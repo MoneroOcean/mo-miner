@@ -133,12 +133,16 @@ void xmrig::VirtualMemory::init(size_t poolSize, size_t hugePageSize)
         osInit(hugePageSize);
     }
 
-#   ifdef XMRIG_FEATURE_HWLOC
+#   if defined(_WIN32)
+    (void) poolSize;
+#   else
+#       ifdef XMRIG_FEATURE_HWLOC
     if (Cpu::info()->nodes() > 1) {
         pool = new NUMAMemoryPool(align(poolSize, Cpu::info()->nodes()), hugePageSize > 0);
     } else
-#   endif
+#       endif
     {
         pool = new MemoryPool(poolSize, hugePageSize > 0);
     }
+#   endif
 }

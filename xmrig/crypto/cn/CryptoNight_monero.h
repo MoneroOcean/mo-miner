@@ -66,8 +66,8 @@
     __m128i sqrt_result_xmm_##part     = _mm_cvtsi64_si128(static_cast<int64_t>(h##part[13]));
 
 #ifdef _MSC_VER
-#   define VARIANT2_SET_ROUNDING_MODE() if (BASE == Algorithm::CN_2) { _control87(RC_DOWN, MCW_RC); }
-#   define RESTORE_ROUNDING_MODE() _control87(RC_NEAR, MCW_RC);
+#   define VARIANT2_SET_ROUNDING_MODE() if (BASE == Algorithm::CN_2) { _control87(RC_DOWN, MCW_RC); _MM_SET_ROUNDING_MODE(_MM_ROUND_DOWN); }
+#   define RESTORE_ROUNDING_MODE() do { _control87(RC_NEAR, MCW_RC); _MM_SET_ROUNDING_MODE(_MM_ROUND_NEAREST); } while (0)
 #else
 #   define VARIANT2_SET_ROUNDING_MODE() if (BASE == Algorithm::CN_2) { fesetround(FE_DOWNWARD); }
 #   define RESTORE_ROUNDING_MODE() fesetround(FE_TONEAREST);

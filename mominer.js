@@ -6,10 +6,10 @@ const path = require("path");
 const net  = require("net");
 const tls  = require("tls");
 const fs   = require('fs');
-const si   = require('systeminformation');
-const h    = require(path.join(__dirname, 'helper.js'));
-const o    = require(path.join(__dirname, 'opts.js'));
-const p    = require(path.join(__dirname, 'pool.js'));
+const os   = require("os");
+const h    = require("./helper.js");
+const o    = require("./opts.js");
+const p    = require("./pool.js");
 
 // compute core wrapper for cluster process fork
 if (h.cluster_process()) return;
@@ -26,18 +26,61 @@ let test = {
   result:          ""
 };
 let thread_hashrates = {};
+let is_exiting = false;
+
+const WORKER_CLOSE_GRACE_MS = 3000;
+const PROCESS_EXIT_GRACE_MS = 5000;
 
 o.set_default_opts(global.opt, o.opt_help);
 
-function exit(code) {
+function reallyExit(code) {
+  const finish = () => {
+    if (h.exit_now) h.exit_now(code);
+    else process.exit(code);
+  };
+
+  setImmediate(() => {
+    process.stdout.write("", () => {
+      process.stderr.write("", finish);
+    });
+  });
+}
+
+function normalizeTestResult(algo, value) {
+  if (!algo.includes("c29")) return value;
+
+  const tokens = value.trim().split(/\s+/);
+  const hasEol = tokens[tokens.length - 1] === "EOL";
+  if (hasEol) tokens.pop();
+
+  return tokens.sort().join(" ") + (hasEol ? " EOL" : "");
+}
+
+function normalizeExpectedResults(algo, value) {
+  return value.split("|").map((expected) => normalizeTestResult(algo, expected));
+}
+
+function exit(code, force = directive === "mine" || directive === "bench") {
+  if (is_exiting) {
+    if (force) reallyExit(code);
+    return false;
+  }
+  is_exiting = true;
   if (compute_core) {
     if (Object.keys(global.opt.default_msrs).length)
       compute_core.emit_to("write_msr", h.pack_msr(global.opt.default_msrs));
     compute_core.emit_to("close");
     compute_core = null;
   }
-  h.messageWorkers({type: "close"});
+  h.closeWorkers(force ? WORKER_CLOSE_GRACE_MS : null);
   process.exitCode = code;
+  if (directive === "test" || directive === "algo_params") {
+    reallyExit(code);
+  } else if (force) {
+    setTimeout(function() {
+      reallyExit(code);
+    }, PROCESS_EXIT_GRACE_MS).unref();
+  }
   return false;
 }
 
@@ -56,7 +99,7 @@ function parse_args() {
       if (args.length < 1) return o.print_help("Directive \"mine\" needs 1+ parameters");
       const param1 = args.shift();
       if (param1.match(/.\json$/)) { // load config file
-        const config_fn = param1;
+        const config_fn = path.resolve(param1);
         h.log("Loading config file " + config_fn);
         const opt2 = require(config_fn);
         for (const key in opt2) switch (key) {
@@ -146,11 +189,13 @@ function messageHandler(msg) {
       const test_threads = is_rx ? batch * threads : (global.opt.job.algo.includes("c29") ? test.result_hash_hex.trim().split(/\s+/).length : threads);
       test.result = (test.result ? test.result + " " : "") + msg.value.result;
       if (++test.thread_tested >= test_threads) {
-        if (test.result_hash_hex != test.result) {
-          h.log_err("FAILED: " + test.result + " != " + test.result_hash_hex + " " + test_threads);
+        const expectedResults = normalizeExpectedResults(global.opt.job.algo, test.result_hash_hex);
+        const actualResult = normalizeTestResult(global.opt.job.algo, test.result);
+        if (!expectedResults.includes(actualResult)) {
+          fs.writeSync(2, "FAILED: " + test.result + " != " + test.result_hash_hex + " " + test_threads + "\n");
           return exit(1);
         } else {
-          h.log("PASSED");
+          fs.writeSync(1, "PASSED\n");
           return exit(0);
         }
       }
@@ -333,34 +378,91 @@ function start_mining() {
   }, global.opt.pool_time.donate_interval * 1000);
 }
 
-function on_exit() { exit(0); }
+function on_exit() { exit(0, true); }
+
+function install_exit_handlers() {
+  process.on("SIGINT", on_exit);
+  process.on("SIGTERM", on_exit);
+  if (process.platform === "win32") process.on("SIGBREAK", on_exit);
+  else process.on("SIGHUP", on_exit);
+}
+
+function detect_cpu() {
+  const fallback = {
+    cpu_sockets: 1,
+    cpu_threads: os.cpus().length || 1,
+    cpu_l3cache: 0,
+  };
+  if (process.platform === "win32" || !fs.existsSync("/proc/cpuinfo")) return fallback;
+
+  const cpuinfo = fs.readFileSync("/proc/cpuinfo", "utf8");
+  const processor_count = (cpuinfo.match(/^processor\s*:/gm) || []).length;
+  const physical_ids = new Set();
+  for (const match of cpuinfo.matchAll(/^physical id\s*:\s*(.+)$/gm)) physical_ids.add(match[1]);
+
+  let l3cache = 0;
+  const l3_ids = new Set();
+  for (const index of fs.readdirSync("/sys/devices/system/cpu").filter((name) => /^cpu\d+$/.test(name))) {
+    const cache_dir = `/sys/devices/system/cpu/${index}/cache`;
+    if (!fs.existsSync(cache_dir)) continue;
+    for (const entry of fs.readdirSync(cache_dir)) {
+      try {
+        const base = `${cache_dir}/${entry}`;
+        if (fs.readFileSync(`${base}/type`, "utf8").trim() !== "Unified") continue;
+        if (fs.readFileSync(`${base}/level`, "utf8").trim() !== "3") continue;
+        const size = fs.readFileSync(`${base}/size`, "utf8").trim().match(/^(\d+)([KMG])$/i);
+        if (!size) continue;
+        const id = fs.existsSync(`${base}/shared_cpu_list`) ? fs.readFileSync(`${base}/shared_cpu_list`, "utf8").trim() : base;
+        if (l3_ids.has(id)) continue;
+        l3_ids.add(id);
+        const multiplier = { K: 1024, M: 1024 * 1024, G: 1024 * 1024 * 1024 }[size[2].toUpperCase()];
+        l3cache += Number(size[1]) * multiplier;
+      } catch (_) {}
+    }
+  }
+
+  return {
+    cpu_sockets: physical_ids.size || 1,
+    cpu_threads: processor_count || fallback.cpu_threads,
+    cpu_l3cache: l3cache,
+  };
+}
+
+function use_msr_tuning() {
+  return process.platform !== "win32";
+}
+
+function add_algo_params(params) {
+  for (const algo in params) {
+    if (!(algo in global.opt.algo_params))
+      global.opt.algo_params[algo] = { dev: params[algo], perf: null };
+  }
+}
 
 switch (directive) {
   case "mine":
-    process.on('SIGINT', on_exit);
+    install_exit_handlers();
     compute_core = h.create_core();
-    compute_core.from.on("close", function() { process.exit(0); });
-    si.cpu(function(cpu) {
-      compute_core.from.on("algo_params", function(v) {
-        for (const algo in v) {
-          if (!(algo in global.opt.algo_params))
-            global.opt.algo_params[algo] = { dev: v[algo], perf: null };
-        }
-        compute_core.from.on("read_msr", function(v) {
-          global.opt.default_msrs = h.unpack_msr(v);
-          bench_algos(start_mining);
-        });
-        compute_core.from.on("error", function(v) {
-          h.log("Can't access MSR: " + JSON.stringify(v.message));
-          global.opt.default_msrs = {}; // do not try to write it later
-          bench_algos(start_mining);
-        });
-        compute_core.emit_to("read_msr", h.pack_msr(global.opt.default_msrs));
+    compute_core.from.on("close", function() { process.exitCode = 0; });
+    compute_core.from.on("algo_params", function(v) {
+      add_algo_params(v);
+      if (!use_msr_tuning()) {
+        global.opt.default_msrs = {};
+        bench_algos(start_mining);
+        return;
+      }
+      compute_core.from.on("read_msr", function(v) {
+        global.opt.default_msrs = h.unpack_msr(v);
+        bench_algos(start_mining);
       });
-      compute_core.emit_to("algo_params", {
-        cpu_sockets: cpu.processors, cpu_threads: cpu.cores, cpu_l3cache: cpu.cache.l3
+      compute_core.from.on("error", function(v) {
+        h.log("Can't access MSR: " + JSON.stringify(v.message));
+        global.opt.default_msrs = {}; // do not try to write it later
+        bench_algos(start_mining);
       });
+      compute_core.emit_to("read_msr", h.pack_msr(global.opt.default_msrs));
     });
+    compute_core.emit_to("algo_params", detect_cpu());
     break;
 
   case "test":
@@ -369,10 +471,14 @@ switch (directive) {
     break;
 
   case "bench":
-    process.on('SIGINT', on_exit);
-    compute_core = h.create_core();
-    compute_core.from.on("close", function() { process.exit(0); });
+    install_exit_handlers();
     h.recreate_threads(global.opt.job.dev, messageHandler);
+    if (!use_msr_tuning()) {
+      h.messageWorkers({type: "bench", job: last_job = global.opt.job});
+      break;
+    }
+    compute_core = h.create_core();
+    compute_core.from.on("close", function() { process.exitCode = 0; });
     compute_core.from.on("read_msr", function(v) {
       global.opt.default_msrs = h.unpack_msr(v); // to restore them on exit
       set_algo_msr(global.opt.job.algo);
@@ -387,18 +493,14 @@ switch (directive) {
 
   case "algo_params":
     compute_core = h.create_core();
-    compute_core.from.on("close", function() { process.exit(0); });
+    compute_core.from.on("close", function() { process.exitCode = 0; });
     compute_core.from.on("algo_params", function(v) {
-      console.log("MOMINER_ALGO_PARAMS " + JSON.stringify(v));
+      fs.writeSync(1, "MOMINER_ALGO_PARAMS " + JSON.stringify(v) + "\n");
       exit(0);
     });
     compute_core.from.on("error", function(v) {
       err_exit("Can't detect algo params: " + JSON.stringify(v.message ? v.message : v));
     });
-    si.cpu(function(cpu) {
-      compute_core.emit_to("algo_params", {
-        cpu_sockets: cpu.processors, cpu_threads: cpu.cores, cpu_l3cache: cpu.cache.l3
-      });
-    });
+    compute_core.emit_to("algo_params", detect_cpu());
     break;
 }

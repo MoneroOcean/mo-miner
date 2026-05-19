@@ -5,6 +5,8 @@
 
 #include <sycl/sycl.hpp>
 #include <chrono>
+#include <cstdio>
+#include <cstring>
 #include "sycl-lib-internal.h"
 #include "consts.h"
 
@@ -82,15 +84,15 @@ void keccak(uint64_t* const s) {
 
     // Theta step - optimized for Arc's execution units
     bc[0] = s[0] ^ s[5] ^ s[10] ^ s[15] ^ s[20] ^
-            sycl::rotate(s[2] ^ s[7] ^ s[12] ^ s[17] ^ s[22], 1UL);
+            sycl::rotate(s[2] ^ s[7] ^ s[12] ^ s[17] ^ s[22], uint64_t{1});
     bc[1] = s[1] ^ s[6] ^ s[11] ^ s[16] ^ s[21] ^
-            sycl::rotate(s[3] ^ s[8] ^ s[13] ^ s[18] ^ s[23], 1UL);
+            sycl::rotate(s[3] ^ s[8] ^ s[13] ^ s[18] ^ s[23], uint64_t{1});
     bc[2] = s[2] ^ s[7] ^ s[12] ^ s[17] ^ s[22] ^
-            sycl::rotate(s[4] ^ s[9] ^ s[14] ^ s[19] ^ s[24], 1UL);
+            sycl::rotate(s[4] ^ s[9] ^ s[14] ^ s[19] ^ s[24], uint64_t{1});
     bc[3] = s[3] ^ s[8] ^ s[13] ^ s[18] ^ s[23] ^
-            sycl::rotate(s[0] ^ s[5] ^ s[10] ^ s[15] ^ s[20], 1UL);
+            sycl::rotate(s[0] ^ s[5] ^ s[10] ^ s[15] ^ s[20], uint64_t{1});
     bc[4] = s[4] ^ s[9] ^ s[14] ^ s[19] ^ s[24] ^
-            sycl::rotate(s[1] ^ s[6] ^ s[11] ^ s[16] ^ s[21], 1UL);
+            sycl::rotate(s[1] ^ s[6] ^ s[11] ^ s[16] ^ s[21], uint64_t{1});
 
     s[0] ^= bc[4]; s[5] ^= bc[4]; s[10] ^= bc[4]; s[15] ^= bc[4]; s[20] ^= bc[4];
     s[1] ^= bc[0]; s[6] ^= bc[0]; s[11] ^= bc[0]; s[16] ^= bc[0]; s[21] ^= bc[0];
@@ -144,13 +146,25 @@ inline int32_t* lpad_ptr(const unsigned idx, const unsigned n, int32_t* const lp
 
 // Optimized float operations for Xe-HPG's FPU
 inline sycl::float4 my_and_or_ps(const sycl::float4 x, const uint32_t _and, const uint32_t _or) {
-  const sycl::uint4 i = (reinterpret_cast<const sycl::uint4&>(x) & _and) | _or;
-  return reinterpret_cast<const sycl::float4&>(i);
+  const sycl::uint4 i = (sycl::bit_cast<sycl::uint4>(x) & _and) | _or;
+  return sycl::bit_cast<sycl::float4>(i);
 }
 
 // Breaks the FMA dependency chain
 inline sycl::float4 fma_break(const sycl::float4 x) {
   return my_and_or_ps(x, 0xFEFFFFFF, 0x00800000);
+}
+
+inline const char* cn_gpu_fp_compile_options(const sycl::device& dev) {
+  constexpr const char* optimized =
+    "-cl-fp32-correctly-rounded-divide-sqrt -cl-mad-enable -cl-fast-relaxed-math -cl-no-signed-zeros";
+  constexpr const char* stable =
+    "-cl-fp32-correctly-rounded-divide-sqrt -cl-mad-enable -cl-fast-relaxed-math -cl-no-signed-zeros -cl-opt-disable";
+
+  // Intel OpenCL CPU backends reassociate the cn/gpu floating-point recurrence
+  // differently from GPU backends. Keep GPU optimized, but compile CPU devices
+  // without backend optimization so the recurrence preserves the canonical order.
+  return dev.is_cpu() ? stable : optimized;
 }
 
 inline void sub_round(
@@ -206,11 +220,12 @@ inline sycl::int4 single_comupte(
 inline sycl::int4 my_alignr_epi8(const sycl::int4 a, const unsigned rot) {
   const unsigned right = 8 * rot;
   const unsigned left  = 32 - right;
+  const sycl::uint4 u = a.as<sycl::uint4>();
   return sycl::int4(
-    (static_cast<uint32_t>(a[0]) >> right) | ( a[1] << left ),
-    (static_cast<uint32_t>(a[1]) >> right) | ( a[2] << left ),
-    (static_cast<uint32_t>(a[2]) >> right) | ( a[3] << left ),
-    (static_cast<uint32_t>(a[3]) >> right) | ( a[0] << left )
+    (u[0] >> right) | (u[1] << left),
+    (u[1] >> right) | (u[2] << left),
+    (u[2] >> right) | (u[3] << left),
+    (u[3] >> right) | (u[0] << left)
   );
 }
 
@@ -285,7 +300,7 @@ void cn_gpu(
   void* const Spads, const unsigned batch, const std::string& dev_str
 ) {
   try {
-    const auto exception_handler = [] (sycl::exception_list exceptions) {
+    const sycl::async_handler exception_handler = [] (sycl::exception_list exceptions) {
       for (std::exception_ptr const& e : exceptions) {
         try {
           std::rethrow_exception(e);
@@ -301,8 +316,7 @@ void cn_gpu(
     // Set optimal compiler flags for Xe-HPG architecture
     static bool isFirstTime = true;
     if (isFirstTime) {
-      setenv("SYCL_PROGRAM_COMPILE_OPTIONS",
-             "-cl-fp32-correctly-rounded-divide-sqrt -cl-mad-enable -cl-fast-relaxed-math -cl-no-signed-zeros", 1);
+      set_sycl_env("SYCL_PROGRAM_COMPILE_OPTIONS", cn_gpu_fp_compile_options(q.get_device()));
 //      setenv("IGC_ShaderDumpEnable", "1", 0); // Optional: for debugging
 //      setenv("IGC_DumpToCurrentDir", "1", 0);
       isFirstTime = false;
@@ -364,13 +378,16 @@ void cn_gpu(
       });
     });
 
-    // Kernel 3: Main computation kernel
+    // Kernel 3: Main computation kernel. A prior CPU-SYCL stability pass used
+    // a separate scalar CPU-device path here; keep this single kernel until a
+    // standalone package failure proves the extra implementation is required.
     q.submit([&](sycl::handler& h) {
       const auto spads = bSpads4.get_access<sycl::access::mode::read>(h);
       const auto lpads = bLpads4.get_access<sycl::access::mode::read_write>(h);
 
       // Optimized local memory allocation
       const auto vi0   = sycl::local_accessor<sycl::int4,   1>(sycl::range(WORKGROUP_SIZE), h);
+      const auto vi1   = sycl::local_accessor<sycl::int4,   1>(sycl::range(WORKGROUP_SIZE), h);
       const auto vf0   = sycl::local_accessor<sycl::float4, 1>(sycl::range(WORKGROUP_SIZE), h);
 
       h.use_kernel_bundle(kb);
@@ -411,6 +428,8 @@ void cn_gpu(
 
         sycl::int4* const   vi  = &vi0[0];
         int32_t* const      vi4 = reinterpret_cast<int32_t*>(&vi0[0]);
+        sycl::int4* const   vo  = &vi1[0];
+        int32_t* const      vo4 = reinterpret_cast<int32_t*>(&vi1[0]);
         sycl::float4* const vf  = &vf0[0];
         float* const        vf4 = reinterpret_cast<float*>(&vf0[0]);
 
@@ -421,15 +440,15 @@ void cn_gpu(
           nd.barrier(sycl::access::fence_space::local_space);
 
           single_comupte_wrap(
-	    vi[L[l][0]], vi[L[l][1]], vi[L[l][2]], vi[L[l][3]], lm, ccnt[l], sf, vf + l, vi + l
+	    vi[L[l][0]], vi[L[l][1]], vi[L[l][2]], vi[L[l][3]], lm, ccnt[l], sf, vf + l, vo + l
 	  );
           nd.barrier(sycl::access::fence_space::local_space);
 
           // Vectorized XOR operations
-	  { int32_t xo = vi4[b];
-            for (unsigned dd = b + 4; dd < (ld + 1) * 16; dd += 4) xo ^= vi4[dd];
+	  { int32_t xo = vo4[b];
+            for (unsigned dd = b + 4; dd < (ld + 1) * 16; dd += 4) xo ^= vo4[dd];
             lpad_ptr(s, ld, lpad)[lm] = xo ^ xi;
-            vi4[l] = xo;
+            vo4[l] = xo;
 	  }
 
           // Float addition is not really associative and it is really important here
@@ -438,13 +457,13 @@ void cn_gpu(
           nd.barrier(sycl::access::fence_space::local_space);
 
           const float xf = sycl::fabs((vf4[b] + vf4[b + 4]) + (vf4[b + 8] + vf4[b + 12]));
-          vi4[l] ^= vi4[l + 4] ^ vi4[l + 8] ^ vi4[l + 12] ^
+          vo4[l] ^= vo4[l + 4] ^ vo4[l + 8] ^ vo4[l + 12] ^
                     static_cast<int32_t>(xf * 16777216.0f);
           vf4[l] = xf * 0.015625f; // 1/64 as multiplication
           nd.barrier(sycl::access::fence_space::local_space);
 
           sf = vf[0];
-          s = vi[0][0] ^ vi[0][1] ^ vi[0][2] ^ vi[0][3];
+          s = vo[0][0] ^ vo[0][1] ^ vo[0][2] ^ vo[0][3];
         }
       });
     });
@@ -530,6 +549,7 @@ void cn_gpu(
           for (unsigned j = 0; j < 10; ++ j) {
             aes_round(&x, key.u4[j], aes0, aes1, aes2, aes3);
           }
+          nd.barrier(sycl::access::fence_space::local_space);
           x1s = x;
           nd.barrier(sycl::access::fence_space::local_space);
           x ^= x1l;

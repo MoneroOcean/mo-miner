@@ -5,8 +5,8 @@
 const path = require("path");
 const net  = require("net");
 const tls  = require("tls");
-const h    = require(path.join(__dirname, 'helper.js'));
-const o    = require(path.join(__dirname, 'opts.js'));
+const h    = require("./helper.js");
+const o    = require("./opts.js");
 
 function pool_str(pool_id) {
   const pool = global.opt.pools[pool_id];

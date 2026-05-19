@@ -9,16 +9,21 @@
 #include "crypto/ghostrider/ghostrider.h"
 #include "crypto/randomx/configuration.h"
 #include "crypto/randomx/aes_hash.hpp"
+#include "base/tools/bswap_64.h"
 
+#include <algorithm>
 #include <ranges>
 #include <list>
+#include <set>
 #include <thread>
+#include <cstdlib>
 
 const constexpr unsigned MAX_BLOB_LEN    = 512;
 const constexpr unsigned SPAD_LEN        = 200;
 const constexpr unsigned MAX_CN_CPU_WAYS = 5;
 
-static const xmrig::ICpuInfo& ci = *xmrig::Cpu::info();
+static const xmrig::ICpuInfo& cpu_info() { return *xmrig::Cpu::info(); }
+#define ci cpu_info()
 
 static const std::map<std::string, xmrig::Algorithm::Id> cpu_name2algo = {
   { "cn/0",            xmrig::Algorithm::CN_0           },
@@ -321,15 +326,14 @@ void Core::set_job(
 
   // start rx job compute threads
   if (new_dev == DEV::RX_CPU) {
-    std::atomic<int> unique_counter{0};
     // need static copy here so it will be alive in rx threads
     static uint8_t new_input2[MAX_BLOB_LEN];
     memcpy(new_input2, new_input, m_input_len);
     const unsigned job_ref = m_job_ref;
     const bool is_rx_v2 = new_algo_str == "rx/2";
     for (unsigned batch_id = 0; batch_id != m_batch; ++batch_id) m_thread_pool->push(
-      [=, this, &m_job_ref = m_job_ref, &m_hash_count = m_hash_count, &unique_counter](int) {
-        const int thread_id = unique_counter.fetch_add(1);
+      [=, this, &m_job_ref = m_job_ref, &m_hash_count = m_hash_count](int) {
+        const unsigned thread_id = batch_id;
         try {
           alignas(16) uint8_t  input[MAX_BLOB_LEN];
           alignas(16) uint8_t  output[HASH_LEN];
@@ -337,17 +341,17 @@ void Core::set_job(
           alignas(16) uint8_t  prev_input[MAX_BLOB_LEN];
           alignas(16) uint64_t temp_hash[8];
           uint32_t nonce = new_nonce + new_thread_id * m_batch + batch_id;
-          if (m_nicehash_mask) nonce |= __builtin_bswap32(*get_nonce32(new_input2, 0)) & static_cast<uint32_t>(m_nicehash_mask);
+          if (m_nicehash_mask) nonce |= bswap_32(*get_nonce32(new_input2, 0)) & static_cast<uint32_t>(m_nicehash_mask);
           const unsigned nonce_step = new_thread_num * m_batch;
           unsigned hashrate_update_counter = HASHRATE_COUNTER_INTERVAL;
           memcpy(input, new_input2, m_input_len);
-          if (is_set_nonce) { *get_nonce32(input, 0) = __builtin_bswap32(nonce); nonce += nonce_step; }
+          if (is_set_nonce) { *get_nonce32(input, 0) = bswap_32(nonce); nonce += nonce_step; }
           if (is_rx_v2) memcpy(prev_input, input, m_input_len);
           randomx_calculate_hash_first(m_vm[thread_id], temp_hash, input, m_input_len);
           while (job_ref == m_job_ref) { // continue until we get a new job
             uint32_t* const pnonce = get_nonce32(input, 0);
             const uint32_t prev_nonce = nonce;
-            *pnonce = __builtin_bswap32(nonce += nonce_step);
+            *pnonce = bswap_32(nonce += nonce_step);
 	    // check that current nonce is greater than previous one and nince hash protected nonce part is not changed
             if (m_target && ( m_nicehash_mask ? (prev_nonce & static_cast<uint32_t>(m_nicehash_mask)) != (nonce & static_cast<uint32_t>(m_nicehash_mask)) :
                               prev_nonce > nonce )
@@ -392,15 +396,15 @@ void Core::set_job(
       memcpy(m_input + m_input_len*i, new_input, m_input_len);
     if (m_nonce_bytes == 4) {
       m_nonce32 = new_nonce + new_thread_id;
-      if (m_nicehash_mask) m_nonce32 |= __builtin_bswap32(*get_nonce32(new_input, 0)) & static_cast<uint32_t>(m_nicehash_mask);
+      if (m_nicehash_mask) m_nonce32 |= bswap_32(*get_nonce32(new_input, 0)) & static_cast<uint32_t>(m_nicehash_mask);
       if (is_set_nonce) for (unsigned i = 0; i != m_batch; ++i) {
-        *get_nonce32(i) = __builtin_bswap32(m_nonce32); m_nonce32 += m_nonce_step;
+        *get_nonce32(i) = bswap_32(m_nonce32); m_nonce32 += m_nonce_step;
       }
     } else {
       m_nonce64 = new_nonce + new_thread_id;
-      if (m_nicehash_mask) m_nonce64 |= __builtin_bswap64(*get_nonce64(new_input, 0)) & m_nicehash_mask;
+      if (m_nicehash_mask) m_nonce64 |= bswap_64(*get_nonce64(new_input, 0)) & m_nicehash_mask;
       if (is_set_nonce) for (unsigned i = 0; i != m_batch; ++i) {
-        *get_nonce64(i) = __builtin_bswap64(m_nonce64); m_nonce64 += m_nonce_step;
+        *get_nonce64(i) = bswap_64(m_nonce64); m_nonce64 += m_nonce_step;
       }
     }
   }
@@ -417,8 +421,12 @@ void Core::get_algo_params(const MessageValues& v) {
   const auto& gpu_cn_algo_keys = std::views::keys(gpu_cn_algo2fn);
   const auto& gpu_c29_algo_keys = std::views::keys(gpu_c29_algo2fn);
   const std::set<std::string> cpu_algos(cpu_algo_keys.begin(), cpu_algo_keys.end()),
-                              gpu_cn_algos(gpu_cn_algo_keys.begin(), gpu_cn_algo_keys.end()),
-			      gpu_c29_algos(gpu_c29_algo_keys.begin(), gpu_c29_algo_keys.end());
+                              gpu_cn_algos = std::getenv("MOMINER_SKIP_SYCL_ALGO_PARAMS")
+                                ? std::set<std::string>{}
+                                : std::set<std::string>(gpu_cn_algo_keys.begin(), gpu_cn_algo_keys.end()),
+                              gpu_c29_algos = std::getenv("MOMINER_SKIP_SYCL_ALGO_PARAMS")
+                                ? std::set<std::string>{}
+                                : std::set<std::string>(gpu_c29_algo_keys.begin(), gpu_c29_algo_keys.end());
   const std::map<std::string, std::string>& result_map = algo_params(
     MAX_CN_CPU_WAYS, cpu_sockets, cpu_threads, cpu_l3cache, algo2mem, cpu_algos, gpu_cn_algos, gpu_c29_algos
   );

@@ -613,7 +613,7 @@ static SkeinHashReturn Final (hashState *state,       SkeinBitSequence *hashval)
 static SkeinHashReturn Init(hashState *state, int hashbitlen)
 {
     state->statebits = 64*SKEIN_512_STATE_WORDS;
-    return Skein_512_Init(&state->u.ctx_512,(size_t) hashbitlen);
+    return (SkeinHashReturn) Skein_512_Init(&state->u.ctx_512,(size_t) hashbitlen);
 }
 
 /*++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*/
@@ -626,7 +626,7 @@ static SkeinHashReturn Update(hashState *state, const SkeinBitSequence *data, Sk
   Skein_Assert(state->statebits % 256 == 0 && (state->statebits-256) < 1024,SKEIN_FAIL);
   if ((databitlen & 7) == 0)  /* partial bytes? */
   {
-    return Skein_512_Update(&state->u.ctx_512,data,databitlen >> 3);
+    return (SkeinHashReturn) Skein_512_Update(&state->u.ctx_512,data,databitlen >> 3);
   }
   else
   {   /* handle partial final byte */
@@ -649,7 +649,7 @@ static SkeinHashReturn Update(hashState *state, const SkeinBitSequence *data, Sk
 static SkeinHashReturn Final(hashState *state, SkeinBitSequence *hashval)
 {
   Skein_Assert(state->statebits % 256 == 0 && (state->statebits-256) < 1024,FAIL);
-  return Skein_512_Final(&state->u.ctx_512,hashval);
+  return (SkeinHashReturn) Skein_512_Final(&state->u.ctx_512,hashval);
 }
 
 /*++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*/

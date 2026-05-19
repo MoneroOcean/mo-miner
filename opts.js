@@ -3,9 +3,9 @@
 "use strict";
 
 const path = require("path");
-const h    = require(path.join(__dirname, 'helper.js'));
+const h    = require("./helper.js");
 
-const version_str = "0.4.0";
+const version_str = require("./package.json").version;
 
 module.exports.agent_str = "MoMiner v" + version_str;
 
@@ -166,9 +166,12 @@ module.exports.print_opt_help = function(opt_help, depth_str, base_key_path_str)
 };
 
 module.exports.print_help = function(err_str) {
+  const exe = path.basename(process.argv[1] || "");
+  const command = process.env.MOMINER_COMMAND ||
+                  (exe === "mominer" || exe === "mominer.exe" ? "./" + exe : "node mominer.js");
   const str = `
 # Node.js/SYCL based CPU/GPU miner v${version_str}
-$ node mominer.js <directive> <parameter>+ [<option>+]
+$ ${command} <directive> <parameter>+ [<option>+]
 
 Directives:
   mine  (<pool_address:port[tls]> <login> [<pass>]|<config.json>)
@@ -203,7 +206,7 @@ module.exports.parse_opt = function(opt, opt_help, arg, val, base_key_path_str) 
         try {
           val2 = JSON.parse(val);
         } catch (err) {
-          return print_help("Can't parse option " + arg + " JSON param: " + val + ": " + err);
+          return this.print_help("Can't parse option " + arg + " JSON param: " + val + ": " + err);
         }
         if ("_template" in opt_help[key]) {
           const template = opt_help[key]._template;
@@ -215,7 +218,7 @@ module.exports.parse_opt = function(opt, opt_help, arg, val, base_key_path_str) 
             const def_val = template[key2][0];
             // do not allow to keys without default values to be missing
             if (typeof def_val === 'undefined' && !(key2 in val2))
-              return print_help("Need to specify key value \"" + key2 + "\" in " + key + " JSON");
+              return this.print_help("Need to specify key value \"" + key2 + "\" in " + key + " JSON");
             val3[key2] = key2 in val2 ? val2[key2] : def_val;
           }
           if ("_array" in opt_help[key] && arg === "--add." + key_path_str) {

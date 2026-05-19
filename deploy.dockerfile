@@ -1,7 +1,8 @@
-# https://hub.docker.com/r/intel/oneapi-basekit/tags
-FROM intel/oneapi-runtime:2025.2.2-0-devel-ubuntu24.04
+# https://hub.docker.com/r/intel/oneapi-runtime/tags
+FROM intel/oneapi-runtime:2026.0.0-devel-ubuntu24.04
 
 # install minimal number of packages needed
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends nodejs
 
-COPY libumf.so.0 /opt/intel/oneapi/redist/lib
+COPY *.so* /usr/local/lib/
+ENV LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH

@@ -9,10 +9,15 @@
 #include <vector>
 #include <list>
 #include <thread>
-#include <mutex>
 #include <atomic>
+#include <cstdio>
 #include "sycl-lib-internal.h"
 #include "consts.h"
+#include "crypto/randomx/blake2/blake2.h"
+
+#if defined(_WIN32)
+#include <windows.h>
+#endif
 
 // Cuckaroo Cycle algorithm constants
 const constexpr uint64_t DUCK_SIZE_A    = 129;
@@ -36,11 +41,43 @@ const constexpr uint32_t BUCKET_OFFSET          = 255;
 const constexpr uint32_t BUCKET_STEP            = 32;
 
 // Global solution management
+class C29SolutionMutex {
+  std::atomic_flag m_flag = ATOMIC_FLAG_INIT;
+
+  public:
+
+  void lock() {
+    while (m_flag.test_and_set(std::memory_order_acquire)) {
+#if defined(_WIN32)
+      Sleep(0);
+#else
+      std::this_thread::yield();
+#endif
+    }
+  }
+
+  void unlock() {
+    m_flag.clear(std::memory_order_release);
+  }
+};
+
+class C29SolutionLock {
+  C29SolutionMutex& m_mutex;
+
+  public:
+
+  explicit C29SolutionLock(C29SolutionMutex& mutex) : m_mutex(mutex) { m_mutex.lock(); }
+  ~C29SolutionLock() { m_mutex.unlock(); }
+
+  C29SolutionLock(const C29SolutionLock&) = delete;
+  C29SolutionLock& operator=(const C29SolutionLock&) = delete;
+};
+
 static std::list<std::vector<sycl::uint2>> global_solutions;
 static std::list<std::vector<uint64_t>> global_seeds;
 static std::list<unsigned> global_job_refs;
 static std::list<uint64_t> global_nonces;
-static std::mutex global_solutions_mutex;
+static C29SolutionMutex global_solutions_mutex;
 static std::atomic<uint32_t> running_search_threads{0};
 
 // Helper function to create path through graph - optimized for cycle detection
@@ -646,7 +683,7 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
 
       // Thread-safe update of global solutions list
       if (!solutions.empty()) {
-        std::lock_guard<std::mutex> lock(global_solutions_mutex);
+        C29SolutionLock lock(global_solutions_mutex);
         for (const auto& solution : solutions) {
           global_solutions.push_back(solution);
 	  global_seeds.push_back(std::vector<uint64_t>{seed_k0, seed_k1, seed_k2, seed_k3});
@@ -664,15 +701,13 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
   }
 }
 
-extern int (*rx_blake2b)(void* out, const size_t outlen, const void* in, const size_t inlen);
-
 int c29(const unsigned job_ref, const unsigned c29_proof_size,
         const uint8_t* const input, const unsigned input_size,
         uint8_t* const output, uint32_t* const output_edges,
         uint64_t* const pnonce, const std::string& dev_str) {
 
   try {
-    const auto exception_handler = [] (sycl::exception_list exceptions) {
+    const sycl::async_handler exception_handler = [] (sycl::exception_list exceptions) {
       for (std::exception_ptr const& e : exceptions) {
         try {
           std::rethrow_exception(e);
@@ -689,7 +724,7 @@ int c29(const unsigned job_ref, const unsigned c29_proof_size,
     // Set optimal SYCL compiler flags for this algo
     static bool isFirstTime = true;
     if (isFirstTime) {
-      setenv("SYCL_PROGRAM_COMPILE_OPTIONS", "-O3 -Rpass=loop-vectorize -Rpass-missed=loop-vectorize -Rpass-analysis=loop-vectorize", 1);
+      set_sycl_env("SYCL_PROGRAM_COMPILE_OPTIONS", "-O3 -Rpass=loop-vectorize -Rpass-missed=loop-vectorize -Rpass-analysis=loop-vectorize");
       isFirstTime = false;
     }
 
@@ -700,7 +735,7 @@ int c29(const unsigned job_ref, const unsigned c29_proof_size,
     unsigned solution_job_ref;
     uint64_t solution_nonce;
 
-    { std::lock_guard<std::mutex> lock(global_solutions_mutex);
+    { C29SolutionLock lock(global_solutions_mutex);
       while (!global_solutions.empty()) {
 	solution         = global_solutions.front();
         solution_seed    = global_seeds.front();

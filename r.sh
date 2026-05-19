@@ -18,6 +18,7 @@ docker_flags=(
   --rm
   --name mominer
   --hostname mominer
+  --env MOMINER_R_SH=1
   --mount "type=bind,source=$SCRIPT_DIR,target=/root/mominer"
 )
 

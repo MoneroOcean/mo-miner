@@ -1,12 +1,20 @@
 "use strict";
 
-const { spawn } = require("node:child_process");
+const fs = require("node:fs");
 const path = require("node:path");
+const { hasReleaseExecutable, repoRoot, spawnAndExit } = require("./common/miner_command");
 const { perfTests } = require("./vectors");
 
-const repoRoot = path.join(__dirname, "..");
 const algo = process.argv[2];
-const args = ["env"];
+const testArgs = [
+  "--require",
+  "./tests/common/test_output_buffer.js",
+  "--test",
+  "--test-reporter=./tests/common/spec_reporter.js",
+  "--test-concurrency=1",
+  "tests/perf.js",
+];
+const testEnv = {};
 
 if (algo && !perfTests.some((definition) => definition.algo === algo)) {
   console.error(`Unknown perf algo: ${algo}`);
@@ -14,29 +22,22 @@ if (algo && !perfTests.some((definition) => definition.algo === algo)) {
   process.exit(1);
 }
 
-if (algo) args.push(`MOMINER_PERF_ALGO=${algo}`);
+if (algo) testEnv.MOMINER_PERF_ALGO = algo;
 
-args.push(
-  "node",
-  "--require",
-  "./tests/common/test_output_buffer.js",
-  "--test",
-  "--test-reporter=./tests/common/spec_reporter.js",
-  "--test-concurrency=1",
-  "tests/perf.js"
-);
+function isInsideRsh() {
+  return process.env.MOMINER_R_SH === "1" || fs.existsSync("/.dockerenv");
+}
 
-const child = spawn("./r.sh", args, {
-  cwd: repoRoot,
-  stdio: "inherit",
-});
+const nodeRunner = { command: process.execPath, args: testArgs, env: testEnv };
+let runner;
+if (process.platform === "win32" || isInsideRsh() || hasReleaseExecutable) {
+  runner = nodeRunner;
+} else if (fs.existsSync(path.join(repoRoot, "r.sh"))) {
+  const args = ["env"];
+  if (algo) args.push(`MOMINER_PERF_ALGO=${algo}`);
+  runner = { command: "./r.sh", args: [...args, "node", ...testArgs] };
+} else {
+  runner = { command: "./docker-mominer.sh", args: ["node", ...testArgs], env: testEnv };
+}
 
-child.on("exit", (code, signal) => {
-  if (signal) process.kill(process.pid, signal);
-  process.exit(code === null ? 1 : code);
-});
-
-child.on("error", (error) => {
-  console.error(error.message);
-  process.exit(1);
-});
+spawnAndExit(runner.command, runner.args, { env: runner.env });

@@ -20,13 +20,14 @@
 #include "hw/msr/Msr.h"
 #include "backend/cpu/Cpu.h"
 #include "base/io/log/Log.h"
-#include "base/kernel/Platform.h"
 
 
 #include <string>
 #include <thread>
 #include <vector>
+#include <cassert>
 #include <windows.h>
+#include <winioctl.h>
 
 
 #define SERVICE_NAME    L"WinRing0_1_2_0"
@@ -38,6 +39,22 @@ namespace xmrig {
 
 
 static const wchar_t *kServiceName = SERVICE_NAME;
+
+
+static constexpr const char *msrTag()
+{
+    return "msr";
+}
+
+
+static bool setThreadAffinity(int32_t cpu)
+{
+    if (cpu < 0 || cpu >= static_cast<int32_t>(sizeof(DWORD_PTR) * 8)) {
+        return false;
+    }
+
+    return SetThreadAffinityMask(GetCurrentThread(), static_cast<DWORD_PTR>(1) << cpu) != 0;
+}
 
 
 class MsrPrivate
@@ -63,7 +80,7 @@ public:
             }
 
             if (!DeleteService(service)) {
-                LOG_ERR("%s " RED("failed to remove WinRing0 driver, error %u"), Msr::tag(), GetLastError());
+                LOG_ERR("%s " RED("failed to remove WinRing0 driver, error %u"), msrTag(), GetLastError());
                 result = false;
             }
         }
@@ -92,10 +109,10 @@ xmrig::Msr::Msr() : d_ptr(new MsrPrivate())
     d_ptr->manager = OpenSCManager(nullptr, nullptr, SC_MANAGER_ALL_ACCESS);
     if (!d_ptr->manager) {
         if ((err = GetLastError()) == ERROR_ACCESS_DENIED) {
-            LOG_WARN("%s " YELLOW_BOLD("to access MSR registers Administrator privileges required."), tag());
+            LOG_WARN("%s " YELLOW_BOLD("to access MSR registers Administrator privileges required."), msrTag());
         }
         else {
-            LOG_ERR("%s " RED("failed to open service control manager, error %u"), tag(), err);
+            LOG_ERR("%s " RED("failed to open service control manager, error %u"), msrTag(), err);
         }
 
         return;
@@ -110,7 +127,7 @@ xmrig::Msr::Msr() : d_ptr(new MsrPrivate())
     } while (err == ERROR_INSUFFICIENT_BUFFER);
 
     if (err != ERROR_SUCCESS) {
-        LOG_ERR("%s " RED("failed to get path to driver, error %u"), tag(), err);
+        LOG_ERR("%s " RED("failed to get path to driver, error %u"), msrTag(), err);
         return;
     }
 
@@ -126,7 +143,7 @@ xmrig::Msr::Msr() : d_ptr(new MsrPrivate())
 
     d_ptr->service = OpenServiceW(d_ptr->manager, kServiceName, SERVICE_ALL_ACCESS);
     if (d_ptr->service) {
-        LOG_WARN("%s " YELLOW("service ") YELLOW_BOLD("WinRing0_1_2_0") YELLOW(" already exists"), tag());
+        LOG_WARN("%s " YELLOW("service ") YELLOW_BOLD("WinRing0_1_2_0") YELLOW(" already exists"), msrTag());
 
         SERVICE_STATUS status;
         const auto rc = QueryServiceStatus(d_ptr->service, &status);
@@ -140,7 +157,7 @@ xmrig::Msr::Msr() : d_ptr(new MsrPrivate())
                 auto config = reinterpret_cast<LPQUERY_SERVICE_CONFIGA>(buffer.data());
 
                 if (QueryServiceConfigA(d_ptr->service, config, buffer.size(), &dwBytesNeeded)) {
-                    LOG_INFO("%s " YELLOW("service path: ") YELLOW_BOLD("\"%s\""), tag(), config->lpBinaryPathName);
+                    LOG_INFO("%s " YELLOW("service path: ") YELLOW_BOLD("\"%s\""), msrTag(), config->lpBinaryPathName);
                 }
             }
         }
@@ -155,7 +172,7 @@ xmrig::Msr::Msr() : d_ptr(new MsrPrivate())
 
     d_ptr->driver = CreateFileW(L"\\\\.\\" SERVICE_NAME, GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (d_ptr->driver != INVALID_HANDLE_VALUE) {
-        LOG_WARN("%s " YELLOW("service ") YELLOW_BOLD("WinRing0_1_2_0") YELLOW(" already exists, but with a different service name"), tag());
+        LOG_WARN("%s " YELLOW("service ") YELLOW_BOLD("WinRing0_1_2_0") YELLOW(" already exists, but with a different service name"), msrTag());
         d_ptr->reuse = true;
         return;
     }
@@ -163,7 +180,7 @@ xmrig::Msr::Msr() : d_ptr(new MsrPrivate())
     if (!d_ptr->reuse) {
         d_ptr->service = CreateServiceW(d_ptr->manager, kServiceName, kServiceName, SERVICE_ALL_ACCESS, SERVICE_KERNEL_DRIVER, SERVICE_DEMAND_START, SERVICE_ERROR_NORMAL, path.c_str(), nullptr, nullptr, nullptr, nullptr, nullptr);
         if (!d_ptr->service) {
-            LOG_ERR("%s " RED("failed to install WinRing0 driver, error %u"), tag(), GetLastError());
+            LOG_ERR("%s " RED("failed to install WinRing0 driver, error %u"), msrTag(), GetLastError());
 
             return;
         }
@@ -172,10 +189,10 @@ xmrig::Msr::Msr() : d_ptr(new MsrPrivate())
             err = GetLastError();
             if (err != ERROR_SERVICE_ALREADY_RUNNING) {
                 if (err == ERROR_FILE_NOT_FOUND) {
-                    LOG_ERR("%s " RED("failed to start WinRing0 driver: ") RED_BOLD("\"WinRing0x64.sys not found\""), tag());
+                    LOG_ERR("%s " RED("failed to start WinRing0 driver: ") RED_BOLD("\"WinRing0x64.sys not found\""), msrTag());
                 }
                 else {
-                    LOG_ERR("%s " RED("failed to start WinRing0 driver, error %u"), tag(), err);
+                    LOG_ERR("%s " RED("failed to start WinRing0 driver, error %u"), msrTag(), err);
                 }
 
                 d_ptr->uninstall();
@@ -187,7 +204,7 @@ xmrig::Msr::Msr() : d_ptr(new MsrPrivate())
 
     d_ptr->driver = CreateFileW(L"\\\\.\\" SERVICE_NAME, GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (d_ptr->driver == INVALID_HANDLE_VALUE) {
-        LOG_ERR("%s " RED("failed to connect to WinRing0 driver, error %u"), tag(), GetLastError());;
+        LOG_ERR("%s " RED("failed to connect to WinRing0 driver, error %u"), msrTag(), GetLastError());;
     }
 }
 
@@ -213,7 +230,7 @@ bool xmrig::Msr::write(Callback &&callback)
 
     std::thread thread([&callback, &units, &success]() {
         for (int32_t pu : units) {
-            if (!Platform::setThreadAffinity(pu)) {
+            if (!setThreadAffinity(pu)) {
                 continue;
             }
 

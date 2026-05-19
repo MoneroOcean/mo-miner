@@ -1,3 +1,5 @@
 "use strict";
 
-require("./hash.js");
+require("./cpu.js");
+require("./sycl_cpu.js");
+require("./gpu.js");

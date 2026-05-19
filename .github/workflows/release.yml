@@ -9,34 +9,16 @@ on:
 permissions:
   contents: write
 
+env:
+  WINDOWS_ONEAPI_URL: https://raw.githubusercontent.com/oneapi-src/oneapi-ci/master/.github/workflows/build_all.yml
+  WINDOWS_ONEAPI_PACKAGE: intel-oneapi-toolkit
+  WINDOWS_DPCPP_COMPONENTS: intel.oneapi.win.cpp-dpcpp-common
+  ONEAPI_ROOT: C:/Program Files (x86)/Intel/oneAPI
+
 jobs:
-  validate:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: 24
-          package-manager-cache: false
-
-      - name: Install npm dependencies
-        run: npm install --ignore-scripts --no-audit --no-fund
-
-      - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Test
-        run: npm test
-
   build-linux-x64:
-    needs: validate
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 90
 
     steps:
       - name: Checkout
@@ -45,11 +27,24 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: 24
+          node-version: 24.15.0
           package-manager-cache: false
 
-      - name: Install npm dependencies
-        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Free disk space
+        run: |
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /usr/local/share/boost \
+            /usr/local/.ghcup \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            /opt/hostedtoolcache/go \
+            /opt/hostedtoolcache/Python \
+            /opt/hostedtoolcache/Ruby \
+            /opt/hostedtoolcache/Java_Temurin-Hotspot_jdk
+          docker system prune --all --force || true
+          df -h
 
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -58,56 +53,112 @@ jobs:
         run: ./r.sh node -e "console.log('mominer build ready')"
 
       - name: Package release archive
+        run: .github/workflows/scripts/package-linux.sh
+
+      - name: Test release archive
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
-          root="mominer-v${version}"
-          archive="mominer-v${version}-linux-x64.tgz"
-          rm -rf release "$archive"
-          mkdir -p "release/$root"
-
-          docker rm -f mominer-release-lib >/dev/null 2>&1 || true
-          docker create --name mominer-release-lib mominer-build >/dev/null
-          libumf="$(docker export mominer-release-lib | tar -t | grep 'opt/intel/oneapi/.*/lib/libumf.so.0' | head -n1)"
-          docker cp -L "mominer-release-lib:$libumf" "release/$root/"
-          docker rm -f mominer-release-lib >/dev/null
-
-          cp mominer.js pool.js opts.js helper.js package.json README.md LICENSE deploy.dockerfile "release/$root/"
-          cp -r node_modules "release/$root/"
-          cp build/Release/mominer.node "release/$root/"
-
-          cat >"release/$root/docker-mominer.sh" <<'EOF'
-          #!/usr/bin/env bash
-          set -e
-          SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
-          if docker buildx version >/dev/null 2>&1; then
-            iid_file="$(mktemp)"
-            trap 'rm -f "$iid_file"' EXIT
-            docker buildx build --load --progress=none --iidfile "$iid_file" -t mominer-deploy -f "$SCRIPT_DIR/deploy.dockerfile" "$SCRIPT_DIR"
-          else
-            docker build -t mominer-deploy -f "$SCRIPT_DIR/deploy.dockerfile" "$SCRIPT_DIR"
-          fi
-          docker run --privileged --rm --name mominer-deploy --hostname mominer-deploy \
-            --mount "type=bind,source=$SCRIPT_DIR,target=/root/mominer" \
-            --workdir /root/mominer \
-            -it mominer-deploy node mominer.js "$@"
-          EOF
-          chmod +x "release/$root/docker-mominer.sh"
-
-          tar -C release -czf "$archive" "$root"
+          archive="$(find . -maxdepth 1 -name 'mominer-*-lin.tgz' -print -quit)"
+          .github/workflows/scripts/test-release-linux.sh "$archive"
 
       - name: Upload release artifact
         uses: actions/upload-artifact@v7
         with:
-          name: mominer-linux-x64
-          path: mominer-*-linux-x64.tgz
+          name: mominer-lin
+          path: mominer-*-lin.tgz
+
+  build-windows-x64:
+    runs-on: windows-2022
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Use oneAPI installation cache
+        uses: actions/cache@v5
+        id: cache-oneapi
+        with:
+          path: |
+            ${{ env.ONEAPI_ROOT }}
+            C:/Program Files/Microsoft Visual Studio/2022/Enterprise/MSBuild/Microsoft/VC/v170/Platforms/*/PlatformToolsets/Intel*
+            C:/Program Files/Microsoft Visual Studio/2022/Enterprise/MSBuild/Microsoft/VC/v170/BuildCustomizations/Intel*
+            C:/Program Files/Microsoft Visual Studio/2022/Enterprise/MSBuild/Microsoft/VC/v170/Intel*.dll
+          key: oneapi-windows-2026.0.0-toolkit-dpcpp-online-v3
+
+      - name: Install Intel oneAPI
+        if: steps.cache-oneapi.outputs.cache-hit != 'true'
+        shell: cmd
+        run: .github\workflows\scripts\install-oneapi.bat "%WINDOWS_ONEAPI_URL%" "%WINDOWS_DPCPP_COMPONENTS%" "%WINDOWS_ONEAPI_PACKAGE%"
+
+      - name: Build native addon
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .github\workflows\scripts\build-windows.ps1
+
+      - name: Package release archive
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .github\workflows\scripts\package-windows.ps1
+
+      - name: Install Intel OpenCL CPU runtime
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .github\workflows\scripts\install-opencl-runtime-windows.ps1
+
+      - name: Test release archive
+        shell: powershell
+        run: |
+          $archive = Get-ChildItem . -Filter "mominer-*-win.zip" | Select-Object -First 1
+          powershell -NoProfile -ExecutionPolicy Bypass -File .github\workflows\scripts\test-release-windows.ps1 -Archive $archive.FullName
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: mominer-win
+          path: mominer-*-win.zip
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs:
+      - build-linux-x64
+      - build-windows-x64
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: artifacts
 
       - name: Publish GitHub release
-        if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >
-          gh release create "${GITHUB_REF_NAME}"
-          mominer-*-linux-x64.tgz
-          --title "${GITHUB_REF_NAME}"
-          --notes "MoMiner ${GITHUB_REF_NAME}"
+        run: |
+          set -euo pipefail
+          files=()
+          while IFS= read -r -d '' file; do
+            files+=("$file")
+          done < <(find artifacts -type f -print0)
+          if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release edit "${GITHUB_REF_NAME}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "${GITHUB_REF_NAME}" \
+              --notes "MoMiner ${GITHUB_REF_NAME}"
+            gh release upload "${GITHUB_REF_NAME}" "${files[@]}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" "${files[@]}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "${GITHUB_REF_NAME}" \
+              --notes "MoMiner ${GITHUB_REF_NAME}"
+          fi

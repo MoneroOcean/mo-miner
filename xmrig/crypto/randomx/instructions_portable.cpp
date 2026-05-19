@@ -46,8 +46,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #endif
 
 #if defined(_MSC_VER)
-	#define HAS_VALUE(X) X ## 0
-	#define EVAL_DEFINE(X) HAS_VALUE(X)
 	#include <intrin.h>
 	#include <stdlib.h>
 
@@ -60,14 +58,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 	#define HAVE_ROTL64
 	#define HAVE_ROTR64
 
-	#if EVAL_DEFINE(__MACHINEARM64_X64(1))
+	#if !defined(HAVE_MULH) && (defined(_M_X64) || defined(_M_ARM64) || defined(_M_ARM64EC))
 		uint64_t mulh(uint64_t a, uint64_t b) {
 			return __umulh(a, b);
 		}
 		#define HAVE_MULH
 	#endif
 
-	#if EVAL_DEFINE(__MACHINEX64(1))
+	#if !defined(HAVE_SMULH) && defined(_M_X64)
 		int64_t smulh(int64_t a, int64_t b) {
 			int64_t hi;
 			_mul128(a, b, &hi);

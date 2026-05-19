@@ -54,7 +54,7 @@ constexpr int RoundToZero = 3;
 #endif
 
 //MSVC doesn't define __AES__
-#if defined(_MSC_VER) && defined(__SSE2__)
+#if defined(_MSC_VER) && defined(__SSE2__) && !defined(__AES__)
 #define __AES__
 #endif
 

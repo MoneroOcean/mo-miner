@@ -1,6 +1,6 @@
 {
   "name": "mominer",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Node.js and SYCL miner built on XMRig hashing sources with MoneroOcean algo switching support",
   "private": true,
   "main": "mominer.js",
@@ -19,10 +19,14 @@
     "node": ">=18"
   },
   "os": [
-    "linux"
+    "linux",
+    "win32"
   ],
   "scripts": {
-    "test": "./r.sh node --require ./tests/common/test_output_buffer.js --test --test-reporter=./tests/common/spec_reporter.js --test-concurrency=1 tests/all.js",
+    "test": "node tests/run_hash.js",
+    "test:cpu": "node tests/run_hash.js cpu",
+    "test:gpu": "node tests/run_hash.js gpu",
+    "test:sycl-cpu": "node tests/run_hash.js sycl-cpu",
     "test:perf": "node tests/run_perf.js",
     "test:perf:rx/0": "node tests/run_perf.js rx/0",
     "test:perf:rx/2": "node tests/run_perf.js rx/2",
@@ -58,10 +62,6 @@
     "test:perf:cn/gpu": "node tests/run_perf.js cn/gpu",
     "test:perf:c29": "node tests/run_perf.js c29",
     "test:all": "npm test && npm run test:perf"
-  },
-  "dependencies": {
-    "nan": "2.26.2",
-    "systeminformation": "5.31.6"
   },
   "keywords": [
     "monero",

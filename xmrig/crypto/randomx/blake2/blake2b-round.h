@@ -21,7 +21,11 @@
 #define TOF(reg) _mm_castsi128_ps((reg))
 #define TOI(reg) _mm_castps_si128((reg))
 
+#if defined(__GNUC__) || defined(__clang__)
 #define LIKELY(x) __builtin_expect((x),1)
+#else
+#define LIKELY(x) (x)
+#endif
 
 
 /* Microarchitecture-specific macros */

@@ -1,9 +1,16 @@
-# https://hub.docker.com/r/intel/oneapi-basekit/tags
-FROM intel/oneapi-basekit:2025.2.2-0-devel-ubuntu24.04
+# https://hub.docker.com/r/intel/oneapi-toolkit/tags
+FROM intel/oneapi-toolkit:2026.0.0-devel-ubuntu24.04
 
 SHELL ["/bin/bash", "-c"]
 
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends sudo npm iputils-ping
+ARG NODE_VERSION=24.15.0
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      ca-certificates curl iputils-ping make python3 sudo xz-utils && \
+    curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" -o /tmp/node.tar.xz && \
+    tar -C /usr/local --strip-components=1 -xf /tmp/node.tar.xz && \
+    rm /tmp/node.tar.xz && \
+    npm install -g node-gyp@12.2.0 && \
+    node --version && npm --version && node-gyp --version
 
 # allow root group access to /root
 RUN chmod g=u /root
@@ -21,8 +28,12 @@ su - user <<EOF\n\
 cd /root/mominer # su - resets to home dir and we need to keep /root/mominer pwd\n\
 . /opt/intel/oneapi/setvars.sh >/dev/null\n\
 { ping -c1 -W2 8.8.8.8 >/dev/null 2>&1; } && npm update --silent || echo "Skip npm update since there is no internet access"\n\
-( test -s ./build/Release/mominer.node || CC=icx CXX=icpx node-gyp configure ) &&\n\
-JOBS=$(nproc) CC=icx CXX=icpx MAKEFLAGS=-s node-gyp build --silent &&\n\
+node_build_version="\$(node -p "process.version"):/usr/local"\n\
+if [ ! -s ./build/Release/mominer.node ] || [ "\$(cat ./build/.node-version 2>/dev/null || true)" != "\$node_build_version" ]; then\n\
+  CC=icx CXX=icpx node-gyp configure --nodedir=/usr/local\n\
+fi &&\n\
+JOBS=$(nproc) CC=icx CXX=icpx MAKEFLAGS=-s node-gyp build --nodedir=/usr/local --silent &&\n\
+mkdir -p ./build && echo "\$node_build_version" > ./build/.node-version &&\n\
 ({ test $# -eq 1; } && { echo "One param mode"; sudo LD_LIBRARY_PATH=$LD_LIBRARY_PATH -- /bin/bash -c ${*@Q}; } || sudo LD_LIBRARY_PATH=$LD_LIBRARY_PATH -- ${*@Q})\n\
 EOF' >/root/entrypoint.sh &&\
 chmod +x /root/entrypoint.sh
