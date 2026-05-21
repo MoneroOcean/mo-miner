@@ -10,7 +10,10 @@
 #include <list>
 #include <thread>
 #include <atomic>
+#include <chrono>
+#include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include "sycl-lib-internal.h"
 #include "consts.h"
 #include "crypto/randomx/blake2/blake2.h"
@@ -25,7 +28,7 @@ const constexpr uint64_t DUCK_SIZE_B    = 83;
 const constexpr uint64_t BUFFER_SIZE_A1 = DUCK_SIZE_A * 1024 * (4096 - 128) * 2;
 const constexpr uint64_t BUFFER_SIZE_A2 = DUCK_SIZE_A * 1024 * 256 * 2;
 const constexpr uint64_t BUFFER_SIZE_B  = DUCK_SIZE_B * 1024 * 4096 * 2;
-const constexpr uint64_t INDEX_SIZE     = 256 * 256 * 4;
+const constexpr uint64_t INDEX_SIZE     = 4096;
 
 // Algorithm parameters
 const constexpr uint32_t COMPUTE_THREADS        = 1024;
@@ -39,6 +42,142 @@ const constexpr uint32_t EDGE_MASK              = NUM_EDGES - 1;
 const constexpr uint32_t BUCKET_MASK_4K         = 4096 - 1;
 const constexpr uint32_t BUCKET_OFFSET          = 255;
 const constexpr uint32_t BUCKET_STEP            = 32;
+const constexpr uint32_t EDGE_COUNTER_WORDS     = 8192;
+const constexpr uint32_t DEFAULT_SEED_BLOCKS    = 32;
+
+static uint32_t c29_env_u32(const char* name, const uint32_t default_value) {
+  const char* const value = std::getenv(name);
+  if (!value || !value[0]) return default_value;
+  const unsigned long parsed = std::strtoul(value, nullptr, 10);
+  return parsed == 0 ? default_value : static_cast<uint32_t>(parsed);
+}
+
+static bool c29_profile_enabled() {
+  static const bool enabled = []() {
+    const char* const value = std::getenv("MOMINER_C29_PROFILE");
+    return value && value[0] && value[0] != '0';
+  }();
+  return enabled;
+}
+
+static uint32_t c29_profile_limit() {
+  static const uint32_t limit = []() {
+    const char* const value = std::getenv("MOMINER_C29_PROFILE_LIMIT");
+    if (!value || !value[0]) return 1u;
+    const unsigned long parsed = std::strtoul(value, nullptr, 10);
+    return parsed == 0 ? UINT32_MAX : static_cast<uint32_t>(parsed);
+  }();
+  return limit;
+}
+
+static uint32_t c29_seed_local_size() {
+  static const uint32_t local_size = []() {
+    const uint32_t requested = c29_env_u32("MOMINER_C29_SEED_LOCAL_SIZE", 128u);
+    return (requested == 64u || requested == 128u || requested == 256u) ? requested : 128u;
+  }();
+  return local_size;
+}
+
+static uint32_t c29_seed_blocks_per_item() {
+  static const uint32_t blocks = []() {
+    const uint32_t requested = c29_env_u32("MOMINER_C29_SEED_BLOCKS", DEFAULT_SEED_BLOCKS);
+    return (requested == 4u || requested == 8u || requested == 16u || requested == 32u) ? requested : DEFAULT_SEED_BLOCKS;
+  }();
+  return blocks;
+}
+
+static bool c29_direct_seed_enabled() {
+  static const bool enabled = []() {
+    const char* const value = std::getenv("MOMINER_C29_DIRECT_SEED");
+    return !(value && value[0] == '0');
+  }();
+  return enabled;
+}
+
+static uint64_t c29_now_us() {
+  return std::chrono::duration_cast<std::chrono::microseconds>(
+    std::chrono::steady_clock::now().time_since_epoch()
+  ).count();
+}
+
+struct C29ProfileEvent {
+  const char* name;
+  sycl::event event;
+};
+
+struct C29Profile {
+  bool enabled;
+  uint64_t start_us;
+  uint64_t last_us;
+  std::vector<C29ProfileEvent> events;
+
+  C29Profile(const unsigned job_ref, const uint64_t nonce, const unsigned proof_size,
+             const sycl::queue& queue, const std::string& dev_str)
+      : enabled(false), start_us(c29_now_us()), last_us(start_us) {
+    static std::atomic<uint32_t> profiled_graphs{0};
+    enabled = c29_profile_enabled() && profiled_graphs.fetch_add(1, std::memory_order_relaxed) < c29_profile_limit();
+    if (!enabled) return;
+
+    const sycl::device dev = queue.get_device();
+    std::printf("[c29-profile] graph start job=%u nonce=%llu proof=%u dev=%s device=\"%s\" platform=\"%s\" "
+                "index_size=%llu trim_rounds=%u compute_threads=%u seed_local=%u seed_blocks=%u direct_seed=%u\n",
+                job_ref, static_cast<unsigned long long>(nonce), proof_size, dev_str.c_str(),
+                dev.get_info<sycl::info::device::name>().c_str(),
+                dev.get_platform().get_info<sycl::info::platform::name>().c_str(),
+                static_cast<unsigned long long>(INDEX_SIZE), TRIMMING_ROUNDS, COMPUTE_THREADS,
+                c29_seed_local_size(), c29_seed_blocks_per_item(), c29_direct_seed_enabled() ? 1u : 0u);
+  }
+
+  void mark(const char* name) {
+    if (!enabled) return;
+    const uint64_t now_us = c29_now_us();
+    std::printf("[c29-profile] host %-28s %.3f ms\n", name, (now_us - last_us) / 1000.0);
+    last_us = now_us;
+  }
+
+  void add_event(const char* name, const sycl::event& event) {
+    if (enabled) events.push_back({name, event});
+  }
+
+  void print_events() {
+    if (!enabled) return;
+    double total_ms = 0.0;
+    for (const C29ProfileEvent& entry : events) {
+      try {
+        const uint64_t start = entry.event.get_profiling_info<sycl::info::event_profiling::command_start>();
+        const uint64_t end   = entry.event.get_profiling_info<sycl::info::event_profiling::command_end>();
+        const double ms = static_cast<double>(end - start) / 1000000.0;
+        total_ms += ms;
+        std::printf("[c29-profile] device %-26s %.3f ms\n", entry.name, ms);
+      } catch (const sycl::exception& e) {
+        std::printf("[c29-profile] device %-26s unavailable: %s\n", entry.name, e.what());
+      }
+    }
+    std::printf("[c29-profile] device total                    %.3f ms\n", total_ms);
+  }
+
+  void finish(const uint32_t trimmed_edges) {
+    if (!enabled) return;
+    const uint64_t now_us = c29_now_us();
+    std::printf("[c29-profile] graph end trimmed=%u host_total=%.3f ms\n",
+                trimmed_edges, (now_us - start_us) / 1000.0);
+  }
+};
+
+struct C29Buffers {
+  sycl::buffer<uint32_t, 1> buffer_a1{sycl::range<1>{BUFFER_SIZE_A1}};
+  sycl::buffer<uint32_t, 1> buffer_a2{sycl::range<1>{BUFFER_SIZE_A2}};
+  sycl::buffer<uint32_t, 1> buffer_b{sycl::range<1>{BUFFER_SIZE_B}};
+  sycl::buffer<uint32_t, 1> buffer_i1{sycl::range<1>{INDEX_SIZE}};
+  sycl::buffer<uint32_t, 1> buffer_i2{sycl::range<1>{INDEX_SIZE}};
+  sycl::buffer<uint32_t, 1> buffer_trimmed_edge_count{sycl::range<1>{1}};
+  sycl::buffer<sycl::uint2, 1> buffer_trimmed_edges_u2{sycl::range<1>{MAX_TRIMMED_EDGE_COUNT}};
+};
+
+static C29Buffers& get_c29_buffers() {
+  static C29Buffers buffers;
+  return buffers;
+}
 
 // Global solution management
 class C29SolutionMutex {
@@ -223,33 +362,41 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
                                           sycl::queue& compute_queue) {
   try {
     static auto kernel_bundle = sycl::get_kernel_bundle<sycl::bundle_state::executable>(compute_queue.get_context());
+    C29Profile profile(job_ref, nonce, c29_proof_size, compute_queue, compute_queue.get_device().get_info<sycl::info::device::name>());
 
-    // Create GPU memory buffers with type reinterpretation for different access patterns
-    sycl::buffer<uint32_t, 1> buffer_a1{sycl::range<1>{BUFFER_SIZE_A1}};
+    C29Buffers& c29_buffers = get_c29_buffers();
+
+    // Reuse GPU memory buffers across graphs and reinterpret them for different access patterns.
+    sycl::buffer<uint32_t, 1>& buffer_a1 = c29_buffers.buffer_a1;
     auto buffer_a1_u2  = buffer_a1.reinterpret<sycl::uint2>(sycl::range(BUFFER_SIZE_A1 / 2));
     auto buffer_a1_ul4 = buffer_a1.reinterpret<sycl::ulong4>(sycl::range(BUFFER_SIZE_A1 / 8));
 
-    sycl::buffer<uint32_t, 1> buffer_a2{sycl::range<1>{BUFFER_SIZE_A2}};
+    sycl::buffer<uint32_t, 1>& buffer_a2 = c29_buffers.buffer_a2;
     auto buffer_a2_u2  = buffer_a2.reinterpret<sycl::uint2>(sycl::range(BUFFER_SIZE_A2 / 2));
     auto buffer_a2_ul4 = buffer_a2.reinterpret<sycl::ulong4>(sycl::range(BUFFER_SIZE_A2 / 8));
 
-    sycl::buffer<uint32_t, 1> buffer_b{sycl::range<1>{BUFFER_SIZE_B}};
+    sycl::buffer<uint32_t, 1>& buffer_b = c29_buffers.buffer_b;
     auto buffer_b_u2  = buffer_b.reinterpret<sycl::uint2>(sycl::range(BUFFER_SIZE_B / 2));
     auto buffer_b_ul4 = buffer_b.reinterpret<sycl::ulong4>(sycl::range(BUFFER_SIZE_B / 8));
 
-    sycl::buffer<uint32_t, 1> buffer_i1{sycl::range<1>{INDEX_SIZE}}, buffer_i2{sycl::range<1>{INDEX_SIZE}};
+    sycl::buffer<uint32_t, 1>& buffer_i1 = c29_buffers.buffer_i1;
+    sycl::buffer<uint32_t, 1>& buffer_i2 = c29_buffers.buffer_i2;
+    sycl::buffer<uint32_t, 1>& buffer_trimmed_edge_count = c29_buffers.buffer_trimmed_edge_count;
+    sycl::buffer<sycl::uint2, 1>& buffer_trimmed_edges_u2 = c29_buffers.buffer_trimmed_edges_u2;
+    profile.mark("buffers ready");
 
     // Buffer zeroing utility function
-    auto zero_buffer = [&](sycl::buffer<uint32_t, 1>& buffer) {
-      compute_queue.submit([&](sycl::handler& handler) {
+    auto zero_buffer = [&](const char* name, sycl::buffer<uint32_t, 1>& buffer) {
+      const sycl::event event = compute_queue.submit([&](sycl::handler& handler) {
         sycl::accessor accessor{buffer, handler, sycl::write_only, sycl::no_init};
         handler.use_kernel_bundle(kernel_bundle);
         handler.fill(accessor, static_cast<uint32_t>(0));
       });
+      profile.add_event(name, event);
     };
 
-    zero_buffer(buffer_i1);
-    zero_buffer(buffer_i2);
+    zero_buffer("clear_i1_start", buffer_i1);
+    zero_buffer("clear_i2_start", buffer_i2);
 
     // Algorithm parameters for edge trimming
     const uint32_t duck_edges_a = static_cast<uint32_t>(DUCK_SIZE_A) * 1024;
@@ -260,7 +407,62 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
     using global_atomic_ref = sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device, sycl::access::address_space::global_space>;
 
     // FluffySeed2A: Generate initial edges using SipHash cryptographic function
-    compute_queue.submit([&](sycl::handler& handler) {
+    const uint32_t seed_local_size = c29_seed_local_size();
+    const uint32_t seed_blocks_per_item = c29_seed_blocks_per_item();
+    const uint32_t seed_work_items = NUM_EDGES / (EDGE_BLOCK_SIZE * seed_blocks_per_item);
+    const bool direct_seed = c29_direct_seed_enabled();
+    if (direct_seed) {
+      const sycl::event direct_seed_event = compute_queue.submit([&](sycl::handler& handler) {
+        sycl::accessor acc_buffer_a1{buffer_a1_u2, handler, sycl::write_only, sycl::no_init};
+        sycl::accessor acc_buffer_a2{buffer_a2_u2, handler, sycl::write_only, sycl::no_init};
+        sycl::accessor acc_index_2{buffer_i2, handler, sycl::read_write};
+
+        handler.use_kernel_bundle(kernel_bundle);
+        handler.parallel_for(sycl::nd_range<1>(sycl::range<1>(seed_work_items), sycl::range<1>(seed_local_size)),
+                            [=](sycl::nd_item<1> item) {
+          const uint32_t global_id = item.get_global_id(0);
+
+          SIPHASH_ROUND_LAMBDA_MACRO;
+
+          for (uint32_t block_offset = 0; block_offset < seed_blocks_per_item * EDGE_BLOCK_SIZE; block_offset += EDGE_BLOCK_SIZE) {
+            const uint64_t base_nonce = global_id * (seed_blocks_per_item * EDGE_BLOCK_SIZE) + block_offset;
+
+            uint64_t sip_v0 = seed_k0, sip_v1 = seed_k1, sip_v2 = seed_k2, sip_v3 = seed_k3;
+            uint64_t hash_block[EDGE_BLOCK_SIZE];
+
+            #pragma vector always
+            for (uint32_t nonce_offset = 0; nonce_offset < EDGE_BLOCK_SIZE; nonce_offset++) {
+              sip_v3 ^= base_nonce + nonce_offset;
+              siphash_round(sip_v0, sip_v1, sip_v2, sip_v3);
+              siphash_round(sip_v0, sip_v1, sip_v2, sip_v3);
+              sip_v0 ^= base_nonce + nonce_offset;
+              sip_v2 ^= 0xff;
+              siphash_round(sip_v0, sip_v1, sip_v2, sip_v3); siphash_round(sip_v0, sip_v1, sip_v2, sip_v3);
+              siphash_round(sip_v0, sip_v1, sip_v2, sip_v3); siphash_round(sip_v0, sip_v1, sip_v2, sip_v3);
+              hash_block[nonce_offset] = (sip_v0 ^ sip_v1) ^ (sip_v2 ^ sip_v3);
+            }
+
+            const uint64_t hash_last = hash_block[EDGE_BLOCK_MASK];
+
+            for (uint32_t hash_index = 0; hash_index < EDGE_BLOCK_SIZE; hash_index++) {
+              const uint64_t hash_lookup = hash_index == EDGE_BLOCK_MASK ? hash_last : hash_block[hash_index] ^ hash_last;
+              const uint32_t edge_u      = static_cast<uint32_t>(hash_lookup & EDGE_MASK);
+              const uint32_t edge_v      = static_cast<uint32_t>((hash_lookup >> 32) & EDGE_MASK);
+              if (!(edge_u || edge_v)) continue;
+
+              const uint32_t bucket_id = ((edge_u & 63u) << 6) | ((edge_u >> 6) & 63u);
+              const uint32_t bucket_index = sycl::min(global_atomic_ref(acc_index_2[bucket_id]).fetch_add(1), duck_edges_a - 1);
+              if (bucket_id < 62 * 64)
+                acc_buffer_a1[bucket_id * duck_edges_a + bucket_index] = sycl::uint2(edge_u, edge_v);
+              else
+                acc_buffer_a2[(bucket_id - 62 * 64) * duck_edges_a + bucket_index] = sycl::uint2(edge_u, edge_v);
+            }
+          }
+        });
+      });
+      profile.add_event("seed2a_direct", direct_seed_event);
+    } else {
+    const sycl::event seed_event = compute_queue.submit([&](sycl::handler& handler) {
       sycl::accessor acc_buffer_b{buffer_b_ul4, handler, sycl::write_only, sycl::no_init};
       sycl::accessor acc_buffer_a1{buffer_a1_ul4, handler, sycl::write_only, sycl::no_init};
       sycl::accessor acc_index_1{buffer_i1, handler, sycl::read_write};
@@ -270,7 +472,7 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
       sycl::local_accessor<uint32_t, 1> bucket_counters{sycl::range<1>(64), handler};
 
       handler.use_kernel_bundle(kernel_bundle);
-      handler.parallel_for(sycl::nd_range<1>(sycl::range<1>(2048 * 128), sycl::range<1>(128)),
+      handler.parallel_for(sycl::nd_range<1>(sycl::range<1>(seed_work_items), sycl::range<1>(seed_local_size)),
                           [=](sycl::nd_item<1> item) {
         const uint32_t global_id = item.get_global_id(0);
         const uint32_t local_id  = item.get_local_id(0);
@@ -282,8 +484,8 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
 	SIPHASH_ROUND_LAMBDA_MACRO;
 
         // Process nonces in blocks to generate graph edges efficiently
-        for (uint32_t block_offset = 0; block_offset < 1024 * 2; block_offset += EDGE_BLOCK_SIZE) {
-          const uint64_t base_nonce = global_id * (1024 * 2) + block_offset;
+        for (uint32_t block_offset = 0; block_offset < seed_blocks_per_item * EDGE_BLOCK_SIZE; block_offset += EDGE_BLOCK_SIZE) {
+          const uint64_t base_nonce = global_id * (seed_blocks_per_item * EDGE_BLOCK_SIZE) + block_offset;
 
           uint64_t sip_v0 = seed_k0, sip_v1 = seed_k1, sip_v2 = seed_k2, sip_v3 = seed_k3;
           uint64_t hash_block[EDGE_BLOCK_SIZE];
@@ -350,13 +552,14 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
         }
       });
     });
+    profile.add_event("seed2a", seed_event);
 
     // FluffySeed2B: Redistribute edges to smaller buckets for better memory access patterns
     auto redistribute_edges = [](sycl::queue& queue, sycl::buffer<sycl::uint2, 1>& source_buffer,
                                  sycl::buffer<sycl::ulong4, 1>& dest_buffer_1, sycl::buffer<sycl::ulong4, 1>& dest_buffer_2,
                                  sycl::buffer<uint32_t, 1>& source_indexes, sycl::buffer<uint32_t, 1>& dest_indexes,
                                  const uint32_t start_block, const uint32_t duck_edges_a, auto& kernel_bundle) {
-      queue.submit([&](sycl::handler& handler) {
+      return queue.submit([&](sycl::handler& handler) {
         sycl::accessor acc_source{source_buffer, handler, sycl::read_only};
         sycl::accessor acc_dest_1{dest_buffer_1, handler, sycl::write_only, sycl::no_init};
         sycl::accessor acc_dest_2{dest_buffer_2, handler, sycl::write_only, sycl::no_init};
@@ -432,10 +635,13 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
       });
     };
 
-    redistribute_edges(compute_queue, buffer_a1_u2, buffer_a1_ul4, buffer_a2_ul4, buffer_i1, buffer_i2, 32, duck_edges_a, kernel_bundle);
-    redistribute_edges(compute_queue, buffer_b_u2, buffer_a1_ul4, buffer_a2_ul4, buffer_i1, buffer_i2, 0, duck_edges_a, kernel_bundle);
+    profile.add_event("redistribute_32",
+      redistribute_edges(compute_queue, buffer_a1_u2, buffer_a1_ul4, buffer_a2_ul4, buffer_i1, buffer_i2, 32, duck_edges_a, kernel_bundle));
+    profile.add_event("redistribute_0",
+      redistribute_edges(compute_queue, buffer_b_u2, buffer_a1_ul4, buffer_a2_ul4, buffer_i1, buffer_i2, 0, duck_edges_a, kernel_bundle));
 
-    zero_buffer(buffer_i1);
+    zero_buffer("clear_i1_seed", buffer_i1);
+    }
 
     // Helper functions for 2-bit edge counters used in trimming phases
     auto increment_2bit_counter = [](const uint32_t bucket_id, sycl::local_accessor<uint32_t, 1> counters) -> void {
@@ -454,14 +660,14 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
     };
 
     // FluffyRound1: First trimming round using 2-bit counters to remove low-degree edges
-    compute_queue.submit([&](sycl::handler& handler) {
+    const sycl::event round1_event = compute_queue.submit([&](sycl::handler& handler) {
       sycl::accessor acc_a1{buffer_a1_u2, handler, sycl::read_only};
       sycl::accessor acc_a2{buffer_a2_u2, handler, sycl::read_only};
       sycl::accessor acc_b{buffer_b_u2, handler, sycl::write_only, sycl::no_init};
-      sycl::accessor acc_i2{buffer_i2, handler, sycl::read_only};
+      sycl::accessor acc_i2{buffer_i2, handler, sycl::read_write};
       sycl::accessor acc_i1{buffer_i1, handler, sycl::read_write};
 
-      sycl::local_accessor<uint32_t, 1> edge_counters{sycl::range<1>(8 * COMPUTE_THREADS), handler};
+      sycl::local_accessor<uint32_t, 1> edge_counters{sycl::range<1>(EDGE_COUNTER_WORDS), handler};
 
       handler.use_kernel_bundle(kernel_bundle);
       handler.parallel_for(sycl::nd_range<1>(sycl::range<1>(4096 * COMPUTE_THREADS), sycl::range<1>(COMPUTE_THREADS)),
@@ -474,8 +680,8 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
         const uint32_t read_group = is_source_1 ? work_group_id : work_group_id - (62 * 64);
 
         // Initialize 2-bit edge counters
-        for (uint32_t counter_index = 0; counter_index < 8; counter_index++)
-          edge_counters[local_id + (COMPUTE_THREADS * counter_index)] = 0;
+        for (uint32_t counter_index = local_id; counter_index < EDGE_COUNTER_WORDS; counter_index += COMPUTE_THREADS)
+          edge_counters[counter_index] = 0;
         item.barrier(sycl::access::fence_space::local_space);
 
         const uint32_t edges_in_bucket = sycl::min(acc_i2[work_group_id], duck_edges_a);
@@ -505,19 +711,20 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
             }
           }
         }
+
+        if (local_id == 0) acc_i2[work_group_id] = 0;
       });
     });
-
-    zero_buffer(buffer_i2);
+    profile.add_event("round1", round1_event);
 
     // FluffyRoundNO1: First trimming round with memory offset optimization
-    compute_queue.submit([&](sycl::handler& handler) {
+    const sycl::event round_no1_event = compute_queue.submit([&](sycl::handler& handler) {
       sycl::accessor acc_b{buffer_b_u2, handler, sycl::read_only};
       sycl::accessor acc_a1{buffer_a1_u2, handler, sycl::write_only, sycl::no_init};
-      sycl::accessor acc_i1{buffer_i1, handler, sycl::read_only};
+      sycl::accessor acc_i1{buffer_i1, handler, sycl::read_write};
       sycl::accessor acc_i2{buffer_i2, handler, sycl::read_write};
 
-      sycl::local_accessor<uint32_t, 1> edge_counters{sycl::range<1>(8 * COMPUTE_THREADS), handler};
+      sycl::local_accessor<uint32_t, 1> edge_counters{sycl::range<1>(EDGE_COUNTER_WORDS), handler};
 
       handler.use_kernel_bundle(kernel_bundle);
       handler.parallel_for(sycl::nd_range<1>(sycl::range<1>(4096 * COMPUTE_THREADS), sycl::range<1>(COMPUTE_THREADS)),
@@ -526,8 +733,8 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
         const uint32_t work_group_id = item.get_group(0);
 
         // Initialize edge counters
-        for (uint32_t counter_index = 0; counter_index < 8; counter_index++)
-          edge_counters[local_id + (COMPUTE_THREADS * counter_index)] = 0;
+        for (uint32_t counter_index = local_id; counter_index < EDGE_COUNTER_WORDS; counter_index += COMPUTE_THREADS)
+          edge_counters[counter_index] = 0;
         item.barrier(sycl::access::fence_space::local_space);
 
         const uint32_t edges_in_bucket = sycl::min(acc_i1[work_group_id], duck_edges_b);
@@ -559,22 +766,23 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
             }
           }
         }
+
+        if (local_id == 0) acc_i1[work_group_id] = 0;
       });
     });
-
-    zero_buffer(buffer_i1);
+    profile.add_event("round_no1", round_no1_event);
 
     // FluffyRoundNON: Subsequent trimming rounds with memory offset optimization
     auto trim_round_with_offset = [&](sycl::queue& queue, sycl::buffer<sycl::uint2, 1>& source_buffer,
                                       sycl::buffer<sycl::uint2, 1>& dest_buffer, sycl::buffer<uint32_t, 1>& source_indexes,
                                       sycl::buffer<uint32_t, 1>& dest_indexes) {
-      queue.submit([&](sycl::handler& handler) {
+      return queue.submit([&](sycl::handler& handler) {
         sycl::accessor acc_source{source_buffer, handler, sycl::read_only};
         sycl::accessor acc_dest{dest_buffer, handler, sycl::write_only, sycl::no_init};
-        sycl::accessor acc_source_indexes{source_indexes, handler, sycl::read_only};
+        sycl::accessor acc_source_indexes{source_indexes, handler, sycl::read_write};
         sycl::accessor acc_dest_indexes{dest_indexes, handler, sycl::read_write};
 
-        sycl::local_accessor<uint32_t, 1> edge_counters{sycl::range<1>(8 * COMPUTE_THREADS), handler};
+        sycl::local_accessor<uint32_t, 1> edge_counters{sycl::range<1>(EDGE_COUNTER_WORDS), handler};
 
         handler.use_kernel_bundle(kernel_bundle);
         handler.parallel_for(sycl::nd_range<1>(sycl::range<1>(4096 * COMPUTE_THREADS), sycl::range<1>(COMPUTE_THREADS)),
@@ -583,8 +791,8 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
           const uint32_t work_group_id = item.get_group(0);
 
           // Initialize edge counters
-          for (uint32_t counter_index = 0; counter_index < 8; counter_index++)
-            edge_counters[local_id + (COMPUTE_THREADS * counter_index)] = 0;
+          for (uint32_t counter_index = local_id; counter_index < EDGE_COUNTER_WORDS; counter_index += COMPUTE_THREADS)
+            edge_counters[counter_index] = 0;
           item.barrier(sycl::access::fence_space::local_space);
 
           const uint32_t edges_in_bucket = sycl::min(acc_source_indexes[work_group_id], duck_edges_b);
@@ -618,27 +826,29 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
               }
             }
           }
+
+          if (local_id == 0) acc_source_indexes[work_group_id] = 0;
         });
       });
     };
 
     // Main trimming loop: iteratively reduce edge count by removing low-degree edges
-    trim_round_with_offset(compute_queue, buffer_a1_u2, buffer_b_u2, buffer_i2, buffer_i1);
+    profile.add_event("trim_a_to_b_initial",
+      trim_round_with_offset(compute_queue, buffer_a1_u2, buffer_b_u2, buffer_i2, buffer_i1));
     for (uint32_t round_index = 0; round_index < TRIMMING_ROUNDS; round_index++) {
-      zero_buffer(buffer_i2);
-      trim_round_with_offset(compute_queue, buffer_b_u2, buffer_a1_u2, buffer_i1, buffer_i2);
-      zero_buffer(buffer_i1);
-      trim_round_with_offset(compute_queue, buffer_a1_u2, buffer_b_u2, buffer_i2, buffer_i1);
+      profile.add_event("trim_b_to_a",
+        trim_round_with_offset(compute_queue, buffer_b_u2, buffer_a1_u2, buffer_i1, buffer_i2));
+      profile.add_event("trim_a_to_b",
+        trim_round_with_offset(compute_queue, buffer_a1_u2, buffer_b_u2, buffer_i2, buffer_i1));
     }
 
     // FluffyTailO: Collect final edges into contiguous output buffer
     uint32_t trimmed_edge_count = 0;
-    sycl::buffer<uint32_t, 1> buffer_trimmed_edge_count{&trimmed_edge_count, sycl::range(1)};
-    sycl::buffer<sycl::uint2, 1> buffer_trimmed_edges_u2{sycl::range(MAX_TRIMMED_EDGE_COUNT)};
-    compute_queue.submit([&](sycl::handler& handler) {
+    zero_buffer("clear_trimmed_count", buffer_trimmed_edge_count);
+    const sycl::event tail_event = compute_queue.submit([&](sycl::handler& handler) {
       sycl::accessor acc_b{buffer_b_u2, handler, sycl::read_only};
       sycl::accessor acc_edges{buffer_trimmed_edges_u2, handler, sycl::write_only, sycl::no_init};
-      sycl::accessor acc_i1{buffer_i1, handler, sycl::read_only};
+      sycl::accessor acc_i1{buffer_i1, handler, sycl::read_write};
       sycl::accessor acc_trimmed_edge_count{buffer_trimmed_edge_count, handler, sycl::read_write};
 
       sycl::local_accessor<uint32_t, 1> output_index{sycl::range<1>(1), handler};
@@ -655,23 +865,30 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
         item.barrier(sycl::access::fence_space::local_space);
 
         // Copy edges to contiguous output buffer
-        if (local_id < edges_to_copy) {
-          const uint32_t index = output_index[0] + local_id;
+        for (uint32_t edge_index = local_id; edge_index < edges_to_copy; edge_index += COMPUTE_THREADS) {
+          const uint32_t index = output_index[0] + edge_index;
           if (index < MAX_TRIMMED_EDGE_COUNT)
-            acc_edges[index] = acc_b[((work_group_id & BUCKET_OFFSET) * BUCKET_STEP) + work_group_id * duck_edges_b + local_id];
+            acc_edges[index] = acc_b[((work_group_id & BUCKET_OFFSET) * BUCKET_STEP) + work_group_id * duck_edges_b + edge_index];
         }
+
+        if (local_id == 0) acc_i1[work_group_id] = 0;
       });
     });
+    profile.add_event("tail", tail_event);
 
     // Read final trimmed edges from GPU memory
     { sycl::host_accessor host_accessor{buffer_trimmed_edge_count, sycl::read_only};
       trimmed_edge_count = sycl::min(host_accessor[0], MAX_TRIMMED_EDGE_COUNT);
     }
+    profile.mark("read trimmed count");
+    profile.print_events();
 
     std::vector<sycl::uint2> trimmed_edges(trimmed_edge_count);
     { auto host_accessor = buffer_trimmed_edges_u2.get_host_access(sycl::range<1>(trimmed_edge_count), sycl::id<1>(0));
       std::memcpy(trimmed_edges.data(), host_accessor.get_pointer(), trimmed_edge_count * sizeof(sycl::uint2));
     }
+    profile.mark("read trimmed edges");
+    profile.finish(trimmed_edge_count);
 
     // Increment running thread counter
     running_search_threads.fetch_add(1);
@@ -718,15 +935,22 @@ int c29(const unsigned job_ref, const unsigned c29_proof_size,
       }
     };
 
-    static auto compute_queue = sycl::queue{get_dev(dev_str), exception_handler};
-    static auto kernel_bundle = sycl::get_kernel_bundle<sycl::bundle_state::executable>(compute_queue.get_context());
+    static sycl::device compute_device = get_dev(dev_str);
 
-    // Set optimal SYCL compiler flags for this algo
-    static bool isFirstTime = true;
-    if (isFirstTime) {
-      set_sycl_env("SYCL_PROGRAM_COMPILE_OPTIONS", "-O3 -Rpass=loop-vectorize -Rpass-missed=loop-vectorize -Rpass-analysis=loop-vectorize");
-      isFirstTime = false;
-    }
+    // CPU SYCL backends can reject Intel GPU compiler-report flags.
+    static const bool sycl_compile_env_set = []() {
+      set_sycl_env("SYCL_PROGRAM_COMPILE_OPTIONS", compute_device.is_gpu() ? "-O3" : "");
+      return true;
+    }();
+    (void)sycl_compile_env_set;
+
+    static auto compute_queue = c29_profile_enabled()
+      ? sycl::queue{compute_device, exception_handler,
+                    sycl::property_list{sycl::property::queue::in_order{},
+                                        sycl::property::queue::enable_profiling{}}}
+      : sycl::queue{compute_device, exception_handler,
+                    sycl::property_list{sycl::property::queue::in_order{}}};
+    static auto kernel_bundle = sycl::get_kernel_bundle<sycl::bundle_state::executable>(compute_queue.get_context());
 
     // Check for existing solutions first
     bool has_solution = false;

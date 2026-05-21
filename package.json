@@ -1,6 +1,6 @@
 {
   "name": "mominer",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Node.js and SYCL miner built on XMRig hashing sources with MoneroOcean algo switching support",
   "private": true,
   "main": "mominer.js",
