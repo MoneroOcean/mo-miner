@@ -1,6 +1,6 @@
 // Copyright GNU GPLv3 (c) 2023-2025 MoneroOcean <support@moneroocean.stream>
 
-#include "sycl-lib-internal.h"
+#include "lib-internal.h"
 #include <algorithm>
 #include <list>
 #include <sstream>

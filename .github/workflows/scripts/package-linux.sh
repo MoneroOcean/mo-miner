@@ -72,7 +72,8 @@ exec "$script_dir/mo-miner-bin" "$@"
 EOF
 chmod +x "$package_dir/mo-miner"
 
-cp package.json README.md LICENSE install.sh "$package_dir/"
+cp package.json README.md LICENSE "$package_dir/"
+cp scripts/install.sh "$package_dir/install.sh"
 cp build/Release/mo-miner.node "$libs_dir/"
 
 container="mo-miner-release-libs-$$"

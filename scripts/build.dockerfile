@@ -26,12 +26,14 @@ useradd user -u $(stat -c "%g" /root/mo-miner) -G root,video -m -s /bin/bash;\n\
 echo "user ALL=(ALL) NOPASSWD:ALL" >/etc/sudoers.d/user-user\n\
 # Release CI builds use a portable baseline because GitHub can build and test on different x86-64 CPU models.\n\
 portable_build="${MOMINER_PORTABLE_BUILD:-0}"\n\
+lto="${MOMINER_LTO:-auto}"\n\
 su - user <<EOF\n\
 cd /root/mo-miner # su - resets to home dir and we need to keep /root/mo-miner pwd\n\
 . /opt/intel/oneapi/setvars.sh >/dev/null\n\
 export MOMINER_PORTABLE_BUILD="$portable_build"\n\
+export MOMINER_LTO="$lto"\n\
 { ping -c1 -W2 8.8.8.8 >/dev/null 2>&1; } && npm update --silent || echo "Skip npm update since there is no internet access"\n\
-node_build_version="\$(node -p "process.version"):/usr/local:portable=$portable_build"\n\
+node_build_version="\$(node -p "process.version"):/usr/local:portable=$portable_build:ax=1:lto=$lto"\n\
 if [ ! -s ./build/Release/mo-miner.node ] || [ "\$(cat ./build/.node-version 2>/dev/null || true)" != "\$node_build_version" ] || ! grep -q "/root/mo-miner" ./build/Makefile 2>/dev/null; then\n\
   rm -rf ./build\n\
   CC=icx CXX=icpx node-gyp configure --nodedir=/usr/local\n\

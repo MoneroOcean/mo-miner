@@ -4,7 +4,7 @@
 
 #include <sycl/sycl.hpp>
 #include <cstdlib>
-#include "sycl-lib.h"
+#include "lib.h"
 
 inline void set_sycl_env(const char* name, const char* value) {
 #ifdef _WIN32

@@ -64,7 +64,9 @@ if not defined OCL_ICD_FILENAMES for %%F in ("%MOMINER_LIBS%\intelocl*.dll") do 
 exit /b %ERRORLEVEL%
 '@ | Set-Content -Encoding ascii "$packageDir/mo-miner.cmd"
 
-Copy-Item package.json, README.md, LICENSE, install.bat, install.ps1 "$packageDir/"
+Copy-Item package.json, README.md, LICENSE "$packageDir/"
+Copy-Item scripts/install.bat "$packageDir/install.bat"
+Copy-Item scripts/install.ps1 "$packageDir/install.ps1"
 Copy-Item build/Release/mo-miner.node "$libsDir/"
 Copy-Item build/Release/sycl.dll "$libsDir/"
 

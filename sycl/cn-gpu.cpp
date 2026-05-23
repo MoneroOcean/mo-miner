@@ -11,8 +11,8 @@
 #include <memory>
 #include <mutex>
 
-#include "sycl-lib-internal.h"
-#include "../consts.h"
+#include "lib-internal.h"
+#include "../native/consts.h"
 
 const unsigned HASH_DATA_AREA = 136;
 const unsigned CN_MEMORY      = 2 * 1024 * 1024;

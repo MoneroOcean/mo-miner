@@ -3,9 +3,9 @@
     {
       "target_name": "mo-miner",
       "sources": [
-        "mo-miner-core.cpp",
-        "mo-miner-xmrig-compat.cpp",
-        "mo-miner-job.cpp",
+        "native/core.cpp",
+        "native/xmrig-compat.cpp",
+        "native/job.cpp",
 
         "xmrig/crypto/common/VirtualMemory.cpp",
         "xmrig/crypto/common/HugePagesInfo.cpp",
@@ -66,6 +66,7 @@
         "xmrig/3rdparty/fmt/format.cc"
       ],
       "include_dirs": [
+        ".",
         "xmrig",
         "xmrig/3rdparty/argon2/include",
         "xmrig/3rdparty/argon2/lib"
@@ -144,7 +145,7 @@
           "sources": [
             "xmrig/crypto/common/VirtualMemory_unix.cpp",
             "xmrig/crypto/cn/r/CryptonightR_gen.cpp",
-            "<!@(./cpu-feature.sh x86_64 && ("
+            "<!@(./scripts/cpu-feature.sh x86_64 && ("
             "     echo \"xmrig/backend/cpu/platform/BasicCpuInfo.cpp\""
             "     echo \"xmrig/hw/msr/Msr.cpp\""
             "     echo \"xmrig/hw/msr/Msr_linux.cpp\""
@@ -162,19 +163,19 @@
             "   ))"
           ],
           "cflags+": [
-            "<!@(./cpu-feature.sh arm64 && echo \"-march=armv8-a+crypto -flax-vector-conversions\" || (./cpu-feature.sh arm && echo \"-mfpu=neon -flax-vector-conversions\" || ([ \"${MOMINER_PORTABLE_BUILD:-}\" = \"1\" ] && echo \"-march=x86-64 -mtune=generic -maes\" || echo \"-march=native\")))",
-            "<!@(./cpu-feature.sh avx512f && echo \"-DHAVE_AVX512F\" || echo)",
-            "<!@(./cpu-feature.sh avx2    && echo \"-DHAVE_AVX2 -DXMRIG_FEATURE_AVX2\" || echo)",
-            "<!@(./cpu-feature.sh xop     && echo \"-DHAVE_XOP\" || echo)",
-            "<!@(./cpu-feature.sh sse4_1  && echo \"-DXMRIG_FEATURE_SSE4_1\" || echo)",
-            "<!@(./cpu-feature.sh ssse3   && echo \"-DHAVE_SSSE3\" || echo)",
-            "<!@(./cpu-feature.sh sse2    && echo \"-DHAVE_SSE2\" || echo)",
-            "<!@(./cpu-feature.sh msr     && echo \"-DXMRIG_FEATURE_MSR\" || echo)",
-            "<!@(./cpu-feature.sh vaes    && echo \"-DHAVE_VAES\" || echo)",
-            "-DXMRIG_FEATURE_ASM -O3 -ffast-math -flto -funroll-loops -fmerge-all-constants"
+            "<!@(./scripts/cpu-cflags.sh)",
+            "<!@(./scripts/cpu-feature.sh avx512f && echo \"-DHAVE_AVX512F\" || echo)",
+            "<!@(./scripts/cpu-feature.sh avx2    && echo \"-DHAVE_AVX2 -DXMRIG_FEATURE_AVX2\" || echo)",
+            "<!@(./scripts/cpu-feature.sh xop     && echo \"-DHAVE_XOP\" || echo)",
+            "<!@(./scripts/cpu-feature.sh sse4_1  && echo \"-DXMRIG_FEATURE_SSE4_1\" || echo)",
+            "<!@(./scripts/cpu-feature.sh ssse3   && echo \"-DHAVE_SSSE3\" || echo)",
+            "<!@(./scripts/cpu-feature.sh sse2    && echo \"-DHAVE_SSE2\" || echo)",
+            "<!@(./scripts/cpu-feature.sh msr     && echo \"-DXMRIG_FEATURE_MSR\" || echo)",
+            "<!@(./scripts/cpu-feature.sh vaes    && echo \"-DHAVE_VAES\" || echo)",
+            "<!@(./scripts/cpu-optflags.sh cflags)"
           ],
           "cflags_cc+": [ "-std=c++20" ],
-          "ldflags+": [ "-flto -O3 -ffast-math -funroll-loops -fmerge-all-constants" ]
+          "ldflags+": [ "<!@(./scripts/cpu-optflags.sh ldflags)" ]
         } ],
         [ "OS!='win'", {
           "ldflags+": [
@@ -209,7 +210,7 @@
       "type": "static_library",
       "win_delay_load_hook": "false",
       "sources": [
-        "sycl/sycl-lib.cpp",
+        "sycl/lib.cpp",
         "sycl/c29.cpp",
         "sycl/cn-gpu.cpp"
       ],
@@ -260,7 +261,7 @@
             }
           },
           "sources": [
-            "sycl/sycl-blake2b.cpp",
+            "sycl/blake2b.cpp",
             "xmrig/crypto/randomx/blake2/blake2b.c"
           ],
           "defines": [
@@ -280,7 +281,6 @@
           }
         }, {
           "cflags+": [
-            "<!@(./cpu-feature.sh arm64 && echo \"-march=armv8-a+crypto -flax-vector-conversions\" || (./cpu-feature.sh arm && echo \"-mfpu=neon -flax-vector-conversions\" || ([ \"${MOMINER_PORTABLE_BUILD:-}\" = \"1\" ] && echo \"-march=x86-64 -mtune=generic -maes\" || echo \"-march=native\")))",
             "-std=c++20 -O3 -fsycl -DNDEBUG"
           ]
         } ]

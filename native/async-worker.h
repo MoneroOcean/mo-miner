@@ -201,9 +201,9 @@ class AsyncWorker {
   MessageQueue<Message> fromNode;
 
   AsyncWorker(napi_env env, napi_value progress, napi_value complete, napi_value error_callback)
-    : m_progress_tsfn(create_tsfn(env, progress, "mo-miner-core::progress", call_progress, this)),
-      m_complete_tsfn(create_tsfn(env, complete, "mo-miner-core::complete", call_complete, this)),
-      m_error_tsfn(create_tsfn(env, error_callback, "mo-miner-core::error", call_error, this)),
+    : m_progress_tsfn(create_tsfn(env, progress, "core::progress", call_progress, this)),
+      m_complete_tsfn(create_tsfn(env, complete, "core::complete", call_complete, this)),
+      m_error_tsfn(create_tsfn(env, error_callback, "core::error", call_error, this)),
       m_started(false), m_stopped(false) {}
 
   virtual ~AsyncWorker() {

@@ -1,6 +1,6 @@
 // Copyright GNU GPLv3 (c) 2023-2025 MoneroOcean <support@moneroocean.stream>
 
-#include "mo-miner-core.h"
+#include "core.h"
 
 #include "3rdparty/fmt/core.h"
 #include "backend/cpu/Cpu.h"

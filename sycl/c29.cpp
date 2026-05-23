@@ -14,8 +14,8 @@
 #include <unordered_map>
 #include <vector>
 
-#include "sycl-lib-internal.h"
-#include "../consts.h"
+#include "lib-internal.h"
+#include "../native/consts.h"
 #include "crypto/randomx/blake2/blake2.h"
 
 #if defined(_WIN32)

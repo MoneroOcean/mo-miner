@@ -1,7 +1,7 @@
 // Copyright GNU GPLv3 (c) 2023-2025 MoneroOcean <support@moneroocean.stream>
 
-#include "mo-miner-core.h"
-#include "sycl/sycl-lib.h"
+#include "core.h"
+#include "../sycl/lib.h"
 
 #include "backend/cpu/Cpu.h"
 #include "crypto/cn/CnCtx.h"
