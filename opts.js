@@ -7,7 +7,7 @@ const h    = require("./helper.js");
 
 const version_str = require("./package.json").version;
 
-module.exports.agent_str = "MoMiner v" + version_str;
+module.exports.agent_str = "mo-miner v" + version_str;
 
 module.exports.pool_create = function(url, port, is_tls, login, pass) {
   return {
@@ -168,7 +168,7 @@ module.exports.print_opt_help = function(opt_help, depth_str, base_key_path_str)
 module.exports.print_help = function(err_str) {
   const exe = path.basename(process.argv[1] || "");
   const command = process.env.MOMINER_COMMAND ||
-                  (exe === "mominer" || exe === "mominer.exe" ? "./" + exe : "node mominer.js");
+                  (exe === "mo-miner" || exe === "mo-miner.exe" ? "./" + exe : "node mo-miner.js");
   const str = `
 # Node.js/SYCL based CPU/GPU miner v${version_str}
 $ ${command} <directive> <parameter>+ [<option>+]

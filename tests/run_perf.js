@@ -37,7 +37,7 @@ if (process.platform === "win32" || isInsideRsh() || hasReleaseExecutable) {
   if (algo) args.push(`MOMINER_PERF_ALGO=${algo}`);
   runner = { command: "./r.sh", args: [...args, "node", ...testArgs] };
 } else {
-  runner = { command: "./docker-mominer.sh", args: ["node", ...testArgs], env: testEnv };
+  runner = { command: "./docker-mo-miner.sh", args: ["node", ...testArgs], env: testEnv };
 }
 
 spawnAndExit(runner.command, runner.args, { env: runner.env });

@@ -1,19 +1,19 @@
 {
-  "name": "mominer",
-  "version": "0.6.0",
+  "name": "mo-miner",
+  "version": "0.6.1",
   "description": "Node.js and SYCL miner built on XMRig hashing sources with MoneroOcean algo switching support",
   "private": true,
-  "main": "mominer.js",
+  "main": "mo-miner.js",
   "gypfile": true,
-  "homepage": "https://github.com/MoneroOcean/mominer#readme",
+  "homepage": "https://github.com/MoneroOcean/mo-miner#readme",
   "bugs": {
-    "url": "https://github.com/MoneroOcean/mominer/issues"
+    "url": "https://github.com/MoneroOcean/mo-miner/issues"
   },
   "author": "MoneroOcean contributors",
   "license": "GPL-3.0-or-later",
   "repository": {
     "type": "git",
-    "url": "https://github.com/MoneroOcean/mominer.git"
+    "url": "https://github.com/MoneroOcean/mo-miner.git"
   },
   "engines": {
     "node": ">=22.9.0",

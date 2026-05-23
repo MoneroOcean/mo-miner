@@ -10,17 +10,21 @@ fi
 
 build_iid="$(mktemp)"
 trap 'rm -f "$build_iid"' EXIT
-docker buildx build --load --progress=none --iidfile "$build_iid" -t mominer-build --pull=false - <"$SCRIPT_DIR/build.dockerfile"
-docker rm -f mominer >/dev/null 2>&1 || true
+docker buildx build --load --progress=none --iidfile "$build_iid" -t mo-miner-build --pull=false - <"$SCRIPT_DIR/build.dockerfile"
+docker rm -f mo-miner >/dev/null 2>&1 || true
 
 docker_flags=(
   --privileged
   --rm
-  --name mominer
-  --hostname mominer
+  --name mo-miner
+  --hostname mo-miner
   --env MOMINER_R_SH=1
-  --mount "type=bind,source=$SCRIPT_DIR,target=/root/mominer"
+  --mount "type=bind,source=$SCRIPT_DIR,target=/root/mo-miner"
 )
+
+if [ -n "${MOMINER_PORTABLE_BUILD:-}" ]; then
+  docker_flags+=(--env MOMINER_PORTABLE_BUILD)
+fi
 
 if [ -t 0 ] && [ -t 1 ]; then
   docker_flags+=(-it)
@@ -29,7 +33,7 @@ else
 fi
 
 if [ $# -ne 0 ]; then
-  docker run "${docker_flags[@]}" mominer-build "$@"
+  docker run "${docker_flags[@]}" mo-miner-build "$@"
 else
-  docker run "${docker_flags[@]}" mominer-build
+  docker run "${docker_flags[@]}" mo-miner-build
 fi

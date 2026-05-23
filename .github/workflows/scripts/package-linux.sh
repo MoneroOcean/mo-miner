@@ -10,24 +10,24 @@ if [ -z "$version" ]; then
 fi
 version="${version#v}"
 
-root="mominer-v${version}"
-archive="${2:-mominer-v${version}-lin.tgz}"
+root="mo-miner-v${version}"
+archive="${2:-mo-miner-v${version}-lin.tgz}"
 package_dir="release/${root}"
 libs_dir="$package_dir/libs"
 build_dir="release-build"
 node_bin="${NODE_BIN:-$(command -v node)}"
 
-if [ ! -f build/Release/mominer.node ]; then
-  echo "build/Release/mominer.node is missing; build the native addon before packaging." >&2
+if [ ! -f build/Release/mo-miner.node ]; then
+  echo "build/Release/mo-miner.node is missing; build the native addon before packaging." >&2
   exit 1
 fi
 
 rm -rf release "$build_dir" "$archive"
 mkdir -p "$package_dir" "$libs_dir" "$build_dir"
 
-bundle_path="$PWD/$build_dir/mominer.bundle.cjs"
-blob_path="$PWD/$build_dir/mominer.blob"
-npx --yes esbuild@0.28.0 mominer.js \
+bundle_path="$PWD/$build_dir/mo-miner.bundle.cjs"
+blob_path="$PWD/$build_dir/mo-miner.blob"
+npx --yes esbuild@0.28.0 mo-miner.js \
   --bundle \
   --platform=node \
   --format=cjs \
@@ -43,11 +43,11 @@ cat >"$build_dir/sea-config.json" <<EOF
 }
 EOF
 "$node_bin" --experimental-sea-config "$build_dir/sea-config.json"
-cp "$node_bin" "$package_dir/mominer-bin"
-npx --yes postject@1.0.0-alpha.6 "$package_dir/mominer-bin" NODE_SEA_BLOB "$blob_path" \
+cp "$node_bin" "$package_dir/mo-miner-bin"
+npx --yes postject@1.0.0-alpha.6 "$package_dir/mo-miner-bin" NODE_SEA_BLOB "$blob_path" \
   --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2
-chmod +x "$package_dir/mominer-bin"
-cat >"$package_dir/mominer" <<'EOF'
+chmod +x "$package_dir/mo-miner-bin"
+cat >"$package_dir/mo-miner" <<'EOF'
 #!/usr/bin/env sh
 set -eu
 
@@ -68,16 +68,16 @@ if [ -z "${OCL_ICD_FILENAMES:-}" ] && [ -f "$script_dir/libs/libintelocl.so" ]; 
   export OCL_ICD_FILENAMES="$script_dir/libs/libintelocl.so"
 fi
 
-exec "$script_dir/mominer-bin" "$@"
+exec "$script_dir/mo-miner-bin" "$@"
 EOF
-chmod +x "$package_dir/mominer"
+chmod +x "$package_dir/mo-miner"
 
 cp package.json README.md LICENSE install.sh "$package_dir/"
-cp build/Release/mominer.node "$libs_dir/"
+cp build/Release/mo-miner.node "$libs_dir/"
 
-container="mominer-release-libs-$$"
+container="mo-miner-release-libs-$$"
 docker rm -f "$container" >/dev/null 2>&1 || true
-docker run -d --name "$container" --entrypoint sleep mominer-build infinity >/dev/null
+docker run -d --name "$container" --entrypoint sleep mo-miner-build infinity >/dev/null
 cleanup() {
   docker rm -f "$container" >/dev/null 2>&1 || true
 }
@@ -138,7 +138,7 @@ missing_libraries() {
     LD_LIBRARY_PATH="$PWD/$libs_dir:$PWD/$package_dir" ldd "$file" 2>/dev/null || true
   done < <(
     find "$package_dir" "$libs_dir" -maxdepth 1 -type f \
-      \( -name "mominer-bin" -o -name "mominer.node" -o -name "*.so" -o -name "*.so.*" \) \
+      \( -name "mo-miner-bin" -o -name "mo-miner.node" -o -name "*.so" -o -name "*.so.*" \) \
       -print0
   ) | awk '/not found/{print $1}' | sort -u
 }

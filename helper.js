@@ -39,9 +39,9 @@ function childEnv(extra) {
   }
   env[pathKey] = [
     appDir,
-    path.join(appDir, "mominer"),
+    path.join(appDir, "mo-miner"),
     process.cwd(),
-    path.join(process.cwd(), "mominer"),
+    path.join(process.cwd(), "mo-miner"),
     path.join(__dirname, "build", "Release"),
     pathValue,
   ]
@@ -91,16 +91,16 @@ module.exports.create_core = function() {
   this.log3("Starting compute core in " + thread_id + " thread");
   const appDir = path.dirname(process.execPath);
   const core_path = firstExistingPath([
-    path.join(appDir, "libs", "mominer.node"),
-    path.join(appDir, "mominer.node"),
-    path.join(appDir, "mominer", "mominer.node"),
-    path.join(appDir, "build", "Release", "mominer.node"),
-    path.join(process.cwd(), "libs", "mominer.node"),
-    path.join(process.cwd(), "mominer.node"),
-    path.join(process.cwd(), "mominer", "mominer.node"),
-    path.join(__dirname, "libs", "mominer.node"),
-    path.join(__dirname, "mominer.node"),
-    path.join(__dirname, "build", "Release", "mominer.node"),
+    path.join(appDir, "libs", "mo-miner.node"),
+    path.join(appDir, "mo-miner.node"),
+    path.join(appDir, "mo-miner", "mo-miner.node"),
+    path.join(appDir, "build", "Release", "mo-miner.node"),
+    path.join(process.cwd(), "libs", "mo-miner.node"),
+    path.join(process.cwd(), "mo-miner.node"),
+    path.join(process.cwd(), "mo-miner", "mo-miner.node"),
+    path.join(__dirname, "libs", "mo-miner.node"),
+    path.join(__dirname, "mo-miner.node"),
+    path.join(__dirname, "build", "Release", "mo-miner.node"),
   ]);
   debugStartup("requiring " + core_path);
   const core_module = require(core_path);

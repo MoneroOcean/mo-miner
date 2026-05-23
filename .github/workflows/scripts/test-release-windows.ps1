@@ -54,12 +54,12 @@ $hasSyclBridge = Test-Path (Join-Path $libsDir "sycl.dll")
 if (-not $hasSyclBridge) {
   throw "Windows release package is missing libs/sycl.dll."
 }
-if (-not (Test-Path (Join-Path $libsDir "mominer.node"))) {
-  throw "Windows release package is missing libs/mominer.node."
+if (-not (Test-Path (Join-Path $libsDir "mo-miner.node"))) {
+  throw "Windows release package is missing libs/mo-miner.node."
 }
 $entryPaths = @(
-  (Join-Path $packageDir "mominer-node.exe"),
-  (Join-Path $libsDir "mominer.node"),
+  (Join-Path $packageDir "mo-miner-node.exe"),
+  (Join-Path $libsDir "mo-miner.node"),
   (Join-Path $libsDir "sycl.dll")
 )
 Test-MominerDllClosure -PackageDir $libsDir -EntryPaths $entryPaths
@@ -105,13 +105,13 @@ Push-Location $packageDir
 try {
   $oldErrorActionPreference = $ErrorActionPreference
   $ErrorActionPreference = "Continue"
-  $smokeOutput = & .\mominer.cmd algo_params 2>&1
+  $smokeOutput = & .\mo-miner.cmd algo_params 2>&1
   $smokeExit = $LASTEXITCODE
   $ErrorActionPreference = $oldErrorActionPreference
   if ($smokeExit -ne 0) {
     $env:MOMINER_DEBUG_STARTUP = "1"
     $ErrorActionPreference = "Continue"
-    $debugOutput = & .\mominer.cmd algo_params 2>&1
+    $debugOutput = & .\mo-miner.cmd algo_params 2>&1
     $debugExit = $LASTEXITCODE
     $ErrorActionPreference = $oldErrorActionPreference
     Remove-Item Env:MOMINER_DEBUG_STARTUP -ErrorAction SilentlyContinue

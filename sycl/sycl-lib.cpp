@@ -142,22 +142,33 @@ std::map<std::string, std::string> algo_params(
     };
     if (gpu_cn_algos.contains(algo)) {
       for_each_default_gpu([&](const std::string& dev_str, const sycl::device& dev) {
-        const unsigned max_compute_units = dev.get_info<sycl::info::device::max_compute_units>();
+        std::string cn_dev_str = dev_str;
+        sycl::device cn_dev = dev;
+        unsigned batch_multiplier = 6;
+        const auto opencl_dev = str2dev.find(dev_str + "o");
+        const std::string device_name = dev.get_info<sycl::info::device::name>();
+        if (algo == "cn/gpu" && opencl_dev != str2dev.end() &&
+            device_name.find("Intel") != std::string::npos) {
+          cn_dev_str = dev_str + "o";
+          cn_dev = opencl_dev->second;
+          batch_multiplier = 8;
+        }
+        const unsigned max_compute_units = cn_dev.get_info<sycl::info::device::max_compute_units>();
         if (algo2mem.contains(algo)) {
           const unsigned batch_mem        = algo2mem.at(algo),
-                         max_alloc_batch  = (dev.get_info<sycl::info::device::max_mem_alloc_size>()
+                         max_alloc_batch  = (cn_dev.get_info<sycl::info::device::max_mem_alloc_size>()
                                             / batch_mem) & 0xFFFFFFF8,
-                         max_batch        = dev.get_info<sycl::info::device::global_mem_size>()
+                         max_batch        = cn_dev.get_info<sycl::info::device::global_mem_size>()
                                             / batch_mem,
                          max_thread_batch = std::min(max_alloc_batch, max_batch),
-                         best_batch       = std::min(max_compute_units * 6, max_batch);
+                         best_batch       = std::min(max_compute_units * batch_multiplier, max_batch);
           unsigned used_batch = 0;
           while (used_batch < best_batch) {
             const unsigned current_batch = std::min(best_batch - used_batch, max_thread_batch);
-            add_result_dev(dev_str + "*" + std::to_string(current_batch));
+            add_result_dev(cn_dev_str + "*" + std::to_string(current_batch));
             used_batch += current_batch;
           }
-        } else add_result_dev(dev_str + "*" + std::to_string(max_compute_units));
+        } else add_result_dev(cn_dev_str + "*" + std::to_string(max_compute_units));
       });
     } else if (gpu_c29_algos.contains(algo)) {
       for_each_default_gpu([&](const std::string& dev_str, const sycl::device&) {

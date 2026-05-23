@@ -15,6 +15,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  MOMINER_PORTABLE_BUILD: "1"
   WINDOWS_ONEAPI_URL: https://raw.githubusercontent.com/oneapi-src/oneapi-ci/master/.github/workflows/build_all.yml
   WINDOWS_ONEAPI_PACKAGE: intel-oneapi-toolkit
   WINDOWS_DPCPP_COMPONENTS: intel.oneapi.win.cpp-dpcpp-common
@@ -56,7 +57,7 @@ jobs:
         uses: docker/setup-buildx-action@v4
 
       - name: Build native addon in release image
-        run: ./r.sh node -e "console.log('mominer build ready')"
+        run: ./r.sh node -e "console.log('mo-miner build ready')"
 
       - name: Package release archive
         run: .github/workflows/scripts/package-linux.sh
@@ -64,8 +65,8 @@ jobs:
       - name: Upload package
         uses: actions/upload-artifact@v7
         with:
-          name: mominer-lin-package
-          path: mominer-*-lin.tgz
+          name: mo-miner-lin-package
+          path: mo-miner-*-lin.tgz
 
   test-linux-x64:
     name: Ubuntu / ${{ matrix.suite }}
@@ -93,13 +94,13 @@ jobs:
       - name: Download package
         uses: actions/download-artifact@v7
         with:
-          name: mominer-lin-package
+          name: mo-miner-lin-package
           path: dist
 
       - name: Test extracted package
         run: |
           set -euo pipefail
-          archive="$(find dist -name 'mominer-*-lin.tgz' -print -quit)"
+          archive="$(find dist -name 'mo-miner-*-lin.tgz' -print -quit)"
           .github/workflows/scripts/test-release-linux.sh "$archive" "${{ matrix.suite }}"
 
   package-windows-x64:
@@ -149,8 +150,8 @@ jobs:
       - name: Upload package
         uses: actions/upload-artifact@v7
         with:
-          name: mominer-win-package
-          path: mominer-*-win.zip
+          name: mo-miner-win-package
+          path: mo-miner-*-win.zip
 
   test-windows-x64:
     name: Windows / ${{ matrix.suite }}
@@ -178,7 +179,7 @@ jobs:
       - name: Download package
         uses: actions/download-artifact@v7
         with:
-          name: mominer-win-package
+          name: mo-miner-win-package
           path: dist
 
       - name: Install Intel OpenCL CPU runtime
@@ -189,5 +190,5 @@ jobs:
       - name: Test extracted package
         shell: powershell
         run: |
-          $archive = Get-ChildItem dist -Filter "mominer-*-win.zip" | Select-Object -First 1
+          $archive = Get-ChildItem dist -Filter "mo-miner-*-win.zip" | Select-Object -First 1
           powershell -NoProfile -ExecutionPolicy Bypass -File .github\workflows\scripts\test-release-windows.ps1 -Archive $archive.FullName -Suite "${{ matrix.suite }}"

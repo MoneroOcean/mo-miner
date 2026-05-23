@@ -1,8 +1,8 @@
-## MoMiner
+## mo-miner
 
 # About
 
-MoMiner is open-source cryptocurrency miner that is built upon high performance xmrig CPU miner
+mo-miner is open-source cryptocurrency miner that is built upon high performance xmrig CPU miner
 sources with front-end and network backend rewritten in Node.js to significantly simplify its code.
 GPU mining sources are also simplified and rewritten in SYCL from OpenCL/CUDA.
 The main goal of this project is to make simple, easy to extend open-source miner with native
@@ -28,13 +28,13 @@ By default, miner donates 1% of hashrate (can be disabled in config).
 
 # Distribution
 
-Miner mominer.node dynamic library can be compiled and run from sources using `./r.sh` script that
+Miner mo-miner.node dynamic library can be compiled and run from sources using `./r.sh` script that
 will build Docker container with SYCL compiler. Docker buildx is required so builds use BuildKit
 instead of Docker's deprecated legacy builder:
 
 ```
-git clone https://github.com/MoneroOcean/mominer.git
-cd mominer
+git clone https://github.com/MoneroOcean/mo-miner.git
+cd mo-miner
 ./r.sh
 ```
 
@@ -58,7 +58,7 @@ docker buildx version
 ```
 
 Tagged GitHub releases build Linux x86-64 `.tgz` and Windows x86-64 `.zip` archives with a
-`mominer` executable, precompiled `mominer.node`, and required SYCL runtime libraries. The release
+`mo-miner` executable, precompiled `mo-miner.node`, and required SYCL runtime libraries. The release
 executable embeds the Node.js control plane, so Docker and system Node.js are not required to run
 the release artifact.
 
@@ -81,9 +81,9 @@ and installs a coherent GPU compute runtime set:
 * oneAPI Level Zero loader: `libze1` or the older `level-zero` package name
 
 Set `MOMINER_COMPUTE_RUNTIME_RELEASE`, `MOMINER_IGC_RELEASE`, or `MOMINER_LEVEL_ZERO_RELEASE`
-to a GitHub release tag to pin a specific version. The installer keeps mominer's bundled SYCL
+to a GitHub release tag to pin a specific version. The installer keeps mo-miner's bundled SYCL
 runtime libraries in place. Those bundled libraries include the oneAPI SYCL and Unified Runtime
-user-space pieces mominer loads directly; `install.sh` only installs the host GPU driver/runtime
+user-space pieces mo-miner loads directly; `install.sh` only installs the host GPU driver/runtime
 side that exposes Level Zero/OpenCL devices to them. Installing the full oneAPI runtime
 system-wide would be much larger than the release-bundled runtime closure.
 
@@ -97,7 +97,7 @@ install.bat
 Windows GPU Level Zero support is supplied by the Intel Graphics Driver, not by a small standalone
 `libze` package. Keep the Intel Graphics Driver current if `gpuN` Level Zero devices are missing or
 slow on Windows. The Windows release package already bundles the oneAPI SYCL and Level Zero loader
-DLLs needed by mominer. To also let the installer attempt a silent Intel Graphics Driver update
+DLLs needed by mo-miner. To also let the installer attempt a silent Intel Graphics Driver update
 through `winget`, run:
 
 ```
@@ -110,55 +110,55 @@ On Linux if you run miner like that for the first time it will benchmark all sup
 will start mining (this is perf numbers for Intel i7-11700K CPU and Intel Arc B580 GPU):
 
 ```
-$ ./mominer mine gulf.moneroocean.stream:20001tls 89TxfrUmqJJcb1V124WsUzA78Xa3UYHt7Bg8RGMhXVeZYPN8cE5CZEk58Y1m23ZMLHN7wYeJ9da5n5MXharEjrm41hSnWHL --save_config config.json
+$ ./mo-miner mine gulf.moneroocean.stream:20001tls 89TxfrUmqJJcb1V124WsUzA78Xa3UYHt7Bg8RGMhXVeZYPN8cE5CZEk58Y1m23ZMLHN7wYeJ9da5n5MXharEjrm41hSnWHL --save_config config.json
 cpu1: Intel(R) OpenCL
 gpu1: Intel(R) oneAPI Unified Runtime over Level-Zero V2
 gpu1o: Intel(R) OpenCL Graphics
 gpu1z: Intel(R) oneAPI Unified Runtime over Level-Zero V2
-2026-05-12 04:16:50 Doing algo benchmarks...
-2026-05-12 04:17:50 Algo argon2/chukwa (cpu^16) hashrate: 47960.00 H/s (2997.35, 2999.07, 2991.80, 3009.85, 2998.35, 3003.47, 3001.68, 2996.45, 2979.62, 2995.57, 2998.68, 2984.07, 2993.40, 3002.73, 3007.73, 3000.18)
-2026-05-12 04:18:51 Algo argon2/chukwav2 (cpu^16) hashrate: 16271.11 H/s (1012.25, 1015.25, 1020.21, 1017.82, 1016.15, 1019.62, 1018.27, 1014.48, 1020.58, 1017.62, 1017.03, 1012.36, 1022.13, 1017.30, 1019.18, 1010.87)
-2026-05-12 04:19:51 Algo argon2/wrkz (cpu^16) hashrate: 73792.52 H/s (4616.94, 4580.44, 4611.59, 4622.26, 4601.76, 4556.35, 4619.76, 4629.59, 4625.01, 4616.42, 4624.85, 4615.35, 4610.01, 4630.44, 4607.09, 4624.68)
-2026-05-12 04:21:08 Algo c29 (gpu1*1) hashrate: 0.80 H/s (0.80)
-2026-05-12 04:22:08 Algo cn-heavy/0 (cpu^4) hashrate: 336.89 H/s (80.88, 86.73, 85.95, 83.33)
-2026-05-12 04:23:08 Algo cn-heavy/tube (cpu^4) hashrate: 301.43 H/s (76.81, 76.09, 74.91, 73.61)
-2026-05-12 04:24:09 Algo cn-heavy/xhv (cpu^4) hashrate: 336.23 H/s (83.89, 86.04, 80.59, 85.72)
-2026-05-12 04:25:09 Algo cn-lite/0 (cpu^16) hashrate: 2322.05 H/s (143.41, 149.18, 148.45, 143.87, 139.97, 140.06, 148.20, 147.55, 148.87, 143.71, 143.08, 147.06, 139.58, 149.86, 148.90, 140.31)
-2026-05-12 04:26:10 Algo cn-lite/1 (cpu^16) hashrate: 2280.48 H/s (138.28, 140.86, 145.32, 146.85, 146.16, 145.67, 139.92, 139.79, 141.73, 137.56, 137.63, 147.07, 137.27, 144.45, 144.81, 147.11)
-2026-05-12 04:27:10 Algo cn-pico/0 (cpu*4^16) hashrate: 14680.83 H/s (908.23, 921.88, 927.52, 923.03, 924.59, 906.61, 926.23, 915.00, 915.45, 924.31, 924.28, 913.57, 921.24, 904.46, 908.33, 916.10)
-2026-05-12 04:28:11 Algo cn-pico/tlo (cpu*4^16) hashrate: 13055.17 H/s (821.38, 823.56, 819.41, 812.72, 809.49, 808.41, 811.84, 809.00, 824.41, 808.18, 826.56, 815.80, 822.05, 812.68, 809.10, 820.58)
-2026-05-12 04:29:11 Algo cn/0 (cpu^8) hashrate: 616.41 H/s (73.97, 76.07, 79.56, 78.85, 79.41, 78.69, 76.08, 73.79)
-2026-05-12 04:30:11 Algo cn/1 (cpu^8) hashrate: 610.54 H/s (78.08, 75.38, 78.66, 78.67, 73.11, 73.31, 78.06, 75.27)
-2026-05-12 04:31:12 Algo cn/2 (cpu^8) hashrate: 622.00 H/s (79.34, 79.55, 79.51, 79.16, 76.94, 75.24, 75.26, 77.00)
-2026-05-12 04:32:12 Algo cn/ccx (cpu^8) hashrate: 1186.61 H/s (151.92, 142.14, 142.51, 152.81, 146.36, 152.67, 151.67, 146.53)
-2026-05-12 04:33:13 Algo cn/double (cpu^8) hashrate: 314.07 H/s (40.10, 40.17, 40.05, 38.10, 38.04, 38.82, 38.75, 40.05)
-2026-05-12 04:34:13 Algo cn/fast (cpu^8) hashrate: 1188.67 H/s (151.76, 143.05, 146.11, 152.00, 153.24, 146.49, 153.13, 142.89)
-2026-05-12 04:35:19 Algo cn/gpu (gpu1*960) hashrate: 2222.08 H/s (2222.08)
-2026-05-12 04:36:20 Algo cn/half (cpu^8) hashrate: 1218.76 H/s (156.33, 156.00, 147.92, 148.27, 155.73, 151.58, 147.65, 155.27)
-2026-05-12 04:37:20 Algo cn/r (cpu^8) hashrate: 586.12 H/s (71.14, 74.72, 74.72, 72.61, 74.51, 72.59, 71.15, 74.67)
-2026-05-12 04:38:21 Algo cn/rto (cpu^8) hashrate: 604.99 H/s (78.07, 77.49, 74.56, 77.83, 74.62, 77.31, 72.49, 72.61)
-2026-05-12 04:39:21 Algo cn/rwz (cpu^8) hashrate: 816.42 H/s (102.32, 104.54, 104.35, 98.83, 102.55, 100.99, 98.94, 103.88)
-2026-05-12 04:40:21 Algo cn/upx2 (cpu*5^16) hashrate: 54449.18 H/s (3431.70, 3380.27, 3434.05, 3377.27, 3377.71, 3424.66, 3420.21, 3383.05, 3373.22, 3432.21, 3367.60, 3426.87, 3371.94, 3422.21, 3397.65, 3428.54)
-2026-05-12 04:41:22 Algo cn/xao (cpu^8) hashrate: 308.58 H/s (39.61, 38.10, 39.52, 37.00, 39.54, 36.90, 37.99, 39.93)
-2026-05-12 04:42:22 Algo cn/zls (cpu^8) hashrate: 810.57 H/s (99.94, 103.09, 103.00, 103.25, 98.20, 100.43, 98.73, 103.93)
-2026-05-12 04:43:23 Algo ghostrider (cpu*8^8) hashrate: 1574.35 H/s (194.52, 190.18, 200.79, 194.52, 202.21, 190.17, 200.06, 201.91)
-2026-05-12 04:44:27 Algo rx/0 (cpu*8) hashrate: 5855.01 H/s (5855.01)
-2026-05-12 04:45:30 Algo rx/2 (cpu*8) hashrate: 5050.21 H/s (5050.21)
-2026-05-12 04:46:33 Algo rx/arq (cpu*16) hashrate: 39159.68 H/s (39159.68)
-2026-05-12 04:47:36 Algo rx/graft (cpu*8) hashrate: 5702.72 H/s (5702.72)
-2026-05-12 04:48:39 Algo rx/sfx (cpu*8) hashrate: 5902.84 H/s (5902.84)
-2026-05-12 04:49:43 Algo rx/wow (cpu*16) hashrate: 7854.73 H/s (7854.73)
-2026-05-12 04:50:46 Algo rx/yada (cpu*8) hashrate: 5863.44 H/s (5863.44)
-2026-05-12 04:50:46 Connecting to primary gulf.moneroocean.stream:20001tls pool
-2026-05-12 04:50:46 Got new c29 algo job with 1 diff and 262457 height
-2026-05-12 04:52:00 Share accepted by the pool (1/0)
-2026-05-12 04:52:01 Algo c29 (gpu1*1) hashrate: 0.81 H/s (0.81)
+2026-05-23 00:33:49 Doing algo benchmarks...
+2026-05-23 00:34:49 Algo argon2/chukwa (cpu^16) hashrate: 50657.82 H/s (3172.17, 3160.39, 3169.17, 3178.28, 3177.11, 3171.34, 3168.06, 3168.73, 3141.46, 3174.23, 3176.01, 3134.18, 3159.56, 3175.45, 3166.45, 3165.23)
+2026-05-23 00:35:50 Algo argon2/chukwav2 (cpu^16) hashrate: 16885.64 H/s (1054.66, 1051.13, 1051.26, 1057.89, 1055.56, 1051.86, 1050.69, 1057.75, 1057.26, 1057.08, 1056.73, 1054.80, 1056.25, 1059.43, 1055.46, 1057.82)
+2026-05-23 00:36:50 Algo argon2/wrkz (cpu^16) hashrate: 76960.75 H/s (4829.84, 4808.01, 4816.01, 4809.01, 4812.42, 4820.75, 4837.01, 4818.17, 4807.84, 4837.75, 4816.59, 4812.59, 4754.75, 4817.17, 4814.01, 4748.84)
+2026-05-23 00:37:56 Algo c29 (gpu1*1) hashrate: 2.79 H/s (2.79)
+2026-05-23 00:38:56 Algo cn-heavy/0 (cpu^4) hashrate: 341.99 H/s (85.69, 81.91, 86.19, 88.20)
+2026-05-23 00:39:57 Algo cn-heavy/tube (cpu^4) hashrate: 312.04 H/s (80.15, 77.11, 75.33, 79.46)
+2026-05-23 00:40:57 Algo cn-heavy/xhv (cpu^4) hashrate: 341.04 H/s (86.66, 80.73, 86.49, 87.16)
+2026-05-23 00:41:58 Algo cn-lite/0 (cpu^16) hashrate: 2347.42 H/s (141.58, 144.93, 141.64, 144.88, 149.74, 141.70, 150.68, 149.82, 150.45, 149.88, 150.22, 150.75, 144.88, 144.91, 149.65, 141.72)
+2026-05-23 00:42:58 Algo cn-lite/1 (cpu^16) hashrate: 2278.44 H/s (138.97, 144.82, 145.16, 137.73, 145.58, 144.00, 140.65, 145.83, 140.81, 145.90, 137.70, 140.77, 138.23, 145.18, 146.42, 140.70)
+2026-05-23 00:43:59 Algo cn-pico/0 (cpu*4^16) hashrate: 14722.82 H/s (909.14, 916.51, 930.39, 928.85, 915.92, 909.45, 924.16, 915.92, 909.73, 926.95, 930.00, 927.01, 909.77, 929.64, 915.65, 923.72)
+2026-05-23 00:44:59 Algo cn-pico/tlo (cpu*4^16) hashrate: 13128.46 H/s (826.91, 827.00, 811.40, 811.01, 826.12, 811.38, 810.71, 826.78, 817.50, 816.94, 826.85, 826.89, 826.40, 826.91, 818.63, 817.03)
+2026-05-23 00:46:00 Algo cn/0 (cpu^8) hashrate: 622.43 H/s (79.58, 76.71, 80.15, 74.72, 74.82, 76.78, 80.11, 79.55)
+2026-05-23 00:47:00 Algo cn/1 (cpu^8) hashrate: 615.83 H/s (78.72, 74.00, 75.94, 75.95, 74.04, 78.67, 79.21, 79.30)
+2026-05-23 00:48:01 Algo cn/2 (cpu^8) hashrate: 621.40 H/s (79.25, 75.69, 79.50, 77.03, 77.65, 75.56, 79.66, 77.05)
+2026-05-23 00:49:01 Algo cn/ccx (cpu^8) hashrate: 1198.48 H/s (154.17, 147.92, 153.02, 144.23, 144.09, 154.19, 147.82, 153.04)
+2026-05-23 00:50:02 Algo cn/double (cpu^8) hashrate: 315.71 H/s (38.27, 39.01, 39.03, 38.29, 40.25, 40.34, 40.31, 40.22)
+2026-05-23 00:51:02 Algo cn/fast (cpu^8) hashrate: 1198.14 H/s (153.01, 144.10, 144.16, 154.16, 147.82, 153.03, 154.09, 147.78)
+2026-05-23 00:52:10 Algo cn/gpu (gpu1o*1280) hashrate: 2685.82 H/s (2685.82)
+2026-05-23 00:53:11 Algo cn/half (cpu^8) hashrate: 773.13 H/s (88.22, 103.22, 98.46, 100.66, 93.55, 88.48, 100.38, 100.15)
+2026-05-23 00:54:11 Algo cn/r (cpu^8) hashrate: 595.96 H/s (75.86, 73.80, 76.04, 76.08, 72.32, 72.36, 75.84, 73.66)
+2026-05-23 00:55:12 Algo cn/rto (cpu^8) hashrate: 614.68 H/s (78.48, 78.53, 75.79, 73.88, 79.10, 75.86, 73.92, 79.13)
+2026-05-23 00:56:12 Algo cn/rwz (cpu^8) hashrate: 822.62 H/s (105.07, 104.78, 99.81, 105.09, 99.80, 101.72, 101.68, 104.66)
+2026-05-23 00:57:13 Algo cn/upx2 (cpu*5^16) hashrate: 54562.86 H/s (3381.50, 3419.89, 3403.83, 3380.61, 3381.33, 3422.16, 3435.49, 3380.10, 3434.60, 3436.09, 3422.71, 3404.60, 3418.22, 3403.71, 3434.54, 3403.49)
+2026-05-23 00:58:14 Algo cn/xao (cpu^8) hashrate: 315.57 H/s (37.93, 37.88, 40.67, 38.92, 40.66, 40.34, 38.90, 40.27)
+2026-05-23 00:59:14 Algo cn/zls (cpu^8) hashrate: 822.00 H/s (101.63, 104.97, 99.64, 104.75, 104.66, 101.58, 104.99, 99.77)
+2026-05-23 01:00:15 Algo ghostrider (cpu*8^8) hashrate: 1604.25 H/s (205.54, 194.07, 194.02, 204.48, 205.51, 198.13, 198.03, 204.47)
+2026-05-23 01:01:18 Algo rx/0 (cpu*8) hashrate: 5928.99 H/s (5928.99)
+2026-05-23 01:02:21 Algo rx/2 (cpu*8) hashrate: 5077.44 H/s (5077.44)
+2026-05-23 01:03:24 Algo rx/arq (cpu*16) hashrate: 39243.27 H/s (39243.27)
+2026-05-23 01:04:28 Algo rx/graft (cpu*8) hashrate: 5735.79 H/s (5735.79)
+2026-05-23 01:05:31 Algo rx/sfx (cpu*8) hashrate: 5931.82 H/s (5931.82)
+2026-05-23 01:06:34 Algo rx/wow (cpu*16) hashrate: 7854.22 H/s (7854.22)
+2026-05-23 01:07:37 Algo rx/yada (cpu*8) hashrate: 5911.47 H/s (5911.47)
+2026-05-23 01:07:37 Connecting to primary gulf.moneroocean.stream:20001tls pool
+2026-05-23 01:07:38 Got new c29 algo job with 1 diff and 269917 height
+2026-05-23 01:07:51 Share accepted by the pool (1/0)
+...
 ```
 
 Next time you can reuse saved config.json file to avoid running benchmarks again before mining:
 
 ```
-$ ./mominer mine ./config.json
+$ ./mo-miner mine ./config.json
 2023-02-24 05:55:59 Loading config file ./config.json
 2023-02-24 05:55:59 Connecting to primary gulf.moneroocean.stream:20064tls pool
 2023-02-24 05:55:59 Got new cn/gpu algo job with 12004 diff
@@ -169,10 +169,10 @@ $ ./mominer mine ./config.json
 Without parameters miner will show help:
 
 ```
-$ ./mominer
+$ ./mo-miner
 
 # Node.js/SYCL based CPU/GPU miner v0.1
-$ ./mominer <directive> <parameter>+ [<option>+]
+$ ./mo-miner <directive> <parameter>+ [<option>+]
 
 Directives:
   mine  (<pool_address:port[tls]> <login> [<pass>]|<config.json>)
@@ -220,8 +220,8 @@ Options:
 You can run test and benchmark separately for algo you need like this:
 
 ```
-./r.sh node mominer.js test cn/gpu e55cb23e51649a59b127b96b515f2bf7bfea199741a0216cf838ded06eff82df --job '{"algo":"cn/gpu","dev":"gpu1*8"}'
-./r.sh node mominer.js bench cn/gpu --job '{"algo":"cn/gpu","dev":"gpu1z*960"}'
+./r.sh node mo-miner.js test cn/gpu e55cb23e51649a59b127b96b515f2bf7bfea199741a0216cf838ded06eff82df --job '{"algo":"cn/gpu","dev":"gpu1*8"}'
+./r.sh node mo-miner.js bench cn/gpu --job '{"algo":"cn/gpu","dev":"gpu1z*960"}'
 ```
 
 Project test suites are npm entry points:
@@ -233,7 +233,7 @@ npm run test:perf:ghostrider
 ```
 
 `npm test` runs the hash-vector suite under Docker and skips GPU cases when no GPU device is
-available. `npm run test:perf` benchmarks every supported algo with mominer's detected mining
+available. `npm run test:perf` benchmarks every supported algo with mo-miner's detected mining
 device config and prints each hashrate in the same test reporter output. Individual benchmark entry points are available as
 `npm run test:perf:<algo>`, for example `npm run test:perf:rx/0`,
 `npm run test:perf:cn-heavy/tube`, or `npm run test:perf:c29`.
@@ -258,4 +258,4 @@ sudo systemctl start xmr.service
 
 # License
 
-MoMiner is licensed under [GPL-3.0-or-later](LICENSE).
+mo-miner is licensed under [GPL-3.0-or-later](LICENSE).

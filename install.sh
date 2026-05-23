@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Install the latest upstream Intel GPU compute runtime used by mominer's
+# Install the latest upstream Intel GPU compute runtime used by mo-miner's
 # bundled SYCL runtime. This intentionally does not add an apt repository.
 
 github_api_root="https://api.github.com/repos"
@@ -43,7 +43,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends ca-certificates curl python3 ocl-icd-libopencl1
 
-work_dir="$(mktemp -d "${TMPDIR:-/tmp}/mominer-intel-runtime.XXXXXX")"
+work_dir="$(mktemp -d "${TMPDIR:-/tmp}/mo-miner-intel-runtime.XXXXXX")"
 chmod 755 "$work_dir"
 if [ "${MOMINER_INTEL_RUNTIME_KEEP_DOWNLOADS:-}" = "1" ]; then
   echo "Keeping downloads in $work_dir"

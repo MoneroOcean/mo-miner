@@ -6,8 +6,8 @@ const path = require("node:path");
 
 const repoRoot = path.join(__dirname, "..", "..");
 const releaseExecutableNames = process.platform === "win32"
-  ? ["mominer.exe", "mominer.cmd"]
-  : ["mominer"];
+  ? ["mo-miner.exe", "mo-miner.cmd"]
+  : ["mo-miner"];
 const releaseExecutable = releaseExecutableNames
   .map((name) => path.join(repoRoot, name))
   .find((filePath) => fs.existsSync(filePath)) || path.join(repoRoot, releaseExecutableNames[0]);
@@ -63,11 +63,11 @@ function emitGitHubError(title, message) {
 }
 
 function resolveMinerCommand(args) {
-  if (hasReleaseExecutable && args[0] === "mominer.js") {
+  if (hasReleaseExecutable && args[0] === "mo-miner.js") {
     if (/\.cmd$/i.test(releaseExecutable)) {
       const packageDir = path.dirname(releaseExecutable);
-      const nodeExe = path.join(packageDir, "mominer-node.exe");
-      const bundle = path.join(packageDir, "mominer.bundle.cjs");
+      const nodeExe = path.join(packageDir, "mo-miner-node.exe");
+      const bundle = path.join(packageDir, "mo-miner.bundle.cjs");
       if (fs.existsSync(nodeExe) && fs.existsSync(bundle)) {
         return [nodeExe, bundle, ...args.slice(1)];
       }
@@ -319,7 +319,7 @@ async function runMinerTest(definition) {
     ? definition.expected.join("|")
     : definition.expected;
   const args = [
-    "mominer.js",
+    "mo-miner.js",
     "test",
     job.algo,
     expected,
@@ -366,7 +366,7 @@ async function runMinerBench(definition) {
   if (resolved.skipped) return resolved;
 
   const job = resolved.job;
-  const args = ["mominer.js", "bench", job.algo, "--job", JSON.stringify(job)];
+  const args = ["mo-miner.js", "bench", job.algo, "--job", JSON.stringify(job)];
   const timeoutMs = definition.timeoutMs || 150 * 1000;
   const hashratePattern = new RegExp(`Algo ${escapeRegExp(job.algo)} \\([^)]*\\) hashrate: ([0-9.]+) H\\/s`);
 

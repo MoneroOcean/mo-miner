@@ -10,6 +10,7 @@ permissions:
   contents: write
 
 env:
+  MOMINER_PORTABLE_BUILD: "1"
   WINDOWS_ONEAPI_URL: https://raw.githubusercontent.com/oneapi-src/oneapi-ci/master/.github/workflows/build_all.yml
   WINDOWS_ONEAPI_PACKAGE: intel-oneapi-toolkit
   WINDOWS_DPCPP_COMPONENTS: intel.oneapi.win.cpp-dpcpp-common
@@ -50,7 +51,7 @@ jobs:
         uses: docker/setup-buildx-action@v4
 
       - name: Build native addon in release image
-        run: ./r.sh node -e "console.log('mominer build ready')"
+        run: ./r.sh node -e "console.log('mo-miner build ready')"
 
       - name: Package release archive
         run: .github/workflows/scripts/package-linux.sh
@@ -58,14 +59,14 @@ jobs:
       - name: Test release archive
         run: |
           set -euo pipefail
-          archive="$(find . -maxdepth 1 -name 'mominer-*-lin.tgz' -print -quit)"
+          archive="$(find . -maxdepth 1 -name 'mo-miner-*-lin.tgz' -print -quit)"
           .github/workflows/scripts/test-release-linux.sh "$archive"
 
       - name: Upload release artifact
         uses: actions/upload-artifact@v7
         with:
-          name: mominer-lin
-          path: mominer-*-lin.tgz
+          name: mo-miner-lin
+          path: mo-miner-*-lin.tgz
 
   build-windows-x64:
     runs-on: windows-2022
@@ -117,14 +118,14 @@ jobs:
       - name: Test release archive
         shell: powershell
         run: |
-          $archive = Get-ChildItem . -Filter "mominer-*-win.zip" | Select-Object -First 1
+          $archive = Get-ChildItem . -Filter "mo-miner-*-win.zip" | Select-Object -First 1
           powershell -NoProfile -ExecutionPolicy Bypass -File .github\workflows\scripts\test-release-windows.ps1 -Archive $archive.FullName
 
       - name: Upload release artifact
         uses: actions/upload-artifact@v7
         with:
-          name: mominer-win
-          path: mominer-*-win.zip
+          name: mo-miner-win
+          path: mo-miner-*-win.zip
 
   publish:
     if: startsWith(github.ref, 'refs/tags/')
@@ -152,7 +153,7 @@ jobs:
             gh release edit "${GITHUB_REF_NAME}" \
               --repo "${GITHUB_REPOSITORY}" \
               --title "${GITHUB_REF_NAME}" \
-              --notes "MoMiner ${GITHUB_REF_NAME}"
+              --notes "mo-miner ${GITHUB_REF_NAME}"
             gh release upload "${GITHUB_REF_NAME}" "${files[@]}" \
               --repo "${GITHUB_REPOSITORY}" \
               --clobber
@@ -160,5 +161,5 @@ jobs:
             gh release create "${GITHUB_REF_NAME}" "${files[@]}" \
               --repo "${GITHUB_REPOSITORY}" \
               --title "${GITHUB_REF_NAME}" \
-              --notes "MoMiner ${GITHUB_REF_NAME}"
+              --notes "mo-miner ${GITHUB_REF_NAME}"
           fi

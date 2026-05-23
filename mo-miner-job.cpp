@@ -1,7 +1,7 @@
 // Copyright GNU GPLv3 (c) 2023-2025 MoneroOcean <support@moneroocean.stream>
 
-#include "mominer-core.h"
-#include "sycl-lib.h"
+#include "mo-miner-core.h"
+#include "sycl/sycl-lib.h"
 
 #include "backend/cpu/Cpu.h"
 #include "crypto/cn/CnCtx.h"
@@ -164,7 +164,6 @@ void Core::set_job(
   const uint64_t    new_nonce          = v.contains("nonce") ? strtoull(v.at("nonce").c_str(), NULL, 16) : 0,
                     new_nicehash_mask  = v.contains("nicehash_mask") ? strtoull(v.at("nicehash_mask").c_str(), NULL, 16) : 0;
 
-  if (is_no_same_input && new_input_hex == m_input_hex) throw std::string("Ignore duplicate job");
   auto batch_parts = tokenize(new_dev_str, '*');
   if (batch_parts.size() == 0 || batch_parts.size() > 2)
     throw std::string("Invalid dev specification");
@@ -234,9 +233,24 @@ void Core::set_job(
   if (!hex2bin(new_input_hex.c_str(), new_input_len, new_input))
     throw std::string("Bad input hex");
 
+  const unsigned new_mem_size = algo2mem.at(new_algo_str);
+  const bool same_compute_input =
+    is_no_same_input && new_input_hex == m_input_hex &&
+    m_batch == new_batch && m_mem_size == new_mem_size &&
+    m_seed_hex == new_seed_hex && m_algo_str == new_algo_str &&
+    m_dev == new_dev && m_dev_str == new_dev_str2 &&
+    m_height == new_height && m_nonce_bytes == new_nonce_bytes &&
+    m_nonce_offset == new_nonce_offset && m_c29_proof_size == new_c29_proof_size &&
+    m_input_len == new_input_len && m_nicehash_mask == new_nicehash_mask;
+  if (same_compute_input) {
+    // Pools can retarget c29 by sending the same work with a new target/job id.
+    // Keep the existing nonce/search state and only refresh submit metadata.
+    fn_extra_setup();
+    return;
+  }
+
   // new hashing setup (all errors were checked above)
   ++ m_job_ref; // used to stop old m_thread_pool jobs
-  const unsigned new_mem_size = algo2mem.at(new_algo_str);
   if (m_batch != new_batch || m_mem_size != new_mem_size ||
       m_seed_hex != new_seed_hex || m_algo_str != new_algo_str) {
     // free previous memory

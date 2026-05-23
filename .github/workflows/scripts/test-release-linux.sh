@@ -48,8 +48,8 @@ if [ -d "$package_dir/tests" ]; then
   echo "Extracted release package unexpectedly contains tests/." >&2
   exit 1
 fi
-if [ ! -f "$libs_dir/mominer.node" ]; then
-  echo "Extracted release package is missing libs/mominer.node." >&2
+if [ ! -f "$libs_dir/mo-miner.node" ]; then
+  echo "Extracted release package is missing libs/mo-miner.node." >&2
   exit 1
 fi
 
@@ -63,7 +63,7 @@ check_ldd() {
     fi
   done < <(
     find "$package_dir" "$libs_dir" -maxdepth 1 -type f \
-      \( -name "mominer-bin" -o -name "mominer.node" -o -name "*.so" -o -name "*.so.*" \) \
+      \( -name "mo-miner-bin" -o -name "mo-miner.node" -o -name "*.so" -o -name "*.so.*" \) \
       -print0
   )
   return "$failed"
@@ -80,12 +80,12 @@ if [ -f "$libs_dir/libintelocl.so" ]; then
 fi
 
 set +e
-smoke_output="$(cd "$package_dir" && env -u LD_LIBRARY_PATH ./mominer algo_params 2>&1)"
+smoke_output="$(cd "$package_dir" && env -u LD_LIBRARY_PATH ./mo-miner algo_params 2>&1)"
 smoke_exit=$?
 set -e
 if [ "$smoke_exit" -ne 0 ]; then
   set +e
-  debug_output="$(cd "$package_dir" && env -u LD_LIBRARY_PATH MOMINER_DEBUG_STARTUP=1 ./mominer algo_params 2>&1)"
+  debug_output="$(cd "$package_dir" && env -u LD_LIBRARY_PATH MOMINER_DEBUG_STARTUP=1 ./mo-miner algo_params 2>&1)"
   debug_exit=$?
   set -e
   smoke_message=$(

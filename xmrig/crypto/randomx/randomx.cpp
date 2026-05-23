@@ -53,7 +53,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 // MOMINER PATCH END
 
 #include "crypto/rx/Profiler.h"
-// MOMINER PATCH BEGIN: mominer avoids the full XMRig stratum Job dependency; commitment hashing sizes its buffer from inputSize below instead of Job::kMaxBlobSize.
+// MOMINER PATCH BEGIN: mo-miner avoids the full XMRig stratum Job dependency; commitment hashing sizes its buffer from inputSize below instead of Job::kMaxBlobSize.
 // #include "base/net/stratum/Job.h"
 // MOMINER PATCH END
 
@@ -636,7 +636,7 @@ extern "C" {
 	}
 
 	void randomx_calculate_commitment(const void* input, size_t inputSize, const void* hash_in, void* com_out) {
-		// MOMINER PATCH BEGIN: Avoid the full XMRig Job dependency and prevent fixed-size buffer assumptions in mominer's reduced build.
+		// MOMINER PATCH BEGIN: Avoid the full XMRig Job dependency and prevent fixed-size buffer assumptions in mo-miner's reduced build.
 		std::vector<uint8_t> buf(inputSize + RANDOMX_HASH_SIZE);
 		memcpy(buf.data(), input, inputSize);
 		memcpy(buf.data() + inputSize, hash_in, RANDOMX_HASH_SIZE);

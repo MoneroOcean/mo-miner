@@ -164,7 +164,7 @@ private:
 #   define LOG_DEBUG_WARN(x, ...)
 #endif
 
-// MOMINER PATCH BEGIN: mominer links XMRig hash code without the XMRig logging backend, so compile used log calls away to avoid unresolved Log::print symbols.
+// MOMINER PATCH BEGIN: mo-miner links XMRig hash code without the XMRig logging backend, so compile used log calls away to avoid unresolved Log::print symbols.
 #undef LOG_INFO
 #undef LOG_WARN
 #undef LOG_VERBOSE

@@ -22,7 +22,7 @@
 #include "base/tools/cryptonote/umul128.h"
 #include "crypto/common/VirtualMemory.h"
 
-// MOMINER PATCH BEGIN: mominer builds this translation unit directly, so include assert() here instead of relying on transitive headers.
+// MOMINER PATCH BEGIN: mo-miner builds this translation unit directly, so include assert() here instead of relying on transitive headers.
 #include <cassert>
 // MOMINER PATCH END
 

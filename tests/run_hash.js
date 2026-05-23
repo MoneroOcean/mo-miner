@@ -36,7 +36,7 @@ if (process.platform === "win32" || isInsideRsh() || hasReleaseExecutable) {
 } else if (fs.existsSync(path.join(repoRoot, "r.sh"))) {
   runner = { command: "./r.sh", args: ["node", ...testArgs] };
 } else {
-  runner = { command: "./docker-mominer.sh", args: ["node", ...testArgs] };
+  runner = { command: "./docker-mo-miner.sh", args: ["node", ...testArgs] };
 }
 
 spawnAndExit(runner.command, runner.args);

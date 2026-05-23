@@ -1,11 +1,11 @@
 {
   "targets": [
     {
-      "target_name": "mominer",
+      "target_name": "mo-miner",
       "sources": [
-        "mominer-core.cpp",
-        "mominer-xmrig-compat.cpp",
-        "mominer-job.cpp",
+        "mo-miner-core.cpp",
+        "mo-miner-xmrig-compat.cpp",
+        "mo-miner-job.cpp",
 
         "xmrig/crypto/common/VirtualMemory.cpp",
         "xmrig/crypto/common/HugePagesInfo.cpp",
@@ -162,7 +162,7 @@
             "   ))"
           ],
           "cflags+": [
-            "<!@(./cpu-feature.sh arm64 && echo \"-march=armv8-a+crypto -flax-vector-conversions\" || (./cpu-feature.sh arm && echo \"-mfpu=neon -flax-vector-conversions\" || echo \"-march=native\"))",
+            "<!@(./cpu-feature.sh arm64 && echo \"-march=armv8-a+crypto -flax-vector-conversions\" || (./cpu-feature.sh arm && echo \"-mfpu=neon -flax-vector-conversions\" || ([ \"${MOMINER_PORTABLE_BUILD:-}\" = \"1\" ] && echo \"-march=x86-64 -mtune=generic -maes\" || echo \"-march=native\")))",
             "<!@(./cpu-feature.sh avx512f && echo \"-DHAVE_AVX512F\" || echo)",
             "<!@(./cpu-feature.sh avx2    && echo \"-DHAVE_AVX2 -DXMRIG_FEATURE_AVX2\" || echo)",
             "<!@(./cpu-feature.sh xop     && echo \"-DHAVE_XOP\" || echo)",
@@ -182,7 +182,7 @@
             "-Wl,--disable-new-dtags",
             "-Wl,-rpath,'$$ORIGIN'",
             "-Wl,-rpath,'$$ORIGIN/lib'",
-            "-Wl,-rpath,'$$ORIGIN/mominer'"
+            "-Wl,-rpath,'$$ORIGIN/mo-miner'"
           ]
         } ],
         [ "OS=='win'", {
@@ -209,9 +209,9 @@
       "type": "static_library",
       "win_delay_load_hook": "false",
       "sources": [
-        "sycl-lib.cpp",
-        "c29.cpp",
-        "cn-gpu.cpp"
+        "sycl/sycl-lib.cpp",
+        "sycl/c29.cpp",
+        "sycl/cn-gpu.cpp"
       ],
       "include_dirs": [
         "xmrig"
@@ -260,7 +260,7 @@
             }
           },
           "sources": [
-            "sycl-blake2b.cpp",
+            "sycl/sycl-blake2b.cpp",
             "xmrig/crypto/randomx/blake2/blake2b.c"
           ],
           "defines": [
@@ -280,7 +280,7 @@
           }
         }, {
           "cflags+": [
-            "<!@(./cpu-feature.sh arm64 && echo \"-march=armv8-a+crypto -flax-vector-conversions\" || (./cpu-feature.sh arm && echo \"-mfpu=neon -flax-vector-conversions\" || echo \"-march=native\"))",
+            "<!@(./cpu-feature.sh arm64 && echo \"-march=armv8-a+crypto -flax-vector-conversions\" || (./cpu-feature.sh arm && echo \"-mfpu=neon -flax-vector-conversions\" || ([ \"${MOMINER_PORTABLE_BUILD:-}\" = \"1\" ] && echo \"-march=x86-64 -mtune=generic -maes\" || echo \"-march=native\")))",
             "-std=c++20 -O3 -fsycl -DNDEBUG"
           ]
         } ]
