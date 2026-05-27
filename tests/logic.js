@@ -414,6 +414,47 @@ test("malformed pool job data closes the pool instead of throwing", async () => 
   }
 });
 
+test("oversized pool line buffer closes the pool", async () => {
+  const originalConnect = net.connect;
+  const originalSwitchPool = pool.switch_pool;
+  const previousOpt = global.opt;
+  const socket = new events.EventEmitter();
+  let switched = false;
+  socket.write = function() {};
+  socket.destroy = function() { this.destroyed = true; };
+  net.connect = function() { return socket; };
+  pool.switch_pool = function() { switched = true; };
+  global.opt = {
+    log_level: 0,
+    pools: [{
+      url: "pool.example",
+      port: 1,
+      is_tls: false,
+      is_keepalive: false,
+      socket: null,
+      keepalive: null,
+      last_job: null,
+      last_connect_time: 0,
+    }],
+    pool_ids: { active: 0, primary: 0, donate: null },
+    pool_time: { first_job_wait: 0.001, connect_throttle: 60, close_wait: 60, keepalive: 60 },
+    algo_params: {},
+  };
+
+  try {
+    pool.connect_pool_throttle(0, function() {});
+    socket.emit("data", Buffer.alloc(1024 * 1024 + 1, "a"));
+    assert.equal(socket.destroyed, true);
+    assert.equal(global.opt.pools[0].socket, null);
+    assert.equal(switched, true);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  } finally {
+    net.connect = originalConnect;
+    pool.switch_pool = originalSwitchPool;
+    global.opt = previousOpt;
+  }
+});
+
 test("non-C29 pool jobs preserve provided blob_hex and nonceoffset", async () => {
   const miner = await loadMinerWithStubs();
   const setJob = miner.getSetJob();

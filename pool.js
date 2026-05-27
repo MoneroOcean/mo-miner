@@ -8,6 +8,8 @@ const tls  = require("tls");
 const h    = require("./helper.js");
 const o    = require("./opts.js");
 
+const max_pool_data_buffer = 1024 * 1024;
+
 function pool_str(pool_id) {
   const pool = global.opt.pools[pool_id];
   return pool.url + ":" + pool.port + (pool.is_tls ? "tls" : "");
@@ -241,6 +243,8 @@ function connect_pool(pool_id, set_job) {
   socket.on("data", function (data) {
     if (global.opt.pools[pool_id].socket !== socket) return;
     pool_data_buff += data;
+    if (pool_data_buff.length > max_pool_data_buffer)
+      return pool_err(pool_log_str(pool_id, "Pool message buffer limit exceeded"));
     if (pool_data_buff.indexOf('\n') === -1) return;
     let messages = pool_data_buff.split('\n');
     let incomplete_line = pool_data_buff.slice(-1) === '\n' ? '' : messages.pop();
