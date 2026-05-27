@@ -201,7 +201,7 @@ function connect_pool(pool_id, set_job) {
   pool_log(pool_id, "Connecting to " + pool_type_str + " " + pool_str(pool_id) + " pool");
   global.opt.pools[pool_id].last_connect_time = Date.now();
   const socket = global.opt.pools[pool_id].socket = pool.is_tls ?
-    tls.connect(pool.port, pool.url, { rejectUnauthorized: false }) :
+    tls.connect(pool.port, pool.url, { rejectUnauthorized: pool.tls_verify === true }) :
     net.connect(pool.port, pool.url);
   global.opt.pools[pool_id].last_job = null;
 

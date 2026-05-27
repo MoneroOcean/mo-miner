@@ -7,6 +7,7 @@ const events = require("node:events");
 const fs = require("node:fs");
 const net = require("node:net");
 const path = require("node:path");
+const tls = require("node:tls");
 const vm = require("node:vm");
 
 const opts = require("../opts.js");
@@ -210,6 +211,54 @@ test("stale pool timeout does not destroy a replacement socket", async () => {
     assert.equal(replacementSocket.destroyed, undefined);
   } finally {
     net.connect = originalConnect;
+    global.opt = previousOpt;
+  }
+});
+
+test("TLS pools verify certificates only when explicitly enabled", async () => {
+  const originalConnect = tls.connect;
+  const previousOpt = global.opt;
+  const optionsSeen = [];
+  assert.equal(opts.pool_create("pool.example", 443, true, "user").tls_verify, false);
+  tls.connect = function(_port, _host, options) {
+    optionsSeen.push(options);
+    const socket = new events.EventEmitter();
+    socket.write = function() {};
+    socket.destroy = function() {};
+    return socket;
+  };
+  global.opt = {
+    log_level: 0,
+    pools: [{
+      url: "pool.example",
+      port: 443,
+      is_tls: true,
+      is_keepalive: false,
+      socket: null,
+      keepalive: null,
+      last_job: null,
+      last_connect_time: 0,
+    }],
+    pool_ids: { active: 0, primary: 0, donate: null },
+    pool_time: { first_job_wait: 0.001, connect_throttle: 0, close_wait: 60, keepalive: 60 },
+    algo_params: {},
+  };
+
+  try {
+    pool.connect_pool_throttle(0, function() {});
+    global.opt.pools[0].socket = null;
+    global.opt.pools[0].tls_verify = true;
+    pool.connect_pool_throttle(0, function() {});
+    global.opt.pools[0].socket = null;
+    global.opt.pools[0].tls_verify = false;
+    pool.connect_pool_throttle(0, function() {});
+    global.opt.pools[0].socket = null;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(optionsSeen[0].rejectUnauthorized, false);
+    assert.equal(optionsSeen[1].rejectUnauthorized, true);
+    assert.equal(optionsSeen[2].rejectUnauthorized, false);
+  } finally {
+    tls.connect = originalConnect;
     global.opt = previousOpt;
   }
 });
