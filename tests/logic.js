@@ -86,6 +86,25 @@ test("config file detection requires a .json extension", () => {
   assert.equal(opts.is_config_file("config-json"), false);
 });
 
+test("default options do not share array or map references", () => {
+  const optHelp = {
+    pool: { _array: [{ url: "a", nested: { enabled: true } }] },
+    algo_param: { _map: { rx: { dev: "cpu" } } },
+  };
+  const one = {};
+  const two = {};
+
+  opts.set_default_opts(one, optHelp);
+  opts.set_default_opts(two, optHelp);
+  one.pools[0].url = "changed";
+  one.pools[0].nested.enabled = false;
+  one.algo_params.rx.dev = "gpu0";
+
+  assert.equal(two.pools[0].url, "a");
+  assert.equal(two.pools[0].nested.enabled, true);
+  assert.equal(two.algo_params.rx.dev, "cpu");
+});
+
 test("unparsed CLI options fail before runtime startup", () => {
   const result = spawnSync(process.execPath, [
     "mo-miner.js",

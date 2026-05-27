@@ -97,21 +97,29 @@ module.exports.opt_help = {
 // object but not array
 const isObject = function(a) { return (!!a) && (a.constructor === Object); }
 
+function cloneDefault(val) {
+  if (Array.isArray(val)) return val.map(cloneDefault);
+  if (!isObject(val)) return val;
+  let cloned = {};
+  for (const key in val) cloned[key] = cloneDefault(val[key]);
+  return cloned;
+}
+
 // set opt object based on default values from opt_help object
 module.exports.set_default_opts = function(opt, opt_help) {
   for (const key in opt_help) {
     if (key.startsWith("_")) continue;
     if (isObject(opt_help[key])) {
       if ("_array" in opt_help[key]) {
-        opt[key + "s"] = opt_help[key]._array;
+        opt[key + "s"] = cloneDefault(opt_help[key]._array);
       } else if ("_map" in opt_help[key]) {
-        opt[key + "s"] = opt_help[key]._map;
+        opt[key + "s"] = cloneDefault(opt_help[key]._map);
       } else {
         opt[key] = {};
         this.set_default_opts(opt[key], opt_help[key]);
       }
     } else if (Array.isArray(opt_help[key])) {
-      opt[key] = opt_help[key][0];
+      opt[key] = cloneDefault(opt_help[key][0]);
     } else {
       opt[key] = opt_help[key];
     }
