@@ -230,6 +230,8 @@ module.exports.parse_opt = function(opt, opt_help, arg, val, base_key_path_str) 
         }
         if (!isObject(val2))
           return this.print_help("Option " + arg + " JSON param must be an object: " + val);
+        if ("dev" in val2 && !h.is_valid_dev(val2.dev))
+          return this.print_help("Option " + arg + " has invalid dev value: " + val2.dev);
         if ("_template" in opt_help[key]) {
           const template = opt_help[key]._template;
           // val3 is final value including defaults from opt_help

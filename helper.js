@@ -220,6 +220,12 @@ function parseThreadDev(dev_part) {
   return { dev: m ? m[1] : dev_part, threads: m && m[2] ? parseInt(m[2]) : 1 };
 }
 
+module.exports.is_valid_dev = function(dev) {
+  return typeof dev === "string" && dev.split(",").every(function(dev_part) {
+    return /^(?:cpu\d*|gpu\d+)(?:\*[1-9]\d*)?(?:\^[1-9]\d*)?$/.test(dev_part);
+  });
+};
+
 module.exports.get_thread_dev = function(thread_id, devs) {
   let thread_count = 0;
   for (const dev_part of devs.split(",")) {

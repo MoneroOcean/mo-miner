@@ -159,6 +159,24 @@ test("numeric CLI options reject non-numeric values", () => {
   assert.doesNotMatch(result.stderr, /Cannot find module|Compute core/);
 });
 
+test("JSON dev options reject invalid device specs", () => {
+  const result = spawnSync(process.execPath, [
+    "mo-miner.js",
+    "bench",
+    "rx/0",
+    "--job",
+    JSON.stringify({ dev: "cpu^0" }),
+  ], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    timeout: 5000,
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /invalid dev value: cpu\^0/);
+  assert.doesNotMatch(result.stderr, /Cannot find module|Compute core/);
+});
+
 test("repeat schedules delayed callbacks", async () => {
   let calls = 0;
 
