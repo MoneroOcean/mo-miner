@@ -261,6 +261,8 @@ module.exports.parse_opt = function(opt, opt_help, arg, val, base_key_path_str) 
               val3 = Number(val3);
               if (!Number.isFinite(val3))
                 return this.print_help("Option " + arg + "." + key2 + " param must be a number: " + val2[key2]);
+              if (val3 < 0)
+                return this.print_help("Option " + arg + "." + key2 + " param must be non-negative: " + val2[key2]);
             }
             opt[key][key2] = val3;
           }
@@ -274,6 +276,8 @@ module.exports.parse_opt = function(opt, opt_help, arg, val, base_key_path_str) 
         const val2 = Number(val);
         if (!Number.isFinite(val2))
           return this.print_help("Option " + arg + " param must be a number: " + val);
+        if (val2 < 0)
+          return this.print_help("Option " + arg + " param must be non-negative: " + val);
         opt[key] = val2;
       } else opt[key] = val;
       return true;

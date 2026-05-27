@@ -177,6 +177,24 @@ test("numeric JSON option fields reject non-numeric values", () => {
   assert.doesNotMatch(result.stderr, /Cannot find module|Compute core/);
 });
 
+test("numeric option values reject negatives", () => {
+  const result = spawnSync(process.execPath, [
+    "mo-miner.js",
+    "bench",
+    "rx/0",
+    "--pool_time",
+    JSON.stringify({ stats: -1 }),
+  ], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    timeout: 5000,
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /pool_time\.stats param must be non-negative/);
+  assert.doesNotMatch(result.stderr, /Cannot find module|Compute core/);
+});
+
 test("JSON dev options reject invalid device specs", () => {
   const result = spawnSync(process.execPath, [
     "mo-miner.js",
