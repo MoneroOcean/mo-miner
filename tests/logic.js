@@ -230,6 +230,24 @@ test("mine pool URI rejects out-of-range ports", () => {
   assert.doesNotMatch(result.stderr, /Cannot find module|Compute core/);
 });
 
+test("JSON pool options reject invalid ports", () => {
+  const result = spawnSync(process.execPath, [
+    "mo-miner.js",
+    "bench",
+    "rx/0",
+    "--add.pool",
+    JSON.stringify({ url: "pool.example", port: 70000, login: "user" }),
+  ], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    timeout: 5000,
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /invalid pool port/);
+  assert.doesNotMatch(result.stderr, /Cannot find module|Compute core/);
+});
+
 test("repeat schedules delayed callbacks", async () => {
   let calls = 0;
 

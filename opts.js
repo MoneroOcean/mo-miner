@@ -107,6 +107,17 @@ function cloneDefault(val) {
   return cloned;
 }
 
+function validatePool(pool) {
+  if (typeof pool.url !== "string" || pool.url === "") return "url must be a non-empty string";
+  const port = Number(pool.port);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return "port must be an integer from 1 to 65535";
+  pool.port = port;
+  for (const key of ["is_tls", "tls_verify", "is_nicehash", "is_keepalive"]) {
+    if (typeof pool[key] !== "boolean") return key + " must be boolean";
+  }
+  return null;
+}
+
 // set opt object based on default values from opt_help object
 module.exports.set_default_opts = function(opt, opt_help) {
   for (const key in opt_help) {
@@ -244,6 +255,10 @@ module.exports.parse_opt = function(opt, opt_help, arg, val, base_key_path_str) 
             if (typeof def_val === 'undefined' && !(key2 in val2))
               return this.print_help("Need to specify key value \"" + key2 + "\" in " + key + " JSON");
             val3[key2] = key2 in val2 ? val2[key2] : def_val;
+          }
+          if (key_path_str === "pool") {
+            const err = validatePool(val3);
+            if (err) return this.print_help("Option " + arg + " has invalid pool " + err);
           }
           if ("_array" in opt_help[key] && arg === "--add." + key_path_str) {
             opt[key + "s"].push(val3);
