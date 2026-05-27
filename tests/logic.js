@@ -3,10 +3,13 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { spawnSync } = require("node:child_process");
+const events = require("node:events");
+const net = require("node:net");
 const path = require("node:path");
 
 const opts = require("../opts.js");
 const helper = require("../helper.js");
+const pool = require("../pool.js");
 const repoRoot = path.join(__dirname, "..");
 
 test("saved config omits job without mutating live options", () => {
@@ -61,4 +64,41 @@ test("repeat schedules delayed callbacks", async () => {
   });
 
   assert.equal(calls, 2);
+});
+
+test("stale pool timeout does not destroy a replacement socket", async () => {
+  const originalConnect = net.connect;
+  const previousOpt = global.opt;
+  const staleSocket = new events.EventEmitter();
+  const replacementSocket = new events.EventEmitter();
+  staleSocket.write = replacementSocket.write = function() {};
+  staleSocket.destroy = function() { this.destroyed = true; };
+  replacementSocket.destroy = function() { this.destroyed = true; };
+  net.connect = function() { return staleSocket; };
+  global.opt = {
+    log_level: 0,
+    pools: [{
+      url: "pool.example",
+      port: 1,
+      is_tls: false,
+      is_keepalive: false,
+      socket: null,
+      keepalive: null,
+      last_job: null,
+      last_connect_time: 0,
+    }],
+    pool_ids: { active: 0, primary: 0, donate: null },
+    pool_time: { first_job_wait: 0.001, connect_throttle: 60, close_wait: 60, keepalive: 60 },
+    algo_params: {},
+  };
+
+  try {
+    pool.connect_pool_throttle(0, function() {});
+    global.opt.pools[0].socket = replacementSocket;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(replacementSocket.destroyed, undefined);
+  } finally {
+    net.connect = originalConnect;
+    global.opt = previousOpt;
+  }
 });

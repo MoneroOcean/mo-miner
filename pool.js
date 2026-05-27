@@ -21,6 +21,17 @@ function pool_log1(pool_id, str)    { h.log1(pool_log_str(pool_id, str)); }
 function pool_log2(pool_id, str)    { h.log2(pool_log_str(pool_id, str)); }
 function pool_log_err(pool_id, str) { h.log_err(pool_log_str(pool_id, str)); }
 
+function clear_pool_connection(pool_id, socket) {
+  const pool = global.opt.pools[pool_id];
+  if (socket && pool.socket !== socket) return false;
+  if (pool.keepalive !== null) clearTimeout(pool.keepalive);
+  pool.keepalive = null;
+  if (pool.socket) pool.socket.destroy();
+  pool.socket   = null;
+  pool.last_job = null;
+  return true;
+}
+
 module.exports.pool_write = function(pool_id, json) {
   const message = JSON.stringify(json);
   if (global.opt.pools[pool_id].socket) {
@@ -45,14 +56,14 @@ module.exports.pool_write = function(pool_id, json) {
 // soft kill pool connection
 function pool_close_wait(pool_id) {
   if (!global.opt.pools[pool_id].socket) return;
+  const socket = global.opt.pools[pool_id].socket;
   pool_log1(pool_id, "Soft closing the pool connection");
   setTimeout(function() {
     // do not do soft close if this pool became active again
-    if (pool_id === global.opt.pool_ids.active || !global.opt.pools[pool_id].socket) return;
+    if (pool_id === global.opt.pool_ids.active ||
+        global.opt.pools[pool_id].socket !== socket) return;
     pool_log1(pool_id, "Soft closed the pool connection");
-    global.opt.pools[pool_id].socket.destroy();
-    global.opt.pools[pool_id].socket   = null;
-    global.opt.pools[pool_id].last_job = null
+    clear_pool_connection(pool_id, socket);
   }, global.opt.pool_time.close_wait * 1000);
 }
 
@@ -189,27 +200,26 @@ function connect_pool(pool_id, set_job) {
   }
   pool_log(pool_id, "Connecting to " + pool_type_str + " " + pool_str(pool_id) + " pool");
   global.opt.pools[pool_id].last_connect_time = Date.now();
-  global.opt.pools[pool_id].socket = pool.is_tls ?
+  const socket = global.opt.pools[pool_id].socket = pool.is_tls ?
     tls.connect(pool.port, pool.url, { rejectUnauthorized: false }) :
     net.connect(pool.port, pool.url);
   global.opt.pools[pool_id].last_job = null;
 
   const pool_err = function(message) {
-    if (!global.opt.pools[pool_id].socket) return;
+    if (!clear_pool_connection(pool_id, socket)) return;
     h.log_err(message);
-    global.opt.pools[pool_id].socket.destroy();
-    global.opt.pools[pool_id].socket   = null;
-    global.opt.pools[pool_id].last_job = null;
     return module.exports.switch_pool(pool_id, set_job);
   };
 
   setTimeout(function() {
+    if (global.opt.pools[pool_id].socket !== socket) return;
     if (!global.opt.pools[pool_id].last_job) return pool_err(pool_log_str(pool_id,
       "No initial job from from " + pool_str(pool_id) + " pool"
     ));
   }, global.opt.pool_time.first_job_wait * 1000);
 
-  global.opt.pools[pool_id].socket.on("connect", function () {
+  socket.on("connect", function () {
+    if (global.opt.pools[pool_id].socket !== socket) return;
     pool_log1(pool_id, "Connected to the pool");
     let algos = [];
     let algo_perfs = {};
@@ -228,7 +238,8 @@ function connect_pool(pool_id, set_job) {
 
   let pool_data_buff = "";
 
-  global.opt.pools[pool_id].socket.on("data", function (data) {
+  socket.on("data", function (data) {
+    if (global.opt.pools[pool_id].socket !== socket) return;
     pool_data_buff += data;
     if (pool_data_buff.indexOf('\n') === -1) return;
     let messages = pool_data_buff.split('\n');
@@ -249,11 +260,11 @@ function connect_pool(pool_id, set_job) {
     pool_data_buff = incomplete_line;
   });
 
-  global.opt.pools[pool_id].socket.on("end", function() {
+  socket.on("end", function() {
     return pool_err(pool_log_str(pool_id, "Socket closed from the pool"));
   });
 
-  global.opt.pools[pool_id].socket.on("error", function() {
+  socket.on("error", function() {
     return pool_err(pool_log_str(pool_id, "Socket error from the pool"));
   });
 }
