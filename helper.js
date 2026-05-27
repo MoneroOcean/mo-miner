@@ -440,9 +440,10 @@ module.exports.target2diff = function(target) {
 };
 
 module.exports.diff2target = function(diff) {
-  if (BigInt(diff) === 0n) return "0000000000000000";
+  const diff2 = BigInt(diff);
+  if (diff2 <= 0n) return "0000000000000000";
   // Reverse of: div = BigInt(0xFFFFFFFFFFFFFFFF) / diff
-  let div = BigInt("0xFFFFFFFFFFFFFFFF") / BigInt(diff);
+  let div = BigInt("0xFFFFFFFFFFFFFFFF") / diff2;
   // Convert to hex without `0x`
   let hexLE = div.toString(16).padStart(16, "0");
   // Reverse LE -> BE

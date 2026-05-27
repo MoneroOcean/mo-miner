@@ -194,6 +194,7 @@ test("repeat schedules delayed callbacks", async () => {
 test("diff2target handles numeric zero difficulty", () => {
   assert.equal(helper.diff2target(0), "0000000000000000");
   assert.equal(helper.diff2target(0n), "0000000000000000");
+  assert.equal(helper.diff2target(-1), "0000000000000000");
 });
 
 test("stale pool timeout does not destroy a replacement socket", async () => {
