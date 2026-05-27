@@ -20,3 +20,10 @@ test("saved config omits job without mutating live options", () => {
   });
   assert.deepEqual(opt.job, { algo: "rx/0", dev: "cpu" });
 });
+
+test("config file detection requires a .json extension", () => {
+  assert.equal(opts.is_config_file("config.json"), true);
+  assert.equal(opts.is_config_file("CONFIG.JSON"), true);
+  assert.equal(opts.is_config_file("pooljson"), false);
+  assert.equal(opts.is_config_file("config-json"), false);
+});

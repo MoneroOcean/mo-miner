@@ -124,6 +124,10 @@ module.exports.saved_config = function(opt) {
   return saved;
 };
 
+module.exports.is_config_file = function(file) {
+  return path.extname(file).toLowerCase() === ".json";
+};
+
 // prints options help from opt_help
 module.exports.print_opt_help = function(opt_help, depth_str, base_key_path_str) {
   const pad = 36;

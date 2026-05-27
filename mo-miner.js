@@ -98,7 +98,7 @@ function parse_args() {
    case "mine":
       if (args.length < 1) return o.print_help("Directive \"mine\" needs 1+ parameters");
       const param1 = args.shift();
-      if (param1.match(/.\json$/)) { // load config file
+      if (o.is_config_file(param1)) { // load config file
         const config_fn = path.resolve(param1);
         h.log("Loading config file " + config_fn);
         const opt2 = require(config_fn);
