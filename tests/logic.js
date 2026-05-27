@@ -342,3 +342,22 @@ test("non-C29 pool jobs preserve provided blob_hex and nonceoffset", async () =>
   assert.equal(jobMessage.job.blob_hex, "abcd");
   assert.equal(jobMessage.job.nonceoffset, 7);
 });
+
+test("nicehash xn prefixes longer than noncebytes are truncated", async () => {
+  const miner = await loadMinerWithStubs();
+  const setJob = miner.getSetJob();
+
+  assert.doesNotThrow(() => setJob({
+    algo: "cn/0",
+    blob_hex: "abcd",
+    noncebytes: 4,
+    xn: "001122334455",
+    difficulty: 1,
+    id: "worker",
+    job_id: "job",
+  }));
+
+  const jobMessage = miner.sentMessages.find((msg) => msg.type === "job");
+  assert.equal(jobMessage.job.nonce, "00112233");
+  assert.equal(jobMessage.job.nicehash_mask, "ffffffff");
+});

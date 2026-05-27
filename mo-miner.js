@@ -283,9 +283,9 @@ function set_job(prev_job) {
   }
 
   if (prev_job.xn) { // we need to create nonce with xn prefix and update nicehash_mask to cover it
-    const nicehash_bytes = Math.ceil(prev_job.xn.length / 2);
-    job.nicehash_mask = Buffer.alloc(job.noncebytes, 0).fill(0xFF, 0, Math.min(nicehash_bytes, job.noncebytes)).toString("hex");
-    job.nonce = Buffer.concat([Buffer.from(prev_job.xn, "hex"), Buffer.alloc(job.noncebytes - nicehash_bytes, 0x00)]).toString("hex");
+    const nicehash_prefix = Buffer.from(prev_job.xn, "hex").subarray(0, job.noncebytes);
+    job.nicehash_mask = Buffer.alloc(job.noncebytes, 0).fill(0xFF, 0, nicehash_prefix.length).toString("hex");
+    job.nonce = Buffer.concat([nicehash_prefix, Buffer.alloc(job.noncebytes - nicehash_prefix.length, 0x00)]).toString("hex");
   } else {
     const last_job_can_be_used = last_job && last_job.algo === job.algo;
     // use existing nicehash_mask or make a new one with FF00..00 that job.noncebytes long
