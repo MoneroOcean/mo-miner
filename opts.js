@@ -118,6 +118,12 @@ module.exports.set_default_opts = function(opt, opt_help) {
   }
 };
 
+module.exports.saved_config = function(opt) {
+  const saved = { ...opt };
+  delete saved.job;
+  return saved;
+};
+
 // prints options help from opt_help
 module.exports.print_opt_help = function(opt_help, depth_str, base_key_path_str) {
   const pad = 36;

@@ -341,10 +341,7 @@ function start_mining() {
     const save_config = global.opt.save_config;
     delete global.opt.save_config; // by default do not save config again when it will be loaded
     h.log("Saving config file to " + save_config);
-    // remove job from saved config
-    let opt = global.opt;
-    delete opt.job;
-    fs.writeFile(save_config, JSON.stringify(opt, null, 2), function(err) {
+    fs.writeFile(save_config, JSON.stringify(o.saved_config(global.opt), null, 2), function(err) {
       if (err) h.log_err("Error saving " + save_config + " file");
     });
   }

@@ -24,6 +24,7 @@
     "win32"
   ],
   "scripts": {
+    "test:logic": "node --test tests/logic.js",
     "test": "node tests/run_hash.js",
     "test:cpu": "node tests/run_hash.js cpu",
     "test:gpu": "node tests/run_hash.js gpu",
