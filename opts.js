@@ -259,6 +259,14 @@ module.exports.parse_opt = function(opt, opt_help, arg, val, base_key_path_str) 
           if (key_path_str === "pool") {
             const err = validatePool(val3);
             if (err) return this.print_help("Option " + arg + " has invalid pool " + err);
+          } else if (key_path_str === "algo_param") {
+            if (!h.is_valid_dev(val3.dev))
+              return this.print_help("Option " + arg + " has invalid dev value: " + val3.dev);
+            if (val3.perf !== null) {
+              val3.perf = Number(val3.perf);
+              if (!Number.isFinite(val3.perf) || val3.perf < 0)
+                return this.print_help("Option " + arg + " has invalid perf value: " + val2.perf);
+            }
           }
           if ("_array" in opt_help[key] && arg === "--add." + key_path_str) {
             opt[key + "s"].push(val3);

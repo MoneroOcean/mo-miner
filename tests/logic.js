@@ -248,6 +248,24 @@ test("JSON pool options reject invalid ports", () => {
   assert.doesNotMatch(result.stderr, /Cannot find module|Compute core/);
 });
 
+test("JSON algo params reject invalid perf values", () => {
+  const result = spawnSync(process.execPath, [
+    "mo-miner.js",
+    "bench",
+    "rx/0",
+    "--new.algo_param.rx/0",
+    JSON.stringify({ perf: "fast" }),
+  ], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    timeout: 5000,
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /invalid perf value: fast/);
+  assert.doesNotMatch(result.stderr, /Cannot find module|Compute core/);
+});
+
 test("repeat schedules delayed callbacks", async () => {
   let calls = 0;
 
