@@ -254,7 +254,16 @@ module.exports.parse_opt = function(opt, opt_help, arg, val, base_key_path_str) 
             return true;
           }
         } else {
-          for (const key2 in val2) opt[key][key2] = val2[key2];
+          for (const key2 in val2) {
+            let val3 = val2[key2];
+            if (key2 in opt_help[key] && Array.isArray(opt_help[key][key2]) &&
+                typeof opt_help[key][key2][0] == 'number') {
+              val3 = Number(val3);
+              if (!Number.isFinite(val3))
+                return this.print_help("Option " + arg + "." + key2 + " param must be a number: " + val2[key2]);
+            }
+            opt[key][key2] = val3;
+          }
           return true;
         }
       } else if (this.parse_opt(opt[key], opt_help[key], arg, val, key_path_str)) return true;
