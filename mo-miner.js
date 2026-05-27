@@ -277,8 +277,9 @@ function set_job(prev_job) {
     }
   } else {
     job.noncebytes  = prev_job.noncebytes ? prev_job.noncebytes : 4;
-    job.blob_hex    = prev_job.blob ? prev_job.blob : job.blob_hex;
-    job.nonceoffset = job.nonceoffset ? job.nonceoffset : (algo == "ghostrider" ? 76 : 39);
+    job.blob_hex    = prev_job.blob ? prev_job.blob : prev_job.blob_hex;
+    job.nonceoffset = typeof prev_job.nonceoffset !== "undefined" ?
+                      prev_job.nonceoffset : (algo == "ghostrider" ? 76 : 39);
   }
 
   if (prev_job.xn) { // we need to create nonce with xn prefix and update nicehash_mask to cover it

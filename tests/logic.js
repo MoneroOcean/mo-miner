@@ -4,13 +4,64 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { spawnSync } = require("node:child_process");
 const events = require("node:events");
+const fs = require("node:fs");
 const net = require("node:net");
 const path = require("node:path");
+const vm = require("node:vm");
 
 const opts = require("../opts.js");
 const helper = require("../helper.js");
 const pool = require("../pool.js");
 const repoRoot = path.join(__dirname, "..");
+
+async function loadMinerWithStubs() {
+  const source = fs.readFileSync(path.join(repoRoot, "mo-miner.js"), "utf8");
+  const moduleStub = { exports: {} };
+  const coreEvents = new events.EventEmitter();
+  const sentMessages = [];
+  let capturedSetJob = null;
+  const helperStub = {
+    ...helper,
+    cluster_process: () => false,
+    create_core: () => ({
+      from: coreEvents,
+      emit_to: (name) => {
+        if (name === "algo_params") setImmediate(() => coreEvents.emit("algo_params", {}));
+        if (name === "read_msr") setImmediate(() => coreEvents.emit("error", { message: "skip" }));
+      },
+    }),
+    recreate_threads: () => {},
+    messageWorkers: (msg) => sentMessages.push(msg),
+    log: () => {},
+    log1: () => {},
+    log2: () => {},
+    log3: () => {},
+    log_err: () => {},
+  };
+  const poolStub = {
+    connect_pool_throttle: (pool_id, setJob) => { capturedSetJob = setJob; },
+  };
+  const processStub = Object.create(process);
+  processStub.argv = ["node", "mo-miner.js", "mine", "pool.example:1", "user"];
+  processStub.env = { ...process.env };
+  processStub.exit = (code) => { throw new Error(`unexpected exit ${code}`); };
+  const requireStub = (id) => {
+    if (id === "./helper.js") return helperStub;
+    if (id === "./pool.js") return poolStub;
+    if (id === "./opts.js") return opts;
+    return require(id);
+  };
+
+  vm.runInNewContext(
+    `(function(require, module, exports, process, global, console, Buffer, setTimeout, setInterval, setImmediate) { ${source}\n})`,
+    {},
+  )(requireStub, moduleStub, moduleStub.exports, processStub, {}, console, Buffer, setTimeout, () => {}, setImmediate);
+
+  for (let i = 0; i < 10 && !capturedSetJob; ++i) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  return { getSetJob: () => capturedSetJob, sentMessages };
+}
 
 test("saved config omits job without mutating live options", () => {
   const opt = {
@@ -101,4 +152,23 @@ test("stale pool timeout does not destroy a replacement socket", async () => {
     net.connect = originalConnect;
     global.opt = previousOpt;
   }
+});
+
+test("non-C29 pool jobs preserve provided blob_hex and nonceoffset", async () => {
+  const miner = await loadMinerWithStubs();
+  const setJob = miner.getSetJob();
+  assert.equal(typeof setJob, "function");
+
+  setJob({
+    algo: "cn/0",
+    blob_hex: "abcd",
+    nonceoffset: 7,
+    difficulty: 1,
+    id: "worker",
+    job_id: "job",
+  });
+
+  const jobMessage = miner.sentMessages.find((msg) => msg.type === "job");
+  assert.equal(jobMessage.job.blob_hex, "abcd");
+  assert.equal(jobMessage.job.nonceoffset, 7);
 });
