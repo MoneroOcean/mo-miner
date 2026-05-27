@@ -226,6 +226,8 @@ module.exports.parse_opt = function(opt, opt_help, arg, val, base_key_path_str) 
         } catch (err) {
           return this.print_help("Can't parse option " + arg + " JSON param: " + val + ": " + err);
         }
+        if (!isObject(val2))
+          return this.print_help("Option " + arg + " JSON param must be an object: " + val);
         if ("_template" in opt_help[key]) {
           const template = opt_help[key]._template;
           // val3 is final value including defaults from opt_help

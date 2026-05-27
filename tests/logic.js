@@ -122,6 +122,24 @@ test("unparsed CLI options fail before runtime startup", () => {
   assert.doesNotMatch(result.stderr, /Cannot find module|Compute core/);
 });
 
+test("JSON options reject non-object values cleanly", () => {
+  const result = spawnSync(process.execPath, [
+    "mo-miner.js",
+    "bench",
+    "rx/0",
+    "--job",
+    "null",
+  ], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    timeout: 5000,
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /JSON param must be an object/);
+  assert.doesNotMatch(result.stderr, /TypeError|Cannot use 'in' operator|Cannot find module/);
+});
+
 test("repeat schedules delayed callbacks", async () => {
   let calls = 0;
 
