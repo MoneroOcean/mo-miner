@@ -257,7 +257,12 @@ module.exports.parse_opt = function(opt, opt_help, arg, val, base_key_path_str) 
 
     // sets simple key value
     } else if (arg === "--" + key_path_str) {
-      opt[key] = typeof opt_help[key][0] == 'number' ? Number(val) : val;
+      if (typeof opt_help[key][0] == 'number') {
+        const val2 = Number(val);
+        if (!Number.isFinite(val2))
+          return this.print_help("Option " + arg + " param must be a number: " + val);
+        opt[key] = val2;
+      } else opt[key] = val;
       return true;
     }
   }

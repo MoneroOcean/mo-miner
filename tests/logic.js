@@ -140,6 +140,24 @@ test("JSON options reject non-object values cleanly", () => {
   assert.doesNotMatch(result.stderr, /TypeError|Cannot use 'in' operator|Cannot find module/);
 });
 
+test("numeric CLI options reject non-numeric values", () => {
+  const result = spawnSync(process.execPath, [
+    "mo-miner.js",
+    "bench",
+    "rx/0",
+    "--log_level",
+    "nope",
+  ], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    timeout: 5000,
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /param must be a number/);
+  assert.doesNotMatch(result.stderr, /Cannot find module|Compute core/);
+});
+
 test("repeat schedules delayed callbacks", async () => {
   let calls = 0;
 
