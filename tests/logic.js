@@ -2,8 +2,11 @@
 
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
+const { spawnSync } = require("node:child_process");
+const path = require("node:path");
 
 const opts = require("../opts.js");
+const repoRoot = path.join(__dirname, "..");
 
 test("saved config omits job without mutating live options", () => {
   const opt = {
@@ -26,4 +29,21 @@ test("config file detection requires a .json extension", () => {
   assert.equal(opts.is_config_file("CONFIG.JSON"), true);
   assert.equal(opts.is_config_file("pooljson"), false);
   assert.equal(opts.is_config_file("config-json"), false);
+});
+
+test("unparsed CLI options fail before runtime startup", () => {
+  const result = spawnSync(process.execPath, [
+    "mo-miner.js",
+    "bench",
+    "rx/0",
+    "--definitely-bad-option",
+  ], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    timeout: 5000,
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Unparsed option: --definitely-bad-option/);
+  assert.doesNotMatch(result.stderr, /Cannot find module|Compute core/);
 });

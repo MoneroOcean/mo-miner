@@ -145,7 +145,7 @@ function parse_args() {
     let arg_parsed = false;
     const arg = args.shift();
     if (args.length >= 1 && o.parse_opt(global.opt, o.opt_help, arg, args[0], "")) args.shift();
-    else h.log_err("Unparsed option: " + arg);
+    else return o.print_help("Unparsed option: " + arg);
   }
 
   return true;
