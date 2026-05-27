@@ -6,6 +6,7 @@ const { spawnSync } = require("node:child_process");
 const path = require("node:path");
 
 const opts = require("../opts.js");
+const helper = require("../helper.js");
 const repoRoot = path.join(__dirname, "..");
 
 test("saved config omits job without mutating live options", () => {
@@ -46,4 +47,18 @@ test("unparsed CLI options fail before runtime startup", () => {
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /Unparsed option: --definitely-bad-option/);
   assert.doesNotMatch(result.stderr, /Cannot find module|Compute core/);
+});
+
+test("repeat schedules delayed callbacks", async () => {
+  let calls = 0;
+
+  await new Promise((resolve) => {
+    helper.repeat((next) => {
+      calls += 1;
+      if (calls === 2) return resolve();
+      next();
+    }, 1);
+  });
+
+  assert.equal(calls, 2);
 });

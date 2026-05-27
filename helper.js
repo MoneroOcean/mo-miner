@@ -400,7 +400,7 @@ module.exports.recreate_threads = function(dev, messageHandler) {
 // repeat while cb_next is called returns true result with ms delay
 module.exports.repeat = function(cb_next, delay) {
   cb_next(function() {
-    if (delay) setTimeout(repeat, delay, cb_next, delay);
+    if (delay) setTimeout(module.exports.repeat, delay, cb_next, delay);
     else return module.exports.repeat(cb_next, delay);
   });
 };
