@@ -195,6 +195,23 @@ test("JSON dev options reject invalid device specs", () => {
   assert.doesNotMatch(result.stderr, /Cannot find module|Compute core/);
 });
 
+test("mine pool URI rejects out-of-range ports", () => {
+  const result = spawnSync(process.execPath, [
+    "mo-miner.js",
+    "mine",
+    "pool.example:70000",
+    "user",
+  ], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    timeout: 5000,
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Wrong pool port: 70000/);
+  assert.doesNotMatch(result.stderr, /Cannot find module|Compute core/);
+});
+
 test("repeat schedules delayed callbacks", async () => {
   let calls = 0;
 

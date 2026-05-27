@@ -118,8 +118,10 @@ function parse_args() {
         const port_tls = pool_uri_parts[1];
         const m = port_tls.match(/^(\d+)((?:tls)?)$/);
         if (!m) return o.print_help("Wrong pool port: " + port_tls);
+        const port = Number(m[1]);
+        if (port < 1 || port > 65535) return o.print_help("Wrong pool port: " + port_tls);
         global.opt.pool_ids.primary = global.opt.pools.length;
-        global.opt.pools.push(o.pool_create(pool_uri_parts[0], parseInt(m[1]), m[2] === "tls",
+        global.opt.pools.push(o.pool_create(pool_uri_parts[0], port, m[2] === "tls",
                                             pool_login, pool_pass));
       }
       break;
