@@ -434,7 +434,7 @@ module.exports.target2diff = function(target) {
 };
 
 module.exports.diff2target = function(diff) {
-  if (diff === 0n) return "0000000000000000";
+  if (BigInt(diff) === 0n) return "0000000000000000";
   // Reverse of: div = BigInt(0xFFFFFFFFFFFFFFFF) / diff
   let div = BigInt("0xFFFFFFFFFFFFFFFF") / BigInt(diff);
   // Convert to hex without `0x`

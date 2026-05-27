@@ -136,6 +136,11 @@ test("repeat schedules delayed callbacks", async () => {
   assert.equal(calls, 2);
 });
 
+test("diff2target handles numeric zero difficulty", () => {
+  assert.equal(helper.diff2target(0), "0000000000000000");
+  assert.equal(helper.diff2target(0n), "0000000000000000");
+});
+
 test("stale pool timeout does not destroy a replacement socket", async () => {
   const originalConnect = net.connect;
   const previousOpt = global.opt;
