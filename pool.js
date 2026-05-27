@@ -255,7 +255,13 @@ function connect_pool(pool_id, set_job) {
         continue;
       }
       pool_log2(pool_id, "Got from the pool: " + JSON.stringify(json));
-      pool_message(pool_id, json, set_job);
+      try {
+        pool_message(pool_id, json, set_job);
+      } catch (err) {
+        return pool_err(pool_log_str(pool_id,
+          "Can't process message from the pool: " + (err && err.message ? err.message : err)
+        ));
+      }
     }
     pool_data_buff = incomplete_line;
   });
