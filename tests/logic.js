@@ -1,6 +1,6 @@
 "use strict";
 
-const { test } = require("node:test");
+const { describe, test } = require("node:test");
 const assert = require("node:assert/strict");
 const { spawnSync } = require("node:child_process");
 const events = require("node:events");
@@ -64,6 +64,7 @@ async function loadMinerWithStubs() {
   return { getSetJob: () => capturedSetJob, sentMessages };
 }
 
+describe("JavaScript logic tests", () => {
 test("saved config omits job without mutating live options", () => {
   const opt = {
     job: { algo: "rx/0", dev: "cpu" },
@@ -491,4 +492,5 @@ test("nicehash xn prefixes longer than noncebytes are truncated", async () => {
   const jobMessage = miner.sentMessages.find((msg) => msg.type === "job");
   assert.equal(jobMessage.job.nonce, "00112233");
   assert.equal(jobMessage.job.nicehash_mask, "ffffffff");
+});
 });

@@ -4,8 +4,10 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { hasReleaseExecutable, repoRoot, spawnAndExit } = require("./common/miner_command");
 
+const logicSuite = fs.existsSync(path.join(repoRoot, "opts.js")) ? ["tests/logic.js"] : [];
+
 const suites = {
-  all: ["tests/all.js"],
+  all: [...logicSuite, "tests/all.js"],
   cpu: ["tests/cpu.js"],
   gpu: ["tests/gpu.js"],
   "sycl-cpu": ["tests/sycl_cpu.js"],
