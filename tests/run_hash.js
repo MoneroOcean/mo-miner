@@ -2,7 +2,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
-const { hasReleaseExecutable, repoRoot, spawnAndExit } = require("./common/miner_command");
+const { repoRoot, resolveNodeRunner, spawnAndExit } = require("./common/miner_command");
 
 const logicSuite = fs.existsSync(path.join(repoRoot, "opts.js")) ? ["tests/logic.js"] : [];
 
@@ -28,17 +28,5 @@ const testArgs = [
   ...suites[suite],
 ];
 
-function isInsideRsh() {
-  return process.env.MOMINER_R_SH === "1" || fs.existsSync("/.dockerenv");
-}
-
-let runner;
-if (process.platform === "win32" || isInsideRsh() || hasReleaseExecutable) {
-  runner = { command: process.execPath, args: testArgs };
-} else if (fs.existsSync(path.join(repoRoot, "r.sh"))) {
-  runner = { command: "./r.sh", args: ["node", ...testArgs] };
-} else {
-  runner = { command: "./docker-mo-miner.sh", args: ["node", ...testArgs] };
-}
-
+const runner = resolveNodeRunner(testArgs);
 spawnAndExit(runner.command, runner.args);

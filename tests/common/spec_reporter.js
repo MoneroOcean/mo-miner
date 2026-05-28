@@ -22,14 +22,19 @@ class SpacedSpecReporter extends Transform {
     let output = "";
     let newlineIndex = this.pendingText.indexOf("\n");
     while (newlineIndex !== -1) {
-      let line = this.pendingText.slice(0, newlineIndex + 1);
+      const line = this.pendingText.slice(0, newlineIndex + 1);
       this.pendingText = this.pendingText.slice(newlineIndex + 1);
-      if (/^\s*▶ /.test(line) && this.lastPrintedNonEmptyLine) line = "\n" + line;
-      if (line.trim()) this.lastPrintedNonEmptyLine = line.trimEnd();
-      output += line;
+      output += this.rewriteLine(line);
       newlineIndex = this.pendingText.indexOf("\n");
     }
     return output;
+  }
+
+  rewriteLine(line) {
+    let rewritten = line;
+    if (/^\s*▶ /.test(rewritten) && this.lastPrintedNonEmptyLine) rewritten = "\n" + rewritten;
+    if (rewritten.trim()) this.lastPrintedNonEmptyLine = rewritten.trimEnd();
+    return rewritten;
   }
 
   _transform(event, encoding, callback) {

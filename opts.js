@@ -8,6 +8,7 @@ const h    = require("./helper.js");
 const version_str = require("./package.json").version;
 
 module.exports.agent_str = "mo-miner v" + version_str;
+const releaseCommandNames = new Set(["mo-miner", "mo-miner.exe"]);
 
 module.exports.pool_create = function(url, port, is_tls, login, pass) {
   return {
@@ -15,7 +16,7 @@ module.exports.pool_create = function(url, port, is_tls, login, pass) {
     port:         port,
     is_tls:       is_tls,
     tls_verify:   false,
-    is_nicehash:  url.includes("nicehash") ? true : false,
+    is_nicehash:  url.includes("nicehash"),
     is_keepalive: true,
     login:        login,
     pass:         pass
@@ -98,46 +99,201 @@ module.exports.opt_help = {
 
 // object but not array
 const isObject = function(a) { return (!!a) && (a.constructor === Object); }
+const poolBooleanFields = ["is_tls", "tls_verify", "is_nicehash", "is_keepalive"];
+const templateValidators = {
+  pool: validatePoolOption,
+  algo_param: validateAlgoParamOption,
+};
 
 function cloneDefault(val) {
   if (Array.isArray(val)) return val.map(cloneDefault);
   if (!isObject(val)) return val;
-  let cloned = {};
+  const cloned = {};
   for (const key in val) cloned[key] = cloneDefault(val[key]);
   return cloned;
 }
 
-function validatePool(pool) {
-  if (typeof pool.url !== "string" || pool.url === "") return "url must be a non-empty string";
+function isPublicKey(key) {
+  return !key.startsWith("_");
+}
+
+function publicKeys(object) {
+  return Object.keys(object).filter(isPublicKey);
+}
+
+function isValidPort(port) {
+  return Number.isInteger(port) && port >= 1 && port <= 65535;
+}
+
+function validatePoolUrl(pool) {
+  return typeof pool.url === "string" && pool.url !== "" ? null : "url must be a non-empty string";
+}
+
+function validatePoolPort(pool) {
   const port = Number(pool.port);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) return "port must be an integer from 1 to 65535";
+  if (!isValidPort(port)) return "port must be an integer from 1 to 65535";
   pool.port = port;
-  for (const key of ["is_tls", "tls_verify", "is_nicehash", "is_keepalive"]) {
-    if (typeof pool[key] !== "boolean") return key + " must be boolean";
-  }
   return null;
+}
+
+function validatePoolBooleans(pool) {
+  const invalidBoolean = poolBooleanFields.find((key) => typeof pool[key] !== "boolean");
+  return invalidBoolean ? invalidBoolean + " must be boolean" : null;
+}
+
+function validatePool(pool) {
+  return validatePoolUrl(pool) || validatePoolPort(pool) || validatePoolBooleans(pool);
+}
+
+function formatDefaultValue(def_val) {
+  switch (typeof def_val) {
+    case 'string': return "\"" + def_val + "\"";
+    case 'bigint': return "0x" + def_val.toString(16);
+    default: return def_val;
+  }
+}
+
+function defaultSuffix(def_val) {
+  return typeof def_val !== 'undefined' ? " (" + formatDefaultValue(def_val) + " by default)" : "";
+}
+
+function parseJsonObject(arg, val) {
+  let parsed;
+  try {
+    parsed = JSON.parse(val);
+  } catch (err) {
+    return module.exports.print_help("Can't parse option " + arg + " JSON param: " + val + ": " + err);
+  }
+  return validateParsedJsonObject(arg, val, parsed);
+}
+
+function validateParsedJsonObject(arg, val, parsed) {
+  if (!isObject(parsed))
+    return module.exports.print_help("Option " + arg + " JSON param must be an object: " + val);
+  if ("dev" in parsed && !h.is_valid_dev(parsed.dev))
+    return module.exports.print_help("Option " + arg + " has invalid dev value: " + parsed.dev);
+  return parsed;
+}
+
+function parseNonNegativeNumber(arg, val) {
+  const val2 = Number(val);
+  if (!Number.isFinite(val2))
+    return module.exports.print_help("Option " + arg + " param must be a number: " + val);
+  if (val2 < 0)
+    return module.exports.print_help("Option " + arg + " param must be non-negative: " + val);
+  return val2;
+}
+
+function isNumberOption(help) {
+  return Array.isArray(help) && typeof help[0] === 'number';
+}
+
+function isJsonOptionArg(arg, key_path_str, new_str_prefix) {
+  return arg === "--" + key_path_str ||
+         arg === "--add." + key_path_str ||
+         arg.startsWith(new_str_prefix);
+}
+
+function templateDefaultValue(key2, def_val, values) {
+  return key2 in values ? values[key2] : def_val;
+}
+
+function templateDefaults(arg, key, template, values) {
+  const result = {};
+  for (const key2 of publicKeys(template)) {
+    const def_val = template[key2][0];
+    // do not allow to keys without default values to be missing
+    if (typeof def_val === 'undefined' && !(key2 in values))
+      return module.exports.print_help("Need to specify key value \"" + key2 + "\" in " + key + " JSON");
+    result[key2] = templateDefaultValue(key2, def_val, values);
+  }
+  return result;
+}
+
+function validatePoolOption(arg, val2, val3) {
+  const err = validatePool(val3);
+  return err ? module.exports.print_help("Option " + arg + " has invalid pool " + err) : val3;
+}
+
+function validateAlgoPerf(arg, val2, val3) {
+  if (val3.perf === null) return val3;
+  val3.perf = Number(val3.perf);
+  if (!Number.isFinite(val3.perf) || val3.perf < 0) {
+    return module.exports.print_help("Option " + arg + " has invalid perf value: " + val2.perf);
+  }
+  return val3;
+}
+
+function validateAlgoParamOption(arg, val2, val3) {
+  if (!h.is_valid_dev(val3.dev))
+    return module.exports.print_help("Option " + arg + " has invalid dev value: " + val3.dev);
+  return validateAlgoPerf(arg, val2, val3);
+}
+
+function validateTemplateValue(arg, key_path_str, val2, val3) {
+  const validator = templateValidators[key_path_str];
+  return validator ? validator(arg, val2, val3) : val3;
+}
+
+function addArrayTemplateOption(opt, key, key_help, key_path_str, arg, val) {
+  if (!("_array" in key_help) || arg !== "--add." + key_path_str) return false;
+  opt[key + "s"].push(val);
+  return true;
+}
+
+function addMapTemplateOption(opt, key, key_help, new_str_prefix, arg, val) {
+  if (!("_map" in key_help) || !arg.startsWith(new_str_prefix)) return false;
+  const key2 = arg.substring(new_str_prefix.length);
+  opt[key + "s"][key2] = val;
+  return true;
+}
+
+function applyTemplateOption(opt, key, key_help, key_path_str, new_str_prefix, arg, val2) {
+  const template = key_help._template;
+  // val3 is final value including defaults from opt_help
+  const val3 = validateTemplateValue(arg, key_path_str, val2, templateDefaults(arg, key, template, val2));
+  return addArrayTemplateOption(opt, key, key_help, key_path_str, arg, val3) ||
+         addMapTemplateOption(opt, key, key_help, new_str_prefix, arg, val3);
+}
+
+function applyJsonOption(opt, key, key_help, arg, val2) {
+  for (const key2 in val2) {
+    const help = key_help[key2];
+    opt[key][key2] = isNumberOption(help) ? parseNonNegativeNumber(arg + "." + key2, val2[key2]) : val2[key2];
+  }
+  return true;
+}
+
+function parseJsonOption(opt, key, key_help, key_path_str, new_str_prefix, arg, val) {
+  const val2 = parseJsonObject(arg, val);
+  if ("_template" in key_help)
+    return applyTemplateOption(opt, key, key_help, key_path_str, new_str_prefix, arg, val2);
+  return applyJsonOption(opt, key, key_help, arg, val2);
 }
 
 // set opt object based on default values from opt_help object
 module.exports.set_default_opts = function(opt, opt_help) {
-  for (const key in opt_help) {
-    if (key.startsWith("_")) continue;
-    if (isObject(opt_help[key])) {
-      if ("_array" in opt_help[key]) {
-        opt[key + "s"] = cloneDefault(opt_help[key]._array);
-      } else if ("_map" in opt_help[key]) {
-        opt[key + "s"] = cloneDefault(opt_help[key]._map);
-      } else {
-        opt[key] = {};
-        this.set_default_opts(opt[key], opt_help[key]);
-      }
-    } else if (Array.isArray(opt_help[key])) {
-      opt[key] = cloneDefault(opt_help[key][0]);
-    } else {
-      opt[key] = opt_help[key];
-    }
+  for (const key of publicKeys(opt_help)) {
+    const key_help = opt_help[key];
+    if (isObject(key_help)) setObjectDefault(opt, key, key_help);
+    else opt[key] = simpleDefault(key_help);
   }
 };
+
+function simpleDefault(key_help) {
+  return Array.isArray(key_help) ? cloneDefault(key_help[0]) : key_help;
+}
+
+function setObjectDefault(opt, key, key_help) {
+  if ("_array" in key_help) {
+    opt[key + "s"] = cloneDefault(key_help._array);
+  } else if ("_map" in key_help) {
+    opt[key + "s"] = cloneDefault(key_help._map);
+  } else {
+    opt[key] = {};
+    module.exports.set_default_opts(opt[key], key_help);
+  }
+}
 
 module.exports.saved_config = function(opt) {
   const saved = { ...opt };
@@ -151,58 +307,68 @@ module.exports.is_config_file = function(file) {
 
 // prints options help from opt_help
 module.exports.print_opt_help = function(opt_help, depth_str, base_key_path_str) {
-  const pad = 36;
-  for (const key in opt_help) {
-    if (key.startsWith("_")) continue;
+  for (const key of publicKeys(opt_help)) {
     const key_path_str = base_key_path_str ? base_key_path_str + "." + key : key;
-    if (isObject(opt_help[key])) {
-      const key_help = opt_help[key]._help;
-      if (typeof opt_help[key]._help === 'undefined') continue;
-      if ("_template" in opt_help[key]) {
-        if ("_array" in opt_help[key]) {
-          console.log(( depth_str + "--add." + key_path_str +
-                        " '{[\"<key>\": <value>,]+}': ").padEnd(pad, " ") + key_help);
-        } else if ("_map" in opt_help[key]) {
-          console.log(( depth_str + "--new." + key_path_str + ".<name>" +
-                        " '{[\"<key>\": <value>,]+}': ").padEnd(pad, " ") + key_help);
-        }
-        const template = opt_help[key]._template;
-        for (const key2 in template) {
-          if (key2.startsWith("_")) continue;
-          let def_val = template[key2][0];
-          if (def_val === null) continue; // do not show internal params
-          switch (typeof def_val) {
-            case 'string': def_val = "\"" + def_val + "\""; break;
-            case 'bigint': def_val = "0x" + def_val.toString(16); break;
-          }
-          console.log((depth_str + "  " + key2 + ": ").padEnd(pad, " ") + template[key2][1] +
-                      (typeof def_val !== 'undefined' ? " (" + def_val + " by default)" : ""));
-        }
-      } else {
-        console.log((depth_str + "--" + key_path_str + " '{...}': ").padEnd(pad, " ") + key_help);
-        this.print_opt_help(opt_help[key], depth_str + "  ", key_path_str);
-      }
-      console.log();
-    } else {
-      let def_val = opt_help[key][0];
-      if (def_val === null) continue; // do not show internal params
-      switch (typeof def_val) {
-        case 'string': def_val = "\"" + def_val + "\""; break;
-        case 'bigint': def_val = "0x" + def_val.toString(16); break;
-      }
-      console.log((depth_str + "--" + key_path_str + ": ").padEnd(pad, " ") + opt_help[key][1] +
-                  (typeof def_val !== 'undefined' ? " (" + def_val + " by default)" : ""));
-    }
+    if (isObject(opt_help[key])) printObjectOptHelp(opt_help[key], depth_str, key_path_str);
+    else printSimpleOptHelp(opt_help[key], depth_str, key_path_str);
   }
 };
 
-module.exports.print_help = function(err_str) {
+function paddedHelp(line, help) {
+  return line.padEnd(36, " ") + help;
+}
+
+function printTemplateHeader(key_help, depth_str, key_path_str) {
+  if ("_array" in key_help)
+    console.log(paddedHelp(depth_str + "--add." + key_path_str + " '{[\"<key>\": <value>,]+}': ", key_help._help));
+  else if ("_map" in key_help)
+    console.log(paddedHelp(depth_str + "--new." + key_path_str + ".<name> '{[\"<key>\": <value>,]+}': ", key_help._help));
+}
+
+function printTemplateFields(template, depth_str) {
+  for (const key of publicKeys(template)) {
+    const def_val = template[key][0];
+    if (def_val === null) continue; // do not show internal params
+    console.log(paddedHelp(depth_str + "  " + key + ": ", template[key][1] + defaultSuffix(def_val)));
+  }
+}
+
+function printObjectOptHelp(key_help, depth_str, key_path_str) {
+  if (typeof key_help._help === 'undefined') return;
+  if ("_template" in key_help) {
+    printTemplateHeader(key_help, depth_str, key_path_str);
+    printTemplateFields(key_help._template, depth_str);
+  } else {
+    console.log(paddedHelp(depth_str + "--" + key_path_str + " '{...}': ", key_help._help));
+    module.exports.print_opt_help(key_help, depth_str + "  ", key_path_str);
+  }
+  console.log();
+}
+
+function printSimpleOptHelp(key_help, depth_str, key_path_str) {
+  const def_val = key_help[0];
+  if (def_val === null) return; // do not show internal params
+  console.log(paddedHelp(depth_str + "--" + key_path_str + ": ", key_help[1] + defaultSuffix(def_val)));
+}
+
+function helpCommand() {
   const exe = path.basename(process.argv[1] || "");
-  const command = process.env.MOMINER_COMMAND ||
-                  (exe === "mo-miner" || exe === "mo-miner.exe" ? "./" + exe : "node mo-miner.js");
+  if (process.env.MOMINER_COMMAND) return process.env.MOMINER_COMMAND;
+  return releaseCommandNames.has(exe) ? "./" + exe : "node mo-miner.js";
+}
+
+function finishHelp(err_str) {
+  if (err_str) {
+    h.log_err(err_str);
+    process.exit(1);
+  }
+  process.exit(0);
+}
+
+module.exports.print_help = function(err_str) {
   const str = `
 # Node.js/SYCL based CPU/GPU miner v${version_str}
-$ ${command} <directive> <parameter>+ [<option>+]
+$ ${helpCommand()} <directive> <parameter>+ [<option>+]
 
 Directives:
   mine  (<pool_address:port[tls]> <login> [<pass>]|<config.json>)
@@ -213,116 +379,59 @@ Directives:
 Options:`;
   console.log(str);
   this.print_opt_help(this.opt_help, "", "");
-  if (err_str) {
-    h.log_err(err_str);
-    process.exit(1);
-  }
-  process.exit(0);
+  finishHelp(err_str);
 };
 
 // recursively parses all options specified by the opt_help data structure
 module.exports.parse_opt = function(opt, opt_help, arg, val, base_key_path_str) {
-  for (const key in opt_help) {
-    if (key.startsWith("_")) continue;
+  for (const key of publicKeys(opt_help)) {
+    const key_help = opt_help[key];
     const key_path_str = base_key_path_str ? base_key_path_str + "." + key : key;
-    if (isObject(opt_help[key])) {
-      if (!("_help" in opt_help[key])) continue;
-      const new_str_prefix = "--new." + key_path_str + ".";
-      if (arg === "--" + key_path_str ||
-          arg === "--add." + key_path_str ||
-          arg.startsWith(new_str_prefix)
-      ) {
-        // consider val as JSON string here
-        let val2;
-        try {
-          val2 = JSON.parse(val);
-        } catch (err) {
-          return this.print_help("Can't parse option " + arg + " JSON param: " + val + ": " + err);
-        }
-        if (!isObject(val2))
-          return this.print_help("Option " + arg + " JSON param must be an object: " + val);
-        if ("dev" in val2 && !h.is_valid_dev(val2.dev))
-          return this.print_help("Option " + arg + " has invalid dev value: " + val2.dev);
-        if ("_template" in opt_help[key]) {
-          const template = opt_help[key]._template;
-          // val3 is final value including defaults from opt_help
-          let val3 = {};
-          for (const key2 in template) {
-            if (key2.startsWith("_")) continue;
-            const default_val = template[key2][0];
-            const def_val = template[key2][0];
-            // do not allow to keys without default values to be missing
-            if (typeof def_val === 'undefined' && !(key2 in val2))
-              return this.print_help("Need to specify key value \"" + key2 + "\" in " + key + " JSON");
-            val3[key2] = key2 in val2 ? val2[key2] : def_val;
-          }
-          if (key_path_str === "pool") {
-            const err = validatePool(val3);
-            if (err) return this.print_help("Option " + arg + " has invalid pool " + err);
-          } else if (key_path_str === "algo_param") {
-            if (!h.is_valid_dev(val3.dev))
-              return this.print_help("Option " + arg + " has invalid dev value: " + val3.dev);
-            if (val3.perf !== null) {
-              val3.perf = Number(val3.perf);
-              if (!Number.isFinite(val3.perf) || val3.perf < 0)
-                return this.print_help("Option " + arg + " has invalid perf value: " + val2.perf);
-            }
-          }
-          if ("_array" in opt_help[key] && arg === "--add." + key_path_str) {
-            opt[key + "s"].push(val3);
-            return true;
-          } else if ("_map" in opt_help[key] && arg.startsWith(new_str_prefix)) {
-            const key2 = arg.substring(new_str_prefix.length);
-            opt[key + "s"][key2] = val3;
-            return true;
-          }
-        } else {
-          for (const key2 in val2) {
-            let val3 = val2[key2];
-            if (key2 in opt_help[key] && Array.isArray(opt_help[key][key2]) &&
-                typeof opt_help[key][key2][0] == 'number') {
-              val3 = Number(val3);
-              if (!Number.isFinite(val3))
-                return this.print_help("Option " + arg + "." + key2 + " param must be a number: " + val2[key2]);
-              if (val3 < 0)
-                return this.print_help("Option " + arg + "." + key2 + " param must be non-negative: " + val2[key2]);
-            }
-            opt[key][key2] = val3;
-          }
-          return true;
-        }
-      } else if (this.parse_opt(opt[key], opt_help[key], arg, val, key_path_str)) return true;
-
-    // sets simple key value
-    } else if (arg === "--" + key_path_str) {
-      if (typeof opt_help[key][0] == 'number') {
-        const val2 = Number(val);
-        if (!Number.isFinite(val2))
-          return this.print_help("Option " + arg + " param must be a number: " + val);
-        if (val2 < 0)
-          return this.print_help("Option " + arg + " param must be non-negative: " + val);
-        opt[key] = val2;
-      } else opt[key] = val;
-      return true;
-    }
+    if (parseOptionEntry(opt, key, key_help, key_path_str, arg, val)) return true;
   }
   return false;
 };
 
+function parseObjectOption(opt, key, key_help, key_path_str, arg, val) {
+  if (!("_help" in key_help)) return false;
+  const new_str_prefix = "--new." + key_path_str + ".";
+  // consider val as JSON string here
+  if (isJsonOptionArg(arg, key_path_str, new_str_prefix))
+    return parseJsonOption(opt, key, key_help, key_path_str, new_str_prefix, arg, val);
+  return module.exports.parse_opt(opt[key], key_help, arg, val, key_path_str);
+}
+
+function parseSimpleOption(opt, key, key_help, key_path_str, arg, val) {
+  if (arg !== "--" + key_path_str) return false;
+  opt[key] = isNumberOption(key_help) ? parseNonNegativeNumber(arg, val) : val;
+  return true;
+}
+
+function parseOptionEntry(opt, key, key_help, key_path_str, arg, val) {
+  if (isObject(key_help)) return parseObjectOption(opt, key, key_help, key_path_str, arg, val);
+  return parseSimpleOption(opt, key, key_help, key_path_str, arg, val);
+}
+
 // inject internal default values to opt object from opt_help object
 module.exports.set_internal_opts = function(opt, opt_help) {
-  for (const key in opt_help) {
-    if (key.startsWith("_")) continue;
-    if (isObject(opt_help[key])) {
-      if ("_template" in opt_help[key]) {
-        let items = "_array" in opt_help[key] ? opt[key + "s"] : Object.values(opt[key + "s"]);
-        for (let item of items) {
-          for (const [key2, val2] of Object.entries(opt_help[key]._template)) {
-            if (!key2.startsWith("_")) continue;
-            item[key2.substring(1)] = val2[0];
-          }
-        }
-      } else this.set_internal_opts(opt[key], opt_help[key]);
-    }
+  for (const key of publicKeys(opt_help)) {
+    if (isObject(opt_help[key])) setInternalObject(opt, key, opt_help[key]);
   }
 };
+
+function templateItems(opt, key, key_help) {
+  return "_array" in key_help ? opt[key + "s"] : Object.values(opt[key + "s"]);
+}
+
+function applyInternalTemplateValues(item, template) {
+  for (const [key, val] of Object.entries(template)) {
+    if (key.startsWith("_")) item[key.substring(1)] = val[0];
+  }
+}
+
+function setInternalObject(opt, key, key_help) {
+  if (!("_template" in key_help)) return module.exports.set_internal_opts(opt[key], key_help);
+  for (let item of templateItems(opt, key, key_help)) {
+    applyInternalTemplateValues(item, key_help._template);
+  }
+}

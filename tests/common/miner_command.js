@@ -62,19 +62,18 @@ function emitGitHubError(title, message) {
   process.stderr.write(`::error title=${escape(title)}::${escape(message)}\n`);
 }
 
+function resolveReleaseCommand(args) {
+  if (!/\.cmd$/i.test(releaseExecutable)) return [releaseExecutable, ...args.slice(1)];
+
+  const packageDir = path.dirname(releaseExecutable);
+  const nodeExe = path.join(packageDir, "mo-miner-node.exe");
+  const bundle = path.join(packageDir, "mo-miner.bundle.cjs");
+  if (fs.existsSync(nodeExe) && fs.existsSync(bundle)) return [nodeExe, bundle, ...args.slice(1)];
+  return wrapWindowsCmd([releaseExecutable, ...args.slice(1)]);
+}
+
 function resolveMinerCommand(args) {
-  if (hasReleaseExecutable && args[0] === "mo-miner.js") {
-    if (/\.cmd$/i.test(releaseExecutable)) {
-      const packageDir = path.dirname(releaseExecutable);
-      const nodeExe = path.join(packageDir, "mo-miner-node.exe");
-      const bundle = path.join(packageDir, "mo-miner.bundle.cjs");
-      if (fs.existsSync(nodeExe) && fs.existsSync(bundle)) {
-        return [nodeExe, bundle, ...args.slice(1)];
-      }
-      return wrapWindowsCmd([releaseExecutable, ...args.slice(1)]);
-    }
-    return [releaseExecutable, ...args.slice(1)];
-  }
+  if (hasReleaseExecutable && args[0] === "mo-miner.js") return resolveReleaseCommand(args);
   return [process.execPath, ...args];
 }
 
@@ -96,6 +95,28 @@ function spawnAndExit(command, args, options = {}) {
   });
 }
 
+function isInsideRsh() {
+  return process.env.MOMINER_R_SH === "1" || fs.existsSync("/.dockerenv");
+}
+
+function shouldUseDirectNode() {
+  return process.platform === "win32" || isInsideRsh() || hasReleaseExecutable;
+}
+
+function resolveRshRunner(testArgs, env) {
+  const envArgs = Object.entries(env).map(([key, value]) => `${key}=${value}`);
+  const args = envArgs.length ? ["env", ...envArgs, "node", ...testArgs] : ["node", ...testArgs];
+  return { command: "./r.sh", args };
+}
+
+function resolveNodeRunner(testArgs, env = {}) {
+  if (shouldUseDirectNode()) return { command: process.execPath, args: testArgs, env };
+
+  if (fs.existsSync(path.join(repoRoot, "r.sh"))) return resolveRshRunner(testArgs, env);
+
+  return { command: "./docker-mo-miner.sh", args: ["node", ...testArgs], env };
+}
+
 function isMissingGpuOutput(result) {
   const output = `${result.stdout}\n${result.stderr}`;
   if (result.code === 0 && result.stdout.trim() === "" && result.stderr.trim() === "") return true;
@@ -113,15 +134,31 @@ function escapeRegExp(value) {
 function childEnv(extra = {}) {
   const env = { ...process.env, ...extra };
   if (process.platform !== "win32") return env;
+  return withWindowsTestPath(env);
+}
 
+function normalizeWindowsPathKey(env) {
   const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") || "Path";
-  const pathValue = env[pathKey] || "";
   for (const key of Object.keys(env)) {
-    if (key.toLowerCase() === "path" && key !== pathKey) delete env[key];
+    if (isDuplicatePathKey(key, pathKey)) delete env[key];
   }
+  return pathKey;
+}
+
+function isDuplicatePathKey(key, pathKey) {
+  return key.toLowerCase() === "path" && key !== pathKey;
+}
+
+function releasePathEntry(entry) {
+  return hasReleaseExecutable ? entry : null;
+}
+
+function withWindowsTestPath(env) {
+  const pathKey = normalizeWindowsPathKey(env);
+  const pathValue = env[pathKey] || "";
   env[pathKey] = [
-    hasReleaseExecutable ? path.join(path.dirname(releaseExecutable), "libs") : null,
-    hasReleaseExecutable ? path.dirname(releaseExecutable) : null,
+    releasePathEntry(path.join(path.dirname(releaseExecutable), "libs")),
+    releasePathEntry(path.dirname(releaseExecutable)),
     path.join(repoRoot, "build", "Release"),
     pathValue,
   ]
@@ -148,24 +185,35 @@ function detachChild(child) {
   child.unref();
 }
 
+function createRunResult() {
+  return {
+    code: null,
+    signal: null,
+    error: null,
+    stdout: "",
+    stderr: "",
+  };
+}
+
+function spawnMiner(args, env) {
+  const command = resolveMinerCommand(args);
+  return spawn(command[0], command.slice(1), {
+    cwd: repoRoot,
+    env: childEnv(env),
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+}
+
+function appendOutput(result, streamName, chunk) {
+  result[streamName] += chunk.toString("utf8");
+}
+
 function runNode(args, options = {}) {
   const timeoutMs = options.timeoutMs || 5 * 60 * 1000;
 
   return new Promise((resolve) => {
-    const command = resolveMinerCommand(args);
-    const child = spawn(command[0], command.slice(1), {
-      cwd: repoRoot,
-      env: childEnv(options.env),
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-
-    const result = {
-      code: null,
-      signal: null,
-      error: null,
-      stdout: "",
-      stderr: "",
-    };
+    const child = spawnMiner(args, options.env);
+    const result = createRunResult();
     let settled = false;
     let forceResolveTimeout = null;
 
@@ -188,12 +236,8 @@ function runNode(args, options = {}) {
       }, 10 * 1000);
     }, timeoutMs);
 
-    child.stdout.on("data", (chunk) => {
-      result.stdout += chunk.toString("utf8");
-    });
-    child.stderr.on("data", (chunk) => {
-      result.stderr += chunk.toString("utf8");
-    });
+    child.stdout.on("data", (chunk) => appendOutput(result, "stdout", chunk));
+    child.stderr.on("data", (chunk) => appendOutput(result, "stderr", chunk));
     child.on("error", (error) => {
       result.error = error;
     });
@@ -252,27 +296,38 @@ function parseSyclCpuDevices(output) {
   return devices;
 }
 
-async function getFirstSyclCpuDevice() {
-  if (process.env.MOMINER_ASSUME_SYCL_CPU) {
-    return {
-      skipped: false,
-      dev: process.env.MOMINER_ASSUME_SYCL_CPU,
-      description: "configured by MOMINER_ASSUME_SYCL_CPU",
-    };
+function syclCpuUnavailable(message) {
+  if (process.env.GITHUB_ACTIONS) {
+    emitGitHubError("SYCL CPU device unavailable", message);
+    throw new Error(message);
   }
+
+  return {
+    skipped: true,
+    reason: message,
+  };
+}
+
+function syclCpuDetectionFailure(error) {
+  if (process.env.GITHUB_ACTIONS) {
+    emitGitHubError("SYCL CPU device unavailable", error.message);
+    throw error;
+  }
+  return {
+    skipped: true,
+    reason: `SYCL CPU device detection failed: ${error.message}`,
+  };
+}
+
+async function getFirstSyclCpuDevice() {
+  const assumedDevice = assumedSyclCpuDevice();
+  if (assumedDevice) return assumedDevice;
 
   let report;
   try {
     report = await getAutoAlgoParamsReport();
   } catch (error) {
-    if (process.env.GITHUB_ACTIONS) {
-      emitGitHubError("SYCL CPU device unavailable", error.message);
-      throw error;
-    }
-    return {
-      skipped: true,
-      reason: `SYCL CPU device detection failed: ${error.message}`,
-    };
+    return syclCpuDetectionFailure(error);
   }
 
   const output = `${report.stdout}\n${report.stderr}`;
@@ -284,14 +339,20 @@ async function getFirstSyclCpuDevice() {
     formatOutput("stdout", report.stdout),
     formatOutput("stderr", report.stderr),
   ].join("\n");
-  if (process.env.GITHUB_ACTIONS) {
-    emitGitHubError("SYCL CPU device unavailable", message);
-    throw new Error(message);
-  }
+  return syclCpuUnavailable(missingSyclCpuMessage(message));
+}
 
+function missingSyclCpuMessage(reportMessage) {
+  if (process.env.GITHUB_ACTIONS) return reportMessage;
+  return "SYCL CPU device is not available in this environment";
+}
+
+function assumedSyclCpuDevice() {
+  if (!process.env.MOMINER_ASSUME_SYCL_CPU) return null;
   return {
-    skipped: true,
-    reason: "SYCL CPU device is not available in this environment",
+    skipped: false,
+    dev: process.env.MOMINER_ASSUME_SYCL_CPU,
+    description: "configured by MOMINER_ASSUME_SYCL_CPU",
   };
 }
 
@@ -313,50 +374,68 @@ async function resolveBenchJob(definition) {
   throw new Error(`No auto device config detected for ${job.algo}`);
 }
 
+function expectedHash(definition) {
+  return Array.isArray(definition.expected) ? definition.expected.join("|") : definition.expected;
+}
+
+async function maybeDebugRerun(definition, args, result) {
+  if (process.platform !== "win32" || process.env.MOMINER_DEBUG_STARTUP) return result;
+
+  const debugResult = await runNode(args, {
+    timeoutMs: definition.timeoutMs,
+    env: { MOMINER_DEBUG_STARTUP: "1" },
+  });
+  return {
+    ...result,
+    stderr: [
+      result.stderr,
+      "Debug rerun:",
+      formatFailure(`${definition.name} debug rerun`, args, debugResult),
+    ].filter(Boolean).join("\n"),
+  };
+}
+
+function assertMinerSuccess(definition, args, result, output) {
+  if (minerFailed(result)) {
+    const message = formatFailure(`${definition.name} failed`, args, result);
+    emitGitHubError(definition.name, message);
+    throw new Error(message);
+  }
+  if (!minerReportedPass(result, output)) {
+    const message = formatFailure(`${definition.name} did not report a clean pass`, args, result);
+    emitGitHubError(definition.name, message);
+    throw new Error(message);
+  }
+}
+
+function minerFailed(result) {
+  return result.error || result.code !== 0;
+}
+
+function minerReportedPass(result, output) {
+  return result.stdout.includes("PASSED") && !/\bFAIL(?:ED)?\b/.test(output);
+}
+
 async function runMinerTest(definition) {
   const job = withTestDevice(definition);
-  const expected = Array.isArray(definition.expected)
-    ? definition.expected.join("|")
-    : definition.expected;
   const args = [
     "mo-miner.js",
     "test",
     job.algo,
-    expected,
+    expectedHash(definition),
     "--job",
     JSON.stringify(job),
   ];
   let result = await runNode(args, { timeoutMs: definition.timeoutMs });
-  const output = `${result.stdout}\n${result.stderr}`;
 
   if (definition.gpu && isMissingGpuOutput(result)) {
     return { skipped: true, reason: "Requested SYCL device is not available in this environment" };
   }
 
-  if (result.error || result.code !== 0) {
-    if (process.platform === "win32" && !process.env.MOMINER_DEBUG_STARTUP) {
-      const debugResult = await runNode(args, {
-        timeoutMs: definition.timeoutMs,
-        env: { MOMINER_DEBUG_STARTUP: "1" },
-      });
-      result = {
-        ...result,
-        stderr: [
-          result.stderr,
-          "Debug rerun:",
-          formatFailure(`${definition.name} debug rerun`, args, debugResult),
-        ].filter(Boolean).join("\n"),
-      };
-    }
-    const message = formatFailure(`${definition.name} failed`, args, result);
-    emitGitHubError(definition.name, message);
-    throw new Error(message);
+  if (minerFailed(result)) {
+    result = await maybeDebugRerun(definition, args, result);
   }
-  if (!result.stdout.includes("PASSED") || /\bFAIL(?:ED)?\b/.test(output)) {
-    const message = formatFailure(`${definition.name} did not report a clean pass`, args, result);
-    emitGitHubError(definition.name, message);
-    throw new Error(message);
-  }
+  assertMinerSuccess(definition, args, result, `${result.stdout}\n${result.stderr}`);
 
   return { skipped: false };
 }
@@ -371,13 +450,8 @@ async function runMinerBench(definition) {
   const hashratePattern = new RegExp(`Algo ${escapeRegExp(job.algo)} \\([^)]*\\) hashrate: ([0-9.]+) H\\/s`);
 
   return new Promise((resolve, reject) => {
-    const command = resolveMinerCommand(args);
-    const child = spawn(command[0], command.slice(1), {
-      cwd: repoRoot,
-      env: childEnv(),
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    const result = { code: null, signal: null, error: null, stdout: "", stderr: "" };
+    const child = spawnMiner(args);
+    const result = createRunResult();
     let matchedHashrate = null;
     let stopping = false;
 
@@ -394,7 +468,7 @@ async function runMinerBench(definition) {
     }, timeoutMs);
 
     const onData = (streamName, chunk) => {
-      result[streamName] += chunk.toString("utf8");
+      appendOutput(result, streamName, chunk);
       const match = `${result.stdout}\n${result.stderr}`.match(hashratePattern);
       if (match && !matchedHashrate) {
         matchedHashrate = Number.parseFloat(match[1]);
@@ -411,15 +485,24 @@ async function runMinerBench(definition) {
       clearTimeout(timeout);
       result.code = code;
       result.signal = signal;
-
-      if (matchedHashrate && matchedHashrate > 0) return resolve({ hashrate: matchedHashrate, dev: job.dev });
-      if (definition.gpu && isMissingGpuOutput(result)) {
-        return resolve({ skipped: true, reason: "GPU device is not available in this environment" });
-      }
-
-      reject(new Error(formatFailure(`${definition.name} did not report hashrate`, args, result)));
+      finishBenchRun(definition, args, job, result, matchedHashrate, resolve, reject);
     });
   });
+}
+
+function finishBenchRun(definition, args, job, result, matchedHashrate, resolve, reject) {
+  if (isPositiveHashrate(matchedHashrate)) return resolve({ hashrate: matchedHashrate, dev: job.dev });
+  if (isMissingBenchGpu(definition, result))
+    return resolve({ skipped: true, reason: "GPU device is not available in this environment" });
+  reject(new Error(formatFailure(`${definition.name} did not report hashrate`, args, result)));
+}
+
+function isPositiveHashrate(hashrate) {
+  return hashrate && hashrate > 0;
+}
+
+function isMissingBenchGpu(definition, result) {
+  return definition.gpu && isMissingGpuOutput(result);
 }
 
 module.exports = {
@@ -427,6 +510,7 @@ module.exports = {
   hasReleaseExecutable,
   repoRoot,
   resolveMinerCommand,
+  resolveNodeRunner,
   runMinerBench,
   runMinerTest,
   spawnAndExit,

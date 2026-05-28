@@ -1,8 +1,6 @@
 "use strict";
 
-const fs = require("node:fs");
-const path = require("node:path");
-const { hasReleaseExecutable, repoRoot, spawnAndExit } = require("./common/miner_command");
+const { resolveNodeRunner, spawnAndExit } = require("./common/miner_command");
 const { perfTests } = require("./vectors");
 
 const algo = process.argv[2];
@@ -24,20 +22,5 @@ if (algo && !perfTests.some((definition) => definition.algo === algo)) {
 
 if (algo) testEnv.MOMINER_PERF_ALGO = algo;
 
-function isInsideRsh() {
-  return process.env.MOMINER_R_SH === "1" || fs.existsSync("/.dockerenv");
-}
-
-const nodeRunner = { command: process.execPath, args: testArgs, env: testEnv };
-let runner;
-if (process.platform === "win32" || isInsideRsh() || hasReleaseExecutable) {
-  runner = nodeRunner;
-} else if (fs.existsSync(path.join(repoRoot, "r.sh"))) {
-  const args = ["env"];
-  if (algo) args.push(`MOMINER_PERF_ALGO=${algo}`);
-  runner = { command: "./r.sh", args: [...args, "node", ...testArgs] };
-} else {
-  runner = { command: "./docker-mo-miner.sh", args: ["node", ...testArgs], env: testEnv };
-}
-
+const runner = resolveNodeRunner(testArgs, testEnv);
 spawnAndExit(runner.command, runner.args, { env: runner.env });
