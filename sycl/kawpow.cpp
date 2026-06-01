@@ -9,6 +9,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cinttypes>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -50,6 +51,16 @@ constexpr uint32_t RAVENCOIN_KAWPOW[15] = {
   0x00000043, 0x0000004F, 0x00000049, 0x0000004E, 0x0000004B,
   0x00000041, 0x00000057, 0x00000050, 0x0000004F, 0x00000057
 };
+
+static void format_duration_ms(char* out, size_t out_size, uint64_t ms) {
+  if (ms < 1000) {
+    std::snprintf(out, out_size, "%" PRIu64 "ms", ms);
+  } else if (ms < 60000) {
+    std::snprintf(out, out_size, "%.2f s", static_cast<double>(ms) / 1000.0);
+  } else {
+    std::snprintf(out, out_size, "%.2f min", static_cast<double>(ms) / 60000.0);
+  }
+}
 
 struct KawpowCacheOp {
   uint32_t src;
@@ -785,7 +796,9 @@ public:
     q.wait_and_throw();
 
     epoch = new_epoch;
-    std::fprintf(stderr, "KawPow DAG for epoch %u calculated (%" PRIu64 "ms)\n", new_epoch, now_ms() - start_ms);
+    char elapsed[32];
+    format_duration_ms(elapsed, sizeof(elapsed), now_ms() - start_ms);
+    std::fprintf(stderr, "KawPow DAG for epoch %u calculated (%s)\n", new_epoch, elapsed);
   }
 
   void ensure_period(const uint64_t new_period) {

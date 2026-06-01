@@ -488,6 +488,33 @@ module.exports.repeat = function(cb_next, delay) {
   });
 };
 
+const hashrate_units = [
+  { value: 1000000000, suffix: "GH/s" },
+  { value: 1000000, suffix: "MH/s" },
+  { value: 1000, suffix: "KH/s" },
+];
+const hashrate_unit_multipliers = Object.fromEntries([
+  ...hashrate_units.map((unit) => [unit.suffix, unit.value]),
+  ["H/s", 1],
+]);
+
+module.exports.hashrate_units = Object.keys(hashrate_unit_multipliers);
+
+module.exports.formatHashrate = function(hashrate) {
+  const rate = Number.parseFloat(hashrate);
+  if (!Number.isFinite(rate)) return String(hashrate);
+  for (const unit of hashrate_units) {
+    if (Math.abs(rate) >= unit.value) return (rate / unit.value).toFixed(2) + " " + unit.suffix;
+  }
+  return rate.toFixed(2) + " H/s";
+};
+
+module.exports.parseFormattedHashrate = function(value, unit) {
+  const rate = Number.parseFloat(value);
+  const multiplier = hashrate_unit_multipliers[unit];
+  return Number.isFinite(rate) && multiplier ? rate * multiplier : Number.NaN;
+};
+
 // pack opt.default_msrs to it can be more easily passed into compute core
 module.exports.pack_msr = function(default_msr) {
   let packed = {};

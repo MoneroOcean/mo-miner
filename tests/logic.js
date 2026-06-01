@@ -13,7 +13,7 @@ const vm = require("node:vm");
 const opts = require("../opts.js");
 const helper = require("../helper.js");
 const pool = require("../pool.js");
-const { formatHashrate } = require("./common/miner_command");
+const { formatHashrate, parseFormattedHashrate } = require("./common/miner_command");
 const specReporter = require("./common/spec_reporter");
 const repoRoot = path.join(__dirname, "..");
 
@@ -388,10 +388,13 @@ test("kawpowTarget2diff uses the Eth-style high target word", () => {
   );
 });
 
-test("perf hashrate formatting uses megahashes above one megahash", () => {
-  assert.equal(formatHashrate(999999.99), "999999.99 H/s");
+test("perf hashrate formatting uses scaled units", () => {
+  assert.equal(formatHashrate(999.99), "999.99 H/s");
+  assert.equal(formatHashrate(1000), "1.00 KH/s");
   assert.equal(formatHashrate(1000000), "1.00 MH/s");
-  assert.equal(formatHashrate(4503299.5), "4.50 MH/s");
+  assert.equal(formatHashrate(19891722), "19.89 MH/s");
+  assert.equal(formatHashrate(1200000000), "1.20 GH/s");
+  assert.equal(parseFormattedHashrate("19.89", "MH/s"), 19890000);
 });
 
 test("test report duration formatting uses seconds and minutes", () => {

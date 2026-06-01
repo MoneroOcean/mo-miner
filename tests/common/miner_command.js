@@ -17,10 +17,35 @@ const hasReleaseExecutable = fs.existsSync(releaseExecutable);
 let autoAlgoParamsPromise = null;
 let autoAlgoParamsReportPromise = null;
 
+const hashrateUnits = [
+  { value: 1000000000, suffix: "GH/s" },
+  { value: 1000000, suffix: "MH/s" },
+  { value: 1000, suffix: "KH/s" },
+];
+const hashrateUnitMultipliers = Object.fromEntries([
+  ...hashrateUnits.map((unit) => [unit.suffix, unit.value]),
+  ["H/s", 1],
+]);
+
 function quoteCommand(args) {
   return args
     .map((arg) => (/^[A-Za-z0-9_./:=+-]+$/.test(arg) ? arg : JSON.stringify(arg)))
     .join(" ");
+}
+
+function formatHashrate(hashrate) {
+  const rate = Number.parseFloat(hashrate);
+  if (!Number.isFinite(rate)) return String(hashrate);
+  for (const unit of hashrateUnits) {
+    if (Math.abs(rate) >= unit.value) return (rate / unit.value).toFixed(2) + " " + unit.suffix;
+  }
+  return rate.toFixed(2) + " H/s";
+}
+
+function parseFormattedHashrate(value, unit) {
+  const rate = Number.parseFloat(value);
+  const multiplier = hashrateUnitMultipliers[unit];
+  return Number.isFinite(rate) && multiplier ? rate * multiplier : Number.NaN;
 }
 
 function quoteWindowsCmdArg(arg) {
@@ -52,11 +77,6 @@ function formatFailure(title, args, result) {
     formatOutput("stdout", result.stdout),
     formatOutput("stderr", result.stderr),
   ].join("\n");
-}
-
-function formatHashrate(hashrate) {
-  if (hashrate >= 1000000) return `${(hashrate / 1000000).toFixed(2)} MH/s`;
-  return `${hashrate.toFixed(2)} H/s`;
 }
 
 function emitGitHubError(title, message) {
@@ -451,7 +471,8 @@ async function runMinerBench(definition) {
   const job = resolved.job;
   const args = ["mo-miner.js", "bench", job.algo, "--job", JSON.stringify(job)];
   const timeoutMs = definition.timeoutMs || 150 * 1000;
-  const hashratePattern = new RegExp(`Algo ${escapeRegExp(job.algo)} \\([^)]*\\) hashrate: ([0-9.]+) H\\/s`);
+  const unitPattern = Object.keys(hashrateUnitMultipliers).map(escapeRegExp).join("|");
+  const hashratePattern = new RegExp(`Algo ${escapeRegExp(job.algo)} \\([^)]*\\) hashrate: ([0-9.]+)\\s+(${unitPattern})`);
 
   return new Promise((resolve, reject) => {
     const child = spawnMiner(args);
@@ -475,7 +496,7 @@ async function runMinerBench(definition) {
       appendOutput(result, streamName, chunk);
       const match = `${result.stdout}\n${result.stderr}`.match(hashratePattern);
       if (match && !matchedHashrate) {
-        matchedHashrate = Number.parseFloat(match[1]);
+        matchedHashrate = parseFormattedHashrate(match[1], match[2]);
         stop();
       }
     };
@@ -513,6 +534,7 @@ module.exports = {
   formatHashrate,
   getFirstSyclCpuDevice,
   hasReleaseExecutable,
+  parseFormattedHashrate,
   repoRoot,
   resolveMinerCommand,
   resolveNodeRunner,

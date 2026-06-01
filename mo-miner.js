@@ -305,14 +305,9 @@ function handleTestResult(msg) {
 }
 
 function collectedHashrate() {
-  let thread_hashrate_str = "";
-  let total_hashrate = 0;
-  for (const hashrate of Object.values(thread_hashrates)) {
-    if (thread_hashrate_str !== "") thread_hashrate_str += ", ";
-    const hashrate2 = Number.parseFloat(hashrate);
-    thread_hashrate_str += hashrate2.toFixed(2);
-    total_hashrate += hashrate2;
-  }
+  const rates = Object.values(thread_hashrates).map(Number.parseFloat);
+  const total_hashrate = rates.reduce((total, rate) => total + rate, 0);
+  const thread_hashrate_str = rates.map(h.formatHashrate).join(", ");
   return { total_hashrate, thread_hashrate_str };
 }
 
@@ -322,7 +317,7 @@ function handleHashrate(msg) {
 
   const hashrate = collectedHashrate();
   h.log("Algo " + last_job.algo + " (" + last_job.dev + ") hashrate: " +
-        hashrate.total_hashrate.toFixed(2) + " H/s (" + hashrate.thread_hashrate_str + ")");
+        h.formatHashrate(hashrate.total_hashrate) + " (" + hashrate.thread_hashrate_str + ")");
   thread_hashrates = {};
   if (algo_params_bench_cb) return algo_params_bench_cb(hashrate.total_hashrate);
 }
