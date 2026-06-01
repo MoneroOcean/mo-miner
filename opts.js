@@ -94,6 +94,7 @@ module.exports.opt_help = {
     _map: {}
   },
   log_level: [ 0, "log level: 0=minimal, 1=verbose, 2=network debug, 3=compute core debug" ],
+  bench_algo_params: [ 1, "benchmark algo params before mining; set 0 to skip hashrate benchmarking" ],
   save_config: [ "", "file name to save config in JSON format (only for mine directive)" ]
 };
 

@@ -213,6 +213,7 @@ Options:
   dev:                              device config line "[<dev>[*B][^T],]+", dev = {cpu, gpu<N>, cpu<N>}, N = device number, B = hash batch size, T = number of parallel threads ("cpu" by default)
 
 --log_level:                        log level: 0=minimal, 1=verbose, 2=network debug, 3=compute core debug (0 by default)
+--bench_algo_params:                benchmark algo params before mining; set 0 to skip hashrate benchmarking (1 by default)
 --save_config:                      file name to save config in JSON format (only for mine directive) ("" by default)
 2023-02-24 05:58:24 ERROR: No directive specified
 ```

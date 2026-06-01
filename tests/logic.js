@@ -17,7 +17,7 @@ const { formatHashrate } = require("./common/miner_command");
 const specReporter = require("./common/spec_reporter");
 const repoRoot = path.join(__dirname, "..");
 
-async function loadMinerWithStubs() {
+async function loadMinerWithStubs(options = {}) {
   const source = fs.readFileSync(path.join(repoRoot, "mo-miner.js"), "utf8");
   const moduleStub = { exports: {} };
   const globalStub = {};
@@ -25,13 +25,14 @@ async function loadMinerWithStubs() {
   const sentMessages = [];
   const poolWrites = [];
   let capturedSetJob = null;
+  const algoParams = options.algoParams || {};
   const helperStub = {
     ...helper,
     cluster_process: () => false,
     create_core: () => ({
       from: coreEvents,
       emit_to: (name) => {
-        if (name === "algo_params") setImmediate(() => coreEvents.emit("algo_params", {}));
+        if (name === "algo_params") setImmediate(() => coreEvents.emit("algo_params", algoParams));
         if (name === "read_msr") setImmediate(() => coreEvents.emit("error", { message: "skip" }));
       },
     }),
@@ -403,6 +404,25 @@ test("test report duration formatting uses seconds and minutes", () => {
   );
 });
 
+test("mine can skip algo benchmark before connecting", async () => {
+  const miner = await loadMinerWithStubs({
+    argv: [
+      "node",
+      "mo-miner.js",
+      "mine",
+      "pool.example:1",
+      "wallet",
+      "x~kawpow",
+      "--bench_algo_params",
+      "0",
+    ],
+    algoParams: { kawpow: "gpu1*1" },
+  });
+
+  assert.equal(typeof miner.getSetJob(), "function");
+  assert.deepEqual(miner.sentMessages, []);
+});
+
 test("KawPow benchmark jobs include fixed nonce metadata", async () => {
   const autoBenchmark = await loadMinerWithStubs({
     algoParams: { kawpow: "gpu1*1" },
@@ -419,6 +439,24 @@ test("KawPow benchmark jobs include fixed nonce metadata", async () => {
     assert.equal(benchMessage.job.noncebytes, 8);
     assert.equal(benchMessage.job.nonceoffset, 32);
   }
+});
+
+test("pool login does not infer algo from pass when benchmarks are skipped", async () => {
+  await withMockPool({
+    pool: { pass: "x~kawpow" },
+    opt: {
+      bench_algo_params: 0,
+      job: { algo: null },
+      algo_params: { kawpow: { dev: "gpu1*1", perf: null } },
+    },
+  }, async ({ socket, writes }) => {
+    pool.connect_pool_throttle(0, function() {});
+    socket.emit("connect");
+    const loginMessage = writes[0];
+    assert.deepEqual(loginMessage.params.algo, []);
+    assert.deepEqual(loginMessage.params["algo-perf"], {});
+    assert.equal(loginMessage.params.pass, "x~kawpow");
+  });
 });
 
 test("fixed KawPow pools use Raven stratum subscribe and authorize", async () => {

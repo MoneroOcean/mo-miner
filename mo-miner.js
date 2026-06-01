@@ -200,6 +200,10 @@ function parse_args() {
   return true;
 }
 
+function normalizeAlgoName(algo) {
+  return algo && (algo.startsWith("c29") || algo === "cuckaroo") ? "c29" : algo;
+}
+
 function parseTestArgs(args) {
   if (args.length < 2) return o.print_help("Directive \"test\" needs two parameters");
   global.opt.job.algo = args.shift();
@@ -354,7 +358,7 @@ function set_algo_msr(algo) {
 
 function normalizedAlgo(prev_job) {
   const algo = prev_job.algo ? prev_job.algo : global.opt.job.algo;
-  return algo.startsWith("c29") || algo === "cuckaroo" ? "c29" : algo;
+  return normalizeAlgoName(algo);
 }
 
 function jobDev(algo) {
@@ -658,8 +662,22 @@ function add_algo_params(params) {
   }
 }
 
+function use_algo_param_benchmarks() {
+  return global.opt.bench_algo_params !== 0;
+}
+
+function prepare_fixed_algo_params() {
+  const algo = normalizeAlgoName(global.opt.job.algo);
+  if (!algo) return;
+  const algo_param = global.opt.algo_params[algo] || { dev: global.opt.job.dev, perf: null };
+  global.opt.job.algo = algo;
+  global.opt.algo_params = { [algo]: algo_param };
+}
+
 function start_after_algo_params() {
-  return bench_algos(start_mining);
+  if (use_algo_param_benchmarks()) return bench_algos(start_mining);
+  prepare_fixed_algo_params();
+  return start_mining();
 }
 
 function onComputeCoreClose() {
