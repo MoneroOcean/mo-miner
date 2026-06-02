@@ -46,21 +46,22 @@ function isDuplicatePathKey(key, pathKey) {
 }
 
 function withWindowsWorkerPath(env) {
-  const pathKey = normalizeWindowsPathKey(env);
-  const pathValue = env[pathKey] || "";
   const appDir = path.dirname(process.execPath);
-  env[pathKey] = [
+  return module.exports.withWindowsPathEntries(env, [
     appDir,
     path.join(appDir, "mo-miner"),
     process.cwd(),
     path.join(process.cwd(), "mo-miner"),
     path.join(__dirname, "build", "Release"),
-    pathValue,
-  ]
-    .filter(Boolean)
-    .join(path.delimiter);
-  return env;
+  ]);
 }
+
+module.exports.withWindowsPathEntries = function(env, entries) {
+  const pathKey = normalizeWindowsPathKey(env);
+  const pathValue = env[pathKey] || "";
+  env[pathKey] = [...entries, pathValue].filter(Boolean).join(path.delimiter);
+  return env;
+};
 
 function firstExistingPath(paths) {
   return paths.find((filePath) => filePath && fs.existsSync(filePath)) || paths[paths.length - 1];
@@ -256,7 +257,7 @@ function parseThreadDev(dev_part) {
 
 module.exports.is_valid_dev = function(dev) {
   return typeof dev === "string" && dev.split(",").every(function(dev_part) {
-    return /^(?:cpu\d*|gpu\d+)(?:\*[1-9]\d*)?(?:\^[1-9]\d*)?$/.test(dev_part);
+    return /^(?:cpu\d*|gpu\d+[oz]?)(?:\*[1-9]\d*)?(?:\^[1-9]\d*)?$/.test(dev_part);
   });
 };
 
@@ -343,22 +344,24 @@ module.exports.messageWorkers = function(msg) {
 
 function forceCloseSubprocess(worker) {
   if (isSubprocessClosed(worker)) return;
-  if (killWindowsProcessTree(worker)) return;
-  worker.kill("SIGKILL");
+  module.exports.killProcessTree(worker);
 }
 
 function isSubprocessClosed(worker) {
   return worker.exitCode !== null || worker.signalCode !== null || worker.killed;
 }
 
-function killWindowsProcessTree(worker) {
-  if (!is_windows_process || !worker.pid) return false;
+module.exports.killProcessTree = function(worker, signal = "SIGKILL") {
+  if (!is_windows_process || !worker.pid) {
+    worker.kill(signal);
+    return false;
+  }
   const killer = childProcess.spawn("taskkill", ["/pid", String(worker.pid), "/t", "/f"], {
     stdio: "ignore",
   });
-  killer.on("error", function() { worker.kill(); });
+  killer.on("error", function() { worker.kill(signal); });
   return true;
-}
+};
 
 function forceCloseClusterWorker(worker) {
   if (worker.isDead && worker.isDead()) return;
@@ -509,6 +512,13 @@ module.exports.target2diff = function(target) {
   if (target.length === 8) target = "00000000" + target;
   // need BE -> LE conversion here
   const div = BigInt("0x" + target.match(/.{2}/g).reverse().join(""));
+  if (div === BigInt(0)) return 0;
+  return BigInt("0xFFFFFFFFFFFFFFFF") / div;
+};
+
+module.exports.kawpowTarget2diff = function(target) {
+  const target64 = target.slice(0, 16).padEnd(16, "0");
+  const div = BigInt("0x" + target64);
   if (div === BigInt(0)) return 0;
   return BigInt("0xFFFFFFFFFFFFFFFF") / div;
 };

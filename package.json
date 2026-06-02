@@ -61,6 +61,7 @@
     "test:perf:cn-heavy/xhv": "node tests/run_perf.js cn-heavy/xhv",
     "test:perf:cn-heavy/tube": "node tests/run_perf.js cn-heavy/tube",
     "test:perf:cn/gpu": "node tests/run_perf.js cn/gpu",
+    "test:perf:kawpow": "node tests/run_perf.js kawpow",
     "test:perf:c29": "node tests/run_perf.js c29",
     "test:all": "npm test && npm run test:perf"
   },

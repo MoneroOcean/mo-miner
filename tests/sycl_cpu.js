@@ -6,7 +6,7 @@ const assert = require("node:assert/strict");
 const { getFirstSyclCpuDevice, runMinerTest } = require("./common/miner_command");
 const { hashTests } = require("./vectors");
 
-const CPU_TEST_TIMEOUT_MS = 3 * 60 * 1000;
+const CPU_TEST_TIMEOUT_MS = 15 * 60 * 1000;
 
 function cloneForSyclCpu(definition, dev) {
   const copy = JSON.parse(JSON.stringify(definition));
@@ -25,6 +25,7 @@ function requiredVector(name) {
 
 const syclCpuVectors = [
   requiredVector("cn/gpu gpu1*8"),
+  requiredVector("kawpow gpu1*256"),
   requiredVector("c29 proofsize 42 gpu1*1"),
 ];
 

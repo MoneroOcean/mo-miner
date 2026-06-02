@@ -19,10 +19,17 @@ typedef int (*gpu_c29_hash_fun)(
   const uint8_t* input, unsigned input_size, uint8_t* output,
   uint32_t* output_edges, uint64_t* pnonce, const std::string& dev_str
 );
+typedef int (*gpu_kawpow_hash_fun)(
+  unsigned job_ref, uint32_t height,
+  const uint8_t* input, unsigned input_size, uint8_t* output,
+  uint8_t* mix_hash, uint64_t* pnonce, uint64_t target,
+  unsigned intensity, bool is_test, const std::string& dev_str
+);
 static_assert(
   sizeof(cn_any_hash_fun) == sizeof(xmrig::cn_hash_fun) &&
   sizeof(cn_any_hash_fun) == sizeof(gpu_cn_hash_fun) &&
-  sizeof(cn_any_hash_fun) == sizeof(gpu_c29_hash_fun),
+  sizeof(cn_any_hash_fun) == sizeof(gpu_c29_hash_fun) &&
+  sizeof(cn_any_hash_fun) == sizeof(gpu_kawpow_hash_fun),
   "Compute function pointers differ in size!"
 );
 union FN {
@@ -30,8 +37,9 @@ union FN {
   xmrig::cn_hash_fun cpu;
   gpu_cn_hash_fun    gpu_cn;
   gpu_c29_hash_fun   gpu_c29;
+  gpu_kawpow_hash_fun gpu_kawpow;
 };
-enum DEV { CPU, RX_CPU, GPU, C29_GPU };
+enum DEV { CPU, RX_CPU, GPU, C29_GPU, KAWPOW_GPU };
 
 class Core: public AsyncWorker {
   const unsigned HASHRATE_COUNTER_INTERVAL = 10; // iterations to skip to update/check hashrate
@@ -45,7 +53,7 @@ class Core: public AsyncWorker {
 	   m_nonce_bytes, m_nonce_offset, m_c29_proof_size;
   uint32_t m_nonce32; // next nonce that will be used in an input
   uint64_t m_nonce64, m_nicehash_mask, m_target, m_timestamp, m_hash_count;
-  std::string m_algo_str, m_dev_str, m_seed_hex, m_input_hex, m_pool_id, m_worker_id, m_job_id;
+  std::string m_algo_str, m_dev_str, m_seed_hex, m_input_hex, m_pool_id, m_worker_id, m_job_id, m_header_hash;
   bool m_is_rx_jit;
   randomx_cache*   m_rx_cache;
   randomx_dataset* m_rx_dataset;
@@ -84,7 +92,7 @@ class Core: public AsyncWorker {
   void send_result(
     uint64_t nonce, unsigned noncebytes, const uint8_t* output,
     const uint32_t* edges = nullptr, unsigned c29_proof_size = 32,
-    const uint8_t* commitment = nullptr
+    const uint8_t* commitment = nullptr, const uint8_t* mix_hash = nullptr
   );
   void send_last_nonce(uint64_t nonce, unsigned noncebytes, const std::string& pool_id);
   void free_memory(

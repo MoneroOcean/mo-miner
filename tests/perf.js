@@ -3,7 +3,7 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { runMinerBench } = require("./common/miner_command");
+const { formatHashrate, runMinerBench } = require("./common/miner_command");
 const { perfTests } = require("./vectors");
 
 const selectedAlgo = process.env.MOMINER_PERF_ALGO || "";
@@ -11,6 +11,11 @@ const selectedTests = selectedAlgo ? perfTests.filter((definition) => definition
 
 if (selectedAlgo && selectedTests.length === 0) {
   throw new Error(`Unknown perf algo: ${selectedAlgo}`);
+}
+
+function assertAlgoParamsDevice(definition, dev) {
+  if (definition.algo !== "kawpow") return;
+  assert.match(dev, /(?:^|,)gpu\d+\*\d+(?:,|$)/, "kawpow should be auto-detected on a GPU with an intensity");
 }
 
 describe(selectedAlgo ? `proof-of-work performance: ${selectedAlgo}` : "proof-of-work performance", () => {
@@ -23,7 +28,8 @@ describe(selectedAlgo ? `proof-of-work performance: ${selectedAlgo}` : "proof-of
       }
 
       assert.ok(result.hashrate > 0, `${definition.name} reported invalid hashrate: ${result.hashrate}`);
-      t.diagnostic(`${definition.algo} (${result.dev}): ${result.hashrate.toFixed(2)} H/s`);
+      assertAlgoParamsDevice(definition, result.dev);
+      t.diagnostic(`${definition.algo} (${result.dev}): ${formatHashrate(result.hashrate)}`);
     });
   }
 });

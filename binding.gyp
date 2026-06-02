@@ -10,7 +10,9 @@
         "xmrig/crypto/common/VirtualMemory.cpp",
         "xmrig/crypto/common/HugePagesInfo.cpp",
         "xmrig/base/crypto/keccak.cpp",
+        "xmrig/base/crypto/sha3.cpp",
         "xmrig/backend/cpu/Cpu.cpp",
+        "xmrig/3rdparty/libethash/ethash_internal.c",
 
         "xmrig/crypto/cn/CnCtx.cpp",
         "xmrig/crypto/cn/CnHash.cpp",
@@ -212,7 +214,8 @@
       "sources": [
         "sycl/lib.cpp",
         "sycl/c29.cpp",
-        "sycl/cn-gpu.cpp"
+        "sycl/cn-gpu.cpp",
+        "sycl/kawpow.cpp"
       ],
       "include_dirs": [
         "xmrig"
@@ -261,8 +264,11 @@
             }
           },
           "sources": [
+            "sycl/ethash.cpp",
             "sycl/blake2b.cpp",
-            "xmrig/crypto/randomx/blake2/blake2b.c"
+            "xmrig/crypto/randomx/blake2/blake2b.c",
+            "xmrig/base/crypto/keccak.cpp",
+            "xmrig/base/crypto/sha3.cpp"
           ],
           "defines": [
             "MOMINER_SYCL_BUILD"

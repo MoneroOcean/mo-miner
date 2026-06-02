@@ -225,6 +225,20 @@ function handleResult(msg) {
     id: msg.value.worker_id, job_id: msg.value.job_id,
     nonce: msg.value.nonce, result: msg.value.hash
   };
+  const pool = global.opt.pools[msg.value.pool_id];
+  if (msg.value.mix_hash) {
+    const headerHash = resultHeaderHash(msg, pool);
+    if (pool && pool.submit_mode === "raven") {
+      return p.pool_write(msg.value.pool_id, {
+        jsonrpc: "2.0",
+        id: 3,
+        method: "mining.submit",
+        params: [pool.login, msg.value.job_id, "0x" + msg.value.nonce, "0x" + headerHash.slice(0, 64), "0x" + msg.value.mix_hash],
+      });
+    }
+    params.mixhash = msg.value.mix_hash;
+    if (headerHash) params.header_hash = headerHash.slice(0, 64);
+  }
   if (msg.value.commitment) params.commitment = msg.value.commitment;
   if (msg.value.edges) {
     params.pow = h.edge_hex2arr(msg.value.edges);
@@ -232,6 +246,13 @@ function handleResult(msg) {
     if (params.pow.length !== 42) params.nonce = Number.parseInt(params.nonce, 16);
   }
   p.pool_write(msg.value.pool_id, { jsonrpc: "2.0", id: 3, method: "submit", params: params });
+}
+
+function resultHeaderHash(msg, pool) {
+  if (msg.value.header_hash) return msg.value.header_hash;
+  if (!pool || !pool.last_job) return "";
+  if (pool.last_job.job_id && msg.value.job_id && pool.last_job.job_id !== msg.value.job_id) return "";
+  return firstTruthyOr("", pool.last_job.header_hash, pool.last_job.blob, pool.last_job.blob_hex);
 }
 
 // store max last nonce for background pool job to resume it from there
@@ -347,8 +368,10 @@ function baseJob(prev_job, algo, dev, pool_id) {
     dev:        dev,
     seed_hex:   orDefault(prev_job.seed_hash, prev_job.seed_hex),
     target:     orDefaultFn(prev_job.target, () => h.diff2target(prev_job.difficulty)),
-    worker_id:  firstTruthyOr(global.opt.pools[pool_id].worker_id, prev_job.id, prev_job.worker_id),
+    worker_id:  firstTruthyOr(global.opt.pools[pool_id].worker_id || global.opt.pools[pool_id].login,
+                              prev_job.id, prev_job.worker_id),
     job_id:     orDefault(prev_job.job_id, ""),
+    header_hash: orDefault(prev_job.header_hash, ""),
     nonce:      orDefault(prev_job.nonce, 0),
     height:     orDefault(prev_job.height, 0),
     thread_num: h.get_dev_threads(dev),
@@ -371,6 +394,14 @@ function addC29JobFields(job, prev_job) {
     job.blob_hex    = prev_job.blob_hex;
     job.nonceoffset = prev_job.nonceoffset;
   }
+}
+
+function addKawpowJobFields(job, prev_job) {
+  job.noncebytes = orDefault(prev_job.noncebytes, 8);
+  job.nonceoffset = typeof prev_job.nonceoffset !== "undefined" ? prev_job.nonceoffset : 32;
+
+  const blob = orDefault(prev_job.blob, prev_job.blob_hex);
+  job.blob_hex = blob && blob.length === 64 ? blob + "0000000000000000" : blob;
 }
 
 function addStandardJobFields(job, prev_job) {
@@ -422,6 +453,7 @@ function set_job(prev_job) {
   const pool_id = global.opt.pool_ids.active;
   const job = baseJob(prev_job, algo, dev, pool_id);
   if (algo === "c29") addC29JobFields(job, prev_job);
+  else if (algo === "kawpow") addKawpowJobFields(job, prev_job);
   else addStandardJobFields(job, prev_job);
   addNonceFields(job, prev_job, pool_id);
   set_algo_msr(algo);
@@ -429,14 +461,22 @@ function set_job(prev_job) {
   return job;
 }
 
+function prepareBenchmarkJob(job) {
+  if (job.algo === "kawpow") {
+    job.noncebytes = 8;
+    job.nonceoffset = 32;
+  }
+  return job;
+}
+
 function bench_algo(algo, cb) {
-  const job = {
+  const job = prepareBenchmarkJob({
     algo:     algo,
     dev:      global.opt.algo_params[algo].dev,
     blob_hex: global.opt.job.blob_hex,
     seed_hex: global.opt.job.seed_hex,
     pool_id:  "", // to drop last nonce messages from this job
-  };
+  });
   h.recreate_threads(job.dev, messageHandler);
   let timeout = setTimeout(function() {
     h.log_err("Benchmark " + algo + " algo (" + job.dev + ") timeout");
@@ -618,28 +658,51 @@ function add_algo_params(params) {
   }
 }
 
+function start_after_algo_params() {
+  return bench_algos(start_mining);
+}
+
+function onComputeCoreClose() {
+  process.exitCode = 0;
+}
+
+function createComputeCore() {
+  compute_core = h.create_core();
+  compute_core.from.on("close", onComputeCoreClose);
+  return compute_core;
+}
+
+function logMsrAccessError(v) {
+  if (v) h.log("Can't access MSR: " + JSON.stringify(v.message));
+}
+
+function readMsrThen(on_read, on_error) {
+  if (!use_msr_tuning()) return on_error();
+  compute_core.from.on("read_msr", on_read);
+  compute_core.from.on("error", function(v) {
+    logMsrAccessError(v);
+    return on_error(v);
+  });
+  compute_core.emit_to("read_msr", h.pack_msr(global.opt.default_msrs));
+}
+
+function startBenchJob() {
+  h.messageWorkers({type: "bench", job: last_job = prepareBenchmarkJob(global.opt.job)});
+}
+
 switch (directive) {
   case "mine":
     install_exit_handlers();
-    compute_core = h.create_core();
-    compute_core.from.on("close", function() { process.exitCode = 0; });
+    createComputeCore();
     compute_core.from.on("algo_params", function(v) {
       add_algo_params(v);
-      if (!use_msr_tuning()) {
-        global.opt.default_msrs = {};
-        bench_algos(start_mining);
-        return;
-      }
-      compute_core.from.on("read_msr", function(v) {
+      readMsrThen(function(v) {
         global.opt.default_msrs = h.unpack_msr(v);
-        bench_algos(start_mining);
+        start_after_algo_params();
+      }, function() {
+        global.opt.default_msrs = {};
+        start_after_algo_params();
       });
-      compute_core.from.on("error", function(v) {
-        h.log("Can't access MSR: " + JSON.stringify(v.message));
-        global.opt.default_msrs = {}; // do not try to write it later
-        bench_algos(start_mining);
-      });
-      compute_core.emit_to("read_msr", h.pack_msr(global.opt.default_msrs));
     });
     compute_core.emit_to("algo_params", detect_cpu());
     break;
@@ -653,26 +716,19 @@ switch (directive) {
     install_exit_handlers();
     h.recreate_threads(global.opt.job.dev, messageHandler);
     if (!use_msr_tuning()) {
-      h.messageWorkers({type: "bench", job: last_job = global.opt.job});
+      startBenchJob();
       break;
     }
-    compute_core = h.create_core();
-    compute_core.from.on("close", function() { process.exitCode = 0; });
-    compute_core.from.on("read_msr", function(v) {
+    createComputeCore();
+    readMsrThen(function(v) {
       global.opt.default_msrs = h.unpack_msr(v); // to restore them on exit
       set_algo_msr(global.opt.job.algo);
-      h.messageWorkers({type: "bench", job: last_job = global.opt.job});
-    });
-    compute_core.from.on("error", function(v) {
-      h.log("Can't access MSR: " + JSON.stringify(v.message));
-      h.messageWorkers({type: "bench", job: last_job = global.opt.job});
-    });
-    compute_core.emit_to("read_msr", h.pack_msr(global.opt.default_msrs));
+      startBenchJob();
+    }, startBenchJob);
     break;
 
   case "algo_params":
-    compute_core = h.create_core();
-    compute_core.from.on("close", function() { process.exitCode = 0; });
+    createComputeCore();
     compute_core.from.on("algo_params", function(v) {
       fs.writeSync(1, "MOMINER_ALGO_PARAMS " + JSON.stringify(v) + "\n");
       exit(0);

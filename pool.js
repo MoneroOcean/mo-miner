@@ -45,25 +45,31 @@ function isCurrentPoolSocket(pool_id, socket) {
   return global.opt.pools[pool_id].socket === socket;
 }
 
+function defaultPoolProtocol() {
+  const job = global.opt && global.opt.job;
+  return job && job.algo === "kawpow" ? "raven" : "login";
+}
+
+function usesMiningSubscribe(pool) {
+  return (pool.protocol || defaultPoolProtocol()) === "raven";
+}
+
 module.exports.pool_write = function(pool_id, json) {
   const message = JSON.stringify(json);
-  if (global.opt.pools[pool_id].socket) {
-    pool_log2(pool_id, "Sent to the pool: " + message);
-    global.opt.pools[pool_id].socket.write(message + "\n");
-    // sends keepalive if no submit/keepalive to pool for more than global.opt.pool_time.keepalive
-    if (global.opt.pools[pool_id].is_keepalive) {
-      if (global.opt.pools[pool_id].keepalive !== null)
-        clearTimeout(global.opt.pools[pool_id].keepalive);
-      global.opt.pools[pool_id].keepalive = setTimeout(function() {
-        global.opt.pools[pool_id].keepalive = null;
-        module.exports.pool_write(pool_id, {
-          jsonrpc: "2.0", id: 2, method: "keepalive", params: {}
-        });
-      }, global.opt.pool_time.keepalive * 1000);
-    }
-  } else {
-    pool_log2(pool_id, "Sent to the closed pool socket: " + message);
-  }
+  const pool = global.opt.pools[pool_id];
+  if (!pool.socket) return pool_log2(pool_id, "Sent to the closed pool socket: " + message);
+
+  pool_log2(pool_id, "Sent to the pool: " + message);
+  pool.socket.write(message + "\n");
+  // sends keepalive if no submit/keepalive to pool for more than global.opt.pool_time.keepalive
+  if (!pool.is_keepalive || usesMiningSubscribe(pool)) return;
+  if (pool.keepalive !== null) clearTimeout(pool.keepalive);
+  pool.keepalive = setTimeout(function() {
+    pool.keepalive = null;
+    module.exports.pool_write(pool_id, {
+      jsonrpc: "2.0", id: 2, method: "keepalive", params: {}
+    });
+  }, global.opt.pool_time.keepalive * 1000);
 };
 
 // soft kill pool connection
@@ -100,12 +106,73 @@ function applyLoginExtensions(pool_id, extensions) {
   if (extensions.includes("keepalive")) pool.is_keepalive = true;
 }
 
+function rememberPoolExtraNonce(pool_id, result) {
+  rememberPoolExtraNonceHex(pool_id, result.extra_nonce);
+}
+
 function isObject(value) {
   return value instanceof Object;
 }
 
 function isJobNotification(json) {
   return json.method === "job" && isObject(json.params);
+}
+
+function isRavenJobNotification(json) {
+  return json.method === "mining.notify" && Array.isArray(json.params) && json.params.length >= 6;
+}
+
+function isRavenSetTargetNotification(json) {
+  return json.method === "mining.set_target" && Array.isArray(json.params) && json.params.length >= 1;
+}
+
+function hexWithoutPrefix(value) {
+  return String(value || "").replace(/^0x/i, "");
+}
+
+function validExtraNonce(value) {
+  const hex = hexWithoutPrefix(value);
+  return hex.length > 0 && hex.length % 2 === 0 && hex.length <= 16 && !/[^0-9a-f]/i.test(hex) ? hex : "";
+}
+
+function subscribeExtraNonceCandidates(result) {
+  if (!Array.isArray(result)) return [];
+  return Array.isArray(result[0]) || result[0] == null ? [result[1]] : result;
+}
+
+function rememberPoolExtraNonceHex(pool_id, value) {
+  const extra_nonce = validExtraNonce(value);
+  if (extra_nonce) global.opt.pools[pool_id].extra_nonce = extra_nonce;
+}
+
+function rememberSubscribeExtraNonce(pool_id, result) {
+  rememberPoolExtraNonceHex(pool_id, subscribeExtraNonceCandidates(result).find(validExtraNonce));
+}
+
+function fixedHexBytesLE(hex, bytes) {
+  const padded = hex.padEnd(bytes * 2, "0").slice(0, bytes * 2);
+  return padded.match(/.{2}/g).reverse().join("");
+}
+
+function ravenExtraNonce(pool) {
+  return hexWithoutPrefix(pool.extra_nonce || "");
+}
+
+function ravenNonce(pool) {
+  return ravenExtraNonce(pool).padEnd(16, "0").slice(0, 16);
+}
+
+function ravenNonceMask(pool) {
+  return "ff".repeat(ravenExtraNonce(pool).length / 2).padEnd(16, "0");
+}
+
+function ravenBlob(headerHash, pool) {
+  return headerHash + fixedHexBytesLE(ravenExtraNonce(pool), 8);
+}
+
+function ravenTarget(pool, notifyTarget) {
+  const target = hexWithoutPrefix(notifyTarget || pool.raven_target || "");
+  return target.padEnd(64, "0");
 }
 
 function isLoginJob(json) {
@@ -176,14 +243,48 @@ function reactivateAlivePoolIfAny(active_pool, set_job) {
   return reactivatePrimaryPool(set_job) || reactivateBackupPool(active_pool, set_job);
 }
 
+function handleRavenSetTarget(pool_id, json) {
+  global.opt.pools[pool_id].raven_target = hexWithoutPrefix(json.params[0]);
+}
+
 function jobFromPoolMessage(pool_id, json) {
-  if (isJobNotification(json)) return json.params;
+  if (isJobNotification(json)) {
+    global.opt.pools[pool_id].submit_mode = null;
+    return json.params;
+  }
+  if (isRavenJobNotification(json)) {
+    const pool = global.opt.pools[pool_id];
+    const headerHash = hexWithoutPrefix(json.params[1]);
+    const seedHash = hexWithoutPrefix(json.params[2]);
+    const target = ravenTarget(pool, json.params[3]);
+    pool.submit_mode = "raven";
+    return {
+      algo: json.algo || "kawpow",
+      blob: ravenBlob(headerHash, pool),
+      header_hash: headerHash,
+      seed_hash: seedHash,
+      target: target,
+      job_id: json.params[0],
+      height: json.params[5],
+      nonce: ravenNonce(pool),
+      nicehash_mask: ravenNonceMask(pool),
+      noncebytes: 8,
+      nonceoffset: 32,
+    };
+  }
   if (isLoginJob(json)) { // login job
+    global.opt.pools[pool_id].submit_mode = null;
     if ("id" in json.result) global.opt.pools[pool_id].worker_id = json.result.id;
+    rememberPoolExtraNonce(pool_id, json.result);
     applyLoginExtensions(pool_id, json.result.extensions);
     return json.result.job;
   }
   return null;
+}
+
+function jobDifficulty(job) {
+  if (job.algo === "kawpow" && job.target) return h.kawpowTarget2diff(job.target);
+  return job.target ? h.target2diff(job.target) : job.difficulty;
 }
 
 function activatePoolForJob(pool_id, active_pool) {
@@ -219,7 +320,7 @@ function handlePoolJob(pool_id, job, set_job) {
   if (pool_id === global.opt.pool_ids.active) {
     const last_job = set_job(job);
     pool_log(pool_id, "Got new " + last_job.algo + " algo job with " +
-                     (job.target ? h.target2diff(job.target) : job.difficulty) + " diff" +
+                     jobDifficulty(job) + " diff" +
 	             (job.height ? " and " + job.height + " height" : "")
     );
   } else {
@@ -227,13 +328,29 @@ function handlePoolJob(pool_id, job, set_job) {
   }
 }
 
-function handleLoginResponse(pool_id, is_err, is_ok, err_msg) {
-  if (is_err) return pool_log_err(pool_id, "Login to the pool failed" + err_msg);
+function handleLoginResponse(pool_id, is_err, is_ok, err_msg, json) {
+  if (is_err || json.result === false)
+    return pool_log_err(pool_id, "Login to the pool failed" + (err_msg || ": Login rejected"));
   if (is_ok) return pool_log(pool_id, "Login to the pool succeeded");
 }
 
+function handleSubscribeResponse(pool_id, is_err, is_ok, err_msg, json) {
+  if (is_err) return pool_log_err(pool_id, "Subscribe to the pool failed" + err_msg);
+  if (!is_ok) return;
+  rememberSubscribeExtraNonce(pool_id, json.result);
+  const pool = global.opt.pools[pool_id];
+  return module.exports.pool_write(pool_id, {
+    jsonrpc: "2.0", id: 2, method: "mining.authorize", params: [pool.login, pool.pass]
+  });
+}
+
+function handleAuthorizeResponse(pool_id, is_err, is_ok, err_msg, json) {
+  if (!is_err && json.result === true) return pool_log(pool_id, "Login to the pool succeeded");
+  return pool_log_err(pool_id, "Login to the pool failed" + (err_msg || ": Authorization rejected"));
+}
+
 function handleShareResponse(pool_id, is_err, is_ok, err_msg) {
-  if (is_err) {
+  if (is_err || is_ok === false) {
     ++ global.opt.pools[pool_id].bad_shares;
     return pool_log_err(pool_id, "Share rejected by the pool " + poolShareStats(pool_id) + err_msg);
   }
@@ -246,18 +363,36 @@ function handleShareResponse(pool_id, is_err, is_ok, err_msg) {
 function handlePoolResponse(pool_id, json) {
   const is_err  = "error" in json && json.error !== null;
   const err_msg = poolErrorMessage(json, is_err);
-  const is_ok   = "result" in json && json.result !== null;
-  const handler = poolResponseHandler(json.id);
-  return handler(pool_id, is_err, is_ok, err_msg);
+  const is_ok   = "result" in json && json.result !== null && json.result !== false;
+  rememberPoolResponseMetadata(pool_id, json.result);
+  const handler = poolResponseHandler(pool_id, json.id);
+  return handler(pool_id, is_err, is_ok, err_msg, json);
 }
 
-function poolResponseHandler(id) {
-  if (id === 1) return handleLoginResponse; // login response
-  if (id === 2) return function() {}; // keepalive response
+function rememberPoolResponseMetadata(pool_id, result) {
+  if (!isObject(result)) return;
+
+  const pool = global.opt.pools[pool_id];
+  if ("id" in result) pool.worker_id = result.id;
+  rememberPoolExtraNonce(pool_id, result);
+  applyLoginExtensions(pool_id, result.extensions);
+}
+
+function ignorePoolResponse() {}
+
+function poolResponseHandler(pool_id, id) {
+  if (usesMiningSubscribe(global.opt.pools[pool_id])) {
+    if (id === 1) return handleSubscribeResponse; // mining.subscribe response
+    if (id === 2) return handleAuthorizeResponse; // mining.authorize response
+  } else {
+    if (id === 1) return handleLoginResponse; // login response
+    if (id === 2) return ignorePoolResponse; // keepalive response
+  }
   return handleShareResponse; // share submit response
 }
 
 function pool_message(pool_id, json, set_job) {
+  if (isRavenSetTargetNotification(json)) return handleRavenSetTarget(pool_id, json);
   const job = jobFromPoolMessage(pool_id, json);
   if (job) return handlePoolJob(pool_id, job, set_job);
   if ("id" in json) return handlePoolResponse(pool_id, json);
@@ -348,9 +483,10 @@ function scheduleInitialJobTimeout(pool_id, socket, pool_err) {
 function handlePoolConnect(pool_id, socket, pool) {
   if (!isCurrentPoolSocket(pool_id, socket)) return;
   pool_log1(pool_id, "Connected to the pool");
-  module.exports.pool_write(pool_id, {
-    jsonrpc: "2.0", id: 1, method: "login", params: poolLoginParams(pool)
-  });
+  const request = usesMiningSubscribe(pool) ?
+    { jsonrpc: "2.0", id: 1, method: "mining.subscribe", params: [o.agent_str] } :
+    { jsonrpc: "2.0", id: 1, method: "login", params: poolLoginParams(pool) };
+  return module.exports.pool_write(pool_id, request);
 }
 
 function splitPoolMessages(pool_data_buff) {

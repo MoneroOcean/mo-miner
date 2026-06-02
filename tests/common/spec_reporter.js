@@ -3,6 +3,22 @@
 const { Transform } = require("node:stream");
 const { spec } = require("node:test/reporters");
 
+function formatDurationMs(durationMs, raw = String(durationMs)) {
+  if (durationMs >= 60 * 1000) return `${(durationMs / (60 * 1000)).toFixed(2)} min`;
+  if (durationMs >= 1000) return `${(durationMs / 1000).toFixed(2)} s`;
+  return `${raw}ms`;
+}
+
+function rewriteReporterDurations(text) {
+  return text
+    .replace(/\(([0-9]+(?:\.[0-9]+)?)ms\)/g, (_match, raw) =>
+      `(${formatDurationMs(Number.parseFloat(raw), raw)})`)
+    .replace(/\bduration_ms ([0-9]+(?:\.[0-9]+)?)/g, (match, raw) => {
+      const formatted = formatDurationMs(Number.parseFloat(raw), raw);
+      return formatted.endsWith("ms") ? match : `duration ${formatted}`;
+    });
+}
+
 class SpacedSpecReporter extends Transform {
   constructor() {
     super({ writableObjectMode: true });
@@ -31,7 +47,7 @@ class SpacedSpecReporter extends Transform {
   }
 
   rewriteLine(line) {
-    let rewritten = line;
+    let rewritten = rewriteReporterDurations(line);
     if (/^\s*▶ /.test(rewritten) && this.lastPrintedNonEmptyLine) rewritten = "\n" + rewritten;
     if (rewritten.trim()) this.lastPrintedNonEmptyLine = rewritten.trimEnd();
     return rewritten;
@@ -57,3 +73,5 @@ class SpacedSpecReporter extends Transform {
 }
 
 module.exports = SpacedSpecReporter;
+module.exports.formatDurationMs = formatDurationMs;
+module.exports.rewriteReporterDurations = rewriteReporterDurations;

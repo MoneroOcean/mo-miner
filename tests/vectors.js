@@ -181,6 +181,22 @@ const hashTests = [
     expected: dup("e55cb23e51649a59b127b96b515f2bf7bfea199741a0216cf838ded06eff82df", 8),
   },
   {
+    name: "kawpow gpu1*256",
+    gpu: true,
+    timeoutMs: 15 * 60 * 1000,
+    job: {
+      algo: "kawpow",
+      dev: "gpu1*256",
+      height: 0,
+      noncebytes: 8,
+      nonceoffset: 32,
+      blob_hex: "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0100000000000000",
+    },
+    expected:
+      "fd91ea3ed018d9d823fa219f7d6bce93ba920f318f8e9b934ebb19290aa112c8 " +
+      "60abafe4148f34284b2c9e2e4a222ddcba272cb0669a8673cc1d5934ba5ecbfc",
+  },
+  {
     name: "c29 proofsize 32 gpu1*1",
     gpu: true,
     timeoutMs: 10 * 60 * 1000,
@@ -222,7 +238,7 @@ for (const definition of hashTests) {
     autoDev: true,
     name: algo,
     timeoutMs: definition.timeoutMs || 3 * 60 * 1000,
-    job: { algo },
+    job: algo === "kawpow" ? { ...definition.job, dev: undefined } : { algo },
   });
 }
 

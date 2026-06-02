@@ -127,7 +127,7 @@ void Core::send_error(const std::string& str) {
 void Core::send_result(
   const uint64_t nonce, const unsigned noncebytes, const uint8_t* const output,
   const uint32_t* const edges, const unsigned c29_proof_size,
-  const uint8_t* const commitment
+  const uint8_t* const commitment, const uint8_t* const mix_hash
 ) {
   MessageValues values;
 
@@ -149,6 +149,11 @@ void Core::send_result(
     values["commitment"] = hash_bin2hex(commitment, commitment_hex);
   }
 
+  if (mix_hash) {
+    char mix_hash_hex[HASH_LEN * 2 + 1];
+    values["mix_hash"] = hash_bin2hex(mix_hash, mix_hash_hex);
+  }
+
   // edges hex
   if (edges) {
     std::string edges_hex;
@@ -164,6 +169,7 @@ void Core::send_result(
   values["pool_id"]   = m_pool_id;
   values["worker_id"] = m_worker_id;
   values["job_id"]    = m_job_id;
+  if (!m_header_hash.empty()) values["header_hash"] = m_header_hash;
   send_msg("result", values);
 }
 
@@ -178,6 +184,46 @@ void Core::send_last_nonce(const uint64_t nonce, const unsigned noncebytes, cons
   result["nonce"]   = nonce_hex;
   result["pool_id"] = pool_id;
   send_msg("last_nonce", result);
+}
+
+static uint64_t parse_padded_le_hex(const std::string& hex, const unsigned bytes) {
+  bool error = false;
+  uint64_t value = 0;
+  for (unsigned i = 0; i < bytes; ++i) {
+    const unsigned pos = i * 2;
+    const unsigned char byte =
+      (hf_hex2bin(pos < hex.size() ? hex[pos] : '0', error) << 4) |
+       hf_hex2bin(pos + 1 < hex.size() ? hex[pos + 1] : '0', error);
+    value |= static_cast<uint64_t>(byte) << (i * 8);
+  }
+  if (error) throw std::string("Bad target hex");
+  return value;
+}
+
+static uint64_t parse_high_target_word(const std::string& target) {
+  std::string target64 = target.substr(0, sizeof(uint64_t) * 2);
+  target64.resize(sizeof(uint64_t) * 2, '0');
+  bool error = false;
+  for (const char c : target64) hf_hex2bin(c, error);
+  if (error) throw std::string("Bad target hex");
+  char* end = nullptr;
+  const uint64_t value = strtoull(target64.c_str(), &end, 16);
+  if (end == target64.c_str() || *end || value == 0) throw std::string("Bad target hex");
+  return value;
+}
+
+static uint64_t parse_target_hex(const std::string& target, const bool is_kawpow_target) {
+  if (is_kawpow_target || target.size() > sizeof(uint64_t) * 2) return parse_high_target_word(target);
+
+  const uint64_t value = parse_padded_le_hex(target, target.size() <= sizeof(uint32_t) * 2 ?
+                                                    sizeof(uint32_t) : sizeof(uint64_t));
+  if (value == 0) throw std::string("Bad target hex");
+  if (target.size() > sizeof(uint32_t) * 2) return value;
+  return 0xFFFFFFFFFFFFFFFFULL / (0xFFFFFFFFULL / value);
+}
+
+static bool nonce_overflowed(const uint64_t previous, const uint64_t next, const uint64_t mask) {
+  return mask ? (previous & mask) != (next & mask) : previous > next;
 }
 
 static void free_mem(void* const mem) { _mm_free(mem); }
@@ -232,24 +278,8 @@ bool Core::process_message(const std::string& type, const MessageValues& v) {
     if (!v.contains("job_id"))    throw std::string("Missing job_id job key");
     const std::string new_target_str = v.at("target");
 
-    uint64_t new_target;
-    if (new_target_str.size() <= sizeof(uint32_t)*2) {
-      uint32_t tmp = 0;
-      char str[sizeof(uint32_t)*2 + 1] = "00000000";
-      memcpy(str, new_target_str.c_str(), new_target_str.size());
-      if ( !hex2bin(str, sizeof(uint32_t), reinterpret_cast<unsigned char*>(&tmp)) ||
-           tmp == 0 ) throw std::string("Bad target hex");
-      new_target = 0xFFFFFFFFFFFFFFFFULL / (0xFFFFFFFFULL / static_cast<uint64_t>(tmp));
-
-    } else if (new_target_str.size() <= sizeof(uint64_t)*2) {
-       uint64_t tmp = 0;
-       char str[sizeof(uint64_t)*2 + 1] = "0000000000000000";
-       memcpy(str, new_target_str.c_str(), new_target_str.size());
-       if ( !hex2bin(str, sizeof(uint64_t), reinterpret_cast<unsigned char*>(&tmp)) ||
-            tmp == 0 ) throw std::string("Bad target hex");
-       new_target = tmp;
-
-    } else throw std::string("Bad target hex");
+    const bool is_kawpow_target = v.contains("algo") && v.at("algo") == "kawpow";
+    const uint64_t new_target = parse_target_hex(new_target_str, is_kawpow_target);
 
     const uint64_t last_nonce = m_nonce_bytes == 4 ? m_nonce32 : m_nonce64;
     const std::string prev_pool_id = m_pool_id;
@@ -258,12 +288,13 @@ bool Core::process_message(const std::string& type, const MessageValues& v) {
       m_pool_id   = v.at("pool_id");
       m_worker_id = v.at("worker_id");
       m_job_id    = v.at("job_id");
+      m_header_hash = v.contains("header_hash") ? v.at("header_hash") : "";
     });
     if (last_nonce) send_last_nonce(last_nonce, m_nonce_bytes, prev_pool_id);
 
   } else if (type == "bench") {
     debug_startup("process bench start");
-    set_job(true, false, v);
+    set_job(true, true, v);
     debug_startup("process bench done");
     m_target = 0;
 
@@ -434,6 +465,8 @@ void Core::Execute() {
       init_runtime();
       int c29_sols;
       uint64_t c29_nonce;
+      int kawpow_sols;
+      uint64_t kawpow_nonce;
       try {
         switch (m_dev) {
           case DEV::CPU:
@@ -448,6 +481,14 @@ void Core::Execute() {
 	      m_job_ref, m_c29_proof_size, m_input, m_input_len, m_output,
               static_cast<uint32_t*>(m_spads), &c29_nonce, m_dev_str
 	    );
+            break;
+          case DEV::KAWPOW_GPU:
+            std::memcpy(&kawpow_nonce, m_input + m_nonce_offset, sizeof(kawpow_nonce));
+            kawpow_sols = m_fn.gpu_kawpow(
+              m_job_ref, m_height, m_input, m_input_len, m_output,
+              static_cast<uint8_t*>(m_spads), &kawpow_nonce, m_target,
+              m_batch, !m_nonce32 && !m_nonce64, m_dev_str
+            );
             break;
 
           case DEV::RX_CPU: throw "Internal error: Unreachable code executed";
@@ -464,6 +505,18 @@ void Core::Execute() {
 
       if (!m_nonce32 && !m_nonce64) { // test job
 	m_input_len = 0; // do not produce any more test jobs for async GPU code like in c29
+        if (m_dev == DEV::KAWPOW_GPU) {
+          if (kawpow_sols == 1) {
+            char hash[HASH_LEN*2+1], mix[HASH_LEN*2+1];
+            send_msg("test", "result", std::string(hash_bin2hex(hash, 0)) + " " +
+                                      hash_bin2hex(static_cast<uint8_t*>(m_spads), mix));
+            set_fn(nullptr);
+          } else {
+            send_error("No kawpow test result");
+            set_fn(nullptr);
+          }
+          continue;
+        }
         if (m_dev == DEV::C29_GPU && c29_sols == 0) {
           std::this_thread::sleep_for(std::chrono::milliseconds(100));
           continue;
@@ -487,6 +540,19 @@ void Core::Execute() {
       }
 
       m_hash_count += m_batch; // here we do not need mutex since there are no threads
+      if (m_dev == DEV::KAWPOW_GPU) {
+        const uint64_t prev_nonce = m_nonce64;
+        if (kawpow_sols == 1 && m_target)
+          send_result(kawpow_nonce, 8, m_output, nullptr, 32, nullptr, static_cast<uint8_t*>(m_spads));
+
+        std::memcpy(m_input + m_nonce_offset, &m_nonce64, sizeof(m_nonce64));
+        m_nonce64 += m_nonce_step;
+        if (m_target && nonce_overflowed(prev_nonce, m_nonce64, m_nicehash_mask)) {
+          send_error("Nonce overflow");
+          set_fn(nullptr);
+        }
+        continue;
+      }
       if (m_nonce_bytes == 4) {
         const uint32_t prev_nonce = m_nonce32;
 
@@ -506,9 +572,7 @@ void Core::Execute() {
         }
 
 	// check that current nonce is greater than previous one and nince hash protected nonce part is not changed
-        if (m_target && ( m_nicehash_mask ? (prev_nonce & static_cast<uint32_t>(m_nicehash_mask)) != (m_nonce32 & static_cast<uint32_t>(m_nicehash_mask)) :
-                          prev_nonce > m_nonce32 )
-        ) {
+        if (m_target && nonce_overflowed(prev_nonce, m_nonce32, static_cast<uint32_t>(m_nicehash_mask))) {
           send_error("Nonce overflow");
           set_fn(nullptr);
           continue;
@@ -532,9 +596,7 @@ void Core::Execute() {
         }
 
 	// check that current nonce is greater than previous one and nince hash protected nonce part is not changed
-        if (m_target && ( m_nicehash_mask ? (prev_nonce & m_nicehash_mask) != (m_nonce64 & m_nicehash_mask) :
-                          prev_nonce > m_nonce64 )
-        ) {
+        if (m_target && nonce_overflowed(prev_nonce, m_nonce64, m_nicehash_mask)) {
           send_error("Nonce overflow");
           set_fn(nullptr);
           continue;

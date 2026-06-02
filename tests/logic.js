@@ -13,13 +13,17 @@ const vm = require("node:vm");
 const opts = require("../opts.js");
 const helper = require("../helper.js");
 const pool = require("../pool.js");
+const { formatHashrate } = require("./common/miner_command");
+const specReporter = require("./common/spec_reporter");
 const repoRoot = path.join(__dirname, "..");
 
 async function loadMinerWithStubs() {
   const source = fs.readFileSync(path.join(repoRoot, "mo-miner.js"), "utf8");
   const moduleStub = { exports: {} };
+  const globalStub = {};
   const coreEvents = new events.EventEmitter();
   const sentMessages = [];
+  const poolWrites = [];
   let capturedSetJob = null;
   const helperStub = {
     ...helper,
@@ -41,11 +45,17 @@ async function loadMinerWithStubs() {
   };
   const poolStub = {
     connect_pool_throttle: (pool_id, setJob) => { capturedSetJob = setJob; },
+    pool_write: (pool_id, json) => poolWrites.push({ pool_id, json }),
   };
   const processStub = Object.create(process);
-  processStub.argv = ["node", "mo-miner.js", "mine", "pool.example:1", "user"];
+  processStub.argv = options.argv || ["node", "mo-miner.js", "mine", "pool.example:1", "user"];
   processStub.env = { ...process.env };
   processStub.exit = (code) => { throw new Error(`unexpected exit ${code}`); };
+  const detachedSetTimeout = (...args) => {
+    const timer = setTimeout(...args);
+    if (timer.unref) timer.unref();
+    return timer;
+  };
   const requireStub = (id) => {
     if (id === "./helper.js") return helperStub;
     if (id === "./pool.js") return poolStub;
@@ -54,14 +64,77 @@ async function loadMinerWithStubs() {
   };
 
   vm.runInNewContext(
-    `(function(require, module, exports, process, global, console, Buffer, setTimeout, setInterval, setImmediate) { ${source}\n})`,
+    `(function(require, module, exports, process, global, console, Buffer, setTimeout, clearTimeout, setInterval, setImmediate) { ${source}\nmodule.exports.__test = { messageHandler };\n})`,
     {},
-  )(requireStub, moduleStub, moduleStub.exports, processStub, {}, console, Buffer, setTimeout, () => {}, setImmediate);
+  )(requireStub, moduleStub, moduleStub.exports, processStub, globalStub, console, Buffer, detachedSetTimeout, clearTimeout, () => {}, setImmediate);
 
-  for (let i = 0; i < 10 && !capturedSetJob; ++i) {
+  const hasExpectedMessage = () =>
+    options.waitForMessageType && sentMessages.some((msg) => msg.type === options.waitForMessageType);
+  for (let i = 0; i < 10 && !capturedSetJob && !hasExpectedMessage(); ++i) {
     await new Promise((resolve) => setImmediate(resolve));
   }
-  return { getSetJob: () => capturedSetJob, sentMessages };
+  return {
+    getSetJob: () => capturedSetJob,
+    global: globalStub,
+    messageHandler: moduleStub.exports.__test.messageHandler,
+    poolWrites,
+    sentMessages,
+  };
+}
+
+function mockPoolConfig(overrides = {}) {
+  return {
+    url: "pool.example",
+    port: 1,
+    is_tls: false,
+    is_keepalive: false,
+    socket: null,
+    keepalive: null,
+    last_job: null,
+    last_connect_time: 0,
+    good_shares: 0,
+    bad_shares: 0,
+    login: "wallet",
+    pass: "x",
+    ...overrides,
+  };
+}
+
+function mockPoolOptions(options = {}) {
+  return {
+    log_level: 0,
+    job: {},
+    pools: [mockPoolConfig(options.pool)],
+    pool_ids: { active: 0, primary: 0, donate: null },
+    pool_time: { first_job_wait: 0.001, connect_throttle: 60, close_wait: 60, keepalive: 60, ...options.pool_time },
+    algo_params: {},
+    ...options.opt,
+  };
+}
+
+async function withMockPool(options, callback) {
+  const originalConnect = net.connect;
+  const originalSwitchPool = pool.switch_pool;
+  const previousOpt = global.opt;
+  const socket = options.socket || new events.EventEmitter();
+  const writes = [];
+  let switched = false;
+
+  socket.write = options.write || function(message) { writes.push(JSON.parse(message)); };
+  socket.destroy = options.destroy || function() { this.destroyed = true; };
+  net.connect = function() { return socket; };
+  if (options.switchPool) pool.switch_pool = function() { switched = true; };
+  global.opt = mockPoolOptions(options);
+
+  try {
+    return await callback({ socket, writes, switched: () => switched, poolConfig: global.opt.pools[0] });
+  } finally {
+    for (const poolConfig of global.opt.pools) poolConfig.socket = null;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    net.connect = originalConnect;
+    pool.switch_pool = originalSwitchPool;
+    global.opt = previousOpt;
+  }
 }
 
 describe("JavaScript logic tests", () => {
@@ -214,6 +287,26 @@ test("JSON dev options reject invalid device specs", () => {
   assert.doesNotMatch(result.stderr, /Cannot find module|Compute core/);
 });
 
+test("JSON dev options accept explicit SYCL GPU platform suffixes", () => {
+  const result = spawnSync(process.execPath, [
+    "mo-miner.js",
+    "bench",
+    "cn/gpu",
+    "--job",
+    JSON.stringify({ dev: "gpu1o*1280" }),
+    "--pool_time",
+    JSON.stringify({ stats: -1 }),
+  ], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    timeout: 5000,
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.doesNotMatch(result.stderr, /invalid dev value: gpu1o\*1280/);
+  assert.match(result.stderr, /pool_time\.stats param must be non-negative/);
+});
+
 test("mine pool URI rejects out-of-range ports", () => {
   const result = spawnSync(process.execPath, [
     "mo-miner.js",
@@ -287,41 +380,94 @@ test("diff2target handles numeric zero difficulty", () => {
   assert.equal(helper.diff2target(-1), "0000000000000000");
 });
 
+test("kawpowTarget2diff uses the Eth-style high target word", () => {
+  assert.equal(
+    helper.kawpowTarget2diff("00000000117edbe19772d0000000000000000000000000000000000000000000"),
+    62845243145n
+  );
+});
+
+test("perf hashrate formatting uses megahashes above one megahash", () => {
+  assert.equal(formatHashrate(999999.99), "999999.99 H/s");
+  assert.equal(formatHashrate(1000000), "1.00 MH/s");
+  assert.equal(formatHashrate(4503299.5), "4.50 MH/s");
+});
+
+test("test report duration formatting uses seconds and minutes", () => {
+  assert.equal(specReporter.formatDurationMs(999.9, "999.9"), "999.9ms");
+  assert.equal(specReporter.formatDurationMs(1000, "1000"), "1.00 s");
+  assert.equal(specReporter.formatDurationMs(198896.794728, "198896.794728"), "3.31 min");
+  assert.equal(
+    specReporter.rewriteReporterDurations("  ✔ kawpow (198896.794728ms)\nℹ duration_ms 198936.440599\n"),
+    "  ✔ kawpow (3.31 min)\nℹ duration 3.32 min\n",
+  );
+});
+
+test("KawPow benchmark jobs include fixed nonce metadata", async () => {
+  const autoBenchmark = await loadMinerWithStubs({
+    algoParams: { kawpow: "gpu1*1" },
+    waitForMessageType: "bench",
+  });
+  const directBenchmark = await loadMinerWithStubs({
+    argv: ["node", "mo-miner.js", "bench", "kawpow"],
+    waitForMessageType: "bench",
+  });
+
+  for (const miner of [autoBenchmark, directBenchmark]) {
+    const benchMessage = miner.sentMessages.find((msg) => msg.type === "bench");
+    assert.equal(benchMessage.job.algo, "kawpow");
+    assert.equal(benchMessage.job.noncebytes, 8);
+    assert.equal(benchMessage.job.nonceoffset, 32);
+  }
+});
+
+test("fixed KawPow pools use Raven stratum subscribe and authorize", async () => {
+  let jobMessage = null;
+  await withMockPool({
+    pool: { is_keepalive: true, login: "RVNwallet.rig01" },
+    pool_time: { keepalive: 0.001 },
+    opt: { job: { algo: "kawpow" } },
+  }, async ({ socket, writes, poolConfig }) => {
+    pool.connect_pool_throttle(0, (job) => {
+      jobMessage = job;
+      return job;
+    });
+    socket.emit("connect");
+    assert.equal(writes[0].method, "mining.subscribe");
+
+    socket.emit("data", Buffer.from(
+      '{"jsonrpc":"2.0","id":1,"error":null,"result":["0a1fa6c0","e0"]}\n' +
+      '{"jsonrpc":"2.0","id":2,"error":null,"result":true}\n' +
+      '{"method":"mining.notify","params":["203d","' + "00".repeat(32) + '","' + "11".repeat(32) + '","' +
+      "00000000ffff0000000000000000000000000000000000000000000000000000" +
+      '",true,4390582,"1b01e5f2"],"id":null,"jsonrpc":"2.0"}\n'
+    ));
+
+    assert.equal(writes[1].method, "mining.authorize");
+    assert.deepEqual(writes[1].params, ["RVNwallet.rig01", "x"]);
+    assert.equal(poolConfig.extra_nonce, "0a1fa6c0");
+    assert.equal(jobMessage.job_id, "203d");
+    assert.equal(jobMessage.blob, "00".repeat(32) + "00000000c0a61f0a");
+    assert.equal(jobMessage.nonce, "0a1fa6c000000000");
+    assert.equal(jobMessage.nicehash_mask, "ffffffff00000000");
+    assert.equal(writes.length, 2);
+  });
+});
+
 test("stale pool timeout does not destroy a replacement socket", async () => {
-  const originalConnect = net.connect;
-  const previousOpt = global.opt;
   const staleSocket = new events.EventEmitter();
   const replacementSocket = new events.EventEmitter();
-  staleSocket.write = replacementSocket.write = function() {};
-  staleSocket.destroy = function() { this.destroyed = true; };
   replacementSocket.destroy = function() { this.destroyed = true; };
-  net.connect = function() { return staleSocket; };
-  global.opt = {
-    log_level: 0,
-    pools: [{
-      url: "pool.example",
-      port: 1,
-      is_tls: false,
-      is_keepalive: false,
-      socket: null,
-      keepalive: null,
-      last_job: null,
-      last_connect_time: 0,
-    }],
-    pool_ids: { active: 0, primary: 0, donate: null },
-    pool_time: { first_job_wait: 0.001, connect_throttle: 60, close_wait: 60, keepalive: 60 },
-    algo_params: {},
-  };
 
-  try {
+  await withMockPool({
+    socket: staleSocket,
+    pool_time: { first_job_wait: 0.001 },
+  }, async ({ poolConfig }) => {
     pool.connect_pool_throttle(0, function() {});
-    global.opt.pools[0].socket = replacementSocket;
+    poolConfig.socket = replacementSocket;
     await new Promise((resolve) => setTimeout(resolve, 10));
     assert.equal(replacementSocket.destroyed, undefined);
-  } finally {
-    net.connect = originalConnect;
-    global.opt = previousOpt;
-  }
+  });
 });
 
 test("TLS pools verify certificates only when explicitly enabled", async () => {
@@ -373,87 +519,68 @@ test("TLS pools verify certificates only when explicitly enabled", async () => {
 });
 
 test("malformed pool job data closes the pool instead of throwing", async () => {
-  const originalConnect = net.connect;
-  const originalSwitchPool = pool.switch_pool;
-  const previousOpt = global.opt;
-  const socket = new events.EventEmitter();
-  let switched = false;
-  socket.write = function() {};
-  socket.destroy = function() { this.destroyed = true; };
-  net.connect = function() { return socket; };
-  pool.switch_pool = function() { switched = true; };
-  global.opt = {
-    log_level: 0,
-    pools: [{
-      url: "pool.example",
-      port: 1,
-      is_tls: false,
-      is_keepalive: false,
-      socket: null,
-      keepalive: null,
-      last_job: null,
-      last_connect_time: 0,
-    }],
-    pool_ids: { active: 0, primary: 0, donate: null },
-    pool_time: { first_job_wait: 0.001, connect_throttle: 60, close_wait: 60, keepalive: 60 },
-    algo_params: {},
-  };
-
-  try {
+  await withMockPool({
+    switchPool: true,
+    pool_time: { first_job_wait: 0.001 },
+  }, async ({ socket, switched }) => {
     pool.connect_pool_throttle(0, () => ({ algo: "cn/0" }));
     assert.doesNotThrow(() => {
       socket.emit("data", Buffer.from('{"method":"job","params":{"target":"zz"}}\n'));
     });
     assert.equal(socket.destroyed, true);
     assert.equal(global.opt.pools[0].socket, null);
-    assert.equal(switched, true);
+    assert.equal(switched(), true);
     await new Promise((resolve) => setTimeout(resolve, 10));
-  } finally {
-    net.connect = originalConnect;
-    pool.switch_pool = originalSwitchPool;
-    global.opt = previousOpt;
-  }
+  });
 });
 
 test("oversized pool line buffer closes the pool", async () => {
-  const originalConnect = net.connect;
-  const originalSwitchPool = pool.switch_pool;
-  const previousOpt = global.opt;
-  const socket = new events.EventEmitter();
-  let switched = false;
-  socket.write = function() {};
-  socket.destroy = function() { this.destroyed = true; };
-  net.connect = function() { return socket; };
-  pool.switch_pool = function() { switched = true; };
-  global.opt = {
-    log_level: 0,
-    pools: [{
-      url: "pool.example",
-      port: 1,
-      is_tls: false,
-      is_keepalive: false,
-      socket: null,
-      keepalive: null,
-      last_job: null,
-      last_connect_time: 0,
-    }],
-    pool_ids: { active: 0, primary: 0, donate: null },
-    pool_time: { first_job_wait: 0.001, connect_throttle: 60, close_wait: 60, keepalive: 60 },
-    algo_params: {},
-  };
-
-  try {
+  await withMockPool({
+    switchPool: true,
+    pool_time: { first_job_wait: 0.001 },
+  }, async ({ socket, switched }) => {
     pool.connect_pool_throttle(0, function() {});
     socket.emit("data", Buffer.alloc(1024 * 1024 + 1, "a"));
     assert.equal(socket.destroyed, true);
     assert.equal(global.opt.pools[0].socket, null);
-    assert.equal(switched, true);
+    assert.equal(switched(), true);
     await new Promise((resolve) => setTimeout(resolve, 10));
-  } finally {
-    net.connect = originalConnect;
-    pool.switch_pool = originalSwitchPool;
-    global.opt = previousOpt;
-  }
+  });
+});
+
+test("KawPow login response id is reused for later notify jobs", async () => {
+  let jobMessage = null;
+  await withMockPool({
+    pool: { pass: "~kawpow" },
+    pool_time: { first_job_wait: 0.001 },
+  }, async ({ socket, poolConfig }) => {
+    pool.connect_pool_throttle(0, (job) => {
+      jobMessage = job;
+      return job;
+    });
+    socket.emit("data", Buffer.from(
+      '{"jsonrpc":"2.0","id":1,"error":null,"result":{"id":"5122080","algo":"kawpow","extra_nonce":"ff81"}}\n' +
+      '{"method":"mining.notify","params":["203d","' + "00".repeat(32) + '","' + "11".repeat(32) + '","' +
+      "0000005eb993eef1b05c00000000000000000000000000000000000000000000" +
+      '",true,4390582,"1b01e5f2"],"algo":"kawpow","id":null,"jsonrpc":"2.0"}\n'
+    ));
+    assert.equal(poolConfig.worker_id, "5122080");
+    assert.equal(poolConfig.extra_nonce, "ff81");
+    assert.equal(jobMessage.job_id, "203d");
+    assert.equal(jobMessage.blob, "00".repeat(32) + "00000000000081ff");
+    assert.equal(jobMessage.nonce, "ff81000000000000");
+    assert.equal(jobMessage.nicehash_mask, "ffff000000000000");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  });
+});
+
+test("pool share response false is counted as rejected", async () => {
+  await withMockPool({}, async ({ socket, poolConfig }) => {
+    pool.connect_pool_throttle(0, function() {});
+    socket.emit("data", Buffer.from('{"jsonrpc":"2.0","id":3,"error":null,"result":false}\n'));
+    assert.equal(poolConfig.good_shares, 0);
+    assert.equal(poolConfig.bad_shares, 1);
+  });
 });
 
 test("non-C29 pool jobs preserve provided blob_hex and nonceoffset", async () => {
@@ -473,6 +600,99 @@ test("non-C29 pool jobs preserve provided blob_hex and nonceoffset", async () =>
   const jobMessage = miner.sentMessages.find((msg) => msg.type === "job");
   assert.equal(jobMessage.job.blob_hex, "abcd");
   assert.equal(jobMessage.job.nonceoffset, 7);
+});
+
+test("KawPow pool jobs append the nonce field to a header hash", async () => {
+  const miner = await loadMinerWithStubs();
+  const setJob = miner.getSetJob();
+  const headerHash = "00".repeat(32);
+
+  setJob({
+    algo: "kawpow",
+    blob: headerHash,
+    difficulty: 1,
+    id: "worker",
+    job_id: "job",
+  });
+
+  const jobMessage = miner.sentMessages.find((msg) => msg.type === "job");
+  assert.equal(jobMessage.job.blob_hex, headerHash + "0000000000000000");
+  assert.equal(jobMessage.job.noncebytes, 8);
+  assert.equal(jobMessage.job.nonceoffset, 32);
+  assert.equal(jobMessage.job.worker_id, "worker");
+});
+
+test("KawPow stratum jobs can use pool login as worker id", async () => {
+  const miner = await loadMinerWithStubs();
+  const setJob = miner.getSetJob();
+  const headerHash = "00".repeat(32);
+
+  setJob({
+    algo: "kawpow",
+    blob: headerHash,
+    difficulty: 1,
+    job_id: "job",
+  });
+
+  const jobMessage = miner.sentMessages.find((msg) => msg.type === "job");
+  assert.equal(jobMessage.job.worker_id, "user");
+});
+
+test("KawPow pool jobs preserve provided nonce template", async () => {
+  const miner = await loadMinerWithStubs();
+  const setJob = miner.getSetJob();
+  const headerHash = "00".repeat(32);
+  const extraNonce = "00000000000081ff";
+
+  setJob({
+    algo: "kawpow",
+    blob: headerHash + extraNonce,
+    header_hash: headerHash,
+    nonce: "ff81000000000000",
+    nicehash_mask: "ffff000000000000",
+    difficulty: 1,
+    id: "worker",
+    job_id: "job",
+  });
+
+  const jobMessage = miner.sentMessages.find((msg) => msg.type === "job");
+  assert.equal(jobMessage.job.blob_hex, headerHash + extraNonce);
+  assert.equal(jobMessage.job.header_hash, headerHash);
+  assert.equal(jobMessage.job.nonce, "ff81000000000000");
+  assert.equal(jobMessage.job.nicehash_mask, "ffff000000000000");
+});
+
+test("KawPow submit uses the header hash carried by the worker result", async () => {
+  const miner = await loadMinerWithStubs();
+  const oldHeaderHash = "11".repeat(32);
+  const newHeaderHash = "22".repeat(32);
+  miner.global.opt.pools[0].submit_mode = "raven";
+  miner.global.opt.pools[0].last_job = {
+    job_id: "new",
+    header_hash: newHeaderHash,
+  };
+
+  miner.messageHandler({
+    type: "result",
+    value: {
+      pool_id: 0,
+      worker_id: "worker",
+      job_id: "old",
+      nonce: "ff81000000000001",
+      hash: "00".repeat(32),
+      mix_hash: "33".repeat(32),
+      header_hash: oldHeaderHash,
+    },
+  });
+
+  assert.equal(miner.poolWrites.length, 1);
+  assert.equal(JSON.stringify(miner.poolWrites[0].json.params), JSON.stringify([
+    "user",
+    "old",
+    "0xff81000000000001",
+    "0x" + oldHeaderHash,
+    "0x" + "33".repeat(32),
+  ]));
 });
 
 test("nicehash xn prefixes longer than noncebytes are truncated", async () => {

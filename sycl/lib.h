@@ -22,7 +22,8 @@ MOMINER_SYCL_API std::map<std::string, std::string> algo_params(
   const std::map<std::string, unsigned>& algo2mem,
   const std::set<std::string>& cpu_algos,
   const std::set<std::string>& gpu_cn_algos,
-  const std::set<std::string>& gpu_c29_algos
+  const std::set<std::string>& gpu_c29_algos,
+  const std::set<std::string>& gpu_kawpow_algos
 );
 
 MOMINER_SYCL_API void cn_gpu(
@@ -34,4 +35,10 @@ MOMINER_SYCL_API int c29(
   unsigned job_id, unsigned c29_proof_size,
   const uint8_t* inputs, unsigned input_size, uint8_t* output,
   uint32_t* output_edges, uint64_t* pnonce, const std::string& dev_str
+);
+
+MOMINER_SYCL_API int kawpow(
+  unsigned job_id, uint32_t height, const uint8_t* input, unsigned input_size, uint8_t* output,
+  uint8_t* mix_hash, uint64_t* pnonce, uint64_t target,
+  unsigned intensity, bool is_test, const std::string& dev_str
 );

@@ -1,8 +1,10 @@
 "use strict";
 
-const { spawn } = require("node:child_process");
+const childProcess = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
+
+const { spawn } = childProcess;
 
 const repoRoot = path.join(__dirname, "..", "..");
 const releaseExecutableNames = process.platform === "win32"
@@ -50,6 +52,11 @@ function formatFailure(title, args, result) {
     formatOutput("stdout", result.stdout),
     formatOutput("stderr", result.stderr),
   ].join("\n");
+}
+
+function formatHashrate(hashrate) {
+  if (hashrate >= 1000000) return `${(hashrate / 1000000).toFixed(2)} MH/s`;
+  return `${hashrate.toFixed(2)} H/s`;
 }
 
 function emitGitHubError(title, message) {
@@ -137,46 +144,43 @@ function childEnv(extra = {}) {
   return withWindowsTestPath(env);
 }
 
-function normalizeWindowsPathKey(env) {
-  const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") || "Path";
-  for (const key of Object.keys(env)) {
-    if (isDuplicatePathKey(key, pathKey)) delete env[key];
-  }
-  return pathKey;
-}
-
-function isDuplicatePathKey(key, pathKey) {
-  return key.toLowerCase() === "path" && key !== pathKey;
-}
-
 function releasePathEntry(entry) {
   return hasReleaseExecutable ? entry : null;
 }
 
 function withWindowsTestPath(env) {
-  const pathKey = normalizeWindowsPathKey(env);
-  const pathValue = env[pathKey] || "";
-  env[pathKey] = [
+  return withWindowsPathEntries(env, [
     releasePathEntry(path.join(path.dirname(releaseExecutable), "libs")),
     releasePathEntry(path.dirname(releaseExecutable)),
     path.join(repoRoot, "build", "Release"),
-    pathValue,
-  ]
-    .filter(Boolean)
-    .join(path.delimiter);
+  ]);
+}
+
+function withWindowsPathEntries(env, entries) {
+  const pathKey = normalizeWindowsPathKey(env);
+  const pathValue = env[pathKey] || "";
+  env[pathKey] = [...entries, pathValue].filter(Boolean).join(path.delimiter);
   return env;
+}
+
+function normalizeWindowsPathKey(env) {
+  const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") || "Path";
+  for (const key of Object.keys(env)) {
+    if (key.toLowerCase() === "path" && key !== pathKey) delete env[key];
+  }
+  return pathKey;
 }
 
 function killProcessTree(child, signal = "SIGKILL") {
   if (process.platform !== "win32" || !child.pid) {
     child.kill(signal);
-    return;
+    return false;
   }
-
-  const killer = spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
+  const killer = childProcess.spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
     stdio: "ignore",
   });
   killer.on("error", () => child.kill(signal));
+  return true;
 }
 
 function detachChild(child) {
@@ -506,6 +510,7 @@ function isMissingBenchGpu(definition, result) {
 }
 
 module.exports = {
+  formatHashrate,
   getFirstSyclCpuDevice,
   hasReleaseExecutable,
   repoRoot,
