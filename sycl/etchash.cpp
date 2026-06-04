@@ -560,7 +560,7 @@ public:
     if (!input || !target || !result) throw std::string("Can't allocate etchash SYCL input buffers");
   }
 
-  void ensure_epoch(const uint32_t new_epoch, const uint32_t new_seed_epoch) {
+  void ensure_epoch(const uint32_t new_epoch, const uint32_t new_seed_epoch, const bool should_log) {
     if (epoch == new_epoch && seed_epoch == new_seed_epoch) return;
     if (new_epoch >= 2048 || !dag_sizes[new_epoch] || !cache_sizes[new_epoch]) {
       throw std::string("Bad etchash epoch");
@@ -643,9 +643,11 @@ public:
 
     epoch = new_epoch;
     seed_epoch = new_seed_epoch;
-    char elapsed[32];
-    format_duration_ms(elapsed, sizeof(elapsed), now_ms() - start_ms);
-    std::fprintf(stderr, "Etchash DAG for epoch %u seed epoch %u calculated (%s)\n", new_epoch, new_seed_epoch, elapsed);
+    if (should_log) {
+      char elapsed[32];
+      format_duration_ms(elapsed, sizeof(elapsed), now_ms() - start_ms);
+      std::fprintf(stderr, "Etchash DAG for epoch %u seed epoch %u calculated (%s)\n", new_epoch, new_seed_epoch, elapsed);
+    }
   }
 
   static uint64_t now_ms() {
@@ -672,7 +674,7 @@ using namespace mominer_etchash;
 int etchash(
   const unsigned, const uint32_t block_height, const uint8_t* const input, const unsigned input_size, uint8_t* const output,
   uint8_t* const mix_hash, uint64_t* const pnonce, const uint8_t* const target, const uint8_t* const seed_hash,
-  const unsigned intensity, const bool is_test, const std::string& dev_str
+  const unsigned intensity, const bool is_test, const bool is_benchmark, const std::string& dev_str
 ) {
   if (input_size < 40) throw std::string("Bad etchash input length");
 
@@ -682,7 +684,7 @@ int etchash(
   uint32_t epoch = 0;
   uint32_t seed_epoch = 0;
   resolve_epochs(block_height, seed_hash, epoch, seed_epoch);
-  state.ensure_epoch(epoch, seed_epoch);
+  state.ensure_epoch(epoch, seed_epoch, !is_benchmark);
 
   uint64_t start_nonce = 0;
   std::memcpy(&start_nonce, input + 32, sizeof(start_nonce));

@@ -213,32 +213,20 @@ function fixedHexBytesLE(hex, bytes) {
   return padded.match(/.{2}/g).reverse().join("");
 }
 
-function ravenExtraNonce(pool) {
+function poolExtraNonce(pool) {
   return hexWithoutPrefix(pool.extra_nonce || "");
 }
 
-function ravenNonce(pool) {
-  return ravenExtraNonce(pool).padEnd(16, "0").slice(0, 16);
+function poolNonce(pool) {
+  return poolExtraNonce(pool).padEnd(16, "0").slice(0, 16);
 }
 
-function ravenNonceMask(pool) {
-  return "ff".repeat(ravenExtraNonce(pool).length / 2).padEnd(16, "0");
+function poolNonceMask(pool) {
+  return "ff".repeat(poolExtraNonce(pool).length / 2).padEnd(16, "0");
 }
 
-function ethExtraNonce(pool) {
-  return hexWithoutPrefix(pool.extra_nonce || "");
-}
-
-function ethNonce(pool) {
-  return ethExtraNonce(pool).padEnd(16, "0").slice(0, 16);
-}
-
-function ethNonceMask(pool) {
-  return "ff".repeat(ethExtraNonce(pool).length / 2).padEnd(16, "0");
-}
-
-function ethBlob(headerHash, pool) {
-  return headerHash + fixedHexBytesLE(ethExtraNonce(pool), 8);
+function nonceAt32Blob(headerHash, pool) {
+  return headerHash + fixedHexBytesLE(poolExtraNonce(pool), 8);
 }
 
 function parseHexHeight(value) {
@@ -254,17 +242,13 @@ function ergTarget(bound) {
 function rememberErgSubmitJob(pool, job) {
   if (!pool.erg_submit_jobs) pool.erg_submit_jobs = {};
   pool.erg_submit_jobs[job.job_id] = {
-    extra_nonce: ethExtraNonce(pool),
+    extra_nonce: poolExtraNonce(pool),
     extra_nonce2_size: pool.extra_nonce2_size,
     ntime: job.ntime || "",
   };
 
   const jobIds = Object.keys(pool.erg_submit_jobs);
   while (jobIds.length > 16) delete pool.erg_submit_jobs[jobIds.shift()];
-}
-
-function ravenBlob(headerHash, pool) {
-  return headerHash + fixedHexBytesLE(ravenExtraNonce(pool), 8);
 }
 
 function ravenTarget(pool, notifyTarget) {
@@ -366,6 +350,21 @@ function handleSetDifficulty(pool_id, json) {
   global.opt.pools[pool_id].eth_difficulty = json.params[0];
 }
 
+function nonceAt32Job(pool, job) {
+  return {
+    ...job,
+    blob: nonceAt32Blob(job.header_hash, pool),
+    nonce: poolNonce(pool),
+    nicehash_mask: poolNonceMask(pool),
+    noncebytes: 8,
+    nonceoffset: 32,
+  };
+}
+
+function fixedAlgoJobName(json, fallback) {
+  return json.algo || (global.opt.job && global.opt.job.algo) || fallback;
+}
+
 function jobFromPoolMessage(pool_id, json) {
   const pool = global.opt.pools[pool_id];
   if (isJobNotification(json)) {
@@ -376,40 +375,28 @@ function jobFromPoolMessage(pool_id, json) {
   if (poolProtocol(pool) === "raven" && isRavenJobNotification(json)) {
     if (!pool.logged_in) return null;
     const headerHash = hexWithoutPrefix(json.params[1]);
-    const seedHash = hexWithoutPrefix(json.params[2]);
-    const target = ravenTarget(pool, json.params[3]);
     pool.submit_mode = "raven";
-    return {
+    return nonceAt32Job(pool, {
       algo: json.algo || "kawpow",
-      blob: ravenBlob(headerHash, pool),
       header_hash: headerHash,
-      seed_hash: seedHash,
-      target: target,
+      seed_hash: hexWithoutPrefix(json.params[2]),
+      target: ravenTarget(pool, json.params[3]),
       job_id: json.params[0],
       height: json.params[5],
-      nonce: ravenNonce(pool),
-      nicehash_mask: ravenNonceMask(pool),
-      noncebytes: 8,
-      nonceoffset: 32,
-    };
+    });
   }
   if (poolProtocol(pool) === "eth" && isEthJobNotification(json)) {
     if (!pool.logged_in) return null;
     const seedHash = hexWithoutPrefix(json.params[1]);
     const headerHash = hexWithoutPrefix(json.params[2]);
     pool.submit_mode = "eth";
-    return {
-      algo: json.algo || (global.opt.job && global.opt.job.algo) || "etchash",
-      blob: ethBlob(headerHash, pool),
+    return nonceAt32Job(pool, {
+      algo: fixedAlgoJobName(json, "etchash"),
       header_hash: headerHash,
       seed_hash: seedHash,
       target: ethTarget(pool),
       job_id: json.params[0],
-      nonce: ethNonce(pool),
-      nicehash_mask: ethNonceMask(pool),
-      noncebytes: 8,
-      nonceoffset: 32,
-    };
+    });
   }
   if (usesEthProxy(pool) && isEthProxyWork(json)) {
     if (!pool.logged_in) return null;
@@ -417,38 +404,27 @@ function jobFromPoolMessage(pool_id, json) {
     const seedHash = hexWithoutPrefix(json.result[1]);
     const target = hexWithoutPrefix(json.result[2]).padStart(64, "0");
     pool.submit_mode = "ethproxy";
-    return {
-      algo: json.algo || (global.opt.job && global.opt.job.algo) || "etchash",
-      blob: ethBlob(headerHash, pool),
+    return nonceAt32Job(pool, {
+      algo: fixedAlgoJobName(json, "etchash"),
       header_hash: headerHash,
       seed_hash: seedHash,
       target: target,
       job_id: headerHash,
       height: parseHexHeight(json.result[3]),
-      nonce: ethNonce(pool),
-      nicehash_mask: ethNonceMask(pool),
-      noncebytes: 8,
-      nonceoffset: 32,
-    };
+    });
   }
   if (poolProtocol(pool) === "erg" && isErgJobNotification(json)) {
     if (!pool.logged_in) return null;
     const headerHash = hexWithoutPrefix(json.params[2]);
-    const ntime = hexWithoutPrefix(json.params[7]);
     pool.submit_mode = "erg";
-    const job = {
-      algo: json.algo || (global.opt.job && global.opt.job.algo) || "autolykos2",
-      blob: ethBlob(headerHash, pool),
+    const job = nonceAt32Job(pool, {
+      algo: fixedAlgoJobName(json, "autolykos2"),
       header_hash: headerHash,
       target: ergTarget(json.params[6]),
       job_id: json.params[0],
       height: json.params[1],
-      ntime: ntime,
-      nonce: ethNonce(pool),
-      nicehash_mask: ethNonceMask(pool),
-      noncebytes: 8,
-      nonceoffset: 32,
-    };
+      ntime: hexWithoutPrefix(json.params[7]),
+    });
     rememberErgSubmitJob(pool, job);
     return job;
   }

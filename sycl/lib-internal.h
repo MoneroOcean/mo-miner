@@ -19,11 +19,14 @@ inline void set_sycl_env(const char* name, const char* value) {
 #endif
 }
 
-inline void sycl_wait_and_throw(sycl::event event, const sycl::device& device) {
-  const bool is_level_zero_gpu =
+inline bool sycl_is_level_zero_gpu(const sycl::device& device) {
+  return
     device.is_gpu() &&
     device.get_platform().get_info<sycl::info::platform::name>().find("Level-Zero") != std::string::npos;
-  if (!is_level_zero_gpu) {
+}
+
+inline void sycl_wait_and_throw(sycl::event event, const sycl::device& device) {
+  if (!sycl_is_level_zero_gpu(device)) {
     event.wait_and_throw();
     return;
   }

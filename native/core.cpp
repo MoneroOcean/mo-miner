@@ -533,7 +533,7 @@ void Core::Execute() {
             etchash_sols = m_fn.gpu_etchash(
               m_job_ref, m_height, m_input, m_input_len, m_output,
               static_cast<uint8_t*>(m_spads), &etchash_nonce, m_target_bin, m_seed,
-              m_batch, !m_nonce32 && !m_nonce64, m_dev_str
+              m_batch, !m_nonce32 && !m_nonce64, m_is_bench, m_dev_str
             );
             break;
           case DEV::AUTOLYKOS2_GPU:

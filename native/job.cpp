@@ -316,10 +316,7 @@ void Core::set_job(
   if (m_batch != new_batch || m_mem_size != new_mem_size ||
       m_seed_hex != new_seed_hex || m_algo_str != new_algo_str) {
     // free previous memory
-    const bool is_ethlike_change =
-      m_dev == DEV::KAWPOW_GPU || new_dev == DEV::KAWPOW_GPU ||
-      m_dev == DEV::ETCHASH_GPU || new_dev == DEV::ETCHASH_GPU ||
-      m_dev == DEV::AUTOLYKOS2_GPU || new_dev == DEV::AUTOLYKOS2_GPU;
+    const bool is_ethlike_change = is_nonce_at_32_gpu_dev(m_dev) || is_nonce_at_32_gpu_dev(new_dev);
     free_memory(
       m_batch != new_batch || is_ethlike_change,
       m_mem_size != new_mem_size,
@@ -327,8 +324,7 @@ void Core::set_job(
       !m_seed_hex.empty() && new_seed_hex.empty()
     );
 
-    if (new_dev != DEV::KAWPOW_GPU && new_dev != DEV::ETCHASH_GPU &&
-        new_dev != DEV::AUTOLYKOS2_GPU && m_lpads == nullptr)
+    if (!is_nonce_at_32_gpu_dev(new_dev) && m_lpads == nullptr)
       m_lpads = alloc_huge_mem(new_batch * new_mem_size);
 
     if (new_dev == DEV::RX_CPU) {
@@ -379,8 +375,7 @@ void Core::set_job(
           );
         }
       }
-    } else if (new_dev == DEV::KAWPOW_GPU || new_dev == DEV::ETCHASH_GPU ||
-               new_dev == DEV::AUTOLYKOS2_GPU) {
+    } else if (is_nonce_at_32_gpu_dev(new_dev)) {
       if (m_input == nullptr) m_input = static_cast<uint8_t*>(alloc_mem(MAX_BLOB_LEN));
       if (m_output == nullptr) m_output = static_cast<uint8_t*>(alloc_mem(HASH_LEN));
       if (m_spads == nullptr) m_spads = alloc_mem(HASH_LEN);
@@ -479,8 +474,7 @@ void Core::set_job(
       }
     );
   } else {
-    if (new_dev == DEV::KAWPOW_GPU || new_dev == DEV::ETCHASH_GPU ||
-        new_dev == DEV::AUTOLYKOS2_GPU) {
+    if (is_nonce_at_32_gpu_dev(new_dev)) {
       memcpy(m_input, new_input, m_input_len);
       const uint64_t current_nonce = new_nonce + static_cast<uint64_t>(new_thread_id) * m_batch;
       m_nonce_step = new_thread_num * m_batch;

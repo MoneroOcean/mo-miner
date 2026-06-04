@@ -1,6 +1,6 @@
 {
   "name": "mo-miner",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "description": "Node.js and SYCL miner built on XMRig hashing sources with MoneroOcean algo switching support",
   "private": true,
   "main": "mo-miner.js",

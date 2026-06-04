@@ -260,6 +260,17 @@ const hashTests = [
 const perfTests = [];
 const perfAlgos = new Set();
 const nonceAt32Algos = new Set(["kawpow", "etchash", "autolykos2"]);
+const currentEtcBenchHeight = 24689903; // Sampled from ETC mainnet on 2026-06-04 for live-size Etchash DAG benchmarks.
+
+function perfJob(definition) {
+  const algo = definition.job.algo;
+  if (!nonceAt32Algos.has(algo)) return { algo };
+
+  const job = { ...definition.job, dev: undefined };
+  if (algo === "etchash") job.height = currentEtcBenchHeight;
+  return job;
+}
+
 for (const definition of hashTests) {
   const algo = definition.job.algo;
   if (perfAlgos.has(algo)) continue;
@@ -271,7 +282,7 @@ for (const definition of hashTests) {
     autoDev: true,
     name: algo,
     timeoutMs: definition.timeoutMs || 3 * 60 * 1000,
-    job: nonceAt32Algos.has(algo) ? { ...definition.job, dev: undefined } : { algo },
+    job: perfJob(definition),
   });
 }
 

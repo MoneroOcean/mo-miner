@@ -29,7 +29,7 @@ typedef int (*gpu_etchash_hash_fun)(
   unsigned job_ref, uint32_t height,
   const uint8_t* input, unsigned input_size, uint8_t* output,
   uint8_t* mix_hash, uint64_t* pnonce, const uint8_t* target, const uint8_t* seed_hash,
-  unsigned intensity, bool is_test, const std::string& dev_str
+  unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
 );
 typedef int (*gpu_autolykos2_hash_fun)(
   unsigned job_ref, uint32_t height,
@@ -56,6 +56,10 @@ union FN {
   gpu_autolykos2_hash_fun gpu_autolykos2;
 };
 enum DEV { CPU, RX_CPU, GPU, C29_GPU, KAWPOW_GPU, ETCHASH_GPU, AUTOLYKOS2_GPU };
+
+inline bool is_nonce_at_32_gpu_dev(const DEV dev) {
+  return dev == DEV::KAWPOW_GPU || dev == DEV::ETCHASH_GPU || dev == DEV::AUTOLYKOS2_GPU;
+}
 
 class Core: public AsyncWorker {
   const unsigned HASHRATE_COUNTER_INTERVAL = 10; // iterations to skip to update/check hashrate

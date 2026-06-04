@@ -453,6 +453,26 @@ test("KawPow benchmark jobs include fixed nonce metadata", async () => {
   }
 });
 
+test("Etchash benchmark uses current ETC height instead of default seed", async () => {
+  const autoBenchmark = await loadMinerWithStubs({
+    algoParams: { etchash: "gpu1*1" },
+    waitForMessageType: "bench",
+  });
+  const directBenchmark = await loadMinerWithStubs({
+    argv: ["node", "mo-miner.js", "bench", "etchash"],
+    waitForMessageType: "bench",
+  });
+
+  for (const miner of [autoBenchmark, directBenchmark]) {
+    const benchMessage = miner.sentMessages.find((msg) => msg.type === "bench");
+    assert.equal(benchMessage.job.algo, "etchash");
+    assert.equal(benchMessage.job.height, 24689903);
+    assert.equal(benchMessage.job.seed_hex, "");
+    assert.equal(benchMessage.job.noncebytes, 8);
+    assert.equal(benchMessage.job.nonceoffset, 32);
+  }
+});
+
 test("pool login does not infer algo from pass when benchmarks are skipped", async () => {
   await withMockPool({
     pool: { pass: "x~kawpow" },

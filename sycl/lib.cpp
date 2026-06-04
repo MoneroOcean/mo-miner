@@ -87,45 +87,34 @@ static unsigned parse_pow_intensity_override(const unsigned local, const char* c
 static unsigned pow_intensity(
   const sycl::device& dev,
   const char* const workgroup_env,
-  const char* const intensity_env
+  const char* const intensity_env,
+  const unsigned fallback_workgroup,
+  const unsigned base_work_items,
+  const unsigned compute_unit_divisor
 ) {
-  const unsigned local = parse_pow_workgroup_override(dev.is_cpu(), workgroup_env);
+  const unsigned local = parse_pow_workgroup_override(dev.is_cpu(), workgroup_env, fallback_workgroup);
   const unsigned override = parse_pow_intensity_override(local, intensity_env);
   if (override) return override;
 
   const unsigned max_compute_units = std::max(1u, dev.get_info<sycl::info::device::max_compute_units>());
-  unsigned intensity = local * 32768u;
-  intensity = static_cast<unsigned>((static_cast<uint64_t>(intensity) * max_compute_units) / 36u);
+  unsigned intensity = local * base_work_items;
+  intensity = static_cast<unsigned>((static_cast<uint64_t>(intensity) * max_compute_units) / compute_unit_divisor);
   intensity -= intensity % local;
   return std::max(intensity, local * 4096u);
 }
 
 static unsigned kawpow_intensity(const sycl::device& dev) {
-  return pow_intensity(dev, "MOMINER_KAWPOW_WORKGROUP", "MOMINER_KAWPOW_INTENSITY");
+  return pow_intensity(dev, "MOMINER_KAWPOW_WORKGROUP", "MOMINER_KAWPOW_INTENSITY", 0, 32768, 36);
 }
 
 static unsigned etchash_intensity(const sycl::device& dev) {
-  const unsigned local = parse_pow_workgroup_override(dev.is_cpu(), "MOMINER_ETCHASH_WORKGROUP", 32);
-  const unsigned override = parse_pow_intensity_override(local, "MOMINER_ETCHASH_INTENSITY");
-  if (override) return override;
-
-  const unsigned max_compute_units = std::max(1u, dev.get_info<sycl::info::device::max_compute_units>());
-  unsigned intensity = local * 32768u;
-  intensity = static_cast<unsigned>((static_cast<uint64_t>(intensity) * max_compute_units) / 36u);
-  intensity -= intensity % local;
-  return std::max(intensity, local * 4096u);
+  return pow_intensity(dev, "MOMINER_ETCHASH_WORKGROUP", "MOMINER_ETCHASH_INTENSITY", 32, 32768, 36);
 }
 
 static unsigned autolykos2_intensity(const sycl::device& dev) {
-  const unsigned local = parse_pow_workgroup_override(dev.is_cpu(), "MOMINER_AUTOLYKOS2_WORKGROUP", 64);
-  const unsigned override = parse_pow_intensity_override(local, "MOMINER_AUTOLYKOS2_INTENSITY");
-  if (override) return override;
-
-  const unsigned max_compute_units = std::max(1u, dev.get_info<sycl::info::device::max_compute_units>());
-  unsigned intensity = local * 8192u;
-  intensity = static_cast<unsigned>((static_cast<uint64_t>(intensity) * max_compute_units) / 10u);
-  intensity -= intensity % local;
-  return std::max(intensity, local * 4096u);
+  return pow_intensity(
+    dev, "MOMINER_AUTOLYKOS2_WORKGROUP", "MOMINER_AUTOLYKOS2_INTENSITY", 64, 8192, 10
+  );
 }
 
 static void add_result_dev(std::string& result_dev, const std::string& add_str) {

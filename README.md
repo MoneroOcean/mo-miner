@@ -17,10 +17,15 @@ is possible and WIP.
 # Supported algos
 
 * CPU: All xmrig miner CPU supported algos with similar performance
-* GPU: cn/gpu, c29
+* GPU/SYCL: cn/gpu, c29, kawpow, etchash, autolykos2
+
+The GPU/SYCL implementations also run on SYCL CPU devices for hash-vector coverage and fallback
+testing, though the CPU mining path remains the preferred CPU path for CPU-focused algos.
 
 Miner supports algo switching if you connect it to algo switching pool like
 gulf.moneroocean.stream that auto switches to the most profitable algo.
+KawPow, Etchash, and Autolykos2 can also be used on non-MoneroOcean stratum pools that serve those
+algos directly.
 
 # Donation
 
@@ -64,7 +69,7 @@ the release artifact.
 
 # Host Intel GPU Runtime
 
-Linux release archives include `install.sh`. Run it as root on Ubuntu 24.04 or 26.04 if `cn/gpu`
+Linux release archives include `install.sh`. Run it as root on Ubuntu 24.04 or 26.04 if GPU
 performance is lower outside Docker, or if Level Zero/OpenCL GPU detection is missing:
 
 ```
@@ -115,46 +120,48 @@ cpu1: Intel(R) OpenCL
 gpu1: Intel(R) oneAPI Unified Runtime over Level-Zero V2
 gpu1o: Intel(R) OpenCL Graphics
 gpu1z: Intel(R) oneAPI Unified Runtime over Level-Zero V2
-2026-06-02 03:02:02 Doing algo benchmarks...
-2026-06-02 03:03:02 Algo argon2/chukwa (cpu^16) hashrate: 49.43 KH/s (3.07 KH/s, 3.09 KH/s, 3.10 KH/s, 3.09 KH/s, 3.10 KH/s, 3.08 KH/s, 3.09 KH/s, 3.08 KH/s, 3.09 KH/s, 3.09 KH/s, 3.10 KH/s, 3.09 KH/s, 3.09 KH/s, 3.09 KH/s, 3.09 KH/s, 3.09 KH/s)
-2026-06-02 03:04:03 Algo argon2/chukwav2 (cpu^16) hashrate: 16.68 KH/s (1.04 KH/s, 1.04 KH/s, 1.04 KH/s, 1.05 KH/s, 1.04 KH/s, 1.04 KH/s, 1.04 KH/s, 1.04 KH/s, 1.04 KH/s, 1.04 KH/s, 1.04 KH/s, 1.04 KH/s, 1.05 KH/s, 1.04 KH/s, 1.04 KH/s, 1.04 KH/s)
-2026-06-02 03:05:03 Algo argon2/wrkz (cpu^16) hashrate: 76.38 KH/s (4.80 KH/s, 4.80 KH/s, 4.71 KH/s, 4.77 KH/s, 4.78 KH/s, 4.77 KH/s, 4.78 KH/s, 4.70 KH/s, 4.78 KH/s, 4.78 KH/s, 4.80 KH/s, 4.77 KH/s, 4.78 KH/s, 4.79 KH/s, 4.78 KH/s, 4.80 KH/s)
-2026-06-02 03:06:09 Algo c29 (gpu1*1) hashrate: 2.79 H/s (2.79 H/s)
-2026-06-02 03:07:10 Algo cn-heavy/0 (cpu^4) hashrate: 347.62 H/s (88.26 H/s, 87.94 H/s, 88.38 H/s, 83.05 H/s)
-2026-06-02 03:08:10 Algo cn-heavy/tube (cpu^4) hashrate: 303.17 H/s (76.16 H/s, 73.02 H/s, 77.02 H/s, 76.97 H/s)
-2026-06-02 03:09:11 Algo cn-heavy/xhv (cpu^4) hashrate: 336.77 H/s (87.05 H/s, 86.39 H/s, 80.51 H/s, 82.81 H/s)
-2026-06-02 03:10:11 Algo cn-lite/0 (cpu^16) hashrate: 2.35 KH/s (149.49 H/s, 150.94 H/s, 144.75 H/s, 141.63 H/s, 141.43 H/s, 150.68 H/s, 144.89 H/s, 150.70 H/s, 144.83 H/s, 149.65 H/s, 144.94 H/s, 141.58 H/s, 141.72 H/s, 149.62 H/s, 149.44 H/s, 150.82 H/s)
-2026-06-02 03:11:12 Algo cn-lite/1 (cpu^16) hashrate: 2.29 KH/s (145.96 H/s, 145.92 H/s, 141.32 H/s, 137.77 H/s, 137.90 H/s, 141.28 H/s, 146.92 H/s, 146.18 H/s, 145.96 H/s, 146.95 H/s, 138.10 H/s, 147.00 H/s, 141.57 H/s, 146.94 H/s, 141.39 H/s, 137.95 H/s)
-2026-06-02 03:12:12 Algo cn-pico/0 (cpu*4^16) hashrate: 14.64 KH/s (923.83 H/s, 923.60 H/s, 922.66 H/s, 911.29 H/s, 920.41 H/s, 905.62 H/s, 923.99 H/s, 911.32 H/s, 923.69 H/s, 920.44 H/s, 911.00 H/s, 903.58 H/s, 922.16 H/s, 911.38 H/s, 905.08 H/s, 903.05 H/s)
-2026-06-02 03:13:13 Algo cn-pico/tlo (cpu*4^16) hashrate: 13.05 KH/s (821.34 H/s, 805.48 H/s, 823.56 H/s, 823.55 H/s, 819.80 H/s, 807.61 H/s, 807.17 H/s, 804.53 H/s, 811.61 H/s, 823.62 H/s, 820.63 H/s, 811.88 H/s, 823.92 H/s, 821.28 H/s, 813.96 H/s, 813.14 H/s)
-2026-06-02 03:14:13 Algo cn/0 (cpu^8) hashrate: 622.33 H/s (76.72 H/s, 80.17 H/s, 80.11 H/s, 74.74 H/s, 79.49 H/s, 74.84 H/s, 79.52 H/s, 76.74 H/s)
-2026-06-02 03:15:14 Algo cn/1 (cpu^8) hashrate: 615.89 H/s (78.68 H/s, 78.58 H/s, 76.00 H/s, 75.96 H/s, 74.03 H/s, 79.29 H/s, 79.25 H/s, 74.09 H/s)
-2026-06-02 03:16:14 Algo cn/2 (cpu^8) hashrate: 621.71 H/s (76.89 H/s, 76.89 H/s, 75.45 H/s, 79.39 H/s, 79.19 H/s, 75.33 H/s, 79.34 H/s, 79.22 H/s)
-2026-06-02 03:17:15 Algo cn/ccx (cpu^8) hashrate: 1.19 KH/s (143.83 H/s, 152.37 H/s, 147.33 H/s, 143.76 H/s, 152.61 H/s, 147.43 H/s, 153.76 H/s, 153.68 H/s)
-2026-06-02 03:18:15 Algo cn/double (cpu^8) hashrate: 314.19 H/s (38.12 H/s, 40.05 H/s, 40.15 H/s, 38.81 H/s, 40.05 H/s, 40.09 H/s, 38.09 H/s, 38.84 H/s)
-2026-06-02 03:19:16 Algo cn/fast (cpu^8) hashrate: 1.19 KH/s (152.26 H/s, 152.21 H/s, 153.44 H/s, 153.25 H/s, 143.15 H/s, 143.20 H/s, 146.55 H/s, 143.05 H/s)
-2026-06-02 03:20:24 Algo cn/gpu (gpu1*1280) hashrate: 2.42 KH/s (2.42 KH/s)
-2026-06-02 03:21:25 Algo cn/half (cpu^8) hashrate: 801.36 H/s (103.19 H/s, 104.10 H/s, 101.71 H/s, 101.01 H/s, 104.54 H/s, 97.55 H/s, 94.83 H/s, 94.42 H/s)
-2026-06-02 03:22:25 Algo cn/r (cpu^8) hashrate: 594.05 H/s (75.58 H/s, 75.80 H/s, 72.12 H/s, 73.52 H/s, 75.63 H/s, 73.52 H/s, 72.16 H/s, 75.71 H/s)
-2026-06-02 03:23:26 Algo cn/rto (cpu^8) hashrate: 614.81 H/s (73.94 H/s, 79.17 H/s, 73.86 H/s, 78.56 H/s, 75.81 H/s, 79.17 H/s, 75.88 H/s, 78.43 H/s)
-2026-06-02 03:24:26 Algo cn/rwz (cpu^8) hashrate: 819.35 H/s (104.65 H/s, 104.59 H/s, 104.33 H/s, 99.28 H/s, 101.33 H/s, 101.34 H/s, 104.37 H/s, 99.48 H/s)
-2026-06-02 03:25:27 Algo cn/upx2 (cpu*5^16) hashrate: 54.29 KH/s (3.36 KH/s, 3.42 KH/s, 3.38 KH/s, 3.38 KH/s, 3.38 KH/s, 3.42 KH/s, 3.41 KH/s, 3.38 KH/s, 3.36 KH/s, 3.37 KH/s, 3.41 KH/s, 3.41 KH/s, 3.37 KH/s, 3.41 KH/s, 3.42 KH/s, 3.42 KH/s)
-2026-06-02 03:26:27 Algo cn/xao (cpu^8) hashrate: 315.35 H/s (40.30 H/s, 37.91 H/s, 40.26 H/s, 40.60 H/s, 38.89 H/s, 38.87 H/s, 40.63 H/s, 37.89 H/s)
-2026-06-02 03:27:28 Algo cn/zls (cpu^8) hashrate: 818.64 H/s (104.59 H/s, 99.32 H/s, 101.24 H/s, 104.32 H/s, 101.21 H/s, 104.55 H/s, 104.11 H/s, 99.30 H/s)
-2026-06-02 03:28:29 Algo ghostrider (cpu*8^8) hashrate: 1.60 KH/s (197.65 H/s, 205.02 H/s, 203.96 H/s, 197.59 H/s, 205.01 H/s, 193.62 H/s, 193.58 H/s, 203.97 H/s)
-2026-06-02 03:29:59 Algo kawpow (gpu1*37282560) hashrate: 20.88 MH/s (20.88 MH/s)
-2026-06-02 03:31:03 Algo rx/0 (cpu*8) hashrate: 6.10 KH/s (6.10 KH/s)
-2026-06-02 03:32:06 Algo rx/2 (cpu*8) hashrate: 5.07 KH/s (5.07 KH/s)
-2026-06-02 03:33:09 Algo rx/arq (cpu*16) hashrate: 39.10 KH/s (39.10 KH/s)
-2026-06-02 03:34:12 Algo rx/graft (cpu*8) hashrate: 5.72 KH/s (5.72 KH/s)
-2026-06-02 03:35:15 Algo rx/sfx (cpu*8) hashrate: 5.92 KH/s (5.92 KH/s)
-2026-06-02 03:36:19 Algo rx/wow (cpu*16) hashrate: 7.89 KH/s (7.89 KH/s)
-2026-06-02 03:37:22 Algo rx/yada (cpu*8) hashrate: 5.91 KH/s (5.91 KH/s)
-2026-06-02 03:37:22 Connecting to primary gulf.moneroocean.stream:20001tls pool
-2026-06-02 03:37:23 Login to the pool succeeded
-2026-06-02 03:37:23 Got new kawpow algo job with 56546580 diff and 1631411 height
-KawPow DAG for epoch 217 calculated (8.62 s)
-2026-06-02 03:37:34 Share accepted by the pool (1/0)
+2026-06-04 04:38:04 Doing algo benchmarks...
+2026-06-04 04:39:04 Algo argon2/chukwa (cpu^16) hashrate: 49.56 KH/s (3.10 KH/s, 3.10 KH/s, 3.10 KH/s, 3.10 KH/s, 3.07 KH/s, 3.07 KH/s, 3.10 KH/s, 3.10 KH/s, 3.10 KH/s, 3.10 KH/s, 3.10 KH/s, 3.10 KH/s, 3.10 KH/s, 3.10 KH/s, 3.10 KH/s, 3.10 KH/s)
+2026-06-04 04:40:05 Algo argon2/chukwav2 (cpu^16) hashrate: 16.70 KH/s (1.04 KH/s, 1.05 KH/s, 1.04 KH/s, 1.05 KH/s, 1.05 KH/s, 1.04 KH/s, 1.04 KH/s, 1.04 KH/s, 1.05 KH/s, 1.05 KH/s, 1.05 KH/s, 1.05 KH/s, 1.04 KH/s, 1.05 KH/s, 1.04 KH/s, 1.04 KH/s)
+2026-06-04 04:41:05 Algo argon2/wrkz (cpu^16) hashrate: 76.16 KH/s (4.77 KH/s, 4.77 KH/s, 4.77 KH/s, 4.69 KH/s, 4.77 KH/s, 4.76 KH/s, 4.76 KH/s, 4.77 KH/s, 4.69 KH/s, 4.76 KH/s, 4.78 KH/s, 4.78 KH/s, 4.77 KH/s, 4.76 KH/s, 4.78 KH/s, 4.77 KH/s)
+2026-06-04 04:42:20 Algo autolykos2 (gpu1*8388608) hashrate: 38.06 MH/s (38.06 MH/s)
+2026-06-04 04:43:25 Algo c29 (gpu1*1) hashrate: 2.79 H/s (2.79 H/s)
+2026-06-04 04:44:25 Algo cn-heavy/0 (cpu^4) hashrate: 339.46 H/s (86.38 H/s, 82.30 H/s, 85.66 H/s, 85.12 H/s)
+2026-06-04 04:45:26 Algo cn-heavy/tube (cpu^4) hashrate: 295.55 H/s (75.03 H/s, 75.68 H/s, 72.18 H/s, 72.66 H/s)
+2026-06-04 04:46:26 Algo cn-heavy/xhv (cpu^4) hashrate: 338.58 H/s (81.38 H/s, 86.20 H/s, 84.79 H/s, 86.21 H/s)
+2026-06-04 04:47:27 Algo cn-lite/0 (cpu^16) hashrate: 2.34 KH/s (149.60 H/s, 144.47 H/s, 144.58 H/s, 141.51 H/s, 150.22 H/s, 141.63 H/s, 141.26 H/s, 149.49 H/s, 150.69 H/s, 144.82 H/s, 149.63 H/s, 146.83 H/s, 147.32 H/s, 141.45 H/s, 150.85 H/s, 150.41 H/s)
+2026-06-04 04:48:27 Algo cn-lite/1 (cpu^16) hashrate: 2.30 KH/s (147.57 H/s, 141.59 H/s, 138.91 H/s, 147.56 H/s, 138.74 H/s, 146.43 H/s, 138.75 H/s, 142.07 H/s, 146.44 H/s, 141.99 H/s, 146.51 H/s, 147.50 H/s, 147.55 H/s, 141.66 H/s, 146.13 H/s, 138.93 H/s)
+2026-06-04 04:49:28 Algo cn-pico/0 (cpu*4^16) hashrate: 14.70 KH/s (913.45 H/s, 926.11 H/s, 915.18 H/s, 927.85 H/s, 908.70 H/s, 914.65 H/s, 927.26 H/s, 908.58 H/s, 925.60 H/s, 925.89 H/s, 909.00 H/s, 924.78 H/s, 927.40 H/s, 913.97 H/s, 907.79 H/s, 927.27 H/s)
+2026-06-04 04:50:28 Algo cn-pico/tlo (cpu*4^16) hashrate: 13.08 KH/s (824.47 H/s, 824.45 H/s, 823.95 H/s, 824.14 H/s, 824.82 H/s, 809.09 H/s, 823.20 H/s, 813.29 H/s, 807.95 H/s, 814.35 H/s, 813.91 H/s, 824.28 H/s, 824.39 H/s, 809.24 H/s, 814.14 H/s, 808.46 H/s)
+2026-06-04 04:51:29 Algo cn/0 (cpu^8) hashrate: 621.13 H/s (79.38 H/s, 76.61 H/s, 79.95 H/s, 80.04 H/s, 76.53 H/s, 74.67 H/s, 74.54 H/s, 79.41 H/s)
+2026-06-04 04:52:29 Algo cn/1 (cpu^8) hashrate: 614.90 H/s (75.86 H/s, 79.16 H/s, 78.57 H/s, 73.78 H/s, 73.89 H/s, 78.62 H/s, 75.80 H/s, 79.20 H/s)
+2026-06-04 04:53:30 Algo cn/2 (cpu^8) hashrate: 617.00 H/s (79.04 H/s, 76.44 H/s, 77.16 H/s, 76.67 H/s, 78.57 H/s, 74.91 H/s, 75.20 H/s, 79.02 H/s)
+2026-06-04 04:54:30 Algo cn/ccx (cpu^8) hashrate: 1.15 KH/s (138.63 H/s, 148.76 H/s, 141.70 H/s, 137.70 H/s, 137.83 H/s, 147.43 H/s, 148.80 H/s, 149.40 H/s)
+2026-06-04 04:55:31 Algo cn/double (cpu^8) hashrate: 302.34 H/s (37.23 H/s, 36.10 H/s, 39.11 H/s, 38.51 H/s, 36.93 H/s, 39.05 H/s, 38.47 H/s, 36.94 H/s)
+2026-06-04 04:56:31 Algo cn/fast (cpu^8) hashrate: 1.13 KH/s (141.42 H/s, 136.35 H/s, 147.58 H/s, 148.18 H/s, 142.58 H/s, 143.62 H/s, 135.72 H/s, 136.79 H/s)
+2026-06-04 04:57:43 Algo cn/gpu (gpu1*1280) hashrate: 2.32 KH/s (2.32 KH/s)
+2026-06-04 04:58:43 Algo cn/half (cpu^8) hashrate: 706.89 H/s (80.12 H/s, 89.32 H/s, 97.75 H/s, 83.97 H/s, 94.64 H/s, 83.93 H/s, 80.54 H/s, 96.60 H/s)
+2026-06-04 04:59:44 Algo cn/r (cpu^8) hashrate: 548.44 H/s (71.34 H/s, 68.92 H/s, 65.42 H/s, 71.94 H/s, 68.35 H/s, 67.66 H/s, 67.59 H/s, 67.22 H/s)
+2026-06-04 05:00:44 Algo cn/rto (cpu^8) hashrate: 537.74 H/s (69.70 H/s, 69.24 H/s, 67.37 H/s, 62.35 H/s, 65.18 H/s, 66.65 H/s, 67.17 H/s, 70.08 H/s)
+2026-06-04 05:01:45 Algo cn/rwz (cpu^8) hashrate: 749.60 H/s (90.10 H/s, 95.26 H/s, 92.89 H/s, 97.09 H/s, 91.12 H/s, 91.30 H/s, 95.68 H/s, 96.16 H/s)
+2026-06-04 05:02:45 Algo cn/upx2 (cpu*5^16) hashrate: 52.80 KH/s (3.37 KH/s, 3.22 KH/s, 3.25 KH/s, 3.29 KH/s, 3.32 KH/s, 3.33 KH/s, 3.27 KH/s, 3.36 KH/s, 3.29 KH/s, 3.29 KH/s, 3.30 KH/s, 3.30 KH/s, 3.27 KH/s, 3.27 KH/s, 3.33 KH/s, 3.33 KH/s)
+2026-06-04 05:03:46 Algo cn/xao (cpu^8) hashrate: 276.95 H/s (35.23 H/s, 30.06 H/s, 34.62 H/s, 34.54 H/s, 33.32 H/s, 35.44 H/s, 36.76 H/s, 36.98 H/s)
+2026-06-04 05:04:47 Algo cn/zls (cpu^8) hashrate: 753.77 H/s (91.98 H/s, 97.04 H/s, 95.18 H/s, 98.66 H/s, 99.06 H/s, 94.85 H/s, 89.33 H/s, 87.67 H/s)
+2026-06-04 05:06:03 Algo etchash (gpu1*4660320) hashrate: 15.00 MH/s (15.00 MH/s)
+2026-06-04 05:07:04 Algo ghostrider (cpu*8^8) hashrate: 1.48 KH/s (188.17 H/s, 180.98 H/s, 185.91 H/s, 190.11 H/s, 192.20 H/s, 193.60 H/s, 176.50 H/s, 174.47 H/s)
+2026-06-04 05:08:35 Algo kawpow (gpu1*37282560) hashrate: 20.87 MH/s (20.87 MH/s)
+2026-06-04 05:09:37 Algo rx/0 (cpu*8) hashrate: 6.03 KH/s (6.03 KH/s)
+2026-06-04 05:10:39 Algo rx/2 (cpu*8) hashrate: 4.97 KH/s (4.97 KH/s)
+2026-06-04 05:11:41 Algo rx/arq (cpu*16) hashrate: 39.02 KH/s (39.02 KH/s)
+2026-06-04 05:12:43 Algo rx/graft (cpu*8) hashrate: 5.54 KH/s (5.54 KH/s)
+2026-06-04 05:13:46 Algo rx/sfx (cpu*8) hashrate: 5.73 KH/s (5.73 KH/s)
+2026-06-04 05:14:48 Algo rx/wow (cpu*16) hashrate: 7.88 KH/s (7.88 KH/s)
+2026-06-04 05:15:50 Algo rx/yada (cpu*8) hashrate: 5.92 KH/s (5.92 KH/s)
+2026-06-04 05:15:50 Connecting to primary gulf.moneroocean.stream:20001tls pool
+2026-06-04 05:15:51 Login to the pool succeeded
+2026-06-04 05:15:52 Got new kawpow algo job with 65.41 MH/share target and 4395729 height
+KawPow DAG for epoch 586 calculated (26.60 s)
+2026-06-04 05:16:27 Share accepted by the pool (1/0)
 ...
 ```
 
@@ -240,9 +247,11 @@ npm run test:perf:ghostrider
 
 `npm test` runs the hash-vector suite under Docker and skips GPU cases when no GPU device is
 available. `npm run test:perf` benchmarks every supported algo with mo-miner's detected mining
-device config and prints each hashrate in the same test reporter output. Individual benchmark entry points are available as
-`npm run test:perf:<algo>`, for example `npm run test:perf:rx/0`,
-`npm run test:perf:cn-heavy/tube`, or `npm run test:perf:c29`.
+device config and prints each hashrate in the same test reporter output. Individual benchmark entry
+points are available as `npm run test:perf:<algo>` for named scripts in `package.json`, for example
+`npm run test:perf:rx/0`, `npm run test:perf:cn-heavy/tube`, or `npm run test:perf:c29`. Any
+supported algo can also be selected by passing it to the generic perf runner, for example
+`npm run test:perf -- etchash` or `npm run test:perf -- autolykos2`.
 
 Enable huge pages for better performance (check [Huge Pages](https://xmrig.com/docs/miner/hugepages)):
 

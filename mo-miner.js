@@ -422,24 +422,19 @@ function baseJob(prev_job, algo, dev, pool_id) {
   };
 }
 
-function isEthHashAlgo(algo) {
-  return algo === "kawpow" || algo === "etchash";
-}
-
-function isAutolykos2Algo(algo) {
-  return algo === "autolykos2";
-}
+const nonceAt32Algos = new Set(["kawpow", "etchash", "autolykos2"]);
+const currentEtcBenchHeight = 24689903; // Sampled from ETC mainnet on 2026-06-04 for live-size Etchash benchmarks.
 
 function isNonceAt32Algo(algo) {
-  return isEthHashAlgo(algo) || isAutolykos2Algo(algo);
+  return nonceAt32Algos.has(algo);
 }
 
 function jobTarget(prev_job, algo) {
   const explicitTarget = orDefault(prev_job.target, "");
-  if (!isEthHashAlgo(algo) && !isAutolykos2Algo(algo)) return explicitTarget || h.diff2target(prev_job.difficulty);
+  if (!isNonceAt32Algo(algo)) return explicitTarget || h.diff2target(prev_job.difficulty);
   if (explicitTarget && !/^\d+$/.test(explicitTarget) && explicitTarget.replace(/^0x/i, "").length > 16)
     return explicitTarget.replace(/^0x/i, "").padStart(64, "0");
-  if (isAutolykos2Algo(algo) && /^\d+$/.test(explicitTarget)) return h.decimalTargetToHex(explicitTarget);
+  if (algo === "autolykos2" && /^\d+$/.test(explicitTarget)) return h.decimalTargetToHex(explicitTarget);
   return h.ethDiff2Target(prev_job.difficulty || (explicitTarget ? h.target2diff(explicitTarget) : 1));
 }
 
@@ -542,6 +537,10 @@ function prepareBenchmarkJob(job) {
     job.noncebytes = 8;
     job.nonceoffset = 32;
     if (job.blob_hex && job.blob_hex.length === 64) job.blob_hex += "0000000000000000";
+  }
+  if (job.algo === "etchash") {
+    job.height = job.height || currentEtcBenchHeight;
+    job.seed_hex = "";
   }
   return job;
 }
