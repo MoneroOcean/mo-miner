@@ -714,7 +714,7 @@ public:
     if (!input || !result) throw std::string("Can't allocate kawpow SYCL input buffers");
   }
 
-  void ensure_epoch(const uint32_t new_epoch) {
+  void ensure_epoch(const uint32_t new_epoch, const bool should_log) {
     if (epoch == new_epoch) return;
     if (new_epoch >= 2048 || !dag_sizes[new_epoch] || !cache_sizes[new_epoch]) {
       throw std::string("Bad kawpow epoch");
@@ -742,7 +742,7 @@ public:
     if (!light_cache || !dag) throw std::string("Can't allocate kawpow DAG buffers");
 
     if (shared_dag) std::memcpy(light_cache, host_cache.data(), host_cache.size() * sizeof(uint32_t));
-    else queue.memcpy(light_cache, host_cache.data(), host_cache.size() * sizeof(uint32_t)).wait_and_throw();
+    else sycl_wait_and_throw(queue.memcpy(light_cache, host_cache.data(), host_cache.size() * sizeof(uint32_t)), device);
 
     const uint32_t light_nodes = static_cast<uint32_t>(new_light_cache_words / NODE_WORDS);
     const FastModData light_mod = make_fast_mod_data(light_nodes);
@@ -755,10 +755,11 @@ public:
     sycl::queue& q = queue;
     auto& kb = *bundle;
 
+    sycl::event dag_event;
     for (uint32_t start_node = 0; start_node < total;) {
       const uint32_t current_nodes = chunk_nodes ? std::min(chunk_nodes, total - start_node) : total;
       const uint32_t chunk_start = start_node;
-      q.submit([&](sycl::handler& h) {
+      dag_event = q.submit([&](sycl::handler& h) {
         h.use_kernel_bundle(kb);
         h.parallel_for(
           sycl::nd_range<1>(sycl::range<1>(round_up(current_nodes, dag_workgroup)), sycl::range<1>(dag_workgroup)),
@@ -793,12 +794,14 @@ public:
       if (!chunk_nodes) break;
       start_node += current_nodes;
     }
-    q.wait_and_throw();
+    sycl_wait_and_throw(dag_event, device);
 
     epoch = new_epoch;
-    char elapsed[32];
-    format_duration_ms(elapsed, sizeof(elapsed), now_ms() - start_ms);
-    std::fprintf(stderr, "KawPow DAG for epoch %u calculated (%s)\n", new_epoch, elapsed);
+    if (should_log) {
+      char elapsed[32];
+      format_duration_ms(elapsed, sizeof(elapsed), now_ms() - start_ms);
+      std::fprintf(stderr, "KawPow DAG for epoch %u calculated (%s)\n", new_epoch, elapsed);
+    }
   }
 
   void ensure_period(const uint64_t new_period) {
@@ -831,7 +834,7 @@ using namespace mominer_kawpow;
 int kawpow(
   const unsigned, const uint32_t block_height, const uint8_t* const input, const unsigned input_size, uint8_t* const output,
   uint8_t* const mix_hash, uint64_t* const pnonce, const uint64_t target,
-  const unsigned intensity, const bool is_test, const std::string& dev_str
+  const unsigned intensity, const bool is_test, const bool is_benchmark, const std::string& dev_str
 ) {
   if (input_size < 40) throw std::string("Bad kawpow input length");
 
@@ -841,7 +844,7 @@ int kawpow(
 
   const uint32_t epoch = block_height / KAWPOW_EPOCH_LENGTH;
   const uint64_t period = block_height / KAWPOW_PERIOD_LENGTH;
-  state.ensure_epoch(epoch);
+  state.ensure_epoch(epoch, !is_benchmark);
   state.ensure_period(period);
 
   uint64_t start_nonce = 0;
@@ -860,7 +863,7 @@ int kawpow(
   const DagLoad* const d_dag_load = reinterpret_cast<const DagLoad*>(state.dag);
   KawpowResult* const d_result = state.result;
 
-  q.submit([&](sycl::handler& h) {
+  sycl_wait_and_throw(q.submit([&](sycl::handler& h) {
     const auto share = sycl::local_accessor<uint32_t, 1>(sycl::range<1>(local_size), h);
     const auto offsets = sycl::local_accessor<uint32_t, 1>(sycl::range<1>(local_size / KAWPOW_LANES), h);
     const auto c_dag = sycl::local_accessor<uint32_t, 1>(sycl::range<1>(KAWPOW_CACHE_WORDS), h);
@@ -958,7 +961,7 @@ int kawpow(
         }
       }
     );
-  }).wait_and_throw();
+  }), state.device);
 
   const uint32_t result_count = std::min(state.result->count, MAX_KAWPOW_OUTPUTS);
   for (uint32_t index = 0; index < result_count; ++index) {

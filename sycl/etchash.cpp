@@ -588,7 +588,7 @@ public:
     if (!light_cache || !dag) throw std::string("Can't allocate etchash DAG buffers");
 
     if (shared_dag) std::memcpy(light_cache, host_cache.data(), host_cache.size() * sizeof(uint32_t));
-    else queue.memcpy(light_cache, host_cache.data(), host_cache.size() * sizeof(uint32_t)).wait_and_throw();
+    else sycl_wait_and_throw(queue.memcpy(light_cache, host_cache.data(), host_cache.size() * sizeof(uint32_t)), device);
 
     const uint32_t light_nodes = static_cast<uint32_t>(new_light_cache_words / ETHASH_NODE_WORDS);
     const FastModData light_mod = make_fast_mod_data(light_nodes);
@@ -600,10 +600,11 @@ public:
     sycl::queue& q = queue;
     auto& kb = *bundle;
 
+    sycl::event dag_event;
     for (uint32_t start_node = 0; start_node < total;) {
       const uint32_t current_nodes = chunk_nodes ? std::min(chunk_nodes, total - start_node) : total;
       const uint32_t chunk_start = start_node;
-      q.submit([&](sycl::handler& h) {
+      dag_event = q.submit([&](sycl::handler& h) {
         h.use_kernel_bundle(kb);
         h.parallel_for(
           sycl::nd_range<1>(sycl::range<1>(round_up(current_nodes, dag_workgroup)), sycl::range<1>(dag_workgroup)),
@@ -638,7 +639,7 @@ public:
       if (!chunk_nodes) break;
       start_node += current_nodes;
     }
-    q.wait_and_throw();
+    sycl_wait_and_throw(dag_event, device);
 
     epoch = new_epoch;
     seed_epoch = new_seed_epoch;
@@ -711,7 +712,7 @@ int etchash(
   constexpr unsigned SCRATCH_WORDS = CMIX_OFFSET + 8;
 
   if (state.device.is_gpu()) {
-    q.submit([&](sycl::handler& h) {
+    sycl_wait_and_throw(q.submit([&](sycl::handler& h) {
       h.use_kernel_bundle(kb);
       sycl::local_accessor<uint32_t, 1> scratch(sycl::range<1>(SCRATCH_WORDS), h);
       h.parallel_for(
@@ -772,9 +773,9 @@ int etchash(
           }
         }
       );
-    }).wait_and_throw();
+    }), state.device);
   } else {
-    q.submit([&](sycl::handler& h) {
+    sycl_wait_and_throw(q.submit([&](sycl::handler& h) {
       h.use_kernel_bundle(kb);
       sycl::local_accessor<uint32_t, 1> scratch(sycl::range<1>(SCRATCH_WORDS), h);
       h.parallel_for(
@@ -837,7 +838,7 @@ int etchash(
           }
         }
       );
-    }).wait_and_throw();
+    }), state.device);
   }
 
   const uint32_t count = state.result->count;

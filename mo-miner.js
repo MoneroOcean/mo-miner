@@ -503,9 +503,21 @@ function reusableLastNonce(last_job_can_be_used) {
   return last_job_can_be_used && last_job.nonce ? last_job.nonce : "0";
 }
 
+function workerRuntimeEnv(algo) {
+  if (algo !== "c29") return {};
+
+  // C29 submits hundreds of short SYCL kernels per second; legacy non-immediate
+  // Level Zero command lists avoid the one-core immediate-list path on Intel GPUs.
+  return {
+    SYCL_UR_USE_LEVEL_ZERO_V2: "0",
+    SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS: "0",
+    MOMINER_C29_SEED_BLOCKS: process.env.MOMINER_C29_SEED_BLOCKS || "16",
+  };
+}
+
 function ensureWorkersForJob(algo, dev) {
   if (!last_job || last_job.algo !== algo || last_job.dev !== dev)
-    h.recreate_threads(dev, messageHandler);
+    h.recreate_threads(dev, messageHandler, workerRuntimeEnv(algo));
 }
 
 // prev_job can be either job json from the pool or
@@ -542,7 +554,7 @@ function bench_algo(algo, cb) {
     seed_hex: global.opt.job.seed_hex,
     pool_id:  "", // to drop last nonce messages from this job
   });
-  h.recreate_threads(job.dev, messageHandler);
+  h.recreate_threads(job.dev, messageHandler, workerRuntimeEnv(algo));
   let timeout = setTimeout(function() {
     h.log_err("Benchmark " + algo + " algo (" + job.dev + ") timeout");
     return cb(0);
@@ -787,13 +799,13 @@ switch (directive) {
     break;
 
   case "test":
-    h.recreate_threads(global.opt.job.dev, messageHandler);
+    h.recreate_threads(global.opt.job.dev, messageHandler, workerRuntimeEnv(normalizeAlgoName(global.opt.job.algo)));
     h.messageWorkers({type: "test", job: global.opt.job});
     break;
 
   case "bench":
     install_exit_handlers();
-    h.recreate_threads(global.opt.job.dev, messageHandler);
+    h.recreate_threads(global.opt.job.dev, messageHandler, workerRuntimeEnv(normalizeAlgoName(global.opt.job.algo)));
     if (!use_msr_tuning()) {
       startBenchJob();
       break;

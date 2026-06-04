@@ -23,7 +23,7 @@ typedef int (*gpu_kawpow_hash_fun)(
   unsigned job_ref, uint32_t height,
   const uint8_t* input, unsigned input_size, uint8_t* output,
   uint8_t* mix_hash, uint64_t* pnonce, uint64_t target,
-  unsigned intensity, bool is_test, const std::string& dev_str
+  unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
 );
 typedef int (*gpu_etchash_hash_fun)(
   unsigned job_ref, uint32_t height,
@@ -71,7 +71,7 @@ class Core: public AsyncWorker {
   uint32_t m_nonce32; // next nonce that will be used in an input
   uint64_t m_nonce64, m_nicehash_mask, m_target, m_timestamp, m_hash_count;
   std::string m_algo_str, m_dev_str, m_seed_hex, m_input_hex, m_pool_id, m_worker_id, m_job_id, m_header_hash;
-  bool m_is_rx_jit;
+  bool m_is_rx_jit, m_is_bench;
   randomx_cache*   m_rx_cache;
   randomx_dataset* m_rx_dataset;
   ctpl::thread_pool* m_thread_pool;
@@ -140,7 +140,7 @@ class Core: public AsyncWorker {
       m_job_ref(0), m_height(0), m_batch(0), m_mem_size(0), m_input_len(0),
       m_nonce_step(1), m_nonce_bytes(4), m_nonce_offset(39), m_c29_proof_size(32),
       m_nonce32(0), m_nonce64(0), m_nicehash_mask(0), m_target(0), m_timestamp(0),
-      m_hash_count(0), m_is_rx_jit(true),m_rx_cache(nullptr), m_rx_dataset(nullptr),
+      m_hash_count(0), m_is_rx_jit(true), m_is_bench(false), m_rx_cache(nullptr), m_rx_dataset(nullptr),
       m_thread_pool(nullptr), m_vm(nullptr)
   {
     m_fn.any = nullptr;

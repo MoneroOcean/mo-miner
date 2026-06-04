@@ -469,7 +469,7 @@ struct AutolykosState {
     auto& kb = *bundle;
     const uint32_t local = prehash_workgroup;
 
-    q.submit([&](sycl::handler& h) {
+    sycl_wait_and_throw(q.submit([&](sycl::handler& h) {
       h.use_kernel_bundle(kb);
       h.parallel_for(
         sycl::nd_range<1>(sycl::range<1>(round_up(n_len, local)), sycl::range<1>(local)),
@@ -487,7 +487,7 @@ struct AutolykosState {
           for (unsigned i = 0; i < 8; ++i) out[i] = load32_be_dev(table_item + i * 4);
         }
       );
-    }).wait_and_throw();
+    }), device);
 
     table_height = height;
     table_n = n_len;
@@ -591,7 +591,7 @@ int autolykos2(
       );
     });
 
-    q.submit([&](sycl::handler& h) {
+    sycl_wait_and_throw(q.submit([&](sycl::handler& h) {
       h.use_kernel_bundle(kb);
       h.parallel_for(
         sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(local_size)),
@@ -638,7 +638,7 @@ int autolykos2(
           }
         }
       );
-    }).wait_and_throw();
+    }), state.device);
 
     const uint32_t count = state.result->count;
     if (count == 0) return 0;
@@ -648,7 +648,7 @@ int autolykos2(
     return 1;
   }
 
-  q.submit([&](sycl::handler& h) {
+  sycl_wait_and_throw(q.submit([&](sycl::handler& h) {
     h.use_kernel_bundle(kb);
     sycl::local_accessor<uint32_t, 1> shared_index(sycl::range<1>(64), h);
     sycl::local_accessor<uint32_t, 1> shared_data(sycl::range<1>(512), h);
@@ -764,7 +764,7 @@ int autolykos2(
         }
       }
     );
-  }).wait_and_throw();
+  }), state.device);
 
   const uint32_t count = state.result->count;
   if (count == 0) return 0;

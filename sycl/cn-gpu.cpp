@@ -10,6 +10,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <string>
 
 #include "lib-internal.h"
 #include "../native/consts.h"
@@ -147,12 +148,18 @@ inline sycl::float4 fma_break(const sycl::float4 x) { // Breaks the FMA dependen
   return my_and_or_ps(x, 0xFEFFFFFF, 0x00800000);
 }
 
+inline bool cn_gpu_is_level_zero_gpu(const sycl::device& dev) {
+  return dev.is_gpu() &&
+         dev.get_platform().get_info<sycl::info::platform::name>().find("Level-Zero") != std::string::npos;
+}
+
 inline const char* cn_gpu_fp_compile_options(const sycl::device& dev) {
   constexpr const char* optimized =
     "-cl-fp32-correctly-rounded-divide-sqrt -cl-mad-enable -cl-fast-relaxed-math -cl-no-signed-zeros";
   constexpr const char* stable =
     "-cl-fp32-correctly-rounded-divide-sqrt -cl-mad-enable -cl-fast-relaxed-math -cl-no-signed-zeros -cl-opt-disable";
 
+  if (cn_gpu_is_level_zero_gpu(dev)) return "-cl-fp32-correctly-rounded-divide-sqrt";
   return dev.is_cpu() ? stable : optimized; // CPU backends otherwise reassociate the fp recurrence.
 }
 
@@ -309,7 +316,8 @@ struct CnGpuState { // Per-device queue and persistent allocations; avoids buffe
     : device(get_dev(dev_str)),
       queue(device, cn_gpu_exception_handler(), sycl::property_list{sycl::property::queue::in_order{}}),
       shared_scratch(device.is_cpu() || !device.has(sycl::aspect::usm_device_allocations)),
-      shared_io(device.is_cpu() || !device.has(sycl::aspect::usm_device_allocations))
+      shared_io(device.is_cpu() || cn_gpu_is_level_zero_gpu(device) ||
+                !device.has(sycl::aspect::usm_device_allocations))
   {
     if (!device.has(sycl::aspect::usm_shared_allocations) ||
         (!device.is_cpu() && !device.has(sycl::aspect::usm_device_allocations))) {
@@ -625,7 +633,7 @@ void cn_gpu(
     });
   }
 
-  q.submit([&](sycl::handler& h) { // Final Keccak stays on device; the host scratchpad argument is unused.
+  sycl::event final_event = q.submit([&](sycl::handler& h) { // Final Keccak stays on device; the host scratchpad argument is unused.
     h.use_kernel_bundle(kb);
     h.parallel_for(sycl::nd_range(sycl::range((batch + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE * WORKGROUP_SIZE),
                                  sycl::range(WORKGROUP_SIZE)),
@@ -642,9 +650,9 @@ void cn_gpu(
   });
 
   if (state.shared_io) {
-    q.wait_and_throw();
+    sycl_wait_and_throw(final_event, state.device);
     std::memcpy(output, d_outputs, output_bytes);
   } else {
-    q.memcpy(output, d_outputs, output_bytes).wait_and_throw();
+    sycl_wait_and_throw(q.memcpy(output, d_outputs, output_bytes), state.device);
   }
 }

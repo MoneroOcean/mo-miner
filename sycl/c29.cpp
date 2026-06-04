@@ -137,6 +137,20 @@ struct C29Buffers {
 
 static C29Buffers& get_c29_buffers() { static C29Buffers buffers; return buffers; }
 
+template <typename T>
+static void c29_read_buffer(sycl::queue& queue, sycl::buffer<T, 1>& buffer,
+                            T* const dest, const size_t count) {
+  if (count == 0) return;
+
+  const sycl::event event = queue.submit([&](sycl::handler& handler) {
+    sycl::accessor accessor{
+      buffer, handler, sycl::range<1>{count}, sycl::id<1>{0}, sycl::read_only
+    };
+    handler.copy(accessor, dest);
+  });
+  sycl_wait_and_throw(event, queue.get_device());
+}
+
 // Global solution management
 class C29SolutionMutex {
   std::atomic_flag m_flag = ATOMIC_FLAG_INIT;
@@ -790,18 +804,15 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
     profile.add_event("tail", tail_event);
 
     // Read final trimmed edges from GPU memory
-    { sycl::host_accessor host_accessor{buffer_trimmed_edge_count, sycl::read_only};
-      trimmed_edge_count = sycl::min(host_accessor[0], MAX_TRIMMED_EDGE_COUNT);
-    }
+    c29_read_buffer(compute_queue, buffer_trimmed_edge_count, &trimmed_edge_count, 1);
+    trimmed_edge_count = sycl::min(trimmed_edge_count, MAX_TRIMMED_EDGE_COUNT);
 
     profile.mark("read trimmed count");
     profile.print_events();
 
     std::vector<sycl::uint2> trimmed_edges(trimmed_edge_count);
 
-    { auto host_accessor = buffer_trimmed_edges_u2.get_host_access(sycl::range<1>(trimmed_edge_count), sycl::id<1>(0));
-      std::memcpy(trimmed_edges.data(), host_accessor.get_pointer(), trimmed_edge_count * sizeof(sycl::uint2));
-    }
+    c29_read_buffer(compute_queue, buffer_trimmed_edges_u2, trimmed_edges.data(), trimmed_edge_count);
 
     profile.mark("read trimmed edges");
     profile.finish(trimmed_edge_count);

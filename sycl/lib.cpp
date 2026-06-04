@@ -215,12 +215,8 @@ static void add_gpu_cn_algo_dev(
     std::string cn_dev_str = dev_str;
     sycl::device cn_dev = dev;
     unsigned batch_multiplier = 6;
-    const auto opencl_dev = str2dev.find(dev_str + "o");
     const std::string device_name = dev.get_info<sycl::info::device::name>();
-    if (algo == "cn/gpu" && opencl_dev != str2dev.end() &&
-        device_name.find("Intel") != std::string::npos) {
-      cn_dev_str = dev_str + "o";
-      cn_dev = opencl_dev->second;
+    if (algo == "cn/gpu" && device_name.find("Intel") != std::string::npos) {
       batch_multiplier = 8;
     }
     const unsigned max_compute_units = cn_dev.get_info<sycl::info::device::max_compute_units>();

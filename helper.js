@@ -467,14 +467,14 @@ function createClusterThread(i, env, messageHandler) {
 // map 0..N-1 thread IDs into worker.id (that might be not sequential)
 // need to recreate threads from 0 for every algo change since huge memory reallocations
 // can have issues
-module.exports.recreate_threads = function(dev, messageHandler) {
+module.exports.recreate_threads = function(dev, messageHandler, extraEnv = {}) {
   module.exports.closeWorkers(5000);
   //for (const thread of Object.values(thread_id_map)) cluster.workers[thread].kill();
   worker_ids = [];
   worker_procs = {};
   const curr_thread_count = this.get_dev_threads(dev);
   for (let i = 0; i < curr_thread_count; ++ i) {
-    const env = childEnv({thread_id: i, log_level: global.opt.log_level});
+    const env = childEnv({thread_id: i, log_level: global.opt.log_level, ...extraEnv});
     if (use_subprocess_workers) createSubprocessThread(i, env, messageHandler);
     else createClusterThread(i, env, messageHandler);
   }

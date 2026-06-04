@@ -292,6 +292,7 @@ void Core::set_fn(cn_any_hash_fun fn) {
 
 bool Core::process_message(const std::string& type, const MessageValues& v) {
   if (type == "job") {
+    m_is_bench = false;
     if (!v.contains("target"))    throw std::string("Missing target job key");
     if (!v.contains("pool_id"))   throw std::string("Missing pool_id job key");
     if (!v.contains("worker_id")) throw std::string("Missing worker_id job key");
@@ -320,12 +321,14 @@ bool Core::process_message(const std::string& type, const MessageValues& v) {
 
   } else if (type == "bench") {
     debug_startup("process bench start");
+    m_is_bench = true;
     set_job(true, true, v);
     debug_startup("process bench done");
     m_target = 0;
 
   } else if (type == "test") {
     debug_startup("process test start");
+    m_is_bench = false;
     set_job(false, false, v);
     debug_startup("process test done");
     m_nonce32 = 0;
@@ -487,6 +490,11 @@ void Core::Execute() {
       }
     }
 
+    if (!m_fn.any) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      continue;
+    }
+
     if (m_fn.any) {
       init_runtime();
       int c29_sols;
@@ -517,7 +525,7 @@ void Core::Execute() {
             kawpow_sols = m_fn.gpu_kawpow(
               m_job_ref, m_height, m_input, m_input_len, m_output,
               static_cast<uint8_t*>(m_spads), &kawpow_nonce, m_target,
-              m_batch, !m_nonce32 && !m_nonce64, m_dev_str
+              m_batch, !m_nonce32 && !m_nonce64, m_is_bench, m_dev_str
             );
             break;
           case DEV::ETCHASH_GPU:

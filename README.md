@@ -133,7 +133,7 @@ gpu1z: Intel(R) oneAPI Unified Runtime over Level-Zero V2
 2026-06-02 03:17:15 Algo cn/ccx (cpu^8) hashrate: 1.19 KH/s (143.83 H/s, 152.37 H/s, 147.33 H/s, 143.76 H/s, 152.61 H/s, 147.43 H/s, 153.76 H/s, 153.68 H/s)
 2026-06-02 03:18:15 Algo cn/double (cpu^8) hashrate: 314.19 H/s (38.12 H/s, 40.05 H/s, 40.15 H/s, 38.81 H/s, 40.05 H/s, 40.09 H/s, 38.09 H/s, 38.84 H/s)
 2026-06-02 03:19:16 Algo cn/fast (cpu^8) hashrate: 1.19 KH/s (152.26 H/s, 152.21 H/s, 153.44 H/s, 153.25 H/s, 143.15 H/s, 143.20 H/s, 146.55 H/s, 143.05 H/s)
-2026-06-02 03:20:24 Algo cn/gpu (gpu1o*1280) hashrate: 2.69 KH/s (2.69 KH/s)
+2026-06-02 03:20:24 Algo cn/gpu (gpu1*1280) hashrate: 2.42 KH/s (2.42 KH/s)
 2026-06-02 03:21:25 Algo cn/half (cpu^8) hashrate: 801.36 H/s (103.19 H/s, 104.10 H/s, 101.71 H/s, 101.01 H/s, 104.54 H/s, 97.55 H/s, 94.83 H/s, 94.42 H/s)
 2026-06-02 03:22:25 Algo cn/r (cpu^8) hashrate: 594.05 H/s (75.58 H/s, 75.80 H/s, 72.12 H/s, 73.52 H/s, 75.63 H/s, 73.52 H/s, 72.16 H/s, 75.71 H/s)
 2026-06-02 03:23:26 Algo cn/rto (cpu^8) hashrate: 614.81 H/s (73.94 H/s, 79.17 H/s, 73.86 H/s, 78.56 H/s, 75.81 H/s, 79.17 H/s, 75.88 H/s, 78.43 H/s)
@@ -142,7 +142,6 @@ gpu1z: Intel(R) oneAPI Unified Runtime over Level-Zero V2
 2026-06-02 03:26:27 Algo cn/xao (cpu^8) hashrate: 315.35 H/s (40.30 H/s, 37.91 H/s, 40.26 H/s, 40.60 H/s, 38.89 H/s, 38.87 H/s, 40.63 H/s, 37.89 H/s)
 2026-06-02 03:27:28 Algo cn/zls (cpu^8) hashrate: 818.64 H/s (104.59 H/s, 99.32 H/s, 101.24 H/s, 104.32 H/s, 101.21 H/s, 104.55 H/s, 104.11 H/s, 99.30 H/s)
 2026-06-02 03:28:29 Algo ghostrider (cpu*8^8) hashrate: 1.60 KH/s (197.65 H/s, 205.02 H/s, 203.96 H/s, 197.59 H/s, 205.01 H/s, 193.62 H/s, 193.58 H/s, 203.97 H/s)
-KawPow DAG for epoch 0 calculated (725ms)
 2026-06-02 03:29:59 Algo kawpow (gpu1*37282560) hashrate: 20.88 MH/s (20.88 MH/s)
 2026-06-02 03:31:03 Algo rx/0 (cpu*8) hashrate: 6.10 KH/s (6.10 KH/s)
 2026-06-02 03:32:06 Algo rx/2 (cpu*8) hashrate: 5.07 KH/s (5.07 KH/s)
@@ -226,7 +225,9 @@ You can run test and benchmark separately for algo you need like this:
 
 ```
 ./r.sh node mo-miner.js test cn/gpu e55cb23e51649a59b127b96b515f2bf7bfea199741a0216cf838ded06eff82df --job '{"algo":"cn/gpu","dev":"gpu1*8"}'
-./r.sh node mo-miner.js bench cn/gpu --job '{"algo":"cn/gpu","dev":"gpu1z*960"}'
+./r.sh node mo-miner.js bench cn/gpu --job '{"algo":"cn/gpu","dev":"gpu1*1280"}'
+./r.sh node mo-miner.js bench etchash --job '{"algo":"etchash","dev":"gpu1*256"}'
+./r.sh node mo-miner.js bench autolykos2 --job '{"algo":"autolykos2","dev":"gpu1*1"}'
 ```
 
 Project test suites are npm entry points:
