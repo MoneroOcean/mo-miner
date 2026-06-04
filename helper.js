@@ -600,6 +600,13 @@ module.exports.ethDiff2Target = function(diff) {
   return (target > UINT256_MAX ? UINT256_MAX : target).toString(16).padStart(64, "0");
 };
 
+module.exports.decimalTargetToHex = function(value) {
+  const [numerator, denominator] = decimalToRatio(value);
+  if (numerator <= 0n) return "0".repeat(64);
+  const target = numerator / denominator;
+  return (target > UINT256_MAX ? UINT256_MAX : target).toString(16).padStart(64, "0");
+};
+
 module.exports.ethTarget2diff = function(target) {
   const div = BigInt("0x" + String(target || "").replace(/^0x/i, "").padStart(64, "0"));
   if (div === 0n) return 0;

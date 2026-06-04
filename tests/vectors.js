@@ -214,6 +214,21 @@ const hashTests = [
       "756598185990f2143a94d65787ce5fea2b1feae6bed481e79dd216ef426c3eaa",
   },
   {
+    name: "autolykos2 gpu1*1",
+    gpu: true,
+    timeoutMs: 20 * 60 * 1000,
+    job: {
+      algo: "autolykos2",
+      dev: "gpu1*1",
+      height: 614400,
+      target: "0003fffffffffffffffffffffffffffffffaeabb739abd2280eeff497a3340d9",
+      noncebytes: 8,
+      nonceoffset: 32,
+      blob_hex: "548c3e602a8f36f8f2738f5f643b02425038044d98543a51cabaa9785e7e864f0531000000000000",
+    },
+    expected: "0002fcb113fe65e5754959872dfdbffea0489bf830beb4961ddc0e9e66a1412a",
+  },
+  {
     name: "c29 proofsize 32 gpu1*1",
     gpu: true,
     timeoutMs: 10 * 60 * 1000,
@@ -244,7 +259,7 @@ const hashTests = [
 
 const perfTests = [];
 const perfAlgos = new Set();
-const ethHashAlgos = new Set(["kawpow", "etchash"]);
+const nonceAt32Algos = new Set(["kawpow", "etchash", "autolykos2"]);
 for (const definition of hashTests) {
   const algo = definition.job.algo;
   if (perfAlgos.has(algo)) continue;
@@ -256,7 +271,7 @@ for (const definition of hashTests) {
     autoDev: true,
     name: algo,
     timeoutMs: definition.timeoutMs || 3 * 60 * 1000,
-    job: ethHashAlgos.has(algo) ? { ...definition.job, dev: undefined } : { algo },
+    job: nonceAt32Algos.has(algo) ? { ...definition.job, dev: undefined } : { algo },
   });
 }
 

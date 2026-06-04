@@ -31,12 +31,19 @@ typedef int (*gpu_etchash_hash_fun)(
   uint8_t* mix_hash, uint64_t* pnonce, const uint8_t* target, const uint8_t* seed_hash,
   unsigned intensity, bool is_test, const std::string& dev_str
 );
+typedef int (*gpu_autolykos2_hash_fun)(
+  unsigned job_ref, uint32_t height,
+  const uint8_t* input, unsigned input_size, uint8_t* output,
+  uint64_t* pnonce, const uint8_t* target,
+  unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
+);
 static_assert(
   sizeof(cn_any_hash_fun) == sizeof(xmrig::cn_hash_fun) &&
   sizeof(cn_any_hash_fun) == sizeof(gpu_cn_hash_fun) &&
   sizeof(cn_any_hash_fun) == sizeof(gpu_c29_hash_fun) &&
   sizeof(cn_any_hash_fun) == sizeof(gpu_kawpow_hash_fun) &&
-  sizeof(cn_any_hash_fun) == sizeof(gpu_etchash_hash_fun),
+  sizeof(cn_any_hash_fun) == sizeof(gpu_etchash_hash_fun) &&
+  sizeof(cn_any_hash_fun) == sizeof(gpu_autolykos2_hash_fun),
   "Compute function pointers differ in size!"
 );
 union FN {
@@ -46,8 +53,9 @@ union FN {
   gpu_c29_hash_fun   gpu_c29;
   gpu_kawpow_hash_fun gpu_kawpow;
   gpu_etchash_hash_fun gpu_etchash;
+  gpu_autolykos2_hash_fun gpu_autolykos2;
 };
-enum DEV { CPU, RX_CPU, GPU, C29_GPU, KAWPOW_GPU, ETCHASH_GPU };
+enum DEV { CPU, RX_CPU, GPU, C29_GPU, KAWPOW_GPU, ETCHASH_GPU, AUTOLYKOS2_GPU };
 
 class Core: public AsyncWorker {
   const unsigned HASHRATE_COUNTER_INTERVAL = 10; // iterations to skip to update/check hashrate

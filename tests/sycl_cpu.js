@@ -27,6 +27,7 @@ const syclCpuVectors = [
   requiredVector("cn/gpu gpu1*8"),
   requiredVector("kawpow gpu1*256"),
   requiredVector("etchash gpu1*256"),
+  requiredVector("autolykos2 gpu1*1"),
   requiredVector("c29 proofsize 42 gpu1*1"),
 ];
 

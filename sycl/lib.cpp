@@ -105,7 +105,27 @@ static unsigned kawpow_intensity(const sycl::device& dev) {
 }
 
 static unsigned etchash_intensity(const sycl::device& dev) {
-  return pow_intensity(dev, "MOMINER_ETCHASH_WORKGROUP", "MOMINER_ETCHASH_INTENSITY");
+  const unsigned local = parse_pow_workgroup_override(dev.is_cpu(), "MOMINER_ETCHASH_WORKGROUP", 32);
+  const unsigned override = parse_pow_intensity_override(local, "MOMINER_ETCHASH_INTENSITY");
+  if (override) return override;
+
+  const unsigned max_compute_units = std::max(1u, dev.get_info<sycl::info::device::max_compute_units>());
+  unsigned intensity = local * 32768u;
+  intensity = static_cast<unsigned>((static_cast<uint64_t>(intensity) * max_compute_units) / 36u);
+  intensity -= intensity % local;
+  return std::max(intensity, local * 4096u);
+}
+
+static unsigned autolykos2_intensity(const sycl::device& dev) {
+  const unsigned local = parse_pow_workgroup_override(dev.is_cpu(), "MOMINER_AUTOLYKOS2_WORKGROUP", 64);
+  const unsigned override = parse_pow_intensity_override(local, "MOMINER_AUTOLYKOS2_INTENSITY");
+  if (override) return override;
+
+  const unsigned max_compute_units = std::max(1u, dev.get_info<sycl::info::device::max_compute_units>());
+  unsigned intensity = local * 8192u;
+  intensity = static_cast<unsigned>((static_cast<uint64_t>(intensity) * max_compute_units) / 10u);
+  intensity -= intensity % local;
+  return std::max(intensity, local * 4096u);
 }
 
 static void add_result_dev(std::string& result_dev, const std::string& add_str) {
@@ -243,6 +263,14 @@ static void add_gpu_etchash_algo_dev(std::string& result_dev) {
   });
 }
 
+static void add_gpu_autolykos2_algo_dev(std::string& result_dev) {
+  for_each_default_gpu([&](const std::string& dev_str, const sycl::device& dev) {
+    constexpr uint64_t min_global_mem = 3ULL * 1024ULL * 1024ULL * 1024ULL;
+    if (dev.get_info<sycl::info::device::global_mem_size>() >= min_global_mem)
+      add_result_dev(result_dev, dev_str + "*" + std::to_string(autolykos2_intensity(dev)));
+  });
+}
+
 sycl::device get_dev(const std::string& dev_str) {
   if (str2dev.empty()) update_str2dev();
   if (!str2dev.contains(dev_str)) {
@@ -260,10 +288,12 @@ std::map<std::string, std::string> algo_params(
   const std::set<std::string>& gpu_cn_algos,
   const std::set<std::string>& gpu_c29_algos,
   const std::set<std::string>& gpu_kawpow_algos,
-  const std::set<std::string>& gpu_etchash_algos
+  const std::set<std::string>& gpu_etchash_algos,
+  const std::set<std::string>& gpu_autolykos2_algos
 ) {
   const bool need_sycl_devices = !gpu_cn_algos.empty() || !gpu_c29_algos.empty() ||
-                                 !gpu_kawpow_algos.empty() || !gpu_etchash_algos.empty();
+                                 !gpu_kawpow_algos.empty() || !gpu_etchash_algos.empty() ||
+                                 !gpu_autolykos2_algos.empty();
   if (need_sycl_devices && str2dev.empty()) update_str2dev(true);
   const unsigned socket_count = std::max(1u, cpu_sockets);
   const unsigned thread_count = std::max(1u, cpu_threads);
@@ -276,6 +306,7 @@ std::map<std::string, std::string> algo_params(
   algos.insert(gpu_c29_algos.begin(), gpu_c29_algos.end());
   algos.insert(gpu_kawpow_algos.begin(), gpu_kawpow_algos.end());
   algos.insert(gpu_etchash_algos.begin(), gpu_etchash_algos.end());
+  algos.insert(gpu_autolykos2_algos.begin(), gpu_autolykos2_algos.end());
   for (const auto& algo : algos) {
     std::string result_dev;
     if (cpu_algos.contains(algo))
@@ -284,6 +315,7 @@ std::map<std::string, std::string> algo_params(
     else if (gpu_c29_algos.contains(algo)) add_gpu_c29_algo_dev(result_dev);
     else if (gpu_kawpow_algos.contains(algo)) add_gpu_kawpow_algo_dev(result_dev);
     else if (gpu_etchash_algos.contains(algo)) add_gpu_etchash_algo_dev(result_dev);
+    else if (gpu_autolykos2_algos.contains(algo)) add_gpu_autolykos2_algo_dev(result_dev);
     if (!result_dev.empty()) result[algo] = result_dev;
   }
   return result;

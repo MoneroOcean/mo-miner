@@ -200,6 +200,34 @@ function parse_args() {
   return true;
 }
 
+function hexWithoutPrefix(value) {
+  return String(value || "").replace(/^0x/i, "");
+}
+
+function normalizedFullNonce(value) {
+  return hexWithoutPrefix(value).padStart(16, "0").slice(-16);
+}
+
+function ergSubmitMeta(pool, job_id) {
+  return (pool.erg_submit_jobs && pool.erg_submit_jobs[job_id]) || {};
+}
+
+function ergExtraNonce2Size(pool, meta) {
+  const size = Number(meta.extra_nonce2_size);
+  if (Number.isInteger(size) && size >= 0 && size <= 8) return size;
+
+  const extraNonce = hexWithoutPrefix(meta.extra_nonce || pool.extra_nonce || "");
+  return Math.max(0, 8 - Math.ceil(extraNonce.length / 2));
+}
+
+function ergSubmitParams(pool, value) {
+  const meta = ergSubmitMeta(pool, value.job_id);
+  const nonce = normalizedFullNonce(value.nonce);
+  const extraNonce2HexLength = ergExtraNonce2Size(pool, meta) * 2;
+  const extraNonce2 = extraNonce2HexLength ? nonce.slice(16 - extraNonce2HexLength) : "";
+  return [pool.login, value.job_id, extraNonce2, hexWithoutPrefix(meta.ntime), nonce];
+}
+
 function normalizeAlgoName(algo) {
   return algo && (algo.startsWith("c29") || algo === "cuckaroo") ? "c29" : algo;
 }
@@ -230,6 +258,14 @@ function handleResult(msg) {
     nonce: msg.value.nonce, result: msg.value.hash
   };
   const pool = global.opt.pools[msg.value.pool_id];
+  if (pool && pool.submit_mode === "erg") {
+    return p.pool_write(msg.value.pool_id, {
+      jsonrpc: "2.0",
+      id: 3,
+      method: "mining.submit",
+      params: ergSubmitParams(pool, msg.value),
+    });
+  }
   if (msg.value.mix_hash) {
     const headerHash = resultHeaderHash(msg, pool);
     if (pool && pool.submit_mode === "ethproxy") {
@@ -390,11 +426,20 @@ function isEthHashAlgo(algo) {
   return algo === "kawpow" || algo === "etchash";
 }
 
+function isAutolykos2Algo(algo) {
+  return algo === "autolykos2";
+}
+
+function isNonceAt32Algo(algo) {
+  return isEthHashAlgo(algo) || isAutolykos2Algo(algo);
+}
+
 function jobTarget(prev_job, algo) {
   const explicitTarget = orDefault(prev_job.target, "");
-  if (!isEthHashAlgo(algo)) return explicitTarget || h.diff2target(prev_job.difficulty);
-  if (explicitTarget && explicitTarget.replace(/^0x/i, "").length > 16)
+  if (!isEthHashAlgo(algo) && !isAutolykos2Algo(algo)) return explicitTarget || h.diff2target(prev_job.difficulty);
+  if (explicitTarget && !/^\d+$/.test(explicitTarget) && explicitTarget.replace(/^0x/i, "").length > 16)
     return explicitTarget.replace(/^0x/i, "").padStart(64, "0");
+  if (isAutolykos2Algo(algo) && /^\d+$/.test(explicitTarget)) return h.decimalTargetToHex(explicitTarget);
   return h.ethDiff2Target(prev_job.difficulty || (explicitTarget ? h.target2diff(explicitTarget) : 1));
 }
 
@@ -472,7 +517,7 @@ function set_job(prev_job) {
   const pool_id = global.opt.pool_ids.active;
   const job = baseJob(prev_job, algo, dev, pool_id);
   if (algo === "c29") addC29JobFields(job, prev_job);
-  else if (isEthHashAlgo(algo)) addEthHashJobFields(job, prev_job);
+  else if (isNonceAt32Algo(algo)) addEthHashJobFields(job, prev_job);
   else addStandardJobFields(job, prev_job);
   addNonceFields(job, prev_job, pool_id);
   set_algo_msr(algo);
@@ -481,7 +526,7 @@ function set_job(prev_job) {
 }
 
 function prepareBenchmarkJob(job) {
-  if (isEthHashAlgo(job.algo)) {
+  if (isNonceAt32Algo(job.algo)) {
     job.noncebytes = 8;
     job.nonceoffset = 32;
     if (job.blob_hex && job.blob_hex.length === 64) job.blob_hex += "0000000000000000";

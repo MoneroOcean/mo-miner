@@ -64,7 +64,8 @@
     "test:perf:kawpow": "node tests/run_perf.js kawpow",
     "test:perf:c29": "node tests/run_perf.js c29",
     "test:all": "npm test && npm run test:perf",
-    "test:perf:etchash": "node tests/run_perf.js etchash"
+    "test:perf:etchash": "node tests/run_perf.js etchash",
+    "test:perf:autolykos2": "node tests/run_perf.js autolykos2"
   },
   "keywords": [
     "monero",

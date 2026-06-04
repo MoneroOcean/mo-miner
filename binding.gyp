@@ -215,6 +215,7 @@
         "sycl/lib.cpp",
         "sycl/ethash.cpp",
         "sycl/etchash.cpp",
+        "sycl/autolykos2.cpp",
         "sycl/c29.cpp",
         "sycl/cn-gpu.cpp",
         "sycl/kawpow.cpp"

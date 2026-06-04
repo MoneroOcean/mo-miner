@@ -624,6 +624,45 @@ test("fixed Etchash pools can use ethproxy work jobs", async () => {
   });
 });
 
+test("fixed Autolykos2 pools use Ergo stratum notify jobs", async () => {
+  let jobMessage = null;
+  const headerHash = "54".repeat(32);
+  const bound = "7067388259113537318333190002971674063283542741642755394446115914399301849";
+  await withMockPool({
+    pool: { is_keepalive: true, login: "9ergwallet.worker" },
+    opt: { job: { algo: "autolykos2" } },
+    pool_time: { keepalive: 0.001, first_job_wait: 0.001 },
+  }, async ({ socket, writes, poolConfig }) => {
+    pool.connect_pool_throttle(0, (job) => {
+      jobMessage = job;
+      return job;
+    });
+    socket.emit("connect");
+    assert.equal(writes[0].method, "mining.subscribe");
+
+    socket.emit("data", Buffer.from(
+      '{"jsonrpc":"2.0","id":1,"error":null,"result":[[["mining.notify","1"],"080c"],"080c",6]}\n' +
+      '{"jsonrpc":"2.0","id":2,"error":null,"result":true}\n' +
+      '{"method":"mining.notify","params":["203d",614400,"' + headerHash + '","","",2,"' + bound + '","",true],"algo":"autolykos2","id":null,"jsonrpc":"2.0"}\n'
+    ));
+
+    assert.equal(writes[1].method, "mining.authorize");
+    assert.deepEqual(writes[1].params, ["9ergwallet.worker", "x"]);
+    assert.equal(poolConfig.extra_nonce, "080c");
+    assert.equal(poolConfig.extra_nonce2_size, 6);
+    assert.equal(jobMessage.algo, "autolykos2");
+    assert.equal(jobMessage.job_id, "203d");
+    assert.equal(jobMessage.header_hash, headerHash);
+    assert.equal(jobMessage.blob, headerHash + "0000000000000c08");
+    assert.equal(jobMessage.nonce, "080c000000000000");
+    assert.equal(jobMessage.nicehash_mask, "ffff000000000000");
+    assert.equal(jobMessage.height, 614400);
+    assert.equal(jobMessage.ntime, "");
+    assert.equal(jobMessage.target, "0003fffffffffffffffffffffffffffffffaeabb739abd2280eeff497a3340d9");
+    assert.equal(writes.length, 2);
+  });
+});
+
 test("stale pool timeout does not destroy a replacement socket", async () => {
   const staleSocket = new events.EventEmitter();
   const replacementSocket = new events.EventEmitter();
@@ -997,6 +1036,34 @@ test("Etchash submit uses ethproxy eth_submitWork format", async () => {
     "0x080c000000000001",
     "0x" + headerHash,
     "0x" + "33".repeat(32),
+  ]));
+});
+
+test("Autolykos2 submit uses Ergo mining.submit format", async () => {
+  const miner = await loadMinerWithStubs();
+  miner.global.opt.pools[0].submit_mode = "erg";
+  miner.global.opt.pools[0].erg_submit_jobs = {
+    "203d": { extra_nonce: "080c", extra_nonce2_size: 6, ntime: "00000002" },
+  };
+
+  miner.messageHandler({
+    type: "result",
+    value: {
+      pool_id: 0,
+      worker_id: "worker",
+      job_id: "203d",
+      nonce: "080c000000000001",
+      hash: "00".repeat(32),
+    },
+  });
+
+  assert.equal(miner.poolWrites.length, 1);
+  assert.equal(JSON.stringify(miner.poolWrites[0].json.params), JSON.stringify([
+    "user",
+    "203d",
+    "000000000001",
+    "00000002",
+    "080c000000000001",
   ]));
 });
 

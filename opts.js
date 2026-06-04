@@ -58,7 +58,7 @@ module.exports.opt_help = {
       url:                [ undefined, "pool DNS or IP address" ],
       port:               [ undefined, "pool port" ],
       is_tls:             [ false, "is pool port is encrypted using TLS/SSL" ],
-      protocol:           [ null, "pool protocol override: login, raven, eth, or ethproxy" ],
+      protocol:           [ null, "pool protocol override: login, raven, eth, ethproxy, or erg" ],
       tls_verify:         [ false, "verify pool TLS/SSL certificate" ],
       is_nicehash:        [ false, "nicehash nonce mining mode support" ],
       is_keepalive:       [ true, "sends keepalive messages to the pool to avoid disconnect" ],

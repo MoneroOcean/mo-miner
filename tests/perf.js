@@ -14,7 +14,7 @@ if (selectedAlgo && selectedTests.length === 0) {
 }
 
 function assertAlgoParamsDevice(definition, dev) {
-  if (definition.algo !== "kawpow" && definition.algo !== "etchash") return;
+  if (definition.algo !== "kawpow" && definition.algo !== "etchash" && definition.algo !== "autolykos2") return;
   assert.match(dev, /(?:^|,)gpu\d+\*\d+(?:,|$)/, `${definition.algo} should be auto-detected on a GPU with an intensity`);
 }
 

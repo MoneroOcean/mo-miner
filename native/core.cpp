@@ -300,15 +300,17 @@ bool Core::process_message(const std::string& type, const MessageValues& v) {
 
     const bool is_kawpow_target = v.contains("algo") && v.at("algo") == "kawpow";
     const bool is_etchash_target = v.contains("algo") && v.at("algo") == "etchash";
-    const uint64_t new_target = is_etchash_target ? 1 : parse_target_hex(new_target_str, is_kawpow_target);
+    const bool is_autolykos2_target = v.contains("algo") && v.at("algo") == "autolykos2";
+    const bool is_big_target = is_etchash_target || is_autolykos2_target;
+    const uint64_t new_target = is_big_target ? 1 : parse_target_hex(new_target_str, is_kawpow_target);
     uint8_t new_target_bin[HASH_LEN]{};
-    if (is_etchash_target) parse_big_target_hex(new_target_str, new_target_bin);
+    if (is_big_target) parse_big_target_hex(new_target_str, new_target_bin);
 
     const uint64_t last_nonce = m_nonce_bytes == 4 ? m_nonce32 : m_nonce64;
     const std::string prev_pool_id = m_pool_id;
     set_job(true, true, v, [&]() {
       m_target    = new_target;
-      if (is_etchash_target) std::memcpy(m_target_bin, new_target_bin, HASH_LEN);
+      if (is_big_target) std::memcpy(m_target_bin, new_target_bin, HASH_LEN);
       m_pool_id   = v.at("pool_id");
       m_worker_id = v.at("worker_id");
       m_job_id    = v.at("job_id");
@@ -493,6 +495,8 @@ void Core::Execute() {
       uint64_t kawpow_nonce;
       int etchash_sols;
       uint64_t etchash_nonce;
+      int autolykos2_sols;
+      uint64_t autolykos2_nonce;
       try {
         switch (m_dev) {
           case DEV::CPU:
@@ -524,6 +528,14 @@ void Core::Execute() {
               m_batch, !m_nonce32 && !m_nonce64, m_dev_str
             );
             break;
+          case DEV::AUTOLYKOS2_GPU:
+            std::memcpy(&autolykos2_nonce, m_input + m_nonce_offset, sizeof(autolykos2_nonce));
+            autolykos2_sols = m_fn.gpu_autolykos2(
+              m_job_ref, m_height, m_input, m_input_len, m_output,
+              &autolykos2_nonce, m_target_bin,
+              m_batch, !m_nonce32 && !m_nonce64, m_is_bench, m_dev_str
+            );
+            break;
 
           case DEV::RX_CPU: throw "Internal error: Unreachable code executed";
         }
@@ -548,6 +560,17 @@ void Core::Execute() {
             set_fn(nullptr);
           } else {
             send_error(std::string("No ") + (m_dev == DEV::KAWPOW_GPU ? "kawpow" : "etchash") + " test result");
+            set_fn(nullptr);
+          }
+          continue;
+        }
+        if (m_dev == DEV::AUTOLYKOS2_GPU) {
+          if (autolykos2_sols == 1) {
+            char hash[HASH_LEN*2+1];
+            send_msg("test", "result", hash_bin2hex(hash, 0));
+            set_fn(nullptr);
+          } else {
+            send_error("No autolykos2 test result");
             set_fn(nullptr);
           }
           continue;
@@ -587,6 +610,19 @@ void Core::Execute() {
         if (m_target && nonce_overflowed(prev_nonce, m_nonce64, m_nicehash_mask)) {
           send_error("Nonce overflow");
           set_fn(nullptr);
+        }
+        continue;
+      }
+      if (m_dev == DEV::AUTOLYKOS2_GPU) {
+        const uint64_t prev_nonce = m_nonce64;
+        if (autolykos2_sols == 1 && m_target)
+          send_result(autolykos2_nonce, 8, m_output);
+
+        std::memcpy(m_input + m_nonce_offset, &m_nonce64, sizeof(m_nonce64));
+        m_nonce64 += m_nonce_step;
+        if (m_target && nonce_overflowed(prev_nonce, m_nonce64, m_nicehash_mask)) {
+          set_fn(nullptr);
+          send_last_nonce(prev_nonce, m_nonce_bytes, m_pool_id);
         }
         continue;
       }

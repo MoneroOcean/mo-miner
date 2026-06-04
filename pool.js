@@ -51,6 +51,7 @@ function defaultPoolProtocol() {
   const job = global.opt && global.opt.job;
   if (job && job.algo === "kawpow") return "raven";
   if (job && job.algo === "etchash") return "eth";
+  if (job && job.algo === "autolykos2") return "erg";
   return "login";
 }
 
@@ -59,7 +60,7 @@ function poolProtocol(pool) {
 }
 
 function usesMiningSubscribe(pool) {
-  return poolProtocol(pool) === "raven" || poolProtocol(pool) === "eth";
+  return poolProtocol(pool) === "raven" || poolProtocol(pool) === "eth" || poolProtocol(pool) === "erg";
 }
 
 function usesEthProxy(pool) {
@@ -125,12 +126,13 @@ function rememberPoolExtraNonce(pool_id, result) {
 function protocolForAlgo(algo) {
   if (algo === "kawpow") return "raven";
   if (algo === "etchash") return "eth";
+  if (algo === "autolykos2") return "erg";
   return null;
 }
 
 function algoFromPass(pool) {
   const pass = String(pool.pass || "");
-  const m = pass.match(/(?:^|[~;,])(?:algo=)?(kawpow|etchash)(?:$|[~;,])/i);
+  const m = pass.match(/(?:^|[~;,])(?:algo=)?(kawpow|etchash|autolykos2)(?:$|[~;,])/i);
   return m ? m[1].toLowerCase() : "";
 }
 
@@ -159,6 +161,10 @@ function isEthJobNotification(json) {
   return json.method === "mining.notify" && Array.isArray(json.params) && json.params.length >= 4;
 }
 
+function isErgJobNotification(json) {
+  return json.method === "mining.notify" && Array.isArray(json.params) && json.params.length >= 7;
+}
+
 function isEthProxyWork(json) {
   return Array.isArray(json.result) && json.result.length >= 3;
 }
@@ -185,6 +191,12 @@ function subscribeExtraNonceCandidates(result) {
   return Array.isArray(result[0]) || result[0] == null ? [result[1]] : result;
 }
 
+function subscribeExtraNonce2Size(result) {
+  if (!Array.isArray(result) || !(Array.isArray(result[0]) || result[0] == null)) return null;
+  const size = Number(result[2]);
+  return Number.isInteger(size) && size >= 0 && size <= 8 ? size : null;
+}
+
 function rememberPoolExtraNonceHex(pool_id, value) {
   const extra_nonce = validExtraNonce(value);
   if (extra_nonce) global.opt.pools[pool_id].extra_nonce = extra_nonce;
@@ -192,6 +204,8 @@ function rememberPoolExtraNonceHex(pool_id, value) {
 
 function rememberSubscribeExtraNonce(pool_id, result) {
   rememberPoolExtraNonceHex(pool_id, subscribeExtraNonceCandidates(result).find(validExtraNonce));
+  const extra_nonce2_size = subscribeExtraNonce2Size(result);
+  if (extra_nonce2_size !== null) global.opt.pools[pool_id].extra_nonce2_size = extra_nonce2_size;
 }
 
 function fixedHexBytesLE(hex, bytes) {
@@ -231,6 +245,22 @@ function parseHexHeight(value) {
   const hex = hexWithoutPrefix(value);
   if (!hex || /[^0-9a-f]/i.test(hex)) return 0;
   return Number.parseInt(hex, 16);
+}
+
+function ergTarget(bound) {
+  return h.decimalTargetToHex(bound);
+}
+
+function rememberErgSubmitJob(pool, job) {
+  if (!pool.erg_submit_jobs) pool.erg_submit_jobs = {};
+  pool.erg_submit_jobs[job.job_id] = {
+    extra_nonce: ethExtraNonce(pool),
+    extra_nonce2_size: pool.extra_nonce2_size,
+    ntime: job.ntime || "",
+  };
+
+  const jobIds = Object.keys(pool.erg_submit_jobs);
+  while (jobIds.length > 16) delete pool.erg_submit_jobs[jobIds.shift()];
 }
 
 function ravenBlob(headerHash, pool) {
@@ -400,6 +430,27 @@ function jobFromPoolMessage(pool_id, json) {
       noncebytes: 8,
       nonceoffset: 32,
     };
+  }
+  if (poolProtocol(pool) === "erg" && isErgJobNotification(json)) {
+    if (!pool.logged_in) return null;
+    const headerHash = hexWithoutPrefix(json.params[2]);
+    const ntime = hexWithoutPrefix(json.params[7]);
+    pool.submit_mode = "erg";
+    const job = {
+      algo: json.algo || (global.opt.job && global.opt.job.algo) || "autolykos2",
+      blob: ethBlob(headerHash, pool),
+      header_hash: headerHash,
+      target: ergTarget(json.params[6]),
+      job_id: json.params[0],
+      height: json.params[1],
+      ntime: ntime,
+      nonce: ethNonce(pool),
+      nicehash_mask: ethNonceMask(pool),
+      noncebytes: 8,
+      nonceoffset: 32,
+    };
+    rememberErgSubmitJob(pool, job);
+    return job;
   }
   if (isLoginJob(json)) { // login job
     pool.logged_in = true;

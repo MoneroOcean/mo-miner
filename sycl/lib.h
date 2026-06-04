@@ -24,7 +24,8 @@ MOMINER_SYCL_API std::map<std::string, std::string> algo_params(
   const std::set<std::string>& gpu_cn_algos,
   const std::set<std::string>& gpu_c29_algos,
   const std::set<std::string>& gpu_kawpow_algos,
-  const std::set<std::string>& gpu_etchash_algos
+  const std::set<std::string>& gpu_etchash_algos,
+  const std::set<std::string>& gpu_autolykos2_algos
 );
 
 MOMINER_SYCL_API void cn_gpu(
@@ -48,4 +49,10 @@ MOMINER_SYCL_API int etchash(
   unsigned job_id, uint32_t height, const uint8_t* input, unsigned input_size, uint8_t* output,
   uint8_t* mix_hash, uint64_t* pnonce, const uint8_t* target, const uint8_t* seed_hash,
   unsigned intensity, bool is_test, const std::string& dev_str
+);
+
+MOMINER_SYCL_API int autolykos2(
+  unsigned job_id, uint32_t height, const uint8_t* input, unsigned input_size, uint8_t* output,
+  uint64_t* pnonce, const uint8_t* target,
+  unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
 );
