@@ -50,9 +50,11 @@ static std::string available_dev_str() {
   return first ? "none" : devices.str();
 }
 
-static unsigned parse_kawpow_workgroup_override(const bool is_cpu) {
-  const unsigned fallback = is_cpu ? 128 : 256;
-  const char* const value = std::getenv("MOMINER_KAWPOW_WORKGROUP");
+static unsigned parse_pow_workgroup_override(
+  const bool is_cpu, const char* const env_name, const unsigned fallback_override = 0
+) {
+  const unsigned fallback = fallback_override ? fallback_override : (is_cpu ? 128 : 256);
+  const char* const value = std::getenv(env_name);
   if (!value || !*value) return fallback;
 
   char* end = nullptr;
@@ -61,6 +63,7 @@ static unsigned parse_kawpow_workgroup_override(const bool is_cpu) {
   if (errno || end == value || *end) return fallback;
 
   switch (parsed) {
+    case 32:
     case 64:
     case 128:
     case 256:
@@ -70,8 +73,8 @@ static unsigned parse_kawpow_workgroup_override(const bool is_cpu) {
   return fallback;
 }
 
-static unsigned parse_kawpow_intensity_override(const unsigned local) {
-  const char* const value = std::getenv("MOMINER_KAWPOW_INTENSITY");
+static unsigned parse_pow_intensity_override(const unsigned local, const char* const env_name) {
+  const char* const value = std::getenv(env_name);
   if (!value || !*value) return 0;
 
   char* end = nullptr;
@@ -81,9 +84,13 @@ static unsigned parse_kawpow_intensity_override(const unsigned local) {
   return static_cast<unsigned>(parsed - (parsed % local));
 }
 
-static unsigned kawpow_intensity(const sycl::device& dev) {
-  const unsigned local = parse_kawpow_workgroup_override(dev.is_cpu());
-  const unsigned override = parse_kawpow_intensity_override(local);
+static unsigned pow_intensity(
+  const sycl::device& dev,
+  const char* const workgroup_env,
+  const char* const intensity_env
+) {
+  const unsigned local = parse_pow_workgroup_override(dev.is_cpu(), workgroup_env);
+  const unsigned override = parse_pow_intensity_override(local, intensity_env);
   if (override) return override;
 
   const unsigned max_compute_units = std::max(1u, dev.get_info<sycl::info::device::max_compute_units>());
@@ -91,6 +98,14 @@ static unsigned kawpow_intensity(const sycl::device& dev) {
   intensity = static_cast<unsigned>((static_cast<uint64_t>(intensity) * max_compute_units) / 36u);
   intensity -= intensity % local;
   return std::max(intensity, local * 4096u);
+}
+
+static unsigned kawpow_intensity(const sycl::device& dev) {
+  return pow_intensity(dev, "MOMINER_KAWPOW_WORKGROUP", "MOMINER_KAWPOW_INTENSITY");
+}
+
+static unsigned etchash_intensity(const sycl::device& dev) {
+  return pow_intensity(dev, "MOMINER_ETCHASH_WORKGROUP", "MOMINER_ETCHASH_INTENSITY");
 }
 
 static void add_result_dev(std::string& result_dev, const std::string& add_str) {
@@ -220,6 +235,14 @@ static void add_gpu_kawpow_algo_dev(std::string& result_dev) {
   });
 }
 
+static void add_gpu_etchash_algo_dev(std::string& result_dev) {
+  for_each_default_gpu([&](const std::string& dev_str, const sycl::device& dev) {
+    constexpr uint64_t min_global_mem = 5ULL * 1024ULL * 1024ULL * 1024ULL;
+    if (dev.get_info<sycl::info::device::global_mem_size>() >= min_global_mem)
+      add_result_dev(result_dev, dev_str + "*" + std::to_string(etchash_intensity(dev)));
+  });
+}
+
 sycl::device get_dev(const std::string& dev_str) {
   if (str2dev.empty()) update_str2dev();
   if (!str2dev.contains(dev_str)) {
@@ -236,9 +259,11 @@ std::map<std::string, std::string> algo_params(
   const std::set<std::string>& cpu_algos,
   const std::set<std::string>& gpu_cn_algos,
   const std::set<std::string>& gpu_c29_algos,
-  const std::set<std::string>& gpu_kawpow_algos
+  const std::set<std::string>& gpu_kawpow_algos,
+  const std::set<std::string>& gpu_etchash_algos
 ) {
-  const bool need_sycl_devices = !gpu_cn_algos.empty() || !gpu_c29_algos.empty() || !gpu_kawpow_algos.empty();
+  const bool need_sycl_devices = !gpu_cn_algos.empty() || !gpu_c29_algos.empty() ||
+                                 !gpu_kawpow_algos.empty() || !gpu_etchash_algos.empty();
   if (need_sycl_devices && str2dev.empty()) update_str2dev(true);
   const unsigned socket_count = std::max(1u, cpu_sockets);
   const unsigned thread_count = std::max(1u, cpu_threads);
@@ -250,6 +275,7 @@ std::map<std::string, std::string> algo_params(
   algos.insert(gpu_cn_algos.begin(), gpu_cn_algos.end());
   algos.insert(gpu_c29_algos.begin(), gpu_c29_algos.end());
   algos.insert(gpu_kawpow_algos.begin(), gpu_kawpow_algos.end());
+  algos.insert(gpu_etchash_algos.begin(), gpu_etchash_algos.end());
   for (const auto& algo : algos) {
     std::string result_dev;
     if (cpu_algos.contains(algo))
@@ -257,6 +283,7 @@ std::map<std::string, std::string> algo_params(
     if (gpu_cn_algos.contains(algo)) add_gpu_cn_algo_dev(result_dev, algo, algo2mem);
     else if (gpu_c29_algos.contains(algo)) add_gpu_c29_algo_dev(result_dev);
     else if (gpu_kawpow_algos.contains(algo)) add_gpu_kawpow_algo_dev(result_dev);
+    else if (gpu_etchash_algos.contains(algo)) add_gpu_etchash_algo_dev(result_dev);
     if (!result_dev.empty()) result[algo] = result_dev;
   }
   return result;

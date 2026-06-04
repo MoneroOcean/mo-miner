@@ -14,8 +14,8 @@ if (selectedAlgo && selectedTests.length === 0) {
 }
 
 function assertAlgoParamsDevice(definition, dev) {
-  if (definition.algo !== "kawpow") return;
-  assert.match(dev, /(?:^|,)gpu\d+\*\d+(?:,|$)/, "kawpow should be auto-detected on a GPU with an intensity");
+  if (definition.algo !== "kawpow" && definition.algo !== "etchash") return;
+  assert.match(dev, /(?:^|,)gpu\d+\*\d+(?:,|$)/, `${definition.algo} should be auto-detected on a GPU with an intensity`);
 }
 
 describe(selectedAlgo ? `proof-of-work performance: ${selectedAlgo}` : "proof-of-work performance", () => {

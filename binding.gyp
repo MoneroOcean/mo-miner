@@ -213,6 +213,8 @@
       "win_delay_load_hook": "false",
       "sources": [
         "sycl/lib.cpp",
+        "sycl/ethash.cpp",
+        "sycl/etchash.cpp",
         "sycl/c29.cpp",
         "sycl/cn-gpu.cpp",
         "sycl/kawpow.cpp"
@@ -264,7 +266,6 @@
             }
           },
           "sources": [
-            "sycl/ethash.cpp",
             "sycl/blake2b.cpp",
             "xmrig/crypto/randomx/blake2/blake2b.c",
             "xmrig/base/crypto/keccak.cpp",

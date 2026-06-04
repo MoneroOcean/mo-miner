@@ -509,6 +509,31 @@ module.exports.formatHashrate = function(hashrate) {
   return rate.toFixed(2) + " H/s";
 };
 
+const hash_count_units = [
+  { value: 1000000000000000000n, suffix: "EH" },
+  { value: 1000000000000000n, suffix: "PH" },
+  { value: 1000000000000n, suffix: "TH" },
+  { value: 1000000000n, suffix: "GH" },
+  { value: 1000000n, suffix: "MH" },
+  { value: 1000n, suffix: "KH" },
+];
+
+function formatHashCountValue(count, unit) {
+  const scaled = (count * 100n + unit.value / 2n) / unit.value;
+  const whole = scaled / 100n;
+  const fraction = scaled % 100n;
+  return whole.toString() + "." + fraction.toString().padStart(2, "0") + " " + unit.suffix;
+}
+
+module.exports.formatHashCount = function(hashes) {
+  let count = typeof hashes === "bigint" ? hashes : BigInt(Math.max(0, Math.round(Number(hashes) || 0)));
+  if (count < 0n) count = 0n;
+  for (const unit of hash_count_units) {
+    if (count >= unit.value) return formatHashCountValue(count, unit);
+  }
+  return count.toString() + " H";
+};
+
 module.exports.parseFormattedHashrate = function(value, unit) {
   const rate = Number.parseFloat(value);
   const multiplier = hashrate_unit_multipliers[unit];
@@ -548,6 +573,43 @@ module.exports.kawpowTarget2diff = function(target) {
   const div = BigInt("0x" + target64);
   if (div === BigInt(0)) return 0;
   return BigInt("0xFFFFFFFFFFFFFFFF") / div;
+};
+
+const ETH_STRATUM_DIFF1_TARGET = BigInt("0x00000000ffff0000000000000000000000000000000000000000000000000000");
+const UINT256_MAX = (1n << 256n) - 1n;
+
+function decimalToRatio(value) {
+  const text = String(value || "0").trim().toLowerCase();
+  const m = text.match(/^([+-])?(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/);
+  if (!m) return [0n, 1n];
+  let digits = (m[2] + (m[3] || "")).replace(/^0+/, "") || "0";
+  let scale = BigInt((m[3] || "").length);
+  const exp = BigInt(m[4] || "0");
+  let numerator = BigInt(digits);
+  let denominator = 10n ** scale;
+  if (exp > 0n) numerator *= 10n ** exp;
+  else if (exp < 0n) denominator *= 10n ** (-exp);
+  if (m[1] === "-") numerator = -numerator;
+  return [numerator, denominator];
+}
+
+module.exports.ethDiff2Target = function(diff) {
+  const [numerator, denominator] = decimalToRatio(diff);
+  if (numerator <= 0n) return "0".repeat(64);
+  const target = (ETH_STRATUM_DIFF1_TARGET * denominator) / numerator;
+  return (target > UINT256_MAX ? UINT256_MAX : target).toString(16).padStart(64, "0");
+};
+
+module.exports.ethTarget2diff = function(target) {
+  const div = BigInt("0x" + String(target || "").replace(/^0x/i, "").padStart(64, "0"));
+  if (div === 0n) return 0;
+  return Number(ETH_STRATUM_DIFF1_TARGET) / Number(div);
+};
+
+module.exports.target256ToWork = function(target) {
+  const div = BigInt("0x" + String(target || "").replace(/^0x/i, "").padStart(64, "0"));
+  if (div === 0n) return 0n;
+  return UINT256_MAX / div;
 };
 
 module.exports.diff2target = function(diff) {

@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <inttypes.h>
 #include <thread>
+#include <cstring>
 
 static const xmrig::ICpuInfo& cpu_info() { return *xmrig::Cpu::info(); }
 #define ci cpu_info()
@@ -222,6 +223,25 @@ static uint64_t parse_target_hex(const std::string& target, const bool is_kawpow
   return 0xFFFFFFFFFFFFFFFFULL / (0xFFFFFFFFULL / value);
 }
 
+static std::string strip_hex_prefix(const std::string& value) {
+  return value.starts_with("0x") || value.starts_with("0X") ? value.substr(2) : value;
+}
+
+static void parse_big_target_hex(const std::string& target, uint8_t* const out) {
+  std::string hex = strip_hex_prefix(target);
+  if (hex.empty() || hex.size() > HASH_LEN * 2 || (hex.size() & 1))
+    throw std::string("Bad target hex");
+  hex.insert(0, HASH_LEN * 2 - hex.size(), '0');
+  bool error = false;
+  for (unsigned i = 0; i < HASH_LEN; ++i) {
+    out[i] = (hf_hex2bin(hex[i * 2], error) << 4) | hf_hex2bin(hex[i * 2 + 1], error);
+    if (error) throw std::string("Bad target hex");
+  }
+  bool is_zero = true;
+  for (unsigned i = 0; i < HASH_LEN; ++i) is_zero &= out[i] == 0;
+  if (is_zero) throw std::string("Bad target hex");
+}
+
 static bool nonce_overflowed(const uint64_t previous, const uint64_t next, const uint64_t mask) {
   return mask ? (previous & mask) != (next & mask) : previous > next;
 }
@@ -276,15 +296,19 @@ bool Core::process_message(const std::string& type, const MessageValues& v) {
     if (!v.contains("pool_id"))   throw std::string("Missing pool_id job key");
     if (!v.contains("worker_id")) throw std::string("Missing worker_id job key");
     if (!v.contains("job_id"))    throw std::string("Missing job_id job key");
-    const std::string new_target_str = v.at("target");
+    const std::string new_target_str = strip_hex_prefix(v.at("target"));
 
     const bool is_kawpow_target = v.contains("algo") && v.at("algo") == "kawpow";
-    const uint64_t new_target = parse_target_hex(new_target_str, is_kawpow_target);
+    const bool is_etchash_target = v.contains("algo") && v.at("algo") == "etchash";
+    const uint64_t new_target = is_etchash_target ? 1 : parse_target_hex(new_target_str, is_kawpow_target);
+    uint8_t new_target_bin[HASH_LEN]{};
+    if (is_etchash_target) parse_big_target_hex(new_target_str, new_target_bin);
 
     const uint64_t last_nonce = m_nonce_bytes == 4 ? m_nonce32 : m_nonce64;
     const std::string prev_pool_id = m_pool_id;
     set_job(true, true, v, [&]() {
       m_target    = new_target;
+      if (is_etchash_target) std::memcpy(m_target_bin, new_target_bin, HASH_LEN);
       m_pool_id   = v.at("pool_id");
       m_worker_id = v.at("worker_id");
       m_job_id    = v.at("job_id");
@@ -467,6 +491,8 @@ void Core::Execute() {
       uint64_t c29_nonce;
       int kawpow_sols;
       uint64_t kawpow_nonce;
+      int etchash_sols;
+      uint64_t etchash_nonce;
       try {
         switch (m_dev) {
           case DEV::CPU:
@@ -490,6 +516,14 @@ void Core::Execute() {
               m_batch, !m_nonce32 && !m_nonce64, m_dev_str
             );
             break;
+          case DEV::ETCHASH_GPU:
+            std::memcpy(&etchash_nonce, m_input + m_nonce_offset, sizeof(etchash_nonce));
+            etchash_sols = m_fn.gpu_etchash(
+              m_job_ref, m_height, m_input, m_input_len, m_output,
+              static_cast<uint8_t*>(m_spads), &etchash_nonce, m_target_bin, m_seed,
+              m_batch, !m_nonce32 && !m_nonce64, m_dev_str
+            );
+            break;
 
           case DEV::RX_CPU: throw "Internal error: Unreachable code executed";
         }
@@ -505,14 +539,15 @@ void Core::Execute() {
 
       if (!m_nonce32 && !m_nonce64) { // test job
 	m_input_len = 0; // do not produce any more test jobs for async GPU code like in c29
-        if (m_dev == DEV::KAWPOW_GPU) {
-          if (kawpow_sols == 1) {
+        if (m_dev == DEV::KAWPOW_GPU || m_dev == DEV::ETCHASH_GPU) {
+          const int sols = m_dev == DEV::KAWPOW_GPU ? kawpow_sols : etchash_sols;
+          if (sols == 1) {
             char hash[HASH_LEN*2+1], mix[HASH_LEN*2+1];
             send_msg("test", "result", std::string(hash_bin2hex(hash, 0)) + " " +
                                       hash_bin2hex(static_cast<uint8_t*>(m_spads), mix));
             set_fn(nullptr);
           } else {
-            send_error("No kawpow test result");
+            send_error(std::string("No ") + (m_dev == DEV::KAWPOW_GPU ? "kawpow" : "etchash") + " test result");
             set_fn(nullptr);
           }
           continue;
@@ -540,10 +575,12 @@ void Core::Execute() {
       }
 
       m_hash_count += m_batch; // here we do not need mutex since there are no threads
-      if (m_dev == DEV::KAWPOW_GPU) {
+      if (m_dev == DEV::KAWPOW_GPU || m_dev == DEV::ETCHASH_GPU) {
         const uint64_t prev_nonce = m_nonce64;
-        if (kawpow_sols == 1 && m_target)
-          send_result(kawpow_nonce, 8, m_output, nullptr, 32, nullptr, static_cast<uint8_t*>(m_spads));
+        const int sols = m_dev == DEV::KAWPOW_GPU ? kawpow_sols : etchash_sols;
+        const uint64_t found_nonce = m_dev == DEV::KAWPOW_GPU ? kawpow_nonce : etchash_nonce;
+        if (sols == 1 && m_target)
+          send_result(found_nonce, 8, m_output, nullptr, 32, nullptr, static_cast<uint8_t*>(m_spads));
 
         std::memcpy(m_input + m_nonce_offset, &m_nonce64, sizeof(m_nonce64));
         m_nonce64 += m_nonce_step;

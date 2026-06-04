@@ -232,7 +232,15 @@ function handleResult(msg) {
   const pool = global.opt.pools[msg.value.pool_id];
   if (msg.value.mix_hash) {
     const headerHash = resultHeaderHash(msg, pool);
-    if (pool && pool.submit_mode === "raven") {
+    if (pool && pool.submit_mode === "ethproxy") {
+      return p.pool_write(msg.value.pool_id, {
+        jsonrpc: "2.0",
+        id: 3,
+        method: "eth_submitWork",
+        params: ["0x" + msg.value.nonce, "0x" + headerHash.slice(0, 64), "0x" + msg.value.mix_hash],
+      });
+    }
+    if (pool && (pool.submit_mode === "raven" || pool.submit_mode === "eth")) {
       return p.pool_write(msg.value.pool_id, {
         jsonrpc: "2.0",
         id: 3,
@@ -366,7 +374,7 @@ function baseJob(prev_job, algo, dev, pool_id) {
     algo:       algo,
     dev:        dev,
     seed_hex:   orDefault(prev_job.seed_hash, prev_job.seed_hex),
-    target:     orDefaultFn(prev_job.target, () => h.diff2target(prev_job.difficulty)),
+    target:     jobTarget(prev_job, algo),
     worker_id:  firstTruthyOr(global.opt.pools[pool_id].worker_id || global.opt.pools[pool_id].login,
                               prev_job.id, prev_job.worker_id),
     job_id:     orDefault(prev_job.job_id, ""),
@@ -376,6 +384,18 @@ function baseJob(prev_job, algo, dev, pool_id) {
     thread_num: h.get_dev_threads(dev),
     pool_id:    pool_id,
   };
+}
+
+function isEthHashAlgo(algo) {
+  return algo === "kawpow" || algo === "etchash";
+}
+
+function jobTarget(prev_job, algo) {
+  const explicitTarget = orDefault(prev_job.target, "");
+  if (!isEthHashAlgo(algo)) return explicitTarget || h.diff2target(prev_job.difficulty);
+  if (explicitTarget && explicitTarget.replace(/^0x/i, "").length > 16)
+    return explicitTarget.replace(/^0x/i, "").padStart(64, "0");
+  return h.ethDiff2Target(prev_job.difficulty || (explicitTarget ? h.target2diff(explicitTarget) : 1));
 }
 
 function addC29JobFields(job, prev_job) {
@@ -395,7 +415,7 @@ function addC29JobFields(job, prev_job) {
   }
 }
 
-function addKawpowJobFields(job, prev_job) {
+function addEthHashJobFields(job, prev_job) {
   job.noncebytes = orDefault(prev_job.noncebytes, 8);
   job.nonceoffset = typeof prev_job.nonceoffset !== "undefined" ? prev_job.nonceoffset : 32;
 
@@ -452,7 +472,7 @@ function set_job(prev_job) {
   const pool_id = global.opt.pool_ids.active;
   const job = baseJob(prev_job, algo, dev, pool_id);
   if (algo === "c29") addC29JobFields(job, prev_job);
-  else if (algo === "kawpow") addKawpowJobFields(job, prev_job);
+  else if (isEthHashAlgo(algo)) addEthHashJobFields(job, prev_job);
   else addStandardJobFields(job, prev_job);
   addNonceFields(job, prev_job, pool_id);
   set_algo_msr(algo);
@@ -461,9 +481,10 @@ function set_job(prev_job) {
 }
 
 function prepareBenchmarkJob(job) {
-  if (job.algo === "kawpow") {
+  if (isEthHashAlgo(job.algo)) {
     job.noncebytes = 8;
     job.nonceoffset = 32;
+    if (job.blob_hex && job.blob_hex.length === 64) job.blob_hex += "0000000000000000";
   }
   return job;
 }

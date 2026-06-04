@@ -15,9 +15,11 @@ module.exports.pool_create = function(url, port, is_tls, login, pass) {
     url:          url,
     port:         port,
     is_tls:       is_tls,
+    protocol:     null,
     tls_verify:   false,
     is_nicehash:  url.includes("nicehash"),
     is_keepalive: true,
+    logged_in:    false,
     login:        login,
     pass:         pass
   };
@@ -56,6 +58,7 @@ module.exports.opt_help = {
       url:                [ undefined, "pool DNS or IP address" ],
       port:               [ undefined, "pool port" ],
       is_tls:             [ false, "is pool port is encrypted using TLS/SSL" ],
+      protocol:           [ null, "pool protocol override: login, raven, eth, or ethproxy" ],
       tls_verify:         [ false, "verify pool TLS/SSL certificate" ],
       is_nicehash:        [ false, "nicehash nonce mining mode support" ],
       is_keepalive:       [ true, "sends keepalive messages to the pool to avoid disconnect" ],
@@ -63,6 +66,7 @@ module.exports.opt_help = {
       pass:               [ "", "pool password" ],
       _socket:            [ null, "network socket object" ],
       _keepalive:         [ null, "keepalive timer object" ],
+      _pending_authorize: [ false, "authorize request is waiting for response" ],
       _last_connect_time: [ 0, "last connect time for throttling purposes" ],
       _last_job:          [ null, "last job object" ],
       _good_shares:       [ 0, "number of accepted shares" ],

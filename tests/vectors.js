@@ -197,6 +197,23 @@ const hashTests = [
       "60abafe4148f34284b2c9e2e4a222ddcba272cb0669a8673cc1d5934ba5ecbfc",
   },
   {
+    name: "etchash gpu1*256",
+    gpu: true,
+    timeoutMs: 15 * 60 * 1000,
+    job: {
+      algo: "etchash",
+      dev: "gpu1*256",
+      height: 0,
+      seed_hex: "",
+      noncebytes: 8,
+      nonceoffset: 32,
+      blob_hex: "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0100000000000000",
+    },
+    expected:
+      "f31cafe3b6ec655c82ebe64a470f6599f513674420a32490402ad897c827cf7e " +
+      "756598185990f2143a94d65787ce5fea2b1feae6bed481e79dd216ef426c3eaa",
+  },
+  {
     name: "c29 proofsize 32 gpu1*1",
     gpu: true,
     timeoutMs: 10 * 60 * 1000,
@@ -227,6 +244,7 @@ const hashTests = [
 
 const perfTests = [];
 const perfAlgos = new Set();
+const ethHashAlgos = new Set(["kawpow", "etchash"]);
 for (const definition of hashTests) {
   const algo = definition.job.algo;
   if (perfAlgos.has(algo)) continue;
@@ -238,7 +256,7 @@ for (const definition of hashTests) {
     autoDev: true,
     name: algo,
     timeoutMs: definition.timeoutMs || 3 * 60 * 1000,
-    job: algo === "kawpow" ? { ...definition.job, dev: undefined } : { algo },
+    job: ethHashAlgos.has(algo) ? { ...definition.job, dev: undefined } : { algo },
   });
 }
 

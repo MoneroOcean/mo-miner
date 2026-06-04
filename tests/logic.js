@@ -97,6 +97,7 @@ function mockPoolConfig(overrides = {}) {
     bad_shares: 0,
     login: "wallet",
     pass: "x",
+    logged_in: false,
     ...overrides,
   };
 }
@@ -388,6 +389,14 @@ test("kawpowTarget2diff uses the Eth-style high target word", () => {
   );
 });
 
+test("256-bit targets convert to share work", () => {
+  const diffOneTarget = "00000000ffff0000000000000000000000000000000000000000000000000000";
+  assert.equal(helper.target256ToWork(diffOneTarget), 4295032833n);
+  assert.equal(helper.formatHashCount(583796823439n), "583.80 GH");
+  assert.equal(helper.formatHashCount(56546580n), "56.55 MH");
+  assert.equal(helper.formatHashCount(12004n), "12.00 KH");
+});
+
 test("perf hashrate formatting uses scaled units", () => {
   assert.equal(formatHashrate(999.99), "999.99 H/s");
   assert.equal(formatHashrate(1000), "1.00 KH/s");
@@ -495,6 +504,126 @@ test("fixed KawPow pools use Raven stratum subscribe and authorize", async () =>
   });
 });
 
+test("fixed Etchash pools use Eth stratum notify jobs", async () => {
+  let jobMessage = null;
+  const headerHash = "22".repeat(32);
+  const seedHash = "11".repeat(32);
+  await withMockPool({
+    pool: { is_keepalive: true, login: "0xwallet.worker" },
+    opt: { job: { algo: "etchash" } },
+    pool_time: { keepalive: 0.001, first_job_wait: 0.001 },
+  }, async ({ socket, writes, poolConfig }) => {
+    pool.connect_pool_throttle(0, (job) => {
+      jobMessage = job;
+      return job;
+    });
+    socket.emit("connect");
+    assert.equal(writes[0].method, "mining.subscribe");
+
+    socket.emit("data", Buffer.from(
+      '{"jsonrpc":"2.0","id":1,"error":null,"result":[[["mining.notify","1"],"080c"],"080c",6]}\n' +
+      '{"jsonrpc":"2.0","method":"mining.set_difficulty","params":[1]}\n' +
+      '{"jsonrpc":"2.0","id":2,"error":null,"result":true}\n' +
+      '{"method":"mining.notify","params":["203d","' + seedHash + '","' + headerHash + '",true],"id":null,"jsonrpc":"2.0"}\n'
+    ));
+
+    assert.equal(writes[1].method, "mining.authorize");
+    assert.deepEqual(writes[1].params, ["0xwallet.worker", "x"]);
+    assert.equal(poolConfig.extra_nonce, "080c");
+    assert.equal(jobMessage.algo, "etchash");
+    assert.equal(jobMessage.job_id, "203d");
+    assert.equal(jobMessage.seed_hash, seedHash);
+    assert.equal(jobMessage.header_hash, headerHash);
+    assert.equal(jobMessage.blob, headerHash + "0000000000000c08");
+    assert.equal(jobMessage.nonce, "080c000000000000");
+    assert.equal(jobMessage.nicehash_mask, "ffff000000000000");
+    assert.equal(jobMessage.target, "00000000ffff0000000000000000000000000000000000000000000000000000");
+    assert.equal(writes.length, 2);
+  });
+});
+
+test("MO login-inferred Etchash ignores stale keepalive response", async () => {
+  let jobMessage = null;
+  const headerHash = "22".repeat(32);
+  const seedHash = "11".repeat(32);
+  await withMockPool({
+    pool: { is_keepalive: true, pass: "x~etchash" },
+    pool_time: { keepalive: 60, first_job_wait: 0.001 },
+  }, async ({ socket, writes, poolConfig }) => {
+    pool.connect_pool_throttle(0, (job) => {
+      jobMessage = job;
+      return job;
+    });
+    socket.emit("connect");
+    assert.equal(writes[0].method, "login");
+    assert.notEqual(poolConfig.keepalive, null);
+
+    socket.emit("data", Buffer.from(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      error: null,
+      result: { id: "worker", algo: "etchash", extra_nonce: "080c" },
+    }) + "\n"));
+
+    assert.equal(poolConfig.logged_in, true);
+    assert.equal(poolConfig.inferred_protocol, "eth");
+    assert.equal(poolConfig.keepalive, null);
+
+    socket.emit("data", Buffer.from(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 2,
+      error: { message: "Authorization rejected" },
+      result: false,
+    }) + "\n"));
+
+    assert.equal(poolConfig.logged_in, true);
+
+    socket.emit("data", Buffer.from(
+      '{"method":"mining.notify","params":["203d","' + seedHash + '","' + headerHash + '",true],"algo":"etchash","id":null,"jsonrpc":"2.0"}\n'
+    ));
+
+    assert.equal(jobMessage.job_id, "203d");
+    assert.equal(jobMessage.seed_hash, seedHash);
+    assert.equal(jobMessage.header_hash, headerHash);
+  });
+});
+
+test("fixed Etchash pools can use ethproxy work jobs", async () => {
+  let jobMessage = null;
+  const headerHash = "22".repeat(32);
+  const seedHash = "11".repeat(32);
+  const target = "000000007fffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+  await withMockPool({
+    pool: { is_keepalive: true, login: "0xwallet.worker", protocol: "ethproxy" },
+    opt: { job: { algo: "etchash" } },
+    pool_time: { keepalive: 0.001, first_job_wait: 0.001 },
+  }, async ({ socket, writes }) => {
+    pool.connect_pool_throttle(0, (job) => {
+      jobMessage = job;
+      return job;
+    });
+    socket.emit("connect");
+    assert.equal(writes[0].method, "eth_submitLogin");
+    assert.deepEqual(writes[0].params, ["0xwallet.worker", "x"]);
+
+    socket.emit("data", Buffer.from(
+      '{"jsonrpc":"2.0","id":1,"error":null,"result":true}\n' +
+      '{"id":0,"jsonrpc":"2.0","result":["0x' + headerHash + '","0x' + seedHash + '","0x' + target + '","0x1788f2d"],"algo":"etchash"}\n'
+    ));
+
+    assert.equal(jobMessage.algo, "etchash");
+    assert.equal(jobMessage.job_id, headerHash);
+    assert.equal(jobMessage.seed_hash, seedHash);
+    assert.equal(jobMessage.header_hash, headerHash);
+    assert.equal(jobMessage.blob, headerHash + "0000000000000000");
+    assert.equal(jobMessage.nonce, "0000000000000000");
+    assert.equal(jobMessage.nicehash_mask, "0000000000000000");
+    assert.equal(jobMessage.height, 24678189);
+    assert.equal(jobMessage.target, target);
+    assert.equal(writes.length, 1);
+  });
+});
+
 test("stale pool timeout does not destroy a replacement socket", async () => {
   const staleSocket = new events.EventEmitter();
   const replacementSocket = new events.EventEmitter();
@@ -562,6 +691,7 @@ test("TLS pools verify certificates only when explicitly enabled", async () => {
 test("malformed pool job data closes the pool instead of throwing", async () => {
   await withMockPool({
     switchPool: true,
+    pool: { logged_in: true },
     pool_time: { first_job_wait: 0.001 },
   }, async ({ socket, switched }) => {
     pool.connect_pool_throttle(0, () => ({ algo: "cn/0" }));
@@ -572,6 +702,85 @@ test("malformed pool job data closes the pool instead of throwing", async () => 
     assert.equal(global.opt.pools[0].socket, null);
     assert.equal(switched(), true);
     await new Promise((resolve) => setTimeout(resolve, 10));
+  });
+});
+
+test("errored login response with job does not start mining", async () => {
+  await withMockPool({}, async ({ socket, poolConfig }) => {
+    let jobStarted = false;
+    pool.connect_pool_throttle(0, () => { jobStarted = true; });
+    socket.emit("data", Buffer.from(JSON.stringify({
+      id: 1,
+      jsonrpc: "2.0",
+      error: { message: "No double login is allowed" },
+      result: {
+        id: "worker",
+        job: {
+          algo: "autolykos2",
+          blob: "00".repeat(32),
+          target: "ff",
+          height: 1,
+        },
+      },
+    }) + "\n"));
+
+    assert.equal(jobStarted, false);
+    assert.equal(poolConfig.last_job, null);
+  });
+});
+
+test("job notification before login success does not start mining", async () => {
+  await withMockPool({}, async ({ socket, poolConfig }) => {
+    let jobStarted = false;
+    pool.connect_pool_throttle(0, () => { jobStarted = true; });
+    socket.emit("data", Buffer.from(
+      JSON.stringify({
+        method: "job",
+        params: {
+          algo: "autolykos2",
+          blob: "00".repeat(32),
+          target: "ff",
+          height: 1,
+        },
+      }) + "\n" +
+      JSON.stringify({
+        id: 1,
+        jsonrpc: "2.0",
+        error: { message: "No double login is allowed" },
+        result: false,
+      }) + "\n"
+    ));
+
+    assert.equal(jobStarted, false);
+    assert.equal(poolConfig.last_job, null);
+    assert.equal(poolConfig.logged_in, false);
+  });
+});
+
+test("login job inherits height from login result metadata", async () => {
+  let jobMessage = null;
+  await withMockPool({}, async ({ socket }) => {
+    pool.connect_pool_throttle(0, (job) => {
+      jobMessage = job;
+      return job;
+    });
+    socket.emit("data", Buffer.from(JSON.stringify({
+      id: 1,
+      jsonrpc: "2.0",
+      error: null,
+      result: {
+        id: "worker",
+        height: 1799914,
+        job: {
+          algo: "etchash",
+          blob: "00".repeat(32),
+          seed_hash: "11".repeat(32),
+          target: "00000000ffff0000000000000000000000000000000000000000000000000000",
+        },
+      },
+    }) + "\n"));
+
+    assert.equal(jobMessage.height, 1799914);
   });
 });
 
@@ -732,6 +941,61 @@ test("KawPow submit uses the header hash carried by the worker result", async ()
     "old",
     "0xff81000000000001",
     "0x" + oldHeaderHash,
+    "0x" + "33".repeat(32),
+  ]));
+});
+
+test("Etchash submit uses Eth mining.submit format", async () => {
+  const miner = await loadMinerWithStubs();
+  const headerHash = "22".repeat(32);
+  miner.global.opt.pools[0].submit_mode = "eth";
+
+  miner.messageHandler({
+    type: "result",
+    value: {
+      pool_id: 0,
+      worker_id: "worker",
+      job_id: "203d",
+      nonce: "080c000000000001",
+      hash: "00".repeat(32),
+      mix_hash: "33".repeat(32),
+      header_hash: headerHash,
+    },
+  });
+
+  assert.equal(miner.poolWrites.length, 1);
+  assert.equal(JSON.stringify(miner.poolWrites[0].json.params), JSON.stringify([
+    "user",
+    "203d",
+    "0x080c000000000001",
+    "0x" + headerHash,
+    "0x" + "33".repeat(32),
+  ]));
+});
+
+test("Etchash submit uses ethproxy eth_submitWork format", async () => {
+  const miner = await loadMinerWithStubs();
+  const headerHash = "22".repeat(32);
+  miner.global.opt.pools[0].submit_mode = "ethproxy";
+
+  miner.messageHandler({
+    type: "result",
+    value: {
+      pool_id: 0,
+      worker_id: "worker",
+      job_id: headerHash,
+      nonce: "080c000000000001",
+      hash: "00".repeat(32),
+      mix_hash: "33".repeat(32),
+      header_hash: headerHash,
+    },
+  });
+
+  assert.equal(miner.poolWrites.length, 1);
+  assert.equal(miner.poolWrites[0].json.method, "eth_submitWork");
+  assert.equal(JSON.stringify(miner.poolWrites[0].json.params), JSON.stringify([
+    "0x080c000000000001",
+    "0x" + headerHash,
     "0x" + "33".repeat(32),
   ]));
 });

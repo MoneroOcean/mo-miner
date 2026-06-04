@@ -25,11 +25,18 @@ typedef int (*gpu_kawpow_hash_fun)(
   uint8_t* mix_hash, uint64_t* pnonce, uint64_t target,
   unsigned intensity, bool is_test, const std::string& dev_str
 );
+typedef int (*gpu_etchash_hash_fun)(
+  unsigned job_ref, uint32_t height,
+  const uint8_t* input, unsigned input_size, uint8_t* output,
+  uint8_t* mix_hash, uint64_t* pnonce, const uint8_t* target, const uint8_t* seed_hash,
+  unsigned intensity, bool is_test, const std::string& dev_str
+);
 static_assert(
   sizeof(cn_any_hash_fun) == sizeof(xmrig::cn_hash_fun) &&
   sizeof(cn_any_hash_fun) == sizeof(gpu_cn_hash_fun) &&
   sizeof(cn_any_hash_fun) == sizeof(gpu_c29_hash_fun) &&
-  sizeof(cn_any_hash_fun) == sizeof(gpu_kawpow_hash_fun),
+  sizeof(cn_any_hash_fun) == sizeof(gpu_kawpow_hash_fun) &&
+  sizeof(cn_any_hash_fun) == sizeof(gpu_etchash_hash_fun),
   "Compute function pointers differ in size!"
 );
 union FN {
@@ -38,8 +45,9 @@ union FN {
   gpu_cn_hash_fun    gpu_cn;
   gpu_c29_hash_fun   gpu_c29;
   gpu_kawpow_hash_fun gpu_kawpow;
+  gpu_etchash_hash_fun gpu_etchash;
 };
-enum DEV { CPU, RX_CPU, GPU, C29_GPU, KAWPOW_GPU };
+enum DEV { CPU, RX_CPU, GPU, C29_GPU, KAWPOW_GPU, ETCHASH_GPU };
 
 class Core: public AsyncWorker {
   const unsigned HASHRATE_COUNTER_INTERVAL = 10; // iterations to skip to update/check hashrate
@@ -49,6 +57,7 @@ class Core: public AsyncWorker {
   void* m_spads;
   struct cryptonight_ctx** m_ctx;
   uint8_t *m_input, *m_output;
+  uint8_t m_target_bin[HASH_LEN]{}, m_seed[HASH_LEN]{};
   unsigned m_job_ref, m_height, m_batch, m_mem_size, m_input_len, m_nonce_step,
 	   m_nonce_bytes, m_nonce_offset, m_c29_proof_size;
   uint32_t m_nonce32; // next nonce that will be used in an input
