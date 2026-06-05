@@ -21,6 +21,7 @@ if (algo && !perfTests.some((definition) => definition.algo === algo)) {
 }
 
 if (algo) testEnv.MOMINER_PERF_ALGO = algo;
+if (process.env.MOMINER_PERF_SAMPLES) testEnv.MOMINER_PERF_SAMPLES = process.env.MOMINER_PERF_SAMPLES;
 
 const runner = resolveNodeRunner(testArgs, testEnv);
 spawnAndExit(runner.command, runner.args, { env: runner.env });

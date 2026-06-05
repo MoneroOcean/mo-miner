@@ -139,6 +139,10 @@ async function withMockPool(options, callback) {
   }
 }
 
+function completeOneBenchmark(miner, rate = "1") {
+  miner.messageHandler({ type: "hashrate", thread_id: 0, value: { hashrate: rate } });
+}
+
 describe("JavaScript logic tests", () => {
 test("saved config omits job without mutating live options", () => {
   const opt = {
@@ -433,6 +437,58 @@ test("mine can skip algo benchmark before connecting", async () => {
 
   assert.equal(typeof miner.getSetJob(), "function");
   assert.deepEqual(miner.sentMessages, []);
+});
+
+test("default algo benchmarking only includes MoneroOcean algos plus rx/2", async () => {
+  const miner = await loadMinerWithStubs({
+    algoParams: {
+      "argon2/chukwa": "cpu",
+      "argon2/chukwav2": "cpu",
+      "cn-heavy/xhv": "cpu",
+      "cn-pico/tlo": "cpu",
+      "cn/0": "cpu",
+      "etchash": "gpu1*1",
+      "panthera": "cpu",
+      "rx/2": "cpu",
+    },
+    waitForMessageType: "bench",
+  });
+
+  assert.equal(miner.sentMessages[0].job.algo, "etchash");
+  completeOneBenchmark(miner);
+  assert.equal(miner.sentMessages[1].job.algo, "panthera");
+  completeOneBenchmark(miner);
+  assert.equal(miner.sentMessages[2].job.algo, "rx/2");
+  completeOneBenchmark(miner);
+  assert.equal(miner.sentMessages.length, 3);
+});
+
+test("bench_algo_params 2 benchmarks all detected algos", async () => {
+  const miner = await loadMinerWithStubs({
+    argv: [
+      "node",
+      "mo-miner.js",
+      "mine",
+      "pool.example:1",
+      "wallet",
+      "--bench_algo_params",
+      "2",
+    ],
+    algoParams: {
+      "argon2/chukwa": "cpu",
+      "argon2/chukwav2": "cpu",
+      "cn/0": "cpu",
+    },
+    waitForMessageType: "bench",
+  });
+
+  assert.equal(miner.sentMessages[0].job.algo, "argon2/chukwa");
+  completeOneBenchmark(miner);
+  assert.equal(miner.sentMessages[1].job.algo, "argon2/chukwav2");
+  completeOneBenchmark(miner);
+  assert.equal(miner.sentMessages[2].job.algo, "cn/0");
+  completeOneBenchmark(miner);
+  assert.equal(miner.sentMessages.length, 3);
 });
 
 test("KawPow benchmark jobs include fixed nonce metadata", async () => {

@@ -51,6 +51,7 @@ static const std::map<std::string, xmrig::Algorithm::Id> cpu_name2algo = {
   { "argon2/chukwa",   xmrig::Algorithm::AR2_CHUKWA     },
   { "argon2/chukwav2", xmrig::Algorithm::AR2_CHUKWA_V2  },
   { "argon2/wrkz",     xmrig::Algorithm::AR2_WRKZ       },
+  { "panthera",        xmrig::Algorithm::RX_XLA         },
   { "rx/0",            xmrig::Algorithm::RX_0           },
   { "rx/2",            xmrig::Algorithm::RX_V2          },
   { "rx/wow",          xmrig::Algorithm::RX_WOW         },
@@ -61,6 +62,7 @@ static const std::map<std::string, xmrig::Algorithm::Id> cpu_name2algo = {
 };
 
 static const std::map<std::string, RandomX_ConfigurationBase*> rx_cpu_name2config = {
+  { "panthera",        &RandomX_ScalaConfig   },
   { "rx/0",            &RandomX_MoneroConfig  },
   { "rx/2",            &RandomX_MoneroConfigV2 },
   { "rx/wow",          &RandomX_WowneroConfig },
@@ -140,11 +142,11 @@ static void init_rx_dataset_thread(
 }
 
 static randomx_flags get_rx_vm_flags(
-  const bool is_rx_jit, const randomx_dataset* const m_rx_dataset,
+  const std::string& algo, const bool is_rx_jit, const randomx_dataset* const m_rx_dataset,
   const xmrig::VirtualMemory* const m_rx_dataset_mem
 ) {
   unsigned rx_flags = RANDOMX_FLAG_DEFAULT;
-  if (m_rx_dataset_mem->isHugePages()) rx_flags |= RANDOMX_FLAG_LARGE_PAGES;
+  if (algo != "panthera" && m_rx_dataset_mem->isHugePages()) rx_flags |= RANDOMX_FLAG_LARGE_PAGES;
   if (ci.hasAES()) rx_flags |= RANDOMX_FLAG_HARD_AES;
   if (m_rx_dataset) rx_flags |= RANDOMX_FLAG_FULL_MEM;
   if (is_rx_jit) rx_flags |= RANDOMX_FLAG_JIT;
@@ -186,7 +188,7 @@ void Core::set_job(
   const std::string new_dev_str2 = batch_parts[0];
   const unsigned new_batch = batch_parts.size() == 2 ? atoi(batch_parts[1].c_str()) : 1;
   const DEV new_dev =
-    new_dev_str2 == "cpu" ? (new_algo_str.starts_with("rx/") ? DEV::RX_CPU : DEV::CPU) :
+    new_dev_str2 == "cpu" ? (rx_cpu_name2config.contains(new_algo_str) ? DEV::RX_CPU : DEV::CPU) :
     new_algo_str == "kawpow" ? DEV::KAWPOW_GPU :
     new_algo_str == "etchash" ? DEV::ETCHASH_GPU :
     new_algo_str == "autolykos2" ? DEV::AUTOLYKOS2_GPU :
@@ -210,7 +212,8 @@ void Core::set_job(
     throw std::string("Autolykos2 requires an 8-byte nonce at offset 32");
 
   FN new_fn;
-  uint8_t new_seed[HASH_LEN]{};
+  uint8_t new_seed[MAX_BLOB_LEN]{};
+  unsigned new_seed_len = HASH_LEN;
   const RandomX_ConfigurationBase* new_rx_config;
   switch (new_dev) {
     case DEV::CPU: {
@@ -233,8 +236,10 @@ void Core::set_job(
 
     case DEV::RX_CPU: {
       if (new_seed_hex.empty()) throw std::string("No seed_hex job key");
-      if (new_seed_hex.size() != HASH_LEN * 2) throw std::string("Bad seed length");
-      if (!hex2bin(new_seed_hex.c_str(), HASH_LEN, new_seed)) throw std::string("Bad seed hex");
+      if ((new_seed_hex.size() & 1) || new_seed_hex.size() > MAX_BLOB_LEN * 2)
+        throw std::string("Bad seed length");
+      new_seed_len = new_seed_hex.size() / 2;
+      if (!hex2bin(new_seed_hex.c_str(), new_seed_len, new_seed)) throw std::string("Bad seed hex");
       const auto pi = rx_cpu_name2config.find(new_algo_str);
       if (pi == rx_cpu_name2config.end()) throw std::string("Unsupported algo");
       new_rx_config = pi->second;
@@ -328,13 +333,14 @@ void Core::set_job(
       m_lpads = alloc_huge_mem(new_batch * new_mem_size);
 
     if (new_dev == DEV::RX_CPU) {
+      randomx_apply_config(*new_rx_config);
       // setup rx cache, dataset and thread_pool
       if (m_rx_cache_mem == nullptr)
         m_rx_cache_mem = alloc_huge_mem(RANDOMX_CACHE_MAX_SIZE);
       if (m_rx_dataset_mem == nullptr)
         m_rx_dataset_mem = alloc_huge_mem(RANDOMX_DATASET_MAX_SIZE);
       if (m_rx_cache == nullptr) {
-        m_rx_cache = randomx_create_cache(RANDOMX_FLAG_JIT, m_rx_cache_mem->raw());
+        m_rx_cache = randomx_create_cache(new_algo_str == "panthera" ? RANDOMX_FLAG_DEFAULT : RANDOMX_FLAG_JIT, m_rx_cache_mem->raw());
         if (m_rx_cache == nullptr) {
           m_is_rx_jit = false;
           m_rx_cache = randomx_create_cache(RANDOMX_FLAG_DEFAULT, m_rx_cache_mem->raw());
@@ -349,12 +355,13 @@ void Core::set_job(
 
       // recompute cache, dataset for new seed
       if (m_seed_hex != new_seed_hex || m_algo_str != new_algo_str) {
-        randomx_apply_config(*new_rx_config);
-        randomx_init_cache(m_rx_cache, new_seed, HASH_LEN);
+        randomx_init_cache(m_rx_cache, new_seed, new_seed_len);
         // init dataset in parallel threads
         const unsigned rx_dataset_item_count = randomx_dataset_item_count(),
                        thread_count          = std::thread::hardware_concurrency();
-        if (thread_count > 1) {
+        if (new_algo_str == "panthera") {
+          randomx_init_dataset(m_rx_dataset, m_rx_cache, 0, rx_dataset_item_count);
+        } else if (thread_count > 1) {
           std::list<std::thread> threads;
           for (unsigned i = 0; i < thread_count; ++i) {
             const unsigned a = (rx_dataset_item_count * i) / thread_count,
@@ -370,7 +377,7 @@ void Core::set_job(
         m_vm = new randomx_vm*[new_batch];
         for (unsigned i = 0; i != new_batch; ++ i) {
           m_vm[i] = randomx_create_vm(
-            get_rx_vm_flags(m_is_rx_jit, m_rx_dataset, m_rx_dataset_mem), m_rx_cache, m_rx_dataset,
+            get_rx_vm_flags(new_algo_str, m_is_rx_jit, m_rx_dataset, m_rx_dataset_mem), nullptr, m_rx_dataset,
             m_lpads->scratchpad() + i * new_mem_size, 0
           );
         }
@@ -414,6 +421,7 @@ void Core::set_job(
     memcpy(new_input2, new_input, m_input_len);
     const unsigned job_ref = m_job_ref;
     const bool is_rx_v2 = new_algo_str == "rx/2";
+    const xmrig::Algorithm rx_algo(cpu_name2algo.at(new_algo_str));
     for (unsigned batch_id = 0; batch_id != m_batch; ++batch_id) m_thread_pool->push(
       [=, this, &m_job_ref = m_job_ref, &m_hash_count = m_hash_count](int) {
         const unsigned thread_id = batch_id;
@@ -430,7 +438,7 @@ void Core::set_job(
           memcpy(input, new_input2, m_input_len);
           if (is_set_nonce) { *get_nonce32(input, 0) = bswap_32(nonce); nonce += nonce_step; }
           if (is_rx_v2) memcpy(prev_input, input, m_input_len);
-          randomx_calculate_hash_first(m_vm[thread_id], temp_hash, input, m_input_len);
+          randomx_calculate_hash_first(m_vm[thread_id], temp_hash, input, m_input_len, rx_algo);
           while (job_ref == m_job_ref) { // continue until we get a new job
             uint32_t* const pnonce = get_nonce32(input, 0);
             const uint32_t prev_nonce = nonce;
@@ -442,7 +450,7 @@ void Core::set_job(
               send_error("Nonce overflow");
               break; // will also effectively stops this thread
             }
-            randomx_calculate_hash_next(m_vm[thread_id], temp_hash, input, m_input_len, output);
+            randomx_calculate_hash_next(m_vm[thread_id], temp_hash, input, m_input_len, output, rx_algo);
             const uint8_t* commitment = nullptr;
             if (is_rx_v2) {
               memcpy(raw_hash, output, HASH_LEN);

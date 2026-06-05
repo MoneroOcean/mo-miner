@@ -52,6 +52,29 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <vector>
 // MOMINER PATCH END
 
+extern "C" {
+#include "crypto/randomx/panthera/yespower.h"
+#include "crypto/randomx/panthera/KangarooTwelve.h"
+}
+
+#if defined(XMRIG_FEATURE_ASM) && (defined(_M_X64) || defined(__x86_64__))
+static void patchCodeReadDatasetMask(uint8_t* code, const uint32_t size, const uint32_t mask)
+{
+	uint32_t patched = 0;
+
+	for (uint32_t i = 0; i + 6 <= size; ++i) {
+		if (code[i] == 0x81 && (code[i + 1] == 0xe1 || code[i + 1] == 0xe2)) {
+			memcpy(code + i + 2, &mask, sizeof(mask));
+			++patched;
+		}
+	}
+
+	if (patched != 2) {
+		abort();
+	}
+}
+#endif
+
 #include "crypto/rx/Profiler.h"
 // MOMINER PATCH BEGIN: mo-miner avoids the full XMRig stratum Job dependency; commitment hashing sizes its buffer from inputSize below instead of Job::kMaxBlobSize.
 // #include "base/net/stratum/Job.h"
@@ -125,8 +148,29 @@ RandomX_ConfigurationYada::RandomX_ConfigurationYada()
 	ArgonIterations = 4;
 }
 
+RandomX_ConfigurationScala::RandomX_ConfigurationScala()
+{
+	ArgonMemory       = 131072;
+	ArgonIterations   = 2;
+	ArgonSalt         = "DefyXScala\x13";
+	CacheAccesses     = 2;
+	DatasetBaseSize   = 33554432;
+	ScratchpadL1_Size  = 65536;
+	ScratchpadL2_Size  = 131072;
+	ScratchpadL3_Size  = 262144;
+	ProgramSize       = 64;
+	ProgramIterations = 1024;
+	ProgramCount      = 4;
+
+	RANDOMX_FREQ_IADD_RS = 25;
+	RANDOMX_FREQ_CBRANCH = 16;
+}
+
 RandomX_ConfigurationBase::RandomX_ConfigurationBase()
-	: ArgonIterations(3)
+	: ArgonMemory(262144)
+	, CacheAccesses(8)
+	, DatasetBaseSize(2147483648)
+	, ArgonIterations(3)
 	, ArgonLanes(1)
 	, ArgonSalt("RandomX\x03")
 	, SuperscalarLatency(170)
@@ -170,6 +214,7 @@ RandomX_ConfigurationBase::RandomX_ConfigurationBase()
 	, Tweak_V2_AES(0)
 	, Tweak_V2_PREFETCH(0)
 	, Tweak_V2_COMMITMENT(0)
+	, CacheLineAlignMask_Calculated((DatasetBaseSize - 1) & ~(RANDOMX_DATASET_ITEM_SIZE - 1))
 {
 	fillAes4Rx4_Key[0] = rx_set_int_vec_i128(0x99e5d23f, 0x2f546d2b, 0xd1833ddb, 0x6421aadd);
 	fillAes4Rx4_Key[1] = rx_set_int_vec_i128(0xa5dfcde5, 0x06f79d53, 0xb6913f55, 0xb20e3450);
@@ -196,6 +241,22 @@ RandomX_ConfigurationBase::RandomX_ConfigurationBase()
 		const uint8_t* a = addr(randomx_sshash_prefetch);
 		const uint8_t* b = addr(randomx_sshash_end);
 		memcpy(codeSshPrefetchTweaked, a, b - a);
+	}
+	{
+		const uint8_t* a = addr(randomx_program_read_dataset);
+		const uint8_t* b = addr(randomx_program_read_dataset_v2);
+		const auto size = static_cast<size_t>(b - a);
+		assert(size <= sizeof(codeReadDatasetTweaked));
+		memcpy(codeReadDatasetTweaked, a, size);
+		codeReadDatasetTweakedSize = static_cast<uint32_t>(size);
+	}
+	{
+		const uint8_t* a = addr(randomx_program_read_dataset_v2);
+		const uint8_t* b = addr(randomx_program_read_dataset_sshash_init);
+		const auto size = static_cast<size_t>(b - a);
+		assert(size <= sizeof(codeReadDatasetV2Tweaked));
+		memcpy(codeReadDatasetV2Tweaked, a, size);
+		codeReadDatasetV2TweakedSize = static_cast<uint32_t>(size);
 	}
 	if (xmrig::Cpu::info()->hasBMI2()) {
 		const uint8_t* a = addr(randomx_prefetch_scratchpad_bmi2);
@@ -235,14 +296,13 @@ void RandomX_ConfigurationBase::Apply()
 
 	ScratchpadL3Mask_Calculated = (((ScratchpadL3_Size / sizeof(uint64_t)) - 1) * 8);
 	ScratchpadL3Mask64_Calculated = ((ScratchpadL3_Size / sizeof(uint64_t)) / 8 - 1) * 64;
+	CacheLineAlignMask_Calculated = (DatasetBaseSize - 1) & ~(RANDOMX_DATASET_ITEM_SIZE - 1);
 
 #if defined(XMRIG_FEATURE_ASM) && (defined(_M_X64) || defined(__x86_64__))
 	*(uint32_t*)(codeSshPrefetchTweaked + 3) = ArgonMemory * 16 - 1;
-	// Not needed right now because all variants use default dataset base size
-	//const uint32_t DatasetBaseMask = DatasetBaseSize - RANDOMX_DATASET_ITEM_SIZE;
-	//*(uint32_t*)(codeReadDatasetTweaked + 9) = DatasetBaseMask;
-	//*(uint32_t*)(codeReadDatasetTweaked + 24) = DatasetBaseMask;
-	//*(uint32_t*)(codeReadDatasetLightSshInitTweaked + 59) = DatasetBaseMask;
+	const uint32_t DatasetBaseMask = DatasetBaseSize - RANDOMX_DATASET_ITEM_SIZE;
+	patchCodeReadDatasetMask(codeReadDatasetV2Tweaked, codeReadDatasetV2TweakedSize, DatasetBaseMask);
+	patchCodeReadDatasetMask(codeReadDatasetTweaked, codeReadDatasetTweakedSize, DatasetBaseMask);
 
 	const bool hasBMI2 = xmrig::Cpu::info()->hasBMI2();
 
@@ -392,11 +452,32 @@ RandomX_ConfigurationWownero RandomX_WowneroConfig;
 RandomX_ConfigurationArqma RandomX_ArqmaConfig;
 RandomX_ConfigurationGraft RandomX_GraftConfig;
 RandomX_ConfigurationSafex RandomX_SafexConfig;
+RandomX_ConfigurationScala RandomX_ScalaConfig;
 RandomX_ConfigurationYada RandomX_YadaConfig;
 
 alignas(64) RandomX_ConfigurationBase RandomX_CurrentConfig;
 
 static std::mutex vm_pool_mutex;
+
+static void calculate_initial_hash(
+	uint64_t (&tempHash)[8], const void* input, size_t inputSize,
+	const xmrig::Algorithm algo
+)
+{
+	if (algo != xmrig::Algorithm::RX_XLA) {
+		rx_blake2b_wrapper::run(tempHash, sizeof(tempHash), input, inputSize);
+		return;
+	}
+
+	rx_blake2b_wrapper::run(tempHash, sizeof(tempHash), input, inputSize);
+	yespower_params_t params = { YESPOWER_1_0, 2048, 8, NULL, 0 };
+	if (yespower_tls(reinterpret_cast<const uint8_t*>(tempHash), sizeof(tempHash), &params, reinterpret_cast<yespower_binary_t*>(tempHash))) {
+		memset(tempHash, 0, sizeof(tempHash));
+		return;
+	}
+	KangarooTwelve(reinterpret_cast<const unsigned char*>(tempHash), sizeof(tempHash),
+	               reinterpret_cast<unsigned char*>(tempHash), 32, nullptr, 0);
+}
 
 extern "C" {
 
@@ -599,12 +680,15 @@ extern "C" {
 		vm->~randomx_vm();
 	}
 
-	void randomx_calculate_hash(randomx_vm *machine, const void *input, size_t inputSize, void *output) {
+	void randomx_calculate_hash(
+		randomx_vm *machine, const void *input, size_t inputSize, void *output,
+		const xmrig::Algorithm algo
+	) {
 		assert(machine != nullptr);
 		assert(inputSize == 0 || input != nullptr);
 		assert(output != nullptr);
 		alignas(16) uint64_t tempHash[8];
-		rx_blake2b_wrapper::run(tempHash, sizeof(tempHash), input, inputSize);
+		calculate_initial_hash(tempHash, input, inputSize, algo);
 		machine->initScratchpad(&tempHash);
 		machine->resetRoundingMode();
 		for (uint32_t chain = 0; chain < RandomX_CurrentConfig.ProgramCount - 1; ++chain) {
@@ -615,12 +699,18 @@ extern "C" {
 		machine->getFinalResult(output);
 	}
 
-	void randomx_calculate_hash_first(randomx_vm* machine, uint64_t (&tempHash)[8], const void* input, size_t inputSize) {
-		rx_blake2b_wrapper::run(tempHash, sizeof(tempHash), input, inputSize);
+	void randomx_calculate_hash_first(
+		randomx_vm* machine, uint64_t (&tempHash)[8], const void* input, size_t inputSize,
+		const xmrig::Algorithm algo
+	) {
+		calculate_initial_hash(tempHash, input, inputSize, algo);
 		machine->initScratchpad(tempHash);
 	}
 
-	void randomx_calculate_hash_next(randomx_vm* machine, uint64_t (&tempHash)[8], const void* nextInput, size_t nextInputSize, void* output) {
+	void randomx_calculate_hash_next(
+		randomx_vm* machine, uint64_t (&tempHash)[8], const void* nextInput, size_t nextInputSize,
+		void* output, const xmrig::Algorithm algo
+	) {
 		PROFILE_SCOPE(RandomX_hash);
 
 		machine->resetRoundingMode();
@@ -631,7 +721,7 @@ extern "C" {
 		machine->run(&tempHash);
 
 		// Finish current hash and fill the scratchpad for the next hash at the same time
-		rx_blake2b_wrapper::run(tempHash, sizeof(tempHash), nextInput, nextInputSize);
+		calculate_initial_hash(tempHash, nextInput, nextInputSize, algo);
 		machine->hashAndFill(output, tempHash);
 	}
 

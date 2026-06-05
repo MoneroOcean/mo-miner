@@ -326,6 +326,21 @@ inline void keccak_512_header_nonce_dev(const uint8_t* const header_hash, const 
   for (unsigned i = 0; i < 8; ++i) store64_words_le_dev(out, i, st[i]);
 }
 
+inline void keccak_512_header_nonce_pair_dev(const uint8_t* const header_hash, const uint64_t nonce, uint32_t out[16]) {
+  Uint2 st[25]{};
+  for (unsigned i = 0; i < 4; ++i) {
+    st[i] = make_u2(load32_le_dev(header_hash + i * 8), load32_le_dev(header_hash + i * 8 + 4));
+  }
+  st[4] = make_u2(static_cast<uint32_t>(nonce), static_cast<uint32_t>(nonce >> 32));
+  st[5] = make_u2(0x00000001, 0x00000000);
+  st[8] = make_u2(0x00000000, 0x80000000);
+  keccakf1600_pair_dev(st);
+  for (unsigned i = 0; i < 8; ++i) {
+    out[i * 2] = st[i].x;
+    out[i * 2 + 1] = st[i].y;
+  }
+}
+
 inline void keccak_256_seed_mix_dev(const uint32_t seed[16], const uint32_t mix[8], uint8_t out[32]) {
   uint64_t st[25]{};
   for (unsigned i = 0; i < 8; ++i) st[i] = static_cast<uint64_t>(seed[i * 2]) |
@@ -338,6 +353,19 @@ inline void keccak_256_seed_mix_dev(const uint32_t seed[16], const uint32_t mix[
   for (unsigned i = 0; i < 4; ++i) {
     store32_le_dev(out + i * 8, static_cast<uint32_t>(st[i]));
     store32_le_dev(out + i * 8 + 4, static_cast<uint32_t>(st[i] >> 32));
+  }
+}
+
+inline void keccak_256_seed_mix_pair_dev(const uint32_t seed[16], const uint32_t mix[8], uint8_t out[32]) {
+  Uint2 st[25]{};
+  for (unsigned i = 0; i < 8; ++i) st[i] = make_u2(seed[i * 2], seed[i * 2 + 1]);
+  for (unsigned i = 0; i < 4; ++i) st[8 + i] = make_u2(mix[i * 2], mix[i * 2 + 1]);
+  st[12] = make_u2(0x00000001, 0x00000000);
+  st[16] = make_u2(0x00000000, 0x80000000);
+  keccakf1600_pair_dev(st);
+  for (unsigned i = 0; i < 4; ++i) {
+    store32_le_dev(out + i * 8, st[i].x);
+    store32_le_dev(out + i * 8 + 4, st[i].y);
   }
 }
 
@@ -441,15 +469,13 @@ public:
   uint64_t dag_words = 0;
   uint32_t epoch = UINT32_MAX;
   uint32_t seed_epoch = UINT32_MAX;
-  unsigned workgroup;
   std::mutex mutex;
 
   explicit EtchashState(const std::string& dev_str)
     : device(get_dev(dev_str)),
       queue(device, sycl::property_list{sycl::property::queue::in_order{}}),
       shared_io(device.is_cpu() || !device.has(sycl::aspect::usm_device_allocations)),
-      shared_dag(device.is_cpu() || !device.has(sycl::aspect::usm_device_allocations)),
-      workgroup(etchash_workgroup(device))
+      shared_dag(device.is_cpu() || !device.has(sycl::aspect::usm_device_allocations))
   {
     if (!device.has(sycl::aspect::usm_shared_allocations) ||
         (!device.is_cpu() && !device.has(sycl::aspect::usm_device_allocations))) {
@@ -464,29 +490,8 @@ public:
 
   ~EtchashState() { release(); }
 
-  static unsigned etchash_workgroup(const sycl::device& dev) {
-    const unsigned fallback = 32;
-    const char* const value = std::getenv("MOMINER_ETCHASH_WORKGROUP");
-    if (!value || !*value) return fallback;
-
-    char* end = nullptr;
-    errno = 0;
-    const unsigned long parsed = std::strtoul(value, &end, 10);
-    if (errno || end == value || *end) return fallback;
-
-    switch (parsed) {
-      case 32:
-      case 64:
-      case 128:
-      case 256:
-      case 512:
-        return static_cast<unsigned>(parsed);
-    }
-    return fallback;
-  }
-
   static unsigned etchash_dag_workgroup(const sycl::device& dev) {
-    const unsigned fallback = dev.is_cpu() ? 128 : 64;
+    const unsigned fallback = sycl_default_workgroup(dev, {32, 64, 128, 256, 512}, dev.is_cpu() ? 128 : 64);
     const char* const value = std::getenv("MOMINER_ETCHASH_DAG_WORKGROUP");
     if (!value || !*value) return fallback;
 
@@ -714,64 +719,91 @@ int etchash(
   constexpr unsigned SCRATCH_WORDS = CMIX_OFFSET + 8;
 
   if (state.device.is_gpu()) {
+    constexpr unsigned GROUP4_WORKGROUP = 128;
+    constexpr unsigned GROUP4_SEED_WORDS = GROUP4_WORKGROUP * 16;
+
     sycl_wait_and_throw(q.submit([&](sycl::handler& h) {
       h.use_kernel_bundle(kb);
-      sycl::local_accessor<uint32_t, 1> scratch(sycl::range<1>(SCRATCH_WORDS), h);
+      sycl::local_accessor<uint32_t, 1> seeds(sycl::range<1>(GROUP4_SEED_WORDS), h);
       h.parallel_for(
         sycl::nd_range<1>(
-          sycl::range<1>(static_cast<size_t>(intensity) * ETCHASH_LANES),
-          sycl::range<1>(ETCHASH_LANES)
+          sycl::range<1>(round_up(intensity, GROUP4_WORKGROUP)),
+          sycl::range<1>(GROUP4_WORKGROUP)
         ),
-        [=](sycl::nd_item<1> item) [[sycl::reqd_sub_group_size(32)]] {
-          const uint32_t gid = static_cast<uint32_t>(item.get_group(0));
-          const uint32_t lane = static_cast<uint32_t>(item.get_local_id(0));
+        [=](sycl::nd_item<1> item) [[sycl::reqd_sub_group_size(16)]] {
+          const uint32_t lid = static_cast<uint32_t>(item.get_local_id(0));
+          const uint32_t group_hash_base = static_cast<uint32_t>(item.get_group(0)) * GROUP4_WORKGROUP;
+          const uint32_t own_hash = group_hash_base + lid;
 
-          const uint64_t nonce = start_nonce + gid;
-          if (lane == 0) {
+          if (own_hash < intensity) {
             uint32_t seed[16];
-            keccak_512_header_nonce_dev(d_input, nonce, seed);
+            keccak_512_header_nonce_pair_dev(d_input, start_nonce + own_hash, seed);
 #pragma unroll
-            for (unsigned w = 0; w < 16; ++w) scratch[SEED_OFFSET + w] = seed[w];
+            for (unsigned w = 0; w < 16; ++w) seeds[lid * 16 + w] = seed[w];
           }
           item.barrier(sycl::access::fence_space::local_space);
 
           const auto sg = item.get_sub_group();
-          const uint32_t seed0 = scratch[SEED_OFFSET];
-          uint32_t mix_word = scratch[SEED_OFFSET + (lane & (ETHASH_NODE_WORDS - 1))];
+          const uint32_t sg_lane = static_cast<uint32_t>(sg.get_local_id()[0]);
+          const uint32_t lane4 = lid & 3U;
+          const uint32_t group4_base = lid & ~3U;
+          const uint32_t sg_group4_base = sg_lane & ~3U;
 
-          for (unsigned i = 0; i < ETHASH_ACCESSES; ++i) {
-            const uint32_t page_candidate = fast_mod_dev(fnv_dev(seed0 ^ i, mix_word), dag_mod);
-            const uint32_t page = sycl::select_from_group(sg, page_candidate, i & (ETHASH_MIX_WORDS - 1));
-            const uint32_t base = page * ETHASH_MIX_WORDS;
-            mix_word = fnv_dev(mix_word, d_dag[base + lane]);
-          }
+          for (unsigned owner = 0; owner < 4; ++owner) {
+            const uint32_t owner_lid = group4_base + owner;
+            const uint32_t hash_index = group_hash_base + owner_lid;
+            if (hash_index >= intensity) continue;
 
-          scratch[MIX_OFFSET + lane] = mix_word;
-          item.barrier(sycl::access::fence_space::local_space);
-
-          if (lane < 8) {
-            const uint32_t w = lane * 4;
-            uint32_t reduction = scratch[MIX_OFFSET + w + 0];
-            reduction = fnv_dev(reduction, scratch[MIX_OFFSET + w + 1]);
-            reduction = fnv_dev(reduction, scratch[MIX_OFFSET + w + 2]);
-            reduction = fnv_dev(reduction, scratch[MIX_OFFSET + w + 3]);
-            scratch[CMIX_OFFSET + lane] = reduction;
-          }
-          item.barrier(sycl::access::fence_space::local_space);
-
-          if (lane != 0) return;
-
-          uint32_t seed[16];
-          uint32_t compressed_mix[8];
+            const uint32_t seed_base = owner_lid * 16;
+            const uint32_t seed0 = seeds[seed_base];
+            uint32_t mix[8];
 #pragma unroll
-          for (unsigned w = 0; w < 16; ++w) seed[w] = scratch[SEED_OFFSET + w];
-#pragma unroll
-          for (unsigned w = 0; w < 8; ++w) compressed_mix[w] = scratch[CMIX_OFFSET + w];
+            for (unsigned w = 0; w < 8; ++w) mix[w] = seeds[seed_base + ((lane4 * 8 + w) & 15U)];
 
-          uint8_t final_hash[32];
-          keccak_256_seed_mix_dev(seed, compressed_mix, final_hash);
-          if ((is_test && gid == 0) || meets_target_dev(final_hash, d_target)) {
-            store_etchash_result(d_result, nonce, final_hash, compressed_mix);
+            for (unsigned i = 0; i < ETHASH_ACCESSES; ++i) {
+              const uint32_t selected_lane = (i & (ETHASH_MIX_WORDS - 1)) >> 3;
+              const uint32_t selected_word = i & 7U;
+              const uint32_t page_candidate = lane4 == selected_lane
+                ? fast_mod_dev(fnv_dev(seed0 ^ i, mix[selected_word]), dag_mod)
+                : 0;
+              const uint32_t page = sycl::select_from_group(sg, page_candidate, sg_group4_base + selected_lane);
+              const uint32_t base = page * ETHASH_MIX_WORDS + lane4 * 8;
+              const auto dag_words = *reinterpret_cast<const sycl::vec<uint64_t, 4>*>(d_dag + base);
+#pragma unroll
+              for (unsigned w = 0; w < 4; ++w) {
+                const uint64_t dag_pair = dag_words[w];
+                mix[w * 2] = fnv_dev(mix[w * 2], static_cast<uint32_t>(dag_pair));
+                mix[w * 2 + 1] = fnv_dev(mix[w * 2 + 1], static_cast<uint32_t>(dag_pair >> 32));
+              }
+            }
+
+            uint32_t compressed0 = mix[0];
+            compressed0 = fnv_dev(compressed0, mix[1]);
+            compressed0 = fnv_dev(compressed0, mix[2]);
+            compressed0 = fnv_dev(compressed0, mix[3]);
+            uint32_t compressed1 = mix[4];
+            compressed1 = fnv_dev(compressed1, mix[5]);
+            compressed1 = fnv_dev(compressed1, mix[6]);
+            compressed1 = fnv_dev(compressed1, mix[7]);
+
+            uint32_t compressed_mix[8];
+#pragma unroll
+            for (unsigned lane = 0; lane < 4; ++lane) {
+              compressed_mix[lane * 2] = sycl::select_from_group(sg, compressed0, sg_group4_base + lane);
+              compressed_mix[lane * 2 + 1] = sycl::select_from_group(sg, compressed1, sg_group4_base + lane);
+            }
+
+            if (lane4 == owner) {
+              uint32_t seed[16];
+#pragma unroll
+              for (unsigned w = 0; w < 16; ++w) seed[w] = seeds[seed_base + w];
+
+              uint8_t final_hash[32];
+              keccak_256_seed_mix_pair_dev(seed, compressed_mix, final_hash);
+              if ((is_test && hash_index == 0) || meets_target_dev(final_hash, d_target)) {
+                store_etchash_result(d_result, start_nonce + hash_index, final_hash, compressed_mix);
+              }
+            }
           }
         }
       );
@@ -807,8 +839,8 @@ int etchash(
             }
             item.barrier(sycl::access::fence_space::local_space);
             const uint32_t page = scratch[PAGE_OFFSET + (i & 1)];
-          const uint32_t base = page * ETHASH_MIX_WORDS;
-          mix_word = fnv_dev(mix_word, d_dag[base + lane]);
+            const uint32_t base = page * ETHASH_MIX_WORDS;
+            mix_word = fnv_dev(mix_word, d_dag[base + lane]);
           }
 
           scratch[MIX_OFFSET + lane] = mix_word;

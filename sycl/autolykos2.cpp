@@ -362,7 +362,7 @@ struct AutolykosState {
   ~AutolykosState() { release(); }
 
   static unsigned autolykos_workgroup(const sycl::device& dev) {
-    const unsigned fallback = dev.is_cpu() ? 64 : 64;
+    const unsigned fallback = sycl_default_workgroup(dev, {32, 64, 128, 256}, 64);
     const char* const value = std::getenv("MOMINER_AUTOLYKOS2_WORKGROUP");
     if (!value || !*value) return fallback;
 
@@ -382,7 +382,7 @@ struct AutolykosState {
   }
 
   static unsigned autolykos_prehash_workgroup(const sycl::device& dev) {
-    const unsigned fallback = dev.is_cpu() ? 64 : 64;
+    const unsigned fallback = sycl_default_workgroup(dev, {32, 64, 128, 256}, 64);
     const char* const value = std::getenv("MOMINER_AUTOLYKOS2_PREHASH_WORKGROUP");
     if (!value || !*value) return fallback;
 

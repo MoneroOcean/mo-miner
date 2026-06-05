@@ -41,6 +41,19 @@ const hashTests = [
     expected: dup("c6cc14fe859f917013223aa7a1959a169162df14510d462b681c70895ea6f874", 2),
   },
   {
+    name: "panthera cpu*2",
+    job: {
+      algo: "panthera",
+      dev: "cpu*2",
+      seed_hex: "786d7269672d6d6f2d636865636b2d6861736865732073656564",
+      blob_hex: "786d7269672d6d6f2d636865636b2d68617368657320696e7075742041",
+    },
+    expected: [
+      "1805aa4fd26f5686dada26d9e16ccb290811b2a79404fdd1064f1ca092902212",
+      dup("1805aa4fd26f5686dada26d9e16ccb290811b2a79404fdd1064f1ca092902212", 2),
+    ],
+  },
+  {
     name: "ghostrider cpu*8",
     job: {
       algo: "ghostrider",

@@ -51,9 +51,10 @@ static std::string available_dev_str() {
 }
 
 static unsigned parse_pow_workgroup_override(
-  const bool is_cpu, const char* const env_name, const unsigned fallback_override = 0
+  const sycl::device& dev, const char* const env_name, const unsigned fallback_override = 0
 ) {
-  const unsigned fallback = fallback_override ? fallback_override : (is_cpu ? 128 : 256);
+  const unsigned preferred = fallback_override ? fallback_override : (dev.is_cpu() ? 128 : 256);
+  const unsigned fallback = sycl_default_workgroup(dev, {32, 64, 128, 256, 512}, preferred);
   const char* const value = std::getenv(env_name);
   if (!value || !*value) return fallback;
 
@@ -84,37 +85,109 @@ static unsigned parse_pow_intensity_override(const unsigned local, const char* c
   return static_cast<unsigned>(parsed - (parsed % local));
 }
 
+struct PowDeviceProfile {
+  unsigned compute_units;
+  uint64_t global_mem;
+  uint64_t max_alloc;
+};
+
+struct PowIntensityScale {
+  unsigned fallback_workgroup;
+  unsigned base_work_items;
+  unsigned compute_unit_divisor;
+};
+
+struct PowIntensityHeuristic {
+  PowIntensityScale compact;
+  PowIntensityScale balanced;
+  PowIntensityScale wide;
+};
+
+static PowDeviceProfile pow_device_profile(const sycl::device& dev) {
+  return {
+    std::max(1u, dev.get_info<sycl::info::device::max_compute_units>()),
+    dev.get_info<sycl::info::device::global_mem_size>(),
+    dev.get_info<sycl::info::device::max_mem_alloc_size>()
+  };
+}
+
+static bool pow_has_dataset_memory(
+  const sycl::device& dev, const uint64_t dataset_bytes, const uint64_t min_global_mem
+) {
+  constexpr uint64_t MiB = 1024ULL * 1024ULL;
+  const PowDeviceProfile profile = pow_device_profile(dev);
+  const uint64_t reserve = 512ULL * MiB;
+  return profile.max_alloc >= dataset_bytes &&
+         profile.global_mem >= std::max(min_global_mem, dataset_bytes + reserve);
+}
+
+static unsigned pow_device_score(const PowDeviceProfile& profile) {
+  constexpr uint64_t MiB = 1024ULL * 1024ULL;
+  constexpr uint64_t GiB = 1024ULL * MiB;
+
+  // Favor deeper in-flight batches only on GPUs with enough parallelism and memory headroom.
+  const uint64_t mem_per_cu = profile.global_mem / profile.compute_units;
+  unsigned score = 0;
+  if (profile.compute_units >= 128) score += 2;
+  else if (profile.compute_units >= 64) score += 1;
+  if (profile.global_mem >= 8ULL * GiB) score += 2;
+  else if (profile.global_mem >= 6ULL * GiB) score += 1;
+  if (profile.max_alloc >= 2ULL * GiB) score += 1;
+  if (mem_per_cu >= 48ULL * MiB) score += 1;
+  return score;
+}
+
+static PowIntensityScale select_pow_intensity_scale(
+  const PowDeviceProfile& profile, const PowIntensityHeuristic& heuristic
+) {
+  const unsigned score = pow_device_score(profile);
+  if (score >= 5) return heuristic.wide;
+  if (score >= 3) return heuristic.balanced;
+  return heuristic.compact;
+}
+
 static unsigned pow_intensity(
   const sycl::device& dev,
   const char* const workgroup_env,
   const char* const intensity_env,
-  const unsigned fallback_workgroup,
-  const unsigned base_work_items,
-  const unsigned compute_unit_divisor
+  const PowIntensityHeuristic& heuristic
 ) {
-  const unsigned local = parse_pow_workgroup_override(dev.is_cpu(), workgroup_env, fallback_workgroup);
+  const PowDeviceProfile profile = pow_device_profile(dev);
+  const PowIntensityScale scale = select_pow_intensity_scale(profile, heuristic);
+  const unsigned local = parse_pow_workgroup_override(dev, workgroup_env, scale.fallback_workgroup);
   const unsigned override = parse_pow_intensity_override(local, intensity_env);
   if (override) return override;
 
-  const unsigned max_compute_units = std::max(1u, dev.get_info<sycl::info::device::max_compute_units>());
-  unsigned intensity = local * base_work_items;
-  intensity = static_cast<unsigned>((static_cast<uint64_t>(intensity) * max_compute_units) / compute_unit_divisor);
+  uint64_t intensity64 = static_cast<uint64_t>(local) * scale.base_work_items * profile.compute_units;
+  intensity64 /= scale.compute_unit_divisor;
+  intensity64 = std::min<uint64_t>(intensity64, std::numeric_limits<unsigned>::max());
+  unsigned intensity = static_cast<unsigned>(intensity64);
   intensity -= intensity % local;
   return std::max(intensity, local * 4096u);
 }
 
 static unsigned kawpow_intensity(const sycl::device& dev) {
-  return pow_intensity(dev, "MOMINER_KAWPOW_WORKGROUP", "MOMINER_KAWPOW_INTENSITY", 0, 32768, 36);
+  return pow_intensity(dev, "MOMINER_KAWPOW_WORKGROUP", "MOMINER_KAWPOW_INTENSITY", {
+    {256, 16384, 48},
+    {256, 32768, 48},
+    {256, 32768, 36}
+  });
 }
 
 static unsigned etchash_intensity(const sycl::device& dev) {
-  return pow_intensity(dev, "MOMINER_ETCHASH_WORKGROUP", "MOMINER_ETCHASH_INTENSITY", 32, 32768, 36);
+  return pow_intensity(dev, "MOMINER_ETCHASH_WORKGROUP", "MOMINER_ETCHASH_INTENSITY", {
+    {64, 32768, 36},
+    {64, 65536, 36},
+    {64, 131072, 40}
+  });
 }
 
 static unsigned autolykos2_intensity(const sycl::device& dev) {
-  return pow_intensity(
-    dev, "MOMINER_AUTOLYKOS2_WORKGROUP", "MOMINER_AUTOLYKOS2_INTENSITY", 64, 8192, 10
-  );
+  return pow_intensity(dev, "MOMINER_AUTOLYKOS2_WORKGROUP", "MOMINER_AUTOLYKOS2_INTENSITY", {
+    {64, 4096, 12},
+    {64, 8192, 16},
+    {64, 8192, 10}
+  });
 }
 
 static void add_result_dev(std::string& result_dev, const std::string& add_str) {
@@ -204,9 +277,9 @@ static void add_gpu_cn_algo_dev(
     std::string cn_dev_str = dev_str;
     sycl::device cn_dev = dev;
     unsigned batch_multiplier = 6;
-    const std::string device_name = dev.get_info<sycl::info::device::name>();
-    if (algo == "cn/gpu" && device_name.find("Intel") != std::string::npos) {
-      batch_multiplier = 8;
+    if (algo == "cn/gpu") {
+      const unsigned score = pow_device_score(pow_device_profile(dev));
+      batch_multiplier = score >= 5 ? 8 : (score >= 3 ? 6 : 4);
     }
     const unsigned max_compute_units = cn_dev.get_info<sycl::info::device::max_compute_units>();
     const auto mem = algo2mem.find(algo);
@@ -234,24 +307,27 @@ static void add_gpu_c29_algo_dev(std::string& result_dev) {
 
 static void add_gpu_kawpow_algo_dev(std::string& result_dev) {
   for_each_default_gpu([&](const std::string& dev_str, const sycl::device& dev) {
+    constexpr uint64_t dataset_bytes = 5ULL * 1024ULL * 1024ULL * 1024ULL;
     constexpr uint64_t min_global_mem = 6ULL * 1024ULL * 1024ULL * 1024ULL;
-    if (dev.get_info<sycl::info::device::global_mem_size>() >= min_global_mem)
+    if (pow_has_dataset_memory(dev, dataset_bytes, min_global_mem))
       add_result_dev(result_dev, dev_str + "*" + std::to_string(kawpow_intensity(dev)));
   });
 }
 
 static void add_gpu_etchash_algo_dev(std::string& result_dev) {
   for_each_default_gpu([&](const std::string& dev_str, const sycl::device& dev) {
+    constexpr uint64_t dataset_bytes = 4300ULL * 1024ULL * 1024ULL;
     constexpr uint64_t min_global_mem = 5ULL * 1024ULL * 1024ULL * 1024ULL;
-    if (dev.get_info<sycl::info::device::global_mem_size>() >= min_global_mem)
+    if (pow_has_dataset_memory(dev, dataset_bytes, min_global_mem))
       add_result_dev(result_dev, dev_str + "*" + std::to_string(etchash_intensity(dev)));
   });
 }
 
 static void add_gpu_autolykos2_algo_dev(std::string& result_dev) {
   for_each_default_gpu([&](const std::string& dev_str, const sycl::device& dev) {
+    constexpr uint64_t dataset_bytes = 1ULL * 1024ULL * 1024ULL * 1024ULL;
     constexpr uint64_t min_global_mem = 3ULL * 1024ULL * 1024ULL * 1024ULL;
-    if (dev.get_info<sycl::info::device::global_mem_size>() >= min_global_mem)
+    if (pow_has_dataset_memory(dev, dataset_bytes, min_global_mem))
       add_result_dev(result_dev, dev_str + "*" + std::to_string(autolykos2_intensity(dev)));
   });
 }

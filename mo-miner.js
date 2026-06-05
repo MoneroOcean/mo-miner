@@ -424,6 +424,18 @@ function baseJob(prev_job, algo, dev, pool_id) {
 
 const nonceAt32Algos = new Set(["kawpow", "etchash", "autolykos2"]);
 const currentEtcBenchHeight = 24689903; // Sampled from ETC mainnet on 2026-06-04 for live-size Etchash benchmarks.
+const defaultBenchAlgos = new Set([
+  "autolykos2",
+  "c29",
+  "cn/gpu",
+  "etchash",
+  "ghostrider",
+  "kawpow",
+  "panthera",
+  "rx/0",
+  "rx/2",
+  "rx/arq",
+]);
 
 function isNonceAt32Algo(algo) {
   return nonceAt32Algos.has(algo);
@@ -565,7 +577,7 @@ function bench_algo(algo, cb) {
 
 // do global.opt.algo_params benchmarks if perf === null
 function bench_algos(cb) {
-  let algos = Object.keys(global.opt.algo_params);
+  let algos = benchmarkAlgos();
   let is_before_first_benchmark = true;
   h.repeat(function(cb_next) {
     const algo = nextAlgoToBenchmark(algos);
@@ -578,6 +590,12 @@ function bench_algos(cb) {
       return cb_next();
     });
   });
+}
+
+function benchmarkAlgos() {
+  const algos = Object.keys(global.opt.algo_params);
+  if (global.opt.bench_algo_params === 2) return algos;
+  return algos.filter((algo) => defaultBenchAlgos.has(algo));
 }
 
 function nextAlgoToBenchmark(algos) {

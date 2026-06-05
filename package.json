@@ -1,6 +1,6 @@
 {
   "name": "mo-miner",
-  "version": "0.6.4",
+  "version": "0.6.5",
   "description": "Node.js and SYCL miner built on XMRig hashing sources with MoneroOcean algo switching support",
   "private": true,
   "main": "mo-miner.js",
@@ -36,6 +36,7 @@
     "test:perf:rx/graft": "node tests/run_perf.js rx/graft",
     "test:perf:rx/sfx": "node tests/run_perf.js rx/sfx",
     "test:perf:rx/yada": "node tests/run_perf.js rx/yada",
+    "test:perf:panthera": "node tests/run_perf.js panthera",
     "test:perf:ghostrider": "node tests/run_perf.js ghostrider",
     "test:perf:argon2/chukwa": "node tests/run_perf.js argon2/chukwa",
     "test:perf:argon2/chukwav2": "node tests/run_perf.js argon2/chukwav2",

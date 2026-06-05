@@ -38,6 +38,11 @@
         "xmrig/crypto/randomx/virtual_machine.cpp",
         "xmrig/crypto/randomx/vm_compiled_light.cpp",
         "xmrig/crypto/randomx/blake2/blake2b.c",
+        "xmrig/crypto/randomx/panthera/KangarooTwelve.c",
+        "xmrig/crypto/randomx/panthera/KeccakP-1600-reference.c",
+        "xmrig/crypto/randomx/panthera/KeccakSpongeWidth1600.c",
+        "xmrig/crypto/randomx/panthera/sha256.c",
+        "xmrig/crypto/randomx/panthera/yespower-opt.c",
 
         "xmrig/crypto/ghostrider/sph_blake.c",
         "xmrig/crypto/ghostrider/sph_bmw.c",

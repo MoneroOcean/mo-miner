@@ -30,6 +30,10 @@ if [ -n "${MOMINER_LTO:-}" ]; then
   docker_flags+=(--env MOMINER_LTO)
 fi
 
+if [ -n "${MOMINER_PERF_SAMPLES:-}" ]; then
+  docker_flags+=(--env MOMINER_PERF_SAMPLES)
+fi
+
 if [ -t 0 ] && [ -t 1 ]; then
   docker_flags+=(-it)
 else

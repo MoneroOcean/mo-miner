@@ -18,6 +18,11 @@ function assertAlgoParamsDevice(definition, dev) {
   assert.match(dev, /(?:^|,)gpu\d+\*\d+(?:,|$)/, `${definition.algo} should be auto-detected on a GPU with an intensity`);
 }
 
+function sampleSummary(result) {
+  if (!result.samples || result.samples.length <= 1) return "";
+  return ` median of ${result.samples.length} samples [${result.samples.map(formatHashrate).join(", ")}]`;
+}
+
 describe(selectedAlgo ? `proof-of-work performance: ${selectedAlgo}` : "proof-of-work performance", () => {
   for (const definition of selectedTests) {
     it(definition.name, { timeout: definition.timeoutMs || 3 * 60 * 1000 }, async (t) => {
@@ -29,7 +34,7 @@ describe(selectedAlgo ? `proof-of-work performance: ${selectedAlgo}` : "proof-of
 
       assert.ok(result.hashrate > 0, `${definition.name} reported invalid hashrate: ${result.hashrate}`);
       assertAlgoParamsDevice(definition, result.dev);
-      t.diagnostic(`${definition.algo} (${result.dev}): ${formatHashrate(result.hashrate)}`);
+      t.diagnostic(`${definition.algo} (${result.dev}): ${formatHashrate(result.hashrate)}${sampleSummary(result)}`);
     });
   }
 });

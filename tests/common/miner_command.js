@@ -48,6 +48,11 @@ function parseFormattedHashrate(value, unit) {
   return Number.isFinite(rate) && multiplier ? rate * multiplier : Number.NaN;
 }
 
+function medianHashrate(samples) {
+  const sorted = samples.slice().sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)];
+}
+
 function quoteWindowsCmdArg(arg) {
   if (arg.length === 0) return '""';
   if (!/[\s"&|<>()^%]/.test(arg)) return arg;
@@ -470,14 +475,15 @@ async function runMinerBench(definition) {
 
   const job = resolved.job;
   const args = ["mo-miner.js", "bench", job.algo, "--job", JSON.stringify(job)];
+  const sampleCount = benchSampleCount(definition);
   const timeoutMs = definition.timeoutMs || 150 * 1000;
   const unitPattern = Object.keys(hashrateUnitMultipliers).map(escapeRegExp).join("|");
-  const hashratePattern = new RegExp(`Algo ${escapeRegExp(job.algo)} \\([^)]*\\) hashrate: ([0-9.]+)\\s+(${unitPattern})`);
+  const hashratePattern = new RegExp(`Algo ${escapeRegExp(job.algo)} \\([^)]*\\) hashrate: ([0-9.]+)\\s+(${unitPattern})`, "g");
 
   return new Promise((resolve, reject) => {
     const child = spawnMiner(args);
     const result = createRunResult();
-    let matchedHashrate = null;
+    const matchedHashrates = [];
     let stopping = false;
 
     const stop = () => {
@@ -494,11 +500,11 @@ async function runMinerBench(definition) {
 
     const onData = (streamName, chunk) => {
       appendOutput(result, streamName, chunk);
-      const match = `${result.stdout}\n${result.stderr}`.match(hashratePattern);
-      if (match && !matchedHashrate) {
-        matchedHashrate = parseFormattedHashrate(match[1], match[2]);
-        stop();
+      const matches = [...`${result.stdout}\n${result.stderr}`.matchAll(hashratePattern)];
+      for (const match of matches.slice(matchedHashrates.length)) {
+        matchedHashrates.push(parseFormattedHashrate(match[1], match[2]));
       }
+      if (matchedHashrates.length >= sampleCount) stop();
     };
 
     child.stdout.on("data", (chunk) => onData("stdout", chunk));
@@ -510,16 +516,28 @@ async function runMinerBench(definition) {
       clearTimeout(timeout);
       result.code = code;
       result.signal = signal;
-      finishBenchRun(definition, args, job, result, matchedHashrate, resolve, reject);
+      finishBenchRun(definition, args, job, result, matchedHashrates, sampleCount, resolve, reject);
     });
   });
 }
 
-function finishBenchRun(definition, args, job, result, matchedHashrate, resolve, reject) {
-  if (isPositiveHashrate(matchedHashrate)) return resolve({ hashrate: matchedHashrate, dev: job.dev });
+function benchSampleCount(definition) {
+  const samples = Number.parseInt(process.env.MOMINER_PERF_SAMPLES || definition.benchSamples || 1, 10);
+  return Number.isFinite(samples) && samples > 0 ? samples : 1;
+}
+
+function finishBenchRun(definition, args, job, result, matchedHashrates, sampleCount, resolve, reject) {
+  if (matchedHashrates.length >= sampleCount && matchedHashrates.every(isPositiveHashrate)) {
+    const samples = matchedHashrates.slice(0, sampleCount);
+    return resolve({ hashrate: medianHashrate(samples), samples, dev: job.dev });
+  }
   if (isMissingBenchGpu(definition, result))
     return resolve({ skipped: true, reason: "GPU device is not available in this environment" });
-  reject(new Error(formatFailure(`${definition.name} did not report hashrate`, args, result)));
+  reject(new Error(formatFailure(
+    `${definition.name} did not report ${sampleCount} hashrate sample${sampleCount === 1 ? "" : "s"}`,
+    args,
+    result
+  )));
 }
 
 function isPositiveHashrate(hashrate) {

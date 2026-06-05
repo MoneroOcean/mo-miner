@@ -623,7 +623,7 @@ public:
   ~KawpowState() { release(); }
 
   static unsigned kawpow_workgroup(const sycl::device& dev) {
-    const unsigned fallback = dev.is_cpu() ? 128 : 256;
+    const unsigned fallback = sycl_default_workgroup(dev, {64, 128, 256, 512}, dev.is_cpu() ? 128 : 256);
     const char* const value = std::getenv("MOMINER_KAWPOW_WORKGROUP");
     if (!value || !*value) return fallback;
 
@@ -643,7 +643,7 @@ public:
   }
 
   static unsigned kawpow_dag_workgroup(const sycl::device& dev) {
-    const unsigned fallback = dev.is_cpu() ? 128 : 64;
+    const unsigned fallback = sycl_default_workgroup(dev, {32, 64, 128, 256, 512}, dev.is_cpu() ? 128 : 64);
     const char* const value = std::getenv("MOMINER_KAWPOW_DAG_WORKGROUP");
     if (!value || !*value) return fallback;
 
