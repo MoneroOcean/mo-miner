@@ -614,13 +614,25 @@ function poolLoginParams(pool) {
   const algo_perfs = {};
   for (const algo in global.opt.algo_params) {
     if (!global.opt.algo_params[algo].perf) continue;
-    algos.push(algo);
-    algo_perfs[algo] = global.opt.algo_params[algo].perf;
+    const poolAlgo = poolAlgoName(algo);
+    algos.push(poolAlgo);
+    algo_perfs[poolAlgo] = normalizedPoolAlgoPerf(algo, global.opt.algo_params[algo].perf);
   }
   return {
     login: pool.login, pass: pool.pass, agent: o.agent_str,
     algo: algos, "algo-perf": algo_perfs
   };
+}
+
+function poolAlgoName(algo) {
+  // Historical mo-miner KawPow perf values were already raw H/s.
+  return algo === "kawpow" ? "kawpow1" : algo;
+}
+
+function normalizedPoolAlgoPerf(algo, perf) {
+  // Cycle algorithms are reported to the pool in solutions per second.
+  if (algo === "c29") return perf / 42;
+  return perf;
 }
 
 function parsePoolLine(pool_id, message) {

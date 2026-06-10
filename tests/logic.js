@@ -547,6 +547,29 @@ test("pool login does not infer algo from pass when benchmarks are skipped", asy
   });
 });
 
+test("pool login advertises raw KawPow performance as kawpow1", async () => {
+  await withMockPool({
+    opt: {
+      algo_params: {
+        kawpow: { dev: "gpu1*37282560", perf: 20882200 },
+        c29: { dev: "gpu1*1", perf: 2.79 },
+        etchash: { dev: "gpu1*33554432", perf: 21090000 },
+      },
+    },
+  }, async ({ socket, writes }) => {
+    pool.connect_pool_throttle(0, function() {});
+    socket.emit("connect");
+    const loginParams = writes[0].params;
+    const algoPerf = loginParams["algo-perf"];
+    assert.equal(loginParams.algo.includes("kawpow1"), true);
+    assert.equal(loginParams.algo.includes("kawpow"), false);
+    assert.equal(algoPerf.kawpow1, 20882200);
+    assert.equal("kawpow" in algoPerf, false);
+    assert.equal(algoPerf.c29, 2.79 / 42);
+    assert.equal(algoPerf.etchash, 21090000);
+  });
+});
+
 test("fixed KawPow pools use Raven stratum subscribe and authorize", async () => {
   let jobMessage = null;
   await withMockPool({

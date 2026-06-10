@@ -93,7 +93,7 @@ module.exports.opt_help = {
     _help: 'new algo params, defined by the following keys:',
     _template: {
       dev:      [ "cpu", dev_help ],
-      perf:     [ null, "algo hashrate" ],
+      perf:     [ null, "local algo hashrate (pool protocol normalization is automatic)" ],
     },
     _map: {}
   },

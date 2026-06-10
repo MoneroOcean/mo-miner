@@ -152,6 +152,11 @@ $ ./mo-miner mine ./config.json
 ...
 ```
 
+Saved `algo_params.*.perf` values are local hashrates in H/s. mo-miner advertises KawPow to
+MoneroOcean as `kawpow1` with raw H/s while continuing to mine pool jobs named `kawpow`. Cycle
+algorithms whose protocol units are solutions per second, currently `c29`, are converted
+automatically when sending `algo-perf`.
+
 Without parameters miner will show help:
 
 ```
