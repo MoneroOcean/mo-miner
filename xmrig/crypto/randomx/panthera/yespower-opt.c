@@ -116,7 +116,7 @@
 #include "yespower-platform.c"
 
 #if defined(_MSC_VER)
-#define __thread
+#define __thread __declspec(thread)
 #endif
 
 #if __STDC_VERSION__ >= 199901L

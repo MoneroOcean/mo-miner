@@ -48,10 +48,7 @@ const hashTests = [
       seed_hex: "786d7269672d6d6f2d636865636b2d6861736865732073656564",
       blob_hex: "786d7269672d6d6f2d636865636b2d68617368657320696e7075742041",
     },
-    expected: [
-      "1805aa4fd26f5686dada26d9e16ccb290811b2a79404fdd1064f1ca092902212",
-      dup("1805aa4fd26f5686dada26d9e16ccb290811b2a79404fdd1064f1ca092902212", 2),
-    ],
+    expected: dup("1805aa4fd26f5686dada26d9e16ccb290811b2a79404fdd1064f1ca092902212", 2),
   },
   {
     name: "ghostrider cpu*8",

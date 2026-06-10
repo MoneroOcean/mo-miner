@@ -324,9 +324,13 @@ function isNewerNonce(prev_nonce, new_nonce) {
   return !prev_nonce || BigInt("0x" + prev_nonce) < BigInt("0x" + new_nonce);
 }
 
+function isRandomXAlgo(algo) {
+  return algo.startsWith("rx/") || algo === "panthera";
+}
+
 function expectedTestThreads(msg) {
   const threads = h.get_dev_threads(global.opt.job.dev);
-  if (global.opt.job.algo.includes("rx/")) {
+  if (isRandomXAlgo(global.opt.job.algo)) {
     const batch = h.get_dev_batch(h.get_thread_dev(msg.thread_id, global.opt.job.dev));
     return batch * threads;
   }

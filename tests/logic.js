@@ -65,7 +65,7 @@ async function loadMinerWithStubs(options = {}) {
   };
 
   vm.runInNewContext(
-    `(function(require, module, exports, process, global, console, Buffer, setTimeout, clearTimeout, setInterval, setImmediate) { ${source}\nmodule.exports.__test = { messageHandler };\n})`,
+    `(function(require, module, exports, process, global, console, Buffer, setTimeout, clearTimeout, setInterval, setImmediate) { ${source}\nmodule.exports.__test = { expectedTestThreads, messageHandler };\n})`,
     {},
   )(requireStub, moduleStub, moduleStub.exports, processStub, globalStub, console, Buffer, detachedSetTimeout, clearTimeout, () => {}, setImmediate);
 
@@ -77,6 +77,7 @@ async function loadMinerWithStubs(options = {}) {
   return {
     getSetJob: () => capturedSetJob,
     global: globalStub,
+    expectedTestThreads: moduleStub.exports.__test.expectedTestThreads,
     messageHandler: moduleStub.exports.__test.messageHandler,
     poolWrites,
     sentMessages,
@@ -418,6 +419,13 @@ test("test report duration formatting uses seconds and minutes", () => {
     specReporter.rewriteReporterDurations("  ✔ kawpow (198896.794728ms)\nℹ duration_ms 198936.440599\n"),
     "  ✔ kawpow (3.31 min)\nℹ duration 3.32 min\n",
   );
+});
+
+test("Panthera hash tests wait for every CPU batch result", async () => {
+  const miner = await loadMinerWithStubs();
+  miner.global.opt.job = { algo: "panthera", dev: "cpu*2" };
+
+  assert.equal(miner.expectedTestThreads({ thread_id: 0 }), 2);
 });
 
 test("mine can skip algo benchmark before connecting", async () => {
