@@ -278,7 +278,14 @@ static void add_gpu_cn_algo_dev(
     sycl::device cn_dev = dev;
     unsigned batch_multiplier = 6;
     if (algo == "cn/gpu") {
-      const unsigned score = pow_device_score(pow_device_profile(dev));
+      // cn/gpu runs long kernels that trip Level-Zero scheduling resets on
+      // Intel Xe2; the OpenCL backend runs them cleanly, so prefer it.
+      const auto opencl_dev = str2dev.find(dev_str + "o");
+      if (opencl_dev != str2dev.end()) {
+        cn_dev_str = opencl_dev->first;
+        cn_dev = opencl_dev->second;
+      }
+      const unsigned score = pow_device_score(pow_device_profile(cn_dev));
       batch_multiplier = score >= 5 ? 8 : (score >= 3 ? 6 : 4);
     }
     const unsigned max_compute_units = cn_dev.get_info<sycl::info::device::max_compute_units>();

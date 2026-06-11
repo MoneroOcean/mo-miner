@@ -6,11 +6,16 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <initializer_list>
 #include <limits>
 #include <string>
 #include <thread>
+
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
 
 #include "lib.h"
 
@@ -40,6 +45,54 @@ inline unsigned sycl_default_workgroup(
     if (candidate <= preferred && candidate <= max_workgroup) selected = std::max(selected, candidate);
   }
   return selected ? selected : *std::min_element(allowed.begin(), allowed.end());
+}
+
+// Branch-free modulo by a runtime divisor via multiply-shift (Granlund-Montgomery).
+// Shared by the kawpow/etchash/autolykos2 kernels.
+struct FastModData {
+  uint32_t reciprocal;
+  uint32_t increment;
+  uint32_t shift;
+  uint32_t divisor;
+};
+
+inline uint32_t clz32_host(const uint32_t value) {
+#if defined(_MSC_VER)
+  unsigned long index;
+  _BitScanReverse(&index, value);
+  return 31U - static_cast<uint32_t>(index);
+#else
+  return static_cast<uint32_t>(__builtin_clz(value));
+#endif
+}
+
+inline FastModData make_fast_mod_data(const uint32_t divisor) {
+  FastModData data{};
+  data.divisor = divisor;
+  if ((divisor & (divisor - 1U)) == 0) {
+    data.reciprocal = 1;
+    data.increment = 0;
+    data.shift = 31U - clz32_host(divisor);
+  } else {
+    data.shift = 63U - clz32_host(divisor);
+    const uint64_t n = 1ULL << data.shift;
+    const uint64_t q = n / divisor;
+    const uint64_t r = n - q * divisor;
+    if (r * 2 < divisor) {
+      data.reciprocal = static_cast<uint32_t>(q);
+      data.increment = 1;
+    } else {
+      data.reciprocal = static_cast<uint32_t>(q + 1);
+      data.increment = 0;
+    }
+  }
+  return data;
+}
+
+inline uint32_t fast_mod_dev(const uint32_t a, const FastModData d) {
+  const uint64_t t = a;
+  const uint32_t q = static_cast<uint32_t>(((t + d.increment) * d.reciprocal) >> d.shift);
+  return a - q * d.divisor;
 }
 
 inline void sycl_wait_and_throw(sycl::event event, const sycl::device& device) {

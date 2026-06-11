@@ -36,12 +36,7 @@ constexpr uint32_t ETHASH_DATASET_PARENTS2 = 256;
 constexpr uint32_t FNV_PRIME               = 0x01000193U;
 constexpr uint32_t MAX_ETCHASH_OUTPUTS     = 15;
 
-struct FastModData {
-  uint32_t reciprocal;
-  uint32_t increment;
-  uint32_t shift;
-  uint32_t divisor;
-};
+// FastModData / make_fast_mod_data / fast_mod_dev are shared from lib-internal.h.
 
 struct EtchashResult {
   uint32_t count;
@@ -57,45 +52,6 @@ struct Uint2 {
 
 inline uint32_t round_up(const uint32_t value, const uint32_t step) {
   return ((value + step - 1) / step) * step;
-}
-
-inline uint32_t clz32_host(const uint32_t value) {
-#if defined(_MSC_VER)
-  unsigned long index;
-  _BitScanReverse(&index, value);
-  return 31U - static_cast<uint32_t>(index);
-#else
-  return static_cast<uint32_t>(__builtin_clz(value));
-#endif
-}
-
-FastModData make_fast_mod_data(const uint32_t divisor) {
-  FastModData data{};
-  data.divisor = divisor;
-  if ((divisor & (divisor - 1U)) == 0) {
-    data.reciprocal = 1;
-    data.increment = 0;
-    data.shift = 31U - clz32_host(divisor);
-  } else {
-    data.shift = 63U - clz32_host(divisor);
-    const uint64_t n = 1ULL << data.shift;
-    const uint64_t q = n / divisor;
-    const uint64_t r = n - q * divisor;
-    if (r * 2 < divisor) {
-      data.reciprocal = static_cast<uint32_t>(q);
-      data.increment = 1;
-    } else {
-      data.reciprocal = static_cast<uint32_t>(q + 1);
-      data.increment = 0;
-    }
-  }
-  return data;
-}
-
-inline uint32_t fast_mod_dev(const uint32_t a, const FastModData d) {
-  const uint64_t t = a;
-  const uint32_t q = static_cast<uint32_t>(((t + d.increment) * d.reciprocal) >> d.shift);
-  return a - q * d.divisor;
 }
 
 inline uint32_t fnv_dev(const uint32_t x, const uint32_t y) {
