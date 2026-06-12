@@ -72,7 +72,7 @@ function normalizeExpectedResults(algo, value) {
 }
 
 function forceExitByDefault() {
-  return directive === "mine" || directive === "bench";
+  return directive === "mine" || directive === "bench" || shouldExitAfterWorkerShutdown();
 }
 
 function closeComputeCore() {
@@ -83,7 +83,7 @@ function closeComputeCore() {
   compute_core = null;
 }
 
-function shouldExitImmediately() {
+function shouldExitAfterWorkerShutdown() {
   return directive === "test" || directive === "algo_params";
 }
 
@@ -103,8 +103,7 @@ function workerCloseGrace(force) {
 }
 
 function finishExit(code, force) {
-  if (shouldExitImmediately()) reallyExit(code);
-  else if (force) scheduleForcedExit(code);
+  if (force) scheduleForcedExit(code);
   return false;
 }
 
