@@ -14,6 +14,7 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <ctime>
 #include <inttypes.h>
 #include <thread>
 #include <cstring>
@@ -422,8 +423,37 @@ bool Core::process_message(const std::string& type, const MessageValues& v) {
   return true; // continue processing messages
 }
 
+// MOMINER_LOOP_STATS=1 prints, every ~10s on stderr, how the compute loop wall time splits
+// between GPU/CPU dispatch calls and the host work around them (plus one-off stall lines).
+struct LoopStats {
+  uint64_t window_start = 0, dispatch = 0, msg = 0, post = 0, iters = 0, jobs = 0,
+           max_msg = 0, max_post = 0, dispatch_end = 0;
+};
+
+static uint64_t loop_now_us() {
+  return std::chrono::duration_cast<std::chrono::microseconds>(
+    std::chrono::steady_clock::now().time_since_epoch()
+  ).count();
+}
+
+static void loop_stats_report(LoopStats& ls, const uint64_t now) {
+  const uint64_t wall = now - ls.window_start;
+  fprintf(stderr,
+    "LOOPSTAT t=%llu wall=%.1fs dispatch=%.1f%% msg=%.3fs post=%.3fs iters=%llu jobs=%llu"
+    " max_msg=%.1fms max_post=%.1fms\n",
+    static_cast<unsigned long long>(time(nullptr)),
+    wall / 1e6, 100.0 * ls.dispatch / wall, ls.msg / 1e6, ls.post / 1e6,
+    static_cast<unsigned long long>(ls.iters), static_cast<unsigned long long>(ls.jobs),
+    ls.max_msg / 1e3, ls.max_post / 1e3);
+  fflush(stderr);
+  ls = LoopStats{};
+  ls.window_start = now;
+}
+
 void Core::Execute() {
   debug_startup("Core::Execute entered");
+  const bool loop_stats = std::getenv("MOMINER_LOOP_STATS") != nullptr;
+  LoopStats ls;
   bool runtime_initialized = false;
   auto init_runtime = [&]() {
     if (runtime_initialized) return;
@@ -455,6 +485,20 @@ void Core::Execute() {
   };
 
   while (true) {
+    const uint64_t t_loop_start = loop_stats ? loop_now_us() : 0;
+    if (loop_stats) {
+      if (ls.dispatch_end) {
+        const uint64_t post_us = t_loop_start - ls.dispatch_end;
+        ls.post += post_us;
+        if (post_us > ls.max_post) ls.max_post = post_us;
+        if (post_us > 100000) fprintf(stderr, "LOOPSTALL t=%llu post=%.1fms\n",
+          static_cast<unsigned long long>(time(nullptr)), post_us / 1e3);
+        ls.dispatch_end = 0;
+      }
+      if (!ls.window_start) ls.window_start = t_loop_start;
+      else if (t_loop_start - ls.window_start > 10*1000*1000) loop_stats_report(ls, t_loop_start);
+    }
+
     std::deque<Message> messages;
     fromNode.readAll(messages);
     for (const auto& message : messages) {
@@ -462,10 +506,18 @@ void Core::Execute() {
         debug_startup(("message " + message.name).c_str());
         if (message.name == "job" || message.name == "bench" || message.name == "test")
           init_runtime();
+        if (loop_stats && (message.name == "job" || message.name == "bench")) ++ls.jobs;
         if (!process_message(message.name, message.values)) return;
       } catch(const std::string& err) {
         send_error(std::string("Message processing exception: ") + err);
       }
+    }
+    if (loop_stats && !messages.empty()) {
+      const uint64_t msg_us = loop_now_us() - t_loop_start;
+      ls.msg += msg_us;
+      if (msg_us > ls.max_msg) ls.max_msg = msg_us;
+      if (msg_us > 100000) fprintf(stderr, "LOOPSTALL t=%llu msg=%.1fms\n",
+        static_cast<unsigned long long>(time(nullptr)), msg_us / 1e3);
     }
 
     // we skip first hash function run using m_hash_count check to exclude GPU compile time
@@ -505,6 +557,7 @@ void Core::Execute() {
       uint64_t etchash_nonce;
       int autolykos2_sols;
       uint64_t autolykos2_nonce;
+      const uint64_t t_dispatch = loop_stats ? loop_now_us() : 0;
       try {
         switch (m_dev) {
           case DEV::CPU:
@@ -555,6 +608,11 @@ void Core::Execute() {
         send_error("Compute function exception");
         set_fn(nullptr);
         continue;
+      }
+      if (loop_stats) {
+        ls.dispatch_end = loop_now_us();
+        ls.dispatch += ls.dispatch_end - t_dispatch;
+        ++ls.iters;
       }
 
       if (!m_nonce32 && !m_nonce64) { // test job

@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <limits>
 #include <map>
 #include <memory>
@@ -52,6 +53,18 @@ constexpr uint32_t RAVENCOIN_KAWPOW[15] = {
   0x00000043, 0x0000004F, 0x00000049, 0x0000004E, 0x0000004B,
   0x00000041, 0x00000057, 0x00000050, 0x0000004F, 0x00000057
 };
+
+// Used by MOMINER_LOOP_STATS to break a dispatch call into host-side phases.
+static uint64_t kawpow_now_us() {
+  return std::chrono::duration_cast<std::chrono::microseconds>(
+    std::chrono::steady_clock::now().time_since_epoch()
+  ).count();
+}
+
+static bool kawpow_loop_stats() {
+  static const bool enabled = std::getenv("MOMINER_LOOP_STATS") != nullptr;
+  return enabled;
+}
 
 static void format_duration_ms(char* out, size_t out_size, uint64_t ms) {
   if (ms < 1000) {
@@ -971,13 +984,18 @@ int kawpow(
 ) {
   if (input_size < 40) throw std::string("Bad kawpow input length");
 
+  const bool loop_stats = kawpow_loop_stats();
+  const uint64_t t_enter = loop_stats ? kawpow_now_us() : 0;
+
   KawpowState& state = kawpow_state(dev_str);
   std::lock_guard<std::mutex> state_lock(state.mutex);
   state.ensure_input(input_size);
 
   const uint32_t epoch = block_height / KAWPOW_EPOCH_LENGTH;
   const uint64_t period = block_height / KAWPOW_PERIOD_LENGTH;
+  const uint64_t t_state = loop_stats ? kawpow_now_us() : 0;
   state.ensure_epoch(epoch, !is_benchmark);
+  const uint64_t t_epoch = loop_stats ? kawpow_now_us() : 0;
   state.ensure_period(period);
 
   uint64_t start_nonce = 0;
@@ -1000,8 +1018,10 @@ int kawpow(
   const bool use_sg = state.device.is_gpu() && !(exchange_env && std::strcmp(exchange_env, "slm") == 0);
 
   if (use_sg) {
+    const uint64_t t_io = loop_stats ? kawpow_now_us() : 0;
     state.ensure_period_bundle(period, epoch, dag_mod);
-    sycl_wait_and_throw(q.submit([&](sycl::handler& h) {
+    const uint64_t t_bundle = loop_stats ? kawpow_now_us() : 0;
+    const sycl::event search_event = q.submit([&](sycl::handler& h) {
       const auto c_dag = sycl::local_accessor<uint32_t, 1>(sycl::range<1>(KAWPOW_CACHE_WORDS), h);
       h.use_kernel_bundle(*state.period_bundle);
       h.parallel_for<KawpowSgKernel>(
@@ -1040,7 +1060,17 @@ int kawpow(
           }
         }
       );
-    }), state.device);
+    });
+    if (loop_stats) {
+      const uint64_t t_submit = kawpow_now_us();
+      const uint64_t pre_us = t_submit - t_enter;
+      if (pre_us > 50000) fprintf(stderr,
+        "KAWSTALL t=%llu pre=%.1fms (state=%.1f epoch=%.1f period+io=%.1f bundle=%.1f submit=%.1f)\n",
+        static_cast<unsigned long long>(time(nullptr)),
+        pre_us / 1e3, (t_state - t_enter) / 1e3, (t_epoch - t_state) / 1e3,
+        (t_io - t_epoch) / 1e3, (t_bundle - t_io) / 1e3, (t_submit - t_bundle) / 1e3);
+    }
+    sycl_wait_and_throw(search_event, state.device);
   } else {
     sycl_wait_and_throw(q.submit([&](sycl::handler& h) {
       const auto share = sycl::local_accessor<uint32_t, 1>(sycl::range<1>(local_size), h);

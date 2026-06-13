@@ -426,7 +426,13 @@ function baseJob(prev_job, algo, dev, pool_id) {
 }
 
 const nonceAt32Algos = new Set(["kawpow", "etchash", "autolykos2"]);
-const currentEtcBenchHeight = 24689903; // Sampled from ETC mainnet on 2026-06-04 for live-size Etchash benchmarks.
+// Heights sampled from coin mainnets so benchmark DAG/table sizes match live pool jobs
+// (epoch-0 sizes overstate hashrate by ~7-10% on these algos): ETC 2026-06-04, RVN and ERG 2026-06-12.
+const benchHeightByAlgo = {
+  etchash:    24689903,
+  kawpow:     4407982,
+  autolykos2: 1806198,
+};
 const defaultBenchAlgos = new Set([
   "autolykos2",
   "c29",
@@ -553,10 +559,8 @@ function prepareBenchmarkJob(job) {
     job.nonceoffset = 32;
     if (job.blob_hex && job.blob_hex.length === 64) job.blob_hex += "0000000000000000";
   }
-  if (job.algo === "etchash") {
-    job.height = job.height || currentEtcBenchHeight;
-    job.seed_hex = "";
-  }
+  if (benchHeightByAlgo[job.algo]) job.height = job.height || benchHeightByAlgo[job.algo];
+  if (job.algo === "etchash") job.seed_hex = "";
   return job;
 }
 
@@ -569,10 +573,12 @@ function bench_algo(algo, cb) {
     pool_id:  "", // to drop last nonce messages from this job
   });
   h.recreate_threads(job.dev, messageHandler, workerRuntimeEnv(algo));
+  // Live-size DAG/table builds (benchHeightByAlgo) take ~30s on a fast GPU before the
+  // 60s+ measurement window even starts, so the old 2 minute cap could cut off honest runs.
   let timeout = setTimeout(function() {
     h.log_err("Benchmark " + algo + " algo (" + job.dev + ") timeout");
     return cb(0);
-  }, 2*60*1000);
+  }, 4*60*1000);
   algo_params_bench_cb = function(hashrate) { clearTimeout(timeout); return cb(hashrate) };
   set_algo_msr(algo);
   h.messageWorkers({type: "bench", job: last_job = job});

@@ -270,14 +270,20 @@ const hashTests = [
 const perfTests = [];
 const perfAlgos = new Set();
 const nonceAt32Algos = new Set(["kawpow", "etchash", "autolykos2"]);
-const currentEtcBenchHeight = 24689903; // Sampled from ETC mainnet on 2026-06-04 for live-size Etchash DAG benchmarks.
+// Heights sampled from coin mainnets so perf DAG/table sizes match live pool jobs
+// (ETC 2026-06-04, RVN and ERG 2026-06-12). Keep in sync with benchHeightByAlgo in mo-miner.js.
+const benchHeightByAlgo = {
+  etchash:    24689903,
+  kawpow:     4407982,
+  autolykos2: 1806198,
+};
 
 function perfJob(definition) {
   const algo = definition.job.algo;
   if (!nonceAt32Algos.has(algo)) return { algo };
 
   const job = { ...definition.job, dev: undefined };
-  if (algo === "etchash") job.height = currentEtcBenchHeight;
+  if (benchHeightByAlgo[algo]) job.height = benchHeightByAlgo[algo];
   return job;
 }
 

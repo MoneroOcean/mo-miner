@@ -258,6 +258,156 @@ inline void autolykos_prehash_digest_dev(const uint32_t index, const uint32_t he
   blake2b256_output_dev(h, digest);
 }
 
+// Fast table-row prehash. Two differences from autolykos_prehash_digest_dev above (which is
+// kept unchanged as the no-table mining path and the verification reference):
+// 1. Explicit 32-bit pair arithmetic — Xe2 has no native 64-bit integer ALU and the uint64_t
+//    lowering leaves throughput on the table (same finding as the kawpow keccak, which uses
+//    Uint2 pairs). rotr64 by 32 becomes a half swap, 24/16/63 become shift pairs.
+// 2. The 8192-byte Autolykos2 pad is the 64-bit big-endian integers 0..1023, so every pad
+//    message word is bswap64(item) with item < 1024: zero low half, two-shift high half.
+//    Message providers feed these without materializing a 16-word block.
+struct B2bWord {
+  uint32_t lo, hi;
+};
+
+inline uint32_t pad_message_hi_dev(const uint32_t item) {
+  return ((item & 0xFFU) << 24) | ((item >> 8) << 16);
+}
+
+struct PrehashBlock0Message { // word 0 carries index|height, words 1..15 are pad items 0..14
+  uint32_t index_be, height_be;
+  inline B2bWord word(const unsigned i) const {
+    return i == 0 ? B2bWord{index_be, height_be} : B2bWord{0, pad_message_hi_dev(i - 1)};
+  }
+};
+
+struct PrehashPadMessage { // blocks 1..63: word i is pad item 16*block - 1 + i
+  uint32_t base;
+  inline B2bWord word(const unsigned i) const {
+    return B2bWord{0, pad_message_hi_dev(base + i)};
+  }
+};
+
+struct PrehashFinalMessage { // word 0 is pad item 1023, the rest is padding zeros
+  inline B2bWord word(const unsigned i) const {
+    return i == 0 ? B2bWord{0, pad_message_hi_dev(CONST_MES_SIZE / sizeof(uint64_t) - 1)}
+                  : B2bWord{0, 0};
+  }
+};
+
+inline void blake2b_g_pair(
+  B2bWord& a, B2bWord& b, B2bWord& c, B2bWord& d, const B2bWord x, const B2bWord y
+) {
+  uint32_t lo = a.lo + b.lo;
+  uint32_t carry = lo < b.lo ? 1U : 0U;
+  a.lo = lo + x.lo;
+  carry += a.lo < x.lo ? 1U : 0U;
+  a.hi = a.hi + b.hi + x.hi + carry;
+  { // d = rotr64(d ^ a, 32): swap halves
+    const uint32_t t = d.lo ^ a.lo;
+    d.lo = d.hi ^ a.hi;
+    d.hi = t;
+  }
+  lo = c.lo + d.lo;
+  c.hi = c.hi + d.hi + (lo < d.lo ? 1U : 0U);
+  c.lo = lo;
+  { // b = rotr64(b ^ c, 24)
+    const uint32_t bl = b.lo ^ c.lo, bh = b.hi ^ c.hi;
+    b.lo = (bl >> 24) | (bh << 8);
+    b.hi = (bh >> 24) | (bl << 8);
+  }
+  lo = a.lo + b.lo;
+  carry = lo < b.lo ? 1U : 0U;
+  a.lo = lo + y.lo;
+  carry += a.lo < y.lo ? 1U : 0U;
+  a.hi = a.hi + b.hi + y.hi + carry;
+  { // d = rotr64(d ^ a, 16)
+    const uint32_t dl = d.lo ^ a.lo, dh = d.hi ^ a.hi;
+    d.lo = (dl >> 16) | (dh << 16);
+    d.hi = (dh >> 16) | (dl << 16);
+  }
+  lo = c.lo + d.lo;
+  c.hi = c.hi + d.hi + (lo < d.lo ? 1U : 0U);
+  c.lo = lo;
+  { // b = rotr64(b ^ c, 63) == rotl64(b ^ c, 1)
+    const uint32_t bl = b.lo ^ c.lo, bh = b.hi ^ c.hi;
+    b.lo = (bl << 1) | (bh >> 31);
+    b.hi = (bh << 1) | (bl >> 31);
+  }
+}
+
+template <typename Message>
+inline void blake2b_compress_pair_dev(B2bWord h[8], const Message& msg, const uint32_t t, const bool last) {
+  B2bWord v[16];
+#pragma unroll
+  for (unsigned i = 0; i < 8; ++i) v[i] = h[i];
+#pragma unroll
+  for (unsigned i = 0; i < 8; ++i) {
+    v[i + 8] = B2bWord{static_cast<uint32_t>(BLAKE2B_IV[i]), static_cast<uint32_t>(BLAKE2B_IV[i] >> 32)};
+  }
+  v[12].lo ^= t; // the prehash message is 8200 bytes, the counter never reaches the high half
+  if (last) {
+    v[14].lo = ~v[14].lo;
+    v[14].hi = ~v[14].hi;
+  }
+
+  for (unsigned r = 0; r < 12; ++r) {
+    blake2b_g_pair(v[0], v[4], v[ 8], v[12], msg.word(BLAKE2B_SIGMA[r][ 0]), msg.word(BLAKE2B_SIGMA[r][ 1]));
+    blake2b_g_pair(v[1], v[5], v[ 9], v[13], msg.word(BLAKE2B_SIGMA[r][ 2]), msg.word(BLAKE2B_SIGMA[r][ 3]));
+    blake2b_g_pair(v[2], v[6], v[10], v[14], msg.word(BLAKE2B_SIGMA[r][ 4]), msg.word(BLAKE2B_SIGMA[r][ 5]));
+    blake2b_g_pair(v[3], v[7], v[11], v[15], msg.word(BLAKE2B_SIGMA[r][ 6]), msg.word(BLAKE2B_SIGMA[r][ 7]));
+    blake2b_g_pair(v[0], v[5], v[10], v[15], msg.word(BLAKE2B_SIGMA[r][ 8]), msg.word(BLAKE2B_SIGMA[r][ 9]));
+    blake2b_g_pair(v[1], v[6], v[11], v[12], msg.word(BLAKE2B_SIGMA[r][10]), msg.word(BLAKE2B_SIGMA[r][11]));
+    blake2b_g_pair(v[2], v[7], v[ 8], v[13], msg.word(BLAKE2B_SIGMA[r][12]), msg.word(BLAKE2B_SIGMA[r][13]));
+    blake2b_g_pair(v[3], v[4], v[ 9], v[14], msg.word(BLAKE2B_SIGMA[r][14]), msg.word(BLAKE2B_SIGMA[r][15]));
+  }
+
+#pragma unroll
+  for (unsigned i = 0; i < 8; ++i) {
+    h[i].lo ^= v[i].lo ^ v[i + 8].lo;
+    h[i].hi ^= v[i].hi ^ v[i + 8].hi;
+  }
+}
+
+inline void autolykos_prehash_digest_fast_dev(const uint32_t index, const uint32_t height, uint8_t digest[32]) {
+  B2bWord h[8];
+#pragma unroll
+  for (unsigned i = 0; i < 8; ++i) {
+    h[i] = B2bWord{static_cast<uint32_t>(BLAKE2B_IV[i]), static_cast<uint32_t>(BLAKE2B_IV[i] >> 32)};
+  }
+  h[0].lo ^= 0x01010020U;
+
+  const uint32_t index_be = (index >> 24) | ((index >> 8) & 0xFF00U) |
+                            ((index << 8) & 0xFF0000U) | (index << 24);
+  const uint32_t height_be = (height >> 24) | ((height >> 8) & 0xFF00U) |
+                             ((height << 8) & 0xFF0000U) | (height << 24);
+  blake2b_compress_pair_dev(h, PrehashBlock0Message{index_be, height_be}, 128, false);
+  for (uint32_t block = 1; block < 64; ++block) {
+    blake2b_compress_pair_dev(h, PrehashPadMessage{16U * block - 1U}, (block + 1U) * 128U, false);
+  }
+  blake2b_compress_pair_dev(h, PrehashFinalMessage{}, CONST_MES_SIZE + 8U, true);
+
+#pragma unroll
+  for (unsigned i = 0; i < 32; ++i) {
+    const B2bWord word = h[i >> 3];
+    const unsigned byte = i & 7U;
+    digest[i] = static_cast<uint8_t>((byte < 4 ? word.lo >> (byte * 8U) : word.hi >> ((byte - 4U) * 8U)));
+  }
+}
+
+// One table row as stored: byte 0 zeroed, bytes 1..31 of the digest, packed big-endian.
+inline void autolykos_table_row_store_dev(uint32_t* const table, const uint32_t gid, const uint32_t height) {
+  uint8_t digest[32];
+  autolykos_prehash_digest_fast_dev(gid, height, digest);
+  uint8_t table_item[32];
+  table_item[0] = 0;
+#pragma unroll
+  for (unsigned i = 1; i < 32; ++i) table_item[i] = digest[i];
+  uint32_t* const out = table + static_cast<uint64_t>(gid) * (TABLE_ENTRY_BYTES / sizeof(uint32_t));
+#pragma unroll
+  for (unsigned i = 0; i < 8; ++i) out[i] = load32_be_dev(table_item + i * 4);
+}
+
 inline void table_item_limbs_dev(
   const uint32_t* const table, const uint32_t index, const uint32_t height, uint32_t limbs[8]
 ) {
@@ -336,12 +486,22 @@ struct AutolykosState {
   uint32_t* table = nullptr;
   uint32_t* bhashes = nullptr;
   AutolykosResult* result = nullptr;
+  uint32_t* table_mismatches = nullptr;
   uint32_t table_height = UINT32_MAX;
   uint32_t table_n = 0;
+  uint32_t table_cap_n = 0;
   uint32_t bhashes_cap = 0;
   unsigned workgroup;
   unsigned prehash_workgroup;
   std::mutex mutex;
+
+  // Background prebuild of the next height's table was tried three ways and measured
+  // slower than the synchronous rebuild it replaces on Xe2/GuC (B580, 2026-06): a second
+  // queue is timesliced against mining whether paced, flat-out or priority_low (mining
+  // drops to 50%/15%/starved-builder respectively), and fusing builder workgroups into the
+  // mix kernel halves its occupancy through shared register allocation (~2x the slices'
+  // GPU cost). The prehash's GPU-seconds cannot co-execute with mining on this hardware,
+  // so the cheapest place to pay them is one concentrated rebuild per height.
 
   explicit AutolykosState(const std::string& dev_str)
     : device(get_dev(dev_str)),
@@ -407,13 +567,43 @@ struct AutolykosState {
     return dev.is_gpu() ? "-O3" : "";
   }
 
+  // Unlike the kawpow DAG chunking this defaults on: at live N the monolithic build is one
+  // multi-second GPU job, the long-running-job shape that tripped xe/GuC scheduler cleanup
+  // crashes in June 2026. ~3 s chunks cost nothing on the in-order queue. 0 = single kernel.
+  static uint32_t autolykos_table_chunk_rows() {
+    constexpr uint32_t fallback = 32U * 1024U * 1024U;
+    const char* const value = std::getenv("MOMINER_AUTOLYKOS2_TABLE_CHUNK");
+    if (!value || !*value) return fallback;
+
+    char* end = nullptr;
+    errno = 0;
+    const unsigned long parsed = std::strtoul(value, &end, 10);
+    if (errno || end == value || *end || parsed > std::numeric_limits<uint32_t>::max()) return fallback;
+    return static_cast<uint32_t>(parsed);
+  }
+
+  // 0 disables the post-build row check, 1 (default) cross-checks a strided sample of rows
+  // against autolykos_prehash_digest_dev, 2 recomputes every row (slow, for debugging).
+  static unsigned autolykos_table_verify_mode() {
+    const char* const value = std::getenv("MOMINER_AUTOLYKOS2_VERIFY_TABLE");
+    if (!value || !*value) return 1;
+
+    char* end = nullptr;
+    errno = 0;
+    const unsigned long parsed = std::strtoul(value, &end, 10);
+    if (errno || end == value || *end || parsed > 2) return 1;
+    return static_cast<unsigned>(parsed);
+  }
+
   void release() {
     queue.wait_and_throw();
     free_ptr(table);
     free_ptr(bhashes);
     free_ptr(result);
+    free_ptr(table_mismatches);
     table_height = UINT32_MAX;
     table_n = 0;
+    table_cap_n = 0;
     bhashes_cap = 0;
   }
 
@@ -443,12 +633,69 @@ struct AutolykosState {
     return !(value && value[0] == '0');
   }
 
+  // Recompute a sample of the freshly built table with the reference digest and throw on
+  // any difference: the fast build kernel folds the constant pad, and a silently wrong
+  // table would invalidate every share until the next block.
+  void verify_table(const uint32_t height, const uint32_t n_len) {
+    const unsigned mode = autolykos_table_verify_mode();
+    if (!mode) return;
+
+    if (!table_mismatches) {
+      table_mismatches = sycl::malloc_shared<uint32_t>(1, queue);
+      if (!table_mismatches) throw std::string("Can't allocate autolykos2 verify counter");
+    }
+    *table_mismatches = 0;
+
+    const uint32_t stride = mode >= 2 ? 1 : 65521; // prime; ~3.3k of 216M rows in default mode
+    const uint32_t count = (n_len + stride - 1) / stride;
+    const uint32_t* const d_table = table;
+    uint32_t* const d_mismatches = table_mismatches;
+    const uint32_t local = prehash_workgroup;
+
+    sycl_wait_and_throw(queue.submit([&](sycl::handler& h) {
+      h.use_kernel_bundle(*bundle);
+      h.parallel_for(
+        sycl::nd_range<1>(sycl::range<1>(round_up(count, local)), sycl::range<1>(local)),
+        [=](sycl::nd_item<1> item) {
+          const uint32_t gid = item.get_global_id(0);
+          if (gid >= count) return;
+          const uint32_t row = gid * stride;
+          if (row >= n_len) return;
+
+          uint8_t digest[32];
+          autolykos_prehash_digest_dev(row, height, digest);
+          uint8_t table_item[32];
+          table_item[0] = 0;
+#pragma unroll
+          for (unsigned i = 1; i < 32; ++i) table_item[i] = digest[i];
+
+          const uint32_t* const stored = d_table + static_cast<uint64_t>(row) * (TABLE_ENTRY_BYTES / sizeof(uint32_t));
+          bool differs = false;
+#pragma unroll
+          for (unsigned i = 0; i < 8; ++i) differs |= stored[i] != load32_be_dev(table_item + i * 4);
+          if (differs) {
+            sycl::atomic_ref<
+              uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
+              sycl::access::address_space::global_space
+            >(*d_mismatches).fetch_add(1);
+          }
+        }
+      );
+    }), device);
+
+    if (*table_mismatches) {
+      throw std::string("Autolykos2 table verification failed: ") +
+            std::to_string(*table_mismatches) + " of " + std::to_string(count) + " sampled rows differ";
+    }
+  }
+
   void ensure_table(const uint32_t height, const uint32_t n_len, const bool is_test, const bool should_log) {
     if (!should_use_table(is_test)) {
       queue.wait_and_throw();
       free_ptr(table);
       table_height = UINT32_MAX;
       table_n = 0;
+      table_cap_n = 0;
       return;
     }
 
@@ -457,41 +704,48 @@ struct AutolykosState {
       throw std::string("autolykos2 SYCL GPU device does not support device allocations");
     }
 
-    queue.wait_and_throw();
-    free_ptr(table);
-    const uint64_t table_words = static_cast<uint64_t>(n_len) * (TABLE_ENTRY_BYTES / sizeof(uint32_t));
-    table = sycl::malloc_device<uint32_t>(table_words, queue);
-    if (!table) throw std::string("Can't allocate autolykos2 table");
-
     const uint64_t start_ms = now_ms();
+    table_height = UINT32_MAX;
+    if (!table || table_cap_n != n_len) {
+      queue.wait_and_throw();
+      free_ptr(table);
+      table_cap_n = 0;
+      table = sycl::malloc_device<uint32_t>(
+        static_cast<uint64_t>(n_len) * (TABLE_ENTRY_BYTES / sizeof(uint32_t)), queue);
+      if (!table) throw std::string("Can't allocate autolykos2 table");
+      table_cap_n = n_len;
+    }
+
     uint32_t* const d_table = table;
     sycl::queue& q = queue;
     auto& kb = *bundle;
     const uint32_t local = prehash_workgroup;
 
-    sycl_wait_and_throw(q.submit([&](sycl::handler& h) {
-      h.use_kernel_bundle(kb);
-      h.parallel_for(
-        sycl::nd_range<1>(sycl::range<1>(round_up(n_len, local)), sycl::range<1>(local)),
-        [=](sycl::nd_item<1> item) {
-          const uint32_t gid = item.get_global_id(0);
-          if (gid >= n_len) return;
-          uint8_t digest[32];
-          autolykos_prehash_digest_dev(gid, height, digest);
-          uint8_t table_item[32];
-          table_item[0] = 0;
-#pragma unroll
-          for (unsigned i = 1; i < 32; ++i) table_item[i] = digest[i];
-          uint32_t* const out = d_table + static_cast<uint64_t>(gid) * (TABLE_ENTRY_BYTES / sizeof(uint32_t));
-#pragma unroll
-          for (unsigned i = 0; i < 8; ++i) out[i] = load32_be_dev(table_item + i * 4);
-        }
-      );
-    }), device);
+    const uint32_t chunk_rows = autolykos_table_chunk_rows();
+    sycl::event build_event;
+    for (uint32_t start_row = 0; start_row < n_len;) {
+      const uint32_t current_rows = chunk_rows ? std::min(chunk_rows, n_len - start_row) : n_len;
+      const uint32_t chunk_start = start_row;
+      build_event = q.submit([&](sycl::handler& h) {
+        h.use_kernel_bundle(kb);
+        h.parallel_for(
+          sycl::nd_range<1>(sycl::range<1>(round_up(current_rows, local)), sycl::range<1>(local)),
+          [=](sycl::nd_item<1> item) {
+            const uint32_t local_row = item.get_global_id(0);
+            if (local_row >= current_rows) return;
+            autolykos_table_row_store_dev(d_table, chunk_start + local_row, height);
+          }
+        );
+      });
+      if (!chunk_rows) break;
+      start_row += current_rows;
+    }
+    sycl_wait_and_throw(build_event, device);
+    verify_table(height, n_len);
 
     table_height = height;
     table_n = n_len;
-    if (should_log) {
+    if (should_log || std::getenv("MOMINER_LOOP_STATS")) {
       char elapsed[32];
       format_duration_ms(elapsed, sizeof(elapsed), now_ms() - start_ms);
       std::fprintf(stderr, "Autolykos2 table for height %u N %u calculated (%s)\n", height, n_len, elapsed);
