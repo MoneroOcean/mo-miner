@@ -28,6 +28,17 @@
 #include <mutex>
 #include <memory>
 
+// SYCL backend detection (mirrors lib-internal.h, but needed here too because the
+// search kernels below are defined before this file includes lib-internal.h). The
+// NVIDIA build compiles with AdaptiveCpp (acpp), which implements neither Intel
+// ESIMD nor the oneapi joint_matrix extension and forbids inline PTX under its
+// generic SSCP JIT -- so under MOMINER_ACPP we use a portable scalar int8 GEMM.
+#if defined(__ACPP__) || defined(__HIPSYCL__) || defined(__OPENSYCL__)
+  #ifndef MOMINER_ACPP
+  #define MOMINER_ACPP 1
+  #endif
+#endif
+
 // ---- One-shot BLAKE3 (keyed + unkeyed) for host and SYCL device code ----
 // Used by the Pearl kernel for matrix-commitment roots, commitment hashes, the noise PRNG and the
 // PoW jackpot. Ported from the BLAKE3 reference impl; validated against the python verifier.
@@ -419,6 +430,7 @@ static inline bool tile_wins(const uint32_t tr[16], const uint8_t* key, const ui
   for (int i = 31; i >= 0; i--) { if (jp[i] < target[i]) return true; if (jp[i] > target[i]) return false; }
   return true;   // jackpot == target: still within bound
 }
+#if !defined(PEARL_ESIMD) && !defined(MOMINER_ACPP)
 static void search(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k, int rank) {
   using namespace sycl::ext::oneapi::experimental::matrix;
   constexpr int NT = PEARL_NTILE, HR = PEARL_HR, HT = 16, SG = 16;
@@ -475,6 +487,47 @@ static void search(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int 
     });
   });
 }
+#endif  // !PEARL_ESIMD && !MOMINER_ACPP
+
+#if defined(MOMINER_ACPP)
+// ---- portable scalar int8 GEMM search (AdaptiveCpp / NVIDIA) ----
+// acpp implements neither joint_matrix (Intel) nor ESIMD, and its generic SSCP JIT
+// forbids inline PTX, so tensor cores / DP4A are unreachable here -- this is plain
+// SYCL C++ with an int32 accumulator. One work-item owns one 16x16 hash tile: it
+// streams k, accumulates the 256 cells, and XOR/rotl-folds the cumulative tile into
+// the transcript at each rank boundary, then runs the shared tile_wins() jackpot
+// check. Reads the same compute_ab() layouts (row-major A', VNNI-tile-major B').
+// Correctness-first and bandwidth/scalar-bound -- not competitive with a tensor-core
+// miner; see the perf notes for the NVIDIA tensor-core path.
+static void search_scalar(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k, int rank) {
+  auto B = bb;
+  constexpr int HT = 16;
+  const int tilesW = n / HT;
+  const size_t nWI = (size_t)(m / HT) * tilesW;
+  q.parallel_for(sycl::range<1>(nWI), [=](sycl::id<1> id) {
+    const int wi = (int)id[0];
+    const int tileC = wi % tilesW, rowBase = (wi / tilesW) * HT, colBase = tileC * HT;
+    int32_t acc[HT * HT]; for (int i = 0; i < HT * HT; i++) acc[i] = 0;
+    uint32_t tr[16]; for (int i = 0; i < 16; i++) tr[i] = 0;
+    int rc = 0;
+    for (int c = 0; c < k; c++) {
+      int8_t a[HT], bcol[HT];
+      for (int i = 0; i < HT; i++) a[i] = B.Ap[(size_t)(rowBase + i) * k + c];     // row-major A'[rowBase+i, c]
+      // VNNI-tile-major B'[c, colBase+j]: tile tileC, depth c, within-tile col j.
+      for (int j = 0; j < HT; j++) bcol[j] = B.Bp[(size_t)tileC * k * 16 + (size_t)(c / 4) * 64 + (size_t)j * 4 + (c % 4)];
+      for (int i = 0; i < HT; i++) for (int j = 0; j < HT; j++) acc[i * HT + j] += (int)a[i] * (int)bcol[j];
+      if ((c + 1) % rank == 0) {     // rank-chunk boundary: XOR-fold the cumulative tile into the transcript
+        uint32_t part = 0; for (int t = 0; t < HT * HT; t++) part ^= (uint32_t)acc[t];
+        tr[rc % 16] = rotl(tr[rc % 16], 13) ^ part; rc++;
+      }
+    }
+    if (tile_wins(tr, B.cA, B.target)) {
+      sycl::atomic_ref<int, sycl::memory_order::relaxed, sycl::memory_scope::device, sycl::access::address_space::global_space> at(B.result->found);
+      if (at.exchange(1) == 0) { B.result->seed = seed; B.result->row = (uint32_t)rowBase; B.result->col = (uint32_t)colBase; }
+    }
+  });
+}
+#endif  // MOMINER_ACPP
 
 #ifdef PEARL_ESIMD
 // ---- experimental ESIMD register-resident DPAS search (alternative to search()) ----
@@ -593,8 +646,10 @@ static void attempt(sycl::queue& q, const Buffers& b, uint32_t seed, int m, int 
   k_roots(q, b, seed, m, n, k);          // commitment roots cA/cB (A/Bt regenerated from RNG)
   k_noise(q, b, m, n, k, rank);          // sparse low-rank noise E_AL/E_AR, E_BL/E_BR
   compute_ab(q, b, seed, m, n, k, rank); // materialize noised A' (tile-major) and B' (VNNI tile-major)
-#ifdef PEARL_ESIMD
+#if defined(PEARL_ESIMD)
   search_esimd(q, b, seed, m, n, k, rank); // ESIMD register-resident DPAS path (Intel GPUs, ~53 TH/s)
+#elif defined(MOMINER_ACPP)
+  search_scalar(q, b, seed, m, n, k, rank); // portable scalar int8 GEMM (AdaptiveCpp / NVIDIA)
 #else
   search(q, b, seed, m, n, k, rank);       // portable joint_matrix path (XMX A'*B' + XOR transcript + BLAKE3)
 #endif
