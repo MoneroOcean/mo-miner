@@ -32,6 +32,33 @@ implemented by mo-miner plus `rx/2`: `autolykos2`, `c29`, `cn/gpu`, `etchash`, `
 `kawpow`, `panthera`, `rx/0`, `rx/2`, and `rx/arq`. Use `--bench_algo_params 2` to benchmark every algo
 supported locally.
 
+# NVIDIA GPU performance
+
+mo-miner also builds for NVIDIA GPUs with [AdaptiveCpp](https://github.com/AdaptiveCpp/AdaptiveCpp)
+(generic SSCP JIT to PTX) from the same SYCL kernels used for Intel; the NVIDIA Linux release
+artifact is `mo-miner-v<version>-lin-nvidia.tgz`. The hashrates below were measured on an NVIDIA L4
+and compared against the best closed-source NVIDIA miners benchmarked on the same machine (matched
+DAG sizes, local reported hashrate):
+
+| Algo | mo-miner | SOTA reference | % of SOTA |
+| --- | --- | --- | --- |
+| etchash | 28.8 MH/s | ~28.8 MH/s (memory-bandwidth bound) | ~parity |
+| kawpow | 14.9 MH/s | Rigel 15.56 MH/s | 96% |
+| c29 (Cuckaroo29) | 4.87 g/s | lolMiner ~5.3 g/s | 92% |
+| cn/gpu | 2.20 KH/s | SRBMiner-MULTI 3.04 KH/s | 73% |
+| autolykos2 | 69.5 MH/s | lolMiner 98.19 MH/s | 71% |
+
+cn/gpu and autolykos2 sit at the SYCL codegen ceiling: ahead-of-time compilation
+(`--acpp-targets=cuda:sm_89`) is slower than the generic JIT, and a gather microbenchmark already
+reaches the DRAM roofline. The remaining gap is nvcc-vs-clang register allocation/scheduling plus
+the SOTA miners' fused single-kernel prehash+gather, which only native CUDA could close.
+
+**Hardware:** NVIDIA L4 (AD104, Ada / sm_89, ~72 W power cap) on an AMD EPYC 9454 host, Ubuntu 26.04.
+
+**Software:** mo-miner v0.7.0 NVIDIA build — AdaptiveCpp v25.10.0, NVIDIA driver 580, CUDA 13.1,
+Node.js 24.15. SOTA references benchmarked on the same L4: lolMiner (`--benchmark AUTOLYKOS2`,
+`--benchmark CR29`), Rigel (`-a kawpow`), SRBMiner-MULTI (`--algorithm cryptonight_gpu`).
+
 # Donation
 
 By default, miner donates 1% of hashrate (can be disabled in config).
@@ -127,20 +154,21 @@ cpu1: Intel(R) OpenCL
 gpu1: Intel(R) oneAPI Unified Runtime over Level-Zero V2
 gpu1o: Intel(R) OpenCL Graphics
 gpu1z: Intel(R) oneAPI Unified Runtime over Level-Zero V2
-2026-06-12 23:58:18 Doing algo benchmarks...
-2026-06-12 23:59:38 Algo autolykos2 (gpu1*8388608) hashrate: 37.24 MH/s (37.24 MH/s)
-2026-06-13 00:00:43 Algo c29 (gpu1*1) hashrate: 2.79 H/s (2.79 H/s)
-2026-06-13 00:01:56 Algo cn/gpu (gpu1o*1280) hashrate: 2.66 KH/s (2.66 KH/s)
-2026-06-13 00:03:25 Algo etchash (gpu1*33554432) hashrate: 21.10 MH/s (21.10 MH/s)
-2026-06-13 00:04:26 Algo ghostrider (cpu*8^8) hashrate: 1.66 KH/s (200.07 H/s, 200.13 H/s, 204.40 H/s, 212.09 H/s, 204.42 H/s, 211.10 H/s, 212.11 H/s, 211.05 H/s)
-2026-06-13 00:06:23 Algo kawpow (gpu1*37282560) hashrate: 20.93 MH/s (20.93 MH/s)
-2026-06-13 00:07:32 Algo panthera (cpu*4^16) hashrate: 4.18 KH/s (264.41 H/s, 260.77 H/s, 252.50 H/s, 257.37 H/s, 281.96 H/s, 246.10 H/s, 273.98 H/s, 256.95 H/s, 264.06 H/s, 264.06 H/s, 257.59 H/s, 248.49 H/s, 282.07 H/s, 243.38 H/s, 280.04 H/s, 243.20 H/s)
-2026-06-13 00:08:35 Algo rx/0 (cpu*8) hashrate: 5.78 KH/s (5.78 KH/s)
-2026-06-13 00:09:37 Algo rx/2 (cpu*8) hashrate: 5.02 KH/s (5.02 KH/s)
-2026-06-13 00:10:39 Algo rx/arq (cpu*16) hashrate: 38.94 KH/s (38.94 KH/s)
-2026-06-13 00:10:39 Connecting to primary gulf.moneroocean.stream:20001tls pool
-2026-06-13 00:10:39 Got new cn/gpu algo job with 32.61 KH/share target and 2093639 height
-2026-06-13 00:10:50 Share accepted by the pool (1/0)
+2026-06-14 23:22:35 Doing algo benchmarks...
+2026-06-14 23:24:07 Algo autolykos2 (gpu1*8388608) hashrate: 37.87 MH/s (37.87 MH/s)
+2026-06-14 23:25:12 Algo c29 (gpu1*1) hashrate: 2.79 H/s (2.79 H/s)
+2026-06-14 23:26:34 Algo cn/gpu (gpu1o*1280) hashrate: 2.95 KH/s (2.95 KH/s)
+2026-06-14 23:28:04 Algo etchash (gpu1*33554432) hashrate: 21.09 MH/s (21.09 MH/s)
+2026-06-14 23:29:05 Algo ghostrider (cpu*8^8) hashrate: 1.66 KH/s (205.32 H/s, 212.96 H/s, 200.92 H/s, 201.01 H/s, 205.24 H/s, 212.93 H/s, 211.91 H/s, 211.82 H/s)
+2026-06-14 23:31:01 Algo kawpow (gpu1*37282560) hashrate: 20.93 MH/s (20.93 MH/s)
+2026-06-14 23:32:10 Algo panthera (cpu*4^16) hashrate: 4.24 KH/s (259.15 H/s, 268.97 H/s, 269.84 H/s, 266.02 H/s, 270.41 H/s, 258.63 H/s, 276.43 H/s, 262.15 H/s, 264.18 H/s, 263.20 H/s, 267.30 H/s, 266.04 H/s, 265.74 H/s, 255.83 H/s, 259.60 H/s, 263.85 H/s)
+2026-06-14 23:33:12 Algo rx/0 (cpu*8) hashrate: 5.89 KH/s (5.89 KH/s)
+2026-06-14 23:34:14 Algo rx/2 (cpu*8) hashrate: 5.05 KH/s (5.05 KH/s)
+2026-06-14 23:35:17 Algo rx/arq (cpu*16) hashrate: 39.24 KH/s (39.24 KH/s)
+2026-06-14 23:35:17 Connecting to primary gulf.moneroocean.stream:20001tls pool
+2026-06-14 23:35:17 Got new cn/gpu algo job with 345.14 KH/share target and 2095043 height
+2026-06-14 23:35:21 Got new cn/gpu algo job with 341.49 KH/share target and 2095044 height
+2026-06-14 23:35:36 Share accepted by the pool (1/0)
 ...
 ```
 
