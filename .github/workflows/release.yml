@@ -68,6 +68,65 @@ jobs:
           name: mo-miner-lin
           path: mo-miner-*-lin.tgz
 
+  build-linux-nvidia-x64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /usr/local/share/boost \
+            /usr/local/.ghcup \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            /opt/hostedtoolcache/go \
+            /opt/hostedtoolcache/Python \
+            /opt/hostedtoolcache/Ruby \
+            /opt/hostedtoolcache/Java_Temurin-Hotspot_jdk
+          docker system prune --all --force || true
+          df -h
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # AdaptiveCpp generic-SSCP build: no GPU needed at build time (JITs to PTX at
+      # runtime); the image bundles an OpenMP host SYCL device for verification.
+      - name: Build native addon in NVIDIA (AdaptiveCpp) image
+        run: ./r-nvidia.sh node -e "console.log('mo-miner nvidia build ready')"
+
+      - name: Package release archive
+        run: .github/workflows/scripts/package-linux-nvidia.sh
+
+      - name: Test release archive (CPU + SYCL-CPU)
+        # kawpow/autolykos2 are miscompiled by AdaptiveCpp's OpenMP host backend, so
+        # the GPU-less SYCL-CPU verification skips them (they are GPU-verified); the
+        # other three GPU algos plus the full CPU suite run on the bundled libs.
+        env:
+          MOMINER_SYCL_CPU_SKIP: kawpow,autolykos2
+        run: |
+          set -euo pipefail
+          archive="$(find . -maxdepth 1 -name 'mo-miner-*-lin-nvidia.tgz' -print -quit)"
+          .github/workflows/scripts/test-release-linux.sh "$archive" cpu
+          .github/workflows/scripts/test-release-linux.sh "$archive" sycl-cpu
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: mo-miner-lin-nvidia
+          path: mo-miner-*-lin-nvidia.tgz
+
   build-windows-x64:
     runs-on: windows-2022
     timeout-minutes: 90
@@ -131,6 +190,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     needs:
       - build-linux-x64
+      - build-linux-nvidia-x64
       - build-windows-x64
     runs-on: ubuntu-24.04
 

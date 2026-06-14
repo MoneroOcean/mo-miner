@@ -1,4 +1,11 @@
 {
+  "variables": {
+    # SYCL implementation selector. Default "dpcpp" (Intel oneAPI DPC++) keeps the
+    # existing Intel Linux and Windows builds byte-for-byte unchanged. The NVIDIA
+    # build runs `node-gyp configure -- -Dmominer_sycl_impl=acpp` to compile the
+    # SYCL sources with AdaptiveCpp (generic SSCP JIT target) instead.
+    "mominer_sycl_impl%": "dpcpp"
+  },
   "targets": [
     {
       "target_name": "mo-miner",
@@ -184,7 +191,19 @@
           "cflags_cc+": [ "-std=c++20" ],
           "ldflags+": [ "<!@(./scripts/cpu-optflags.sh ldflags)" ]
         } ],
-        [ "OS!='win'", {
+        [ "OS!='win' and mominer_sycl_impl=='acpp'", {
+          # acpp rejects more than one -std; drop node's common.gypi default so
+          # only the explicit -std=c++20 (cflags_cc+ above) remains.
+          "cflags_cc!": [ "-std=gnu++20" ],
+          "ldflags+": [
+            "--acpp-targets=generic",
+            "-Wl,--disable-new-dtags",
+            "-Wl,-rpath,'$$ORIGIN'",
+            "-Wl,-rpath,'$$ORIGIN/lib'",
+            "-Wl,-rpath,'$$ORIGIN/mo-miner'"
+          ]
+        } ],
+        [ "OS!='win' and mominer_sycl_impl!='acpp'", {
           "ldflags+": [
             "-fsycl",
             "-Wl,--disable-new-dtags",
@@ -293,8 +312,19 @@
             }
           }
         }, {
-          "cflags+": [
-            "-std=c++20 -O3 -fsycl -DNDEBUG"
+          "conditions": [
+            [ "mominer_sycl_impl=='acpp'", {
+              # acpp rejects more than one -std; drop node's common.gypi default
+              # so only the explicit -std=c++20 below remains.
+              "cflags_cc!": [ "-std=gnu++20" ],
+              "cflags+": [
+                "-std=c++20 -O3 -DNDEBUG --acpp-targets=generic"
+              ]
+            }, {
+              "cflags+": [
+                "-std=c++20 -O3 -fsycl -DNDEBUG"
+              ]
+            } ]
           ]
         } ]
       ]

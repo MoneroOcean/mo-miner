@@ -150,6 +150,9 @@ inline void blake2b_compress_dev(uint64_t h[8], const uint64_t m[16], const uint
   v[12] ^= t;
   if (last) v[14] = ~v[14];
 
+  // Unroll so BLAKE2B_SIGMA[r][i] becomes a compile-time constant and m[16] stays
+  // in registers instead of spilling to local memory.
+#pragma unroll
   for (unsigned r = 0; r < 12; ++r) {
     blake2b_g(v[0], v[4], v[ 8], v[12], m[BLAKE2B_SIGMA[r][ 0]], m[BLAKE2B_SIGMA[r][ 1]]);
     blake2b_g(v[1], v[5], v[ 9], v[13], m[BLAKE2B_SIGMA[r][ 2]], m[BLAKE2B_SIGMA[r][ 3]]);
@@ -482,7 +485,7 @@ static void format_duration_ms(char* out, size_t out_size, uint64_t ms) {
 struct AutolykosState {
   sycl::device device;
   sycl::queue queue;
-  std::unique_ptr<sycl::kernel_bundle<sycl::bundle_state::executable>> bundle;
+  std::unique_ptr<MOMINER_BUNDLE_T> bundle;
   uint32_t* table = nullptr;
   uint32_t* bhashes = nullptr;
   AutolykosResult* result = nullptr;
@@ -514,15 +517,22 @@ struct AutolykosState {
     }
 
     set_sycl_env("SYCL_PROGRAM_COMPILE_OPTIONS", autolykos_compile_options(device));
-    bundle = std::make_unique<sycl::kernel_bundle<sycl::bundle_state::executable>>(
-      sycl::get_kernel_bundle<sycl::bundle_state::executable>(queue.get_context())
+    bundle = std::make_unique<MOMINER_BUNDLE_T>(
+      MOMINER_GET_EXEC_BUNDLE(queue.get_context())
     );
   }
 
   ~AutolykosState() { release(); }
 
   static unsigned autolykos_workgroup(const sycl::device& dev) {
+#if defined(MOMINER_ACPP)
+    // NVIDIA: 128 gives the best occupancy for the unrolled per-thread lookup
+    // (measured ~68 vs ~64 MH/s at 64 on an L4); the cooperative local==64 path
+    // is intentionally not used here.
+    const unsigned fallback = sycl_default_workgroup(dev, {32, 64, 128, 256}, 128);
+#else
     const unsigned fallback = sycl_default_workgroup(dev, {32, 64, 128, 256}, 64);
+#endif
     const char* const value = std::getenv("MOMINER_AUTOLYKOS2_WORKGROUP");
     if (!value || !*value) return fallback;
 
@@ -653,7 +663,7 @@ struct AutolykosState {
     const uint32_t local = prehash_workgroup;
 
     sycl_wait_and_throw(queue.submit([&](sycl::handler& h) {
-      h.use_kernel_bundle(*bundle);
+      MOMINER_USE_BUNDLE(h, *bundle);
       h.parallel_for(
         sycl::nd_range<1>(sycl::range<1>(round_up(count, local)), sycl::range<1>(local)),
         [=](sycl::nd_item<1> item) {
@@ -727,7 +737,7 @@ struct AutolykosState {
       const uint32_t current_rows = chunk_rows ? std::min(chunk_rows, n_len - start_row) : n_len;
       const uint32_t chunk_start = start_row;
       build_event = q.submit([&](sycl::handler& h) {
-        h.use_kernel_bundle(kb);
+        MOMINER_USE_BUNDLE(h, kb);
         h.parallel_for(
           sycl::nd_range<1>(sycl::range<1>(round_up(current_rows, local)), sycl::range<1>(local)),
           [=](sycl::nd_item<1> item) {
@@ -801,7 +811,7 @@ int autolykos2(
     uint32_t* const d_bhashes = state.bhashes;
 
     q.submit([&](sycl::handler& h) {
-      h.use_kernel_bundle(kb);
+      MOMINER_USE_BUNDLE(h, kb);
       h.parallel_for(
         sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(local_size)),
         [=](sycl::nd_item<1> item) {
@@ -846,7 +856,7 @@ int autolykos2(
     });
 
     sycl_wait_and_throw(q.submit([&](sycl::handler& h) {
-      h.use_kernel_bundle(kb);
+      MOMINER_USE_BUNDLE(h, kb);
       h.parallel_for(
         sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(local_size)),
         [=](sycl::nd_item<1> item) {
@@ -860,6 +870,10 @@ int autolykos2(
           words[8] = words[0];
 
           uint32_t sum[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+          // Unroll the K_LEN table-row reads so the independent random loads issue
+          // in parallel (memory-level parallelism) and hide DRAM latency instead
+          // of stalling one-at-a-time (the read loop is the autolykos2 bottleneck).
+#pragma unroll
           for (unsigned k = 0; k < K_LEN; ++k) {
             const unsigned word_index = k >> 2;
             uint32_t idx;
@@ -903,7 +917,7 @@ int autolykos2(
   }
 
   sycl_wait_and_throw(q.submit([&](sycl::handler& h) {
-    h.use_kernel_bundle(kb);
+    MOMINER_USE_BUNDLE(h, kb);
     sycl::local_accessor<uint32_t, 1> shared_index(sycl::range<1>(64), h);
     sycl::local_accessor<uint32_t, 1> shared_data(sycl::range<1>(512), h);
     h.parallel_for(

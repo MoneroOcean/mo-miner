@@ -82,15 +82,15 @@ void keccak(uint64_t* const s) { // Hot device-side Keccak; keep explicit steps 
     uint64_t bc[5];
     // Theta step - optimized for Arc's execution units.
     bc[0] = s[0] ^ s[5] ^ s[10] ^ s[15] ^ s[20] ^
-            sycl::rotate(s[2] ^ s[7] ^ s[12] ^ s[17] ^ s[22], uint64_t{1});
+            mo_rotate(s[2] ^ s[7] ^ s[12] ^ s[17] ^ s[22], uint64_t{1});
     bc[1] = s[1] ^ s[6] ^ s[11] ^ s[16] ^ s[21] ^
-            sycl::rotate(s[3] ^ s[8] ^ s[13] ^ s[18] ^ s[23], uint64_t{1});
+            mo_rotate(s[3] ^ s[8] ^ s[13] ^ s[18] ^ s[23], uint64_t{1});
     bc[2] = s[2] ^ s[7] ^ s[12] ^ s[17] ^ s[22] ^
-            sycl::rotate(s[4] ^ s[9] ^ s[14] ^ s[19] ^ s[24], uint64_t{1});
+            mo_rotate(s[4] ^ s[9] ^ s[14] ^ s[19] ^ s[24], uint64_t{1});
     bc[3] = s[3] ^ s[8] ^ s[13] ^ s[18] ^ s[23] ^
-            sycl::rotate(s[0] ^ s[5] ^ s[10] ^ s[15] ^ s[20], uint64_t{1});
+            mo_rotate(s[0] ^ s[5] ^ s[10] ^ s[15] ^ s[20], uint64_t{1});
     bc[4] = s[4] ^ s[9] ^ s[14] ^ s[19] ^ s[24] ^
-            sycl::rotate(s[1] ^ s[6] ^ s[11] ^ s[16] ^ s[21], uint64_t{1});
+            mo_rotate(s[1] ^ s[6] ^ s[11] ^ s[16] ^ s[21], uint64_t{1});
     s[0] ^= bc[4]; s[5] ^= bc[4]; s[10] ^= bc[4]; s[15] ^= bc[4]; s[20] ^= bc[4];
     s[1] ^= bc[0]; s[6] ^= bc[0]; s[11] ^= bc[0]; s[16] ^= bc[0]; s[21] ^= bc[0];
     s[2] ^= bc[1]; s[7] ^= bc[1]; s[12] ^= bc[1]; s[17] ^= bc[1]; s[22] ^= bc[1];
@@ -100,17 +100,17 @@ void keccak(uint64_t* const s) { // Hot device-side Keccak; keep explicit steps 
     uint64_t t = s[1];
     for (unsigned i = 0; i < 24; ++ i) {
       bc[0] = s[piln[i]];
-      s[piln[i]] = sycl::rotate(t, static_cast<uint64_t>(rotc[i]));
+      s[piln[i]] = mo_rotate(t, static_cast<uint64_t>(rotc[i]));
       t = bc[0];
     }
     // Chi step - unrolled for Arc's SIMD width.
     for (unsigned i = 0; i < 25; i += 5) {
       const uint64_t tmp1 = s[i], tmp2 = s[i + 1];
-      s[i    ] = sycl::bitselect(s[i    ] ^ s[i + 2], s[i    ], s[i + 1]);
-      s[i + 1] = sycl::bitselect(s[i + 1] ^ s[i + 3], s[i + 1], s[i + 2]);
-      s[i + 2] = sycl::bitselect(s[i + 2] ^ s[i + 4], s[i + 2], s[i + 3]);
-      s[i + 3] = sycl::bitselect(s[i + 3] ^ tmp1,     s[i + 3], s[i + 4]);
-      s[i + 4] = sycl::bitselect(s[i + 4] ^ tmp2,     s[i + 4], tmp1);
+      s[i    ] = mo_bitselect(s[i    ] ^ s[i + 2], s[i    ], s[i + 1]);
+      s[i + 1] = mo_bitselect(s[i + 1] ^ s[i + 3], s[i + 1], s[i + 2]);
+      s[i + 2] = mo_bitselect(s[i + 2] ^ s[i + 4], s[i + 2], s[i + 3]);
+      s[i + 3] = mo_bitselect(s[i + 3] ^ tmp1,     s[i + 3], s[i + 4]);
+      s[i + 4] = mo_bitselect(s[i + 4] ^ tmp2,     s[i + 4], tmp1);
     }
     s[0] ^= rndc[round];
   }
@@ -206,7 +206,10 @@ inline sycl::int4 single_comupte(
 inline sycl::int4 my_alignr_epi8(const sycl::int4 a, const unsigned rot) {
   const unsigned right = 8 * rot;
   const unsigned left  = 32 - right;
-  const sycl::uint4 u = a.as<sycl::uint4>();
+  // Reinterpret int->uint (bit-preserving) by explicit construction; works on both
+  // DPC++ and AdaptiveCpp (acpp's vec::as() is a const method that casts away const).
+  const sycl::uint4 u(static_cast<uint32_t>(a[0]), static_cast<uint32_t>(a[1]),
+                      static_cast<uint32_t>(a[2]), static_cast<uint32_t>(a[3]));
 
   return sycl::int4(
     (u[0] >> right) | (u[1] << left),
@@ -260,7 +263,7 @@ void aes_expend_key(uint32_t* const keybuf) { // Unrolled AES-256 key expansion.
 
   for (unsigned c = 8, i = 1; c < 40; ++ c) {
     const uint32_t t = ((!(c & 7)) || ((c & 7) == 4)) ? sw(keybuf[c - 1]) : keybuf[c - 1];
-    keybuf[c] = keybuf[c - 8] ^ ((!(c & 7)) ? sycl::rotate(t, 24U) ^ rcon[i++] : t);
+    keybuf[c] = keybuf[c - 8] ^ ((!(c & 7)) ? mo_rotate(t, 24U) ^ rcon[i++] : t);
   }
 }
 
@@ -281,7 +284,10 @@ inline void aes_round(
   px->w() = key[3] ^ aes0[u3.b[0]] ^ aes1[u0.b[1]] ^ aes2[u1.b[2]] ^ aes3[u2.b[3]];
 }
 
-union AesKey { uint32_t u[40]; sycl::uint4 u4[10]; sycl::uint8 u8[5]; }; // aligned at use sites for vector loads
+union AesKey {
+  uint32_t u[40]; sycl::uint4 u4[10]; sycl::uint8 u8[5]; // aligned at use sites for vector loads
+  AesKey() {} // explicit default ctor: AdaptiveCpp's sycl::vec has a non-trivial default ctor, so the union needs one to stay default-constructible (uninitialized, matching DPC++).
+};
 
 inline sycl::async_handler cn_gpu_exception_handler() {
   return [] (sycl::exception_list exceptions) {
@@ -298,7 +304,7 @@ inline sycl::async_handler cn_gpu_exception_handler() {
 struct CnGpuState { // Per-device queue and persistent allocations; avoids buffer churn in the hot path.
   sycl::device device;
   sycl::queue queue;
-  std::unique_ptr<sycl::kernel_bundle<sycl::bundle_state::executable>> bundle;
+  std::unique_ptr<MOMINER_BUNDLE_T> bundle;
   bool shared_scratch; // CPU or backends without device allocation need shared scratch/IO.
   bool shared_io;
   uint8_t* inputs = nullptr, *outputs = nullptr;
@@ -318,8 +324,8 @@ struct CnGpuState { // Per-device queue and persistent allocations; avoids buffe
     }
 
     set_sycl_env("SYCL_PROGRAM_COMPILE_OPTIONS", cn_gpu_fp_compile_options(device));
-    bundle = std::make_unique<sycl::kernel_bundle<sycl::bundle_state::executable>>(
-      sycl::get_kernel_bundle<sycl::bundle_state::executable>(queue.get_context())
+    bundle = std::make_unique<MOMINER_BUNDLE_T>(
+      MOMINER_GET_EXEC_BUNDLE(queue.get_context())
     );
   }
 
@@ -373,7 +379,10 @@ void cn_gpu(
 ) {
   CnGpuState& state = cn_gpu_state(dev_str);
   std::lock_guard<std::mutex> state_lock(state.mutex);
-  state.ensure_capacity(batch, input_size);
+  // The FP recurrence packs two 16-thread hashes into one 32-wide group, so round
+  // the in-flight batch up to even; the extra hash is computed but never read.
+  const unsigned batch_eff = (batch + 1u) & ~1u;
+  state.ensure_capacity(batch_eff, input_size);
   sycl::queue& q = state.queue;
   auto& kb = *state.bundle;
   uint8_t* const d_inputs = state.inputs;
@@ -394,7 +403,7 @@ void cn_gpu(
 
   // Initial Keccak pads each input into its 200-byte state.
   q.submit([&](sycl::handler& h) {
-    h.use_kernel_bundle(kb);
+    MOMINER_USE_BUNDLE(h, kb);
     h.parallel_for(sycl::nd_range(sycl::range((batch + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE * WORKGROUP_SIZE),
                                  sycl::range(WORKGROUP_SIZE)),
                    [=](sycl::nd_item<1> nd) {
@@ -414,7 +423,7 @@ void cn_gpu(
   // Expand Keccak state into each 2 MiB scratchpad.
   q.submit([&](sycl::handler& h) {
     const unsigned THREADS2 = CN_MEMORY8 / 64;
-    h.use_kernel_bundle(kb);
+    MOMINER_USE_BUNDLE(h, kb);
     const unsigned total_threads = batch * THREADS2;
     const unsigned wg_size = std::min(WORKGROUP_SIZE, THREADS2);
     h.parallel_for(sycl::nd_range(sycl::range((total_threads + wg_size - 1) / wg_size * wg_size),
@@ -433,14 +442,22 @@ void cn_gpu(
 
   // Main cn/gpu floating-point recurrence.
   q.submit([&](sycl::handler& h) {
-    const auto vi0 = sycl::local_accessor<sycl::int4, 1>(sycl::range(WORKGROUP_SIZE), h);
-    const auto vi1 = sycl::local_accessor<sycl::int4, 1>(sycl::range(WORKGROUP_SIZE), h);
-    const auto vf0 = sycl::local_accessor<sycl::float4, 1>(sycl::range(WORKGROUP_SIZE), h);
-    h.use_kernel_bundle(kb);
-    h.parallel_for(sycl::nd_range(sycl::range(batch * WORKGROUP_SIZE),
-                                  sycl::range(WORKGROUP_SIZE)),
+    // The recurrence uses 16 threads/hash. Pack TWO independent hashes per workgroup
+    // (two 16-lane groups sharing the barriers, advancing in lockstep) so a 32-wide
+    // warp/EU is fully occupied. All per-hash local state lives in a 16-int4 slice
+    // selected by base16/base32; the loop body is otherwise identical to one hash.
+    const auto vi0 = sycl::local_accessor<sycl::int4, 1>(sycl::range(2 * WORKGROUP_SIZE), h);
+    const auto vi1 = sycl::local_accessor<sycl::int4, 1>(sycl::range(2 * WORKGROUP_SIZE), h);
+    const auto vf0 = sycl::local_accessor<sycl::float4, 1>(sycl::range(2 * WORKGROUP_SIZE), h);
+    MOMINER_USE_BUNDLE(h, kb);
+    h.parallel_for(sycl::nd_range(sycl::range(batch_eff * WORKGROUP_SIZE),
+                                  sycl::range(2 * WORKGROUP_SIZE)),
                    [=](sycl::nd_item<1> nd) {
-      const unsigned l = nd.get_local_id();
+      const unsigned lid = nd.get_local_id();
+      const unsigned sub = lid >> 4;        // which of the two warp-packed hashes
+      const unsigned l = lid & 15U;         // 0..15 lane role within the hash
+      const unsigned base16 = sub * 16U;    // int4 slice base for this hash
+      const unsigned base32 = sub * 64U;    // int32/float slice base for this hash
       const unsigned ld = l / 4;
       const unsigned lm = l % 4;
       const unsigned b = ld * 16 + lm;
@@ -456,16 +473,17 @@ void cn_gpu(
         1.4140625f, 1.2734375f, 1.2578125f, 1.2890625f,
         1.3203125f, 1.3515625f, 1.3359375f, 1.4609375f
       };
-      const uint32_t* const spad = &d_spads4[nd.get_group().get_group_id() * (25 * 2)];
-      int32_t* const lpad = &d_lpads4[nd.get_group().get_group_id() * CN_MEMORY4];
+      const unsigned group_hash = nd.get_group().get_group_id() * 2U + sub;
+      const uint32_t* const spad = &d_spads4[group_hash * (25 * 2)];
+      int32_t* const lpad = &d_lpads4[group_hash * CN_MEMORY4];
       uint32_t s = *spad >> 8;
       sycl::float4 sf(0.0f);
-      sycl::int4* const vi = &vi0[0];
-      int32_t* const vi4 = reinterpret_cast<int32_t*>(&vi0[0]);
-      sycl::int4* const vo = &vi1[0];
-      int32_t* const vo4 = reinterpret_cast<int32_t*>(&vi1[0]);
-      sycl::float4* const vf = &vf0[0];
-      float* const vf4 = reinterpret_cast<float*>(&vf0[0]);
+      sycl::int4* const vi = &vi0[base16];
+      int32_t* const vi4 = reinterpret_cast<int32_t*>(&vi0[0]) + base32;
+      sycl::int4* const vo = &vi1[base16];
+      int32_t* const vo4 = reinterpret_cast<int32_t*>(&vi1[0]) + base32;
+      sycl::float4* const vf = &vf0[base16];
+      float* const vf4 = reinterpret_cast<float*>(&vf0[0]) + base32;
 
       for (unsigned i = 0; i < CN_GPU_ITER; ++ i) {
         const int32_t xi = lpad_ptr(s, ld, lpad)[lm];
@@ -509,14 +527,14 @@ void cn_gpu(
       const auto aes1 = sycl::local_accessor<uint32_t, 1>(sycl::range(256), h);
       const auto aes2 = sycl::local_accessor<uint32_t, 1>(sycl::range(256), h);
       const auto aes3 = sycl::local_accessor<uint32_t, 1>(sycl::range(256), h);
-      h.use_kernel_bundle(kb);
+      MOMINER_USE_BUNDLE(h, kb);
       h.parallel_for(sycl::nd_range(sycl::range(batch, 8), sycl::range(THREADS2, 8)),
-                     [=](sycl::nd_item<2> nd) [[sycl::reqd_sub_group_size(16)]] {
+                     [=](sycl::nd_item<2> nd) MOMINER_REQD_SG_16 {
         const unsigned l0 = nd.get_local_id(0), l1 = nd.get_local_id(1);
         const unsigned table_init_threads = nd.get_local_range(0) * nd.get_local_range(1);
         for (unsigned i = l0 * nd.get_local_range(1) + l1; i < 256; i += table_init_threads) {
           const uint32_t aes = AES[i];
-          aes0[i] = aes; aes1[i] = sycl::rotate(aes, 8U); aes2[i] = sycl::rotate(aes, 16U); aes3[i] = sycl::rotate(aes, 24U);
+          aes0[i] = aes; aes1[i] = mo_rotate(aes, 8U); aes2[i] = mo_rotate(aes, 16U); aes3[i] = mo_rotate(aes, 24U);
         }
 
         nd.barrier(sycl::access::fence_space::local_space);
@@ -524,9 +542,9 @@ void cn_gpu(
         const auto spad = d_spads4 + (nd.get_global_id(0) * (25 * 2));
         const sycl::uint4* const lpad = &d_lpads16[nd.get_global_id(0) * CN_MEMORY16];
         sycl::uint4 x;
-        x.load(l1 + 4, spad);
+        mo_vec_load(x, l1 + 4, spad);
         alignas(32) AesKey key;
-        key.u8[0].load(1, spad);
+        mo_vec_load(key.u8[0], 1, spad);
         aes_expend_key(key.u);
         const auto sg = nd.get_sub_group();
         const unsigned row_lane_base = sg.get_local_linear_id() & ~7u;
@@ -562,7 +580,7 @@ void cn_gpu(
           const sycl::uint4 x1l = next_row_value(x1s);
           x ^= x1l;
         }
-        x.store(l1 + 4, spad);
+        mo_vec_store(x, l1 + 4, spad);
       });
     });
   } else { // CPU path keeps the barriered local-memory exchange for stable behavior.
@@ -574,14 +592,14 @@ void cn_gpu(
       const auto aes3 = sycl::local_accessor<uint32_t, 1>(sycl::range(256), h);
       const auto x1 = sycl::local_accessor<sycl::uint4, 2>(sycl::range(THREADS2, 8), h);
       const auto x2 = sycl::local_accessor<sycl::uint4, 2>(sycl::range(THREADS2, 8), h);
-      h.use_kernel_bundle(kb);
+      MOMINER_USE_BUNDLE(h, kb);
       h.parallel_for(sycl::nd_range(sycl::range(batch, 8), sycl::range(THREADS2, 8)),
                      [=](sycl::nd_item<2> nd) {
         const unsigned l0 = nd.get_local_id(0), l1 = nd.get_local_id(1);
         const unsigned table_init_threads = nd.get_local_range(0) * nd.get_local_range(1);
         for (unsigned i = l0 * nd.get_local_range(1) + l1; i < 256; i += table_init_threads) {
           const uint32_t aes = AES[i];
-          aes0[i] = aes; aes1[i] = sycl::rotate(aes, 8U); aes2[i] = sycl::rotate(aes, 16U); aes3[i] = sycl::rotate(aes, 24U);
+          aes0[i] = aes; aes1[i] = mo_rotate(aes, 8U); aes2[i] = mo_rotate(aes, 16U); aes3[i] = mo_rotate(aes, 24U);
         }
 
         nd.barrier(sycl::access::fence_space::local_space);
@@ -589,9 +607,9 @@ void cn_gpu(
         const auto spad = d_spads4 + (nd.get_global_id(0) * (25 * 2));
         const sycl::uint4* const lpad = &d_lpads16[nd.get_global_id(0) * CN_MEMORY16];
         sycl::uint4 x;
-        x.load(l1 + 4, spad);
+        mo_vec_load(x, l1 + 4, spad);
         alignas(32) AesKey key;
-        key.u8[0].load(1, spad);
+        mo_vec_load(key.u8[0], 1, spad);
         aes_expend_key(key.u);
         sycl::uint4 &x1s = x1[l0][l1], &x1l = x1[l0][(l1 + 1) % 8],
                     &x2s = x2[l0][l1], &x2l = x2[l0][(l1 + 1) % 8];
@@ -621,13 +639,13 @@ void cn_gpu(
           nd.barrier(sycl::access::fence_space::local_space);
           x ^= x1l;
         }
-        x.store(l1 + 4, spad);
+        mo_vec_store(x, l1 + 4, spad);
       });
     });
   }
 
   sycl::event final_event = q.submit([&](sycl::handler& h) { // Final Keccak stays on device; the host scratchpad argument is unused.
-    h.use_kernel_bundle(kb);
+    MOMINER_USE_BUNDLE(h, kb);
     h.parallel_for(sycl::nd_range(sycl::range((batch + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE * WORKGROUP_SIZE),
                                  sycl::range(WORKGROUP_SIZE)),
                    [=](sycl::nd_item<1> nd) {

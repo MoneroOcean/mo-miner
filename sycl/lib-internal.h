@@ -19,6 +19,86 @@
 
 #include "lib.h"
 
+// SYCL backend detection. The NVIDIA build compiles these sources with
+// AdaptiveCpp (acpp), which predefines __ACPP__ (older names: __HIPSYCL__ /
+// __OPENSYCL__). The Intel GPU / Windows builds use oneAPI DPC++, which defines
+// none of them. All NVIDIA-specific specialization is gated on MOMINER_ACPP so
+// the DPC++ build compiles the identical text with this macro undefined.
+#if defined(__ACPP__) || defined(__HIPSYCL__) || defined(__OPENSYCL__)
+  #define MOMINER_ACPP 1
+#endif
+
+// The cooperative ProgPoW / Ethash / cn-gpu kernels run on 16-wide sub-groups on
+// Intel GPUs, requested via reqd_sub_group_size(16). NVIDIA warps are fixed at 32
+// lanes and AdaptiveCpp does not honor a 16-wide request, so on the NVIDIA build
+// we drop the attribute and let the native 32-wide sub-group stand; those kernels
+// address each cooperative team relative to its base lane within the sub-group,
+// which is correct at both 16 and 32 lanes.
+#if defined(MOMINER_ACPP)
+  #define MOMINER_REQD_SG_16
+#else
+  #define MOMINER_REQD_SG_16 [[sycl::reqd_sub_group_size(16)]]
+#endif
+
+// AdaptiveCpp does not provide the SYCL-2020 kernel_bundle API. The Intel build
+// fetches the context's executable bundle and binds it to each handler purely as
+// a build-cache hint; on AdaptiveCpp the generic-SSCP JIT compiles kernels
+// directly, so these become no-ops (the bundle handle is a dummy int).
+#if defined(MOMINER_ACPP)
+  #define MOMINER_BUNDLE_T int
+  #define MOMINER_GET_EXEC_BUNDLE(ctx) 0
+  #define MOMINER_USE_BUNDLE(handler, kb) ((void)(kb))
+#else
+  #define MOMINER_BUNDLE_T sycl::kernel_bundle<sycl::bundle_state::executable>
+  #define MOMINER_GET_EXEC_BUNDLE(ctx) \
+    sycl::get_kernel_bundle<sycl::bundle_state::executable>(ctx)
+  #define MOMINER_USE_BUNDLE(handler, kb) (handler).use_kernel_bundle(kb)
+#endif
+
+// sycl::rotate (left rotate) and sycl::bitselect are SYCL builtins that
+// AdaptiveCpp does not expose. Forward to the builtins on DPC++ (unchanged Intel
+// codegen) and provide portable bit-twiddle equivalents on AdaptiveCpp.
+template <typename T> inline T mo_rotate(const T x, const T n) {
+#if defined(MOMINER_ACPP)
+  constexpr unsigned bits = sizeof(T) * 8u;
+  const T s = n & static_cast<T>(bits - 1u);
+  return s == 0 ? x : static_cast<T>((x << s) | (x >> (static_cast<T>(bits) - s)));
+#else
+  return sycl::rotate(x, n);
+#endif
+}
+template <typename T> inline T mo_bitselect(const T a, const T b, const T c) {
+#if defined(MOMINER_ACPP)
+  return (a & ~c) | (b & c);
+#else
+  return sycl::bitselect(a, b, c);
+#endif
+}
+
+// sycl::vec::load/store accept a raw pointer on DPC++ but require a multi_ptr on
+// AdaptiveCpp; fall back to element-wise copy there. offset is in units of N
+// elements (matching the SYCL load/store contract).
+template <typename VecT, typename T>
+inline void mo_vec_load(VecT& v, const size_t offset, const T* const p) {
+#if defined(MOMINER_ACPP)
+  constexpr unsigned N = sizeof(VecT) / sizeof(T);
+  const T* const base = p + offset * N;
+  for (unsigned i = 0; i < N; ++i) v[i] = base[i];
+#else
+  v.load(offset, p);
+#endif
+}
+template <typename VecT, typename T>
+inline void mo_vec_store(const VecT& v, const size_t offset, T* const p) {
+#if defined(MOMINER_ACPP)
+  constexpr unsigned N = sizeof(VecT) / sizeof(T);
+  T* const base = p + offset * N;
+  for (unsigned i = 0; i < N; ++i) base[i] = v[i];
+#else
+  v.store(offset, p);
+#endif
+}
+
 inline void set_sycl_env(const char* name, const char* value) {
 #ifdef _WIN32
   _putenv_s(name, value);

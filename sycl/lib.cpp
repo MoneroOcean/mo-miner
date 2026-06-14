@@ -20,6 +20,14 @@ static void update_str2dev(const bool verbose = false) {
       } else if (device.is_gpu()) {
         // OpenCL GPU platforms will be available but not used by default if something else is present
         const std::string gpuN = std::string("gpu") + std::to_string(++gpu_num);
+#if defined(MOMINER_ACPP)
+        // AdaptiveCpp (NVIDIA build) exposes the GPU through the CUDA backend,
+        // whose platform name carries no "OpenCL"/"Level-Zero" marker. Register
+        // it as the default GPU. (The CPU branch above still picks up the
+        // AdaptiveCpp OpenMP host device as cpuN for verification.)
+        (void)platform_name;
+        str2dev[gpuN] = device;
+#else
         const bool is_opencl = platform_name.find("OpenCL") != std::string::npos;
         const bool is_level_zero = platform_name.find("Level-Zero") != std::string::npos;
         if (is_opencl || is_level_zero) {
@@ -28,6 +36,7 @@ static void update_str2dev(const bool verbose = false) {
         } else if (verbose) {
           std::cout << "Found unsupported " << platform_name << " GPU platform device" << std::endl;
         }
+#endif
       }
     }
     gpu_num = 0; // reset gpu counter for every platform
@@ -183,11 +192,21 @@ static unsigned etchash_intensity(const sycl::device& dev) {
 }
 
 static unsigned autolykos2_intensity(const sycl::device& dev) {
+#if defined(MOMINER_ACPP)
+  // NVIDIA: larger batches amortize per-iteration host/sync overhead; throughput
+  // climbs to a ~70 MH/s plateau on an L4 around these intensities.
+  return pow_intensity(dev, "MOMINER_AUTOLYKOS2_WORKGROUP", "MOMINER_AUTOLYKOS2_INTENSITY", {
+    {64, 16384, 12},
+    {64, 32768, 16},
+    {64, 32768, 10}
+  });
+#else
   return pow_intensity(dev, "MOMINER_AUTOLYKOS2_WORKGROUP", "MOMINER_AUTOLYKOS2_INTENSITY", {
     {64, 4096, 12},
     {64, 8192, 16},
     {64, 8192, 10}
   });
+#endif
 }
 
 static void add_result_dev(std::string& result_dev, const std::string& add_str) {
@@ -287,6 +306,13 @@ static void add_gpu_cn_algo_dev(
       }
       const unsigned score = pow_device_score(pow_device_profile(cn_dev));
       batch_multiplier = score >= 5 ? 8 : (score >= 3 ? 6 : 4);
+#if defined(MOMINER_ACPP)
+      // NVIDIA (sm_89): the FP recurrence needs far more in-flight hashes than the
+      // Intel heuristic to fill the SMs. An L4 intensity sweep plateaus near
+      // compute_units*64 (~3.7k hashes); below that throughput scales with batch.
+      // MOMINER_CN_GPU_INTENSITY still overrides this.
+      batch_multiplier = 64;
+#endif
     }
     const unsigned max_compute_units = cn_dev.get_info<sycl::info::device::max_compute_units>();
     const auto mem = algo2mem.find(algo);

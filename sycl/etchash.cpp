@@ -412,7 +412,7 @@ class EtchashState {
 public:
   sycl::device device;
   sycl::queue queue;
-  std::unique_ptr<sycl::kernel_bundle<sycl::bundle_state::executable>> bundle;
+  std::unique_ptr<MOMINER_BUNDLE_T> bundle;
   bool shared_io;
   bool shared_dag;
   uint8_t* input = nullptr;
@@ -439,8 +439,8 @@ public:
     }
 
     set_sycl_env("SYCL_PROGRAM_COMPILE_OPTIONS", etchash_compile_options(device));
-    bundle = std::make_unique<sycl::kernel_bundle<sycl::bundle_state::executable>>(
-      sycl::get_kernel_bundle<sycl::bundle_state::executable>(queue.get_context())
+    bundle = std::make_unique<MOMINER_BUNDLE_T>(
+      MOMINER_GET_EXEC_BUNDLE(queue.get_context())
     );
   }
 
@@ -566,7 +566,7 @@ public:
       const uint32_t current_nodes = chunk_nodes ? std::min(chunk_nodes, total - start_node) : total;
       const uint32_t chunk_start = start_node;
       dag_event = q.submit([&](sycl::handler& h) {
-        h.use_kernel_bundle(kb);
+        MOMINER_USE_BUNDLE(h, kb);
         h.parallel_for(
           sycl::nd_range<1>(sycl::range<1>(round_up(current_nodes, dag_workgroup)), sycl::range<1>(dag_workgroup)),
           [=](sycl::nd_item<1> item) {
@@ -679,14 +679,14 @@ int etchash(
     constexpr unsigned GROUP4_SEED_WORDS = GROUP4_WORKGROUP * 16;
 
     sycl_wait_and_throw(q.submit([&](sycl::handler& h) {
-      h.use_kernel_bundle(kb);
+      MOMINER_USE_BUNDLE(h, kb);
       sycl::local_accessor<uint32_t, 1> seeds(sycl::range<1>(GROUP4_SEED_WORDS), h);
       h.parallel_for(
         sycl::nd_range<1>(
           sycl::range<1>(round_up(intensity, GROUP4_WORKGROUP)),
           sycl::range<1>(GROUP4_WORKGROUP)
         ),
-        [=](sycl::nd_item<1> item) [[sycl::reqd_sub_group_size(16)]] {
+        [=](sycl::nd_item<1> item) MOMINER_REQD_SG_16 {
           const uint32_t lid = static_cast<uint32_t>(item.get_local_id(0));
           const uint32_t group_hash_base = static_cast<uint32_t>(item.get_group(0)) * GROUP4_WORKGROUP;
           const uint32_t own_hash = group_hash_base + lid;
@@ -766,7 +766,7 @@ int etchash(
     }), state.device);
   } else {
     sycl_wait_and_throw(q.submit([&](sycl::handler& h) {
-      h.use_kernel_bundle(kb);
+      MOMINER_USE_BUNDLE(h, kb);
       sycl::local_accessor<uint32_t, 1> scratch(sycl::range<1>(SCRATCH_WORDS), h);
       h.parallel_for(
         sycl::nd_range<1>(

@@ -151,6 +151,9 @@ function resolveNodeRunner(testArgs, env = {}) {
 
 function isMissingGpuOutput(result) {
   const output = `${result.stdout}\n${result.stderr}`;
+  // A run that reported a clean pass clearly found its device; do not let
+  // diagnostic stderr (e.g. AdaptiveCpp's SYCL-buffer notice) misclassify it.
+  if (result.stdout.includes("PASSED")) return false;
   if (result.code === 0 && result.stdout.trim() === "" && result.stderr.trim() === "") return true;
   return /Unknown compute platform gpu|No device of requested type|No GPU|gpu[0-9]+.*not found|SYCL.*device/i.test(output);
 }

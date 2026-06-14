@@ -302,11 +302,11 @@ static std::list<std::vector<sycl::uint2>> find_cycles(const std::vector<sycl::u
 // SipHash cryptographic round function for edge generation
 #define SIPHASH_ROUND_LAMBDA_MACRO\
   auto siphash_round = [](uint64_t& v0, uint64_t& v1, uint64_t& v2, uint64_t& v3) {\
-    v0 += v1; v2 += v3; v1 = sycl::rotate(v1, static_cast<uint64_t>(13));\
-    v3 = sycl::rotate(v3, static_cast<uint64_t>(16)); v1 ^= v0; v3 ^= v2;\
-    v0 = sycl::rotate(v0, static_cast<uint64_t>(32)); v2 += v1; v0 += v3;\
-    v1 = sycl::rotate(v1, static_cast<uint64_t>(17)); v3 = sycl::rotate(v3, static_cast<uint64_t>(21));\
-    v1 ^= v2; v3 ^= v0; v2 = sycl::rotate(v2, static_cast<uint64_t>(32));\
+    v0 += v1; v2 += v3; v1 = mo_rotate(v1, static_cast<uint64_t>(13));\
+    v3 = mo_rotate(v3, static_cast<uint64_t>(16)); v1 ^= v0; v3 ^= v2;\
+    v0 = mo_rotate(v0, static_cast<uint64_t>(32)); v2 += v1; v0 += v3;\
+    v1 = mo_rotate(v1, static_cast<uint64_t>(17)); v3 = mo_rotate(v3, static_cast<uint64_t>(21));\
+    v1 ^= v2; v3 ^= v0; v2 = mo_rotate(v2, static_cast<uint64_t>(32));\
   };
 #define SIPHASH_FILL_BLOCK(V0, V1, V2, V3, BASE, OUT, I)\
   for (uint32_t I = 0; I < EDGE_BLOCK_SIZE; I++) {\
@@ -329,7 +329,7 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
                                           const unsigned c29_proof_size,
                                           sycl::queue& compute_queue) {
   try {
-    static auto kernel_bundle = sycl::get_kernel_bundle<sycl::bundle_state::executable>(compute_queue.get_context());
+    static auto kernel_bundle = MOMINER_GET_EXEC_BUNDLE(compute_queue.get_context());
     C29Profile profile(job_ref, nonce, c29_proof_size, compute_queue, compute_queue.get_device().get_info<sycl::info::device::name>());
     C29Buffers& c29_buffers = get_c29_buffers();
 
@@ -354,7 +354,7 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
     auto zero_buffer = [&](const char* name, sycl::buffer<uint32_t, 1>& buffer) {
       const sycl::event event = compute_queue.submit([&](sycl::handler& handler) {
         sycl::accessor accessor{buffer, handler, sycl::write_only, sycl::no_init};
-        handler.use_kernel_bundle(kernel_bundle);
+        MOMINER_USE_BUNDLE(handler, kernel_bundle);
         handler.fill(accessor, static_cast<uint32_t>(0));
       });
       profile.add_event(name, event);
@@ -382,7 +382,7 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
         sycl::accessor acc_buffer_a1{buffer_a1_u2, handler, sycl::write_only, sycl::no_init};
         sycl::accessor acc_buffer_a2{buffer_a2_u2, handler, sycl::write_only, sycl::no_init};
         sycl::accessor acc_index_2{buffer_i2, handler, sycl::read_write};
-        handler.use_kernel_bundle(kernel_bundle);
+        MOMINER_USE_BUNDLE(handler, kernel_bundle);
         handler.parallel_for(sycl::nd_range<1>(sycl::range<1>(seed_work_items), sycl::range<1>(seed_local_size)),
                             [=](sycl::nd_item<1> item) {
           const uint32_t global_id = item.get_global_id(0);
@@ -426,7 +426,7 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
         // Local memory for temporary edge storage and bucket counters
         sycl::local_accessor<uint64_t, 2> temp_storage{sycl::range<2>(64, 16), handler};
         sycl::local_accessor<uint32_t, 1> bucket_counters{sycl::range<1>(64), handler};
-        handler.use_kernel_bundle(kernel_bundle);
+        MOMINER_USE_BUNDLE(handler, kernel_bundle);
         handler.parallel_for(sycl::nd_range<1>(sycl::range<1>(seed_work_items), sycl::range<1>(seed_local_size)),
                             [=](sycl::nd_item<1> item) {
           const uint32_t global_id = item.get_global_id(0);
@@ -506,7 +506,7 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
           const constexpr uint32_t BUCKET_GRANULARITY = 32;
           sycl::local_accessor<uint64_t, 2> temp_storage{sycl::range<2>(64, 16), handler};
           sycl::local_accessor<uint32_t, 1> bucket_counters{sycl::range<1>(64), handler};
-          handler.use_kernel_bundle(kernel_bundle);
+          MOMINER_USE_BUNDLE(handler, kernel_bundle);
           handler.parallel_for(sycl::nd_range<1>(sycl::range<1>(1024 * 128), sycl::range<1>(128)),
                               [=](sycl::nd_item<1> item) {
             const uint32_t local_id      = item.get_local_id(0);
@@ -594,7 +594,7 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
       sycl::accessor acc_i2{buffer_i2, handler, sycl::read_write};
       sycl::accessor acc_i1{buffer_i1, handler, sycl::read_write};
       sycl::local_accessor<uint32_t, 1> edge_counters{sycl::range<1>(EDGE_COUNTER_WORDS), handler};
-      handler.use_kernel_bundle(kernel_bundle);
+      MOMINER_USE_BUNDLE(handler, kernel_bundle);
       handler.parallel_for(sycl::nd_range<1>(sycl::range<1>(4096 * COMPUTE_THREADS), sycl::range<1>(COMPUTE_THREADS)),
                           [=](sycl::nd_item<1> item) {
         const uint32_t local_id      = item.get_local_id(0);
@@ -650,7 +650,7 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
       sycl::accessor acc_i1{buffer_i1, handler, sycl::read_write};
       sycl::accessor acc_i2{buffer_i2, handler, sycl::read_write};
       sycl::local_accessor<uint32_t, 1> edge_counters{sycl::range<1>(EDGE_COUNTER_WORDS), handler};
-      handler.use_kernel_bundle(kernel_bundle);
+      MOMINER_USE_BUNDLE(handler, kernel_bundle);
       handler.parallel_for(sycl::nd_range<1>(sycl::range<1>(4096 * COMPUTE_THREADS), sycl::range<1>(COMPUTE_THREADS)),
                           [=](sycl::nd_item<1> item) {
         const uint32_t local_id      = item.get_local_id(0);
@@ -708,7 +708,7 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
         sycl::accessor acc_source_indexes{source_indexes, handler, sycl::read_write};
         sycl::accessor acc_dest_indexes{dest_indexes, handler, sycl::read_write};
         sycl::local_accessor<uint32_t, 1> edge_counters{sycl::range<1>(EDGE_COUNTER_WORDS), handler};
-        handler.use_kernel_bundle(kernel_bundle);
+        MOMINER_USE_BUNDLE(handler, kernel_bundle);
         handler.parallel_for(sycl::nd_range<1>(sycl::range<1>(4096 * COMPUTE_THREADS), sycl::range<1>(COMPUTE_THREADS)),
                             [=](sycl::nd_item<1> item) {
           const uint32_t local_id      = item.get_local_id(0);
@@ -778,7 +778,7 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
       sycl::accessor acc_i1{buffer_i1, handler, sycl::read_write};
       sycl::accessor acc_trimmed_edge_count{buffer_trimmed_edge_count, handler, sycl::read_write};
       sycl::local_accessor<uint32_t, 1> output_index{sycl::range<1>(1), handler};
-      handler.use_kernel_bundle(kernel_bundle);
+      MOMINER_USE_BUNDLE(handler, kernel_bundle);
       handler.parallel_for(sycl::nd_range<1>(sycl::range<1>(4096 * COMPUTE_THREADS), sycl::range<1>(COMPUTE_THREADS)),
                           [=](sycl::nd_item<1> item) {
         const uint32_t local_id      = item.get_local_id(0);
@@ -875,7 +875,7 @@ int c29(const unsigned job_ref, const unsigned c29_proof_size,
                                         sycl::property::queue::enable_profiling{}}}
       : sycl::queue{compute_device, exception_handler,
                     sycl::property_list{sycl::property::queue::in_order{}}};
-    static auto kernel_bundle = sycl::get_kernel_bundle<sycl::bundle_state::executable>(compute_queue.get_context());
+    static auto kernel_bundle = MOMINER_GET_EXEC_BUNDLE(compute_queue.get_context());
 
     // Check for existing solutions first
     bool has_solution = false;
@@ -920,7 +920,7 @@ int c29(const unsigned job_ref, const unsigned c29_proof_size,
         sycl::accessor acc_edges{buffer_edges, handler, sycl::read_only};
         sycl::accessor acc_nonces{buffer_nonces, handler, sycl::write_only, sycl::no_init};
         sycl::local_accessor<uint32_t, 1> local_nonces{sycl::range<1>{c29_proof_size}, handler};
-        handler.use_kernel_bundle(kernel_bundle);
+        MOMINER_USE_BUNDLE(handler, kernel_bundle);
         handler.parallel_for(sycl::nd_range<1>(sycl::range<1>(2048 * 256), sycl::range<1>(256)),
                             [=](sycl::nd_item<1> item) {
           const uint32_t gid = item.get_global_id(0);

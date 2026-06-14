@@ -23,13 +23,22 @@ function requiredVector(name) {
   return definition;
 }
 
+// MOMINER_SYCL_CPU_SKIP lets a build opt specific algos out of SYCL-CPU
+// verification (comma-separated algo names). The AdaptiveCpp/NVIDIA build sets it
+// to kawpow,autolykos2: those barrier-heavy kernels are miscompiled by
+// AdaptiveCpp's OpenMP host backend (they are verified on the GPU instead). The
+// Intel build leaves it unset and runs all five.
+const skipAlgos = new Set(
+  (process.env.MOMINER_SYCL_CPU_SKIP || "").split(",").map((s) => s.trim()).filter(Boolean)
+);
+
 const syclCpuVectors = [
   requiredVector("cn/gpu gpu1*8"),
   requiredVector("kawpow gpu1*256"),
   requiredVector("etchash gpu1*256"),
   requiredVector("autolykos2 gpu1*1"),
   requiredVector("c29 proofsize 42 gpu1*1"),
-];
+].filter((definition) => !skipAlgos.has(definition.job.algo));
 
 describe("SYCL CPU hash vectors", () => {
   let detectedDevice;

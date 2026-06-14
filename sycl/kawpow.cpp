@@ -104,9 +104,11 @@ struct KawpowProgram {
   KawpowDataOp data[KAWPOW_DATA_LOADS];
 };
 
+#if !defined(MOMINER_ACPP)
 constexpr sycl::specialization_id<KawpowProgram> kawpow_program_id;
 constexpr sycl::specialization_id<FastModData> kawpow_dag_mod_id;
 constexpr sycl::specialization_id<bool> kawpow_cpu_offset_barrier_id;
+#endif
 
 struct KawpowResult {
   uint32_t count;
@@ -525,26 +527,34 @@ inline uint32_t bswap32_dev(const uint32_t value) {
 
 struct KawpowSgExchange {
   sycl::sub_group sg;
+  // Base sub-group lane of this work-item's 16-lane ProgPoW group. On NVIDIA the
+  // native sub-group is a 32-wide warp holding two ProgPoW groups, so shuffles
+  // must stay within the group (base 0 or 16). On a 16-wide Intel sub-group this
+  // is always 0, reproducing the original lane indices.
+  uint32_t base;
+  inline uint32_t lane(const uint32_t l) const { return base + l; }
 
   inline void seed(uint32_t& s0, uint32_t& s1, const uint32_t state2[8], const uint32_t h0) const {
-    s0 = sycl::select_from_group(sg, state2[0], h0);
-    s1 = sycl::select_from_group(sg, state2[1], h0);
+    s0 = sycl::select_from_group(sg, state2[0], lane(h0));
+    s1 = sycl::select_from_group(sg, state2[1], lane(h0));
   }
 
   inline uint32_t offset(const uint32_t mix0, const uint32_t src_lane) const {
-    return sycl::select_from_group(sg, mix0, src_lane);
+    return sycl::select_from_group(sg, mix0, lane(src_lane));
   }
 
   inline void digest(uint32_t digest_out[8], const uint32_t lane_hash, const bool keep) const {
     // digest_temp[j] = fnv1a(fnv1a(basis, lane_hash[j]), lane_hash[j + 8]);
     // lanes 0..7 each fold their pair, then the eight values are distributed.
+    // shift_group_left by 8 stays within each 16-lane group on a 32-wide warp
+    // (groups are 16-aligned), so only the distribution select needs rebasing.
     const uint32_t other = sycl::shift_group_left(sg, lane_hash, 8);
     uint32_t fold = FNV_OFFSET_BASIS;
     fnv1a(fold, lane_hash);
     fnv1a(fold, other);
 #pragma unroll
     for (unsigned i = 0; i < 8; ++i) {
-      const uint32_t value = sycl::select_from_group(sg, fold, i);
+      const uint32_t value = sycl::select_from_group(sg, fold, lane(i));
       if (keep) digest_out[i] = value;
     }
   }
@@ -682,7 +692,7 @@ class KawpowState {
 public:
   sycl::device device;
   sycl::queue queue;
-  std::unique_ptr<sycl::kernel_bundle<sycl::bundle_state::executable>> bundle;
+  std::unique_ptr<MOMINER_BUNDLE_T> bundle;
   bool shared_io;
   bool shared_dag;
   uint8_t* input = nullptr;
@@ -698,6 +708,7 @@ public:
   unsigned workgroup;
   std::mutex mutex;
 
+#if !defined(MOMINER_ACPP)
   // Per-period executable bundles with the program/dag spec constants baked
   // in. The next period's bundle is built on a worker thread while the
   // current one mines, so the period switch no longer stalls hashing on JIT.
@@ -708,6 +719,7 @@ public:
   uint64_t next_bundle_period = UINT64_MAX;
   uint32_t next_bundle_epoch = UINT32_MAX;
   std::thread prefetch_thread;
+#endif
 
   explicit KawpowState(const std::string& dev_str)
     : device(get_dev(dev_str)),
@@ -722,18 +734,27 @@ public:
     }
 
     set_sycl_env("SYCL_PROGRAM_COMPILE_OPTIONS", kawpow_compile_options(device));
-    bundle = std::make_unique<sycl::kernel_bundle<sycl::bundle_state::executable>>(
-      sycl::get_kernel_bundle<sycl::bundle_state::executable>(queue.get_context())
+    bundle = std::make_unique<MOMINER_BUNDLE_T>(
+      MOMINER_GET_EXEC_BUNDLE(queue.get_context())
     );
   }
 
   ~KawpowState() {
+#if !defined(MOMINER_ACPP)
     if (prefetch_thread.joinable()) prefetch_thread.join();
+#endif
     release();
   }
 
   static unsigned kawpow_workgroup(const sycl::device& dev) {
+#if defined(MOMINER_ACPP)
+    // NVIDIA: a 64-thread block (two ProgPoW 16-lane groups + headroom) keeps the
+    // register-heavy unrolled body resident and clocks high on the power-capped L4
+    // (sweep: 64=14.9 > 128=14.5 > 256=13.7 MH/s). Intel keeps its 256 default.
+    const unsigned fallback = sycl_default_workgroup(dev, {64, 128, 256, 512}, dev.is_cpu() ? 128 : 64);
+#else
     const unsigned fallback = sycl_default_workgroup(dev, {64, 128, 256, 512}, dev.is_cpu() ? 128 : 256);
+#endif
     const char* const value = std::getenv("MOMINER_KAWPOW_WORKGROUP");
     if (!value || !*value) return fallback;
 
@@ -864,13 +885,14 @@ public:
     uint32_t* const d_dag = dag;
     sycl::queue& q = queue;
     auto& kb = *bundle;
+    (void)kb;
 
     sycl::event dag_event;
     for (uint32_t start_node = 0; start_node < total;) {
       const uint32_t current_nodes = chunk_nodes ? std::min(chunk_nodes, total - start_node) : total;
       const uint32_t chunk_start = start_node;
       dag_event = q.submit([&](sycl::handler& h) {
-        h.use_kernel_bundle(kb);
+        MOMINER_USE_BUNDLE(h, kb);
         h.parallel_for(
           sycl::nd_range<1>(sycl::range<1>(round_up(current_nodes, dag_workgroup)), sycl::range<1>(dag_workgroup)),
           [=](sycl::nd_item<1> item) {
@@ -920,6 +942,7 @@ public:
     period = new_period;
   }
 
+#if !defined(MOMINER_ACPP)
   std::unique_ptr<sycl::kernel_bundle<sycl::bundle_state::executable>>
   build_period_bundle(const uint64_t new_period, const FastModData dag_mod) {
     auto input = sycl::get_kernel_bundle<sycl::bundle_state::input>(
@@ -955,6 +978,8 @@ public:
       }
     });
   }
+
+#endif
 
   static uint64_t now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1014,10 +1039,16 @@ int kawpow(
   const DagLoad* const d_dag_load = reinterpret_cast<const DagLoad*>(state.dag);
   KawpowResult* const d_result = state.result;
 
+  // GPU devices use the subgroup (warp-shuffle) exchange; the CPU SYCL device
+  // (is_gpu()==false) and an explicit MOMINER_KAWPOW_EXCHANGE=slm use the
+  // barrier/local-memory exchange. On AdaptiveCpp the subgroup kernel captures
+  // the ProgPoW program by value instead of via SYCL-2020 specialization
+  // constants / kernel bundles (which AdaptiveCpp does not provide).
   const char* const exchange_env = std::getenv("MOMINER_KAWPOW_EXCHANGE");
   const bool use_sg = state.device.is_gpu() && !(exchange_env && std::strcmp(exchange_env, "slm") == 0);
 
   if (use_sg) {
+#if !defined(MOMINER_ACPP)
     const uint64_t t_io = loop_stats ? kawpow_now_us() : 0;
     state.ensure_period_bundle(period, epoch, dag_mod);
     const uint64_t t_bundle = loop_stats ? kawpow_now_us() : 0;
@@ -1026,7 +1057,7 @@ int kawpow(
       h.use_kernel_bundle(*state.period_bundle);
       h.parallel_for<KawpowSgKernel>(
         sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(local_size)),
-        [=](sycl::nd_item<1> item, sycl::kernel_handler kh) [[sycl::reqd_sub_group_size(16)]] {
+        [=](sycl::nd_item<1> item, sycl::kernel_handler kh) MOMINER_REQD_SG_16 {
           const KawpowProgram program = kh.get_specialization_constant<kawpow_program_id>();
           const FastModData dag_mod = kh.get_specialization_constant<kawpow_dag_mod_id>();
           const uint32_t lid = item.get_local_id(0);
@@ -1050,7 +1081,8 @@ int kawpow(
                              static_cast<uint32_t>(full_nonce >> 32), state2);
 
           uint32_t digest[8];
-          const KawpowSgExchange ex{sg};
+          const KawpowSgExchange ex{sg,
+            static_cast<uint32_t>(sg.get_local_id()[0]) & ~(KAWPOW_LANES - 1u)};
           kawpow_search_dev(ex, lane_id, state2, c_dag, d_dag_load, program, dag_mod, digest);
 
           uint32_t final_state[25];
@@ -1071,11 +1103,75 @@ int kawpow(
         (t_io - t_epoch) / 1e3, (t_bundle - t_io) / 1e3, (t_submit - t_bundle) / 1e3);
     }
     sycl_wait_and_throw(search_event, state.device);
+#else
+    // AdaptiveCpp subgroup path: per-warp shuffles, no work-group barriers (unlike
+    // the SLM exchange). The ProgPoW program + DAG modulus are captured by value
+    // (small structs passed as kernel arguments); on a 32-wide NVIDIA warp two
+    // independent 16-lane ProgPoW groups run via the half-warp base in the exchange.
+    const sycl::event search_event = q.submit([&](sycl::handler& h) {
+      const auto c_dag = sycl::local_accessor<uint32_t, 1>(sycl::range<1>(KAWPOW_CACHE_WORDS), h);
+      // JIT-specialize the per-period ProgPoW program + DAG modulus so the
+      // random-math interpreter folds to constant ops (AdaptiveCpp recompiles
+      // and caches per unique value), instead of running a switch per math op.
+      sycl::specialized<KawpowProgram> sg_program = state.program;
+      sycl::specialized<FastModData> sg_dag_mod = dag_mod;
+      h.parallel_for(
+        sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(local_size)),
+        [=](sycl::nd_item<1> item) MOMINER_REQD_SG_16 {
+          const KawpowProgram program = sg_program;
+          const FastModData dag_mod = sg_dag_mod;
+          const uint32_t lid = item.get_local_id(0);
+          const uint32_t gid = item.get_global_id(0);
+          const bool active = gid < intensity;
+          const uint64_t full_nonce = start_nonce + gid;
+
+          for (uint32_t word = lid * KAWPOW_DAG_LOADS; word < KAWPOW_CACHE_WORDS;
+               word += item.get_local_range(0) * KAWPOW_DAG_LOADS) {
+            const DagLoad load = d_dag_load[word / KAWPOW_DAG_LOADS];
+#pragma unroll
+            for (unsigned i = 0; i < KAWPOW_DAG_LOADS; ++i) c_dag[word + i] = load.s[i];
+          }
+          item.barrier(sycl::access::fence_space::local_space);
+
+          const auto sg = item.get_sub_group();
+          const uint32_t lane_id = static_cast<uint32_t>(sg.get_local_id()[0]) & (KAWPOW_LANES - 1);
+
+          uint32_t state2[8];
+          kawpow_initial_dev(d_input, static_cast<uint32_t>(full_nonce),
+                             static_cast<uint32_t>(full_nonce >> 32), state2);
+
+          uint32_t digest[8];
+          const KawpowSgExchange ex{sg,
+            static_cast<uint32_t>(sg.get_local_id()[0]) & ~(KAWPOW_LANES - 1u)};
+          kawpow_search_dev(ex, lane_id, state2, c_dag, d_dag_load, program, dag_mod, digest);
+
+          uint32_t final_state[25];
+          kawpow_final_dev(state2, digest, final_state);
+          if ((is_test && gid == 0) || (active && target && kawpow_meets_target_words(final_state, target))) {
+            store_kawpow_result(d_result, full_nonce, final_state, digest);
+          }
+        }
+      );
+    });
+    sycl_wait_and_throw(search_event, state.device);
+#endif
   } else {
     sycl_wait_and_throw(q.submit([&](sycl::handler& h) {
       const auto share = sycl::local_accessor<uint32_t, 1>(sycl::range<1>(local_size), h);
       const auto offsets = sycl::local_accessor<uint32_t, 1>(sycl::range<1>(local_size / KAWPOW_LANES), h);
       const auto c_dag = sycl::local_accessor<uint32_t, 1>(sycl::range<1>(KAWPOW_CACHE_WORDS), h);
+#if defined(MOMINER_ACPP)
+      // AdaptiveCpp: capture the program/dag/barrier by value (no spec constants).
+      const KawpowProgram slm_program = state.program;
+      const FastModData slm_dag_mod = dag_mod;
+      const bool slm_cpu_barrier = state.device.is_cpu();
+      h.parallel_for(
+        sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(local_size)),
+        [=](sycl::nd_item<1> item) {
+          const KawpowProgram program = slm_program;
+          const FastModData dag_mod = slm_dag_mod;
+          const bool cpu_offset_barrier = slm_cpu_barrier;
+#else
       h.set_specialization_constant<kawpow_program_id>(state.program);
       h.set_specialization_constant<kawpow_dag_mod_id>(dag_mod);
       h.set_specialization_constant<kawpow_cpu_offset_barrier_id>(state.device.is_cpu());
@@ -1085,6 +1181,7 @@ int kawpow(
           const KawpowProgram program = kh.get_specialization_constant<kawpow_program_id>();
           const FastModData dag_mod = kh.get_specialization_constant<kawpow_dag_mod_id>();
           const bool cpu_offset_barrier = kh.get_specialization_constant<kawpow_cpu_offset_barrier_id>();
+#endif
           const uint32_t lid = item.get_local_id(0);
           const uint32_t gid = item.get_global_id(0);
           const bool active = gid < intensity;
