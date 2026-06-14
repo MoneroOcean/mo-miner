@@ -60,6 +60,7 @@ alignas(64) const constexpr uint32_t AES[256] = {
   0xC3414182, 0xB0999929, 0x772D2D5A, 0x110F0F1E, 0xCBB0B07B, 0xFC5454A8, 0xD6BBBB6D, 0x3A16162C
 };
 
+#if defined(MOMINER_ACPP)
 void keccak(uint64_t* const s) { // Hot device-side Keccak; keep explicit steps for backend codegen.
   static const uint32_t rotc[24] = {
     1,  3,  6,  10, 15, 21, 28, 36, 45, 55, 2,  14,
@@ -115,6 +116,148 @@ void keccak(uint64_t* const s) { // Hot device-side Keccak; keep explicit steps 
     s[0] ^= rndc[round];
   }
 }
+#else
+// 32-bit-pair Keccak-f[1600] for Xe2 (Intel Arc B580), which has no native
+// 64-bit integer ALU. Each 64-bit lane is held as two uint32 (lo/hi). Bit-exact
+// with the uint64 body above. rho/pi rotation amounts are compile-time constants
+// (the loop is fully unrolled), so each rotl64 reduces to shift+or on uint32.
+
+// rotl64(value held as lo/hi) by a compile-time amount R, 1 <= R <= 63.
+template <unsigned R>
+static inline void mo_rotl64_32(uint32_t& lo, uint32_t& hi) {
+  if (R == 32) {
+    const uint32_t t = lo; lo = hi; hi = t;
+  } else if (R < 32) {
+    const uint32_t nlo = (lo << R) | (hi >> (32 - R));
+    const uint32_t nhi = (hi << R) | (lo >> (32 - R));
+    lo = nlo; hi = nhi;
+  } else { // R > 32
+    const unsigned s = R - 32;
+    const uint32_t nlo = (hi << s) | (lo >> (32 - s));
+    const uint32_t nhi = (lo << s) | (hi >> (32 - s));
+    lo = nlo; hi = nhi;
+  }
+}
+
+void keccak(uint64_t* const s) { // Hot device-side Keccak; keep explicit steps for backend codegen.
+  static const uint32_t rndc_lo[24] = {
+    0x00000001, 0x00008082, 0x0000808a, 0x80008000, 0x0000808b, 0x80000001,
+    0x80008081, 0x00008009, 0x0000008a, 0x00000088, 0x80008009, 0x8000000a,
+    0x8000808b, 0x0000008b, 0x00008089, 0x00008003, 0x00008002, 0x00000080,
+    0x0000800a, 0x8000000a, 0x80008081, 0x00008080, 0x80000001, 0x80008008
+  };
+  static const uint32_t rndc_hi[24] = {
+    0x00000000, 0x00000000, 0x80000000, 0x80000000, 0x00000000, 0x00000000,
+    0x80000000, 0x80000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+    0x00000000, 0x80000000, 0x80000000, 0x80000000, 0x80000000, 0x80000000,
+    0x00000000, 0x80000000, 0x80000000, 0x80000000, 0x00000000, 0x80000000
+  };
+  // Split state into lo/hi halves.
+  uint32_t lo[25], hi[25];
+  for (unsigned i = 0; i < 25; ++ i) {
+    lo[i] = static_cast<uint32_t>(s[i]);
+    hi[i] = static_cast<uint32_t>(s[i] >> 32);
+  }
+  for (unsigned round = 0; round < 24; ++ round) {
+    uint32_t bclo[5], bchi[5];
+    // Theta step. The inner rotate is rotl64 by 1 (R<32 path, R=1).
+    // bc[k] = column[k] ^ rotl64(column[k+2 mod 5], 1)
+    {
+      uint32_t col0lo = lo[0]^lo[5]^lo[10]^lo[15]^lo[20];
+      uint32_t col0hi = hi[0]^hi[5]^hi[10]^hi[15]^hi[20];
+      uint32_t col1lo = lo[1]^lo[6]^lo[11]^lo[16]^lo[21];
+      uint32_t col1hi = hi[1]^hi[6]^hi[11]^hi[16]^hi[21];
+      uint32_t col2lo = lo[2]^lo[7]^lo[12]^lo[17]^lo[22];
+      uint32_t col2hi = hi[2]^hi[7]^hi[12]^hi[17]^hi[22];
+      uint32_t col3lo = lo[3]^lo[8]^lo[13]^lo[18]^lo[23];
+      uint32_t col3hi = hi[3]^hi[8]^hi[13]^hi[18]^hi[23];
+      uint32_t col4lo = lo[4]^lo[9]^lo[14]^lo[19]^lo[24];
+      uint32_t col4hi = hi[4]^hi[9]^hi[14]^hi[19]^hi[24];
+      bclo[0] = col0lo ^ ((col2lo << 1) | (col2hi >> 31));
+      bchi[0] = col0hi ^ ((col2hi << 1) | (col2lo >> 31));
+      bclo[1] = col1lo ^ ((col3lo << 1) | (col3hi >> 31));
+      bchi[1] = col1hi ^ ((col3hi << 1) | (col3lo >> 31));
+      bclo[2] = col2lo ^ ((col4lo << 1) | (col4hi >> 31));
+      bchi[2] = col2hi ^ ((col4hi << 1) | (col4lo >> 31));
+      bclo[3] = col3lo ^ ((col0lo << 1) | (col0hi >> 31));
+      bchi[3] = col3hi ^ ((col0hi << 1) | (col0lo >> 31));
+      bclo[4] = col4lo ^ ((col1lo << 1) | (col1hi >> 31));
+      bchi[4] = col4hi ^ ((col1hi << 1) | (col1lo >> 31));
+    }
+    for (unsigned k = 0; k < 5; ++ k) {
+      const uint32_t dlo = bclo[(k + 4) % 5], dhi = bchi[(k + 4) % 5];
+      lo[k     ] ^= dlo; hi[k     ] ^= dhi;
+      lo[k +  5] ^= dlo; hi[k +  5] ^= dhi;
+      lo[k + 10] ^= dlo; hi[k + 10] ^= dhi;
+      lo[k + 15] ^= dlo; hi[k + 15] ^= dhi;
+      lo[k + 20] ^= dlo; hi[k + 20] ^= dhi;
+    }
+    // Rho and Pi steps - fully unrolled so each rotation amount is constant.
+    // Chain: t = s[1]; for each i: tmp=s[piln[i]]; s[piln[i]]=rotl(t,rotc[i]); t=tmp;
+    // piln = {10,7,11,17,18,3,5,16,8,21,24,4,15,23,19,13,12,2,20,14,22,9,6,1}
+    // rotc = {1,3,6,10,15,21,28,36,45,55,2,14,27,41,56,8,25,43,62,18,39,61,20,44}
+    #define MO_RHOPI(P, R) do {                                             \
+      uint32_t tmplo = lo[P], tmphi = hi[P];                                \
+      uint32_t rlo = tlo, rhi = thi;                                        \
+      mo_rotl64_32<R>(rlo, rhi);                                            \
+      lo[P] = rlo; hi[P] = rhi;                                             \
+      tlo = tmplo; thi = tmphi;                                             \
+    } while (0)
+    uint32_t tlo = lo[1], thi = hi[1];
+    MO_RHOPI(10, 1);
+    MO_RHOPI(7,  3);
+    MO_RHOPI(11, 6);
+    MO_RHOPI(17, 10);
+    MO_RHOPI(18, 15);
+    MO_RHOPI(3,  21);
+    MO_RHOPI(5,  28);
+    MO_RHOPI(16, 36);
+    MO_RHOPI(8,  45);
+    MO_RHOPI(21, 55);
+    MO_RHOPI(24, 2);
+    MO_RHOPI(4,  14);
+    MO_RHOPI(15, 27);
+    MO_RHOPI(23, 41);
+    MO_RHOPI(19, 56);
+    MO_RHOPI(13, 8);
+    MO_RHOPI(12, 25);
+    MO_RHOPI(2,  43);
+    MO_RHOPI(20, 62);
+    MO_RHOPI(14, 18);
+    MO_RHOPI(22, 39);
+    MO_RHOPI(9,  61);
+    MO_RHOPI(6,  20);
+    MO_RHOPI(1,  44);
+    #undef MO_RHOPI
+    // Chi step. mo_bitselect(a,b,c) = (a & ~c) | (b & c), component-wise.
+    for (unsigned i = 0; i < 25; i += 5) {
+      const uint32_t t1lo = lo[i], t1hi = hi[i];
+      const uint32_t t2lo = lo[i + 1], t2hi = hi[i + 1];
+      uint32_t n0lo = ((lo[i    ] ^ lo[i + 2]) & ~lo[i + 1]) | (lo[i    ] & lo[i + 1]);
+      uint32_t n0hi = ((hi[i    ] ^ hi[i + 2]) & ~hi[i + 1]) | (hi[i    ] & hi[i + 1]);
+      uint32_t n1lo = ((lo[i + 1] ^ lo[i + 3]) & ~lo[i + 2]) | (lo[i + 1] & lo[i + 2]);
+      uint32_t n1hi = ((hi[i + 1] ^ hi[i + 3]) & ~hi[i + 2]) | (hi[i + 1] & hi[i + 2]);
+      uint32_t n2lo = ((lo[i + 2] ^ lo[i + 4]) & ~lo[i + 3]) | (lo[i + 2] & lo[i + 3]);
+      uint32_t n2hi = ((hi[i + 2] ^ hi[i + 4]) & ~hi[i + 3]) | (hi[i + 2] & hi[i + 3]);
+      uint32_t n3lo = ((lo[i + 3] ^ t1lo) & ~lo[i + 4]) | (lo[i + 3] & lo[i + 4]);
+      uint32_t n3hi = ((hi[i + 3] ^ t1hi) & ~hi[i + 4]) | (hi[i + 3] & hi[i + 4]);
+      uint32_t n4lo = ((lo[i + 4] ^ t2lo) & ~t1lo) | (lo[i + 4] & t1lo);
+      uint32_t n4hi = ((hi[i + 4] ^ t2hi) & ~t1hi) | (hi[i + 4] & t1hi);
+      lo[i    ] = n0lo; hi[i    ] = n0hi;
+      lo[i + 1] = n1lo; hi[i + 1] = n1hi;
+      lo[i + 2] = n2lo; hi[i + 2] = n2hi;
+      lo[i + 3] = n3lo; hi[i + 3] = n3hi;
+      lo[i + 4] = n4lo; hi[i + 4] = n4hi;
+    }
+    lo[0] ^= rndc_lo[round];
+    hi[0] ^= rndc_hi[round];
+  }
+  // Recombine lo/hi into the 64-bit state.
+  for (unsigned i = 0; i < 25; ++ i) {
+    s[i] = static_cast<uint64_t>(lo[i]) | (static_cast<uint64_t>(hi[i]) << 32);
+  }
+}
+#endif
 
 void generate512(const unsigned idx, const uint64_t* const in, uint64_t* out) { // Expands one scratchpad stripe.
   static const unsigned skip[3] = { 20, 22, 22 };
