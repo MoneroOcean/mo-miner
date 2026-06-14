@@ -37,13 +37,22 @@ typedef int (*gpu_autolykos2_hash_fun)(
   uint64_t* pnonce, const uint8_t* target,
   unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
 );
+// pearl: same ABI as autolykos2, but pnonce carries the search SEED (not a blob nonce) and on a
+// hit the winning seed+tile produce a PlainProof retrieved out-of-band via pearl_proof().
+typedef int (*gpu_pearl_hash_fun)(
+  unsigned job_ref, uint32_t height,
+  const uint8_t* input, unsigned input_size, uint8_t* output,
+  uint64_t* pseed, const uint8_t* target,
+  unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
+);
 static_assert(
   sizeof(cn_any_hash_fun) == sizeof(xmrig::cn_hash_fun) &&
   sizeof(cn_any_hash_fun) == sizeof(gpu_cn_hash_fun) &&
   sizeof(cn_any_hash_fun) == sizeof(gpu_c29_hash_fun) &&
   sizeof(cn_any_hash_fun) == sizeof(gpu_kawpow_hash_fun) &&
   sizeof(cn_any_hash_fun) == sizeof(gpu_etchash_hash_fun) &&
-  sizeof(cn_any_hash_fun) == sizeof(gpu_autolykos2_hash_fun),
+  sizeof(cn_any_hash_fun) == sizeof(gpu_autolykos2_hash_fun) &&
+  sizeof(cn_any_hash_fun) == sizeof(gpu_pearl_hash_fun),
   "Compute function pointers differ in size!"
 );
 union FN {
@@ -54,11 +63,16 @@ union FN {
   gpu_kawpow_hash_fun gpu_kawpow;
   gpu_etchash_hash_fun gpu_etchash;
   gpu_autolykos2_hash_fun gpu_autolykos2;
+  gpu_pearl_hash_fun gpu_pearl;
 };
-enum DEV { CPU, RX_CPU, GPU, C29_GPU, KAWPOW_GPU, ETCHASH_GPU, AUTOLYKOS2_GPU };
+enum DEV { CPU, RX_CPU, GPU, C29_GPU, KAWPOW_GPU, ETCHASH_GPU, AUTOLYKOS2_GPU, PEARL_GPU };
 
 inline bool is_nonce_at_32_gpu_dev(const DEV dev) {
   return dev == DEV::KAWPOW_GPU || dev == DEV::ETCHASH_GPU || dev == DEV::AUTOLYKOS2_GPU;
+}
+// GPU pow devices that allocate a single small input blob + 32-byte output (not a per-batch buffer).
+inline bool is_small_blob_gpu_dev(const DEV dev) {
+  return is_nonce_at_32_gpu_dev(dev) || dev == DEV::PEARL_GPU;
 }
 
 class Core: public AsyncWorker {
@@ -75,6 +89,7 @@ class Core: public AsyncWorker {
   uint32_t m_nonce32; // next nonce that will be used in an input
   uint64_t m_nonce64, m_nicehash_mask, m_target, m_timestamp, m_hash_count;
   std::string m_algo_str, m_dev_str, m_seed_hex, m_input_hex, m_pool_id, m_worker_id, m_job_id, m_header_hash;
+  std::string m_pearl_proof_job;   // job_id of the last pearl share emitted (one share built per pool job)
   bool m_is_rx_jit, m_is_bench;
   randomx_cache*   m_rx_cache;
   randomx_dataset* m_rx_dataset;

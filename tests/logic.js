@@ -578,6 +578,33 @@ test("pool login advertises raw KawPow performance as kawpow1", async () => {
   });
 });
 
+test("donation pool mines a MoneroOcean algo while the rig is configured for pearl", async () => {
+  // Regression for pearl + donation: the donate pool (xmrig.moneroocean.stream, protocol null) must
+  // keep speaking the XMR `login` dialect and advertise a MoneroOcean-supported algo even when the
+  // rig's algo context is pearl. Otherwise donation would either send pearl-protocol traffic the MO
+  // pool can't serve, or advertise only pearl (which MO cannot assign). MO ignores pearl and assigns
+  // the other advertised algo (rx/0) in its login result, which must parse as an rx/0 donation job.
+  let donatedJob = null;
+  await withMockPool({
+    pool: { login: "user", pass: "x", use_subscribe: false }, // MO donate pool opts out of pearl subscribe
+    opt: {
+      bench_algo_params: 0,
+      job: { algo: "pearl" },                            // rig context is pearl; must NOT leak to the donate pool
+      algo_params: { pearl: { dev: "gpu1*131072", perf: 1 }, "rx/0": { dev: "cpu", perf: 1 } },
+    },
+  }, async ({ socket, writes }) => {
+    pool.connect_pool_throttle(0, (job) => { donatedJob = job; return job; });
+    socket.emit("connect");
+    const login = writes[0];
+    assert.equal(login.method, "login");                          // XMR login, not a pearl mining.subscribe
+    assert.equal(login.params.algo.includes("rx/0"), true);      // a MoneroOcean-minable algo is offered
+    socket.emit("data", Buffer.from(
+      '{"jsonrpc":"2.0","id":1,"error":null,"result":{"id":"w","job":' +
+      '{"blob":"0101","job_id":"1","target":"c6100000","algo":"rx/0","height":1,"seed_hash":"ab"}}}\n'));
+    assert.equal(donatedJob.algo, "rx/0");                        // MO assigns rx/0; donation actually mines
+  });
+});
+
 test("fixed KawPow pools use Raven stratum subscribe and authorize", async () => {
   let jobMessage = null;
   await withMockPool({

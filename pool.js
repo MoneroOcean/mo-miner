@@ -52,6 +52,7 @@ function defaultPoolProtocol() {
   if (job && job.algo === "kawpow") return "raven";
   if (job && job.algo === "etchash") return "eth";
   if (job && job.algo === "autolykos2") return "erg";
+  if (job && job.algo === "pearl") return "pearl";
   return "login";
 }
 
@@ -67,6 +68,45 @@ function usesEthProxy(pool) {
   return poolProtocol(pool) === "ethproxy";
 }
 
+// Standard Pearl handshake (HeroMiners/LuckyPool/etc.): mining.subscribe + mining.authorize
+// {wallet,worker,pass}. This is the DEFAULT for pearl pools. pearlpool.cloud uses the older single
+// `login` dialect instead -- opt OUT of subscribe there with "use_subscribe": false (the MoneroOcean
+// donate pool also sets it false so donation keeps using login). Both dialects push the same
+// object-param pearl mining.notify and take the same mining.submit{job_id,plain_proof}.
+function pearlUsesSubscribe(pool) {
+  // MOMINER_PEARL_LOGIN env forces the legacy login dialect (pearlpool.cloud) for CLI mining.
+  // The MO donate pool opts out via use_subscribe:false, so this env never affects donation.
+  if (process.env.MOMINER_PEARL_LOGIN) return false;
+  return poolProtocol(pool) === "pearl" && pool.use_subscribe !== false;
+}
+
+// Pearl difficulty is carried in the job_id suffix "<hex>_<diff>" (HeroMiners omits the difficulty
+// field that pearlpool.cloud sends); used to derive the 2^256/diff kernel target.
+function pearlDiffFromJobId(job_id) {
+  const m = String(job_id || "").match(/_(\d+)$/);
+  return m ? Number(m[1]) : undefined;
+}
+
+// k - k%rank (the "dot_product_length"), from the same env the native kernel reads. Defaults MUST
+// match the native pearl_k()/pearl_rank() (4096/256) or the JS-computed jackpot bound disagrees with
+// the kernel/verifier and shares come out too rare.
+function pearlKEff() {
+  const k = Number(process.env.MOMINER_PEARL_K) || 4096, rank = Number(process.env.MOMINER_PEARL_RANK) || 256;
+  return Math.floor(k / rank) * rank;
+}
+
+// HeroMiners sends the BASE target T0 (= nbits_to_difficulty(share_nbits)); the actual jackpot bound
+// the verifier checks is T0 * (16*16) * (k - k%rank)  (zk-pow extract_difficulty_bound: tile_size *
+// dot_product_length). pearlpool instead accepts the lenient 2^256/diff and its target field is the
+// network block target (ignored).
+function pearlNbitsBound(baseTargetHex) {
+  const MAX = (1n << 256n) - 1n;
+  const base = BigInt("0x" + (hexWithoutPrefix(baseTargetHex) || "0"));
+  let bound = base * BigInt(16 * 16 * pearlKEff());
+  if (bound > MAX) bound = MAX;
+  return bound.toString(16).padStart(64, "0");
+}
+
 module.exports.pool_write = function(pool_id, json) {
   const message = JSON.stringify(json);
   const pool = global.opt.pools[pool_id];
@@ -75,7 +115,7 @@ module.exports.pool_write = function(pool_id, json) {
   pool_log2(pool_id, "Sent to the pool: " + message);
   pool.socket.write(message + "\n");
   // sends keepalive if no submit/keepalive to pool for more than global.opt.pool_time.keepalive
-  if (!pool.is_keepalive || usesMiningSubscribe(pool) || usesEthProxy(pool)) return;
+  if (!pool.is_keepalive || usesMiningSubscribe(pool) || usesEthProxy(pool) || pearlUsesSubscribe(pool)) return;
   if (pool.keepalive !== null) clearTimeout(pool.keepalive);
   pool.keepalive = setTimeout(function() {
     pool.keepalive = null;
@@ -127,12 +167,13 @@ function protocolForAlgo(algo) {
   if (algo === "kawpow") return "raven";
   if (algo === "etchash") return "eth";
   if (algo === "autolykos2") return "erg";
+  if (algo === "pearl") return "pearl";
   return null;
 }
 
 function algoFromPass(pool) {
   const pass = String(pool.pass || "");
-  const m = pass.match(/(?:^|[~;,])(?:algo=)?(kawpow|etchash|autolykos2)(?:$|[~;,])/i);
+  const m = pass.match(/(?:^|[~;,])(?:algo=)?(kawpow|etchash|autolykos2|pearl)(?:$|[~;,])/i);
   return m ? m[1].toLowerCase() : "";
 }
 
@@ -163,6 +204,11 @@ function isEthJobNotification(json) {
 
 function isErgJobNotification(json) {
   return json.method === "mining.notify" && Array.isArray(json.params) && json.params.length >= 7;
+}
+
+// pearlpool.cloud pushes mining.notify with OBJECT params {job_id, header, target, difficulty, height, mode}
+function isPearlJobNotification(json) {
+  return json.method === "mining.notify" && isObject(json.params) && typeof json.params.header === "string";
 }
 
 function isEthProxyWork(json) {
@@ -347,7 +393,11 @@ function handleEthSetTarget(pool_id, json) {
 }
 
 function handleSetDifficulty(pool_id, json) {
-  global.opt.pools[pool_id].eth_difficulty = json.params[0];
+  const pool = global.opt.pools[pool_id];
+  pool.eth_difficulty = json.params[0];
+  // var-diff pearl pools may push a standalone set_difficulty; stash it so the next pearl job picks
+  // it up if the notify itself omits a diff field (otherwise jobTarget would fall back to MAX).
+  if (poolProtocol(pool) === "pearl") pool.pearl_difficulty = json.params[0];
 }
 
 function nonceAt32Job(pool, job) {
@@ -428,6 +478,21 @@ function jobFromPoolMessage(pool_id, json) {
     rememberErgSubmitJob(pool, job);
     return job;
   }
+  if (poolProtocol(pool) === "pearl" && isPearlJobNotification(json)) {
+    if (!pool.logged_in) return null;
+    pool.submit_mode = "pearl";
+    const pp = json.params;
+    return {
+      algo: fixedAlgoJobName(json, "pearl"),
+      blob: hexWithoutPrefix(pp.header),   // the 76-byte incomplete header (input for the kernel)
+      job_id: pp.job_id,
+      height: pp.height || 0,
+      difficulty: pp.difficulty || pp.diff || pearlDiffFromJobId(pp.job_id) || pool.pearl_difficulty, // LuckyPool names it "diff"; var-diff may send it via set_difficulty
+      // HeroMiners-style pools: precompute the verifier's jackpot bound from the base target field.
+      // pearlpool-style: leave unset so jobTarget falls back to 2^256/diff.
+      target: pearlUsesSubscribe(pool) ? pearlNbitsBound(pp.target) : undefined,
+    };
+  }
   if (isLoginJob(json)) { // login job
     pool.logged_in = true;
     pool.submit_mode = null;
@@ -442,6 +507,10 @@ function jobFromPoolMessage(pool_id, json) {
 function jobTargetWork(job) {
   if (!job.target) return null;
   if (job.algo === "kawpow") return h.kawpowTarget2diff(job.target);
+  // pearl: report the share target in GEMM MACs to match the MAC/s hashrate (so time-per-share =
+  // target/hashrate). work/share = (tiles/share = 2^256/bound) * (MACs/tile = 16*16*k_eff).
+  if (job.algo === "pearl") return h.target256ToWork(job.target) * BigInt(16 * 16 * pearlKEff());
+  // etchash/autolykos2 carry a full 256-bit target too, but their hashrate is in hashes -> H/share.
   if (job.algo === "etchash" || job.algo === "autolykos2") return h.target256ToWork(job.target);
   return h.target2diff(job.target);
 }
@@ -569,7 +638,10 @@ function ignorePoolResponse() {}
 
 function poolResponseHandler(pool_id, id) {
   const pool = global.opt.pools[pool_id];
-  if (usesMiningSubscribe(pool)) {
+  if (pearlUsesSubscribe(pool)) {
+    if (id === 1) return ignorePoolResponse;           // subscribe ack/err (authorize already sent)
+    if (id === 2) return pool.pending_authorize ? handleAuthorizeResponse : ignorePoolResponse;
+  } else if (usesMiningSubscribe(pool)) {
     if (id === 1) return handleSubscribeResponse; // mining.subscribe response
     if (id === 2) return pool.pending_authorize ? handleAuthorizeResponse : ignorePoolResponse;
   } else if (usesEthProxy(pool)) {
@@ -707,6 +779,18 @@ function scheduleInitialJobTimeout(pool_id, socket, set_job, pool_err) {
 function handlePoolConnect(pool_id, socket, pool) {
   if (!isCurrentPoolSocket(pool_id, socket)) return;
   pool_log1(pool_id, "Connected to the pool");
+  if (pearlUsesSubscribe(pool)) {
+    // Pearl subscribe dialect: send subscribe AND authorize back-to-back. mining.subscribe is just a
+    // handshake nicety -- HeroMiners acks it (result:true), LuckyPool rejects it ("method not
+    // supported") and drops the connection if no authorize follows promptly. So don't wait on the
+    // subscribe reply; authorize immediately. authorize takes OBJECT params {wallet,worker,pass}.
+    pool.pending_authorize = true;
+    module.exports.pool_write(pool_id, { jsonrpc: "2.0", id: 1, method: "mining.subscribe", params: [o.agent_str] });
+    return module.exports.pool_write(pool_id, {
+      jsonrpc: "2.0", id: 2, method: "mining.authorize",
+      params: { wallet: pool.login, worker: pool.worker || "mo-miner", pass: pool.pass }
+    });
+  }
   const request = usesMiningSubscribe(pool) ?
     { jsonrpc: "2.0", id: 1, method: "mining.subscribe", params: [o.agent_str] } :
     usesEthProxy(pool) ?

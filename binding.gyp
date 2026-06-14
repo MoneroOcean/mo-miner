@@ -240,6 +240,7 @@
         "sycl/ethash.cpp",
         "sycl/etchash.cpp",
         "sycl/autolykos2.cpp",
+        "sycl/pearl.cpp",
         "sycl/c29.cpp",
         "sycl/cn-gpu.cpp",
         "sycl/kawpow.cpp"
@@ -307,6 +308,7 @@
                 "/O2",
                 "/fsycl",
                 "/DNDEBUG",
+                "/DPEARL_ESIMD",
                 "/clang:-fno-strict-aliasing"
               ]
             }
@@ -314,15 +316,16 @@
         }, {
           "conditions": [
             [ "mominer_sycl_impl=='acpp'", {
-              # acpp rejects more than one -std; drop node's common.gypi default
-              # so only the explicit -std=c++20 below remains.
+              # acpp rejects more than one -std; drop node's common.gypi default so only the explicit
+              # -std=c++20 below remains. acpp's generic target has no Intel ESIMD, so pearl is left to
+              # its portable joint_matrix path here (no -DPEARL_ESIMD).
               "cflags_cc!": [ "-std=gnu++20" ],
               "cflags+": [
                 "-std=c++20 -O3 -DNDEBUG --acpp-targets=generic"
               ]
             }, {
               "cflags+": [
-                "-std=c++20 -O3 -fsycl -DNDEBUG"
+                "-std=c++20 -O3 -fsycl -DNDEBUG -DPEARL_ESIMD"
               ]
             } ]
           ]

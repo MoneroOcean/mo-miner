@@ -265,6 +265,20 @@ const hashTests = [
     },
     expected: "68005b0465cf34675f804de6ef37b3ea2fed0f4796236fc55d1ecd996b54db2d EOL",
   },
+  {
+    // pearl is a NoisyGEMM search, not a fixed-hash algo: in test mode pearl() forces m=n=256, sets
+    // the target to all-0xFF (first tile wins) and runs one attempt, so the core returns "ok". This
+    // exercises the GPU kernel end-to-end deterministically and also seeds the pearl perf entry.
+    name: "pearl gpu1*1",
+    gpu: true,
+    timeoutMs: 10 * 60 * 1000,
+    job: {
+      algo: "pearl",
+      dev: "gpu1*1",
+      blob_hex: "000040205d1cd9b9049d9f594cd0d05697f99a8a6770bbd59a2aefcf669be71e3b3eb253866bc496a00224b6bdf05ed1983a52622fc90bc3ef86969c27bc0d6686afacdfa9db2c6a21000118",
+    },
+    expected: "ok",
+  },
 ];
 
 const perfTests = [];

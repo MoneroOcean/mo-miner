@@ -862,9 +862,10 @@ int c29(const unsigned job_ref, const unsigned c29_proof_size,
 
     static sycl::device compute_device = get_dev(dev_str);
 
-    // CPU SYCL backends can reject Intel GPU compiler-report flags.
+    // SYCL_PROGRAM_COMPILE_OPTIONS is process-global; pearl's ESIMD (VC-backend) image rejects "-O3"
+    // ("invalid api option"), which is a no-op for c29 anyway, so leave it empty to stay compatible.
     static const bool sycl_compile_env_set = []() {
-      set_sycl_env("SYCL_PROGRAM_COMPILE_OPTIONS", compute_device.is_gpu() ? "-O3" : "");
+      set_sycl_env("SYCL_PROGRAM_COMPILE_OPTIONS", "");
       return true;
     }();
     (void)sycl_compile_env_set;

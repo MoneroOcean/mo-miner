@@ -1,6 +1,6 @@
 {
   "name": "mo-miner",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Node.js and SYCL miner built on XMRig hashing sources with MoneroOcean algo switching support",
   "private": true,
   "main": "mo-miner.js",
@@ -66,7 +66,8 @@
     "test:perf:c29": "node tests/run_perf.js c29",
     "test:all": "npm test && npm run test:perf",
     "test:perf:etchash": "node tests/run_perf.js etchash",
-    "test:perf:autolykos2": "node tests/run_perf.js autolykos2"
+    "test:perf:autolykos2": "node tests/run_perf.js autolykos2",
+    "test:perf:pearl": "node tests/run_perf.js pearl"
   },
   "keywords": [
     "monero",

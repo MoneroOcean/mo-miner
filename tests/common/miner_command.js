@@ -18,6 +18,8 @@ let autoAlgoParamsPromise = null;
 let autoAlgoParamsReportPromise = null;
 
 const hashrateUnits = [
+  { value: 1000000000000000, suffix: "PH/s" },   // pearl reports GEMM throughput in TH/s+
+  { value: 1000000000000, suffix: "TH/s" },
   { value: 1000000000, suffix: "GH/s" },
   { value: 1000000, suffix: "MH/s" },
   { value: 1000, suffix: "KH/s" },

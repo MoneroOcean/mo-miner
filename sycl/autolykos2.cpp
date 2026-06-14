@@ -574,7 +574,11 @@ struct AutolykosState {
   static const char* autolykos_compile_options(const sycl::device& dev) {
     const char* const value = std::getenv("MOMINER_AUTOLYKOS2_COMPILE_OPTIONS");
     if (value) return value;
-    return dev.is_gpu() ? "-O3" : "";
+    // SYCL_PROGRAM_COMPILE_OPTIONS is process-global; pearl's ESIMD (VC-backend) image rejects "-O3",
+    // and it's a measured no-op for this kernel anyway (36.44 vs 36.41 MH/s on B580). Override via
+    // MOMINER_AUTOLYKOS2_COMPILE_OPTIONS if needed.
+    (void)dev;
+    return "";
   }
 
   // Unlike the kawpow DAG chunking this defaults on: at live N the monolithic build is one

@@ -138,6 +138,17 @@ function loadConfigFile(config_file) {
   const config_fn = path.resolve(config_file);
   h.log("Loading config file " + config_fn);
   mergeConfigOptions(require(config_fn));
+  applyPearlShapeEnv();
+}
+
+// Pearl mining params (k, noise_rank) are pool-specific (HeroMiners requires 4096/256, pearlpool
+// 1024/64). Let the config carry them under algo_params.pearl.{k,rank} and forward to the env the
+// native kernel and pool.js (pearlNbitsBound) both read, so a config alone is turnkey -- no env vars.
+function applyPearlShapeEnv() {
+  const pearl = global.opt.algo_params && global.opt.algo_params.pearl;
+  if (!pearl) return;
+  if (pearl.k    && !process.env.MOMINER_PEARL_K)    process.env.MOMINER_PEARL_K    = String(pearl.k);
+  if (pearl.rank && !process.env.MOMINER_PEARL_RANK) process.env.MOMINER_PEARL_RANK = String(pearl.rank);
 }
 
 function parsePoolUri(pool_uri) {
@@ -257,6 +268,14 @@ function handleResult(msg) {
     nonce: msg.value.nonce, result: msg.value.hash
   };
   const pool = global.opt.pools[msg.value.pool_id];
+  if (pool && pool.submit_mode === "pearl") {   // the worker already built the base64 PlainProof
+    // The native core already emits at most one solution per unit of work (job_id + header), so just
+    // relay it -- no JS-side per-job dedup (which mis-fires on HeroMiners' constant job_id).
+    return p.pool_write(msg.value.pool_id, {
+      jsonrpc: "2.0", id: 3, method: "mining.submit",
+      params: { job_id: msg.value.job_id, plain_proof: msg.value.plain_proof },
+    });
+  }
   if (pool && pool.submit_mode === "erg") {
     return p.pool_write(msg.value.pool_id, {
       jsonrpc: "2.0",
@@ -452,6 +471,13 @@ function isNonceAt32Algo(algo) {
 
 function jobTarget(prev_job, algo) {
   const explicitTarget = orDefault(prev_job.target, "");
+  if (algo === "pearl") {
+    // HeroMiners-style pools precompute the verifier bound (pool.js pearlNbitsBound -> prev_job.target);
+    // pearlpool.cloud uses the lenient floor(2^256 / difficulty). Both are 256-bit big-endian hex.
+    if (explicitTarget) return explicitTarget.replace(/^0x/i, "").padStart(64, "0");
+    const MAX = (1n << 256n) - 1n, diff = BigInt(prev_job.difficulty || 1);
+    return (diff > 0n ? MAX / diff : MAX).toString(16).padStart(64, "0");
+  }
   if (!isNonceAt32Algo(algo)) return explicitTarget || h.diff2target(prev_job.difficulty);
   if (explicitTarget && !/^\d+$/.test(explicitTarget) && explicitTarget.replace(/^0x/i, "").length > 16)
     return explicitTarget.replace(/^0x/i, "").padStart(64, "0");

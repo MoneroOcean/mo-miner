@@ -1,6 +1,7 @@
 // Copyright GNU GPLv3 (c) 2023-2025 MoneroOcean <support@moneroocean.stream>
 
 #include "core.h"
+#include "../sycl/lib.h"   // pearl_proof()
 
 #include "3rdparty/fmt/core.h"
 #include "backend/cpu/Cpu.h"
@@ -303,12 +304,13 @@ bool Core::process_message(const std::string& type, const MessageValues& v) {
     const bool is_kawpow_target = v.contains("algo") && v.at("algo") == "kawpow";
     const bool is_etchash_target = v.contains("algo") && v.at("algo") == "etchash";
     const bool is_autolykos2_target = v.contains("algo") && v.at("algo") == "autolykos2";
-    const bool is_big_target = is_etchash_target || is_autolykos2_target;
+    const bool is_pearl_target = v.contains("algo") && v.at("algo") == "pearl";
+    const bool is_big_target = is_etchash_target || is_autolykos2_target || is_pearl_target;
     const uint64_t new_target = is_big_target ? 1 : parse_target_hex(new_target_str, is_kawpow_target);
     uint8_t new_target_bin[HASH_LEN]{};
     if (is_big_target) parse_big_target_hex(new_target_str, new_target_bin);
 
-    const uint64_t last_nonce = m_nonce_bytes == 4 ? m_nonce32 : m_nonce64;
+    const uint64_t last_nonce = (m_nonce_bytes == 4 && m_dev != DEV::PEARL_GPU) ? m_nonce32 : m_nonce64; // pearl's seed lives in m_nonce64
     const std::string prev_pool_id = m_pool_id;
     set_job(true, true, v, [&]() {
       m_target    = new_target;
@@ -411,7 +413,7 @@ bool Core::process_message(const std::string& type, const MessageValues& v) {
      return true;
 
   } else if (type == "close") {
-    const uint64_t last_nonce = m_nonce_bytes == 4 ? m_nonce32 : m_nonce64;
+    const uint64_t last_nonce = (m_nonce_bytes == 4 && m_dev != DEV::PEARL_GPU) ? m_nonce32 : m_nonce64; // pearl's seed lives in m_nonce64
     if (last_nonce) send_last_nonce(last_nonce, m_nonce_bytes, m_pool_id);
     free_memory();
     return false; // stop processing messages
@@ -524,7 +526,7 @@ void Core::Execute() {
     // that effectively skips it in test mode too
     static unsigned hashrate_check_counter = HASHRATE_COUNTER_INTERVAL;
     if (m_dev == DEV::RX_CPU) m_mutex_hashrate.lock();
-    const unsigned hash_count = m_hash_count;
+    const uint64_t hash_count = m_hash_count;   // 64-bit: pearl's MAC count per attempt is 2^46, which truncated to 0 mod 2^32
     if (m_dev == DEV::RX_CPU) m_mutex_hashrate.unlock();
     if (hash_count && --hashrate_check_counter == 0) {
       hashrate_check_counter = HASHRATE_COUNTER_INTERVAL;
@@ -557,6 +559,8 @@ void Core::Execute() {
       uint64_t etchash_nonce;
       int autolykos2_sols;
       uint64_t autolykos2_nonce;
+      int pearl_sols;
+      uint64_t pearl_seed;
       const uint64_t t_dispatch = loop_stats ? loop_now_us() : 0;
       try {
         switch (m_dev) {
@@ -594,6 +598,15 @@ void Core::Execute() {
             autolykos2_sols = m_fn.gpu_autolykos2(
               m_job_ref, m_height, m_input, m_input_len, m_output,
               &autolykos2_nonce, m_target_bin,
+              m_batch, !m_nonce32 && !m_nonce64, m_is_bench, m_dev_str
+            );
+            break;
+
+          case DEV::PEARL_GPU:
+            pearl_seed = m_nonce64;   // the search seed is internal (not embedded in the blob)
+            pearl_sols = m_fn.gpu_pearl(
+              m_job_ref, m_height, m_input, m_input_len, m_output,
+              &pearl_seed, m_target_bin,
               m_batch, !m_nonce32 && !m_nonce64, m_is_bench, m_dev_str
             );
             break;
@@ -641,6 +654,12 @@ void Core::Execute() {
           }
           continue;
         }
+        if (m_dev == DEV::PEARL_GPU) {
+          if (pearl_sols == 1) send_msg("test", "result", "ok");
+          else send_error("No pearl test result");
+          set_fn(nullptr);
+          continue;
+        }
         if (m_dev == DEV::C29_GPU && c29_sols == 0) {
           std::this_thread::sleep_for(std::chrono::milliseconds(100));
           continue;
@@ -663,7 +682,8 @@ void Core::Execute() {
         continue;
       }
 
-      m_hash_count += m_batch; // here we do not need mutex since there are no threads
+      // Pearl's work unit is GEMM MACs (m*n*k) so its rate matches the "TH/s" GEMM bench; others = 1/batch.
+      m_hash_count += (m_dev == DEV::PEARL_GPU) ? pearl_attempt_hashes(m_batch) : m_batch;
       if (m_dev == DEV::KAWPOW_GPU || m_dev == DEV::ETCHASH_GPU) {
         const uint64_t prev_nonce = m_nonce64;
         const int sols = m_dev == DEV::KAWPOW_GPU ? kawpow_sols : etchash_sols;
@@ -689,6 +709,32 @@ void Core::Execute() {
         if (m_target && nonce_overflowed(prev_nonce, m_nonce64, m_nicehash_mask)) {
           set_fn(nullptr);
           send_last_nonce(prev_nonce, m_nonce_bytes, m_pool_id);
+        }
+        continue;
+      }
+      if (m_dev == DEV::PEARL_GPU) {
+        const uint64_t prev_nonce = m_nonce64;
+        // Emit at most once per (job_id, header) pair since the PlainProof rebuild is heavy and the
+        // pool credits one share per job. Pearlpool varies job_id (reuses header); HeroMiners the reverse.
+        if (pearl_sols == 1 && m_target) {
+          std::string pearl_key = m_job_id;
+          pearl_key.append(reinterpret_cast<const char*>(m_input), m_input_len);
+          if (pearl_key != m_pearl_proof_job) {
+            m_pearl_proof_job = pearl_key;
+            MessageValues values;
+            char seed_hex[17]; snprintf(seed_hex, sizeof(seed_hex), "%016" PRIx64, pearl_seed);
+            values["nonce"]       = seed_hex;          // winning seed, for logging/traceability
+            values["plain_proof"] = pearl_proof();     // builds the proof for the captured tile (lazy)
+            values["pool_id"]     = m_pool_id;
+            values["worker_id"]   = m_worker_id;
+            values["job_id"]      = m_job_id;
+            send_msg("result", values);
+          }
+        }
+        m_nonce64 += m_nonce_step;   // advance to the next seed (the blob is not touched)
+        if (m_target && nonce_overflowed(prev_nonce, m_nonce64, m_nicehash_mask)) {
+          set_fn(nullptr);
+          send_last_nonce(prev_nonce, 8, m_pool_id);   // pearl seed is 64-bit
         }
         continue;
       }

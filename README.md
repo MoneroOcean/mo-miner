@@ -17,7 +17,7 @@ is possible and WIP.
 # Supported algos
 
 * CPU: All xmrig miner CPU supported algos with similar performance
-* GPU/SYCL: cn/gpu, c29, kawpow, etchash, autolykos2
+* GPU/SYCL: cn/gpu, c29, kawpow, etchash, autolykos2, pearl
 
 The GPU/SYCL implementations also run on SYCL CPU devices for hash-vector coverage and fallback
 testing, though the CPU mining path remains the preferred CPU path for CPU-focused algos.
@@ -25,12 +25,37 @@ testing, though the CPU mining path remains the preferred CPU path for CPU-focus
 Miner supports algo switching if you connect it to algo switching pool like
 gulf.moneroocean.stream that auto switches to the most profitable algo.
 KawPow, Etchash, and Autolykos2 can also be used on non-MoneroOcean stratum pools that serve those
-algos directly.
+algos directly. Pearl (`pearl`, the PRL NoisyGEMM proof-of-useful-work coin) is **only** mined on
+third-party pools (HeroMiners, LuckyPool) — the MoneroOcean pool does not serve it — so see the Pearl
+mining section below. Its hashrate is reported as GEMM multiply-accumulate throughput in TH/s (the
+same unit ARC-miner uses), not cryptographic H/s, so it is not directly comparable to the other algos.
 
 By default, startup algo-parameter benchmarking only benchmarks active MoneroOcean coin algos
 implemented by mo-miner plus `rx/2`: `autolykos2`, `c29`, `cn/gpu`, `etchash`, `ghostrider`,
 `kawpow`, `panthera`, `rx/0`, `rx/2`, and `rx/arq`. Use `--bench_algo_params 2` to benchmark every algo
-supported locally.
+supported locally. `pearl` is **not** in the default set (MoneroOcean can't assign it); mine it with
+`--bench_algo_params 0` plus an explicit `--job.dev`, or bench it with `--bench_algo_params 2`.
+
+# Mining Pearl (PRL)
+
+Pearl uses a fixed network NoisyGEMM shape (m=n=131072, k=4096, noise_rank=256) — the defaults — so a
+capable GPU (~1.2 GB VRAM for that shape) just needs the pool, wallet and GPU device:
+
+```
+# HeroMiners (TLS, direct):
+./r.sh node mo-miner.js mine pearl.herominers.com:1200tls <prl1-wallet> --job.algo pearl --job.dev gpu1*131072 --bench_algo_params 0
+# LuckyPool (TLS, var-diff):
+./r.sh node mo-miner.js mine pearl-eu1.luckypool.io:3360tls <prl1-wallet> --job.algo pearl --job.dev gpu1*131072 --bench_algo_params 0
+```
+
+These pools use the `mining.subscribe`+`mining.authorize` dialect (the default for `pearl`). The older
+pearlpool.cloud uses the single-`login` dialect and a smaller low-mem shape; select it with env vars:
+`MOMINER_PEARL_LOGIN=1 MOMINER_PEARL_K=1024 MOMINER_PEARL_RANK=64` and `--job.dev gpu1*16384`.
+
+Pearl env knobs (all optional; defaults = network-standard shape): `MOMINER_PEARL_INTENSITY` (m=n,
+default 131072), `MOMINER_PEARL_K` (default 4096), `MOMINER_PEARL_RANK` (default 256),
+`MOMINER_PEARL_LOGIN` (force the login dialect). In a saved config these can instead live under
+`algo_params.pearl.{k,rank}` (the dev `*<batch>` sets the intensity) so no env vars are needed.
 
 # NVIDIA GPU performance
 
@@ -186,7 +211,8 @@ $ ./mo-miner mine ./config.json
 Saved `algo_params.*.perf` values are local hashrates in H/s. mo-miner advertises KawPow to
 MoneroOcean as `kawpow1` with raw H/s while continuing to mine pool jobs named `kawpow`. Cycle
 algorithms whose protocol units are solutions per second, currently `c29`, are converted
-automatically when sending `algo-perf`.
+automatically when sending `algo-perf`. `pearl` reports GEMM multiply-accumulate throughput (TH/s),
+not H/s; MoneroOcean does not switch to it, so its perf is informational only.
 
 Without parameters miner will show help:
 
@@ -247,6 +273,7 @@ You can run test and benchmark separately for algo you need like this:
 ./r.sh node mo-miner.js bench cn/gpu --job '{"algo":"cn/gpu","dev":"gpu1*1280"}'
 ./r.sh node mo-miner.js bench etchash --job '{"algo":"etchash","dev":"gpu1*256"}'
 ./r.sh node mo-miner.js bench autolykos2 --job '{"algo":"autolykos2","dev":"gpu1*1"}'
+./r.sh node mo-miner.js bench pearl --job '{"algo":"pearl","dev":"gpu1*131072"}'
 ```
 
 Project test suites are npm entry points:

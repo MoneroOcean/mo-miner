@@ -58,10 +58,12 @@ module.exports.opt_help = {
       url:                [ undefined, "pool DNS or IP address" ],
       port:               [ undefined, "pool port" ],
       is_tls:             [ false, "is pool port is encrypted using TLS/SSL" ],
-      protocol:           [ null, "pool protocol override: login, raven, eth, ethproxy, or erg" ],
+      protocol:           [ null, "pool protocol override: login, raven, eth, ethproxy, erg, or pearl" ],
       tls_verify:         [ false, "verify pool TLS/SSL certificate" ],
       is_nicehash:        [ false, "nicehash nonce mining mode support" ],
       is_keepalive:       [ true, "sends keepalive messages to the pool to avoid disconnect" ],
+      use_subscribe:      [ true, "pearl pools: use mining.subscribe+authorize handshake; set false for the login-dialect pearl pool (pearlpool.cloud) and the MoneroOcean donate pool" ],
+      worker:             [ "mo-miner", "pearl subscribe-dialect worker name (mining.authorize)" ],
       login:              [ undefined, "pool login data" ],
       pass:               [ "", "pool password" ],
       _socket:            [ null, "network socket object" ],
@@ -73,7 +75,9 @@ module.exports.opt_help = {
       _bad_shares:        [ 0, "number of invalid shares" ],
     },
     _array: [
-      this.pool_create("xmrig.moneroocean.stream", 20001, true, "user", "pass")
+      // MoneroOcean donate pool: speaks the XMR `login` dialect, so opt out of the pearl subscribe
+      // default (which is on for pearl pools) -- keeps donation working when the rig algo is pearl.
+      { ...this.pool_create("xmrig.moneroocean.stream", 20001, true, "user", "pass"), use_subscribe: false }
     ]
   },
   default_msr: {

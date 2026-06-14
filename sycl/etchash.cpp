@@ -481,7 +481,10 @@ public:
   static const char* etchash_compile_options(const sycl::device& dev) {
     const char* const value = std::getenv("MOMINER_ETCHASH_COMPILE_OPTIONS");
     if (value) return value;
-    return dev.is_gpu() ? "-O3" : "";
+    // "-O3" is process-global; pearl's ESIMD image rejects it (no-op for etchash anyway).
+    // Override via MOMINER_ETCHASH_COMPILE_OPTIONS if needed.
+    (void)dev;
+    return "";
   }
 
   template<typename T>

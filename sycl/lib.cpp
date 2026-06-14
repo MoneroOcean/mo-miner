@@ -209,6 +209,19 @@ static unsigned autolykos2_intensity(const sycl::device& dev) {
 #endif
 }
 
+// pearl "intensity" is the square NoisyGEMM edge m=n (not a nonce batch). Default 131072 -- the
+// network-standard shape for HeroMiners/LuckyPool (k=4096, rank=256), ~53 TH/s on a B580 (~1.2GB
+// VRAM). Low-mem cards / pearlpool.cloud use 16384 via MOMINER_PEARL_INTENSITY (k=1024, rank=64).
+static unsigned pearl_intensity(const sycl::device&) {
+  const char* const env = std::getenv("MOMINER_PEARL_INTENSITY");
+  if (env && *env) {
+    char* end = nullptr;
+    const unsigned long parsed = std::strtoul(env, &end, 10);
+    if (end != env && !*end && parsed >= 256) return static_cast<unsigned>(parsed - (parsed % 64));
+  }
+  return 131072;
+}
+
 static void add_result_dev(std::string& result_dev, const std::string& add_str) {
   if (!result_dev.empty()) result_dev += ",";
   result_dev += add_str;
@@ -365,6 +378,15 @@ static void add_gpu_autolykos2_algo_dev(std::string& result_dev) {
   });
 }
 
+static void add_gpu_pearl_algo_dev(std::string& result_dev) {
+  for_each_default_gpu([&](const std::string& dev_str, const sycl::device& dev) {
+    constexpr uint64_t dataset_bytes = 256ULL * 1024ULL * 1024ULL;   // A'/B'/noise buffers are small
+    constexpr uint64_t min_global_mem = 2ULL * 1024ULL * 1024ULL * 1024ULL;
+    if (pow_has_dataset_memory(dev, dataset_bytes, min_global_mem))
+      add_result_dev(result_dev, dev_str + "*" + std::to_string(pearl_intensity(dev)));
+  });
+}
+
 sycl::device get_dev(const std::string& dev_str) {
   if (str2dev.empty()) update_str2dev();
   if (!str2dev.contains(dev_str)) {
@@ -383,11 +405,12 @@ std::map<std::string, std::string> algo_params(
   const std::set<std::string>& gpu_c29_algos,
   const std::set<std::string>& gpu_kawpow_algos,
   const std::set<std::string>& gpu_etchash_algos,
-  const std::set<std::string>& gpu_autolykos2_algos
+  const std::set<std::string>& gpu_autolykos2_algos,
+  const std::set<std::string>& gpu_pearl_algos
 ) {
   const bool need_sycl_devices = !gpu_cn_algos.empty() || !gpu_c29_algos.empty() ||
                                  !gpu_kawpow_algos.empty() || !gpu_etchash_algos.empty() ||
-                                 !gpu_autolykos2_algos.empty();
+                                 !gpu_autolykos2_algos.empty() || !gpu_pearl_algos.empty();
   if (need_sycl_devices && str2dev.empty()) update_str2dev(true);
   const unsigned socket_count = std::max(1u, cpu_sockets);
   const unsigned thread_count = std::max(1u, cpu_threads);
@@ -401,6 +424,7 @@ std::map<std::string, std::string> algo_params(
   algos.insert(gpu_kawpow_algos.begin(), gpu_kawpow_algos.end());
   algos.insert(gpu_etchash_algos.begin(), gpu_etchash_algos.end());
   algos.insert(gpu_autolykos2_algos.begin(), gpu_autolykos2_algos.end());
+  algos.insert(gpu_pearl_algos.begin(), gpu_pearl_algos.end());
   for (const auto& algo : algos) {
     std::string result_dev;
     if (cpu_algos.contains(algo))
@@ -410,6 +434,7 @@ std::map<std::string, std::string> algo_params(
     else if (gpu_kawpow_algos.contains(algo)) add_gpu_kawpow_algo_dev(result_dev);
     else if (gpu_etchash_algos.contains(algo)) add_gpu_etchash_algo_dev(result_dev);
     else if (gpu_autolykos2_algos.contains(algo)) add_gpu_autolykos2_algo_dev(result_dev);
+    else if (gpu_pearl_algos.contains(algo)) add_gpu_pearl_algo_dev(result_dev);
     if (!result_dev.empty()) result[algo] = result_dev;
   }
   return result;

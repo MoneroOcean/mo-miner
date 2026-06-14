@@ -489,6 +489,8 @@ module.exports.repeat = function(cb_next, delay) {
 };
 
 const hashrate_units = [
+  { value: 1000000000000000, suffix: "PH/s" },
+  { value: 1000000000000, suffix: "TH/s" },
   { value: 1000000000, suffix: "GH/s" },
   { value: 1000000, suffix: "MH/s" },
   { value: 1000, suffix: "KH/s" },
