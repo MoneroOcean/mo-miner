@@ -199,8 +199,8 @@ jobs:
           name: mom-win-package
           path: dist
 
-      # Set up the runtime with the SAME install.ps1 users run (dogfoods it), pinning the OpenCL
-      # CPU runtime URL for a deterministic CI download.
+      # Set up the runtime with the SAME scripts/install.ps1 users run (dogfoods it), pinning the
+      # OpenCL CPU runtime URL for a deterministic CI download.
       - name: Install Intel OpenCL CPU runtime
         if: matrix.suite == 'sycl-cpu'
         shell: powershell

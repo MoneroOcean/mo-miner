@@ -187,6 +187,21 @@ while IFS= read -r rtl; do
   [ -n "$rtl" ] && copy_image_file "$rtl"
 done < <(docker exec "$container" bash -lc "ls $oneapi_lib/clbltfn*.rtl $oneapi_lib/cllibrary*.rtl $oneapi_lib/cllibrary*.o 2>/dev/null || true")
 
+# 2b. The OpenCL CPU runtime (libintelocl) dlopens these oneAPI libs BY NAME when it creates a
+#     context -- libocl_svml_* (vector math), libtbbmalloc, libtcm, libiomp5 -- so they never show up
+#     in ldd output and must be copied explicitly. Without them clCreateContext on the CPU SYCL device
+#     fails with DEVICE_NOT_AVAILABLE (they live across several oneAPI component dirs, like package-linux.sh).
+while IFS= read -r src; do
+  [ -n "$src" ] && copy_image_file "$src"
+done < <(docker exec "$container" bash -lc '
+  find /opt/intel/oneapi/compiler/latest/lib /opt/intel/oneapi/tbb /opt/intel/oneapi/tcm /opt/intel/oneapi/umf \
+    -type f,l \( \
+      -name "libocl_svml_*.so" -o \
+      -name "libtbbmalloc.so*" -o \
+      -name "libtcm.so*" -o \
+      -name "libiomp5.so" \
+    \) ! -name "*-gdb.py" -print 2>/dev/null | sort -u')
+
 # 3. Resolve the rest of the closure: ldd the staged files on the host against libs/, pull each
 #    still-missing non-base SONAME from the image, repeat until clean (see copy_missing_closure).
 copy_missing_closure

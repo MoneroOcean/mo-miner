@@ -103,11 +103,16 @@ if (-not (Test-Administrator)) {
 }
 
 function Stop-OpenClRuntimeInstallers {
+  # Match only the actual installer EXECUTABLES by image path. Do NOT match on CommandLine containing
+  # the runtime name/URL: when the URL is passed via -OpenClRuntimeUrl, this very script's process
+  # (and its parent shell) carry that string on their command line, so a CommandLine match would make
+  # the script Stop-Process itself and exit with no error. Excluding $PID is a further safety net.
   Get-CimInstance Win32_Process |
     Where-Object {
-      $_.ExecutablePath -eq $installer -or
-      $_.CommandLine -like "*w_opencl_runtime_p_*" -or
-      $_.CommandLine -like "*opencl-runtime.exe*"
+      $_.ProcessId -ne $PID -and (
+        $_.ExecutablePath -eq $installer -or
+        $_.ExecutablePath -like "*\w_opencl_runtime_p_*.exe"
+      )
     } |
     ForEach-Object {
       Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue

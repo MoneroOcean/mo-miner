@@ -116,8 +116,8 @@ jobs:
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File .github\workflows\scripts\package-windows.ps1
 
-      # Set up the runtime with the SAME install.ps1 users run (dogfoods it), pinning the OpenCL
-      # CPU runtime URL for a deterministic CI download.
+      # Set up the runtime with the SAME scripts/install.ps1 users run (dogfoods it), pinning the
+      # OpenCL CPU runtime URL for a deterministic CI download.
       - name: Install Intel OpenCL CPU runtime
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install.ps1 -OpenClRuntimeUrl "https://registrationcenter-download.intel.com/akdlm/IRC_NAS/ad824c04-01c8-4ae5-b5e8-164a04f67609/w_opencl_runtime_p_2025.3.1.762.exe"
