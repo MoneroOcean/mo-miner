@@ -52,7 +52,7 @@ struct KawpowResult {
   uint32_t mix_hash[MAX_KAWPOW_OUTPUTS][8];
 };
 struct Uint2 { uint32_t x, y; };
-struct DagLoad { uint32_t s[KAWPOW_DAG_LOADS]; };
+struct alignas(16) DagLoad { uint32_t s[KAWPOW_DAG_LOADS]; };  // 16B-align -> one 128-bit dag load (see kawpow.cpp)
 struct Kiss99 { uint32_t z, w, jsr, jcong; };
 
 // FastModData / fast_mod_dev mirror sycl/lib-internal.h (the AOT build pulls them from there).

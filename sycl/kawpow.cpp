@@ -124,7 +124,12 @@ struct Uint2 {
   uint32_t y;
 };
 
-struct DagLoad {
+// alignas(16): the per-loop dag read (kawpow_device.inc) is the hottest global op (64/nonce); 16-byte
+// alignment lets it lower to one 128-bit vector load (ld.global.v4.u32 / block_load) instead of 4
+// scalar loads. The DAG base is 256B-aligned USM and offsets step whole DagLoads, so it is already
+// 16B-aligned at runtime -- only the declared alignment was blocking the wide load. Size stays 16
+// bytes, so this stays byte-compatible with the kawpow_jit.inc mirror (which gets the same alignas).
+struct alignas(16) DagLoad {
   uint32_t s[KAWPOW_DAG_LOADS];
 };
 
