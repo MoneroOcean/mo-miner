@@ -8,9 +8,7 @@ if ! docker buildx version >/dev/null 2>&1; then
   exit 1
 fi
 
-build_iid="$(mktemp)"
-trap 'rm -f "$build_iid"' EXIT
-docker buildx build --load --progress=none --iidfile "$build_iid" -t mom-build --pull=false - <"$SCRIPT_DIR/scripts/build.dockerfile"
+docker buildx build --load --progress=none -t mom-build --pull=false - <"$SCRIPT_DIR/scripts/build.dockerfile"
 docker rm -f mom >/dev/null 2>&1 || true
 
 docker_flags=(
@@ -22,26 +20,16 @@ docker_flags=(
   --mount "type=bind,source=$SCRIPT_DIR,target=/root/mom"
 )
 
-if [ -n "${MOM_PORTABLE_BUILD:-}" ]; then
-  docker_flags+=(--env MOM_PORTABLE_BUILD)
-fi
+# Forward these build-tuning env vars into the container only when set.
+for var in MOM_PORTABLE_BUILD MOM_LTO MOM_PERF_SAMPLES; do
+  if [ -n "${!var:-}" ]; then docker_flags+=(--env "$var"); fi
+done
 
-if [ -n "${MOM_LTO:-}" ]; then
-  docker_flags+=(--env MOM_LTO)
-fi
-
-if [ -n "${MOM_PERF_SAMPLES:-}" ]; then
-  docker_flags+=(--env MOM_PERF_SAMPLES)
-fi
-
+# Allocate a TTY only when both stdin and stdout are terminals.
 if [ -t 0 ] && [ -t 1 ]; then
   docker_flags+=(-it)
 else
   docker_flags+=(-i)
 fi
 
-if [ $# -ne 0 ]; then
-  docker run "${docker_flags[@]}" mom-build "$@"
-else
-  docker run "${docker_flags[@]}" mom-build
-fi
+docker run "${docker_flags[@]}" mom-build "$@"

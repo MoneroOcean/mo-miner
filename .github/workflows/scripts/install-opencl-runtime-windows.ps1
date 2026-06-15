@@ -27,46 +27,35 @@ function Stop-OpenClRuntimeInstallers {
 Remove-Item -Recurse -Force $runtimeDir -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $runtimeDir | Out-Null
 
-Invoke-WebRequest `
-  -UseBasicParsing `
-  -Uri $Url `
-  -OutFile $installer
+Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $installer
 
 Stop-OpenClRuntimeInstallers
 Remove-Item -Recurse -Force $extractRoot -ErrorAction SilentlyContinue
-$extract = Start-Process `
-  -FilePath $installer `
-  -ArgumentList @("-s", "-a", "--silent", "--eula", "accept") `
-  -PassThru
+
+# The installer self-extracts the MSI into $extractRoot and then re-launches it
+# interactively, so run it non-blocking and poll for the MSI instead of waiting.
+Start-Process -FilePath $installer -ArgumentList "-s", "-a", "--silent", "--eula", "accept"
 
 $deadline = (Get-Date).AddMinutes(3)
 $msi = $null
 while ((Get-Date) -lt $deadline) {
-  $msi = Get-ChildItem `
-    -Path $extractRoot `
-    -Filter "w_opencl_runtime_p_*.msi" `
-    -File `
-    -Recurse `
-    -ErrorAction SilentlyContinue |
+  $msi = Get-ChildItem -Path $extractRoot -Filter "w_opencl_runtime_p_*.msi" -File -Recurse -ErrorAction SilentlyContinue |
     Select-Object -First 1
-  if ($msi) {
-    break
-  }
+  if ($msi) { break }
   Start-Sleep -Seconds 1
 }
 
+# Kill the bootstrapper's interactive MSI re-launch before we drive msiexec ourselves.
 Stop-OpenClRuntimeInstallers
 
 if (-not $msi) {
   throw "Unable to extract Intel OpenCL CPU runtime MSI from $installer."
 }
 
-$install = Start-Process `
-  -FilePath msiexec.exe `
-  -ArgumentList @("/i", $msi.FullName, "/qn", "/norestart") `
-  -Wait `
-  -PassThru
+$msiProc = Start-Process -FilePath msiexec.exe `
+  -ArgumentList "/i", $msi.FullName, "/qn", "/norestart" -Wait -PassThru
 
-if ($install.ExitCode -ne 0 -and $install.ExitCode -ne 3010) {
-  throw "Intel OpenCL CPU runtime install failed with exit code $($install.ExitCode)."
+# 3010 == ERROR_SUCCESS_REBOOT_REQUIRED: a successful install that wants a reboot.
+if ($msiProc.ExitCode -ne 0 -and $msiProc.ExitCode -ne 3010) {
+  throw "Intel OpenCL CPU runtime install failed with exit code $($msiProc.ExitCode)."
 }

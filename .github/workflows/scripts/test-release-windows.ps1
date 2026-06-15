@@ -50,12 +50,10 @@ if (Test-Path (Join-Path $packageDir "tests")) {
   throw "Extracted release package unexpectedly contains tests/."
 }
 
-$hasSyclBridge = Test-Path (Join-Path $libsDir "sycl.dll")
-if (-not $hasSyclBridge) {
-  throw "Windows release package is missing libs/sycl.dll."
-}
-if (-not (Test-Path (Join-Path $libsDir "mom.node"))) {
-  throw "Windows release package is missing libs/mom.node."
+foreach ($lib in @("sycl.dll", "mom.node")) {
+  if (-not (Test-Path (Join-Path $libsDir $lib))) {
+    throw "Windows release package is missing libs/$lib."
+  }
 }
 $entryPaths = @(
   (Join-Path $packageDir "mom-node.exe"),
@@ -66,7 +64,8 @@ Test-MominerDllClosure -PackageDir $libsDir -EntryPaths $entryPaths
 
 Copy-Item tests (Join-Path $packageDir "tests") -Recurse
 
-$systemPath = @(
+# Minimal PATH: package/libs first, then the Windows system dirs the EXE needs.
+$env:Path = @(
   $libsDir,
   $packageDir,
   "$env:WINDIR\System32",
@@ -74,7 +73,6 @@ $systemPath = @(
   "$env:WINDIR\System32\Wbem",
   "$env:WINDIR\System32\WindowsPowerShell\v1.0"
 ) -join ';'
-$env:Path = $systemPath
 
 function Enable-IntelOpenCL {
   if ($env:OCL_ICD_FILENAMES) {
@@ -92,7 +90,8 @@ function Get-SyclCpuDevicesFromOutput {
 
   $devices = New-Object 'System.Collections.Generic.List[string]'
   foreach ($line in $Output) {
-    if ($line -match '^(cpu\d+):\s+(.+)$') {
+    # "cpuN: <description>" lines name an available CPU SYCL device.
+    if ($line -match '^(cpu\d+):\s+.+$') {
       $devices.Add($Matches[1])
     }
   }
@@ -103,24 +102,30 @@ Remove-Item Env:MOM_ASSUME_SYCL_CPU -ErrorAction SilentlyContinue
 Enable-IntelOpenCL
 Push-Location $packageDir
 try {
-  $oldErrorActionPreference = $ErrorActionPreference
-  $ErrorActionPreference = "Continue"
-  $smokeOutput = & .\mom.cmd algo_params 2>&1
-  $smokeExit = $LASTEXITCODE
-  $ErrorActionPreference = $oldErrorActionPreference
-  if ($smokeExit -ne 0) {
-    $env:MOM_DEBUG_STARTUP = "1"
+  # Run mom.cmd without aborting on a non-zero exit so we can inspect output/code.
+  function Invoke-AlgoParams {
+    $previous = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-    $debugOutput = & .\mom.cmd algo_params 2>&1
-    $debugExit = $LASTEXITCODE
-    $ErrorActionPreference = $oldErrorActionPreference
-    Remove-Item Env:MOM_DEBUG_STARTUP -ErrorAction SilentlyContinue
-    throw "Direct executable smoke test failed with exit code $smokeExit. Output: $($smokeOutput -join ' | '). Debug exit code: $debugExit. Debug output: $($debugOutput -join ' | ')"
+    try {
+      $output = & .\mom.cmd algo_params 2>&1
+      return [pscustomobject]@{ Output = $output; Exit = $LASTEXITCODE }
+    } finally {
+      $ErrorActionPreference = $previous
+    }
   }
-  if (-not ($smokeOutput | Where-Object { $_ -match '^MOM_ALGO_PARAMS ' })) {
-    throw "Direct executable smoke test did not print algo params marker.`n$($smokeOutput -join "`n")"
+
+  $smoke = Invoke-AlgoParams
+  $smokeOutput = $smoke.Output
+  if ($smoke.Exit -ne 0) {
+    $env:MOM_DEBUG_STARTUP = "1"
+    $debug = Invoke-AlgoParams
+    Remove-Item Env:MOM_DEBUG_STARTUP -ErrorAction SilentlyContinue
+    throw "Direct executable smoke test failed with exit code $($smoke.Exit). Output: $($smokeOutput -join ' | '). Debug exit code: $($debug.Exit). Debug output: $($debug.Output -join ' | ')"
   }
   $marker = $smokeOutput | Where-Object { $_ -match '^MOM_ALGO_PARAMS ' } | Select-Object -First 1
+  if (-not $marker) {
+    throw "Direct executable smoke test did not print algo params marker.`n$($smokeOutput -join "`n")"
+  }
   $params = ($marker -replace '^MOM_ALGO_PARAMS ', '') | ConvertFrom-Json
   foreach ($prop in $params.PSObject.Properties) {
     $dev = [string]$prop.Value
@@ -133,12 +138,8 @@ try {
     throw "Windows $Suite release test requires a CPU SYCL device, but algo_params did not report one.`n$($smokeOutput -join "`n")"
   }
 
-  $validSuites = @("all", "cpu", "sycl-cpu", "gpu")
-  if ($Suite -notin $validSuites) {
+  if ($Suite -notin @("all", "cpu", "sycl-cpu", "gpu")) {
     throw "Unknown release test suite: $Suite"
-  }
-  if ($Suite -eq "all" -or $Suite -eq "sycl-cpu") {
-    Enable-IntelOpenCL
   }
   & $node tests/run_hash.js $Suite
   if ($LASTEXITCODE -ne 0) {

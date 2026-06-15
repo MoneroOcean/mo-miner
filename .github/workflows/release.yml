@@ -102,8 +102,8 @@ jobs:
         uses: docker/setup-buildx-action@v4
 
       # DPC++ CUDA-backend build: AOT to PTX/SASS, so no GPU is needed at build time.
-      # The build is CUDA-only (no CPU SYCL device), so GPU algos are verified on real
-      # NVIDIA hardware, not in CI.
+      # The build is CUDA-only (no CPU SYCL device) and CI runners have no NVIDIA GPU,
+      # so the SYCL/GPU algos are verified on real NVIDIA hardware, not in CI.
       - name: Build native addon in NVIDIA (DPC++ CUDA) image
         run: ./r-nvidia.sh node -e "console.log('mom nvidia build ready')"
 
@@ -111,9 +111,7 @@ jobs:
         run: .github/workflows/scripts/package-linux-nvidia.sh
 
       - name: Test release archive (CPU)
-        # Only the pure-CPU (xmrig) suite runs in CI: the dpcpp-cuda build exposes no
-        # CPU SYCL device and CI runners have no NVIDIA GPU, so the SYCL/GPU algos are
-        # verified on real NVIDIA hardware instead.
+        # Only the pure-CPU (xmrig) suite runs here (see build step above for why).
         run: |
           set -euo pipefail
           archive="$(find . -maxdepth 1 -name 'mom-*-lin-nvidia.tgz' -print -quit)"
@@ -203,21 +201,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          files=()
-          while IFS= read -r -d '' file; do
-            files+=("$file")
-          done < <(find artifacts -type f -print0)
+          mapfile -d '' files < <(find artifacts -type f -print0)
+          meta=(--repo "${GITHUB_REPOSITORY}" --title "${GITHUB_REF_NAME}" --notes "mom ${GITHUB_REF_NAME}")
           if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            gh release edit "${GITHUB_REF_NAME}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --title "${GITHUB_REF_NAME}" \
-              --notes "mom ${GITHUB_REF_NAME}"
-            gh release upload "${GITHUB_REF_NAME}" "${files[@]}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --clobber
+            # Release already exists (e.g. a re-run): refresh metadata, then overwrite assets.
+            gh release edit "${GITHUB_REF_NAME}" "${meta[@]}"
+            gh release upload "${GITHUB_REF_NAME}" "${files[@]}" --repo "${GITHUB_REPOSITORY}" --clobber
           else
-            gh release create "${GITHUB_REF_NAME}" "${files[@]}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --title "${GITHUB_REF_NAME}" \
-              --notes "mom ${GITHUB_REF_NAME}"
+            gh release create "${GITHUB_REF_NAME}" "${files[@]}" "${meta[@]}"
           fi

@@ -77,9 +77,9 @@ inline unsigned sycl_default_workgroup(
   const sycl::device& device, const std::initializer_list<unsigned> allowed, const unsigned preferred
 ) {
   const size_t reported_max = device.get_info<sycl::info::device::max_work_group_size>();
-  const unsigned max_workgroup = reported_max > std::numeric_limits<unsigned>::max()
-    ? std::numeric_limits<unsigned>::max()
-    : std::max(1u, static_cast<unsigned>(reported_max));
+  // Clamp the reported limit into [1, UINT_MAX] before comparing against unsigned candidates.
+  const unsigned max_workgroup = std::max<unsigned>(1u, static_cast<unsigned>(
+    std::min<size_t>(reported_max, std::numeric_limits<unsigned>::max())));
   unsigned selected = 0;
   for (const unsigned candidate : allowed) {
     if (candidate <= preferred && candidate <= max_workgroup) selected = std::max(selected, candidate);
@@ -88,13 +88,9 @@ inline unsigned sycl_default_workgroup(
 }
 
 // Branch-free modulo by a runtime divisor via multiply-shift (Granlund-Montgomery).
-// Shared by the kawpow/etchash/autolykos2 kernels.
-struct FastModData {
-  uint32_t reciprocal;
-  uint32_t increment;
-  uint32_t shift;
-  uint32_t divisor;
-};
+// Shared by the kawpow/etchash/autolykos2 kernels. Layout must stay byte-compatible
+// with the FastModData mirror in kawpow_jit.inc.
+struct FastModData { uint32_t reciprocal, increment, shift, divisor; };
 
 inline uint32_t clz32_host(const uint32_t value) {
 #if defined(_MSC_VER)
@@ -107,23 +103,22 @@ inline uint32_t clz32_host(const uint32_t value) {
 }
 
 inline FastModData make_fast_mod_data(const uint32_t divisor) {
-  FastModData data{};
+  FastModData data{};  // increment defaults to 0
   data.divisor = divisor;
-  if ((divisor & (divisor - 1U)) == 0) {
+  if ((divisor & (divisor - 1U)) == 0) {  // power of two: exact shift, reciprocal 1
     data.reciprocal = 1;
-    data.increment = 0;
     data.shift = 31U - clz32_host(divisor);
   } else {
     data.shift = 63U - clz32_host(divisor);
     const uint64_t n = 1ULL << data.shift;
     const uint64_t q = n / divisor;
     const uint64_t r = n - q * divisor;
+    // Round the reciprocal up unless the remainder lets us round down with increment=1.
     if (r * 2 < divisor) {
       data.reciprocal = static_cast<uint32_t>(q);
       data.increment = 1;
     } else {
       data.reciprocal = static_cast<uint32_t>(q + 1);
-      data.increment = 0;
     }
   }
   return data;

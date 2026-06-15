@@ -14,14 +14,33 @@ escape_github_message() {
   printf '%s' "$value"
 }
 
-emit_github_error() {
-  local title="$1"
-  local message="$2"
+# Print a one-line message to stderr and abort.
+die() {
+  echo "$1" >&2
+  exit 1
+}
+
+# Like die(), but also emit a GitHub Actions error annotation when running in CI.
+fail() {
+  local title="$1" message="$2"
   if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
     printf '::error title=%s::%s\n' \
       "$(escape_github_message "$title")" \
       "$(escape_github_message "$message")" >&2
   fi
+  die "$message"
+}
+
+# Run a command, capturing combined stdout+stderr into the global CAPTURE_OUT
+# and its exit status into CAPTURE_RC (without tripping set -e). The command
+# runs in a subshell, so a leading `cd` stays contained.
+CAPTURE_OUT=""
+CAPTURE_RC=0
+capture() {
+  set +e
+  CAPTURE_OUT="$( "$@" 2>&1 )"
+  CAPTURE_RC=$?
+  set -e
 }
 
 rm -rf "$work_dir"
@@ -32,26 +51,16 @@ trap 'rm -f "$archive_list"' EXIT
 tar -tzf "$archive" >"$archive_list"
 
 root="$(sed -n '1p' "$archive_list" | cut -d/ -f1)"
-if [ -z "$root" ]; then
-  echo "Unable to determine archive root for $archive." >&2
-  exit 1
-fi
+[ -n "$root" ] || die "Unable to determine archive root for $archive."
 if grep -Eq '(^|/)tests(/|$)' "$archive_list"; then
-  echo "Release archive must not contain tests/." >&2
-  exit 1
+  die "Release archive must not contain tests/."
 fi
 
 tar -C "$work_dir" -xzf "$archive"
 package_dir="$work_dir/$root"
 libs_dir="$package_dir/libs"
-if [ -d "$package_dir/tests" ]; then
-  echo "Extracted release package unexpectedly contains tests/." >&2
-  exit 1
-fi
-if [ ! -f "$libs_dir/mom.node" ]; then
-  echo "Extracted release package is missing libs/mom.node." >&2
-  exit 1
-fi
+[ ! -d "$package_dir/tests" ] || die "Extracted release package unexpectedly contains tests/."
+[ -f "$libs_dir/mom.node" ] || die "Extracted release package is missing libs/mom.node."
 
 check_ldd() {
   local file output failed=0
@@ -79,39 +88,34 @@ if [ -f "$libs_dir/libintelocl.so" ]; then
   export OCL_ICD_FILENAMES="$PWD/$libs_dir/libintelocl.so"
 fi
 
-set +e
-smoke_output="$(cd "$package_dir" && env -u LD_LIBRARY_PATH ./mom algo_params 2>&1)"
-smoke_exit=$?
-set -e
-if [ "$smoke_exit" -ne 0 ]; then
-  set +e
-  debug_output="$(cd "$package_dir" && env -u LD_LIBRARY_PATH MOM_DEBUG_STARTUP=1 ./mom algo_params 2>&1)"
-  debug_exit=$?
-  set -e
-  smoke_message=$(
-    cat <<EOF
+# Run the extracted ./mom from inside the package dir, with LD_LIBRARY_PATH
+# unset so the loader must find the bundled libs via rpath alone.
+run_mom() { (cd "$package_dir" && env -u LD_LIBRARY_PATH "$@" ./mom algo_params); }
+
+capture run_mom
+smoke_output="$CAPTURE_OUT"
+if [ "$CAPTURE_RC" -ne 0 ]; then
+  smoke_exit="$CAPTURE_RC"
+  capture run_mom MOM_DEBUG_STARTUP=1
+  fail "Linux release smoke test failed" "$(cat <<EOF
 Direct executable smoke test failed with exit code $smoke_exit.
 
 Output:
 $smoke_output
 
-Debug exit code: $debug_exit
+Debug exit code: $CAPTURE_RC
 Debug output:
-$debug_output
+$CAPTURE_OUT
 EOF
-  )
-  emit_github_error "Linux release smoke test failed" "$smoke_message"
-  echo "$smoke_message" >&2
-  exit 1
+)"
 fi
 if ! grep -q '^MOM_ALGO_PARAMS ' <<<"$smoke_output"; then
-  emit_github_error "Linux release smoke test missing marker" "$smoke_output"
-  echo "Direct executable smoke test did not print algo params marker." >&2
-  echo "$smoke_output" >&2
-  exit 1
+  fail "Linux release smoke test missing marker" "$(printf '%s\n%s' \
+    "Direct executable smoke test did not print algo params marker." "$smoke_output")"
 fi
-set +e
-validation_output="$(printf '%s\n' "$smoke_output" | "$node_bin" -e '
+# Validate that every algo advertises a usable device string (non-empty and not
+# a disabled "*0"/"^0" entry).
+capture "$node_bin" -e '
 const fs = require("node:fs");
 const marker = fs.readFileSync(0, "utf8").split(/\r?\n/).find((line) => line.startsWith("MOM_ALGO_PARAMS "));
 const params = JSON.parse(marker.slice("MOM_ALGO_PARAMS ".length));
@@ -121,31 +125,23 @@ for (const [algo, dev] of Object.entries(params)) {
     process.exit(1);
   }
 }
-' 2>&1)"
-validation_exit=$?
-set -e
-if [ "$validation_exit" -ne 0 ]; then
-  validation_message=$(
-    cat <<EOF
-Algo params validation failed with exit code $validation_exit.
+' <<<"$smoke_output"
+if [ "$CAPTURE_RC" -ne 0 ]; then
+  fail "Linux release algo params invalid" "$(cat <<EOF
+Algo params validation failed with exit code $CAPTURE_RC.
 
 Validation output:
-$validation_output
+$CAPTURE_OUT
 
 Smoke output:
 $smoke_output
 EOF
-  )
-  emit_github_error "Linux release algo params invalid" "$validation_message"
-  echo "$validation_message" >&2
-  exit 1
+)"
 fi
 
 case "$suite" in
   all|cpu|gpu|sycl-cpu)
     (cd "$package_dir" && "$node_bin" tests/run_hash.js "$suite") ;;
   *)
-    echo "Unknown release test suite: $suite" >&2
-    exit 1
-    ;;
+    die "Unknown release test suite: $suite" ;;
 esac

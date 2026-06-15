@@ -58,6 +58,11 @@ inline uint32_t fnv_dev(const uint32_t x, const uint32_t y) {
   return x * FNV_PRIME ^ y;
 }
 
+// Compress 4 consecutive mix words into one via the ethash FNV chain.
+inline uint32_t fnv_fold4_dev(const uint32_t* const v) {
+  return fnv_dev(fnv_dev(fnv_dev(v[0], v[1]), v[2]), v[3]);
+}
+
 inline uint32_t load32_le_dev(const uint8_t* const input) {
   return static_cast<uint32_t>(input[0]) |
          (static_cast<uint32_t>(input[1]) << 8) |
@@ -157,6 +162,12 @@ inline Uint2& operator^=(Uint2& a, const Uint2 b) {
   a.x ^= b.x;
   a.y ^= b.y;
   return a;
+}
+
+// Scatter a 64-bit lane held as a Uint2 into two little-endian 32-bit words.
+inline void store_pair_words_dev(uint32_t* const out, const unsigned lane, const Uint2 value) {
+  out[lane * 2] = value.x;
+  out[lane * 2 + 1] = value.y;
 }
 
 inline Uint2 rotl64_pair_dev(const Uint2 value, const unsigned shift) {
@@ -266,10 +277,7 @@ inline void keccak_512_words_dev(uint32_t words[ETHASH_NODE_WORDS]) {
   for (unsigned i = 0; i < 8; ++i) st[i] = make_u2(words[i * 2], words[i * 2 + 1]);
   st[8] = make_u2(0x00000001, 0x80000000);
   keccakf1600_pair_dev(st);
-  for (unsigned i = 0; i < 8; ++i) {
-    words[i * 2] = st[i].x;
-    words[i * 2 + 1] = st[i].y;
-  }
+  for (unsigned i = 0; i < 8; ++i) store_pair_words_dev(words, i, st[i]);
 }
 
 inline void keccak_512_header_nonce_dev(const uint8_t* const header_hash, const uint64_t nonce, uint32_t out[16]) {
@@ -291,10 +299,7 @@ inline void keccak_512_header_nonce_pair_dev(const uint8_t* const header_hash, c
   st[5] = make_u2(0x00000001, 0x00000000);
   st[8] = make_u2(0x00000000, 0x80000000);
   keccakf1600_pair_dev(st);
-  for (unsigned i = 0; i < 8; ++i) {
-    out[i * 2] = st[i].x;
-    out[i * 2 + 1] = st[i].y;
-  }
+  for (unsigned i = 0; i < 8; ++i) store_pair_words_dev(out, i, st[i]);
 }
 
 inline void keccak_256_seed_mix_dev(const uint32_t seed[16], const uint32_t mix[8], uint8_t out[32]) {
@@ -352,6 +357,8 @@ inline void store_etchash_result(
 }
 
 inline uint32_t etchash_epoch(const uint32_t height) {
+  // ETC doubled the epoch length at the ECIP-1099 fork: 30000 blocks before, 60000 after.
+  // The two divisors differ (ETHASH_EPOCH vs ETCHASH_EPOCH) despite their similar names.
   return height < ETCHASH_FORK_BLOCK ? height / ETHASH_EPOCH : height / ETCHASH_EPOCH;
 }
 
@@ -408,6 +415,19 @@ void resolve_epochs(
   seed_epoch = etchash_seed_epoch(block_height);
 }
 
+// Parse env var `name` as a base-10 unsigned long into `out`; returns false (leaving
+// `out` untouched) when unset, empty, or not a clean integer so callers keep their default.
+bool parse_env_ulong(const char* const name, unsigned long& out) {
+  const char* const value = std::getenv(name);
+  if (!value || !*value) return false;
+  char* end = nullptr;
+  errno = 0;
+  const unsigned long parsed = std::strtoul(value, &end, 10);
+  if (errno || end == value || *end) return false;
+  out = parsed;
+  return true;
+}
+
 class EtchashState {
 public:
   sycl::device device;
@@ -438,7 +458,7 @@ public:
       throw std::string("etchash SYCL device does not support required allocations");
     }
 
-    set_sycl_env("SYCL_PROGRAM_COMPILE_OPTIONS", etchash_compile_options(device));
+    set_sycl_env("SYCL_PROGRAM_COMPILE_OPTIONS", etchash_compile_options());
     bundle = std::make_unique<MOM_BUNDLE_T>(
       MOM_GET_EXEC_BUNDLE(queue.get_context())
     );
@@ -448,14 +468,8 @@ public:
 
   static unsigned etchash_dag_workgroup(const sycl::device& dev) {
     const unsigned fallback = sycl_default_workgroup(dev, {32, 64, 128, 256, 512}, dev.is_cpu() ? 128 : 64);
-    const char* const value = std::getenv("MOM_ETCHASH_DAG_WORKGROUP");
-    if (!value || !*value) return fallback;
-
-    char* end = nullptr;
-    errno = 0;
-    const unsigned long parsed = std::strtoul(value, &end, 10);
-    if (errno || end == value || *end) return fallback;
-
+    unsigned long parsed = 0;
+    if (!parse_env_ulong("MOM_ETCHASH_DAG_WORKGROUP", parsed)) return fallback;
     switch (parsed) {
       case 32:
       case 64:
@@ -468,23 +482,17 @@ public:
   }
 
   static uint32_t etchash_dag_chunk_nodes() {
-    const char* const value = std::getenv("MOM_ETCHASH_DAG_CHUNK_NODES");
-    if (!value || !*value) return 0;
-
-    char* end = nullptr;
-    errno = 0;
-    const unsigned long parsed = std::strtoul(value, &end, 10);
-    if (errno || end == value || *end || parsed > std::numeric_limits<uint32_t>::max()) return 0;
+    unsigned long parsed = 0;
+    if (!parse_env_ulong("MOM_ETCHASH_DAG_CHUNK_NODES", parsed) ||
+        parsed > std::numeric_limits<uint32_t>::max()) return 0;
     return static_cast<uint32_t>(parsed);
   }
 
-  static const char* etchash_compile_options(const sycl::device& dev) {
+  static const char* etchash_compile_options() {
     const char* const value = std::getenv("MOM_ETCHASH_COMPILE_OPTIONS");
-    if (value) return value;
-    // "-O3" is process-global; pearl's ESIMD image rejects it (no-op for etchash anyway).
-    // Override via MOM_ETCHASH_COMPILE_OPTIONS if needed.
-    (void)dev;
-    return "";
+    // Default empty: "-O3" is process-global and pearl's ESIMD image rejects it
+    // (and it is a no-op for etchash). Override via MOM_ETCHASH_COMPILE_OPTIONS if needed.
+    return value ? value : "";
   }
 
   template<typename T>
@@ -736,14 +744,8 @@ int etchash(
               }
             }
 
-            uint32_t compressed0 = mix[0];
-            compressed0 = fnv_dev(compressed0, mix[1]);
-            compressed0 = fnv_dev(compressed0, mix[2]);
-            compressed0 = fnv_dev(compressed0, mix[3]);
-            uint32_t compressed1 = mix[4];
-            compressed1 = fnv_dev(compressed1, mix[5]);
-            compressed1 = fnv_dev(compressed1, mix[6]);
-            compressed1 = fnv_dev(compressed1, mix[7]);
+            const uint32_t compressed0 = fnv_fold4_dev(mix);
+            const uint32_t compressed1 = fnv_fold4_dev(mix + 4);
 
             uint32_t compressed_mix[8];
 #pragma unroll

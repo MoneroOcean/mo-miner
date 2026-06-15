@@ -7,12 +7,11 @@
 #include <set>
 #include <string>
 
-#if defined(_WIN32)
-#if defined(MOM_SYCL_BUILD)
+// Windows needs explicit DLL visibility; everything else exports by default.
+#if defined(_WIN32) && defined(MOM_SYCL_BUILD)
 #define MOM_SYCL_API __declspec(dllexport)
-#else
+#elif defined(_WIN32)
 #define MOM_SYCL_API __declspec(dllimport)
-#endif
 #else
 #define MOM_SYCL_API
 #endif
@@ -67,6 +66,6 @@ MOM_SYCL_API int pearl(
   unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
 );
 MOM_SYCL_API const char* pearl_proof();
-// GEMM MACs per pearl attempt (m*n*k, m=n=intensity) -- the work unit the pearl "TH/s" hashrate is
-// quoted in, so the core counts this rather than the seed/intensity batch.
+// GEMM MACs per pearl attempt (m*n*k, m=n) -- the work unit the pearl "TH/s" hashrate is quoted in,
+// so the core counts this rather than the seed/intensity batch. Mirrors pearl()'s intensity clamp.
 MOM_SYCL_API uint64_t pearl_attempt_hashes(unsigned intensity);

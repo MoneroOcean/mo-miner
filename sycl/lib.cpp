@@ -10,6 +10,9 @@
 
 static std::map<std::string, sycl::device> str2dev;
 
+constexpr uint64_t MiB = 1024ULL * 1024ULL;
+constexpr uint64_t GiB = 1024ULL * MiB;
+
 static void update_str2dev(const bool verbose = false) {
   unsigned cpu_num = 0, gpu_num = 0;
   for (auto platform : sycl::platform::get_platforms()) {
@@ -57,19 +60,31 @@ static std::string available_dev_str() {
   return first ? "none" : devices.str();
 }
 
+// Parse env_name as a base-10 unsigned long, requiring it to be present, non-empty
+// and fully numeric. Returns false (leaving out unchanged) when unset or malformed.
+static bool parse_env_ulong(const char* const env_name, unsigned long& out) {
+  const char* const value = std::getenv(env_name);
+  if (!value || !*value) return false;
+  char* end = nullptr;
+  errno = 0;
+  const unsigned long parsed = std::strtoul(value, &end, 10);
+  if (errno || end == value || *end) return false;
+  out = parsed;
+  return true;
+}
+
+// Round down to a whole multiple of step (step > 0) so intensities stay workgroup-aligned.
+static unsigned round_down_to_multiple(const unsigned value, const unsigned step) {
+  return value - value % step;
+}
+
 static unsigned parse_pow_workgroup_override(
   const sycl::device& dev, const char* const env_name, const unsigned fallback_override = 0
 ) {
   const unsigned preferred = fallback_override ? fallback_override : (dev.is_cpu() ? 128 : 256);
   const unsigned fallback = sycl_default_workgroup(dev, {32, 64, 128, 256, 512}, preferred);
-  const char* const value = std::getenv(env_name);
-  if (!value || !*value) return fallback;
-
-  char* end = nullptr;
-  errno = 0;
-  const unsigned long parsed = std::strtoul(value, &end, 10);
-  if (errno || end == value || *end) return fallback;
-
+  unsigned long parsed = 0;
+  if (!parse_env_ulong(env_name, parsed)) return fallback;
   switch (parsed) {
     case 32:
     case 64:
@@ -82,14 +97,10 @@ static unsigned parse_pow_workgroup_override(
 }
 
 static unsigned parse_pow_intensity_override(const unsigned local, const char* const env_name) {
-  const char* const value = std::getenv(env_name);
-  if (!value || !*value) return 0;
-
-  char* end = nullptr;
-  errno = 0;
-  const unsigned long parsed = std::strtoul(value, &end, 10);
-  if (errno || end == value || *end || parsed < local || parsed > std::numeric_limits<unsigned>::max()) return 0;
-  return static_cast<unsigned>(parsed - (parsed % local));
+  unsigned long parsed = 0;
+  if (!parse_env_ulong(env_name, parsed) ||
+      parsed < local || parsed > std::numeric_limits<unsigned>::max()) return 0;
+  return round_down_to_multiple(static_cast<unsigned>(parsed), local);
 }
 
 struct PowDeviceProfile {
@@ -121,17 +132,13 @@ static PowDeviceProfile pow_device_profile(const sycl::device& dev) {
 static bool pow_has_dataset_memory(
   const sycl::device& dev, const uint64_t dataset_bytes, const uint64_t min_global_mem
 ) {
-  constexpr uint64_t MiB = 1024ULL * 1024ULL;
   const PowDeviceProfile profile = pow_device_profile(dev);
-  const uint64_t reserve = 512ULL * MiB;
+  const uint64_t reserve = 512ULL * MiB; // headroom for runtime/scratch allocations
   return profile.max_alloc >= dataset_bytes &&
          profile.global_mem >= std::max(min_global_mem, dataset_bytes + reserve);
 }
 
 static unsigned pow_device_score(const PowDeviceProfile& profile) {
-  constexpr uint64_t MiB = 1024ULL * 1024ULL;
-  constexpr uint64_t GiB = 1024ULL * MiB;
-
   // Favor deeper in-flight batches only on GPUs with enough parallelism and memory headroom.
   const uint64_t mem_per_cu = profile.global_mem / profile.compute_units;
   unsigned score = 0;
@@ -168,8 +175,7 @@ static unsigned pow_intensity(
   uint64_t intensity64 = static_cast<uint64_t>(local) * scale.base_work_items * profile.compute_units;
   intensity64 /= scale.compute_unit_divisor;
   intensity64 = std::min<uint64_t>(intensity64, std::numeric_limits<unsigned>::max());
-  unsigned intensity = static_cast<unsigned>(intensity64);
-  intensity -= intensity % local;
+  const unsigned intensity = round_down_to_multiple(static_cast<unsigned>(intensity64), local);
   return std::max(intensity, local * 4096u);
 }
 
@@ -211,12 +217,9 @@ static unsigned autolykos2_intensity(const sycl::device& dev) {
 // network-standard shape for HeroMiners/LuckyPool (k=4096, rank=256), ~53 TH/s on a B580 (~1.2GB
 // VRAM). Low-mem cards / pearlpool.cloud use 16384 via MOM_PEARL_INTENSITY (k=1024, rank=64).
 static unsigned pearl_intensity(const sycl::device&) {
-  const char* const env = std::getenv("MOM_PEARL_INTENSITY");
-  if (env && *env) {
-    char* end = nullptr;
-    const unsigned long parsed = std::strtoul(env, &end, 10);
-    if (end != env && !*end && parsed >= 256) return static_cast<unsigned>(parsed - (parsed % 64));
-  }
+  unsigned long parsed = 0;
+  if (parse_env_ulong("MOM_PEARL_INTENSITY", parsed) && parsed >= 256)
+    return round_down_to_multiple(static_cast<unsigned>(parsed), 64);
   return 131072;
 }
 
@@ -330,6 +333,7 @@ static void add_gpu_cn_algo_dev(
     if (mem == algo2mem.end()) return add_result_dev(result_dev, cn_dev_str + "*" + std::to_string(max_compute_units));
 
     const unsigned batch_mem        = mem->second,
+                   // &~7: keep per-allocation batch a multiple of 8 hashes
                    max_alloc_batch  = (cn_dev.get_info<sycl::info::device::max_mem_alloc_size>() / batch_mem) & 0xFFFFFFF8,
                    max_batch        = cn_dev.get_info<sycl::info::device::global_mem_size>() / batch_mem,
                    max_thread_batch = std::min(max_alloc_batch, max_batch),
@@ -349,39 +353,14 @@ static void add_gpu_c29_algo_dev(std::string& result_dev) {
   });
 }
 
-static void add_gpu_kawpow_algo_dev(std::string& result_dev) {
+// Emit "<dev>*<intensity>" for each default GPU that has room for the algo's dataset.
+static void add_gpu_dataset_algo_dev(
+  std::string& result_dev, const uint64_t dataset_bytes, const uint64_t min_global_mem,
+  unsigned (*intensity)(const sycl::device&)
+) {
   for_each_default_gpu([&](const std::string& dev_str, const sycl::device& dev) {
-    constexpr uint64_t dataset_bytes = 5ULL * 1024ULL * 1024ULL * 1024ULL;
-    constexpr uint64_t min_global_mem = 6ULL * 1024ULL * 1024ULL * 1024ULL;
     if (pow_has_dataset_memory(dev, dataset_bytes, min_global_mem))
-      add_result_dev(result_dev, dev_str + "*" + std::to_string(kawpow_intensity(dev)));
-  });
-}
-
-static void add_gpu_etchash_algo_dev(std::string& result_dev) {
-  for_each_default_gpu([&](const std::string& dev_str, const sycl::device& dev) {
-    constexpr uint64_t dataset_bytes = 4300ULL * 1024ULL * 1024ULL;
-    constexpr uint64_t min_global_mem = 5ULL * 1024ULL * 1024ULL * 1024ULL;
-    if (pow_has_dataset_memory(dev, dataset_bytes, min_global_mem))
-      add_result_dev(result_dev, dev_str + "*" + std::to_string(etchash_intensity(dev)));
-  });
-}
-
-static void add_gpu_autolykos2_algo_dev(std::string& result_dev) {
-  for_each_default_gpu([&](const std::string& dev_str, const sycl::device& dev) {
-    constexpr uint64_t dataset_bytes = 1ULL * 1024ULL * 1024ULL * 1024ULL;
-    constexpr uint64_t min_global_mem = 3ULL * 1024ULL * 1024ULL * 1024ULL;
-    if (pow_has_dataset_memory(dev, dataset_bytes, min_global_mem))
-      add_result_dev(result_dev, dev_str + "*" + std::to_string(autolykos2_intensity(dev)));
-  });
-}
-
-static void add_gpu_pearl_algo_dev(std::string& result_dev) {
-  for_each_default_gpu([&](const std::string& dev_str, const sycl::device& dev) {
-    constexpr uint64_t dataset_bytes = 256ULL * 1024ULL * 1024ULL;   // A'/B'/noise buffers are small
-    constexpr uint64_t min_global_mem = 2ULL * 1024ULL * 1024ULL * 1024ULL;
-    if (pow_has_dataset_memory(dev, dataset_bytes, min_global_mem))
-      add_result_dev(result_dev, dev_str + "*" + std::to_string(pearl_intensity(dev)));
+      add_result_dev(result_dev, dev_str + "*" + std::to_string(intensity(dev)));
   });
 }
 
@@ -427,12 +406,13 @@ std::map<std::string, std::string> algo_params(
     std::string result_dev;
     if (cpu_algos.contains(algo))
       add_cpu_algo_dev(result_dev, algo, max_cpu_batch, socket_count, thread_count, l3cache, algo2mem);
+    // Dataset bytes (largest single allocation) and minimum global memory per GPU algo.
     if (gpu_cn_algos.contains(algo)) add_gpu_cn_algo_dev(result_dev, algo, algo2mem);
     else if (gpu_c29_algos.contains(algo)) add_gpu_c29_algo_dev(result_dev);
-    else if (gpu_kawpow_algos.contains(algo)) add_gpu_kawpow_algo_dev(result_dev);
-    else if (gpu_etchash_algos.contains(algo)) add_gpu_etchash_algo_dev(result_dev);
-    else if (gpu_autolykos2_algos.contains(algo)) add_gpu_autolykos2_algo_dev(result_dev);
-    else if (gpu_pearl_algos.contains(algo)) add_gpu_pearl_algo_dev(result_dev);
+    else if (gpu_kawpow_algos.contains(algo)) add_gpu_dataset_algo_dev(result_dev, 5 * GiB, 6 * GiB, kawpow_intensity);
+    else if (gpu_etchash_algos.contains(algo)) add_gpu_dataset_algo_dev(result_dev, 4300 * MiB, 5 * GiB, etchash_intensity);
+    else if (gpu_autolykos2_algos.contains(algo)) add_gpu_dataset_algo_dev(result_dev, 1 * GiB, 3 * GiB, autolykos2_intensity);
+    else if (gpu_pearl_algos.contains(algo)) add_gpu_dataset_algo_dev(result_dev, 256 * MiB, 2 * GiB, pearl_intensity); // small A'/B'/noise buffers
     if (!result_dev.empty()) result[algo] = result_dev;
   }
   return result;

@@ -168,16 +168,12 @@ KawpowProgram make_program(const uint64_t period) {
 
   for (uint32_t i = 0; i < KAWPOW_CNT_CACHE || i < KAWPOW_CNT_MATH; ++i) {
     if (i < KAWPOW_CNT_CACHE) {
-      program.cache[cache_counter++] = {
-        src_seq[(src_counter++) % KAWPOW_REGS],
-        dst_seq[(dst_counter++) % KAWPOW_REGS],
-        0,
-        0
-      };
+      // Order matters: the src/dst sequence reads must precede the kiss99() selector draw to match
+      // the reference ProgPoW program (the test vector guards this).
+      const uint32_t src = src_seq[(src_counter++) % KAWPOW_REGS];
+      const uint32_t dst = dst_seq[(dst_counter++) % KAWPOW_REGS];
       const uint32_t selector = kiss99(rnd);
-      auto& op = program.cache[cache_counter - 1];
-      op.merge_mode = selector % 4;
-      op.merge_shift = merge_shift(selector);
+      program.cache[cache_counter++] = {src, dst, selector % 4, merge_shift(selector)};
     }
 
     if (i < KAWPOW_CNT_MATH) {
@@ -199,17 +195,11 @@ KawpowProgram make_program(const uint64_t period) {
     }
   }
 
-  {
+  for (uint32_t i = 0; i < KAWPOW_DATA_LOADS; ++i) {
+    // The first data load always targets register 0; the rest pull from the shuffled dst sequence.
+    const uint32_t dst = i == 0 ? 0 : dst_seq[(dst_counter++) % KAWPOW_REGS];
     const uint32_t selector = kiss99(rnd);
-    program.data[0] = { 0, selector % 4, merge_shift(selector) };
-  }
-  for (uint32_t i = 1; i < KAWPOW_DATA_LOADS; ++i) {
-    const uint32_t selector = kiss99(rnd);
-    program.data[i] = {
-      dst_seq[(dst_counter++) % KAWPOW_REGS],
-      selector % 4,
-      merge_shift(selector)
-    };
+    program.data[i] = {dst, selector % 4, merge_shift(selector)};
   }
 
   return program;
@@ -223,11 +213,6 @@ void compute_light_cache(std::vector<uint32_t>& cache, const uint32_t epoch) {
   if (!ethash_compute_cache_nodes(cache.data(), cache_bytes, &seed)) {
     throw std::string("Can't calculate kawpow light cache");
   }
-}
-
-
-bool kawpow_meets_target_host(const uint32_t output[8], const uint64_t target) {
-  return kawpow_meets_target_words(output, target);
 }
 
 // Named so the per-period specialized bundle can be built ahead of time.
@@ -276,7 +261,7 @@ public:
       throw std::string("kawpow SYCL device does not support required allocations");
     }
 
-    set_sycl_env("SYCL_PROGRAM_COMPILE_OPTIONS", kawpow_compile_options(device));
+    set_sycl_env("SYCL_PROGRAM_COMPILE_OPTIONS", kawpow_compile_options());
     bundle = std::make_unique<MOM_BUNDLE_T>(
       MOM_GET_EXEC_BUNDLE(queue.get_context())
     );
@@ -287,71 +272,52 @@ public:
     release();
   }
 
-  static unsigned kawpow_workgroup(const sycl::device& dev) {
-#if defined(MOM_SYCL_CUDA)
-    // DPC++ CUDA JIT: the source-baked kernel is heavier (80 regs), so a larger 256-thread block
-    // gives more resident warps to hide the DAG-read latency (sweep: 256=13.2 > 128=13.1 > 64=12.3).
-    const unsigned fallback = sycl_default_workgroup(dev, {64, 128, 256, 512}, dev.is_cpu() ? 128 : 256);
-#else
-    const unsigned fallback = sycl_default_workgroup(dev, {64, 128, 256, 512}, dev.is_cpu() ? 128 : 256);
-#endif
-    const char* const value = std::getenv("MOM_KAWPOW_WORKGROUP");
-    if (!value || !*value) return fallback;
-
+  // Parse env var `name` as base-10 unsigned; returns false (leaving `out` untouched) on unset,
+  // empty, malformed, or out-of-uint32-range input so callers fall back to their default.
+  static bool parse_env_u32(const char* name, uint32_t& out) {
+    const char* const value = std::getenv(name);
+    if (!value || !*value) return false;
     char* end = nullptr;
     errno = 0;
     const unsigned long parsed = std::strtoul(value, &end, 10);
-    if (errno || end == value || *end) return fallback;
+    if (errno || end == value || *end || parsed > std::numeric_limits<uint32_t>::max()) return false;
+    out = static_cast<uint32_t>(parsed);
+    return true;
+  }
 
-    switch (parsed) {
-      case 64:
-      case 128:
-      case 256:
-      case 512:
-        return static_cast<unsigned>(parsed);
-    }
+  // Pick a work-group size: honor `name` if set to one of `allowed`, else `sycl_default_workgroup`.
+  static unsigned select_workgroup(
+    const char* name, const sycl::device& dev,
+    const std::initializer_list<unsigned> allowed, const unsigned preferred
+  ) {
+    const unsigned fallback = sycl_default_workgroup(dev, allowed, preferred);
+    uint32_t parsed;
+    if (!parse_env_u32(name, parsed)) return fallback;
+    for (const unsigned candidate : allowed) if (candidate == parsed) return parsed;
     return fallback;
+  }
+
+  static unsigned kawpow_workgroup(const sycl::device& dev) {
+    // GPU default is a 256-thread block: the heavy search kernel (80 regs on the CUDA source-baked
+    // build) wants more resident warps to hide DAG-read latency (CUDA sweep: 256=13.2 > 128 > 64).
+    return select_workgroup("MOM_KAWPOW_WORKGROUP", dev, {64, 128, 256, 512}, dev.is_cpu() ? 128 : 256);
   }
 
   static unsigned kawpow_dag_workgroup(const sycl::device& dev) {
-    const unsigned fallback = sycl_default_workgroup(dev, {32, 64, 128, 256, 512}, dev.is_cpu() ? 128 : 64);
-    const char* const value = std::getenv("MOM_KAWPOW_DAG_WORKGROUP");
-    if (!value || !*value) return fallback;
-
-    char* end = nullptr;
-    errno = 0;
-    const unsigned long parsed = std::strtoul(value, &end, 10);
-    if (errno || end == value || *end) return fallback;
-
-    switch (parsed) {
-      case 32:
-      case 64:
-      case 128:
-      case 256:
-      case 512:
-        return static_cast<unsigned>(parsed);
-    }
-    return fallback;
+    return select_workgroup("MOM_KAWPOW_DAG_WORKGROUP", dev, {32, 64, 128, 256, 512}, dev.is_cpu() ? 128 : 64);
   }
 
   static uint32_t kawpow_dag_chunk_nodes() {
-    const char* const value = std::getenv("MOM_KAWPOW_DAG_CHUNK_NODES");
-    if (!value || !*value) return 0;
-
-    char* end = nullptr;
-    errno = 0;
-    const unsigned long parsed = std::strtoul(value, &end, 10);
-    if (errno || end == value || *end || parsed > std::numeric_limits<uint32_t>::max()) return 0;
-    return static_cast<uint32_t>(parsed);
+    uint32_t parsed = 0;  // 0 means "single full-DAG dispatch" (chunking disabled)
+    parse_env_u32("MOM_KAWPOW_DAG_CHUNK_NODES", parsed);
+    return parsed;
   }
 
-  static const char* kawpow_compile_options(const sycl::device& dev) {
+  static const char* kawpow_compile_options() {
+    // "-O3" is process-global; pearl's ESIMD image rejects it (and it's a no-op for kawpow), so
+    // default to none. Override via MOM_KAWPOW_COMPILE_OPTIONS if needed.
     const char* const value = std::getenv("MOM_KAWPOW_COMPILE_OPTIONS");
-    if (value) return value;
-    // "-O3" is process-global; pearl's ESIMD image rejects it (no-op for kawpow anyway).
-    // Override via MOM_KAWPOW_COMPILE_OPTIONS if needed.
-    (void)dev;
-    return "";
+    return value ? value : "";
   }
 
   template<typename T>
@@ -396,7 +362,6 @@ public:
 
     const uint64_t new_light_cache_words = cache_sizes[new_epoch] / sizeof(uint32_t);
     const uint64_t new_dag_words = dag_sizes[new_epoch] / sizeof(uint32_t);
-    const uint64_t new_dag_nodes = dag_sizes[new_epoch] / (NODE_WORDS * sizeof(uint32_t));
 
     std::vector<uint32_t> host_cache;
     const uint64_t start_ms = now_ms();
@@ -422,7 +387,7 @@ public:
     const FastModData light_mod = make_fast_mod_data(light_nodes);
 
     const uint32_t dag_workgroup = kawpow_dag_workgroup(device);
-    const uint32_t total = static_cast<uint32_t>(new_dag_nodes);
+    const uint32_t total = static_cast<uint32_t>(new_dag_words / NODE_WORDS);  // DAG node count
     const uint32_t chunk_nodes = kawpow_dag_chunk_nodes();
     uint32_t* const d_light = light_cache;
     uint32_t* const d_dag = dag;
@@ -602,11 +567,11 @@ int kawpow(
   const bool use_sg = state.device.is_gpu() && !(exchange_env && std::strcmp(exchange_env, "slm") == 0);
 
   if (use_sg) {
-  // Sub-group (warp-shuffle) exchange path. KawpowSgExchange is sub-group-size-agnostic (its
-  // `& ~(LANES-1)` base runs two 16-lane ProgPoW groups inside a 32-wide warp), so the same kernel
-  // runs at sub-group=16 on Intel and natively at warp=32 on CUDA (reqd_sub_group_size dropped there).
-  // The per-period ProgPoW program is folded to constants: Intel via SYCL-2020 specialization
-  // constants + kernel_bundle; CUDA via a runtime source-compiled kernel (kawpow_jit.inc).
+    // Sub-group (warp-shuffle) exchange path. KawpowSgExchange is sub-group-size-agnostic (its
+    // `& ~(LANES-1)` base runs two 16-lane ProgPoW groups inside a 32-wide warp), so the same kernel
+    // runs at sub-group=16 on Intel and natively at warp=32 on CUDA (reqd_sub_group_size dropped here).
+    // The per-period ProgPoW program is folded to constants: Intel via SYCL-2020 specialization
+    // constants + kernel_bundle; CUDA via a runtime source-compiled kernel (kawpow_jit.inc).
     const uint64_t t_io = loop_stats ? kawpow_now_us() : 0;
     state.ensure_period_bundle(period, epoch, dag_mod);
     const uint64_t t_bundle = loop_stats ? kawpow_now_us() : 0;
@@ -724,12 +689,11 @@ int kawpow(
 
   const uint32_t result_count = std::min(state.result->count, MAX_KAWPOW_OUTPUTS);
   for (uint32_t index = 0; index < result_count; ++index) {
-    if (!is_test && !kawpow_meets_target_host(state.result->output[index], target)) continue;
+    if (!is_test && !kawpow_meets_target_words(state.result->output[index], target)) continue;
 
-    const uint64_t found_nonce = state.result->nonce[index];
     std::memcpy(output, state.result->output[index], HASH_LEN);
     std::memcpy(mix_hash, state.result->mix_hash[index], HASH_LEN);
-    *pnonce = found_nonce;
+    *pnonce = state.result->nonce[index];
     return 1;
   }
 

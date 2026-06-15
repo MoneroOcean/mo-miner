@@ -3,6 +3,8 @@
 const { Transform } = require("node:stream");
 const { spec } = require("node:test/reporters");
 
+// `raw` is the original numeric token from the reporter; sub-second durations
+// echo it verbatim so we never reformat (and thus widen) the printed value.
 function formatDurationMs(durationMs, raw = String(durationMs)) {
   if (durationMs >= 60 * 1000) return `${(durationMs / (60 * 1000)).toFixed(2)} min`;
   if (durationMs >= 1000) return `${(durationMs / 1000).toFixed(2)} s`;
@@ -25,30 +27,30 @@ class SpacedSpecReporter extends Transform {
     this.pendingText = "";
     this.lastPrintedNonEmptyLine = "";
     this.reporter = spec();
-    this.reporter.on("data", (chunk) => {
-      this.push(this.rewriteText(Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk)));
-    });
-    this.reporter.on("error", (error) => {
-      this.destroy(error);
-    });
+    this.reporter.on("data", (chunk) =>
+      this.push(this.rewriteText(Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk))));
+    this.reporter.on("error", (error) => this.destroy(error));
   }
 
+  // Rewrite complete lines as they arrive; buffer any trailing partial line.
   rewriteText(text) {
     this.pendingText += text;
     let output = "";
-    let newlineIndex = this.pendingText.indexOf("\n");
-    while (newlineIndex !== -1) {
-      const line = this.pendingText.slice(0, newlineIndex + 1);
-      this.pendingText = this.pendingText.slice(newlineIndex + 1);
-      output += this.rewriteLine(line);
-      newlineIndex = this.pendingText.indexOf("\n");
+    for (let nl; (nl = this.pendingText.indexOf("\n")) !== -1; ) {
+      output += this.rewriteLine(this.pendingText.slice(0, nl + 1));
+      this.pendingText = this.pendingText.slice(nl + 1);
     }
     return output;
   }
 
+  // Insert a blank line before each test-group header (▶) so groups stand apart,
+  // but only once we've already printed something.
+  spaceBeforeGroupHeader(text) {
+    return /^\s*▶ /.test(text) && this.lastPrintedNonEmptyLine ? "\n" + text : text;
+  }
+
   rewriteLine(line) {
-    let rewritten = rewriteReporterDurations(line);
-    if (/^\s*▶ /.test(rewritten) && this.lastPrintedNonEmptyLine) rewritten = "\n" + rewritten;
+    const rewritten = this.spaceBeforeGroupHeader(rewriteReporterDurations(line));
     if (rewritten.trim()) this.lastPrintedNonEmptyLine = rewritten.trimEnd();
     return rewritten;
   }
@@ -62,9 +64,7 @@ class SpacedSpecReporter extends Transform {
     this.reporter.end();
     this.reporter.once("end", () => {
       if (this.pendingText) {
-        let output = this.pendingText;
-        if (/^\s*▶ /.test(output) && this.lastPrintedNonEmptyLine) output = "\n" + output;
-        this.push(output);
+        this.push(this.spaceBeforeGroupHeader(this.pendingText));
         this.pendingText = "";
       }
       callback();

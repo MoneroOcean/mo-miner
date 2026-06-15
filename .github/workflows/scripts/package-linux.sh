@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
+# Package the Linux/Intel release: build a single-executable (Node SEA) binary, then bundle
+# the Intel oneAPI SYCL/OpenCL runtime closure (extracted from the mom-build image) into
+# libs/ so the tarball runs with only the user's GPU driver installed.
 set -euo pipefail
 
 version="${1:-}"
-if [ -z "$version" ] && [ "${GITHUB_REF_NAME:-}" != "" ] && [[ "${GITHUB_REF_NAME}" =~ ^v?[0-9] ]]; then
+if [ -z "$version" ] && [ -n "${GITHUB_REF_NAME:-}" ] && [[ "${GITHUB_REF_NAME}" =~ ^v?[0-9] ]]; then
   version="$GITHUB_REF_NAME"
 fi
 if [ -z "$version" ]; then
@@ -28,9 +31,7 @@ mkdir -p "$package_dir" "$libs_dir" "$build_dir"
 bundle_path="$PWD/$build_dir/mom.bundle.cjs"
 blob_path="$PWD/$build_dir/mom.blob"
 npx --yes esbuild@0.28.0 mom.js \
-  --bundle \
-  --platform=node \
-  --format=cjs \
+  --bundle --platform=node --format=cjs \
   --banner:js="const { createRequire } = require('node:module'); require = createRequire(process.execPath);" \
   --outfile="$bundle_path"
 cat >"$build_dir/sea-config.json" <<EOF
@@ -79,60 +80,54 @@ cp build/Release/mom.node "$libs_dir/"
 container="mom-release-libs-$$"
 docker rm -f "$container" >/dev/null 2>&1 || true
 docker run -d --name "$container" --entrypoint sleep mom-build infinity >/dev/null
-cleanup() {
-  docker rm -f "$container" >/dev/null 2>&1 || true
-}
-trap cleanup EXIT
+trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
 
 find_oneapi_path() {
-  local name="$1"
   local quoted
-  quoted="$(printf "%q" "$name")"
+  quoted="$(printf "%q" "$1")"
   docker exec "$container" bash -lc \
     "find /opt/intel/oneapi -type f,l -name $quoted ! -name '*-gdb.py' -print -quit"
 }
 
+# Copy a file out of the build image into libs/ (skipping if it already exists), with
+# docker cp -L dereferencing symlinks to their real target.
 copy_container_file() {
-  local source_path="$1"
-  local dest_name="${2:-$(basename "$source_path")}"
-  if [ -z "$source_path" ] || [ -f "$libs_dir/$dest_name" ]; then
-    return
-  fi
-  docker cp -L "$container:$source_path" "$libs_dir/$dest_name"
+  local src="$1" dest="${2:-$(basename "$1")}"
+  [ -n "$src" ] && [ ! -f "$libs_dir/$dest" ] || return 0
+  docker cp -L "$container:$src" "$libs_dir/$dest"
 }
 
+# Copy a runtime path, preserving the SONAME symlink layout the loader expects: if the
+# source is a symlink, copy its real target under the target basename and recreate the
+# symlink in libs/. The -L check (vs -e) guards against an existing broken symlink.
 copy_container_runtime_path() {
-  local source_path="$1"
-  local dest_name resolved target_name quoted
-  dest_name="$(basename "$source_path")"
-  if [ -z "$source_path" ] || [ -e "$libs_dir/$dest_name" ] || [ -L "$libs_dir/$dest_name" ]; then
-    return
-  fi
+  local src="$1" dest resolved target quoted
+  dest="$(basename "$src")"
+  [ -n "$src" ] && [ ! -e "$libs_dir/$dest" ] && [ ! -L "$libs_dir/$dest" ] || return 0
 
-  if docker exec "$container" test -L "$source_path"; then
-    quoted="$(printf "%q" "$source_path")"
+  if docker exec "$container" test -L "$src"; then
+    quoted="$(printf "%q" "$src")"
     resolved="$(docker exec "$container" bash -lc "readlink -f $quoted")"
-    target_name="$(basename "$resolved")"
-    copy_container_file "$resolved" "$target_name"
-    if [ "$dest_name" != "$target_name" ]; then
-      ln -s "./$target_name" "$libs_dir/$dest_name"
-    fi
+    target="$(basename "$resolved")"
+    copy_container_file "$resolved" "$target"
+    [ "$dest" = "$target" ] || ln -s "./$target" "$libs_dir/$dest"
   else
-    copy_container_file "$source_path" "$dest_name"
+    copy_container_file "$src" "$dest"
   fi
 }
 
 copy_oneapi_name() {
-  local name="$1"
-  local source_path
-  source_path="$(find_oneapi_path "$name")"
-  if [ -z "$source_path" ]; then
-    echo "Unable to find oneAPI runtime dependency $name in the build image." >&2
+  local src
+  src="$(find_oneapi_path "$1")"
+  if [ -z "$src" ]; then
+    echo "Unable to find oneAPI runtime dependency $1 in the build image." >&2
     exit 1
   fi
-  copy_container_file "$source_path" "$name"
+  copy_container_file "$src" "$1"
 }
 
+# List SONAMEs that ldd cannot resolve against the bundled dirs alone (libs/ + package
+# dir), i.e. the dependencies still needed to make the tarball self-contained.
 missing_libraries() {
   local file
   while IFS= read -r -d "" file; do
@@ -144,6 +139,8 @@ missing_libraries() {
   ) | awk '/not found/{print $1}' | sort -u
 }
 
+# Repeatedly pull every still-unresolved dependency out of the oneAPI tree until ldd
+# reports nothing missing, picking up each newly copied lib's own dependencies.
 copy_missing_closure() {
   local copied_any=1
   while [ "$copied_any" -eq 1 ]; do
@@ -158,6 +155,8 @@ copy_missing_closure() {
   done
 }
 
+# Copy SYCL runtime pieces that are dlopen()'d by name (so they never appear in ldd
+# output) plus the OpenCL device-builtin .rtl/.o blobs the JIT loads at runtime.
 copy_optional_sycl_runtime() {
   local paths
   paths="$(docker exec "$container" bash -lc '
@@ -176,12 +175,14 @@ copy_optional_sycl_runtime() {
         -name "cllibrary*.o" \
       \) ! -name "*-gdb.py" -print 2>/dev/null | sort
   ')"
-  while IFS= read -r source_path; do
-    [ -n "$source_path" ] || continue
-    copy_container_runtime_path "$source_path"
+  while IFS= read -r src; do
+    [ -n "$src" ] || continue
+    copy_container_runtime_path "$src"
   done <<<"$paths"
 }
 
+# Resolve the addon's closure first, then add the dlopen'd SYCL libs, then close again so
+# those libs' own dependencies get pulled in too.
 copy_missing_closure
 copy_optional_sycl_runtime
 copy_missing_closure

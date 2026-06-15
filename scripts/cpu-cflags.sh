@@ -11,26 +11,24 @@ intel_ax_flags() {
   fi
 }
 
+# ARM flags are architecture-detected, ignoring MOM_CPU_MARCH (which is x86-only).
 if "$SCRIPT_DIR/cpu-feature.sh" arm64; then
   echo "-march=armv8-a+crypto -flax-vector-conversions"
   exit 0
-fi
-
-if "$SCRIPT_DIR/cpu-feature.sh" arm; then
+elif "$SCRIPT_DIR/cpu-feature.sh" arm; then
   echo "-mfpu=neon -flax-vector-conversions"
   exit 0
 fi
 
 case "${MOM_CPU_MARCH:-}" in
-  "")
-    if [ "${MOM_PORTABLE_BUILD:-}" = "1" ]; then
+  # Explicit "native" or unset both build native, except an unset value with
+  # MOM_PORTABLE_BUILD=1, which selects a portable baseline + Intel -ax flags.
+  ""|native)
+    if [ -z "${MOM_CPU_MARCH:-}" ] && [ "${MOM_PORTABLE_BUILD:-}" = "1" ]; then
       echo "-march=x86-64 -mtune=generic -maes$(intel_ax_flags)"
     else
       echo "-march=native"
     fi
-    ;;
-  native)
-    echo "-march=native"
     ;;
   x86-64|x86-64-v2|x86-64-v3|x86-64-v4|rocketlake)
     echo "-march=${MOM_CPU_MARCH} -mtune=generic -maes"

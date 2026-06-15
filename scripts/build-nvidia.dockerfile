@@ -18,8 +18,8 @@ ARG NODE_VERSION=24.15.0
 ARG DPCPP_RELEASE=nightly-2026-06-13
 ARG DPCPP_ASSET=sycl_linux.tar.gz
 
-# Base tools + libhwloc (UR CUDA adapter dep) + Node. No LLVM/clang apt packages and no
-# AdaptiveCpp build: the DPC++ tarball is a self-contained clang + SYCL runtime.
+# Base tools + libhwloc (UR CUDA adapter dep) + Node. No LLVM/clang apt packages: the DPC++
+# tarball below is a self-contained clang + SYCL runtime.
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       ca-certificates curl iputils-ping make python3 sudo xz-utils libhwloc15 && \
     curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" -o /tmp/node.tar.xz && \
@@ -33,16 +33,17 @@ RUN mkdir -p /opt/dpcpp && \
     tar -C /opt/dpcpp -xf /tmp/dpcpp.tar.gz && rm /tmp/dpcpp.tar.gz && \
     /opt/dpcpp/bin/clang++ --version | head -2
 
-ENV PATH=/opt/dpcpp/bin:$PATH
-ENV LD_LIBRARY_PATH=/opt/dpcpp/lib:/usr/local/cuda/lib64:/usr/local/lib:$LD_LIBRARY_PATH
+ENV PATH=/opt/dpcpp/bin:$PATH \
+    LD_LIBRARY_PATH=/opt/dpcpp/lib:/usr/local/cuda/lib64:/usr/local/lib:$LD_LIBRARY_PATH
 
-# allow root group access to /root
+# Give the root group the same access as the root user to /root, so the
+# host-mapped build user (added to group root below) can write into /root/mom.
 RUN chmod g=u /root
-# replace dash by bash as default /bin/sh shell
+# Make /bin/sh bash instead of dash (entrypoint relies on bash features like ${*@Q}).
 RUN rm /bin/sh && ln -s /bin/bash /bin/sh
 
-# setup env to do build under user that owns /root/mom on the host
-# runs miner under root anyway (no way to access /dev/cpu/*/msr otherwise)
+# Build as the host user that owns /root/mom (so build artifacts stay host-writable),
+# but run the miner as root (needed to access /dev/cpu/*/msr).
 RUN echo $'#!/usr/bin/env bash\n\
 (userdel -r "$(getent passwd $(stat -c "%u" /root/mom) | cut -d: -f1)" 2>/dev/null || true)\n\
 useradd user -u $(stat -c "%g" /root/mom) -G root,video -m -s /bin/bash;\n\
@@ -57,7 +58,7 @@ cd /root/mom # su - resets to home dir and we need to keep /root/mom pwd\n\
 export PATH=/opt/dpcpp/bin:$PATH\n\
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH\n\
 export MOM_SYCL_IMPL=dpcpp-cuda\n\
-export ONEAPI_DEVICE_SELECTOR="${ONEAPI_DEVICE_SELECTOR:-cuda:*}"\n\
+export ONEAPI_DEVICE_SELECTOR="${ONEAPI_DEVICE_SELECTOR:-cuda:*}" # DPC++ selects the CUDA backend\n\
 export SYCL_CACHE_PERSISTENT=1 # cache the kawpow kernel_compiler JIT between runs\n\
 export MOM_PORTABLE_BUILD="$portable_build"\n\
 export MOM_LTO="$lto"\n\
@@ -76,6 +77,6 @@ chmod +x /root/entrypoint.sh
 
 ENTRYPOINT ["/root/entrypoint.sh"]
 
-# sync user with host, build and run application
+# Default command (after the entrypoint syncs the user, builds, and elevates): run the test suite.
 WORKDIR /root/mom
 CMD node --require ./tests/common/test_output_buffer.js --test --test-reporter=./tests/common/spec_reporter.js --test-concurrency=1 tests/all.js

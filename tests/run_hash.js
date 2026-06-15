@@ -4,10 +4,11 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { repoRoot, resolveNodeRunner, spawnAndExit } = require("./common/miner_command");
 
-const logicSuite = fs.existsSync(path.join(repoRoot, "opts.js")) ? ["tests/logic.js"] : [];
+// Only run the logic suite from a source checkout (opts.js is absent in release packages).
+const hasLogicSuite = fs.existsSync(path.join(repoRoot, "opts.js"));
 
 const suites = {
-  all: [...logicSuite, "tests/all.js"],
+  all: [...(hasLogicSuite ? ["tests/logic.js"] : []), "tests/all.js"],
   cpu: ["tests/cpu.js"],
   gpu: ["tests/gpu.js"],
   "sycl-cpu": ["tests/sycl_cpu.js"],

@@ -1,10 +1,8 @@
 "use strict";
 
-const childProcess = require("node:child_process");
+const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
-
-const { spawn } = childProcess;
 
 const repoRoot = path.join(__dirname, "..", "..");
 const releaseExecutableNames = process.platform === "win32"
@@ -39,9 +37,9 @@ function formatHashrate(hashrate) {
   const rate = Number.parseFloat(hashrate);
   if (!Number.isFinite(rate)) return String(hashrate);
   for (const unit of hashrateUnits) {
-    if (Math.abs(rate) >= unit.value) return (rate / unit.value).toFixed(2) + " " + unit.suffix;
+    if (Math.abs(rate) >= unit.value) return `${(rate / unit.value).toFixed(2)} ${unit.suffix}`;
   }
-  return rate.toFixed(2) + " H/s";
+  return `${rate.toFixed(2)} H/s`;
 }
 
 function parseFormattedHashrate(value, unit) {
@@ -51,7 +49,7 @@ function parseFormattedHashrate(value, unit) {
 }
 
 function medianHashrate(samples) {
-  const sorted = samples.slice().sort((a, b) => a - b);
+  const sorted = [...samples].sort((a, b) => a - b);
   return sorted[Math.floor(sorted.length / 2)];
 }
 
@@ -160,10 +158,6 @@ function isMissingGpuOutput(result) {
   return /Unknown compute platform gpu|No device of requested type|No GPU|gpu[0-9]+.*not found|SYCL.*device/i.test(output);
 }
 
-function withTestDevice(definition) {
-  return { ...definition.job };
-}
-
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -206,7 +200,7 @@ function killProcessTree(child, signal = "SIGKILL") {
     child.kill(signal);
     return false;
   }
-  const killer = childProcess.spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
+  const killer = spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
     stdio: "ignore",
   });
   killer.on("error", () => child.kill(signal));
@@ -287,7 +281,6 @@ async function getAutoAlgoParams() {
   if (!autoAlgoParamsPromise) {
     autoAlgoParamsPromise = getAutoAlgoParamsReport().then((report) => report.params);
   }
-
   return autoAlgoParamsPromise;
 }
 
@@ -317,7 +310,6 @@ async function getAutoAlgoParamsReport() {
         };
       });
   }
-
   return autoAlgoParamsReportPromise;
 }
 
@@ -391,7 +383,7 @@ function assumedSyclCpuDevice() {
 }
 
 async function resolveBenchJob(definition) {
-  const job = withTestDevice(definition);
+  const job = { ...definition.job };
   if (!definition.autoDev) return { job };
 
   const algoParams = await getAutoAlgoParams();
@@ -451,7 +443,7 @@ function minerReportedPass(result, output) {
 }
 
 async function runMinerTest(definition) {
-  const job = withTestDevice(definition);
+  const job = { ...definition.job };
   const args = [
     "mom.js",
     "test",
@@ -532,25 +524,17 @@ function benchSampleCount(definition) {
 }
 
 function finishBenchRun(definition, args, job, result, matchedHashrates, sampleCount, resolve, reject) {
-  if (matchedHashrates.length >= sampleCount && matchedHashrates.every(isPositiveHashrate)) {
+  if (matchedHashrates.length >= sampleCount && matchedHashrates.every((rate) => rate > 0)) {
     const samples = matchedHashrates.slice(0, sampleCount);
     return resolve({ hashrate: medianHashrate(samples), samples, dev: job.dev });
   }
-  if (isMissingBenchGpu(definition, result))
+  if (definition.gpu && isMissingGpuOutput(result))
     return resolve({ skipped: true, reason: "GPU device is not available in this environment" });
   reject(new Error(formatFailure(
     `${definition.name} did not report ${sampleCount} hashrate sample${sampleCount === 1 ? "" : "s"}`,
     args,
     result
   )));
-}
-
-function isPositiveHashrate(hashrate) {
-  return hashrate && hashrate > 0;
-}
-
-function isMissingBenchGpu(definition, result) {
-  return definition.gpu && isMissingGpuOutput(result);
 }
 
 module.exports = {

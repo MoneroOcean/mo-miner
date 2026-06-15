@@ -1,12 +1,13 @@
 $ErrorActionPreference = "Stop"
 
 function Get-MominerDumpBin {
-  $command = Get-Command dumpbin.exe -ErrorAction SilentlyContinue
-  if ($command) {
-    return $command.Source
+  $onPath = Get-Command dumpbin.exe -ErrorAction SilentlyContinue
+  if ($onPath) {
+    return $onPath.Source
   }
 
-  $candidates = Get-ChildItem `
+  # Fall back to the newest MSVC toolchain install (descending sort picks latest).
+  $found = Get-ChildItem `
     -Path @(
       "C:/Program Files/Microsoft Visual Studio/2022/*/VC/Tools/MSVC/*/bin/Hostx64/x64/dumpbin.exe",
       "C:/BuildTools/VC/Tools/MSVC/*/bin/Hostx64/x64/dumpbin.exe"
@@ -15,11 +16,10 @@ function Get-MominerDumpBin {
     -ErrorAction SilentlyContinue |
     Sort-Object FullName -Descending
 
-  if (-not $candidates) {
+  if (-not $found) {
     throw "dumpbin.exe was not found. Install Visual Studio Build Tools or run from a VS developer shell."
   }
-
-  return $candidates[0].FullName
+  return @($found)[0].FullName
 }
 
 function Get-MominerDllDependencies {
@@ -54,6 +54,7 @@ function Test-MominerRedistributableDllName {
 function Test-MominerSystemDllName {
   param([Parameter(Mandatory = $true)][string]$Name)
 
+  # API/EXT set extension DLLs are always system-provided.
   if ($Name -like 'api-ms-win-*.dll' -or $Name -like 'ext-ms-win-*.dll') {
     return $true
   }
@@ -105,6 +106,17 @@ function Test-MominerWindowsPath {
   return $full.StartsWith($windows, [System.StringComparison]::OrdinalIgnoreCase)
 }
 
+function Get-MominerOneApiBinDirs {
+  # oneAPI compiler/runtime DLL locations; empty when ONEAPI_ROOT is unset.
+  if (-not $env:ONEAPI_ROOT) {
+    return @()
+  }
+  return @(
+    (Join-Path $env:ONEAPI_ROOT "compiler/latest/bin"),
+    (Join-Path $env:ONEAPI_ROOT "compiler/latest/bin/compiler")
+  )
+}
+
 function Get-MominerDllSearchRoots {
   param([Parameter(Mandatory = $true)][string]$PackageDir)
 
@@ -123,14 +135,9 @@ function Get-MominerDllSearchRoots {
   & $addRoot "build/Release"
 
   $node = Get-Command node.exe -ErrorAction SilentlyContinue
-  if ($node) {
-    & $addRoot (Split-Path -Parent $node.Source)
-  }
+  if ($node) { & $addRoot (Split-Path -Parent $node.Source) }
 
-  if ($env:ONEAPI_ROOT) {
-    & $addRoot (Join-Path $env:ONEAPI_ROOT "compiler/latest/bin")
-    & $addRoot (Join-Path $env:ONEAPI_ROOT "compiler/latest/bin/compiler")
-  }
+  foreach ($dir in Get-MominerOneApiBinDirs) { & $addRoot $dir }
 
   Get-ChildItem `
     -Path @(
@@ -151,15 +158,10 @@ function New-MominerDllIndex {
 
   $index = @{}
   foreach ($root in $Roots) {
-    $isWindowsRoot = Test-MominerWindowsPath $root
-    $files = Get-ChildItem `
-      -Path $root `
-      -Filter '*.dll' `
-      -File `
-      -Recurse:(!$isWindowsRoot) `
-      -ErrorAction SilentlyContinue
-
-    foreach ($file in $files) {
+    # Don't recurse under %WINDIR% (System32) to avoid indexing the entire
+    # Windows tree; first root to provide a given name wins (roots are ordered).
+    $recurse = -not (Test-MominerWindowsPath $root)
+    foreach ($file in (Get-ChildItem -Path $root -Filter '*.dll' -File -Recurse:$recurse -ErrorAction SilentlyContinue)) {
       $key = $file.Name.ToLowerInvariant()
       if (-not $index.ContainsKey($key)) {
         $index[$key] = $file.FullName
@@ -207,18 +209,9 @@ function Copy-MominerOptionalRuntimeFiles {
     [string]$PackageDir
   )
 
-  if (-not $env:ONEAPI_ROOT) {
-    return
-  }
-
-  $roots = @(
-    (Join-Path $env:ONEAPI_ROOT "compiler/latest/bin"),
-    (Join-Path $env:ONEAPI_ROOT "compiler/latest/bin/compiler")
-  )
   $patterns = @(
     'sycl*.dll',
-    'ur_*.dll',
-    'ur_adapter*.dll',
+    'ur_*.dll',          # covers ur_adapter*.dll
     'pi_*.dll',
     'OpenCL.dll',
     'intelocl*.dll',
@@ -235,18 +228,13 @@ function Copy-MominerOptionalRuntimeFiles {
     'cllibrary*.o'
   )
 
-  foreach ($root in $roots) {
-    if (-not (Test-Path $root)) {
-      continue
-    }
-
+  foreach ($root in Get-MominerOneApiBinDirs) {
+    if (-not (Test-Path $root)) { continue }
     foreach ($pattern in $patterns) {
       Get-ChildItem -Path $root -Filter $pattern -File -ErrorAction SilentlyContinue |
         ForEach-Object {
           $dest = Join-Path $PackageDir $_.Name
-          if (-not (Test-Path $dest)) {
-            Copy-Item $_.FullName $dest
-          }
+          if (-not (Test-Path $dest)) { Copy-Item $_.FullName $dest }
         }
     }
   }
@@ -272,47 +260,36 @@ function Invoke-MominerDllClosure {
   $missing = New-Object 'System.Collections.Generic.List[string]'
 
   foreach ($entry in $EntryPaths) {
-    if (Test-Path $entry) {
-      $queue.Enqueue((Resolve-Path $entry).Path)
-    }
+    if (Test-Path $entry) { $queue.Enqueue((Resolve-Path $entry).Path) }
   }
 
   while ($queue.Count -gt 0) {
     $current = $queue.Dequeue()
-    if (-not $seen.Add($current.ToLowerInvariant())) {
-      continue
-    }
+    if (-not $seen.Add($current.ToLowerInvariant())) { continue }
 
     foreach ($dep in (Get-MominerDllDependencies -Path $current -DumpBin $dumpBin)) {
       $resolution = Resolve-MominerDependency -Name $dep -PackageDir $packageFull -Index $index
       switch ($resolution.Kind) {
-        'package' {
-          $queue.Enqueue($resolution.Path)
-        }
+        'package' { $queue.Enqueue($resolution.Path) }
         'copy' {
-          if ($CopyMissing) {
-            $dest = Join-Path $packageFull $dep
-            Copy-Item $resolution.Path $dest -Force
-            $resolvedDest = (Resolve-Path $dest).Path
-            $index[$dep] = $resolvedDest
-            $queue.Enqueue($resolvedDest)
-          } else {
+          if (-not $CopyMissing) {
             $missing.Add("$dep required by $current")
+            break
           }
+          $dest = Join-Path $packageFull $dep
+          Copy-Item $resolution.Path $dest -Force
+          $dest = (Resolve-Path $dest).Path
+          $index[$dep] = $dest
+          $queue.Enqueue($dest)
         }
-        'missing' {
-          $missing.Add("$dep required by $current")
-        }
+        'missing' { $missing.Add("$dep required by $current") }
       }
     }
   }
 
   if ($missing.Count -gt 0) {
-    $prefix = if ($CopyMissing) {
-      "Unresolved non-system DLL dependencies:"
-    } else {
-      "Release package is missing non-system DLL dependencies:"
-    }
+    $prefix = if ($CopyMissing) { "Unresolved non-system DLL dependencies:" }
+              else { "Release package is missing non-system DLL dependencies:" }
     throw "$prefix`n$($missing -join "`n")"
   }
 }

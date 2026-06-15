@@ -2,5 +2,5 @@
 
 #pragma once
 
-const constexpr unsigned HASH_LEN = 32;
+constexpr unsigned HASH_LEN = 32; // length of a PoW hash / target in bytes
 

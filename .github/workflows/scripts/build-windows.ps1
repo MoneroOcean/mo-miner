@@ -3,6 +3,7 @@ $ProgressPreference = "SilentlyContinue"
 
 trap {
   if ($env:GITHUB_ACTIONS) {
+    # GitHub Actions workflow commands require %/CR/LF percent-encoded in the message.
     $message = $_.Exception.Message.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
     Write-Host "::error title=Windows build failed::$message"
   }
@@ -10,14 +11,7 @@ trap {
 }
 
 function Invoke-MominerNative {
-  param(
-    [Parameter(Mandatory = $true)]
-    [scriptblock]$Command,
-
-    [Parameter(Mandatory = $true)]
-    [string]$Name
-  )
-
+  param([scriptblock]$Command, [string]$Name)
   & $Command
   if ($LASTEXITCODE -ne 0) {
     throw "$Name failed with exit code $LASTEXITCODE."
@@ -25,23 +19,22 @@ function Invoke-MominerNative {
 }
 
 function Find-MominerNodeGyp {
-  $candidates = New-Object System.Collections.Generic.List[string]
+  $candidates = @()
 
-  $nodeCommand = Get-Command node -ErrorAction Stop
-  $nodeRoot = Split-Path $nodeCommand.Source -Parent
-  $candidates.Add((Join-Path $nodeRoot "node_modules\npm\node_modules\node-gyp\bin\node-gyp.js"))
+  $nodeRoot = Split-Path (Get-Command node -ErrorAction Stop).Source -Parent
+  $candidates += Join-Path $nodeRoot "node_modules\npm\node_modules\node-gyp\bin\node-gyp.js"
 
   $npmCommand = Get-Command npm -ErrorAction SilentlyContinue
   if ($npmCommand) {
     $npmRoot = Split-Path $npmCommand.Source -Parent
-    $candidates.Add((Join-Path $npmRoot "node_modules\npm\node_modules\node-gyp\bin\node-gyp.js"))
+    $candidates += Join-Path $npmRoot "node_modules\npm\node_modules\node-gyp\bin\node-gyp.js"
   }
 
   $globalRootOutput = & npm root -g 2>$null
   if ($LASTEXITCODE -eq 0 -and $globalRootOutput) {
     $globalRoot = ($globalRootOutput | Select-Object -First 1).Trim()
-    $candidates.Add((Join-Path $globalRoot "npm\node_modules\node-gyp\bin\node-gyp.js"))
-    $candidates.Add((Join-Path $globalRoot "node-gyp\bin\node-gyp.js"))
+    $candidates += Join-Path $globalRoot "npm\node_modules\node-gyp\bin\node-gyp.js"
+    $candidates += Join-Path $globalRoot "node-gyp\bin\node-gyp.js"
   }
 
   foreach ($candidate in ($candidates | Select-Object -Unique)) {
@@ -49,7 +42,6 @@ function Find-MominerNodeGyp {
       return (Resolve-Path $candidate).Path
     }
   }
-
   return $null
 }
 
@@ -87,13 +79,16 @@ foreach ($line in $envLines) {
     [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], "Process")
   }
 }
-$env:ICInstallDir = Join-Path $env:ONEAPI_ROOT "compiler\latest\"
-$env:IDPCInstallDir = Join-Path $env:ONEAPI_ROOT "compiler\latest\"
+# Both vars point at the same oneAPI compiler dir; node-gyp/icx read either name.
+$compilerDir = Join-Path $env:ONEAPI_ROOT "compiler\latest\"
+$env:ICInstallDir = $compilerDir
+$env:IDPCInstallDir = $compilerDir
 
 Invoke-MominerNative { icx --version } "icx"
 
 Invoke-MominerNative { node $nodeGyp configure --msvs_version=2022 } "node-gyp configure"
 $msbuild = (Get-Command MSBuild.exe -ErrorAction Stop).Source
+# Capture output (rather than letting it stream) so the tail can be re-shown in the failure message.
 $msbuildOutput = & $msbuild build\mom.vcxproj /clp:Verbosity=minimal /nologo /nodeReuse:false /p:Configuration=Release /p:Platform=x64 2>&1
 $msbuildOutput | ForEach-Object { Write-Host $_ }
 if ($LASTEXITCODE -ne 0) {

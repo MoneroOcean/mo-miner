@@ -1,7 +1,7 @@
 // DPC++ CUDA-backend kawpow JIT: build the per-period search kernel from SYCL *source* at runtime
 // with the ProgPoW program baked in as a `const` struct, so the random-math interpreter folds to
-// straight-line constant ops (the CUDA backend spec-constants do NOT fold; this matches the Intel spec-const
-// speedup). The device code is the SAME sycl/kawpow_device.inc the AOT build uses; here it is read at
+// straight-line constant ops (spec-constants do NOT fold on this backend; baking matches the Intel
+// spec-const speedup). The device code is the SAME sycl/kawpow_device.inc the AOT build uses; read at
 // runtime and appended after a self-contained prelude (constants/structs/FastModData) plus the baked
 // program/dag-mod and a free-function-kernel wrapper. Only built for MOM_SYCL_CUDA (Linux/NVIDIA).
 #if defined(MOM_SYCL_CUDA)
@@ -151,23 +151,20 @@ static const std::string& kawpow_device_src() {
 }
 
 static std::string kawpow_emit_baked(const KawpowProgram& p, const FastModData& m) {
+  // Emit one struct's brace-init "{a,b,c,...},"; pass fields in declaration order (no field names,
+  // so order is the only thing binding the literal to the struct layout).
+  const auto braces = [](std::initializer_list<uint32_t> fields) {
+    std::string r = "{";
+    const char* sep = "";
+    for (const uint32_t v : fields) { r += sep + std::to_string(v); sep = ","; }
+    return r + "},";
+  };
   std::string s = "static const KawpowProgram BAKED_PROGRAM = {{";
-  for (uint32_t i = 0; i < KAWPOW_CNT_CACHE; ++i) {
-    const auto& o = p.cache[i];
-    s += "{" + std::to_string(o.src) + "," + std::to_string(o.dst) + "," +
-         std::to_string(o.merge_mode) + "," + std::to_string(o.merge_shift) + "},";
-  }
+  for (const auto& o : p.cache) s += braces({o.src, o.dst, o.merge_mode, o.merge_shift});
   s += "},{";
-  for (uint32_t i = 0; i < KAWPOW_CNT_MATH; ++i) {
-    const auto& o = p.math[i];
-    s += "{" + std::to_string(o.src1) + "," + std::to_string(o.src2) + "," + std::to_string(o.dst) + "," +
-         std::to_string(o.math_selector) + "," + std::to_string(o.merge_mode) + "," + std::to_string(o.merge_shift) + "},";
-  }
+  for (const auto& o : p.math) s += braces({o.src1, o.src2, o.dst, o.math_selector, o.merge_mode, o.merge_shift});
   s += "},{";
-  for (uint32_t i = 0; i < KAWPOW_DATA_LOADS; ++i) {
-    const auto& o = p.data[i];
-    s += "{" + std::to_string(o.dst) + "," + std::to_string(o.merge_mode) + "," + std::to_string(o.merge_shift) + "},";
-  }
+  for (const auto& o : p.data) s += braces({o.dst, o.merge_mode, o.merge_shift});
   s += "}};\n";
   s += "static const FastModData BAKED_DAGMOD = {" + std::to_string(m.reciprocal) + "," +
        std::to_string(m.increment) + "," + std::to_string(m.shift) + "," + std::to_string(m.divisor) + "};\n";

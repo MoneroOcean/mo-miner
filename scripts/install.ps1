@@ -16,8 +16,7 @@ if ($PSVersionTable.PSVersion.Major -ge 7) {
 }
 
 function Test-Administrator {
-  $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-  $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+  $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
   return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
@@ -36,17 +35,14 @@ function Resolve-OpenClRuntimeUrl {
 
   try {
     $response = Invoke-WebRequest -UseBasicParsing -Uri $openClRuntimePage
-    $matches = [regex]::Matches(
+    # Scrape the runtime .exe links (use $found, not the $Matches automatic var).
+    $found = [regex]::Matches(
       $response.Content,
       'https://registrationcenter-download\.intel\.com/[^"''<>\s]+/w_opencl_runtime_p_[0-9.]+\.exe'
     )
-    $urls = @(
-      $matches |
-        ForEach-Object { $_.Value } |
-        Sort-Object -Unique
-    )
-    if ($urls.Count -gt 0) {
-      return $urls[0]
+    $url = @($found.Value | Sort-Object -Unique) | Select-Object -First 1
+    if ($url) {
+      return $url
     }
   } catch {
     Write-Warning "Unable to discover latest Intel OpenCL CPU runtime URL: $($_.Exception.Message)"
@@ -72,18 +68,20 @@ function Install-IntelGraphicsDriver {
     "--accept-source-agreements",
     "--disable-interactivity"
   )
+  $runWinget = { (Start-Process -FilePath $winget.Source -ArgumentList $arguments -Wait -PassThru).ExitCode }
 
-  $upgrade = Start-Process -FilePath $winget.Source -ArgumentList $arguments -Wait -PassThru
-  if ($upgrade.ExitCode -eq 0) {
+  $upgradeExitCode = & $runWinget
+  if ($upgradeExitCode -eq 0) {
     Write-Host "Intel Graphics Driver update completed."
     return
   }
 
-  Write-Warning "Intel Graphics Driver winget update exited with $($upgrade.ExitCode); trying install."
+  # winget 'upgrade' fails when the driver is not yet installed; retry with 'install'.
+  Write-Warning "Intel Graphics Driver winget update exited with $upgradeExitCode; trying install."
   $arguments[0] = "install"
-  $install = Start-Process -FilePath $winget.Source -ArgumentList $arguments -Wait -PassThru
-  if ($install.ExitCode -ne 0) {
-    Write-Warning "Intel Graphics Driver winget install exited with $($install.ExitCode)."
+  $installExitCode = & $runWinget
+  if ($installExitCode -ne 0) {
+    Write-Warning "Intel Graphics Driver winget install exited with $installExitCode."
   }
 }
 
@@ -120,27 +118,18 @@ Remove-Item -Recurse -Force $runtimeDir -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $runtimeDir | Out-Null
 
 Write-Host "Downloading Intel OpenCL CPU runtime from $resolvedOpenClRuntimeUrl"
-Invoke-WebRequest `
-  -UseBasicParsing `
-  -Uri $resolvedOpenClRuntimeUrl `
-  -OutFile $installer
+Invoke-WebRequest -UseBasicParsing -Uri $resolvedOpenClRuntimeUrl -OutFile $installer
 
 Stop-OpenClRuntimeInstallers
 Remove-Item -Recurse -Force $extractRoot -ErrorAction SilentlyContinue
-$extract = Start-Process `
-  -FilePath $installer `
-  -ArgumentList @("-s", "-a", "--silent", "--eula", "accept") `
-  -PassThru
+# The installer self-extracts the MSI into $extractRoot; we poll for it below
+# rather than waiting on the process, so its handle is intentionally discarded.
+Start-Process -FilePath $installer -ArgumentList @("-s", "-a", "--silent", "--eula", "accept") | Out-Null
 
 $deadline = (Get-Date).AddMinutes(3)
 $msi = $null
 while ((Get-Date) -lt $deadline) {
-  $msi = Get-ChildItem `
-    -Path $extractRoot `
-    -Filter "w_opencl_runtime_p_*.msi" `
-    -File `
-    -Recurse `
-    -ErrorAction SilentlyContinue |
+  $msi = Get-ChildItem -Path $extractRoot -Filter "w_opencl_runtime_p_*.msi" -File -Recurse -ErrorAction SilentlyContinue |
     Select-Object -First 1
   if ($msi) {
     break
@@ -154,12 +143,9 @@ if (-not $msi) {
   throw "Unable to extract Intel OpenCL CPU runtime MSI from $installer."
 }
 
-$install = Start-Process `
-  -FilePath msiexec.exe `
-  -ArgumentList @("/i", $msi.FullName, "/qn", "/norestart") `
-  -Wait `
-  -PassThru
+$install = Start-Process -FilePath msiexec.exe -ArgumentList @("/i", $msi.FullName, "/qn", "/norestart") -Wait -PassThru
 
+# 3010 = ERROR_SUCCESS_REBOOT_REQUIRED: the install succeeded, just needs a reboot.
 if ($install.ExitCode -ne 0 -and $install.ExitCode -ne 3010) {
   throw "Intel OpenCL CPU runtime install failed with exit code $($install.ExitCode)."
 }
@@ -169,8 +155,7 @@ if ($InstallIntelGraphicsDriver) {
 }
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$libsDir = Join-Path $scriptDir "libs"
-if (Test-Path (Join-Path $libsDir "ze_loader.dll")) {
+if (Test-Path (Join-Path $scriptDir "libs\ze_loader.dll")) {
   Write-Host "Bundled Level Zero loader is present."
 } else {
   Write-Host "Bundled Level Zero loader was not found; update the mom release package if GPU Level Zero is unavailable."

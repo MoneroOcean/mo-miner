@@ -281,8 +281,6 @@ const hashTests = [
   },
 ];
 
-const perfTests = [];
-const perfAlgos = new Set();
 const nonceAt32Algos = new Set(["kawpow", "etchash", "autolykos2"]);
 // Heights sampled from coin mainnets so perf DAG/table sizes match live pool jobs
 // (ETC 2026-06-04, RVN and ERG 2026-06-12). Keep in sync with benchHeightByAlgo in mom.js.
@@ -292,27 +290,33 @@ const benchHeightByAlgo = {
   autolykos2: 1806198,
 };
 
-function perfJob(definition) {
-  const algo = definition.job.algo;
+// Build a perf job from a hash vector's source job. Nonce-at-32 algos (kawpow/etchash/autolykos2)
+// carry a blob and need a live-sized DAG, so we keep the source job (clearing its dev for autoDev)
+// and stamp the sampled height; all other algos only need the algo name.
+function perfJob(sourceJob) {
+  const algo = sourceJob.algo;
   if (!nonceAt32Algos.has(algo)) return { algo };
 
-  const job = { ...definition.job, dev: undefined };
+  const job = { ...sourceJob, dev: undefined };
   if (benchHeightByAlgo[algo]) job.height = benchHeightByAlgo[algo];
   return job;
 }
 
+// One perf entry per distinct algo, taken from its first hash vector.
+const perfTests = [];
+const seenAlgos = new Set();
 for (const definition of hashTests) {
   const algo = definition.job.algo;
-  if (perfAlgos.has(algo)) continue;
+  if (seenAlgos.has(algo)) continue;
+  seenAlgos.add(algo);
 
-  perfAlgos.add(algo);
   perfTests.push({
     algo,
     gpu: definition.gpu,
     autoDev: true,
     name: algo,
     timeoutMs: definition.timeoutMs || 3 * 60 * 1000,
-    job: perfJob(definition),
+    job: perfJob(definition.job),
   });
 }
 

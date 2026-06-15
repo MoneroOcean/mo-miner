@@ -29,20 +29,17 @@ function reallyExit(code) {
 
 function childEnv(extra) {
   const env = { ...process.env, ...extra };
-  if (process.platform !== "win32") return env;
-  return withWindowsWorkerPath(env);
+  return process.platform === "win32" ? withWindowsWorkerPath(env) : env;
 }
 
 function normalizeWindowsPathKey(env) {
+  // Windows env var names are case-insensitive; collapse any stray PATH variants
+  // (e.g. "Path" and "PATH") onto a single canonical key.
   const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") || "Path";
   for (const key of Object.keys(env)) {
-    if (isDuplicatePathKey(key, pathKey)) delete env[key];
+    if (key !== pathKey && key.toLowerCase() === "path") delete env[key];
   }
   return pathKey;
-}
-
-function isDuplicatePathKey(key, pathKey) {
-  return key.toLowerCase() === "path" && key !== pathKey;
 }
 
 function withWindowsWorkerPath(env) {
@@ -119,9 +116,9 @@ module.exports.create_core = function() {
   const core_module = require(core_path);
   debugStartup("required native module");
   core_module_for_exit = core_module;
-  let emitter = new events();
+  const emitter = new events();
   debugStartup("constructing AsyncWorker");
-  let worker = new core_module.AsyncWorker(
+  const worker = new core_module.AsyncWorker(
     function(name, value) {
       module.exports.log3("Getting from compute core " + thread_id + " " + name + " message: " +
                           JSON.stringify(value));
@@ -138,17 +135,16 @@ module.exports.create_core = function() {
       module.exports.log3("Sending to compute core " + thread_id + " " + name + " message: " +
                           JSON.stringify(data));
       const payload = {};
-      for (const [key, value] of Object.entries(data || {})) payload[key] = corePayloadValue(value);
+      // native core expects string values; map null/undefined to empty string
+      for (const [key, value] of Object.entries(data || {})) {
+        payload[key] = value === undefined || value === null ? "" : String(value);
+      }
       debugStartup("sending " + name + " to native module");
       worker.sendToCpp(name, payload);
       debugStartup("sent " + name + " to native module");
     }
   };
 };
-
-function corePayloadValue(value) {
-  return value === undefined || value === null ? "" : String(value);
-}
 
 module.exports.exit_now = function(code) {
   if (core_module_for_exit && core_module_for_exit.exitNow) {
@@ -158,18 +154,15 @@ module.exports.exit_now = function(code) {
 };
 
 function sendWorkerMessage(type, value) {
-  const msg = {type: type, value: value, thread_id: thread_id};
+  const msg = {type, value, thread_id};
   if (process.send) return process.send(msg);
   process.stdout.write(worker_message_prefix + JSON.stringify(msg) + "\n");
 }
 
 function forwardCoreMessages(compute_core) {
-  compute_core.from.on("test",        function(v) { sendWorkerMessage("test", v); });
-  compute_core.from.on("last_nonce",  function(v) { sendWorkerMessage("last_nonce", v); });
-  compute_core.from.on("result",      function(v) { sendWorkerMessage("result", v); });
-  compute_core.from.on("hashrate",    function(v) { sendWorkerMessage("hashrate", v); });
-  compute_core.from.on("algo_params", function(v) { sendWorkerMessage("algo_params", v); });
-  compute_core.from.on("error",       function(v) { sendWorkerMessage("error", v); });
+  for (const name of ["test", "last_nonce", "result", "hashrate", "algo_params", "error"]) {
+    compute_core.from.on(name, function(v) { sendWorkerMessage(name, v); });
+  }
 }
 
 function closeWorkerProcess(compute_core, is_exiting_ref) {
@@ -227,7 +220,7 @@ module.exports.cluster_process = function() {
   // process worker thread env vars
   global.opt = { log_level: Number.parseInt(process.env["log_level"], 10) };
 
-  let compute_core = this.create_core();
+  const compute_core = this.create_core();
 
   // send message from worker thread to master thread
   forwardCoreMessages(compute_core);
@@ -285,16 +278,12 @@ module.exports.get_dev_batch = function(dev) {
   return m ? Number.parseInt(m[1], 10) : 1;
 };
 
-function isCloseMessage(msg) {
-  return msg.type === "close";
-}
-
 function markExpectedClose(worker, msg) {
-  if (isCloseMessage(msg)) worker.expectedClose = true;
+  if (msg.type === "close") worker.expectedClose = true;
 }
 
 function isUnexpectedSendError(worker, msg) {
-  return !isCloseMessage(msg) && !worker.expectedClose;
+  return msg.type !== "close" && !worker.expectedClose;
 }
 
 function sendSubprocessWorker(worker_id, worker, msg) {
@@ -342,11 +331,6 @@ module.exports.messageWorkers = function(msg) {
   return targets;
 };
 
-function forceCloseSubprocess(worker) {
-  if (isSubprocessClosed(worker)) return;
-  module.exports.killProcessTree(worker);
-}
-
 function isSubprocessClosed(worker) {
   return worker.exitCode !== null || worker.signalCode !== null || worker.killed;
 }
@@ -363,21 +347,19 @@ module.exports.killProcessTree = function(worker, signal = "SIGKILL") {
   return true;
 };
 
-function forceCloseClusterWorker(worker) {
-  if (worker.isDead && worker.isDead()) return;
-  worker.kill("SIGKILL");
-}
-
 function forceCloseWorker(target) {
   const worker = target.worker;
   if (!worker) return;
-  if (target.type === "subprocess") return forceCloseSubprocess(worker);
-  forceCloseClusterWorker(worker);
+  if (target.type === "subprocess") {
+    if (!isSubprocessClosed(worker)) module.exports.killProcessTree(worker);
+  } else if (!worker.isDead || !worker.isDead()) {
+    worker.kill("SIGKILL");
+  }
 }
 
 module.exports.closeWorkers = function(forceAfterMs) {
   const targets = module.exports.messageWorkers({type: "close"});
-  if (forceAfterMs !== undefined && forceAfterMs !== null) {
+  if (forceAfterMs != null) {
     setTimeout(function() {
       for (const target of targets) forceCloseWorker(target);
     }, forceAfterMs).unref();
@@ -469,7 +451,6 @@ function createClusterThread(i, env, messageHandler) {
 // can have issues
 module.exports.recreate_threads = function(dev, messageHandler, extraEnv = {}) {
   module.exports.closeWorkers(5000);
-  //for (const thread of Object.values(thread_id_map)) cluster.workers[thread].kill();
   worker_ids = [];
   worker_procs = {};
   const curr_thread_count = this.get_dev_threads(dev);
@@ -480,11 +461,12 @@ module.exports.recreate_threads = function(dev, messageHandler, extraEnv = {}) {
   }
 };
 
-// repeat while cb_next is called returns true result with ms delay
+// Re-run cb_next each time it invokes its callback, waiting `delay` ms between
+// runs (or immediately/recursively when delay is falsy).
 module.exports.repeat = function(cb_next, delay) {
   cb_next(function() {
     if (delay) setTimeout(module.exports.repeat, delay, cb_next, delay);
-    else return module.exports.repeat(cb_next, delay);
+    else module.exports.repeat(cb_next, delay);
   });
 };
 
@@ -528,8 +510,8 @@ function formatHashCountValue(count, unit) {
 }
 
 module.exports.formatHashCount = function(hashes) {
-  let count = typeof hashes === "bigint" ? hashes : BigInt(Math.max(0, Math.round(Number(hashes) || 0)));
-  if (count < 0n) count = 0n;
+  let count = typeof hashes === "bigint" ? hashes : BigInt(Math.round(Number(hashes) || 0));
+  if (count < 0n) count = 0n; // counts are unsigned; clamp negatives to zero
   for (const unit of hash_count_units) {
     if (count >= unit.value) return formatHashCountValue(count, unit);
   }
@@ -542,9 +524,9 @@ module.exports.parseFormattedHashrate = function(value, unit) {
   return Number.isFinite(rate) && multiplier ? rate * multiplier : Number.NaN;
 };
 
-// pack opt.default_msrs to it can be more easily passed into compute core
+// pack opt.default_msrs so it can be more easily passed into the compute core
 module.exports.pack_msr = function(default_msr) {
-  let packed = {};
+  const packed = {};
   for (const [key, val] of Object.entries(default_msr)) {
     packed["msr:" + key] = val.value + "," + val.mask;
   }
@@ -552,7 +534,7 @@ module.exports.pack_msr = function(default_msr) {
 };
 
 module.exports.unpack_msr = function(default_msr) {
-  let unpacked = {};
+  const unpacked = {};
   for (const [key, val] of Object.entries(default_msr)) {
     if (!key.startsWith("msr:0x")) continue;
     const parts = val.split(",");
@@ -564,16 +546,15 @@ module.exports.unpack_msr = function(default_msr) {
 
 module.exports.target2diff = function(target) {
   if (target.length === 8) target = "00000000" + target;
-  // need BE -> LE conversion here
+  // target is stored big-endian; reverse byte pairs to read it as a LE integer
   const div = BigInt("0x" + target.match(/.{2}/g).reverse().join(""));
-  if (div === BigInt(0)) return 0;
+  if (div === 0n) return 0;
   return BigInt("0xFFFFFFFFFFFFFFFF") / div;
 };
 
 module.exports.kawpowTarget2diff = function(target) {
-  const target64 = target.slice(0, 16).padEnd(16, "0");
-  const div = BigInt("0x" + target64);
-  if (div === BigInt(0)) return 0;
+  const div = BigInt("0x" + target.slice(0, 16).padEnd(16, "0"));
+  if (div === 0n) return 0;
   return BigInt("0xFFFFFFFFFFFFFFFF") / div;
 };
 
@@ -584,8 +565,8 @@ function decimalToRatio(value) {
   const text = String(value || "0").trim().toLowerCase();
   const m = text.match(/^([+-])?(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/);
   if (!m) return [0n, 1n];
-  let digits = (m[2] + (m[3] || "")).replace(/^0+/, "") || "0";
-  let scale = BigInt((m[3] || "").length);
+  const digits = (m[2] + (m[3] || "")).replace(/^0+/, "") || "0";
+  const scale = BigInt((m[3] || "").length);
   const exp = BigInt(m[4] || "0");
   let numerator = BigInt(digits);
   let denominator = 10n ** scale;
@@ -595,50 +576,52 @@ function decimalToRatio(value) {
   return [numerator, denominator];
 }
 
+// clamp a 256-bit target to UINT256_MAX and render as 64 lowercase hex chars
+function target256ToHex(target) {
+  return (target > UINT256_MAX ? UINT256_MAX : target).toString(16).padStart(64, "0");
+}
+
+// parse a (possibly 0x-prefixed, short) 256-bit target hex string into a BigInt
+function parseTarget256(target) {
+  return BigInt("0x" + String(target || "").replace(/^0x/i, "").padStart(64, "0"));
+}
+
 module.exports.ethDiff2Target = function(diff) {
   const [numerator, denominator] = decimalToRatio(diff);
   if (numerator <= 0n) return "0".repeat(64);
-  const target = (ETH_STRATUM_DIFF1_TARGET * denominator) / numerator;
-  return (target > UINT256_MAX ? UINT256_MAX : target).toString(16).padStart(64, "0");
+  return target256ToHex((ETH_STRATUM_DIFF1_TARGET * denominator) / numerator);
 };
 
 module.exports.decimalTargetToHex = function(value) {
   const [numerator, denominator] = decimalToRatio(value);
   if (numerator <= 0n) return "0".repeat(64);
-  const target = numerator / denominator;
-  return (target > UINT256_MAX ? UINT256_MAX : target).toString(16).padStart(64, "0");
+  return target256ToHex(numerator / denominator);
 };
 
 module.exports.ethTarget2diff = function(target) {
-  const div = BigInt("0x" + String(target || "").replace(/^0x/i, "").padStart(64, "0"));
+  const div = parseTarget256(target);
   if (div === 0n) return 0;
   return Number(ETH_STRATUM_DIFF1_TARGET) / Number(div);
 };
 
 module.exports.target256ToWork = function(target) {
-  const div = BigInt("0x" + String(target || "").replace(/^0x/i, "").padStart(64, "0"));
+  const div = parseTarget256(target);
   if (div === 0n) return 0n;
   return UINT256_MAX / div;
 };
 
+// Inverse of target2diff: diff -> compact BE target hex (4 bytes when it fits).
 module.exports.diff2target = function(diff) {
-  const diff2 = BigInt(diff);
-  if (diff2 <= 0n) return "0000000000000000";
-  // Reverse of: div = BigInt(0xFFFFFFFFFFFFFFFF) / diff
-  let div = BigInt("0xFFFFFFFFFFFFFFFF") / diff2;
-  // Convert to hex without `0x`
-  let hexLE = div.toString(16).padStart(16, "0");
-  // Reverse LE -> BE
-  let hexBE = hexLE.match(/.{2}/g).reverse().join("");
-  // If 8-byte (16 hex chars), remove leading zeros to match original style
-  if (hexBE.startsWith("00000000")) {
-    hexBE = hexBE.slice(8);
-  }
-  return hexBE;
+  const d = BigInt(diff);
+  if (d <= 0n) return "0000000000000000";
+  const hexLE = (BigInt("0xFFFFFFFFFFFFFFFF") / d).toString(16).padStart(16, "0");
+  const hexBE = hexLE.match(/.{2}/g).reverse().join("");
+  // Drop the high 4 zero bytes to match the original compact-target style.
+  return hexBE.startsWith("00000000") ? hexBE.slice(8) : hexBE;
 };
 
 module.exports.edge_hex2arr = function(hex) {
   const pow = [];
   for (let i = 0; i < hex.length; i += 8) pow.push(Number.parseInt(hex.slice(i, i + 8), 16));
   return pow;
-}
+};

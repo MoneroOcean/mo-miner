@@ -18,7 +18,7 @@ function cloneForSyclCpu(definition, dev) {
 }
 
 function requiredVector(name) {
-  const definition = hashTests.find((entry) => entry.name === name);
+  const definition = hashTests.find((v) => v.name === name);
   assert.ok(definition, `Missing hash vector: ${name}`);
   return definition;
 }
@@ -53,17 +53,14 @@ describe("SYCL CPU hash vectors", () => {
     return result.dev;
   }
 
-  for (const source of syclCpuVectors) {
-    it(source.name.replace(/gpu1/g, "SYCL CPU"), { timeout: CPU_TEST_TIMEOUT_MS }, async (t) => {
+  for (const definition of syclCpuVectors) {
+    it(definition.name.replace(/gpu1/g, "SYCL CPU"), { timeout: CPU_TEST_TIMEOUT_MS }, async (t) => {
       const dev = await getDevice(t);
       if (!dev) return;
 
-      const result = await runMinerTest(cloneForSyclCpu(source, dev));
-      if (result.skipped) {
-        t.skip(result.reason);
-        return;
-      }
-      assert.equal(result.skipped, false);
+      // runMinerTest throws on failure, so a non-skipped return already means the vector passed.
+      const result = await runMinerTest(cloneForSyclCpu(definition, dev));
+      if (result.skipped) t.skip(result.reason);
     });
   }
 });

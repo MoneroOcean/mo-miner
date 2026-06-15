@@ -22,8 +22,7 @@ const unsigned CN_MEMORY4  = CN_MEMORY / sizeof(uint32_t);
 const unsigned CN_MEMORY8  = CN_MEMORY / sizeof(uint64_t);
 const unsigned CN_MEMORY16 = CN_MEMORY / sizeof(sycl::uint4);
 
-// Optimized Xe-HPG workgroup size and AES table layout.
-const unsigned WORKGROUP_SIZE = 16; // Sub-groups are 32 wide on Arc
+const unsigned WORKGROUP_SIZE = 16; // 16 threads/hash; two hashes fill an Arc 32-wide sub-group
 
 alignas(64) const constexpr uint32_t AES[256] = {
   0xA56363C6, 0x847C7CF8, 0x997777EE, 0x8D7B7BF6, 0x0DF2F2FF, 0xBD6B6BD6, 0xB16F6FDE, 0x54C5C591,
@@ -84,7 +83,7 @@ void keccak(uint64_t* const s) { // Hot device-side Keccak; keep explicit steps 
   };
   for (unsigned round = 0; round < 24; ++ round) {
     uint64_t bc[5];
-    // Theta step - optimized for Arc's execution units.
+    // Theta step.
     bc[0] = s[0] ^ s[5] ^ s[10] ^ s[15] ^ s[20] ^
             mo_rotate(s[2] ^ s[7] ^ s[12] ^ s[17] ^ s[22], uint64_t{1});
     bc[1] = s[1] ^ s[6] ^ s[11] ^ s[16] ^ s[21] ^
@@ -107,7 +106,7 @@ void keccak(uint64_t* const s) { // Hot device-side Keccak; keep explicit steps 
       s[piln[i]] = mo_rotate(t, static_cast<uint64_t>(rotc[i]));
       t = bc[0];
     }
-    // Chi step - unrolled for Arc's SIMD width.
+    // Chi step.
     for (unsigned i = 0; i < 25; i += 5) {
       const uint64_t tmp1 = s[i], tmp2 = s[i + 1];
       s[i    ] = mo_bitselect(s[i    ] ^ s[i + 2], s[i    ], s[i + 1]);
@@ -266,10 +265,9 @@ void generate512(const unsigned idx, const uint64_t* const in, uint64_t* out) { 
   static const unsigned skip[3] = { 20, 22, 22 };
   uint64_t hash[25];
   hash[0] = in[0] ^ idx;
-
-  // Each lane expands one 512-byte chunk through three Keccak rounds.
   for (unsigned i = 1; i < 25; ++ i) hash[i] = in[i];
 
+  // Three Keccak rounds emit one 512-byte chunk (20 + 22 + 22 = 64 uint64 words).
   for (unsigned a = 0; a < 3; ++ a) {
     keccak(hash);
     for (unsigned i = 0; i < skip[a]; ++ i) out[i] = hash[i];
@@ -422,7 +420,7 @@ inline uint32_t sw(const uint32_t inw) { // AES S-box for key expansion.
   u = inw;
   b[0] = sbox[b[0]]; b[1] = sbox[b[1]]; b[2] = sbox[b[2]]; b[3] = sbox[b[3]];
   return u;
-};
+}
 
 void aes_expend_key(uint32_t* const keybuf) { // Unrolled AES-256 key expansion.
   static const uint32_t rcon[8] = { 0x8d, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40 };
@@ -433,17 +431,25 @@ void aes_expend_key(uint32_t* const keybuf) { // Unrolled AES-256 key expansion.
   }
 }
 
-inline void aes_round(
-  sycl::uint4* const px, const sycl::uint4 key,
-  const sycl::local_accessor<uint32_t, 1>& aes0,
-  const sycl::local_accessor<uint32_t, 1>& aes1,
-  const sycl::local_accessor<uint32_t, 1>& aes2,
-  const sycl::local_accessor<uint32_t, 1>& aes3
-) {
+// Local-memory T-table: AES base table rotated by 0/8/16/24 bytes.
+using AesTable = sycl::local_accessor<uint32_t, 1>;
+
+// Cooperatively fill the four rotated T-tables; caller must barrier before first use.
+inline void aes_fill_tables(const AesTable& aes0, const AesTable& aes1, const AesTable& aes2,
+                            const AesTable& aes3, const sycl::nd_item<2>& nd) {
+  const unsigned linear = nd.get_local_id(0) * nd.get_local_range(1) + nd.get_local_id(1);
+  const unsigned threads = nd.get_local_range(0) * nd.get_local_range(1);
+  for (unsigned i = linear; i < 256; i += threads) {
+    const uint32_t a = AES[i];
+    aes0[i] = a; aes1[i] = mo_rotate(a, 8U); aes2[i] = mo_rotate(a, 16U); aes3[i] = mo_rotate(a, 24U);
+  }
+}
+
+inline void aes_round(sycl::uint4* const px, const sycl::uint4 key, const AesTable& aes0,
+                      const AesTable& aes1, const AesTable& aes2, const AesTable& aes3) {
   union { uint8_t b[4]; uint32_t u; } u0, u1, u2, u3;
   u0.u = px->x(); u1.u = px->y(); u2.u = px->z(); u3.u = px->w();
 
-  // Local T-table access pattern matches the final AES kernels.
   px->x() = key[0] ^ aes0[u0.b[0]] ^ aes1[u1.b[1]] ^ aes2[u2.b[2]] ^ aes3[u3.b[3]];
   px->y() = key[1] ^ aes0[u1.b[0]] ^ aes1[u2.b[1]] ^ aes2[u3.b[2]] ^ aes3[u0.b[3]];
   px->z() = key[2] ^ aes0[u2.b[0]] ^ aes1[u3.b[1]] ^ aes2[u0.b[2]] ^ aes3[u1.b[3]];
@@ -592,23 +598,23 @@ void cn_gpu(
     });
   });
 
-  // Expand Keccak state into each 2 MiB scratchpad.
+  // Expand Keccak state into each 2 MiB scratchpad (one thread per 512-byte stripe).
   q.submit([&](sycl::handler& h) {
-    const unsigned THREADS2 = CN_MEMORY8 / 64;
+    const unsigned stripes = CN_MEMORY8 / 64; // 512-byte stripes per scratchpad
     MOM_USE_BUNDLE(h, kb);
-    const unsigned total_threads = batch * THREADS2;
-    const unsigned wg_size = std::min(WORKGROUP_SIZE, THREADS2);
+    const unsigned total_threads = batch * stripes;
+    const unsigned wg_size = std::min(WORKGROUP_SIZE, stripes);
     h.parallel_for(sycl::nd_range(sycl::range((total_threads + wg_size - 1) / wg_size * wg_size),
                                  sycl::range(wg_size)),
                    [=](sycl::nd_item<1> nd) {
       const auto t = nd.get_global_id(0);
       if (t >= total_threads) return;
 
-      const unsigned tm = t % THREADS2;
-      const unsigned td = t / THREADS2;
-      const uint64_t* const spad = &d_spads[td * 25];
-      uint64_t* const lpad = &d_lpads[td * CN_MEMORY8];
-      generate512(tm, spad, &lpad[tm * 64]);
+      const unsigned stripe = t % stripes;
+      const unsigned hash_idx = t / stripes;
+      const uint64_t* const spad = &d_spads[hash_idx * 25];
+      uint64_t* const lpad = &d_lpads[hash_idx * CN_MEMORY8];
+      generate512(stripe, spad, &lpad[stripe * 64]);
     });
   });
 
@@ -692,22 +698,16 @@ void cn_gpu(
     });
   });
 
+  const unsigned aes_wg = WORKGROUP_SIZE / 4; // hashes per workgroup row; dim1 (8) splits each hash
   if (state.device.is_gpu()) { // GPU path replaces the AES local-memory ring with subgroup shuffles.
     q.submit([&](sycl::handler& h) {
-      const unsigned THREADS2 = WORKGROUP_SIZE / 4;
-      const auto aes0 = sycl::local_accessor<uint32_t, 1>(sycl::range(256), h);
-      const auto aes1 = sycl::local_accessor<uint32_t, 1>(sycl::range(256), h);
-      const auto aes2 = sycl::local_accessor<uint32_t, 1>(sycl::range(256), h);
-      const auto aes3 = sycl::local_accessor<uint32_t, 1>(sycl::range(256), h);
+      const AesTable aes0(sycl::range(256), h), aes1(sycl::range(256), h),
+                     aes2(sycl::range(256), h), aes3(sycl::range(256), h);
       MOM_USE_BUNDLE(h, kb);
-      h.parallel_for(sycl::nd_range(sycl::range(batch, 8), sycl::range(THREADS2, 8)),
+      h.parallel_for(sycl::nd_range(sycl::range(batch, 8), sycl::range(aes_wg, 8)),
                      [=](sycl::nd_item<2> nd) MOM_REQD_SG_16 {
-        const unsigned l0 = nd.get_local_id(0), l1 = nd.get_local_id(1);
-        const unsigned table_init_threads = nd.get_local_range(0) * nd.get_local_range(1);
-        for (unsigned i = l0 * nd.get_local_range(1) + l1; i < 256; i += table_init_threads) {
-          const uint32_t aes = AES[i];
-          aes0[i] = aes; aes1[i] = mo_rotate(aes, 8U); aes2[i] = mo_rotate(aes, 16U); aes3[i] = mo_rotate(aes, 24U);
-        }
+        const unsigned l1 = nd.get_local_id(1);
+        aes_fill_tables(aes0, aes1, aes2, aes3, nd);
 
         nd.barrier(sycl::access::fence_space::local_space);
 
@@ -757,22 +757,15 @@ void cn_gpu(
     });
   } else { // CPU path keeps the barriered local-memory exchange for stable behavior.
     q.submit([&](sycl::handler& h) {
-      const unsigned THREADS2 = WORKGROUP_SIZE / 4;
-      const auto aes0 = sycl::local_accessor<uint32_t, 1>(sycl::range(256), h);
-      const auto aes1 = sycl::local_accessor<uint32_t, 1>(sycl::range(256), h);
-      const auto aes2 = sycl::local_accessor<uint32_t, 1>(sycl::range(256), h);
-      const auto aes3 = sycl::local_accessor<uint32_t, 1>(sycl::range(256), h);
-      const auto x1 = sycl::local_accessor<sycl::uint4, 2>(sycl::range(THREADS2, 8), h);
-      const auto x2 = sycl::local_accessor<sycl::uint4, 2>(sycl::range(THREADS2, 8), h);
+      const AesTable aes0(sycl::range(256), h), aes1(sycl::range(256), h),
+                     aes2(sycl::range(256), h), aes3(sycl::range(256), h);
+      const auto x1 = sycl::local_accessor<sycl::uint4, 2>(sycl::range(aes_wg, 8), h);
+      const auto x2 = sycl::local_accessor<sycl::uint4, 2>(sycl::range(aes_wg, 8), h);
       MOM_USE_BUNDLE(h, kb);
-      h.parallel_for(sycl::nd_range(sycl::range(batch, 8), sycl::range(THREADS2, 8)),
+      h.parallel_for(sycl::nd_range(sycl::range(batch, 8), sycl::range(aes_wg, 8)),
                      [=](sycl::nd_item<2> nd) {
         const unsigned l0 = nd.get_local_id(0), l1 = nd.get_local_id(1);
-        const unsigned table_init_threads = nd.get_local_range(0) * nd.get_local_range(1);
-        for (unsigned i = l0 * nd.get_local_range(1) + l1; i < 256; i += table_init_threads) {
-          const uint32_t aes = AES[i];
-          aes0[i] = aes; aes1[i] = mo_rotate(aes, 8U); aes2[i] = mo_rotate(aes, 16U); aes3[i] = mo_rotate(aes, 24U);
-        }
+        aes_fill_tables(aes0, aes1, aes2, aes3, nd);
 
         nd.barrier(sycl::access::fence_space::local_space);
 

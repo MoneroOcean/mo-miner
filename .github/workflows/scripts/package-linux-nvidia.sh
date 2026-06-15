@@ -9,7 +9,7 @@
 set -euo pipefail
 
 version="${1:-}"
-if [ -z "$version" ] && [ "${GITHUB_REF_NAME:-}" != "" ] && [[ "${GITHUB_REF_NAME}" =~ ^v?[0-9] ]]; then
+if [ -z "$version" ] && [ -n "${GITHUB_REF_NAME:-}" ] && [[ "${GITHUB_REF_NAME}" =~ ^v?[0-9] ]]; then
   version="$GITHUB_REF_NAME"
 fi
 if [ -z "$version" ]; then
@@ -90,50 +90,58 @@ trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
 # Copy a file out of the build image, dereferencing symlinks to the real target. The dest
 # basename is the SONAME (e.g. libsycl.so.9), which is what DT_NEEDED / dlopen() ask for.
 copy_image_file() {
-  local src="$1" dest="${2:-}"
-  [ -n "$src" ] || return 0
-  [ -n "$dest" ] || dest="$libs_dir/$(basename "$src")"
-  [ -e "$dest" ] && return 0
+  local src="$1" dest="${2:-$libs_dir/$(basename "$1")}"
+  [ -n "$src" ] && [ ! -e "$dest" ] || return 0
   docker cp -L "$container:$src" "$dest"
 }
 
-# 1. The SYCL runtime + everything libsycl dlopen()s for the CUDA backend. These are loaded
-#    by name at runtime, so they are NOT in the addon's ldd output and must be copied
-#    explicitly: the SYCL runtime, the CUDA UR adapter (+ its libumf dep), and the
-#    kernel_compiler JIT library (kawpow compiles its device source through it).
-copy_image_file "$dpcpp_lib/libsycl.so.9"
-copy_image_file "$dpcpp_lib/libur_adapter_cuda.so.0"
-copy_image_file "$dpcpp_lib/libumf.so.1"
-copy_image_file "$dpcpp_lib/libsycl-jit.so"
+# Libs that libsycl dlopen()s for the CUDA backend. They are loaded by name at runtime, so
+# they are NOT in the addon's ldd output and must be copied explicitly: the SYCL runtime, the
+# CUDA UR adapter (+ its libumf dep), and the kernel_compiler JIT library (kawpow compiles its
+# device source through it).
+dlopen_libs="$dpcpp_lib/libsycl.so.9 $dpcpp_lib/libur_adapter_cuda.so.0 $dpcpp_lib/libumf.so.1 $dpcpp_lib/libsycl-jit.so"
 
-# 2. Bundle the transitive dependency closure of those libs, resolved INSIDE the build image
-#    (ldd is transitive) so the bundled libs match the build environment. This picks up
-#    libhwloc, libstdc++/libgcc and libz. Skip glibc-base libs (present on every target) and
-#    the user-provided libcuda driver, so the release runs on a machine with just the driver.
+# Basename globs for libs NOT to bundle: glibc-base libs (present on every target) and the
+# libcuda/libnvidia-ml driver (provided by the user), so the release needs only the driver.
+# set -f keeps them as literal patterns (no pathname expansion at assignment, any CWD).
+set -f; base_libs=(ld-linux* libc.so* libm.so* libdl.so* libpthread.so* librt.so* libresolv.so* libutil.so* libcuda.so* libnvidia-ml.so*); set +f
+is_base_lib() {
+  local pat
+  for pat in "${base_libs[@]}"; do
+    [[ "$1" == $pat ]] && return 0
+  done
+  return 1
+}
+
+# 1. Copy the dlopen'd libs themselves.
+for lib in $dlopen_libs; do
+  copy_image_file "$lib"
+done
+
+# 2. Bundle their transitive dependency closure, resolved INSIDE the build image (ldd is
+#    transitive) so the bundled libs match the build environment. This picks up libhwloc,
+#    libstdc++/libgcc and libz; base_libs are skipped.
 deps="$(docker exec "$container" bash -lc "
   set -e
-  libs=\"$dpcpp_lib/libsycl.so.9 $dpcpp_lib/libur_adapter_cuda.so.0 $dpcpp_lib/libumf.so.1 $dpcpp_lib/libsycl-jit.so\"
-  for l in \$libs; do ldd \"\$l\" 2>/dev/null || true; done \
+  for l in $dlopen_libs; do ldd \"\$l\" 2>/dev/null || true; done \
     | awk '/=>/ && \$3 ~ /^\// {print \$3}' | sort -u
 ")"
 while IFS= read -r path; do
   [ -n "$path" ] || continue
-  base="$(basename "$path")"
-  case "$base" in
-    ld-linux*|libc.so*|libm.so*|libdl.so*|libpthread.so*|librt.so*|libresolv.so*|libutil.so*|libcuda.so*|libnvidia-ml.so*) continue ;;
-  esac
+  is_base_lib "$(basename "$path")" && continue
   copy_image_file "$path"
 done <<<"$deps"
 
-# Sanity check: nothing the bundled libs need (other than glibc/libcuda) is absent from
-# libs/. Resolved against libs/ only, so it catches gaps a clean target would hit.
+# Sanity check: nothing the bundled libs need (other than base_libs) is absent from libs/.
+# Resolved against libs/ only, so it catches gaps a clean target would hit.
 unresolved="$(
   while IFS= read -r -d "" file; do
     LD_LIBRARY_PATH="$PWD/$libs_dir" ldd "$file" 2>/dev/null || true
   done < <(find "$libs_dir" -maxdepth 1 -type f \( -name "*.so" -o -name "*.so.*" \) -print0) \
-    | awk '/not found/{print $1}' \
-    | { grep -vE "^(libcuda\.so|libnvidia-ml\.so|ld-linux|libc\.so|libm\.so|libdl\.so|libpthread\.so|librt\.so|libresolv\.so|libutil\.so)" || true; } \
-    | sort -u
+    | awk '/not found/{print $1}' | sort -u \
+    | while IFS= read -r missing; do
+        is_base_lib "$missing" || printf '%s\n' "$missing"
+      done
 )"
 if [ -n "$unresolved" ]; then
   echo "Unresolved packaged Linux/NVIDIA dependencies (excluding glibc-base and the user-provided libcuda):" >&2

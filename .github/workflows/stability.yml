@@ -154,9 +154,9 @@ jobs:
     needs: package-linux-nvidia-x64
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    # Only the pure-CPU (xmrig) suite: the dpcpp-cuda build is CUDA-only (no CPU SYCL
-    # device) and CI runners have no NVIDIA GPU, so SYCL/GPU algos are verified on real
-    # NVIDIA hardware, not in CI.
+    # Only the pure-CPU (xmrig) suite runs: the dpcpp-cuda build exposes no CPU SYCL
+    # device and CI runners have no NVIDIA GPU, so SYCL/GPU algos are verified on real
+    # NVIDIA hardware instead.
     strategy:
       fail-fast: false
       matrix:

@@ -26,17 +26,14 @@ if [ ! -r /etc/os-release ]; then
 fi
 
 . /etc/os-release
-if [ "${ID:-}" != "ubuntu" ]; then
+unsupported_distro() {
   echo "This installer supports Ubuntu 24.04 and 26.04 only; detected ${PRETTY_NAME:-unknown}." >&2
   exit 1
-fi
-
+}
+[ "${ID:-}" = "ubuntu" ] || unsupported_distro
 case "${VERSION_ID:-}" in
   24.*|26.*) ;;
-  *)
-    echo "This installer supports Ubuntu 24.04 and 26.04 only; detected ${PRETTY_NAME:-unknown}." >&2
-    exit 1
-    ;;
+  *) unsupported_distro ;;
 esac
 
 export DEBIAN_FRONTEND=noninteractive
@@ -54,28 +51,33 @@ fi
 cd "$work_dir"
 
 github_release_json() {
-  local repo="$1"
-  local release="${2:-}"
-  local url
+  local repo="$1" release="${2:-}" url
   if [ -n "$release" ]; then
     url="$github_api_root/$repo/releases/tags/$release"
   else
     url="$github_api_root/$repo/releases/latest"
   fi
-
   curl -fsSL --retry 3 --retry-delay 2 \
     -H "Accept: application/vnd.github+json" \
     -H "X-GitHub-Api-Version: 2022-11-28" \
     "$url"
 }
 
+# Print "Using <repo> <tag_name>" from a release-JSON file produced above.
+announce_release() {
+  python3 - "$1" "$2" <<'PY'
+import json, sys
+with open(sys.argv[2], encoding="utf-8") as fh:
+    release = json.load(fh)
+print(f'Using {sys.argv[1]} {release.get("tag_name", "<unknown>")}')
+PY
+}
+
 select_asset() {
   local json_file="$1"
   shift
   python3 - "$json_file" "$@" <<'PY'
-import json
-import re
-import sys
+import json, re, sys
 
 with open(sys.argv[1], encoding="utf-8") as fh:
     release = json.load(fh)
@@ -105,9 +107,7 @@ PY
 }
 
 download_asset() {
-  local name="$1"
-  local digest="$2"
-  local url="$3"
+  local name="$1" digest="$2" url="$3"
 
   echo "Downloading $name" >&2
   curl -fL --retry 3 --retry-delay 2 -o "$name" "$url"
@@ -121,6 +121,8 @@ download_asset() {
 download_selected_asset() {
   local json_file="$1"
   shift
+  # Keep select_asset on its own line so its non-zero exit aborts under `set -e`
+  # (a failure inside <<<"$(...)" would be masked by read's exit status).
   local selected name digest url
   selected="$(select_asset "$json_file" "$@")"
   IFS=$'\t' read -r name digest url <<<"$selected"
@@ -131,12 +133,7 @@ download_selected_asset() {
 download_compute_runtime() {
   echo "Resolving Intel compute-runtime release..."
   github_release_json intel/compute-runtime "${MOM_COMPUTE_RUNTIME_RELEASE:-}" > compute-runtime.json
-  python3 - <<'PY'
-import json
-with open("compute-runtime.json", encoding="utf-8") as fh:
-    release = json.load(fh)
-print("Using intel/compute-runtime " + release.get("tag_name", "<unknown>"))
-PY
+  announce_release intel/compute-runtime compute-runtime.json
 
   compute_debs=()
   compute_debs+=("$(download_selected_asset compute-runtime.json 'libigdgmm[0-9]*_.+_amd64\.deb')")
@@ -148,9 +145,7 @@ PY
 extract_igc_version() {
   local deb="$1"
   python3 - "$deb" <<'PY'
-import re
-import subprocess
-import sys
+import re, subprocess, sys
 
 text = subprocess.check_output(["dpkg-deb", "-I", sys.argv[1]], text=True)
 matches = re.findall(r"intel-igc-(?:core|opencl)(?:-[0-9]+)?\s*\(>=\s*([^)]+)\)", text)
@@ -160,9 +155,11 @@ PY
 }
 
 download_igc_runtime() {
-  local required_version=""
-  local deb version release
+  local required_version="" release=""
+  local deb version
 
+  # IGC must satisfy the ">= x.y.z" dependency pinned in the compute-runtime
+  # .debs; use the first version we can extract from any of them.
   for deb in "${compute_debs[@]}"; do
     version="$(extract_igc_version "$deb" || true)"
     if [ -n "$version" ]; then
@@ -175,8 +172,6 @@ download_igc_runtime() {
     release="$MOM_IGC_RELEASE"
   elif [ -n "$required_version" ]; then
     release="v$required_version"
-  else
-    release=""
   fi
 
   echo "Resolving Intel Graphics Compiler release..."
@@ -189,12 +184,7 @@ download_igc_runtime() {
     fi
   fi
 
-  python3 - <<'PY'
-import json
-with open("igc.json", encoding="utf-8") as fh:
-    release = json.load(fh)
-print("Using intel/intel-graphics-compiler " + release.get("tag_name", "<unknown>"))
-PY
+  announce_release intel/intel-graphics-compiler igc.json
 
   igc_debs=()
   if [ -n "$required_version" ]; then
@@ -211,12 +201,7 @@ download_level_zero_loader() {
 
   echo "Resolving oneAPI Level Zero loader release..."
   github_release_json oneapi-src/level-zero "${MOM_LEVEL_ZERO_RELEASE:-}" > level-zero.json
-  python3 - <<'PY'
-import json
-with open("level-zero.json", encoding="utf-8") as fh:
-    release = json.load(fh)
-print("Using oneapi-src/level-zero " + release.get("tag_name", "<unknown>"))
-PY
+  announce_release oneapi-src/level-zero level-zero.json
 
   level_zero_deb="$(download_selected_asset level-zero.json \
     "libze1_.+\\+${ubuntu_asset_suffix}_amd64\\.deb" \

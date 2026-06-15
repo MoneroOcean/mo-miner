@@ -85,7 +85,7 @@ class Core: public AsyncWorker {
   uint8_t *m_input, *m_output;
   uint8_t m_target_bin[HASH_LEN]{}, m_seed[HASH_LEN]{};
   unsigned m_job_ref, m_height, m_batch, m_mem_size, m_input_len, m_nonce_step,
-	   m_nonce_bytes, m_nonce_offset, m_c29_proof_size;
+           m_nonce_bytes, m_nonce_offset, m_c29_proof_size;
   uint32_t m_nonce32; // next nonce that will be used in an input
   uint64_t m_nonce64, m_nicehash_mask, m_target, m_timestamp, m_hash_count;
   std::string m_algo_str, m_dev_str, m_seed_hex, m_input_hex, m_pool_id, m_worker_id, m_job_id, m_header_hash;
@@ -109,9 +109,13 @@ class Core: public AsyncWorker {
   inline uint64_t* get_nonce64(const unsigned batch = 0) {
     return get_nonce64(m_input, batch);
   }
-  // just check the most significant uint64_t value of the full 32-byte hash value
+  // last nonce reached on the current device; pearl keeps its 64-bit search seed in m_nonce64
+  inline uint64_t last_nonce() const {
+    return (m_nonce_bytes == 4 && m_dev != DEV::PEARL_GPU) ? m_nonce32 : m_nonce64;
+  }
+  // points at the most-significant uint64_t of the 32-byte hash (little-endian top word)
   inline const uint64_t* get_result(const uint8_t* const output, const unsigned batch) const {
-    return reinterpret_cast<const uint64_t*>(output + (batch * HASH_LEN) + 24);
+    return reinterpret_cast<const uint64_t*>(output + (batch * HASH_LEN) + HASH_LEN - sizeof(uint64_t));
   }
   inline const uint64_t* get_result(const unsigned batch = 0) const {
     return get_result(m_output, batch);

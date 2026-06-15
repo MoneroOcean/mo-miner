@@ -33,7 +33,7 @@ static void debug_startup(const char* message) {
 
 struct MsrValue {
   uint64_t value, mask;
-  MsrValue() {};
+  MsrValue() {}
   MsrValue(const uint64_t value, const uint64_t mask = ~0) : value(value), mask(mask) {}
 };
 typedef std::map<uint32_t, MsrValue> MsrItems;
@@ -63,9 +63,9 @@ static const std::map<xmrig::ICpuInfo::MsrMod, MsrItems> msr_mods = {
 };
 
 static inline unsigned char hf_hex2bin(const char c, bool& err) {
-  if (c >= '0' && c <= '9')      return c - '0';
-  else if (c >= 'a' && c <= 'f') return c - 'a' + 0xA;
-  else if (c >= 'A' && c <= 'F') return c - 'A' + 0xA;
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 0xA;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 0xA;
   err = true;
   return 0;
 }
@@ -91,8 +91,7 @@ std::vector<std::string> Core::tokenize(const std::string& str, const char delim
 }
 
 static inline char hf_bin2hex(const unsigned n) {
-  if (n < 10) return '0' + n;
-  return 'a' + (n - 10);
+  return n < 10 ? '0' + n : 'a' + (n - 10);
 }
 
 char* Core::hash_bin2hex(const uint8_t* const output, char* hash, const unsigned batch) const {
@@ -127,23 +126,22 @@ void Core::send_error(const std::string& str) {
   send_msg("error", "message", str);
 }
 
+// Format a nonce as fixed-width little-endian-display hex: 8 digits for 4-byte nonces, else 16.
+static std::string nonce_to_hex(const uint64_t nonce, const unsigned noncebytes) {
+  char hex[sizeof(uint64_t) * 2 + 1];
+  if (noncebytes == 4) snprintf(hex, sizeof(hex), "%08x", static_cast<uint32_t>(nonce));
+  else                 snprintf(hex, sizeof(hex), "%016" PRIx64, nonce);
+  return hex;
+}
+
 void Core::send_result(
   const uint64_t nonce, const unsigned noncebytes, const uint8_t* const output,
   const uint32_t* const edges, const unsigned c29_proof_size,
   const uint8_t* const commitment, const uint8_t* const mix_hash
 ) {
   MessageValues values;
+  values["nonce"] = nonce_to_hex(nonce, noncebytes);
 
-  // nonce hex
-  char nonce_hex[sizeof(uint64_t) * 2 + 1];
-  if (noncebytes == 4) {
-    snprintf(nonce_hex, sizeof(nonce_hex), "%08x", static_cast<uint32_t>(nonce));
-  } else {
-    snprintf(nonce_hex, sizeof(nonce_hex), "%016" PRIx64, nonce);
-  }
-  values["nonce"] = nonce_hex;
-
-  // hash hex
   char hash_hex[HASH_LEN * 2 + 1];
   values["hash"] = hash_bin2hex(output, hash_hex);
 
@@ -157,7 +155,6 @@ void Core::send_result(
     values["mix_hash"] = hash_bin2hex(mix_hash, mix_hash_hex);
   }
 
-  // edges hex
   if (edges) {
     std::string edges_hex;
     edges_hex.reserve(c29_proof_size * 8); // 8 hex chars per edge
@@ -178,13 +175,7 @@ void Core::send_result(
 
 void Core::send_last_nonce(const uint64_t nonce, const unsigned noncebytes, const std::string& pool_id) {
   MessageValues result;
-  char nonce_hex[sizeof(uint64_t)*2+1];
-  if (noncebytes == 4) {
-    snprintf(nonce_hex, noncebytes*2+1, "%08x", static_cast<uint32_t>(nonce));
-  } else {
-    snprintf(nonce_hex, noncebytes*2+1, "%016" PRIx64, nonce);
-  }
-  result["nonce"]   = nonce_hex;
+  result["nonce"]   = nonce_to_hex(nonce, noncebytes);
   result["pool_id"] = pool_id;
   send_msg("last_nonce", result);
 }
@@ -235,13 +226,13 @@ static void parse_big_target_hex(const std::string& target, uint8_t* const out) 
     throw std::string("Bad target hex");
   hex.insert(0, HASH_LEN * 2 - hex.size(), '0');
   bool error = false;
+  uint8_t any = 0;
   for (unsigned i = 0; i < HASH_LEN; ++i) {
     out[i] = (hf_hex2bin(hex[i * 2], error) << 4) | hf_hex2bin(hex[i * 2 + 1], error);
     if (error) throw std::string("Bad target hex");
+    any |= out[i];
   }
-  bool is_zero = true;
-  for (unsigned i = 0; i < HASH_LEN; ++i) is_zero &= out[i] == 0;
-  if (is_zero) throw std::string("Bad target hex");
+  if (!any) throw std::string("Bad target hex"); // reject all-zero target
 }
 
 static bool nonce_overflowed(const uint64_t previous, const uint64_t next, const uint64_t mask) {
@@ -301,16 +292,15 @@ bool Core::process_message(const std::string& type, const MessageValues& v) {
     if (!v.contains("job_id"))    throw std::string("Missing job_id job key");
     const std::string new_target_str = strip_hex_prefix(v.at("target"));
 
-    const bool is_kawpow_target = v.contains("algo") && v.at("algo") == "kawpow";
-    const bool is_etchash_target = v.contains("algo") && v.at("algo") == "etchash";
-    const bool is_autolykos2_target = v.contains("algo") && v.at("algo") == "autolykos2";
-    const bool is_pearl_target = v.contains("algo") && v.at("algo") == "pearl";
-    const bool is_big_target = is_etchash_target || is_autolykos2_target || is_pearl_target;
+    const std::string algo = v.contains("algo") ? v.at("algo") : "";
+    const bool is_kawpow_target = algo == "kawpow";
+    // etchash/autolykos2/pearl use a full 32-byte target instead of a single 64-bit word
+    const bool is_big_target = algo == "etchash" || algo == "autolykos2" || algo == "pearl";
     const uint64_t new_target = is_big_target ? 1 : parse_target_hex(new_target_str, is_kawpow_target);
     uint8_t new_target_bin[HASH_LEN]{};
     if (is_big_target) parse_big_target_hex(new_target_str, new_target_bin);
 
-    const uint64_t last_nonce = (m_nonce_bytes == 4 && m_dev != DEV::PEARL_GPU) ? m_nonce32 : m_nonce64; // pearl's seed lives in m_nonce64
+    const uint64_t prev_last_nonce = last_nonce();
     const std::string prev_pool_id = m_pool_id;
     set_job(true, true, v, [&]() {
       m_target    = new_target;
@@ -320,7 +310,7 @@ bool Core::process_message(const std::string& type, const MessageValues& v) {
       m_job_id    = v.at("job_id");
       m_header_hash = v.contains("header_hash") ? v.at("header_hash") : "";
     });
-    if (last_nonce) send_last_nonce(last_nonce, m_nonce_bytes, prev_pool_id);
+    if (prev_last_nonce) send_last_nonce(prev_last_nonce, m_nonce_bytes, prev_pool_id);
 
   } else if (type == "bench") {
     debug_startup("process bench start");
@@ -384,15 +374,10 @@ bool Core::process_message(const std::string& type, const MessageValues& v) {
        send_msg("read_msr", result);
 
      } else { // write msr
-       // if algo is set and needs MSR mod then set it
-       // otherwise reset MSR to default values
-       bool is_set_msr = false;
-       { const auto pi = v.find("algo");
-         if (pi != v.end()) {
-           const auto& algo = pi->second;
-           is_set_msr = algo.starts_with("rx/") || algo == "ghostrider" || algo == "cn-heavy/xhv";
-         }
-       }
+       // set the MSR mod if the active algo needs it, otherwise reset MSRs to default values
+       const std::string algo = v.contains("algo") ? v.at("algo") : "";
+       const bool is_set_msr =
+         algo.starts_with("rx/") || algo == "ghostrider" || algo == "cn-heavy/xhv";
 
        for (const auto& i : msr_items) {
          const uint32_t reg = i.first;
@@ -413,8 +398,8 @@ bool Core::process_message(const std::string& type, const MessageValues& v) {
      return true;
 
   } else if (type == "close") {
-    const uint64_t last_nonce = (m_nonce_bytes == 4 && m_dev != DEV::PEARL_GPU) ? m_nonce32 : m_nonce64; // pearl's seed lives in m_nonce64
-    if (last_nonce) send_last_nonce(last_nonce, m_nonce_bytes, m_pool_id);
+    const uint64_t prev_last_nonce = last_nonce();
+    if (prev_last_nonce) send_last_nonce(prev_last_nonce, m_nonce_bytes, m_pool_id);
     free_memory();
     return false; // stop processing messages
 
@@ -436,6 +421,13 @@ static uint64_t loop_now_us() {
   return std::chrono::duration_cast<std::chrono::microseconds>(
     std::chrono::steady_clock::now().time_since_epoch()
   ).count();
+}
+
+// log a one-off stall line when a single loop phase blocks the compute loop for >100ms
+static void loop_stall(const char* phase, const uint64_t us) {
+  if (us > 100000)
+    fprintf(stderr, "LOOPSTALL t=%llu %s=%.1fms\n",
+      static_cast<unsigned long long>(time(nullptr)), phase, us / 1e3);
 }
 
 static void loop_stats_report(LoopStats& ls, const uint64_t now) {
@@ -468,9 +460,6 @@ void Core::Execute() {
 #if !defined(_WIN32)
     if (ci.arch() == xmrig::ICpuInfo::ARCH_ZEN)
       xmrig::RxFix::setupMainLoopExceptionFrame();
-#endif
-
-#if !defined(_WIN32)
     if (ci.has(xmrig::ICpuInfo::FLAG_SSE41)) rx_blake2b_compress = rx_blake2b_compress_sse41;
     if (ci.hasAVX2())                        rx_blake2b          = blake2b_avx2;
 #endif
@@ -493,8 +482,7 @@ void Core::Execute() {
         const uint64_t post_us = t_loop_start - ls.dispatch_end;
         ls.post += post_us;
         if (post_us > ls.max_post) ls.max_post = post_us;
-        if (post_us > 100000) fprintf(stderr, "LOOPSTALL t=%llu post=%.1fms\n",
-          static_cast<unsigned long long>(time(nullptr)), post_us / 1e3);
+        loop_stall("post", post_us);
         ls.dispatch_end = 0;
       }
       if (!ls.window_start) ls.window_start = t_loop_start;
@@ -518,8 +506,7 @@ void Core::Execute() {
       const uint64_t msg_us = loop_now_us() - t_loop_start;
       ls.msg += msg_us;
       if (msg_us > ls.max_msg) ls.max_msg = msg_us;
-      if (msg_us > 100000) fprintf(stderr, "LOOPSTALL t=%llu msg=%.1fms\n",
-        static_cast<unsigned long long>(time(nullptr)), msg_us / 1e3);
+      loop_stall("msg", msg_us);
     }
 
     // we skip first hash function run using m_hash_count check to exclude GPU compile time
@@ -549,18 +536,14 @@ void Core::Execute() {
       continue;
     }
 
-    if (m_fn.any) {
+    { // m_fn.any is non-null here (early-continue above), so compute a batch
       init_runtime();
-      int c29_sols;
-      uint64_t c29_nonce;
-      int kawpow_sols;
-      uint64_t kawpow_nonce;
-      int etchash_sols;
-      uint64_t etchash_nonce;
-      int autolykos2_sols;
-      uint64_t autolykos2_nonce;
-      int pearl_sols;
-      uint64_t pearl_seed;
+      // Only one device runs per dispatch, so a single solution-count + nonce/seed pair is shared
+      // across all the GPU cases. dev_nonce doubles as the kernel's in/out found-nonce slot (and as
+      // pearl's search seed); dev_sols is the per-call solution count (or C29's -1 EOL / 0 pending).
+      int dev_sols = 0;
+      uint64_t dev_nonce = 0;
+      const bool is_test = !m_nonce32 && !m_nonce64;
       const uint64_t t_dispatch = loop_stats ? loop_now_us() : 0;
       try {
         switch (m_dev) {
@@ -568,49 +551,47 @@ void Core::Execute() {
             m_fn.cpu(m_input, m_input_len, m_output, m_ctx, m_height);
             break;
           case DEV::GPU:
-	    m_fn.gpu_cn(m_input, m_input_len, m_output, m_spads, m_batch, m_dev_str);
-	    break;
+            m_fn.gpu_cn(m_input, m_input_len, m_output, m_spads, m_batch, m_dev_str);
+            break;
           case DEV::C29_GPU:
-	    c29_nonce = m_nonce_bytes == 4 ? bswap_32(*get_nonce32()) : bswap_64(*get_nonce64());
-            c29_sols = m_fn.gpu_c29(
-	      m_job_ref, m_c29_proof_size, m_input, m_input_len, m_output,
-              static_cast<uint32_t*>(m_spads), &c29_nonce, m_dev_str
-	    );
+            dev_nonce = m_nonce_bytes == 4 ? bswap_32(*get_nonce32()) : bswap_64(*get_nonce64());
+            dev_sols = m_fn.gpu_c29(
+              m_job_ref, m_c29_proof_size, m_input, m_input_len, m_output,
+              static_cast<uint32_t*>(m_spads), &dev_nonce, m_dev_str
+            );
             break;
           case DEV::KAWPOW_GPU:
-            std::memcpy(&kawpow_nonce, m_input + m_nonce_offset, sizeof(kawpow_nonce));
-            kawpow_sols = m_fn.gpu_kawpow(
+            std::memcpy(&dev_nonce, m_input + m_nonce_offset, sizeof(dev_nonce));
+            dev_sols = m_fn.gpu_kawpow(
               m_job_ref, m_height, m_input, m_input_len, m_output,
-              static_cast<uint8_t*>(m_spads), &kawpow_nonce, m_target,
-              m_batch, !m_nonce32 && !m_nonce64, m_is_bench, m_dev_str
+              static_cast<uint8_t*>(m_spads), &dev_nonce, m_target,
+              m_batch, is_test, m_is_bench, m_dev_str
             );
             break;
           case DEV::ETCHASH_GPU:
-            std::memcpy(&etchash_nonce, m_input + m_nonce_offset, sizeof(etchash_nonce));
-            etchash_sols = m_fn.gpu_etchash(
+            std::memcpy(&dev_nonce, m_input + m_nonce_offset, sizeof(dev_nonce));
+            dev_sols = m_fn.gpu_etchash(
               m_job_ref, m_height, m_input, m_input_len, m_output,
-              static_cast<uint8_t*>(m_spads), &etchash_nonce, m_target_bin, m_seed,
-              m_batch, !m_nonce32 && !m_nonce64, m_is_bench, m_dev_str
+              static_cast<uint8_t*>(m_spads), &dev_nonce, m_target_bin, m_seed,
+              m_batch, is_test, m_is_bench, m_dev_str
             );
             break;
           case DEV::AUTOLYKOS2_GPU:
-            std::memcpy(&autolykos2_nonce, m_input + m_nonce_offset, sizeof(autolykos2_nonce));
-            autolykos2_sols = m_fn.gpu_autolykos2(
+            std::memcpy(&dev_nonce, m_input + m_nonce_offset, sizeof(dev_nonce));
+            dev_sols = m_fn.gpu_autolykos2(
               m_job_ref, m_height, m_input, m_input_len, m_output,
-              &autolykos2_nonce, m_target_bin,
-              m_batch, !m_nonce32 && !m_nonce64, m_is_bench, m_dev_str
+              &dev_nonce, m_target_bin,
+              m_batch, is_test, m_is_bench, m_dev_str
             );
             break;
-
           case DEV::PEARL_GPU:
-            pearl_seed = m_nonce64;   // the search seed is internal (not embedded in the blob)
-            pearl_sols = m_fn.gpu_pearl(
+            dev_nonce = m_nonce64;   // the search seed is internal (not embedded in the blob)
+            dev_sols = m_fn.gpu_pearl(
               m_job_ref, m_height, m_input, m_input_len, m_output,
-              &pearl_seed, m_target_bin,
-              m_batch, !m_nonce32 && !m_nonce64, m_is_bench, m_dev_str
+              &dev_nonce, m_target_bin,
+              m_batch, is_test, m_is_bench, m_dev_str
             );
             break;
-
           case DEV::RX_CPU: throw "Internal error: Unreachable code executed";
         }
       } catch(const std::string& err) {
@@ -628,48 +609,45 @@ void Core::Execute() {
         ++ls.iters;
       }
 
-      if (!m_nonce32 && !m_nonce64) { // test job
-	m_input_len = 0; // do not produce any more test jobs for async GPU code like in c29
+      if (is_test) {
+        m_input_len = 0; // do not produce any more test jobs for async GPU code like in c29
         if (m_dev == DEV::KAWPOW_GPU || m_dev == DEV::ETCHASH_GPU) {
-          const int sols = m_dev == DEV::KAWPOW_GPU ? kawpow_sols : etchash_sols;
-          if (sols == 1) {
+          if (dev_sols == 1) {
             char hash[HASH_LEN*2+1], mix[HASH_LEN*2+1];
             send_msg("test", "result", std::string(hash_bin2hex(hash, 0)) + " " +
                                       hash_bin2hex(static_cast<uint8_t*>(m_spads), mix));
-            set_fn(nullptr);
           } else {
             send_error(std::string("No ") + (m_dev == DEV::KAWPOW_GPU ? "kawpow" : "etchash") + " test result");
-            set_fn(nullptr);
           }
+          set_fn(nullptr);
           continue;
         }
         if (m_dev == DEV::AUTOLYKOS2_GPU) {
-          if (autolykos2_sols == 1) {
+          if (dev_sols == 1) {
             char hash[HASH_LEN*2+1];
             send_msg("test", "result", hash_bin2hex(hash, 0));
-            set_fn(nullptr);
           } else {
             send_error("No autolykos2 test result");
-            set_fn(nullptr);
           }
+          set_fn(nullptr);
           continue;
         }
         if (m_dev == DEV::PEARL_GPU) {
-          if (pearl_sols == 1) send_msg("test", "result", "ok");
+          if (dev_sols == 1) send_msg("test", "result", "ok");
           else send_error("No pearl test result");
           set_fn(nullptr);
           continue;
         }
-        if (m_dev == DEV::C29_GPU && c29_sols == 0) {
+        if (m_dev == DEV::C29_GPU && dev_sols == 0) {
           std::this_thread::sleep_for(std::chrono::milliseconds(100));
           continue;
         }
-        if (m_dev == DEV::C29_GPU && c29_sols == -1) {
+        if (m_dev == DEV::C29_GPU && dev_sols == -1) {
           send_msg("test", "result", "EOL");
-	  set_fn(nullptr);
-	  continue;
-	}
-	if (m_dev != DEV::C29_GPU || c29_sols == 1) {
+          set_fn(nullptr);
+          continue;
+        }
+        if (m_dev != DEV::C29_GPU || dev_sols == 1) {
           std::string result_hash_str;
           for (unsigned i = 0; i != m_batch; ++ i) {
             if (i) result_hash_str += " ";
@@ -677,8 +655,8 @@ void Core::Execute() {
             result_hash_str += hash_bin2hex(hash, i);
           }
           send_msg("test", "result", result_hash_str);
-	  if (m_dev != DEV::C29_GPU) set_fn(nullptr); // no async solutions anymore
-	}
+          if (m_dev != DEV::C29_GPU) set_fn(nullptr); // no async solutions anymore
+        }
         continue;
       }
 
@@ -686,10 +664,8 @@ void Core::Execute() {
       m_hash_count += (m_dev == DEV::PEARL_GPU) ? pearl_attempt_hashes(m_batch) : m_batch;
       if (m_dev == DEV::KAWPOW_GPU || m_dev == DEV::ETCHASH_GPU) {
         const uint64_t prev_nonce = m_nonce64;
-        const int sols = m_dev == DEV::KAWPOW_GPU ? kawpow_sols : etchash_sols;
-        const uint64_t found_nonce = m_dev == DEV::KAWPOW_GPU ? kawpow_nonce : etchash_nonce;
-        if (sols == 1 && m_target)
-          send_result(found_nonce, 8, m_output, nullptr, 32, nullptr, static_cast<uint8_t*>(m_spads));
+        if (dev_sols == 1 && m_target)
+          send_result(dev_nonce, 8, m_output, nullptr, 32, nullptr, static_cast<uint8_t*>(m_spads));
 
         std::memcpy(m_input + m_nonce_offset, &m_nonce64, sizeof(m_nonce64));
         m_nonce64 += m_nonce_step;
@@ -701,8 +677,8 @@ void Core::Execute() {
       }
       if (m_dev == DEV::AUTOLYKOS2_GPU) {
         const uint64_t prev_nonce = m_nonce64;
-        if (autolykos2_sols == 1 && m_target)
-          send_result(autolykos2_nonce, 8, m_output);
+        if (dev_sols == 1 && m_target)
+          send_result(dev_nonce, 8, m_output);
 
         std::memcpy(m_input + m_nonce_offset, &m_nonce64, sizeof(m_nonce64));
         m_nonce64 += m_nonce_step;
@@ -716,14 +692,13 @@ void Core::Execute() {
         const uint64_t prev_nonce = m_nonce64;
         // Emit at most once per (job_id, header) pair since the PlainProof rebuild is heavy and the
         // pool credits one share per job. Pearlpool varies job_id (reuses header); HeroMiners the reverse.
-        if (pearl_sols == 1 && m_target) {
+        if (dev_sols == 1 && m_target) {
           std::string pearl_key = m_job_id;
           pearl_key.append(reinterpret_cast<const char*>(m_input), m_input_len);
           if (pearl_key != m_pearl_proof_job) {
             m_pearl_proof_job = pearl_key;
             MessageValues values;
-            char seed_hex[17]; snprintf(seed_hex, sizeof(seed_hex), "%016" PRIx64, pearl_seed);
-            values["nonce"]       = seed_hex;          // winning seed, for logging/traceability
+            values["nonce"]       = nonce_to_hex(dev_nonce, 8); // winning seed, for logging/traceability
             values["plain_proof"] = pearl_proof();     // builds the proof for the captured tile (lazy)
             values["pool_id"]     = m_pool_id;
             values["worker_id"]   = m_worker_id;
@@ -750,19 +725,19 @@ void Core::Execute() {
             m_nonce32 += m_nonce_step;
           }
         } else {
-          if (c29_sols == 1 && m_target && *get_result() < m_target)
-            send_result(c29_nonce, 4, m_output, static_cast<uint32_t*>(m_spads), m_c29_proof_size);
+          if (dev_sols == 1 && m_target && *get_result() < m_target)
+            send_result(dev_nonce, 4, m_output, static_cast<uint32_t*>(m_spads), m_c29_proof_size);
           *get_nonce32() = bswap_32(m_nonce32);
           m_nonce32 += m_nonce_step;
         }
 
-	// check that current nonce is greater than previous one and nince hash protected nonce part is not changed
+        // fail if the nonce wrapped, or the nicehash-protected high bits changed
         if (m_target && nonce_overflowed(prev_nonce, m_nonce32, static_cast<uint32_t>(m_nicehash_mask))) {
           send_error("Nonce overflow");
           set_fn(nullptr);
           continue;
         }
-     } else {
+      } else {
         const uint64_t prev_nonce = m_nonce64;
 
         if (m_dev != DEV::C29_GPU) {
@@ -774,22 +749,19 @@ void Core::Execute() {
             m_nonce64 += m_nonce_step;
           }
         } else {
-          if (c29_sols == 1 && m_target && *get_result() < m_target)
-            send_result(c29_nonce, 8, m_output, static_cast<uint32_t*>(m_spads), m_c29_proof_size);
+          if (dev_sols == 1 && m_target && *get_result() < m_target)
+            send_result(dev_nonce, 8, m_output, static_cast<uint32_t*>(m_spads), m_c29_proof_size);
           *get_nonce64() = bswap_64(m_nonce64);
           m_nonce64 += m_nonce_step;
         }
 
-	// check that current nonce is greater than previous one and nince hash protected nonce part is not changed
+        // fail if the nonce wrapped, or the nicehash-protected high bits changed
         if (m_target && nonce_overflowed(prev_nonce, m_nonce64, m_nicehash_mask)) {
           send_error("Nonce overflow");
           set_fn(nullptr);
           continue;
         }
-     }
-
-    } else {
-      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      }
     }
   }
 }

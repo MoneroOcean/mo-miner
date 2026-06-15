@@ -413,17 +413,18 @@ inline void autolykos_prehash_digest_fast_dev(const uint32_t index, const uint32
   }
 }
 
-// One table row as stored: byte 0 zeroed, bytes 1..31 of the digest, packed big-endian.
+// A table row is the digest packed big-endian into 8 words, with its top byte (digest[0])
+// forced to zero — load32_be of word 0 reads digest[0..3], so just mask that byte off.
+inline void digest_to_limbs_dev(const uint8_t digest[32], uint32_t limbs[8]) {
+  limbs[0] = load32_be_dev(digest) & 0x00FFFFFFU;
+#pragma unroll
+  for (unsigned i = 1; i < 8; ++i) limbs[i] = load32_be_dev(digest + i * 4);
+}
+
 inline void autolykos_table_row_store_dev(uint32_t* const table, const uint32_t gid, const uint32_t height) {
   uint8_t digest[32];
   autolykos_prehash_digest_fast_dev(gid, height, digest);
-  uint8_t table_item[32];
-  table_item[0] = 0;
-#pragma unroll
-  for (unsigned i = 1; i < 32; ++i) table_item[i] = digest[i];
-  uint32_t* const out = table + static_cast<uint64_t>(gid) * (TABLE_ENTRY_BYTES / sizeof(uint32_t));
-#pragma unroll
-  for (unsigned i = 0; i < 8; ++i) out[i] = load32_be_dev(table_item + i * 4);
+  digest_to_limbs_dev(digest, table + static_cast<uint64_t>(gid) * (TABLE_ENTRY_BYTES / sizeof(uint32_t)));
 }
 
 inline void table_item_limbs_dev(
@@ -437,13 +438,19 @@ inline void table_item_limbs_dev(
   }
 
   uint8_t digest[32];
-  uint8_t item[32];
   autolykos_prehash_digest_dev(index, height, digest);
-  item[0] = 0;
-#pragma unroll
-  for (unsigned i = 1; i < 32; ++i) item[i] = digest[i];
-#pragma unroll
-  for (unsigned i = 0; i < 8; ++i) limbs[i] = load32_be_dev(item + i * 4);
+  digest_to_limbs_dev(digest, limbs);
+}
+
+// 256-bit big-endian add: sum[0..7] += add[0..7], propagating carry from least- (i=7) to
+// most-significant limb. The Autolykos2 sum wraps mod 2^256, so the final carry is dropped.
+inline void add_limbs_dev(uint32_t sum[8], const uint32_t* const add) {
+  uint64_t carry = 0;
+  for (int i = 7; i >= 0; --i) {
+    const uint64_t v = static_cast<uint64_t>(sum[i]) + add[i] + carry;
+    sum[i] = static_cast<uint32_t>(v);
+    carry = v >> 32;
+  }
 }
 
 inline bool meets_target_dev(const uint8_t output[32], const uint8_t target[32]) {
@@ -471,6 +478,49 @@ inline void store_autolykos_result(
   for (unsigned i = 0; i < 32; ++i) result->output[index][i] = output[i];
 }
 
+// Autolykos2 per-nonce prehash: blake2b(message||nonce) selects table row h3, then
+// index_hash = blake2b(row[1..31] || message || nonce) seeds the K_LEN table reads.
+// Row bytes come from the prebuilt table when present, else from the on-the-fly digest.
+inline void autolykos_index_hash_dev(
+  const uint8_t message[32], const uint64_t nonce, const uint32_t* const table,
+  const uint32_t height, const uint32_t n_len, uint8_t index_hash[32]
+) {
+  uint8_t nonce_be[8];
+#pragma unroll
+  for (unsigned i = 0; i < 8; ++i) nonce_be[i] = static_cast<uint8_t>(nonce >> ((7U - i) * 8U));
+
+  uint8_t h1_input[40];
+#pragma unroll
+  for (unsigned i = 0; i < 32; ++i) h1_input[i] = message[i];
+#pragma unroll
+  for (unsigned i = 0; i < 8; ++i) h1_input[32 + i] = nonce_be[i];
+
+  uint8_t h1[32];
+  blake2b256_oneblock_dev(h1_input, sizeof(h1_input), h1);
+  const uint32_t h3 = static_cast<uint32_t>(load64_be_dev(h1 + 24) % n_len);
+
+  uint8_t seed[71]; // row[1..31] (31) || message (32) || nonce (8)
+  if (table) {
+    const uint32_t* const h3_item = table + static_cast<uint64_t>(h3) * (TABLE_ENTRY_BYTES / sizeof(uint32_t));
+#pragma unroll
+    for (unsigned i = 0; i < 31; ++i) {
+      const unsigned pos = i + 1U;
+      seed[i] = word_byte_be_dev(h3_item[pos >> 2], pos & 3U);
+    }
+  } else {
+    uint8_t h3_digest[32];
+    autolykos_prehash_digest_dev(h3, height, h3_digest);
+#pragma unroll
+    for (unsigned i = 0; i < 31; ++i) seed[i] = h3_digest[i + 1];
+  }
+#pragma unroll
+  for (unsigned i = 0; i < 32; ++i) seed[31 + i] = message[i];
+#pragma unroll
+  for (unsigned i = 0; i < 8; ++i) seed[63 + i] = nonce_be[i];
+
+  blake2b256_oneblock_dev(seed, sizeof(seed), index_hash);
+}
+
 inline uint32_t calc_n(const uint32_t height) {
   if (height < INCREASE_START) return INIT_N_LEN;
   if (height >= INCREASE_END) return MAX_N_LEN;
@@ -495,6 +545,21 @@ static void format_duration_ms(char* out, size_t out_size, uint64_t ms) {
   } else {
     std::snprintf(out, out_size, "%.2f min", static_cast<double>(ms) / 60000.0);
   }
+}
+
+// Parse env var `name` as a base-10 u32. Writes *out and returns true only when the
+// variable is set to a clean, fully-consumed, in-range integer; otherwise returns false
+// (unset, empty, trailing junk, overflow) so the caller can keep its fallback.
+static bool env_u32(const char* name, uint32_t& out) {
+  const char* const value = std::getenv(name);
+  if (!value || !*value) return false;
+
+  char* end = nullptr;
+  errno = 0;
+  const unsigned long parsed = std::strtoul(value, &end, 10);
+  if (errno || end == value || *end || parsed > std::numeric_limits<uint32_t>::max()) return false;
+  out = static_cast<uint32_t>(parsed);
+  return true;
 }
 
 struct AutolykosState {
@@ -548,40 +613,19 @@ struct AutolykosState {
 #else
     const unsigned fallback = sycl_default_workgroup(dev, {32, 64, 128, 256}, 64);
 #endif
-    const char* const value = std::getenv("MOM_AUTOLYKOS2_WORKGROUP");
-    if (!value || !*value) return fallback;
-
-    char* end = nullptr;
-    errno = 0;
-    const unsigned long parsed = std::strtoul(value, &end, 10);
-    if (errno || end == value || *end) return fallback;
-
-    switch (parsed) {
-      case 32:
-      case 64:
-      case 128:
-      case 256:
-        return static_cast<unsigned>(parsed);
-    }
-    return fallback;
+    return env_workgroup("MOM_AUTOLYKOS2_WORKGROUP", fallback);
   }
 
   static unsigned autolykos_prehash_workgroup(const sycl::device& dev) {
     const unsigned fallback = sycl_default_workgroup(dev, {32, 64, 128, 256}, 64);
-    const char* const value = std::getenv("MOM_AUTOLYKOS2_PREHASH_WORKGROUP");
-    if (!value || !*value) return fallback;
+    return env_workgroup("MOM_AUTOLYKOS2_PREHASH_WORKGROUP", fallback);
+  }
 
-    char* end = nullptr;
-    errno = 0;
-    const unsigned long parsed = std::strtoul(value, &end, 10);
-    if (errno || end == value || *end) return fallback;
-
-    switch (parsed) {
-      case 32:
-      case 64:
-      case 128:
-      case 256:
-        return static_cast<unsigned>(parsed);
+  // Accept an env override only if it is one of the supported workgroup sizes.
+  static unsigned env_workgroup(const char* name, const unsigned fallback) {
+    uint32_t parsed = 0;
+    if (env_u32(name, parsed) && (parsed == 32 || parsed == 64 || parsed == 128 || parsed == 256)) {
+      return parsed;
     }
     return fallback;
   }
@@ -601,27 +645,15 @@ struct AutolykosState {
   // crashes in June 2026. ~3 s chunks cost nothing on the in-order queue. 0 = single kernel.
   static uint32_t autolykos_table_chunk_rows() {
     constexpr uint32_t fallback = 32U * 1024U * 1024U;
-    const char* const value = std::getenv("MOM_AUTOLYKOS2_TABLE_CHUNK");
-    if (!value || !*value) return fallback;
-
-    char* end = nullptr;
-    errno = 0;
-    const unsigned long parsed = std::strtoul(value, &end, 10);
-    if (errno || end == value || *end || parsed > std::numeric_limits<uint32_t>::max()) return fallback;
-    return static_cast<uint32_t>(parsed);
+    uint32_t parsed = 0;
+    return env_u32("MOM_AUTOLYKOS2_TABLE_CHUNK", parsed) ? parsed : fallback;
   }
 
   // 0 disables the post-build row check, 1 (default) cross-checks a strided sample of rows
   // against autolykos_prehash_digest_dev, 2 recomputes every row (slow, for debugging).
   static unsigned autolykos_table_verify_mode() {
-    const char* const value = std::getenv("MOM_AUTOLYKOS2_VERIFY_TABLE");
-    if (!value || !*value) return 1;
-
-    char* end = nullptr;
-    errno = 0;
-    const unsigned long parsed = std::strtoul(value, &end, 10);
-    if (errno || end == value || *end || parsed > 2) return 1;
-    return static_cast<unsigned>(parsed);
+    uint32_t parsed = 0;
+    return env_u32("MOM_AUTOLYKOS2_VERIFY_TABLE", parsed) && parsed <= 2 ? parsed : 1;
   }
 
   void release() {
@@ -693,15 +725,13 @@ struct AutolykosState {
 
           uint8_t digest[32];
           autolykos_prehash_digest_dev(row, height, digest);
-          uint8_t table_item[32];
-          table_item[0] = 0;
-#pragma unroll
-          for (unsigned i = 1; i < 32; ++i) table_item[i] = digest[i];
+          uint32_t expected[8];
+          digest_to_limbs_dev(digest, expected);
 
           const uint32_t* const stored = d_table + static_cast<uint64_t>(row) * (TABLE_ENTRY_BYTES / sizeof(uint32_t));
           bool differs = false;
 #pragma unroll
-          for (unsigned i = 0; i < 8; ++i) differs |= stored[i] != load32_be_dev(table_item + i * 4);
+          for (unsigned i = 0; i < 8; ++i) differs |= stored[i] != expected[i];
           if (differs) {
             sycl::atomic_ref<
               uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
@@ -792,6 +822,17 @@ static AutolykosState& autolykos_state(const std::string& dev_str) {
   return *state;
 }
 
+// Return the last winning share found by a mining kernel (0 = none). The kernels may stash up
+// to MAX_AUTOLYKOS_OUTPUTS hits but the API reports a single nonce/hash, so pick the last slot.
+static int take_autolykos_result(const AutolykosResult* result, uint8_t* output, uint64_t* pnonce) {
+  const uint32_t count = result->count;
+  if (count == 0) return 0;
+  const uint32_t index = std::min(count, MAX_AUTOLYKOS_OUTPUTS) - 1;
+  *pnonce = result->nonce[index];
+  std::memcpy(output, result->output[index], HASH_LEN);
+  return 1;
+}
+
 } // namespace mom_autolykos2
 
 using namespace mom_autolykos2;
@@ -838,35 +879,8 @@ int autolykos2(
           const uint32_t gid = item.get_global_id(0);
           if (gid >= effective_intensity) return;
 
-          const uint64_t nonce = start_nonce + gid;
-          uint8_t nonce_be[8];
-#pragma unroll
-          for (unsigned i = 0; i < 8; ++i) nonce_be[i] = static_cast<uint8_t>(nonce >> ((7U - i) * 8U));
-
-          uint8_t h1_input[40];
-#pragma unroll
-          for (unsigned i = 0; i < 32; ++i) h1_input[i] = job.message[i];
-#pragma unroll
-          for (unsigned i = 0; i < 8; ++i) h1_input[32 + i] = nonce_be[i];
-
-          uint8_t h1[32];
-          blake2b256_oneblock_dev(h1_input, sizeof(h1_input), h1);
-          const uint32_t h3 = static_cast<uint32_t>(load64_be_dev(h1 + 24) % n_len);
-
-          const uint32_t* const h3_item = d_table + static_cast<uint64_t>(h3) * (TABLE_ENTRY_BYTES / sizeof(uint32_t));
-          uint8_t seed[71];
-#pragma unroll
-          for (unsigned i = 0; i < 31; ++i) {
-            const unsigned pos = i + 1U;
-            seed[i] = word_byte_be_dev(h3_item[pos >> 2], pos & 3U);
-          }
-#pragma unroll
-          for (unsigned i = 0; i < 32; ++i) seed[31 + i] = job.message[i];
-#pragma unroll
-          for (unsigned i = 0; i < 8; ++i) seed[63 + i] = nonce_be[i];
-
           uint8_t index_hash[32];
-          blake2b256_oneblock_dev(seed, sizeof(seed), index_hash);
+          autolykos_index_hash_dev(job.message, start_nonce + gid, d_table, height, n_len, index_hash);
 
           uint32_t* const out = d_bhashes + static_cast<uint64_t>(gid) * 8U;
 #pragma unroll
@@ -889,7 +903,7 @@ int autolykos2(
           for (unsigned i = 0; i < 8; ++i) words[i] = hash_words[i];
           words[8] = words[0];
 
-          uint32_t sum[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+          uint32_t sum[8] = {};
           // Unroll the K_LEN table-row reads so the independent random loads issue
           // in parallel (memory-level parallelism) and hide DRAM latency instead
           // of stalling one-at-a-time (the read loop is the autolykos2 bottleneck).
@@ -904,15 +918,7 @@ int autolykos2(
               default: idx = (words[word_index] << 24) | (words[word_index + 1] >> 8); break;
             }
             idx = mo_mod_u32(idx, n_len, n_len_M);
-
-            const uint32_t* const table_item =
-              d_table + static_cast<uint64_t>(idx) * (TABLE_ENTRY_BYTES / sizeof(uint32_t));
-            uint64_t carry = 0;
-            for (int i = 7; i >= 0; --i) {
-              const uint64_t v = static_cast<uint64_t>(sum[i]) + table_item[i] + carry;
-              sum[i] = static_cast<uint32_t>(v);
-              carry = v >> 32;
-            }
+            add_limbs_dev(sum, d_table + static_cast<uint64_t>(idx) * (TABLE_ENTRY_BYTES / sizeof(uint32_t)));
           }
 
           uint8_t final_input[32];
@@ -928,12 +934,7 @@ int autolykos2(
       );
     }), state.device);
 
-    const uint32_t count = state.result->count;
-    if (count == 0) return 0;
-    const uint32_t index = std::min(count, MAX_AUTOLYKOS_OUTPUTS) - 1;
-    *pnonce = state.result->nonce[index];
-    std::memcpy(output, state.result->output[index], HASH_LEN);
-    return 1;
+    return take_autolykos_result(state.result, output, pnonce);
   }
 
   sycl_wait_and_throw(q.submit([&](sycl::handler& h) {
@@ -953,41 +954,8 @@ int autolykos2(
         for (unsigned i = 0; i < K_LEN; ++i) indices[i] = 0;
 
         if (active) {
-          uint8_t nonce_be[8];
-#pragma unroll
-          for (unsigned i = 0; i < 8; ++i) nonce_be[i] = static_cast<uint8_t>(nonce >> ((7U - i) * 8U));
-
-          uint8_t h1_input[40];
-#pragma unroll
-          for (unsigned i = 0; i < 32; ++i) h1_input[i] = job.message[i];
-#pragma unroll
-          for (unsigned i = 0; i < 8; ++i) h1_input[32 + i] = nonce_be[i];
-
-          uint8_t h1[32];
-          blake2b256_oneblock_dev(h1_input, sizeof(h1_input), h1);
-          const uint32_t h3 = static_cast<uint32_t>(load64_be_dev(h1 + 24) % n_len);
-
-          uint8_t seed[71];
-          if (d_table) {
-            const uint32_t* const h3_item = d_table + static_cast<uint64_t>(h3) * (TABLE_ENTRY_BYTES / sizeof(uint32_t));
-#pragma unroll
-            for (unsigned i = 0; i < 31; ++i) {
-              const unsigned pos = i + 1U;
-              seed[i] = word_byte_be_dev(h3_item[pos >> 2], pos & 3U);
-            }
-          } else {
-            uint8_t h3_digest[32];
-            autolykos_prehash_digest_dev(h3, height, h3_digest);
-#pragma unroll
-            for (unsigned i = 0; i < 31; ++i) seed[i] = h3_digest[i + 1];
-          }
-#pragma unroll
-          for (unsigned i = 0; i < 32; ++i) seed[31 + i] = job.message[i];
-#pragma unroll
-          for (unsigned i = 0; i < 8; ++i) seed[63 + i] = nonce_be[i];
-
           uint8_t index_hash[32];
-          blake2b256_oneblock_dev(seed, sizeof(seed), index_hash);
+          autolykos_index_hash_dev(job.message, nonce, d_table, height, n_len, index_hash);
 
 #pragma unroll
           for (unsigned k = 0; k < K_LEN; ++k) {
@@ -999,7 +967,7 @@ int autolykos2(
           }
         }
 
-        uint32_t sum[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+        uint32_t sum[8] = {};
 
         if (d_table && local_size == 64) {
           const uint32_t thread_id = local_id & 7U;
@@ -1030,12 +998,7 @@ int autolykos2(
           for (unsigned k = 0; k < K_LEN; ++k) {
             uint32_t limbs[8];
             table_item_limbs_dev(d_table, indices[k], height, limbs);
-            uint64_t carry = 0;
-            for (int i = 7; i >= 0; --i) {
-              const uint64_t v = static_cast<uint64_t>(sum[i]) + limbs[i] + carry;
-              sum[i] = static_cast<uint32_t>(v);
-              carry = v >> 32;
-            }
+            add_limbs_dev(sum, limbs);
           }
         }
 
@@ -1054,10 +1017,5 @@ int autolykos2(
     );
   }), state.device);
 
-  const uint32_t count = state.result->count;
-  if (count == 0) return 0;
-  const uint32_t index = std::min(count, MAX_AUTOLYKOS_OUTPUTS) - 1;
-  *pnonce = state.result->nonce[index];
-  std::memcpy(output, state.result->output[index], HASH_LEN);
-  return 1;
+  return take_autolykos_result(state.result, output, pnonce);
 }

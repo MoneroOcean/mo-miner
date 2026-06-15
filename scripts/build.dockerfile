@@ -12,14 +12,15 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     npm install -g node-gyp@12.2.0 && \
     node --version && npm --version && node-gyp --version
 
-# allow root group access to /root
+# Give the root group the same access as the root user to /root, so the
+# host-mapped build user (added to group root below) can write into /root/mom.
 RUN chmod g=u /root
 ENV LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
-# replace dash by bash as default /bin/sh shell
+# Make /bin/sh bash instead of dash (entrypoint relies on bash features like ${*@Q}).
 RUN rm /bin/sh && ln -s /bin/bash /bin/sh
 
-# setup env to do build under user that owns /root/mom on the host
-# runs miner under root anyway (no way to access /dev/cpu/*/msr otherwise)
+# Build as the host user that owns /root/mom (so build artifacts stay host-writable),
+# but run the miner as root (needed to access /dev/cpu/*/msr).
 RUN echo $'#!/usr/bin/env bash\n\
 (userdel -r "$(getent passwd $(stat -c "%u" /root/mom) | cut -d: -f1)" 2>/dev/null || true)\n\
 useradd user -u $(stat -c "%g" /root/mom) -G root,video -m -s /bin/bash;\n\
@@ -27,13 +28,12 @@ echo "user ALL=(ALL) NOPASSWD:ALL" >/etc/sudoers.d/user-user\n\
 # Release CI builds use a portable baseline because GitHub can build and test on different x86-64 CPU models.\n\
 portable_build="${MOM_PORTABLE_BUILD:-0}"\n\
 lto="${MOM_LTO:-auto}"\n\
-perf_samples="${MOM_PERF_SAMPLES:-}"\n\
 su - user <<EOF\n\
 cd /root/mom # su - resets to home dir and we need to keep /root/mom pwd\n\
 . /opt/intel/oneapi/setvars.sh >/dev/null\n\
 export MOM_PORTABLE_BUILD="$portable_build"\n\
 export MOM_LTO="$lto"\n\
-export MOM_PERF_SAMPLES="$perf_samples"\n\
+export MOM_PERF_SAMPLES="${MOM_PERF_SAMPLES:-}"\n\
 { ping -c1 -W2 8.8.8.8 >/dev/null 2>&1; } && npm update --silent || echo "Skip npm update since there is no internet access"\n\
 node_build_version="\$(node -p "process.version"):/usr/local:portable=$portable_build:ax=1:lto=$lto"\n\
 if [ ! -s ./build/Release/mom.node ] || [ "\$(cat ./build/.node-version 2>/dev/null || true)" != "\$node_build_version" ] || ! grep -q "/root/mom" ./build/Makefile 2>/dev/null; then\n\
@@ -48,6 +48,6 @@ chmod +x /root/entrypoint.sh
 
 ENTRYPOINT ["/root/entrypoint.sh"]
 
-# sync user with host, build and run application
+# Default command (after the entrypoint syncs the user, builds, and elevates): run the test suite.
 WORKDIR /root/mom
 CMD node --require ./tests/common/test_output_buffer.js --test --test-reporter=./tests/common/spec_reporter.js --test-concurrency=1 tests/all.js

@@ -35,13 +35,8 @@ function orDefault(value, fallback) {
   return value ? value : fallback;
 }
 
-function orDefaultFn(value, fallback) {
-  return value ? value : fallback();
-}
-
 function firstTruthyOr(fallback, ...values) {
-  const found = values.find(Boolean);
-  return found ? found : fallback;
+  return values.find(Boolean) || fallback;
 }
 
 function reallyExit(code) {
@@ -87,33 +82,18 @@ function shouldExitAfterWorkerShutdown() {
   return directive === "test" || directive === "algo_params";
 }
 
-function scheduleForcedExit(code) {
-  setTimeout(function() {
-    reallyExit(code);
-  }, PROCESS_EXIT_GRACE_MS).unref();
-}
-
-function finishAlreadyExiting(code, force) {
-  if (force) reallyExit(code);
-  return false;
-}
-
-function workerCloseGrace(force) {
-  return force ? WORKER_CLOSE_GRACE_MS : null;
-}
-
-function finishExit(code, force) {
-  if (force) scheduleForcedExit(code);
-  return false;
-}
-
 function exit(code, force = forceExitByDefault()) {
-  if (is_exiting) return finishAlreadyExiting(code, force);
+  // A second exit() (e.g. SIGINT during shutdown) must not re-run teardown; just honor force.
+  if (is_exiting) {
+    if (force) reallyExit(code);
+    return false;
+  }
   is_exiting = true;
   closeComputeCore();
-  h.closeWorkers(workerCloseGrace(force));
+  h.closeWorkers(force ? WORKER_CLOSE_GRACE_MS : null);
   process.exitCode = code;
-  return finishExit(code, force);
+  if (force) setTimeout(() => reallyExit(code), PROCESS_EXIT_GRACE_MS).unref();
+  return false;
 }
 
 function err_exit(msg) {
@@ -257,61 +237,44 @@ const directiveParsers = {
   mine: parseMineArgs,
   test: parseTestArgs,
   bench: parseBenchArgs,
-  algo_params: function() {},
+  algo_params: () => {},
 };
 
 if (!parse_args()) return;
 
 function handleResult(msg) {
-  const params = {
-    id: msg.value.worker_id, job_id: msg.value.job_id,
-    nonce: msg.value.nonce, result: msg.value.hash
-  };
-  const pool = global.opt.pools[msg.value.pool_id];
-  if (pool && pool.submit_mode === "pearl") {   // the worker already built the base64 PlainProof
-    // The native core already emits at most one solution per unit of work (job_id + header), so just
-    // relay it -- no JS-side per-job dedup (which mis-fires on HeroMiners' constant job_id).
-    return p.pool_write(msg.value.pool_id, {
-      jsonrpc: "2.0", id: 3, method: "mining.submit",
-      params: { job_id: msg.value.job_id, plain_proof: msg.value.plain_proof },
-    });
-  }
-  if (pool && pool.submit_mode === "erg") {
-    return p.pool_write(msg.value.pool_id, {
-      jsonrpc: "2.0",
-      id: 3,
-      method: "mining.submit",
-      params: ergSubmitParams(pool, msg.value),
-    });
-  }
-  if (msg.value.mix_hash) {
+  const v = msg.value;
+  const pool = global.opt.pools[v.pool_id];
+  const submit_mode = pool && pool.submit_mode;
+  const send = (body) => p.pool_write(v.pool_id, { jsonrpc: "2.0", id: 3, ...body });
+
+  // Pearl: the worker already built the base64 PlainProof, and the native core emits at most one
+  // solution per unit of work (job_id + header), so just relay it -- no JS-side per-job dedup
+  // (which would mis-fire on HeroMiners' constant job_id).
+  if (submit_mode === "pearl")
+    return send({ method: "mining.submit", params: { job_id: v.job_id, plain_proof: v.plain_proof } });
+  if (submit_mode === "erg")
+    return send({ method: "mining.submit", params: ergSubmitParams(pool, v) });
+
+  const params = { id: v.worker_id, job_id: v.job_id, nonce: v.nonce, result: v.hash };
+  if (v.mix_hash) {
     const headerHash = resultHeaderHash(msg, pool);
-    if (pool && pool.submit_mode === "ethproxy") {
-      return p.pool_write(msg.value.pool_id, {
-        jsonrpc: "2.0",
-        id: 3,
-        method: "eth_submitWork",
-        params: ["0x" + msg.value.nonce, "0x" + headerHash.slice(0, 64), "0x" + msg.value.mix_hash],
-      });
-    }
-    if (pool && (pool.submit_mode === "raven" || pool.submit_mode === "eth")) {
-      return p.pool_write(msg.value.pool_id, {
-        jsonrpc: "2.0",
-        id: 3,
-        method: "mining.submit",
-        params: [pool.login, msg.value.job_id, "0x" + msg.value.nonce, "0x" + headerHash.slice(0, 64), "0x" + msg.value.mix_hash],
-      });
-    }
-    params.mixhash = msg.value.mix_hash;
+    if (submit_mode === "ethproxy")
+      return send({ method: "eth_submitWork",
+        params: ["0x" + v.nonce, "0x" + headerHash.slice(0, 64), "0x" + v.mix_hash] });
+    if (submit_mode === "raven" || submit_mode === "eth")
+      return send({ method: "mining.submit",
+        params: [pool.login, v.job_id, "0x" + v.nonce, "0x" + headerHash.slice(0, 64), "0x" + v.mix_hash] });
+    params.mixhash = v.mix_hash;
     if (headerHash) params.header_hash = headerHash.slice(0, 64);
   }
-  if (msg.value.commitment) params.commitment = msg.value.commitment;
-  if (msg.value.edges) {
-    params.pow = h.edge_hex2arr(msg.value.edges);
+  if (v.commitment) params.commitment = v.commitment;
+  if (v.edges) {
+    params.pow = h.edge_hex2arr(v.edges);
     // for proofsize == 42 (Tari C29) we return nonce hex as usual
     if (params.pow.length !== 42) params.nonce = Number.parseInt(params.nonce, 16);
   }
-  p.pool_write(msg.value.pool_id, { jsonrpc: "2.0", id: 3, method: "submit", params: params });
+  send({ method: "submit", params: params });
 }
 
 function resultHeaderHash(msg, pool) {
@@ -410,16 +373,10 @@ const masterMessageHandlers = {
 };
 
 function set_algo_msr(algo) {
-  if (Object.keys(global.opt.default_msrs).length && compute_core) {
-    let default_msr = h.pack_msr(global.opt.default_msrs);
-    default_msr.algo = algo;
-    compute_core.emit_to("write_msr", default_msr);
-  }
-}
-
-function normalizedAlgo(prev_job) {
-  const algo = prev_job.algo ? prev_job.algo : global.opt.job.algo;
-  return normalizeAlgoName(algo);
+  if (!compute_core || !Object.keys(global.opt.default_msrs).length) return;
+  const default_msr = h.pack_msr(global.opt.default_msrs);
+  default_msr.algo = algo;
+  compute_core.emit_to("write_msr", default_msr);
 }
 
 function jobDev(algo) {
@@ -477,13 +434,13 @@ function jobTarget(prev_job, algo) {
   if (algo === "pearl") {
     // HeroMiners-style pools precompute the verifier bound (pool.js pearlNbitsBound -> prev_job.target);
     // pearlpool.cloud uses the lenient floor(2^256 / difficulty). Both are 256-bit big-endian hex.
-    if (explicitTarget) return explicitTarget.replace(/^0x/i, "").padStart(64, "0");
+    if (explicitTarget) return hexWithoutPrefix(explicitTarget).padStart(64, "0");
     const MAX = (1n << 256n) - 1n, diff = BigInt(prev_job.difficulty || 1);
     return (diff > 0n ? MAX / diff : MAX).toString(16).padStart(64, "0");
   }
   if (!isNonceAt32Algo(algo)) return explicitTarget || h.diff2target(prev_job.difficulty);
-  if (explicitTarget && !/^\d+$/.test(explicitTarget) && explicitTarget.replace(/^0x/i, "").length > 16)
-    return explicitTarget.replace(/^0x/i, "").padStart(64, "0");
+  if (explicitTarget && !/^\d+$/.test(explicitTarget) && hexWithoutPrefix(explicitTarget).length > 16)
+    return hexWithoutPrefix(explicitTarget).padStart(64, "0");
   if (algo === "autolykos2" && /^\d+$/.test(explicitTarget)) return h.decimalTargetToHex(explicitTarget);
   return h.ethDiff2Target(prev_job.difficulty || (explicitTarget ? h.target2diff(explicitTarget) : 1));
 }
@@ -568,7 +525,7 @@ function ensureWorkersForJob(algo, dev) {
 // prev_job can be either job json from the pool or
 // previous job restored from the pool switch (with nonce that we need to take into account)
 function set_job(prev_job) {
-  const algo = normalizedAlgo(prev_job);
+  const algo = normalizeAlgoName(prev_job.algo || global.opt.job.algo);
   const dev = jobDev(algo);
   ensureWorkersForJob(algo, dev);
   const pool_id = global.opt.pool_ids.active;
@@ -644,14 +601,13 @@ function nextAlgoToBenchmark(algos) {
 }
 
 function saveConfig() {
-  if (global.opt.save_config) {
-    const save_config = global.opt.save_config;
-    delete global.opt.save_config; // by default do not save config again when it will be loaded
-    h.log("Saving config file to " + save_config);
-    fs.writeFile(save_config, JSON.stringify(o.saved_config(global.opt), null, 2), function(err) {
-      if (err) h.log_err("Error saving " + save_config + " file");
-    });
-  }
+  const save_config = global.opt.save_config;
+  if (!save_config) return;
+  delete global.opt.save_config; // a saved config should not re-save itself when later loaded
+  h.log("Saving config file to " + save_config);
+  fs.writeFile(save_config, JSON.stringify(o.saved_config(global.opt), null, 2), function(err) {
+    if (err) h.log_err("Error saving " + save_config + " file");
+  });
 }
 
 // setup all pool share report
@@ -808,25 +764,17 @@ function start_after_algo_params() {
   return start_mining();
 }
 
-function onComputeCoreClose() {
-  process.exitCode = 0;
-}
-
 function createComputeCore() {
   compute_core = h.create_core();
-  compute_core.from.on("close", onComputeCoreClose);
+  compute_core.from.on("close", () => { process.exitCode = 0; });
   return compute_core;
-}
-
-function logMsrAccessError(v) {
-  if (v) h.log("Can't access MSR: " + JSON.stringify(v.message));
 }
 
 function readMsrThen(on_read, on_error) {
   if (!use_msr_tuning()) return on_error();
   compute_core.from.on("read_msr", on_read);
   compute_core.from.on("error", function(v) {
-    logMsrAccessError(v);
+    if (v) h.log("Can't access MSR: " + JSON.stringify(v.message));
     return on_error(v);
   });
   compute_core.emit_to("read_msr", h.pack_msr(global.opt.default_msrs));

@@ -26,6 +26,15 @@ const constexpr unsigned MAX_CN_CPU_WAYS = 5;
 static const xmrig::ICpuInfo& cpu_info() { return *xmrig::Cpu::info(); }
 #define ci cpu_info()
 
+// Look up algo->value in a name map, throwing the standard error if absent.
+template<class Map> static const typename Map::mapped_type& algo_lookup(
+  const Map& map, const std::string& algo
+) {
+  const auto it = map.find(algo);
+  if (it == map.end()) throw std::string("Unsupported algo");
+  return it->second;
+}
+
 static const std::map<std::string, xmrig::Algorithm::Id> cpu_name2algo = {
   { "cn/0",            xmrig::Algorithm::CN_0           },
   { "cn/1",            xmrig::Algorithm::CN_1           },
@@ -169,31 +178,35 @@ void Core::set_job(
   if (!v.contains("algo"))     throw std::string("Missing algo job key");
   if (!v.contains("blob_hex")) throw std::string("Missing blob_hex job key");
 
+  // optional job keys fall back to a default when absent; *_hex16 keys are parsed as base-16
+  const auto opt_str = [&](const char* k) { return v.contains(k) ? v.at(k) : std::string(); };
+  const auto opt_uint = [&](const char* k, unsigned def) {
+    return v.contains(k) ? static_cast<unsigned>(atoi(v.at(k).c_str())) : def;
+  };
+  const auto opt_u64_hex = [&](const char* k) {
+    return v.contains(k) ? strtoull(v.at(k).c_str(), NULL, 16) : 0ull;
+  };
   const std::string new_dev_str        = v.at("dev"),
                     new_algo_str       = v.at("algo"),
                     new_input_hex      = v.at("blob_hex"),
-                    new_seed_hex       = v.contains("seed_hex") ? v.at("seed_hex") : std::string();
-  const unsigned    new_height         = v.contains("height") ? atoi(v.at("height").c_str()) : 0,
-                    new_thread_id      = v.contains("thread_id") ?
-                                         atoi(v.at("thread_id").c_str()) : 0,
-                    new_thread_num     = v.contains("thread_num") ?
-                                         atoi(v.at("thread_num").c_str()) : 1,
-                    new_nonce_bytes    = v.contains("noncebytes") ?
-                                         atoi(v.at("noncebytes").c_str()) : 4,
-		    new_nonce_offset   = v.contains("nonceoffset") ?
-                                         atoi(v.at("nonceoffset").c_str()) : 39,
-		    new_c29_proof_size = v.contains("proofsize") ?
-                                         atoi(v.at("proofsize").c_str()) : 32;
-  const uint64_t    new_nonce          = v.contains("nonce") ? strtoull(v.at("nonce").c_str(), NULL, 16) : 0,
-                    new_nicehash_mask  = v.contains("nicehash_mask") ? strtoull(v.at("nicehash_mask").c_str(), NULL, 16) : 0;
+                    new_seed_hex       = opt_str("seed_hex");
+  const unsigned    new_height         = opt_uint("height", 0),
+                    new_thread_id      = opt_uint("thread_id", 0),
+                    new_thread_num     = opt_uint("thread_num", 1),
+                    new_nonce_bytes    = opt_uint("noncebytes", 4),
+                    new_nonce_offset   = opt_uint("nonceoffset", 39),
+                    new_c29_proof_size = opt_uint("proofsize", 32);
+  const uint64_t    new_nonce          = opt_u64_hex("nonce"),
+                    new_nicehash_mask  = opt_u64_hex("nicehash_mask");
 
-  auto batch_parts = tokenize(new_dev_str, '*');
-  if (batch_parts.size() == 0 || batch_parts.size() > 2)
+  // dev is "<name>" or "<name>*<batch>" (batch == intensity for GPU pow algos)
+  const auto dev_parts = tokenize(new_dev_str, '*');
+  if (dev_parts.empty() || dev_parts.size() > 2)
     throw std::string("Invalid dev specification");
-  const std::string new_dev_str2 = batch_parts[0];
-  const unsigned new_batch = batch_parts.size() == 2 ? atoi(batch_parts[1].c_str()) : 1;
+  const std::string new_dev_name = dev_parts[0];
+  const unsigned new_batch = dev_parts.size() == 2 ? atoi(dev_parts[1].c_str()) : 1;
   const DEV new_dev =
-    new_dev_str2 == "cpu" ? (rx_cpu_name2config.contains(new_algo_str) ? DEV::RX_CPU : DEV::CPU) :
+    new_dev_name == "cpu" ? (rx_cpu_name2config.contains(new_algo_str) ? DEV::RX_CPU : DEV::CPU) :
     new_algo_str == "kawpow" ? DEV::KAWPOW_GPU :
     new_algo_str == "etchash" ? DEV::ETCHASH_GPU :
     new_algo_str == "autolykos2" ? DEV::AUTOLYKOS2_GPU :
@@ -202,22 +215,14 @@ void Core::set_job(
 
   if (new_dev == DEV::C29_GPU && new_batch != 1)
     throw std::string("Invalid batch size for c29s algo. Should be 1.");
-  if (new_dev == DEV::KAWPOW_GPU && new_batch == 0)
-    throw std::string("Invalid kawpow intensity");
-  if (new_dev == DEV::ETCHASH_GPU && new_batch == 0)
-    throw std::string("Invalid etchash intensity");
-  if (new_dev == DEV::AUTOLYKOS2_GPU && new_batch == 0)
-    throw std::string("Invalid autolykos2 intensity");
-  if (new_dev == DEV::PEARL_GPU && new_batch == 0)
-    throw std::string("Invalid pearl intensity");
+  // batch carries the intensity for the small-blob GPU pow algos, so 0 is never valid
+  if (new_batch == 0 && is_small_blob_gpu_dev(new_dev))
+    throw std::string("Invalid " + new_algo_str + " intensity");
   if (new_nonce_bytes != 4 && new_nonce_bytes != 8)
     throw std::string("Only support 4 or 8 bytes long nonces");
-  if (new_dev == DEV::KAWPOW_GPU && (new_nonce_bytes != 8 || new_nonce_offset != 32))
-    throw std::string("KawPow requires an 8-byte nonce at offset 32");
-  if (new_dev == DEV::ETCHASH_GPU && (new_nonce_bytes != 8 || new_nonce_offset != 32))
-    throw std::string("Etchash requires an 8-byte nonce at offset 32");
-  if (new_dev == DEV::AUTOLYKOS2_GPU && (new_nonce_bytes != 8 || new_nonce_offset != 32))
-    throw std::string("Autolykos2 requires an 8-byte nonce at offset 32");
+  // kawpow/etchash/autolykos2 embed an 8-byte nonce at offset 32 in the header blob
+  if (is_nonce_at_32_gpu_dev(new_dev) && (new_nonce_bytes != 8 || new_nonce_offset != 32))
+    throw std::string(new_algo_str + " requires an 8-byte nonce at offset 32");
 
   FN new_fn;
   uint8_t new_seed[MAX_BLOB_LEN]{};
@@ -225,9 +230,7 @@ void Core::set_job(
   const RandomX_ConfigurationBase* new_rx_config;
   switch (new_dev) {
     case DEV::CPU: {
-      const auto pi = cpu_name2algo.find(new_algo_str);
-      if (pi == cpu_name2algo.end()) throw std::string("Unsupported algo");
-      const auto new_algo = pi->second;
+      const auto new_algo = algo_lookup(cpu_name2algo, new_algo_str);
       if (new_algo == xmrig::Algorithm::GHOSTRIDER_RTM) {
         if (new_batch != 8) throw std::string("Bad CPU batch");
         new_fn.cpu = ghostrider;
@@ -248,58 +251,38 @@ void Core::set_job(
         throw std::string("Bad seed length");
       new_seed_len = new_seed_hex.size() / 2;
       if (!hex2bin(new_seed_hex.c_str(), new_seed_len, new_seed)) throw std::string("Bad seed hex");
-      const auto pi = rx_cpu_name2config.find(new_algo_str);
-      if (pi == rx_cpu_name2config.end()) throw std::string("Unsupported algo");
-      new_rx_config = pi->second;
+      new_rx_config = algo_lookup(rx_cpu_name2config, new_algo_str);
       new_fn.any = nullptr; // all work is done in the m_thread_pool
       break;
     }
 
-    case DEV::GPU: {
-      const auto pi = gpu_cn_algo2fn.find(new_algo_str);
-      if (pi == gpu_cn_algo2fn.end()) throw std::string("Unsupported algo");
-      new_fn.gpu_cn = pi->second;
+    case DEV::GPU:
+      new_fn.gpu_cn = algo_lookup(gpu_cn_algo2fn, new_algo_str);
       break;
-    }
 
-    case DEV::C29_GPU: {
-      const auto pi = gpu_c29_algo2fn.find(new_algo_str);
-      if (pi == gpu_c29_algo2fn.end()) throw std::string("Unsupported algo");
-      new_fn.gpu_c29 = pi->second;
+    case DEV::C29_GPU:
+      new_fn.gpu_c29 = algo_lookup(gpu_c29_algo2fn, new_algo_str);
       break;
-    }
 
-    case DEV::KAWPOW_GPU: {
-      const auto pi = gpu_kawpow_algo2fn.find(new_algo_str);
-      if (pi == gpu_kawpow_algo2fn.end()) throw std::string("Unsupported algo");
-      new_fn.gpu_kawpow = pi->second;
+    case DEV::KAWPOW_GPU:
+      new_fn.gpu_kawpow = algo_lookup(gpu_kawpow_algo2fn, new_algo_str);
       break;
-    }
 
-    case DEV::ETCHASH_GPU: {
+    case DEV::ETCHASH_GPU:
       if (!new_seed_hex.empty()) {
         if (new_seed_hex.size() != HASH_LEN * 2) throw std::string("Bad seed length");
         if (!hex2bin(new_seed_hex.c_str(), HASH_LEN, new_seed)) throw std::string("Bad seed hex");
       }
-      const auto pi = gpu_etchash_algo2fn.find(new_algo_str);
-      if (pi == gpu_etchash_algo2fn.end()) throw std::string("Unsupported algo");
-      new_fn.gpu_etchash = pi->second;
+      new_fn.gpu_etchash = algo_lookup(gpu_etchash_algo2fn, new_algo_str);
       break;
-    }
 
-    case DEV::AUTOLYKOS2_GPU: {
-      const auto pi = gpu_autolykos2_algo2fn.find(new_algo_str);
-      if (pi == gpu_autolykos2_algo2fn.end()) throw std::string("Unsupported algo");
-      new_fn.gpu_autolykos2 = pi->second;
+    case DEV::AUTOLYKOS2_GPU:
+      new_fn.gpu_autolykos2 = algo_lookup(gpu_autolykos2_algo2fn, new_algo_str);
       break;
-    }
 
-    case DEV::PEARL_GPU: {
-      const auto pi = gpu_pearl_algo2fn.find(new_algo_str);
-      if (pi == gpu_pearl_algo2fn.end()) throw std::string("Unsupported algo");
-      new_fn.gpu_pearl = pi->second;
+    case DEV::PEARL_GPU:
+      new_fn.gpu_pearl = algo_lookup(gpu_pearl_algo2fn, new_algo_str);
       break;
-    }
   }
 
   uint8_t new_input[MAX_BLOB_LEN];
@@ -308,21 +291,18 @@ void Core::set_job(
     throw std::string("Bad input length");
   if (!hex2bin(new_input_hex.c_str(), new_input_len, new_input))
     throw std::string("Bad input hex");
-  if (new_dev == DEV::KAWPOW_GPU && new_input_len < 40)
-    throw std::string("Bad kawpow input length");
-  if (new_dev == DEV::ETCHASH_GPU && new_input_len < 40)
-    throw std::string("Bad etchash input length");
-  if (new_dev == DEV::AUTOLYKOS2_GPU && new_input_len < 40)
-    throw std::string("Bad autolykos2 input length");
-  if (new_dev == DEV::PEARL_GPU && new_input_len < 76)
-    throw std::string("Bad pearl input length");
+  // header must be long enough to hold the nonce (kawpow/etchash/autolykos2) or the full PoUW
+  // header (pearl); min lengths differ by algo
+  const unsigned min_input_len = new_dev == DEV::PEARL_GPU ? 76 : is_nonce_at_32_gpu_dev(new_dev) ? 40 : 0;
+  if (new_input_len < min_input_len)
+    throw std::string("Bad " + new_algo_str + " input length");
 
   const unsigned new_mem_size = algo2mem.at(new_algo_str);
   const bool same_compute_input =
     is_no_same_input && new_input_hex == m_input_hex &&
     m_batch == new_batch && m_mem_size == new_mem_size &&
     m_seed_hex == new_seed_hex && m_algo_str == new_algo_str &&
-    m_dev == new_dev && m_dev_str == new_dev_str2 &&
+    m_dev == new_dev && m_dev_str == new_dev_name &&
     m_height == new_height && m_nonce_bytes == new_nonce_bytes &&
     m_nonce_offset == new_nonce_offset && m_c29_proof_size == new_c29_proof_size &&
     m_input_len == new_input_len && m_nicehash_mask == new_nicehash_mask;
@@ -421,7 +401,7 @@ void Core::set_job(
 
   m_input_hex      = new_input_hex;
   m_dev            = new_dev;
-  m_dev_str        = new_dev_str2;
+  m_dev_str        = new_dev_name;
   m_height         = new_height;
   m_nonce_bytes    = new_nonce_bytes;
   m_nonce_offset   = new_nonce_offset;
@@ -441,7 +421,6 @@ void Core::set_job(
     const xmrig::Algorithm rx_algo(cpu_name2algo.at(new_algo_str));
     for (unsigned batch_id = 0; batch_id != m_batch; ++batch_id) m_thread_pool->push(
       [=, this, &m_job_ref = m_job_ref, &m_hash_count = m_hash_count](int) {
-        const unsigned thread_id = batch_id;
         try {
           alignas(16) uint8_t  input[MAX_BLOB_LEN];
           alignas(16) uint8_t  output[HASH_LEN];
@@ -455,19 +434,20 @@ void Core::set_job(
           memcpy(input, new_input2, m_input_len);
           if (is_set_nonce) { *get_nonce32(input, 0) = bswap_32(nonce); nonce += nonce_step; }
           if (is_rx_v2) memcpy(prev_input, input, m_input_len);
-          randomx_calculate_hash_first(m_vm[thread_id], temp_hash, input, m_input_len, rx_algo);
+          randomx_calculate_hash_first(m_vm[batch_id], temp_hash, input, m_input_len, rx_algo);
           while (job_ref == m_job_ref) { // continue until we get a new job
             uint32_t* const pnonce = get_nonce32(input, 0);
             const uint32_t prev_nonce = nonce;
             *pnonce = bswap_32(nonce += nonce_step);
-	    // check that current nonce is greater than previous one and nince hash protected nonce part is not changed
+            // detect nonce overflow: nonce must keep increasing, and the nicehash-protected high
+            // bits of the nonce must stay constant
             if (m_target && ( m_nicehash_mask ? (prev_nonce & static_cast<uint32_t>(m_nicehash_mask)) != (nonce & static_cast<uint32_t>(m_nicehash_mask)) :
                               prev_nonce > nonce )
             ) {
               send_error("Nonce overflow");
-              break; // will also effectively stops this thread
+              break; // also effectively stops this thread
             }
-            randomx_calculate_hash_next(m_vm[thread_id], temp_hash, input, m_input_len, output, rx_algo);
+            randomx_calculate_hash_next(m_vm[batch_id], temp_hash, input, m_input_len, output, rx_algo);
             const uint8_t* commitment = nullptr;
             if (is_rx_v2) {
               memcpy(raw_hash, output, HASH_LEN);
@@ -513,12 +493,10 @@ void Core::set_job(
       memcpy(m_input, new_input, m_input_len);
       const uint64_t current_nonce = new_nonce + static_cast<uint64_t>(new_thread_id) * m_batch;
       m_nonce_step = new_thread_num * m_batch;
-      if (is_set_nonce) {
-        std::memcpy(m_input + m_nonce_offset, &current_nonce, sizeof(current_nonce));
-        m_nonce64 = current_nonce + m_nonce_step;
-      } else {
-        m_nonce64 = 0;
-      }
+      // mine mode embeds the starting nonce and points m_nonce64 at the next one; m_nonce64==0
+      // is the test-job sentinel consumed by Execute
+      if (is_set_nonce) std::memcpy(m_input + m_nonce_offset, &current_nonce, sizeof(current_nonce));
+      m_nonce64 = is_set_nonce ? current_nonce + m_nonce_step : 0;
       m_nonce32 = 0;
       return;
     }
@@ -549,30 +527,19 @@ void Core::get_algo_params(const MessageValues& v) {
   const unsigned cpu_sockets = atoi(v.at("cpu_sockets").c_str()),
                  cpu_threads = atoi(v.at("cpu_threads").c_str()),
                  cpu_l3cache = atoi(v.at("cpu_l3cache").c_str());
-  const auto& cpu_algo_keys = std::views::keys(cpu_name2algo);
-  const auto& gpu_cn_algo_keys = std::views::keys(gpu_cn_algo2fn);
-  const auto& gpu_c29_algo_keys = std::views::keys(gpu_c29_algo2fn);
-  const auto& gpu_kawpow_algo_keys = std::views::keys(gpu_kawpow_algo2fn);
-  const auto& gpu_etchash_algo_keys = std::views::keys(gpu_etchash_algo2fn);
-  const auto& gpu_autolykos2_algo_keys = std::views::keys(gpu_autolykos2_algo2fn);
-  const auto& gpu_pearl_algo_keys = std::views::keys(gpu_pearl_algo2fn);
-  const bool skip_sycl_algos = std::getenv("MOM_SKIP_SYCL_ALGO_PARAMS");
-  const auto sycl_algo_set = [skip_sycl_algos](const auto& keys) {
-    return skip_sycl_algos ? std::set<std::string>{} : std::set<std::string>(keys.begin(), keys.end());
+  const auto keys2set = [](const auto& map) {
+    const auto keys = std::views::keys(map);
+    return std::set<std::string>(keys.begin(), keys.end());
   };
-  const std::set<std::string> cpu_algos(cpu_algo_keys.begin(), cpu_algo_keys.end()),
-                              gpu_cn_algos = sycl_algo_set(gpu_cn_algo_keys),
-                              gpu_c29_algos = sycl_algo_set(gpu_c29_algo_keys),
-                              gpu_kawpow_algos = sycl_algo_set(gpu_kawpow_algo_keys),
-                              gpu_etchash_algos = sycl_algo_set(gpu_etchash_algo_keys),
-                              gpu_autolykos2_algos = sycl_algo_set(gpu_autolykos2_algo_keys),
-                              gpu_pearl_algos = sycl_algo_set(gpu_pearl_algo_keys);
-  const std::map<std::string, std::string>& result_map = algo_params(
-    MAX_CN_CPU_WAYS, cpu_sockets, cpu_threads, cpu_l3cache, algo2mem, cpu_algos,
-    gpu_cn_algos, gpu_c29_algos, gpu_kawpow_algos, gpu_etchash_algos, gpu_autolykos2_algos,
-    gpu_pearl_algos
-  );
-  MessageValues result;
-  for (const auto& i : result_map) result[i.first] = i.second;
-  send_msg("algo_params", result);
+  // SYCL/GPU algo params can be skipped (e.g. for CPU-only builds/tests)
+  const bool skip_sycl = std::getenv("MOM_SKIP_SYCL_ALGO_PARAMS");
+  const auto gpu_set = [&](const auto& map) {
+    return skip_sycl ? std::set<std::string>{} : keys2set(map);
+  };
+  // algo_params returns std::map<std::string,std::string>, which is exactly MessageValues
+  send_msg("algo_params", algo_params(
+    MAX_CN_CPU_WAYS, cpu_sockets, cpu_threads, cpu_l3cache, algo2mem, keys2set(cpu_name2algo),
+    gpu_set(gpu_cn_algo2fn), gpu_set(gpu_c29_algo2fn), gpu_set(gpu_kawpow_algo2fn),
+    gpu_set(gpu_etchash_algo2fn), gpu_set(gpu_autolykos2_algo2fn), gpu_set(gpu_pearl_algo2fn)
+  ));
 }

@@ -238,9 +238,7 @@ inline void keccakf1600_pair_dev(Uint2 st[25]) {
 
 inline void keccak_512_words_dev(uint32_t words[NODE_WORDS]) {
   Uint2 st[25]{};
-  for (unsigned i = 0; i < 8; ++i) {
-    st[i] = make_u2(words[i * 2], words[i * 2 + 1]);
-  }
+  for (unsigned i = 0; i < 8; ++i) st[i] = make_u2(words[i * 2], words[i * 2 + 1]);
   st[8] = make_u2(0x00000001, 0x80000000);
   keccakf1600_pair_dev(st);
   for (unsigned i = 0; i < 8; ++i) {
@@ -335,8 +333,8 @@ struct KawpowSgExchange {
   }
 
   inline void digest(uint32_t digest_out[8], const uint32_t lane_hash, const bool keep) const {
-    // digest_temp[j] = fnv1a(fnv1a(basis, lane_hash[j]), lane_hash[j + 8]);
-    // lanes 0..7 each fold their pair, then the eight values are distributed.
+    // Each lane j folds fnv1a(fnv1a(basis, lane_hash[j]), lane_hash[j + 8]); lanes
+    // 0..7 hold the eight results, which are then distributed to every lane.
     // shift_group_left by 8 stays within each 16-lane group on a 32-wide warp
     // (groups are 16-aligned), so only the distribution select needs rebasing.
     const uint32_t other = sycl::shift_group_left(sg, lane_hash, 8);
@@ -438,8 +436,10 @@ inline void kawpow_initial_dev(
 }
 
 inline void kawpow_final_dev(const uint32_t state2[8], const uint32_t digest[8], uint32_t final_state[25]) {
-  for (unsigned i = 0; i < 8; ++i) final_state[i] = state2[i];
-  for (unsigned i = 0; i < 8; ++i) final_state[i + 8] = digest[i];
+  for (unsigned i = 0; i < 8; ++i) {
+    final_state[i] = state2[i];
+    final_state[i + 8] = digest[i];
+  }
   for (unsigned i = 16; i < 25; ++i) final_state[i] = RAVENCOIN_KAWPOW[i - 16];
   keccak_f800_dev(final_state);
 }

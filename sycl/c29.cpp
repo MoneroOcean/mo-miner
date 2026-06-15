@@ -187,12 +187,13 @@ static std::list<uint64_t> global_nonces;
 static C29SolutionMutex global_solutions_mutex;
 static std::atomic<uint32_t> running_search_threads{0};
 
-// Helper function to create path through graph - optimized for cycle detection
+// Walk the alternating bipartite graph from start_node, following each node's stored
+// successor until a dead end (or max_path_length) is reached.
 static std::vector<uint32_t> create_path(const std::unordered_map<uint32_t, uint32_t>& graph_u,
     const std::unordered_map<uint32_t, uint32_t>& graph_v, const bool start_in_u,
     const uint32_t start_node, const uint32_t max_path_length = 8192) {
   std::vector<uint32_t> path;
-  path.reserve(64); // Reserve reasonable initial capacity for performance
+  path.reserve(64);
   path.push_back(start_node);
 
   const std::unordered_map<uint32_t, uint32_t>* current_graph = start_in_u ? &graph_u : &graph_v;
@@ -210,10 +211,9 @@ static std::vector<uint32_t> create_path(const std::unordered_map<uint32_t, uint
   return path;
 }
 
-// Helper function to reverse path in graph - optimized with fewer branches
+// Reverse the direction of every edge along path, flipping which side (u/v) each link is stored on.
 static void reverse_path(std::unordered_map<uint32_t, uint32_t>& graph_u, std::unordered_map<uint32_t, uint32_t>& graph_v,
     const std::vector<uint32_t>& path, const bool starts_in_u) {
-  // Use pointers to avoid repeated branching in tight loop
   std::unordered_map<uint32_t, uint32_t>* graphs[2] = {&graph_u, &graph_v};
 
   for (int32_t i = static_cast<int32_t>(path.size()) - 2; i >= 0; i--) {
@@ -230,62 +230,51 @@ static std::list<std::vector<sycl::uint2>> find_cycles(const std::vector<sycl::u
                                                        const uint32_t target_cycle_length) {
   const uint32_t edge_count = trimmed_edges.size();
 
-  // Pre-allocate hash maps with expected size to reduce rehashing overhead
   std::unordered_map<uint32_t, uint32_t> graph_u, graph_v;
   graph_u.reserve(edge_count);
   graph_v.reserve(edge_count);
   std::list<std::vector<sycl::uint2>> solutions;
 
-  // Process edges directly from the input vector for better cache performance
   for (uint32_t edge_idx = 0; edge_idx < edge_count; edge_idx++) {
     const uint32_t node_u = trimmed_edges[edge_idx].x(), node_v = trimmed_edges[edge_idx].y();
 
-    // Check for duplicate edges - use find result directly to avoid double lookup
+    // Skip edges already present (find result reused to avoid a second lookup).
     auto it_u = graph_u.find(node_u);
     if (it_u != graph_u.end() && it_u->second == node_v) continue;
 
     auto it_v = graph_v.find(node_v);
     if (it_v != graph_v.end() && it_v->second == node_u) continue;
 
-    // Create paths from both endpoints to detect potential cycles
+    // Walk from both endpoints; a shared node means the new edge closes a cycle.
     const std::vector<uint32_t> path_from_u = create_path(graph_u, graph_v, true, node_u);
     const std::vector<uint32_t> path_from_v = create_path(graph_u, graph_v, false, node_v);
 
-    // Find intersection point using simple O(n*m) algorithm like original
+    // Find the first intersection (simple O(n*m) scan, as in the reference miner).
     int64_t join_a = -1, join_b = -1;
-
-    // Early termination on first match for performance
-    for (uint32_t i = 0; i < path_from_u.size() && join_a == -1; i++) {
-      const uint32_t current_node = path_from_u[i];
-
-      // Use optimized std::find which often uses SIMD instructions
-      auto it = std::find(path_from_v.begin(), path_from_v.end(), current_node);
+    for (uint32_t i = 0; i < path_from_u.size(); i++) {
+      const auto it = std::find(path_from_v.begin(), path_from_v.end(), path_from_u[i]);
       if (it != path_from_v.end()) {
         join_a = i;
         join_b = it - path_from_v.begin();
-        break; // Early termination like original implementation
+        break;
       }
     }
 
     const int64_t cycle_length = join_a != -1 ? 1 + join_a + join_b : 0;
 
     if (cycle_length == target_cycle_length) {
-      // Found a valid cycle - construct edge list for solution
+      // Closing edge plus the two paths back to the join point form the cycle.
       std::vector<sycl::uint2> cycle_edges;
       cycle_edges.reserve(target_cycle_length);
       cycle_edges.push_back({node_u, node_v});
-
-      // Add edges from first path (u to join point)
       for (int64_t i = 0; i < join_a; i++)
         cycle_edges.push_back({path_from_u[i + 1], path_from_u[i]});
-
-      // Add edges from second path (v to join point)
       for (int64_t i = 0; i < join_b; i++)
         cycle_edges.push_back({path_from_v[i + 1], path_from_v[i]});
 
       solutions.push_back(std::move(cycle_edges));
     } else {
-      // Update graph structure by reversing shorter path for efficiency
+      // No cycle yet: splice the new edge in by reversing the shorter path (cheaper).
       if (path_from_u.size() > path_from_v.size()) {
         reverse_path(graph_u, graph_v, path_from_v, false);
         graph_v[node_v] = node_u;
@@ -333,16 +322,14 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
     C29Profile profile(job_ref, nonce, c29_proof_size, compute_queue, compute_queue.get_device().get_info<sycl::info::device::name>());
     C29Buffers& c29_buffers = get_c29_buffers();
 
-    // Reuse GPU memory buffers across graphs and reinterpret them for different access patterns.
-    sycl::buffer<uint32_t, 1>& buffer_a1 = c29_buffers.buffer_a1;
-    auto buffer_a1_u2  = buffer_a1.reinterpret<sycl::uint2>(sycl::range(BUFFER_SIZE_A1 / 2));
-    auto buffer_a1_ul4 = buffer_a1.reinterpret<sycl::ulong4>(sycl::range(BUFFER_SIZE_A1 / 8));
-    sycl::buffer<uint32_t, 1>& buffer_a2 = c29_buffers.buffer_a2;
-    auto buffer_a2_u2  = buffer_a2.reinterpret<sycl::uint2>(sycl::range(BUFFER_SIZE_A2 / 2));
-    auto buffer_a2_ul4 = buffer_a2.reinterpret<sycl::ulong4>(sycl::range(BUFFER_SIZE_A2 / 8));
-    sycl::buffer<uint32_t, 1>& buffer_b = c29_buffers.buffer_b;
-    auto buffer_b_u2  = buffer_b.reinterpret<sycl::uint2>(sycl::range(BUFFER_SIZE_B / 2));
-    auto buffer_b_ul4 = buffer_b.reinterpret<sycl::ulong4>(sycl::range(BUFFER_SIZE_B / 8));
+    // Reuse the persistent GPU buffers across graphs, reinterpreting each as uint2 (edge pairs)
+    // and ulong4 (8-word block writes) for the different kernel access patterns.
+    auto buffer_a1_u2  = c29_buffers.buffer_a1.reinterpret<sycl::uint2>(sycl::range(BUFFER_SIZE_A1 / 2));
+    auto buffer_a1_ul4 = c29_buffers.buffer_a1.reinterpret<sycl::ulong4>(sycl::range(BUFFER_SIZE_A1 / 8));
+    auto buffer_a2_u2  = c29_buffers.buffer_a2.reinterpret<sycl::uint2>(sycl::range(BUFFER_SIZE_A2 / 2));
+    auto buffer_a2_ul4 = c29_buffers.buffer_a2.reinterpret<sycl::ulong4>(sycl::range(BUFFER_SIZE_A2 / 8));
+    auto buffer_b_u2   = c29_buffers.buffer_b.reinterpret<sycl::uint2>(sycl::range(BUFFER_SIZE_B / 2));
+    auto buffer_b_ul4  = c29_buffers.buffer_b.reinterpret<sycl::ulong4>(sycl::range(BUFFER_SIZE_B / 8));
     sycl::buffer<uint32_t, 1>& buffer_i1 = c29_buffers.buffer_i1;
     sycl::buffer<uint32_t, 1>& buffer_i2 = c29_buffers.buffer_i2;
     sycl::buffer<uint32_t, 1>& buffer_trimmed_edge_count = c29_buffers.buffer_trimmed_edge_count;
@@ -350,7 +337,6 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
 
     profile.mark("buffers ready");
 
-    // Buffer zeroing utility function
     auto zero_buffer = [&](const char* name, sycl::buffer<uint32_t, 1>& buffer) {
       const sycl::event event = compute_queue.submit([&](sycl::handler& handler) {
         sycl::accessor accessor{buffer, handler, sycl::write_only, sycl::no_init};
@@ -363,11 +349,9 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
     zero_buffer("clear_i1_start", buffer_i1);
     zero_buffer("clear_i2_start", buffer_i2);
 
-    // Algorithm parameters for edge trimming
     const uint32_t duck_edges_a = static_cast<uint32_t>(DUCK_SIZE_A) * 1024;
     const uint32_t duck_edges_b = static_cast<uint32_t>(DUCK_SIZE_B) * 1024;
 
-    // Atomic reference types for memory synchronization
     using local_atomic_ref  = sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::work_group, sycl::access::address_space::local_space>;
     using global_atomic_ref = sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device, sycl::access::address_space::global_space>;
 
@@ -432,7 +416,6 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
           const uint32_t global_id = item.get_global_id(0);
           const uint32_t local_id  = item.get_local_id(0);
 
-          // Initialize local bucket counters for thread cooperation
           if (local_id < 64) bucket_counters[local_id] = 0;
 
           item.barrier(sycl::access::fence_space::local_space);
@@ -445,7 +428,6 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
             uint64_t sip_v0 = seed_k0, sip_v1 = seed_k1, sip_v2 = seed_k2, sip_v3 = seed_k3;
             uint64_t hash_block[EDGE_BLOCK_SIZE];
 
-            // Generate SipHash values for block of nonces
             #pragma vector always
             SIPHASH_FILL_BLOCK(sip_v0, sip_v1, sip_v2, sip_v3, base_nonce, hash_block, nonce_offset);
 
@@ -556,7 +538,7 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
               const uint32_t final_counter      = bucket_counters[local_id];
               const uint32_t final_counter_base = (final_counter % 16) >= 8 ? 8 : 0;
               const uint32_t final_write_count  = sycl::min(global_atomic_ref(acc_dest_indexes[start_block * 64 + current_bucket * 64 + local_id]).fetch_add(8), duck_edges_a - 8);
-              const uint32_t final_write_index  = (memory_offset + (((current_bucket - bucket_offset) * 64 + local_id) * duck_edges_a + final_write_count)) / 4;
+              const uint32_t final_write_index  = (memory_offset + (((current_bucket - bucket_offset) * 64 + local_id) * duck_edges_a + final_write_count)) >> 2;
               C29_WRITE8((*destination_buffer), final_write_index, temp_storage, local_id, final_counter_base);
             }
           });
@@ -603,7 +585,6 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
         auto* const source_buffer = is_source_1 ? &acc_a1 : &acc_a2;
         const uint32_t read_group = is_source_1 ? work_group_id : work_group_id - (62 * 64);
 
-        // Initialize 2-bit edge counters
         for (uint32_t counter_index = local_id; counter_index < EDGE_COUNTER_WORDS; counter_index += COMPUTE_THREADS)
           edge_counters[counter_index] = 0;
 
@@ -656,7 +637,6 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
         const uint32_t local_id      = item.get_local_id(0);
         const uint32_t work_group_id = item.get_group(0);
 
-        // Initialize edge counters
         for (uint32_t counter_index = local_id; counter_index < EDGE_COUNTER_WORDS; counter_index += COMPUTE_THREADS)
           edge_counters[counter_index] = 0;
 
@@ -714,7 +694,6 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
           const uint32_t local_id      = item.get_local_id(0);
           const uint32_t work_group_id = item.get_group(0);
 
-          // Initialize edge counters
           for (uint32_t counter_index = local_id; counter_index < EDGE_COUNTER_WORDS; counter_index += COMPUTE_THREADS)
             edge_counters[counter_index] = 0;
 
@@ -817,15 +796,11 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
     profile.mark("read trimmed edges");
     profile.finish(trimmed_edge_count);
 
-    // Increment running thread counter
+    // Cycle search runs on a detached thread so the GPU queue is freed for the next graph.
     running_search_threads.fetch_add(1);
-
-    // Start new thread for solution search
     std::thread([=]() {
-      // Find c29_proof_size-cycles in trimmed graph
       const std::list<std::vector<sycl::uint2>> solutions = find_cycles(trimmed_edges, c29_proof_size);
 
-      // Thread-safe update of global solutions list
       if (!solutions.empty()) {
         C29SolutionLock lock(global_solutions_mutex);
         for (const auto& solution : solutions) {
@@ -836,9 +811,8 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
         }
       }
 
-      // Decrement running thread counter
       running_search_threads.fetch_sub(1);
-    }).detach(); // Detach thread to run independently
+    }).detach();
   } catch (const sycl::exception& e) {
     printf("Error in solution search worker: %s\n", e.what());
   }
@@ -864,11 +838,8 @@ int c29(const unsigned job_ref, const unsigned c29_proof_size,
 
     // SYCL_PROGRAM_COMPILE_OPTIONS is process-global; pearl's ESIMD (VC-backend) image rejects "-O3"
     // ("invalid api option"), which is a no-op for c29 anyway, so leave it empty to stay compatible.
-    static const bool sycl_compile_env_set = []() {
-      set_sycl_env("SYCL_PROGRAM_COMPILE_OPTIONS", "");
-      return true;
-    }();
-    (void)sycl_compile_env_set;
+    [[maybe_unused]] static const bool sycl_compile_env_set =
+      (set_sycl_env("SYCL_PROGRAM_COMPILE_OPTIONS", ""), true);
 
     static auto compute_queue = c29_profile_enabled()
       ? sycl::queue{compute_device, exception_handler,
@@ -878,32 +849,30 @@ int c29(const unsigned job_ref, const unsigned c29_proof_size,
                     sycl::property_list{sycl::property::queue::in_order{}}};
     static auto kernel_bundle = MOM_GET_EXEC_BUNDLE(compute_queue.get_context());
 
-    // Check for existing solutions first
+    // Pop the oldest queued solution that belongs to the current job (older jobs are discarded).
     bool has_solution = false;
     std::vector<sycl::uint2> solution;
     std::vector<uint64_t> solution_seed;
-    unsigned solution_job_ref;
-    uint64_t solution_nonce;
+    uint64_t solution_nonce = 0;
 
     { C29SolutionLock lock(global_solutions_mutex);
       while (!global_solutions.empty()) {
-        solution         = global_solutions.front();
-        solution_seed    = global_seeds.front();
-        solution_job_ref = global_job_refs.front();
-        solution_nonce   = global_nonces.front();
+        solution            = global_solutions.front();
+        solution_seed       = global_seeds.front();
+        const unsigned ref  = global_job_refs.front();
+        solution_nonce      = global_nonces.front();
         global_solutions.pop_front();
         global_seeds.pop_front();
         global_job_refs.pop_front();
         global_nonces.pop_front();
 
-        if (solution_job_ref == job_ref) { // drop old job solutions
+        if (ref == job_ref) {
           has_solution = true;
           break;
         }
       }
     }
 
-    // Process existing solution if available
     if (has_solution) {
       // Convert cycle edges to 64-bit format for recovery kernel
       std::vector<uint64_t> recovery_edges;
@@ -912,7 +881,6 @@ int c29(const unsigned job_ref, const unsigned c29_proof_size,
 
       const uint64_t k0 = solution_seed[0], k1 = solution_seed[1], k2 = solution_seed[2], k3 = solution_seed[3];
 
-      // Create SYCL buffers for edge recovery
       sycl::buffer<uint64_t, 1> buffer_edges{recovery_edges.data(), sycl::range<1>{c29_proof_size}};
       sycl::buffer<uint32_t, 1> buffer_nonces{sycl::range<1>{c29_proof_size}};
 
@@ -927,20 +895,17 @@ int c29(const unsigned job_ref, const unsigned c29_proof_size,
           const uint32_t gid = item.get_global_id(0);
           const uint32_t lid = item.get_local_id(0);
 
-          // Initialize local memory for found nonces
           if (lid < c29_proof_size) local_nonces[lid] = 0;
 
           item.barrier(sycl::access::fence_space::local_space);
 
           SIPHASH_ROUND_LAMBDA_MACRO
 
-          // Search nonce space in blocks for efficiency
           for (uint32_t block = 0; block < 1024; block += EDGE_BLOCK_SIZE) {
             const uint64_t base_nonce = gid * 1024 + block;
             uint64_t v0 = k0, v1 = k1, v2 = k2, v3 = k3;
             uint64_t sip_block[EDGE_BLOCK_SIZE];
 
-            // Generate SipHash values for nonce block
             SIPHASH_FILL_BLOCK(v0, v1, v2, v3, base_nonce, sip_block, b);
             const uint64_t last = sip_block[EDGE_BLOCK_MASK];
 
@@ -962,55 +927,45 @@ int c29(const unsigned job_ref, const unsigned c29_proof_size,
 
           item.barrier(sycl::access::fence_space::local_space);
 
-          // Write recovered nonces to global memory
           if (lid < c29_proof_size && local_nonces[lid] > 0) acc_nonces[lid] = local_nonces[lid];
         });
       });
 
-      // Read recovered nonces from device
       std::vector<uint32_t> nonces(c29_proof_size);
 
       { sycl::host_accessor acc{buffer_nonces, sycl::read_only};
         std::memcpy(nonces.data(), acc.get_pointer(), c29_proof_size * sizeof(uint32_t));
       }
 
-      // Sort nonces as required by Cuckaroo29 protocol
+      // Cuckaroo29 requires the recovered edge nonces in ascending order.
       std::sort(nonces.begin(), nonces.end());
 
-      // Pack nonces into bitstream (EDGE_BITS bits per nonce)
+      // Pack the sorted nonces little-endian, EDGE_BITS bits each, into the proof bitstream.
       const uint32_t packed_len = (c29_proof_size * EDGE_BITS + 7) / 8;
       std::vector<uint8_t> packed(packed_len, 0);
       uint32_t bit_pos = 0;
 
       for (const uint32_t nonce : nonces) {
-        for (uint32_t bit = 0; bit < EDGE_BITS; bit++) {
-          if (nonce & (1u << bit)) {
-            const uint32_t byte_idx = bit_pos / 8;
-            const uint32_t bit_idx  = bit_pos % 8;
-            packed[byte_idx] |= (1u << bit_idx);
-          }
-          bit_pos++;
-        }
+        for (uint32_t bit = 0; bit < EDGE_BITS; bit++, bit_pos++)
+          if (nonce & (1u << bit)) packed[bit_pos / 8] |= (1u << (bit_pos % 8));
       }
 
-      // Generate proof hash by hashing packed solution
       rx_blake2b(output, 32, packed.data(), packed_len);
 
-      // Invert (reverse) bytes in place
-      for (int i = 0; i < 16; i++)  std::swap(output[i], output[31 - i]);
+      // Reverse the 32-byte hash in place to match the pool's expected byte order.
+      for (int i = 0; i < 16; i++) std::swap(output[i], output[31 - i]);
 
-      // Store input nonce and edge nonces in edge output buffer
       *pnonce = solution_nonce;
       std::memcpy(output_edges, nonces.data(), c29_proof_size * sizeof(uint32_t));
 
-      return 1; // Update solution count
-    } else if (input_size) { // Start new solution search thread
+      return 1; // one solution produced
+    } else if (input_size) { // start a new asynchronous solution search
       union { uint8_t blake_output[32]; uint64_t k[4]; };
       rx_blake2b(blake_output, 32, input, input_size);
       start_new_c29_solution_search(k[0], k[1], k[2], k[3], job_ref, *pnonce, c29_proof_size, compute_queue);
 
-      return 0; // No immediate results
-    } else { // Check if any threads are still running and return -1 if not more solutions are expected
+      return 0; // no immediate results
+    } else { // poll: -1 once every worker has drained, otherwise 0 (still searching)
       return running_search_threads.load() == 0 ? -1 : 0;
     }
   } catch (const sycl::exception& e) {

@@ -4,6 +4,7 @@
 #include "xmrig/base/tools/Chrono.h"
 
 #include <chrono>
+#include <type_traits>
 
 namespace xmrig {
 
@@ -24,11 +25,10 @@ double Chrono::highResolutionMSecs()
 {
     using namespace std::chrono;
 
-    if (high_resolution_clock::is_steady) {
-        return duration<double, std::milli>(high_resolution_clock::now().time_since_epoch()).count();
-    }
-
-    return duration<double, std::milli>(steady_clock::now().time_since_epoch()).count();
+    // Pick high_resolution_clock only when it is steady, else steady_clock, so the
+    // result stays monotonic (mirrors Chrono::steadyMSecs).
+    using Clock = std::conditional_t<high_resolution_clock::is_steady, high_resolution_clock, steady_clock>;
+    return duration<double, std::milli>(Clock::now().time_since_epoch()).count();
 }
 
 } // namespace xmrig

@@ -34,12 +34,14 @@ $packageDir = "release/$root"
 $libsDir = Join-Path $packageDir "libs"
 $nodeExe = if ($env:NODE_BIN) { $env:NODE_BIN } else { (Get-Command node.exe).Source }
 
-if (-not (Test-Path "build/Release/mom.node")) {
-  throw "build/Release/mom.node is missing; build the native addon before packaging."
+function Assert-BuildArtifact {
+  param([string]$Path, [string]$Reason)
+  if (-not (Test-Path $Path)) {
+    throw "$Path is missing; $Reason"
+  }
 }
-if (-not (Test-Path "build/Release/sycl.dll")) {
-  throw "build/Release/sycl.dll is missing; Windows release packages require SYCL support."
-}
+Assert-BuildArtifact "build/Release/mom.node" "build the native addon before packaging."
+Assert-BuildArtifact "build/Release/sycl.dll" "Windows release packages require SYCL support."
 
 Remove-Item -Recurse -Force release, release-build, $Archive -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $packageDir, $libsDir, release-build | Out-Null
@@ -64,11 +66,8 @@ if not defined OCL_ICD_FILENAMES for %%F in ("%MOM_LIBS%\intelocl*.dll") do if e
 exit /b %ERRORLEVEL%
 '@ | Set-Content -Encoding ascii "$packageDir/mom.cmd"
 
-Copy-Item package.json, README.md, LICENSE "$packageDir/"
-Copy-Item scripts/install.bat "$packageDir/install.bat"
-Copy-Item scripts/install.ps1 "$packageDir/install.ps1"
-Copy-Item build/Release/mom.node "$libsDir/"
-Copy-Item build/Release/sycl.dll "$libsDir/"
+Copy-Item package.json, README.md, LICENSE, scripts/install.bat, scripts/install.ps1 "$packageDir/"
+Copy-Item build/Release/mom.node, build/Release/sycl.dll "$libsDir/"
 
 Copy-MominerOptionalRuntimeFiles -PackageDir $libsDir
 $entryPaths = @("$packageDir/mom-node.exe", "$libsDir/mom.node", "$libsDir/sycl.dll")

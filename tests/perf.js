@@ -13,9 +13,12 @@ if (selectedAlgo && selectedTests.length === 0) {
   throw new Error(`Unknown perf algo: ${selectedAlgo}`);
 }
 
-function assertAlgoParamsDevice(definition, dev) {
-  if (definition.algo !== "kawpow" && definition.algo !== "etchash" && definition.algo !== "autolykos2") return;
-  assert.match(dev, /(?:^|,)gpu\d+\*\d+(?:,|$)/, `${definition.algo} should be auto-detected on a GPU with an intensity`);
+// Algos whose auto config must resolve to a GPU device with an intensity (gpuN*M).
+const gpuIntensityAlgos = new Set(["kawpow", "etchash", "autolykos2"]);
+
+function assertGpuIntensityDev(algo, dev) {
+  if (!gpuIntensityAlgos.has(algo)) return;
+  assert.match(dev, /(?:^|,)gpu\d+\*\d+(?:,|$)/, `${algo} should be auto-detected on a GPU with an intensity`);
 }
 
 function sampleSummary(result) {
@@ -33,7 +36,7 @@ describe(selectedAlgo ? `proof-of-work performance: ${selectedAlgo}` : "proof-of
       }
 
       assert.ok(result.hashrate > 0, `${definition.name} reported invalid hashrate: ${result.hashrate}`);
-      assertAlgoParamsDevice(definition, result.dev);
+      assertGpuIntensityDev(definition.algo, result.dev);
       t.diagnostic(`${definition.algo} (${result.dev}): ${formatHashrate(result.hashrate)}${sampleSummary(result)}`);
     });
   }

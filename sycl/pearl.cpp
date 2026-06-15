@@ -46,6 +46,7 @@ inline void iv_words(uint32_t o[8]) {
   o[4] = 0x510e527f; o[5] = 0x9b05688c; o[6] = 0x1f83d9ab; o[7] = 0x5be0cd19;
 }
 inline uint32_t b3_rotr(uint32_t w, int c) { return (w >> c) | (w << (32 - c)); }
+inline uint32_t le32(const uint8_t* p) { return (uint32_t)p[0] | ((uint32_t)p[1]<<8) | ((uint32_t)p[2]<<16) | ((uint32_t)p[3]<<24); }
 
 inline void b3_g(uint32_t* s, int a, int b, int c, int d, uint32_t mx, uint32_t my) {
   s[a] = s[a] + s[b] + mx; s[d] = b3_rotr(s[d] ^ s[a], 16);
@@ -108,9 +109,8 @@ inline void parent_output(const uint32_t left[8], const uint32_t right[8], const
 
 // One-shot keyed (key32 != nullptr) or unkeyed BLAKE3 -> out[32].
 inline void b3(const uint8_t* input, uint32_t len, const uint8_t* key32, uint8_t out[32]) {
-  uint32_t key[8];
-  uint32_t base_flags = 0;
-  if (key32) { for (int i = 0; i < 8; i++) key[i] = (uint32_t)key32[i*4] | ((uint32_t)key32[i*4+1]<<8) | ((uint32_t)key32[i*4+2]<<16) | ((uint32_t)key32[i*4+3]<<24); base_flags = B3_KEYED; }
+  uint32_t key[8], base_flags = 0;
+  if (key32) { for (int i = 0; i < 8; i++) key[i] = le32(key32 + i*4); base_flags = B3_KEYED; }
   else iv_words(key);
 
   uint32_t cv_stack[54][8];
@@ -188,7 +188,7 @@ inline void b3(const uint8_t* input, uint32_t len, const uint8_t* key32, uint8_t
 
 // ---- Merkle-style tree primitives (for parallel keyed-BLAKE3 of large buffers) ----
 inline void load_key(const uint8_t* key32, uint32_t key[8], uint32_t& base_flags) {
-  if (key32) { for (int i = 0; i < 8; i++) key[i] = (uint32_t)key32[i*4] | ((uint32_t)key32[i*4+1]<<8) | ((uint32_t)key32[i*4+2]<<16) | ((uint32_t)key32[i*4+3]<<24); base_flags = B3_KEYED; }
+  if (key32) { for (int i = 0; i < 8; i++) key[i] = le32(key32 + i*4); base_flags = B3_KEYED; }
   else { iv_words(key); base_flags = 0; }
 }
 inline void cv_to_bytes(const uint32_t cv[8], uint8_t out[32]) {
@@ -212,8 +212,7 @@ inline void chunk_cv(const uint8_t* data, uint32_t len, uint64_t chunkIndex, con
 inline void parent_cv(const uint8_t l[32], const uint8_t r[32], const uint8_t* key32, bool isRoot, uint8_t out[32]) {
   uint32_t key[8], base; load_key(key32, key, base);
   uint32_t block[16];
-  for (int i = 0; i < 8; i++) { block[i] = (uint32_t)l[i*4]|((uint32_t)l[i*4+1]<<8)|((uint32_t)l[i*4+2]<<16)|((uint32_t)l[i*4+3]<<24);
-                                block[8+i] = (uint32_t)r[i*4]|((uint32_t)r[i*4+1]<<8)|((uint32_t)r[i*4+2]<<16)|((uint32_t)r[i*4+3]<<24); }
+  for (int i = 0; i < 8; i++) { block[i] = le32(l + i*4); block[8+i] = le32(r + i*4); }
   uint32_t t[16]; b3_compress(key, block, 0, 64, base | B3_PARENT | (isRoot ? B3_ROOT : 0), t);
   cv_to_bytes(t, out);
 }
@@ -281,6 +280,12 @@ static inline int8_t gv(uint32_t seed, uint32_t idx) {
 }
 static inline uint32_t mulhi(uint32_t a, uint32_t b) { return (uint32_t)(((uint64_t)a * (uint64_t)b) >> 32); }
 static inline uint32_t rotl(uint32_t x, int n) { return (x << n) | (x >> (32 - n)); }
+static inline uint32_t rd_u32le(const uint8_t* p) { return pearl_b3::le32(p); }
+// Sparse-noise index pair for one k-column: first index `f` in [0,rank), second `se != f` (a
+// permutation step within the rank). Same mapping for both the A and B noise tables.
+static inline void perm_pair(uint32_t u, int rank, int32_t& f, int32_t& se) {
+  uint32_t a = u & (rank - 1); f = (int32_t)a; se = (int32_t)(a ^ (1 + mulhi(rank - 1, u)));
+}
 static inline void mk_seed(uint8_t out[32], char c0) { const char* s = c0 == 'A' ? "A_tensor" : "B_tensor"; for (int i = 0; i < 32; i++) out[i] = i < 8 ? (uint8_t)s[i] : 0; }
 static inline void dev_randHash(int index, const uint8_t* seed32, const uint8_t* key32, int prepend, uint8_t out[32]) {
   uint8_t mb[64]{};   // (1+index) LE at word `prepend`, seed32 at bytes 32..63, rest zero
@@ -332,6 +337,8 @@ static void k_roots(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int
     int j = off / k, r = off % k;        // Bt byte (off+t) -> column j, depth r of B; advance incrementally
     for (int t = 0; t < len; t++) { buf[t] = (uint8_t)gv(seed, tot + (uint32_t)(r * n + j)); if (++r == k) { r = 0; j++; } }
     pearl_b3::chunk_cv(buf, (uint32_t)len, (uint64_t)ci, B.key, B.CVB + ci * 32); });
+  // Both branches finish the same commitment chain (cB = B3(key||rootB), cA = B3(cB||rootA)); they
+  // differ only in how each tree's root is obtained (parallel pairwise reduce vs serial merge_root).
   const bool pow2 = ((ncA & (ncA - 1)) == 0) && ((ncB & (ncB - 1)) == 0);
   if (pow2) {
     int offA = reduce_tree_pow2(q, B.CVA, B.key, ncA);
@@ -360,11 +367,9 @@ static void k_noise(sycl::queue& q, const Buffers& bb, int m, int n, int k, int 
   q.parallel_for(sycl::range<1>(dBR), [=](sycl::id<1> id) { int i = (int)id[0]; uint8_t sd[32]; mk_seed(sd, 'B'); uint8_t h[32]; dev_randHash(i, sd, B.cB, 0, h);
     int total = n * rank; for (int j = 0; j < 32; j++) { int o = i * 32 + j; if (o < total) B.EBRt[o] = (int8_t)((h[j] & 63) - 32); } });
   q.parallel_for(sycl::range<1>(dP), [=](sycl::id<1> id) { int i = (int)id[0]; uint8_t sd[32]; mk_seed(sd, 'A'); uint8_t h[32]; dev_randHash(i, sd, B.cA, 1, h);
-    for (int kk = 0; kk < 8; kk++) { int idx = i * 8 + kk; if (idx >= k) break; uint32_t u = h[kk*4]|(h[kk*4+1]<<8)|(h[kk*4+2]<<16)|((uint32_t)h[kk*4+3]<<24);
-      uint32_t f = u & (rank - 1), se = f ^ (1 + mulhi(rank - 1, u)); B.EARp1[idx] = (int32_t)f; B.EARp2[idx] = (int32_t)se; } });
+    for (int kk = 0; kk < 8; kk++) { int idx = i * 8 + kk; if (idx >= k) break; perm_pair(rd_u32le(h + kk*4), rank, B.EARp1[idx], B.EARp2[idx]); } });
   q.parallel_for(sycl::range<1>(dP), [=](sycl::id<1> id) { int i = (int)id[0]; uint8_t sd[32]; mk_seed(sd, 'B'); uint8_t h[32]; dev_randHash(i, sd, B.cB, 1, h);
-    for (int kk = 0; kk < 8; kk++) { int idx = i * 8 + kk; if (idx >= k) break; uint32_t u = h[kk*4]|(h[kk*4+1]<<8)|(h[kk*4+2]<<16)|((uint32_t)h[kk*4+3]<<24);
-      uint32_t f = u & (rank - 1), se = f ^ (1 + mulhi(rank - 1, u)); B.EBLq1[idx] = (int32_t)f; B.EBLq2[idx] = (int32_t)se; } });
+    for (int kk = 0; kk < 8; kk++) { int idx = i * 8 + kk; if (idx >= k) break; perm_pair(rd_u32le(h + kk*4), rank, B.EBLq1[idx], B.EBLq2[idx]); } });
   q.parallel_for(sycl::range<1>((size_t)rank * n), [=](sycl::id<1> id) { int idx = (int)id[0], r = idx / n, c = idx % n; B.EBR[idx] = B.EBRt[c * rank + r]; });
 }
 
@@ -976,10 +981,17 @@ static void attempt(sycl::queue& q, const Buffers& b, uint32_t seed, int m, int 
 
 using namespace mom_pearl;
 
-// ---- host PlainProof construction (the pool submission for a winning tile) ----
+// 52-byte NoisyGEMM config block hashed with the 76-byte header into the per-job key (k, rank, and
+// the two sparsity bytes at [9]/[15]); bytes 0..3 = k LE, 4..5 = rank LE.
 static void config_bytes(uint8_t cfg[52], int k, int rank) {
   memset(cfg, 0, 52);
   cfg[0]=k&0xff; cfg[1]=(k>>8)&0xff; cfg[2]=(k>>16)&0xff; cfg[3]=(k>>24)&0xff; cfg[4]=rank&0xff; cfg[5]=(rank>>8)&0xff; cfg[9]=15; cfg[15]=15;
+}
+// Per-job key = unkeyed BLAKE3 of the 76-byte header concatenated with the 52-byte config block.
+static void derive_key(const uint8_t* header76, int k, int rank, uint8_t key32[32]) {
+  uint8_t cfg[52], kb[128]; config_bytes(cfg, k, rank);
+  memcpy(kb, header76, 76); memcpy(kb + 76, cfg, 52);
+  pearl_b3::b3(kb, 128, nullptr, key32);
 }
 
 // ---- PlainProof construction on the host (the pool submission for a winning tile) ----
@@ -1086,10 +1098,11 @@ static Buffers alloc_buffers(sycl::queue& q, int m, int n, int k, int rank) {
 #include "lib-internal.h"   // get_dev() + MOM_SYCL_API
 namespace {
 // Network-standard NoisyGEMM shape (what HeroMiners/LuckyPool and the reference miner use): k=4096,
-// noise_rank=256, m=n=131072 (see pearl_intensity). pearlpool.cloud's 1024/64/16384 is the low-mem
-// exception; override via MOM_PEARL_K / MOM_PEARL_RANK (and a smaller dev batch) for it.
-static int pearl_k()    { const char* e = std::getenv("MOM_PEARL_K");    int v = e && *e ? atoi(e) : 0; return v ? v : 4096; }
-static int pearl_rank() { const char* e = std::getenv("MOM_PEARL_RANK"); int v = e && *e ? atoi(e) : 0; return v ? v : 256; }
+// noise_rank=256, m=n=131072 (m=n set from intensity in pearl()). pearlpool.cloud's 1024/64/16384 is
+// the low-mem exception; override via MOM_PEARL_K / MOM_PEARL_RANK (and a smaller dev batch) for it.
+static int env_int(const char* name, int dflt) { const char* e = std::getenv(name); int v = e && *e ? atoi(e) : 0; return v ? v : dflt; }
+static int pearl_k()    { return env_int("MOM_PEARL_K", 4096); }
+static int pearl_rank() { return env_int("MOM_PEARL_RANK", 256); }
 // One persistent in-order queue + device buffer set per GPU; the seed search reuses them.
 struct PearlState {
   sycl::queue queue;
@@ -1154,9 +1167,7 @@ int pearl(
 
   if (!st.have_header || std::memcmp(st.header, input, 76) != 0) {  // (re)derive key on header change
     std::memcpy(st.header, input, 76);
-    uint8_t cfg[52], kb[128]; config_bytes(cfg, k, rank);
-    std::memcpy(kb, input, 76); std::memcpy(kb + 76, cfg, 52);
-    pearl_b3::b3(kb, 128, nullptr, st.key); q.memcpy(b.key, st.key, 32); st.have_header = true;
+    derive_key(input, k, rank, st.key); q.memcpy(b.key, st.key, 32); st.have_header = true;
   }
   (void)job_ref;
   uint8_t tgtLE[32];
@@ -1222,9 +1233,8 @@ static int run_server(int k, int rank, int m, int n) {
       std::string line=inbuf.substr(0,nl); inbuf.erase(0,nl+1);
       if (line.rfind("job ",0)==0) {
         char hh[160], tt[80]; if (sscanf(line.c_str(),"job %159s %79s",hh,tt)==2) {
-          uint8_t header[76], cfg[52], kb[128], tgt[32];
-          parse_hex(hh,header,76); config_bytes(cfg,k,rank); memcpy(kb,header,76); memcpy(kb+76,cfg,52);
-          pearl_b3::b3(kb,128,nullptr,curKey); parse_hex(tt,tgt,32);
+          uint8_t header[76], tgt[32];
+          parse_hex(hh,header,76); derive_key(header,k,rank,curKey); parse_hex(tt,tgt,32);
           q.memcpy(b.key,curKey,32); q.memcpy(b.target,tgt,32); q.wait();
           haveJob=true; seed=1; b.result->found=0;
         }
@@ -1251,9 +1261,8 @@ int main(int argc, char** argv) {
     return run_server(atoi(argv[2]), atoi(argv[3]), atoi(argv[4]), atoi(argv[5]));
   if (std::string(argv[1]) == "proof") {   // proof <hdr> k rank m n seed row col -> base64 (host, no GPU)
     int k = atoi(argv[3]), rank = atoi(argv[4]), m = atoi(argv[5]), n = atoi(argv[6]);
-    uint8_t header[76], cfg[52], kb[128], key[32];
-    parse_hex(argv[2], header, 76); config_bytes(cfg, k, rank);
-    memcpy(kb, header, 76); memcpy(kb + 76, cfg, 52); pearl_b3::b3(kb, 128, nullptr, key);
+    uint8_t header[76], key[32];
+    parse_hex(argv[2], header, 76); derive_key(header, k, rank, key);
     std::printf("%s\n", build_plain_proof((uint32_t)strtoul(argv[7], nullptr, 10), m, n, k, rank, key, atoi(argv[8]), atoi(argv[9])).c_str());
     return 0;
   }
@@ -1263,9 +1272,8 @@ int main(int argc, char** argv) {
   int count = atoi(argv[7]);
   const char* tgtHexLE = argv[8];
 
-  uint8_t header[76], cfg[52], kb[128], key[32], target[32];
-  parse_hex(headerHex, header, 76); config_bytes(cfg, k, rank);
-  memcpy(kb, header, 76); memcpy(kb + 76, cfg, 52); pearl_b3::b3(kb, 128, nullptr, key);
+  uint8_t header[76], key[32], target[32];
+  parse_hex(headerHex, header, 76); derive_key(header, k, rank, key);
   parse_hex(tgtHexLE, target, 32);
 
   sycl::queue q{sycl::gpu_selector_v, sycl::property::queue::in_order{}};

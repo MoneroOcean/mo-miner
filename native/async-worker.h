@@ -6,11 +6,9 @@
 
 #include <atomic>
 #include <algorithm>
-#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
-#include <iostream>
 #include <iterator>
 #include <map>
 #include <string>
@@ -31,6 +29,8 @@ struct Message {
   Message(std::string name, MessageValues values) : name(std::move(name)), values(std::move(values)) {}
 };
 
+// Spinlock guarding only short queue ops; avoids std::mutex to keep this header
+// dependency-light and lock-hold times are negligible.
 class SimpleMutex {
   std::atomic_flag m_flag = ATOMIC_FLAG_INIT;
 
@@ -58,8 +58,8 @@ class SimpleLock {
 };
 
 template<typename T> class MessageQueue {
-  SimpleMutex             m_mutex;
-  std::deque<T>           m_buff;
+  SimpleMutex   m_mutex;
+  std::deque<T> m_buff;
 
   public:
 
@@ -72,20 +72,6 @@ template<typename T> class MessageQueue {
       debug_async_worker("MessageQueue write stored");
     }
     debug_async_worker("MessageQueue write done");
-  }
-
-  T read() {
-    while (true) {
-      {
-        SimpleLock lock(m_mutex);
-        if (!m_buff.empty()) {
-          T back = std::move(m_buff.front());
-          m_buff.pop_front();
-          return back;
-        }
-      }
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
   }
 
   void readAll(std::deque<T>& target) {
@@ -101,8 +87,8 @@ class AsyncWorker {
   napi_threadsafe_function m_error_tsfn;
   MessageQueue<Message> m_toNode;
   std::thread m_thread;
-  std::atomic<bool> m_started;
-  std::atomic<bool> m_stopped;
+  std::atomic<bool> m_started{false};
+  std::atomic<bool> m_stopped{false};
 
   public:
 
@@ -140,10 +126,9 @@ class AsyncWorker {
       return;
     }
     std::string* const message = static_cast<std::string*>(data);
-    napi_value global, error, text;
+    napi_value global, error;
     check(env, napi_get_global(env, &global));
-    text = make_string(env, *message);
-    check(env, napi_create_error(env, nullptr, text, &error));
+    check(env, napi_create_error(env, nullptr, make_string(env, *message), &error));
     napi_value argv[] = { error };
     check(env, napi_call_function(env, global, callback, 1, argv, nullptr));
     delete message;
@@ -168,10 +153,8 @@ class AsyncWorker {
     for (const Message& msg : contents) {
       napi_value values;
       check(env, napi_create_object(env, &values));
-      for (const auto& i : msg.values) {
-        napi_value value = make_string(env, i.second);
-        check(env, napi_set_named_property(env, values, i.first.c_str(), value));
-      }
+      for (const auto& kv : msg.values)
+        check(env, napi_set_named_property(env, values, kv.first.c_str(), make_string(env, kv.second)));
       napi_value argv[] = { make_string(env, msg.name), values };
       check(env, napi_call_function(env, global, callback, 2, argv, nullptr));
     }
@@ -203,8 +186,7 @@ class AsyncWorker {
   AsyncWorker(napi_env env, napi_value progress, napi_value complete, napi_value error_callback)
     : m_progress_tsfn(create_tsfn(env, progress, "core::progress", call_progress, this)),
       m_complete_tsfn(create_tsfn(env, complete, "core::complete", call_complete, this)),
-      m_error_tsfn(create_tsfn(env, error_callback, "core::error", call_error, this)),
-      m_started(false), m_stopped(false) {}
+      m_error_tsfn(create_tsfn(env, error_callback, "core::error", call_error, this)) {}
 
   virtual ~AsyncWorker() {
     if (m_started && !m_stopped) fromNode.write(Message("close", {}));
@@ -324,6 +306,8 @@ class AsyncWorkerWrapper {
     int32_t code = 0;
     check(env, napi_get_cb_info(env, info, &argc, args, nullptr, nullptr));
     if (argc > 0) check(env, napi_get_value_int32(env, args[0], &code));
+    // Flush all streams then terminate without running destructors/atexit; the
+    // worker thread may still be busy and a clean shutdown could deadlock.
     std::fflush(nullptr);
     std::_Exit(code);
   }
@@ -337,15 +321,13 @@ class AsyncWorkerWrapper {
     napi_value cons;
     check(env, napi_define_class(
       env, "AsyncWorker", NAPI_AUTO_LENGTH, New, nullptr,
-      sizeof(properties) / sizeof(properties[0]), properties, &cons
+      std::size(properties), properties, &cons
     ));
     check(env, napi_set_named_property(env, exports, "AsyncWorker", cons));
     napi_property_descriptor module_properties[] = {
       { "exitNow", nullptr, exitNow, nullptr, nullptr, nullptr, napi_default, nullptr }
     };
-    check(env, napi_define_properties(
-      env, exports, sizeof(module_properties) / sizeof(module_properties[0]), module_properties
-    ));
+    check(env, napi_define_properties(env, exports, std::size(module_properties), module_properties));
     return exports;
   }
 };

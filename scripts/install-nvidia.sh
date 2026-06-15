@@ -11,15 +11,17 @@ found_libcuda() {
   for d in /usr/lib/x86_64-linux-gnu /usr/lib64 /usr/lib /lib/x86_64-linux-gnu; do
     [ -e "$d/libcuda.so.1" ] && return 0
   done
-  ldconfig -p 2>/dev/null | grep -q "libcuda.so.1" && return 0
-  return 1
+  # Fall back to the dynamic linker cache; grep's exit status is the result.
+  ldconfig -p 2>/dev/null | grep -q "libcuda.so.1"
 }
 
 echo "mom (Linux/NVIDIA) runtime check"
 
 if found_libcuda || have nvidia-smi; then
-  echo "  NVIDIA driver: detected (libcuda.so.1 present)."
-  if have nvidia-smi; then nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>/dev/null | sed 's/^/  GPU: /' || true; fi
+  echo "  NVIDIA driver: detected."
+  if have nvidia-smi; then
+    nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>/dev/null | sed 's/^/  GPU: /' || true
+  fi
   echo "  Ready: GPU mining (gpu1...) and the SYCL CPU fallback are both available."
   exit 0
 fi

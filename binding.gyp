@@ -101,6 +101,9 @@
       ],
       "cflags!": [ "-O3" ],
       "cflags_cc!": [ "-std=gnu++1y", "-std=gnu++17", "-fno-exceptions" ],
+      # The SYCL static/shared lib is always required; per-arch argon2/blake2b
+      # libs are appended below for x86_64.
+      "dependencies": [ "sycl" ],
       "conditions": [
         [ "OS=='win'", {
           "sources": [
@@ -195,30 +198,21 @@
           "cflags_cc+": [ "-std=c++20" ],
           "ldflags+": [ "<!@(./scripts/cpu-optflags.sh ldflags)" ]
         } ],
-        [ "OS!='win' and mom_sycl_impl=='dpcpp-cuda'", {
-          "ldflags+": [
-            "-fsycl",
-            "-fsycl-targets=<(mom_cuda_arch)",
-            "-Wl,--disable-new-dtags",
-            "-Wl,-rpath,'$$ORIGIN'",
-            "-Wl,-rpath,'$$ORIGIN/lib'",
-            "-Wl,-rpath,'$$ORIGIN/mom'"
-          ]
-        } ],
-        [ "OS!='win' and mom_sycl_impl!='dpcpp-cuda'", {
-          "ldflags+": [
-            "-fsycl",
-            "-Wl,--disable-new-dtags",
-            "-Wl,-rpath,'$$ORIGIN'",
-            "-Wl,-rpath,'$$ORIGIN/lib'",
-            "-Wl,-rpath,'$$ORIGIN/mom'"
-          ]
-        } ],
-        [ "OS=='win'", {
-          "dependencies": [ "sycl" ]
-        } ],
         [ "OS!='win'", {
-          "dependencies": [ "sycl" ]
+          # rpath order $$ORIGIN, lib, mom lets the .node find libsycl.so next to
+          # itself, in build/Release/lib, or in build/Release/mom.
+          "ldflags+": [
+            "-fsycl",
+            "-Wl,--disable-new-dtags",
+            "-Wl,-rpath,'$$ORIGIN'",
+            "-Wl,-rpath,'$$ORIGIN/lib'",
+            "-Wl,-rpath,'$$ORIGIN/mom'"
+          ],
+          "conditions": [
+            [ "mom_sycl_impl=='dpcpp-cuda'", {
+              "ldflags+": [ "-fsycl-targets=<(mom_cuda_arch)" ]
+            } ]
+          ]
         } ],
         [ "OS!='win' and target_arch=='x64'", {
           "dependencies": [
@@ -255,42 +249,16 @@
       "conditions": [
         [ "OS=='win'", {
           "type": "shared_library",
+          # Release/Debug differ only in RuntimeLibrary (MD vs MDd); the toolset and
+          # linker flags below are shared via the target-level msvs_settings.
           "configurations": {
             "Release": {
               "msbuild_toolset": "Intel(R) oneAPI DPC++ Compiler 2026",
-              "msvs_settings": {
-                "VCCLCompilerTool": {
-                  "RuntimeLibrary": 2
-                },
-                "VCLinkerTool": {
-                  "AdditionalLibraryDirectories": [
-                    "$(ICInstallDir)lib",
-                    "%(AdditionalLibraryDirectories)"
-                  ],
-                  "AdditionalOptions": [
-                    "/DLL",
-                    "/fsycl"
-                  ]
-                }
-              }
+              "msvs_settings": { "VCCLCompilerTool": { "RuntimeLibrary": 2 } }
             },
             "Debug": {
               "msbuild_toolset": "Intel(R) oneAPI DPC++ Compiler 2026",
-              "msvs_settings": {
-                "VCCLCompilerTool": {
-                  "RuntimeLibrary": 3
-                },
-                "VCLinkerTool": {
-                  "AdditionalLibraryDirectories": [
-                    "$(ICInstallDir)lib",
-                    "%(AdditionalLibraryDirectories)"
-                  ],
-                  "AdditionalOptions": [
-                    "/DLL",
-                    "/fsycl"
-                  ]
-                }
-              }
+              "msvs_settings": { "VCCLCompilerTool": { "RuntimeLibrary": 3 } }
             }
           },
           "sources": [
@@ -312,6 +280,16 @@
                 "/DNDEBUG",
                 "/DPEARL_ESIMD",
                 "/clang:-fno-strict-aliasing"
+              ]
+            },
+            "VCLinkerTool": {
+              "AdditionalLibraryDirectories": [
+                "$(ICInstallDir)lib",
+                "%(AdditionalLibraryDirectories)"
+              ],
+              "AdditionalOptions": [
+                "/DLL",
+                "/fsycl"
               ]
             }
           }

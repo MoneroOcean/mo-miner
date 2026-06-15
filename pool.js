@@ -26,7 +26,7 @@ function clear_pool_connection(pool_id, socket) {
   const pool = global.opt.pools[pool_id];
   if (socket && !isCurrentPoolSocket(pool_id, socket)) return false;
   clearPoolKeepalive(pool);
-  destroyPoolSocket(pool);
+  if (pool.socket) pool.socket.destroy();
   pool.socket   = null;
   pool.last_job = null;
   pool.logged_in = false;
@@ -39,21 +39,24 @@ function clearPoolKeepalive(pool) {
   pool.keepalive = null;
 }
 
-function destroyPoolSocket(pool) {
-  if (pool.socket) pool.socket.destroy();
-}
-
 function isCurrentPoolSocket(pool_id, socket) {
   return global.opt.pools[pool_id].socket === socket;
 }
 
+// Maps a mining algo to its stratum protocol dialect, or null if it uses the default `login` dialect.
+function protocolForAlgo(algo) {
+  switch (algo) {
+    case "kawpow":     return "raven";
+    case "etchash":    return "eth";
+    case "autolykos2": return "erg";
+    case "pearl":      return "pearl";
+    default:           return null;
+  }
+}
+
 function defaultPoolProtocol() {
   const job = global.opt && global.opt.job;
-  if (job && job.algo === "kawpow") return "raven";
-  if (job && job.algo === "etchash") return "eth";
-  if (job && job.algo === "autolykos2") return "erg";
-  if (job && job.algo === "pearl") return "pearl";
-  return "login";
+  return (job && protocolForAlgo(job.algo)) || "login";
 }
 
 function poolProtocol(pool) {
@@ -61,7 +64,8 @@ function poolProtocol(pool) {
 }
 
 function usesMiningSubscribe(pool) {
-  return poolProtocol(pool) === "raven" || poolProtocol(pool) === "eth" || poolProtocol(pool) === "erg";
+  const protocol = poolProtocol(pool);
+  return protocol === "raven" || protocol === "eth" || protocol === "erg";
 }
 
 function usesEthProxy(pool) {
@@ -116,7 +120,7 @@ module.exports.pool_write = function(pool_id, json) {
   pool.socket.write(message + "\n");
   // sends keepalive if no submit/keepalive to pool for more than global.opt.pool_time.keepalive
   if (!pool.is_keepalive || usesMiningSubscribe(pool) || usesEthProxy(pool) || pearlUsesSubscribe(pool)) return;
-  if (pool.keepalive !== null) clearTimeout(pool.keepalive);
+  clearPoolKeepalive(pool);
   pool.keepalive = setTimeout(function() {
     pool.keepalive = null;
     module.exports.pool_write(pool_id, {
@@ -127,8 +131,8 @@ module.exports.pool_write = function(pool_id, json) {
 
 // soft kill pool connection
 function pool_close_wait(pool_id) {
-  if (!global.opt.pools[pool_id].socket) return;
   const socket = global.opt.pools[pool_id].socket;
+  if (!socket) return;
   pool_log1(pool_id, "Soft closing the pool connection");
   setTimeout(function() {
     // do not do soft close if this pool became active again
@@ -144,10 +148,6 @@ function poolShareStats(pool_id) {
   return "(" + pool.good_shares + "/" + pool.bad_shares + ")";
 }
 
-function poolErrorMessage(json, is_err) {
-  return is_err ? poolErrorText(json.error) : "";
-}
-
 function poolErrorText(error) {
   return error instanceof Object && typeof error.message === "string" ? ": " + error.message : "";
 }
@@ -157,18 +157,6 @@ function applyLoginExtensions(pool_id, extensions) {
   const pool = global.opt.pools[pool_id];
   if (extensions.includes("nicehash")) pool.is_nicehash = true;
   if (extensions.includes("keepalive")) pool.is_keepalive = true;
-}
-
-function rememberPoolExtraNonce(pool_id, result) {
-  rememberPoolExtraNonceHex(pool_id, result.extra_nonce);
-}
-
-function protocolForAlgo(algo) {
-  if (algo === "kawpow") return "raven";
-  if (algo === "etchash") return "eth";
-  if (algo === "autolykos2") return "erg";
-  if (algo === "pearl") return "pearl";
-  return null;
 }
 
 function algoFromPass(pool) {
@@ -350,11 +338,10 @@ function shouldSkipBackupPool(pool_id, active_pool) {
 }
 
 function nextNonDonatePool(pool_id) {
-  const donate_pool = global.opt.pool_ids.donate;
-  let next_pool = pool_id + 1;
+  const next_pool = pool_id + 1;
   if (next_pool < Object.keys(global.opt.pools).length) return next_pool;
-  next_pool = 0;
-  return next_pool === donate_pool ? next_pool + 1 : next_pool;
+  // wrapped back to the first pool; skip it if it is the donate pool
+  return global.opt.pool_ids.donate === 0 ? 1 : 0;
 }
 
 // switch active pool to the next available pool (except donate pool)
@@ -366,7 +353,7 @@ module.exports.switch_pool = function(pool_id, set_job) {
   const donate_pool  = global.opt.pool_ids.donate;
 
   // do not care about not active pool
-  if (pool_id !== global.opt.pool_ids.active) return;
+  if (pool_id !== active_pool) return;
 
   // select already alive pool if possible, except donate pool (starting from primary pool)
   const alive_job = reactivateAlivePoolIfAny(active_pool, set_job);
@@ -424,11 +411,10 @@ function jobFromPoolMessage(pool_id, json) {
   }
   if (poolProtocol(pool) === "raven" && isRavenJobNotification(json)) {
     if (!pool.logged_in) return null;
-    const headerHash = hexWithoutPrefix(json.params[1]);
     pool.submit_mode = "raven";
     return nonceAt32Job(pool, {
       algo: json.algo || "kawpow",
-      header_hash: headerHash,
+      header_hash: hexWithoutPrefix(json.params[1]),
       seed_hash: hexWithoutPrefix(json.params[2]),
       target: ravenTarget(pool, json.params[3]),
       job_id: json.params[0],
@@ -437,13 +423,11 @@ function jobFromPoolMessage(pool_id, json) {
   }
   if (poolProtocol(pool) === "eth" && isEthJobNotification(json)) {
     if (!pool.logged_in) return null;
-    const seedHash = hexWithoutPrefix(json.params[1]);
-    const headerHash = hexWithoutPrefix(json.params[2]);
     pool.submit_mode = "eth";
     return nonceAt32Job(pool, {
       algo: fixedAlgoJobName(json, "etchash"),
-      header_hash: headerHash,
-      seed_hash: seedHash,
+      header_hash: hexWithoutPrefix(json.params[2]),
+      seed_hash: hexWithoutPrefix(json.params[1]),
       target: ethTarget(pool),
       job_id: json.params[0],
     });
@@ -451,25 +435,22 @@ function jobFromPoolMessage(pool_id, json) {
   if (usesEthProxy(pool) && isEthProxyWork(json)) {
     if (!pool.logged_in) return null;
     const headerHash = hexWithoutPrefix(json.result[0]);
-    const seedHash = hexWithoutPrefix(json.result[1]);
-    const target = hexWithoutPrefix(json.result[2]).padStart(64, "0");
     pool.submit_mode = "ethproxy";
     return nonceAt32Job(pool, {
       algo: fixedAlgoJobName(json, "etchash"),
       header_hash: headerHash,
-      seed_hash: seedHash,
-      target: target,
-      job_id: headerHash,
+      seed_hash: hexWithoutPrefix(json.result[1]),
+      target: hexWithoutPrefix(json.result[2]).padStart(64, "0"),
+      job_id: headerHash, // ethproxy has no job_id field; the header hash uniquely identifies the job
       height: parseHexHeight(json.result[3]),
     });
   }
   if (poolProtocol(pool) === "erg" && isErgJobNotification(json)) {
     if (!pool.logged_in) return null;
-    const headerHash = hexWithoutPrefix(json.params[2]);
     pool.submit_mode = "erg";
     const job = nonceAt32Job(pool, {
       algo: fixedAlgoJobName(json, "autolykos2"),
-      header_hash: headerHash,
+      header_hash: hexWithoutPrefix(json.params[2]),
       target: ergTarget(json.params[6]),
       job_id: json.params[0],
       height: json.params[1],
@@ -497,7 +478,7 @@ function jobFromPoolMessage(pool_id, json) {
     pool.logged_in = true;
     pool.submit_mode = null;
     if ("id" in json.result) pool.worker_id = json.result.id;
-    rememberPoolExtraNonce(pool_id, json.result);
+    rememberPoolExtraNonceHex(pool_id, json.result.extra_nonce);
     applyLoginExtensions(pool_id, json.result.extensions);
     return loginJobWithResultMetadata(json.result);
   }
@@ -517,12 +498,7 @@ function jobTargetWork(job) {
 
 function jobTargetDescription(job) {
   const work = jobTargetWork(job);
-  if (work !== null) return h.formatHashCount(work) + "/share target";
-  return job.difficulty + " diff";
-}
-
-function validateJobTarget(job) {
-  if (job.target) jobTargetWork(job);
+  return work !== null ? h.formatHashCount(work) + "/share target" : job.difficulty + " diff";
 }
 
 function activatePoolForJob(pool_id, active_pool) {
@@ -553,29 +529,33 @@ function poolActivator(pool_id) {
 
 function handlePoolJob(pool_id, job, set_job) {
   activatePoolForJob(pool_id, global.opt.pool_ids.active);
-  validateJobTarget(job);
+  if (job.target) jobTargetWork(job); // throws early on a malformed target before we store the job
 
   global.opt.pools[pool_id].last_job = job;
   if (pool_id === global.opt.pool_ids.active) {
     const last_job = set_job(job);
     pool_log(pool_id, "Got new " + last_job.algo + " algo job with " +
                      jobTargetDescription(last_job) +
-	             (last_job.height ? " and " + last_job.height + " height" : "")
+                     (last_job.height ? " and " + last_job.height + " height" : "")
     );
   } else {
     pool_log2(pool_id, "Storing not active pool job " + JSON.stringify(job));
   }
 }
 
+function loginSucceeded(pool_id) {
+  global.opt.pools[pool_id].logged_in = true;
+  return pool_log(pool_id, "Login to the pool succeeded");
+}
+
+function loginFailed(pool_id, reason) {
+  global.opt.pools[pool_id].logged_in = false;
+  return pool_log_err(pool_id, "Login to the pool failed" + reason);
+}
+
 function handleLoginResponse(pool_id, is_err, is_ok, err_msg, json) {
-  if (is_err || json.result === false) {
-    global.opt.pools[pool_id].logged_in = false;
-    return pool_log_err(pool_id, "Login to the pool failed" + (err_msg || ": Login rejected"));
-  }
-  if (is_ok) {
-    global.opt.pools[pool_id].logged_in = true;
-    return pool_log(pool_id, "Login to the pool succeeded");
-  }
+  if (is_err || json.result === false) return loginFailed(pool_id, err_msg || ": Login rejected");
+  if (is_ok) return loginSucceeded(pool_id);
 }
 
 function handleSubscribeResponse(pool_id, is_err, is_ok, err_msg, json) {
@@ -589,18 +569,10 @@ function handleSubscribeResponse(pool_id, is_err, is_ok, err_msg, json) {
   });
 }
 
-function handleEthProxyLoginResponse(pool_id, is_err, is_ok, err_msg, json) {
-  return handleLoginResponse(pool_id, is_err, is_ok, err_msg, json);
-}
-
 function handleAuthorizeResponse(pool_id, is_err, is_ok, err_msg, json) {
   global.opt.pools[pool_id].pending_authorize = false;
-  if (!is_err && json.result === true) {
-    global.opt.pools[pool_id].logged_in = true;
-    return pool_log(pool_id, "Login to the pool succeeded");
-  }
-  global.opt.pools[pool_id].logged_in = false;
-  return pool_log_err(pool_id, "Login to the pool failed" + (err_msg || ": Authorization rejected"));
+  if (!is_err && json.result === true) return loginSucceeded(pool_id);
+  return loginFailed(pool_id, err_msg || ": Authorization rejected");
 }
 
 function handleShareResponse(pool_id, is_err, is_ok, err_msg) {
@@ -616,7 +588,7 @@ function handleShareResponse(pool_id, is_err, is_ok, err_msg) {
 
 function handlePoolResponse(pool_id, json) {
   const is_err  = "error" in json && json.error !== null;
-  const err_msg = poolErrorMessage(json, is_err);
+  const err_msg = is_err ? poolErrorText(json.error) : "";
   const is_ok   = "result" in json && json.result !== null && json.result !== false;
   const handler = poolResponseHandler(pool_id, json.id);
   const result = handler(pool_id, is_err, is_ok, err_msg, json);
@@ -629,7 +601,7 @@ function rememberPoolResponseMetadata(pool_id, result) {
 
   const pool = global.opt.pools[pool_id];
   if ("id" in result) pool.worker_id = result.id;
-  rememberPoolExtraNonce(pool_id, result);
+  rememberPoolExtraNonceHex(pool_id, result.extra_nonce);
   rememberPoolProtocol(pool_id, result);
   applyLoginExtensions(pool_id, result.extensions);
 }
@@ -645,7 +617,7 @@ function poolResponseHandler(pool_id, id) {
     if (id === 1) return handleSubscribeResponse; // mining.subscribe response
     if (id === 2) return pool.pending_authorize ? handleAuthorizeResponse : ignorePoolResponse;
   } else if (usesEthProxy(pool)) {
-    if (id === 1) return handleEthProxyLoginResponse; // eth_submitLogin response
+    if (id === 1) return handleLoginResponse; // eth_submitLogin response
     if (id === 2) return ignorePoolResponse; // legacy keepalive response
   } else {
     if (id === 1) return handleLoginResponse; // login response
@@ -733,13 +705,9 @@ function handlePoolLines(pool_id, messages, set_job, pool_err) {
   for (const message of messages) {
     if (message.trim() === '') continue;
     const json = parsePoolLine(pool_id, message);
-    if (shouldStopPoolLineProcessing(pool_id, json, set_job, pool_err)) return true;
+    if (json && processPoolJson(pool_id, json, set_job, pool_err)) return true;
   }
   return false;
-}
-
-function shouldStopPoolLineProcessing(pool_id, json, set_job, pool_err) {
-  return json ? processPoolJson(pool_id, json, set_job, pool_err) : false;
 }
 
 function poolErrorHandler(pool_id, socket, set_job) {
@@ -771,7 +739,7 @@ function scheduleInitialJobTimeout(pool_id, socket, set_job, pool_err) {
     if (global.opt.pools[pool_id].last_job) return;
     if (retryAsEthProxy(pool_id, socket, set_job)) return;
     return pool_err(pool_log_str(pool_id,
-      "No initial job from from " + pool_str(pool_id) + " pool"
+      "No initial job from " + pool_str(pool_id) + " pool"
     ));
   }, global.opt.pool_time.first_job_wait * 1000);
 }
@@ -822,14 +790,11 @@ function poolDataHandler(pool_id, socket, set_job, pool_err) {
   return function(data) {
     const next_buff = readPoolData(pool_id, socket, pool_data_buff, data, pool_err);
     if (next_buff === null) return;
-    if (!hasCompletePoolLine(next_buff)) {
-      pool_data_buff = next_buff;
-      return;
-    }
     pool_data_buff = next_buff;
-    const split = splitPoolMessages(pool_data_buff);
-    if (handlePoolLines(pool_id, split.messages, set_job, pool_err)) return;
-    pool_data_buff = split.incomplete_line;
+    if (!hasCompletePoolLine(pool_data_buff)) return;
+    const { messages, incomplete_line } = splitPoolMessages(pool_data_buff);
+    if (handlePoolLines(pool_id, messages, set_job, pool_err)) return;
+    pool_data_buff = incomplete_line;
   };
 }
 
@@ -840,9 +805,9 @@ function connect_pool(pool_id, set_job) {
   if (pool.socket) return;
 
   pool_log(pool_id, "Connecting to " + poolTypeStr(pool_id) + " " + pool_str(pool_id) + " pool");
-  global.opt.pools[pool_id].last_connect_time = Date.now();
-  const socket = global.opt.pools[pool_id].socket = connectSocket(pool);
-  global.opt.pools[pool_id].last_job = null;
+  pool.last_connect_time = Date.now();
+  const socket = pool.socket = connectSocket(pool);
+  pool.last_job = null;
 
   const pool_err = poolErrorHandler(pool_id, socket, set_job);
   scheduleInitialJobTimeout(pool_id, socket, set_job, pool_err);
@@ -866,8 +831,7 @@ module.exports.connect_pool_throttle = function(pool_id, set_job) {
   const pool = global.opt.pools[pool_id];
   const wait_time = global.opt.pool_time.connect_throttle * 1000 -
                     (Date.now() - pool.last_connect_time);
-  if (wait_time > 0) {
-    pool_log(pool_id, "Waiting " + Math.floor(wait_time / 1000) + "s to connect to the pool");
-    return setTimeout(connect_pool, wait_time, pool_id, set_job);
-  } else return connect_pool(pool_id, set_job);
+  if (wait_time <= 0) return connect_pool(pool_id, set_job);
+  pool_log(pool_id, "Waiting " + Math.floor(wait_time / 1000) + "s to connect to the pool");
+  return setTimeout(connect_pool, wait_time, pool_id, set_job);
 };
