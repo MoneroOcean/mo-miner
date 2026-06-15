@@ -1,8 +1,8 @@
 # NVIDIA build image: DPC++ CUDA backend (mom_sycl_impl=dpcpp-cuda).
 # Mirrors scripts/build.dockerfile (Intel oneAPI) but compiles the SAME SYCL sources
-# with the DPC++ CUDA backend instead of AdaptiveCpp. The DPC++ toolchain is a prebuilt
-# binary tarball (intel/llvm nightly, which already ships the CUDA/nvptx backend), so the
-# Codeplay CUDA plugin does NOT need to be built from source. AOT compiles to PTX/SASS at
+# with the DPC++ CUDA backend. The DPC++ toolchain is a prebuilt binary tarball (intel/llvm
+# nightly, which already ships the CUDA/nvptx backend), so nothing extra is built from source.
+# AOT compiles to PTX/SASS at
 # build time for the binding.gyp default arch set (sm_80/89/90); at runtime only the system
 # NVIDIA driver (libcuda.so.1) is required, and the CUDA driver JITs PTX where needed.
 # https://hub.docker.com/r/nvidia/cuda/tags  https://github.com/intel/llvm/releases

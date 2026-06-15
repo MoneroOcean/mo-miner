@@ -296,7 +296,7 @@
         }, {
           "conditions": [
             [ "mom_sycl_impl=='dpcpp-cuda'", {
-              # NVIDIA via the intel/llvm DPC++ CUDA backend (oneAPI 2026.0 / Codeplay CUDA plugin).
+              # NVIDIA via the intel/llvm DPC++ CUDA backend (oneAPI 2026.0; CUDA/nvptx built in).
               # Same DPC++ as the Intel build; MOM_SYCL_CUDA marks the few NVIDIA-specific spots
               # (native 32-wide warps, Lemire/div.rn fixes, pearl mma.sync tensor cores, kawpow source
               # JIT). -ffp-contract=off keeps the cn/gpu FP recurrence deterministic; -fsycl-embed-ir for

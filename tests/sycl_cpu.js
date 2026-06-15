@@ -23,11 +23,10 @@ function requiredVector(name) {
   return definition;
 }
 
-// MOM_SYCL_CPU_SKIP lets a build opt specific algos out of SYCL-CPU
-// verification (comma-separated algo names). The AdaptiveCpp/NVIDIA build sets it
-// to kawpow,autolykos2: those barrier-heavy kernels are miscompiled by
-// AdaptiveCpp's OpenMP host backend (they are verified on the GPU instead). The
-// Intel build leaves it unset and runs all five.
+// MOM_SYCL_CPU_SKIP lets a build opt specific algos out of SYCL-CPU hash verification
+// (comma-separated algo names) when a host SYCL CPU device miscompiles them. The Intel build
+// leaves it unset and runs all five; the NVIDIA build is CUDA-only (no SYCL CPU device), so it
+// skips this verification entirely.
 const skipAlgos = new Set(
   (process.env.MOM_SYCL_CPU_SKIP || "").split(",").map((s) => s.trim()).filter(Boolean)
 );

@@ -493,14 +493,10 @@ static void search(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int 
 }
 #endif  // !PEARL_ESIMD && !MOM_SYCL_CUDA
 
-// Why DPC++ (CUDA backend), not AdaptiveCpp, for NVIDIA: pearl's throughput lives entirely in the
-// int8 Tensor Cores, and acpp cannot reach them. Its default generic-SSCP target lowers to a
-// retargetable IR with no Intel ESIMD, no oneAPI joint_matrix, and inline nvptx PTX (e.g. mma.sync)
-// compiled to a silent no-op -- so the best it can do for pearl is a ~0.05 TH/s scalar GEMM. Its
-// explicit cuda:sm_XX target *can* emit inline PTX, but that mode is AOT and loses the SSCP runtime
-// JIT that kawpow's per-period specialization depends on. The intel/llvm DPC++ CUDA backend (oneAPI
-// 2026.0 / Codeplay plugin) instead reaches the Tensor Cores via the mma.sync path below AND is the
-// same DPC++ as the Intel build, so all the SYCL kernels stay unified across both GPU vendors.
+// NVIDIA pearl throughput lives entirely in the int8 Tensor Cores, reached here through the
+// mma.sync path below. It is built with the intel/llvm DPC++ CUDA backend (nvptx64) -- the SAME
+// DPC++ as the Intel build -- so every SYCL kernel stays unified across both GPU vendors, and the
+// runtime kernel_compiler JIT that kawpow's per-period specialization relies on is available too.
 #if defined(MOM_SYCL_CUDA)
 // ---- NVIDIA tensor-core int8 mma.sync search (DPC++ CUDA backend) ----
 // Built with intel/llvm DPC++ for nvptx64 (-fsycl-targets=nvptx64-nvidia-cuda --cuda-gpu-arch=sm_89),
