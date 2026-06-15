@@ -622,7 +622,7 @@ static inline void mma_m16n8k32_s8(int32_t c[4], const uint32_t a[4], const uint
   (void)c; (void)a; (void)b;   // host pass: never executed
 #endif
 }
-static inline uint32_t ld_u32(const int8_t* p) { return *reinterpret_cast<const uint32_t*>(p); }
+static inline uint32_t ld_u32(const int8_t* __restrict__ p) { return *reinterpret_cast<const uint32_t*>(p); }
 // cp.async helpers (PEARL_CU_PIPE pipeline): async global->shared 16-byte copies that overlap with
 // mma, plus the generic->shared address conversion cp.async needs. Device-only (inline PTX).
 static inline uint32_t cu_smem_addr(const void* p) {
@@ -659,9 +659,23 @@ template <int N> static inline void cu_cp_wait() {
 // config; occupancy-bound by the resident-accumulator register tile. (PEARL_CU_PIPE selects the
 // experimental SMEM/cp.async pipeline.)
 static void search_cuda(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k, int rank) {
-  constexpr int SG = 32, ER = PEARL_CU_ER, EC = PEARL_CU_EC, BLK = PEARL_CU_BLK;
+  constexpr int SG = 32, ER = PEARL_CU_ER, EC = PEARL_CU_EC;
   auto B = bb;
   const int tilesH = m / (16 * ER), tilesW = n / (16 * EC);
+  // BLK super-block size: pick the largest power-of-two whose A'/B' operand slice stays L2-resident,
+  // derived from the device's actual L2 cache size -- so the L2-reuse win generalizes across NVIDIA
+  // cards (L4's 48MB L2 -> 64, +15% vs the old fixed 16; small-L2 cards stay at the PEARL_CU_BLK floor
+  // and can't thrash/regress). Slice ~= BLK*16*k*(ER+EC) int8 bytes. MOM_PEARL_CU_BLK overrides. Must
+  // evenly divide both tile dims or super-block swizzle disables (falls back to row-major).
+  int BLK = PEARL_CU_BLK;
+  if (const char* e = std::getenv("MOM_PEARL_CU_BLK")) {
+    BLK = std::atoi(e); if (BLK < 1) BLK = PEARL_CU_BLK;
+  } else {
+    const size_t l2 = q.get_device().get_info<sycl::info::device::global_mem_cache_size>();
+    const size_t per_blk = (size_t)16 * k * (ER + EC);   // operand bytes per unit of BLK
+    for (int cand = 128; cand > PEARL_CU_BLK; cand >>= 1)
+      if ((size_t)cand * per_blk <= l2 && (tilesW % cand) == 0 && (tilesH % cand) == 0) { BLK = cand; break; }
+  }
   const size_t nWarp = (size_t)tilesH * tilesW;
   const bool blocked = BLK > 1 && (tilesW % BLK) == 0 && (tilesH % BLK) == 0;
   const int blocksW = blocked ? tilesW / BLK : 0;
@@ -676,7 +690,7 @@ static void search_cuda(sycl::queue& q, const Buffers& bb, uint32_t seed, int m,
         Rg = (blk / blocksW) * BLK + (intra / BLK); Cg = (blk % blocksW) * BLK + (intra % BLK); }
       else { Rg = warp / tilesW; Cg = warp % tilesW; }
       const int rowBase = Rg * 16 * ER, colBase = Cg * 16 * EC;
-      const int8_t* Ap = B.Ap; const int8_t* Bp = B.Bp;   // A' row-major (i*k+c), B' col-major (j*k+c)
+      const int8_t* __restrict__ Ap = B.Ap; const int8_t* __restrict__ Bp = B.Bp;   // A' row-major (i*k+c), B' col-major (j*k+c)
       int32_t acc[ER * EC * 2][4];
 #pragma unroll
       for (int i = 0; i < ER * EC * 2; i++) { acc[i][0] = acc[i][1] = acc[i][2] = acc[i][3] = 0; }
@@ -770,7 +784,7 @@ static void search_cuda(sycl::queue& q, const Buffers& bb, uint32_t seed, int m,
       const int wM = warp / WN, wN = warp % WN;
       const int block = (int)it.get_group(0), bR = block / nB, bC = block % nB;
       const int rowBlock = bR * BM, colBlock = bC * BN;
-      const int8_t* Ap = B.Ap; const int8_t* Bp = B.Bp;
+      const int8_t* __restrict__ Ap = B.Ap; const int8_t* __restrict__ Bp = B.Bp;
       int8_t* Asp = As.get_multi_ptr<sycl::access::decorated::no>().get();
       int8_t* Bsp = Bs.get_multi_ptr<sycl::access::decorated::no>().get();
       uint32_t* tr = trbuf.get_multi_ptr<sycl::access::decorated::no>().get() + warp * TM * TN * 16;

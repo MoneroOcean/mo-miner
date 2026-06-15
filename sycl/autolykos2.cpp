@@ -863,7 +863,7 @@ int autolykos2(
 
   sycl::queue& q = state.queue;
   auto& kb = *state.bundle;
-  const uint32_t* const d_table = state.table;
+  const uint32_t* const __restrict__ d_table = state.table;
   AutolykosResult* const d_result = state.result;
   const uint32_t local_size = state.workgroup;
 

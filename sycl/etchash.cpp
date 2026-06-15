@@ -676,7 +676,7 @@ int etchash(
   auto& kb = *state.bundle;
   const uint8_t* const d_input = state.input;
   const uint8_t* const d_target = state.target;
-  const uint32_t* const d_dag = state.dag;
+  const uint32_t* const __restrict__ d_dag = state.dag;
   EtchashResult* const d_result = state.result;
   constexpr unsigned ETCHASH_LANES = ETHASH_MIX_WORDS;
   constexpr unsigned SEED_OFFSET = 0;
