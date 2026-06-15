@@ -105,7 +105,7 @@ jobs:
       # The build is CUDA-only (no CPU SYCL device) and CI runners have no NVIDIA GPU,
       # so the SYCL/GPU algos are verified on real NVIDIA hardware, not in CI.
       - name: Build native addon in NVIDIA (DPC++ CUDA) image
-        run: ./r-nvidia.sh node -e "console.log('mom nvidia build ready')"
+        run: ./r.sh --nvidia node -e "console.log('mom nvidia build ready')"
 
       - name: Package release archive
         run: .github/workflows/scripts/package-linux-nvidia.sh
