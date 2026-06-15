@@ -27,9 +27,18 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     npm install -g node-gyp@12.2.0 && \
     node --version && npm --version && node-gyp --version
 
-# Install the prebuilt DPC++ CUDA-enabled toolchain into /opt/dpcpp.
+# Install the prebuilt DPC++ CUDA-enabled toolchain into /opt/dpcpp. Self-healing: intel/llvm
+# garbage-collects old nightlies, so if the pinned tag has been pruned, resolve the latest
+# nightly-YYYY-MM-DD tag from the GitHub releases API and use that instead.
 RUN mkdir -p /opt/dpcpp && \
-    curl -fsSL "https://github.com/intel/llvm/releases/download/${DPCPP_RELEASE}/${DPCPP_ASSET}" -o /tmp/dpcpp.tar.gz && \
+    rel="${DPCPP_RELEASE}" && \
+    if ! curl -fsIL "https://github.com/intel/llvm/releases/download/${rel}/${DPCPP_ASSET}" >/dev/null 2>&1; then \
+      echo "Pinned ${rel} unavailable (pruned); resolving latest nightly from the GitHub API..." && \
+      rel="$(curl -fsSL 'https://api.github.com/repos/intel/llvm/releases?per_page=100' | grep -oE 'nightly-[0-9]{4}-[0-9]{2}-[0-9]{2}' | sort -ru | head -1)" && \
+      [ -n "${rel}" ] || { echo 'Could not resolve any intel/llvm nightly tag' >&2; exit 1; }; \
+    fi && \
+    echo "Using DPC++ ${rel}" && \
+    curl -fsSL "https://github.com/intel/llvm/releases/download/${rel}/${DPCPP_ASSET}" -o /tmp/dpcpp.tar.gz && \
     tar -C /opt/dpcpp -xf /tmp/dpcpp.tar.gz && rm /tmp/dpcpp.tar.gz && \
     /opt/dpcpp/bin/clang++ --version | head -2
 
