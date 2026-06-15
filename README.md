@@ -14,9 +14,10 @@ miner performance.
 
 # Limitations
 
-The only platform tested at this moment is Linux with one socket x86-64 CPU and Intel Arc GPU
-(my current development system). 2+ socket CPU, Windows, ARM CPU, nVidia/AMD GPU support
-is possible and WIP.
+The primary development and test platform is Linux with a single-socket x86-64 CPU and an Intel Arc
+GPU. NVIDIA GPUs are also supported via the DPC++ CUDA backend (see NVIDIA GPU performance below), and
+Windows is supported (see the runtime/install notes below). 2+ socket CPUs, ARM CPUs, and AMD GPUs are
+not yet tested — support is possible and WIP.
 
 # Supported algos
 
@@ -72,10 +73,10 @@ compared against the best closed-source miner benchmarked on the same card:
 | --- | --- | --- | --- |
 | cn/gpu | 2.65 KH/s | SRBMiner-MULTI 3.04 KH/s | 87% |
 | c29 (Cuckaroo29) | 4.83 g/s | lolMiner ~5.3 g/s | 91% |
-| kawpow | 12.9 MH/s | Rigel 15.56 MH/s | 83% |
+| kawpow | 13.2 MH/s | Rigel 15.56 MH/s | 85% |
 | etchash | 28.9 MH/s | ~28.8 MH/s (memory-bandwidth bound) | ~parity |
 | autolykos2 | 76.5 MH/s | lolMiner 98.19 MH/s | 78% |
-| pearl | 28.6 TH/s | no NVIDIA SOTA (ARC-miner is Intel-only) | — |
+| pearl | 33.6 TH/s | no NVIDIA SOTA (ARC-miner is Intel-only) | — |
 
 SOTA references benchmarked on the same L4: lolMiner (`--benchmark AUTOLYKOS2` / `CR29`), Rigel
 (`-a kawpow`), SRBMiner-MULTI (`--algorithm cryptonight_gpu`).
@@ -175,21 +176,24 @@ cpu1: Intel(R) OpenCL
 gpu1: Intel(R) oneAPI Unified Runtime over Level-Zero V2
 gpu1o: Intel(R) OpenCL Graphics
 gpu1z: Intel(R) oneAPI Unified Runtime over Level-Zero V2
-2026-06-14 23:22:35 Doing algo benchmarks...
-2026-06-14 23:24:07 Algo autolykos2 (gpu1*8388608) hashrate: 37.87 MH/s (37.87 MH/s)
-2026-06-14 23:25:12 Algo c29 (gpu1*1) hashrate: 2.79 H/s (2.79 H/s)
-2026-06-14 23:26:34 Algo cn/gpu (gpu1o*1280) hashrate: 2.95 KH/s (2.95 KH/s)
-2026-06-14 23:28:04 Algo etchash (gpu1*33554432) hashrate: 21.09 MH/s (21.09 MH/s)
-2026-06-14 23:29:05 Algo ghostrider (cpu*8^8) hashrate: 1.66 KH/s (205.32 H/s, 212.96 H/s, 200.92 H/s, 201.01 H/s, 205.24 H/s, 212.93 H/s, 211.91 H/s, 211.82 H/s)
-2026-06-14 23:31:01 Algo kawpow (gpu1*37282560) hashrate: 20.93 MH/s (20.93 MH/s)
-2026-06-14 23:32:10 Algo panthera (cpu*4^16) hashrate: 4.24 KH/s (259.15 H/s, 268.97 H/s, 269.84 H/s, 266.02 H/s, 270.41 H/s, 258.63 H/s, 276.43 H/s, 262.15 H/s, 264.18 H/s, 263.20 H/s, 267.30 H/s, 266.04 H/s, 265.74 H/s, 255.83 H/s, 259.60 H/s, 263.85 H/s)
-2026-06-14 23:33:12 Algo rx/0 (cpu*8) hashrate: 5.89 KH/s (5.89 KH/s)
-2026-06-14 23:34:14 Algo rx/2 (cpu*8) hashrate: 5.05 KH/s (5.05 KH/s)
-2026-06-14 23:35:17 Algo rx/arq (cpu*16) hashrate: 39.24 KH/s (39.24 KH/s)
-2026-06-14 23:35:17 Connecting to primary gulf.moneroocean.stream:20001tls pool
-2026-06-14 23:35:17 Got new cn/gpu algo job with 345.14 KH/share target and 2095043 height
-2026-06-14 23:35:21 Got new cn/gpu algo job with 341.49 KH/share target and 2095044 height
-2026-06-14 23:35:36 Share accepted by the pool (1/0)
+2026-06-15 13:10:29 Doing algo benchmarks...
+2026-06-15 13:12:04 Algo autolykos2 (gpu1*8388608) hashrate: 37.55 MH/s (37.55 MH/s)
+2026-06-15 13:13:10 Algo c29 (gpu1*1) hashrate: 2.73 H/s (2.73 H/s)
+2026-06-15 13:14:38 Algo cn/gpu (gpu1o*1280) hashrate: 2.94 KH/s (2.94 KH/s)
+2026-06-15 13:16:07 Algo etchash (gpu1*33554432) hashrate: 21.10 MH/s (21.10 MH/s)
+2026-06-15 13:17:08 Algo ghostrider (cpu*8^8) hashrate: 1.66 KH/s (211.34 H/s, 200.52 H/s, 212.52 H/s, 204.79 H/s, 200.47 H/s, 204.75 H/s, 211.35 H/s, 212.58 H/s)
+2026-06-15 13:19:04 Algo kawpow (gpu1*37282560) hashrate: 20.92 MH/s (20.92 MH/s)
+2026-06-15 13:20:13 Algo panthera (cpu*4^16) hashrate: 4.21 KH/s (255.77 H/s, 263.38 H/s, 266.65 H/s, 259.05 H/s, 265.44 H/s, 260.45 H/s, 259.93 H/s, 270.73 H/s, 285.56 H/s, 263.45 H/s, 252.52 H/s, 262.90 H/s, 253.04 H/s, 269.66 H/s, 268.26 H/s, 255.31 H/s)
+2026-06-15 13:21:37 Algo pearl (gpu1*131072) hashrate: 52.11 TH/s (52.11 TH/s)
+2026-06-15 13:22:39 Algo rx/0 (cpu*8) hashrate: 6.16 KH/s (6.16 KH/s)
+2026-06-15 13:23:42 Algo rx/2 (cpu*8) hashrate: 5.10 KH/s (5.10 KH/s)
+2026-06-15 13:24:44 Algo rx/arq (cpu*16) hashrate: 39.42 KH/s (39.42 KH/s)
+2026-06-15 13:24:44 Connecting to primary gulf.moneroocean.stream:20001tls pool
+2026-06-15 13:24:44 Got new cn/gpu algo job with 269.06 KH/share target and 2095451 height
+2026-06-15 13:25:42 Got new cn/gpu algo job with 506.00 KH/share target and 2095451 height
+2026-06-15 13:25:49 Algo cn/gpu (gpu1o*1280) hashrate: 2.95 KH/s (2.95 KH/s)
+2026-06-15 13:26:28 Got new cn/gpu algo job with 515.42 KH/share target and 2095452 height
+2026-06-15 13:26:36 Share accepted by the pool (1/0)
 ...
 ```
 
@@ -197,10 +201,10 @@ Next time you can reuse saved config.json file to avoid running benchmarks again
 
 ```
 $ ./mom mine ./config.json
-2023-02-24 05:55:59 Loading config file ./config.json
-2023-02-24 05:55:59 Connecting to primary gulf.moneroocean.stream:20064tls pool
-2023-02-24 05:55:59 Got new cn/gpu algo job with 12004 diff
-2023-02-24 05:56:24 Share accepted by the pool (1/0)
+2026-06-15 13:30:01 Loading config file ./config.json
+2026-06-15 13:30:01 Connecting to primary gulf.moneroocean.stream:20001tls pool
+2026-06-15 13:30:01 Got new cn/gpu algo job with 341.49 KH/share target and 2095460 height
+2026-06-15 13:30:09 Share accepted by the pool (1/0)
 ...
 ```
 
@@ -215,13 +219,14 @@ Without parameters miner will show help:
 ```
 $ ./mom
 
-# Node.js/SYCL based CPU/GPU miner v0.1
+# Node.js/SYCL based CPU/GPU miner v0.7.0
 $ ./mom <directive> <parameter>+ [<option>+]
 
 Directives:
   mine  (<pool_address:port[tls]> <login> [<pass>]|<config.json>)
   test  <algo> <result_hash_hex_str>
   bench <algo>
+  algo_params
 
 Options:
 --job '{...}':                      JSON string of the default job params (mostly used in test/bench mode)
@@ -244,8 +249,11 @@ Options:
   url:                              pool DNS or IP address
   port:                             pool port
   is_tls:                           is pool port is encrypted using TLS/SSL (false by default)
+  tls_verify:                       verify pool TLS/SSL certificate (false by default)
   is_nicehash:                      nicehash nonce mining mode support (false by default)
   is_keepalive:                     sends keepalive messages to the pool to avoid disconnect (true by default)
+  use_subscribe:                    pearl pools: use mining.subscribe+authorize handshake; set false for the login-dialect pearl pool (pearlpool.cloud) and the MoneroOcean donate pool (true by default)
+  worker:                           pearl subscribe-dialect worker name (mining.authorize) ("mom" by default)
   login:                            pool login data
   pass:                             pool password ("" by default)
 
@@ -254,12 +262,12 @@ Options:
   mask:                             MSR register mask in hex string with 0x prefix format ("0xFFFFFFFFFFFFFFFF" by default)
 
 --new.algo_param.<name> '{["<key>": <value>,]+}': new algo params, defined by the following keys:
-  dev:                              device config line "[<dev>[*B][^T],]+", dev = {cpu, gpu<N>, cpu<N>}, N = device number, B = hash batch size, T = number of parallel threads ("cpu" by default)
+  dev:                              device config line "[<dev>[*B][^P],]+", dev = {cpu, gpu<N>, cpu<N>}, N = device number, B = hash batch size, P = number of parallel processes ("cpu" by default)
 
 --log_level:                        log level: 0=minimal, 1=verbose, 2=network debug, 3=compute core debug (0 by default)
 --bench_algo_params:                benchmark algo params before mining: 0=skip, 1=active MoneroOcean coin algos plus rx/2, 2=all supported algos (1 by default)
 --save_config:                      file name to save config in JSON format (only for mine directive) ("" by default)
-2023-02-24 05:58:24 ERROR: No directive specified
+2026-06-15 13:58:03 ERROR: No directive specified
 ```
 
 You can run test and benchmark separately for algo you need like this:
