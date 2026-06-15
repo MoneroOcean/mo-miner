@@ -17,26 +17,26 @@ if [ -z "$version" ]; then
 fi
 version="${version#v}"
 
-root="mo-miner-v${version}"
-archive="${2:-mo-miner-v${version}-lin-nvidia.tgz}"
+root="mom-v${version}"
+archive="${2:-mom-v${version}-lin-nvidia.tgz}"
 package_dir="release-nvidia/${root}"
 libs_dir="$package_dir/libs"
 build_dir="release-nvidia-build"
 node_bin="${NODE_BIN:-$(command -v node)}"
-image="${MOMINER_NVIDIA_IMAGE:-mo-miner-build-nvidia}"
-dpcpp_lib="${MOMINER_DPCPP_LIB:-/opt/dpcpp/lib}"
+image="${MOM_NVIDIA_IMAGE:-mom-build-nvidia}"
+dpcpp_lib="${MOM_DPCPP_LIB:-/opt/dpcpp/lib}"
 
-if [ ! -f build/Release/mo-miner.node ]; then
-  echo "build/Release/mo-miner.node is missing; build the native addon (dpcpp-cuda) before packaging." >&2
+if [ ! -f build/Release/mom.node ]; then
+  echo "build/Release/mom.node is missing; build the native addon (dpcpp-cuda) before packaging." >&2
   exit 1
 fi
 
 rm -rf release-nvidia "$build_dir" "$archive"
 mkdir -p "$package_dir" "$libs_dir" "$build_dir"
 
-bundle_path="$PWD/$build_dir/mo-miner.bundle.cjs"
-blob_path="$PWD/$build_dir/mo-miner.blob"
-npx --yes esbuild@0.28.0 mo-miner.js \
+bundle_path="$PWD/$build_dir/mom.bundle.cjs"
+blob_path="$PWD/$build_dir/mom.blob"
+npx --yes esbuild@0.28.0 mom.js \
   --bundle --platform=node --format=cjs \
   --banner:js="const { createRequire } = require('node:module'); require = createRequire(process.execPath);" \
   --outfile="$bundle_path"
@@ -50,11 +50,11 @@ cat >"$build_dir/sea-config.json" <<EOF
 }
 EOF
 "$node_bin" --experimental-sea-config "$build_dir/sea-config.json"
-cp "$node_bin" "$package_dir/mo-miner-bin"
-npx --yes postject@1.0.0-alpha.6 "$package_dir/mo-miner-bin" NODE_SEA_BLOB "$blob_path" \
+cp "$node_bin" "$package_dir/mom-bin"
+npx --yes postject@1.0.0-alpha.6 "$package_dir/mom-bin" NODE_SEA_BLOB "$blob_path" \
   --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2
-chmod +x "$package_dir/mo-miner-bin"
-cat >"$package_dir/mo-miner" <<'EOF'
+chmod +x "$package_dir/mom-bin"
+cat >"$package_dir/mom" <<'EOF'
 #!/usr/bin/env sh
 set -eu
 
@@ -71,18 +71,18 @@ else
   export LD_LIBRARY_PATH="$library_dirs"
 fi
 
-exec "$script_dir/mo-miner-bin" "$@"
+exec "$script_dir/mom-bin" "$@"
 EOF
-chmod +x "$package_dir/mo-miner"
+chmod +x "$package_dir/mom"
 
 cp package.json README.md LICENSE "$package_dir/"
 cp scripts/install-nvidia.sh "$package_dir/install.sh"
-cp build/Release/mo-miner.node "$libs_dir/"
+cp build/Release/mom.node "$libs_dir/"
 # Device source the kawpow kernel_compiler JIT reads at runtime; it resolves beside the
 # loaded module (libs/) via dladdr (see sycl/kawpow_jit.inc kawpow_module_dir()).
 cp sycl/kawpow_device.inc "$libs_dir/"
 
-container="mo-miner-nvidia-release-libs-$$"
+container="mom-nvidia-release-libs-$$"
 docker rm -f "$container" >/dev/null 2>&1 || true
 docker run -d --name "$container" --entrypoint sleep "$image" infinity >/dev/null
 trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT

@@ -250,7 +250,7 @@ inline void merge_root(uint8_t* cvs, int numChunks, const uint8_t* key32, uint8_
 
 }  // namespace pearl_b3
 
-namespace mominer_pearl {
+namespace mom_pearl {
 
 using pearl_b3::b3;
 
@@ -381,16 +381,16 @@ static void compute_ab(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, 
 #endif
   });
   // B' layout depends on the search backend's use::b expectation:
-  //  - MOMINER_SYCL_CUDA: plain ROW-MAJOR B'[r,j] at r*n+j -- NVIDIA joint_matrix use::b is
+  //  - MOM_SYCL_CUDA: plain ROW-MAJOR B'[r,j] at r*n+j -- NVIDIA joint_matrix use::b is
   //    row_major/col_major (no VNNI), loaded with stride n.
   //  - else (Intel XMX): TILE-MAJOR VNNI, each 16-wide N-tile's k*16 block contiguous (stride 64),
   //    Bp[ (j/16)*k*16 + (r/4)*64 + (j%16)*4 + (r%4) ] = B'[r,j], coalesced sub-group read.
   q.parallel_for(sycl::range<1>((size_t)k * n), [=](sycl::id<1> id) { int idx = (int)id[0], r = idx / n, j = idx % n;
     int acc = (int)B.EBR[B.EBLq1[r] * n + j] - (int)B.EBR[B.EBLq2[r] * n + j];
     int8_t v = (int8_t)(gv(seed, tot + (uint32_t)idx) + acc);
-#if defined(MOMINER_SYCL_CUDA) && defined(PEARL_CU_JM)
+#if defined(MOM_SYCL_CUDA) && defined(PEARL_CU_JM)
     B.Bp[(size_t)r * n + j] = v;                 // row-major B'[r,j] for joint_matrix use::b
-#elif defined(MOMINER_SYCL_CUDA)
+#elif defined(MOM_SYCL_CUDA)
     B.Bp[(size_t)j * k + r] = v;                 // col-major B'[r,j] for mma.sync B operand (coalesced loads)
 #else
     B.Bp[(size_t)(j / 16) * k * 16 + (size_t)(r / 4) * 64 + (size_t)(j % 16) * 4 + (r % 4)] = v;
@@ -429,7 +429,7 @@ static inline bool tile_wins(const uint32_t tr[16], const uint8_t* key, const ui
   for (int i = 31; i >= 0; i--) { if (jp[i] < target[i]) return true; if (jp[i] > target[i]) return false; }
   return true;   // jackpot == target: still within bound
 }
-#if !defined(PEARL_ESIMD) && !defined(MOMINER_SYCL_CUDA)
+#if !defined(PEARL_ESIMD) && !defined(MOM_SYCL_CUDA)
 static void search(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k, int rank) {
   using namespace sycl::ext::oneapi::experimental::matrix;
   constexpr int NT = PEARL_NTILE, HR = PEARL_HR, HT = 16, SG = 16;
@@ -486,7 +486,7 @@ static void search(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int 
     });
   });
 }
-#endif  // !PEARL_ESIMD && !MOMINER_SYCL_CUDA
+#endif  // !PEARL_ESIMD && !MOM_SYCL_CUDA
 
 // Why DPC++ (CUDA backend), not AdaptiveCpp, for NVIDIA: pearl's throughput lives entirely in the
 // int8 Tensor Cores, and acpp cannot reach them. Its default generic-SSCP target lowers to a
@@ -496,7 +496,7 @@ static void search(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int 
 // JIT that kawpow's per-period specialization depends on. The intel/llvm DPC++ CUDA backend (oneAPI
 // 2026.0 / Codeplay plugin) instead reaches the Tensor Cores via the mma.sync path below AND is the
 // same DPC++ as the Intel build, so all the SYCL kernels stay unified across both GPU vendors.
-#if defined(MOMINER_SYCL_CUDA)
+#if defined(MOM_SYCL_CUDA)
 // ---- NVIDIA tensor-core int8 mma.sync search (DPC++ CUDA backend) ----
 // Built with intel/llvm DPC++ for nvptx64 (-fsycl-targets=nvptx64-nvidia-cuda --cuda-gpu-arch=sm_89),
 // where joint_matrix maps to the L4's int8 Tensor Cores (wmma.mma.sync IMMA). NVIDIA constraints
@@ -844,7 +844,7 @@ static void search_cuda(sycl::queue& q, const Buffers& bb, uint32_t seed, int m,
 }
 #endif  // !PEARL_CU_PIPE
 #endif  // PEARL_CU_JM
-#endif  // MOMINER_SYCL_CUDA
+#endif  // MOM_SYCL_CUDA
 
 #ifdef PEARL_ESIMD
 // ---- experimental ESIMD register-resident DPAS search (alternative to search()) ----
@@ -965,16 +965,16 @@ static void attempt(sycl::queue& q, const Buffers& b, uint32_t seed, int m, int 
   compute_ab(q, b, seed, m, n, k, rank); // materialize noised A' (tile-major) and B' (VNNI tile-major)
 #if defined(PEARL_ESIMD)
   search_esimd(q, b, seed, m, n, k, rank); // ESIMD register-resident DPAS path (Intel GPUs, ~53 TH/s)
-#elif defined(MOMINER_SYCL_CUDA)
+#elif defined(MOM_SYCL_CUDA)
   search_cuda(q, b, seed, m, n, k, rank);  // NVIDIA tensor-core mma.sync path (DPC++ CUDA backend)
 #else
   search(q, b, seed, m, n, k, rank);       // portable joint_matrix path (XMX A'*B' + XOR transcript + BLAKE3)
 #endif
 }
 
-}  // namespace mominer_pearl
+}  // namespace mom_pearl
 
-using namespace mominer_pearl;
+using namespace mom_pearl;
 
 // ---- host PlainProof construction (the pool submission for a winning tile) ----
 static void config_bytes(uint8_t cfg[52], int k, int rank) {
@@ -1082,14 +1082,14 @@ static Buffers alloc_buffers(sycl::queue& q, int m, int n, int k, int rank) {
 }
 
 #ifndef PEARL_STANDALONE
-// ---- native mo-miner entry point (DEV::PEARL_GPU) ----
-#include "lib-internal.h"   // get_dev() + MOMINER_SYCL_API
+// ---- native mom entry point (DEV::PEARL_GPU) ----
+#include "lib-internal.h"   // get_dev() + MOM_SYCL_API
 namespace {
 // Network-standard NoisyGEMM shape (what HeroMiners/LuckyPool and the reference miner use): k=4096,
 // noise_rank=256, m=n=131072 (see pearl_intensity). pearlpool.cloud's 1024/64/16384 is the low-mem
-// exception; override via MOMINER_PEARL_K / MOMINER_PEARL_RANK (and a smaller dev batch) for it.
-static int pearl_k()    { const char* e = std::getenv("MOMINER_PEARL_K");    int v = e && *e ? atoi(e) : 0; return v ? v : 4096; }
-static int pearl_rank() { const char* e = std::getenv("MOMINER_PEARL_RANK"); int v = e && *e ? atoi(e) : 0; return v ? v : 256; }
+// exception; override via MOM_PEARL_K / MOM_PEARL_RANK (and a smaller dev batch) for it.
+static int pearl_k()    { const char* e = std::getenv("MOM_PEARL_K");    int v = e && *e ? atoi(e) : 0; return v ? v : 4096; }
+static int pearl_rank() { const char* e = std::getenv("MOM_PEARL_RANK"); int v = e && *e ? atoi(e) : 0; return v ? v : 256; }
 // One persistent in-order queue + device buffer set per GPU; the seed search reuses them.
 struct PearlState {
   sycl::queue queue;

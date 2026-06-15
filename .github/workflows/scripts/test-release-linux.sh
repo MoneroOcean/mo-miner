@@ -4,7 +4,7 @@ set -euo pipefail
 archive="${1:?Usage: .github/workflows/scripts/test-release-linux.sh <archive> [suite]}"
 suite="${2:-all}"
 node_bin="${NODE_BIN:-$(command -v node)}"
-work_dir="${MOMINER_RELEASE_TEST_DIR:-release-test}"
+work_dir="${MOM_RELEASE_TEST_DIR:-release-test}"
 
 escape_github_message() {
   local value="$1"
@@ -48,8 +48,8 @@ if [ -d "$package_dir/tests" ]; then
   echo "Extracted release package unexpectedly contains tests/." >&2
   exit 1
 fi
-if [ ! -f "$libs_dir/mo-miner.node" ]; then
-  echo "Extracted release package is missing libs/mo-miner.node." >&2
+if [ ! -f "$libs_dir/mom.node" ]; then
+  echo "Extracted release package is missing libs/mom.node." >&2
   exit 1
 fi
 
@@ -63,7 +63,7 @@ check_ldd() {
     fi
   done < <(
     find "$package_dir" "$libs_dir" -maxdepth 1 -type f \
-      \( -name "mo-miner-bin" -o -name "mo-miner.node" -o -name "*.so" -o -name "*.so.*" \) \
+      \( -name "mom-bin" -o -name "mom.node" -o -name "*.so" -o -name "*.so.*" \) \
       -print0
   )
   return "$failed"
@@ -80,12 +80,12 @@ if [ -f "$libs_dir/libintelocl.so" ]; then
 fi
 
 set +e
-smoke_output="$(cd "$package_dir" && env -u LD_LIBRARY_PATH ./mo-miner algo_params 2>&1)"
+smoke_output="$(cd "$package_dir" && env -u LD_LIBRARY_PATH ./mom algo_params 2>&1)"
 smoke_exit=$?
 set -e
 if [ "$smoke_exit" -ne 0 ]; then
   set +e
-  debug_output="$(cd "$package_dir" && env -u LD_LIBRARY_PATH MOMINER_DEBUG_STARTUP=1 ./mo-miner algo_params 2>&1)"
+  debug_output="$(cd "$package_dir" && env -u LD_LIBRARY_PATH MOM_DEBUG_STARTUP=1 ./mom algo_params 2>&1)"
   debug_exit=$?
   set -e
   smoke_message=$(
@@ -104,7 +104,7 @@ EOF
   echo "$smoke_message" >&2
   exit 1
 fi
-if ! grep -q '^MOMINER_ALGO_PARAMS ' <<<"$smoke_output"; then
+if ! grep -q '^MOM_ALGO_PARAMS ' <<<"$smoke_output"; then
   emit_github_error "Linux release smoke test missing marker" "$smoke_output"
   echo "Direct executable smoke test did not print algo params marker." >&2
   echo "$smoke_output" >&2
@@ -113,8 +113,8 @@ fi
 set +e
 validation_output="$(printf '%s\n' "$smoke_output" | "$node_bin" -e '
 const fs = require("node:fs");
-const marker = fs.readFileSync(0, "utf8").split(/\r?\n/).find((line) => line.startsWith("MOMINER_ALGO_PARAMS "));
-const params = JSON.parse(marker.slice("MOMINER_ALGO_PARAMS ".length));
+const marker = fs.readFileSync(0, "utf8").split(/\r?\n/).find((line) => line.startsWith("MOM_ALGO_PARAMS "));
+const params = JSON.parse(marker.slice("MOM_ALGO_PARAMS ".length));
 for (const [algo, dev] of Object.entries(params)) {
   if (typeof dev !== "string" || !dev || /(?:^|,)[^,]*(?:\*0|\^0)(?:,|$)/.test(dev)) {
     console.error(`Invalid algo params for ${algo}: ${dev}`);

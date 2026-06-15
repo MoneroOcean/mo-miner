@@ -20,7 +20,7 @@ static void update_str2dev(const bool verbose = false) {
       } else if (device.is_gpu()) {
         // OpenCL GPU platforms will be available but not used by default if something else is present
         const std::string gpuN = std::string("gpu") + std::to_string(++gpu_num);
-#if defined(MOMINER_SYCL_CUDA)
+#if defined(MOM_SYCL_CUDA)
         // The DPC++ CUDA backend exposes the GPU through a platform whose name
         // carries no "OpenCL"/"Level-Zero" marker, so register it as the default GPU.
         (void)platform_name;
@@ -174,7 +174,7 @@ static unsigned pow_intensity(
 }
 
 static unsigned kawpow_intensity(const sycl::device& dev) {
-  return pow_intensity(dev, "MOMINER_KAWPOW_WORKGROUP", "MOMINER_KAWPOW_INTENSITY", {
+  return pow_intensity(dev, "MOM_KAWPOW_WORKGROUP", "MOM_KAWPOW_INTENSITY", {
     {256, 16384, 48},
     {256, 32768, 48},
     {256, 32768, 36}
@@ -182,7 +182,7 @@ static unsigned kawpow_intensity(const sycl::device& dev) {
 }
 
 static unsigned etchash_intensity(const sycl::device& dev) {
-  return pow_intensity(dev, "MOMINER_ETCHASH_WORKGROUP", "MOMINER_ETCHASH_INTENSITY", {
+  return pow_intensity(dev, "MOM_ETCHASH_WORKGROUP", "MOM_ETCHASH_INTENSITY", {
     {64, 32768, 36},
     {64, 65536, 36},
     {64, 131072, 40}
@@ -190,16 +190,16 @@ static unsigned etchash_intensity(const sycl::device& dev) {
 }
 
 static unsigned autolykos2_intensity(const sycl::device& dev) {
-#if defined(MOMINER_SYCL_CUDA)
+#if defined(MOM_SYCL_CUDA)
   // NVIDIA: larger batches amortize per-iteration host/sync overhead; throughput
   // climbs to a ~70 MH/s plateau on an L4 around these intensities.
-  return pow_intensity(dev, "MOMINER_AUTOLYKOS2_WORKGROUP", "MOMINER_AUTOLYKOS2_INTENSITY", {
+  return pow_intensity(dev, "MOM_AUTOLYKOS2_WORKGROUP", "MOM_AUTOLYKOS2_INTENSITY", {
     {64, 16384, 12},
     {64, 32768, 16},
     {64, 32768, 10}
   });
 #else
-  return pow_intensity(dev, "MOMINER_AUTOLYKOS2_WORKGROUP", "MOMINER_AUTOLYKOS2_INTENSITY", {
+  return pow_intensity(dev, "MOM_AUTOLYKOS2_WORKGROUP", "MOM_AUTOLYKOS2_INTENSITY", {
     {64, 4096, 12},
     {64, 8192, 16},
     {64, 8192, 10}
@@ -209,9 +209,9 @@ static unsigned autolykos2_intensity(const sycl::device& dev) {
 
 // pearl "intensity" is the square NoisyGEMM edge m=n (not a nonce batch). Default 131072 -- the
 // network-standard shape for HeroMiners/LuckyPool (k=4096, rank=256), ~53 TH/s on a B580 (~1.2GB
-// VRAM). Low-mem cards / pearlpool.cloud use 16384 via MOMINER_PEARL_INTENSITY (k=1024, rank=64).
+// VRAM). Low-mem cards / pearlpool.cloud use 16384 via MOM_PEARL_INTENSITY (k=1024, rank=64).
 static unsigned pearl_intensity(const sycl::device&) {
-  const char* const env = std::getenv("MOMINER_PEARL_INTENSITY");
+  const char* const env = std::getenv("MOM_PEARL_INTENSITY");
   if (env && *env) {
     char* end = nullptr;
     const unsigned long parsed = std::strtoul(env, &end, 10);
@@ -317,11 +317,11 @@ static void add_gpu_cn_algo_dev(
       }
       const unsigned score = pow_device_score(pow_device_profile(cn_dev));
       batch_multiplier = score >= 5 ? 8 : (score >= 3 ? 6 : 4);
-#if defined(MOMINER_SYCL_CUDA)
+#if defined(MOM_SYCL_CUDA)
       // NVIDIA (sm_89): the FP recurrence needs far more in-flight hashes than the
       // Intel heuristic to fill the SMs. An L4 intensity sweep plateaus near
       // compute_units*64 (~3.7k hashes); below that throughput scales with batch.
-      // MOMINER_CN_GPU_INTENSITY still overrides this.
+      // MOM_CN_GPU_INTENSITY still overrides this.
       batch_multiplier = 64;
 #endif
     }

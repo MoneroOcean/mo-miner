@@ -45,7 +45,7 @@
 #if _YESPOWER_OPT_C_PASS_ == 1
 /*
  * MoneroOcean's Panthera hash vectors are built with the SSE2 yespower path.
- * mo-miner's native build uses global CPU flags, so keep this file on the same
+ * mom's native build uses global CPU flags, so keep this file on the same
  * consensus path even when the rest of the miner is compiled with AVX enabled.
  */
 #if defined(__AVX__) && !defined(_MSC_VER)

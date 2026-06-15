@@ -7,8 +7,8 @@ const h    = require("./helper.js");
 
 const version_str = require("./package.json").version;
 
-module.exports.agent_str = "mo-miner v" + version_str;
-const releaseCommandNames = new Set(["mo-miner", "mo-miner.exe"]);
+module.exports.agent_str = "mom v" + version_str;
+const releaseCommandNames = new Set(["mom", "mom.exe"]);
 
 module.exports.pool_create = function(url, port, is_tls, login, pass) {
   return {
@@ -63,7 +63,7 @@ module.exports.opt_help = {
       is_nicehash:        [ false, "nicehash nonce mining mode support" ],
       is_keepalive:       [ true, "sends keepalive messages to the pool to avoid disconnect" ],
       use_subscribe:      [ true, "pearl pools: use mining.subscribe+authorize handshake; set false for the login-dialect pearl pool (pearlpool.cloud) and the MoneroOcean donate pool" ],
-      worker:             [ "mo-miner", "pearl subscribe-dialect worker name (mining.authorize)" ],
+      worker:             [ "mom", "pearl subscribe-dialect worker name (mining.authorize)" ],
       login:              [ undefined, "pool login data" ],
       pass:               [ "", "pool password" ],
       _socket:            [ null, "network socket object" ],
@@ -362,8 +362,8 @@ function printSimpleOptHelp(key_help, depth_str, key_path_str) {
 
 function helpCommand() {
   const exe = path.basename(process.argv[1] || "");
-  if (process.env.MOMINER_COMMAND) return process.env.MOMINER_COMMAND;
-  return releaseCommandNames.has(exe) ? "./" + exe : "node mo-miner.js";
+  if (process.env.MOM_COMMAND) return process.env.MOM_COMMAND;
+  return releaseCommandNames.has(exe) ? "./" + exe : "node mom.js";
 }
 
 function finishHelp(err_str) {

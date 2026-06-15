@@ -48,9 +48,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <mutex>
 
 #include <cassert>
-// MOMINER PATCH BEGIN: rx/2 commitment hashing should size its temporary buffer from the actual input, not from XMRig stratum Job constants.
+// MOM PATCH BEGIN: rx/2 commitment hashing should size its temporary buffer from the actual input, not from XMRig stratum Job constants.
 #include <vector>
-// MOMINER PATCH END
+// MOM PATCH END
 
 extern "C" {
 #include "crypto/randomx/panthera/yespower.h"
@@ -76,9 +76,9 @@ static void patchCodeReadDatasetMask(uint8_t* code, const uint32_t size, const u
 #endif
 
 #include "crypto/rx/Profiler.h"
-// MOMINER PATCH BEGIN: mo-miner avoids the full XMRig stratum Job dependency; commitment hashing sizes its buffer from inputSize below instead of Job::kMaxBlobSize.
+// MOM PATCH BEGIN: mom avoids the full XMRig stratum Job dependency; commitment hashing sizes its buffer from inputSize below instead of Job::kMaxBlobSize.
 // #include "base/net/stratum/Job.h"
-// MOMINER PATCH END
+// MOM PATCH END
 
 RandomX_ConfigurationMoneroV2::RandomX_ConfigurationMoneroV2()
 {
@@ -726,12 +726,12 @@ extern "C" {
 	}
 
 	void randomx_calculate_commitment(const void* input, size_t inputSize, const void* hash_in, void* com_out) {
-		// MOMINER PATCH BEGIN: Avoid the full XMRig Job dependency and prevent fixed-size buffer assumptions in mo-miner's reduced build.
+		// MOM PATCH BEGIN: Avoid the full XMRig Job dependency and prevent fixed-size buffer assumptions in mom's reduced build.
 		std::vector<uint8_t> buf(inputSize + RANDOMX_HASH_SIZE);
 		memcpy(buf.data(), input, inputSize);
 		memcpy(buf.data() + inputSize, hash_in, RANDOMX_HASH_SIZE);
 		rx_blake2b_wrapper::run(com_out, RANDOMX_HASH_SIZE, buf.data(), buf.size());
-		// MOMINER PATCH END
+		// MOM PATCH END
 	}
 
 }

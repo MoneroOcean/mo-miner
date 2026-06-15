@@ -1,9 +1,9 @@
 {
-  "name": "mo-miner",
+  "name": "mom",
   "version": "0.7.0",
   "description": "Node.js and SYCL miner built on XMRig hashing sources with MoneroOcean algo switching support",
   "private": true,
-  "main": "mo-miner.js",
+  "main": "mom.js",
   "gypfile": true,
   "homepage": "https://github.com/MoneroOcean/mo-miner#readme",
   "bugs": {

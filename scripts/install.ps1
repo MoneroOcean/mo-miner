@@ -23,7 +23,7 @@ function Test-Administrator {
 
 $tempRoot = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { "/tmp" }
 $profileRoot = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
-$runtimeDir = Join-Path $tempRoot "mo-miner-opencl-runtime"
+$runtimeDir = Join-Path $tempRoot "mom-opencl-runtime"
 $installer = Join-Path $runtimeDir "opencl-runtime.exe"
 $extractRoot = Join-Path $profileRoot "Downloads\Intel"
 $openClRuntimePage = "https://www.intel.com/content/www/us/en/developer/articles/technical/intel-cpu-runtime-for-opencl-applications-with-sycl-support.html"
@@ -173,7 +173,7 @@ $libsDir = Join-Path $scriptDir "libs"
 if (Test-Path (Join-Path $libsDir "ze_loader.dll")) {
   Write-Host "Bundled Level Zero loader is present."
 } else {
-  Write-Host "Bundled Level Zero loader was not found; update the mo-miner release package if GPU Level Zero is unavailable."
+  Write-Host "Bundled Level Zero loader was not found; update the mom release package if GPU Level Zero is unavailable."
 }
 
 Write-Host "Intel OpenCL CPU runtime installation completed."

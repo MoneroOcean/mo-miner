@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 env:
-  MOMINER_PORTABLE_BUILD: "1"
+  MOM_PORTABLE_BUILD: "1"
   WINDOWS_ONEAPI_URL: https://raw.githubusercontent.com/oneapi-src/oneapi-ci/master/.github/workflows/build_all.yml
   WINDOWS_ONEAPI_PACKAGE: intel-oneapi-toolkit
   WINDOWS_DPCPP_COMPONENTS: intel.oneapi.win.cpp-dpcpp-common
@@ -51,7 +51,7 @@ jobs:
         uses: docker/setup-buildx-action@v4
 
       - name: Build native addon in release image
-        run: ./r.sh node -e "console.log('mo-miner build ready')"
+        run: ./r.sh node -e "console.log('mom build ready')"
 
       - name: Package release archive
         run: .github/workflows/scripts/package-linux.sh
@@ -59,14 +59,14 @@ jobs:
       - name: Test release archive
         run: |
           set -euo pipefail
-          archive="$(find . -maxdepth 1 -name 'mo-miner-*-lin.tgz' -print -quit)"
+          archive="$(find . -maxdepth 1 -name 'mom-*-lin.tgz' -print -quit)"
           .github/workflows/scripts/test-release-linux.sh "$archive"
 
       - name: Upload release artifact
         uses: actions/upload-artifact@v7
         with:
-          name: mo-miner-lin
-          path: mo-miner-*-lin.tgz
+          name: mom-lin
+          path: mom-*-lin.tgz
 
   build-linux-nvidia-x64:
     runs-on: ubuntu-24.04
@@ -105,7 +105,7 @@ jobs:
       # The build is CUDA-only (no CPU SYCL device), so GPU algos are verified on real
       # NVIDIA hardware, not in CI.
       - name: Build native addon in NVIDIA (DPC++ CUDA) image
-        run: ./r-nvidia.sh node -e "console.log('mo-miner nvidia build ready')"
+        run: ./r-nvidia.sh node -e "console.log('mom nvidia build ready')"
 
       - name: Package release archive
         run: .github/workflows/scripts/package-linux-nvidia.sh
@@ -116,14 +116,14 @@ jobs:
         # verified on real NVIDIA hardware instead.
         run: |
           set -euo pipefail
-          archive="$(find . -maxdepth 1 -name 'mo-miner-*-lin-nvidia.tgz' -print -quit)"
+          archive="$(find . -maxdepth 1 -name 'mom-*-lin-nvidia.tgz' -print -quit)"
           .github/workflows/scripts/test-release-linux.sh "$archive" cpu
 
       - name: Upload release artifact
         uses: actions/upload-artifact@v7
         with:
-          name: mo-miner-lin-nvidia
-          path: mo-miner-*-lin-nvidia.tgz
+          name: mom-lin-nvidia
+          path: mom-*-lin-nvidia.tgz
 
   build-windows-x64:
     runs-on: windows-2022
@@ -175,14 +175,14 @@ jobs:
       - name: Test release archive
         shell: powershell
         run: |
-          $archive = Get-ChildItem . -Filter "mo-miner-*-win.zip" | Select-Object -First 1
+          $archive = Get-ChildItem . -Filter "mom-*-win.zip" | Select-Object -First 1
           powershell -NoProfile -ExecutionPolicy Bypass -File .github\workflows\scripts\test-release-windows.ps1 -Archive $archive.FullName
 
       - name: Upload release artifact
         uses: actions/upload-artifact@v7
         with:
-          name: mo-miner-win
-          path: mo-miner-*-win.zip
+          name: mom-win
+          path: mom-*-win.zip
 
   publish:
     if: startsWith(github.ref, 'refs/tags/')
@@ -211,7 +211,7 @@ jobs:
             gh release edit "${GITHUB_REF_NAME}" \
               --repo "${GITHUB_REPOSITORY}" \
               --title "${GITHUB_REF_NAME}" \
-              --notes "mo-miner ${GITHUB_REF_NAME}"
+              --notes "mom ${GITHUB_REF_NAME}"
             gh release upload "${GITHUB_REF_NAME}" "${files[@]}" \
               --repo "${GITHUB_REPOSITORY}" \
               --clobber
@@ -219,5 +219,5 @@ jobs:
             gh release create "${GITHUB_REF_NAME}" "${files[@]}" \
               --repo "${GITHUB_REPOSITORY}" \
               --title "${GITHUB_REF_NAME}" \
-              --notes "mo-miner ${GITHUB_REF_NAME}"
+              --notes "mom ${GITHUB_REF_NAME}"
           fi

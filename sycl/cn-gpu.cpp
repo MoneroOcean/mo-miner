@@ -62,8 +62,8 @@ alignas(64) const constexpr uint32_t AES[256] = {
 
 // NVIDIA (sm_89) has a native 64-bit integer datapath, so the plain uint64 Keccak below is fastest;
 // the 32-bit-pair variant (#else) exists for Xe2 (Intel Arc), which lacks a native 64-bit ALU. Define
-// MOMINER_CNGPU_K32 to force the 32-bit-pair path on CUDA for A/B measurement (it loses on NVIDIA).
-#if defined(MOMINER_SYCL_CUDA) && !defined(MOMINER_CNGPU_K32)
+// MOM_CNGPU_K32 to force the 32-bit-pair path on CUDA for A/B measurement (it loses on NVIDIA).
+#if defined(MOM_SYCL_CUDA) && !defined(MOM_CNGPU_K32)
 void keccak(uint64_t* const s) { // Hot device-side Keccak; keep explicit steps for backend codegen.
   static const uint32_t rotc[24] = {
     1,  3,  6,  10, 15, 21, 28, 36, 45, 55, 2,  14,
@@ -290,7 +290,7 @@ inline int32_t* lpad_ptr(const unsigned idx, const unsigned n, int32_t* const lp
 // recurrence into a wrong hash. Force the PTX correctly-rounded div.rn.f32 per component on that
 // backend; everywhere else use the plain operator/ (unchanged Intel codegen).
 inline sycl::float4 mo_div_rn(const sycl::float4 a, const sycl::float4 b) {
-#if defined(MOMINER_SYCL_CUDA) && defined(__SYCL_DEVICE_ONLY__)
+#if defined(MOM_SYCL_CUDA) && defined(__SYCL_DEVICE_ONLY__)
   sycl::float4 r;
   #pragma unroll
   for (int k = 0; k < 4; ++k) {
@@ -470,7 +470,7 @@ inline sycl::async_handler cn_gpu_exception_handler() {
 struct CnGpuState { // Per-device queue and persistent allocations; avoids buffer churn in the hot path.
   sycl::device device;
   sycl::queue queue;
-  std::unique_ptr<MOMINER_BUNDLE_T> bundle;
+  std::unique_ptr<MOM_BUNDLE_T> bundle;
   bool shared_scratch; // CPU or backends without device allocation need shared scratch/IO.
   bool shared_io;
   uint8_t* inputs = nullptr, *outputs = nullptr;
@@ -489,15 +489,15 @@ struct CnGpuState { // Per-device queue and persistent allocations; avoids buffe
       throw std::string("cn/gpu SYCL device does not support required allocations");
     }
 
-#if !defined(MOMINER_SYCL_CUDA)
+#if !defined(MOM_SYCL_CUDA)
     // The OpenCL "-cl-*" build options are an OpenCL/Level-Zero JIT mechanism for the Intel build.
     // On the DPC++ CUDA backend, setting SYCL_PROGRAM_COMPILE_OPTIONS to them makes the AOT nvptx
     // module fail at runtime with UR_RESULT_ERROR_UNKNOWN, so skip it there; CUDA FP determinism
     // comes instead from -ffp-contract=off in the build flags (binding.gyp).
     set_sycl_env("SYCL_PROGRAM_COMPILE_OPTIONS", cn_gpu_fp_compile_options(device));
 #endif
-    bundle = std::make_unique<MOMINER_BUNDLE_T>(
-      MOMINER_GET_EXEC_BUNDLE(queue.get_context())
+    bundle = std::make_unique<MOM_BUNDLE_T>(
+      MOM_GET_EXEC_BUNDLE(queue.get_context())
     );
   }
 
@@ -575,7 +575,7 @@ void cn_gpu(
 
   // Initial Keccak pads each input into its 200-byte state.
   q.submit([&](sycl::handler& h) {
-    MOMINER_USE_BUNDLE(h, kb);
+    MOM_USE_BUNDLE(h, kb);
     h.parallel_for(sycl::nd_range(sycl::range((batch + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE * WORKGROUP_SIZE),
                                  sycl::range(WORKGROUP_SIZE)),
                    [=](sycl::nd_item<1> nd) {
@@ -595,7 +595,7 @@ void cn_gpu(
   // Expand Keccak state into each 2 MiB scratchpad.
   q.submit([&](sycl::handler& h) {
     const unsigned THREADS2 = CN_MEMORY8 / 64;
-    MOMINER_USE_BUNDLE(h, kb);
+    MOM_USE_BUNDLE(h, kb);
     const unsigned total_threads = batch * THREADS2;
     const unsigned wg_size = std::min(WORKGROUP_SIZE, THREADS2);
     h.parallel_for(sycl::nd_range(sycl::range((total_threads + wg_size - 1) / wg_size * wg_size),
@@ -621,7 +621,7 @@ void cn_gpu(
     const auto vi0 = sycl::local_accessor<sycl::int4, 1>(sycl::range(2 * WORKGROUP_SIZE), h);
     const auto vi1 = sycl::local_accessor<sycl::int4, 1>(sycl::range(2 * WORKGROUP_SIZE), h);
     const auto vf0 = sycl::local_accessor<sycl::float4, 1>(sycl::range(2 * WORKGROUP_SIZE), h);
-    MOMINER_USE_BUNDLE(h, kb);
+    MOM_USE_BUNDLE(h, kb);
     h.parallel_for(sycl::nd_range(sycl::range(batch_eff * WORKGROUP_SIZE),
                                   sycl::range(2 * WORKGROUP_SIZE)),
                    [=](sycl::nd_item<1> nd) {
@@ -699,9 +699,9 @@ void cn_gpu(
       const auto aes1 = sycl::local_accessor<uint32_t, 1>(sycl::range(256), h);
       const auto aes2 = sycl::local_accessor<uint32_t, 1>(sycl::range(256), h);
       const auto aes3 = sycl::local_accessor<uint32_t, 1>(sycl::range(256), h);
-      MOMINER_USE_BUNDLE(h, kb);
+      MOM_USE_BUNDLE(h, kb);
       h.parallel_for(sycl::nd_range(sycl::range(batch, 8), sycl::range(THREADS2, 8)),
-                     [=](sycl::nd_item<2> nd) MOMINER_REQD_SG_16 {
+                     [=](sycl::nd_item<2> nd) MOM_REQD_SG_16 {
         const unsigned l0 = nd.get_local_id(0), l1 = nd.get_local_id(1);
         const unsigned table_init_threads = nd.get_local_range(0) * nd.get_local_range(1);
         for (unsigned i = l0 * nd.get_local_range(1) + l1; i < 256; i += table_init_threads) {
@@ -764,7 +764,7 @@ void cn_gpu(
       const auto aes3 = sycl::local_accessor<uint32_t, 1>(sycl::range(256), h);
       const auto x1 = sycl::local_accessor<sycl::uint4, 2>(sycl::range(THREADS2, 8), h);
       const auto x2 = sycl::local_accessor<sycl::uint4, 2>(sycl::range(THREADS2, 8), h);
-      MOMINER_USE_BUNDLE(h, kb);
+      MOM_USE_BUNDLE(h, kb);
       h.parallel_for(sycl::nd_range(sycl::range(batch, 8), sycl::range(THREADS2, 8)),
                      [=](sycl::nd_item<2> nd) {
         const unsigned l0 = nd.get_local_id(0), l1 = nd.get_local_id(1);
@@ -817,7 +817,7 @@ void cn_gpu(
   }
 
   sycl::event final_event = q.submit([&](sycl::handler& h) { // Final Keccak stays on device; the host scratchpad argument is unused.
-    MOMINER_USE_BUNDLE(h, kb);
+    MOM_USE_BUNDLE(h, kb);
     h.parallel_for(sycl::nd_range(sycl::range((batch + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE * WORKGROUP_SIZE),
                                  sycl::range(WORKGROUP_SIZE)),
                    [=](sycl::nd_item<1> nd) {

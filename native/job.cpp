@@ -556,7 +556,7 @@ void Core::get_algo_params(const MessageValues& v) {
   const auto& gpu_etchash_algo_keys = std::views::keys(gpu_etchash_algo2fn);
   const auto& gpu_autolykos2_algo_keys = std::views::keys(gpu_autolykos2_algo2fn);
   const auto& gpu_pearl_algo_keys = std::views::keys(gpu_pearl_algo2fn);
-  const bool skip_sycl_algos = std::getenv("MOMINER_SKIP_SYCL_ALGO_PARAMS");
+  const bool skip_sycl_algos = std::getenv("MOM_SKIP_SYCL_ALGO_PARAMS");
   const auto sycl_algo_set = [skip_sycl_algos](const auto& keys) {
     return skip_sycl_algos ? std::set<std::string>{} : std::set<std::string>(keys.begin(), keys.end());
   };

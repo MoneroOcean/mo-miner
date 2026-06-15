@@ -94,7 +94,7 @@ Invoke-MominerNative { icx --version } "icx"
 
 Invoke-MominerNative { node $nodeGyp configure --msvs_version=2022 } "node-gyp configure"
 $msbuild = (Get-Command MSBuild.exe -ErrorAction Stop).Source
-$msbuildOutput = & $msbuild build\mo-miner.vcxproj /clp:Verbosity=minimal /nologo /nodeReuse:false /p:Configuration=Release /p:Platform=x64 2>&1
+$msbuildOutput = & $msbuild build\mom.vcxproj /clp:Verbosity=minimal /nologo /nodeReuse:false /p:Configuration=Release /p:Platform=x64 2>&1
 $msbuildOutput | ForEach-Object { Write-Host $_ }
 if ($LASTEXITCODE -ne 0) {
   $tail = ($msbuildOutput | Select-Object -Last 80) -join "`n"
@@ -107,6 +107,6 @@ Get-ChildItem build -Recurse -Include *.node,*.dll |
   Where-Object { $_.FullName -ne (Join-Path $releasePath $_.Name) } |
   Copy-Item -Destination build\Release -Force
 
-if (-not (Test-Path build\Release\mo-miner.node)) {
-  throw "build\Release\mo-miner.node was not created."
+if (-not (Test-Path build\Release\mom.node)) {
+  throw "build\Release\mom.node was not created."
 }

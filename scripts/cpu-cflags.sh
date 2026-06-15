@@ -21,9 +21,9 @@ if "$SCRIPT_DIR/cpu-feature.sh" arm; then
   exit 0
 fi
 
-case "${MOMINER_CPU_MARCH:-}" in
+case "${MOM_CPU_MARCH:-}" in
   "")
-    if [ "${MOMINER_PORTABLE_BUILD:-}" = "1" ]; then
+    if [ "${MOM_PORTABLE_BUILD:-}" = "1" ]; then
       echo "-march=x86-64 -mtune=generic -maes$(intel_ax_flags)"
     else
       echo "-march=native"
@@ -33,10 +33,10 @@ case "${MOMINER_CPU_MARCH:-}" in
     echo "-march=native"
     ;;
   x86-64|x86-64-v2|x86-64-v3|x86-64-v4|rocketlake)
-    echo "-march=${MOMINER_CPU_MARCH} -mtune=generic -maes"
+    echo "-march=${MOM_CPU_MARCH} -mtune=generic -maes"
     ;;
   *)
-    echo "Unsupported MOMINER_CPU_MARCH=${MOMINER_CPU_MARCH}" >&2
+    echo "Unsupported MOM_CPU_MARCH=${MOM_CPU_MARCH}" >&2
     exit 1
     ;;
 esac

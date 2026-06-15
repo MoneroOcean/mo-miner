@@ -8,8 +8,8 @@ const { spawn } = childProcess;
 
 const repoRoot = path.join(__dirname, "..", "..");
 const releaseExecutableNames = process.platform === "win32"
-  ? ["mo-miner.exe", "mo-miner.cmd"]
-  : ["mo-miner"];
+  ? ["mom.exe", "mom.cmd"]
+  : ["mom"];
 const releaseExecutable = releaseExecutableNames
   .map((name) => path.join(repoRoot, name))
   .find((filePath) => fs.existsSync(filePath)) || path.join(repoRoot, releaseExecutableNames[0]);
@@ -100,14 +100,14 @@ function resolveReleaseCommand(args) {
   if (!/\.cmd$/i.test(releaseExecutable)) return [releaseExecutable, ...args.slice(1)];
 
   const packageDir = path.dirname(releaseExecutable);
-  const nodeExe = path.join(packageDir, "mo-miner-node.exe");
-  const bundle = path.join(packageDir, "mo-miner.bundle.cjs");
+  const nodeExe = path.join(packageDir, "mom-node.exe");
+  const bundle = path.join(packageDir, "mom.bundle.cjs");
   if (fs.existsSync(nodeExe) && fs.existsSync(bundle)) return [nodeExe, bundle, ...args.slice(1)];
   return wrapWindowsCmd([releaseExecutable, ...args.slice(1)]);
 }
 
 function resolveMinerCommand(args) {
-  if (hasReleaseExecutable && args[0] === "mo-miner.js") return resolveReleaseCommand(args);
+  if (hasReleaseExecutable && args[0] === "mom.js") return resolveReleaseCommand(args);
   return [process.execPath, ...args];
 }
 
@@ -130,7 +130,7 @@ function spawnAndExit(command, args, options = {}) {
 }
 
 function isInsideRsh() {
-  return process.env.MOMINER_R_SH === "1" || fs.existsSync("/.dockerenv");
+  return process.env.MOM_R_SH === "1" || fs.existsSync("/.dockerenv");
 }
 
 function shouldUseDirectNode() {
@@ -148,7 +148,7 @@ function resolveNodeRunner(testArgs, env = {}) {
 
   if (fs.existsSync(path.join(repoRoot, "r.sh"))) return resolveRshRunner(testArgs, env);
 
-  return { command: "./docker-mo-miner.sh", args: ["node", ...testArgs], env };
+  return { command: "./docker-mom.sh", args: ["node", ...testArgs], env };
 }
 
 function isMissingGpuOutput(result) {
@@ -304,14 +304,14 @@ async function getAutoAlgoParamsReport() {
           .trim()
           .split(/\r?\n/)
           .reverse()
-          .find((entry) => entry.startsWith("MOMINER_ALGO_PARAMS "));
+          .find((entry) => entry.startsWith("MOM_ALGO_PARAMS "));
 
         if (!line) {
           throw new Error(formatFailure("Algo params output did not contain JSON marker", args, result));
         }
 
         return {
-          params: JSON.parse(line.slice("MOMINER_ALGO_PARAMS ".length)),
+          params: JSON.parse(line.slice("MOM_ALGO_PARAMS ".length)),
           stdout: result.stdout,
           stderr: result.stderr,
         };
@@ -382,11 +382,11 @@ function missingSyclCpuMessage(reportMessage) {
 }
 
 function assumedSyclCpuDevice() {
-  if (!process.env.MOMINER_ASSUME_SYCL_CPU) return null;
+  if (!process.env.MOM_ASSUME_SYCL_CPU) return null;
   return {
     skipped: false,
-    dev: process.env.MOMINER_ASSUME_SYCL_CPU,
-    description: "configured by MOMINER_ASSUME_SYCL_CPU",
+    dev: process.env.MOM_ASSUME_SYCL_CPU,
+    description: "configured by MOM_ASSUME_SYCL_CPU",
   };
 }
 
@@ -413,11 +413,11 @@ function expectedHash(definition) {
 }
 
 async function maybeDebugRerun(definition, args, result) {
-  if (process.platform !== "win32" || process.env.MOMINER_DEBUG_STARTUP) return result;
+  if (process.platform !== "win32" || process.env.MOM_DEBUG_STARTUP) return result;
 
   const debugResult = await runNode(args, {
     timeoutMs: definition.timeoutMs,
-    env: { MOMINER_DEBUG_STARTUP: "1" },
+    env: { MOM_DEBUG_STARTUP: "1" },
   });
   return {
     ...result,
@@ -453,7 +453,7 @@ function minerReportedPass(result, output) {
 async function runMinerTest(definition) {
   const job = withTestDevice(definition);
   const args = [
-    "mo-miner.js",
+    "mom.js",
     "test",
     job.algo,
     expectedHash(definition),
@@ -479,7 +479,7 @@ async function runMinerBench(definition) {
   if (resolved.skipped) return resolved;
 
   const job = resolved.job;
-  const args = ["mo-miner.js", "bench", job.algo, "--job", JSON.stringify(job)];
+  const args = ["mom.js", "bench", job.algo, "--job", JSON.stringify(job)];
   const sampleCount = benchSampleCount(definition);
   const timeoutMs = definition.timeoutMs || 150 * 1000;
   const unitPattern = Object.keys(hashrateUnitMultipliers).map(escapeRegExp).join("|");
@@ -527,7 +527,7 @@ async function runMinerBench(definition) {
 }
 
 function benchSampleCount(definition) {
-  const samples = Number.parseInt(process.env.MOMINER_PERF_SAMPLES || definition.benchSamples || 1, 10);
+  const samples = Number.parseInt(process.env.MOM_PERF_SAMPLES || definition.benchSamples || 1, 10);
   return Number.isFinite(samples) && samples > 0 ? samples : 1;
 }
 

@@ -26,8 +26,8 @@ void (*rx_blake2b_compress)(blake2b_state* S, const uint8_t * block) = rx_blake2
 int (*rx_blake2b)(void* out, size_t outlen, const void* in, size_t inlen) = rx_blake2b_default;
 
 static void debug_startup(const char* message) {
-  if (!std::getenv("MOMINER_DEBUG_STARTUP")) return;
-  fprintf(stderr, "MOMINER_DEBUG_STARTUP %s\n", message);
+  if (!std::getenv("MOM_DEBUG_STARTUP")) return;
+  fprintf(stderr, "MOM_DEBUG_STARTUP %s\n", message);
   fflush(stderr);
 }
 
@@ -425,7 +425,7 @@ bool Core::process_message(const std::string& type, const MessageValues& v) {
   return true; // continue processing messages
 }
 
-// MOMINER_LOOP_STATS=1 prints, every ~10s on stderr, how the compute loop wall time splits
+// MOM_LOOP_STATS=1 prints, every ~10s on stderr, how the compute loop wall time splits
 // between GPU/CPU dispatch calls and the host work around them (plus one-off stall lines).
 struct LoopStats {
   uint64_t window_start = 0, dispatch = 0, msg = 0, post = 0, iters = 0, jobs = 0,
@@ -454,7 +454,7 @@ static void loop_stats_report(LoopStats& ls, const uint64_t now) {
 
 void Core::Execute() {
   debug_startup("Core::Execute entered");
-  const bool loop_stats = std::getenv("MOMINER_LOOP_STATS") != nullptr;
+  const bool loop_stats = std::getenv("MOM_LOOP_STATS") != nullptr;
   LoopStats ls;
   bool runtime_initialized = false;
   auto init_runtime = [&]() {

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runtime check for the Linux/NVIDIA mo-miner release. Unlike the Intel install.sh
+# Runtime check for the Linux/NVIDIA mom release. Unlike the Intel install.sh
 # (which fetches the Intel GPU compute runtime), the NVIDIA build bundles its own
 # DPC++ SYCL runtime (libsycl + the CUDA Unified Runtime adapter + the kawpow
 # kernel-compiler JIT) in libs/ and only needs the system NVIDIA driver
@@ -15,7 +15,7 @@ found_libcuda() {
   return 1
 }
 
-echo "mo-miner (Linux/NVIDIA) runtime check"
+echo "mom (Linux/NVIDIA) runtime check"
 
 if found_libcuda || have nvidia-smi; then
   echo "  NVIDIA driver: detected (libcuda.so.1 present)."

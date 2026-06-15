@@ -2,17 +2,17 @@
   "variables": {
     # SYCL implementation selector. Default "dpcpp" (Intel oneAPI DPC++) keeps the
     # existing Intel Linux and Windows builds byte-for-byte unchanged. The NVIDIA
-    # build runs `node-gyp configure -- -Dmominer_sycl_impl=dpcpp-cuda` to compile
+    # build runs `node-gyp configure -- -Dmom_sycl_impl=dpcpp-cuda` to compile
     # the same SYCL sources with the DPC++ CUDA backend.
-    "mominer_sycl_impl%": "dpcpp",
-    # CUDA AOT target arch(es) for mominer_sycl_impl=dpcpp-cuda. Default is NVIDIA-wide
-    # (Ampere/Ada/Hopper); override e.g. -Dmominer_cuda_arch=nvidia_gpu_sm_89 for a faster
+    "mom_sycl_impl%": "dpcpp",
+    # CUDA AOT target arch(es) for mom_sycl_impl=dpcpp-cuda. Default is NVIDIA-wide
+    # (Ampere/Ada/Hopper); override e.g. -Dmom_cuda_arch=nvidia_gpu_sm_89 for a faster
     # single-arch build. (Blackwell sm_120 needs a CUDA 12.8+ toolkit.)
-    "mominer_cuda_arch%": "nvidia_gpu_sm_80,nvidia_gpu_sm_89,nvidia_gpu_sm_90"
+    "mom_cuda_arch%": "nvidia_gpu_sm_80,nvidia_gpu_sm_89,nvidia_gpu_sm_90"
   },
   "targets": [
     {
-      "target_name": "mo-miner",
+      "target_name": "mom",
       "sources": [
         "native/core.cpp",
         "native/xmrig-compat.cpp",
@@ -195,23 +195,23 @@
           "cflags_cc+": [ "-std=c++20" ],
           "ldflags+": [ "<!@(./scripts/cpu-optflags.sh ldflags)" ]
         } ],
-        [ "OS!='win' and mominer_sycl_impl=='dpcpp-cuda'", {
+        [ "OS!='win' and mom_sycl_impl=='dpcpp-cuda'", {
           "ldflags+": [
             "-fsycl",
-            "-fsycl-targets=<(mominer_cuda_arch)",
+            "-fsycl-targets=<(mom_cuda_arch)",
             "-Wl,--disable-new-dtags",
             "-Wl,-rpath,'$$ORIGIN'",
             "-Wl,-rpath,'$$ORIGIN/lib'",
-            "-Wl,-rpath,'$$ORIGIN/mo-miner'"
+            "-Wl,-rpath,'$$ORIGIN/mom'"
           ]
         } ],
-        [ "OS!='win' and mominer_sycl_impl!='dpcpp-cuda'", {
+        [ "OS!='win' and mom_sycl_impl!='dpcpp-cuda'", {
           "ldflags+": [
             "-fsycl",
             "-Wl,--disable-new-dtags",
             "-Wl,-rpath,'$$ORIGIN'",
             "-Wl,-rpath,'$$ORIGIN/lib'",
-            "-Wl,-rpath,'$$ORIGIN/mo-miner'"
+            "-Wl,-rpath,'$$ORIGIN/mom'"
           ]
         } ],
         [ "OS=='win'", {
@@ -300,7 +300,7 @@
             "xmrig/base/crypto/sha3.cpp"
           ],
           "defines": [
-            "MOMINER_SYCL_BUILD"
+            "MOM_SYCL_BUILD"
           ],
           "msvs_settings": {
             "VCCLCompilerTool": {
@@ -317,19 +317,19 @@
           }
         }, {
           "conditions": [
-            [ "mominer_sycl_impl=='dpcpp-cuda'", {
+            [ "mom_sycl_impl=='dpcpp-cuda'", {
               # NVIDIA via the intel/llvm DPC++ CUDA backend (oneAPI 2026.0 / Codeplay CUDA plugin).
-              # Same DPC++ as the Intel build; MOMINER_SYCL_CUDA marks the few NVIDIA-specific spots
+              # Same DPC++ as the Intel build; MOM_SYCL_CUDA marks the few NVIDIA-specific spots
               # (native 32-wide warps, Lemire/div.rn fixes, pearl mma.sync tensor cores, kawpow source
               # JIT). -ffp-contract=off keeps the cn/gpu FP recurrence deterministic; -fsycl-embed-ir for
               # the kawpow runtime kernel-compiler. Multi-arch AOT, NVIDIA-wide (Ampere/Ada/Hopper). No
               # ESIMD (that is Intel-only), so pearl uses its mma.sync path here.
               "cflags_cc!": [ "-std=gnu++20" ],
               "cflags+": [
-                "-std=c++20 -O3 -ffp-contract=off -fsycl -fsycl-embed-ir -fsycl-targets=<(mominer_cuda_arch) -DNDEBUG -DMOMINER_SYCL_CUDA"
+                "-std=c++20 -O3 -ffp-contract=off -fsycl -fsycl-embed-ir -fsycl-targets=<(mom_cuda_arch) -DNDEBUG -DMOM_SYCL_CUDA"
               ]
             } ],
-            [ "mominer_sycl_impl!='dpcpp-cuda'", {
+            [ "mom_sycl_impl!='dpcpp-cuda'", {
               "cflags+": [
                 "-std=c++20 -O3 -fsycl -DNDEBUG -DPEARL_ESIMD"
               ]

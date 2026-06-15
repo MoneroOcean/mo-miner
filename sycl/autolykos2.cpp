@@ -18,7 +18,7 @@
 #include "lib-internal.h"
 #include "../native/consts.h"
 
-namespace mominer_autolykos2 {
+namespace mom_autolykos2 {
 
 constexpr uint32_t CONST_MES_SIZE       = 8192;
 constexpr uint32_t K_LEN                = 32;
@@ -69,13 +69,13 @@ inline uint32_t round_up(const uint32_t value, const uint32_t step) {
 
 // Fast unsigned remainder by a runtime divisor (Lemire's "faster remainder"). The K_LEN=32 dataset
 // reads do `idx % n_len` per nonce and n_len is a per-height runtime value. On the DPC++ CUDA backend
-// (MOMINER_SYCL_CUDA) NVIDIA has no integer-divide unit, so `%` emulates as a slow multi-op sequence:
+// (MOM_SYCL_CUDA) NVIDIA has no integer-divide unit, so `%` emulates as a slow multi-op sequence:
 // M = floor(2^64 / n_len) + 1 is precomputed once on the host (mo_modM), then
 // x % n_len == hi64( (M*x mod 2^64) * n_len ). Bit-exact for x, n_len in [1, 2^32). On Intel (which
 // has a divide unit) keep the plain modulo.
 inline uint64_t mo_modM(const uint32_t d) { return d ? (0xFFFFFFFFFFFFFFFFULL / d) + 1ULL : 0ULL; }
 inline uint32_t mo_mod_u32(const uint32_t x, const uint32_t d, const uint64_t M) {
-#if defined(MOMINER_SYCL_CUDA)
+#if defined(MOM_SYCL_CUDA)
   return static_cast<uint32_t>(sycl::mul_hi(M * static_cast<uint64_t>(x), static_cast<uint64_t>(d)));
 #else
   (void)M; return x % d;
@@ -500,7 +500,7 @@ static void format_duration_ms(char* out, size_t out_size, uint64_t ms) {
 struct AutolykosState {
   sycl::device device;
   sycl::queue queue;
-  std::unique_ptr<MOMINER_BUNDLE_T> bundle;
+  std::unique_ptr<MOM_BUNDLE_T> bundle;
   uint32_t* table = nullptr;
   uint32_t* bhashes = nullptr;
   AutolykosResult* result = nullptr;
@@ -532,15 +532,15 @@ struct AutolykosState {
     }
 
     set_sycl_env("SYCL_PROGRAM_COMPILE_OPTIONS", autolykos_compile_options(device));
-    bundle = std::make_unique<MOMINER_BUNDLE_T>(
-      MOMINER_GET_EXEC_BUNDLE(queue.get_context())
+    bundle = std::make_unique<MOM_BUNDLE_T>(
+      MOM_GET_EXEC_BUNDLE(queue.get_context())
     );
   }
 
   ~AutolykosState() { release(); }
 
   static unsigned autolykos_workgroup(const sycl::device& dev) {
-#if defined(MOMINER_SYCL_CUDA)
+#if defined(MOM_SYCL_CUDA)
     // NVIDIA: 128 gives the best occupancy for the unrolled per-thread lookup
     // (measured ~68 vs ~64 MH/s at 64 on an L4); the cooperative local==64 path
     // is intentionally not used here.
@@ -548,7 +548,7 @@ struct AutolykosState {
 #else
     const unsigned fallback = sycl_default_workgroup(dev, {32, 64, 128, 256}, 64);
 #endif
-    const char* const value = std::getenv("MOMINER_AUTOLYKOS2_WORKGROUP");
+    const char* const value = std::getenv("MOM_AUTOLYKOS2_WORKGROUP");
     if (!value || !*value) return fallback;
 
     char* end = nullptr;
@@ -568,7 +568,7 @@ struct AutolykosState {
 
   static unsigned autolykos_prehash_workgroup(const sycl::device& dev) {
     const unsigned fallback = sycl_default_workgroup(dev, {32, 64, 128, 256}, 64);
-    const char* const value = std::getenv("MOMINER_AUTOLYKOS2_PREHASH_WORKGROUP");
+    const char* const value = std::getenv("MOM_AUTOLYKOS2_PREHASH_WORKGROUP");
     if (!value || !*value) return fallback;
 
     char* end = nullptr;
@@ -587,11 +587,11 @@ struct AutolykosState {
   }
 
   static const char* autolykos_compile_options(const sycl::device& dev) {
-    const char* const value = std::getenv("MOMINER_AUTOLYKOS2_COMPILE_OPTIONS");
+    const char* const value = std::getenv("MOM_AUTOLYKOS2_COMPILE_OPTIONS");
     if (value) return value;
     // SYCL_PROGRAM_COMPILE_OPTIONS is process-global; pearl's ESIMD (VC-backend) image rejects "-O3",
     // and it's a measured no-op for this kernel anyway (36.44 vs 36.41 MH/s on B580). Override via
-    // MOMINER_AUTOLYKOS2_COMPILE_OPTIONS if needed.
+    // MOM_AUTOLYKOS2_COMPILE_OPTIONS if needed.
     (void)dev;
     return "";
   }
@@ -601,7 +601,7 @@ struct AutolykosState {
   // crashes in June 2026. ~3 s chunks cost nothing on the in-order queue. 0 = single kernel.
   static uint32_t autolykos_table_chunk_rows() {
     constexpr uint32_t fallback = 32U * 1024U * 1024U;
-    const char* const value = std::getenv("MOMINER_AUTOLYKOS2_TABLE_CHUNK");
+    const char* const value = std::getenv("MOM_AUTOLYKOS2_TABLE_CHUNK");
     if (!value || !*value) return fallback;
 
     char* end = nullptr;
@@ -614,7 +614,7 @@ struct AutolykosState {
   // 0 disables the post-build row check, 1 (default) cross-checks a strided sample of rows
   // against autolykos_prehash_digest_dev, 2 recomputes every row (slow, for debugging).
   static unsigned autolykos_table_verify_mode() {
-    const char* const value = std::getenv("MOMINER_AUTOLYKOS2_VERIFY_TABLE");
+    const char* const value = std::getenv("MOM_AUTOLYKOS2_VERIFY_TABLE");
     if (!value || !*value) return 1;
 
     char* end = nullptr;
@@ -658,7 +658,7 @@ struct AutolykosState {
 
   bool should_use_table(const bool is_test) const {
     if (is_test || device.is_cpu()) return false;
-    const char* const value = std::getenv("MOMINER_AUTOLYKOS2_TABLE");
+    const char* const value = std::getenv("MOM_AUTOLYKOS2_TABLE");
     return !(value && value[0] == '0');
   }
 
@@ -682,7 +682,7 @@ struct AutolykosState {
     const uint32_t local = prehash_workgroup;
 
     sycl_wait_and_throw(queue.submit([&](sycl::handler& h) {
-      MOMINER_USE_BUNDLE(h, *bundle);
+      MOM_USE_BUNDLE(h, *bundle);
       h.parallel_for(
         sycl::nd_range<1>(sycl::range<1>(round_up(count, local)), sycl::range<1>(local)),
         [=](sycl::nd_item<1> item) {
@@ -756,7 +756,7 @@ struct AutolykosState {
       const uint32_t current_rows = chunk_rows ? std::min(chunk_rows, n_len - start_row) : n_len;
       const uint32_t chunk_start = start_row;
       build_event = q.submit([&](sycl::handler& h) {
-        MOMINER_USE_BUNDLE(h, kb);
+        MOM_USE_BUNDLE(h, kb);
         h.parallel_for(
           sycl::nd_range<1>(sycl::range<1>(round_up(current_rows, local)), sycl::range<1>(local)),
           [=](sycl::nd_item<1> item) {
@@ -774,7 +774,7 @@ struct AutolykosState {
 
     table_height = height;
     table_n = n_len;
-    if (should_log || std::getenv("MOMINER_LOOP_STATS")) {
+    if (should_log || std::getenv("MOM_LOOP_STATS")) {
       char elapsed[32];
       format_duration_ms(elapsed, sizeof(elapsed), now_ms() - start_ms);
       std::fprintf(stderr, "Autolykos2 table for height %u N %u calculated (%s)\n", height, n_len, elapsed);
@@ -792,9 +792,9 @@ static AutolykosState& autolykos_state(const std::string& dev_str) {
   return *state;
 }
 
-} // namespace mominer_autolykos2
+} // namespace mom_autolykos2
 
-using namespace mominer_autolykos2;
+using namespace mom_autolykos2;
 
 int autolykos2(
   const unsigned, const uint32_t height, const uint8_t* const input, const unsigned input_size,
@@ -831,7 +831,7 @@ int autolykos2(
     uint32_t* const d_bhashes = state.bhashes;
 
     q.submit([&](sycl::handler& h) {
-      MOMINER_USE_BUNDLE(h, kb);
+      MOM_USE_BUNDLE(h, kb);
       h.parallel_for(
         sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(local_size)),
         [=](sycl::nd_item<1> item) {
@@ -876,7 +876,7 @@ int autolykos2(
     });
 
     sycl_wait_and_throw(q.submit([&](sycl::handler& h) {
-      MOMINER_USE_BUNDLE(h, kb);
+      MOM_USE_BUNDLE(h, kb);
       h.parallel_for(
         sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(local_size)),
         [=](sycl::nd_item<1> item) {
@@ -937,7 +937,7 @@ int autolykos2(
   }
 
   sycl_wait_and_throw(q.submit([&](sycl::handler& h) {
-    MOMINER_USE_BUNDLE(h, kb);
+    MOM_USE_BUNDLE(h, kb);
     sycl::local_accessor<uint32_t, 1> shared_index(sycl::range<1>(64), h);
     sycl::local_accessor<uint32_t, 1> shared_data(sycl::range<1>(512), h);
     h.parallel_for(

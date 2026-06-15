@@ -147,8 +147,8 @@ function loadConfigFile(config_file) {
 function applyPearlShapeEnv() {
   const pearl = global.opt.algo_params && global.opt.algo_params.pearl;
   if (!pearl) return;
-  if (pearl.k    && !process.env.MOMINER_PEARL_K)    process.env.MOMINER_PEARL_K    = String(pearl.k);
-  if (pearl.rank && !process.env.MOMINER_PEARL_RANK) process.env.MOMINER_PEARL_RANK = String(pearl.rank);
+  if (pearl.k    && !process.env.MOM_PEARL_K)    process.env.MOM_PEARL_K    = String(pearl.k);
+  if (pearl.rank && !process.env.MOM_PEARL_RANK) process.env.MOM_PEARL_RANK = String(pearl.rank);
 }
 
 function parsePoolUri(pool_uri) {
@@ -556,7 +556,7 @@ function workerRuntimeEnv(algo) {
   return {
     SYCL_UR_USE_LEVEL_ZERO_V2: "0",
     SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS: "0",
-    MOMINER_C29_SEED_BLOCKS: process.env.MOMINER_C29_SEED_BLOCKS || "16",
+    MOM_C29_SEED_BLOCKS: process.env.MOM_C29_SEED_BLOCKS || "16",
   };
 }
 
@@ -876,7 +876,7 @@ switch (directive) {
   case "algo_params":
     createComputeCore();
     compute_core.from.on("algo_params", function(v) {
-      fs.writeSync(1, "MOMINER_ALGO_PARAMS " + JSON.stringify(v) + "\n");
+      fs.writeSync(1, "MOM_ALGO_PARAMS " + JSON.stringify(v) + "\n");
       exit(0);
     });
     compute_core.from.on("error", function(v) {

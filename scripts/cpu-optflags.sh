@@ -12,7 +12,7 @@ esac
 
 flags="-O3 -ffast-math -funroll-loops -fmerge-all-constants"
 
-case "${MOMINER_LTO:-auto}" in
+case "${MOM_LTO:-auto}" in
   auto)
     flags="-flto $flags"
     ;;
@@ -25,7 +25,7 @@ case "${MOMINER_LTO:-auto}" in
   0|off|false|no)
     ;;
   *)
-    echo "Unsupported MOMINER_LTO=${MOMINER_LTO}" >&2
+    echo "Unsupported MOM_LTO=${MOM_LTO}" >&2
     exit 1
     ;;
 esac

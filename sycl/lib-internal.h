@@ -20,8 +20,8 @@
 #include "lib.h"
 
 // SYCL builds: oneAPI DPC++ for Intel GPU / Windows (default), and DPC++ with the
-// CUDA backend for NVIDIA (-Dmominer_sycl_impl=dpcpp-cuda, which defines
-// MOMINER_SYCL_CUDA). Both are DPC++, so they share almost all code; only the few
+// CUDA backend for NVIDIA (-Dmom_sycl_impl=dpcpp-cuda, which defines
+// MOM_SYCL_CUDA). Both are DPC++, so they share almost all code; only the few
 // NVIDIA-specific spots below differ.
 
 // The cooperative ProgPoW / Ethash / cn-gpu kernels run on 16-wide sub-groups on
@@ -30,17 +30,17 @@
 // the attribute and let the native 32-wide warp stand; those kernels address each
 // cooperative team relative to its base lane within the sub-group, which is correct
 // at both 16 and 32 lanes.
-#if defined(MOMINER_SYCL_CUDA)
-  #define MOMINER_REQD_SG_16
+#if defined(MOM_SYCL_CUDA)
+  #define MOM_REQD_SG_16
 #else
-  #define MOMINER_REQD_SG_16 [[sycl::reqd_sub_group_size(16)]]
+  #define MOM_REQD_SG_16 [[sycl::reqd_sub_group_size(16)]]
 #endif
 
 // Bind the context's executable kernel bundle to each handler as a build-cache hint.
-#define MOMINER_BUNDLE_T sycl::kernel_bundle<sycl::bundle_state::executable>
-#define MOMINER_GET_EXEC_BUNDLE(ctx) \
+#define MOM_BUNDLE_T sycl::kernel_bundle<sycl::bundle_state::executable>
+#define MOM_GET_EXEC_BUNDLE(ctx) \
   sycl::get_kernel_bundle<sycl::bundle_state::executable>(ctx)
-#define MOMINER_USE_BUNDLE(handler, kb) (handler).use_kernel_bundle(kb)
+#define MOM_USE_BUNDLE(handler, kb) (handler).use_kernel_bundle(kb)
 
 // Thin wrappers kept for call-site readability; both DPC++ builds use the SYCL builtins.
 template <typename T> inline T mo_rotate(const T x, const T n) {

@@ -18,7 +18,7 @@ const specReporter = require("./common/spec_reporter");
 const repoRoot = path.join(__dirname, "..");
 
 async function loadMinerWithStubs(options = {}) {
-  const source = fs.readFileSync(path.join(repoRoot, "mo-miner.js"), "utf8");
+  const source = fs.readFileSync(path.join(repoRoot, "mom.js"), "utf8");
   const moduleStub = { exports: {} };
   const globalStub = {};
   const coreEvents = new events.EventEmitter();
@@ -49,7 +49,7 @@ async function loadMinerWithStubs(options = {}) {
     pool_write: (pool_id, json) => poolWrites.push({ pool_id, json }),
   };
   const processStub = Object.create(process);
-  processStub.argv = options.argv || ["node", "mo-miner.js", "mine", "pool.example:1", "user"];
+  processStub.argv = options.argv || ["node", "mom.js", "mine", "pool.example:1", "user"];
   processStub.env = { ...process.env };
   processStub.exit = (code) => { throw new Error(`unexpected exit ${code}`); };
   const detachedSetTimeout = (...args) => {
@@ -189,7 +189,7 @@ test("default options do not share array or map references", () => {
 
 test("unparsed CLI options fail before runtime startup", () => {
   const result = spawnSync(process.execPath, [
-    "mo-miner.js",
+    "mom.js",
     "bench",
     "rx/0",
     "--definitely-bad-option",
@@ -206,7 +206,7 @@ test("unparsed CLI options fail before runtime startup", () => {
 
 test("JSON options reject non-object values cleanly", () => {
   const result = spawnSync(process.execPath, [
-    "mo-miner.js",
+    "mom.js",
     "bench",
     "rx/0",
     "--job",
@@ -224,7 +224,7 @@ test("JSON options reject non-object values cleanly", () => {
 
 test("numeric CLI options reject non-numeric values", () => {
   const result = spawnSync(process.execPath, [
-    "mo-miner.js",
+    "mom.js",
     "bench",
     "rx/0",
     "--log_level",
@@ -242,7 +242,7 @@ test("numeric CLI options reject non-numeric values", () => {
 
 test("numeric JSON option fields reject non-numeric values", () => {
   const result = spawnSync(process.execPath, [
-    "mo-miner.js",
+    "mom.js",
     "bench",
     "rx/0",
     "--pool_time",
@@ -260,7 +260,7 @@ test("numeric JSON option fields reject non-numeric values", () => {
 
 test("numeric option values reject negatives", () => {
   const result = spawnSync(process.execPath, [
-    "mo-miner.js",
+    "mom.js",
     "bench",
     "rx/0",
     "--pool_time",
@@ -278,7 +278,7 @@ test("numeric option values reject negatives", () => {
 
 test("JSON dev options reject invalid device specs", () => {
   const result = spawnSync(process.execPath, [
-    "mo-miner.js",
+    "mom.js",
     "bench",
     "rx/0",
     "--job",
@@ -296,7 +296,7 @@ test("JSON dev options reject invalid device specs", () => {
 
 test("JSON dev options accept explicit SYCL GPU platform suffixes", () => {
   const result = spawnSync(process.execPath, [
-    "mo-miner.js",
+    "mom.js",
     "bench",
     "cn/gpu",
     "--job",
@@ -316,7 +316,7 @@ test("JSON dev options accept explicit SYCL GPU platform suffixes", () => {
 
 test("mine pool URI rejects out-of-range ports", () => {
   const result = spawnSync(process.execPath, [
-    "mo-miner.js",
+    "mom.js",
     "mine",
     "pool.example:70000",
     "user",
@@ -333,7 +333,7 @@ test("mine pool URI rejects out-of-range ports", () => {
 
 test("JSON pool options reject invalid ports", () => {
   const result = spawnSync(process.execPath, [
-    "mo-miner.js",
+    "mom.js",
     "bench",
     "rx/0",
     "--add.pool",
@@ -351,7 +351,7 @@ test("JSON pool options reject invalid ports", () => {
 
 test("JSON algo params reject invalid perf values", () => {
   const result = spawnSync(process.execPath, [
-    "mo-miner.js",
+    "mom.js",
     "bench",
     "rx/0",
     "--new.algo_param.rx/0",
@@ -432,7 +432,7 @@ test("mine can skip algo benchmark before connecting", async () => {
   const miner = await loadMinerWithStubs({
     argv: [
       "node",
-      "mo-miner.js",
+      "mom.js",
       "mine",
       "pool.example:1",
       "wallet",
@@ -475,7 +475,7 @@ test("bench_algo_params 2 benchmarks all detected algos", async () => {
   const miner = await loadMinerWithStubs({
     argv: [
       "node",
-      "mo-miner.js",
+      "mom.js",
       "mine",
       "pool.example:1",
       "wallet",
@@ -505,7 +505,7 @@ test("KawPow benchmark jobs include fixed nonce metadata", async () => {
     waitForMessageType: "bench",
   });
   const directBenchmark = await loadMinerWithStubs({
-    argv: ["node", "mo-miner.js", "bench", "kawpow"],
+    argv: ["node", "mom.js", "bench", "kawpow"],
     waitForMessageType: "bench",
   });
 
@@ -523,7 +523,7 @@ test("Etchash benchmark uses current ETC height instead of default seed", async 
     waitForMessageType: "bench",
   });
   const directBenchmark = await loadMinerWithStubs({
-    argv: ["node", "mo-miner.js", "bench", "etchash"],
+    argv: ["node", "mom.js", "bench", "etchash"],
     waitForMessageType: "bench",
   });
 

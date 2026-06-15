@@ -25,7 +25,7 @@ Set-Location $repoRoot
 . "$PSScriptRoot/windows-dll-deps.ps1"
 
 $node = (Get-Command node.exe).Source
-$workDir = if ($env:MOMINER_RELEASE_TEST_DIR) { $env:MOMINER_RELEASE_TEST_DIR } else { "release-test" }
+$workDir = if ($env:MOM_RELEASE_TEST_DIR) { $env:MOM_RELEASE_TEST_DIR } else { "release-test" }
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $Archive).Path)
@@ -54,12 +54,12 @@ $hasSyclBridge = Test-Path (Join-Path $libsDir "sycl.dll")
 if (-not $hasSyclBridge) {
   throw "Windows release package is missing libs/sycl.dll."
 }
-if (-not (Test-Path (Join-Path $libsDir "mo-miner.node"))) {
-  throw "Windows release package is missing libs/mo-miner.node."
+if (-not (Test-Path (Join-Path $libsDir "mom.node"))) {
+  throw "Windows release package is missing libs/mom.node."
 }
 $entryPaths = @(
-  (Join-Path $packageDir "mo-miner-node.exe"),
-  (Join-Path $libsDir "mo-miner.node"),
+  (Join-Path $packageDir "mom-node.exe"),
+  (Join-Path $libsDir "mom.node"),
   (Join-Path $libsDir "sycl.dll")
 )
 Test-MominerDllClosure -PackageDir $libsDir -EntryPaths $entryPaths
@@ -99,29 +99,29 @@ function Get-SyclCpuDevicesFromOutput {
   return $devices
 }
 
-Remove-Item Env:MOMINER_ASSUME_SYCL_CPU -ErrorAction SilentlyContinue
+Remove-Item Env:MOM_ASSUME_SYCL_CPU -ErrorAction SilentlyContinue
 Enable-IntelOpenCL
 Push-Location $packageDir
 try {
   $oldErrorActionPreference = $ErrorActionPreference
   $ErrorActionPreference = "Continue"
-  $smokeOutput = & .\mo-miner.cmd algo_params 2>&1
+  $smokeOutput = & .\mom.cmd algo_params 2>&1
   $smokeExit = $LASTEXITCODE
   $ErrorActionPreference = $oldErrorActionPreference
   if ($smokeExit -ne 0) {
-    $env:MOMINER_DEBUG_STARTUP = "1"
+    $env:MOM_DEBUG_STARTUP = "1"
     $ErrorActionPreference = "Continue"
-    $debugOutput = & .\mo-miner.cmd algo_params 2>&1
+    $debugOutput = & .\mom.cmd algo_params 2>&1
     $debugExit = $LASTEXITCODE
     $ErrorActionPreference = $oldErrorActionPreference
-    Remove-Item Env:MOMINER_DEBUG_STARTUP -ErrorAction SilentlyContinue
+    Remove-Item Env:MOM_DEBUG_STARTUP -ErrorAction SilentlyContinue
     throw "Direct executable smoke test failed with exit code $smokeExit. Output: $($smokeOutput -join ' | '). Debug exit code: $debugExit. Debug output: $($debugOutput -join ' | ')"
   }
-  if (-not ($smokeOutput | Where-Object { $_ -match '^MOMINER_ALGO_PARAMS ' })) {
+  if (-not ($smokeOutput | Where-Object { $_ -match '^MOM_ALGO_PARAMS ' })) {
     throw "Direct executable smoke test did not print algo params marker.`n$($smokeOutput -join "`n")"
   }
-  $marker = $smokeOutput | Where-Object { $_ -match '^MOMINER_ALGO_PARAMS ' } | Select-Object -First 1
-  $params = ($marker -replace '^MOMINER_ALGO_PARAMS ', '') | ConvertFrom-Json
+  $marker = $smokeOutput | Where-Object { $_ -match '^MOM_ALGO_PARAMS ' } | Select-Object -First 1
+  $params = ($marker -replace '^MOM_ALGO_PARAMS ', '') | ConvertFrom-Json
   foreach ($prop in $params.PSObject.Properties) {
     $dev = [string]$prop.Value
     if (-not $dev -or $dev -match '(^|,)[^,]*(\*0|\^0)(,|$)') {

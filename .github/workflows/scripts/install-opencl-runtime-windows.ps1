@@ -8,7 +8,7 @@ if ($PSVersionTable.PSVersion.Major -ge 7) {
   $PSNativeCommandUseErrorActionPreference = $true
 }
 
-$runtimeDir = Join-Path $env:TEMP "mo-miner-opencl-runtime"
+$runtimeDir = Join-Path $env:TEMP "mom-opencl-runtime"
 $installer = Join-Path $runtimeDir "opencl-runtime.exe"
 $extractRoot = Join-Path $env:USERPROFILE "Downloads\Intel"
 

@@ -8,16 +8,16 @@
 #include <string>
 
 #if defined(_WIN32)
-#if defined(MOMINER_SYCL_BUILD)
-#define MOMINER_SYCL_API __declspec(dllexport)
+#if defined(MOM_SYCL_BUILD)
+#define MOM_SYCL_API __declspec(dllexport)
 #else
-#define MOMINER_SYCL_API __declspec(dllimport)
+#define MOM_SYCL_API __declspec(dllimport)
 #endif
 #else
-#define MOMINER_SYCL_API
+#define MOM_SYCL_API
 #endif
 
-MOMINER_SYCL_API std::map<std::string, std::string> algo_params(
+MOM_SYCL_API std::map<std::string, std::string> algo_params(
   unsigned max_cpu_batch, unsigned cpu_sockets, unsigned cpu_threads, unsigned cpu_l3cache,
   const std::map<std::string, unsigned>& algo2mem,
   const std::set<std::string>& cpu_algos,
@@ -29,30 +29,30 @@ MOMINER_SYCL_API std::map<std::string, std::string> algo_params(
   const std::set<std::string>& gpu_pearl_algos
 );
 
-MOMINER_SYCL_API void cn_gpu(
+MOM_SYCL_API void cn_gpu(
   const uint8_t* inputs, unsigned input_size, uint8_t* output,
   void* Spads, unsigned batch, const std::string& dev_str
 );
 
-MOMINER_SYCL_API int c29(
+MOM_SYCL_API int c29(
   unsigned job_id, unsigned c29_proof_size,
   const uint8_t* inputs, unsigned input_size, uint8_t* output,
   uint32_t* output_edges, uint64_t* pnonce, const std::string& dev_str
 );
 
-MOMINER_SYCL_API int kawpow(
+MOM_SYCL_API int kawpow(
   unsigned job_id, uint32_t height, const uint8_t* input, unsigned input_size, uint8_t* output,
   uint8_t* mix_hash, uint64_t* pnonce, uint64_t target,
   unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
 );
 
-MOMINER_SYCL_API int etchash(
+MOM_SYCL_API int etchash(
   unsigned job_id, uint32_t height, const uint8_t* input, unsigned input_size, uint8_t* output,
   uint8_t* mix_hash, uint64_t* pnonce, const uint8_t* target, const uint8_t* seed_hash,
   unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
 );
 
-MOMINER_SYCL_API int autolykos2(
+MOM_SYCL_API int autolykos2(
   unsigned job_id, uint32_t height, const uint8_t* input, unsigned input_size, uint8_t* output,
   uint64_t* pnonce, const uint8_t* target,
   unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
@@ -61,12 +61,12 @@ MOMINER_SYCL_API int autolykos2(
 // pearl: input is the 76-byte incomplete header; pseed is the search seed (in/out, set to the
 // winning seed on a hit); intensity is the square matrix edge (m=n). On a hit returns 1 and the
 // pool-ready base64 PlainProof is available from pearl_proof() (thread-local to this call).
-MOMINER_SYCL_API int pearl(
+MOM_SYCL_API int pearl(
   unsigned job_id, uint32_t height, const uint8_t* input, unsigned input_size, uint8_t* output,
   uint64_t* pseed, const uint8_t* target,
   unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
 );
-MOMINER_SYCL_API const char* pearl_proof();
+MOM_SYCL_API const char* pearl_proof();
 // GEMM MACs per pearl attempt (m*n*k, m=n=intensity) -- the work unit the pearl "TH/s" hashrate is
 // quoted in, so the core counts this rather than the seed/intensity batch.
-MOMINER_SYCL_API uint64_t pearl_attempt_hashes(unsigned intensity);
+MOM_SYCL_API uint64_t pearl_attempt_hashes(unsigned intensity);

@@ -1,8 +1,12 @@
-## mo-miner
+## mom
+
+`mom` is the short name for the **mo-miner** project (the executable, release archives and
+config keys all use `mom`); the GitHub repository remains
+[MoneroOcean/mo-miner](https://github.com/MoneroOcean/mo-miner).
 
 # About
 
-mo-miner is open-source cryptocurrency miner that is built upon high performance xmrig CPU miner
+mom is open-source cryptocurrency miner that is built upon high performance xmrig CPU miner
 sources with front-end and network backend rewritten in Node.js to significantly simplify its code.
 GPU mining sources are also simplified and rewritten in SYCL from OpenCL/CUDA.
 The main goal of this project is to make simple, easy to extend open-source miner with native
@@ -31,7 +35,7 @@ mining section below. Its hashrate is reported as GEMM multiply-accumulate throu
 same unit ARC-miner uses), not cryptographic H/s, so it is not directly comparable to the other algos.
 
 By default, startup algo-parameter benchmarking only benchmarks active MoneroOcean coin algos
-implemented by mo-miner plus `rx/2`: `autolykos2`, `c29`, `cn/gpu`, `etchash`, `ghostrider`,
+implemented by mom plus `rx/2`: `autolykos2`, `c29`, `cn/gpu`, `etchash`, `ghostrider`,
 `kawpow`, `panthera`, `rx/0`, `rx/2`, and `rx/arq`. Use `--bench_algo_params 2` to benchmark every algo
 supported locally. `pearl` is **not** in the default set (MoneroOcean can't assign it); mine it with
 `--bench_algo_params 0` plus an explicit `--job.dev`, or bench it with `--bench_algo_params 2`.
@@ -43,28 +47,28 @@ capable GPU (~1.2 GB VRAM for that shape) just needs the pool, wallet and GPU de
 
 ```
 # HeroMiners (TLS, direct):
-./r.sh node mo-miner.js mine pearl.herominers.com:1200tls <prl1-wallet> --job.algo pearl --job.dev gpu1*131072 --bench_algo_params 0
+./r.sh node mom.js mine pearl.herominers.com:1200tls <prl1-wallet> --job.algo pearl --job.dev gpu1*131072 --bench_algo_params 0
 # LuckyPool (TLS, var-diff):
-./r.sh node mo-miner.js mine pearl-eu1.luckypool.io:3360tls <prl1-wallet> --job.algo pearl --job.dev gpu1*131072 --bench_algo_params 0
+./r.sh node mom.js mine pearl-eu1.luckypool.io:3360tls <prl1-wallet> --job.algo pearl --job.dev gpu1*131072 --bench_algo_params 0
 ```
 
 These pools use the `mining.subscribe`+`mining.authorize` dialect (the default for `pearl`). The older
 pearlpool.cloud uses the single-`login` dialect and a smaller low-mem shape; select it with env vars:
-`MOMINER_PEARL_LOGIN=1 MOMINER_PEARL_K=1024 MOMINER_PEARL_RANK=64` and `--job.dev gpu1*16384`.
+`MOM_PEARL_LOGIN=1 MOM_PEARL_K=1024 MOM_PEARL_RANK=64` and `--job.dev gpu1*16384`.
 
-Pearl env knobs (all optional; defaults = network-standard shape): `MOMINER_PEARL_INTENSITY` (m=n,
-default 131072), `MOMINER_PEARL_K` (default 4096), `MOMINER_PEARL_RANK` (default 256),
-`MOMINER_PEARL_LOGIN` (force the login dialect). In a saved config these can instead live under
+Pearl env knobs (all optional; defaults = network-standard shape): `MOM_PEARL_INTENSITY` (m=n,
+default 131072), `MOM_PEARL_K` (default 4096), `MOM_PEARL_RANK` (default 256),
+`MOM_PEARL_LOGIN` (force the login dialect). In a saved config these can instead live under
 `algo_params.pearl.{k,rank}` (the dev `*<batch>` sets the intensity) so no env vars are needed.
 
 # NVIDIA GPU performance
 
-mo-miner also builds for NVIDIA GPUs from the same SYCL kernels using the DPC++ CUDA backend
+mom also builds for NVIDIA GPUs from the same SYCL kernels using the DPC++ CUDA backend
 (ahead-of-time compiled to PTX/SASS); the NVIDIA Linux release artifact is
-`mo-miner-v<version>-lin-nvidia.tgz`. Hashrates measured on an NVIDIA L4 (Ada, sm_89), each
+`mom-v<version>-lin-nvidia.tgz`. Hashrates measured on an NVIDIA L4 (Ada, sm_89), each
 compared against the best closed-source miner benchmarked on the same card:
 
-| Algo | mo-miner (L4) | SOTA reference (same L4) | % of SOTA |
+| Algo | mom (L4) | SOTA reference (same L4) | % of SOTA |
 | --- | --- | --- | --- |
 | cn/gpu | 2.65 KH/s | SRBMiner-MULTI 3.04 KH/s | 87% |
 | c29 (Cuckaroo29) | 4.83 g/s | lolMiner ~5.3 g/s | 91% |
@@ -82,7 +86,7 @@ By default, miner donates 1% of hashrate (can be disabled in config).
 
 # Distribution
 
-Miner mo-miner.node dynamic library can be compiled and run from sources using `./r.sh` script that
+Miner mom.node dynamic library can be compiled and run from sources using `./r.sh` script that
 will build Docker container with SYCL compiler. Docker buildx is required so builds use BuildKit
 instead of Docker's deprecated legacy builder:
 
@@ -112,7 +116,7 @@ docker buildx version
 ```
 
 Tagged GitHub releases build Linux x86-64 `.tgz` and Windows x86-64 `.zip` archives with a
-`mo-miner` executable, precompiled `mo-miner.node`, and required SYCL runtime libraries. The release
+`mom` executable, precompiled `mom.node`, and required SYCL runtime libraries. The release
 executable embeds the Node.js control plane, so Docker and system Node.js are not required to run
 the release artifact.
 
@@ -134,10 +138,10 @@ and installs a coherent GPU compute runtime set:
 * Intel Graphics Compiler: `intel-igc-core-2` and `intel-igc-opencl-2`
 * oneAPI Level Zero loader: `libze1` or the older `level-zero` package name
 
-Set `MOMINER_COMPUTE_RUNTIME_RELEASE`, `MOMINER_IGC_RELEASE`, or `MOMINER_LEVEL_ZERO_RELEASE`
-to a GitHub release tag to pin a specific version. The installer keeps mo-miner's bundled SYCL
+Set `MOM_COMPUTE_RUNTIME_RELEASE`, `MOM_IGC_RELEASE`, or `MOM_LEVEL_ZERO_RELEASE`
+to a GitHub release tag to pin a specific version. The installer keeps mom's bundled SYCL
 runtime libraries in place. Those bundled libraries include the oneAPI SYCL and Unified Runtime
-user-space pieces mo-miner loads directly; `install.sh` only installs the host GPU driver/runtime
+user-space pieces mom loads directly; `install.sh` only installs the host GPU driver/runtime
 side that exposes Level Zero/OpenCL devices to them. Installing the full oneAPI runtime
 system-wide would be much larger than the release-bundled runtime closure.
 
@@ -151,7 +155,7 @@ install.bat
 Windows GPU Level Zero support is supplied by the Intel Graphics Driver, not by a small standalone
 `libze` package. Keep the Intel Graphics Driver current if `gpuN` Level Zero devices are missing or
 slow on Windows. The Windows release package already bundles the oneAPI SYCL and Level Zero loader
-DLLs needed by mo-miner. To also let the installer attempt a silent Intel Graphics Driver update
+DLLs needed by mom. To also let the installer attempt a silent Intel Graphics Driver update
 through `winget`, run:
 
 ```
@@ -161,12 +165,12 @@ install.bat -InstallIntelGraphicsDriver
 # Usage example
 
 On Linux if you run miner like that for the first time it will benchmark MoneroOcean pool algos
-supported by mo-miner plus `rx/2`, then start mining. Use `--bench_algo_params 2` to benchmark
+supported by mom plus `rx/2`, then start mining. Use `--bench_algo_params 2` to benchmark
 every algo supported locally before mining instead. This is full local benchmark example output for
 Intel i7-11700K CPU and Intel Arc B580 GPU:
 
 ```
-$ ./mo-miner mine gulf.moneroocean.stream:20001tls 89TxfrUmqJJcb1V124WsUzA78Xa3UYHt7Bg8RGMhXVeZYPN8cE5CZEk58Y1m23ZMLHN7wYeJ9da5n5MXharEjrm41hSnWHL --save_config config.json
+$ ./mom mine gulf.moneroocean.stream:20001tls 89TxfrUmqJJcb1V124WsUzA78Xa3UYHt7Bg8RGMhXVeZYPN8cE5CZEk58Y1m23ZMLHN7wYeJ9da5n5MXharEjrm41hSnWHL --save_config config.json
 cpu1: Intel(R) OpenCL
 gpu1: Intel(R) oneAPI Unified Runtime over Level-Zero V2
 gpu1o: Intel(R) OpenCL Graphics
@@ -192,7 +196,7 @@ gpu1z: Intel(R) oneAPI Unified Runtime over Level-Zero V2
 Next time you can reuse saved config.json file to avoid running benchmarks again before mining:
 
 ```
-$ ./mo-miner mine ./config.json
+$ ./mom mine ./config.json
 2023-02-24 05:55:59 Loading config file ./config.json
 2023-02-24 05:55:59 Connecting to primary gulf.moneroocean.stream:20064tls pool
 2023-02-24 05:55:59 Got new cn/gpu algo job with 12004 diff
@@ -200,7 +204,7 @@ $ ./mo-miner mine ./config.json
 ...
 ```
 
-Saved `algo_params.*.perf` values are local hashrates in H/s. mo-miner advertises KawPow to
+Saved `algo_params.*.perf` values are local hashrates in H/s. mom advertises KawPow to
 MoneroOcean as `kawpow1` with raw H/s while continuing to mine pool jobs named `kawpow`. Cycle
 algorithms whose protocol units are solutions per second, currently `c29`, are converted
 automatically when sending `algo-perf`. `pearl` reports GEMM multiply-accumulate throughput (TH/s),
@@ -209,10 +213,10 @@ not H/s; MoneroOcean does not switch to it, so its perf is informational only.
 Without parameters miner will show help:
 
 ```
-$ ./mo-miner
+$ ./mom
 
 # Node.js/SYCL based CPU/GPU miner v0.1
-$ ./mo-miner <directive> <parameter>+ [<option>+]
+$ ./mom <directive> <parameter>+ [<option>+]
 
 Directives:
   mine  (<pool_address:port[tls]> <login> [<pass>]|<config.json>)
@@ -261,11 +265,11 @@ Options:
 You can run test and benchmark separately for algo you need like this:
 
 ```
-./r.sh node mo-miner.js test cn/gpu e55cb23e51649a59b127b96b515f2bf7bfea199741a0216cf838ded06eff82df --job '{"algo":"cn/gpu","dev":"gpu1*8"}'
-./r.sh node mo-miner.js bench cn/gpu --job '{"algo":"cn/gpu","dev":"gpu1*1280"}'
-./r.sh node mo-miner.js bench etchash --job '{"algo":"etchash","dev":"gpu1*256"}'
-./r.sh node mo-miner.js bench autolykos2 --job '{"algo":"autolykos2","dev":"gpu1*1"}'
-./r.sh node mo-miner.js bench pearl --job '{"algo":"pearl","dev":"gpu1*131072"}'
+./r.sh node mom.js test cn/gpu e55cb23e51649a59b127b96b515f2bf7bfea199741a0216cf838ded06eff82df --job '{"algo":"cn/gpu","dev":"gpu1*8"}'
+./r.sh node mom.js bench cn/gpu --job '{"algo":"cn/gpu","dev":"gpu1*1280"}'
+./r.sh node mom.js bench etchash --job '{"algo":"etchash","dev":"gpu1*256"}'
+./r.sh node mom.js bench autolykos2 --job '{"algo":"autolykos2","dev":"gpu1*1"}'
+./r.sh node mom.js bench pearl --job '{"algo":"pearl","dev":"gpu1*131072"}'
 ```
 
 Project test suites are npm entry points:
@@ -277,16 +281,16 @@ npm run test:perf:ghostrider
 ```
 
 `npm test` runs the hash-vector suite under Docker and skips GPU cases when no GPU device is
-available. `npm run test:perf` benchmarks every supported algo with mo-miner's detected mining
+available. `npm run test:perf` benchmarks every supported algo with mom's detected mining
 device config and prints each hashrate in the same test reporter output. Individual benchmark entry
 points are available as `npm run test:perf:<algo>` for named scripts in `package.json`, for example
 `npm run test:perf:rx/0`, `npm run test:perf:cn-heavy/tube`, or `npm run test:perf:c29`. Any
 supported algo can also be selected by passing it to the generic perf runner, for example
 `npm run test:perf -- etchash` or `npm run test:perf -- autolykos2`. Set
-`MOMINER_PERF_SAMPLES=N` to collect `N` hashrate reports and use the median for perf tests:
+`MOM_PERF_SAMPLES=N` to collect `N` hashrate reports and use the median for perf tests:
 
 ```
-MOMINER_PERF_SAMPLES=3 ./r.sh npm run test:perf:etchash
+MOM_PERF_SAMPLES=3 ./r.sh npm run test:perf:etchash
 ```
 
 Enable huge pages for better performance (check [Huge Pages](https://xmrig.com/docs/miner/hugepages)):
@@ -309,4 +313,4 @@ sudo systemctl start xmr.service
 
 # License
 
-mo-miner is licensed under [GPL-3.0-or-later](LICENSE).
+mom is licensed under [GPL-3.0-or-later](LICENSE).

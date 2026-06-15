@@ -20,8 +20,8 @@ if (algo && !perfTests.some((definition) => definition.algo === algo)) {
   process.exit(1);
 }
 
-if (algo) testEnv.MOMINER_PERF_ALGO = algo;
-if (process.env.MOMINER_PERF_SAMPLES) testEnv.MOMINER_PERF_SAMPLES = process.env.MOMINER_PERF_SAMPLES;
+if (algo) testEnv.MOM_PERF_ALGO = algo;
+if (process.env.MOM_PERF_SAMPLES) testEnv.MOM_PERF_SAMPLES = process.env.MOM_PERF_SAMPLES;
 
 const runner = resolveNodeRunner(testArgs, testEnv);
 spawnAndExit(runner.command, runner.args, { env: runner.env });

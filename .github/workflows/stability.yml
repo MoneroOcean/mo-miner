@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  MOMINER_PORTABLE_BUILD: "1"
+  MOM_PORTABLE_BUILD: "1"
   WINDOWS_ONEAPI_URL: https://raw.githubusercontent.com/oneapi-src/oneapi-ci/master/.github/workflows/build_all.yml
   WINDOWS_ONEAPI_PACKAGE: intel-oneapi-toolkit
   WINDOWS_DPCPP_COMPONENTS: intel.oneapi.win.cpp-dpcpp-common
@@ -57,7 +57,7 @@ jobs:
         uses: docker/setup-buildx-action@v4
 
       - name: Build native addon in release image
-        run: ./r.sh node -e "console.log('mo-miner build ready')"
+        run: ./r.sh node -e "console.log('mom build ready')"
 
       - name: Package release archive
         run: .github/workflows/scripts/package-linux.sh
@@ -65,8 +65,8 @@ jobs:
       - name: Upload package
         uses: actions/upload-artifact@v7
         with:
-          name: mo-miner-lin-package
-          path: mo-miner-*-lin.tgz
+          name: mom-lin-package
+          path: mom-*-lin.tgz
 
   test-linux-x64:
     name: Ubuntu / ${{ matrix.suite }}
@@ -94,13 +94,13 @@ jobs:
       - name: Download package
         uses: actions/download-artifact@v7
         with:
-          name: mo-miner-lin-package
+          name: mom-lin-package
           path: dist
 
       - name: Test extracted package
         run: |
           set -euo pipefail
-          archive="$(find dist -name 'mo-miner-*-lin.tgz' -print -quit)"
+          archive="$(find dist -name 'mom-*-lin.tgz' -print -quit)"
           .github/workflows/scripts/test-release-linux.sh "$archive" "${{ matrix.suite }}"
 
   package-linux-nvidia-x64:
@@ -138,7 +138,7 @@ jobs:
         uses: docker/setup-buildx-action@v4
 
       - name: Build native addon in NVIDIA (DPC++ CUDA) image
-        run: ./r-nvidia.sh node -e "console.log('mo-miner nvidia build ready')"
+        run: ./r-nvidia.sh node -e "console.log('mom nvidia build ready')"
 
       - name: Package release archive
         run: .github/workflows/scripts/package-linux-nvidia.sh
@@ -146,8 +146,8 @@ jobs:
       - name: Upload package
         uses: actions/upload-artifact@v7
         with:
-          name: mo-miner-lin-nvidia-package
-          path: mo-miner-*-lin-nvidia.tgz
+          name: mom-lin-nvidia-package
+          path: mom-*-lin-nvidia.tgz
 
   test-linux-nvidia-x64:
     name: Ubuntu NVIDIA / ${{ matrix.suite }}
@@ -176,13 +176,13 @@ jobs:
       - name: Download package
         uses: actions/download-artifact@v7
         with:
-          name: mo-miner-lin-nvidia-package
+          name: mom-lin-nvidia-package
           path: dist
 
       - name: Test extracted package
         run: |
           set -euo pipefail
-          archive="$(find dist -name 'mo-miner-*-lin-nvidia.tgz' -print -quit)"
+          archive="$(find dist -name 'mom-*-lin-nvidia.tgz' -print -quit)"
           .github/workflows/scripts/test-release-linux.sh "$archive" "${{ matrix.suite }}"
 
   package-windows-x64:
@@ -232,8 +232,8 @@ jobs:
       - name: Upload package
         uses: actions/upload-artifact@v7
         with:
-          name: mo-miner-win-package
-          path: mo-miner-*-win.zip
+          name: mom-win-package
+          path: mom-*-win.zip
 
   test-windows-x64:
     name: Windows / ${{ matrix.suite }}
@@ -261,7 +261,7 @@ jobs:
       - name: Download package
         uses: actions/download-artifact@v7
         with:
-          name: mo-miner-win-package
+          name: mom-win-package
           path: dist
 
       - name: Install Intel OpenCL CPU runtime
@@ -272,5 +272,5 @@ jobs:
       - name: Test extracted package
         shell: powershell
         run: |
-          $archive = Get-ChildItem dist -Filter "mo-miner-*-win.zip" | Select-Object -First 1
+          $archive = Get-ChildItem dist -Filter "mom-*-win.zip" | Select-Object -First 1
           powershell -NoProfile -ExecutionPolicy Bypass -File .github\workflows\scripts\test-release-windows.ps1 -Archive $archive.FullName -Suite "${{ matrix.suite }}"

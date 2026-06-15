@@ -25,7 +25,7 @@
 #include "../xmrig/3rdparty/libethash/ethash.h"
 #include "../xmrig/3rdparty/libethash/data_sizes.h"
 
-namespace mominer_etchash {
+namespace mom_etchash {
 
 constexpr uint32_t ETCHASH_FORK_BLOCK      = 11700000;
 constexpr uint32_t ETHASH_EPOCH            = 30000;
@@ -412,7 +412,7 @@ class EtchashState {
 public:
   sycl::device device;
   sycl::queue queue;
-  std::unique_ptr<MOMINER_BUNDLE_T> bundle;
+  std::unique_ptr<MOM_BUNDLE_T> bundle;
   bool shared_io;
   bool shared_dag;
   uint8_t* input = nullptr;
@@ -439,8 +439,8 @@ public:
     }
 
     set_sycl_env("SYCL_PROGRAM_COMPILE_OPTIONS", etchash_compile_options(device));
-    bundle = std::make_unique<MOMINER_BUNDLE_T>(
-      MOMINER_GET_EXEC_BUNDLE(queue.get_context())
+    bundle = std::make_unique<MOM_BUNDLE_T>(
+      MOM_GET_EXEC_BUNDLE(queue.get_context())
     );
   }
 
@@ -448,7 +448,7 @@ public:
 
   static unsigned etchash_dag_workgroup(const sycl::device& dev) {
     const unsigned fallback = sycl_default_workgroup(dev, {32, 64, 128, 256, 512}, dev.is_cpu() ? 128 : 64);
-    const char* const value = std::getenv("MOMINER_ETCHASH_DAG_WORKGROUP");
+    const char* const value = std::getenv("MOM_ETCHASH_DAG_WORKGROUP");
     if (!value || !*value) return fallback;
 
     char* end = nullptr;
@@ -468,7 +468,7 @@ public:
   }
 
   static uint32_t etchash_dag_chunk_nodes() {
-    const char* const value = std::getenv("MOMINER_ETCHASH_DAG_CHUNK_NODES");
+    const char* const value = std::getenv("MOM_ETCHASH_DAG_CHUNK_NODES");
     if (!value || !*value) return 0;
 
     char* end = nullptr;
@@ -479,10 +479,10 @@ public:
   }
 
   static const char* etchash_compile_options(const sycl::device& dev) {
-    const char* const value = std::getenv("MOMINER_ETCHASH_COMPILE_OPTIONS");
+    const char* const value = std::getenv("MOM_ETCHASH_COMPILE_OPTIONS");
     if (value) return value;
     // "-O3" is process-global; pearl's ESIMD image rejects it (no-op for etchash anyway).
-    // Override via MOMINER_ETCHASH_COMPILE_OPTIONS if needed.
+    // Override via MOM_ETCHASH_COMPILE_OPTIONS if needed.
     (void)dev;
     return "";
   }
@@ -569,7 +569,7 @@ public:
       const uint32_t current_nodes = chunk_nodes ? std::min(chunk_nodes, total - start_node) : total;
       const uint32_t chunk_start = start_node;
       dag_event = q.submit([&](sycl::handler& h) {
-        MOMINER_USE_BUNDLE(h, kb);
+        MOM_USE_BUNDLE(h, kb);
         h.parallel_for(
           sycl::nd_range<1>(sycl::range<1>(round_up(current_nodes, dag_workgroup)), sycl::range<1>(dag_workgroup)),
           [=](sycl::nd_item<1> item) {
@@ -631,9 +631,9 @@ static EtchashState& etchash_state(const std::string& dev_str) {
   return *state;
 }
 
-} // namespace mominer_etchash
+} // namespace mom_etchash
 
-using namespace mominer_etchash;
+using namespace mom_etchash;
 
 int etchash(
   const unsigned, const uint32_t block_height, const uint8_t* const input, const unsigned input_size, uint8_t* const output,
@@ -682,14 +682,14 @@ int etchash(
     constexpr unsigned GROUP4_SEED_WORDS = GROUP4_WORKGROUP * 16;
 
     sycl_wait_and_throw(q.submit([&](sycl::handler& h) {
-      MOMINER_USE_BUNDLE(h, kb);
+      MOM_USE_BUNDLE(h, kb);
       sycl::local_accessor<uint32_t, 1> seeds(sycl::range<1>(GROUP4_SEED_WORDS), h);
       h.parallel_for(
         sycl::nd_range<1>(
           sycl::range<1>(round_up(intensity, GROUP4_WORKGROUP)),
           sycl::range<1>(GROUP4_WORKGROUP)
         ),
-        [=](sycl::nd_item<1> item) MOMINER_REQD_SG_16 {
+        [=](sycl::nd_item<1> item) MOM_REQD_SG_16 {
           const uint32_t lid = static_cast<uint32_t>(item.get_local_id(0));
           const uint32_t group_hash_base = static_cast<uint32_t>(item.get_group(0)) * GROUP4_WORKGROUP;
           const uint32_t own_hash = group_hash_base + lid;
@@ -769,7 +769,7 @@ int etchash(
     }), state.device);
   } else {
     sycl_wait_and_throw(q.submit([&](sycl::handler& h) {
-      MOMINER_USE_BUNDLE(h, kb);
+      MOM_USE_BUNDLE(h, kb);
       sycl::local_accessor<uint32_t, 1> scratch(sycl::range<1>(SCRATCH_WORDS), h);
       h.parallel_for(
         sycl::nd_range<1>(

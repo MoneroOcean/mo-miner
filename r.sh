@@ -10,28 +10,28 @@ fi
 
 build_iid="$(mktemp)"
 trap 'rm -f "$build_iid"' EXIT
-docker buildx build --load --progress=none --iidfile "$build_iid" -t mo-miner-build --pull=false - <"$SCRIPT_DIR/scripts/build.dockerfile"
-docker rm -f mo-miner >/dev/null 2>&1 || true
+docker buildx build --load --progress=none --iidfile "$build_iid" -t mom-build --pull=false - <"$SCRIPT_DIR/scripts/build.dockerfile"
+docker rm -f mom >/dev/null 2>&1 || true
 
 docker_flags=(
   --privileged
   --rm
-  --name mo-miner
-  --hostname mo-miner
-  --env MOMINER_R_SH=1
-  --mount "type=bind,source=$SCRIPT_DIR,target=/root/mo-miner"
+  --name mom
+  --hostname mom
+  --env MOM_R_SH=1
+  --mount "type=bind,source=$SCRIPT_DIR,target=/root/mom"
 )
 
-if [ -n "${MOMINER_PORTABLE_BUILD:-}" ]; then
-  docker_flags+=(--env MOMINER_PORTABLE_BUILD)
+if [ -n "${MOM_PORTABLE_BUILD:-}" ]; then
+  docker_flags+=(--env MOM_PORTABLE_BUILD)
 fi
 
-if [ -n "${MOMINER_LTO:-}" ]; then
-  docker_flags+=(--env MOMINER_LTO)
+if [ -n "${MOM_LTO:-}" ]; then
+  docker_flags+=(--env MOM_LTO)
 fi
 
-if [ -n "${MOMINER_PERF_SAMPLES:-}" ]; then
-  docker_flags+=(--env MOMINER_PERF_SAMPLES)
+if [ -n "${MOM_PERF_SAMPLES:-}" ]; then
+  docker_flags+=(--env MOM_PERF_SAMPLES)
 fi
 
 if [ -t 0 ] && [ -t 1 ]; then
@@ -41,7 +41,7 @@ else
 fi
 
 if [ $# -ne 0 ]; then
-  docker run "${docker_flags[@]}" mo-miner-build "$@"
+  docker run "${docker_flags[@]}" mom-build "$@"
 else
-  docker run "${docker_flags[@]}" mo-miner-build
+  docker run "${docker_flags[@]}" mom-build
 fi

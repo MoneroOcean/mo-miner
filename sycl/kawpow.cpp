@@ -32,7 +32,7 @@
 #include "../xmrig/3rdparty/libethash/ethash.h"
 #include "../xmrig/3rdparty/libethash/data_sizes.h"
 
-namespace mominer_kawpow {
+namespace mom_kawpow {
 
 constexpr uint32_t KAWPOW_EPOCH_LENGTH  = 7500;
 constexpr uint32_t KAWPOW_PERIOD_LENGTH = 3;
@@ -56,7 +56,7 @@ constexpr uint32_t RAVENCOIN_KAWPOW[15] = {
   0x00000041, 0x00000057, 0x00000050, 0x0000004F, 0x00000057
 };
 
-// Used by MOMINER_LOOP_STATS to break a dispatch call into host-side phases.
+// Used by MOM_LOOP_STATS to break a dispatch call into host-side phases.
 static uint64_t kawpow_now_us() {
   return std::chrono::duration_cast<std::chrono::microseconds>(
     std::chrono::steady_clock::now().time_since_epoch()
@@ -64,7 +64,7 @@ static uint64_t kawpow_now_us() {
 }
 
 static bool kawpow_loop_stats() {
-  static const bool enabled = std::getenv("MOMINER_LOOP_STATS") != nullptr;
+  static const bool enabled = std::getenv("MOM_LOOP_STATS") != nullptr;
   return enabled;
 }
 
@@ -237,7 +237,7 @@ class KawpowState {
 public:
   sycl::device device;
   sycl::queue queue;
-  std::unique_ptr<MOMINER_BUNDLE_T> bundle;
+  std::unique_ptr<MOM_BUNDLE_T> bundle;
   bool shared_io;
   bool shared_dag;
   uint8_t* input = nullptr;
@@ -277,8 +277,8 @@ public:
     }
 
     set_sycl_env("SYCL_PROGRAM_COMPILE_OPTIONS", kawpow_compile_options(device));
-    bundle = std::make_unique<MOMINER_BUNDLE_T>(
-      MOMINER_GET_EXEC_BUNDLE(queue.get_context())
+    bundle = std::make_unique<MOM_BUNDLE_T>(
+      MOM_GET_EXEC_BUNDLE(queue.get_context())
     );
   }
 
@@ -288,14 +288,14 @@ public:
   }
 
   static unsigned kawpow_workgroup(const sycl::device& dev) {
-#if defined(MOMINER_SYCL_CUDA)
+#if defined(MOM_SYCL_CUDA)
     // DPC++ CUDA JIT: the source-baked kernel is heavier (80 regs), so a larger 256-thread block
     // gives more resident warps to hide the DAG-read latency (sweep: 256=13.2 > 128=13.1 > 64=12.3).
     const unsigned fallback = sycl_default_workgroup(dev, {64, 128, 256, 512}, dev.is_cpu() ? 128 : 256);
 #else
     const unsigned fallback = sycl_default_workgroup(dev, {64, 128, 256, 512}, dev.is_cpu() ? 128 : 256);
 #endif
-    const char* const value = std::getenv("MOMINER_KAWPOW_WORKGROUP");
+    const char* const value = std::getenv("MOM_KAWPOW_WORKGROUP");
     if (!value || !*value) return fallback;
 
     char* end = nullptr;
@@ -315,7 +315,7 @@ public:
 
   static unsigned kawpow_dag_workgroup(const sycl::device& dev) {
     const unsigned fallback = sycl_default_workgroup(dev, {32, 64, 128, 256, 512}, dev.is_cpu() ? 128 : 64);
-    const char* const value = std::getenv("MOMINER_KAWPOW_DAG_WORKGROUP");
+    const char* const value = std::getenv("MOM_KAWPOW_DAG_WORKGROUP");
     if (!value || !*value) return fallback;
 
     char* end = nullptr;
@@ -335,7 +335,7 @@ public:
   }
 
   static uint32_t kawpow_dag_chunk_nodes() {
-    const char* const value = std::getenv("MOMINER_KAWPOW_DAG_CHUNK_NODES");
+    const char* const value = std::getenv("MOM_KAWPOW_DAG_CHUNK_NODES");
     if (!value || !*value) return 0;
 
     char* end = nullptr;
@@ -346,10 +346,10 @@ public:
   }
 
   static const char* kawpow_compile_options(const sycl::device& dev) {
-    const char* const value = std::getenv("MOMINER_KAWPOW_COMPILE_OPTIONS");
+    const char* const value = std::getenv("MOM_KAWPOW_COMPILE_OPTIONS");
     if (value) return value;
     // "-O3" is process-global; pearl's ESIMD image rejects it (no-op for kawpow anyway).
-    // Override via MOMINER_KAWPOW_COMPILE_OPTIONS if needed.
+    // Override via MOM_KAWPOW_COMPILE_OPTIONS if needed.
     (void)dev;
     return "";
   }
@@ -435,7 +435,7 @@ public:
       const uint32_t current_nodes = chunk_nodes ? std::min(chunk_nodes, total - start_node) : total;
       const uint32_t chunk_start = start_node;
       dag_event = q.submit([&](sycl::handler& h) {
-        MOMINER_USE_BUNDLE(h, kb);
+        MOM_USE_BUNDLE(h, kb);
         h.parallel_for(
           sycl::nd_range<1>(sycl::range<1>(round_up(current_nodes, dag_workgroup)), sycl::range<1>(dag_workgroup)),
           [=](sycl::nd_item<1> item) {
@@ -487,7 +487,7 @@ public:
 
   std::unique_ptr<sycl::kernel_bundle<sycl::bundle_state::executable>>
   build_period_bundle(const uint64_t new_period, const FastModData dag_mod) {
-#if defined(MOMINER_SYCL_CUDA)
+#if defined(MOM_SYCL_CUDA)
     // CUDA: spec-constants do not JIT-fold here, so compile the search kernel from SYCL source with
     // the period program baked in as a const struct (folds the random-math interpreter). The device
     // body is the shared sycl/kawpow_device.inc, read at runtime.
@@ -496,7 +496,7 @@ public:
       kawpow_emit_baked(make_program(new_period), dag_mod) + KAWPOW_JIT_WRAPPER;
     auto kb_src = syclex::create_kernel_bundle_from_source(
       queue.get_context(), syclex::source_language::sycl, src);
-    const char* const jit_opts = std::getenv("MOMINER_KAWPOW_JIT_OPTS");
+    const char* const jit_opts = std::getenv("MOM_KAWPOW_JIT_OPTS");
     auto exe = (jit_opts && *jit_opts)
       ? syclex::build(kb_src, syclex::properties{syclex::build_options{std::string(jit_opts)}})
       : syclex::build(kb_src);
@@ -554,9 +554,9 @@ static KawpowState& kawpow_state(const std::string& dev_str) {
   return *state;
 }
 
-} // namespace mominer_kawpow
+} // namespace mom_kawpow
 
-using namespace mominer_kawpow;
+using namespace mom_kawpow;
 
 int kawpow(
   const unsigned, const uint32_t block_height, const uint8_t* const input, const unsigned input_size, uint8_t* const output,
@@ -596,9 +596,9 @@ int kawpow(
   KawpowResult* const d_result = state.result;
 
   // GPU devices use the subgroup (warp-shuffle) exchange; the CPU SYCL device
-  // (is_gpu()==false) and an explicit MOMINER_KAWPOW_EXCHANGE=slm use the
+  // (is_gpu()==false) and an explicit MOM_KAWPOW_EXCHANGE=slm use the
   // barrier/local-memory exchange.
-  const char* const exchange_env = std::getenv("MOMINER_KAWPOW_EXCHANGE");
+  const char* const exchange_env = std::getenv("MOM_KAWPOW_EXCHANGE");
   const bool use_sg = state.device.is_gpu() && !(exchange_env && std::strcmp(exchange_env, "slm") == 0);
 
   if (use_sg) {
@@ -610,7 +610,7 @@ int kawpow(
     const uint64_t t_io = loop_stats ? kawpow_now_us() : 0;
     state.ensure_period_bundle(period, epoch, dag_mod);
     const uint64_t t_bundle = loop_stats ? kawpow_now_us() : 0;
-#if defined(MOMINER_SYCL_CUDA)
+#if defined(MOM_SYCL_CUDA)
     // Launch the source-JIT'd kernel: program/dag-mod are baked into the bundle, so the only kernel
     // args are the per-call buffers/scalars; work-group local memory comes from work_group_static.
     sycl::kernel jit_kernel = state.period_bundle->ext_oneapi_get_kernel("kawpow_search_jit");
@@ -625,7 +625,7 @@ int kawpow(
       h.use_kernel_bundle(*state.period_bundle);
       h.parallel_for<KawpowSgKernel>(
         sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(local_size)),
-        [=](sycl::nd_item<1> item, sycl::kernel_handler kh) MOMINER_REQD_SG_16 {
+        [=](sycl::nd_item<1> item, sycl::kernel_handler kh) MOM_REQD_SG_16 {
           const KawpowProgram program = kh.get_specialization_constant<kawpow_program_id>();
           const FastModData dag_mod = kh.get_specialization_constant<kawpow_dag_mod_id>();
           const uint32_t lid = item.get_local_id(0);

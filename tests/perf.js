@@ -6,7 +6,7 @@ const assert = require("node:assert/strict");
 const { formatHashrate, runMinerBench } = require("./common/miner_command");
 const { perfTests } = require("./vectors");
 
-const selectedAlgo = process.env.MOMINER_PERF_ALGO || "";
+const selectedAlgo = process.env.MOM_PERF_ALGO || "";
 const selectedTests = selectedAlgo ? perfTests.filter((definition) => definition.algo === selectedAlgo) : perfTests;
 
 if (selectedAlgo && selectedTests.length === 0) {

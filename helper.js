@@ -9,16 +9,16 @@ const fs      = require('fs');
 const childProcess = require("child_process");
 
 const is_windows_process = process.platform === "win32";
-const is_explicit_worker = process.env.MOMINER_CLUSTER_WORKER === "1";
+const is_explicit_worker = process.env.MOM_CLUSTER_WORKER === "1";
 const is_worker_process = is_explicit_worker ||
   (!is_windows_process && !cluster.isMaster);
 const use_subprocess_workers = is_windows_process ||
-  process.env.MOMINER_USE_SUBPROCESS_WORKERS === "1";
+  process.env.MOM_USE_SUBPROCESS_WORKERS === "1";
 const thread_id = is_worker_process ? Number.parseInt(process.env["thread_id"], 10) : "master";
 let worker_ids = []; // active worker ids (cluster.workers can contain not yet closed workers)
 let worker_procs = {};
 let core_module_for_exit = null;
-const worker_message_prefix = "MOMINER_WORKER_MESSAGE ";
+const worker_message_prefix = "MOM_WORKER_MESSAGE ";
 
 function reallyExit(code) {
   setImmediate(() => {
@@ -49,9 +49,9 @@ function withWindowsWorkerPath(env) {
   const appDir = path.dirname(process.execPath);
   return module.exports.withWindowsPathEntries(env, [
     appDir,
-    path.join(appDir, "mo-miner"),
+    path.join(appDir, "mom"),
     process.cwd(),
-    path.join(process.cwd(), "mo-miner"),
+    path.join(process.cwd(), "mom"),
     path.join(__dirname, "build", "Release"),
   ]);
 }
@@ -68,7 +68,7 @@ function firstExistingPath(paths) {
 }
 
 function debugStartup(str) {
-  if (process.env.MOMINER_DEBUG_STARTUP) console.error("MOMINER_DEBUG_STARTUP " + str);
+  if (process.env.MOM_DEBUG_STARTUP) console.error("MOM_DEBUG_STARTUP " + str);
 }
 
 function appendRecentText(current, chunk, limit = 8192) {
@@ -104,16 +104,16 @@ module.exports.create_core = function() {
   this.log3("Starting compute core in " + thread_id + " thread");
   const appDir = path.dirname(process.execPath);
   const core_path = firstExistingPath([
-    path.join(appDir, "libs", "mo-miner.node"),
-    path.join(appDir, "mo-miner.node"),
-    path.join(appDir, "mo-miner", "mo-miner.node"),
-    path.join(appDir, "build", "Release", "mo-miner.node"),
-    path.join(process.cwd(), "libs", "mo-miner.node"),
-    path.join(process.cwd(), "mo-miner.node"),
-    path.join(process.cwd(), "mo-miner", "mo-miner.node"),
-    path.join(__dirname, "libs", "mo-miner.node"),
-    path.join(__dirname, "mo-miner.node"),
-    path.join(__dirname, "build", "Release", "mo-miner.node"),
+    path.join(appDir, "libs", "mom.node"),
+    path.join(appDir, "mom.node"),
+    path.join(appDir, "mom", "mom.node"),
+    path.join(appDir, "build", "Release", "mom.node"),
+    path.join(process.cwd(), "libs", "mom.node"),
+    path.join(process.cwd(), "mom.node"),
+    path.join(process.cwd(), "mom", "mom.node"),
+    path.join(__dirname, "libs", "mom.node"),
+    path.join(__dirname, "mom.node"),
+    path.join(__dirname, "build", "Release", "mom.node"),
   ]);
   debugStartup("requiring " + core_path);
   const core_module = require(core_path);
@@ -401,7 +401,7 @@ function workerExitMessage(thread_id, code, signal, detail = []) {
 
 function createSubprocessThread(i, env, messageHandler) {
   const thread = childProcess.spawn(process.execPath, process.argv.slice(1), {
-    env: {...env, MOMINER_CLUSTER_WORKER: "1"},
+    env: {...env, MOM_CLUSTER_WORKER: "1"},
     stdio: ["pipe", "pipe", "pipe"],
   });
   let output = "";

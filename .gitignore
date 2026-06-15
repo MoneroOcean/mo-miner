@@ -14,7 +14,7 @@ cert*
 *.log
 log
 x
-mo-miner-*.tgz
+mom-*.tgz
 *.tgz
 
 test/

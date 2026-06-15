@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Install the latest upstream Intel GPU compute runtime used by mo-miner's
+# Install the latest upstream Intel GPU compute runtime used by mom's
 # bundled SYCL runtime. This intentionally does not add an apt repository.
 
 github_api_root="https://api.github.com/repos"
 
 if [ "$(id -u)" -ne 0 ]; then
   exec sudo -n env \
-    MOMINER_INTEL_RUNTIME_KEEP_DOWNLOADS="${MOMINER_INTEL_RUNTIME_KEEP_DOWNLOADS:-}" \
-    MOMINER_COMPUTE_RUNTIME_RELEASE="${MOMINER_COMPUTE_RUNTIME_RELEASE:-}" \
-    MOMINER_IGC_RELEASE="${MOMINER_IGC_RELEASE:-}" \
-    MOMINER_LEVEL_ZERO_RELEASE="${MOMINER_LEVEL_ZERO_RELEASE:-}" \
+    MOM_INTEL_RUNTIME_KEEP_DOWNLOADS="${MOM_INTEL_RUNTIME_KEEP_DOWNLOADS:-}" \
+    MOM_COMPUTE_RUNTIME_RELEASE="${MOM_COMPUTE_RUNTIME_RELEASE:-}" \
+    MOM_IGC_RELEASE="${MOM_IGC_RELEASE:-}" \
+    MOM_LEVEL_ZERO_RELEASE="${MOM_LEVEL_ZERO_RELEASE:-}" \
     "$0" "$@"
 fi
 
@@ -43,9 +43,9 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends ca-certificates curl python3 ocl-icd-libopencl1
 
-work_dir="$(mktemp -d "${TMPDIR:-/tmp}/mo-miner-intel-runtime.XXXXXX")"
+work_dir="$(mktemp -d "${TMPDIR:-/tmp}/mom-intel-runtime.XXXXXX")"
 chmod 755 "$work_dir"
-if [ "${MOMINER_INTEL_RUNTIME_KEEP_DOWNLOADS:-}" = "1" ]; then
+if [ "${MOM_INTEL_RUNTIME_KEEP_DOWNLOADS:-}" = "1" ]; then
   echo "Keeping downloads in $work_dir"
 else
   trap 'rm -rf "$work_dir"' EXIT
@@ -130,7 +130,7 @@ download_selected_asset() {
 
 download_compute_runtime() {
   echo "Resolving Intel compute-runtime release..."
-  github_release_json intel/compute-runtime "${MOMINER_COMPUTE_RUNTIME_RELEASE:-}" > compute-runtime.json
+  github_release_json intel/compute-runtime "${MOM_COMPUTE_RUNTIME_RELEASE:-}" > compute-runtime.json
   python3 - <<'PY'
 import json
 with open("compute-runtime.json", encoding="utf-8") as fh:
@@ -171,8 +171,8 @@ download_igc_runtime() {
     fi
   done
 
-  if [ -n "${MOMINER_IGC_RELEASE:-}" ]; then
-    release="$MOMINER_IGC_RELEASE"
+  if [ -n "${MOM_IGC_RELEASE:-}" ]; then
+    release="$MOM_IGC_RELEASE"
   elif [ -n "$required_version" ]; then
     release="v$required_version"
   else
@@ -210,7 +210,7 @@ download_level_zero_loader() {
   local ubuntu_asset_suffix="u${VERSION_ID}"
 
   echo "Resolving oneAPI Level Zero loader release..."
-  github_release_json oneapi-src/level-zero "${MOMINER_LEVEL_ZERO_RELEASE:-}" > level-zero.json
+  github_release_json oneapi-src/level-zero "${MOM_LEVEL_ZERO_RELEASE:-}" > level-zero.json
   python3 - <<'PY'
 import json
 with open("level-zero.json", encoding="utf-8") as fh:

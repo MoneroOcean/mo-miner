@@ -74,9 +74,9 @@ function usesEthProxy(pool) {
 // donate pool also sets it false so donation keeps using login). Both dialects push the same
 // object-param pearl mining.notify and take the same mining.submit{job_id,plain_proof}.
 function pearlUsesSubscribe(pool) {
-  // MOMINER_PEARL_LOGIN env forces the legacy login dialect (pearlpool.cloud) for CLI mining.
+  // MOM_PEARL_LOGIN env forces the legacy login dialect (pearlpool.cloud) for CLI mining.
   // The MO donate pool opts out via use_subscribe:false, so this env never affects donation.
-  if (process.env.MOMINER_PEARL_LOGIN) return false;
+  if (process.env.MOM_PEARL_LOGIN) return false;
   return poolProtocol(pool) === "pearl" && pool.use_subscribe !== false;
 }
 
@@ -91,7 +91,7 @@ function pearlDiffFromJobId(job_id) {
 // match the native pearl_k()/pearl_rank() (4096/256) or the JS-computed jackpot bound disagrees with
 // the kernel/verifier and shares come out too rare.
 function pearlKEff() {
-  const k = Number(process.env.MOMINER_PEARL_K) || 4096, rank = Number(process.env.MOMINER_PEARL_RANK) || 256;
+  const k = Number(process.env.MOM_PEARL_K) || 4096, rank = Number(process.env.MOM_PEARL_RANK) || 256;
   return Math.floor(k / rank) * rank;
 }
 
@@ -697,7 +697,7 @@ function poolLoginParams(pool) {
 }
 
 function poolAlgoName(algo) {
-  // Historical mo-miner KawPow perf values were already raw H/s.
+  // Historical mom KawPow perf values were already raw H/s.
   return algo === "kawpow" ? "kawpow1" : algo;
 }
 
@@ -788,7 +788,7 @@ function handlePoolConnect(pool_id, socket, pool) {
     module.exports.pool_write(pool_id, { jsonrpc: "2.0", id: 1, method: "mining.subscribe", params: [o.agent_str] });
     return module.exports.pool_write(pool_id, {
       jsonrpc: "2.0", id: 2, method: "mining.authorize",
-      params: { wallet: pool.login, worker: pool.worker || "mo-miner", pass: pool.pass }
+      params: { wallet: pool.login, worker: pool.worker || "mom", pass: pool.pass }
     });
   }
   const request = usesMiningSubscribe(pool) ?

@@ -20,8 +20,8 @@
 typedef std::map<std::string, std::string> MessageValues;
 
 static void debug_async_worker(const char* message) {
-  if (!std::getenv("MOMINER_DEBUG_STARTUP")) return;
-  std::fprintf(stderr, "MOMINER_DEBUG_STARTUP %s\n", message);
+  if (!std::getenv("MOM_DEBUG_STARTUP")) return;
+  std::fprintf(stderr, "MOM_DEBUG_STARTUP %s\n", message);
   std::fflush(stderr);
 }
 

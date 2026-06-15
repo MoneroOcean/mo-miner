@@ -164,14 +164,14 @@ private:
 #   define LOG_DEBUG_WARN(x, ...)
 #endif
 
-// MOMINER PATCH BEGIN: mo-miner links XMRig hash code without the XMRig logging backend, so compile used log calls away to avoid unresolved Log::print symbols.
+// MOM PATCH BEGIN: mom links XMRig hash code without the XMRig logging backend, so compile used log calls away to avoid unresolved Log::print symbols.
 #undef LOG_INFO
 #undef LOG_WARN
 #undef LOG_VERBOSE
 #define LOG_INFO(x, ...)
 #define LOG_WARN(x, ...)
 #define LOG_VERBOSE(x, ...)
-// MOMINER PATCH END
+// MOM PATCH END
 
 
 } /* namespace xmrig */

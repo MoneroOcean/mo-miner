@@ -3,8 +3,8 @@
 // straight-line constant ops (the CUDA backend spec-constants do NOT fold; this matches the Intel spec-const
 // speedup). The device code is the SAME sycl/kawpow_device.inc the AOT build uses; here it is read at
 // runtime and appended after a self-contained prelude (constants/structs/FastModData) plus the baked
-// program/dag-mod and a free-function-kernel wrapper. Only built for MOMINER_SYCL_CUDA (Linux/NVIDIA).
-#if defined(MOMINER_SYCL_CUDA)
+// program/dag-mod and a free-function-kernel wrapper. Only built for MOM_SYCL_CUDA (Linux/NVIDIA).
+#if defined(MOM_SYCL_CUDA)
 #include <dlfcn.h>  // dladdr: locate the loaded module so kawpow_device.inc can ship beside it
 
 // Prelude: everything sycl/kawpow_device.inc relies on (it assumes constants/structs/FastModData are
@@ -63,7 +63,7 @@ inline uint32_t fast_mod_dev(const uint32_t a, const FastModData d) {
 }
 )KJP";
 
-// Free-function-kernel wrapper. Mirrors the AOT MOMINER_SYCL_CUDA search lambda, but reads the baked
+// Free-function-kernel wrapper. Mirrors the AOT MOM_SYCL_CUDA search lambda, but reads the baked
 // BAKED_PROGRAM/BAKED_DAGMOD consts (which fold) and gets work-group local memory from
 // work_group_static instead of a local_accessor. Appended after the device .inc + the baked consts.
 static const char* const KAWPOW_JIT_WRAPPER = R"KJW(
@@ -114,7 +114,7 @@ static std::string kawpow_read_file(const std::string& path) {
   return ss.str();
 }
 
-// Directory of the loaded mo-miner.node (so kawpow_device.inc can ship beside it), via dladdr.
+// Directory of the loaded mom.node (so kawpow_device.inc can ship beside it), via dladdr.
 static std::string kawpow_module_dir() {
   Dl_info info{};
   if (dladdr(reinterpret_cast<const void*>(&kawpow_read_file), &info) && info.dli_fname) {
@@ -126,12 +126,12 @@ static std::string kawpow_module_dir() {
 }
 
 // kawpow_device.inc holds the device code the CUDA JIT compiles at runtime. It ships as a separate
-// file: look beside the loaded module (release: libs/kawpow_device.inc next to mo-miner.node), then in
-// the source tree (dev: sycl/kawpow_device.inc), with $MOMINER_KAWPOW_DEVICE_INC as an override. Read
+// file: look beside the loaded module (release: libs/kawpow_device.inc next to mom.node), then in
+// the source tree (dev: sycl/kawpow_device.inc), with $MOM_KAWPOW_DEVICE_INC as an override. Read
 // once and cached.
 static const std::string& kawpow_device_src() {
   static const std::string src = [] {
-    const char* const env = std::getenv("MOMINER_KAWPOW_DEVICE_INC");
+    const char* const env = std::getenv("MOM_KAWPOW_DEVICE_INC");
     const std::string dir = kawpow_module_dir();
     const std::string candidates[] = {
       env ? std::string(env) : std::string(),
@@ -144,8 +144,8 @@ static const std::string& kawpow_device_src() {
       std::string c = kawpow_read_file(p);
       if (!c.empty()) return c;
     }
-    throw std::string("kawpow JIT: cannot find kawpow_device.inc beside mo-miner.node or in "
-                      "sycl/ (set MOMINER_KAWPOW_DEVICE_INC)");
+    throw std::string("kawpow JIT: cannot find kawpow_device.inc beside mom.node or in "
+                      "sycl/ (set MOM_KAWPOW_DEVICE_INC)");
   }();
   return src;
 }
@@ -174,4 +174,4 @@ static std::string kawpow_emit_baked(const KawpowProgram& p, const FastModData& 
   return s;
 }
 
-#endif // MOMINER_SYCL_CUDA
+#endif // MOM_SYCL_CUDA

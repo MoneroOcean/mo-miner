@@ -285,7 +285,7 @@ const perfTests = [];
 const perfAlgos = new Set();
 const nonceAt32Algos = new Set(["kawpow", "etchash", "autolykos2"]);
 // Heights sampled from coin mainnets so perf DAG/table sizes match live pool jobs
-// (ETC 2026-06-04, RVN and ERG 2026-06-12). Keep in sync with benchHeightByAlgo in mo-miner.js.
+// (ETC 2026-06-04, RVN and ERG 2026-06-12). Keep in sync with benchHeightByAlgo in mom.js.
 const benchHeightByAlgo = {
   etchash:    24689903,
   kawpow:     4407982,

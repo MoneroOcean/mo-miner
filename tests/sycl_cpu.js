@@ -23,13 +23,13 @@ function requiredVector(name) {
   return definition;
 }
 
-// MOMINER_SYCL_CPU_SKIP lets a build opt specific algos out of SYCL-CPU
+// MOM_SYCL_CPU_SKIP lets a build opt specific algos out of SYCL-CPU
 // verification (comma-separated algo names). The AdaptiveCpp/NVIDIA build sets it
 // to kawpow,autolykos2: those barrier-heavy kernels are miscompiled by
 // AdaptiveCpp's OpenMP host backend (they are verified on the GPU instead). The
 // Intel build leaves it unset and runs all five.
 const skipAlgos = new Set(
-  (process.env.MOMINER_SYCL_CPU_SKIP || "").split(",").map((s) => s.trim()).filter(Boolean)
+  (process.env.MOM_SYCL_CPU_SKIP || "").split(",").map((s) => s.trim()).filter(Boolean)
 );
 
 const syclCpuVectors = [

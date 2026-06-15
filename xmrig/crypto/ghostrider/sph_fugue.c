@@ -957,13 +957,13 @@ fugue4_core(sph_fugue_context *sc, const void *data, size_t len)
 
 #define ROR(n, s)   do { \
 		sph_u32 tmp[n]; \
-		/* MOMINER PATCH BEGIN: ICX miscompiles the fixed-size overlapping memmove in this rotate; use the equivalent backwards word copy without disabling optimization. */ \
+		/* MOM PATCH BEGIN: ICX miscompiles the fixed-size overlapping memmove in this rotate; use the equivalent backwards word copy without disabling optimization. */ \
 		unsigned u; \
 		memcpy(tmp, S + ((s) - (n)), (n) * sizeof(sph_u32)); \
 		for (u = (s) - 1; u >= (n); --u) \
 			S[u] = S[u - (n)]; \
 		memcpy(S, tmp, (n) * sizeof(sph_u32)); \
-		/* MOMINER PATCH END */ \
+		/* MOM PATCH END */ \
 	} while (0)
 
 static void
