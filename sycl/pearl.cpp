@@ -1110,6 +1110,7 @@ struct PearlState {
   Buffers b{};
   uint8_t key[32] = {0}, header[76] = {0};
   bool have_header = false;
+  double wait_ema_us = 0.0; // EMA of recent attempt wall times (us); paces the pre-wait sleep below
   std::mutex mutex;
   explicit PearlState(const std::string& dev_str)
     : queue(get_dev(dev_str), sycl::property::queue::in_order{}) {}
@@ -1178,7 +1179,20 @@ int pearl(
   q.wait();
 
   attempt(q, b, (uint32_t)*pseed, m, n, k, rank);
+  // The in-order queue's wait busy-spins a host core on both backends (CUDA's native sync and the
+  // Intel GPU wait), and pearl waits once per attempt -- a long, very stable GEMM. So sleep through
+  // most of the attempt (an EMA of recent attempt wall times) before waiting, leaving only a short
+  // spinning tail; the result is read from shared USM afterwards so completion stays exact. The 90%
+  // sleep stays under the attempt time, adding no latency. Mirrors the cn/gpu pre-read sleep.
+  const auto attempt_start = std::chrono::steady_clock::now();
+  if (st.wait_ema_us > 2000.0)
+    std::this_thread::sleep_for(std::chrono::microseconds(static_cast<long>(st.wait_ema_us * 0.90)));
   q.wait();
+  {
+    const double us = static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
+      std::chrono::steady_clock::now() - attempt_start).count());
+    st.wait_ema_us = st.wait_ema_us == 0.0 ? us : st.wait_ema_us * 0.8 + us * 0.2;
+  }
   if (!b.result->found) return 0;
   *pseed = b.result->seed;
   if (is_test) return 1;                                             // test: core only needs "ok", no proof

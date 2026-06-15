@@ -131,11 +131,21 @@ inline uint32_t fast_mod_dev(const uint32_t a, const FastModData d) {
 }
 
 inline void sycl_wait_and_throw(sycl::event event, const sycl::device& device) {
-  if (!sycl_is_level_zero_gpu(device)) {
+#if defined(MOM_SYCL_CUDA)
+  // CUDA's native wait busy-spins a host core (default context scheduling), but its event-status
+  // query (cuEventQuery) is reliable and cheap, so poll+sleep on every GPU device to free the core.
+  const bool poll_wait = device.is_gpu();
+#else
+  // Level-Zero busy-spins inside the native wait but exposes a reliable, cheap event-status query,
+  // so poll it and sleep between checks to free the host core (1d7d9e0). Every other device blocks
+  // efficiently (CPU) or handles the busy-wait at its call site (cn/gpu on the OpenCL backend sleeps
+  // before its blocking output read; see cn-gpu.cpp), so wait natively.
+  const bool poll_wait = sycl_is_level_zero_gpu(device);
+#endif
+  if (!poll_wait) {
     event.wait_and_throw();
     return;
   }
-
   while (event.get_info<sycl::info::event::command_execution_status>() !=
          sycl::info::event_command_status::complete) {
     std::this_thread::sleep_for(std::chrono::microseconds(100));

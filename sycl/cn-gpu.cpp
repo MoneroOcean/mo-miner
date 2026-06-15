@@ -482,6 +482,7 @@ struct CnGpuState { // Per-device queue and persistent allocations; avoids buffe
   uint8_t* inputs = nullptr, *outputs = nullptr;
   uint64_t* spads = nullptr, *lpads = nullptr;
   unsigned input_cap = 0, batch_cap = 0;
+  double wait_ema_us = 0.0; // EMA of recent batch wall times (us); paces the pre-read sleep below
   std::mutex mutex;
   CnGpuState(const std::string& dev_str)
     : device(get_dev(dev_str)),
@@ -572,6 +573,8 @@ void cn_gpu(
   uint8_t* const d_outputs = state.outputs;
   const unsigned input_bytes = input_size * batch;
   const unsigned output_bytes = HASH_LEN * batch;
+
+  const auto batch_start = std::chrono::steady_clock::now();  // for the pre-read sleep EMA below
 
   if (state.shared_io) {
     std::memcpy(d_inputs, inputs, input_bytes);
@@ -825,10 +828,33 @@ void cn_gpu(
     });
   });
 
+  // shared_io is false only for the device-memory GPUs that take the blocking D2H output read
+  // below: Intel OpenCL (cn/gpu's default gpu1o) and the CUDA backend. On both, that read pins a
+  // host core for the whole batch -- their queue waits return before the kernels finish, and the
+  // CUDA D2H copy to pageable host memory is synchronous, so the real GPU sync happens inside the
+  // read. (CPU and Level-Zero take the shared_io path instead: a poll-freed wait then a host-side
+  // copy of already-ready data.) To stop pinning the core, sleep through most of the batch before
+  // the read -- sized from an EMA of recent batch wall times -- leaving only a short spinning tail.
+  // cn/gpu batches are long (hundreds of ms) and very stable, so a 90% sleep adds no latency (it
+  // stays under the batch) while cutting steady-state host usage to ~10% of a core.
+  const bool sleep_before_read = !state.shared_io;
+  if (sleep_before_read && state.wait_ema_us > 2000.0) {
+    std::this_thread::sleep_for(std::chrono::microseconds(static_cast<long>(state.wait_ema_us * 0.90)));
+  }
+
   if (state.shared_io) {
     sycl_wait_and_throw(final_event, state.device);
     std::memcpy(output, d_outputs, output_bytes);
   } else {
     sycl_wait_and_throw(q.memcpy(output, d_outputs, output_bytes), state.device);
+  }
+
+  if (sleep_before_read) {
+    // Track the full batch wall time (submit + sleep + read). With the sleep sized below the
+    // batch this equals the true GPU time, so the EMA self-corrects: oversleep -> measured time
+    // drops -> next sleep shrinks; undersleep -> read spins longer -> EMA rises toward the truth.
+    const double batch_us = static_cast<double>(
+      std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - batch_start).count());
+    state.wait_ema_us = state.wait_ema_us == 0.0 ? batch_us : state.wait_ema_us * 0.8 + batch_us * 0.2;
   }
 }
