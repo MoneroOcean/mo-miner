@@ -1,231 +1,49 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Install the latest upstream Intel GPU compute runtime used by mom's
-# bundled SYCL runtime. This intentionally does not add an apt repository.
-
-github_api_root="https://api.github.com/repos"
+# Install the Intel GPU compute runtime that mom's bundled SYCL runtime needs to reach the GPU,
+# straight from the distribution's own apt repositories -- no extra apt repos, no downloads. mom
+# already bundles the SYCL runtime user-space (libsycl + the UR adapters + libhwloc + the OpenCL CPU
+# runtime) in libs/; this only adds the host GPU driver/runtime that exposes Level-Zero / OpenCL
+# devices to them. Ubuntu 24.04 / 26.04 (aim for 26.04, whose packages are new enough for Arc B-series).
 
 if [ "$(id -u)" -ne 0 ]; then
-  exec sudo -n env \
-    MOM_INTEL_RUNTIME_KEEP_DOWNLOADS="${MOM_INTEL_RUNTIME_KEEP_DOWNLOADS:-}" \
-    MOM_COMPUTE_RUNTIME_RELEASE="${MOM_COMPUTE_RUNTIME_RELEASE:-}" \
-    MOM_IGC_RELEASE="${MOM_IGC_RELEASE:-}" \
-    MOM_LEVEL_ZERO_RELEASE="${MOM_LEVEL_ZERO_RELEASE:-}" \
-    "$0" "$@"
-fi
-
-if [ "$(uname -m)" != "x86_64" ]; then
-  echo "Intel GPU runtime installer supports x86_64 Linux only." >&2
-  exit 1
+  exec sudo -- "$0" "$@"
 fi
 
 if [ ! -r /etc/os-release ]; then
-  echo "/etc/os-release is missing; unable to detect Linux distribution." >&2
+  echo "/etc/os-release is missing; unable to detect the Linux distribution." >&2
   exit 1
 fi
-
 . /etc/os-release
-unsupported_distro() {
-  echo "This installer supports Ubuntu 24.04 and 26.04 only; detected ${PRETTY_NAME:-unknown}." >&2
+if [ "${ID:-}" != "ubuntu" ]; then
+  echo "This installer targets Ubuntu (detected ${PRETTY_NAME:-unknown})." >&2
+  echo "Install the equivalents of: intel-opencl-icd, the Level-Zero GPU driver, and the Level-Zero + OpenCL loaders." >&2
   exit 1
-}
-[ "${ID:-}" = "ubuntu" ] || unsupported_distro
-case "${VERSION_ID:-}" in
-  24.*|26.*) ;;
-  *) unsupported_distro ;;
-esac
+fi
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y --no-install-recommends ca-certificates curl python3 ocl-icd-libopencl1
 
-work_dir="$(mktemp -d "${TMPDIR:-/tmp}/mom-intel-runtime.XXXXXX")"
-chmod 755 "$work_dir"
-if [ "${MOM_INTEL_RUNTIME_KEEP_DOWNLOADS:-}" = "1" ]; then
-  echo "Keeping downloads in $work_dir"
+# intel-opencl-icd  : Intel OpenCL GPU driver (NEO) -- cn/gpu and OpenCL GPU devices.
+# libze-intel-gpu1  : Intel Level-Zero GPU driver (named intel-level-zero-gpu on older Ubuntu).
+# libze1            : oneAPI Level-Zero loader (libze_loader.so.1).
+# ocl-icd-libopencl1: OpenCL ICD loader (libOpenCL.so.1).
+pkgs="intel-opencl-icd libze1 ocl-icd-libopencl1"
+if apt-cache show libze-intel-gpu1 >/dev/null 2>&1; then
+  pkgs="$pkgs libze-intel-gpu1"
 else
-  trap 'rm -rf "$work_dir"' EXIT
+  pkgs="$pkgs intel-level-zero-gpu"
 fi
 
-cd "$work_dir"
-
-github_release_json() {
-  local repo="$1" release="${2:-}" url
-  if [ -n "$release" ]; then
-    url="$github_api_root/$repo/releases/tags/$release"
-  else
-    url="$github_api_root/$repo/releases/latest"
-  fi
-  curl -fsSL --retry 3 --retry-delay 2 \
-    -H "Accept: application/vnd.github+json" \
-    -H "X-GitHub-Api-Version: 2022-11-28" \
-    "$url"
-}
-
-# Print "Using <repo> <tag_name>" from a release-JSON file produced above.
-announce_release() {
-  python3 - "$1" "$2" <<'PY'
-import json, sys
-with open(sys.argv[2], encoding="utf-8") as fh:
-    release = json.load(fh)
-print(f'Using {sys.argv[1]} {release.get("tag_name", "<unknown>")}')
-PY
-}
-
-select_asset() {
-  local json_file="$1"
-  shift
-  python3 - "$json_file" "$@" <<'PY'
-import json, re, sys
-
-with open(sys.argv[1], encoding="utf-8") as fh:
-    release = json.load(fh)
-
-assets = release.get("assets") or []
-for pattern in sys.argv[2:]:
-    rx = re.compile(pattern)
-    for asset in assets:
-        name = asset.get("name") or ""
-        if rx.fullmatch(name):
-            digest = asset.get("digest") or ""
-            url = asset.get("browser_download_url") or ""
-            if not url:
-                continue
-            print(f"{name}\t{digest}\t{url}")
-            raise SystemExit(0)
-
-print("Unable to find a matching asset in release "
-      f"{release.get('tag_name', '<unknown>')}: {', '.join(sys.argv[2:])}",
-      file=sys.stderr)
-if assets:
-    print("Available assets:", file=sys.stderr)
-    for asset in assets:
-        print("  " + (asset.get("name") or ""), file=sys.stderr)
-raise SystemExit(1)
-PY
-}
-
-download_asset() {
-  local name="$1" digest="$2" url="$3"
-
-  echo "Downloading $name" >&2
-  curl -fL --retry 3 --retry-delay 2 -o "$name" "$url"
-  if [[ "$digest" == sha256:* ]]; then
-    printf '%s  %s\n' "${digest#sha256:}" "$name" | sha256sum -c - >&2
-  else
-    echo "Warning: GitHub did not provide a SHA-256 digest for $name." >&2
-  fi
-}
-
-download_selected_asset() {
-  local json_file="$1"
-  shift
-  # Keep select_asset on its own line so its non-zero exit aborts under `set -e`
-  # (a failure inside <<<"$(...)" would be masked by read's exit status).
-  local selected name digest url
-  selected="$(select_asset "$json_file" "$@")"
-  IFS=$'\t' read -r name digest url <<<"$selected"
-  download_asset "$name" "$digest" "$url"
-  printf '%s\n' "$name"
-}
-
-download_compute_runtime() {
-  echo "Resolving Intel compute-runtime release..."
-  github_release_json intel/compute-runtime "${MOM_COMPUTE_RUNTIME_RELEASE:-}" > compute-runtime.json
-  announce_release intel/compute-runtime compute-runtime.json
-
-  compute_debs=()
-  compute_debs+=("$(download_selected_asset compute-runtime.json 'libigdgmm[0-9]*_.+_amd64\.deb')")
-  compute_debs+=("$(download_selected_asset compute-runtime.json 'intel-ocloc_.+_amd64\.deb')")
-  compute_debs+=("$(download_selected_asset compute-runtime.json 'intel-opencl-icd_.+_amd64\.deb')")
-  compute_debs+=("$(download_selected_asset compute-runtime.json 'libze-intel-gpu1_.+_amd64\.deb' 'intel-level-zero-gpu_.+_amd64\.deb')")
-}
-
-extract_igc_version() {
-  local deb="$1"
-  python3 - "$deb" <<'PY'
-import re, subprocess, sys
-
-text = subprocess.check_output(["dpkg-deb", "-I", sys.argv[1]], text=True)
-matches = re.findall(r"intel-igc-(?:core|opencl)(?:-[0-9]+)?\s*\(>=\s*([^)]+)\)", text)
-if matches:
-    print(matches[0])
-PY
-}
-
-download_igc_runtime() {
-  local required_version="" release=""
-  local deb version
-
-  # IGC must satisfy the ">= x.y.z" dependency pinned in the compute-runtime
-  # .debs; use the first version we can extract from any of them.
-  for deb in "${compute_debs[@]}"; do
-    version="$(extract_igc_version "$deb" || true)"
-    if [ -n "$version" ]; then
-      required_version="$version"
-      break
-    fi
-  done
-
-  if [ -n "${MOM_IGC_RELEASE:-}" ]; then
-    release="$MOM_IGC_RELEASE"
-  elif [ -n "$required_version" ]; then
-    release="v$required_version"
-  fi
-
-  echo "Resolving Intel Graphics Compiler release..."
-  if ! github_release_json intel/intel-graphics-compiler "$release" > igc.json; then
-    if [ -n "$release" ]; then
-      echo "Unable to fetch IGC release $release; falling back to latest IGC release." >&2
-      github_release_json intel/intel-graphics-compiler > igc.json
-    else
-      return 1
-    fi
-  fi
-
-  announce_release intel/intel-graphics-compiler igc.json
-
-  igc_debs=()
-  if [ -n "$required_version" ]; then
-    igc_debs+=("$(download_selected_asset igc.json "intel-igc-core(?:-[0-9]+)?_${required_version//./\\.}.+_amd64\\.deb" 'intel-igc-core(?:-[0-9]+)?_.+_amd64\.deb')")
-    igc_debs+=("$(download_selected_asset igc.json "intel-igc-opencl(?:-[0-9]+)?_${required_version//./\\.}.+_amd64\\.deb" 'intel-igc-opencl(?:-[0-9]+)?_.+_amd64\.deb')")
-  else
-    igc_debs+=("$(download_selected_asset igc.json 'intel-igc-core(?:-[0-9]+)?_.+_amd64\.deb')")
-    igc_debs+=("$(download_selected_asset igc.json 'intel-igc-opencl(?:-[0-9]+)?_.+_amd64\.deb')")
-  fi
-}
-
-download_level_zero_loader() {
-  local ubuntu_asset_suffix="u${VERSION_ID}"
-
-  echo "Resolving oneAPI Level Zero loader release..."
-  github_release_json oneapi-src/level-zero "${MOM_LEVEL_ZERO_RELEASE:-}" > level-zero.json
-  announce_release oneapi-src/level-zero level-zero.json
-
-  level_zero_deb="$(download_selected_asset level-zero.json \
-    "libze1_.+\\+${ubuntu_asset_suffix}_amd64\\.deb" \
-    "level-zero_.+\\+${ubuntu_asset_suffix}_amd64\\.deb" \
-    'libze1_.+\+u24\.04_amd64\.deb' \
-    'level-zero_.+\+u24\.04_amd64\.deb' \
-    'libze1_.+\+u22\.04_amd64\.deb' \
-    'level-zero_.+\+u22\.04_amd64\.deb')"
-}
-
-download_compute_runtime
-download_igc_runtime
-download_level_zero_loader
-
-debs=("$level_zero_deb" "${compute_debs[@]}" "${igc_debs[@]}")
-
-echo "Installing Intel GPU compute runtime packages:"
-printf '  %s\n' "${debs[@]}"
-apt-get install -y --no-install-recommends "${debs[@]/#/.\/}"
+echo "Installing Intel GPU runtime from apt: $pkgs"
+apt-get install -y --no-install-recommends $pkgs
 ldconfig
 
-echo "Installed Intel GPU compute runtime:"
-dpkg-query -W -f='${db:Status-Abbrev}\t${Package}\t${Version}\n' \
-  libze1 level-zero libze-intel-gpu1 intel-level-zero-gpu intel-opencl-icd \
-  'intel-igc-core*' 'intel-igc-opencl*' 'libigdgmm*' intel-ocloc 2>/dev/null |
-  awk '$1 == "ii" {print $2 "\t" $3}' |
-  sort
+echo "Installed Intel GPU runtime packages:"
+# Query only the packages actually selected above ($pkgs). dpkg-query -W exits nonzero if ANY queried
+# name is unknown to dpkg, so listing names that weren't installed (e.g. the legacy intel-level-zero-gpu
+# on 24.04, where libze-intel-gpu1 is used instead) would abort the script under `set -e` AFTER a
+# successful install. The trailing `|| true` keeps this summary purely informational regardless.
+dpkg-query -W -f='  ${Package}\t${Version}\n' $pkgs 2>/dev/null | sort || true
+echo "Done. Run './mom algo_params' to confirm a gpu1 device is listed."

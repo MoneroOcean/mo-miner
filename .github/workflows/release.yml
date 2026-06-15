@@ -19,7 +19,9 @@ env:
 jobs:
   build-linux-x64:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    # The unified build is a dual-compiler build in a large (oneAPI + nightly DPC++ + CUDA) image,
+    # so it needs more time and the free-disk-space step below.
+    timeout-minutes: 150
 
     steps:
       - name: Checkout
@@ -50,11 +52,14 @@ jobs:
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v4
 
+      # ONE unified mom.node for both Intel and NVIDIA GPUs (dual-compiler combined build). No GPU is
+      # needed to build (the NVIDIA images are AOT to PTX); GPU algos are verified on real hardware,
+      # not in CI (CI has no GPU). The bundled SYCL CPU device covers the cpu + sycl-cpu test suites.
       - name: Build native addon in release image
         run: ./r.sh node -e "console.log('mom build ready')"
 
       - name: Package release archive
-        run: .github/workflows/scripts/package-linux.sh
+        run: .github/workflows/scripts/package-linux-combined.sh
 
       - name: Test release archive
         run: |
@@ -67,61 +72,6 @@ jobs:
         with:
           name: mom-lin
           path: mom-*-lin.tgz
-
-  build-linux-nvidia-x64:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 120
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: 24.15.0
-          package-manager-cache: false
-
-      - name: Free disk space
-        run: |
-          sudo rm -rf \
-            /usr/share/dotnet \
-            /usr/local/lib/android \
-            /usr/local/share/boost \
-            /usr/local/.ghcup \
-            /opt/ghc \
-            /opt/hostedtoolcache/CodeQL \
-            /opt/hostedtoolcache/go \
-            /opt/hostedtoolcache/Python \
-            /opt/hostedtoolcache/Ruby \
-            /opt/hostedtoolcache/Java_Temurin-Hotspot_jdk
-          docker system prune --all --force || true
-          df -h
-
-      - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      # DPC++ CUDA-backend build: AOT to PTX/SASS, so no GPU is needed at build time.
-      # The build is CUDA-only (no CPU SYCL device) and CI runners have no NVIDIA GPU,
-      # so the SYCL/GPU algos are verified on real NVIDIA hardware, not in CI.
-      - name: Build native addon in NVIDIA (DPC++ CUDA) image
-        run: ./r.sh --nvidia node -e "console.log('mom nvidia build ready')"
-
-      - name: Package release archive
-        run: .github/workflows/scripts/package-linux-nvidia.sh
-
-      - name: Test release archive (CPU)
-        # Only the pure-CPU (xmrig) suite runs here (see build step above for why).
-        run: |
-          set -euo pipefail
-          archive="$(find . -maxdepth 1 -name 'mom-*-lin-nvidia.tgz' -print -quit)"
-          .github/workflows/scripts/test-release-linux.sh "$archive" cpu
-
-      - name: Upload release artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: mom-lin-nvidia
-          path: mom-*-lin-nvidia.tgz
 
   build-windows-x64:
     runs-on: windows-2022
@@ -166,9 +116,11 @@ jobs:
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File .github\workflows\scripts\package-windows.ps1
 
+      # Set up the runtime with the SAME install.ps1 users run (dogfoods it), pinning the OpenCL
+      # CPU runtime URL for a deterministic CI download.
       - name: Install Intel OpenCL CPU runtime
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File .github\workflows\scripts\install-opencl-runtime-windows.ps1
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install.ps1 -OpenClRuntimeUrl "https://registrationcenter-download.intel.com/akdlm/IRC_NAS/ad824c04-01c8-4ae5-b5e8-164a04f67609/w_opencl_runtime_p_2025.3.1.762.exe"
 
       - name: Test release archive
         shell: powershell
@@ -186,7 +138,6 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     needs:
       - build-linux-x64
-      - build-linux-nvidia-x64
       - build-windows-x64
     runs-on: ubuntu-24.04
 

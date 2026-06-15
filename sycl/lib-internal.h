@@ -19,18 +19,23 @@
 
 #include "lib.h"
 
-// SYCL builds: oneAPI DPC++ for Intel GPU / Windows (default), and DPC++ with the
-// CUDA backend for NVIDIA (-Dmom_sycl_impl=dpcpp-cuda, which defines
-// MOM_SYCL_CUDA). Both are DPC++, so they share almost all code; only the few
-// NVIDIA-specific spots below differ.
+// SYCL builds, all DPC++: oneAPI icx for Intel GPU / Windows (default), the intel/llvm
+// nightly clang CUDA backend for NVIDIA (-Dmom_sycl_impl=dpcpp-cuda), and the combined
+// build that AOTs both spir64 + nvptx in one mom.node (scripts/build-combined.dockerfile).
+// They share almost all code; the NVIDIA-specific spots are gated three ways:
+//   * device code           -> per device-compilation pass via the compiler's __NVPTX__
+//   * host code that must be COMPILED for CUDA capability -> MOM_SYCL_HAS_CUDA (set by
+//     binding.gyp for the dpcpp-cuda and dpcpp-combined modes)
+//   * host runtime decisions -> mom_is_cuda(device) below (the actual device backend)
 
-// The cooperative ProgPoW / Ethash / cn-gpu kernels run on 16-wide sub-groups on
-// Intel GPUs, requested via reqd_sub_group_size(16). NVIDIA warps are fixed at 32
-// lanes (the CUDA backend has no 16-wide sub-group), so on the NVIDIA build we drop
-// the attribute and let the native 32-wide warp stand; those kernels address each
-// cooperative team relative to its base lane within the sub-group, which is correct
-// at both 16 and 32 lanes.
-#if defined(MOM_SYCL_CUDA)
+// The cooperative ProgPoW / Ethash / cn-gpu kernels run on 16-wide sub-groups on Intel
+// GPUs, requested via reqd_sub_group_size(16). NVIDIA warps are fixed at 32 lanes (no
+// 16-wide sub-group), so the nvptx device pass drops the attribute and lets the native
+// 32-wide warp stand; those kernels address each cooperative team relative to its base
+// lane within the sub-group, correct at both 16 and 32 lanes. Gating on the per-pass
+// __NVPTX__ (not a build macro) lets the combined build emit sg16 in its spir64 image and
+// no requirement in its nvptx image, so each device loads the image that fits it.
+#if defined(__NVPTX__)
   #define MOM_REQD_SG_16
 #else
   #define MOM_REQD_SG_16 [[sycl::reqd_sub_group_size(16)]]
@@ -71,6 +76,13 @@ inline bool sycl_is_level_zero_gpu(const sycl::device& device) {
   return
     device.is_gpu() &&
     device.get_platform().get_info<sycl::info::platform::name>().find("Level-Zero") != std::string::npos;
+}
+
+// Runtime test for the DPC++ CUDA backend. The enum exists in every DPC++ sycl header, so this
+// compiles in the Intel-only build too (where it simply never matches). Use this for host-side
+// per-device decisions in the combined build, instead of the old build-wide MOM_SYCL_CUDA macro.
+inline bool mom_is_cuda(const sycl::device& device) {
+  return device.get_backend() == sycl::backend::ext_oneapi_cuda;
 }
 
 inline unsigned sycl_default_workgroup(
@@ -131,17 +143,14 @@ inline uint32_t fast_mod_dev(const uint32_t a, const FastModData d) {
 }
 
 inline void sycl_wait_and_throw(sycl::event event, const sycl::device& device) {
-#if defined(MOM_SYCL_CUDA)
-  // CUDA's native wait busy-spins a host core (default context scheduling), but its event-status
-  // query (cuEventQuery) is reliable and cheap, so poll+sleep on every GPU device to free the core.
-  const bool poll_wait = device.is_gpu();
-#else
-  // Level-Zero busy-spins inside the native wait but exposes a reliable, cheap event-status query,
-  // so poll it and sleep between checks to free the host core (1d7d9e0). Every other device blocks
-  // efficiently (CPU) or handles the busy-wait at its call site (cn/gpu on the OpenCL backend sleeps
-  // before its blocking output read; see cn-gpu.cpp), so wait natively.
-  const bool poll_wait = sycl_is_level_zero_gpu(device);
-#endif
+  // CUDA's native wait busy-spins a host core (default context scheduling), but cuEventQuery is
+  // reliable and cheap, so poll+sleep on every CUDA GPU device to free the core. Level-Zero
+  // likewise busy-spins inside the native wait but exposes a cheap event-status query, so poll it
+  // too (1d7d9e0). Every other device blocks efficiently (CPU) or handles the busy-wait at its
+  // call site (cn/gpu on the OpenCL backend sleeps before its blocking read; see cn-gpu.cpp), so
+  // wait natively. Decided at runtime on the device backend so the combined build does the right
+  // thing per device.
+  const bool poll_wait = mom_is_cuda(device) ? device.is_gpu() : sycl_is_level_zero_gpu(device);
   if (!poll_wait) {
     event.wait_and_throw();
     return;

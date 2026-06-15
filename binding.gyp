@@ -5,10 +5,14 @@
     # build runs `node-gyp configure -- -Dmom_sycl_impl=dpcpp-cuda` to compile
     # the same SYCL sources with the DPC++ CUDA backend.
     "mom_sycl_impl%": "dpcpp",
-    # CUDA AOT target arch(es) for mom_sycl_impl=dpcpp-cuda. Default is NVIDIA-wide
-    # (Ampere/Ada/Hopper); override e.g. -Dmom_cuda_arch=nvidia_gpu_sm_89 for a faster
-    # single-arch build. (Blackwell sm_120 needs a CUDA 12.8+ toolkit.)
-    "mom_cuda_arch%": "nvidia_gpu_sm_80,nvidia_gpu_sm_89,nvidia_gpu_sm_90"
+    # CUDA AOT target arch for mom_sycl_impl=dpcpp-cuda. A single low arch (sm_80, Ampere), NOT a
+    # multi-arch list: the nightly clang mis-selects a multi-nvptx-target fatbin at runtime (every
+    # algo CUDA_ERROR_NO_BINARY on an sm_89 device), whereas a single sm_80 image's forward-compatible
+    # PTX is JIT'd by the driver to the actual GPU at load -- so one sm_80 build runs natively on
+    # Ampere/Ada/Hopper (verified on an L4/sm_89 at full perf). sm_80 is also the floor for pearl's
+    # int8 mma.m16n8k32. Override e.g. -Dmom_cuda_arch=nvidia_gpu_sm_90 to pin a single newer arch.
+    # (Blackwell sm_120 needs a CUDA 12.8+ toolkit.)
+    "mom_cuda_arch%": "nvidia_gpu_sm_80"
   },
   "targets": [
     {
@@ -296,18 +300,32 @@
         }, {
           "conditions": [
             [ "mom_sycl_impl=='dpcpp-cuda'", {
-              # NVIDIA via the intel/llvm DPC++ CUDA backend (oneAPI 2026.0; CUDA/nvptx built in).
-              # Same DPC++ as the Intel build; MOM_SYCL_CUDA marks the few NVIDIA-specific spots
-              # (native 32-wide warps, Lemire/div.rn fixes, pearl mma.sync tensor cores, kawpow source
-              # JIT). -ffp-contract=off keeps the cn/gpu FP recurrence deterministic; -fsycl-embed-ir for
-              # the kawpow runtime kernel-compiler. Multi-arch AOT, NVIDIA-wide (Ampere/Ada/Hopper). No
-              # ESIMD (that is Intel-only), so pearl uses its mma.sync path here.
+              # NVIDIA-only via the intel/llvm DPC++ CUDA backend (AOT to nvptx). MOM_SYCL_HAS_CUDA
+              # compiles the CUDA-capable host paths (pearl mma.sync search_cuda, kawpow source JIT);
+              # device-specific code is gated per compilation pass on the compiler's __NVPTX__.
+              # -ffp-contract=off keeps the cn/gpu FP recurrence deterministic; -fsycl-embed-ir for the
+              # kawpow runtime kernel-compiler. Multi-arch AOT, NVIDIA-wide (Ampere/Ada/Hopper). No ESIMD.
               "cflags_cc!": [ "-std=gnu++20" ],
               "cflags+": [
-                "-std=c++20 -O3 -ffp-contract=off -fsycl -fsycl-embed-ir -fsycl-targets=<(mom_cuda_arch) -DNDEBUG -DMOM_SYCL_CUDA"
+                "-std=c++20 -O3 -ffp-contract=off -fsycl -fsycl-embed-ir -fsycl-targets=<(mom_cuda_arch) -DNDEBUG -DMOM_SYCL_HAS_CUDA"
               ]
             } ],
-            [ "mom_sycl_impl!='dpcpp-cuda'", {
+            [ "mom_sycl_impl=='dpcpp-combined'", {
+              # Combined Intel+NVIDIA: one mom.node carrying both spir64 + nvptx device images. The
+              # cxx-combined.sh wrapper compiles these TUs with the intel/llvm nightly clang and adds
+              # -fsycl-targets=spir64,<cuda archs>; the flags here are the shared ones. MOM_SYCL_HAS_CUDA
+              # compiles the CUDA host paths (pearl mma.sync, kawpow JIT); __NVPTX__ gates device code
+              # per pass. Intel pearl keeps its full-speed ESIMD path, but ESIMD can't share a
+              # -fsycl-targets with nvptx, so it is compiled spir64-only in the separate pearl_esimd.cpp
+              # TU (the wrapper gives that file -fsycl-targets=spir64) and linked into the same binary;
+              # MOM_PEARL_HAS_ESIMD tells pearl.cpp to call that external search_esimd.
+              "sources": [ "sycl/pearl_esimd.cpp" ],
+              "cflags_cc!": [ "-std=gnu++20" ],
+              "cflags+": [
+                "-std=c++20 -O3 -ffp-contract=off -fsycl -fsycl-embed-ir -DNDEBUG -DMOM_SYCL_HAS_CUDA -DMOM_PEARL_HAS_ESIMD"
+              ]
+            } ],
+            [ "mom_sycl_impl=='dpcpp'", {
               "cflags+": [
                 "-std=c++20 -O3 -fsycl -DNDEBUG -DPEARL_ESIMD"
               ]

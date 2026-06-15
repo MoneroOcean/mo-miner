@@ -3,28 +3,12 @@ set -e
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
-# Backend select: Intel oneAPI (default) or the DPC++ CUDA backend for NVIDIA. Pass --nvidia
-# (or --intel) as the first argument to force one; MOM_NVIDIA=1 also forces NVIDIA. When neither
-# is given it auto-selects NVIDIA only if the host has an NVIDIA GPU and no Intel GPU (so a pure
-# NVIDIA box "just works" while an Intel box, or a box with both, stays on the Intel build).
-nvidia=0; explicit=0
-case "${1:-}" in
-  --nvidia) nvidia=1; explicit=1; shift ;;
-  --intel)  nvidia=0; explicit=1; shift ;;
-esac
-[ "${MOM_NVIDIA:-}" = 1 ] && { nvidia=1; explicit=1; }
-
-if [ "$explicit" = 0 ] && nvidia-smi -L >/dev/null 2>&1 \
-   && ! lspci 2>/dev/null | grep -iE 'vga|3d|display' | grep -qiE 'intel|8086'; then
-  nvidia=1
-  echo "r.sh: NVIDIA GPU detected and no Intel GPU -> building the DPC++ CUDA backend (use --intel to override)." >&2
-fi
-
-if [ "$nvidia" = 1 ]; then
-  dockerfile=build-nvidia.dockerfile; image=mom-build-nvidia; name=mom-nvidia
-else
-  dockerfile=build.dockerfile;        image=mom-build;        name=mom
-fi
+# mom builds ONE Linux binary: a unified mom.node that runs on both Intel and NVIDIA GPUs. It is a
+# dual-compiler build -- the CPU/host objects come from oneAPI icx (for the faster RandomX codegen)
+# and the SYCL device objects + final -fsycl link from the intel/llvm nightly clang (the only
+# toolchain that AOTs both spir64 and nvptx into one binary). See scripts/build-combined.dockerfile
+# + scripts/combined-build.sh. This is the only build mode -- there is no per-vendor variant to pick.
+dockerfile=build-combined.dockerfile; image=mom-build-combined; name=mom
 
 if ! docker buildx version >/dev/null 2>&1; then
   echo "Docker buildx is required. Install docker-buildx-plugin or see README.md." >&2
@@ -43,16 +27,15 @@ docker_flags=(
   --mount "type=bind,source=$SCRIPT_DIR,target=/root/mom"
 )
 
-if [ "$nvidia" = 1 ]; then
-  docker_flags+=(--env MOM_SYCL_IMPL=dpcpp-cuda)
-  # The CUDA build is AOT (no GPU needed to build); expose the GPU only when a host driver is
-  # present so GPU runs/tests work (requires nvidia-container-toolkit). CI runners have none and
-  # just build + package + run the pure-CPU suite.
-  if nvidia-smi -L >/dev/null 2>&1; then docker_flags+=(--gpus all); fi
-fi
+# The NVIDIA nvptx images are AOT-built (no GPU needed to build); expose the GPU only when a host
+# driver is present so GPU runs/tests work (needs nvidia-container-toolkit). CI runners have none
+# and just build + package + run the CPU and SYCL-CPU suites. An Intel GPU is reached via --privileged
+# (/dev/dri). The build picks dpcpp-combined itself in scripts/combined-build.sh, so no MOM_SYCL_IMPL.
+if nvidia-smi -L >/dev/null 2>&1; then docker_flags+=(--gpus all); fi
 
-# Forward these build-tuning env vars into the container only when set.
-for var in MOM_PORTABLE_BUILD MOM_LTO MOM_PERF_SAMPLES; do
+# Forward these build-tuning env vars into the container only when set. MOM_COMBINED_TARGETS lets a
+# build widen/narrow its AOT arch set; MOM_FORCE_REBUILD forces a clean reconfigure.
+for var in MOM_PORTABLE_BUILD MOM_LTO MOM_PERF_SAMPLES MOM_COMBINED_TARGETS MOM_FORCE_REBUILD; do
   if [ -n "${!var:-}" ]; then docker_flags+=(--env "$var"); fi
 done
 

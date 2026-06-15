@@ -25,7 +25,8 @@ jobs:
   package-linux-x64:
     name: Ubuntu / package
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    # Unified dual-compiler build in a large (oneAPI + nightly DPC++ + CUDA) image.
+    timeout-minutes: 150
 
     steps:
       - name: Checkout
@@ -53,14 +54,26 @@ jobs:
           docker system prune --all --force || true
           df -h
 
+      # Exercise the bundled Linux setup scripts so apt-package rot is caught in CI. install.sh
+      # installs the Intel GPU runtime from the distro repos (harmless on a GPU-less runner);
+      # install-nvidia.sh installs a kernel driver that can't run on a GPU-less CI runner, so it is
+      # only syntax-checked here and verified on real NVIDIA hardware.
+      - name: Verify Linux install scripts
+        run: |
+          set -euo pipefail
+          bash -n scripts/install.sh
+          bash -n scripts/install-nvidia.sh
+          sudo bash scripts/install.sh
+
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v4
 
+      # ONE unified mom.node for both Intel and NVIDIA GPUs (dual-compiler combined build).
       - name: Build native addon in release image
         run: ./r.sh node -e "console.log('mom build ready')"
 
       - name: Package release archive
-        run: .github/workflows/scripts/package-linux.sh
+        run: .github/workflows/scripts/package-linux-combined.sh
 
       - name: Upload package
         uses: actions/upload-artifact@v7
@@ -76,10 +89,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # No GitHub-hosted runner has a GPU, so the `gpu` suite is verified on real
+        # hardware locally (`npm test` on a GPU box runs cpu + sycl-cpu + gpu). CI runs
+        # the two suites that work on a CPU-only runner: xmrig CPU and the SYCL CPU device.
         suite:
           - cpu
           - sycl-cpu
-          - gpu
 
     steps:
       - name: Checkout
@@ -101,88 +116,6 @@ jobs:
         run: |
           set -euo pipefail
           archive="$(find dist -name 'mom-*-lin.tgz' -print -quit)"
-          .github/workflows/scripts/test-release-linux.sh "$archive" "${{ matrix.suite }}"
-
-  package-linux-nvidia-x64:
-    name: Ubuntu NVIDIA / package
-    runs-on: ubuntu-24.04
-    timeout-minutes: 120
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: 24.15.0
-          package-manager-cache: false
-
-      - name: Free disk space
-        run: |
-          sudo rm -rf \
-            /usr/share/dotnet \
-            /usr/local/lib/android \
-            /usr/local/share/boost \
-            /usr/local/.ghcup \
-            /opt/ghc \
-            /opt/hostedtoolcache/CodeQL \
-            /opt/hostedtoolcache/go \
-            /opt/hostedtoolcache/Python \
-            /opt/hostedtoolcache/Ruby \
-            /opt/hostedtoolcache/Java_Temurin-Hotspot_jdk
-          docker system prune --all --force || true
-          df -h
-
-      - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Build native addon in NVIDIA (DPC++ CUDA) image
-        run: ./r.sh --nvidia node -e "console.log('mom nvidia build ready')"
-
-      - name: Package release archive
-        run: .github/workflows/scripts/package-linux-nvidia.sh
-
-      - name: Upload package
-        uses: actions/upload-artifact@v7
-        with:
-          name: mom-lin-nvidia-package
-          path: mom-*-lin-nvidia.tgz
-
-  test-linux-nvidia-x64:
-    name: Ubuntu NVIDIA / ${{ matrix.suite }}
-    needs: package-linux-nvidia-x64
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    # Only the pure-CPU (xmrig) suite runs: the dpcpp-cuda build exposes no CPU SYCL
-    # device and CI runners have no NVIDIA GPU, so SYCL/GPU algos are verified on real
-    # NVIDIA hardware instead.
-    strategy:
-      fail-fast: false
-      matrix:
-        suite:
-          - cpu
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: 24.15.0
-          package-manager-cache: false
-
-      - name: Download package
-        uses: actions/download-artifact@v7
-        with:
-          name: mom-lin-nvidia-package
-          path: dist
-
-      - name: Test extracted package
-        run: |
-          set -euo pipefail
-          archive="$(find dist -name 'mom-*-lin-nvidia.tgz' -print -quit)"
           .github/workflows/scripts/test-release-linux.sh "$archive" "${{ matrix.suite }}"
 
   package-windows-x64:
@@ -243,10 +176,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # No GitHub-hosted runner has a GPU, so the `gpu` suite is verified on real
+        # hardware locally. CI runs the two suites that work on a CPU-only runner:
+        # xmrig CPU and the SYCL CPU device (Intel OpenCL CPU runtime).
         suite:
           - cpu
           - sycl-cpu
-          - gpu
 
     steps:
       - name: Checkout
@@ -264,10 +199,12 @@ jobs:
           name: mom-win-package
           path: dist
 
+      # Set up the runtime with the SAME install.ps1 users run (dogfoods it), pinning the OpenCL
+      # CPU runtime URL for a deterministic CI download.
       - name: Install Intel OpenCL CPU runtime
         if: matrix.suite == 'sycl-cpu'
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File .github\workflows\scripts\install-opencl-runtime-windows.ps1
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install.ps1 -OpenClRuntimeUrl "https://registrationcenter-download.intel.com/akdlm/IRC_NAS/ad824c04-01c8-4ae5-b5e8-164a04f67609/w_opencl_runtime_p_2025.3.1.762.exe"
 
       - name: Test extracted package
         shell: powershell

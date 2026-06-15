@@ -66,7 +66,11 @@ check_ldd() {
   local file output failed=0
   while IFS= read -r -d "" file; do
     output="$(LD_LIBRARY_PATH="$PWD/$libs_dir:$PWD/$package_dir" ldd "$file" 2>&1 || true)"
-    if grep -q "not found" <<<"$output"; then
+    # The unified package's CUDA UR adapter links the user-provided driver libs libcuda.so.1 /
+    # libnvidia-ml.so.1. These are intentionally NOT bundled (see the base_libs list in
+    # package-linux-combined.sh: the driver supplies them) and are absent on a GPU-less CI runner,
+    # so their "not found" is expected, not a packaging defect — ignore those lines.
+    if grep -vE '^[[:space:]]*(libcuda|libnvidia-ml)\.so' <<<"$output" | grep -q "not found"; then
       echo "$output" >&2
       failed=1
     fi

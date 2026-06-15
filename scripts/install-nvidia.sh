@@ -1,43 +1,57 @@
 #!/usr/bin/env bash
-# Runtime check for the Linux/NVIDIA mom release. Unlike the Intel install.sh
-# (which fetches the Intel GPU compute runtime), the NVIDIA build bundles its own
-# DPC++ SYCL runtime (libsycl + the CUDA Unified Runtime adapter + the kawpow
-# kernel-compiler JIT) in libs/ and only needs the system NVIDIA driver
-# (libcuda.so.1) to run on the GPU.
-set -eu
+set -euo pipefail
+
+# Install the NVIDIA driver that mom's bundled DPC++ CUDA runtime needs (libcuda.so.1), from
+# Ubuntu's own apt repositories (the restricted component -- no extra apt repos, no downloads). mom
+# already bundles the SYCL runtime user-space (libsycl + the CUDA Unified Runtime adapter + the
+# kawpow kernel-compiler JIT) in libs/; only the host driver is needed (not the CUDA toolkit).
+# Ubuntu 24.04 / 26.04. A reboot is required after the driver's kernel module is installed.
 
 have() { command -v "$1" >/dev/null 2>&1; }
-found_libcuda() {
-  for d in /usr/lib/x86_64-linux-gnu /usr/lib64 /usr/lib /lib/x86_64-linux-gnu; do
-    [ -e "$d/libcuda.so.1" ] && return 0
-  done
-  # Fall back to the dynamic linker cache; grep's exit status is the result.
-  ldconfig -p 2>/dev/null | grep -q "libcuda.so.1"
-}
-
-echo "mom (Linux/NVIDIA) runtime check"
+found_libcuda() { ldconfig -p 2>/dev/null | grep -q "libcuda.so.1"; }
 
 if found_libcuda || have nvidia-smi; then
-  echo "  NVIDIA driver: detected."
-  if have nvidia-smi; then
-    nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>/dev/null | sed 's/^/  GPU: /' || true
-  fi
-  echo "  Ready: GPU mining (gpu1...) and the SYCL CPU fallback are both available."
+  echo "NVIDIA driver already present:"
+  have nvidia-smi && nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>/dev/null | sed 's/^/  /' || true
+  echo "Ready. Run './mom algo_params' to confirm a gpu1 device is listed."
   exit 0
 fi
 
-cat <<'EOF'
-  NVIDIA driver NOT detected (no libcuda.so.1).
-  GPU mining needs the proprietary NVIDIA driver. The miner will otherwise fall
-  back to the bundled SYCL CPU (OpenMP) device, which is for verification only.
+if [ "$(id -u)" -ne 0 ]; then
+  exec sudo -- "$0" "$@"
+fi
 
-  To install the driver:
-    Ubuntu/Debian : sudo ubuntu-drivers install   (or: sudo apt install nvidia-driver-580)
-    RHEL/Fedora   : sudo dnf install akmod-nvidia
-    Other         : https://www.nvidia.com/Download/index.aspx
-  A reboot is required after installing the kernel driver.
+if [ ! -r /etc/os-release ]; then
+  echo "/etc/os-release is missing; unable to detect the Linux distribution." >&2
+  exit 1
+fi
+. /etc/os-release
+if [ "${ID:-}" != "ubuntu" ]; then
+  echo "This installer targets Ubuntu. Install the proprietary NVIDIA driver (>= 560 for CUDA 12.6)" >&2
+  echo "from your distribution and reboot; the CUDA toolkit is NOT needed." >&2
+  exit 1
+fi
 
-  The CUDA *toolkit* is NOT required at runtime — the DPC++ SYCL runtime is
-  bundled in libs/; only the driver is needed.
-EOF
-exit 0
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+
+# Prefer ubuntu-drivers' headless (--gpgpu) recommendation; otherwise install the newest
+# nvidia-driver-*-server-open from apt (server = headless/datacenter, -open = Turing+ open modules).
+installed=0
+if apt-get install -y --no-install-recommends ubuntu-drivers-common && ubuntu-drivers install --gpgpu; then
+  installed=1
+else
+  drv="$(apt-cache search 'nvidia-driver-[0-9].*server-open' 2>/dev/null \
+         | grep -oE 'nvidia-driver-[0-9]+-server-open' | sort -t- -k3 -n | tail -1)"
+  if [ -n "$drv" ]; then
+    echo "Installing $drv"
+    apt-get install -y "$drv" && installed=1
+  fi
+fi
+
+if [ "$installed" != 1 ]; then
+  echo "Could not install an NVIDIA driver via apt. Install one manually (e.g. 'sudo ubuntu-drivers install')." >&2
+  exit 1
+fi
+
+echo "NVIDIA driver installed. REBOOT, then run './mom algo_params' to confirm a gpu1 device is listed."

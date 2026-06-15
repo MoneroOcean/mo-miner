@@ -598,6 +598,11 @@ void Core::Execute() {
         send_error(std::string("Compute function exception: ") + err);
         set_fn(nullptr);
         continue;
+      } catch(const std::exception& e) {
+        // Surface sycl::exception (and any std::exception) detail instead of a bare message.
+        send_error(std::string("Compute function exception: ") + e.what());
+        set_fn(nullptr);
+        continue;
       } catch(...) {
         send_error("Compute function exception");
         set_fn(nullptr);

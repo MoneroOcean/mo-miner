@@ -60,9 +60,11 @@ alignas(64) const constexpr uint32_t AES[256] = {
 };
 
 // NVIDIA (sm_89) has a native 64-bit integer datapath, so the plain uint64 Keccak below is fastest;
-// the 32-bit-pair variant (#else) exists for Xe2 (Intel Arc), which lacks a native 64-bit ALU. Define
-// MOM_CNGPU_K32 to force the 32-bit-pair path on CUDA for A/B measurement (it loses on NVIDIA).
-#if defined(MOM_SYCL_CUDA) && !defined(MOM_CNGPU_K32)
+// the 32-bit-pair variant (#else) exists for Xe2 (Intel Arc), which lacks a native 64-bit ALU. The
+// nvptx device pass (__NVPTX__) gets the 64-bit Keccak, the spir64 pass the 32-bit-pair one, so the
+// combined build is right on both. Define MOM_CNGPU_K32 to force the 32-bit-pair path on nvptx for
+// A/B measurement (it loses on NVIDIA).
+#if defined(__NVPTX__) && !defined(MOM_CNGPU_K32)
 void keccak(uint64_t* const s) { // Hot device-side Keccak; keep explicit steps for backend codegen.
   static const uint32_t rotc[24] = {
     1,  3,  6,  10, 15, 21, 28, 36, 45, 55, 2,  14,
@@ -285,10 +287,10 @@ inline int32_t* lpad_ptr(const unsigned idx, const unsigned n, int32_t* const lp
 // -cl-fp32-correctly-rounded-divide-sqrt) computes the recurrence's one division
 // with an IEEE correctly-rounded result. DPC++'s CUDA backend emits a division that is 1 ULP low
 // for some operands (not correctly rounded), and a single 1-ULP error desyncs the chaotic
-// recurrence into a wrong hash. Force the PTX correctly-rounded div.rn.f32 per component on that
-// backend; everywhere else use the plain operator/ (unchanged Intel codegen).
+// recurrence into a wrong hash. Force the PTX correctly-rounded div.rn.f32 per component in the
+// nvptx device pass (__NVPTX__); everywhere else use the plain operator/ (unchanged Intel codegen).
 inline sycl::float4 mo_div_rn(const sycl::float4 a, const sycl::float4 b) {
-#if defined(MOM_SYCL_CUDA) && defined(__SYCL_DEVICE_ONLY__)
+#if defined(__NVPTX__)
   sycl::float4 r;
   #pragma unroll
   for (int k = 0; k < 4; ++k) {
@@ -496,13 +498,13 @@ struct CnGpuState { // Per-device queue and persistent allocations; avoids buffe
       throw std::string("cn/gpu SYCL device does not support required allocations");
     }
 
-#if !defined(MOM_SYCL_CUDA)
-    // The OpenCL "-cl-*" build options are an OpenCL/Level-Zero JIT mechanism for the Intel build.
-    // On the DPC++ CUDA backend, setting SYCL_PROGRAM_COMPILE_OPTIONS to them makes the AOT nvptx
-    // module fail at runtime with UR_RESULT_ERROR_UNKNOWN, so skip it there; CUDA FP determinism
-    // comes instead from -ffp-contract=off in the build flags (binding.gyp).
-    set_sycl_env("SYCL_PROGRAM_COMPILE_OPTIONS", cn_gpu_fp_compile_options(device));
-#endif
+    if (!mom_is_cuda(device)) {
+      // The OpenCL "-cl-*" build options are an OpenCL/Level-Zero JIT mechanism for the Intel build.
+      // On the CUDA backend, setting SYCL_PROGRAM_COMPILE_OPTIONS to them makes the AOT nvptx module
+      // fail at runtime with UR_RESULT_ERROR_UNKNOWN, so skip it there; CUDA FP determinism comes
+      // instead from -ffp-contract=off in the build flags (binding.gyp).
+      set_sycl_env("SYCL_PROGRAM_COMPILE_OPTIONS", cn_gpu_fp_compile_options(device));
+    }
     bundle = std::make_unique<MOM_BUNDLE_T>(
       MOM_GET_EXEC_BUNDLE(queue.get_context())
     );

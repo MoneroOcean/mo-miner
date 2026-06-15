@@ -3,8 +3,10 @@
 // straight-line constant ops (spec-constants do NOT fold on this backend; baking matches the Intel
 // spec-const speedup). The device code is the SAME sycl/kawpow_device.inc the AOT build uses; read at
 // runtime and appended after a self-contained prelude (constants/structs/FastModData) plus the baked
-// program/dag-mod and a free-function-kernel wrapper. Only built for MOM_SYCL_CUDA (Linux/NVIDIA).
-#if defined(MOM_SYCL_CUDA)
+// program/dag-mod and a free-function-kernel wrapper. Built whenever the binary can target CUDA
+// (MOM_SYCL_HAS_CUDA: the dpcpp-cuda and dpcpp-combined modes); the source-JIT path is taken at
+// runtime only on a CUDA device.
+#if defined(MOM_SYCL_HAS_CUDA)
 #include <dlfcn.h>  // dladdr: locate the loaded module so kawpow_device.inc can ship beside it
 
 // Prelude: everything sycl/kawpow_device.inc relies on (it assumes constants/structs/FastModData are
@@ -64,7 +66,7 @@ inline uint32_t fast_mod_dev(const uint32_t a, const FastModData d) {
 }
 )KJP";
 
-// Free-function-kernel wrapper. Mirrors the AOT MOM_SYCL_CUDA search lambda, but reads the baked
+// Free-function-kernel wrapper. Mirrors the AOT CUDA search lambda, but reads the baked
 // BAKED_PROGRAM/BAKED_DAGMOD consts (which fold) and gets work-group local memory from
 // work_group_static instead of a local_accessor. Appended after the device .inc + the baked consts.
 static const char* const KAWPOW_JIT_WRAPPER = R"KJW(
@@ -172,4 +174,4 @@ static std::string kawpow_emit_baked(const KawpowProgram& p, const FastModData& 
   return s;
 }
 
-#endif // MOM_SYCL_CUDA
+#endif // MOM_SYCL_HAS_CUDA

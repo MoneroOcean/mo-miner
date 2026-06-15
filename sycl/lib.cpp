@@ -23,21 +23,20 @@ static void update_str2dev(const bool verbose = false) {
       } else if (device.is_gpu()) {
         // OpenCL GPU platforms will be available but not used by default if something else is present
         const std::string gpuN = std::string("gpu") + std::to_string(++gpu_num);
-#if defined(MOM_SYCL_CUDA)
-        // The DPC++ CUDA backend exposes the GPU through a platform whose name
-        // carries no "OpenCL"/"Level-Zero" marker, so register it as the default GPU.
-        (void)platform_name;
-        str2dev[gpuN] = device;
-#else
-        const bool is_opencl = platform_name.find("OpenCL") != std::string::npos;
-        const bool is_level_zero = platform_name.find("Level-Zero") != std::string::npos;
-        if (is_opencl || is_level_zero) {
-          str2dev[gpuN + (is_opencl ? "o" : "z")] = device;
-          if (is_level_zero || !str2dev.contains(gpuN)) str2dev[gpuN] = device;
-        } else if (verbose) {
-          std::cout << "Found unsupported " << platform_name << " GPU platform device" << std::endl;
+        if (mom_is_cuda(device)) {
+          // The DPC++ CUDA backend exposes the GPU through a platform whose name
+          // carries no "OpenCL"/"Level-Zero" marker, so register it as the default GPU.
+          str2dev[gpuN] = device;
+        } else {
+          const bool is_opencl = platform_name.find("OpenCL") != std::string::npos;
+          const bool is_level_zero = platform_name.find("Level-Zero") != std::string::npos;
+          if (is_opencl || is_level_zero) {
+            str2dev[gpuN + (is_opencl ? "o" : "z")] = device;
+            if (is_level_zero || !str2dev.contains(gpuN)) str2dev[gpuN] = device;
+          } else if (verbose) {
+            std::cout << "Found unsupported " << platform_name << " GPU platform device" << std::endl;
+          }
         }
-#endif
       }
     }
     gpu_num = 0; // reset gpu counter for every platform
@@ -196,21 +195,20 @@ static unsigned etchash_intensity(const sycl::device& dev) {
 }
 
 static unsigned autolykos2_intensity(const sycl::device& dev) {
-#if defined(MOM_SYCL_CUDA)
-  // NVIDIA: larger batches amortize per-iteration host/sync overhead; throughput
-  // climbs to a ~70 MH/s plateau on an L4 around these intensities.
-  return pow_intensity(dev, "MOM_AUTOLYKOS2_WORKGROUP", "MOM_AUTOLYKOS2_INTENSITY", {
-    {64, 16384, 12},
-    {64, 32768, 16},
-    {64, 32768, 10}
-  });
-#else
+  if (mom_is_cuda(dev)) {
+    // NVIDIA: larger batches amortize per-iteration host/sync overhead; throughput
+    // climbs to a ~70 MH/s plateau on an L4 around these intensities.
+    return pow_intensity(dev, "MOM_AUTOLYKOS2_WORKGROUP", "MOM_AUTOLYKOS2_INTENSITY", {
+      {64, 16384, 12},
+      {64, 32768, 16},
+      {64, 32768, 10}
+    });
+  }
   return pow_intensity(dev, "MOM_AUTOLYKOS2_WORKGROUP", "MOM_AUTOLYKOS2_INTENSITY", {
     {64, 4096, 12},
     {64, 8192, 16},
     {64, 8192, 10}
   });
-#endif
 }
 
 // pearl "intensity" is the square NoisyGEMM edge m=n (not a nonce batch). Default 131072 -- the
@@ -320,13 +318,13 @@ static void add_gpu_cn_algo_dev(
       }
       const unsigned score = pow_device_score(pow_device_profile(cn_dev));
       batch_multiplier = score >= 5 ? 8 : (score >= 3 ? 6 : 4);
-#if defined(MOM_SYCL_CUDA)
-      // NVIDIA (sm_89): the FP recurrence needs far more in-flight hashes than the
-      // Intel heuristic to fill the SMs. An L4 intensity sweep plateaus near
-      // compute_units*64 (~3.7k hashes); below that throughput scales with batch.
-      // MOM_CN_GPU_INTENSITY still overrides this.
-      batch_multiplier = 64;
-#endif
+      if (mom_is_cuda(cn_dev)) {
+        // NVIDIA (sm_89): the FP recurrence needs far more in-flight hashes than the
+        // Intel heuristic to fill the SMs. An L4 intensity sweep plateaus near
+        // compute_units*64 (~3.7k hashes); below that throughput scales with batch.
+        // MOM_CN_GPU_INTENSITY still overrides this.
+        batch_multiplier = 64;
+      }
     }
     const unsigned max_compute_units = cn_dev.get_info<sycl::info::device::max_compute_units>();
     const auto mem = algo2mem.find(algo);

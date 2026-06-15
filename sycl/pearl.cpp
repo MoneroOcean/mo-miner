@@ -378,24 +378,28 @@ static void compute_ab(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, 
   q.parallel_for(sycl::range<1>((size_t)m * k), [=](sycl::id<1> id) { int idx = (int)id[0], i = idx / k, c = idx % k;
     int acc = (int)B.EAL[i * rank + B.EARp1[c]] - (int)B.EAL[i * rank + B.EARp2[c]];
     int8_t v = (int8_t)(gv(seed, (uint32_t)idx) + acc);
-#ifdef PEARL_ESIMD
-    // A' TILE-MAJOR for ESIMD: each 8x32 dpas-A fragment is one contiguous 256-byte block_load.
-    B.Ap[((size_t)((i >> 3) * (k / 32) + (c >> 5)) * 256) + (i & 7) * 32 + (c & 31)] = v;
+#ifdef __NVPTX__
+    B.Ap[idx] = v;   // row-major A' for the NVIDIA mma.sync search_cuda (nvptx device pass)
 #else
-    B.Ap[idx] = v;
+    // A' TILE-MAJOR (spir64 pass, read by the ESIMD search): each 8x32 dpas-A fragment is one
+    // contiguous 256-byte block_load. Chosen per device pass so the combined build's spir64 image is
+    // tile-major (ESIMD) and its nvptx image row-major (mma.sync).
+    B.Ap[((size_t)((i >> 3) * (k / 32) + (c >> 5)) * 256) + (i & 7) * 32 + (c & 31)] = v;
 #endif
   });
-  // B' layout depends on the search backend's use::b expectation:
-  //  - MOM_SYCL_CUDA: plain ROW-MAJOR B'[r,j] at r*n+j -- NVIDIA joint_matrix use::b is
-  //    row_major/col_major (no VNNI), loaded with stride n.
+  // B' layout depends on the search backend's use::b expectation; chosen per device-compilation pass
+  // (__NVPTX__) so the combined build's nvptx image gets the CUDA layout and its spir64 image the
+  // Intel one, and each device loads the image that fits its search() variant:
+  //  - nvptx (__NVPTX__): plain ROW-MAJOR B'[r,j] at r*n+j for the joint_matrix variant, else
+  //    COLUMN-major for the default mma.sync B operand (coalesced 32-bit loads).
   //  - else (Intel XMX): TILE-MAJOR VNNI, each 16-wide N-tile's k*16 block contiguous (stride 64),
   //    Bp[ (j/16)*k*16 + (r/4)*64 + (j%16)*4 + (r%4) ] = B'[r,j], coalesced sub-group read.
   q.parallel_for(sycl::range<1>((size_t)k * n), [=](sycl::id<1> id) { int idx = (int)id[0], r = idx / n, j = idx % n;
     int acc = (int)B.EBR[B.EBLq1[r] * n + j] - (int)B.EBR[B.EBLq2[r] * n + j];
     int8_t v = (int8_t)(gv(seed, tot + (uint32_t)idx) + acc);
-#if defined(MOM_SYCL_CUDA) && defined(PEARL_CU_JM)
+#if defined(__NVPTX__) && defined(PEARL_CU_JM)
     B.Bp[(size_t)r * n + j] = v;                 // row-major B'[r,j] for joint_matrix use::b
-#elif defined(MOM_SYCL_CUDA)
+#elif defined(__NVPTX__)
     B.Bp[(size_t)j * k + r] = v;                 // col-major B'[r,j] for mma.sync B operand (coalesced loads)
 #else
     B.Bp[(size_t)(j / 16) * k * 16 + (size_t)(r / 4) * 64 + (size_t)(j % 16) * 4 + (r % 4)] = v;
@@ -434,7 +438,11 @@ static inline bool tile_wins(const uint32_t tr[16], const uint8_t* key, const ui
   for (int i = 31; i >= 0; i--) { if (jp[i] < target[i]) return true; if (jp[i] > target[i]) return false; }
   return true;   // jackpot == target: still within bound
 }
-#if !defined(PEARL_ESIMD) && !defined(MOM_SYCL_CUDA)
+// Portable XMX joint_matrix search -- a fallback for a hypothetical build with neither ESIMD nor a
+// CUDA target. The real modes all use ESIMD on Intel (search_esimd) or mma.sync on NVIDIA
+// (search_cuda), so dpcpp / dpcpp-cuda / dpcpp-combined do NOT compile this. (It also DEVICE_LOSTs on
+// Xe2 with the nightly clang -- another reason the Intel path is ESIMD, not joint_matrix.)
+#if !defined(PEARL_ESIMD) && !defined(MOM_PEARL_HAS_ESIMD)
 static void search(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k, int rank) {
   using namespace sycl::ext::oneapi::experimental::matrix;
   constexpr int NT = PEARL_NTILE, HR = PEARL_HR, HT = 16, SG = 16;
@@ -443,7 +451,18 @@ static void search(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int 
   const size_t nt = (size_t)tilesH * tilesW;
   q.submit([&](sycl::handler& h) {
     sycl::local_accessor<int32_t, 1> slm(256, h);   // one 16x16 tile's int32 cells, for the inner-hash XOR
-    h.parallel_for(sycl::nd_range<1>(nt * SG, SG), [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(16)]] {
+    // Explicit capture list (not [=]) so the kernel-lambda layout is identical across the host,
+    // spir64 and nvptx passes -- the nvptx body is #ifdef'd out (below) and [=] would then capture
+    // fewer vars, tripping the SYCL "Unexpected kernel lambda size" static assert.
+    h.parallel_for(sycl::nd_range<1>(nt * SG, SG), [B, seed, slm, tilesW, k, rank](sycl::nd_item<1> it)
+#ifndef __NVPTX__
+        [[sycl::reqd_sub_group_size(16)]]
+#endif
+    {
+#ifndef __NVPTX__
+      // Intel-XMX joint_matrix shapes (8x32 A, 32x16 VNNI B, 8x16 accumulator) have no NVIDIA wmma
+      // equivalent, so this kernel is excluded from the nvptx pass; on CUDA the dispatch uses
+      // search_cuda instead and this image is never launched.
       auto sg = it.get_sub_group();
       int strip = (int)it.get_group(0), R = strip / tilesW, C = strip % tilesW, lane = (int)it.get_local_linear_id();
       auto sl = slm.template get_multi_ptr<sycl::access::decorated::no>();
@@ -488,16 +507,19 @@ static void search(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int 
           if (a.exchange(1) == 0) { B.result->seed = seed; B.result->row = (uint32_t)(rowBase + r * HT); B.result->col = (uint32_t)((colBase + t) * HT); }
         }
       }
+#else
+      (void)it;   // nvptx pass: empty kernel body (see above)
+#endif
     });
   });
 }
-#endif  // !PEARL_ESIMD && !MOM_SYCL_CUDA
+#endif  // !PEARL_ESIMD && !MOM_PEARL_HAS_ESIMD
 
 // NVIDIA pearl throughput lives entirely in the int8 Tensor Cores, reached here through the
 // mma.sync path below. It is built with the intel/llvm DPC++ CUDA backend (nvptx64) -- the SAME
 // DPC++ as the Intel build -- so every SYCL kernel stays unified across both GPU vendors, and the
 // runtime kernel_compiler JIT that kawpow's per-period specialization relies on is available too.
-#if defined(MOM_SYCL_CUDA)
+#if defined(MOM_SYCL_HAS_CUDA)
 // ---- NVIDIA tensor-core int8 mma.sync search (DPC++ CUDA backend) ----
 // Built with intel/llvm DPC++ for nvptx64 (-fsycl-targets=nvptx64-nvidia-cuda --cuda-gpu-arch=sm_89),
 // where joint_matrix maps to the L4's int8 Tensor Cores (wmma.mma.sync IMMA). NVIDIA constraints
@@ -608,7 +630,7 @@ static void search_cuda(sycl::queue& q, const Buffers& bb, uint32_t seed, int m,
 //   B(32x8 ,col): b[0]=B[tid*4..][gid],   b[1]=B[16+tid*4..][gid]
 //   C(16x8 ,row): c[0]=C[gid][tid*2], c[1]=C[gid][tid*2+1], c[2]=C[gid+8][tid*2], c[3]=C[gid+8][tid*2+1]
 static inline void mma_m16n8k32_s8(int32_t c[4], const uint32_t a[4], const uint32_t b[2]) {
-#ifdef __SYCL_DEVICE_ONLY__
+#ifdef __NVPTX__
   asm volatile(
     "mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 "
     "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
@@ -623,7 +645,7 @@ static inline uint32_t ld_u32(const int8_t* __restrict__ p) { return *reinterpre
 // mma, plus the generic->shared address conversion cp.async needs. Device-only (inline PTX).
 static inline uint32_t cu_smem_addr(const void* p) {
   uint32_t a = 0;
-#ifdef __SYCL_DEVICE_ONLY__
+#ifdef __NVPTX__
   asm("{ .reg .u64 t; cvta.to.shared.u64 t, %1; cvt.u32.u64 %0, t; }" : "=r"(a) : "l"(p));
 #else
   (void)p;
@@ -631,19 +653,19 @@ static inline uint32_t cu_smem_addr(const void* p) {
   return a;
 }
 static inline void cu_cp_async16(uint32_t smem, const int8_t* g) {
-#ifdef __SYCL_DEVICE_ONLY__
+#ifdef __NVPTX__
   asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" :: "r"(smem), "l"(g));
 #else
   (void)smem; (void)g;
 #endif
 }
 static inline void cu_cp_commit() {
-#ifdef __SYCL_DEVICE_ONLY__
+#ifdef __NVPTX__
   asm volatile("cp.async.commit_group;\n");
 #endif
 }
 template <int N> static inline void cu_cp_wait() {
-#ifdef __SYCL_DEVICE_ONLY__
+#ifdef __NVPTX__
   asm volatile("cp.async.wait_group %0;\n" :: "n"(N));
 #endif
 }
@@ -859,7 +881,7 @@ static void search_cuda(sycl::queue& q, const Buffers& bb, uint32_t seed, int m,
 }
 #endif  // !PEARL_CU_PIPE
 #endif  // PEARL_CU_JM
-#endif  // MOM_SYCL_CUDA
+#endif  // MOM_SYCL_HAS_CUDA
 
 #ifdef PEARL_ESIMD
 // ---- experimental ESIMD register-resident DPAS search (alternative to search()) ----
@@ -903,7 +925,13 @@ static inline uint32_t esimd_xor_reduce(esimd_ns::simd<uint32_t, N> v) {
   }
 }
 
+// External in the standalone spir64-only ESIMD TU (pearl_esimd.cpp) so the main pearl.o can call it;
+// static in the single-TU Intel/Windows build where it lives in this same object.
+#ifdef MOM_PEARL_ESIMD_TU
+void search_esimd(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k, int rank) {
+#else
 static void search_esimd(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k, int rank) {
+#endif
   constexpr int ER = PEARL_E_HR, EC = PEARL_E_NTILE, HT = 16;
   auto B = bb;
   const int tilesH = m / (HT * ER), tilesW = n / (HT * EC);
@@ -974,21 +1002,34 @@ static void search_esimd(sycl::queue& q, const Buffers& bb, uint32_t seed, int m
 #endif  // PEARL_ESIMD
 
 
+// In the combined build the ESIMD search lives in the separate spir64-only TU (pearl_esimd.cpp);
+// declare it here so attempt() can call it. (When PEARL_ESIMD is set this is the same TU, defined above.)
+#if defined(MOM_PEARL_HAS_ESIMD) && !defined(PEARL_ESIMD)
+void search_esimd(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k, int rank);
+#endif
+
 static void attempt(sycl::queue& q, const Buffers& b, uint32_t seed, int m, int n, int k, int rank) {
   k_roots(q, b, seed, m, n, k);          // commitment roots cA/cB (A/Bt regenerated from RNG)
   k_noise(q, b, m, n, k, rank);          // sparse low-rank noise E_AL/E_AR, E_BL/E_BR
-  compute_ab(q, b, seed, m, n, k, rank); // materialize noised A' (tile-major) and B' (VNNI tile-major)
-#if defined(PEARL_ESIMD)
+  compute_ab(q, b, seed, m, n, k, rank); // materialize noised A' and B' (layouts chosen per device pass)
+  // Pick the search by the running device's backend. search_cuda (mma.sync Tensor Cores) is compiled
+  // only when the binary can target CUDA (MOM_SYCL_HAS_CUDA). (mom_is_cuda lives in lib-internal.h,
+  // included below attempt(), so test the backend inline here.)
+#if defined(MOM_SYCL_HAS_CUDA)
+  if (q.get_device().get_backend() == sycl::backend::ext_oneapi_cuda) { search_cuda(q, b, seed, m, n, k, rank); return; }
+#endif
+#if defined(PEARL_ESIMD) || defined(MOM_PEARL_HAS_ESIMD)
   search_esimd(q, b, seed, m, n, k, rank); // ESIMD register-resident DPAS path (Intel GPUs, ~53 TH/s)
-#elif defined(MOM_SYCL_CUDA)
-  search_cuda(q, b, seed, m, n, k, rank);  // NVIDIA tensor-core mma.sync path (DPC++ CUDA backend)
 #else
-  search(q, b, seed, m, n, k, rank);       // portable joint_matrix path (XMX A'*B' + XOR transcript + BLAKE3)
+  search(q, b, seed, m, n, k, rank);       // portable joint_matrix fallback (no ESIMD, no CUDA)
 #endif
 }
 
 }  // namespace mom_pearl
 
+// The standalone spir64-only ESIMD TU (pearl_esimd.cpp) only needs the device kernels inside the
+// namespace above; the host-side entry point + PlainProof builder below belong to the main TU only.
+#ifndef MOM_PEARL_ESIMD_TU
 using namespace mom_pearl;
 
 // 52-byte NoisyGEMM config block hashed with the 76-byte header into the per-job key (k, rank, and
@@ -1321,3 +1362,4 @@ int main(int argc, char** argv) {
   return 0;
 }
 #endif
+#endif  // !MOM_PEARL_ESIMD_TU

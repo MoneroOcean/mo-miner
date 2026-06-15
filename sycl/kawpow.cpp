@@ -6,6 +6,7 @@
 #include <sycl/sycl.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cinttypes>
@@ -254,6 +255,14 @@ public:
   uint32_t next_bundle_epoch = UINT32_MAX;
   std::thread prefetch_thread;
 
+  // CUDA kawpow path (decided once, then stable for this device's lifetime): the source-JIT folds
+  // the per-period ProgPoW program for full speed, but needs a working runtime kernel_compiler
+  // (libsycl-jit + a CUDA target). If the first build's JIT throws (e.g. an old driver or a host
+  // missing libdevice), fall back permanently to the AOT spec-constant kernel -- correct, just
+  // unfolded (~3x slower). -1 = undecided, 1 = JIT, 0 = spec-const. MOM_KAWPOW_JIT=0/1 forces a path.
+  // Atomic because the prefetch thread reads/writes it while the launch path reads it.
+  std::atomic<int> cuda_use_jit{-1};
+
   explicit KawpowState(const std::string& dev_str)
     : device(get_dev(dev_str)),
       queue(device, sycl::property_list{sycl::property::queue::in_order{}}),
@@ -457,21 +466,48 @@ public:
 
   std::unique_ptr<sycl::kernel_bundle<sycl::bundle_state::executable>>
   build_period_bundle(const uint64_t new_period, const FastModData dag_mod) {
-#if defined(MOM_SYCL_CUDA)
-    // CUDA: spec-constants do not JIT-fold here, so compile the search kernel from SYCL source with
-    // the period program baked in as a const struct (folds the random-math interpreter). The device
-    // body is the shared sycl/kawpow_device.inc, read at runtime.
-    namespace syclex = sycl::ext::oneapi::experimental;
-    const std::string src = std::string(KAWPOW_JIT_PRELUDE) + kawpow_device_src() +
-      kawpow_emit_baked(make_program(new_period), dag_mod) + KAWPOW_JIT_WRAPPER;
-    auto kb_src = syclex::create_kernel_bundle_from_source(
-      queue.get_context(), syclex::source_language::sycl, src);
-    const char* const jit_opts = std::getenv("MOM_KAWPOW_JIT_OPTS");
-    auto exe = (jit_opts && *jit_opts)
-      ? syclex::build(kb_src, syclex::properties{syclex::build_options{std::string(jit_opts)}})
-      : syclex::build(kb_src);
-    return std::make_unique<sycl::kernel_bundle<sycl::bundle_state::executable>>(std::move(exe));
-#else
+#if defined(MOM_SYCL_HAS_CUDA)
+    // CUDA: the source-JIT folds the per-period program to straight-line const ops (full speed); the
+    // AOT spec-constant kernel below is correct but ~3x slower because spec constants do NOT fold on
+    // the nvptx backend. Default to JIT; fall back to spec-const if the runtime kernel_compiler is
+    // unavailable (see cuda_use_jit). MOM_KAWPOW_JIT=0/1 forces a path (1 = JIT, no fallback).
+    if (mom_is_cuda(device)) {
+      if (cuda_use_jit.load() < 0) {
+        const char* const force = std::getenv("MOM_KAWPOW_JIT");
+        if (force) cuda_use_jit.store(std::atoi(force) != 0 ? 1 : 0);
+      }
+      if (cuda_use_jit.load() != 0) {  // 1 (committed JIT) or -1 (undecided -> try JIT)
+        try {
+          // CUDA JIT: compile the search kernel from SYCL source with the period program baked in as
+          // a const struct (folds the random-math interpreter). Device body is sycl/kawpow_device.inc.
+          namespace syclex = sycl::ext::oneapi::experimental;
+          const std::string src = std::string(KAWPOW_JIT_PRELUDE) + kawpow_device_src() +
+            kawpow_emit_baked(make_program(new_period), dag_mod) + KAWPOW_JIT_WRAPPER;
+          auto kb_src = syclex::create_kernel_bundle_from_source(
+            queue.get_context(), syclex::source_language::sycl, src);
+          const char* const jit_opts = std::getenv("MOM_KAWPOW_JIT_OPTS");
+          // Build for THIS device explicitly: without the device list the kernel_compiler targets a
+          // generic nvptx default (sm_75 -> CUDA_ERROR_NO_BINARY on newer GPUs / needs sm_75 libdevice).
+          // Passing the device makes it compile for the device's actual arch (e.g. sm_89 on an L4).
+          const std::vector<sycl::device> jit_devs{device};
+          auto exe = (jit_opts && *jit_opts)
+            ? syclex::build(kb_src, jit_devs, syclex::properties{syclex::build_options{std::string(jit_opts)}})
+            : syclex::build(kb_src, jit_devs);
+          cuda_use_jit.store(1);
+          return std::make_unique<sycl::kernel_bundle<sycl::bundle_state::executable>>(std::move(exe));
+        } catch (const std::exception& e) {
+          // Committed to JIT (user forced it, or an earlier period already JIT'd): a failure now is a
+          // real error. Undecided (first build probing): fall back permanently to spec-const.
+          if (cuda_use_jit.load() == 1) throw;
+          fprintf(stderr, "kawpow: CUDA source-JIT unavailable (%s); using the slower AOT "
+                  "spec-constant kernel\n", e.what());
+          cuda_use_jit.store(0);
+        }
+      }
+      // cuda_use_jit == 0: fall through to the spec-constant build below.
+    }
+#endif
+    // Intel/spir64: SYCL-2020 specialization constants fold the per-period program at JIT time.
     auto input = sycl::get_kernel_bundle<sycl::bundle_state::input>(
       queue.get_context(), {device}, {sycl::get_kernel_id<KawpowSgKernel>()}
     );
@@ -480,7 +516,6 @@ public:
     return std::make_unique<sycl::kernel_bundle<sycl::bundle_state::executable>>(
       sycl::build(input)
     );
-#endif
   }
 
   void ensure_period_bundle(const uint64_t new_period, const uint32_t new_epoch, const FastModData dag_mod) {
@@ -580,17 +615,22 @@ int kawpow(
     const uint64_t t_io = loop_stats ? kawpow_now_us() : 0;
     state.ensure_period_bundle(period, epoch, dag_mod);
     const uint64_t t_bundle = loop_stats ? kawpow_now_us() : 0;
-#if defined(MOM_SYCL_CUDA)
+    sycl::event search_event;
+#if defined(MOM_SYCL_HAS_CUDA)
+    // Must match build_period_bundle's choice: launch the JIT kernel iff that path was selected.
+    if (mom_is_cuda(state.device) && state.cuda_use_jit.load() == 1) {
     // Launch the source-JIT'd kernel: program/dag-mod are baked into the bundle, so the only kernel
     // args are the per-call buffers/scalars; work-group local memory comes from work_group_static.
     sycl::kernel jit_kernel = state.period_bundle->ext_oneapi_get_kernel("kawpow_search_jit");
-    const sycl::event search_event = q.submit([&](sycl::handler& h) {
+    search_event = q.submit([&](sycl::handler& h) {
       h.set_args(d_input, d_dag_load, d_result,
                  static_cast<uint32_t>(intensity), start_nonce, target, static_cast<int>(is_test));
       h.parallel_for(sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(local_size)), jit_kernel);
     });
-#else
-    const sycl::event search_event = q.submit([&](sycl::handler& h) {
+    } else
+#endif
+    {
+    search_event = q.submit([&](sycl::handler& h) {
       const auto c_dag = sycl::local_accessor<uint32_t, 1>(sycl::range<1>(KAWPOW_CACHE_WORDS), h);
       h.use_kernel_bundle(*state.period_bundle);
       h.parallel_for<KawpowSgKernel>(
@@ -631,7 +671,7 @@ int kawpow(
         }
       );
     });
-#endif
+    }
     if (loop_stats) {
       const uint64_t t_submit = kawpow_now_us();
       const uint64_t pre_us = t_submit - t_enter;

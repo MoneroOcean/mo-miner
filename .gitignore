@@ -16,6 +16,7 @@ log
 x
 mom-*.tgz
 *.tgz
+release*/
 
 test/
 icx/

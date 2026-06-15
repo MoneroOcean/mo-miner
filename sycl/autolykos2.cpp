@@ -68,14 +68,15 @@ inline uint32_t round_up(const uint32_t value, const uint32_t step) {
 }
 
 // Fast unsigned remainder by a runtime divisor (Lemire's "faster remainder"). The K_LEN=32 dataset
-// reads do `idx % n_len` per nonce and n_len is a per-height runtime value. On the DPC++ CUDA backend
-// (MOM_SYCL_CUDA) NVIDIA has no integer-divide unit, so `%` emulates as a slow multi-op sequence:
+// reads do `idx % n_len` per nonce and n_len is a per-height runtime value. On the nvptx device pass
+// (__NVPTX__) NVIDIA has no integer-divide unit, so `%` emulates as a slow multi-op sequence:
 // M = floor(2^64 / n_len) + 1 is precomputed once on the host (mo_modM), then
 // x % n_len == hi64( (M*x mod 2^64) * n_len ). Bit-exact for x, n_len in [1, 2^32). On Intel (which
-// has a divide unit) keep the plain modulo.
+// has a divide unit) keep the plain modulo. Gating on the per-pass __NVPTX__ (not a build macro)
+// lets the combined build pick the right path in each device image.
 inline uint64_t mo_modM(const uint32_t d) { return d ? (0xFFFFFFFFFFFFFFFFULL / d) + 1ULL : 0ULL; }
 inline uint32_t mo_mod_u32(const uint32_t x, const uint32_t d, const uint64_t M) {
-#if defined(MOM_SYCL_CUDA)
+#if defined(__NVPTX__)
   return static_cast<uint32_t>(sycl::mul_hi(M * static_cast<uint64_t>(x), static_cast<uint64_t>(d)));
 #else
   (void)M; return x % d;
@@ -605,14 +606,9 @@ struct AutolykosState {
   ~AutolykosState() { release(); }
 
   static unsigned autolykos_workgroup(const sycl::device& dev) {
-#if defined(MOM_SYCL_CUDA)
-    // NVIDIA: 128 gives the best occupancy for the unrolled per-thread lookup
-    // (measured ~68 vs ~64 MH/s at 64 on an L4); the cooperative local==64 path
-    // is intentionally not used here.
-    const unsigned fallback = sycl_default_workgroup(dev, {32, 64, 128, 256}, 128);
-#else
-    const unsigned fallback = sycl_default_workgroup(dev, {32, 64, 128, 256}, 64);
-#endif
+    // NVIDIA: 128 gives the best occupancy for the unrolled per-thread lookup (measured ~68 vs
+    // ~64 MH/s at 64 on an L4); the cooperative local==64 path is intentionally not used there.
+    const unsigned fallback = sycl_default_workgroup(dev, {32, 64, 128, 256}, mom_is_cuda(dev) ? 128 : 64);
     return env_workgroup("MOM_AUTOLYKOS2_WORKGROUP", fallback);
   }
 

@@ -64,10 +64,10 @@ default 131072), `MOM_PEARL_K` (default 4096), `MOM_PEARL_RANK` (default 256),
 
 # NVIDIA GPU performance
 
-mom also builds for NVIDIA GPUs from the same SYCL kernels using the DPC++ CUDA backend
-(ahead-of-time compiled to PTX/SASS); the NVIDIA Linux release artifact is
-`mom-v<version>-lin-nvidia.tgz`. Hashrates measured on an NVIDIA L4 (Ada, sm_89), each
-compared against the best closed-source miner benchmarked on the same card:
+mom also runs on NVIDIA GPUs from the same SYCL kernels via the DPC++ CUDA backend (ahead-of-time
+compiled to PTX). There is a single Linux release artifact, `mom-v<version>-lin.tgz`, whose one
+`mom.node` runs on both Intel and NVIDIA GPUs (it auto-detects the device). Hashrates measured on an
+NVIDIA L4 (Ada, sm_89), each compared against the best closed-source miner benchmarked on the same card:
 
 | Algo | mom (L4) | SOTA reference (same L4) | % of SOTA |
 | --- | --- | --- | --- |
@@ -79,7 +79,9 @@ compared against the best closed-source miner benchmarked on the same card:
 | pearl | 33.6 TH/s | no NVIDIA SOTA (ARC-miner is Intel-only) | — |
 
 SOTA references benchmarked on the same L4: lolMiner (`--benchmark AUTOLYKOS2` / `CR29`), Rigel
-(`-a kawpow`), SRBMiner-MULTI (`--algorithm cryptonight_gpu`).
+(`-a kawpow`), SRBMiner-MULTI (`--algorithm cryptonight_gpu`). The kawpow figure uses the runtime
+SYCL-source JIT, which needs CUDA libdevice on the host (see NVIDIA GPU install below); without it
+kawpow falls back to ~4 MH/s.
 
 # Donation
 
@@ -88,7 +90,9 @@ By default, miner donates 1% of hashrate (can be disabled in config).
 # Distribution
 
 Miner mom.node dynamic library can be compiled and run from sources using `./r.sh` script that
-will build Docker container with SYCL compiler. Docker buildx is required so builds use BuildKit
+will build a Docker container with the SYCL compilers and produce the one unified mom.node that runs
+on both Intel and NVIDIA GPUs (a dual-compiler build: oneAPI icx for host objects, the intel/llvm
+nightly clang for the SYCL device images + link). Docker buildx is required so builds use BuildKit
 instead of Docker's deprecated legacy builder:
 
 ```
@@ -121,36 +125,65 @@ Tagged GitHub releases build Linux x86-64 `.tgz` and Windows x86-64 `.zip` archi
 executable embeds the Node.js control plane, so Docker and system Node.js are not required to run
 the release artifact.
 
-# Host Intel GPU Runtime
+# Host GPU runtime (Linux)
 
-Linux release archives include `install.sh`. Run it as root on Ubuntu 24.04 or 26.04 if GPU
-performance is lower outside Docker, or if Level Zero/OpenCL GPU detection is missing:
+The release archive bundles mom's SYCL runtime user-space in `libs/` (libsycl, the Unified Runtime
+adapters for both Level-Zero and CUDA, libhwloc, the Intel OpenCL CPU runtime, and the kawpow
+kernel-compiler JIT). You only need the host GPU driver/runtime that exposes the GPU. On Ubuntu 24.04 / 26.04 (aim for 26.04) these are plain apt packages from the distribution
+itself -- **no extra apt repositories and no downloads**. Run the bundled installer, or apt directly.
+
+## Intel GPU
 
 ```
-sudo ./install.sh
+sudo ./install.sh    # bundled in the release archive
+# or straight from this repo, without the archive:
+curl -fsSL https://raw.githubusercontent.com/MoneroOcean/mo-miner/master/scripts/install.sh | sudo bash
+# or apt directly:
+sudo apt install intel-opencl-icd libze-intel-gpu1 libze1 ocl-icd-libopencl1
 ```
 
-The script does not add an apt repository. It discovers the latest upstream GitHub releases at
-runtime, downloads the matching Ubuntu `.deb` packages, verifies GitHub-provided SHA-256 digests,
-and installs a coherent GPU compute runtime set:
+`intel-opencl-icd` is the Intel OpenCL GPU driver (cn/gpu and OpenCL GPU devices), `libze-intel-gpu1`
+the Level-Zero GPU driver (`intel-level-zero-gpu` on older Ubuntu), and `libze1` / `ocl-icd-libopencl1`
+the Level-Zero and OpenCL loaders. Verify with `./mom algo_params` -- a `gpu1` device should appear.
 
-* Intel compute-runtime: `libze-intel-gpu1` or `intel-level-zero-gpu`, `intel-opencl-icd`,
-  `intel-ocloc`, and `libigdgmm*`
-* Intel Graphics Compiler: `intel-igc-core-2` and `intel-igc-opencl-2`
-* oneAPI Level Zero loader: `libze1` or the older `level-zero` package name
+## NVIDIA GPU
 
-Set `MOM_COMPUTE_RUNTIME_RELEASE`, `MOM_IGC_RELEASE`, or `MOM_LEVEL_ZERO_RELEASE`
-to a GitHub release tag to pin a specific version. The installer keeps mom's bundled SYCL
-runtime libraries in place. Those bundled libraries include the oneAPI SYCL and Unified Runtime
-user-space pieces mom loads directly; `install.sh` only installs the host GPU driver/runtime
-side that exposes Level Zero/OpenCL devices to them. Installing the full oneAPI runtime
-system-wide would be much larger than the release-bundled runtime closure.
+```
+sudo ./install-nvidia.sh    # bundled in the release archive; then reboot
+# or straight from this repo, without the archive:
+curl -fsSL https://raw.githubusercontent.com/MoneroOcean/mo-miner/master/scripts/install-nvidia.sh | sudo bash
+# or apt directly (server = headless/datacenter, -open = Turing+ open kernel modules):
+sudo apt install nvidia-driver-580-server-open   # or newer; reboot afterwards
+```
 
-Windows release archives include `install.bat` and `install.ps1`. Run `install.bat` from an
-elevated Administrator command prompt to install the Intel OpenCL CPU runtime silently:
+Only the proprietary NVIDIA driver is needed (>= 560 for the bundled CUDA 12.6 runtime) -- **not** the
+CUDA toolkit. `install-nvidia.sh` picks a driver via `ubuntu-drivers`/apt and is a no-op if one is
+already present. After the reboot, `./mom algo_params` should list a `gpu1` device. When running mom
+inside Docker, add `--gpus all` (needs `nvidia-container-toolkit`).
+
+One exception: full-speed **kawpow** recompiles its per-period kernel at runtime (a SYCL-source JIT
+that folds the ProgPoW program to constants), and that JIT needs CUDA **libdevice** -- shipped by the
+CUDA toolkit at the default `/usr/local/cuda`, not by the driver. If libdevice is absent, kawpow
+automatically falls back to a correct ahead-of-time kernel that runs at roughly a third of the JIT
+speed (~4 vs ~13 MH/s on an L4); every other algo is unaffected. For full kawpow throughput on a
+driver-only host, install the toolkit, e.g. `sudo apt install nvidia-cuda-toolkit` (or NVIDIA's
+`cuda-toolkit-12-6`), so `/usr/local/cuda/nvvm/libdevice/libdevice.10.bc` exists.
+
+# Host GPU runtime (Windows)
+
+Windows release archives include `install.bat` and `install.ps1`. From an **elevated** (Administrator)
+Command Prompt, run `install.bat` to install the Intel OpenCL CPU runtime silently:
 
 ```
 install.bat
+```
+
+Or straight from this repo, without the archive -- a single Command Prompt line (it downloads the
+script with the built-in `curl` and hands it to PowerShell for you, so no PowerShell knowledge is
+needed; still run it from an elevated Command Prompt):
+
+```
+curl -fsSL -o "%TEMP%\mom-install.ps1" https://raw.githubusercontent.com/MoneroOcean/mo-miner/master/scripts/install.ps1 && powershell -NoProfile -ExecutionPolicy Bypass -File "%TEMP%\mom-install.ps1"
 ```
 
 Windows GPU Level Zero support is supplied by the Intel Graphics Driver, not by a small standalone
