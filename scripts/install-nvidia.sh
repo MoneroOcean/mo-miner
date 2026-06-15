@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Runtime check for the Linux/NVIDIA mo-miner release. Unlike the Intel install.sh
 # (which fetches the Intel GPU compute runtime), the NVIDIA build bundles its own
-# AdaptiveCpp + LLVM + CUDA libdevice runtime in libs/ and only needs the system
-# NVIDIA driver (libcuda.so.1) to JIT and run on the GPU. If the driver is absent
-# the miner still runs on the bundled SYCL CPU (OpenMP) device for verification.
+# DPC++ SYCL runtime (libsycl + the CUDA Unified Runtime adapter + the kawpow
+# kernel-compiler JIT) in libs/ and only needs the system NVIDIA driver
+# (libcuda.so.1) to run on the GPU.
 set -eu
 
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -35,7 +35,7 @@ cat <<'EOF'
     Other         : https://www.nvidia.com/Download/index.aspx
   A reboot is required after installing the kernel driver.
 
-  The CUDA *toolkit* is NOT required at runtime — AdaptiveCpp's libdevice and JIT
-  are bundled in libs/; only the driver is needed.
+  The CUDA *toolkit* is NOT required at runtime — the DPC++ SYCL runtime is
+  bundled in libs/; only the driver is needed.
 EOF
 exit 0

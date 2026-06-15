@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Package the Linux/NVIDIA (AdaptiveCpp) release. Mirrors package-linux.sh but
-# bundles the AdaptiveCpp + LLVM + CUDA-libdevice runtime instead of the Intel
-# oneAPI runtime. The generic-SSCP JIT needs libacpp-rt/common, the hipSYCL
-# plugin tree (rt-backend-*, llvm-to-backend/*), libLLVM (IR->PTX at runtime) and
-# libdevice.10.bc; only the user's NVIDIA driver (libcuda.so.1) is required at
-# runtime, not the CUDA toolkit. libdevice is placed in the acpp redist bitcode
-# path (hipSYCL/bitcode/ptx) so it is found without a CUDA install.
+# Package the Linux/NVIDIA (DPC++ CUDA backend) release. Mirrors package-linux.sh but
+# bundles the DPC++ SYCL runtime instead of the Intel oneAPI runtime: libsycl.so.9, the
+# CUDA Unified Runtime adapter (libur_adapter_cuda.so.0 + libumf.so.1), and the
+# kernel_compiler JIT library (libsycl-jit.so) that the kawpow algo compiles its device
+# source through at runtime, plus the device source itself (kawpow_device.inc). The UR
+# loader is linked inside libsycl, so no separate loader file is needed. Only the user's
+# NVIDIA driver (libcuda.so.1) is required at runtime, not the CUDA toolkit.
 set -euo pipefail
 
 version="${1:-}"
@@ -24,9 +24,10 @@ libs_dir="$package_dir/libs"
 build_dir="release-nvidia-build"
 node_bin="${NODE_BIN:-$(command -v node)}"
 image="${MOMINER_NVIDIA_IMAGE:-mo-miner-build-nvidia}"
+dpcpp_lib="${MOMINER_DPCPP_LIB:-/opt/dpcpp/lib}"
 
 if [ ! -f build/Release/mo-miner.node ]; then
-  echo "build/Release/mo-miner.node is missing; build the native addon (acpp) before packaging." >&2
+  echo "build/Release/mo-miner.node is missing; build the native addon (dpcpp-cuda) before packaging." >&2
   exit 1
 fi
 
@@ -77,13 +78,17 @@ chmod +x "$package_dir/mo-miner"
 cp package.json README.md LICENSE "$package_dir/"
 cp scripts/install-nvidia.sh "$package_dir/install.sh"
 cp build/Release/mo-miner.node "$libs_dir/"
+# Device source the kawpow kernel_compiler JIT reads at runtime; it resolves beside the
+# loaded module (libs/) via dladdr (see sycl/kawpow_jit.inc kawpow_module_dir()).
+cp sycl/kawpow_device.inc "$libs_dir/"
 
 container="mo-miner-nvidia-release-libs-$$"
 docker rm -f "$container" >/dev/null 2>&1 || true
 docker run -d --name "$container" --entrypoint sleep "$image" infinity >/dev/null
 trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
 
-# Copy a file out of the build image, dereferencing symlinks to the real target.
+# Copy a file out of the build image, dereferencing symlinks to the real target. The dest
+# basename is the SONAME (e.g. libsycl.so.9), which is what DT_NEEDED / dlopen() ask for.
 copy_image_file() {
   local src="$1" dest="${2:-}"
   [ -n "$src" ] || return 0
@@ -92,66 +97,42 @@ copy_image_file() {
   docker cp -L "$container:$src" "$dest"
 }
 
-# 1. AdaptiveCpp runtime + the whole hipSYCL plugin/bitcode tree (preserve layout
-#    next to libacpp-rt so the runtime finds rt-backend-* / llvm-to-backend / bitcode).
-copy_image_file /opt/adaptivecpp/lib/libacpp-rt.so
-copy_image_file /opt/adaptivecpp/lib/libacpp-common.so
-docker cp -L "$container:/opt/adaptivecpp/lib/hipSYCL" "$libs_dir/hipSYCL"
+# 1. The SYCL runtime + everything libsycl dlopen()s for the CUDA backend. These are loaded
+#    by name at runtime, so they are NOT in the addon's ldd output and must be copied
+#    explicitly: the SYCL runtime, the CUDA UR adapter (+ its libumf dep), and the
+#    kernel_compiler JIT library (kawpow compiles its device source through it).
+copy_image_file "$dpcpp_lib/libsycl.so.9"
+copy_image_file "$dpcpp_lib/libur_adapter_cuda.so.0"
+copy_image_file "$dpcpp_lib/libumf.so.1"
+copy_image_file "$dpcpp_lib/libsycl-jit.so"
 
-# 2. libLLVM (the generic JIT lowers IR -> PTX at runtime through it).
-llvm_so="$(docker exec "$container" bash -lc 'ls /usr/lib/llvm-*/lib/libLLVM.so.* 2>/dev/null | grep -E "libLLVM\.so\.[0-9]" | head -1')"
-copy_image_file "$llvm_so"
-
-# acpp resolves its redistributable-package path as <lib-dir>/hipSYCL/ext, so the
-# JIT looks for bitcode under ext/bitcode/<backend> and LLVM tools under
-# ext/llvm/bin. Place the bundled libdevice and opt/llc/lld there.
-ext="$libs_dir/hipSYCL/ext"
-
-# 3. CUDA libdevice into the acpp redist bitcode path so PTX JIT needs no CUDA toolkit.
-mkdir -p "$ext/bitcode/ptx"
-libdevice="$(docker exec "$container" bash -lc 'ls /usr/local/cuda*/nvvm/libdevice/libdevice.*.bc 2>/dev/null | head -1')"
-copy_image_file "$libdevice" "$ext/bitcode/ptx/$(basename "$libdevice")"
-
-# 3b. LLVM tools (opt/llc/ld.lld) the JIT shells out to at runtime (both PTX and
-#     host backends), placed in the acpp LLVM redist path (ext/llvm/bin) so
-#     getOptPath/getLLCPath/getLLDPath find them with no system LLVM install.
-mkdir -p "$ext/llvm/bin"
-for tool in opt llc ld.lld; do
-  tsrc="$(docker exec "$container" bash -lc "ls /usr/lib/llvm-*/bin/$tool 2>/dev/null | head -1")"
-  copy_image_file "$tsrc" "$ext/llvm/bin/$tool"
-done
-
-# 4. Bundle the full transitive dependency closure of the acpp/LLVM libs, resolved
-#    INSIDE the build image (ldd is transitive) so the bundled libs match the
-#    build environment rather than the packaging host. Skip only glibc-base libs
-#    (present on every target) and the user-provided libcuda driver, so the
-#    release runs on a clean machine that has just the NVIDIA driver.
-deps="$(docker exec "$container" bash -lc '
+# 2. Bundle the transitive dependency closure of those libs, resolved INSIDE the build image
+#    (ldd is transitive) so the bundled libs match the build environment. This picks up
+#    libhwloc, libstdc++/libgcc and libz. Skip glibc-base libs (present on every target) and
+#    the user-provided libcuda driver, so the release runs on a machine with just the driver.
+deps="$(docker exec "$container" bash -lc "
   set -e
-  llvm="$(ls /usr/lib/llvm-*/lib/libLLVM.so.* 2>/dev/null | grep -E "libLLVM\.so\.[0-9]" | head -1)"
-  tools="$(ls /usr/lib/llvm-*/bin/opt /usr/lib/llvm-*/bin/llc /usr/lib/llvm-*/bin/ld.lld 2>/dev/null)"
-  libs="/opt/adaptivecpp/lib/libacpp-rt.so /opt/adaptivecpp/lib/libacpp-common.so $llvm $tools $(find /opt/adaptivecpp/lib/hipSYCL -name "*.so" 2>/dev/null)"
-  for l in $libs; do ldd "$l" 2>/dev/null || true; done \
-    | awk "/=>/ && \$3 ~ /^\// {print \$3}" | sort -u
-')"
+  libs=\"$dpcpp_lib/libsycl.so.9 $dpcpp_lib/libur_adapter_cuda.so.0 $dpcpp_lib/libumf.so.1 $dpcpp_lib/libsycl-jit.so\"
+  for l in \$libs; do ldd \"\$l\" 2>/dev/null || true; done \
+    | awk '/=>/ && \$3 ~ /^\// {print \$3}' | sort -u
+")"
 while IFS= read -r path; do
   [ -n "$path" ] || continue
   base="$(basename "$path")"
   case "$base" in
-    ld-linux*|libc.so*|libm.so*|libdl.so*|libpthread.so*|librt.so*|libresolv.so*|libutil.so*|libcuda.so*) continue ;;
+    ld-linux*|libc.so*|libm.so*|libdl.so*|libpthread.so*|librt.so*|libresolv.so*|libutil.so*|libcuda.so*|libnvidia-ml.so*) continue ;;
   esac
   copy_image_file "$path"
 done <<<"$deps"
 
-# Sanity check: nothing the bundled libs need (other than glibc/libcuda) is absent
-# from libs/. Resolved against libs/ only, so it catches gaps a clean target hits.
+# Sanity check: nothing the bundled libs need (other than glibc/libcuda) is absent from
+# libs/. Resolved against libs/ only, so it catches gaps a clean target would hit.
 unresolved="$(
   while IFS= read -r -d "" file; do
-    LD_LIBRARY_PATH="$PWD/$libs_dir:$PWD/$libs_dir/hipSYCL:$PWD/$libs_dir/hipSYCL/llvm-to-backend" \
-      ldd "$file" 2>/dev/null || true
-  done < <(find "$libs_dir" -maxdepth 2 -type f \( -name "*.so" -o -name "*.so.*" \) -print0) \
+    LD_LIBRARY_PATH="$PWD/$libs_dir" ldd "$file" 2>/dev/null || true
+  done < <(find "$libs_dir" -maxdepth 1 -type f \( -name "*.so" -o -name "*.so.*" \) -print0) \
     | awk '/not found/{print $1}' \
-    | { grep -vE "^(libcuda\.so|ld-linux|libc\.so|libm\.so|libdl\.so|libpthread\.so|librt\.so|libresolv\.so|libutil\.so)" || true; } \
+    | { grep -vE "^(libcuda\.so|libnvidia-ml\.so|ld-linux|libc\.so|libm\.so|libdl\.so|libpthread\.so|librt\.so|libresolv\.so|libutil\.so)" || true; } \
     | sort -u
 )"
 if [ -n "$unresolved" ]; then
@@ -159,15 +140,6 @@ if [ -n "$unresolved" ]; then
   echo "$unresolved" >&2
   exit 1
 fi
-
-# opt/llc/ld.lld (at ext/llvm/bin) resolve their libraries through their RUNPATH
-# ($ORIGIN/../lib = ext/llvm/lib); point that at the bundled libs via relative
-# symlinks so the JIT tools run even when spawned without LD_LIBRARY_PATH.
-mkdir -p "$libs_dir/hipSYCL/ext/llvm/lib"
-for so in "$libs_dir"/*.so*; do
-  [ -e "$so" ] || continue
-  ln -sf "../../../../$(basename "$so")" "$libs_dir/hipSYCL/ext/llvm/lib/$(basename "$so")"
-done
 
 if [ -d "$package_dir/tests" ]; then
   echo "Release package unexpectedly contains tests/." >&2

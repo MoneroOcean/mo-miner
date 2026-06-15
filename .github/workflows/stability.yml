@@ -137,7 +137,7 @@ jobs:
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v4
 
-      - name: Build native addon in NVIDIA (AdaptiveCpp) image
+      - name: Build native addon in NVIDIA (DPC++ CUDA) image
         run: ./r-nvidia.sh node -e "console.log('mo-miner nvidia build ready')"
 
       - name: Package release archive
@@ -154,15 +154,14 @@ jobs:
     needs: package-linux-nvidia-x64
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    # No 'gpu' suite: CI runners have no NVIDIA GPU. sycl-cpu runs on AdaptiveCpp's
-    # OpenMP host device; kawpow/autolykos2 are skipped there (OpenMP-backend
-    # miscompile) and verified on the GPU instead.
+    # Only the pure-CPU (xmrig) suite: the dpcpp-cuda build is CUDA-only (no CPU SYCL
+    # device) and CI runners have no NVIDIA GPU, so SYCL/GPU algos are verified on real
+    # NVIDIA hardware, not in CI.
     strategy:
       fail-fast: false
       matrix:
         suite:
           - cpu
-          - sycl-cpu
 
     steps:
       - name: Checkout
@@ -181,8 +180,6 @@ jobs:
           path: dist
 
       - name: Test extracted package
-        env:
-          MOMINER_SYCL_CPU_SKIP: kawpow,autolykos2
         run: |
           set -euo pipefail
           archive="$(find dist -name 'mo-miner-*-lin-nvidia.tgz' -print -quit)"

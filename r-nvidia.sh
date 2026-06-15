@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Build/run mo-miner with the AdaptiveCpp (NVIDIA) toolchain, mirroring r.sh but
-# using scripts/build-nvidia.dockerfile and the acpp build path. The Intel r.sh
-# is left untouched. Builds with the generic SSCP JIT target, so the image needs
-# no GPU at build time; if a host NVIDIA driver is present the container is given
-# GPU access (requires nvidia-container-toolkit) so GPU runs/tests work too.
+# Build/run mo-miner with the DPC++ CUDA backend (NVIDIA), mirroring r.sh but using
+# scripts/build-nvidia.dockerfile and mominer_sycl_impl=dpcpp-cuda. The Intel r.sh is
+# left untouched. AOT-compiles to PTX/SASS, so the image needs no GPU at build time;
+# if a host NVIDIA driver is present the container is given GPU access (requires
+# nvidia-container-toolkit) so GPU runs/tests work too.
 set -e
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
@@ -24,12 +24,13 @@ docker_flags=(
   --name mo-miner-nvidia
   --hostname mo-miner-nvidia
   --env MOMINER_R_SH=1
-  --env MOMINER_SYCL_IMPL=acpp
+  --env MOMINER_SYCL_IMPL=dpcpp-cuda
   --mount "type=bind,source=$SCRIPT_DIR,target=/root/mo-miner"
 )
 
-# Expose the GPU when a host driver is available (CI runners have none and only
-# build + run the CPU/sycl-cpu suites on the AdaptiveCpp OpenMP backend).
+# Expose the GPU when a host driver is available. The dpcpp-cuda build is CUDA-only
+# (no CPU SYCL device), so GPU algos run only with a driver present; CI runners have
+# none and only build + package + run the pure-CPU (xmrig) suite.
 if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; then
   docker_flags+=(--gpus all)
 fi

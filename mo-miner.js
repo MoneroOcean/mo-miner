@@ -460,6 +460,9 @@ const defaultBenchAlgos = new Set([
   "ghostrider",
   "kawpow",
   "panthera",
+  // Pearl (PRL) is benched by default even though it is not (yet) a MoneroOcean pool algo: the
+  // GPU PoUW NoisyGEMM path is a headline number we want reported alongside the other GPU algos.
+  "pearl",
   "rx/0",
   "rx/2",
   "rx/arq",

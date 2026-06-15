@@ -2,9 +2,13 @@
   "variables": {
     # SYCL implementation selector. Default "dpcpp" (Intel oneAPI DPC++) keeps the
     # existing Intel Linux and Windows builds byte-for-byte unchanged. The NVIDIA
-    # build runs `node-gyp configure -- -Dmominer_sycl_impl=acpp` to compile the
-    # SYCL sources with AdaptiveCpp (generic SSCP JIT target) instead.
-    "mominer_sycl_impl%": "dpcpp"
+    # build runs `node-gyp configure -- -Dmominer_sycl_impl=dpcpp-cuda` to compile
+    # the same SYCL sources with the DPC++ CUDA backend.
+    "mominer_sycl_impl%": "dpcpp",
+    # CUDA AOT target arch(es) for mominer_sycl_impl=dpcpp-cuda. Default is NVIDIA-wide
+    # (Ampere/Ada/Hopper); override e.g. -Dmominer_cuda_arch=nvidia_gpu_sm_89 for a faster
+    # single-arch build. (Blackwell sm_120 needs a CUDA 12.8+ toolkit.)
+    "mominer_cuda_arch%": "nvidia_gpu_sm_80,nvidia_gpu_sm_89,nvidia_gpu_sm_90"
   },
   "targets": [
     {
@@ -191,19 +195,17 @@
           "cflags_cc+": [ "-std=c++20" ],
           "ldflags+": [ "<!@(./scripts/cpu-optflags.sh ldflags)" ]
         } ],
-        [ "OS!='win' and mominer_sycl_impl=='acpp'", {
-          # acpp rejects more than one -std; drop node's common.gypi default so
-          # only the explicit -std=c++20 (cflags_cc+ above) remains.
-          "cflags_cc!": [ "-std=gnu++20" ],
+        [ "OS!='win' and mominer_sycl_impl=='dpcpp-cuda'", {
           "ldflags+": [
-            "--acpp-targets=generic",
+            "-fsycl",
+            "-fsycl-targets=<(mominer_cuda_arch)",
             "-Wl,--disable-new-dtags",
             "-Wl,-rpath,'$$ORIGIN'",
             "-Wl,-rpath,'$$ORIGIN/lib'",
             "-Wl,-rpath,'$$ORIGIN/mo-miner'"
           ]
         } ],
-        [ "OS!='win' and mominer_sycl_impl!='acpp'", {
+        [ "OS!='win' and mominer_sycl_impl!='dpcpp-cuda'", {
           "ldflags+": [
             "-fsycl",
             "-Wl,--disable-new-dtags",
@@ -315,15 +317,19 @@
           }
         }, {
           "conditions": [
-            [ "mominer_sycl_impl=='acpp'", {
-              # acpp rejects more than one -std; drop node's common.gypi default so only the explicit
-              # -std=c++20 below remains. acpp's generic target has no Intel ESIMD, so pearl is left to
-              # its portable joint_matrix path here (no -DPEARL_ESIMD).
+            [ "mominer_sycl_impl=='dpcpp-cuda'", {
+              # NVIDIA via the intel/llvm DPC++ CUDA backend (oneAPI 2026.0 / Codeplay CUDA plugin).
+              # Same DPC++ as the Intel build; MOMINER_SYCL_CUDA marks the few NVIDIA-specific spots
+              # (native 32-wide warps, Lemire/div.rn fixes, pearl mma.sync tensor cores, kawpow source
+              # JIT). -ffp-contract=off keeps the cn/gpu FP recurrence deterministic; -fsycl-embed-ir for
+              # the kawpow runtime kernel-compiler. Multi-arch AOT, NVIDIA-wide (Ampere/Ada/Hopper). No
+              # ESIMD (that is Intel-only), so pearl uses its mma.sync path here.
               "cflags_cc!": [ "-std=gnu++20" ],
               "cflags+": [
-                "-std=c++20 -O3 -DNDEBUG --acpp-targets=generic"
+                "-std=c++20 -O3 -ffp-contract=off -fsycl -fsycl-embed-ir -fsycl-targets=<(mominer_cuda_arch) -DNDEBUG -DMOMINER_SYCL_CUDA"
               ]
-            }, {
+            } ],
+            [ "mominer_sycl_impl!='dpcpp-cuda'", {
               "cflags+": [
                 "-std=c++20 -O3 -fsycl -DNDEBUG -DPEARL_ESIMD"
               ]

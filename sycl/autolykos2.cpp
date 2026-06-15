@@ -67,6 +67,21 @@ inline uint32_t round_up(const uint32_t value, const uint32_t step) {
   return ((value + step - 1) / step) * step;
 }
 
+// Fast unsigned remainder by a runtime divisor (Lemire's "faster remainder"). The K_LEN=32 dataset
+// reads do `idx % n_len` per nonce and n_len is a per-height runtime value. On the DPC++ CUDA backend
+// (MOMINER_SYCL_CUDA) NVIDIA has no integer-divide unit, so `%` emulates as a slow multi-op sequence:
+// M = floor(2^64 / n_len) + 1 is precomputed once on the host (mo_modM), then
+// x % n_len == hi64( (M*x mod 2^64) * n_len ). Bit-exact for x, n_len in [1, 2^32). On Intel (which
+// has a divide unit) keep the plain modulo.
+inline uint64_t mo_modM(const uint32_t d) { return d ? (0xFFFFFFFFFFFFFFFFULL / d) + 1ULL : 0ULL; }
+inline uint32_t mo_mod_u32(const uint32_t x, const uint32_t d, const uint64_t M) {
+#if defined(MOMINER_SYCL_CUDA)
+  return static_cast<uint32_t>(sycl::mul_hi(M * static_cast<uint64_t>(x), static_cast<uint64_t>(d)));
+#else
+  (void)M; return x % d;
+#endif
+}
+
 inline uint64_t bswap64_dev(const uint64_t value) {
   return ((value & 0x00000000000000FFULL) << 56) |
          ((value & 0x000000000000FF00ULL) << 40) |
@@ -525,7 +540,7 @@ struct AutolykosState {
   ~AutolykosState() { release(); }
 
   static unsigned autolykos_workgroup(const sycl::device& dev) {
-#if defined(MOMINER_ACPP)
+#if defined(MOMINER_SYCL_CUDA)
     // NVIDIA: 128 gives the best occupancy for the unrolled per-thread lookup
     // (measured ~68 vs ~64 MH/s at 64 on an L4); the cooperative local==64 path
     // is intentionally not used here.
@@ -792,6 +807,7 @@ int autolykos2(
   std::lock_guard<std::mutex> state_lock(state.mutex);
   state.ensure_result();
   const uint32_t n_len = calc_n(height);
+  const uint64_t n_len_M = mo_modM(n_len);   // Lemire magic for the hot `idx % n_len` (see mo_mod_u32)
   state.ensure_table(height, n_len, is_test, !is_benchmark);
 
   AutolykosJobData job{};
@@ -887,7 +903,7 @@ int autolykos2(
               case 2: idx = (words[word_index] << 16) | (words[word_index + 1] >> 16); break;
               default: idx = (words[word_index] << 24) | (words[word_index + 1] >> 8); break;
             }
-            idx %= n_len;
+            idx = mo_mod_u32(idx, n_len, n_len_M);
 
             const uint32_t* const table_item =
               d_table + static_cast<uint64_t>(idx) * (TABLE_ENTRY_BYTES / sizeof(uint32_t));
@@ -975,11 +991,11 @@ int autolykos2(
 
 #pragma unroll
           for (unsigned k = 0; k < K_LEN; ++k) {
-            indices[k] =
+            indices[k] = mo_mod_u32(
               ((static_cast<uint32_t>(index_hash[(k + 0) & 31U]) << 24) |
                (static_cast<uint32_t>(index_hash[(k + 1) & 31U]) << 16) |
                (static_cast<uint32_t>(index_hash[(k + 2) & 31U]) << 8) |
-                static_cast<uint32_t>(index_hash[(k + 3) & 31U])) % n_len;
+                static_cast<uint32_t>(index_hash[(k + 3) & 31U])), n_len, n_len_M);
           }
         }
 

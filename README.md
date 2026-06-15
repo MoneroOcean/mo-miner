@@ -59,30 +59,22 @@ default 131072), `MOMINER_PEARL_K` (default 4096), `MOMINER_PEARL_RANK` (default
 
 # NVIDIA GPU performance
 
-mo-miner also builds for NVIDIA GPUs with [AdaptiveCpp](https://github.com/AdaptiveCpp/AdaptiveCpp)
-(generic SSCP JIT to PTX) from the same SYCL kernels used for Intel; the NVIDIA Linux release
-artifact is `mo-miner-v<version>-lin-nvidia.tgz`. The hashrates below were measured on an NVIDIA L4
-and compared against the best closed-source NVIDIA miners benchmarked on the same machine (matched
-DAG sizes, local reported hashrate):
+mo-miner also builds for NVIDIA GPUs from the same SYCL kernels using the DPC++ CUDA backend
+(ahead-of-time compiled to PTX/SASS); the NVIDIA Linux release artifact is
+`mo-miner-v<version>-lin-nvidia.tgz`. Hashrates measured on an NVIDIA L4 (Ada, sm_89), each
+compared against the best closed-source miner benchmarked on the same card:
 
-| Algo | mo-miner | SOTA reference | % of SOTA |
+| Algo | mo-miner (L4) | SOTA reference (same L4) | % of SOTA |
 | --- | --- | --- | --- |
-| etchash | 28.8 MH/s | ~28.8 MH/s (memory-bandwidth bound) | ~parity |
-| kawpow | 14.9 MH/s | Rigel 15.56 MH/s | 96% |
-| c29 (Cuckaroo29) | 4.87 g/s | lolMiner ~5.3 g/s | 92% |
-| cn/gpu | 2.20 KH/s | SRBMiner-MULTI 3.04 KH/s | 73% |
-| autolykos2 | 69.5 MH/s | lolMiner 98.19 MH/s | 71% |
+| cn/gpu | 2.65 KH/s | SRBMiner-MULTI 3.04 KH/s | 87% |
+| c29 (Cuckaroo29) | 4.83 g/s | lolMiner ~5.3 g/s | 91% |
+| kawpow | 12.9 MH/s | Rigel 15.56 MH/s | 83% |
+| etchash | 28.9 MH/s | ~28.8 MH/s (memory-bandwidth bound) | ~parity |
+| autolykos2 | 76.5 MH/s | lolMiner 98.19 MH/s | 78% |
+| pearl | 28.6 TH/s | no NVIDIA SOTA (ARC-miner is Intel-only) | — |
 
-cn/gpu and autolykos2 sit at the SYCL codegen ceiling: ahead-of-time compilation
-(`--acpp-targets=cuda:sm_89`) is slower than the generic JIT, and a gather microbenchmark already
-reaches the DRAM roofline. The remaining gap is nvcc-vs-clang register allocation/scheduling plus
-the SOTA miners' fused single-kernel prehash+gather, which only native CUDA could close.
-
-**Hardware:** NVIDIA L4 (AD104, Ada / sm_89, ~72 W power cap) on an AMD EPYC 9454 host, Ubuntu 26.04.
-
-**Software:** mo-miner v0.7.0 NVIDIA build — AdaptiveCpp v25.10.0, NVIDIA driver 580, CUDA 13.1,
-Node.js 24.15. SOTA references benchmarked on the same L4: lolMiner (`--benchmark AUTOLYKOS2`,
-`--benchmark CR29`), Rigel (`-a kawpow`), SRBMiner-MULTI (`--algorithm cryptonight_gpu`).
+SOTA references benchmarked on the same L4: lolMiner (`--benchmark AUTOLYKOS2` / `CR29`), Rigel
+(`-a kawpow`), SRBMiner-MULTI (`--algorithm cryptonight_gpu`).
 
 # Donation
 

@@ -28,17 +28,6 @@
 #include <mutex>
 #include <memory>
 
-// SYCL backend detection (mirrors lib-internal.h, but needed here too because the
-// search kernels below are defined before this file includes lib-internal.h). The
-// NVIDIA build compiles with AdaptiveCpp (acpp), which implements neither Intel
-// ESIMD nor the oneapi joint_matrix extension and forbids inline PTX under its
-// generic SSCP JIT -- so under MOMINER_ACPP we use a portable scalar int8 GEMM.
-#if defined(__ACPP__) || defined(__HIPSYCL__) || defined(__OPENSYCL__)
-  #ifndef MOMINER_ACPP
-  #define MOMINER_ACPP 1
-  #endif
-#endif
-
 // ---- One-shot BLAKE3 (keyed + unkeyed) for host and SYCL device code ----
 // Used by the Pearl kernel for matrix-commitment roots, commitment hashes, the noise PRNG and the
 // PoW jackpot. Ported from the BLAKE3 reference impl; validated against the python verifier.
@@ -391,12 +380,22 @@ static void compute_ab(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, 
     B.Ap[idx] = v;
 #endif
   });
-  // B' written TILE-MAJOR VNNI for XMX use::b: each 16-wide N-tile's k*16 block is contiguous
-  // (stride 64), so a sub-group reads its B' tile coalesced. Layout:
-  //   Bp[ (j/16)*k*16 + (r/4)*64 + (j%16)*4 + (r%4) ] = B'[r,j].
+  // B' layout depends on the search backend's use::b expectation:
+  //  - MOMINER_SYCL_CUDA: plain ROW-MAJOR B'[r,j] at r*n+j -- NVIDIA joint_matrix use::b is
+  //    row_major/col_major (no VNNI), loaded with stride n.
+  //  - else (Intel XMX): TILE-MAJOR VNNI, each 16-wide N-tile's k*16 block contiguous (stride 64),
+  //    Bp[ (j/16)*k*16 + (r/4)*64 + (j%16)*4 + (r%4) ] = B'[r,j], coalesced sub-group read.
   q.parallel_for(sycl::range<1>((size_t)k * n), [=](sycl::id<1> id) { int idx = (int)id[0], r = idx / n, j = idx % n;
     int acc = (int)B.EBR[B.EBLq1[r] * n + j] - (int)B.EBR[B.EBLq2[r] * n + j];
-    B.Bp[(size_t)(j / 16) * k * 16 + (size_t)(r / 4) * 64 + (size_t)(j % 16) * 4 + (r % 4)] = (int8_t)(gv(seed, tot + (uint32_t)idx) + acc); });
+    int8_t v = (int8_t)(gv(seed, tot + (uint32_t)idx) + acc);
+#if defined(MOMINER_SYCL_CUDA) && defined(PEARL_CU_JM)
+    B.Bp[(size_t)r * n + j] = v;                 // row-major B'[r,j] for joint_matrix use::b
+#elif defined(MOMINER_SYCL_CUDA)
+    B.Bp[(size_t)j * k + r] = v;                 // col-major B'[r,j] for mma.sync B operand (coalesced loads)
+#else
+    B.Bp[(size_t)(j / 16) * k * 16 + (size_t)(r / 4) * 64 + (size_t)(j % 16) * 4 + (r % 4)] = v;
+#endif
+  });
 }
 
 // XMX joint_matrix search: each sub-group (16 lanes) computes a PEARL_HR (rows) x PEARL_NTILE
@@ -430,7 +429,7 @@ static inline bool tile_wins(const uint32_t tr[16], const uint8_t* key, const ui
   for (int i = 31; i >= 0; i--) { if (jp[i] < target[i]) return true; if (jp[i] > target[i]) return false; }
   return true;   // jackpot == target: still within bound
 }
-#if !defined(PEARL_ESIMD) && !defined(MOMINER_ACPP)
+#if !defined(PEARL_ESIMD) && !defined(MOMINER_SYCL_CUDA)
 static void search(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k, int rank) {
   using namespace sycl::ext::oneapi::experimental::matrix;
   constexpr int NT = PEARL_NTILE, HR = PEARL_HR, HT = 16, SG = 16;
@@ -487,47 +486,365 @@ static void search(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int 
     });
   });
 }
-#endif  // !PEARL_ESIMD && !MOMINER_ACPP
+#endif  // !PEARL_ESIMD && !MOMINER_SYCL_CUDA
 
-#if defined(MOMINER_ACPP)
-// ---- portable scalar int8 GEMM search (AdaptiveCpp / NVIDIA) ----
-// acpp implements neither joint_matrix (Intel) nor ESIMD, and its generic SSCP JIT
-// forbids inline PTX, so tensor cores / DP4A are unreachable here -- this is plain
-// SYCL C++ with an int32 accumulator. One work-item owns one 16x16 hash tile: it
-// streams k, accumulates the 256 cells, and XOR/rotl-folds the cumulative tile into
-// the transcript at each rank boundary, then runs the shared tile_wins() jackpot
-// check. Reads the same compute_ab() layouts (row-major A', VNNI-tile-major B').
-// Correctness-first and bandwidth/scalar-bound -- not competitive with a tensor-core
-// miner; see the perf notes for the NVIDIA tensor-core path.
-static void search_scalar(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k, int rank) {
+// Why DPC++ (CUDA backend), not AdaptiveCpp, for NVIDIA: pearl's throughput lives entirely in the
+// int8 Tensor Cores, and acpp cannot reach them. Its default generic-SSCP target lowers to a
+// retargetable IR with no Intel ESIMD, no oneAPI joint_matrix, and inline nvptx PTX (e.g. mma.sync)
+// compiled to a silent no-op -- so the best it can do for pearl is a ~0.05 TH/s scalar GEMM. Its
+// explicit cuda:sm_XX target *can* emit inline PTX, but that mode is AOT and loses the SSCP runtime
+// JIT that kawpow's per-period specialization depends on. The intel/llvm DPC++ CUDA backend (oneAPI
+// 2026.0 / Codeplay plugin) instead reaches the Tensor Cores via the mma.sync path below AND is the
+// same DPC++ as the Intel build, so all the SYCL kernels stay unified across both GPU vendors.
+#if defined(MOMINER_SYCL_CUDA)
+// ---- NVIDIA tensor-core int8 mma.sync search (DPC++ CUDA backend) ----
+// Built with intel/llvm DPC++ for nvptx64 (-fsycl-targets=nvptx64-nvidia-cuda --cuda-gpu-arch=sm_89),
+// where joint_matrix maps to the L4's int8 Tensor Cores (wmma.mma.sync IMMA). NVIDIA constraints
+// differ from Intel XMX: fixed WMMA shape m16n16k16 (one 16x16 hash tile == one accumulator), only
+// row_major/col_major layouts (NO ext_intel_packed VNNI -- compute_ab writes B' row-major here), and
+// a 32-lane warp per matrix op. One sub-group (warp) owns one 16x16 hash tile; the cumulative tile is
+// XOR-folded into the transcript every `rank` columns via joint_matrix_apply (per-lane, in-register)
+// + a sub-group XOR reduce -- no SLM readback (the bottleneck that capped Intel joint_matrix). The
+// XOR of all 256 cells is order-independent, so the NVIDIA fragment distribution needs no remap; the
+// jackpot is bit-identical to the reference given identical A'/B'.
+// Per-warp register tile: each warp computes an ER x EC grid of 16x16 hash tiles, reusing each A'
+// row-fragment across EC columns and each B' col-fragment across ER rows (raises MAC/byte so the
+// mma issue rate, not the loads, bounds throughput -- the naive 1-tile/warp kernel was load-bound at
+// ~6 TH/s). PEARL_CU_BLK swizzles warps into BLK x BLK super-blocks so each block's A'/B' slice stays
+// L2-resident (the m=n=131072 shape is 512MB/operand -> DRAM-bound without it). Tunable at build.
+#ifndef PEARL_CU_ER
+#define PEARL_CU_ER 4    // 4x4 register tile = best MAC/byte reuse without accumulator spill (generic, not L4-tuned)
+#endif
+#ifndef PEARL_CU_EC
+#define PEARL_CU_EC 4
+#endif
+#ifndef PEARL_CU_BLK
+#define PEARL_CU_BLK 16  // super-block swizzle for L2 reuse at the big network shape
+#endif
+#if defined(PEARL_CU_JM)
+// joint_matrix variant (kept for comparison; the SYCL accumulator read caps it at ~20 TH/s -- the
+// default below uses native mma.sync inline PTX instead). Build with -DPEARL_CU_JM + B' row-major.
+static void search_cuda(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k, int rank) {
+  using namespace sycl::ext::oneapi::experimental::matrix;
+  constexpr int T = 16, SG = 32, ER = PEARL_CU_ER, EC = PEARL_CU_EC, BLK = PEARL_CU_BLK;
   auto B = bb;
-  constexpr int HT = 16;
-  const int tilesW = n / HT;
-  const size_t nWI = (size_t)(m / HT) * tilesW;
-  q.parallel_for(sycl::range<1>(nWI), [=](sycl::id<1> id) {
-    const int wi = (int)id[0];
-    const int tileC = wi % tilesW, rowBase = (wi / tilesW) * HT, colBase = tileC * HT;
-    int32_t acc[HT * HT]; for (int i = 0; i < HT * HT; i++) acc[i] = 0;
-    uint32_t tr[16]; for (int i = 0; i < 16; i++) tr[i] = 0;
-    int rc = 0;
-    for (int c = 0; c < k; c++) {
-      int8_t a[HT], bcol[HT];
-      for (int i = 0; i < HT; i++) a[i] = B.Ap[(size_t)(rowBase + i) * k + c];     // row-major A'[rowBase+i, c]
-      // VNNI-tile-major B'[c, colBase+j]: tile tileC, depth c, within-tile col j.
-      for (int j = 0; j < HT; j++) bcol[j] = B.Bp[(size_t)tileC * k * 16 + (size_t)(c / 4) * 64 + (size_t)j * 4 + (c % 4)];
-      for (int i = 0; i < HT; i++) for (int j = 0; j < HT; j++) acc[i * HT + j] += (int)a[i] * (int)bcol[j];
-      if ((c + 1) % rank == 0) {     // rank-chunk boundary: XOR-fold the cumulative tile into the transcript
-        uint32_t part = 0; for (int t = 0; t < HT * HT; t++) part ^= (uint32_t)acc[t];
-        tr[rc % 16] = rotl(tr[rc % 16], 13) ^ part; rc++;
+  const int tilesH = m / (T * ER), tilesW = n / (T * EC);
+  const size_t nWarp = (size_t)tilesH * tilesW;
+  const bool blocked = BLK > 1 && (tilesW % BLK) == 0 && (tilesH % BLK) == 0;
+  const int blocksW = blocked ? tilesW / BLK : 0;
+  q.submit([&](sycl::handler& h) {
+    sycl::local_accessor<uint32_t, 1> trbuf(sycl::range<1>(ER * EC * 16), h);  // per-warp transcripts in SLM
+    h.parallel_for(sycl::nd_range<1>(nWarp * SG, SG), [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(32)]] {
+      auto sg = it.get_sub_group();
+      const int lane = (int)sg.get_local_linear_id();
+      const int warp = (int)it.get_group(0);
+      int Rg, Cg;
+      if (blocked) { const int blk = warp / (BLK * BLK), intra = warp % (BLK * BLK);
+        Rg = (blk / blocksW) * BLK + (intra / BLK); Cg = (blk % blocksW) * BLK + (intra % BLK); }
+      else { Rg = warp / tilesW; Cg = warp % tilesW; }
+      const int rowBase = Rg * T * ER, colBase = Cg * T * EC;
+      auto Ap = sycl::address_space_cast<sycl::access::address_space::global_space, sycl::access::decorated::no>(B.Ap);
+      auto Bp = sycl::address_space_cast<sycl::access::address_space::global_space, sycl::access::decorated::no>(B.Bp);
+      joint_matrix<sycl::sub_group, int8_t, use::a, T, T, layout::row_major> a[ER];
+      joint_matrix<sycl::sub_group, int8_t, use::b, T, T, layout::row_major> b[EC];
+      joint_matrix<sycl::sub_group, int32_t, use::accumulator, T, T> acc[ER * EC];
+#pragma unroll
+      for (int i = 0; i < ER * EC; i++) joint_matrix_fill(sg, acc[i], 0);
+      // Transcripts live in SLM, not per-lane registers: holding ER*EC*16 u32/lane spilled the
+      // accumulators out of tensor-core registers and collapsed the GEMM (79 -> 17 TH/s). Only lane 0
+      // touches trbuf (the fold reduces across the warp first), so no SLM race / barrier is needed.
+      if (lane == 0)
+#pragma unroll
+        for (int i = 0; i < ER * EC * 16; i++) trbuf[i] = 0;
+      int rc = 0;
+      for (int p = 0; p < k; p += T) {
+#pragma unroll
+        for (int r = 0; r < ER; r++) joint_matrix_load(sg, a[r], Ap + (size_t)(rowBase + r * T) * k + p, k);
+#pragma unroll
+        for (int c = 0; c < EC; c++) joint_matrix_load(sg, b[c], Bp + (size_t)p * n + colBase + c * T, n);
+#pragma unroll
+        for (int r = 0; r < ER; r++)
+#pragma unroll
+          for (int c = 0; c < EC; c++) joint_matrix_mad(sg, acc[r * EC + c], a[r], b[c], acc[r * EC + c]);
+        if ((p + T) % rank == 0) {     // rank-chunk boundary: XOR-fold each cumulative tile into SLM
+#ifndef PEARL_CU_NODRAIN
+#pragma unroll
+          for (int t = 0; t < ER * EC; t++) {
+            uint32_t part = 0;
+            joint_matrix_apply(sg, acc[t], [&](int32_t& v) { part ^= (uint32_t)v; });
+            part = sycl::reduce_over_group(sg, part, sycl::bit_xor<uint32_t>{});
+            if (lane == 0) trbuf[t * 16 + rc % 16] = rotl(trbuf[t * 16 + rc % 16], 13) ^ part;
+          }
+#endif
+          rc++;
+        }
       }
-    }
-    if (tile_wins(tr, B.cA, B.target)) {
-      sycl::atomic_ref<int, sycl::memory_order::relaxed, sycl::memory_scope::device, sycl::access::address_space::global_space> at(B.result->found);
-      if (at.exchange(1) == 0) { B.result->seed = seed; B.result->row = (uint32_t)rowBase; B.result->col = (uint32_t)colBase; }
-    }
+      if (lane == 0) {
+        for (int r = 0; r < ER; r++) for (int c = 0; c < EC; c++) {
+          const int t = r * EC + c;
+          uint32_t full[16];
+#pragma unroll
+          for (int s = 0; s < 16; s++) full[s] = trbuf[t * 16 + s];
+          if (!tile_wins(full, B.cA, B.target)) continue;
+          sycl::atomic_ref<int, sycl::memory_order::relaxed, sycl::memory_scope::device, sycl::access::address_space::global_space> at(B.result->found);
+          if (at.exchange(1) == 0) { B.result->seed = seed; B.result->row = (uint32_t)(rowBase + r * T); B.result->col = (uint32_t)(colBase + c * T); }
+        }
+      }
+    });
   });
 }
-#endif  // MOMINER_ACPP
+#else   // default NVIDIA path: native mma.sync IMMA via inline PTX
+// One warp computes an ER x EC grid of 16x16 hash tiles using the int8 Tensor-Core MMA
+// mma.sync.aligned.m16n8k32 (a 16x16 tile = two n=8 halves). The accumulator stays in registers and
+// the inner-hash reads those registers DIRECTLY -- unlike joint_matrix_apply, a plain register read
+// does not spill the accumulators / pessimize the GEMM (that capped the joint_matrix path at ~20).
+// This is the NVIDIA analog of the Intel ESIMD dpas path. A' is row-major, B' is COLUMN-major (so
+// each thread's 4 contiguous int8 of a fragment is one aligned 32-bit load). PEARL_CU_BLK super-block
+// swizzle keeps the A'/B' slice L2-resident at the 131072 shape.
+//
+// mma.m16n8k32.s8 register fragment layout (PTX ISA): lane -> gid=lane/4, tid=lane%4.
+//   A(16x32,row): a[0]=A[gid][tid*4..],   a[1]=A[gid+8][tid*4..],   a[2]=A[gid][16+tid*4..],   a[3]=A[gid+8][16+tid*4..]
+//   B(32x8 ,col): b[0]=B[tid*4..][gid],   b[1]=B[16+tid*4..][gid]
+//   C(16x8 ,row): c[0]=C[gid][tid*2], c[1]=C[gid][tid*2+1], c[2]=C[gid+8][tid*2], c[3]=C[gid+8][tid*2+1]
+static inline void mma_m16n8k32_s8(int32_t c[4], const uint32_t a[4], const uint32_t b[2]) {
+#ifdef __SYCL_DEVICE_ONLY__
+  asm volatile(
+    "mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 "
+    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
+    : "+r"(c[0]), "+r"(c[1]), "+r"(c[2]), "+r"(c[3])
+    : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]));
+#else
+  (void)c; (void)a; (void)b;   // host pass: never executed
+#endif
+}
+static inline uint32_t ld_u32(const int8_t* p) { return *reinterpret_cast<const uint32_t*>(p); }
+// cp.async helpers (PEARL_CU_PIPE pipeline): async global->shared 16-byte copies that overlap with
+// mma, plus the generic->shared address conversion cp.async needs. Device-only (inline PTX).
+static inline uint32_t cu_smem_addr(const void* p) {
+  uint32_t a = 0;
+#ifdef __SYCL_DEVICE_ONLY__
+  asm("{ .reg .u64 t; cvta.to.shared.u64 t, %1; cvt.u32.u64 %0, t; }" : "=r"(a) : "l"(p));
+#else
+  (void)p;
+#endif
+  return a;
+}
+static inline void cu_cp_async16(uint32_t smem, const int8_t* g) {
+#ifdef __SYCL_DEVICE_ONLY__
+  asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" :: "r"(smem), "l"(g));
+#else
+  (void)smem; (void)g;
+#endif
+}
+static inline void cu_cp_commit() {
+#ifdef __SYCL_DEVICE_ONLY__
+  asm volatile("cp.async.commit_group;\n");
+#endif
+}
+template <int N> static inline void cu_cp_wait() {
+#ifdef __SYCL_DEVICE_ONLY__
+  asm volatile("cp.async.wait_group %0;\n" :: "n"(N));
+#endif
+}
+#if !defined(PEARL_CU_PIPE)
+// DEFAULT NVIDIA path: one warp per ER x EC grid of 16x16 hash tiles, mma.sync m16n8k32 int8, operands
+// from global (L2-resident via the BLK super-block swizzle), accumulators resident in registers
+// (pearl's inner-hash needs CUMULATIVE C, so tiles cannot be evicted like a normal GEMM), inner-hash
+// folds them per rank via direct register reads. ~24 TH/s on an L4 -- correct and the best working
+// config; occupancy-bound by the resident-accumulator register tile. (PEARL_CU_PIPE selects the
+// experimental SMEM/cp.async pipeline.)
+static void search_cuda(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k, int rank) {
+  constexpr int SG = 32, ER = PEARL_CU_ER, EC = PEARL_CU_EC, BLK = PEARL_CU_BLK;
+  auto B = bb;
+  const int tilesH = m / (16 * ER), tilesW = n / (16 * EC);
+  const size_t nWarp = (size_t)tilesH * tilesW;
+  const bool blocked = BLK > 1 && (tilesW % BLK) == 0 && (tilesH % BLK) == 0;
+  const int blocksW = blocked ? tilesW / BLK : 0;
+  q.submit([&](sycl::handler& h) {
+    sycl::local_accessor<uint32_t, 1> trbuf(sycl::range<1>(ER * EC * 16), h);  // per-warp transcripts in SLM
+    h.parallel_for(sycl::nd_range<1>(nWarp * SG, SG), [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(32)]] {
+      auto sg = it.get_sub_group();
+      const int lane = (int)sg.get_local_linear_id(), gid = lane >> 2, tid = lane & 3;
+      const int warp = (int)it.get_group(0);
+      int Rg, Cg;
+      if (blocked) { const int blk = warp / (BLK * BLK), intra = warp % (BLK * BLK);
+        Rg = (blk / blocksW) * BLK + (intra / BLK); Cg = (blk % blocksW) * BLK + (intra % BLK); }
+      else { Rg = warp / tilesW; Cg = warp % tilesW; }
+      const int rowBase = Rg * 16 * ER, colBase = Cg * 16 * EC;
+      const int8_t* Ap = B.Ap; const int8_t* Bp = B.Bp;   // A' row-major (i*k+c), B' col-major (j*k+c)
+      int32_t acc[ER * EC * 2][4];
+#pragma unroll
+      for (int i = 0; i < ER * EC * 2; i++) { acc[i][0] = acc[i][1] = acc[i][2] = acc[i][3] = 0; }
+      if (lane == 0)
+#pragma unroll
+        for (int i = 0; i < ER * EC * 16; i++) trbuf[i] = 0;
+      int rc = 0;
+      for (int p = 0; p < k; p += 32) {
+        uint32_t ra[ER][4];
+#pragma unroll
+        for (int r = 0; r < ER; r++) {
+          const size_t r0 = (size_t)(rowBase + r * 16 + gid) * k + p, r8 = (size_t)(rowBase + r * 16 + gid + 8) * k + p;
+          ra[r][0] = ld_u32(Ap + r0 + tid * 4);      ra[r][1] = ld_u32(Ap + r8 + tid * 4);
+          ra[r][2] = ld_u32(Ap + r0 + 16 + tid * 4); ra[r][3] = ld_u32(Ap + r8 + 16 + tid * 4);
+        }
+#pragma unroll
+        for (int c = 0; c < EC; c++)
+#pragma unroll
+          for (int hh = 0; hh < 2; hh++) {
+            const size_t cb = (size_t)(colBase + c * 16 + hh * 8 + gid) * k + p;   // col-major B' column
+            uint32_t rb[2] = { ld_u32(Bp + cb + tid * 4), ld_u32(Bp + cb + 16 + tid * 4) };
+#pragma unroll
+            for (int r = 0; r < ER; r++) mma_m16n8k32_s8(acc[(r * EC + c) * 2 + hh], ra[r], rb);
+          }
+        if ((p + 32) % rank == 0) {     // rank-chunk boundary: XOR-fold cumulative tiles (register read)
+#ifndef PEARL_CU_NODRAIN
+#pragma unroll
+          for (int t = 0; t < ER * EC; t++) {
+            uint32_t part = (uint32_t)acc[t * 2][0] ^ (uint32_t)acc[t * 2][1] ^ (uint32_t)acc[t * 2][2] ^ (uint32_t)acc[t * 2][3]
+                          ^ (uint32_t)acc[t * 2 + 1][0] ^ (uint32_t)acc[t * 2 + 1][1] ^ (uint32_t)acc[t * 2 + 1][2] ^ (uint32_t)acc[t * 2 + 1][3];
+#ifndef PEARL_CU_NOREDUCE
+            part = sycl::reduce_over_group(sg, part, sycl::bit_xor<uint32_t>{});
+#endif
+            if (lane == 0) trbuf[t * 16 + rc % 16] = rotl(trbuf[t * 16 + rc % 16], 13) ^ part;
+          }
+#endif
+          rc++;
+        }
+      }
+      if (lane == 0) {
+        for (int r = 0; r < ER; r++) for (int c = 0; c < EC; c++) {
+          const int t = r * EC + c;
+          uint32_t full[16];
+#pragma unroll
+          for (int s = 0; s < 16; s++) full[s] = trbuf[t * 16 + s];
+          if (!tile_wins(full, B.cA, B.target)) continue;
+          sycl::atomic_ref<int, sycl::memory_order::relaxed, sycl::memory_scope::device, sycl::access::address_space::global_space> at(B.result->found);
+          if (at.exchange(1) == 0) { B.result->seed = seed; B.result->row = (uint32_t)(rowBase + r * 16); B.result->col = (uint32_t)(colBase + c * 16); }
+        }
+      }
+    });
+  });
+}
+#else   // PEARL_CU_PIPE: SMEM-staged + cp.async double-buffered mma.sync pipeline
+// ncu of the default kernel: 78% memory throughput, 16.5% occupancy (208 regs/thread) -> memory-bound
+// + occupancy-starved. This pipeline fixes both: a block of WM x WN warps stages each k-chunk of
+// A'(BM x BK) and B'(BN x BK) in SMEM and REUSES it across all warps (cuts global/L2 traffic), with
+// cp.async DOUBLE-BUFFERING so the next chunk's async copy overlaps the current chunk's mma (no barrier
+// stall -- the Phase-A barrier-only version regressed to 9), and a small per-warp register tile (TM x
+// TN) -> high occupancy. Accumulators are cumulative (resident); inner-hash folds them per rank.
+#ifndef PEARL_CU_WM
+#define PEARL_CU_WM 4    // warps per block along M
+#endif
+#ifndef PEARL_CU_WN
+#define PEARL_CU_WN 2    // warps per block along N
+#endif
+#ifndef PEARL_CU_TM
+#define PEARL_CU_TM 2    // 16x16 hash tiles per warp along M
+#endif
+#ifndef PEARL_CU_TN
+#define PEARL_CU_TN 2    // 16x16 hash tiles per warp along N
+#endif
+#ifndef PEARL_CU_BK
+#define PEARL_CU_BK 64   // K staged per SMEM chunk (multiple of 16 for cp.async, of 32 for the mma K)
+#endif
+static void search_cuda(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k, int rank) {
+  constexpr int WM = PEARL_CU_WM, WN = PEARL_CU_WN, TM = PEARL_CU_TM, TN = PEARL_CU_TN, BK = PEARL_CU_BK;
+  constexpr int NW = WM * WN, TBSZ = NW * 32, BM = WM * TM * 16, BN = WN * TN * 16;
+  constexpr int AB = BM * BK, BB = BN * BK, A16 = AB / 16, B16 = BB / 16;
+  auto B = bb;
+  const int mB = m / BM, nB = n / BN, nChunks = k / BK;
+  const size_t nBlocks = (size_t)mB * nB;
+  q.submit([&](sycl::handler& h) {
+    sycl::local_accessor<int8_t, 1> As(sycl::range<1>(2 * AB), h);                 // double-buffered A' [2][BM][BK]
+    sycl::local_accessor<int8_t, 1> Bs(sycl::range<1>(2 * BB), h);                 // double-buffered B' [2][BN][BK] (col-major B')
+    sycl::local_accessor<uint32_t, 1> trbuf(sycl::range<1>(NW * TM * TN * 16), h); // per-warp transcripts
+    h.parallel_for(sycl::nd_range<1>(nBlocks * TBSZ, TBSZ), [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(32)]] {
+      auto grp = it.get_group();
+      const int tid = (int)it.get_local_linear_id();
+      const int warp = tid >> 5, lane = tid & 31, gid = lane >> 2, tln = lane & 3;
+      const int wM = warp / WN, wN = warp % WN;
+      const int block = (int)it.get_group(0), bR = block / nB, bC = block % nB;
+      const int rowBlock = bR * BM, colBlock = bC * BN;
+      const int8_t* Ap = B.Ap; const int8_t* Bp = B.Bp;
+      int8_t* Asp = As.get_multi_ptr<sycl::access::decorated::no>().get();
+      int8_t* Bsp = Bs.get_multi_ptr<sycl::access::decorated::no>().get();
+      uint32_t* tr = trbuf.get_multi_ptr<sycl::access::decorated::no>().get() + warp * TM * TN * 16;
+      int32_t acc[TM * TN * 2][4];
+#pragma unroll
+      for (int i = 0; i < TM * TN * 2; i++) { acc[i][0] = acc[i][1] = acc[i][2] = acc[i][3] = 0; }
+      if (lane == 0)
+#pragma unroll
+        for (int i = 0; i < TM * TN * 16; i++) tr[i] = 0;
+      const int warpRow = wM * TM * 16, warpCol = wN * TN * 16;
+      auto load_chunk = [&](int buf, int p) {     // async-copy k-chunk at offset p into SMEM buffer buf
+        int8_t* aDst = Asp + buf * AB; int8_t* bDst = Bsp + buf * BB;
+        for (int ci = tid; ci < A16; ci += TBSZ) { const int mm = (ci * 16) / BK, kk = (ci * 16) % BK;
+          cu_cp_async16(cu_smem_addr(aDst + mm * BK + kk), Ap + (size_t)(rowBlock + mm) * k + p + kk); }
+        for (int ci = tid; ci < B16; ci += TBSZ) { const int nn = (ci * 16) / BK, kk = (ci * 16) % BK;
+          cu_cp_async16(cu_smem_addr(bDst + nn * BK + kk), Bp + (size_t)(colBlock + nn) * k + p + kk); }
+        cu_cp_commit();
+      };
+      load_chunk(0, 0);     // prologue
+      int rc = 0;
+      for (int c = 0; c < nChunks; c++) {
+        const int buf = c & 1;
+        if (c + 1 < nChunks) load_chunk((c + 1) & 1, (c + 1) * BK);   // prefetch next chunk (overlaps the mma below)
+        cu_cp_wait<1>();              // current chunk's copy done (keep the prefetch in flight)
+        sycl::group_barrier(grp);     // make the cp.async writes visible to all warps
+        const int8_t* Ab = Asp + buf * AB; const int8_t* Bb = Bsp + buf * BB;
+#pragma unroll
+        for (int ks = 0; ks < BK; ks += 32) {
+          uint32_t ra[TM][4];
+#pragma unroll
+          for (int mt = 0; mt < TM; mt++) {
+            const int mr = warpRow + mt * 16 + gid, o = ks + tln * 4;
+            ra[mt][0] = ld_u32(Ab + mr * BK + o);        ra[mt][1] = ld_u32(Ab + (mr + 8) * BK + o);
+            ra[mt][2] = ld_u32(Ab + mr * BK + o + 16);   ra[mt][3] = ld_u32(Ab + (mr + 8) * BK + o + 16);
+          }
+#pragma unroll
+          for (int nt = 0; nt < TN; nt++)
+#pragma unroll
+            for (int hh = 0; hh < 2; hh++) {
+              const int nc = warpCol + nt * 16 + hh * 8 + gid, o = ks + tln * 4;
+              uint32_t rb[2] = { ld_u32(Bb + nc * BK + o), ld_u32(Bb + nc * BK + o + 16) };
+#pragma unroll
+              for (int mt = 0; mt < TM; mt++) mma_m16n8k32_s8(acc[(mt * TN + nt) * 2 + hh], ra[mt], rb);
+            }
+          if (((c * BK + ks) + 32) % rank == 0) {     // cumulative k hit a rank boundary -> fold
+#ifndef PEARL_CU_NODRAIN
+#pragma unroll
+            for (int t = 0; t < TM * TN; t++) {
+              uint32_t part = (uint32_t)acc[t*2][0] ^ (uint32_t)acc[t*2][1] ^ (uint32_t)acc[t*2][2] ^ (uint32_t)acc[t*2][3]
+                            ^ (uint32_t)acc[t*2+1][0] ^ (uint32_t)acc[t*2+1][1] ^ (uint32_t)acc[t*2+1][2] ^ (uint32_t)acc[t*2+1][3];
+              part = sycl::reduce_over_group(it.get_sub_group(), part, sycl::bit_xor<uint32_t>{});
+              if (lane == 0) tr[t * 16 + rc % 16] = rotl(tr[t * 16 + rc % 16], 13) ^ part;
+            }
+#endif
+            rc++;
+          }
+        }
+        sycl::group_barrier(grp);   // mma done reading this buffer before it is reused two chunks later
+      }
+      if (lane == 0) {
+#pragma unroll
+        for (int mt = 0; mt < TM; mt++)
+#pragma unroll
+          for (int nt = 0; nt < TN; nt++) {
+            const int t = mt * TN + nt;
+            uint32_t full[16];
+#pragma unroll
+            for (int s = 0; s < 16; s++) full[s] = tr[t * 16 + s];
+            if (!tile_wins(full, B.cA, B.target)) continue;
+            sycl::atomic_ref<int, sycl::memory_order::relaxed, sycl::memory_scope::device, sycl::access::address_space::global_space> at(B.result->found);
+            if (at.exchange(1) == 0) { B.result->seed = seed; B.result->row = (uint32_t)(rowBlock + warpRow + mt * 16); B.result->col = (uint32_t)(colBlock + warpCol + nt * 16); }
+          }
+      }
+    });
+  });
+}
+#endif  // !PEARL_CU_PIPE
+#endif  // PEARL_CU_JM
+#endif  // MOMINER_SYCL_CUDA
 
 #ifdef PEARL_ESIMD
 // ---- experimental ESIMD register-resident DPAS search (alternative to search()) ----
@@ -648,8 +965,8 @@ static void attempt(sycl::queue& q, const Buffers& b, uint32_t seed, int m, int 
   compute_ab(q, b, seed, m, n, k, rank); // materialize noised A' (tile-major) and B' (VNNI tile-major)
 #if defined(PEARL_ESIMD)
   search_esimd(q, b, seed, m, n, k, rank); // ESIMD register-resident DPAS path (Intel GPUs, ~53 TH/s)
-#elif defined(MOMINER_ACPP)
-  search_scalar(q, b, seed, m, n, k, rank); // portable scalar int8 GEMM (AdaptiveCpp / NVIDIA)
+#elif defined(MOMINER_SYCL_CUDA)
+  search_cuda(q, b, seed, m, n, k, rank);  // NVIDIA tensor-core mma.sync path (DPC++ CUDA backend)
 #else
   search(q, b, seed, m, n, k, rank);       // portable joint_matrix path (XMX A'*B' + XOR transcript + BLAKE3)
 #endif

@@ -60,7 +60,10 @@ alignas(64) const constexpr uint32_t AES[256] = {
   0xC3414182, 0xB0999929, 0x772D2D5A, 0x110F0F1E, 0xCBB0B07B, 0xFC5454A8, 0xD6BBBB6D, 0x3A16162C
 };
 
-#if defined(MOMINER_ACPP)
+// NVIDIA (sm_89) has a native 64-bit integer datapath, so the plain uint64 Keccak below is fastest;
+// the 32-bit-pair variant (#else) exists for Xe2 (Intel Arc), which lacks a native 64-bit ALU. Define
+// MOMINER_CNGPU_K32 to force the 32-bit-pair path on CUDA for A/B measurement (it loses on NVIDIA).
+#if defined(MOMINER_SYCL_CUDA) && !defined(MOMINER_CNGPU_K32)
 void keccak(uint64_t* const s) { // Hot device-side Keccak; keep explicit steps for backend codegen.
   static const uint32_t rotc[24] = {
     1,  3,  6,  10, 15, 21, 28, 36, 45, 55, 2,  14,
@@ -280,6 +283,27 @@ inline int32_t* lpad_ptr(const unsigned idx, const unsigned n, int32_t* const lp
   );
 }
 
+// Correctly-rounded f32 division. The cn/gpu reference (Intel/Level-Zero with
+// -cl-fp32-correctly-rounded-divide-sqrt) computes the recurrence's one division
+// with an IEEE correctly-rounded result. DPC++'s CUDA backend emits a division that is 1 ULP low
+// for some operands (not correctly rounded), and a single 1-ULP error desyncs the chaotic
+// recurrence into a wrong hash. Force the PTX correctly-rounded div.rn.f32 per component on that
+// backend; everywhere else use the plain operator/ (unchanged Intel codegen).
+inline sycl::float4 mo_div_rn(const sycl::float4 a, const sycl::float4 b) {
+#if defined(MOMINER_SYCL_CUDA) && defined(__SYCL_DEVICE_ONLY__)
+  sycl::float4 r;
+  #pragma unroll
+  for (int k = 0; k < 4; ++k) {
+    float q;
+    asm("div.rn.f32 %0, %1, %2;" : "=f"(q) : "f"(a[k]), "f"(b[k]));
+    r[k] = q;
+  }
+  return r;
+#else
+  return a / b;
+#endif
+}
+
 inline sycl::float4 my_and_or_ps(const sycl::float4 x, const uint32_t _and, const uint32_t _or) { // Float bit shaping used by cn/gpu recurrence.
   const sycl::uint4 i = (sycl::bit_cast<sycl::uint4>(x) & _and) | _or;
   return sycl::bit_cast<sycl::float4>(i);
@@ -328,7 +352,7 @@ inline void round_compute( // The divisor mask also prevents divide-by-near-zero
   sub_round(n2, n1, n0, n3, rnd_c, &n, &d, pc);
   sub_round(n1, n0, n3, n2, rnd_c, &n, &d, pc);
   sub_round(n0, n3, n2, n1, rnd_c, &n, &d, pc);
-  *pr += n / my_and_or_ps(d, 0xFF7FFFFF, 0x40000000);
+  *pr += mo_div_rn(n, my_and_or_ps(d, 0xFF7FFFFF, 0x40000000));
 }
 
 inline sycl::int4 single_comupte(
@@ -349,8 +373,7 @@ inline sycl::int4 single_comupte(
 inline sycl::int4 my_alignr_epi8(const sycl::int4 a, const unsigned rot) {
   const unsigned right = 8 * rot;
   const unsigned left  = 32 - right;
-  // Reinterpret int->uint (bit-preserving) by explicit construction; works on both
-  // DPC++ and AdaptiveCpp (acpp's vec::as() is a const method that casts away const).
+  // Reinterpret int->uint (bit-preserving) by explicit construction.
   const sycl::uint4 u(static_cast<uint32_t>(a[0]), static_cast<uint32_t>(a[1]),
                       static_cast<uint32_t>(a[2]), static_cast<uint32_t>(a[3]));
 
@@ -429,7 +452,7 @@ inline void aes_round(
 
 union AesKey {
   uint32_t u[40]; sycl::uint4 u4[10]; sycl::uint8 u8[5]; // aligned at use sites for vector loads
-  AesKey() {} // explicit default ctor: AdaptiveCpp's sycl::vec has a non-trivial default ctor, so the union needs one to stay default-constructible (uninitialized, matching DPC++).
+  AesKey() {} // explicit default ctor: sycl::vec has a non-trivial default ctor, so the union needs one to stay default-constructible (uninitialized).
 };
 
 inline sycl::async_handler cn_gpu_exception_handler() {
@@ -466,7 +489,13 @@ struct CnGpuState { // Per-device queue and persistent allocations; avoids buffe
       throw std::string("cn/gpu SYCL device does not support required allocations");
     }
 
+#if !defined(MOMINER_SYCL_CUDA)
+    // The OpenCL "-cl-*" build options are an OpenCL/Level-Zero JIT mechanism for the Intel build.
+    // On the DPC++ CUDA backend, setting SYCL_PROGRAM_COMPILE_OPTIONS to them makes the AOT nvptx
+    // module fail at runtime with UR_RESULT_ERROR_UNKNOWN, so skip it there; CUDA FP determinism
+    // comes instead from -ffp-contract=off in the build flags (binding.gyp).
     set_sycl_env("SYCL_PROGRAM_COMPILE_OPTIONS", cn_gpu_fp_compile_options(device));
+#endif
     bundle = std::make_unique<MOMINER_BUNDLE_T>(
       MOMINER_GET_EXEC_BUNDLE(queue.get_context())
     );

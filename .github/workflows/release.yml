@@ -101,25 +101,23 @@ jobs:
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v4
 
-      # AdaptiveCpp generic-SSCP build: no GPU needed at build time (JITs to PTX at
-      # runtime); the image bundles an OpenMP host SYCL device for verification.
-      - name: Build native addon in NVIDIA (AdaptiveCpp) image
+      # DPC++ CUDA-backend build: AOT to PTX/SASS, so no GPU is needed at build time.
+      # The build is CUDA-only (no CPU SYCL device), so GPU algos are verified on real
+      # NVIDIA hardware, not in CI.
+      - name: Build native addon in NVIDIA (DPC++ CUDA) image
         run: ./r-nvidia.sh node -e "console.log('mo-miner nvidia build ready')"
 
       - name: Package release archive
         run: .github/workflows/scripts/package-linux-nvidia.sh
 
-      - name: Test release archive (CPU + SYCL-CPU)
-        # kawpow/autolykos2 are miscompiled by AdaptiveCpp's OpenMP host backend, so
-        # the GPU-less SYCL-CPU verification skips them (they are GPU-verified); the
-        # other three GPU algos plus the full CPU suite run on the bundled libs.
-        env:
-          MOMINER_SYCL_CPU_SKIP: kawpow,autolykos2
+      - name: Test release archive (CPU)
+        # Only the pure-CPU (xmrig) suite runs in CI: the dpcpp-cuda build exposes no
+        # CPU SYCL device and CI runners have no NVIDIA GPU, so the SYCL/GPU algos are
+        # verified on real NVIDIA hardware instead.
         run: |
           set -euo pipefail
           archive="$(find . -maxdepth 1 -name 'mo-miner-*-lin-nvidia.tgz' -print -quit)"
           .github/workflows/scripts/test-release-linux.sh "$archive" cpu
-          .github/workflows/scripts/test-release-linux.sh "$archive" sycl-cpu
 
       - name: Upload release artifact
         uses: actions/upload-artifact@v7
