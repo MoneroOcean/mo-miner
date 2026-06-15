@@ -11,6 +11,7 @@
 // already defined). Kept byte-compatible with the host KawpowProgram/FastModData so the emitted
 // literal initializers below bind correctly; the kawpow test vector guards against drift.
 static const char* const KAWPOW_JIT_PRELUDE = R"KJP(
+#define MO_KAW_JIT_FOLD 1   // make kawpow_device.inc force-inline so the baked program const-folds
 #include <sycl/sycl.hpp>
 #include <sycl/ext/oneapi/work_group_static.hpp>
 #include <cstdint>

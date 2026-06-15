@@ -7,9 +7,12 @@ inline uint32_t round_up(const uint32_t value, const uint32_t step) {
   return ((value + step - 1) / step) * step;
 }
 
-// Force-inline the program-application chain so a baked `const KawpowProgram` const-propagates
-// through it on the runtime JIT (the interpreter switches then fold to single ops).
-#if defined(__clang__)
+// Force-inline the program-application chain ONLY on the runtime-JIT path, where a baked
+// `const KawpowProgram` must const-propagate through it (the interpreter switches then fold to
+// single ops). On the AOT build (Intel icx / NVIDIA AOT) plain `inline` is used so the compiler
+// chooses inlining itself — forcing always_inline there spills registers and cost ~16% on Intel.
+// MO_KAW_JIT_FOLD is defined only by the JIT prelude (sycl/kawpow_jit.inc).
+#if defined(MO_KAW_JIT_FOLD) && defined(__clang__)
 #define MO_KAW_AINLINE inline __attribute__((always_inline))
 #else
 #define MO_KAW_AINLINE inline
