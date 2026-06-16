@@ -22,6 +22,11 @@ trap {
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "../../..")).Path
 Set-Location $repoRoot
 
+# Log the runner CPU vendor: RandomX (rx/*, panthera) crashed with 0xC0000005 on AMD CI runners until
+# XMRIG_FIX_RYZEN was defined (registers the JIT main-loop bounds the RxFix exception handler recovers
+# from). Print it so an rx access-violation can be correlated with the CPU at a glance.
+Write-Host "Runner CPU: $env:PROCESSOR_IDENTIFIER"
+
 . "$PSScriptRoot/windows-dll-deps.ps1"
 
 $node = (Get-Command node.exe).Source

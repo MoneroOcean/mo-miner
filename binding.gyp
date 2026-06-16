@@ -126,7 +126,14 @@
           "defines": [
             "NOMINMAX",
             "WIN32_LEAN_AND_MEAN",
-            "XMRIG_FEATURE_ASM"
+            "XMRIG_FEATURE_ASM",
+            # Upstream xmrig defines this for WIN32 and node-gyp dropped it. Without it the RandomX JIT
+            # never registers its main-loop bounds (jit_compiler_x86.cpp, all gated on XMRIG_FIX_RYZEN),
+            # so the vectored exception handler installed in native/core.cpp (RxFix_win.cpp) has
+            # {nullptr,nullptr} bounds and can't recover the rx JIT main-loop access violation that fires
+            # on AMD CPUs -> rx/* and panthera crash (0xC0000005) on AMD Windows. Intel CPUs never fault,
+            # which is why it passed locally and on Intel CI runners but crashed on AMD CI runners.
+            "XMRIG_FIX_RYZEN"
           ],
           # Build mom.node with the non-SYCL "Intel C++ Compiler" toolset (icx, no -fsycl), NOT the DPC++
           # one: mom.node has no SYCL code, and the DPC++/SYCL MSBuild task both miscompiles the xmrig .c
