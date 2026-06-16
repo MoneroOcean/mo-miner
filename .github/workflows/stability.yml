@@ -121,7 +121,8 @@ jobs:
   package-windows-x64:
     name: Windows / package
     runs-on: windows-2022
-    timeout-minutes: 90
+    # icx build with /Qipo whole-program IPO at link needs more than the old 90.
+    timeout-minutes: 120
 
     steps:
       - name: Checkout
@@ -157,18 +158,6 @@ jobs:
         if: steps.cache-oneapi.outputs.cache-hit != 'true'
         shell: cmd
         run: .github\workflows\scripts\install-oneapi.bat "%WINDOWS_ONEAPI_URL%" "%WINDOWS_DPCPP_COMPONENTS%" "%WINDOWS_ONEAPI_PACKAGE%"
-
-      # Diagnostic: confirm where the classic-icx toolset's task assembly lives (so the cache path above
-      # captures it). Remove once the cache-hit build is confirmed green.
-      - name: Locate Intel toolset task assembly
-        shell: powershell
-        run: |
-          $roots = @("C:\Windows\Microsoft.NET\assembly", $env:ONEAPI_ROOT,
-                     "C:\Program Files (x86)\Microsoft Visual Studio\2022",
-                     "C:\Program Files\Microsoft Visual Studio\2022")
-          $hits = Get-ChildItem -Path $roots -Recurse -Filter "Intel.1ACompiler*.dll" -ErrorAction SilentlyContinue
-          if ($hits) { $hits | ForEach-Object { Write-Host "FOUND: $($_.FullName)" } } else { Write-Host "Intel.1ACompiler* NOT FOUND" }
-          Write-Host "cache-hit=${{ steps.cache-oneapi.outputs.cache-hit }}"
 
       - name: Build native addon
         shell: powershell
