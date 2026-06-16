@@ -295,7 +295,7 @@ static inline void dev_randHash(int index, const uint8_t* seed32, const uint8_t*
   b3(mb, 64, key32, out);
 }
 
-struct Result { int found; uint32_t seed; uint32_t row; uint32_t col; };
+struct Result { int found; uint32_t seed; uint32_t row; uint32_t col; uint32_t chk; };
 
 struct Buffers {
   int8_t *EAL, *EBR, *EBRt, *Ap, *Bp;       // A'/B' (noised, search inputs); A/B regenerated from RNG
@@ -373,59 +373,61 @@ static void k_noise(sycl::queue& q, const Buffers& bb, int m, int n, int k, int 
   q.parallel_for(sycl::range<1>((size_t)rank * n), [=](sycl::id<1> id) { int idx = (int)id[0], r = idx / n, c = idx % n; B.EBR[idx] = B.EBRt[c * rank + r]; });
 }
 
-static void compute_ab(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k, int rank) {
+static void compute_ab(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k, int rank, bool portable) {
   auto B = bb; const uint32_t tot = (uint32_t)(m * k);
-  q.parallel_for(sycl::range<1>((size_t)m * k), [=](sycl::id<1> id) { int idx = (int)id[0], i = idx / k, c = idx % k;
+  // Explicit capture list (not [=]): capturing the extra `portable` bool under [=] makes the host
+  // (icx) and device (clang) compilers disagree on the lambda layout in the dual-compiler combined
+  // build ("Unexpected kernel lambda size"). Listing the captures explicitly keeps them in sync.
+  q.parallel_for(sycl::range<1>((size_t)m * k), [B, seed, k, rank, portable](sycl::id<1> id) { int idx = (int)id[0], i = idx / k, c = idx % k;
     int acc = (int)B.EAL[i * rank + B.EARp1[c]] - (int)B.EAL[i * rank + B.EARp2[c]];
     int8_t v = (int8_t)(gv(seed, (uint32_t)idx) + acc);
 #ifdef __NVPTX__
+    (void)portable;
     B.Ap[idx] = v;   // row-major A' for the NVIDIA mma.sync search_cuda (nvptx device pass)
 #else
-    // A' TILE-MAJOR (spir64 pass, read by the ESIMD search): each 8x32 dpas-A fragment is one
-    // contiguous 256-byte block_load. Chosen per device pass so the combined build's spir64 image is
-    // tile-major (ESIMD) and its nvptx image row-major (mma.sync).
-    B.Ap[((size_t)((i >> 3) * (k / 32) + (c >> 5)) * 256) + (i & 7) * 32 + (c & 31)] = v;
+    // The spir64 image carries BOTH searches; the host sets `portable` to match the one it will launch:
+    //  - portable (the dp4a int8 GEMM search(), used by every OpenCL device -- AMD, the CPU device, and
+    //    Intel-OpenCL): ROW-MAJOR A'[i*k+c], so each output row reads a contiguous int8 run over k that
+    //    packs into the 4-wide dp4a operand.
+    //  - else (ESIMD search_esimd): TILE-MAJOR -- each 8x32 dpas-A fragment is one contiguous 256-byte
+    //    block_load (the fast Intel path on Level-Zero).
+    if (portable) B.Ap[idx] = v;
+    else B.Ap[((size_t)((i >> 3) * (k / 32) + (c >> 5)) * 256) + (i & 7) * 32 + (c & 31)] = v;
 #endif
   });
-  // B' layout depends on the search backend's use::b expectation; chosen per device-compilation pass
-  // (__NVPTX__) so the combined build's nvptx image gets the CUDA layout and its spir64 image the
-  // Intel one, and each device loads the image that fits its search() variant:
-  //  - nvptx (__NVPTX__): plain ROW-MAJOR B'[r,j] at r*n+j for the joint_matrix variant, else
-  //    COLUMN-major for the default mma.sync B operand (coalesced 32-bit loads).
-  //  - else (Intel XMX): TILE-MAJOR VNNI, each 16-wide N-tile's k*16 block contiguous (stride 64),
+  // B' layout matches the search variant that will run (explicit capture, same reason as above):
+  //  - nvptx (__NVPTX__): ROW-MAJOR B'[r,j] for the joint_matrix B operand, else COLUMN-major for the
+  //    default mma.sync B operand (coalesced 32-bit loads).
+  //  - portable (dp4a search()): COLUMN-major B'[r,j] at j*k+r, so each output column reads a
+  //    contiguous int8 run over k -- the dp4a counterpart to the row-major A'.
+  //  - else (Intel XMX ESIMD): TILE-MAJOR VNNI, each 16-wide N-tile's k*16 block contiguous (stride 64),
   //    Bp[ (j/16)*k*16 + (r/4)*64 + (j%16)*4 + (r%4) ] = B'[r,j], coalesced sub-group read.
-  q.parallel_for(sycl::range<1>((size_t)k * n), [=](sycl::id<1> id) { int idx = (int)id[0], r = idx / n, j = idx % n;
+  q.parallel_for(sycl::range<1>((size_t)k * n), [B, seed, tot, k, n, portable](sycl::id<1> id) { int idx = (int)id[0], r = idx / n, j = idx % n;
     int acc = (int)B.EBR[B.EBLq1[r] * n + j] - (int)B.EBR[B.EBLq2[r] * n + j];
     int8_t v = (int8_t)(gv(seed, tot + (uint32_t)idx) + acc);
+#ifdef __NVPTX__
+    (void)portable;
+#endif
 #if defined(__NVPTX__) && defined(PEARL_CU_JM)
     B.Bp[(size_t)r * n + j] = v;                 // row-major B'[r,j] for joint_matrix use::b
 #elif defined(__NVPTX__)
     B.Bp[(size_t)j * k + r] = v;                 // col-major B'[r,j] for mma.sync B operand (coalesced loads)
 #else
-    B.Bp[(size_t)(j / 16) * k * 16 + (size_t)(r / 4) * 64 + (size_t)(j % 16) * 4 + (r % 4)] = v;
+    (void)n;
+    if (portable) B.Bp[(size_t)j * k + r] = v;   // col-major B'[r,j] for the dp4a search()
+    else B.Bp[(size_t)(j / 16) * k * 16 + (size_t)(r / 4) * 64 + (size_t)(j % 16) * 4 + (r % 4)] = v;
 #endif
   });
 }
 
-// XMX joint_matrix search: each sub-group (16 lanes) computes a PEARL_HR (rows) x PEARL_NTILE
-// (cols) grid of 16x16 hash tiles, accumulating C = A'*B' over k via DPAS (M8 x N16 x K32) into
-// 2*HR*NT int32 accumulators. One B' column-tile load is reused across all 2*HR row-fragments and
-// one A' row-fragment across all NT column-tiles (register tiling). Every loop over the
-// joint_matrix fragment arrays uses the compile-time MU<> fold-expression unroll (never a runtime
-// array subscript): that both unrolls cleanly and avoids the intel/llvm#21409 DEVICE_LOST.
-//
-// After each rank-chunk the cumulative 16x16 tile is XOR-folded into the transcript. NOTE: the
-// readback uses joint_matrix_store -> SLM -> manual XOR, NOT joint_matrix_apply: on this oneAPI
-// 2026.0 / IGC stack joint_matrix_apply silently does nothing for a read accumulate (every cell
-// reads as 0), which would zero the transcript and make every tile produce one identical jackpot
-// (a bug easy-target verification cannot catch). This per-rank accumulator readback is the real
-// throughput bottleneck (~10 TH/s at HR=NT=2); HR=NT=2 is the best correct config here -- larger
-// tiles drown in per-tile store/barrier cost. m=n=16384 is the size sweet spot.
-#ifndef PEARL_NTILE
-#define PEARL_NTILE 2   // column-tiles per sub-group; 2 is the B580 sweet spot (3+ spills the GRF)
+// PEARL_ER x PEARL_EC: the micro-tile of output cells each work-item owns (raises the dp4a MAC/byte so
+// each A'/B' int32 word fetched from L2 feeds ER*EC / (ER+EC) dot products instead of one). A 16x16 hash
+// tile is computed by one work-group of 256/(ER*EC) work-items. Tunable for the GPU's register file.
+#ifndef PEARL_ER
+#define PEARL_ER 4
 #endif
-#ifndef PEARL_HR
-#define PEARL_HR 2      // row-bands per sub-group; 2 maximizes A'/B' fragment reuse without spilling
+#ifndef PEARL_EC
+#define PEARL_EC 4
 #endif
 // Finalize one tile: serialize its 16-word transcript little-endian, keyed-BLAKE3 it into the
 // jackpot, and test jackpot <= target as a little-endian u256. Shared by both search paths; the
@@ -438,82 +440,116 @@ static inline bool tile_wins(const uint32_t tr[16], const uint8_t* key, const ui
   for (int i = 31; i >= 0; i--) { if (jp[i] < target[i]) return true; if (jp[i] > target[i]) return false; }
   return true;   // jackpot == target: still within bound
 }
-// Portable XMX joint_matrix search -- a fallback for a hypothetical build with neither ESIMD nor a
-// CUDA target. The real modes all use ESIMD on Intel (search_esimd) or mma.sync on NVIDIA
-// (search_cuda), so dpcpp / dpcpp-cuda / dpcpp-combined do NOT compile this. (It also DEVICE_LOSTs on
-// Xe2 with the nightly clang -- another reason the Intel path is ESIMD, not joint_matrix.)
-#if !defined(PEARL_ESIMD) && !defined(MOM_PEARL_HAS_ESIMD)
-static void search(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k, int rank) {
-  using namespace sycl::ext::oneapi::experimental::matrix;
-  constexpr int NT = PEARL_NTILE, HR = PEARL_HR, HT = 16, SG = 16;
+// Position-weighted mix of a tile's (row,col) + its 16-word transcript. When MOM_PEARL_CHK is set every
+// search path atomically sums tile_mix over ALL tiles into result->chk -- a whole-search checksum used to
+// cross-validate the portable search() against search_esimd/search_cuda: identical A'/B' must give an
+// identical chk. The sum is order-independent (any tile schedule) and the row/col weighting makes it
+// sensitive to a tile mis-mapping (e.g. an A'/B' transpose). Scalar-only, so it works in every kernel.
+[[maybe_unused]] static inline uint32_t tile_mix(uint32_t row, uint32_t col, const uint32_t tr[16]) {
+  uint32_t h = row * 2654435761u + col * 2246822519u + 0x9e3779b9u;
+  for (int w = 0; w < 16; w++) h = (h ^ tr[w]) * 16777619u + (uint32_t)w;
+  return h;
+}
+// Portable int8 GEMM search -- the matrix-hardware-free path that EVERY OpenCL device takes: AMD GPUs
+// (no ESIMD, no usable joint_matrix), the SYCL CPU device (cpu1), and Intel-OpenCL (gpu1o). Each
+// work-group computes one 16x16 hash tile; its work-items split the tile's 256 cells into PEARL_ER x
+// PEARL_EC micro-tiles (one work-item per micro-tile, ER*EC int32 accumulators in registers). A'/B' are
+// laid out by compute_ab(portable=true) -- A' row-major, B' column-major -- so each output cell reads a
+// contiguous int8 run over k that the compiler packs (4 int8 at a time, loaded as one int32) into the
+// 4-wide integer dot product: dp4a on Intel/AMD GPUs, plain scalar int MACs on the CPU -- bit-identical
+// either way, since int8*int8->int32 is exact everywhere. There is NO SLM staging and NO per-rank
+// barrier: A'/B' reuse is left to the L2 cache, and each work-item folds its own cells into a private
+// 16-word partial transcript during the k-loop, so the ONLY work-group synchronisation is a single
+// XOR-reduction tree at the end (a plain barrier tree -- not a sub-group op, so no reqd_sub_group_size
+// is needed and the kernel runs on AMD and the CPU where the sub-group size is not 16). The result
+// (found/seed/row/col) and transcript are bit-identical to search_esimd / search_cuda for the same A'/B'
+// (cross-checked via MOM_PEARL_CHK), so this path finds the same tiles. Requires k % rank == 0 and
+// k/rank <= 16 (true for every shipped shape: network 4096/256 and pearlpool 1024/64 both give 16).
+// Compiled in every build that carries attempt() -- including the Windows/dpcpp Intel build where it
+// shares the TU with search_esimd -- and EXCLUDED only from the separate spir64-only ESIMD TU
+// (pearl_esimd.cpp, which sets MOM_PEARL_ESIMD_TU and re-includes this file just for search_esimd).
+#if !defined(MOM_PEARL_ESIMD_TU)
+template <int ER, int EC>
+static void search_t(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k, int rank, bool dbg) {
+  constexpr int HT = 16;
+  constexpr int WG = (HT * HT) / (ER * EC);                 // work-items per tile
+  [[maybe_unused]] constexpr int BW = HT / EC;              // micro-tile blocks per row (unused on the empty nvptx pass)
+  static_assert(HT % ER == 0 && HT % EC == 0, "pearl portable: ER/EC must divide 16");
+  static_assert((WG & (WG - 1)) == 0, "pearl portable: work-group size must be a power of two");
   auto B = bb;
-  const int tilesH = m / (HT * HR), tilesW = n / (HT * NT);
-  const size_t nt = (size_t)tilesH * tilesW;
+  const int tilesW = n / HT, k4 = k / 4, nb = k / rank;   // k4 = int32 columns; nb = rank chunks (<= 16)
+  const size_t ntiles = (size_t)(m / HT) * tilesW;
   q.submit([&](sycl::handler& h) {
-    sycl::local_accessor<int32_t, 1> slm(256, h);   // one 16x16 tile's int32 cells, for the inner-hash XOR
-    // Explicit capture list (not [=]) so the kernel-lambda layout is identical across the host,
-    // spir64 and nvptx passes -- the nvptx body is #ifdef'd out (below) and [=] would then capture
-    // fewer vars, tripping the SYCL "Unexpected kernel lambda size" static assert.
-    h.parallel_for(sycl::nd_range<1>(nt * SG, SG), [B, seed, slm, tilesW, k, rank](sycl::nd_item<1> it)
+    sycl::local_accessor<uint32_t, 1> red(WG * 16, h);   // batched per-boundary XOR reduction scratch
+    // Explicit capture list (not [=]): keeps the kernel-lambda layout identical across the host, spir64
+    // and nvptx passes (the nvptx body is #ifdef'd out below), so the dual-compiler combined build's
+    // "Unexpected kernel lambda size" static assert stays satisfied.
+    h.parallel_for(sycl::nd_range<1>(ntiles * WG, WG),
+                   [B, seed, red, tilesW, k4, rank, nb, dbg](sycl::nd_item<1> it) {
 #ifndef __NVPTX__
-        [[sycl::reqd_sub_group_size(16)]]
-#endif
-    {
-#ifndef __NVPTX__
-      // Intel-XMX joint_matrix shapes (8x32 A, 32x16 VNNI B, 8x16 accumulator) have no NVIDIA wmma
-      // equivalent, so this kernel is excluded from the nvptx pass; on CUDA the dispatch uses
-      // search_cuda instead and this image is never launched.
-      auto sg = it.get_sub_group();
-      int strip = (int)it.get_group(0), R = strip / tilesW, C = strip % tilesW, lane = (int)it.get_local_linear_id();
-      auto sl = slm.template get_multi_ptr<sycl::access::decorated::no>();
-      const int rowBase = R * HT * HR, colBase = C * NT;     // colBase in 16-col-tile units
-      auto Ap = sycl::address_space_cast<sycl::access::address_space::global_space, sycl::access::decorated::no>(B.Ap);
-      auto Bp = sycl::address_space_cast<sycl::access::address_space::global_space, sycl::access::decorated::no>(B.Bp);
-      joint_matrix<sycl::sub_group, int8_t, use::a, 8, 32, layout::row_major> a0[HR], a1[HR];
-      joint_matrix<sycl::sub_group, int8_t, use::b, 32, 16, layout::ext_intel_packed> bf[NT];
-      joint_matrix<sycl::sub_group, int32_t, use::accumulator, 8, 16> acc0[HR][NT], acc1[HR][NT];
-      MU<HR>([&](auto r) { MU<NT>([&](auto t) { joint_matrix_fill(sg, acc0[r][t], 0); joint_matrix_fill(sg, acc1[r][t], 0); }); });
-      uint32_t tr[HR * NT][16] = {};   // per-tile transcript, XOR/rotl-folded at each rank boundary
-      int rc = 0;
-      MU<NT>([&](auto t) { joint_matrix_load(sg, bf[t], Bp + (size_t)(colBase + t) * k * 16, 64); });   // load first B panel
-      for (int p = 0; p < k; p += 32) {
-        MU<HR>([&](auto r) { joint_matrix_load(sg, a0[r], Ap + (size_t)(rowBase + r * HT) * k + p, k);
-                             joint_matrix_load(sg, a1[r], Ap + (size_t)(rowBase + r * HT + 8) * k + p, k); });
-        MU<NT>([&](auto t) { MU<HR>([&](auto r) { joint_matrix_mad(sg, acc0[r][t], a0[r], bf[t], acc0[r][t]);
-                                                  joint_matrix_mad(sg, acc1[r][t], a1[r], bf[t], acc1[r][t]); }); });
-        if ((p + 32) % rank == 0) {     // rank-chunk boundary: XOR-fold the cumulative tile into the transcript
-          // joint_matrix_apply is a no-op for reads on this IGC stack, so read the accumulators via
-          // joint_matrix_store to SLM and XOR the 256 cells/tile. All tiles are stored before a
-          // single barrier pair (vs per-tile barriers) to keep the readback cheap.
-          MU<HR>([&](auto r) { MU<NT>([&](auto t) {
-            joint_matrix_store(sg, acc0[r][t], sl, 16, layout::row_major);
-            joint_matrix_store(sg, acc1[r][t], sl + 128, 16, layout::row_major);
-            sycl::group_barrier(sg);
-            uint32_t part = 0; for (int c = lane; c < 256; c += SG) part ^= (uint32_t)sl[c];
-            part = sycl::reduce_over_group(sg, part, sycl::bit_xor<uint32_t>{});
-            tr[r * NT + t][rc % 16] = rotl(tr[r * NT + t][rc % 16], 13) ^ part;
-            sycl::group_barrier(sg);
-          }); });
-          rc++;
+      const int g = (int)it.get_group(0), R = g / tilesW, C = g % tilesW;
+      const int lid = (int)it.get_local_linear_id();
+      const int r0 = (lid / BW) * ER, c0 = (lid % BW) * EC;     // this work-item's micro-tile origin
+      const int rowBase = R * HT, colBase = C * HT;
+      // A'/B' read as int32 words (4 packed int8) straight from global -- the L2 absorbs the per-tile
+      // reuse (each 128KB tile slice stays resident), which is why no SLM staging is needed.
+      auto A32 = sycl::address_space_cast<sycl::access::address_space::global_space, sycl::access::decorated::no>(
+                   reinterpret_cast<const int32_t*>(B.Ap));
+      auto B32 = sycl::address_space_cast<sycl::access::address_space::global_space, sycl::access::decorated::no>(
+                   reinterpret_cast<const int32_t*>(B.Bp));
+      int32_t acc[ER][EC]; for (int i = 0; i < ER; i++) for (int j = 0; j < EC; j++) acc[i][j] = 0;
+      uint32_t pX[16]; for (int w = 0; w < 16; w++) pX[w] = 0;   // this work-item's per-boundary partial XOR
+      for (int rc = 0; rc < nb; rc++) {
+        const int c4lo = rc * (rank / 4), c4hi = c4lo + (rank / 4);
+        for (int c4 = c4lo; c4 < c4hi; c4++) {        // each step = 4 columns packed into one int32 word
+          int32_t bw[EC]; for (int j = 0; j < EC; j++) bw[j] = B32[(size_t)(colBase + c0 + j) * k4 + c4];
+          for (int i = 0; i < ER; i++) {
+            const int32_t aw = A32[(size_t)(rowBase + r0 + i) * k4 + c4];
+            const int a0 = (int8_t)aw, a1 = (int8_t)(aw >> 8), a2 = (int8_t)(aw >> 16), a3 = (int8_t)(aw >> 24);
+            for (int j = 0; j < EC; j++) {           // dp4a: 4 int8 MACs (one ALU op on Intel/AMD GPUs)
+              const int32_t b = bw[j];
+              acc[i][j] += a0*(int8_t)b + a1*(int8_t)(b >> 8) + a2*(int8_t)(b >> 16) + a3*(int8_t)(b >> 24);
+            }
+          }
         }
-        // software pipeline: issue the next panel's B load now so its latency overlaps the fold
-        // above and the next iteration's A-load (bf is reused -- joint_matrix has no copy assign).
-        if (p + 32 < k) MU<NT>([&](auto t) { joint_matrix_load(sg, bf[t], Bp + (size_t)(colBase + t) * k * 16 + (size_t)((p + 32) / 4) * 64, 64); });
+        uint32_t lx = 0; for (int i = 0; i < ER; i++) for (int j = 0; j < EC; j++) lx ^= (uint32_t)acc[i][j];
+        pX[rc] = lx;   // cumulative tile XOR at this rank boundary (rc < nb <= 16)
       }
-      if (lane == 0) {
-        for (int r = 0; r < HR; r++) for (int t = 0; t < NT; t++) {
-          if (!tile_wins(tr[r * NT + t], B.cA, B.target)) continue;
+      // Single batched work-group reduction: XOR every work-item's 16-word partial transcript together.
+      auto grp = it.get_group();
+      for (int w = 0; w < 16; w++) red[lid * 16 + w] = pX[w];
+      sycl::group_barrier(grp);
+      for (int half = WG >> 1; half > 0; half >>= 1) {
+        if (lid < half) for (int w = 0; w < 16; w++) red[lid * 16 + w] ^= red[(lid + half) * 16 + w];
+        sycl::group_barrier(grp);
+      }
+      if (lid == 0) {
+        // nb <= 16 => each rank boundary owns a distinct transcript word, so tr[w] == part[w] (the
+        // rotl-fold in search_esimd only matters when nb > 16, which no shipped shape uses).
+        uint32_t t16[16]; for (int w = 0; w < 16; w++) t16[w] = red[w];
+        if (dbg) {
+          sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device, sycl::access::address_space::global_space> c(B.result->chk);
+          c.fetch_add(tile_mix((uint32_t)rowBase, (uint32_t)colBase, t16));
+        }
+        if (tile_wins(t16, B.cA, B.target)) {
           sycl::atomic_ref<int, sycl::memory_order::relaxed, sycl::memory_scope::device, sycl::access::address_space::global_space> a(B.result->found);
-          if (a.exchange(1) == 0) { B.result->seed = seed; B.result->row = (uint32_t)(rowBase + r * HT); B.result->col = (uint32_t)((colBase + t) * HT); }
+          if (a.exchange(1) == 0) { B.result->seed = seed; B.result->row = (uint32_t)rowBase; B.result->col = (uint32_t)colBase; }
         }
       }
 #else
-      (void)it;   // nvptx pass: empty kernel body (see above)
+      (void)it; (void)B; (void)seed; (void)red; (void)tilesW; (void)k4; (void)rank; (void)nb; (void)dbg;
 #endif
     });
   });
 }
-#endif  // !PEARL_ESIMD && !MOM_PEARL_HAS_ESIMD
+// Run the portable search at the configured micro-tile. PEARL_ER/PEARL_EC default to the B580 OpenCL
+// sweet spot (4x4, measured); override at build time (-DPEARL_ER=.. -DPEARL_EC=..) to retune for another
+// GPU's register file. SLM staging and software-pipelined prefetch were both tried and measured slower on
+// the B580 (the L2 already absorbs the A'/B' reuse; IGC schedules the loads better than a manual pipeline).
+static void search(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k, int rank, bool dbg) {
+  search_t<PEARL_ER, PEARL_EC>(q, bb, seed, m, n, k, rank, dbg);
+}
+#endif  // !MOM_PEARL_ESIMD_TU
 
 // NVIDIA pearl throughput lives entirely in the int8 Tensor Cores, reached here through the
 // mma.sync path below. It is built with the intel/llvm DPC++ CUDA backend (nvptx64) -- the SAME
@@ -928,9 +964,9 @@ static inline uint32_t esimd_xor_reduce(esimd_ns::simd<uint32_t, N> v) {
 // External in the standalone spir64-only ESIMD TU (pearl_esimd.cpp) so the main pearl.o can call it;
 // static in the single-TU Intel/Windows build where it lives in this same object.
 #ifdef MOM_PEARL_ESIMD_TU
-void search_esimd(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k, int rank) {
+void search_esimd(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k, int rank, bool dbg) {
 #else
-static void search_esimd(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k, int rank) {
+static void search_esimd(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k, int rank, bool dbg) {
 #endif
   constexpr int ER = PEARL_E_HR, EC = PEARL_E_NTILE, HT = 16;
   auto B = bb;
@@ -990,6 +1026,11 @@ static void search_esimd(sycl::queue& q, const Buffers& bb, uint32_t seed, int m
         }
       }
       for (int r = 0; r < ER; r++) for (int c = 0; c < EC; c++) {
+        if (dbg) {   // whole-search checksum for cross-validation (see tile_mix); ESIMD atomic add
+          const uint32_t mx = tile_mix((uint32_t)(rowBase + r * HT), (uint32_t)((colBase + c) * HT), tr[r * EC + c]);
+          esimd_ns::atomic_update<esimd_ns::atomic_op::add>(
+              &B.result->chk, esimd_ns::simd<uint32_t, 1>(0), esimd_ns::simd<uint32_t, 1>(mx), esimd_ns::simd_mask<1>(1));
+        }
         if (!tile_wins(tr[r * EC + c], B.cA, B.target)) continue;
         // ESIMD has no sycl::atomic_ref; use esimd::atomic_update<xchg> to pick one winner
         esimd_ns::simd<int, 1> old = esimd_ns::atomic_update<esimd_ns::atomic_op::xchg>(
@@ -1005,23 +1046,53 @@ static void search_esimd(sycl::queue& q, const Buffers& bb, uint32_t seed, int m
 // In the combined build the ESIMD search lives in the separate spir64-only TU (pearl_esimd.cpp);
 // declare it here so attempt() can call it. (When PEARL_ESIMD is set this is the same TU, defined above.)
 #if defined(MOM_PEARL_HAS_ESIMD) && !defined(PEARL_ESIMD)
-void search_esimd(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k, int rank);
+void search_esimd(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k, int rank, bool dbg);
 #endif
 
 static void attempt(sycl::queue& q, const Buffers& b, uint32_t seed, int m, int n, int k, int rank) {
   k_roots(q, b, seed, m, n, k);          // commitment roots cA/cB (A/Bt regenerated from RNG)
   k_noise(q, b, m, n, k, rank);          // sparse low-rank noise E_AL/E_AR, E_BL/E_BR
-  compute_ab(q, b, seed, m, n, k, rank); // materialize noised A' and B' (layouts chosen per device pass)
-  // Pick the search by the running device's backend. search_cuda (mma.sync Tensor Cores) is compiled
-  // only when the binary can target CUDA (MOM_SYCL_HAS_CUDA). (mom_is_cuda lives in lib-internal.h,
-  // included below attempt(), so test the backend inline here.)
+
+  // Pick the search kernel by the running device's backend BEFORE laying out A'/B': compute_ab needs to
+  // know whether to write the portable row-major A' / column-major B' (search()) or the ESIMD tile-major
+  // layout. CUDA -> search_cuda (mma.sync, nvptx). Any OpenCL device (AMD GPU, the CPU device, and
+  // Intel-OpenCL gpu1o) -> the portable dp4a search() -- it is the single matrix-hardware-free path, so
+  // the same image runs on AMD and the CPU and gpu1o behaves like a non-Intel GPU would. (Set
+  // MOM_PEARL_ESIMD to opt an Intel-OpenCL *GPU* back into the faster ESIMD path.) Level-Zero / default
+  // Intel -> ESIMD. search_cuda/search_esimd/search() are each compiled only in the builds that can run
+  // them, so the references below are guarded to match.
 #if defined(MOM_SYCL_HAS_CUDA)
-  if (q.get_device().get_backend() == sycl::backend::ext_oneapi_cuda) { search_cuda(q, b, seed, m, n, k, rank); return; }
+  const bool is_cuda = q.get_device().get_backend() == sycl::backend::ext_oneapi_cuda;
+#else
+  const bool is_cuda = false;
+#endif
+  const bool dbg = std::getenv("MOM_PEARL_CHK") != nullptr;   // whole-search checksum cross-validation
+  // The portable search() is compiled into every build that has attempt() (i.e. not the ESIMD-only TU),
+  // so it is always callable here -- including the Windows/dpcpp Intel build, which has search_esimd in
+  // the SAME TU. Route any OpenCL device (AMD GPU, the CPU device, Intel-OpenCL gpu1o) to it; an
+  // Intel-OpenCL GPU can opt back into ESIMD with MOM_PEARL_ESIMD. CUDA -> search_cuda; Level-Zero -> ESIMD.
+  bool use_portable = false;
+#if defined(PEARL_ESIMD) || defined(MOM_PEARL_HAS_ESIMD)
+  if (!is_cuda && q.get_device().get_backend() == sycl::backend::opencl) {
+    const bool is_gpu = q.get_device().is_gpu();
+    use_portable = !(is_gpu && std::getenv("MOM_PEARL_ESIMD"));
+  }
+#else
+  use_portable = !is_cuda;   // dpcpp-cuda build: no ESIMD, so any non-CUDA device takes the portable path
+#endif
+
+  compute_ab(q, b, seed, m, n, k, rank, /*portable=*/use_portable);
+
+#if defined(MOM_SYCL_HAS_CUDA)
+  if (is_cuda) { search_cuda(q, b, seed, m, n, k, rank); return; }
+#endif
+#ifndef MOM_PEARL_ESIMD_TU   // search() is not compiled into the ESIMD-only TU (which only exports search_esimd)
+  if (use_portable) { search(q, b, seed, m, n, k, rank, dbg); return; }   // portable dp4a int8 GEMM (AMD / CPU / Intel-OpenCL)
 #endif
 #if defined(PEARL_ESIMD) || defined(MOM_PEARL_HAS_ESIMD)
-  search_esimd(q, b, seed, m, n, k, rank); // ESIMD register-resident DPAS path (Intel GPUs, ~53 TH/s)
+  search_esimd(q, b, seed, m, n, k, rank, dbg); // ESIMD register-resident DPAS path (Intel GPUs, Level-Zero, ~53 TH/s)
 #else
-  search(q, b, seed, m, n, k, rank);       // portable joint_matrix fallback (no ESIMD, no CUDA)
+  search(q, b, seed, m, n, k, rank, dbg);       // unreached (use_portable already handled non-CUDA above)
 #endif
 }
 
@@ -1227,6 +1298,7 @@ int pearl(
   else for (int i = 0; i < 32; i++) tgtLE[i] = target[31 - i];       // core gives BE; kernel wants LE
   q.memcpy(b.target, tgtLE, 32);
   b.result->found = 0;
+  b.result->chk = 0;   // whole-search checksum (filled only when MOM_PEARL_CHK is set; see tile_mix)
   q.wait();
 
   attempt(q, b, (uint32_t)*pseed, m, n, k, rank);
@@ -1244,6 +1316,8 @@ int pearl(
       std::chrono::steady_clock::now() - attempt_start).count());
     st.wait_ema_us = st.wait_ema_us == 0.0 ? us : st.wait_ema_us * 0.8 + us * 0.2;
   }
+  if (std::getenv("MOM_PEARL_CHK"))   // cross-validation: same A'/B' -> identical chk on every search path
+    std::fprintf(stderr, "PEARL_CHK dev=%s seed=%u chk=%08x\n", dev_str.c_str(), (uint32_t)*pseed, b.result->chk);
   if (!b.result->found) return 0;
   *pseed = b.result->seed;
   if (is_test) return 1;                                             // test: core only needs "ok", no proof

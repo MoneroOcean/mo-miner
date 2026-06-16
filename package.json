@@ -28,6 +28,7 @@
     "test:cpu": "node tests/run_hash.js cpu",
     "test:gpu": "node tests/run_hash.js gpu",
     "test:sycl-cpu": "node tests/run_hash.js sycl-cpu",
+    "test:opencl": "node tests/run_hash.js opencl",
     "test:perf": "node tests/run_perf.js",
     "test:perf:rx/0": "node tests/run_perf.js rx/0",
     "test:perf:rx/2": "node tests/run_perf.js rx/2",

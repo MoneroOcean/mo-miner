@@ -28,7 +28,12 @@ static void update_str2dev(const bool verbose = false) {
           // carries no "OpenCL"/"Level-Zero" marker, so register it as the default GPU.
           str2dev[gpuN] = device;
         } else {
-          const bool is_opencl = platform_name.find("OpenCL") != std::string::npos;
+          // Detect OpenCL by BACKEND, not the platform-name substring: AMD ("AMD Accelerated Parallel
+          // Processing") and Mesa ("rusticl") OpenCL platforms don't contain "OpenCL" in their name, so a
+          // name match would drop them. By backend they register as gpuNo and -- via the default-alias
+          // fallback below -- become the automatic gpuN on an OpenCL-only (e.g. AMD) box. Level-Zero stays
+          // name-based (matches sycl_is_level_zero_gpu in lib-internal.h).
+          const bool is_opencl = device.get_backend() == sycl::backend::opencl;
           const bool is_level_zero = platform_name.find("Level-Zero") != std::string::npos;
           if (is_opencl || is_level_zero) {
             str2dev[gpuN + (is_opencl ? "o" : "z")] = device;

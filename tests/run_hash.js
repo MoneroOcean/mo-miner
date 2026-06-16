@@ -12,6 +12,7 @@ const suites = {
   cpu: ["tests/cpu.js"],
   gpu: ["tests/gpu.js"],
   "sycl-cpu": ["tests/sycl_cpu.js"],
+  opencl: ["tests/opencl.js"],
 };
 
 const suite = process.argv[2] || "all";

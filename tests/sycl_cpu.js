@@ -31,12 +31,24 @@ const skipAlgos = new Set(
   (process.env.MOM_SYCL_CPU_SKIP || "").split(",").map((s) => s.trim()).filter(Boolean)
 );
 
+// These algos are ordinary SYCL kernels (plain integer/FP/memory work; kawpow just swaps its
+// warp-shuffle exchange for an SLM/barrier one when is_gpu()==false), so the SAME device code runs
+// unchanged on the OpenCL CPU device as on the GPU -- no CPU-specific implementation needed, which
+// is what makes this CPU verification possible.
+//
+// pearl is here too now: the OpenCL CPU device (backend==opencl) takes the same matrix-hardware-free
+// portable int8 GEMM (sycl/pearl.cpp search()) that AMD GPUs use -- its 4-wide integer dot product
+// degrades to plain scalar int MACs on the CPU. It is the SAME device kernel the `opencl` suite runs on
+// the GPU (cross-validated bit-identical to the ESIMD/XMX path), so it is a real regression guard. The
+// XMX (ESIMD) and tensor-core (mma.sync) pearl paths still can't run on the CPU, but they don't need to:
+// the portable path is what runs on every OpenCL device. It is slow on the CPU but the test shape is tiny.
 const syclCpuVectors = [
   requiredVector("cn/gpu gpu1*8"),
   requiredVector("kawpow gpu1*256"),
   requiredVector("etchash gpu1*256"),
   requiredVector("autolykos2 gpu1*1"),
   requiredVector("c29 proofsize 42 gpu1*1"),
+  requiredVector("pearl gpu1*1"),
 ].filter((definition) => !skipAlgos.has(definition.job.algo));
 
 describe("SYCL CPU hash vectors", () => {

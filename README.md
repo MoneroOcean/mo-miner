@@ -16,8 +16,12 @@ miner performance.
 
 The primary development and test platform is Linux with a single-socket x86-64 CPU and an Intel Arc
 GPU. NVIDIA GPUs are also supported via the DPC++ CUDA backend (see NVIDIA GPU performance below), and
-Windows is supported (see the runtime/install notes below). 2+ socket CPUs, ARM CPUs, and AMD GPUs are
-not yet tested — support is possible and WIP.
+Windows is supported (see the runtime/install notes below). There is also a generic **SYCL OpenCL
+backend** (see "OpenCL backend / AMD GPUs" below): on a box with no Intel-Level-Zero and no NVIDIA-CUDA
+GPU it is auto-selected, so an **AMD GPU** (or any OpenCL GPU) runs the same binary via its OpenCL
+driver. The OpenCL path is exercised in CI-equivalent testing on the Intel B580 (as an OpenCL/AMD
+stand-in), but **no real AMD GPU has been tested yet** — AMD support is best-effort/WIP (a real AMD
+card also needs sub-group-size 32/64 handling). 2+ socket CPUs and ARM CPUs are likewise untested.
 
 # Supported algos
 
@@ -82,6 +86,45 @@ SOTA references benchmarked on the same L4: lolMiner (`--benchmark AUTOLYKOS2` /
 (`-a kawpow`), SRBMiner-MULTI (`--algorithm cryptonight_gpu`). The kawpow figure uses the runtime
 SYCL-source JIT, which needs CUDA libdevice on the host (see NVIDIA GPU install below); without it
 kawpow falls back to ~4 MH/s.
+
+NVIDIA + OpenCL: **not available** — NVIDIA's OpenCL driver doesn't ingest SPIR-V (`cl_khr_il_program`),
+so the SYCL OpenCL adapter can't load mom's `spir64` image. CUDA is the only NVIDIA path. Verified on
+this L4: `clinfo` reports the NVIDIA OpenCL device as `IL version (n/a)`, and the SYCL OpenCL adapter
+drops it entirely, so `gpu1o` does not enumerate (the `opencl` test suite simply skips on NVIDIA). The
+CUDA `gpu` suite passes all 7 vectors on the same binary.
+
+# OpenCL backend / AMD GPUs
+
+Besides Level-Zero (Intel) and CUDA (NVIDIA), mom runs the GPU algos through the generic SYCL **OpenCL**
+backend — the *same* `spir64` device image, JIT-compiled by the GPU's own OpenCL driver. This is how an
+**AMD GPU** (or any OpenCL GPU) runs the miner: on a machine with no Intel-Level-Zero and no NVIDIA-CUDA
+GPU, the OpenCL GPU is auto-selected as `gpu1` — **no flag or config needed**, just install an OpenCL ICD
+(see Linux install below) and run. On an Intel box the default `gpu1` stays Level-Zero; the same GPU's
+OpenCL device is also exposed explicitly as `gpu1o` (and Level-Zero as `gpu1z`).
+
+The OpenCL path is verified on the Intel B580 against the same hash vectors as Level-Zero
+(`npm run test:opencl`, which runs them via `gpu1o`), and benchmarks at parity with Level-Zero on every
+algo there *except pearl* (below) — same `spir64` kernels (cn/gpu is even marginally faster on OpenCL,
+which is why it already defaults to it).
+
+**pearl is the exception.** Its hot loop is an int8 matrix-multiply; the fast paths use dedicated matrix
+hardware — Intel **XMX** (the ESIMD kernel, on Level-Zero) or NVIDIA **tensor cores** (on CUDA) — which
+are *not reachable* through the OpenCL backend (Intel exposes XMX to OpenCL only via the ESIMD extension,
+and AMD/NVIDIA expose their matrix units through HIP/Vulkan, not OpenCL's SPIR-V). So on **any** OpenCL
+device — an AMD GPU, the SYCL **CPU** device, or Intel's own OpenCL (`gpu1o`) — pearl runs a **portable
+dp4a int8 GEMM** instead (`sycl/pearl.cpp` `search()`): the same int8 A′·B′, but on the regular vector
+ALU's 4-wide integer dot product (dp4a; plain scalar MACs on the CPU). It is **bit-identical** to the
+XMX/tensor-core paths (int8→int32 is exact; cross-checked tile-for-tile via `MOM_PEARL_CHK`) and
+therefore correct everywhere, but far slower — ~**2.2 TH/s** on the B580's OpenCL vs ESIMD's ~30 TH/s at
+the same shape, the inherent ALU-vs-systolic-array gap. Level-Zero (`gpu1`/`gpu1z`) keeps the fast ESIMD
+path on Intel; only the OpenCL backend takes dp4a. (On an Intel-OpenCL GPU, `MOM_PEARL_ESIMD=1` opts
+`gpu1o` back into ESIMD; the dp4a micro-tile is `-DPEARL_ER`/`-DPEARL_EC`, defaulting to the 4×4 B580
+sweet spot.)
+
+Caveats: **no real AMD GPU has been tested** (no hardware). AMD wavefronts are 32/64 vs Intel's 16, so
+some cooperative kernels may need sub-group-size handling (pearl's dp4a kernel deliberately uses none),
+and pearl's dp4a micro-tile may want re-tuning on a real AMD register file. The B580's OpenCL driver is
+the closest available stand-in.
 
 # Donation
 
@@ -168,6 +211,24 @@ automatically falls back to a correct ahead-of-time kernel that runs at roughly 
 speed (~4 vs ~13 MH/s on an L4); every other algo is unaffected. For full kawpow throughput on a
 driver-only host, install the toolkit, e.g. `sudo apt install nvidia-cuda-toolkit` (or NVIDIA's
 `cuda-toolkit-12-6`), so `/usr/local/cuda/nvvm/libdevice/libdevice.10.bc` exists.
+
+## AMD GPU (OpenCL)
+
+```
+sudo ./install.sh    # auto-detects an AMD-only box and installs Mesa OpenCL (rusticl)
+# or straight from this repo, without the archive:
+curl -fsSL https://raw.githubusercontent.com/MoneroOcean/mo-miner/master/scripts/install.sh | sudo bash
+# or apt directly:
+sudo apt install mesa-opencl-icd ocl-icd-libopencl1 clinfo
+```
+
+An AMD GPU runs through the generic SYCL **OpenCL** backend (the same `spir64` image, JIT-compiled by
+the GPU's OpenCL driver). On an AMD-only box mom auto-selects the OpenCL GPU as `gpu1` -- no flag or
+config needed. `install.sh` detects AMD via `lspci` and installs Mesa's `mesa-opencl-icd` (rusticl) from
+plain apt; rusticl is opt-in per driver, so you may need `RUSTICL_ENABLE=radeonsi ./mom algo_params`.
+For wider algo coverage, AMD's own **ROCm** OpenCL runtime (`rocm-opencl-runtime`, from AMD's apt repo)
+is the alternative. **AMD is untested** (no hardware) -- see "OpenCL backend / AMD GPUs" above for the
+caveats (sub-group size, pearl `joint_matrix` tiling). Verify with `./mom algo_params`.
 
 # Host GPU runtime (Windows)
 
