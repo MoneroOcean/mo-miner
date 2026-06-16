@@ -147,12 +147,27 @@ jobs:
             C:/Program Files/Microsoft Visual Studio/2022/Enterprise/MSBuild/Microsoft/VC/v170/Platforms/*/PlatformToolsets/Intel*
             C:/Program Files/Microsoft Visual Studio/2022/Enterprise/MSBuild/Microsoft/VC/v170/BuildCustomizations/Intel*
             C:/Program Files/Microsoft Visual Studio/2022/Enterprise/MSBuild/Microsoft/VC/v170/Intel*.dll
-          key: oneapi-windows-2026.0.0-toolkit-dpcpp-online-v3
+            C:/Windows/Microsoft.NET/assembly/GAC_MSIL/Intel*
+          # v4-icx: the mom target now uses the classic "Intel C++ Compiler" toolset, whose MSBuild task
+          # depends on GAC-registered Intel.1ACompiler.* assemblies that the previous cache paths dropped.
+          key: oneapi-windows-2026.0.0-toolkit-dpcpp-online-v4-icx
 
       - name: Install Intel oneAPI
         if: steps.cache-oneapi.outputs.cache-hit != 'true'
         shell: cmd
         run: .github\workflows\scripts\install-oneapi.bat "%WINDOWS_ONEAPI_URL%" "%WINDOWS_DPCPP_COMPONENTS%" "%WINDOWS_ONEAPI_PACKAGE%"
+
+      # Diagnostic: confirm where the classic-icx toolset's task assembly lives (so the cache path above
+      # captures it). Remove once the cache-hit build is confirmed green.
+      - name: Locate Intel toolset task assembly
+        shell: powershell
+        run: |
+          $roots = @("C:\Windows\Microsoft.NET\assembly", $env:ONEAPI_ROOT,
+                     "C:\Program Files (x86)\Microsoft Visual Studio\2022",
+                     "C:\Program Files\Microsoft Visual Studio\2022")
+          $hits = Get-ChildItem -Path $roots -Recurse -Filter "Intel.1ACompiler*.dll" -ErrorAction SilentlyContinue
+          if ($hits) { $hits | ForEach-Object { Write-Host "FOUND: $($_.FullName)" } } else { Write-Host "Intel.1ACompiler* NOT FOUND" }
+          Write-Host "cache-hit=${{ steps.cache-oneapi.outputs.cache-hit }}"
 
       - name: Build native addon
         shell: powershell
