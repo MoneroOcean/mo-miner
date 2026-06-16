@@ -87,7 +87,23 @@ $env:IDPCInstallDir = $compilerDir
 Invoke-MominerNative { icx --version } "icx"
 
 Invoke-MominerNative { node $nodeGyp configure --msvs_version=2022 } "node-gyp configure"
-$msbuild = (Get-Command MSBuild.exe -ErrorAction Stop).Source
+# MSBuild is on PATH inside a VS Developer/Native-Tools shell (and on CI runners), but not on a bare
+# VS Build Tools box. Fall back to locating it via vswhere so a local Windows build works either way.
+$msbuildCmd = Get-Command MSBuild.exe -ErrorAction SilentlyContinue
+if ($msbuildCmd) {
+  $msbuild = $msbuildCmd.Source
+} else {
+  $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+  if (Test-Path $vswhere) {
+    # NB: do not add -requires Microsoft.Component.MSBuild -- VS Build Tools doesn't report that exact
+    # component id, and it makes -find return nothing. -products * covers BuildTools + full VS.
+    $msbuild = & $vswhere -latest -products * -find "MSBuild\**\Bin\MSBuild.exe" |
+      Select-Object -First 1
+  }
+  if (-not $msbuild) {
+    throw "MSBuild.exe not found on PATH or via vswhere; run from a VS Developer/Native Tools prompt."
+  }
+}
 # Capture output (rather than letting it stream) so the tail can be re-shown in the failure message.
 $msbuildOutput = & $msbuild build\mom.vcxproj /clp:Verbosity=minimal /nologo /nodeReuse:false /p:Configuration=Release /p:Platform=x64 2>&1
 $msbuildOutput | ForEach-Object { Write-Host $_ }

@@ -6,10 +6,20 @@ function Get-MominerDumpBin {
     return $onPath.Source
   }
 
+  # vswhere finds dumpbin under any VS edition/location, including Build Tools under
+  # "Program Files (x86)" (where choco installs it) -- which the globs below otherwise miss.
+  $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+  if (Test-Path $vswhere) {
+    $viaVswhere = & $vswhere -latest -products * -find "VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe" |
+      Select-Object -First 1
+    if ($viaVswhere) { return $viaVswhere }
+  }
+
   # Fall back to the newest MSVC toolchain install (descending sort picks latest).
   $found = Get-ChildItem `
     -Path @(
       "C:/Program Files/Microsoft Visual Studio/2022/*/VC/Tools/MSVC/*/bin/Hostx64/x64/dumpbin.exe",
+      "C:/Program Files (x86)/Microsoft Visual Studio/2022/*/VC/Tools/MSVC/*/bin/Hostx64/x64/dumpbin.exe",
       "C:/BuildTools/VC/Tools/MSVC/*/bin/Hostx64/x64/dumpbin.exe"
     ) `
     -File `
@@ -117,6 +127,17 @@ function Get-MominerOneApiBinDirs {
   )
 }
 
+function Get-MominerDpcppBinDir {
+  # From-source DPC++ CUDA toolchain bin/ (the unified/combined Windows build). Holds the NIGHTLY SYCL
+  # runtime the clang-built sycl.dll links/dlopens (sycl9.dll, sycl-jit.dll, ur_adapter_{cuda,level_zero,
+  # opencl}.dll, ur_win_proxy_loader.dll, umf*.dll). Empty unless restore-toolchain-win.ps1 ran. Ordered
+  # ahead of the oneAPI dirs so the nightly runtime wins over any same-named oneAPI lib.
+  if (-not $env:MOM_DPCPP_DIR) { return @() }
+  $bin = Join-Path $env:MOM_DPCPP_DIR "bin"
+  if (Test-Path $bin) { return @($bin) }
+  return @()
+}
+
 function Get-MominerDllSearchRoots {
   param([Parameter(Mandatory = $true)][string]$PackageDir)
 
@@ -133,6 +154,9 @@ function Get-MominerDllSearchRoots {
 
   & $addRoot $PackageDir
   & $addRoot "build/Release"
+
+  # From-source DPC++ CUDA runtime first (combined build), so the nightly sycl9/ur adapters win.
+  foreach ($dir in Get-MominerDpcppBinDir) { & $addRoot $dir }
 
   $node = Get-Command node.exe -ErrorAction SilentlyContinue
   if ($node) { & $addRoot (Split-Path -Parent $node.Source) }
@@ -228,7 +252,10 @@ function Copy-MominerOptionalRuntimeFiles {
     'cllibrary*.o'
   )
 
-  foreach ($root in Get-MominerOneApiBinDirs) {
+  # DPC++ CUDA toolchain bin first (combined build), then oneAPI. First to provide a name wins, so the
+  # nightly sycl9.dll/ur adapters/sycl-jit.dll are taken over any same-named oneAPI lib.
+  $sources = @(Get-MominerDpcppBinDir) + @(Get-MominerOneApiBinDirs)
+  foreach ($root in $sources) {
     if (-not (Test-Path $root)) { continue }
     foreach ($pattern in $patterns) {
       Get-ChildItem -Path $root -Filter $pattern -File -ErrorAction SilentlyContinue |

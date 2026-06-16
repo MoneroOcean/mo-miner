@@ -75,7 +75,9 @@ jobs:
 
   build-windows-x64:
     runs-on: windows-2022
-    timeout-minutes: 90
+    # Unified Intel+NVIDIA build: + CUDA toolkit install, ~1 GB toolchain download, and a second
+    # (spir64+nvptx) sycl.dll compile on top of the Intel build, so it needs more than the Intel-only 90.
+    timeout-minutes: 120
 
     steps:
       - name: Checkout
@@ -108,9 +110,32 @@ jobs:
         shell: cmd
         run: .github\workflows\scripts\install-oneapi.bat "%WINDOWS_ONEAPI_URL%" "%WINDOWS_DPCPP_COMPONENTS%" "%WINDOWS_ONEAPI_PACKAGE%"
 
+      # NVIDIA half of the unified Windows mom.node: a prebuilt from-source intel/llvm --cuda DPC++
+      # toolchain (release asset) builds the spir64+nvptx sycl.dll, and the CUDA toolkit supplies
+      # libdevice (nvptx codegen + the kawpow runtime JIT). The ~1.5h LLVM build is NOT done here -- it
+      # cannot finish in a hosted Windows job (see scripts/build-windows-nvidia.md).
+      - name: Install CUDA toolkit (libdevice)
+        uses: Jimver/cuda-toolkit@v0.2.19
+        id: cuda-toolkit
+        with:
+          cuda: "12.6.0"
+          method: "network"
+          sub-packages: '["nvcc", "cudart"]'
+
+      - name: Restore DPC++ CUDA toolchain
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .github\workflows\scripts\restore-toolchain-win.ps1
+
       - name: Build native addon
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File .github\workflows\scripts\build-windows.ps1
+
+      # Overwrite the MSBuild/icx Intel-only sycl.dll with the unified spir64+nvptx one (from-source clang).
+      - name: Build unified sycl.dll (spir64 + nvptx)
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .github\workflows\scripts\build-sycl-cuda-win.ps1
 
       - name: Package release archive
         shell: powershell

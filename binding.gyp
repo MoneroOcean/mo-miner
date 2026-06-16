@@ -128,18 +128,27 @@
             "WIN32_LEAN_AND_MEAN",
             "XMRIG_FEATURE_ASM"
           ],
+          # Build mom.node with the non-SYCL "Intel C++ Compiler" toolset (icx, no -fsycl), NOT the DPC++
+          # one: mom.node has no SYCL code, and the DPC++/SYCL MSBuild task both miscompiles the xmrig .c
+          # sources as C++ and mangles node-gyp's HOST_BINARY string define. The Intel C++ toolset only
+          # accepts the dynamic CRT (/MD, /MDd) -- static /MT/MTd is rejected -- so use MultiThreadedDLL(2)/
+          # MultiThreadedDebugDLL(3); that is the same CRT the sycl target uses and is already bundled.
+          # (icx vs MSVC is rx/0 perf-neutral on Windows -- RandomX is JIT-compiled -- but icx is used for
+          # parity with the Linux build, which also compiles host objects with icx.)
           "configurations": {
             "Release": {
+              "msbuild_toolset": "Intel C++ Compiler 2026",
               "msvs_settings": {
                 "VCCLCompilerTool": {
-                  "RuntimeLibrary": 0
+                  "RuntimeLibrary": 2
                 }
               }
             },
             "Debug": {
+              "msbuild_toolset": "Intel C++ Compiler 2026",
               "msvs_settings": {
                 "VCCLCompilerTool": {
-                  "RuntimeLibrary": 1
+                  "RuntimeLibrary": 3
                 }
               }
             }
@@ -149,8 +158,30 @@
               "ExceptionHandling": 1,
               "LanguageStandard": "stdcpp20",
               "AdditionalOptions": [
+                # icx-cl (clang in MSVC-compat mode) defines __x86_64__ + _MSC_VER but NOT __GNUC__ -- an
+                # untested combo that drops the xmrig crypto code (e.g. yespower-opt.c) into broken
+                # preprocessor branches (undefined Smask2). -fgnuc-version makes icx-cl report __GNUC__ like
+                # GNU-clang, taking the well-tested GCC paths (matching the Linux build).
+                "-fgnuc-version=4.2.1",
+                # Newer clang (icx 2026 ~= clang 22) makes several legacy-C diagnostics DEFAULT errors
+                # (their own default severity is Error, not -Werror-promoted -- so a plain -Wno-error does
+                # NOT downgrade them; only -Wno-error=<group> does). MSVC and the Linux icx accept the
+                # xmrig C sources as warnings; downgrade the same groups so the 3rd-party C compiles.
+                "-Wno-error=incompatible-pointer-types",
+                "-Wno-error=incompatible-function-pointer-types",
+                "-Wno-error=int-conversion",
+                "-Wno-error=implicit-int",
+                "-Wno-error=implicit-function-declaration",
+                # CryptoNight's AES-NI intrinsics (_mm_aesenc_si128, ...) need the 'aes' target feature
+                # under clang/icx (MSVC allowed them unconditionally). Match the Linux baseline
+                # (-march=x86-64 -maes); the miner requires AES-NI hardware regardless.
+                "-maes",
                 "/O2",
-                "/fp:strict"
+                "/fp:strict",
+                # icx-cl form of Linux's -axCORE-AVX2,CORE-AVX512,ROCKETLAKE: a portable SSE2 baseline plus
+                # AVX2/AVX-512/Rocketlake code paths chosen at runtime (icx multipath dispatch). /fp:strict
+                # kept for RandomX correctness.
+                "/QaxCORE-AVX2,CORE-AVX512,ROCKETLAKE"
               ]
             },
             "VCLinkerTool": {

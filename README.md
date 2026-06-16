@@ -70,12 +70,13 @@ default 131072), `MOM_PEARL_K` (default 4096), `MOM_PEARL_RANK` (default 256),
 
 mom also runs on NVIDIA GPUs from the same SYCL kernels via the DPC++ CUDA backend (ahead-of-time
 compiled to PTX). There is a single Linux release artifact, `mom-v<version>-lin.tgz`, whose one
-`mom.node` runs on both Intel and NVIDIA GPUs (it auto-detects the device). **Windows** can build the
-same unified Intel+NVIDIA `mom.node` (spir64 + nvptx in one binary) from a from-source DPC++ CUDA
-toolchain — verified 7/7 on an L4 (Windows Server 2022), kawpow runtime-JIT included; see
-[scripts/build-windows-nvidia.md](scripts/build-windows-nvidia.md). The stock Windows release package is
-Intel-only. Hashrates measured on an NVIDIA L4 (Ada, sm_89), each compared against the best closed-source
-miner benchmarked on the same card:
+`mom.node` runs on both Intel and NVIDIA GPUs (it auto-detects the device). The **Windows** release is
+currently **Intel-only**. A unified Intel+NVIDIA Windows `mom.node` (spir64 + nvptx in one binary) is
+**experimental**: it needs a from-source DPC++ CUDA toolchain and a manual build (recipe in
+[scripts/build-windows-nvidia.md](scripts/build-windows-nvidia.md)), is **not part of the released
+package or CI**, and so far has only been built and verified once (7/7 hash vectors, kawpow runtime-JIT
+included) on an L4 / Windows Server 2022. Hashrates measured on an NVIDIA L4 (Ada, sm_89), each compared
+against the best closed-source miner benchmarked on the same card:
 
 | Algo | mom (L4) | SOTA reference (same L4) | % of SOTA |
 | --- | --- | --- | --- |
@@ -232,7 +233,7 @@ config needed. `install.sh` detects AMD via `lspci` and installs Mesa's `mesa-op
 plain apt; rusticl is opt-in per driver, so you may need `RUSTICL_ENABLE=radeonsi ./mom algo_params`.
 For wider algo coverage, AMD's own **ROCm** OpenCL runtime (`rocm-opencl-runtime`, from AMD's apt repo)
 is the alternative. **AMD is untested** (no hardware) -- see "OpenCL backend / AMD GPUs" above for the
-caveats (sub-group size, pearl `joint_matrix` tiling). Verify with `./mom algo_params`.
+caveats (sub-group size, pearl dp4a micro-tile tuning). Verify with `./mom algo_params`.
 
 # Host GPU runtime (Windows)
 
