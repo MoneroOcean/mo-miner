@@ -70,8 +70,12 @@ default 131072), `MOM_PEARL_K` (default 4096), `MOM_PEARL_RANK` (default 256),
 
 mom also runs on NVIDIA GPUs from the same SYCL kernels via the DPC++ CUDA backend (ahead-of-time
 compiled to PTX). There is a single Linux release artifact, `mom-v<version>-lin.tgz`, whose one
-`mom.node` runs on both Intel and NVIDIA GPUs (it auto-detects the device). Hashrates measured on an
-NVIDIA L4 (Ada, sm_89), each compared against the best closed-source miner benchmarked on the same card:
+`mom.node` runs on both Intel and NVIDIA GPUs (it auto-detects the device). **Windows** can build the
+same unified Intel+NVIDIA `mom.node` (spir64 + nvptx in one binary) from a from-source DPC++ CUDA
+toolchain — verified 7/7 on an L4 (Windows Server 2022), kawpow runtime-JIT included; see
+[scripts/build-windows-nvidia.md](scripts/build-windows-nvidia.md). The stock Windows release package is
+Intel-only. Hashrates measured on an NVIDIA L4 (Ada, sm_89), each compared against the best closed-source
+miner benchmarked on the same card:
 
 | Algo | mom (L4) | SOTA reference (same L4) | % of SOTA |
 | --- | --- | --- | --- |

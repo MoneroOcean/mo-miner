@@ -7,7 +7,15 @@
 // (MOM_SYCL_HAS_CUDA: the dpcpp-cuda and dpcpp-combined modes); the source-JIT path is taken at
 // runtime only on a CUDA device.
 #if defined(MOM_SYCL_HAS_CUDA)
-#include <dlfcn.h>  // dladdr: locate the loaded module so kawpow_device.inc can ship beside it
+#ifdef _WIN32
+// Minimal Win32 declarations instead of <windows.h>: the latter's _Interlocked* intrinsics clash with
+// MSVC's <atomic> under clang -fsycl ("ambiguous"). These locate the loaded module (GetModuleHandleEx +
+// GetModuleFileName) so kawpow_device.inc can ship beside it.
+extern "C" __declspec(dllimport) int  __stdcall GetModuleHandleExA(unsigned long, const char*, void**);
+extern "C" __declspec(dllimport) unsigned long __stdcall GetModuleFileNameA(void*, char*, unsigned long);
+#else
+#include <dlfcn.h>    // dladdr: locate the loaded module so kawpow_device.inc can ship beside it
+#endif
 
 // Prelude: everything sycl/kawpow_device.inc relies on (it assumes constants/structs/FastModData are
 // already defined). Kept byte-compatible with the host KawpowProgram/FastModData so the emitted
@@ -117,8 +125,23 @@ static std::string kawpow_read_file(const std::string& path) {
   return ss.str();
 }
 
-// Directory of the loaded mom.node (so kawpow_device.inc can ship beside it), via dladdr.
+// Directory of the loaded mom.node (so kawpow_device.inc can ship beside it). dladdr on POSIX;
+// GetModuleHandleEx/GetModuleFileName on Windows (dlfcn is Linux-only).
 static std::string kawpow_module_dir() {
+#ifdef _WIN32
+  void* mod = nullptr;
+  // 0x4 = GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, 0x2 = ..._UNCHANGED_REFCOUNT; MAX_PATH = 260.
+  if (GetModuleHandleExA(0x4u | 0x2u, reinterpret_cast<const char*>(&kawpow_read_file), &mod)) {
+    char buf[260] = {};
+    const unsigned long n = GetModuleFileNameA(mod, buf, sizeof(buf));
+    if (n > 0 && n < sizeof(buf)) {
+      const std::string p(buf, n);
+      const size_t slash = p.find_last_of("/\\");
+      if (slash != std::string::npos) return p.substr(0, slash);
+    }
+  }
+  return {};
+#else
   Dl_info info{};
   if (dladdr(reinterpret_cast<const void*>(&kawpow_read_file), &info) && info.dli_fname) {
     const std::string p = info.dli_fname;
@@ -126,6 +149,7 @@ static std::string kawpow_module_dir() {
     if (slash != std::string::npos) return p.substr(0, slash);
   }
   return {};
+#endif
 }
 
 // kawpow_device.inc holds the device code the CUDA JIT compiles at runtime. It ships as a separate
