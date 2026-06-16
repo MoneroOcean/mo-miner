@@ -176,11 +176,22 @@
                 # under clang/icx (MSVC allowed them unconditionally). Match the Linux baseline
                 # (-march=x86-64 -maes); the miner requires AES-NI hardware regardless.
                 "-maes",
-                "/O2",
-                "/fp:strict",
+                # Max-perf C++ codegen, mirroring the Linux build (scripts/cpu-optflags.sh:
+                # -O3 -ffast-math -fmerge-all-constants). The FP-exact hot paths (RandomX JIT +
+                # cn_main_loop.asm, both under XMRIG_FEATURE_ASM) are hand-written machine code, so
+                # -ffast-math cannot perturb hash correctness -- it only speeds the C++ glue / argon2 /
+                # hash helpers (validated by the full cpu hash-vector suite). Linux's -funroll-loops is
+                # omitted: icx-cl (clang-cl mode) ignores that GNU spelling and clang/icx already unroll
+                # at -O3. -flto is omitted, which MATCHES the shipped Linux build: the dual-compiler combined
+                # build forces MOM_LTO=0 (scripts/combined-build.sh) -- the icx-bitcode + nightly-clang
+                # -fsycl object-level link has no LTO plugin -- and LTO "never closed the rx/0 gap" anyway
+                # (the hot paths are the RandomX JIT + cn ASM, which LTO cannot touch). So: no LTO either
+                # platform, full parity, and node-gyp's MSVC link.exe couldn't consume icx bitcode regardless.
+                "-O3",
+                "-ffast-math",
+                "-fmerge-all-constants",
                 # icx-cl form of Linux's -axCORE-AVX2,CORE-AVX512,ROCKETLAKE: a portable SSE2 baseline plus
-                # AVX2/AVX-512/Rocketlake code paths chosen at runtime (icx multipath dispatch). /fp:strict
-                # kept for RandomX correctness.
+                # AVX2/AVX-512/Rocketlake code paths chosen at runtime (icx multipath dispatch).
                 "/QaxCORE-AVX2,CORE-AVX512,ROCKETLAKE"
               ]
             },

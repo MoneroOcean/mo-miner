@@ -167,7 +167,11 @@ void xmrig::keccakf(uint64_t st[25], int rounds)
 typedef uint64_t state_t[25];
 
 // MOM PATCH BEGIN: ICX optimizes these byte-buffer word loads incorrectly under strict aliasing; keep the loads alias-safe without disabling optimization.
-#ifndef _MSC_VER
+// Gate on the compiler actually doing TBAA + supporting __may_alias__ (GNU/Clang/icx), NOT on !_MSC_VER:
+// icx-cl on Windows defines _MSC_VER yet IS clang and DOES do TBAA, so the old !_MSC_VER guard wrongly
+// dropped it into the unprotected branch -> miscompiled (wrong, non-deterministic) cn hashes. Real MSVC
+// (cl.exe) defines neither __GNUC__ nor __clang__ and does no TBAA, so the plain typedef is correct there.
+#if defined(__GNUC__) || defined(__clang__)
 typedef uint64_t uint64_t_alias __attribute__((__may_alias__));
 #else
 typedef uint64_t uint64_t_alias;
