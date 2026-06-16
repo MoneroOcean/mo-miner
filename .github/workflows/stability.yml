@@ -147,10 +147,11 @@ jobs:
             C:/Program Files/Microsoft Visual Studio/2022/Enterprise/MSBuild/Microsoft/VC/v170/Platforms/*/PlatformToolsets/Intel*
             C:/Program Files/Microsoft Visual Studio/2022/Enterprise/MSBuild/Microsoft/VC/v170/BuildCustomizations/Intel*
             C:/Program Files/Microsoft Visual Studio/2022/Enterprise/MSBuild/Microsoft/VC/v170/Intel*.dll
-            C:/Windows/Microsoft.NET/assembly/GAC_MSIL/Intel*
-          # v4-icx: the mom target now uses the classic "Intel C++ Compiler" toolset, whose MSBuild task
-          # depends on GAC-registered Intel.1ACompiler.* assemblies that the previous cache paths dropped.
-          key: oneapi-windows-2026.0.0-toolkit-dpcpp-online-v4-icx
+            C:/Program Files/Microsoft Visual Studio/2022/Enterprise/Common7/IDE/PublicAssemblies/Intel*
+          # v5-icx: the mom target uses the classic "Intel C++ Compiler" toolset, whose MSBuild task loads
+          # Intel.1ACompiler.* from VS's Common7/IDE/PublicAssemblies (installed by the oneAPI VS
+          # integration) -- the previous cache paths dropped them, so the cached build failed ICXMultiToolTask.
+          key: oneapi-windows-2026.0.0-toolkit-dpcpp-online-v5-icx
 
       - name: Install Intel oneAPI
         if: steps.cache-oneapi.outputs.cache-hit != 'true'
