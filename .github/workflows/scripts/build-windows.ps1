@@ -79,28 +79,24 @@ foreach ($line in $envLines) {
     [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], "Process")
   }
 }
-# The Intel MSBuild toolsets read $(ICInstallDir)/$(IDPCInstallDir) to locate icx. Point them at the REAL
-# compiler dir: the `compiler\latest` junction does NOT survive actions/cache restore in CI (it exists on
-# a normal install), which makes the toolset fail "Could not expand ICInstallDir". Derive it from icx's
-# actual location, then fall back to `latest`, then the newest versioned `compiler\<ver>` dir.
-$compilerDir = $null
-$icx = (Get-Command icx.exe -ErrorAction SilentlyContinue).Source
-if ($icx) {
-  # ...\compiler\<ver>\bin\compiler\icx.exe -> ...\compiler\<ver>
-  $compilerDir = Split-Path (Split-Path (Split-Path $icx -Parent) -Parent) -Parent
-}
-if (-not $compilerDir -or -not (Test-Path (Join-Path $compilerDir "bin"))) {
-  $latest = Join-Path $env:ONEAPI_ROOT "compiler\latest"
-  if (Test-Path (Join-Path $latest "bin")) {
-    $compilerDir = $latest
-  } else {
-    $verDir = Get-ChildItem (Join-Path $env:ONEAPI_ROOT "compiler") -Directory -ErrorAction SilentlyContinue |
-      Where-Object { $_.Name -match '^[0-9]' } | Sort-Object Name -Descending | Select-Object -First 1
-    if ($verDir) { $compilerDir = $verDir.FullName }
-  }
+# The Intel MSBuild toolsets read $(ICInstallDir)/$(IDPCInstallDir) to locate icx. Resolve the REAL
+# compiler dir and pass it to MSBuild as a GLOBAL property below. Two CI-specific traps this avoids:
+#   1. Prefer the VERSIONED dir (compiler\<ver>) over the `latest` junction -- actions/cache flattens the
+#      junction, and the "Intel C++ Compiler" toolset validates the version embedded in the path.
+#   2. The classic-icx toolset's own props otherwise set ICInstallDir from a stale integration-registry
+#      value, overriding the env var ("Could not expand ICInstallDir"); only a /p: global property wins.
+$compilerBase = Join-Path $env:ONEAPI_ROOT "compiler"
+$compilerDir = Get-ChildItem $compilerBase -Directory -ErrorAction SilentlyContinue |
+  Where-Object { $_.Name -match '^[0-9]+\.[0-9]' -and (Test-Path (Join-Path $_.FullName "bin")) } |
+  Sort-Object Name -Descending | Select-Object -First 1 | ForEach-Object { $_.FullName }
+if (-not $compilerDir) {
+  $latest = Join-Path $compilerBase "latest"
+  if (Test-Path (Join-Path $latest "bin")) { $compilerDir = $latest }
 }
 if (-not $compilerDir) { throw "Could not locate the oneAPI compiler directory under $env:ONEAPI_ROOT." }
-$compilerDir = $compilerDir.TrimEnd('\') + "\"
+# Forward slashes + trailing slash: dodges the MSBuild /p: trailing-backslash quoting trap, and the
+# toolset expects a trailing separator (it builds $(ICInstallDir)bin\...).
+$compilerDir = ($compilerDir -replace '\\', '/').TrimEnd('/') + "/"
 $env:ICInstallDir = $compilerDir
 $env:IDPCInstallDir = $compilerDir
 Write-Host "ICInstallDir = $compilerDir"
@@ -126,7 +122,11 @@ if ($msbuildCmd) {
   }
 }
 # Capture output (rather than letting it stream) so the tail can be re-shown in the failure message.
-$msbuildOutput = & $msbuild build\mom.vcxproj /clp:Verbosity=minimal /nologo /nodeReuse:false /p:Configuration=Release /p:Platform=x64 2>&1
+# ICInstallDir/IDPCInstallDir passed as global /p: properties so the Intel toolset can't override them
+# from a stale integration registry (see the compiler-dir resolution above).
+$msbuildOutput = & $msbuild build\mom.vcxproj /clp:Verbosity=minimal /nologo /nodeReuse:false `
+  /p:Configuration=Release /p:Platform=x64 `
+  "/p:ICInstallDir=$($env:ICInstallDir)" "/p:IDPCInstallDir=$($env:IDPCInstallDir)" 2>&1
 $msbuildOutput | ForEach-Object { Write-Host $_ }
 if ($LASTEXITCODE -ne 0) {
   $tail = ($msbuildOutput | Select-Object -Last 80) -join "`n"
