@@ -126,28 +126,26 @@
           "defines": [
             "NOMINMAX",
             "WIN32_LEAN_AND_MEAN",
-            "XMRIG_FEATURE_ASM",
-            # Upstream xmrig defines this for WIN32 and node-gyp dropped it. Without it the RandomX JIT
-            # never registers its main-loop bounds (jit_compiler_x86.cpp, all gated on XMRIG_FIX_RYZEN),
-            # so the vectored exception handler installed in native/core.cpp (RxFix_win.cpp) has
-            # {nullptr,nullptr} bounds and can't recover the rx JIT main-loop access violation that fires
-            # on AMD CPUs -> rx/* and panthera crash (0xC0000005) on AMD Windows. Intel CPUs never fault,
-            # which is why it passed locally and on Intel CI runners but crashed on AMD CI runners.
-            "XMRIG_FIX_RYZEN"
+            "XMRIG_FEATURE_ASM"
           ],
           # Build mom.node with the non-SYCL "Intel C++ Compiler" toolset (icx, no -fsycl), NOT the DPC++
           # one: mom.node has no SYCL code, and the DPC++/SYCL MSBuild task both miscompiles the xmrig .c
-          # sources as C++ and mangles node-gyp's HOST_BINARY string define. The Intel C++ toolset only
-          # accepts the dynamic CRT (/MD, /MDd) -- static /MT/MTd is rejected -- so use MultiThreadedDLL(2)/
-          # MultiThreadedDebugDLL(3); that is the same CRT the sycl target uses and is already bundled.
-          # (icx vs MSVC is rx/0 perf-neutral on Windows -- RandomX is JIT-compiled -- but icx is used for
-          # parity with the Linux build, which also compiles host objects with icx.)
+          # sources as C++ and mangles node-gyp's HOST_BINARY string define. (icx vs MSVC is rx/0
+          # perf-neutral on Windows -- RandomX is JIT-compiled -- but icx is used for parity with the
+          # Linux build, which also compiles host objects with icx.)
+          #
+          # Static CRT: /MT, /MTd = MultiThreaded(0) / MultiThreadedDebug(1). icx statically links the MSVC
+          # C++ runtime AND its own libmmd/svml, so mom.node depends on only KERNEL32 + ADVAPI32 +
+          # (delay-loaded) sycl.dll -- nothing to version-mismatch or bundle. The earlier /MD build loaded a
+          # bundled MSVCP140.dll that mismatched icx's STL ABI and null-dereferenced inside the C++ runtime
+          # on rx/* (heavy STL use) -- a packaged-build crash on every CI runner. v0.6.6 used /MT for exactly
+          # this reason. (The earlier "icx rejects /MT" note was wrong -- /MT builds and links fine here.)
           "configurations": {
             "Release": {
               "msbuild_toolset": "Intel C++ Compiler 2026",
               "msvs_settings": {
                 "VCCLCompilerTool": {
-                  "RuntimeLibrary": 2
+                  "RuntimeLibrary": 0
                 }
               }
             },
@@ -155,7 +153,7 @@
               "msbuild_toolset": "Intel C++ Compiler 2026",
               "msvs_settings": {
                 "VCCLCompilerTool": {
-                  "RuntimeLibrary": 3
+                  "RuntimeLibrary": 1
                 }
               }
             }

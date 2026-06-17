@@ -457,16 +457,7 @@ void Core::Execute() {
     argon2_select_impl();
     debug_startup((std::string("argon2 impl ") + argon2_get_impl_name()).c_str());
 
-#if defined(_WIN32)
-    // Install the RandomX JIT main-loop fault-recovery handler on Windows. RxFix_win.cpp is the
-    // Windows (AddVectoredExceptionHandler) implementation, yet this call was gated #if !defined(_WIN32),
-    // so Windows ran with NO handler at all -- and the bounds it needs are only registered when
-    // XMRIG_FIX_RYZEN is defined (also added). Without both, rx/* + panthera crash with 0xC0000005 on
-    // AMD Windows (no large pages, where the JIT main loop reads one page past the scratchpad). The
-    // handler is process-wide and only acts on an access violation whose RIP is inside the per-thread
-    // main-loop bounds, so it is a no-op on CPUs/runs that never fault -- safe to install for all.
-    xmrig::RxFix::setupMainLoopExceptionFrame();
-#else
+#if !defined(_WIN32)
     if (ci.arch() == xmrig::ICpuInfo::ARCH_ZEN)
       xmrig::RxFix::setupMainLoopExceptionFrame();
     if (ci.has(xmrig::ICpuInfo::FLAG_SSE41)) rx_blake2b_compress = rx_blake2b_compress_sse41;
