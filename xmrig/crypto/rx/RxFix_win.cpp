@@ -22,6 +22,8 @@
 
 
 #include <windows.h>
+#include <cstdio>
+#include <cstdlib>
 
 
 namespace xmrig {
@@ -48,6 +50,17 @@ static LONG WINAPI MainLoopHandler(_EXCEPTION_POINTERS *ExceptionInfo)
 
     void* p = reinterpret_cast<void*>(ExceptionInfo->ContextRecord->Rip); // NOLINT(performance-no-int-to-ptr)
     const std::pair<const void*, const void*>& loopBounds = mainLoopBounds;
+
+    // MOM TEMP DIAG (gated on MOM_DEBUG_STARTUP, set by the release test's failure rerun): surface the
+    // fault code, faulting RIP, the registered main-loop bounds, and whether recovery applies. Remove
+    // once the AMD-Windows rx crash is confirmed fixed.
+    if (std::getenv("MOM_DEBUG_STARTUP")) {
+        std::fprintf(stderr, "MOM_RXFIX code=0x%08lX rip=%p bounds=[%p,%p) inBounds=%d\n",
+                     (unsigned long)ExceptionInfo->ExceptionRecord->ExceptionCode, p,
+                     loopBounds.first, loopBounds.second,
+                     (int)((loopBounds.first <= p) && (p < loopBounds.second)));
+        std::fflush(stderr);
+    }
 
     if ((loopBounds.first <= p) && (p < loopBounds.second)) {
         ExceptionInfo->ContextRecord->Rip = reinterpret_cast<DWORD64>(loopBounds.second);
