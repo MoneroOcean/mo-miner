@@ -130,17 +130,22 @@
           ],
           # Build mom.node with the non-SYCL "Intel C++ Compiler" toolset (icx, no -fsycl), NOT the DPC++
           # one: mom.node has no SYCL code, and the DPC++/SYCL MSBuild task both miscompiles the xmrig .c
-          # sources as C++ and mangles node-gyp's HOST_BINARY string define. The Intel C++ toolset only
-          # accepts the dynamic CRT (/MD, /MDd) -- static /MT/MTd is rejected -- so use MultiThreadedDLL(2)/
-          # MultiThreadedDebugDLL(3); that is the same CRT the sycl target uses and is already bundled.
-          # (icx vs MSVC is rx/0 perf-neutral on Windows -- RandomX is JIT-compiled -- but icx is used for
-          # parity with the Linux build, which also compiles host objects with icx.)
+          # sources as C++ and mangles node-gyp's HOST_BINARY string define. (icx vs MSVC is rx/0
+          # perf-neutral on Windows -- RandomX is JIT-compiled -- but icx is used for parity with the
+          # Linux build, which also compiles host objects with icx.)
+          #
+          # Static CRT: /MT, /MTd = MultiThreaded(0) / MultiThreadedDebug(1). icx statically links the MSVC
+          # C++ runtime AND its own libmmd/svml, so mom.node depends on only KERNEL32 + ADVAPI32 +
+          # (delay-loaded) sycl.dll -- nothing to version-mismatch or bundle. The earlier /MD build loaded a
+          # bundled MSVCP140.dll that mismatched icx's STL ABI and null-dereferenced inside the C++ runtime
+          # on rx/* (heavy STL use) -- a packaged-build crash on every CI runner. v0.6.6 used /MT for exactly
+          # this reason. (The earlier "icx rejects /MT" note was wrong -- /MT builds and links fine here.)
           "configurations": {
             "Release": {
               "msbuild_toolset": "Intel C++ Compiler 2026",
               "msvs_settings": {
                 "VCCLCompilerTool": {
-                  "RuntimeLibrary": 2
+                  "RuntimeLibrary": 0
                 }
               }
             },
@@ -148,7 +153,7 @@
               "msbuild_toolset": "Intel C++ Compiler 2026",
               "msvs_settings": {
                 "VCCLCompilerTool": {
-                  "RuntimeLibrary": 3
+                  "RuntimeLibrary": 1
                 }
               }
             }
@@ -176,11 +181,24 @@
                 # under clang/icx (MSVC allowed them unconditionally). Match the Linux baseline
                 # (-march=x86-64 -maes); the miner requires AES-NI hardware regardless.
                 "-maes",
-                "/O2",
-                "/fp:strict",
+                # Max-perf C++ codegen, mirroring the Linux build (scripts/cpu-optflags.sh:
+                # -O3 -ffast-math -fmerge-all-constants), plus /Qipo (Intel whole-program IPO = LTO).
+                # The FP-exact hot paths (RandomX JIT + cn_main_loop.asm, both under XMRIG_FEATURE_ASM)
+                # are hand-written machine code, so -ffast-math cannot perturb hash correctness -- it only
+                # speeds the C++ glue / argon2 / hash helpers (validated by the full cpu hash-vector suite).
+                # /Qipo links through node-gyp's link.exe because the Intel C++ toolset routes the IPO link
+                # via xilink (LLVM -flto would NOT -- link.exe can't consume bitcode). Measured perf-neutral
+                # on this code (cn/0 -0.1%, ghostrider -0.3%, within run-to-run noise -- the hot loops are
+                # JIT/ASM, which IPO can't touch); kept for maximal optimization. -funroll-loops is dropped
+                # (icx-cl clang-cl mode ignores that GNU spelling; clang/icx unroll at -O3). NB the Linux
+                # combined build cannot LTO (icx-bitcode + nightly-clang -fsycl object link has no plugin,
+                # so scripts/combined-build.sh forces MOM_LTO=0); /Qipo is therefore a Windows-only extra.
+                "-O3",
+                "-ffast-math",
+                "-fmerge-all-constants",
+                "/Qipo",
                 # icx-cl form of Linux's -axCORE-AVX2,CORE-AVX512,ROCKETLAKE: a portable SSE2 baseline plus
-                # AVX2/AVX-512/Rocketlake code paths chosen at runtime (icx multipath dispatch). /fp:strict
-                # kept for RandomX correctness.
+                # AVX2/AVX-512/Rocketlake code paths chosen at runtime (icx multipath dispatch).
                 "/QaxCORE-AVX2,CORE-AVX512,ROCKETLAKE"
               ]
             },

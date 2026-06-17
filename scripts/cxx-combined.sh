@@ -52,8 +52,12 @@ if [ "$is_link" = 1 ]; then
     # icx lowers memcpy/memset etc. to libirc helpers (_intel_fast_memcpy), and emits
     # libsvml/libimf/libintlc math calls. clang won't auto-pull these, so link them
     # explicitly AFTER the object group ("$@" ends with gyp's object group + ldflags) so
-    # the referenced symbols are resolved.
-    intel_libs=(-limf -lsvml -lirng -lintlc -lirc)
+    # the referenced symbols are resolved. Prefer the STATIC Intel runtime (.a) for the libs
+    # that ship one (imf/svml/irng/irc) so mom.node carries no libimf/libsvml/libirng/libirc.so
+    # deps to bundle; libintlc ships only a .so, so it stays dynamic. libstdc++/libgcc stay
+    # dynamic too -- they share C++ exceptions/RTTI across the boundary with the bundled
+    # libsycl.so, where two static copies would break unwinding.
+    intel_libs=(-Wl,-Bstatic -limf -lsvml -lirng -lirc -Wl,-Bdynamic -lintlc)
   fi
   exec "$CLANGXX" -fsycl -fsycl-targets="$TARGETS" "${rpaths[@]}" "$@" "${intel_libs[@]}"
 fi

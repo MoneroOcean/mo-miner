@@ -75,9 +75,10 @@ jobs:
 
   build-windows-x64:
     runs-on: windows-2022
-    # Unified Intel+NVIDIA build: + CUDA toolkit install, ~1 GB toolchain download, and a second
-    # (spir64+nvptx) sycl.dll compile on top of the Intel build, so it needs more than the Intel-only 90.
-    timeout-minutes: 120
+    # Unified Intel+NVIDIA build: + CUDA toolkit install, ~1 GB toolchain download, a second
+    # (spir64+nvptx) sycl.dll compile on top of the Intel build, and /Qipo whole-program IPO at link,
+    # so it needs more than the Intel-only 90.
+    timeout-minutes: 150
 
     steps:
       - name: Checkout
@@ -103,7 +104,12 @@ jobs:
             C:/Program Files/Microsoft Visual Studio/2022/Enterprise/MSBuild/Microsoft/VC/v170/Platforms/*/PlatformToolsets/Intel*
             C:/Program Files/Microsoft Visual Studio/2022/Enterprise/MSBuild/Microsoft/VC/v170/BuildCustomizations/Intel*
             C:/Program Files/Microsoft Visual Studio/2022/Enterprise/MSBuild/Microsoft/VC/v170/Intel*.dll
-          key: oneapi-windows-2026.0.0-toolkit-dpcpp-online-v3
+            C:/Program Files/Microsoft Visual Studio/2022/Enterprise/Common7/IDE/PublicAssemblies/Intel*
+          # v5-icx: the mom target uses the classic "Intel C++ Compiler" toolset, whose MSBuild task loads
+          # Intel.1ACompiler.* from VS's Common7/IDE/PublicAssemblies (installed by the oneAPI VS
+          # integration) -- earlier cache paths dropped them, so the cached build failed ICXMultiToolTask.
+          # Shares the key with stability.yml so one workflow's cache populates both.
+          key: oneapi-windows-2026.0.0-toolkit-dpcpp-online-v5-icx
 
       - name: Install Intel oneAPI
         if: steps.cache-oneapi.outputs.cache-hit != 'true'
