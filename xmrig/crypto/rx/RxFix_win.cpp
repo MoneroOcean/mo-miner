@@ -52,11 +52,23 @@ static LONG WINAPI MainLoopHandler(_EXCEPTION_POINTERS *ExceptionInfo)
     const std::pair<const void*, const void*>& loopBounds = mainLoopBounds;
 
     // MOM TEMP DIAG (gated on MOM_DEBUG_STARTUP, set by the release test's failure rerun): surface the
-    // fault code, faulting RIP, the registered main-loop bounds, and whether recovery applies. Remove
-    // once the AMD-Windows rx crash is confirmed fixed.
+    // fault code, faulting RIP + which module/offset it is in, the access type/target, the registered
+    // main-loop bounds, and whether recovery applies. Remove once the AMD-Windows rx crash is fixed.
     if (std::getenv("MOM_DEBUG_STARTUP")) {
-        std::fprintf(stderr, "MOM_RXFIX code=0x%08lX rip=%p bounds=[%p,%p) inBounds=%d\n",
-                     (unsigned long)ExceptionInfo->ExceptionRecord->ExceptionCode, p,
+        const EXCEPTION_RECORD* rec = ExceptionInfo->ExceptionRecord;
+        const char* at = "?";
+        if (rec->ExceptionCode == 0xC0000005 && rec->NumberParameters >= 1) {
+            switch (rec->ExceptionInformation[0]) { case 0: at = "read"; break; case 1: at = "write"; break; case 8: at = "DEP"; break; }
+        }
+        char modname[MAX_PATH] = "<none-VirtualAlloc?>"; uintptr_t off = 0; HMODULE mod = nullptr;
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               reinterpret_cast<LPCSTR>(p), &mod) && mod) {
+            GetModuleFileNameA(mod, modname, MAX_PATH);
+            off = reinterpret_cast<uintptr_t>(p) - reinterpret_cast<uintptr_t>(mod);
+        }
+        std::fprintf(stderr, "MOM_RXFIX code=0x%08lX rip=%p mod=%s+0x%zX access=%s target=%p bounds=[%p,%p) inBounds=%d\n",
+                     (unsigned long)rec->ExceptionCode, p, modname, off, at,
+                     (rec->NumberParameters >= 2 ? reinterpret_cast<void*>(rec->ExceptionInformation[1]) : nullptr),
                      loopBounds.first, loopBounds.second,
                      (int)((loopBounds.first <= p) && (p < loopBounds.second)));
         std::fflush(stderr);
