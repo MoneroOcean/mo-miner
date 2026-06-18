@@ -4,7 +4,11 @@ set -euo pipefail
 # Install the NVIDIA driver that mom's bundled DPC++ CUDA runtime needs (libcuda.so.1), from
 # Ubuntu's own apt repositories (the restricted component -- no extra apt repos, no downloads). mom
 # already bundles the SYCL runtime user-space (libsycl + the CUDA Unified Runtime adapter + the
-# kawpow kernel-compiler JIT) in libs/; only the host driver is needed (not the CUDA toolkit).
+# ProgPoW kernel-compiler JIT) in libs/, so the driver alone is enough for CORRECT mining of every algo.
+# NOTE: full-speed kawpow/firopow/evrprogpow additionally need a CUDA toolkit (libdevice + CUDA headers
+# under /usr/local/cuda) AND a host C++ toolchain (g++/libstdc++) for the runtime source-JIT; without
+# them those three fall back to a correct ~4 MH/s AOT kernel (every other algo is unaffected). See the
+# "NVIDIA GPU install" section of README.md.
 # Ubuntu 24.04 / 26.04. A reboot is required after the driver's kernel module is installed.
 
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -28,7 +32,8 @@ fi
 . /etc/os-release
 if [ "${ID:-}" != "ubuntu" ]; then
   echo "This installer targets Ubuntu. Install the proprietary NVIDIA driver (>= 560 for CUDA 12.6)" >&2
-  echo "from your distribution and reboot; the CUDA toolkit is NOT needed." >&2
+  echo "from your distribution and reboot. The CUDA toolkit + g++ are only needed for full-speed" >&2
+  echo "kawpow/firopow/evrprogpow (the source-JIT); see README.md 'NVIDIA GPU install'." >&2
   exit 1
 fi
 

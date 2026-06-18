@@ -83,15 +83,20 @@ against the best closed-source miner benchmarked on the same card:
 | --- | --- | --- | --- |
 | cn/gpu | 2.65 KH/s | SRBMiner-MULTI 3.04 KH/s | 87% |
 | c29 (Cuckaroo29) | 4.83 g/s | lolMiner ~5.3 g/s | 91% |
-| kawpow | 13.2 MH/s | Rigel 15.56 MH/s | 85% |
+| kawpow | 13.79 MH/s | Rigel 15.56 MH/s | 89% |
+| firopow | 13.44 MH/s | ProgPoW family -- cf. kawpow (Rigel 15.56) | ~86% |
+| evrprogpow | 13.41 MH/s | ProgPoW family -- cf. kawpow (Rigel 15.56) | ~86% |
 | etchash | 28.9 MH/s | ~28.8 MH/s (memory-bandwidth bound) | ~parity |
 | autolykos2 | 76.5 MH/s | lolMiner 98.19 MH/s | 78% |
 | pearl | 33.6 TH/s | no NVIDIA SOTA (ARC-miner is Intel-only) | — |
 
 SOTA references benchmarked on the same L4: lolMiner (`--benchmark AUTOLYKOS2` / `CR29`), Rigel
-(`-a kawpow`), SRBMiner-MULTI (`--algorithm cryptonight_gpu`). The kawpow figure uses the runtime
-SYCL-source JIT, which needs CUDA libdevice on the host (see NVIDIA GPU install below); without it
-kawpow falls back to ~4 MH/s.
+(`-a kawpow`), SRBMiner-MULTI (`--algorithm cryptonight_gpu`). firopow/evrprogpow run the same kawpow
+kernel family (the kawpow SOTA class applies; they were not separately SOTA-benched). kawpow/firopow/
+evrprogpow use the runtime SYCL-source JIT, which needs **two** host pieces (see NVIDIA GPU install
+below): a CUDA toolkit (libdevice **and** its headers under `/usr/local/cuda`) *and* a host C++
+toolchain (`g++`/libstdc++). Without either, the ProgPoW-family algos fall back to a correct AOT kernel
+at ~4 MH/s; the JIT-free algos (etchash/autolykos2/c29/cn-gpu/pearl) are unaffected.
 
 NVIDIA + OpenCL: **not available** — NVIDIA's OpenCL driver doesn't ingest SPIR-V (`cl_khr_il_program`),
 so the SYCL OpenCL adapter can't load mom's `spir64` image. CUDA is the only NVIDIA path. Verified on
@@ -210,13 +215,19 @@ CUDA toolkit. `install-nvidia.sh` picks a driver via `ubuntu-drivers`/apt and is
 already present. After the reboot, `./mom algo_params` should list a `gpu1` device. When running mom
 inside Docker, add `--gpus all` (needs `nvidia-container-toolkit`).
 
-One exception: full-speed **kawpow** recompiles its per-period kernel at runtime (a SYCL-source JIT
-that folds the ProgPoW program to constants), and that JIT needs CUDA **libdevice** -- shipped by the
-CUDA toolkit at the default `/usr/local/cuda`, not by the driver. If libdevice is absent, kawpow
-automatically falls back to a correct ahead-of-time kernel that runs at roughly a third of the JIT
-speed (~4 vs ~13 MH/s on an L4); every other algo is unaffected. For full kawpow throughput on a
-driver-only host, install the toolkit, e.g. `sudo apt install nvidia-cuda-toolkit` (or NVIDIA's
-`cuda-toolkit-12-6`), so `/usr/local/cuda/nvvm/libdevice/libdevice.10.bc` exists.
+One exception: the full-speed **ProgPoW family** (**kawpow**, **firopow**, **evrprogpow**) recompiles
+its per-period kernel at runtime (a SYCL-source JIT that folds the ProgPoW program to constants). That
+JIT compiles SYCL *source* on the host, so it needs **two** things the driver alone does not provide:
+(1) a CUDA **toolkit** -- `libdevice` *and* the CUDA headers under `/usr/local/cuda` (not just the
+driver), and (2) a host **C++ toolchain** (`g++`/libstdc++ -- the JIT `#include`s `<type_traits>` etc.).
+If either is missing, kawpow/firopow/evrprogpow automatically fall back to a correct ahead-of-time
+kernel at roughly a third of the JIT speed (~4 vs ~13 MH/s on an L4); every other algo is unaffected.
+For full ProgPoW-family throughput on a driver-only host, install both, e.g. `sudo apt install
+nvidia-cuda-toolkit g++` (or NVIDIA's `cuda-toolkit-12-6` for a `/usr/local/cuda` with both
+`nvvm/libdevice/libdevice.10.bc` and the CUDA headers, plus `g++`). Verified on a fresh L4: with only
+the driver, kawpow JIT errored through three successive stages (missing libdevice -> missing
+`<type_traits>` -> missing PTX target) and ran at 4.2 MH/s; with a full toolkit + `g++` it recovered to
+13.8 MH/s.
 
 ## AMD GPU (OpenCL)
 
