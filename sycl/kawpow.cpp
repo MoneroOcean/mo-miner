@@ -6,6 +6,7 @@
 #include <sycl/sycl.hpp>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
@@ -37,6 +38,12 @@ namespace mom_kawpow {
 
 constexpr uint32_t KAWPOW_EPOCH_LENGTH  = 7500;
 constexpr uint32_t KAWPOW_PERIOD_LENGTH = 3;
+// FiroPow: DAG epoch every 1300 blocks, ProgPoW program changes every block (period == height).
+constexpr uint32_t FIROPOW_EPOCH_LENGTH  = 1300;
+constexpr uint32_t FIROPOW_PERIOD_LENGTH = 1;
+// EvrProgPow: same seal structure as KawPoW (different magic), DAG epoch every 12000 blocks.
+constexpr uint32_t EVRPROGPOW_EPOCH_LENGTH  = 12000;
+constexpr uint32_t EVRPROGPOW_PERIOD_LENGTH = 3;
 constexpr uint32_t KAWPOW_LANES         = 16;
 constexpr uint32_t KAWPOW_REGS          = 32;
 constexpr uint32_t KAWPOW_DAG_LOADS     = 4;
@@ -56,6 +63,49 @@ constexpr uint32_t RAVENCOIN_KAWPOW[15] = {
   0x00000043, 0x0000004F, 0x00000049, 0x0000004E, 0x0000004B,
   0x00000041, 0x00000057, 0x00000050, 0x0000004F, 0x00000057
 };
+
+// EvrProgPow seal magic: ASCII "EVRMORE-PROGPOW" (hyphen 0x2D at index 7). Same 15-word placement
+// (st[10..24] initial / st[16..24] final) and seal structure as KawPoW -- only the data differs.
+constexpr uint32_t EVRMORE_EVRPROGPOW[15] = {
+  0x00000045, 0x00000056, 0x00000052, 0x0000004D, 0x0000004F,  // E V R M O
+  0x00000052, 0x00000045, 0x0000002D, 0x00000050, 0x00000052,  // R E - P R
+  0x0000004F, 0x00000047, 0x00000050, 0x0000004F, 0x00000057   // O G P O W
+};
+
+// FiroPow uses the chfast/ethash (EIP-1057) dataset sizing, NOT the classic Ethereum sizing baked
+// into data_sizes.h (which KawPoW/Ravencoin uses). The light CACHE sizing is identical between the
+// two (so cache_sizes[epoch] + ethash_get_seedhash + ethash_compute_cache_nodes are reused), but the
+// full DATASET is larger: init 1.5 GiB (vs 1 GiB), growth 8 MiB/epoch, num_items = largest prime
+// <= init/128 + epoch*growth/128, then *128 bytes. The DAG-gen kernel and search are otherwise
+// identical -- only the node count (and thus the search modulus) changes.
+constexpr int FIRO_FULL_DATASET_INIT_ITEMS = ((1 << 30) + (1 << 29)) / 128;  // 12582912 (1.5 GiB)
+constexpr int FIRO_FULL_DATASET_GROWTH_ITEMS = (1 << 23) / 128;              // 65536 per epoch
+// EvrProgPow uses the SAME chfast/EIP-1057 prime sizing but a 3 GiB init (confirmed against the
+// EvrmoreOrg/cpp-evrprogpow reference: full_dataset_init=(1<<30)*3, growth=1<<23, num_items=
+// largest_prime(init/128 + epoch*growth/128)*128; epoch 0 = 25165813 items = 3.0000 GiB).
+constexpr int EVR_FULL_DATASET_INIT_ITEMS = ((1u << 30) * 3) / 128;          // 25165824 (3 GiB)
+constexpr int EVR_FULL_DATASET_GROWTH_ITEMS = (1 << 23) / 128;               // 65536 per epoch
+
+static bool firo_is_odd_prime(const int number) {
+  for (int64_t d = 3; d * d <= static_cast<int64_t>(number); d += 2)
+    if (number % d == 0) return false;
+  return true;
+}
+
+static int firo_find_largest_prime(int n) {
+  if (n < 2) return 0;
+  if (n == 2) return 2;
+  if (n % 2 == 0) --n;
+  while (!firo_is_odd_prime(n)) n -= 2;
+  return n;
+}
+
+// chfast/EIP-1057 full-dataset byte size for an epoch: largest_prime(init + epoch*growth) * 128.
+// Shared by FiroPow (1.5 GiB init) and EvrProgPow (3 GiB init); a multiple of 128 (so also of 64).
+static uint64_t chfast_dag_bytes(const uint32_t epoch, const int init_items, const int growth_items) {
+  const int upper = init_items + static_cast<int>(epoch) * growth_items;
+  return static_cast<uint64_t>(firo_find_largest_prime(upper)) * 128ull;
+}
 
 // Used by MOM_LOOP_STATS to break a dispatch call into host-side phases.
 static uint64_t kawpow_now_us() {
@@ -143,6 +193,30 @@ struct Kiss99 {
 
 #include "kawpow_device.inc"
 #include "kawpow_jit.inc"
+
+// Per-algo ProgPoW variant: epoch/period divisors (host-side DAG/program selection) plus the keccak
+// seal mode + magic words baked into the kernel. KawPoW and EvrProgPow share SealMode::KAWPOW (magic
+// differs); FiroPow uses SealMode::FIRO (no magic). SealMode is defined in kawpow_device.inc.
+struct KawpowVariant {
+  uint32_t epoch_length;
+  uint32_t period_length;
+  SealMode seal;
+  const uint32_t* magic;  // 15 words; ignored for SealMode::FIRO
+  // Dataset sizing: chfast_init_items == 0 means classic Ethereum sizing (data_sizes.h table, KawPoW);
+  // otherwise chfast/EIP-1057 sizing largest_prime(init + epoch*growth)*128 -- FiroPow 1.5 GiB init,
+  // EvrProgPow 3 GiB init. Light cache sizing is identical across all three variants.
+  int chfast_init_items;
+  int chfast_growth_items;
+};
+
+constexpr KawpowVariant KAWPOW_VARIANT{
+  KAWPOW_EPOCH_LENGTH, KAWPOW_PERIOD_LENGTH, SealMode::KAWPOW, RAVENCOIN_KAWPOW, 0, 0};
+constexpr KawpowVariant FIROPOW_VARIANT{
+  FIROPOW_EPOCH_LENGTH, FIROPOW_PERIOD_LENGTH, SealMode::FIRO, RAVENCOIN_KAWPOW,
+  FIRO_FULL_DATASET_INIT_ITEMS, FIRO_FULL_DATASET_GROWTH_ITEMS};
+constexpr KawpowVariant EVRPROGPOW_VARIANT{
+  EVRPROGPOW_EPOCH_LENGTH, EVRPROGPOW_PERIOD_LENGTH, SealMode::KAWPOW, EVRMORE_EVRPROGPOW,
+  EVR_FULL_DATASET_INIT_ITEMS, EVR_FULL_DATASET_GROWTH_ITEMS};
 
 KawpowProgram make_program(const uint64_t period) {
   KawpowProgram program{};
@@ -239,10 +313,21 @@ public:
   uint64_t light_cache_words = 0;
   uint64_t dag_words = 0;
   uint32_t epoch = UINT32_MAX;
+  // Tracks the DAG byte size the current DAG was built with. KawPoW and FiroPow use different dataset
+  // sizing (classic vs chfast), so the same epoch can map to different DAG sizes; the DAG is rebuilt
+  // when this changes, not just when the epoch changes.
+  uint64_t dag_bytes = 0;
   uint64_t period = UINT64_MAX;
   KawpowProgram program{};
   unsigned workgroup;
   std::mutex mutex;
+
+  // Active ProgPoW seal (set per-call from the variant, under `mutex`). On CUDA it is baked into the
+  // JIT source (kawpow_emit_seal); on Intel/spir64 it rides in via SealParams. A device's KawpowState
+  // is shared across the kawpow/firopow/evrprogpow entrypoints, so the seal can change between calls
+  // and participates in the bundle cache key below (a seal change forces a rebuild).
+  SealMode seal = SealMode::KAWPOW;
+  uint32_t magic[15] = {};
 
   // Per-period executable bundles (Intel: program/dag spec constants baked in; CUDA: source-JIT'd
   // kernel). The next period's bundle is built on a worker thread while the current one mines, so
@@ -250,9 +335,13 @@ public:
   std::unique_ptr<sycl::kernel_bundle<sycl::bundle_state::executable>> period_bundle;
   uint64_t period_bundle_period = UINT64_MAX;
   uint32_t period_bundle_epoch = UINT32_MAX;
+  SealMode period_bundle_seal = SealMode::KAWPOW;
+  uint32_t period_bundle_magic[15] = {};
   std::unique_ptr<sycl::kernel_bundle<sycl::bundle_state::executable>> next_bundle;
   uint64_t next_bundle_period = UINT64_MAX;
   uint32_t next_bundle_epoch = UINT32_MAX;
+  SealMode next_bundle_seal = SealMode::KAWPOW;
+  uint32_t next_bundle_magic[15] = {};
   std::thread prefetch_thread;
 
   // CUDA kawpow path (decided once, then stable for this device's lifetime): the source-JIT folds
@@ -354,6 +443,7 @@ public:
     light_cache_words = 0;
     dag_words = 0;
     epoch = UINT32_MAX;
+    dag_bytes = 0;
     period = UINT64_MAX;
   }
 
@@ -368,14 +458,14 @@ public:
     if (!input || !result) throw std::string("Can't allocate kawpow SYCL input buffers");
   }
 
-  void ensure_epoch(const uint32_t new_epoch, const bool should_log) {
-    if (epoch == new_epoch) return;
-    if (new_epoch >= 2048 || !dag_sizes[new_epoch] || !cache_sizes[new_epoch]) {
+  void ensure_epoch(const uint32_t new_epoch, const uint64_t new_dag_bytes, const bool should_log) {
+    if (epoch == new_epoch && dag_bytes == new_dag_bytes) return;
+    if (new_epoch >= 2048 || !new_dag_bytes || !cache_sizes[new_epoch]) {
       throw std::string("Bad kawpow epoch");
     }
 
     const uint64_t new_light_cache_words = cache_sizes[new_epoch] / sizeof(uint32_t);
-    const uint64_t new_dag_words = dag_sizes[new_epoch] / sizeof(uint32_t);
+    const uint64_t new_dag_words = new_dag_bytes / sizeof(uint32_t);
 
     std::vector<uint32_t> host_cache;
     const uint64_t start_ms = now_ms();
@@ -451,6 +541,7 @@ public:
     sycl_wait_and_throw(dag_event, device);
 
     epoch = new_epoch;
+    dag_bytes = new_dag_bytes;
     if (should_log) {
       char elapsed[32];
       format_duration_ms(elapsed, sizeof(elapsed), now_ms() - start_ms);
@@ -464,8 +555,12 @@ public:
     period = new_period;
   }
 
+  // build_seal / build_magic are passed by value (not read from the members) so the prefetch thread,
+  // which calls this off the state mutex, never races kawpow_core writing state.seal/state.magic. Only
+  // the CUDA JIT path bakes the seal; the Intel spec-const path gets it via SealParams at launch.
   std::unique_ptr<sycl::kernel_bundle<sycl::bundle_state::executable>>
-  build_period_bundle(const uint64_t new_period, const FastModData dag_mod) {
+  build_period_bundle(const uint64_t new_period, const FastModData dag_mod,
+                      const SealMode build_seal, const uint32_t build_magic[15]) {
 #if defined(MOM_SYCL_HAS_CUDA)
     // CUDA: the source-JIT folds the per-period program to straight-line const ops (full speed); the
     // AOT spec-constant kernel below is correct but ~3x slower because spec constants do NOT fold on
@@ -480,9 +575,13 @@ public:
         try {
           // CUDA JIT: compile the search kernel from SYCL source with the period program baked in as
           // a const struct (folds the random-math interpreter). Device body is sycl/kawpow_device.inc.
+          // The per-algo keccak seal (mode + magic) is also baked in (kawpow_emit_seal) so firopow /
+          // evrprogpow compute the correct seal on CUDA; emitted after kawpow_device_src() (defines
+          // SealMode) and before the WRAPPER (reads JIT_SEAL/JIT_MAGIC).
           namespace syclex = sycl::ext::oneapi::experimental;
           const std::string src = std::string(KAWPOW_JIT_PRELUDE) + kawpow_device_src() +
-            kawpow_emit_baked(make_program(new_period), dag_mod) + KAWPOW_JIT_WRAPPER;
+            kawpow_emit_baked(make_program(new_period), dag_mod) +
+            kawpow_emit_seal(build_seal, build_magic) + KAWPOW_JIT_WRAPPER;
           auto kb_src = syclex::create_kernel_bundle_from_source(
             queue.get_context(), syclex::source_language::sycl, src);
           const char* const jit_opts = std::getenv("MOM_KAWPOW_JIT_OPTS");
@@ -518,24 +617,44 @@ public:
     );
   }
 
+  // The seal participates in the cache key: a device's KawpowState is shared across the
+  // kawpow/firopow/evrprogpow entrypoints, so an algo switch can change the seal even when the
+  // period/epoch are unchanged -- it must force a rebuild. `s`/`m` are the current call's seal.
+  static bool seal_eq(const SealMode a, const uint32_t am[15], const SealMode b, const uint32_t bm[15]) {
+    if (a != b) return false;
+    for (unsigned i = 0; i < 15; ++i) if (am[i] != bm[i]) return false;
+    return true;
+  }
+
   void ensure_period_bundle(const uint64_t new_period, const uint32_t new_epoch, const FastModData dag_mod) {
-    if (period_bundle && period_bundle_period == new_period && period_bundle_epoch == new_epoch) return;
+    if (period_bundle && period_bundle_period == new_period && period_bundle_epoch == new_epoch &&
+        seal_eq(period_bundle_seal, period_bundle_magic, seal, magic)) return;
 
     if (prefetch_thread.joinable()) prefetch_thread.join();
-    if (next_bundle && next_bundle_period == new_period && next_bundle_epoch == new_epoch) {
+    if (next_bundle && next_bundle_period == new_period && next_bundle_epoch == new_epoch &&
+        seal_eq(next_bundle_seal, next_bundle_magic, seal, magic)) {
       period_bundle = std::move(next_bundle);
     } else {
-      period_bundle = build_period_bundle(new_period, dag_mod);
+      period_bundle = build_period_bundle(new_period, dag_mod, seal, magic);
     }
     period_bundle_period = new_period;
     period_bundle_epoch = new_epoch;
+    period_bundle_seal = seal;
+    for (unsigned i = 0; i < 15; ++i) period_bundle_magic[i] = magic[i];
 
     next_bundle.reset();
     next_bundle_period = new_period + 1;
     next_bundle_epoch = new_epoch;
-    prefetch_thread = std::thread([this, next_period = new_period + 1, dag_mod] {
+    next_bundle_seal = seal;
+    for (unsigned i = 0; i < 15; ++i) next_bundle_magic[i] = magic[i];
+    // Capture seal/magic by value so the prefetch build is race-free w.r.t. a concurrent algo switch
+    // writing state.seal/state.magic on the next call (FiroPow rebuilds every block, so this runs).
+    SealMode pf_seal = seal;
+    std::array<uint32_t, 15> pf_magic;
+    for (unsigned i = 0; i < 15; ++i) pf_magic[i] = magic[i];
+    prefetch_thread = std::thread([this, next_period = new_period + 1, dag_mod, pf_seal, pf_magic] {
       try {
-        next_bundle = build_period_bundle(next_period, dag_mod);
+        next_bundle = build_period_bundle(next_period, dag_mod, pf_seal, pf_magic.data());
       } catch (...) {
         next_bundle.reset();
       }
@@ -563,8 +682,16 @@ static KawpowState& kawpow_state(const std::string& dev_str) {
 
 using namespace mom_kawpow;
 
-int kawpow(
-  const unsigned, const uint32_t block_height, const uint8_t* const input, const unsigned input_size, uint8_t* const output,
+// Per-work-item value-captured copy of the seal mode + 15 magic words (the device lambda cannot
+// dereference the host `KawpowVariant::magic` constexpr pointer). FIRO ignores the magic words.
+struct SealParams {
+  SealMode seal;
+  uint32_t magic[15];
+};
+
+static int kawpow_core(
+  const KawpowVariant& variant,
+  const uint32_t block_height, const uint8_t* const input, const unsigned input_size, uint8_t* const output,
   uint8_t* const mix_hash, uint64_t* const pnonce, const uint64_t target,
   const unsigned intensity, const bool is_test, const bool is_benchmark, const std::string& dev_str
 ) {
@@ -573,21 +700,34 @@ int kawpow(
   const bool loop_stats = kawpow_loop_stats();
   const uint64_t t_enter = loop_stats ? kawpow_now_us() : 0;
 
+  SealParams seal_params{variant.seal, {}};
+  for (unsigned i = 0; i < 15; ++i) seal_params.magic[i] = variant.magic[i];
+
   KawpowState& state = kawpow_state(dev_str);
   std::lock_guard<std::mutex> state_lock(state.mutex);
+  // Publish this call's seal into the state (under the mutex) so build_period_bundle bakes it into the
+  // CUDA JIT source and the bundle cache key reflects it. A device shared across algos can switch seal.
+  state.seal = seal_params.seal;
+  for (unsigned i = 0; i < 15; ++i) state.magic[i] = seal_params.magic[i];
   state.ensure_input(input_size);
 
-  const uint32_t epoch = block_height / KAWPOW_EPOCH_LENGTH;
-  const uint64_t period = block_height / KAWPOW_PERIOD_LENGTH;
+  const uint32_t epoch = block_height / variant.epoch_length;
+  const uint64_t period = block_height / variant.period_length;
+  // FiroPow's full dataset uses chfast/EIP-1057 sizing (1.5 GiB init); KawPoW/EvrProgPow use the
+  // classic Ethereum dataset table. The cache sizing is shared (cache_sizes[]).
+  if (epoch >= 2048) throw std::string("Bad kawpow epoch");
+  const uint64_t dag_bytes = variant.chfast_init_items
+    ? chfast_dag_bytes(epoch, variant.chfast_init_items, variant.chfast_growth_items)
+    : dag_sizes[epoch];
   const uint64_t t_state = loop_stats ? kawpow_now_us() : 0;
-  state.ensure_epoch(epoch, !is_benchmark);
+  state.ensure_epoch(epoch, dag_bytes, !is_benchmark);
   const uint64_t t_epoch = loop_stats ? kawpow_now_us() : 0;
   state.ensure_period(period);
 
   uint64_t start_nonce = 0;
   std::memcpy(&start_nonce, input + 32, sizeof(start_nonce));
   const uint32_t global_size = round_up(std::max(intensity, state.workgroup), state.workgroup);
-  const uint32_t dag_elements = static_cast<uint32_t>(dag_sizes[epoch] / 256);
+  const uint32_t dag_elements = static_cast<uint32_t>(dag_bytes / 256);
   const FastModData dag_mod = make_fast_mod_data(dag_elements);
 
   if (state.shared_io) std::memcpy(state.input, input, input_size);
@@ -656,7 +796,8 @@ int kawpow(
 
           uint32_t state2[8];
           kawpow_initial_dev(d_input, static_cast<uint32_t>(full_nonce),
-                             static_cast<uint32_t>(full_nonce >> 32), state2);
+                             static_cast<uint32_t>(full_nonce >> 32),
+                             seal_params.seal, seal_params.magic, state2);
 
           uint32_t digest[8];
           const KawpowSgExchange ex{sg,
@@ -664,7 +805,7 @@ int kawpow(
           kawpow_search_dev(ex, lane_id, state2, c_dag, d_dag_load, program, dag_mod, digest);
 
           uint32_t final_state[25];
-          kawpow_final_dev(state2, digest, final_state);
+          kawpow_final_dev(state2, digest, seal_params.seal, seal_params.magic, final_state);
           if ((is_test && gid == 0) || (active && target && kawpow_meets_target_words(final_state, target))) {
             store_kawpow_result(d_result, full_nonce, final_state, digest);
           }
@@ -714,7 +855,8 @@ int kawpow(
 
           uint32_t state2[8];
           kawpow_initial_dev(d_input, static_cast<uint32_t>(full_nonce),
-                             static_cast<uint32_t>(full_nonce >> 32), state2);
+                             static_cast<uint32_t>(full_nonce >> 32),
+                             seal_params.seal, seal_params.magic, state2);
 
           uint32_t digest[8];
           const KawpowSlmExchange ex{
@@ -723,7 +865,7 @@ int kawpow(
           kawpow_search_dev(ex, lane_id, state2, c_dag, d_dag_load, program, dag_mod, digest);
 
           uint32_t final_state[25];
-          kawpow_final_dev(state2, digest, final_state);
+          kawpow_final_dev(state2, digest, seal_params.seal, seal_params.magic, final_state);
           if ((is_test && gid == 0) || (active && target && kawpow_meets_target_words(final_state, target))) {
             store_kawpow_result(d_result, full_nonce, final_state, digest);
           }
@@ -743,4 +885,33 @@ int kawpow(
   }
 
   return 0;
+}
+
+// ABI entrypoints (gpu_kawpow_hash_fun). The fn-pointer signature does not carry the algo name, so
+// each ProgPoW variant is a DISTINCT exported function that bakes its own epoch/period/seal/magic.
+int kawpow(
+  const unsigned job_id, const uint32_t block_height, const uint8_t* const input, const unsigned input_size,
+  uint8_t* const output, uint8_t* const mix_hash, uint64_t* const pnonce, const uint64_t target,
+  const unsigned intensity, const bool is_test, const bool is_benchmark, const std::string& dev_str
+) {
+  return kawpow_core(KAWPOW_VARIANT, block_height, input, input_size, output, mix_hash, pnonce,
+                     target, intensity, is_test, is_benchmark, dev_str);
+}
+
+int firopow(
+  const unsigned job_id, const uint32_t block_height, const uint8_t* const input, const unsigned input_size,
+  uint8_t* const output, uint8_t* const mix_hash, uint64_t* const pnonce, const uint64_t target,
+  const unsigned intensity, const bool is_test, const bool is_benchmark, const std::string& dev_str
+) {
+  return kawpow_core(FIROPOW_VARIANT, block_height, input, input_size, output, mix_hash, pnonce,
+                     target, intensity, is_test, is_benchmark, dev_str);
+}
+
+int evrprogpow(
+  const unsigned job_id, const uint32_t block_height, const uint8_t* const input, const unsigned input_size,
+  uint8_t* const output, uint8_t* const mix_hash, uint64_t* const pnonce, const uint64_t target,
+  const unsigned intensity, const bool is_test, const bool is_benchmark, const std::string& dev_str
+) {
+  return kawpow_core(EVRPROGPOW_VARIANT, block_height, input, input_size, output, mix_hash, pnonce,
+                     target, intensity, is_test, is_benchmark, dev_str);
 }

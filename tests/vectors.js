@@ -207,6 +207,110 @@ const hashTests = [
       "60abafe4148f34284b2c9e2e4a222ddcba272cb0669a8673cc1d5934ba5ecbfc",
   },
   {
+    // REAL pool-ACCEPTED share captured live from RavenMiner (stratum.ravenminer.com TLS), 2026-06-18,
+    // height 4415577 = epoch 588 (mainnet-scale ~5.4 GiB DAG). The pool ACCEPTED this share (network
+    // consensus-validated) AND it reproduces offline -> end-to-end real-mainnet vector. blob = 32-byte
+    // header + 8-byte winning nonce LITTLE-ENDIAN (nonce 0xef00000002249aaf; ef000000 = pool extranonce).
+    name: "kawpow gpu1*1 live-share h4415577",
+    gpu: true,
+    timeoutMs: 15 * 60 * 1000,
+    job: {
+      algo: "kawpow",
+      dev: "gpu1*1",
+      height: 4415577,
+      noncebytes: 8,
+      nonceoffset: 32,
+      blob_hex: "c3d504e2946989b90767a7a98b59e0770483d256a0178497b0278908ef0edac6af9a2402000000ef",
+    },
+    expected:
+      "0000004eac670a2c1362781f7a9eaa299df135b7bbe4dd276a8eba9587733255 " +
+      "2ed045ae6a3828170e292b9a105cb79586d6a74090c772ea3eb438154ae485be",
+  },
+  {
+    // FiroPow (ProgPoW-0.9.4 variant of KawPoW): EPOCH_LENGTH=1300, PERIOD_LENGTH=1, and a padding-
+    // constant keccak seal (no magic array). Vectors are firoorg/firo's own firopow_test_vectors.hpp.
+    // dev gpu1*1 runs a single hash at gid 0; blob_hex = 32-byte header + 8-byte nonce LITTLE-ENDIAN
+    // (the firo vector lists nonce big-endian: 85f22c9b3cd2f123 -> stored 23f1d23c9b2cf285).
+    // expected = "<final_hash> <mix_hash>". height 1 = epoch 0 (tiny DAG): clears seal + fill_mix.
+    name: "firopow gpu1*1 height 1",
+    gpu: true,
+    timeoutMs: 15 * 60 * 1000,
+    job: {
+      algo: "firopow",
+      dev: "gpu1*1",
+      height: 1,
+      noncebytes: 8,
+      nonceoffset: 32,
+      blob_hex: "2d794e900dcad779e658de9078d9a88eee87d75f7b09a8fdd270d3a8e76650c723f1d23c9b2cf285",
+    },
+    expected:
+      "00017c7de1fa499314f9e3dd3537546982073624f7d478592cf28a6d13929f2d " +
+      "cfab3766331d6c4e6913e6688a71e4c26b7f36c1581cdbec0f5b19db8956eb50",
+  },
+  {
+    // REAL share captured live from WoolyPooly FIRO (pool.woolypooly.com:3104 TLS), 2026-06-18, at
+    // mainnet height 1326124 = epoch 1020 (~10 GiB DAG). The pool's vardiff (4.29 GH) outruns a single
+    // GPU so it was submitted stale, but the hash is a genuine mainnet-job result and reproduces offline
+    // (correctness anchored by firo's own height 1/2/1300 reference vectors above). blob = 32-byte header
+    // + 8-byte winning nonce LE (nonce 0x2e6f000020c42945).
+    name: "firopow gpu1*1 live-share h1326124",
+    gpu: true,
+    timeoutMs: 15 * 60 * 1000,
+    job: {
+      algo: "firopow",
+      dev: "gpu1*1",
+      height: 1326124,
+      noncebytes: 8,
+      nonceoffset: 32,
+      blob_hex: "308c3193f94225113edb4a8727a753c10b97dff393eda9b227a880208768f1814529c42000006f2e",
+    },
+    expected:
+      "00000000ebdedafd5e17a6ccd9ef312dd5322363a7afb02415340446b741ebe5 " +
+      "51839afd7148b3121aac84b0bb4ef0b081a2ab3283a41b15ea59821bab64e381",
+  },
+  {
+    // EvrProgPow (Evrmore): KawPoW with epoch=12000, period=3, "EVRMORE-PROGPOW" seal magic, and
+    // chfast/EIP-1057 DAG sizing with a 3 GiB init. Vectors generated from the EvrmoreOrg/cpp-evrprogpow
+    // reference (the repo's committed vectors are STALE classic-ProgPoW copies -- do not use those).
+    // header_hash = 000102..1f, nonce u64 0x0102030405060708 -> blob LE "0807060504030201".
+    // expected = "<final_hash> <mix_hash>". height 0 = epoch 0 (3 GiB DAG): clears seal + sizing.
+    name: "evrprogpow gpu1*1 height 0",
+    gpu: true,
+    timeoutMs: 15 * 60 * 1000,
+    job: {
+      algo: "evrprogpow",
+      dev: "gpu1*1",
+      height: 0,
+      noncebytes: 8,
+      nonceoffset: 32,
+      blob_hex: "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0807060504030201",
+    },
+    expected:
+      "d812833c51da91c0e217e2d02b01cb37f4361f7293fe3abc018a5a39ad0c037f " +
+      "0135e22005ad373005c518a9f68099ffff8f698af61580495b620ef2fbe6380f",
+  },
+  {
+    // REAL accepted share captured live from Mining4People (us-east.mining4people.com:24173 TLS),
+    // 2026-06-17, height 1896108 = epoch 158 (mainnet-scale ~4 GiB DAG). The pool ACCEPTED this share
+    // (consensus-validated) AND it reproduces offline -> the strongest end-to-end vector: real job
+    // header, real winning nonce, mainnet DAG. Submitted nonce 0xb8c700003165dfca stored little-endian
+    // in the blob (b8c70000 = pool extranonce high bytes). See logs/evrprogpow_live_captured_shares.log.
+    name: "evrprogpow gpu1*1 live-share h1896108",
+    gpu: true,
+    timeoutMs: 15 * 60 * 1000,
+    job: {
+      algo: "evrprogpow",
+      dev: "gpu1*1",
+      height: 1896108,
+      noncebytes: 8,
+      nonceoffset: 32,
+      blob_hex: "bb9c2f5035d8ad57359cab200094105e233e1c0e42ae1baf9568b710faba0c6ccadf65310000c7b8",
+    },
+    expected:
+      "000000044f87561c07bf42dca0c22211319d29fffcf95988e94c4791f4628f6d " +
+      "fec20ef703aa7e02ec069d1f392c2e73236ed4116f44650e108405b53382916b",
+  },
+  {
     name: "etchash gpu1*256",
     gpu: true,
     timeoutMs: 15 * 60 * 1000,
@@ -222,6 +326,27 @@ const hashTests = [
     expected:
       "f31cafe3b6ec655c82ebe64a470f6599f513674420a32490402ad897c827cf7e " +
       "756598185990f2143a94d65787ce5fea2b1feae6bed481e79dd216ef426c3eaa",
+  },
+  {
+    // REAL pool-ACCEPTED share captured live from the MoneroOcean pool (gulf.moneroocean.stream:20001
+    // TLS), 2026-06-18. MO sends a seed (not a height) -> the epoch resolves from seed_hex (a real ETC
+    // mainnet epoch, ~5 GiB DAG). The pool ACCEPTED this share (network consensus-validated) AND it
+    // reproduces offline. blob = 32-byte header + 8-byte winning nonce LE (nonce 0xff2b000015b0c4dc).
+    name: "etchash gpu1*1 live-share MO",
+    gpu: true,
+    timeoutMs: 15 * 60 * 1000,
+    job: {
+      algo: "etchash",
+      dev: "gpu1*1",
+      height: 0,
+      seed_hex: "6c81497f04471e1f108bbef0c523cbd56e9c42f5bd589208601eeb88c1460cc6",
+      noncebytes: 8,
+      nonceoffset: 32,
+      blob_hex: "e3c03345c43176e9af64c85c6a9c7bace62f964aa6b467a43c732d9f442eee51dcc4b01500002bff",
+    },
+    expected:
+      "0000000011ba1869669c2433f9b264b8faf1b8c991ec175d64f0b934c63d78a6 " +
+      "2352df3a7c7911c9bdafb65bf2665f30938faaee96259a88f18d88e4e6a7b577",
   },
   {
     name: "autolykos2 gpu1*1",
@@ -281,12 +406,14 @@ const hashTests = [
   },
 ];
 
-const nonceAt32Algos = new Set(["kawpow", "etchash", "autolykos2"]);
+const nonceAt32Algos = new Set(["kawpow", "firopow", "evrprogpow", "etchash", "autolykos2"]);
 // Heights sampled from coin mainnets so perf DAG/table sizes match live pool jobs
 // (ETC 2026-06-04, RVN and ERG 2026-06-12). Keep in sync with benchHeightByAlgo in mom.js.
 const benchHeightByAlgo = {
   etchash:    24689903,
   kawpow:     4407982,
+  firopow:    600000,
+  evrprogpow: 1800000,
   autolykos2: 1806198,
 };
 

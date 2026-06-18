@@ -47,6 +47,8 @@ function isCurrentPoolSocket(pool_id, socket) {
 function protocolForAlgo(algo) {
   switch (algo) {
     case "kawpow":     return "raven";
+    case "firopow":    return "raven";
+    case "evrprogpow": return "raven";
     case "etchash":    return "eth";
     case "autolykos2": return "erg";
     case "pearl":      return "pearl";
@@ -161,7 +163,7 @@ function applyLoginExtensions(pool_id, extensions) {
 
 function algoFromPass(pool) {
   const pass = String(pool.pass || "");
-  const m = pass.match(/(?:^|[~;,])(?:algo=)?(kawpow|etchash|autolykos2|pearl)(?:$|[~;,])/i);
+  const m = pass.match(/(?:^|[~;,])(?:algo=)?(kawpow|firopow|evrprogpow|etchash|autolykos2|pearl)(?:$|[~;,])/i);
   return m ? m[1].toLowerCase() : "";
 }
 
@@ -413,7 +415,10 @@ function jobFromPoolMessage(pool_id, json) {
     if (!pool.logged_in) return null;
     pool.submit_mode = "raven";
     return nonceAt32Job(pool, {
-      algo: json.algo || "kawpow",
+      // raven dialect is shared by kawpow/firopow/evrprogpow; resolve the actual algo from the job,
+      // the configured global job, or the pool pass (falling back to kawpow) so firopow/evrprogpow
+      // pools select the right seal/epoch instead of always hashing kawpow.
+      algo: json.algo || (global.opt.job && global.opt.job.algo) || algoFromPass(pool) || "kawpow",
       header_hash: hexWithoutPrefix(json.params[1]),
       seed_hash: hexWithoutPrefix(json.params[2]),
       target: ravenTarget(pool, json.params[3]),
@@ -487,7 +492,8 @@ function jobFromPoolMessage(pool_id, json) {
 
 function jobTargetWork(job) {
   if (!job.target) return null;
-  if (job.algo === "kawpow") return h.kawpowTarget2diff(job.target);
+  if (job.algo === "kawpow" || job.algo === "firopow" || job.algo === "evrprogpow")
+    return h.kawpowTarget2diff(job.target);
   // pearl: report the share target in GEMM MACs to match the MAC/s hashrate (so time-per-share =
   // target/hashrate). work/share = (tiles/share = 2^256/bound) * (MACs/tile = 16*16*k_eff).
   if (job.algo === "pearl") return h.target256ToWork(job.target) * BigInt(16 * 16 * pearlKEff());

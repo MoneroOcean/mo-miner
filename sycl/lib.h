@@ -45,6 +45,21 @@ MOM_SYCL_API int kawpow(
   unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
 );
 
+// FiroPow / EvrProgPow: ProgPoW-0.9.4 variants of KawPoW. Same gpu_kawpow_hash_fun ABI; each bakes
+// its own epoch/period divisors + keccak seal (FiroPow: padding-constant seal; EvrProgPow: KawPoW
+// seal with the EVRMORE-PROGPOW magic).
+MOM_SYCL_API int firopow(
+  unsigned job_id, uint32_t height, const uint8_t* input, unsigned input_size, uint8_t* output,
+  uint8_t* mix_hash, uint64_t* pnonce, uint64_t target,
+  unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
+);
+
+MOM_SYCL_API int evrprogpow(
+  unsigned job_id, uint32_t height, const uint8_t* input, unsigned input_size, uint8_t* output,
+  uint8_t* mix_hash, uint64_t* pnonce, uint64_t target,
+  unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
+);
+
 MOM_SYCL_API int etchash(
   unsigned job_id, uint32_t height, const uint8_t* input, unsigned input_size, uint8_t* output,
   uint8_t* mix_hash, uint64_t* pnonce, const uint8_t* target, const uint8_t* seed_hash,

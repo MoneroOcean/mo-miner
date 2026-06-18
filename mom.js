@@ -401,12 +401,14 @@ function baseJob(prev_job, algo, dev, pool_id) {
   };
 }
 
-const nonceAt32Algos = new Set(["kawpow", "etchash", "autolykos2"]);
+const nonceAt32Algos = new Set(["kawpow", "firopow", "evrprogpow", "etchash", "autolykos2"]);
 // Heights sampled from coin mainnets so benchmark DAG/table sizes match live pool jobs
 // (epoch-0 sizes overstate hashrate by ~7-10% on these algos): ETC 2026-06-04, RVN and ERG 2026-06-12.
 const benchHeightByAlgo = {
   etchash:    24689903,
   kawpow:     4407982,
+  firopow:    600000,
+  evrprogpow: 1800000,
   autolykos2: 1806198,
 };
 const defaultBenchAlgos = new Set([
@@ -439,9 +441,13 @@ function jobTarget(prev_job, algo) {
     return (diff > 0n ? MAX / diff : MAX).toString(16).padStart(64, "0");
   }
   if (!isNonceAt32Algo(algo)) return explicitTarget || h.diff2target(prev_job.difficulty);
-  if (explicitTarget && !/^\d+$/.test(explicitTarget) && hexWithoutPrefix(explicitTarget).length > 16)
-    return hexWithoutPrefix(explicitTarget).padStart(64, "0");
+  // autolykos2 (erg) may deliver the target as a DECIMAL string. Every other nonce-at-32 algo
+  // (kawpow/firopow/evrprogpow/etchash) delivers a 256-bit HEX boundary in mining.notify/set_target --
+  // and that hex can legitimately be all-[0-9] digits (e.g. WoolyPooly's "0000000100..."), so the
+  // digit-only "is decimal" heuristic must be applied ONLY to autolykos2, never to the hex-target algos.
   if (algo === "autolykos2" && /^\d+$/.test(explicitTarget)) return h.decimalTargetToHex(explicitTarget);
+  if (explicitTarget && hexWithoutPrefix(explicitTarget).length > 16)
+    return hexWithoutPrefix(explicitTarget).padStart(64, "0");
   return h.ethDiff2Target(prev_job.difficulty || (explicitTarget ? h.target2diff(explicitTarget) : 1));
 }
 

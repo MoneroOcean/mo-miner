@@ -42,9 +42,15 @@ const skipAlgos = new Set(
 // the GPU (cross-validated bit-identical to the ESIMD/XMX path), so it is a real regression guard. The
 // XMX (ESIMD) and tensor-core (mma.sync) pearl paths still can't run on the CPU, but they don't need to:
 // the portable path is what runs on every OpenCL device. It is slow on the CPU but the test shape is tiny.
+// firopow/evrprogpow run the kawpow kernel family, so the same SLM/barrier CPU path applies. They use
+// the SMALLEST height (epoch 0) to keep the CPU-built DAG as small as possible -- but note chfast init
+// sizing makes even epoch 0 large: firopow ~1.5 GiB, evrprogpow ~3 GiB (vs ~1 GiB for etchash/kawpow
+// epoch 0), so these are the slowest CPU vectors. The live mainnet-DAG vectors stay GPU-only.
 const syclCpuVectors = [
   requiredVector("cn/gpu gpu1*8"),
   requiredVector("kawpow gpu1*256"),
+  requiredVector("firopow gpu1*1 height 1"),
+  requiredVector("evrprogpow gpu1*1 height 0"),
   requiredVector("etchash gpu1*256"),
   requiredVector("autolykos2 gpu1*1"),
   requiredVector("c29 proofsize 42 gpu1*1"),

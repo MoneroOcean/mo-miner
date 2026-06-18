@@ -98,7 +98,9 @@ static const std::map<std::string, gpu_c29_hash_fun> gpu_c29_algo2fn = {
 };
 
 static const std::map<std::string, gpu_kawpow_hash_fun> gpu_kawpow_algo2fn = {
-  { "kawpow", kawpow }
+  { "kawpow", kawpow },
+  { "firopow", firopow },
+  { "evrprogpow", evrprogpow }
 };
 
 static const std::map<std::string, gpu_etchash_hash_fun> gpu_etchash_algo2fn = {
@@ -118,6 +120,8 @@ static const std::map<std::string, unsigned> algo2mem = [](){
     { "cn/gpu", 2*1024*1024 }, // host memory is not really used (number used only for algo_params calcs)
     { "c29",    0 },           // host memory is not used even for algo_params calcs
     { "kawpow", 0 },
+    { "firopow", 0 },
+    { "evrprogpow", 0 },
     { "etchash", 0 },
     { "autolykos2", 0 },
     { "pearl", 0 }
@@ -208,6 +212,8 @@ void Core::set_job(
   const DEV new_dev =
     new_dev_name == "cpu" ? (rx_cpu_name2config.contains(new_algo_str) ? DEV::RX_CPU : DEV::CPU) :
     new_algo_str == "kawpow" ? DEV::KAWPOW_GPU :
+    new_algo_str == "firopow" ? DEV::KAWPOW_GPU :
+    new_algo_str == "evrprogpow" ? DEV::KAWPOW_GPU :
     new_algo_str == "etchash" ? DEV::ETCHASH_GPU :
     new_algo_str == "autolykos2" ? DEV::AUTOLYKOS2_GPU :
     new_algo_str == "pearl" ? DEV::PEARL_GPU :

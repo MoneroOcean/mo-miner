@@ -268,8 +268,34 @@ inline void keccakf1600_pair_round_dev(Uint2 st[25], const unsigned round) {
   keccakf1600_pair_chi_dev(st, 20, t);
 }
 
+#if defined(__NVPTX__)
+// NVIDIA (nvptx device image): the 32-bit-pair permutation is correct and tuned for warps; unchanged from 0.7.0.
 inline void keccakf1600_pair_dev(Uint2 st[25]) {
   for (unsigned round = 0; round < 24; ++round) keccakf1600_pair_round_dev(st, round);
+}
+#else
+// SPIR-V device image (Intel IGC / AMD / CPU). IGC 2.36.x SILENTLY MISCOMPILES the Uint2 32-bit-pair
+// Keccak-f[1600] when it is INLINED into the high-register-pressure DAG/search kernels on Xe2/BMG
+// (Arc B580): the pair state held live across the loop comes out 100% wrong. The permutation is
+// bit-exact in isolation, so forcing it OUT OF LINE (noinline) dodges the register-allocation
+// miscompile while keeping the fast 32-bit pair path -- ~13% faster than a scalar u64 fallback and
+// bit-exact on every IGC. Clean IGC 2.28.4-good -> 2.36.3-broken regression; see ~/bug_report5
+// (sibling of intel-graphics-compiler#414). This out-of-line function is the always-correct reference
+// path (used by DAG-gen and by the noinline search instantiation, byte-identical to 0.7.0 codegen).
+inline __attribute__((noinline)) void keccakf1600_pair_dev(Uint2 st[25]) {
+  for (unsigned round = 0; round < 24; ++round) keccakf1600_pair_round_dev(st, round);
+}
+#endif
+
+// Selects the pair permutation for a search-kernel instantiation. INLINE_PAIR=true expands the 24
+// rounds IN PLACE (the fast pre-0.7.0 path, miscompiled on the affected IGC); false calls the single
+// out-of-line keccakf1600_pair_dev reference. Inlining the rounds directly -- rather than via a second
+// identical always_inline function -- keeps the noinline path's codegen byte-identical to 0.7.0 (an
+// identical-bodied always_inline twin made IGC miscompile the *noinline* path even on a good IGC).
+template <bool INLINE_PAIR>
+inline void keccakf1600_pair_sel_dev(Uint2 st[25]) {
+  if constexpr (INLINE_PAIR) { for (unsigned round = 0; round < 24; ++round) keccakf1600_pair_round_dev(st, round); }
+  else                       { keccakf1600_pair_dev(st); }
 }
 
 inline void keccak_512_words_dev(uint32_t words[ETHASH_NODE_WORDS]) {
@@ -290,6 +316,7 @@ inline void keccak_512_header_nonce_dev(const uint8_t* const header_hash, const 
   for (unsigned i = 0; i < 8; ++i) store64_words_le_dev(out, i, st[i]);
 }
 
+template <bool INLINE_PAIR>
 inline void keccak_512_header_nonce_pair_dev(const uint8_t* const header_hash, const uint64_t nonce, uint32_t out[16]) {
   Uint2 st[25]{};
   for (unsigned i = 0; i < 4; ++i) {
@@ -298,7 +325,7 @@ inline void keccak_512_header_nonce_pair_dev(const uint8_t* const header_hash, c
   st[4] = make_u2(static_cast<uint32_t>(nonce), static_cast<uint32_t>(nonce >> 32));
   st[5] = make_u2(0x00000001, 0x00000000);
   st[8] = make_u2(0x00000000, 0x80000000);
-  keccakf1600_pair_dev(st);
+  keccakf1600_pair_sel_dev<INLINE_PAIR>(st);
   for (unsigned i = 0; i < 8; ++i) store_pair_words_dev(out, i, st[i]);
 }
 
@@ -317,13 +344,14 @@ inline void keccak_256_seed_mix_dev(const uint32_t seed[16], const uint32_t mix[
   }
 }
 
+template <bool INLINE_PAIR>
 inline void keccak_256_seed_mix_pair_dev(const uint32_t seed[16], const uint32_t mix[8], uint8_t out[32]) {
   Uint2 st[25]{};
   for (unsigned i = 0; i < 8; ++i) st[i] = make_u2(seed[i * 2], seed[i * 2 + 1]);
   for (unsigned i = 0; i < 4; ++i) st[8 + i] = make_u2(mix[i * 2], mix[i * 2 + 1]);
   st[12] = make_u2(0x00000001, 0x00000000);
   st[16] = make_u2(0x00000000, 0x80000000);
-  keccakf1600_pair_dev(st);
+  keccakf1600_pair_sel_dev<INLINE_PAIR>(st);
   for (unsigned i = 0; i < 4; ++i) {
     store32_le_dev(out + i * 8, st[i].x);
     store32_le_dev(out + i * 8 + 4, st[i].y);
@@ -428,6 +456,103 @@ bool parse_env_ulong(const char* const name, unsigned long& out) {
   return true;
 }
 
+template <bool INLINE_PAIR> class EtchashSearchKernel;  // distinct kernel name per instantiation
+
+// GPU etchash search kernel, instantiated for the inlined (fast) and noinline (always-correct) pair
+// Keccak. Identical to the 0.7.0 kernel except the two per-nonce Keccaks select their permutation by
+// INLINE_PAIR. The caller picks the instantiation per device from EtchashState::use_inline_pair().
+template <bool INLINE_PAIR>
+static sycl::event submit_etchash_search_gpu(
+  sycl::queue& q, MOM_BUNDLE_T& kb,
+  const uint8_t* const d_input, const uint64_t start_nonce,
+  const uint32_t* const __restrict__ d_dag, const FastModData dag_mod,
+  const uint32_t intensity, const uint8_t* const d_target,
+  EtchashResult* const d_result, const bool is_test
+) {
+  constexpr unsigned GROUP4_WORKGROUP = 128;
+  constexpr unsigned GROUP4_SEED_WORDS = GROUP4_WORKGROUP * 16;
+  return q.submit([&](sycl::handler& h) {
+    MOM_USE_BUNDLE(h, kb);
+    sycl::local_accessor<uint32_t, 1> seeds(sycl::range<1>(GROUP4_SEED_WORDS), h);
+    h.parallel_for<EtchashSearchKernel<INLINE_PAIR>>(
+      sycl::nd_range<1>(
+        sycl::range<1>(round_up(intensity, GROUP4_WORKGROUP)),
+        sycl::range<1>(GROUP4_WORKGROUP)
+      ),
+      [=](sycl::nd_item<1> item) MOM_REQD_SG_16 {
+        const uint32_t lid = static_cast<uint32_t>(item.get_local_id(0));
+        const uint32_t group_hash_base = static_cast<uint32_t>(item.get_group(0)) * GROUP4_WORKGROUP;
+        const uint32_t own_hash = group_hash_base + lid;
+
+        if (own_hash < intensity) {
+          uint32_t seed[16];
+          keccak_512_header_nonce_pair_dev<INLINE_PAIR>(d_input, start_nonce + own_hash, seed);
+#pragma unroll
+          for (unsigned w = 0; w < 16; ++w) seeds[lid * 16 + w] = seed[w];
+        }
+        item.barrier(sycl::access::fence_space::local_space);
+
+        const auto sg = item.get_sub_group();
+        const uint32_t sg_lane = static_cast<uint32_t>(sg.get_local_id()[0]);
+        const uint32_t lane4 = lid & 3U;
+        const uint32_t group4_base = lid & ~3U;
+        const uint32_t sg_group4_base = sg_lane & ~3U;
+
+        for (unsigned owner = 0; owner < 4; ++owner) {
+          const uint32_t owner_lid = group4_base + owner;
+          const uint32_t hash_index = group_hash_base + owner_lid;
+          if (hash_index >= intensity) continue;
+
+          const uint32_t seed_base = owner_lid * 16;
+          const uint32_t seed0 = seeds[seed_base];
+          uint32_t mix[8];
+#pragma unroll
+          for (unsigned w = 0; w < 8; ++w) mix[w] = seeds[seed_base + ((lane4 * 8 + w) & 15U)];
+
+          for (unsigned i = 0; i < ETHASH_ACCESSES; ++i) {
+            const uint32_t selected_lane = (i & (ETHASH_MIX_WORDS - 1)) >> 3;
+            const uint32_t selected_word = i & 7U;
+            const uint32_t page_candidate = lane4 == selected_lane
+              ? fast_mod_dev(fnv_dev(seed0 ^ i, mix[selected_word]), dag_mod)
+              : 0;
+            const uint32_t page = sycl::select_from_group(sg, page_candidate, sg_group4_base + selected_lane);
+            const uint32_t base = page * ETHASH_MIX_WORDS + lane4 * 8;
+            const auto dag_words = *reinterpret_cast<const sycl::vec<uint64_t, 4>*>(d_dag + base);
+#pragma unroll
+            for (unsigned w = 0; w < 4; ++w) {
+              const uint64_t dag_pair = dag_words[w];
+              mix[w * 2] = fnv_dev(mix[w * 2], static_cast<uint32_t>(dag_pair));
+              mix[w * 2 + 1] = fnv_dev(mix[w * 2 + 1], static_cast<uint32_t>(dag_pair >> 32));
+            }
+          }
+
+          const uint32_t compressed0 = fnv_fold4_dev(mix);
+          const uint32_t compressed1 = fnv_fold4_dev(mix + 4);
+
+          uint32_t compressed_mix[8];
+#pragma unroll
+          for (unsigned lane = 0; lane < 4; ++lane) {
+            compressed_mix[lane * 2] = sycl::select_from_group(sg, compressed0, sg_group4_base + lane);
+            compressed_mix[lane * 2 + 1] = sycl::select_from_group(sg, compressed1, sg_group4_base + lane);
+          }
+
+          if (lane4 == owner) {
+            uint32_t seed[16];
+#pragma unroll
+            for (unsigned w = 0; w < 16; ++w) seed[w] = seeds[seed_base + w];
+
+            uint8_t final_hash[32];
+            keccak_256_seed_mix_pair_dev<INLINE_PAIR>(seed, compressed_mix, final_hash);
+            if ((is_test && hash_index == 0) || meets_target_dev(final_hash, d_target)) {
+              store_etchash_result(d_result, start_nonce + hash_index, final_hash, compressed_mix);
+            }
+          }
+        }
+      }
+    );
+  });
+}
+
 class EtchashState {
 public:
   sycl::device device;
@@ -446,6 +571,74 @@ public:
   uint32_t epoch = UINT32_MAX;
   uint32_t seed_epoch = UINT32_MAX;
   std::mutex mutex;
+  int inline_pair_ok = -1;  // -1 untested, 1 = inlined pair Keccak is bit-exact here (fast path), 0 = miscompiled (noinline)
+
+  // Per-device gate for the etchash search Keccak. The fast pre-0.7.0 path inlines the Uint2 pair
+  // permutation; IGC 2.36.x miscompiles that under the search kernel's register pressure (see
+  // ~/bug_report5). use_inline_pair() runs a one-time self-test that executes the REAL search kernel
+  // both ways on a tiny synthetic DAG and only enables the inlined path if it is byte-for-byte equal to
+  // the noinline reference (which ships correct on every device). DAG-gen always uses noinline.
+  bool use_inline_pair() {
+    if (inline_pair_ok < 0) {
+      unsigned long forced = 0;
+      if (parse_env_ulong("MOM_ETCHASH_FORCE_NOINLINE", forced) && forced) {
+        inline_pair_ok = 0;
+        std::fprintf(stderr, "Etchash: MOM_ETCHASH_FORCE_NOINLINE set -> using safe noinline search path\n");
+      } else if (parse_env_ulong("MOM_ETCHASH_FORCE_INLINE", forced) && forced) {
+        inline_pair_ok = 1;
+        std::fprintf(stderr, "Etchash: MOM_ETCHASH_FORCE_INLINE set -> using fast inlined search path\n");
+      } else {
+        inline_pair_ok = probe_inline_pair() ? 1 : 0;
+        std::fprintf(stderr, "Etchash: inlined pair-Keccak self-test %s -> using %s search path\n",
+          inline_pair_ok ? "passed" : "FAILED (IGC miscompile)", inline_pair_ok ? "fast inlined" : "safe noinline");
+      }
+    }
+    return inline_pair_ok == 1;
+  }
+
+  bool probe_inline_pair() {
+    constexpr uint32_t PAGES = 4096;                       // tiny synthetic DAG: 4096 * 128 B = 512 KiB
+    constexpr uint32_t WORDS = PAGES * ETHASH_MIX_WORDS;
+    constexpr uint32_t NONCES = 256;                       // the miscompile is total+deterministic; 256 is ample
+    uint32_t* d_dag_t = nullptr; uint8_t* d_in_t = nullptr; uint8_t* d_tgt_t = nullptr;
+    EtchashResult* r_inl = nullptr; EtchashResult* r_ref = nullptr;
+    bool ok = false;
+    try {
+      d_dag_t = sycl::malloc_device<uint32_t>(WORDS, queue);
+      d_in_t  = sycl::malloc_device<uint8_t>(40, queue);
+      d_tgt_t = sycl::malloc_device<uint8_t>(HASH_LEN, queue);
+      r_inl = sycl::malloc_shared<EtchashResult>(1, queue);
+      r_ref = sycl::malloc_shared<EtchashResult>(1, queue);
+
+      std::vector<uint32_t> hdag(WORDS);                   // deterministic fill; content is irrelevant, only equality is
+      uint32_t s = 0x9e3779b9u;
+      for (auto& v : hdag) { s ^= s << 13; s ^= s >> 17; s ^= s << 5; v = s; }
+      uint8_t hin[40];  for (unsigned i = 0; i < 40; ++i) hin[i] = static_cast<uint8_t>(i * 7 + 1);
+      uint8_t htgt[HASH_LEN]; std::memset(htgt, 0, HASH_LEN);   // all-zero target: meets_target never fires, only is_test stores nonce 0
+      queue.memcpy(d_dag_t, hdag.data(), WORDS * sizeof(uint32_t));
+      queue.memcpy(d_in_t, hin, 40);
+      queue.memcpy(d_tgt_t, htgt, HASH_LEN);
+      queue.wait();
+
+      const FastModData m = make_fast_mod_data(PAGES);
+      std::memset(r_inl, 0, sizeof(EtchashResult));
+      sycl_wait_and_throw(submit_etchash_search_gpu<true >(queue, *bundle, d_in_t, 0, d_dag_t, m, NONCES, d_tgt_t, r_inl, true), device);
+      std::memset(r_ref, 0, sizeof(EtchashResult));
+      sycl_wait_and_throw(submit_etchash_search_gpu<false>(queue, *bundle, d_in_t, 0, d_dag_t, m, NONCES, d_tgt_t, r_ref, true), device);
+
+      ok = r_inl->count == 1 && r_ref->count == 1 &&
+           std::memcmp(r_inl->output[0],   r_ref->output[0],   HASH_LEN) == 0 &&
+           std::memcmp(r_inl->mix_hash[0], r_ref->mix_hash[0], HASH_LEN) == 0;
+    } catch (...) {
+      ok = false;  // any failure -> conservatively use the safe noinline path
+    }
+    if (d_dag_t) sycl::free(d_dag_t, queue);
+    if (d_in_t)  sycl::free(d_in_t,  queue);
+    if (d_tgt_t) sycl::free(d_tgt_t, queue);
+    if (r_inl)   sycl::free(r_inl,   queue);
+    if (r_ref)   sycl::free(r_ref,   queue);
+    return ok;
+  }
 
   explicit EtchashState(const std::string& dev_str)
     : device(get_dev(dev_str)),
@@ -686,89 +879,14 @@ int etchash(
   constexpr unsigned SCRATCH_WORDS = CMIX_OFFSET + 8;
 
   if (state.device.is_gpu()) {
-    constexpr unsigned GROUP4_WORKGROUP = 128;
-    constexpr unsigned GROUP4_SEED_WORDS = GROUP4_WORKGROUP * 16;
-
-    sycl_wait_and_throw(q.submit([&](sycl::handler& h) {
-      MOM_USE_BUNDLE(h, kb);
-      sycl::local_accessor<uint32_t, 1> seeds(sycl::range<1>(GROUP4_SEED_WORDS), h);
-      h.parallel_for(
-        sycl::nd_range<1>(
-          sycl::range<1>(round_up(intensity, GROUP4_WORKGROUP)),
-          sycl::range<1>(GROUP4_WORKGROUP)
-        ),
-        [=](sycl::nd_item<1> item) MOM_REQD_SG_16 {
-          const uint32_t lid = static_cast<uint32_t>(item.get_local_id(0));
-          const uint32_t group_hash_base = static_cast<uint32_t>(item.get_group(0)) * GROUP4_WORKGROUP;
-          const uint32_t own_hash = group_hash_base + lid;
-
-          if (own_hash < intensity) {
-            uint32_t seed[16];
-            keccak_512_header_nonce_pair_dev(d_input, start_nonce + own_hash, seed);
-#pragma unroll
-            for (unsigned w = 0; w < 16; ++w) seeds[lid * 16 + w] = seed[w];
-          }
-          item.barrier(sycl::access::fence_space::local_space);
-
-          const auto sg = item.get_sub_group();
-          const uint32_t sg_lane = static_cast<uint32_t>(sg.get_local_id()[0]);
-          const uint32_t lane4 = lid & 3U;
-          const uint32_t group4_base = lid & ~3U;
-          const uint32_t sg_group4_base = sg_lane & ~3U;
-
-          for (unsigned owner = 0; owner < 4; ++owner) {
-            const uint32_t owner_lid = group4_base + owner;
-            const uint32_t hash_index = group_hash_base + owner_lid;
-            if (hash_index >= intensity) continue;
-
-            const uint32_t seed_base = owner_lid * 16;
-            const uint32_t seed0 = seeds[seed_base];
-            uint32_t mix[8];
-#pragma unroll
-            for (unsigned w = 0; w < 8; ++w) mix[w] = seeds[seed_base + ((lane4 * 8 + w) & 15U)];
-
-            for (unsigned i = 0; i < ETHASH_ACCESSES; ++i) {
-              const uint32_t selected_lane = (i & (ETHASH_MIX_WORDS - 1)) >> 3;
-              const uint32_t selected_word = i & 7U;
-              const uint32_t page_candidate = lane4 == selected_lane
-                ? fast_mod_dev(fnv_dev(seed0 ^ i, mix[selected_word]), dag_mod)
-                : 0;
-              const uint32_t page = sycl::select_from_group(sg, page_candidate, sg_group4_base + selected_lane);
-              const uint32_t base = page * ETHASH_MIX_WORDS + lane4 * 8;
-              const auto dag_words = *reinterpret_cast<const sycl::vec<uint64_t, 4>*>(d_dag + base);
-#pragma unroll
-              for (unsigned w = 0; w < 4; ++w) {
-                const uint64_t dag_pair = dag_words[w];
-                mix[w * 2] = fnv_dev(mix[w * 2], static_cast<uint32_t>(dag_pair));
-                mix[w * 2 + 1] = fnv_dev(mix[w * 2 + 1], static_cast<uint32_t>(dag_pair >> 32));
-              }
-            }
-
-            const uint32_t compressed0 = fnv_fold4_dev(mix);
-            const uint32_t compressed1 = fnv_fold4_dev(mix + 4);
-
-            uint32_t compressed_mix[8];
-#pragma unroll
-            for (unsigned lane = 0; lane < 4; ++lane) {
-              compressed_mix[lane * 2] = sycl::select_from_group(sg, compressed0, sg_group4_base + lane);
-              compressed_mix[lane * 2 + 1] = sycl::select_from_group(sg, compressed1, sg_group4_base + lane);
-            }
-
-            if (lane4 == owner) {
-              uint32_t seed[16];
-#pragma unroll
-              for (unsigned w = 0; w < 16; ++w) seed[w] = seeds[seed_base + w];
-
-              uint8_t final_hash[32];
-              keccak_256_seed_mix_pair_dev(seed, compressed_mix, final_hash);
-              if ((is_test && hash_index == 0) || meets_target_dev(final_hash, d_target)) {
-                store_etchash_result(d_result, start_nonce + hash_index, final_hash, compressed_mix);
-              }
-            }
-          }
-        }
-      );
-    }), state.device);
+    // Pick the inlined (fast) or noinline (always-correct) pair-Keccak search kernel per device. The
+    // gate is a cached one-time self-test (see EtchashState::use_inline_pair); DAG-gen above is always
+    // noinline so the dataset is correct regardless.
+    sycl_wait_and_throw(
+      state.use_inline_pair()
+        ? submit_etchash_search_gpu<true >(q, kb, d_input, start_nonce, d_dag, dag_mod, intensity, d_target, d_result, is_test)
+        : submit_etchash_search_gpu<false>(q, kb, d_input, start_nonce, d_dag, dag_mod, intensity, d_target, d_result, is_test),
+      state.device);
   } else {
     sycl_wait_and_throw(q.submit([&](sycl::handler& h) {
       MOM_USE_BUNDLE(h, kb);

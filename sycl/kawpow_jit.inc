@@ -99,9 +99,13 @@ void kawpow_search_jit(const uint8_t* d_input, const DagLoad* __restrict__ d_dag
   const auto sg = item.get_sub_group();
   const uint32_t lane_id = static_cast<uint32_t>(sg.get_local_id()[0]) & (KAWPOW_LANES - 1);
 
+  // The per-algo keccak seal is baked into the JIT source as JIT_SEAL/JIT_MAGIC (kawpow_emit_seal),
+  // injected after kawpow_device_src() (which defines SealMode) and before this WRAPPER. KawPoW and
+  // EvrProgPow use SealMode::KAWPOW with different magic; FiroPow uses SealMode::FIRO.
   uint32_t state2[8];
   kawpow_initial_dev(d_input, static_cast<uint32_t>(full_nonce),
-                     static_cast<uint32_t>(full_nonce >> 32), state2);
+                     static_cast<uint32_t>(full_nonce >> 32),
+                     JIT_SEAL, JIT_MAGIC, state2);
 
   uint32_t digest[8];
   const KawpowSgExchange ex{sg, static_cast<uint32_t>(sg.get_local_id()[0]) & ~(KAWPOW_LANES - 1u)};
@@ -109,7 +113,7 @@ void kawpow_search_jit(const uint8_t* d_input, const DagLoad* __restrict__ d_dag
   kawpow_search_dev(ex, lane_id, state2, c_dag_ptr, d_dag_load, BAKED_PROGRAM, BAKED_DAGMOD, digest);
 
   uint32_t final_state[25];
-  kawpow_final_dev(state2, digest, final_state);
+  kawpow_final_dev(state2, digest, JIT_SEAL, JIT_MAGIC, final_state);
   if ((is_test && gid == 0) || (active && target && kawpow_meets_target_words(final_state, target))) {
     store_kawpow_result(d_result, full_nonce, final_state, digest);
   }
@@ -195,6 +199,20 @@ static std::string kawpow_emit_baked(const KawpowProgram& p, const FastModData& 
   s += "}};\n";
   s += "static const FastModData BAKED_DAGMOD = {" + std::to_string(m.reciprocal) + "," +
        std::to_string(m.increment) + "," + std::to_string(m.shift) + "," + std::to_string(m.divisor) + "};\n";
+  return s;
+}
+
+// Bake the per-algo keccak seal (mode + 15 magic words) into the JIT source as file-scope consts the
+// WRAPPER reads, mirroring the Intel SealParams path. KawPoW and EvrProgPow use SealMode::KAWPOW with
+// different magic; FiroPow uses SealMode::FIRO (magic ignored device-side, emitted as zeros). SealMode
+// is defined by kawpow_device_src(), so this must be injected AFTER it and BEFORE the WRAPPER.
+static std::string kawpow_emit_seal(const SealMode seal, const uint32_t magic[15]) {
+  std::string s = "static const SealMode JIT_SEAL = SealMode::";
+  s += (seal == SealMode::FIRO) ? "FIRO" : "KAWPOW";
+  s += ";\nstatic const uint32_t JIT_MAGIC[15] = {";
+  const char* sep = "";
+  for (unsigned i = 0; i < 15; ++i) { s += sep + std::to_string(magic[i]); sep = ","; }
+  s += "};\n";
   return s;
 }
 

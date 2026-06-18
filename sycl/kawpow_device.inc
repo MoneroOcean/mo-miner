@@ -235,9 +235,23 @@ inline void keccakf1600_pair_round_dev(Uint2 st[25], const unsigned round) {
   keccakf1600_pair_chi_dev(st, 20, t);
 }
 
+#if defined(__NVPTX__)
+// NVIDIA (nvptx device image): the 32-bit-pair permutation is correct and tuned for warps; unchanged from 0.7.0.
 inline void keccakf1600_pair_dev(Uint2 st[25]) {
   for (unsigned round = 0; round < 24; ++round) keccakf1600_pair_round_dev(st, round);
 }
+#else
+// SPIR-V device image (Intel IGC / AMD / CPU). IGC 2.36.x silently miscompiles the Uint2 32-bit-pair
+// Keccak-f[1600] when it is INLINED into the high-register-pressure DAG kernel on Xe2/BMG (Arc B580):
+// the pair state held live across the parent-mix loop comes out 100% wrong. It is bit-exact in
+// isolation, so forcing the permutation OUT OF LINE (noinline) dodges the register-allocation
+// miscompile while keeping the fast pair path, bit-exact on every IGC. (KawPoW uses this pair Keccak
+// only in DAG generation; the per-nonce seal uses keccak_f800, unaffected.) Clean 2.28.4-good ->
+// 2.36.3-broken regression; see ~/bug_report5 (sibling of intel-graphics-compiler#414).
+inline __attribute__((noinline)) void keccakf1600_pair_dev(Uint2 st[25]) {
+  for (unsigned round = 0; round < 24; ++round) keccakf1600_pair_round_dev(st, round);
+}
+#endif
 
 inline void keccak_512_words_dev(uint32_t words[NODE_WORDS]) {
   Uint2 st[25]{};
@@ -424,26 +438,53 @@ MO_KAW_AINLINE void kawpow_search_dev(
   }
 }
 
-// Initial keccak-f800 absorb of header+nonce shared by both kernel variants.
+// ProgPoW seal variant selector. KawPoW and EvrProgPow share the same keccak-f800 seal structure
+// (15 magic words absorbed into the high state words), differing only in the magic data; FiroPow uses
+// a structurally different seal with NO magic array -- just keccak padding constants. The seal is
+// selected per-algo via the SealMode passed to the kernel; the program/DAG machinery is identical for
+// all three (only EPOCH_LENGTH and PERIOD_LENGTH change, and those live host-side).
+enum class SealMode : uint32_t { KAWPOW = 0, FIRO = 1 };
+
+// Initial keccak-f800 absorb of header+nonce. KAWPOW/EVR: st[10..24] = the 15-word magic array.
+// FIRO: st[10]=0x00000001, st[18]=0x80008081, all other high words zero (keccak padding, no magic).
+// `magic` is read only in KAWPOW mode (FIRO ignores it).
 inline void kawpow_initial_dev(
-  const uint8_t* const input, const uint32_t nonce_low, const uint32_t nonce_high, uint32_t state2[8]
+  const uint8_t* const input, const uint32_t nonce_low, const uint32_t nonce_high,
+  const SealMode seal, const uint32_t* const magic, uint32_t state2[8]
 ) {
   uint32_t st[25];
   const uint32_t* const job_words = reinterpret_cast<const uint32_t*>(input);
   for (unsigned i = 0; i < 8; ++i) st[i] = job_words[i];
   st[8] = nonce_low;
   st[9] = nonce_high;
-  for (unsigned i = 10; i < 25; ++i) st[i] = RAVENCOIN_KAWPOW[i - 10];
+  if (seal == SealMode::FIRO) {
+    for (unsigned i = 10; i < 25; ++i) st[i] = 0;
+    st[10] = 0x00000001U;
+    st[18] = 0x80008081U;
+  } else {
+    for (unsigned i = 10; i < 25; ++i) st[i] = magic[i - 10];
+  }
   keccak_f800_dev(st);
   for (unsigned i = 0; i < 8; ++i) state2[i] = st[i];
 }
 
-inline void kawpow_final_dev(const uint32_t state2[8], const uint32_t digest[8], uint32_t final_state[25]) {
+// Final keccak-f800 absorb of seed-hash (state2) + digest (mix). KAWPOW/EVR: st[16..24] = magic[0..8].
+// FIRO: st[17]=0x00000001, st[24]=0x80008081, all other high words (st[16], st[18..23]) zero.
+inline void kawpow_final_dev(
+  const uint32_t state2[8], const uint32_t digest[8],
+  const SealMode seal, const uint32_t* const magic, uint32_t final_state[25]
+) {
   for (unsigned i = 0; i < 8; ++i) {
     final_state[i] = state2[i];
     final_state[i + 8] = digest[i];
   }
-  for (unsigned i = 16; i < 25; ++i) final_state[i] = RAVENCOIN_KAWPOW[i - 16];
+  if (seal == SealMode::FIRO) {
+    for (unsigned i = 16; i < 25; ++i) final_state[i] = 0;
+    final_state[17] = 0x00000001U;
+    final_state[24] = 0x80008081U;
+  } else {
+    for (unsigned i = 16; i < 25; ++i) final_state[i] = magic[i - 16];
+  }
   keccak_f800_dev(final_state);
 }
 

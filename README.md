@@ -319,7 +319,7 @@ Without parameters miner will show help:
 ```
 $ ./mom
 
-# Node.js/SYCL based CPU/GPU miner v0.7.0
+# Node.js/SYCL based CPU/GPU miner v0.7.1
 $ ./mom <directive> <parameter>+ [<option>+]
 
 Directives:

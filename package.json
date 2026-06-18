@@ -1,6 +1,6 @@
 {
   "name": "mom",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Node.js and SYCL miner built on XMRig hashing sources with MoneroOcean algo switching support",
   "private": true,
   "main": "mom.js",
