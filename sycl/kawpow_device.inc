@@ -85,12 +85,16 @@ MO_KAW_AINLINE void random_merge_dev(
   }
 }
 
-template<unsigned I, typename LocalDag>
+// CNT_CACHE/CNT_MATH are template non-type params (default to the KawPoW 11/18) so meowpow can run the
+// shorter 6/9 sequence with the SAME KawpowProgram layout (arrays still sized at the 18/11 max; only
+// the active prefix is generated/applied). KawPoW/FiroPow/EvrProgPow keep the defaults -> bit-identical.
+template<unsigned I, typename LocalDag,
+         unsigned CNT_CACHE = KAWPOW_CNT_CACHE, unsigned CNT_MATH = KAWPOW_CNT_MATH>
 MO_KAW_AINLINE void apply_progpow_ops_dev(
-  uint32_t mix[KAWPOW_REGS], const LocalDag& c_dag, const KawpowProgram& program
+  uint32_t* mix, const LocalDag& c_dag, const KawpowProgram& program
 ) {
-  if constexpr (I < KAWPOW_CNT_MATH) {
-    if constexpr (I < KAWPOW_CNT_CACHE) {
+  if constexpr (I < CNT_MATH) {
+    if constexpr (I < CNT_CACHE) {
       const KawpowCacheOp op = program.cache[I];
       const uint32_t data = c_dag[mix[op.src] & (KAWPOW_CACHE_WORDS - 1)];
       random_merge_dev(mix[op.dst], data, op.merge_mode, op.merge_shift);
@@ -100,13 +104,13 @@ MO_KAW_AINLINE void apply_progpow_ops_dev(
     const uint32_t data = random_math_dev(mix[op.src1], mix[op.src2], op.math_selector);
     random_merge_dev(mix[op.dst], data, op.merge_mode, op.merge_shift);
 
-    apply_progpow_ops_dev<I + 1>(mix, c_dag, program);
+    apply_progpow_ops_dev<I + 1, LocalDag, CNT_CACHE, CNT_MATH>(mix, c_dag, program);
   }
 }
 
 template<unsigned I>
 MO_KAW_AINLINE void apply_progpow_data_dev(
-  uint32_t mix[KAWPOW_REGS], const DagLoad data_dag, const KawpowProgram& program
+  uint32_t* mix, const DagLoad data_dag, const KawpowProgram& program
 ) {
   if constexpr (I < KAWPOW_DATA_LOADS) {
     const KawpowDataOp op = program.data[I];
@@ -308,7 +312,11 @@ inline void keccak_f800_dev(uint32_t st[25]) {
   for (unsigned round = 0; round < 22; ++round) keccak_f800_round_dev(st, round);
 }
 
-MO_KAW_AINLINE void fill_mix_dev(const uint32_t seed0, const uint32_t seed1, const uint32_t lane, uint32_t mix[KAWPOW_REGS]) {
+// REGS is the active per-lane register count (KawPoW 32, meowpow 16); defaults to KAWPOW_REGS so the
+// existing variants compile unchanged. `mix` is sized at the 32-reg max by the caller; only the first
+// REGS entries are seeded/used.
+template<unsigned REGS = KAWPOW_REGS>
+MO_KAW_AINLINE void fill_mix_dev(const uint32_t seed0, const uint32_t seed1, const uint32_t lane, uint32_t* mix) {
   uint32_t fnv_hash = FNV_OFFSET_BASIS;
   Kiss99 st{};
   st.z = fnv1a(fnv_hash, seed0);
@@ -316,7 +324,7 @@ MO_KAW_AINLINE void fill_mix_dev(const uint32_t seed0, const uint32_t seed1, con
   st.jsr = fnv1a(fnv_hash, lane);
   st.jcong = fnv1a(fnv_hash, lane);
 
-  for (unsigned i = 0; i < KAWPOW_REGS; ++i) mix[i] = kiss99(st);
+  for (unsigned i = 0; i < REGS; ++i) mix[i] = kiss99(st);
 }
 
 inline uint32_t bswap32_dev(const uint32_t value) {
@@ -409,7 +417,11 @@ struct KawpowSlmExchange {
 
 // One full ProgPoW search round for this work-item's lane group: 16 hashes are
 // computed cooperatively; the work-item keeps the digest of its own nonce.
-template <typename Exchange, typename LocalDag>
+// REGS/CNT_CACHE/CNT_MATH are template non-type params (default to the KawPoW 32/11/18); meowpow
+// instantiates 16/6/9. mix[] is always sized at the 32-reg max so the KawpowProgram layout is shared.
+template <typename Exchange, typename LocalDag,
+          unsigned REGS = KAWPOW_REGS, unsigned CNT_CACHE = KAWPOW_CNT_CACHE,
+          unsigned CNT_MATH = KAWPOW_CNT_MATH>
 MO_KAW_AINLINE void kawpow_search_dev(
   const Exchange& ex, const uint32_t lane_id, const uint32_t state2[8],
   const LocalDag& c_dag, const DagLoad* const __restrict__ dag, const KawpowProgram& program,
@@ -419,7 +431,7 @@ MO_KAW_AINLINE void kawpow_search_dev(
     uint32_t mix[KAWPOW_REGS];
     uint32_t s0, s1;
     ex.seed(s0, s1, state2, h0);
-    fill_mix_dev(s0, s1, lane_id, mix);
+    fill_mix_dev<REGS>(s0, s1, lane_id, mix);
 
     for (uint32_t loop = 0; loop < KAWPOW_CNT_DAG; ++loop) {
       const uint32_t selected_offset = ex.offset(mix[0], loop & (KAWPOW_LANES - 1));
@@ -427,12 +439,12 @@ MO_KAW_AINLINE void kawpow_search_dev(
       offset = offset * KAWPOW_LANES + ((lane_id ^ loop) & (KAWPOW_LANES - 1));
       const DagLoad data_dag = dag[offset];
 
-      apply_progpow_ops_dev<0>(mix, c_dag, program);
+      apply_progpow_ops_dev<0, LocalDag, CNT_CACHE, CNT_MATH>(mix, c_dag, program);
       apply_progpow_data_dev<0>(mix, data_dag, program);
     }
 
     uint32_t lane_hash = FNV_OFFSET_BASIS;
-    for (unsigned i = 0; i < KAWPOW_REGS; ++i) lane_hash = fnv1a(lane_hash, mix[i]);
+    for (unsigned i = 0; i < REGS; ++i) lane_hash = fnv1a(lane_hash, mix[i]);
 
     ex.digest(digest, lane_hash, h0 == lane_id);
   }

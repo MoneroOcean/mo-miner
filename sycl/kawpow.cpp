@@ -44,6 +44,10 @@ constexpr uint32_t FIROPOW_PERIOD_LENGTH = 1;
 // EvrProgPow: same seal structure as KawPoW (different magic), DAG epoch every 12000 blocks.
 constexpr uint32_t EVRPROGPOW_EPOCH_LENGTH  = 12000;
 constexpr uint32_t EVRPROGPOW_PERIOD_LENGTH = 3;
+// MeowPow (Meowcoin): KawPoW with classic-Ethereum DAG sizing but a SHORTER ProgPoW inner loop
+// (REGS 16, CNT_CACHE 6, CNT_MATH 9) and a longer period (6). Same DAG epoch (7500) as KawPoW.
+constexpr uint32_t MEOWPOW_EPOCH_LENGTH  = 7500;
+constexpr uint32_t MEOWPOW_PERIOD_LENGTH = 6;
 constexpr uint32_t KAWPOW_LANES         = 16;
 constexpr uint32_t KAWPOW_REGS          = 32;
 constexpr uint32_t KAWPOW_DAG_LOADS     = 4;
@@ -51,6 +55,11 @@ constexpr uint32_t KAWPOW_CACHE_WORDS   = 4096;
 constexpr uint32_t KAWPOW_CNT_DAG       = 64;
 constexpr uint32_t KAWPOW_CNT_CACHE     = 11;
 constexpr uint32_t KAWPOW_CNT_MATH      = 18;
+// MeowPow's shorter inner loop (the only ProgPoW variant here that changes these): HALF the registers,
+// ~half the cache/math ops. REGS<=KAWPOW_REGS so the shared 32-wide mix[]/KawpowProgram layout fits.
+constexpr uint32_t MEOWPOW_REGS         = 16;
+constexpr uint32_t MEOWPOW_CNT_CACHE    = 6;
+constexpr uint32_t MEOWPOW_CNT_MATH     = 9;
 constexpr uint32_t KAWPOW_DATA_LOADS    = 256 / (sizeof(uint32_t) * KAWPOW_LANES);
 constexpr uint32_t KAWPOW_DATASET_PARENTS = 512;
 constexpr uint32_t NODE_WORDS           = 16;
@@ -72,6 +81,14 @@ constexpr uint32_t EVRMORE_EVRPROGPOW[15] = {
   0x0000004F, 0x00000047, 0x00000050, 0x0000004F, 0x00000057   // O G P O W
 };
 
+// MeowPow seal magic: ASCII "MEOWCOINMEOWPOW" (Meowcoin consensus kawpow_hash domain string). Same
+// 15-word placement / seal structure as KawPoW; only the magic data differs.
+constexpr uint32_t MEOWCOIN_MEOWPOW[15] = {
+  0x0000004D, 0x00000045, 0x0000004F, 0x00000057, 0x00000043,  // M E O W C
+  0x0000004F, 0x00000049, 0x0000004E, 0x0000004D, 0x00000045,  // O I N M E
+  0x0000004F, 0x00000057, 0x00000050, 0x0000004F, 0x00000057   // O W P O W
+};
+
 // FiroPow uses the chfast/ethash (EIP-1057) dataset sizing, NOT the classic Ethereum sizing baked
 // into data_sizes.h (which KawPoW/Ravencoin uses). The light CACHE sizing is identical between the
 // two (so cache_sizes[epoch] + ethash_get_seedhash + ethash_compute_cache_nodes are reused), but the
@@ -85,6 +102,16 @@ constexpr int FIRO_FULL_DATASET_GROWTH_ITEMS = (1 << 23) / 128;              // 
 // largest_prime(init/128 + epoch*growth/128)*128; epoch 0 = 25165813 items = 3.0000 GiB).
 constexpr int EVR_FULL_DATASET_INIT_ITEMS = ((1u << 30) * 3) / 128;          // 25165824 (3 GiB)
 constexpr int EVR_FULL_DATASET_GROWTH_ITEMS = (1 << 23) / 128;               // 65536 per epoch
+// MeowPow uses the STANDARD ethash chfast sizing (init 1 GiB, growth 8 MiB/epoch) -- which equals the
+// classic data_sizes.h table -- EXCEPT for the epoch-110 "dag change" hard fork (Meowcoin core
+// create_epoch_context): for epoch >= 110 the dataset/cache SIZES are computed with meow_epoch =
+// epoch*4 (a one-time 4x DAG-size jump at block 960000 / epoch 110), while the keccak SEED still uses
+// the real epoch. So below 110 it matches KawPoW sizing; at/above 110 the DAG is ~4.4 GiB+.
+constexpr int MEOW_FULL_DATASET_INIT_ITEMS   = (1 << 30) / 128;              // 8388608 (1 GiB)
+constexpr int MEOW_FULL_DATASET_GROWTH_ITEMS = (1 << 23) / 128;             // 65536 per epoch
+constexpr int MEOW_LIGHT_CACHE_INIT_ITEMS    = (1 << 24) / 64;              // 262144 (16 MiB)
+constexpr int MEOW_LIGHT_CACHE_GROWTH_ITEMS  = (1 << 17) / 64;             // 2048 per epoch
+constexpr uint32_t MEOWPOW_DAGCHANGE_EPOCH   = 110;                        // block 960000 / 7500 -> *4 sizing
 
 static bool firo_is_odd_prime(const int number) {
   for (int64_t d = 3; d * d <= static_cast<int64_t>(number); d += 2)
@@ -105,6 +132,14 @@ static int firo_find_largest_prime(int n) {
 static uint64_t chfast_dag_bytes(const uint32_t epoch, const int init_items, const int growth_items) {
   const int upper = init_items + static_cast<int>(epoch) * growth_items;
   return static_cast<uint64_t>(firo_find_largest_prime(upper)) * 128ull;
+}
+
+// chfast light-cache byte size: largest_prime(init + epoch*growth) * 64. Only MeowPow needs this
+// (its epoch-110 dag-change scales the cache too); the other variants reuse the classic cache_sizes[]
+// table. A multiple of 64 (NODE_WORDS*4) so it tiles cleanly into 64-byte ethash nodes.
+static uint64_t chfast_cache_bytes(const uint32_t epoch, const int init_items, const int growth_items) {
+  const int upper = init_items + static_cast<int>(epoch) * growth_items;
+  return static_cast<uint64_t>(firo_find_largest_prime(upper)) * 64ull;
 }
 
 // Used by MOM_LOOP_STATS to break a dispatch call into host-side phases.
@@ -207,23 +242,49 @@ struct KawpowVariant {
   // EvrProgPow 3 GiB init. Light cache sizing is identical across all three variants.
   int chfast_init_items;
   int chfast_growth_items;
+  // Light-cache chfast sizing (init/growth in 64-byte items). 0 == use the classic cache_sizes[] table
+  // (KawPoW/FiroPow/EvrProgPow). MeowPow sets these because its epoch-110 dag-change scales the cache.
+  int chfast_cache_init_items;
+  int chfast_cache_growth_items;
+  // MeowPow "dag change" hard fork (Meowcoin core): for epoch >= this threshold, the DATASET AND CACHE
+  // SIZES are computed with a scaled epoch (epoch*4) while the keccak SEED keeps the real epoch. 0
+  // disables it (KawPoW/FiroPow/EvrProgPow). MeowPow uses MEOWPOW_DAGCHANGE_EPOCH (110, block 960000).
+  uint32_t dagchange_epoch;
+  // Inner-loop ProgPoW shape. KawPoW/FiroPow/EvrProgPow = 32/11/18; MeowPow = 16/6/9. These drive both
+  // make_program() (host) and the search-kernel template instantiation (REGS/CNT_CACHE/CNT_MATH).
+  uint32_t regs;
+  uint32_t cnt_cache;
+  uint32_t cnt_math;
 };
 
 constexpr KawpowVariant KAWPOW_VARIANT{
-  KAWPOW_EPOCH_LENGTH, KAWPOW_PERIOD_LENGTH, SealMode::KAWPOW, RAVENCOIN_KAWPOW, 0, 0};
+  KAWPOW_EPOCH_LENGTH, KAWPOW_PERIOD_LENGTH, SealMode::KAWPOW, RAVENCOIN_KAWPOW, 0, 0, 0, 0, 0,
+  KAWPOW_REGS, KAWPOW_CNT_CACHE, KAWPOW_CNT_MATH};
 constexpr KawpowVariant FIROPOW_VARIANT{
   FIROPOW_EPOCH_LENGTH, FIROPOW_PERIOD_LENGTH, SealMode::FIRO, RAVENCOIN_KAWPOW,
-  FIRO_FULL_DATASET_INIT_ITEMS, FIRO_FULL_DATASET_GROWTH_ITEMS};
+  FIRO_FULL_DATASET_INIT_ITEMS, FIRO_FULL_DATASET_GROWTH_ITEMS, 0, 0, 0,
+  KAWPOW_REGS, KAWPOW_CNT_CACHE, KAWPOW_CNT_MATH};
 constexpr KawpowVariant EVRPROGPOW_VARIANT{
   EVRPROGPOW_EPOCH_LENGTH, EVRPROGPOW_PERIOD_LENGTH, SealMode::KAWPOW, EVRMORE_EVRPROGPOW,
-  EVR_FULL_DATASET_INIT_ITEMS, EVR_FULL_DATASET_GROWTH_ITEMS};
+  EVR_FULL_DATASET_INIT_ITEMS, EVR_FULL_DATASET_GROWTH_ITEMS, 0, 0, 0,
+  KAWPOW_REGS, KAWPOW_CNT_CACHE, KAWPOW_CNT_MATH};
+constexpr KawpowVariant MEOWPOW_VARIANT{
+  MEOWPOW_EPOCH_LENGTH, MEOWPOW_PERIOD_LENGTH, SealMode::KAWPOW, MEOWCOIN_MEOWPOW,
+  MEOW_FULL_DATASET_INIT_ITEMS, MEOW_FULL_DATASET_GROWTH_ITEMS,
+  MEOW_LIGHT_CACHE_INIT_ITEMS, MEOW_LIGHT_CACHE_GROWTH_ITEMS, MEOWPOW_DAGCHANGE_EPOCH,
+  MEOWPOW_REGS, MEOWPOW_CNT_CACHE, MEOWPOW_CNT_MATH};
 
-KawpowProgram make_program(const uint64_t period) {
+// regs/cnt_cache/cnt_math are per-variant (KawPoW 32/11/18; meowpow 16/6/9). They size the dst/src
+// permutation, the kiss99 draw count, and the math src index modulus (REGS*(REGS-1): %992 KawPoW,
+// %240 meowpow). The output arrays stay sized at the 18/11 max; meowpow fills only the active prefix.
+KawpowProgram make_program(const uint64_t period, const uint32_t regs = KAWPOW_REGS,
+                           const uint32_t cnt_cache = KAWPOW_CNT_CACHE,
+                           const uint32_t cnt_math = KAWPOW_CNT_MATH) {
   KawpowProgram program{};
   uint32_t dst_seq[KAWPOW_REGS];
   uint32_t src_seq[KAWPOW_REGS];
 
-  for (uint32_t i = 0; i < KAWPOW_REGS; ++i) {
+  for (uint32_t i = 0; i < regs; ++i) {
     dst_seq[i] = i;
     src_seq[i] = i;
   }
@@ -236,7 +297,7 @@ KawpowProgram make_program(const uint64_t period) {
     fnv1a(fnv_hash, static_cast<uint32_t>(period >> 32))
   };
 
-  for (uint32_t i = KAWPOW_REGS; i > 1; --i) {
+  for (uint32_t i = regs; i > 1; --i) {
     std::swap(dst_seq[i - 1], dst_seq[kiss99(rnd) % i]);
     std::swap(src_seq[i - 1], src_seq[kiss99(rnd) % i]);
   }
@@ -246,20 +307,20 @@ KawpowProgram make_program(const uint64_t period) {
   uint32_t cache_counter = 0;
   uint32_t math_counter = 0;
 
-  for (uint32_t i = 0; i < KAWPOW_CNT_CACHE || i < KAWPOW_CNT_MATH; ++i) {
-    if (i < KAWPOW_CNT_CACHE) {
+  for (uint32_t i = 0; i < cnt_cache || i < cnt_math; ++i) {
+    if (i < cnt_cache) {
       // Order matters: the src/dst sequence reads must precede the kiss99() selector draw to match
       // the reference ProgPoW program (the test vector guards this).
-      const uint32_t src = src_seq[(src_counter++) % KAWPOW_REGS];
-      const uint32_t dst = dst_seq[(dst_counter++) % KAWPOW_REGS];
+      const uint32_t src = src_seq[(src_counter++) % regs];
+      const uint32_t dst = dst_seq[(dst_counter++) % regs];
       const uint32_t selector = kiss99(rnd);
       program.cache[cache_counter++] = {src, dst, selector % 4, merge_shift(selector)};
     }
 
-    if (i < KAWPOW_CNT_MATH) {
-      const uint32_t src_rnd = kiss99(rnd) % (KAWPOW_REGS * (KAWPOW_REGS - 1));
-      const uint32_t src1 = src_rnd % KAWPOW_REGS;
-      uint32_t src2 = src_rnd / KAWPOW_REGS;
+    if (i < cnt_math) {
+      const uint32_t src_rnd = kiss99(rnd) % (regs * (regs - 1));
+      const uint32_t src1 = src_rnd % regs;
+      uint32_t src2 = src_rnd / regs;
       if (src2 >= src1) ++src2;
 
       const uint32_t math_selector = kiss99(rnd);
@@ -267,7 +328,7 @@ KawpowProgram make_program(const uint64_t period) {
       program.math[math_counter++] = {
         src1,
         src2,
-        dst_seq[(dst_counter++) % KAWPOW_REGS],
+        dst_seq[(dst_counter++) % regs],
         math_selector % 11,
         merge_selector % 4,
         merge_shift(merge_selector)
@@ -277,7 +338,7 @@ KawpowProgram make_program(const uint64_t period) {
 
   for (uint32_t i = 0; i < KAWPOW_DATA_LOADS; ++i) {
     // The first data load always targets register 0; the rest pull from the shuffled dst sequence.
-    const uint32_t dst = i == 0 ? 0 : dst_seq[(dst_counter++) % KAWPOW_REGS];
+    const uint32_t dst = i == 0 ? 0 : dst_seq[(dst_counter++) % regs];
     const uint32_t selector = kiss99(rnd);
     program.data[i] = {dst, selector % 4, merge_shift(selector)};
   }
@@ -285,11 +346,13 @@ KawpowProgram make_program(const uint64_t period) {
   return program;
 }
 
-void compute_light_cache(std::vector<uint32_t>& cache, const uint32_t epoch) {
-  const uint64_t cache_bytes = cache_sizes[epoch];
+// cache_bytes sizes the cache (classic cache_sizes[] or MeowPow's chfast/scaled size); seed_epoch is
+// the epoch the keccak seedhash is derived from (== epoch except for MeowPow >= dag-change, where the
+// SIZE uses epoch*4 but the SEED keeps the real epoch).
+void compute_light_cache(std::vector<uint32_t>& cache, const uint64_t cache_bytes, const uint32_t seed_epoch) {
   cache.assign(cache_bytes / sizeof(uint32_t), 0);
 
-  const ethash_h256_t seed = ethash_get_seedhash(epoch);
+  const ethash_h256_t seed = ethash_get_seedhash(seed_epoch);
   if (!ethash_compute_cache_nodes(cache.data(), cache_bytes, &seed)) {
     throw std::string("Can't calculate kawpow light cache");
   }
@@ -328,6 +391,14 @@ public:
   // and participates in the bundle cache key below (a seal change forces a rebuild).
   SealMode seal = SealMode::KAWPOW;
   uint32_t magic[15] = {};
+  // Active inner-loop shape (set per-call from the variant, under `mutex`, like seal/magic). MeowPow
+  // (16/6/9) differs from the 32/11/18 of the other variants; it drives make_program() and selects the
+  // search-kernel template instantiation. Participates in the bundle cache key (a shape change rebuilds:
+  // the CUDA JIT bakes a different program; the Intel kernel branches on it but the baked program
+  // changes shape). regs<=KAWPOW_REGS, cnt_cache<=KAWPOW_CNT_CACHE, cnt_math<=KAWPOW_CNT_MATH.
+  uint32_t regs = KAWPOW_REGS;
+  uint32_t cnt_cache = KAWPOW_CNT_CACHE;
+  uint32_t cnt_math = KAWPOW_CNT_MATH;
 
   // Per-period executable bundles (Intel: program/dag spec constants baked in; CUDA: source-JIT'd
   // kernel). The next period's bundle is built on a worker thread while the current one mines, so
@@ -337,11 +408,17 @@ public:
   uint32_t period_bundle_epoch = UINT32_MAX;
   SealMode period_bundle_seal = SealMode::KAWPOW;
   uint32_t period_bundle_magic[15] = {};
+  uint32_t period_bundle_regs = KAWPOW_REGS;
+  uint32_t period_bundle_cnt_cache = KAWPOW_CNT_CACHE;
+  uint32_t period_bundle_cnt_math = KAWPOW_CNT_MATH;
   std::unique_ptr<sycl::kernel_bundle<sycl::bundle_state::executable>> next_bundle;
   uint64_t next_bundle_period = UINT64_MAX;
   uint32_t next_bundle_epoch = UINT32_MAX;
   SealMode next_bundle_seal = SealMode::KAWPOW;
   uint32_t next_bundle_magic[15] = {};
+  uint32_t next_bundle_regs = KAWPOW_REGS;
+  uint32_t next_bundle_cnt_cache = KAWPOW_CNT_CACHE;
+  uint32_t next_bundle_cnt_math = KAWPOW_CNT_MATH;
   std::thread prefetch_thread;
 
   // CUDA kawpow path (decided once, then stable for this device's lifetime): the source-JIT folds
@@ -401,9 +478,12 @@ public:
   }
 
   static unsigned kawpow_workgroup(const sycl::device& dev) {
-    // GPU default is a 256-thread block: the heavy search kernel (80 regs on the CUDA source-baked
-    // build) wants more resident warps to hide DAG-read latency (CUDA sweep: 256=13.2 > 128 > 64).
-    return select_workgroup("MOM_KAWPOW_WORKGROUP", dev, {64, 128, 256, 512}, dev.is_cpu() ? 128 : 256);
+    // Block-size default. NVIDIA: the source-JIT'd search kernel is latency-bound on the serial DAG
+    // gather, not occupancy-bound; an L4 sweep on the combined/JIT build is 128 > 512 > 256 > 64
+    // (128 = 13.71, 256 = 13.58, 64 = 12.44 MH/s -- 64 starves the SLM c_dag broadcast, 256 splits
+    // the SM into fewer schedulable blocks). Intel/L0 GPU keeps 256 (tuned on B580). CPU uses 128.
+    const unsigned gpu_default = mom_is_cuda(dev) ? 128 : 256;
+    return select_workgroup("MOM_KAWPOW_WORKGROUP", dev, {64, 128, 256, 512}, dev.is_cpu() ? 128 : gpu_default);
   }
 
   static unsigned kawpow_dag_workgroup(const sycl::device& dev) {
@@ -458,18 +538,24 @@ public:
     if (!input || !result) throw std::string("Can't allocate kawpow SYCL input buffers");
   }
 
-  void ensure_epoch(const uint32_t new_epoch, const uint64_t new_dag_bytes, const bool should_log) {
+  // new_epoch is the REAL epoch (the seed/period-bundle key); new_cache_bytes/new_dag_bytes are the
+  // (possibly MeowPow-scaled) sizes; seed_epoch is the epoch the keccak seedhash derives from (== epoch
+  // except MeowPow >= dag-change). The cache key includes dag_bytes so a size change forces a rebuild.
+  void ensure_epoch(const uint32_t new_epoch, const uint64_t new_cache_bytes, const uint64_t new_dag_bytes,
+                    const uint32_t seed_epoch, const bool should_log) {
     if (epoch == new_epoch && dag_bytes == new_dag_bytes) return;
-    if (new_epoch >= 2048 || !new_dag_bytes || !cache_sizes[new_epoch]) {
+    if (new_epoch >= 2048 || !new_cache_bytes || !new_dag_bytes ||
+        new_cache_bytes % (NODE_WORDS * sizeof(uint32_t)) != 0 ||
+        new_dag_bytes % (NODE_WORDS * sizeof(uint32_t)) != 0) {
       throw std::string("Bad kawpow epoch");
     }
 
-    const uint64_t new_light_cache_words = cache_sizes[new_epoch] / sizeof(uint32_t);
+    const uint64_t new_light_cache_words = new_cache_bytes / sizeof(uint32_t);
     const uint64_t new_dag_words = new_dag_bytes / sizeof(uint32_t);
 
     std::vector<uint32_t> host_cache;
     const uint64_t start_ms = now_ms();
-    compute_light_cache(host_cache, new_epoch);
+    compute_light_cache(host_cache, new_cache_bytes, seed_epoch);
 
     queue.wait_and_throw();
     if (new_light_cache_words != light_cache_words) {
@@ -550,17 +636,29 @@ public:
   }
 
   void ensure_period(const uint64_t new_period) {
-    if (period == new_period) return;
-    program = make_program(new_period);
+    // The program shape (regs/cnt_*) can change with the algo even at an unchanged period, so rebuild
+    // when either changes. period_shape tracks the shape the cached program was generated with.
+    if (period == new_period && program_shape_regs == regs && program_shape_cnt_cache == cnt_cache &&
+        program_shape_cnt_math == cnt_math) return;
+    program = make_program(new_period, regs, cnt_cache, cnt_math);
     period = new_period;
+    program_shape_regs = regs;
+    program_shape_cnt_cache = cnt_cache;
+    program_shape_cnt_math = cnt_math;
   }
+  uint32_t program_shape_regs = KAWPOW_REGS;
+  uint32_t program_shape_cnt_cache = KAWPOW_CNT_CACHE;
+  uint32_t program_shape_cnt_math = KAWPOW_CNT_MATH;
 
-  // build_seal / build_magic are passed by value (not read from the members) so the prefetch thread,
-  // which calls this off the state mutex, never races kawpow_core writing state.seal/state.magic. Only
-  // the CUDA JIT path bakes the seal; the Intel spec-const path gets it via SealParams at launch.
+  // build_seal / build_magic / build_regs+cnt are passed by value (not read from the members) so the
+  // prefetch thread, which calls this off the state mutex, never races kawpow_core writing state.*. Only
+  // the CUDA JIT path bakes the seal/shape; the Intel spec-const path gets seal+shape via SealParams at
+  // launch (and the per-shape make_program already bakes the right program into the spec constant).
   std::unique_ptr<sycl::kernel_bundle<sycl::bundle_state::executable>>
   build_period_bundle(const uint64_t new_period, const FastModData dag_mod,
-                      const SealMode build_seal, const uint32_t build_magic[15]) {
+                      const SealMode build_seal, const uint32_t build_magic[15],
+                      const uint32_t build_regs, const uint32_t build_cnt_cache,
+                      const uint32_t build_cnt_math) {
 #if defined(MOM_SYCL_HAS_CUDA)
     // CUDA: the source-JIT folds the per-period program to straight-line const ops (full speed); the
     // AOT spec-constant kernel below is correct but ~3x slower because spec constants do NOT fold on
@@ -580,8 +678,9 @@ public:
           // SealMode) and before the WRAPPER (reads JIT_SEAL/JIT_MAGIC).
           namespace syclex = sycl::ext::oneapi::experimental;
           const std::string src = std::string(KAWPOW_JIT_PRELUDE) + kawpow_device_src() +
-            kawpow_emit_baked(make_program(new_period), dag_mod) +
-            kawpow_emit_seal(build_seal, build_magic) + KAWPOW_JIT_WRAPPER;
+            kawpow_emit_baked(make_program(new_period, build_regs, build_cnt_cache, build_cnt_math), dag_mod) +
+            kawpow_emit_seal(build_seal, build_magic) +
+            kawpow_emit_shape(build_regs, build_cnt_cache, build_cnt_math) + KAWPOW_JIT_WRAPPER;
           auto kb_src = syclex::create_kernel_bundle_from_source(
             queue.get_context(), syclex::source_language::sycl, src);
           const char* const jit_opts = std::getenv("MOM_KAWPOW_JIT_OPTS");
@@ -610,51 +709,68 @@ public:
     auto input = sycl::get_kernel_bundle<sycl::bundle_state::input>(
       queue.get_context(), {device}, {sycl::get_kernel_id<KawpowSgKernel>()}
     );
-    input.set_specialization_constant<kawpow_program_id>(make_program(new_period));
+    input.set_specialization_constant<kawpow_program_id>(
+      make_program(new_period, build_regs, build_cnt_cache, build_cnt_math));
     input.set_specialization_constant<kawpow_dag_mod_id>(dag_mod);
     return std::make_unique<sycl::kernel_bundle<sycl::bundle_state::executable>>(
       sycl::build(input)
     );
   }
 
-  // The seal participates in the cache key: a device's KawpowState is shared across the
-  // kawpow/firopow/evrprogpow entrypoints, so an algo switch can change the seal even when the
-  // period/epoch are unchanged -- it must force a rebuild. `s`/`m` are the current call's seal.
-  static bool seal_eq(const SealMode a, const uint32_t am[15], const SealMode b, const uint32_t bm[15]) {
-    if (a != b) return false;
+  // The seal AND the inner-loop shape participate in the cache key: a device's KawpowState is shared
+  // across the kawpow/firopow/evrprogpow/meowpow entrypoints, so an algo switch can change the seal or
+  // shape even when period/epoch are unchanged -- it must force a rebuild. `b*` are the current call's.
+  static bool bundle_key_eq(const SealMode a, const uint32_t am[15], const uint32_t ar,
+                            const uint32_t ac, const uint32_t amth,
+                            const SealMode b, const uint32_t bm[15], const uint32_t br,
+                            const uint32_t bc, const uint32_t bmth) {
+    if (a != b || ar != br || ac != bc || amth != bmth) return false;
     for (unsigned i = 0; i < 15; ++i) if (am[i] != bm[i]) return false;
     return true;
   }
 
   void ensure_period_bundle(const uint64_t new_period, const uint32_t new_epoch, const FastModData dag_mod) {
     if (period_bundle && period_bundle_period == new_period && period_bundle_epoch == new_epoch &&
-        seal_eq(period_bundle_seal, period_bundle_magic, seal, magic)) return;
+        bundle_key_eq(period_bundle_seal, period_bundle_magic, period_bundle_regs,
+                      period_bundle_cnt_cache, period_bundle_cnt_math,
+                      seal, magic, regs, cnt_cache, cnt_math)) return;
 
     if (prefetch_thread.joinable()) prefetch_thread.join();
     if (next_bundle && next_bundle_period == new_period && next_bundle_epoch == new_epoch &&
-        seal_eq(next_bundle_seal, next_bundle_magic, seal, magic)) {
+        bundle_key_eq(next_bundle_seal, next_bundle_magic, next_bundle_regs,
+                      next_bundle_cnt_cache, next_bundle_cnt_math,
+                      seal, magic, regs, cnt_cache, cnt_math)) {
       period_bundle = std::move(next_bundle);
     } else {
-      period_bundle = build_period_bundle(new_period, dag_mod, seal, magic);
+      period_bundle = build_period_bundle(new_period, dag_mod, seal, magic, regs, cnt_cache, cnt_math);
     }
     period_bundle_period = new_period;
     period_bundle_epoch = new_epoch;
     period_bundle_seal = seal;
     for (unsigned i = 0; i < 15; ++i) period_bundle_magic[i] = magic[i];
+    period_bundle_regs = regs;
+    period_bundle_cnt_cache = cnt_cache;
+    period_bundle_cnt_math = cnt_math;
 
     next_bundle.reset();
     next_bundle_period = new_period + 1;
     next_bundle_epoch = new_epoch;
     next_bundle_seal = seal;
     for (unsigned i = 0; i < 15; ++i) next_bundle_magic[i] = magic[i];
-    // Capture seal/magic by value so the prefetch build is race-free w.r.t. a concurrent algo switch
-    // writing state.seal/state.magic on the next call (FiroPow rebuilds every block, so this runs).
+    next_bundle_regs = regs;
+    next_bundle_cnt_cache = cnt_cache;
+    next_bundle_cnt_math = cnt_math;
+    // Capture seal/magic/shape by value so the prefetch build is race-free w.r.t. a concurrent algo
+    // switch writing state.* on the next call (FiroPow rebuilds every block, so this runs).
     SealMode pf_seal = seal;
     std::array<uint32_t, 15> pf_magic;
     for (unsigned i = 0; i < 15; ++i) pf_magic[i] = magic[i];
-    prefetch_thread = std::thread([this, next_period = new_period + 1, dag_mod, pf_seal, pf_magic] {
+    const uint32_t pf_regs = regs, pf_cnt_cache = cnt_cache, pf_cnt_math = cnt_math;
+    prefetch_thread = std::thread([this, next_period = new_period + 1, dag_mod, pf_seal, pf_magic,
+                                   pf_regs, pf_cnt_cache, pf_cnt_math] {
       try {
-        next_bundle = build_period_bundle(next_period, dag_mod, pf_seal, pf_magic.data());
+        next_bundle = build_period_bundle(next_period, dag_mod, pf_seal, pf_magic.data(),
+                                          pf_regs, pf_cnt_cache, pf_cnt_math);
       } catch (...) {
         next_bundle.reset();
       }
@@ -709,18 +825,35 @@ static int kawpow_core(
   // CUDA JIT source and the bundle cache key reflects it. A device shared across algos can switch seal.
   state.seal = seal_params.seal;
   for (unsigned i = 0; i < 15; ++i) state.magic[i] = seal_params.magic[i];
+  // Publish this call's inner-loop shape (32/11/18 for KawPoW/FiroPow/EvrProgPow; 16/6/9 for MeowPow)
+  // so make_program(), the bundle cache key, the CUDA JIT shape bake, and the Intel kernel's runtime
+  // template dispatch below all see the active variant's shape.
+  state.regs = variant.regs;
+  state.cnt_cache = variant.cnt_cache;
+  state.cnt_math = variant.cnt_math;
   state.ensure_input(input_size);
 
   const uint32_t epoch = block_height / variant.epoch_length;
   const uint64_t period = block_height / variant.period_length;
   // FiroPow's full dataset uses chfast/EIP-1057 sizing (1.5 GiB init); KawPoW/EvrProgPow use the
-  // classic Ethereum dataset table. The cache sizing is shared (cache_sizes[]).
+  // classic Ethereum dataset table. The cache sizing is the classic table EXCEPT for MeowPow.
   if (epoch >= 2048) throw std::string("Bad kawpow epoch");
+  // MeowPow epoch-110 "dag change" (Meowcoin core create_epoch_context): for epoch >= dagchange_epoch
+  // the dataset AND cache SIZES use a scaled epoch (epoch*4), while the keccak SEED keeps the real
+  // epoch. size_epoch == epoch for the other variants and for MeowPow below the fork.
+  const uint32_t size_epoch =
+    (variant.dagchange_epoch && epoch >= variant.dagchange_epoch) ? epoch * 4 : epoch;
+  if (size_epoch >= 2048) throw std::string("Bad kawpow epoch");
   const uint64_t dag_bytes = variant.chfast_init_items
-    ? chfast_dag_bytes(epoch, variant.chfast_init_items, variant.chfast_growth_items)
+    ? chfast_dag_bytes(size_epoch, variant.chfast_init_items, variant.chfast_growth_items)
     : dag_sizes[epoch];
+  // Light cache: MeowPow uses chfast cache sizing (scales with the dag change); everyone else uses the
+  // classic cache_sizes[] table. The SEED always uses the real epoch (passed separately below).
+  const uint64_t cache_bytes = variant.chfast_cache_init_items
+    ? chfast_cache_bytes(size_epoch, variant.chfast_cache_init_items, variant.chfast_cache_growth_items)
+    : cache_sizes[epoch];
   const uint64_t t_state = loop_stats ? kawpow_now_us() : 0;
-  state.ensure_epoch(epoch, dag_bytes, !is_benchmark);
+  state.ensure_epoch(epoch, cache_bytes, dag_bytes, epoch, !is_benchmark);
   const uint64_t t_epoch = loop_stats ? kawpow_now_us() : 0;
   state.ensure_period(period);
 
@@ -745,6 +878,10 @@ static int kawpow_core(
   // barrier/local-memory exchange.
   const char* const exchange_env = std::getenv("MOM_KAWPOW_EXCHANGE");
   const bool use_sg = state.device.is_gpu() && !(exchange_env && std::strcmp(exchange_env, "slm") == 0);
+  // The Intel (spec-const) kernels can't bake REGS/CNT_* at JIT time the way the CUDA path does, so they
+  // pick the active inner-loop shape at runtime. There are exactly two ProgPoW shapes: MeowPow's 16/6/9
+  // and everyone else's 32/11/18. (variant.regs is published into state.regs above.)
+  const bool meowpow_shape = (variant.regs == MEOWPOW_REGS);
 
   if (use_sg) {
     // Sub-group (warp-shuffle) exchange path. KawpowSgExchange is sub-group-size-agnostic (its
@@ -802,7 +939,16 @@ static int kawpow_core(
           uint32_t digest[8];
           const KawpowSgExchange ex{sg,
             static_cast<uint32_t>(sg.get_local_id()[0]) & ~(KAWPOW_LANES - 1u)};
-          kawpow_search_dev(ex, lane_id, state2, c_dag, d_dag_load, program, dag_mod, digest);
+          // Select the inner-loop shape at runtime (the only two ProgPoW shapes here): MeowPow runs the
+          // shorter 16/6/9 sequence, the others the 32/11/18 sequence. The spec-const program already
+          // carries the matching active-prefix layout (make_program(period, regs, cnt_cache, cnt_math)).
+          if (meowpow_shape) {
+            kawpow_search_dev<KawpowSgExchange, sycl::local_accessor<uint32_t, 1>,
+              MEOWPOW_REGS, MEOWPOW_CNT_CACHE, MEOWPOW_CNT_MATH>(
+              ex, lane_id, state2, c_dag, d_dag_load, program, dag_mod, digest);
+          } else {
+            kawpow_search_dev(ex, lane_id, state2, c_dag, d_dag_load, program, dag_mod, digest);
+          }
 
           uint32_t final_state[25];
           kawpow_final_dev(state2, digest, seal_params.seal, seal_params.magic, final_state);
@@ -862,7 +1008,15 @@ static int kawpow_core(
           const KawpowSlmExchange ex{
             item, &share[group_id * KAWPOW_LANES], &offsets[group_id], lane_id, cpu_offset_barrier
           };
-          kawpow_search_dev(ex, lane_id, state2, c_dag, d_dag_load, program, dag_mod, digest);
+          // Runtime shape select (see the SG path): MeowPow 16/6/9, others 32/11/18. The spec-const
+          // program already carries the matching active-prefix layout.
+          if (meowpow_shape) {
+            kawpow_search_dev<KawpowSlmExchange, sycl::local_accessor<uint32_t, 1>,
+              MEOWPOW_REGS, MEOWPOW_CNT_CACHE, MEOWPOW_CNT_MATH>(
+              ex, lane_id, state2, c_dag, d_dag_load, program, dag_mod, digest);
+          } else {
+            kawpow_search_dev(ex, lane_id, state2, c_dag, d_dag_load, program, dag_mod, digest);
+          }
 
           uint32_t final_state[25];
           kawpow_final_dev(state2, digest, seal_params.seal, seal_params.magic, final_state);
@@ -913,5 +1067,14 @@ int evrprogpow(
   const unsigned intensity, const bool is_test, const bool is_benchmark, const std::string& dev_str
 ) {
   return kawpow_core(EVRPROGPOW_VARIANT, block_height, input, input_size, output, mix_hash, pnonce,
+                     target, intensity, is_test, is_benchmark, dev_str);
+}
+
+int meowpow(
+  const unsigned job_id, const uint32_t block_height, const uint8_t* const input, const unsigned input_size,
+  uint8_t* const output, uint8_t* const mix_hash, uint64_t* const pnonce, const uint64_t target,
+  const unsigned intensity, const bool is_test, const bool is_benchmark, const std::string& dev_str
+) {
+  return kawpow_core(MEOWPOW_VARIANT, block_height, input, input_size, output, mix_hash, pnonce,
                      target, intensity, is_test, is_benchmark, dev_str);
 }

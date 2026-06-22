@@ -110,7 +110,10 @@ void kawpow_search_jit(const uint8_t* d_input, const DagLoad* __restrict__ d_dag
   uint32_t digest[8];
   const KawpowSgExchange ex{sg, static_cast<uint32_t>(sg.get_local_id()[0]) & ~(KAWPOW_LANES - 1u)};
   uint32_t* const c_dag_ptr = &c_dag[0];
-  kawpow_search_dev(ex, lane_id, state2, c_dag_ptr, d_dag_load, BAKED_PROGRAM, BAKED_DAGMOD, digest);
+  // JIT_REGS/JIT_CNT_CACHE/JIT_CNT_MATH are baked per-variant (kawpow_emit_shape), injected after the
+  // device .inc and before this WRAPPER: KawPoW/FiroPow/EvrProgPow 32/11/18, MeowPow 16/6/9.
+  kawpow_search_dev<KawpowSgExchange, uint32_t*, JIT_REGS, JIT_CNT_CACHE, JIT_CNT_MATH>(
+    ex, lane_id, state2, c_dag_ptr, d_dag_load, BAKED_PROGRAM, BAKED_DAGMOD, digest);
 
   uint32_t final_state[25];
   kawpow_final_dev(state2, digest, JIT_SEAL, JIT_MAGIC, final_state);
@@ -214,6 +217,15 @@ static std::string kawpow_emit_seal(const SealMode seal, const uint32_t magic[15
   for (unsigned i = 0; i < 15; ++i) { s += sep + std::to_string(magic[i]); sep = ","; }
   s += "};\n";
   return s;
+}
+
+// Bake the per-variant inner-loop shape (REGS/CNT_CACHE/CNT_MATH) as JIT_* macros the WRAPPER passes as
+// template args to kawpow_search_dev so the program-application chain unrolls to the active counts.
+// KawPoW/FiroPow/EvrProgPow 32/11/18; MeowPow 16/6/9. Injected after the device .inc, before the WRAPPER.
+static std::string kawpow_emit_shape(const uint32_t regs, const uint32_t cnt_cache, const uint32_t cnt_math) {
+  return "#define JIT_REGS " + std::to_string(regs) +
+         "\n#define JIT_CNT_CACHE " + std::to_string(cnt_cache) +
+         "\n#define JIT_CNT_MATH " + std::to_string(cnt_math) + "\n";
 }
 
 #endif // MOM_SYCL_HAS_CUDA
