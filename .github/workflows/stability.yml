@@ -210,6 +210,9 @@ jobs:
 
       - name: Test extracted package
         shell: powershell
+        timeout-minutes: 20
+        env:
+          MOM_SYCL_CPU_SMOKE: ${{ matrix.suite == 'sycl-cpu' && '1' || '' }}
         run: |
           $archive = Get-ChildItem dist -Filter "mom-*-win.zip" | Select-Object -First 1
           powershell -NoProfile -ExecutionPolicy Bypass -File .github\workflows\scripts\test-release-windows.ps1 -Archive $archive.FullName -Suite "${{ matrix.suite }}"

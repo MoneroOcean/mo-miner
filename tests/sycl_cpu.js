@@ -81,6 +81,15 @@ const syclCpuVectors = [
   requiredVector("beamhash3 gpu1 gen"),
 ].filter((definition) => !skipAlgos.has(definition.job.algo));
 
+const syclCpuSmokeVectorNames = new Set([
+  "cn/gpu gpu1*8",
+  "kheavyhash gpu1*256",
+  "beamhash3 gpu1 gen",
+]);
+const selectedSyclCpuVectors = process.env.MOM_SYCL_CPU_SMOKE === "1"
+  ? syclCpuVectors.filter((definition) => syclCpuSmokeVectorNames.has(definition.name))
+  : syclCpuVectors;
+
 describe("SYCL CPU hash vectors", () => {
   let detectedDevice;
 
@@ -94,7 +103,7 @@ describe("SYCL CPU hash vectors", () => {
     return result.dev;
   }
 
-  for (const definition of syclCpuVectors) {
+  for (const definition of selectedSyclCpuVectors) {
     it(definition.name.replace(/gpu1/g, "SYCL CPU"), { timeout: CPU_TEST_TIMEOUT_MS }, async (t) => {
       const dev = await getDevice(t);
       if (!dev) {return;}
