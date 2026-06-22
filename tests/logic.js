@@ -517,6 +517,28 @@ test("KawPow benchmark jobs include fixed nonce metadata", async () => {
   }
 });
 
+test("BeamHash III benchmark jobs include fixed M4-shaped nonce metadata", async () => {
+  const autoBenchmark = await loadMinerWithStubs({
+    argv: ["node", "mom.js", "mine", "pool.example:1", "user", "--bench_algo_params", "2"],
+    algoParams: { beamhash3: "gpu1" },
+    waitForMessageType: "bench",
+  });
+  const directBenchmark = await loadMinerWithStubs({
+    argv: ["node", "mom.js", "bench", "beamhash3"],
+    waitForMessageType: "bench",
+  });
+
+  for (const miner of [autoBenchmark, directBenchmark]) {
+    const benchMessage = miner.sentMessages.find((msg) => msg.type === "bench");
+    assert.equal(benchMessage.job.algo, "beamhash3");
+    assert.equal(benchMessage.job.noncebytes, 8);
+    assert.equal(benchMessage.job.nonceoffset, 32);
+    assert.equal(benchMessage.job.blob_hex.length, 88);
+    assert.equal(benchMessage.job.nonce, "0100000000000000");
+    assert.equal(benchMessage.job.nicehash_mask, "0000000000000000");
+  }
+});
+
 test("Etchash benchmark uses current ETC height instead of default seed", async () => {
   const autoBenchmark = await loadMinerWithStubs({
     algoParams: { etchash: "gpu1*1" },
@@ -1218,5 +1240,275 @@ test("nicehash xn prefixes longer than noncebytes are truncated", async () => {
   const jobMessage = miner.sentMessages.find((msg) => msg.type === "job");
   assert.equal(jobMessage.job.nonce, "00112233");
   assert.equal(jobMessage.job.nicehash_mask, "ffffffff");
+});
+
+test("Equihash125_4 (Flux) pools build the 140-byte header from the ZIP-301 notify", async () => {
+  let jobMessage = null;
+  const version  = "04000000";
+  const prevhash = "a8675c842f7a1342fadd00cd9b4e4909526b1c0ab5a747c5529b4deb13000000";
+  const merkle   = "ce7d6ea2452245925fc70c3a08a3c3dd2ca4beab7481f237a19751666bfd25c3";
+  const reserved = "0fd282d94b1e1a7f2c57eb3fb9e2853d990753fa137e13c99bd43f220d4fce69";
+  const ntime    = "90e44f5d";
+  const bits     = "ce28421d";
+  const target   = "0000000a42ce000000000000000000000000000000000000000000000000000c";
+  await withMockPool({
+    pool: { is_keepalive: true, login: "t1fluxwallet.worker", protocol: "equihash" },
+    opt: { job: { algo: "equihash125_4" } },
+    pool_time: { keepalive: 0.001, first_job_wait: 0.001 },
+  }, async ({ socket, writes, poolConfig }) => {
+    pool.connect_pool_throttle(0, (job) => { jobMessage = job; return job; });
+    socket.emit("connect");
+    assert.equal(writes[0].method, "mining.subscribe");
+
+    // subscribe result -> [[["mining.notify",session]], NONCE1]; NONCE1 = "0a1b" (2-byte prefix)
+    socket.emit("data", Buffer.from(
+      '{"jsonrpc":"2.0","id":1,"error":null,"result":[[["mining.notify","sess"]],"0a1b"]}\n' +
+      '{"jsonrpc":"2.0","id":2,"error":null,"result":true}\n' +
+      '{"id":null,"method":"mining.set_target","params":["' + target + '"]}\n' +
+      '{"id":null,"method":"mining.notify","params":["job1","' + version + '","' + prevhash + '","' +
+        merkle + '","' + reserved + '","' + ntime + '","' + bits + '",true]}\n'
+    ));
+
+    assert.equal(writes[1].method, "mining.authorize");
+    assert.deepEqual(writes[1].params, ["t1fluxwallet.worker", "x"]);
+    assert.equal(poolConfig.extra_nonce, "0a1b");
+    assert.equal(poolConfig.equihash_target, target);
+    assert.equal(jobMessage.algo, "equihash125_4");
+    assert.equal(jobMessage.job_id, "job1");
+    assert.equal(jobMessage.target, target);
+    assert.equal(jobMessage.ntime, ntime);
+    assert.equal(jobMessage.nonce1_len, 2);
+    assert.equal(jobMessage.noncebytes, 8);
+    assert.equal(jobMessage.nonceoffset, 110); // 108 + nonce1_len
+    // 280-hex = 140 bytes; nonce field (last 64 hex) = nonce1(0a1b) || zero nonce2 region.
+    assert.equal(jobMessage.blob.length, 280);
+    assert.equal(jobMessage.blob.slice(0, 8), version);
+    assert.equal(jobMessage.blob.slice(8, 72), prevhash);
+    assert.equal(jobMessage.blob.slice(72, 136), merkle);
+    assert.equal(jobMessage.blob.slice(136, 200), reserved);
+    assert.equal(jobMessage.blob.slice(200, 208), ntime);
+    assert.equal(jobMessage.blob.slice(208, 216), bits);
+    assert.equal(jobMessage.blob.slice(216), "0a1b" + "0".repeat(60));
+  });
+});
+
+test("Equihash125_4 submit uses ZIP-301 mining.submit [worker, job_id, time, nonce2, solution]", async () => {
+  const miner = await loadMinerWithStubs();
+  const solution = "34" + "ab".repeat(52); // 0x34 compactSize + 52-byte compressed proof = 106 hex
+  miner.global.opt.pools[0].submit_mode = "equihash";
+  miner.global.opt.pools[0].login = "t1fluxwallet.worker";
+  miner.global.opt.pools[0].last_job = {
+    job_id: "job1",
+    ntime: "90e44f5d",
+    nonce1_len: 2,
+    // 280-hex header; only the 32-byte nonce (last 64 hex) is read here = nonce1 "0a1b" || zero nonce2.
+    blob: "0".repeat(216) + "0a1b" + "0".repeat(60),
+  };
+
+  miner.messageHandler({
+    type: "result",
+    value: {
+      pool_id: 0,
+      worker_id: "worker",
+      job_id: "job1",
+      nonce: "0000000000000007", // 8-byte search counter, big-endian (native %016 PRIx64)
+      hash: "00".repeat(32),
+      solution: solution,
+    },
+  });
+
+  assert.equal(miner.poolWrites.length, 1);
+  assert.equal(miner.poolWrites[0].json.method, "mining.submit");
+  // nonce2 = counter(LE) || nonce2 tail past the counter; nonce1 prefix excluded.
+  // counter 0x...07 -> wire LE "0700000000000000"; tail = zeros; total = 32 - 2 = 30 bytes = 60 hex.
+  assert.equal(JSON.stringify(miner.poolWrites[0].json.params), JSON.stringify([
+    "t1fluxwallet.worker",
+    "job1",
+    "90e44f5d",
+    "0700000000000000" + "0".repeat(60 - 16),
+    solution,
+  ]));
+});
+
+test("Iron Fish pools build fishhash jobs from object stratum notify", async () => {
+  let jobMessage = null;
+  const header = "11".repeat(180);
+  const target = "0f".repeat(32);
+  await withMockPool({
+    pool: { login: "ironfishwallet.worker", protocol: "ironfish" },
+    opt: { job: { algo: "fishhash" } },
+  }, async ({ socket, poolConfig }) => {
+    pool.connect_pool_throttle(0, (job) => { jobMessage = job; return job; });
+    socket.emit("connect");
+
+    socket.emit("data", Buffer.from(
+      JSON.stringify({ method: "mining.subscribed", body: { xn: "a1b2" } }) + "\n" +
+      JSON.stringify({ method: "mining.set_target", body: { target } }) + "\n" +
+      JSON.stringify({ method: "mining.notify", body: { miningRequestId: 17, header } }) + "\n"
+    ));
+
+    assert.equal(poolConfig.ironfish_xn, "a1b2");
+    assert.equal(poolConfig.ironfish_target, target);
+    assert.equal(jobMessage.algo, "fishhash");
+    assert.equal(jobMessage.job_id, 17);
+    assert.equal(jobMessage.blob, header);
+    assert.equal(jobMessage.target, target);
+    assert.equal(jobMessage.noncebytes, 8);
+    assert.equal(jobMessage.nonceoffset, 0);
+  });
+});
+
+test("Iron Fish submit uses mining.submit object body", async () => {
+  const miner = await loadMinerWithStubs();
+  miner.global.opt.pools[0].submit_mode = "ironfish";
+
+  miner.messageHandler({
+    type: "result",
+    value: {
+      pool_id: 0,
+      worker_id: "worker",
+      job_id: "17",
+      nonce: "0000000000000005",
+      hash: "00".repeat(32),
+    },
+  });
+
+  assert.equal(miner.poolWrites.length, 1);
+  assert.equal(JSON.stringify(miner.poolWrites[0].json), JSON.stringify({
+    id: 2,
+    method: "mining.submit",
+    body: {
+      miningRequestId: "17",
+      randomness: "0000000000000005",
+      graffiti: "00".repeat(32),
+    },
+  }));
+});
+
+test("Kaspa-family pools build 80-byte jobs from exact 64-bit notify words", async () => {
+  let jobMessage = null;
+  await withMockPool({
+    pool: { login: "kaspa:qzwallet.mom", protocol: "kaspa" },
+    opt: { job: { algo: "karlsenhashv2" } },
+  }, async ({ socket, writes, poolConfig }) => {
+    pool.connect_pool_throttle(0, (job) => { jobMessage = job; return job; });
+    socket.emit("connect");
+    assert.equal(writes[0].method, "mining.subscribe");
+
+    socket.emit("data", Buffer.from(
+      '{"jsonrpc":"2.0","id":1,"error":null,"result":[null,"56e0"]}\n' +
+      '{"jsonrpc":"2.0","id":2,"error":null,"result":true}\n' +
+      '{"id":null,"method":"mining.set_difficulty","params":[4.25]}\n' +
+      '{"id":null,"method":"mining.notify","params":["7a",[' +
+        "18446744073709551615,9223372036854775808,72623859790382856,4909777105915057546" +
+        "],1781909733171]}\n"
+    ));
+
+    assert.equal(poolConfig.extra_nonce, "56e0");
+    assert.equal(poolConfig.kaspa_difficulty, 4.25);
+    assert.equal(jobMessage.algo, "karlsenhashv2");
+    assert.equal(jobMessage.job_id, "7a");
+    assert.equal(jobMessage.nonce, "56e0000000000000");
+    assert.equal(jobMessage.nicehash_mask, "ffff000000000000");
+    assert.equal(jobMessage.nonceoffset, 72);
+    assert.equal(jobMessage.blob.length, 160);
+    assert.equal(jobMessage.blob.slice(0, 16), "ffffffffffffffff");
+    assert.equal(jobMessage.blob.slice(16, 32), "0000000000000080");
+    assert.equal(jobMessage.blob.slice(32, 48), "0807060504030201");
+    assert.equal(jobMessage.blob.slice(48, 64), "8a9569c443082344");
+    assert.equal(jobMessage.blob.slice(64, 80), "33bf18e29e010000");
+    assert.equal(jobMessage.blob.slice(80, 144), "00".repeat(32));
+    assert.equal(jobMessage.blob.slice(144), "0000000000000000");
+  });
+});
+
+test("Kaspa (kheavyhash) submit uses mining.submit [wallet.worker, job_id, 0x+nonce]", async () => {
+  const miner = await loadMinerWithStubs();
+  miner.global.opt.pools[0].submit_mode = "kaspa";
+  miner.global.opt.pools[0].login = "kaspa:qzwallet.mom";
+
+  miner.messageHandler({
+    type: "result",
+    value: {
+      pool_id: 0,
+      worker_id: "worker",
+      job_id: "7a",
+      // native nonce_to_hex(%016PRIx64): the winning 8-byte nonce big-endian; the extranonce (high
+      // bytes) leads, so the pool re-parses it big-endian with no further work -- pass it through as-is.
+      nonce: "56e0000000abcdef",
+      hash: "00".repeat(32),
+    },
+  });
+
+  assert.equal(miner.poolWrites.length, 1);
+  assert.equal(miner.poolWrites[0].json.method, "mining.submit");
+  assert.equal(JSON.stringify(miner.poolWrites[0].json.params), JSON.stringify([
+    "kaspa:qzwallet.mom",
+    "7a",
+    "0x56e0000000abcdef",
+  ]));
+});
+
+test("BeamHash III pools build jobs from login nonceprefix and job push", async () => {
+  let jobMessage = null;
+  const input = "22".repeat(32);
+  await withMockPool({
+    pool: { login: "beamwallet.worker", protocol: "beam" },
+    opt: { job: { algo: "beamhash3" } },
+  }, async ({ socket, writes, poolConfig }) => {
+    pool.connect_pool_throttle(0, (job) => { jobMessage = job; return job; });
+    socket.emit("connect");
+    assert.equal(JSON.stringify(writes[0]), JSON.stringify({
+      jsonrpc: "2.0",
+      id: "login",
+      method: "login",
+      api_key: "beamwallet.worker",
+    }));
+
+    socket.emit("data", Buffer.from(
+      JSON.stringify({
+        id: "login", method: "result", code: 0, nonceprefix: "a1b2", forkheight: 321,
+      }) + "\n" +
+      JSON.stringify({
+        id: "beam-job", method: "job", input, difficulty: 881445,
+      }) + "\n"
+    ));
+
+    assert.equal(poolConfig.beam_nonceprefix, "a1b2");
+    assert.equal(poolConfig.beam_forkheight, 321);
+    assert.equal(jobMessage.algo, "beamhash3");
+    assert.equal(jobMessage.job_id, "beam-job");
+    assert.equal(jobMessage.header_hash, input);
+    assert.equal(jobMessage.difficulty, 881445);
+    assert.equal(jobMessage.target.slice(-8), "000d7325");
+  });
+});
+
+test("BeamHash III submit uses solution message with raw nonce byte order", async () => {
+  const miner = await loadMinerWithStubs();
+  miner.global.opt.pools[0].submit_mode = "beam";
+  miner.global.opt.pools[0].login = "beamwallet.worker";
+  const solution = "ab".repeat(104);
+
+  miner.messageHandler({
+    type: "result",
+    value: {
+      pool_id: 0,
+      worker_id: "worker",
+      job_id: "beam-job",
+      nonce: "a1b2000000000007",
+      hash: "00".repeat(32),
+      solution,
+    },
+  });
+
+  assert.equal(miner.poolWrites.length, 1);
+  assert.equal(JSON.stringify(miner.poolWrites[0].json), JSON.stringify({
+    jsonrpc: "2.0",
+    id: "beam-job",
+    method: "solution",
+    nonce: "070000000000b2a1",
+    output: solution,
+  }));
 });
 });

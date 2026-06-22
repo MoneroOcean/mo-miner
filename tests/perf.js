@@ -14,7 +14,7 @@ if (selectedAlgo && selectedTests.length === 0) {
 }
 
 // Algos whose auto config must resolve to a GPU device with an intensity (gpuN*M).
-const gpuIntensityAlgos = new Set(["kawpow", "firopow", "evrprogpow", "etchash", "autolykos2"]);
+const gpuIntensityAlgos = new Set(["kawpow", "firopow", "evrprogpow", "meowpow", "etchash", "autolykos2"]);
 
 function assertGpuIntensityDev(algo, dev) {
   if (!gpuIntensityAlgos.has(algo)) return;

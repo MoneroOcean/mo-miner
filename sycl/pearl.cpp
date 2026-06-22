@@ -1237,7 +1237,9 @@ struct PearlState {
   explicit PearlState(const std::string& dev_str)
     : queue(get_dev(dev_str), sycl::property::queue::in_order{}) {}
   void free_buffers() {
-    if (!b.Ap) return;
+    // Free every non-null member independently (sycl::free is no-op'd by the per-element `if (p)`),
+    // so a partial-allocation failure where Ap is null but earlier members (EAL/EBR/EBRt/...) are
+    // not still releases them instead of leaking. No early return on !b.Ap.
     queue.wait();
     for (void* p : {(void*)b.EAL,(void*)b.EBR,(void*)b.EBRt,(void*)b.Ap,(void*)b.Bp,
                     (void*)b.EARp1,(void*)b.EARp2,(void*)b.EBLq1,(void*)b.EBLq2,

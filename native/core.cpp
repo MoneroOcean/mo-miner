@@ -137,13 +137,27 @@ static std::string nonce_to_hex(const uint64_t nonce, const unsigned noncebytes)
 void Core::send_result(
   const uint64_t nonce, const unsigned noncebytes, const uint8_t* const output,
   const uint32_t* const edges, const unsigned c29_proof_size,
-  const uint8_t* const commitment, const uint8_t* const mix_hash
+  const uint8_t* const commitment, const uint8_t* const mix_hash,
+  const uint8_t* const solution, const unsigned solution_len
 ) {
   MessageValues values;
   values["nonce"] = nonce_to_hex(nonce, noncebytes);
 
   char hash_hex[HASH_LEN * 2 + 1];
   values["hash"] = hash_bin2hex(output, hash_hex);
+
+  // Out-of-band proof bytes for algos whose share isn't a 32-byte hash (equihash125_4: the Flux/ZIP-301
+  // stratum submit carries the full compactSize-prefixed solution -- 0x34 || 52-byte compressed proof =
+  // 53 bytes / 106 hex). Serialized like edges: caller passes the already-prefixed byte run.
+  if (solution && solution_len) {
+    std::string solution_hex;
+    solution_hex.reserve(solution_len * 2);
+    for (unsigned i = 0; i < solution_len; ++i) {
+      solution_hex += hf_bin2hex(solution[i] >> 4);
+      solution_hex += hf_bin2hex(solution[i] & 0xF);
+    }
+    values["solution"] = solution_hex;
+  }
 
   if (commitment) {
     char commitment_hex[HASH_LEN * 2 + 1];
@@ -294,11 +308,25 @@ bool Core::process_message(const std::string& type, const MessageValues& v) {
 
     const std::string algo = v.contains("algo") ? v.at("algo") : "";
     const bool is_kawpow_target = algo == "kawpow";
-    // etchash/autolykos2/pearl use a full 32-byte target instead of a single 64-bit word
-    const bool is_big_target = algo == "etchash" || algo == "autolykos2" || algo == "pearl";
+    // etchash/autolykos2/pearl/fishhash use a full 32-byte target instead of a single 64-bit word
+    // (fishhash: live Iron Fish sends a 256-bit big-endian target -> m_target_bin -> meets_target_be_dev)
+    const bool is_big_target = algo == "etchash" || algo == "autolykos2" || algo == "pearl" || algo == "fishhash" || algo == "equihash125_4" || algo == "beamhash3" ||
+      // kHeavyHash family (Kaspa/Karlsen/Pyrin) compares the 32-byte hash against a full 256-bit BE
+      // boundary via m_target_bin; without this the bin stays zero and live mining finds no shares.
+      algo == "kheavyhash" || algo == "karlsenhashv2" || algo == "pyrinhashv2";
     const uint64_t new_target = is_big_target ? 1 : parse_target_hex(new_target_str, is_kawpow_target);
     uint8_t new_target_bin[HASH_LEN]{};
     if (is_big_target) parse_big_target_hex(new_target_str, new_target_bin);
+    // The kHeavyHash family kernel (meets_target_le_dev) compares the little-endian-stored 32-byte hash
+    // against a little-endian target array (index 31 = MSB), but the share target hex is big-endian.
+    // Reverse the bytes so target[31] is the MSB, matching the hash's LE byte layout. (is_test passes a
+    // zero target, which is symmetric, so the offline vector path is unaffected.)
+    if (is_big_target && (algo == "kheavyhash" || algo == "karlsenhashv2" || algo == "pyrinhashv2"))
+      for (unsigned i = 0; i < HASH_LEN / 2; ++i) {
+        const uint8_t t = new_target_bin[i];
+        new_target_bin[i] = new_target_bin[HASH_LEN - 1 - i];
+        new_target_bin[HASH_LEN - 1 - i] = t;
+      }
 
     const uint64_t prev_last_nonce = last_nonce();
     const std::string prev_pool_id = m_pool_id;
@@ -592,6 +620,59 @@ void Core::Execute() {
               m_batch, is_test, m_is_bench, m_dev_str
             );
             break;
+          case DEV::KHEAVYHASH_GPU:
+            std::memcpy(&dev_nonce, m_input + m_nonce_offset, sizeof(dev_nonce));  // nonce at offset 72
+            dev_sols = m_fn.gpu_kheavyhash(
+              m_job_ref, m_height, m_input, m_input_len, m_output,
+              static_cast<uint8_t*>(m_spads), &dev_nonce, m_target_bin, m_seed,
+              m_batch, is_test, m_is_bench, m_dev_str
+            );
+            break;
+          case DEV::FISHHASH_GPU:
+            std::memcpy(&dev_nonce, m_input + m_nonce_offset, sizeof(dev_nonce));  // nonce at offset 32
+            dev_sols = m_fn.gpu_fishhash(
+              m_job_ref, m_height, m_input, m_input_len, m_output,
+              static_cast<uint8_t*>(m_spads), &dev_nonce, m_target_bin, m_seed,
+              m_batch, is_test, m_is_bench, m_dev_str
+            );
+            break;
+          case DEV::KARLSENHASHV2_GPU:
+            std::memcpy(&dev_nonce, m_input + m_nonce_offset, sizeof(dev_nonce));  // nonce at offset 72
+            dev_sols = m_fn.gpu_karlsenhashv2(
+              m_job_ref, m_height, m_input, m_input_len, m_output,
+              static_cast<uint8_t*>(m_spads), &dev_nonce, m_target_bin, m_seed,
+              m_batch, is_test, m_is_bench, m_dev_str
+            );
+            break;
+          case DEV::PYRINHASHV2_GPU:
+            std::memcpy(&dev_nonce, m_input + m_nonce_offset, sizeof(dev_nonce));  // nonce at offset 72
+            dev_sols = m_fn.gpu_pyrinhashv2(
+              m_job_ref, m_height, m_input, m_input_len, m_output,
+              static_cast<uint8_t*>(m_spads), &dev_nonce, m_target_bin, m_seed,
+              m_batch, is_test, m_is_bench, m_dev_str
+            );
+            break;
+          case DEV::EQUIHASH125_4_GPU:
+            // c29-like: the 32-byte nonce lives in the header (offset 108); the solver writes the
+            // 52-byte solution (or, in is_test, the gen-kernel rows) out-of-band into m_spads.
+            std::memcpy(&dev_nonce, m_input + m_nonce_offset, sizeof(dev_nonce));  // low 8 bytes @108
+            dev_sols = m_fn.gpu_equihash125_4(
+              m_job_ref, m_height, m_input, m_input_len,
+              static_cast<uint8_t*>(m_spads), &dev_nonce, m_target_bin,
+              m_batch, is_test, m_is_bench, m_dev_str
+            );
+            break;
+          case DEV::BEAMHASH3_GPU:
+            // c29-like: input is the prework||nonce||extranonce blob; the 8-byte Beam nonce is at
+            // offset 32. The solver writes the 104-byte solution(s) out-of-band into m_spads (or, in
+            // is_test, the gen-validation rows).
+            std::memcpy(&dev_nonce, m_input + m_nonce_offset, sizeof(dev_nonce));  // 8-byte nonce @32
+            dev_sols = m_fn.gpu_beamhash3(
+              m_job_ref, m_height, m_input, m_input_len,
+              static_cast<uint8_t*>(m_spads), &dev_nonce, m_target_bin,
+              m_batch, is_test, m_is_bench, m_dev_str
+            );
+            break;
           case DEV::RX_CPU: throw "Internal error: Unreachable code executed";
         }
       } catch(const std::string& err) {
@@ -627,12 +708,12 @@ void Core::Execute() {
           set_fn(nullptr);
           continue;
         }
-        if (m_dev == DEV::AUTOLYKOS2_GPU) {
+        if (m_dev == DEV::AUTOLYKOS2_GPU || m_dev == DEV::KHEAVYHASH_GPU || m_dev == DEV::FISHHASH_GPU || m_dev == DEV::KARLSENHASHV2_GPU || m_dev == DEV::PYRINHASHV2_GPU) {
           if (dev_sols == 1) {
             char hash[HASH_LEN*2+1];
             send_msg("test", "result", hash_bin2hex(hash, 0));
           } else {
-            send_error("No autolykos2 test result");
+            send_error(m_dev == DEV::KHEAVYHASH_GPU ? "No kheavyhash test result" : "No autolykos2 test result");
           }
           set_fn(nullptr);
           continue;
@@ -640,6 +721,23 @@ void Core::Execute() {
         if (m_dev == DEV::PEARL_GPU) {
           if (dev_sols == 1) send_msg("test", "result", "ok");
           else send_error("No pearl test result");
+          set_fn(nullptr);
+          continue;
+        }
+        if (m_dev == DEV::EQUIHASH125_4_GPU || m_dev == DEV::BEAMHASH3_GPU) {
+          // M1 gen-kernel validation (or the SOLVE path): the kernel dumped the rows / solution(s) into
+          // m_spads; emit the whole buffer as hex so the standalone checker can diff it against the oracle.
+          if (dev_sols == 1) {
+            const uint8_t* const rows = static_cast<const uint8_t*>(m_spads);
+            std::string hex; hex.reserve(SMALL_BLOB_SOL_LEN * 2);
+            for (unsigned i = 0; i != SMALL_BLOB_SOL_LEN; ++i) {
+              hex += hf_bin2hex(rows[i] >> 4);
+              hex += hf_bin2hex(rows[i] & 0xF);
+            }
+            send_msg("test", "result", hex);
+          } else {
+            send_error(m_dev == DEV::BEAMHASH3_GPU ? "No beamhash3 test result" : "No equihash125_4 test result");
+          }
           set_fn(nullptr);
           continue;
         }
@@ -665,8 +763,12 @@ void Core::Execute() {
         continue;
       }
 
-      // Pearl's work unit is GEMM MACs (m*n*k) so its rate matches the "TH/s" GEMM bench; others = 1/batch.
-      m_hash_count += (m_dev == DEV::PEARL_GPU) ? pearl_attempt_hashes(m_batch) : m_batch;
+      // Pearl's work unit is GEMM MACs (m*n*k) so its rate matches the "TH/s" GEMM bench. Equihash's
+      // unit is a Wagner SOLUTION (the solver finds ~1.88 distinct proofs per nonce); the solver returns
+      // that distinct count in dev_sols when benching, so the rate reads out as Sol/s. Others = 1/batch.
+      m_hash_count += (m_dev == DEV::PEARL_GPU) ? pearl_attempt_hashes(m_batch)
+                    : (m_dev == DEV::EQUIHASH125_4_GPU || m_dev == DEV::BEAMHASH3_GPU) ? static_cast<uint64_t>(dev_sols < 0 ? 0 : dev_sols)
+                    : m_batch;
       if (m_dev == DEV::KAWPOW_GPU || m_dev == DEV::ETCHASH_GPU) {
         const uint64_t prev_nonce = m_nonce64;
         if (dev_sols == 1 && m_target)
@@ -680,12 +782,68 @@ void Core::Execute() {
         }
         continue;
       }
-      if (m_dev == DEV::AUTOLYKOS2_GPU) {
+      // autolykos2 and kHeavyHash share the mine-result handling: 8-byte nonce, single 32-byte hash
+      // (no mix), nonce embedded in the header at m_nonce_offset (32 for autolykos2, 72 for kHeavyHash).
+      if (m_dev == DEV::AUTOLYKOS2_GPU || m_dev == DEV::KHEAVYHASH_GPU || m_dev == DEV::FISHHASH_GPU || m_dev == DEV::KARLSENHASHV2_GPU || m_dev == DEV::PYRINHASHV2_GPU) {
         const uint64_t prev_nonce = m_nonce64;
         if (dev_sols == 1 && m_target)
           send_result(dev_nonce, 8, m_output);
 
+        // live Iron Fish (fishhash, 180-byte header) reads the nonce big-endian; embed BE there, LE otherwise
+        const uint64_t embed = (m_dev == DEV::FISHHASH_GPU && m_input_len >= 140) ? bswap_64(m_nonce64) : m_nonce64;
+        std::memcpy(m_input + m_nonce_offset, &embed, sizeof(embed));
+        m_nonce64 += m_nonce_step;
+        if (m_target && nonce_overflowed(prev_nonce, m_nonce64, m_nicehash_mask)) {
+          set_fn(nullptr);
+          send_last_nonce(prev_nonce, m_nonce_bytes, m_pool_id);
+        }
+        continue;
+      }
+      if (m_dev == DEV::EQUIHASH125_4_GPU) {
+        // M5 mining path: the solver writes the target-passing solutions out-of-band into m_spads as
+        // [count:u8][count * 52-byte compressed solution]. For each one, emit a result carrying the
+        // 53-byte compactSize-prefixed solution (0x34 || 52 B = 106 hex) the Flux/ZIP-301 submit needs.
+        const uint64_t prev_nonce = m_nonce64;
+        if (dev_sols > 0 && m_target) {
+          const uint8_t* const sols = static_cast<const uint8_t*>(m_spads);
+          const unsigned count = sols[0];
+          for (unsigned i = 0; i < count; ++i) {
+            uint8_t submit[1 + 52];
+            submit[0] = 0x34;   // compactSize(52)
+            std::memcpy(submit + 1, sols + 1 + static_cast<size_t>(i) * 52, 52);
+            send_result(dev_nonce, m_nonce_bytes, m_output, nullptr, 32, nullptr, nullptr, submit, sizeof(submit));
+          }
+        }
+
+        // Advance the low 8 bytes of the 32-byte header nonce (offset 108) as the search counter.
         std::memcpy(m_input + m_nonce_offset, &m_nonce64, sizeof(m_nonce64));
+        m_nonce64 += m_nonce_step;
+        if (m_target && nonce_overflowed(prev_nonce, m_nonce64, m_nicehash_mask)) {
+          set_fn(nullptr);
+          send_last_nonce(prev_nonce, m_nonce_bytes, m_pool_id);
+        }
+        continue;
+      }
+      if (m_dev == DEV::BEAMHASH3_GPU) {
+        // M5 mining path: the solver already SHA-256-filtered its found proofs against the packed Beam
+        // difficulty (carried in m_target_bin), and wrote the passing ones out-of-band into m_spads as
+        // [count:u8][count * 104-byte solution]. For each, emit a result carrying the 8-byte Beam nonce
+        // (offset 32) and the 104-byte solution (208 hex) the Beam JSON-RPC `solution` submit needs.
+        const uint64_t prev_nonce = m_nonce64;
+        if (dev_sols > 0 && m_target) {
+          const uint8_t* const sols = static_cast<const uint8_t*>(m_spads);
+          const unsigned count = sols[0];
+          for (unsigned i = 0; i < count; ++i)
+            send_result(dev_nonce, m_nonce_bytes, m_output, nullptr, 32, nullptr, nullptr,
+                        sols + 1 + static_cast<size_t>(i) * 104, 104);
+        }
+
+        // Advance the 8-byte Beam nonce (offset 32) as the search counter. The nonce is written to the
+        // blob BIG-endian (bswap), matching set_job's convention -- so the pool nonceprefix occupies the
+        // LEADING physical bytes = the HIGH bytes of m_nonce64, which m_nicehash_mask fixes (standard
+        // nonce-at-32 nicehash). The low bytes are the free search counter, advanced normally.
+        const uint64_t embed = bswap_64(m_nonce64);
+        std::memcpy(m_input + m_nonce_offset, &embed, sizeof(embed));
         m_nonce64 += m_nonce_step;
         if (m_target && nonce_overflowed(prev_nonce, m_nonce64, m_nicehash_mask)) {
           set_fn(nullptr);

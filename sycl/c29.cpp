@@ -699,7 +699,12 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
 
           item.barrier(sycl::access::fence_space::local_space);
 
-          const uint32_t edges_in_bucket = sycl::min(acc_source_indexes[work_group_id], duck_edges_b);
+          // Clamp the read count to the per-bucket written region: the writer (skewed kernel above)
+          // caps each bucket index at duck_edges_b - 1 - ((bucket & BUCKET_OFFSET) * BUCKET_STEP), and
+          // the reads here add the same skew, so without this the top work-groups read past the highest
+          // written index (OOB device read / stale cross-bucket data). Mirrors the write clamp exactly.
+          const uint32_t edges_in_bucket = sycl::min(acc_source_indexes[work_group_id],
+                                                     duck_edges_b - ((work_group_id & BUCKET_OFFSET) * BUCKET_STEP));
           const uint32_t processing_loops = (edges_in_bucket + COMPUTE_THREADS - 1) / COMPUTE_THREADS;
 
           // First pass: count edge occurrences
@@ -781,6 +786,11 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
     });
 
     profile.add_event("tail", tail_event);
+
+    // Intel OpenCL may busy-spin a host core inside the blocking D2H read if the copy is enqueued
+    // before the preceding trim kernels finish. Wait for the final trim event with our poll/sleep
+    // helper first; then the small readbacks below only move already-ready data.
+    sycl_wait_and_throw(tail_event, compute_queue.get_device());
 
     // Read final trimmed edges from GPU memory
     c29_read_buffer(compute_queue, buffer_trimmed_edge_count, &trimmed_edge_count, 1);

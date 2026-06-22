@@ -3,7 +3,7 @@
 "use strict";
 
 const path = require("path");
-const fs   = require('fs');
+const fs   = require("fs");
 const os   = require("os");
 const h    = require("./helper.js");
 const o    = require("./opts.js");
@@ -18,7 +18,7 @@ let compute_core = null;
 let algo_params_bench_cb = null; // used to record algo_params bench data
 let last_job = null;
 let directive = null;
-let test = {
+const test = {
   result_hash_hex: null,
   thread_tested:   0,
   result:          ""
@@ -33,6 +33,11 @@ o.set_default_opts(global.opt, o.opt_help);
 
 function orDefault(value, fallback) {
   return value ? value : fallback;
+}
+
+// Like orDefault but keyed on presence, so an explicit nonceoffset of 0 is honored (not treated as falsy).
+function nonceOffsetOr(prev_job, fallback) {
+  return typeof prev_job.nonceoffset !== "undefined" ? prev_job.nonceoffset : fallback;
 }
 
 function firstTruthyOr(fallback, ...values) {
@@ -198,6 +203,11 @@ function normalizedFullNonce(value) {
   return hexWithoutPrefix(value).padStart(16, "0").slice(-16);
 }
 
+function reverseHexBytes(value) {
+  const hex = hexWithoutPrefix(value);
+  return hex.length % 2 === 0 ? (hex.match(/.{2}/g) || []).reverse().join("") : hex;
+}
+
 function ergSubmitMeta(pool, job_id) {
   return (pool.erg_submit_jobs && pool.erg_submit_jobs[job_id]) || {};
 }
@@ -218,6 +228,34 @@ function ergSubmitParams(pool, value) {
   return [pool.login, value.job_id, extraNonce2, hexWithoutPrefix(meta.ntime), nonce];
 }
 
+// Little-endian byte order of an 8-byte counter expressed as big-endian hex (the native emits the
+// search counter via %016 PRIx64 = big-endian; the wire/header stores it little-endian, matching the
+// memcpy of m_nonce64 into the header at nonceoffset).
+function counterHexToWireLE(nonceHex) {
+  return normalizedFullNonce(nonceHex).match(/.{2}/g).reverse().join("");
+}
+
+// The submit nonce2 = the 32-byte header nonce after the pool's nonce1 prefix. The header nonce is
+// nonce1 (nonce1_len bytes) || nonce2; the solver advances an 8-byte counter at the start of nonce2,
+// the remaining nonce2 bytes stay as the job delivered them (zeros). Returns wire-order hex.
+function equihashNonce2(pool, nonceHex) {
+  const job = (pool && pool.last_job) || {};
+  const nonce1_len = Number(job.nonce1_len) || 0;
+  // full 32-byte nonce (64 hex) lives at the end of the 280-hex header blob
+  const blob = hexWithoutPrefix(job.blob || job.blob_hex || "");
+  const fullNonce = blob.slice(-64).padEnd(64, "0");
+  const counterLE = counterHexToWireLE(nonceHex);   // 8-byte search counter, wire (LE) order
+  // nonce2 = the counter (start of nonce2) || the nonce2 tail past the counter (job-delivered zeros);
+  // the nonce1 prefix (fullNonce[0 .. nonce1_len]) is intentionally excluded per ZIP-301.
+  const tail = fullNonce.slice(nonce1_len * 2 + 16);
+  return (counterLE + tail).padEnd(64 - nonce1_len * 2, "0");
+}
+
+function equihashSubmitNtime(pool) {
+  const job = (pool && pool.last_job) || {};
+  return hexWithoutPrefix(job.ntime || "");
+}
+
 function normalizeAlgoName(algo) {
   return algo && (algo.startsWith("c29") || algo === "cuckaroo") ? "c29" : algo;
 }
@@ -229,7 +267,7 @@ function parseTestArgs(args) {
 }
 
 function parseBenchArgs(args) {
-  if (args.length < 1) return o.print_help("Directive \"bench\" needs one paramater");
+  if (args.length < 1) {return o.print_help("Directive \"bench\" needs one parameter");}
   global.opt.job.algo = args.shift();
 }
 
@@ -255,6 +293,28 @@ function handleResult(msg) {
     return send({ method: "mining.submit", params: { job_id: v.job_id, plain_proof: v.plain_proof } });
   if (submit_mode === "erg")
     return send({ method: "mining.submit", params: ergSubmitParams(pool, v) });
+  // Equihash 125,4 (Flux/ZIP-301): mining.submit [worker, job_id, time(8hex), nonce2(hex), solution(hex)].
+  // The native solver returns the 8-byte search counter (v.nonce, big-endian hex) + the 106-hex
+  // 0x34-prefixed 52-byte solution (v.solution). Rebuild nonce2 = the 32-byte header nonce minus the
+  // pool's nonce1 prefix, with the search counter written little-endian at its nonceoffset.
+  if (submit_mode === "equihash")
+    return send({ method: "mining.submit",
+      params: [pool.login, v.job_id, equihashSubmitNtime(pool), equihashNonce2(pool, v.nonce), v.solution] });
+  // Iron Fish custom OBJECT stratum: submit {miningRequestId, randomness (8-byte BE nonce), graffiti}.
+  if (submit_mode === "ironfish")
+    return p.pool_write(v.pool_id, { id: 2, method: "mining.submit",
+      body: { miningRequestId: v.job_id, randomness: v.nonce, graffiti: "00".repeat(32) } });
+  // Kaspa (kheavyhash) kaspa-stratum-bridge submit: mining.submit [wallet.worker, job_id, nonce_hex].
+  // The native returns the winning 8-byte nonce as 16-hex big-endian (nonce_to_hex %016PRIx64); the
+  // pool parses it big-endian with the extranonce as the leading bytes, which is exactly this layout.
+  if (submit_mode === "kaspa")
+    return send({ method: "mining.submit", params: [pool.login, v.job_id, "0x" + v.nonce] });
+  if (submit_mode === "beam") {
+    // Beam JSON-RPC `solution`: TOP-LEVEL {id, nonce(16hex), output(208hex=104B)}. The native emits the
+    // nonce as the big-endian hex of the LE-stored 8-byte blob nonce, so reverse it back to the raw
+    // blob byte order the pool (and the nonceprefix) expect. The 104-byte solution is already raw.
+    return send({ id: v.job_id, method: "solution", nonce: reverseHexBytes(v.nonce), output: v.solution });
+  }
 
   const params = { id: v.worker_id, job_id: v.job_id, nonce: v.nonce, result: v.hash };
   if (v.mix_hash) {
@@ -297,6 +357,7 @@ function handleLastNonce(msg) {
 }
 
 function shouldStoreLastNonce(pool_id) {
+  // eslint-disable-next-line eqeqeq -- pool_id is "" | number; loose != is intentional coercion
   return pool_id !== "" && pool_id != global.opt.pool_ids.active &&
          global.opt.pools[pool_id].last_job;
 }
@@ -391,17 +452,20 @@ function baseJob(prev_job, algo, dev, pool_id) {
     seed_hex:   orDefault(prev_job.seed_hash, prev_job.seed_hex),
     target:     jobTarget(prev_job, algo),
     worker_id:  firstTruthyOr(global.opt.pools[pool_id].worker_id || global.opt.pools[pool_id].login,
-                              prev_job.id, prev_job.worker_id),
+      prev_job.id, prev_job.worker_id),
     job_id:     orDefault(prev_job.job_id, ""),
     header_hash: orDefault(prev_job.header_hash, ""),
     nonce:      orDefault(prev_job.nonce, 0),
     height:     orDefault(prev_job.height, 0),
+    difficulty: prev_job.difficulty,
     thread_num: h.get_dev_threads(dev),
     pool_id:    pool_id,
   };
 }
 
-const nonceAt32Algos = new Set(["kawpow", "firopow", "evrprogpow", "etchash", "autolykos2"]);
+const nonceAt32Algos = new Set(["kawpow", "firopow", "evrprogpow", "meowpow", "etchash", "autolykos2", "fishhash"]);
+// Kaspa-style algos sharing the 80-byte header / 8-byte nonce at offset 72 layout.
+const kHeavyHashAlgos = new Set(["kheavyhash", "karlsenhashv2", "pyrinhashv2"]);
 // Heights sampled from coin mainnets so benchmark DAG/table sizes match live pool jobs
 // (epoch-0 sizes overstate hashrate by ~7-10% on these algos): ETC 2026-06-04, RVN and ERG 2026-06-12.
 const benchHeightByAlgo = {
@@ -409,6 +473,7 @@ const benchHeightByAlgo = {
   kawpow:     4407982,
   firopow:    600000,
   evrprogpow: 1800000,
+  meowpow:    825000,
   autolykos2: 1806198,
 };
 const defaultBenchAlgos = new Set([
@@ -431,14 +496,38 @@ function isNonceAt32Algo(algo) {
   return nonceAt32Algos.has(algo);
 }
 
+function isKHeavyHashAlgo(algo) {
+  return kHeavyHashAlgos.has(algo);
+}
+
+function isEquihashAlgo(algo) {
+  return algo === "equihash125_4";
+}
+
+// A deterministic 140-byte Flux header for benching the Equihash 125,4 GPU solver (mainnet block
+// 400000). Each Wagner solve over this header finds 2 distinct proofs in ~2.2 s on a B580, so the
+// reported Sol/s is the solver's true throughput. The 32-byte nonce lives at offset 108.
+const EQUIHASH_BENCH_BLOB =
+  "04000000a8675c842f7a1342fadd00cd9b4e4909526b1c0ab5a747c5529b4deb13000000" +
+  "ce7d6ea2452245925fc70c3a08a3c3dd2ca4beab7481f237a19751666bfd25c3" +
+  "0fd282d94b1e1a7f2c57eb3fb9e2853d990753fa137e13c99bd43f220d4fce69" +
+  "90e44f5dce28421d" +
+  "600000160000000000000000000000000000000000000000000000009cfd1100";
+
+// BeamHash III M4 keystone-shaped benchmark blob: prework(32) || nonce(8) || extranonce(4).
+const BEAMHASH3_BENCH_BLOB =
+  "fc40996a518c221384c9f2542ca811cd66c4ccddb001ef40b9f9ba059c20352e" +
+  "0100000000000000" +
+  "00000000";
+
 function jobTarget(prev_job, algo) {
   const explicitTarget = orDefault(prev_job.target, "");
-  if (algo === "pearl") {
+  if (algo === "pearl" || isEquihashAlgo(algo)) {
     // HeroMiners-style pools precompute the verifier bound (pool.js pearlNbitsBound -> prev_job.target);
-    // pearlpool.cloud uses the lenient floor(2^256 / difficulty). Both are 256-bit big-endian hex.
-    if (explicitTarget) return hexWithoutPrefix(explicitTarget).padStart(64, "0");
-    const MAX = (1n << 256n) - 1n, diff = BigInt(prev_job.difficulty || 1);
-    return (diff > 0n ? MAX / diff : MAX).toString(16).padStart(64, "0");
+    // Flux set_target also delivers a 256-bit big-endian hex share target. When a pool does not send a
+    // target, use the lenient floor(2^256 / difficulty) fallback.
+    if (explicitTarget) {return hexWithoutPrefix(explicitTarget).padStart(64, "0");}
+    return fullTargetFromDifficulty(prev_job.difficulty);
   }
   if (!isNonceAt32Algo(algo)) return explicitTarget || h.diff2target(prev_job.difficulty);
   // autolykos2 (erg) may deliver the target as a DECIMAL string. Every other nonce-at-32 algo
@@ -449,6 +538,11 @@ function jobTarget(prev_job, algo) {
   if (explicitTarget && hexWithoutPrefix(explicitTarget).length > 16)
     return hexWithoutPrefix(explicitTarget).padStart(64, "0");
   return h.ethDiff2Target(prev_job.difficulty || (explicitTarget ? h.target2diff(explicitTarget) : 1));
+}
+
+function fullTargetFromDifficulty(difficulty) {
+  const MAX = (1n << 256n) - 1n, diff = BigInt(difficulty || 1);
+  return (diff > 0n ? MAX / diff : MAX).toString(16).padStart(64, "0");
 }
 
 function addC29JobFields(job, prev_job) {
@@ -470,17 +564,64 @@ function addC29JobFields(job, prev_job) {
 
 function addEthHashJobFields(job, prev_job) {
   job.noncebytes = orDefault(prev_job.noncebytes, 8);
-  job.nonceoffset = typeof prev_job.nonceoffset !== "undefined" ? prev_job.nonceoffset : 32;
+  job.nonceoffset = nonceOffsetOr(prev_job, 32);
 
   const blob = orDefault(prev_job.blob, prev_job.blob_hex);
   job.blob_hex = blob && blob.length === 64 ? blob + "0000000000000000" : blob;
 }
 
+function addKHeavyHashJobFields(job, prev_job) {
+  // kHeavyHash header is 80 bytes: pre_pow_hash(32) || timestamp_le(8) || zero pad(32) || nonce_le(8),
+  // with an 8-byte LE nonce at offset 72. Tests/bench pass blob_hex directly; the live kaspa dialect
+  // (pool.js) builds the 80-byte header from the pool's pre_pow_hash + timestamp.
+  addFixedNonceBlobFields(job, prev_job, 72);
+}
+
+function addEquihashJobFields(job, prev_job) {
+  // Equihash 125,4 (Flux/ZIP-301): 140-byte Zcash header with a 32-byte nonce at offset 108. The pool
+  // dialect (pool.js equihashNotifyJob) builds the full 280-hex header and sets nonceoffset to
+  // 108 + nonce1_len so the solver's 8-byte search counter advances inside nonce2 (after the pool's
+  // fixed nonce1 prefix). Carry ntime + nonce1_len through for the mining.submit reconstruction.
+  addFixedNonceBlobFields(job, prev_job, 108);
+  job.ntime       = orDefault(prev_job.ntime, "");
+  job.nonce1_len  = orDefault(prev_job.nonce1_len, 0);
+}
+
+function addFixedNonceBlobFields(job, prev_job, defaultOffset) {
+  job.noncebytes  = orDefault(prev_job.noncebytes, 8);
+  job.nonceoffset = nonceOffsetOr(prev_job, defaultOffset);
+  job.blob_hex    = orDefault(prev_job.blob, prev_job.blob_hex);
+}
+
+// BeamHash III blob = prework(32) || nonce(8) || extranonce(4) = 44 bytes; the 8-byte Beam nonce sits
+// at offset 32. The pool's nonceprefix (0-6 bytes) must occupy the LEADING physical bytes of that nonce
+// field. The native search counter is the LE-stored uint64 there, seeded big-endian from job.nonce and
+// fixed by nicehash_mask -- so both are the reverse of the desired physical {prefix || 0...} layout.
+function addBeamhash3JobFields(job, prev_job, pool) {
+  job.noncebytes  = 8;
+  job.nonceoffset = 32;
+  // prework(64hex) || nonce(16hex, zero placeholder) || extranonce(8hex, zero) = 88 hex = 44 bytes.
+  const prework = orDefault(prev_job.header_hash, prev_job.blob_hex).padStart(64, "0").slice(0, 64);
+  job.blob_hex = prework + "0000000000000000" + "00000000";
+
+  // The native writes the nonce to the blob BIG-endian (set_job + the beamhash3 loop both bswap), so the
+  // 8-byte nonce field's PHYSICAL bytes equal m_nonce64's bytes most-significant-first. Beam's nonceprefix
+  // must occupy the LEADING physical bytes -> the HIGH bytes of m_nonce64. So job.nonce (read big-endian
+  // by the native) and the nicehash mask are the plain {prefix || counter} layout, prefix at the front.
+  // The low bytes are the free search counter; seed its top free byte to 1 so the first m_nonce64 is
+  // never 0 (the native loop treats m_nonce64==0 as a test dispatch).
+  const prefix = hexWithoutPrefix((pool && pool.beam_nonceprefix) || "").slice(0, 16);
+  const prefixBytes = Math.min(prefix.length / 2, 8);
+  let nonce = prefix.slice(0, prefixBytes * 2);
+  if (prefixBytes < 8) nonce += "01";                  // seed the first free (counter) byte = 1
+  job.nonce         = nonce.padEnd(16, "0");
+  job.nicehash_mask = "ff".repeat(prefixBytes).padEnd(16, "0");
+}
+
 function addStandardJobFields(job, prev_job) {
   job.noncebytes  = orDefault(prev_job.noncebytes, 4);
   job.blob_hex    = orDefault(prev_job.blob, prev_job.blob_hex);
-  job.nonceoffset = typeof prev_job.nonceoffset !== "undefined" ?
-                    prev_job.nonceoffset : (job.algo === "ghostrider" ? 76 : 39);
+  job.nonceoffset = nonceOffsetOr(prev_job, job.algo === "ghostrider" ? 76 : 39);
 }
 
 function addNoncePrefix(job, prev_job) {
@@ -503,7 +644,7 @@ function addNonceFields(job, prev_job, pool_id) {
   const last_job_can_be_used = last_job && last_job.algo === job.algo;
   // use existing nicehash_mask or make a new one with FF00..00 that job.noncebytes long
   job.nicehash_mask = orDefault(prev_job.nicehash_mask,
-                                defaultNicehashMask(job, pool_id, last_job_can_be_used));
+    defaultNicehashMask(job, pool_id, last_job_can_be_used));
   job.nonce = orDefault(prev_job.nonce, reusableLastNonce(last_job_can_be_used));
 }
 
@@ -537,9 +678,18 @@ function set_job(prev_job) {
   const pool_id = global.opt.pool_ids.active;
   const job = baseJob(prev_job, algo, dev, pool_id);
   if (algo === "c29") addC29JobFields(job, prev_job);
+  else if (algo === "beamhash3") addBeamhash3JobFields(job, prev_job, global.opt.pools[pool_id]);
+  else if (isKHeavyHashAlgo(algo)) addKHeavyHashJobFields(job, prev_job);
+  else if (isEquihashAlgo(algo)) addEquihashJobFields(job, prev_job);
   else if (isNonceAt32Algo(algo)) addEthHashJobFields(job, prev_job);
   else addStandardJobFields(job, prev_job);
-  addNonceFields(job, prev_job, pool_id);
+  // BeamHash III seeds its nonce from the pool nonceprefix inside addBeamhash3JobFields; the generic
+  // nonce/nicehash defaults would clobber that, so only run them for the other algos.
+  if (algo !== "beamhash3") addNonceFields(job, prev_job, pool_id);
+  else {
+    job.nicehash_mask = orDefault(job.nicehash_mask, "0000000000000000");
+    job.nonce = orDefault(job.nonce, "0000000000000000");
+  }
   set_algo_msr(algo);
   h.messageWorkers({type: "job", job: last_job = job});
   return job;
@@ -550,6 +700,31 @@ function prepareBenchmarkJob(job) {
     job.noncebytes = 8;
     job.nonceoffset = 32;
     if (job.blob_hex && job.blob_hex.length === 64) job.blob_hex += "0000000000000000";
+  }
+  if (isKHeavyHashAlgo(job.algo)) {
+    // 80-byte Kaspa-style header, 8-byte nonce at offset 72 (kheavyhash: matrix from header[0..31];
+    // karlsenhashv2: prePow||ts||zeros||nonce -> the FishHash DAG).
+    job.noncebytes = 8;
+    job.nonceoffset = 72;
+    if (!job.blob_hex || job.blob_hex.length !== 160)
+      job.blob_hex = "2a".repeat(32) + "52c9f84301000000" + "00".repeat(32) + "0000000000000000";
+  }
+  if (isEquihashAlgo(job.algo)) {
+    // Equihash 125,4 (ZelHash/Flux): 140-byte Zcash header with a 32-byte nonce at offset 108. Bench
+    // over the deterministic block-400000 header so each solve finds ~1.88 proofs and the rate is Sol/s.
+    job.noncebytes = 8;
+    job.nonceoffset = 108;
+    if (!job.blob_hex || job.blob_hex.length !== 280) job.blob_hex = EQUIHASH_BENCH_BLOB;
+    job.height = job.height || 400000;
+  }
+  if (job.algo === "beamhash3") {
+    // BeamHash III: one Wagner solve per dispatch over a deterministic M4-shaped prework. Seed the
+    // 8-byte nonce nonzero so the native path does not classify the dispatch as an is_test gen run.
+    job.noncebytes = 8;
+    job.nonceoffset = 32;
+    if (!job.blob_hex || job.blob_hex.length !== 88) job.blob_hex = BEAMHASH3_BENCH_BLOB;
+    job.nonce = job.nonce || "0100000000000000";
+    job.nicehash_mask = job.nicehash_mask || "0000000000000000";
   }
   if (benchHeightByAlgo[job.algo]) job.height = job.height || benchHeightByAlgo[job.algo];
   if (job.algo === "etchash") job.seed_hex = "";
@@ -567,18 +742,18 @@ function bench_algo(algo, cb) {
   h.recreate_threads(job.dev, messageHandler, workerRuntimeEnv(algo));
   // Live-size DAG/table builds (benchHeightByAlgo) take ~30s on a fast GPU before the
   // 60s+ measurement window even starts, so the old 2 minute cap could cut off honest runs.
-  let timeout = setTimeout(function() {
+  const timeout = setTimeout(function() {
     h.log_err("Benchmark " + algo + " algo (" + job.dev + ") timeout");
     return cb(0);
   }, 4*60*1000);
-  algo_params_bench_cb = function(hashrate) { clearTimeout(timeout); return cb(hashrate) };
+  algo_params_bench_cb = function(hashrate) { clearTimeout(timeout); return cb(hashrate); };
   set_algo_msr(algo);
   h.messageWorkers({type: "bench", job: last_job = job});
 }
 
 // do global.opt.algo_params benchmarks if perf === null
 function bench_algos(cb) {
-  let algos = benchmarkAlgos();
+  const algos = benchmarkAlgos();
   let is_before_first_benchmark = true;
   h.repeat(function(cb_next) {
     const algo = nextAlgoToBenchmark(algos);
@@ -645,7 +820,7 @@ function scheduleDonationMining() {
   if (global.opt.pool_ids.donate !== null) setInterval(function() {
     p.connect_pool_throttle(global.opt.pool_ids.donate, set_job);
     setTimeout(p.switch_pool, global.opt.pool_time.donate_length * 1000,
-               global.opt.pool_ids.donate, set_job);
+      global.opt.pool_ids.donate, set_job);
   }, global.opt.pool_time.donate_interval * 1000);
 }
 
@@ -702,7 +877,7 @@ function l3CacheEntryBytes(base, l3_ids) {
     if (l3_ids.has(id)) return 0;
     l3_ids.add(id);
     return cacheSizeBytes(fs.readFileSync(`${base}/size`, "utf8").trim());
-  } catch (_) {
+  } catch {
     return 0;
   }
 }

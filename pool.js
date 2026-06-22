@@ -49,11 +49,27 @@ function protocolForAlgo(algo) {
     case "kawpow":     return "raven";
     case "firopow":    return "raven";
     case "evrprogpow": return "raven";
+    case "meowpow":    return "raven";
     case "etchash":    return "eth";
     case "autolykos2": return "erg";
     case "pearl":      return "pearl";
+    case "fishhash":   return "ironfish";
+    case "equihash125_4": return "equihash";
+    case "beamhash3":  return "beam";
+    case "kheavyhash":  return "kaspa";
+    case "karlsenhashv2": return "kaspa";
+    case "pyrinhashv2": return "kaspa";
     default:           return null;
   }
+}
+
+// Beam packs the network difficulty into a 32-bit int (top 8 bits = order, low 24 = mantissa). The
+// native beamhash3 solver re-derives it from the low 4 bytes of the 32-byte big-endian target, so the
+// JS job carries the packed int there. We keep a per-pool copy so a job that omits `difficulty` (some
+// pools push it only on the login/set) can still resolve a target.
+function beamPackedTarget(packed) {
+  const p = (packed >>> 0).toString(16).padStart(8, "0");
+  return "0".repeat(56) + p;   // 64 hex = 32 bytes big-endian, packed int32 in the low 4 bytes
 }
 
 function defaultPoolProtocol() {
@@ -67,11 +83,16 @@ function poolProtocol(pool) {
 
 function usesMiningSubscribe(pool) {
   const protocol = poolProtocol(pool);
-  return protocol === "raven" || protocol === "eth" || protocol === "erg";
+  return protocol === "raven" || protocol === "eth" || protocol === "erg" ||
+         protocol === "equihash" || protocol === "kaspa";
 }
 
 function usesEthProxy(pool) {
   return poolProtocol(pool) === "ethproxy";
+}
+
+function usesIronfish(pool) {
+  return poolProtocol(pool) === "ironfish";
 }
 
 // Standard Pearl handshake (HeroMiners/LuckyPool/etc.): mining.subscribe + mining.authorize
@@ -121,7 +142,7 @@ module.exports.pool_write = function(pool_id, json) {
   pool_log2(pool_id, "Sent to the pool: " + message);
   pool.socket.write(message + "\n");
   // sends keepalive if no submit/keepalive to pool for more than global.opt.pool_time.keepalive
-  if (!pool.is_keepalive || usesMiningSubscribe(pool) || usesEthProxy(pool) || pearlUsesSubscribe(pool)) return;
+  if (!pool.is_keepalive || usesMiningSubscribe(pool) || usesEthProxy(pool) || pearlUsesSubscribe(pool) || usesIronfish(pool)) return;
   clearPoolKeepalive(pool);
   pool.keepalive = setTimeout(function() {
     pool.keepalive = null;
@@ -163,7 +184,7 @@ function applyLoginExtensions(pool_id, extensions) {
 
 function algoFromPass(pool) {
   const pass = String(pool.pass || "");
-  const m = pass.match(/(?:^|[~;,])(?:algo=)?(kawpow|firopow|evrprogpow|etchash|autolykos2|pearl)(?:$|[~;,])/i);
+  const m = pass.match(/(?:^|[~;,])(?:algo=)?(kawpow|firopow|evrprogpow|meowpow|etchash|autolykos2|pearl|fishhash|equihash125_4)(?:$|[~;,])/i);
   return m ? m[1].toLowerCase() : "";
 }
 
@@ -196,9 +217,40 @@ function isErgJobNotification(json) {
   return json.method === "mining.notify" && Array.isArray(json.params) && json.params.length >= 7;
 }
 
+// ZIP-301 EquihashStratum (Zcash/Flux) mining.notify carries 8 array fields:
+// [job_id, version(LE 8hex), prevhash(64), merkleroot(64), reserved(64), time(8), bits(8), clean].
+function isEquihashJobNotification(json) {
+  return json.method === "mining.notify" && Array.isArray(json.params) && json.params.length >= 8;
+}
+
+// Beam JSON-RPC `job`: TOP-LEVEL {input(64hex), difficulty(int32), id, method:"job"} (no params array).
+function isBeamJobNotification(json) {
+  return json.method === "job" && typeof json.input === "string";
+}
+
+// Kaspa (kheavyhash) kaspa-stratum-bridge mining.notify carries 3 params:
+// [jobId(string), [u0,u1,u2,u3] (4 uint64 LE pre-pow words), timestamp(ms uint64)]. The 4 words are the
+// 32-byte BLAKE2b pre-pow hash (TS=0,Nonce=0) split into little-endian uint64s. They overflow JS
+// Number, so parsePoolLine re-extracts them from the raw line into json.__kaspa_words (decimal strings).
+function isKaspaJobNotification(json) {
+  return json.method === "mining.notify" && Array.isArray(json.params) &&
+         json.params.length >= 3 && Array.isArray(json.params[1]) && json.params[1].length >= 4;
+}
+
 // pearlpool.cloud pushes mining.notify with OBJECT params {job_id, header, target, difficulty, height, mode}
 function isPearlJobNotification(json) {
   return json.method === "mining.notify" && isObject(json.params) && typeof json.params.header === "string";
+}
+
+// Iron Fish uses a custom OBJECT-based stratum: every push is {id, method, body:{...}} (NOT params).
+// mining.notify carries the 180-byte block header (first 8 bytes = randomness, leading bytes == xn).
+function isIronfishJobNotification(json) {
+  return json.method === "mining.notify" && isObject(json.body) && typeof json.body.header === "string";
+}
+
+// Iron Fish mining.set_target carries a 64-hex BE 256-bit target in body.target.
+function isIronfishSetTargetNotification(json) {
+  return json.method === "mining.set_target" && isObject(json.body) && typeof json.body.target === "string";
 }
 
 function isEthProxyWork(json) {
@@ -211,6 +263,13 @@ function isRavenSetTargetNotification(json) {
 
 function isSetDifficultyNotification(json) {
   return json.method === "mining.set_difficulty" && Array.isArray(json.params) && json.params.length >= 1;
+}
+
+// Kaspa pushes a standalone set_extranonce (NO "mining." prefix) carrying [extranonce_hex, size]; it
+// also rides in the subscribe result. Either way the extranonce becomes the leading bytes of the nonce.
+function isSetExtranonceNotification(json) {
+  return (json.method === "set_extranonce" || json.method === "mining.set_extranonce") &&
+         Array.isArray(json.params) && json.params.length >= 1;
 }
 
 function hexWithoutPrefix(value) {
@@ -287,6 +346,94 @@ function rememberErgSubmitJob(pool, job) {
   while (jobIds.length > 16) delete pool.erg_submit_jobs[jobIds.shift()];
 }
 
+// Build the Equihash 125,4 (Flux/ZIP-301) job from a mining.notify. The 8 notify fields go straight
+// into the 140-byte Zcash header at the fixed offsets (prev/merkle/reserved already in header byte
+// order -- concat directly, NO reversal); the 32-byte nonce at offset 108 starts as nonce1 (the
+// subscribe extranonce prefix) followed by a zero nonce2 region the solver fills. The solver's 8-byte
+// search counter is written at nonceoffset = 108 + nonce1_len so it lands inside nonce2, never
+// clobbering the pool's fixed nonce1 prefix.
+function equihashNotifyJob(pool, json) {
+  const p = json.params;
+  const version  = hexWithoutPrefix(p[1]).padStart(8, "0").slice(0, 8);
+  const prevhash = hexWithoutPrefix(p[2]).padStart(64, "0").slice(0, 64);
+  const merkle   = hexWithoutPrefix(p[3]).padStart(64, "0").slice(0, 64);
+  const reserved = hexWithoutPrefix(p[4]).padStart(64, "0").slice(0, 64);
+  const ntime    = hexWithoutPrefix(p[5]).padStart(8, "0").slice(0, 8);
+  const bits     = hexWithoutPrefix(p[6]).padStart(8, "0").slice(0, 8);
+
+  const nonce1 = poolExtraNonce(pool);                 // pool nonce prefix (var length 2-4 bytes)
+  const nonce  = (nonce1 + "0".repeat(64)).slice(0, 64); // 32-byte nonce = nonce1 || zero nonce2
+  const blob   = version + prevhash + merkle + reserved + ntime + bits + nonce; // 280 hex = 140 bytes
+
+  return {
+    algo: fixedAlgoJobName(json, "equihash125_4"),
+    blob: blob,
+    job_id: p[0],
+    ntime: ntime,
+    target: pool.equihash_target,
+    nonce1_len: nonce1.length / 2,   // bytes of the fixed pool prefix; the rest of the 32 B is nonce2
+    noncebytes: 8,                   // the solver's incrementing search counter is 8 bytes
+    nonceoffset: 108 + nonce1.length / 2,
+  };
+}
+
+// Kaspa diff -> 256-bit BE share target. The kaspa-stratum-bridge DiffToTarget = maxTarget/diff where
+// maxTarget = 0xFFFF...FF (28 bytes = 224 one-bits, i.e. 2^224-1). The native kheavyhash compares the
+// 32-byte output little-endian against this big-endian boundary, so we pad to a 64-hex BE string.
+function kaspaDiffToTarget(diff) {
+  const MAX_TARGET = (1n << 224n) - 1n;
+  const d = Math.max(1, Number(diff) || 1);
+  // diff can be fractional; scale to keep precision then divide (target = MAX_TARGET / diff).
+  const scale = 1n << 32n;
+  const dScaled = BigInt(Math.round(d * Number(scale)));
+  const target = dScaled > 0n ? (MAX_TARGET * scale) / dScaled : MAX_TARGET;
+  return target.toString(16).padStart(64, "0").slice(-64);
+}
+
+// Build the Kaspa (kheavyhash) 80-byte header job from a mining.notify. Header layout (LE) =
+//   pre_pow_hash(32) || timestamp(8) || zero(32) || nonce(8)   [native: matrix+keccak from [0..31]].
+// The 4 pre-pow uint64 words go in LITTLE-endian at offsets 0,8,16,24; the timestamp LE at 32. The
+// 8-byte search nonce at offset 72 is seeded so the pool's extranonce occupies its HIGH bytes (the
+// pool parses the submitted nonce big-endian with the extranonce as the leading bytes). The native
+// search counter advances the LOW bytes (nonce2); nicehash_mask fixes the extranonce high bytes.
+function kaspaNotifyJob(pool, json) {
+  const p = json.params;
+  const words = json.__kaspa_words || p[1].map((v) => BigInt(v)); // BigInt-safe from raw line
+  const timestamp = json.__kaspa_timestamp !== undefined ? BigInt(json.__kaspa_timestamp) : BigInt(p[2]);
+
+  let blob = "";
+  for (let i = 0; i < 4; ++i) blob += le8Hex(BigInt(words[i]));
+  blob += le8Hex(timestamp);          // timestamp word (offset 32)
+  blob += "00".repeat(32);            // zero padding (offsets 40..71)
+
+  // Extranonce is the leading (high) bytes of the 8-byte nonce. Seed job.nonce with it in the high
+  // bytes; the native writes the nonce LE at offset 72, so the high bytes land at the top of the field.
+  const xn = poolExtraNonce(pool);                       // 0..3 byte hex (e.g. "56e0")
+  const xnBytes = Math.min(xn.length / 2, 8);
+  const nonceSeedHex = (xn + "0".repeat(16)).slice(0, 16); // 8-byte uint64 hex, xn in the high bytes
+  blob += "0000000000000000";         // nonce placeholder at offset 72 (native re-embeds the seed)
+
+  return {
+    algo: fixedAlgoJobName(json, "kheavyhash"),
+    blob: blob,                        // 160 hex = 80 bytes
+    job_id: String(p[0]),
+    target: pool.kaspa_target || kaspaDiffToTarget(pool.kaspa_difficulty || 1),
+    difficulty: pool.kaspa_difficulty || 1,
+    noncebytes: 8,
+    nonceoffset: 72,
+    nonce: nonceSeedHex,
+    nicehash_mask: ("ff".repeat(xnBytes) + "00".repeat(8 - xnBytes)),
+  };
+}
+
+// 8-byte little-endian hex of a uint64 (BigInt).
+function le8Hex(value) {
+  let v = BigInt(value) & ((1n << 64n) - 1n);
+  let out = "";
+  for (let i = 0; i < 8; ++i) { out += (v & 0xFFn).toString(16).padStart(2, "0"); v >>= 8n; }
+  return out;
+}
+
 function ravenTarget(pool, notifyTarget) {
   const target = hexWithoutPrefix(notifyTarget || pool.raven_target || "");
   return target.padEnd(64, "0");
@@ -336,6 +483,7 @@ function reactivateBackupPool(active_pool, set_job) {
 }
 
 function shouldSkipBackupPool(pool_id, active_pool) {
+  // eslint-disable-next-line eqeqeq -- pool_id is "" | number; loose == is intentional coercion
   return pool_id == global.opt.pool_ids.donate || pool_id == active_pool || !alivePoolJob(pool_id);
 }
 
@@ -381,12 +529,30 @@ function handleEthSetTarget(pool_id, json) {
   global.opt.pools[pool_id].eth_target = hexWithoutPrefix(json.params[0]);
 }
 
+// Equihash mining.set_target carries a verbatim 64-hex BE 256-bit share target; store it as-is
+// (left zero-padded to 64), like Iron Fish -- NOT left-justified the way ravenTarget treats its target.
+function handleEquihashSetTarget(pool_id, json) {
+  global.opt.pools[pool_id].equihash_target = hexWithoutPrefix(json.params[0]).padStart(64, "0");
+}
+
+// Iron Fish set_target carries a verbatim 64-hex BE 256-bit target; store it as-is (zero-padded on
+// the left to 64 hex), unlike ravenTarget which left-justifies its share target.
+function handleIronfishSetTarget(pool_id, json) {
+  global.opt.pools[pool_id].ironfish_target = hexWithoutPrefix(json.body.target).padStart(64, "0");
+}
+
 function handleSetDifficulty(pool_id, json) {
   const pool = global.opt.pools[pool_id];
   pool.eth_difficulty = json.params[0];
   // var-diff pearl pools may push a standalone set_difficulty; stash it so the next pearl job picks
   // it up if the notify itself omits a diff field (otherwise jobTarget would fall back to MAX).
   if (poolProtocol(pool) === "pearl") pool.pearl_difficulty = json.params[0];
+  // Kaspa pushes mining.set_difficulty [diff] (a float). Stash it and precompute the BE share target;
+  // the next mining.notify (which carries no target) picks it up via kaspaNotifyJob.
+  if (poolProtocol(pool) === "kaspa") {
+    pool.kaspa_difficulty = json.params[0];
+    pool.kaspa_target = kaspaDiffToTarget(json.params[0]);
+  }
 }
 
 function nonceAt32Job(pool, job) {
@@ -418,7 +584,7 @@ function jobFromPoolMessage(pool_id, json) {
       // raven dialect is shared by kawpow/firopow/evrprogpow; resolve the actual algo from the job,
       // the configured global job, or the pool pass (falling back to kawpow) so firopow/evrprogpow
       // pools select the right seal/epoch instead of always hashing kawpow.
-      algo: json.algo || (global.opt.job && global.opt.job.algo) || algoFromPass(pool) || "kawpow",
+      algo: fixedAlgoJobName(json, algoFromPass(pool) || "kawpow"),
       header_hash: hexWithoutPrefix(json.params[1]),
       seed_hash: hexWithoutPrefix(json.params[2]),
       target: ravenTarget(pool, json.params[3]),
@@ -479,7 +645,44 @@ function jobFromPoolMessage(pool_id, json) {
       target: pearlUsesSubscribe(pool) ? pearlNbitsBound(pp.target) : undefined,
     };
   }
-  if (isLoginJob(json)) { // login job
+  if (poolProtocol(pool) === "equihash" && isEquihashJobNotification(json)) {
+    if (!pool.logged_in) return null;
+    pool.submit_mode = "equihash";
+    return equihashNotifyJob(pool, json);
+  }
+  if (poolProtocol(pool) === "ironfish" && isIronfishJobNotification(json)) {
+    if (!pool.logged_in) return null;
+    pool.submit_mode = "ironfish";
+    const body = json.body;
+    return {
+      algo: fixedAlgoJobName(json, "fishhash"),
+      blob: hexWithoutPrefix(body.header), // the 180-byte block header (first 8 bytes = randomness)
+      job_id: body.miningRequestId,
+      noncebytes: 8,
+      nonceoffset: 0,
+      target: pool.ironfish_target,
+      xn: pool.ironfish_xn || "",
+    };
+  }
+  if (poolProtocol(pool) === "kaspa" && isKaspaJobNotification(json)) {
+    if (!pool.logged_in) return null;
+    pool.submit_mode = "kaspa";
+    return kaspaNotifyJob(pool, json);
+  }
+  if (poolProtocol(pool) === "beam" && isBeamJobNotification(json)) {
+    if (!pool.logged_in) return null;
+    pool.submit_mode = "beam";
+    if (typeof json.difficulty === "number") pool.beam_difficulty = json.difficulty;
+    const packed = typeof json.difficulty === "number" ? json.difficulty : (pool.beam_difficulty || 0);
+    return {
+      algo:        "beamhash3",
+      header_hash: hexWithoutPrefix(json.input),   // 64hex = 32-byte prework (goes at blob offset 0)
+      job_id:      String(json.id),
+      difficulty:  packed,                          // raw packed int32, for reporting
+      target:      beamPackedTarget(packed),        // native re-derives the packed int from the target
+    };
+  }
+  if (isLoginJob(json)) {
     pool.logged_in = true;
     pool.submit_mode = null;
     if ("id" in json.result) pool.worker_id = json.result.id;
@@ -491,14 +694,20 @@ function jobFromPoolMessage(pool_id, json) {
 }
 
 function jobTargetWork(job) {
+  // BeamHash III carries a PACKED 32-bit network difficulty (not a 256-bit boundary); the share rate is
+  // in solutions, so report the packed difficulty itself rather than decoding job.target as a boundary.
+  if (job.algo === "beamhash3") return job.difficulty ? BigInt(job.difficulty) : null;
   if (!job.target) return null;
-  if (job.algo === "kawpow" || job.algo === "firopow" || job.algo === "evrprogpow")
+  if (job.algo === "kawpow" || job.algo === "firopow" || job.algo === "evrprogpow" || job.algo === "meowpow")
     return h.kawpowTarget2diff(job.target);
   // pearl: report the share target in GEMM MACs to match the MAC/s hashrate (so time-per-share =
   // target/hashrate). work/share = (tiles/share = 2^256/bound) * (MACs/tile = 16*16*k_eff).
   if (job.algo === "pearl") return h.target256ToWork(job.target) * BigInt(16 * 16 * pearlKEff());
-  // etchash/autolykos2 carry a full 256-bit target too, but their hashrate is in hashes -> H/share.
-  if (job.algo === "etchash" || job.algo === "autolykos2") return h.target256ToWork(job.target);
+  // etchash/autolykos2/fishhash carry a full 256-bit target too, but their hashrate is in hashes -> H/share.
+  if (job.algo === "etchash" || job.algo === "autolykos2" || job.algo === "fishhash" ||
+      job.algo === "equihash125_4" || job.algo === "kheavyhash" ||
+      job.algo === "karlsenhashv2" || job.algo === "pyrinhashv2")
+    return h.target256ToWork(job.target);
   return h.target2diff(job.target);
 }
 
@@ -632,12 +841,76 @@ function poolResponseHandler(pool_id, id) {
   return handleShareResponse; // share submit response
 }
 
+// Iron Fish handshake replies (mining.subscribed / mining.submitted) are METHOD pushes, NOT
+// {id,result} responses, and Iron Fish reuses ids across messages -- so they must be matched by
+// method, never routed through the id-keyed handlePoolResponse.
+function handleIronfishSubscribed(pool_id, json) {
+  const pool = global.opt.pools[pool_id];
+  const body = isObject(json.body) ? json.body : {};
+  pool.ironfish_xn = validExtraNonce(body.xn) || hexWithoutPrefix(body.xn);
+  return loginSucceeded(pool_id);
+}
+
+function handleIronfishSubmitted(pool_id, json) {
+  const ok = isObject(json.body) && json.body.result === true;
+  return handleShareResponse(pool_id, !ok, ok, ok ? "" : ": rejected");
+}
+
+function handleIronfishMessage(pool_id, json, set_job) {
+  if (poolProtocol(global.opt.pools[pool_id]) !== "ironfish") return false;
+  if (json.method === "mining.subscribed") { handleIronfishSubscribed(pool_id, json); return true; }
+  if (json.method === "mining.submitted")  { handleIronfishSubmitted(pool_id, json);  return true; }
+  if (isIronfishSetTargetNotification(json)) { handleIronfishSetTarget(pool_id, json); return true; }
+  const job = jobFromPoolMessage(pool_id, json);
+  if (job) { handlePoolJob(pool_id, job, set_job); return true; }
+  return false;
+}
+
+// Beam replies (to login and to solution submits) are `method:"result"` messages carrying a `code`
+// field (0 = login OK, 1 = share accepted; anything else = error/reject) plus an optional description.
+// The login reply also carries `nonceprefix` (0-6 bytes) -- the 8-byte mining nonce's leading bytes
+// MUST match it, so we stash it and seed the job nonce + nicehash mask from it.
+function isBeamResult(json) {
+  return json.method === "result" && typeof json.code === "number";
+}
+
+function handleBeamResult(pool_id, json) {
+  const pool = global.opt.pools[pool_id];
+  const desc = json.description ? ": " + json.description : "";
+  if (String(json.id) === "login" || "nonceprefix" in json) {
+    if (json.code === 0) {
+      if (typeof json.nonceprefix === "string") pool.beam_nonceprefix = hexWithoutPrefix(json.nonceprefix);
+      if (typeof json.forkheight === "number") pool.beam_forkheight = json.forkheight;
+      return loginSucceeded(pool_id);
+    }
+    return loginFailed(pool_id, desc || ": Login rejected");
+  }
+  // a solution-submit reply
+  if (json.code === 1) {
+    ++ pool.good_shares;
+    return pool_log(pool_id, "Share accepted by the pool " + poolShareStats(pool_id));
+  }
+  ++ pool.bad_shares;
+  return pool_log_err(pool_id, "Share rejected by the pool " + poolShareStats(pool_id) + desc);
+}
+
 function pool_message(pool_id, json, set_job) {
+  if (poolProtocol(global.opt.pools[pool_id]) === "beam" && isBeamResult(json))
+    return handleBeamResult(pool_id, json);
+  if (handleIronfishMessage(pool_id, json, set_job)) return;
   if (isRavenSetTargetNotification(json)) {
-    if (poolProtocol(global.opt.pools[pool_id]) === "eth") return handleEthSetTarget(pool_id, json);
+    const protocol = poolProtocol(global.opt.pools[pool_id]);
+    if (protocol === "eth") return handleEthSetTarget(pool_id, json);
+    if (protocol === "equihash") return handleEquihashSetTarget(pool_id, json);
     return handleRavenSetTarget(pool_id, json);
   }
   if (isSetDifficultyNotification(json)) return handleSetDifficulty(pool_id, json);
+  if (isSetExtranonceNotification(json)) {
+    rememberPoolExtraNonceHex(pool_id, json.params[0]);
+    if (Number.isInteger(Number(json.params[1])))
+      global.opt.pools[pool_id].extra_nonce2_size = Number(json.params[1]);
+    return;
+  }
   const job = jobFromPoolMessage(pool_id, json);
   if (job) return handlePoolJob(pool_id, job, set_job);
   if ("id" in json) return handlePoolResponse(pool_id, json);
@@ -687,11 +960,29 @@ function normalizedPoolAlgoPerf(algo, perf) {
 
 function parsePoolLine(pool_id, message) {
   try {
-    return JSON.parse(message);
-  } catch (e) {
+    const json = JSON.parse(message);
+    attachKaspaPrecisePrePow(json, message);
+    return json;
+  } catch {
     pool_log_err(pool_id, "Can't parse message from the pool: " + message);
     return null;
   }
+}
+
+// The Kaspa mining.notify pre-pow words are 64-bit unsigned ints that exceed Number.MAX_SAFE_INTEGER,
+// so JSON.parse silently rounds them. Re-extract the exact integer literals from the raw line (decimal
+// strings) and stash them as BigInt-safe fields the kaspa job builder reads instead of the lossy array.
+function attachKaspaPrecisePrePow(json, message) {
+  if (!json || json.method !== "mining.notify" || !Array.isArray(json.params) ||
+      !Array.isArray(json.params[1])) return;
+  // params: [ "jobId", [w0,w1,w2,w3], timestamp ]. Capture the bracketed word list + the timestamp.
+  const m = message.match(/"params"\s*:\s*\[\s*"[^"]*"\s*,\s*\[([^\]]*)\]\s*,\s*(\d+)/);
+  if (!m) return;
+  const words = m[1].split(",").map((s) => s.trim()).filter((s) => /^\d+$/.test(s));
+  if (words.length < 4) return;
+  // Store as exact decimal strings (NOT BigInt) so the debug logger's JSON.stringify(json) still works.
+  json.__kaspa_words = words.slice(0, 4);
+  json.__kaspa_timestamp = m[2];
 }
 
 function processPoolJson(pool_id, json, set_job, pool_err) {
@@ -709,7 +1000,7 @@ function processPoolJson(pool_id, json, set_job, pool_err) {
 
 function handlePoolLines(pool_id, messages, set_job, pool_err) {
   for (const message of messages) {
-    if (message.trim() === '') continue;
+    if (message.trim() === "") continue;
     const json = parsePoolLine(pool_id, message);
     if (json && processPoolJson(pool_id, json, set_job, pool_err)) return true;
   }
@@ -753,6 +1044,15 @@ function scheduleInitialJobTimeout(pool_id, socket, set_job, pool_err) {
 function handlePoolConnect(pool_id, socket, pool) {
   if (!isCurrentPoolSocket(pool_id, socket)) return;
   pool_log1(pool_id, "Connected to the pool");
+  if (usesIronfish(pool)) {
+    // Iron Fish custom OBJECT stratum: a single mining.subscribe push carries the wallet+worker
+    // (publicAddress) and the agent; the pool replies with mining.subscribed (handled by method).
+    // No separate authorize. extend:["mining.submitted"] requests the submit-result push.
+    return module.exports.pool_write(pool_id, {
+      id: 1, method: "mining.subscribe",
+      body: { version: 3, agent: o.agent_str, publicAddress: pool.login, extend: ["mining.submitted"] }
+    });
+  }
   if (pearlUsesSubscribe(pool)) {
     // Pearl subscribe dialect: send subscribe AND authorize back-to-back. mining.subscribe is just a
     // handshake nicety -- HeroMiners acks it (result:true), LuckyPool rejects it ("method not
@@ -765,6 +1065,13 @@ function handlePoolConnect(pool_id, socket, pool) {
       params: { wallet: pool.login, worker: pool.worker || "mom", pass: pool.pass }
     });
   }
+  if (poolProtocol(pool) === "beam") {
+    // Beam JSON-RPC: a single `login` with the wallet/api_key (the pool replies with a `result`
+    // message carrying code:0 and the nonceprefix). No mining.subscribe handshake.
+    return module.exports.pool_write(pool_id, {
+      jsonrpc: "2.0", id: "login", method: "login", api_key: pool.login
+    });
+  }
   const request = usesMiningSubscribe(pool) ?
     { jsonrpc: "2.0", id: 1, method: "mining.subscribe", params: [o.agent_str] } :
     usesEthProxy(pool) ?
@@ -774,8 +1081,8 @@ function handlePoolConnect(pool_id, socket, pool) {
 }
 
 function splitPoolMessages(pool_data_buff) {
-  const messages = pool_data_buff.split('\n');
-  const incomplete_line = pool_data_buff.slice(-1) === '\n' ? '' : messages.pop();
+  const messages = pool_data_buff.split("\n");
+  const incomplete_line = pool_data_buff.slice(-1) === "\n" ? "" : messages.pop();
   return { messages, incomplete_line };
 }
 
@@ -788,7 +1095,7 @@ function readPoolData(pool_id, socket, pool_data_buff, data, pool_err) {
 }
 
 function hasCompletePoolLine(pool_data_buff) {
-  return pool_data_buff.indexOf('\n') !== -1;
+  return pool_data_buff.indexOf("\n") !== -1;
 }
 
 function poolDataHandler(pool_id, socket, set_job, pool_err) {

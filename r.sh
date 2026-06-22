@@ -35,7 +35,7 @@ if nvidia-smi -L >/dev/null 2>&1; then docker_flags+=(--gpus all); fi
 
 # Forward these build-tuning env vars into the container only when set. MOM_COMBINED_TARGETS lets a
 # build widen/narrow its AOT arch set; MOM_FORCE_REBUILD forces a clean reconfigure.
-for var in MOM_PORTABLE_BUILD MOM_LTO MOM_PERF_SAMPLES MOM_COMBINED_TARGETS MOM_FORCE_REBUILD; do
+for var in MOM_PORTABLE_BUILD MOM_LTO MOM_PERF_SAMPLES MOM_COMBINED_TARGETS MOM_FORCE_REBUILD MOM_BUILD_VERBOSE MOM_BUILD_JOBS; do
   if [ -n "${!var:-}" ]; then docker_flags+=(--env "$var"); fi
 done
 

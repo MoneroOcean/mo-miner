@@ -2,8 +2,6 @@
 
 #include "lib-internal.h"
 #include <algorithm>
-#include <cstdlib>
-#include <cerrno>
 #include <limits>
 #include <list>
 #include <sstream>
@@ -64,19 +62,6 @@ static std::string available_dev_str() {
   return first ? "none" : devices.str();
 }
 
-// Parse env_name as a base-10 unsigned long, requiring it to be present, non-empty
-// and fully numeric. Returns false (leaving out unchanged) when unset or malformed.
-static bool parse_env_ulong(const char* const env_name, unsigned long& out) {
-  const char* const value = std::getenv(env_name);
-  if (!value || !*value) return false;
-  char* end = nullptr;
-  errno = 0;
-  const unsigned long parsed = std::strtoul(value, &end, 10);
-  if (errno || end == value || *end) return false;
-  out = parsed;
-  return true;
-}
-
 // Round down to a whole multiple of step (step > 0) so intensities stay workgroup-aligned.
 static unsigned round_down_to_multiple(const unsigned value, const unsigned step) {
   return value - value % step;
@@ -88,7 +73,7 @@ static unsigned parse_pow_workgroup_override(
   const unsigned preferred = fallback_override ? fallback_override : (dev.is_cpu() ? 128 : 256);
   const unsigned fallback = sycl_default_workgroup(dev, {32, 64, 128, 256, 512}, preferred);
   unsigned long parsed = 0;
-  if (!parse_env_ulong(env_name, parsed)) return fallback;
+  if (!mom_parse_env_ulong(env_name, parsed)) return fallback;
   switch (parsed) {
     case 32:
     case 64:
@@ -102,7 +87,7 @@ static unsigned parse_pow_workgroup_override(
 
 static unsigned parse_pow_intensity_override(const unsigned local, const char* const env_name) {
   unsigned long parsed = 0;
-  if (!parse_env_ulong(env_name, parsed) ||
+  if (!mom_parse_env_ulong(env_name, parsed) ||
       parsed < local || parsed > std::numeric_limits<unsigned>::max()) return 0;
   return round_down_to_multiple(static_cast<unsigned>(parsed), local);
 }
@@ -221,9 +206,47 @@ static unsigned autolykos2_intensity(const sycl::device& dev) {
 // VRAM). Low-mem cards / pearlpool.cloud use 16384 via MOM_PEARL_INTENSITY (k=1024, rank=64).
 static unsigned pearl_intensity(const sycl::device&) {
   unsigned long parsed = 0;
-  if (parse_env_ulong("MOM_PEARL_INTENSITY", parsed) && parsed >= 256)
+  if (mom_parse_env_ulong("MOM_PEARL_INTENSITY", parsed) && parsed >= 256)
     return round_down_to_multiple(static_cast<unsigned>(parsed), 64);
   return 131072;
+}
+
+// kHeavyHash is compute-bound (no dataset): each nonce is 4096 nibble MACs + two Keccak-f[1600].
+// Larger batches amortize launch overhead; workgroup 256 matches the kernel's SLM-matrix tiling.
+static unsigned kheavyhash_intensity(const sycl::device& dev) {
+  return pow_intensity(dev, "MOM_KHEAVYHASH_WORKGROUP", "MOM_KHEAVYHASH_INTENSITY", {
+    {256, 16384, 36},
+    {256, 32768, 36},
+    {256, 32768, 28}
+  });
+}
+
+// FishHash: memory-gather over the 4.6 GiB DAG (bandwidth-bound like etchash). etchash-class intensities.
+static unsigned fishhash_intensity(const sycl::device& dev) {
+  return pow_intensity(dev, "MOM_FISHHASH_WORKGROUP", "MOM_FISHHASH_INTENSITY", {
+    {64, 32768, 36},
+    {64, 65536, 36},
+    {64, 131072, 40}
+  });
+}
+
+// Equihash 125,4: the "intensity" is the number of header nonces searched per solve (one full Wagner
+// pass over the ~10.7 GiB bucket arenas per nonce), so it stays small -- a handful of nonces per dispatch.
+// Defaults are deliberately modest until M3/M4 tune throughput against real Sol/s. Env override:
+// MOM_EQUIHASH_INTENSITY (workgroup is internal to the kernel pipeline; MOM_EQUIHASH_WORKGROUP reserved).
+static unsigned equihash125_4_intensity(const sycl::device&) {
+  unsigned long parsed = 0;
+  if (mom_parse_env_ulong("MOM_EQUIHASH_INTENSITY", parsed) && parsed >= 1)
+    return static_cast<unsigned>(std::min<unsigned long>(parsed, std::numeric_limits<unsigned>::max()));
+  return 1;
+}
+
+// BeamHash III: like equihash125_4, "intensity" is the nonces searched per dispatch (one Wagner pass).
+static unsigned beamhash3_intensity(const sycl::device&) {
+  unsigned long parsed = 0;
+  if (mom_parse_env_ulong("MOM_BEAMHASH3_INTENSITY", parsed) && parsed >= 1)
+    return static_cast<unsigned>(std::min<unsigned long>(parsed, std::numeric_limits<unsigned>::max()));
+  return 1;
 }
 
 static void add_result_dev(std::string& result_dev, const std::string& add_str) {
@@ -386,11 +409,20 @@ std::map<std::string, std::string> algo_params(
   const std::set<std::string>& gpu_kawpow_algos,
   const std::set<std::string>& gpu_etchash_algos,
   const std::set<std::string>& gpu_autolykos2_algos,
-  const std::set<std::string>& gpu_pearl_algos
+  const std::set<std::string>& gpu_pearl_algos,
+  const std::set<std::string>& gpu_kheavyhash_algos,
+  const std::set<std::string>& gpu_fishhash_algos,
+  const std::set<std::string>& gpu_karlsenhashv2_algos,
+  const std::set<std::string>& gpu_pyrinhashv2_algos,
+  const std::set<std::string>& gpu_equihash125_4_algos,
+  const std::set<std::string>& gpu_beamhash3_algos
 ) {
   const bool need_sycl_devices = !gpu_cn_algos.empty() || !gpu_c29_algos.empty() ||
                                  !gpu_kawpow_algos.empty() || !gpu_etchash_algos.empty() ||
-                                 !gpu_autolykos2_algos.empty() || !gpu_pearl_algos.empty();
+                                 !gpu_autolykos2_algos.empty() || !gpu_pearl_algos.empty() ||
+                                 !gpu_kheavyhash_algos.empty() || !gpu_fishhash_algos.empty() ||
+                                 !gpu_karlsenhashv2_algos.empty() || !gpu_pyrinhashv2_algos.empty() ||
+                                 !gpu_equihash125_4_algos.empty() || !gpu_beamhash3_algos.empty();
   if (need_sycl_devices && str2dev.empty()) update_str2dev(true);
   const unsigned socket_count = std::max(1u, cpu_sockets);
   const unsigned thread_count = std::max(1u, cpu_threads);
@@ -405,6 +437,12 @@ std::map<std::string, std::string> algo_params(
   algos.insert(gpu_etchash_algos.begin(), gpu_etchash_algos.end());
   algos.insert(gpu_autolykos2_algos.begin(), gpu_autolykos2_algos.end());
   algos.insert(gpu_pearl_algos.begin(), gpu_pearl_algos.end());
+  algos.insert(gpu_kheavyhash_algos.begin(), gpu_kheavyhash_algos.end());
+  algos.insert(gpu_fishhash_algos.begin(), gpu_fishhash_algos.end());
+  algos.insert(gpu_karlsenhashv2_algos.begin(), gpu_karlsenhashv2_algos.end());
+  algos.insert(gpu_pyrinhashv2_algos.begin(), gpu_pyrinhashv2_algos.end());
+  algos.insert(gpu_equihash125_4_algos.begin(), gpu_equihash125_4_algos.end());
+  algos.insert(gpu_beamhash3_algos.begin(), gpu_beamhash3_algos.end());
   for (const auto& algo : algos) {
     std::string result_dev;
     if (cpu_algos.contains(algo))
@@ -416,6 +454,12 @@ std::map<std::string, std::string> algo_params(
     else if (gpu_etchash_algos.contains(algo)) add_gpu_dataset_algo_dev(result_dev, 4300 * MiB, 5 * GiB, etchash_intensity);
     else if (gpu_autolykos2_algos.contains(algo)) add_gpu_dataset_algo_dev(result_dev, 1 * GiB, 3 * GiB, autolykos2_intensity);
     else if (gpu_pearl_algos.contains(algo)) add_gpu_dataset_algo_dev(result_dev, 256 * MiB, 2 * GiB, pearl_intensity); // small A'/B'/noise buffers
+    else if (gpu_kheavyhash_algos.contains(algo)) add_gpu_dataset_algo_dev(result_dev, 1 * MiB, 512 * MiB, kheavyhash_intensity); // compute-bound: only the 8 KiB matrix + I/O
+    else if (gpu_fishhash_algos.contains(algo)) add_gpu_dataset_algo_dev(result_dev, 4608 * MiB, 6 * GiB, fishhash_intensity); // 4.6 GiB DAG + 72 MiB light cache
+    else if (gpu_karlsenhashv2_algos.contains(algo)) add_gpu_dataset_algo_dev(result_dev, 4608 * MiB, 6 * GiB, fishhash_intensity); // FishHashPlus: same 4.6 GiB DAG/intensity as fishhash
+    else if (gpu_pyrinhashv2_algos.contains(algo)) add_gpu_dataset_algo_dev(result_dev, 1 * MiB, 512 * MiB, kheavyhash_intensity); // kHeavyHash-family: no DAG, just the 8 KiB matrix + I/O
+    else if (gpu_equihash125_4_algos.contains(algo)) add_gpu_dataset_algo_dev(result_dev, 1856 * MiB, 8 * GiB, equihash125_4_intensity); // ~7.03 GiB Wagner bucket arenas total: per-level slot widths 6/6/5/5/3 words WITH the tree log co-located inline at each slot's tail (no separate tree arena) -> one coalesced write stream per survivor (rounds 420->95 ms, +280% solve/s on B580). Level 3 is padded to 20 B (not 16) to dodge the 2-slots-per-32B-line false-share. Largest single alloc ~1.69 GiB level-0 arena. Fits a >=8 GiB card (was 7.3 GiB split-tree / 10.7 GiB / >=12 GiB before).
+    else if (gpu_beamhash3_algos.contains(algo)) add_gpu_dataset_algo_dev(result_dev, 3200 * MiB, 8 * GiB, beamhash3_intensity); // ~6.9 GiB Wagner arenas: ONE shared transient scratch for levels 0..5 (~2.6 GiB; leaf index == level-0 slot so no persistent mixed[0], and collide never re-reads its input level so each level overwrites the prior in place -- no ping-pong) + 5 tree logs (~0.26 GiB each) + a reused bucket arena (~3.0 GiB, the largest single alloc). Fits a >=8 GiB card (was ~12.8 GiB / >=16 GiB before the shrink).
     if (!result_dev.empty()) result[algo] = result_dev;
   }
   return result;

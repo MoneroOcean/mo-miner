@@ -24,7 +24,10 @@
     "win32"
   ],
   "scripts": {
+    "lint": "eslint .",
+    "pretest": "npm run lint",
     "test": "node tests/run_hash.js",
+    "test:logic": "node --test tests/logic.js",
     "test:cpu": "node tests/run_hash.js cpu",
     "test:gpu": "node tests/run_hash.js gpu",
     "test:sycl-cpu": "node tests/run_hash.js sycl-cpu",
@@ -80,5 +83,10 @@
     "ghostrider",
     "sycl",
     "xmrig"
-  ]
+  ],
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@stylistic/eslint-plugin": "^5.10.0",
+    "globals": "^17.6.0"
+  }
 }

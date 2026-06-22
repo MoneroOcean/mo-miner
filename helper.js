@@ -5,7 +5,7 @@
 const path    = require("path");
 const events  = require("events");
 const cluster = require("cluster");
-const fs      = require('fs');
+const fs      = require("fs");
 const childProcess = require("child_process");
 
 const is_windows_process = process.platform === "win32";
@@ -74,24 +74,22 @@ function appendRecentText(current, chunk, limit = 8192) {
 }
 
 function log_str(str) {
-  return (new Date().toISOString().replace(/T/, ' ').replace(/\..+/, '')) + " " + str;
+  return (new Date().toISOString().replace(/T/, " ").replace(/\..+/, "")) + " " + str;
 }
 
 module.exports.log = function(str) {
   console.log(log_str(global.opt.log_level >= 1 ? "[0] " + str : str));
 };
 
-module.exports.log1 = function(str) {
-  if (global.opt.log_level >= 1) console.log(log_str("[1] " + str));
-};
+function makeLevelLogger(level) {
+  return function(str) {
+    if (global.opt.log_level >= level) console.log(log_str("[" + level + "] " + str));
+  };
+}
 
-module.exports.log2 = function(str) {
-  if (global.opt.log_level >= 2) console.log(log_str("[2] " + str));
-};
-
-module.exports.log3 = function(str) {
-  if (global.opt.log_level >= 3) console.log(log_str("[3] " + str));
-};
+module.exports.log1 = makeLevelLogger(1);
+module.exports.log2 = makeLevelLogger(2);
+module.exports.log3 = makeLevelLogger(3);
 
 module.exports.log_err = function(str) {
   console.error(log_str("ERROR: " + str));
@@ -568,6 +566,9 @@ function decimalToRatio(value) {
   const digits = (m[2] + (m[3] || "")).replace(/^0+/, "") || "0";
   const scale = BigInt((m[3] || "").length);
   const exp = BigInt(m[4] || "0");
+  // Targets/difficulties are 256-bit (< ~78 decimal digits); reject absurd exponents/mantissas so a hostile
+  // pool can't force a multi-million-digit BigInt (10n ** exp) that synchronously hangs the event loop / OOMs.
+  if (exp > 1000n || exp < -1000n || digits.length > 1000) return [0n, 1n];
   let numerator = BigInt(digits);
   let denominator = 10n ** scale;
   if (exp > 0n) numerator *= 10n ** exp;

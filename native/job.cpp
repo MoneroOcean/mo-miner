@@ -100,7 +100,8 @@ static const std::map<std::string, gpu_c29_hash_fun> gpu_c29_algo2fn = {
 static const std::map<std::string, gpu_kawpow_hash_fun> gpu_kawpow_algo2fn = {
   { "kawpow", kawpow },
   { "firopow", firopow },
-  { "evrprogpow", evrprogpow }
+  { "evrprogpow", evrprogpow },
+  { "meowpow", meowpow }
 };
 
 static const std::map<std::string, gpu_etchash_hash_fun> gpu_etchash_algo2fn = {
@@ -115,6 +116,30 @@ static const std::map<std::string, gpu_pearl_hash_fun> gpu_pearl_algo2fn = {
   { "pearl", pearl }
 };
 
+static const std::map<std::string, gpu_kheavyhash_hash_fun> gpu_kheavyhash_algo2fn = {
+  { "kheavyhash", kheavyhash }
+};
+
+static const std::map<std::string, gpu_fishhash_hash_fun> gpu_fishhash_algo2fn = {
+  { "fishhash", fishhash }
+};
+
+static const std::map<std::string, gpu_karlsenhashv2_hash_fun> gpu_karlsenhashv2_algo2fn = {
+  { "karlsenhashv2", karlsenhashv2 }
+};
+
+static const std::map<std::string, gpu_pyrinhashv2_hash_fun> gpu_pyrinhashv2_algo2fn = {
+  { "pyrinhashv2", pyrinhashv2 }
+};
+
+static const std::map<std::string, gpu_equihash125_4_hash_fun> gpu_equihash125_4_algo2fn = {
+  { "equihash125_4", equihash125_4 }
+};
+
+static const std::map<std::string, gpu_beamhash3_hash_fun> gpu_beamhash3_algo2fn = {
+  { "beamhash3", beamhash3 }
+};
+
 static const std::map<std::string, unsigned> algo2mem = [](){
   std::map<std::string, unsigned> result = {
     { "cn/gpu", 2*1024*1024 }, // host memory is not really used (number used only for algo_params calcs)
@@ -122,13 +147,99 @@ static const std::map<std::string, unsigned> algo2mem = [](){
     { "kawpow", 0 },
     { "firopow", 0 },
     { "evrprogpow", 0 },
+    { "meowpow", 0 },
     { "etchash", 0 },
     { "autolykos2", 0 },
-    { "pearl", 0 }
+    { "pearl", 0 },
+    { "kheavyhash", 0 },
+    { "fishhash", 0 },
+    { "karlsenhashv2", 0 },
+    { "pyrinhashv2", 0 },
+    { "equihash125_4", 0 },
+    { "beamhash3", 0 }
   };
   for (const auto& i : cpu_name2algo) result[i.first] = xmrig::Algorithm(i.second).l3();
   return result;
 }();
+
+static void add_result_dev(std::string& result_dev, const std::string& add_str) {
+  if (!result_dev.empty()) result_dev += ",";
+  result_dev += add_str;
+}
+
+static std::list<unsigned> cpu_thread_batches(
+  const std::string& algo, const unsigned max_cpu_batch, const unsigned socket_count,
+  const unsigned thread_count, const unsigned l3cache, const unsigned batch_mem
+) {
+  unsigned used_l3cache = 0, used_threads = 0;
+  std::list<unsigned> threads;
+  if (algo.starts_with("rx/")) {
+    const unsigned batch = std::max(1u, std::min(thread_count, l3cache / batch_mem) / socket_count);
+    for (unsigned i = 0; i != socket_count; ++i) threads.push_back(batch);
+    return threads;
+  }
+
+  while (++used_threads <= thread_count && (used_l3cache += batch_mem) <= l3cache)
+    threads.push_back(algo == "ghostrider" ? 8 : 1);
+  if (!algo.starts_with("argon2/")) {
+    while (used_l3cache < l3cache) {
+      bool updated = false;
+      for (auto& i : threads) {
+        if (i < max_cpu_batch && (used_l3cache += batch_mem) <= l3cache) {
+          ++i;
+          updated = true;
+        }
+      }
+      if (!updated) break;
+    }
+  }
+  if (threads.empty()) threads.push_back(1);
+  return threads;
+}
+
+static void append_grouped_cpu_devs(std::string& result_dev, const std::list<unsigned>& threads) {
+  unsigned prev_batch = 0, same_batch_threads = 0;
+  auto add_last_dev = [&]() {
+    if (!same_batch_threads || !prev_batch) return;
+    add_result_dev(result_dev, "cpu" + (prev_batch != 1 ? "*" + std::to_string(prev_batch) : ""));
+    if (same_batch_threads != 1) result_dev += "^" + std::to_string(same_batch_threads);
+    same_batch_threads = 0;
+  };
+  for (const unsigned batch : threads) {
+    if (same_batch_threads && prev_batch != batch) add_last_dev();
+    prev_batch = batch;
+    ++same_batch_threads;
+  }
+  add_last_dev();
+}
+
+static void add_cpu_algo_dev(
+  std::map<std::string, std::string>& result, const std::string& algo,
+  const unsigned max_cpu_batch, const unsigned socket_count,
+  const unsigned thread_count, const unsigned l3cache
+) {
+  const auto mem = algo2mem.find(algo);
+  if (mem == algo2mem.end()) return;
+  std::string result_dev;
+  append_grouped_cpu_devs(result_dev, cpu_thread_batches(
+    algo, max_cpu_batch, socket_count, thread_count, l3cache, mem->second
+  ));
+  result[algo] = result_dev;
+}
+
+static std::map<std::string, std::string> cpu_only_algo_params(
+  const unsigned max_cpu_batch,
+  const unsigned cpu_sockets, const unsigned cpu_threads, const unsigned cpu_l3cache,
+  const std::set<std::string>& cpu_algos
+) {
+  const unsigned socket_count = std::max(1u, cpu_sockets);
+  const unsigned thread_count = std::max(1u, cpu_threads);
+  const unsigned l3cache = cpu_l3cache ? cpu_l3cache : thread_count * 2u * 1024u * 1024u;
+  std::map<std::string, std::string> result;
+  for (const auto& algo : cpu_algos)
+    add_cpu_algo_dev(result, algo, max_cpu_batch, socket_count, thread_count, l3cache);
+  return result;
+}
 
 static xmrig::VirtualMemory* alloc_huge_mem(const unsigned size) {
   xmrig::VirtualMemory* const mem = new xmrig::VirtualMemory(size, true, false, false);
@@ -214,9 +325,16 @@ void Core::set_job(
     new_algo_str == "kawpow" ? DEV::KAWPOW_GPU :
     new_algo_str == "firopow" ? DEV::KAWPOW_GPU :
     new_algo_str == "evrprogpow" ? DEV::KAWPOW_GPU :
+    new_algo_str == "meowpow" ? DEV::KAWPOW_GPU :
     new_algo_str == "etchash" ? DEV::ETCHASH_GPU :
     new_algo_str == "autolykos2" ? DEV::AUTOLYKOS2_GPU :
     new_algo_str == "pearl" ? DEV::PEARL_GPU :
+    new_algo_str == "kheavyhash" ? DEV::KHEAVYHASH_GPU :
+    new_algo_str == "fishhash" ? DEV::FISHHASH_GPU :
+    new_algo_str == "karlsenhashv2" ? DEV::KARLSENHASHV2_GPU :
+    new_algo_str == "pyrinhashv2" ? DEV::PYRINHASHV2_GPU :
+    new_algo_str == "equihash125_4" ? DEV::EQUIHASH125_4_GPU :
+    new_algo_str == "beamhash3" ? DEV::BEAMHASH3_GPU :
     new_algo_str.starts_with("c29") ? DEV::C29_GPU : DEV::GPU;
 
   if (new_dev == DEV::C29_GPU && new_batch != 1)
@@ -226,9 +344,29 @@ void Core::set_job(
     throw std::string("Invalid " + new_algo_str + " intensity");
   if (new_nonce_bytes != 4 && new_nonce_bytes != 8)
     throw std::string("Only support 4 or 8 bytes long nonces");
-  // kawpow/etchash/autolykos2 embed an 8-byte nonce at offset 32 in the header blob
-  if (is_nonce_at_32_gpu_dev(new_dev) && (new_nonce_bytes != 8 || new_nonce_offset != 32))
+  // kawpow/etchash/autolykos2 embed an 8-byte nonce at offset 32 in the header blob; fishhash uses
+  // offset 32 offline (small blob) but offset 0 for live Iron Fish (its 180-byte header puts the
+  // 8-byte randomness first), so it accepts either.
+  if (is_nonce_at_32_gpu_dev(new_dev) && new_dev != DEV::FISHHASH_GPU && (new_nonce_bytes != 8 || new_nonce_offset != 32))
     throw std::string(new_algo_str + " requires an 8-byte nonce at offset 32");
+  if (new_dev == DEV::FISHHASH_GPU && (new_nonce_bytes != 8 || (new_nonce_offset != 0 && new_nonce_offset != 32)))
+    throw std::string("fishhash requires an 8-byte nonce at offset 0 (ironfish) or 32 (test)");
+  // kHeavyHash embeds an 8-byte nonce at offset 72 of its 80-byte header
+  if (new_dev == DEV::KHEAVYHASH_GPU && (new_nonce_bytes != 8 || new_nonce_offset != 72))
+    throw std::string("kheavyhash requires an 8-byte nonce at offset 72");
+  // KarlsenHashV2 also uses an 8-byte nonce at offset 72 of its 80-byte Kaspa blob
+  if (new_dev == DEV::KARLSENHASHV2_GPU && (new_nonce_bytes != 8 || new_nonce_offset != 72))
+    throw std::string("karlsenhashv2 requires an 8-byte nonce at offset 72");
+  if (new_dev == DEV::PYRINHASHV2_GPU && (new_nonce_bytes != 8 || new_nonce_offset != 72))
+    throw std::string("pyrinhashv2 requires an 8-byte nonce at offset 72");
+  // Equihash 125,4 carries a 32-byte nonce at offset 108 of its 140-byte header. The solver advances
+  // the low 8 bytes of that nonce field as its search counter (the rest is the pool extranonce), so the
+  // job describes it as an 8-byte nonce at offset 108.
+  if (new_dev == DEV::EQUIHASH125_4_GPU && (new_nonce_bytes != 8 || new_nonce_offset != 108))
+    throw std::string("equihash125_4 requires an 8-byte nonce at offset 108");
+  // BeamHash III: the blob is prework(32)||nonce(8)||extranonce(4); the 8-byte Beam nonce is at offset 32.
+  if (new_dev == DEV::BEAMHASH3_GPU && (new_nonce_bytes != 8 || new_nonce_offset != 32))
+    throw std::string("beamhash3 requires an 8-byte nonce at offset 32");
 
   FN new_fn;
   uint8_t new_seed[MAX_BLOB_LEN]{};
@@ -289,6 +427,30 @@ void Core::set_job(
     case DEV::PEARL_GPU:
       new_fn.gpu_pearl = algo_lookup(gpu_pearl_algo2fn, new_algo_str);
       break;
+
+    case DEV::KHEAVYHASH_GPU:
+      new_fn.gpu_kheavyhash = algo_lookup(gpu_kheavyhash_algo2fn, new_algo_str);
+      break;
+
+    case DEV::FISHHASH_GPU:
+      new_fn.gpu_fishhash = algo_lookup(gpu_fishhash_algo2fn, new_algo_str);
+      break;
+
+    case DEV::KARLSENHASHV2_GPU:
+      new_fn.gpu_karlsenhashv2 = algo_lookup(gpu_karlsenhashv2_algo2fn, new_algo_str);
+      break;
+
+    case DEV::PYRINHASHV2_GPU:
+      new_fn.gpu_pyrinhashv2 = algo_lookup(gpu_pyrinhashv2_algo2fn, new_algo_str);
+      break;
+
+    case DEV::EQUIHASH125_4_GPU:
+      new_fn.gpu_equihash125_4 = algo_lookup(gpu_equihash125_4_algo2fn, new_algo_str);
+      break;
+
+    case DEV::BEAMHASH3_GPU:
+      new_fn.gpu_beamhash3 = algo_lookup(gpu_beamhash3_algo2fn, new_algo_str);
+      break;
   }
 
   uint8_t new_input[MAX_BLOB_LEN];
@@ -299,7 +461,13 @@ void Core::set_job(
     throw std::string("Bad input hex");
   // header must be long enough to hold the nonce (kawpow/etchash/autolykos2) or the full PoUW
   // header (pearl); min lengths differ by algo
-  const unsigned min_input_len = new_dev == DEV::PEARL_GPU ? 76 : is_nonce_at_32_gpu_dev(new_dev) ? 40 : 0;
+  const unsigned min_input_len = new_dev == DEV::PEARL_GPU ? 76
+    : new_dev == DEV::KHEAVYHASH_GPU ? 80
+    : new_dev == DEV::KARLSENHASHV2_GPU ? 80
+    : new_dev == DEV::PYRINHASHV2_GPU ? 80
+    : new_dev == DEV::EQUIHASH125_4_GPU ? 140   // full Zcash/Flux header
+    : new_dev == DEV::BEAMHASH3_GPU ? 44         // prework(32)||nonce(8)||extranonce(4)
+    : is_nonce_at_32_gpu_dev(new_dev) ? 40 : 0;
   if (new_input_len < min_input_len)
     throw std::string("Bad " + new_algo_str + " input length");
 
@@ -388,7 +556,9 @@ void Core::set_job(
     } else if (is_small_blob_gpu_dev(new_dev)) {
       if (m_input == nullptr) m_input = static_cast<uint8_t*>(alloc_mem(MAX_BLOB_LEN));
       if (m_output == nullptr) m_output = static_cast<uint8_t*>(alloc_mem(HASH_LEN));
-      if (m_spads == nullptr) m_spads = alloc_mem(HASH_LEN);
+      // The solution buffer holds the kawpow/etchash mix (32 B) for most algos, but equihash125_4
+      // returns a 52-byte out-of-band solution and its M1 test path dumps gen-kernel rows here.
+      if (m_spads == nullptr) m_spads = alloc_mem(SMALL_BLOB_SOL_LEN);
     } else { // setup cn/c29 stuff
       if (m_input == nullptr) m_input = static_cast<uint8_t*>(alloc_mem(new_batch * MAX_BLOB_LEN));
       if (m_output == nullptr) m_output = static_cast<uint8_t*>(alloc_mem(new_batch * HASH_LEN));
@@ -495,13 +665,21 @@ void Core::set_job(
       m_nonce32 = 0;
       return;
     }
-    if (is_nonce_at_32_gpu_dev(new_dev)) {
+    // Single-blob GPU pow with an embedded nonce: kawpow/etchash/autolykos2 (nonce at offset 32) and
+    // kHeavyHash (8-byte nonce at offset 72). One header blob (not a per-batch buffer); the kernel
+    // searches start_nonce..start_nonce+batch. m_nonce_offset (not a hardcoded 32) places the nonce.
+    if (is_nonce_at_32_gpu_dev(new_dev) || new_dev == DEV::KHEAVYHASH_GPU || new_dev == DEV::KARLSENHASHV2_GPU || new_dev == DEV::PYRINHASHV2_GPU || is_equihash_gpu_dev(new_dev)) {
       memcpy(m_input, new_input, m_input_len);
       const uint64_t current_nonce = new_nonce + static_cast<uint64_t>(new_thread_id) * m_batch;
       m_nonce_step = new_thread_num * m_batch;
       // mine mode embeds the starting nonce and points m_nonce64 at the next one; m_nonce64==0
-      // is the test-job sentinel consumed by Execute
-      if (is_set_nonce) std::memcpy(m_input + m_nonce_offset, &current_nonce, sizeof(current_nonce));
+      // is the test-job sentinel consumed by Execute. Live Iron Fish (fishhash, 180-byte header) reads
+      // the 8-byte nonce big-endian, so embed it byte-swapped there; every other layout stays LE.
+      if (is_set_nonce) {
+        const bool ironfish = new_dev == DEV::FISHHASH_GPU && m_input_len >= 140;
+        const uint64_t embed = ironfish ? bswap_64(current_nonce) : current_nonce;
+        std::memcpy(m_input + m_nonce_offset, &embed, sizeof(embed));
+      }
       m_nonce64 = is_set_nonce ? current_nonce + m_nonce_step : 0;
       m_nonce32 = 0;
       return;
@@ -542,10 +720,19 @@ void Core::get_algo_params(const MessageValues& v) {
   const auto gpu_set = [&](const auto& map) {
     return skip_sycl ? std::set<std::string>{} : keys2set(map);
   };
+  if (skip_sycl) {
+    send_msg("algo_params", cpu_only_algo_params(
+      MAX_CN_CPU_WAYS, cpu_sockets, cpu_threads, cpu_l3cache, keys2set(cpu_name2algo)
+    ));
+    return;
+  }
   // algo_params returns std::map<std::string,std::string>, which is exactly MessageValues
   send_msg("algo_params", algo_params(
     MAX_CN_CPU_WAYS, cpu_sockets, cpu_threads, cpu_l3cache, algo2mem, keys2set(cpu_name2algo),
     gpu_set(gpu_cn_algo2fn), gpu_set(gpu_c29_algo2fn), gpu_set(gpu_kawpow_algo2fn),
-    gpu_set(gpu_etchash_algo2fn), gpu_set(gpu_autolykos2_algo2fn), gpu_set(gpu_pearl_algo2fn)
+    gpu_set(gpu_etchash_algo2fn), gpu_set(gpu_autolykos2_algo2fn), gpu_set(gpu_pearl_algo2fn),
+    gpu_set(gpu_kheavyhash_algo2fn), gpu_set(gpu_fishhash_algo2fn),
+    gpu_set(gpu_karlsenhashv2_algo2fn), gpu_set(gpu_pyrinhashv2_algo2fn),
+    gpu_set(gpu_equihash125_4_algo2fn), gpu_set(gpu_beamhash3_algo2fn)
   ));
 }

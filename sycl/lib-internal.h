@@ -5,6 +5,7 @@
 #include <sycl/sycl.hpp>
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -70,6 +71,18 @@ inline void set_sycl_env(const char* name, const char* value) {
 #else
   setenv(name, value, 1);
 #endif
+}
+
+// Parse a base-10 unsigned long, requiring the variable to be present, non-empty, and fully numeric.
+inline bool mom_parse_env_ulong(const char* const name, unsigned long& out) {
+  const char* const value = std::getenv(name);
+  if (!value || !*value) return false;
+  char* end = nullptr;
+  errno = 0;
+  const unsigned long parsed = std::strtoul(value, &end, 10);
+  if (errno || end == value || *end) return false;
+  out = parsed;
+  return true;
 }
 
 inline bool sycl_is_level_zero_gpu(const sycl::device& device) {
@@ -143,14 +156,10 @@ inline uint32_t fast_mod_dev(const uint32_t a, const FastModData d) {
 }
 
 inline void sycl_wait_and_throw(sycl::event event, const sycl::device& device) {
-  // CUDA's native wait busy-spins a host core (default context scheduling), but cuEventQuery is
-  // reliable and cheap, so poll+sleep on every CUDA GPU device to free the core. Level-Zero
-  // likewise busy-spins inside the native wait but exposes a cheap event-status query, so poll it
-  // too (1d7d9e0). Every other device blocks efficiently (CPU) or handles the busy-wait at its
-  // call site (cn/gpu on the OpenCL backend sleeps before its blocking read; see cn-gpu.cpp), so
-  // wait natively. Decided at runtime on the device backend so the combined build does the right
-  // thing per device.
-  const bool poll_wait = mom_is_cuda(device) ? device.is_gpu() : sycl_is_level_zero_gpu(device);
+  // Several GPU backends busy-spin a host core inside native event waits. Polling the event status
+  // with a short sleep keeps GPU mining from pinning one CPU thread while preserving exact completion.
+  // CPU devices keep the native wait because their "kernel" work is host work and should not be hidden.
+  const bool poll_wait = device.is_gpu();
   if (!poll_wait) {
     event.wait_and_throw();
     return;

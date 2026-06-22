@@ -45,6 +45,26 @@ typedef int (*gpu_pearl_hash_fun)(
   uint64_t* pseed, const uint8_t* target,
   unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
 );
+// kHeavyHash + FishHash share the etchash hash-fun ABI (32-byte LE target; seed_hash unused).
+typedef gpu_etchash_hash_fun gpu_kheavyhash_hash_fun;
+typedef gpu_etchash_hash_fun gpu_fishhash_hash_fun;
+typedef gpu_etchash_hash_fun gpu_karlsenhashv2_hash_fun;
+typedef gpu_etchash_hash_fun gpu_pyrinhashv2_hash_fun;
+// Equihash 125,4 (ZelHash / Flux): Wagner bucket-collision solver. C29-like ABI -- the 32-byte nonce
+// lives IN the 140-byte header (offset 108) and the solver returns a solution COUNT, writing the
+// 52-byte compressed solution(s) out-of-band into solution_out (like c29's output_edges). 256-bit
+// big-target. pnonce carries the current header nonce (in/out). is_test runs the M1 gen-kernel
+// validation path (writes the first entries' expanded rows into solution_out instead of a solution).
+typedef int (*gpu_equihash125_4_hash_fun)(
+  unsigned job_ref, uint32_t height,
+  const uint8_t* input, unsigned input_size, uint8_t* solution_out,
+  uint64_t* pnonce, const uint8_t* target,
+  unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
+);
+// BeamHash III (Beam): Wagner k=5 bucket-collision solver. Same c29-like ABI as equihash125_4 -- the
+// input is the prework(32)||nonce(8)||extranonce(4) blob; the solver returns a solution COUNT and writes
+// the 104-byte solution(s) out-of-band into solution_out. is_test runs the M1 gen-validation path.
+typedef gpu_equihash125_4_hash_fun gpu_beamhash3_hash_fun;
 static_assert(
   sizeof(cn_any_hash_fun) == sizeof(xmrig::cn_hash_fun) &&
   sizeof(cn_any_hash_fun) == sizeof(gpu_cn_hash_fun) &&
@@ -64,15 +84,28 @@ union FN {
   gpu_etchash_hash_fun gpu_etchash;
   gpu_autolykos2_hash_fun gpu_autolykos2;
   gpu_pearl_hash_fun gpu_pearl;
+  gpu_kheavyhash_hash_fun gpu_kheavyhash;
+  gpu_fishhash_hash_fun gpu_fishhash;
+  gpu_karlsenhashv2_hash_fun gpu_karlsenhashv2;
+  gpu_pyrinhashv2_hash_fun gpu_pyrinhashv2;
+  gpu_equihash125_4_hash_fun gpu_equihash125_4;
+  gpu_beamhash3_hash_fun gpu_beamhash3;
 };
-enum DEV { CPU, RX_CPU, GPU, C29_GPU, KAWPOW_GPU, ETCHASH_GPU, AUTOLYKOS2_GPU, PEARL_GPU };
+enum DEV { CPU, RX_CPU, GPU, C29_GPU, KAWPOW_GPU, ETCHASH_GPU, AUTOLYKOS2_GPU, PEARL_GPU, KHEAVYHASH_GPU, FISHHASH_GPU, KARLSENHASHV2_GPU, PYRINHASHV2_GPU, EQUIHASH125_4_GPU, BEAMHASH3_GPU };
 
 inline bool is_nonce_at_32_gpu_dev(const DEV dev) {
-  return dev == DEV::KAWPOW_GPU || dev == DEV::ETCHASH_GPU || dev == DEV::AUTOLYKOS2_GPU;
+  return dev == DEV::KAWPOW_GPU || dev == DEV::ETCHASH_GPU || dev == DEV::AUTOLYKOS2_GPU || dev == DEV::FISHHASH_GPU;
 }
-// GPU pow devices that allocate a single small input blob + 32-byte output (not a per-batch buffer).
+// Equihash 125,4: the 32-byte nonce lives at offset 108 of the 140-byte header (NOT at 32), and the
+// solver returns a solution count + writes the 52-byte solution out-of-band (c29-like, not a hash loop).
+inline bool is_equihash_gpu_dev(const DEV dev) {
+  return dev == DEV::EQUIHASH125_4_GPU || dev == DEV::BEAMHASH3_GPU;
+}
+// GPU pow devices that allocate a single small input blob + small output (not a per-batch buffer).
+// kHeavyHash is small-blob (80-byte header) but its nonce is at offset 72, not 32 (handled in mom.js).
+// Equihash carries a 32-byte nonce at offset 108 and a 52-byte out-of-band solution buffer.
 inline bool is_small_blob_gpu_dev(const DEV dev) {
-  return is_nonce_at_32_gpu_dev(dev) || dev == DEV::PEARL_GPU;
+  return is_nonce_at_32_gpu_dev(dev) || dev == DEV::PEARL_GPU || dev == DEV::KHEAVYHASH_GPU || dev == DEV::KARLSENHASHV2_GPU || dev == DEV::PYRINHASHV2_GPU || is_equihash_gpu_dev(dev);
 }
 
 class Core: public AsyncWorker {
@@ -132,7 +165,8 @@ class Core: public AsyncWorker {
   void send_result(
     uint64_t nonce, unsigned noncebytes, const uint8_t* output,
     const uint32_t* edges = nullptr, unsigned c29_proof_size = 32,
-    const uint8_t* commitment = nullptr, const uint8_t* mix_hash = nullptr
+    const uint8_t* commitment = nullptr, const uint8_t* mix_hash = nullptr,
+    const uint8_t* solution = nullptr, unsigned solution_len = 0
   );
   void send_last_nonce(uint64_t nonce, unsigned noncebytes, const std::string& pool_id);
   void free_memory(

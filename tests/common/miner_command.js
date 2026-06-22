@@ -452,7 +452,7 @@ async function runMinerTest(definition) {
     "--job",
     JSON.stringify(job),
   ];
-  let result = await runNode(args, { timeoutMs: definition.timeoutMs });
+  let result = await runNode(args, { timeoutMs: definition.timeoutMs, env: definition.env });
 
   if (definition.gpu && isMissingGpuOutput(result)) {
     return { skipped: true, reason: "Requested SYCL device is not available in this environment" };

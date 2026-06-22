@@ -22,39 +22,39 @@ module.exports.pool_create = function(url, port, is_tls, login, pass) {
 };
 
 const dev_help = 'device config line "[<dev>[*B][^P],]+", dev = ' +
-                 '{cpu, gpu<N>, cpu<N>}, ' +
-                 'N = device number, B = hash batch size, P = number of parallel processes';
+                 "{cpu, gpu<N>, cpu<N>}, " +
+                 "N = device number, B = hash batch size, P = number of parallel processes";
 
 module.exports.opt_help = {
   job: {
-    _help:        'JSON string of the default job params (mostly used in test/bench mode)',
+    _help:        "JSON string of the default job params (mostly used in test/bench mode)",
     algo:         [ null,  'algo name of the job (only used with "mine" directive)' ],
     dev:          [ "cpu", dev_help ],
     blob_hex: [ "0305A0DBD6BF05CF16E503F3A66F78007CBF34144332ECBFC22ED95C8700383B309ACE1923A0964B"
               + "00000008BA939A62724C0D7581FCE5761E9D8A0E6A1C3F924FDD8493D1115649C05EB601",
-                'hexadecimal string of input blob' ],
+    "hexadecimal string of input blob" ],
     seed_hex: [ "3132333435363738393031323334353637383930313233343536373839303132",
-                'hexadecimal string of seed hash blob (used for rx algos)' ],
+      "hexadecimal string of seed hash blob (used for rx algos)" ],
     height:   [ 0, "Block height used by some algos"],
   },
   pool_time: {
-    _help:             'JSON string of pool related timings (in seconds)',
-    stats:             [ 10*60,  'time to show pool mining stats' ],
-    connect_throttle:  [ 60,     'time between pool connection attempts' ],
-    primary_reconnect: [ 90,     'time to try to use primary pool if currently on backup pool' ],
-    first_job_wait:    [ 15,     'consider pool bad if no first job after connection' ],
-    close_wait:        [ 10,     'keep pool socket to submit delayed jobs' ],
-    donate_interval:   [ 100*60, 'time before donation pool is activated' ],
-    donate_length:     [ 1*60,   'donation pool work time' ],
-    keepalive:         [ 5*60,   'interval to send keepalive messages' ],
+    _help:             "JSON string of pool related timings (in seconds)",
+    stats:             [ 10*60,  "time to show pool mining stats" ],
+    connect_throttle:  [ 60,     "time between pool connection attempts" ],
+    primary_reconnect: [ 90,     "time to try to use primary pool if currently on backup pool" ],
+    first_job_wait:    [ 15,     "consider pool bad if no first job after connection" ],
+    close_wait:        [ 10,     "keep pool socket to submit delayed jobs" ],
+    donate_interval:   [ 100*60, "time before donation pool is activated" ],
+    donate_length:     [ 1*60,   "donation pool work time" ],
+    keepalive:         [ 5*60,   "interval to send keepalive messages" ],
   },
   pool: {
-    _help: 'add backup pool, defined by the following keys:',
+    _help: "add backup pool, defined by the following keys:",
     _template: {
       url:                [ undefined, "pool DNS or IP address" ],
       port:               [ undefined, "pool port" ],
       is_tls:             [ false, "is pool port is encrypted using TLS/SSL" ],
-      protocol:           [ null, "pool protocol override: login, raven, eth, ethproxy, erg, or pearl" ],
+      protocol:           [ null, "pool protocol override: login, raven, eth, ethproxy, erg, pearl, equihash, kaspa, beam, or ironfish" ],
       tls_verify:         [ false, "verify pool TLS/SSL certificate" ],
       is_nicehash:        [ false, "nicehash nonce mining mode support" ],
       is_keepalive:       [ true, "sends keepalive messages to the pool to avoid disconnect" ],
@@ -77,8 +77,8 @@ module.exports.opt_help = {
     ]
   },
   default_msr: {
-    _help: 'stores default MSR register values to restore them without reboot, ' +
-           'keys should be hex strings with 0x prefix',
+    _help: "stores default MSR register values to restore them without reboot, " +
+           "keys should be hex strings with 0x prefix",
     _template: {
       value:  [ undefined, "MSR register value in hex string with 0x prefix format" ],
       mask:   [ "0xFFFFFFFFFFFFFFFF", "MSR register mask in hex string with 0x prefix format" ],
@@ -90,7 +90,7 @@ module.exports.opt_help = {
     donate:  0,
   },
   algo_param: {
-    _help: 'new algo params, defined by the following keys:',
+    _help: "new algo params, defined by the following keys:",
     _template: {
       dev:      [ "cpu", dev_help ],
       perf:     [ null, "local algo hashrate (pool protocol normalization is automatic)" ],
@@ -148,14 +148,14 @@ function validatePool(pool) {
 
 function formatDefaultValue(def_val) {
   switch (typeof def_val) {
-    case 'string': return "\"" + def_val + "\"";
-    case 'bigint': return "0x" + def_val.toString(16);
+    case "string": return "\"" + def_val + "\"";
+    case "bigint": return "0x" + def_val.toString(16);
     default: return def_val;
   }
 }
 
 function defaultSuffix(def_val) {
-  return typeof def_val !== 'undefined' ? " (" + formatDefaultValue(def_val) + " by default)" : "";
+  return typeof def_val !== "undefined" ? " (" + formatDefaultValue(def_val) + " by default)" : "";
 }
 
 function parseJsonObject(arg, val) {
@@ -182,7 +182,7 @@ function parseNonNegativeNumber(arg, val) {
 }
 
 function isNumberOption(help) {
-  return Array.isArray(help) && typeof help[0] === 'number';
+  return Array.isArray(help) && typeof help[0] === "number";
 }
 
 function isJsonOptionArg(arg, key_path_str, new_str_prefix) {
@@ -196,7 +196,7 @@ function templateDefaults(arg, key, template, values) {
   for (const key2 of publicKeys(template)) {
     const def_val = template[key2][0];
     // template keys without a default (undefined) are required, so they must be supplied
-    if (typeof def_val === 'undefined' && !(key2 in values))
+    if (typeof def_val === "undefined" && !(key2 in values))
       return module.exports.print_help("Need to specify key value \"" + key2 + "\" in " + key + " JSON");
     result[key2] = key2 in values ? values[key2] : def_val;
   }
@@ -325,7 +325,7 @@ function printTemplateFields(template, depth_str) {
 }
 
 function printObjectOptHelp(key_help, depth_str, key_path_str) {
-  if (typeof key_help._help === 'undefined') return;
+  if (typeof key_help._help === "undefined") return;
   if ("_template" in key_help) {
     printTemplateHeader(key_help, depth_str, key_path_str);
     printTemplateFields(key_help._template, depth_str);

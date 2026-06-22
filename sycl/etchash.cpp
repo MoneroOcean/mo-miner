@@ -3,7 +3,6 @@
 #include <sycl/sycl.hpp>
 
 #include <algorithm>
-#include <cerrno>
 #include <chrono>
 #include <cinttypes>
 #include <cstddef>
@@ -443,19 +442,6 @@ void resolve_epochs(
   seed_epoch = etchash_seed_epoch(block_height);
 }
 
-// Parse env var `name` as a base-10 unsigned long into `out`; returns false (leaving
-// `out` untouched) when unset, empty, or not a clean integer so callers keep their default.
-bool parse_env_ulong(const char* const name, unsigned long& out) {
-  const char* const value = std::getenv(name);
-  if (!value || !*value) return false;
-  char* end = nullptr;
-  errno = 0;
-  const unsigned long parsed = std::strtoul(value, &end, 10);
-  if (errno || end == value || *end) return false;
-  out = parsed;
-  return true;
-}
-
 template <bool INLINE_PAIR> class EtchashSearchKernel;  // distinct kernel name per instantiation
 
 // GPU etchash search kernel, instantiated for the inlined (fast) and noinline (always-correct) pair
@@ -581,16 +567,17 @@ public:
   bool use_inline_pair() {
     if (inline_pair_ok < 0) {
       unsigned long forced = 0;
-      if (parse_env_ulong("MOM_ETCHASH_FORCE_NOINLINE", forced) && forced) {
+      if (mom_parse_env_ulong("MOM_ETCHASH_FORCE_NOINLINE", forced) && forced) {
         inline_pair_ok = 0;
         std::fprintf(stderr, "Etchash: MOM_ETCHASH_FORCE_NOINLINE set -> using safe noinline search path\n");
-      } else if (parse_env_ulong("MOM_ETCHASH_FORCE_INLINE", forced) && forced) {
+      } else if (mom_parse_env_ulong("MOM_ETCHASH_FORCE_INLINE", forced) && forced) {
         inline_pair_ok = 1;
         std::fprintf(stderr, "Etchash: MOM_ETCHASH_FORCE_INLINE set -> using fast inlined search path\n");
       } else {
         inline_pair_ok = probe_inline_pair() ? 1 : 0;
-        std::fprintf(stderr, "Etchash: inlined pair-Keccak self-test %s -> using %s search path\n",
-          inline_pair_ok ? "passed" : "FAILED (IGC miscompile)", inline_pair_ok ? "fast inlined" : "safe noinline");
+        if (!inline_pair_ok || std::getenv("MOM_ETCHASH_SELFTEST_LOG"))
+          std::fprintf(stderr, "Etchash: inlined pair-Keccak self-test %s -> using %s search path\n",
+            inline_pair_ok ? "passed" : "FAILED (IGC miscompile)", inline_pair_ok ? "fast inlined" : "safe noinline");
       }
     }
     return inline_pair_ok == 1;
@@ -662,7 +649,7 @@ public:
   static unsigned etchash_dag_workgroup(const sycl::device& dev) {
     const unsigned fallback = sycl_default_workgroup(dev, {32, 64, 128, 256, 512}, dev.is_cpu() ? 128 : 64);
     unsigned long parsed = 0;
-    if (!parse_env_ulong("MOM_ETCHASH_DAG_WORKGROUP", parsed)) return fallback;
+    if (!mom_parse_env_ulong("MOM_ETCHASH_DAG_WORKGROUP", parsed)) return fallback;
     switch (parsed) {
       case 32:
       case 64:
@@ -676,7 +663,7 @@ public:
 
   static uint32_t etchash_dag_chunk_nodes() {
     unsigned long parsed = 0;
-    if (!parse_env_ulong("MOM_ETCHASH_DAG_CHUNK_NODES", parsed) ||
+    if (!mom_parse_env_ulong("MOM_ETCHASH_DAG_CHUNK_NODES", parsed) ||
         parsed > std::numeric_limits<uint32_t>::max()) return 0;
     return static_cast<uint32_t>(parsed);
   }
