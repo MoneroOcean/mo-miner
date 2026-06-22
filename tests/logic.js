@@ -16,6 +16,7 @@ const pool = require("../pool.js");
 const { formatHashrate, parseFormattedHashrate } = require("./common/miner_command");
 const specReporter = require("./common/spec_reporter");
 const repoRoot = path.join(__dirname, "..");
+const noOp = () => undefined;
 
 async function loadMinerWithStubs(options = {}) {
   const source = fs.readFileSync(path.join(repoRoot, "mom.js"), "utf8");
@@ -32,17 +33,17 @@ async function loadMinerWithStubs(options = {}) {
     create_core: () => ({
       from: coreEvents,
       emit_to: (name) => {
-        if (name === "algo_params") setImmediate(() => coreEvents.emit("algo_params", algoParams));
-        if (name === "read_msr") setImmediate(() => coreEvents.emit("error", { message: "skip" }));
+        if (name === "algo_params") {setImmediate(() => coreEvents.emit("algo_params", algoParams));}
+        if (name === "read_msr") {setImmediate(() => coreEvents.emit("error", { message: "skip" }));}
       },
     }),
-    recreate_threads: () => {},
+    recreate_threads: noOp,
     messageWorkers: (msg) => sentMessages.push(msg),
-    log: () => {},
-    log1: () => {},
-    log2: () => {},
-    log3: () => {},
-    log_err: () => {},
+    log: noOp,
+    log1: noOp,
+    log2: noOp,
+    log3: noOp,
+    log_err: noOp,
   };
   const poolStub = {
     connect_pool_throttle: (pool_id, setJob) => { capturedSetJob = setJob; },
@@ -54,20 +55,20 @@ async function loadMinerWithStubs(options = {}) {
   processStub.exit = (code) => { throw new Error(`unexpected exit ${code}`); };
   const detachedSetTimeout = (...args) => {
     const timer = setTimeout(...args);
-    if (timer.unref) timer.unref();
+    if (timer.unref) {timer.unref();}
     return timer;
   };
   const requireStub = (id) => {
-    if (id === "./helper.js") return helperStub;
-    if (id === "./pool.js") return poolStub;
-    if (id === "./opts.js") return opts;
+    if (id === "./helper.js") {return helperStub;}
+    if (id === "./pool.js") {return poolStub;}
+    if (id === "./opts.js") {return opts;}
     return require(id);
   };
 
   vm.runInNewContext(
     `(function(require, module, exports, process, global, console, Buffer, setTimeout, clearTimeout, setInterval, setImmediate) { ${source}\nmodule.exports.__test = { expectedTestThreads, messageHandler };\n})`,
     {},
-  )(requireStub, moduleStub, moduleStub.exports, processStub, globalStub, console, Buffer, detachedSetTimeout, clearTimeout, () => {}, setImmediate);
+  )(requireStub, moduleStub, moduleStub.exports, processStub, globalStub, console, Buffer, detachedSetTimeout, clearTimeout, noOp, setImmediate);
 
   const hasExpectedMessage = () =>
     options.waitForMessageType && sentMessages.some((msg) => msg.type === options.waitForMessageType);
@@ -126,13 +127,13 @@ async function withMockPool(options, callback) {
   socket.write = options.write || function(message) { writes.push(JSON.parse(message)); };
   socket.destroy = options.destroy || function() { this.destroyed = true; };
   net.connect = function() { return socket; };
-  if (options.switchPool) pool.switch_pool = function() { switched = true; };
+  if (options.switchPool) {pool.switch_pool = function() { switched = true; };}
   global.opt = mockPoolOptions(options);
 
   try {
     return await callback({ socket, writes, switched: () => switched, poolConfig: global.opt.pools[0] });
   } finally {
-    for (const poolConfig of global.opt.pools) poolConfig.socket = null;
+    for (const poolConfig of global.opt.pools) {poolConfig.socket = null;}
     await new Promise((resolve) => setTimeout(resolve, 5));
     net.connect = originalConnect;
     pool.switch_pool = originalSwitchPool;
@@ -373,7 +374,7 @@ test("repeat schedules delayed callbacks", async () => {
   await new Promise((resolve) => {
     helper.repeat((next) => {
       calls += 1;
-      if (calls === 2) return resolve();
+      if (calls === 2) {return resolve();}
       next();
     }, 1);
   });
@@ -568,7 +569,7 @@ test("pool login does not infer algo from pass when benchmarks are skipped", asy
       algo_params: { kawpow: { dev: "gpu1*1", perf: null } },
     },
   }, async ({ socket, writes }) => {
-    pool.connect_pool_throttle(0, function() {});
+    pool.connect_pool_throttle(0, noOp);
     socket.emit("connect");
     const loginMessage = writes[0];
     assert.deepEqual(loginMessage.params.algo, []);
@@ -587,7 +588,7 @@ test("pool login advertises raw KawPow performance as kawpow1", async () => {
       },
     },
   }, async ({ socket, writes }) => {
-    pool.connect_pool_throttle(0, function() {});
+    pool.connect_pool_throttle(0, noOp);
     socket.emit("connect");
     const loginParams = writes[0].params;
     const algoPerf = loginParams["algo-perf"];
@@ -828,7 +829,7 @@ test("stale pool timeout does not destroy a replacement socket", async () => {
     socket: staleSocket,
     pool_time: { first_job_wait: 0.001 },
   }, async ({ poolConfig }) => {
-    pool.connect_pool_throttle(0, function() {});
+    pool.connect_pool_throttle(0, noOp);
     poolConfig.socket = replacementSocket;
     await new Promise((resolve) => setTimeout(resolve, 10));
     assert.equal(replacementSocket.destroyed, undefined);
@@ -843,8 +844,8 @@ test("TLS pools verify certificates only when explicitly enabled", async () => {
   tls.connect = function(_port, _host, options) {
     optionsSeen.push(options);
     const socket = new events.EventEmitter();
-    socket.write = function() {};
-    socket.destroy = function() {};
+    socket.write = noOp;
+    socket.destroy = noOp;
     return socket;
   };
   global.opt = {
@@ -865,13 +866,13 @@ test("TLS pools verify certificates only when explicitly enabled", async () => {
   };
 
   try {
-    pool.connect_pool_throttle(0, function() {});
+    pool.connect_pool_throttle(0, noOp);
     global.opt.pools[0].socket = null;
     global.opt.pools[0].tls_verify = true;
-    pool.connect_pool_throttle(0, function() {});
+    pool.connect_pool_throttle(0, noOp);
     global.opt.pools[0].socket = null;
     global.opt.pools[0].tls_verify = false;
-    pool.connect_pool_throttle(0, function() {});
+    pool.connect_pool_throttle(0, noOp);
     global.opt.pools[0].socket = null;
     await new Promise((resolve) => setTimeout(resolve, 10));
     assert.equal(optionsSeen[0].rejectUnauthorized, false);
@@ -984,7 +985,7 @@ test("oversized pool line buffer closes the pool", async () => {
     switchPool: true,
     pool_time: { first_job_wait: 0.001 },
   }, async ({ socket, switched }) => {
-    pool.connect_pool_throttle(0, function() {});
+    pool.connect_pool_throttle(0, noOp);
     socket.emit("data", Buffer.alloc(1024 * 1024 + 1, "a"));
     assert.equal(socket.destroyed, true);
     assert.equal(global.opt.pools[0].socket, null);
@@ -1021,7 +1022,7 @@ test("KawPow login response id is reused for later notify jobs", async () => {
 
 test("pool share response false is counted as rejected", async () => {
   await withMockPool({}, async ({ socket, poolConfig }) => {
-    pool.connect_pool_throttle(0, function() {});
+    pool.connect_pool_throttle(0, noOp);
     socket.emit("data", Buffer.from('{"jsonrpc":"2.0","id":3,"error":null,"result":false}\n'));
     assert.equal(poolConfig.good_shares, 0);
     assert.equal(poolConfig.bad_shares, 1);

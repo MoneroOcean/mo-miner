@@ -26,7 +26,7 @@ describe("OpenCL proof-of-work hash vectors", () => {
     it(opencl.name, { timeout: opencl.timeoutMs || GPU_TEST_TIMEOUT_MS }, async (t) => {
       // runMinerTest throws on failure, so a non-skipped return already means the vector passed.
       const result = await runMinerTest(opencl);
-      if (result.skipped) t.skip(result.reason);
+      if (result.skipped) {t.skip(result.reason);}
     });
   }
 });

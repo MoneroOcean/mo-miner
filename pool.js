@@ -24,9 +24,9 @@ function pool_log_err(pool_id, str) { h.log_err(pool_log_str(pool_id, str)); }
 
 function clear_pool_connection(pool_id, socket) {
   const pool = global.opt.pools[pool_id];
-  if (socket && !isCurrentPoolSocket(pool_id, socket)) return false;
+  if (socket && !isCurrentPoolSocket(pool_id, socket)) {return false;}
   clearPoolKeepalive(pool);
-  if (pool.socket) pool.socket.destroy();
+  if (pool.socket) {pool.socket.destroy();}
   pool.socket   = null;
   pool.last_job = null;
   pool.logged_in = false;
@@ -35,7 +35,7 @@ function clear_pool_connection(pool_id, socket) {
 }
 
 function clearPoolKeepalive(pool) {
-  if (pool.keepalive !== null) clearTimeout(pool.keepalive);
+  if (pool.keepalive !== null) {clearTimeout(pool.keepalive);}
   pool.keepalive = null;
 }
 
@@ -103,7 +103,7 @@ function usesIronfish(pool) {
 function pearlUsesSubscribe(pool) {
   // MOM_PEARL_LOGIN env forces the legacy login dialect (pearlpool.cloud) for CLI mining.
   // The MO donate pool opts out via use_subscribe:false, so this env never affects donation.
-  if (process.env.MOM_PEARL_LOGIN) return false;
+  if (process.env.MOM_PEARL_LOGIN) {return false;}
   return poolProtocol(pool) === "pearl" && pool.use_subscribe !== false;
 }
 
@@ -130,19 +130,19 @@ function pearlNbitsBound(baseTargetHex) {
   const MAX = (1n << 256n) - 1n;
   const base = BigInt("0x" + (hexWithoutPrefix(baseTargetHex) || "0"));
   let bound = base * BigInt(16 * 16 * pearlKEff());
-  if (bound > MAX) bound = MAX;
+  if (bound > MAX) {bound = MAX;}
   return bound.toString(16).padStart(64, "0");
 }
 
 module.exports.pool_write = function(pool_id, json) {
   const message = JSON.stringify(json);
   const pool = global.opt.pools[pool_id];
-  if (!pool.socket) return pool_log2(pool_id, "Sent to the closed pool socket: " + message);
+  if (!pool.socket) {return pool_log2(pool_id, "Sent to the closed pool socket: " + message);}
 
   pool_log2(pool_id, "Sent to the pool: " + message);
   pool.socket.write(message + "\n");
   // sends keepalive if no submit/keepalive to pool for more than global.opt.pool_time.keepalive
-  if (!pool.is_keepalive || usesMiningSubscribe(pool) || usesEthProxy(pool) || pearlUsesSubscribe(pool) || usesIronfish(pool)) return;
+  if (!pool.is_keepalive || usesMiningSubscribe(pool) || usesEthProxy(pool) || pearlUsesSubscribe(pool) || usesIronfish(pool)) {return;}
   clearPoolKeepalive(pool);
   pool.keepalive = setTimeout(function() {
     pool.keepalive = null;
@@ -155,12 +155,12 @@ module.exports.pool_write = function(pool_id, json) {
 // soft kill pool connection
 function pool_close_wait(pool_id) {
   const socket = global.opt.pools[pool_id].socket;
-  if (!socket) return;
+  if (!socket) {return;}
   pool_log1(pool_id, "Soft closing the pool connection");
   setTimeout(function() {
     // do not do soft close if this pool became active again
     if (pool_id === global.opt.pool_ids.active ||
-        !isCurrentPoolSocket(pool_id, socket)) return;
+        !isCurrentPoolSocket(pool_id, socket)) {return;}
     pool_log1(pool_id, "Soft closed the pool connection");
     clear_pool_connection(pool_id, socket);
   }, global.opt.pool_time.close_wait * 1000);
@@ -176,10 +176,10 @@ function poolErrorText(error) {
 }
 
 function applyLoginExtensions(pool_id, extensions) {
-  if (!Array.isArray(extensions)) return;
+  if (!Array.isArray(extensions)) {return;}
   const pool = global.opt.pools[pool_id];
-  if (extensions.includes("nicehash")) pool.is_nicehash = true;
-  if (extensions.includes("keepalive")) pool.is_keepalive = true;
+  if (extensions.includes("nicehash")) {pool.is_nicehash = true;}
+  if (extensions.includes("keepalive")) {pool.is_keepalive = true;}
 }
 
 function algoFromPass(pool) {
@@ -190,11 +190,11 @@ function algoFromPass(pool) {
 
 function rememberPoolProtocol(pool_id, result) {
   const pool = global.opt.pools[pool_id];
-  if (pool.protocol) return;
+  if (pool.protocol) {return;}
   const protocol = protocolForAlgo((result && result.algo) || algoFromPass(pool));
-  if (!protocol) return;
+  if (!protocol) {return;}
   pool.inferred_protocol = protocol;
-  if (usesMiningSubscribe(pool) || usesEthProxy(pool)) clearPoolKeepalive(pool);
+  if (usesMiningSubscribe(pool) || usesEthProxy(pool)) {clearPoolKeepalive(pool);}
 }
 
 function isObject(value) {
@@ -282,25 +282,25 @@ function validExtraNonce(value) {
 }
 
 function subscribeExtraNonceCandidates(result) {
-  if (!Array.isArray(result)) return [];
+  if (!Array.isArray(result)) {return [];}
   return Array.isArray(result[0]) || result[0] == null ? [result[1]] : result;
 }
 
 function subscribeExtraNonce2Size(result) {
-  if (!Array.isArray(result) || !(Array.isArray(result[0]) || result[0] == null)) return null;
+  if (!Array.isArray(result) || !(Array.isArray(result[0]) || result[0] == null)) {return null;}
   const size = Number(result[2]);
   return Number.isInteger(size) && size >= 0 && size <= 8 ? size : null;
 }
 
 function rememberPoolExtraNonceHex(pool_id, value) {
   const extra_nonce = validExtraNonce(value);
-  if (extra_nonce) global.opt.pools[pool_id].extra_nonce = extra_nonce;
+  if (extra_nonce) {global.opt.pools[pool_id].extra_nonce = extra_nonce;}
 }
 
 function rememberSubscribeExtraNonce(pool_id, result) {
   rememberPoolExtraNonceHex(pool_id, subscribeExtraNonceCandidates(result).find(validExtraNonce));
   const extra_nonce2_size = subscribeExtraNonce2Size(result);
-  if (extra_nonce2_size !== null) global.opt.pools[pool_id].extra_nonce2_size = extra_nonce2_size;
+  if (extra_nonce2_size !== null) {global.opt.pools[pool_id].extra_nonce2_size = extra_nonce2_size;}
 }
 
 function fixedHexBytesLE(hex, bytes) {
@@ -326,7 +326,7 @@ function nonceAt32Blob(headerHash, pool) {
 
 function parseHexHeight(value) {
   const hex = hexWithoutPrefix(value);
-  if (!hex || /[^0-9a-f]/i.test(hex)) return 0;
+  if (!hex || /[^0-9a-f]/i.test(hex)) {return 0;}
   return Number.parseInt(hex, 16);
 }
 
@@ -335,7 +335,7 @@ function ergTarget(bound) {
 }
 
 function rememberErgSubmitJob(pool, job) {
-  if (!pool.erg_submit_jobs) pool.erg_submit_jobs = {};
+  if (!pool.erg_submit_jobs) {pool.erg_submit_jobs = {};}
   pool.erg_submit_jobs[job.job_id] = {
     extra_nonce: poolExtraNonce(pool),
     extra_nonce2_size: pool.extra_nonce2_size,
@@ -343,7 +343,7 @@ function rememberErgSubmitJob(pool, job) {
   };
 
   const jobIds = Object.keys(pool.erg_submit_jobs);
-  while (jobIds.length > 16) delete pool.erg_submit_jobs[jobIds.shift()];
+  while (jobIds.length > 16) {delete pool.erg_submit_jobs[jobIds.shift()];}
 }
 
 // Build the Equihash 125,4 (Flux/ZIP-301) job from a mining.notify. The 8 notify fields go straight
@@ -402,7 +402,7 @@ function kaspaNotifyJob(pool, json) {
   const timestamp = json.__kaspa_timestamp !== undefined ? BigInt(json.__kaspa_timestamp) : BigInt(p[2]);
 
   let blob = "";
-  for (let i = 0; i < 4; ++i) blob += le8Hex(BigInt(words[i]));
+  for (let i = 0; i < 4; ++i) {blob += le8Hex(BigInt(words[i]));}
   blob += le8Hex(timestamp);          // timestamp word (offset 32)
   blob += "00".repeat(32);            // zero padding (offsets 40..71)
 
@@ -452,7 +452,7 @@ function isLoginJob(json) {
 function loginJobWithResultMetadata(result) {
   const job = { ...result.job };
   for (const key of ["algo", "height", "seed_hash", "target", "difficulty"]) {
-    if (!(key in job) && key in result) job[key] = result[key];
+    if (!(key in job) && key in result) {job[key] = result[key];}
   }
   return job;
 }
@@ -469,14 +469,14 @@ function activateAlivePool(pool_id, set_job, label) {
 
 function reactivatePrimaryPool(set_job) {
   const primary_pool = global.opt.pool_ids.primary;
-  if (!alivePoolJob(primary_pool)) return null;
+  if (!alivePoolJob(primary_pool)) {return null;}
   return activateAlivePool(primary_pool, set_job, "the primary");
 }
 
 function reactivateBackupPool(active_pool, set_job) {
   for (const pool_id of Object.keys(global.opt.pools)) {
     // === will not work here since here we are comparing strings and integers
-    if (shouldSkipBackupPool(pool_id, active_pool)) continue;
+    if (shouldSkipBackupPool(pool_id, active_pool)) {continue;}
     return activateAlivePool(pool_id, set_job, "backup");
   }
   return null;
@@ -489,7 +489,7 @@ function shouldSkipBackupPool(pool_id, active_pool) {
 
 function nextNonDonatePool(pool_id) {
   const next_pool = pool_id + 1;
-  if (next_pool < Object.keys(global.opt.pools).length) return next_pool;
+  if (next_pool < Object.keys(global.opt.pools).length) {return next_pool;}
   // wrapped back to the first pool; skip it if it is the donate pool
   return global.opt.pool_ids.donate === 0 ? 1 : 0;
 }
@@ -503,18 +503,19 @@ module.exports.switch_pool = function(pool_id, set_job) {
   const donate_pool  = global.opt.pool_ids.donate;
 
   // do not care about not active pool
-  if (pool_id !== active_pool) return;
+  if (pool_id !== active_pool) {return;}
 
   // select already alive pool if possible, except donate pool (starting from primary pool)
   const alive_job = reactivateAlivePoolIfAny(active_pool, set_job);
-  if (alive_job) return alive_job;
+  if (alive_job) {return alive_job;}
 
   // do not continue to mine on donate pool if all other pools are dead
-  if (global.opt.pool_ids.active === donate_pool) h.messageWorkers({type: "pause"});
+  if (global.opt.pool_ids.active === donate_pool) {h.messageWorkers({type: "pause"});}
 
   // select the next available pool except donate pool
   pool_id = nextNonDonatePool(pool_id);
-  return module.exports.connect_pool_throttle(global.opt.pool_ids.active = pool_id, set_job);
+  global.opt.pool_ids.active = pool_id;
+  return module.exports.connect_pool_throttle(pool_id, set_job);
 };
 
 function reactivateAlivePoolIfAny(active_pool, set_job) {
@@ -546,7 +547,7 @@ function handleSetDifficulty(pool_id, json) {
   pool.eth_difficulty = json.params[0];
   // var-diff pearl pools may push a standalone set_difficulty; stash it so the next pearl job picks
   // it up if the notify itself omits a diff field (otherwise jobTarget would fall back to MAX).
-  if (poolProtocol(pool) === "pearl") pool.pearl_difficulty = json.params[0];
+  if (poolProtocol(pool) === "pearl") {pool.pearl_difficulty = json.params[0];}
   // Kaspa pushes mining.set_difficulty [diff] (a float). Stash it and precompute the BE share target;
   // the next mining.notify (which carries no target) picks it up via kaspaNotifyJob.
   if (poolProtocol(pool) === "kaspa") {
@@ -573,12 +574,12 @@ function fixedAlgoJobName(json, fallback) {
 function jobFromPoolMessage(pool_id, json) {
   const pool = global.opt.pools[pool_id];
   if (isJobNotification(json)) {
-    if (!pool.logged_in) return null;
+    if (!pool.logged_in) {return null;}
     pool.submit_mode = null;
     return json.params;
   }
   if (poolProtocol(pool) === "raven" && isRavenJobNotification(json)) {
-    if (!pool.logged_in) return null;
+    if (!pool.logged_in) {return null;}
     pool.submit_mode = "raven";
     return nonceAt32Job(pool, {
       // raven dialect is shared by kawpow/firopow/evrprogpow; resolve the actual algo from the job,
@@ -593,7 +594,7 @@ function jobFromPoolMessage(pool_id, json) {
     });
   }
   if (poolProtocol(pool) === "eth" && isEthJobNotification(json)) {
-    if (!pool.logged_in) return null;
+    if (!pool.logged_in) {return null;}
     pool.submit_mode = "eth";
     return nonceAt32Job(pool, {
       algo: fixedAlgoJobName(json, "etchash"),
@@ -604,7 +605,7 @@ function jobFromPoolMessage(pool_id, json) {
     });
   }
   if (usesEthProxy(pool) && isEthProxyWork(json)) {
-    if (!pool.logged_in) return null;
+    if (!pool.logged_in) {return null;}
     const headerHash = hexWithoutPrefix(json.result[0]);
     pool.submit_mode = "ethproxy";
     return nonceAt32Job(pool, {
@@ -617,7 +618,7 @@ function jobFromPoolMessage(pool_id, json) {
     });
   }
   if (poolProtocol(pool) === "erg" && isErgJobNotification(json)) {
-    if (!pool.logged_in) return null;
+    if (!pool.logged_in) {return null;}
     pool.submit_mode = "erg";
     const job = nonceAt32Job(pool, {
       algo: fixedAlgoJobName(json, "autolykos2"),
@@ -631,7 +632,7 @@ function jobFromPoolMessage(pool_id, json) {
     return job;
   }
   if (poolProtocol(pool) === "pearl" && isPearlJobNotification(json)) {
-    if (!pool.logged_in) return null;
+    if (!pool.logged_in) {return null;}
     pool.submit_mode = "pearl";
     const pp = json.params;
     return {
@@ -646,12 +647,12 @@ function jobFromPoolMessage(pool_id, json) {
     };
   }
   if (poolProtocol(pool) === "equihash" && isEquihashJobNotification(json)) {
-    if (!pool.logged_in) return null;
+    if (!pool.logged_in) {return null;}
     pool.submit_mode = "equihash";
     return equihashNotifyJob(pool, json);
   }
   if (poolProtocol(pool) === "ironfish" && isIronfishJobNotification(json)) {
-    if (!pool.logged_in) return null;
+    if (!pool.logged_in) {return null;}
     pool.submit_mode = "ironfish";
     const body = json.body;
     return {
@@ -665,14 +666,14 @@ function jobFromPoolMessage(pool_id, json) {
     };
   }
   if (poolProtocol(pool) === "kaspa" && isKaspaJobNotification(json)) {
-    if (!pool.logged_in) return null;
+    if (!pool.logged_in) {return null;}
     pool.submit_mode = "kaspa";
     return kaspaNotifyJob(pool, json);
   }
   if (poolProtocol(pool) === "beam" && isBeamJobNotification(json)) {
-    if (!pool.logged_in) return null;
+    if (!pool.logged_in) {return null;}
     pool.submit_mode = "beam";
-    if (typeof json.difficulty === "number") pool.beam_difficulty = json.difficulty;
+    if (typeof json.difficulty === "number") {pool.beam_difficulty = json.difficulty;}
     const packed = typeof json.difficulty === "number" ? json.difficulty : (pool.beam_difficulty || 0);
     return {
       algo:        "beamhash3",
@@ -685,7 +686,7 @@ function jobFromPoolMessage(pool_id, json) {
   if (isLoginJob(json)) {
     pool.logged_in = true;
     pool.submit_mode = null;
-    if ("id" in json.result) pool.worker_id = json.result.id;
+    if ("id" in json.result) {pool.worker_id = json.result.id;}
     rememberPoolExtraNonceHex(pool_id, json.result.extra_nonce);
     applyLoginExtensions(pool_id, json.result.extensions);
     return loginJobWithResultMetadata(json.result);
@@ -696,18 +697,18 @@ function jobFromPoolMessage(pool_id, json) {
 function jobTargetWork(job) {
   // BeamHash III carries a PACKED 32-bit network difficulty (not a 256-bit boundary); the share rate is
   // in solutions, so report the packed difficulty itself rather than decoding job.target as a boundary.
-  if (job.algo === "beamhash3") return job.difficulty ? BigInt(job.difficulty) : null;
-  if (!job.target) return null;
+  if (job.algo === "beamhash3") {return job.difficulty ? BigInt(job.difficulty) : null;}
+  if (!job.target) {return null;}
   if (job.algo === "kawpow" || job.algo === "firopow" || job.algo === "evrprogpow" || job.algo === "meowpow")
-    return h.kawpowTarget2diff(job.target);
+  {return h.kawpowTarget2diff(job.target);}
   // pearl: report the share target in GEMM MACs to match the MAC/s hashrate (so time-per-share =
   // target/hashrate). work/share = (tiles/share = 2^256/bound) * (MACs/tile = 16*16*k_eff).
-  if (job.algo === "pearl") return h.target256ToWork(job.target) * BigInt(16 * 16 * pearlKEff());
+  if (job.algo === "pearl") {return h.target256ToWork(job.target) * BigInt(16 * 16 * pearlKEff());}
   // etchash/autolykos2/fishhash carry a full 256-bit target too, but their hashrate is in hashes -> H/share.
   if (job.algo === "etchash" || job.algo === "autolykos2" || job.algo === "fishhash" ||
       job.algo === "equihash125_4" || job.algo === "kheavyhash" ||
       job.algo === "karlsenhashv2" || job.algo === "pyrinhashv2")
-    return h.target256ToWork(job.target);
+  {return h.target256ToWork(job.target);}
   return h.target2diff(job.target);
 }
 
@@ -718,9 +719,9 @@ function jobTargetDescription(job) {
 
 function activatePoolForJob(pool_id, active_pool) {
   // only switch active pool once for its first job here
-  if (pool_id === active_pool || global.opt.pools[pool_id].last_job) return;
+  if (pool_id === active_pool || global.opt.pools[pool_id].last_job) {return;}
   const activator = poolActivator(pool_id);
-  if (activator) activator(pool_id, active_pool);
+  if (activator) {activator(pool_id, active_pool);}
 }
 
 function activatePrimaryPool(pool_id, active_pool) {
@@ -744,7 +745,7 @@ function poolActivator(pool_id) {
 
 function handlePoolJob(pool_id, job, set_job) {
   activatePoolForJob(pool_id, global.opt.pool_ids.active);
-  if (job.target) jobTargetWork(job); // throws early on a malformed target before we store the job
+  if (job.target) {jobTargetWork(job);} // throws early on a malformed target before we store the job
 
   global.opt.pools[pool_id].last_job = job;
   if (pool_id === global.opt.pool_ids.active) {
@@ -769,13 +770,13 @@ function loginFailed(pool_id, reason) {
 }
 
 function handleLoginResponse(pool_id, is_err, is_ok, err_msg, json) {
-  if (is_err || json.result === false) return loginFailed(pool_id, err_msg || ": Login rejected");
-  if (is_ok) return loginSucceeded(pool_id);
+  if (is_err || json.result === false) {return loginFailed(pool_id, err_msg || ": Login rejected");}
+  if (is_ok) {return loginSucceeded(pool_id);}
 }
 
 function handleSubscribeResponse(pool_id, is_err, is_ok, err_msg, json) {
-  if (is_err) return pool_log_err(pool_id, "Subscribe to the pool failed" + err_msg);
-  if (!is_ok) return;
+  if (is_err) {return pool_log_err(pool_id, "Subscribe to the pool failed" + err_msg);}
+  if (!is_ok) {return;}
   rememberSubscribeExtraNonce(pool_id, json.result);
   const pool = global.opt.pools[pool_id];
   pool.pending_authorize = true;
@@ -786,7 +787,7 @@ function handleSubscribeResponse(pool_id, is_err, is_ok, err_msg, json) {
 
 function handleAuthorizeResponse(pool_id, is_err, is_ok, err_msg, json) {
   global.opt.pools[pool_id].pending_authorize = false;
-  if (!is_err && json.result === true) return loginSucceeded(pool_id);
+  if (!is_err && json.result === true) {return loginSucceeded(pool_id);}
   return loginFailed(pool_id, err_msg || ": Authorization rejected");
 }
 
@@ -807,36 +808,38 @@ function handlePoolResponse(pool_id, json) {
   const is_ok   = "result" in json && json.result !== null && json.result !== false;
   const handler = poolResponseHandler(pool_id, json.id);
   const result = handler(pool_id, is_err, is_ok, err_msg, json);
-  if (!is_err && is_ok) rememberPoolResponseMetadata(pool_id, json.result);
+  if (!is_err && is_ok) {rememberPoolResponseMetadata(pool_id, json.result);}
   return result;
 }
 
 function rememberPoolResponseMetadata(pool_id, result) {
-  if (!isObject(result)) return;
+  if (!isObject(result)) {return;}
 
   const pool = global.opt.pools[pool_id];
-  if ("id" in result) pool.worker_id = result.id;
+  if ("id" in result) {pool.worker_id = result.id;}
   rememberPoolExtraNonceHex(pool_id, result.extra_nonce);
   rememberPoolProtocol(pool_id, result);
   applyLoginExtensions(pool_id, result.extensions);
 }
 
-function ignorePoolResponse() {}
+function ignorePoolResponse() {
+  return undefined;
+}
 
 function poolResponseHandler(pool_id, id) {
   const pool = global.opt.pools[pool_id];
   if (pearlUsesSubscribe(pool)) {
-    if (id === 1) return ignorePoolResponse;           // subscribe ack/err (authorize already sent)
-    if (id === 2) return pool.pending_authorize ? handleAuthorizeResponse : ignorePoolResponse;
+    if (id === 1) {return ignorePoolResponse;}           // subscribe ack/err (authorize already sent)
+    if (id === 2) {return pool.pending_authorize ? handleAuthorizeResponse : ignorePoolResponse;}
   } else if (usesMiningSubscribe(pool)) {
-    if (id === 1) return handleSubscribeResponse; // mining.subscribe response
-    if (id === 2) return pool.pending_authorize ? handleAuthorizeResponse : ignorePoolResponse;
+    if (id === 1) {return handleSubscribeResponse;} // mining.subscribe response
+    if (id === 2) {return pool.pending_authorize ? handleAuthorizeResponse : ignorePoolResponse;}
   } else if (usesEthProxy(pool)) {
-    if (id === 1) return handleLoginResponse; // eth_submitLogin response
-    if (id === 2) return ignorePoolResponse; // legacy keepalive response
+    if (id === 1) {return handleLoginResponse;} // eth_submitLogin response
+    if (id === 2) {return ignorePoolResponse;} // legacy keepalive response
   } else {
-    if (id === 1) return handleLoginResponse; // login response
-    if (id === 2) return ignorePoolResponse; // keepalive response
+    if (id === 1) {return handleLoginResponse;} // login response
+    if (id === 2) {return ignorePoolResponse;} // keepalive response
   }
   return handleShareResponse; // share submit response
 }
@@ -857,7 +860,7 @@ function handleIronfishSubmitted(pool_id, json) {
 }
 
 function handleIronfishMessage(pool_id, json, set_job) {
-  if (poolProtocol(global.opt.pools[pool_id]) !== "ironfish") return false;
+  if (poolProtocol(global.opt.pools[pool_id]) !== "ironfish") {return false;}
   if (json.method === "mining.subscribed") { handleIronfishSubscribed(pool_id, json); return true; }
   if (json.method === "mining.submitted")  { handleIronfishSubmitted(pool_id, json);  return true; }
   if (isIronfishSetTargetNotification(json)) { handleIronfishSetTarget(pool_id, json); return true; }
@@ -879,8 +882,8 @@ function handleBeamResult(pool_id, json) {
   const desc = json.description ? ": " + json.description : "";
   if (String(json.id) === "login" || "nonceprefix" in json) {
     if (json.code === 0) {
-      if (typeof json.nonceprefix === "string") pool.beam_nonceprefix = hexWithoutPrefix(json.nonceprefix);
-      if (typeof json.forkheight === "number") pool.beam_forkheight = json.forkheight;
+      if (typeof json.nonceprefix === "string") {pool.beam_nonceprefix = hexWithoutPrefix(json.nonceprefix);}
+      if (typeof json.forkheight === "number") {pool.beam_forkheight = json.forkheight;}
       return loginSucceeded(pool_id);
     }
     return loginFailed(pool_id, desc || ": Login rejected");
@@ -896,24 +899,24 @@ function handleBeamResult(pool_id, json) {
 
 function pool_message(pool_id, json, set_job) {
   if (poolProtocol(global.opt.pools[pool_id]) === "beam" && isBeamResult(json))
-    return handleBeamResult(pool_id, json);
-  if (handleIronfishMessage(pool_id, json, set_job)) return;
+  {return handleBeamResult(pool_id, json);}
+  if (handleIronfishMessage(pool_id, json, set_job)) {return;}
   if (isRavenSetTargetNotification(json)) {
     const protocol = poolProtocol(global.opt.pools[pool_id]);
-    if (protocol === "eth") return handleEthSetTarget(pool_id, json);
-    if (protocol === "equihash") return handleEquihashSetTarget(pool_id, json);
+    if (protocol === "eth") {return handleEthSetTarget(pool_id, json);}
+    if (protocol === "equihash") {return handleEquihashSetTarget(pool_id, json);}
     return handleRavenSetTarget(pool_id, json);
   }
-  if (isSetDifficultyNotification(json)) return handleSetDifficulty(pool_id, json);
+  if (isSetDifficultyNotification(json)) {return handleSetDifficulty(pool_id, json);}
   if (isSetExtranonceNotification(json)) {
     rememberPoolExtraNonceHex(pool_id, json.params[0]);
     if (Number.isInteger(Number(json.params[1])))
-      global.opt.pools[pool_id].extra_nonce2_size = Number(json.params[1]);
+    {global.opt.pools[pool_id].extra_nonce2_size = Number(json.params[1]);}
     return;
   }
   const job = jobFromPoolMessage(pool_id, json);
-  if (job) return handlePoolJob(pool_id, job, set_job);
-  if ("id" in json) return handlePoolResponse(pool_id, json);
+  if (job) {return handlePoolJob(pool_id, job, set_job);}
+  if ("id" in json) {return handlePoolResponse(pool_id, json);}
 
   pool_log1(pool_id, "Unknown message from the pool: " + JSON.stringify(json));
 }
@@ -936,7 +939,7 @@ function poolLoginParams(pool) {
   const algos = [];
   const algo_perfs = {};
   for (const algo in global.opt.algo_params) {
-    if (!global.opt.algo_params[algo].perf) continue;
+    if (!global.opt.algo_params[algo].perf) {continue;}
     const poolAlgo = poolAlgoName(algo);
     algos.push(poolAlgo);
     algo_perfs[poolAlgo] = normalizedPoolAlgoPerf(algo, global.opt.algo_params[algo].perf);
@@ -954,7 +957,7 @@ function poolAlgoName(algo) {
 
 function normalizedPoolAlgoPerf(algo, perf) {
   // Cycle algorithms are reported to the pool in solutions per second.
-  if (algo === "c29") return perf / 42;
+  if (algo === "c29") {return perf / 42;}
   return perf;
 }
 
@@ -974,12 +977,12 @@ function parsePoolLine(pool_id, message) {
 // strings) and stash them as BigInt-safe fields the kaspa job builder reads instead of the lossy array.
 function attachKaspaPrecisePrePow(json, message) {
   if (!json || json.method !== "mining.notify" || !Array.isArray(json.params) ||
-      !Array.isArray(json.params[1])) return;
+      !Array.isArray(json.params[1])) {return;}
   // params: [ "jobId", [w0,w1,w2,w3], timestamp ]. Capture the bracketed word list + the timestamp.
   const m = message.match(/"params"\s*:\s*\[\s*"[^"]*"\s*,\s*\[([^\]]*)\]\s*,\s*(\d+)/);
-  if (!m) return;
+  if (!m) {return;}
   const words = m[1].split(",").map((s) => s.trim()).filter((s) => /^\d+$/.test(s));
-  if (words.length < 4) return;
+  if (words.length < 4) {return;}
   // Store as exact decimal strings (NOT BigInt) so the debug logger's JSON.stringify(json) still works.
   json.__kaspa_words = words.slice(0, 4);
   json.__kaspa_timestamp = m[2];
@@ -1000,16 +1003,16 @@ function processPoolJson(pool_id, json, set_job, pool_err) {
 
 function handlePoolLines(pool_id, messages, set_job, pool_err) {
   for (const message of messages) {
-    if (message.trim() === "") continue;
+    if (message.trim() === "") {continue;}
     const json = parsePoolLine(pool_id, message);
-    if (json && processPoolJson(pool_id, json, set_job, pool_err)) return true;
+    if (json && processPoolJson(pool_id, json, set_job, pool_err)) {return true;}
   }
   return false;
 }
 
 function poolErrorHandler(pool_id, socket, set_job) {
   return function(message) {
-    if (!clear_pool_connection(pool_id, socket)) return;
+    if (!clear_pool_connection(pool_id, socket)) {return;}
     h.log_err(message);
     return module.exports.switch_pool(pool_id, set_job);
   };
@@ -1022,7 +1025,7 @@ function canRetryAsEthProxy(pool) {
 
 function retryAsEthProxy(pool_id, socket, set_job) {
   const pool = global.opt.pools[pool_id];
-  if (!canRetryAsEthProxy(pool)) return false;
+  if (!canRetryAsEthProxy(pool)) {return false;}
   pool_log1(pool_id, "No initial Etchash job, retrying the pool with ethproxy protocol");
   pool.inferred_protocol = "ethproxy";
   clear_pool_connection(pool_id, socket);
@@ -1032,9 +1035,9 @@ function retryAsEthProxy(pool_id, socket, set_job) {
 
 function scheduleInitialJobTimeout(pool_id, socket, set_job, pool_err) {
   setTimeout(function() {
-    if (!isCurrentPoolSocket(pool_id, socket)) return;
-    if (global.opt.pools[pool_id].last_job) return;
-    if (retryAsEthProxy(pool_id, socket, set_job)) return;
+    if (!isCurrentPoolSocket(pool_id, socket)) {return;}
+    if (global.opt.pools[pool_id].last_job) {return;}
+    if (retryAsEthProxy(pool_id, socket, set_job)) {return;}
     return pool_err(pool_log_str(pool_id,
       "No initial job from " + pool_str(pool_id) + " pool"
     ));
@@ -1042,7 +1045,7 @@ function scheduleInitialJobTimeout(pool_id, socket, set_job, pool_err) {
 }
 
 function handlePoolConnect(pool_id, socket, pool) {
-  if (!isCurrentPoolSocket(pool_id, socket)) return;
+  if (!isCurrentPoolSocket(pool_id, socket)) {return;}
   pool_log1(pool_id, "Connected to the pool");
   if (usesIronfish(pool)) {
     // Iron Fish custom OBJECT stratum: a single mining.subscribe push carries the wallet+worker
@@ -1087,9 +1090,9 @@ function splitPoolMessages(pool_data_buff) {
 }
 
 function readPoolData(pool_id, socket, pool_data_buff, data, pool_err) {
-  if (!isCurrentPoolSocket(pool_id, socket)) return null;
+  if (!isCurrentPoolSocket(pool_id, socket)) {return null;}
   const next_buff = pool_data_buff + data;
-  if (next_buff.length <= max_pool_data_buffer) return next_buff;
+  if (next_buff.length <= max_pool_data_buffer) {return next_buff;}
   pool_err(pool_log_str(pool_id, "Pool message buffer limit exceeded"));
   return null;
 }
@@ -1102,11 +1105,11 @@ function poolDataHandler(pool_id, socket, set_job, pool_err) {
   let pool_data_buff = "";
   return function(data) {
     const next_buff = readPoolData(pool_id, socket, pool_data_buff, data, pool_err);
-    if (next_buff === null) return;
+    if (next_buff === null) {return;}
     pool_data_buff = next_buff;
-    if (!hasCompletePoolLine(pool_data_buff)) return;
+    if (!hasCompletePoolLine(pool_data_buff)) {return;}
     const { messages, incomplete_line } = splitPoolMessages(pool_data_buff);
-    if (handlePoolLines(pool_id, messages, set_job, pool_err)) return;
+    if (handlePoolLines(pool_id, messages, set_job, pool_err)) {return;}
     pool_data_buff = incomplete_line;
   };
 }
@@ -1115,11 +1118,12 @@ function connect_pool(pool_id, set_job) {
   const pool = global.opt.pools[pool_id];
 
   // do not connect to already connected pools
-  if (pool.socket) return;
+  if (pool.socket) {return;}
 
   pool_log(pool_id, "Connecting to " + poolTypeStr(pool_id) + " " + pool_str(pool_id) + " pool");
   pool.last_connect_time = Date.now();
-  const socket = pool.socket = connectSocket(pool);
+  const socket = connectSocket(pool);
+  pool.socket = socket;
   pool.last_job = null;
 
   const pool_err = poolErrorHandler(pool_id, socket, set_job);
@@ -1144,7 +1148,7 @@ module.exports.connect_pool_throttle = function(pool_id, set_job) {
   const pool = global.opt.pools[pool_id];
   const wait_time = global.opt.pool_time.connect_throttle * 1000 -
                     (Date.now() - pool.last_connect_time);
-  if (wait_time <= 0) return connect_pool(pool_id, set_job);
+  if (wait_time <= 0) {return connect_pool(pool_id, set_job);}
   pool_log(pool_id, "Waiting " + Math.floor(wait_time / 1000) + "s to connect to the pool");
   return setTimeout(connect_pool, wait_time, pool_id, set_job);
 };

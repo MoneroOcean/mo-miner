@@ -10,7 +10,7 @@ const o    = require("./opts.js");
 const p    = require("./pool.js");
 
 // compute core wrapper for cluster process fork
-if (h.cluster_process()) return;
+if (h.cluster_process()) {return;}
 
 global.opt = {};
 
@@ -46,8 +46,8 @@ function firstTruthyOr(fallback, ...values) {
 
 function reallyExit(code) {
   const finish = () => {
-    if (h.exit_now) h.exit_now(code);
-    else process.exit(code);
+    if (h.exit_now) {h.exit_now(code);}
+    else {process.exit(code);}
   };
 
   setImmediate(() => {
@@ -58,11 +58,11 @@ function reallyExit(code) {
 }
 
 function normalizeTestResult(algo, value) {
-  if (!algo.includes("c29")) return value;
+  if (!algo.includes("c29")) {return value;}
 
   const tokens = value.trim().split(/\s+/);
   const hasEol = tokens[tokens.length - 1] === "EOL";
-  if (hasEol) tokens.pop();
+  if (hasEol) {tokens.pop();}
 
   return tokens.sort().join(" ") + (hasEol ? " EOL" : "");
 }
@@ -76,9 +76,9 @@ function forceExitByDefault() {
 }
 
 function closeComputeCore() {
-  if (!compute_core) return;
+  if (!compute_core) {return;}
   if (Object.keys(global.opt.default_msrs).length)
-    compute_core.emit_to("write_msr", h.pack_msr(global.opt.default_msrs));
+  {compute_core.emit_to("write_msr", h.pack_msr(global.opt.default_msrs));}
   compute_core.emit_to("close");
   compute_core = null;
 }
@@ -90,14 +90,14 @@ function shouldExitAfterWorkerShutdown() {
 function exit(code, force = forceExitByDefault()) {
   // A second exit() (e.g. SIGINT during shutdown) must not re-run teardown; just honor force.
   if (is_exiting) {
-    if (force) reallyExit(code);
+    if (force) {reallyExit(code);}
     return false;
   }
   is_exiting = true;
   closeComputeCore();
   h.closeWorkers(force ? WORKER_CLOSE_GRACE_MS : null);
   process.exitCode = code;
-  if (force) setTimeout(() => reallyExit(code), PROCESS_EXIT_GRACE_MS).unref();
+  if (force) {setTimeout(() => reallyExit(code), PROCESS_EXIT_GRACE_MS).unref();}
   return false;
 }
 
@@ -107,16 +107,16 @@ function err_exit(msg) {
 }
 
 function mergeConfigOptions(opt2) {
-  for (const key in opt2) switch (key) {
+  for (const key in opt2) {switch (key) {
     case "job": case "pool_time": // do not overwrite these option sets completely
       mergeNestedConfigOption(key, opt2[key]);
       break;
     default: global.opt[key] = opt2[key];
-  }
+  }}
 }
 
 function mergeNestedConfigOption(key, values) {
-  for (const key2 in values) global.opt[key][key2] = values[key2];
+  for (const key2 in values) {global.opt[key][key2] = values[key2];}
 }
 
 function loadConfigFile(config_file) {
@@ -131,24 +131,24 @@ function loadConfigFile(config_file) {
 // native kernel and pool.js (pearlNbitsBound) both read, so a config alone is turnkey -- no env vars.
 function applyPearlShapeEnv() {
   const pearl = global.opt.algo_params && global.opt.algo_params.pearl;
-  if (!pearl) return;
-  if (pearl.k    && !process.env.MOM_PEARL_K)    process.env.MOM_PEARL_K    = String(pearl.k);
-  if (pearl.rank && !process.env.MOM_PEARL_RANK) process.env.MOM_PEARL_RANK = String(pearl.rank);
+  if (!pearl) {return;}
+  if (pearl.k    && !process.env.MOM_PEARL_K)    {process.env.MOM_PEARL_K    = String(pearl.k);}
+  if (pearl.rank && !process.env.MOM_PEARL_RANK) {process.env.MOM_PEARL_RANK = String(pearl.rank);}
 }
 
 function parsePoolUri(pool_uri) {
   const pool_uri_parts = pool_uri.split(":");
-  if (pool_uri_parts.length !== 2) return o.print_help("Wrong pool URI: " + pool_uri);
+  if (pool_uri_parts.length !== 2) {return o.print_help("Wrong pool URI: " + pool_uri);}
   const parsed_port = parsePoolPort(pool_uri_parts[1]);
-  if (!parsed_port) return o.print_help("Wrong pool port: " + pool_uri_parts[1]);
+  if (!parsed_port) {return o.print_help("Wrong pool port: " + pool_uri_parts[1]);}
   return { url: pool_uri_parts[0], port: parsed_port.port, is_tls: parsed_port.is_tls };
 }
 
 function parsePoolPort(port_tls) {
   const m = port_tls.match(/^(\d+)((?:tls)?)$/);
-  if (!m) return o.print_help("Wrong pool port: " + port_tls);
+  if (!m) {return o.print_help("Wrong pool port: " + port_tls);}
   const port = Number(m[1]);
-  if (port < 1 || port > 65535) return o.print_help("Wrong pool port: " + port_tls);
+  if (port < 1 || port > 65535) {return o.print_help("Wrong pool port: " + port_tls);}
   return { port, is_tls: m[2] === "tls" };
 }
 
@@ -163,12 +163,12 @@ function optionalPoolPass(args) {
 }
 
 function parseMineArgs(args) {
-  if (args.length < 1) return o.print_help("Directive \"mine\" needs 1+ parameters");
+  if (args.length < 1) {return o.print_help("Directive \"mine\" needs 1+ parameters");}
   const param1 = args.shift();
-  if (o.is_config_file(param1)) return loadConfigFile(param1); // load config file
+  if (o.is_config_file(param1)) {return loadConfigFile(param1);} // load config file
 
   // setup primary pool
-  if (args.length < 1) return o.print_help("Directive \"mine\" needs 2+ parameters");
+  if (args.length < 1) {return o.print_help("Directive \"mine\" needs 2+ parameters");}
   const pool_login = args.shift();
   const pool_pass  = optionalPoolPass(args);
   return addPrimaryPool(param1, pool_login, pool_pass);
@@ -177,18 +177,18 @@ function parseMineArgs(args) {
 function parseRemainingOptions(args) {
   while (args.length) {
     const arg = args.shift();
-    if (args.length >= 1 && o.parse_opt(global.opt, o.opt_help, arg, args[0], "")) args.shift();
-    else return o.print_help("Unparsed option: " + arg);
+    if (args.length >= 1 && o.parse_opt(global.opt, o.opt_help, arg, args[0], "")) {args.shift();}
+    else {return o.print_help("Unparsed option: " + arg);}
   }
 }
 
 function parse_args() {
   const args = process.argv.slice(2);
 
-  if (args.length === 0) return o.print_help("No directive specified");
+  if (args.length === 0) {return o.print_help("No directive specified");}
   directive = args.shift();
   const parser = directiveParsers[directive];
-  if (!parser) return o.print_help("Unknown directive " + directive);
+  if (!parser) {return o.print_help("Unknown directive " + directive);}
   parser(args);
 
   parseRemainingOptions(args);
@@ -214,7 +214,7 @@ function ergSubmitMeta(pool, job_id) {
 
 function ergExtraNonce2Size(pool, meta) {
   const size = Number(meta.extra_nonce2_size);
-  if (Number.isInteger(size) && size >= 0 && size <= 8) return size;
+  if (Number.isInteger(size) && size >= 0 && size <= 8) {return size;}
 
   const extraNonce = hexWithoutPrefix(meta.extra_nonce || pool.extra_nonce || "");
   return Math.max(0, 8 - Math.ceil(extraNonce.length / 2));
@@ -261,7 +261,7 @@ function normalizeAlgoName(algo) {
 }
 
 function parseTestArgs(args) {
-  if (args.length < 2) return o.print_help("Directive \"test\" needs two parameters");
+  if (args.length < 2) {return o.print_help("Directive \"test\" needs two parameters");}
   global.opt.job.algo = args.shift();
   test.result_hash_hex = args.shift();
 }
@@ -275,10 +275,10 @@ const directiveParsers = {
   mine: parseMineArgs,
   test: parseTestArgs,
   bench: parseBenchArgs,
-  algo_params: () => {},
+  algo_params: () => undefined,
 };
 
-if (!parse_args()) return;
+if (!parse_args()) {return;}
 
 function handleResult(msg) {
   const v = msg.value;
@@ -290,25 +290,25 @@ function handleResult(msg) {
   // solution per unit of work (job_id + header), so just relay it -- no JS-side per-job dedup
   // (which would mis-fire on HeroMiners' constant job_id).
   if (submit_mode === "pearl")
-    return send({ method: "mining.submit", params: { job_id: v.job_id, plain_proof: v.plain_proof } });
+  {return send({ method: "mining.submit", params: { job_id: v.job_id, plain_proof: v.plain_proof } });}
   if (submit_mode === "erg")
-    return send({ method: "mining.submit", params: ergSubmitParams(pool, v) });
+  {return send({ method: "mining.submit", params: ergSubmitParams(pool, v) });}
   // Equihash 125,4 (Flux/ZIP-301): mining.submit [worker, job_id, time(8hex), nonce2(hex), solution(hex)].
   // The native solver returns the 8-byte search counter (v.nonce, big-endian hex) + the 106-hex
   // 0x34-prefixed 52-byte solution (v.solution). Rebuild nonce2 = the 32-byte header nonce minus the
   // pool's nonce1 prefix, with the search counter written little-endian at its nonceoffset.
   if (submit_mode === "equihash")
-    return send({ method: "mining.submit",
-      params: [pool.login, v.job_id, equihashSubmitNtime(pool), equihashNonce2(pool, v.nonce), v.solution] });
+  {return send({ method: "mining.submit",
+    params: [pool.login, v.job_id, equihashSubmitNtime(pool), equihashNonce2(pool, v.nonce), v.solution] });}
   // Iron Fish custom OBJECT stratum: submit {miningRequestId, randomness (8-byte BE nonce), graffiti}.
   if (submit_mode === "ironfish")
-    return p.pool_write(v.pool_id, { id: 2, method: "mining.submit",
-      body: { miningRequestId: v.job_id, randomness: v.nonce, graffiti: "00".repeat(32) } });
+  {return p.pool_write(v.pool_id, { id: 2, method: "mining.submit",
+    body: { miningRequestId: v.job_id, randomness: v.nonce, graffiti: "00".repeat(32) } });}
   // Kaspa (kheavyhash) kaspa-stratum-bridge submit: mining.submit [wallet.worker, job_id, nonce_hex].
   // The native returns the winning 8-byte nonce as 16-hex big-endian (nonce_to_hex %016PRIx64); the
   // pool parses it big-endian with the extranonce as the leading bytes, which is exactly this layout.
   if (submit_mode === "kaspa")
-    return send({ method: "mining.submit", params: [pool.login, v.job_id, "0x" + v.nonce] });
+  {return send({ method: "mining.submit", params: [pool.login, v.job_id, "0x" + v.nonce] });}
   if (submit_mode === "beam") {
     // Beam JSON-RPC `solution`: TOP-LEVEL {id, nonce(16hex), output(208hex=104B)}. The native emits the
     // nonce as the big-endian hex of the LE-stored 8-byte blob nonce, so reverse it back to the raw
@@ -320,27 +320,27 @@ function handleResult(msg) {
   if (v.mix_hash) {
     const headerHash = resultHeaderHash(msg, pool);
     if (submit_mode === "ethproxy")
-      return send({ method: "eth_submitWork",
-        params: ["0x" + v.nonce, "0x" + headerHash.slice(0, 64), "0x" + v.mix_hash] });
+    {return send({ method: "eth_submitWork",
+      params: ["0x" + v.nonce, "0x" + headerHash.slice(0, 64), "0x" + v.mix_hash] });}
     if (submit_mode === "raven" || submit_mode === "eth")
-      return send({ method: "mining.submit",
-        params: [pool.login, v.job_id, "0x" + v.nonce, "0x" + headerHash.slice(0, 64), "0x" + v.mix_hash] });
+    {return send({ method: "mining.submit",
+      params: [pool.login, v.job_id, "0x" + v.nonce, "0x" + headerHash.slice(0, 64), "0x" + v.mix_hash] });}
     params.mixhash = v.mix_hash;
-    if (headerHash) params.header_hash = headerHash.slice(0, 64);
+    if (headerHash) {params.header_hash = headerHash.slice(0, 64);}
   }
-  if (v.commitment) params.commitment = v.commitment;
+  if (v.commitment) {params.commitment = v.commitment;}
   if (v.edges) {
     params.pow = h.edge_hex2arr(v.edges);
     // for proofsize == 42 (Tari C29) we return nonce hex as usual
-    if (params.pow.length !== 42) params.nonce = Number.parseInt(params.nonce, 16);
+    if (params.pow.length !== 42) {params.nonce = Number.parseInt(params.nonce, 16);}
   }
   send({ method: "submit", params: params });
 }
 
 function resultHeaderHash(msg, pool) {
-  if (msg.value.header_hash) return msg.value.header_hash;
-  if (!pool || !pool.last_job) return "";
-  if (pool.last_job.job_id && msg.value.job_id && pool.last_job.job_id !== msg.value.job_id) return "";
+  if (msg.value.header_hash) {return msg.value.header_hash;}
+  if (!pool || !pool.last_job) {return "";}
+  if (pool.last_job.job_id && msg.value.job_id && pool.last_job.job_id !== msg.value.job_id) {return "";}
   return firstTruthyOr("", pool.last_job.header_hash, pool.last_job.blob, pool.last_job.blob_hex);
 }
 
@@ -349,11 +349,11 @@ function handleLastNonce(msg) {
   const pool_id = msg.value.pool_id;
   // pool_id can be "" for benchmark jobs. can not use === here since
   // global.opt.pool_ids.active is integer here
-  if (!shouldStoreLastNonce(pool_id)) return;
+  if (!shouldStoreLastNonce(pool_id)) {return;}
   const prev_nonce = global.opt.pools[pool_id].last_job.nonce;
   const new_nonce  = msg.value.nonce;
   if (isNewerNonce(prev_nonce, new_nonce))
-    global.opt.pools[pool_id].last_job.nonce = new_nonce;
+  {global.opt.pools[pool_id].last_job.nonce = new_nonce;}
 }
 
 function shouldStoreLastNonce(pool_id) {
@@ -382,7 +382,7 @@ function expectedTestThreads(msg) {
 function handleTestResult(msg) {
   const test_threads = expectedTestThreads(msg);
   test.result = (test.result ? test.result + " " : "") + msg.value.result;
-  if (++test.thread_tested < test_threads) return;
+  if (++test.thread_tested < test_threads) {return;}
 
   const expectedResults = normalizeExpectedResults(global.opt.job.algo, test.result_hash_hex);
   const actualResult = normalizeTestResult(global.opt.job.algo, test.result);
@@ -403,25 +403,25 @@ function collectedHashrate() {
 
 function handleHashrate(msg) {
   thread_hashrates[msg.thread_id] = msg.value.hashrate;
-  if (Object.keys(thread_hashrates).length < h.get_dev_threads(last_job.dev)) return;
+  if (Object.keys(thread_hashrates).length < h.get_dev_threads(last_job.dev)) {return;}
 
   const hashrate = collectedHashrate();
   h.log("Algo " + last_job.algo + " (" + last_job.dev + ") hashrate: " +
         h.formatHashrate(hashrate.total_hashrate) + " (" + hashrate.thread_hashrate_str + ")");
   thread_hashrates = {};
-  if (algo_params_bench_cb) return algo_params_bench_cb(hashrate.total_hashrate);
+  if (algo_params_bench_cb) {return algo_params_bench_cb(hashrate.total_hashrate);}
 }
 
 function handleWorkerError(msg) {
-  if (msg.value.message === "Ignore duplicate job") return;
+  if (msg.value.message === "Ignore duplicate job") {return;}
   h.log_err("Compute core error: " + JSON.stringify(msg.value));
-  if (test.result_hash_hex) exit(1); // exit with error
+  if (test.result_hash_hex) {exit(1);} // exit with error
 }
 
 // handles messages sent to the master thread from worker threads
 function messageHandler(msg) {
   const handler = masterMessageHandlers[msg.type];
-  if (handler) return handler(msg);
+  if (handler) {return handler(msg);}
   return h.log_err("Unknown master thread message: " + JSON.stringify(msg));
 }
 
@@ -434,7 +434,7 @@ const masterMessageHandlers = {
 };
 
 function set_algo_msr(algo) {
-  if (!compute_core || !Object.keys(global.opt.default_msrs).length) return;
+  if (!compute_core || !Object.keys(global.opt.default_msrs).length) {return;}
   const default_msr = h.pack_msr(global.opt.default_msrs);
   default_msr.algo = algo;
   compute_core.emit_to("write_msr", default_msr);
@@ -529,14 +529,14 @@ function jobTarget(prev_job, algo) {
     if (explicitTarget) {return hexWithoutPrefix(explicitTarget).padStart(64, "0");}
     return fullTargetFromDifficulty(prev_job.difficulty);
   }
-  if (!isNonceAt32Algo(algo)) return explicitTarget || h.diff2target(prev_job.difficulty);
+  if (!isNonceAt32Algo(algo)) {return explicitTarget || h.diff2target(prev_job.difficulty);}
   // autolykos2 (erg) may deliver the target as a DECIMAL string. Every other nonce-at-32 algo
   // (kawpow/firopow/evrprogpow/etchash) delivers a 256-bit HEX boundary in mining.notify/set_target --
   // and that hex can legitimately be all-[0-9] digits (e.g. WoolyPooly's "0000000100..."), so the
   // digit-only "is decimal" heuristic must be applied ONLY to autolykos2, never to the hex-target algos.
-  if (algo === "autolykos2" && /^\d+$/.test(explicitTarget)) return h.decimalTargetToHex(explicitTarget);
+  if (algo === "autolykos2" && /^\d+$/.test(explicitTarget)) {return h.decimalTargetToHex(explicitTarget);}
   if (explicitTarget && hexWithoutPrefix(explicitTarget).length > 16)
-    return hexWithoutPrefix(explicitTarget).padStart(64, "0");
+  {return hexWithoutPrefix(explicitTarget).padStart(64, "0");}
   return h.ethDiff2Target(prev_job.difficulty || (explicitTarget ? h.target2diff(explicitTarget) : 1));
 }
 
@@ -602,7 +602,7 @@ function addBeamhash3JobFields(job, prev_job, pool) {
   job.nonceoffset = 32;
   // prework(64hex) || nonce(16hex, zero placeholder) || extranonce(8hex, zero) = 88 hex = 44 bytes.
   const prework = orDefault(prev_job.header_hash, prev_job.blob_hex).padStart(64, "0").slice(0, 64);
-  job.blob_hex = prework + "0000000000000000" + "00000000";
+  job.blob_hex = prework + "000000000000000000000000";
 
   // The native writes the nonce to the blob BIG-endian (set_job + the beamhash3 loop both bswap), so the
   // 8-byte nonce field's PHYSICAL bytes equal m_nonce64's bytes most-significant-first. Beam's nonceprefix
@@ -613,7 +613,7 @@ function addBeamhash3JobFields(job, prev_job, pool) {
   const prefix = hexWithoutPrefix((pool && pool.beam_nonceprefix) || "").slice(0, 16);
   const prefixBytes = Math.min(prefix.length / 2, 8);
   let nonce = prefix.slice(0, prefixBytes * 2);
-  if (prefixBytes < 8) nonce += "01";                  // seed the first free (counter) byte = 1
+  if (prefixBytes < 8) {nonce += "01";}                  // seed the first free (counter) byte = 1
   job.nonce         = nonce.padEnd(16, "0");
   job.nicehash_mask = "ff".repeat(prefixBytes).padEnd(16, "0");
 }
@@ -632,14 +632,14 @@ function addNoncePrefix(job, prev_job) {
 }
 
 function defaultNicehashMask(job, pool_id, last_job_can_be_used) {
-  if (last_job_can_be_used && last_job.nicehash_mask) return last_job.nicehash_mask;
+  if (last_job_can_be_used && last_job.nicehash_mask) {return last_job.nicehash_mask;}
   return Buffer.alloc(job.noncebytes, 0)
     .fill(0xFF, 0, global.opt.pools[pool_id].is_nicehash ? 1 : 0)
     .toString("hex");
 }
 
 function addNonceFields(job, prev_job, pool_id) {
-  if (prev_job.xn) return addNoncePrefix(job, prev_job);
+  if (prev_job.xn) {return addNoncePrefix(job, prev_job);}
 
   const last_job_can_be_used = last_job && last_job.algo === job.algo;
   // use existing nicehash_mask or make a new one with FF00..00 that job.noncebytes long
@@ -653,7 +653,7 @@ function reusableLastNonce(last_job_can_be_used) {
 }
 
 function workerRuntimeEnv(algo) {
-  if (algo !== "c29") return {};
+  if (algo !== "c29") {return {};}
 
   // C29 submits hundreds of short SYCL kernels per second; legacy non-immediate
   // Level Zero command lists avoid the one-core immediate-list path on Intel GPUs.
@@ -666,7 +666,7 @@ function workerRuntimeEnv(algo) {
 
 function ensureWorkersForJob(algo, dev) {
   if (!last_job || last_job.algo !== algo || last_job.dev !== dev)
-    h.recreate_threads(dev, messageHandler, workerRuntimeEnv(algo));
+  {h.recreate_threads(dev, messageHandler, workerRuntimeEnv(algo));}
 }
 
 // prev_job can be either job json from the pool or
@@ -677,15 +677,15 @@ function set_job(prev_job) {
   ensureWorkersForJob(algo, dev);
   const pool_id = global.opt.pool_ids.active;
   const job = baseJob(prev_job, algo, dev, pool_id);
-  if (algo === "c29") addC29JobFields(job, prev_job);
-  else if (algo === "beamhash3") addBeamhash3JobFields(job, prev_job, global.opt.pools[pool_id]);
-  else if (isKHeavyHashAlgo(algo)) addKHeavyHashJobFields(job, prev_job);
-  else if (isEquihashAlgo(algo)) addEquihashJobFields(job, prev_job);
-  else if (isNonceAt32Algo(algo)) addEthHashJobFields(job, prev_job);
-  else addStandardJobFields(job, prev_job);
+  if (algo === "c29") {addC29JobFields(job, prev_job);}
+  else if (algo === "beamhash3") {addBeamhash3JobFields(job, prev_job, global.opt.pools[pool_id]);}
+  else if (isKHeavyHashAlgo(algo)) {addKHeavyHashJobFields(job, prev_job);}
+  else if (isEquihashAlgo(algo)) {addEquihashJobFields(job, prev_job);}
+  else if (isNonceAt32Algo(algo)) {addEthHashJobFields(job, prev_job);}
+  else {addStandardJobFields(job, prev_job);}
   // BeamHash III seeds its nonce from the pool nonceprefix inside addBeamhash3JobFields; the generic
   // nonce/nicehash defaults would clobber that, so only run them for the other algos.
-  if (algo !== "beamhash3") addNonceFields(job, prev_job, pool_id);
+  if (algo !== "beamhash3") {addNonceFields(job, prev_job, pool_id);}
   else {
     job.nicehash_mask = orDefault(job.nicehash_mask, "0000000000000000");
     job.nonce = orDefault(job.nonce, "0000000000000000");
@@ -699,7 +699,7 @@ function prepareBenchmarkJob(job) {
   if (isNonceAt32Algo(job.algo)) {
     job.noncebytes = 8;
     job.nonceoffset = 32;
-    if (job.blob_hex && job.blob_hex.length === 64) job.blob_hex += "0000000000000000";
+    if (job.blob_hex && job.blob_hex.length === 64) {job.blob_hex += "0000000000000000";}
   }
   if (isKHeavyHashAlgo(job.algo)) {
     // 80-byte Kaspa-style header, 8-byte nonce at offset 72 (kheavyhash: matrix from header[0..31];
@@ -707,14 +707,14 @@ function prepareBenchmarkJob(job) {
     job.noncebytes = 8;
     job.nonceoffset = 72;
     if (!job.blob_hex || job.blob_hex.length !== 160)
-      job.blob_hex = "2a".repeat(32) + "52c9f84301000000" + "00".repeat(32) + "0000000000000000";
+    {job.blob_hex = "2a".repeat(32) + "52c9f84301000000" + "00".repeat(32) + "0000000000000000";}
   }
   if (isEquihashAlgo(job.algo)) {
     // Equihash 125,4 (ZelHash/Flux): 140-byte Zcash header with a 32-byte nonce at offset 108. Bench
     // over the deterministic block-400000 header so each solve finds ~1.88 proofs and the rate is Sol/s.
     job.noncebytes = 8;
     job.nonceoffset = 108;
-    if (!job.blob_hex || job.blob_hex.length !== 280) job.blob_hex = EQUIHASH_BENCH_BLOB;
+    if (!job.blob_hex || job.blob_hex.length !== 280) {job.blob_hex = EQUIHASH_BENCH_BLOB;}
     job.height = job.height || 400000;
   }
   if (job.algo === "beamhash3") {
@@ -722,12 +722,12 @@ function prepareBenchmarkJob(job) {
     // 8-byte nonce nonzero so the native path does not classify the dispatch as an is_test gen run.
     job.noncebytes = 8;
     job.nonceoffset = 32;
-    if (!job.blob_hex || job.blob_hex.length !== 88) job.blob_hex = BEAMHASH3_BENCH_BLOB;
+    if (!job.blob_hex || job.blob_hex.length !== 88) {job.blob_hex = BEAMHASH3_BENCH_BLOB;}
     job.nonce = job.nonce || "0100000000000000";
     job.nicehash_mask = job.nicehash_mask || "0000000000000000";
   }
-  if (benchHeightByAlgo[job.algo]) job.height = job.height || benchHeightByAlgo[job.algo];
-  if (job.algo === "etchash") job.seed_hex = "";
+  if (benchHeightByAlgo[job.algo]) {job.height = job.height || benchHeightByAlgo[job.algo];}
+  if (job.algo === "etchash") {job.seed_hex = "";}
   return job;
 }
 
@@ -757,8 +757,8 @@ function bench_algos(cb) {
   let is_before_first_benchmark = true;
   h.repeat(function(cb_next) {
     const algo = nextAlgoToBenchmark(algos);
-    if (!algo) return cb();
-    if (is_before_first_benchmark) h.log("Doing algo benchmarks...");
+    if (!algo) {return cb();}
+    if (is_before_first_benchmark) {h.log("Doing algo benchmarks...");}
     is_before_first_benchmark = false;
     bench_algo(algo, function(hashrate) {
       algo_params_bench_cb = null;
@@ -770,24 +770,24 @@ function bench_algos(cb) {
 
 function benchmarkAlgos() {
   const algos = Object.keys(global.opt.algo_params);
-  if (global.opt.bench_algo_params === 2) return algos;
+  if (global.opt.bench_algo_params === 2) {return algos;}
   return algos.filter((algo) => defaultBenchAlgos.has(algo));
 }
 
 function nextAlgoToBenchmark(algos) {
   let algo;
   // skip until next algo with null perf
-  while ((algo = algos.shift()) && global.opt.algo_params[algo].perf !== null);
+  while ((algo = algos.shift()) && global.opt.algo_params[algo].perf !== null){;}
   return algo;
 }
 
 function saveConfig() {
   const save_config = global.opt.save_config;
-  if (!save_config) return;
+  if (!save_config) {return;}
   delete global.opt.save_config; // a saved config should not re-save itself when later loaded
   h.log("Saving config file to " + save_config);
   fs.writeFile(save_config, JSON.stringify(o.saved_config(global.opt), null, 2), function(err) {
-    if (err) h.log_err("Error saving " + save_config + " file");
+    if (err) {h.log_err("Error saving " + save_config + " file");}
   });
 }
 
@@ -806,22 +806,23 @@ function scheduleShareStats() {
 // if there are backup pools, try to reconnect to primary pool if it is not active
 function schedulePrimaryReconnect() {
   if (global.opt.pools.length >= (global.opt.pool_ids.donate !== null ? 3 : 2))
-    setInterval(function() {
-      switch (global.opt.pool_ids.active) {
-        case global.opt.pool_ids.primary:
-        case global.opt.pool_ids.donate: return;
-      }
-      p.connect_pool_throttle(global.opt.pool_ids.primary, set_job);
-    }, global.opt.pool_time.primary_reconnect * 1000);
+  {setInterval(function() {
+    switch (global.opt.pool_ids.active) {
+      case global.opt.pool_ids.primary:
+      case global.opt.pool_ids.donate: return;
+      default: break;
+    }
+    p.connect_pool_throttle(global.opt.pool_ids.primary, set_job);
+  }, global.opt.pool_time.primary_reconnect * 1000);}
 }
 
 // donation mining
 function scheduleDonationMining() {
-  if (global.opt.pool_ids.donate !== null) setInterval(function() {
+  if (global.opt.pool_ids.donate !== null) {setInterval(function() {
     p.connect_pool_throttle(global.opt.pool_ids.donate, set_job);
     setTimeout(p.switch_pool, global.opt.pool_time.donate_length * 1000,
       global.opt.pool_ids.donate, set_job);
-  }, global.opt.pool_time.donate_interval * 1000);
+  }, global.opt.pool_time.donate_interval * 1000);}
 }
 
 function start_mining() {
@@ -840,8 +841,8 @@ function on_exit() { exit(0, true); }
 function install_exit_handlers() {
   process.on("SIGINT", on_exit);
   process.on("SIGTERM", on_exit);
-  if (process.platform === "win32") process.on("SIGBREAK", on_exit);
-  else process.on("SIGHUP", on_exit);
+  if (process.platform === "win32") {process.on("SIGBREAK", on_exit);}
+  else {process.on("SIGHUP", on_exit);}
 }
 
 function fallbackCpuInfo() {
@@ -854,13 +855,13 @@ function fallbackCpuInfo() {
 
 function cpuSocketCount(cpuinfo) {
   const physical_ids = new Set();
-  for (const match of cpuinfo.matchAll(/^physical id\s*:\s*(.+)$/gm)) physical_ids.add(match[1]);
+  for (const match of cpuinfo.matchAll(/^physical id\s*:\s*(.+)$/gm)) {physical_ids.add(match[1]);}
   return physical_ids.size || 1;
 }
 
 function cacheSizeBytes(size_text) {
   const size = size_text.match(/^(\d+)([KMG])$/i);
-  if (!size) return 0;
+  if (!size) {return 0;}
   const multiplier = { K: 1024, M: 1024 * 1024, G: 1024 * 1024 * 1024 }[size[2].toUpperCase()];
   return Number(size[1]) * multiplier;
 }
@@ -872,9 +873,9 @@ function cacheSharedId(base) {
 
 function l3CacheEntryBytes(base, l3_ids) {
   try {
-    if (!isUnifiedL3Cache(base)) return 0;
+    if (!isUnifiedL3Cache(base)) {return 0;}
     const id = cacheSharedId(base);
-    if (l3_ids.has(id)) return 0;
+    if (l3_ids.has(id)) {return 0;}
     l3_ids.add(id);
     return cacheSizeBytes(fs.readFileSync(`${base}/size`, "utf8").trim());
   } catch {
@@ -893,15 +894,15 @@ function l3CacheBytes() {
   const cpu_dirs = fs.readdirSync("/sys/devices/system/cpu").filter((name) => /^cpu\d+$/.test(name));
   for (const index of cpu_dirs) {
     const cache_dir = `/sys/devices/system/cpu/${index}/cache`;
-    if (!fs.existsSync(cache_dir)) continue;
-    for (const entry of fs.readdirSync(cache_dir)) l3cache += l3CacheEntryBytes(`${cache_dir}/${entry}`, l3_ids);
+    if (!fs.existsSync(cache_dir)) {continue;}
+    for (const entry of fs.readdirSync(cache_dir)) {l3cache += l3CacheEntryBytes(`${cache_dir}/${entry}`, l3_ids);}
   }
   return l3cache;
 }
 
 function detect_cpu() {
   const fallback = fallbackCpuInfo();
-  if (!hasProcCpuInfo()) return fallback;
+  if (!hasProcCpuInfo()) {return fallback;}
 
   const cpuinfo = fs.readFileSync("/proc/cpuinfo", "utf8");
   const processor_count = (cpuinfo.match(/^processor\s*:/gm) || []).length;
@@ -923,7 +924,7 @@ function use_msr_tuning() {
 function add_algo_params(params) {
   for (const algo in params) {
     if (!(algo in global.opt.algo_params))
-      global.opt.algo_params[algo] = { dev: params[algo], perf: null };
+    {global.opt.algo_params[algo] = { dev: params[algo], perf: null };}
   }
 }
 
@@ -933,14 +934,14 @@ function use_algo_param_benchmarks() {
 
 function prepare_fixed_algo_params() {
   const algo = normalizeAlgoName(global.opt.job.algo);
-  if (!algo) return;
+  if (!algo) {return;}
   const algo_param = global.opt.algo_params[algo] || { dev: global.opt.job.dev, perf: null };
   global.opt.job.algo = algo;
   global.opt.algo_params = { [algo]: algo_param };
 }
 
 function start_after_algo_params() {
-  if (use_algo_param_benchmarks()) return bench_algos(start_mining);
+  if (use_algo_param_benchmarks()) {return bench_algos(start_mining);}
   prepare_fixed_algo_params();
   return start_mining();
 }
@@ -952,10 +953,10 @@ function createComputeCore() {
 }
 
 function readMsrThen(on_read, on_error) {
-  if (!use_msr_tuning()) return on_error();
+  if (!use_msr_tuning()) {return on_error();}
   compute_core.from.on("read_msr", on_read);
   compute_core.from.on("error", function(v) {
-    if (v) h.log("Can't access MSR: " + JSON.stringify(v.message));
+    if (v) {h.log("Can't access MSR: " + JSON.stringify(v.message));}
     return on_error(v);
   });
   compute_core.emit_to("read_msr", h.pack_msr(global.opt.default_msrs));
@@ -1012,5 +1013,7 @@ switch (directive) {
       err_exit("Can't detect algo params: " + JSON.stringify(v.message ? v.message : v));
     });
     compute_core.emit_to("algo_params", detect_cpu());
+    break;
+  default:
     break;
 }

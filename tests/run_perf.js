@@ -21,8 +21,8 @@ const testArgs = [
 ];
 // perf.js reads these; MOM_PERF_SAMPLES is forwarded as-is when set.
 const testEnv = {};
-if (algo) testEnv.MOM_PERF_ALGO = algo;
-if (process.env.MOM_PERF_SAMPLES) testEnv.MOM_PERF_SAMPLES = process.env.MOM_PERF_SAMPLES;
+if (algo) {testEnv.MOM_PERF_ALGO = algo;}
+if (process.env.MOM_PERF_SAMPLES) {testEnv.MOM_PERF_SAMPLES = process.env.MOM_PERF_SAMPLES;}
 
 const runner = resolveNodeRunner(testArgs, testEnv);
 spawnAndExit(runner.command, runner.args, { env: runner.env });

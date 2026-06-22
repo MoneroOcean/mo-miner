@@ -85,7 +85,7 @@ describe("SYCL CPU hash vectors", () => {
   let detectedDevice;
 
   async function getDevice(t) {
-    if (!detectedDevice) detectedDevice = getFirstSyclCpuDevice();
+    if (!detectedDevice) {detectedDevice = getFirstSyclCpuDevice();}
     const result = await detectedDevice;
     if (result.skipped) {
       t.skip(result.reason);
@@ -97,11 +97,11 @@ describe("SYCL CPU hash vectors", () => {
   for (const definition of syclCpuVectors) {
     it(definition.name.replace(/gpu1/g, "SYCL CPU"), { timeout: CPU_TEST_TIMEOUT_MS }, async (t) => {
       const dev = await getDevice(t);
-      if (!dev) return;
+      if (!dev) {return;}
 
       // runMinerTest throws on failure, so a non-skipped return already means the vector passed.
       const result = await runMinerTest(cloneForSyclCpu(definition, dev));
-      if (result.skipped) t.skip(result.reason);
+      if (result.skipped) {t.skip(result.reason);}
     });
   }
 });

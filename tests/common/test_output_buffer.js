@@ -17,7 +17,7 @@ for (const method of METHODS) {
 }
 
 function flushBufferedOutput() {
-  if (flushed || buffered.length === 0) return;
+  if (flushed || buffered.length === 0) {return;}
   flushed = true;
 
   originalConsole.error("");
@@ -28,5 +28,5 @@ function flushBufferedOutput() {
 }
 
 process.on("exit", (code) => {
-  if (code !== 0 && process.env.NODE_TEST_FLUSH_BUFFERED_OUTPUT === "1") flushBufferedOutput();
+  if (code !== 0 && process.env.NODE_TEST_FLUSH_BUFFERED_OUTPUT === "1") {flushBufferedOutput();}
 });

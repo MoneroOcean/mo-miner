@@ -6,8 +6,8 @@ const { spec } = require("node:test/reporters");
 // `raw` is the original numeric token from the reporter; sub-second durations
 // echo it verbatim so we never reformat (and thus widen) the printed value.
 function formatDurationMs(durationMs, raw = String(durationMs)) {
-  if (durationMs >= 60 * 1000) return `${(durationMs / (60 * 1000)).toFixed(2)} min`;
-  if (durationMs >= 1000) return `${(durationMs / 1000).toFixed(2)} s`;
+  if (durationMs >= 60 * 1000) {return `${(durationMs / (60 * 1000)).toFixed(2)} min`;}
+  if (durationMs >= 1000) {return `${(durationMs / 1000).toFixed(2)} s`;}
   return `${raw}ms`;
 }
 
@@ -51,12 +51,12 @@ class SpacedSpecReporter extends Transform {
 
   rewriteLine(line) {
     const rewritten = this.spaceBeforeGroupHeader(rewriteReporterDurations(line));
-    if (rewritten.trim()) this.lastPrintedNonEmptyLine = rewritten.trimEnd();
+    if (rewritten.trim()) {this.lastPrintedNonEmptyLine = rewritten.trimEnd();}
     return rewritten;
   }
 
   _transform(event, encoding, callback) {
-    if (this.reporter.write(event, encoding)) return callback();
+    if (this.reporter.write(event, encoding)) {return callback();}
     this.reporter.once("drain", callback);
   }
 

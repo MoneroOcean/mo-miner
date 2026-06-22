@@ -14,7 +14,7 @@ const is_worker_process = is_explicit_worker ||
   (!is_windows_process && !cluster.isMaster);
 const use_subprocess_workers = is_windows_process ||
   process.env.MOM_USE_SUBPROCESS_WORKERS === "1";
-const thread_id = is_worker_process ? Number.parseInt(process.env["thread_id"], 10) : "master";
+const thread_id = is_worker_process ? Number.parseInt(process.env.thread_id, 10) : "master";
 let worker_ids = []; // active worker ids (cluster.workers can contain not yet closed workers)
 let worker_procs = {};
 let core_module_for_exit = null;
@@ -22,7 +22,7 @@ const worker_message_prefix = "MOM_WORKER_MESSAGE ";
 
 function reallyExit(code) {
   setImmediate(() => {
-    if (module.exports.exit_now) module.exports.exit_now(code);
+    if (module.exports.exit_now) {module.exports.exit_now(code);}
     process.exit(code);
   });
 }
@@ -37,7 +37,7 @@ function normalizeWindowsPathKey(env) {
   // (e.g. "Path" and "PATH") onto a single canonical key.
   const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") || "Path";
   for (const key of Object.keys(env)) {
-    if (key !== pathKey && key.toLowerCase() === "path") delete env[key];
+    if (key !== pathKey && key.toLowerCase() === "path") {delete env[key];}
   }
   return pathKey;
 }
@@ -65,7 +65,7 @@ function firstExistingPath(paths) {
 }
 
 function debugStartup(str) {
-  if (process.env.MOM_DEBUG_STARTUP) console.error("MOM_DEBUG_STARTUP " + str);
+  if (process.env.MOM_DEBUG_STARTUP) {console.error("MOM_DEBUG_STARTUP " + str);}
 }
 
 function appendRecentText(current, chunk, limit = 8192) {
@@ -83,7 +83,7 @@ module.exports.log = function(str) {
 
 function makeLevelLogger(level) {
   return function(str) {
-    if (global.opt.log_level >= level) console.log(log_str("[" + level + "] " + str));
+    if (global.opt.log_level >= level) {console.log(log_str("[" + level + "] " + str));}
   };
 }
 
@@ -153,7 +153,7 @@ module.exports.exit_now = function(code) {
 
 function sendWorkerMessage(type, value) {
   const msg = {type, value, thread_id};
-  if (process.send) return process.send(msg);
+  if (process.send) {return process.send(msg);}
   process.stdout.write(worker_message_prefix + JSON.stringify(msg) + "\n");
 }
 
@@ -164,7 +164,7 @@ function forwardCoreMessages(compute_core) {
 }
 
 function closeWorkerProcess(compute_core, is_exiting_ref) {
-  if (is_exiting_ref.value) return reallyExit(0);
+  if (is_exiting_ref.value) {return reallyExit(0);}
   is_exiting_ref.value = true;
   compute_core.emit_to("close");
   setTimeout(function() { reallyExit(0); }, 3000).unref();
@@ -173,8 +173,8 @@ function closeWorkerProcess(compute_core, is_exiting_ref) {
 function installWorkerExitHandlers(close_worker_process) {
   process.on("SIGINT", close_worker_process);
   process.on("SIGTERM", close_worker_process);
-  if (process.platform === "win32") process.on("SIGBREAK", close_worker_process);
-  else process.on("SIGHUP", close_worker_process);
+  if (process.platform === "win32") {process.on("SIGBREAK", close_worker_process);}
+  else {process.on("SIGHUP", close_worker_process);}
 }
 
 function startWorkerJob(compute_core, msg) {
@@ -186,7 +186,7 @@ function startWorkerJob(compute_core, msg) {
 
 function handleWorkerMessage(compute_core, msg) {
   const handler = workerMessageHandlers[msg.type];
-  if (handler) return handler(compute_core, msg);
+  if (handler) {return handler(compute_core, msg);}
   module.exports.log_err("Unknown thread message");
 }
 
@@ -207,16 +207,16 @@ function readStdinMessages(handle_msg) {
     while ((eol = input.indexOf("\n")) !== -1) {
       const line = input.slice(0, eol);
       input = input.slice(eol + 1);
-      if (line) handle_msg(JSON.parse(line));
+      if (line) {handle_msg(JSON.parse(line));}
     }
   });
 }
 
 module.exports.cluster_process = function() {
-  if (!is_worker_process) return false;
+  if (!is_worker_process) {return false;}
 
   // process worker thread env vars
-  global.opt = { log_level: Number.parseInt(process.env["log_level"], 10) };
+  global.opt = { log_level: Number.parseInt(process.env.log_level, 10) };
 
   const compute_core = this.create_core();
 
@@ -224,7 +224,7 @@ module.exports.cluster_process = function() {
   forwardCoreMessages(compute_core);
   compute_core.from.on("close",       function()  {
     process.exitCode = 0;
-    if (process.disconnect) process.disconnect();
+    if (process.disconnect) {process.disconnect();}
     reallyExit(0);
   });
 
@@ -235,7 +235,7 @@ module.exports.cluster_process = function() {
 
   // process messages from the master thread
   process.on("message", handle_msg);
-  if (!process.send) readStdinMessages(handle_msg);
+  if (!process.send) {readStdinMessages(handle_msg);}
 
   return true;
 };
@@ -257,7 +257,7 @@ module.exports.get_thread_dev = function(thread_id, devs) {
   for (const dev_part of devs.split(",")) {
     const parsed = parseThreadDev(dev_part);
     thread_count += parsed.threads;
-    if (thread_id < thread_count) return parsed.dev;
+    if (thread_id < thread_count) {return parsed.dev;}
   }
   this.log_err("Can't find " + thread_id + " thread device in " + devs + " specification");
   return null;
@@ -266,7 +266,7 @@ module.exports.get_thread_dev = function(thread_id, devs) {
 // return number of ^threads in dev specification
 module.exports.get_dev_threads = function(dev) {
   let thread_count = 0;
-  for (const dev_part of dev.split(",")) thread_count += parseThreadDev(dev_part).threads;
+  for (const dev_part of dev.split(",")) {thread_count += parseThreadDev(dev_part).threads;}
   return thread_count;
 };
 
@@ -277,7 +277,7 @@ module.exports.get_dev_batch = function(dev) {
 };
 
 function markExpectedClose(worker, msg) {
-  if (msg.type === "close") worker.expectedClose = true;
+  if (msg.type === "close") {worker.expectedClose = true;}
 }
 
 function isUnexpectedSendError(worker, msg) {
@@ -285,14 +285,14 @@ function isUnexpectedSendError(worker, msg) {
 }
 
 function sendSubprocessWorker(worker_id, worker, msg) {
-  if (!worker || !worker.stdin || !worker.stdin.writable) return null;
+  if (!worker || !worker.stdin || !worker.stdin.writable) {return null;}
   markExpectedClose(worker, msg);
   worker.stdin.write(JSON.stringify(msg) + "\n");
   return { type: "subprocess", id: worker_id, worker };
 }
 
 function emitClusterSendError(cluster_worker, msg, error) {
-  if (isUnexpectedSendError(cluster_worker, msg)) cluster_worker.emit("error", error);
+  if (isUnexpectedSendError(cluster_worker, msg)) {cluster_worker.emit("error", error);}
 }
 
 function canSendClusterWorker(cluster_worker) {
@@ -302,7 +302,7 @@ function canSendClusterWorker(cluster_worker) {
 function sendClusterMessage(cluster_worker, msg) {
   try {
     cluster_worker.send(msg, function(error) {
-      if (error) emitClusterSendError(cluster_worker, msg, error);
+      if (error) {emitClusterSendError(cluster_worker, msg, error);}
     });
   } catch (error) {
     emitClusterSendError(cluster_worker, msg, error);
@@ -312,10 +312,10 @@ function sendClusterMessage(cluster_worker, msg) {
 }
 
 function sendClusterWorker(worker_id, cluster_worker, msg) {
-  if (!cluster_worker) return null;
+  if (!cluster_worker) {return null;}
   markExpectedClose(cluster_worker, msg);
-  if (!canSendClusterWorker(cluster_worker)) return null;
-  if (!sendClusterMessage(cluster_worker, msg)) return null;
+  if (!canSendClusterWorker(cluster_worker)) {return null;}
+  if (!sendClusterMessage(cluster_worker, msg)) {return null;}
   return { type: "cluster", id: worker_id, worker: cluster_worker };
 }
 
@@ -324,7 +324,7 @@ module.exports.messageWorkers = function(msg) {
   for (const worker_id of worker_ids) {
     const target = sendSubprocessWorker(worker_id, worker_procs[worker_id], msg) ||
                    sendClusterWorker(worker_id, cluster.workers[worker_id], msg);
-    if (target) targets.push(target);
+    if (target) {targets.push(target);}
   }
   return targets;
 };
@@ -347,9 +347,9 @@ module.exports.killProcessTree = function(worker, signal = "SIGKILL") {
 
 function forceCloseWorker(target) {
   const worker = target.worker;
-  if (!worker) return;
+  if (!worker) {return;}
   if (target.type === "subprocess") {
-    if (!isSubprocessClosed(worker)) module.exports.killProcessTree(worker);
+    if (!isSubprocessClosed(worker)) {module.exports.killProcessTree(worker);}
   } else if (!worker.isDead || !worker.isDead()) {
     worker.kill("SIGKILL");
   }
@@ -359,7 +359,7 @@ module.exports.closeWorkers = function(forceAfterMs) {
   const targets = module.exports.messageWorkers({type: "close"});
   if (forceAfterMs != null) {
     setTimeout(function() {
-      for (const target of targets) forceCloseWorker(target);
+      for (const target of targets) {forceCloseWorker(target);}
     }, forceAfterMs).unref();
   }
   return targets;
@@ -410,10 +410,10 @@ function createSubprocessThread(i, env, messageHandler) {
     workerError(messageHandler, i, "Worker " + i + " failed to start: " + error.message);
   });
   thread.on("exit", function(code, signal) {
-    if (worker_procs[i] !== thread) return;
+    if (worker_procs[i] !== thread) {return;}
     delete worker_procs[i];
     worker_ids = worker_ids.filter((worker_id) => worker_id !== i);
-    if (thread.expectedClose) return;
+    if (thread.expectedClose) {return;}
     workerError(messageHandler, i, workerExitMessage(i, code, signal,
       workerExitDetail(recentStdout, recentStderr)
     ));
@@ -424,8 +424,8 @@ function createSubprocessThread(i, env, messageHandler) {
 
 function workerExitDetail(recentStdout, recentStderr) {
   const detail = [];
-  if (recentStdout.trim()) detail.push("stdout: " + recentStdout.trim());
-  if (recentStderr.trim()) detail.push("stderr: " + recentStderr.trim());
+  if (recentStdout.trim()) {detail.push("stdout: " + recentStdout.trim());}
+  if (recentStderr.trim()) {detail.push("stderr: " + recentStderr.trim());}
   return detail;
 }
 
@@ -433,12 +433,12 @@ function createClusterThread(i, env, messageHandler) {
   const thread = cluster.fork(env);
   thread.on("message", messageHandler);
   thread.on("error", function(error) {
-    if (thread.expectedClose) return;
+    if (thread.expectedClose) {return;}
     workerError(messageHandler, i, "Worker " + i + " IPC error: " + error.message);
   });
   thread.on("exit", function(code, signal) {
     worker_ids = worker_ids.filter((worker_id) => worker_id !== thread.id);
-    if (thread.expectedClose) return;
+    if (thread.expectedClose) {return;}
     workerError(messageHandler, i, workerExitMessage(i, code, signal));
   });
   worker_ids.push(thread.id);
@@ -454,8 +454,8 @@ module.exports.recreate_threads = function(dev, messageHandler, extraEnv = {}) {
   const curr_thread_count = this.get_dev_threads(dev);
   for (let i = 0; i < curr_thread_count; ++ i) {
     const env = childEnv({thread_id: i, log_level: global.opt.log_level, ...extraEnv});
-    if (use_subprocess_workers) createSubprocessThread(i, env, messageHandler);
-    else createClusterThread(i, env, messageHandler);
+    if (use_subprocess_workers) {createSubprocessThread(i, env, messageHandler);}
+    else {createClusterThread(i, env, messageHandler);}
   }
 };
 
@@ -463,8 +463,8 @@ module.exports.recreate_threads = function(dev, messageHandler, extraEnv = {}) {
 // runs (or immediately/recursively when delay is falsy).
 module.exports.repeat = function(cb_next, delay) {
   cb_next(function() {
-    if (delay) setTimeout(module.exports.repeat, delay, cb_next, delay);
-    else module.exports.repeat(cb_next, delay);
+    if (delay) {setTimeout(module.exports.repeat, delay, cb_next, delay);}
+    else {module.exports.repeat(cb_next, delay);}
   });
 };
 
@@ -484,9 +484,9 @@ module.exports.hashrate_units = Object.keys(hashrate_unit_multipliers);
 
 module.exports.formatHashrate = function(hashrate) {
   const rate = Number.parseFloat(hashrate);
-  if (!Number.isFinite(rate)) return String(hashrate);
+  if (!Number.isFinite(rate)) {return String(hashrate);}
   for (const unit of hashrate_units) {
-    if (Math.abs(rate) >= unit.value) return (rate / unit.value).toFixed(2) + " " + unit.suffix;
+    if (Math.abs(rate) >= unit.value) {return (rate / unit.value).toFixed(2) + " " + unit.suffix;}
   }
   return rate.toFixed(2) + " H/s";
 };
@@ -509,9 +509,9 @@ function formatHashCountValue(count, unit) {
 
 module.exports.formatHashCount = function(hashes) {
   let count = typeof hashes === "bigint" ? hashes : BigInt(Math.round(Number(hashes) || 0));
-  if (count < 0n) count = 0n; // counts are unsigned; clamp negatives to zero
+  if (count < 0n) {count = 0n;} // counts are unsigned; clamp negatives to zero
   for (const unit of hash_count_units) {
-    if (count >= unit.value) return formatHashCountValue(count, unit);
+    if (count >= unit.value) {return formatHashCountValue(count, unit);}
   }
   return count.toString() + " H";
 };
@@ -534,25 +534,25 @@ module.exports.pack_msr = function(default_msr) {
 module.exports.unpack_msr = function(default_msr) {
   const unpacked = {};
   for (const [key, val] of Object.entries(default_msr)) {
-    if (!key.startsWith("msr:0x")) continue;
+    if (!key.startsWith("msr:0x")) {continue;}
     const parts = val.split(",");
-    if (parts.length !== 2) continue;
+    if (parts.length !== 2) {continue;}
     unpacked[key.substring(4)] = { value: parts[0], mask: parts[1] };
   }
   return unpacked;
 };
 
 module.exports.target2diff = function(target) {
-  if (target.length === 8) target = "00000000" + target;
+  if (target.length === 8) {target = "00000000" + target;}
   // target is stored big-endian; reverse byte pairs to read it as a LE integer
   const div = BigInt("0x" + target.match(/.{2}/g).reverse().join(""));
-  if (div === 0n) return 0;
+  if (div === 0n) {return 0;}
   return BigInt("0xFFFFFFFFFFFFFFFF") / div;
 };
 
 module.exports.kawpowTarget2diff = function(target) {
   const div = BigInt("0x" + target.slice(0, 16).padEnd(16, "0"));
-  if (div === 0n) return 0;
+  if (div === 0n) {return 0;}
   return BigInt("0xFFFFFFFFFFFFFFFF") / div;
 };
 
@@ -562,18 +562,18 @@ const UINT256_MAX = (1n << 256n) - 1n;
 function decimalToRatio(value) {
   const text = String(value || "0").trim().toLowerCase();
   const m = text.match(/^([+-])?(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/);
-  if (!m) return [0n, 1n];
+  if (!m) {return [0n, 1n];}
   const digits = (m[2] + (m[3] || "")).replace(/^0+/, "") || "0";
   const scale = BigInt((m[3] || "").length);
   const exp = BigInt(m[4] || "0");
   // Targets/difficulties are 256-bit (< ~78 decimal digits); reject absurd exponents/mantissas so a hostile
   // pool can't force a multi-million-digit BigInt (10n ** exp) that synchronously hangs the event loop / OOMs.
-  if (exp > 1000n || exp < -1000n || digits.length > 1000) return [0n, 1n];
+  if (exp > 1000n || exp < -1000n || digits.length > 1000) {return [0n, 1n];}
   let numerator = BigInt(digits);
   let denominator = 10n ** scale;
-  if (exp > 0n) numerator *= 10n ** exp;
-  else if (exp < 0n) denominator *= 10n ** (-exp);
-  if (m[1] === "-") numerator = -numerator;
+  if (exp > 0n) {numerator *= 10n ** exp;}
+  else if (exp < 0n) {denominator *= 10n ** (-exp);}
+  if (m[1] === "-") {numerator = -numerator;}
   return [numerator, denominator];
 }
 
@@ -589,32 +589,32 @@ function parseTarget256(target) {
 
 module.exports.ethDiff2Target = function(diff) {
   const [numerator, denominator] = decimalToRatio(diff);
-  if (numerator <= 0n) return "0".repeat(64);
+  if (numerator <= 0n) {return "0".repeat(64);}
   return target256ToHex((ETH_STRATUM_DIFF1_TARGET * denominator) / numerator);
 };
 
 module.exports.decimalTargetToHex = function(value) {
   const [numerator, denominator] = decimalToRatio(value);
-  if (numerator <= 0n) return "0".repeat(64);
+  if (numerator <= 0n) {return "0".repeat(64);}
   return target256ToHex(numerator / denominator);
 };
 
 module.exports.ethTarget2diff = function(target) {
   const div = parseTarget256(target);
-  if (div === 0n) return 0;
+  if (div === 0n) {return 0;}
   return Number(ETH_STRATUM_DIFF1_TARGET) / Number(div);
 };
 
 module.exports.target256ToWork = function(target) {
   const div = parseTarget256(target);
-  if (div === 0n) return 0n;
+  if (div === 0n) {return 0n;}
   return UINT256_MAX / div;
 };
 
 // Inverse of target2diff: diff -> compact BE target hex (4 bytes when it fits).
 module.exports.diff2target = function(diff) {
   const d = BigInt(diff);
-  if (d <= 0n) return "0000000000000000";
+  if (d <= 0n) {return "0000000000000000";}
   const hexLE = (BigInt("0xFFFFFFFFFFFFFFFF") / d).toString(16).padStart(16, "0");
   const hexBE = hexLE.match(/.{2}/g).reverse().join("");
   // Drop the high 4 zero bytes to match the original compact-target style.
@@ -623,6 +623,6 @@ module.exports.diff2target = function(diff) {
 
 module.exports.edge_hex2arr = function(hex) {
   const pow = [];
-  for (let i = 0; i < hex.length; i += 8) pow.push(Number.parseInt(hex.slice(i, i + 8), 16));
+  for (let i = 0; i < hex.length; i += 8) {pow.push(Number.parseInt(hex.slice(i, i + 8), 16));}
   return pow;
 };

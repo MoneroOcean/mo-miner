@@ -35,9 +35,9 @@ function quoteCommand(args) {
 
 function formatHashrate(hashrate) {
   const rate = Number.parseFloat(hashrate);
-  if (!Number.isFinite(rate)) return String(hashrate);
+  if (!Number.isFinite(rate)) {return String(hashrate);}
   for (const unit of hashrateUnits) {
-    if (Math.abs(rate) >= unit.value) return `${(rate / unit.value).toFixed(2)} ${unit.suffix}`;
+    if (Math.abs(rate) >= unit.value) {return `${(rate / unit.value).toFixed(2)} ${unit.suffix}`;}
   }
   return `${rate.toFixed(2)} H/s`;
 }
@@ -54,8 +54,8 @@ function medianHashrate(samples) {
 }
 
 function quoteWindowsCmdArg(arg) {
-  if (arg.length === 0) return '""';
-  if (!/[\s"&|<>()^%]/.test(arg)) return arg;
+  if (arg.length === 0) {return '""';}
+  if (!/[\s"&|<>()^%]/.test(arg)) {return arg;}
   return `"${arg.replace(/"/g, '""')}"`;
 }
 
@@ -85,7 +85,7 @@ function formatFailure(title, args, result) {
 }
 
 function emitGitHubError(title, message) {
-  if (!process.env.GITHUB_ACTIONS) return;
+  if (!process.env.GITHUB_ACTIONS) {return;}
 
   const escape = (value) => value
     .replace(/%/g, "%25")
@@ -95,17 +95,17 @@ function emitGitHubError(title, message) {
 }
 
 function resolveReleaseCommand(args) {
-  if (!/\.cmd$/i.test(releaseExecutable)) return [releaseExecutable, ...args.slice(1)];
+  if (!/\.cmd$/i.test(releaseExecutable)) {return [releaseExecutable, ...args.slice(1)];}
 
   const packageDir = path.dirname(releaseExecutable);
   const nodeExe = path.join(packageDir, "mom-node.exe");
   const bundle = path.join(packageDir, "mom.bundle.cjs");
-  if (fs.existsSync(nodeExe) && fs.existsSync(bundle)) return [nodeExe, bundle, ...args.slice(1)];
+  if (fs.existsSync(nodeExe) && fs.existsSync(bundle)) {return [nodeExe, bundle, ...args.slice(1)];}
   return wrapWindowsCmd([releaseExecutable, ...args.slice(1)]);
 }
 
 function resolveMinerCommand(args) {
-  if (hasReleaseExecutable && args[0] === "mom.js") return resolveReleaseCommand(args);
+  if (hasReleaseExecutable && args[0] === "mom.js") {return resolveReleaseCommand(args);}
   return [process.execPath, ...args];
 }
 
@@ -117,7 +117,7 @@ function spawnAndExit(command, args, options = {}) {
   });
 
   child.on("exit", (code, signal) => {
-    if (signal) process.kill(process.pid, signal);
+    if (signal) {process.kill(process.pid, signal);}
     process.exit(code === null ? 1 : code);
   });
 
@@ -142,9 +142,9 @@ function resolveRshRunner(testArgs, env) {
 }
 
 function resolveNodeRunner(testArgs, env = {}) {
-  if (shouldUseDirectNode()) return { command: process.execPath, args: testArgs, env };
+  if (shouldUseDirectNode()) {return { command: process.execPath, args: testArgs, env };}
 
-  if (fs.existsSync(path.join(repoRoot, "r.sh"))) return resolveRshRunner(testArgs, env);
+  if (fs.existsSync(path.join(repoRoot, "r.sh"))) {return resolveRshRunner(testArgs, env);}
 
   return { command: "./docker-mom.sh", args: ["node", ...testArgs], env };
 }
@@ -153,8 +153,8 @@ function isMissingGpuOutput(result) {
   const output = `${result.stdout}\n${result.stderr}`;
   // A run that reported a clean pass clearly found its device; do not let
   // diagnostic stderr (e.g. a SYCL runtime buffer/info notice) misclassify it.
-  if (result.stdout.includes("PASSED")) return false;
-  if (result.code === 0 && result.stdout.trim() === "" && result.stderr.trim() === "") return true;
+  if (result.stdout.includes("PASSED")) {return false;}
+  if (result.code === 0 && result.stdout.trim() === "" && result.stderr.trim() === "") {return true;}
   return /Unknown compute platform gpu|No device of requested type|No GPU|gpu[0-9]+.*not found|SYCL.*device/i.test(output);
 }
 
@@ -164,7 +164,7 @@ function escapeRegExp(value) {
 
 function childEnv(extra = {}) {
   const env = { ...process.env, ...extra };
-  if (process.platform !== "win32") return env;
+  if (process.platform !== "win32") {return env;}
   return withWindowsTestPath(env);
 }
 
@@ -190,7 +190,7 @@ function withWindowsPathEntries(env, entries) {
 function normalizeWindowsPathKey(env) {
   const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") || "Path";
   for (const key of Object.keys(env)) {
-    if (key.toLowerCase() === "path" && key !== pathKey) delete env[key];
+    if (key.toLowerCase() === "path" && key !== pathKey) {delete env[key];}
   }
   return pathKey;
 }
@@ -246,7 +246,7 @@ function runNode(args, options = {}) {
     let forceResolveTimeout = null;
 
     const finish = () => {
-      if (settled) return;
+      if (settled) {return;}
       settled = true;
       clearTimeout(timeout);
       clearTimeout(forceResolveTimeout);
@@ -254,7 +254,7 @@ function runNode(args, options = {}) {
     };
 
     const timeout = setTimeout(() => {
-      if (settled) return;
+      if (settled) {return;}
       result.error = new Error(`Timed out after ${timeoutMs}ms`);
       killProcessTree(child);
       forceResolveTimeout = setTimeout(() => {
@@ -317,7 +317,7 @@ function parseSyclCpuDevices(output) {
   const devices = [];
   for (const line of output.split(/\r?\n/)) {
     const match = line.match(/^(cpu\d+):\s+(.+)$/);
-    if (match) devices.push({ dev: match[1], description: match[2] });
+    if (match) {devices.push({ dev: match[1], description: match[2] });}
   }
   return devices;
 }
@@ -347,7 +347,7 @@ function syclCpuDetectionFailure(error) {
 
 async function getFirstSyclCpuDevice() {
   const assumedDevice = assumedSyclCpuDevice();
-  if (assumedDevice) return assumedDevice;
+  if (assumedDevice) {return assumedDevice;}
 
   let report;
   try {
@@ -358,7 +358,7 @@ async function getFirstSyclCpuDevice() {
 
   const output = `${report.stdout}\n${report.stderr}`;
   const devices = parseSyclCpuDevices(output);
-  if (devices.length) return { skipped: false, ...devices[0] };
+  if (devices.length) {return { skipped: false, ...devices[0] };}
 
   const message = [
     "No SYCL CPU device was reported by algo_params output.",
@@ -369,12 +369,12 @@ async function getFirstSyclCpuDevice() {
 }
 
 function missingSyclCpuMessage(reportMessage) {
-  if (process.env.GITHUB_ACTIONS) return reportMessage;
+  if (process.env.GITHUB_ACTIONS) {return reportMessage;}
   return "SYCL CPU device is not available in this environment";
 }
 
 function assumedSyclCpuDevice() {
-  if (!process.env.MOM_ASSUME_SYCL_CPU) return null;
+  if (!process.env.MOM_ASSUME_SYCL_CPU) {return null;}
   return {
     skipped: false,
     dev: process.env.MOM_ASSUME_SYCL_CPU,
@@ -384,7 +384,7 @@ function assumedSyclCpuDevice() {
 
 async function resolveBenchJob(definition) {
   const job = { ...definition.job };
-  if (!definition.autoDev) return { job };
+  if (!definition.autoDev) {return { job };}
 
   const algoParams = await getAutoAlgoParams();
   const dev = algoParams[job.algo];
@@ -405,7 +405,7 @@ function expectedHash(definition) {
 }
 
 async function maybeDebugRerun(definition, args, result) {
-  if (process.platform !== "win32" || process.env.MOM_DEBUG_STARTUP) return result;
+  if (process.platform !== "win32" || process.env.MOM_DEBUG_STARTUP) {return result;}
 
   const debugResult = await runNode(args, {
     timeoutMs: definition.timeoutMs,
@@ -468,7 +468,7 @@ async function runMinerTest(definition) {
 
 async function runMinerBench(definition) {
   const resolved = await resolveBenchJob(definition);
-  if (resolved.skipped) return resolved;
+  if (resolved.skipped) {return resolved;}
 
   const job = resolved.job;
   const args = ["mom.js", "bench", job.algo, "--job", JSON.stringify(job)];
@@ -484,7 +484,7 @@ async function runMinerBench(definition) {
     let stopping = false;
 
     const stop = () => {
-      if (stopping) return;
+      if (stopping) {return;}
       stopping = true;
       killProcessTree(child, "SIGINT");
       setTimeout(() => killProcessTree(child), 5000).unref();
@@ -501,7 +501,7 @@ async function runMinerBench(definition) {
       for (const match of matches.slice(matchedHashrates.length)) {
         matchedHashrates.push(parseFormattedHashrate(match[1], match[2]));
       }
-      if (matchedHashrates.length >= sampleCount) stop();
+      if (matchedHashrates.length >= sampleCount) {stop();}
     };
 
     child.stdout.on("data", (chunk) => onData("stdout", chunk));
@@ -529,7 +529,7 @@ function finishBenchRun(definition, args, job, result, matchedHashrates, sampleC
     return resolve({ hashrate: medianHashrate(samples), samples, dev: job.dev });
   }
   if (definition.gpu && isMissingGpuOutput(result))
-    return resolve({ skipped: true, reason: "GPU device is not available in this environment" });
+  {return resolve({ skipped: true, reason: "GPU device is not available in this environment" });}
   reject(new Error(formatFailure(
     `${definition.name} did not report ${sampleCount} hashrate sample${sampleCount === 1 ? "" : "s"}`,
     args,

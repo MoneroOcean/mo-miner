@@ -17,12 +17,12 @@ if (selectedAlgo && selectedTests.length === 0) {
 const gpuIntensityAlgos = new Set(["kawpow", "firopow", "evrprogpow", "meowpow", "etchash", "autolykos2"]);
 
 function assertGpuIntensityDev(algo, dev) {
-  if (!gpuIntensityAlgos.has(algo)) return;
+  if (!gpuIntensityAlgos.has(algo)) {return;}
   assert.match(dev, /(?:^|,)gpu\d+\*\d+(?:,|$)/, `${algo} should be auto-detected on a GPU with an intensity`);
 }
 
 function sampleSummary(result) {
-  if (!result.samples || result.samples.length <= 1) return "";
+  if (!result.samples || result.samples.length <= 1) {return "";}
   return ` median of ${result.samples.length} samples [${result.samples.map(formatHashrate).join(", ")}]`;
 }
 
