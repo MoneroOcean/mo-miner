@@ -11,6 +11,26 @@ cd "$ROOT"
 DPCPP="${MOM_DPCPP_ROOT:-/opt/dpcpp}"
 WRAP="$ROOT/scripts/cxx-combined.sh"
 chmod +x "$WRAP"
+build_jobs="${MOM_BUILD_JOBS:-$(nproc)}"
+build_log="$ROOT/build/combined-build-output.log"
+verbose_build="${MOM_BUILD_VERBOSE:-0}"
+
+run_quiet() {
+  local label="$1"
+  shift
+  mkdir -p build
+  if [ "$verbose_build" = 1 ]; then
+    echo "[combined] $label"
+    "$@"
+    return
+  fi
+
+  if ! "$@" >"$build_log" 2>&1; then
+    echo "[combined] $label failed" >&2
+    cat "$build_log" >&2
+    return 1
+  fi
+}
 
 # Dual-compiler builds link at the OBJECT level: icx host objects + clang -fsycl link. LTO is
 # impossible across the two (icx LLVM bitcode != nightly clang bitcode, and the nightly tarball
@@ -39,27 +59,32 @@ if [ "${MOM_FORCE_REBUILD:-0}" = 1 ] \
    || [ binding.gyp -nt build/Makefile ] \
    || ! grep -q "/root/mom" build/Makefile 2>/dev/null; then
   rm -rf build
-  echo "[combined] node-gyp configure (CXX=cxx-combined.sh, CC=icx, impl=dpcpp-combined, targets=$MOM_COMBINED_TARGETS)"
-  CC=icx CXX="$WRAP" LINK="$WRAP" node-gyp configure --nodedir=/usr/local -- -Dmom_sycl_impl=dpcpp-combined
+  run_quiet "node-gyp configure (CXX=cxx-combined.sh, CC=icx, impl=dpcpp-combined, targets=$MOM_COMBINED_TARGETS)" \
+    env CC=icx CXX="$WRAP" LINK="$WRAP" node-gyp configure --nodedir=/usr/local -- -Dmom_sycl_impl=dpcpp-combined
   # Stamp the marker right after configure so a later failed build still skips the reconfigure.
   mkdir -p build && echo "$node_build_version" > build/.node-version
 fi
 
-echo "[combined] node-gyp build"
 export MOM_COMBINED_LOG="$ROOT/build/combined-routing.log"
 : > "$MOM_COMBINED_LOG"
 # Force a relink each run (cheap; keeps compiled objects) so wrapper/link tweaks take effect
 # without a full reconfigure+recompile.
 rm -f build/Release/mom.node build/Release/obj.target/mom.node
-JOBS="$(nproc)" CC=icx CXX="$WRAP" LINK="$WRAP" MAKEFLAGS=-s node-gyp build --nodedir=/usr/local --silent
+run_quiet "node-gyp build" \
+  env JOBS="$build_jobs" CC=icx CXX="$WRAP" LINK="$WRAP" MAKEFLAGS="-s -j${build_jobs}" \
+    node-gyp build --nodedir=/usr/local --jobs "$build_jobs" --silent
 
-echo "[combined] compiler routing (want: 7 SYCL->clang, rest HOST->icpx, 1 LINK->clang):"
-sort "$MOM_COMBINED_LOG" | uniq -c | sed 's/^/    /'
-echo "    --- SYCL TUs routed to clang: $(grep -c '^SYCL' "$MOM_COMBINED_LOG") ---"
+if [ "$verbose_build" = 1 ]; then
+  echo "[combined] compiler routing (want: 7 SYCL->clang, rest HOST->icpx, 1 LINK->clang):"
+  sort "$MOM_COMBINED_LOG" | uniq -c | sed 's/^/    /'
+  echo "    --- SYCL TUs routed to clang: $(grep -c '^SYCL' "$MOM_COMBINED_LOG") ---"
+fi
 
 mkdir -p build && echo "$node_build_version" > build/.node-version
 
-echo "[combined] build OK:"
-ls -la build/Release/mom.node
-echo "[combined] mom.node SYCL/runtime linkage:"
-ldd build/Release/mom.node | grep -iE "sycl|svml|irc|imf|intlc|cuda|ze_|opencl" || true
+if [ "$verbose_build" = 1 ]; then
+  echo "[combined] build OK:"
+  ls -la build/Release/mom.node
+  echo "[combined] mom.node SYCL/runtime linkage:"
+  ldd build/Release/mom.node | grep -iE "sycl|svml|irc|imf|intlc|cuda|ze_|opencl" || true
+fi

@@ -1,11 +1,17 @@
 # Windows Level Zero GPU support is installed by the Intel Graphics Driver.
-# The release package already bundles the oneAPI Level Zero loader and SYCL
-# runtime DLLs. This script installs the Intel OpenCL CPU runtime silently so
-# CPU SYCL/OpenCL devices are available on Windows release systems.
+# NVIDIA CUDA support is installed by the NVIDIA driver; the CUDA toolkit is
+# only needed for runtime SYCL-source JIT paths such as the ProgPoW kernels.
+# The release package already bundles the oneAPI SYCL/UR runtime DLLs. This
+# script installs the Intel OpenCL CPU runtime silently so CPU SYCL/OpenCL
+# devices are available on Windows release systems.
 
 param(
   [string]$OpenClRuntimeUrl = "",
+  [string]$NvidiaDriverUrl = "",
+  [string]$CudaToolkitUrl = "",
   [switch]$InstallIntelGraphicsDriver,
+  [switch]$InstallNvidiaDriver,
+  [switch]$InstallCudaToolkit,
   [switch]$DryRun
 )
 
@@ -27,6 +33,9 @@ $installer = Join-Path $runtimeDir "opencl-runtime.exe"
 $extractRoot = Join-Path $profileRoot "Downloads\Intel"
 $openClRuntimePage = "https://www.intel.com/content/www/us/en/developer/articles/technical/intel-cpu-runtime-for-opencl-applications-with-sycl-support.html"
 $fallbackOpenClRuntimeUrl = "https://registrationcenter-download.intel.com/akdlm/IRC_NAS/ad824c04-01c8-4ae5-b5e8-164a04f67609/w_opencl_runtime_p_2025.3.1.762.exe"
+$fallbackNvidiaDriverUrl = "https://us.download.nvidia.com/tesla/596.36/596.36-data-center-tesla-desktop-winserver-2022-2025-dch-international.exe"
+$fallbackCudaToolkitUrl = "https://developer.download.nvidia.com/compute/cuda/12.6.0/network_installers/cuda_12.6.0_windows_network.exe"
+$cudaToolkitPackages = @("nvcc_12.6", "cudart_12.6", "nvrtc_12.6", "nvrtc_dev_12.6")
 
 function Resolve-OpenClRuntimeUrl {
   if ($OpenClRuntimeUrl) {
@@ -85,6 +94,101 @@ function Install-IntelGraphicsDriver {
   }
 }
 
+function Get-NvidiaPnpDevice {
+  Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue |
+    Where-Object { $_.PNPDeviceID -like "PCI\VEN_10DE*" } |
+    Select-Object -First 1
+}
+
+function Get-NvidiaSmi {
+  $cmd = Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue
+  if ($cmd) { return $cmd.Source }
+
+  $system32 = Join-Path $env:WINDIR "System32\nvidia-smi.exe"
+  if (Test-Path $system32) { return $system32 }
+
+  $nvSmi = "C:\Program Files\NVIDIA Corporation\NVSMI\nvidia-smi.exe"
+  if (Test-Path $nvSmi) { return $nvSmi }
+
+  return $null
+}
+
+function Install-NvidiaDriver {
+  if (-not (Get-NvidiaPnpDevice)) {
+    Write-Host "No NVIDIA PCI device was detected; skipping NVIDIA driver install."
+    return
+  }
+
+  $smi = Get-NvidiaSmi
+  if ($smi) {
+    Write-Host "nvidia-smi is already available at $smi; skipping NVIDIA driver install."
+    return
+  }
+
+  $url = if ($NvidiaDriverUrl) { $NvidiaDriverUrl } else { $fallbackNvidiaDriverUrl }
+  $driverDir = Join-Path $tempRoot "mom-nvidia-driver"
+  $driverInstaller = Join-Path $driverDir "nvidia-driver.exe"
+  Remove-Item -Recurse -Force $driverDir -ErrorAction SilentlyContinue
+  New-Item -ItemType Directory -Force $driverDir | Out-Null
+
+  Write-Host "Downloading NVIDIA driver from $url"
+  Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $driverInstaller
+
+  $install = Start-Process -FilePath $driverInstaller -ArgumentList @("-s", "-noreboot") -Wait -PassThru
+  if ($install.ExitCode -ne 0 -and $install.ExitCode -ne 3010) {
+    throw "NVIDIA driver install failed with exit code $($install.ExitCode)."
+  }
+
+  Write-Host "NVIDIA driver installation completed. Reboot if nvidia-smi is still unavailable."
+}
+
+function Test-CudaToolkitReady {
+  $roots = @()
+  if ($env:CUDA_PATH) { $roots += $env:CUDA_PATH }
+  $roots += "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6"
+
+  foreach ($root in $roots | Select-Object -Unique) {
+    if (-not $root) { continue }
+    if ((Test-Path (Join-Path $root "bin\ptxas.exe")) -and
+        (Test-Path (Join-Path $root "nvvm\libdevice\libdevice.10.bc"))) {
+      return $true
+    }
+  }
+  return $false
+}
+
+function Install-CudaToolkit {
+  if (-not (Get-NvidiaPnpDevice)) {
+    Write-Host "No NVIDIA PCI device was detected; skipping CUDA toolkit install."
+    return
+  }
+  if (Test-CudaToolkitReady) {
+    Write-Host "CUDA toolkit ptxas/libdevice are already available; skipping CUDA toolkit install."
+    return
+  }
+
+  $url = if ($CudaToolkitUrl) { $CudaToolkitUrl } else { $fallbackCudaToolkitUrl }
+  $cudaDir = Join-Path $tempRoot "mom-cuda-toolkit"
+  $cudaInstaller = Join-Path $cudaDir "cuda-toolkit-network.exe"
+  Remove-Item -Recurse -Force $cudaDir -ErrorAction SilentlyContinue
+  New-Item -ItemType Directory -Force $cudaDir | Out-Null
+
+  Write-Host "Downloading CUDA toolkit network installer from $url"
+  Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $cudaInstaller
+
+  $install = Start-Process -FilePath $cudaInstaller -ArgumentList (@("-s") + $cudaToolkitPackages) -Wait -PassThru
+  if ($install.ExitCode -ne 0 -and $install.ExitCode -ne 3010) {
+    throw "CUDA toolkit install failed with exit code $($install.ExitCode)."
+  }
+
+  $cudaRoot = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6"
+  if (Test-Path $cudaRoot) {
+    $env:CUDA_PATH = $cudaRoot
+    $env:Path = (Join-Path $cudaRoot "bin") + ";" + $env:Path
+  }
+  Write-Host "CUDA toolkit installation completed."
+}
+
 $resolvedOpenClRuntimeUrl = Resolve-OpenClRuntimeUrl
 
 if ($DryRun) {
@@ -94,12 +198,30 @@ if ($DryRun) {
   } else {
     Write-Host "winget.exe was not found; optional Intel Graphics Driver update would be skipped."
   }
+  if (Get-NvidiaPnpDevice) {
+    $resolvedNvidiaDriverUrl = if ($NvidiaDriverUrl) { $NvidiaDriverUrl } else { $fallbackNvidiaDriverUrl }
+    $resolvedCudaToolkitUrl = if ($CudaToolkitUrl) { $CudaToolkitUrl } else { $fallbackCudaToolkitUrl }
+    Write-Host "NVIDIA PCI device detected."
+    Write-Host "NVIDIA driver URL: $resolvedNvidiaDriverUrl"
+    Write-Host "CUDA toolkit URL: $resolvedCudaToolkitUrl"
+    Write-Host "CUDA toolkit packages: $($cudaToolkitPackages -join ', ')"
+  } else {
+    Write-Host "No NVIDIA PCI device detected."
+  }
   Write-Host "Dry run completed; no packages were installed."
   exit 0
 }
 
 if (-not (Test-Administrator)) {
   throw "Run install.bat from an elevated Administrator command prompt."
+}
+
+if ($InstallNvidiaDriver) {
+  Install-NvidiaDriver
+}
+
+if ($InstallCudaToolkit) {
+  Install-CudaToolkit
 }
 
 function Stop-OpenClRuntimeInstallers {
@@ -111,7 +233,12 @@ function Stop-OpenClRuntimeInstallers {
     Where-Object {
       $_.ProcessId -ne $PID -and (
         $_.ExecutablePath -eq $installer -or
-        $_.ExecutablePath -like "*\w_opencl_runtime_p_*.exe"
+        $_.ExecutablePath -like "*\w_opencl_runtime_p_*.exe" -or
+        (
+          $_.Name -ieq "msiexec.exe" -and
+          $_.CommandLine -like "*\w_opencl_runtime_p_*.msi*" -and
+          $_.CommandLine -notmatch "(/qn|/quiet)"
+        )
       )
     } |
     ForEach-Object {
@@ -160,12 +287,13 @@ if ($InstallIntelGraphicsDriver) {
 }
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-if (Test-Path (Join-Path $scriptDir "libs\ze_loader.dll")) {
-  Write-Host "Bundled Level Zero loader is present."
+if (Get-ChildItem -Path (Join-Path $scriptDir "libs") -Filter "ur_adapter_level_zero*.dll" -File -ErrorAction SilentlyContinue) {
+  Write-Host "Bundled Level Zero UR adapter is present."
 } else {
-  Write-Host "Bundled Level Zero loader was not found; update the mom release package if GPU Level Zero is unavailable."
+  Write-Host "Bundled Level Zero UR adapter was not found; update the mom release package if GPU Level Zero is unavailable."
 }
 
 Write-Host "Intel OpenCL CPU runtime installation completed."
 Write-Host "Intel GPU Level Zero runtime is provided by the Intel Graphics Driver."
 Write-Host "Run install.ps1 -InstallIntelGraphicsDriver to try a non-interactive winget driver update."
+Write-Host "Run install.ps1 -InstallNVIDIADriver -InstallCudaToolkit on NVIDIA Windows hosts that need driver/toolkit setup."

@@ -76,7 +76,7 @@ EOF
 chmod +x "$package_dir/mom"
 
 cp package.json README.md LICENSE "$package_dir/"
-cp scripts/install-nvidia.sh "$package_dir/install.sh"
+cp scripts/install.sh "$package_dir/install.sh"  # unified vendor-detecting installer (handles NVIDIA)
 cp build/Release/mom.node "$libs_dir/"
 # Device source the kawpow kernel_compiler JIT reads at runtime; it resolves beside the
 # loaded module (libs/) via dladdr (see sycl/kawpow_jit.inc kawpow_module_dir()).

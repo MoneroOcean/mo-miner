@@ -90,9 +90,10 @@ EOF
 chmod +x "$package_dir/mom"
 
 cp package.json README.md LICENSE "$package_dir/"
-# The combined binary runs on either vendor, so ship BOTH host-runtime installers: install.sh
-# (Intel GPU runtime) and install-nvidia.sh (NVIDIA driver). The user runs the one for their GPU.
-cp scripts/install.sh scripts/install-nvidia.sh "$package_dir/"
+# The combined binary runs on any vendor; the single install.sh auto-detects the GPU(s) present
+# (Intel/AMD/NVIDIA) and installs each one's host runtime (incl the NVIDIA driver + CUDA toolkit + g++
+# that the full-speed ProgPoW source-JIT needs).
+cp scripts/install.sh "$package_dir/"
 cp build/Release/mom.node "$libs_dir/"
 # Device source the kawpow kernel_compiler JIT reads at runtime (resolves beside the loaded module).
 cp sycl/kawpow_device.inc "$libs_dir/"

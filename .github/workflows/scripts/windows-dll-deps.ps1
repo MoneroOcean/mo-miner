@@ -61,6 +61,15 @@ function Test-MominerRedistributableDllName {
   return $Name -match '^(msvcp|vcruntime|concrt|vcamp|vcomp|vccorlib)[0-9].*\.dll$'
 }
 
+function Test-MominerDebugRuntimeDllName {
+  param([Parameter(Mandatory = $true)][string]$Name)
+
+  $lower = $Name.ToLowerInvariant()
+  return $lower -match '^(sycl9d|sycl9-previewd|ur_adapter_.*d|ur_win_proxy_loaderd)\.dll$' -or
+         $lower -match '^(msvcp|vcruntime|ucrtbased).*[d]\.dll$' -or
+         $lower -match '^(libiomp5md_db|libmmdd)\.dll$'
+}
+
 function Test-MominerSystemDllName {
   param([Parameter(Mandatory = $true)][string]$Name)
 
@@ -237,9 +246,11 @@ function Copy-MominerOptionalRuntimeFiles {
     'sycl*.dll',
     'ur_*.dll',          # covers ur_adapter*.dll
     'pi_*.dll',
+    'ocloc*.dll',
     'OpenCL.dll',
     'intelocl*.dll',
     'ocl*.dll',
+    'syclx.dll',
     'libocl_svml_*.dll',
     'libiomp5*.dll',
     'libmmd*.dll',
@@ -260,8 +271,10 @@ function Copy-MominerOptionalRuntimeFiles {
     foreach ($pattern in $patterns) {
       Get-ChildItem -Path $root -Filter $pattern -File -ErrorAction SilentlyContinue |
         ForEach-Object {
-          $dest = Join-Path $PackageDir $_.Name
-          if (-not (Test-Path $dest)) { Copy-Item $_.FullName $dest }
+          if (-not (Test-MominerDebugRuntimeDllName $_.Name)) {
+            $dest = Join-Path $PackageDir $_.Name
+            if (-not (Test-Path $dest)) { Copy-Item $_.FullName $dest }
+          }
         }
     }
   }

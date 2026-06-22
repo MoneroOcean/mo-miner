@@ -66,7 +66,21 @@ function Invoke-Clang { param([string[]]$ClangArgs, [string]$What)
 }
 
 # Main SYCL TUs -> spir64 + nvptx.
-$main = @("lib","ethash","etchash","autolykos2","pearl","c29","cn-gpu","kawpow","blake2b")
+$main = @(
+  "lib",
+  "ethash",
+  "etchash",
+  "autolykos2",
+  "pearl",
+  "c29",
+  "cn-gpu",
+  "kawpow",
+  "kheavyhash",
+  "fishhash",
+  "equihash125_4",
+  "beamhash3",
+  "blake2b"
+)
 $objs = @()
 foreach ($s in $main) {
   $o = Join-Path $obj "$s.obj"

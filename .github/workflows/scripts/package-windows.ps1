@@ -60,6 +60,7 @@ setlocal
 set "MOM_DIR=%~dp0"
 set "MOM_LIBS=%MOM_DIR%libs"
 set "PATH=%MOM_LIBS%;%MOM_DIR%;%CD%;%PATH%"
+if defined CUDA_PATH if exist "%CUDA_PATH%\bin" set "PATH=%CUDA_PATH%\bin;%PATH%"
 if not defined MOM_COMMAND set "MOM_COMMAND=mom"
 if not defined OCL_ICD_FILENAMES for %%F in ("%MOM_LIBS%\intelocl*.dll") do if exist "%%~fF" set "OCL_ICD_FILENAMES=%%~fF"
 "%MOM_DIR%mom-node.exe" "%MOM_DIR%mom.bundle.cjs" %*
@@ -71,8 +72,9 @@ Copy-Item build/Release/mom.node, build/Release/sycl.dll "$libsDir/"
 
 Copy-MominerOptionalRuntimeFiles -PackageDir $libsDir
 # Combined (Intel+NVIDIA) build: the kawpow CUDA source-JIT reads kawpow_device.inc beside the module at
-# runtime (else it falls back to the slower AOT kernel). Only present for the from-source toolchain build.
-if ($env:MOM_DPCPP_DIR -and (Test-Path "sycl/kawpow_device.inc")) {
+# runtime (else it falls back to the slower AOT kernel). Ship it whenever the source checkout has it;
+# Intel-only packages ignore the extra file.
+if (Test-Path "sycl/kawpow_device.inc") {
   Copy-Item "sycl/kawpow_device.inc" "$libsDir/"
 }
 $entryPaths = @("$packageDir/mom-node.exe", "$libsDir/mom.node", "$libsDir/sycl.dll")
