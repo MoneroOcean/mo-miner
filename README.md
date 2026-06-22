@@ -1,145 +1,74 @@
-## mom
-
-`mom` is the short name for the **mo-miner** project (the executable, release archives and
-config keys all use `mom`); the GitHub repository remains
-[MoneroOcean/mo-miner](https://github.com/MoneroOcean/mo-miner).
-
 # About
 
-mom is open-source cryptocurrency miner that is built upon high performance xmrig CPU miner
-sources with front-end and network backend rewritten in Node.js to significantly simplify its code.
-GPU mining sources are also simplified and rewritten in SYCL from OpenCL/CUDA.
-The main goal of this project is to make simple, easy to extend open-source miner with native
-miner performance.
+mom (short name for the **MO-Miner**) is an open-source cryptocurrency miner
+that is built upon high performance xmrig CPU miner sources with front-end and network backend
+rewritten in Node.js to significantly simplify its code. GPU mining sources are also simplified
+and rewritten in SYCL from OpenCL/CUDA. The main goal of this project is to make simple,
+easy to extend open-source miner with native miner performance.
 
-# Limitations
+The executable, release archives, and config keys use `mom`; the GitHub repository remains
+[MoneroOcean/mo-miner](https://github.com/MoneroOcean/mo-miner).
 
-The primary development and test platform is Linux with a single-socket x86-64 CPU and an Intel Arc
-GPU. NVIDIA GPUs are also supported via the DPC++ CUDA backend (see NVIDIA GPU performance below), and
-Windows is supported (see the runtime/install notes below). There is also a generic **SYCL OpenCL
-backend** (see "OpenCL backend / AMD GPUs" below): on a box with no Intel-Level-Zero and no NVIDIA-CUDA
-GPU it is auto-selected, so an **AMD GPU** (or any OpenCL GPU) runs the same binary via its OpenCL
-driver. The OpenCL path is exercised in CI-equivalent testing on the Intel B580 (as an OpenCL/AMD
-stand-in), but **no real AMD GPU has been tested yet** — AMD support is best-effort/WIP (a real AMD
-card also needs sub-group-size 32/64 handling). 2+ socket CPUs and ARM CPUs are likewise untested.
+Miner supports algo switching on pools such as `gulf.moneroocean.stream`. By default, startup
+algo-parameter benchmarking covers active MoneroOcean coin algos implemented by mom plus `rx/2`
+and `pearl`.
 
-# Supported algos
+## Supported algos
 
-* CPU: All xmrig miner CPU supported algos with similar performance
-* GPU/SYCL: cn/gpu, c29, kawpow, etchash, autolykos2, pearl
+* CPU: All xmrig miner CPU supported algos with similar performance.
+* GPU/SYCL: Check table below.
 
-The GPU/SYCL implementations also run on SYCL CPU devices for hash-vector coverage and fallback
-testing, though the CPU mining path remains the preferred CPU path for CPU-focused algos.
+Missing measurements use `-`; known measurements without a same-platform reusable SOTA run use `(%?)`.
+Percentages compare mom against the miner(s) named in `SOTA ref(s)`. A bare miner name means it is
+used as the reference for Intel, NVIDIA, and AMD; tagged entries limit the miner to the listed GPU
+platform(s).
+`memory-bandwidth bound` describes algorithms such as `etchash` whose speed is mainly limited by
+GPU memory bandwidth; it is not a miner name.
 
-Miner supports algo switching if you connect it to algo switching pool like
-gulf.moneroocean.stream that auto switches to the most profitable algo.
-KawPow, Etchash, and Autolykos2 can also be used on non-MoneroOcean stratum pools that serve those
-algos directly. Pearl (`pearl`, the PRL NoisyGEMM proof-of-useful-work coin) is **only** mined on
-third-party pools (HeroMiners, LuckyPool) — the MoneroOcean pool does not serve it — so see the Pearl
-mining section below. Its hashrate is reported as GEMM multiply-accumulate throughput in TH/s (the
-same unit ARC-miner uses), not cryptographic H/s, so it is not directly comparable to the other algos.
+Support: `mo` = MoneroOcean can serve it; `mom` = implemented by mom; `-` = backlog/not implemented.
+`Top coin` is the highest-market-cap known mineable coin for the exact algo/variant.
 
-By default, startup algo-parameter benchmarking only benchmarks active MoneroOcean coin algos
-implemented by mom plus `rx/2`: `autolykos2`, `c29`, `cn/gpu`, `etchash`, `ghostrider`,
-`kawpow`, `panthera`, `rx/0`, `rx/2`, and `rx/arq`. Use `--bench_algo_params 2` to benchmark every algo
-supported locally. `pearl` is **not** in the default set (MoneroOcean can't assign it); mine it with
-`--bench_algo_params 0` plus an explicit `--job.dev`, or bench it with `--bench_algo_params 2`.
+| Algo                  | Support | Top coin | Intel B580           | OpenCL              | NVIDIA L4          | Windows L4        | SOTA ref(s)                                                                  |
+| --------------------- | ------- | -------- | -------------------- | ------------------- | ------------------ | ----------------- | ---------------------------------------------------------------------------- |
+| **Cuckoo Cycle**      |         |          |                      |                     |                    |                   |                                                                              |
+| `c29`                 | mo,mom  | TARI     | 2.73 g/s (%?)        | 2.50 g/s (%?)       | 4.93 g/s (93%)     | 4.86 g/s          | lolMiner (NVIDIA/AMD; no B580 ref)                                           |
+| `cuckaroo30`          | -       | CTXC     | -                    | -                   | -                  | -                 | lolMiner                                                                     |
+| **ProgPoW family**    |         |          |                      |                     |                    |                   |                                                                              |
+| `kawpow`              | mo,mom  | RVN      | 20.92 MH/s (110%)    | 18.63 MH/s (98%)    | 13.17 MH/s (84%)   | 13.28 MH/s        | SRBMiner (Intel), GMiner/Rigel (NVIDIA)                                      |
+| `evrprogpow`          | mom     | EVR      | 21.05 MH/s (110%)    | 18.69 MH/s (97%)    | 12.83 MH/s (82%)   | 12.95 MH/s        | SRBMiner                                                                     |
+| `firopow`             | mom     | FIRO     | 20.95 MH/s (112%)    | 18.58 MH/s (99%)    | 12.82 MH/s (82%)   | 12.95 MH/s        | SRBMiner                                                                     |
+| `meowpow`             | mom     | MEWC     | 19.08 MH/s (101%)    | 18.55 MH/s (99%)    | 14.97 MH/s (96%)   | 14.74 MH/s        | SRBMiner                                                                     |
+| `progpowz`            | -       | ZANO     | -                    | -                   | -                  | -                 | SRBMiner                                                                     |
+| **FishHash family**   |         |          |                      |                     |                    |                   |                                                                              |
+| `fishhash`            | mom     | IRON     | 11.82 MH/s (92%)     | 11.81 MH/s (92%)    | 7.40 MH/s (38%)    | 7.33 MH/s         | SRBMiner (Intel), Rigel (NVIDIA)                                             |
+| `karlsenhashv2`       | mom     | KLS      | 10.40 MH/s (83%)     | 10.37 MH/s (83%)    | 10.54 MH/s (55%)   | 10.06 MH/s        | SRBMiner (Intel), Rigel (NVIDIA)                                             |
+| **Equihash**          |         |          |                      |                     |                    |                   |                                                                              |
+| `equihash125_4`       | mom     | FLUX     | 18.91 Sol/s (%?)     | 19.07 Sol/s (%?)    | 15.74 Sol/s (31%)  | 11.86 Sol/s       | lolMiner (Intel Arc A-series/NVIDIA; no B580 ref)                            |
+| `equihash144_5`       | -       | BTG      | -                    | -                   | -                  | -                 | lolMiner (Intel, AMD), miniZ (NVIDIA)                                        |
+| `equihash192_7`       | -       | ZCL      | -                    | -                   | -                  | -                 | miniZ (NVIDIA), lolMiner (Intel, AMD)                                        |
+| **Misc**              |         |          |                      |                     |                    |                   |                                                                              |
+| `autolykos2`          | mo,mom  | ERG      | 37.55 MH/s (112%)    | 36.03 MH/s (108%)   | 77.02 MH/s (78%)   | 69.50 MH/s        | SRBMiner (Intel), GMiner/Rigel (NVIDIA)                                      |
+| `cn/gpu`              | mo,mom  | RYO      | 2.94 KH/s (107%)     | 2.94 KH/s (107%)    | 2.68 KH/s (88%)    | 1.87 KH/s         | SRBMiner                                                                     |
+| `beamhash3`           | mom     | BEAM     | 7.68 Sol/s (%?)      | 7.66 Sol/s (%?)     | 8.20 Sol/s (32%)   | 6.04 Sol/s        | lolMiner (Intel Arc A-series/NVIDIA), GMiner (NVIDIA); no B580 ref           |
+| `pearl`               | mom     | PRL      | 52.11 TH/s (158%)    | ~2.2 TH/s (7%)      | 34.58 TH/s (178%)  | 34.73 TH/s        | ARC-miner (Intel), BzMiner (NVIDIA)                                          |
+| `pyrinhashv2`         | mom     | PYI      | 385.07 MH/s (%?)     | 387.80 MH/s (%?)    | 258.08 MH/s (5%)   | 216.24 MH/s       | SRBMiner 2.6.8 (Intel pre-B580), lolMiner (NVIDIA); no B580 ref              |
+| `hoohashv2`           | -       | HTN      | -                    | -                   | -                  | -                 | SRBMiner                                                                     |
+| `nxlhash`             | -       | NXL      | -                    | -                   | -                  | -                 | SRBMiner                                                                     |
+| `octopus`             | -       | CFX      | -                    | -                   | -                  | -                 | lolMiner (Intel, AMD), GMiner (NVIDIA)                                       |
+| `verthash`            | -       | VTC      | -                    | -                   | -                  | -                 | SRBMiner, VerthashMiner (AMD/NVIDIA)                                         |
+| `walahash`            | -       | WALA     | -                    | -                   | -                  | -                 | SRBMiner (Intel), Rigel (NVIDIA)                                             |
+| **ASIC-exposed**      |         |          |                      |                     |                    |                   |                                                                              |
+| `etchash`             | mo,mom  | ETC      | 21.10 MH/s (100%)    | 20.00 MH/s (100%)   | 28.84 MH/s (99%)   | 27.53 MH/s        | GMiner/Rigel (NVIDIA)                                                        |
+| `kheavyhash`          | mom     | KAS      | 160.89 MH/s (%?)     | 162.86 MH/s (%?)    | 303.52 MH/s (42%)  | 288.31 MH/s       | BzMiner/GMiner (NVIDIA), BzMiner/SRBMiner (Intel; no stable B580 ref)        |
 
-# Mining Pearl (PRL)
+Platform notes:
 
-Pearl uses a fixed network NoisyGEMM shape (m=n=131072, k=4096, noise_rank=256) — the defaults — so a
-capable GPU (~1.2 GB VRAM for that shape) just needs the pool, wallet and GPU device:
-
-```
-# HeroMiners (TLS, direct):
-./r.sh node mom.js mine pearl.herominers.com:1200tls <prl1-wallet> --job.algo pearl --job.dev gpu1*131072 --bench_algo_params 0
-# LuckyPool (TLS, var-diff):
-./r.sh node mom.js mine pearl-eu1.luckypool.io:3360tls <prl1-wallet> --job.algo pearl --job.dev gpu1*131072 --bench_algo_params 0
-```
-
-These pools use the `mining.subscribe`+`mining.authorize` dialect (the default for `pearl`). The older
-pearlpool.cloud uses the single-`login` dialect and a smaller low-mem shape; select it with env vars:
-`MOM_PEARL_LOGIN=1 MOM_PEARL_K=1024 MOM_PEARL_RANK=64` and `--job.dev gpu1*16384`.
-
-Pearl env knobs (all optional; defaults = network-standard shape): `MOM_PEARL_INTENSITY` (m=n,
-default 131072), `MOM_PEARL_K` (default 4096), `MOM_PEARL_RANK` (default 256),
-`MOM_PEARL_LOGIN` (force the login dialect). In a saved config these can instead live under
-`algo_params.pearl.{k,rank}` (the dev `*<batch>` sets the intensity) so no env vars are needed.
-
-# NVIDIA GPU performance
-
-mom also runs on NVIDIA GPUs from the same SYCL kernels via the DPC++ CUDA backend (ahead-of-time
-compiled to PTX). There is a single Linux release artifact, `mom-v<version>-lin.tgz`, whose one
-`mom.node` runs on both Intel and NVIDIA GPUs (it auto-detects the device). The **Windows** release is
-now also a unified Intel+NVIDIA `mom.node` (spir64 + nvptx in one binary): CI builds it by restoring a
-prebuilt from-source DPC++ CUDA toolchain (cached as a release asset -- the ~1.5 h LLVM build can't run
-in a hosted job; recipe in [scripts/build-windows-nvidia.md](scripts/build-windows-nvidia.md)) plus the
-CUDA toolkit for libdevice. GPU algos are verified on real hardware (7/7 hash vectors, kawpow runtime-JIT
-included, on an L4 / Windows Server 2022); the hosted CI runners have no GPU, so they build the package
-and run the CPU + SYCL-CPU suites. Hashrates measured on an NVIDIA L4 (Ada, sm_89), each compared
-against the best closed-source miner benchmarked on the same card:
-
-| Algo | mom (L4) | SOTA reference (same L4) | % of SOTA |
-| --- | --- | --- | --- |
-| cn/gpu | 2.65 KH/s | SRBMiner-MULTI 3.04 KH/s | 87% |
-| c29 (Cuckaroo29) | 4.83 g/s | lolMiner ~5.3 g/s | 91% |
-| kawpow | 13.79 MH/s | Rigel 15.56 MH/s | 89% |
-| firopow | 13.44 MH/s | ProgPoW family -- cf. kawpow (Rigel 15.56) | ~86% |
-| evrprogpow | 13.41 MH/s | ProgPoW family -- cf. kawpow (Rigel 15.56) | ~86% |
-| etchash | 28.9 MH/s | ~28.8 MH/s (memory-bandwidth bound) | ~parity |
-| autolykos2 | 76.5 MH/s | lolMiner 98.19 MH/s | 78% |
-| pearl | 33.6 TH/s | no NVIDIA SOTA (ARC-miner is Intel-only) | — |
-
-SOTA references benchmarked on the same L4: lolMiner (`--benchmark AUTOLYKOS2` / `CR29`), Rigel
-(`-a kawpow`), SRBMiner-MULTI (`--algorithm cryptonight_gpu`). firopow/evrprogpow run the same kawpow
-kernel family (the kawpow SOTA class applies; they were not separately SOTA-benched). kawpow/firopow/
-evrprogpow use the runtime SYCL-source JIT, which needs **two** host pieces (see NVIDIA GPU install
-below): a CUDA toolkit (libdevice **and** its headers under `/usr/local/cuda`) *and* a host C++
-toolchain (`g++`/libstdc++). Without either, the ProgPoW-family algos fall back to a correct AOT kernel
-at ~4 MH/s; the JIT-free algos (etchash/autolykos2/c29/cn-gpu/pearl) are unaffected.
-
-NVIDIA + OpenCL: **not available** — NVIDIA's OpenCL driver doesn't ingest SPIR-V (`cl_khr_il_program`),
-so the SYCL OpenCL adapter can't load mom's `spir64` image. CUDA is the only NVIDIA path. Verified on
-this L4: `clinfo` reports the NVIDIA OpenCL device as `IL version (n/a)`, and the SYCL OpenCL adapter
-drops it entirely, so `gpu1o` does not enumerate (the `opencl` test suite simply skips on NVIDIA). The
-CUDA `gpu` suite passes all 7 vectors on the same binary.
-
-# OpenCL backend / AMD GPUs
-
-Besides Level-Zero (Intel) and CUDA (NVIDIA), mom runs the GPU algos through the generic SYCL **OpenCL**
-backend — the *same* `spir64` device image, JIT-compiled by the GPU's own OpenCL driver. This is how an
-**AMD GPU** (or any OpenCL GPU) runs the miner: on a machine with no Intel-Level-Zero and no NVIDIA-CUDA
-GPU, the OpenCL GPU is auto-selected as `gpu1` — **no flag or config needed**, just install an OpenCL ICD
-(see Linux install below) and run. On an Intel box the default `gpu1` stays Level-Zero; the same GPU's
-OpenCL device is also exposed explicitly as `gpu1o` (and Level-Zero as `gpu1z`).
-
-The OpenCL path is verified on the Intel B580 against the same hash vectors as Level-Zero
-(`npm run test:opencl`, which runs them via `gpu1o`), and benchmarks at parity with Level-Zero on every
-algo there *except pearl* (below) — same `spir64` kernels (cn/gpu is even marginally faster on OpenCL,
-which is why it already defaults to it).
-
-**pearl is the exception.** Its hot loop is an int8 matrix-multiply; the fast paths use dedicated matrix
-hardware — Intel **XMX** (the ESIMD kernel, on Level-Zero) or NVIDIA **tensor cores** (on CUDA) — which
-are *not reachable* through the OpenCL backend (Intel exposes XMX to OpenCL only via the ESIMD extension,
-and AMD/NVIDIA expose their matrix units through HIP/Vulkan, not OpenCL's SPIR-V). So on **any** OpenCL
-device — an AMD GPU, the SYCL **CPU** device, or Intel's own OpenCL (`gpu1o`) — pearl runs a **portable
-dp4a int8 GEMM** instead (`sycl/pearl.cpp` `search()`): the same int8 A′·B′, but on the regular vector
-ALU's 4-wide integer dot product (dp4a; plain scalar MACs on the CPU). It is **bit-identical** to the
-XMX/tensor-core paths (int8→int32 is exact; cross-checked tile-for-tile via `MOM_PEARL_CHK`) and
-therefore correct everywhere, but far slower — ~**2.2 TH/s** on the B580's OpenCL vs ESIMD's ~30 TH/s at
-the same shape, the inherent ALU-vs-systolic-array gap. Level-Zero (`gpu1`/`gpu1z`) keeps the fast ESIMD
-path on Intel; only the OpenCL backend takes dp4a. (On an Intel-OpenCL GPU, `MOM_PEARL_ESIMD=1` opts
-`gpu1o` back into ESIMD; the dp4a micro-tile is `-DPEARL_ER`/`-DPEARL_EC`, defaulting to the 4×4 B580
-sweet spot.)
-
-Caveats: **no real AMD GPU has been tested** (no hardware). AMD wavefronts are 32/64 vs Intel's 16, so
-some cooperative kernels may need sub-group-size handling (pearl's dp4a kernel deliberately uses none),
-and pearl's dp4a micro-tile may want re-tuning on a real AMD register file. The B580's OpenCL driver is
-the closest available stand-in.
-
-# Donation
-
-By default, miner donates 1% of hashrate (can be disabled in config).
+| Platform | OS / kernel | GPU / backend | Driver / runtime | Toolchain | Power / clocks / VRAM | Notes |
+| -------- | ----------- | ------------- | ---------------- | --------- | --------------------- | ----- |
+| Intel B580 | Ubuntu 24.04.4 LTS, Linux `6.17.0-35-generic` | Intel B580, Level Zero | `xe`, `intel-opencl-icd`/`libze-intel-gpu1` `26.22.38646.4-0`, `libze1` `1.28.6` | - | - | GuC/HuC versions not recorded. |
+| OpenCL | Ubuntu 24.04.4 LTS, Linux `6.17.0-35-generic` | Intel B580, SYCL OpenCL | `intel-opencl-icd` `26.22.38646.4-0` | - | - | `(%?)` cells have no stable same-B580 SOTA reference. |
+| NVIDIA L4 | Ubuntu 26.04 LTS, Linux `7.0.0-14-generic` | NVIDIA L4 Ada (`sm_89`), DPC++ CUDA | NVIDIA `595.71.05` open kernel module, driver CUDA `13.2` | CUDA toolkit `12.4.131`, Node.js `22.22.1`, `g++` `15.2.0` | 72 W, 2040 MHz core / 6251 MHz memory, 23034 MiB | Linux SOTA reference platform. |
+| Windows L4 | Windows Server 2022 Standard `10.0.20348` | NVIDIA L4, DPC++ CUDA | NVIDIA `596.36` | CUDA toolkit `12.6` (`nvcc`, `cudart`, `nvrtc`, `nvrtc_dev`) | 72 W, 2040 MHz core / 6251 MHz memory, 23034 MiB | Release hash-vector suite and ProgPoW source-JIT validated. |
 
 # Distribution
 
@@ -184,7 +113,8 @@ the release artifact.
 The release archive bundles mom's SYCL runtime user-space in `libs/` (libsycl, the Unified Runtime
 adapters for both Level-Zero and CUDA, libhwloc, the Intel OpenCL CPU runtime, and the kawpow
 kernel-compiler JIT). You only need the host GPU driver/runtime that exposes the GPU. On Ubuntu 24.04 / 26.04 (aim for 26.04) these are plain apt packages from the distribution
-itself -- **no extra apt repositories and no downloads**. Run the bundled installer, or apt directly.
+itself -- **no extra apt repositories and no downloads**. The bundled `install.sh` auto-detects the
+GPU(s) present (Intel / AMD / NVIDIA) and installs each one's runtime; or apt directly.
 
 ## Intel GPU
 
@@ -203,31 +133,27 @@ the Level-Zero and OpenCL loaders. Verify with `./mom algo_params` -- a `gpu1` d
 ## NVIDIA GPU
 
 ```
-sudo ./install-nvidia.sh    # bundled in the release archive; then reboot
+sudo ./install.sh    # bundled in the release archive; auto-detects NVIDIA; then reboot
 # or straight from this repo, without the archive:
-curl -fsSL https://raw.githubusercontent.com/MoneroOcean/mo-miner/master/scripts/install-nvidia.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/MoneroOcean/mo-miner/master/scripts/install.sh | sudo bash
 # or apt directly (server = headless/datacenter, -open = Turing+ open kernel modules):
-sudo apt install nvidia-driver-580-server-open   # or newer; reboot afterwards
+sudo apt install nvidia-driver-580-server-open nvidia-cuda-toolkit g++   # or newer; reboot afterwards
 ```
 
-Only the proprietary NVIDIA driver is needed (>= 560 for the bundled CUDA 12.6 runtime) -- **not** the
-CUDA toolkit. `install-nvidia.sh` picks a driver via `ubuntu-drivers`/apt and is a no-op if one is
-already present. After the reboot, `./mom algo_params` should list a `gpu1` device. When running mom
-inside Docker, add `--gpus all` (needs `nvidia-container-toolkit`).
+The unified `install.sh` detects the NVIDIA GPU and installs both (a) the proprietary driver (>= 560 for
+the bundled CUDA 12.6 runtime; via `ubuntu-drivers`/apt, a no-op if one is already present) and (b) the
+CUDA toolkit + `g++` that the **ProgPoW family** needs for full speed. After the reboot, `./mom
+algo_params` should list a `gpu1` device. When running mom inside Docker, add `--gpus all` (needs
+`nvidia-container-toolkit`).
 
-One exception: the full-speed **ProgPoW family** (**kawpow**, **firopow**, **evrprogpow**) recompiles
-its per-period kernel at runtime (a SYCL-source JIT that folds the ProgPoW program to constants). That
-JIT compiles SYCL *source* on the host, so it needs **two** things the driver alone does not provide:
-(1) a CUDA **toolkit** -- `libdevice` *and* the CUDA headers under `/usr/local/cuda` (not just the
-driver), and (2) a host **C++ toolchain** (`g++`/libstdc++ -- the JIT `#include`s `<type_traits>` etc.).
-If either is missing, kawpow/firopow/evrprogpow automatically fall back to a correct ahead-of-time
-kernel at roughly a third of the JIT speed (~4 vs ~13 MH/s on an L4); every other algo is unaffected.
-For full ProgPoW-family throughput on a driver-only host, install both, e.g. `sudo apt install
-nvidia-cuda-toolkit g++` (or NVIDIA's `cuda-toolkit-12-6` for a `/usr/local/cuda` with both
-`nvvm/libdevice/libdevice.10.bc` and the CUDA headers, plus `g++`). Verified on a fresh L4: with only
-the driver, kawpow JIT errored through three successive stages (missing libdevice -> missing
-`<type_traits>` -> missing PTX target) and ran at 4.2 MH/s; with a full toolkit + `g++` it recovered to
-13.8 MH/s.
+Why the toolkit: the full-speed **ProgPoW family** (`kawpow`, `firopow`, `evrprogpow`, `meowpow`)
+recompiles its per-period kernel at runtime (a SYCL-source JIT that folds the ProgPoW program to constants). That
+JIT compiles SYCL *source* on the host, so beyond the driver it needs a CUDA **toolkit** (`libdevice` +
+`ptxas`) and a host **C++ toolchain** (`g++`/libstdc++ -- it `#include`s `<type_traits>` etc.).
+`install.sh` installs both (`nvidia-cuda-toolkit` + `g++`) and the JIT auto-detects the toolkit. **If you
+set up only the driver manually** (skipping `install.sh`/the toolkit),
+kawpow/firopow/evrprogpow/meowpow fall back to a correct ahead-of-time kernel at roughly a third of
+the JIT speed (~4 vs ~13.8 MH/s on an L4; verified end-to-end); every other algo is unaffected.
 
 ## AMD GPU (OpenCL)
 
@@ -244,8 +170,8 @@ the GPU's OpenCL driver). On an AMD-only box mom auto-selects the OpenCL GPU as 
 config needed. `install.sh` detects AMD via `lspci` and installs Mesa's `mesa-opencl-icd` (rusticl) from
 plain apt; rusticl is opt-in per driver, so you may need `RUSTICL_ENABLE=radeonsi ./mom algo_params`.
 For wider algo coverage, AMD's own **ROCm** OpenCL runtime (`rocm-opencl-runtime`, from AMD's apt repo)
-is the alternative. **AMD is untested** (no hardware) -- see "OpenCL backend / AMD GPUs" above for the
-caveats (sub-group size, pearl dp4a micro-tile tuning). Verify with `./mom algo_params`.
+is the alternative. **AMD is untested** (no hardware) -- see "Backend notes" above for the caveats
+(sub-group size, pearl dp4a micro-tile tuning). Verify with `./mom algo_params`.
 
 # Host GPU runtime (Windows)
 
@@ -274,12 +200,24 @@ through `winget`, run:
 install.bat -InstallIntelGraphicsDriver
 ```
 
+On NVIDIA Windows hosts, the installer can also install the current data-center driver when
+`nvidia-smi` is missing and install the CUDA toolkit pieces used by runtime SYCL-source JIT paths
+(`nvcc`, `cudart`, `nvrtc`, `nvrtc_dev`):
+
+```
+install.bat -InstallNVIDIADriver -InstallCudaToolkit
+```
+
+Reboot after driver installation, then verify `nvidia-smi`, `nvcc -V`, and `mom.cmd algo_params`.
+
 # Usage example
 
 On Linux if you run miner like that for the first time it will benchmark MoneroOcean pool algos
 supported by mom plus `rx/2`, then start mining. Use `--bench_algo_params 2` to benchmark
 every algo supported locally before mining instead. This is full local benchmark example output for
-Intel i7-11700K CPU and Intel Arc B580 GPU:
+Intel i7-11700K CPU and Intel Arc B580 GPU. Run mom as **root** (or grant it the MSR + huge-page caps)
+so RandomX (`rx/*`) can apply the MSR mod and 2 MiB/1 GiB huge pages -- without that the CPU RandomX
+rates are ~40% lower (e.g. `rx/0` ~3.7 instead of 6.16 KH/s; GPU algos are unaffected):
 
 ```
 $ ./mom mine gulf.moneroocean.stream:20001tls 89TxfrUmqJJcb1V124WsUzA78Xa3UYHt7Bg8RGMhXVeZYPN8cE5CZEk58Y1m23ZMLHN7wYeJ9da5n5MXharEjrm41hSnWHL --save_config config.json
@@ -287,24 +225,21 @@ cpu1: Intel(R) OpenCL
 gpu1: Intel(R) oneAPI Unified Runtime over Level-Zero V2
 gpu1o: Intel(R) OpenCL Graphics
 gpu1z: Intel(R) oneAPI Unified Runtime over Level-Zero V2
-2026-06-15 13:10:29 Doing algo benchmarks...
-2026-06-15 13:12:04 Algo autolykos2 (gpu1*8388608) hashrate: 37.55 MH/s (37.55 MH/s)
-2026-06-15 13:13:10 Algo c29 (gpu1*1) hashrate: 2.73 H/s (2.73 H/s)
-2026-06-15 13:14:38 Algo cn/gpu (gpu1o*1280) hashrate: 2.94 KH/s (2.94 KH/s)
-2026-06-15 13:16:07 Algo etchash (gpu1*33554432) hashrate: 21.10 MH/s (21.10 MH/s)
-2026-06-15 13:17:08 Algo ghostrider (cpu*8^8) hashrate: 1.66 KH/s (211.34 H/s, 200.52 H/s, 212.52 H/s, 204.79 H/s, 200.47 H/s, 204.75 H/s, 211.35 H/s, 212.58 H/s)
-2026-06-15 13:19:04 Algo kawpow (gpu1*37282560) hashrate: 20.92 MH/s (20.92 MH/s)
-2026-06-15 13:20:13 Algo panthera (cpu*4^16) hashrate: 4.21 KH/s (255.77 H/s, 263.38 H/s, 266.65 H/s, 259.05 H/s, 265.44 H/s, 260.45 H/s, 259.93 H/s, 270.73 H/s, 285.56 H/s, 263.45 H/s, 252.52 H/s, 262.90 H/s, 253.04 H/s, 269.66 H/s, 268.26 H/s, 255.31 H/s)
-2026-06-15 13:21:37 Algo pearl (gpu1*131072) hashrate: 52.11 TH/s (52.11 TH/s)
-2026-06-15 13:22:39 Algo rx/0 (cpu*8) hashrate: 6.16 KH/s (6.16 KH/s)
-2026-06-15 13:23:42 Algo rx/2 (cpu*8) hashrate: 5.10 KH/s (5.10 KH/s)
-2026-06-15 13:24:44 Algo rx/arq (cpu*16) hashrate: 39.42 KH/s (39.42 KH/s)
-2026-06-15 13:24:44 Connecting to primary gulf.moneroocean.stream:20001tls pool
-2026-06-15 13:24:44 Got new cn/gpu algo job with 269.06 KH/share target and 2095451 height
-2026-06-15 13:25:42 Got new cn/gpu algo job with 506.00 KH/share target and 2095451 height
-2026-06-15 13:25:49 Algo cn/gpu (gpu1o*1280) hashrate: 2.95 KH/s (2.95 KH/s)
-2026-06-15 13:26:28 Got new cn/gpu algo job with 515.42 KH/share target and 2095452 height
-2026-06-15 13:26:36 Share accepted by the pool (1/0)
+2026-06-22 15:21:15 Doing algo benchmarks...
+2026-06-22 15:23:09 Algo autolykos2 (gpu1*8388608) hashrate: 37.66 MH/s (37.66 MH/s)
+2026-06-22 15:24:14 Algo c29 (gpu1*1) hashrate: 2.78 H/s (2.78 H/s)
+2026-06-22 15:25:58 Algo cn/gpu (gpu1o*1280) hashrate: 2.94 KH/s (2.94 KH/s)
+2026-06-22 15:27:29 Algo etchash (gpu1*33554432) hashrate: 21.10 MH/s (21.10 MH/s)
+2026-06-22 15:28:30 Algo ghostrider (cpu*8^8) hashrate: 1.65 KH/s (210.85 H/s, 210.76 H/s, 199.94 H/s, 204.12 H/s, 211.90 H/s, 211.79 H/s, 204.13 H/s, 199.92 H/s)
+2026-06-22 15:30:30 Algo kawpow (gpu1*37282560) hashrate: 20.95 MH/s (20.95 MH/s)
+2026-06-22 15:31:40 Algo panthera (cpu*4^16) hashrate: 4.20 KH/s (261.93 H/s, 264.43 H/s, 273.02 H/s, 267.38 H/s, 263.41 H/s, 284.90 H/s, 254.31 H/s, 268.43 H/s, 262.42 H/s, 248.54 H/s, 256.79 H/s, 250.11 H/s, 259.60 H/s, 255.85 H/s, 258.94 H/s, 271.94 H/s)
+2026-06-22 15:33:05 Algo pearl (gpu1*131072) hashrate: 51.58 TH/s (51.58 TH/s)
+2026-06-22 15:34:07 Algo rx/0 (cpu*8) hashrate: 6.11 KH/s (6.11 KH/s)
+2026-06-22 15:35:10 Algo rx/2 (cpu*8) hashrate: 5.03 KH/s (5.03 KH/s)
+2026-06-22 15:36:12 Algo rx/arq (cpu*16) hashrate: 38.95 KH/s (38.95 KH/s)
+2026-06-22 15:36:12 Connecting to primary gulf.moneroocean.stream:20001tls pool
+2026-06-22 15:36:12 Got new cn/gpu algo job with 206.29 KH/share target and 2100441 height
+2026-06-22 15:37:11 Share accepted by the pool (1/0)
 ...
 ```
 
@@ -325,6 +260,28 @@ algorithms whose protocol units are solutions per second, currently `c29`, are c
 automatically when sending `algo-perf`. `pearl` reports GEMM multiply-accumulate throughput (TH/s),
 not H/s; MoneroOcean does not switch to it, so its perf is informational only.
 
+## Direct pool examples
+
+Use this template for non-MoneroOcean pools. mom infers the stratum dialect from `--job.algo`.
+
+```
+./r.sh node mom.js mine <endpoint> <wallet.worker> <dev / command suffix> --bench_algo_params 0
+```
+
+| Coin | Algo          | Endpoint                           | Donation address (owner)                                                                                         | Dev / command suffix                                                   |
+| ---- | ------------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| RVN  | kawpow        | stratum.ravenminer.com:13838tls    | `RSJZNSvzt3PJdGVKahSczRrhinc24KA6wU` (hans-schmidt, Ravencoin/Evrmore maintainer)                                | --job.algo kawpow --job.dev gpu1*37282560                              |
+| FIRO | firopow       | pool.woolypooly.com:3104tls        | `a4vQ7zr5CEBDEdNQBFVvHcM1BRVYKEnuEv` (Firo Core Team funding proposal)                                           | --job.algo firopow --job.dev gpu1*37282560                             |
+| EVR  | evrprogpow    | us-east.mining4people.com:24173tls | `EaBGnWtDiAseYZiyvNT1u3WTjAeYtAR7MV` (hans-schmidt, Evrmore maintainer)                                          | --job.algo evrprogpow --job.dev gpu1*37282560                          |
+| MEWC | meowpow       | stratum-eu.rplant.xyz:17120tls     | `MPyNGZSSZ4rbjkVJRLn3v64pMcktpEYJnU` (MeowCoin donation address)                                                 | --job.algo meowpow --job.dev gpu1*37282560                             |
+| PRL  | pearl         | pearl.herominers.com:1200tls       | `prl1p79wzxcvatcsmnzp9xp0ep0rvfe9ans05mjtxnt4d9x0qqej0mtdqfrezc0` (ARC-miner PRL donation address)               | --job.algo pearl --job.dev gpu1*131072                                 |
+| IRON | fishhash      | ironfish.herominers.com:1145tls    | `66e044578b31c6c4c05810b0e5281bdf36138ad41bf6844ba317dc7c506bf9ac` (GMiner/Rigel bundled sample)                 | --job.algo fishhash --job.dev gpu1*33554432                            |
+| KAS  | kheavyhash    | kaspa.herominers.com:1206tls       | `precqv0krj3r6uyyfa36ga7s0u9jct0v4wg8ctsfde2gkrsgwgw8jgxfzfc98` (Kaspa Devfund)                                  | --job.algo kheavyhash --job.dev gpu1*47934720                          |
+| KLS  | karlsenhashv2 | pool.woolypooly.com:3132           | `qzrq7v5jhsc5znvtfdg6vxg7dz5x8dqe4wrh90jkdnwehp6vr8uj7csdss2l7` (Karlsen Devfund)                                | --job.algo karlsenhashv2 --job.dev gpu1*33554432                       |
+| PYI  | pyrinhashv2   | ca.pyrin.herominers.com:1177       | `qq92h3nryfwq0gkh73cwvjh9hhqlq2mank9sfxtgc99hqwn2ec6u2gszphr0u` (lolMiner bundled sample)                        | --job.algo pyrinhashv2 --job.dev gpu1*47934720                         |
+| FLUX | equihash125_4 | flux.herominers.com:1200tls        | `t1Mzja9iJcEYeW5B4m4s1tJG8M42odFZ16A` (Flux development address)                                                 | --job.algo equihash125_4 --job.dev gpu1*1                              |
+| BEAM | beamhash3     | beam.2miners.com:5252tls           | `2346a827cb56ca74e34680593e50d7b1fa4a169332415a1d5984c6f874395c3684b` (Wilke Trei, Beam)                         | --job.algo beamhash3 --job.dev gpu1*1                                  |
+
 Without parameters miner will show help:
 
 ```
@@ -341,6 +298,7 @@ Directives:
 
 Options:
 --job '{...}':                      JSON string of the default job params (mostly used in test/bench mode)
+  --job.algo:                       algo name of the job (only used with "mine" directive) (null by default)
   --job.dev:                        device config line "[<dev>[*B][^P],]+", dev = {cpu, gpu<N>, cpu<N>}, N = device number, B = hash batch size, P = number of parallel processes ("cpu" by default)
   --job.blob_hex:                   hexadecimal string of input blob ("0305A0DBD6BF05CF16E503F3A66F78007CBF34144332ECBFC22ED95C8700383B309ACE1923A0964B00000008BA939A62724C0D7581FCE5761E9D8A0E6A1C3F924FDD8493D1115649C05EB601" by default)
   --job.seed_hex:                   hexadecimal string of seed hash blob (used for rx algos) ("3132333435363738393031323334353637383930313233343536373839303132" by default)
@@ -360,6 +318,7 @@ Options:
   url:                              pool DNS or IP address
   port:                             pool port
   is_tls:                           is pool port is encrypted using TLS/SSL (false by default)
+  protocol:                         pool protocol override: login, raven, eth, ethproxy, erg, pearl, equihash, kaspa, beam, or ironfish (null by default)
   tls_verify:                       verify pool TLS/SSL certificate (false by default)
   is_nicehash:                      nicehash nonce mining mode support (false by default)
   is_keepalive:                     sends keepalive messages to the pool to avoid disconnect (true by default)
