@@ -54,15 +54,12 @@ jobs:
           docker system prune --all --force || true
           df -h
 
-      # Exercise the bundled Linux setup scripts so apt-package rot is caught in CI. install.sh
-      # installs the Intel GPU runtime from the distro repos (harmless on a GPU-less runner);
-      # install-nvidia.sh installs a kernel driver that can't run on a GPU-less CI runner, so it is
-      # only syntax-checked here and verified on real NVIDIA hardware.
+      # Exercise the bundled Linux setup script so apt-package rot is caught in CI. install.sh
+      # auto-detects GPU vendors and defaults to the Intel runtime on a GPU-less runner.
       - name: Verify Linux install scripts
         run: |
           set -euo pipefail
           bash -n scripts/install.sh
-          bash -n scripts/install-nvidia.sh
           sudo bash scripts/install.sh
 
       - name: Setup Docker Buildx
