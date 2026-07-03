@@ -67,20 +67,30 @@ inline uint32_t round_up(const uint32_t value, const uint32_t step) {
   return ((value + step - 1) / step) * step;
 }
 
-// Fast unsigned remainder by a runtime divisor (Lemire's "faster remainder"). The K_LEN=32 dataset
-// reads do `idx % n_len` per nonce and n_len is a per-height runtime value. On the nvptx device pass
-// (__NVPTX__) NVIDIA has no integer-divide unit, so `%` emulates as a slow multi-op sequence:
-// M = floor(2^64 / n_len) + 1 is precomputed once on the host (mo_modM), then
-// x % n_len == hi64( (M*x mod 2^64) * n_len ). Bit-exact for x, n_len in [1, 2^32). On Intel (which
-// has a divide unit) keep the plain modulo. Gating on the per-pass __NVPTX__ (not a build macro)
-// lets the combined build pick the right path in each device image.
+// Fast unsigned remainder by a runtime divisor. The K_LEN=32 dataset reads do `idx % n_len` per nonce
+// and n_len is a per-height runtime value. Keeping this divide-free helps both NVIDIA's nvptx image
+// and Intel Level Zero on Arc. M = floor(2^64 / n_len) + 1 is precomputed once on the host (mo_modM),
+// then x % n_len == hi64( (M*x mod 2^64) * n_len ). Bit-exact for x, n_len in [1, 2^32).
 inline uint64_t mo_modM(const uint32_t d) { return d ? (0xFFFFFFFFFFFFFFFFULL / d) + 1ULL : 0ULL; }
 inline uint32_t mo_mod_u32(const uint32_t x, const uint32_t d, const uint64_t M) {
-#if defined(__NVPTX__)
   return static_cast<uint32_t>(sycl::mul_hi(M * static_cast<uint64_t>(x), static_cast<uint64_t>(d)));
-#else
-  (void)M; return x % d;
-#endif
+}
+
+inline uint64_t mo_divM64(const uint32_t d) {
+  if (!d) return 0;
+  const uint64_t q = 0xFFFFFFFFFFFFFFFFULL / d;
+  return (0xFFFFFFFFFFFFFFFFULL % d) == static_cast<uint64_t>(d - 1U) ? q + 1ULL : q;
+}
+
+// Exact Barrett reduction for h3 = uint64 % n_len. For x < 2^64 and d < 2^32,
+// q = high64(x * floor(2^64/d)) is at most one low, so one subtraction after
+// x - q*d produces the exact remainder.
+inline uint32_t mo_mod_u64(const uint64_t x, const uint32_t d, const uint64_t M) {
+  if (d <= 1) return 0;
+  const uint64_t q = sycl::mul_hi(x, M);
+  uint64_t r = x - q * static_cast<uint64_t>(d);
+  if (r >= d) r -= d;
+  return static_cast<uint32_t>(r);
 }
 
 inline uint64_t bswap64_dev(const uint64_t value) {
@@ -484,7 +494,7 @@ inline void store_autolykos_result(
 // Row bytes come from the prebuilt table when present, else from the on-the-fly digest.
 inline void autolykos_index_hash_dev(
   const uint8_t message[32], const uint64_t nonce, const uint32_t* const table,
-  const uint32_t height, const uint32_t n_len, uint8_t index_hash[32]
+  const uint32_t height, const uint32_t n_len, const uint64_t n_len_divM, uint8_t index_hash[32]
 ) {
   uint8_t nonce_be[8];
 #pragma unroll
@@ -498,7 +508,7 @@ inline void autolykos_index_hash_dev(
 
   uint8_t h1[32];
   blake2b256_oneblock_dev(h1_input, sizeof(h1_input), h1);
-  const uint32_t h3 = static_cast<uint32_t>(load64_be_dev(h1 + 24) % n_len);
+  const uint32_t h3 = mo_mod_u64(load64_be_dev(h1 + 24), n_len, n_len_divM);
 
   uint8_t seed[71]; // row[1..31] (31) || message (32) || nonce (8)
   if (table) {
@@ -534,6 +544,12 @@ inline uint32_t calc_n(const uint32_t height) {
 
 static uint64_t now_ms() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::steady_clock::now().time_since_epoch()
+  ).count();
+}
+
+static uint64_t now_us() {
+  return std::chrono::duration_cast<std::chrono::microseconds>(
     std::chrono::steady_clock::now().time_since_epoch()
   ).count();
 }
@@ -608,7 +624,15 @@ struct AutolykosState {
   static unsigned autolykos_workgroup(const sycl::device& dev) {
     // NVIDIA: 128 gives the best occupancy for the unrolled per-thread lookup (measured ~68 vs
     // ~64 MH/s at 64 on an L4); the cooperative local==64 path is intentionally not used there.
-    const unsigned fallback = sycl_default_workgroup(dev, {32, 64, 128, 256}, mom_is_cuda(dev) ? 128 : 64);
+    const unsigned preferred =
+      mom_is_cuda(dev) ? 128 :
+#if defined(_WIN32)
+      // Windows Arc Level Zero is consistently faster at local size 32 for the split table path.
+      32;
+#else
+      64;
+#endif
+    const unsigned fallback = sycl_default_workgroup(dev, {32, 64, 128, 256}, preferred);
     return env_workgroup("MOM_AUTOLYKOS2_WORKGROUP", fallback);
   }
 
@@ -650,6 +674,11 @@ struct AutolykosState {
   static unsigned autolykos_table_verify_mode() {
     uint32_t parsed = 0;
     return env_u32("MOM_AUTOLYKOS2_VERIFY_TABLE", parsed) && parsed <= 2 ? parsed : 1;
+  }
+
+  static bool autolykos_split_table() {
+    const char* const value = std::getenv("MOM_AUTOLYKOS2_SPLIT");
+    return !(value && value[0] == '0');
   }
 
   void release() {
@@ -845,6 +874,7 @@ int autolykos2(
   state.ensure_result();
   const uint32_t n_len = calc_n(height);
   const uint64_t n_len_M = mo_modM(n_len);   // Lemire magic for the hot `idx % n_len` (see mo_mod_u32)
+  const uint64_t n_len_divM = mo_divM64(n_len);
   state.ensure_table(height, n_len, is_test, !is_benchmark);
 
   AutolykosJobData job{};
@@ -862,12 +892,14 @@ int autolykos2(
   const uint32_t* const __restrict__ d_table = state.table;
   AutolykosResult* const d_result = state.result;
   const uint32_t local_size = state.workgroup;
+  const bool profile = std::getenv("MOM_AUTOLYKOS2_PROFILE") != nullptr;
 
-  if (d_table && !is_test) {
+  if (d_table && !is_test && AutolykosState::autolykos_split_table()) {
     state.ensure_bhashes(effective_intensity);
     uint32_t* const d_bhashes = state.bhashes;
 
-    q.submit([&](sycl::handler& h) {
+    const uint64_t profile_t0 = profile ? now_us() : 0;
+    sycl::event index_event = q.submit([&](sycl::handler& h) {
       MOM_USE_BUNDLE(h, kb);
       h.parallel_for(
         sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(local_size)),
@@ -876,7 +908,8 @@ int autolykos2(
           if (gid >= effective_intensity) return;
 
           uint8_t index_hash[32];
-          autolykos_index_hash_dev(job.message, start_nonce + gid, d_table, height, n_len, index_hash);
+          autolykos_index_hash_dev(
+            job.message, start_nonce + gid, d_table, height, n_len, n_len_divM, index_hash);
 
           uint32_t* const out = d_bhashes + static_cast<uint64_t>(gid) * 8U;
 #pragma unroll
@@ -885,7 +918,9 @@ int autolykos2(
       );
     });
 
-    sycl_wait_and_throw(q.submit([&](sycl::handler& h) {
+    if (profile) sycl_wait_and_throw(index_event, state.device);
+    const uint64_t profile_t1 = profile ? now_us() : 0;
+    sycl::event search_event = q.submit([&](sycl::handler& h) {
       MOM_USE_BUNDLE(h, kb);
       h.parallel_for(
         sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(local_size)),
@@ -928,12 +963,23 @@ int autolykos2(
           }
         }
       );
-    }), state.device);
+    });
+    sycl_wait_and_throw(search_event, state.device);
+    if (profile) {
+      const uint64_t profile_t2 = now_us();
+      std::fprintf(stderr,
+        "AUTOLYKOS2_PROFILE split intensity=%u local=%u index=%.3fms search=%.3fms total=%.3fms\n",
+        effective_intensity, local_size,
+        static_cast<double>(profile_t1 - profile_t0) / 1000.0,
+        static_cast<double>(profile_t2 - profile_t1) / 1000.0,
+        static_cast<double>(profile_t2 - profile_t0) / 1000.0);
+    }
 
     return take_autolykos_result(state.result, output, pnonce);
   }
 
-  sycl_wait_and_throw(q.submit([&](sycl::handler& h) {
+  const uint64_t profile_t0 = profile ? now_us() : 0;
+  sycl::event search_event = q.submit([&](sycl::handler& h) {
     MOM_USE_BUNDLE(h, kb);
     sycl::local_accessor<uint32_t, 1> shared_index(sycl::range<1>(64), h);
     sycl::local_accessor<uint32_t, 1> shared_data(sycl::range<1>(512), h);
@@ -951,7 +997,7 @@ int autolykos2(
 
         if (active) {
           uint8_t index_hash[32];
-          autolykos_index_hash_dev(job.message, nonce, d_table, height, n_len, index_hash);
+          autolykos_index_hash_dev(job.message, nonce, d_table, height, n_len, n_len_divM, index_hash);
 
 #pragma unroll
           for (unsigned k = 0; k < K_LEN; ++k) {
@@ -1011,7 +1057,15 @@ int autolykos2(
         }
       }
     );
-  }), state.device);
+  });
+  sycl_wait_and_throw(search_event, state.device);
+  if (profile) {
+    const uint64_t profile_t1 = now_us();
+    std::fprintf(stderr,
+      "AUTOLYKOS2_PROFILE single intensity=%u local=%u total=%.3fms table=%u\n",
+      effective_intensity, local_size, static_cast<double>(profile_t1 - profile_t0) / 1000.0,
+      d_table ? 1U : 0U);
+  }
 
   return take_autolykos_result(state.result, output, pnonce);
 }

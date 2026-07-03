@@ -11,16 +11,29 @@ static std::map<std::string, sycl::device> str2dev;
 constexpr uint64_t MiB = 1024ULL * 1024ULL;
 constexpr uint64_t GiB = 1024ULL * MiB;
 
+static std::string gpu_identity_key(const sycl::device& device, const unsigned platform_gpu_num) {
+  return device.get_info<sycl::info::device::vendor>() + "|" +
+         device.get_info<sycl::info::device::name>() + "|" +
+         std::to_string(platform_gpu_num);
+}
+
 static void update_str2dev(const bool verbose = false) {
-  unsigned cpu_num = 0, gpu_num = 0;
+  str2dev.clear();
+  unsigned cpu_num = 0, next_gpu_num = 0;
+  std::map<std::string, std::string> gpu2base;
   for (auto platform : sycl::platform::get_platforms()) {
+    unsigned platform_gpu_num = 0;
     const std::string& platform_name = platform.get_info<sycl::info::platform::name>();
     for (auto device : platform.get_devices()) {
       if (device.is_cpu()) {
         str2dev[std::string("cpu") + std::to_string(++cpu_num)] = device;
       } else if (device.is_gpu()) {
-        // OpenCL GPU platforms will be available but not used by default if something else is present
-        const std::string gpuN = std::string("gpu") + std::to_string(++gpu_num);
+        ++platform_gpu_num;
+        const std::string identity_key = gpu_identity_key(device, platform_gpu_num);
+        if (!gpu2base.contains(identity_key)) {
+          gpu2base[identity_key] = std::string("gpu") + std::to_string(++next_gpu_num);
+        }
+        const std::string& gpuN = gpu2base.at(identity_key);
         if (mom_is_cuda(device)) {
           // The DPC++ CUDA backend exposes the GPU through a platform whose name
           // carries no "OpenCL"/"Level-Zero" marker, so register it as the default GPU.
@@ -42,7 +55,6 @@ static void update_str2dev(const bool verbose = false) {
         }
       }
     }
-    gpu_num = 0; // reset gpu counter for every platform
   }
   if (verbose) for (const auto& pair : str2dev) {
     std::cout << pair.first << ": " << pair.second.get_platform().get_info<sycl::info::platform::name>() << std::endl;

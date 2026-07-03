@@ -31,11 +31,13 @@ docker_flags=(
 # driver is present so GPU runs/tests work (needs nvidia-container-toolkit). CI runners have none
 # and just build + package + run the CPU and SYCL-CPU suites. An Intel GPU is reached via --privileged
 # (/dev/dri). The build picks dpcpp-combined itself in scripts/combined-build.sh, so no MOM_SYCL_IMPL.
-if nvidia-smi -L >/dev/null 2>&1; then docker_flags+=(--gpus all); fi
+if [ "${MOM_DOCKER_GPUS:-auto}" != "0" ] && nvidia-smi -L >/dev/null 2>&1; then
+  docker_flags+=(--gpus all)
+fi
 
 # Forward these build-tuning env vars into the container only when set. MOM_COMBINED_TARGETS lets a
 # build widen/narrow its AOT arch set; MOM_FORCE_REBUILD forces a clean reconfigure.
-for var in MOM_PORTABLE_BUILD MOM_LTO MOM_PERF_SAMPLES MOM_COMBINED_TARGETS MOM_FORCE_REBUILD MOM_BUILD_VERBOSE MOM_BUILD_JOBS; do
+for var in MOM_PORTABLE_BUILD MOM_LTO MOM_PERF_SAMPLES MOM_COMBINED_TARGETS MOM_FORCE_REBUILD MOM_BUILD_VERBOSE MOM_BUILD_JOBS MOM_AUTOLYKOS2_WORKGROUP MOM_AUTOLYKOS2_SPLIT MOM_AUTOLYKOS2_PROFILE; do
   if [ -n "${!var:-}" ]; then docker_flags+=(--env "$var"); fi
 done
 
