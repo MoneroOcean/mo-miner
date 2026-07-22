@@ -56,9 +56,7 @@ function protocolForAlgo(algo) {
     case "fishhash":   return "ironfish";
     case "equihash125_4": return "equihash";
     case "beamhash3":  return "beam";
-    case "kheavyhash":  return "kaspa";
     case "karlsenhashv2": return "kaspa";
-    case "pyrinhashv2": return "kaspa";
     default:           return null;
   }
 }
@@ -228,7 +226,7 @@ function isBeamJobNotification(json) {
   return json.method === "job" && typeof json.input === "string";
 }
 
-// Kaspa (kheavyhash) kaspa-stratum-bridge mining.notify carries 3 params:
+// Kaspa-family mining.notify carries 3 params:
 // [jobId(string), [u0,u1,u2,u3] (4 uint64 LE pre-pow words), timestamp(ms uint64)]. The 4 words are the
 // 32-byte BLAKE2b pre-pow hash (TS=0,Nonce=0) split into little-endian uint64s. They overflow JS
 // Number, so parsePoolLine re-extracts them from the raw line into json.__kaspa_words (decimal strings).
@@ -378,8 +376,8 @@ function equihashNotifyJob(pool, json) {
 }
 
 // Kaspa diff -> 256-bit BE share target. The kaspa-stratum-bridge DiffToTarget = maxTarget/diff where
-// maxTarget = 0xFFFF...FF (28 bytes = 224 one-bits, i.e. 2^224-1). The native kheavyhash compares the
-// 32-byte output little-endian against this big-endian boundary, so we pad to a 64-hex BE string.
+// maxTarget = 0xFFFF...FF (28 bytes = 224 one-bits, i.e. 2^224-1). KarlsenHashV2 compares its
+// 32-byte output little-endian against this big-endian boundary, so pad to a 64-hex BE string.
 function kaspaDiffToTarget(diff) {
   const MAX_TARGET = (1n << 224n) - 1n;
   const d = Math.max(1, Number(diff) || 1);
@@ -390,8 +388,8 @@ function kaspaDiffToTarget(diff) {
   return target.toString(16).padStart(64, "0").slice(-64);
 }
 
-// Build the Kaspa (kheavyhash) 80-byte header job from a mining.notify. Header layout (LE) =
-//   pre_pow_hash(32) || timestamp(8) || zero(32) || nonce(8)   [native: matrix+keccak from [0..31]].
+// Build the KarlsenHashV2 80-byte header job from a Kaspa-family mining.notify. Header layout (LE) =
+//   pre_pow_hash(32) || timestamp(8) || zero(32) || nonce(8).
 // The 4 pre-pow uint64 words go in LITTLE-endian at offsets 0,8,16,24; the timestamp LE at 32. The
 // 8-byte search nonce at offset 72 is seeded so the pool's extranonce occupies its HIGH bytes (the
 // pool parses the submitted nonce big-endian with the extranonce as the leading bytes). The native
@@ -414,7 +412,7 @@ function kaspaNotifyJob(pool, json) {
   blob += "0000000000000000";         // nonce placeholder at offset 72 (native re-embeds the seed)
 
   return {
-    algo: fixedAlgoJobName(json, "kheavyhash"),
+    algo: fixedAlgoJobName(json, "karlsenhashv2"),
     blob: blob,                        // 160 hex = 80 bytes
     job_id: String(p[0]),
     target: pool.kaspa_target || kaspaDiffToTarget(pool.kaspa_difficulty || 1),
@@ -706,8 +704,8 @@ function jobTargetWork(job) {
   if (job.algo === "pearl") {return h.target256ToWork(job.target) * BigInt(16 * 16 * pearlKEff());}
   // etchash/autolykos2/fishhash carry a full 256-bit target too, but their hashrate is in hashes -> H/share.
   if (job.algo === "etchash" || job.algo === "autolykos2" || job.algo === "fishhash" ||
-      job.algo === "equihash125_4" || job.algo === "kheavyhash" ||
-      job.algo === "karlsenhashv2" || job.algo === "pyrinhashv2")
+      job.algo === "equihash125_4" ||
+      job.algo === "karlsenhashv2")
   {return h.target256ToWork(job.target);}
   return h.target2diff(job.target);
 }

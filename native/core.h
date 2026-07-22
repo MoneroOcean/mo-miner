@@ -45,11 +45,9 @@ typedef int (*gpu_pearl_hash_fun)(
   uint64_t* pseed, const uint8_t* target,
   unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
 );
-// kHeavyHash + FishHash share the etchash hash-fun ABI (32-byte LE target; seed_hash unused).
-typedef gpu_etchash_hash_fun gpu_kheavyhash_hash_fun;
+// FishHash variants share the etchash hash-fun ABI (32-byte LE target; seed_hash unused).
 typedef gpu_etchash_hash_fun gpu_fishhash_hash_fun;
 typedef gpu_etchash_hash_fun gpu_karlsenhashv2_hash_fun;
-typedef gpu_etchash_hash_fun gpu_pyrinhashv2_hash_fun;
 // Equihash 125,4 (ZelHash / Flux): Wagner bucket-collision solver. C29-like ABI -- the 32-byte nonce
 // lives IN the 140-byte header (offset 108) and the solver returns a solution COUNT, writing the
 // 52-byte compressed solution(s) out-of-band into solution_out (like c29's output_edges). 256-bit
@@ -84,14 +82,12 @@ union FN {
   gpu_etchash_hash_fun gpu_etchash;
   gpu_autolykos2_hash_fun gpu_autolykos2;
   gpu_pearl_hash_fun gpu_pearl;
-  gpu_kheavyhash_hash_fun gpu_kheavyhash;
   gpu_fishhash_hash_fun gpu_fishhash;
   gpu_karlsenhashv2_hash_fun gpu_karlsenhashv2;
-  gpu_pyrinhashv2_hash_fun gpu_pyrinhashv2;
   gpu_equihash125_4_hash_fun gpu_equihash125_4;
   gpu_beamhash3_hash_fun gpu_beamhash3;
 };
-enum DEV { CPU, RX_CPU, GPU, C29_GPU, KAWPOW_GPU, ETCHASH_GPU, AUTOLYKOS2_GPU, PEARL_GPU, KHEAVYHASH_GPU, FISHHASH_GPU, KARLSENHASHV2_GPU, PYRINHASHV2_GPU, EQUIHASH125_4_GPU, BEAMHASH3_GPU };
+enum DEV { CPU, RX_CPU, GPU, C29_GPU, KAWPOW_GPU, ETCHASH_GPU, AUTOLYKOS2_GPU, PEARL_GPU, FISHHASH_GPU, KARLSENHASHV2_GPU, EQUIHASH125_4_GPU, BEAMHASH3_GPU };
 
 inline bool is_nonce_at_32_gpu_dev(const DEV dev) {
   return dev == DEV::KAWPOW_GPU || dev == DEV::ETCHASH_GPU || dev == DEV::AUTOLYKOS2_GPU || dev == DEV::FISHHASH_GPU;
@@ -102,10 +98,10 @@ inline bool is_equihash_gpu_dev(const DEV dev) {
   return dev == DEV::EQUIHASH125_4_GPU || dev == DEV::BEAMHASH3_GPU;
 }
 // GPU pow devices that allocate a single small input blob + small output (not a per-batch buffer).
-// kHeavyHash is small-blob (80-byte header) but its nonce is at offset 72, not 32 (handled in mom.js).
+// KarlsenHashV2 is small-blob (80-byte header) but its nonce is at offset 72, not 32.
 // Equihash carries a 32-byte nonce at offset 108 and a 52-byte out-of-band solution buffer.
 inline bool is_small_blob_gpu_dev(const DEV dev) {
-  return is_nonce_at_32_gpu_dev(dev) || dev == DEV::PEARL_GPU || dev == DEV::KHEAVYHASH_GPU || dev == DEV::KARLSENHASHV2_GPU || dev == DEV::PYRINHASHV2_GPU || is_equihash_gpu_dev(dev);
+  return is_nonce_at_32_gpu_dev(dev) || dev == DEV::PEARL_GPU || dev == DEV::KARLSENHASHV2_GPU || is_equihash_gpu_dev(dev);
 }
 
 class Core: public AsyncWorker {

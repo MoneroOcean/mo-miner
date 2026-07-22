@@ -57,12 +57,6 @@ const syclCpuVectors = [
   requiredVector("autolykos2 gpu1*1"),
   requiredVector("c29 proofsize 42 gpu1*1"),
   requiredVector("pearl gpu1*1"),
-  // kHeavyHash: same SYCL kernel as on the GPU (scalar Keccak + SLM-matrix matvec; no warp ops),
-  // so the CPU SYCL device is a real regression guard. The 64x64 matrix is host-generated either way.
-  requiredVector("kheavyhash gpu1*256"),
-  // Live HeroMiners pre-pow header (real mining.notify), CPU-validated bit-exact -- a regression guard
-  // for the kaspa stratum dialect's job->header construction against the actual GPU/CPU hash.
-  requiredVector("kheavyhash live gpu1*256"),
   // FishHash: same kernel (BLAKE3 + keccak512 + FNV item gen + mul-add mix), lazy light-cache lookup.
   requiredVector("fishhash gpu1*1"),
   // Live Iron Fish block header (real mining.notify), CPU-validated bit-exact -- a regression guard for
@@ -70,8 +64,6 @@ const syclCpuVectors = [
   requiredVector("fishhash live gpu1*1"),
   // KarlsenHashV2 (FishHashPlus): same DAG/kernel family as fishhash (folded index + BLAKE3 wrapping).
   requiredVector("karlsenhashv2 gpu1*1"),
-  // PyrinHashV2: kHeavyHash-family (matrix matvec) with BLAKE3 + V2 nibble-XOR reduction, no DAG.
-  requiredVector("pyrinhashv2 gpu1*256"),
   // Equihash 125,4 / BeamHash III: the FULL Wagner solve is far too heavy for the CPU SYCL device
   // (multi-GiB arenas), but each algo's GEN sub-step is light enough to verify here. The default
   // is_test path runs gen-only and dumps the first rows; these vectors check that dump bit-exactly
@@ -83,7 +75,6 @@ const syclCpuVectors = [
 
 const syclCpuSmokeVectorNames = new Set([
   "cn/gpu gpu1*8",
-  "kheavyhash gpu1*256",
   "beamhash3 gpu1 gen",
 ]);
 const selectedSyclCpuVectors = process.env.MOM_SYCL_CPU_SMOKE === "1"

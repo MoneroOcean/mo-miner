@@ -1423,7 +1423,7 @@ test("Kaspa-family pools build 80-byte jobs from exact 64-bit notify words", asy
   });
 });
 
-test("Kaspa (kheavyhash) submit uses mining.submit [wallet.worker, job_id, 0x+nonce]", async () => {
+test("Kaspa-family submit uses mining.submit [wallet.worker, job_id, 0x+nonce]", async () => {
   const miner = await loadMinerWithStubs();
   miner.global.opt.pools[0].submit_mode = "kaspa";
   miner.global.opt.pools[0].login = "kaspa:qzwallet.mom";

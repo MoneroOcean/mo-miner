@@ -1,4 +1,4 @@
-// BLAKE3 single-chunk device hash (shared by fishhash.cpp + kheavyhash.cpp). Extracted from fishhash.cpp.
+// BLAKE3 single-chunk device hash used by fishhash.cpp.
 inline uint32_t load32_le_dev(const uint8_t* p) {
   return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }

@@ -75,7 +75,6 @@ $main = @(
   "c29",
   "cn-gpu",
   "kawpow",
-  "kheavyhash",
   "fishhash",
   "equihash125_4",
   "beamhash3",

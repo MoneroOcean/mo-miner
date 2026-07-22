@@ -116,20 +116,12 @@ static const std::map<std::string, gpu_pearl_hash_fun> gpu_pearl_algo2fn = {
   { "pearl", pearl }
 };
 
-static const std::map<std::string, gpu_kheavyhash_hash_fun> gpu_kheavyhash_algo2fn = {
-  { "kheavyhash", kheavyhash }
-};
-
 static const std::map<std::string, gpu_fishhash_hash_fun> gpu_fishhash_algo2fn = {
   { "fishhash", fishhash }
 };
 
 static const std::map<std::string, gpu_karlsenhashv2_hash_fun> gpu_karlsenhashv2_algo2fn = {
   { "karlsenhashv2", karlsenhashv2 }
-};
-
-static const std::map<std::string, gpu_pyrinhashv2_hash_fun> gpu_pyrinhashv2_algo2fn = {
-  { "pyrinhashv2", pyrinhashv2 }
 };
 
 static const std::map<std::string, gpu_equihash125_4_hash_fun> gpu_equihash125_4_algo2fn = {
@@ -151,10 +143,8 @@ static const std::map<std::string, unsigned> algo2mem = [](){
     { "etchash", 0 },
     { "autolykos2", 0 },
     { "pearl", 0 },
-    { "kheavyhash", 0 },
     { "fishhash", 0 },
     { "karlsenhashv2", 0 },
-    { "pyrinhashv2", 0 },
     { "equihash125_4", 0 },
     { "beamhash3", 0 }
   };
@@ -329,10 +319,8 @@ void Core::set_job(
     new_algo_str == "etchash" ? DEV::ETCHASH_GPU :
     new_algo_str == "autolykos2" ? DEV::AUTOLYKOS2_GPU :
     new_algo_str == "pearl" ? DEV::PEARL_GPU :
-    new_algo_str == "kheavyhash" ? DEV::KHEAVYHASH_GPU :
     new_algo_str == "fishhash" ? DEV::FISHHASH_GPU :
     new_algo_str == "karlsenhashv2" ? DEV::KARLSENHASHV2_GPU :
-    new_algo_str == "pyrinhashv2" ? DEV::PYRINHASHV2_GPU :
     new_algo_str == "equihash125_4" ? DEV::EQUIHASH125_4_GPU :
     new_algo_str == "beamhash3" ? DEV::BEAMHASH3_GPU :
     new_algo_str.starts_with("c29") ? DEV::C29_GPU : DEV::GPU;
@@ -351,14 +339,9 @@ void Core::set_job(
     throw std::string(new_algo_str + " requires an 8-byte nonce at offset 32");
   if (new_dev == DEV::FISHHASH_GPU && (new_nonce_bytes != 8 || (new_nonce_offset != 0 && new_nonce_offset != 32)))
     throw std::string("fishhash requires an 8-byte nonce at offset 0 (ironfish) or 32 (test)");
-  // kHeavyHash embeds an 8-byte nonce at offset 72 of its 80-byte header
-  if (new_dev == DEV::KHEAVYHASH_GPU && (new_nonce_bytes != 8 || new_nonce_offset != 72))
-    throw std::string("kheavyhash requires an 8-byte nonce at offset 72");
-  // KarlsenHashV2 also uses an 8-byte nonce at offset 72 of its 80-byte Kaspa blob
+  // KarlsenHashV2 uses an 8-byte nonce at offset 72 of its 80-byte Kaspa blob.
   if (new_dev == DEV::KARLSENHASHV2_GPU && (new_nonce_bytes != 8 || new_nonce_offset != 72))
     throw std::string("karlsenhashv2 requires an 8-byte nonce at offset 72");
-  if (new_dev == DEV::PYRINHASHV2_GPU && (new_nonce_bytes != 8 || new_nonce_offset != 72))
-    throw std::string("pyrinhashv2 requires an 8-byte nonce at offset 72");
   // Equihash 125,4 carries a 32-byte nonce at offset 108 of its 140-byte header. The solver advances
   // the low 8 bytes of that nonce field as its search counter (the rest is the pool extranonce), so the
   // job describes it as an 8-byte nonce at offset 108.
@@ -428,20 +411,12 @@ void Core::set_job(
       new_fn.gpu_pearl = algo_lookup(gpu_pearl_algo2fn, new_algo_str);
       break;
 
-    case DEV::KHEAVYHASH_GPU:
-      new_fn.gpu_kheavyhash = algo_lookup(gpu_kheavyhash_algo2fn, new_algo_str);
-      break;
-
     case DEV::FISHHASH_GPU:
       new_fn.gpu_fishhash = algo_lookup(gpu_fishhash_algo2fn, new_algo_str);
       break;
 
     case DEV::KARLSENHASHV2_GPU:
       new_fn.gpu_karlsenhashv2 = algo_lookup(gpu_karlsenhashv2_algo2fn, new_algo_str);
-      break;
-
-    case DEV::PYRINHASHV2_GPU:
-      new_fn.gpu_pyrinhashv2 = algo_lookup(gpu_pyrinhashv2_algo2fn, new_algo_str);
       break;
 
     case DEV::EQUIHASH125_4_GPU:
@@ -462,9 +437,7 @@ void Core::set_job(
   // header must be long enough to hold the nonce (kawpow/etchash/autolykos2) or the full PoUW
   // header (pearl); min lengths differ by algo
   const unsigned min_input_len = new_dev == DEV::PEARL_GPU ? 76
-    : new_dev == DEV::KHEAVYHASH_GPU ? 80
     : new_dev == DEV::KARLSENHASHV2_GPU ? 80
-    : new_dev == DEV::PYRINHASHV2_GPU ? 80
     : new_dev == DEV::EQUIHASH125_4_GPU ? 140   // full Zcash/Flux header
     : new_dev == DEV::BEAMHASH3_GPU ? 44         // prework(32)||nonce(8)||extranonce(4)
     : is_nonce_at_32_gpu_dev(new_dev) ? 40 : 0;
@@ -666,9 +639,9 @@ void Core::set_job(
       return;
     }
     // Single-blob GPU pow with an embedded nonce: kawpow/etchash/autolykos2 (nonce at offset 32) and
-    // kHeavyHash (8-byte nonce at offset 72). One header blob (not a per-batch buffer); the kernel
+    // Kaspa-style hashes (8-byte nonce at offset 72). One header blob (not a per-batch buffer); the kernel
     // searches start_nonce..start_nonce+batch. m_nonce_offset (not a hardcoded 32) places the nonce.
-    if (is_nonce_at_32_gpu_dev(new_dev) || new_dev == DEV::KHEAVYHASH_GPU || new_dev == DEV::KARLSENHASHV2_GPU || new_dev == DEV::PYRINHASHV2_GPU || is_equihash_gpu_dev(new_dev)) {
+    if (is_nonce_at_32_gpu_dev(new_dev) || new_dev == DEV::KARLSENHASHV2_GPU || is_equihash_gpu_dev(new_dev)) {
       memcpy(m_input, new_input, m_input_len);
       const uint64_t current_nonce = new_nonce + static_cast<uint64_t>(new_thread_id) * m_batch;
       m_nonce_step = new_thread_num * m_batch;
@@ -731,8 +704,7 @@ void Core::get_algo_params(const MessageValues& v) {
     MAX_CN_CPU_WAYS, cpu_sockets, cpu_threads, cpu_l3cache, algo2mem, keys2set(cpu_name2algo),
     gpu_set(gpu_cn_algo2fn), gpu_set(gpu_c29_algo2fn), gpu_set(gpu_kawpow_algo2fn),
     gpu_set(gpu_etchash_algo2fn), gpu_set(gpu_autolykos2_algo2fn), gpu_set(gpu_pearl_algo2fn),
-    gpu_set(gpu_kheavyhash_algo2fn), gpu_set(gpu_fishhash_algo2fn),
-    gpu_set(gpu_karlsenhashv2_algo2fn), gpu_set(gpu_pyrinhashv2_algo2fn),
+    gpu_set(gpu_fishhash_algo2fn), gpu_set(gpu_karlsenhashv2_algo2fn),
     gpu_set(gpu_equihash125_4_algo2fn), gpu_set(gpu_beamhash3_algo2fn)
   ));
 }

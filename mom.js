@@ -304,7 +304,7 @@ function handleResult(msg) {
   if (submit_mode === "ironfish")
   {return p.pool_write(v.pool_id, { id: 2, method: "mining.submit",
     body: { miningRequestId: v.job_id, randomness: v.nonce, graffiti: "00".repeat(32) } });}
-  // Kaspa (kheavyhash) kaspa-stratum-bridge submit: mining.submit [wallet.worker, job_id, nonce_hex].
+  // Kaspa-family submit: mining.submit [wallet.worker, job_id, nonce_hex].
   // The native returns the winning 8-byte nonce as 16-hex big-endian (nonce_to_hex %016PRIx64); the
   // pool parses it big-endian with the extranonce as the leading bytes, which is exactly this layout.
   if (submit_mode === "kaspa")
@@ -465,7 +465,7 @@ function baseJob(prev_job, algo, dev, pool_id) {
 
 const nonceAt32Algos = new Set(["kawpow", "firopow", "evrprogpow", "meowpow", "etchash", "autolykos2", "fishhash"]);
 // Kaspa-style algos sharing the 80-byte header / 8-byte nonce at offset 72 layout.
-const kHeavyHashAlgos = new Set(["kheavyhash", "karlsenhashv2", "pyrinhashv2"]);
+const kaspaHeaderAlgos = new Set(["karlsenhashv2"]);
 // Heights sampled from coin mainnets so benchmark DAG/table sizes match live pool jobs
 // (epoch-0 sizes overstate hashrate by ~7-10% on these algos): ETC 2026-06-04, RVN and ERG 2026-06-12.
 const benchHeightByAlgo = {
@@ -496,8 +496,8 @@ function isNonceAt32Algo(algo) {
   return nonceAt32Algos.has(algo);
 }
 
-function isKHeavyHashAlgo(algo) {
-  return kHeavyHashAlgos.has(algo);
+function isKaspaHeaderAlgo(algo) {
+  return kaspaHeaderAlgos.has(algo);
 }
 
 function isEquihashAlgo(algo) {
@@ -570,9 +570,9 @@ function addEthHashJobFields(job, prev_job) {
   job.blob_hex = blob && blob.length === 64 ? blob + "0000000000000000" : blob;
 }
 
-function addKHeavyHashJobFields(job, prev_job) {
-  // kHeavyHash header is 80 bytes: pre_pow_hash(32) || timestamp_le(8) || zero pad(32) || nonce_le(8),
-  // with an 8-byte LE nonce at offset 72. Tests/bench pass blob_hex directly; the live kaspa dialect
+function addKaspaHeaderJobFields(job, prev_job) {
+  // The header is pre_pow_hash(32) || timestamp_le(8) || zero pad(32) || nonce_le(8), with an
+  // 8-byte LE nonce at offset 72. Tests/bench pass blob_hex directly; the live Kaspa dialect
   // (pool.js) builds the 80-byte header from the pool's pre_pow_hash + timestamp.
   addFixedNonceBlobFields(job, prev_job, 72);
 }
@@ -679,7 +679,7 @@ function set_job(prev_job) {
   const job = baseJob(prev_job, algo, dev, pool_id);
   if (algo === "c29") {addC29JobFields(job, prev_job);}
   else if (algo === "beamhash3") {addBeamhash3JobFields(job, prev_job, global.opt.pools[pool_id]);}
-  else if (isKHeavyHashAlgo(algo)) {addKHeavyHashJobFields(job, prev_job);}
+  else if (isKaspaHeaderAlgo(algo)) {addKaspaHeaderJobFields(job, prev_job);}
   else if (isEquihashAlgo(algo)) {addEquihashJobFields(job, prev_job);}
   else if (isNonceAt32Algo(algo)) {addEthHashJobFields(job, prev_job);}
   else {addStandardJobFields(job, prev_job);}
@@ -701,9 +701,8 @@ function prepareBenchmarkJob(job) {
     job.nonceoffset = 32;
     if (job.blob_hex && job.blob_hex.length === 64) {job.blob_hex += "0000000000000000";}
   }
-  if (isKHeavyHashAlgo(job.algo)) {
-    // 80-byte Kaspa-style header, 8-byte nonce at offset 72 (kheavyhash: matrix from header[0..31];
-    // karlsenhashv2: prePow||ts||zeros||nonce -> the FishHash DAG).
+  if (isKaspaHeaderAlgo(job.algo)) {
+    // 80-byte Kaspa-style header, 8-byte nonce at offset 72.
     job.noncebytes = 8;
     job.nonceoffset = 72;
     if (!job.blob_hex || job.blob_hex.length !== 160)

@@ -293,7 +293,6 @@
         "sycl/c29.cpp",
         "sycl/cn-gpu.cpp",
         "sycl/kawpow.cpp",
-        "sycl/kheavyhash.cpp",
         "sycl/fishhash.cpp",
         "sycl/equihash125_4.cpp",
         "sycl/beamhash3.cpp"

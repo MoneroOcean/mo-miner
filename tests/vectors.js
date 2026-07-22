@@ -424,43 +424,6 @@ const hashTests = [
     expected: "0002fcb113fe65e5754959872dfdbffea0489bf830beb4961ddc0e9e66a1412a",
   },
   {
-    // kHeavyHash (Kaspa): compute-bound 64x64-matrix + double-Keccak. 80-byte header, 8-byte LE nonce
-    // at offset 72. Derived offline from the rusty-kaspa reference (validated bit-exact vs js-sha3
-    // cshake256): pre_pow_hash=0x2a*32, timestamp=5435345234, nonce=432432432. No DAG/epoch.
-    name: "kheavyhash gpu1*256",
-    gpu: true,
-    timeoutMs: 15 * 60 * 1000,
-    job: {
-      algo: "kheavyhash",
-      dev: "gpu1*256",
-      noncebytes: 8,
-      nonceoffset: 72,
-      target: "0000000000000000000000000000000000000000000000000000000000000000",
-      blob_hex: "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a52c9f8430100000000000000000000000000000000000000000000000000000000000000000000003065c61900000000",
-    },
-    expected: "5a5bcd6e352eb8c87c80d0f0574a45a5fcc3d5755660ac120dc9893684c19be6",
-  },
-  {
-    // kHeavyHash (Kaspa) LIVE-POOL vector: a real mining.notify from kaspa.herominers.com:1206 (TLS),
-    // job_id "73". The pool sent the pre-pow as 4 LE uint64 words [14311454634314100036,
-    // 12026711064689961364, 15283992124271141330, 4909777105915057546] + timestamp 1781909733171; the
-    // kaspa stratum dialect (pool.js kaspaNotifyJob) builds this 80-byte header (LE words || ts || 32
-    // zero pad || nonce) with the 8-byte nonce at offset 72. Hash captured here is for nonce 0 (gid 0),
-    // bit-exact from the GPU solver -- the same value the live share submit hashes against the pool target.
-    name: "kheavyhash live gpu1*256",
-    gpu: true,
-    timeoutMs: 15 * 60 * 1000,
-    job: {
-      algo: "kheavyhash",
-      dev: "gpu1*256",
-      noncebytes: 8,
-      nonceoffset: 72,
-      target: "0000000000000000000000000000000000000000000000000000000000000000",
-      blob_hex: "44ed68212a809cc694e91a3bfe75e7a6d2a10ce5dba51bd48a9569c44308234433bf18e29e01000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
-    },
-    expected: "139108d4e9d63e8fac47cff8f98f2b2c6c757eb08d46ff13d1ba65daddfe69c7",
-  },
-  {
     // FishHash (Iron Fish / Karlsen): ASIC-resistant memory-hard (Ethash-derived + BLAKE3). 8-byte LE
     // nonce at offset 32. Derived offline from the iron-fish/fish-hash C++ reference (light cache + lazy
     // lookup). dev gpu1*1: the lazy kernel recomputes dataset items, so one nonce only for the vector.
@@ -506,7 +469,7 @@ const hashTests = [
   },
   {
     // KarlsenHashV2 (FishHashPlus): same 4.6 GB FishHash DAG, folded index derivation + plain-BLAKE3
-    // wrapping. 80-byte Kaspa blob, 8-byte LE nonce at offset 72 (same blob shape as kHeavyHash). From
+    // wrapping. 80-byte Kaspa blob, 8-byte LE nonce at offset 72. From
     // the authoritative rusty-karlsen test_khashv2 vector (prePow=0x2a*32, ts=5435345234, nonce=432432432).
     // dev gpu1*1: lazy DAG recompute, one nonce.
     name: "karlsenhashv2 gpu1*1",
@@ -521,24 +484,6 @@ const hashTests = [
       blob_hex: "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a52c9f8430100000000000000000000000000000000000000000000000000000000000000000000003065c61900000000",
     },
     expected: "71e8a7ff50f4eba67fbf00af449c12e6e74b1edfc1577b59c41c77922e546f87",
-  },
-  {
-    // PyrinHashV2 (Pyrin PYI): kHeavyHash-family (no DAG) -- 64x64 matrix matvec, plain-BLAKE3 powHash/
-    // final + V2 nibble-XOR reduction. 80-byte Kaspa blob, 8-byte LE nonce at offset 72. From the
-    // authoritative Pyrinpyi/pyrin source (prePow=0x2a*32, ts=1715521488610, nonce=11171827086635415026;
-    // powHash e369d9a9...117626 is the repo's published intermediate).
-    name: "pyrinhashv2 gpu1*256",
-    gpu: true,
-    timeoutMs: 15 * 60 * 1000,
-    job: {
-      algo: "pyrinhashv2",
-      dev: "gpu1*256",
-      noncebytes: 8,
-      nonceoffset: 72,
-      target: "0000000000000000000000000000000000000000000000000000000000000000",
-      blob_hex: "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2ae2860c6d8f0100000000000000000000000000000000000000000000000000000000000000000000f2b5fd5e8b4d0a9b",
-    },
-    expected: "646bfd6050195afc4ce933216c28681954cfb3c2354a0f0ed556ba4d96f7f254",
   },
   {
     name: "c29 proofsize 32 gpu1*1",

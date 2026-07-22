@@ -310,18 +310,19 @@ bool Core::process_message(const std::string& type, const MessageValues& v) {
     const bool is_kawpow_target = algo == "kawpow";
     // etchash/autolykos2/pearl/fishhash use a full 32-byte target instead of a single 64-bit word
     // (fishhash: live Iron Fish sends a 256-bit big-endian target -> m_target_bin -> meets_target_be_dev)
-    const bool is_big_target = algo == "etchash" || algo == "autolykos2" || algo == "pearl" || algo == "fishhash" || algo == "equihash125_4" || algo == "beamhash3" ||
-      // kHeavyHash family (Kaspa/Karlsen/Pyrin) compares the 32-byte hash against a full 256-bit BE
-      // boundary via m_target_bin; without this the bin stays zero and live mining finds no shares.
-      algo == "kheavyhash" || algo == "karlsenhashv2" || algo == "pyrinhashv2";
+    const bool is_big_target = algo == "etchash" || algo == "autolykos2" || algo == "pearl" ||
+      algo == "fishhash" || algo == "equihash125_4" || algo == "beamhash3" ||
+      // KarlsenHashV2 compares the 32-byte hash against a full 256-bit BE boundary via
+      // m_target_bin; without this the bin stays zero and live mining finds no shares.
+      algo == "karlsenhashv2";
     const uint64_t new_target = is_big_target ? 1 : parse_target_hex(new_target_str, is_kawpow_target);
     uint8_t new_target_bin[HASH_LEN]{};
     if (is_big_target) parse_big_target_hex(new_target_str, new_target_bin);
-    // The kHeavyHash family kernel (meets_target_le_dev) compares the little-endian-stored 32-byte hash
+    // The KarlsenHashV2 kernel compares the little-endian-stored 32-byte hash
     // against a little-endian target array (index 31 = MSB), but the share target hex is big-endian.
     // Reverse the bytes so target[31] is the MSB, matching the hash's LE byte layout. (is_test passes a
     // zero target, which is symmetric, so the offline vector path is unaffected.)
-    if (is_big_target && (algo == "kheavyhash" || algo == "karlsenhashv2" || algo == "pyrinhashv2"))
+    if (is_big_target && algo == "karlsenhashv2")
       for (unsigned i = 0; i < HASH_LEN / 2; ++i) {
         const uint8_t t = new_target_bin[i];
         new_target_bin[i] = new_target_bin[HASH_LEN - 1 - i];
@@ -620,14 +621,6 @@ void Core::Execute() {
               m_batch, is_test, m_is_bench, m_dev_str
             );
             break;
-          case DEV::KHEAVYHASH_GPU:
-            std::memcpy(&dev_nonce, m_input + m_nonce_offset, sizeof(dev_nonce));  // nonce at offset 72
-            dev_sols = m_fn.gpu_kheavyhash(
-              m_job_ref, m_height, m_input, m_input_len, m_output,
-              static_cast<uint8_t*>(m_spads), &dev_nonce, m_target_bin, m_seed,
-              m_batch, is_test, m_is_bench, m_dev_str
-            );
-            break;
           case DEV::FISHHASH_GPU:
             std::memcpy(&dev_nonce, m_input + m_nonce_offset, sizeof(dev_nonce));  // nonce at offset 32
             dev_sols = m_fn.gpu_fishhash(
@@ -639,14 +632,6 @@ void Core::Execute() {
           case DEV::KARLSENHASHV2_GPU:
             std::memcpy(&dev_nonce, m_input + m_nonce_offset, sizeof(dev_nonce));  // nonce at offset 72
             dev_sols = m_fn.gpu_karlsenhashv2(
-              m_job_ref, m_height, m_input, m_input_len, m_output,
-              static_cast<uint8_t*>(m_spads), &dev_nonce, m_target_bin, m_seed,
-              m_batch, is_test, m_is_bench, m_dev_str
-            );
-            break;
-          case DEV::PYRINHASHV2_GPU:
-            std::memcpy(&dev_nonce, m_input + m_nonce_offset, sizeof(dev_nonce));  // nonce at offset 72
-            dev_sols = m_fn.gpu_pyrinhashv2(
               m_job_ref, m_height, m_input, m_input_len, m_output,
               static_cast<uint8_t*>(m_spads), &dev_nonce, m_target_bin, m_seed,
               m_batch, is_test, m_is_bench, m_dev_str
@@ -708,12 +693,12 @@ void Core::Execute() {
           set_fn(nullptr);
           continue;
         }
-        if (m_dev == DEV::AUTOLYKOS2_GPU || m_dev == DEV::KHEAVYHASH_GPU || m_dev == DEV::FISHHASH_GPU || m_dev == DEV::KARLSENHASHV2_GPU || m_dev == DEV::PYRINHASHV2_GPU) {
+        if (m_dev == DEV::AUTOLYKOS2_GPU || m_dev == DEV::FISHHASH_GPU || m_dev == DEV::KARLSENHASHV2_GPU) {
           if (dev_sols == 1) {
             char hash[HASH_LEN*2+1];
             send_msg("test", "result", hash_bin2hex(hash, 0));
           } else {
-            send_error(m_dev == DEV::KHEAVYHASH_GPU ? "No kheavyhash test result" : "No autolykos2 test result");
+            send_error("No " + m_algo_str + " test result");
           }
           set_fn(nullptr);
           continue;
@@ -782,9 +767,9 @@ void Core::Execute() {
         }
         continue;
       }
-      // autolykos2 and kHeavyHash share the mine-result handling: 8-byte nonce, single 32-byte hash
-      // (no mix), nonce embedded in the header at m_nonce_offset (32 for autolykos2, 72 for kHeavyHash).
-      if (m_dev == DEV::AUTOLYKOS2_GPU || m_dev == DEV::KHEAVYHASH_GPU || m_dev == DEV::FISHHASH_GPU || m_dev == DEV::KARLSENHASHV2_GPU || m_dev == DEV::PYRINHASHV2_GPU) {
+      // autolykos2, fishhash, and Kaspa-style hashes share the mine-result handling: 8-byte nonce,
+      // single 32-byte hash, no mix, nonce embedded in the header at m_nonce_offset.
+      if (m_dev == DEV::AUTOLYKOS2_GPU || m_dev == DEV::FISHHASH_GPU || m_dev == DEV::KARLSENHASHV2_GPU) {
         const uint64_t prev_nonce = m_nonce64;
         if (dev_sols == 1 && m_target)
           send_result(dev_nonce, 8, m_output);

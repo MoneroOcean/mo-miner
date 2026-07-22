@@ -59,7 +59,6 @@ Support: `mo` = MoneroOcean can serve it; `mom` = implemented by mom; `-` = back
 | `walahash`            | -       | WALA     | -                    | -                   | -                  | -                 | SRBMiner (Intel), Rigel (NVIDIA)                                             |
 | **ASIC-exposed**      |         |          |                      |                     |                    |                   |                                                                              |
 | `etchash`             | mo,mom  | ETC      | 21.10 MH/s (100%)    | 20.00 MH/s (100%)   | 28.84 MH/s (99%)   | 27.53 MH/s        | GMiner/Rigel (NVIDIA)                                                        |
-| `kheavyhash`          | mom     | KAS      | 160.89 MH/s (%?)     | 162.86 MH/s (%?)    | 303.52 MH/s (42%)  | 288.31 MH/s       | BzMiner/GMiner (NVIDIA), BzMiner/SRBMiner (Intel; no stable B580 ref)        |
 
 Platform notes:
 
@@ -276,7 +275,6 @@ Use this template for non-MoneroOcean pools. mom infers the stratum dialect from
 | MEWC | meowpow       | stratum-eu.rplant.xyz:17120tls     | `MPyNGZSSZ4rbjkVJRLn3v64pMcktpEYJnU` (MeowCoin donation address)                                                 | --job.algo meowpow --job.dev gpu1*37282560                             |
 | PRL  | pearl         | pearl.herominers.com:1200tls       | `prl1p79wzxcvatcsmnzp9xp0ep0rvfe9ans05mjtxnt4d9x0qqej0mtdqfrezc0` (ARC-miner PRL donation address)               | --job.algo pearl --job.dev gpu1*131072                                 |
 | IRON | fishhash      | ironfish.herominers.com:1145tls    | `66e044578b31c6c4c05810b0e5281bdf36138ad41bf6844ba317dc7c506bf9ac` (GMiner/Rigel bundled sample)                 | --job.algo fishhash --job.dev gpu1*33554432                            |
-| KAS  | kheavyhash    | kaspa.herominers.com:1206tls       | `precqv0krj3r6uyyfa36ga7s0u9jct0v4wg8ctsfde2gkrsgwgw8jgxfzfc98` (Kaspa Devfund)                                  | --job.algo kheavyhash --job.dev gpu1*47934720                          |
 | KLS  | karlsenhashv2 | pool.woolypooly.com:3132           | `qzrq7v5jhsc5znvtfdg6vxg7dz5x8dqe4wrh90jkdnwehp6vr8uj7csdss2l7` (Karlsen Devfund)                                | --job.algo karlsenhashv2 --job.dev gpu1*33554432                       |
 | PYI  | pyrinhashv2   | ca.pyrin.herominers.com:1177       | `qq92h3nryfwq0gkh73cwvjh9hhqlq2mank9sfxtgc99hqwn2ec6u2gszphr0u` (lolMiner bundled sample)                        | --job.algo pyrinhashv2 --job.dev gpu1*47934720                         |
 | FLUX | equihash125_4 | flux.herominers.com:1200tls        | `t1Mzja9iJcEYeW5B4m4s1tJG8M42odFZ16A` (Flux development address)                                                 | --job.algo equihash125_4 --job.dev gpu1*1                              |

@@ -338,7 +338,7 @@ static sycl::event submit_fishhash_search(
 // ---- KarlsenHashV2 (FishHashPlus): SAME 4.6 GB DAG, different index derivation + BLAKE3 wrapping.
 // powHash = BLAKE3_32(prePow(32)||ts(8 LE)||32 zeros||nonce(8 LE), 80B); seed = powHash(32)||zeros(32);
 // mix = seed||seed; 32 rounds (mixGroup-fold index); collapse 32->8 u32; final = BLAKE3_32(mix_hash).
-// Input = 80-byte Kaspa-style blob, 8-byte nonce at offset 72 (same blob shape as kHeavyHash).
+// Input = 80-byte Kaspa-style blob, 8-byte nonce at offset 72.
 template <bool FULL> class KarlsenKernel;
 template <bool FULL>
 static sycl::event submit_karlsenhashv2_search(
