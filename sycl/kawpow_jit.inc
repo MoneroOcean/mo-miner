@@ -28,6 +28,15 @@ static const char* const KAWPOW_JIT_PRELUDE = R"KJP(
 using std::uint8_t; using std::uint32_t; using std::uint64_t;
 namespace syclexp = sycl::ext::oneapi::experimental;
 
+// The shared device body uses the miner wrappers so DPC++/AMDGPU AOT can select
+// native wave permutes. CUDA source-JIT has the normal SYCL subgroup builtins.
+inline uint32_t mom_select_from_group(const sycl::sub_group& group, uint32_t value, uint32_t lane) {
+  return sycl::select_from_group(group, value, lane);
+}
+inline uint32_t mom_shift_group_left(const sycl::sub_group& group, uint32_t value, uint32_t delta) {
+  return sycl::shift_group_left(group, value, delta);
+}
+
 constexpr uint32_t KAWPOW_LANES         = 16;
 constexpr uint32_t KAWPOW_REGS          = 32;
 constexpr uint32_t KAWPOW_DAG_LOADS     = 4;
@@ -80,7 +89,7 @@ inline uint32_t fast_mod_dev(const uint32_t a, const FastModData d) {
 static const char* const KAWPOW_JIT_WRAPPER = R"KJW(
 extern "C"
 SYCL_EXT_ONEAPI_FUNCTION_PROPERTY((syclexp::nd_range_kernel<1>))
-void kawpow_search_jit(const uint8_t* d_input, const DagLoad* __restrict__ d_dag_load, KawpowResult* d_result,
+void KAWPOW_JIT_KERNEL_NAME(const uint8_t* d_input, const DagLoad* __restrict__ d_dag_load, KawpowResult* d_result,
                        uint32_t intensity, uint64_t start_nonce, uint64_t target, int is_test) {
   auto item = sycl::ext::oneapi::this_work_item::get_nd_item<1>();
   static syclexp::work_group_static<uint32_t[KAWPOW_CACHE_WORDS]> c_dag;
@@ -171,7 +180,10 @@ static const std::string& kawpow_device_src() {
       env ? std::string(env) : std::string(),
       dir.empty() ? std::string() : dir + "/kawpow_device.inc",
       dir.empty() ? std::string() : dir + "/sycl/kawpow_device.inc",
-      dir.empty() ? std::string() : dir + "/../../sycl/kawpow_device.inc",  // build/Release -> repo/sycl
+      // Development addons are under build/<lin|win>/Release. Keep the old depth as a final
+      // compatibility fallback for release trees or stale developer builds.
+      dir.empty() ? std::string() : dir + "/../../../sycl/kawpow_device.inc",
+      dir.empty() ? std::string() : dir + "/../../sycl/kawpow_device.inc",
       "sycl/kawpow_device.inc",
     };
     for (const std::string& p : candidates) {
@@ -226,6 +238,39 @@ static std::string kawpow_emit_shape(const uint32_t regs, const uint32_t cnt_cac
   return "#define JIT_REGS " + std::to_string(regs) +
          "\n#define JIT_CNT_CACHE " + std::to_string(cnt_cache) +
          "\n#define JIT_CNT_MATH " + std::to_string(cnt_math) + "\n";
+}
+
+// Every live runtime image needs a distinct free-function kernel symbol. The current and prefetched
+// period bundles coexist, and older DPC++ ProgramManager bookkeeping aliases two dynamic images that
+// both export `kawpow_search_jit`, eventually asserting while their images are removed. Hash the full
+// bundle key (including the DAG modulus) and retain the period in readable form.
+static std::string kawpow_jit_kernel_name(
+  const uint64_t period, const FastModData& dag_mod, const SealMode seal,
+  const uint32_t magic[15], const uint32_t regs,
+  const uint32_t cnt_cache, const uint32_t cnt_math
+) {
+  uint64_t hash = 1469598103934665603ull;
+  const auto add = [&](const uint32_t word) {
+    hash ^= word;
+    hash *= 1099511628211ull;
+  };
+  add((uint32_t)period); add((uint32_t)(period >> 32));
+  add(dag_mod.reciprocal); add(dag_mod.increment); add(dag_mod.shift); add(dag_mod.divisor);
+  add(static_cast<uint32_t>(seal));
+  for (unsigned i = 0; i < 15; ++i) add(magic[i]);
+  add(regs); add(cnt_cache); add(cnt_math);
+  std::ostringstream name;
+  name << "kawpow_search_jit_p" << period << "_h" << std::hex << hash;
+  return name.str();
+}
+
+static std::string kawpow_named_jit_wrapper(const std::string& kernel_name) {
+  constexpr const char token[] = "KAWPOW_JIT_KERNEL_NAME";
+  std::string wrapper = KAWPOW_JIT_WRAPPER;
+  const size_t pos = wrapper.find(token);
+  if (pos == std::string::npos) throw std::string("kawpow JIT: kernel-name placeholder is missing");
+  wrapper.replace(pos, sizeof(token) - 1, kernel_name);
+  return wrapper;
 }
 
 #endif // MOM_SYCL_HAS_CUDA

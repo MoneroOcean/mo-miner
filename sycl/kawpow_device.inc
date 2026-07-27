@@ -349,12 +349,12 @@ struct KawpowSgExchange {
   inline uint32_t lane(const uint32_t l) const { return base + l; }
 
   inline void seed(uint32_t& s0, uint32_t& s1, const uint32_t state2[8], const uint32_t h0) const {
-    s0 = sycl::select_from_group(sg, state2[0], lane(h0));
-    s1 = sycl::select_from_group(sg, state2[1], lane(h0));
+    s0 = mom_select_from_group(sg, state2[0], lane(h0));
+    s1 = mom_select_from_group(sg, state2[1], lane(h0));
   }
 
   inline uint32_t offset(const uint32_t mix0, const uint32_t src_lane) const {
-    return sycl::select_from_group(sg, mix0, lane(src_lane));
+    return mom_select_from_group(sg, mix0, lane(src_lane));
   }
 
   inline void digest(uint32_t digest_out[8], const uint32_t lane_hash, const bool keep) const {
@@ -362,13 +362,13 @@ struct KawpowSgExchange {
     // 0..7 hold the eight results, which are then distributed to every lane.
     // shift_group_left by 8 stays within each 16-lane group on a 32-wide warp
     // (groups are 16-aligned), so only the distribution select needs rebasing.
-    const uint32_t other = sycl::shift_group_left(sg, lane_hash, 8);
+    const uint32_t other = mom_shift_group_left(sg, lane_hash, 8);
     uint32_t fold = FNV_OFFSET_BASIS;
     fnv1a(fold, lane_hash);
     fnv1a(fold, other);
 #pragma unroll
     for (unsigned i = 0; i < 8; ++i) {
-      const uint32_t value = sycl::select_from_group(sg, fold, lane(i));
+      const uint32_t value = mom_select_from_group(sg, fold, lane(i));
       if (keep) digest_out[i] = value;
     }
   }

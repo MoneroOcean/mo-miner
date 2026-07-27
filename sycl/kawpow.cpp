@@ -194,9 +194,11 @@ struct KawpowProgram {
 
 // Per-period spec constants for the Intel spec-const path (the CUDA build folds the program via the
 // runtime source JIT instead, but these stay declared for the shared SLM/CPU code below).
+#if !defined(MOM_SYCL_ADAPTIVECPP) && !defined(MOM_SYCL_PORTABLE_OPENCL)
 constexpr sycl::specialization_id<KawpowProgram> kawpow_program_id;
 constexpr sycl::specialization_id<FastModData> kawpow_dag_mod_id;
 constexpr sycl::specialization_id<bool> kawpow_cpu_offset_barrier_id;
+#endif
 
 struct KawpowResult {
   uint32_t count;
@@ -361,11 +363,22 @@ void compute_light_cache(std::vector<uint32_t>& cache, const uint64_t cache_byte
 // Named so the per-period specialized bundle can be built ahead of time.
 class KawpowSgKernel;
 
+static bool kawpow_default_subgroup_exchange(const sycl::device& device) {
+  if (!device.is_gpu()) return false;
+  if (!sycl_is_level_zero_gpu(device)) return true;
+  const uint32_t build = mom_driver_build(device);
+  // NEO 32224 aborts inside the subgroup-exchange ProgPoW kernel on Arc A-series, while the common
+  // local-memory exchange is bit-exact and reached 21.8 MH/s on A770. Current NEO 37020 executes the
+  // subgroup path correctly and it is 26% faster on B580, so keep that fast path outside the affected
+  // driver family. MOM_KAWPOW_EXCHANGE=sg|slm remains an explicit diagnostic override.
+  return build < 30000u || build >= 35000u;
+}
+
 class KawpowState {
 public:
   sycl::device device;
   sycl::queue queue;
-  std::unique_ptr<MOM_BUNDLE_T> bundle;
+  std::unique_ptr<MomKernelBundle> bundle;
   bool shared_io;
   bool shared_dag;
   uint8_t* input = nullptr;
@@ -383,6 +396,7 @@ public:
   uint64_t period = UINT64_MAX;
   KawpowProgram program{};
   unsigned workgroup;
+  bool default_subgroup_exchange;
   std::mutex mutex;
 
   // Active ProgPoW seal (set per-call from the variant, under `mutex`). On CUDA it is baked into the
@@ -403,7 +417,7 @@ public:
   // Per-period executable bundles (Intel: program/dag spec constants baked in; CUDA: source-JIT'd
   // kernel). The next period's bundle is built on a worker thread while the current one mines, so
   // the period switch no longer stalls hashing on the build.
-  std::unique_ptr<sycl::kernel_bundle<sycl::bundle_state::executable>> period_bundle;
+  std::unique_ptr<MomKernelBundle> period_bundle;
   uint64_t period_bundle_period = UINT64_MAX;
   uint32_t period_bundle_epoch = UINT32_MAX;
   SealMode period_bundle_seal = SealMode::KAWPOW;
@@ -411,7 +425,7 @@ public:
   uint32_t period_bundle_regs = KAWPOW_REGS;
   uint32_t period_bundle_cnt_cache = KAWPOW_CNT_CACHE;
   uint32_t period_bundle_cnt_math = KAWPOW_CNT_MATH;
-  std::unique_ptr<sycl::kernel_bundle<sycl::bundle_state::executable>> next_bundle;
+  std::unique_ptr<MomKernelBundle> next_bundle;
   uint64_t next_bundle_period = UINT64_MAX;
   uint32_t next_bundle_epoch = UINT32_MAX;
   SealMode next_bundle_seal = SealMode::KAWPOW;
@@ -432,24 +446,28 @@ public:
   explicit KawpowState(const std::string& dev_str)
     : device(get_dev(dev_str)),
       queue(device, sycl::property_list{sycl::property::queue::in_order{}}),
-      shared_io(device.is_cpu() || !device.has(sycl::aspect::usm_device_allocations)),
-      shared_dag(device.is_cpu() || !device.has(sycl::aspect::usm_device_allocations)),
-      workgroup(kawpow_workgroup(device))
+      shared_io(device.is_cpu() || !mom_has_usm_device(device)),
+      shared_dag(device.is_cpu() || !mom_has_usm_device(device)),
+      workgroup(kawpow_workgroup(device)),
+      default_subgroup_exchange(kawpow_default_subgroup_exchange(device))
   {
-    if (!device.has(sycl::aspect::usm_shared_allocations) ||
-        (!device.is_cpu() && !device.has(sycl::aspect::usm_device_allocations))) {
+    if (!mom_has_usm_shared(device)) {
       throw std::string("kawpow SYCL device does not support required allocations");
     }
 
     set_sycl_env("SYCL_PROGRAM_COMPILE_OPTIONS", kawpow_compile_options());
-    bundle = std::make_unique<MOM_BUNDLE_T>(
-      MOM_GET_EXEC_BUNDLE(queue.get_context())
+    bundle = std::make_unique<MomKernelBundle>(
+      mom_get_exec_bundle(queue.get_context())
     );
+    if (device.is_gpu() && sycl_is_level_zero_gpu(device) && !default_subgroup_exchange) {
+      std::fprintf(stderr, "kawpow: Intel driver build %u uses stable local-memory exchange\n",
+                   mom_driver_build(device));
+    }
   }
 
   ~KawpowState() {
     if (prefetch_thread.joinable()) prefetch_thread.join();
-    release();
+    sycl_cleanup_noexcept("kawpow", [&] { release(); });
   }
 
   // Parse env var `name` as base-10 unsigned; returns false (leaving `out` untouched) on unset,
@@ -478,11 +496,18 @@ public:
   }
 
   static unsigned kawpow_workgroup(const sycl::device& dev) {
-    // Block-size default. NVIDIA: the source-JIT'd search kernel is latency-bound on the serial DAG
-    // gather, not occupancy-bound; an L4 sweep on the combined/JIT build is 128 > 512 > 256 > 64
-    // (128 = 13.71, 256 = 13.58, 64 = 12.44 MH/s -- 64 starves the SLM c_dag broadcast, 256 splits
-    // the SM into fewer schedulable blocks). Intel/L0 GPU keeps 256 (tuned on B580). CPU uses 128.
-    const unsigned gpu_default = mom_is_cuda(dev) ? 128 : 256;
+    // Windows CUDA, Intel, and HIP use 256 as before. Linux CUDA stays at the established L4 winner
+    // 128 except on the measured RTX 5060 Ti: at fixed batch depth, 256 raises its 32-register
+    // variants by 5--6% (KawPow 20.66 -> 21.71, FiroPow 19.94 -> 21.10, EvrProgPow 19.87 ->
+    // 21.08 MH/s) while MeowPow is neutral (25.10 -> 25.07). Keep the model check narrow until other
+    // NVIDIA generations are measured; MOM_KAWPOW_WORKGROUP remains the tuning override. CPU uses 128.
+#if defined(_WIN32)
+    const unsigned gpu_default = 256;
+#else
+    const bool cuda_5060_ti = mom_is_cuda(dev) &&
+      dev.get_info<sycl::info::device::name>().find("RTX 5060 Ti") != std::string::npos;
+    const unsigned gpu_default = mom_is_cuda(dev) && !cuda_5060_ti ? 128 : 256;
+#endif
     return select_workgroup("MOM_KAWPOW_WORKGROUP", dev, {64, 128, 256, 512}, dev.is_cpu() ? 128 : gpu_default);
   }
 
@@ -497,7 +522,7 @@ public:
   }
 
   static const char* kawpow_compile_options() {
-    // "-O3" is process-global; pearl's ESIMD image rejects it (and it's a no-op for kawpow), so
+    // "-O3" is process-global; pearlhash's ESIMD image rejects it (and it's a no-op for kawpow), so
     // default to none. Override via MOM_KAWPOW_COMPILE_OPTIONS if needed.
     const char* const value = std::getenv("MOM_KAWPOW_COMPILE_OPTIONS");
     return value ? value : "";
@@ -515,6 +540,12 @@ public:
 
   void release() {
     queue.wait_and_throw();
+    // Source-built bundles must die while DPC++'s ProgramManager is still alive. In particular, the
+    // CUDA kernel_compiler registers dynamic device images whose bundle destructor calls
+    // ProgramManager::removeImages(). Keep this explicit (rather than relying on member destruction)
+    // so shutdown never leaves an outstanding prefetch/period image behind the queue allocations.
+    next_bundle.reset();
+    period_bundle.reset();
     free_ptr(input);
     free_ptr(light_cache);
     free_ptr(dag);
@@ -590,7 +621,7 @@ public:
       const uint32_t current_nodes = chunk_nodes ? std::min(chunk_nodes, total - start_node) : total;
       const uint32_t chunk_start = start_node;
       dag_event = q.submit([&](sycl::handler& h) {
-        MOM_USE_BUNDLE(h, kb);
+        mom_use_bundle(h, kb);
         h.parallel_for(
           sycl::nd_range<1>(sycl::range<1>(round_up(current_nodes, dag_workgroup)), sycl::range<1>(dag_workgroup)),
           [=](sycl::nd_item<1> item) {
@@ -652,13 +683,18 @@ public:
 
   // build_seal / build_magic / build_regs+cnt are passed by value (not read from the members) so the
   // prefetch thread, which calls this off the state mutex, never races kawpow_core writing state.*. Only
-  // the CUDA JIT path bakes the seal/shape; the Intel spec-const path gets seal+shape via SealParams at
+  // the source-JIT path bakes the seal/shape; the Intel spec-const path gets seal+shape via SealParams at
   // launch (and the per-shape make_program already bakes the right program into the spec constant).
-  std::unique_ptr<sycl::kernel_bundle<sycl::bundle_state::executable>>
+  std::unique_ptr<MomKernelBundle>
   build_period_bundle(const uint64_t new_period, const FastModData dag_mod,
                       const SealMode build_seal, const uint32_t build_magic[15],
                       const uint32_t build_regs, const uint32_t build_cnt_cache,
                       const uint32_t build_cnt_math) {
+#if defined(MOM_SYCL_ADAPTIVECPP) || defined(MOM_SYCL_PORTABLE_OPENCL)
+    (void)new_period; (void)dag_mod; (void)build_seal; (void)build_magic;
+    (void)build_regs; (void)build_cnt_cache; (void)build_cnt_math;
+    return std::make_unique<MomKernelBundle>();
+#else
 #if defined(MOM_SYCL_HAS_CUDA)
     // CUDA: the source-JIT folds the per-period program to straight-line const ops (full speed); the
     // AOT spec-constant kernel below is correct but ~3x slower because spec constants do NOT fold on
@@ -671,16 +707,20 @@ public:
       }
       if (cuda_use_jit.load() != 0) {  // 1 (committed JIT) or -1 (undecided -> try JIT)
         try {
-          // CUDA JIT: compile the search kernel from SYCL source with the period program baked in as
+          // Compile the search kernel from SYCL source with the period program baked in as
           // a const struct (folds the random-math interpreter). Device body is sycl/kawpow_device.inc.
           // The per-algo keccak seal (mode + magic) is also baked in (kawpow_emit_seal) so firopow /
           // evrprogpow compute the correct seal on CUDA; emitted after kawpow_device_src() (defines
           // SealMode) and before the WRAPPER (reads JIT_SEAL/JIT_MAGIC).
           namespace syclex = sycl::ext::oneapi::experimental;
+          const std::string kernel_name = kawpow_jit_kernel_name(
+            new_period, dag_mod, build_seal, build_magic,
+            build_regs, build_cnt_cache, build_cnt_math);
           const std::string src = std::string(KAWPOW_JIT_PRELUDE) + kawpow_device_src() +
             kawpow_emit_baked(make_program(new_period, build_regs, build_cnt_cache, build_cnt_math), dag_mod) +
             kawpow_emit_seal(build_seal, build_magic) +
-            kawpow_emit_shape(build_regs, build_cnt_cache, build_cnt_math) + KAWPOW_JIT_WRAPPER;
+            kawpow_emit_shape(build_regs, build_cnt_cache, build_cnt_math) +
+            kawpow_named_jit_wrapper(kernel_name);
           auto kb_src = syclex::create_kernel_bundle_from_source(
             queue.get_context(), syclex::source_language::sycl, src);
           const char* const jit_opts = std::getenv("MOM_KAWPOW_JIT_OPTS");
@@ -715,6 +755,7 @@ public:
     return std::make_unique<sycl::kernel_bundle<sycl::bundle_state::executable>>(
       sycl::build(input)
     );
+#endif
   }
 
   // The seal AND the inner-loop shape participate in the cache key: a device's KawpowState is shared
@@ -784,14 +825,36 @@ public:
   }
 };
 
-static KawpowState& kawpow_state(const std::string& dev_str) {
-  static std::mutex states_mutex;
-  static std::map<std::string, std::unique_ptr<KawpowState>> states;
+using KawpowStateMap = std::map<std::string, std::unique_ptr<KawpowState>>;
 
-  std::lock_guard<std::mutex> lock(states_mutex);
-  auto& state = states[dev_str];
+// Heap-own the registry and lock so they have no competing C++ static destructors. Node's explicit
+// environment cleanup hook calls kawpow_cleanup_states() at the correct runtime-lifetime boundary.
+static KawpowStateMap& kawpow_states() {
+  static KawpowStateMap* const states = new KawpowStateMap;
+  return *states;
+}
+
+static std::mutex& kawpow_states_mutex() {
+  static std::mutex* const mutex = new std::mutex;
+  return *mutex;
+}
+
+static KawpowState& kawpow_state(const std::string& dev_str) {
+  std::lock_guard<std::mutex> lock(kawpow_states_mutex());
+  auto& state = kawpow_states()[dev_str];
   if (!state) state = std::make_unique<KawpowState>(dev_str);
   return *state;
+}
+
+void kawpow_cleanup_states() noexcept {
+  try {
+    std::lock_guard<std::mutex> lock(kawpow_states_mutex());
+    kawpow_states().clear();
+  } catch (const std::exception& error) {
+    std::fprintf(stderr, "kawpow: ordered SYCL cleanup failed: %s\n", error.what());
+  } catch (...) {
+    std::fprintf(stderr, "kawpow: ordered SYCL cleanup failed\n");
+  }
 }
 
 } // namespace mom_kawpow
@@ -822,11 +885,11 @@ static int kawpow_core(
   KawpowState& state = kawpow_state(dev_str);
   std::lock_guard<std::mutex> state_lock(state.mutex);
   // Publish this call's seal into the state (under the mutex) so build_period_bundle bakes it into the
-  // CUDA JIT source and the bundle cache key reflects it. A device shared across algos can switch seal.
+  // runtime-JIT source and the bundle cache key reflects it. A device shared across algos can switch seal.
   state.seal = seal_params.seal;
   for (unsigned i = 0; i < 15; ++i) state.magic[i] = seal_params.magic[i];
   // Publish this call's inner-loop shape (32/11/18 for KawPoW/FiroPow/EvrProgPow; 16/6/9 for MeowPow)
-  // so make_program(), the bundle cache key, the CUDA JIT shape bake, and the Intel kernel's runtime
+  // so make_program(), the bundle cache key, the source-JIT shape bake, and the Intel kernel's runtime
   // template dispatch below all see the active variant's shape.
   state.regs = variant.regs;
   state.cnt_cache = variant.cnt_cache;
@@ -859,7 +922,8 @@ static int kawpow_core(
 
   uint64_t start_nonce = 0;
   std::memcpy(&start_nonce, input + 32, sizeof(start_nonce));
-  const uint32_t global_size = round_up(std::max(intensity, state.workgroup), state.workgroup);
+  uint32_t search_intensity = intensity;
+  uint32_t global_size = round_up(std::max(search_intensity, state.workgroup), state.workgroup);
   const uint32_t dag_elements = static_cast<uint32_t>(dag_bytes / 256);
   const FastModData dag_mod = make_fast_mod_data(dag_elements);
 
@@ -877,7 +941,9 @@ static int kawpow_core(
   // (is_gpu()==false) and an explicit MOM_KAWPOW_EXCHANGE=slm use the
   // barrier/local-memory exchange.
   const char* const exchange_env = std::getenv("MOM_KAWPOW_EXCHANGE");
-  const bool use_sg = state.device.is_gpu() && !(exchange_env && std::strcmp(exchange_env, "slm") == 0);
+  bool use_sg = state.default_subgroup_exchange;
+  if (exchange_env && std::strcmp(exchange_env, "sg") == 0) use_sg = state.device.is_gpu();
+  else if (exchange_env && std::strcmp(exchange_env, "slm") == 0) use_sg = false;
   // The Intel (spec-const) kernels can't bake REGS/CNT_* at JIT time the way the CUDA path does, so they
   // pick the active inner-loop shape at runtime. There are exactly two ProgPoW shapes: MeowPow's 16/6/9
   // and everyone else's 32/11/18. (variant.regs is published into state.regs above.)
@@ -898,10 +964,13 @@ static int kawpow_core(
     if (mom_is_cuda(state.device) && state.cuda_use_jit.load() == 1) {
     // Launch the source-JIT'd kernel: program/dag-mod are baked into the bundle, so the only kernel
     // args are the per-call buffers/scalars; work-group local memory comes from work_group_static.
-    sycl::kernel jit_kernel = state.period_bundle->ext_oneapi_get_kernel("kawpow_search_jit");
+    const std::string jit_kernel_name = kawpow_jit_kernel_name(
+      period, dag_mod, state.seal, state.magic,
+      state.regs, state.cnt_cache, state.cnt_math);
+    sycl::kernel jit_kernel = state.period_bundle->ext_oneapi_get_kernel(jit_kernel_name);
     search_event = q.submit([&](sycl::handler& h) {
       h.set_args(d_input, d_dag_load, d_result,
-                 static_cast<uint32_t>(intensity), start_nonce, target, static_cast<int>(is_test));
+                 search_intensity, start_nonce, target, static_cast<int>(is_test));
       h.parallel_for(sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(local_size)), jit_kernel);
     });
     } else
@@ -909,15 +978,44 @@ static int kawpow_core(
     {
     search_event = q.submit([&](sycl::handler& h) {
       const auto c_dag = sycl::local_accessor<uint32_t, 1>(sycl::range<1>(KAWPOW_CACHE_WORDS), h);
+#if !defined(MOM_SYCL_ADAPTIVECPP) && !defined(MOM_SYCL_PORTABLE_OPENCL)
       h.use_kernel_bundle(*state.period_bundle);
+#endif
+#if defined(MOM_SYCL_ADAPTIVECPP)
+      // AdaptiveCpp's generic SSCP image stays architecture-neutral, but its JIT can still treat
+      // selected kernel captures as compile-time constants. The ProgPoW instruction stream changes
+      // only once per period, so specialize it (and the matching fast modulus/shape) to let the
+      // AMDGPU backend erase the interpreter exactly as a source-generated kernel would. The
+      // specialized value participates in AdaptiveCpp's persistent kernel-cache key.
+      const sycl::specialized<KawpowProgram> adaptive_program{state.program};
+      const sycl::specialized<FastModData> adaptive_dag_mod{dag_mod};
+      const sycl::specialized<bool> adaptive_meowpow_shape{meowpow_shape};
+      h.parallel_for<KawpowSgKernel>(
+        sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(local_size)),
+        [=](sycl::nd_item<1> item) MOM_REQD_SG_16 {
+          const KawpowProgram program = adaptive_program;
+          const FastModData dag_mod = adaptive_dag_mod;
+          const bool specialized_meowpow_shape = adaptive_meowpow_shape;
+#elif defined(MOM_SYCL_PORTABLE_OPENCL)
+      const KawpowProgram adaptive_program = state.program;
+      const FastModData adaptive_dag_mod = dag_mod;
+      h.parallel_for<KawpowSgKernel>(
+        sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(local_size)),
+        [=](sycl::nd_item<1> item) MOM_REQD_SG_16 {
+          const KawpowProgram program = adaptive_program;
+          const FastModData dag_mod = adaptive_dag_mod;
+          const bool specialized_meowpow_shape = meowpow_shape;
+#else
       h.parallel_for<KawpowSgKernel>(
         sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(local_size)),
         [=](sycl::nd_item<1> item, sycl::kernel_handler kh) MOM_REQD_SG_16 {
           const KawpowProgram program = kh.get_specialization_constant<kawpow_program_id>();
           const FastModData dag_mod = kh.get_specialization_constant<kawpow_dag_mod_id>();
+          const bool specialized_meowpow_shape = meowpow_shape;
+#endif
           const uint32_t lid = item.get_local_id(0);
           const uint32_t gid = item.get_global_id(0);
-          const bool active = gid < intensity;
+          const bool active = gid < search_intensity;
           const uint64_t full_nonce = start_nonce + gid;
 
           for (uint32_t word = lid * KAWPOW_DAG_LOADS; word < KAWPOW_CACHE_WORDS;
@@ -942,7 +1040,7 @@ static int kawpow_core(
           // Select the inner-loop shape at runtime (the only two ProgPoW shapes here): MeowPow runs the
           // shorter 16/6/9 sequence, the others the 32/11/18 sequence. The spec-const program already
           // carries the matching active-prefix layout (make_program(period, regs, cnt_cache, cnt_math)).
-          if (meowpow_shape) {
+          if (specialized_meowpow_shape) {
             kawpow_search_dev<KawpowSgExchange, sycl::local_accessor<uint32_t, 1>,
               MEOWPOW_REGS, MEOWPOW_CNT_CACHE, MEOWPOW_CNT_MATH>(
               ex, lane_id, state2, c_dag, d_dag_load, program, dag_mod, digest);
@@ -974,6 +1072,17 @@ static int kawpow_core(
       const auto share = sycl::local_accessor<uint32_t, 1>(sycl::range<1>(local_size), h);
       const auto offsets = sycl::local_accessor<uint32_t, 1>(sycl::range<1>(local_size / KAWPOW_LANES), h);
       const auto c_dag = sycl::local_accessor<uint32_t, 1>(sycl::range<1>(KAWPOW_CACHE_WORDS), h);
+#if defined(MOM_SYCL_ADAPTIVECPP) || defined(MOM_SYCL_PORTABLE_OPENCL)
+      const KawpowProgram adaptive_program = state.program;
+      const FastModData adaptive_dag_mod = dag_mod;
+      const bool adaptive_cpu_offset_barrier = state.device.is_cpu();
+      h.parallel_for(
+        sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(local_size)),
+        [=](sycl::nd_item<1> item) {
+          const KawpowProgram program = adaptive_program;
+          const FastModData dag_mod = adaptive_dag_mod;
+          const bool cpu_offset_barrier = adaptive_cpu_offset_barrier;
+#else
       h.set_specialization_constant<kawpow_program_id>(state.program);
       h.set_specialization_constant<kawpow_dag_mod_id>(dag_mod);
       h.set_specialization_constant<kawpow_cpu_offset_barrier_id>(state.device.is_cpu());
@@ -983,9 +1092,10 @@ static int kawpow_core(
           const KawpowProgram program = kh.get_specialization_constant<kawpow_program_id>();
           const FastModData dag_mod = kh.get_specialization_constant<kawpow_dag_mod_id>();
           const bool cpu_offset_barrier = kh.get_specialization_constant<kawpow_cpu_offset_barrier_id>();
+#endif
           const uint32_t lid = item.get_local_id(0);
           const uint32_t gid = item.get_global_id(0);
-          const bool active = gid < intensity;
+          const bool active = gid < search_intensity;
 
           const uint32_t lane_id = lid & (KAWPOW_LANES - 1);
           const uint32_t group_id = lid / KAWPOW_LANES;
