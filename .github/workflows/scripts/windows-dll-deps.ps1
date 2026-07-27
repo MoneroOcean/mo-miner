@@ -67,7 +67,8 @@ function Test-MominerDebugRuntimeDllName {
   $lower = $Name.ToLowerInvariant()
   return $lower -match '^(sycl9d|sycl9-previewd|ur_adapter_.*d|ur_win_proxy_loaderd)\.dll$' -or
          $lower -match '^(msvcp|vcruntime|ucrtbased).*[d]\.dll$' -or
-         $lower -match '^(libiomp5md_db|libmmdd)\.dll$'
+         $lower -match '^(libiomp5md_db|libmmdd)\.dll$' -or
+         $lower -match '_debug\.dll$'
 }
 
 function Test-MominerSystemDllName {
@@ -114,6 +115,9 @@ function Test-MominerSystemDllName {
     'winmm.dll',
     'ws2_32.dll'
   )
+  # The Windows HIP runtime is installed by AMD's display driver. Bundling the SDK copy beside an
+  # AdaptiveCpp worker can load a second amdhip64 runtime in the same process and crash at teardown.
+  if ($Name -eq 'amdhip64_7.dll') { return $true }
   return $systemNames -contains $Name
 }
 
@@ -130,10 +134,26 @@ function Get-MominerOneApiBinDirs {
   if (-not $env:ONEAPI_ROOT) {
     return @()
   }
-  return @(
+  $dirs = @(
     (Join-Path $env:ONEAPI_ROOT "compiler/latest/bin"),
     (Join-Path $env:ONEAPI_ROOT "compiler/latest/bin/compiler")
   )
+  # UMF depends on hwloc, which Intel installs with the Toolchain Configuration Manager rather than
+  # under compiler/latest. Open-source DPC++ ships the same UMF DLL, so its release closure needs the
+  # TCM runtime even though the worker itself came from C:\Tools\dpcpp.
+  $tcmRoot = Join-Path $env:ONEAPI_ROOT 'tcm'
+  if (Test-Path $tcmRoot) {
+    $dirs += Get-ChildItem $tcmRoot -Directory -ErrorAction SilentlyContinue |
+      ForEach-Object { Join-Path $_.FullName 'bin' } |
+      Where-Object { Test-Path $_ }
+  }
+  $tbbRoot = Join-Path $env:ONEAPI_ROOT 'tbb'
+  if (Test-Path $tbbRoot) {
+    $dirs += Get-ChildItem $tbbRoot -Directory -ErrorAction SilentlyContinue |
+      ForEach-Object { Join-Path $_.FullName 'bin' } |
+      Where-Object { Test-Path $_ }
+  }
+  return $dirs
 }
 
 function Get-MominerDpcppBinDir {
@@ -143,6 +163,34 @@ function Get-MominerDpcppBinDir {
   # ahead of the oneAPI dirs so the nightly runtime wins over any same-named oneAPI lib.
   if (-not $env:MOM_DPCPP_DIR) { return @() }
   $bin = Join-Path $env:MOM_DPCPP_DIR "bin"
+  if (Test-Path $bin) { return @($bin) }
+  return @()
+}
+
+function Get-MominerAdaptiveCppBinDir {
+  if (-not $env:MOM_ACPP_DIR) { return @() }
+  $bin = Join-Path $env:MOM_ACPP_DIR 'bin'
+  if (Test-Path $bin) { return @($bin) }
+  return @()
+}
+
+function Get-MominerHipBinDir {
+  $root = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH }
+    elseif (Test-Path 'C:\Program Files\AMD\ROCm\7.1') { 'C:\Program Files\AMD\ROCm\7.1' }
+    else { $null }
+  if (-not $root) { return @() }
+  $bin = Join-Path $root "bin"
+  if (Test-Path $bin) { return @($bin) }
+  return @()
+}
+
+function Get-MominerCudaBinDir {
+  $root = if ($env:CUDA_PATH) { $env:CUDA_PATH }
+    elseif (Test-Path 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6') {
+      'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6'
+    } else { $null }
+  if (-not $root) { return @() }
+  $bin = Join-Path $root 'bin'
   if (Test-Path $bin) { return @($bin) }
   return @()
 }
@@ -162,10 +210,18 @@ function Get-MominerDllSearchRoots {
   }
 
   & $addRoot $PackageDir
+  # The first path is node-gyp's transient workspace during compilation; the second is the
+  # platform-separated tree consumed by tests and packaging after the build completes.
   & $addRoot "build/Release"
+  & $addRoot "build/win/Release"
 
   # From-source DPC++ CUDA runtime first (combined build), so the nightly sycl9/ur adapters win.
   foreach ($dir in Get-MominerDpcppBinDir) { & $addRoot $dir }
+  foreach ($dir in Get-MominerAdaptiveCppBinDir) { & $addRoot $dir }
+  # AdaptiveCpp's CUDA plugin imports cudart directly. Index the Toolkit bin so the selected
+  # compiler directory receives that runtime DLL instead of depending on a developer install.
+  foreach ($dir in Get-MominerCudaBinDir) { & $addRoot $dir }
+  foreach ($dir in Get-MominerHipBinDir) { & $addRoot $dir }
 
   $node = Get-Command node.exe -ErrorAction SilentlyContinue
   if ($node) { & $addRoot (Split-Path -Parent $node.Source) }
@@ -242,6 +298,8 @@ function Copy-MominerOptionalRuntimeFiles {
     [string]$PackageDir
   )
 
+  New-Item -ItemType Directory -Force $PackageDir | Out-Null
+
   $patterns = @(
     'sycl*.dll',
     'ur_*.dll',          # covers ur_adapter*.dll
@@ -260,12 +318,15 @@ function Copy-MominerOptionalRuntimeFiles {
     'ze_loader*.dll',
     'clbltfn*.rtl',
     'cllibrary*.rtl',
-    'cllibrary*.o'
+    'cllibrary*.o',
+    'acpp-*.dll',
+    'rt-backend-*.dll'
   )
 
   # DPC++ CUDA toolchain bin first (combined build), then oneAPI. First to provide a name wins, so the
   # nightly sycl9.dll/ur adapters/sycl-jit.dll are taken over any same-named oneAPI lib.
-  $sources = @(Get-MominerDpcppBinDir) + @(Get-MominerOneApiBinDirs)
+  $sources = @(Get-MominerDpcppBinDir) + @(Get-MominerAdaptiveCppBinDir) +
+    @(Get-MominerCudaBinDir) + @(Get-MominerHipBinDir) + @(Get-MominerOneApiBinDirs)
   foreach ($root in $sources) {
     if (-not (Test-Path $root)) { continue }
     foreach ($pattern in $patterns) {
@@ -276,6 +337,25 @@ function Copy-MominerOptionalRuntimeFiles {
             if (-not (Test-Path $dest)) { Copy-Item $_.FullName $dest }
           }
         }
+    }
+  }
+}
+
+function Copy-MominerHipDynamicRuntimeFiles {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$PackageDir
+  )
+
+  New-Item -ItemType Directory -Force $PackageDir | Out-Null
+
+  # HIPRTC loads these by name at kernel-JIT time, so dumpbin cannot discover them. Without the
+  # runtime set the HIP backend enumerates correctly but exits with 0xc0000005 after its first kernel.
+  # Do not copy amdhip64_7.dll: that runtime must come from the target machine's display driver.
+  foreach ($root in Get-MominerHipBinDir) {
+    foreach ($pattern in @('hiprtc.dll', 'hiprtc0*.dll', 'hiprtc-builtins*.dll', 'amd_comgr0*.dll')) {
+      Get-ChildItem $root -Filter $pattern -File -ErrorAction SilentlyContinue |
+        ForEach-Object { Copy-Item $_.FullName (Join-Path $PackageDir $_.Name) -Force }
     }
   }
 }

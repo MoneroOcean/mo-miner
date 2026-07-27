@@ -18,7 +18,7 @@ source "$host_root/scripts/build-helpers.sh"
 marker="$(node -p process.version):adaptivecpp-$backend:${ACPP_TARGETS:-}:cpu=${MOM_CPU_MARCH:-unset}:portable=${MOM_PORTABLE_BUILD:-0}"
 if [ "$(cat "$build_dir/.node-version" 2>/dev/null || true)" != "$marker" ] ||
    [ ! -s "$build_dir/Release/mom.node" ] ||
-   find binding.gyp native sycl xmrig scripts/cxx-adaptivecpp.sh -type f \
+   find binding.gyp native sycl xmrig scripts/cpu-cflags.sh scripts/cxx-adaptivecpp.sh -type f \
      -newer "$build_dir/Release/mom.node" -print -quit | grep -q .; then
   rm -rf /tmp/mom-adaptive-build "$build_dir"
   mkdir -p /tmp/mom-adaptive-build

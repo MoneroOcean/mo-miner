@@ -1,0 +1,439 @@
+name: Build and test release archives
+
+on:
+  workflow_call:
+    inputs:
+      upload_artifacts:
+        description: Upload the validated archives for a release publishing job
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  MOM_PORTABLE_BUILD: "1"
+  # Hosted x64 runners expose two effective build cores. Keep nested node-gyp/LLVM work inside that
+  # budget so compiler jobs do not lose time to oversubscription.
+  MOM_BUILD_JOBS: "2"
+  ONEAPI_ROOT: C:/Program Files (x86)/Intel/oneAPI
+
+# GitHub-hosted runners expose no supported discrete GPU. The archive gates below therefore run the
+# native CPU suite plus one mandatory portable SYCL/OpenCL CPU vector for every GPU algorithm. They
+# do not instantiate hardware lanes that would merely be reported as skipped.
+jobs:
+  source-quality:
+    name: Source / lint and logic
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24.15.0
+
+      - name: Validate release tag matches package version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "Release tag $GITHUB_REF_NAME does not match package version v$version." >&2
+            exit 1
+          fi
+
+      - name: Validate workflows and shell syntax
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD:/repo:ro" -w /repo \
+            rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 \
+            -color .github/workflows/*.yml
+          git ls-files -z -- '*.sh' 'r.sh' | xargs -0 -n1 bash -n
+          fake_icx="$(mktemp)"
+          printf '#!/usr/bin/env sh\nprintf "Intel(R) oneAPI DPC++/C++ Compiler\\n"\n' >"$fake_icx"
+          chmod +x "$fake_icx"
+          test "$(MOM_PORTABLE_BUILD=1 CXX="$fake_icx" scripts/cpu-cflags.sh)" = \
+            "-march=x86-64 -mtune=generic -maes"
+          rm -f "$fake_icx"
+
+      - name: Install JavaScript tooling
+        run: npm ci --ignore-scripts
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test JavaScript logic
+        run: npm run test:logic
+
+  windows-script-quality:
+    name: Source / PowerShell syntax
+    runs-on: windows-2022
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Parse PowerShell scripts
+        shell: powershell
+        run: .github\workflows\scripts\test-powershell-syntax.ps1
+
+  warm-linux-toolchains:
+    name: Linux toolchain / ${{ matrix.scope }}
+    needs: source-quality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - scope: acpp-cuda
+            input1: scripts/build-nvidia-adaptivecpp.dockerfile
+            input2: scripts/patches/adaptivecpp-cuda-unloading.patch
+            input3: scripts/install-dev.sh
+            input4: scripts/install-cutlass.sh
+          - scope: acpp-hip
+            input1: scripts/build-amd-adaptivecpp.dockerfile
+            input2: scripts/install-dev.sh
+            input3: scripts/install-dev.sh
+            input4: scripts/build-amd-adaptivecpp.dockerfile
+    env:
+      # `runner` is unavailable while GitHub evaluates a job-level env block. Ubuntu runners are
+      # ephemeral, so a fixed /tmp root has the same isolation and remains usable by actions/cache.
+      MOM_BUILDX_CACHE_DIR: /tmp/mom-buildx-cache
+      MOM_BUILDX_CACHE_SCOPES: ${{ matrix.scope }}
+      MOM_BUILD_ONLY_SCOPE: ${{ matrix.scope }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Restore compiler image cache
+        id: compiler-cache
+        uses: actions/cache@v6
+        with:
+          path: /tmp/mom-buildx-cache/${{ matrix.scope }}
+          key: linux-x64-sycl-${{ matrix.scope }}-v3-${{ hashFiles(matrix.input1, matrix.input2, matrix.input3, matrix.input4) }}
+          restore-keys: linux-x64-sycl-${{ matrix.scope }}-v3-
+
+      - name: Free disk space
+        if: steps.compiler-cache.outputs.cache-hit != 'true'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /usr/local/.ghcup \
+            /opt/ghc /opt/hostedtoolcache/CodeQL /opt/hostedtoolcache/go \
+            /opt/hostedtoolcache/Python /opt/hostedtoolcache/Ruby \
+            /opt/hostedtoolcache/Java_Temurin-Hotspot_jdk
+          docker system prune --all --force || true
+
+      - name: Setup Docker Buildx
+        if: steps.compiler-cache.outputs.cache-hit != 'true'
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build uncached compiler image
+        if: steps.compiler-cache.outputs.cache-hit != 'true'
+        run: ./r.sh
+
+  package-linux-x64:
+    name: Ubuntu / package
+    needs:
+      - source-quality
+      - warm-linux-toolchains
+    runs-on: ubuntu-24.04
+    # Source toolchains warm in parallel prerequisite jobs. A three-hour guard still permits one
+    # cache reconstruction, but stops a stalled assembly well before GitHub's six-hour ceiling.
+    timeout-minutes: 180
+    env:
+      MOM_BUILDX_CACHE_DIR: /tmp/mom-buildx-cache
+      MOM_BUILDX_CACHE_READ_ONLY: "1"
+      MOM_BUILDX_CACHE_DELETE_AFTER_LOAD: "1"
+      MOM_BUILDX_CACHE_SCOPES: acpp-cuda,acpp-hip
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24.15.0
+
+      - name: Install pinned packaging tools
+        run: npm ci --ignore-scripts
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /usr/local/share/boost \
+            /usr/local/.ghcup \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            /opt/hostedtoolcache/go \
+            /opt/hostedtoolcache/Python \
+            /opt/hostedtoolcache/Ruby \
+            /opt/hostedtoolcache/Java_Temurin-Hotspot_jdk
+          docker system prune --all --force || true
+          df -h
+
+      # Exercise the bundled Linux setup script without mutating GPU drivers. The later SYCL-CPU
+      # gate uses the packaged standards-only DPC++ worker through a CPU OpenCL implementation.
+      - name: Verify Linux install scripts
+        run: |
+          set -euo pipefail
+          bash -n scripts/install.sh
+          sudo env MOM_INSTALL_GPU_VENDORS=none bash scripts/install.sh
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Restore AdaptiveCpp CUDA image cache
+        uses: actions/cache/restore@v6
+        with:
+          path: /tmp/mom-buildx-cache/acpp-cuda
+          key: linux-x64-sycl-acpp-cuda-v3-${{ hashFiles('scripts/build-nvidia-adaptivecpp.dockerfile', 'scripts/patches/adaptivecpp-cuda-unloading.patch', 'scripts/install-dev.sh', 'scripts/install-cutlass.sh') }}
+          restore-keys: linux-x64-sycl-acpp-cuda-v3-
+
+      - name: Restore AdaptiveCpp HIP image cache
+        uses: actions/cache/restore@v6
+        with:
+          path: /tmp/mom-buildx-cache/acpp-hip
+          key: linux-x64-sycl-acpp-hip-v3-${{ hashFiles('scripts/build-amd-adaptivecpp.dockerfile', 'scripts/install-dev.sh') }}
+          restore-keys: linux-x64-sycl-acpp-hip-v3-
+
+      - name: Build all policy-selected native addons
+        run: MOM_GPU_BACKEND=all ./r.sh node -e "console.log('mom multi-compiler build ready')"
+
+      - name: Package release archive
+        run: .github/workflows/scripts/package-linux-combined.sh
+
+      # Test the archive itself, not the source tree. Keeping both short suites in this job avoids
+      # uploading and downloading the already-compressed 380+ MiB stability artifact twice on every
+      # PR. Release publishing still uploads the same archive after these gates pass.
+      - name: Test extracted release archive
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libnuma1 ocl-icd-libopencl1 qemu-user
+          archive="$(find . -maxdepth 1 -name 'mom-*-lin.tgz' -print -quit)"
+          .github/workflows/scripts/test-release-linux.sh "$archive" cpu
+          MOM_RELEASE_EMULATE_INTEL_CPU=1 \
+            .github/workflows/scripts/test-release-linux.sh "$archive" sycl-cpu
+
+      - name: Upload Linux release artifact
+        if: inputs.upload_artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: mom-lin
+          path: mom-*-lin.tgz
+          if-no-files-found: error
+          overwrite: true
+          compression-level: 0
+          retention-days: 1
+
+  warm-windows-acpp-cuda:
+    name: Windows toolchain / acpp-cuda
+    needs:
+      - source-quality
+      - windows-script-quality
+    runs-on: windows-2022
+    # A cold run builds the pinned LLVM 20 + AdaptiveCpp toolchain from source. Isolating and
+    # caching that build keeps the package job predictable and avoids expiring upstream artifacts.
+    # A cache hit finishes in minutes. Give the first two-core source build enough room to seed the
+    # durable cache even under hosted-runner contention. Five hours leaves cache-save margin on the
+    # two-core Windows runner while still terminating before GitHub's six-hour hard limit.
+    timeout-minutes: 300
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Free Windows disk space
+        shell: powershell
+        run: .github\workflows\scripts\free-windows-disk.ps1
+
+      - name: Cache AdaptiveCpp CUDA/base toolchain
+        id: acpp-cuda-cache
+        uses: actions/cache@v6
+        with:
+          path: C:/Tools/acpp-cuda
+          # The source builder pins every input that affects this output. Do not invalidate a
+          # multi-hour LLVM cache for unrelated installer orchestration edits.
+          key: windows-acpp-cuda-source-v1-${{ hashFiles('scripts/build-windows-adaptivecpp-base.ps1') }}
+
+      - name: Build uncached AdaptiveCpp CUDA/base toolchain
+        if: steps.acpp-cuda-cache.outputs.cache-hit != 'true'
+        shell: cmd
+        run: scripts\install-dev.bat -Component acpp-cuda -Jobs 2
+
+      - name: Validate AdaptiveCpp CUDA/base cache payload
+        shell: cmd
+        run: scripts\install-dev.bat -Component acpp-cuda -Jobs 2 -ValidateOnly
+
+  warm-windows-acpp-hip:
+    name: Windows toolchain / acpp-hip
+    needs:
+      - warm-windows-acpp-cuda
+    runs-on: windows-2022
+    # Two-core cold runs take about 45 minutes. The expensive source build is isolated and cached;
+    # a two-hour guard leaves download variance while detecting a stuck build promptly.
+    # Cache hits finish quickly. A first-ever two-core build is allowed to run long enough to seed
+    # the reusable binary cache instead of timing out and repeating the same LLVM work forever.
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Free Windows disk space
+        shell: powershell
+        run: .github\workflows\scripts\free-windows-disk.ps1
+
+      - name: Restore staged AdaptiveCpp CUDA/base toolchain
+        uses: actions/cache/restore@v6
+        with:
+          path: C:/Tools/acpp-cuda
+          key: windows-acpp-cuda-source-v1-${{ hashFiles('scripts/build-windows-adaptivecpp-base.ps1') }}
+          fail-on-cache-miss: true
+
+      - name: Cache AdaptiveCpp HIP toolchain
+        id: acpp-hip-cache
+        uses: actions/cache@v6
+        with:
+          # The HIP toolchain is the CUDA/base tree plus these two generated payloads. Cache only
+          # the 17 MiB delta instead of a second 3.2 GiB copy of LLVM; the next step rehydrates the
+          # complete tree from the required base cache. The pinned HIP SDK remains a reproducible
+          # download and is independently installed/validated by the package job.
+          path: |
+            C:/Tools/acpp-amd/bin/hipSYCL/rt-backend-hip.dll
+            C:/Tools/acpp-amd/lib/hipSYCL/bitcode/libkernel-sscp-amdgpu-amdhsa-full.bc
+          key: windows-acpp-hip-overlay-v1-${{ hashFiles('scripts/install-dev.ps1', 'scripts/build-windows-adaptivecpp-base.ps1', 'scripts/build-windows-adaptivecpp-amd.ps1') }}
+
+      - name: Rehydrate cached AdaptiveCpp HIP toolchain
+        if: steps.acpp-hip-cache.outputs.cache-hit == 'true'
+        shell: powershell
+        run: |
+          Copy-Item C:\Tools\acpp-amd\bin\hipSYCL\rt-backend-hip.dll C:\Tools\acpp-cuda\bin\hipSYCL -Force
+          Copy-Item C:\Tools\acpp-amd\lib\hipSYCL\bitcode\libkernel-sscp-amdgpu-amdhsa-full.bc C:\Tools\acpp-cuda\lib\hipSYCL\bitcode -Force
+
+      - name: Build uncached AdaptiveCpp HIP toolchain
+        if: steps.acpp-hip-cache.outputs.cache-hit != 'true'
+        shell: cmd
+        run: scripts\install-dev.bat -Component acpp-hip -Jobs 2
+
+      - name: Validate AdaptiveCpp HIP cache payload
+        shell: cmd
+        # The cached compiler is self-contained. The package job installs and separately validates
+        # the pinned HIP SDK; avoiding that 1.6 GiB SDK download here keeps a cache-hit warm job fast.
+        run: >-
+          scripts\install-dev.bat -Component acpp-hip -Jobs 2 -ValidateOnly
+          -AcppHipDir ${{ steps.acpp-hip-cache.outputs.cache-hit == 'true' && 'C:\Tools\acpp-cuda' || 'C:\Tools\acpp-amd' }}
+
+  package-windows-x64:
+    name: Windows / package
+    needs:
+      - source-quality
+      - windows-script-quality
+      - warm-windows-acpp-cuda
+      - warm-windows-acpp-hip
+    runs-on: windows-2022
+    # oneAPI, CUDA, and DPC++ are pinned prebuilt downloads. They are intentionally not stored in
+    # actions/cache: caching those large reproducible SDKs evicts the source-built Linux and Windows
+    # toolchains that actually save hours. Cold downloads plus the addon builds fit well inside this.
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Free Windows disk space
+        shell: powershell
+        run: .github\workflows\scripts\free-windows-disk.ps1
+
+      - name: Validate/install common development prerequisites
+        shell: cmd
+        run: scripts\install-dev.bat -Component base,node -Jobs 2
+
+      - name: Install pinned packaging tools
+        shell: cmd
+        run: npm ci --ignore-scripts
+
+      - name: Install Intel oneAPI
+        shell: cmd
+        run: scripts\install-dev.bat -Component oneapi -Jobs 2
+
+      - name: Install pinned CUDA compiler SDK
+        shell: cmd
+        run: scripts\install-dev.bat -Component cuda -Jobs 2
+
+      - name: Install pinned HIP compiler SDK
+        shell: cmd
+        run: scripts\install-dev.bat -Component hip -Jobs 2
+
+      - name: Restore SHA256-verified DPC++ CUDA toolchain release
+        shell: cmd
+        run: scripts\install-dev.bat -Component dpcpp -Jobs 2
+
+      - name: Restore staged AdaptiveCpp CUDA/base toolchain
+        uses: actions/cache/restore@v6
+        with:
+          path: C:/Tools/acpp-cuda
+          key: windows-acpp-cuda-source-v1-${{ hashFiles('scripts/build-windows-adaptivecpp-base.ps1') }}
+          fail-on-cache-miss: true
+
+      - name: Restore staged AdaptiveCpp HIP toolchain
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            C:/Tools/acpp-amd/bin/hipSYCL/rt-backend-hip.dll
+            C:/Tools/acpp-amd/lib/hipSYCL/bitcode/libkernel-sscp-amdgpu-amdhsa-full.bc
+          key: windows-acpp-hip-overlay-v1-${{ hashFiles('scripts/install-dev.ps1', 'scripts/build-windows-adaptivecpp-base.ps1', 'scripts/build-windows-adaptivecpp-amd.ps1') }}
+          fail-on-cache-miss: true
+
+      - name: Rehydrate staged AdaptiveCpp HIP toolchain
+        shell: powershell
+        run: |
+          Copy-Item C:\Tools\acpp-amd\bin\hipSYCL\rt-backend-hip.dll C:\Tools\acpp-cuda\bin\hipSYCL -Force
+          Copy-Item C:\Tools\acpp-amd\lib\hipSYCL\bitcode\libkernel-sscp-amdgpu-amdhsa-full.bc C:\Tools\acpp-cuda\lib\hipSYCL\bitcode -Force
+
+      - name: Validate restored AdaptiveCpp and HIP toolchains
+        shell: cmd
+        run: scripts\install-dev.bat -Component acpp-cuda,hip,acpp-hip -Jobs 2 -AcppHipDir C:\Tools\acpp-cuda -ValidateOnly
+
+      - name: Build all policy-selected Windows workers
+        shell: powershell
+        run: >-
+          powershell -NoProfile -ExecutionPolicy Bypass
+          -File .github\workflows\scripts\build-windows-multicompiler.ps1
+          -AcppHipDir C:\Tools\acpp-cuda
+
+      - name: Package release archive
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .github\workflows\scripts\package-windows.ps1
+
+      # oneAPI setup above installs the CPU OpenCL ICD needed by the portable SYCL gate. Run both
+      # suites against the zip in-place so stability does not transfer the 490+ MiB archive twice.
+      - name: Test extracted release archive
+        timeout-minutes: 30
+        shell: powershell
+        run: |
+          $archive = Get-ChildItem . -Filter "mom-*-win.zip" | Select-Object -First 1
+          powershell -NoProfile -ExecutionPolicy Bypass -File .github\workflows\scripts\test-release-windows.ps1 -Archive $archive.FullName -Suite cpu
+          powershell -NoProfile -ExecutionPolicy Bypass -File .github\workflows\scripts\test-release-windows.ps1 -Archive $archive.FullName -Suite sycl-cpu
+
+      - name: Upload Windows release artifact
+        if: inputs.upload_artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: mom-win
+          path: mom-*-win.zip
+          if-no-files-found: error
+          overwrite: true
+          compression-level: 0
+          retention-days: 1

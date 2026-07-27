@@ -7,174 +7,31 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
-env:
-  MOM_PORTABLE_BUILD: "1"
-  WINDOWS_ONEAPI_URL: https://raw.githubusercontent.com/oneapi-src/oneapi-ci/master/.github/workflows/build_all.yml
-  WINDOWS_ONEAPI_PACKAGE: intel-oneapi-toolkit
-  WINDOWS_DPCPP_COMPONENTS: intel.oneapi.win.cpp-dpcpp-common
-  ONEAPI_ROOT: C:/Program Files (x86)/Intel/oneAPI
+concurrency:
+  # Serialize attempts for the same ref and never discard a package build that may seed a cache.
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  build-linux-x64:
-    runs-on: ubuntu-24.04
-    # The unified build is a dual-compiler build in a large (oneAPI + nightly DPC++ + CUDA) image,
-    # so it needs more time and the free-disk-space step below.
-    timeout-minutes: 150
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: 24.15.0
-          package-manager-cache: false
-
-      - name: Free disk space
-        run: |
-          sudo rm -rf \
-            /usr/share/dotnet \
-            /usr/local/lib/android \
-            /usr/local/share/boost \
-            /usr/local/.ghcup \
-            /opt/ghc \
-            /opt/hostedtoolcache/CodeQL \
-            /opt/hostedtoolcache/go \
-            /opt/hostedtoolcache/Python \
-            /opt/hostedtoolcache/Ruby \
-            /opt/hostedtoolcache/Java_Temurin-Hotspot_jdk
-          docker system prune --all --force || true
-          df -h
-
-      - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      # ONE unified mom.node for both Intel and NVIDIA GPUs (dual-compiler combined build). No GPU is
-      # needed to build (the NVIDIA images are AOT to PTX); GPU algos are verified on real hardware,
-      # not in CI (CI has no GPU). The bundled SYCL CPU device covers the cpu + sycl-cpu test suites.
-      - name: Build native addon in release image
-        run: ./r.sh node -e "console.log('mom build ready')"
-
-      - name: Package release archive
-        run: .github/workflows/scripts/package-linux-combined.sh
-
-      - name: Test release archive
-        run: |
-          set -euo pipefail
-          archive="$(find . -maxdepth 1 -name 'mom-*-lin.tgz' -print -quit)"
-          .github/workflows/scripts/test-release-linux.sh "$archive"
-
-      - name: Upload release artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: mom-lin
-          path: mom-*-lin.tgz
-
-  build-windows-x64:
-    runs-on: windows-2022
-    # Unified Intel+NVIDIA build: + CUDA toolkit install, ~1 GB toolchain download, a second
-    # (spir64+nvptx) sycl.dll compile on top of the Intel build, and /Qipo whole-program IPO at link,
-    # so it needs more than the Intel-only 90.
-    timeout-minutes: 150
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: 24.15.0
-          package-manager-cache: false
-
-      - name: Setup Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
-      - name: Use oneAPI installation cache
-        uses: actions/cache@v5
-        id: cache-oneapi
-        with:
-          path: |
-            ${{ env.ONEAPI_ROOT }}
-            C:/Program Files/Microsoft Visual Studio/2022/Enterprise/MSBuild/Microsoft/VC/v170/Platforms/*/PlatformToolsets/Intel*
-            C:/Program Files/Microsoft Visual Studio/2022/Enterprise/MSBuild/Microsoft/VC/v170/BuildCustomizations/Intel*
-            C:/Program Files/Microsoft Visual Studio/2022/Enterprise/MSBuild/Microsoft/VC/v170/Intel*.dll
-            C:/Program Files/Microsoft Visual Studio/2022/Enterprise/Common7/IDE/PublicAssemblies/Intel*
-          # v5-icx: the mom target uses the classic "Intel C++ Compiler" toolset, whose MSBuild task loads
-          # Intel.1ACompiler.* from VS's Common7/IDE/PublicAssemblies (installed by the oneAPI VS
-          # integration) -- earlier cache paths dropped them, so the cached build failed ICXMultiToolTask.
-          # Shares the key with stability.yml so one workflow's cache populates both.
-          key: oneapi-windows-2026.0.0-toolkit-dpcpp-online-v5-icx
-
-      - name: Install Intel oneAPI
-        if: steps.cache-oneapi.outputs.cache-hit != 'true'
-        shell: cmd
-        run: .github\workflows\scripts\install-oneapi.bat "%WINDOWS_ONEAPI_URL%" "%WINDOWS_DPCPP_COMPONENTS%" "%WINDOWS_ONEAPI_PACKAGE%"
-
-      # NVIDIA half of the unified Windows mom.node: a prebuilt from-source intel/llvm --cuda DPC++
-      # toolchain (release asset) builds the spir64+nvptx sycl.dll, and the CUDA toolkit supplies
-      # libdevice (nvptx codegen + the kawpow runtime JIT). The ~1.5h LLVM build is NOT done here -- it
-      # cannot finish in a hosted Windows job (see scripts/build-windows-nvidia.md).
-      - name: Install CUDA toolkit (libdevice)
-        uses: Jimver/cuda-toolkit@v0.2.19
-        id: cuda-toolkit
-        with:
-          cuda: "12.6.0"
-          method: "network"
-          sub-packages: '["nvcc", "cudart"]'
-
-      - name: Restore DPC++ CUDA toolchain
-        shell: powershell
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File .github\workflows\scripts\restore-toolchain-win.ps1
-
-      - name: Build native addon
-        shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File .github\workflows\scripts\build-windows.ps1
-
-      # Overwrite the MSBuild/icx Intel-only sycl.dll with the unified spir64+nvptx one (from-source clang).
-      - name: Build unified sycl.dll (spir64 + nvptx)
-        shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File .github\workflows\scripts\build-sycl-cuda-win.ps1
-
-      - name: Package release archive
-        shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File .github\workflows\scripts\package-windows.ps1
-
-      # Set up the runtime with the SAME scripts/install.ps1 users run (dogfoods it), pinning the
-      # OpenCL CPU runtime URL for a deterministic CI download.
-      - name: Install Intel OpenCL CPU runtime
-        shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install.ps1 -OpenClRuntimeUrl "https://registrationcenter-download.intel.com/akdlm/IRC_NAS/ad824c04-01c8-4ae5-b5e8-164a04f67609/w_opencl_runtime_p_2025.3.1.762.exe"
-
-      - name: Test release archive
-        shell: powershell
-        run: |
-          $archive = Get-ChildItem . -Filter "mom-*-win.zip" | Select-Object -First 1
-          powershell -NoProfile -ExecutionPolicy Bypass -File .github\workflows\scripts\test-release-windows.ps1 -Archive $archive.FullName
-
-      - name: Upload release artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: mom-win
-          path: mom-*-win.zip
+  build-and-test:
+    name: Build and test release archives
+    uses: ./.github/workflows/build-release-artifacts.yml
+    with:
+      upload_artifacts: true
 
   publish:
     if: startsWith(github.ref, 'refs/tags/')
-    needs:
-      - build-linux-x64
-      - build-windows-x64
+    needs: build-and-test
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
 
     steps:
       - name: Download release artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
 
@@ -184,6 +41,13 @@ jobs:
         run: |
           set -euo pipefail
           mapfile -d '' files < <(find artifacts -type f -print0)
+          mapfile -t linux_files < <(find artifacts -type f -name 'mom-*-lin.tgz' -print)
+          mapfile -t windows_files < <(find artifacts -type f -name 'mom-*-win.zip' -print)
+          if (( ${#files[@]} != 2 || ${#linux_files[@]} != 1 || ${#windows_files[@]} != 1 )); then
+            printf 'Expected exactly one unified Linux tgz and one unified Windows zip; found:\n' >&2
+            printf '  %s\n' "${files[@]}" >&2
+            exit 1
+          fi
           meta=(--repo "${GITHUB_REPOSITORY}" --title "${GITHUB_REF_NAME}" --notes "mom ${GITHUB_REF_NAME}")
           if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             # Release already exists (e.g. a re-run): refresh metadata, then overwrite assets.

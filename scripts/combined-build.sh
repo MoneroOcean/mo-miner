@@ -43,6 +43,7 @@ node_build_version="$(node -p 'process.version'):${MOM_DPCPP_IMPL}:dual-icx-clan
 if [ "${MOM_FORCE_REBUILD:-0}" = 1 ] \
    || [ "$(cat build/.node-version 2>/dev/null || true)" != "$node_build_version" ] \
    || [ binding.gyp -nt build/Makefile ] \
+   || [ scripts/cpu-cflags.sh -nt build/Makefile ] \
    || ! grep -q "/root/mom" build/Makefile 2>/dev/null; then
   rm -rf build
   mom_run_quiet "[combined] node-gyp configure (CXX=cxx-combined.sh, CC=icx, impl=$MOM_DPCPP_IMPL, targets=$MOM_COMBINED_TARGETS)" \

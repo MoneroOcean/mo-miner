@@ -1,227 +1,340 @@
 #!/usr/bin/env bash
-# Package the Linux/Combined release: ONE mom.node that runs on both Intel and NVIDIA GPUs
-# (mom_sycl_impl=dpcpp-combined). It is a dual-compiler build -- the CPU/host objects come from
-# oneAPI icx and the SYCL device objects + final link from the intel/llvm nightly clang -- so its
-# runtime closure is the UNION of the Intel and NVIDIA packages:
-#   * nightly DPC++ (/opt/dpcpp): libsycl.so.9 + the UR adapters it dlopen()s (level_zero[_v2],
-#     opencl, cuda) + libumf + the kernel_compiler JIT (libsycl-jit.so) for kawpow.
-#   * oneAPI (/opt/intel/oneapi): the icx compiler runtime the host objects need (libimf, libsvml,
-#     libintlc, libirc, libirng) AND the OpenCL CPU runtime (libintelocl.so + clbltfn*/cllibrary .rtl
-#     device-builtin blobs) that backs the SYCL CPU device and cn/gpu's OpenCL path.
-# The nightly libsycl.so.9 is bundled (NOT oneAPI's same-SONAME lib); the user's NVIDIA driver
-# (libcuda.so.1 / libnvidia-ml.so.1) and glibc-base libs are provided by the host, never bundled.
+# Package every policy-selected Linux worker from the one multicompiler image. Each worker and its
+# runtime live in an isolated directory so the incompatible oneAPI/nightly/AdaptiveCpp libraries
+# never share a process. compiler-policy.js chooses the directory before spawning each worker.
 set -euo pipefail
 
 version="${1:-}"
-if [ -z "$version" ] && [ -n "${GITHUB_REF_NAME:-}" ] && [[ "${GITHUB_REF_NAME}" =~ ^v?[0-9] ]]; then
-  version="$GITHUB_REF_NAME"
-fi
-if [ -z "$version" ]; then
-  version="$(node -p "require('./package.json').version")"
-fi
+if [ -z "$version" ] && [[ "${GITHUB_REF_NAME:-}" =~ ^v?[0-9] ]]; then version="$GITHUB_REF_NAME"; fi
+[ -n "$version" ] || version="$(node -p "require('./package.json').version")"
 version="${version#v}"
-
 root="mom-v${version}"
-# This unified build IS the Linux release (one tarball for both Intel and NVIDIA GPUs), so the
-# user-facing artifact is just mom-v<ver>-lin.tgz -- no vendor/"combined" suffix.
 archive="${2:-mom-v${version}-lin.tgz}"
-package_dir="release-combined/${root}"
+package_dir="release-combined/$root"
 libs_dir="$package_dir/libs"
-build_dir="release-combined-build"
-node_bin="${NODE_BIN:-$(command -v node)}"
-image="${MOM_COMBINED_IMAGE:-mom-build-combined}"
-dpcpp_lib="${MOM_DPCPP_LIB:-/opt/dpcpp/lib}"
-# oneAPI compiler lib dir inside the image (icx runtime + OpenCL CPU); 'latest' is a symlink to it.
-oneapi_lib="${MOM_ONEAPI_LIB:-/opt/intel/oneapi/compiler/latest/lib}"
+build_dir=release-combined-build
+node_bin="${NODE_BIN:-}"
+image="${MOM_MULTICOMPILER_IMAGE:-mom-build-multicompiler}"
 
-if [ ! -f build/Release/mom.node ]; then
-  echo "build/Release/mom.node is missing; build the combined native addon before packaging." >&2
-  exit 1
-fi
+compilers=(oneapi dpcpp dpcpp-opencl acpp-cuda acpp-hip)
+for key in "${compilers[@]}"; do
+  [ -s "build-compilers/Release/$key/mom.node" ] || {
+    echo "build-compilers/Release/$key/mom.node is missing; run MOM_GPU_BACKEND=all ./r.sh true." >&2
+    exit 1
+  }
+done
+docker image inspect "$image" >/dev/null
 
 rm -rf release-combined "$build_dir" "$archive"
 mkdir -p "$package_dir" "$libs_dir" "$build_dir"
 
+# SEA blobs must be produced by the exact Node executable that receives them. Distribution Node
+# binaries can omit the SEA fuse even when their version nominally supports SEA, so fall back to
+# the tested Node 24 executable already carried by the unified build image.
+if [ -z "$node_bin" ]; then node_bin="$(command -v node)"; fi
+if ! LC_ALL=C grep -aq 'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2' "$node_bin"; then
+  node_container="mom-multicompiler-node-$$"
+  docker rm -f "$node_container" >/dev/null 2>&1 || true
+  docker create --name "$node_container" --entrypoint /bin/true "$image" >/dev/null
+  docker cp "$node_container:/usr/local/bin/node" "$build_dir/node"
+  docker rm "$node_container" >/dev/null
+  chmod +x "$build_dir/node"
+  node_bin="$PWD/$build_dir/node"
+fi
+
+# Build the standalone Node executable payload. The Markdown policy remains an external, readable
+# config and is copied beside the executable; esbuild intentionally leaves the fs read at runtime.
 bundle_path="$PWD/$build_dir/mom.bundle.cjs"
 blob_path="$PWD/$build_dir/mom.blob"
-npx --yes esbuild@0.28.0 mom.js \
-  --bundle --platform=node --format=cjs \
+npx --yes esbuild@0.28.0 mom.js --bundle --platform=node --format=cjs \
   --banner:js="const { createRequire } = require('node:module'); require = createRequire(process.execPath);" \
   --outfile="$bundle_path"
 cat >"$build_dir/sea-config.json" <<EOF
-{
-  "main": "$bundle_path",
-  "output": "$blob_path",
-  "disableExperimentalSEAWarning": true,
-  "useCodeCache": false,
-  "useSnapshot": false
-}
+{"main":"$bundle_path","output":"$blob_path","disableExperimentalSEAWarning":true,"useCodeCache":false,"useSnapshot":false}
 EOF
 "$node_bin" --experimental-sea-config "$build_dir/sea-config.json"
 cp "$node_bin" "$package_dir/mom-bin"
 npx --yes postject@1.0.0-alpha.6 "$package_dir/mom-bin" NODE_SEA_BLOB "$blob_path" \
   --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2
 chmod +x "$package_dir/mom-bin"
-# Launcher: bundled libs first on the path (so the nightly libsycl wins), and point the OpenCL ICD
-# loader at the bundled libintelocl so the SYCL CPU device / cn/gpu OpenCL path resolve.
+
 cat >"$package_dir/mom" <<'EOF'
 #!/usr/bin/env sh
 set -eu
-
-case "$0" in
-  */*) script_dir=${0%/*} ;;
-  *) script_dir=$(dirname "$(command -v "$0")") ;;
-esac
+case "$0" in */*) script_dir=${0%/*} ;; *) script_dir=$(dirname "$(command -v "$0")") ;; esac
 script_dir=$(CDPATH= cd -- "$script_dir" && pwd -P)
+libs="$script_dir/libs"
 
-library_dirs="$script_dir/libs:$script_dir:$(pwd)/libs:$(pwd)"
-if [ -n "${LD_LIBRARY_PATH:-}" ]; then
-  export LD_LIBRARY_PATH="$library_dirs:$LD_LIBRARY_PATH"
-else
-  export LD_LIBRARY_PATH="$library_dirs"
+# Auto-select only on single-vendor systems. On a mixed-vendor host the requested worker/device is
+# ambiguous, so MOM_GPU_BACKEND=intel|nvidia|amd is intentionally explicit. `opencl` is the
+# best-effort generic SPIR-V fallback for a driver not covered by those native vendor paths.
+if [ -z "${MOM_GPU_BACKEND:-}" ]; then
+  intel=0; nvidia=0; amd=0; opencl=0
+  for vendor in /sys/bus/pci/devices/*/vendor; do
+    [ -r "$vendor" ] || continue
+    class_file="${vendor%/vendor}/class"
+    [ -r "$class_file" ] || continue
+    case "$(cat "$class_file")" in 0x03*) ;; *) continue ;; esac
+    case "$(cat "$vendor")" in 0x8086) intel=1 ;; 0x10de) nvidia=1 ;; 0x1002) amd=1 ;; esac
+    case "$(cat "$vendor")" in 0x8086|0x10de|0x1002) ;; *) opencl=1 ;; esac
+  done
+  count=$((intel+nvidia+amd+opencl))
+  if [ "$count" -eq 1 ]; then
+    [ "$intel" -eq 0 ] || MOM_GPU_BACKEND=intel
+    [ "$nvidia" -eq 0 ] || MOM_GPU_BACKEND=nvidia
+    [ "$amd" -eq 0 ] || MOM_GPU_BACKEND=amd
+    [ "$opencl" -eq 0 ] || MOM_GPU_BACKEND=opencl
+    export MOM_GPU_BACKEND
+  fi
 fi
 
-if [ -z "${OCL_ICD_FILENAMES:-}" ] && [ -f "$script_dir/libs/libintelocl.so" ]; then
-  export OCL_ICD_FILENAMES="$script_dir/libs/libintelocl.so"
+# oneAPI remains the compatibility/default worker for legacy callers. Automatic unknown-vendor
+# detection and explicit MOM_GPU_BACKEND=opencl select the open-source DPC++ SPIR-V/UR worker.
+# Release CI selects the standards-only DPC++ OpenCL worker for its full SYCL CPU vector suite.
+key=oneapi
+if [ -n "${MOM_GPU_INDEX:-}" ]; then
+  case "$MOM_GPU_INDEX" in *[!0-9]*) echo "MOM_GPU_INDEX must be a non-negative integer" >&2; exit 2 ;; esac
 fi
-
+selector_backend=
+selector_default=
+case "${MOM_GPU_BACKEND:-}" in
+  intel)
+    key=oneapi; selector_backend=level_zero; selector_default="level_zero:gpu"
+    UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS=${UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS:-1}
+    export UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS
+    ;;
+  nvidia) key=dpcpp; selector_backend=cuda; selector_default=cuda:* ;;
+  amd)
+    key=acpp-hip
+    ACPP_VISIBILITY_MASK=${ACPP_VISIBILITY_MASK:-hip}
+    export ACPP_VISIBILITY_MASK
+    ;;
+  opencl) key=dpcpp-opencl; selector_backend=opencl; selector_default=opencl:gpu ;;
+esac
+if [ -n "$selector_backend" ] && [ -z "${ONEAPI_DEVICE_SELECTOR:-}" ]; then
+  if [ -n "${MOM_GPU_INDEX:-}" ]; then
+    if [ "${MOM_GPU_BACKEND:-}" = intel ]; then
+      ONEAPI_DEVICE_SELECTOR="level_zero:gpu"
+    elif [ "${MOM_GPU_BACKEND:-}" = opencl ]; then
+      # Keep all ICDs visible; the addon applies the index after stable device-name sorting.
+      ONEAPI_DEVICE_SELECTOR="opencl:gpu"
+    else
+      ONEAPI_DEVICE_SELECTOR="$selector_backend:$MOM_GPU_INDEX"
+    fi
+  else
+    ONEAPI_DEVICE_SELECTOR="$selector_default"
+  fi
+fi
+# Release CI uses the already-bundled AdaptiveCpp OpenMP backend for a real SYCL CPU kernel gate.
+# Keep this narrow override separate from the user-facing vendor policy: normal miners never set it,
+# while the extracted-archive test can validate an isolated runtime without a physical GPU.
+if [ -n "${MOM_RELEASE_RUNTIME_KEY:-}" ]; then
+  case "$MOM_RELEASE_RUNTIME_KEY" in
+    oneapi|dpcpp|dpcpp-opencl|acpp-cuda|acpp-hip) key=$MOM_RELEASE_RUNTIME_KEY ;;
+    *) echo "Unknown MOM_RELEASE_RUNTIME_KEY: $MOM_RELEASE_RUNTIME_KEY" >&2; exit 2 ;;
+  esac
+fi
+export ONEAPI_DEVICE_SELECTOR
+runtime="$libs/$key"
+export MOM_NATIVE_DIR="$libs"
+if [ -z "${MOM_NATIVE_PATH:-}" ]; then
+  export MOM_NATIVE_PATH="$runtime/mom.node"
+  export MOM_NATIVE_PATH_LAUNCHER_DEFAULT="$MOM_NATIVE_PATH"
+fi
+# install.sh exposes the NVIDIA source-JIT payload at this stable path. Development images already
+# export CUDA_PATH, but a release host normally does not; ProgPoW uses its compiler/libdevice tools,
+# while Pearl discovers NVRTC and CUDA/CCCL headers below the same root.
+if [ "${MOM_GPU_BACKEND:-}" = nvidia ]; then
+  if [ -z "${CUDA_PATH:-}" ] && [ -d /usr/local/cuda ]; then CUDA_PATH=/usr/local/cuda; fi
+  if [ -n "${CUDA_PATH:-}" ]; then
+    export CUDA_PATH
+    if [ -d "$CUDA_PATH/bin" ]; then PATH="$CUDA_PATH/bin:$PATH"; export PATH; fi
+  fi
+fi
+library_dirs="$runtime:$runtime/hipSYCL"
+if [ "$key" = dpcpp-opencl ]; then library_dirs="$library_dirs:$libs/dpcpp"; fi
+if [ -n "${LD_LIBRARY_PATH:-}" ]; then library_dirs="$library_dirs:$LD_LIBRARY_PATH"; fi
+export LD_LIBRARY_PATH="$library_dirs"
+if [ "${MOM_GPU_BACKEND:-}" != opencl ] && \
+   [ -z "${OCL_ICD_FILENAMES:-}" ] && [ -f "$runtime/libintelocl.so" ]; then
+  export OCL_ICD_FILENAMES="$runtime/libintelocl.so"
+fi
 exec "$script_dir/mom-bin" "$@"
 EOF
 chmod +x "$package_dir/mom"
 
-cp package.json README.md LICENSE "$package_dir/"
-# The combined binary runs on any vendor; the single install.sh auto-detects the GPU(s) present
-# (Intel/AMD/NVIDIA) and installs each one's host runtime (incl the NVIDIA driver + CUDA toolkit + g++
-# that the full-speed ProgPoW source-JIT needs).
-cp scripts/install.sh "$package_dir/"
-cp build/Release/mom.node "$libs_dir/"
-# Device source the kawpow kernel_compiler JIT reads at runtime (resolves beside the loaded module).
-cp sycl/kawpow_device.inc "$libs_dir/"
+cp package.json compiler-policy.js README.md DEVELOPMENT.md GPU-COMPILERS.md LICENSE "$package_dir/"
+cp scripts/install.sh scripts/install-cutlass.sh "$package_dir/"
+for key in "${compilers[@]}"; do
+  mkdir -p "$libs_dir/$key"
+  cp "build-compilers/Release/$key/mom.node" "$libs_dir/$key/mom.node"
+done
+# Only the open DPC++ CUDA worker compiles the shared SYCL device body from source at runtime.
+# The generic AdaptiveCpp workers consume their embedded SSCP IR instead, so duplicating this file
+# in every runtime directory has no consumer.
+cp sycl/kawpow_device.inc "$libs_dir/dpcpp/"
+# Backward-compatible fallback for callers that do not use the launcher/policy selection.
+cp "$libs_dir/oneapi/mom.node" "$libs_dir/mom.node"
 
-container="mom-combined-release-libs-$$"
+container="mom-multicompiler-package-$$"
 docker rm -f "$container" >/dev/null 2>&1 || true
-docker run -d --name "$container" --entrypoint sleep "$image" infinity >/dev/null
+docker run -d --name "$container" --entrypoint sleep -v "$PWD:/repo:ro" "$image" infinity >/dev/null
 trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
 
-# Copy a file out of the build image, dereferencing symlinks; dest basename = SONAME.
-copy_image_file() {
-  local src="$1" dest="${2:-$libs_dir/$(basename "$1")}"
-  [ -n "$src" ] && [ ! -e "$dest" ] || return 0
-  docker cp -L "$container:$src" "$dest"
-}
-
-# Resolve a lib by SONAME in the image: nightly dir first (so its libsycl/adapters win over oneAPI's
-# same-SONAME libs), then the oneAPI compiler lib, then a broad search of both trees.
-find_image_lib() {
-  docker exec "$container" bash -lc "
-    for d in '$dpcpp_lib' '$oneapi_lib'; do [ -e \"\$d/$1\" ] && { echo \"\$d/$1\"; exit 0; }; done
-    find /opt/dpcpp /opt/intel/oneapi -type f,l -name '$1' ! -name '*-gdb.py' -print -quit 2>/dev/null
-  "
-}
-copy_image_name() {
-  local src; src="$(find_image_lib "$1")"
-  [ -n "$src" ] || { echo "Unable to find dependency $1 in the build image." >&2; exit 1; }
-  copy_image_file "$src" "$libs_dir/$1"
-}
-# SONAMEs ldd can't resolve against libs/ alone (run on the HOST over the staged files; the packaging
-# container has no repo mount, so mom.node is ldd'd here, not in the image).
-missing_libraries() {
-  local file
-  while IFS= read -r -d "" file; do
-    LD_LIBRARY_PATH="$PWD/$libs_dir" ldd "$file" 2>/dev/null || true
-  done < <(find "$package_dir" "$libs_dir" -maxdepth 1 -type f \
-            \( -name mom-bin -o -name mom.node -o -name "*.so" -o -name "*.so.*" \) -print0) \
-    | awk '/not found/{print $1}' | sort -u
-}
-# Pull every still-missing non-base dependency from the image until ldd is clean (newly copied libs
-# may add their own deps). Brings in the icx runtime (libimf/svml/intlc/irc/irng -- mom.node's own
-# DT_NEEDED) and any transitive deps, from whichever tree they live in.
-copy_missing_closure() {
-  local copied_any=1 lib
-  while [ "$copied_any" -eq 1 ]; do
-    copied_any=0
-    while IFS= read -r lib; do
-      [ -n "$lib" ] || continue
-      is_base_lib "$lib" && continue
-      [ -e "$libs_dir/$lib" ] && continue
-      copy_image_name "$lib"; copied_any=1
-    done < <(missing_libraries)
-  done
-}
-
-# Libs dlopen()'d by name (never in ldd output), so copied explicitly:
-#  - nightly DPC++: the SYCL runtime, all UR adapters, libumf, the kawpow JIT lib.
-#  - oneAPI: the OpenCL CPU ICD + its device-builtin .rtl blobs (loaded via OCL_ICD_FILENAMES).
-dlopen_libs="$dpcpp_lib/libsycl.so.9 \
-  $dpcpp_lib/libur_adapter_level_zero.so.0 $dpcpp_lib/libur_adapter_level_zero_v2.so.0 \
-  $dpcpp_lib/libur_adapter_opencl.so.0 $dpcpp_lib/libur_adapter_cuda.so.0 \
-  $dpcpp_lib/libumf.so.1 $dpcpp_lib/libsycl-jit.so \
-  $oneapi_lib/libintelocl.so"
-
-# Basename globs NOT to bundle: glibc-base (present everywhere) and the user-provided NVIDIA driver.
-set -f; base_libs=(ld-linux* libc.so* libm.so* libdl.so* libpthread.so* librt.so* libresolv.so* libutil.so* libcuda.so* libnvidia-ml.so*); set +f
 is_base_lib() {
-  local pat
-  for pat in "${base_libs[@]}"; do [[ "$1" == $pat ]] && return 0; done
+  case "$1" in
+    ld-linux*|libc.so*|libm.so*|libdl.so*|libpthread.so*|librt.so*|libresolv.so*|libutil.so*|\
+    libgcc_s.so*|libstdc++.so*|libcuda.so*|libnvidia-ml.so*|libOpenCL.so*|libze_loader.so*|\
+    libamdhip64.so*|libhiprtc.so*|libhsa-runtime64.so*|libhsakmt.so*|libdrm*.so*|libnuma.so*) return 0 ;;
+  esac
   return 1
 }
 
-# 1. Copy the explicitly-dlopen'd libs.
-for lib in $dlopen_libs; do copy_image_file "$lib"; done
+runtime_key=
+runtime_roots=
+runtime_dest=
+declare -a closure_queue
+declare -A closure_seen
 
-# 1b. Bundle those libs' transitive closure resolved INSIDE the image, so deps the packaging HOST
-#     happens to have but a clean target may not (notably libhwloc.so.15, which the Level-Zero UR
-#     adapters need) get bundled. A host-side ldd masks these; this is what left the L0 adapters
-#     unable to load on a clean Ubuntu box. base_libs (glibc + the user-provided driver) are skipped.
-in_image_deps="$(docker exec "$container" bash -lc "
-  export LD_LIBRARY_PATH='$dpcpp_lib:$oneapi_lib'
-  for l in $dlopen_libs; do ldd \"\$l\" 2>/dev/null || true; done \
-    | awk '/=>/ && \$3 ~ /^\//{print \$3}' | sort -u
-")"
-while IFS= read -r path; do
-  [ -n "$path" ] || continue
-  is_base_lib "$(basename "$path")" && continue
-  copy_image_file "$path"
-done <<<"$in_image_deps"
-# 2. Copy the OpenCL CPU device-builtin blobs the JIT loads at runtime (beside libintelocl).
-while IFS= read -r rtl; do
-  [ -n "$rtl" ] && copy_image_file "$rtl"
-done < <(docker exec "$container" bash -lc "ls $oneapi_lib/clbltfn*.rtl $oneapi_lib/cllibrary*.rtl $oneapi_lib/cllibrary*.o 2>/dev/null || true")
+copy_runtime_file() {
+  local src="$1" name
+  name="$(basename "$src")"
+  is_base_lib "$name" && return 0
+  if [ ! -e "$runtime_dest/$name" ]; then docker cp -L "$container:$src" "$runtime_dest/$name"; fi
+  closure_queue+=("$src")
+}
 
-# 2b. The OpenCL CPU runtime (libintelocl) dlopens these oneAPI libs BY NAME when it creates a
-#     context -- libocl_svml_* (vector math), libtbbmalloc, libtcm, libiomp5 -- so they never show up
-#     in ldd output and must be copied explicitly. Without them clCreateContext on the CPU SYCL device
-#     fails with DEVICE_NOT_AVAILABLE (they live across several oneAPI component dirs, like package-linux.sh).
-while IFS= read -r src; do
-  [ -n "$src" ] && copy_image_file "$src"
-done < <(docker exec "$container" bash -lc '
-  find /opt/intel/oneapi/compiler/latest/lib /opt/intel/oneapi/tbb /opt/intel/oneapi/tcm /opt/intel/oneapi/umf \
-    -type f,l \( \
-      -name "libocl_svml_*.so" -o \
-      -name "libtbbmalloc.so*" -o \
-      -name "libtcm.so*" -o \
-      -name "libiomp5.so" \
-    \) ! -name "*-gdb.py" -print 2>/dev/null | sort -u')
+image_matches() {
+  local expression="$1"
+  docker exec "$container" bash -lc "for f in $expression; do [ -f \"\$f\" ] && [[ \"\$f\" != *-gdb.py ]] && printf '%s\\n' \"\$f\"; done"
+}
 
-# 3. Resolve the rest of the closure: ldd the staged files on the host against libs/, pull each
-#    still-missing non-base SONAME from the image, repeat until clean (see copy_missing_closure).
-copy_missing_closure
+copy_matches() {
+  local expression="$1" src
+  while IFS= read -r src; do [ -z "$src" ] || copy_runtime_file "$src"; done < <(image_matches "$expression")
+}
 
-# Sanity: nothing the bundled libs need (other than base_libs / the user driver) is missing from libs/.
-unresolved="$(
-  while IFS= read -r -d "" file; do
-    LD_LIBRARY_PATH="$PWD/$libs_dir" ldd "$file" 2>/dev/null || true
-  done < <(find "$libs_dir" -maxdepth 1 -type f \( -name "*.so" -o -name "*.so.*" -o -name "mom.node" \) -print0) \
-    | awk '/not found/{print $1}' | sort -u \
-    | while IFS= read -r missing; do is_base_lib "$missing" || printf '%s\n' "$missing"; done
-)"
-if [ -n "$unresolved" ]; then
-  echo "Unresolved packaged Linux/Combined dependencies (excluding glibc-base and the user-provided NVIDIA driver):" >&2
-  echo "$unresolved" >&2
-  exit 1
-fi
+copy_dependency_closure() {
+  local index=0 current dep name output
+  while [ "$index" -lt "${#closure_queue[@]}" ]; do
+    current="${closure_queue[$index]}"; index=$((index+1))
+    [ -z "${closure_seen[$current]:-}" ] || continue
+    closure_seen[$current]=1
+    output="$(docker exec "$container" bash -lc \
+      "LD_LIBRARY_PATH='$runtime_roots' ldd '$current' 2>/dev/null || true")"
+    while IFS= read -r dep; do
+      [ -n "$dep" ] || continue
+      name="$(basename "$dep")"
+      is_base_lib "$name" && continue
+      copy_runtime_file "$dep"
+    done < <(awk '/=> \/[^ ]+/{print $3} /^\/[^( ]+/{print $1}' <<<"$output" | sort -u)
+  done
+}
 
-if [ -d "$package_dir/tests" ]; then echo "Release package unexpectedly contains tests/." >&2; exit 1; fi
+begin_runtime() {
+  runtime_key="$1"; runtime_roots="$2"; runtime_dest="$libs_dir/$runtime_key"
+  closure_queue=("/repo/build-compilers/Release/$runtime_key/mom.node")
+  closure_seen=()
+}
+
+copy_oneapi_opencl_runtime() {
+  copy_matches '/opt/intel/oneapi/compiler/latest/lib/libintelocl.so'
+  # shellcheck disable=SC2016 # evaluated inside the build container by copy_matches
+  copy_matches '$(find /opt/intel/oneapi/compiler/latest/lib /opt/intel/oneapi/tbb /opt/intel/oneapi/tcm /opt/intel/oneapi/umf -type f,l \( -name "libocl_svml_*.so" -o -name "libtbbmalloc.so.2" -o -name "libtcm.so.1" -o -name "libiomp5.so" \) 2>/dev/null)'
+  local blob
+  while IFS= read -r blob; do
+    [ -z "$blob" ] || docker cp -L "$container:$blob" "$runtime_dest/$(basename "$blob")"
+  done < <(image_matches '/opt/intel/oneapi/compiler/latest/lib/clbltfn*.rtl /opt/intel/oneapi/compiler/latest/lib/cllibrary*.rtl /opt/intel/oneapi/compiler/latest/lib/cllibrary*.o')
+}
+
+begin_runtime oneapi '/opt/intel/oneapi/compiler/latest/lib:/opt/intel/oneapi/tbb/latest/lib:/opt/intel/oneapi/tcm/latest/lib:/opt/intel/oneapi/umf/latest/lib'
+copy_matches '/opt/intel/oneapi/compiler/latest/lib/libsycl.so.9 /opt/intel/oneapi/compiler/latest/lib/libur_adapter_level_zero.so.0 /opt/intel/oneapi/compiler/latest/lib/libur_adapter_level_zero_v2.so.0 /opt/intel/oneapi/compiler/latest/lib/libur_adapter_opencl.so.0 /opt/intel/oneapi/umf/latest/lib/libumf.so.1'
+copy_oneapi_opencl_runtime
+copy_dependency_closure
+
+begin_runtime dpcpp '/opt/dpcpp/lib:/opt/intel/oneapi/compiler/latest/lib:/opt/intel/oneapi/tbb/latest/lib:/opt/intel/oneapi/tcm/latest/lib'
+copy_matches '/opt/dpcpp/lib/libsycl.so.9 /opt/dpcpp/lib/libur_adapter_cuda.so.0 /opt/dpcpp/lib/libur_adapter_level_zero.so.0 /opt/dpcpp/lib/libur_adapter_level_zero_v2.so.0 /opt/dpcpp/lib/libumf.so.1 /opt/dpcpp/lib/libsycl-jit.so'
+# This Linux configuration links the UR OpenCL adapter into libsycl; only Windows emits a separate
+# ur_adapter_opencl.dll. The vendor's ICD and libOpenCL dispatcher remain host dependencies, so an
+# unknown future vendor can supply its driver without any OpenCL-specific miner sources.
+copy_dependency_closure
+
+copy_acpp_runtime() {
+  local key="$1" prefix="$2" so tool redist_bin llvm_root=/opt/llvm21-ubuntu24
+  [ "$key" != acpp-hip ] || llvm_root=/opt/llvm20-ubuntu24
+  begin_runtime "$key" "$prefix/lib:$prefix/lib/hipSYCL:/opt/ubuntu24-libs:$llvm_root/lib:/usr/lib/x86_64-linux-gnu"
+  docker cp -L "$container:$prefix/lib/." "$runtime_dest/"
+  rm -rf "$runtime_dest/cmake"
+  # These workers are intentionally vendor-isolated and never select AdaptiveCpp's OpenCL
+  # backend. Shipping its plugin makes a driver-only CUDA/HIP host probe libOpenCL at startup and
+  # emit a misleading loader warning; the SPIR-V translator has no remaining consumer either.
+  rm -f "$runtime_dest/hipSYCL/librt-backend-ocl.so" \
+    "$runtime_dest/hipSYCL/llvm-to-backend/libllvm-to-spirv.so"
+  # AdaptiveCpp's supported relocatable JIT layout. Without these, a package works in the dev image
+  # (which has LLVM globally) but fails on a driver-only target when generic/SSCP first compiles.
+  redist_bin="$runtime_dest/hipSYCL/ext/llvm/bin"
+  mkdir -p "$redist_bin"
+  # Preserve every compiled tool basename. In particular AdaptiveCpp's host translator searches for
+  # `ld.lld`, not the multicall binary's `lld` name; omitting the symlink made the otherwise-complete
+  # OpenMP JIT payload fall back to the build-only /usr/lib/llvm-21 path.
+  for tool in opt llc lld ld.lld; do
+    if docker exec "$container" test -x "$llvm_root/bin/$tool"; then
+      docker cp -L "$container:$llvm_root/bin/$tool" "$redist_bin/$tool"
+      closure_queue+=("$llvm_root/bin/$tool")
+    fi
+  done
+  if [ "$key" = acpp-hip ]; then
+    mkdir -p "$runtime_dest/hipSYCL/ext/bitcode/amdgcn"
+    while IFS= read -r tool; do
+      docker cp -L "$container:$tool" "$runtime_dest/hipSYCL/ext/bitcode/amdgcn/$(basename "$tool")"
+    done < <(image_matches '/opt/rocm-device-libs-ubuntu24/*.bc')
+  elif [ "$key" = acpp-cuda ]; then
+    # Destination prescribed by AdaptiveCpp's deployment manifest. The runtime resolves this
+    # relative to its own libraries, avoiding the build-image-only /usr/local/cuda path.
+    mkdir -p "$runtime_dest/hipSYCL/ext/bitcode/ptx"
+    docker cp -L "$container:/usr/local/cuda/nvvm/libdevice/libdevice.10.bc" \
+      "$runtime_dest/hipSYCL/ext/bitcode/ptx/libdevice.10.bc"
+  fi
+  while IFS= read -r so; do closure_queue+=("$so"); done < <(
+    docker exec "$container" find "$prefix/lib" -type f -name '*.so*' -print)
+  copy_dependency_closure
+}
+copy_acpp_runtime acpp-cuda /opt/adaptivecpp-cuda
+copy_acpp_runtime acpp-hip /opt/adaptivecpp-hip
+
+# Keep the AdaptiveCpp runtime directories isolated for loader safety, but hard-link any
+# byte-identical support files so tar stores one copy. The CUDA and HIP translators use LLVM 21 and
+# LLVM 20 respectively; cmp naturally keeps those versioned JIT payloads separate.
+while IFS= read -r -d '' file; do
+  relative="${file#"$libs_dir/acpp-hip/"}"
+  peer="$libs_dir/acpp-cuda/$relative"
+  if [ -f "$peer" ] && cmp -s "$peer" "$file"; then
+    rm "$file"
+    ln "$peer" "$file"
+  fi
+done < <(find "$libs_dir/acpp-hip" -type f -print0)
+
+# Preserve the old libs/mom.node entry point without duplicating archive data: its oneAPI runtime
+# files are hard links to the isolated default directory. Policy-selected workers still prepend only
+# their own compiler directory.
+while IFS= read -r -d '' file; do
+  name="$(basename "$file")"
+  [ "$name" = mom.node ] || [ -e "$libs_dir/$name" ] || ln "$file" "$libs_dir/$name"
+done < <(find "$libs_dir/oneapi" -maxdepth 1 -type f -print0)
+
+# Validate every isolated closure. Driver/loader libraries listed in is_base_lib intentionally come
+# from install.sh and are the only permitted unresolved dependencies on the packaging host.
+failed=0
+while IFS= read -r -d '' file; do
+  relative="${file#"$libs_dir/"}"; key="${relative%%/*}"; compiler_root="$libs_dir/$key"
+  dir="$(dirname "$file")"
+  shared_root=
+  [ "$key" != dpcpp-opencl ] || shared_root=":$libs_dir/dpcpp"
+  if output="$(LD_LIBRARY_PATH="$compiler_root:$compiler_root/hipSYCL:$dir$shared_root" ldd "$file" 2>&1)"; then :; else true; fi
+  unresolved="$(awk '/not found/{print $1}' <<<"$output" | while read -r lib; do is_base_lib "$lib" || echo "$lib"; done)"
+  if [ -n "$unresolved" ]; then echo "$file: unresolved $unresolved" >&2; failed=1; fi
+done < <(find "$libs_dir" -type f \( -name 'mom.node' -o -name '*.so' -o -name '*.so.*' \) -print0)
+[ "$failed" -eq 0 ] || exit 1
 
 tar -C release-combined -czf "$archive" "$root"
 echo "$archive"

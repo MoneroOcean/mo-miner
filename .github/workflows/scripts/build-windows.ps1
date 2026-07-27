@@ -18,6 +18,17 @@ function Invoke-MominerNative {
   }
 }
 
+function Get-MominerBuildJobs {
+  $jobs = 0
+  if ($env:MOM_BUILD_JOBS) {
+    [void][int]::TryParse($env:MOM_BUILD_JOBS, [ref]$jobs)
+  }
+  if ($jobs -lt 1) {
+    $jobs = [Environment]::ProcessorCount
+  }
+  return [Math]::Max(1, $jobs)
+}
+
 function Find-MominerNodeGyp {
   $candidates = @()
 
@@ -103,6 +114,9 @@ Write-Host "ICInstallDir = $compilerDir"
 
 Invoke-MominerNative { icx --version } "icx"
 
+$buildJobs = Get-MominerBuildJobs
+Write-Host "MOM_BUILD_JOBS = $buildJobs"
+
 Invoke-MominerNative { node $nodeGyp configure --msvs_version=2022 } "node-gyp configure"
 # MSBuild is on PATH inside a VS Developer/Native-Tools shell (and on CI runners), but not on a bare
 # VS Build Tools box. Fall back to locating it via vswhere so a local Windows build works either way.
@@ -125,7 +139,8 @@ if ($msbuildCmd) {
 # ICInstallDir/IDPCInstallDir passed as global /p: properties so the Intel toolset can't override them
 # from a stale integration registry (see the compiler-dir resolution above).
 $msbuildOutput = & $msbuild build\mom.vcxproj /clp:Verbosity=minimal /nologo /nodeReuse:false `
-  /p:Configuration=Release /p:Platform=x64 `
+  "/m:$buildJobs" /p:Configuration=Release /p:Platform=x64 `
+  "/p:CL_MPCount=$buildJobs" /p:UseMultiToolTask=true /p:TrackFileAccess=false `
   "/p:ICInstallDir=$($env:ICInstallDir)" "/p:IDPCInstallDir=$($env:IDPCInstallDir)" 2>&1
 $msbuildOutput | ForEach-Object { Write-Host $_ }
 if ($LASTEXITCODE -ne 0) {
@@ -135,8 +150,12 @@ if ($LASTEXITCODE -ne 0) {
 
 New-Item -ItemType Directory -Force build\Release | Out-Null
 $releasePath = (Resolve-Path build\Release).Path
+$compilerCachePath = Join-Path $repoRoot 'build\compilers'
 Get-ChildItem build -Recurse -Include *.node,*.dll |
-  Where-Object { $_.FullName -ne (Join-Path $releasePath $_.Name) } |
+  Where-Object {
+    $_.FullName -ne (Join-Path $releasePath $_.Name) -and
+    -not $_.FullName.StartsWith($compilerCachePath + '\', [StringComparison]::OrdinalIgnoreCase)
+  } |
   Copy-Item -Destination build\Release -Force
 
 if (-not (Test-Path build\Release\mom.node)) {

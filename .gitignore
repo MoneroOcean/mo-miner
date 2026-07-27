@@ -1,5 +1,18 @@
 node_modules/
 build/
+build-amd/
+build-compilers/
+build-oneapi/
+build-dpcpp/
+build-dpcpp-opencl/
+build-dpcpp-hip/
+build-acpp-cuda/
+build-acpp-hip/
+build-acpp20/
+build-acpp-wmma/
+build-amd-acpp-compare/
+build-nvidia-acpp-compare/
+obj-acpp-*/
 deploy/
 .cache/
 coverage/
@@ -10,11 +23,15 @@ npm-debug.log*
 
 config.json
 config*.json
+bench-*.json
+benchmark-windows-*.json
+gpu-benchmark.json
 cert*
 *.log
 log
 x
 mom-*.tgz
+mom-*.zip
 *.tgz
 release*/
 

@@ -90,7 +90,8 @@ build_oneapi() {
   local marker="$(node -p process.version):oneapi-2026:cpu=${MOM_CPU_MARCH:-unset}:portable=${MOM_PORTABLE_BUILD:-0}"
   if [ "$(cat "$out/.node-version" 2>/dev/null || true)" != "$marker" ] ||
      [ ! -s "$out/Release/mom.node" ] ||
-     find binding.gyp native sycl xmrig -type f -newer "$out/Release/mom.node" -print -quit | grep -q .; then
+     find binding.gyp native sycl xmrig scripts/cpu-cflags.sh -type f \
+       -newer "$out/Release/mom.node" -print -quit | grep -q .; then
     rm -rf build "$out"
     CC=icx CXX=icpx node-gyp configure --nodedir=/usr/local -- -Dmom_sycl_impl=dpcpp
     JOBS="$jobs" CC=icx CXX=icpx node-gyp build --nodedir=/usr/local --jobs "$jobs"

@@ -4,13 +4,6 @@ set -e
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
-intel_ax_flags() {
-  local compiler="${CXX:-${CC:-c++}}"
-  if "$compiler" --version 2>/dev/null | grep -q "Intel(R) oneAPI DPC++/C++ Compiler"; then
-    printf ' %s' "-axCORE-AVX2,CORE-AVX512,ROCKETLAKE"
-  fi
-}
-
 # ARM flags are architecture-detected, ignoring MOM_CPU_MARCH (which is x86-only).
 if "$SCRIPT_DIR/cpu-feature.sh" arm64; then
   echo "-march=armv8-a+crypto -flax-vector-conversions"
@@ -22,10 +15,14 @@ fi
 
 case "${MOM_CPU_MARCH:-}" in
   # Explicit "native" or unset both build native, except an unset value with
-  # MOM_PORTABLE_BUILD=1, which selects a portable baseline + Intel -ax flags.
+  # MOM_PORTABLE_BUILD=1, which selects a portable x86-64 baseline. Do not use
+  # Intel -ax here: it may optimize static helpers directly for the build CPU
+  # instead of emitting a guarded dispatch, making a release built on AVX-512
+  # crash on otherwise-supported CPUs. The explicitly dispatched Argon2/Blake
+  # variants and RandomX JIT/assembly retain their architecture optimizations.
   ""|native)
     if [ -z "${MOM_CPU_MARCH:-}" ] && [ "${MOM_PORTABLE_BUILD:-}" = "1" ]; then
-      echo "-march=x86-64 -mtune=generic -maes$(intel_ax_flags)"
+      echo "-march=x86-64 -mtune=generic -maes"
     else
       echo "-march=native"
     fi
