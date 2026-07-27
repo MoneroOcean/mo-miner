@@ -10,6 +10,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <list>
+#include <map>
+#include <memory>
+#include <mutex>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -135,7 +138,74 @@ struct C29Buffers {
   sycl::buffer<sycl::uint2, 1> buffer_trimmed_edges_u2{sycl::range<1>{MAX_TRIMMED_EDGE_COUNT}};
 };
 
-static C29Buffers& get_c29_buffers() { static C29Buffers buffers; return buffers; }
+using C29GlobalAtomicRef = sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed,
+  sycl::memory_scope::device, sycl::access::address_space::global_space>;
+
+template <typename Accessor>
+inline C29GlobalAtomicRef c29_global_atomic(const Accessor& accessor, const size_t index) {
+  auto pointer = accessor.template get_multi_ptr<sycl::access::decorated::yes>();
+  return C29GlobalAtomicRef{pointer[index]};
+}
+
+static sycl::async_handler c29_exception_handler() {
+  return [](sycl::exception_list exceptions) {
+    for (const std::exception_ptr& exception : exceptions) {
+      try {
+        std::rethrow_exception(exception);
+      } catch (const sycl::exception& error) {
+        std::printf("Caught asynchronous SYCL exception:\n%s\n", error.what());
+        throw;
+      }
+    }
+  };
+}
+
+struct C29State {
+  sycl::device device;
+  sycl::queue queue;
+  MomKernelBundle bundle;
+  C29Buffers buffers;
+
+  explicit C29State(const std::string& dev_str)
+      : device(get_dev(dev_str)),
+        queue(c29_profile_enabled()
+          ? sycl::queue{device, c29_exception_handler(),
+                        sycl::property_list{sycl::property::queue::in_order{},
+                                            sycl::property::queue::enable_profiling{}}}
+          : sycl::queue{device, c29_exception_handler(),
+                        sycl::property_list{sycl::property::queue::in_order{}}}),
+        bundle(mom_get_exec_bundle(queue.get_context())) {}
+
+  ~C29State() { sycl_cleanup_noexcept("c29", [&] { queue.wait_and_throw(); }); }
+};
+
+using C29StateMap = std::map<std::string, std::unique_ptr<C29State>>;
+
+static C29StateMap& c29_states() {
+  static C29StateMap* const states = new C29StateMap;
+  return *states;
+}
+
+static std::mutex& c29_states_mutex() {
+  static std::mutex* const mutex = new std::mutex;
+  return *mutex;
+}
+
+static C29State& c29_state(const std::string& dev_str) {
+  std::lock_guard<std::mutex> lock(c29_states_mutex());
+  auto& state = c29_states()[dev_str];
+  if (!state) state = std::make_unique<C29State>(dev_str);
+  return *state;
+}
+
+void c29_cleanup_states() noexcept {
+  try {
+    std::lock_guard<std::mutex> lock(c29_states_mutex());
+    c29_states().clear();
+  } catch (...) {
+    std::fprintf(stderr, "c29: ordered SYCL cleanup failed\n");
+  }
+}
 
 template <typename T>
 static void c29_read_buffer(sycl::queue& queue, sycl::buffer<T, 1>& buffer,
@@ -288,39 +358,53 @@ static std::list<std::vector<sycl::uint2>> find_cycles(const std::vector<sycl::u
   return solutions;
 }
 
-// SipHash cryptographic round function for edge generation
-#define SIPHASH_ROUND_LAMBDA_MACRO\
-  auto siphash_round = [](uint64_t& v0, uint64_t& v1, uint64_t& v2, uint64_t& v3) {\
-    v0 += v1; v2 += v3; v1 = mo_rotate(v1, static_cast<uint64_t>(13));\
-    v3 = mo_rotate(v3, static_cast<uint64_t>(16)); v1 ^= v0; v3 ^= v2;\
-    v0 = mo_rotate(v0, static_cast<uint64_t>(32)); v2 += v1; v0 += v3;\
-    v1 = mo_rotate(v1, static_cast<uint64_t>(17)); v3 = mo_rotate(v3, static_cast<uint64_t>(21));\
-    v1 ^= v2; v3 ^= v0; v2 = mo_rotate(v2, static_cast<uint64_t>(32));\
-  };
-#define SIPHASH_FILL_BLOCK(V0, V1, V2, V3, BASE, OUT, I)\
-  for (uint32_t I = 0; I < EDGE_BLOCK_SIZE; I++) {\
-    V3 ^= BASE + I; siphash_round(V0, V1, V2, V3); siphash_round(V0, V1, V2, V3);\
-    V0 ^= BASE + I; V2 ^= 0xff;\
-    siphash_round(V0, V1, V2, V3); siphash_round(V0, V1, V2, V3);\
-    siphash_round(V0, V1, V2, V3); siphash_round(V0, V1, V2, V3);\
-    OUT[I] = (V0 ^ V1) ^ (V2 ^ V3);\
+// SipHash helpers for edge generation. These used to be statement macros, although every operand
+// is strongly typed and visible to the device optimizer through ordinary inline functions.
+inline __attribute__((always_inline)) void siphash_round(
+  uint64_t& v0, uint64_t& v1, uint64_t& v2, uint64_t& v3
+) {
+  v0 += v1; v2 += v3; v1 = mo_rotate(v1, static_cast<uint64_t>(13));
+  v3 = mo_rotate(v3, static_cast<uint64_t>(16)); v1 ^= v0; v3 ^= v2;
+  v0 = mo_rotate(v0, static_cast<uint64_t>(32)); v2 += v1; v0 += v3;
+  v1 = mo_rotate(v1, static_cast<uint64_t>(17)); v3 = mo_rotate(v3, static_cast<uint64_t>(21));
+  v1 ^= v2; v3 ^= v0; v2 = mo_rotate(v2, static_cast<uint64_t>(32));
+}
+
+inline __attribute__((always_inline)) void siphash_fill_block(
+  uint64_t& v0, uint64_t& v1, uint64_t& v2, uint64_t& v3,
+  const uint64_t base, uint64_t* const output
+) {
+#pragma vector always
+  for (uint32_t offset = 0; offset < EDGE_BLOCK_SIZE; ++offset) {
+    v3 ^= base + offset; siphash_round(v0, v1, v2, v3); siphash_round(v0, v1, v2, v3);
+    v0 ^= base + offset; v2 ^= 0xff;
+    siphash_round(v0, v1, v2, v3); siphash_round(v0, v1, v2, v3);
+    siphash_round(v0, v1, v2, v3); siphash_round(v0, v1, v2, v3);
+    output[offset] = (v0 ^ v1) ^ (v2 ^ v3);
   }
-#define C29_WRITE8(DEST, INDEX, STORE, BUCKET, BASE)\
-  do {\
-    (DEST)[(INDEX)] = sycl::ulong4(STORE[(BUCKET)][(BASE)], STORE[(BUCKET)][(BASE) + 1], STORE[(BUCKET)][(BASE) + 2], STORE[(BUCKET)][(BASE) + 3]);\
-    (DEST)[(INDEX) + 1] = sycl::ulong4(STORE[(BUCKET)][(BASE) + 4], STORE[(BUCKET)][(BASE) + 5], STORE[(BUCKET)][(BASE) + 6], STORE[(BUCKET)][(BASE) + 7]);\
-  } while (false)
+}
+
+template <typename Destination, typename Store>
+inline __attribute__((always_inline)) void c29_write8(
+  Destination& destination, const uint32_t index, const Store& store,
+  const uint32_t bucket, const uint32_t base
+) {
+  destination[index] = sycl::ulong4(store[bucket][base], store[bucket][base + 1],
+    store[bucket][base + 2], store[bucket][base + 3]);
+  destination[index + 1] = sycl::ulong4(store[bucket][base + 4], store[bucket][base + 5],
+    store[bucket][base + 6], store[bucket][base + 7]);
+}
 
 // Worker function that performs GPU trimming and cycle finding in separate thread
 static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t seed_k1,
                                           const uint64_t seed_k2, const uint64_t seed_k3,
                                           const unsigned job_ref, const uint64_t nonce,
                                           const unsigned c29_proof_size,
-                                          sycl::queue& compute_queue) {
+                                          sycl::queue& compute_queue,
+                                          MomKernelBundle& kernel_bundle,
+                                          C29Buffers& c29_buffers) {
   try {
-    static auto kernel_bundle = MOM_GET_EXEC_BUNDLE(compute_queue.get_context());
     C29Profile profile(job_ref, nonce, c29_proof_size, compute_queue, compute_queue.get_device().get_info<sycl::info::device::name>());
-    C29Buffers& c29_buffers = get_c29_buffers();
 
     // Reuse the persistent GPU buffers across graphs, reinterpreting each as uint2 (edge pairs)
     // and ulong4 (8-word block writes) for the different kernel access patterns.
@@ -340,7 +424,7 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
     auto zero_buffer = [&](const char* name, sycl::buffer<uint32_t, 1>& buffer) {
       const sycl::event event = compute_queue.submit([&](sycl::handler& handler) {
         sycl::accessor accessor{buffer, handler, sycl::write_only, sycl::no_init};
-        MOM_USE_BUNDLE(handler, kernel_bundle);
+        mom_use_bundle(handler, kernel_bundle);
         handler.fill(accessor, static_cast<uint32_t>(0));
       });
       profile.add_event(name, event);
@@ -353,7 +437,6 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
     const uint32_t duck_edges_b = static_cast<uint32_t>(DUCK_SIZE_B) * 1024;
 
     using local_atomic_ref  = sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::work_group, sycl::access::address_space::local_space>;
-    using global_atomic_ref = sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device, sycl::access::address_space::global_space>;
 
     // FluffySeed2A: Generate initial edges using SipHash cryptographic function
     const uint32_t seed_local_size = c29_seed_local_size();
@@ -366,20 +449,17 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
         sycl::accessor acc_buffer_a1{buffer_a1_u2, handler, sycl::write_only, sycl::no_init};
         sycl::accessor acc_buffer_a2{buffer_a2_u2, handler, sycl::write_only, sycl::no_init};
         sycl::accessor acc_index_2{buffer_i2, handler, sycl::read_write};
-        MOM_USE_BUNDLE(handler, kernel_bundle);
+        mom_use_bundle(handler, kernel_bundle);
         handler.parallel_for(sycl::nd_range<1>(sycl::range<1>(seed_work_items), sycl::range<1>(seed_local_size)),
                             [=](sycl::nd_item<1> item) {
           const uint32_t global_id = item.get_global_id(0);
-
-          SIPHASH_ROUND_LAMBDA_MACRO;
 
           for (uint32_t block_offset = 0; block_offset < seed_blocks_per_item * EDGE_BLOCK_SIZE; block_offset += EDGE_BLOCK_SIZE) {
             const uint64_t base_nonce = global_id * (seed_blocks_per_item * EDGE_BLOCK_SIZE) + block_offset;
             uint64_t sip_v0 = seed_k0, sip_v1 = seed_k1, sip_v2 = seed_k2, sip_v3 = seed_k3;
             uint64_t hash_block[EDGE_BLOCK_SIZE];
 
-            #pragma vector always
-            SIPHASH_FILL_BLOCK(sip_v0, sip_v1, sip_v2, sip_v3, base_nonce, hash_block, nonce_offset);
+            siphash_fill_block(sip_v0, sip_v1, sip_v2, sip_v3, base_nonce, hash_block);
 
             const uint64_t hash_last = hash_block[EDGE_BLOCK_MASK];
 
@@ -390,7 +470,7 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
               if (!(edge_u || edge_v)) continue;
 
               const uint32_t bucket_id = ((edge_u & 63u) << 6) | ((edge_u >> 6) & 63u);
-              const uint32_t bucket_index = sycl::min(global_atomic_ref(acc_index_2[bucket_id]).fetch_add(1), duck_edges_a - 1);
+              const uint32_t bucket_index = sycl::min(c29_global_atomic(acc_index_2, bucket_id).fetch_add(1), duck_edges_a - 1);
 
               if (bucket_id < 62 * 64)
                 acc_buffer_a1[bucket_id * duck_edges_a + bucket_index] = sycl::uint2(edge_u, edge_v);
@@ -410,7 +490,7 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
         // Local memory for temporary edge storage and bucket counters
         sycl::local_accessor<uint64_t, 2> temp_storage{sycl::range<2>(64, 16), handler};
         sycl::local_accessor<uint32_t, 1> bucket_counters{sycl::range<1>(64), handler};
-        MOM_USE_BUNDLE(handler, kernel_bundle);
+        mom_use_bundle(handler, kernel_bundle);
         handler.parallel_for(sycl::nd_range<1>(sycl::range<1>(seed_work_items), sycl::range<1>(seed_local_size)),
                             [=](sycl::nd_item<1> item) {
           const uint32_t global_id = item.get_global_id(0);
@@ -420,16 +500,13 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
 
           item.barrier(sycl::access::fence_space::local_space);
 
-          SIPHASH_ROUND_LAMBDA_MACRO;
-
           // Process nonces in blocks to generate graph edges efficiently
           for (uint32_t block_offset = 0; block_offset < seed_blocks_per_item * EDGE_BLOCK_SIZE; block_offset += EDGE_BLOCK_SIZE) {
             const uint64_t base_nonce = global_id * (seed_blocks_per_item * EDGE_BLOCK_SIZE) + block_offset;
             uint64_t sip_v0 = seed_k0, sip_v1 = seed_k1, sip_v2 = seed_k2, sip_v3 = seed_k3;
             uint64_t hash_block[EDGE_BLOCK_SIZE];
 
-            #pragma vector always
-            SIPHASH_FILL_BLOCK(sip_v0, sip_v1, sip_v2, sip_v3, base_nonce, hash_block, nonce_offset);
+            siphash_fill_block(sip_v0, sip_v1, sip_v2, sip_v3, base_nonce, hash_block);
 
             const uint64_t hash_last = hash_block[EDGE_BLOCK_MASK];
 
@@ -447,10 +524,10 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
 
               // Write accumulated edges when buffer reaches threshold
               if ((counter > 0) && (counter_local == 0 || counter_local == 8)) {
-                const uint32_t write_count = sycl::min(global_atomic_ref(acc_index_1[bucket_id]).fetch_add(8), duck_edges_a * 64 - 8);
+                const uint32_t write_count = sycl::min(c29_global_atomic(acc_index_1, bucket_id).fetch_add(8), duck_edges_a * 64 - 8);
                 const uint32_t write_index = ((bucket_id < 32 ? bucket_id : bucket_id - 32) * duck_edges_a * 64 + write_count) >> 2;
                 auto* const dest_buffer    = bucket_id < 32 ? &acc_buffer_b : &acc_buffer_a1;
-                C29_WRITE8((*dest_buffer), write_index, temp_storage, bucket_id, 8 - counter_local);
+                c29_write8(*dest_buffer, write_index, temp_storage, bucket_id, 8 - counter_local);
 
                 // Clear written entries for reuse
                 for (uint32_t clear_index = 0; clear_index < 8; clear_index++) temp_storage[bucket_id][8 - counter_local + clear_index] = 0;
@@ -464,10 +541,10 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
           if (local_id < 64) {
             const uint32_t final_counter     = bucket_counters[local_id];
             const uint32_t final_counter_base = (final_counter % 16) >= 8 ? 8 : 0;
-            const uint32_t final_write_count  = sycl::min(global_atomic_ref(acc_index_1[local_id]).fetch_add(8), duck_edges_a * 64 - 8);
+            const uint32_t final_write_count  = sycl::min(c29_global_atomic(acc_index_1, local_id).fetch_add(8), duck_edges_a * 64 - 8);
             const uint32_t final_write_index  = ((local_id < 32 ? local_id : local_id - 32) * duck_edges_a * 64 + final_write_count) >> 2;
             auto* const final_dest_buffer     = local_id < 32 ? &acc_buffer_b : &acc_buffer_a1;
-            C29_WRITE8((*final_dest_buffer), final_write_index, temp_storage, local_id, final_counter_base);
+            c29_write8(*final_dest_buffer, final_write_index, temp_storage, local_id, final_counter_base);
           }
         });
       });
@@ -488,7 +565,7 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
           const constexpr uint32_t BUCKET_GRANULARITY = 32;
           sycl::local_accessor<uint64_t, 2> temp_storage{sycl::range<2>(64, 16), handler};
           sycl::local_accessor<uint32_t, 1> bucket_counters{sycl::range<1>(64), handler};
-          MOM_USE_BUNDLE(handler, kernel_bundle);
+          mom_use_bundle(handler, kernel_bundle);
           handler.parallel_for(sycl::nd_range<1>(sycl::range<1>(1024 * 128), sycl::range<1>(128)),
                               [=](sycl::nd_item<1> item) {
             const uint32_t local_id      = item.get_local_id(0);
@@ -524,9 +601,10 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
               item.barrier(sycl::access::fence_space::local_space);
 
               if ((edge_counter > 0) && (local_counter == 0 || local_counter == 8)) {
-                const uint32_t write_count = sycl::min(global_atomic_ref(acc_dest_indexes[start_block * 64 + current_bucket * 64 + bucket_id]).fetch_add(8), duck_edges_a - 8);
+                const uint32_t write_count = sycl::min(c29_global_atomic(acc_dest_indexes,
+                  start_block * 64 + current_bucket * 64 + bucket_id).fetch_add(8), duck_edges_a - 8);
                 const uint32_t write_index = (memory_offset + (((current_bucket - bucket_offset) * 64 + bucket_id) * duck_edges_a + write_count)) >> 2;
-                C29_WRITE8((*destination_buffer), write_index, temp_storage, bucket_id, 8 - local_counter);
+                c29_write8(*destination_buffer, write_index, temp_storage, bucket_id, 8 - local_counter);
                 for (uint32_t clear_index = 0; clear_index < 8; clear_index++) temp_storage[bucket_id][8 - local_counter + clear_index] = 0;
               }
             }
@@ -537,9 +615,10 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
             if (local_id < 64) {
               const uint32_t final_counter      = bucket_counters[local_id];
               const uint32_t final_counter_base = (final_counter % 16) >= 8 ? 8 : 0;
-              const uint32_t final_write_count  = sycl::min(global_atomic_ref(acc_dest_indexes[start_block * 64 + current_bucket * 64 + local_id]).fetch_add(8), duck_edges_a - 8);
+              const uint32_t final_write_count  = sycl::min(c29_global_atomic(acc_dest_indexes,
+                start_block * 64 + current_bucket * 64 + local_id).fetch_add(8), duck_edges_a - 8);
               const uint32_t final_write_index  = (memory_offset + (((current_bucket - bucket_offset) * 64 + local_id) * duck_edges_a + final_write_count)) >> 2;
-              C29_WRITE8((*destination_buffer), final_write_index, temp_storage, local_id, final_counter_base);
+              c29_write8(*destination_buffer, final_write_index, temp_storage, local_id, final_counter_base);
             }
           });
         });
@@ -576,7 +655,7 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
       sycl::accessor acc_i2{buffer_i2, handler, sycl::read_write};
       sycl::accessor acc_i1{buffer_i1, handler, sycl::read_write};
       sycl::local_accessor<uint32_t, 1> edge_counters{sycl::range<1>(EDGE_COUNTER_WORDS), handler};
-      MOM_USE_BUNDLE(handler, kernel_bundle);
+      mom_use_bundle(handler, kernel_bundle);
       handler.parallel_for(sycl::nd_range<1>(sycl::range<1>(4096 * COMPUTE_THREADS), sycl::range<1>(COMPUTE_THREADS)),
                           [=](sycl::nd_item<1> item) {
         const uint32_t local_id      = item.get_local_id(0);
@@ -612,7 +691,7 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
             const sycl::uint2 current_edge = (*source_buffer)[duck_edges_a * read_group + edge_local_index];
             if ((current_edge.x() || current_edge.y()) && read_2bit_counter((current_edge.x() & EDGE_MASK) >> 12, edge_counters)) {
               const uint32_t bucket_id = current_edge.y() & BUCKET_MASK_4K;
-              const uint32_t bucket_index = sycl::min(global_atomic_ref(acc_i1[bucket_id]).fetch_add(1), duck_edges_b - 1);
+              const uint32_t bucket_index = sycl::min(c29_global_atomic(acc_i1, bucket_id).fetch_add(1), duck_edges_b - 1);
               acc_b[bucket_id * duck_edges_b + bucket_index] = sycl::uint2(current_edge.y(), current_edge.x()); // Swap edge direction
             }
           }
@@ -631,7 +710,7 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
       sycl::accessor acc_i1{buffer_i1, handler, sycl::read_write};
       sycl::accessor acc_i2{buffer_i2, handler, sycl::read_write};
       sycl::local_accessor<uint32_t, 1> edge_counters{sycl::range<1>(EDGE_COUNTER_WORDS), handler};
-      MOM_USE_BUNDLE(handler, kernel_bundle);
+      mom_use_bundle(handler, kernel_bundle);
       handler.parallel_for(sycl::nd_range<1>(sycl::range<1>(4096 * COMPUTE_THREADS), sycl::range<1>(COMPUTE_THREADS)),
                           [=](sycl::nd_item<1> item) {
         const uint32_t local_id      = item.get_local_id(0);
@@ -664,7 +743,7 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
             const sycl::uint2 current_edge = acc_b[(duck_edges_b * work_group_id) + edge_local_index];
             if ((current_edge.x() || current_edge.y()) && read_2bit_counter((current_edge.x() & EDGE_MASK) >> 12, edge_counters)) {
               const uint32_t bucket_id = current_edge.y() & BUCKET_MASK_4K;
-              const uint32_t bucket_index = sycl::min(global_atomic_ref(acc_i2[bucket_id]).fetch_add(1),
+              const uint32_t bucket_index = sycl::min(c29_global_atomic(acc_i2, bucket_id).fetch_add(1),
                                                       duck_edges_b - 1 - ((bucket_id & BUCKET_OFFSET) * BUCKET_STEP));
               acc_a1[((bucket_id & BUCKET_OFFSET) * BUCKET_STEP) + (bucket_id * duck_edges_b) + bucket_index] =
                 sycl::uint2(current_edge.y(), current_edge.x());
@@ -688,7 +767,7 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
         sycl::accessor acc_source_indexes{source_indexes, handler, sycl::read_write};
         sycl::accessor acc_dest_indexes{dest_indexes, handler, sycl::read_write};
         sycl::local_accessor<uint32_t, 1> edge_counters{sycl::range<1>(EDGE_COUNTER_WORDS), handler};
-        MOM_USE_BUNDLE(handler, kernel_bundle);
+        mom_use_bundle(handler, kernel_bundle);
         handler.parallel_for(sycl::nd_range<1>(sycl::range<1>(4096 * COMPUTE_THREADS), sycl::range<1>(COMPUTE_THREADS)),
                             [=](sycl::nd_item<1> item) {
           const uint32_t local_id      = item.get_local_id(0);
@@ -728,7 +807,7 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
                                                           (duck_edges_b * work_group_id) + edge_local_index];
               if ((current_edge.x() || current_edge.y()) && read_2bit_counter((current_edge.x() & EDGE_MASK) >> 12, edge_counters)) {
                 const uint32_t bucket_id = current_edge.y() & BUCKET_MASK_4K;
-                const uint32_t bucket_index = sycl::min(global_atomic_ref(acc_dest_indexes[bucket_id]).fetch_add(1),
+                const uint32_t bucket_index = sycl::min(c29_global_atomic(acc_dest_indexes, bucket_id).fetch_add(1),
                                                         duck_edges_b - 1 - ((bucket_id & BUCKET_OFFSET) * BUCKET_STEP));
                 acc_dest[((bucket_id & BUCKET_OFFSET) * BUCKET_STEP) + (bucket_id * duck_edges_b) + bucket_index] =
                   sycl::uint2(current_edge.y(), current_edge.x());
@@ -762,7 +841,7 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
       sycl::accessor acc_i1{buffer_i1, handler, sycl::read_write};
       sycl::accessor acc_trimmed_edge_count{buffer_trimmed_edge_count, handler, sycl::read_write};
       sycl::local_accessor<uint32_t, 1> output_index{sycl::range<1>(1), handler};
-      MOM_USE_BUNDLE(handler, kernel_bundle);
+      mom_use_bundle(handler, kernel_bundle);
       handler.parallel_for(sycl::nd_range<1>(sycl::range<1>(4096 * COMPUTE_THREADS), sycl::range<1>(COMPUTE_THREADS)),
                           [=](sycl::nd_item<1> item) {
         const uint32_t local_id      = item.get_local_id(0);
@@ -770,7 +849,7 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
         const uint32_t edges_to_copy = acc_i1[work_group_id];
 
         // Thread 0 reserves space in output buffer
-        if (local_id == 0) output_index[0] = global_atomic_ref(acc_trimmed_edge_count[0]).fetch_add(edges_to_copy);
+        if (local_id == 0) output_index[0] = c29_global_atomic(acc_trimmed_edge_count, 0).fetch_add(edges_to_copy);
 
         item.barrier(sycl::access::fence_space::local_space);
 
@@ -833,31 +912,14 @@ int c29(const unsigned job_ref, const unsigned c29_proof_size,
         uint8_t* const output, uint32_t* const output_edges,
         uint64_t* const pnonce, const std::string& dev_str) {
   try {
-    const sycl::async_handler exception_handler = [] (sycl::exception_list exceptions) {
-      for (std::exception_ptr const& e : exceptions) {
-        try {
-          std::rethrow_exception(e);
-        } catch(sycl::exception const& e) {
-          printf("Caught asynchronous SYCL exception:\n%s\n", e.what());
-          throw;
-        }
-      }
-    };
-
-    static sycl::device compute_device = get_dev(dev_str);
-
-    // SYCL_PROGRAM_COMPILE_OPTIONS is process-global; pearl's ESIMD (VC-backend) image rejects "-O3"
+    // SYCL_PROGRAM_COMPILE_OPTIONS is process-global; pearlhash's ESIMD (VC-backend) image rejects "-O3"
     // ("invalid api option"), which is a no-op for c29 anyway, so leave it empty to stay compatible.
     [[maybe_unused]] static const bool sycl_compile_env_set =
       (set_sycl_env("SYCL_PROGRAM_COMPILE_OPTIONS", ""), true);
 
-    static auto compute_queue = c29_profile_enabled()
-      ? sycl::queue{compute_device, exception_handler,
-                    sycl::property_list{sycl::property::queue::in_order{},
-                                        sycl::property::queue::enable_profiling{}}}
-      : sycl::queue{compute_device, exception_handler,
-                    sycl::property_list{sycl::property::queue::in_order{}}};
-    static auto kernel_bundle = MOM_GET_EXEC_BUNDLE(compute_queue.get_context());
+    C29State& state = c29_state(dev_str);
+    sycl::queue& compute_queue = state.queue;
+    MomKernelBundle& kernel_bundle = state.bundle;
 
     // Pop the oldest queued solution that belongs to the current job (older jobs are discarded).
     bool has_solution = false;
@@ -899,7 +961,7 @@ int c29(const unsigned job_ref, const unsigned c29_proof_size,
         sycl::accessor acc_edges{buffer_edges, handler, sycl::read_only};
         sycl::accessor acc_nonces{buffer_nonces, handler, sycl::write_only, sycl::no_init};
         sycl::local_accessor<uint32_t, 1> local_nonces{sycl::range<1>{c29_proof_size}, handler};
-        MOM_USE_BUNDLE(handler, kernel_bundle);
+        mom_use_bundle(handler, kernel_bundle);
         handler.parallel_for(sycl::nd_range<1>(sycl::range<1>(2048 * 256), sycl::range<1>(256)),
                             [=](sycl::nd_item<1> item) {
           const uint32_t gid = item.get_global_id(0);
@@ -909,14 +971,12 @@ int c29(const unsigned job_ref, const unsigned c29_proof_size,
 
           item.barrier(sycl::access::fence_space::local_space);
 
-          SIPHASH_ROUND_LAMBDA_MACRO
-
           for (uint32_t block = 0; block < 1024; block += EDGE_BLOCK_SIZE) {
             const uint64_t base_nonce = gid * 1024 + block;
             uint64_t v0 = k0, v1 = k1, v2 = k2, v3 = k3;
             uint64_t sip_block[EDGE_BLOCK_SIZE];
 
-            SIPHASH_FILL_BLOCK(v0, v1, v2, v3, base_nonce, sip_block, b);
+            siphash_fill_block(v0, v1, v2, v3, base_nonce, sip_block);
             const uint64_t last = sip_block[EDGE_BLOCK_MASK];
 
             // Check each generated edge against target edges
@@ -972,7 +1032,8 @@ int c29(const unsigned job_ref, const unsigned c29_proof_size,
     } else if (input_size) { // start a new asynchronous solution search
       union { uint8_t blake_output[32]; uint64_t k[4]; };
       rx_blake2b(blake_output, 32, input, input_size);
-      start_new_c29_solution_search(k[0], k[1], k[2], k[3], job_ref, *pnonce, c29_proof_size, compute_queue);
+      start_new_c29_solution_search(k[0], k[1], k[2], k[3], job_ref, *pnonce, c29_proof_size,
+                                    compute_queue, kernel_bundle, state.buffers);
 
       return 0; // no immediate results
     } else { // poll: -1 once every worker has drained, otherwise 0 (still searching)
