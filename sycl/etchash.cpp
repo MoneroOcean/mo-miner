@@ -449,7 +449,7 @@ template <bool INLINE_PAIR> class EtchashSearchKernel;  // distinct kernel name 
 // INLINE_PAIR. The caller picks the instantiation per device from EtchashState::use_inline_pair().
 template <bool INLINE_PAIR>
 static sycl::event submit_etchash_search_gpu(
-  sycl::queue& q, MOM_BUNDLE_T& kb,
+  sycl::queue& q, MomKernelBundle& kb,
   const uint8_t* const d_input, const uint64_t start_nonce,
   const uint32_t* const __restrict__ d_dag, const FastModData dag_mod,
   const uint32_t intensity, const uint8_t* const d_target,
@@ -458,7 +458,7 @@ static sycl::event submit_etchash_search_gpu(
   constexpr unsigned GROUP4_WORKGROUP = 128;
   constexpr unsigned GROUP4_SEED_WORDS = GROUP4_WORKGROUP * 16;
   return q.submit([&](sycl::handler& h) {
-    MOM_USE_BUNDLE(h, kb);
+    mom_use_bundle(h, kb);
     sycl::local_accessor<uint32_t, 1> seeds(sycl::range<1>(GROUP4_SEED_WORDS), h);
     h.parallel_for<EtchashSearchKernel<INLINE_PAIR>>(
       sycl::nd_range<1>(
@@ -501,7 +501,7 @@ static sycl::event submit_etchash_search_gpu(
             const uint32_t page_candidate = lane4 == selected_lane
               ? fast_mod_dev(fnv_dev(seed0 ^ i, mix[selected_word]), dag_mod)
               : 0;
-            const uint32_t page = sycl::select_from_group(sg, page_candidate, sg_group4_base + selected_lane);
+            const uint32_t page = mom_select_from_group(sg, page_candidate, sg_group4_base + selected_lane);
             const uint32_t base = page * ETHASH_MIX_WORDS + lane4 * 8;
             const auto dag_words = *reinterpret_cast<const sycl::vec<uint64_t, 4>*>(d_dag + base);
 #pragma unroll
@@ -518,8 +518,8 @@ static sycl::event submit_etchash_search_gpu(
           uint32_t compressed_mix[8];
 #pragma unroll
           for (unsigned lane = 0; lane < 4; ++lane) {
-            compressed_mix[lane * 2] = sycl::select_from_group(sg, compressed0, sg_group4_base + lane);
-            compressed_mix[lane * 2 + 1] = sycl::select_from_group(sg, compressed1, sg_group4_base + lane);
+            compressed_mix[lane * 2] = mom_select_from_group(sg, compressed0, sg_group4_base + lane);
+            compressed_mix[lane * 2 + 1] = mom_select_from_group(sg, compressed1, sg_group4_base + lane);
           }
 
           if (lane4 == owner) {
@@ -543,7 +543,7 @@ class EtchashState {
 public:
   sycl::device device;
   sycl::queue queue;
-  std::unique_ptr<MOM_BUNDLE_T> bundle;
+  std::unique_ptr<MomKernelBundle> bundle;
   bool shared_io;
   bool shared_dag;
   uint8_t* input = nullptr;
@@ -630,21 +630,20 @@ public:
   explicit EtchashState(const std::string& dev_str)
     : device(get_dev(dev_str)),
       queue(device, sycl::property_list{sycl::property::queue::in_order{}}),
-      shared_io(device.is_cpu() || !device.has(sycl::aspect::usm_device_allocations)),
-      shared_dag(device.is_cpu() || !device.has(sycl::aspect::usm_device_allocations))
+      shared_io(device.is_cpu() || !mom_has_usm_device(device)),
+      shared_dag(device.is_cpu() || !mom_has_usm_device(device))
   {
-    if (!device.has(sycl::aspect::usm_shared_allocations) ||
-        (!device.is_cpu() && !device.has(sycl::aspect::usm_device_allocations))) {
+    if (!mom_has_usm_shared(device) || (!device.is_cpu() && !mom_has_usm_device(device))) {
       throw std::string("etchash SYCL device does not support required allocations");
     }
 
     set_sycl_env("SYCL_PROGRAM_COMPILE_OPTIONS", etchash_compile_options());
-    bundle = std::make_unique<MOM_BUNDLE_T>(
-      MOM_GET_EXEC_BUNDLE(queue.get_context())
+    bundle = std::make_unique<MomKernelBundle>(
+      mom_get_exec_bundle(queue.get_context())
     );
   }
 
-  ~EtchashState() { release(); }
+  ~EtchashState() { sycl_cleanup_noexcept("etchash", [&] { release(); }); }
 
   static unsigned etchash_dag_workgroup(const sycl::device& dev) {
     const unsigned fallback = sycl_default_workgroup(dev, {32, 64, 128, 256, 512}, dev.is_cpu() ? 128 : 64);
@@ -670,7 +669,7 @@ public:
 
   static const char* etchash_compile_options() {
     const char* const value = std::getenv("MOM_ETCHASH_COMPILE_OPTIONS");
-    // Default empty: "-O3" is process-global and pearl's ESIMD image rejects it
+    // Default empty: "-O3" is process-global and PearlHash's ESIMD image rejects it
     // (and it is a no-op for etchash). Override via MOM_ETCHASH_COMPILE_OPTIONS if needed.
     return value ? value : "";
   }
@@ -757,7 +756,7 @@ public:
       const uint32_t current_nodes = chunk_nodes ? std::min(chunk_nodes, total - start_node) : total;
       const uint32_t chunk_start = start_node;
       dag_event = q.submit([&](sycl::handler& h) {
-        MOM_USE_BUNDLE(h, kb);
+        mom_use_bundle(h, kb);
         h.parallel_for(
           sycl::nd_range<1>(sycl::range<1>(round_up(current_nodes, dag_workgroup)), sycl::range<1>(dag_workgroup)),
           [=](sycl::nd_item<1> item) {
@@ -809,14 +808,32 @@ public:
   }
 };
 
-static EtchashState& etchash_state(const std::string& dev_str) {
-  static std::mutex states_mutex;
-  static std::map<std::string, std::unique_ptr<EtchashState>> states;
+using EtchashStateMap = std::map<std::string, std::unique_ptr<EtchashState>>;
 
-  std::lock_guard<std::mutex> lock(states_mutex);
-  auto& state = states[dev_str];
+static EtchashStateMap& etchash_states() {
+  static EtchashStateMap* const states = new EtchashStateMap;
+  return *states;
+}
+
+static std::mutex& etchash_states_mutex() {
+  static std::mutex* const mutex = new std::mutex;
+  return *mutex;
+}
+
+static EtchashState& etchash_state(const std::string& dev_str) {
+  std::lock_guard<std::mutex> lock(etchash_states_mutex());
+  auto& state = etchash_states()[dev_str];
   if (!state) state = std::make_unique<EtchashState>(dev_str);
   return *state;
+}
+
+void etchash_cleanup_states() noexcept {
+  try {
+    std::lock_guard<std::mutex> lock(etchash_states_mutex());
+    etchash_states().clear();
+  } catch (...) {
+    std::fprintf(stderr, "etchash: ordered SYCL cleanup failed\n");
+  }
 }
 
 } // namespace mom_etchash
@@ -876,7 +893,7 @@ int etchash(
       state.device);
   } else {
     sycl_wait_and_throw(q.submit([&](sycl::handler& h) {
-      MOM_USE_BUNDLE(h, kb);
+      mom_use_bundle(h, kb);
       sycl::local_accessor<uint32_t, 1> scratch(sycl::range<1>(SCRATCH_WORDS), h);
       h.parallel_for(
         sycl::nd_range<1>(
