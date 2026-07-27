@@ -5,13 +5,15 @@ const { perfTests } = require("./vectors");
 
 const algo = process.argv[2];
 const availableAlgos = perfTests.map((definition) => definition.algo);
-if (algo && !availableAlgos.includes(algo)) {
+if (algo && algo !== "gpu" && !availableAlgos.includes(algo)) {
   console.error(`Unknown perf algo: ${algo}`);
-  console.error(`Available algos: ${availableAlgos.join(", ")}`);
+  console.error(`Available algos: gpu, ${availableAlgos.join(", ")}`);
   process.exit(1);
 }
 
 const testArgs = [
+  "--require",
+  "./tests/common/no_pool_network.js",
   "--require",
   "./tests/common/test_output_buffer.js",
   "--test",
@@ -21,7 +23,8 @@ const testArgs = [
 ];
 // perf.js reads these; MOM_PERF_SAMPLES is forwarded as-is when set.
 const testEnv = {};
-if (algo) {testEnv.MOM_PERF_ALGO = algo;}
+if (algo === "gpu") {testEnv.MOM_PERF_GPU_ONLY = "1";}
+else if (algo) {testEnv.MOM_PERF_ALGO = algo;}
 if (process.env.MOM_PERF_SAMPLES) {testEnv.MOM_PERF_SAMPLES = process.env.MOM_PERF_SAMPLES;}
 
 const runner = resolveNodeRunner(testArgs, testEnv);

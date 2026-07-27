@@ -11,8 +11,8 @@ const suites = {
   all: [...(hasLogicSuite ? ["tests/logic.js"] : []), "tests/all.js"],
   cpu: ["tests/cpu.js"],
   gpu: ["tests/gpu.js"],
-  "sycl-cpu": ["tests/sycl_cpu.js"],
-  opencl: ["tests/opencl.js"],
+  "gpu-discrete": ["tests/discrete_gpu.js"],
+  "gpu-portable-cpu": ["tests/portable_gpu_cpu.js"],
 };
 
 const suite = process.argv[2] || "all";
@@ -23,12 +23,21 @@ if (!suites[suite]) {
 
 const testArgs = [
   "--require",
+  "./tests/common/no_pool_network.js",
+  "--require",
   "./tests/common/test_output_buffer.js",
   "--test",
   "--test-reporter=./tests/common/spec_reporter.js",
+  // Some suites touch the same physical GPU through different backends. Keep top-level files
+  // serialized; the algorithm-centric GPU matrix controls safe device-level concurrency itself.
   "--test-concurrency=1",
   ...suites[suite],
 ];
 
-const runner = resolveNodeRunner(testArgs);
-spawnAndExit(runner.command, runner.args);
+const usesVendorMatrix = suite === "all" || suite === "gpu" || suite === "gpu-discrete";
+const portableOpencl = (process.env.MOM_GPU_BACKEND || "").toLowerCase() === "opencl";
+const runnerEnv = usesVendorMatrix && !portableOpencl
+  ? {MOM_GPU_TEST_VENDORS: process.env.MOM_GPU_TEST_VENDORS || "intel,nvidia,amd"}
+  : {};
+const runner = resolveNodeRunner(testArgs, runnerEnv);
+spawnAndExit(runner.command, runner.args, {env: runner.env});

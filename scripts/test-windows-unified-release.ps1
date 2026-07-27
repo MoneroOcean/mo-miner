@@ -98,7 +98,7 @@ try {
   if ($LASTEXITCODE -ne 0) { throw "Windows unified packaging failed: $LASTEXITCODE" }
 
   Clear-CompilerEnvironment
-  foreach ($suite in @('cpu', 'sycl-cpu')) {
+  foreach ($suite in @('cpu', 'gpu-portable-cpu')) {
     Remove-Item Env:MOM_GPU_BACKEND -ErrorAction SilentlyContinue
     Remove-Item Env:MOM_OPENCL_DEVICE_TYPE -ErrorAction SilentlyContinue
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File `

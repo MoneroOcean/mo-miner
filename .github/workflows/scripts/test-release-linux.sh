@@ -3,11 +3,7 @@ set -euo pipefail
 
 archive="${1:?Usage: .github/workflows/scripts/test-release-linux.sh <archive> [suite]}"
 suite="${2:-all}"
-if [ "$suite" = opencl ]; then
-  export MOM_GPU_BACKEND=opencl
-  export MOM_OPENCL_DEVICE_TYPE="${MOM_OPENCL_DEVICE_TYPE:-cpu}"
-fi
-if [ "$suite" = sycl-cpu ]; then
+if [ "$suite" = gpu-portable-cpu ]; then
   # Select the packaged standards-only OpenCL worker before the launcher smoke test as well as the
   # vector suite. Otherwise a host with an Intel GPU can make QEMU probe Level Zero/DRM before the
   # CPU-only selector is applied, making this nominally hardware-independent gate abort.
@@ -151,8 +147,7 @@ export PATH="$package_dir:$system_path"
 # Point the generic OpenCL CPU gate at the archive's Intel CPU ICD explicitly. OCL_ICD_FILENAMES is
 # not implemented by every system loader; OCL_ICD_VENDORS with a private one-line manifest is. This
 # also prevents unrelated host GPU ICDs from making a CPU-only CI gate appear to pass accidentally.
-if { [ "$suite" = opencl ] && [ "${MOM_OPENCL_DEVICE_TYPE:-gpu}" = cpu ]; } ||
-   [ "$suite" = sycl-cpu ]; then
+if [ "$suite" = gpu-portable-cpu ]; then
   # Test workers run with the extracted package as cwd, so the loader needs an absolute vendor
   # directory. A relative MOM_RELEASE_TEST_DIR otherwise works for the launcher smoke but becomes a
   # nonexistent package-relative path when tests spawn their own miner processes.
@@ -216,24 +211,20 @@ $smoke_output
 EOF
 )"
 fi
-if { [ "$suite" = gpu ] || { [ "$suite" = opencl ] && [ "${MOM_OPENCL_DEVICE_TYPE:-gpu}" != cpu ]; }; } &&
-   ! grep -Eq ':"gpu[0-9]+' <<<"$smoke_output"; then
+if [ "$suite" = gpu ] && ! grep -Eq ':"gpu[0-9]+' <<<"$smoke_output"; then
   fail "Linux release GPU discovery missing" \
     "The $suite suite requires launcher-time GPU discovery, but algo_params returned no GPU job."
 fi
 
 case "$suite" in
-  all|cpu|gpu|sycl-cpu|opencl)
+  all|cpu|gpu|gpu-portable-cpu)
     if [ "$suite" = gpu ]; then export MOM_REQUIRE_GPU_TESTS=1; fi
-    if [ "$suite" = sycl-cpu ]; then
-      export MOM_REQUIRE_SYCL_CPU_TESTS=1
+    if [ "$suite" = gpu-portable-cpu ]; then
+      export MOM_REQUIRE_PORTABLE_CPU_TESTS=1
       # Exercise every CPU-sized GPU algorithm vector from the extracted archive. These cases avoid
       # production-size DAGs but prove that the complete portable kernel set and runtime closure JIT.
       # Use the standards-only SPIR-V worker: unlike AdaptiveCpp's OpenMP backend it has the same
       # semantics as the generic OpenCL deployment path and passes the complete vector set.
-    fi
-    if [ "$suite" = opencl ] && [ "${MOM_OPENCL_DEVICE_TYPE:-gpu}" = cpu ]; then
-      export MOM_REQUIRE_SYCL_CPU_TESTS=1
     fi
     (cd "$package_dir" && "$node_bin" tests/run_hash.js "$suite") ;;
   *)

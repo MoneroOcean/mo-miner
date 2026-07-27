@@ -86,12 +86,12 @@ function Invoke-PortableSuite {
   # let an Intel Level Zero device leak into what is meant to be the OpenCL compatibility gate.
   Remove-Item Env:MOM_NATIVE_PATH -ErrorAction SilentlyContinue
   $env:MOM_COMPILER_POLICY_STRICT = '1'
-  $env:MOM_REQUIRE_SYCL_CPU_TESTS = '1'
+  $env:MOM_REQUIRE_PORTABLE_CPU_TESTS = '1'
 
   Write-Host '=== Portable OpenCL: CPU and Intel GPU ==='
   $env:MOM_GPU_BACKEND = 'opencl'
   Remove-Item Env:MOM_GPU_TEST_VENDORS -ErrorAction SilentlyContinue
-  & node.exe .\tests\run_hash.js opencl
+  & node.exe .\tests\run_hash.js gpu
   if ($LASTEXITCODE -ne 0) { throw "Portable OpenCL compatibility suite failed: $LASTEXITCODE" }
 }
 

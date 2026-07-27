@@ -2,4 +2,4 @@
 
 const {defineGpuTestMatrix} = require("./common/gpu_test_matrix");
 
-defineGpuTestMatrix();
+defineGpuTestMatrix({portableCpuOnly: true});

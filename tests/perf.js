@@ -7,7 +7,10 @@ const { formatHashrate, runMinerBench } = require("./common/miner_command");
 const { perfTests } = require("./vectors");
 
 const selectedAlgo = process.env.MOM_PERF_ALGO || "";
-const selectedTests = selectedAlgo ? perfTests.filter((definition) => definition.algo === selectedAlgo) : perfTests;
+const gpuOnly = process.env.MOM_PERF_GPU_ONLY === "1";
+const selectedTests = selectedAlgo
+  ? perfTests.filter((definition) => definition.algo === selectedAlgo)
+  : gpuOnly ? perfTests.filter((definition) => definition.gpu) : perfTests;
 
 if (selectedAlgo && selectedTests.length === 0) {
   throw new Error(`Unknown perf algo: ${selectedAlgo}`);
@@ -26,7 +29,8 @@ function sampleSummary(result) {
   return ` median of ${result.samples.length} samples [${result.samples.map(formatHashrate).join(", ")}]`;
 }
 
-describe(selectedAlgo ? `proof-of-work performance: ${selectedAlgo}` : "proof-of-work performance", () => {
+describe(selectedAlgo ? `proof-of-work performance: ${selectedAlgo}`
+  : gpuOnly ? "GPU proof-of-work performance" : "proof-of-work performance", () => {
   for (const definition of selectedTests) {
     it(definition.name, { timeout: definition.timeoutMs || 3 * 60 * 1000 }, async (t) => {
       const result = await runMinerBench(definition);
@@ -38,6 +42,10 @@ describe(selectedAlgo ? `proof-of-work performance: ${selectedAlgo}` : "proof-of
       assert.ok(result.hashrate > 0, `${definition.name} reported invalid hashrate: ${result.hashrate}`);
       assertGpuIntensityDev(definition.algo, result.dev);
       t.diagnostic(`${definition.algo} (${result.dev}): ${formatHashrate(result.hashrate)}${sampleSummary(result)}`);
+      if (process.env.MOM_PERF_VERBOSE === "1") {
+        if (result.stdout.trim()) {t.diagnostic(`miner stdout:\n${result.stdout.trimEnd()}`);}
+        if (result.stderr.trim()) {t.diagnostic(`miner stderr:\n${result.stderr.trimEnd()}`);}
+      }
     });
   }
 });

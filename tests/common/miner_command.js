@@ -3,6 +3,7 @@
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
+const compilerPolicy = require("../../compiler-policy");
 
 const repoRoot = path.join(__dirname, "..", "..");
 const releaseExecutableNames = process.platform === "win32"
@@ -16,7 +17,7 @@ let autoAlgoParamsPromise = null;
 let autoAlgoParamsReportPromise = null;
 
 const hashrateUnits = [
-  { value: 1000000000000000, suffix: "PH/s" },   // pearl reports GEMM throughput in TH/s+
+  { value: 1000000000000000, suffix: "PH/s" },   // pearlhash reports GEMM throughput in TH/s+
   { value: 1000000000000, suffix: "TH/s" },
   { value: 1000000000, suffix: "GH/s" },
   { value: 1000000, suffix: "MH/s" },
@@ -154,6 +155,11 @@ function isMissingGpuOutput(result) {
   // A run that reported a clean pass clearly found its device; do not let
   // diagnostic stderr (e.g. a SYCL runtime buffer/info notice) misclassify it.
   if (result.stdout.includes("PASSED")) {return false;}
+  // Preserve actionable compiler/JIT/crash diagnostics. Some of them mention a SYCL device in
+  // their surrounding worker error, which the availability pattern below must not turn into a
+  // misleading "device unavailable" skip.
+  if (/\[AdaptiveCpp Error\]|Code object construction failed|Worker \d+ exited unexpectedly|LLVM ERROR|fatal error/i
+    .test(output)) {return false;}
   if (result.code === 0 && result.stdout.trim() === "" && result.stderr.trim() === "") {return true;}
   return /Unknown compute platform gpu|No device of requested type|No GPU|gpu[0-9]+.*not found|SYCL.*device/i.test(output);
 }
@@ -174,9 +180,10 @@ function releasePathEntry(entry) {
 
 function withWindowsTestPath(env) {
   return withWindowsPathEntries(env, [
+    env.MOM_NATIVE_PATH ? path.dirname(env.MOM_NATIVE_PATH) : null,
     releasePathEntry(path.join(path.dirname(releaseExecutable), "libs")),
     releasePathEntry(path.dirname(releaseExecutable)),
-    path.join(repoRoot, "build", "Release"),
+    path.join(repoRoot, "build", "win", "Release"),
   ]);
 }
 
@@ -223,10 +230,13 @@ function createRunResult() {
   };
 }
 
-function spawnMiner(args, env) {
+function spawnMiner(args, env, cwd = repoRoot) {
+  if (!hasReleaseExecutable && args[0] === "mom.js") {
+    args = [path.join(repoRoot, "mom.js"), ...args.slice(1)];
+  }
   const command = resolveMinerCommand(args);
   return spawn(command[0], command.slice(1), {
-    cwd: repoRoot,
+    cwd,
     env: childEnv(env),
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -240,7 +250,7 @@ function runNode(args, options = {}) {
   const timeoutMs = options.timeoutMs || 5 * 60 * 1000;
 
   return new Promise((resolve) => {
-    const child = spawnMiner(args, options.env);
+    const child = spawnMiner(args, options.env, options.cwd);
     const result = createRunResult();
     let settled = false;
     let forceResolveTimeout = null;
@@ -284,32 +294,29 @@ async function getAutoAlgoParams() {
   return autoAlgoParamsPromise;
 }
 
-async function getAutoAlgoParamsReport() {
-  if (!autoAlgoParamsReportPromise) {
-    const args = ["tests/common/print_algo_params.js"];
-    autoAlgoParamsReportPromise = runNode(args, { timeoutMs: 60 * 1000 })
-      .then((result) => {
-        if (result.error || result.code !== 0) {
-          throw new Error(formatFailure("Unable to detect algo params", args, result));
-        }
+function detectAlgoParams(env) {
+  const args = ["tests/common/print_algo_params.js"];
+  return runNode(args, {timeoutMs: 60 * 1000, env}).then((result) => {
+    if (result.error || result.code !== 0) {
+      throw new Error(formatFailure("Unable to detect algo params", args, result));
+    }
 
-        const line = result.stdout
-          .trim()
-          .split(/\r?\n/)
-          .reverse()
-          .find((entry) => entry.startsWith("MOM_ALGO_PARAMS "));
+    const line = result.stdout.trim().split(/\r?\n/).reverse()
+      .find((entry) => entry.startsWith("MOM_ALGO_PARAMS "));
+    if (!line) {
+      throw new Error(formatFailure("Algo params output did not contain JSON marker", args, result));
+    }
+    return {
+      params: JSON.parse(line.slice("MOM_ALGO_PARAMS ".length)),
+      stdout: result.stdout,
+      stderr: result.stderr,
+    };
+  });
+}
 
-        if (!line) {
-          throw new Error(formatFailure("Algo params output did not contain JSON marker", args, result));
-        }
-
-        return {
-          params: JSON.parse(line.slice("MOM_ALGO_PARAMS ".length)),
-          stdout: result.stdout,
-          stderr: result.stderr,
-        };
-      });
-  }
+async function getAutoAlgoParamsReport(env) {
+  if (env) {return detectAlgoParams(env);}
+  if (!autoAlgoParamsReportPromise) {autoAlgoParamsReportPromise = detectAlgoParams();}
   return autoAlgoParamsReportPromise;
 }
 
@@ -322,8 +329,50 @@ function parseSyclCpuDevices(output) {
   return devices;
 }
 
+function parseGpuDevices(output, integrated = null) {
+  const devices = new Map();
+  for (const line of output.split(/\r?\n/)) {
+    const match = line.match(/^(gpu\d+):\s+(.+)$/);
+    if (!match) {continue;}
+    const isIntegrated = /\s\[integrated\]$/i.test(match[2]);
+    if (integrated !== null && isIntegrated !== integrated) {continue;}
+    devices.set(match[1], {dev: match[1], description: match[2], integrated: isIntegrated});
+  }
+  return [...devices.values()];
+}
+
+function parseDiscreteGpuDevices(output) {
+  return parseGpuDevices(output, false).map(({dev, description}) => ({dev, description}));
+}
+
+async function getGpuDevices(vendor, options = {}) {
+  const baseEnv = {
+    MOM_GPU_BACKEND: vendor,
+    ...(options.env || {}),
+  };
+  const selectedEnv = compilerPolicy.workerEnv(
+    options.algo || "etchash",
+    {...process.env, ...baseEnv},
+    process.platform,
+    options.backend || "auto"
+  );
+  let report;
+  try {
+    report = await getAutoAlgoParamsReport({...baseEnv, ...selectedEnv});
+  } catch (error) {
+    return {skipped: true, reason: `${vendor} GPU discovery failed: ${error.message}`};
+  }
+  const integrated = Object.hasOwn(options, "integrated") ? options.integrated : false;
+  const devices = parseGpuDevices(`${report.stdout}\n${report.stderr}`, integrated);
+  if (!devices.length) {
+    const kind = integrated === null ? "" : integrated ? " integrated" : " discrete";
+    return {skipped: true, reason: `No${kind} ${vendor} GPU is available in this environment`};
+  }
+  return {skipped: false, devices, params: report.params};
+}
+
 function syclCpuUnavailable(message) {
-  if (process.env.GITHUB_ACTIONS) {
+  if (process.env.GITHUB_ACTIONS || process.env.MOM_REQUIRE_PORTABLE_CPU_TESTS === "1") {
     emitGitHubError("SYCL CPU device unavailable", message);
     throw new Error(message);
   }
@@ -335,7 +384,7 @@ function syclCpuUnavailable(message) {
 }
 
 function syclCpuDetectionFailure(error) {
-  if (process.env.GITHUB_ACTIONS) {
+  if (process.env.GITHUB_ACTIONS || process.env.MOM_REQUIRE_PORTABLE_CPU_TESTS === "1") {
     emitGitHubError("SYCL CPU device unavailable", error.message);
     throw error;
   }
@@ -345,13 +394,13 @@ function syclCpuDetectionFailure(error) {
   };
 }
 
-async function getFirstSyclCpuDevice() {
+async function getFirstSyclCpuDevice(env) {
   const assumedDevice = assumedSyclCpuDevice();
   if (assumedDevice) {return assumedDevice;}
 
   let report;
   try {
-    report = await getAutoAlgoParamsReport();
+    report = await getAutoAlgoParamsReport(env);
   } catch (error) {
     return syclCpuDetectionFailure(error);
   }
@@ -387,9 +436,9 @@ async function resolveBenchJob(definition) {
   if (!definition.autoDev) {return { job };}
 
   const algoParams = await getAutoAlgoParams();
-  const dev = algoParams[job.algo];
-  if (dev) {
-    job.dev = dev;
+  const reported = algoParams[job.algo];
+  if (reported) {
+    Object.assign(job, compilerPolicy.parseReportedAlgoParam(reported));
     return { job };
   }
 
@@ -409,7 +458,7 @@ async function maybeDebugRerun(definition, args, result) {
 
   const debugResult = await runNode(args, {
     timeoutMs: definition.timeoutMs,
-    env: { MOM_DEBUG_STARTUP: "1" },
+    env: {...definition.env, MOM_DEBUG_STARTUP: "1"},
   });
   return {
     ...result,
@@ -475,12 +524,16 @@ async function runMinerBench(definition) {
   const sampleCount = benchSampleCount(definition);
   const timeoutMs = definition.timeoutMs || 150 * 1000;
   const unitPattern = Object.keys(hashrateUnitMultipliers).map(escapeRegExp).join("|");
-  const hashratePattern = new RegExp(`Algo ${escapeRegExp(job.algo)} \\([^)]*\\) hashrate: ([0-9.]+)\\s+(${unitPattern})`, "g");
+  const hashratePattern = new RegExp(
+    `Algo ${escapeRegExp(job.algo)} \\(([^)]*)\\) hashrate: ([0-9.]+)\\s+(${unitPattern})`,
+    "g"
+  );
 
   return new Promise((resolve, reject) => {
     const child = spawnMiner(args);
     const result = createRunResult();
     const matchedHashrates = [];
+    const matchedDevices = [];
     let stopping = false;
 
     const stop = () => {
@@ -499,7 +552,8 @@ async function runMinerBench(definition) {
       appendOutput(result, streamName, chunk);
       const matches = [...`${result.stdout}\n${result.stderr}`.matchAll(hashratePattern)];
       for (const match of matches.slice(matchedHashrates.length)) {
-        matchedHashrates.push(parseFormattedHashrate(match[1], match[2]));
+        matchedDevices.push(match[1]);
+        matchedHashrates.push(parseFormattedHashrate(match[2], match[3]));
       }
       if (matchedHashrates.length >= sampleCount) {stop();}
     };
@@ -513,7 +567,9 @@ async function runMinerBench(definition) {
       clearTimeout(timeout);
       result.code = code;
       result.signal = signal;
-      finishBenchRun(definition, args, job, result, matchedHashrates, sampleCount, resolve, reject);
+      finishBenchRun(
+        definition, args, job, result, matchedHashrates, matchedDevices, sampleCount, resolve, reject
+      );
     });
   });
 }
@@ -523,10 +579,18 @@ function benchSampleCount(definition) {
   return Number.isFinite(samples) && samples > 0 ? samples : 1;
 }
 
-function finishBenchRun(definition, args, job, result, matchedHashrates, sampleCount, resolve, reject) {
+function finishBenchRun(
+  definition, args, job, result, matchedHashrates, matchedDevices, sampleCount, resolve, reject
+) {
   if (matchedHashrates.length >= sampleCount && matchedHashrates.every((rate) => rate > 0)) {
     const samples = matchedHashrates.slice(0, sampleCount);
-    return resolve({ hashrate: medianHashrate(samples), samples, dev: job.dev });
+    return resolve({
+      hashrate: medianHashrate(samples),
+      samples,
+      dev: matchedDevices[sampleCount - 1] || job.dev,
+      stdout: result.stdout,
+      stderr: result.stderr,
+    });
   }
   if (definition.gpu && isMissingGpuOutput(result))
   {return resolve({ skipped: true, reason: "GPU device is not available in this environment" });}
@@ -539,12 +603,16 @@ function finishBenchRun(definition, args, job, result, matchedHashrates, sampleC
 
 module.exports = {
   formatHashrate,
+  getGpuDevices,
   getFirstSyclCpuDevice,
-  hasReleaseExecutable,
   parseFormattedHashrate,
+  parseReportedAlgoParam: compilerPolicy.parseReportedAlgoParam,
+  parseDiscreteGpuDevices,
+  parseGpuDevices,
   repoRoot,
   resolveMinerCommand,
   resolveNodeRunner,
+  runNode,
   runMinerBench,
   runMinerTest,
   spawnAndExit,

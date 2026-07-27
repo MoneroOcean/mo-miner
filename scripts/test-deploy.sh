@@ -73,6 +73,7 @@ test_linux_nvidia_release() {
   local output
   output="$(
     docker run --rm --gpus all -v "$ROOT_DIR:/repo:ro" \
+      -e MOM_TEST_NO_POOL_NETWORK=1 \
       -e MOM_RELEASE_ARCHIVE="$LINUX_ARCHIVE" -e MOM_RELEASE_DIR="$RELEASE_DIR" \
       ubuntu:26.04 bash -lc '
       set -euo pipefail
@@ -103,6 +104,7 @@ test_linux_intel_release() {
   local output
   output="$(
     docker run --rm --device=/dev/dri:/dev/dri -v "$ROOT_DIR:/repo:ro" \
+      -e MOM_TEST_NO_POOL_NETWORK=1 \
       -e MOM_RELEASE_ARCHIVE="$LINUX_ARCHIVE" -e MOM_RELEASE_DIR="$RELEASE_DIR" \
       ubuntu:26.04 bash -lc '
       set -euo pipefail
@@ -131,7 +133,8 @@ test_linux_amd_release() {
   local output
   output="$(
     docker run --rm --device=/dev/kfd --device=/dev/dri --group-add video \
-      -v "$ROOT_DIR:/repo:ro" -e MOM_RELEASE_ARCHIVE="$LINUX_ARCHIVE" \
+      -v "$ROOT_DIR:/repo:ro" -e MOM_TEST_NO_POOL_NETWORK=1 \
+      -e MOM_RELEASE_ARCHIVE="$LINUX_ARCHIVE" \
       -e MOM_RELEASE_DIR="$RELEASE_DIR" ubuntu:26.04 bash -lc '
       set -euo pipefail
       export DEBIAN_FRONTEND=noninteractive
@@ -198,7 +201,8 @@ PS
   encoded="$(printf '%s' "$ps_script" | iconv -f UTF-8 -t UTF-16LE | base64 -w0)"
   set +e
   output="$(printf '%s\n' "$SUDO_PASSWORD" | sudo -S env GPU_GROUP=nvidia "$WIN_RUN" --release -- \
-    env "MOM_RELEASE_ARCHIVE=$WINDOWS_ARCHIVE" powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand "$encoded" 2>&1)"
+    env "MOM_RELEASE_ARCHIVE=$WINDOWS_ARCHIVE" "MOM_TEST_NO_POOL_NETWORK=1" \
+      powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand "$encoded" 2>&1)"
   status=$?
   set -e
   printf '%s\n' "$output"
@@ -237,7 +241,8 @@ PS
   encoded="$(printf '%s' "$ps_script" | iconv -f UTF-8 -t UTF-16LE | base64 -w0)"
   set +e
   output="$(printf '%s\n' "$SUDO_PASSWORD" | sudo -S env GPU_GROUP=arc "$WIN_RUN" --release -- \
-    env "MOM_RELEASE_ARCHIVE=$WINDOWS_ARCHIVE" powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand "$encoded" 2>&1)"
+    env "MOM_RELEASE_ARCHIVE=$WINDOWS_ARCHIVE" "MOM_TEST_NO_POOL_NETWORK=1" \
+      powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand "$encoded" 2>&1)"
   status=$?
   set -e
   printf '%s\n' "$output"
@@ -276,7 +281,8 @@ PS
   encoded="$(printf '%s' "$ps_script" | iconv -f UTF-8 -t UTF-16LE | base64 -w0)"
   set +e
   output="$(printf '%s\n' "$SUDO_PASSWORD" | sudo -S env GPU_GROUP=amd "$WIN_RUN" --release -- \
-    env "MOM_RELEASE_ARCHIVE=$WINDOWS_ARCHIVE" powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand "$encoded" 2>&1)"
+    env "MOM_RELEASE_ARCHIVE=$WINDOWS_ARCHIVE" "MOM_TEST_NO_POOL_NETWORK=1" \
+      powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand "$encoded" 2>&1)"
   status=$?
   set -e
   printf '%s\n' "$output"

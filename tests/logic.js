@@ -13,6 +13,7 @@ const vm = require("node:vm");
 const opts = require("../opts.js");
 const helper = require("../helper.js");
 const pool = require("../pool.js");
+const compilerPolicy = require("../compiler-policy.js");
 const { formatHashrate, parseFormattedHashrate } = require("./common/miner_command");
 const specReporter = require("./common/spec_reporter");
 const repoRoot = path.join(__dirname, "..");
@@ -49,10 +50,19 @@ async function loadMinerWithStubs(options = {}) {
     connect_pool_throttle: (pool_id, setJob) => { capturedSetJob = setJob; },
     pool_write: (pool_id, json) => poolWrites.push({ pool_id, json }),
   };
-  const processStub = Object.create(process);
-  processStub.argv = options.argv || ["node", "mom.js", "mine", "pool.example:1", "user"];
-  processStub.env = { ...process.env };
-  processStub.exit = (code) => { throw new Error(`unexpected exit ${code}`); };
+  // Give every VM-loaded miner its own signal emitter. Inheriting from the real process object also
+  // inherits its internal EventEmitter state, so repeated tests otherwise leak signal handlers into
+  // the test runner and eventually trigger MaxListenersExceededWarning.
+  const processStub = new events.EventEmitter();
+  Object.assign(processStub, {
+    argv: options.argv || ["node", "mom.js", "mine", "pool.example:1", "user"],
+    env: { ...process.env, ...(options.env || {}) },
+    platform: process.platform,
+    stderr: process.stderr,
+    stdin: process.stdin,
+    stdout: process.stdout,
+    exit: (code) => { throw new Error(`unexpected exit ${code}`); },
+  });
   const detachedSetTimeout = (...args) => {
     const timer = setTimeout(...args);
     if (timer.unref) {timer.unref();}
@@ -62,11 +72,12 @@ async function loadMinerWithStubs(options = {}) {
     if (id === "./helper.js") {return helperStub;}
     if (id === "./pool.js") {return poolStub;}
     if (id === "./opts.js") {return opts;}
+    if (id === "./compiler-policy.js") {return require("../compiler-policy.js");}
     return require(id);
   };
 
   vm.runInNewContext(
-    `(function(require, module, exports, process, global, console, Buffer, setTimeout, clearTimeout, setInterval, setImmediate) { ${source}\nmodule.exports.__test = { expectedTestThreads, messageHandler };\n})`,
+    `(function(require, module, exports, process, global, console, Buffer, setTimeout, clearTimeout, setInterval, setImmediate) { ${source}\nmodule.exports.__test = { expectedTestThreads, messageHandler, pearlhashDev, publicAlgoParams };\n})`,
     {},
   )(requireStub, moduleStub, moduleStub.exports, processStub, globalStub, console, Buffer, detachedSetTimeout, clearTimeout, noOp, setImmediate);
 
@@ -80,6 +91,8 @@ async function loadMinerWithStubs(options = {}) {
     global: globalStub,
     expectedTestThreads: moduleStub.exports.__test.expectedTestThreads,
     messageHandler: moduleStub.exports.__test.messageHandler,
+    pearlhashDev: moduleStub.exports.__test.pearlhashDev,
+    publicAlgoParams: moduleStub.exports.__test.publicAlgoParams,
     poolWrites,
     sentMessages,
   };
@@ -146,6 +159,60 @@ function completeOneBenchmark(miner, rate = "1") {
 }
 
 describe("JavaScript logic tests", () => {
+test("correctness mode blocks real pool sockets", () => {
+  const previousOpt = global.opt;
+  const previousGuard = process.env.MOM_TEST_NO_POOL_NETWORK;
+  global.opt = mockPoolOptions({ pool_time: { connect_throttle: 0 } });
+  process.env.MOM_TEST_NO_POOL_NETWORK = "1";
+  try {
+    assert.throws(
+      () => pool.connect_pool_throttle(0, noOp),
+      /Pool network access is disabled during mom correctness tests/
+    );
+  } finally {
+    global.opt = previousOpt;
+    if (previousGuard === undefined) {delete process.env.MOM_TEST_NO_POOL_NETWORK;}
+    else {process.env.MOM_TEST_NO_POOL_NETWORK = previousGuard;}
+  }
+});
+
+test("ROCr signal-pool shutdown warning is hidden without losing worker stderr", () => {
+  let filtered = helper.filterWorkerStderr("", "Warning: Resource leak detected by SharedSignalPool, 51");
+  assert.equal(filtered.visible, "");
+  filtered = helper.filterWorkerStderr(filtered.pending, "9 Signals leaked.\nreal warning\n");
+  assert.equal(filtered.pending, "");
+  assert.equal(filtered.visible, "real warning\n");
+
+  filtered = helper.filterWorkerStderr("", "partial diagnostic", true);
+  assert.equal(filtered.pending, "");
+  assert.equal(filtered.visible, "partial diagnostic");
+});
+
+test("known colored AdaptiveCpp advisories are hidden without hiding errors or unfamiliar warnings", () => {
+  const bufferWarning = "\u001b[;35m[AdaptiveCpp Warning] \u001b[0mThis application uses SYCL buffers; the SYCL " +
+    "buffer-accessor model is well-known to introduce unnecessary overheads. Please consider " +
+    "migrating to the SYCL2020 USM model, in particular device USM (sycl::malloc_device) combined " +
+    "with in-order queues for more performance. See the AdaptiveCpp performance guide for more information: \n" +
+    "https://github.com/AdaptiveCpp/AdaptiveCpp/blob/develop/doc/performance.md\n";
+  const jitWarning = "\u001b[;35m[AdaptiveCpp Warning] \u001b[0mkernel_cache: This application run has " +
+    "resulted in new binaries being JIT-compiled. This indicates that the runtime optimization process " +
+    "has not yet reached peak performance. You may want to run the application again until this warning " +
+    "no longer appears to achieve optimal performance.\n";
+  const unfamiliarWarning = "[AdaptiveCpp Warning] kernel_cache: cache directory is read-only.\n";
+  const ptxFallback = "'+ptx88' is not a recognized feature for this target (ignoring feature)\n";
+  const otherTargetWarning = "'+ptx90' is not a recognized feature for this target (ignoring feature)\n";
+  const filtered = helper.filterWorkerStderr("", bufferWarning + jitWarning + ptxFallback +
+    unfamiliarWarning + otherTargetWarning + "real error\n");
+  assert.equal(filtered.pending, "");
+  assert.equal(filtered.visible, unfamiliarWarning + otherTargetWarning + "real error\n");
+});
+
+test("Windows HIP loader path chatter is hidden without hiding normal stdout", () => {
+  assert.equal(helper.filterWorkerStdoutLine("HIP Library Path: C:\\WINDOWS\\SYSTEM32\\amdhip64_7.dll"), "");
+  assert.equal(helper.filterWorkerStdoutLine("HIP Library Path failed"), "HIP Library Path failed");
+  assert.equal(helper.filterWorkerStdoutLine("normal output"), "normal output");
+});
+
 test("saved config omits job without mutating live options", () => {
   const opt = {
     job: { algo: "rx/0", dev: "cpu" },
@@ -295,13 +362,13 @@ test("JSON dev options reject invalid device specs", () => {
   assert.doesNotMatch(result.stderr, /Cannot find module|Compute core/);
 });
 
-test("JSON dev options accept explicit SYCL GPU platform suffixes", () => {
+test("JSON dev options reject non-numeric GPU suffixes", () => {
   const result = spawnSync(process.execPath, [
     "mom.js",
     "bench",
     "cn/gpu",
     "--job",
-    JSON.stringify({ dev: "gpu1o*1280" }),
+    JSON.stringify({ dev: "gpu1x*1280" }),
     "--pool_time",
     JSON.stringify({ stats: -1 }),
   ], {
@@ -311,8 +378,7 @@ test("JSON dev options accept explicit SYCL GPU platform suffixes", () => {
   });
 
   assert.notEqual(result.status, 0);
-  assert.doesNotMatch(result.stderr, /invalid dev value: gpu1o\*1280/);
-  assert.match(result.stderr, /pool_time\.stats param must be non-negative/);
+  assert.match(result.stderr, /invalid dev value: gpu1x\*1280/);
 });
 
 test("mine pool URI rejects out-of-range ports", () => {
@@ -350,6 +416,26 @@ test("JSON pool options reject invalid ports", () => {
   assert.doesNotMatch(result.stderr, /Cannot find module|Compute core/);
 });
 
+test("JSON pool options reject removed protocol names", () => {
+  for (const protocol of ["pearl", "equihash"]) {
+    const result = spawnSync(process.execPath, [
+      "mom.js",
+      "bench",
+      "rx/0",
+      "--add.pool",
+      JSON.stringify({ url: "pool.example", port: 1, login: "user", protocol }),
+    ], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      timeout: 5000,
+    });
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, new RegExp("protocol is not supported: " + protocol));
+    assert.doesNotMatch(result.stderr, /Cannot find module|Compute core/);
+  }
+});
+
 test("JSON algo params reject invalid perf values", () => {
   const result = spawnSync(process.execPath, [
     "mom.js",
@@ -366,6 +452,80 @@ test("JSON algo params reject invalid perf values", () => {
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /invalid perf value: fast/);
   assert.doesNotMatch(result.stderr, /Cannot find module|Compute core/);
+});
+
+test("JSON algo params reject unknown GPU backends", () => {
+  const result = spawnSync(process.execPath, [
+    "mom.js",
+    "bench",
+    "pearlhash",
+    "--new.algo_param.pearlhash",
+    JSON.stringify({dev: "gpu1", backend: "unknown"}),
+  ], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    timeout: 5000,
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /invalid backend value: unknown/);
+  assert.doesNotMatch(result.stderr, /Cannot find module|Compute core/);
+});
+
+test("PearlHash CLI algo params preserve named matrix tuning controls", () => {
+  const opt = {};
+  opts.set_default_opts(opt, opts.opt_help);
+  assert.equal(opts.parse_opt(
+    opt,
+    opts.opt_help,
+    "--new.algo_param.pearlhash",
+    JSON.stringify({dev: "gpu1*8192", backend: "native", m: 8192, n: 32768, k: 2048, rank: 128}),
+  ), true);
+  assert.deepEqual(opt.algo_params.pearlhash, {
+    dev: "gpu1*8192",
+    perf: null,
+    backend: "native",
+    m: 8192,
+    n: 32768,
+    k: 2048,
+    rank: 128,
+  });
+});
+
+test("PearlHash policy profile normalizes bare, batched, and parallel GPU device specs", async () => {
+  const miner = await loadMinerWithStubs({env: {MOM_GPU_BACKEND: "amd"}});
+  const profile = compilerPolicy.selection("pearlhash", "amd").pearlhashProfile;
+  assert.ok(profile);
+  assert.equal(miner.pearlhashDev("gpu1"), `gpu1*${profile.m}`);
+  assert.equal(miner.pearlhashDev("gpu1*1"), `gpu1*${profile.m}`);
+  assert.equal(
+    miner.pearlhashDev("gpu1*131072^2,gpu2"),
+    `gpu1*${profile.m}^2,gpu2*${profile.m}`,
+  );
+  assert.equal(miner.pearlhashDev("cpu"), "cpu");
+});
+
+test("algo_params reports requested and resolved GPU backends without changing CPU specs", async () => {
+  const miner = await loadMinerWithStubs({env: {MOM_GPU_BACKEND: "amd"}});
+  const profile = compilerPolicy.selection("pearlhash", "amd").pearlhashProfile;
+  assert.ok(profile);
+  miner.global.opt.algo_params = {
+    autolykos2: {dev: "gpu1*8", perf: null, backend: "auto"},
+    pearlhash: {dev: "gpu1*8192", perf: null, backend: "sycl"},
+    "rx/0": {dev: "cpu*8", perf: null, backend: "auto"},
+  };
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(miner.publicAlgoParams({
+      autolykos2: "gpu1*8",
+      pearlhash: "gpu1*8192",
+      "rx/0": "cpu*8",
+    }))),
+    {
+      autolykos2: "gpu1*8:auto[sycl-native]",
+      pearlhash: `gpu1*${profile.m}:sycl`,
+      "rx/0": "cpu*8",
+    },
+  );
 });
 
 test("repeat schedules delayed callbacks", async () => {
@@ -601,25 +761,41 @@ test("pool login advertises raw KawPow performance as kawpow1", async () => {
   });
 });
 
-test("donation pool mines a MoneroOcean algo while the rig is configured for pearl", async () => {
-  // Regression for pearl + donation: the donate pool (xmrig.moneroocean.stream, protocol null) must
+test("PearlHash uses its canonical protocol name for subscribe and authorize", async () => {
+  await withMockPool({
+    pool: { login: "prl-wallet", worker: "rig", protocol: "pearlhash", use_subscribe: true },
+    opt: { job: { algo: "pearlhash" } },
+    pool_time: { first_job_wait: 0.001 },
+  }, async ({ socket, writes, poolConfig }) => {
+    pool.connect_pool_throttle(0, noOp);
+    socket.emit("connect");
+
+    assert.equal(writes[0].method, "mining.subscribe");
+    assert.equal(writes[1].method, "mining.authorize");
+    assert.deepEqual(writes[1].params, { wallet: "prl-wallet", worker: "rig", pass: "x" });
+    poolConfig.last_job = {};
+  });
+});
+
+test("donation pool mines a MoneroOcean algo while the rig is configured for pearlhash", async () => {
+  // Regression for pearlhash + donation: the donate pool (xmrig.moneroocean.stream, protocol null) must
   // keep speaking the XMR `login` dialect and advertise a MoneroOcean-supported algo even when the
-  // rig's algo context is pearl. Otherwise donation would either send pearl-protocol traffic the MO
-  // pool can't serve, or advertise only pearl (which MO cannot assign). MO ignores pearl and assigns
+  // rig's algo context is pearlhash. Otherwise donation would either send pearlhash-protocol traffic the MO
+  // pool can't serve, or advertise only pearlhash (which MO cannot assign). MO ignores pearlhash and assigns
   // the other advertised algo (rx/0) in its login result, which must parse as an rx/0 donation job.
   let donatedJob = null;
   await withMockPool({
-    pool: { login: "user", pass: "x", use_subscribe: false }, // MO donate pool opts out of pearl subscribe
+    pool: { login: "user", pass: "x", use_subscribe: false }, // MO donate pool opts out of pearlhash subscribe
     opt: {
       bench_algo_params: 0,
-      job: { algo: "pearl" },                            // rig context is pearl; must NOT leak to the donate pool
-      algo_params: { pearl: { dev: "gpu1*131072", perf: 1 }, "rx/0": { dev: "cpu", perf: 1 } },
+      job: { algo: "pearlhash" },                            // rig context is pearlhash; must NOT leak to the donate pool
+      algo_params: { pearlhash: { dev: "gpu1*131072", perf: 1 }, "rx/0": { dev: "cpu", perf: 1 } },
     },
   }, async ({ socket, writes }) => {
     pool.connect_pool_throttle(0, (job) => { donatedJob = job; return job; });
     socket.emit("connect");
     const login = writes[0];
-    assert.equal(login.method, "login");                          // XMR login, not a pearl mining.subscribe
+    assert.equal(login.method, "login");                          // XMR login, not a pearlhash mining.subscribe
     assert.equal(login.params.algo.includes("rx/0"), true);      // a MoneroOcean-minable algo is offered
     socket.emit("data", Buffer.from(
       '{"jsonrpc":"2.0","id":1,"error":null,"result":{"id":"w","job":' +
@@ -1196,6 +1372,28 @@ test("Etchash submit uses ethproxy eth_submitWork format", async () => {
   ]));
 });
 
+test("PearlHash submit uses its canonical submit mode", async () => {
+  const miner = await loadMinerWithStubs();
+  miner.global.opt.pools[0].submit_mode = "pearlhash";
+
+  miner.messageHandler({
+    type: "result",
+    value: {
+      pool_id: 0,
+      job_id: "job1",
+      plain_proof: "proof",
+    },
+  });
+
+  assert.equal(miner.poolWrites.length, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(miner.poolWrites[0].json)), {
+    jsonrpc: "2.0",
+    id: 3,
+    method: "mining.submit",
+    params: { job_id: "job1", plain_proof: "proof" },
+  });
+});
+
 test("Autolykos2 submit uses Ergo mining.submit format", async () => {
   const miner = await loadMinerWithStubs();
   miner.global.opt.pools[0].submit_mode = "erg";
@@ -1243,7 +1441,7 @@ test("nicehash xn prefixes longer than noncebytes are truncated", async () => {
   assert.equal(jobMessage.job.nicehash_mask, "ffffffff");
 });
 
-test("Equihash125_4 (Flux) pools build the 140-byte header from the ZIP-301 notify", async () => {
+test("ZelHash (Flux) pools build the 140-byte header from the ZIP-301 notify", async () => {
   let jobMessage = null;
   const version  = "04000000";
   const prevhash = "a8675c842f7a1342fadd00cd9b4e4909526b1c0ab5a747c5529b4deb13000000";
@@ -1253,8 +1451,8 @@ test("Equihash125_4 (Flux) pools build the 140-byte header from the ZIP-301 noti
   const bits     = "ce28421d";
   const target   = "0000000a42ce000000000000000000000000000000000000000000000000000c";
   await withMockPool({
-    pool: { is_keepalive: true, login: "t1fluxwallet.worker", protocol: "equihash" },
-    opt: { job: { algo: "equihash125_4" } },
+    pool: { is_keepalive: true, login: "t1fluxwallet.worker", protocol: "zelhash" },
+    opt: { job: { algo: "zelhash" } },
     pool_time: { keepalive: 0.001, first_job_wait: 0.001 },
   }, async ({ socket, writes, poolConfig }) => {
     pool.connect_pool_throttle(0, (job) => { jobMessage = job; return job; });
@@ -1273,8 +1471,8 @@ test("Equihash125_4 (Flux) pools build the 140-byte header from the ZIP-301 noti
     assert.equal(writes[1].method, "mining.authorize");
     assert.deepEqual(writes[1].params, ["t1fluxwallet.worker", "x"]);
     assert.equal(poolConfig.extra_nonce, "0a1b");
-    assert.equal(poolConfig.equihash_target, target);
-    assert.equal(jobMessage.algo, "equihash125_4");
+    assert.equal(poolConfig.zelhash_target, target);
+    assert.equal(jobMessage.algo, "zelhash");
     assert.equal(jobMessage.job_id, "job1");
     assert.equal(jobMessage.target, target);
     assert.equal(jobMessage.ntime, ntime);
@@ -1293,10 +1491,10 @@ test("Equihash125_4 (Flux) pools build the 140-byte header from the ZIP-301 noti
   });
 });
 
-test("Equihash125_4 submit uses ZIP-301 mining.submit [worker, job_id, time, nonce2, solution]", async () => {
+test("ZelHash submit uses ZIP-301 mining.submit [worker, job_id, time, nonce2, solution]", async () => {
   const miner = await loadMinerWithStubs();
   const solution = "34" + "ab".repeat(52); // 0x34 compactSize + 52-byte compressed proof = 106 hex
-  miner.global.opt.pools[0].submit_mode = "equihash";
+  miner.global.opt.pools[0].submit_mode = "zelhash";
   miner.global.opt.pools[0].login = "t1fluxwallet.worker";
   miner.global.opt.pools[0].last_job = {
     job_id: "job1",

@@ -224,7 +224,7 @@ jobs:
           archive="$(find . -maxdepth 1 -name 'mom-*-lin.tgz' -print -quit)"
           .github/workflows/scripts/test-release-linux.sh "$archive" cpu
           MOM_RELEASE_EMULATE_INTEL_CPU=1 \
-            .github/workflows/scripts/test-release-linux.sh "$archive" sycl-cpu
+            .github/workflows/scripts/test-release-linux.sh "$archive" gpu-portable-cpu
 
       - name: Upload Linux release artifact
         if: inputs.upload_artifacts
@@ -425,7 +425,7 @@ jobs:
         run: |
           $archive = Get-ChildItem . -Filter "mom-*-win.zip" | Select-Object -First 1
           powershell -NoProfile -ExecutionPolicy Bypass -File .github\workflows\scripts\test-release-windows.ps1 -Archive $archive.FullName -Suite cpu
-          powershell -NoProfile -ExecutionPolicy Bypass -File .github\workflows\scripts\test-release-windows.ps1 -Archive $archive.FullName -Suite sycl-cpu
+          powershell -NoProfile -ExecutionPolicy Bypass -File .github\workflows\scripts\test-release-windows.ps1 -Archive $archive.FullName -Suite gpu-portable-cpu
 
       - name: Upload Windows release artifact
         if: inputs.upload_artifacts

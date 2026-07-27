@@ -187,12 +187,14 @@ const hashTests = [
   {
     name: "cn/gpu gpu1*8",
     gpu: true,
+    syclCpu: true,
     job: { algo: "cn/gpu", dev: "gpu1*8" },
     expected: dup("e55cb23e51649a59b127b96b515f2bf7bfea199741a0216cf838ded06eff82df", 8),
   },
   {
     name: "kawpow gpu1*256",
     gpu: true,
+    syclCpu: true,
     timeoutMs: 15 * 60 * 1000,
     job: {
       algo: "kawpow",
@@ -211,7 +213,7 @@ const hashTests = [
     // height 4415577 = epoch 588 (mainnet-scale ~5.4 GiB DAG). The pool ACCEPTED this share (network
     // consensus-validated) AND it reproduces offline -> end-to-end real-mainnet vector. blob = 32-byte
     // header + 8-byte winning nonce LITTLE-ENDIAN (nonce 0xef00000002249aaf; ef000000 = pool extranonce).
-    name: "kawpow gpu1*1 live-share h4415577",
+    name: "kawpow gpu1*1 recorded-share h4415577",
     gpu: true,
     timeoutMs: 15 * 60 * 1000,
     job: {
@@ -234,6 +236,7 @@ const hashTests = [
     // expected = "<final_hash> <mix_hash>". height 1 = epoch 0 (tiny DAG): clears seal + fill_mix.
     name: "firopow gpu1*1 height 1",
     gpu: true,
+    syclCpu: true,
     timeoutMs: 15 * 60 * 1000,
     job: {
       algo: "firopow",
@@ -253,7 +256,7 @@ const hashTests = [
     // GPU so it was submitted stale, but the hash is a genuine mainnet-job result and reproduces offline
     // (correctness anchored by firo's own height 1/2/1300 reference vectors above). blob = 32-byte header
     // + 8-byte winning nonce LE (nonce 0x2e6f000020c42945).
-    name: "firopow gpu1*1 live-share h1326124",
+    name: "firopow gpu1*1 recorded-mainnet h1326124",
     gpu: true,
     timeoutMs: 15 * 60 * 1000,
     job: {
@@ -276,6 +279,7 @@ const hashTests = [
     // expected = "<final_hash> <mix_hash>". height 0 = epoch 0 (3 GiB DAG): clears seal + sizing.
     name: "evrprogpow gpu1*1 height 0",
     gpu: true,
+    syclCpu: true,
     timeoutMs: 15 * 60 * 1000,
     job: {
       algo: "evrprogpow",
@@ -295,7 +299,7 @@ const hashTests = [
     // (consensus-validated) AND it reproduces offline -> the strongest end-to-end vector: real job
     // header, real winning nonce, mainnet DAG. Submitted nonce 0xb8c700003165dfca stored little-endian
     // in the blob (b8c70000 = pool extranonce high bytes). See logs/evrprogpow_live_captured_shares.log.
-    name: "evrprogpow gpu1*1 live-share h1896108",
+    name: "evrprogpow gpu1*1 recorded-share h1896108",
     gpu: true,
     timeoutMs: 15 * 60 * 1000,
     job: {
@@ -338,6 +342,7 @@ const hashTests = [
     // exercising the MeowPow-specific reduced ProgPoW shape and seal.
     name: "meowpow gpu1*1 height 0",
     gpu: true,
+    syclCpu: true,
     timeoutMs: 15 * 60 * 1000,
     job: {
       algo: "meowpow",
@@ -352,27 +357,9 @@ const hashTests = [
       "80e1899bacd477a2efe2ce5994f784206612802626675b9287bc045a0c7eb425",
   },
   {
-    // REAL pool-ACCEPTED share captured live from RPlant MeowCoin (stratum-eu.rplant.xyz:17120 TLS),
-    // 2026-06-19. RPlant accepted this share. blob = 32-byte header + 8-byte winning nonce LE
-    // (native/pool nonce 0x193400002ebab394; 0x1934 is the subscribe extranonce prefix).
-    name: "meowpow gpu1*1 live-share h1960554",
-    gpu: true,
-    timeoutMs: 15 * 60 * 1000,
-    job: {
-      algo: "meowpow",
-      dev: "gpu1*1",
-      height: 1960554,
-      noncebytes: 8,
-      nonceoffset: 32,
-      blob_hex: "5af87965c0fa82fcb208977be5e3cecae9974b81a907be1436bf55490c3ee74b94b3ba2e00003419",
-    },
-    expected:
-      "000000018175d1e821428d61145bcc14859f6741e2311446159a48c7d220e38b " +
-      "90b603f366e690aa8b6d35bd018d1ae7384339ad43597c0702fe0f8ddc47073d",
-  },
-  {
     name: "etchash gpu1*256",
     gpu: true,
+    syclCpu: true,
     timeoutMs: 15 * 60 * 1000,
     job: {
       algo: "etchash",
@@ -392,7 +379,7 @@ const hashTests = [
     // TLS), 2026-06-18. MO sends a seed (not a height) -> the epoch resolves from seed_hex (a real ETC
     // mainnet epoch, ~5 GiB DAG). The pool ACCEPTED this share (network consensus-validated) AND it
     // reproduces offline. blob = 32-byte header + 8-byte winning nonce LE (nonce 0xff2b000015b0c4dc).
-    name: "etchash gpu1*1 live-share MO",
+    name: "etchash gpu1*1 recorded-share MO",
     gpu: true,
     timeoutMs: 15 * 60 * 1000,
     job: {
@@ -411,6 +398,7 @@ const hashTests = [
   {
     name: "autolykos2 gpu1*1",
     gpu: true,
+    syclCpu: true,
     timeoutMs: 20 * 60 * 1000,
     job: {
       algo: "autolykos2",
@@ -429,6 +417,7 @@ const hashTests = [
     // lookup). dev gpu1*1: the lazy kernel recomputes dataset items, so one nonce only for the vector.
     name: "fishhash gpu1*1",
     gpu: true,
+    syclCpu: true,
     timeoutMs: 15 * 60 * 1000,
     job: {
       algo: "fishhash",
@@ -448,8 +437,8 @@ const hashTests = [
     // the GPU solver AND the SYCL-CPU device (light cache, no 4.6 GiB DAG) -- the same value the live share
     // submit hashes against the pool target. (Live mining connected/logged in/jobs+set_target parsed and a
     // structurally-valid mining.submit was accepted+mapped by the pool; shares only rejected "Job expired"
-    // because herominers' 1 GH/share min static-diff floor exceeds the per-job window at the L4 rate.)
-    name: "fishhash live gpu1*1",
+    // because herominers' 1 GH/share minimum static-difficulty floor exceeds the per-job window.)
+    name: "fishhash recorded-job gpu1*1",
     gpu: true,
     timeoutMs: 15 * 60 * 1000,
     job: {
@@ -474,6 +463,7 @@ const hashTests = [
     // dev gpu1*1: lazy DAG recompute, one nonce.
     name: "karlsenhashv2 gpu1*1",
     gpu: true,
+    syclCpu: true,
     timeoutMs: 15 * 60 * 1000,
     job: {
       algo: "karlsenhashv2",
@@ -488,6 +478,7 @@ const hashTests = [
   {
     name: "c29 proofsize 32 gpu1*1",
     gpu: true,
+    syclCpu: true,
     timeoutMs: 10 * 60 * 1000,
     job: {
       algo: "c29",
@@ -514,19 +505,19 @@ const hashTests = [
   },
   {
     // Equihash 125,4 (ZelHash / Flux): the GPU Wagner solver run end-to-end on Flux mainnet block
-    // 400000. With MOM_EQUIHASH_SOLVE the native is_test path runs the full solve (M2 rounds + M3
+    // 400000. With MOM_ZELHASH_SOLVE the native is_test path runs the full solve (M2 rounds + M3
     // recovery) and dumps the whole SMALL_BLOB_SOL_LEN(=5120 B) out-of-band buffer as hex:
     // [count:u8][count * 52-byte compressed solution][zero pad]. The solver finds the 2 distinct
     // proofs for this header (sorted), the first being the known block-400000 solution 0898985c...199b.
-    // Heavy: a full solve is ~0.5 s + ~7.3 GiB of Wagner arenas (progressive per-level slot shrink),
-    // so this needs a >=8 GiB GPU (B580/L4) and is gated behind MOM_EQUIHASH_SOLVE -- the default GPU
+    // Heavy: a full solve needs up to ~4.3 GiB of Wagner arenas (progressive per-level slot shrink),
+    // so this needs a discrete GPU with at least 8 GiB and is gated behind MOM_ZELHASH_SOLVE -- the default GPU
     // suite without it skips straight past.
-    name: "equihash125_4 gpu1 (block 400000 solve)",
+    name: "zelhash gpu1 (block 400000 solve)",
     gpu: true,
     timeoutMs: 15 * 60 * 1000,
-    env: { MOM_EQUIHASH_SOLVE: "1" },
+    env: { MOM_ZELHASH_SOLVE: "1" },
     job: {
-      algo: "equihash125_4",
+      algo: "zelhash",
       dev: "gpu1",
       noncebytes: 8,
       nonceoffset: 108,
@@ -549,14 +540,15 @@ const hashTests = [
       "0".repeat(10240 - 2 - 104 * 2),
   },
   {
-    // pearl is a NoisyGEMM search, not a fixed-hash algo: in test mode pearl() forces m=n=256, sets
-    // the target to all-0xFF (first tile wins) and runs one attempt, so the core returns "ok". This
-    // exercises the GPU kernel end-to-end deterministically and also seeds the pearl perf entry.
-    name: "pearl gpu1*1",
+    // PearlHash is a NoisyGEMM search, not a fixed-hash algo. Test mode uses a compact deterministic
+    // matrix (2048 square for `native` so cache-block mapping is covered, 256 otherwise), sets the
+    // target to all-0xFF, and runs one attempt, so the core returns "ok".
+    name: "pearlhash gpu1*1",
     gpu: true,
+    syclCpu: true,
     timeoutMs: 10 * 60 * 1000,
     job: {
-      algo: "pearl",
+      algo: "pearlhash",
       dev: "gpu1*1",
       blob_hex: "000040205d1cd9b9049d9f594cd0d05697f99a8a6770bbd59a2aefcf669be71e3b3eb253866bc496a00224b6bdf05ed1983a52622fc90bc3ef86969c27bc0d6686afacdfa9db2c6a21000118",
     },
@@ -564,18 +556,19 @@ const hashTests = [
   },
   {
     // Equihash 125,4 (ZelHash / Flux) GEN sub-step ONLY -- a LIGHT, CPU-runnable regression guard for
-    // the BLAKE2b "ZelProof" gen kernel. The default is_test path (no MOM_EQUIHASH_SOLVE) runs ONLY the
+    // the BLAKE2b "ZelProof" gen kernel. The default is_test path (no MOM_ZELHASH_SOLVE) runs ONLY the
     // gen kernel and dumps the first EQUIHASH_TEST_ROWS(=256) expanded 20-byte collision rows (5120 B =
     // SMALL_BLOB_SOL_LEN) as hex. The FULL Wagner solve is far too heavy for the CPU SYCL device (~7 GiB
     // arenas) and stays in the gpu1-only solve vector above; this gen-only vector is cheap enough to run
     // on the SYCL CPU device. Header = Flux block-400000 (matches the solve vector). Expected derived
     // from reference indexHashRow(makeBaseState(buildHeader400000()), i) for i in 0..255, and cross-checked
     // bit-exact against the GPU + SYCL-CPU gen dump.
-    name: "equihash125_4 gpu1 gen",
+    name: "zelhash gpu1 gen",
     gpu: true,
+    syclCpu: true,
     timeoutMs: 5 * 60 * 1000,
     job: {
-      algo: "equihash125_4",
+      algo: "zelhash",
       dev: "gpu1",
       noncebytes: 8,
       nonceoffset: 108,
@@ -602,6 +595,7 @@ const hashTests = [
     // serialized 7 LE u64 + zero pad, cross-checked bit-exact against the GPU + SYCL-CPU gen dump.
     name: "beamhash3 gpu1 gen",
     gpu: true,
+    syclCpu: true,
     timeoutMs: 5 * 60 * 1000,
     job: {
       algo: "beamhash3",

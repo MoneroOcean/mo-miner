@@ -21,7 +21,6 @@ trap {
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "../../..")).Path
 Set-Location $repoRoot
-if ($Suite -eq 'opencl') { $env:MOM_GPU_BACKEND = 'opencl' }
 
 $workDir = if ($env:MOM_RELEASE_TEST_DIR) { $env:MOM_RELEASE_TEST_DIR } else { "release-test" }
 
@@ -121,7 +120,7 @@ Copy-Item scripts\validate-portable-opencl.js (Join-Path $packageDir 'scripts\va
 # A developer image may already point OCL_ICD_FILENAMES at oneAPI's GPU ICD. CPU deployment gates
 # deliberately select Intel's separately installed CPU ICD so a headless runner cannot silently
 # enumerate zero devices while ignoring the system-wide Khronos registry entry.
-if ($Suite -eq 'sycl-cpu' -or ($Suite -eq 'opencl' -and $env:MOM_OPENCL_DEVICE_TYPE -eq 'cpu')) {
+if ($Suite -eq 'gpu-portable-cpu') {
   $cpuIcdPaths = New-Object 'System.Collections.Generic.List[string]'
   $vendorKey = Get-Item 'HKLM:\SOFTWARE\Khronos\OpenCL\Vendors' -ErrorAction SilentlyContinue
   if ($vendorKey) {
@@ -166,14 +165,14 @@ $env:Path = @(
 # individual test.  Mirror the small part of mom.cmd's launcher environment that selects the initial
 # worker; compiler-policy.js still performs any per-algorithm worker override in child processes.
 $env:MOM_NATIVE_DIR = $libsDir
-if ($Suite -eq 'sycl-cpu') {
+if ($Suite -eq 'gpu-portable-cpu') {
   # Development/release jobs install Intel's redistributable CPU OpenCL implementation. Use the
   # portable SPIR-V worker so this archive gate needs no GPU and exercises the generic fallback ABI.
   $env:MOM_GPU_BACKEND = 'opencl'
   $env:MOM_OPENCL_DEVICE_TYPE = 'cpu'
   $env:ONEAPI_DEVICE_SELECTOR = 'opencl:cpu'
 }
-$defaultWorker = if ($Suite -eq 'sycl-cpu') { 'dpcpp-opencl' } else { switch ($env:MOM_GPU_BACKEND) {
+$defaultWorker = if ($Suite -eq 'gpu-portable-cpu') { 'dpcpp-opencl' } else { switch ($env:MOM_GPU_BACKEND) {
   'nvidia' { 'dpcpp' }
   'amd' { 'acpp-hip' }
   'opencl' { 'dpcpp-opencl' }
@@ -190,7 +189,7 @@ $env:Path = @($workerDir, (Join-Path $workerDir 'hipSYCL'), $externalOpenClDir,
   $sharedDpcppDir, $env:Path) -join ';'
 
 function Enable-IntelOpenCL {
-  if ($Suite -eq 'sycl-cpu' -or $env:MOM_OPENCL_DEVICE_TYPE -eq 'cpu') {
+  if ($Suite -eq 'gpu-portable-cpu' -or $env:MOM_OPENCL_DEVICE_TYPE -eq 'cpu') {
     return
   }
   if ($env:OCL_ICD_FILENAMES) {
@@ -252,8 +251,7 @@ try {
       throw "Invalid algo params for $($prop.Name): $dev"
     }
   }
-  $openclGpuSuite = $Suite -eq 'opencl' -and $env:MOM_OPENCL_DEVICE_TYPE -ne 'cpu'
-  if ($Suite -eq 'gpu' -or $openclGpuSuite) {
+  if ($Suite -eq 'gpu') {
     $gpuParam = $params.PSObject.Properties | Where-Object { [string]$_.Value -match '(^|,)gpu\d+' } |
       Select-Object -First 1
     if (-not $gpuParam) {
@@ -261,19 +259,18 @@ try {
     }
   }
   $syclCpuDevices = Get-SyclCpuDevicesFromOutput $smokeOutput
-  if (($Suite -eq "all" -or $Suite -eq "sycl-cpu") -and $syclCpuDevices.Count -eq 0) {
+  if (($Suite -eq "all" -or $Suite -eq "gpu-portable-cpu") -and $syclCpuDevices.Count -eq 0) {
     throw "Windows $Suite release test requires a CPU SYCL device, but algo_params did not report one.`n$($smokeOutput -join "`n")"
   }
 
-  if ($Suite -notin @("all", "cpu", "sycl-cpu", "gpu", "opencl")) {
+  if ($Suite -notin @("all", "cpu", "gpu", "gpu-portable-cpu")) {
     throw "Unknown release test suite: $Suite"
   }
   if ($Suite -eq 'gpu') { $env:MOM_REQUIRE_GPU_TESTS = '1' }
-  if ($Suite -eq 'sycl-cpu' -or
-      ($Suite -eq 'opencl' -and $env:MOM_OPENCL_DEVICE_TYPE -eq 'cpu')) {
+  if ($Suite -eq 'gpu-portable-cpu') {
     # Keep the archive gate fail-closed outside GitHub Actions as well. A missing or broken CPU
     # OpenCL device must never turn the per-algorithm portable kernel coverage into skipped tests.
-    $env:MOM_REQUIRE_SYCL_CPU_TESTS = '1'
+    $env:MOM_REQUIRE_PORTABLE_CPU_TESTS = '1'
   }
   & $node tests/run_hash.js $Suite
   if ($LASTEXITCODE -ne 0) {
