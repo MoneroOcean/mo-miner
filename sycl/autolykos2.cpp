@@ -14,11 +14,18 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <vector>
 
 #include "lib-internal.h"
 #include "../native/consts.h"
 
 namespace mom_autolykos2 {
+
+#if defined(MOM_SYCL_PORTABLE_OPENCL)
+#define AUTOLYKOS_DEVICE_INLINE inline __attribute__((always_inline))
+#else
+#define AUTOLYKOS_DEVICE_INLINE inline
+#endif
 
 constexpr uint32_t CONST_MES_SIZE       = 8192;
 constexpr uint32_t K_LEN                = 32;
@@ -52,6 +59,44 @@ constexpr uint8_t BLAKE2B_SIGMA[12][16] = {
   {14,10, 4, 8, 9,15,13, 6, 1,12, 0, 2,11, 7, 5, 3 }
 };
 
+template <bool Portable = mom_sycl_portable_opencl>
+inline uint64_t blake2b_iv(const unsigned index) {
+  if constexpr (Portable) {
+    switch (index) {
+      case 0: return 0x6A09E667F3BCC908ULL;
+      case 1: return 0xBB67AE8584CAA73BULL;
+      case 2: return 0x3C6EF372FE94F82BULL;
+      case 3: return 0xA54FF53A5F1D36F1ULL;
+      case 4: return 0x510E527FADE682D1ULL;
+      case 5: return 0x9B05688C2B3E6C1FULL;
+      case 6: return 0x1F83D9ABFB41BD6BULL;
+      default: return 0x5BE0CD19137E2179ULL;
+    }
+  } else {
+    return BLAKE2B_IV[index];
+  }
+}
+
+AUTOLYKOS_DEVICE_INLINE uint8_t blake2b_sigma(const unsigned round, const unsigned index) {
+  // Rounds 1 and 11 share this permutation. Keeping it as the initialized/default value avoids an
+  // llvm-spirv switch phi with two identical incoming edges, which Mesa's SPIR-V validator rejects.
+  uint64_t packed = 0x357b20c16df984aeULL;
+  switch (round) {
+    case 0:  packed = 0xfedcba9876543210ULL; break;
+    case 2:  packed = 0x491763eadf250c8bULL; break;
+    case 3:  packed = 0x8f04a562ebcd1397ULL; break;
+    case 4:  packed = 0xd386cb1efa427509ULL; break;
+    case 5:  packed = 0x91ef57d438b0a6c2ULL; break;
+    case 6:  packed = 0xb8293670a4def15cULL; break;
+    case 7:  packed = 0xa2684f05931ce7bdULL; break;
+    case 8:  packed = 0x5a417d2c803b9ef6ULL; break;
+    case 9:  packed = 0x0dc3e9bf5167482aULL; break;
+    case 10: packed = 0xfedcba9876543210ULL; break;
+    default: break;
+  }
+  return static_cast<uint8_t>((packed >> (index * 4U)) & 0xfU);
+}
+
 struct AutolykosJobData {
   uint8_t message[HASH_LEN];
   uint8_t target[HASH_LEN];
@@ -63,6 +108,12 @@ struct AutolykosResult {
   uint8_t output[MAX_AUTOLYKOS_OUTPUTS][HASH_LEN];
 };
 
+struct AutolykosPortableResult {
+  uint32_t found;
+  uint64_t nonce;
+  uint8_t output[HASH_LEN];
+};
+
 inline uint32_t round_up(const uint32_t value, const uint32_t step) {
   return ((value + step - 1) / step) * step;
 }
@@ -72,8 +123,8 @@ inline uint32_t round_up(const uint32_t value, const uint32_t step) {
 // and Intel Level Zero on Arc. M = floor(2^64 / n_len) + 1 is precomputed once on the host (mo_modM),
 // then x % n_len == hi64( (M*x mod 2^64) * n_len ). Bit-exact for x, n_len in [1, 2^32).
 inline uint64_t mo_modM(const uint32_t d) { return d ? (0xFFFFFFFFFFFFFFFFULL / d) + 1ULL : 0ULL; }
-inline uint32_t mo_mod_u32(const uint32_t x, const uint32_t d, const uint64_t M) {
-  return static_cast<uint32_t>(sycl::mul_hi(M * static_cast<uint64_t>(x), static_cast<uint64_t>(d)));
+AUTOLYKOS_DEVICE_INLINE uint32_t mo_mod_u32(const uint32_t x, const uint32_t d, const uint64_t M) {
+  return static_cast<uint32_t>(mo_mul_hi_u64(M * static_cast<uint64_t>(x), static_cast<uint64_t>(d)));
 }
 
 inline uint64_t mo_divM64(const uint32_t d) {
@@ -85,42 +136,81 @@ inline uint64_t mo_divM64(const uint32_t d) {
 // Exact Barrett reduction for h3 = uint64 % n_len. For x < 2^64 and d < 2^32,
 // q = high64(x * floor(2^64/d)) is at most one low, so one subtraction after
 // x - q*d produces the exact remainder.
-inline uint32_t mo_mod_u64(const uint64_t x, const uint32_t d, const uint64_t M) {
+AUTOLYKOS_DEVICE_INLINE uint32_t mo_mod_u64(const uint64_t x, const uint32_t d, const uint64_t M) {
   if (d <= 1) return 0;
-  const uint64_t q = sycl::mul_hi(x, M);
+  const uint64_t q = mo_mul_hi_u64(x, M);
   uint64_t r = x - q * static_cast<uint64_t>(d);
   if (r >= d) r -= d;
   return static_cast<uint32_t>(r);
 }
 
-inline uint64_t bswap64_dev(const uint64_t value) {
-  return ((value & 0x00000000000000FFULL) << 56) |
-         ((value & 0x000000000000FF00ULL) << 40) |
-         ((value & 0x0000000000FF0000ULL) << 24) |
-         ((value & 0x00000000FF000000ULL) << 8) |
-         ((value & 0x000000FF00000000ULL) >> 8) |
-         ((value & 0x0000FF0000000000ULL) >> 24) |
-         ((value & 0x00FF000000000000ULL) >> 40) |
-         ((value & 0xFF00000000000000ULL) >> 56);
+AUTOLYKOS_DEVICE_INLINE uint64_t bswap64_dev(const uint64_t value) {
+  if constexpr (mom_sycl_portable_opencl) {
+    // Keep this as ordinary shifts for OpenCL SPIR-V consumers. LLVM otherwise recognizes the
+    // expression as llvm.bswap, which llvm-spirv can leave as an unresolved implementation helper.
+    volatile uint64_t source = value;
+    uint64_t result = 0;
+#pragma unroll
+    for (unsigned i = 0; i < 8; ++i) {
+      const volatile uint64_t byte = (source >> (i * 8U)) & 0xffU;
+      result |= byte << ((7U - i) * 8U);
+    }
+    return result;
+  } else {
+    return ((value & 0x00000000000000FFULL) << 56) |
+           ((value & 0x000000000000FF00ULL) << 40) |
+           ((value & 0x0000000000FF0000ULL) << 24) |
+           ((value & 0x00000000FF000000ULL) << 8) |
+           ((value & 0x000000FF00000000ULL) >> 8) |
+           ((value & 0x0000FF0000000000ULL) >> 24) |
+           ((value & 0x00FF000000000000ULL) >> 40) |
+           ((value & 0xFF00000000000000ULL) >> 56);
+  }
 }
 
-inline uint64_t rotr64_dev(const uint64_t value, const unsigned shift) {
-  return (value >> shift) | (value << (64U - shift));
+AUTOLYKOS_DEVICE_INLINE uint32_t bswap32_dev(const uint32_t value) {
+  volatile uint32_t source = value;
+  uint32_t result = 0;
+#pragma unroll
+  for (unsigned i = 0; i < 4; ++i) {
+    const volatile uint32_t byte = (source >> (i * 8U)) & 0xffU;
+    result |= byte << ((3U - i) * 8U);
+  }
+  return result;
 }
 
-inline uint32_t load32_be_dev(const uint8_t* const input) {
-  return (static_cast<uint32_t>(input[0]) << 24) |
-         (static_cast<uint32_t>(input[1]) << 16) |
-         (static_cast<uint32_t>(input[2]) << 8) |
-          static_cast<uint32_t>(input[3]);
+AUTOLYKOS_DEVICE_INLINE uint64_t rotr64_dev(const uint64_t value, const unsigned shift) {
+  if constexpr (mom_sycl_portable_opencl) {
+    volatile uint64_t right = value >> shift;
+    volatile uint64_t left = value << (64U - shift);
+    return right | left;
+  } else {
+    return (value >> shift) | (value << (64U - shift));
+  }
 }
 
-inline uint64_t load64_be_dev(const uint8_t* const input) {
+AUTOLYKOS_DEVICE_INLINE uint32_t load32_be_dev(const uint8_t* const input) {
+  if constexpr (mom_sycl_portable_opencl) {
+    const volatile uint8_t* const bytes = input;
+    uint32_t value = static_cast<uint32_t>(bytes[0]) << 24;
+    value |= static_cast<uint32_t>(bytes[1]) << 16;
+    value |= static_cast<uint32_t>(bytes[2]) << 8;
+    value |= static_cast<uint32_t>(bytes[3]);
+    return value;
+  } else {
+    return (static_cast<uint32_t>(input[0]) << 24) |
+           (static_cast<uint32_t>(input[1]) << 16) |
+           (static_cast<uint32_t>(input[2]) << 8) |
+            static_cast<uint32_t>(input[3]);
+  }
+}
+
+AUTOLYKOS_DEVICE_INLINE uint64_t load64_be_dev(const uint8_t* const input) {
   return (static_cast<uint64_t>(load32_be_dev(input)) << 32) |
           static_cast<uint64_t>(load32_be_dev(input + 4));
 }
 
-inline uint64_t load64_le_dev(const uint8_t* const input) {
+AUTOLYKOS_DEVICE_INLINE uint64_t load64_le_dev(const uint8_t* const input) {
   return static_cast<uint64_t>(input[0]) |
          (static_cast<uint64_t>(input[1]) << 8) |
          (static_cast<uint64_t>(input[2]) << 16) |
@@ -131,29 +221,50 @@ inline uint64_t load64_le_dev(const uint8_t* const input) {
          (static_cast<uint64_t>(input[7]) << 56);
 }
 
-inline void store32_be_dev(uint8_t* const output, const uint32_t value) {
-  output[0] = static_cast<uint8_t>(value >> 24);
-  output[1] = static_cast<uint8_t>(value >> 16);
-  output[2] = static_cast<uint8_t>(value >> 8);
-  output[3] = static_cast<uint8_t>(value);
+AUTOLYKOS_DEVICE_INLINE void store32_be_dev(uint8_t* const output, const uint32_t value) {
+  if constexpr (mom_sycl_portable_opencl) {
+    volatile uint8_t* const bytes = output;
+    bytes[0] = static_cast<uint8_t>(value >> 24);
+    bytes[1] = static_cast<uint8_t>(value >> 16);
+    bytes[2] = static_cast<uint8_t>(value >> 8);
+    bytes[3] = static_cast<uint8_t>(value);
+  } else {
+    output[0] = static_cast<uint8_t>(value >> 24);
+    output[1] = static_cast<uint8_t>(value >> 16);
+    output[2] = static_cast<uint8_t>(value >> 8);
+    output[3] = static_cast<uint8_t>(value);
+  }
 }
 
-inline uint8_t word_byte_be_dev(const uint32_t word, const unsigned byte_index) {
+AUTOLYKOS_DEVICE_INLINE uint8_t word_byte_be_dev(const uint32_t word, const unsigned byte_index) {
   return static_cast<uint8_t>(word >> ((3U - byte_index) * 8U));
 }
 
-inline uint64_t pack_be32_pair_as_blake_word(const uint32_t a, const uint32_t b) {
-  return (static_cast<uint64_t>((a >> 24) & 0xffU) << 0) |
-         (static_cast<uint64_t>((a >> 16) & 0xffU) << 8) |
-         (static_cast<uint64_t>((a >> 8) & 0xffU) << 16) |
-         (static_cast<uint64_t>(a & 0xffU) << 24) |
-         (static_cast<uint64_t>((b >> 24) & 0xffU) << 32) |
-         (static_cast<uint64_t>((b >> 16) & 0xffU) << 40) |
-         (static_cast<uint64_t>((b >> 8) & 0xffU) << 48) |
-         (static_cast<uint64_t>(b & 0xffU) << 56);
+AUTOLYKOS_DEVICE_INLINE uint64_t pack_be32_pair_as_blake_word(const uint32_t a, const uint32_t b) {
+  if constexpr (mom_sycl_portable_opencl) {
+    volatile uint32_t av = a, bv = b;
+    uint64_t result = static_cast<uint64_t>((av >> 24) & 0xffU);
+    result |= static_cast<uint64_t>((av >> 16) & 0xffU) << 8;
+    result |= static_cast<uint64_t>((av >> 8) & 0xffU) << 16;
+    result |= static_cast<uint64_t>(av & 0xffU) << 24;
+    result |= static_cast<uint64_t>((bv >> 24) & 0xffU) << 32;
+    result |= static_cast<uint64_t>((bv >> 16) & 0xffU) << 40;
+    result |= static_cast<uint64_t>((bv >> 8) & 0xffU) << 48;
+    result |= static_cast<uint64_t>(bv & 0xffU) << 56;
+    return result;
+  } else {
+    return (static_cast<uint64_t>((a >> 24) & 0xffU) << 0) |
+           (static_cast<uint64_t>((a >> 16) & 0xffU) << 8) |
+           (static_cast<uint64_t>((a >> 8) & 0xffU) << 16) |
+           (static_cast<uint64_t>(a & 0xffU) << 24) |
+           (static_cast<uint64_t>((b >> 24) & 0xffU) << 32) |
+           (static_cast<uint64_t>((b >> 16) & 0xffU) << 40) |
+           (static_cast<uint64_t>((b >> 8) & 0xffU) << 48) |
+           (static_cast<uint64_t>(b & 0xffU) << 56);
+  }
 }
 
-inline void blake2b_g(
+AUTOLYKOS_DEVICE_INLINE void blake2b_g(
   uint64_t& a, uint64_t& b, uint64_t& c, uint64_t& d,
   const uint64_t x, const uint64_t y
 ) {
@@ -167,45 +278,68 @@ inline void blake2b_g(
   b = rotr64_dev(b ^ c, 63);
 }
 
-inline void blake2b_compress_dev(uint64_t h[8], const uint64_t m[16], const uint64_t t, const bool last) {
+AUTOLYKOS_DEVICE_INLINE void blake2b_compress_dev(uint64_t h[8], const uint64_t m[16], const uint64_t t, const bool last) {
   uint64_t v[16];
 #pragma unroll
   for (unsigned i = 0; i < 8; ++i) v[i] = h[i];
 #pragma unroll
-  for (unsigned i = 0; i < 8; ++i) v[i + 8] = BLAKE2B_IV[i];
+  for (unsigned i = 0; i < 8; ++i) {
+    if constexpr (mom_sycl_portable_opencl) v[i + 8] = blake2b_iv(i);
+    else v[i + 8] = BLAKE2B_IV[i];
+  }
   v[12] ^= t;
   if (last) v[14] = ~v[14];
 
-  // Unroll so BLAKE2B_SIGMA[r][i] becomes a compile-time constant and m[16] stays
-  // in registers instead of spilling to local memory.
+  // Native builds unroll this loop and fold the constant table. The generic OpenCL profile keeps
+  // the compact switch-based form to avoid multi-minute JIT compilation on CPU implementations.
+#if defined(MOM_SYCL_PORTABLE_OPENCL)
+#pragma unroll 1
+#else
 #pragma unroll
+#endif
   for (unsigned r = 0; r < 12; ++r) {
-    blake2b_g(v[0], v[4], v[ 8], v[12], m[BLAKE2B_SIGMA[r][ 0]], m[BLAKE2B_SIGMA[r][ 1]]);
-    blake2b_g(v[1], v[5], v[ 9], v[13], m[BLAKE2B_SIGMA[r][ 2]], m[BLAKE2B_SIGMA[r][ 3]]);
-    blake2b_g(v[2], v[6], v[10], v[14], m[BLAKE2B_SIGMA[r][ 4]], m[BLAKE2B_SIGMA[r][ 5]]);
-    blake2b_g(v[3], v[7], v[11], v[15], m[BLAKE2B_SIGMA[r][ 6]], m[BLAKE2B_SIGMA[r][ 7]]);
-    blake2b_g(v[0], v[5], v[10], v[15], m[BLAKE2B_SIGMA[r][ 8]], m[BLAKE2B_SIGMA[r][ 9]]);
-    blake2b_g(v[1], v[6], v[11], v[12], m[BLAKE2B_SIGMA[r][10]], m[BLAKE2B_SIGMA[r][11]]);
-    blake2b_g(v[2], v[7], v[ 8], v[13], m[BLAKE2B_SIGMA[r][12]], m[BLAKE2B_SIGMA[r][13]]);
-    blake2b_g(v[3], v[4], v[ 9], v[14], m[BLAKE2B_SIGMA[r][14]], m[BLAKE2B_SIGMA[r][15]]);
+    if constexpr (mom_sycl_portable_opencl) {
+      blake2b_g(v[0], v[4], v[ 8], v[12], m[blake2b_sigma(r,  0)], m[blake2b_sigma(r,  1)]);
+      blake2b_g(v[1], v[5], v[ 9], v[13], m[blake2b_sigma(r,  2)], m[blake2b_sigma(r,  3)]);
+      blake2b_g(v[2], v[6], v[10], v[14], m[blake2b_sigma(r,  4)], m[blake2b_sigma(r,  5)]);
+      blake2b_g(v[3], v[7], v[11], v[15], m[blake2b_sigma(r,  6)], m[blake2b_sigma(r,  7)]);
+      blake2b_g(v[0], v[5], v[10], v[15], m[blake2b_sigma(r,  8)], m[blake2b_sigma(r,  9)]);
+      blake2b_g(v[1], v[6], v[11], v[12], m[blake2b_sigma(r, 10)], m[blake2b_sigma(r, 11)]);
+      blake2b_g(v[2], v[7], v[ 8], v[13], m[blake2b_sigma(r, 12)], m[blake2b_sigma(r, 13)]);
+      blake2b_g(v[3], v[4], v[ 9], v[14], m[blake2b_sigma(r, 14)], m[blake2b_sigma(r, 15)]);
+    } else {
+      // Preserve the proven native source shape. DPC++ HIP miscompiled the equivalent helper-lambda
+      // indexing form on gfx1200 and produced a deterministic wrong Autolykos hash.
+      blake2b_g(v[0], v[4], v[ 8], v[12], m[BLAKE2B_SIGMA[r][ 0]], m[BLAKE2B_SIGMA[r][ 1]]);
+      blake2b_g(v[1], v[5], v[ 9], v[13], m[BLAKE2B_SIGMA[r][ 2]], m[BLAKE2B_SIGMA[r][ 3]]);
+      blake2b_g(v[2], v[6], v[10], v[14], m[BLAKE2B_SIGMA[r][ 4]], m[BLAKE2B_SIGMA[r][ 5]]);
+      blake2b_g(v[3], v[7], v[11], v[15], m[BLAKE2B_SIGMA[r][ 6]], m[BLAKE2B_SIGMA[r][ 7]]);
+      blake2b_g(v[0], v[5], v[10], v[15], m[BLAKE2B_SIGMA[r][ 8]], m[BLAKE2B_SIGMA[r][ 9]]);
+      blake2b_g(v[1], v[6], v[11], v[12], m[BLAKE2B_SIGMA[r][10]], m[BLAKE2B_SIGMA[r][11]]);
+      blake2b_g(v[2], v[7], v[ 8], v[13], m[BLAKE2B_SIGMA[r][12]], m[BLAKE2B_SIGMA[r][13]]);
+      blake2b_g(v[3], v[4], v[ 9], v[14], m[BLAKE2B_SIGMA[r][14]], m[BLAKE2B_SIGMA[r][15]]);
+    }
   }
 
 #pragma unroll
   for (unsigned i = 0; i < 8; ++i) h[i] ^= v[i] ^ v[i + 8];
 }
 
-inline void blake2b256_init_dev(uint64_t h[8]) {
+AUTOLYKOS_DEVICE_INLINE void blake2b256_init_dev(uint64_t h[8]) {
 #pragma unroll
-  for (unsigned i = 0; i < 8; ++i) h[i] = BLAKE2B_IV[i];
+  for (unsigned i = 0; i < 8; ++i) {
+    if constexpr (mom_sycl_portable_opencl) h[i] = blake2b_iv(i);
+    else h[i] = BLAKE2B_IV[i];
+  }
   h[0] ^= 0x01010020ULL;
 }
 
-inline void blake2b256_output_dev(const uint64_t h[8], uint8_t out[32]) {
+AUTOLYKOS_DEVICE_INLINE void blake2b256_output_dev(const uint64_t h[8], uint8_t out[32]) {
 #pragma unroll
   for (unsigned i = 0; i < 32; ++i) out[i] = static_cast<uint8_t>(h[i >> 3] >> ((i & 7U) * 8U));
 }
 
-inline void blake2b256_oneblock_dev(const uint8_t* const input, const uint32_t len, uint8_t out[32]) {
+AUTOLYKOS_DEVICE_INLINE void blake2b256_oneblock_dev(const uint8_t* const input, const uint32_t len, uint8_t out[32]) {
   uint64_t h[8];
   uint64_t m[16];
   blake2b256_init_dev(h);
@@ -218,7 +352,7 @@ inline void blake2b256_oneblock_dev(const uint8_t* const input, const uint32_t l
   blake2b256_output_dev(h, out);
 }
 
-inline void blake2b256_71_dev(const uint8_t input[71], uint8_t out[32]) {
+AUTOLYKOS_DEVICE_INLINE void blake2b256_71_dev(const uint8_t input[71], uint8_t out[32]) {
   uint64_t h[8];
   uint64_t m[16];
   blake2b256_init_dev(h);
@@ -232,7 +366,7 @@ inline void blake2b256_71_dev(const uint8_t input[71], uint8_t out[32]) {
   blake2b256_output_dev(h, out);
 }
 
-inline void blake2b256_message_nonce_dev(const uint8_t message[32], const uint64_t nonce, uint8_t out[32]) {
+AUTOLYKOS_DEVICE_INLINE void blake2b256_message_nonce_dev(const uint8_t message[32], const uint64_t nonce, uint8_t out[32]) {
   uint64_t h[8];
   uint64_t m[16];
   blake2b256_init_dev(h);
@@ -247,7 +381,7 @@ inline void blake2b256_message_nonce_dev(const uint8_t message[32], const uint64
   blake2b256_output_dev(h, out);
 }
 
-inline void blake2b256_sum_dev(const uint32_t sum[8], uint8_t out[32]) {
+AUTOLYKOS_DEVICE_INLINE void blake2b256_sum_dev(const uint32_t sum[8], uint8_t out[32]) {
   uint64_t h[8];
   uint64_t m[16];
   blake2b256_init_dev(h);
@@ -261,7 +395,7 @@ inline void blake2b256_sum_dev(const uint32_t sum[8], uint8_t out[32]) {
   blake2b256_output_dev(h, out);
 }
 
-inline void autolykos_prehash_digest_dev(const uint32_t index, const uint32_t height, uint8_t digest[32]) {
+AUTOLYKOS_DEVICE_INLINE void autolykos_prehash_digest_dev(const uint32_t index, const uint32_t height, uint8_t digest[32]) {
   uint64_t h[8];
   uint64_t m[16];
   blake2b256_init_dev(h);
@@ -372,7 +506,8 @@ inline void blake2b_compress_pair_dev(B2bWord h[8], const Message& msg, const ui
   for (unsigned i = 0; i < 8; ++i) v[i] = h[i];
 #pragma unroll
   for (unsigned i = 0; i < 8; ++i) {
-    v[i + 8] = B2bWord{static_cast<uint32_t>(BLAKE2B_IV[i]), static_cast<uint32_t>(BLAKE2B_IV[i] >> 32)};
+    const uint64_t iv = mom_sycl_portable_opencl ? blake2b_iv(i) : BLAKE2B_IV[i];
+    v[i + 8] = B2bWord{static_cast<uint32_t>(iv), static_cast<uint32_t>(iv >> 32)};
   }
   v[12].lo ^= t; // the prehash message is 8200 bytes, the counter never reaches the high half
   if (last) {
@@ -380,15 +515,31 @@ inline void blake2b_compress_pair_dev(B2bWord h[8], const Message& msg, const ui
     v[14].hi = ~v[14].hi;
   }
 
+#if defined(MOM_SYCL_PORTABLE_OPENCL)
+#pragma unroll 1
+#else
+#pragma unroll
+#endif
   for (unsigned r = 0; r < 12; ++r) {
-    blake2b_g_pair(v[0], v[4], v[ 8], v[12], msg.word(BLAKE2B_SIGMA[r][ 0]), msg.word(BLAKE2B_SIGMA[r][ 1]));
-    blake2b_g_pair(v[1], v[5], v[ 9], v[13], msg.word(BLAKE2B_SIGMA[r][ 2]), msg.word(BLAKE2B_SIGMA[r][ 3]));
-    blake2b_g_pair(v[2], v[6], v[10], v[14], msg.word(BLAKE2B_SIGMA[r][ 4]), msg.word(BLAKE2B_SIGMA[r][ 5]));
-    blake2b_g_pair(v[3], v[7], v[11], v[15], msg.word(BLAKE2B_SIGMA[r][ 6]), msg.word(BLAKE2B_SIGMA[r][ 7]));
-    blake2b_g_pair(v[0], v[5], v[10], v[15], msg.word(BLAKE2B_SIGMA[r][ 8]), msg.word(BLAKE2B_SIGMA[r][ 9]));
-    blake2b_g_pair(v[1], v[6], v[11], v[12], msg.word(BLAKE2B_SIGMA[r][10]), msg.word(BLAKE2B_SIGMA[r][11]));
-    blake2b_g_pair(v[2], v[7], v[ 8], v[13], msg.word(BLAKE2B_SIGMA[r][12]), msg.word(BLAKE2B_SIGMA[r][13]));
-    blake2b_g_pair(v[3], v[4], v[ 9], v[14], msg.word(BLAKE2B_SIGMA[r][14]), msg.word(BLAKE2B_SIGMA[r][15]));
+    if constexpr (mom_sycl_portable_opencl) {
+      blake2b_g_pair(v[0], v[4], v[ 8], v[12], msg.word(blake2b_sigma(r,  0)), msg.word(blake2b_sigma(r,  1)));
+      blake2b_g_pair(v[1], v[5], v[ 9], v[13], msg.word(blake2b_sigma(r,  2)), msg.word(blake2b_sigma(r,  3)));
+      blake2b_g_pair(v[2], v[6], v[10], v[14], msg.word(blake2b_sigma(r,  4)), msg.word(blake2b_sigma(r,  5)));
+      blake2b_g_pair(v[3], v[7], v[11], v[15], msg.word(blake2b_sigma(r,  6)), msg.word(blake2b_sigma(r,  7)));
+      blake2b_g_pair(v[0], v[5], v[10], v[15], msg.word(blake2b_sigma(r,  8)), msg.word(blake2b_sigma(r,  9)));
+      blake2b_g_pair(v[1], v[6], v[11], v[12], msg.word(blake2b_sigma(r, 10)), msg.word(blake2b_sigma(r, 11)));
+      blake2b_g_pair(v[2], v[7], v[ 8], v[13], msg.word(blake2b_sigma(r, 12)), msg.word(blake2b_sigma(r, 13)));
+      blake2b_g_pair(v[3], v[4], v[ 9], v[14], msg.word(blake2b_sigma(r, 14)), msg.word(blake2b_sigma(r, 15)));
+    } else {
+      blake2b_g_pair(v[0], v[4], v[ 8], v[12], msg.word(BLAKE2B_SIGMA[r][ 0]), msg.word(BLAKE2B_SIGMA[r][ 1]));
+      blake2b_g_pair(v[1], v[5], v[ 9], v[13], msg.word(BLAKE2B_SIGMA[r][ 2]), msg.word(BLAKE2B_SIGMA[r][ 3]));
+      blake2b_g_pair(v[2], v[6], v[10], v[14], msg.word(BLAKE2B_SIGMA[r][ 4]), msg.word(BLAKE2B_SIGMA[r][ 5]));
+      blake2b_g_pair(v[3], v[7], v[11], v[15], msg.word(BLAKE2B_SIGMA[r][ 6]), msg.word(BLAKE2B_SIGMA[r][ 7]));
+      blake2b_g_pair(v[0], v[5], v[10], v[15], msg.word(BLAKE2B_SIGMA[r][ 8]), msg.word(BLAKE2B_SIGMA[r][ 9]));
+      blake2b_g_pair(v[1], v[6], v[11], v[12], msg.word(BLAKE2B_SIGMA[r][10]), msg.word(BLAKE2B_SIGMA[r][11]));
+      blake2b_g_pair(v[2], v[7], v[ 8], v[13], msg.word(BLAKE2B_SIGMA[r][12]), msg.word(BLAKE2B_SIGMA[r][13]));
+      blake2b_g_pair(v[3], v[4], v[ 9], v[14], msg.word(BLAKE2B_SIGMA[r][14]), msg.word(BLAKE2B_SIGMA[r][15]));
+    }
   }
 
 #pragma unroll
@@ -402,14 +553,15 @@ inline void autolykos_prehash_digest_fast_dev(const uint32_t index, const uint32
   B2bWord h[8];
 #pragma unroll
   for (unsigned i = 0; i < 8; ++i) {
-    h[i] = B2bWord{static_cast<uint32_t>(BLAKE2B_IV[i]), static_cast<uint32_t>(BLAKE2B_IV[i] >> 32)};
+    const uint64_t iv = mom_sycl_portable_opencl ? blake2b_iv(i) : BLAKE2B_IV[i];
+    h[i] = B2bWord{static_cast<uint32_t>(iv), static_cast<uint32_t>(iv >> 32)};
   }
   h[0].lo ^= 0x01010020U;
 
-  const uint32_t index_be = (index >> 24) | ((index >> 8) & 0xFF00U) |
-                            ((index << 8) & 0xFF0000U) | (index << 24);
-  const uint32_t height_be = (height >> 24) | ((height >> 8) & 0xFF00U) |
-                             ((height << 8) & 0xFF0000U) | (height << 24);
+  const uint32_t index_be = mom_sycl_portable_opencl ? bswap32_dev(index)
+    : (index >> 24) | ((index >> 8) & 0xFF00U) | ((index << 8) & 0xFF0000U) | (index << 24);
+  const uint32_t height_be = mom_sycl_portable_opencl ? bswap32_dev(height)
+    : (height >> 24) | ((height >> 8) & 0xFF00U) | ((height << 8) & 0xFF0000U) | (height << 24);
   blake2b_compress_pair_dev(h, PrehashBlock0Message{index_be, height_be}, 128, false);
   for (uint32_t block = 1; block < 64; ++block) {
     blake2b_compress_pair_dev(h, PrehashPadMessage{16U * block - 1U}, (block + 1U) * 128U, false);
@@ -426,7 +578,7 @@ inline void autolykos_prehash_digest_fast_dev(const uint32_t index, const uint32
 
 // A table row is the digest packed big-endian into 8 words, with its top byte (digest[0])
 // forced to zero — load32_be of word 0 reads digest[0..3], so just mask that byte off.
-inline void digest_to_limbs_dev(const uint8_t digest[32], uint32_t limbs[8]) {
+AUTOLYKOS_DEVICE_INLINE void digest_to_limbs_dev(const uint8_t digest[32], uint32_t limbs[8]) {
   limbs[0] = load32_be_dev(digest) & 0x00FFFFFFU;
 #pragma unroll
   for (unsigned i = 1; i < 8; ++i) limbs[i] = load32_be_dev(digest + i * 4);
@@ -438,7 +590,7 @@ inline void autolykos_table_row_store_dev(uint32_t* const table, const uint32_t 
   digest_to_limbs_dev(digest, table + static_cast<uint64_t>(gid) * (TABLE_ENTRY_BYTES / sizeof(uint32_t)));
 }
 
-inline void table_item_limbs_dev(
+AUTOLYKOS_DEVICE_INLINE void table_item_limbs_dev(
   const uint32_t* const table, const uint32_t index, const uint32_t height, uint32_t limbs[8]
 ) {
   if (table) {
@@ -455,7 +607,7 @@ inline void table_item_limbs_dev(
 
 // 256-bit big-endian add: sum[0..7] += add[0..7], propagating carry from least- (i=7) to
 // most-significant limb. The Autolykos2 sum wraps mod 2^256, so the final carry is dropped.
-inline void add_limbs_dev(uint32_t sum[8], const uint32_t* const add) {
+AUTOLYKOS_DEVICE_INLINE void add_limbs_dev(uint32_t sum[8], const uint32_t* const add) {
   uint64_t carry = 0;
   for (int i = 7; i >= 0; --i) {
     const uint64_t v = static_cast<uint64_t>(sum[i]) + add[i] + carry;
@@ -464,7 +616,30 @@ inline void add_limbs_dev(uint32_t sum[8], const uint32_t* const add) {
   }
 }
 
-inline bool meets_target_dev(const uint8_t output[32], const uint8_t target[32]) {
+AUTOLYKOS_DEVICE_INLINE uint32_t autolykos_index_from_words_dev(
+  const uint32_t word0, const uint32_t word1, const unsigned byte_offset,
+  const uint32_t n_len, const uint64_t n_len_M
+) {
+  uint32_t idx;
+  switch (byte_offset) {
+    case 0: idx = word0; break;
+    case 1:
+      if constexpr (mom_sycl_portable_opencl) { volatile uint32_t a = word0 << 8, b = word1 >> 24; idx = a | b; }
+      else idx = (word0 << 8) | (word1 >> 24);
+      break;
+    case 2:
+      if constexpr (mom_sycl_portable_opencl) { volatile uint32_t a = word0 << 16, b = word1 >> 16; idx = a | b; }
+      else idx = (word0 << 16) | (word1 >> 16);
+      break;
+    default:
+      if constexpr (mom_sycl_portable_opencl) { volatile uint32_t a = word0 << 24, b = word1 >> 8; idx = a | b; }
+      else idx = (word0 << 24) | (word1 >> 8);
+      break;
+  }
+  return mo_mod_u32(idx, n_len, n_len_M);
+}
+
+AUTOLYKOS_DEVICE_INLINE bool meets_target_dev(const uint8_t output[32], const uint8_t target[32]) {
   for (unsigned i = 0; i < 32; ++i) {
     if (output[i] == target[i]) continue;
     return output[i] < target[i];
@@ -492,7 +667,7 @@ inline void store_autolykos_result(
 // Autolykos2 per-nonce prehash: blake2b(message||nonce) selects table row h3, then
 // index_hash = blake2b(row[1..31] || message || nonce) seeds the K_LEN table reads.
 // Row bytes come from the prebuilt table when present, else from the on-the-fly digest.
-inline void autolykos_index_hash_dev(
+AUTOLYKOS_DEVICE_INLINE void autolykos_index_hash_dev(
   const uint8_t message[32], const uint64_t nonce, const uint32_t* const table,
   const uint32_t height, const uint32_t n_len, const uint64_t n_len_divM, uint8_t index_hash[32]
 ) {
@@ -531,6 +706,38 @@ inline void autolykos_index_hash_dev(
 
   blake2b256_oneblock_dev(seed, sizeof(seed), index_hash);
 }
+
+#if defined(MOM_SYCL_PORTABLE_OPENCL)
+AUTOLYKOS_DEVICE_INLINE void autolykos_index_hash_portable_dev(
+  const uint8_t message[32], const uint64_t nonce, const uint32_t height,
+  const uint32_t n_len, const uint64_t n_len_divM, uint8_t index_hash[32]
+) {
+  uint8_t nonce_be[8];
+#pragma unroll
+  for (unsigned i = 0; i < 8; ++i) nonce_be[i] = static_cast<uint8_t>(nonce >> ((7U - i) * 8U));
+
+  uint8_t h1_input[40];
+#pragma unroll
+  for (unsigned i = 0; i < 32; ++i) h1_input[i] = message[i];
+#pragma unroll
+  for (unsigned i = 0; i < 8; ++i) h1_input[32 + i] = nonce_be[i];
+
+  uint8_t h1[32];
+  blake2b256_oneblock_dev(h1_input, sizeof(h1_input), h1);
+  const uint32_t h3 = mo_mod_u64(load64_be_dev(h1 + 24), n_len, n_len_divM);
+  uint8_t h3_digest[32];
+  autolykos_prehash_digest_dev(h3, height, h3_digest);
+
+  uint8_t seed[71];
+#pragma unroll
+  for (unsigned i = 0; i < 31; ++i) seed[i] = h3_digest[i + 1];
+#pragma unroll
+  for (unsigned i = 0; i < 32; ++i) seed[31 + i] = message[i];
+#pragma unroll
+  for (unsigned i = 0; i < 8; ++i) seed[63 + i] = nonce_be[i];
+  blake2b256_oneblock_dev(seed, sizeof(seed), index_hash);
+}
+#endif
 
 inline uint32_t calc_n(const uint32_t height) {
   if (height < INCREASE_START) return INIT_N_LEN;
@@ -582,15 +789,18 @@ static bool env_u32(const char* name, uint32_t& out) {
 struct AutolykosState {
   sycl::device device;
   sycl::queue queue;
-  std::unique_ptr<MOM_BUNDLE_T> bundle;
+  std::unique_ptr<MomKernelBundle> bundle;
   uint32_t* table = nullptr;
   uint32_t* bhashes = nullptr;
+  MomBufferAllocation<AutolykosPortableResult> portable_results;
+  uint32_t portable_result_cap = 0;
   AutolykosResult* result = nullptr;
   uint32_t* table_mismatches = nullptr;
   uint32_t table_height = UINT32_MAX;
   uint32_t table_n = 0;
   uint32_t table_cap_n = 0;
   uint32_t bhashes_cap = 0;
+  bool subgroup_coop_verified = false;
   unsigned workgroup;
   unsigned prehash_workgroup;
   std::mutex mutex;
@@ -609,23 +819,25 @@ struct AutolykosState {
       workgroup(autolykos_workgroup(device)),
       prehash_workgroup(autolykos_prehash_workgroup(device))
   {
-    if (!device.has(sycl::aspect::usm_shared_allocations)) {
-      throw std::string("autolykos2 SYCL device does not support shared allocations");
+    if constexpr (!mom_sycl_portable_opencl) {
+      if (!mom_has_usm_shared(device)) {
+        throw std::string("autolykos2 SYCL device does not support shared allocations");
+      }
     }
 
     set_sycl_env("SYCL_PROGRAM_COMPILE_OPTIONS", autolykos_compile_options(device));
-    bundle = std::make_unique<MOM_BUNDLE_T>(
-      MOM_GET_EXEC_BUNDLE(queue.get_context())
+    bundle = std::make_unique<MomKernelBundle>(
+      mom_get_exec_bundle(queue.get_context())
     );
   }
 
-  ~AutolykosState() { release(); }
+  ~AutolykosState() { sycl_cleanup_noexcept("autolykos2", [&] { release(); }); }
 
   static unsigned autolykos_workgroup(const sycl::device& dev) {
-    // NVIDIA: 128 gives the best occupancy for the unrolled per-thread lookup (measured ~68 vs
-    // ~64 MH/s at 64 on an L4); the cooperative local==64 path is intentionally not used there.
+    // CUDA/HIP: 128 is a reliable default for both the scalar diagnostic and the eight-lane
+    // subgroup path. The latter is insensitive between 64 and 128 on current NVIDIA hardware.
     const unsigned preferred =
-      mom_is_cuda(dev) ? 128 :
+      (mom_is_cuda(dev) || mom_is_hip(dev)) ? 128 :
 #if defined(_WIN32)
       // Windows Arc Level Zero is consistently faster at local size 32 for the split table path.
       32;
@@ -653,7 +865,7 @@ struct AutolykosState {
   static const char* autolykos_compile_options(const sycl::device& dev) {
     const char* const value = std::getenv("MOM_AUTOLYKOS2_COMPILE_OPTIONS");
     if (value) return value;
-    // SYCL_PROGRAM_COMPILE_OPTIONS is process-global; pearl's ESIMD (VC-backend) image rejects "-O3",
+    // SYCL_PROGRAM_COMPILE_OPTIONS is process-global; pearlhash's ESIMD (VC-backend) image rejects "-O3",
     // and it's a measured no-op for this kernel anyway (36.44 vs 36.41 MH/s on B580). Override via
     // MOM_AUTOLYKOS2_COMPILE_OPTIONS if needed.
     (void)dev;
@@ -681,11 +893,31 @@ struct AutolykosState {
     return !(value && value[0] == '0');
   }
 
+  // CUDA/HIP path: eight lanes own one 256-bit accumulator. This lowers the scalar kernel's register
+  // footprint and turns every random table row into one contiguous 32-byte subgroup transaction.
+  // The old HIP-only variable remains an alias for existing diagnostic scripts.
+  static bool autolykos_subgroup_coop() {
+    const char* value = std::getenv("MOM_AUTOLYKOS2_SUBGROUP_COOP");
+    if (!value) value = std::getenv("MOM_AUTOLYKOS2_HIP_COOP");
+    return !value || (std::strcmp(value, "0") && std::strcmp(value, "false"));
+  }
+
+  static bool autolykos_subgroup_coop_verify() {
+    const char* value = std::getenv("MOM_AUTOLYKOS2_SUBGROUP_COOP_VERIFY");
+    if (!value) value = std::getenv("MOM_AUTOLYKOS2_HIP_COOP_VERIFY");
+    return value && (!std::strcmp(value, "1") || !std::strcmp(value, "true"));
+  }
+
   void release() {
     queue.wait_and_throw();
     free_ptr(table);
     free_ptr(bhashes);
-    free_ptr(result);
+    if constexpr (mom_sycl_portable_opencl) {
+      portable_results.release();
+      portable_result_cap = 0;
+    } else {
+      free_ptr(result);
+    }
     free_ptr(table_mismatches);
     table_height = UINT32_MAX;
     table_n = 0;
@@ -699,9 +931,19 @@ struct AutolykosState {
   }
 
   void ensure_result() {
-    if (result) return;
-    result = sycl::malloc_shared<AutolykosResult>(1, queue);
-    if (!result) throw std::string("Can't allocate autolykos2 SYCL result buffer");
+    if constexpr (!mom_sycl_portable_opencl) {
+      if (result) return;
+      result = sycl::malloc_shared<AutolykosResult>(1, queue);
+      if (!result) throw std::string("Can't allocate autolykos2 SYCL result buffer");
+    }
+  }
+
+  void ensure_portable_results(const uint32_t count) {
+    if constexpr (!mom_sycl_portable_opencl) return;
+    if (portable_result_cap >= count) return;
+    queue.wait_and_throw();
+    portable_results.allocate(count);
+    portable_result_cap = count;
   }
 
   void ensure_bhashes(const uint32_t intensity) {
@@ -714,9 +956,16 @@ struct AutolykosState {
   }
 
   bool should_use_table(const bool is_test) const {
-    if (is_test || device.is_cpu()) return false;
-    const char* const value = std::getenv("MOM_AUTOLYKOS2_TABLE");
-    return !(value && value[0] == '0');
+    if constexpr (mom_sycl_portable_opencl) {
+      // Some conforming ICDs cap individual buffers at 2 GiB. Recompute rows instead of requiring
+      // the ~6.9-GiB fast table in the no-USM profile.
+      (void)is_test;
+      return false;
+    } else {
+      if (is_test || device.is_cpu()) return false;
+      const char* const value = std::getenv("MOM_AUTOLYKOS2_TABLE");
+      return !(value && value[0] == '0');
+    }
   }
 
   // Recompute a sample of the freshly built table with the reference digest and throw on
@@ -739,7 +988,7 @@ struct AutolykosState {
     const uint32_t local = prehash_workgroup;
 
     sycl_wait_and_throw(queue.submit([&](sycl::handler& h) {
-      MOM_USE_BUNDLE(h, *bundle);
+      mom_use_bundle(h, *bundle);
       h.parallel_for(
         sycl::nd_range<1>(sycl::range<1>(round_up(count, local)), sycl::range<1>(local)),
         [=](sycl::nd_item<1> item) {
@@ -784,7 +1033,7 @@ struct AutolykosState {
     }
 
     if (table && table_height == height && table_n == n_len) return;
-    if (!device.has(sycl::aspect::usm_device_allocations)) {
+    if (!mom_has_usm_device(device)) {
       throw std::string("autolykos2 SYCL GPU device does not support device allocations");
     }
 
@@ -811,7 +1060,7 @@ struct AutolykosState {
       const uint32_t current_rows = chunk_rows ? std::min(chunk_rows, n_len - start_row) : n_len;
       const uint32_t chunk_start = start_row;
       build_event = q.submit([&](sycl::handler& h) {
-        MOM_USE_BUNDLE(h, kb);
+        mom_use_bundle(h, kb);
         h.parallel_for(
           sycl::nd_range<1>(sycl::range<1>(round_up(current_rows, local)), sycl::range<1>(local)),
           [=](sycl::nd_item<1> item) {
@@ -837,14 +1086,34 @@ struct AutolykosState {
   }
 };
 
-static AutolykosState& autolykos_state(const std::string& dev_str) {
-  static std::mutex states_mutex;
-  static std::map<std::string, std::unique_ptr<AutolykosState>> states;
+using AutolykosStateMap = std::map<std::string, std::unique_ptr<AutolykosState>>;
 
-  std::lock_guard<std::mutex> lock(states_mutex);
-  auto& state = states[dev_str];
+// sycl_cleanup() clears the device-owning values before the compiler runtime unloads. Keep only
+// this now-empty registry shell alive so C++ static destruction cannot race runtime DLL teardown.
+static AutolykosStateMap& autolykos_states() {
+  static AutolykosStateMap* const states = new AutolykosStateMap;
+  return *states;
+}
+
+static std::mutex& autolykos_states_mutex() {
+  static std::mutex* const mutex = new std::mutex;
+  return *mutex;
+}
+
+static AutolykosState& autolykos_state(const std::string& dev_str) {
+  std::lock_guard<std::mutex> lock(autolykos_states_mutex());
+  auto& state = autolykos_states()[dev_str];
   if (!state) state = std::make_unique<AutolykosState>(dev_str);
   return *state;
+}
+
+void autolykos2_cleanup_states() noexcept {
+  try {
+    std::lock_guard<std::mutex> lock(autolykos_states_mutex());
+    autolykos_states().clear();
+  } catch (...) {
+    std::fprintf(stderr, "autolykos2: ordered SYCL cleanup failed\n");
+  }
 }
 
 // Return the last winning share found by a mining kernel (0 = none). The kernels may stash up
@@ -885,12 +1154,20 @@ int autolykos2(
   std::memcpy(&start_nonce, input + HASH_LEN, sizeof(start_nonce));
   const uint32_t effective_intensity = is_test ? 1 : intensity;
   const uint32_t global_size = round_up(std::max(effective_intensity, state.workgroup), state.workgroup);
-  std::memset(state.result, 0, sizeof(AutolykosResult));
+  if constexpr (mom_sycl_portable_opencl) {
+    state.ensure_portable_results(effective_intensity);
+    AutolykosPortableResult empty_portable_result{};
+    sycl_wait_and_throw(state.portable_results.fill(state.queue, empty_portable_result), state.device);
+  } else {
+    std::memset(state.result, 0, sizeof(AutolykosResult));
+  }
 
   sycl::queue& q = state.queue;
   auto& kb = *state.bundle;
   const uint32_t* const __restrict__ d_table = state.table;
-  AutolykosResult* const d_result = state.result;
+  // Split-table kernels are unreachable in this profile, but retain a well-typed placeholder so
+  // the common source remains compilable and device-code splitting can discard those images.
+  AutolykosResult* const d_result = mom_sycl_portable_opencl ? nullptr : state.result;
   const uint32_t local_size = state.workgroup;
   const bool profile = std::getenv("MOM_AUTOLYKOS2_PROFILE") != nullptr;
 
@@ -900,7 +1177,7 @@ int autolykos2(
 
     const uint64_t profile_t0 = profile ? now_us() : 0;
     sycl::event index_event = q.submit([&](sycl::handler& h) {
-      MOM_USE_BUNDLE(h, kb);
+      mom_use_bundle(h, kb);
       h.parallel_for(
         sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(local_size)),
         [=](sycl::nd_item<1> item) {
@@ -920,72 +1197,258 @@ int autolykos2(
 
     if (profile) sycl_wait_and_throw(index_event, state.device);
     const uint64_t profile_t1 = profile ? now_us() : 0;
-    sycl::event search_event = q.submit([&](sycl::handler& h) {
-      MOM_USE_BUNDLE(h, kb);
-      h.parallel_for(
-        sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(local_size)),
-        [=](sycl::nd_item<1> item) {
-          const uint32_t gid = item.get_global_id(0);
-          if (gid >= effective_intensity) return;
+    const bool subgroup_coop = (mom_is_hip(state.device) || mom_is_cuda(state.device)) &&
+                               AutolykosState::autolykos_subgroup_coop();
+    const uint32_t verify_count = subgroup_coop && AutolykosState::autolykos_subgroup_coop_verify() &&
+                                  !state.subgroup_coop_verified
+      ? std::min<uint32_t>(effective_intensity, 256U) : 0U;
+    uint32_t* const verify_sums = verify_count
+      ? sycl::malloc_device<uint32_t>(static_cast<size_t>(verify_count) * 8U, q) : nullptr;
+    if (verify_count && !verify_sums)
+      throw std::string("Can't allocate Autolykos2 subgroup verification buffer");
+    sycl::event search_event;
+    if (subgroup_coop) {
+      const uint32_t coop_global = round_up(effective_intensity * 8U, local_size);
+      search_event = q.submit([&](sycl::handler& h) {
+        mom_use_bundle(h, kb);
+        h.parallel_for(
+          sycl::nd_range<1>(sycl::range<1>(coop_global), sycl::range<1>(local_size)),
+          [=](sycl::nd_item<1> item) {
+            const uint32_t thread = item.get_global_id(0);
+            const uint32_t gid = thread >> 3;
+            const bool active = gid < effective_intensity;
+            const auto sg = item.get_sub_group();
+            const uint32_t lane = static_cast<uint32_t>(sg.get_local_linear_id());
+            const uint32_t team_lane = lane & 7U;
+            const uint32_t team_base = lane - team_lane;
 
-          const uint32_t* const hash_words = d_bhashes + static_cast<uint64_t>(gid) * 8U;
-          uint32_t words[9];
+            // One lane owns one big-endian limb. The eight hash words are loaded coalesced once, then
+            // native subgroup permutes broadcast the two words needed for each sliding 32-bit index.
+            const uint32_t word = active
+              ? d_bhashes[static_cast<uint64_t>(gid) * 8U + team_lane] : 0U;
+            uint64_t partial[4] = {};
 #pragma unroll
-          for (unsigned i = 0; i < 8; ++i) words[i] = hash_words[i];
-          words[8] = words[0];
-
-          uint32_t sum[8] = {};
-          // Unroll the K_LEN table-row reads so the independent random loads issue
-          // in parallel (memory-level parallelism) and hide DRAM latency instead
-          // of stalling one-at-a-time (the read loop is the autolykos2 bottleneck).
-#pragma unroll
-          for (unsigned k = 0; k < K_LEN; ++k) {
-            const unsigned word_index = k >> 2;
-            uint32_t idx;
-            switch (k & 3U) {
-              case 0: idx = words[word_index]; break;
-              case 1: idx = (words[word_index] << 8) | (words[word_index + 1] >> 24); break;
-              case 2: idx = (words[word_index] << 16) | (words[word_index + 1] >> 16); break;
-              default: idx = (words[word_index] << 24) | (words[word_index + 1] >> 8); break;
+            for (unsigned k = 0; k < K_LEN; ++k) {
+              const unsigned wi = k >> 2;
+              const uint32_t word0 = mom_select_from_group(sg, word, team_base + wi);
+              const uint32_t word1 = mom_select_from_group(sg, word, team_base + ((wi + 1U) & 7U));
+              const uint32_t idx = autolykos_index_from_words_dev(
+                word0, word1, k & 3U, n_len, n_len_M);
+              if (active) {
+                partial[k & 3U] += d_table[static_cast<uint64_t>(idx) * 8U + team_lane];
+              }
             }
-            idx = mo_mod_u32(idx, n_len, n_len_M);
-            add_limbs_dev(sum, d_table + static_cast<uint64_t>(idx) * (TABLE_ENTRY_BYTES / sizeof(uint32_t)));
-          }
+            const uint64_t column = (partial[0] + partial[1]) + (partial[2] + partial[3]);
 
-          uint8_t final_input[32];
+            // Propagate the carry from least-significant limb 7 toward limb 0. Broadcasting one
+            // 64-bit column at each of eight steps keeps every group operation converged.
+            uint32_t carry = 0;
+            uint32_t output_limb = 0;
 #pragma unroll
-          for (unsigned i = 0; i < 8; ++i) store32_be_dev(final_input + i * 4, sum[i]);
+            for (unsigned step = 0; step < 8; ++step) {
+              const uint32_t owner = team_base + 7U - step;
+              if (team_lane == 7U - step) {
+                const uint64_t with_carry = column + carry;
+                output_limb = static_cast<uint32_t>(with_carry);
+                carry = static_cast<uint32_t>(with_carry >> 32);
+              }
+              // Every lane needs the carry for the next, more-significant owner. The column itself
+              // is already resident on its owner, so broadcasting its low/high halves is redundant.
+              carry = mom_select_from_group(sg, carry, owner);
+            }
 
-          uint8_t final_hash[32];
-          blake2b256_oneblock_dev(final_input, sizeof(final_input), final_hash);
-          if (meets_target_dev(final_hash, job.target)) {
-            store_autolykos_result(d_result, start_nonce + gid, final_hash);
+            uint32_t sum[8];
+#pragma unroll
+            for (unsigned i = 0; i < 8; ++i) {
+              const uint32_t value = mom_select_from_group(sg, output_limb, team_base + i);
+              if (team_lane == 0) sum[i] = value;
+            }
+            if (!active || team_lane != 0) return;
+            if (gid < verify_count) {
+#pragma unroll
+              for (unsigned i = 0; i < 8; ++i)
+                verify_sums[static_cast<uint64_t>(gid) * 8U + i] = sum[i];
+            }
+
+            uint8_t final_input[32];
+#pragma unroll
+            for (unsigned i = 0; i < 8; ++i) store32_be_dev(final_input + i * 4, sum[i]);
+            uint8_t final_hash[32];
+            blake2b256_oneblock_dev(final_input, sizeof(final_input), final_hash);
+            if (meets_target_dev(final_hash, job.target))
+              store_autolykos_result(d_result, start_nonce + gid, final_hash);
           }
-        }
-      );
-    });
+        );
+      });
+    } else {
+      search_event = q.submit([&](sycl::handler& h) {
+        mom_use_bundle(h, kb);
+        h.parallel_for(
+          sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(local_size)),
+          [=](sycl::nd_item<1> item) {
+            const uint32_t gid = item.get_global_id(0);
+            if (gid >= effective_intensity) return;
+
+            const uint32_t* const hash_words = d_bhashes + static_cast<uint64_t>(gid) * 8U;
+            uint32_t words[9];
+#pragma unroll
+            for (unsigned i = 0; i < 8; ++i) words[i] = hash_words[i];
+            words[8] = words[0];
+
+            uint32_t sum[8] = {};
+            // Unroll the K_LEN table-row reads so the independent random loads issue
+            // in parallel (memory-level parallelism) and hide DRAM latency instead
+            // of stalling one-at-a-time (the read loop is the autolykos2 bottleneck).
+#pragma unroll
+            for (unsigned k = 0; k < K_LEN; ++k) {
+              const unsigned word_index = k >> 2;
+              uint32_t idx;
+              switch (k & 3U) {
+                case 0: idx = words[word_index]; break;
+                case 1: idx = (words[word_index] << 8) | (words[word_index + 1] >> 24); break;
+                case 2: idx = (words[word_index] << 16) | (words[word_index + 1] >> 16); break;
+                default: idx = (words[word_index] << 24) | (words[word_index + 1] >> 8); break;
+              }
+              idx = mo_mod_u32(idx, n_len, n_len_M);
+              add_limbs_dev(sum, d_table + static_cast<uint64_t>(idx) * (TABLE_ENTRY_BYTES / sizeof(uint32_t)));
+            }
+
+            uint8_t final_input[32];
+#pragma unroll
+            for (unsigned i = 0; i < 8; ++i) store32_be_dev(final_input + i * 4, sum[i]);
+
+            uint8_t final_hash[32];
+            blake2b256_oneblock_dev(final_input, sizeof(final_input), final_hash);
+            if (meets_target_dev(final_hash, job.target))
+              store_autolykos_result(d_result, start_nonce + gid, final_hash);
+          }
+        );
+      });
+    }
     sycl_wait_and_throw(search_event, state.device);
+    if (verify_count) {
+      uint32_t* const mismatches = sycl::malloc_shared<uint32_t>(1, q);
+      if (!mismatches) {
+        sycl::free(verify_sums, q);
+        throw std::string("Can't allocate Autolykos2 subgroup verification counter");
+      }
+      *mismatches = 0;
+      const uint32_t verify_global = round_up(verify_count, local_size);
+      sycl_wait_and_throw(q.submit([&](sycl::handler& h) {
+        mom_use_bundle(h, kb);
+        h.parallel_for(
+          sycl::nd_range<1>(sycl::range<1>(verify_global), sycl::range<1>(local_size)),
+          [=](sycl::nd_item<1> item) {
+            const uint32_t gid = item.get_global_id(0);
+            if (gid >= verify_count) return;
+            const uint32_t* const hash_words = d_bhashes + static_cast<uint64_t>(gid) * 8U;
+            uint32_t words[9];
+#pragma unroll
+            for (unsigned i = 0; i < 8; ++i) words[i] = hash_words[i];
+            words[8] = words[0];
+            uint32_t expected[8] = {};
+#pragma unroll
+            for (unsigned k = 0; k < K_LEN; ++k) {
+              const unsigned wi = k >> 2;
+              uint32_t idx;
+              switch (k & 3U) {
+                case 0: idx = words[wi]; break;
+                case 1: idx = (words[wi] << 8) | (words[wi + 1] >> 24); break;
+                case 2: idx = (words[wi] << 16) | (words[wi + 1] >> 16); break;
+                default: idx = (words[wi] << 24) | (words[wi + 1] >> 8); break;
+              }
+              idx = mo_mod_u32(idx, n_len, n_len_M);
+              add_limbs_dev(expected, d_table + static_cast<uint64_t>(idx) * 8U);
+            }
+            bool differs = false;
+#pragma unroll
+            for (unsigned i = 0; i < 8; ++i)
+              differs |= expected[i] != verify_sums[static_cast<uint64_t>(gid) * 8U + i];
+            if (differs) {
+              sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
+                               sycl::access::address_space::global_space>(*mismatches).fetch_add(1U);
+            }
+          }
+        );
+      }), state.device);
+      const uint32_t mismatch_count = *mismatches;
+      sycl::free(mismatches, q);
+      sycl::free(verify_sums, q);
+      if (mismatch_count)
+        throw std::string("Autolykos2 subgroup verification failed: ") +
+              std::to_string(mismatch_count) + " of " + std::to_string(verify_count) +
+              " accumulator sums differ";
+      state.subgroup_coop_verified = true;
+      std::fprintf(stderr, "Autolykos2 subgroup sums verified for %u nonces\n", verify_count);
+    }
     if (profile) {
       const uint64_t profile_t2 = now_us();
       std::fprintf(stderr,
-        "AUTOLYKOS2_PROFILE split intensity=%u local=%u index=%.3fms search=%.3fms total=%.3fms\n",
-        effective_intensity, local_size,
+        "AUTOLYKOS2_PROFILE split%s intensity=%u local=%u index=%.3fms search=%.3fms total=%.3fms\n",
+        subgroup_coop ? "-subgroup-coop" : "", effective_intensity, local_size,
         static_cast<double>(profile_t1 - profile_t0) / 1000.0,
         static_cast<double>(profile_t2 - profile_t1) / 1000.0,
         static_cast<double>(profile_t2 - profile_t0) / 1000.0);
     }
 
-    return take_autolykos_result(state.result, output, pnonce);
+    if constexpr (mom_sycl_portable_opencl) {
+      throw std::string("Autolykos2 portable OpenCL table path is unavailable");
+    } else {
+      return take_autolykos_result(state.result, output, pnonce);
+    }
   }
 
   const uint64_t profile_t0 = profile ? now_us() : 0;
-  sycl::event search_event = q.submit([&](sycl::handler& h) {
-    MOM_USE_BUNDLE(h, kb);
-    sycl::local_accessor<uint32_t, 1> shared_index(sycl::range<1>(64), h);
-    sycl::local_accessor<uint32_t, 1> shared_data(sycl::range<1>(512), h);
-    h.parallel_for(
-      sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(local_size)),
-      [=](sycl::nd_item<1> item) {
+  sycl::event search_event;
+#if defined(MOM_SYCL_PORTABLE_OPENCL)
+    search_event = q.submit([&](sycl::handler& h) {
+      auto results = state.portable_results.device_view<sycl::access_mode::write>(h);
+      h.parallel_for(sycl::range<1>{effective_intensity}, [=](sycl::id<1> item) {
+        const uint32_t gid = item[0];
+        const uint64_t nonce = start_nonce + gid;
+        uint8_t index_hash[32];
+        autolykos_index_hash_portable_dev(
+          job.message, nonce, height, n_len, n_len_divM, index_hash);
+
+        uint32_t sum[8] = {};
+#pragma unroll
+        for (unsigned k = 0; k < K_LEN; ++k) {
+          const uint32_t idx = mo_mod_u32(
+            (static_cast<uint32_t>(index_hash[(k + 0) & 31U]) << 24) |
+            (static_cast<uint32_t>(index_hash[(k + 1) & 31U]) << 16) |
+            (static_cast<uint32_t>(index_hash[(k + 2) & 31U]) << 8) |
+             static_cast<uint32_t>(index_hash[(k + 3) & 31U]), n_len, n_len_M);
+          uint8_t digest[32];
+          autolykos_prehash_digest_dev(idx, height, digest);
+          uint32_t decoded[8];
+          digest_to_limbs_dev(digest, decoded);
+          add_limbs_dev(sum, decoded);
+        }
+
+        uint8_t final_input[32];
+#pragma unroll
+        for (unsigned i = 0; i < 8; ++i) store32_be_dev(final_input + i * 4, sum[i]);
+        uint8_t final_hash[32];
+        blake2b256_oneblock_dev(final_input, sizeof(final_input), final_hash);
+
+        AutolykosPortableResult candidate{};
+        if (is_test || meets_target_dev(final_hash, job.target)) {
+          candidate.found = 1;
+          candidate.nonce = nonce;
+#pragma unroll
+          for (unsigned i = 0; i < HASH_LEN; ++i) candidate.output[i] = final_hash[i];
+        }
+        results[gid] = candidate;
+      });
+    });
+#else
+    search_event = q.submit([&](sycl::handler& h) {
+      mom_use_bundle(h, kb);
+      sycl::local_accessor<uint32_t, 1> shared_index(sycl::range<1>(64), h);
+      sycl::local_accessor<uint32_t, 1> shared_data(sycl::range<1>(512), h);
+      h.parallel_for(
+        sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(local_size)),
+        [=](sycl::nd_item<1> item) {
         const uint32_t gid = item.get_global_id(0);
         const uint32_t local_id = item.get_local_id(0);
         const bool active = gid < effective_intensity;
@@ -1055,9 +1518,10 @@ int autolykos2(
         if (is_test || meets_target_dev(final_hash, job.target)) {
           store_autolykos_result(d_result, nonce, final_hash);
         }
-      }
-    );
-  });
+        }
+      );
+    });
+#endif
   sycl_wait_and_throw(search_event, state.device);
   if (profile) {
     const uint64_t profile_t1 = now_us();
@@ -1067,5 +1531,17 @@ int autolykos2(
       d_table ? 1U : 0U);
   }
 
+#if defined(MOM_SYCL_PORTABLE_OPENCL)
+    std::vector<AutolykosPortableResult> portable_results(effective_intensity);
+    state.portable_results.read(portable_results.data(), portable_results.size());
+    for (const AutolykosPortableResult& candidate : portable_results) {
+      if (!candidate.found) continue;
+      *pnonce = candidate.nonce;
+      std::memcpy(output, candidate.output, HASH_LEN);
+      return 1;
+    }
+    return 0;
+#else
   return take_autolykos_result(state.result, output, pnonce);
+#endif
 }
