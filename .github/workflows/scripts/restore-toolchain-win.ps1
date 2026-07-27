@@ -7,6 +7,7 @@ param(
   [string]$Repo  = "MoneroOcean/mo-miner",
   [string]$Tag   = "toolchain-win-dpcpp-cuda",
   [string]$Asset = "dpcpp-cuda-win.tar.gz",
+  [string]$ExpectedSha256 = "7a61b81cc15484656c80d3927dfc890d14d98689d64f05e3b88f5b45a1e4bb34",
   [string]$Dest  = ""
 )
 $ErrorActionPreference = "Stop"
@@ -19,21 +20,16 @@ if (-not $Dest) {
 $work = Join-Path ([System.IO.Path]::GetTempPath()) "mom-dpcpp-dl"
 New-Item -ItemType Directory -Force $work | Out-Null
 $tarball = Join-Path $work $Asset
-$shafile = "$tarball.sha256"
 
-# Prefer `gh` (preinstalled on GitHub runners, uses the job token); fall back to the public download URL.
-$gh = Get-Command gh -ErrorAction SilentlyContinue
-if ($gh) {
-  & gh release download $Tag --repo $Repo --pattern "$Asset" --pattern "$Asset.sha256" --dir $work --clobber
-  if ($LASTEXITCODE -ne 0) { throw "gh release download failed ($LASTEXITCODE)." }
-} else {
-  $base = "https://github.com/$Repo/releases/download/$Tag"
-  Invoke-WebRequest "$base/$Asset"        -OutFile $tarball
-  Invoke-WebRequest "$base/$Asset.sha256" -OutFile $shafile
-}
+# The release is public. curl's bounded retries are more reliable for this 1+ GiB payload than one
+# `gh release download` attempt, and make local/dev and hosted-runner behavior identical.
+$url = "https://github.com/$Repo/releases/download/$Tag/$Asset"
+& curl.exe -fL --retry 5 --retry-delay 5 -o $tarball $url
+if ($LASTEXITCODE -ne 0) { throw "DPC++ download failed ($LASTEXITCODE): $url" }
 
-# Verify integrity (the sidecar is "<sha256>  <name>").
-$expected = ((Get-Content $shafile -Raw) -split '\s+')[0].Trim().ToLower()
+# Verify against the source-controlled digest. A mutable release sidecar would only prove that the
+# payload and sidecar changed together, and could silently replace the compiler used for releases.
+$expected = $ExpectedSha256.Trim().ToLower()
 $actual   = (Get-FileHash $tarball -Algorithm SHA256).Hash.ToLower()
 if ($expected -ne $actual) { throw "SHA256 mismatch for ${Asset}: expected $expected, got $actual." }
 
@@ -45,6 +41,9 @@ if ($LASTEXITCODE -ne 0) { throw "tar extract failed ($LASTEXITCODE)." }
 
 $clang = Join-Path $Dest "bin\clang++.exe"
 if (-not (Test-Path $clang)) { throw "clang++.exe not found under $Dest\bin after extract." }
+# The development image persists across source revisions. Record the verified payload identity so
+# install-dev.ps1 can replace a stale-but-otherwise-functional compiler instead of accepting it.
+$expected | Set-Content (Join-Path $Dest '.mom-toolchain-sha256') -NoNewline
 
 $resolved = (Resolve-Path $Dest).Path
 $env:MOM_DPCPP_DIR = $resolved

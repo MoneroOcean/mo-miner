@@ -25,6 +25,14 @@ ICPX="${MOM_ICPX:-icpx}"
 # by the driver to the real GPU at load -- one build runs natively on Ampere/Ada/Hopper. Keep in sync
 # with scripts/combined-build.sh's default. Must match between the sycl-TU compile and the link.
 TARGETS="${MOM_COMBINED_TARGETS:-spir64,nvidia_gpu_sm_80}"
+spirv_translator_args=()
+if [ "${MOM_DPCPP_IMPL:-dpcpp-combined}" = dpcpp-opencl ]; then
+  # Keep the fallback image within the portable OpenCL SPIR-V environment. The translator otherwise
+  # preserves LLVM alias scopes as SPV_INTEL_memory_access_aliasing, which Rusticl and other
+  # standards-only consumers are not required to accept.
+  spirv_translator_args=(-Xspirv-translator=spir64
+    --spirv-ext=-SPV_INTEL_memory_access_aliasing,-SPV_KHR_expect_assume,-SPV_KHR_linkonce_odr)
+fi
 
 is_link=0 is_compile=0 src=""
 for a in "$@"; do
@@ -59,16 +67,16 @@ if [ "$is_link" = 1 ]; then
     # libsycl.so, where two static copies would break unwinding.
     intel_libs=(-Wl,-Bstatic -limf -lsvml -lirng -lirc -Wl,-Bdynamic -lintlc)
   fi
-  exec "$CLANGXX" -fsycl -fsycl-targets="$TARGETS" "${rpaths[@]}" "$@" "${intel_libs[@]}"
+  exec "$CLANGXX" -fsycl -fsycl-targets="$TARGETS" "${spirv_translator_args[@]}" "${rpaths[@]}" "$@" "${intel_libs[@]}"
 fi
 
 # node-gyp runs make from build/, so the SYCL sources arrive as ../sycl/foo.cpp (or an
 # absolute path); match any path component "sycl/" so they route to clang, not just a
 # leading "sycl/".
 if [ "$is_compile" = 1 ] && [[ "$src" == sycl/*.cpp || "$src" == */sycl/*.cpp ]]; then
-  # pearl_esimd.cpp is the Intel ESIMD search, which can't share -fsycl-targets with nvptx, so build
+  # pearlhash_esimd.cpp is the Intel ESIMD search, which can't share -fsycl-targets with nvptx, so build
   # it spir64-only; everything else gets the full spir64+nvptx target set.
-  if [[ "$src" == *pearl_esimd.cpp ]]; then
+  if [[ "$src" == *pearlhash_esimd.cpp ]]; then
     log "SYCL   -> clang   : $src (spir64-only ESIMD)"
     exec "$CLANGXX" -fsycl-targets=spir64 "$@"
   fi
