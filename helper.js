@@ -9,16 +9,77 @@ const fs      = require("fs");
 const childProcess = require("child_process");
 
 const is_windows_process = process.platform === "win32";
+const development_build_platform = is_windows_process ? "win" : "lin";
 const is_explicit_worker = process.env.MOM_CLUSTER_WORKER === "1";
 const is_worker_process = is_explicit_worker ||
   (!is_windows_process && !cluster.isMaster);
 const use_subprocess_workers = is_windows_process ||
-  process.env.MOM_USE_SUBPROCESS_WORKERS === "1";
+  process.env.MOM_USE_SUBPROCESS_WORKERS === "1" ||
+  (process.env.MOM_GPU_BACKEND || "").toLowerCase() === "amd";
 const thread_id = is_worker_process ? Number.parseInt(process.env.thread_id, 10) : "master";
 let worker_ids = []; // active worker ids (cluster.workers can contain not yet closed workers)
 let worker_procs = {};
 let core_module_for_exit = null;
 const worker_message_prefix = "MOM_WORKER_MESSAGE ";
+const rocr_signal_pool_warning =
+  /^Warning: Resource leak detected by SharedSignalPool, \d+ Signals leaked\.\r?$/;
+const ansi_sgr_prefix = String.fromCharCode(27) + "[";
+const acpp_buffer_advisory =
+  /^\[AdaptiveCpp Warning\] This application uses SYCL buffers; the SYCL buffer-accessor model is well-known to introduce unnecessary overheads\. Please consider migrating to the SYCL2020 USM model, in particular device USM \(sycl::malloc_device\) combined with in-order queues for more performance\. See the AdaptiveCpp performance guide for more information: ?\r?$/;
+const acpp_buffer_advisory_url =
+  /^https:\/\/github\.com\/AdaptiveCpp\/AdaptiveCpp\/blob\/develop\/doc\/performance\.md\r?$/;
+const acpp_jit_advisory =
+  /^\[AdaptiveCpp Warning\] kernel_cache: This application run has resulted in new binaries being JIT-compiled\. This indicates that the runtime optimization process has not yet reached peak performance\. You may want to run the application again until this warning no longer appears to achieve optimal performance\.\r?$/;
+const llvm_ptx88_fallback_advisory =
+  /^'\+ptx88' is not a recognized feature for this target \(ignoring feature\)\r?$/;
+const windows_hip_library_path =
+  /^HIP Library Path: [A-Za-z]:\\.*\\amdhip64(?:_\d+)?\.dll\r?$/i;
+
+function hideWorkerStderrLine(line) {
+  const plainLine = line.split(ansi_sgr_prefix).map(function(part, index) {
+    if (index === 0) {return part;}
+    const end = part.indexOf("m");
+    if (end >= 0 && /^[0-9;]*$/.test(part.slice(0, end))) {return part.slice(end + 1);}
+    return ansi_sgr_prefix + part;
+  }).join("");
+  return rocr_signal_pool_warning.test(plainLine) ||
+         acpp_buffer_advisory.test(plainLine) ||
+         acpp_buffer_advisory_url.test(plainLine) ||
+         acpp_jit_advisory.test(plainLine) ||
+         llvm_ptx88_fallback_advisory.test(plainLine);
+}
+
+// Ubuntu ships ROCr with its debug-only SharedSignalPool accounting enabled. hsa_shut_down() prints
+// this line while tearing down short-lived HIP workers, immediately before freeing the complete
+// pool; it is not a persistent host/GPU leak. AdaptiveCpp's buffer text currently comes from C29's
+// buffer/accessor implementation; a measured USM conversion is performance work, not an actionable
+// runtime failure. The exact kernel-cache summary likewise only says that this process used a
+// not-yet-cached kernel; the AppDB still persists that object for later processes. Keep arbitrary
+// stderr byte-for-byte while suppressing only these exact, understood diagnostics (including their
+// optional ANSI coloring), even when a stream chunk splits one across writes. AdaptiveCpp develop
+// requests PTX 8.8 for sm_120, while its Windows LLVM 20.1.8 runtime supports through PTX 8.7.
+// LLVM's exact advisory is harmless here: the emitted JIT object is still `.version 8.7` with
+// `.target sm_120` (the PTX version that introduced sm_120). Keep every other target-feature line.
+function filterWorkerStderr(pending, chunk, flush = false) {
+  let input = pending + chunk;
+  let visible = "";
+  let eol;
+  while ((eol = input.indexOf("\n")) !== -1) {
+    const line = input.slice(0, eol);
+    input = input.slice(eol + 1);
+    if (!hideWorkerStderrLine(line)) {visible += line + "\n";}
+  }
+  if (flush) {
+    if (input && !hideWorkerStderrLine(input)) {visible += input;}
+    input = "";
+  }
+  return {pending: input, visible};
+}
+
+module.exports.filterWorkerStderr = filterWorkerStderr;
+module.exports.filterWorkerStdoutLine = function(line) {
+  return windows_hip_library_path.test(line) ? "" : line;
+};
 
 function reallyExit(code) {
   setImmediate(() => {
@@ -45,11 +106,12 @@ function normalizeWindowsPathKey(env) {
 function withWindowsWorkerPath(env) {
   const appDir = path.dirname(process.execPath);
   return module.exports.withWindowsPathEntries(env, [
+    env.MOM_NATIVE_PATH && path.dirname(env.MOM_NATIVE_PATH),
     appDir,
     path.join(appDir, "mom"),
     process.cwd(),
     path.join(process.cwd(), "mom"),
-    path.join(__dirname, "build", "Release"),
+    path.join(__dirname, "build", development_build_platform, "Release"),
   ]);
 }
 
@@ -99,16 +161,17 @@ module.exports.create_core = function() {
   this.log3("Starting compute core in " + thread_id + " thread");
   const appDir = path.dirname(process.execPath);
   const core_path = firstExistingPath([
+    process.env.MOM_NATIVE_PATH,
     path.join(appDir, "libs", "mom.node"),
     path.join(appDir, "mom.node"),
     path.join(appDir, "mom", "mom.node"),
-    path.join(appDir, "build", "Release", "mom.node"),
+    path.join(appDir, "build", development_build_platform, "Release", "mom.node"),
     path.join(process.cwd(), "libs", "mom.node"),
     path.join(process.cwd(), "mom.node"),
     path.join(process.cwd(), "mom", "mom.node"),
     path.join(__dirname, "libs", "mom.node"),
     path.join(__dirname, "mom.node"),
-    path.join(__dirname, "build", "Release", "mom.node"),
+    path.join(__dirname, "build", development_build_platform, "Release", "mom.node"),
   ]);
   debugStartup("requiring " + core_path);
   const core_module = require(core_path);
@@ -248,7 +311,7 @@ function parseThreadDev(dev_part) {
 
 module.exports.is_valid_dev = function(dev) {
   return typeof dev === "string" && dev.split(",").every(function(dev_part) {
-    return /^(?:cpu\d*|gpu\d+[oz]?)(?:\*[1-9]\d*)?(?:\^[1-9]\d*)?$/.test(dev_part);
+    return /^(?:cpu\d*|gpu\d+)(?:\*[1-9]\d*)?(?:\^[1-9]\d*)?$/.test(dev_part);
   });
 };
 
@@ -387,6 +450,7 @@ function createSubprocessThread(i, env, messageHandler) {
   let output = "";
   let recentStdout = "";
   let recentStderr = "";
+  let pendingStderr = "";
   thread.stdout.setEncoding("utf8");
   thread.stdout.on("data", function(chunk) {
     recentStdout = appendRecentText(recentStdout, chunk);
@@ -398,13 +462,25 @@ function createSubprocessThread(i, env, messageHandler) {
       if (line.startsWith(worker_message_prefix)) {
         messageHandler(JSON.parse(line.slice(worker_message_prefix.length)));
       } else if (line) {
-        process.stdout.write(line + "\n");
+        const visible = module.exports.filterWorkerStdoutLine(line);
+        if (visible) {process.stdout.write(visible + "\n");}
       }
     }
   });
+  thread.stderr.setEncoding("utf8");
   thread.stderr.on("data", function(chunk) {
-    recentStderr = appendRecentText(recentStderr, chunk);
-    process.stderr.write(chunk);
+    const filtered = filterWorkerStderr(pendingStderr, chunk);
+    pendingStderr = filtered.pending;
+    if (!filtered.visible) {return;}
+    recentStderr = appendRecentText(recentStderr, filtered.visible);
+    process.stderr.write(filtered.visible);
+  });
+  thread.stderr.on("end", function() {
+    const filtered = filterWorkerStderr(pendingStderr, "", true);
+    pendingStderr = filtered.pending;
+    if (!filtered.visible) {return;}
+    recentStderr = appendRecentText(recentStderr, filtered.visible);
+    process.stderr.write(filtered.visible);
   });
   thread.on("error", function(error) {
     workerError(messageHandler, i, "Worker " + i + " failed to start: " + error.message);

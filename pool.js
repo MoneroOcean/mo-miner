@@ -7,7 +7,20 @@ const tls  = require("tls");
 const h    = require("./helper.js");
 const o    = require("./opts.js");
 
+// Correctness tests may use normal network services, but must never contact a mining pool. Capture
+// the actual socket functions before logic tests substitute their in-memory sockets, so the guard
+// blocks only a real pool connection and leaves the protocol fixtures testable.
+const systemNetConnect = net.connect;
+const systemTlsConnect = tls.connect;
+
 const max_pool_data_buffer = 1024 * 1024;
+
+function normalizeAlgoName(algo) {
+  if (!algo) {return algo;}
+  const name = String(algo).toLowerCase();
+  if (name.startsWith("c29") || name === "cuckaroo") {return "c29";}
+  return name;
+}
 
 function pool_str(pool_id) {
   const pool = global.opt.pools[pool_id];
@@ -45,16 +58,16 @@ function isCurrentPoolSocket(pool_id, socket) {
 
 // Maps a mining algo to its stratum protocol dialect, or null if it uses the default `login` dialect.
 function protocolForAlgo(algo) {
-  switch (algo) {
+  switch (normalizeAlgoName(algo)) {
     case "kawpow":     return "raven";
     case "firopow":    return "raven";
     case "evrprogpow": return "raven";
     case "meowpow":    return "raven";
     case "etchash":    return "eth";
     case "autolykos2": return "erg";
-    case "pearl":      return "pearl";
+    case "pearlhash":  return "pearlhash";
     case "fishhash":   return "ironfish";
-    case "equihash125_4": return "equihash";
+    case "zelhash":    return "zelhash";
     case "beamhash3":  return "beam";
     case "karlsenhashv2": return "kaspa";
     default:           return null;
@@ -82,7 +95,7 @@ function poolProtocol(pool) {
 function usesMiningSubscribe(pool) {
   const protocol = poolProtocol(pool);
   return protocol === "raven" || protocol === "eth" || protocol === "erg" ||
-         protocol === "equihash" || protocol === "kaspa";
+         protocol === "zelhash" || protocol === "kaspa";
 }
 
 function usesEthProxy(pool) {
@@ -94,29 +107,30 @@ function usesIronfish(pool) {
 }
 
 // Standard Pearl handshake (HeroMiners/LuckyPool/etc.): mining.subscribe + mining.authorize
-// {wallet,worker,pass}. This is the DEFAULT for pearl pools. pearlpool.cloud uses the older single
+// {wallet,worker,pass}. This is the default for PearlHash pools. pearlpool.cloud uses the older single
 // `login` dialect instead -- opt OUT of subscribe there with "use_subscribe": false (the MoneroOcean
 // donate pool also sets it false so donation keeps using login). Both dialects push the same
-// object-param pearl mining.notify and take the same mining.submit{job_id,plain_proof}.
-function pearlUsesSubscribe(pool) {
-  // MOM_PEARL_LOGIN env forces the legacy login dialect (pearlpool.cloud) for CLI mining.
+// object-param PearlHash mining.notify and take the same mining.submit{job_id,plain_proof}.
+function pearlhashUsesSubscribe(pool) {
+  // MOM_PEARLHASH_LOGIN forces pearlpool.cloud's login dialect for CLI mining.
   // The MO donate pool opts out via use_subscribe:false, so this env never affects donation.
-  if (process.env.MOM_PEARL_LOGIN) {return false;}
-  return poolProtocol(pool) === "pearl" && pool.use_subscribe !== false;
+  if (process.env.MOM_PEARLHASH_LOGIN) {return false;}
+  return poolProtocol(pool) === "pearlhash" && pool.use_subscribe !== false;
 }
 
 // Pearl difficulty is carried in the job_id suffix "<hex>_<diff>" (HeroMiners omits the difficulty
 // field that pearlpool.cloud sends); used to derive the 2^256/diff kernel target.
-function pearlDiffFromJobId(job_id) {
+function pearlhashDiffFromJobId(job_id) {
   const m = String(job_id || "").match(/_(\d+)$/);
   return m ? Number(m[1]) : undefined;
 }
 
 // k - k%rank (the "dot_product_length"), from the same env the native kernel reads. Defaults MUST
-// match the native pearl_k()/pearl_rank() (4096/256) or the JS-computed jackpot bound disagrees with
+// match the native PearlHash k/rank defaults (4096/256) or the JS-computed jackpot bound disagrees with
 // the kernel/verifier and shares come out too rare.
-function pearlKEff() {
-  const k = Number(process.env.MOM_PEARL_K) || 4096, rank = Number(process.env.MOM_PEARL_RANK) || 256;
+function pearlhashKEff() {
+  const k = Number(process.env.MOM_PEARLHASH_K) || 4096;
+  const rank = Number(process.env.MOM_PEARLHASH_RANK) || 256;
   return Math.floor(k / rank) * rank;
 }
 
@@ -124,10 +138,10 @@ function pearlKEff() {
 // the verifier checks is T0 * (16*16) * (k - k%rank)  (zk-pow extract_difficulty_bound: tile_size *
 // dot_product_length). pearlpool instead accepts the lenient 2^256/diff and its target field is the
 // network block target (ignored).
-function pearlNbitsBound(baseTargetHex) {
+function pearlhashNbitsBound(baseTargetHex) {
   const MAX = (1n << 256n) - 1n;
   const base = BigInt("0x" + (hexWithoutPrefix(baseTargetHex) || "0"));
-  let bound = base * BigInt(16 * 16 * pearlKEff());
+  let bound = base * BigInt(16 * 16 * pearlhashKEff());
   if (bound > MAX) {bound = MAX;}
   return bound.toString(16).padStart(64, "0");
 }
@@ -140,7 +154,7 @@ module.exports.pool_write = function(pool_id, json) {
   pool_log2(pool_id, "Sent to the pool: " + message);
   pool.socket.write(message + "\n");
   // sends keepalive if no submit/keepalive to pool for more than global.opt.pool_time.keepalive
-  if (!pool.is_keepalive || usesMiningSubscribe(pool) || usesEthProxy(pool) || pearlUsesSubscribe(pool) || usesIronfish(pool)) {return;}
+  if (!pool.is_keepalive || usesMiningSubscribe(pool) || usesEthProxy(pool) || pearlhashUsesSubscribe(pool) || usesIronfish(pool)) {return;}
   clearPoolKeepalive(pool);
   pool.keepalive = setTimeout(function() {
     pool.keepalive = null;
@@ -182,8 +196,8 @@ function applyLoginExtensions(pool_id, extensions) {
 
 function algoFromPass(pool) {
   const pass = String(pool.pass || "");
-  const m = pass.match(/(?:^|[~;,])(?:algo=)?(kawpow|firopow|evrprogpow|meowpow|etchash|autolykos2|pearl|fishhash|equihash125_4)(?:$|[~;,])/i);
-  return m ? m[1].toLowerCase() : "";
+  const m = pass.match(/(?:^|[~;,])(?:algo=)?(kawpow|firopow|evrprogpow|meowpow|etchash|autolykos2|pearlhash|fishhash|zelhash)(?:$|[~;,])/i);
+  return m ? normalizeAlgoName(m[1]) : "";
 }
 
 function rememberPoolProtocol(pool_id, result) {
@@ -215,9 +229,9 @@ function isErgJobNotification(json) {
   return json.method === "mining.notify" && Array.isArray(json.params) && json.params.length >= 7;
 }
 
-// ZIP-301 EquihashStratum (Zcash/Flux) mining.notify carries 8 array fields:
+// ZelHash's ZIP-301 stratum mining.notify carries 8 array fields:
 // [job_id, version(LE 8hex), prevhash(64), merkleroot(64), reserved(64), time(8), bits(8), clean].
-function isEquihashJobNotification(json) {
+function isZelHashJobNotification(json) {
   return json.method === "mining.notify" && Array.isArray(json.params) && json.params.length >= 8;
 }
 
@@ -235,8 +249,8 @@ function isKaspaJobNotification(json) {
          json.params.length >= 3 && Array.isArray(json.params[1]) && json.params[1].length >= 4;
 }
 
-// pearlpool.cloud pushes mining.notify with OBJECT params {job_id, header, target, difficulty, height, mode}
-function isPearlJobNotification(json) {
+// pearlpool.cloud pushes mining.notify with OBJECT params {job_id, header, target, difficulty, height, mode}.
+function isPearlHashJobNotification(json) {
   return json.method === "mining.notify" && isObject(json.params) && typeof json.params.header === "string";
 }
 
@@ -344,13 +358,13 @@ function rememberErgSubmitJob(pool, job) {
   while (jobIds.length > 16) {delete pool.erg_submit_jobs[jobIds.shift()];}
 }
 
-// Build the Equihash 125,4 (Flux/ZIP-301) job from a mining.notify. The 8 notify fields go straight
+// Build the ZelHash (Equihash 125,4, Flux/ZIP-301) job from a mining.notify. The 8 notify fields go straight
 // into the 140-byte Zcash header at the fixed offsets (prev/merkle/reserved already in header byte
 // order -- concat directly, NO reversal); the 32-byte nonce at offset 108 starts as nonce1 (the
 // subscribe extranonce prefix) followed by a zero nonce2 region the solver fills. The solver's 8-byte
 // search counter is written at nonceoffset = 108 + nonce1_len so it lands inside nonce2, never
 // clobbering the pool's fixed nonce1 prefix.
-function equihashNotifyJob(pool, json) {
+function zelhashNotifyJob(pool, json) {
   const p = json.params;
   const version  = hexWithoutPrefix(p[1]).padStart(8, "0").slice(0, 8);
   const prevhash = hexWithoutPrefix(p[2]).padStart(64, "0").slice(0, 64);
@@ -364,11 +378,11 @@ function equihashNotifyJob(pool, json) {
   const blob   = version + prevhash + merkle + reserved + ntime + bits + nonce; // 280 hex = 140 bytes
 
   return {
-    algo: fixedAlgoJobName(json, "equihash125_4"),
+    algo: fixedAlgoJobName(json, "zelhash"),
     blob: blob,
     job_id: p[0],
     ntime: ntime,
-    target: pool.equihash_target,
+    target: pool.zelhash_target,
     nonce1_len: nonce1.length / 2,   // bytes of the fixed pool prefix; the rest of the 32 B is nonce2
     noncebytes: 8,                   // the solver's incrementing search counter is 8 bytes
     nonceoffset: 108 + nonce1.length / 2,
@@ -528,10 +542,10 @@ function handleEthSetTarget(pool_id, json) {
   global.opt.pools[pool_id].eth_target = hexWithoutPrefix(json.params[0]);
 }
 
-// Equihash mining.set_target carries a verbatim 64-hex BE 256-bit share target; store it as-is
+// ZelHash mining.set_target carries a verbatim 64-hex BE 256-bit share target; store it as-is
 // (left zero-padded to 64), like Iron Fish -- NOT left-justified the way ravenTarget treats its target.
-function handleEquihashSetTarget(pool_id, json) {
-  global.opt.pools[pool_id].equihash_target = hexWithoutPrefix(json.params[0]).padStart(64, "0");
+function handleZelHashSetTarget(pool_id, json) {
+  global.opt.pools[pool_id].zelhash_target = hexWithoutPrefix(json.params[0]).padStart(64, "0");
 }
 
 // Iron Fish set_target carries a verbatim 64-hex BE 256-bit target; store it as-is (zero-padded on
@@ -543,9 +557,9 @@ function handleIronfishSetTarget(pool_id, json) {
 function handleSetDifficulty(pool_id, json) {
   const pool = global.opt.pools[pool_id];
   pool.eth_difficulty = json.params[0];
-  // var-diff pearl pools may push a standalone set_difficulty; stash it so the next pearl job picks
+  // Var-diff PearlHash pools may push a standalone set_difficulty; stash it so the next job picks
   // it up if the notify itself omits a diff field (otherwise jobTarget would fall back to MAX).
-  if (poolProtocol(pool) === "pearl") {pool.pearl_difficulty = json.params[0];}
+  if (poolProtocol(pool) === "pearlhash") {pool.pearlhash_difficulty = json.params[0];}
   // Kaspa pushes mining.set_difficulty [diff] (a float). Stash it and precompute the BE share target;
   // the next mining.notify (which carries no target) picks it up via kaspaNotifyJob.
   if (poolProtocol(pool) === "kaspa") {
@@ -566,7 +580,7 @@ function nonceAt32Job(pool, job) {
 }
 
 function fixedAlgoJobName(json, fallback) {
-  return json.algo || (global.opt.job && global.opt.job.algo) || fallback;
+  return normalizeAlgoName(json.algo || (global.opt.job && global.opt.job.algo) || fallback);
 }
 
 function jobFromPoolMessage(pool_id, json) {
@@ -629,25 +643,25 @@ function jobFromPoolMessage(pool_id, json) {
     rememberErgSubmitJob(pool, job);
     return job;
   }
-  if (poolProtocol(pool) === "pearl" && isPearlJobNotification(json)) {
+  if (poolProtocol(pool) === "pearlhash" && isPearlHashJobNotification(json)) {
     if (!pool.logged_in) {return null;}
-    pool.submit_mode = "pearl";
+    pool.submit_mode = "pearlhash";
     const pp = json.params;
     return {
-      algo: fixedAlgoJobName(json, "pearl"),
+      algo: fixedAlgoJobName(json, "pearlhash"),
       blob: hexWithoutPrefix(pp.header),   // the 76-byte incomplete header (input for the kernel)
       job_id: pp.job_id,
       height: pp.height || 0,
-      difficulty: pp.difficulty || pp.diff || pearlDiffFromJobId(pp.job_id) || pool.pearl_difficulty, // LuckyPool names it "diff"; var-diff may send it via set_difficulty
+      difficulty: pp.difficulty || pp.diff || pearlhashDiffFromJobId(pp.job_id) || pool.pearlhash_difficulty, // LuckyPool names it "diff"; var-diff may send it via set_difficulty
       // HeroMiners-style pools: precompute the verifier's jackpot bound from the base target field.
       // pearlpool-style: leave unset so jobTarget falls back to 2^256/diff.
-      target: pearlUsesSubscribe(pool) ? pearlNbitsBound(pp.target) : undefined,
+      target: pearlhashUsesSubscribe(pool) ? pearlhashNbitsBound(pp.target) : undefined,
     };
   }
-  if (poolProtocol(pool) === "equihash" && isEquihashJobNotification(json)) {
+  if (poolProtocol(pool) === "zelhash" && isZelHashJobNotification(json)) {
     if (!pool.logged_in) {return null;}
-    pool.submit_mode = "equihash";
-    return equihashNotifyJob(pool, json);
+    pool.submit_mode = "zelhash";
+    return zelhashNotifyJob(pool, json);
   }
   if (poolProtocol(pool) === "ironfish" && isIronfishJobNotification(json)) {
     if (!pool.logged_in) {return null;}
@@ -699,12 +713,12 @@ function jobTargetWork(job) {
   if (!job.target) {return null;}
   if (job.algo === "kawpow" || job.algo === "firopow" || job.algo === "evrprogpow" || job.algo === "meowpow")
   {return h.kawpowTarget2diff(job.target);}
-  // pearl: report the share target in GEMM MACs to match the MAC/s hashrate (so time-per-share =
+  // PearlHash reports the share target in GEMM MACs to match the MAC/s hashrate (so time-per-share =
   // target/hashrate). work/share = (tiles/share = 2^256/bound) * (MACs/tile = 16*16*k_eff).
-  if (job.algo === "pearl") {return h.target256ToWork(job.target) * BigInt(16 * 16 * pearlKEff());}
+  if (job.algo === "pearlhash") {return h.target256ToWork(job.target) * BigInt(16 * 16 * pearlhashKEff());}
   // etchash/autolykos2/fishhash carry a full 256-bit target too, but their hashrate is in hashes -> H/share.
   if (job.algo === "etchash" || job.algo === "autolykos2" || job.algo === "fishhash" ||
-      job.algo === "equihash125_4" ||
+      job.algo === "zelhash" ||
       job.algo === "karlsenhashv2")
   {return h.target256ToWork(job.target);}
   return h.target2diff(job.target);
@@ -826,7 +840,7 @@ function ignorePoolResponse() {
 
 function poolResponseHandler(pool_id, id) {
   const pool = global.opt.pools[pool_id];
-  if (pearlUsesSubscribe(pool)) {
+  if (pearlhashUsesSubscribe(pool)) {
     if (id === 1) {return ignorePoolResponse;}           // subscribe ack/err (authorize already sent)
     if (id === 2) {return pool.pending_authorize ? handleAuthorizeResponse : ignorePoolResponse;}
   } else if (usesMiningSubscribe(pool)) {
@@ -902,7 +916,7 @@ function pool_message(pool_id, json, set_job) {
   if (isRavenSetTargetNotification(json)) {
     const protocol = poolProtocol(global.opt.pools[pool_id]);
     if (protocol === "eth") {return handleEthSetTarget(pool_id, json);}
-    if (protocol === "equihash") {return handleEquihashSetTarget(pool_id, json);}
+    if (protocol === "zelhash") {return handleZelHashSetTarget(pool_id, json);}
     return handleRavenSetTarget(pool_id, json);
   }
   if (isSetDifficultyNotification(json)) {return handleSetDifficulty(pool_id, json);}
@@ -928,9 +942,14 @@ function poolTypeStr(pool_id) {
 }
 
 function connectSocket(pool) {
+  const connect = pool.is_tls ? tls.connect : net.connect;
+  const systemConnect = pool.is_tls ? systemTlsConnect : systemNetConnect;
+  if (process.env.MOM_TEST_NO_POOL_NETWORK === "1" && connect === systemConnect) {
+    throw new Error("Pool network access is disabled during mom correctness tests");
+  }
   return pool.is_tls ?
-    tls.connect(pool.port, pool.url, { rejectUnauthorized: pool.tls_verify === true }) :
-    net.connect(pool.port, pool.url);
+    connect(pool.port, pool.url, { rejectUnauthorized: pool.tls_verify === true }) :
+    connect(pool.port, pool.url);
 }
 
 function poolLoginParams(pool) {
@@ -1054,8 +1073,8 @@ function handlePoolConnect(pool_id, socket, pool) {
       body: { version: 3, agent: o.agent_str, publicAddress: pool.login, extend: ["mining.submitted"] }
     });
   }
-  if (pearlUsesSubscribe(pool)) {
-    // Pearl subscribe dialect: send subscribe AND authorize back-to-back. mining.subscribe is just a
+  if (pearlhashUsesSubscribe(pool)) {
+    // PearlHash subscribe dialect: send subscribe AND authorize back-to-back. mining.subscribe is just a
     // handshake nicety -- HeroMiners acks it (result:true), LuckyPool rejects it ("method not
     // supported") and drops the connection if no authorize follows promptly. So don't wait on the
     // subscribe reply; authorize immediately. authorize takes OBJECT params {wallet,worker,pass}.

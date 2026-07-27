@@ -1,7 +1,7 @@
 // Copyright GNU GPLv3 (c) 2023-2025 MoneroOcean <support@moneroocean.stream>
 
 #include "core.h"
-#include "../sycl/lib.h"   // pearl_proof()
+#include "../sycl/lib.h"   // pearlhash_proof()
 
 #include "3rdparty/fmt/core.h"
 #include "backend/cpu/Cpu.h"
@@ -146,7 +146,7 @@ void Core::send_result(
   char hash_hex[HASH_LEN * 2 + 1];
   values["hash"] = hash_bin2hex(output, hash_hex);
 
-  // Out-of-band proof bytes for algos whose share isn't a 32-byte hash (equihash125_4: the Flux/ZIP-301
+  // Out-of-band proof bytes for algos whose share isn't a 32-byte hash (zelhash: the Flux/ZIP-301
   // stratum submit carries the full compactSize-prefixed solution -- 0x34 || 52-byte compressed proof =
   // 53 bytes / 106 hex). Serialized like edges: caller passes the already-prefixed byte run.
   if (solution && solution_len) {
@@ -308,10 +308,10 @@ bool Core::process_message(const std::string& type, const MessageValues& v) {
 
     const std::string algo = v.contains("algo") ? v.at("algo") : "";
     const bool is_kawpow_target = algo == "kawpow";
-    // etchash/autolykos2/pearl/fishhash use a full 32-byte target instead of a single 64-bit word
+    // etchash/autolykos2/pearlhash/fishhash use a full 32-byte target instead of a single 64-bit word
     // (fishhash: live Iron Fish sends a 256-bit big-endian target -> m_target_bin -> meets_target_be_dev)
-    const bool is_big_target = algo == "etchash" || algo == "autolykos2" || algo == "pearl" ||
-      algo == "fishhash" || algo == "equihash125_4" || algo == "beamhash3" ||
+    const bool is_big_target = algo == "etchash" || algo == "autolykos2" || algo == "pearlhash" ||
+      algo == "fishhash" || algo == "zelhash" || algo == "beamhash3" ||
       // KarlsenHashV2 compares the 32-byte hash against a full 256-bit BE boundary via
       // m_target_bin; without this the bin stays zero and live mining finds no shares.
       algo == "karlsenhashv2";
@@ -542,9 +542,14 @@ void Core::Execute() {
     // that effectively skips it in test mode too
     static unsigned hashrate_check_counter = HASHRATE_COUNTER_INTERVAL;
     if (m_dev == DEV::RX_CPU) m_mutex_hashrate.lock();
-    const uint64_t hash_count = m_hash_count;   // 64-bit: pearl's MAC count per attempt is 2^46, which truncated to 0 mod 2^32
+    const uint64_t hash_count = m_hash_count;   // 64-bit: pearlhash's MAC count per attempt is 2^46, which truncated to 0 mod 2^32
     if (m_dev == DEV::RX_CPU) m_mutex_hashrate.unlock();
-    if (hash_count && --hashrate_check_counter == 0) {
+    // Most kernels dispatch fast enough that checking wall time every ten loop iterations avoids
+    // pointless clock reads. A production PearlHash attempt lasts several seconds, however: after the
+    // gfx12 WMMA optimization ten attempts can land just below 60 s, miss the reporting threshold,
+    // and make a benchmark wait a further ten attempts. Check PearlHash after every completed attempt;
+    // one host clock read per multi-second GPU dispatch is negligible and makes the 60 s window exact.
+    if (hash_count && (m_dev == DEV::PEARLHASH_GPU || --hashrate_check_counter == 0)) {
       hashrate_check_counter = HASHRATE_COUNTER_INTERVAL;
       const uint64_t new_timestamp = std::chrono::time_point_cast<std::chrono::milliseconds>(
         std::chrono::high_resolution_clock::now()
@@ -569,7 +574,7 @@ void Core::Execute() {
       init_runtime();
       // Only one device runs per dispatch, so a single solution-count + nonce/seed pair is shared
       // across all the GPU cases. dev_nonce doubles as the kernel's in/out found-nonce slot (and as
-      // pearl's search seed); dev_sols is the per-call solution count (or C29's -1 EOL / 0 pending).
+      // pearlhash's search seed); dev_sols is the per-call solution count (or C29's -1 EOL / 0 pending).
       int dev_sols = 0;
       uint64_t dev_nonce = 0;
       const bool is_test = !m_nonce32 && !m_nonce64;
@@ -580,7 +585,8 @@ void Core::Execute() {
             m_fn.cpu(m_input, m_input_len, m_output, m_ctx, m_height);
             break;
           case DEV::GPU:
-            m_fn.gpu_cn(m_input, m_input_len, m_output, m_spads, m_batch, m_dev_str);
+            m_fn.gpu_cn(
+              m_input, m_input_len, m_output, m_spads, m_batch, m_dev_str, m_backend);
             break;
           case DEV::C29_GPU:
             dev_nonce = m_nonce_bytes == 4 ? bswap_32(*get_nonce32()) : bswap_64(*get_nonce64());
@@ -613,12 +619,13 @@ void Core::Execute() {
               m_batch, is_test, m_is_bench, m_dev_str
             );
             break;
-          case DEV::PEARL_GPU:
+          case DEV::PEARLHASH_GPU:
             dev_nonce = m_nonce64;   // the search seed is internal (not embedded in the blob)
-            dev_sols = m_fn.gpu_pearl(
+            dev_sols = m_fn.gpu_pearlhash(
               m_job_ref, m_height, m_input, m_input_len, m_output,
               &dev_nonce, m_target_bin,
-              m_batch, is_test, m_is_bench, m_dev_str
+              m_batch, is_test, m_is_bench, m_dev_str, m_backend,
+              m_pearlhash_n, m_pearlhash_k, m_pearlhash_rank
             );
             break;
           case DEV::FISHHASH_GPU:
@@ -637,11 +644,11 @@ void Core::Execute() {
               m_batch, is_test, m_is_bench, m_dev_str
             );
             break;
-          case DEV::EQUIHASH125_4_GPU:
+          case DEV::ZELHASH_GPU:
             // c29-like: the 32-byte nonce lives in the header (offset 108); the solver writes the
             // 52-byte solution (or, in is_test, the gen-kernel rows) out-of-band into m_spads.
             std::memcpy(&dev_nonce, m_input + m_nonce_offset, sizeof(dev_nonce));  // low 8 bytes @108
-            dev_sols = m_fn.gpu_equihash125_4(
+            dev_sols = m_fn.gpu_zelhash(
               m_job_ref, m_height, m_input, m_input_len,
               static_cast<uint8_t*>(m_spads), &dev_nonce, m_target_bin,
               m_batch, is_test, m_is_bench, m_dev_str
@@ -703,13 +710,13 @@ void Core::Execute() {
           set_fn(nullptr);
           continue;
         }
-        if (m_dev == DEV::PEARL_GPU) {
+        if (m_dev == DEV::PEARLHASH_GPU) {
           if (dev_sols == 1) send_msg("test", "result", "ok");
-          else send_error("No pearl test result");
+          else send_error("No pearlhash test result");
           set_fn(nullptr);
           continue;
         }
-        if (m_dev == DEV::EQUIHASH125_4_GPU || m_dev == DEV::BEAMHASH3_GPU) {
+        if (m_dev == DEV::ZELHASH_GPU || m_dev == DEV::BEAMHASH3_GPU) {
           // M1 gen-kernel validation (or the SOLVE path): the kernel dumped the rows / solution(s) into
           // m_spads; emit the whole buffer as hex so the standalone checker can diff it against the oracle.
           if (dev_sols == 1) {
@@ -721,7 +728,7 @@ void Core::Execute() {
             }
             send_msg("test", "result", hex);
           } else {
-            send_error(m_dev == DEV::BEAMHASH3_GPU ? "No beamhash3 test result" : "No equihash125_4 test result");
+            send_error(m_dev == DEV::BEAMHASH3_GPU ? "No beamhash3 test result" : "No zelhash test result");
           }
           set_fn(nullptr);
           continue;
@@ -748,11 +755,12 @@ void Core::Execute() {
         continue;
       }
 
-      // Pearl's work unit is GEMM MACs (m*n*k) so its rate matches the "TH/s" GEMM bench. Equihash's
+      // PearlHash's work unit is GEMM MACs (m*n*k) so its rate matches the "TH/s" GEMM bench. Equihash's
       // unit is a Wagner SOLUTION (the solver finds ~1.88 distinct proofs per nonce); the solver returns
       // that distinct count in dev_sols when benching, so the rate reads out as Sol/s. Others = 1/batch.
-      m_hash_count += (m_dev == DEV::PEARL_GPU) ? pearl_attempt_hashes(m_batch)
-                    : (m_dev == DEV::EQUIHASH125_4_GPU || m_dev == DEV::BEAMHASH3_GPU) ? static_cast<uint64_t>(dev_sols < 0 ? 0 : dev_sols)
+      m_hash_count += (m_dev == DEV::PEARLHASH_GPU)
+        ? pearlhash_attempt_hashes(m_batch, m_pearlhash_n, m_pearlhash_k)
+                    : (m_dev == DEV::ZELHASH_GPU || m_dev == DEV::BEAMHASH3_GPU) ? static_cast<uint64_t>(dev_sols < 0 ? 0 : dev_sols)
                     : m_batch;
       if (m_dev == DEV::KAWPOW_GPU || m_dev == DEV::ETCHASH_GPU) {
         const uint64_t prev_nonce = m_nonce64;
@@ -767,7 +775,7 @@ void Core::Execute() {
         }
         continue;
       }
-      // autolykos2, fishhash, and Kaspa-style hashes share the mine-result handling: 8-byte nonce,
+      // Autolykos2, FishHash, and KarlsenHashV2 share the mine-result handling: 8-byte nonce,
       // single 32-byte hash, no mix, nonce embedded in the header at m_nonce_offset.
       if (m_dev == DEV::AUTOLYKOS2_GPU || m_dev == DEV::FISHHASH_GPU || m_dev == DEV::KARLSENHASHV2_GPU) {
         const uint64_t prev_nonce = m_nonce64;
@@ -784,7 +792,7 @@ void Core::Execute() {
         }
         continue;
       }
-      if (m_dev == DEV::EQUIHASH125_4_GPU) {
+      if (m_dev == DEV::ZELHASH_GPU) {
         // M5 mining path: the solver writes the target-passing solutions out-of-band into m_spads as
         // [count:u8][count * 52-byte compressed solution]. For each one, emit a result carrying the
         // 53-byte compactSize-prefixed solution (0x34 || 52 B = 106 hex) the Flux/ZIP-301 submit needs.
@@ -836,18 +844,18 @@ void Core::Execute() {
         }
         continue;
       }
-      if (m_dev == DEV::PEARL_GPU) {
+      if (m_dev == DEV::PEARLHASH_GPU) {
         const uint64_t prev_nonce = m_nonce64;
         // Emit at most once per (job_id, header) pair since the PlainProof rebuild is heavy and the
-        // pool credits one share per job. Pearlpool varies job_id (reuses header); HeroMiners the reverse.
+        // pool credits one share per job. PearlHashpool varies job_id (reuses header); HeroMiners the reverse.
         if (dev_sols == 1 && m_target) {
-          std::string pearl_key = m_job_id;
-          pearl_key.append(reinterpret_cast<const char*>(m_input), m_input_len);
-          if (pearl_key != m_pearl_proof_job) {
-            m_pearl_proof_job = pearl_key;
+          std::string pearlhash_key = m_job_id;
+          pearlhash_key.append(reinterpret_cast<const char*>(m_input), m_input_len);
+          if (pearlhash_key != m_pearlhash_proof_job) {
+            m_pearlhash_proof_job = pearlhash_key;
             MessageValues values;
             values["nonce"]       = nonce_to_hex(dev_nonce, 8); // winning seed, for logging/traceability
-            values["plain_proof"] = pearl_proof();     // builds the proof for the captured tile (lazy)
+            values["plain_proof"] = pearlhash_proof();     // builds the proof for the captured tile (lazy)
             values["pool_id"]     = m_pool_id;
             values["worker_id"]   = m_worker_id;
             values["job_id"]      = m_job_id;
@@ -857,7 +865,7 @@ void Core::Execute() {
         m_nonce64 += m_nonce_step;   // advance to the next seed (the blob is not touched)
         if (m_target && nonce_overflowed(prev_nonce, m_nonce64, m_nicehash_mask)) {
           set_fn(nullptr);
-          send_last_nonce(prev_nonce, 8, m_pool_id);   // pearl seed is 64-bit
+          send_last_nonce(prev_nonce, 8, m_pool_id);   // pearlhash seed is 64-bit
         }
         continue;
       }
@@ -920,4 +928,16 @@ AsyncWorker* create_worker(
   return new Core(env, data, complete, error_callback, options);
 }
 
-NAPI_MODULE(NODE_GYP_MODULE_NAME, AsyncWorkerWrapper::Init)
+static void cleanup_sycl_runtime(void*) { sycl_cleanup(); }
+
+static napi_value init_module(napi_env env, napi_value exports) {
+  napi_value result = AsyncWorkerWrapper::Init(env, exports);
+  // Run after every compute worker/TSFN has drained but before Node unloads this addon or the SYCL
+  // runtime. DPC++ source-JIT images have module destructors of their own, while AdaptiveCpp CUDA
+  // otherwise reaches cudaErrorCudartUnloading (error 4) from late queue/allocator destruction.
+  // Releasing every algorithm registry here avoids depending on cross-DLL C++ static order.
+  AsyncWorker::check(env, napi_add_env_cleanup_hook(env, cleanup_sycl_runtime, nullptr));
+  return result;
+}
+
+NAPI_MODULE(NODE_GYP_MODULE_NAME, init_module)

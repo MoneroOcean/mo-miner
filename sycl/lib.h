@@ -25,16 +25,16 @@ MOM_SYCL_API std::map<std::string, std::string> algo_params(
   const std::set<std::string>& gpu_kawpow_algos,
   const std::set<std::string>& gpu_etchash_algos,
   const std::set<std::string>& gpu_autolykos2_algos,
-  const std::set<std::string>& gpu_pearl_algos,
+  const std::set<std::string>& gpu_pearlhash_algos,
   const std::set<std::string>& gpu_fishhash_algos,
   const std::set<std::string>& gpu_karlsenhashv2_algos,
-  const std::set<std::string>& gpu_equihash125_4_algos,
+  const std::set<std::string>& gpu_zelhash_algos,
   const std::set<std::string>& gpu_beamhash3_algos
 );
 
 MOM_SYCL_API void cn_gpu(
   const uint8_t* inputs, unsigned input_size, uint8_t* output,
-  void* Spads, unsigned batch, const std::string& dev_str
+  void* Spads, unsigned batch, const std::string& dev_str, const std::string& backend
 );
 
 MOM_SYCL_API int c29(
@@ -104,13 +104,13 @@ MOM_SYCL_API int karlsenhashv2(
 // ABI -- the 32-byte nonce lives in the 140-byte header (offset 108); the solver returns a solution
 // COUNT and writes the 52-byte compressed solution(s) out-of-band into solution_out. 256-bit big
 // target. is_test runs the M1 gen-kernel validation path (dumps the first entries' expanded rows).
-MOM_SYCL_API int equihash125_4(
+MOM_SYCL_API int zelhash(
   unsigned job_id, uint32_t height, const uint8_t* input, unsigned input_size, uint8_t* solution_out,
   uint64_t* pnonce, const uint8_t* target,
   unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
 );
 
-// BeamHash III (Beam): Wagner k=5 bucket-collision solver. Same c29-like ABI as equihash125_4. Input
+// BeamHash III (Beam): Wagner k=5 bucket-collision solver. Same c29-like ABI as zelhash. Input
 // is the prework(32)||nonce(8)||extranonce(4) blob; the solver writes the 104-byte solution(s)
 // out-of-band into solution_out and returns the count. is_test runs the M1 gen-validation path.
 MOM_SYCL_API int beamhash3(
@@ -119,15 +119,22 @@ MOM_SYCL_API int beamhash3(
   unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
 );
 
-// pearl: input is the 76-byte incomplete header; pseed is the search seed (in/out, set to the
-// winning seed on a hit); intensity is the square matrix edge (m=n). On a hit returns 1 and the
-// pool-ready base64 PlainProof is available from pearl_proof() (thread-local to this call).
-MOM_SYCL_API int pearl(
+// pearlhash: input is the 76-byte incomplete header; pseed is the search seed (in/out, set to the
+// winning seed on a hit); intensity carries M and the explicit shape fields may select rectangular
+// M/N/K/rank profiles. On a hit returns 1 and the pool-ready base64 PlainProof is available from
+// pearlhash_proof().
+MOM_SYCL_API int pearlhash(
   unsigned job_id, uint32_t height, const uint8_t* input, unsigned input_size, uint8_t* output,
   uint64_t* pseed, const uint8_t* target,
-  unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
+  unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str,
+  const std::string& backend, unsigned n, unsigned k, unsigned rank
 );
-MOM_SYCL_API const char* pearl_proof();
-// GEMM MACs per pearl attempt (m*n*k, m=n) -- the work unit the pearl "TH/s" hashrate is quoted in,
-// so the core counts this rather than the seed/intensity batch. Mirrors pearl()'s intensity clamp.
-MOM_SYCL_API uint64_t pearl_attempt_hashes(unsigned intensity);
+MOM_SYCL_API const char* pearlhash_proof();
+// GEMM MACs per pearlhash attempt (m*n*k) -- the work unit the pearlhash "TH/s" hashrate is quoted in, so
+// the core counts this rather than the seed/intensity batch. Mirrors pearlhash()'s shape selection.
+MOM_SYCL_API uint64_t pearlhash_attempt_hashes(unsigned intensity, unsigned n, unsigned k);
+
+// Release process-scoped SYCL state while the Node environment and compiler runtime are still
+// alive. The addon registers this as an environment cleanup hook; it is intentionally separate from
+// C++ static destruction because runtime-compiled device images have their own module destructors.
+MOM_SYCL_API void sycl_cleanup() noexcept;

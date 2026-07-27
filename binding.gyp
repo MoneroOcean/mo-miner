@@ -9,7 +9,7 @@
     # multi-arch list: the nightly clang mis-selects a multi-nvptx-target fatbin at runtime (every
     # algo CUDA_ERROR_NO_BINARY on an sm_89 device), whereas a single sm_80 image's forward-compatible
     # PTX is JIT'd by the driver to the actual GPU at load -- so one sm_80 build runs natively on
-    # Ampere/Ada/Hopper (verified on an L4/sm_89 at full perf). sm_80 is also the floor for pearl's
+    # Ampere/Ada/Hopper (verified on an L4/sm_89 at full perf). sm_80 is also the floor for pearlhash's
     # int8 mma.m16n8k32. Override e.g. -Dmom_cuda_arch=nvidia_gpu_sm_90 to pin a single newer arch.
     # (Blackwell sm_120 needs a CUDA 12.8+ toolkit.)
     "mom_cuda_arch%": "nvidia_gpu_sm_80"
@@ -126,6 +126,7 @@
           "defines": [
             "NOMINMAX",
             "WIN32_LEAN_AND_MEAN",
+            "_CRT_SECURE_NO_WARNINGS",
             "XMRIG_FEATURE_ASM"
           ],
           # Build mom.node with the non-SYCL "Intel C++ Compiler" toolset (icx, no -fsycl), NOT the DPC++
@@ -264,6 +265,16 @@
           "conditions": [
             [ "mom_sycl_impl=='dpcpp-cuda'", {
               "ldflags+": [ "-fsycl-targets=<(mom_cuda_arch)" ]
+            } ],
+            [ "mom_sycl_impl=='dpcpp-opencl'", {
+              "ldflags+": [
+                "-fsycl-device-code-split=per_kernel",
+                "-fno-sycl-rdc",
+                "-fno-sycl-instrument-device-code"
+              ]
+            } ],
+            [ "mom_sycl_impl=='dpcpp-hip' or mom_sycl_impl=='adaptivecpp-hip'", {
+              "libraries": [ "-lamdhip64" ]
             } ]
           ]
         } ],
@@ -289,12 +300,12 @@
         "sycl/ethash.cpp",
         "sycl/etchash.cpp",
         "sycl/autolykos2.cpp",
-        "sycl/pearl.cpp",
+        "sycl/pearlhash.cpp",
         "sycl/c29.cpp",
-        "sycl/cn-gpu.cpp",
+        "sycl/cn_gpu.cpp",
         "sycl/kawpow.cpp",
         "sycl/fishhash.cpp",
-        "sycl/equihash125_4.cpp",
+        "sycl/zelhash.cpp",
         "sycl/beamhash3.cpp"
       ],
       "include_dirs": [
@@ -324,7 +335,8 @@
             "xmrig/base/crypto/sha3.cpp"
           ],
           "defines": [
-            "MOM_SYCL_BUILD"
+            "MOM_SYCL_BUILD",
+            "_CRT_SECURE_NO_WARNINGS"
           ],
           "msvs_settings": {
             "VCCLCompilerTool": {
@@ -334,7 +346,7 @@
                 "/O2",
                 "/fsycl",
                 "/DNDEBUG",
-                "/DPEARL_ESIMD",
+                "/DPEARLHASH_ESIMD",
                 "/clang:-fno-strict-aliasing"
               ]
             },
@@ -353,7 +365,7 @@
           "conditions": [
             [ "mom_sycl_impl=='dpcpp-cuda'", {
               # NVIDIA-only via the intel/llvm DPC++ CUDA backend (AOT to nvptx). MOM_SYCL_HAS_CUDA
-              # compiles the CUDA-capable host paths (pearl mma.sync search_cuda, kawpow source JIT);
+              # compiles the CUDA-capable host paths (pearlhash mma.sync search_cuda, kawpow source JIT);
               # device-specific code is gated per compilation pass on the compiler's __NVPTX__.
               # -ffp-contract=off keeps the cn/gpu FP recurrence deterministic; -fsycl-embed-ir for the
               # kawpow runtime kernel-compiler. Multi-arch AOT, NVIDIA-wide (Ampere/Ada/Hopper). No ESIMD.
@@ -366,20 +378,50 @@
               # Combined Intel+NVIDIA: one mom.node carrying both spir64 + nvptx device images. The
               # cxx-combined.sh wrapper compiles these TUs with the intel/llvm nightly clang and adds
               # -fsycl-targets=spir64,<cuda archs>; the flags here are the shared ones. MOM_SYCL_HAS_CUDA
-              # compiles the CUDA host paths (pearl mma.sync, kawpow JIT); __NVPTX__ gates device code
-              # per pass. Intel pearl keeps its full-speed ESIMD path, but ESIMD can't share a
-              # -fsycl-targets with nvptx, so it is compiled spir64-only in the separate pearl_esimd.cpp
+              # compiles the CUDA host paths (pearlhash mma.sync, kawpow JIT); __NVPTX__ gates device code
+              # per pass. Intel pearlhash keeps its full-speed ESIMD path, but ESIMD can't share a
+              # -fsycl-targets with nvptx, so it is compiled spir64-only in the separate pearlhash_esimd.cpp
               # TU (the wrapper gives that file -fsycl-targets=spir64) and linked into the same binary;
-              # MOM_PEARL_HAS_ESIMD tells pearl.cpp to call that external search_esimd.
-              "sources": [ "sycl/pearl_esimd.cpp" ],
+              # MOM_PEARLHASH_HAS_ESIMD tells pearlhash.cpp to call that external search_esimd.
+              "sources": [ "sycl/pearlhash_esimd.cpp" ],
               "cflags_cc!": [ "-std=gnu++20" ],
               "cflags+": [
-                "-std=c++20 -O3 -ffp-contract=off -fsycl -fsycl-embed-ir -DNDEBUG -DMOM_SYCL_HAS_CUDA -DMOM_PEARL_HAS_ESIMD"
+                "-std=c++20 -O3 -ffp-contract=off -fsycl -fsycl-embed-ir -DNDEBUG -DMOM_SYCL_HAS_CUDA -DMOM_PEARLHASH_HAS_ESIMD"
+              ]
+            } ],
+            [ "mom_sycl_impl=='dpcpp-opencl'", {
+              # Standards-only SPIR-V profile for the generic OpenCL fallback. It deliberately
+              # excludes CUDA/HIP, ESIMD, and vendor-specific device code. The build wrapper also
+              # disables SPV_INTEL_memory_access_aliasing in the translator: non-Intel ICDs are not
+              # required to understand that optional extension.
+              "cflags_cc!": [ "-std=gnu++20" ],
+              "cflags+": [
+                "-std=c++20 -O3 -ffp-contract=off -fsycl -fno-sycl-rdc -fsycl-device-code-split=per_kernel -fno-sycl-instrument-device-code -DNDEBUG -DMOM_SYCL_PORTABLE_OPENCL"
+              ]
+            } ],
+            [ "mom_sycl_impl=='dpcpp-hip'", {
+              "cflags_cc!": [ "-std=gnu++20" ],
+              "cflags+": [
+                "-std=c++20 -O3 -ffp-contract=off -fsycl -fsycl-embed-ir -DNDEBUG -DMOM_SYCL_HAS_HIP -D__HIP_PLATFORM_AMD__"
+              ],
+              "libraries": [ "-lamdhip64" ]
+            } ],
+            [ "mom_sycl_impl=='adaptivecpp-hip'", {
+              "cflags_cc!": [ "-std=gnu++20" ],
+              "cflags+": [
+                "-std=c++20 -O3 -ffp-contract=off -DNDEBUG -DMOM_SYCL_ADAPTIVECPP -DMOM_SYCL_HAS_HIP -D__HIP_PLATFORM_AMD__"
+              ],
+              "libraries": [ "-lamdhip64" ]
+            } ],
+            [ "mom_sycl_impl=='adaptivecpp-cuda'", {
+              "cflags_cc!": [ "-std=gnu++20" ],
+              "cflags+": [
+                "-std=c++20 -O3 -ffp-contract=off -DNDEBUG -DMOM_SYCL_ADAPTIVECPP -DMOM_SYCL_ADAPTIVECPP_CUDA"
               ]
             } ],
             [ "mom_sycl_impl=='dpcpp'", {
               "cflags+": [
-                "-std=c++20 -O3 -fsycl -DNDEBUG -DPEARL_ESIMD"
+                "-std=c++20 -O3 -fsycl -DNDEBUG -DPEARLHASH_ESIMD"
               ]
             } ]
           ]

@@ -12,7 +12,7 @@
 typedef void (*cn_any_hash_fun)();
 typedef void (*gpu_cn_hash_fun)(
   const uint8_t* input, unsigned input_size, uint8_t* output,
-  void* Spads, unsigned batch, const std::string& dev_str
+  void* Spads, unsigned batch, const std::string& dev_str, const std::string& backend
 );
 typedef int (*gpu_c29_hash_fun)(
   unsigned job_ref, unsigned c29_proof_size,
@@ -37,13 +37,14 @@ typedef int (*gpu_autolykos2_hash_fun)(
   uint64_t* pnonce, const uint8_t* target,
   unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
 );
-// pearl: same ABI as autolykos2, but pnonce carries the search SEED (not a blob nonce) and on a
-// hit the winning seed+tile produce a PlainProof retrieved out-of-band via pearl_proof().
-typedef int (*gpu_pearl_hash_fun)(
+// pearlhash: same ABI as autolykos2, but pnonce carries the search SEED (not a blob nonce) and on a
+// hit the winning seed+tile produce a PlainProof retrieved out-of-band via pearlhash_proof().
+typedef int (*gpu_pearlhash_hash_fun)(
   unsigned job_ref, uint32_t height,
   const uint8_t* input, unsigned input_size, uint8_t* output,
   uint64_t* pseed, const uint8_t* target,
-  unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
+  unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str,
+  const std::string& backend, unsigned n, unsigned k, unsigned rank
 );
 // FishHash variants share the etchash hash-fun ABI (32-byte LE target; seed_hash unused).
 typedef gpu_etchash_hash_fun gpu_fishhash_hash_fun;
@@ -53,16 +54,16 @@ typedef gpu_etchash_hash_fun gpu_karlsenhashv2_hash_fun;
 // 52-byte compressed solution(s) out-of-band into solution_out (like c29's output_edges). 256-bit
 // big-target. pnonce carries the current header nonce (in/out). is_test runs the M1 gen-kernel
 // validation path (writes the first entries' expanded rows into solution_out instead of a solution).
-typedef int (*gpu_equihash125_4_hash_fun)(
+typedef int (*gpu_zelhash_hash_fun)(
   unsigned job_ref, uint32_t height,
   const uint8_t* input, unsigned input_size, uint8_t* solution_out,
   uint64_t* pnonce, const uint8_t* target,
   unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
 );
-// BeamHash III (Beam): Wagner k=5 bucket-collision solver. Same c29-like ABI as equihash125_4 -- the
+// BeamHash III (Beam): Wagner k=5 bucket-collision solver. Same c29-like ABI as zelhash -- the
 // input is the prework(32)||nonce(8)||extranonce(4) blob; the solver returns a solution COUNT and writes
 // the 104-byte solution(s) out-of-band into solution_out. is_test runs the M1 gen-validation path.
-typedef gpu_equihash125_4_hash_fun gpu_beamhash3_hash_fun;
+typedef gpu_zelhash_hash_fun gpu_beamhash3_hash_fun;
 static_assert(
   sizeof(cn_any_hash_fun) == sizeof(xmrig::cn_hash_fun) &&
   sizeof(cn_any_hash_fun) == sizeof(gpu_cn_hash_fun) &&
@@ -70,7 +71,7 @@ static_assert(
   sizeof(cn_any_hash_fun) == sizeof(gpu_kawpow_hash_fun) &&
   sizeof(cn_any_hash_fun) == sizeof(gpu_etchash_hash_fun) &&
   sizeof(cn_any_hash_fun) == sizeof(gpu_autolykos2_hash_fun) &&
-  sizeof(cn_any_hash_fun) == sizeof(gpu_pearl_hash_fun),
+  sizeof(cn_any_hash_fun) == sizeof(gpu_pearlhash_hash_fun),
   "Compute function pointers differ in size!"
 );
 union FN {
@@ -81,13 +82,13 @@ union FN {
   gpu_kawpow_hash_fun gpu_kawpow;
   gpu_etchash_hash_fun gpu_etchash;
   gpu_autolykos2_hash_fun gpu_autolykos2;
-  gpu_pearl_hash_fun gpu_pearl;
+  gpu_pearlhash_hash_fun gpu_pearlhash;
   gpu_fishhash_hash_fun gpu_fishhash;
   gpu_karlsenhashv2_hash_fun gpu_karlsenhashv2;
-  gpu_equihash125_4_hash_fun gpu_equihash125_4;
+  gpu_zelhash_hash_fun gpu_zelhash;
   gpu_beamhash3_hash_fun gpu_beamhash3;
 };
-enum DEV { CPU, RX_CPU, GPU, C29_GPU, KAWPOW_GPU, ETCHASH_GPU, AUTOLYKOS2_GPU, PEARL_GPU, FISHHASH_GPU, KARLSENHASHV2_GPU, EQUIHASH125_4_GPU, BEAMHASH3_GPU };
+enum DEV { CPU, RX_CPU, GPU, C29_GPU, KAWPOW_GPU, ETCHASH_GPU, AUTOLYKOS2_GPU, PEARLHASH_GPU, FISHHASH_GPU, KARLSENHASHV2_GPU, ZELHASH_GPU, BEAMHASH3_GPU };
 
 inline bool is_nonce_at_32_gpu_dev(const DEV dev) {
   return dev == DEV::KAWPOW_GPU || dev == DEV::ETCHASH_GPU || dev == DEV::AUTOLYKOS2_GPU || dev == DEV::FISHHASH_GPU;
@@ -95,13 +96,13 @@ inline bool is_nonce_at_32_gpu_dev(const DEV dev) {
 // Equihash 125,4: the 32-byte nonce lives at offset 108 of the 140-byte header (NOT at 32), and the
 // solver returns a solution count + writes the 52-byte solution out-of-band (c29-like, not a hash loop).
 inline bool is_equihash_gpu_dev(const DEV dev) {
-  return dev == DEV::EQUIHASH125_4_GPU || dev == DEV::BEAMHASH3_GPU;
+  return dev == DEV::ZELHASH_GPU || dev == DEV::BEAMHASH3_GPU;
 }
 // GPU pow devices that allocate a single small input blob + small output (not a per-batch buffer).
 // KarlsenHashV2 is small-blob (80-byte header) but its nonce is at offset 72, not 32.
 // Equihash carries a 32-byte nonce at offset 108 and a 52-byte out-of-band solution buffer.
 inline bool is_small_blob_gpu_dev(const DEV dev) {
-  return is_nonce_at_32_gpu_dev(dev) || dev == DEV::PEARL_GPU || dev == DEV::KARLSENHASHV2_GPU || is_equihash_gpu_dev(dev);
+  return is_nonce_at_32_gpu_dev(dev) || dev == DEV::PEARLHASH_GPU || dev == DEV::KARLSENHASHV2_GPU || is_equihash_gpu_dev(dev);
 }
 
 class Core: public AsyncWorker {
@@ -114,11 +115,13 @@ class Core: public AsyncWorker {
   uint8_t *m_input, *m_output;
   uint8_t m_target_bin[HASH_LEN]{}, m_seed[HASH_LEN]{};
   unsigned m_job_ref, m_height, m_batch, m_mem_size, m_input_len, m_nonce_step,
-           m_nonce_bytes, m_nonce_offset, m_c29_proof_size;
+           m_nonce_bytes, m_nonce_offset, m_c29_proof_size,
+           m_pearlhash_n, m_pearlhash_k, m_pearlhash_rank;
   uint32_t m_nonce32; // next nonce that will be used in an input
   uint64_t m_nonce64, m_nicehash_mask, m_target, m_timestamp, m_hash_count;
-  std::string m_algo_str, m_dev_str, m_seed_hex, m_input_hex, m_pool_id, m_worker_id, m_job_id, m_header_hash;
-  std::string m_pearl_proof_job;   // job_id of the last pearl share emitted (one share built per pool job)
+  std::string m_algo_str, m_dev_str, m_seed_hex, m_input_hex, m_pool_id, m_worker_id, m_job_id,
+              m_header_hash, m_backend;
+  std::string m_pearlhash_proof_job;   // job_id of the last pearlhash share emitted (one share built per pool job)
   bool m_is_rx_jit, m_is_bench;
   randomx_cache*   m_rx_cache;
   randomx_dataset* m_rx_dataset;
@@ -138,9 +141,9 @@ class Core: public AsyncWorker {
   inline uint64_t* get_nonce64(const unsigned batch = 0) {
     return get_nonce64(m_input, batch);
   }
-  // last nonce reached on the current device; pearl keeps its 64-bit search seed in m_nonce64
+  // last nonce reached on the current device; pearlhash keeps its 64-bit search seed in m_nonce64
   inline uint64_t last_nonce() const {
-    return (m_nonce_bytes == 4 && m_dev != DEV::PEARL_GPU) ? m_nonce32 : m_nonce64;
+    return (m_nonce_bytes == 4 && m_dev != DEV::PEARLHASH_GPU) ? m_nonce32 : m_nonce64;
   }
   // points at the most-significant uint64_t of the 32-byte hash (little-endian top word)
   inline const uint64_t* get_result(const uint8_t* const output, const unsigned batch) const {
@@ -192,6 +195,7 @@ class Core: public AsyncWorker {
       m_spads(nullptr), m_ctx(nullptr), m_input(nullptr), m_output(nullptr),
       m_job_ref(0), m_height(0), m_batch(0), m_mem_size(0), m_input_len(0),
       m_nonce_step(1), m_nonce_bytes(4), m_nonce_offset(39), m_c29_proof_size(32),
+      m_pearlhash_n(131072), m_pearlhash_k(4096), m_pearlhash_rank(256),
       m_nonce32(0), m_nonce64(0), m_nicehash_mask(0), m_target(0), m_timestamp(0),
       m_hash_count(0), m_is_rx_jit(true), m_is_bench(false), m_rx_cache(nullptr), m_rx_dataset(nullptr),
       m_thread_pool(nullptr), m_vm(nullptr)

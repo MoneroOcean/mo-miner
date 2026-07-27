@@ -4,6 +4,7 @@
 
 const path = require("path");
 const h    = require("./helper.js");
+const compilerPolicy = require("./compiler-policy.js");
 
 const version_str = require("./package.json").version;
 
@@ -36,6 +37,7 @@ module.exports.opt_help = {
     seed_hex: [ "3132333435363738393031323334353637383930313233343536373839303132",
       "hexadecimal string of seed hash blob (used for rx algos)" ],
     height:   [ 0, "Block height used by some algos"],
+    backend:  [ "auto", "GPU implementation (see README backend table)" ],
   },
   pool_time: {
     _help:             "JSON string of pool related timings (in seconds)",
@@ -54,12 +56,12 @@ module.exports.opt_help = {
       url:                [ undefined, "pool DNS or IP address" ],
       port:               [ undefined, "pool port" ],
       is_tls:             [ false, "is pool port is encrypted using TLS/SSL" ],
-      protocol:           [ null, "pool protocol override: login, raven, eth, ethproxy, erg, pearl, equihash, kaspa, beam, or ironfish" ],
+      protocol:           [ null, "pool protocol override: login, raven, eth, ethproxy, erg, pearlhash, zelhash, kaspa, beam, or ironfish" ],
       tls_verify:         [ false, "verify pool TLS/SSL certificate" ],
       is_nicehash:        [ false, "nicehash nonce mining mode support" ],
       is_keepalive:       [ true, "sends keepalive messages to the pool to avoid disconnect" ],
-      use_subscribe:      [ true, "pearl pools: use mining.subscribe+authorize handshake; set false for the login-dialect pearl pool (pearlpool.cloud) and the MoneroOcean donate pool" ],
-      worker:             [ "mom", "pearl subscribe-dialect worker name (mining.authorize)" ],
+      use_subscribe:      [ true, "PearlHash pools: use mining.subscribe+authorize handshake; set false for pearlpool.cloud's login dialect and the MoneroOcean donate pool" ],
+      worker:             [ "mom", "PearlHash subscribe-dialect worker name (mining.authorize)" ],
       login:              [ undefined, "pool login data" ],
       pass:               [ "", "pool password" ],
       _socket:            [ null, "network socket object" ],
@@ -71,8 +73,8 @@ module.exports.opt_help = {
       _bad_shares:        [ 0, "number of invalid shares" ],
     },
     _array: [
-      // MoneroOcean donate pool: speaks the XMR `login` dialect, so opt out of the pearl subscribe
-      // default (which is on for pearl pools) -- keeps donation working when the rig algo is pearl.
+      // MoneroOcean donate pool speaks the XMR `login` dialect, so opt out of the PearlHash
+      // subscribe default. This keeps donation working when the rig algorithm is PearlHash.
       { ...this.pool_create("xmrig.moneroocean.stream", 20001, true, "user", "pass"), use_subscribe: false }
     ]
   },
@@ -94,6 +96,7 @@ module.exports.opt_help = {
     _template: {
       dev:      [ "cpu", dev_help ],
       perf:     [ null, "local algo hashrate (pool protocol normalization is automatic)" ],
+      backend:  [ "auto", "GPU implementation (see README backend table)" ],
     },
     _map: {}
   },
@@ -105,6 +108,9 @@ module.exports.opt_help = {
 // plain object literal (excludes arrays, class instances, null)
 const isObject = function(a) { return (!!a) && (a.constructor === Object); };
 const poolBooleanFields = ["is_tls", "tls_verify", "is_nicehash", "is_keepalive"];
+const poolProtocols = new Set([
+  "login", "raven", "eth", "ethproxy", "erg", "pearlhash", "zelhash", "kaspa", "beam", "ironfish"
+]);
 const templateValidators = {
   pool: validatePoolOption,
   algo_param: validateAlgoParamOption,
@@ -142,8 +148,15 @@ function validatePoolBooleans(pool) {
   return invalidBoolean ? invalidBoolean + " must be boolean" : null;
 }
 
+function validatePoolProtocol(pool) {
+  if (pool.protocol === null) {return null;}
+  pool.protocol = String(pool.protocol).toLowerCase();
+  return poolProtocols.has(pool.protocol) ? null : "protocol is not supported: " + pool.protocol;
+}
+
 function validatePool(pool) {
-  return validatePoolUrl(pool) || validatePoolPort(pool) || validatePoolBooleans(pool);
+  return validatePoolUrl(pool) || validatePoolPort(pool) ||
+         validatePoolBooleans(pool) || validatePoolProtocol(pool);
 }
 
 function formatDefaultValue(def_val) {
@@ -219,10 +232,36 @@ function validateAlgoPerf(arg, parsed, value) {
   return value;
 }
 
+function validateGpuBackend(arg, parsed, value) {
+  value.backend = String(value.backend).toLowerCase();
+  if (!compilerPolicy.validBackends.has(value.backend)) {
+    return module.exports.print_help(
+      "Option " + arg + " has invalid backend value: " + parsed.backend
+    );
+  }
+  return value;
+}
+
+function preservePearlHashShape(arg, parsed, value) {
+  if (!arg.endsWith(".pearlhash")) {return value;}
+  for (const key of ["m", "n", "k", "rank"]) {
+    if (!(key in parsed)) {continue;}
+    const number = Number(parsed[key]);
+    if (!Number.isSafeInteger(number) || number <= 0) {
+      return module.exports.print_help(
+        "Option " + arg + " has invalid Pearl " + key + " value: " + parsed[key]
+      );
+    }
+    value[key] = number;
+  }
+  return value;
+}
+
 function validateAlgoParamOption(arg, parsed, value) {
   if (!h.is_valid_dev(value.dev))
   {return module.exports.print_help("Option " + arg + " has invalid dev value: " + value.dev);}
-  return validateAlgoPerf(arg, parsed, value);
+  return preservePearlHashShape(arg, parsed,
+    validateGpuBackend(arg, parsed, validateAlgoPerf(arg, parsed, value)));
 }
 
 function validateTemplateValue(arg, key_path_str, parsed, value) {

@@ -6,6 +6,7 @@ const path = require("path");
 const fs   = require("fs");
 const os   = require("os");
 const h    = require("./helper.js");
+const compilerPolicy = require("./compiler-policy.js");
 const o    = require("./opts.js");
 const p    = require("./pool.js");
 
@@ -97,7 +98,13 @@ function exit(code, force = forceExitByDefault()) {
   closeComputeCore();
   h.closeWorkers(force ? WORKER_CLOSE_GRACE_MS : null);
   process.exitCode = code;
-  if (force) {setTimeout(() => reallyExit(code), PROCESS_EXIT_GRACE_MS).unref();}
+  if (force) {
+    // The benchmark harness must not record success if its explicit graceful close reaches this
+    // emergency deadline. A normal worker drain exits before the timer; 124 identifies a stuck
+    // worker/cleanup path instead of silently using the requested status and leaving GPU work behind.
+    const deadlineCode = process.env.MOM_BENCHMARK_CONTROL_STDIN === "1" ? 124 : code;
+    setTimeout(() => reallyExit(deadlineCode), PROCESS_EXIT_GRACE_MS).unref();
+  }
   return false;
 }
 
@@ -123,17 +130,6 @@ function loadConfigFile(config_file) {
   const config_fn = path.resolve(config_file);
   h.log("Loading config file " + config_fn);
   mergeConfigOptions(require(config_fn));
-  applyPearlShapeEnv();
-}
-
-// Pearl mining params (k, noise_rank) are pool-specific (HeroMiners requires 4096/256, pearlpool
-// 1024/64). Let the config carry them under algo_params.pearl.{k,rank} and forward to the env the
-// native kernel and pool.js (pearlNbitsBound) both read, so a config alone is turnkey -- no env vars.
-function applyPearlShapeEnv() {
-  const pearl = global.opt.algo_params && global.opt.algo_params.pearl;
-  if (!pearl) {return;}
-  if (pearl.k    && !process.env.MOM_PEARL_K)    {process.env.MOM_PEARL_K    = String(pearl.k);}
-  if (pearl.rank && !process.env.MOM_PEARL_RANK) {process.env.MOM_PEARL_RANK = String(pearl.rank);}
 }
 
 function parsePoolUri(pool_uri) {
@@ -238,7 +234,7 @@ function counterHexToWireLE(nonceHex) {
 // The submit nonce2 = the 32-byte header nonce after the pool's nonce1 prefix. The header nonce is
 // nonce1 (nonce1_len bytes) || nonce2; the solver advances an 8-byte counter at the start of nonce2,
 // the remaining nonce2 bytes stay as the job delivered them (zeros). Returns wire-order hex.
-function equihashNonce2(pool, nonceHex) {
+function zelhashNonce2(pool, nonceHex) {
   const job = (pool && pool.last_job) || {};
   const nonce1_len = Number(job.nonce1_len) || 0;
   // full 32-byte nonce (64 hex) lives at the end of the 280-hex header blob
@@ -251,24 +247,27 @@ function equihashNonce2(pool, nonceHex) {
   return (counterLE + tail).padEnd(64 - nonce1_len * 2, "0");
 }
 
-function equihashSubmitNtime(pool) {
+function zelhashSubmitNtime(pool) {
   const job = (pool && pool.last_job) || {};
   return hexWithoutPrefix(job.ntime || "");
 }
 
 function normalizeAlgoName(algo) {
-  return algo && (algo.startsWith("c29") || algo === "cuckaroo") ? "c29" : algo;
+  if (!algo) {return algo;}
+  const name = String(algo).toLowerCase();
+  if (name.startsWith("c29") || name === "cuckaroo") {return "c29";}
+  return name;
 }
 
 function parseTestArgs(args) {
   if (args.length < 2) {return o.print_help("Directive \"test\" needs two parameters");}
-  global.opt.job.algo = args.shift();
+  global.opt.job.algo = normalizeAlgoName(args.shift());
   test.result_hash_hex = args.shift();
 }
 
 function parseBenchArgs(args) {
   if (args.length < 1) {return o.print_help("Directive \"bench\" needs one parameter");}
-  global.opt.job.algo = args.shift();
+  global.opt.job.algo = normalizeAlgoName(args.shift());
 }
 
 const directiveParsers = {
@@ -279,6 +278,7 @@ const directiveParsers = {
 };
 
 if (!parse_args()) {return;}
+global.opt.job.algo = normalizeAlgoName(global.opt.job.algo);
 
 function handleResult(msg) {
   const v = msg.value;
@@ -286,10 +286,10 @@ function handleResult(msg) {
   const submit_mode = pool && pool.submit_mode;
   const send = (body) => p.pool_write(v.pool_id, { jsonrpc: "2.0", id: 3, ...body });
 
-  // Pearl: the worker already built the base64 PlainProof, and the native core emits at most one
+  // PearlHash: the worker already built the base64 PlainProof, and the native core emits at most one
   // solution per unit of work (job_id + header), so just relay it -- no JS-side per-job dedup
   // (which would mis-fire on HeroMiners' constant job_id).
-  if (submit_mode === "pearl")
+  if (submit_mode === "pearlhash")
   {return send({ method: "mining.submit", params: { job_id: v.job_id, plain_proof: v.plain_proof } });}
   if (submit_mode === "erg")
   {return send({ method: "mining.submit", params: ergSubmitParams(pool, v) });}
@@ -297,9 +297,9 @@ function handleResult(msg) {
   // The native solver returns the 8-byte search counter (v.nonce, big-endian hex) + the 106-hex
   // 0x34-prefixed 52-byte solution (v.solution). Rebuild nonce2 = the 32-byte header nonce minus the
   // pool's nonce1 prefix, with the search counter written little-endian at its nonceoffset.
-  if (submit_mode === "equihash")
+  if (submit_mode === "zelhash")
   {return send({ method: "mining.submit",
-    params: [pool.login, v.job_id, equihashSubmitNtime(pool), equihashNonce2(pool, v.nonce), v.solution] });}
+    params: [pool.login, v.job_id, zelhashSubmitNtime(pool), zelhashNonce2(pool, v.nonce), v.solution] });}
   // Iron Fish custom OBJECT stratum: submit {miningRequestId, randomness (8-byte BE nonce), graffiti}.
   if (submit_mode === "ironfish")
   {return p.pool_write(v.pool_id, { id: 2, method: "mining.submit",
@@ -406,7 +406,9 @@ function handleHashrate(msg) {
   if (Object.keys(thread_hashrates).length < h.get_dev_threads(last_job.dev)) {return;}
 
   const hashrate = collectedHashrate();
-  h.log("Algo " + last_job.algo + " (" + last_job.dev + ") hashrate: " +
+  const backend = last_job.backend_request === "auto"
+    ? `auto[${last_job.backend}]` : last_job.backend;
+  h.log("Algo " + last_job.algo + " (" + last_job.dev + ":" + backend + ") hashrate: " +
         h.formatHashrate(hashrate.total_hashrate) + " (" + hashrate.thread_hashrate_str + ")");
   thread_hashrates = {};
   if (algo_params_bench_cb) {return algo_params_bench_cb(hashrate.total_hashrate);}
@@ -442,11 +444,60 @@ function set_algo_msr(algo) {
 
 function jobDev(algo) {
   const algo_param = global.opt.algo_params[algo];
-  return algo_param && algo_param.dev ? algo_param.dev : global.opt.job.dev;
+  let dev = algo_param && algo_param.dev ? algo_param.dev : global.opt.job.dev;
+  if (algo === "pearlhash") {dev = pearlhashDev(dev);}
+  return dev;
+}
+
+function requestedJobBackend(algo) {
+  const algoParam = global.opt.algo_params[algo];
+  const defaultRequest = global.opt.job.backend_request || global.opt.job.backend;
+  const configured = algoParam && algoParam.backend !== "auto"
+    ? algoParam.backend
+    : defaultRequest;
+  return compilerPolicy.validateBackend(configured || "auto");
+}
+
+function jobBackend(algo) {
+  const requested = requestedJobBackend(algo);
+  if (requested !== "auto") {return requested;}
+  const gpu = compilerPolicy.gpuFromEnv(process.env);
+  const selected = gpu && compilerPolicy.selection(algo, gpu, process.platform);
+  return selected ? selected.backend : "auto";
+}
+
+function pearlhashShape() {
+  const configured = global.opt.algo_params.pearlhash || {};
+  const gpu = compilerPolicy.gpuFromEnv(process.env);
+  const selected = gpu && compilerPolicy.selection("pearlhash", gpu, process.platform);
+  const profile = selected && selected.pearlhashProfile;
+  return {
+    m: Number(configured.m || (profile && profile.m) || 131072),
+    n: Number(configured.n || (profile && profile.n) || configured.m ||
+      (profile && profile.m) || 131072),
+    k: Number(configured.k || (profile && profile.k) || 4096),
+    rank: Number(configured.rank || (profile && profile.rank) || 256),
+  };
+}
+
+function pearlhashDev(dev) {
+  if (typeof dev !== "string" || !dev) {return dev;}
+  const m = pearlhashShape().m;
+  return dev.split(",").map((entry) => {
+    const match = entry.match(/^(gpu\d+)(?:\*\d+)?(\^\d+)?$/);
+    return match ? `${match[1]}*${m}${match[2] || ""}` : entry;
+  }).join(",");
+}
+
+function addPearlHashJobFields(job) {
+  const shape = pearlhashShape();
+  job.pearlhash_n = shape.n;
+  job.pearlhash_k = shape.k;
+  job.pearlhash_rank = shape.rank;
 }
 
 function baseJob(prev_job, algo, dev, pool_id) {
-  return {
+  const job = {
     algo:       algo,
     dev:        dev,
     seed_hex:   orDefault(prev_job.seed_hash, prev_job.seed_hex),
@@ -460,11 +511,15 @@ function baseJob(prev_job, algo, dev, pool_id) {
     difficulty: prev_job.difficulty,
     thread_num: h.get_dev_threads(dev),
     pool_id:    pool_id,
+    backend_request: requestedJobBackend(algo),
+    backend:    jobBackend(algo),
   };
+  if (algo === "pearlhash") {addPearlHashJobFields(job);}
+  return job;
 }
 
 const nonceAt32Algos = new Set(["kawpow", "firopow", "evrprogpow", "meowpow", "etchash", "autolykos2", "fishhash"]);
-// Kaspa-style algos sharing the 80-byte header / 8-byte nonce at offset 72 layout.
+// KarlsenHashV2 uses the Kaspa 80-byte header / 8-byte nonce-at-72 layout.
 const kaspaHeaderAlgos = new Set(["karlsenhashv2"]);
 // Heights sampled from coin mainnets so benchmark DAG/table sizes match live pool jobs
 // (epoch-0 sizes overstate hashrate by ~7-10% on these algos): ETC 2026-06-04, RVN and ERG 2026-06-12.
@@ -484,9 +539,9 @@ const defaultBenchAlgos = new Set([
   "ghostrider",
   "kawpow",
   "panthera",
-  // Pearl (PRL) is benched by default even though it is not (yet) a MoneroOcean pool algo: the
+  // PearlHash (PRL) is benched by default even though it is not (yet) a MoneroOcean pool algo: the
   // GPU PoUW NoisyGEMM path is a headline number we want reported alongside the other GPU algos.
-  "pearl",
+  "pearlhash",
   "rx/0",
   "rx/2",
   "rx/arq",
@@ -500,14 +555,14 @@ function isKaspaHeaderAlgo(algo) {
   return kaspaHeaderAlgos.has(algo);
 }
 
-function isEquihashAlgo(algo) {
-  return algo === "equihash125_4";
+function isZelHashAlgo(algo) {
+  return algo === "zelhash";
 }
 
 // A deterministic 140-byte Flux header for benching the Equihash 125,4 GPU solver (mainnet block
 // 400000). Each Wagner solve over this header finds 2 distinct proofs in ~2.2 s on a B580, so the
 // reported Sol/s is the solver's true throughput. The 32-byte nonce lives at offset 108.
-const EQUIHASH_BENCH_BLOB =
+const ZELHASH_BENCH_BLOB =
   "04000000a8675c842f7a1342fadd00cd9b4e4909526b1c0ab5a747c5529b4deb13000000" +
   "ce7d6ea2452245925fc70c3a08a3c3dd2ca4beab7481f237a19751666bfd25c3" +
   "0fd282d94b1e1a7f2c57eb3fb9e2853d990753fa137e13c99bd43f220d4fce69" +
@@ -522,8 +577,8 @@ const BEAMHASH3_BENCH_BLOB =
 
 function jobTarget(prev_job, algo) {
   const explicitTarget = orDefault(prev_job.target, "");
-  if (algo === "pearl" || isEquihashAlgo(algo)) {
-    // HeroMiners-style pools precompute the verifier bound (pool.js pearlNbitsBound -> prev_job.target);
+  if (algo === "pearlhash" || isZelHashAlgo(algo)) {
+    // HeroMiners-style pools precompute the verifier bound (pool.js pearlhashNbitsBound -> prev_job.target);
     // Flux set_target also delivers a 256-bit big-endian hex share target. When a pool does not send a
     // target, use the lenient floor(2^256 / difficulty) fallback.
     if (explicitTarget) {return hexWithoutPrefix(explicitTarget).padStart(64, "0");}
@@ -577,9 +632,9 @@ function addKaspaHeaderJobFields(job, prev_job) {
   addFixedNonceBlobFields(job, prev_job, 72);
 }
 
-function addEquihashJobFields(job, prev_job) {
+function addZelHashJobFields(job, prev_job) {
   // Equihash 125,4 (Flux/ZIP-301): 140-byte Zcash header with a 32-byte nonce at offset 108. The pool
-  // dialect (pool.js equihashNotifyJob) builds the full 280-hex header and sets nonceoffset to
+  // dialect (pool.js zelhashNotifyJob) builds the full 280-hex header and sets nonceoffset to
   // 108 + nonce1_len so the solver's 8-byte search counter advances inside nonce2 (after the pool's
   // fixed nonce1 prefix). Carry ntime + nonce1_len through for the mining.submit reconstruction.
   addFixedNonceBlobFields(job, prev_job, 108);
@@ -653,15 +708,19 @@ function reusableLastNonce(last_job_can_be_used) {
 }
 
 function workerRuntimeEnv(algo) {
-  if (algo !== "c29") {return {};}
+  // Preserve "auto" here so compiler policy can distinguish its measured default from an explicit
+  // generic fallback. The resolved backend still travels in the job and is shown in status output.
+  const env = compilerPolicy.workerEnv(
+    algo, process.env, process.platform, requestedJobBackend(algo));
+  if (algo !== "c29") {return env;}
 
   // C29 submits hundreds of short SYCL kernels per second; legacy non-immediate
   // Level Zero command lists avoid the one-core immediate-list path on Intel GPUs.
-  return {
+  return Object.assign(env, {
     SYCL_UR_USE_LEVEL_ZERO_V2: "0",
     SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS: "0",
     MOM_C29_SEED_BLOCKS: process.env.MOM_C29_SEED_BLOCKS || "16",
-  };
+  });
 }
 
 function ensureWorkersForJob(algo, dev) {
@@ -680,7 +739,7 @@ function set_job(prev_job) {
   if (algo === "c29") {addC29JobFields(job, prev_job);}
   else if (algo === "beamhash3") {addBeamhash3JobFields(job, prev_job, global.opt.pools[pool_id]);}
   else if (isKaspaHeaderAlgo(algo)) {addKaspaHeaderJobFields(job, prev_job);}
-  else if (isEquihashAlgo(algo)) {addEquihashJobFields(job, prev_job);}
+  else if (isZelHashAlgo(algo)) {addZelHashJobFields(job, prev_job);}
   else if (isNonceAt32Algo(algo)) {addEthHashJobFields(job, prev_job);}
   else {addStandardJobFields(job, prev_job);}
   // BeamHash III seeds its nonce from the pool nonceprefix inside addBeamhash3JobFields; the generic
@@ -696,6 +755,14 @@ function set_job(prev_job) {
 }
 
 function prepareBenchmarkJob(job) {
+  job.backend_request = compilerPolicy.validateBackend(job.backend || "auto");
+  job.backend = job.backend_request !== "auto"
+    ? compilerPolicy.validateBackend(job.backend)
+    : jobBackend(normalizeAlgoName(job.algo));
+  if (normalizeAlgoName(job.algo) === "pearlhash") {
+    job.dev = pearlhashDev(job.dev);
+    addPearlHashJobFields(job);
+  }
   if (isNonceAt32Algo(job.algo)) {
     job.noncebytes = 8;
     job.nonceoffset = 32;
@@ -708,12 +775,12 @@ function prepareBenchmarkJob(job) {
     if (!job.blob_hex || job.blob_hex.length !== 160)
     {job.blob_hex = "2a".repeat(32) + "52c9f84301000000" + "00".repeat(32) + "0000000000000000";}
   }
-  if (isEquihashAlgo(job.algo)) {
+  if (isZelHashAlgo(job.algo)) {
     // Equihash 125,4 (ZelHash/Flux): 140-byte Zcash header with a 32-byte nonce at offset 108. Bench
     // over the deterministic block-400000 header so each solve finds ~1.88 proofs and the rate is Sol/s.
     job.noncebytes = 8;
     job.nonceoffset = 108;
-    if (!job.blob_hex || job.blob_hex.length !== 280) {job.blob_hex = EQUIHASH_BENCH_BLOB;}
+    if (!job.blob_hex || job.blob_hex.length !== 280) {job.blob_hex = ZELHASH_BENCH_BLOB;}
     job.height = job.height || 400000;
   }
   if (job.algo === "beamhash3") {
@@ -844,6 +911,22 @@ function install_exit_handlers() {
   else {process.on("SIGHUP", on_exit);}
 }
 
+function install_benchmark_control() {
+  if (process.env.MOM_BENCHMARK_CONTROL_STDIN !== "1") {return;}
+  let input = "";
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", function(chunk) {
+    input += chunk;
+    let eol;
+    while ((eol = input.indexOf("\n")) !== -1) {
+      const command = input.slice(0, eol).trim();
+      input = input.slice(eol + 1);
+      if (command === "close") {on_exit();}
+    }
+  });
+  process.stdin.resume();
+}
+
 function fallbackCpuInfo() {
   return {
     cpu_sockets: 1,
@@ -921,10 +1004,47 @@ function use_msr_tuning() {
 }
 
 function add_algo_params(params) {
-  for (const algo in params) {
-    if (!(algo in global.opt.algo_params))
-    {global.opt.algo_params[algo] = { dev: params[algo], perf: null };}
+  for (const key in params) {
+    if (!key.startsWith("@backend:")) {continue;}
+    const algo = key.slice("@backend:".length);
+    const configured = global.opt.algo_params[algo];
+    if (configured && (!configured.backend || configured.backend === "auto")) {
+      configured.backend = compilerPolicy.validateBackend(params[key]);
+    }
   }
+  for (const algo in params) {
+    if (algo.startsWith("@")) {continue;}
+    if (!(algo in global.opt.algo_params))
+    {global.opt.algo_params[algo] = {
+      dev: params[algo],
+      perf: null,
+      backend: compilerPolicy.validateBackend(params[`@backend:${algo}`] || "auto"),
+    };}
+  }
+  if (global.opt.algo_params.pearlhash) {
+    global.opt.algo_params.pearlhash.dev = pearlhashDev(global.opt.algo_params.pearlhash.dev);
+  }
+}
+
+function publicAlgoParams(params) {
+  const result = {};
+  for (const [algo, rawDev] of Object.entries(params)) {
+    if (algo.startsWith("@")) {continue;}
+    const dev = algo === "pearlhash" ? pearlhashDev(rawDev) : rawDev;
+    if (!/\bgpu\d+/i.test(dev)) {
+      result[algo] = dev;
+      continue;
+    }
+    const requested = requestedJobBackend(algo);
+    const hinted = params[`@backend:${algo}`];
+    const resolved = requested === "auto"
+      ? compilerPolicy.validateBackend(hinted || jobBackend(algo))
+      : requested;
+    const label = requested === "auto" && resolved !== "auto"
+      ? `auto[${resolved}]` : resolved;
+    result[algo] = `${dev}:${label}`;
+  }
+  return result;
 }
 
 function use_algo_param_benchmarks() {
@@ -946,6 +1066,11 @@ function start_after_algo_params() {
 }
 
 function createComputeCore() {
+  // The control core performs device discovery/MSR work before an algorithm worker exists. In a
+  // multi-compiler source tree the last build artifact is not necessarily runnable with the DLLs
+  // on the ambient PATH, so load the selected GPU policy's default worker for this probe. A real
+  // algorithm name is deliberately not used: overrides belong only to hashing workers.
+  Object.assign(process.env, compilerPolicy.workerEnv("__control__"));
   compute_core = h.create_core();
   compute_core.from.on("close", () => { process.exitCode = 0; });
   return compute_core;
@@ -983,12 +1108,24 @@ switch (directive) {
     break;
 
   case "test":
+    global.opt.job.backend_request = compilerPolicy.validateBackend(global.opt.job.backend || "auto");
+    global.opt.job.backend = global.opt.job.backend_request !== "auto"
+      ? compilerPolicy.validateBackend(global.opt.job.backend)
+      : jobBackend(normalizeAlgoName(global.opt.job.algo));
+    if (normalizeAlgoName(global.opt.job.algo) === "pearlhash") {
+      global.opt.job.dev = pearlhashDev(global.opt.job.dev);
+      addPearlHashJobFields(global.opt.job);
+    }
     h.recreate_threads(global.opt.job.dev, messageHandler, workerRuntimeEnv(normalizeAlgoName(global.opt.job.algo)));
     h.messageWorkers({type: "test", job: global.opt.job});
     break;
 
   case "bench":
     install_exit_handlers();
+    // benchmark-gpu-algos.js uses this small control pipe because Windows emulates SIGTERM by
+    // abruptly killing only the parent process. An explicit close drains every compute worker and
+    // lets N-API/SYCL environment cleanup hooks run before the benchmark process exits.
+    install_benchmark_control();
     h.recreate_threads(global.opt.job.dev, messageHandler, workerRuntimeEnv(normalizeAlgoName(global.opt.job.algo)));
     if (!use_msr_tuning()) {
       startBenchJob();
@@ -1005,7 +1142,7 @@ switch (directive) {
   case "algo_params":
     createComputeCore();
     compute_core.from.on("algo_params", function(v) {
-      fs.writeSync(1, "MOM_ALGO_PARAMS " + JSON.stringify(v) + "\n");
+      fs.writeSync(1, "MOM_ALGO_PARAMS " + JSON.stringify(publicAlgoParams(v)) + "\n");
       exit(0);
     });
     compute_core.from.on("error", function(v) {

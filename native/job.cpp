@@ -112,8 +112,8 @@ static const std::map<std::string, gpu_autolykos2_hash_fun> gpu_autolykos2_algo2
   { "autolykos2", autolykos2 }
 };
 
-static const std::map<std::string, gpu_pearl_hash_fun> gpu_pearl_algo2fn = {
-  { "pearl", pearl }
+static const std::map<std::string, gpu_pearlhash_hash_fun> gpu_pearlhash_algo2fn = {
+  { "pearlhash", pearlhash }
 };
 
 static const std::map<std::string, gpu_fishhash_hash_fun> gpu_fishhash_algo2fn = {
@@ -124,8 +124,8 @@ static const std::map<std::string, gpu_karlsenhashv2_hash_fun> gpu_karlsenhashv2
   { "karlsenhashv2", karlsenhashv2 }
 };
 
-static const std::map<std::string, gpu_equihash125_4_hash_fun> gpu_equihash125_4_algo2fn = {
-  { "equihash125_4", equihash125_4 }
+static const std::map<std::string, gpu_zelhash_hash_fun> gpu_zelhash_algo2fn = {
+  { "zelhash", zelhash }
 };
 
 static const std::map<std::string, gpu_beamhash3_hash_fun> gpu_beamhash3_algo2fn = {
@@ -142,10 +142,10 @@ static const std::map<std::string, unsigned> algo2mem = [](){
     { "meowpow", 0 },
     { "etchash", 0 },
     { "autolykos2", 0 },
-    { "pearl", 0 },
+    { "pearlhash", 0 },
     { "fishhash", 0 },
     { "karlsenhashv2", 0 },
-    { "equihash125_4", 0 },
+    { "zelhash", 0 },
     { "beamhash3", 0 }
   };
   for (const auto& i : cpu_name2algo) result[i.first] = xmrig::Algorithm(i.second).l3();
@@ -294,13 +294,17 @@ void Core::set_job(
   const std::string new_dev_str        = v.at("dev"),
                     new_algo_str       = v.at("algo"),
                     new_input_hex      = v.at("blob_hex"),
-                    new_seed_hex       = opt_str("seed_hex");
+                    new_seed_hex       = opt_str("seed_hex"),
+                    new_backend        = opt_str("backend").empty() ? "auto" : opt_str("backend");
   const unsigned    new_height         = opt_uint("height", 0),
                     new_thread_id      = opt_uint("thread_id", 0),
                     new_thread_num     = opt_uint("thread_num", 1),
                     new_nonce_bytes    = opt_uint("noncebytes", 4),
                     new_nonce_offset   = opt_uint("nonceoffset", 39),
-                    new_c29_proof_size = opt_uint("proofsize", 32);
+                    new_c29_proof_size = opt_uint("proofsize", 32),
+                    new_pearlhash_n        = opt_uint("pearlhash_n", 131072),
+                    new_pearlhash_k        = opt_uint("pearlhash_k", 4096),
+                    new_pearlhash_rank     = opt_uint("pearlhash_rank", 256);
   const uint64_t    new_nonce          = opt_u64_hex("nonce"),
                     new_nicehash_mask  = opt_u64_hex("nicehash_mask");
 
@@ -318,15 +322,25 @@ void Core::set_job(
     new_algo_str == "meowpow" ? DEV::KAWPOW_GPU :
     new_algo_str == "etchash" ? DEV::ETCHASH_GPU :
     new_algo_str == "autolykos2" ? DEV::AUTOLYKOS2_GPU :
-    new_algo_str == "pearl" ? DEV::PEARL_GPU :
+    new_algo_str == "pearlhash" ? DEV::PEARLHASH_GPU :
     new_algo_str == "fishhash" ? DEV::FISHHASH_GPU :
     new_algo_str == "karlsenhashv2" ? DEV::KARLSENHASHV2_GPU :
-    new_algo_str == "equihash125_4" ? DEV::EQUIHASH125_4_GPU :
+    new_algo_str == "zelhash" ? DEV::ZELHASH_GPU :
     new_algo_str == "beamhash3" ? DEV::BEAMHASH3_GPU :
     new_algo_str.starts_with("c29") ? DEV::C29_GPU : DEV::GPU;
 
   if (new_dev == DEV::C29_GPU && new_batch != 1)
     throw std::string("Invalid batch size for c29s algo. Should be 1.");
+  if (new_backend != "auto" && new_backend != "sycl" &&
+      new_backend != "sycl-opencl" && new_backend != "sycl-l0" &&
+      new_backend != "sycl-native" &&
+      new_backend != "native")
+    throw std::string("Invalid GPU backend");
+  if (new_dev == DEV::PEARLHASH_GPU &&
+      (new_pearlhash_n < 256 || new_pearlhash_n % 32 || new_pearlhash_k < 16 ||
+       new_pearlhash_k % 16 || new_pearlhash_rank < 16 || new_pearlhash_rank % 16 ||
+       new_pearlhash_k % new_pearlhash_rank))
+    throw std::string("Invalid pearlhash M/N/K/rank profile");
   // batch carries the intensity for the small-blob GPU pow algos, so 0 is never valid
   if (new_batch == 0 && is_small_blob_gpu_dev(new_dev))
     throw std::string("Invalid " + new_algo_str + " intensity");
@@ -345,8 +359,8 @@ void Core::set_job(
   // Equihash 125,4 carries a 32-byte nonce at offset 108 of its 140-byte header. The solver advances
   // the low 8 bytes of that nonce field as its search counter (the rest is the pool extranonce), so the
   // job describes it as an 8-byte nonce at offset 108.
-  if (new_dev == DEV::EQUIHASH125_4_GPU && (new_nonce_bytes != 8 || new_nonce_offset != 108))
-    throw std::string("equihash125_4 requires an 8-byte nonce at offset 108");
+  if (new_dev == DEV::ZELHASH_GPU && (new_nonce_bytes != 8 || new_nonce_offset != 108))
+    throw std::string("zelhash requires an 8-byte nonce at offset 108");
   // BeamHash III: the blob is prework(32)||nonce(8)||extranonce(4); the 8-byte Beam nonce is at offset 32.
   if (new_dev == DEV::BEAMHASH3_GPU && (new_nonce_bytes != 8 || new_nonce_offset != 32))
     throw std::string("beamhash3 requires an 8-byte nonce at offset 32");
@@ -407,8 +421,8 @@ void Core::set_job(
       new_fn.gpu_autolykos2 = algo_lookup(gpu_autolykos2_algo2fn, new_algo_str);
       break;
 
-    case DEV::PEARL_GPU:
-      new_fn.gpu_pearl = algo_lookup(gpu_pearl_algo2fn, new_algo_str);
+    case DEV::PEARLHASH_GPU:
+      new_fn.gpu_pearlhash = algo_lookup(gpu_pearlhash_algo2fn, new_algo_str);
       break;
 
     case DEV::FISHHASH_GPU:
@@ -419,8 +433,8 @@ void Core::set_job(
       new_fn.gpu_karlsenhashv2 = algo_lookup(gpu_karlsenhashv2_algo2fn, new_algo_str);
       break;
 
-    case DEV::EQUIHASH125_4_GPU:
-      new_fn.gpu_equihash125_4 = algo_lookup(gpu_equihash125_4_algo2fn, new_algo_str);
+    case DEV::ZELHASH_GPU:
+      new_fn.gpu_zelhash = algo_lookup(gpu_zelhash_algo2fn, new_algo_str);
       break;
 
     case DEV::BEAMHASH3_GPU:
@@ -435,10 +449,10 @@ void Core::set_job(
   if (!hex2bin(new_input_hex.c_str(), new_input_len, new_input))
     throw std::string("Bad input hex");
   // header must be long enough to hold the nonce (kawpow/etchash/autolykos2) or the full PoUW
-  // header (pearl); min lengths differ by algo
-  const unsigned min_input_len = new_dev == DEV::PEARL_GPU ? 76
+  // header (pearlhash); min lengths differ by algo
+  const unsigned min_input_len = new_dev == DEV::PEARLHASH_GPU ? 76
     : new_dev == DEV::KARLSENHASHV2_GPU ? 80
-    : new_dev == DEV::EQUIHASH125_4_GPU ? 140   // full Zcash/Flux header
+    : new_dev == DEV::ZELHASH_GPU ? 140   // full Zcash/Flux header
     : new_dev == DEV::BEAMHASH3_GPU ? 44         // prework(32)||nonce(8)||extranonce(4)
     : is_nonce_at_32_gpu_dev(new_dev) ? 40 : 0;
   if (new_input_len < min_input_len)
@@ -452,7 +466,9 @@ void Core::set_job(
     m_dev == new_dev && m_dev_str == new_dev_name &&
     m_height == new_height && m_nonce_bytes == new_nonce_bytes &&
     m_nonce_offset == new_nonce_offset && m_c29_proof_size == new_c29_proof_size &&
-    m_input_len == new_input_len && m_nicehash_mask == new_nicehash_mask;
+    m_input_len == new_input_len && m_nicehash_mask == new_nicehash_mask &&
+    m_backend == new_backend && m_pearlhash_n == new_pearlhash_n &&
+    m_pearlhash_k == new_pearlhash_k && m_pearlhash_rank == new_pearlhash_rank;
   if (same_compute_input) {
     // Pools can retarget c29 by sending the same work with a new target/job id.
     // Keep the existing nonce/search state and only refresh submit metadata.
@@ -529,7 +545,7 @@ void Core::set_job(
     } else if (is_small_blob_gpu_dev(new_dev)) {
       if (m_input == nullptr) m_input = static_cast<uint8_t*>(alloc_mem(MAX_BLOB_LEN));
       if (m_output == nullptr) m_output = static_cast<uint8_t*>(alloc_mem(HASH_LEN));
-      // The solution buffer holds the kawpow/etchash mix (32 B) for most algos, but equihash125_4
+      // The solution buffer holds the kawpow/etchash mix (32 B) for most algos, but zelhash
       // returns a 52-byte out-of-band solution and its M1 test path dumps gen-kernel rows here.
       if (m_spads == nullptr) m_spads = alloc_mem(SMALL_BLOB_SOL_LEN);
     } else { // setup cn/c29 stuff
@@ -557,6 +573,10 @@ void Core::set_job(
   m_c29_proof_size = new_c29_proof_size;
   m_input_len      = new_input_len;
   m_nicehash_mask  = new_nicehash_mask;
+  m_backend        = new_backend;
+  m_pearlhash_n        = new_pearlhash_n;
+  m_pearlhash_k        = new_pearlhash_k;
+  m_pearlhash_rank     = new_pearlhash_rank;
   std::memcpy(m_seed, new_seed, HASH_LEN);
   fn_extra_setup();
 
@@ -628,8 +648,8 @@ void Core::set_job(
       }
     );
   } else {
-    if (new_dev == DEV::PEARL_GPU) {
-      // pearl has a single header blob with NO embedded nonce; the search variable is an internal
+    if (new_dev == DEV::PEARLHASH_GPU) {
+      // pearlhash has a single header blob with NO embedded nonce; the search variable is an internal
       // seed counter (one seeded attempt per Execute call), so step by worker count, not by batch.
       memcpy(m_input, new_input, m_input_len);
       m_nonce_step = new_thread_num;
@@ -639,7 +659,7 @@ void Core::set_job(
       return;
     }
     // Single-blob GPU pow with an embedded nonce: kawpow/etchash/autolykos2 (nonce at offset 32) and
-    // Kaspa-style hashes (8-byte nonce at offset 72). One header blob (not a per-batch buffer); the kernel
+    // KarlsenHashV2 (8-byte nonce at offset 72). One header blob (not a per-batch buffer); the kernel
     // searches start_nonce..start_nonce+batch. m_nonce_offset (not a hardcoded 32) places the nonce.
     if (is_nonce_at_32_gpu_dev(new_dev) || new_dev == DEV::KARLSENHASHV2_GPU || is_equihash_gpu_dev(new_dev)) {
       memcpy(m_input, new_input, m_input_len);
@@ -703,8 +723,8 @@ void Core::get_algo_params(const MessageValues& v) {
   send_msg("algo_params", algo_params(
     MAX_CN_CPU_WAYS, cpu_sockets, cpu_threads, cpu_l3cache, algo2mem, keys2set(cpu_name2algo),
     gpu_set(gpu_cn_algo2fn), gpu_set(gpu_c29_algo2fn), gpu_set(gpu_kawpow_algo2fn),
-    gpu_set(gpu_etchash_algo2fn), gpu_set(gpu_autolykos2_algo2fn), gpu_set(gpu_pearl_algo2fn),
+    gpu_set(gpu_etchash_algo2fn), gpu_set(gpu_autolykos2_algo2fn), gpu_set(gpu_pearlhash_algo2fn),
     gpu_set(gpu_fishhash_algo2fn), gpu_set(gpu_karlsenhashv2_algo2fn),
-    gpu_set(gpu_equihash125_4_algo2fn), gpu_set(gpu_beamhash3_algo2fn)
+    gpu_set(gpu_zelhash_algo2fn), gpu_set(gpu_beamhash3_algo2fn)
   ));
 }
