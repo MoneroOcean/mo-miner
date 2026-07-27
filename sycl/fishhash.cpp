@@ -206,7 +206,7 @@ inline void store_fish_result(FishResult* r, uint64_t nonce, const uint8_t out[3
 // value, identical hash. Off the nvptx device pass this is the plain dereference (unchanged
 // Intel/CPU codegen, and unchanged for the lazy FULL=false path which never calls it).
 inline uint64_t fish_dag_ld(const uint64_t* __restrict p) {
-#if defined(__NVPTX__)
+#if defined(__NVPTX__) && (!defined(MOM_SYCL_ADAPTIVECPP) || defined(__CUDA_ARCH__))
   uint64_t v;
   asm("ld.global.nc.u64 %0, [%1];" : "=l"(v) : "l"(p));
   return v;
@@ -218,7 +218,7 @@ inline uint64_t fish_dag_ld(const uint64_t* __restrict p) {
 // LSU overlaps that miss with the serial per-element fold below (and the prior access's tail).
 // A prefetch never changes a loaded value, so the computed hash is unaffected; no-op off nvptx.
 inline void fish_dag_prefetch(const uint64_t* __restrict p) {
-#if defined(__NVPTX__)
+#if defined(__NVPTX__) && (!defined(MOM_SYCL_ADAPTIVECPP) || defined(__CUDA_ARCH__))
   asm volatile("prefetch.global.L1 [%0];" :: "l"(p));
 #else
   (void)p;
@@ -233,7 +233,7 @@ template <bool FULL> class FishKernel;
 // live Iron Fish). target_be selects BE compare (Iron Fish) vs LE (offline test).
 template <bool FULL>
 static sycl::event submit_fishhash_search(
-  sycl::queue& q, MOM_BUNDLE_T& kb, const uint8_t* d_input, unsigned input_size, uint64_t start_nonce,
+  sycl::queue& q, MomKernelBundle& kb, const uint8_t* d_input, unsigned input_size, uint64_t start_nonce,
   const uint64_t* __restrict d_cache, const uint64_t* __restrict d_dag, uint32_t intensity,
   const uint8_t* d_target, FishResult* d_result, bool is_test,
   unsigned nonce_off, bool nonce_be, bool target_be
@@ -241,7 +241,7 @@ static sycl::event submit_fishhash_search(
   constexpr unsigned WG = 128;  // search: latency-bound gather -> more in-flight subgroups (tuning vs SOTA)
   const size_t global = (static_cast<size_t>(intensity) + WG - 1) / WG * WG;
   return q.submit([&](sycl::handler& h) {
-    MOM_USE_BUNDLE(h, kb);
+    mom_use_bundle(h, kb);
     h.parallel_for<FishKernel<FULL>>(sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(WG)), [=](sycl::nd_item<1> it) {
       const uint32_t gid = (uint32_t)it.get_global_id(0);
       if (gid >= intensity) return;
@@ -342,14 +342,14 @@ static sycl::event submit_fishhash_search(
 template <bool FULL> class KarlsenKernel;
 template <bool FULL>
 static sycl::event submit_karlsenhashv2_search(
-  sycl::queue& q, MOM_BUNDLE_T& kb, const uint8_t* d_input, unsigned input_size, uint64_t start_nonce,
+  sycl::queue& q, MomKernelBundle& kb, const uint8_t* d_input, unsigned input_size, uint64_t start_nonce,
   const uint64_t* __restrict d_cache, const uint64_t* __restrict d_dag, uint32_t intensity,
   const uint8_t* d_target, FishResult* d_result, bool is_test
 ) {
   constexpr unsigned WG = 128;
   const size_t global = (static_cast<size_t>(intensity) + WG - 1) / WG * WG;
   return q.submit([&](sycl::handler& h) {
-    MOM_USE_BUNDLE(h, kb);
+    mom_use_bundle(h, kb);
     h.parallel_for<KarlsenKernel<FULL>>(sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(WG)), [=](sycl::nd_item<1> it) {
       const uint32_t gid = (uint32_t)it.get_global_id(0);
       if (gid >= intensity) return;
@@ -373,13 +373,19 @@ static sycl::event submit_karlsenhashv2_search(
         const uint32_t p0 = (mg[0] ^ mg[3] ^ mg[6]) % M;
         const uint32_t p1 = (mg[1] ^ mg[4] ^ mg[7]) % M;
         const uint32_t p2 = (mg[2] ^ mg[5] ^ rnd) % M;
+        uint64_t lazy0[16], lazy1[16], lazy2[16];
+        if constexpr (!FULL) {
+          fish_dataset_item(d_cache, p0, lazy0);
+          fish_dataset_item(d_cache, p1, lazy1);
+          fish_dataset_item(d_cache, p2, lazy2);
+        }
+#if defined(__NVPTX__)
         uint64_t f0[16], f1[16], f2[16];
         if constexpr (FULL) {
-#if defined(__NVPTX__)
           // NVIDIA (nvptx) only: batch the 48 independent gather loads split per item so the LSU
           // keeps many random 4.6 GB DAG misses in flight per warp before consumption -- same
           // latency-hiding win as FishHash. Spills registers on Intel (spir64), which takes the
-          // interleaved #else load below instead.
+          // streaming path below instead.
           const uint64_t* __restrict q0 = d_dag + (size_t)p0 * 16;
           const uint64_t* __restrict q1 = d_dag + (size_t)p1 * 16;
           const uint64_t* __restrict q2 = d_dag + (size_t)p2 * 16;
@@ -389,26 +395,31 @@ static sycl::event submit_karlsenhashv2_search(
           for (unsigned k = 0; k < 16; ++k) f0[k] = fish_dag_ld(q0 + k);
           for (unsigned k = 0; k < 16; ++k) f1[k] = fish_dag_ld(q1 + k);
           for (unsigned k = 0; k < 16; ++k) f2[k] = fish_dag_ld(q2 + k);
-#else
-          // Intel (spir64): original interleaved load -- one element of each item per iteration.
-          for (unsigned k = 0; k < 16; ++k) {
-            f0[k] = fish_dag_ld(d_dag + (size_t)p0 * 16 + k);
-            f1[k] = fish_dag_ld(d_dag + (size_t)p1 * 16 + k);
-            f2[k] = fish_dag_ld(d_dag + (size_t)p2 * 16 + k);
-          }
-#endif
-        } else {
-          fish_dataset_item(d_cache, p0, f0); fish_dataset_item(d_cache, p1, f1); fish_dataset_item(d_cache, p2, f2);
         }
-        uint32_t f1w[32], f2w[32];
-        for (unsigned j = 0; j < 16; ++j) { f1w[2*j]=(uint32_t)f1[j]; f1w[2*j+1]=(uint32_t)(f1[j]>>32);
-                                            f2w[2*j]=(uint32_t)f2[j]; f2w[2*j+1]=(uint32_t)(f2[j]>>32); }
-        for (unsigned j = 0; j < 32; ++j) { f1w[j] = fnv1_dev(mix[j], f1w[j]); f2w[j] = mix[j] ^ f2w[j]; }
+#endif
         for (unsigned j = 0; j < 16; ++j) {
-          const uint64_t a = f0[j];
-          const uint64_t b = (uint64_t)f1w[2*j] | ((uint64_t)f1w[2*j+1] << 32);
-          const uint64_t c = (uint64_t)f2w[2*j] | ((uint64_t)f2w[2*j+1] << 32);
-          const uint64_t v = a * b + c;
+          uint64_t f0j, f1j, f2j;
+          if constexpr (FULL) {
+#if defined(__NVPTX__)
+            f0j = f0[j]; f1j = f1[j]; f2j = f2[j];
+#else
+            // Keep only one element from each random DAG record live while folding it. The former
+            // f0/f1/f2 + f1w/f2w arrays consumed hundreds of bytes of private storage per work-item
+            // and could spill catastrophically on otherwise portable SPIR-V targets.
+            f0j = fish_dag_ld(d_dag + (size_t)p0 * 16 + j);
+            f1j = fish_dag_ld(d_dag + (size_t)p1 * 16 + j);
+            f2j = fish_dag_ld(d_dag + (size_t)p2 * 16 + j);
+#endif
+          } else {
+            f0j = lazy0[j]; f1j = lazy1[j]; f2j = lazy2[j];
+          }
+          const uint32_t blo = fnv1_dev(mix[2*j], (uint32_t)f1j);
+          const uint32_t bhi = fnv1_dev(mix[2*j+1], (uint32_t)(f1j >> 32));
+          const uint32_t clo = mix[2*j] ^ (uint32_t)f2j;
+          const uint32_t chi = mix[2*j+1] ^ (uint32_t)(f2j >> 32);
+          const uint64_t b = (uint64_t)blo | ((uint64_t)bhi << 32);
+          const uint64_t c = (uint64_t)clo | ((uint64_t)chi << 32);
+          const uint64_t v = f0j * b + c;
           mix[2*j] = (uint32_t)v; mix[2*j+1] = (uint32_t)(v >> 32);
         }
       }
@@ -425,16 +436,198 @@ static sycl::event submit_karlsenhashv2_search(
   });
 }
 
+// ---- Cooperative full-DAG search ---------------------------------------------------------------
+// A scalar work-item owns all 16 u64 mix elements in the portable path above. On a random 4.6-GiB
+// DAG that creates a long 48-load dependency window and a large register footprint. The production
+// path instead maps one hash to a logical 16-lane team: each lane owns one u64 mix element and the
+// three 128-byte DAG records are loaded as three coalesced 16-lane transactions. CUDA and RDNA run
+// two teams per native 32-lane warp/wave; Intel requests a native 16-lane subgroup. Only the three
+// data-dependent record indices cross lanes, through native shuffle/select operations.
+constexpr unsigned FISH_TEAM = 16;
+constexpr unsigned FISH_STAGE_BYTES = 180;  // header first, then reused as seed||collapsed mix
+
+class FishCoopKernel;
+static sycl::event submit_fishhash_search_coop(
+  sycl::queue& q, MomKernelBundle& kb, const uint8_t* d_input, unsigned input_size, uint64_t start_nonce,
+  const uint64_t* __restrict d_dag, uint32_t intensity, const uint8_t* d_target,
+  FishResult* d_result, bool is_test, unsigned nonce_off, bool nonce_be, bool target_be,
+  unsigned workgroup
+) {
+  const size_t work_items = static_cast<size_t>(intensity) * FISH_TEAM;
+  const size_t global = (work_items + workgroup - 1) / workgroup * workgroup;
+  return q.submit([&](sycl::handler& h) {
+    mom_use_bundle(h, kb);
+    sycl::local_accessor<uint8_t, 1> stage(
+      sycl::range<1>((workgroup / FISH_TEAM) * FISH_STAGE_BYTES), h);
+    h.parallel_for<FishCoopKernel>(
+      sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(workgroup)),
+      [=](sycl::nd_item<1> it) MOM_REQD_SG_16 {
+      const unsigned local_id = static_cast<unsigned>(it.get_local_id(0));
+      const unsigned team_local = local_id / FISH_TEAM;
+      const auto sg = it.get_sub_group();
+      const unsigned sg_lane = static_cast<unsigned>(sg.get_local_linear_id());
+      const unsigned team_lane = sg_lane & (FISH_TEAM - 1u);
+      const unsigned team_base = sg_lane - team_lane;
+      const uint32_t gid = static_cast<uint32_t>(it.get_global_id(0) / FISH_TEAM);
+      const bool active = gid < intensity;
+      const uint64_t nonce = start_nonce + gid;
+      uint8_t* const work = &stage[team_local * FISH_STAGE_BYTES];
+
+      const unsigned hlen = input_size <= FISH_STAGE_BYTES ? input_size : FISH_STAGE_BYTES;
+      for (unsigned i = team_lane; i < hlen; i += FISH_TEAM) work[i] = d_input[i];
+      if (team_lane == 0) {
+        if (nonce_be) {
+          for (unsigned i = 0; i < 8; ++i) work[nonce_off + i] = static_cast<uint8_t>(nonce >> (8 * (7 - i)));
+        } else {
+          for (unsigned i = 0; i < 8; ++i) work[nonce_off + i] = static_cast<uint8_t>(nonce >> (8 * i));
+        }
+      }
+      sycl::group_barrier(it.get_group());
+
+      // The leader performs the serial BLAKE3 prefix; SLM then distributes its eight u64 words to
+      // the 16 lanes (the second half repeats the seed, matching mix={seed,seed}).
+      if (team_lane == 0) {
+        uint8_t seed[64];
+        blake3_dev(seed, 64, work, hlen);
+        for (unsigned i = 0; i < 64; ++i) work[i] = seed[i];
+      }
+      sycl::group_barrier(it.get_group());
+      const uint64_t seed_word = load64_le_dev(work + 8 * (team_lane & 7u));
+      uint64_t mix = seed_word;
+
+      constexpr uint32_t M = static_cast<uint32_t>(FULL_DATASET_NUM_ITEMS);
+      for (unsigned round = 0; round < NUM_DATASET_ACCESSES; ++round) {
+        const uint32_t own_low = static_cast<uint32_t>(mix);
+        const uint32_t p0 = mom_select_from_group(sg, own_low, team_base + 0u) % M;
+        const uint32_t p1 = mom_select_from_group(sg, own_low, team_base + 2u) % M;
+        const uint32_t p2 = mom_select_from_group(sg, own_low, team_base + 4u) % M;
+        const uint64_t f0 = fish_dag_ld(d_dag + static_cast<size_t>(p0) * FISH_TEAM + team_lane);
+        const uint64_t f1 = fish_dag_ld(d_dag + static_cast<size_t>(p1) * FISH_TEAM + team_lane);
+        const uint64_t f2 = fish_dag_ld(d_dag + static_cast<size_t>(p2) * FISH_TEAM + team_lane);
+        const uint32_t blo = fnv1_dev(static_cast<uint32_t>(mix), static_cast<uint32_t>(f1));
+        const uint32_t bhi = fnv1_dev(static_cast<uint32_t>(mix >> 32), static_cast<uint32_t>(f1 >> 32));
+        const uint64_t b = static_cast<uint64_t>(blo) | (static_cast<uint64_t>(bhi) << 32);
+        mix = f0 * b + (mix ^ f2);
+      }
+
+      // Each even lane already owns the first u64 in its adjacent pair, so only the second needs a
+      // shuffle. The leader reuses the staged seed as final_data[0..63] and appends the collapsed
+      // 32-byte mix at [64..95].
+      // Group collectives must be encountered by every lane in converged control flow. Fetch the
+      // neighbour unconditionally, then let only the even lanes publish each four-u32 fold.
+      const uint64_t m1 = mom_select_from_group(sg, mix, team_base + (team_lane | 1u));
+      if ((team_lane & 1u) == 0) {
+        const uint32_t folded = fnv1_dev(fnv1_dev(fnv1_dev(
+          static_cast<uint32_t>(mix), static_cast<uint32_t>(mix >> 32)),
+          static_cast<uint32_t>(m1)), static_cast<uint32_t>(m1 >> 32));
+        store32_le_dev(work + 64 + 2 * team_lane, folded);
+      }
+      sycl::group_barrier(it.get_group());
+
+      if (team_lane == 0 && active) {
+        uint8_t final_hash[32];
+        blake3_dev(final_hash, 32, work, 96);
+        const bool hit = target_be ? meets_target_be_dev(final_hash, d_target)
+                                   : meets_target_le_dev(final_hash, d_target);
+        if ((is_test && gid == 0) || hit) store_fish_result(d_result, nonce, final_hash);
+      }
+    });
+  });
+}
+
+class KarlsenCoopKernel;
+static sycl::event submit_karlsenhashv2_search_coop(
+  sycl::queue& q, MomKernelBundle& kb, const uint8_t* d_input, unsigned input_size, uint64_t start_nonce,
+  const uint64_t* __restrict d_dag, uint32_t intensity, const uint8_t* d_target,
+  FishResult* d_result, bool is_test, unsigned workgroup
+) {
+  const size_t work_items = static_cast<size_t>(intensity) * FISH_TEAM;
+  const size_t global = (work_items + workgroup - 1) / workgroup * workgroup;
+  return q.submit([&](sycl::handler& h) {
+    mom_use_bundle(h, kb);
+    sycl::local_accessor<uint8_t, 1> stage(
+      sycl::range<1>((workgroup / FISH_TEAM) * FISH_STAGE_BYTES), h);
+    h.parallel_for<KarlsenCoopKernel>(
+      sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(workgroup)),
+      [=](sycl::nd_item<1> it) MOM_REQD_SG_16 {
+      const unsigned local_id = static_cast<unsigned>(it.get_local_id(0));
+      const unsigned team_local = local_id / FISH_TEAM;
+      const auto sg = it.get_sub_group();
+      const unsigned sg_lane = static_cast<unsigned>(sg.get_local_linear_id());
+      const unsigned team_lane = sg_lane & (FISH_TEAM - 1u);
+      const unsigned team_base = sg_lane - team_lane;
+      const uint32_t gid = static_cast<uint32_t>(it.get_global_id(0) / FISH_TEAM);
+      const bool active = gid < intensity;
+      const uint64_t nonce = start_nonce + gid;
+      uint8_t* const work = &stage[team_local * FISH_STAGE_BYTES];
+
+      for (unsigned i = team_lane; i < 80; i += FISH_TEAM)
+        work[i] = i < input_size ? d_input[i] : 0;
+      if (team_lane == 0)
+        for (unsigned i = 0; i < 8; ++i) work[72 + i] = static_cast<uint8_t>(nonce >> (8 * i));
+      sycl::group_barrier(it.get_group());
+      if (team_lane == 0) {
+        uint8_t pow_hash[32];
+        blake3_dev(pow_hash, 32, work, 80);
+        for (unsigned i = 0; i < 32; ++i) work[i] = pow_hash[i];
+        for (unsigned i = 32; i < 64; ++i) work[i] = 0;
+      }
+      sycl::group_barrier(it.get_group());
+      uint64_t mix = load64_le_dev(work + 8 * (team_lane & 7u));
+
+      constexpr uint32_t M = static_cast<uint32_t>(FULL_DATASET_NUM_ITEMS);
+      for (uint32_t round = 0; round < static_cast<uint32_t>(NUM_DATASET_ACCESSES); ++round) {
+        // Fold the two u64 lanes that form each four-u32 mix group with one shuffle, then select the
+        // even lane representing each required group. This is exactly mg[0]^mg[3]^mg[6],
+        // mg[1]^mg[4]^mg[7], and mg[2]^mg[5], but uses 9 rather than 12 u32 subgroup exchanges.
+        const uint32_t lane_mix = static_cast<uint32_t>(mix) ^ static_cast<uint32_t>(mix >> 32);
+        const uint32_t pair_mix = lane_mix ^ mom_select_from_group(
+          sg, lane_mix, team_base + (team_lane ^ 1u));
+        const uint32_t p0 = (mom_select_from_group(sg, pair_mix, team_base + 0u) ^
+                             mom_select_from_group(sg, pair_mix, team_base + 6u) ^
+                             mom_select_from_group(sg, pair_mix, team_base + 12u)) % M;
+        const uint32_t p1 = (mom_select_from_group(sg, pair_mix, team_base + 2u) ^
+                             mom_select_from_group(sg, pair_mix, team_base + 8u) ^
+                             mom_select_from_group(sg, pair_mix, team_base + 14u)) % M;
+        const uint32_t p2 = (mom_select_from_group(sg, pair_mix, team_base + 4u) ^
+                             mom_select_from_group(sg, pair_mix, team_base + 10u) ^ round) % M;
+        const uint64_t f0 = fish_dag_ld(d_dag + static_cast<size_t>(p0) * FISH_TEAM + team_lane);
+        const uint64_t f1 = fish_dag_ld(d_dag + static_cast<size_t>(p1) * FISH_TEAM + team_lane);
+        const uint64_t f2 = fish_dag_ld(d_dag + static_cast<size_t>(p2) * FISH_TEAM + team_lane);
+        const uint32_t blo = fnv1_dev(static_cast<uint32_t>(mix), static_cast<uint32_t>(f1));
+        const uint32_t bhi = fnv1_dev(static_cast<uint32_t>(mix >> 32), static_cast<uint32_t>(f1 >> 32));
+        const uint64_t b = static_cast<uint64_t>(blo) | (static_cast<uint64_t>(bhi) << 32);
+        mix = f0 * b + (mix ^ f2);
+      }
+
+      const uint64_t m1 = mom_select_from_group(sg, mix, team_base + (team_lane | 1u));
+      if ((team_lane & 1u) == 0) {
+        const uint32_t folded = fnv1_dev(fnv1_dev(fnv1_dev(
+          static_cast<uint32_t>(mix), static_cast<uint32_t>(mix >> 32)),
+          static_cast<uint32_t>(m1)), static_cast<uint32_t>(m1 >> 32));
+        store32_le_dev(work + 2 * team_lane, folded);
+      }
+      sycl::group_barrier(it.get_group());
+      if (team_lane == 0 && active) {
+        uint8_t final_hash[32];
+        blake3_dev(final_hash, 32, work, 32);
+        if ((is_test && gid == 0) || meets_target_le_dev(final_hash, d_target))
+          store_fish_result(d_result, nonce, final_hash);
+      }
+    });
+  });
+}
+
 // ---- GPU DAG generation: compute all 37.7M dataset items into the 4.6 GB buffer (once per device) ----
 class FishDagKernel;
 static sycl::event submit_fishhash_dag_gen(
-  sycl::queue& q, MOM_BUNDLE_T& kb, const uint64_t* __restrict d_cache, uint64_t* __restrict d_dag,
+  sycl::queue& q, MomKernelBundle& kb, const uint64_t* __restrict d_cache, uint64_t* __restrict d_dag,
   uint32_t start, uint32_t count
 ) {
   constexpr unsigned WG = 64;
   const size_t global = (static_cast<size_t>(count) + WG - 1) / WG * WG;
   return q.submit([&](sycl::handler& h) {
-    MOM_USE_BUNDLE(h, kb);
+    mom_use_bundle(h, kb);
     h.parallel_for<FishDagKernel>(sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(WG)), [=](sycl::nd_item<1> it) {
       const uint32_t i = (uint32_t)it.get_global_id(0);
       if (i >= count) return;
@@ -470,17 +663,31 @@ static void build_light_cache_host(std::vector<uint64_t>& cache /* N*8 */) {
 
 class FishState {
 public:
-  sycl::device device; sycl::queue queue; std::unique_ptr<MOM_BUNDLE_T> bundle; bool shared_io;
+  sycl::device device; sycl::queue queue; std::unique_ptr<MomKernelBundle> bundle; bool shared_io;
   uint8_t* input = nullptr; uint8_t* target = nullptr; uint64_t* cache = nullptr; uint64_t* dag = nullptr; FishResult* result = nullptr;
-  unsigned input_cap = 0; bool cache_built = false; bool dag_built = false; std::mutex mutex;
+  unsigned input_cap = 0; unsigned coop_workgroup; bool cache_built = false; bool dag_built = false;
+  int karlsen_cooperative = -1;
+  std::mutex mutex;
   explicit FishState(const std::string& dev_str)
     : device(get_dev(dev_str)), queue(device, sycl::property_list{sycl::property::queue::in_order{}}),
-      shared_io(device.is_cpu() || !device.has(sycl::aspect::usm_device_allocations)) {
-    if (!device.has(sycl::aspect::usm_shared_allocations) || (!device.is_cpu() && !device.has(sycl::aspect::usm_device_allocations)))
+      shared_io(device.is_cpu() || !mom_has_usm_device(device)),
+      coop_workgroup(cooperative_workgroup(device)) {
+    if (!mom_has_usm_shared(device) || (!device.is_cpu() && !mom_has_usm_device(device)))
       throw std::string("fishhash SYCL device does not support required allocations");
-    bundle = std::make_unique<MOM_BUNDLE_T>(MOM_GET_EXEC_BUNDLE(queue.get_context()));
+    bundle = std::make_unique<MomKernelBundle>(mom_get_exec_bundle(queue.get_context()));
   }
-  ~FishState() { queue.wait_and_throw(); free_all(); }
+  static unsigned cooperative_workgroup(const sycl::device& dev) {
+    // Both CUDA compiler paths peak at 512 on the RTX 5060 Ti (3.2% over 128 for AdaptiveCpp and
+    // 5.1% for DPC++). Intel and AMD are flat-to-slower above 128. Clamp against the device limit.
+    const unsigned preferred = mom_is_cuda(dev) ? 512 : 128;
+    const unsigned fallback = sycl_default_workgroup(dev, {64, 128, 256, 512}, preferred);
+    unsigned long parsed = 0;
+    if (!mom_parse_env_ulong("MOM_FISHHASH_WORKGROUP", parsed)) return fallback;
+    for (const unsigned candidate : {64u, 128u, 256u, 512u})
+      if (parsed == candidate) return candidate;
+    return fallback;
+  }
+  ~FishState() { sycl_cleanup_noexcept("fishhash", [&] { queue.wait_and_throw(); free_all(); }); }
   template <typename T> T* alloc(size_t n) { return shared_io ? sycl::malloc_shared<T>(n, queue) : sycl::malloc_device<T>(n, queue); }
   void free_ptr(auto*& p) { if (p) sycl::free(p, queue); p = nullptr; }
   void free_all() { free_ptr(input); free_ptr(target); free_ptr(cache); free_ptr(dag); free_ptr(result); }
@@ -521,10 +728,85 @@ public:
   static uint64_t now_ms() { return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 };
 
+using FishStateMap = std::map<std::string, std::unique_ptr<FishState>>;
+
+static FishStateMap& fishhash_states() {
+  static FishStateMap* const states = new FishStateMap;
+  return *states;
+}
+
+static std::mutex& fishhash_states_mutex() {
+  static std::mutex* const mutex = new std::mutex;
+  return *mutex;
+}
+
 static FishState& fishhash_state(const std::string& dev_str) {
-  static std::mutex m; static std::map<std::string, std::unique_ptr<FishState>> states;
-  std::lock_guard<std::mutex> lock(m);
-  auto& s = states[dev_str]; if (!s) s = std::make_unique<FishState>(dev_str); return *s;
+  std::lock_guard<std::mutex> lock(fishhash_states_mutex());
+  auto& state = fishhash_states()[dev_str];
+  if (!state) state = std::make_unique<FishState>(dev_str);
+  return *state;
+}
+
+static bool select_karlsen_cooperative(
+  FishState& state, const unsigned input_size, const uint64_t start_nonce
+) {
+  if (state.karlsen_cooperative >= 0) return state.karlsen_cooperative != 0;
+
+  // CUDA and HIP have a clear cooperative winner. Generic OpenCL retains the portable scalar path;
+  // Level Zero is tuned because Arc generations differ substantially in register pressure versus
+  // subgroup-exchange cost. This measures the common kernels instead of branching on a GPU model.
+  if (mom_is_cuda(state.device) || mom_is_hip(state.device)) {
+    state.karlsen_cooperative = 1;
+    return true;
+  }
+  if (!sycl_is_level_zero_gpu(state.device)) {
+    state.karlsen_cooperative = 0;
+    return false;
+  }
+  const auto subgroup_sizes =
+    state.device.get_info<sycl::info::device::sub_group_sizes>();
+  if (std::find(subgroup_sizes.begin(), subgroup_sizes.end(), FISH_TEAM) == subgroup_sizes.end()) {
+    state.karlsen_cooperative = 0;
+    return false;
+  }
+
+  constexpr uint32_t warmup_intensity = 65536;
+  constexpr uint32_t sample_intensity = 1048576;
+  const auto run = [&](const bool cooperative, const uint32_t count) {
+    const auto begin = std::chrono::steady_clock::now();
+    const sycl::event event = cooperative
+      ? submit_karlsenhashv2_search_coop(
+          state.queue, *state.bundle, state.input, input_size, start_nonce, state.dag, count,
+          state.target, state.result, false, state.coop_workgroup)
+      : submit_karlsenhashv2_search<true>(
+          state.queue, *state.bundle, state.input, input_size, start_nonce, nullptr, state.dag, count,
+          state.target, state.result, false);
+    sycl_wait_and_throw(event, state.device);
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
+  };
+
+  // Exclude each kernel's first-launch JIT cost, then alternate order to avoid a clock/thermal bias.
+  run(false, warmup_intensity);
+  run(true, warmup_intensity);
+  double scalar_seconds = run(false, sample_intensity);
+  double cooperative_seconds = run(true, sample_intensity);
+  cooperative_seconds += run(true, sample_intensity);
+  scalar_seconds += run(false, sample_intensity);
+  state.karlsen_cooperative = cooperative_seconds < scalar_seconds ? 1 : 0;
+  const double hashes = 2.0 * sample_intensity / 1e6;
+  std::fprintf(stderr, "karlsenhashv2: selected %s search (scalar %.2f, cooperative %.2f MH/s)\n",
+    state.karlsen_cooperative ? "cooperative" : "scalar",
+    hashes / scalar_seconds, hashes / cooperative_seconds);
+  return state.karlsen_cooperative != 0;
+}
+
+void fishhash_cleanup_states() noexcept {
+  try {
+    std::lock_guard<std::mutex> lock(fishhash_states_mutex());
+    fishhash_states().clear();
+  } catch (...) {
+    std::fprintf(stderr, "fishhash: ordered SYCL cleanup failed\n");
+  }
 }
 
 } // namespace mom_fishhash
@@ -540,8 +822,15 @@ int fishhash(
   FishState& state = fishhash_state(dev_str);
   std::lock_guard<std::mutex> lock(state.mutex);
   state.ensure_io(input_size);
-  if (is_test) state.ensure_cache(!is_benchmark);   // lazy light-cache path (no 4.6 GiB alloc)
-  else state.ensure_dag(!is_benchmark);             // mining/bench: build the full DAG once + gather
+  // MOM_FISHHASH_FULL_TEST makes the normal one-nonce vector build/use the full DAG, so the
+  // production cooperative kernel can be checked bit-exactly without slowing the default light-cache
+  // vector. The cooperative search is the GPU default; MOM_FISHHASH_COOP=0 retains the scalar path
+  // for diagnosis.
+  const bool full_test = is_test && std::getenv("MOM_FISHHASH_FULL_TEST") != nullptr;
+  const char* const coop_env = std::getenv("MOM_FISHHASH_COOP");
+  const bool cooperative = state.device.is_gpu() && !(coop_env && coop_env[0] == '0');
+  if (is_test && !full_test) state.ensure_cache(!is_benchmark);  // lazy path: no 4.6-GiB allocation
+  else state.ensure_dag(!is_benchmark);                          // mining/bench or explicit full test
 
   // Iron Fish (180B header) uses nonce@0 big-endian + BE target; the offline vector uses nonce@32 LE.
   const bool ironfish = input_size >= 140;
@@ -554,13 +843,21 @@ int fishhash(
   else { state.queue.memcpy(state.input, input, input_size); state.queue.memcpy(state.target, target, HASH_LEN); }
   std::memset(state.result, 0, sizeof(FishResult));
 
-  sycl_wait_and_throw(
-    is_test
-      ? submit_fishhash_search<false>(state.queue, *state.bundle, state.input, input_size, start_nonce,
-          state.cache, nullptr, intensity, state.target, state.result, is_test, nonce_off, nonce_be, target_be)
-      : submit_fishhash_search<true>(state.queue, *state.bundle, state.input, input_size, start_nonce,
-          nullptr, state.dag, intensity, state.target, state.result, is_test, nonce_off, nonce_be, target_be),
-    state.device);
+  sycl::event search;
+  if (is_test && !full_test) {
+    search = submit_fishhash_search<false>(state.queue, *state.bundle, state.input, input_size, start_nonce,
+      state.cache, nullptr, intensity, state.target, state.result, is_test,
+      nonce_off, nonce_be, target_be);
+  } else if (cooperative) {
+    search = submit_fishhash_search_coop(state.queue, *state.bundle, state.input, input_size, start_nonce,
+      state.dag, intensity, state.target, state.result, is_test,
+      nonce_off, nonce_be, target_be, state.coop_workgroup);
+  } else {
+    search = submit_fishhash_search<true>(state.queue, *state.bundle, state.input, input_size, start_nonce,
+      nullptr, state.dag, intensity, state.target, state.result, is_test,
+      nonce_off, nonce_be, target_be);
+  }
+  sycl_wait_and_throw(search, state.device);
 
   static const bool perf_log = std::getenv("MOM_FISHHASH_PERF") != nullptr;
   if (perf_log && !is_test) {
@@ -588,21 +885,30 @@ int karlsenhashv2(
   FishState& state = fishhash_state(dev_str);  // shares the FishHash 4.6 GB DAG (identical seed/params)
   std::lock_guard<std::mutex> lock(state.mutex);
   state.ensure_io(input_size);
-  if (is_test) state.ensure_cache(!is_benchmark);
+  const bool full_test = is_test && std::getenv("MOM_FISHHASH_FULL_TEST") != nullptr;
+  const char* const coop_env = std::getenv("MOM_FISHHASH_COOP");
+  if (is_test && !full_test) state.ensure_cache(!is_benchmark);
   else state.ensure_dag(!is_benchmark);
 
   uint64_t start_nonce = 0; std::memcpy(&start_nonce, input + 72, sizeof(start_nonce));  // nonce@72 LE
   if (state.shared_io) { std::memcpy(state.input, input, input_size); std::memcpy(state.target, target, HASH_LEN); }
   else { state.queue.memcpy(state.input, input, input_size); state.queue.memcpy(state.target, target, HASH_LEN); }
+  const bool cooperative = state.device.is_gpu() &&
+    (coop_env ? coop_env[0] != '0' : (!is_test && select_karlsen_cooperative(state, input_size, start_nonce)));
   std::memset(state.result, 0, sizeof(FishResult));
 
-  sycl_wait_and_throw(
-    is_test
-      ? submit_karlsenhashv2_search<false>(state.queue, *state.bundle, state.input, input_size, start_nonce,
-          state.cache, nullptr, intensity, state.target, state.result, is_test)
-      : submit_karlsenhashv2_search<true>(state.queue, *state.bundle, state.input, input_size, start_nonce,
-          nullptr, state.dag, intensity, state.target, state.result, is_test),
-    state.device);
+  sycl::event search;
+  if (is_test && !full_test) {
+    search = submit_karlsenhashv2_search<false>(state.queue, *state.bundle, state.input, input_size,
+      start_nonce, state.cache, nullptr, intensity, state.target, state.result, is_test);
+  } else if (cooperative) {
+    search = submit_karlsenhashv2_search_coop(state.queue, *state.bundle, state.input, input_size,
+      start_nonce, state.dag, intensity, state.target, state.result, is_test, state.coop_workgroup);
+  } else {
+    search = submit_karlsenhashv2_search<true>(state.queue, *state.bundle, state.input, input_size,
+      start_nonce, nullptr, state.dag, intensity, state.target, state.result, is_test);
+  }
+  sycl_wait_and_throw(search, state.device);
 
   static const bool perf_log = std::getenv("MOM_KARLSEN_PERF") != nullptr;
   if (perf_log && !is_test) {
