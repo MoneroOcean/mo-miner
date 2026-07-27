@@ -2,7 +2,7 @@
 //
 // BeamHash III (Beam) GPU solver -- Wagner bucket-collision (Equihash-family, k=5).
 //
-// NOT stock Equihash: reuses the equihash125_4.cpp Wagner infra (bucket-sort, slot-shrink, Cantor tree
+// NOT stock Equihash: reuses the zelhash.cpp Wagner infra (bucket-sort, slot-shrink, Cantor tree
 // recovery, 25-bit CompressArray pack), but the row generation and the per-round mixing are different:
 //   gen      : 2^25 leaves; each leaf's 448 work bits = 7 u64 = SipHash-2-4(key=IndividualWork(4 u64),
 //              msg=(index<<3)+i) for i=0..6.  IndividualWork = BLAKE2b(prework||nonce||extranonce,
@@ -85,7 +85,7 @@ static constexpr uint8_t B2B_SIGMA[12][16] = {
   { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15},
   {14,10, 4, 8, 9,15,13, 6, 1,12, 0, 2,11, 7, 5, 3},
 };
-inline uint64_t b2b_rotr64(uint64_t x, unsigned n) { return (x >> n) | (x << (64 - n)); }
+inline uint64_t b2b_rotr64(uint64_t x, unsigned n) { return mo_rotate(x, uint64_t{64 - n}); }
 inline uint64_t b2b_load64(const uint8_t* p) {
   return (uint64_t)p[0] | ((uint64_t)p[1] << 8) | ((uint64_t)p[2] << 16) | ((uint64_t)p[3] << 24) |
          ((uint64_t)p[4] << 32) | ((uint64_t)p[5] << 40) | ((uint64_t)p[6] << 48) | ((uint64_t)p[7] << 56);
@@ -149,7 +149,7 @@ static void individual_work(const uint8_t blob[BLOB_BYTES], uint64_t prePow[4]) 
 // SipHash-2-4 (device + host). prePow[0..3] are v0..v3 directly (already xored into the magic by the
 // blake2b output, per beam). nonce = the 64-bit counter (index<<3)+i. Mirrors the JS oracle exactly.
 // ===========================================================================================
-inline uint64_t rotl64(uint64_t x, unsigned b) { return (x << b) | (x >> (64 - b)); }
+inline uint64_t rotl64(uint64_t x, unsigned b) { return mo_rotate(x, static_cast<uint64_t>(b)); }
 
 inline uint64_t siphash24(uint64_t s0, uint64_t s1, uint64_t s2, uint64_t s3, uint64_t nonce) {
   uint64_t v0 = s0, v1 = s1, v2 = s2, v3 = s3;
@@ -282,7 +282,7 @@ static constexpr uint32_t SHA256_K[64] = {
   0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
   0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2,
 };
-inline uint32_t sha256_rotr(uint32_t x, unsigned n) { return (x >> n) | (x << (32 - n)); }
+inline uint32_t sha256_rotr(uint32_t x, unsigned n) { return mo_rotate(x, uint32_t{32 - n}); }
 
 static void sha256(const uint8_t* msg, size_t len, uint8_t out[32]) {
   uint32_t h[8] = { 0x6a09e667u,0xbb67ae85u,0x3c6ef372u,0xa54ff53au,
@@ -377,7 +377,7 @@ static bool beam_target_reached(const uint8_t hash_be[32], uint32_t packed) {
 
 using namespace mom_beamhash3;
 
-// BeamHash III entrypoint. ABI matches equihash125_4 (c29-like out-of-band solution count).
+// BeamHash III entrypoint. ABI matches zelhash (c29-like out-of-band solution count).
 //   input  : prework(32) || nonce(8) || extranonce(4) = 44-byte blob.
 //   is_test (default): M1 gen-validation -- dumps the first BEAMHASH3_TEST_ROWS raw 448-bit leaf rows
 //            (7 LE u64 words each) into solution_out for the JS-oracle diff. MOM_BEAMHASH3_SOLVE switches
@@ -421,12 +421,104 @@ int beamhash3(
   static const bool prof = std::getenv("MOM_BEAMHASH3_PROF") != nullptr;
   const uint64_t t_start = BeamState::now_ms();
   sycl::queue& q = state.queue;
+  const bool cuda_layout = mom_is_cuda(state.device);
+  const bool level_zero_layout = sycl_is_level_zero_gpu(state.device);
+  // The fused non-CUDA solve has no host-sized handoff between rounds. Its queue is in-order, so in
+  // the hot path submit the whole chain and poll only its tail instead of synchronizing the host after
+  // every memset/collide. CUDA normally reads each output count to size the next coalesced scatter;
+  // the Windows CUDA path over-dispatches by the 3.125%-padded allocation bound and lets that scatter
+  // consume the preceding kernel's device-written count, removing the same host completion points.
+  // This closes a large Windows driver-wait gap; Linux keeps its count-sized scatter because the
+  // production AdaptiveCpp path gains less than 1%. Profiling stays synchronous.
+  const bool async_fused = !cuda_layout && !prof;
+  static const bool cuda_async_enabled = [] {
+    const char* value = std::getenv("MOM_BEAMHASH3_CUDA_ASYNC");
+#if defined(_WIN32)
+    return !value || (std::strcmp(value, "0") && std::strcmp(value, "false"));
+#else
+    return value && std::strcmp(value, "0") && std::strcmp(value, "false");
+#endif
+  }();
+  const bool async_cuda = cuda_layout && !prof && cuda_async_enabled;
+  const bool async_pipeline = async_fused || async_cuda;
+  sycl::event fused_tail;
+#if !defined(MOM_SYCL_PORTABLE_OPENCL)
+  const bool compact_layout = beam_compact_enabled(state.device);
+  if (compact_layout) {
+    // Packed Beam rows alternate directly between two arenas through level 3. Level 4 reuses arena
+    // zero as 16-byte work+parent records while arena one retains the level-3 recovery trees; this
+    // removes the last round's otherwise-dead 48-byte tree traffic. The in-order queue makes every
+    // clear/round dependency explicit without a host synchronization point.
+    *state.cand_count = 0;
+    // The collision-list SLM footprint, rather than threads, caps resident workgroups. Once level 4
+    // became a thin record, WG256's faster final traversal slightly outweighs WG128's seed advantage
+    // on Blackwell (32.92 vs 32.86 Sol/s, matched three-sample medians). HIP retains WG512.
+    const unsigned compact_preferred = mom_is_hip(state.device) ? 512 : 256;
+    unsigned compact_wg = sycl_default_workgroup(state.device, {128, 256, 512}, compact_preferred);
+    { unsigned long parsed = 0;
+      if (mom_parse_env_ulong("MOM_BEAMHASH3_COMPACT_WG", parsed) && parsed >= 16)
+        compact_wg = (unsigned)std::min<unsigned long>(parsed, 512); }
+    static unsigned compact_profile_call = 0;
+    // AdaptiveCpp JITs each template specialization during the first solve. Profile the following
+    // steady solve so compilation is never mistaken for GPU execution time.
+    const bool compact_profile = prof && compact_profile_call++ == 1;
+    uint64_t compact_stage_start = compact_profile ? BeamState::now_ms() : 0;
+    auto compact_stage_done = [&](const char* name, sycl::event event) {
+      if (!compact_profile) return;
+      sycl_wait_and_throw(event, state.device);
+      const uint64_t now = BeamState::now_ms();
+      std::fprintf(stderr, "beamhash3 compact %s: %llu ms\n", name,
+                   (unsigned long long)(now - compact_stage_start));
+      std::fflush(stderr);
+      compact_stage_start = now;
+    };
+    q.memset(state.compact_ns[0], 0, (size_t)COMPACT_NBUCKETS * sizeof(uint32_t));
+    auto compact_event = submit_compact_seed(q, *state.bundle, state.prePow, state.compact[0],
+                                             state.compact_ns[0], compact_wg);
+    compact_stage_done("seed", compact_event);
+    q.memset(state.compact_ns[1], 0, (size_t)COMPACT_NBUCKETS * sizeof(uint32_t));
+    compact_event = submit_compact_round<1>(q, *state.bundle, state.compact[0], state.compact_ns[0],
+                                            state.compact[1], state.compact_ns[1], state.cand,
+                                            state.cand_count, BeamState::CAND_CAP, compact_wg);
+    compact_stage_done("round 1", compact_event);
+    q.memset(state.compact_ns[0], 0, (size_t)COMPACT_NBUCKETS * sizeof(uint32_t));
+    compact_event = submit_compact_round<2>(q, *state.bundle, state.compact[1], state.compact_ns[1],
+                                            state.compact[0], state.compact_ns[0], state.cand,
+                                            state.cand_count, BeamState::CAND_CAP, compact_wg);
+    compact_stage_done("round 2", compact_event);
+    q.memset(state.compact_ns[1], 0, (size_t)COMPACT_NBUCKETS * sizeof(uint32_t));
+    compact_event = submit_compact_round<3>(q, *state.bundle, state.compact[0], state.compact_ns[0],
+                                            state.compact[1], state.compact_ns[1], state.cand,
+                                            state.cand_count, BeamState::CAND_CAP, compact_wg);
+    compact_stage_done("round 3", compact_event);
+    q.memset(state.compact_ns[0], 0, (size_t)COMPACT_NBUCKETS * sizeof(uint32_t));
+    compact_event = submit_compact_round<4>(q, *state.bundle, state.compact[1], state.compact_ns[1],
+                                            state.compact[0], state.compact_ns[0], state.cand,
+                                            state.cand_count, BeamState::CAND_CAP, compact_wg);
+    compact_stage_done("round 4", compact_event);
+    auto compact_tail = submit_compact_final_thin(
+      q, *state.bundle, reinterpret_cast<const BeamLevel4Row*>(state.compact[0]),
+      state.compact_ns[0], state.compact[1], state.cand, state.cand_count,
+      BeamState::CAND_CAP, compact_wg);
+    compact_stage_done("round 5", compact_tail);
+    sycl_wait_and_throw(compact_tail, state.device);
+    if (log) { std::fprintf(stderr, "beamhash3 compact solve candidates=%u (%llu ms)\n",
+      std::min<uint32_t>(*state.cand_count, BeamState::CAND_CAP),
+      (unsigned long long)(BeamState::now_ms() - t_start)); std::fflush(stderr); }
+  } else
+#endif
+  {
 
-  // Collide WG=640: with the SLM-staged collision keys the kernel is no longer DRAM-bound on the
-  // collision field, so a larger WG (more slots resident per bucket SLM, better latency hiding) wins.
-  // Pre-gen-fusion L4 sweep: 128=276 256=290 512=257 1024=272 -> 512. After gen fusion (round-1 scatter
-  // regenerates leaves) the whole-solve sweep shifted: 384=262 512=232 640=228 768=228 ms -> 640 optimal.
-  unsigned wg = 640;
+  // With SLM-staged collision keys, a larger WG hides the wide-record latency. Packed/fused whole-
+  // solve A/Bs on Arc B580 repeated at 11.94 H/s for WG1024 versus 11.39--11.40 for WG640 (+4.8%).
+  // On RTX 5060 Ti, DPC++ CUDA's 150-solve stage mean improves 172.7 -> 161.8 ms at WG768, while
+  // AdaptiveCpp peaks at WG640 (151.6 ms); HIP remains flat around its WG640 default.
+  unsigned preferred_wg = sycl_is_level_zero_gpu(state.device) ? 1024 : 640;
+#if !defined(MOM_SYCL_ADAPTIVECPP)
+  if (mom_is_cuda(state.device)) preferred_wg = 768;
+#endif
+  unsigned wg = sycl_default_workgroup(
+    state.device, {128, 256, 384, 512, 640, 768, 1024}, preferred_wg);
   { unsigned long parsed = 0; if (mom_parse_env_ulong("MOM_BEAMHASH3_WORKGROUP", parsed) && parsed >= 16)
       wg = (unsigned)std::min<unsigned long>(parsed, 1024); }
   unsigned scatter_wg = 128;
@@ -439,42 +531,101 @@ int beamhash3(
   // in-kernel (slot == leaf index), so round 1's "input count" is simply all 2^25 leaves.
   state.mixed_count[0] = (uint32_t)NUM_ENTRIES;
 
-  // ALL levels (1..5) are transient and share ONE scratch buffer. Level-0 (the leaves) is never
-  // materialized -- round-1 scatter regenerates the leaf at slot==index. Recovery returns the slot
-  // directly (leaf index == slot). Within a round, scatter fully drains the input into the bucket
-  // arena (group_barrier between kernels), then collide reads ONLY the bucket arena and overwrites
-  // scratch with level R. So a single scratch suffices for the whole pipeline.
+  // Level 0 is never materialized: round-1 scatter regenerates each leaf at slot==index. Thereafter,
+  // collision R immediately applies mix R+1 and advances into the opposite parity bucket arena. This
+  // preserves the linear oslot as the tree-log source ID while eliminating levels 1..4's linear arena.
   const uint64_t t_gen0 = prof ? BeamState::now_ms() : 0;
-  if (prof) { std::fprintf(stderr, "beamhash3 gen: fused into round-1 scatter (%llu ms)\n",
+  auto gen_clear = q.memset(state.bucket_ns[0], 0, (size_t)NBUCKETS * sizeof(uint32_t));
+  if (!async_pipeline) sycl_wait_and_throw(gen_clear, state.device);
+  auto gen_scatter = submit_mix_scatter<1>(q, *state.bundle, nullptr, (uint32_t)NUM_ENTRIES,
+                                           state.bucket[0], state.bucket_ns[0], scatter_wg,
+                                           state.prePow);
+  if (!async_pipeline) sycl_wait_and_throw(gen_scatter, state.device);
+  if (prof) { std::fprintf(stderr, "beamhash3 gen/mix/scatter r1: %llu ms\n",
     (unsigned long long)(BeamState::now_ms() - t_gen0)); std::fflush(stderr); }
 
-  auto level_buf = [&](unsigned /*L*/) -> uint32_t* { return state.scratch[0]; };
-
-  // Rounds 1..5: mix-scatter then collide.
+  // Rounds 1..4 collide and advance directly into the other bucket arena. Round 5 writes only the
+  // compact final merged word. Each output counter remains a linear source-ID namespace for tree logs.
   auto do_round = [&](auto Rconst) {
     constexpr unsigned R = decltype(Rconst)::value;
     constexpr unsigned L = R - 1;
-    const uint32_t in_count = std::min<uint32_t>(state.mixed_count[L], (uint32_t)MIXED_CAP);
-    sycl_wait_and_throw(q.memset(state.bucket_ns, 0, (size_t)NBUCKETS * sizeof(uint32_t)), state.device);
-    const uint64_t t_sc = prof ? BeamState::now_ms() : 0;
-    sycl_wait_and_throw(submit_mix_scatter<R>(q, *state.bundle, level_buf(L), in_count,
-                                              state.bucket, state.bucket_ns, scatter_wg, state.prePow), state.device);
+    constexpr unsigned CUR = L & 1u;
+    constexpr unsigned NEXT = R & 1u;
+    uint32_t in_count = 0;
+    if (!async_pipeline)
+      in_count = std::min<uint32_t>(state.mixed_count[L], (uint32_t)MIXED_CAP);
+    if constexpr (R < NUM_ROUNDS) if (!cuda_layout) {
+      auto clear = q.memset(state.bucket_ns[NEXT], 0, (size_t)NBUCKETS * sizeof(uint32_t));
+      if (!async_fused) sycl_wait_and_throw(clear, state.device);
+    }
     const uint64_t t_co = prof ? BeamState::now_ms() : 0;
-    sycl_wait_and_throw(submit_collide<R>(q, *state.bundle, state.bucket, state.bucket_ns,
-                                          level_buf(R), state.mixed_count + R, state.tree[R], wg), state.device);
-    if (prof || log) {
+    uint64_t t_collide_done = 0;
+    if (cuda_layout) {
+      // NVIDIA keeps a linear/coalesced handoff: the direct fused random wide writes regress by
+      // 8--33% there. One reusable max-stride bucket and one reusable linear arena still fit in
+      // 6.76 GiB, while preserving the packed source-ID representation and fused leaf generation.
+      auto collide = submit_collide<R, false, false>(
+        q, *state.bundle, state.bucket[0], state.bucket_ns[0], state.linear_mixed,
+        state.mixed_count + R, state.tree[R], nullptr, nullptr, wg);
+      if (async_cuda) fused_tail = collide;
+      else sycl_wait_and_throw(collide, state.device);
+      t_collide_done = prof ? BeamState::now_ms() : 0;
+      if constexpr (R < NUM_ROUNDS) {
+        auto clear = q.memset(state.bucket_ns[0], 0, (size_t)NBUCKETS * sizeof(uint32_t));
+        if (async_cuda) fused_tail = clear;
+        else sycl_wait_and_throw(clear, state.device);
+        const uint32_t out_count = async_cuda ? (uint32_t)MIXED_CAP
+          : std::min<uint32_t>(state.mixed_count[R], (uint32_t)MIXED_CAP);
+        auto scatter = async_cuda ? submit_mix_scatter<R + 1, true>(
+          q, *state.bundle, state.linear_mixed, out_count, state.bucket[0], state.bucket_ns[0],
+          scatter_wg, state.prePow, state.mixed_count + R)
+          : submit_mix_scatter<R + 1, false>(
+          q, *state.bundle, state.linear_mixed, out_count, state.bucket[0], state.bucket_ns[0],
+          scatter_wg, state.prePow, nullptr);
+        if (async_cuda) fused_tail = scatter;
+        else sycl_wait_and_throw(scatter, state.device);
+      }
+    } else {
+      if (level_zero_layout) {
+        auto collide = submit_collide<R, true, true>(
+          q, *state.bundle, state.bucket[CUR], state.bucket_ns[CUR], state.final_mixed,
+          state.mixed_count + R, state.tree[R],
+          R < NUM_ROUNDS ? state.bucket[NEXT] : nullptr,
+          R < NUM_ROUNDS ? state.bucket_ns[NEXT] : nullptr, wg);
+        if (async_fused) fused_tail = collide;
+        else sycl_wait_and_throw(collide, state.device);
+      } else {
+        auto collide = submit_collide<R, true, false>(
+          q, *state.bundle, state.bucket[CUR], state.bucket_ns[CUR], state.final_mixed,
+          state.mixed_count + R, state.tree[R],
+          R < NUM_ROUNDS ? state.bucket[NEXT] : nullptr,
+          R < NUM_ROUNDS ? state.bucket_ns[NEXT] : nullptr, wg);
+        if (async_fused) fused_tail = collide;
+        else sycl_wait_and_throw(collide, state.device);
+      }
+    }
+    if (!async_pipeline && (prof || log)) {
       const uint32_t out = std::min<uint32_t>(state.mixed_count[R], (uint32_t)MIXED_CAP);
       if (prof) {
         const uint64_t t_end = BeamState::now_ms();
-        // Peak bucket demand this round (bucket_ns keeps counting past NSLOTS) -> NSLOTS sizing headroom.
+        // Peak input-bucket demand (bucket_ns keeps counting past NSLOTS) -> NSLOTS sizing headroom.
         uint32_t maxns = 0;
         { std::vector<uint32_t> ns(NBUCKETS);
-          q.memcpy(ns.data(), state.bucket_ns, (size_t)NBUCKETS * sizeof(uint32_t)).wait();
+          q.memcpy(ns.data(), state.bucket_ns[cuda_layout ? 0 : CUR],
+                   (size_t)NBUCKETS * sizeof(uint32_t)).wait();
           for (uint32_t v : ns) if (v > maxns) maxns = v; }
-        std::fprintf(stderr, "beamhash3 round %u: in=%u out=%u  scatter=%llu ms collide=%llu ms  maxbucket=%u/%u%s\n",
-          R, in_count, out, (unsigned long long)(t_co - t_sc), (unsigned long long)(t_end - t_co),
-          maxns, (unsigned)NSLOTS,
-          state.mixed_count[R] > MIXED_CAP ? " (OVERFLOW)" : "");
+        if (cuda_layout) {
+          std::fprintf(stderr,
+            "beamhash3 round %u: in=%u out=%u  collide=%llu ms scatter=%llu ms  maxbucket=%u/%u%s\n",
+            R, in_count, out, (unsigned long long)(t_collide_done - t_co),
+            (unsigned long long)(t_end - t_collide_done), maxns, (unsigned)NSLOTS,
+            state.mixed_count[R] > MIXED_CAP ? " (OVERFLOW)" : "");
+        } else {
+          std::fprintf(stderr,
+            "beamhash3 round %u: in=%u out=%u  collide/advance=%llu ms  maxbucket=%u/%u%s\n",
+            R, in_count, out, (unsigned long long)(t_end - t_co), maxns, (unsigned)NSLOTS,
+            state.mixed_count[R] > MIXED_CAP ? " (OVERFLOW)" : "");
+        }
       } else {
         std::fprintf(stderr, "beamhash3 round %u: in=%u out=%u%s\n", R, in_count, out,
           state.mixed_count[R] > MIXED_CAP ? " (OVERFLOW)" : "");
@@ -487,14 +638,27 @@ int beamhash3(
   do_round(std::integral_constant<unsigned, 3>{});
   do_round(std::integral_constant<unsigned, 4>{});
   do_round(std::integral_constant<unsigned, 5>{});
+  // mixed_count[5] is shared USM; complete the queued chain before the host sizes the final launch.
+  if (async_pipeline) sycl_wait_and_throw(fused_tail, state.device);
+  if (async_pipeline && log) {
+    for (unsigned R = 1; R <= NUM_ROUNDS; ++R) {
+      const uint32_t in = std::min<uint32_t>(state.mixed_count[R - 1], (uint32_t)MIXED_CAP);
+      const uint32_t out = std::min<uint32_t>(state.mixed_count[R], (uint32_t)MIXED_CAP);
+      std::fprintf(stderr, "beamhash3 round %u: in=%u out=%u%s\n", R, in, out,
+        state.mixed_count[R] > MIXED_CAP ? " (OVERFLOW)" : "");
+    }
+    std::fflush(stderr);
+  }
 
   // Final: level-5 survivors with merged 24-bit == 0 -> walk tree -> 32 distinct leaf indices.
   // (Leaf index == level-0 slot; recovery needs only the tree[] logs.)
   BeamLevels lv;
   for (unsigned L = 0; L <= NUM_ROUNDS; ++L) lv.tree[L] = state.tree[L];
   const uint32_t fin_count = std::min<uint32_t>(state.mixed_count[NUM_ROUNDS], (uint32_t)MIXED_CAP);
-  sycl_wait_and_throw(submit_final(q, *state.bundle, level_buf(NUM_ROUNDS), fin_count, lv,
+  sycl_wait_and_throw(submit_final(q, *state.bundle,
+                                   cuda_layout ? state.linear_mixed : state.final_mixed, fin_count, lv,
                                    state.cand, state.cand_count, BeamState::CAND_CAP), state.device);
+  }
 
   const uint32_t cand_count = std::min<uint32_t>(*state.cand_count, BeamState::CAND_CAP);
   if (log) { std::fprintf(stderr, "beamhash3 candidates=%u (%llu ms)\n", cand_count,
