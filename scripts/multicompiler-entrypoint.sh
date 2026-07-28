@@ -180,6 +180,6 @@ export MOM_NATIVE_PATH_LAUNCHER_DEFAULT="$MOM_NATIVE_PATH"
 # A fresh checkout has no host node_modules. Keep `./r.sh npm test` self-contained without making
 # ordinary miner/build commands pay for a package-registry check.
 if [ "${1:-}" = npm ] && [ ! -x node_modules/.bin/eslint ]; then
-  npm install --no-package-lock --ignore-scripts
+  npm ci --ignore-scripts
 fi
 exec "$@"

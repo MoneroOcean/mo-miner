@@ -1,11 +1,18 @@
 # Windows multi-compiler development image
 
-The Windows development environment is one consolidated qcow2 overlay,
-`win-mom-dev.qcow2`, backed directly by the GPU-driver layer and recreated by running the repository-owned
-`scripts\install-dev.bat -Component all`. It contains all compiler-side dependencies and is the
-default source-build base for `~/win/run.sh`; `--release` still selects the driver-only base. The host
-VM helper owns only Windows installation, drivers, passthrough, and layer lifecycle—miner/compiler
-provisioning lives in this repository.
+The Windows development environment is one standalone consolidated qcow2 image,
+`win-mom-dev.qcow2`. Recreate it from the repository root with:
+
+```bash
+~/win/run.sh --rebuild-dev scripts/install-dev.bat -- -Component all -Jobs 8
+```
+
+The host helper creates a temporary child of the GPU-driver layer, runs the explicitly supplied
+repository installer, validates and flattens the result, then atomically replaces the development
+image. It contains all compiler-side dependencies and is the default source-build base for
+`~/win/run.sh`; `--release` still selects the driver-only base. The host VM helper owns only Windows
+installation, drivers, passthrough, and layer lifecycle—miner/compiler provisioning lives in this
+repository.
 The helper's default is a cold-present `GPU_GROUP=all` VM with Arc, NVIDIA, and AMD attached together,
 which lets one build feed consecutive cross-vendor gates without reboot gaps. Set
 `GPU_GROUP=intel|nvidia|amd` to isolate a vendor while diagnosing it. For packaging, cleanup, and
@@ -73,7 +80,7 @@ Release builds always discard a copied `build/` tree before compiling, preventin
 from surviving an incremental Windows build. Packaging computes each worker's DLL closure separately.
 The DPC++ release snapshot contains only its worker and production runtimes: compiler executables and
 debug adapters are stripped even when packaging an older cached build directory.
-`kawpow_device.inc` is copied beside the isolated DPC++ worker because the production CUDA
+`sycl/kawpow/{device,keccak}.inc` is copied beside the isolated DPC++ worker because the production CUDA
 source-JIT resolves it relative to the loaded module.
 The AMD worker additionally carries the HIPRTC-builtins and versioned COMGR DLL used by AdaptiveCpp's
 HIP backend; `amdhip64_7.dll` deliberately comes from the installed display driver, because loading a bundled

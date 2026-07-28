@@ -63,7 +63,7 @@ Remove-Item -Recurse -Force release, release-build, $Archive -ErrorAction Silent
 New-Item -ItemType Directory -Force $packageDir, $libsDir, release-build | Out-Null
 
 $bundlePath = (Resolve-Path release-build).Path + "\mom.bundle.cjs"
-npx --yes esbuild@0.28.0 mom.js `
+npx --no-install esbuild mom.js `
   --bundle `
   --platform=node `
   --format=cjs `
@@ -284,12 +284,14 @@ if ($hasMultiCompiler) {
 # Combined (Intel+NVIDIA) build: the kawpow CUDA source-JIT reads kawpow_device.inc beside the module at
 # runtime (else it falls back to the slower AOT kernel). Ship it whenever the source checkout has it;
 # Intel-only packages ignore the extra file.
-if (Test-Path "sycl/kawpow_device.inc") {
+if (Test-Path "sycl/kawpow/device.inc") {
   if ($hasMultiCompiler) {
     # The CUDA source-JIT locates this relative to the loaded DPC++ sycl.dll.
-    Copy-Item "sycl/kawpow_device.inc" (Join-Path $libsDir 'dpcpp')
+    Copy-Item "sycl/kawpow/device.inc" (Join-Path $libsDir 'dpcpp\kawpow_device.inc')
+    Copy-Item "sycl/kawpow/keccak.inc" (Join-Path $libsDir 'dpcpp\kawpow_keccak.inc')
   } else {
-    Copy-Item "sycl/kawpow_device.inc" "$libsDir/"
+    Copy-Item "sycl/kawpow/device.inc" (Join-Path $libsDir 'kawpow_device.inc')
+    Copy-Item "sycl/kawpow/keccak.inc" (Join-Path $libsDir 'kawpow_keccak.inc')
   }
 }
 $entryPaths = @("$packageDir/mom-node.exe")

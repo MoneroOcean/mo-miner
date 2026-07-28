@@ -297,16 +297,16 @@
       "win_delay_load_hook": "false",
       "sources": [
         "sycl/lib.cpp",
-        "sycl/ethash.cpp",
-        "sycl/etchash.cpp",
-        "sycl/autolykos2.cpp",
-        "sycl/pearlhash.cpp",
-        "sycl/c29.cpp",
-        "sycl/cn_gpu.cpp",
-        "sycl/kawpow.cpp",
-        "sycl/fishhash.cpp",
-        "sycl/zelhash.cpp",
-        "sycl/beamhash3.cpp"
+        "sycl/etchash/ethash.cpp",
+        "sycl/etchash/etchash.cpp",
+        "sycl/autolykos2/autolykos2.cpp",
+        "sycl/pearlhash/pearlhash.cpp",
+        "sycl/c29/c29.cpp",
+        "sycl/cn_gpu/cn_gpu.cpp",
+        "sycl/kawpow/kawpow.cpp",
+        "sycl/fishhash/fishhash.cpp",
+        "sycl/zelhash/zelhash.cpp",
+        "sycl/beamhash3/beamhash3.cpp"
       ],
       "include_dirs": [
         "xmrig"
@@ -329,7 +329,7 @@
             }
           },
           "sources": [
-            "sycl/blake2b.cpp",
+            "sycl/c29/blake2b.cpp",
             "xmrig/crypto/randomx/blake2/blake2b.c",
             "xmrig/base/crypto/keccak.cpp",
             "xmrig/base/crypto/sha3.cpp"
@@ -380,10 +380,10 @@
               # -fsycl-targets=spir64,<cuda archs>; the flags here are the shared ones. MOM_SYCL_HAS_CUDA
               # compiles the CUDA host paths (pearlhash mma.sync, kawpow JIT); __NVPTX__ gates device code
               # per pass. Intel pearlhash keeps its full-speed ESIMD path, but ESIMD can't share a
-              # -fsycl-targets with nvptx, so it is compiled spir64-only in the separate pearlhash_esimd.cpp
+              # -fsycl-targets with nvptx, so it is compiled spir64-only in the separate pearlhash/esimd.cpp
               # TU (the wrapper gives that file -fsycl-targets=spir64) and linked into the same binary;
               # MOM_PEARLHASH_HAS_ESIMD tells pearlhash.cpp to call that external search_esimd.
-              "sources": [ "sycl/pearlhash_esimd.cpp" ],
+              "sources": [ "sycl/pearlhash/esimd.cpp" ],
               "cflags_cc!": [ "-std=gnu++20" ],
               "cflags+": [
                 "-std=c++20 -O3 -ffp-contract=off -fsycl -fsycl-embed-ir -DNDEBUG -DMOM_SYCL_HAS_CUDA -DMOM_PEARLHASH_HAS_ESIMD"

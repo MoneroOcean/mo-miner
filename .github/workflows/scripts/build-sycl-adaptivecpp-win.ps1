@@ -68,12 +68,25 @@ $common = @('--acpp-targets=generic','-std=c++20','-O3','-ffp-contract=off','-DN
   '-DMOM_SYCL_BUILD','-DMOM_SYCL_ADAPTIVECPP') + $backendDefines + @('-DNOMINMAX',
   '-DWIN32_LEAN_AND_MEAN','-fno-strict-aliasing',"-I$(Join-Path $RepoRoot 'xmrig')")
 if ($Backend -eq 'hip') { $common += '-D__HIP_PLATFORM_AMD__', "-I$HipPath\include" }
-$sources = @('lib','ethash','etchash','autolykos2','pearlhash','c29','cn_gpu','kawpow',
-  'fishhash','zelhash','beamhash3','blake2b')
+$sources = [ordered]@{
+  lib         = 'sycl\lib.cpp'
+  ethash      = 'sycl\etchash\ethash.cpp'
+  etchash     = 'sycl\etchash\etchash.cpp'
+  autolykos2  = 'sycl\autolykos2\autolykos2.cpp'
+  pearlhash   = 'sycl\pearlhash\pearlhash.cpp'
+  c29         = 'sycl\c29\c29.cpp'
+  cn_gpu      = 'sycl\cn_gpu\cn_gpu.cpp'
+  kawpow      = 'sycl\kawpow\kawpow.cpp'
+  fishhash    = 'sycl\fishhash\fishhash.cpp'
+  zelhash     = 'sycl\zelhash\zelhash.cpp'
+  beamhash3   = 'sycl\beamhash3\beamhash3.cpp'
+  blake2b     = 'sycl\c29\blake2b.cpp'
+}
 $objects = @()
-foreach ($source in $sources) {
+foreach ($entry in $sources.GetEnumerator()) {
+  $source = $entry.Key
   $object = Join-Path $obj "$source.obj"
-  Invoke-Checked { & python.exe $acpp @common -c "sycl\$source.cpp" -o $object } "AdaptiveCpp compile $source"
+  Invoke-Checked { & python.exe $acpp @common -c $entry.Value -o $object } "AdaptiveCpp compile $source"
   $objects += $object
 }
 foreach ($source in @('xmrig\base\crypto\sha3.cpp','xmrig\base\crypto\keccak.cpp')) {

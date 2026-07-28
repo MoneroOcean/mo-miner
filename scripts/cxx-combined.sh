@@ -67,16 +67,17 @@ if [ "$is_link" = 1 ]; then
     # libsycl.so, where two static copies would break unwinding.
     intel_libs=(-Wl,-Bstatic -limf -lsvml -lirng -lirc -Wl,-Bdynamic -lintlc)
   fi
-  exec "$CLANGXX" -fsycl -fsycl-targets="$TARGETS" "${spirv_translator_args[@]}" "${rpaths[@]}" "$@" "${intel_libs[@]}"
+  exec "$CLANGXX" -fsycl -fsycl-targets="$TARGETS" "${spirv_translator_args[@]}" \
+    "${rpaths[@]}" "$@" "${intel_libs[@]}"
 fi
 
 # node-gyp runs make from build/, so the SYCL sources arrive as ../sycl/foo.cpp (or an
 # absolute path); match any path component "sycl/" so they route to clang, not just a
 # leading "sycl/".
 if [ "$is_compile" = 1 ] && [[ "$src" == sycl/*.cpp || "$src" == */sycl/*.cpp ]]; then
-  # pearlhash_esimd.cpp is the Intel ESIMD search, which can't share -fsycl-targets with nvptx, so build
+  # pearlhash/esimd.cpp is the Intel ESIMD search, which can't share -fsycl-targets with nvptx, so build
   # it spir64-only; everything else gets the full spir64+nvptx target set.
-  if [[ "$src" == *pearlhash_esimd.cpp ]]; then
+  if [[ "$src" == *pearlhash/esimd.cpp ]]; then
     log "SYCL   -> clang   : $src (spir64-only ESIMD)"
     exec "$CLANGXX" -fsycl-targets=spir64 "$@"
   fi

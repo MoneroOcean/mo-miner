@@ -319,7 +319,7 @@ inline unsigned sycl_default_workgroup(
 
 // Branch-free modulo by a runtime divisor via multiply-shift (Granlund-Montgomery).
 // Shared by the kawpow/etchash/autolykos2 kernels. Layout must stay byte-compatible
-// with the FastModData mirror in kawpow_jit.inc.
+// with the FastModData mirror in kawpow/jit.inc.
 struct FastModData { uint32_t reciprocal, increment, shift, divisor; };
 
 inline uint32_t clz32_host(const uint32_t value) {

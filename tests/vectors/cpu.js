@@ -1,0 +1,194 @@
+"use strict";
+
+function dup(str, n) {
+  return Array(n).fill(str).join(" ");
+}
+
+module.exports = [
+  {
+    name: "rx/0 cpu*2",
+    job: { algo: "rx/0", dev: "cpu*2", blob_hex: "5468697320697320612074657374" },
+    expected: dup("38f638606c730dd6f271d037556b83988c71acc6980e22e25271b22389ecfce6", 2),
+  },
+  {
+    name: "rx/2 cpu*2",
+    job: { algo: "rx/2", dev: "cpu*2", blob_hex: "5468697320697320612074657374" },
+    expected: dup("ad6eff4f6d8a301b40183174edb4cf72b85caa65e8e5616354c92a2607022712", 2),
+  },
+  {
+    name: "rx/wow cpu*2",
+    job: { algo: "rx/wow", dev: "cpu*2", blob_hex: "5468697320697320612074657374" },
+    expected: dup("15c9bd99b3180ab256e89beecaf7b693abb7cdb0d1dfe30020c72f0c70b904ce", 2),
+  },
+  {
+    name: "rx/arq cpu*2",
+    job: { algo: "rx/arq", dev: "cpu*2", blob_hex: "5468697320697320612074657374" },
+    expected: dup("8b9937420651309742f833333371a8ab4d04e5f06d4b3d0a2dbec1b381e9a0e5", 2),
+  },
+  {
+    name: "rx/graft cpu*2",
+    job: { algo: "rx/graft", dev: "cpu*2", blob_hex: "5468697320697320612074657374" },
+    expected: dup("08135aaeb098d86f269d0a037aba423093e4c48e9e31f16c13d2ed3dc4489ba7", 2),
+  },
+  {
+    name: "rx/sfx cpu*2",
+    job: { algo: "rx/sfx", dev: "cpu*2", blob_hex: "5468697320697320612074657374" },
+    expected: dup("19e786570a6d959f023cb77b0be5bede76cc4a5c61c090b3d24c5ebd2c9ecb27", 2),
+  },
+  {
+    name: "rx/yada cpu*2",
+    job: { algo: "rx/yada", dev: "cpu*2", blob_hex: "5468697320697320612074657374" },
+    expected: dup("c6cc14fe859f917013223aa7a1959a169162df14510d462b681c70895ea6f874", 2),
+  },
+  {
+    name: "panthera cpu*2",
+    job: {
+      algo: "panthera",
+      dev: "cpu*2",
+      seed_hex: "786d7269672d6d6f2d636865636b2d6861736865732073656564",
+      blob_hex: "786d7269672d6d6f2d636865636b2d68617368657320696e7075742041",
+    },
+    expected: dup("1805aa4fd26f5686dada26d9e16ccb290811b2a79404fdd1064f1ca092902212", 2),
+  },
+  {
+    name: "ghostrider cpu*8",
+    job: {
+      algo: "ghostrider",
+      dev: "cpu*8",
+      blob_hex:
+        "000000208c246d0b90c3b389c4086e8b672ee040" +
+        "d64db5b9648527133e217fbfa48da64c0f3c0a0b" +
+        "0e8350800568b40fbb323ac3ccdf2965de51b9aa" +
+        "eb939b4f11ff81c49b74a16156ff251c00000000",
+    },
+    expected: dup("84402e62b6bedafcd65f6ba13b59ff19ad7f273900c59fa49bfbb5f67e10030f", 8),
+  },
+  {
+    name: "argon2/chukwa",
+    job: { algo: "argon2/chukwa" },
+    expected: "c158a105ae75c7561cfd029083a47a87653d51f914128e21c1971d8b10c49034",
+  },
+  {
+    name: "argon2/chukwav2",
+    job: { algo: "argon2/chukwav2" },
+    expected: "77cf6958b3536e1f9f0d1ea165f22811ca7bc487ea9f52030b5050c17fcdd8f5",
+  },
+  {
+    name: "argon2/wrkz",
+    job: { algo: "argon2/wrkz" },
+    expected: "35e083d4b9c64c2a68820a431f61311998a8cd1864dba4077e25b7f121d54bd1",
+  },
+  {
+    name: "cn/0",
+    job: { algo: "cn/0" },
+    expected: "1a3ffbee909b420d91f7be6e5fb56db71b3110d886011e877ee5786afd080100",
+  },
+  {
+    name: "cn/1",
+    job: { algo: "cn/1" },
+    expected: "f22d3d6203d2a08b41d9027278d8bcc983acada9b68e52e3c689692a50e921d9",
+  },
+  {
+    name: "cn/2",
+    job: { algo: "cn/2" },
+    expected: "97378282cf10e7ad033f7b8074c40e14d06e7f609dddda787680b58c05f43d21",
+  },
+  {
+    name: "cn/r height 1806260",
+    job: {
+      algo: "cn/r",
+      height: 1806260,
+      blob_hex:
+        "54686973206973206120746573742054686973206973" +
+        "20612074657374205468697320697320612074657374",
+    },
+    expected: "f759588ad57e758467295443a9bd71490abff8e9dad1b95b6bf2f5d0d78387bc",
+  },
+  {
+    name: "cn/fast",
+    job: { algo: "cn/fast" },
+    expected: "3c7a61084c5eb865b498ab2f5a1ac52c49c177c2d0133442d65ed514335c82c5",
+  },
+  {
+    name: "cn/half",
+    job: { algo: "cn/half" },
+    expected: "5d4fbc356097ea6440b0888edeb635ddc84a0e397c868456895c3f29be7312a7",
+  },
+  {
+    name: "cn/xao",
+    job: { algo: "cn/xao" },
+    expected: "9a29d0c4afdc639b6553b1c83735114c5d77162142975cb850c0a51f6407bd33",
+  },
+  {
+    name: "cn/rto",
+    job: { algo: "cn/rto" },
+    expected: "82661e1c6e6436668406327a9bb11319a5561615dfec1c9ee3884a6c1ceb76a5",
+  },
+  {
+    name: "cn/rwz",
+    job: { algo: "cn/rwz" },
+    expected: "5f56c6b0996ba23e0bba0729c99074855a10e3087fdbfe947533547376f075b8",
+  },
+  {
+    name: "cn/zls",
+    job: { algo: "cn/zls" },
+    expected: "516e33c6e446abbccdad18c04cd9a25e64102853b20a42dfdeaa8b599ecf40e2",
+  },
+  {
+    name: "cn/double",
+    job: { algo: "cn/double" },
+    expected: "aefbb3f0cc88046d119f6c54b96d90c9e884ea3b5983a60d50a42d7d3ebe4821",
+  },
+  {
+    name: "cn/ccx",
+    job: { algo: "cn/ccx" },
+    expected: "b3a16786d2c985ecadc45f910527c7a196f0e1e97c8709381d7d419335f81672",
+  },
+  {
+    name: "cn/upx2",
+    job: { algo: "cn/upx2" },
+    expected: "aabbb8ed14a835fa22cfb1b5dea872b0a1d6cbd846f4391c0f01f3875e3a3761",
+  },
+  {
+    name: "cn-pico/0",
+    job: { algo: "cn-pico/0" },
+    expected: "08f421d7833117300eda66e98f4a2569093df300500173944efc401e9a4a17af",
+  },
+  {
+    name: "cn-pico/tlo",
+    job: { algo: "cn-pico/tlo" },
+    expected: "9975f2c1b3b45434a49386213097f31bb4b9a6586a7e81f4429f6d5f65c38d1a",
+  },
+  {
+    name: "cn-lite/0",
+    job: { algo: "cn-lite/0" },
+    expected: "3695b4b53bb00358b0ad38dc160feb9e004eece09b83a72ef6ba9864d3510c88",
+  },
+  {
+    name: "cn-lite/1",
+    job: { algo: "cn-lite/1" },
+    expected: "6d8cdc444e9bbbfd68fc43fcd4855b228c8a1bd91d9d00285bec02b7ca2d6741",
+  },
+  {
+    name: "cn-heavy/0",
+    job: { algo: "cn-heavy/0" },
+    expected: "9983f21bdf2010a8d707bb2f14d78664bbe1187f55014b39e5f3d69328e48fc2",
+  },
+  {
+    name: "cn-heavy/xhv",
+    job: { algo: "cn-heavy/xhv" },
+    expected: "5ac3f785c490c58550ec95d2726563577e7c1c212d0cde591273201e44fdd5b6",
+  },
+  {
+    name: "cn-heavy/tube",
+    job: { algo: "cn-heavy/tube" },
+    expected: "fe53352076eae689fa3b4fda614634cfc312ee0c387df2b8b74da2a159741235",
+  },
+  {
+    name: "cn/gpu gpu1*[intensity=8]",
+    gpu: true,
+    syclCpu: true,
+    job: { algo: "cn/gpu", dev: "gpu1*[intensity=8]" },
+    expected: dup("e55cb23e51649a59b127b96b515f2bf7bfea199741a0216cf838ded06eff82df", 8),
+  },
+];

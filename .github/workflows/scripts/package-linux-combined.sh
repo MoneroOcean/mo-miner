@@ -47,7 +47,7 @@ fi
 # config and is copied beside the executable; esbuild intentionally leaves the fs read at runtime.
 bundle_path="$PWD/$build_dir/mom.bundle.cjs"
 blob_path="$PWD/$build_dir/mom.blob"
-npx --yes esbuild@0.28.0 mom.js --bundle --platform=node --format=cjs \
+npx --no-install esbuild mom.js --bundle --platform=node --format=cjs \
   --banner:js="const { createRequire } = require('node:module'); require = createRequire(process.execPath);" \
   --outfile="$bundle_path"
 cat >"$build_dir/sea-config.json" <<EOF
@@ -55,7 +55,7 @@ cat >"$build_dir/sea-config.json" <<EOF
 EOF
 "$node_bin" --experimental-sea-config "$build_dir/sea-config.json"
 cp "$node_bin" "$package_dir/mom-bin"
-npx --yes postject@1.0.0-alpha.6 "$package_dir/mom-bin" NODE_SEA_BLOB "$blob_path" \
+npx --no-install postject "$package_dir/mom-bin" NODE_SEA_BLOB "$blob_path" \
   --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2
 chmod +x "$package_dir/mom-bin"
 
@@ -126,9 +126,9 @@ if [ -n "$selector_backend" ] && [ -z "${ONEAPI_DEVICE_SELECTOR:-}" ]; then
     ONEAPI_DEVICE_SELECTOR="$selector_default"
   fi
 fi
-# Release CI uses the already-bundled AdaptiveCpp OpenMP backend for a real SYCL CPU kernel gate.
-# Keep this narrow override separate from the user-facing vendor policy: normal miners never set it,
-# while the extracted-archive test can validate an isolated runtime without a physical GPU.
+# Release CI uses this narrow override to select the packaged standards-only DPC++ OpenCL worker for
+# its SYCL CPU gate. Normal miners never set it; the extracted archive can therefore validate an
+# isolated runtime without changing the user-facing vendor policy or requiring a physical GPU.
 if [ -n "${MOM_RELEASE_RUNTIME_KEY:-}" ]; then
   case "$MOM_RELEASE_RUNTIME_KEY" in
     oneapi|dpcpp|dpcpp-opencl|acpp-cuda|acpp-hip) key=$MOM_RELEASE_RUNTIME_KEY ;;
@@ -173,7 +173,8 @@ done
 # Only the open DPC++ CUDA worker compiles the shared SYCL device body from source at runtime.
 # The generic AdaptiveCpp workers consume their embedded SSCP IR instead, so duplicating this file
 # in every runtime directory has no consumer.
-cp sycl/kawpow_device.inc "$libs_dir/dpcpp/"
+cp sycl/kawpow/device.inc "$libs_dir/dpcpp/kawpow_device.inc"
+cp sycl/kawpow/keccak.inc "$libs_dir/dpcpp/kawpow_keccak.inc"
 # Backward-compatible fallback for callers that do not use the launcher/policy selection.
 cp "$libs_dir/oneapi/mom.node" "$libs_dir/mom.node"
 

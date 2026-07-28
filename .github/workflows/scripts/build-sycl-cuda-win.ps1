@@ -192,34 +192,36 @@ function Invoke-ClangTasks {
   }
 }
 
-# Main SYCL TUs -> spir64 + nvptx.
-$main = @(
-  "lib",
-  "ethash",
-  "etchash",
-  "autolykos2",
-  "pearlhash",
-  "c29",
-  "cn_gpu",
-  "kawpow",
-  "fishhash",
-  "zelhash",
-  "beamhash3",
-  "blake2b"
-)
+# Main SYCL TUs -> spir64 + nvptx. Keep stable object names for the linker while source paths follow
+# the algorithm directories used by binding.gyp.
+$main = [ordered]@{
+  lib         = "sycl\lib.cpp"
+  ethash      = "sycl\etchash\ethash.cpp"
+  etchash     = "sycl\etchash\etchash.cpp"
+  autolykos2  = "sycl\autolykos2\autolykos2.cpp"
+  pearlhash   = "sycl\pearlhash\pearlhash.cpp"
+  c29         = "sycl\c29\c29.cpp"
+  cn_gpu      = "sycl\cn_gpu\cn_gpu.cpp"
+  kawpow      = "sycl\kawpow\kawpow.cpp"
+  fishhash    = "sycl\fishhash\fishhash.cpp"
+  zelhash     = "sycl\zelhash\zelhash.cpp"
+  beamhash3   = "sycl\beamhash3\beamhash3.cpp"
+  blake2b     = "sycl\c29\blake2b.cpp"
+}
 $objs = @()
 $compileTasks = @()
-foreach ($s in $main) {
+foreach ($entry in $main.GetEnumerator()) {
+  $s = $entry.Key
   $o = Join-Path $obj "$s.obj"
   $compileTasks += New-ClangTask $clang (@("-fsycl","-fsycl-targets=$targets") + $amdBackendArgs +
-    $F + @("-c","sycl\$s.cpp","-o",$o)) "$targets $s"
+    $F + @("-c",$entry.Value,"-o",$o)) "$targets $s"
   $objs += $o
 }
 # PearlHash ESIMD TU -> spir64 only (ESIMD can't share -fsycl-targets with nvptx; dispatched at runtime).
 if (-not $PortableOpencl) {
   $pe = Join-Path $obj "pearlhash_esimd.obj"
   $compileTasks += New-ClangTask $clang (@("-fsycl","-fsycl-targets=spir64") + $F +
-    @("-c","sycl\pearlhash_esimd.cpp","-o",$pe)) "spir64 pearlhash_esimd"
+    @("-c","sycl\pearlhash\esimd.cpp","-o",$pe)) "spir64 pearlhash_esimd"
   $objs += $pe
 }
 # Host helpers the sycl target also needs (no -fsycl).
