@@ -1,8 +1,9 @@
 # Development and releases
 
 Generated native artifacts are platform-separated: Linux uses `build/lin`, while Windows uses
-`build/win`. `node-gyp` still creates a temporary top-level `build` workspace during compilation;
-the entrypoints stage that workspace and restore the two persistent platform trees afterward.
+`build/win`; reusable compiler object trees live in `build/cache`.
+`node-gyp` still creates a temporary top-level `build` workspace during compilation;
+the entrypoints temporarily park the persistent tree and restore it after compilation.
 
 ## GPU compiler layout
 

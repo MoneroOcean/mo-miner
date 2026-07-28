@@ -11,7 +11,7 @@ case "$backend" in
   *) echo "Unsupported MOM_ADAPTIVE_BACKEND=$backend" >&2; exit 2 ;;
 esac
 chmod +x "$compiler"
-build_dir=${MOM_ADAPTIVE_BUILD_DIR:-build-adaptive-$backend}
+build_dir=${MOM_ADAPTIVE_BUILD_DIR:-build/cache/acpp-$backend}
 MOM_BUILD_LOG="/tmp/mom-adaptive-build/build-output.log"
 source "$host_root/scripts/build-helpers.sh"
 # Include host CPU policy so portable packages cannot inherit cached -march=native objects.
@@ -22,7 +22,11 @@ if [ "$(cat "$build_dir/.node-version" 2>/dev/null || true)" != "$marker" ] ||
      -newer "$build_dir/Release/mom.node" -print -quit | grep -q .; then
   rm -rf /tmp/mom-adaptive-build "$build_dir"
   mkdir -p /tmp/mom-adaptive-build
-  cp -a . /tmp/mom-adaptive-build/source
+  mkdir -p /tmp/mom-adaptive-build/source
+  # Only these tracked inputs participate in the native addon. Copying the entire checkout also
+  # copied persistent Linux/Windows compiler caches after they moved under build/, wasting hundreds
+  # of megabytes of tmpfs and making an otherwise incremental AdaptiveCpp build needlessly fragile.
+  cp -a binding.gyp native scripts sycl xmrig /tmp/mom-adaptive-build/source/
   cd /tmp/mom-adaptive-build/source
   rm -rf build build-amd build-adaptive-hip build-adaptive-cuda
   mom_run_quiet "[adaptivecpp-$backend] node-gyp configure" env \

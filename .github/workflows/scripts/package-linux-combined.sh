@@ -15,11 +15,12 @@ libs_dir="$package_dir/libs"
 build_dir=release-combined-build
 node_bin="${NODE_BIN:-}"
 image="${MOM_MULTICOMPILER_IMAGE:-mom-build-multicompiler}"
+compiler_build_dir=build/lin/Release
 
 compilers=(oneapi dpcpp dpcpp-opencl acpp-cuda acpp-hip)
 for key in "${compilers[@]}"; do
-  [ -s "build-compilers/Release/$key/mom.node" ] || {
-    echo "build-compilers/Release/$key/mom.node is missing; run MOM_GPU_BACKEND=all ./r.sh true." >&2
+  [ -s "$compiler_build_dir/$key/mom.node" ] || {
+    echo "$compiler_build_dir/$key/mom.node is missing; run MOM_GPU_BACKEND=all ./r.sh true." >&2
     exit 1
   }
 done
@@ -167,7 +168,7 @@ cp package.json compiler-policy.js README.md DEVELOPMENT.md GPU-COMPILERS.md LIC
 cp scripts/install.sh scripts/install-cutlass.sh "$package_dir/"
 for key in "${compilers[@]}"; do
   mkdir -p "$libs_dir/$key"
-  cp "build-compilers/Release/$key/mom.node" "$libs_dir/$key/mom.node"
+  cp "$compiler_build_dir/$key/mom.node" "$libs_dir/$key/mom.node"
 done
 # Only the open DPC++ CUDA worker compiles the shared SYCL device body from source at runtime.
 # The generic AdaptiveCpp workers consume their embedded SSCP IR instead, so duplicating this file
@@ -233,7 +234,7 @@ copy_dependency_closure() {
 
 begin_runtime() {
   runtime_key="$1"; runtime_roots="$2"; runtime_dest="$libs_dir/$runtime_key"
-  closure_queue=("/repo/build-compilers/Release/$runtime_key/mom.node")
+  closure_queue=("/repo/$compiler_build_dir/$runtime_key/mom.node")
   closure_seen=()
 }
 

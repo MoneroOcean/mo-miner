@@ -1,24 +1,10 @@
 node_modules/
 build/
-build-amd/
-build-compilers/
-build-oneapi/
-build-dpcpp/
-build-dpcpp-opencl/
-build-dpcpp-hip/
-build-acpp-cuda/
-build-acpp-hip/
-build-acpp20/
-build-acpp-wmma/
-build-amd-acpp-compare/
-build-nvidia-acpp-compare/
-obj-acpp-*/
 deploy/
 .cache/
 coverage/
 test-artifacts/
 
-package-lock.json
 npm-debug.log*
 
 config.json

@@ -29,14 +29,6 @@ if [ "$backend" = nvidia ]; then
 elif [ "$backend" = amd ]; then
   export ACPP_VISIBILITY_MASK="${ACPP_VISIBILITY_MASK:-hip}"
 fi
-artifact_dir=build-compilers/Release
-mkdir -p "$artifact_dir"
-# Remove the pre-policy flat names left by older development images. Compiler workers and their
-# runtimes now always live in isolated key/ directories on both operating systems.
-rm -f "$artifact_dir"/mom-*.node
-# DPC++ HIP is retained only as an explicitly requested reproducer toolchain; it is no longer a
-# release-policy worker. Remove an artifact left by an older checkout before publishing build/lin.
-rm -rf "$artifact_dir/dpcpp-hip"
 set +u
 # The disk-efficient multicompiler image inherits the combined oneAPI image, whose Docker build has
 # already sourced setvars. Force a clean process-local refresh instead of treating that inherited
@@ -45,16 +37,36 @@ set +u
 set -u
 
 # node-gyp unconditionally uses a top-level build/ directory. Keep it as a scratch workspace while
-# compiling, then restore the persistent platform tree and publish Linux output under build/lin.
-# This prevents a Windows PE addon returned by win/run.sh from ever colliding with a Linux ELF addon.
+# compiling. The resting tree keeps platform outputs and every reusable compiler cache together
+# under build/; temporarily parking that tree prevents a Windows PE addon returned by win/run.sh
+# from ever colliding with a Linux ELF addon.
 platforms_hold=build-platforms-hold
 if [ -e "$platforms_hold" ]; then
   echo "$platforms_hold exists from an interrupted build; refusing to overwrite it" >&2
   exit 1
 fi
-if [ -d build ]; then mv build "$platforms_hold"; fi
+if [ -d build ]; then mv build "$platforms_hold"; else mkdir -p "$platforms_hold"; fi
+cache_root="$platforms_hold/cache"
+artifact_dir="$platforms_hold/lin/Release"
+active_cache=
+mkdir -p "$artifact_dir"
+# Remove the pre-policy flat names left by older development images. Compiler workers and their
+# runtimes now always live in isolated key/ directories on both operating systems.
+rm -f "$artifact_dir"/mom-*.node
+# DPC++ HIP is retained only as an explicitly requested reproducer toolchain; it is no longer a
+# release-policy worker. Remove an artifact left by an older checkout before publishing build/lin.
+rm -rf "$artifact_dir/dpcpp-hip"
 restore_platform_tree() {
-  rm -rf build
+  # Preserve a partially rebuilt object tree on ordinary command failure or Ctrl-C. It remains
+  # eligible for the same marker/dependency checks on the next run instead of losing all progress.
+  if [ -n "$active_cache" ] && [ -d build ]; then
+    rm -rf "$active_cache"
+    mkdir -p "$(dirname "$active_cache")"
+    mv build "$active_cache"
+  else
+    rm -rf build
+  fi
+  active_cache=
   if [ -d "$platforms_hold" ]; then mv "$platforms_hold" build; else mkdir -p build; fi
 }
 trap restore_platform_tree EXIT
@@ -86,34 +98,40 @@ publish() {
 build_oneapi() {
   # CPU flags are part of the artifact ABI. In particular, a cached developer build made with
   # -march=native must never be reused after MOM_PORTABLE_BUILD=1 is selected for packaging.
-  local out=build-oneapi
+  local out="$cache_root/oneapi"
   local marker="$(node -p process.version):oneapi-2026:cpu=${MOM_CPU_MARCH:-unset}:portable=${MOM_PORTABLE_BUILD:-0}"
   if [ "$(cat "$out/.node-version" 2>/dev/null || true)" != "$marker" ] ||
      [ ! -s "$out/Release/mom.node" ] ||
      find binding.gyp native sycl xmrig scripts/cpu-cflags.sh -type f \
        -newer "$out/Release/mom.node" -print -quit | grep -q .; then
+    active_cache="$out"
     rm -rf build "$out"
     CC=icx CXX=icpx node-gyp configure --nodedir=/usr/local -- -Dmom_sycl_impl=dpcpp
     JOBS="$jobs" CC=icx CXX=icpx node-gyp build --nodedir=/usr/local --jobs "$jobs"
-    mv build "$out"; printf '%s\n' "$marker" >"$out/.node-version"
+    mv build "$out"; active_cache=
+    printf '%s\n' "$marker" >"$out/.node-version"
   fi
   publish "$out/Release/mom.node" oneapi
 }
 
 build_dpcpp() {
+  local out="$cache_root/dpcpp"
+  active_cache="$out"
   rm -rf build
-  [ ! -d build-dpcpp ] || mv build-dpcpp build
+  [ ! -d "$out" ] || mv "$out" build
   MOM_COMBINED_TARGETS=${MOM_COMBINED_TARGETS:-spir64,nvidia_gpu_sm_80} bash scripts/combined-build.sh
-  rm -rf build-dpcpp; mv build build-dpcpp
-  publish build-dpcpp/Release/mom.node dpcpp
+  rm -rf "$out"; mv build "$out"; active_cache=
+  publish "$out/Release/mom.node" dpcpp
 }
 
 build_dpcpp_opencl() {
+  local out="$cache_root/dpcpp-opencl"
+  active_cache="$out"
   rm -rf build
-  [ ! -d build-dpcpp-opencl ] || mv build-dpcpp-opencl build
+  [ ! -d "$out" ] || mv "$out" build
   MOM_DPCPP_IMPL=dpcpp-opencl MOM_COMBINED_TARGETS=spir64 bash scripts/combined-build.sh
-  rm -rf build-dpcpp-opencl; mv build build-dpcpp-opencl
-  publish build-dpcpp-opencl/Release/mom.node dpcpp-opencl
+  rm -rf "$out"; mv build "$out"; active_cache=
+  publish "$out/Release/mom.node" dpcpp-opencl
 }
 
 build_acpp() {
@@ -129,11 +147,11 @@ case "$backend" in
   nvidia)
     build_dpcpp
     build_dpcpp_opencl
-    build_acpp cuda /opt/adaptivecpp-cuda build-acpp-cuda acpp-cuda
+    build_acpp cuda /opt/adaptivecpp-cuda "$cache_root/acpp-cuda" acpp-cuda
     default=dpcpp ;;
   amd)
     build_dpcpp_opencl
-    build_acpp hip /opt/adaptivecpp-hip build-acpp-hip acpp-hip
+    build_acpp hip /opt/adaptivecpp-hip "$cache_root/acpp-hip" acpp-hip
     default=acpp-hip ;;
   opencl)
     build_dpcpp_opencl
@@ -141,24 +159,21 @@ case "$backend" in
     export ONEAPI_DEVICE_SELECTOR="${ONEAPI_DEVICE_SELECTOR:-opencl:$opencl_device_type}" ;;
   all)
     build_oneapi; build_dpcpp; build_dpcpp_opencl
-    build_acpp cuda /opt/adaptivecpp-cuda build-acpp-cuda acpp-cuda
-    build_acpp hip /opt/adaptivecpp-hip build-acpp-hip acpp-hip
+    build_acpp cuda /opt/adaptivecpp-cuda "$cache_root/acpp-cuda" acpp-cuda
+    build_acpp hip /opt/adaptivecpp-hip "$cache_root/acpp-hip" acpp-hip
     default=oneapi ;;
   *) echo "Unsupported MOM_GPU_BACKEND=$backend" >&2; exit 2 ;;
 esac
 
-restore_platform_tree
-trap - EXIT
-rm -rf build/lin
-mkdir -p build/lin/Release
-cp -a "$artifact_dir/." build/lin/Release/
-cp "build/lin/Release/$default/mom.node" build/lin/Release/mom.node
+cp "$artifact_dir/$default/mom.node" "$artifact_dir/mom.node"
 # The container runs as root so it can reach MSRs and GPU device nodes, but build/ is shared with
 # Windows run.sh. Return both the platform tree and its parent to the checkout owner; otherwise a
 # first Linux build leaves a root-owned build/ directory that prevents run.sh from creating
 # build/win beside it.
+chown -R --reference="$PWD" "$platforms_hold/lin"
+restore_platform_tree
+trap - EXIT
 chown --reference="$PWD" build
-chown -R --reference="$PWD" build/lin
 export MOM_NATIVE_DIR="$PWD/build/lin/Release"
 export MOM_NATIVE_PATH="$MOM_NATIVE_DIR/$default/mom.node"
 export MOM_NATIVE_PATH_LAUNCHER_DEFAULT="$MOM_NATIVE_PATH"
