@@ -86,7 +86,7 @@ test_linux_nvidia_release() {
       MOM_INSTALL_GPU_VENDORS=nvidia ./install.sh >/tmp/mom-install.log
       # Exercise the release launcher exactly as a miner does. It must discover the CUDA compiler
       # payload installed above; injecting CUDA_PATH here would mask a slow ProgPoW fallback.
-      timeout 180 env MOM_GPU_BACKEND=nvidia ./mom bench kawpow --job.dev gpu1*6291456
+      timeout 180 env MOM_GPU_BACKEND=nvidia ./mom bench kawpow --job.dev 'gpu1*[intensity=6291456]'
     ' 2>&1
   )"
   local status=$?
@@ -115,7 +115,7 @@ test_linux_intel_release() {
       tar -xzf "/repo/$MOM_RELEASE_ARCHIVE"
       cd "$MOM_RELEASE_DIR"
       MOM_INSTALL_GPU_VENDORS=intel ./install.sh >/tmp/mom-install.log
-      timeout 180 env ONEAPI_DEVICE_SELECTOR=level_zero:gpu ZE_AFFINITY_MASK=0 ./mom bench kawpow --job.dev gpu1*37282560
+      timeout 180 env ONEAPI_DEVICE_SELECTOR=level_zero:gpu ZE_AFFINITY_MASK=0 ./mom bench kawpow --job.dev 'gpu1*[intensity=37282560]'
     ' 2>&1
   )"
   local status=$?
@@ -144,7 +144,7 @@ test_linux_amd_release() {
       tar -xzf "/repo/$MOM_RELEASE_ARCHIVE"
       cd "$MOM_RELEASE_DIR"
       MOM_INSTALL_GPU_VENDORS=amd ./install.sh >/tmp/mom-install.log
-      timeout 180 env MOM_GPU_BACKEND=amd ./mom bench kawpow --job.dev gpu1*2796032
+      timeout 180 env MOM_GPU_BACKEND=amd ./mom bench kawpow --job.dev 'gpu1*[intensity=2796032]'
     ' 2>&1
   )"
   local status=$?
@@ -189,7 +189,7 @@ $ready = (Test-Path 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6\bi
 Write-Host "NVIDIA_JIT_READY=$ready"
 if (-not $ready) { throw 'CUDA toolkit or C++ headers did not install' }
 $env:ONEAPI_DEVICE_SELECTOR = 'cuda:*'
-$p = Start-Process -FilePath '.\mom.cmd' -ArgumentList @('bench', 'kawpow', '--job.dev', 'gpu1*6291456') -NoNewWindow -RedirectStandardOutput 'mom-kawpow.out' -RedirectStandardError 'mom-kawpow.err' -PassThru
+$p = Start-Process -FilePath '.\mom.cmd' -ArgumentList @('bench', 'kawpow', '--job.dev', 'gpu1*[intensity=6291456]') -NoNewWindow -RedirectStandardOutput 'mom-kawpow.out' -RedirectStandardError 'mom-kawpow.err' -PassThru
 if (-not $p.WaitForExit(180000)) { $p.Kill() }
 $out = Get-Content -Raw -ErrorAction SilentlyContinue 'mom-kawpow.out'
 $err = Get-Content -Raw -ErrorAction SilentlyContinue 'mom-kawpow.err'
@@ -229,7 +229,7 @@ Set-Location (Join-Path $dst $releaseDir)
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $env:ONEAPI_DEVICE_SELECTOR = 'level_zero:gpu'
 $env:ZE_AFFINITY_MASK = '0'
-$p = Start-Process -FilePath '.\mom.cmd' -ArgumentList @('bench', 'kawpow', '--job.dev', 'gpu1*37282560') -NoNewWindow -RedirectStandardOutput 'mom-kawpow.out' -RedirectStandardError 'mom-kawpow.err' -PassThru
+$p = Start-Process -FilePath '.\mom.cmd' -ArgumentList @('bench', 'kawpow', '--job.dev', 'gpu1*[intensity=37282560]') -NoNewWindow -RedirectStandardOutput 'mom-kawpow.out' -RedirectStandardError 'mom-kawpow.err' -PassThru
 if (-not $p.WaitForExit(180000)) { $p.Kill() }
 $out = Get-Content -Raw -ErrorAction SilentlyContinue 'mom-kawpow.out'
 $err = Get-Content -Raw -ErrorAction SilentlyContinue 'mom-kawpow.err'
@@ -269,7 +269,7 @@ Set-Location (Join-Path $dst $releaseDir)
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $env:MOM_GPU_BACKEND = 'amd'
 $env:ACPP_VISIBILITY_MASK = 'hip'
-$p = Start-Process -FilePath '.\mom.cmd' -ArgumentList @('bench', 'kawpow', '--job.dev', 'gpu1*2796032') -NoNewWindow -RedirectStandardOutput 'mom-kawpow.out' -RedirectStandardError 'mom-kawpow.err' -PassThru
+$p = Start-Process -FilePath '.\mom.cmd' -ArgumentList @('bench', 'kawpow', '--job.dev', 'gpu1*[intensity=2796032]') -NoNewWindow -RedirectStandardOutput 'mom-kawpow.out' -RedirectStandardError 'mom-kawpow.err' -PassThru
 if (-not $p.WaitForExit(240000)) { $p.Kill() }
 $out = Get-Content -Raw -ErrorAction SilentlyContinue 'mom-kawpow.out'
 $err = Get-Content -Raw -ErrorAction SilentlyContinue 'mom-kawpow.err'

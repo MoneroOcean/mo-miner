@@ -176,11 +176,45 @@ Device identifiers never encode an execution API; switch implementations with `b
 `dev` API-neutral. Status output makes the choice visible: `auto[sycl-native]` means `auto` resolved
 to `sycl-native`, while an explicit selection is printed directly.
 
-The number after `gpuN*` is the algorithm's batch/intensity control. One value is sufficient for
-the current GPU algorithms because their other launch geometry is derived from the selected device
-and backend. PearlHash additionally accepts named `m`, `n`, `k`, and `rank` fields in its
-`algo_params.pearlhash` entry; named algorithm-specific fields will be used if another algorithm gains
-a second independently useful tuning control.
+## GPU tuning
+
+mom derives tuning from the GPU's compute units, memory limits, runtime, and algorithm. The short
+`gpuN*VALUE` form sets the algorithm's primary control; its unambiguous expanded form is
+`gpuN*[name=value;name=value]`. For example, `gpu1*4194304` and
+`gpu1*[intensity=4194304]` are equivalent for KawPow, while
+`gpu1*[workgroup=128]` overrides only its workgroup and leaves intensity automatic. A bare `gpuN`
+leaves every tuning field automatic; brackets are accepted only in the starred `*[...]` form.
+
+| Algorithms                                      | `*VALUE` means   | Additional tuning fields                                         |
+| ----------------------------------------------- | ---------------- | ---------------------------------------------------------------- |
+| `cn/gpu`                                        | `intensity`      | —                                                                |
+| `c29`                                           | `seed_workgroup` | `seed_blocks`                                                    |
+| `kawpow`, `firopow`, `evrprogpow`, `meowpow`    | `intensity`      | `workgroup`, `dag_workgroup`, `dag_chunk`                        |
+| `etchash`                                       | `intensity`      | `dag_workgroup`, `dag_chunk`                                     |
+| `autolykos2`                                    | `intensity`      | `workgroup`, `prehash_workgroup`, `table_chunk`, `search_mode`   |
+| `fishhash`, `karlsenhashv2`                     | `intensity`      | `workgroup`, `search_mode`                                       |
+| `pearlhash`                                     | `m`              | `n`, `k`, `rank`, `workgroup`, `cache_block`, `tile`             |
+| `zelhash`                                       | `slots`          | —                                                                |
+| `beamhash3`                                     | `workgroup`      | `compact_workgroup`, `scatter_workgroup`, `layout`               |
+
+Entry-local fields take precedence over the optional `algo_params.<algo>.tuning` object, which takes
+precedence over automatic heuristics. Fields may be omitted at either level. `search_mode` accepts
+`auto`, `scalar`, or `cooperative`; `layout` accepts `auto`, `compact`, or `full`. Pearl's `tile`
+accepts `auto`, `1x1`, `2x2`, `2x4`, `4x2`, `4x4`, or `8x2`; it only affects its AMD DP4A path.
+Other secondary fields affect only implementations that expose the corresponding launch control.
+
+The object form is useful for a saved configuration, while the inline form can override one worker:
+
+```
+"algo_params": {"kawpow": {"dev": "gpu1", "backend": "auto", "tuning": {"workgroup": 256}}}
+```
+
+Repeated entries run independent workers on one GPU:
+
+```
+gpu1*[intensity=2097152],gpu1*[intensity=4194304]
+gpu1*[workgroup=256]^2
+```
 
 # Usage example
 
@@ -194,14 +228,14 @@ before benchmarking CPU algorithms. This example explicitly selects the Intel GP
 $ MOM_GPU_BACKEND=intel MOM_GPU_INDEX=0 ./mom mine gulf.moneroocean.stream:20001tls 89TxfrUmqJJcb1V124WsUzA78Xa3UYHt7Bg8RGMhXVeZYPN8cE5CZEk58Y1m23ZMLHN7wYeJ9da5n5MXharEjrm41hSnWHL --save_config config.json
 gpu1: Intel(R) Arc(TM) B580 Graphics via Intel(R) oneAPI Unified Runtime over Level-Zero V2
 2026-07-19 15:25:33 Doing algo benchmarks...
-2026-07-19 15:27:30 Algo autolykos2 (gpu1*8388608) hashrate: 37.72 MH/s (37.72 MH/s)
-2026-07-19 15:28:35 Algo c29 (gpu1*1) hashrate: 2.78 H/s (2.78 H/s)
-2026-07-19 15:30:25 Algo cn/gpu (gpu1*1280) hashrate: 2.88 KH/s (2.88 KH/s)
-2026-07-19 15:31:56 Algo etchash (gpu1*33554432) hashrate: 21.13 MH/s (21.13 MH/s)
+2026-07-19 15:27:30 Algo autolykos2 (gpu1*[intensity=8388608]:auto[sycl]) hashrate: 37.72 MH/s (37.72 MH/s)
+2026-07-19 15:28:35 Algo c29 (gpu1*[seed_workgroup=128;seed_blocks=16]:auto[sycl]) hashrate: 2.78 H/s (2.78 H/s)
+2026-07-19 15:30:25 Algo cn/gpu (gpu1*[intensity=1280]:auto[sycl-opencl]) hashrate: 2.88 KH/s (2.88 KH/s)
+2026-07-19 15:31:56 Algo etchash (gpu1*[intensity=33554432]:auto[sycl]) hashrate: 21.13 MH/s (21.13 MH/s)
 2026-07-19 15:32:57 Algo ghostrider (cpu*8^8) hashrate: 1.64 KH/s (209.21 H/s, 210.00 H/s, 202.30 H/s, 201.68 H/s, 210.02 H/s, 198.13 H/s, 197.82 H/s, 207.49 H/s)
-2026-07-19 15:34:58 Algo kawpow (gpu1*37282560) hashrate: 20.95 MH/s (20.95 MH/s)
+2026-07-19 15:34:58 Algo kawpow (gpu1*[intensity=37282560]:auto[sycl-native]) hashrate: 20.95 MH/s (20.95 MH/s)
 2026-07-19 15:36:07 Algo panthera (cpu*4^16) hashrate: 5.16 KH/s (326.78 H/s, 314.66 H/s, 324.24 H/s, 319.90 H/s, 323.86 H/s, 324.56 H/s, 331.25 H/s, 319.02 H/s, 317.66 H/s, 323.39 H/s, 322.89 H/s, 328.28 H/s, 317.52 H/s, 326.35 H/s, 322.83 H/s, 313.86 H/s)
-2026-07-19 15:37:12 Algo pearlhash (gpu1*131072) hashrate: 52.00 TH/s (52.00 TH/s)
+2026-07-19 15:37:12 Algo pearlhash (gpu1*[m=131072]:auto[sycl-native]) hashrate: 52.00 TH/s (52.00 TH/s)
 2026-07-19 15:38:14 Algo rx/0 (cpu*8) hashrate: 5.92 KH/s (5.92 KH/s)
 2026-07-19 15:39:16 Algo rx/2 (cpu*8) hashrate: 5.25 KH/s (5.25 KH/s)
 2026-07-19 15:40:18 Algo rx/arq (cpu*16) hashrate: 41.49 KH/s (41.49 KH/s)
@@ -237,17 +271,17 @@ Use this template for non-MoneroOcean pools. mom infers the stratum dialect from
 ./mom mine <endpoint> <wallet.worker> <dev / command suffix> --bench_algo_params 0
 ```
 
-| Coin | Algo          | Endpoint                           | Donation address (owner)                                                                           | Dev / command suffix                             |
-| ---- | ------------- | ---------------------------------- | -------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
-| RVN  | kawpow        | stratum.ravenminer.com:13838tls    | `RSJZNSvzt3PJdGVKahSczRrhinc24KA6wU` (hans-schmidt, Ravencoin/Evrmore maintainer)                  | --job.algo kawpow --job.dev gpu1*37282560        |
-| FIRO | firopow       | pool.woolypooly.com:3104tls        | `a4vQ7zr5CEBDEdNQBFVvHcM1BRVYKEnuEv` (Firo Core Team funding proposal)                             | --job.algo firopow --job.dev gpu1*37282560       |
-| EVR  | evrprogpow    | us-east.mining4people.com:24173tls | `EaBGnWtDiAseYZiyvNT1u3WTjAeYtAR7MV` (hans-schmidt, Evrmore maintainer)                            | --job.algo evrprogpow --job.dev gpu1*37282560    |
-| MEWC | meowpow       | stratum-eu.rplant.xyz:17120tls     | `MPyNGZSSZ4rbjkVJRLn3v64pMcktpEYJnU` (MeowCoin donation address)                                   | --job.algo meowpow --job.dev gpu1*37282560       |
-| PRL  | pearlhash     | pearl.herominers.com:1200tls       | `prl1p79wzxcvatcsmnzp9xp0ep0rvfe9ans05mjtxnt4d9x0qqej0mtdqfrezc0` (ARC-miner PRL donation address) | --job.algo pearlhash --job.dev gpu1*131072       |
-| IRON | fishhash      | ironfish.herominers.com:1145tls    | `66e044578b31c6c4c05810b0e5281bdf36138ad41bf6844ba317dc7c506bf9ac` (GMiner/Rigel bundled sample)   | --job.algo fishhash --job.dev gpu1*33554432      |
-| KLS  | karlsenhashv2 | pool.woolypooly.com:3132           | `qzrq7v5jhsc5znvtfdg6vxg7dz5x8dqe4wrh90jkdnwehp6vr8uj7csdss2l7` (Karlsen Devfund)                  | --job.algo karlsenhashv2 --job.dev gpu1*33554432 |
-| FLUX | zelhash       | flux.herominers.com:1200tls        | `t1Mzja9iJcEYeW5B4m4s1tJG8M42odFZ16A` (Flux development address)                                   | --job.algo zelhash --job.dev gpu1*1              |
-| BEAM | beamhash3     | beam.2miners.com:5252tls           | `2346a827cb56ca74e34680593e50d7b1fa4a169332415a1d5984c6f874395c3684b` (Wilke Trei, Beam)           | --job.algo beamhash3 --job.dev gpu1*1            |
+| Coin | Algo          | Endpoint                           | Donation address (owner)                                                                            | Dev / command suffix                               |
+| ---- | ------------- | ---------------------------------- | --------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| RVN  | kawpow        | stratum.ravenminer.com:13838tls    | `RSJZNSvzt3PJdGVKahSczRrhinc24KA6wU` (hans-schmidt, Ravencoin/Evrmore maintainer)                   | --job.algo kawpow --job.dev gpu1                   |
+| FIRO | firopow       | pool.woolypooly.com:3104tls        | `a4vQ7zr5CEBDEdNQBFVvHcM1BRVYKEnuEv` (Firo Core Team funding proposal)                              | --job.algo firopow --job.dev gpu1                  |
+| EVR  | evrprogpow    | us-east.mining4people.com:24173tls | `EaBGnWtDiAseYZiyvNT1u3WTjAeYtAR7MV` (hans-schmidt, Evrmore maintainer)                             | --job.algo evrprogpow --job.dev gpu1               |
+| MEWC | meowpow       | stratum-eu.rplant.xyz:17120tls     | `MPyNGZSSZ4rbjkVJRLn3v64pMcktpEYJnU` (MeowCoin donation address)                                    | --job.algo meowpow --job.dev gpu1                  |
+| PRL  | pearlhash     | pearl.herominers.com:1200tls       | `prl1p79wzxcvatcsmnzp9xp0ep0rvfe9ans05mjtxnt4d9x0qqej0mtdqfrezc0` (ARC-miner PRL donation address)  | --job.algo pearlhash --job.dev gpu1                |
+| IRON | fishhash      | ironfish.herominers.com:1145tls    | `66e044578b31c6c4c05810b0e5281bdf36138ad41bf6844ba317dc7c506bf9ac` (GMiner/Rigel bundled sample)    | --job.algo fishhash --job.dev gpu1                 |
+| KLS  | karlsenhashv2 | pool.woolypooly.com:3132           | `qzrq7v5jhsc5znvtfdg6vxg7dz5x8dqe4wrh90jkdnwehp6vr8uj7csdss2l7` (Karlsen Devfund)                   | --job.algo karlsenhashv2 --job.dev gpu1            |
+| FLUX | zelhash       | flux.herominers.com:1200tls        | `t1Mzja9iJcEYeW5B4m4s1tJG8M42odFZ16A` (Flux development address)                                    | --job.algo zelhash --job.dev gpu1                  |
+| BEAM | beamhash3     | beam.2miners.com:5252tls           | `2346a827cb56ca74e34680593e50d7b1fa4a169332415a1d5984c6f874395c3684b` (Wilke Trei, Beam)            | --job.algo beamhash3 --job.dev gpu1                |
 
 Without parameters miner will show help:
 
@@ -266,7 +300,7 @@ Directives:
 Options:
 --job '{...}':                      JSON string of the default job params (mostly used in test/bench mode)
   --job.algo:                       algo name of the job (only used with "mine" directive) (null by default)
-  --job.dev:                        device config line "[<dev>[*B][^P],]+", dev = {cpu, gpu<N>, cpu<N>}, N = device number, B = hash batch size, P = number of parallel processes ("cpu" by default)
+  --job.dev:                        device config "[<dev>[*MAIN|*[name=value;...]][^P],]+", dev = {cpu, gpu<N>, cpu<N>}, N = device number, MAIN = algorithm primary tuning value, P = number of parallel processes ("cpu" by default)
   --job.blob_hex:                   hexadecimal string of input blob ("0305A0DBD6BF05CF16E503F3A66F78007CBF34144332ECBFC22ED95C8700383B309ACE1923A0964B00000008BA939A62724C0D7581FCE5761E9D8A0E6A1C3F924FDD8493D1115649C05EB601" by default)
   --job.seed_hex:                   hexadecimal string of seed hash blob (used for rx algos) ("3132333435363738393031323334353637383930313233343536373839303132" by default)
   --job.height:                     Block height used by some algos (0 by default)
@@ -300,8 +334,10 @@ Options:
   mask:                             MSR register mask in hex string with 0x prefix format ("0xFFFFFFFFFFFFFFFF" by default)
 
 --new.algo_param.<name> '{["<key>": <value>,]+}': new algo params, defined by the following keys:
-  dev:                              device config line "[<dev>[*B][^P],]+", dev = {cpu, gpu<N>, cpu<N>}, N = device number, B = hash batch size, P = number of parallel processes ("cpu" by default)
+  dev:                              device config "[<dev>[*MAIN|*[name=value;...]][^P],]+", dev = {cpu, gpu<N>, cpu<N>}, N = device number, MAIN = algorithm primary tuning value, P = number of parallel processes ("cpu" by default)
+  perf:                             local algo hashrate (pool protocol normalization is automatic) (null by default)
   backend:                          GPU implementation (see README backend table) ("auto" by default)
+  tuning:                           partial algorithm-specific GPU tuning object; omitted fields use auto heuristics ({} by default)
 
 --log_level:                        log level: 0=minimal, 1=verbose, 2=network debug, 3=compute core debug (0 by default)
 --bench_algo_params:                benchmark algo params before mining: 0=skip, 1=active MoneroOcean coin algos plus rx/2, 2=all supported algos (1 by default)
@@ -312,11 +348,11 @@ Options:
 You can run test and benchmark separately for algo you need like this:
 
 ```
-./mom test cn/gpu e55cb23e51649a59b127b96b515f2bf7bfea199741a0216cf838ded06eff82df --job '{"algo":"cn/gpu","dev":"gpu1*8"}'
-./mom bench cn/gpu --job '{"algo":"cn/gpu","dev":"gpu1*1280"}'
-./mom bench etchash --job '{"algo":"etchash","dev":"gpu1*256"}'
-./mom bench autolykos2 --job '{"algo":"autolykos2","dev":"gpu1*1"}'
-./mom bench pearlhash --job '{"algo":"pearlhash","dev":"gpu1*131072"}'
+./mom test cn/gpu e55cb23e51649a59b127b96b515f2bf7bfea199741a0216cf838ded06eff82df --job '{"algo":"cn/gpu","dev":"gpu1*[intensity=8]"}'
+./mom bench cn/gpu --job '{"algo":"cn/gpu","dev":"gpu1*[intensity=1280]"}'
+./mom bench etchash --job '{"algo":"etchash","dev":"gpu1*[intensity=256]"}'
+./mom bench autolykos2 --job '{"algo":"autolykos2","dev":"gpu1*[intensity=1]"}'
+./mom bench pearlhash --job '{"algo":"pearlhash","dev":"gpu1*[m=131072]"}'
 ```
 
 ## CPU performance setup

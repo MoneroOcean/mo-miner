@@ -36,7 +36,7 @@ const constexpr uint32_t COMPUTE_THREADS = 1024, TRIMMING_ROUNDS = 80,
                          EDGE_BLOCK_SIZE = 64, EDGE_BITS = 29,
                          BUCKET_MASK_4K = 4095, BUCKET_OFFSET = 255,
                          BUCKET_STEP = 32, EDGE_COUNTER_WORDS = 8192,
-                         DEFAULT_SEED_BLOCKS = 32;
+                         DEFAULT_SEED_BLOCKS = 16;
 
 const constexpr uint32_t MAX_TRIMMED_EDGE_COUNT = 128 * COMPUTE_THREADS,
                          EDGE_BLOCK_MASK = EDGE_BLOCK_SIZE - 1,
@@ -55,9 +55,9 @@ static bool c29_profile_enabled() { static const bool v = [](){ const char* e = 
 
 static uint32_t c29_profile_limit() { static const uint32_t v = [](){ const char* e = std::getenv("MOM_C29_PROFILE_LIMIT"); if (!e || !e[0]) return 1u; const unsigned long p = std::strtoul(e, nullptr, 10); return p == 0 ? UINT32_MAX : static_cast<uint32_t>(p); }(); return v; }
 
-static uint32_t c29_seed_local_size() { static const uint32_t v = [](){ const uint32_t r = c29_env_u32("MOM_C29_SEED_LOCAL_SIZE", 128u); return (r == 64u || r == 128u || r == 256u) ? r : 128u; }(); return v; }
+uint32_t c29_seed_local_size() { static const uint32_t v = [](){ const uint32_t r = c29_env_u32("MOM_C29_SEED_LOCAL_SIZE", 128u); return (r == 64u || r == 128u || r == 256u) ? r : 128u; }(); return v; }
 
-static uint32_t c29_seed_blocks_per_item() { static const uint32_t v = [](){ const uint32_t r = c29_env_u32("MOM_C29_SEED_BLOCKS", DEFAULT_SEED_BLOCKS); return (r == 4u || r == 8u || r == 16u || r == 32u) ? r : DEFAULT_SEED_BLOCKS; }(); return v; }
+uint32_t c29_seed_blocks_per_item() { static const uint32_t v = [](){ const uint32_t r = c29_env_u32("MOM_C29_SEED_BLOCKS", DEFAULT_SEED_BLOCKS); return (r == 4u || r == 8u || r == 16u || r == 32u) ? r : DEFAULT_SEED_BLOCKS; }(); return v; }
 
 static bool c29_direct_seed_enabled() { static const bool v = [](){ const char* e = std::getenv("MOM_C29_DIRECT_SEED"); return !(e && e[0] == '0'); }(); return v; }
 

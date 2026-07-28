@@ -28,13 +28,21 @@ void mom_sycl_poll_pause() {
 #endif
 
 namespace mom_autolykos2 { void autolykos2_cleanup_states() noexcept; }
-namespace mom_beamhash3 { void beamhash3_cleanup_states() noexcept; }
-namespace mom_zelhash { void zelhash_cleanup_states() noexcept; }
+namespace mom_beamhash3 {
+void beamhash3_cleanup_states() noexcept;
+unsigned beamhash3_workgroup(const sycl::device&);
+}
+namespace mom_zelhash {
+void zelhash_cleanup_states() noexcept;
+unsigned zelhash_slot_capacity(const sycl::device&);
+}
 namespace mom_etchash { void etchash_cleanup_states() noexcept; }
 namespace mom_fishhash { void fishhash_cleanup_states() noexcept; }
 namespace mom_kawpow { void kawpow_cleanup_states() noexcept; }
 void cn_gpu_cleanup_states() noexcept;
 void c29_cleanup_states() noexcept;
+uint32_t c29_seed_local_size();
+uint32_t c29_seed_blocks_per_item();
 void pearlhash_cleanup_states() noexcept;
 
 // The registry values are cleared explicitly on runtimes that support ordered destruction. The
@@ -390,9 +398,9 @@ static unsigned autolykos2_intensity(const sycl::device& dev) {
   });
 }
 
-// PearlHash's device batch carries M (not a nonce count). gfx12 performs best with the compact
-// rectangular policy profile; Intel/NVIDIA retain the large square profile that fills their matrix
-// engines efficiently. N/K/rank travel in the job, so this only selects the matching M.
+// PearlHash's device batch carries M (not a nonce count). Choose the same vendor/OS profile used
+// for N/K/rank by the compiler policy: this keeps automatic discovery and an explicitly saved
+// profile identical without recognizing individual GPU products.
 static unsigned pearlhash_intensity(const sycl::device& dev) {
   unsigned long parsed = 0;
   if (mom_parse_env_ulong("MOM_PEARLHASH_INTENSITY", parsed) && parsed >= 256)
@@ -400,8 +408,16 @@ static unsigned pearlhash_intensity(const sycl::device& dev) {
   std::string vendor = dev.get_info<sycl::info::device::vendor>();
   std::transform(vendor.begin(), vendor.end(), vendor.begin(),
                  [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-  return vendor.find("amd") != std::string::npos ||
-         vendor.find("advanced micro") != std::string::npos ? 8192 : 131072;
+  if (vendor.find("nvidia") != std::string::npos) return 65536;
+  if (vendor.find("amd") != std::string::npos ||
+      vendor.find("advanced micro") != std::string::npos) {
+#if defined(_WIN32)
+    return 131072;
+#else
+    return 32768;
+#endif
+  }
+  return 131072;
 }
 
 // FishHash: memory-gather over the 4.6 GiB DAG (bandwidth-bound like etchash). etchash-class intensities.
@@ -428,24 +444,15 @@ static unsigned fishhash_intensity(const sycl::device& dev) {
 // Equihash 125,4: the "intensity" is the number of header nonces searched per solve (one full Wagner
 // pass over a 3.72--4.25 GiB accelerator-specific arena), so one process searches one nonce per
 // dispatch. MOM_ZELHASH_INTENSITY overrides that process batch.
-static unsigned zelhash_intensity(const sycl::device&) {
-  unsigned long parsed = 0;
-  if (mom_parse_env_ulong("MOM_ZELHASH_INTENSITY", parsed) && parsed >= 1)
-    return static_cast<unsigned>(std::min<unsigned long>(parsed, std::numeric_limits<unsigned>::max()));
-  return 1;
-}
-
-// BeamHash III: like zelhash, "intensity" is the nonces searched per dispatch (one Wagner pass).
-static unsigned beamhash3_intensity(const sycl::device&) {
-  unsigned long parsed = 0;
-  if (mom_parse_env_ulong("MOM_BEAMHASH3_INTENSITY", parsed) && parsed >= 1)
-    return static_cast<unsigned>(std::min<unsigned long>(parsed, std::numeric_limits<unsigned>::max()));
-  return 1;
-}
-
 static void add_result_dev(std::string& result_dev, const std::string& add_str) {
   if (!result_dev.empty()) result_dev += ",";
   result_dev += add_str;
+}
+
+static std::string gpu_tuning_entry(
+  const std::string& dev_str, const char* const field, const unsigned value
+) {
+  return dev_str + "*[" + field + "=" + std::to_string(value) + "]";
 }
 
 static bool is_default_gpu_dev(const std::string& dev_str) {
@@ -585,7 +592,7 @@ static void add_gpu_cn_algo_dev(
     unsigned used_batch = 0;
     while (used_batch < best_batch) {
       const unsigned current_batch = std::min(best_batch - used_batch, max_thread_batch);
-      add_result_dev(result_dev, dev_str + "*" + std::to_string(current_batch));
+      add_result_dev(result_dev, gpu_tuning_entry(dev_str, "intensity", current_batch));
       used_batch += current_batch;
     }
   });
@@ -596,18 +603,24 @@ static void add_gpu_cn_algo_dev(
 
 static void add_gpu_c29_algo_dev(std::string& result_dev) {
   for_each_default_gpu([&](const std::string& dev_str, const sycl::device&) {
-    add_result_dev(result_dev, dev_str + "*1"); // batch is not really used by this algo
+    add_result_dev(result_dev, dev_str + "*[seed_workgroup=" +
+      std::to_string(c29_seed_local_size()) + ";seed_blocks=" +
+      std::to_string(c29_seed_blocks_per_item()) + "]");
   });
 }
 
-// Emit "<dev>*<intensity>" for each default GPU that has room for the algo's dataset.
+// Emit the resolved primary tuning dimension for each GPU that has room for the
+// algorithm's dataset. Secondary launch controls stay algorithm-specific and
+// can be overridden in the same bracket/object tuning model.
 static void add_gpu_dataset_algo_dev(
   std::string& result_dev, const uint64_t dataset_bytes, const uint64_t min_global_mem,
-  unsigned (*intensity)(const sycl::device&)
+  unsigned (*intensity)(const sycl::device&), const char* const field = "intensity"
 ) {
   for_each_default_gpu([&](const std::string& dev_str, const sycl::device& dev) {
-    if (pow_has_dataset_memory(dev, dataset_bytes, min_global_mem))
-      add_result_dev(result_dev, dev_str + "*" + std::to_string(intensity(dev)));
+    if (!pow_has_dataset_memory(dev, dataset_bytes, min_global_mem)) return;
+    add_result_dev(result_dev, field
+      ? gpu_tuning_entry(dev_str, field, intensity(dev))
+      : dev_str);
   });
 }
 
@@ -676,11 +689,17 @@ std::map<std::string, std::string> algo_params(
     );
     else if (gpu_etchash_algos.contains(algo)) add_gpu_dataset_algo_dev(result_dev, 4300 * MiB, 5 * GiB, etchash_intensity);
     else if (gpu_autolykos2_algos.contains(algo)) add_gpu_dataset_algo_dev(result_dev, 1 * GiB, 3 * GiB, autolykos2_intensity);
-    else if (gpu_pearlhash_algos.contains(algo)) add_gpu_dataset_algo_dev(result_dev, 256 * MiB, 2 * GiB, pearlhash_intensity); // small A'/B'/noise buffers
+    else if (gpu_pearlhash_algos.contains(algo)) add_gpu_dataset_algo_dev(
+      result_dev, 256 * MiB, 2 * GiB, pearlhash_intensity, "m"
+    ); // small A'/B'/noise buffers
     else if (gpu_fishhash_algos.contains(algo)) add_gpu_dataset_algo_dev(result_dev, 4608 * MiB, 6 * GiB, fishhash_intensity); // 4.6 GiB DAG + 72 MiB light cache
     else if (gpu_karlsenhashv2_algos.contains(algo)) add_gpu_dataset_algo_dev(result_dev, 4608 * MiB, 6 * GiB, fishhash_intensity); // FishHashPlus: same 4.6 GiB DAG/intensity as fishhash
-    else if (gpu_zelhash_algos.contains(algo)) add_gpu_dataset_algo_dev(result_dev, 1856 * MiB, 8 * GiB, zelhash_intensity); // The fused final filter removes level 4: compact records use 3.83 GiB on Intel and 3.72 GiB on HIP ({5,4,3,2}); aligned records use 4.25 GiB in DPC++/CUDA ({5,4,4,3}) and 4.13 GiB in AdaptiveCpp/CUDA's smaller-bucket fallback. Parent trees are reconstructed only for final zero pairs; >=8 GiB leaves runtime headroom.
-    else if (gpu_beamhash3_algos.contains(algo)) add_gpu_dataset_algo_dev(result_dev, 3000 * MiB, 8 * GiB, beamhash3_intensity); // CUDA/HIP default to two 64-byte arenas totaling 4.375 GiB. Intel's fused layout is 7.184 GiB; MOM_BEAMHASH3_COMPACT=0 retains CUDA's 6.758 GiB linear or HIP's 7.184 GiB fused fallback. All supported layouts fit >=8 GiB.
+    else if (gpu_zelhash_algos.contains(algo)) add_gpu_dataset_algo_dev(
+      result_dev, 1856 * MiB, 8 * GiB, mom_zelhash::zelhash_slot_capacity, "slots"
+    ); // The reported slot count and the solver use the same allocation-derived heuristic.
+    else if (gpu_beamhash3_algos.contains(algo)) add_gpu_dataset_algo_dev(
+      result_dev, 3000 * MiB, 8 * GiB, mom_beamhash3::beamhash3_workgroup, "workgroup"
+    ); // The reported workgroup and the solver share one device/compiler heuristic.
     if (!result_dev.empty()) result[algo] = result_dev;
   }
   return result;

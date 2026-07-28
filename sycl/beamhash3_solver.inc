@@ -218,6 +218,28 @@ inline bool beam_compact_enabled(const sycl::device& device) {
                     std::strcmp(value, "off"));
 }
 
+unsigned beamhash3_workgroup(const sycl::device& device) {
+  if (beam_compact_enabled(device)) {
+    const unsigned preferred = mom_is_hip(device) ? 512 : 256;
+    unsigned result = sycl_default_workgroup(device, {128, 256, 512}, preferred);
+    unsigned long parsed = 0;
+    if (mom_parse_env_ulong("MOM_BEAMHASH3_COMPACT_WG", parsed) && parsed >= 16)
+      result = static_cast<unsigned>(std::min<unsigned long>(parsed, 512));
+    return result;
+  }
+
+  unsigned preferred = sycl_is_level_zero_gpu(device) ? 1024 : 640;
+#if !defined(MOM_SYCL_ADAPTIVECPP)
+  if (mom_is_cuda(device)) preferred = 768;
+#endif
+  unsigned result = sycl_default_workgroup(
+    device, {128, 256, 384, 512, 640, 768, 1024}, preferred);
+  unsigned long parsed = 0;
+  if (mom_parse_env_ulong("MOM_BEAMHASH3_WORKGROUP", parsed) && parsed >= 16)
+    result = static_cast<unsigned>(std::min<unsigned long>(parsed, 1024));
+  return result;
+}
+
 constexpr unsigned compact_work_bits(unsigned L) { return BUCKET_WORK_BITS[L]; }
 constexpr unsigned compact_tree_len(unsigned L) { return 1u << L; }
 

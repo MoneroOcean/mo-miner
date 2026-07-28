@@ -16,12 +16,13 @@ if (selectedAlgo && selectedTests.length === 0) {
   throw new Error(`Unknown perf algo: ${selectedAlgo}`);
 }
 
-// Algos whose auto config must resolve to a GPU device with an intensity (gpuN*M).
+// Algos whose auto config must resolve to a GPU with a named intensity.
 const gpuIntensityAlgos = new Set(["kawpow", "firopow", "evrprogpow", "meowpow", "etchash", "autolykos2"]);
 
 function assertGpuIntensityDev(algo, dev) {
   if (!gpuIntensityAlgos.has(algo)) {return;}
-  assert.match(dev, /(?:^|,)gpu\d+\*\d+(?:,|$)/, `${algo} should be auto-detected on a GPU with an intensity`);
+  assert.match(dev, /(?:^|,)gpu\d+\*\[[^\]]*\bintensity=\d+/,
+    `${algo} should be auto-detected on a GPU with an intensity`);
 }
 
 function sampleSummary(result) {

@@ -308,12 +308,17 @@ void Core::set_job(
   const uint64_t    new_nonce          = opt_u64_hex("nonce"),
                     new_nicehash_mask  = opt_u64_hex("nicehash_mask");
 
-  // dev is "<name>" or "<name>*<batch>" (batch == intensity for GPU pow algos)
+  // GPU launch depth is an explicit job field. CPU keeps cpu*B because B selects a
+  // compiled multi-way CPU hash function rather than an algorithm tuning profile.
   const auto dev_parts = tokenize(new_dev_str, '*');
   if (dev_parts.empty() || dev_parts.size() > 2)
     throw std::string("Invalid dev specification");
   const std::string new_dev_name = dev_parts[0];
-  const unsigned new_batch = dev_parts.size() == 2 ? atoi(dev_parts[1].c_str()) : 1;
+  if (new_dev_name.starts_with("gpu") && dev_parts.size() != 1)
+    throw std::string("GPU intensity must use the explicit job intensity field");
+  const unsigned new_batch = new_dev_name.starts_with("gpu")
+    ? opt_uint("intensity", 1)
+    : (dev_parts.size() == 2 ? atoi(dev_parts[1].c_str()) : 1);
   const DEV new_dev =
     new_dev_name == "cpu" ? (rx_cpu_name2config.contains(new_algo_str) ? DEV::RX_CPU : DEV::CPU) :
     new_algo_str == "kawpow" ? DEV::KAWPOW_GPU :

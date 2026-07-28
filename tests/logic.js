@@ -73,11 +73,12 @@ async function loadMinerWithStubs(options = {}) {
     if (id === "./pool.js") {return poolStub;}
     if (id === "./opts.js") {return opts;}
     if (id === "./compiler-policy.js") {return require("../compiler-policy.js");}
+    if (id === "./gpu-tuning.js") {return require("../gpu-tuning.js");}
     return require(id);
   };
 
   vm.runInNewContext(
-    `(function(require, module, exports, process, global, console, Buffer, setTimeout, clearTimeout, setInterval, setImmediate) { ${source}\nmodule.exports.__test = { expectedTestThreads, messageHandler, pearlhashDev, publicAlgoParams };\n})`,
+    `(function(require, module, exports, process, global, console, Buffer, setTimeout, clearTimeout, setInterval, setImmediate) { ${source}\nmodule.exports.__test = { expectedTestThreads, matchesTestResult, messageHandler, publicAlgoParams };\n})`,
     {},
   )(requireStub, moduleStub, moduleStub.exports, processStub, globalStub, console, Buffer, detachedSetTimeout, clearTimeout, noOp, setImmediate);
 
@@ -90,8 +91,8 @@ async function loadMinerWithStubs(options = {}) {
     getSetJob: () => capturedSetJob,
     global: globalStub,
     expectedTestThreads: moduleStub.exports.__test.expectedTestThreads,
+    matchesTestResult: moduleStub.exports.__test.matchesTestResult,
     messageHandler: moduleStub.exports.__test.messageHandler,
-    pearlhashDev: moduleStub.exports.__test.pearlhashDev,
     publicAlgoParams: moduleStub.exports.__test.publicAlgoParams,
     poolWrites,
     sentMessages,
@@ -479,30 +480,34 @@ test("PearlHash CLI algo params preserve named matrix tuning controls", () => {
     opt,
     opts.opt_help,
     "--new.algo_param.pearlhash",
-    JSON.stringify({dev: "gpu1*8192", backend: "native", m: 8192, n: 32768, k: 2048, rank: 128}),
+    JSON.stringify({
+      dev: "gpu1*8192",
+      backend: "native",
+      tuning: {m: 8192, n: 32768, k: 2048, rank: 128},
+    }),
   ), true);
   assert.deepEqual(opt.algo_params.pearlhash, {
     dev: "gpu1*8192",
     perf: null,
     backend: "native",
-    m: 8192,
-    n: 32768,
-    k: 2048,
-    rank: 128,
+    tuning: {m: 8192, n: 32768, k: 2048, rank: 128},
   });
 });
 
-test("PearlHash policy profile normalizes bare, batched, and parallel GPU device specs", async () => {
-  const miner = await loadMinerWithStubs({env: {MOM_GPU_BACKEND: "amd"}});
-  const profile = compilerPolicy.selection("pearlhash", "amd").pearlhashProfile;
-  assert.ok(profile);
-  assert.equal(miner.pearlhashDev("gpu1"), `gpu1*${profile.m}`);
-  assert.equal(miner.pearlhashDev("gpu1*1"), `gpu1*${profile.m}`);
-  assert.equal(
-    miner.pearlhashDev("gpu1*131072^2,gpu2"),
-    `gpu1*${profile.m}^2,gpu2*${profile.m}`,
-  );
-  assert.equal(miner.pearlhashDev("cpu"), "cpu");
+test("PearlHash tuning rejects removed top-level shape fields", () => {
+  const result = spawnSync(process.execPath, [
+    "mom.js",
+    "algo_params",
+    "--new.algo_param.pearlhash",
+    JSON.stringify({dev: "gpu1*8192", m: 8192}),
+  ], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    timeout: 5000,
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /unsupported field: m/);
 });
 
 test("algo_params reports requested and resolved GPU backends without changing CPU specs", async () => {
@@ -510,22 +515,74 @@ test("algo_params reports requested and resolved GPU backends without changing C
   const profile = compilerPolicy.selection("pearlhash", "amd").pearlhashProfile;
   assert.ok(profile);
   miner.global.opt.algo_params = {
-    autolykos2: {dev: "gpu1*8", perf: null, backend: "auto"},
-    pearlhash: {dev: "gpu1*8192", perf: null, backend: "sycl"},
+    autolykos2: {dev: "gpu1*[intensity=8]", perf: null, backend: "auto", tuning: {}},
+    pearlhash: {dev: "gpu1*8192", perf: null, backend: "sycl", tuning: {}},
     "rx/0": {dev: "cpu*8", perf: null, backend: "auto"},
   };
   assert.deepEqual(
     JSON.parse(JSON.stringify(miner.publicAlgoParams({
-      autolykos2: "gpu1*8",
-      pearlhash: "gpu1*8192",
+      autolykos2: "gpu1*[intensity=8]",
+      pearlhash: "gpu1*[m=8192]",
       "rx/0": "cpu*8",
     }))),
     {
-      autolykos2: "gpu1*8:auto[sycl-native]",
-      pearlhash: `gpu1*${profile.m}:sycl`,
+      autolykos2: "gpu1*[intensity=8]:auto[sycl-native]",
+      pearlhash: "gpu1*[m=8192]:sycl",
       "rx/0": "cpu*8",
     },
   );
+});
+
+test("GPU tuning precedence is entry, named object, then automatic heuristic", async () => {
+  const miner = await loadMinerWithStubs({env: {MOM_GPU_BACKEND: "nvidia"}});
+  miner.global.opt.algo_params = {
+    kawpow: {
+      dev: "gpu1*[workgroup=128]",
+      perf: null,
+      backend: "auto",
+      tuning: {intensity: 2000, workgroup: 256, dag_workgroup: 64},
+    },
+  };
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(miner.publicAlgoParams({
+      kawpow: "gpu1*[intensity=1000;workgroup=64;dag_workgroup=32]",
+    }))),
+    {
+      kawpow:
+        "gpu1*[intensity=2000;workgroup=128;dag_workgroup=64]:auto[sycl-native]",
+    },
+  );
+});
+
+test("Beam layout-only tuning keeps its layout-specific workgroup automatic", async () => {
+  const miner = await loadMinerWithStubs({env: {MOM_GPU_BACKEND: "nvidia"}});
+  miner.global.opt.algo_params = {
+    beamhash3: {
+      dev: "gpu1*[layout=full]",
+      perf: null,
+      backend: "auto",
+      tuning: {},
+    },
+  };
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(miner.publicAlgoParams({
+      beamhash3: "gpu1*[workgroup=256]",
+    }))),
+    {beamhash3: "gpu1*[layout=full]:auto[sycl-native]"},
+  );
+});
+
+test("direct GPU benchmark fills omitted primary tuning from device heuristics", async () => {
+  const miner = await loadMinerWithStubs({
+    argv: [
+      "node", "mom.js", "bench", "kawpow",
+      "--job.dev", "gpu1*[workgroup=128]",
+    ],
+    algoParams: {kawpow: "gpu1*[intensity=4096;workgroup=256]"},
+    waitForMessageType: "bench",
+  });
+  const message = miner.sentMessages.find((item) => item.type === "bench");
+  assert.equal(message.job.dev, "gpu1*[intensity=4096;workgroup=128]");
 });
 
 test("repeat schedules delayed callbacks", async () => {
@@ -589,6 +646,13 @@ test("Panthera hash tests wait for every CPU batch result", async () => {
   assert.equal(miner.expectedTestThreads({ thread_id: 0 }), 2);
 });
 
+test("repeated GPU workers may return identical multi-field test results", async () => {
+  const miner = await loadMinerWithStubs();
+  const result = "final_hash mix_hash";
+  assert.equal(miner.matchesTestResult("kawpow", `${result} ${result}`, result), true);
+  assert.equal(miner.matchesTestResult("kawpow", `${result} wrong_hash`, result), false);
+});
+
 test("mine can skip algo benchmark before connecting", async () => {
   const miner = await loadMinerWithStubs({
     argv: [
@@ -601,11 +665,28 @@ test("mine can skip algo benchmark before connecting", async () => {
       "--bench_algo_params",
       "0",
     ],
-    algoParams: { kawpow: "gpu1*1" },
+    algoParams: { kawpow: "gpu1*[intensity=1]" },
   });
 
   assert.equal(typeof miner.getSetJob(), "function");
   assert.deepEqual(miner.sentMessages, []);
+});
+
+test("fixed-algorithm mining honors explicit GPU selection and fills partial tuning", async () => {
+  const miner = await loadMinerWithStubs({
+    argv: [
+      "node", "mom.js", "mine", "pool.example:1", "wallet",
+      "--job.algo", "kawpow",
+      "--job.dev", "gpu1*[workgroup=128]",
+      "--bench_algo_params", "0",
+    ],
+    algoParams: {kawpow: "gpu1*[intensity=4096;workgroup=256]"},
+  });
+
+  assert.equal(
+    miner.global.opt.algo_params.kawpow.dev,
+    "gpu1*[intensity=4096;workgroup=128]",
+  );
 });
 
 test("default algo benchmarking only includes MoneroOcean algos plus rx/2", async () => {
@@ -616,7 +697,7 @@ test("default algo benchmarking only includes MoneroOcean algos plus rx/2", asyn
       "cn-heavy/xhv": "cpu",
       "cn-pico/tlo": "cpu",
       "cn/0": "cpu",
-      "etchash": "gpu1*1",
+      "etchash": "gpu1*[intensity=1]",
       "panthera": "cpu",
       "rx/2": "cpu",
     },
@@ -662,7 +743,7 @@ test("bench_algo_params 2 benchmarks all detected algos", async () => {
 
 test("KawPow benchmark jobs include fixed nonce metadata", async () => {
   const autoBenchmark = await loadMinerWithStubs({
-    algoParams: { kawpow: "gpu1*1" },
+    algoParams: { kawpow: "gpu1*[intensity=1]" },
     waitForMessageType: "bench",
   });
   const directBenchmark = await loadMinerWithStubs({
@@ -702,7 +783,7 @@ test("BeamHash III benchmark jobs include fixed M4-shaped nonce metadata", async
 
 test("Etchash benchmark uses current ETC height instead of default seed", async () => {
   const autoBenchmark = await loadMinerWithStubs({
-    algoParams: { etchash: "gpu1*1" },
+    algoParams: { etchash: "gpu1*[intensity=1]" },
     waitForMessageType: "bench",
   });
   const directBenchmark = await loadMinerWithStubs({
@@ -726,7 +807,7 @@ test("pool login does not infer algo from pass when benchmarks are skipped", asy
     opt: {
       bench_algo_params: 0,
       job: { algo: null },
-      algo_params: { kawpow: { dev: "gpu1*1", perf: null } },
+      algo_params: { kawpow: { dev: "gpu1*[intensity=1]", perf: null } },
     },
   }, async ({ socket, writes }) => {
     pool.connect_pool_throttle(0, noOp);
@@ -742,9 +823,9 @@ test("pool login advertises raw KawPow performance as kawpow1", async () => {
   await withMockPool({
     opt: {
       algo_params: {
-        kawpow: { dev: "gpu1*37282560", perf: 20882200 },
-        c29: { dev: "gpu1*1", perf: 2.79 },
-        etchash: { dev: "gpu1*33554432", perf: 21090000 },
+        kawpow: { dev: "gpu1*[intensity=37282560]", perf: 20882200 },
+        c29: { dev: "gpu1", perf: 2.79 },
+        etchash: { dev: "gpu1*[intensity=33554432]", perf: 21090000 },
       },
     },
   }, async ({ socket, writes }) => {
@@ -789,7 +870,7 @@ test("donation pool mines a MoneroOcean algo while the rig is configured for pea
     opt: {
       bench_algo_params: 0,
       job: { algo: "pearlhash" },                            // rig context is pearlhash; must NOT leak to the donate pool
-      algo_params: { pearlhash: { dev: "gpu1*131072", perf: 1 }, "rx/0": { dev: "cpu", perf: 1 } },
+      algo_params: { pearlhash: { dev: "gpu1*[m=131072]", perf: 1 }, "rx/0": { dev: "cpu", perf: 1 } },
     },
   }, async ({ socket, writes }) => {
     pool.connect_pool_throttle(0, (job) => { donatedJob = job; return job; });

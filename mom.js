@@ -7,6 +7,7 @@ const fs   = require("fs");
 const os   = require("os");
 const h    = require("./helper.js");
 const compilerPolicy = require("./compiler-policy.js");
+const gpuTuning = require("./gpu-tuning.js");
 const o    = require("./opts.js");
 const p    = require("./pool.js");
 
@@ -59,7 +60,7 @@ function reallyExit(code) {
 }
 
 function normalizeTestResult(algo, value) {
-  if (!algo.includes("c29")) {return value;}
+  if (!algo.includes("c29")) {return value.trim();}
 
   const tokens = value.trim().split(/\s+/);
   const hasEol = tokens[tokens.length - 1] === "EOL";
@@ -70,6 +71,17 @@ function normalizeTestResult(algo, value) {
 
 function normalizeExpectedResults(algo, value) {
   return value.split("|").map((expected) => normalizeTestResult(algo, expected));
+}
+
+function matchesTestResult(algo, actual, expected) {
+  if (algo.includes("c29")) {
+    return normalizeTestResult(algo, actual) === normalizeTestResult(algo, expected);
+  }
+  const actualTokens = actual.trim().split(/\s+/);
+  const expectedTokens = expected.trim().split(/\s+/);
+  return expectedTokens.length > 0 &&
+    actualTokens.length % expectedTokens.length === 0 &&
+    actualTokens.every((token, index) => token === expectedTokens[index % expectedTokens.length]);
 }
 
 function forceExitByDefault() {
@@ -385,8 +397,9 @@ function handleTestResult(msg) {
   if (++test.thread_tested < test_threads) {return;}
 
   const expectedResults = normalizeExpectedResults(global.opt.job.algo, test.result_hash_hex);
-  const actualResult = normalizeTestResult(global.opt.job.algo, test.result);
-  if (!expectedResults.includes(actualResult)) {
+  if (!expectedResults.some(
+    (expected) => matchesTestResult(global.opt.job.algo, test.result, expected)
+  )) {
     fs.writeSync(2, "FAILED: " + test.result + " != " + test.result_hash_hex + " " + test_threads + "\n");
     return exit(1);
   }
@@ -444,9 +457,7 @@ function set_algo_msr(algo) {
 
 function jobDev(algo) {
   const algo_param = global.opt.algo_params[algo];
-  let dev = algo_param && algo_param.dev ? algo_param.dev : global.opt.job.dev;
-  if (algo === "pearlhash") {dev = pearlhashDev(dev);}
-  return dev;
+  return algo_param && algo_param.dev ? algo_param.dev : global.opt.job.dev;
 }
 
 function requestedJobBackend(algo) {
@@ -466,27 +477,75 @@ function jobBackend(algo) {
   return selected ? selected.backend : "auto";
 }
 
+function mergeDeviceTuning(algo, heuristic, named, entry) {
+  const tuning = {...heuristic, ...named, ...entry};
+  // Beam's automatic workgroup depends on the selected memory layout. Discovery reports the
+  // default layout's workgroup; when a user changes only the layout, leave workgroup unresolved
+  // so the hashing worker derives the correct device-specific value for that layout.
+  const requestedBeamLayout = entry.layout ?? named.layout;
+  if (algo === "beamhash3" && requestedBeamLayout &&
+      requestedBeamLayout !== "auto" &&
+      entry.workgroup === undefined && named.workgroup === undefined) {
+    delete tuning.workgroup;
+  }
+  return tuning;
+}
+
+function resolvedDeviceList(algo, configuredDev, heuristicDev, namedTuning = {}) {
+  const configured = gpuTuning.parseDeviceList(configuredDev, algo);
+  const heuristic = gpuTuning.parseDeviceList(heuristicDev, algo);
+  const primaryField = gpuTuning.primaryTuningField(algo);
+  const configuredCounts = new Map();
+  for (const entry of configured) {
+    configuredCounts.set(entry.device, (configuredCounts.get(entry.device) || 0) + 1);
+  }
+  const result = [];
+  for (const entry of configured) {
+    if (!entry.device.startsWith("gpu")) {
+      result.push(entry);
+      continue;
+    }
+    const matches = heuristic.filter((candidate) => candidate.device === entry.device);
+    const explicitShape = entry.tuning[primaryField] !== undefined;
+    if (!explicitShape && configuredCounts.get(entry.device) === 1 && matches.length > 1) {
+      for (const candidate of matches) {
+        result.push({
+          ...entry,
+          tuning: mergeDeviceTuning(algo, candidate.tuning, namedTuning, entry.tuning),
+        });
+      }
+      continue;
+    }
+    const heuristicTuning = matches.length === 1 ? matches[0].tuning :
+      matches.length > 1
+        ? {intensity: matches.reduce((total, candidate) =>
+          total + (candidate.tuning.intensity || 0), 0)}
+        : {};
+    result.push({
+      ...entry,
+      tuning: mergeDeviceTuning(algo, heuristicTuning, namedTuning, entry.tuning),
+    });
+  }
+  return gpuTuning.formatDeviceList(result);
+}
+
+function configuredTuning(algo) {
+  return (global.opt.algo_params[algo] && global.opt.algo_params[algo].tuning) || {};
+}
+
 function pearlhashShape() {
   const configured = global.opt.algo_params.pearlhash || {};
+  const tuning = configured.tuning || {};
   const gpu = compilerPolicy.gpuFromEnv(process.env);
   const selected = gpu && compilerPolicy.selection("pearlhash", gpu, process.platform);
   const profile = selected && selected.pearlhashProfile;
   return {
-    m: Number(configured.m || (profile && profile.m) || 131072),
-    n: Number(configured.n || (profile && profile.n) || configured.m ||
+    m: Number(tuning.m || (profile && profile.m) || 131072),
+    n: Number(tuning.n || (profile && profile.n) || tuning.m ||
       (profile && profile.m) || 131072),
-    k: Number(configured.k || (profile && profile.k) || 4096),
-    rank: Number(configured.rank || (profile && profile.rank) || 256),
+    k: Number(tuning.k || (profile && profile.k) || 4096),
+    rank: Number(tuning.rank || (profile && profile.rank) || 256),
   };
-}
-
-function pearlhashDev(dev) {
-  if (typeof dev !== "string" || !dev) {return dev;}
-  const m = pearlhashShape().m;
-  return dev.split(",").map((entry) => {
-    const match = entry.match(/^(gpu\d+)(?:\*\d+)?(\^\d+)?$/);
-    return match ? `${match[1]}*${m}${match[2] || ""}` : entry;
-  }).join(",");
 }
 
 function addPearlHashJobFields(job) {
@@ -707,25 +766,28 @@ function reusableLastNonce(last_job_can_be_used) {
   return last_job_can_be_used && last_job.nonce ? last_job.nonce : "0";
 }
 
-function workerRuntimeEnv(algo) {
+function workerRuntimeEnv(algo, devEntry = null) {
   // Preserve "auto" here so compiler policy can distinguish its measured default from an explicit
   // generic fallback. The resolved backend still travels in the job and is shown in status output.
   const env = compilerPolicy.workerEnv(
     algo, process.env, process.platform, requestedJobBackend(algo));
-  if (algo !== "c29") {return env;}
+  const entryTuning = devEntry
+    ? gpuTuning.parseDeviceEntry(devEntry, algo).tuning : {};
+  const tuningEnv = gpuTuning.tuningEnvironment(
+    algo, {...configuredTuning(algo), ...entryTuning});
+  if (algo !== "c29") {return Object.assign(env, tuningEnv);}
 
   // C29 submits hundreds of short SYCL kernels per second; legacy non-immediate
   // Level Zero command lists avoid the one-core immediate-list path on Intel GPUs.
   return Object.assign(env, {
     SYCL_UR_USE_LEVEL_ZERO_V2: "0",
     SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS: "0",
-    MOM_C29_SEED_BLOCKS: process.env.MOM_C29_SEED_BLOCKS || "16",
-  });
+  }, tuningEnv);
 }
 
 function ensureWorkersForJob(algo, dev) {
   if (!last_job || last_job.algo !== algo || last_job.dev !== dev)
-  {h.recreate_threads(dev, messageHandler, workerRuntimeEnv(algo));}
+  {h.recreate_threads(dev, messageHandler, (entry) => workerRuntimeEnv(algo, entry));}
 }
 
 // prev_job can be either job json from the pool or
@@ -760,7 +822,6 @@ function prepareBenchmarkJob(job) {
     ? compilerPolicy.validateBackend(job.backend)
     : jobBackend(normalizeAlgoName(job.algo));
   if (normalizeAlgoName(job.algo) === "pearlhash") {
-    job.dev = pearlhashDev(job.dev);
     addPearlHashJobFields(job);
   }
   if (isNonceAt32Algo(job.algo)) {
@@ -805,7 +866,7 @@ function bench_algo(algo, cb) {
     seed_hex: global.opt.job.seed_hex,
     pool_id:  "", // to drop last nonce messages from this job
   });
-  h.recreate_threads(job.dev, messageHandler, workerRuntimeEnv(algo));
+  h.recreate_threads(job.dev, messageHandler, (entry) => workerRuntimeEnv(algo, entry));
   // Live-size DAG/table builds (benchHeightByAlgo) take ~30s on a fast GPU before the
   // 60s+ measurement window even starts, so the old 2 minute cap could cut off honest runs.
   const timeout = setTimeout(function() {
@@ -1014,15 +1075,18 @@ function add_algo_params(params) {
   }
   for (const algo in params) {
     if (algo.startsWith("@")) {continue;}
-    if (!(algo in global.opt.algo_params))
-    {global.opt.algo_params[algo] = {
-      dev: params[algo],
-      perf: null,
-      backend: compilerPolicy.validateBackend(params[`@backend:${algo}`] || "auto"),
-    };}
-  }
-  if (global.opt.algo_params.pearlhash) {
-    global.opt.algo_params.pearlhash.dev = pearlhashDev(global.opt.algo_params.pearlhash.dev);
+    const configured = global.opt.algo_params[algo];
+    if (!configured) {
+      global.opt.algo_params[algo] = {
+        dev: gpuTuning.formatDeviceList(gpuTuning.parseDeviceList(params[algo], algo)),
+        perf: null,
+        backend: compilerPolicy.validateBackend(params[`@backend:${algo}`] || "auto"),
+        tuning: {},
+      };
+    } else {
+      configured.dev = resolvedDeviceList(
+        algo, configured.dev, params[algo], configured.tuning || {});
+    }
   }
 }
 
@@ -1030,7 +1094,10 @@ function publicAlgoParams(params) {
   const result = {};
   for (const [algo, rawDev] of Object.entries(params)) {
     if (algo.startsWith("@")) {continue;}
-    const dev = algo === "pearlhash" ? pearlhashDev(rawDev) : rawDev;
+    const configured = global.opt.algo_params[algo];
+    const dev = resolvedDeviceList(
+      algo, configured && configured.dev ? configured.dev : rawDev,
+      rawDev, configuredTuning(algo));
     if (!/\bgpu\d+/i.test(dev)) {
       result[algo] = dev;
       continue;
@@ -1054,7 +1121,18 @@ function use_algo_param_benchmarks() {
 function prepare_fixed_algo_params() {
   const algo = normalizeAlgoName(global.opt.job.algo);
   if (!algo) {return;}
-  const algo_param = global.opt.algo_params[algo] || { dev: global.opt.job.dev, perf: null };
+  const detected = global.opt.algo_params[algo];
+  let algo_param = detected || {dev: global.opt.job.dev, perf: null, backend: "auto", tuning: {}};
+  // The default job device is CPU. A non-default --job.dev on a fixed-algorithm command is an
+  // explicit user selection and must override discovery while inheriting any omitted GPU tuning.
+  if (global.opt.job.dev !== o.opt_help.job.dev[0]) {
+    algo_param = {
+      ...algo_param,
+      dev: resolvedDeviceList(
+        algo, global.opt.job.dev, detected ? detected.dev : global.opt.job.dev,
+        algo_param.tuning || {}),
+    };
+  }
   global.opt.job.algo = algo;
   global.opt.algo_params = { [algo]: algo_param };
 }
@@ -1066,6 +1144,7 @@ function start_after_algo_params() {
 }
 
 function createComputeCore() {
+  if (compute_core) {return compute_core;}
   // The control core performs device discovery/MSR work before an algorithm worker exists. In a
   // multi-compiler source tree the last build artifact is not necessarily runnable with the DLLs
   // on the ambient PATH, so load the selected GPU policy's default worker for this probe. A real
@@ -1090,6 +1169,62 @@ function startBenchJob() {
   h.messageWorkers({type: "bench", job: last_job = prepareBenchmarkJob(global.opt.job)});
 }
 
+function resolveDirectJobTuning(params) {
+  const algo = normalizeAlgoName(global.opt.job.algo);
+  const heuristicDev = params[algo];
+  if (!heuristicDev) {
+    err_exit(`No automatic GPU tuning is available for ${algo} on the selected device`);
+    return false;
+  }
+  global.opt.job.dev = resolvedDeviceList(
+    algo, global.opt.job.dev, heuristicDev, configuredTuning(algo));
+  return true;
+}
+
+function startWithDirectJobTuning(start) {
+  const algo = normalizeAlgoName(global.opt.job.algo);
+  if (!gpuTuning.needsPrimaryTuning(global.opt.job.dev, algo)) {return start();}
+  createComputeCore();
+  const onError = function(value) {
+    err_exit("Can't derive automatic GPU tuning: " +
+      JSON.stringify(value && value.message ? value.message : value));
+  };
+  compute_core.from.once("algo_params", function(params) {
+    compute_core.from.removeListener("error", onError);
+    if (resolveDirectJobTuning(params)) {start();}
+  });
+  compute_core.from.once("error", onError);
+  compute_core.emit_to("algo_params", detect_cpu());
+}
+
+function startTestJob() {
+  global.opt.job.backend_request = compilerPolicy.validateBackend(global.opt.job.backend || "auto");
+  global.opt.job.backend = global.opt.job.backend_request !== "auto"
+    ? compilerPolicy.validateBackend(global.opt.job.backend)
+    : jobBackend(normalizeAlgoName(global.opt.job.algo));
+  if (normalizeAlgoName(global.opt.job.algo) === "pearlhash") {
+    addPearlHashJobFields(global.opt.job);
+  }
+  h.recreate_threads(global.opt.job.dev, messageHandler,
+    (entry) => workerRuntimeEnv(normalizeAlgoName(global.opt.job.algo), entry));
+  h.messageWorkers({type: "test", job: global.opt.job});
+}
+
+function startDirectBenchmark() {
+  h.recreate_threads(global.opt.job.dev, messageHandler,
+    (entry) => workerRuntimeEnv(normalizeAlgoName(global.opt.job.algo), entry));
+  if (!use_msr_tuning()) {
+    startBenchJob();
+    return;
+  }
+  createComputeCore();
+  readMsrThen(function(v) {
+    global.opt.default_msrs = h.unpack_msr(v); // to restore them on exit
+    set_algo_msr(global.opt.job.algo);
+    startBenchJob();
+  }, startBenchJob);
+}
+
 switch (directive) {
   case "mine":
     install_exit_handlers();
@@ -1108,16 +1243,7 @@ switch (directive) {
     break;
 
   case "test":
-    global.opt.job.backend_request = compilerPolicy.validateBackend(global.opt.job.backend || "auto");
-    global.opt.job.backend = global.opt.job.backend_request !== "auto"
-      ? compilerPolicy.validateBackend(global.opt.job.backend)
-      : jobBackend(normalizeAlgoName(global.opt.job.algo));
-    if (normalizeAlgoName(global.opt.job.algo) === "pearlhash") {
-      global.opt.job.dev = pearlhashDev(global.opt.job.dev);
-      addPearlHashJobFields(global.opt.job);
-    }
-    h.recreate_threads(global.opt.job.dev, messageHandler, workerRuntimeEnv(normalizeAlgoName(global.opt.job.algo)));
-    h.messageWorkers({type: "test", job: global.opt.job});
+    startWithDirectJobTuning(startTestJob);
     break;
 
   case "bench":
@@ -1126,17 +1252,7 @@ switch (directive) {
     // abruptly killing only the parent process. An explicit close drains every compute worker and
     // lets N-API/SYCL environment cleanup hooks run before the benchmark process exits.
     install_benchmark_control();
-    h.recreate_threads(global.opt.job.dev, messageHandler, workerRuntimeEnv(normalizeAlgoName(global.opt.job.algo)));
-    if (!use_msr_tuning()) {
-      startBenchJob();
-      break;
-    }
-    createComputeCore();
-    readMsrThen(function(v) {
-      global.opt.default_msrs = h.unpack_msr(v); // to restore them on exit
-      set_algo_msr(global.opt.job.algo);
-      startBenchJob();
-    }, startBenchJob);
+    startWithDirectJobTuning(startDirectBenchmark);
     break;
 
   case "algo_params":

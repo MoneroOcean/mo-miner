@@ -7,6 +7,7 @@ const events  = require("events");
 const cluster = require("cluster");
 const fs      = require("fs");
 const childProcess = require("child_process");
+const gpuTuning = require("./gpu-tuning");
 
 const is_windows_process = process.platform === "win32";
 const development_build_platform = is_windows_process ? "win" : "lin";
@@ -242,7 +243,9 @@ function installWorkerExitHandlers(close_worker_process) {
 
 function startWorkerJob(compute_core, msg) {
   // find dev for this specific thread from msg.job.dev list
-  msg.job.dev = module.exports.get_thread_dev(thread_id, msg.job.dev);
+  const selected = gpuTuning.parseDeviceEntry(
+    module.exports.get_thread_dev(thread_id, msg.job.dev), msg.job.algo);
+  gpuTuning.applyNativeJobTuning(msg.job, selected, msg.job.algo);
   msg.job.thread_id = thread_id;
   compute_core.emit_to(msg.type, msg.job);
 }
@@ -305,14 +308,23 @@ module.exports.cluster_process = function() {
 
 // get thread dev stripping ^thread specification from it
 function parseThreadDev(dev_part) {
-  const m = dev_part.match(/^([^^]+)(?:\^(\d+))?$/);
-  return { dev: m ? m[1] : dev_part, threads: m && m[2] ? Number.parseInt(m[2], 10) : 1 };
+  const parsed = gpuTuning.parseDeviceEntry(dev_part);
+  const processSuffix = parsed.processes > 1 ? `^${parsed.processes}` : "";
+  return {
+    // Keep *B intact here: its primary-field meaning is algorithm-specific and
+    // is resolved in the worker, where the job's algorithm is available.
+    dev: dev_part.slice(0, dev_part.length - processSuffix.length),
+    threads: parsed.processes,
+  };
 }
 
-module.exports.is_valid_dev = function(dev) {
-  return typeof dev === "string" && dev.split(",").every(function(dev_part) {
-    return /^(?:cpu\d*|gpu\d+)(?:\*[1-9]\d*)?(?:\^[1-9]\d*)?$/.test(dev_part);
-  });
+module.exports.is_valid_dev = function(dev, algo = "") {
+  try {
+    gpuTuning.parseDeviceList(dev, algo);
+    return true;
+  } catch {
+    return false;
+  }
 };
 
 module.exports.get_thread_dev = function(thread_id, devs) {
@@ -335,8 +347,12 @@ module.exports.get_dev_threads = function(dev) {
 
 // return dev *batch value
 module.exports.get_dev_batch = function(dev) {
-  const m = dev.match(/\*(\d+)$/);
-  return m ? Number.parseInt(m[1], 10) : 1;
+  try {
+    const tuning = gpuTuning.parseDeviceEntry(dev).tuning;
+    return tuning.intensity || tuning.m || 1;
+  } catch {
+    return 1;
+  }
 };
 
 function markExpectedClose(worker, msg) {
@@ -529,7 +545,9 @@ module.exports.recreate_threads = function(dev, messageHandler, extraEnv = {}) {
   worker_procs = {};
   const curr_thread_count = this.get_dev_threads(dev);
   for (let i = 0; i < curr_thread_count; ++ i) {
-    const env = childEnv({thread_id: i, log_level: global.opt.log_level, ...extraEnv});
+    const selectedDev = this.get_thread_dev(i, dev);
+    const selectedEnv = typeof extraEnv === "function" ? extraEnv(selectedDev, i) : extraEnv;
+    const env = childEnv({thread_id: i, log_level: global.opt.log_level, ...selectedEnv});
     if (use_subprocess_workers) {createSubprocessThread(i, env, messageHandler);}
     else {createClusterThread(i, env, messageHandler);}
   }

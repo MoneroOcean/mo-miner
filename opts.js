@@ -5,6 +5,7 @@
 const path = require("path");
 const h    = require("./helper.js");
 const compilerPolicy = require("./compiler-policy.js");
+const gpuTuning = require("./gpu-tuning.js");
 
 const version_str = require("./package.json").version;
 
@@ -22,9 +23,9 @@ module.exports.pool_create = function(url, port, is_tls, login, pass) {
   };
 };
 
-const dev_help = 'device config line "[<dev>[*B][^P],]+", dev = ' +
-                 "{cpu, gpu<N>, cpu<N>}, " +
-                 "N = device number, B = hash batch size, P = number of parallel processes";
+const dev_help = 'device config "[<dev>[*MAIN|*[name=value;...]][^P],]+", dev = ' +
+                 "{cpu, gpu<N>, cpu<N>}, N = device number, MAIN = algorithm primary tuning value, " +
+                 "P = number of parallel processes";
 
 module.exports.opt_help = {
   job: {
@@ -97,6 +98,7 @@ module.exports.opt_help = {
       dev:      [ "cpu", dev_help ],
       perf:     [ null, "local algo hashrate (pool protocol normalization is automatic)" ],
       backend:  [ "auto", "GPU implementation (see README backend table)" ],
+      tuning:   [ {}, "partial algorithm-specific GPU tuning object; omitted fields use auto heuristics" ],
     },
     _map: {}
   },
@@ -163,6 +165,7 @@ function formatDefaultValue(def_val) {
   switch (typeof def_val) {
     case "string": return "\"" + def_val + "\"";
     case "bigint": return "0x" + def_val.toString(16);
+    case "object": return JSON.stringify(def_val);
     default: return def_val;
   }
 }
@@ -180,7 +183,7 @@ function parseJsonObject(arg, val) {
   }
   if (!isObject(parsed))
   {return module.exports.print_help("Option " + arg + " JSON param must be an object: " + val);}
-  if ("dev" in parsed && !h.is_valid_dev(parsed.dev))
+  if ("dev" in parsed && !h.is_valid_dev(parsed.dev, parsed.algo || ""))
   {return module.exports.print_help("Option " + arg + " has invalid dev value: " + parsed.dev);}
   return parsed;
 }
@@ -242,26 +245,26 @@ function validateGpuBackend(arg, parsed, value) {
   return value;
 }
 
-function preservePearlHashShape(arg, parsed, value) {
-  if (!arg.endsWith(".pearlhash")) {return value;}
-  for (const key of ["m", "n", "k", "rank"]) {
-    if (!(key in parsed)) {continue;}
-    const number = Number(parsed[key]);
-    if (!Number.isSafeInteger(number) || number <= 0) {
-      return module.exports.print_help(
-        "Option " + arg + " has invalid Pearl " + key + " value: " + parsed[key]
-      );
-    }
-    value[key] = number;
-  }
-  return value;
+function algoNameFromOption(arg) {
+  const marker = ".algo_param.";
+  const position = arg.indexOf(marker);
+  return position === -1 ? "" : arg.slice(position + marker.length);
 }
 
 function validateAlgoParamOption(arg, parsed, value) {
-  if (!h.is_valid_dev(value.dev))
-  {return module.exports.print_help("Option " + arg + " has invalid dev value: " + value.dev);}
-  return preservePearlHashShape(arg, parsed,
-    validateGpuBackend(arg, parsed, validateAlgoPerf(arg, parsed, value)));
+  const algo = algoNameFromOption(arg);
+  const supported = new Set(["dev", "perf", "backend", "tuning"]);
+  const unknown = Object.keys(parsed).find((field) => !supported.has(field));
+  if (unknown) {
+    return module.exports.print_help(`Option ${arg} has unsupported field: ${unknown}`);
+  }
+  try {
+    gpuTuning.parseDeviceList(value.dev, algo);
+    value.tuning = gpuTuning.validateTuning(algo, value.tuning || {}, `${arg}.tuning`);
+  } catch (error) {
+    return module.exports.print_help("Option " + arg + " has invalid GPU tuning: " + error.message);
+  }
+  return validateGpuBackend(arg, parsed, validateAlgoPerf(arg, parsed, value));
 }
 
 function validateTemplateValue(arg, key_path_str, parsed, value) {

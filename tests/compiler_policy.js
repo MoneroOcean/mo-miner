@@ -6,6 +6,8 @@ const policy = require("../compiler-policy");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const gpuTuning = require("../gpu-tuning");
+const helper = require("../helper");
 const {
   parseDiscreteGpuDevices, parseGpuDevices,
 } = require("./common/miner_command");
@@ -35,11 +37,93 @@ test("GPU test discovery excludes integrated devices", () => {
 });
 
 test("reported backend annotations are not copied into GPU device specifications", () => {
-  assert.deepEqual(policy.parseReportedAlgoParam("gpu1*8:auto[sycl-native]"),
-    {dev: "gpu1*8", backend: "auto"});
-  assert.deepEqual(policy.parseReportedAlgoParam("gpu2*1:sycl"),
-    {dev: "gpu2*1", backend: "sycl"});
+  assert.deepEqual(policy.parseReportedAlgoParam("gpu1*[intensity=8]:auto[sycl-native]"),
+    {dev: "gpu1*[intensity=8]", backend: "auto"});
+  assert.deepEqual(policy.parseReportedAlgoParam("gpu2*[intensity=1]:sycl"),
+    {dev: "gpu2*[intensity=1]", backend: "sycl"});
   assert.deepEqual(policy.parseReportedAlgoParam("cpu*8"), {dev: "cpu*8"});
+});
+
+test("GPU tuning syntax preserves per-device workers and partial overrides", () => {
+  const entries = gpuTuning.parseDeviceList(
+    "gpu1*[intensity=39612672;workgroup=256]^2,gpu2*[workgroup=128]", "kawpow");
+  assert.equal(gpuTuning.formatDeviceList(entries),
+    "gpu1*[intensity=39612672;workgroup=256]^2,gpu2*[workgroup=128]");
+  assert.equal(gpuTuning.formatDeviceList(
+    gpuTuning.parseDeviceList("gpu1*39612672", "kawpow")),
+  "gpu1*[intensity=39612672]");
+  assert.equal(gpuTuning.formatDeviceList(gpuTuning.parseDeviceList("gpu1*128", "c29")),
+    "gpu1*[seed_workgroup=128]");
+  assert.equal(gpuTuning.formatDeviceList(gpuTuning.parseDeviceList("gpu1*8192", "pearlhash")),
+    "gpu1*[m=8192]");
+  assert.equal(gpuTuning.formatDeviceList(gpuTuning.parseDeviceList("gpu1*176", "zelhash")),
+    "gpu1*[slots=176]");
+  assert.equal(gpuTuning.formatDeviceList(gpuTuning.parseDeviceList("gpu1*256", "beamhash3")),
+    "gpu1*[workgroup=256]");
+  assert.throws(() => gpuTuning.parseDeviceList("gpu1*[]", "kawpow"), /must not be empty/);
+  assert.throws(() => gpuTuning.parseDeviceList("gpu1[intensity=2]", "kawpow"),
+    /invalid device entry/);
+  assert.throws(() => gpuTuning.parseDeviceList("gpu1*[intensity=2]", "beamhash3"),
+    /intensity/);
+  assert.throws(() => gpuTuning.parseDeviceList("gpu1*[workgroup=63]", "kawpow"),
+    /must be one of/);
+  assert.throws(() => gpuTuning.parseDeviceList("gpu1*[intensity=1e3]", "kawpow"),
+    /base-10 integer/);
+  assert.deepEqual(gpuTuning.parseDeviceList(
+    "gpu1*[dag_chunk=0]", "kawpow"
+  )[0].tuning, {dag_chunk: 0});
+  assert.deepEqual(gpuTuning.parseDeviceList(
+    "gpu1*[cache_block=0]", "pearlhash"
+  )[0].tuning, {cache_block: 0});
+});
+
+test("Pearl tuning is applied independently to each native worker job", () => {
+  const first = {algo: "pearlhash", pearlhash_n: 131072, pearlhash_k: 4096, pearlhash_rank: 256};
+  gpuTuning.applyNativeJobTuning(
+    first, gpuTuning.parseDeviceEntry("gpu1*[m=8192;k=2048]", "pearlhash"), "pearlhash");
+  assert.deepEqual(first, {
+    algo: "pearlhash", dev: "gpu1", intensity: 8192,
+    pearlhash_n: 8192, pearlhash_k: 2048, pearlhash_rank: 256,
+  });
+  const second = {algo: "pearlhash", pearlhash_n: 131072, pearlhash_k: 4096, pearlhash_rank: 256};
+  gpuTuning.applyNativeJobTuning(second,
+    gpuTuning.parseDeviceEntry("gpu1*[m=16384;n=32768;rank=128]", "pearlhash"), "pearlhash");
+  assert.deepEqual(second, {
+    algo: "pearlhash", dev: "gpu1", intensity: 16384,
+    pearlhash_n: 32768, pearlhash_k: 4096, pearlhash_rank: 128,
+  });
+});
+
+test("thread selection preserves algorithm-specific *B shorthand until worker resolution", () => {
+  assert.equal(helper.get_dev_threads("gpu1*128^2,gpu2*[workgroup=256]"), 3);
+  assert.equal(helper.get_thread_dev(0, "gpu1*128^2,gpu2*[workgroup=256]"), "gpu1*128");
+  assert.equal(helper.get_thread_dev(1, "gpu1*128^2,gpu2*[workgroup=256]"), "gpu1*128");
+  assert.equal(helper.get_thread_dev(2, "gpu1*128^2,gpu2*[workgroup=256]"),
+    "gpu2*[workgroup=256]");
+
+  const c29 = gpuTuning.parseDeviceEntry(helper.get_thread_dev(0, "gpu1*128^2"), "c29");
+  assert.deepEqual(c29.tuning, {seed_workgroup: 128});
+  const job = {algo: "c29"};
+  gpuTuning.applyNativeJobTuning(job, c29, "c29");
+  assert.deepEqual(job, {algo: "c29", dev: "gpu1", intensity: 1});
+  assert.deepEqual(gpuTuning.tuningEnvironment("c29", c29.tuning),
+    {MOM_C29_SEED_LOCAL_SIZE: "128"});
+  assert.deepEqual(gpuTuning.tuningEnvironment("beamhash3", {workgroup: 256}), {
+    MOM_BEAMHASH3_WORKGROUP: "256",
+    MOM_BEAMHASH3_COMPACT_WG: "256",
+  });
+});
+
+test("portable Pearl tuning maps generic controls onto relevant vendor kernels", () => {
+  assert.deepEqual(gpuTuning.tuningEnvironment("pearlhash", {
+    workgroup: 128, cache_block: 32, tile: "4x2",
+  }), {
+    MOM_PEARLHASH_AMD_WMMA_THREADS: "128",
+    MOM_PEARLHASH_AMD_WMMA_CACHE_BLOCK: "32",
+    MOM_PEARLHASH_AMD_DP4A_CACHE_BLOCK: "32",
+    MOM_PEARLHASH_CU_BLK: "32",
+    MOM_PEARLHASH_AMD_DP4A_TILE: "4x2",
+  });
 });
 
 test("GPU compiler Markdown selects platform defaults and overrides", () => {

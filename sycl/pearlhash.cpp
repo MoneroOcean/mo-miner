@@ -2900,7 +2900,7 @@ int pearlhash(
   if (input_size < 76) throw std::string("Bad pearlhash input length (need 76-byte header)");
   const int k = static_cast<int>(requested_k);
   const int rank = static_cast<int>(requested_rank);
-  // M comes from the dev batch "gpuN*<intensity>"; N can be selected independently. Native HIP
+  // M arrives as the worker's explicit primary tuning value; N can be selected independently. Native HIP
   // tests use the smallest square that activates the 32x32 cache-block traversal, so the
   // native-vs-SYCL checksum comparison covers production tile mapping without making CPU tests
   // expensive. Other implementations retain the compact 256x256 vector.

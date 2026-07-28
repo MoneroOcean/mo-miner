@@ -70,7 +70,7 @@ function osName(platform) { return platform === "win32" ? "windows" : "linux"; }
 
 // algo_params is user-facing and annotates each GPU job with the selected backend. Callers that
 // feed a reported job back to mom must remove that annotation first; otherwise mom would append it
-// again and eventually hand an invalid device string such as gpu1*8:auto[sycl]:auto[sycl] to a
+// again and eventually hand an invalid device string such as gpu1*[intensity=8]:auto[sycl]:auto[sycl] to a
 // worker.
 function parseReportedAlgoParam(value) {
   const text = String(value);

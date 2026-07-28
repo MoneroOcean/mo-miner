@@ -496,17 +496,16 @@ public:
   }
 
   static unsigned kawpow_workgroup(const sycl::device& dev) {
-    // Windows CUDA, Intel, and HIP use 256 as before. Linux CUDA stays at the established L4 winner
-    // 128 except on the measured RTX 5060 Ti: at fixed batch depth, 256 raises its 32-register
-    // variants by 5--6% (KawPow 20.66 -> 21.71, FiroPow 19.94 -> 21.10, EvrProgPow 19.87 ->
-    // 21.08 MH/s) while MeowPow is neutral (25.10 -> 25.07). Keep the model check narrow until other
-    // NVIDIA generations are measured; MOM_KAWPOW_WORKGROUP remains the tuning override. CPU uses 128.
+    // Windows CUDA, Intel, and HIP use 256 as before. On Linux CUDA, compact GPUs benefit from
+    // local 256 (36-CU RTX 5060 Ti: +5--6%), while wider GPUs have enough resident blocks at local
+    // 128 (60-CU L4 winner). Use the portable compute-unit count rather than a product-name list so
+    // future devices choose a reasonable side of the same occupancy tradeoff.
 #if defined(_WIN32)
     const unsigned gpu_default = 256;
 #else
-    const bool cuda_5060_ti = mom_is_cuda(dev) &&
-      dev.get_info<sycl::info::device::name>().find("RTX 5060 Ti") != std::string::npos;
-    const unsigned gpu_default = mom_is_cuda(dev) && !cuda_5060_ti ? 128 : 256;
+    const bool wide_cuda = mom_is_cuda(dev) &&
+      dev.get_info<sycl::info::device::max_compute_units>() >= 48;
+    const unsigned gpu_default = wide_cuda ? 128 : 256;
 #endif
     return select_workgroup("MOM_KAWPOW_WORKGROUP", dev, {64, 128, 256, 512}, dev.is_cpu() ? 128 : gpu_default);
   }

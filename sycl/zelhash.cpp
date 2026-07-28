@@ -1655,7 +1655,8 @@ static sycl::event submit_l0_invert(
 // are allocated lazily on the first mining solve to prove headroom; the M1 test path only needs the
 // small base-state + rows buffers.
 // ===========================================================================================
-static unsigned device_slot_capacity(const sycl::device& device, bool gpu_compact) {
+unsigned zelhash_slot_capacity(const sycl::device& device) {
+  const bool gpu_compact = mom_is_cuda(device) || mom_is_hip(device);
   // Preserve the statistically selected fast capacity when it fits. On smaller or conservatively
   // reported devices, derive a reduced aligned stride from both total memory and the largest legal
   // allocation instead of recognizing individual products or failing at the first arena allocation.
@@ -1688,9 +1689,8 @@ static unsigned device_slot_capacity(const sycl::device& device, bool gpu_compac
   if (aligned < minimum)
     throw std::string("zelhash device has insufficient allocation capacity");
 
-  // Developer-only sweep hook: production uses the device-derived value above. Keeping the
-  // override bounded and aligned lets additional architectures validate the heuristic with one
-  // binary instead of rebuilding every candidate stride.
+  // Keep the public tuning override bounded by this device-derived capacity. This lets additional
+  // architectures sweep a safe stride with one binary while automatic mode remains portable.
   if (const char* value = std::getenv("MOM_ZELHASH_SLOTS"); value && *value) {
     char* end = nullptr;
     const unsigned long requested = std::strtoul(value, &end, 10);
@@ -1732,7 +1732,7 @@ public:
     : device(get_dev(dev_str)), queue(device, sycl::property_list{sycl::property::queue::in_order{}}),
       shared_io(device.is_cpu() || !mom_has_usm_device(device)),
       gpu_compact(mom_is_cuda(device) || mom_is_hip(device)),
-      slot_capacity(device_slot_capacity(device, gpu_compact)) {
+      slot_capacity(zelhash_slot_capacity(device)) {
     if (!mom_has_usm_shared(device) || (!device.is_cpu() && !mom_has_usm_device(device)))
       throw std::string("zelhash SYCL device does not support required allocations");
     bundle = std::make_unique<MomKernelBundle>(mom_get_exec_bundle(queue.get_context()));

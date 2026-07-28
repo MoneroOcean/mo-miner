@@ -453,11 +453,7 @@ int beamhash3(
     // The collision-list SLM footprint, rather than threads, caps resident workgroups. Once level 4
     // became a thin record, WG256's faster final traversal slightly outweighs WG128's seed advantage
     // on Blackwell (32.92 vs 32.86 Sol/s, matched three-sample medians). HIP retains WG512.
-    const unsigned compact_preferred = mom_is_hip(state.device) ? 512 : 256;
-    unsigned compact_wg = sycl_default_workgroup(state.device, {128, 256, 512}, compact_preferred);
-    { unsigned long parsed = 0;
-      if (mom_parse_env_ulong("MOM_BEAMHASH3_COMPACT_WG", parsed) && parsed >= 16)
-        compact_wg = (unsigned)std::min<unsigned long>(parsed, 512); }
+    const unsigned compact_wg = beamhash3_workgroup(state.device);
     static unsigned compact_profile_call = 0;
     // AdaptiveCpp JITs each template specialization during the first solve. Profile the following
     // steady solve so compilation is never mistaken for GPU execution time.
@@ -513,14 +509,7 @@ int beamhash3(
   // solve A/Bs on Arc B580 repeated at 11.94 H/s for WG1024 versus 11.39--11.40 for WG640 (+4.8%).
   // On RTX 5060 Ti, DPC++ CUDA's 150-solve stage mean improves 172.7 -> 161.8 ms at WG768, while
   // AdaptiveCpp peaks at WG640 (151.6 ms); HIP remains flat around its WG640 default.
-  unsigned preferred_wg = sycl_is_level_zero_gpu(state.device) ? 1024 : 640;
-#if !defined(MOM_SYCL_ADAPTIVECPP)
-  if (mom_is_cuda(state.device)) preferred_wg = 768;
-#endif
-  unsigned wg = sycl_default_workgroup(
-    state.device, {128, 256, 384, 512, 640, 768, 1024}, preferred_wg);
-  { unsigned long parsed = 0; if (mom_parse_env_ulong("MOM_BEAMHASH3_WORKGROUP", parsed) && parsed >= 16)
-      wg = (unsigned)std::min<unsigned long>(parsed, 1024); }
+  const unsigned wg = beamhash3_workgroup(state.device);
   unsigned scatter_wg = 128;
   { unsigned long parsed = 0; if (mom_parse_env_ulong("MOM_BEAMHASH3_SCATTER_WG", parsed) && parsed >= 16)
       scatter_wg = (unsigned)std::min<unsigned long>(parsed, 1024); }
