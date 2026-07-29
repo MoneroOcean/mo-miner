@@ -38,8 +38,12 @@ static sycl::event submit_gen_test(
       h.parallel_for<ZelHashGenTestKernel<false>>(
         sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(SG)),
         [=](sycl::nd_item<1> it) MOM_REQD_SG_16 {
+#if defined(MOM_SYCL_PORTABLE_OPENCL)
+        const unsigned lane = (unsigned)it.get_local_id(0);
+#else
         const sycl::sub_group sg = it.get_sub_group();
         const unsigned lane = sg.get_local_linear_id();          // 0..15 within the block
+#endif
         const uint32_t block = (uint32_t)it.get_group(0);        // which 16-aligned hash-index block
         const uint32_t hash_idx = block * 16u + lane;            // this lane's hash index g
 
@@ -197,7 +201,9 @@ static sycl::event submit_gen_fill(
     h.parallel_for<ZelHashGenFillKernelT<GPU_COMPACT>>(
       sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(WG)),
       [=](sycl::nd_item<1> it) MOM_REQD_SG_16 {
+#if !defined(MOM_SYCL_PORTABLE_OPENCL)
       const sycl::sub_group sg = it.get_sub_group();
+#endif
       const uint32_t hash_idx = (uint32_t)it.get_global_linear_id();
 
       // Pair-form base state + the two non-zero message words (block = pending[0..11] || htole32(g)).

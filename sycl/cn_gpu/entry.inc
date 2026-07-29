@@ -151,13 +151,11 @@ void cn_gpu(
       int32_t* const vo4 = reinterpret_cast<int32_t*>(&vi1[0]) + base32;
       sycl::float4* const vf = &vf0[base16];
       float* const vf4 = reinterpret_cast<float*>(&vf0[0]) + base32;
-      const auto sg = nd.get_sub_group();
-
       for (unsigned i = 0; i < CN_GPU_ITER; ++ i) {
         const int32_t xi = lpad_ptr(s, ld, lpad)[lm];
         vi4[l] = xi;
 
-        cn_recurrence_barrier(nd, sg, use_narrow_recurrence_barriers);
+        cn_recurrence_barrier(nd, use_narrow_recurrence_barriers);
 
         single_comupte_wrap(
           vi[cn_lane_select(l, 0)], vi[cn_lane_select(l, 1)],
@@ -165,7 +163,7 @@ void cn_gpu(
           lm, cn_lane_count(l), sf, vf + l, vo + l
         );
 
-        cn_recurrence_barrier(nd, sg, use_narrow_recurrence_barriers);
+        cn_recurrence_barrier(nd, use_narrow_recurrence_barriers);
 
         { int32_t xo = vo4[b];
           for (unsigned dd = b + 4; dd < (ld + 1) * 16; dd += 4) xo ^= vo4[dd];
@@ -175,14 +173,14 @@ void cn_gpu(
 
         vf4[l] = (vf4[b] + vf4[b + 4]) + (vf4[b + 8] + vf4[b + 12]);
 
-        cn_recurrence_barrier(nd, sg, use_narrow_recurrence_barriers);
+        cn_recurrence_barrier(nd, use_narrow_recurrence_barriers);
 
         const float xf = sycl::fabs((vf4[b] + vf4[b + 4]) + (vf4[b + 8] + vf4[b + 12]));
         vo4[l] ^= vo4[l + 4] ^ vo4[l + 8] ^ vo4[l + 12] ^
                   static_cast<int32_t>(xf * 16777216.0f);
         vf4[l] = xf * 0.015625f;
 
-        cn_recurrence_barrier(nd, sg, use_narrow_recurrence_barriers);
+        cn_recurrence_barrier(nd, use_narrow_recurrence_barriers);
 
         sf = vf[0];
         s = vo[0][0] ^ vo[0][1] ^ vo[0][2] ^ vo[0][3];
@@ -191,6 +189,7 @@ void cn_gpu(
     });
 
   const unsigned aes_wg = WORKGROUP_SIZE / 4; // hashes per workgroup row; dim1 (8) splits each hash
+#if !defined(MOM_SYCL_PORTABLE_OPENCL)
   const bool use_gpu_aes = !mom_sycl_portable_opencl && state.device.is_gpu();
   if (use_gpu_aes) { // GPU path replaces the AES local-memory ring with subgroup shuffles.
     q.submit([&](sycl::handler& h) {
@@ -251,7 +250,9 @@ void cn_gpu(
         mo_vec_store(x, l1 + 4, spad);
       });
     });
-  } else { // CPU path keeps the barriered local-memory exchange for stable behavior.
+  } else
+#endif
+  { // CPU/portable path keeps the barriered local-memory exchange for stable behavior.
     q.submit([&](sycl::handler& h) {
       CnGpuActiveViews cn_views(state, h);
       const AesTable aes0(sycl::range(256), h), aes1(sycl::range(256), h),

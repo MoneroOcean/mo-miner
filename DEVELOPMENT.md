@@ -72,7 +72,9 @@ The `r.sh` development image is the supported Linux test path:
 
 ```bash
 ./r.sh npm test
+./r.sh npm run test:github
 MOM_GPU_TEST_VENDORS=amd ./r.sh npm run test:gpu-discrete
+MOM_GPU_TEST_VENDORS=nvidia ./r.sh npm run test:gpu-multi
 ./r.sh npm run test:perf
 MOM_PERF_SAMPLES=3 ./r.sh npm run test:perf -- etchash
 npm run test:deploy
@@ -82,13 +84,16 @@ npm run test:deploy
 `sycl-native`, and `native` where available). Discrete vendors run concurrently; the generic OpenCL
 CPU and supported integrated Intel GPUs run sequentially. Unavailable devices are skipped.
 `test:gpu-discrete` is the shorter native-device lane used by targeted compiler builds.
-The performance runner
-accepts any supported algorithm after `--`.
-`test:deploy` builds and unpacks the unified archives, runs their installers, and executes the
-release checks. Its KawPow gate also requires source-JIT performance to clear the platform-specific
-minimum (20 MH/s by default). Limit it with `MOM_DEPLOY_TARGET` set to `linux`, `windows`,
-`linux-intel`,
-`linux-nvidia`, `linux-amd`, `windows-intel`, `windows-nvidia`, or `windows-amd`.
+`test:gpu-multi` separately checks two workers on one GPU and all same-vendor discrete GPUs in one
+job. `test:github` is the fast, network-guarded subset used by hardware-free hosted runners; it
+contains no expected device skips. The performance runner accepts any supported algorithm after
+`--`.
+
+`test:deploy` builds and unpacks the unified archives, runs their installers and complete GPU
+vector suites, then benchmarks every supported GPU algorithm. Each result must reach at least 95%
+of its platform value in the README table. Windows checks use `~/win/run.sh` when it exists and
+otherwise skip cleanly. Limit the run with `MOM_DEPLOY_TARGET` set to `linux`, `windows`,
+`linux-intel`, `linux-nvidia`, `linux-amd`, `windows-intel`, `windows-nvidia`, or `windows-amd`.
 
 For compiler or kernel A/B measurements, produce JSON reports with `scripts/benchmark-gpu-algos.js`
 and compare any number of runs in normalized H/s with:

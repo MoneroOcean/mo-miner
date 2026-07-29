@@ -295,7 +295,10 @@ async function getAutoAlgoParams() {
 }
 
 function detectAlgoParams(env) {
-  const args = ["tests/common/print_algo_params.js"];
+  // Invoke the miner directly. The old extra Node wrapper applied the selected compiler
+  // environment twice around release launchers, allowing an inherited libsycl with the same SONAME
+  // to pre-empt the runtime beside the selected addon.
+  const args = ["mom.js", "algo_params"];
   return runNode(args, {timeoutMs: 60 * 1000, env}).then((result) => {
     if (result.error || result.code !== 0) {
       throw new Error(formatFailure("Unable to detect algo params", args, result));

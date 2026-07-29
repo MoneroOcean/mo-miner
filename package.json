@@ -27,10 +27,12 @@
     "lint": "eslint .",
     "pretest": "npm run lint",
     "test": "node tests/run_hash.js",
-    "test:logic": "node --require ./tests/common/no_pool_network.js --test tests/logic.js tests/compiler_policy.js",
+    "test:logic": "node --test tests/logic.js tests/compiler_policy.js tests/readme_performance.js tests/pool_transport.js",
+    "test:github": "npm run lint && node --require ./tests/common/no_pool_network.js --test tests/logic.js tests/compiler_policy.js tests/readme_performance.js tests/pool_transport.js",
     "test:cpu": "node tests/run_hash.js cpu",
     "test:gpu": "node tests/run_hash.js gpu",
     "test:gpu-discrete": "node tests/run_hash.js gpu-discrete",
+    "test:gpu-multi": "node tests/run_hash.js gpu-multi",
     "test:perf": "node tests/run_perf.js",
     "test:deploy": "bash scripts/test-deploy.sh"
   },

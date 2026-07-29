@@ -29,9 +29,13 @@ spirv_translator_args=()
 if [ "${MOM_DPCPP_IMPL:-dpcpp-combined}" = dpcpp-opencl ]; then
   # Keep the fallback image within the portable OpenCL SPIR-V environment. The translator otherwise
   # preserves LLVM alias scopes as SPV_INTEL_memory_access_aliasing, which Rusticl and other
-  # standards-only consumers are not required to accept.
+  # standards-only consumers are not required to accept. SPIR-V 1.3 also expresses subgroup
+  # operations in the core language, avoiding the older translator's SPV_INTEL_subgroups fallback.
+  # Each -Xspirv-translator forwards one argument, so repeat it for both options.
   spirv_translator_args=(-Xspirv-translator=spir64
-    --spirv-ext=-SPV_INTEL_memory_access_aliasing,-SPV_KHR_expect_assume,-SPV_KHR_linkonce_odr)
+    --spirv-max-version=1.3
+    -Xspirv-translator=spir64
+    --spirv-ext=-SPV_INTEL_memory_access_aliasing,-SPV_INTEL_subgroups,-SPV_KHR_expect_assume,-SPV_KHR_linkonce_odr)
 fi
 
 is_link=0 is_compile=0 src=""

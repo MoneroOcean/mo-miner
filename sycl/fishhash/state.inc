@@ -87,6 +87,12 @@ static FishState& fishhash_state(const std::string& dev_str) {
 static bool select_karlsen_cooperative(
   FishState& state, const unsigned input_size, const uint64_t start_nonce
 ) {
+#if defined(MOM_SYCL_PORTABLE_OPENCL)
+  (void)state;
+  (void)input_size;
+  (void)start_nonce;
+  return false;
+#else
   if (state.karlsen_cooperative >= 0) return state.karlsen_cooperative != 0;
 
   // CUDA and HIP have a clear cooperative winner. Generic OpenCL retains the portable scalar path;
@@ -135,6 +141,7 @@ static bool select_karlsen_cooperative(
     state.karlsen_cooperative ? "cooperative" : "scalar",
     hashes / scalar_seconds, hashes / cooperative_seconds);
   return state.karlsen_cooperative != 0;
+#endif
 }
 
 void fishhash_cleanup_states() noexcept {

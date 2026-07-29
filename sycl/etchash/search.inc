@@ -16,6 +16,11 @@ static sycl::event submit_etchash_search_gpu(
   return q.submit([&](sycl::handler& h) {
     mom_use_bundle(h, kb);
     sycl::local_accessor<uint32_t, 1> seeds(sycl::range<1>(GROUP4_SEED_WORDS), h);
+#if defined(MOM_SYCL_PORTABLE_OPENCL)
+    // Standards-only SPIR-V must not depend on SPV_INTEL_subgroups. The portable specialization
+    // exchanges each four-lane team's page/mix words through work-group local memory instead.
+    sycl::local_accessor<uint32_t, 1> exchange(sycl::range<1>(GROUP4_WORKGROUP * 2), h);
+#endif
     h.parallel_for<EtchashSearchKernel<INLINE_PAIR>>(
       sycl::nd_range<1>(
         sycl::range<1>(round_up(intensity, GROUP4_WORKGROUP)),
@@ -26,7 +31,14 @@ static sycl::event submit_etchash_search_gpu(
         const uint32_t group_hash_base = static_cast<uint32_t>(item.get_group(0)) * GROUP4_WORKGROUP;
         const uint32_t own_hash = group_hash_base + lid;
 
-        if (own_hash < intensity) {
+        if constexpr (mom_sycl_portable_opencl) {
+          uint32_t seed[16] = {};
+          if (own_hash < intensity) {
+            keccak_512_header_nonce_pair_dev<INLINE_PAIR>(d_input, start_nonce + own_hash, seed);
+          }
+#pragma unroll
+          for (unsigned w = 0; w < 16; ++w) seeds[lid * 16 + w] = seed[w];
+        } else if (own_hash < intensity) {
           uint32_t seed[16];
           keccak_512_header_nonce_pair_dev<INLINE_PAIR>(d_input, start_nonce + own_hash, seed);
 #pragma unroll
@@ -34,16 +46,21 @@ static sycl::event submit_etchash_search_gpu(
         }
         item.barrier(sycl::access::fence_space::local_space);
 
+#if !defined(MOM_SYCL_PORTABLE_OPENCL)
         const auto sg = item.get_sub_group();
         const uint32_t sg_lane = static_cast<uint32_t>(sg.get_local_id()[0]);
+        const uint32_t sg_group4_base = sg_lane & ~3U;
+#endif
         const uint32_t lane4 = lid & 3U;
         const uint32_t group4_base = lid & ~3U;
-        const uint32_t sg_group4_base = sg_lane & ~3U;
 
         for (unsigned owner = 0; owner < 4; ++owner) {
           const uint32_t owner_lid = group4_base + owner;
           const uint32_t hash_index = group_hash_base + owner_lid;
-          if (hash_index >= intensity) continue;
+          const bool active = hash_index < intensity;
+          if constexpr (!mom_sycl_portable_opencl) {
+            if (!active) continue;
+          }
 
           const uint32_t seed_base = owner_lid * 16;
           const uint32_t seed0 = seeds[seed_base];
@@ -57,7 +74,15 @@ static sycl::event submit_etchash_search_gpu(
             const uint32_t page_candidate = lane4 == selected_lane
               ? fast_mod_dev(fnv_dev(seed0 ^ i, mix[selected_word]), dag_mod)
               : 0;
-            const uint32_t page = mom_select_from_group(sg, page_candidate, sg_group4_base + selected_lane);
+            uint32_t page;
+#if defined(MOM_SYCL_PORTABLE_OPENCL)
+            exchange[lid] = page_candidate;
+            item.barrier(sycl::access::fence_space::local_space);
+            page = exchange[group4_base + selected_lane];
+            item.barrier(sycl::access::fence_space::local_space);
+#else
+            page = mom_select_from_group(sg, page_candidate, sg_group4_base + selected_lane);
+#endif
             const uint32_t base = page * ETHASH_MIX_WORDS + lane4 * 8;
             const auto dag_words = *reinterpret_cast<const sycl::vec<uint64_t, 4>*>(d_dag + base);
 #pragma unroll
@@ -72,13 +97,25 @@ static sycl::event submit_etchash_search_gpu(
           const uint32_t compressed1 = fnv_fold4_dev(mix + 4);
 
           uint32_t compressed_mix[8];
+#if defined(MOM_SYCL_PORTABLE_OPENCL)
+          exchange[lid * 2] = compressed0;
+          exchange[lid * 2 + 1] = compressed1;
+          item.barrier(sycl::access::fence_space::local_space);
+#pragma unroll
+          for (unsigned lane = 0; lane < 4; ++lane) {
+            compressed_mix[lane * 2] = exchange[(group4_base + lane) * 2];
+            compressed_mix[lane * 2 + 1] = exchange[(group4_base + lane) * 2 + 1];
+          }
+          item.barrier(sycl::access::fence_space::local_space);
+#else
 #pragma unroll
           for (unsigned lane = 0; lane < 4; ++lane) {
             compressed_mix[lane * 2] = mom_select_from_group(sg, compressed0, sg_group4_base + lane);
             compressed_mix[lane * 2 + 1] = mom_select_from_group(sg, compressed1, sg_group4_base + lane);
           }
+#endif
 
-          if (lane4 == owner) {
+          if (active && lane4 == owner) {
             uint32_t seed[16];
 #pragma unroll
             for (unsigned w = 0; w < 16; ++w) seed[w] = seeds[seed_base + w];

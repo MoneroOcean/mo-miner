@@ -96,19 +96,30 @@ static sycl::event submit_mix_scatter(sycl::queue& q, MomKernelBundle& kb, const
 
       // Warp-cooperative coalesced flush: each sub-group copies one whole record at a time with
       // consecutive lanes writing consecutive u32 -> one coalesced burst per ~84-byte record.
-      auto sg = it.get_sub_group();
-      const unsigned sg_sz   = (unsigned)sg.get_max_local_range()[0];
-      const unsigned lane     = (unsigned)sg.get_local_id()[0];
-      const unsigned wg_warps = (lsz + sg_sz - 1) / sg_sz;
-      const unsigned warp_id  = lid / sg_sz;
-      for (unsigned r = warp_id; r < lsz; r += wg_warps) {
-        const uint32_t packed = dst[r];
-        if (packed == SENTINEL) continue;
-        const uint32_t bucket = packed >> SLOT_BITS;
-        const uint32_t slot   = packed & ((1u << SLOT_BITS) - 1u);
-        uint32_t* o = d_bucket + ((size_t)bucket * NSLOTS + slot) * OUT_ST;
-        const uint32_t* src = &stage[(size_t)r * OUT_ST];
-        for (unsigned k = lane; k < OUT_ST; k += sg_sz) o[k] = src[k];
+      if constexpr (mom_sycl_portable_opencl) {
+        const uint32_t packed = dst[lid];
+        if (packed != SENTINEL) {
+          const uint32_t bucket = packed >> SLOT_BITS;
+          const uint32_t slot   = packed & ((1u << SLOT_BITS) - 1u);
+          uint32_t* o = d_bucket + ((size_t)bucket * NSLOTS + slot) * OUT_ST;
+          const uint32_t* src = &stage[(size_t)lid * OUT_ST];
+          for (unsigned k = 0; k < OUT_ST; ++k) o[k] = src[k];
+        }
+      } else {
+        auto sg = it.get_sub_group();
+        const unsigned sg_sz   = (unsigned)sg.get_max_local_range()[0];
+        const unsigned lane     = (unsigned)sg.get_local_id()[0];
+        const unsigned wg_warps = (lsz + sg_sz - 1) / sg_sz;
+        const unsigned warp_id  = lid / sg_sz;
+        for (unsigned r = warp_id; r < lsz; r += wg_warps) {
+          const uint32_t packed = dst[r];
+          if (packed == SENTINEL) continue;
+          const uint32_t bucket = packed >> SLOT_BITS;
+          const uint32_t slot   = packed & ((1u << SLOT_BITS) - 1u);
+          uint32_t* o = d_bucket + ((size_t)bucket * NSLOTS + slot) * OUT_ST;
+          const uint32_t* src = &stage[(size_t)r * OUT_ST];
+          for (unsigned k = lane; k < OUT_ST; k += sg_sz) o[k] = src[k];
+        }
       }
     });
   });

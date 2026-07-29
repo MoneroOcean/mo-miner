@@ -12,8 +12,10 @@ int fishhash(
   // vector. The cooperative search is the GPU default; MOM_FISHHASH_COOP=0 retains the scalar path
   // for diagnosis.
   const bool full_test = is_test && std::getenv("MOM_FISHHASH_FULL_TEST") != nullptr;
+#if !defined(MOM_SYCL_PORTABLE_OPENCL)
   const char* const coop_env = std::getenv("MOM_FISHHASH_COOP");
   const bool cooperative = state.device.is_gpu() && !(coop_env && coop_env[0] == '0');
+#endif
   if (is_test && !full_test) state.ensure_cache(!is_benchmark);  // lazy path: no 4.6-GiB allocation
   else state.ensure_dag(!is_benchmark);                          // mining/bench or explicit full test
 
@@ -33,10 +35,12 @@ int fishhash(
     search = submit_fishhash_search<false>(state.queue, *state.bundle, state.input, input_size, start_nonce,
       state.cache, nullptr, intensity, state.target, state.result, is_test,
       nonce_off, nonce_be, target_be);
+#if !defined(MOM_SYCL_PORTABLE_OPENCL)
   } else if (cooperative) {
     search = submit_fishhash_search_coop(state.queue, *state.bundle, state.input, input_size, start_nonce,
       state.dag, intensity, state.target, state.result, is_test,
       nonce_off, nonce_be, target_be, state.coop_workgroup);
+#endif
   } else {
     search = submit_fishhash_search<true>(state.queue, *state.bundle, state.input, input_size, start_nonce,
       nullptr, state.dag, intensity, state.target, state.result, is_test,
@@ -71,24 +75,30 @@ int karlsenhashv2(
   std::lock_guard<std::mutex> lock(state.mutex);
   state.ensure_io(input_size);
   const bool full_test = is_test && std::getenv("MOM_FISHHASH_FULL_TEST") != nullptr;
+#if !defined(MOM_SYCL_PORTABLE_OPENCL)
   const char* const coop_env = std::getenv("MOM_FISHHASH_COOP");
+#endif
   if (is_test && !full_test) state.ensure_cache(!is_benchmark);
   else state.ensure_dag(!is_benchmark);
 
   uint64_t start_nonce = 0; std::memcpy(&start_nonce, input + 72, sizeof(start_nonce));  // nonce@72 LE
   if (state.shared_io) { std::memcpy(state.input, input, input_size); std::memcpy(state.target, target, HASH_LEN); }
   else { state.queue.memcpy(state.input, input, input_size); state.queue.memcpy(state.target, target, HASH_LEN); }
+#if !defined(MOM_SYCL_PORTABLE_OPENCL)
   const bool cooperative = state.device.is_gpu() &&
     (coop_env ? coop_env[0] != '0' : (!is_test && select_karlsen_cooperative(state, input_size, start_nonce)));
+#endif
   std::memset(state.result, 0, sizeof(FishResult));
 
   sycl::event search;
   if (is_test && !full_test) {
     search = submit_karlsenhashv2_search<false>(state.queue, *state.bundle, state.input, input_size,
       start_nonce, state.cache, nullptr, intensity, state.target, state.result, is_test);
+#if !defined(MOM_SYCL_PORTABLE_OPENCL)
   } else if (cooperative) {
     search = submit_karlsenhashv2_search_coop(state.queue, *state.bundle, state.input, input_size,
       start_nonce, state.dag, intensity, state.target, state.result, is_test, state.coop_workgroup);
+#endif
   } else {
     search = submit_karlsenhashv2_search<true>(state.queue, *state.bundle, state.input, input_size,
       start_nonce, nullptr, state.dag, intensity, state.target, state.result, is_test);

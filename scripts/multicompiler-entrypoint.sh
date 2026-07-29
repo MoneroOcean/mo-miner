@@ -49,7 +49,7 @@ if [ -d build ]; then mv build "$platforms_hold"; else mkdir -p "$platforms_hold
 cache_root="$platforms_hold/cache"
 artifact_dir="$platforms_hold/lin/Release"
 active_cache=
-mkdir -p "$artifact_dir"
+mkdir -p "$cache_root" "$artifact_dir"
 # Remove the pre-policy flat names left by older development images. Compiler workers and their
 # runtimes now always live in isolated key/ directories on both operating systems.
 rm -f "$artifact_dir"/mom-*.node

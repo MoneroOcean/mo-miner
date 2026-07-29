@@ -26,7 +26,9 @@
 
 #include "device.inc"
 #include "search.inc"
+#if !defined(MOM_SYCL_PORTABLE_OPENCL)
 #include "cooperative_search.inc"
+#endif
 #include "dag.inc"
 
 #include "state.inc"

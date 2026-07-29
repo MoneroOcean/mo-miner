@@ -8,10 +8,19 @@ const { repoRoot, resolveNodeRunner, spawnAndExit } = require("./common/miner_co
 const hasLogicSuite = fs.existsSync(path.join(repoRoot, "opts.js"));
 
 const suites = {
-  all: [...(hasLogicSuite ? ["tests/logic.js"] : []), "tests/all.js"],
+  all: [
+    ...(hasLogicSuite
+      ? [
+        "tests/logic.js", "tests/compiler_policy.js", "tests/readme_performance.js",
+        "tests/pool_transport.js",
+      ]
+      : []),
+    "tests/all.js",
+  ],
   cpu: ["tests/cpu.js"],
   gpu: ["tests/gpu.js"],
   "gpu-discrete": ["tests/discrete_gpu.js"],
+  "gpu-multi": ["tests/multi_gpu.js"],
   "gpu-portable-cpu": ["tests/portable_gpu_cpu.js"],
 };
 
@@ -22,8 +31,6 @@ if (!suites[suite]) {
 }
 
 const testArgs = [
-  "--require",
-  "./tests/common/no_pool_network.js",
   "--require",
   "./tests/common/test_output_buffer.js",
   "--test",

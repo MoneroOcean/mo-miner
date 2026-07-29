@@ -110,15 +110,18 @@ static int kawpow_core(
   // GPU devices use the subgroup (warp-shuffle) exchange; the CPU SYCL device
   // (is_gpu()==false) and an explicit MOM_KAWPOW_EXCHANGE=slm use the
   // barrier/local-memory exchange.
+#if !defined(MOM_SYCL_PORTABLE_OPENCL)
   const char* const exchange_env = std::getenv("MOM_KAWPOW_EXCHANGE");
   bool use_sg = state.default_subgroup_exchange;
   if (exchange_env && std::strcmp(exchange_env, "sg") == 0) use_sg = state.device.is_gpu();
   else if (exchange_env && std::strcmp(exchange_env, "slm") == 0) use_sg = false;
+#endif
   // The Intel (spec-const) kernels can't bake REGS/CNT_* at JIT time the way the CUDA path does, so they
   // pick the active inner-loop shape at runtime. There are exactly two ProgPoW shapes: MeowPow's 16/6/9
   // and everyone else's 32/11/18. (variant.regs is published into state.regs above.)
   const bool meowpow_shape = (variant.regs == MEOWPOW_REGS);
 
+#if !defined(MOM_SYCL_PORTABLE_OPENCL)
   if (use_sg) {
     // Sub-group (warp-shuffle) exchange path. KawpowSgExchange is sub-group-size-agnostic (its
     // `& ~(LANES-1)` base runs two 16-lane ProgPoW groups inside a 32-wide warp), so the same kernel
@@ -237,7 +240,9 @@ static int kawpow_core(
         (t_io - t_epoch) / 1e3, (t_bundle - t_io) / 1e3, (t_submit - t_bundle) / 1e3);
     }
     sycl_wait_and_throw(search_event, state.device);
-  } else {
+  } else
+#endif
+  {
     sycl_wait_and_throw(q.submit([&](sycl::handler& h) {
       const auto share = sycl::local_accessor<uint32_t, 1>(sycl::range<1>(local_size), h);
       const auto offsets = sycl::local_accessor<uint32_t, 1>(sycl::range<1>(local_size / KAWPOW_LANES), h);

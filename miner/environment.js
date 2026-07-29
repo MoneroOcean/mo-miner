@@ -78,7 +78,7 @@ module.exports = ({
   }
 
   function use_msr_tuning() {
-    return process.platform !== "win32";
+    return process.platform !== "win32" && process.env.MOM_SKIP_MSR !== "1";
   }
 
   function add_algo_params(params) {

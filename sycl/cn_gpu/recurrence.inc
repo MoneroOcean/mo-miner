@@ -140,7 +140,7 @@ inline void single_comupte_wrap(
   *pout = rot == 0 ? r : my_alignr_epi8(r, rot);
 }
 
-template <bool NarrowSupported = !mom_sycl_adaptivecpp>
+template <bool NarrowSupported = !mom_sycl_adaptivecpp && !mom_sycl_portable_opencl>
 inline void cn_recurrence_barrier(const sycl::nd_item<1>& item, const sycl::sub_group& subgroup,
                                   const bool use_narrow) {
   if constexpr (NarrowSupported) {
@@ -150,6 +150,14 @@ inline void cn_recurrence_barrier(const sycl::nd_item<1>& item, const sycl::sub_
     }
   }
   item.barrier(sycl::access::fence_space::local_space);
+}
+
+inline void cn_recurrence_barrier(const sycl::nd_item<1>& item, const bool use_narrow) {
+  if constexpr (mom_sycl_portable_opencl) {
+    item.barrier(sycl::access::fence_space::local_space);
+  } else {
+    cn_recurrence_barrier(item, item.get_sub_group(), use_narrow);
+  }
 }
 
 template <bool Portable = mom_sycl_portable_opencl>

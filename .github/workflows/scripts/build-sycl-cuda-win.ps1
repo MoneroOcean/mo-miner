@@ -17,6 +17,7 @@ param(
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 Set-Location $RepoRoot
+. (Join-Path $RepoRoot 'scripts\import-vcvars.ps1')
 
 function Resolve-BuildJobs([int]$Requested) {
   $jobs = $Requested
@@ -35,26 +36,8 @@ $clangc = Join-Path $ToolchainDir "bin\clang.exe"
 if (-not (Test-Path $clang)) { throw "clang++.exe not found at $clang." }
 $withCuda = $CudaPath -and (Test-Path $CudaPath)
 
-# The clang driver links sycl.dll with lld-link + the MSVC CRT/Windows SDK, so it needs the MSVC build
-# environment. Import vcvars64 into this process (mirrors how build-windows.ps1 imports oneAPI setvars).
-function Import-VcVars64 {
-  $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-  $vsRoot = $null
-  if (Test-Path $vswhere) {
-    $vsRoot = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null | Select-Object -First 1
-  }
-  $candidates = @()
-  if ($vsRoot) { $candidates += (Join-Path $vsRoot "VC\Auxiliary\Build\vcvars64.bat") }
-  $candidates += "C:\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
-  $vcvars = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-  if (-not $vcvars) { throw "vcvars64.bat not found (need VS 2022 C++ build tools)." }
-  $lines = & cmd.exe /d /s /c "call `"$vcvars`" >nul && set"
-  if ($LASTEXITCODE -ne 0) { throw "vcvars64 failed ($LASTEXITCODE)." }
-  foreach ($line in $lines) {
-    if ($line -match '^([^=]+)=(.*)$') { [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], "Process") }
-  }
-}
-Import-VcVars64
+# The clang driver links sycl.dll with lld-link + the MSVC CRT/Windows SDK.
+Import-MomVcVars64
 if ($withCuda) {
   $env:CUDA_PATH = (Resolve-Path $CudaPath).Path
   $env:PATH = "$env:CUDA_PATH\bin;$env:PATH"
@@ -86,9 +69,14 @@ if ($PortableOpencl) {
   # Device IR is translated and embedded during this standards-only link.
   $F += @("-DMOM_SYCL_PORTABLE_OPENCL", "-fno-sycl-rdc", "-fsycl-device-code-split=per_kernel",
           "-fno-sycl-instrument-device-code")
+  # SPIR-V 1.3 has core subgroup operations. The pinned CI translator otherwise falls back to
+  # SPV_INTEL_subgroups when that extension is enabled, or rejects standard SYCL collectives when
+  # it is disabled. Forward each translator option separately: -X consumes exactly one argument.
   $portableSpirvArgs = @(
     "-Xspirv-translator=spir64",
-    "--spirv-ext=-SPV_INTEL_memory_access_aliasing,-SPV_KHR_expect_assume,-SPV_KHR_linkonce_odr"
+    "--spirv-max-version=1.3",
+    "-Xspirv-translator=spir64",
+    "--spirv-ext=-SPV_INTEL_memory_access_aliasing,-SPV_INTEL_subgroups,-SPV_KHR_expect_assume,-SPV_KHR_linkonce_odr"
   )
 } else {
   $F += "-DMOM_PEARLHASH_HAS_ESIMD"

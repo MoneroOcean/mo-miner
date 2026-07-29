@@ -7,7 +7,10 @@ const {hashTests} = require("../vectors");
 const TEST_TIMEOUT_MS = 15 * 60 * 1000;
 const supportedVendors = ["intel", "nvidia", "amd"];
 
-const gpuVectors = hashTests.filter((definition) => definition.gpu);
+// A few algorithms use a deliberately tiny vector only for the portable SYCL CPU lane and a
+// separate mainnet-sized vector on real GPUs. Do not duplicate those slow/non-representative
+// synthetic paths in every discrete backend.
+const gpuVectors = hashTests.filter((definition) => definition.gpu && !definition.portableOnly);
 const fastVectors = hashTests.filter((definition) => definition.syclCpu);
 const gpuAlgos = [...new Set(gpuVectors.map((definition) => definition.job.algo))];
 const gpuVectorsByAlgo = new Map(gpuAlgos.map((algo) => [

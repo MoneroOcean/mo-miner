@@ -3,6 +3,9 @@ set -euo pipefail
 
 archive="${1:?Usage: .github/workflows/scripts/test-release-linux.sh <archive> [suite]}"
 suite="${2:-all}"
+# Correctness/archive validation never needs privileged RandomX MSR tuning. Disable it here rather
+# than relying on each caller so unprivileged hosts skip the optimization without noisy diagnostics.
+export MOM_SKIP_MSR=1
 if [ "$suite" = gpu-portable-cpu ]; then
   # Select the packaged standards-only OpenCL worker before the launcher smoke test as well as the
   # vector suite. Otherwise a host with an Intel GPU can make QEMU probe Level Zero/DRM before the
@@ -128,12 +131,29 @@ if [ "${MOM_RELEASE_EMULATE_INTEL_CPU:-0}" = 1 ]; then
   command -v qemu-x86_64 >/dev/null ||
     die "MOM_RELEASE_EMULATE_INTEL_CPU=1 requires qemu-x86_64."
   mv "$package_dir/mom-bin" "$package_dir/mom-bin.real"
-  cat >"$package_dir/mom-bin" <<'EOF'
+cat >"$package_dir/mom-bin" <<'EOF'
 #!/usr/bin/env sh
 set -eu
 script_dir=$(CDPATH= cd -- "$(dirname "$0")" && pwd -P)
-exec env QEMU_CPU="${QEMU_CPU:-Haswell-noTSX-IBRS}" \
-  qemu-x86_64 "$script_dir/mom-bin.real" "$@"
+stdout=$(mktemp)
+stderr=$(mktemp)
+trap 'rm -f "$stdout" "$stderr"' EXIT
+set +e
+env QEMU_CPU="${QEMU_CPU:-Haswell-noTSX-IBRS}" \
+  qemu-x86_64 "$script_dir/mom-bin.real" "$@" >"$stdout" 2>"$stderr"
+status=$?
+set -e
+cat "$stdout"
+cat "$stderr" >&2
+# Intel's OpenCL CPU runtime can deliver SIGSEGV while QEMU tears it down after the process has
+# already completed and reported a valid vector. Normalize only that exact emulator-only outcome;
+# a signal before PASSED, any other exit, or any native run remains a hard test failure.
+if [ "$status" -eq 139 ] &&
+   grep -qx 'PASSED' "$stdout" &&
+   grep -q 'qemu: uncaught target signal 11 (Segmentation fault)' "$stderr"; then
+  exit 0
+fi
+exit "$status"
 EOF
   chmod 0755 "$package_dir/mom-bin"
 fi
@@ -211,14 +231,17 @@ $smoke_output
 EOF
 )"
 fi
-if [ "$suite" = gpu ] && ! grep -Eq ':"gpu[0-9]+' <<<"$smoke_output"; then
+if [[ "$suite" = gpu || "$suite" = gpu-discrete ]] &&
+  ! grep -Eq ':"gpu[0-9]+' <<<"$smoke_output"; then
   fail "Linux release GPU discovery missing" \
     "The $suite suite requires launcher-time GPU discovery, but algo_params returned no GPU job."
 fi
 
 case "$suite" in
-  all|cpu|gpu|gpu-portable-cpu)
-    if [ "$suite" = gpu ]; then export MOM_REQUIRE_GPU_TESTS=1; fi
+  all|cpu|gpu|gpu-discrete|gpu-portable-cpu)
+    if [[ "$suite" = gpu || "$suite" = gpu-discrete ]]; then
+      export MOM_REQUIRE_GPU_TESTS=1
+    fi
     if [ "$suite" = gpu-portable-cpu ]; then
       export MOM_REQUIRE_PORTABLE_CPU_TESTS=1
       # Exercise every CPU-sized GPU algorithm vector from the extracted archive. These cases avoid

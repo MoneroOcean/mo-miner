@@ -7,6 +7,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
+$env:MOM_SKIP_MSR = "1"
 if ($PSVersionTable.PSVersion.Major -ge 7) {
   $PSNativeCommandUseErrorActionPreference = $true
 }
@@ -142,7 +143,10 @@ if ($Suite -eq 'gpu-portable-cpu') {
   }
   $cpuIcd = $cpuIcdPaths | Select-Object -Unique -First 1
   if (-not $cpuIcd) {
-    throw 'Intel CPU OpenCL ICD is missing; run scripts\install-dev.bat -Component opencl-cpu.'
+    $message = 'Intel CPU OpenCL ICD is missing; run scripts\install-dev.bat -Component opencl-cpu.'
+    if ($env:GITHUB_ACTIONS -or $env:MOM_REQUIRE_PORTABLE_CPU_TESTS -eq "1") {throw $message}
+    Write-Host "SKIP gpu-portable-cpu: $message"
+    exit 0
   }
   $env:OCL_ICD_FILENAMES = $cpuIcd
 }
@@ -251,7 +255,7 @@ try {
       throw "Invalid algo params for $($prop.Name): $dev"
     }
   }
-  if ($Suite -eq 'gpu') {
+  if ($Suite -in @('gpu', 'gpu-discrete')) {
     $gpuParam = $params.PSObject.Properties | Where-Object { [string]$_.Value -match '(^|,)gpu\d+' } |
       Select-Object -First 1
     if (-not $gpuParam) {
@@ -263,10 +267,10 @@ try {
     throw "Windows $Suite release test requires a CPU SYCL device, but algo_params did not report one.`n$($smokeOutput -join "`n")"
   }
 
-  if ($Suite -notin @("all", "cpu", "gpu", "gpu-portable-cpu")) {
+  if ($Suite -notin @("all", "cpu", "gpu", "gpu-discrete", "gpu-portable-cpu")) {
     throw "Unknown release test suite: $Suite"
   }
-  if ($Suite -eq 'gpu') { $env:MOM_REQUIRE_GPU_TESTS = '1' }
+  if ($Suite -in @('gpu', 'gpu-discrete')) { $env:MOM_REQUIRE_GPU_TESTS = '1' }
   if ($Suite -eq 'gpu-portable-cpu') {
     # Keep the archive gate fail-closed outside GitHub Actions as well. A missing or broken CPU
     # OpenCL device must never turn the per-algorithm portable kernel coverage into skipped tests.

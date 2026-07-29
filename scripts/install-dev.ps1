@@ -149,13 +149,19 @@ function Install-Base {
   }
 
   # Do not trust Get-Command here: a fresh Windows installation exposes the Microsoft Store
-  # WindowsApps `python.exe` alias, which exists on PATH but exits with 9009. Require the pinned
-  # python.org installation itself so fresh VM and hosted-runner builds behave identically.
+  # WindowsApps `python.exe` alias, which exists on PATH but exits with 9009. Use the pinned,
+  # registry-independent embeddable distribution so hosted-runner disk cleanup cannot leave the
+  # python.org MSI registered with its tool-cache payload already removed.
   if (-not (Test-Python)) {
-    $python = Join-Path $Workspace "python-$pythonVersion-amd64.exe"
-    Download "https://www.python.org/ftp/python/$pythonVersion/python-$pythonVersion-amd64.exe" $python
-    $process = Start-Process $python -ArgumentList @('/quiet','InstallAllUsers=1','PrependPath=1','Include_test=0') -Wait -PassThru
-    if ($process.ExitCode -notin @(0,3010)) { throw "Python install failed: $($process.ExitCode)" }
+    $python = Join-Path $Workspace "python-$pythonVersion-embed-amd64.zip"
+    Download "https://www.python.org/ftp/python/$pythonVersion/python-$pythonVersion-embed-amd64.zip" $python
+    Remove-Item $pythonRoot -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force $pythonRoot | Out-Null
+    Invoke-Checked "$env:SystemRoot\System32\tar.exe" @('-xf',$python,'-C',$pythonRoot)
+    # The embeddable archive enables isolated `_pth` mode by default. LLVM/OpenMP build helpers
+    # import sibling modules (for example message-converter.py -> libomputils.py), which requires
+    # normal script-directory resolution just like a regular python.org installation.
+    Remove-Item (Join-Path $pythonRoot 'python312._pth') -Force
   }
   Add-MachinePath $pythonRoot
   Add-MachinePath (Join-Path $pythonRoot 'Scripts')

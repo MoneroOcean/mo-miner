@@ -2,13 +2,17 @@
 
 module.exports = [
   {
-    name: "kawpow gpu1*[intensity=256]",
+    // Keep the tiny epoch-0 case for standards-only SYCL CPU coverage. Windows CUDA can spend
+    // minutes in this synthetic initialization path; the following recorded mainnet share is the
+    // representative GPU correctness test.
+    name: "kawpow gpu1*[intensity=1] height 0",
     gpu: true,
     syclCpu: true,
+    portableOnly: true,
     timeoutMs: 15 * 60 * 1000,
     job: {
       algo: "kawpow",
-      dev: "gpu1*[intensity=256]",
+      dev: "gpu1*[intensity=1]",
       height: 0,
       noncebytes: 8,
       nonceoffset: 32,

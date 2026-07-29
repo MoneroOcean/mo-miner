@@ -19,7 +19,8 @@ module.exports = ({
   function connectSocket(pool) {
     const connect = pool.is_tls ? tls.connect : net.connect;
     const systemConnect = pool.is_tls ? systemTlsConnect : systemNetConnect;
-    if (process.env.MOM_TEST_NO_POOL_NETWORK === "1" && connect === systemConnect) {
+    const loopback = pool.url === "127.0.0.1" || pool.url === "::1";
+    if (process.env.MOM_TEST_NO_POOL_NETWORK === "1" && connect === systemConnect && !loopback) {
       throw new Error("Pool network access is disabled during mom correctness tests");
     }
     return pool.is_tls ?

@@ -76,6 +76,9 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
+# AdaptiveCpp's bundled OpenMP fallback backend links libnuma even when the selected work runs on a
+# discrete CUDA/HIP device. Keep this small runtime dependency common to every detected GPU vendor.
+apt-get install -y --no-install-recommends libnuma1
 
 reboot_needed=0
 

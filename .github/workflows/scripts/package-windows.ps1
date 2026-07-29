@@ -63,11 +63,15 @@ Remove-Item -Recurse -Force release, release-build, $Archive -ErrorAction Silent
 New-Item -ItemType Directory -Force $packageDir, $libsDir, release-build | Out-Null
 
 $bundlePath = (Resolve-Path release-build).Path + "\mom.bundle.cjs"
-npx --no-install esbuild mom.js `
+& npx.cmd --no-install esbuild mom.js `
   --bundle `
   --platform=node `
   --format=cjs `
   --outfile="$bundlePath"
+if ($LASTEXITCODE -ne 0) {
+  throw "esbuild failed with exit code $LASTEXITCODE. Run npm ci --ignore-scripts first."
+}
+Assert-BuildArtifact $bundlePath "esbuild did not produce the release bundle."
 Copy-Item $nodeExe "$packageDir/mom-node.exe"
 Copy-Item $bundlePath "$packageDir/mom.bundle.cjs"
 @'

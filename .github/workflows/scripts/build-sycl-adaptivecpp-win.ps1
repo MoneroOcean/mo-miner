@@ -16,19 +16,12 @@ if (-not $RepoRoot) {
   $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
 }
 Set-Location $RepoRoot
+. (Join-Path $RepoRoot 'scripts\import-vcvars.ps1')
 
 # The VM may launch PowerShell from a generic or x86 Visual Studio environment.
 # AdaptiveCpp invokes clang/lld underneath, so an x86 LIB here silently selects
 # the wrong CRT and only fails at the final x64 DLL link. Always import vcvars64.
-$vcvars = 'C:\BuildTools\VC\Auxiliary\Build\vcvars64.bat'
-if (-not (Test-Path $vcvars)) { throw "vcvars64.bat not found at $vcvars" }
-$vcenv = & cmd.exe /d /s /c "call `"$vcvars`" >nul && set"
-if ($LASTEXITCODE -ne 0) { throw 'vcvars64.bat failed' }
-foreach ($line in $vcenv) {
-  if ($line -match '^([^=]+)=(.*)$') {
-    [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], 'Process')
-  }
-}
+Import-MomVcVars64
 
 function Invoke-Checked([scriptblock]$Command, [string]$Name) {
   & $Command

@@ -13,8 +13,6 @@ if (algo && algo !== "gpu" && !availableAlgos.includes(algo)) {
 
 const testArgs = [
   "--require",
-  "./tests/common/no_pool_network.js",
-  "--require",
   "./tests/common/test_output_buffer.js",
   "--test",
   "--test-reporter=./tests/common/spec_reporter.js",

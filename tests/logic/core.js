@@ -3,6 +3,18 @@
 const s = require("./support");
 const { test, assert, spawnSync, opts, helper, pool, compilerPolicy, formatHashrate, parseFormattedHashrate, specReporter, repoRoot, noOp, loadMinerWithStubs, mockPoolOptions } = s;
 
+test("MSR tuning can be disabled for portable deployment tests", () => {
+  const environment = require("../../miner/environment")({
+    process: {platform: "linux", env: {MOM_SKIP_MSR: "1"}},
+  });
+  assert.equal(environment.use_msr_tuning(), false);
+
+  const normal = require("../../miner/environment")({
+    process: {platform: "linux", env: {}},
+  });
+  assert.equal(normal.use_msr_tuning(), true);
+});
+
 test("correctness mode blocks real pool sockets", () => {
   const previousOpt = global.opt;
   const previousGuard = process.env.MOM_TEST_NO_POOL_NETWORK;

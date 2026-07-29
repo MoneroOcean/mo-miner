@@ -115,9 +115,10 @@ function Test-MominerSystemDllName {
     'winmm.dll',
     'ws2_32.dll'
   )
-  # The Windows HIP runtime is installed by AMD's display driver. Bundling the SDK copy beside an
-  # AdaptiveCpp worker can load a second amdhip64 runtime in the same process and crash at teardown.
-  if ($Name -eq 'amdhip64_7.dll') { return $true }
+  # GPU driver interfaces are installed by the target machine's display driver. Bundling an SDK
+  # copy is either impossible (NVIDIA's nvcuda/NVML interfaces) or unsafe: a second amdhip64
+  # runtime beside an AdaptiveCpp worker can crash at teardown.
+  if ($Name -in @('amdhip64_7.dll', 'nvcuda.dll', 'nvml.dll')) { return $true }
   return $systemNames -contains $Name
 }
 

@@ -64,11 +64,8 @@ jobs:
       - name: Install JavaScript tooling
         run: npm ci --ignore-scripts
 
-      - name: Lint
-        run: npm run lint
-
-      - name: Test JavaScript logic
-        run: npm run test:logic
+      - name: Test GitHub-safe source subset
+        run: npm run test:github
 
   windows-script-quality:
     name: Source / PowerShell syntax
@@ -222,8 +219,8 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends libnuma1 ocl-icd-libopencl1 qemu-user
           archive="$(find . -maxdepth 1 -name 'mom-*-lin.tgz' -print -quit)"
-          .github/workflows/scripts/test-release-linux.sh "$archive" cpu
-          MOM_RELEASE_EMULATE_INTEL_CPU=1 \
+          MOM_TEST_NO_POOL_NETWORK=1 .github/workflows/scripts/test-release-linux.sh "$archive" cpu
+          MOM_TEST_NO_POOL_NETWORK=1 MOM_RELEASE_EMULATE_INTEL_CPU=1 \
             .github/workflows/scripts/test-release-linux.sh "$archive" gpu-portable-cpu
 
       - name: Upload Linux release artifact
@@ -424,6 +421,7 @@ jobs:
         shell: powershell
         run: |
           $archive = Get-ChildItem . -Filter "mom-*-win.zip" | Select-Object -First 1
+          $env:MOM_TEST_NO_POOL_NETWORK = "1"
           powershell -NoProfile -ExecutionPolicy Bypass -File .github\workflows\scripts\test-release-windows.ps1 -Archive $archive.FullName -Suite cpu
           powershell -NoProfile -ExecutionPolicy Bypass -File .github\workflows\scripts\test-release-windows.ps1 -Archive $archive.FullName -Suite gpu-portable-cpu
 

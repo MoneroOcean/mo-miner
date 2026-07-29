@@ -81,6 +81,7 @@ int autolykos2(
   const uint32_t local_size = state.workgroup;
   const bool profile = std::getenv("MOM_AUTOLYKOS2_PROFILE") != nullptr;
 
+#if !defined(MOM_SYCL_PORTABLE_OPENCL)
   if (d_table && !is_test && AutolykosState::autolykos_split_table()) {
     state.ensure_bhashes(effective_intensity);
     uint32_t* const d_bhashes = state.bhashes;
@@ -307,6 +308,7 @@ int autolykos2(
       return take_autolykos_result(state.result, output, pnonce);
     }
   }
+#endif
 
   const uint64_t profile_t0 = profile ? now_us() : 0;
   sycl::event search_event;
