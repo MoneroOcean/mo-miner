@@ -104,6 +104,7 @@ module.exports.opt_help = {
   },
   log_level: [ 0, "log level: 0=minimal, 1=verbose, 2=network debug, 3=compute core debug" ],
   bench_algo_params: [ 1, "benchmark algo params before mining: 0=skip, 1=active MoneroOcean coin algos plus rx/2, 2=all supported algos" ],
+  gpu_tune: [ 0, "one-shot empirical tuning before missing GPU benchmarks: 0=off, 1=bounded search (slow)" ],
   save_config: [ "", "file name to save config in JSON format (only for mine directive)" ]
 };
 

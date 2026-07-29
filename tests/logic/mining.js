@@ -91,6 +91,62 @@ test("bench_algo_params 2 benchmarks all detected algos", async () => {
   assert.equal(miner.sentMessages.length, 3);
 });
 
+test("Windows AMD cn/gpu first-run benchmark discards both cold runtime windows", async () => {
+  const miner = await loadMinerWithStubs({
+    platform: "win32",
+    env: {MOM_GPU_BACKEND: "amd"},
+    algoParams: {
+      "cn/gpu": "gpu1*[intensity=768],gpu1*[intensity=768]",
+      "rx/2": "cpu",
+    },
+    waitForMessageType: "bench",
+  });
+
+  assert.equal(miner.sentMessages[0].job.algo, "cn/gpu");
+  const completeWorkerPair = (rate) => {
+    miner.messageHandler({type: "hashrate", thread_id: 0, value: {hashrate: String(rate / 2)}});
+    miner.messageHandler({type: "hashrate", thread_id: 1, value: {hashrate: String(rate / 2)}});
+  };
+  completeWorkerPair(1000);
+  completeWorkerPair(2500);
+  assert.equal(miner.sentMessages.length, 1);
+  completeWorkerPair(3100);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(miner.global.opt.algo_params["cn/gpu"].perf, 3100);
+  assert.equal(miner.sentMessages[1].job.algo, "rx/2");
+});
+
+test("gpu_tune compares two samples and benchmarks the materially faster saved tuning", async () => {
+  const miner = await loadMinerWithStubs({
+    argv: [
+      "node", "mom.js", "mine", "pool.example:1", "wallet",
+      "--gpu_tune", "1",
+    ],
+    algoParams: {etchash: "gpu1*[intensity=4096]"},
+    waitForMessageType: "bench",
+  });
+  const finishCandidate = async (rate) => {
+    completeOneBenchmark(miner, String(rate));
+    completeOneBenchmark(miner, String(rate));
+    await new Promise((resolve) => setImmediate(resolve));
+  };
+
+  assert.equal(miner.sentMessages[0].job.dev, "gpu1*[intensity=4096]");
+  await finishCandidate(100);
+  assert.equal(miner.sentMessages[1].job.dev, "gpu1*[intensity=2048]");
+  await finishCandidate(90);
+  assert.equal(miner.sentMessages[2].job.dev, "gpu1*[intensity=3072]");
+  await finishCandidate(105);
+  assert.equal(miner.sentMessages[3].job.dev, "gpu1*[intensity=5120]");
+  await finishCandidate(104);
+
+  assert.equal(miner.sentMessages[4].job.dev, "gpu1*[intensity=3072]");
+  completeOneBenchmark(miner, "103");
+  assert.equal(miner.global.opt.algo_params.etchash.dev, "gpu1*[intensity=3072]");
+  assert.equal(miner.global.opt.algo_params.etchash.perf, 103);
+  assert.equal(miner.global.opt.gpu_tune, 0);
+});
+
 test("KawPow benchmark jobs include fixed nonce metadata", async () => {
   const autoBenchmark = await loadMinerWithStubs({
     algoParams: { kawpow: "gpu1*[intensity=1]" },

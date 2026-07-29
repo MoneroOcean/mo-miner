@@ -57,7 +57,7 @@ async function loadMinerWithStubs(options = {}) {
   Object.assign(processStub, {
     argv: options.argv || ["node", "mom.js", "mine", "pool.example:1", "user"],
     env: { ...process.env, ...(options.env || {}) },
-    platform: process.platform,
+    platform: options.platform || process.platform,
     stderr: process.stderr,
     stdin: process.stdin,
     stdout: process.stdout,

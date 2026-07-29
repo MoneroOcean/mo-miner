@@ -53,7 +53,7 @@ Linux and Windows columns were measured on the local hardware listed below, one 
 | `zhash`             | -      | BTG  | -                  | -                  | -                 | -                 | -                  | -                 | lolMiner / miniZ / lolMiner          |
 | **Misc**            |        |      |                    |                    |                   |                   |                    |                   |                                      |
 | `autolykos2`        | mo,mom | ERG  | 37.72 MH/s (112%)  | 38.84 MH/s (116%)  | 104.30 MH/s (88%) | 101.85 MH/s (86%) | 37.44 MH/s (100%)  | 31.44 MH/s (103%) | SRBMiner / Rigel / lolMiner          |
-| `cn/gpu`            | mo,mom | RYO  | 2.86 KH/s (104%)   | 2.89 KH/s (105%)   | 3.39 KH/s (88%)   | 3.48 KH/s (90%)   | 2.55 KH/s (95%)    | 2.70 KH/s (104%)  | SRBMiner / XMR-Stak / SRBMiner       |
+| `cn/gpu`            | mo,mom | RYO  | 2.86 KH/s (104%)   | 2.89 KH/s (105%)   | 3.39 KH/s (88%)   | 3.48 KH/s (90%)   | 2.55 KH/s (95%)    | 2.81 KH/s (108%)  | SRBMiner / XMR-Stak / SRBMiner       |
 | `pearlhash`         | mom    | PRL  | 51.97 TH/s (149%)  | 49.96 TH/s (143%)  | 71.50 TH/s (82%)  | 71.32 TH/s (81%)  | 41.77 TH/s (98%)   | 42.94 TH/s (99%)  | ARC-miner / WildRig / KRig-Miner     |
 | `hoohashv2`         | -      | HTN  | -                  | -                  | -                 | -                 | -                  | -                 | SRBMiner                             |
 | `nxlhash`           | -      | NXL  | -                  | -                  | -                 | -                 | -                  | -                 | SRBMiner                             |
@@ -203,6 +203,16 @@ precedence over automatic heuristics. Fields may be omitted at either level. `se
 accepts `auto`, `1x1`, `2x2`, `2x4`, `4x2`, `4x4`, or `8x2`; it only affects its AMD DP4A path.
 Other secondary fields affect only implementations that expose the corresponding launch control.
 
+The device-derived heuristic is the default and needs no setup. For an opt-in empirical pass, add
+`--gpu_tune 1` to the first `mine` command together with `--save_config config.json`. Before each
+missing GPU hashrate is benchmarked, mom tries a bounded set of safe nearby hash-path settings where
+a stable comparison is available. It compares two steady-state samples per candidate, saving one
+only when it is at least 2% faster than the heuristic. Existing non-null `perf` entries are not
+retuned, and the one-shot flag is reset before the resulting configuration is saved. This is
+normally overkill: testing every supported GPU algorithm can take hours and may rebuild
+multi-gigabyte datasets repeatedly. Dataset-construction and capacity-only controls retain their
+stability-oriented heuristics; explicit fields remain available for specialized experiments.
+
 The object form is useful for a saved configuration, while the inline form can override one worker:
 
 ```
@@ -341,6 +351,7 @@ Options:
 
 --log_level:                        log level: 0=minimal, 1=verbose, 2=network debug, 3=compute core debug (0 by default)
 --bench_algo_params:                benchmark algo params before mining: 0=skip, 1=active MoneroOcean coin algos plus rx/2, 2=all supported algos (1 by default)
+--gpu_tune:                         one-shot empirical tuning before missing GPU benchmarks: 0=off, 1=bounded search (slow) (0 by default)
 --save_config:                      file name to save config in JSON format (only for mine directive) ("" by default)
 2026-06-15 13:58:03 ERROR: No directive specified
 ```

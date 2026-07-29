@@ -299,8 +299,79 @@ function tuningEnvironment(algo, tuning) {
   return env;
 }
 
+function tuningCandidate(entry, changes) {
+  return {
+    device: entry.device,
+    processes: entry.processes,
+    tuning: {...(entry.tuning || {}), ...changes},
+  };
+}
+
+function alignedScale(value, numerator, denominator, alignment = 256) {
+  const scaled = Math.floor(value * numerator / denominator / alignment) * alignment;
+  return Math.max(alignment, scaled);
+}
+
+// Return a deliberately bounded empirical-search set around the device heuristic. Variants change
+// one launch dimension at a time: this keeps the optional first-run tuner useful without turning it
+// into a combinatorial multi-hour search for every algorithm. Dataset-construction-only controls
+// remain on their stability-oriented heuristics because steady-state hashrate cannot rank them.
+function autotuneCandidates(algo, entry) {
+  if (!entry.device.startsWith("gpu")) {return [entry];}
+  const base = entry.tuning || {};
+  const candidates = [tuningCandidate(entry, {})];
+  const add = (field, values) => {
+    for (const value of values) {
+      if (base[field] === value) {continue;}
+      candidates.push(tuningCandidate(entry, {[field]: value}));
+    }
+  };
+  const intensity = Number(base.intensity || 0);
+  if (intensity) {
+    if (algo === "cn/gpu") {
+      add("intensity", [
+        alignedScale(intensity, 1, 2, 8),
+        alignedScale(intensity, 3, 4, 8),
+      ]);
+    } else {
+      add("intensity", [
+        alignedScale(intensity, 1, 2),
+        alignedScale(intensity, 3, 4),
+        alignedScale(intensity, 5, 4),
+      ]);
+    }
+  }
+  if (algo === "c29") {
+    add("seed_workgroup", [64, 128, 256]);
+    add("seed_blocks", [8, 16, 32]);
+  } else if (["kawpow", "firopow", "evrprogpow", "meowpow"].includes(algo)) {
+    add("workgroup", [64, 128, 256]);
+  } else if (algo === "autolykos2") {
+    add("workgroup", [32, 64, 128, 256]);
+  } else if (algo === "fishhash" || algo === "karlsenhashv2") {
+    add("workgroup", [64, 128, 256]);
+    add("search_mode", ["scalar", "cooperative"]);
+  } else if (algo === "pearlhash" && base.m) {
+    add("m", [
+      alignedScale(base.m, 1, 4, 64),
+      alignedScale(base.m, 1, 2, 64),
+    ]);
+  } else if (algo === "beamhash3" && base.workgroup) {
+    add("workgroup", [384, 512, 640, 768, 1024].filter((value) => value <= base.workgroup));
+    add("scatter_workgroup", [64, 128, 256]);
+  }
+  const unique = new Map();
+  for (const candidate of candidates) {
+    candidate.tuning = validateTuning(algo, candidate.tuning, `${algo} auto-tune candidate`);
+    unique.set(formatDeviceEntry(candidate), candidate);
+  }
+  return [...unique.values()];
+}
+
 module.exports = {
   applyNativeJobTuning,
+  autotuneCandidates,
+  formatDeviceEntry,
   formatDeviceList,
   needsPrimaryTuning,
   parseDeviceEntry,

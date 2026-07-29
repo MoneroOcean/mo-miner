@@ -95,20 +95,32 @@ static void add_gpu_cn_algo_dev(
   std::string& result_dev, const std::string& algo,
   const std::map<std::string, unsigned>& algo2mem, std::string* const backend_hint = nullptr
 ) {
+#if defined(_WIN32)
+  constexpr unsigned hip_cn_total_per_cu = 96;
+  constexpr unsigned hip_cn_worker_per_cu = 48;
+#else
+  constexpr unsigned hip_cn_total_per_cu = 120;
+  constexpr unsigned hip_cn_worker_per_cu = 40;
+#endif
   bool saw_intel_level_zero = false;
   bool needs_intel_opencl = false;
   for_each_default_gpu([&](const std::string& dev_str, const sycl::device& dev) {
-    bool legacy_level_zero = false;
+    const unsigned max_compute_units = dev.get_info<sycl::info::device::max_compute_units>();
+    bool prefer_intel_level_zero = false;
     unsigned batch_multiplier = 6;
     if (algo == "cn/gpu") {
-      // Backend choice is policy/configuration, not part of the device name. NEO 32224 still
-      // needs the measured shallow queue when the configured worker uses Level Zero.
+      // Backend choice is policy/configuration, not part of the device name. Older NEO builds and
+      // Intel GPUs exposing whole 64-EU slice groups run this long recurrence much faster through
+      // Level Zero with a shallow queue. Current Xe2-class geometry does not expose that grouping
+      // and needs OpenCL to avoid long-dispatch scheduler resets. Use reported execution geometry,
+      // not a product-name/device-ID table, so the rule extends to unlisted cards.
       const uint32_t build = sycl_is_level_zero_gpu(dev) ? mom_driver_build(dev) : 0;
-      legacy_level_zero = build >= 30000u && build < 35000u;
+      prefer_intel_level_zero = build >= 30000u && build < 35000u;
       if (sycl_is_level_zero_gpu(dev) &&
           dev.get_info<sycl::info::device::vendor>().find("Intel") != std::string::npos) {
         saw_intel_level_zero = true;
-        needs_intel_opencl = needs_intel_opencl || !legacy_level_zero;
+        prefer_intel_level_zero = prefer_intel_level_zero || max_compute_units % 64u == 0u;
+        needs_intel_opencl = needs_intel_opencl || !prefer_intel_level_zero;
       }
       const unsigned score = pow_device_score(pow_device_profile(dev));
       batch_multiplier = score >= 5 ? 8 : (score >= 3 ? 6 : 4);
@@ -120,15 +132,14 @@ static void add_gpu_cn_algo_dev(
         batch_multiplier = 64;
       }
       if (mom_is_hip(dev)) {
-        // RX 9060 XT reaches its repeatable Linux knee at three 512-hash workers: 3.31 KH/s at
-        // 1536 total versus 2.95 at 1024, while 2048 falls to 3.12. Use that cross-platform HIP
-        // heuristic while the Windows gate checks its own depth curve explicitly. Scale by compute
-        // units so the allocation cap can split the total safely; MOM_CN_GPU_INTENSITY remains
-        // authoritative.
-        batch_multiplier = 96;
+        // HIP reaches its broad knee through independent queues. Linux peaks near three workers
+        // of forty hashes per reported CU. AdaptiveCpp/HIP on Windows favors two workers of
+        // forty-eight; a third worker can overlap independent JIT/runtime initialization and stall
+        // every queue. Scale both total work and worker depth from execution geometry so the rule
+        // extends to unlisted devices rather than depending on a product ID.
+        batch_multiplier = hip_cn_total_per_cu;
       }
     }
-    const unsigned max_compute_units = dev.get_info<sycl::info::device::max_compute_units>();
     const auto mem = algo2mem.find(algo);
     if (mem == algo2mem.end()) return add_result_dev(result_dev, dev_str + "*" + std::to_string(max_compute_units));
 
@@ -136,10 +147,17 @@ static void add_gpu_cn_algo_dev(
                    // &~7: keep per-allocation batch a multiple of 8 hashes
                    max_alloc_batch  = (dev.get_info<sycl::info::device::max_mem_alloc_size>() / batch_mem) & 0xFFFFFFF8,
                    max_batch        = dev.get_info<sycl::info::device::global_mem_size>() / batch_mem,
-                   max_thread_batch = std::min(max_alloc_batch, max_batch),
-                   // NEO 32224's measured A770 knee is three hashes per reported compute unit:
-                   // ~369 H/s at 1536, versus 231 at 256 and a severe long-dispatch cliff at 4096.
-                   default_batch    = legacy_level_zero
+                   // HIP's long recurrence scales through independent queues/processes, not a
+                   // single deeper queue. Keep the platform's geometry-scaled worker count inside
+                   // the total heuristic; an allocation-only split collapses it to one worker.
+                   transport_batch = algo == "cn/gpu" && mom_is_hip(dev)
+                     ? std::max(8u, max_compute_units * hip_cn_worker_per_cu)
+                     : max_alloc_batch,
+                   max_thread_batch = std::min(std::min(max_alloc_batch, transport_batch), max_batch),
+                   // Intel Level Zero's measured broad knee is 2--3 hashes per reported compute
+                   // unit. Three retains peak throughput while avoiding the severe deep-dispatch
+                   // cliff; other transports use their independently measured occupancy scales.
+                   default_batch    = prefer_intel_level_zero
                      ? std::min(std::max(8u, (max_compute_units * 3u) & ~7u), max_batch)
                      : std::min(max_compute_units * batch_multiplier, max_batch),
                    best_batch       = algo == "cn/gpu" ? cn_gpu_env_intensity(default_batch, max_batch) : default_batch;

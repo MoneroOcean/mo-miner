@@ -92,7 +92,8 @@ static unsigned pow_intensity(
   const sycl::device& dev,
   const char* const workgroup_env,
   const char* const intensity_env,
-  const PowIntensityHeuristic& heuristic
+  const PowIntensityHeuristic& heuristic,
+  const unsigned max_work_items_per_gib = 0
 ) {
   const PowDeviceProfile profile = pow_device_profile(dev);
   const PowIntensityScale scale = select_pow_intensity_scale(profile, heuristic);
@@ -102,6 +103,13 @@ static unsigned pow_intensity(
 
   uint64_t intensity64 = static_cast<uint64_t>(local) * scale.base_work_items * profile.compute_units;
   intensity64 /= scale.compute_unit_divisor;
+  if (max_work_items_per_gib) {
+    // Backends count execution slices/EUs/CUs/SMs at different granularities. A memory-scaled cap
+    // prevents that reporting difference from creating an unnecessarily deep search dispatch.
+    const uint64_t memory_depth_cap =
+      std::max<uint64_t>(1, profile.global_mem / GiB) * max_work_items_per_gib * MiB;
+    intensity64 = std::min(intensity64, memory_depth_cap);
+  }
   intensity64 = std::min<uint64_t>(intensity64, std::numeric_limits<unsigned>::max());
   const unsigned intensity = round_down_to_multiple(static_cast<unsigned>(intensity64), local);
   return std::max(intensity, local * 4096u);
@@ -135,11 +143,13 @@ static unsigned firopow_intensity(const sycl::device& dev) {
 }
 
 static unsigned etchash_intensity(const sycl::device& dev) {
+  // Four Mi work-items/GiB places high-EU devices on the measured broad Etchash plateau; current
+  // Xe2, NVIDIA, and AMD heuristics are already shallower and therefore remain unchanged.
   return pow_intensity(dev, "MOM_ETCHASH_WORKGROUP", "MOM_ETCHASH_INTENSITY", {
     {64, 32768, 36},
     {64, 65536, 36},
     {64, 131072, 40}
-  });
+  }, 4);
 }
 
 static unsigned autolykos2_intensity(const sycl::device& dev) {

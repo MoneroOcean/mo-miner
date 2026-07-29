@@ -133,7 +133,7 @@ if (!directive) {return;}
 
 // expectedTestThreads is also exposed to the VM-based logic harness appended by tests/logic/support.
 // eslint-disable-next-line no-unused-vars
-const {expectedTestThreads, messageHandler} = require("./miner/messages")({
+const {expectedTestThreads, messageHandler, resetHashrates} = require("./miner/messages")({
   fs, h, p, opt: global.opt, submission, test, firstTruthyOr, normalizeExpectedResults,
   matchesTestResult, exit, getLastJob: () => last_job,
   getAlgoParamsBenchCallback: () => algo_params_bench_cb,
@@ -152,10 +152,10 @@ const {
   configuredTuning, addPearlHashJobFields, workerRuntimeEnv, set_job,
   prepareBenchmarkJob, defaultBenchAlgos,
 } = jobApi;
-function bench_algo(algo, cb) {
+function bench_algo(algo, cb, dev = global.opt.algo_params[algo].dev, samples = 1) {
   const job = prepareBenchmarkJob({
     algo:     algo,
-    dev:      global.opt.algo_params[algo].dev,
+    dev,
     blob_hex: global.opt.job.blob_hex,
     seed_hex: global.opt.job.seed_hex,
     pool_id:  "", // to drop last nonce messages from this job
@@ -163,14 +163,39 @@ function bench_algo(algo, cb) {
   h.recreate_threads(job.dev, messageHandler, (entry) => workerRuntimeEnv(algo, entry));
   // Live-size DAG/table builds (benchHeightByAlgo) take ~30s on a fast GPU before the
   // 60s+ measurement window even starts, so the old 2 minute cap could cut off honest runs.
+  // Concurrent AdaptiveCpp/HIP worker initialization perturbs the first two measured Windows
+  // CryptoNight-GPU windows even though per-worker kernel compilation is already excluded. Discard
+  // those cold windows so first-run profitability records the stable rate. The optional empirical
+  // tuner consequently averages steady samples rather than selecting from startup noise.
+  const warmupSamples = process.platform === "win32" && algo === "cn/gpu" &&
+    compilerPolicy.gpuFromEnv(process.env) === "amd" ? 2 : 0;
+  const rates = [];
+  const finish = function(hashrate) {
+    if (algo_params_bench_cb !== record) {return;}
+    algo_params_bench_cb = null;
+    resetHashrates();
+    clearTimeout(timeout);
+    return cb(hashrate);
+  };
+  const record = function(hashrate) {
+    if (!(hashrate > 0)) {return finish(0);}
+    rates.push(hashrate);
+    if (rates.length < samples + warmupSamples) {return;}
+    const measuredRates = rates.slice(warmupSamples);
+    return finish(measuredRates.reduce((sum, rate) => sum + rate, 0) / measuredRates.length);
+  };
   const timeout = setTimeout(function() {
     h.log_err("Benchmark " + algo + " algo (" + job.dev + ") timeout");
-    return cb(0);
-  }, 4*60*1000);
-  algo_params_bench_cb = function(hashrate) { clearTimeout(timeout); return cb(hashrate); };
+    return finish(0);
+  }, (4 + Math.max(0, samples + warmupSamples - 1) * 2)*60*1000);
+  algo_params_bench_cb = record;
   set_algo_msr(algo);
   h.messageWorkers({type: "bench", job: last_job = job});
 }
+
+const gpuAutotune = require("./miner/gpu_autotune")({
+  h, opt: global.opt, gpuTuning, benchAlgo: bench_algo,
+});
 
 // do global.opt.algo_params benchmarks if perf === null
 function bench_algos(cb) {
@@ -178,14 +203,19 @@ function bench_algos(cb) {
   let is_before_first_benchmark = true;
   h.repeat(function(cb_next) {
     const algo = nextAlgoToBenchmark(algos);
-    if (!algo) {return cb();}
+    if (!algo) {
+      // This is an explicitly expensive first-run action, not a persistent mining mode.
+      global.opt.gpu_tune = 0;
+      return cb();
+    }
     if (is_before_first_benchmark) {h.log("Doing algo benchmarks...");}
     is_before_first_benchmark = false;
-    bench_algo(algo, function(hashrate) {
-      algo_params_bench_cb = null;
+    const benchmark = () => bench_algo(algo, function(hashrate) {
       global.opt.algo_params[algo].perf = hashrate;
       return cb_next();
     });
+    if (global.opt.gpu_tune) {return gpuAutotune.tuneAlgo(algo, benchmark);}
+    return benchmark();
   });
 }
 

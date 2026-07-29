@@ -152,6 +152,8 @@ module.exports = ({
     if (msg.value.message === "Ignore duplicate job") {return;}
     h.log_err("Compute core error: " + JSON.stringify(msg.value));
     if (test.result_hash_hex) {exit(1);} // exit with error
+    const callback = getAlgoParamsBenchCallback();
+    if (callback) {return callback(0);}
   }
 
   // handles messages sent to the master thread from worker threads
@@ -169,5 +171,9 @@ module.exports = ({
     error:      handleWorkerError,
   };
 
-  return {expectedTestThreads, messageHandler};
+  return {
+    expectedTestThreads,
+    messageHandler,
+    resetHashrates: () => { thread_hashrates = {}; },
+  };
 };

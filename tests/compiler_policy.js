@@ -12,6 +12,24 @@ const {
   parseDiscreteGpuDevices, parseGpuDevices,
 } = require("./common/miner_command");
 
+async function tuneCnGpu(rates) {
+  const opt = {algo_params: {"cn/gpu": {dev: "gpu1*[intensity=1536]"}}};
+  const fakeHelper = {
+    formatHashrate: String,
+    log: () => undefined,
+    log_err: assert.fail,
+    repeat(fn) { fn(() => fakeHelper.repeat(fn)); },
+  };
+  const tuner = require("../miner/gpu_autotune")({
+    h: fakeHelper,
+    opt,
+    gpuTuning,
+    benchAlgo: (_algo, callback, dev) => callback(rates.get(dev)),
+  });
+  await new Promise((resolve) => tuner.tuneAlgo("cn/gpu", resolve));
+  return opt.algo_params["cn/gpu"].dev;
+}
+
 test("GPU test discovery excludes integrated devices", () => {
   // Device names are deliberately arbitrary: discovery uses only SYCL's integrated marker, never
   // a model-name/PCI-ID list, so new and unlisted GPU generations are covered automatically.
@@ -75,6 +93,42 @@ test("GPU tuning syntax preserves per-device workers and partial overrides", () 
   assert.deepEqual(gpuTuning.parseDeviceList(
     "gpu1*[cache_block=0]", "pearlhash"
   )[0].tuning, {cache_block: 0});
+});
+
+test("empirical GPU tuning candidates stay bounded around portable heuristics", () => {
+  const formats = (algo, dev) => gpuTuning.autotuneCandidates(
+    algo, gpuTuning.parseDeviceEntry(dev, algo)
+  ).map(gpuTuning.formatDeviceEntry);
+  assert.deepEqual(formats("cn/gpu", "gpu1*[intensity=1536]"), [
+    "gpu1*[intensity=1536]",
+    "gpu1*[intensity=768]",
+    "gpu1*[intensity=1152]",
+  ]);
+  const autolykos = formats("autolykos2", "gpu2*[intensity=26843520;workgroup=64]^2");
+  assert(autolykos.includes("gpu2*[intensity=33554176;workgroup=64]^2"));
+  assert(autolykos.includes("gpu2*[intensity=26843520;workgroup=256]^2"));
+  assert.equal(formats("zelhash", "gpu1*[slots=4480]").length, 1);
+  assert(formats("beamhash3", "gpu1*[workgroup=640]")
+    .every((dev) => !dev.includes("workgroup=768") && !dev.includes("workgroup=1024")));
+  assert.equal(formats("kawpow", "cpu1*8").length, 1);
+});
+
+test("empirical tuner selects the fastest candidate after requiring a material baseline gain", async () => {
+  const rates = new Map([
+    ["gpu1*[intensity=1536]", 100],
+    ["gpu1*[intensity=768]", 105],
+    ["gpu1*[intensity=1152]", 106],
+  ]);
+  assert.equal(await tuneCnGpu(rates), "gpu1*[intensity=1152]");
+});
+
+test("empirical tuner keeps the heuristic across benchmark noise", async () => {
+  const rates = new Map([
+    ["gpu1*[intensity=1536]", 100],
+    ["gpu1*[intensity=768]", 101],
+    ["gpu1*[intensity=1152]", 101.9],
+  ]);
+  assert.equal(await tuneCnGpu(rates), "gpu1*[intensity=1536]");
 });
 
 test("Pearl tuning is applied independently to each native worker job", () => {
