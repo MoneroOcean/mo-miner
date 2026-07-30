@@ -256,7 +256,9 @@ async function openclImageGuard() {
 }
 
 function defineGpuTestMatrix({discreteOnly = false, portableCpuOnly = false} = {}) {
-  const vendors = requestedVendors();
+  // The portable CPU lane does not discover hardware vendors. Ignore a caller's GPU selection
+  // (for example r.sh's explicit MOM_GPU_BACKEND=opencl) instead of treating a backend as a vendor.
+  const vendors = portableCpuOnly ? [] : requestedVendors();
   const discoverDiscrete = discreteDiscovery();
   const discoverShared = sharedDiscovery();
   const title = portableCpuOnly

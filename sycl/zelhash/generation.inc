@@ -52,8 +52,17 @@ static sycl::event submit_gen_test(
         uint32_t mine[16];
         stock_hash_words(base_h, pending, hash_idx, mine);
         uint32_t acc[16];
-        for (unsigned i = 0; i < 16; ++i)
+        for (unsigned i = 0; i < 16; ++i) {
+#if defined(MOM_SYCL_PORTABLE_OPENCL)
+          // Portable OpenCL may split this 16-item work-group into smaller sub-groups (the
+          // pocl CPU runtime uses eight lanes under QEMU). The ZelHash twist is defined over
+          // the whole 16-hash block, so use the work-group collective in the portable image.
+          acc[i] = sycl::inclusive_scan_over_group(
+            it.get_group(), mine[i], sycl::plus<uint32_t>());
+#else
           acc[i] = sycl::inclusive_scan_over_group(sg, mine[i], sycl::plus<uint32_t>());
+#endif
+        }
 
         // acc now holds the twist accumulator for hash index `hash_idx` (sum over its 16-block prefix
         // up to and including this lane). Mask bytes 15/31/47/63, then emit the 4 sub-element rows for
@@ -207,6 +216,13 @@ static sycl::event submit_gen_fill(
       uint32_t acc[16];
 #if defined(__NVPTX__)
       zelhash_scan16_words(sg, mine, acc);
+#elif defined(MOM_SYCL_PORTABLE_OPENCL)
+      // Unlike the tuned GPU images, a portable OpenCL device is not required to expose
+      // 16-lane sub-groups. WG is exactly 16 here, making the work-group scan both portable
+      // and equivalent to ZelHash's required 16-hash prefix.
+      for (unsigned i = 0; i < 16; ++i)
+        acc[i] = sycl::inclusive_scan_over_group(
+          it.get_group(), mine[i], sycl::plus<uint32_t>());
 #else
       for (unsigned i = 0; i < 16; ++i)
         acc[i] = zelhash_scan16(sg, mine[i]);
