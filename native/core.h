@@ -121,7 +121,6 @@ class Core: public AsyncWorker {
   uint64_t m_nonce64, m_nicehash_mask, m_target, m_timestamp, m_hash_count;
   std::string m_algo_str, m_dev_str, m_seed_hex, m_input_hex, m_pool_id, m_worker_id, m_job_id,
               m_header_hash, m_backend;
-  std::string m_pearlhash_proof_job;   // job_id of the last pearlhash share emitted (one share built per pool job)
   bool m_is_rx_jit, m_is_bench;
   randomx_cache*   m_rx_cache;
   randomx_dataset* m_rx_dataset;

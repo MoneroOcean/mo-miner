@@ -403,21 +403,14 @@ void Core::Execute() {
       }
       if (m_dev == DEV::PEARLHASH_GPU) {
         const uint64_t prev_nonce = m_nonce64;
-        // Emit at most once per (job_id, header) pair since the PlainProof rebuild is heavy and the
-        // pool credits one share per job. PearlHashpool varies job_id (reuses header); HeroMiners the reverse.
         if (dev_sols == 1 && m_target) {
-          std::string pearlhash_key = m_job_id;
-          pearlhash_key.append(reinterpret_cast<const char*>(m_input), m_input_len);
-          if (pearlhash_key != m_pearlhash_proof_job) {
-            m_pearlhash_proof_job = pearlhash_key;
-            MessageValues values;
-            values["nonce"]       = nonce_to_hex(dev_nonce, 8); // winning seed, for logging/traceability
-            values["plain_proof"] = pearlhash_proof();     // builds the proof for the captured tile (lazy)
-            values["pool_id"]     = m_pool_id;
-            values["worker_id"]   = m_worker_id;
-            values["job_id"]      = m_job_id;
-            send_msg("result", values);
-          }
+          MessageValues values;
+          values["nonce"]       = nonce_to_hex(dev_nonce, 8);
+          values["plain_proof"] = pearlhash_proof();
+          values["pool_id"]     = m_pool_id;
+          values["worker_id"]   = m_worker_id;
+          values["job_id"]      = m_job_id;
+          send_msg("result", values);
         }
         m_nonce64 += m_nonce_step;   // advance to the next seed (the blob is not touched)
         if (m_target && nonce_overflowed(prev_nonce, m_nonce64, m_nicehash_mask)) {
