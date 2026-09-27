@@ -288,12 +288,12 @@ int pearlhash(
   // Start after submission: a first call can include synchronous device-image/JIT setup, and feeding
   // that one-off cost into the wait EMA makes later completed GPU attempts sleep needlessly.
   const auto attempt_start = std::chrono::steady_clock::now();
-  // The in-order queue's wait busy-spins a host core on both backends (CUDA's native sync and the
-  // Intel GPU wait), and pearlhash waits once per attempt -- a long, very stable GEMM. So sleep through
-  // most of the attempt (an EMA of recent attempt wall times) before waiting, leaving only a short
-  // spinning tail; the result is read from shared USM afterwards so completion stays exact. The 90%
-  // sleep stays under the attempt time, adding no latency. Mirrors the cn/gpu pre-read sleep.
-  if (st.wait_ema_us > 2000.0) {
+  // Pre-wait sleeping delayed live Intel queue progress and fed that delay
+  // back into the wall-time EMA. Wait immediately on Intel SYCL GPUs; preserve
+  // the existing pacing on other backends and always wait before reading USM.
+  const bool intel_sycl_gpu = search_backend == PearlHashSearchBackend::sycl &&
+    q.get_device().is_gpu() && q.get_device().get_info<sycl::info::device::vendor_id>() == 0x8086;
+  if (st.wait_ema_us > 2000.0 && !intel_sycl_gpu) {
     const double elapsed_us = static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
       std::chrono::steady_clock::now() - attempt_start).count());
     const double sleep_us = st.wait_ema_us * 0.90 - elapsed_us;
@@ -367,7 +367,7 @@ uint64_t pearlhash_attempt_hashes(unsigned intensity, unsigned n, unsigned k) {
 }
 #endif  // !PEARLHASH_STANDALONE
 
-#ifdef PEARLHASH_STANDALONE
+#if defined(PEARLHASH_STANDALONE) && !defined(PEARLHASH_TEST)
 #include <cstdio>
 #include <chrono>
 #include <poll.h>

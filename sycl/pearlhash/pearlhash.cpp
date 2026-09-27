@@ -32,6 +32,7 @@
 #include <sycl/ext/intel/esimd.hpp>   // experimental register-resident DPAS search path
 #endif
 #include <chrono>
+#include <cctype>
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>

@@ -114,6 +114,7 @@ static void search_esimd(sycl::queue& q, const Buffers& bb, uint32_t seed, int m
     });
   });
 }
+#include "alchemist_search.inc"
 #endif  // PEARLHASH_ESIMD
 
 
@@ -121,4 +122,5 @@ static void search_esimd(sycl::queue& q, const Buffers& bb, uint32_t seed, int m
 // declare it here so attempt() can call it. (When PEARLHASH_ESIMD is set this is the same TU, defined above.)
 #if defined(MOM_PEARLHASH_HAS_ESIMD) && !defined(PEARLHASH_ESIMD)
 void search_esimd(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k, int rank, bool dbg);
+sycl::event search_esimd_alchemist(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k, int rank, bool dbg);
 #endif

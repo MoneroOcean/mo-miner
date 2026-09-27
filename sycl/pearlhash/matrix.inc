@@ -228,7 +228,7 @@ static void prepare_noise_cpu(const Buffers& B, int m, int n, int k, int rank) {
 
 static sycl::event compute_ab(sycl::queue& q, const Buffers& bb, uint32_t seed,
            int m, int n, int k, int rank,
-           bool portable) {
+           bool portable, bool alchemist = false) {
   auto B = bb; const uint32_t tot = (uint32_t)(m * k);
   // Explicit capture list (not [=]): capturing the extra `portable` bool under [=] makes the host
   // (icx) and device (clang) compilers disagree on the lambda layout in the dual-compiler combined
@@ -301,7 +301,7 @@ static sycl::event compute_ab(sycl::queue& q, const Buffers& bb, uint32_t seed,
         });
     });
   }
-  return q.parallel_for(sycl::range<1>((size_t)k * n), [ebr, bp, eblq1, eblq2, seed, tot, k, n, portable](sycl::id<1> id) { int idx = (int)id[0], r = idx / n, j = idx % n;
+  return q.parallel_for(sycl::range<1>((size_t)k * n), [ebr, bp, eblq1, eblq2, seed, tot, k, n, portable, alchemist](sycl::id<1> id) { int idx = (int)id[0], r = idx / n, j = idx % n;
     int acc = (int)ebr[eblq1[r] * n + j] - (int)ebr[eblq2[r] * n + j];
     int8_t v = (int8_t)(gv(seed, tot + (uint32_t)idx) + acc);
 #if defined(__NVPTX__) && (!defined(MOM_SYCL_ADAPTIVECPP) || defined(__CUDA_ARCH__))
@@ -312,6 +312,8 @@ static sycl::event compute_ab(sycl::queue& q, const Buffers& bb, uint32_t seed,
 #else
     (void)n;
     if (portable) bp[(size_t)j * k + r] = v;   // col-major B'[r,j] for the dp4a search()
+    // DG2: contiguous 32x8 VNNI fragments (256 bytes), matching SIMD8 DPAS.
+    else if (alchemist) bp[(size_t)(j / 8) * k * 8 + (size_t)(r / 4) * 32 + (size_t)(j % 8) * 4 + (r % 4)] = v;
     else bp[(size_t)(j / 16) * k * 16 + (size_t)(r / 4) * 64 + (size_t)(j % 16) * 4 + (r % 4)] = v;
 #endif
   });

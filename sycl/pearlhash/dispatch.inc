@@ -1,5 +1,4 @@
 enum class PearlHashSearchBackend { sycl, amd_sycl_wmma, hip_jit, cuda_jit };
-
 static PearlHashSearchBackend attempt(
     sycl::queue& q, const Buffers& b, uint32_t seed, int m, int n, int k, int rank,
     const std::string& backend = "auto", PearlHashHipSearch* hip = nullptr,
@@ -131,11 +130,29 @@ static PearlHashSearchBackend attempt(
     }
   }
 #endif
+  bool use_alchemist = false;
+#if defined(PEARLHASH_ESIMD) || defined(MOM_PEARLHASH_HAS_ESIMD)
+  if (!use_portable && !is_cuda && q.get_device().is_gpu() &&
+      q.get_device().get_info<sycl::info::device::vendor_id>() == 0x8086) {
+    std::string name = q.get_device().get_info<sycl::info::device::name>();
+    for (char& c : name) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    use_alchemist = name.find("a770") != std::string::npos ||
+                    name.find("a750") != std::string::npos ||
+                    name.find("a580") != std::string::npos ||
+                    name.find("dg2") != std::string::npos;
+    // The tuned grid owns two complete 16-row tiles. Use the portable path
+    // for smaller/non-divisible shapes rather than silently omitting rows.
+    if (use_alchemist && (m % 32 != 0 || n % 16 != 0 || k % 32 != 0)) {
+      use_alchemist = false;
+      use_portable = true;
+    }
+  }
+#endif
   if (q.get_device().is_cpu()) {
     q.wait_and_throw();
     compute_ab_cpu(b, seed, m, n, k, rank);
   } else {
-    compute_ab(q, b, seed, m, n, k, rank, /*portable=*/use_portable);
+    compute_ab(q, b, seed, m, n, k, rank, /*portable=*/use_portable, use_alchemist);
   }
   mark("ab");
 #if defined(MOM_SYCL_HAS_CUDA)
@@ -156,8 +173,15 @@ static PearlHashSearchBackend attempt(
   }   // portable dp4a int8 GEMM (AMD / CPU / Intel-OpenCL)
 #endif
 #if defined(PEARLHASH_ESIMD) || defined(MOM_PEARLHASH_HAS_ESIMD)
-  search_esimd(q, b, seed, m, n, k, rank, dbg); // ESIMD register-resident DPAS path (Intel GPUs, Level-Zero, ~53 TH/s)
-  mark("search_esimd");
+  // Select the generation-specific operand shape and matching search kernel.
+  if (use_alchemist) {
+    search_esimd_alchemist(q, b, seed, m, n, k, rank, dbg);
+    mark("search_esimd_alchemist");
+  } else {
+    // Default Battlemage / Xe2 path (SIMD16, 2x2 tile grid configuration)
+    search_esimd(q, b, seed, m, n, k, rank, dbg);
+    mark("search_esimd");
+  }
 #else
   search(q, b, seed, m, n, k, rank, dbg);       // unreached (use_portable already handled non-CUDA above)
   mark("search_portable");
