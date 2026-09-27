@@ -128,18 +128,11 @@ function pearlhashKEff() {
   return Math.floor(k / rank) * rank;
 }
 
-// HeroMiners sends the BASE target T0 (= nbits_to_difficulty(share_nbits)); the actual jackpot bound
-// the verifier checks is T0 * (16*16) * (k - k%rank)  (zk-pow extract_difficulty_bound: tile_size *
-// dot_product_length). pearlpool instead accepts the lenient 2^256/diff and its target field is the
-// network block target (ignored).
-function pearlhashNbitsBound(baseTargetHex) {
-  const MAX = (1n << 256n) - 1n;
-  const base = BigInt("0x" + (hexWithoutPrefix(baseTargetHex) || "0"));
-  let bound = base * BigInt(16 * 16 * pearlhashKEff());
-  if (bound > MAX) {bound = MAX;}
-  return bound.toString(16).padStart(64, "0");
+function pearlhashNbitsBound(baseTargetHex, rankPenalty = false) {
+  return require("./gpu-tuning").pearlhashTarget(baseTargetHex,
+    Number(process.env.MOM_PEARLHASH_K) || 4096,
+    Number(process.env.MOM_PEARLHASH_RANK) || 256, rankPenalty);
 }
-
 module.exports.pool_write = function(pool_id, json) {
   const message = JSON.stringify(json);
   const pool = global.opt.pools[pool_id];

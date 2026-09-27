@@ -206,6 +206,18 @@ function nativeJobIntensity(entry, algo = "") {
   return Number((entry.tuning || {})[algo === "pearlhash" ? "m" : "intensity"] || 1);
 }
 
+function pearlhashTarget(baseHex, k, rank, rankPenalty = false) {
+  if (!Number.isSafeInteger(k) || !Number.isSafeInteger(rank) || k < rank || rank <= 0 ||
+      (rankPenalty && rank < 128)) {throw new Error("Invalid PearlHash target dimensions");}
+  const hex = String(baseHex).replace(/^0x/i, "");
+  if (!/^[0-9a-f]{1,64}$/i.test(hex)) {throw new Error("Invalid PearlHash base target");}
+  const factor = 256n * BigInt(Math.floor(k / rank)) * BigInt(rankPenalty ? 128 : rank);
+  const bound = BigInt("0x" + hex) * factor;
+  const max = (1n << 256n) - 1n;
+  if (rankPenalty && (bound === 0n || bound > max)) {throw new Error("Unusable PearlHash rank-penalized target");}
+  return (bound > max ? max : bound).toString(16).padStart(64, "0");
+}
+
 function applyNativeJobTuning(job, entry, algo = "") {
   job.dev = nativeJobDevice(entry);
   job.intensity = nativeJobIntensity(entry, algo);
@@ -217,6 +229,10 @@ function applyNativeJobTuning(job, entry, algo = "") {
   if (tuning.m !== undefined && tuning.n === undefined) {job.pearlhash_n = tuning.m;}
   for (const field of ["n", "k", "rank"]) {
     if (tuning[field] !== undefined) {job[`pearlhash_${field}`] = tuning[field];}
+  }
+  if (job.pearlhash_base_target !== undefined) {
+    job.target = pearlhashTarget(job.pearlhash_base_target, job.pearlhash_k,
+      job.pearlhash_rank, job.pearlhash_rank_penalty);
   }
   return job;
 }
@@ -370,6 +386,7 @@ function autotuneCandidates(algo, entry) {
 
 module.exports = {
   applyNativeJobTuning,
+  pearlhashTarget,
   autotuneCandidates,
   formatDeviceEntry,
   formatDeviceList,

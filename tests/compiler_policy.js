@@ -7,6 +7,27 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const gpuTuning = require("../gpu-tuning");
+
+test("PearlHash rank penalty matches verifier scaling and follows worker dimensions", () => {
+  const target = (rank, penalty) => BigInt("0x" + gpuTuning.pearlhashTarget("01", 4096, rank, penalty));
+  assert.equal(target(128, true), target(128, false));
+  assert.equal(target(256, true), target(256, false) / 2n);
+  assert.equal(target(512, true), target(512, false) / 4n);
+  const base = "000000000000218dcdb37c99ae924f227d028a1dfb9389b52007dd441355475a";
+  const rejectedHash = 0x0000000181519d127b2a7d46094e3a8d6c2af2f6607f7002d7de72fdc59c76a0n;
+  assert.ok(rejectedHash <= BigInt("0x" + gpuTuning.pearlhashTarget(base, 4096, 256, false)));
+  assert.ok(rejectedHash > BigInt("0x" + gpuTuning.pearlhashTarget(base, 4096, 256, true)));
+  const job = {pearlhash_base_target: "01", pearlhash_rank_penalty: true,
+    pearlhash_k: 4096, pearlhash_rank: 256, target: "ff".repeat(32)};
+  gpuTuning.applyNativeJobTuning(job, {device: "gpu1", tuning: {k: 8192, rank: 512}}, "pearlhash");
+  assert.equal(BigInt("0x" + job.target), 256n * 16n * 128n);
+  const final = {target: "12".repeat(32), pearlhash_k: 4096, pearlhash_rank: 256};
+  gpuTuning.applyNativeJobTuning(final, {device: "gpu1", tuning: {}}, "pearlhash");
+  assert.equal(final.target, "12".repeat(32));
+  assert.throws(() => gpuTuning.pearlhashTarget("01", 4096, 64, true), /dimensions/);
+  assert.throws(() => gpuTuning.pearlhashTarget("ff".repeat(32), 4096, 256, true), /Unusable/);
+  assert.throws(() => gpuTuning.pearlhashTarget("0", 4096, 256, true), /Unusable/);
+});
 const helper = require("../helper");
 const {
   parseDiscreteGpuDevices, parseGpuDevices,

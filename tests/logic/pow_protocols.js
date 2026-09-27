@@ -6,11 +6,14 @@ const { test, assert, loadMinerWithStubs } = s;
 test("PearlHash certificate versions survive job dispatch and reject unknown rules", async () => {
   const miner = await loadMinerWithStubs();
   const setJob = miner.getSetJob();
-  const job = {algo: "pearlhash", blob: "00".repeat(76), difficulty: 1, job_id: "v3"};
+  const job = {algo: "pearlhash", blob: "00".repeat(76), difficulty: 1, job_id: "v3",
+    pearlhash_base_target: "01", pearlhash_rank_penalty: true};
   for (const version of [undefined, 1, 2, 3, 2]) {
     setJob({...job, cert_version: version});
     const messages = miner.sentMessages.filter((msg) => msg.type === "job");
     assert.equal(messages.at(-1).job.cert_version, version ?? 2);
+    assert.equal(messages.at(-1).job.pearlhash_base_target, "01");
+    assert.equal(messages.at(-1).job.pearlhash_rank_penalty, true);
   }
   for (const version of [0, 4, "3", 3.5]) {
     assert.throws(() => setJob({...job, cert_version: version}), /Unsupported PearlHash certificate version/);

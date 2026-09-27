@@ -176,6 +176,8 @@ Device identifiers never encode an execution API; switch implementations with `b
 `dev` API-neutral. Status output makes the choice visible: `auto[sycl-native]` means `auto` resolved
 to `sycl-native`, while an explicit selection is printed directly.
 
+For PearlHash base-target pools enforcing the rank penalty (including the tested LuckyPool endpoint), set "pearlhash_rank_penalty": true in that pool entry. The target is calculated after each worker's K/rank tuning is applied. This rule is independent of certificate version; enable it according to the pool's verification rules. Already-final jackpot targets must not be scaled again.
+
 ## GPU tuning
 
 mom derives tuning from the GPU's compute units, memory limits, runtime, and algorithm. The short
@@ -336,6 +338,7 @@ Options:
   is_keepalive:                     sends keepalive messages to the pool to avoid disconnect (true by default)
   use_subscribe:                    PearlHash pools: use mining.subscribe+authorize handshake; set false for pearlpool.cloud's login dialect and the MoneroOcean donate pool (true by default)
   worker:                           PearlHash subscribe-dialect worker name (mining.authorize) ("mom" by default)
+  pearlhash_rank_penalty:            Apply the rank-128 normalized share target on pools enforcing the rank penalty (false by default)
   login:                            pool login data
   pass:                             pool password ("" by default)
 

@@ -63,6 +63,7 @@ module.exports.opt_help = {
       is_keepalive:       [ true, "sends keepalive messages to the pool to avoid disconnect" ],
       use_subscribe:      [ true, "PearlHash pools: use mining.subscribe+authorize handshake; set false for pearlpool.cloud's login dialect and the MoneroOcean donate pool" ],
       worker:             [ "mom", "PearlHash subscribe-dialect worker name (mining.authorize)" ],
+      pearlhash_rank_penalty: [ false, "Apply the rank-128 normalized share target on pools enforcing the rank penalty" ],
       login:              [ undefined, "pool login data" ],
       pass:               [ "", "pool password" ],
       _socket:            [ null, "network socket object" ],

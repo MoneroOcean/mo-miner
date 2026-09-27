@@ -449,11 +449,15 @@ module.exports = ({
         blob: hexWithoutPrefix(pp.header),   // the 76-byte incomplete header (input for the kernel)
         job_id: pp.job_id,
         cert_version: pp.cert_version,
+        ...(pearlhashUsesSubscribe(pool) && pool.pearlhash_target_format !== "jackpot" ? {
+          pearlhash_base_target: pp.target,
+          pearlhash_rank_penalty: pool.pearlhash_rank_penalty === true,
+        } : {}),
         height: pp.height || 0,
         difficulty: pp.difficulty || pp.diff || pearlhashDiffFromJobId(pp.job_id) || pool.pearlhash_difficulty, // LuckyPool names it "diff"; var-diff may send it via set_difficulty
         // HeroMiners-style pools: precompute the verifier's jackpot bound from the base target field.
         // pearlpool-style: leave unset so jobTarget falls back to 2^256/diff.
-        target: pearlhashUsesSubscribe(pool) ? pearlhashNbitsBound(pp.target) : undefined,
+        target: pearlhashUsesSubscribe(pool) ? pearlhashNbitsBound(pp.target, pool.pearlhash_rank_penalty) : undefined,
       };
     }
     if (poolProtocol(pool) === "zelhash" && isZelHashJobNotification(json)) {

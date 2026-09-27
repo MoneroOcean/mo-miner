@@ -137,6 +137,10 @@ module.exports = ({
       const version = prev_job.cert_version ?? 2;
       if (![1, 2, 3].includes(version)) {throw new Error("Unsupported PearlHash certificate version: " + version);}
       job.cert_version = version;
+      if (prev_job.pearlhash_base_target !== undefined) {
+        job.pearlhash_base_target = prev_job.pearlhash_base_target;
+        job.pearlhash_rank_penalty = prev_job.pearlhash_rank_penalty === true;
+      }
     }
     return job;
   }
