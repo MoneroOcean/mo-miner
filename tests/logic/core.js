@@ -487,3 +487,23 @@ test("repeated GPU workers may return identical multi-field test results", async
   assert.equal(miner.matchesTestResult("kawpow", `${result} ${result}`, result), true);
   assert.equal(miner.matchesTestResult("kawpow", `${result} wrong_hash`, result), false);
 });
+
+test("invalid replacement worker configuration preserves existing workers", () => {
+  const originalClose = helper.closeWorkers;
+  const previousOpt = global.opt;
+  let closed = 0;
+  const prepared = [];
+  global.opt = {log_level: 0};
+  helper.closeWorkers = () => {closed++;};
+  try {
+    assert.throws(() => helper.recreate_threads("gpu1,gpu2", noOp, (dev) => {
+      prepared.push(dev);
+      throw new Error("incompatible donation tuning");
+    }), /incompatible donation tuning/);
+    assert.deepEqual(prepared, ["gpu1"]);
+    assert.equal(closed, 0);
+  } finally {
+    helper.closeWorkers = originalClose;
+    global.opt = previousOpt;
+  }
+});

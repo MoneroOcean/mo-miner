@@ -484,14 +484,18 @@ function createClusterThread(i, env, messageHandler) {
 // need to recreate threads from 0 for every algo change since huge memory reallocations
 // can have issues
 module.exports.recreate_threads = function(dev, messageHandler, extraEnv = {}) {
-  module.exports.closeWorkers(5000);
-  worker_ids = [];
-  worker_procs = {};
+  const environments = [];
   const curr_thread_count = this.get_dev_threads(dev);
   for (let i = 0; i < curr_thread_count; ++ i) {
     const selectedDev = this.get_thread_dev(i, dev);
     const selectedEnv = typeof extraEnv === "function" ? extraEnv(selectedDev, i) : extraEnv;
     const env = childEnv({thread_id: i, log_level: global.opt.log_level, ...selectedEnv});
+    environments.push(env);
+  }
+  module.exports.closeWorkers(5000);
+  worker_ids = [];
+  worker_procs = {};
+  for (const [i, env] of environments.entries()) {
     if (use_subprocess_workers) {createSubprocessThread(i, env, messageHandler);}
     else {createClusterThread(i, env, messageHandler);}
   }
