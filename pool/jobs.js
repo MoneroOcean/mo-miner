@@ -448,6 +448,7 @@ module.exports = ({
         algo: fixedAlgoJobName(json, "pearlhash"),
         blob: hexWithoutPrefix(pp.header),   // the 76-byte incomplete header (input for the kernel)
         job_id: pp.job_id,
+        cert_version: pp.cert_version,
         height: pp.height || 0,
         difficulty: pp.difficulty || pp.diff || pearlhashDiffFromJobId(pp.job_id) || pool.pearlhash_difficulty, // LuckyPool names it "diff"; var-diff may send it via set_difficulty
         // HeroMiners-style pools: precompute the verifier's jackpot bound from the base target field.

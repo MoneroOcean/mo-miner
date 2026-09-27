@@ -3,6 +3,20 @@
 const s = require("./support");
 const { test, assert, events, tls, opts, pool, noOp, loadMinerWithStubs, withMockPool } = s;
 
+test("PearlHash notifications preserve the certificate version", async () => {
+  await withMockPool({pool: {protocol: "pearlhash"}, opt: {job: {algo: "pearlhash"}}}, async ({socket}) => {
+    let received;
+    pool.connect_pool_throttle(0, (job) => { received = job; return job; });
+    socket.emit("connect");
+    socket.emit("data", Buffer.from(JSON.stringify({id: 1, result: [], error: null}) + "\n"));
+    socket.emit("data", Buffer.from(JSON.stringify({id: 2, result: true, error: null}) + "\n"));
+    socket.emit("data", Buffer.from(JSON.stringify({method: "mining.notify", params: {
+      job_id: "v3", header: "00".repeat(76), target: "00".repeat(31) + "01", cert_version: 3,
+    }}) + "\n"));
+    assert.equal(received.cert_version, 3);
+  });
+});
+
 test("fixed KawPow pools use Raven stratum subscribe and authorize", async () => {
   let jobMessage = null;
   await withMockPool({

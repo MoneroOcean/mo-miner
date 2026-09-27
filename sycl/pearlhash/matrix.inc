@@ -47,6 +47,7 @@ static inline void dev_randHash(int index, const uint8_t* seed32, const uint8_t*
 struct Result { int found; uint32_t seed; uint32_t row; uint32_t col; uint32_t chk; };
 
 struct Buffers {
+  unsigned cert_version = 2; // absent legacy jobs and standalone benchmarks
   int8_t *EAL, *EBR, *EBRt, *Ap, *Bp;       // A'/B' (noised, search inputs); A/B regenerated from RNG
   int8_t *ApWmma, *BpWmma;
   int32_t *EARp1, *EARp2, *EBLq1, *EBLq2;
@@ -112,17 +113,15 @@ static void k_roots(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int
     int offA = reduce_tree_pow2(q, B.CVA, B.key, ncA);
     int offB = reduce_tree_pow2(q, B.CVB, B.key, ncB);
     q.single_task([=]() {
-      uint8_t buf[64];
-      for (int i = 0; i < 32; i++) { buf[i] = B.key[i]; buf[32 + i] = B.CVB[(size_t)offB * 32 + i]; } b3(buf, 64, nullptr, B.cB);
-      for (int i = 0; i < 32; i++) { buf[i] = B.cB[i]; buf[32 + i] = B.CVA[(size_t)offA * 32 + i]; } b3(buf, 64, nullptr, B.cA);
+      pearlhash_b3::noise_seeds(B.key, B.CVA + (size_t)offA * 32,
+          B.CVB + (size_t)offB * 32, m, n, B.cert_version, B.cA, B.cB);
     });
   } else {
     q.single_task([=]() {
-      uint8_t rootA[32], rootB[32], buf[64];
+      uint8_t rootA[32], rootB[32];
       pearlhash_b3::merge_root(B.CVA, ncA, B.key, rootA);
       pearlhash_b3::merge_root(B.CVB, ncB, B.key, rootB);
-      for (int i = 0; i < 32; i++) { buf[i] = B.key[i]; buf[32 + i] = rootB[i]; } b3(buf, 64, nullptr, B.cB);
-      for (int i = 0; i < 32; i++) { buf[i] = B.cB[i]; buf[32 + i] = rootA[i]; } b3(buf, 64, nullptr, B.cA);
+      pearlhash_b3::noise_seeds(B.key, rootA, rootB, m, n, B.cert_version, B.cA, B.cB);
     });
   }
 }
@@ -183,13 +182,10 @@ static void prepare_roots_cpu(
     pearlhash_b3::chunk_cv(chunk, static_cast<uint32_t>(len), static_cast<uint64_t>(ci),
                           B.key, B.CVB + static_cast<size_t>(ci) * 32);
   }
-  uint8_t rootA[32], rootB[32], input[64];
+  uint8_t rootA[32], rootB[32];
   pearlhash_b3::merge_root(B.CVA, ncA, B.key, rootA);
   pearlhash_b3::merge_root(B.CVB, ncB, B.key, rootB);
-  for (int i = 0; i < 32; ++i) { input[i] = B.key[i]; input[32 + i] = rootB[i]; }
-  b3(input, 64, nullptr, B.cB);
-  for (int i = 0; i < 32; ++i) { input[i] = B.cB[i]; input[32 + i] = rootA[i]; }
-  b3(input, 64, nullptr, B.cA);
+  pearlhash_b3::noise_seeds(B.key, rootA, rootB, m, n, B.cert_version, B.cA, B.cB);
 }
 
 static void prepare_noise_cpu(const Buffers& B, int m, int n, int k, int rank) {

@@ -44,7 +44,7 @@ typedef int (*gpu_pearlhash_hash_fun)(
   const uint8_t* input, unsigned input_size, uint8_t* output,
   uint64_t* pseed, const uint8_t* target,
   unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str,
-  const std::string& backend, unsigned n, unsigned k, unsigned rank
+  const std::string& backend, unsigned n, unsigned k, unsigned rank, unsigned cert_version
 );
 // FishHash variants share the etchash hash-fun ABI (32-byte LE target; seed_hash unused).
 typedef gpu_etchash_hash_fun gpu_fishhash_hash_fun;
@@ -116,7 +116,7 @@ class Core: public AsyncWorker {
   uint8_t m_target_bin[HASH_LEN]{}, m_seed[HASH_LEN]{};
   unsigned m_job_ref, m_height, m_batch, m_mem_size, m_input_len, m_nonce_step,
            m_nonce_bytes, m_nonce_offset, m_c29_proof_size,
-           m_pearlhash_n, m_pearlhash_k, m_pearlhash_rank;
+           m_pearlhash_n, m_pearlhash_k, m_pearlhash_rank, m_pearlhash_cert_version;
   uint32_t m_nonce32; // next nonce that will be used in an input
   uint64_t m_nonce64, m_nicehash_mask, m_target, m_timestamp, m_hash_count;
   std::string m_algo_str, m_dev_str, m_seed_hex, m_input_hex, m_pool_id, m_worker_id, m_job_id,
@@ -195,7 +195,7 @@ class Core: public AsyncWorker {
       m_spads(nullptr), m_ctx(nullptr), m_input(nullptr), m_output(nullptr),
       m_job_ref(0), m_height(0), m_batch(0), m_mem_size(0), m_input_len(0),
       m_nonce_step(1), m_nonce_bytes(4), m_nonce_offset(39), m_c29_proof_size(32),
-      m_pearlhash_n(131072), m_pearlhash_k(4096), m_pearlhash_rank(256),
+      m_pearlhash_n(131072), m_pearlhash_k(4096), m_pearlhash_rank(256), m_pearlhash_cert_version(2),
       m_nonce32(0), m_nonce64(0), m_nicehash_mask(0), m_target(0), m_timestamp(0),
       m_hash_count(0), m_is_rx_jit(true), m_is_bench(false), m_rx_cache(nullptr), m_rx_dataset(nullptr),
       m_thread_pool(nullptr), m_vm(nullptr)

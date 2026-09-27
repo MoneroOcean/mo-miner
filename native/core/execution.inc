@@ -182,7 +182,7 @@ void Core::Execute() {
               m_job_ref, m_height, m_input, m_input_len, m_output,
               &dev_nonce, m_target_bin,
               m_batch, is_test, m_is_bench, m_dev_str, m_backend,
-              m_pearlhash_n, m_pearlhash_k, m_pearlhash_rank
+              m_pearlhash_n, m_pearlhash_k, m_pearlhash_rank, m_pearlhash_cert_version
             );
             break;
           case DEV::FISHHASH_GPU:

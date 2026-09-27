@@ -238,7 +238,7 @@ int pearlhash(
   uint8_t* const, uint64_t* const pseed, const uint8_t* const target,
   const unsigned intensity, const bool is_test, const bool, const std::string& dev_str,
   const std::string& backend, const unsigned requested_n, const unsigned requested_k,
-  const unsigned requested_rank
+  const unsigned requested_rank, const unsigned cert_version
 ) {
   if (input_size < 76) throw std::string("Bad pearlhash input length (need 76-byte header)");
   const int k = static_cast<int>(requested_k);
@@ -267,6 +267,8 @@ int pearlhash(
   st.ensure(m, n, k, rank, hip_jit, cuda_jit);
   sycl::queue& q = st.queue;
   Buffers& b = st.b;
+  if (cert_version < 1 || cert_version > 3) throw std::string("Unsupported PearlHash certificate version");
+  b.cert_version = cert_version;
 
   if (!st.have_header || std::memcmp(st.header, input, 76) != 0) {  // (re)derive key on header change
     std::memcpy(st.header, input, 76);

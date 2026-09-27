@@ -132,7 +132,12 @@ module.exports = ({
       backend_request: requestedJobBackend(algo),
       backend:    jobBackend(algo),
     };
-    if (algo === "pearlhash") {addPearlHashJobFields(job);}
+    if (algo === "pearlhash") {
+      addPearlHashJobFields(job);
+      const version = prev_job.cert_version ?? 2;
+      if (![1, 2, 3].includes(version)) {throw new Error("Unsupported PearlHash certificate version: " + version);}
+      job.cert_version = version;
+    }
     return job;
   }
 

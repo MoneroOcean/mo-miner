@@ -127,7 +127,7 @@ MOM_SYCL_API int pearlhash(
   unsigned job_id, uint32_t height, const uint8_t* input, unsigned input_size, uint8_t* output,
   uint64_t* pseed, const uint8_t* target,
   unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str,
-  const std::string& backend, unsigned n, unsigned k, unsigned rank
+  const std::string& backend, unsigned n, unsigned k, unsigned rank, unsigned cert_version
 );
 MOM_SYCL_API const char* pearlhash_proof();
 // GEMM MACs per pearlhash attempt (m*n*k) -- the work unit the pearlhash "TH/s" hashrate is quoted in, so

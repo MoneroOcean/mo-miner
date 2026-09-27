@@ -218,3 +218,32 @@ inline void merge_root(uint8_t* cvs, int numChunks, const uint8_t* key32, uint8_
 }
 
 }  // namespace pearlhash_b3
+
+// Certificate V3 root binding, matching zk-pow/src/api/seed.rs.
+// Only seed derivation uses bound roots; serialized proofs retain raw roots.
+namespace pearlhash_b3 {
+static inline void noise_seeds(const uint8_t* key, const uint8_t* root_a,
+    const uint8_t* root_b, uint32_t m, uint32_t n, unsigned version,
+    uint8_t* a, uint8_t* b) {
+  const uint8_t salt_a[32] = {
+    0x82,0x49,0x40,0x6c,0xa0,0xed,0x15,0x16,0x96,0x16,0xf6,0x92,0xfc,0xf0,0x76,0xf8,
+    0x92,0xdb,0xdb,0x2a,0x70,0x23,0xb8,0x52,0xf0,0xd4,0x77,0x19,0xc3,0x90,0x01,0x7b};
+  const uint8_t salt_b[32] = {
+    0x11,0x30,0x06,0x32,0xec,0x63,0x01,0xca,0x2b,0xe2,0xaf,0x71,0x8b,0x3f,0x4d,0x4f,
+    0x1a,0xe9,0xc6,0x39,0x88,0xe8,0xcc,0x04,0x48,0x44,0x30,0x1d,0x71,0xb8,0x9a,0xa9};
+  uint8_t bound_a[32], bound_b[32], input[64]{};
+  if (version == 3) {
+    for (int i=0;i<32;++i) input[i]=root_a[i];
+    for (int i=0;i<4;++i) input[32+i]=static_cast<uint8_t>(m>>(8*i));
+    b3(input,64,salt_a,bound_a);
+    for (int i=0;i<32;++i) input[i]=root_b[i];
+    for (int i=0;i<4;++i) input[32+i]=static_cast<uint8_t>(n>>(8*i));
+    b3(input,64,salt_b,bound_b);
+    root_a=bound_a; root_b=bound_b;
+  }
+  for (int i=0;i<32;++i) { input[i]=key[i]; input[32+i]=root_b[i]; }
+  b3(input,64,nullptr,b);
+  for (int i=0;i<32;++i) { input[i]=b[i]; input[32+i]=root_a[i]; }
+  b3(input,64,nullptr,a);
+}
+}

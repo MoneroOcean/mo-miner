@@ -60,6 +60,10 @@ void Core::set_job(
                     new_pearlhash_n        = opt_uint("pearlhash_n", 131072),
                     new_pearlhash_k        = opt_uint("pearlhash_k", 4096),
                     new_pearlhash_rank     = opt_uint("pearlhash_rank", 256);
+  const unsigned new_pearlhash_cert_version = opt_uint("cert_version", 2);
+  if (new_algo_str == "pearlhash" && v.contains("cert_version") &&
+      v.at("cert_version") != "1" && v.at("cert_version") != "2" && v.at("cert_version") != "3")
+    throw std::string("Unsupported PearlHash certificate version");
   const uint64_t    new_nonce          = opt_u64_hex("nonce"),
                     new_nicehash_mask  = opt_u64_hex("nicehash_mask");
 
@@ -228,7 +232,7 @@ void Core::set_job(
     m_nonce_offset == new_nonce_offset && m_c29_proof_size == new_c29_proof_size &&
     m_input_len == new_input_len && m_nicehash_mask == new_nicehash_mask &&
     m_backend == new_backend && m_pearlhash_n == new_pearlhash_n &&
-    m_pearlhash_k == new_pearlhash_k && m_pearlhash_rank == new_pearlhash_rank;
+    m_pearlhash_k == new_pearlhash_k && m_pearlhash_rank == new_pearlhash_rank && m_pearlhash_cert_version == new_pearlhash_cert_version;
   if (same_compute_input) {
     // Pools can retarget c29 by sending the same work with a new target/job id.
     // Keep the existing nonce/search state and only refresh submit metadata.
@@ -337,6 +341,7 @@ void Core::set_job(
   m_pearlhash_n        = new_pearlhash_n;
   m_pearlhash_k        = new_pearlhash_k;
   m_pearlhash_rank     = new_pearlhash_rank;
+  m_pearlhash_cert_version = new_pearlhash_cert_version;
   std::memcpy(m_seed, new_seed, HASH_LEN);
   fn_extra_setup();
 
