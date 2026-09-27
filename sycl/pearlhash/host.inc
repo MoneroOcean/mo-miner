@@ -288,9 +288,7 @@ int pearlhash(
   // Start after submission: a first call can include synchronous device-image/JIT setup, and feeding
   // that one-off cost into the wait EMA makes later completed GPU attempts sleep needlessly.
   const auto attempt_start = std::chrono::steady_clock::now();
-  // Pre-wait sleeping delayed live Intel queue progress and fed that delay
-  // back into the wall-time EMA. Wait immediately on Intel SYCL GPUs; preserve
-  // the existing pacing on other backends and always wait before reading USM.
+  // Intel queue progress must precede the wait-time EMA update.
   const bool intel_sycl_gpu = search_backend == PearlHashSearchBackend::sycl &&
     q.get_device().is_gpu() && q.get_device().get_info<sycl::info::device::vendor_id>() == 0x8086;
   if (st.wait_ema_us > 2000.0 && !intel_sycl_gpu) {

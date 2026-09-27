@@ -114,10 +114,7 @@ static void search_esimd(sycl::queue& q, const Buffers& bb, uint32_t seed, int m
     });
   });
 }
-// Alchemist uses SIMD8 DPAS operands: C=8x8, B=32x8 VNNI, A=8x32.
-// Two vertically adjacent 16x16 hash tiles retain eight 64-element accumulators.
-// DPASW pairs adjacent work-items, each supplying half of the shared A operand.
-// B and the cumulative rank-boundary transcripts remain private to each work-item.
+// DG2 SIMD8: C=8x8, B=32x8 VNNI, A=8x32; DPASW pairs share A.
 constexpr int pearlhash_alchemist_rows = 2;
 constexpr int pearlhash_alchemist_columns = 1;
 constexpr int pearlhash_alchemist_block_rows = 64;
@@ -164,8 +161,6 @@ static sycl::event search_esimd_alchemist_impl(
       MU<ER * EC>([&](auto t) { accTL[t] = 0; accTR[t] = 0; accBL[t] = 0; accBR[t] = 0; });
       uint32_t tr[ER * EC][16] = {};
       int rc = 0;
-      // Eight K32 steps span the common rank256 interval. Keep a runtime-rank
-      // instantiation for other valid jobs, including partial unroll groups.
 #pragma unroll 8
       for (int p = 0; p < k; p += 32) {
         simd<int8_t, AN> a0[ER], a1[ER];
@@ -175,8 +170,6 @@ static sycl::event search_esimd_alchemist_impl(
           a1[r] = esimd_ns::block_load<int8_t, AN>(Ap + size_t((band0 + 1) * (k / 32) + (p >> 5)) * 256 + aHalfOffset);
         });
         MU<EC>([&](auto c) {
-          // Issue both current B loads before consuming either. Do not retain
-          // next-step operands: that increased pressure without improving timing.
           simd<int8_t, 256> earlyB[2];
           MU<2>([&](auto half) {
             earlyB[half] = esimd_ns::block_load<int8_t, 256>(
@@ -225,11 +218,9 @@ static sycl::event search_esimd_alchemist_impl(
   });
 }
 
-// External linkage also supports the combined build's separate spir64 ESIMD TU.
 sycl::event search_esimd_alchemist(sycl::queue& q, const Buffers& bb, uint32_t seed,
                                   int m, int n, int k, int rank, bool dbg) {
-  // Odd-width grids cannot pair without crossing an A row band. Both kernels
-  // consume the same SIMD8 B packing; ordinary DPAS loads the complete A tile.
+  // Odd-width grids cannot pair DPASW lanes within an A row band.
   const int tilesW = n / (16 * pearlhash_alchemist_columns);
   if (tilesW % 2 == 0) {
     if (rank == 256) return search_esimd_alchemist_impl<256, true>(q, bb, seed, m, n, k, rank, dbg);
