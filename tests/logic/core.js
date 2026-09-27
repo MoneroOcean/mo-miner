@@ -254,6 +254,16 @@ test("mine pool URI rejects out-of-range ports", () => {
   assert.doesNotMatch(result.stderr, /Cannot find module|Compute core/);
 });
 
+test("JSON pool options reject an unknown PearlHash target format", () => {
+  const result = spawnSync(process.execPath, [
+    "mom.js", "bench", "rx/0", "--add.pool",
+    JSON.stringify({ url: "pool.example", port: 1234, login: "user", pearlhash_target_format: "guess" }),
+  ], { cwd: repoRoot, encoding: "utf8", timeout: 5000 });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /pearlhash_target_format must be base or jackpot/);
+  assert.doesNotMatch(result.stderr, /Cannot find module|Compute core/);
+});
+
 test("JSON pool options reject invalid ports", () => {
   const result = spawnSync(process.execPath, [
     "mom.js",

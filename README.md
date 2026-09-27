@@ -336,6 +336,7 @@ Options:
   is_keepalive:                     sends keepalive messages to the pool to avoid disconnect (true by default)
   use_subscribe:                    PearlHash pools: use mining.subscribe+authorize handshake; set false for pearlpool.cloud's login dialect and the MoneroOcean donate pool (true by default)
   worker:                           PearlHash subscribe-dialect worker name (mining.authorize) ("mom" by default)
+  pearlhash_target_format:           PearlHash subscribe target: "base" applies jackpot scaling (default); "jackpot" uses the final threshold unchanged
   login:                            pool login data
   pass:                             pool password ("" by default)
 

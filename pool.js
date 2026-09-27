@@ -38,6 +38,7 @@ function clear_pool_connection(pool_id, socket) {
   pool.last_job = null;
   pool.logged_in = false;
   pool.pending_authorize = false;
+  pool.pending_pearlhash_job = null;
   return true;
 }
 
@@ -178,7 +179,9 @@ function poolShareStats(pool_id) {
 }
 
 function poolErrorText(error) {
-  return error instanceof Object && typeof error.message === "string" ? ": " + error.message : "";
+  if (!(error instanceof Object)) {return "";}
+  const message = typeof error.message === "string" ? error.message : error.msg;
+  return typeof message === "string" ? ": " + message : "";
 }
 
 function applyLoginExtensions(pool_id, extensions) {
@@ -210,7 +213,7 @@ const poolJobs = require("./pool/jobs")({
   connectPoolThrottle: (...args) => module.exports.connect_pool_throttle(...args),
 });
 const {
-  isObject, isIronfishSetTargetNotification, isRavenSetTargetNotification,
+  isObject, isPearlHashJobNotification, isIronfishSetTargetNotification, isRavenSetTargetNotification,
   isSetDifficultyNotification, isSetExtranonceNotification, hexWithoutPrefix,
   validExtraNonce, rememberPoolExtraNonceHex, rememberSubscribeExtraNonce,
   switchPool, handleRavenSetTarget, handleEthSetTarget, handleZelHashSetTarget,
@@ -421,6 +424,13 @@ function handleBeamResult(pool_id, json) {
 }
 
 function pool_message(pool_id, json, set_job) {
+  const pool = global.opt.pools[pool_id];
+  // Some Pearl pools send the initial job before acknowledging authorization.
+  // Keep only the latest job, and do not count its null request ID as a share reply.
+  if (pearlhashUsesSubscribe(pool) && !pool.logged_in && isPearlHashJobNotification(json)) {
+    if (pool.pending_authorize) {pool.pending_pearlhash_job = json;}
+    return;
+  }
   if (poolProtocol(global.opt.pools[pool_id]) === "beam" && isBeamResult(json))
   {return handleBeamResult(pool_id, json);}
   if (handleIronfishMessage(pool_id, json, set_job)) {return;}
@@ -439,7 +449,15 @@ function pool_message(pool_id, json, set_job) {
   }
   const job = jobFromPoolMessage(pool_id, json);
   if (job) {return handlePoolJob(pool_id, job, set_job);}
-  if ("id" in json) {return handlePoolResponse(pool_id, json);}
+  if ("id" in json) {
+    const result = handlePoolResponse(pool_id, json);
+    if (!pool.pending_authorize && pool.pending_pearlhash_job) {
+      const pending = pool.pending_pearlhash_job;
+      pool.pending_pearlhash_job = null;
+      if (pool.logged_in) {pool_message(pool_id, pending, set_job);}
+    }
+    return result;
+  }
 
   pool_log1(pool_id, "Unknown message from the pool: " + JSON.stringify(json));
 }

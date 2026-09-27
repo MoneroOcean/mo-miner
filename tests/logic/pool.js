@@ -3,6 +3,92 @@
 const s = require("./support");
 const { test, assert, events, tls, opts, pool, noOp, loadMinerWithStubs, withMockPool } = s;
 
+test("PearlHash defers a pre-authorization job without counting a rejected share", async () => {
+  for (const authorized of [true, false]) {
+    let jobMessage = null;
+    await withMockPool({
+      pool: { login: "prl-wallet", protocol: "pearlhash", use_subscribe: true },
+      opt: { job: { algo: "pearlhash" } },
+    }, async ({ socket, poolConfig }) => {
+      pool.connect_pool_throttle(0, job => { jobMessage = job; return job; });
+      socket.emit("connect");
+      const notify = job_id => JSON.stringify({id:null, method:"mining.notify", params:{
+        header:"00".repeat(76), job_id, height:119394, difficulty:20000,
+      }}) + "\n";
+      socket.emit("data", Buffer.from(notify("old_20000") + notify("latest_20000")));
+      assert.equal(jobMessage, null);
+      assert.equal(poolConfig.bad_shares, 0);
+      socket.emit("data", Buffer.from(JSON.stringify({id:2, error:null, result:authorized}) + "\n"));
+      assert.equal(jobMessage && jobMessage.job_id, authorized ? "latest_20000" : null);
+      assert.equal(poolConfig.pending_pearlhash_job, null);
+      assert.equal(poolConfig.bad_shares, 0);
+      socket.emit("data", Buffer.from(notify("after_20000")));
+      assert.equal(jobMessage && jobMessage.job_id, authorized ? "after_20000" : null);
+      assert.equal(poolConfig.pending_pearlhash_job, null);
+      assert.equal(poolConfig.bad_shares, 0);
+    });
+  }
+});
+
+test("PearlHash disconnect discards a pre-authorization job", async () => {
+  let jobs = 0;
+  await withMockPool({
+    pool: { protocol: "pearlhash", use_subscribe: true },
+    opt: { job: { algo: "pearlhash" } },
+    switchPool: true,
+  }, async ({ socket, poolConfig }) => {
+    pool.connect_pool_throttle(0, () => { jobs++; });
+    socket.emit("connect");
+    socket.emit("data", Buffer.from(JSON.stringify({ id: null, method: "mining.notify", params: {
+      header: "00".repeat(76), job_id: "stale_20000", difficulty: 20000,
+    } }) + "\n"));
+    assert.ok(poolConfig.pending_pearlhash_job);
+    socket.emit("end");
+    assert.equal(poolConfig.pending_pearlhash_job, null);
+    assert.equal(poolConfig.pending_authorize, false);
+    assert.equal(jobs, 0);
+  });
+});
+
+test("PearlHash displays the pool's msg rejection reason", async () => {
+  const original = s.helper.log_err;
+  const errors = [];
+  s.helper.log_err = message => errors.push(message);
+  try {
+    await withMockPool({
+      pool: { protocol: "pearlhash", use_subscribe: true },
+      opt: { job: { algo: "pearlhash" } },
+    }, async ({ socket }) => {
+      pool.connect_pool_throttle(0, noOp);
+      socket.emit("connect");
+      socket.emit("data", Buffer.from('{"id":2,"result":true,"error":null}\n'));
+      socket.emit("data", Buffer.from('{"id":10,"result":null,"error":{"code":23,"msg":"low difficulty share"}}\n'));
+      assert.ok(errors.some(message => message.includes("low difficulty share")));
+    });
+  } finally { s.helper.log_err = original; }
+});
+
+test("PearlHash distinguishes a base target from a final jackpot target", async () => {
+  const target = "00000000d1b71758e219652bd3c36113404ea4a8c154c985f06f694467381d7d";
+  for (const format of [undefined, "base", "jackpot"]) {
+    let jobMessage;
+    await withMockPool({
+      pool: { protocol:"pearlhash", use_subscribe:true, pearlhash_target_format:format },
+      opt: { job: { algo:"pearlhash" } },
+    }, async ({ socket }) => {
+      pool.connect_pool_throttle(0, job => { jobMessage=job; return job; });
+      socket.emit("connect");
+      socket.emit("data", Buffer.from('{"id":2,"result":true,"error":null}\n'));
+      socket.emit("data", Buffer.from(JSON.stringify({id:null, method:"mining.notify", params:{
+        header:"00".repeat(76), job_id:"test_20000", target: "0x" + target,
+      }}) + "\n"));
+      const expected = format === "jackpot" ? target :
+        (BigInt("0x" + target) * 1048576n).toString(16).padStart(64, "0");
+      assert.equal(jobMessage.target, expected);
+    });
+  }
+});
+
 test("fixed KawPow pools use Raven stratum subscribe and authorize", async () => {
   let jobMessage = null;
   await withMockPool({

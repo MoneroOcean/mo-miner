@@ -63,6 +63,7 @@ module.exports.opt_help = {
       is_keepalive:       [ true, "sends keepalive messages to the pool to avoid disconnect" ],
       use_subscribe:      [ true, "PearlHash pools: use mining.subscribe+authorize handshake; set false for pearlpool.cloud's login dialect and the MoneroOcean donate pool" ],
       worker:             [ "mom", "PearlHash subscribe-dialect worker name (mining.authorize)" ],
+      pearlhash_target_format: [ "base", "PearlHash subscribe target: base (apply jackpot scaling) or jackpot (already the final threshold)" ],
       login:              [ undefined, "pool login data" ],
       pass:               [ "", "pool password" ],
       _socket:            [ null, "network socket object" ],
@@ -158,6 +159,10 @@ function validatePoolProtocol(pool) {
 }
 
 function validatePool(pool) {
+  if (pool.pearlhash_target_format !== undefined &&
+      !["base", "jackpot"].includes(pool.pearlhash_target_format)) {
+    return "pearlhash_target_format must be base or jackpot";
+  }
   return validatePoolUrl(pool) || validatePoolPort(pool) ||
          validatePoolBooleans(pool) || validatePoolProtocol(pool);
 }
