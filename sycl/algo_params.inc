@@ -297,6 +297,14 @@ std::map<std::string, std::string> algo_params(
             add_result_dev(result_dev,
                            gpu_tuning_entry(dev_str, "intensity", walahash_intensity(dev)));
         });
+      else if (algo == "xelishashv3")
+        for_each_default_gpu([&](const std::string& dev_str, const sycl::device& dev) {
+          if (!xelishashv3_supported(dev))
+            return;
+          const unsigned intensity = xelishashv3_intensity(dev);
+          if (intensity)
+            add_result_dev(result_dev, gpu_tuning_entry(dev_str, "intensity", intensity));
+        });
       else if (algo == "nexapow")
         for_each_default_gpu([&](const std::string& dev_str, const sycl::device& dev) {
           if (mom_has_usm_device(dev))

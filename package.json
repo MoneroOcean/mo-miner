@@ -35,7 +35,8 @@
     "test:gpu-multi": "node tests/run_hash.js gpu-multi",
     "test:perf": "node tests/run_perf.js",
     "test:nexapow-ref": "out=/tmp/mom-nexapow-ref-$$; trap 'rm -f \"$out\"' EXIT; c++ -std=c++17 -O2 -Wall -Wextra -Werror -pedantic tests/reference/nexapow_echelon.cpp -o \"$out\" && \"$out\"",
-    "test:deploy": "bash scripts/test-deploy.sh"
+    "test:deploy": "bash scripts/test-deploy.sh",
+    "test:xelishashv3-ops": "out=/tmp/mom-xelishashv3-ops-$$; trap 'rm -f \"$out\"' EXIT; for xelis_flags in '' '-DMOM_SYCL_PORTABLE_OPENCL'; do c++ -std=c++20 -O2 $xelis_flags tests/logic/xelishashv3_operations.cpp -o \"$out\" && \"$out\" || exit; done"
   },
   "keywords": [
     "monero",
@@ -59,6 +60,7 @@
     "equihash192_7",
     "beamhash3",
     "pearlhash",
+    "xelishashv3",
     "nexapow",
     "sycl",
     "opencl",

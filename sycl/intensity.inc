@@ -234,6 +234,34 @@ static unsigned verthash_intensity(const sycl::device& dev) {
 // pass over a 3.72--4.25 GiB accelerator-specific arena), so one process searches one nonce per
 // dispatch. MOM_ZELHASH_INTENSITY overrides that process batch.
 
+static bool xelishashv3_supported(const sycl::device& dev) {
+  return mom_has_usm_device(dev);
+}
+
+static uint64_t xelishashv3_scratch_capacity(const sycl::device& dev) {
+  constexpr uint64_t scratch_bytes = 531ULL * 1024;
+  const uint64_t global_mem = dev.get_info<sycl::info::device::global_mem_size>();
+  const uint64_t global_limit = (global_mem / 5) * 2 + (global_mem % 5) * 2 / 5;
+  return std::min<uint64_t>(dev.get_info<sycl::info::device::max_mem_alloc_size>(), global_limit) /
+         scratch_bytes;
+}
+
+static unsigned xelishashv3_intensity(const sycl::device& dev) {
+  if (!xelishashv3_supported(dev))
+    return 0;
+  const uint64_t memory_limit = xelishashv3_scratch_capacity(dev);
+  if (!memory_limit)
+    return 0;
+  const unsigned override = parse_pow_intensity_override(1, "MOM_XELISHASHV3_INTENSITY");
+  if (override)
+    return static_cast<unsigned>(std::min<uint64_t>(override, memory_limit));
+  const uint64_t compute_limit =
+      static_cast<uint64_t>(dev.get_info<sycl::info::device::max_compute_units>()) * 384ULL;
+  const uint64_t automatic_limit = std::min(
+      {memory_limit, compute_limit, static_cast<uint64_t>(std::numeric_limits<unsigned>::max())});
+  return static_cast<unsigned>(automatic_limit & ~255ULL);
+}
+
 static unsigned nexapow_intensity(const sycl::device& dev) {
   const unsigned override = parse_pow_intensity_override(1, "MOM_NEXAPOW_INTENSITY");
   if (override)

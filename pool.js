@@ -88,6 +88,9 @@ function clear_pool_connection(pool_id, socket) {
   delete pool.nexa_difficulty;
   delete pool.nexa_target;
   delete pool.verthash_difficulty;
+  delete pool.xelis_difficulty;
+  delete pool.xelis_extra_nonce;
+  delete pool.xelis_public_key;
   return true;
 }
 
@@ -119,6 +122,7 @@ function protocolForAlgo(algo) {
     case "karlsenhashv2": return "kaspa";
     case "walahash": return "kaspa";
     case "hoohash": return "hoosat";
+    case "xelishashv3": return "xelis";
     case "nexapow": return "echelon";
     case "verthash": return "verthash";
     case "c30": return "cortex";
@@ -141,14 +145,15 @@ function defaultPoolProtocol() {
 }
 
 function poolProtocol(pool) {
-  return pool.protocol || pool.inferred_protocol || defaultPoolProtocol();
+  const protocol = pool.protocol || pool.inferred_protocol || defaultPoolProtocol();
+  return typeof protocol === "string" && protocol.toLowerCase() === "xelis" ? "xelis" : protocol;
 }
 
 function usesMiningSubscribe(pool) {
   const protocol = poolProtocol(pool);
   return protocol === "raven" || protocol === "eth" || protocol === "conflux" || protocol === "erg" ||
          protocol === "zelhash" || protocol === "kaspa" || protocol === "hoosat" || protocol === "echelon" ||
-         protocol === "verthash";
+         protocol === "verthash" || protocol === "xelis";
 }
 
 function usesEthProxy(pool) {
@@ -258,8 +263,16 @@ function applyLoginExtensions(pool_id, extensions) {
 
 function algoFromPass(pool) {
   const pass = String(pool.pass || "");
-  const m = pass.match(/(?:^|[~;,])(?:algo=)?(kawpow|firopow|evrprogpow|meowpow|etchash|autolykos2|pearlhash|fishhash|karlsenhashv2|hoohash|walahash|nexapow|verthash|zelhash|zhash|equihash192_7)(?:$|[~;,])/i);
-  return m ? normalizeAlgoName(m[1]) : "";
+  const m = pass.match(/(?:^|[~;,])(?:algo=)?(kawpow|firopow|evrprogpow|meowpow|etchash|autolykos2|pearlhash|fishhash|equihash192_7|zelhash|zhash|karlsenhashv2|walahash|hoohash|verthash|xelishashv3|xel\/(?:2|3|v3)|nexapow)(?:$|[~;,])/i);
+  return m ? normalizeAlgoName(m[1]) || "" : "";
+}
+
+function xelisAuthorizeParams(pool) {
+  const login = String(pool.login || "");
+  const separator = login.indexOf(".");
+  const wallet = separator < 0 ? login : login.slice(0, separator);
+  const worker = separator < 0 ? pool.worker : login.slice(separator + 1);
+  return [wallet, worker || "mom", pool.pass];
 }
 
 function rememberPoolProtocol(pool_id, result) {
@@ -272,7 +285,7 @@ function rememberPoolProtocol(pool_id, result) {
 }
 
 const poolJobs = require("./pool/jobs")({
-  h, normalizeAlgoName, poolProtocol, usesEthProxy, pearlhashUsesSubscribe,
+  h, normalizeAlgoName, poolAt, poolProtocol, usesEthProxy, pearlhashUsesSubscribe,
   pearlhashDiffFromJobId, pearlhashNbitsBound, beamPackedTarget, pool_close_wait,
   pool_log, pool_str, algoFromPass, applyLoginExtensions,
   connectPoolThrottle: (...args) => module.exports.connect_pool_throttle(...args),
@@ -281,7 +294,7 @@ const {
   isObject, isIronfishSetTargetNotification, isRavenSetTargetNotification,
   isSetDifficultyNotification, isSetExtranonceNotification, hexWithoutPrefix,
   validExtraNonce, rememberPoolExtraNonceHex, rememberSubscribeExtraNonce,
-  switchPool, handleRavenSetTarget, handleEthSetTarget, handleZelHashSetTarget,
+  switchPool, rememberXelisExtranonce, handleRavenSetTarget, handleEthSetTarget, handleZelHashSetTarget,
   handleIronfishSetTarget, handleSetDifficulty, jobFromPoolMessage,
 } = poolJobs;
 module.exports.switch_pool = switchPool;
@@ -298,7 +311,7 @@ function jobTargetWork(job) {
   // etchash/autolykos2/fishhash carry a full 256-bit target too, but their hashrate is in hashes -> H/share.
   if (job.algo === "etchash" || job.algo === "octopus" || job.algo === "autolykos2" || job.algo === "fishhash" ||
       job.algo === "zelhash" || job.algo === "zhash" || job.algo === "equihash192_7" ||
-      job.algo === "karlsenhashv2" || job.algo === "hoohash" || job.algo === "walahash" || job.algo === "verthash" || job.algo === "c30" || job.algo === "nexapow")
+      job.algo === "karlsenhashv2" || job.algo === "hoohash" || job.algo === "walahash" || job.algo === "verthash" || job.algo === "c30" || job.algo === "xelishashv3" || job.algo === "nexapow")
   {return h.target256ToWork(job.target);}
   return h.target2diff(job.target);
 }
@@ -381,8 +394,9 @@ function handleSubscribeResponse(pool_id, is_err, is_ok, err_msg, json) {
   rememberSubscribeExtraNonce(pool_id, json.result);
   const pool = global.opt.pools[pool_id];
   pool.pending_authorize = true;
+  const params = poolProtocol(pool) === "xelis" ? xelisAuthorizeParams(pool) : [pool.login, pool.pass];
   return module.exports.pool_write(pool_id, {
-    jsonrpc: "2.0", id: 2, method: "mining.authorize", params: [pool.login, pool.pass]
+    jsonrpc: "2.0", id: 2, method: "mining.authorize", params
   });
 }
 
@@ -543,7 +557,11 @@ function pool_message(pool_id, json, set_job) {
     return handleRavenSetTarget(pool_id, json);
   }
   if (isSetDifficultyNotification(json)) {return handleSetDifficulty(pool_id, json);}
+  if (poolProtocol(global.opt.pools[pool_id]) === "xelis" && json.method === "mining.ping") {
+    return module.exports.pool_write(pool_id, {jsonrpc: "2.0", id: json.id, method: "mining.pong"});
+  }
   if (isSetExtranonceNotification(json)) {
+    if (poolProtocol(global.opt.pools[pool_id]) === "xelis") {return rememberXelisExtranonce(pool_id, json.params);}
     rememberPoolExtraNonceHex(pool_id, json.params[0]);
     if (Number.isInteger(Number(json.params[1])))
     {global.opt.pools[pool_id].extra_nonce2_size = Number(json.params[1]);}

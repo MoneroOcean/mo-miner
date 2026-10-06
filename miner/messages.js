@@ -103,7 +103,8 @@ module.exports = ({
       pool.last_job?.submit_mode === "kaspa") || pool.last_job?.submit_mode === "cortex" ||
       pool.last_job?.submit_mode === "echelon" ||
       pool.last_job?.submit_mode === "conflux" ||
-      pool.last_job?.submit_mode === "verthash") ? pool.last_job.submit_mode : pool.submit_mode);
+      pool.last_job?.submit_mode === "verthash" ||
+      pool.last_job?.submit_mode === "xelis") ? pool.last_job.submit_mode : pool.submit_mode);
     const send = (body) => p.pool_write(v.pool_id, { jsonrpc: "2.0", id: 3, ...body });
 
     if (submit_mode === "verthash") {
@@ -153,6 +154,13 @@ module.exports = ({
       const job = matchingPoolJob(pool, v);
       if (!job) {return;}
       return send({method: "mining.submit", params: submission.nexaSubmitParams(pool, job, v)});
+    }
+    if (submit_mode === "xelis") {
+      if (!isWorkerResult(v)) {return h.log_err("Invalid compute core message");}
+      const job = matchingPoolJob(pool, v);
+      if (!job) {return;}
+      // Preserve an opaque numeric pool ID; the worker string only matches the current job.
+      return send({method: "mining.submit", params: [xelisWorkerName(pool), job.job_id, v.nonce]});
     }
     if (submit_mode === "conflux") {
       if (!isWorkerResult(v)) {return h.log_err("Invalid compute core message");}
@@ -215,6 +223,12 @@ module.exports = ({
       if (params.pow.length !== 42) {params.nonce = Number.parseInt(params.nonce, 16);}
     }
     send({ method: "submit", params: params });
+  }
+
+  function xelisWorkerName(pool) {
+    const login = pool.login;
+    const separator = login.indexOf(".");
+    return separator < 0 ? (pool.worker || "mom") : login.slice(separator + 1) || pool.worker || "mom";
   }
 
   function resultHeaderHash(value, job) {

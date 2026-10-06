@@ -421,7 +421,7 @@ module.exports = ({
     else if (isKaspaHeaderAlgo(algo)) {addKaspaHeaderJobFields(job, prev_job);}
     else if (isZelHashAlgo(algo)) {addZelHashJobFields(job, prev_job);}
     else if (isNonceAt32Algo(algo)) {addEthHashJobFields(job, prev_job);}
-    else if (algo === "nexapow") {addFixedNonceBlobFields(job, prev_job, 40);}
+    else if (algo === "xelishashv3" || algo === "nexapow") {addFixedNonceBlobFields(job, prev_job, 40);}
     else {addStandardJobFields(job, prev_job);}
     // BeamHash III seeds its nonce from the pool nonceprefix inside addBeamhash3JobFields; the generic
     // nonce/nicehash defaults would clobber that, so only run them for the other algos.
@@ -517,6 +517,11 @@ module.exports = ({
       if (!job.blob_hex || job.blob_hex.length !== 96) {job.blob_hex = NEXAPOW_BENCH_BLOB;}
       job.nonce = job.nonce || "1182dc5800000000";
       job.target = "00".repeat(32); // benchmark the steady no-share path, not the all-candidate test target
+    }
+    if (job.algo === "xelishashv3") {
+      job.noncebytes = 8;
+      job.nonceoffset = 40;
+      if (!job.blob_hex || job.blob_hex.length !== 224) {job.blob_hex = "00".repeat(112);}
     }
     if (job.algo === "verthash") {
       job.noncebytes = 4;

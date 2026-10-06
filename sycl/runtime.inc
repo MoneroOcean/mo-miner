@@ -50,6 +50,9 @@ namespace mom_octopus { void octopus_cleanup_states() noexcept; }
 namespace mom_walahash {
 void walahash_cleanup_states() noexcept;
 }
+namespace mom_xelishashv3 {
+void xelishashv3_cleanup_states() noexcept;
+}
 namespace mom_nexapow {
 void nexapow_cleanup_states() noexcept;
 }
@@ -99,6 +102,7 @@ void sycl_cleanup() noexcept {
   mom_fishhash::fishhash_cleanup_states();
   mom_hoohash::hoohash_cleanup_states();
   mom_walahash::walahash_cleanup_states();
+  mom_xelishashv3::xelishashv3_cleanup_states();
   mom_nexapow::nexapow_cleanup_states();
   mom_verthash::verthash_cleanup_states();
   mom_kawpow::kawpow_cleanup_states();

@@ -556,3 +556,26 @@ test("Verthash defaults use safe Level Zero batches", () => {
   assert.match(block, /#ifdef _WIN32[\s\S]*return 1u << 18;[\s\S]*#else[\s\S]*return 1u << 19;/);
   assert.match(block, /return 1u << 16;/);
 });
+
+test("Xelis orders setup transfers and Windows ESIMD stages", () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, "../sycl/xelishashv3/xelishashv3.cpp"), "utf8");
+  const entry = source.slice(source.indexOf("int xelishashv3("));
+  assert.match(entry,
+    /sycl_wait_and_throw\(s\.queue\.memcpy\(s\.input,[\s\S]*?\n\s*sycl_wait_and_throw\(s\.queue\.memcpy\(s\.target,[\s\S]*?\n\s*sycl_wait_and_throw\(s\.queue\.memset\(s\.result,[\s\S]*?\n\s*const char\* configured/);
+  assert.match(source,
+    /#ifdef _WIN32\s+required = required \|\| use_esimd;\s+#endif/);
+  assert.match(source,
+    /fence<esimd::memory_kind::global, esimd::fence_flush_op::clean,\s+esimd::fence_scope::group>/);
+});
+
+test("Xelis portable OpenCL avoids vendor-specific 64-bit mul_hi", () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, "../sycl/xelishashv3/xelishashv3.cpp"), "utf8");
+  assert.match(source,
+    /#ifdef MOM_XELISHASHV3_HOST_TEST\s+return static_cast<uint64_t>\(a\) \* b;\s+#else\s+return mo_mul_wide_u32\(a, b\);/);
+  assert.match(source,
+    /const uint32_t a0 = static_cast<uint32_t>\(a\), a1 = a >> 32,[\s\S]*?return mul_wide32\(a1, b1\)/);
+  assert.match(source,
+    /#if defined\(MOM_SYCL_ADAPTIVECPP\) \|\| defined\(MOM_SYCL_PORTABLE_OPENCL\)[\s\S]*?return mul_hi64_portable\(a, b\);[\s\S]*?#else\s+return sycl::mul_hi\(a, b\);/);
+});

@@ -3,7 +3,7 @@
 const crypto = require("node:crypto");
 
 module.exports = ({
-  h, normalizeAlgoName, poolProtocol, usesEthProxy, pearlhashUsesSubscribe,
+  h, normalizeAlgoName, poolAt, poolProtocol, usesEthProxy, pearlhashUsesSubscribe,
   pearlhashDiffFromJobId, pearlhashNbitsBound, beamPackedTarget, pool_close_wait,
   pool_log, pool_str, algoFromPass, applyLoginExtensions, connectPoolThrottle,
 }) => {
@@ -41,6 +41,15 @@ module.exports = ({
 
   function isJobNotification(json) {
     return json.method === "job" && isObject(json.params);
+  }
+
+  function isXelisJobNotification(json) {
+    if (json.method !== "mining.notify" || !Array.isArray(json.params) || json.params.length < 5) {
+      return false;
+    }
+    const algo = typeof json.params[3] === "string"
+      ? normalizeAlgoName(json.params[3]) : null;
+    return algo === "xelishashv3" && typeof json.params[4] === "boolean";
   }
 
   function isNexaJobNotification(json) {
@@ -132,6 +141,27 @@ module.exports = ({
     return hex.length > 0 && hex.length % 2 === 0 && hex.length <= 16 && !/[^0-9a-f]/i.test(hex) ? hex : "";
   }
 
+  function rememberXelisSubscribeExtraNonce(pool_id, result) {
+    if (!Array.isArray(result)) {
+      return;
+    }
+    const pool = poolAt(pool_id);
+    pool.xelis_extra_nonce = validHexBytes(result[1], 32);
+    pool.xelis_public_key = validHexBytes(result[3], 32);
+  }
+
+  function rememberXelisExtranonce(pool_id, params) {
+    const pool = poolAt(pool_id);
+    const extra_nonce = validHexBytes(params[0], 32);
+    if (params.length >= 3) {
+      const public_key = validHexBytes(params[2], 32);
+      pool.xelis_extra_nonce = extra_nonce && public_key ? extra_nonce : "";
+      pool.xelis_public_key = extra_nonce && public_key ? public_key : "";
+    } else if (extra_nonce) {
+      pool.xelis_extra_nonce = extra_nonce;
+    }
+  }
+
   function subscribeExtraNonceCandidates(result) {
     if (!Array.isArray(result)) {return [];}
     return Array.isArray(result[0]) || result[0] == null ? [result[1]] : result;
@@ -149,6 +179,7 @@ module.exports = ({
   }
 
   function rememberSubscribeExtraNonce(pool_id, result) {
+    if (poolProtocol(poolAt(pool_id)) === "xelis") {return rememberXelisSubscribeExtraNonce(pool_id, result);}
     rememberPoolExtraNonceHex(pool_id, subscribeExtraNonceCandidates(result).find(validExtraNonce));
     const extra_nonce2_size = subscribeExtraNonce2Size(result);
     if (extra_nonce2_size !== null) {global.opt.pools[pool_id].extra_nonce2_size = extra_nonce2_size;}
@@ -399,6 +430,53 @@ module.exports = ({
     return job;
   }
 
+  function xelisHex(value) {
+    if (typeof value !== "number") {return hexWithoutPrefix(value);}
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new Error("Invalid XELIS timestamp");
+    }
+    return value.toString(16);
+  }
+
+  function xelisDifficulty(value) {
+    const diff = unsignedDecimal(value, (1n << 256n) - 1n, "XELIS difficulty");
+    if (diff === 0n) {throw new Error("XELIS difficulty must be positive");}
+    return diff;
+  }
+
+  function xelisDiffToTarget(difficulty) {
+    const diff = xelisDifficulty(difficulty);
+    return (((1n << 256n) - 1n) / diff).toString(16).padStart(64, "0");
+  }
+
+  function xelisNotifyJob(pool, json) {
+    const p = json.params;
+    // The pool's job ID is an opaque token, not part of the hashed header.
+    const job_id = poolJobId(p[0]);
+    const header_work_hash = validHexBytes(p[2], 32);
+    const timestamp_hex = xelisHex(p[1]);
+    if (job_id === null || !header_work_hash || !/^[0-9a-f]{1,16}$/i.test(timestamp_hex) ||
+        !pool.xelis_extra_nonce || !pool.xelis_public_key) {
+      return null;
+    }
+    const rawDifficulty = pool.xelis_difficulty ?? 1;
+    const target = xelisDiffToTarget(rawDifficulty);
+    const difficulty = Number(rawDifficulty);
+    /** @type {PoolJob} */
+    const job = {
+      algo: "xelishashv3",
+      blob: header_work_hash + timestamp_hex.padStart(16, "0") + "00".repeat(8) +
+            pool.xelis_extra_nonce + pool.xelis_public_key,
+      header_hash: header_work_hash,
+      job_id,
+      target,
+      noncebytes: 8,
+      nonceoffset: 40,
+    };
+    if (Number.isSafeInteger(difficulty) && difficulty > 0) {job.difficulty = difficulty;}
+    return job;
+  }
+
   function positiveDifficulty(value, label) {
     if (typeof value !== "number" &&
         !(typeof value === "string" &&
@@ -414,6 +492,12 @@ module.exports = ({
 
   function handleSetDifficulty(pool_id, json) {
     const pool = global.opt.pools[pool_id];
+    if (poolProtocol(pool) === "xelis") {
+      const raw = json.params[0];
+      const exactDifficulty = xelisDifficulty(raw);
+      pool.xelis_difficulty = typeof raw === "string" ? raw : Number(exactDifficulty);
+      return;
+    }
     if (poolProtocol(pool) === "verthash") {
       pool.verthash_difficulty = positiveDifficulty(json.params[0], "pool");
     }
@@ -616,6 +700,10 @@ module.exports = ({
       });
       return commitSubmitMode("conflux", job);
     }
+    if (poolProtocol(pool) === "xelis" && isXelisJobNotification(json)) {
+      if (!pool.logged_in) {return null;}
+      return commitSubmitMode("xelis", xelisNotifyJob(pool, json));
+    }
     if (poolProtocol(pool) === "echelon" && isNexaJobNotification(json)) {
       if (!pool.logged_in) {return null;}
       return commitSubmitMode("echelon", nexaNotifyJob(pool, json));
@@ -759,6 +847,6 @@ module.exports = ({
     isSetDifficultyNotification, isSetExtranonceNotification, hexWithoutPrefix,
     validExtraNonce, rememberPoolExtraNonceHex, rememberSubscribeExtraNonce,
     switchPool, handleRavenSetTarget, handleEthSetTarget, handleZelHashSetTarget,
-    handleIronfishSetTarget, handleSetDifficulty, jobFromPoolMessage,
+    handleIronfishSetTarget, rememberXelisExtranonce, handleSetDifficulty, jobFromPoolMessage,
   };
 };

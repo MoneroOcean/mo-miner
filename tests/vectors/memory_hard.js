@@ -281,7 +281,30 @@ vectors.push({
     expected: "c72d158213c8337ef62e2e364858255ab36606264ce214053f8247e7ff29b683",
   });
 
-const miscIntensity2Algos = new Set(["hoohash", "walahash", "nexapow"]);
+vectors.push({
+    // Authoritative XELIS xelis-hash V3 Rust reference vector: src/v3.rs::test_verify_output
+    // (https://github.com/xelis-project/xelis-hash/blob/master/src/v3.rs). The 112 input bytes are
+    // copied verbatim; bytes 40..47 are 19865a6b746eec35 (big-endian serialization of nonce
+    // 0x19865a6b746eec35).
+    name: "xelishashv3 gpu1*[intensity=1]",
+    gpu: true,
+    syclCpu: true,
+    timeoutMs: 5 * 60 * 1000,
+    job: {
+      algo: "xelishashv3",
+      dev: "gpu1*[intensity=1]",
+      noncebytes: 8,
+      nonceoffset: 40,
+      target: "00".repeat(32),
+      blob_hex: "acec6cd4b51f6d2d2cf236e18f85592cb36c27bf2074e5213f822178b959928d" +
+        "0a4fb76bee7a5cde19865a6b746eec35ff05d67e18d861c794effd66c7b8e8fd" +
+        "9e9156bb70514e46506e21259fe9c601b26cd2646d9b6a7c7c535932c573e720" +
+        "4a025c2f19dc87f97aacdc898fea44bc",
+    },
+    expected: "f208b0decb1b68bb162844494f4f41538a650a74c22999155ca30ccee79c4653",
+  });
+
+const miscIntensity2Algos = new Set(["hoohash", "walahash", "xelishashv3", "nexapow"]);
 for (const vector of vectors.filter(({job}) => miscIntensity2Algos.has(job.algo))) {
   const regression = {...vector};
   delete regression.syclCpu;

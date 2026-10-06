@@ -8,6 +8,7 @@ let cached;
 const syclNativeVariables = {
   octopus: "MOM_OCTOPUS_SYCL_NATIVE",
   walahash: "MOM_WALAHASH_SYCL_NATIVE",
+  xelishashv3: "MOM_XELISHASHV3_SYCL_NATIVE",
 };
 
 function cells(line) {
@@ -198,7 +199,17 @@ function workerEnv(algo, env = process.env, platform = process.platform, request
     // device cache in that application-owned tree so a disposable VM does not JIT the same large
     // SPIR-V image again on every run. Packaged releases have no build/win and retain the runtime's
     // normal per-user cache location.
-    if (fs.existsSync(localBuild)) {
+    // Isolate Windows Intel algorithms: a shared Wala compile can return incorrect Xelis code.
+    if (platform === "win32" && gpu === "intel") {
+      result["SYCL_CACHE_PERSISTENT"] = env["SYCL_CACHE_PERSISTENT"] ?? "1";
+      const cacheRoot = env["SYCL_CACHE_DIR"] || (fs.existsSync(localBuild)
+        ? path.join(localBuild, ".sycl-cache")
+        : env["LOCALAPPDATA"] && path.join(env["LOCALAPPDATA"], "mom-sycl-cache"));
+      if (cacheRoot) {
+        const algoKey = algo.replace(/[^A-Za-z0-9_.-]/g, "_");
+        result["SYCL_CACHE_DIR"] = path.join(cacheRoot, selected.key, algoKey);
+      }
+    } else if (fs.existsSync(localBuild)) {
       result.SYCL_CACHE_PERSISTENT = "1";
       result.SYCL_CACHE_DIR = path.join(localBuild, ".sycl-cache");
     }

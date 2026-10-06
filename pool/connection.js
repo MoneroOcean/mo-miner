@@ -182,7 +182,9 @@ module.exports = ({
         jsonrpc: "2.0", id: "login", method: "login", api_key: pool.login
       });
     }
-    const request = usesMiningSubscribe(pool) ?
+    const request = poolProtocol(pool) === "xelis" ?
+      {jsonrpc: "2.0", id: 1, method: "mining.subscribe", params: [o.agent_str, ["xel/v3"]]} :
+      usesMiningSubscribe(pool) ?
       { jsonrpc: "2.0", id: 1, method: "mining.subscribe", params: [o.agent_str] } :
       usesEthProxy(pool) ?
         { jsonrpc: "2.0", id: 1, method: "eth_submitLogin", params: [pool.login, pool.pass] } :

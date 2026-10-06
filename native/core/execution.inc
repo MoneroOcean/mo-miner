@@ -393,7 +393,7 @@ void Core::Execute() {
           send_result(dev_nonce, 8, m_output);
 
         // live Iron Fish (fishhash, 180-byte header) reads the nonce big-endian; embed BE there, LE otherwise
-        const uint64_t embed = ((m_dev == DEV::FISHHASH_GPU && m_input_len >= 140) || m_algo_str == "nexapow") ? bswap_64(m_nonce64) : m_nonce64;
+        const uint64_t embed = ((m_dev == DEV::FISHHASH_GPU && m_input_len >= 140) || m_algo_str == "nexapow" || m_algo_str == "xelishashv3") ? bswap_64(m_nonce64) : m_nonce64;
         std::memcpy(m_input + m_nonce_offset, &embed, sizeof(embed));
         m_nonce64 += m_nonce_step;
         if (m_target && nonce_overflowed(prev_nonce, m_nonce64, m_nicehash_mask)) {

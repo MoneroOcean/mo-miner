@@ -88,6 +88,7 @@ void Core::set_job(
     new_algo_str == "karlsenhashv2" ? DEV::KARLSENHASHV2_GPU :
     new_algo_str == "hoohash" ? DEV::MISC_GPU :
     new_algo_str == "walahash" ? DEV::MISC_GPU :
+    new_algo_str == "xelishashv3" ? DEV::MISC_GPU :
     new_algo_str == "nexapow" ? DEV::MISC_GPU :
     new_algo_str == "verthash" ? DEV::VERTHASH_GPU :
     new_algo_str == "zelhash" ? DEV::ZELHASH_GPU :
@@ -159,8 +160,10 @@ void Core::set_job(
   // KarlsenHashV2 uses an 8-byte nonce at offset 72 of its 80-byte Kaspa blob.
   if (new_dev == DEV::KARLSENHASHV2_GPU && (new_nonce_bytes != 8 || new_nonce_offset != 72))
     throw std::string("karlsenhashv2 requires an 8-byte nonce at offset 72");
-  if (new_dev == DEV::MISC_GPU && new_algo_str != "nexapow" && (new_nonce_bytes != 8 || new_nonce_offset != 72))
-    throw std::string("hoohash requires an 8-byte nonce at offset 72");
+  if (new_dev == DEV::MISC_GPU && new_algo_str != "nexapow" && (new_nonce_bytes != 8 ||
+      new_nonce_offset != (new_algo_str == "xelishashv3" ? 40 : 72)))
+    throw std::string(new_algo_str + " requires an 8-byte nonce at offset " +
+      (new_algo_str == "xelishashv3" ? "40" : "72"));
   if (new_dev == DEV::VERTHASH_GPU && (new_nonce_bytes != 4 || new_nonce_offset != 76))
     throw std::string("verthash requires a 4-byte nonce at offset 76");
   // Zcash-family headers carry a 32-byte nonce at offset 108. Advance an 8-byte counter after any
@@ -280,7 +283,8 @@ void Core::set_job(
   // header (pearlhash); min lengths differ by algo
   const unsigned min_input_len = new_dev == DEV::PEARLHASH_GPU ? 76
     : new_dev == DEV::KARLSENHASHV2_GPU ? 80
-    : new_dev == DEV::MISC_GPU ? (new_algo_str == "nexapow" ? 40 : 80)
+    : new_dev == DEV::MISC_GPU
+      ? (new_algo_str == "xelishashv3" ? 112 : new_algo_str == "nexapow" ? 40 : 80)
     : new_dev == DEV::VERTHASH_GPU ? 80
     : new_dev == DEV::ZELHASH_GPU ? 140   // full Zcash/Flux header
     : new_dev == DEV::BEAMHASH3_GPU ? 44         // prework(32)||nonce(8)||extranonce(4)
@@ -291,8 +295,9 @@ void Core::set_job(
     if (invalid)
       throw std::string("nexapow requires a 40-, 44-, or 48-byte header with an 8-byte nonce");
   }
-  if (new_dev == DEV::MISC_GPU && new_algo_str != "nexapow" && new_input_len != 80)
-    throw std::string("hoohash requires an 80-byte header");
+  if (new_dev == DEV::MISC_GPU && new_algo_str != "nexapow" &&
+      new_input_len != (new_algo_str == "xelishashv3" ? 112 : 80))
+    throw std::string("Bad ") + new_algo_str + " input length";
   if (new_input_len < min_input_len ||
       (new_dev == DEV::VERTHASH_GPU && new_input_len != 80) ||
       ((new_algo_str == "zhash" || new_algo_str == "equihash192_7") && new_input_len != 140))
@@ -542,7 +547,7 @@ void Core::set_job(
       // is the test-job sentinel consumed by Execute. Live Iron Fish (fishhash, 180-byte header) reads
       // the 8-byte nonce big-endian, so embed it byte-swapped there; every other layout stays LE.
       if (is_set_nonce) {
-        const bool ironfish = (new_dev == DEV::FISHHASH_GPU && m_input_len >= 140) || new_algo_str == "nexapow";
+        const bool ironfish = (new_dev == DEV::FISHHASH_GPU && m_input_len >= 140) || new_algo_str == "nexapow" || new_algo_str == "xelishashv3";
         const uint64_t embed = ironfish ? bswap_64(current_nonce) : current_nonce;
         std::memcpy(m_input + m_nonce_offset, &embed, sizeof(embed));
       }
