@@ -11,9 +11,13 @@ using namespace mom_beamhash3;
 int beamhash3(
   const unsigned, const uint32_t, const uint8_t* const input, const unsigned input_size,
   uint8_t* const solution_out, uint64_t* const /*pnonce*/, const uint8_t* const target,
-  const unsigned /*intensity*/, const bool is_test, const bool is_benchmark, const std::string& dev_str
+  const unsigned intensity, const bool is_test, const bool is_benchmark, const std::string& dev_str
 ) {
-  if (input_size < BLOB_BYTES) throw std::string("Bad beamhash3 input length");
+  if (!input || !solution_out || (!is_test && !is_benchmark && !target) ||
+      input_size != BLOB_BYTES || intensity != 1)
+    throw std::string(
+      "beamhash3 requires input, output, a mining target, a 44-byte header, and intensity 1");
+
   BeamState& state = beam_state(dev_str);
   std::lock_guard<std::mutex> lock(state.mutex);
   state.ensure_io();
@@ -75,17 +79,37 @@ int beamhash3(
     // removes the last round's otherwise-dead 48-byte tree traffic. The in-order queue makes every
     // clear/round dependency explicit without a host synchronization point.
     *state.cand_count = 0;
-    // The collision-list SLM footprint, rather than threads, caps resident workgroups. Once level 4
-    // became a thin record, WG256's faster final traversal slightly outweighs WG128's seed advantage
-    // on Blackwell (32.92 vs 32.86 Sol/s, matched three-sample medians). HIP retains WG512.
+    // B580 uses measured per-round workgroup sizes: 768 for ordinary collision rounds, 640 for paired
+    // round 1, and 1024 for paired round 4 when each fits the device.
     const unsigned compact_wg = beamhash3_workgroup(state.device);
+    const bool compact_pair_partitions =
+        sycl_is_level_zero_gpu(state.device) &&
+        sycl_workgroup_fits(state.device, 768, COMPACT_PAIRED_COLLISION_LOCAL_BYTES);
+    const unsigned compact_round_wg =
+        sycl_is_level_zero_gpu(state.device) &&
+                sycl_workgroup_fits(state.device, 768,
+                                    compact_pair_partitions ? COMPACT_PAIRED_COLLISION_LOCAL_BYTES
+                                                            : COMPACT_COLLISION_LOCAL_BYTES)
+            ? 768
+            : compact_wg;
+    const unsigned compact_pair_round_wg =
+        compact_pair_partitions &&
+                sycl_workgroup_fits(state.device, 1024, COMPACT_PAIRED_COLLISION_LOCAL_BYTES)
+            ? 1024
+            : compact_round_wg;
+    const unsigned compact_pair_round1_wg =
+        compact_pair_partitions &&
+                sycl_workgroup_fits(state.device, 640, COMPACT_PAIRED_COLLISION_LOCAL_BYTES)
+            ? 640
+            : compact_round_wg;
     static unsigned compact_profile_call = 0;
     // AdaptiveCpp JITs each template specialization during the first solve. Profile the following
     // steady solve so compilation is never mistaken for GPU execution time.
     const bool compact_profile = prof && compact_profile_call++ == 1;
     uint64_t compact_stage_start = compact_profile ? BeamState::now_ms() : 0;
     auto compact_stage_done = [&](const char* name, sycl::event event) {
-      if (!compact_profile) return;
+      if (!compact_profile)
+        return;
       sycl_wait_and_throw(event, state.device);
       const uint64_t now = BeamState::now_ms();
       std::fprintf(stderr, "beamhash3 compact %s: %llu ms\n", name,
@@ -93,39 +117,67 @@ int beamhash3(
       std::fflush(stderr);
       compact_stage_start = now;
     };
-    q.memset(state.compact_ns[0], 0, (size_t)COMPACT_NBUCKETS * sizeof(uint32_t));
+#if defined(MOM_BEAMHASH3_ESIMD)
+    const char* esimd_seed_configured = std::getenv("MOM_BEAMHASH3_ESIMD");
+    const bool use_esimd_seed =
+        sycl_is_level_zero_gpu(state.device) &&
+        (!esimd_seed_configured ||
+         (std::strcmp(esimd_seed_configured, "0") && std::strcmp(esimd_seed_configured, "false")));
+#endif
+    q.memset(state.compact_ns[0], 0, (size_t)compact_nbuckets(0) * sizeof(uint32_t));
+#if defined(MOM_BEAMHASH3_ESIMD)
+    auto compact_event =
+        use_esimd_seed ? submit_compact_seed_esimd(q, state.prePow, state.compact[0],
+                                                   state.compact_ns[0])
+                       : submit_compact_seed(q, state.prePow, state.compact[0],
+                                             state.compact_ns[0], compact_wg);
+#else
     auto compact_event = submit_compact_seed(q, state.prePow, state.compact[0],
                                              state.compact_ns[0], compact_wg);
+#endif
     compact_stage_done("seed", compact_event);
-    q.memset(state.compact_ns[1], 0, (size_t)COMPACT_NBUCKETS * sizeof(uint32_t));
-    compact_event = submit_compact_round<1>(q, state.compact[0], state.compact_ns[0],
-                                            state.compact[1], state.compact_ns[1], state.cand,
-                                            state.cand_count, BeamState::CAND_CAP, compact_wg);
+    q.memset(state.compact_ns[1], 0, (size_t)compact_nbuckets(1) * sizeof(uint32_t));
+    if (compact_pair_partitions)
+      compact_event = submit_compact_round<1, true>(
+          q, state.compact[0], state.compact_ns[0], state.compact[1], state.compact_ns[1], state.cand,
+          state.cand_count, BeamState::CAND_CAP, compact_pair_round1_wg);
+    else
+      compact_event = submit_compact_round<1>(
+          q, state.compact[0], state.compact_ns[0], state.compact[1], state.compact_ns[1], state.cand,
+          state.cand_count, BeamState::CAND_CAP, compact_round_wg);
     compact_stage_done("round 1", compact_event);
-    q.memset(state.compact_ns[0], 0, (size_t)COMPACT_NBUCKETS * sizeof(uint32_t));
-    compact_event = submit_compact_round<2>(q, state.compact[1], state.compact_ns[1],
-                                            state.compact[0], state.compact_ns[0], state.cand,
-                                            state.cand_count, BeamState::CAND_CAP, compact_wg);
+    q.memset(state.compact_ns[0], 0, (size_t)compact_nbuckets(2) * sizeof(uint32_t));
+    compact_event = submit_compact_round<2>(
+        q, state.compact[1], state.compact_ns[1], state.compact[0], state.compact_ns[0], state.cand,
+        state.cand_count, BeamState::CAND_CAP, compact_round_wg);
     compact_stage_done("round 2", compact_event);
-    q.memset(state.compact_ns[1], 0, (size_t)COMPACT_NBUCKETS * sizeof(uint32_t));
-    compact_event = submit_compact_round<3>(q, state.compact[0], state.compact_ns[0],
-                                            state.compact[1], state.compact_ns[1], state.cand,
-                                            state.cand_count, BeamState::CAND_CAP, compact_wg);
+    q.memset(state.compact_ns[1], 0, (size_t)compact_nbuckets(3) * sizeof(uint32_t));
+    compact_event = submit_compact_round<3>(
+        q, state.compact[0], state.compact_ns[0], state.compact[1], state.compact_ns[1], state.cand,
+        state.cand_count, BeamState::CAND_CAP, compact_round_wg);
     compact_stage_done("round 3", compact_event);
-    q.memset(state.compact_ns[0], 0, (size_t)COMPACT_NBUCKETS * sizeof(uint32_t));
-    compact_event = submit_compact_round<4>(q, state.compact[1], state.compact_ns[1],
-                                            state.compact[0], state.compact_ns[0], state.cand,
-                                            state.cand_count, BeamState::CAND_CAP, compact_wg);
+    q.memset(state.compact_ns[0], 0, (size_t)compact_nbuckets(4) * sizeof(uint32_t));
+    if (compact_pair_partitions)
+      compact_event = submit_compact_round<4, true>(
+          q, state.compact[1], state.compact_ns[1], state.compact[0], state.compact_ns[0], state.cand,
+          state.cand_count, BeamState::CAND_CAP, compact_pair_round_wg);
+    else
+      compact_event = submit_compact_round<4>(
+          q, state.compact[1], state.compact_ns[1], state.compact[0], state.compact_ns[0], state.cand,
+          state.cand_count, BeamState::CAND_CAP, compact_round_wg);
     compact_stage_done("round 4", compact_event);
     auto compact_tail = submit_compact_final_thin(
-      q, reinterpret_cast<const BeamLevel4Row*>(state.compact[0]),
-      state.compact_ns[0], state.compact[1], state.cand, state.cand_count,
-      BeamState::CAND_CAP, compact_wg);
+        q, reinterpret_cast<const BeamLevel4Row*>(state.compact[0]),
+        state.compact_ns[0], state.compact[1], state.cand, state.cand_count, BeamState::CAND_CAP,
+        compact_round_wg);
     compact_stage_done("round 5", compact_tail);
     sycl_wait_and_throw(compact_tail, state.device);
-    if (log) { std::fprintf(stderr, "beamhash3 compact solve candidates=%u (%llu ms)\n",
-      std::min<uint32_t>(*state.cand_count, BeamState::CAND_CAP),
-      (unsigned long long)(BeamState::now_ms() - t_start)); std::fflush(stderr); }
+    if (log) {
+      std::fprintf(stderr, "beamhash3 compact solve candidates=%u (%llu ms)\n",
+                   std::min<uint32_t>(*state.cand_count, BeamState::CAND_CAP),
+                   (unsigned long long)(BeamState::now_ms() - t_start));
+      std::fflush(stderr);
+    }
   } else
 #endif
   {
@@ -135,9 +187,18 @@ int beamhash3(
   // On RTX 5060 Ti, DPC++ CUDA's 150-solve stage mean improves 172.7 -> 161.8 ms at WG768, while
   // AdaptiveCpp peaks at WG640 (151.6 ms); HIP remains flat around its WG640 default.
   const unsigned wg = beamhash3_workgroup(state.device);
-  unsigned scatter_wg = 128;
-  { unsigned long parsed = 0; if (mom_parse_env_ulong("MOM_BEAMHASH3_SCATTER_WG", parsed) && parsed >= 16)
-      scatter_wg = (unsigned)std::min<unsigned long>(parsed, 1024); }
+    unsigned scatter_wg = sycl_default_workgroup(
+        state.device, {16, 32, 64, 128}, 128, 0, GENERIC_SCATTER_LOCAL_BYTES_PER_ITEM);
+    {
+      unsigned long parsed = 0;
+      if (mom_parse_env_ulong("MOM_BEAMHASH3_SCATTER_WG", parsed) && parsed >= 16) {
+        const unsigned override =
+            static_cast<unsigned>(std::min<unsigned long>(parsed, 1024));
+        if (sycl_workgroup_fits(
+                state.device, override, 0, GENERIC_SCATTER_LOCAL_BYTES_PER_ITEM))
+          scatter_wg = override;
+      }
+    }
 
   for (unsigned i = 0; i <= NUM_ROUNDS; ++i) state.mixed_count[i] = 0;
   *state.cand_count = 0;

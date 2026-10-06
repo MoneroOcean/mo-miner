@@ -39,7 +39,7 @@ static sycl::event submit_mix_scatter(sycl::queue& q, const uint32_t* d_mixed,
     sycl::local_accessor<uint32_t, 1> stage(sycl::range<1>((size_t)WG * OUT_ST), h);
     sycl::local_accessor<uint32_t, 1> dst(sycl::range<1>(WG), h);
     h.parallel_for<BeamMixScatterKernel<R, DEVICE_COUNT>>(
-      sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(WG)), [=](sycl::nd_item<1> it) {
+      sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(WG)), [=](sycl::nd_item<1> it) MOM_SYCL_KERNEL_ARGS_RESTRICT {
       const uint32_t s   = (uint32_t)it.get_global_id(0);
       const unsigned lid = (unsigned)it.get_local_id(0);
       const unsigned lsz = (unsigned)it.get_local_range(0);
@@ -106,10 +106,10 @@ static sycl::event submit_mix_scatter(sycl::queue& q, const uint32_t* d_mixed,
         }
       } else {
         auto sg = it.get_sub_group();
-        const unsigned sg_sz   = (unsigned)sg.get_max_local_range()[0];
+        const unsigned sg_sz   = (unsigned)sg.get_local_range()[0];
         const unsigned lane     = (unsigned)sg.get_local_id()[0];
-        const unsigned wg_warps = (lsz + sg_sz - 1) / sg_sz;
-        const unsigned warp_id  = lid / sg_sz;
+        const unsigned wg_warps = (unsigned)sg.get_group_range()[0];
+        const unsigned warp_id  = (unsigned)sg.get_group_id()[0];
         for (unsigned r = warp_id; r < lsz; r += wg_warps) {
           const uint32_t packed = dst[r];
           if (packed == SENTINEL) continue;
@@ -151,7 +151,7 @@ static sycl::event submit_collide(sycl::queue& q, const uint32_t* d_bucket,
     // traversals fail the full-24-bit match, so this removes the dominant scattered b[0],b[1] DRAM reads.
     sycl::local_accessor<uint32_t, 1> coll_key(sycl::range<1>(NSLOTS), h);
     h.parallel_for<BeamCollideKernel<R, FUSED, PREDECESSOR_ONLY>>(
-      sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(wg)), [=](sycl::nd_item<1> it) {
+      sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(wg)), [=](sycl::nd_item<1> it) MOM_SYCL_KERNEL_ARGS_RESTRICT {
       const uint32_t bucket = (uint32_t)it.get_group(0);
       const unsigned lid = (unsigned)it.get_local_id(0);
       const unsigned lsz = (unsigned)it.get_local_range(0);

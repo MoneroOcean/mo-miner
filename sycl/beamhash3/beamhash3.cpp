@@ -22,6 +22,12 @@
 // oracle validation; set MOM_BEAMHASH3_SOLVE for the M4 keystone full-solve vector.
 
 #include <sycl/sycl.hpp>
+#if defined(PEARLHASH_ESIMD) && !defined(MOM_SYCL_ADAPTIVECPP)
+// The build defines PEARLHASH_ESIMD only for its oneAPI ESIMD-capable worker.
+#define MOM_BEAMHASH3_ESIMD
+#include <sycl/ext/intel/esimd.hpp>
+#endif
+
 
 #include <algorithm>
 #include <array>
@@ -34,6 +40,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <type_traits>
 #include <vector>
 
 #include "../lib-internal.h"

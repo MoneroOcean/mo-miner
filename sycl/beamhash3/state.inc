@@ -41,7 +41,7 @@ static sycl::event submit_final(sycl::queue& q, const uint32_t* d_mixed5,
   const size_t global = ((size_t)in_count + WG - 1) / WG * WG;
   return q.submit([&](sycl::handler& h) {
     h.parallel_for<BeamFinalKernel>(
-      sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(WG)), [=](sycl::nd_item<1> it) {
+      sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(WG)), [=](sycl::nd_item<1> it) MOM_SYCL_KERNEL_ARGS_RESTRICT {
       const uint32_t s = (uint32_t)it.get_global_id(0);
       if (s >= in_count) return;
       const uint32_t* rec = d_mixed5 + (size_t)s * IN_ST;
@@ -67,9 +67,9 @@ public:
   // M1 I/O
   uint64_t* prePow = nullptr;   // 4 u64 (the SipHash key / IndividualWork)
   uint8_t*  rows = nullptr;     // BEAMHASH3_TEST_ROWS * ROW_BYTES (raw 448-bit leaf rows)
-  // CUDA/HIP use two 64-byte compact arenas through level 3. Level 4 reuses compact[0] as packed
-  // BeamLevel4Row storage while compact[1] retains the recovery trees. Intel retains the fused parity
-  // arenas; MOM_BEAMHASH3_COMPACT=0 selects CUDA's linear or HIP's fused fallback.
+  // Compact-capable GPU backends use two 64-byte arenas through level 3. Level 4 reuses compact[0]
+  // as packed BeamLevel4Row storage while compact[1] retains the recovery trees;
+  // MOM_BEAMHASH3_COMPACT=0 selects the fused fallback on non-CUDA backends.
   uint32_t* final_mixed = nullptr;  // fused layout: MIXED_CAP * mixed_stride_u32(5)
   uint32_t* linear_mixed = nullptr; // CUDA layout: MIXED_CAP * MAX_MIXED_STRIDE
   uint32_t* bucket[2] = {};         // fused parity arenas, or CUDA's reusable bucket[0]
@@ -93,7 +93,8 @@ public:
     // Miner workers exit immediately after a benchmark sample. Keep process teardown noexcept like
     // every other persistent SYCL state: live kernel errors have already propagated through the
     // explicit waits, while a late CUDA-runtime-unloading result must not abort a completed worker.
-    sycl_cleanup_noexcept("beamhash3", [&] { queue.wait_and_throw(); free_all(); });
+    sycl_cleanup_noexcept("beamhash3 wait", [&] { queue.wait_and_throw(); });
+    sycl_cleanup_noexcept("beamhash3 release", [&] { free_all(); });
   }
   template <typename T> T* alloc(size_t n) {
     return shared_io ? sycl::malloc_shared<T>(n, queue) : sycl::malloc_device<T>(n, queue);
@@ -104,69 +105,98 @@ public:
     free_all_arenas();
   }
   void ensure_io() {
-    if (prePow && rows) return;
-    free_ptr(prePow); free_ptr(rows);
-    prePow = sycl::malloc_shared<uint64_t>(4, queue);
-    rows   = sycl::malloc_shared<uint8_t>((size_t)BEAMHASH3_TEST_ROWS * ROW_BYTES, queue);
-    if (!prePow || !rows) throw std::string("Can't allocate beamhash3 I/O buffers");
+    if (prePow && rows)
+      return;
+    free_ptr(prePow);
+    free_ptr(rows);
+    try {
+      prePow = sycl::malloc_shared<uint64_t>(4, queue);
+      rows = sycl::malloc_shared<uint8_t>((size_t)BEAMHASH3_TEST_ROWS * ROW_BYTES, queue);
+      if (!prePow || !rows)
+        throw std::string("Can't allocate beamhash3 I/O buffers");
+    } catch (...) {
+      free_ptr(prePow);
+      free_ptr(rows);
+      throw;
+    }
   }
   void ensure_arenas(bool log) {
-    if (arenas_built) return;
+    if (arenas_built)
+      return;
     const uint64_t t0 = now_ms();
     free_all_arenas();
-    size_t total = 0;
-    const bool cuda_layout = mom_is_cuda(device);
-    const bool compact_layout = beam_compact_enabled(device);
-    if (compact_layout) {
-      const size_t n = (size_t)COMPACT_NBUCKETS * COMPACT_NSLOTS;
-      for (unsigned parity = 0; parity < 2; ++parity) {
-        compact[parity] = alloc<BeamCompactRow>(n); total += n * sizeof(BeamCompactRow);
-        compact_ns[parity] = alloc<uint32_t>(COMPACT_NBUCKETS);
-        total += (size_t)COMPACT_NBUCKETS * sizeof(uint32_t);
-        if (!compact[parity] || !compact_ns[parity])
-          throw std::string("Can't allocate beamhash3 compact arenas");
-      }
-    } else if (cuda_layout) {
-      const size_t n = (size_t)MIXED_CAP * MAX_MIXED_STRIDE;
-      linear_mixed = alloc<uint32_t>(n); total += n * 4;
-      if (!linear_mixed) throw std::string("Can't allocate beamhash3 CUDA linear arena");
-    } else {
-      // Fused round 5 emits only one u64 work word per survivor.
-      const size_t n = (size_t)MIXED_CAP * mixed_stride_u32(NUM_ROUNDS);
-      final_mixed = alloc<uint32_t>(n); total += n * 4;
-      if (!final_mixed) throw std::string("Can't allocate beamhash3 final arena");
-    }
-    if (!compact_layout) {
-      for (unsigned L = 1; L <= NUM_ROUNDS; ++L) {
-        const size_t tn = (size_t)MIXED_CAP * 2;
-        tree[L] = alloc<uint32_t>(tn); total += tn * 4;
-        if (!tree[L]) throw std::string("Can't allocate beamhash3 tree log");
-      }
-      if (cuda_layout) {
-        const size_t n = (size_t)NBUCKETS * NSLOTS * MAX_BUCKET_STRIDE_ALL;
-        bucket[0] = alloc<uint32_t>(n); total += n * 4;
-        bucket_ns[0] = alloc<uint32_t>(NBUCKETS); total += (size_t)NBUCKETS * 4;
-        if (!bucket[0] || !bucket_ns[0])
-          throw std::string("Can't allocate beamhash3 CUDA bucket arena");
-      } else {
-        const unsigned bucket_stride[2] = { MAX_BUCKET_STRIDE_EVEN, MAX_BUCKET_STRIDE_ODD };
+    try {
+      size_t total = 0;
+      const bool cuda_layout = mom_is_cuda(device);
+      const bool compact_layout = beam_compact_enabled(device);
+      if (compact_layout) {
         for (unsigned parity = 0; parity < 2; ++parity) {
-          const size_t n = (size_t)NBUCKETS * NSLOTS * bucket_stride[parity];
-          bucket[parity] = alloc<uint32_t>(n); total += n * 4;
-          bucket_ns[parity] = alloc<uint32_t>(NBUCKETS); total += (size_t)NBUCKETS * 4;
-          if (!bucket[parity] || !bucket_ns[parity])
-            throw std::string("Can't allocate beamhash3 fused bucket arena");
+          compact[parity] = alloc<BeamCompactRow>(COMPACT_MAX_ROWS);
+          total += COMPACT_MAX_ROWS * sizeof(BeamCompactRow);
+          compact_ns[parity] = alloc<uint32_t>(COMPACT_MAX_NBUCKETS);
+          total += (size_t)COMPACT_MAX_NBUCKETS * sizeof(uint32_t);
+          if (!compact[parity] || !compact_ns[parity])
+            throw std::string("Can't allocate beamhash3 compact arenas");
         }
+      } else if (cuda_layout) {
+        const size_t n = (size_t)MIXED_CAP * MAX_MIXED_STRIDE;
+        linear_mixed = alloc<uint32_t>(n);
+        total += n * 4;
+        if (!linear_mixed)
+          throw std::string("Can't allocate beamhash3 CUDA linear arena");
+      } else {
+        // Fused round 5 emits only one u64 work word per survivor.
+        const size_t n = (size_t)MIXED_CAP * mixed_stride_u32(NUM_ROUNDS);
+        final_mixed = alloc<uint32_t>(n);
+        total += n * 4;
+        if (!final_mixed)
+          throw std::string("Can't allocate beamhash3 final arena");
       }
-      mixed_count = sycl::malloc_shared<uint32_t>(NUM_ROUNDS + 1, queue);
+      if (!compact_layout) {
+        for (unsigned L = 1; L <= NUM_ROUNDS; ++L) {
+          const size_t tn = (size_t)MIXED_CAP * 2;
+          tree[L] = alloc<uint32_t>(tn);
+          total += tn * 4;
+          if (!tree[L])
+            throw std::string("Can't allocate beamhash3 tree log");
+        }
+        if (cuda_layout) {
+          const size_t n = (size_t)NBUCKETS * NSLOTS * MAX_BUCKET_STRIDE_ALL;
+          bucket[0] = alloc<uint32_t>(n);
+          total += n * 4;
+          bucket_ns[0] = alloc<uint32_t>(NBUCKETS);
+          total += (size_t)NBUCKETS * 4;
+          if (!bucket[0] || !bucket_ns[0])
+            throw std::string("Can't allocate beamhash3 CUDA bucket arena");
+        } else {
+          const unsigned bucket_stride[2] = {MAX_BUCKET_STRIDE_EVEN, MAX_BUCKET_STRIDE_ODD};
+          for (unsigned parity = 0; parity < 2; ++parity) {
+            const size_t n = (size_t)NBUCKETS * NSLOTS * bucket_stride[parity];
+            bucket[parity] = alloc<uint32_t>(n);
+            total += n * 4;
+            bucket_ns[parity] = alloc<uint32_t>(NBUCKETS);
+            total += (size_t)NBUCKETS * 4;
+            if (!bucket[parity] || !bucket_ns[parity])
+              throw std::string("Can't allocate beamhash3 fused bucket arena");
+          }
+        }
+        mixed_count = sycl::malloc_shared<uint32_t>(NUM_ROUNDS + 1, queue);
+      }
+      cand = alloc<BeamCandidate>(CAND_CAP);
+      cand_count = sycl::malloc_shared<uint32_t>(1, queue);
+      if ((!compact_layout && !mixed_count) || !cand || !cand_count)
+        throw std::string("Can't allocate beamhash3 counters/candidates");
+      arenas_built = true;
+      if (log) {
+        std::fprintf(stderr, "beamhash3 Wagner arenas (~%.1f GiB) allocated (%llu ms)\n",
+                     (double)total / (1024.0 * 1024.0 * 1024.0),
+                     (unsigned long long)(now_ms() - t0));
+        std::fflush(stderr);
+      }
+    } catch (...) {
+      free_all_arenas();
+      throw;
     }
-    cand        = alloc<BeamCandidate>(CAND_CAP);
-    cand_count  = sycl::malloc_shared<uint32_t>(1, queue);
-    if ((!compact_layout && !mixed_count) || !cand || !cand_count)
-      throw std::string("Can't allocate beamhash3 counters/candidates");
-    arenas_built = true;
-    if (log) { std::fprintf(stderr, "beamhash3 Wagner arenas (~%.1f GiB) allocated (%llu ms)\n",
-      (double)total / (1024.0 * 1024.0 * 1024.0), (unsigned long long)(now_ms() - t0)); std::fflush(stderr); }
   }
   void free_all_arenas() {
     free_ptr(final_mixed); free_ptr(linear_mixed);

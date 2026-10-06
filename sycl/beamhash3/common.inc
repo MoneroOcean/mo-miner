@@ -132,6 +132,89 @@ inline uint64_t siphash24(uint64_t s0, uint64_t s1, uint64_t s2, uint64_t s3, ui
   return v0 ^ v1 ^ v2 ^ v3;
 }
 
+#if defined(MOM_BEAMHASH3_INTEL_PAIR32)
+// Xe2 lowers SipHash's repeated uint64 additions through partial-int64 sequences. Keeping each word
+// as two uint32 halves avoids that compiler bottleneck while retaining the portable uint64 path.
+struct BeamU64Pair {
+  uint32_t lo;
+  uint32_t hi;
+};
+
+inline BeamU64Pair beam_pair_from_u64(uint64_t value) {
+  return {static_cast<uint32_t>(value), static_cast<uint32_t>(value >> 32)};
+}
+
+inline uint64_t beam_pair_to_u64(BeamU64Pair value) {
+  return static_cast<uint64_t>(value.lo) | (static_cast<uint64_t>(value.hi) << 32);
+}
+
+inline BeamU64Pair beam_pair_add(BeamU64Pair a, BeamU64Pair b) {
+  const uint32_t lo = a.lo + b.lo;
+  return {lo, a.hi + b.hi + static_cast<uint32_t>(lo < a.lo)};
+}
+
+inline BeamU64Pair beam_pair_xor(BeamU64Pair a, BeamU64Pair b) {
+  return {a.lo ^ b.lo, a.hi ^ b.hi};
+}
+
+template <unsigned Bits>
+inline BeamU64Pair beam_pair_rotl(BeamU64Pair value) {
+  static_assert(Bits > 0 && Bits < 64);
+  if constexpr (Bits < 32) {
+    return {(value.lo << Bits) | (value.hi >> (32 - Bits)),
+            (value.hi << Bits) | (value.lo >> (32 - Bits))};
+  } else if constexpr (Bits == 32) {
+    return {value.hi, value.lo};
+  } else {
+    constexpr unsigned Shift = Bits - 32;
+    return {(value.hi << Shift) | (value.lo >> (32 - Shift)),
+            (value.lo << Shift) | (value.hi >> (32 - Shift))};
+  }
+}
+
+inline BeamU64Pair siphash24_pair(BeamU64Pair s0, BeamU64Pair s1, BeamU64Pair s2,
+                                  BeamU64Pair s3, BeamU64Pair nonce) {
+  BeamU64Pair v0 = s0;
+  BeamU64Pair v1 = s1;
+  BeamU64Pair v2 = s2;
+  BeamU64Pair v3 = s3;
+  auto sip_round = [&]() {
+    v0 = beam_pair_add(v0, v1);
+    v2 = beam_pair_add(v2, v3);
+    v1 = beam_pair_rotl<13>(v1);
+    v3 = beam_pair_rotl<16>(v3);
+    v1 = beam_pair_xor(v1, v0);
+    v3 = beam_pair_xor(v3, v2);
+    v0 = beam_pair_rotl<32>(v0);
+    v2 = beam_pair_add(v2, v1);
+    v0 = beam_pair_add(v0, v3);
+    v1 = beam_pair_rotl<17>(v1);
+    v3 = beam_pair_rotl<21>(v3);
+    v1 = beam_pair_xor(v1, v2);
+    v3 = beam_pair_xor(v3, v0);
+    v2 = beam_pair_rotl<32>(v2);
+  };
+  v3 = beam_pair_xor(v3, nonce);
+  sip_round();
+  sip_round();
+  v0 = beam_pair_xor(v0, nonce);
+  v2.lo ^= 0xffu;
+  sip_round();
+  sip_round();
+  sip_round();
+  sip_round();
+  return beam_pair_xor(beam_pair_xor(v0, v1), beam_pair_xor(v2, v3));
+}
+
+// Intel seed path: form each nonce pair inline so leaf words can be written directly to SLM.
+inline BeamU64Pair beam_pair_nonce(uint32_t index, uint32_t offset) {
+  const uint32_t base_lo = index << 3;
+  const uint32_t base_hi = index >> 29;
+  const uint32_t nonce_lo = base_lo + offset;
+  return {nonce_lo, base_hi + static_cast<uint32_t>(nonce_lo < base_lo)};
+}
+#endif
+
 // ===========================================================================================
 // StepElem on the device: a row carries WORK_WORDS u64 work bits (w[0]=LSB) + an index tree.
 // The index tree at level L holds 2^L indices (lowest-index-first within each merge). For applyMix we
@@ -140,9 +223,23 @@ inline uint64_t siphash24(uint64_t s0, uint64_t s1, uint64_t s2, uint64_t s3, ui
 
 // makeLeaf: workBits word i = siphash24(prePow, (index<<3)+i). indexTree=[index].
 inline void make_leaf(const uint64_t prePow[4], uint32_t index, uint64_t w[WORK_WORDS]) {
+#if defined(MOM_BEAMHASH3_INTEL_PAIR32)
+  const BeamU64Pair s0 = beam_pair_from_u64(prePow[0]);
+  const BeamU64Pair s1 = beam_pair_from_u64(prePow[1]);
+  const BeamU64Pair s2 = beam_pair_from_u64(prePow[2]);
+  const BeamU64Pair s3 = beam_pair_from_u64(prePow[3]);
+  const uint32_t base_lo = index << 3;
+  const uint32_t base_hi = index >> 29;
+  for (unsigned i = 0; i < WORK_WORDS; ++i) {
+    const uint32_t nonce_lo = base_lo + i;
+    const BeamU64Pair nonce = {nonce_lo, base_hi + static_cast<uint32_t>(nonce_lo < base_lo)};
+    w[i] = beam_pair_to_u64(siphash24_pair(s0, s1, s2, s3, nonce));
+  }
+#else
   const uint64_t base = ((uint64_t)index << 3);
   for (unsigned i = 0; i < WORK_WORDS; ++i)
     w[i] = siphash24(prePow[0], prePow[1], prePow[2], prePow[3], base + i);
+#endif
 }
 
 // 448-bit right shift by COLLISION_BIT_SIZE (24) across WORK_WORDS u64 words, then mask to remLen bits.

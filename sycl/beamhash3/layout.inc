@@ -175,6 +175,11 @@ constexpr unsigned max_mixed_stride() {
 constexpr unsigned MAX_BUCKET_STRIDE_ALL = max_bucket_stride_all();
 constexpr unsigned MAX_MIXED_STRIDE = max_mixed_stride();
 
+constexpr size_t GENERIC_COLLISION_LOCAL_BYTES =
+    static_cast<size_t>(NRESTBINS + 2 * NSLOTS) * sizeof(uint32_t);
+constexpr size_t GENERIC_SCATTER_LOCAL_BYTES_PER_ITEM =
+    static_cast<size_t>(MAX_BUCKET_STRIDE_ALL + 1) * sizeof(uint32_t);
+
 // A round can emit slightly MORE survivors than its input (a rest-bin with c slots yields ~c*(c-1)/2
 // pairs, so the expected survivor count ~ input but the tail fluctuates above 2^25). Over-provision the
 // parent-log source-ID namespace and compact final arena so no survivor (and therefore no solution) is
@@ -199,49 +204,121 @@ struct alignas(16) BeamLevel4Row {
 static_assert(sizeof(BeamCompactRow) == 64, "A compact Beam row must remain exactly 64 bytes");
 static_assert(sizeof(BeamLevel4Row) == 16, "A thin Beam level-4 row must remain exactly 16 bytes");
 
-constexpr unsigned COMPACT_BUCKET_BITS = 13;
-constexpr unsigned COMPACT_NBUCKETS = 1u << COMPACT_BUCKET_BITS;  // low bits select physical storage
-constexpr unsigned COMPACT_SUBGROUP_BITS = 1;    // bit 13 selects one of two collision workgroups
-constexpr unsigned COMPACT_SUBGROUPS = 1u << COMPACT_SUBGROUP_BITS;
-constexpr unsigned COMPACT_RESTBITS = COLLISION_BIT_SIZE - COMPACT_BUCKET_BITS - COMPACT_SUBGROUP_BITS;
+#if defined(MOM_SYCL_HAS_CUDA) || defined(MOM_SYCL_ADAPTIVECPP_CUDA)
+constexpr unsigned COMPACT_EARLY_BUCKET_BITS = 13;
+constexpr unsigned COMPACT_EARLY_SUBGROUP_BITS = 1;
+constexpr unsigned COMPACT_EARLY_NSLOTS = 4480;
+#else
+constexpr unsigned COMPACT_EARLY_BUCKET_BITS = 12;
+constexpr unsigned COMPACT_EARLY_SUBGROUP_BITS = 2;
+constexpr unsigned COMPACT_EARLY_NSLOTS = 8800;
+#endif
+constexpr unsigned COMPACT_LATE_BUCKET_BITS = 13;
+constexpr unsigned COMPACT_LATE_SUBGROUP_BITS = 1;
+constexpr unsigned COMPACT_LATE_NSLOTS = 4480;
+constexpr unsigned COMPACT_BUCKET_SUBGROUP_BITS = 14;
+constexpr unsigned COMPACT_RESTBITS = COLLISION_BIT_SIZE - COMPACT_BUCKET_SUBGROUP_BITS;
 constexpr unsigned COMPACT_NRESTBINS = 1u << COMPACT_RESTBITS;
-static_assert(COMPACT_RESTBITS == 10, "Compact Beam SLM geometry must retain 1024 collision chains");
-// Each physical bucket averages 4096 rows. Two collision workgroups split it into ~2048-row halves;
-// the small margins below cover the measured input-dependent occupancy tail without wasting VRAM.
-constexpr unsigned COMPACT_NSLOTS = 4480;
-constexpr unsigned COMPACT_LOCAL_CAP = 2560;      // ~2048 rows per collision-workgroup half
+static_assert(COMPACT_RESTBITS == 10,
+              "Compact Beam SLM geometry must retain 1024 collision chains");
+static_assert(COMPACT_EARLY_BUCKET_BITS + COMPACT_EARLY_SUBGROUP_BITS ==
+                  COMPACT_BUCKET_SUBGROUP_BITS &&
+              COMPACT_LATE_BUCKET_BITS + COMPACT_LATE_SUBGROUP_BITS ==
+                  COMPACT_BUCKET_SUBGROUP_BITS);
+// Intel/HIP early rounds concentrate wide random writes into 4096 regions. CUDA keeps 8192
+// regions to avoid scanning four partitions per bucket. Thin late rounds use 8192 everywhere.
+constexpr unsigned compact_bucket_bits(unsigned level) {
+  return level < 3 ? COMPACT_EARLY_BUCKET_BITS : COMPACT_LATE_BUCKET_BITS;
+}
+constexpr unsigned compact_subgroup_bits(unsigned level) {
+  return level < 3 ? COMPACT_EARLY_SUBGROUP_BITS : COMPACT_LATE_SUBGROUP_BITS;
+}
+constexpr unsigned compact_nbuckets(unsigned level) {
+  return 1u << compact_bucket_bits(level);
+}
+constexpr unsigned compact_subgroups(unsigned level) {
+  return 1u << compact_subgroup_bits(level);
+}
+constexpr unsigned compact_nslots(unsigned level) {
+  return level < 3 ? COMPACT_EARLY_NSLOTS : COMPACT_LATE_NSLOTS;
+}
+constexpr size_t COMPACT_MAX_ROWS = std::max(
+    (size_t)compact_nbuckets(0) * compact_nslots(0),
+    (size_t)compact_nbuckets(3) * compact_nslots(3));
+constexpr unsigned COMPACT_MAX_NBUCKETS = std::max(compact_nbuckets(0), compact_nbuckets(3));
+constexpr unsigned COMPACT_LOCAL_CAP = 2560;
+constexpr size_t COMPACT_COLLISION_LOCAL_BYTES =
+    static_cast<size_t>(COMPACT_NRESTBINS + 2 * COMPACT_LOCAL_CAP + 1) * sizeof(uint32_t);
+// Paired logical subgroups retain each original 24-bit collision key in one workgroup.
+constexpr unsigned COMPACT_PAIRED_LOCAL_CAP = 2 * COMPACT_LOCAL_CAP;
+constexpr unsigned COMPACT_PAIRED_NRESTBINS = 2 * COMPACT_NRESTBINS;
+constexpr size_t COMPACT_PAIRED_COLLISION_LOCAL_BYTES =
+    static_cast<size_t>(COMPACT_PAIRED_NRESTBINS) * sizeof(uint32_t) +
+    2 * static_cast<size_t>(COMPACT_PAIRED_LOCAL_CAP) * sizeof(uint16_t) + sizeof(uint32_t);
+static_assert(COMPACT_EARLY_NSLOTS <= UINT16_MAX && COMPACT_LATE_NSLOTS <= UINT16_MAX &&
+                  COMPACT_PAIRED_LOCAL_CAP <= UINT16_MAX,
+              "Compact paired slot indices must fit uint16_t");
+constexpr size_t COMPACT_SEED_LOCAL_BYTES_PER_ITEM = sizeof(BeamCompactRow) + sizeof(uint32_t);
 
 inline bool beam_compact_enabled(const sycl::device& device) {
-  if (!mom_is_cuda(device) && !mom_is_hip(device)) return false;
+#if defined(MOM_SYCL_PORTABLE_OPENCL)
+  // The portable worker does not compile the compact kernels, so its arena selection must also
+  // remain on the full solver. Otherwise it allocates compact-only state and enters the full path.
+  (void)device;
+  return false;
+#else
+  if (!mom_is_cuda(device) && !mom_is_hip(device) && !sycl_is_level_zero_gpu(device))
+    return false;
   const char* value = std::getenv("MOM_BEAMHASH3_COMPACT");
-  return !value || (std::strcmp(value, "0") && std::strcmp(value, "false") &&
-                    std::strcmp(value, "off"));
+  return !value ||
+         (std::strcmp(value, "0") && std::strcmp(value, "false") && std::strcmp(value, "off"));
+#endif
 }
 
 unsigned beamhash3_workgroup(const sycl::device& device) {
-  if (beam_compact_enabled(device)) {
-    const unsigned preferred = mom_is_hip(device) ? 512 : 256;
-    unsigned result = sycl_default_workgroup(device, {128, 256, 512}, preferred);
+  const bool compact = beam_compact_enabled(device);
+  const size_t fixed_local =
+      compact ? COMPACT_COLLISION_LOCAL_BYTES : GENERIC_COLLISION_LOCAL_BYTES;
+  const size_t per_item_local =
+      compact ? COMPACT_SEED_LOCAL_BYTES_PER_ITEM : GENERIC_SCATTER_LOCAL_BYTES_PER_ITEM;
+  if (!sycl_local_memory_fits(device, fixed_local))
+    throw std::string("BeamHash3 requires more local memory than this device provides");
+
+  if (compact) {
+    const unsigned preferred = (mom_is_hip(device) || sycl_is_level_zero_gpu(device)) ? 512 : 256;
+    unsigned result =
+        sycl_default_workgroup(device, {128, 256, 512}, preferred, 0, per_item_local);
     unsigned long parsed = 0;
-    if (mom_parse_env_ulong("MOM_BEAMHASH3_COMPACT_WG", parsed) && parsed >= 16)
-      result = static_cast<unsigned>(std::min<unsigned long>(parsed, 512));
+    if (mom_parse_env_ulong("MOM_BEAMHASH3_COMPACT_WG", parsed) && parsed >= 16) {
+      const unsigned override = static_cast<unsigned>(std::min<unsigned long>(parsed, 512));
+      if (sycl_workgroup_fits(device, override, 0, per_item_local))
+        result = override;
+    }
     return result;
   }
 
   unsigned preferred = sycl_is_level_zero_gpu(device) ? 1024 : 640;
 #if !defined(MOM_SYCL_ADAPTIVECPP)
-  if (mom_is_cuda(device)) preferred = 768;
+  if (mom_is_cuda(device))
+    preferred = 768;
 #endif
   unsigned result = sycl_default_workgroup(
-    device, {128, 256, 384, 512, 640, 768, 1024}, preferred);
+      device, {128, 256, 384, 512, 640, 768, 1024}, preferred, 0, per_item_local);
   unsigned long parsed = 0;
-  if (mom_parse_env_ulong("MOM_BEAMHASH3_WORKGROUP", parsed) && parsed >= 16)
-    result = static_cast<unsigned>(std::min<unsigned long>(parsed, 1024));
+  if (mom_parse_env_ulong("MOM_BEAMHASH3_WORKGROUP", parsed) && parsed >= 16) {
+    const unsigned override = static_cast<unsigned>(std::min<unsigned long>(parsed, 1024));
+    if (sycl_workgroup_fits(device, override, 0, per_item_local))
+      result = override;
+  }
   return result;
 }
 
-constexpr unsigned compact_work_bits(unsigned L) { return BUCKET_WORK_BITS[L]; }
-constexpr unsigned compact_tree_len(unsigned L) { return 1u << L; }
+constexpr unsigned compact_work_bits(unsigned L) {
+  return BUCKET_WORK_BITS[L];
+}
+constexpr unsigned compact_tree_len(unsigned L) {
+  return 1u << L;
+}
 
 inline uint32_t compact_get_index(const BeamCompactRow& row, unsigned work_bits, unsigned index) {
   const unsigned bit = work_bits + index * INDEX_BITS;
