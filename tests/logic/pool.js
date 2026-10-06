@@ -1238,6 +1238,46 @@ test("queued pre-authorization job still requires timely authorization", async (
   });
 });
 
+test("pool sockets retain both IP families with a one-second connection attempt budget", async () => {
+  const net = require("node:net");
+  const originalNetConnect = net.connect;
+  const originalTlsConnect = tls.connect;
+  const previousOpt = testGlobal.opt;
+  /** @type {import("node:tls").ConnectionOptions[]} */
+  const optionsSeen = [];
+  /** @param {import("node:tls").ConnectionOptions} options */
+  function connect(options) {
+    optionsSeen.push(options);
+    /** @type {PoolMockSocket} */
+    const socket = /** @type {PoolMockSocket} */ (new events.EventEmitter());
+    socket.write = () => undefined;
+    socket.destroy = () => undefined;
+    return socket;
+  }
+  net.connect = /** @type {typeof net.connect} */ (/** @type {unknown} */ (connect));
+  tls.connect = /** @type {typeof tls.connect} */ (/** @type {unknown} */ (connect));
+  try {
+    for (const is_tls of [false, true]) {
+      testGlobal.opt = mockPoolOptions({
+        pool: {url: "pool.example", port: is_tls ? 20001 : 10001, is_tls},
+        pool_time: {first_job_wait: 0.001, connect_throttle: 0},
+      });
+      pool.connect_pool_throttle(0, unexpectedPoolJob);
+      testGlobal.opt.pools[0].socket = null;
+    }
+    assert.deepEqual(optionsSeen, [
+      {host: "pool.example", port: 10001, autoSelectFamilyAttemptTimeout: 1000},
+      {host: "pool.example", port: 20001, autoSelectFamilyAttemptTimeout: 1000,
+        rejectUnauthorized: false},
+    ]);
+  } finally {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    net.connect = originalNetConnect;
+    tls.connect = originalTlsConnect;
+    testGlobal.opt = previousOpt;
+  }
+});
+
 test("TLS pools accept self-signed certificates unless verification is explicitly enabled", async () => {
   const originalConnect = tls.connect;
   const previousOpt = testGlobal.opt;
@@ -1245,8 +1285,8 @@ test("TLS pools accept self-signed certificates unless verification is explicitl
   const optionsSeen = [];
   assert.equal(opts.pool_create("pool.example", 443, true, "user", "x").tls_verify, false);
   tls.connect = /** @type {typeof tls.connect} */ (/** @type {unknown} */ (
-    /** @param {number} _port @param {string} _host @param {import("node:tls").ConnectionOptions} options */
-    function(_port, _host, options) {
+    /** @param {import("node:tls").ConnectionOptions} options */
+    function(options) {
       const tlsOptions = typeof options === "object" && options !== null ? options : {};
       optionsSeen.push({rejectUnauthorized: tlsOptions.rejectUnauthorized});
       /** @type {PoolMockSocket} */

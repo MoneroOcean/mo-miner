@@ -57,20 +57,22 @@ module.exports = ({
   /** @param {PoolConfig} pool @returns {PoolSocket} */
   function connectSocket(pool) {
     const loopback = pool.url === "127.0.0.1" || pool.url === "::1";
+    // High-latency pool routes can exceed Node's 250ms per-address default.
+    const options = {host: pool.url, port: pool.port, autoSelectFamilyAttemptTimeout: 1000};
     if (pool.is_tls) {
       const connect = tls.connect;
       if (process.env["MOM_TEST_NO_POOL_NETWORK"] === "1" &&
           connect === systemTlsConnect && !loopback) {
         throw new Error("Pool network access is disabled during mom correctness tests");
       }
-      return connect(pool.port, pool.url, {rejectUnauthorized: pool.tls_verify === true});
+      return connect({...options, rejectUnauthorized: pool.tls_verify === true});
     }
     const connect = net.connect;
     if (process.env["MOM_TEST_NO_POOL_NETWORK"] === "1" &&
         connect === systemNetConnect && !loopback) {
       throw new Error("Pool network access is disabled during mom correctness tests");
     }
-    return connect(pool.port, pool.url);
+    return connect(options);
   }
 
   /** @param {PoolConfig} pool @returns {UnknownRecord} */
