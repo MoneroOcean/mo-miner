@@ -1,5 +1,7 @@
 "use strict";
 
+const zlib = require("node:zlib");
+
 const MAX_PEARL_PROOF_BYTES = 8 * 1024 * 1024;
 const MAX_PEARL_PROOF_BASE64 = Math.ceil(MAX_PEARL_PROOF_BYTES / 3) * 4;
 const MAX_JOB_TOKEN_CHARS = 256;
@@ -125,12 +127,25 @@ module.exports = ({
     // Token matching above excludes stale work without suppressing subsequent proofs.
     if (submit_mode === "pearlhash") {
       if (!isWorkerResult(v) || typeof v.plain_proof !== "string" ||
-          typeof v.jackpot !== "string" || typeof v.adjustment_factor !== "string" ||
-          decodePearlProof(v.plain_proof) === null) {return h.log_err("Invalid compute core message");}
+          typeof v.jackpot !== "string" || typeof v.adjustment_factor !== "string") {return h.log_err("Invalid compute core message");}
+      const rawProof = decodePearlProof(v.plain_proof);
+      if (rawProof === null) {return h.log_err("Invalid compute core message");}
       const job = matchingPoolJob(pool, v);
       if (!job) {return;}
+      const gzip = pool.pearlhash_proof_encodings?.includes("gzip") === true;
+      let plainProof = v.plain_proof;
+      if (gzip) {
+        try {
+          plainProof = zlib.gzipSync(rawProof).toString("base64");
+        } catch {
+          return h.log_err("Invalid compute core message");
+        }
+      }
       return send({method: "mining.submit", params: {
-        job_id: job.job_id, plain_proof: v.plain_proof, jackpot: v.jackpot,
+        job_id: job.job_id,
+        plain_proof: plainProof,
+        ...(gzip ? {proof_encoding: "gzip"} : {}),
+        jackpot: v.jackpot,
         adjustment_factor: Number(v.adjustment_factor),
       }});
     }

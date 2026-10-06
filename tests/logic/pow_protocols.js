@@ -1,6 +1,7 @@
 "use strict";
 
 const s = require("./support");
+const zlib = require("node:zlib");
 const { test, assert, pool, loadMinerWithStubs, withMockPool } = s;
 
 test("KawPow pool jobs append the nonce field to a header hash", async () => {
@@ -264,6 +265,45 @@ test("PearlHash submit uses its canonical submit mode", async () => {
       adjustment_factor: 524288,
     },
   });
+});
+
+test("PearlHash prefers advertised gzip and leaves unadvertised proofs unchanged", async () => {
+  const proof = Buffer.from("Pearl proof bytes ".repeat(256)).toString("base64");
+  const result = {
+    pool_id: "0",
+    job_id: "job1",
+    job_token: "token",
+    worker_id: "worker",
+    nonce: "0000000000000001",
+    plain_proof: proof,
+    jackpot: "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    adjustment_factor: "524288",
+  };
+
+  const mo = await loadMinerWithStubs();
+  mo.global.opt.pools[0]["pearlhash_proof_encodings"] = ["none", "gzip"];
+  mo.global.opt.pools[0].last_job = {
+    job_id: "job1", job_token: "token", submit_mode: "pearlhash",
+  };
+  mo.messageHandler({thread_id: 0, type: "result", value: result});
+  mo.messageHandler({thread_id: 0, type: "result", value: {...result}});
+  const first = /** @type {Record<string, unknown>} */ (mo.poolWrites[0]?.json.params);
+  const second = /** @type {Record<string, unknown>} */ (mo.poolWrites[1]?.json.params);
+  const compressedProof = first["plain_proof"];
+  assert.equal(first["proof_encoding"], "gzip");
+  assert.equal(compressedProof, second["plain_proof"]);
+  assert.ok(typeof compressedProof === "string");
+  assert.equal(zlib.gunzipSync(Buffer.from(compressedProof, "base64")).toString("base64"), proof);
+
+  const external = await loadMinerWithStubs();
+  external.global.opt.pools[0]["pearlhash_proof_encodings"] = ["none"];
+  external.global.opt.pools[0].last_job = {
+    job_id: "job1", job_token: "token", submit_mode: "pearlhash",
+  };
+  external.messageHandler({thread_id: 0, type: "result", value: result});
+  const externalParams = /** @type {Record<string, unknown>} */ (external.poolWrites[0]?.json.params);
+  assert.equal(externalParams["plain_proof"], proof);
+  assert.equal(Object.hasOwn(externalParams, "proof_encoding"), false);
 });
 
 test("PearlHash claims are atomic, native-endian, and stable across retries", async () => {
