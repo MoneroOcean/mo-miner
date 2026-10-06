@@ -2,6 +2,54 @@
 
 module.exports = [
   {
+    // Bitcoin Gold's authoritative Equihash 144,5 regression header and first canonical proof.
+    // The solver can find other valid proofs; test mode emits the sorted first proof and zero pads
+    // the standard Equihash test buffer for deterministic cross-backend comparison.
+    name: "zhash gpu1 (BTCGPU validator vector)",
+    gpu: true,
+    timeoutMs: 15 * 60 * 1000,
+    env: {MOM_ZHASH_SOLVE: "1", MOM_ZHASH_RETRY_TEST: "1"},
+    job: {
+      algo: "zhash",
+      dev: "gpu1*[intensity=1]",
+      noncebytes: 8,
+      nonceoffset: 108,
+      target: "ff".repeat(32),
+      height: 400000,
+      blob_hex:
+        "0400000008e9694cc2120ec1b5733cc12687b609058eec4f7046a521ad1d1e3049b40000" +
+        "3e7420ed6f40659de0305ef9b7ec037f4380ed9848bc1c015691c90aa16ff393" +
+        "0000000000000000000000000000000000000000000000000000000000000000" +
+        "c9310d5874e0001f000000000000000000000000000000010b000000000000000000000000666666",
+    },
+    expected:
+      "01" +
+      "01629b3779fd498defb2b0a551f7e111a8a003711acfe129622eb80bc98df66b9d8178b9670bacdc972b250fcb6715f437eb0addf858f9419c03f93a1be742e6377d4dcc4b9196afd811592ee4589cecfa321e7a9d5675338e7834923fe12b49f743a8d4" +
+      "0".repeat(10240 - 2 - 200),
+  },
+  {
+    // Light portable guard for the same BTCGPU header: first 144-bit row for leaf index zero,
+    // followed by its two-byte index and zero padding.
+    name: "zhash gpu1 generation",
+    gpu: true,
+    syclCpu: true,
+    portableOnly: true,
+    timeoutMs: 5 * 60 * 1000,
+    job: {
+      algo: "zhash",
+      dev: "gpu1*[intensity=1]",
+      noncebytes: 8,
+      nonceoffset: 108,
+      target: "ff".repeat(32),
+      blob_hex:
+        "0400000008e9694cc2120ec1b5733cc12687b609058eec4f7046a521ad1d1e3049b40000" +
+        "3e7420ed6f40659de0305ef9b7ec037f4380ed9848bc1c015691c90aa16ff393" +
+        "0000000000000000000000000000000000000000000000000000000000000000" +
+        "c9310d5874e0001f000000000000000000000000000000010b000000000000000000000000666666",
+    },
+    expected: "1ac423f4775bd7ad17f7ebfaf388f780f0940000" + "0".repeat(10240 - 40),
+  },
+  {
     name: "c29 proofsize 32 gpu1*[seed_workgroup=128;seed_blocks=16]",
     gpu: true,
     syclCpu: true,

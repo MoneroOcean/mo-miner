@@ -168,6 +168,7 @@ class Core: public AsyncWorker {
     const uint8_t* commitment = nullptr, const uint8_t* mix_hash = nullptr,
     const uint8_t* solution = nullptr, unsigned solution_len = 0
   );
+  void send_equihash_results(uint64_t nonce, unsigned solution_size, bool compact_size_prefix);
   void send_last_nonce(uint64_t nonce, unsigned noncebytes, const std::string& pool_id,
                        const std::string& job_id = {}, const std::string& job_token = {});
   void free_memory(

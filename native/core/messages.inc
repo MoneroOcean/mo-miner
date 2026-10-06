@@ -121,8 +121,10 @@ void Core::send_result(
   MessageValues values;
   values["nonce"] = nonce_to_hex(nonce, noncebytes);
 
-  char hash_hex[HASH_LEN * 2 + 1];
-  values["hash"] = hash_bin2hex(output, hash_hex);
+  if (output) {
+    char hash_hex[HASH_LEN * 2 + 1];
+    values["hash"] = hash_bin2hex(output, hash_hex);
+  }
 
   // Out-of-band proof bytes for algos whose share isn't a 32-byte hash (zelhash: the Flux/ZIP-301
   // stratum submit carries the full compactSize-prefixed solution -- 0x34 || 52-byte compressed proof =
@@ -164,6 +166,40 @@ void Core::send_result(
   if (!m_job_token.empty()) values["job_token"] = m_job_token;
   if (!m_header_hash.empty()) values["header_hash"] = m_header_hash;
   send_msg("result", values);
+}
+
+void Core::send_equihash_results(
+  const uint64_t nonce, const unsigned solution_size, const bool compact_size_prefix
+) {
+  const uint8_t* const solutions = static_cast<const uint8_t*>(m_spads);
+  const unsigned count = solutions[0];
+  const unsigned capacity = (EQUIHASH_SOL_BUFFER_LEN - 1) / solution_size;
+  if (count > capacity) {
+    send_error("Invalid " + m_algo_str + " solution count");
+    return;
+  }
+
+  const unsigned prefix_size = compact_size_prefix ? (solution_size < 253 ? 1 : 3) : 0;
+  for (unsigned i = 0; i < count; ++i) {
+    const uint8_t* const solution = solutions + 1 + static_cast<size_t>(i) * solution_size;
+    if (!compact_size_prefix) {
+      send_result(nonce, m_nonce_bytes, nullptr, nullptr, 32, nullptr, nullptr,
+                  solution, solution_size);
+      continue;
+    }
+
+    uint8_t submit[3 + 400];
+    if (prefix_size == 1) {
+      submit[0] = static_cast<uint8_t>(solution_size);
+    } else {
+      submit[0] = 253;
+      submit[1] = static_cast<uint8_t>(solution_size);
+      submit[2] = static_cast<uint8_t>(solution_size >> 8);
+    }
+    std::memcpy(submit + prefix_size, solution, solution_size);
+    send_result(nonce, m_nonce_bytes, nullptr, nullptr, 32, nullptr, nullptr,
+                submit, solution_size + prefix_size);
+  }
 }
 
 void Core::send_last_nonce(const uint64_t nonce, const unsigned noncebytes, const std::string& pool_id,

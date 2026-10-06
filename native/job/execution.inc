@@ -86,22 +86,26 @@ void Core::set_job(
     new_algo_str == "fishhash" ? DEV::FISHHASH_GPU :
     new_algo_str == "karlsenhashv2" ? DEV::KARLSENHASHV2_GPU :
     new_algo_str == "zelhash" ? DEV::ZELHASH_GPU :
+    new_algo_str == "zhash" ? DEV::ZELHASH_GPU :
     new_algo_str == "beamhash3" ? DEV::BEAMHASH3_GPU :
     new_algo_str == "c29" ? DEV::C29_GPU :
     new_algo_str == "c30" ? DEV::C30_GPU : DEV::GPU;
 
   uint64_t c30_initial_nonce = 0;
-  if (new_dev == DEV::C30_GPU) {
+  uint64_t zhash_initial_nonce = 0;
+  if (new_dev == DEV::C30_GPU || new_algo_str == "zhash") {
     for (const char* field : {"height", "thread_id", "thread_num", "noncebytes", "nonceoffset", "proofsize", "intensity"}) {
       unsigned value = 0;
       if (v.contains(field) && !mom::job_boundary::parse_unsigned(v.at(field), value))
-        throw std::string("Invalid c30 unsigned job field: ") + field;
+        throw std::string("Invalid ") + new_algo_str + " unsigned job field: " + field;
     }
     for (const char* field : {"nonce", "nicehash_mask"}) {
       uint64_t value = 0;
       if (v.contains(field) && !mom::job_boundary::parse_unsigned(v.at(field), value, 16))
-        throw std::string("Invalid c30 hexadecimal job field: ") + field;
+        throw std::string("Invalid ") + new_algo_str + " hexadecimal job field: " + field;
     }
+  }
+  if (new_dev == DEV::C30_GPU) {
     if (new_batch != 1 || new_c29_proof_size != 42)
       throw std::string("c30 requires intensity 1 and proof size 42");
     if (new_thread_num == 0 || new_thread_id >= new_thread_num)
@@ -111,6 +115,16 @@ void Core::set_job(
           new_nonce, uint64_t{new_thread_id} + new_thread_num, 1,
           new_nicehash_mask, c30_initial_nonce))
       throw std::string("c30 starting nonce is exhausted");
+  }
+  if (new_algo_str == "zhash") {
+    if (new_batch != 1)
+      throw std::string("Single-header solvers require intensity 1");
+    if (new_thread_num == 0 || new_thread_id >= new_thread_num)
+      throw std::string("Invalid worker thread index/count");
+    if (is_set_nonce && !mom::job_boundary::nonce_with_offset<uint64_t>(
+          new_nonce, uint64_t{new_thread_id} + new_thread_num, 1,
+          new_nicehash_mask, zhash_initial_nonce))
+      throw std::string("Initial worker nonce range overflows");
   }
   if (new_dev == DEV::C29_GPU && new_batch != 1)
     throw std::string("Invalid batch size for c29 algo. Should be 1.");
@@ -139,11 +153,11 @@ void Core::set_job(
   // KarlsenHashV2 uses an 8-byte nonce at offset 72 of its 80-byte Kaspa blob.
   if (new_dev == DEV::KARLSENHASHV2_GPU && (new_nonce_bytes != 8 || new_nonce_offset != 72))
     throw std::string("karlsenhashv2 requires an 8-byte nonce at offset 72");
-  // Equihash 125,4 carries a 32-byte nonce at offset 108 of its 140-byte header. The solver advances
-  // the low 8 bytes of that nonce field as its search counter (the rest is the pool extranonce), so the
-  // job describes it as an 8-byte nonce at offset 108.
-  if (new_dev == DEV::ZELHASH_GPU && (new_nonce_bytes != 8 || new_nonce_offset != 108))
-    throw std::string("zelhash requires an 8-byte nonce at offset 108");
+  // Zcash-family headers carry a 32-byte nonce at offset 108. Advance an 8-byte counter after any
+  // fixed pool prefix while keeping it entirely inside that nonce.
+  if (new_dev == DEV::ZELHASH_GPU &&
+      (new_nonce_bytes != 8 || new_nonce_offset < 108 || new_nonce_offset > 132))
+    throw std::string(new_algo_str + " requires an 8-byte counter inside its 32-byte nonce");
   // BeamHash III: the blob is prework(32)||nonce(8)||extranonce(4); the 8-byte Beam nonce is at offset 32.
   if (new_dev == DEV::BEAMHASH3_GPU && (new_nonce_bytes != 8 || new_nonce_offset != 32))
     throw std::string("beamhash3 requires an 8-byte nonce at offset 32");
@@ -251,7 +265,7 @@ void Core::set_job(
     : new_dev == DEV::ZELHASH_GPU ? 140   // full Zcash/Flux header
     : new_dev == DEV::BEAMHASH3_GPU ? 44         // prework(32)||nonce(8)||extranonce(4)
     : is_nonce_at_32_gpu_dev(new_dev) ? 40 : 0;
-  if (new_input_len < min_input_len)
+  if (new_input_len < min_input_len || (new_algo_str == "zhash" && new_input_len != 140))
     throw std::string("Bad " + new_algo_str + " input length");
 
   const unsigned new_mem_size = algo2mem.at(new_algo_str);
@@ -343,7 +357,8 @@ void Core::set_job(
       if (m_output == nullptr) m_output = static_cast<uint8_t*>(alloc_mem(HASH_LEN));
       // The solution buffer holds the kawpow/etchash mix (32 B) for most algos, but zelhash
       // returns a 52-byte out-of-band solution and its M1 test path dumps gen-kernel rows here.
-      if (m_spads == nullptr) m_spads = alloc_mem(SMALL_BLOB_SOL_LEN);
+      if (m_spads == nullptr) m_spads = alloc_mem(is_equihash_gpu_dev(new_dev)
+        ? EQUIHASH_SOL_BUFFER_LEN : SMALL_BLOB_SOL_LEN);
     } else { // setup cn/c29 stuff
       if (m_input == nullptr) m_input = static_cast<uint8_t*>(alloc_mem(new_batch * MAX_BLOB_LEN));
       if (m_output == nullptr) m_output = static_cast<uint8_t*>(alloc_mem(new_batch * HASH_LEN));
@@ -477,7 +492,8 @@ void Core::set_job(
         const uint64_t embed = ironfish ? bswap_64(current_nonce) : current_nonce;
         std::memcpy(m_input + m_nonce_offset, &embed, sizeof(embed));
       }
-      m_nonce64 = is_set_nonce ? current_nonce + m_nonce_step : 0;
+      m_nonce64 = is_set_nonce ? (new_algo_str == "zhash"
+        ? zhash_initial_nonce : current_nonce + m_nonce_step) : 0;
       m_nonce32 = 0;
       return;
     }

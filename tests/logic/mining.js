@@ -290,3 +290,21 @@ test("donation pool mines a MoneroOcean algo while the rig is configured for pea
     assert.equal(donatedJob.algo, "rx/0");                        // MO assigns rx/0; donation actually mines
   });
 });
+
+test("ZHash-family benchmark jobs use fixed 140-byte headers and nonce metadata", async () => {
+  for (const algo of ["zhash"]) {
+    const miner = await loadMinerWithStubs({
+      argv: ["node", "mom.js", "bench", algo], waitForMessageType: "bench",
+    });
+    const message = miner.sentMessages.find((msg) => msg.type === "bench");
+    assert.ok(message);
+    const job = message.job;
+    assert.ok(job);
+    assert.ok(job.blob_hex);
+    assert.equal(job.algo, algo);
+    assert.equal(job.noncebytes, 8);
+    assert.equal(job.nonceoffset, 108);
+    assert.equal(job.blob_hex.length, 280);
+    assert.equal(job.blob_hex.slice(216, 232), "0000000000000000");
+  }
+});

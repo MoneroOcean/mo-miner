@@ -11,6 +11,7 @@ function Get-MomWindowsSyclSources {
     cn_gpu       = 'sycl\cn_gpu\cn_gpu.cpp'
     kawpow       = 'sycl\kawpow\kawpow.cpp'
     fishhash     = 'sycl\fishhash\fishhash.cpp'
+    zhash        = 'sycl\zhash\zhash.cpp'
     zelhash      = 'sycl\zelhash\zelhash.cpp'
     beamhash3    = 'sycl\beamhash3\beamhash3.cpp'
     blake2b      = 'sycl\c29\blake2b.cpp'

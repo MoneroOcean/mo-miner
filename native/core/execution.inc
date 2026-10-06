@@ -209,9 +209,8 @@ void Core::Execute() {
             );
             break;
           case DEV::ZELHASH_GPU:
-            // c29-like: the 32-byte nonce lives in the header (offset 108); the solver writes the
-            // 52-byte solution (or, in is_test, the gen-kernel rows) out-of-band into m_spads.
-            std::memcpy(&dev_nonce, m_input + m_nonce_offset, sizeof(dev_nonce));  // low 8 bytes @108
+            // The solver writes compressed proofs (or test rows) out-of-band into m_spads.
+            std::memcpy(&dev_nonce, m_input + m_nonce_offset, sizeof(dev_nonce));
             dev_sols = m_fn.gpu_zelhash(
               m_job_ref, m_height, m_input, m_input_len,
               static_cast<uint8_t*>(m_spads), &dev_nonce, m_target_bin,
@@ -357,19 +356,11 @@ void Core::Execute() {
         continue;
       }
       if (m_dev == DEV::ZELHASH_GPU) {
-        // M5 mining path: the solver writes the target-passing solutions out-of-band into m_spads as
-        // [count:u8][count * 52-byte compressed solution]. For each one, emit a result carrying the
-        // 53-byte compactSize-prefixed solution (0x34 || 52 B = 106 hex) the Flux/ZIP-301 submit needs.
+        // Each ZIP-301 share carries its CompactSize-prefixed compressed proof.
         const uint64_t prev_nonce = m_nonce64;
         if (dev_sols > 0 && m_target) {
-          const uint8_t* const sols = static_cast<const uint8_t*>(m_spads);
-          const unsigned count = sols[0];
-          for (unsigned i = 0; i < count; ++i) {
-            uint8_t submit[1 + 52];
-            submit[0] = 0x34;   // compactSize(52)
-            std::memcpy(submit + 1, sols + 1 + static_cast<size_t>(i) * 52, 52);
-            send_result(dev_nonce, m_nonce_bytes, m_output, nullptr, 32, nullptr, nullptr, submit, sizeof(submit));
-          }
+          const unsigned solution_size = m_algo_str == "zhash" ? 100 : 52;
+          send_equihash_results(dev_nonce, solution_size, true);
         }
 
         // Advance the low 8 bytes of the 32-byte header nonce (offset 108) as the search counter.
@@ -388,11 +379,7 @@ void Core::Execute() {
         // (offset 32) and the 104-byte solution (208 hex) the Beam JSON-RPC `solution` submit needs.
         const uint64_t prev_nonce = m_nonce64;
         if (dev_sols > 0 && m_target) {
-          const uint8_t* const sols = static_cast<const uint8_t*>(m_spads);
-          const unsigned count = sols[0];
-          for (unsigned i = 0; i < count; ++i)
-            send_result(dev_nonce, m_nonce_bytes, m_output, nullptr, 32, nullptr, nullptr,
-                        sols + 1 + static_cast<size_t>(i) * 104, 104);
+          send_equihash_results(dev_nonce, 104, false);
         }
 
         // Advance the 8-byte Beam nonce (offset 32) as the search counter. The nonce is written to the

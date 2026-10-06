@@ -275,10 +275,16 @@ std::map<std::string, std::string> algo_params(
                                "intensity", GpuUsm::both, 128, 6 * KiB, true); // 4.6 GiB DAG + 72 MiB light cache
     else if (gpu_karlsenhashv2_algos.contains(algo)) add_gpu_dataset_algo_dev(result_dev, 4608 * MiB, 6 * GiB, fishhash_intensity,
                                "intensity", GpuUsm::both, 128); // FishHashPlus: same 4.6 GiB DAG/intensity as fishhash
-    else if (gpu_zelhash_algos.contains(algo)) add_gpu_dataset_algo_dev(
-      result_dev, 1856 * MiB, 8 * GiB, mom_zelhash::zelhash_slot_capacity, "slots",
-      GpuUsm::both, 1024, 0, true
-    ); // The reported slot count and the solver use the same allocation-derived heuristic.
+    else if (gpu_zelhash_algos.contains(algo)) {
+      if (algo == "zhash")
+        add_gpu_dataset_algo_dev(
+          result_dev, 906 * MiB, 4 * GiB, [](const sycl::device&) { return 1u; },
+          "intensity", GpuUsm::device, 1024, 34 * KiB);
+      else add_gpu_dataset_algo_dev(
+        result_dev, 1856 * MiB, 8 * GiB, mom_zelhash::zelhash_slot_capacity, "slots",
+        GpuUsm::both, 1024, 0, true
+      ); // The reported slot count and the solver use the same allocation-derived heuristic.
+    }
     else if (gpu_beamhash3_algos.contains(algo)) add_gpu_dataset_algo_dev(
       result_dev, 3000 * MiB, 8 * GiB, mom_beamhash3::beamhash3_workgroup, "workgroup",
       GpuUsm::both, 128, 24580

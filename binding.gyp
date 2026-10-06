@@ -306,6 +306,7 @@
         "sycl/cn_gpu/cn_gpu.cpp",
         "sycl/kawpow/kawpow.cpp",
         "sycl/fishhash/fishhash.cpp",
+        "sycl/zhash/zhash.cpp",
         "sycl/zelhash/zelhash.cpp",
         "sycl/beamhash3/beamhash3.cpp"
       ],
@@ -352,6 +353,7 @@
                 "/clang:-fsycl-device-code-split=per_kernel",
                 "/DNDEBUG",
                 "/DPEARLHASH_ESIMD",
+                "/DMOM_ZHASH_INTEL_LATE_BUCKETS",
                 "/clang:-fno-strict-aliasing"
               ]
             },
@@ -419,7 +421,7 @@
             } ],
             [ "mom_sycl_impl=='dpcpp'", {
               "cflags+": [
-                "-std=c++20 -O3 -fsycl -fsycl-device-code-split=per_kernel -DNDEBUG -DPEARLHASH_ESIMD"
+                "-std=c++20 -O3 -fsycl -fsycl-device-code-split=per_kernel -DNDEBUG -DPEARLHASH_ESIMD -DMOM_ZHASH_INTEL_LATE_BUCKETS"
               ],
               "ldflags+": [ "-fsycl-device-code-split=per_kernel" ]
             } ]

@@ -177,7 +177,7 @@ module.exports = ({
   }
 
   function isZelHashAlgo(algo) {
-    return algo === "zelhash";
+    return algo === "zelhash" || algo === "zhash";
   }
 
   // A deterministic 140-byte Flux header for benching the Equihash 125,4 GPU solver (mainnet block
@@ -191,6 +191,13 @@ module.exports = ({
   "600000160000000000000000000000000000000000000000000000009cfd1100";
 
   // BeamHash III M4 keystone-shaped benchmark blob: prework(32) || nonce(8) || extranonce(4).
+  const ZHASH_BENCH_BLOB =
+    "0400000008e9694cc2120ec1b5733cc12687b609058eec4f7046a521ad1d1e3049b40000" +
+    "3e7420ed6f40659de0305ef9b7ec037f4380ed9848bc1c015691c90aa16ff393" +
+    "0000000000000000000000000000000000000000000000000000000000000000" +
+    "c9310d5874e0001f" +
+    "000000000000000000000000000000010b000000000000000000000000666666";
+
   const BEAMHASH3_BENCH_BLOB =
     "fc40996a518c221384c9f2542ca811cd66c4ccddb001ef40b9f9ba059c20352e" +
   "0100000000000000" +
@@ -349,7 +356,7 @@ module.exports = ({
       ? gpuTuning.parseDeviceEntry(devEntry, algo).tuning : {};
     const tuningEnv = gpuTuning.tuningEnvironment(
       algo, {...configuredTuning(algo), ...entryTuning});
-    if (algo !== "c29") {return Object.assign(env, tuningEnv);}
+    if (algo !== "c29" && algo !== "zhash") {return Object.assign(env, tuningEnv);}
 
     // C29 submits hundreds of short SYCL kernels per second; legacy non-immediate
     // Level Zero command lists avoid the one-core immediate-list path on Intel GPUs.
@@ -432,7 +439,14 @@ module.exports = ({
       if (!job.blob_hex || job.blob_hex.length !== 160)
       {job.blob_hex = "2a".repeat(32) + "52c9f84301000000" + "00".repeat(32) + "0000000000000000";}
     }
-    if (isZelHashAlgo(job.algo)) {
+    if (job.algo === "zhash") {
+      job.noncebytes = 8;
+      job.nonceoffset = 108;
+      if (!job.blob_hex || job.blob_hex.length !== 280) {job.blob_hex = ZHASH_BENCH_BLOB;}
+      job.blob_hex = job.blob_hex.slice(0, 216) + "00".repeat(8) + job.blob_hex.slice(232);
+      job.height = job.height || 400000;
+    }
+    if (job.algo === "zelhash") {
     // Equihash 125,4 (ZelHash/Flux): 140-byte Zcash header with a 32-byte nonce at offset 108. Bench
     // over the deterministic block-400000 header so each solve finds ~1.88 proofs and the rate is Sol/s.
       job.noncebytes = 8;

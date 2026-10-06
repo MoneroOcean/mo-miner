@@ -106,8 +106,14 @@ if [ "$is_compile" = 1 ] && [[ "$src" == sycl/*.cpp || "$src" == */sycl/*.cpp ]]
     log "SYCL   -> clang   : $src (spir64-only ESIMD)"
     exec "$CLANGXX" -fsycl-targets=spir64 "$@"
   fi
+  source_args=()
+  if [ -n "$intel_aot_device" ] && [[ "$src" == *sycl/zhash/zhash.cpp ]]; then
+    # Keep this AOT experiment on the accepted Intel B13 arena. The combined build normally uses
+    # the portable B12 layout because its one translation unit also targets NVIDIA.
+    source_args=(-DMOM_ZHASH_INTEL_LATE_BUCKETS)
+  fi
   log "SYCL   -> clang   : $src"
-  exec "$CLANGXX" -fsycl-targets="$TARGETS" "${intel_aot_args[@]}" "$@"
+  exec "$CLANGXX" -fsycl-targets="$TARGETS" "${intel_aot_args[@]}" "${source_args[@]}" "$@"
 fi
 
 [ "$is_compile" = 1 ] && log "HOST   -> icpx    : $src"

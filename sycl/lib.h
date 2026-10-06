@@ -116,6 +116,14 @@ MOM_SYCL_API int zelhash(
   unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
 );
 
+// ZHash / Equihash 144,5 (Bitcoin Gold): 140-byte Zcash-family header and 100-byte proof.
+// Uses the Equihash out-of-band solution ABI; pnonce points inside the header nonce field.
+MOM_SYCL_API int zhash(
+  unsigned job_id, uint32_t height, const uint8_t* input, unsigned input_size,
+  uint8_t* solution_out, uint64_t* pnonce, const uint8_t* target,
+  unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
+);
+
 // BeamHash III (Beam): Wagner k=5 bucket-collision solver. Same c29-like ABI as zelhash. Input
 // is the prework(32)||nonce(8)||extranonce(4) blob; the solver writes the 104-byte solution(s)
 // out-of-band into solution_out and returns the count. is_test runs the M1 gen-validation path.
