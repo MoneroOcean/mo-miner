@@ -3,13 +3,9 @@ static std::string gpu_tuning_entry(const std::string& dev_str, const char* cons
   return dev_str + "*[" + field + "=" + std::to_string(value) + "]";
 }
 
-static bool is_default_gpu_dev(const std::string& dev_str) {
-  return dev_str.starts_with("gpu");
-}
-
 template <typename Fn> static void for_each_default_gpu(Fn&& fn) {
   for (const auto& dev_pair : str2dev) {
-    if (is_default_gpu_dev(dev_pair.first))
+    if (dev_pair.first.starts_with("gpu"))
       fn(dev_pair.first, dev_pair.second);
   }
 }
@@ -189,10 +185,14 @@ constexpr uint64_t c30_minimum_local_memory = 32 * KiB;
 
 static bool gpu_usm_supported(const sycl::device& dev, const GpuUsm required) {
   switch (required) {
-  case GpuUsm::none: return true;
-  case GpuUsm::shared: return mom_has_usm_shared(dev);
-  case GpuUsm::device: return mom_has_usm_device(dev);
-  case GpuUsm::both: return mom_has_usm_shared(dev) && mom_has_usm_device(dev);
+  case GpuUsm::none:
+    return true;
+  case GpuUsm::shared:
+    return mom_has_usm_shared(dev);
+  case GpuUsm::device:
+    return mom_has_usm_device(dev);
+  case GpuUsm::both:
+    return mom_has_usm_shared(dev) && mom_has_usm_device(dev);
   }
   return false;
 }
@@ -260,11 +260,12 @@ std::map<std::string, std::string> algo_params(
     const std::set<std::string>& gpu_misc_algos, const std::set<std::string>& gpu_verthash_algos,
     const std::set<std::string>& gpu_zelhash_algos,
     const std::set<std::string>& gpu_beamhash3_algos) {
-  const bool need_sycl_devices =
-      !gpu_cn_algos.empty() || !gpu_c29_algos.empty() || !gpu_kawpow_algos.empty() ||
-      !gpu_etchash_algos.empty() || !gpu_autolykos2_algos.empty() || !gpu_pearlhash_algos.empty() ||
-      !gpu_fishhash_algos.empty() || !gpu_karlsenhashv2_algos.empty() || !gpu_misc_algos.empty() ||
-      !gpu_verthash_algos.empty() || !gpu_zelhash_algos.empty() || !gpu_beamhash3_algos.empty();
+  const auto gpu_algo_sets = {
+      &gpu_cn_algos, &gpu_c29_algos, &gpu_kawpow_algos, &gpu_etchash_algos,
+      &gpu_autolykos2_algos, &gpu_pearlhash_algos, &gpu_fishhash_algos, &gpu_karlsenhashv2_algos,
+      &gpu_misc_algos, &gpu_verthash_algos, &gpu_zelhash_algos, &gpu_beamhash3_algos};
+  const bool need_sycl_devices = std::any_of(
+      gpu_algo_sets.begin(), gpu_algo_sets.end(), [](const auto* algos) { return !algos->empty(); });
   if (need_sycl_devices && str2dev.empty())
     update_str2dev(true);
   const unsigned socket_count = std::max(1u, cpu_sockets);
@@ -274,18 +275,8 @@ std::map<std::string, std::string> algo_params(
   const unsigned l3cache = cpu_l3cache ? cpu_l3cache : thread_count * 2u * 1024u * 1024u;
   std::map<std::string, std::string> result;
   std::set<std::string> algos = cpu_algos;
-  algos.insert(gpu_cn_algos.begin(), gpu_cn_algos.end());
-  algos.insert(gpu_c29_algos.begin(), gpu_c29_algos.end());
-  algos.insert(gpu_kawpow_algos.begin(), gpu_kawpow_algos.end());
-  algos.insert(gpu_etchash_algos.begin(), gpu_etchash_algos.end());
-  algos.insert(gpu_autolykos2_algos.begin(), gpu_autolykos2_algos.end());
-  algos.insert(gpu_pearlhash_algos.begin(), gpu_pearlhash_algos.end());
-  algos.insert(gpu_fishhash_algos.begin(), gpu_fishhash_algos.end());
-  algos.insert(gpu_karlsenhashv2_algos.begin(), gpu_karlsenhashv2_algos.end());
-  algos.insert(gpu_misc_algos.begin(), gpu_misc_algos.end());
-  algos.insert(gpu_verthash_algos.begin(), gpu_verthash_algos.end());
-  algos.insert(gpu_zelhash_algos.begin(), gpu_zelhash_algos.end());
-  algos.insert(gpu_beamhash3_algos.begin(), gpu_beamhash3_algos.end());
+  for (const auto* gpu_algos : gpu_algo_sets)
+    algos.insert(gpu_algos->begin(), gpu_algos->end());
   for (const auto& algo : algos) {
     std::string result_dev;
     if (cpu_algos.contains(algo))

@@ -1,10 +1,13 @@
 node_modules/
 package-lock.json
 build/
+build-platforms-hold/
 deploy/
 .cache/
 coverage/
 test-artifacts/
+perf-evidence/
+/todo
 
 npm-debug.log*
 
@@ -20,6 +23,9 @@ x
 mom-*.tgz
 mom-*.zip
 *.tgz
+/verthash.dat
+/verthash.dat.tmp.*
+/mom-release-*/
 release*/
 
 test/

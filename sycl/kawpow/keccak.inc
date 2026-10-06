@@ -22,18 +22,16 @@ inline Uint2& operator^=(Uint2& a, const Uint2 b) {
 
 inline Uint2 rotl64_pair_dev(const Uint2 value, const unsigned shift) {
   const unsigned s = shift & 63U;
-  if (s == 0) return value;
+  if (s == 0)
+    return value;
   if (s < 32) {
-    return make_u2(
-      (value.x << s) | (value.y >> (32U - s)),
-      (value.y << s) | (value.x >> (32U - s))
-    );
+    return make_u2((value.x << s) | (value.y >> (32U - s)),
+                   (value.y << s) | (value.x >> (32U - s)));
   }
-  if (s == 32) return make_u2(value.y, value.x);
-  return make_u2(
-    (value.y << (s - 32U)) | (value.x >> (64U - s)),
-    (value.x << (s - 32U)) | (value.y >> (64U - s))
-  );
+  if (s == 32)
+    return make_u2(value.y, value.x);
+  return make_u2((value.y << (s - 32U)) | (value.x >> (64U - s)),
+                 (value.x << (s - 32U)) | (value.y >> (64U - s)));
 }
 
 inline void keccakf1600_pair_chi_dev(Uint2 st[25], const unsigned row, const Uint2 t[25]) {
@@ -46,19 +44,14 @@ inline void keccakf1600_pair_chi_dev(Uint2 st[25], const unsigned row, const Uin
 
 inline void keccakf1600_pair_round_dev(Uint2 st[25], const unsigned round) {
   static constexpr Uint2 rndc[24] = {
-    {0x00000001, 0x00000000}, {0x00008082, 0x00000000},
-    {0x0000808a, 0x80000000}, {0x80008000, 0x80000000},
-    {0x0000808b, 0x00000000}, {0x80000001, 0x00000000},
-    {0x80008081, 0x80000000}, {0x00008009, 0x80000000},
-    {0x0000008a, 0x00000000}, {0x00000088, 0x00000000},
-    {0x80008009, 0x00000000}, {0x8000000a, 0x00000000},
-    {0x8000808b, 0x00000000}, {0x0000008b, 0x80000000},
-    {0x00008089, 0x80000000}, {0x00008003, 0x80000000},
-    {0x00008002, 0x80000000}, {0x00000080, 0x80000000},
-    {0x0000800a, 0x00000000}, {0x8000000a, 0x80000000},
-    {0x80008081, 0x80000000}, {0x00008080, 0x80000000},
-    {0x80000001, 0x00000000}, {0x80008008, 0x80000000}
-  };
+      {0x00000001, 0x00000000}, {0x00008082, 0x00000000}, {0x0000808a, 0x80000000},
+      {0x80008000, 0x80000000}, {0x0000808b, 0x00000000}, {0x80000001, 0x00000000},
+      {0x80008081, 0x80000000}, {0x00008009, 0x80000000}, {0x0000008a, 0x00000000},
+      {0x00000088, 0x00000000}, {0x80008009, 0x00000000}, {0x8000000a, 0x00000000},
+      {0x8000808b, 0x00000000}, {0x0000008b, 0x80000000}, {0x00008089, 0x80000000},
+      {0x00008003, 0x80000000}, {0x00008002, 0x80000000}, {0x00000080, 0x80000000},
+      {0x0000800a, 0x00000000}, {0x8000000a, 0x80000000}, {0x80008081, 0x80000000},
+      {0x00008080, 0x80000000}, {0x80000001, 0x00000000}, {0x80008008, 0x80000000}};
 
   Uint2 t[25];
   Uint2 u;
@@ -70,15 +63,35 @@ inline void keccakf1600_pair_round_dev(Uint2 st[25], const unsigned round) {
   t[4] = st[4] ^ st[9] ^ st[14] ^ st[19] ^ st[24];
 
   u = t[4] ^ rotl64_pair_dev(t[1], 1);
-  st[0] ^= u; st[5] ^= u; st[10] ^= u; st[15] ^= u; st[20] ^= u;
+  st[0] ^= u;
+  st[5] ^= u;
+  st[10] ^= u;
+  st[15] ^= u;
+  st[20] ^= u;
   u = t[0] ^ rotl64_pair_dev(t[2], 1);
-  st[1] ^= u; st[6] ^= u; st[11] ^= u; st[16] ^= u; st[21] ^= u;
+  st[1] ^= u;
+  st[6] ^= u;
+  st[11] ^= u;
+  st[16] ^= u;
+  st[21] ^= u;
   u = t[1] ^ rotl64_pair_dev(t[3], 1);
-  st[2] ^= u; st[7] ^= u; st[12] ^= u; st[17] ^= u; st[22] ^= u;
+  st[2] ^= u;
+  st[7] ^= u;
+  st[12] ^= u;
+  st[17] ^= u;
+  st[22] ^= u;
   u = t[2] ^ rotl64_pair_dev(t[4], 1);
-  st[3] ^= u; st[8] ^= u; st[13] ^= u; st[18] ^= u; st[23] ^= u;
+  st[3] ^= u;
+  st[8] ^= u;
+  st[13] ^= u;
+  st[18] ^= u;
+  st[23] ^= u;
   u = t[3] ^ rotl64_pair_dev(t[0], 1);
-  st[4] ^= u; st[9] ^= u; st[14] ^= u; st[19] ^= u; st[24] ^= u;
+  st[4] ^= u;
+  st[9] ^= u;
+  st[14] ^= u;
+  st[19] ^= u;
+  st[24] ^= u;
 
   t[0] = st[0];
   t[10] = rotl64_pair_dev(st[1], 1);
@@ -121,7 +134,8 @@ inline void keccakf1600_pair_round_dev(Uint2 st[25], const unsigned round) {
 #if defined(__NVPTX__)
 // NVIDIA (nvptx device image): the 32-bit-pair permutation is correct and tuned for warps; unchanged from 0.7.0.
 inline void keccakf1600_pair_dev(Uint2 st[25]) {
-  for (unsigned round = 0; round < 24; ++round) keccakf1600_pair_round_dev(st, round);
+  for (unsigned round = 0; round < 24; ++round)
+    keccakf1600_pair_round_dev(st, round);
 }
 #else
 // SPIR-V device image (Intel IGC / AMD / CPU). IGC 2.36.x silently miscompiles the Uint2 32-bit-pair
@@ -132,13 +146,15 @@ inline void keccakf1600_pair_dev(Uint2 st[25]) {
 // only in DAG generation; the per-nonce seal uses keccak_f800, unaffected.) Clean 2.28.4-good ->
 // 2.36.3-broken regression; see ~/bug_report5 (sibling of intel-graphics-compiler#414).
 inline __attribute__((noinline)) void keccakf1600_pair_dev(Uint2 st[25]) {
-  for (unsigned round = 0; round < 24; ++round) keccakf1600_pair_round_dev(st, round);
+  for (unsigned round = 0; round < 24; ++round)
+    keccakf1600_pair_round_dev(st, round);
 }
 #endif
 
 inline void keccak_512_words_dev(uint32_t words[NODE_WORDS]) {
   Uint2 st[25]{};
-  for (unsigned i = 0; i < 8; ++i) st[i] = make_u2(words[i * 2], words[i * 2 + 1]);
+  for (unsigned i = 0; i < 8; ++i)
+    st[i] = make_u2(words[i * 2], words[i * 2 + 1]);
   st[8] = make_u2(0x00000001, 0x80000000);
   keccakf1600_pair_dev(st);
   for (unsigned i = 0; i < 8; ++i) {
@@ -148,20 +164,15 @@ inline void keccak_512_words_dev(uint32_t words[NODE_WORDS]) {
 }
 
 inline void keccak_f800_round_dev(uint32_t st[25], const unsigned round) {
-  static constexpr uint32_t rndc[22] = {
-    0x00000001, 0x00008082, 0x0000808a, 0x80008000, 0x0000808b, 0x80000001,
-    0x80008081, 0x00008009, 0x0000008a, 0x00000088, 0x80008009, 0x8000000a,
-    0x8000808b, 0x0000008b, 0x00008089, 0x00008003, 0x00008002, 0x00000080,
-    0x0000800a, 0x8000000a, 0x80008081, 0x00008080
-  };
-  static constexpr uint32_t rotc[24] = {
-    1, 3, 6, 10, 15, 21, 28, 36, 45, 55, 2, 14,
-    27, 41, 56, 8, 25, 43, 62, 18, 39, 61, 20, 44
-  };
-  static constexpr uint32_t piln[24] = {
-    10, 7, 11, 17, 18, 3, 5, 16, 8, 21, 24, 4,
-    15, 23, 19, 13, 12, 2, 20, 14, 22, 9, 6, 1
-  };
+  static constexpr uint32_t rndc[22] = {0x00000001, 0x00008082, 0x0000808a, 0x80008000, 0x0000808b,
+                                        0x80000001, 0x80008081, 0x00008009, 0x0000008a, 0x00000088,
+                                        0x80008009, 0x8000000a, 0x8000808b, 0x0000008b, 0x00008089,
+                                        0x00008003, 0x00008002, 0x00000080, 0x0000800a, 0x8000000a,
+                                        0x80008081, 0x00008080};
+  static constexpr uint32_t rotc[24] = {1,  3,  6,  10, 15, 21, 28, 36, 45, 55, 2,  14,
+                                        27, 41, 56, 8,  25, 43, 62, 18, 39, 61, 20, 44};
+  static constexpr uint32_t piln[24] = {10, 7,  11, 17, 18, 3, 5,  16, 8,  21, 24, 4,
+                                        15, 23, 19, 13, 12, 2, 20, 14, 22, 9,  6,  1};
 
   uint32_t bc[5];
   for (unsigned i = 0; i < 5; ++i) {
@@ -169,7 +180,8 @@ inline void keccak_f800_round_dev(uint32_t st[25], const unsigned round) {
   }
   for (unsigned i = 0; i < 5; ++i) {
     const uint32_t t = bc[(i + 4) % 5] ^ rotl32_dev(bc[(i + 1) % 5], 1);
-    for (unsigned j = 0; j < 25; j += 5) st[j + i] ^= t;
+    for (unsigned j = 0; j < 25; j += 5)
+      st[j + i] ^= t;
   }
 
   uint32_t t = st[1];
@@ -181,21 +193,25 @@ inline void keccak_f800_round_dev(uint32_t st[25], const unsigned round) {
   }
 
   for (unsigned j = 0; j < 25; j += 5) {
-    for (unsigned i = 0; i < 5; ++i) bc[i] = st[j + i];
-    for (unsigned i = 0; i < 5; ++i) st[j + i] ^= (~bc[(i + 1) % 5]) & bc[(i + 2) % 5];
+    for (unsigned i = 0; i < 5; ++i)
+      bc[i] = st[j + i];
+    for (unsigned i = 0; i < 5; ++i)
+      st[j + i] ^= (~bc[(i + 1) % 5]) & bc[(i + 2) % 5];
   }
   st[0] ^= rndc[round];
 }
 
 inline void keccak_f800_dev(uint32_t st[25]) {
-  for (unsigned round = 0; round < 22; ++round) keccak_f800_round_dev(st, round);
+  for (unsigned round = 0; round < 22; ++round)
+    keccak_f800_round_dev(st, round);
 }
 
 // REGS is the active per-lane register count (KawPoW 32, meowpow 16); defaults to KAWPOW_REGS so the
 // existing variants compile unchanged. `mix` is sized at the 32-reg max by the caller; only the first
 // REGS entries are seeded/used.
-template<unsigned REGS = KAWPOW_REGS>
-MO_KAW_AINLINE void fill_mix_dev(const uint32_t seed0, const uint32_t seed1, const uint32_t lane, uint32_t* mix) {
+template <unsigned REGS = KAWPOW_REGS>
+MO_KAW_AINLINE void fill_mix_dev(const uint32_t seed0, const uint32_t seed1, const uint32_t lane,
+                                 uint32_t* mix) {
   uint32_t fnv_hash = FNV_OFFSET_BASIS;
   Kiss99 st{};
   st.z = fnv1a(fnv_hash, seed0);
@@ -203,5 +219,6 @@ MO_KAW_AINLINE void fill_mix_dev(const uint32_t seed0, const uint32_t seed1, con
   st.jsr = fnv1a(fnv_hash, lane);
   st.jcong = fnv1a(fnv_hash, lane);
 
-  for (unsigned i = 0; i < REGS; ++i) mix[i] = kiss99(st);
+  for (unsigned i = 0; i < REGS; ++i)
+    mix[i] = kiss99(st);
 }

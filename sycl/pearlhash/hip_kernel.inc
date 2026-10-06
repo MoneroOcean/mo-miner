@@ -43,17 +43,25 @@ struct PearlHashResult {
 DEV uint32_t rotr32(uint32_t x, int n) { return (x >> n) | (x << (32 - n)); }
 
 DEV void b3_g(uint32_t* s, int a, int b, int c, int d, uint32_t mx, uint32_t my) {
-  s[a] = s[a] + s[b] + mx; s[d] = rotr32(s[d] ^ s[a], 16);
-  s[c] = s[c] + s[d];      s[b] = rotr32(s[b] ^ s[c], 12);
-  s[a] = s[a] + s[b] + my; s[d] = rotr32(s[d] ^ s[a], 8);
-  s[c] = s[c] + s[d];      s[b] = rotr32(s[b] ^ s[c], 7);
+  s[a] = s[a] + s[b] + mx;
+  s[d] = rotr32(s[d] ^ s[a], 16);
+  s[c] = s[c] + s[d];
+  s[b] = rotr32(s[b] ^ s[c], 12);
+  s[a] = s[a] + s[b] + my;
+  s[d] = rotr32(s[d] ^ s[a], 8);
+  s[c] = s[c] + s[d];
+  s[b] = rotr32(s[b] ^ s[c], 7);
 }
 
 DEV void b3_round(uint32_t* s, const uint32_t* m) {
-  b3_g(s, 0, 4, 8, 12, m[0], m[1]);  b3_g(s, 1, 5, 9, 13, m[2], m[3]);
-  b3_g(s, 2, 6, 10, 14, m[4], m[5]); b3_g(s, 3, 7, 11, 15, m[6], m[7]);
-  b3_g(s, 0, 5, 10, 15, m[8], m[9]); b3_g(s, 1, 6, 11, 12, m[10], m[11]);
-  b3_g(s, 2, 7, 8, 13, m[12], m[13]); b3_g(s, 3, 4, 9, 14, m[14], m[15]);
+  b3_g(s, 0, 4, 8, 12, m[0], m[1]);
+  b3_g(s, 1, 5, 9, 13, m[2], m[3]);
+  b3_g(s, 2, 6, 10, 14, m[4], m[5]);
+  b3_g(s, 3, 7, 11, 15, m[6], m[7]);
+  b3_g(s, 0, 5, 10, 15, m[8], m[9]);
+  b3_g(s, 1, 6, 11, 12, m[10], m[11]);
+  b3_g(s, 2, 7, 8, 13, m[12], m[13]);
+  b3_g(s, 3, 4, 9, 14, m[14], m[15]);
 }
 
 // PearlHash's jackpot input is exactly one 64-byte block. Specializing the general BLAKE3 routine to
@@ -70,20 +78,28 @@ DEV void b3_keyed_64(const uint32_t block[16], const uint8_t* key, uint32_t out[
                     0u, 0u, 64u, 27u}; // CHUNK_START | CHUNK_END | ROOT | KEYED_HASH
   uint32_t m[16];
   #pragma unroll
-  for (int i = 0; i < 16; ++i) m[i] = block[i];
+  for (int i = 0; i < 16; ++i) {
+    m[i] = block[i];
+  }
   #pragma unroll
   for (int r = 0; r < 7; ++r) {
     b3_round(s, m);
     if (r != 6) {
       uint32_t p[16];
       #pragma unroll
-      for (int i = 0; i < 16; ++i) p[i] = m[perm[i]];
+      for (int i = 0; i < 16; ++i) {
+        p[i] = m[perm[i]];
+      }
       #pragma unroll
-      for (int i = 0; i < 16; ++i) m[i] = p[i];
+      for (int i = 0; i < 16; ++i) {
+        m[i] = p[i];
+      }
     }
   }
   #pragma unroll
-  for (int i = 0; i < 8; ++i) out[i] = s[i] ^ s[i + 8];
+  for (int i = 0; i < 8; ++i) {
+    out[i] = s[i] ^ s[i + 8];
+  }
 }
 
 DEV bool tile_wins(const uint32_t tr[16], const uint8_t* key, const uint8_t* target,
@@ -100,7 +116,9 @@ DEV bool tile_wins(const uint32_t tr[16], const uint8_t* key, const uint8_t* tar
 DEV uint32_t tile_mix(uint32_t row, uint32_t col, const uint32_t tr[16]) {
   uint32_t h = row * 2654435761u + col * 2246822519u + 0x9e3779b9u;
   #pragma unroll
-  for (int w = 0; w < 16; ++w) h = (h ^ tr[w]) * 16777619u + (uint32_t)w;
+  for (int w = 0; w < 16; ++w) {
+    h = (h ^ tr[w]) * 16777619u + (uint32_t)w;
+  }
   return h;
 }
 
@@ -174,9 +192,13 @@ void pearlhash_wmma_transcript(const int8_t* A, const int8_t* B, uint32_t* trans
         for (int j = 0; j < PEARLHASH_EC; ++j) {
           uint32_t x = 0;
           #pragma unroll
-          for (int e = 0; e < 8; ++e) x ^= (uint32_t)acc[i][j][e];
+          for (int e = 0; e < 8; ++e) {
+            x ^= (uint32_t)acc[i][j][e];
+          }
           #pragma unroll
-          for (int d = 1; d < 32; d <<= 1) x ^= __shfl_xor(x, d, 32);
+          for (int d = 1; d < 32; d <<= 1) {
+            x ^= __shfl_xor(x, d, 32);
+          }
           if (lane == rc) {
             // Wave-major output keeps the 8 transcripts produced by one wave contiguous. The hash
             // kernel below applies the same wave-to-matrix mapping when it records row and column.
@@ -198,14 +220,18 @@ void pearlhash_hash_search(const uint32_t* transcript, const uint8_t* key, const
   if (tile >= tile_count) return;
   uint32_t tr[16];
   #pragma unroll
-  for (int w = 0; w < 16; ++w) tr[w] = transcript[tile * 16u + (uint32_t)w];
+  for (int w = 0; w < 16; ++w) {
+    tr[w] = transcript[tile * 16u + (uint32_t)w];
+  }
   const uint32_t wave = tile / (PEARLHASH_ER * PEARLHASH_EC);
   const int local_tile = (int)(tile % (PEARLHASH_ER * PEARLHASH_EC));
   int row_group, col_group;
   wave_groups(wave, m, n, &row_group, &col_group);
   const uint32_t row = (uint32_t)(row_group * PEARLHASH_ER + local_tile / PEARLHASH_EC) * 16u;
   const uint32_t col = (uint32_t)(col_group * PEARLHASH_EC + local_tile % PEARLHASH_EC) * 16u;
-  if (debug_checksum) atomicAdd(&result->chk, tile_mix(row, col, tr));
+  if (debug_checksum) {
+    atomicAdd(&result->chk, tile_mix(row, col, tr));
+  }
   uint32_t jackpot[8];
   if (tile_wins(tr, key, target, jackpot) && atomicExch(&result->found, 1) == 0) {
     result->seed = seed;

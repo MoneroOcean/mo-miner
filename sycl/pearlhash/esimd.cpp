@@ -1,4 +1,4 @@
-// Copyright GNU GPLv3 (c) 2023-2025 MoneroOcean <support@moneroocean.stream>
+// Copyright GNU GPLv3 (c) 2023-2026 MoneroOcean <support@moneroocean.stream>
 //
 // Standalone spir64-only ESIMD PearlHash kernel TU for the combined (Intel + NVIDIA) build.
 //

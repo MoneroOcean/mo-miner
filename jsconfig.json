@@ -1,0 +1,40 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "allowUnreachableCode": false,
+    "allowUnusedLabels": false,
+    "checkJs": true,
+    "exactOptionalPropertyTypes": true,
+    "forceConsistentCasingInFileNames": true,
+    "lib": ["ES2024"],
+    "maxNodeModuleJsDepth": 0,
+    "module": "Node16",
+    "moduleDetection": "force",
+    "moduleResolution": "Node16",
+    "noEmit": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "noUncheckedIndexedAccess": true,
+    "noUncheckedSideEffectImports": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": false,
+    "strict": true,
+    "target": "ES2024",
+    "types": ["node"]
+  },
+  "include": [
+    "*.js",
+    "eslint.config.mjs",
+    "helper/**/*.js",
+    "miner/**/*.js",
+    "pool/**/*.js",
+    "scripts/**/*.js",
+    "tests/**/*.js",
+    "types/**/*.d.ts"
+  ],
+  "exclude": ["build", "node_modules", "xmrig"]
+}

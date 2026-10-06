@@ -12,22 +12,25 @@ namespace mom_zelhash {
 
 // ---- 125,4 parameters (fluxd equihash.{h,cpp}) ----
 constexpr unsigned N = 125, K = 4;
-constexpr unsigned COLLISION_BIT_LENGTH  = N / (K + 1);              // 25
+constexpr unsigned COLLISION_BIT_LENGTH = N / (K + 1);                      // 25
 constexpr unsigned COLLISION_BYTE_LENGTH = (COLLISION_BIT_LENGTH + 7) >> 3; // 4
-constexpr unsigned HASH_LENGTH           = (K + 1) * COLLISION_BYTE_LENGTH; // 20  (== EQUIHASH_ROW_LEN)
-constexpr unsigned INDICES_PER_HASH      = 512 / N;                 // 4
-constexpr unsigned HASH_OUTPUT           = INDICES_PER_HASH * ((N + 7) >> 3); // 64
-constexpr unsigned SUB_ELEMENT_BYTES     = (N + 7) >> 3;            // 16
-constexpr uint64_t HEADER_LEN            = 140;
-[[maybe_unused]] constexpr uint64_t NUM_ENTRIES = 1ull << (COLLISION_BIT_LENGTH + 1); // 2^26 (M2 rounds)
-static_assert(HASH_LENGTH == EQUIHASH_ROW_LEN, "row length must match the host-side dump buffer width");
+constexpr unsigned HASH_LENGTH = (K + 1) * COLLISION_BYTE_LENGTH;   // 20  (== EQUIHASH_ROW_LEN)
+constexpr unsigned INDICES_PER_HASH = 512 / N;                      // 4
+constexpr unsigned HASH_OUTPUT = INDICES_PER_HASH * ((N + 7) >> 3); // 64
+constexpr unsigned SUB_ELEMENT_BYTES = (N + 7) >> 3;                // 16
+constexpr uint64_t HEADER_LEN = 140;
+[[maybe_unused]] constexpr uint64_t NUM_ENTRIES = 1ull
+                                                  << (COLLISION_BIT_LENGTH + 1); // 2^26 (M2 rounds)
+static_assert(HASH_LENGTH == EQUIHASH_ROW_LEN,
+              "row length must match the host-side dump buffer width");
 
 constexpr unsigned ceil_div_u64(uint64_t value, unsigned divisor) {
   return static_cast<unsigned>((value + divisor - 1u) / divisor);
 }
 constexpr unsigned ceil_sqrt(unsigned value) {
   unsigned root = 0;
-  while (static_cast<uint64_t>(root) * root < value) ++root;
+  while (static_cast<uint64_t>(root) * root < value)
+    ++root;
   return root;
 }
 constexpr unsigned round_up(unsigned value, unsigned alignment) {
@@ -55,33 +58,33 @@ constexpr unsigned bucket_capacity(unsigned buckets, unsigned deviations, unsign
 // Four materialized levels hold the gen output and round-0..2 survivors. Round 3 filters its final
 // field in-place and emits only zero pairs, so the otherwise 0.27--0.53-GiB level-4 stream is absent.
 #if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
-constexpr unsigned RESTBITS  = 10;
-constexpr unsigned BUCKBITS  = COLLISION_BIT_LENGTH - RESTBITS;     // 15
-constexpr unsigned NBUCKETS  = 1u << BUCKBITS;                      // 32768
-constexpr unsigned NRESTBINS = 1u << RESTBITS;                      // 1024 exact bins per bucket
+constexpr unsigned RESTBITS = 10;
+constexpr unsigned BUCKBITS = COLLISION_BIT_LENGTH - RESTBITS; // 15
+constexpr unsigned NBUCKETS = 1u << BUCKBITS;                  // 32768
+constexpr unsigned NRESTBINS = 1u << RESTBITS;                 // 1024 exact bins per bucket
 constexpr unsigned MAX_SLOTS = bucket_capacity(NBUCKETS, 6u, 64u);
-constexpr unsigned ROUND_WG   = 1024;
+constexpr unsigned ROUND_WG = 1024;
 #elif !defined(MOM_SYCL_HAS_CUDA) && !defined(MOM_SYCL_HAS_HIP) && !defined(MOM_SYCL_ADAPTIVECPP)
-constexpr unsigned RESTBITS  = 11;
-constexpr unsigned BUCKBITS  = COLLISION_BIT_LENGTH - RESTBITS;     // 14
-constexpr unsigned NBUCKETS  = 1u << BUCKBITS;                      // 16384
-constexpr unsigned NRESTBINS = 1u << RESTBITS;                      // 2048 exact bins per super-bucket
+constexpr unsigned RESTBITS = 11;
+constexpr unsigned BUCKBITS = COLLISION_BIT_LENGTH - RESTBITS; // 14
+constexpr unsigned NBUCKETS = 1u << BUCKBITS;                  // 16384
+constexpr unsigned NRESTBINS = 1u << RESTBITS;                 // 2048 exact bins per super-bucket
 constexpr unsigned MAX_SLOTS = bucket_capacity(NBUCKETS, 6u, 16u);
-constexpr unsigned ROUND_WG  = 1024;
+constexpr unsigned ROUND_WG = 1024;
 #elif defined(MOM_SYCL_HAS_CUDA)
 // Eight fixed records per 1024-lane work-group make the collision input fully unrollable. A mildly
 // larger, non-power-of-two bucket count keeps the same total capacity while reducing the per-bucket
 // cap from 8704 to exactly 8192. The quotient is the exact-bin id and the remainder selects a bucket.
-constexpr unsigned RESTBITS  = 12;                                  // packed metadata width
-constexpr unsigned NBUCKETS  = 8759;
-constexpr unsigned NRESTBINS = 3831;                                // ceil(2^25 / 8759)
+constexpr unsigned RESTBITS = 12; // packed metadata width
+constexpr unsigned NBUCKETS = 8759;
+constexpr unsigned NRESTBINS = 3831; // ceil(2^25 / 8759)
 constexpr unsigned MAX_SLOTS = bucket_capacity(NBUCKETS, 6u, 16u);
-constexpr unsigned ROUND_WG  = 1024;
+constexpr unsigned ROUND_WG = 1024;
 #else
-constexpr unsigned RESTBITS  = 12;
-constexpr unsigned BUCKBITS  = COLLISION_BIT_LENGTH - RESTBITS;     // 13
-constexpr unsigned NBUCKETS  = 1u << BUCKBITS;                      // 8192
-constexpr unsigned NRESTBINS = 1u << RESTBITS;                      // 4096 exact bins per super-bucket
+constexpr unsigned RESTBITS = 12;
+constexpr unsigned BUCKBITS = COLLISION_BIT_LENGTH - RESTBITS; // 13
+constexpr unsigned NBUCKETS = 1u << BUCKBITS;                  // 8192
+constexpr unsigned NRESTBINS = 1u << RESTBITS;                 // 4096 exact bins per super-bucket
 #if defined(MOM_SYCL_HAS_HIP)
 // Three standard deviations preserve virtually every generated row while avoiding the large,
 // power-of-two-related strides that concentrate progressive records in too few cache sets.
@@ -89,7 +92,7 @@ constexpr unsigned MAX_SLOTS = bucket_capacity(NBUCKETS, 3u, 16u, true);
 #else
 constexpr unsigned MAX_SLOTS = bucket_capacity(NBUCKETS, 5u, 64u);
 #endif
-constexpr unsigned ROUND_WG  = 1024;
+constexpr unsigned ROUND_WG = 1024;
 #endif
 #if !defined(MOM_SYCL_HAS_CUDA) && !defined(MOM_SYCL_HAS_HIP) && !defined(MOM_SYCL_ADAPTIVECPP)
 // Intel Xe benefits from walking exact-bin chains directly in SLM. Splitting the two early rounds
@@ -98,18 +101,32 @@ constexpr bool ROUND_DIRECT_CHAINS = true;
 #else
 constexpr bool ROUND_DIRECT_CHAINS = false;
 #endif
-constexpr unsigned NLEVELS   = K + 1;                              // five progressive field counts
-constexpr unsigned NSTORED_LEVELS = K;                             // final zero pairs replace level 4
+constexpr unsigned NLEVELS = K + 1;    // five progressive field counts
+constexpr unsigned NSTORED_LEVELS = K; // final zero pairs replace level 4
 static_assert(MAX_SLOTS < (1u << 16));
-inline uint32_t stored_rest(uint32_t word) { return word & ((1u << RESTBITS) - 1u); }
+inline uint32_t stored_rest(uint32_t word) {
+  return word & ((1u << RESTBITS) - 1u);
+}
 #if defined(MOM_SYCL_HAS_CUDA)
-inline uint32_t field_rest(uint32_t field) { return (field & 0x1ffffffu) / NBUCKETS; }
-inline uint32_t field_bucket(uint32_t field) { return (field & 0x1ffffffu) % NBUCKETS; }
-inline uint32_t field_from_parts(uint32_t bucket, uint32_t rest) { return rest * NBUCKETS + bucket; }
+inline uint32_t field_rest(uint32_t field) {
+  return (field & 0x1ffffffu) / NBUCKETS;
+}
+inline uint32_t field_bucket(uint32_t field) {
+  return (field & 0x1ffffffu) % NBUCKETS;
+}
+inline uint32_t field_from_parts(uint32_t bucket, uint32_t rest) {
+  return rest * NBUCKETS + bucket;
+}
 #else
-inline uint32_t field_rest(uint32_t field) { return field & (NRESTBINS - 1u); }
-inline uint32_t field_bucket(uint32_t field) { return field >> RESTBITS; }
-inline uint32_t field_from_parts(uint32_t bucket, uint32_t rest) { return (bucket << RESTBITS) | rest; }
+inline uint32_t field_rest(uint32_t field) {
+  return field & (NRESTBINS - 1u);
+}
+inline uint32_t field_bucket(uint32_t field) {
+  return field >> RESTBITS;
+}
+inline uint32_t field_from_parts(uint32_t bucket, uint32_t rest) {
+  return (bucket << RESTBITS) | rest;
+}
 #endif
 template <unsigned R, bool GPU_COMPACT> inline uint32_t collision_rest(const uint32_t* g) {
 #if defined(MOM_SYCL_HAS_CUDA)
@@ -131,21 +148,24 @@ template <unsigned R, bool GPU_COMPACT> inline uint32_t collision_rest(const uin
 // CUDA keeps aligned 16-byte records through level 2 and the natural 8-byte level 3 used by the
 // final collision round. Physical 16-slot tiling below retains aligned transactions without the
 // cache-alias penalty previously seen with dense late records in bucket-major order.
-constexpr unsigned level_fields(unsigned L) { return NLEVELS - L; }            // 5,4,3,2,1
+constexpr unsigned level_fields(unsigned L) {
+  return NLEVELS - L;
+} // 5,4,3,2,1
 #if !defined(MOM_SYCL_HAS_CUDA) && !defined(MOM_SYCL_HAS_HIP) && !defined(MOM_SYCL_ADAPTIVECPP)
-constexpr unsigned LEVEL_U32_TBL[NLEVELS]    = { 5, 4, 3, 2, 1 };
+constexpr unsigned LEVEL_U32_TBL[NLEVELS] = {5, 4, 3, 2, 1};
 #else
-constexpr unsigned LEVEL_U32_TBL[NLEVELS]    = { 5, 5, 3, 2, 1 };
+constexpr unsigned LEVEL_U32_TBL[NLEVELS] = {5, 5, 3, 2, 1};
 #endif
 // The combined DPC++ binary carries both compile-time shapes and selects by the queue's actual backend.
 constexpr unsigned level_u32(unsigned L, bool gpu_compact = false) {
 #if defined(MOM_EQ_ALIGNED_GPU_RECORDS)
 #if defined(MOM_SYCL_HAS_CUDA)
-  constexpr unsigned CUDA_U32_TBL[NLEVELS] = { 4, 4, 4, 2, 2 };
+  constexpr unsigned CUDA_U32_TBL[NLEVELS] = {4, 4, 4, 2, 2};
 #else
-  constexpr unsigned CUDA_U32_TBL[NLEVELS] = { 4, 4, 4, 4, 2 };
+  constexpr unsigned CUDA_U32_TBL[NLEVELS] = {4, 4, 4, 4, 2};
 #endif
-  if (gpu_compact) return CUDA_U32_TBL[L];
+  if (gpu_compact)
+    return CUDA_U32_TBL[L];
 #endif
   return gpu_compact && L == 1 ? 4u : LEVEL_U32_TBL[L];
 }
@@ -175,13 +195,18 @@ template <unsigned R, bool GPU_COMPACT>
 inline uint32_t load_follower(const uint32_t* g, unsigned k) {
   if constexpr (R == 0) {
 #if defined(MOM_SYCL_HAS_CUDA)
-    if constexpr (GPU_COMPACT) return g[k] & 0x1ffffffu;
+    if constexpr (GPU_COMPACT)
+      return g[k] & 0x1ffffffu;
 #endif
     switch (k) {
-      case 0: return ((g[0] >> 25) & 0x7fu) | ((g[1] & 0x3ffffu) << 7);
-      case 1: return (g[1] >> 18) | ((g[2] & 0x7ffu) << 14);
-      case 2: return (g[2] >> 11) | ((g[3] & 0xfu) << 21);
-      default: return (g[3] >> 4) & 0x01ffffffu;
+    case 0:
+      return ((g[0] >> 25) & 0x7fu) | ((g[1] & 0x3ffffu) << 7);
+    case 1:
+      return (g[1] >> 18) | ((g[2] & 0x7ffu) << 14);
+    case 2:
+      return (g[2] >> 11) | ((g[3] & 0xfu) << 21);
+    default:
+      return (g[3] >> 4) & 0x01ffffffu;
     }
   } else {
     return g[k + 1u];
@@ -198,7 +223,10 @@ inline void store_intel_u32x4(uint32_t* p, uint32_t x, uint32_t y, uint32_t z, u
 }
 #else
 inline void store_intel_u32x4(uint32_t* p, uint32_t x, uint32_t y, uint32_t z, uint32_t w) {
-  p[0] = x; p[1] = y; p[2] = z; p[3] = w;
+  p[0] = x;
+  p[1] = y;
+  p[2] = z;
+  p[3] = w;
 }
 #endif
 #if defined(MOM_EQ_ALIGNED_GPU_RECORDS)
@@ -216,14 +244,11 @@ inline void dense_l0_store_compact(uint32_t* o, const uint32_t* f) {
   // The physical bucket already carries most of f0. Keep only its exact-bin quotient in spare high
   // bits and store f1..f4 directly, so collision rounds avoid unpacking cross-word 25-bit fields.
   const uint32_t rest = field_rest(f[0]);
-  store_aligned_u32x4(o, f[1] | ((rest & 0x7fu) << 25),
-                         f[2] | ((rest >> 7) << 25), f[3], f[4]);
+  store_aligned_u32x4(o, f[1] | ((rest & 0x7fu) << 25), f[2] | ((rest >> 7) << 25), f[3], f[4]);
 #else
-  store_aligned_u32x4(o,
-    f[0] | ((f[1] & 0x7fu) << 25),
-    (f[1] >> 7) | ((f[2] & 0x3fffu) << 18),
-    (f[2] >> 14) | ((f[3] & 0x1fffffu) << 11),
-    (f[3] >> 21) | ((f[4] & 0x01ffffffu) << 4));
+  store_aligned_u32x4(o, f[0] | ((f[1] & 0x7fu) << 25), (f[1] >> 7) | ((f[2] & 0x3fffu) << 18),
+                      (f[2] >> 14) | ((f[3] & 0x1fffffu) << 11),
+                      (f[3] >> 21) | ((f[4] & 0x01ffffffu) << 4));
 #endif
 }
 #endif
@@ -234,20 +259,20 @@ inline void dense_l0_store_compact(uint32_t* o, const uint32_t* f) {
 // (per-index finalize). All scalar / IGC-safe.
 // ===========================================================================================
 static constexpr uint64_t B2B_IV[8] = {
-  0x6a09e667f3bcc908ull, 0xbb67ae8584caa73bull, 0x3c6ef372fe94f82bull, 0xa54ff53a5f1d36f1ull,
-  0x510e527fade682d1ull, 0x9b05688c2b3e6c1full, 0x1f83d9abfb41bd6bull, 0x5be0cd19137e2179ull,
+    0x6a09e667f3bcc908ull, 0xbb67ae8584caa73bull, 0x3c6ef372fe94f82bull, 0xa54ff53a5f1d36f1ull,
+    0x510e527fade682d1ull, 0x9b05688c2b3e6c1full, 0x1f83d9abfb41bd6bull, 0x5be0cd19137e2179ull,
 };
 static constexpr uint8_t B2B_SIGMA[12][16] = {
-  { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15},
-  {14,10, 4, 8, 9,15,13, 6, 1,12, 0, 2,11, 7, 5, 3},
-  {11, 8,12, 0, 5, 2,15,13,10,14, 3, 6, 7, 1, 9, 4},
-  { 7, 9, 3, 1,13,12,11,14, 2, 6, 5,10, 4, 0,15, 8},
-  { 9, 0, 5, 7, 2, 4,10,15,14, 1,11,12, 6, 8, 3,13},
-  { 2,12, 6,10, 0,11, 8, 3, 4,13, 7, 5,15,14, 1, 9},
-  {12, 5, 1,15,14,13, 4,10, 0, 7, 6, 3, 9, 2, 8,11},
-  {13,11, 7,14,12, 1, 3, 9, 5, 0,15, 4, 8, 6, 2,10},
-  { 6,15,14, 9,11, 3, 0, 8,12, 2,13, 7, 1, 4,10, 5},
-  {10, 2, 8, 4, 7, 6, 1, 5,15,11, 9,14, 3,12,13, 0},
-  { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15},
-  {14,10, 4, 8, 9,15,13, 6, 1,12, 0, 2,11, 7, 5, 3},
+    {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15},
+    {14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3},
+    {11, 8, 12, 0, 5, 2, 15, 13, 10, 14, 3, 6, 7, 1, 9, 4},
+    {7, 9, 3, 1, 13, 12, 11, 14, 2, 6, 5, 10, 4, 0, 15, 8},
+    {9, 0, 5, 7, 2, 4, 10, 15, 14, 1, 11, 12, 6, 8, 3, 13},
+    {2, 12, 6, 10, 0, 11, 8, 3, 4, 13, 7, 5, 15, 14, 1, 9},
+    {12, 5, 1, 15, 14, 13, 4, 10, 0, 7, 6, 3, 9, 2, 8, 11},
+    {13, 11, 7, 14, 12, 1, 3, 9, 5, 0, 15, 4, 8, 6, 2, 10},
+    {6, 15, 14, 9, 11, 3, 0, 8, 12, 2, 13, 7, 1, 4, 10, 5},
+    {10, 2, 8, 4, 7, 6, 1, 5, 15, 11, 9, 14, 3, 12, 13, 0},
+    {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15},
+    {14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3},
 };

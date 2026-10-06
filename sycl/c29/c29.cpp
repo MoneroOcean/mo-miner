@@ -1,7 +1,17 @@
-// Copyright GNU GPLv3 (c) 2025-2025 MoneroOcean <support@moneroocean.stream>
+// Copyright GNU GPLv3 (c) 2025-2026 MoneroOcean <support@moneroocean.stream>
 
 // SYCL c29 miner prototype based on Grin GPU Miner (https://github.com/swap-dev/SwapReferenceMiner)
 // OpenCL mining code by Jiri Photon Vadura and John Tromp
+//
+// Performance/portability notes:
+// - Intel seed/trim profiles are dominated by bucket scatter atomics and repeated graph trimming.
+// - Intel uses 42 trim pairs and at most a 4 MiB handoff to the dense host cycle finder.
+//   Shallower trimming can overflow that capacity and lose proofs; 42 pairs is not a fundamental
+//   minimum. Portable builds retain 80 pairs and a 1 MiB handoff.
+// - The B580 comparison uses a local NVIDIA peer because no controlled Intel reference miner is
+//   available. That identifies optimization headroom, not an established hardware ceiling.
+//   The lolMiner/RTX 5060 Ti peer target is 7.40 g/s, reproduced in three local runs at 150 W.
+// - Keep the complete portable SYCL path available; vendor-specific changes must be capability-gated.
 #include <sycl/sycl.hpp>
 #include <algorithm>
 #include <atomic>

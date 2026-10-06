@@ -3,7 +3,7 @@
 // Built with intel/llvm DPC++ for nvptx64 (-fsycl-targets=nvptx64-nvidia-cuda --cuda-gpu-arch=sm_89),
 // where joint_matrix maps to the L4's int8 Tensor Cores (wmma.mma.sync IMMA). NVIDIA constraints
 // differ from Intel XMX: fixed WMMA shape m16n16k16 (one 16x16 hash tile == one accumulator), only
-// row_major/col_major layouts (NO ext_intel_packed VNNI -- compute_ab writes B' row-major here), and
+// row_major/col_major layouts (NO ext_intel_packed VNNI; compute_ab writes B' column-major), and
 // a 32-lane warp per matrix op. One sub-group (warp) owns one 16x16 hash tile; the cumulative tile is
 // XOR-folded into the transcript every `rank` columns via joint_matrix_apply (per-lane, in-register)
 // + a sub-group XOR reduce -- no SLM readback (the bottleneck that capped Intel joint_matrix). The
@@ -33,13 +33,14 @@ constexpr int pearlhash_cuda_block_floor = 16;
 //   C(16x8 ,row): c[0]=C[gid][tid*2], c[1]=C[gid][tid*2+1], c[2]=C[gid+8][tid*2], c[3]=C[gid+8][tid*2+1]
 static inline void mma_m16n8k32_s8(int32_t c[4], const uint32_t a[4], const uint32_t b[2]) {
 #if defined(__NVPTX__) && (!defined(MOM_SYCL_ADAPTIVECPP) || defined(__CUDA_ARCH__))
-  asm volatile(
-    "mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 "
-    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
-    : "+r"(c[0]), "+r"(c[1]), "+r"(c[2]), "+r"(c[3])
-    : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]));
+  asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 "
+               "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
+               : "+r"(c[0]), "+r"(c[1]), "+r"(c[2]), "+r"(c[3])
+               : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]));
 #else
-  (void)c; (void)a; (void)b;   // host pass: never executed
+  (void)c;
+  (void)a;
+  (void)b; // host pass: never executed
 #endif
 }
 static inline uint32_t ld_u32(const int8_t* __restrict__ p) {
@@ -68,9 +69,10 @@ static inline uint32_t cu_smem_addr(const void* p) {
 }
 static inline void cu_cp_async16(uint32_t smem, const int8_t* g) {
 #if defined(__NVPTX__) && (!defined(MOM_SYCL_ADAPTIVECPP) || defined(__CUDA_ARCH__))
-  asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" :: "r"(smem), "l"(g));
+  asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" ::"r"(smem), "l"(g));
 #else
-  (void)smem; (void)g;
+  (void)smem;
+  (void)g;
 #endif
 }
 static inline void cu_cp_commit() {
@@ -80,28 +82,34 @@ static inline void cu_cp_commit() {
 }
 template <int N> static inline void cu_cp_wait() {
 #if defined(__NVPTX__) && (!defined(MOM_SYCL_ADAPTIVECPP) || defined(__CUDA_ARCH__))
-  asm volatile("cp.async.wait_group %0;\n" :: "n"(N));
+  asm volatile("cp.async.wait_group %0;\n" ::"n"(N));
 #endif
 }
 static inline void cu_ldmatrix_x4(uint32_t out[4], uint32_t smem) {
 #if defined(__NVPTX__) && (!defined(MOM_SYCL_ADAPTIVECPP) || defined(__CUDA_ARCH__))
   asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];\n"
-    : "=r"(out[0]), "=r"(out[1]), "=r"(out[2]), "=r"(out[3]) : "r"(smem));
+               : "=r"(out[0]), "=r"(out[1]), "=r"(out[2]), "=r"(out[3])
+               : "r"(smem));
 #else
-  (void)out; (void)smem;
+  (void)out;
+  (void)smem;
 #endif
 }
 static inline void cu_ldmatrix_x2(uint32_t out[2], uint32_t smem) {
 #if defined(__NVPTX__) && (!defined(MOM_SYCL_ADAPTIVECPP) || defined(__CUDA_ARCH__))
   asm volatile("ldmatrix.sync.aligned.m8n8.x2.shared.b16 {%0,%1}, [%2];\n"
-    : "=r"(out[0]), "=r"(out[1]) : "r"(smem));
+               : "=r"(out[0]), "=r"(out[1])
+               : "r"(smem));
 #else
-  (void)out; (void)smem;
+  (void)out;
+  (void)smem;
 #endif
 }
 // CUTE Swizzle<3,4,3>: XOR logical byte-address bits 7..9 into bits 4..6. The low four
 // bits stay unchanged, so every cp.async destination remains naturally 16-byte aligned.
-static inline int cu_swizzle_128(int off) { return off ^ ((off & 0x380) >> 3); }
+static inline int cu_swizzle_128(int off) {
+  return off ^ ((off & 0x380) >> 3);
+}
 
 // DEFAULT NVIDIA path: one warp per ER x EC grid of 16x16 hash tiles, mma.sync m16n8k32 int8, operands
 // from global (L2-resident via the BLK super-block swizzle), accumulators resident in registers
@@ -113,7 +121,8 @@ static bool cuda_sycl_search_supports_shape(const int m, const int n) {
 }
 
 template <bool Debug>
-static void search_cuda_direct(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k, int rank) {
+static void search_cuda_direct(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n,
+                               int k, int rank) {
   constexpr int SG = 32, ER = pearlhash_cuda_er, EC = pearlhash_cuda_ec;
   auto B = bb;
   const int tilesH = m / (16 * ER), tilesW = n / (16 * EC);
@@ -134,9 +143,12 @@ static void search_cuda_direct(sycl::queue& q, const Buffers& bb, uint32_t seed,
   } else {
     const size_t l2 = q.get_device().get_info<sycl::info::device::global_mem_cache_size>();
     const size_t cache_budget = l2 <= (size_t(32) << 20) ? l2 / 2 : l2;
-    const size_t per_blk = (size_t)16 * k * (ER + EC);   // operand bytes per unit of BLK
+    const size_t per_blk = (size_t)16 * k * (ER + EC); // operand bytes per unit of BLK
     for (int cand = 128; cand > pearlhash_cuda_block_floor; cand >>= 1)
-      if ((size_t)cand * per_blk <= cache_budget && (tilesW % cand) == 0 && (tilesH % cand) == 0) { BLK = cand; break; }
+      if ((size_t)cand * per_blk <= cache_budget && (tilesW % cand) == 0 && (tilesH % cand) == 0) {
+        BLK = cand;
+        break;
+      }
   }
   const size_t nWarp = (size_t)tilesH * tilesW;
   const bool blocked = BLK > 1 && (tilesW % BLK) == 0 && (tilesH % BLK) == 0;
@@ -164,56 +176,83 @@ static void search_cuda_direct(sycl::queue& q, const Buffers& bb, uint32_t seed,
           const int8_t* __restrict__ Bp = B.Bp; // A' row-major (i*k+c), B' col-major (j*k+c)
           int32_t acc[ER * EC * 2][4];
 #pragma unroll
-      for (int i = 0; i < ER * EC * 2; i++) { acc[i][0] = acc[i][1] = acc[i][2] = acc[i][3] = 0; }
-      if (lane == 0)
-#pragma unroll
-        for (int i = 0; i < ER * EC * 16; i++) trbuf[i] = 0;
-      int rc = 0;
-      for (int p = 0; p < k; p += 32) {
-        uint32_t ra[ER][4];
-#pragma unroll
-        for (int r = 0; r < ER; r++) {
-          const size_t r0 = (size_t)(rowBase + r * 16 + gid) * k + p, r8 = (size_t)(rowBase + r * 16 + gid + 8) * k + p;
-          ra[r][0] = ld_u32(Ap + r0 + tid * 4);      ra[r][1] = ld_u32(Ap + r8 + tid * 4);
-          ra[r][2] = ld_u32(Ap + r0 + 16 + tid * 4); ra[r][3] = ld_u32(Ap + r8 + 16 + tid * 4);
-        }
-#pragma unroll
-        for (int c = 0; c < EC; c++)
-#pragma unroll
-          for (int hh = 0; hh < 2; hh++) {
-            const size_t cb = (size_t)(colBase + c * 16 + hh * 8 + gid) * k + p;   // col-major B' column
-            uint32_t rb[2] = { ld_u32(Bp + cb + tid * 4), ld_u32(Bp + cb + 16 + tid * 4) };
-#pragma unroll
-            for (int r = 0; r < ER; r++) mma_m16n8k32_s8(acc[(r * EC + c) * 2 + hh], ra[r], rb);
+          for (int i = 0; i < ER * EC * 2; i++) {
+            acc[i][0] = acc[i][1] = acc[i][2] = acc[i][3] = 0;
           }
-        if ((p + 32) % rank == 0) {     // rank-chunk boundary: XOR-fold cumulative tiles (register read)
+          if (lane == 0)
 #pragma unroll
-          for (int t = 0; t < ER * EC; t++) {
-            uint32_t part = (uint32_t)acc[t * 2][0] ^ (uint32_t)acc[t * 2][1] ^ (uint32_t)acc[t * 2][2] ^ (uint32_t)acc[t * 2][3]
-                          ^ (uint32_t)acc[t * 2 + 1][0] ^ (uint32_t)acc[t * 2 + 1][1] ^ (uint32_t)acc[t * 2 + 1][2] ^ (uint32_t)acc[t * 2 + 1][3];
-            part = sycl::reduce_over_group(sg, part, sycl::bit_xor<uint32_t>{});
-            if (lane == 0) trbuf[t * 16 + rc % 16] = rotl(trbuf[t * 16 + rc % 16], 13) ^ part;
-          }
-          rc++;
-        }
-      }
-      if (lane == 0) {
-        for (int r = 0; r < ER; r++) for (int c = 0; c < EC; c++) {
-          const int t = r * EC + c;
-          uint32_t full[16];
+            for (int i = 0; i < ER * EC * 16; i++)
+              trbuf[i] = 0;
+          int rc = 0;
+          for (int p = 0; p < k; p += 32) {
+            uint32_t ra[ER][4];
 #pragma unroll
-          for (int s = 0; s < 16; s++) full[s] = trbuf[t * 16 + s];
-          if constexpr (Debug) {
-            sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device, sycl::access::address_space::global_space> checksum(B.result->chk);
-            checksum.fetch_add(tile_mix(static_cast<uint32_t>(rowBase + r * 16), static_cast<uint32_t>(colBase + c * 16), full));
+            for (int r = 0; r < ER; r++) {
+              const size_t r0 = (size_t)(rowBase + r * 16 + gid) * k + p,
+                           r8 = (size_t)(rowBase + r * 16 + gid + 8) * k + p;
+              ra[r][0] = ld_u32(Ap + r0 + tid * 4);
+              ra[r][1] = ld_u32(Ap + r8 + tid * 4);
+              ra[r][2] = ld_u32(Ap + r0 + 16 + tid * 4);
+              ra[r][3] = ld_u32(Ap + r8 + 16 + tid * 4);
+            }
+#pragma unroll
+            for (int c = 0; c < EC; c++)
+#pragma unroll
+              for (int hh = 0; hh < 2; hh++) {
+                const size_t cb =
+                    (size_t)(colBase + c * 16 + hh * 8 + gid) * k + p; // col-major B' column
+                uint32_t rb[2] = {ld_u32(Bp + cb + tid * 4), ld_u32(Bp + cb + 16 + tid * 4)};
+#pragma unroll
+                for (int r = 0; r < ER; r++)
+                  mma_m16n8k32_s8(acc[(r * EC + c) * 2 + hh], ra[r], rb);
+              }
+            if ((p + 32) % rank ==
+                0) { // rank-chunk boundary: XOR-fold cumulative tiles (register read)
+#pragma unroll
+              for (int t = 0; t < ER * EC; t++) {
+                uint32_t part = (uint32_t)acc[t * 2][0] ^ (uint32_t)acc[t * 2][1] ^
+                                (uint32_t)acc[t * 2][2] ^ (uint32_t)acc[t * 2][3] ^
+                                (uint32_t)acc[t * 2 + 1][0] ^ (uint32_t)acc[t * 2 + 1][1] ^
+                                (uint32_t)acc[t * 2 + 1][2] ^ (uint32_t)acc[t * 2 + 1][3];
+                part = sycl::reduce_over_group(sg, part, sycl::bit_xor<uint32_t>{});
+                if (lane == 0)
+                  trbuf[t * 16 + rc % 16] = rotl(trbuf[t * 16 + rc % 16], 13) ^ part;
+              }
+              rc++;
+            }
           }
-          uint8_t jackpot[32];
-          if (!tile_wins(full, B.cA, B.target, jackpot)) continue;
-          sycl::atomic_ref<int, sycl::memory_order::relaxed, sycl::memory_scope::device, sycl::access::address_space::global_space> at(B.result->found);
-          if (at.exchange(1) == 0) { B.result->seed = seed; B.result->row = (uint32_t)(rowBase + r * 16); B.result->col = (uint32_t)(colBase + c * 16); for (int i = 0; i < 32; ++i) B.result->jackpot[i] = jackpot[i]; }
-        }
-      }
-    });
+          if (lane == 0) {
+            for (int r = 0; r < ER; r++)
+              for (int c = 0; c < EC; c++) {
+                const int t = r * EC + c;
+                uint32_t full[16];
+#pragma unroll
+                for (int s = 0; s < 16; s++)
+                  full[s] = trbuf[t * 16 + s];
+                if constexpr (Debug) {
+                  sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed,
+                                   sycl::memory_scope::device,
+                                   sycl::access::address_space::global_space>
+                      checksum(B.result->chk);
+                  checksum.fetch_add(tile_mix(static_cast<uint32_t>(rowBase + r * 16),
+                                              static_cast<uint32_t>(colBase + c * 16), full));
+                }
+                uint8_t jackpot[32];
+                if (!tile_wins(full, B.cA, B.target, jackpot))
+                  continue;
+                sycl::atomic_ref<int, sycl::memory_order::relaxed, sycl::memory_scope::device,
+                                 sycl::access::address_space::global_space>
+                    at(B.result->found);
+                if (at.exchange(1) == 0) {
+                  B.result->seed = seed;
+                  B.result->row = (uint32_t)(rowBase + r * 16);
+                  B.result->col = (uint32_t)(colBase + c * 16);
+                  for (int i = 0; i < 32; ++i)
+                    B.result->jackpot[i] = jackpot[i];
+                }
+              }
+          }
+        });
   });
 }
 // Blackwell path: SMEM-staged + cp.async double-buffered mma.sync pipeline.
@@ -229,7 +268,8 @@ constexpr int pearlhash_cuda_tile_columns = 4;
 // K staged per SMEM chunk; multiple of 16 for cp.async and 32 for the matrix K dimension.
 constexpr int pearlhash_cuda_block_k = 128;
 template <bool Debug>
-static void search_cuda_pipe(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k, int rank) {
+static void search_cuda_pipe(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k,
+                             int rank) {
   constexpr int WM = pearlhash_cuda_warp_rows, WN = pearlhash_cuda_warp_columns,
                 TM = pearlhash_cuda_tile_rows, TN = pearlhash_cuda_tile_columns,
                 BK = pearlhash_cuda_block_k;
@@ -260,83 +300,119 @@ static void search_cuda_pipe(sycl::queue& q, const Buffers& bb, uint32_t seed, i
           uint32_t tr[8] = {};
           int32_t acc[TM * TN * 2][4];
 #pragma unroll
-      for (int i = 0; i < TM * TN * 2; i++) { acc[i][0] = acc[i][1] = acc[i][2] = acc[i][3] = 0; }
-      const int warpRow = wM * TM * 16, warpCol = wN * TN * 16;
-      auto load_chunk = [&](int buf, int p) {     // async-copy k-chunk at offset p into SMEM buffer buf
-        int8_t* aDst = Asp + buf * AB; int8_t* bDst = Bsp + buf * BB;
-        for (int ci = tid; ci < A16; ci += TBSZ) { const int mm = (ci * 16) / BK, kk = (ci * 16) % BK;
-          cu_cp_async16(cu_smem_addr(aDst + cu_swizzle_128(mm * BK + kk)), Ap + (size_t)(rowBlock + mm) * k + p + kk); }
-        for (int ci = tid; ci < B16; ci += TBSZ) { const int nn = (ci * 16) / BK, kk = (ci * 16) % BK;
-          cu_cp_async16(cu_smem_addr(bDst + cu_swizzle_128(nn * BK + kk)), Bp + (size_t)(colBlock + nn) * k + p + kk); }
-        cu_cp_commit();
-      };
-      load_chunk(0, 0);     // prologue
-      int rc = 0;
-      for (int c = 0; c < nChunks; c++) {
-        const int buf = c & 1;
-        if (c + 1 < nChunks) {
-          load_chunk((c + 1) & 1, (c + 1) * BK);
-          cu_cp_wait<1>(); // current copy done; keep the next prefetch in flight
-        } else {
-          cu_cp_wait<0>(); // final copy has no next prefetch to keep in flight
-        }
-        sycl::group_barrier(grp);     // make the cp.async writes visible to all warps
-        const int8_t* Ab = Asp + buf * AB; const int8_t* Bb = Bsp + buf * BB;
-#pragma unroll
-        for (int ks = 0; ks < BK; ks += 32) {
-          uint32_t ra[TM][4], rb[TN][2][2];
-#pragma unroll
-          for (int mt = 0; mt < TM; mt++) {
-            const int logical = (warpRow + mt * 16 + (lane & 15)) * BK + ks + (lane >> 4) * 16;
-            cu_ldmatrix_x4(ra[mt], cu_smem_addr(Ab + cu_swizzle_128(logical)));
+          for (int i = 0; i < TM * TN * 2; i++) {
+            acc[i][0] = acc[i][1] = acc[i][2] = acc[i][3] = 0;
           }
-#pragma unroll
-          for (int nt = 0; nt < TN; nt++)
-#pragma unroll
-            for (int hh = 0; hh < 2; hh++) {
-              const int logical = (warpCol + nt * 16 + hh * 8 + (lane & 7)) * BK + ks + ((lane >> 3) & 1) * 16;
-              cu_ldmatrix_x2(rb[nt][hh], cu_smem_addr(Bb + cu_swizzle_128(logical)));
+          const int warpRow = wM * TM * 16, warpCol = wN * TN * 16;
+          auto load_chunk = [&](int buf,
+                                int p) { // async-copy k-chunk at offset p into SMEM buffer buf
+            int8_t* aDst = Asp + buf * AB;
+            int8_t* bDst = Bsp + buf * BB;
+            for (int ci = tid; ci < A16; ci += TBSZ) {
+              const int mm = (ci * 16) / BK, kk = (ci * 16) % BK;
+              cu_cp_async16(cu_smem_addr(aDst + cu_swizzle_128(mm * BK + kk)),
+                            Ap + (size_t)(rowBlock + mm) * k + p + kk);
             }
-#pragma unroll
-          for (int nt = 0; nt < TN; nt++)
-#pragma unroll
-            for (int hh = 0; hh < 2; hh++)
-#pragma unroll
-              for (int mt = 0; mt < TM; mt++)
-                mma_m16n8k32_s8(acc[(mt * TN + nt) * 2 + hh], ra[mt], rb[nt][hh]);
-          if (((c * BK + ks) + 32) % rank == 0) {     // cumulative k hit a rank boundary -> fold
-#pragma unroll
-            for (int t = 0; t < TM * TN; t++) {
-              uint32_t part = (uint32_t)acc[t*2][0] ^ (uint32_t)acc[t*2][1] ^ (uint32_t)acc[t*2][2] ^ (uint32_t)acc[t*2][3]
-                            ^ (uint32_t)acc[t*2+1][0] ^ (uint32_t)acc[t*2+1][1] ^ (uint32_t)acc[t*2+1][2] ^ (uint32_t)acc[t*2+1][3];
-              part = sycl::reduce_over_group(it.get_sub_group(), part, sycl::bit_xor<uint32_t>{});
-              if (lane == t * 2 + (rc & 1))
-                tr[(rc & 15) >> 1] = rotl(tr[(rc & 15) >> 1], 13) ^ part;
+            for (int ci = tid; ci < B16; ci += TBSZ) {
+              const int nn = (ci * 16) / BK, kk = (ci * 16) % BK;
+              cu_cp_async16(cu_smem_addr(bDst + cu_swizzle_128(nn * BK + kk)),
+                            Bp + (size_t)(colBlock + nn) * k + p + kk);
             }
-            rc++;
+            cu_cp_commit();
+          };
+          load_chunk(0, 0); // prologue
+          int rc = 0;
+          for (int c = 0; c < nChunks; c++) {
+            const int buf = c & 1;
+            if (c + 1 < nChunks) {
+              load_chunk((c + 1) & 1, (c + 1) * BK); // prefetch next chunk (overlaps the mma below)
+              cu_cp_wait<1>(); // current copy done; keep the next prefetch in flight
+            } else {
+              cu_cp_wait<0>(); // final copy has no next prefetch to keep in flight
+            }
+            sycl::group_barrier(grp); // make the cp.async writes visible to all warps
+            const int8_t* Ab = Asp + buf * AB;
+            const int8_t* Bb = Bsp + buf * BB;
+#pragma unroll
+            for (int ks = 0; ks < BK; ks += 32) {
+              uint32_t ra[TM][4], rb[TN][2][2];
+#pragma unroll
+              for (int mt = 0; mt < TM; mt++) {
+                // Each group of eight ldmatrix providers supplies one 8x8 b16 matrix: low/high A
+                // rows, then those rows in the next 16-byte K half.
+                const int logical = (warpRow + mt * 16 + (lane & 15)) * BK + ks + (lane >> 4) * 16;
+                cu_ldmatrix_x4(ra[mt], cu_smem_addr(Ab + cu_swizzle_128(logical)));
+              }
+#pragma unroll
+              for (int nt = 0; nt < TN; nt++)
+#pragma unroll
+                for (int hh = 0; hh < 2; hh++) {
+                  // B uses eight columns per 16-byte K half.
+                  const int logical =
+                      (warpCol + nt * 16 + hh * 8 + (lane & 7)) * BK + ks + ((lane >> 3) & 1) * 16;
+                  cu_ldmatrix_x2(rb[nt][hh], cu_smem_addr(Bb + cu_swizzle_128(logical)));
+                }
+#pragma unroll
+              for (int nt = 0; nt < TN; nt++)
+#pragma unroll
+                for (int hh = 0; hh < 2; hh++)
+#pragma unroll
+                  for (int mt = 0; mt < TM; mt++)
+                    mma_m16n8k32_s8(acc[(mt * TN + nt) * 2 + hh], ra[mt], rb[nt][hh]);
+              if (((c * BK + ks) + 32) % rank == 0) { // cumulative k hit a rank boundary -> fold
+#pragma unroll
+                for (int t = 0; t < TM * TN; t++) {
+                  uint32_t part = (uint32_t)acc[t * 2][0] ^ (uint32_t)acc[t * 2][1] ^
+                                  (uint32_t)acc[t * 2][2] ^ (uint32_t)acc[t * 2][3] ^
+                                  (uint32_t)acc[t * 2 + 1][0] ^ (uint32_t)acc[t * 2 + 1][1] ^
+                                  (uint32_t)acc[t * 2 + 1][2] ^ (uint32_t)acc[t * 2 + 1][3];
+                  part =
+                      sycl::reduce_over_group(it.get_sub_group(), part, sycl::bit_xor<uint32_t>{});
+                  if (lane == t * 2 + (rc & 1))
+                    tr[(rc & 15) >> 1] = rotl(tr[(rc & 15) >> 1], 13) ^ part;
+                }
+                rc++;
+              }
+            }
+            sycl::group_barrier(
+                grp); // mma done reading this buffer before it is reused two chunks later
           }
-        }
-        sycl::group_barrier(grp);   // mma done reading this buffer before it is reused two chunks later
-      }
-      uint32_t other[8];
+          uint32_t other[8];
 #pragma unroll
-      for (int i = 0; i < 8; i++) other[i] = sycl::select_from_group(it.get_sub_group(), tr[i], lane ^ 1);
-      if ((lane & 1) == 0) {
-        const int t = lane >> 1, mt = t / TN, nt = t % TN;
-        uint32_t full[16];
+          for (int i = 0; i < 8; i++)
+            other[i] = sycl::select_from_group(it.get_sub_group(), tr[i], lane ^ 1);
+          if ((lane & 1) == 0) {
+            const int t = lane >> 1, mt = t / TN, nt = t % TN;
+            uint32_t full[16];
 #pragma unroll
-        for (int i = 0; i < 8; i++) { full[i * 2] = tr[i]; full[i * 2 + 1] = other[i]; }
-        if constexpr (Debug) {
-          sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device, sycl::access::address_space::global_space> checksum(B.result->chk);
-          checksum.fetch_add(tile_mix(static_cast<uint32_t>(rowBlock + warpRow + mt * 16), static_cast<uint32_t>(colBlock + warpCol + nt * 16), full));
-        }
-        uint8_t jackpot[32];
-        if (tile_wins(full, B.cA, B.target, jackpot)) {
-          sycl::atomic_ref<int, sycl::memory_order::relaxed, sycl::memory_scope::device, sycl::access::address_space::global_space> at(B.result->found);
-          if (at.exchange(1) == 0) { B.result->seed = seed; B.result->row = (uint32_t)(rowBlock + warpRow + mt * 16); B.result->col = (uint32_t)(colBlock + warpCol + nt * 16); for (int i = 0; i < 32; ++i) B.result->jackpot[i] = jackpot[i]; }
-        }
-      }
-    });
+            for (int i = 0; i < 8; i++) {
+              full[i * 2] = tr[i];
+              full[i * 2 + 1] = other[i];
+            }
+            if constexpr (Debug) {
+              sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed,
+                               sycl::memory_scope::device,
+                               sycl::access::address_space::global_space>
+                  checksum(B.result->chk);
+              checksum.fetch_add(tile_mix(static_cast<uint32_t>(rowBlock + warpRow + mt * 16),
+                                          static_cast<uint32_t>(colBlock + warpCol + nt * 16),
+                                          full));
+            }
+            uint8_t jackpot[32];
+            if (tile_wins(full, B.cA, B.target, jackpot)) {
+              sycl::atomic_ref<int, sycl::memory_order::relaxed, sycl::memory_scope::device,
+                               sycl::access::address_space::global_space>
+                  at(B.result->found);
+              if (at.exchange(1) == 0) {
+                B.result->seed = seed;
+                B.result->row = (uint32_t)(rowBlock + warpRow + mt * 16);
+                B.result->col = (uint32_t)(colBlock + warpCol + nt * 16);
+                for (int i = 0; i < 32; ++i)
+                  B.result->jackpot[i] = jackpot[i];
+              }
+            }
+          }
+        });
   });
 }
 [[maybe_unused]] static void search_cuda(sycl::queue& q, const Buffers& b, uint32_t seed, int m,
@@ -358,4 +434,4 @@ static void search_cuda_pipe(sycl::queue& q, const Buffers& bb, uint32_t seed, i
     search_cuda_direct<false>(q, b, seed, m, n, k, rank);
   }
 }
-#endif  // MOM_SYCL_HAS_CUDA
+#endif // MOM_SYCL_HAS_CUDA

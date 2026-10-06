@@ -19,8 +19,6 @@ static size_t checked_chunk_count(const size_t bytes, const char* const name) {
   return chunks;
 }
 
-
-
 // --- IGC multi-accumulator codegen workaround -------------------------------
 // Holding several joint_matrix accumulator fragments live in a C-array and
 // iterating over that array with a plain `for` / `#pragma unroll` miscompiles on
@@ -36,30 +34,54 @@ static size_t checked_chunk_count(const size_t bytes, const char* const name) {
 // NTILE; MU<N>(f) below is exactly that and is used for every loop that touches
 // the accumulator-fragment array. Do NOT turn these back into a `for` loop.
 template <class T, T... I, class F>
-static inline void mu_impl(std::integer_sequence<T, I...>, F&& f) { (f(std::integral_constant<T, I>{}), ...); }
-template <int N, class F>
-static inline void MU(F&& f) { mu_impl(std::make_integer_sequence<int, N>{}, static_cast<F&&>(f)); }
+static inline void mu_impl(std::integer_sequence<T, I...>, F&& f) {
+  (f(std::integral_constant<T, I>{}), ...);
+}
+template <int N, class F> static inline void MU(F&& f) {
+  mu_impl(std::make_integer_sequence<int, N>{}, static_cast<F&&>(f));
+}
 
 // counter-based RNG (lowbias32) -- the deterministic A/B matrix generator
 static inline int8_t gv(uint32_t seed, uint32_t idx) {
   uint32_t x = seed + idx * 0x9e3779b9u;
-  x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16;
+  x ^= x >> 16;
+  x *= 0x7feb352du;
+  x ^= x >> 15;
+  x *= 0x846ca68bu;
+  x ^= x >> 16;
   return (int8_t)((x & 127) - 64);
 }
-static inline uint32_t mulhi(uint32_t a, uint32_t b) { return (uint32_t)(((uint64_t)a * (uint64_t)b) >> 32); }
-static inline uint32_t rotl(uint32_t x, int n) { return (x << n) | (x >> (32 - n)); }
-static inline uint32_t rd_u32le(const uint8_t* p) { return pearlhash_b3::le32(p); }
+static inline uint32_t mulhi(uint32_t a, uint32_t b) {
+  return (uint32_t)(((uint64_t)a * (uint64_t)b) >> 32);
+}
+static inline uint32_t rotl(uint32_t x, int n) {
+  return (x << n) | (x >> (32 - n));
+}
+static inline uint32_t rd_u32le(const uint8_t* p) {
+  return pearlhash_b3::le32(p);
+}
 // Sparse-noise index pair for one k-column: first index `f` in [0,rank), second `se != f` (a
 // permutation step within the rank). Same mapping for both the A and B noise tables.
 static inline void perm_pair(uint32_t u, int rank, int32_t& f, int32_t& se) {
-  uint32_t a = u & (rank - 1); f = (int32_t)a; se = (int32_t)(a ^ (1 + mulhi(rank - 1, u)));
+  uint32_t a = u & (rank - 1);
+  f = (int32_t)a;
+  se = (int32_t)(a ^ (1 + mulhi(rank - 1, u)));
 }
-static inline void mk_seed(uint8_t out[32], char c0) { const char* s = c0 == 'A' ? "A_tensor" : "B_tensor"; for (int i = 0; i < 32; i++) out[i] = i < 8 ? (uint8_t)s[i] : 0; }
-static inline void dev_randHash(int index, const uint8_t* seed32, const uint8_t* key32, int prepend, uint8_t out[32]) {
-  uint8_t mb[64]{};   // (1+index) LE at word `prepend`, seed32 at bytes 32..63, rest zero
+static inline void mk_seed(uint8_t out[32], char c0) {
+  const char* s = c0 == 'A' ? "A_tensor" : "B_tensor";
+  for (int i = 0; i < 32; i++)
+    out[i] = i < 8 ? (uint8_t)s[i] : 0;
+}
+static inline void dev_randHash(int index, const uint8_t* seed32, const uint8_t* key32, int prepend,
+                                uint8_t out[32]) {
+  uint8_t mb[64]{}; // (1+index) LE at word `prepend`, seed32 at bytes 32..63, rest zero
   uint32_t v = (uint32_t)(1 + index);
-  mb[prepend*4]=(uint8_t)v; mb[prepend*4+1]=(uint8_t)(v>>8); mb[prepend*4+2]=(uint8_t)(v>>16); mb[prepend*4+3]=(uint8_t)(v>>24);
-  for (int i = 0; i < 32; i++) mb[32+i] = seed32[i];
+  mb[prepend * 4] = (uint8_t)v;
+  mb[prepend * 4 + 1] = (uint8_t)(v >> 8);
+  mb[prepend * 4 + 2] = (uint8_t)(v >> 16);
+  mb[prepend * 4 + 3] = (uint8_t)(v >> 24);
+  for (int i = 0; i < 32; i++)
+    mb[32 + i] = seed32[i];
   b3(mb, 64, key32, out);
 }
 
@@ -72,9 +94,8 @@ struct Result {
   uint8_t jackpot[32];
 };
 
-
 struct Buffers {
-  int8_t *EAL, *EBR, *EBRt, *Ap, *Bp;       // A'/B' (noised, search inputs); A/B regenerated from RNG
+  int8_t *EAL, *EBR, *EBRt, *Ap, *Bp; // A'/B' (noised, search inputs); A/B regenerated from RNG
   int8_t *ApWmma, *BpWmma;
   int32_t *EARp1, *EARp2, *EBLq1, *EBLq2;
   uint8_t *cA, *cB, *key, *target, *CVA, *CVB;
@@ -87,15 +108,20 @@ template <bool DirectLayout>
 static void k_noise_ebr(sycl::queue& q, const Buffers& B, int n, int rank, int blocks) {
   q.parallel_for(sycl::range<1>(blocks), [=](sycl::id<1> id) MOM_SYCL_KERNEL_ARGS_RESTRICT {
     const int i = (int)id[0];
-    uint8_t sd[32]; mk_seed(sd, 'B');
-    uint8_t h[32]; dev_randHash(i, sd, B.cB, 0, h);
+    uint8_t sd[32];
+    mk_seed(sd, 'B');
+    uint8_t h[32];
+    dev_randHash(i, sd, B.cB, 0, h);
     const int total = n * rank;
     for (int j = 0; j < 32; ++j) {
       const int o = i * 32 + j;
-      if (o >= total) break;
+      if (o >= total)
+        break;
       const int8_t value = (int8_t)((h[j] & 63) - 32);
-      if constexpr (DirectLayout) B.EBR[(o % rank) * n + o / rank] = value;
-      else B.EBRt[o] = value;
+      if constexpr (DirectLayout)
+        B.EBR[(o % rank) * n + o / rank] = value;
+      else
+        B.EBRt[o] = value;
     }
   });
 }
@@ -195,7 +221,8 @@ static int reduce_tree_pow2(sycl::queue& q, uint8_t* cvs, const uint8_t* key, in
   }
 }
 
-static void k_noise(sycl::queue& q, const Buffers& bb, int m, int n, int k, int rank) {
+[[maybe_unused]] static void k_noise(sycl::queue& q, const Buffers& bb, int m, int n, int k,
+                                     int rank) {
   auto B = bb;
   const int dAL = (m * rank + 31) / 32, dBR = (n * rank + 31) / 32, dP = (k * 4 + 31) / 32;
   q.parallel_for(sycl::range<1>(dAL), [=](sycl::id<1> id) MOM_SYCL_KERNEL_ARGS_RESTRICT {
@@ -299,30 +326,37 @@ static void prepare_roots_cpu(const Buffers& B, uint32_t seed, int m, int n, int
 static void prepare_noise_cpu(const Buffers& B, int m, int n, int k, int rank) {
   const int dAL = (m * rank + 31) / 32, dBR = (n * rank + 31) / 32;
   for (int i = 0; i < dAL; ++i) {
-    uint8_t seed[32], hash[32]; mk_seed(seed, 'A'); dev_randHash(i, seed, B.cA, 0, hash);
+    uint8_t seed[32], hash[32];
+    mk_seed(seed, 'A');
+    dev_randHash(i, seed, B.cA, 0, hash);
     for (int j = 0; j < 32; ++j) {
       const int out = i * 32 + j;
-      if (out < m * rank) B.EAL[out] = static_cast<int8_t>((hash[j] & 63) - 32);
+      if (out < m * rank)
+        B.EAL[out] = static_cast<int8_t>((hash[j] & 63) - 32);
     }
   }
   for (int i = 0; i < dBR; ++i) {
-    uint8_t seed[32], hash[32]; mk_seed(seed, 'B'); dev_randHash(i, seed, B.cB, 0, hash);
+    uint8_t seed[32], hash[32];
+    mk_seed(seed, 'B');
+    dev_randHash(i, seed, B.cB, 0, hash);
     for (int j = 0; j < 32; ++j) {
       const int out = i * 32 + j;
       if (out < n * rank)
         B.EBR[static_cast<size_t>(out % rank) * n + out / rank] =
-          static_cast<int8_t>((hash[j] & 63) - 32);
+            static_cast<int8_t>((hash[j] & 63) - 32);
     }
   }
   const int blocks = (k + 7) / 8;
   for (int i = 0; i < blocks; ++i) {
     uint8_t seedA[32], seedB[32], hashA[32], hashB[32];
-    mk_seed(seedA, 'A'); mk_seed(seedB, 'B');
+    mk_seed(seedA, 'A');
+    mk_seed(seedB, 'B');
     dev_randHash(i, seedA, B.cA, 1, hashA);
     dev_randHash(i, seedB, B.cB, 1, hashB);
     for (int lane = 0; lane < 8; ++lane) {
       const int index = i * 8 + lane;
-      if (index >= k) break;
+      if (index >= k)
+        break;
       perm_pair(rd_u32le(hashA + lane * 4), rank, B.EARp1[index], B.EARp2[index]);
       perm_pair(rd_u32le(hashB + lane * 4), rank, B.EBLq1[index], B.EBLq2[index]);
     }
@@ -449,7 +483,9 @@ template <bool Dpasw = false>
 }
 
 #if defined(MOM_SYCL_HAS_HIP)
-struct PearlHashPrepEvents { sycl::event a, b; };
+struct PearlHashPrepEvents {
+  sycl::event a, b;
+};
 
 static PearlHashPrepEvents compute_ab_amd_wmma(sycl::queue& a_queue, sycl::queue& b_queue,
                                                const Buffers& b, uint32_t seed, int m, int n, int k,
@@ -577,9 +613,11 @@ static inline bool tile_wins(const uint32_t tr[16], const uint8_t* key, const ui
 // cross-validate the portable search() against search_esimd/search_cuda: identical A'/B' must give an
 // identical chk. The sum is order-independent (any tile schedule) and the row/col weighting makes it
 // sensitive to a tile mis-mapping (e.g. an A'/B' transpose). Scalar-only, so it works in every kernel.
-[[maybe_unused]] static inline uint32_t tile_mix(uint32_t row, uint32_t col, const uint32_t tr[16]) {
+[[maybe_unused]] static inline uint32_t tile_mix(uint32_t row, uint32_t col,
+                                                 const uint32_t tr[16]) {
   uint32_t h = row * 2654435761u + col * 2246822519u + 0x9e3779b9u;
-  for (int w = 0; w < 16; w++) h = (h ^ tr[w]) * 16777619u + (uint32_t)w;
+  for (int w = 0; w < 16; w++)
+    h = (h ^ tr[w]) * 16777619u + (uint32_t)w;
   return h;
 }
 

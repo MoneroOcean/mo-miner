@@ -3,7 +3,6 @@
 #include <sycl/sycl.hpp>
 
 #include <algorithm>
-#include <cerrno>
 #include <chrono>
 #include <cinttypes>
 #include <cstdint>
@@ -11,7 +10,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
-#include <map>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -22,25 +20,28 @@
 #include "blake2b.inc"
 #include "prehash.inc"
 inline uint32_t calc_n(const uint32_t height) {
-  if (height < INCREASE_START) return INIT_N_LEN;
-  if (height >= INCREASE_END) return MAX_N_LEN;
+  if (height < INCREASE_START)
+    return INIT_N_LEN;
+  if (height >= INCREASE_END)
+    return MAX_N_LEN;
 
   uint32_t n = INIT_N_LEN;
   const uint32_t iters = (height - INCREASE_START) / INCREASE_PERIOD + 1;
-  for (uint32_t i = 0; i < iters; ++i) n = n / 100U * 105U;
+  for (uint32_t i = 0; i < iters; ++i)
+    n = n / 100U * 105U;
   return n;
 }
 
 static uint64_t now_ms() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(
-    std::chrono::steady_clock::now().time_since_epoch()
-  ).count();
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
 }
 
 static uint64_t now_us() {
   return std::chrono::duration_cast<std::chrono::microseconds>(
-    std::chrono::steady_clock::now().time_since_epoch()
-  ).count();
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
 }
 
 static void format_duration_ms(char* out, size_t out_size, uint64_t ms) {
@@ -53,9 +54,7 @@ static void format_duration_ms(char* out, size_t out_size, uint64_t ms) {
   }
 }
 
-// Parse env var `name` as a base-10 u32. Writes *out and returns true only when the
-// variable is set to a clean, fully-consumed, in-range integer; otherwise returns false
-// (unset, empty, trailing junk, overflow) so the caller can keep its fallback.
+// Parse env var `name` as a u32, leaving the caller's fallback intact on invalid input.
 static bool env_u32(const char* name, uint32_t& out) {
   unsigned long parsed = 0;
   if (!mom_parse_env_ulong(name, parsed) || parsed > std::numeric_limits<uint32_t>::max())

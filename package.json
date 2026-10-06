@@ -24,11 +24,12 @@
     "win32"
   ],
   "scripts": {
+    "check": "npm run lint && npm run typecheck",
     "lint": "eslint .",
-    "pretest": "npm run lint",
+    "pretest": "npm run check",
     "test": "node tests/run_hash.js",
     "test:logic": "node --require ./tests/common/no_pool_network.js --test tests/logic.js tests/compiler_policy.js tests/nvidia_compatibility.js tests/readme_performance.js tests/benchmark_scripts.js tests/windows_command.js tests/pool_transport.js tests/helper_workers.js tests/release_archive.js",
-    "test:github": "npm run lint && npm run test:gpu-foundations && npm run test:xelishashv3-ops && npm run test:zhash-ref && npm run test:equihash192-ref && npm run test:nexapow-ref && npm run test:octopus-ref && npm run test:c30-ref && npm run test:hoohash-ref && npm run test:pearlhash-ref && npm run test:pearlhash-claim && npm run test:logic",
+    "test:github": "npm run check && npm run test:gpu-foundations && npm run test:xelishashv3-ops && npm run test:zhash-ref && npm run test:equihash192-ref && npm run test:nexapow-ref && npm run test:octopus-ref && npm run test:c30-ref && npm run test:hoohash-ref && npm run test:pearlhash-ref && npm run test:pearlhash-claim && npm run test:logic",
     "test:gpu-foundations": "bash scripts/test-gpu-foundations.sh",
     "test:xelishashv3-ops": "out=/tmp/mom-xelishashv3-ops-$$; trap 'rm -f \"$out\"' EXIT; for xelis_flags in '' '-DMOM_SYCL_PORTABLE_OPENCL'; do c++ -std=c++20 -O2 $xelis_flags tests/logic/xelishashv3_operations.cpp -o \"$out\" && \"$out\" || exit; done",
     "test:zhash-ref": "out=/tmp/mom-zhash-ref-$$; trap 'rm -f \"$out\"' EXIT; c++ -std=c++17 -O2 -Wall -Wextra -Werror tests/reference/zhash_144_5.cpp -o \"$out\" && \"$out\"",
@@ -45,7 +46,8 @@
     "test:gpu-multi": "node tests/run_hash.js gpu-multi",
     "test:perf": "node tests/run_perf.js",
     "test:sota": "node scripts/sota-benchmark.js",
-    "test:deploy": "bash scripts/test-deploy.sh"
+    "test:deploy": "bash scripts/test-deploy.sh",
+    "typecheck": "tsc --project jsconfig.json"
   },
   "keywords": [
     "monero",
@@ -88,9 +90,11 @@
   "devDependencies": {
     "@eslint/js": "10.0.1",
     "@stylistic/eslint-plugin": "5.10.0",
+    "@types/node": "22.20.1",
     "esbuild": "0.28.1",
     "eslint": "10.8.0",
     "globals": "17.9.0",
-    "postject": "1.0.0-alpha.6"
+    "postject": "1.0.0-alpha.6",
+    "typescript": "7.0.2"
   }
 }

@@ -9,7 +9,7 @@
 
 namespace {
 
-constexpr uint32_t ETHASH_NODE_WORDS = 16;  // 64-byte ethash node = 16 u32 words
+constexpr uint32_t ETHASH_NODE_WORDS = 16; // 64-byte ethash node = 16 u32 words
 
 union EthashNode {
   uint8_t bytes[ETHASH_NODE_WORDS * sizeof(uint32_t)];
@@ -26,20 +26,18 @@ void keccak512(void* out, const void* in, const unsigned bytes) {
   sha3_HashBuffer(512, SHA3_FLAGS_KECCAK, in, bytes, out, 64);
 }
 
-}
+} // namespace
 
 extern "C" ethash_h256_t ethash_get_seedhash(uint64_t epoch) {
   // Seed hash = keccak256 applied `epoch` times; epoch 0 yields the all-zero hash.
   ethash_h256_t result{};
-  for (uint64_t i = 0; i < epoch; ++i) keccak256(&result, &result, 32);
+  for (uint64_t i = 0; i < epoch; ++i)
+    keccak256(&result, &result, 32);
   return result;
 }
 
-extern "C" bool ethash_compute_cache_nodes(
-  void* nodes_ptr,
-  uint64_t cache_size,
-  const ethash_h256_t* seed
-) {
+extern "C" bool ethash_compute_cache_nodes(void* nodes_ptr, uint64_t cache_size,
+                                           const ethash_h256_t* seed) {
   if (!nodes_ptr || !seed || cache_size < sizeof(EthashNode) ||
       cache_size % sizeof(EthashNode) != 0)
     return false;

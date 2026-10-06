@@ -25,11 +25,10 @@ struct AutolykosState {
   // so the cheapest place to pay them is one concentrated rebuild per height.
 
   explicit AutolykosState(const std::string& dev_str)
-    : device(get_dev(dev_str)),
-      queue(device, sycl::property_list{sycl::property::queue::in_order{}}),
-      workgroup(autolykos_workgroup(device)),
-      prehash_workgroup(autolykos_prehash_workgroup(device))
-  {
+      : device(get_dev(dev_str)),
+        queue(device, sycl::property_list{sycl::property::queue::in_order{}}),
+        workgroup(autolykos_workgroup(device)),
+        prehash_workgroup(autolykos_prehash_workgroup(device)) {
     if constexpr (!mom_sycl_portable_opencl) {
       if (!mom_has_usm_shared(device)) {
         throw std::string("autolykos2 SYCL device does not support shared allocations");
@@ -48,12 +47,14 @@ struct AutolykosState {
     // CUDA/HIP: 128 is a reliable default for both the scalar diagnostic and the eight-lane
     // subgroup path. The latter is insensitive between 64 and 128 on current NVIDIA hardware.
     const unsigned preferred =
-      (mom_is_cuda(dev) || mom_is_hip(dev)) ? 128 :
+        (mom_is_cuda(dev) || mom_is_hip(dev))
+            ? 128
+            :
 #if defined(_WIN32)
-      // Windows Arc Level Zero is consistently faster at local size 32 for the split table path.
-      32;
+            // Windows Arc Level Zero is consistently faster at local size 32 for the split table path.
+            32;
 #else
-      64;
+            64;
 #endif
     const unsigned fallback = sycl_default_workgroup(dev, {32, 64, 128, 256}, preferred);
     return env_workgroup(dev, "MOM_AUTOLYKOS2_WORKGROUP", fallback);
@@ -75,7 +76,8 @@ struct AutolykosState {
 
   static const char* autolykos_compile_options(const sycl::device& dev) {
     const char* const value = std::getenv("MOM_AUTOLYKOS2_COMPILE_OPTIONS");
-    if (value) return value;
+    if (value)
+      return value;
     // SYCL_PROGRAM_COMPILE_OPTIONS is process-global; pearlhash's ESIMD (VC-backend) image rejects "-O3",
     // and it's a measured no-op for this kernel anyway (36.44 vs 36.41 MH/s on B580). Override via
     // MOM_AUTOLYKOS2_COMPILE_OPTIONS if needed.
@@ -109,13 +111,15 @@ struct AutolykosState {
   // The old HIP-only variable remains an alias for existing diagnostic scripts.
   static bool autolykos_subgroup_coop() {
     const char* value = std::getenv("MOM_AUTOLYKOS2_SUBGROUP_COOP");
-    if (!value) value = std::getenv("MOM_AUTOLYKOS2_HIP_COOP");
+    if (!value)
+      value = std::getenv("MOM_AUTOLYKOS2_HIP_COOP");
     return !value || (std::strcmp(value, "0") && std::strcmp(value, "false"));
   }
 
   static bool autolykos_subgroup_coop_verify() {
     const char* value = std::getenv("MOM_AUTOLYKOS2_SUBGROUP_COOP_VERIFY");
-    if (!value) value = std::getenv("MOM_AUTOLYKOS2_HIP_COOP_VERIFY");
+    if (!value)
+      value = std::getenv("MOM_AUTOLYKOS2_HIP_COOP_VERIFY");
     return value && (!std::strcmp(value, "1") || !std::strcmp(value, "true"));
   }
 
@@ -136,21 +140,26 @@ struct AutolykosState {
   }
 
   void free_ptr(auto*& ptr) {
-    if (ptr) sycl::free(ptr, queue);
+    if (ptr)
+      sycl::free(ptr, queue);
     ptr = nullptr;
   }
 
   void ensure_result() {
     if constexpr (!mom_sycl_portable_opencl) {
-      if (result) return;
+      if (result)
+        return;
       result = sycl::malloc_shared<AutolykosResult>(1, queue);
-      if (!result) throw std::string("Can't allocate autolykos2 SYCL result buffer");
+      if (!result)
+        throw std::string("Can't allocate autolykos2 SYCL result buffer");
     }
   }
 
   void ensure_portable_results(const uint32_t count) {
-    if constexpr (!mom_sycl_portable_opencl) return;
-    if (portable_result_cap >= count) return;
+    if constexpr (!mom_sycl_portable_opencl)
+      return;
+    if (portable_result_cap >= count)
+      return;
     queue.wait_and_throw();
     portable_results.allocate(count);
     portable_result_cap = count;
@@ -201,11 +210,13 @@ struct AutolykosState {
   // table would invalidate every share until the next block.
   void verify_table(const uint32_t height, const uint32_t n_len) {
     const unsigned mode = autolykos_table_verify_mode();
-    if (!mode) return;
+    if (!mode)
+      return;
 
     if (!table_mismatches) {
       table_mismatches = sycl::malloc_shared<uint32_t>(1, queue);
-      if (!table_mismatches) throw std::string("Can't allocate autolykos2 verify counter");
+      if (!table_mismatches)
+        throw std::string("Can't allocate autolykos2 verify counter");
     }
     *table_mismatches = 0;
 
@@ -217,39 +228,44 @@ struct AutolykosState {
 
     sycl_wait_and_throw(queue.submit([&](sycl::handler& h) {
       h.parallel_for(
-        sycl::nd_range<1>(sycl::range<1>(round_up_size(count, local)), sycl::range<1>(local)),
-        [=](sycl::nd_item<1> item) MOM_SYCL_KERNEL_ARGS_RESTRICT {
-          const uint32_t gid = item.get_global_id(0);
-          if (gid >= count) return;
-          const uint32_t row = gid * stride;
-          if (row >= n_len) return;
+          sycl::nd_range<1>(sycl::range<1>(round_up_size(count, local)), sycl::range<1>(local)),
+          [=](sycl::nd_item<1> item) MOM_SYCL_KERNEL_ARGS_RESTRICT {
+            const uint32_t gid = item.get_global_id(0);
+            if (gid >= count)
+              return;
+            const uint32_t row = gid * stride;
+            if (row >= n_len)
+              return;
 
-          uint8_t digest[32];
-          autolykos_prehash_digest_dev(row, height, digest);
-          uint32_t expected[8];
-          digest_to_limbs_dev(digest, expected);
+            uint8_t digest[32];
+            autolykos_prehash_digest_dev(row, height, digest);
+            uint32_t expected[8];
+            digest_to_limbs_dev(digest, expected);
 
-          const uint32_t* const stored = d_table + static_cast<uint64_t>(row) * (TABLE_ENTRY_BYTES / sizeof(uint32_t));
-          bool differs = false;
+            const uint32_t* const stored =
+                d_table + static_cast<uint64_t>(row) * (TABLE_ENTRY_BYTES / sizeof(uint32_t));
+            bool differs = false;
 #pragma unroll
-          for (unsigned i = 0; i < 8; ++i) differs |= stored[i] != expected[i];
-          if (differs) {
-            sycl::atomic_ref<
-              uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
-              sycl::access::address_space::global_space
-            >(*d_mismatches).fetch_add(1);
-          }
-        }
-      );
-    }), device);
+            for (unsigned i = 0; i < 8; ++i)
+              differs |= stored[i] != expected[i];
+            if (differs) {
+              sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
+                               sycl::access::address_space::global_space>(*d_mismatches)
+                  .fetch_add(1);
+            }
+          });
+    }),
+                        device);
 
     if (*table_mismatches) {
       throw std::string("Autolykos2 table verification failed: ") +
-            std::to_string(*table_mismatches) + " of " + std::to_string(count) + " sampled rows differ";
+          std::to_string(*table_mismatches) + " of " + std::to_string(count) +
+          " sampled rows differ";
     }
   }
 
-  void ensure_table(const uint32_t height, const uint32_t n_len, const bool is_test, const bool should_log) {
+  void ensure_table(const uint32_t height, const uint32_t n_len, const bool is_test,
+                    const bool should_log) {
     if (!should_use_table(is_test, n_len)) {
       if (table) {
         queue.wait_and_throw();
@@ -261,7 +277,8 @@ struct AutolykosState {
       return;
     }
 
-    if (table && table_height == height && table_n == n_len) return;
+    if (table && table_height == height && table_n == n_len)
+      return;
     if (!mom_has_usm_device(device)) {
       throw std::string("autolykos2 SYCL GPU device does not support device allocations");
     }
@@ -273,8 +290,9 @@ struct AutolykosState {
       free_ptr(table);
       table_cap_n = 0;
       table = sycl::malloc_device<uint32_t>(
-        static_cast<uint64_t>(n_len) * (TABLE_ENTRY_BYTES / sizeof(uint32_t)), queue);
-      if (!table) throw std::string("Can't allocate autolykos2 table");
+          static_cast<uint64_t>(n_len) * (TABLE_ENTRY_BYTES / sizeof(uint32_t)), queue);
+      if (!table)
+        throw std::string("Can't allocate autolykos2 table");
       table_cap_n = n_len;
     }
 
@@ -289,15 +307,17 @@ struct AutolykosState {
       const uint32_t chunk_start = start_row;
       build_event = q.submit([&](sycl::handler& h) {
         h.parallel_for(
-          sycl::nd_range<1>(sycl::range<1>(round_up_size(current_rows, local)), sycl::range<1>(local)),
-          [=](sycl::nd_item<1> item) {
-            const uint32_t local_row = item.get_global_id(0);
-            if (local_row >= current_rows) return;
-            autolykos_table_row_store_dev(d_table, chunk_start + local_row, height);
-          }
-        );
+            sycl::nd_range<1>(sycl::range<1>(round_up_size(current_rows, local)),
+                              sycl::range<1>(local)),
+            [=](sycl::nd_item<1> item) {
+              const uint32_t local_row = item.get_global_id(0);
+              if (local_row >= current_rows)
+                return;
+              autolykos_table_row_store_dev(d_table, chunk_start + local_row, height);
+            });
       });
-      if (!chunk_rows) break;
+      if (!chunk_rows)
+        break;
       start_row += current_rows;
     }
     sycl_wait_and_throw(build_event, device);
@@ -308,7 +328,8 @@ struct AutolykosState {
     if (should_log || std::getenv("MOM_LOOP_STATS")) {
       char elapsed[32];
       format_duration_ms(elapsed, sizeof(elapsed), now_ms() - start_ms);
-      std::fprintf(stderr, "Autolykos2 table for height %u N %u calculated (%s)\n", height, n_len, elapsed);
+      std::fprintf(stderr, "Autolykos2 table for height %u N %u calculated (%s)\n", height, n_len,
+                   elapsed);
     }
   }
 };

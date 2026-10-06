@@ -1,7 +1,9 @@
-// Copyright GNU GPLv3 (c) 2023-2025 MoneroOcean <support@moneroocean.stream>
+// Copyright GNU GPLv3 (c) 2023-2026 MoneroOcean <support@moneroocean.stream>
 
 // SYCL cn/gpu implementation based on the public CryptoNight-GPU specification.
 // OpenCL mining code by wolf9466, fireice_uk and psychocrypt
+// Windows HIP keeps input/output in device USM. Shared USM stalled before the first reported rate
+// on the RX 9060 XT; cold device-I/O runs need additional warm-up windows but then reach full speed.
 #include <sycl/sycl.hpp>
 #include <algorithm>
 #include <chrono>

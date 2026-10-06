@@ -27,9 +27,8 @@ struct PrehashFinalMessage { // word 0 is pad item 1023, the rest is padding zer
   }
 };
 
-inline void blake2b_g_pair(
-  B2bWord& a, B2bWord& b, B2bWord& c, B2bWord& d, const B2bWord x, const B2bWord y
-) {
+inline void blake2b_g_pair(B2bWord& a, B2bWord& b, B2bWord& c, B2bWord& d, const B2bWord x,
+                           const B2bWord y) {
   uint32_t lo = a.lo + b.lo;
   uint32_t carry = lo < b.lo ? 1U : 0U;
   a.lo = lo + x.lo;
@@ -69,10 +68,12 @@ inline void blake2b_g_pair(
 }
 
 template <typename Message>
-inline void blake2b_compress_pair_dev(B2bWord h[8], const Message& msg, const uint32_t t, const bool last) {
+inline void blake2b_compress_pair_dev(B2bWord h[8], const Message& msg, const uint32_t t,
+                                      const bool last) {
   B2bWord v[16];
 #pragma unroll
-  for (unsigned i = 0; i < 8; ++i) v[i] = h[i];
+  for (unsigned i = 0; i < 8; ++i)
+    v[i] = h[i];
 #pragma unroll
   for (unsigned i = 0; i < 8; ++i) {
     const uint64_t iv = mom_sycl_portable_opencl ? blake2b_iv(i) : BLAKE2B_IV[i];
@@ -91,23 +92,39 @@ inline void blake2b_compress_pair_dev(B2bWord h[8], const Message& msg, const ui
 #endif
   for (unsigned r = 0; r < 12; ++r) {
     if constexpr (mom_sycl_portable_opencl) {
-      blake2b_g_pair(v[0], v[4], v[ 8], v[12], msg.word(blake2b_sigma(r,  0)), msg.word(blake2b_sigma(r,  1)));
-      blake2b_g_pair(v[1], v[5], v[ 9], v[13], msg.word(blake2b_sigma(r,  2)), msg.word(blake2b_sigma(r,  3)));
-      blake2b_g_pair(v[2], v[6], v[10], v[14], msg.word(blake2b_sigma(r,  4)), msg.word(blake2b_sigma(r,  5)));
-      blake2b_g_pair(v[3], v[7], v[11], v[15], msg.word(blake2b_sigma(r,  6)), msg.word(blake2b_sigma(r,  7)));
-      blake2b_g_pair(v[0], v[5], v[10], v[15], msg.word(blake2b_sigma(r,  8)), msg.word(blake2b_sigma(r,  9)));
-      blake2b_g_pair(v[1], v[6], v[11], v[12], msg.word(blake2b_sigma(r, 10)), msg.word(blake2b_sigma(r, 11)));
-      blake2b_g_pair(v[2], v[7], v[ 8], v[13], msg.word(blake2b_sigma(r, 12)), msg.word(blake2b_sigma(r, 13)));
-      blake2b_g_pair(v[3], v[4], v[ 9], v[14], msg.word(blake2b_sigma(r, 14)), msg.word(blake2b_sigma(r, 15)));
+      blake2b_g_pair(v[0], v[4], v[8], v[12], msg.word(blake2b_sigma(r, 0)),
+                     msg.word(blake2b_sigma(r, 1)));
+      blake2b_g_pair(v[1], v[5], v[9], v[13], msg.word(blake2b_sigma(r, 2)),
+                     msg.word(blake2b_sigma(r, 3)));
+      blake2b_g_pair(v[2], v[6], v[10], v[14], msg.word(blake2b_sigma(r, 4)),
+                     msg.word(blake2b_sigma(r, 5)));
+      blake2b_g_pair(v[3], v[7], v[11], v[15], msg.word(blake2b_sigma(r, 6)),
+                     msg.word(blake2b_sigma(r, 7)));
+      blake2b_g_pair(v[0], v[5], v[10], v[15], msg.word(blake2b_sigma(r, 8)),
+                     msg.word(blake2b_sigma(r, 9)));
+      blake2b_g_pair(v[1], v[6], v[11], v[12], msg.word(blake2b_sigma(r, 10)),
+                     msg.word(blake2b_sigma(r, 11)));
+      blake2b_g_pair(v[2], v[7], v[8], v[13], msg.word(blake2b_sigma(r, 12)),
+                     msg.word(blake2b_sigma(r, 13)));
+      blake2b_g_pair(v[3], v[4], v[9], v[14], msg.word(blake2b_sigma(r, 14)),
+                     msg.word(blake2b_sigma(r, 15)));
     } else {
-      blake2b_g_pair(v[0], v[4], v[ 8], v[12], msg.word(BLAKE2B_SIGMA[r][ 0]), msg.word(BLAKE2B_SIGMA[r][ 1]));
-      blake2b_g_pair(v[1], v[5], v[ 9], v[13], msg.word(BLAKE2B_SIGMA[r][ 2]), msg.word(BLAKE2B_SIGMA[r][ 3]));
-      blake2b_g_pair(v[2], v[6], v[10], v[14], msg.word(BLAKE2B_SIGMA[r][ 4]), msg.word(BLAKE2B_SIGMA[r][ 5]));
-      blake2b_g_pair(v[3], v[7], v[11], v[15], msg.word(BLAKE2B_SIGMA[r][ 6]), msg.word(BLAKE2B_SIGMA[r][ 7]));
-      blake2b_g_pair(v[0], v[5], v[10], v[15], msg.word(BLAKE2B_SIGMA[r][ 8]), msg.word(BLAKE2B_SIGMA[r][ 9]));
-      blake2b_g_pair(v[1], v[6], v[11], v[12], msg.word(BLAKE2B_SIGMA[r][10]), msg.word(BLAKE2B_SIGMA[r][11]));
-      blake2b_g_pair(v[2], v[7], v[ 8], v[13], msg.word(BLAKE2B_SIGMA[r][12]), msg.word(BLAKE2B_SIGMA[r][13]));
-      blake2b_g_pair(v[3], v[4], v[ 9], v[14], msg.word(BLAKE2B_SIGMA[r][14]), msg.word(BLAKE2B_SIGMA[r][15]));
+      blake2b_g_pair(v[0], v[4], v[8], v[12], msg.word(BLAKE2B_SIGMA[r][0]),
+                     msg.word(BLAKE2B_SIGMA[r][1]));
+      blake2b_g_pair(v[1], v[5], v[9], v[13], msg.word(BLAKE2B_SIGMA[r][2]),
+                     msg.word(BLAKE2B_SIGMA[r][3]));
+      blake2b_g_pair(v[2], v[6], v[10], v[14], msg.word(BLAKE2B_SIGMA[r][4]),
+                     msg.word(BLAKE2B_SIGMA[r][5]));
+      blake2b_g_pair(v[3], v[7], v[11], v[15], msg.word(BLAKE2B_SIGMA[r][6]),
+                     msg.word(BLAKE2B_SIGMA[r][7]));
+      blake2b_g_pair(v[0], v[5], v[10], v[15], msg.word(BLAKE2B_SIGMA[r][8]),
+                     msg.word(BLAKE2B_SIGMA[r][9]));
+      blake2b_g_pair(v[1], v[6], v[11], v[12], msg.word(BLAKE2B_SIGMA[r][10]),
+                     msg.word(BLAKE2B_SIGMA[r][11]));
+      blake2b_g_pair(v[2], v[7], v[8], v[13], msg.word(BLAKE2B_SIGMA[r][12]),
+                     msg.word(BLAKE2B_SIGMA[r][13]));
+      blake2b_g_pair(v[3], v[4], v[9], v[14], msg.word(BLAKE2B_SIGMA[r][14]),
+                     msg.word(BLAKE2B_SIGMA[r][15]));
     }
   }
 
@@ -118,7 +135,8 @@ inline void blake2b_compress_pair_dev(B2bWord h[8], const Message& msg, const ui
   }
 }
 
-inline void autolykos_prehash_digest_fast_dev(const uint32_t index, const uint32_t height, uint8_t digest[32]) {
+inline void autolykos_prehash_digest_fast_dev(const uint32_t index, const uint32_t height,
+                                              uint8_t digest[32]) {
   B2bWord h[8];
 #pragma unroll
   for (unsigned i = 0; i < 8; ++i) {
@@ -127,10 +145,14 @@ inline void autolykos_prehash_digest_fast_dev(const uint32_t index, const uint32
   }
   h[0].lo ^= 0x01010020U;
 
-  const uint32_t index_be = mom_sycl_portable_opencl ? bswap32_dev(index)
-    : (index >> 24) | ((index >> 8) & 0xFF00U) | ((index << 8) & 0xFF0000U) | (index << 24);
-  const uint32_t height_be = mom_sycl_portable_opencl ? bswap32_dev(height)
-    : (height >> 24) | ((height >> 8) & 0xFF00U) | ((height << 8) & 0xFF0000U) | (height << 24);
+  const uint32_t index_be =
+      mom_sycl_portable_opencl
+          ? bswap32_dev(index)
+          : (index >> 24) | ((index >> 8) & 0xFF00U) | ((index << 8) & 0xFF0000U) | (index << 24);
+  const uint32_t height_be = mom_sycl_portable_opencl
+                                 ? bswap32_dev(height)
+                                 : (height >> 24) | ((height >> 8) & 0xFF00U) |
+                                       ((height << 8) & 0xFF0000U) | (height << 24);
   blake2b_compress_pair_dev(h, PrehashBlock0Message{index_be, height_be}, 128, false);
   for (uint32_t block = 1; block < 64; ++block) {
     blake2b_compress_pair_dev(h, PrehashPadMessage{16U * block - 1U}, (block + 1U) * 128U, false);
@@ -141,7 +163,8 @@ inline void autolykos_prehash_digest_fast_dev(const uint32_t index, const uint32
   for (unsigned i = 0; i < 32; ++i) {
     const B2bWord word = h[i >> 3];
     const unsigned byte = i & 7U;
-    digest[i] = static_cast<uint8_t>((byte < 4 ? word.lo >> (byte * 8U) : word.hi >> ((byte - 4U) * 8U)));
+    digest[i] =
+        static_cast<uint8_t>((byte < 4 ? word.lo >> (byte * 8U) : word.hi >> ((byte - 4U) * 8U)));
   }
 }
 
@@ -150,22 +173,26 @@ inline void autolykos_prehash_digest_fast_dev(const uint32_t index, const uint32
 AUTOLYKOS_DEVICE_INLINE void digest_to_limbs_dev(const uint8_t digest[32], uint32_t limbs[8]) {
   limbs[0] = load32_be_dev(digest) & 0x00FFFFFFU;
 #pragma unroll
-  for (unsigned i = 1; i < 8; ++i) limbs[i] = load32_be_dev(digest + i * 4);
+  for (unsigned i = 1; i < 8; ++i)
+    limbs[i] = load32_be_dev(digest + i * 4);
 }
 
-inline void autolykos_table_row_store_dev(uint32_t* const table, const uint32_t gid, const uint32_t height) {
+inline void autolykos_table_row_store_dev(uint32_t* const table, const uint32_t gid,
+                                          const uint32_t height) {
   uint8_t digest[32];
   autolykos_prehash_digest_fast_dev(gid, height, digest);
-  digest_to_limbs_dev(digest, table + static_cast<uint64_t>(gid) * (TABLE_ENTRY_BYTES / sizeof(uint32_t)));
+  digest_to_limbs_dev(digest,
+                      table + static_cast<uint64_t>(gid) * (TABLE_ENTRY_BYTES / sizeof(uint32_t)));
 }
 
-AUTOLYKOS_DEVICE_INLINE void table_item_limbs_dev(
-  const uint32_t* const table, const uint32_t index, const uint32_t height, uint32_t limbs[8]
-) {
+AUTOLYKOS_DEVICE_INLINE void table_item_limbs_dev(const uint32_t* const table, const uint32_t index,
+                                                  const uint32_t height, uint32_t limbs[8]) {
   if (table) {
-    const uint32_t* const item = table + static_cast<uint64_t>(index) * (TABLE_ENTRY_BYTES / sizeof(uint32_t));
+    const uint32_t* const item =
+        table + static_cast<uint64_t>(index) * (TABLE_ENTRY_BYTES / sizeof(uint32_t));
 #pragma unroll
-    for (unsigned i = 0; i < 8; ++i) limbs[i] = item[i];
+    for (unsigned i = 0; i < 8; ++i)
+      limbs[i] = item[i];
     return;
   }
 
@@ -185,70 +212,84 @@ AUTOLYKOS_DEVICE_INLINE void add_limbs_dev(uint32_t sum[8], const uint32_t* cons
   }
 }
 
-AUTOLYKOS_DEVICE_INLINE uint32_t autolykos_index_from_words_dev(
-  const uint32_t word0, const uint32_t word1, const unsigned byte_offset,
-  const uint32_t n_len, const uint64_t n_len_M
-) {
+AUTOLYKOS_DEVICE_INLINE uint32_t autolykos_index_from_words_dev(const uint32_t word0,
+                                                                const uint32_t word1,
+                                                                const unsigned byte_offset,
+                                                                const uint32_t n_len,
+                                                                const uint64_t n_len_M) {
   uint32_t idx;
   switch (byte_offset) {
-    case 0: idx = word0; break;
-    case 1:
-      if constexpr (mom_sycl_portable_opencl) { volatile uint32_t a = word0 << 8, b = word1 >> 24; idx = a | b; }
-      else idx = (word0 << 8) | (word1 >> 24);
-      break;
-    case 2:
-      if constexpr (mom_sycl_portable_opencl) { volatile uint32_t a = word0 << 16, b = word1 >> 16; idx = a | b; }
-      else idx = (word0 << 16) | (word1 >> 16);
-      break;
-    default:
-      if constexpr (mom_sycl_portable_opencl) { volatile uint32_t a = word0 << 24, b = word1 >> 8; idx = a | b; }
-      else idx = (word0 << 24) | (word1 >> 8);
-      break;
+  case 0:
+    idx = word0;
+    break;
+  case 1:
+    if constexpr (mom_sycl_portable_opencl) {
+      volatile uint32_t a = word0 << 8, b = word1 >> 24;
+      idx = a | b;
+    } else
+      idx = (word0 << 8) | (word1 >> 24);
+    break;
+  case 2:
+    if constexpr (mom_sycl_portable_opencl) {
+      volatile uint32_t a = word0 << 16, b = word1 >> 16;
+      idx = a | b;
+    } else
+      idx = (word0 << 16) | (word1 >> 16);
+    break;
+  default:
+    if constexpr (mom_sycl_portable_opencl) {
+      volatile uint32_t a = word0 << 24, b = word1 >> 8;
+      idx = a | b;
+    } else
+      idx = (word0 << 24) | (word1 >> 8);
+    break;
   }
   return mo_mod_u32(idx, n_len, n_len_M);
 }
 
 AUTOLYKOS_DEVICE_INLINE bool meets_target_dev(const uint8_t output[32], const uint8_t target[32]) {
   for (unsigned i = 0; i < 32; ++i) {
-    if (output[i] == target[i]) continue;
+    if (output[i] == target[i])
+      continue;
     return output[i] < target[i];
   }
   return true;
 }
 
-inline void store_autolykos_result(
-  AutolykosResult* const result, const uint64_t nonce, const uint8_t output[32]
-) {
-  using atomic_ref = sycl::atomic_ref<
-    uint32_t,
-    sycl::memory_order::relaxed,
-    sycl::memory_scope::device,
-    sycl::access::address_space::global_space
-  >;
+inline void store_autolykos_result(AutolykosResult* const result, const uint64_t nonce,
+                                   const uint8_t output[32]) {
+  using atomic_ref =
+      sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
+                       sycl::access::address_space::global_space>;
   const uint32_t index = atomic_ref(result->count).fetch_add(1);
-  if (index >= MAX_AUTOLYKOS_OUTPUTS) return;
+  if (index >= MAX_AUTOLYKOS_OUTPUTS)
+    return;
 
   result->nonce[index] = nonce;
 #pragma unroll
-  for (unsigned i = 0; i < 32; ++i) result->output[index][i] = output[i];
+  for (unsigned i = 0; i < 32; ++i)
+    result->output[index][i] = output[i];
 }
 
 // Autolykos2 per-nonce prehash: blake2b(message||nonce) selects table row h3, then
 // index_hash = blake2b(row[1..31] || message || nonce) seeds the K_LEN table reads.
 // Row bytes come from the prebuilt table when present, else from the on-the-fly digest.
-AUTOLYKOS_DEVICE_INLINE void autolykos_index_hash_dev(
-  const uint8_t message[32], const uint64_t nonce, const uint32_t* const table,
-  const uint32_t height, const uint32_t n_len, const uint64_t n_len_divM, uint8_t index_hash[32]
-) {
+AUTOLYKOS_DEVICE_INLINE void
+autolykos_index_hash_dev(const uint8_t message[32], const uint64_t nonce,
+                         const uint32_t* const table, const uint32_t height, const uint32_t n_len,
+                         const uint64_t n_len_divM, uint8_t index_hash[32]) {
   uint8_t nonce_be[8];
 #pragma unroll
-  for (unsigned i = 0; i < 8; ++i) nonce_be[i] = static_cast<uint8_t>(nonce >> ((7U - i) * 8U));
+  for (unsigned i = 0; i < 8; ++i)
+    nonce_be[i] = static_cast<uint8_t>(nonce >> ((7U - i) * 8U));
 
   uint8_t h1_input[40];
 #pragma unroll
-  for (unsigned i = 0; i < 32; ++i) h1_input[i] = message[i];
+  for (unsigned i = 0; i < 32; ++i)
+    h1_input[i] = message[i];
 #pragma unroll
-  for (unsigned i = 0; i < 8; ++i) h1_input[32 + i] = nonce_be[i];
+  for (unsigned i = 0; i < 8; ++i)
+    h1_input[32 + i] = nonce_be[i];
 
   uint8_t h1[32];
   blake2b256_oneblock_dev(h1_input, sizeof(h1_input), h1);
@@ -256,7 +297,8 @@ AUTOLYKOS_DEVICE_INLINE void autolykos_index_hash_dev(
 
   uint8_t seed[71]; // row[1..31] (31) || message (32) || nonce (8)
   if (table) {
-    const uint32_t* const h3_item = table + static_cast<uint64_t>(h3) * (TABLE_ENTRY_BYTES / sizeof(uint32_t));
+    const uint32_t* const h3_item =
+        table + static_cast<uint64_t>(h3) * (TABLE_ENTRY_BYTES / sizeof(uint32_t));
 #pragma unroll
     for (unsigned i = 0; i < 31; ++i) {
       const unsigned pos = i + 1U;
@@ -266,30 +308,36 @@ AUTOLYKOS_DEVICE_INLINE void autolykos_index_hash_dev(
     uint8_t h3_digest[32];
     autolykos_prehash_digest_dev(h3, height, h3_digest);
 #pragma unroll
-    for (unsigned i = 0; i < 31; ++i) seed[i] = h3_digest[i + 1];
+    for (unsigned i = 0; i < 31; ++i)
+      seed[i] = h3_digest[i + 1];
   }
 #pragma unroll
-  for (unsigned i = 0; i < 32; ++i) seed[31 + i] = message[i];
+  for (unsigned i = 0; i < 32; ++i)
+    seed[31 + i] = message[i];
 #pragma unroll
-  for (unsigned i = 0; i < 8; ++i) seed[63 + i] = nonce_be[i];
+  for (unsigned i = 0; i < 8; ++i)
+    seed[63 + i] = nonce_be[i];
 
   blake2b256_oneblock_dev(seed, sizeof(seed), index_hash);
 }
 
 #if defined(MOM_SYCL_PORTABLE_OPENCL)
-AUTOLYKOS_DEVICE_INLINE void autolykos_index_hash_portable_dev(
-  const uint8_t message[32], const uint64_t nonce, const uint32_t height,
-  const uint32_t n_len, const uint64_t n_len_divM, uint8_t index_hash[32]
-) {
+AUTOLYKOS_DEVICE_INLINE void
+autolykos_index_hash_portable_dev(const uint8_t message[32], const uint64_t nonce,
+                                  const uint32_t height, const uint32_t n_len,
+                                  const uint64_t n_len_divM, uint8_t index_hash[32]) {
   uint8_t nonce_be[8];
 #pragma unroll
-  for (unsigned i = 0; i < 8; ++i) nonce_be[i] = static_cast<uint8_t>(nonce >> ((7U - i) * 8U));
+  for (unsigned i = 0; i < 8; ++i)
+    nonce_be[i] = static_cast<uint8_t>(nonce >> ((7U - i) * 8U));
 
   uint8_t h1_input[40];
 #pragma unroll
-  for (unsigned i = 0; i < 32; ++i) h1_input[i] = message[i];
+  for (unsigned i = 0; i < 32; ++i)
+    h1_input[i] = message[i];
 #pragma unroll
-  for (unsigned i = 0; i < 8; ++i) h1_input[32 + i] = nonce_be[i];
+  for (unsigned i = 0; i < 8; ++i)
+    h1_input[32 + i] = nonce_be[i];
 
   uint8_t h1[32];
   blake2b256_oneblock_dev(h1_input, sizeof(h1_input), h1);
@@ -299,11 +347,14 @@ AUTOLYKOS_DEVICE_INLINE void autolykos_index_hash_portable_dev(
 
   uint8_t seed[71];
 #pragma unroll
-  for (unsigned i = 0; i < 31; ++i) seed[i] = h3_digest[i + 1];
+  for (unsigned i = 0; i < 31; ++i)
+    seed[i] = h3_digest[i + 1];
 #pragma unroll
-  for (unsigned i = 0; i < 32; ++i) seed[31 + i] = message[i];
+  for (unsigned i = 0; i < 32; ++i)
+    seed[31 + i] = message[i];
 #pragma unroll
-  for (unsigned i = 0; i < 8; ++i) seed[63 + i] = nonce_be[i];
+  for (unsigned i = 0; i < 8; ++i)
+    seed[63 + i] = nonce_be[i];
   blake2b256_oneblock_dev(seed, sizeof(seed), index_hash);
 }
 #endif

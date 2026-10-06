@@ -1,9 +1,10 @@
-// NVIDIA's public SYCL matrix interface does not expose the staged CUTE mainloop needed by PearlHash:
-// the best SYCL implementation already uses cp.async/ldmatrix/mma.sync but reaches only ~55.5 TH/s
-// on RTX 5060 Ti, while this same architecture-neutral source reaches ~71.5 TH/s at the lab's 150 W
-// limit. Compile it with NVRTC for the newest target supported by both the installed compiler and
-// selected GPU, then cache the resulting PTX or cubin only on that miner. Releases never contain a
-// precompiled device image. The normal SYCL kernel remains the portable and user-selectable fallback.
+// NVIDIA's public SYCL matrix interface does not expose the staged CUTE mainloop needed by
+// PearlHash. At M131072/N524288/K8192/rank128 on RTX 5060 Ti, the retained Linux measurements are
+// 56.39 TH/s for SYCL-native and 80.24 TH/s for this mainloop at 150 W (2026-09-26).
+// Compile it with NVRTC for the newest target supported by both the installed compiler and selected
+// GPU, then cache the resulting PTX or cubin only on that miner. Releases never contain a
+// precompiled device image. The normal SYCL kernel remains the portable and user-selectable
+// fallback.
 R"===CUDA(
 #include <cute/tensor.hpp>
 #include <cute/algorithm/copy.hpp>
@@ -76,22 +77,32 @@ __device__ __forceinline__ uint32_t rotr32(uint32_t x, int n) {
 }
 __device__ __forceinline__ void b3_g(
     uint32_t* s, int a, int b, int c, int d, uint32_t x, uint32_t y) {
-  s[a] += s[b] + x; s[d] = rotr32(s[d] ^ s[a], 16);
-  s[c] += s[d];     s[b] = rotr32(s[b] ^ s[c], 12);
-  s[a] += s[b] + y; s[d] = rotr32(s[d] ^ s[a], 8);
-  s[c] += s[d];     s[b] = rotr32(s[b] ^ s[c], 7);
+  s[a] += s[b] + x;
+  s[d] = rotr32(s[d] ^ s[a], 16);
+  s[c] += s[d];
+  s[b] = rotr32(s[b] ^ s[c], 12);
+  s[a] += s[b] + y;
+  s[d] = rotr32(s[d] ^ s[a], 8);
+  s[c] += s[d];
+  s[b] = rotr32(s[b] ^ s[c], 7);
 }
 __device__ __forceinline__ void b3_round(uint32_t* s, const uint32_t* m) {
-  b3_g(s,0,4,8,12,m[0],m[1]);   b3_g(s,1,5,9,13,m[2],m[3]);
-  b3_g(s,2,6,10,14,m[4],m[5]);  b3_g(s,3,7,11,15,m[6],m[7]);
-  b3_g(s,0,5,10,15,m[8],m[9]);  b3_g(s,1,6,11,12,m[10],m[11]);
-  b3_g(s,2,7,8,13,m[12],m[13]); b3_g(s,3,4,9,14,m[14],m[15]);
+  b3_g(s,0,4,8,12,m[0],m[1]);
+  b3_g(s,1,5,9,13,m[2],m[3]);
+  b3_g(s,2,6,10,14,m[4],m[5]);
+  b3_g(s,3,7,11,15,m[6],m[7]);
+  b3_g(s,0,5,10,15,m[8],m[9]);
+  b3_g(s,1,6,11,12,m[10],m[11]);
+  b3_g(s,2,7,8,13,m[12],m[13]);
+  b3_g(s,3,4,9,14,m[14],m[15]);
 }
 __device__ __forceinline__ uint32_t tile_mix(
     uint32_t row, uint32_t col, const uint32_t* tr) {
   uint32_t h = row * 2654435761u + col * 2246822519u + 0x9e3779b9u;
 #pragma unroll
-  for (int w = 0; w < 16; ++w) h = (h ^ tr[w]) * 16777619u + uint32_t(w);
+  for (int w = 0; w < 16; ++w) {
+    h = (h ^ tr[w]) * 16777619u + uint32_t(w);
+  }
   return h;
 }
 
@@ -110,10 +121,16 @@ void pearlhash_cuda_hash(const uint32_t* transcript, const unsigned char* key,
     message[i] = transcript_words[i];
   }
 #pragma unroll
-  for (int i = 0; i < 8; ++i) state[i] = load32(key + i * 4);
-  state[8] = 0x6a09e667u; state[9] = 0xbb67ae85u;
-  state[10] = 0x3c6ef372u; state[11] = 0xa54ff53au;
-  state[12] = 0; state[13] = 0; state[14] = 64;
+  for (int i = 0; i < 8; ++i) {
+    state[i] = load32(key + i * 4);
+  }
+  state[8] = 0x6a09e667u;
+  state[9] = 0xbb67ae85u;
+  state[10] = 0x3c6ef372u;
+  state[11] = 0xa54ff53au;
+  state[12] = 0;
+  state[13] = 0;
+  state[14] = 64;
   state[15] = 27; // KEYED_HASH | CHUNK_START | CHUNK_END | ROOT
   constexpr int permutation[16] = {2,6,3,10,7,0,4,13,1,11,12,5,9,14,15,8};
 #pragma unroll
@@ -122,9 +139,13 @@ void pearlhash_cuda_hash(const uint32_t* transcript, const unsigned char* key,
     if (round != 6) {
       uint32_t permuted[16];
 #pragma unroll
-      for (int i = 0; i < 16; ++i) permuted[i] = message[permutation[i]];
+      for (int i = 0; i < 16; ++i) {
+        permuted[i] = message[permutation[i]];
+      }
 #pragma unroll
-      for (int i = 0; i < 16; ++i) message[i] = permuted[i];
+      for (int i = 0; i < 16; ++i) {
+        message[i] = permuted[i];
+      }
     }
   }
   bool wins = true;
@@ -139,7 +160,9 @@ void pearlhash_cuda_hash(const uint32_t* transcript, const unsigned char* key,
   }
   const uint32_t row = uint32_t(row_offset) + (tile / tile_columns) * 16u;
   const uint32_t col = (tile % tile_columns) * 16u;
-  if (debug_checksum) atomicAdd(&result->chk, tile_mix(row, col, transcript_words));
+  if (debug_checksum) {
+    atomicAdd(&result->chk, tile_mix(row, col, transcript_words));
+  }
   if (wins && atomicExch(&result->found, 1) == 0) {
     result->seed = seed;
     result->row = row;
@@ -165,7 +188,6 @@ void pearlhash_cuda_gemm(const int8_t* __restrict__ ap, const int8_t* __restrict
   Tensor mB = make_tensor(make_gmem_ptr(bp), select<1, 2>(shape_mnk), input_stride);
   static_assert(sizeof(decltype(mB.layout()(make_coord(0, 0)))) >= sizeof(int64_t),
                 "PearlHash global matrix offsets must be 64-bit");
-
   // Nearby CTAs reuse A/B through L2. Rank-128 groups also leave room for the neighboring
   // group, which can begin while the previous group's final CTAs are still active.
   int block_m = int(blockIdx.x);
@@ -205,7 +227,9 @@ void pearlhash_cuda_gemm(const int8_t* __restrict__ ap, const int8_t* __restrict
   copy(gmem_copy, tBgB(_, _, _, next_tile), tBsB(_, _, _, 0));
   cp_async_fence();
   --tiles_left;
-  if (tiles_left > 0) ++next_tile;
+  if (tiles_left > 0) {
+    ++next_tile;
+  }
 
   const int warp = int(threadIdx.x) >> 5;
   const int lane = int(threadIdx.x) & 31;
@@ -264,7 +288,9 @@ void pearlhash_cuda_gemm(const int8_t* __restrict__ ap, const int8_t* __restrict
         copy(gmem_copy, tBgB(_, _, _, next_tile), tBsB(_, _, _, write_stage));
         cp_async_fence();
         --tiles_left;
-        if (tiles_left > 0) ++next_tile;
+        if (tiles_left > 0) {
+          ++next_tile;
+        }
         write_stage = read_stage;
         read_stage ^= 1;
       }

@@ -320,7 +320,6 @@
       "sources": [
         "sycl/lib.cpp",
         "sycl/etchash/etchash.cpp",
-        "sycl/octopus/octopus.cpp",
         "sycl/autolykos2/autolykos2.cpp",
         "sycl/pearlhash/pearlhash.cpp",
         "sycl/c29/c29.cpp",
@@ -329,14 +328,15 @@
         "sycl/cn_gpu/cn_gpu.cpp",
         "sycl/kawpow/kawpow.cpp",
         "sycl/fishhash/fishhash.cpp",
-        "sycl/zhash/zhash.cpp",
-        "sycl/equihash192_7/equihash192_7.cpp",
         "sycl/hoohash/hoohash.cpp",
         "sycl/walahash/walahash.cpp",
         "sycl/xelishashv3/xelishashv3.cpp",
         "sycl/nexapow/nexapow.cpp",
         "sycl/nexapow/test_probe.cpp",
         "sycl/verthash/verthash.cpp",
+        "sycl/zhash/zhash.cpp",
+        "sycl/equihash192_7/equihash192_7.cpp",
+        "sycl/octopus/octopus.cpp",
         "sycl/zelhash/zelhash.cpp",
         "sycl/beamhash3/beamhash3.cpp"
       ],
@@ -382,7 +382,6 @@
                 "/fsycl",
                 "/clang:-fsycl-device-code-split=per_kernel",
                 "/DNDEBUG",
-                "/DMOM_NEXAPOW_PORTABLE_FIELD32",
                 "/DPEARLHASH_ESIMD",
                 "/DWALAHASH_ESIMD",
                 "/DOCTOPUS_ESIMD",
@@ -390,6 +389,7 @@
                 "/DMOM_C29_INTEL",
                 "/DMOM_BEAMHASH3_INTEL_PAIR32",
                 "/DMOM_ZHASH_INTEL_LATE_BUCKETS",
+                "/DMOM_NEXAPOW_PORTABLE_FIELD32",
                 "/clang:-fno-strict-aliasing"
               ]
             },
@@ -430,7 +430,7 @@
               "sources": [ "sycl/pearlhash/esimd.cpp" ],
               "cflags_cc!": [ "-std=gnu++20" ],
               "cflags+": [
-                "-std=c++20 -O3 -ffp-contract=off -fsycl -fsycl-embed-ir -DNDEBUG -DMOM_SYCL_HAS_CUDA -DMOM_NEXAPOW_SYCL_NATIVE_FIELD -DMOM_PEARLHASH_HAS_ESIMD -DMOM_OCTOPUS_HAS_SYCL_NATIVE"
+                "-std=c++20 -O3 -ffp-contract=off -fsycl -fsycl-embed-ir -DNDEBUG -DMOM_SYCL_HAS_CUDA -DMOM_PEARLHASH_HAS_ESIMD -DMOM_NEXAPOW_SYCL_NATIVE_FIELD -DMOM_OCTOPUS_HAS_SYCL_NATIVE"
               ]
             } ],
             [ "mom_sycl_impl=='dpcpp-opencl'", {
@@ -458,7 +458,7 @@
             } ],
             [ "mom_sycl_impl=='dpcpp'", {
               "cflags+": [
-                "-std=c++20 -O3 -fsycl -fsycl-device-code-split=per_kernel -DNDEBUG -DMOM_NEXAPOW_PORTABLE_FIELD32 -DPEARLHASH_ESIMD -DWALAHASH_ESIMD -DOCTOPUS_ESIMD -DMOM_OCTOPUS_HAS_SYCL_NATIVE -DMOM_C29_INTEL -DMOM_BEAMHASH3_INTEL_PAIR32 -DMOM_ZHASH_INTEL_LATE_BUCKETS"
+                "-std=c++20 -O3 -fsycl -fsycl-device-code-split=per_kernel -DNDEBUG -DPEARLHASH_ESIMD -DWALAHASH_ESIMD -DOCTOPUS_ESIMD -DMOM_OCTOPUS_HAS_SYCL_NATIVE -DMOM_NEXAPOW_PORTABLE_FIELD32 -DMOM_C29_INTEL -DMOM_BEAMHASH3_INTEL_PAIR32 -DMOM_ZHASH_INTEL_LATE_BUCKETS"
               ],
               "ldflags+": [ "-fsycl-device-code-split=per_kernel" ]
             } ]

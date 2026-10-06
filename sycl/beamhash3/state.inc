@@ -1,60 +1,73 @@
 struct BeamLevels {
-  const uint32_t* tree[NUM_ROUNDS + 1];   // tree[L] (L=1..5): 2 u32/slot = parent mixed[L-1] indices
+  const uint32_t* tree[NUM_ROUNDS + 1]; // tree[L] (L=1..5): 2 u32/slot = parent mixed[L-1] indices
 };
 inline unsigned beam_walk_leaves(const BeamLevels& lv, uint32_t final_slot, uint32_t* leaves) {
-  struct Frame { unsigned level; uint32_t slot; };
+  struct Frame {
+    unsigned level;
+    uint32_t slot;
+  };
   Frame stack[NUM_ROUNDS + 2];
   int sp = 0;
-  stack[sp++] = { NUM_ROUNDS, final_slot };
+  stack[sp++] = {NUM_ROUNDS, final_slot};
   unsigned n = 0;
   while (sp > 0) {
     Frame f = stack[--sp];
     if (f.level == 0) {
-      if (n >= NUM_LEAVES) return 0;
+      if (n >= NUM_LEAVES)
+        return 0;
       // Level-0 gen writes leaf `index` at slot `index`, so the stored leaf index == the slot itself.
       // (mixed0 is therefore not persisted; recovery returns the slot directly.)
       leaves[n++] = f.slot;
       continue;
     }
     const uint32_t* tl = lv.tree[f.level] + (size_t)f.slot * 2;
-    if (sp + 2 > (int)(NUM_ROUNDS + 2)) return 0;
+    if (sp + 2 > (int)(NUM_ROUNDS + 2))
+      return 0;
     // push follower first so the leader (lower index) is processed first -> leaves come out in the
     // canonical lowest-index-first tree order (matches getIndicesFromMinimal's field order).
-    stack[sp++] = { f.level - 1, tl[1] };
-    stack[sp++] = { f.level - 1, tl[0] };
+    stack[sp++] = {f.level - 1, tl[1]};
+    stack[sp++] = {f.level - 1, tl[0]};
   }
   return n;
 }
 inline bool beam_leaves_distinct(const uint32_t* leaves, unsigned n) {
   for (unsigned i = 0; i < n; ++i)
     for (unsigned j = i + 1; j < n; ++j)
-      if (leaves[i] == leaves[j]) return false;
+      if (leaves[i] == leaves[j])
+        return false;
   return true;
 }
 
 class BeamFinalKernel;
-static sycl::event submit_final(sycl::queue& q, const uint32_t* d_mixed5,
-                                uint32_t in_count, BeamLevels lv, BeamCandidate* d_cand,
+static sycl::event submit_final(sycl::queue& q, const uint32_t* d_mixed5, uint32_t in_count,
+                                BeamLevels lv, BeamCandidate* d_cand,
                                 uint32_t* d_cand_count, uint32_t cand_cap) {
-  constexpr unsigned IN_ST = mixed_stride_u32(NUM_ROUNDS);   // level-5 stride (1 word + 0 idx) = 2
+  constexpr unsigned IN_ST = mixed_stride_u32(NUM_ROUNDS); // level-5 stride (1 word + 0 idx) = 2
   constexpr unsigned WG = 128;
   const size_t global = ((size_t)in_count + WG - 1) / WG * WG;
   return q.submit([&](sycl::handler& h) {
     h.parallel_for<BeamFinalKernel>(
-      sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(WG)), [=](sycl::nd_item<1> it) MOM_SYCL_KERNEL_ARGS_RESTRICT {
-      const uint32_t s = (uint32_t)it.get_global_id(0);
-      if (s >= in_count) return;
-      const uint32_t* rec = d_mixed5 + (size_t)s * IN_ST;
-      const uint32_t w0 = rec[0];   // low 32 bits of the 24-bit merged field
-      if ((w0 & ((1u << COLLISION_BIT_SIZE) - 1u)) != 0) return;   // must be zero (full XOR collapse)
-      uint32_t leaves[NUM_LEAVES];
-      const unsigned n = beam_walk_leaves(lv, s, leaves);
-      if (n != NUM_LEAVES) return;
-      if (!beam_leaves_distinct(leaves, n)) return;
-      const uint32_t idx = dev_atomic_u32(d_cand_count[0]).fetch_add(1u);
-      if (idx >= cand_cap) return;
-      for (unsigned i = 0; i < NUM_LEAVES; ++i) d_cand[idx].leaves[i] = leaves[i];
-    });
+        sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(WG)),
+        [=](sycl::nd_item<1> it) MOM_SYCL_KERNEL_ARGS_RESTRICT {
+          const uint32_t s = (uint32_t)it.get_global_id(0);
+          if (s >= in_count)
+            return;
+          const uint32_t* rec = d_mixed5 + (size_t)s * IN_ST;
+          const uint32_t w0 = rec[0]; // low 32 bits of the 24-bit merged field
+          if ((w0 & ((1u << COLLISION_BIT_SIZE) - 1u)) != 0)
+            return; // must be zero (full XOR collapse)
+          uint32_t leaves[NUM_LEAVES];
+          const unsigned n = beam_walk_leaves(lv, s, leaves);
+          if (n != NUM_LEAVES)
+            return;
+          if (!beam_leaves_distinct(leaves, n))
+            return;
+          const uint32_t idx = dev_atomic_u32(d_cand_count[0]).fetch_add(1u);
+          if (idx >= cand_cap)
+            return;
+          for (unsigned i = 0; i < NUM_LEAVES; ++i)
+            d_cand[idx].leaves[i] = leaves[i];
+        });
   });
 }
 
@@ -63,10 +76,12 @@ static sycl::event submit_final(sycl::queue& q, const uint32_t* d_mixed5,
 // ===========================================================================================
 class BeamState {
 public:
-  sycl::device device; sycl::queue queue; bool shared_io;
+  sycl::device device;
+  sycl::queue queue;
+  bool shared_io;
   // M1 I/O
-  uint64_t* prePow = nullptr;   // 4 u64 (the SipHash key / IndividualWork)
-  uint8_t*  rows = nullptr;     // BEAMHASH3_TEST_ROWS * ROW_BYTES (raw 448-bit leaf rows)
+  uint64_t* prePow = nullptr; // 4 u64 (the SipHash key / IndividualWork)
+  uint8_t* rows = nullptr;    // BEAMHASH3_TEST_ROWS * ROW_BYTES (raw 448-bit leaf rows)
   // Compact-capable GPU backends use two 64-byte arenas through level 3. Level 4 reuses compact[0]
   // as packed BeamLevel4Row storage while compact[1] retains the recovery trees;
   // MOM_BEAMHASH3_COMPACT=0 selects the fused fallback on non-CUDA backends.
@@ -74,18 +89,20 @@ public:
   uint32_t* linear_mixed = nullptr; // CUDA layout: MIXED_CAP * MAX_MIXED_STRIDE
   uint32_t* bucket[2] = {};         // fused parity arenas, or CUDA's reusable bucket[0]
   uint32_t* bucket_ns[2] = {};      // counters paired with the allocated bucket arenas
-  BeamCompactRow* compact[2] = {};  // default CUDA/HIP packed two-arena Beam pipeline
+  BeamCompactRow* compact[2] = {};  // packed two-arena Beam pipeline
   uint32_t* compact_ns[2] = {};
-  uint32_t* mixed_count           = nullptr; // shared: per-round output counter (NUM_ROUNDS+1 entries)
-  uint32_t* tree[NUM_ROUNDS + 1]  = {};   // tree[L] (L=1..5): NUM_ENTRIES * 2
-  BeamCandidate* cand             = nullptr;
-  uint32_t* cand_count            = nullptr;
+  uint32_t* mixed_count = nullptr;     // shared: per-round output counter (NUM_ROUNDS+1 entries)
+  uint32_t* tree[NUM_ROUNDS + 1] = {}; // tree[L] (L=1..5): NUM_ENTRIES * 2
+  BeamCandidate* cand = nullptr;
+  uint32_t* cand_count = nullptr;
   static constexpr uint32_t CAND_CAP = 8192;
-  bool arenas_built = false; std::mutex mutex;
+  bool arenas_built = false;
+  std::mutex mutex;
 
   explicit BeamState(const std::string& dev_str)
-    : device(get_dev(dev_str)), queue(device, sycl::property_list{sycl::property::queue::in_order{}}),
-      shared_io(device.is_cpu() || !mom_has_usm_device(device)) {
+      : device(get_dev(dev_str)),
+        queue(device, sycl::property_list{sycl::property::queue::in_order{}}),
+        shared_io(device.is_cpu() || !mom_has_usm_device(device)) {
     if (!mom_has_usm_shared(device) || (!device.is_cpu() && !mom_has_usm_device(device)))
       throw std::string("beamhash3 SYCL device does not support required allocations");
   }
@@ -99,9 +116,14 @@ public:
   template <typename T> T* alloc(size_t n) {
     return shared_io ? sycl::malloc_shared<T>(n, queue) : sycl::malloc_device<T>(n, queue);
   }
-  void free_ptr(auto*& p) { if (p) sycl::free(p, queue); p = nullptr; }
+  void free_ptr(auto*& p) {
+    if (p)
+      sycl::free(p, queue);
+    p = nullptr;
+  }
   void free_all() {
-    free_ptr(prePow); free_ptr(rows);
+    free_ptr(prePow);
+    free_ptr(rows);
     free_all_arenas();
   }
   void ensure_io() {
@@ -199,25 +221,29 @@ public:
     }
   }
   void free_all_arenas() {
-    free_ptr(final_mixed); free_ptr(linear_mixed);
+    free_ptr(final_mixed);
+    free_ptr(linear_mixed);
     for (unsigned parity = 0; parity < 2; ++parity) {
       free_ptr(compact[parity]);
       free_ptr(compact_ns[parity]);
     }
-    for (unsigned L = 0; L <= NUM_ROUNDS; ++L) free_ptr(tree[L]);
+    for (unsigned L = 0; L <= NUM_ROUNDS; ++L)
+      free_ptr(tree[L]);
     for (unsigned parity = 0; parity < 2; ++parity) {
       free_ptr(bucket[parity]);
       free_ptr(bucket_ns[parity]);
     }
-    free_ptr(mixed_count); free_ptr(cand); free_ptr(cand_count);
+    free_ptr(mixed_count);
+    free_ptr(cand);
+    free_ptr(cand_count);
     arenas_built = false;
   }
   static uint64_t now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
-      std::chrono::steady_clock::now().time_since_epoch()).count();
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
   }
 };
-
 
 static DeviceStateRegistry<BeamState>& beam_registry() {
   static auto* const registry = new DeviceStateRegistry<BeamState>;

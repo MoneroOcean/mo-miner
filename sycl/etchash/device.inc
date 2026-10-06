@@ -1,13 +1,13 @@
 namespace mom_etchash {
 
-constexpr uint32_t ETCHASH_FORK_BLOCK      = 11700000;
-constexpr uint32_t ETHASH_EPOCH            = 30000;
-constexpr uint32_t ETCHASH_EPOCH           = 60000;
-constexpr uint32_t ETHASH_NODE_WORDS       = 16;
-constexpr uint32_t ETHASH_MIX_WORDS        = ETHASH_MIX_BYTES / sizeof(uint32_t);
+constexpr uint32_t ETCHASH_FORK_BLOCK = 11700000;
+constexpr uint32_t ETHASH_EPOCH = 30000;
+constexpr uint32_t ETCHASH_EPOCH = 60000;
+constexpr uint32_t ETHASH_NODE_WORDS = 16;
+constexpr uint32_t ETHASH_MIX_WORDS = ETHASH_MIX_BYTES / sizeof(uint32_t);
 constexpr uint32_t ETHASH_DATASET_PARENTS2 = 256;
-constexpr uint32_t FNV_PRIME               = 0x01000193U;
-constexpr uint32_t MAX_ETCHASH_OUTPUTS     = 15;
+constexpr uint32_t FNV_PRIME = 0x01000193U;
+constexpr uint32_t MAX_ETCHASH_OUTPUTS = 15;
 
 // FastModData / make_fast_mod_data / fast_mod_dev are shared from lib-internal.h.
 
@@ -33,10 +33,8 @@ inline uint32_t fnv_fold4_dev(const uint32_t* const v) {
 }
 
 inline uint32_t load32_le_dev(const uint8_t* const input) {
-  return static_cast<uint32_t>(input[0]) |
-         (static_cast<uint32_t>(input[1]) << 8) |
-         (static_cast<uint32_t>(input[2]) << 16) |
-         (static_cast<uint32_t>(input[3]) << 24);
+  return static_cast<uint32_t>(input[0]) | (static_cast<uint32_t>(input[1]) << 8) |
+         (static_cast<uint32_t>(input[2]) << 16) | (static_cast<uint32_t>(input[3]) << 24);
 }
 
 inline uint64_t load64_le_dev(const uint8_t* const input) {
@@ -57,33 +55,24 @@ inline uint64_t rotl64_dev(const uint64_t value, const unsigned shift) {
 
 inline void keccakf1600_u64_round_dev(uint64_t st[25], const unsigned round) {
   static constexpr uint64_t rndc[24] = {
-    0x0000000000000001ULL, 0x0000000000008082ULL,
-    0x800000000000808aULL, 0x8000000080008000ULL,
-    0x000000000000808bULL, 0x0000000080000001ULL,
-    0x8000000080008081ULL, 0x8000000000008009ULL,
-    0x000000000000008aULL, 0x0000000000000088ULL,
-    0x0000000080008009ULL, 0x000000008000000aULL,
-    0x000000008000808bULL, 0x800000000000008bULL,
-    0x8000000000008089ULL, 0x8000000000008003ULL,
-    0x8000000000008002ULL, 0x8000000000000080ULL,
-    0x000000000000800aULL, 0x800000008000000aULL,
-    0x8000000080008081ULL, 0x8000000000008080ULL,
-    0x0000000080000001ULL, 0x8000000080008008ULL
-  };
-  static constexpr unsigned rotc[24] = {
-    1, 3, 6, 10, 15, 21, 28, 36, 45, 55, 2, 14,
-    27, 41, 56, 8, 25, 43, 62, 18, 39, 61, 20, 44
-  };
-  static constexpr unsigned piln[24] = {
-    10, 7, 11, 17, 18, 3, 5, 16, 8, 21, 24, 4,
-    15, 23, 19, 13, 12, 2, 20, 14, 22, 9, 6, 1
-  };
+      0x0000000000000001ULL, 0x0000000000008082ULL, 0x800000000000808aULL, 0x8000000080008000ULL,
+      0x000000000000808bULL, 0x0000000080000001ULL, 0x8000000080008081ULL, 0x8000000000008009ULL,
+      0x000000000000008aULL, 0x0000000000000088ULL, 0x0000000080008009ULL, 0x000000008000000aULL,
+      0x000000008000808bULL, 0x800000000000008bULL, 0x8000000000008089ULL, 0x8000000000008003ULL,
+      0x8000000000008002ULL, 0x8000000000000080ULL, 0x000000000000800aULL, 0x800000008000000aULL,
+      0x8000000080008081ULL, 0x8000000000008080ULL, 0x0000000080000001ULL, 0x8000000080008008ULL};
+  static constexpr unsigned rotc[24] = {1,  3,  6,  10, 15, 21, 28, 36, 45, 55, 2,  14,
+                                        27, 41, 56, 8,  25, 43, 62, 18, 39, 61, 20, 44};
+  static constexpr unsigned piln[24] = {10, 7,  11, 17, 18, 3, 5,  16, 8,  21, 24, 4,
+                                        15, 23, 19, 13, 12, 2, 20, 14, 22, 9,  6,  1};
 
   uint64_t bc[5];
-  for (unsigned i = 0; i < 5; ++i) bc[i] = st[i] ^ st[i + 5] ^ st[i + 10] ^ st[i + 15] ^ st[i + 20];
+  for (unsigned i = 0; i < 5; ++i)
+    bc[i] = st[i] ^ st[i + 5] ^ st[i + 10] ^ st[i + 15] ^ st[i + 20];
   for (unsigned i = 0; i < 5; ++i) {
     const uint64_t t = bc[(i + 4) % 5] ^ rotl64_dev(bc[(i + 1) % 5], 1);
-    for (unsigned j = 0; j < 25; j += 5) st[j + i] ^= t;
+    for (unsigned j = 0; j < 25; j += 5)
+      st[j + i] ^= t;
   }
 
   uint64_t t = st[1];
@@ -95,18 +84,22 @@ inline void keccakf1600_u64_round_dev(uint64_t st[25], const unsigned round) {
   }
 
   for (unsigned j = 0; j < 25; j += 5) {
-    for (unsigned i = 0; i < 5; ++i) bc[i] = st[j + i];
-    for (unsigned i = 0; i < 5; ++i) st[j + i] ^= (~bc[(i + 1) % 5]) & bc[(i + 2) % 5];
+    for (unsigned i = 0; i < 5; ++i)
+      bc[i] = st[j + i];
+    for (unsigned i = 0; i < 5; ++i)
+      st[j + i] ^= (~bc[(i + 1) % 5]) & bc[(i + 2) % 5];
   }
 
   st[0] ^= rndc[round];
 }
 
 inline void keccakf1600_u64_dev(uint64_t st[25]) {
-  for (unsigned round = 0; round < 24; ++round) keccakf1600_u64_round_dev(st, round);
+  for (unsigned round = 0; round < 24; ++round)
+    keccakf1600_u64_round_dev(st, round);
 }
 
-inline void store64_words_le_dev(uint32_t* const output, const unsigned lane, const uint64_t value) {
+inline void store64_words_le_dev(uint32_t* const output, const unsigned lane,
+                                 const uint64_t value) {
   output[lane * 2] = static_cast<uint32_t>(value);
   output[lane * 2 + 1] = static_cast<uint32_t>(value >> 32);
 }
@@ -141,18 +134,16 @@ inline void store_pair_words_dev(uint32_t* const out, const unsigned lane, const
 
 inline Uint2 rotl64_pair_dev(const Uint2 value, const unsigned shift) {
   const unsigned s = shift & 63U;
-  if (s == 0) return value;
+  if (s == 0)
+    return value;
   if (s < 32) {
-    return make_u2(
-      (value.x << s) | (value.y >> (32U - s)),
-      (value.y << s) | (value.x >> (32U - s))
-    );
+    return make_u2((value.x << s) | (value.y >> (32U - s)),
+                   (value.y << s) | (value.x >> (32U - s)));
   }
-  if (s == 32) return make_u2(value.y, value.x);
-  return make_u2(
-    (value.y << (s - 32U)) | (value.x >> (64U - s)),
-    (value.x << (s - 32U)) | (value.y >> (64U - s))
-  );
+  if (s == 32)
+    return make_u2(value.y, value.x);
+  return make_u2((value.y << (s - 32U)) | (value.x >> (64U - s)),
+                 (value.x << (s - 32U)) | (value.y >> (64U - s)));
 }
 
 inline void keccakf1600_pair_chi_dev(Uint2 st[25], const unsigned row, const Uint2 t[25]) {
@@ -165,19 +156,14 @@ inline void keccakf1600_pair_chi_dev(Uint2 st[25], const unsigned row, const Uin
 
 inline void keccakf1600_pair_round_dev(Uint2 st[25], const unsigned round) {
   static constexpr Uint2 rndc[24] = {
-    {0x00000001, 0x00000000}, {0x00008082, 0x00000000},
-    {0x0000808a, 0x80000000}, {0x80008000, 0x80000000},
-    {0x0000808b, 0x00000000}, {0x80000001, 0x00000000},
-    {0x80008081, 0x80000000}, {0x00008009, 0x80000000},
-    {0x0000008a, 0x00000000}, {0x00000088, 0x00000000},
-    {0x80008009, 0x00000000}, {0x8000000a, 0x00000000},
-    {0x8000808b, 0x00000000}, {0x0000008b, 0x80000000},
-    {0x00008089, 0x80000000}, {0x00008003, 0x80000000},
-    {0x00008002, 0x80000000}, {0x00000080, 0x80000000},
-    {0x0000800a, 0x00000000}, {0x8000000a, 0x80000000},
-    {0x80008081, 0x80000000}, {0x00008080, 0x80000000},
-    {0x80000001, 0x00000000}, {0x80008008, 0x80000000}
-  };
+      {0x00000001, 0x00000000}, {0x00008082, 0x00000000}, {0x0000808a, 0x80000000},
+      {0x80008000, 0x80000000}, {0x0000808b, 0x00000000}, {0x80000001, 0x00000000},
+      {0x80008081, 0x80000000}, {0x00008009, 0x80000000}, {0x0000008a, 0x00000000},
+      {0x00000088, 0x00000000}, {0x80008009, 0x00000000}, {0x8000000a, 0x00000000},
+      {0x8000808b, 0x00000000}, {0x0000008b, 0x80000000}, {0x00008089, 0x80000000},
+      {0x00008003, 0x80000000}, {0x00008002, 0x80000000}, {0x00000080, 0x80000000},
+      {0x0000800a, 0x00000000}, {0x8000000a, 0x80000000}, {0x80008081, 0x80000000},
+      {0x00008080, 0x80000000}, {0x80000001, 0x00000000}, {0x80008008, 0x80000000}};
 
   Uint2 t[25];
   Uint2 u;
@@ -189,15 +175,35 @@ inline void keccakf1600_pair_round_dev(Uint2 st[25], const unsigned round) {
   t[4] = st[4] ^ st[9] ^ st[14] ^ st[19] ^ st[24];
 
   u = t[4] ^ rotl64_pair_dev(t[1], 1);
-  st[0] ^= u; st[5] ^= u; st[10] ^= u; st[15] ^= u; st[20] ^= u;
+  st[0] ^= u;
+  st[5] ^= u;
+  st[10] ^= u;
+  st[15] ^= u;
+  st[20] ^= u;
   u = t[0] ^ rotl64_pair_dev(t[2], 1);
-  st[1] ^= u; st[6] ^= u; st[11] ^= u; st[16] ^= u; st[21] ^= u;
+  st[1] ^= u;
+  st[6] ^= u;
+  st[11] ^= u;
+  st[16] ^= u;
+  st[21] ^= u;
   u = t[1] ^ rotl64_pair_dev(t[3], 1);
-  st[2] ^= u; st[7] ^= u; st[12] ^= u; st[17] ^= u; st[22] ^= u;
+  st[2] ^= u;
+  st[7] ^= u;
+  st[12] ^= u;
+  st[17] ^= u;
+  st[22] ^= u;
   u = t[2] ^ rotl64_pair_dev(t[4], 1);
-  st[3] ^= u; st[8] ^= u; st[13] ^= u; st[18] ^= u; st[23] ^= u;
+  st[3] ^= u;
+  st[8] ^= u;
+  st[13] ^= u;
+  st[18] ^= u;
+  st[23] ^= u;
   u = t[3] ^ rotl64_pair_dev(t[0], 1);
-  st[4] ^= u; st[9] ^= u; st[14] ^= u; st[19] ^= u; st[24] ^= u;
+  st[4] ^= u;
+  st[9] ^= u;
+  st[14] ^= u;
+  st[19] ^= u;
+  st[24] ^= u;
 
   t[0] = st[0];
   t[10] = rotl64_pair_dev(st[1], 1);
@@ -240,7 +246,8 @@ inline void keccakf1600_pair_round_dev(Uint2 st[25], const unsigned round) {
 #if defined(__NVPTX__)
 // NVIDIA (nvptx device image): the 32-bit-pair permutation is correct and tuned for warps; unchanged from 0.7.0.
 inline void keccakf1600_pair_dev(Uint2 st[25]) {
-  for (unsigned round = 0; round < 24; ++round) keccakf1600_pair_round_dev(st, round);
+  for (unsigned round = 0; round < 24; ++round)
+    keccakf1600_pair_round_dev(st, round);
 }
 #else
 // SPIR-V device image (Intel IGC / AMD / CPU). IGC 2.36.x SILENTLY MISCOMPILES the Uint2 32-bit-pair
@@ -252,7 +259,8 @@ inline void keccakf1600_pair_dev(Uint2 st[25]) {
 // (sibling of intel-graphics-compiler#414). This out-of-line function is the always-correct reference
 // path (used by DAG-gen and by the noinline search instantiation, byte-identical to 0.7.0 codegen).
 inline __attribute__((noinline)) void keccakf1600_pair_dev(Uint2 st[25]) {
-  for (unsigned round = 0; round < 24; ++round) keccakf1600_pair_round_dev(st, round);
+  for (unsigned round = 0; round < 24; ++round)
+    keccakf1600_pair_round_dev(st, round);
 }
 #endif
 
@@ -261,32 +269,41 @@ inline __attribute__((noinline)) void keccakf1600_pair_dev(Uint2 st[25]) {
 // out-of-line keccakf1600_pair_dev reference. Inlining the rounds directly -- rather than via a second
 // identical always_inline function -- keeps the noinline path's codegen byte-identical to 0.7.0 (an
 // identical-bodied always_inline twin made IGC miscompile the *noinline* path even on a good IGC).
-template <bool INLINE_PAIR>
-inline void keccakf1600_pair_sel_dev(Uint2 st[25]) {
-  if constexpr (INLINE_PAIR) { for (unsigned round = 0; round < 24; ++round) keccakf1600_pair_round_dev(st, round); }
-  else                       { keccakf1600_pair_dev(st); }
+template <bool INLINE_PAIR> inline void keccakf1600_pair_sel_dev(Uint2 st[25]) {
+  if constexpr (INLINE_PAIR) {
+    for (unsigned round = 0; round < 24; ++round)
+      keccakf1600_pair_round_dev(st, round);
+  } else {
+    keccakf1600_pair_dev(st);
+  }
 }
 
 inline void keccak_512_words_dev(uint32_t words[ETHASH_NODE_WORDS]) {
   Uint2 st[25]{};
-  for (unsigned i = 0; i < 8; ++i) st[i] = make_u2(words[i * 2], words[i * 2 + 1]);
+  for (unsigned i = 0; i < 8; ++i)
+    st[i] = make_u2(words[i * 2], words[i * 2 + 1]);
   st[8] = make_u2(0x00000001, 0x80000000);
   keccakf1600_pair_dev(st);
-  for (unsigned i = 0; i < 8; ++i) store_pair_words_dev(words, i, st[i]);
+  for (unsigned i = 0; i < 8; ++i)
+    store_pair_words_dev(words, i, st[i]);
 }
 
-inline void keccak_512_header_nonce_dev(const uint8_t* const header_hash, const uint64_t nonce, uint32_t out[16]) {
+inline void keccak_512_header_nonce_dev(const uint8_t* const header_hash, const uint64_t nonce,
+                                        uint32_t out[16]) {
   uint64_t st[25]{};
-  for (unsigned i = 0; i < 4; ++i) st[i] = load64_le_dev(header_hash + i * 8);
+  for (unsigned i = 0; i < 4; ++i)
+    st[i] = load64_le_dev(header_hash + i * 8);
   st[4] = nonce;
   st[5] = 0x0000000000000001ULL;
   st[8] = 0x8000000000000000ULL;
   keccakf1600_u64_dev(st);
-  for (unsigned i = 0; i < 8; ++i) store64_words_le_dev(out, i, st[i]);
+  for (unsigned i = 0; i < 8; ++i)
+    store64_words_le_dev(out, i, st[i]);
 }
 
 template <bool INLINE_PAIR>
-inline void keccak_512_header_nonce_pair_dev(const uint8_t* const header_hash, const uint64_t nonce, uint32_t out[16]) {
+inline void keccak_512_header_nonce_pair_dev(const uint8_t* const header_hash, const uint64_t nonce,
+                                             uint32_t out[16]) {
   Uint2 st[25]{};
   for (unsigned i = 0; i < 4; ++i) {
     st[i] = make_u2(load32_le_dev(header_hash + i * 8), load32_le_dev(header_hash + i * 8 + 4));
@@ -295,15 +312,17 @@ inline void keccak_512_header_nonce_pair_dev(const uint8_t* const header_hash, c
   st[5] = make_u2(0x00000001, 0x00000000);
   st[8] = make_u2(0x00000000, 0x80000000);
   keccakf1600_pair_sel_dev<INLINE_PAIR>(st);
-  for (unsigned i = 0; i < 8; ++i) store_pair_words_dev(out, i, st[i]);
+  for (unsigned i = 0; i < 8; ++i)
+    store_pair_words_dev(out, i, st[i]);
 }
 
-inline void keccak_256_seed_mix_dev(const uint32_t seed[16], const uint32_t mix[8], uint8_t out[32]) {
+inline void keccak_256_seed_mix_dev(const uint32_t seed[16], const uint32_t mix[8],
+                                    uint8_t out[32]) {
   uint64_t st[25]{};
-  for (unsigned i = 0; i < 8; ++i) st[i] = static_cast<uint64_t>(seed[i * 2]) |
-                                            (static_cast<uint64_t>(seed[i * 2 + 1]) << 32);
-  for (unsigned i = 0; i < 4; ++i) st[8 + i] = static_cast<uint64_t>(mix[i * 2]) |
-                                                (static_cast<uint64_t>(mix[i * 2 + 1]) << 32);
+  for (unsigned i = 0; i < 8; ++i)
+    st[i] = static_cast<uint64_t>(seed[i * 2]) | (static_cast<uint64_t>(seed[i * 2 + 1]) << 32);
+  for (unsigned i = 0; i < 4; ++i)
+    st[8 + i] = static_cast<uint64_t>(mix[i * 2]) | (static_cast<uint64_t>(mix[i * 2 + 1]) << 32);
   st[12] = 0x0000000000000001ULL;
   st[16] = 0x8000000000000000ULL;
   keccakf1600_u64_dev(st);
@@ -314,10 +333,13 @@ inline void keccak_256_seed_mix_dev(const uint32_t seed[16], const uint32_t mix[
 }
 
 template <bool INLINE_PAIR>
-inline void keccak_256_seed_mix_pair_dev(const uint32_t seed[16], const uint32_t mix[8], uint8_t out[32]) {
+inline void keccak_256_seed_mix_pair_dev(const uint32_t seed[16], const uint32_t mix[8],
+                                         uint8_t out[32]) {
   Uint2 st[25]{};
-  for (unsigned i = 0; i < 8; ++i) st[i] = make_u2(seed[i * 2], seed[i * 2 + 1]);
-  for (unsigned i = 0; i < 4; ++i) st[8 + i] = make_u2(mix[i * 2], mix[i * 2 + 1]);
+  for (unsigned i = 0; i < 8; ++i)
+    st[i] = make_u2(seed[i * 2], seed[i * 2 + 1]);
+  for (unsigned i = 0; i < 4; ++i)
+    st[8 + i] = make_u2(mix[i * 2], mix[i * 2 + 1]);
   st[12] = make_u2(0x00000001, 0x00000000);
   st[16] = make_u2(0x00000000, 0x80000000);
   keccakf1600_pair_sel_dev<INLINE_PAIR>(st);
@@ -329,28 +351,27 @@ inline void keccak_256_seed_mix_pair_dev(const uint32_t seed[16], const uint32_t
 
 inline bool meets_target_dev(const uint8_t output[32], const uint8_t* const target) {
   for (unsigned i = 0; i < 32; ++i) {
-    if (output[i] == target[i]) continue;
+    if (output[i] == target[i])
+      continue;
     return output[i] < target[i];
   }
   return true;
 }
 
-inline void store_etchash_result(
-  EtchashResult* const result, const uint64_t nonce, const uint8_t output[32],
-  const uint32_t mix_hash_words[8]
-) {
-  using atomic_ref = sycl::atomic_ref<
-    uint32_t,
-    sycl::memory_order::relaxed,
-    sycl::memory_scope::device,
-    sycl::access::address_space::global_space
-  >;
+inline void store_etchash_result(EtchashResult* const result, const uint64_t nonce,
+                                 const uint8_t output[32], const uint32_t mix_hash_words[8]) {
+  using atomic_ref =
+      sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
+                       sycl::access::address_space::global_space>;
   const uint32_t index = atomic_ref(result->count).fetch_add(1);
-  if (index >= MAX_ETCHASH_OUTPUTS) return;
+  if (index >= MAX_ETCHASH_OUTPUTS)
+    return;
 
   result->nonce[index] = nonce;
-  for (unsigned i = 0; i < 32; ++i) result->output[index][i] = output[i];
-  for (unsigned i = 0; i < 8; ++i) store32_le_dev(result->mix_hash[index] + i * 4, mix_hash_words[i]);
+  for (unsigned i = 0; i < 32; ++i)
+    result->output[index][i] = output[i];
+  for (unsigned i = 0; i < 8; ++i)
+    store32_le_dev(result->mix_hash[index] + i * 4, mix_hash_words[i]);
 }
 
 inline uint32_t etchash_epoch(const uint32_t height) {
@@ -373,7 +394,8 @@ static void format_duration_ms(char* out, size_t out_size, uint64_t ms) {
   }
 }
 
-void compute_light_cache(std::vector<uint32_t>& cache, const uint32_t epoch, const uint32_t seed_epoch) {
+void compute_light_cache(std::vector<uint32_t>& cache, const uint32_t epoch,
+                         const uint32_t seed_epoch) {
   const uint64_t cache_bytes = cache_sizes[epoch];
   cache.assign(cache_bytes / sizeof(uint32_t), 0);
 
@@ -384,7 +406,9 @@ void compute_light_cache(std::vector<uint32_t>& cache, const uint32_t epoch, con
 }
 
 bool is_zero_hash(const uint8_t* const hash) {
-  for (unsigned i = 0; i < HASH_LEN; ++i) if (hash[i]) return false;
+  for (unsigned i = 0; i < HASH_LEN; ++i)
+    if (hash[i])
+      return false;
   return true;
 }
 
@@ -392,7 +416,8 @@ uint32_t seed_epoch_from_hash(const uint8_t* const seed_hash) {
   constexpr uint32_t max_seed_epoch = 4096;
   for (uint32_t seed_epoch = 0; seed_epoch != max_seed_epoch; ++seed_epoch) {
     const ethash_h256_t current = ethash_get_seedhash(seed_epoch);
-    if (std::memcmp(current.b, seed_hash, HASH_LEN) == 0) return seed_epoch;
+    if (std::memcmp(current.b, seed_hash, HASH_LEN) == 0)
+      return seed_epoch;
   }
   throw std::string("Unknown etchash seed hash");
 }

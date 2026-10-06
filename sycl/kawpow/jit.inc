@@ -11,10 +11,12 @@
 // Minimal Win32 declarations instead of <windows.h>: the latter's _Interlocked* intrinsics clash with
 // MSVC's <atomic> under clang -fsycl ("ambiguous"). These locate the loaded module (GetModuleHandleEx +
 // GetModuleFileName) so the packaged kawpow_device.inc can ship beside it.
-extern "C" __declspec(dllimport) int  __stdcall GetModuleHandleExA(unsigned long, const char*, void**);
-extern "C" __declspec(dllimport) unsigned long __stdcall GetModuleFileNameA(void*, char*, unsigned long);
+extern "C" __declspec(dllimport) int __stdcall GetModuleHandleExA(unsigned long, const char*,
+                                                                  void**);
+extern "C" __declspec(dllimport) unsigned long __stdcall GetModuleFileNameA(void*, char*,
+                                                                            unsigned long);
 #else
-#include <dlfcn.h>    // dladdr: locate the loaded module so packaged device source can ship beside it
+#include <dlfcn.h> // dladdr: locate the loaded module so packaged device source can ship beside it
 #endif
 
 // Prelude: everything sycl/kawpow/device.inc relies on (it assumes constants/structs/FastModData are
@@ -25,7 +27,9 @@ static const char* const KAWPOW_JIT_PRELUDE = R"KJP(
 #include <sycl/sycl.hpp>
 #include <sycl/ext/oneapi/work_group_static.hpp>
 #include <cstdint>
-using std::uint8_t; using std::uint32_t; using std::uint64_t;
+using std::uint8_t;
+using std::uint32_t;
+using std::uint64_t;
 namespace syclexp = sycl::ext::oneapi::experimental;
 
 // The shared device body uses the miner wrappers so DPC++/AMDGPU AOT can select
@@ -101,7 +105,9 @@ void KAWPOW_JIT_KERNEL_NAME(const uint8_t* d_input, const DagLoad* __restrict__ 
   for (uint32_t word = lid * KAWPOW_DAG_LOADS; word < KAWPOW_CACHE_WORDS;
        word += item.get_local_range(0) * KAWPOW_DAG_LOADS) {
     const DagLoad load = d_dag_load[word / KAWPOW_DAG_LOADS];
-    for (unsigned i = 0; i < KAWPOW_DAG_LOADS; ++i) c_dag[word + i] = load.s[i];
+    for (unsigned i = 0; i < KAWPOW_DAG_LOADS; ++i) {
+      c_dag[word + i] = load.s[i];
+    }
   }
   item.barrier(sycl::access::fence_space::local_space);
 
@@ -133,9 +139,11 @@ void KAWPOW_JIT_KERNEL_NAME(const uint8_t* d_input, const DagLoad* __restrict__ 
 )KJW";
 
 static std::string kawpow_read_file(const std::string& path) {
-  if (path.empty()) return {};
+  if (path.empty())
+    return {};
   std::ifstream f(path, std::ios::binary);
-  if (!f) return {};
+  if (!f)
+    return {};
   std::stringstream ss;
   ss << f.rdbuf();
   return ss.str();
@@ -153,7 +161,8 @@ static std::string kawpow_module_dir() {
     if (n > 0 && n < sizeof(buf)) {
       const std::string p(buf, n);
       const size_t slash = p.find_last_of("/\\");
-      if (slash != std::string::npos) return p.substr(0, slash);
+      if (slash != std::string::npos)
+        return p.substr(0, slash);
     }
   }
   return {};
@@ -162,7 +171,8 @@ static std::string kawpow_module_dir() {
   if (dladdr(reinterpret_cast<const void*>(&kawpow_read_file), &info) && info.dli_fname) {
     const std::string p = info.dli_fname;
     const size_t slash = p.find_last_of('/');
-    if (slash != std::string::npos) return p.substr(0, slash);
+    if (slash != std::string::npos)
+      return p.substr(0, slash);
   }
   return {};
 #endif
@@ -177,13 +187,13 @@ static const std::string& kawpow_device_src() {
     const char* const env = std::getenv("MOM_KAWPOW_DEVICE_INC");
     const std::string dir = kawpow_module_dir();
     const std::string candidates[] = {
-      env ? std::string(env) : std::string(),
-      dir.empty() ? std::string() : dir + "/kawpow_device.inc",
-      dir.empty() ? std::string() : dir + "/sycl/kawpow/device.inc",
-      // Development addons are under build/<lin|win>/Release.
-      dir.empty() ? std::string() : dir + "/../../../sycl/kawpow/device.inc",
-      dir.empty() ? std::string() : dir + "/../../sycl/kawpow/device.inc",
-      "sycl/kawpow/device.inc",
+        env ? std::string(env) : std::string(),
+        dir.empty() ? std::string() : dir + "/kawpow_device.inc",
+        dir.empty() ? std::string() : dir + "/sycl/kawpow/device.inc",
+        // Development addons are under build/<lin|win>/Release.
+        dir.empty() ? std::string() : dir + "/../../../sycl/kawpow/device.inc",
+        dir.empty() ? std::string() : dir + "/../../sycl/kawpow/device.inc",
+        "sycl/kawpow/device.inc",
     };
     std::string device_path;
     std::string device_source;
@@ -199,19 +209,21 @@ static const std::string& kawpow_device_src() {
                         "sycl/kawpow/ (set MOM_KAWPOW_DEVICE_INC)");
 
     const size_t slash = device_path.find_last_of("/\\");
-    const std::string source_dir = slash == std::string::npos ? std::string() : device_path.substr(0, slash);
+    const std::string source_dir =
+        slash == std::string::npos ? std::string() : device_path.substr(0, slash);
     const std::string keccak_candidates[] = {
-      source_dir.empty() ? std::string() : source_dir + "/keccak.inc",
-      source_dir.empty() ? std::string() : source_dir + "/kawpow_keccak.inc",
-      dir.empty() ? std::string() : dir + "/kawpow_keccak.inc",
-      dir.empty() ? std::string() : dir + "/../../../sycl/kawpow/keccak.inc",
-      dir.empty() ? std::string() : dir + "/../../sycl/kawpow/keccak.inc",
-      "sycl/kawpow/keccak.inc",
+        source_dir.empty() ? std::string() : source_dir + "/keccak.inc",
+        source_dir.empty() ? std::string() : source_dir + "/kawpow_keccak.inc",
+        dir.empty() ? std::string() : dir + "/kawpow_keccak.inc",
+        dir.empty() ? std::string() : dir + "/../../../sycl/kawpow/keccak.inc",
+        dir.empty() ? std::string() : dir + "/../../sycl/kawpow/keccak.inc",
+        "sycl/kawpow/keccak.inc",
     };
     std::string keccak_source;
     for (const std::string& path : keccak_candidates) {
       keccak_source = kawpow_read_file(path);
-      if (!keccak_source.empty()) break;
+      if (!keccak_source.empty())
+        break;
     }
     if (keccak_source.empty())
       throw std::string("kawpow JIT: cannot find kawpow_keccak.inc beside the device source");
@@ -232,18 +244,25 @@ static std::string kawpow_emit_baked(const KawpowProgram& p, const FastModData& 
   const auto braces = [](std::initializer_list<uint32_t> fields) {
     std::string r = "{";
     const char* sep = "";
-    for (const uint32_t v : fields) { r += sep + std::to_string(v); sep = ","; }
+    for (const uint32_t v : fields) {
+      r += sep + std::to_string(v);
+      sep = ",";
+    }
     return r + "},";
   };
   std::string s = "static const KawpowProgram BAKED_PROGRAM = {{";
-  for (const auto& o : p.cache) s += braces({o.src, o.dst, o.merge_mode, o.merge_shift});
+  for (const auto& o : p.cache)
+    s += braces({o.src, o.dst, o.merge_mode, o.merge_shift});
   s += "},{";
-  for (const auto& o : p.math) s += braces({o.src1, o.src2, o.dst, o.math_selector, o.merge_mode, o.merge_shift});
+  for (const auto& o : p.math)
+    s += braces({o.src1, o.src2, o.dst, o.math_selector, o.merge_mode, o.merge_shift});
   s += "},{";
-  for (const auto& o : p.data) s += braces({o.dst, o.merge_mode, o.merge_shift});
+  for (const auto& o : p.data)
+    s += braces({o.dst, o.merge_mode, o.merge_shift});
   s += "}};\n";
   s += "static const FastModData BAKED_DAGMOD = {" + std::to_string(m.reciprocal) + "," +
-       std::to_string(m.increment) + "," + std::to_string(m.shift) + "," + std::to_string(m.divisor) + "};\n";
+       std::to_string(m.increment) + "," + std::to_string(m.shift) + "," +
+       std::to_string(m.divisor) + "};\n";
   return s;
 }
 
@@ -256,7 +275,10 @@ static std::string kawpow_emit_seal(const SealMode seal, const uint32_t magic[15
   s += (seal == SealMode::FIRO) ? "FIRO" : "KAWPOW";
   s += ";\nstatic const uint32_t JIT_MAGIC[15] = {";
   const char* sep = "";
-  for (unsigned i = 0; i < 15; ++i) { s += sep + std::to_string(magic[i]); sep = ","; }
+  for (unsigned i = 0; i < 15; ++i) {
+    s += sep + std::to_string(magic[i]);
+    sep = ",";
+  }
   s += "};\n";
   return s;
 }
@@ -264,31 +286,37 @@ static std::string kawpow_emit_seal(const SealMode seal, const uint32_t magic[15
 // Bake the per-variant inner-loop shape (REGS/CNT_CACHE/CNT_MATH) as JIT_* macros the WRAPPER passes as
 // template args to kawpow_search_dev so the program-application chain unrolls to the active counts.
 // KawPoW/FiroPow/EvrProgPow 32/11/18; MeowPow 16/6/9. Injected after the device .inc, before the WRAPPER.
-static std::string kawpow_emit_shape(const uint32_t regs, const uint32_t cnt_cache, const uint32_t cnt_math) {
-  return "#define JIT_REGS " + std::to_string(regs) +
-         "\n#define JIT_CNT_CACHE " + std::to_string(cnt_cache) +
-         "\n#define JIT_CNT_MATH " + std::to_string(cnt_math) + "\n";
+static std::string kawpow_emit_shape(const uint32_t regs, const uint32_t cnt_cache,
+                                     const uint32_t cnt_math) {
+  return "#define JIT_REGS " + std::to_string(regs) + "\n#define JIT_CNT_CACHE " +
+         std::to_string(cnt_cache) + "\n#define JIT_CNT_MATH " + std::to_string(cnt_math) + "\n";
 }
 
 // Every live runtime image needs a distinct free-function kernel symbol. The current and prefetched
 // period bundles coexist, and older DPC++ ProgramManager bookkeeping aliases two dynamic images that
 // both export `kawpow_search_jit`, eventually asserting while their images are removed. Hash the full
 // bundle key (including the DAG modulus) and retain the period in readable form.
-static std::string kawpow_jit_kernel_name(
-  const uint64_t period, const FastModData& dag_mod, const SealMode seal,
-  const uint32_t magic[15], const uint32_t regs,
-  const uint32_t cnt_cache, const uint32_t cnt_math
-) {
+static std::string kawpow_jit_kernel_name(const uint64_t period, const FastModData& dag_mod,
+                                          const SealMode seal, const uint32_t magic[15],
+                                          const uint32_t regs, const uint32_t cnt_cache,
+                                          const uint32_t cnt_math) {
   uint64_t hash = 1469598103934665603ull;
   const auto add = [&](const uint32_t word) {
     hash ^= word;
     hash *= 1099511628211ull;
   };
-  add((uint32_t)period); add((uint32_t)(period >> 32));
-  add(dag_mod.reciprocal); add(dag_mod.increment); add(dag_mod.shift); add(dag_mod.divisor);
+  add((uint32_t)period);
+  add((uint32_t)(period >> 32));
+  add(dag_mod.reciprocal);
+  add(dag_mod.increment);
+  add(dag_mod.shift);
+  add(dag_mod.divisor);
   add(static_cast<uint32_t>(seal));
-  for (unsigned i = 0; i < 15; ++i) add(magic[i]);
-  add(regs); add(cnt_cache); add(cnt_math);
+  for (unsigned i = 0; i < 15; ++i)
+    add(magic[i]);
+  add(regs);
+  add(cnt_cache);
+  add(cnt_math);
   std::ostringstream name;
   name << "kawpow_search_jit_p" << period << "_h" << std::hex << hash;
   return name.str();
@@ -298,7 +326,8 @@ static std::string kawpow_named_jit_wrapper(const std::string& kernel_name) {
   constexpr const char token[] = "KAWPOW_JIT_KERNEL_NAME";
   std::string wrapper = KAWPOW_JIT_WRAPPER;
   const size_t pos = wrapper.find(token);
-  if (pos == std::string::npos) throw std::string("kawpow JIT: kernel-name placeholder is missing");
+  if (pos == std::string::npos)
+    throw std::string("kawpow JIT: kernel-name placeholder is missing");
   wrapper.replace(pos, sizeof(token) - 1, kernel_name);
   return wrapper;
 }

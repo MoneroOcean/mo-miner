@@ -1,8 +1,7 @@
 #include "pow-intensity.h"
 
-static unsigned parse_pow_workgroup_override(
-  const sycl::device& dev, const char* const env_name, const unsigned fallback_override = 0
-) {
+static unsigned parse_pow_workgroup_override(const sycl::device& dev, const char* const env_name,
+                                             const unsigned fallback_override) {
   const unsigned preferred = fallback_override ? fallback_override : (dev.is_cpu() ? 128 : 256);
   const unsigned fallback = sycl_default_workgroup(dev, {32, 64, 128, 256, 512}, preferred);
   unsigned long parsed = 0;
@@ -46,19 +45,16 @@ static bool pow_has_dataset_memory(const sycl::device& dev, const uint64_t datas
          profile.global_mem >= std::max(min_global_mem, dataset_bytes + reserve);
 }
 
-static unsigned pow_intensity(
-  const sycl::device& dev,
-  const char* const workgroup_env,
-  const char* const intensity_env,
-  const PowIntensityHeuristic& heuristic,
-  const unsigned max_work_items_per_gib = 0
-) {
+static unsigned pow_intensity(const sycl::device& dev, const char* const workgroup_env,
+                              const char* const intensity_env,
+                              const PowIntensityHeuristic& heuristic,
+                              const unsigned max_work_items_per_gib = 0) {
   const PowDeviceProfile profile = pow_device_profile(dev);
   const PowIntensityScale scale = select_pow_intensity_scale(profile, heuristic);
   const unsigned local = parse_pow_workgroup_override(dev, workgroup_env, scale.fallback_workgroup);
   const unsigned override = parse_pow_intensity_override(local, intensity_env);
-  if (override) return override;
-
+  if (override)
+    return override;
   return pow_intensity(profile, heuristic, local, max_work_items_per_gib);
 }
 
@@ -191,10 +187,6 @@ static unsigned hoohash_intensity(const sycl::device& dev) {
 #endif
   return 65536;
 }
-
-// Equihash 125,4: the "intensity" is the number of header nonces searched per solve (one full Wagner
-// pass over a 3.72--4.25 GiB accelerator-specific arena), so one process searches one nonce per
-// dispatch. MOM_ZELHASH_INTENSITY overrides that process batch.
 
 static bool xelishashv3_supported(const sycl::device& dev) {
   return mom_has_usm_device(dev);

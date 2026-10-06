@@ -1,4 +1,4 @@
-// Copyright GNU GPLv3 (c) 2026-2026 MoneroOcean <support@moneroocean.stream>
+// Copyright GNU GPLv3 (c) 2026 MoneroOcean <support@moneroocean.stream>
 
 #include <cstddef>
 

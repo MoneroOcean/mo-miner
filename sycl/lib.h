@@ -1,4 +1,4 @@
-// Copyright GNU GPLv3 (c) 2023-2025 MoneroOcean <support@moneroocean.stream>
+// Copyright GNU GPLv3 (c) 2023-2026 MoneroOcean <support@moneroocean.stream>
 
 #pragma once
 
@@ -100,8 +100,9 @@ MOM_SYCL_API int autolykos2(
   unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
 );
 
-// FishHash (Iron Fish / Karlsen): ASIC-resistant memory-hard PoW (Ethash-derived + BLAKE3). Same
-// etchash ABI (32-byte LE target; 8-byte nonce at offset 32; seed_hash unused). Fixed 4.6 GB DAG.
+// FishHash is an Ethash-derived, BLAKE3-wrapped PoW with a fixed 4.6 GB DAG. Offline vectors use a
+// 40-byte header with a little-endian nonce at offset 32; live Iron Fish uses a 180-byte header with
+// big-endian randomness at offset 172. The target follows the corresponding layout; seed_hash is unused.
 MOM_SYCL_API int fishhash(
   unsigned job_id, uint32_t height, const uint8_t* input, unsigned input_size, uint8_t* output,
   uint8_t* mix_hash, uint64_t* pnonce, const uint8_t* target, const uint8_t* seed_hash,
@@ -116,27 +117,11 @@ MOM_SYCL_API int karlsenhashv2(
   unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
 );
 
+// Hoosat HooHash v1.1.0: accelerated FP64 search filter with canonical host verification.
+// Its 80-byte Kaspa-family header carries the little-endian nonce at offset 72.
 MOM_SYCL_API int hoohash(
   unsigned job_id, uint32_t height, const uint8_t* input, unsigned input_size, uint8_t* output,
   uint8_t* mix_hash, uint64_t* pnonce, const uint8_t* target, const uint8_t* seed_hash,
-  unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
-);
-
-// NexaPoW/Echelon: either a 40-byte header with an 8-byte nonce at offset 32, or a 48-byte header
-// with a fixed 8-byte extranonce followed by the 8-byte big-endian miner nonce.
-MOM_SYCL_API int nexapow(
-  unsigned job_id, uint32_t height, const uint8_t* input, unsigned input_size, uint8_t* output,
-  uint8_t* mix_hash, uint64_t* pnonce, const uint8_t* target, const uint8_t* seed_hash,
-  unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
-);
-
-// Equihash 125,4 (ZelHash / Flux): Wagner bucket-collision solver (Tromp/djezo lineage). C29-like
-// ABI -- the 32-byte nonce lives in the 140-byte header (offset 108); the solver returns a solution
-// COUNT and writes the 52-byte compressed solution(s) out-of-band into solution_out. 256-bit big
-// target. is_test runs the M1 gen-kernel validation path (dumps the first entries' expanded rows).
-MOM_SYCL_API int zelhash(
-  unsigned job_id, uint32_t height, const uint8_t* input, unsigned input_size, uint8_t* solution_out,
-  uint64_t* pnonce, const uint8_t* target,
   unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
 );
 
@@ -151,6 +136,14 @@ MOM_SYCL_API int walahash(
 // XelisHashV3: 531-KiB scratchpad PoW over a 112-byte header; nonce is 8-byte big-endian at 40.
 // Shares the etchash ABI; mix_hash and seed_hash are unused.
 MOM_SYCL_API int xelishashv3(
+  unsigned job_id, uint32_t height, const uint8_t* input, unsigned input_size, uint8_t* output,
+  uint8_t* mix_hash, uint64_t* pnonce, const uint8_t* target, const uint8_t* seed_hash,
+  unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
+);
+
+// NexaPoW/Echelon: either a 40-byte header with an 8-byte nonce at offset 32, or a 48-byte header
+// with a fixed 8-byte extranonce followed by the 8-byte big-endian miner nonce.
+MOM_SYCL_API int nexapow(
   unsigned job_id, uint32_t height, const uint8_t* input, unsigned input_size, uint8_t* output,
   uint8_t* mix_hash, uint64_t* pnonce, const uint8_t* target, const uint8_t* seed_hash,
   unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
@@ -179,6 +172,16 @@ MOM_SYCL_API int equihash192_7(
   unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
 );
 
+// Equihash 125,4 (ZelHash / Flux): Wagner bucket-collision solver (Tromp/djezo lineage). C29-like
+// ABI -- the 32-byte nonce lives in the 140-byte header (offset 108); the solver returns a solution
+// COUNT and writes the 52-byte compressed solution(s) out-of-band into solution_out. 256-bit big
+// target. is_test runs the M1 gen-kernel validation path (dumps the first entries' expanded rows).
+MOM_SYCL_API int zelhash(
+  unsigned job_id, uint32_t height, const uint8_t* input, unsigned input_size, uint8_t* solution_out,
+  uint64_t* pnonce, const uint8_t* target,
+  unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
+);
+
 // BeamHash III (Beam): Wagner k=5 bucket-collision solver. Same c29-like ABI as zelhash. Input
 // is the prework(32)||nonce(8)||extranonce(4) blob; the solver writes the 104-byte solution(s)
 // out-of-band into solution_out and returns the count. is_test runs the M1 gen-validation path.
@@ -201,9 +204,11 @@ MOM_SYCL_API int pearlhash(
 MOM_SYCL_API const char* pearlhash_claim(uint8_t jackpot[32], uint32_t* adjustment_factor);
 // Rank-128-equivalent GEMM MACs per PearlHash attempt: m*n*k*128/rank.  This is the
 // pool accounting unit, so different valid V3 ranks remain directly comparable.
-MOM_SYCL_API uint64_t pearlhash_attempt_hashes(unsigned intensity, unsigned n, unsigned k, unsigned rank);
+MOM_SYCL_API uint64_t pearlhash_attempt_hashes(
+  unsigned intensity, unsigned n, unsigned k, unsigned rank
+);
 
-// Release process-scoped SYCL state while the Node environment and compiler runtime are still
-// alive. The addon registers this as an environment cleanup hook; it is intentionally separate from
-// C++ static destruction because runtime-compiled device images have their own module destructors.
+// Release process-scoped SYCL state that requires ordered teardown while the Node environment and
+// compiler runtime are still alive. The addon registers this as an environment cleanup hook; it is
+// separate from C++ static destruction because runtime-compiled images have module destructors.
 MOM_SYCL_API void sycl_cleanup() noexcept;

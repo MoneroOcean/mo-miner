@@ -100,13 +100,12 @@ public:
   std::atomic<int> cuda_use_jit{-1};
 
   explicit KawpowState(const std::string& dev_str)
-    : device(get_dev(dev_str)),
-      queue(device, sycl::property_list{sycl::property::queue::in_order{}}),
-      shared_io(device.is_cpu() || !mom_has_usm_device(device)),
-      shared_dag(device.is_cpu() || !mom_has_usm_device(device)),
-      workgroup(kawpow_workgroup(device)),
-      default_subgroup_exchange(kawpow_default_subgroup_exchange(device))
-  {
+      : device(get_dev(dev_str)),
+        queue(device, sycl::property_list{sycl::property::queue::in_order{}}),
+        shared_io(device.is_cpu() || !mom_has_usm_device(device)),
+        shared_dag(device.is_cpu() || !mom_has_usm_device(device)),
+        workgroup(kawpow_workgroup(device)),
+        default_subgroup_exchange(kawpow_default_subgroup_exchange(device)) {
     if (!mom_has_usm_shared(device)) {
       throw std::string("kawpow SYCL device does not support required allocations");
     }
@@ -175,7 +174,8 @@ public:
   }
 
   static unsigned kawpow_dag_workgroup(const sycl::device& dev) {
-    return select_workgroup("MOM_KAWPOW_DAG_WORKGROUP", dev, {32, 64, 128, 256, 512}, dev.is_cpu() ? 128 : 64);
+    return select_workgroup("MOM_KAWPOW_DAG_WORKGROUP", dev, {32, 64, 128, 256, 512},
+                            dev.is_cpu() ? 128 : 64);
   }
 
   static uint32_t kawpow_dag_chunk_nodes(const sycl::device& dev) {
@@ -201,13 +201,13 @@ public:
     return value ? value : "";
   }
 
-  template<typename T>
-  T* allocate(const size_t count, const bool shared) {
+  template <typename T> T* allocate(const size_t count, const bool shared) {
     return shared ? sycl::malloc_shared<T>(count, queue) : sycl::malloc_device<T>(count, queue);
   }
 
   void free_ptr(auto*& ptr) {
-    if (ptr) sycl::free(ptr, queue);
+    if (ptr)
+      sycl::free(ptr, queue);
     ptr = nullptr;
   }
 
@@ -374,8 +374,9 @@ public:
   void ensure_period(const uint64_t new_period) {
     // The program shape (regs/cnt_*) can change with the algo even at an unchanged period, so rebuild
     // when either changes. period_shape tracks the shape the cached program was generated with.
-    if (period == new_period && program_shape_regs == regs && program_shape_cnt_cache == cnt_cache &&
-        program_shape_cnt_math == cnt_math) return;
+    if (period == new_period && program_shape_regs == regs &&
+        program_shape_cnt_cache == cnt_cache && program_shape_cnt_math == cnt_math)
+      return;
     program = make_program(new_period, regs, cnt_cache, cnt_math);
     period = new_period;
     program_shape_regs = regs;
@@ -396,8 +397,13 @@ public:
                       const uint32_t build_regs, const uint32_t build_cnt_cache,
                       const uint32_t build_cnt_math) {
 #if defined(MOM_SYCL_ADAPTIVECPP) || defined(MOM_SYCL_PORTABLE_OPENCL)
-    (void)new_period; (void)dag_mod; (void)build_seal; (void)build_magic;
-    (void)build_regs; (void)build_cnt_cache; (void)build_cnt_math;
+    (void)new_period;
+    (void)dag_mod;
+    (void)build_seal;
+    (void)build_magic;
+    (void)build_regs;
+    (void)build_cnt_cache;
+    (void)build_cnt_math;
     return std::make_unique<MomExecutableKernelBundle>();
 #else
 #if defined(MOM_SYCL_HAS_CUDA)
@@ -411,7 +417,7 @@ public:
         if (mom_parse_env_ulong("MOM_KAWPOW_JIT", force))
           cuda_use_jit.store(force != 0 ? 1 : 0);
       }
-      if (cuda_use_jit.load() != 0) {  // 1 (committed JIT) or -1 (undecided -> try JIT)
+      if (cuda_use_jit.load() != 0) { // 1 (committed JIT) or -1 (undecided -> try JIT)
         try {
           // Compile the search kernel from SYCL source with the period program baked in as
           // a const struct (folds the random-math interpreter). Device body is sycl/kawpow/device.inc.
@@ -419,32 +425,40 @@ public:
           // evrprogpow compute the correct seal on CUDA; emitted after kawpow_device_src() (defines
           // SealMode) and before the WRAPPER (reads JIT_SEAL/JIT_MAGIC).
           namespace syclex = sycl::ext::oneapi::experimental;
-          const std::string kernel_name = kawpow_jit_kernel_name(
-            new_period, dag_mod, build_seal, build_magic,
-            build_regs, build_cnt_cache, build_cnt_math);
-          const std::string src = std::string(KAWPOW_JIT_PRELUDE) + kawpow_device_src() +
-            kawpow_emit_baked(make_program(new_period, build_regs, build_cnt_cache, build_cnt_math), dag_mod) +
-            kawpow_emit_seal(build_seal, build_magic) +
-            kawpow_emit_shape(build_regs, build_cnt_cache, build_cnt_math) +
-            kawpow_named_jit_wrapper(kernel_name);
+          const std::string kernel_name =
+              kawpow_jit_kernel_name(new_period, dag_mod, build_seal, build_magic, build_regs,
+                                     build_cnt_cache, build_cnt_math);
+          const std::string src =
+              std::string(KAWPOW_JIT_PRELUDE) + kawpow_device_src() +
+              kawpow_emit_baked(
+                  make_program(new_period, build_regs, build_cnt_cache, build_cnt_math), dag_mod) +
+              kawpow_emit_seal(build_seal, build_magic) +
+              kawpow_emit_shape(build_regs, build_cnt_cache, build_cnt_math) +
+              kawpow_named_jit_wrapper(kernel_name);
           auto kb_src = syclex::create_kernel_bundle_from_source(
-            queue.get_context(), syclex::source_language::sycl, src);
+              queue.get_context(), syclex::source_language::sycl, src);
           const char* const jit_opts = std::getenv("MOM_KAWPOW_JIT_OPTS");
           // Build for THIS device explicitly: without the device list the kernel_compiler targets a
           // generic nvptx default (sm_75 -> CUDA_ERROR_NO_BINARY on newer GPUs / needs sm_75 libdevice).
           // Passing the device makes it compile for the device's actual arch (e.g. sm_89 on an L4).
           const std::vector<sycl::device> jit_devs{device};
-          auto exe = (jit_opts && *jit_opts)
-            ? syclex::build(kb_src, jit_devs, syclex::properties{syclex::build_options{std::string(jit_opts)}})
-            : syclex::build(kb_src, jit_devs);
+          auto exe =
+              (jit_opts && *jit_opts)
+                  ? syclex::build(kb_src, jit_devs,
+                                  syclex::properties{syclex::build_options{std::string(jit_opts)}})
+                  : syclex::build(kb_src, jit_devs);
           cuda_use_jit.store(1);
-          return std::make_unique<sycl::kernel_bundle<sycl::bundle_state::executable>>(std::move(exe));
+          return std::make_unique<sycl::kernel_bundle<sycl::bundle_state::executable>>(
+              std::move(exe));
         } catch (const std::exception& e) {
           // Committed to JIT (user forced it, or an earlier period already JIT'd): a failure now is a
           // real error. Undecided (first build probing): fall back permanently to spec-const.
-          if (cuda_use_jit.load() == 1) throw;
-          fprintf(stderr, "kawpow: CUDA source-JIT unavailable (%s); using the slower AOT "
-                  "spec-constant kernel\n", e.what());
+          if (cuda_use_jit.load() == 1)
+            throw;
+          fprintf(stderr,
+                  "kawpow: CUDA source-JIT unavailable (%s); using the slower AOT "
+                  "spec-constant kernel\n",
+                  e.what());
           cuda_use_jit.store(0);
         }
       }
@@ -453,14 +467,12 @@ public:
 #endif
     // Intel/spir64: SYCL-2020 specialization constants fold the per-period program at JIT time.
     auto input = sycl::get_kernel_bundle<sycl::bundle_state::input>(
-      queue.get_context(), {device}, {sycl::get_kernel_id<KawpowSgKernel>()}
-    );
+        queue.get_context(), {device}, {sycl::get_kernel_id<KawpowSgKernel>()});
     input.set_specialization_constant<kawpow_program_id>(
-      make_program(new_period, build_regs, build_cnt_cache, build_cnt_math));
+        make_program(new_period, build_regs, build_cnt_cache, build_cnt_math));
     input.set_specialization_constant<kawpow_dag_mod_id>(dag_mod);
     return std::make_unique<sycl::kernel_bundle<sycl::bundle_state::executable>>(
-      sycl::build(input)
-    );
+        sycl::build(input));
 #endif
   }
 
@@ -468,11 +480,14 @@ public:
   // across the kawpow/firopow/evrprogpow/meowpow entrypoints, so an algo switch can change the seal or
   // shape even when period/epoch are unchanged -- it must force a rebuild. `b*` are the current call's.
   static bool bundle_key_eq(const SealMode a, const uint32_t am[15], const uint32_t ar,
-                            const uint32_t ac, const uint32_t amth,
-                            const SealMode b, const uint32_t bm[15], const uint32_t br,
-                            const uint32_t bc, const uint32_t bmth) {
-    if (a != b || ar != br || ac != bc || amth != bmth) return false;
-    for (unsigned i = 0; i < 15; ++i) if (am[i] != bm[i]) return false;
+                            const uint32_t ac, const uint32_t amth, const SealMode b,
+                            const uint32_t bm[15], const uint32_t br, const uint32_t bc,
+                            const uint32_t bmth) {
+    if (a != b || ar != br || ac != bc || amth != bmth)
+      return false;
+    for (unsigned i = 0; i < 15; ++i)
+      if (am[i] != bm[i])
+        return false;
     return true;
   }
 
@@ -544,8 +559,8 @@ public:
 
   static uint64_t now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
-      std::chrono::steady_clock::now().time_since_epoch()
-    ).count();
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
   }
 };
 

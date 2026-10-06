@@ -8,7 +8,6 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
-#include <cerrno>
 #include <chrono>
 #include <cinttypes>
 #include <cstddef>
@@ -18,7 +17,6 @@
 #include <ctime>
 #include <fstream>
 #include <limits>
-#include <map>
 #include <memory>
 #include <mutex>
 #include <sstream>

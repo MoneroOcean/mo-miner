@@ -1,7 +1,7 @@
 // Portable int8 GEMM search -- the matrix-hardware-free path that EVERY OpenCL device takes: AMD GPUs
 // (no ESIMD, no usable joint_matrix), the SYCL CPU device (cpu1), and Intel OpenCL. Each
 // work-group computes one 16x16 hash tile; its work-items split the tile's 256 cells into ER x EC
-// micro-tiles (one work-item per micro-tile, ER*EC int32 accumulators in registers). A'/B' are
+// micro-tiles (one work-item per micro-tile, ER*EC wrapping uint32 accumulators in registers). A'/B' are
 // laid out by compute_ab(portable=true) -- A' row-major, B' column-major -- so each output cell reads a
 // contiguous int8 run over k that the compiler packs (4 int8 at a time, loaded as one int32) into the
 // 4-wide integer dot product: dp4a on Intel/AMD GPUs, plain scalar int MACs on the CPU -- bit-identical
@@ -11,8 +11,8 @@
 // XOR-reduction tree at the end (a plain barrier tree -- not a sub-group op, so no reqd_sub_group_size
 // is needed and the kernel runs on AMD and the CPU where the sub-group size is not 16). The result
 // (found/seed/row/col) and transcript are bit-identical to search_esimd / search_cuda for the same A'/B'
-// (cross-checked via MOM_PEARLHASH_CHK), so this path finds the same tiles. Requires k % rank == 0 and
-// k/rank <= 16 (true for every shipped shape: network 4096/256 and pearlpool 1024/64 both give 16).
+// (cross-checked via MOM_PEARLHASH_CHK), so this path finds the same tiles. Each complete rank-boundary
+// part folds into one of the 16 transcript words; the verifier likewise excludes K % rank trailing cells.
 // Compiled in every build that carries attempt() -- including the Windows/dpcpp Intel build where it
 // shares the TU with search_esimd -- and EXCLUDED only from the separate spir64-only ESIMD TU
 // (esimd.cpp, which sets MOM_PEARLHASH_ESIMD_TU and re-includes this file just for search_esimd).
@@ -25,9 +25,8 @@
 // SYCL root/noise stages. CPU mining is not a performance target; deterministic correctness across
 // OpenCL implementations is more useful than another fragile JIT shape. GPU devices never call
 // this function and retain the measured parallel implementation unchanged.
-static void search_cpu(
-    sycl::queue& q, const Buffers& bb, uint32_t seed,
-    int m, int n, int k, int rank, bool dbg) {
+static void search_cpu(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k,
+                       int rank, bool dbg) {
   q.wait_and_throw();
   constexpr int HT = 16;
   const int nb = k / rank;
@@ -39,11 +38,9 @@ static void search_cpu(
         const int end = (boundary + 1) * rank;
         for (int depth = boundary * rank; depth < end; ++depth) {
           for (int i = 0; i < HT; ++i) {
-            const int a = static_cast<int>(
-              bb.Ap[static_cast<size_t>(row_base + i) * k + depth]);
+            const int a = static_cast<int>(bb.Ap[static_cast<size_t>(row_base + i) * k + depth]);
             for (int j = 0; j < HT; ++j) {
-              const int b = static_cast<int>(
-                bb.Bp[static_cast<size_t>(col_base + j) * k + depth]);
+              const int b = static_cast<int>(bb.Bp[static_cast<size_t>(col_base + j) * k + depth]);
               acc[i][j] += static_cast<uint32_t>(a * b);
             }
           }
@@ -56,15 +53,18 @@ static void search_cpu(
         transcript[slot] = rotl(transcript[slot], 13) ^ part;
       }
       if (dbg)
-        bb.result->chk += tile_mix(
-          static_cast<uint32_t>(row_base), static_cast<uint32_t>(col_base), transcript);
+        bb.result->chk +=
+            tile_mix(static_cast<uint32_t>(row_base), static_cast<uint32_t>(col_base), transcript);
       uint8_t jackpot[32];
       if (!bb.result->found && tile_wins(transcript, bb.cA, bb.target, jackpot)) {
         bb.result->found = 1;
         bb.result->seed = seed;
         bb.result->row = static_cast<uint32_t>(row_base);
-        bb.result->col = static_cast<uint32_t>(col_base); for (int i = 0; i < 32; ++i) bb.result->jackpot[i] = jackpot[i];
-        if (!dbg) return;
+        bb.result->col = static_cast<uint32_t>(col_base);
+        for (int i = 0; i < 32; ++i)
+          bb.result->jackpot[i] = jackpot[i];
+        if (!dbg)
+          return;
       }
     }
   }
@@ -78,8 +78,9 @@ template <int ER, int EC>
 static void search_t(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k,
                      int rank, bool dbg) {
   constexpr int HT = 16;
-  constexpr int WG = (HT * HT) / (ER * EC);                 // work-items per tile
-  [[maybe_unused]] constexpr int BW = HT / EC;              // micro-tile blocks per row (unused on the empty nvptx pass)
+  constexpr int WG = (HT * HT) / (ER * EC); // work-items per tile
+  [[maybe_unused]] constexpr int BW =
+      HT / EC; // micro-tile blocks per row (unused on the empty nvptx pass)
   static_assert(HT % ER == 0 && HT % EC == 0, "pearlhash portable: ER/EC must divide 16");
   static_assert((WG & (WG - 1)) == 0, "pearlhash portable: work-group size must be a power of two");
   auto B = bb;
@@ -102,7 +103,6 @@ static void search_t(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, in
       else
         cache_block = 0;
     }
-
   }
 #endif
   const bool blocked = cache_block > 1 &&
@@ -111,7 +111,6 @@ static void search_t(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, in
                        tilesH % static_cast<uint32_t>(cache_block) == 0 &&
                        tilesW % static_cast<uint32_t>(cache_block) == 0;
   const uint32_t blocksW = blocked ? tilesW / static_cast<uint32_t>(cache_block) : 0;
-
   // A full 131072-square 2x2 search contains exactly 2^32 work-items. AdaptiveCpp's HIP launcher
   // cannot represent that as one ND-range (hipErrorInvalidValue), even though the group count is
   // legal. Submit bounded contiguous pieces on the in-order queue and add their group base in the
@@ -120,7 +119,8 @@ static void search_t(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, in
   for (size_t group_base = 0; group_base < ntiles; group_base += max_groups_per_launch) {
     const size_t group_count = std::min(max_groups_per_launch, ntiles - group_base);
     q.submit([&](sycl::handler& h) {
-      sycl::local_accessor<uint32_t, 1> red(WG * 16, h);   // batched per-boundary XOR reduction scratch
+      sycl::local_accessor<uint32_t, 1> red(WG * 16,
+                                            h); // batched per-boundary XOR reduction scratch
       // Explicit capture list (not [=]): keeps the kernel-lambda layout identical across the host, spir64
       // and nvptx passes (the nvptx body is #ifdef'd out below), so the dual-compiler combined build's
       // "Unexpected kernel lambda size" static assert stays satisfied.
@@ -185,35 +185,53 @@ static void search_t(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, in
                       a2 * static_cast<int8_t>(b >> 16) + a3 * static_cast<int8_t>(b >> 24);
                   acc[i][j] += static_cast<uint32_t>(product);
                 }
+              }
+            }
+          }
+          uint32_t lx = 0;
+          for (int i = 0; i < ER; i++)
+            for (int j = 0; j < EC; j++)
+              lx ^= (uint32_t)acc[i][j];
+          const int slot = rc % 16;
+          pX[slot] = rotl(pX[slot], 13) ^ lx; // cumulative tile XOR folded by transcript slot
+        }
+        // Single batched work-group reduction: XOR every work-item's 16-word partial transcript together.
+        auto grp = it.get_group();
+        for (int w = 0; w < 16; w++)
+          red[lid * 16 + w] = pX[w];
+        sycl::group_barrier(grp);
+        for (int half = WG >> 1; half > 0; half >>= 1) {
+          if (lid < half)
+            for (int w = 0; w < 16; w++)
+              red[lid * 16 + w] ^= red[(lid + half) * 16 + w];
+          sycl::group_barrier(grp);
+        }
+        if (lid == 0) {
+          // The per-work-item folds are linear over XOR, so their reduction is the exact shared
+          // rotl-fold of each cumulative tile part used by search_esimd and CUDA-SYCL.
+          uint32_t t16[16];
+          for (int w = 0; w < 16; w++)
+            t16[w] = red[w];
+          if (dbg) {
+            sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
+                             sycl::access::address_space::global_space>
+                c(B.result->chk);
+            c.fetch_add(tile_mix((uint32_t)rowBase, (uint32_t)colBase, t16));
+          }
+          uint8_t jackpot[32];
+          if (tile_wins(t16, B.cA, B.target, jackpot)) {
+            sycl::atomic_ref<int, sycl::memory_order::relaxed, sycl::memory_scope::device,
+                             sycl::access::address_space::global_space>
+                a(B.result->found);
+            if (a.exchange(1) == 0) {
+              B.result->seed = seed;
+              B.result->row = (uint32_t)rowBase;
+              B.result->col = (uint32_t)colBase;
+              for (int i = 0; i < 32; ++i)
+                B.result->jackpot[i] = jackpot[i];
             }
           }
         }
-        uint32_t lx = 0; for (int i = 0; i < ER; i++) for (int j = 0; j < EC; j++) lx ^= (uint32_t)acc[i][j];
-        const int slot = rc % 16;
-        pX[slot] = rotl(pX[slot], 13) ^ lx;
-      }
-      // Single batched work-group reduction: XOR every work-item's 16-word partial transcript together.
-      auto grp = it.get_group();
-      for (int w = 0; w < 16; w++) red[lid * 16 + w] = pX[w];
-      sycl::group_barrier(grp);
-      for (int half = WG >> 1; half > 0; half >>= 1) {
-        if (lid < half) for (int w = 0; w < 16; w++) red[lid * 16 + w] ^= red[(lid + half) * 16 + w];
-        sycl::group_barrier(grp);
-      }
-      if (lid == 0) {
-        // nb <= 16 => each rank boundary owns a distinct transcript word, so tr[w] == part[w] (the
-        // rotl-fold in search_esimd only matters when nb > 16, which no shipped shape uses).
-        uint32_t t16[16]; for (int w = 0; w < 16; w++) t16[w] = red[w];
-        if (dbg) {
-          sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device, sycl::access::address_space::global_space> c(B.result->chk);
-          c.fetch_add(tile_mix((uint32_t)rowBase, (uint32_t)colBase, t16));
-        }
-        uint8_t jackpot[32];
-        if (tile_wins(t16, B.cA, B.target, jackpot)) {
-          sycl::atomic_ref<int, sycl::memory_order::relaxed, sycl::memory_scope::device, sycl::access::address_space::global_space> a(B.result->found);
-          if (a.exchange(1) == 0) { B.result->seed = seed; B.result->row = (uint32_t)rowBase; B.result->col = (uint32_t)colBase; for (int i = 0; i < 32; ++i) B.result->jackpot[i] = jackpot[i]; }
-        }
-      }
       });
     });
   }
@@ -221,10 +239,10 @@ static void search_t(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, in
 // Run the portable search at the measured B580 OpenCL 4x4 micro-tile. Retuning changes the typed
 // constants above rather than adding a preprocessor variant. SLM staging and software-pipelined prefetch were both measured slower on
 // the B580 (the L2 already absorbs the A'/B' reuse; IGC schedules the loads better than a manual pipeline).
-static void search(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k, int rank, bool dbg) {
+static void search(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k, int rank,
+                   bool dbg) {
 #if defined(MOM_SYCL_HAS_HIP)
-  // gfx12 normally takes the SYCL WMMA specialization below. Keep its measured-best 2x2 dp4a
-  // fallback for unsupported shapes/compilers (RX 9060 XT: 750 vs 496 GH/s for 2x2 versus the
+  // HIP keeps its measured-best 2x2 dp4a path (RX 9060 XT: 750 vs 496 GH/s for 2x2 versus the
   // Intel-tuned 4x4). Non-HIP devices retain their own 4x4 default.
   const bool is_hip = mom_is_hip(q.get_device());
   if (is_hip) {
@@ -247,4 +265,4 @@ static void search(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int 
 #endif
   search_t<pearlhash_portable_er, pearlhash_portable_ec>(q, bb, seed, m, n, k, rank, dbg);
 }
-#endif  // !MOM_PEARLHASH_ESIMD_TU
+#endif // !MOM_PEARLHASH_ESIMD_TU
