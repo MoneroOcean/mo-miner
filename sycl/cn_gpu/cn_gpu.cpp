@@ -7,24 +7,16 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
-#include <map>
 #include <memory>
 #include <mutex>
 #include <thread>
 #include <vector>
 #if defined(MOM_SYCL_HAS_CUDA) && !defined(__SYCL_DEVICE_ONLY__)
-#include <cuda.h>
-#include <nvrtc.h>
-#include <cstdlib>
 #include <filesystem>
-#include <fstream>
 #include <iomanip>
 #include <sstream>
-#if defined(_WIN32)
-#include <windows.h>
-#else
-#include <dlfcn.h>
-#endif
+#include "../cuda-api.h"
+#include "../jit-cache.h"
 #endif
 
 #include "../lib-internal.h"

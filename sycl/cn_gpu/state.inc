@@ -1,7 +1,6 @@
 struct CnGpuState { // Per-device queue and persistent allocations; avoids buffer churn in the hot path.
   sycl::device device;
   sycl::queue queue;
-  std::unique_ptr<MomKernelBundle> bundle;
   bool shared_scratch; // CPU or backends without device allocation need shared scratch/IO.
   bool shared_io;
   bool native_notice = false;
@@ -33,9 +32,6 @@ struct CnGpuState { // Per-device queue and persistent allocations; avoids buffe
       // instead from -ffp-contract=off in the build flags (binding.gyp).
       set_sycl_env("SYCL_PROGRAM_COMPILE_OPTIONS", cn_gpu_fp_compile_options(device));
     }
-    bundle = std::make_unique<MomKernelBundle>(
-      mom_get_exec_bundle(queue.get_context())
-    );
   }
 
   ~CnGpuState() { sycl_cleanup_noexcept("cn/gpu", [&] { release(); }); }
@@ -82,29 +78,19 @@ struct CnGpuState { // Per-device queue and persistent allocations; avoids buffe
   }
 };
 
-using CnGpuStateMap = std::map<std::string, std::unique_ptr<CnGpuState>>;
 
-static CnGpuStateMap& cn_gpu_states() {
-  static CnGpuStateMap* const states = new CnGpuStateMap;
-  return *states;
-}
-
-static std::mutex& cn_gpu_states_mutex() {
-  static std::mutex* const mutex = new std::mutex;
-  return *mutex;
+static DeviceStateRegistry<CnGpuState>& cn_gpu_registry() {
+  static auto* const registry = new DeviceStateRegistry<CnGpuState>;
+  return *registry;
 }
 
 static CnGpuState& cn_gpu_state(const std::string& dev_str) {
-  std::lock_guard<std::mutex> lock(cn_gpu_states_mutex());
-  auto& state = cn_gpu_states()[dev_str];
-  if (!state) state = std::make_unique<CnGpuState>(dev_str);
-  return *state;
+  return cn_gpu_registry().get(dev_str, [&] { return std::make_unique<CnGpuState>(dev_str); });
 }
 
 void cn_gpu_cleanup_states() noexcept {
   try {
-    std::lock_guard<std::mutex> lock(cn_gpu_states_mutex());
-    cn_gpu_states().clear();
+    cn_gpu_registry().clear();
   } catch (...) {
     std::fprintf(stderr, "cn/gpu: ordered SYCL cleanup failed\n");
   }

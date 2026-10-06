@@ -22,7 +22,6 @@
       sycl::accessor acc_i2{buffer_i2, handler, sycl::read_write};
       sycl::accessor acc_i1{buffer_i1, handler, sycl::read_write};
       sycl::local_accessor<uint32_t, 1> edge_counters{sycl::range<1>(EDGE_COUNTER_WORDS), handler};
-      mom_use_bundle(handler, kernel_bundle);
       handler.parallel_for(sycl::nd_range<1>(sycl::range<1>(4096 * COMPUTE_THREADS), sycl::range<1>(COMPUTE_THREADS)),
                           [=](sycl::nd_item<1> item) {
         const uint32_t local_id      = item.get_local_id(0);
@@ -77,7 +76,6 @@
       sycl::accessor acc_i1{buffer_i1, handler, sycl::read_write};
       sycl::accessor acc_i2{buffer_i2, handler, sycl::read_write};
       sycl::local_accessor<uint32_t, 1> edge_counters{sycl::range<1>(EDGE_COUNTER_WORDS), handler};
-      mom_use_bundle(handler, kernel_bundle);
       handler.parallel_for(sycl::nd_range<1>(sycl::range<1>(4096 * COMPUTE_THREADS), sycl::range<1>(COMPUTE_THREADS)),
                           [=](sycl::nd_item<1> item) {
         const uint32_t local_id      = item.get_local_id(0);
@@ -134,7 +132,6 @@
         sycl::accessor acc_source_indexes{source_indexes, handler, sycl::read_write};
         sycl::accessor acc_dest_indexes{dest_indexes, handler, sycl::read_write};
         sycl::local_accessor<uint32_t, 1> edge_counters{sycl::range<1>(EDGE_COUNTER_WORDS), handler};
-        mom_use_bundle(handler, kernel_bundle);
         handler.parallel_for(sycl::nd_range<1>(sycl::range<1>(4096 * COMPUTE_THREADS), sycl::range<1>(COMPUTE_THREADS)),
                             [=](sycl::nd_item<1> item) {
           const uint32_t local_id      = item.get_local_id(0);
@@ -208,7 +205,6 @@
       sycl::accessor acc_i1{buffer_i1, handler, sycl::read_write};
       sycl::accessor acc_trimmed_edge_count{buffer_trimmed_edge_count, handler, sycl::read_write};
       sycl::local_accessor<uint32_t, 1> output_index{sycl::range<1>(1), handler};
-      mom_use_bundle(handler, kernel_bundle);
       handler.parallel_for(sycl::nd_range<1>(sycl::range<1>(4096 * COMPUTE_THREADS), sycl::range<1>(COMPUTE_THREADS)),
                           [=](sycl::nd_item<1> item) {
         const uint32_t local_id      = item.get_local_id(0);

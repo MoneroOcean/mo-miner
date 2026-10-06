@@ -50,7 +50,7 @@ unsigned zelhash_slot_capacity(const sycl::device& device) {
 // small base-state + rows buffers.
 class ZelHashState {
 public:
-  sycl::device device; sycl::queue queue; std::unique_ptr<MomKernelBundle> bundle;
+  sycl::device device; sycl::queue queue;
   bool shared_io, gpu_compact;
   unsigned slot_capacity;
   // M1 I/O
@@ -81,7 +81,6 @@ public:
       slot_capacity(zelhash_slot_capacity(device)) {
     if (!mom_has_usm_shared(device) || (!device.is_cpu() && !mom_has_usm_device(device)))
       throw std::string("zelhash SYCL device does not support required allocations");
-    bundle = std::make_unique<MomKernelBundle>(mom_get_exec_bundle(queue.get_context()));
   }
   ~ZelHashState() { sycl_cleanup_noexcept("zelhash", [&] { queue.wait_and_throw(); free_all(); }); }
   template <typename T> T* alloc(size_t n) {
@@ -167,29 +166,19 @@ public:
   }
 };
 
-using ZelHashStateMap = std::map<std::string, std::unique_ptr<ZelHashState>>;
 
-static ZelHashStateMap& zelhash_states() {
-  static ZelHashStateMap* const states = new ZelHashStateMap;
-  return *states;
-}
-
-static std::mutex& zelhash_states_mutex() {
-  static std::mutex* const mutex = new std::mutex;
-  return *mutex;
+static DeviceStateRegistry<ZelHashState>& zelhash_registry() {
+  static auto* const registry = new DeviceStateRegistry<ZelHashState>;
+  return *registry;
 }
 
 static ZelHashState& zelhash_state(const std::string& dev_str) {
-  std::lock_guard<std::mutex> lock(zelhash_states_mutex());
-  auto& state = zelhash_states()[dev_str];
-  if (!state) state = std::make_unique<ZelHashState>(dev_str);
-  return *state;
+  return zelhash_registry().get(dev_str, [&] { return std::make_unique<ZelHashState>(dev_str); });
 }
 
 void zelhash_cleanup_states() noexcept {
   try {
-    std::lock_guard<std::mutex> lock(zelhash_states_mutex());
-    zelhash_states().clear();
+    zelhash_registry().clear();
   } catch (...) {
     std::fprintf(stderr, "zelhash: ordered SYCL cleanup failed\n");
   }

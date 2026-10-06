@@ -2,19 +2,19 @@ template <bool GPU_COMPACT>
 static void run_collision_rounds(ZelHashState& state, unsigned wg, bool wait_stages,
                                  bool prof, uint64_t t_round[4]) {
   sycl::queue& q = state.queue;
-  auto r0 = submit_round<0, GPU_COMPACT>(q, *state.bundle, state.level[0], state.level[1],
+  auto r0 = submit_round<0, GPU_COMPACT>(q, state.level[0], state.level[1],
     state.nslots + 0u * NBUCKETS, state.nslots + 1u * NBUCKETS, wg, state.slot_capacity);
   if (wait_stages) sycl_wait_and_throw(r0, state.device);
   if (prof) t_round[0] = ZelHashState::now_ms();
-  auto r1 = submit_round<1, GPU_COMPACT>(q, *state.bundle, state.level[1], state.level[2],
+  auto r1 = submit_round<1, GPU_COMPACT>(q, state.level[1], state.level[2],
     state.nslots + 1u * NBUCKETS, state.nslots + 2u * NBUCKETS, wg, state.slot_capacity);
   if (wait_stages) sycl_wait_and_throw(r1, state.device);
   if (prof) t_round[1] = ZelHashState::now_ms();
-  auto r2 = submit_round<2, GPU_COMPACT>(q, *state.bundle, state.level[2], state.level[3],
+  auto r2 = submit_round<2, GPU_COMPACT>(q, state.level[2], state.level[3],
     state.nslots + 2u * NBUCKETS, state.nslots + 3u * NBUCKETS, wg, state.slot_capacity);
   if (wait_stages) sycl_wait_and_throw(r2, state.device);
   if (prof) t_round[2] = ZelHashState::now_ms();
-  auto r3 = submit_round<3, GPU_COMPACT>(q, *state.bundle, state.level[3], nullptr,
+  auto r3 = submit_round<3, GPU_COMPACT>(q, state.level[3], nullptr,
     state.nslots + 3u * NBUCKETS, nullptr, wg, state.slot_capacity,
     state.ref, state.ref_count, ZelHashState::CAND_CAP);
   if (wait_stages) sycl_wait_and_throw(r3, state.device);

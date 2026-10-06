@@ -1,25 +1,16 @@
 // The environment cleanup hook calls kawpow_cleanup_states() at the correct runtime-lifetime boundary.
-static KawpowStateMap& kawpow_states() {
-  static KawpowStateMap* const states = new KawpowStateMap;
-  return *states;
-}
-
-static std::mutex& kawpow_states_mutex() {
-  static std::mutex* const mutex = new std::mutex;
-  return *mutex;
+static DeviceStateRegistry<KawpowState>& kawpow_registry() {
+  static auto* const registry = new DeviceStateRegistry<KawpowState>;
+  return *registry;
 }
 
 static KawpowState& kawpow_state(const std::string& dev_str) {
-  std::lock_guard<std::mutex> lock(kawpow_states_mutex());
-  auto& state = kawpow_states()[dev_str];
-  if (!state) state = std::make_unique<KawpowState>(dev_str);
-  return *state;
+  return kawpow_registry().get(dev_str, [&] { return std::make_unique<KawpowState>(dev_str); });
 }
 
 void kawpow_cleanup_states() noexcept {
   try {
-    std::lock_guard<std::mutex> lock(kawpow_states_mutex());
-    kawpow_states().clear();
+    kawpow_registry().clear();
   } catch (const std::exception& error) {
     std::fprintf(stderr, "kawpow: ordered SYCL cleanup failed: %s\n", error.what());
   } catch (...) {

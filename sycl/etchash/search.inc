@@ -5,7 +5,7 @@ template <bool INLINE_PAIR> class EtchashSearchKernel;  // distinct kernel name 
 // INLINE_PAIR. The caller picks the instantiation per device from EtchashState::use_inline_pair().
 template <bool INLINE_PAIR>
 static sycl::event submit_etchash_search_gpu(
-  sycl::queue& q, MomKernelBundle& kb,
+  sycl::queue& q,
   const uint8_t* const d_input, const uint64_t start_nonce,
   const uint32_t* const __restrict__ d_dag, const FastModData dag_mod,
   const uint32_t intensity, const uint8_t* const d_target,
@@ -13,8 +13,9 @@ static sycl::event submit_etchash_search_gpu(
 ) {
   constexpr unsigned GROUP4_WORKGROUP = 128;
   constexpr unsigned GROUP4_SEED_WORDS = GROUP4_WORKGROUP * 16;
+  if (intensity > std::numeric_limits<uint32_t>::max() - (GROUP4_WORKGROUP - 1))
+    throw std::string("Etchash intensity is too large");
   return q.submit([&](sycl::handler& h) {
-    mom_use_bundle(h, kb);
     sycl::local_accessor<uint32_t, 1> seeds(sycl::range<1>(GROUP4_SEED_WORDS), h);
 #if defined(MOM_SYCL_PORTABLE_OPENCL)
     // Standards-only SPIR-V must not depend on SPV_INTEL_subgroups. The portable specialization
@@ -23,7 +24,7 @@ static sycl::event submit_etchash_search_gpu(
 #endif
     h.parallel_for<EtchashSearchKernel<INLINE_PAIR>>(
       sycl::nd_range<1>(
-        sycl::range<1>(round_up(intensity, GROUP4_WORKGROUP)),
+        sycl::range<1>(round_up_size(intensity, GROUP4_WORKGROUP)),
         sycl::range<1>(GROUP4_WORKGROUP)
       ),
       [=](sycl::nd_item<1> item) MOM_REQD_SG_16 {

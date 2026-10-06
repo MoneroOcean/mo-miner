@@ -5,6 +5,7 @@
 #include "base/crypto/sha3.h"
 
 #include <cstring>
+#include <limits>
 
 namespace {
 
@@ -39,8 +40,13 @@ extern "C" bool ethash_compute_cache_nodes(
   uint64_t cache_size,
   const ethash_h256_t* seed
 ) {
-  if (cache_size % sizeof(EthashNode) != 0) return false;
-  const uint32_t num_nodes = static_cast<uint32_t>(cache_size / sizeof(EthashNode));
+  if (!nodes_ptr || !seed || cache_size < sizeof(EthashNode) ||
+      cache_size % sizeof(EthashNode) != 0)
+    return false;
+  const uint64_t node_count = cache_size / sizeof(EthashNode);
+  if (node_count > std::numeric_limits<uint32_t>::max() / ETHASH_NODE_WORDS)
+    return false;
+  const uint32_t num_nodes = static_cast<uint32_t>(node_count);
   auto* nodes = static_cast<EthashNode*>(nodes_ptr);
 
   // Sequentially seed the cache: each node is keccak512 of the previous one.

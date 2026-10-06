@@ -29,7 +29,7 @@ int beamhash3(
     // M1: dump the first BEAMHASH3_TEST_ROWS raw 448-bit leaf rows.
     const size_t rows_bytes = (size_t)BEAMHASH3_TEST_ROWS * ROW_BYTES;
     std::memset(state.rows, 0, rows_bytes);
-    sycl_wait_and_throw(submit_gen_test(state.queue, *state.bundle, state.prePow, state.rows), state.device);
+    sycl_wait_and_throw(submit_gen_test(state.queue, state.prePow, state.rows), state.device);
     // Zero the WHOLE out-of-band buffer (not just rows_bytes) so the test-result hex dump -- which the
     // core emits over the full SMALL_BLOB_SOL_LEN -- is deterministic for the offline gen vector; the
     // 3584-byte gen dump leaves a 1536-byte tail that alloc_mem (_mm_malloc) does not zero otherwise.
@@ -94,31 +94,31 @@ int beamhash3(
       compact_stage_start = now;
     };
     q.memset(state.compact_ns[0], 0, (size_t)COMPACT_NBUCKETS * sizeof(uint32_t));
-    auto compact_event = submit_compact_seed(q, *state.bundle, state.prePow, state.compact[0],
+    auto compact_event = submit_compact_seed(q, state.prePow, state.compact[0],
                                              state.compact_ns[0], compact_wg);
     compact_stage_done("seed", compact_event);
     q.memset(state.compact_ns[1], 0, (size_t)COMPACT_NBUCKETS * sizeof(uint32_t));
-    compact_event = submit_compact_round<1>(q, *state.bundle, state.compact[0], state.compact_ns[0],
+    compact_event = submit_compact_round<1>(q, state.compact[0], state.compact_ns[0],
                                             state.compact[1], state.compact_ns[1], state.cand,
                                             state.cand_count, BeamState::CAND_CAP, compact_wg);
     compact_stage_done("round 1", compact_event);
     q.memset(state.compact_ns[0], 0, (size_t)COMPACT_NBUCKETS * sizeof(uint32_t));
-    compact_event = submit_compact_round<2>(q, *state.bundle, state.compact[1], state.compact_ns[1],
+    compact_event = submit_compact_round<2>(q, state.compact[1], state.compact_ns[1],
                                             state.compact[0], state.compact_ns[0], state.cand,
                                             state.cand_count, BeamState::CAND_CAP, compact_wg);
     compact_stage_done("round 2", compact_event);
     q.memset(state.compact_ns[1], 0, (size_t)COMPACT_NBUCKETS * sizeof(uint32_t));
-    compact_event = submit_compact_round<3>(q, *state.bundle, state.compact[0], state.compact_ns[0],
+    compact_event = submit_compact_round<3>(q, state.compact[0], state.compact_ns[0],
                                             state.compact[1], state.compact_ns[1], state.cand,
                                             state.cand_count, BeamState::CAND_CAP, compact_wg);
     compact_stage_done("round 3", compact_event);
     q.memset(state.compact_ns[0], 0, (size_t)COMPACT_NBUCKETS * sizeof(uint32_t));
-    compact_event = submit_compact_round<4>(q, *state.bundle, state.compact[1], state.compact_ns[1],
+    compact_event = submit_compact_round<4>(q, state.compact[1], state.compact_ns[1],
                                             state.compact[0], state.compact_ns[0], state.cand,
                                             state.cand_count, BeamState::CAND_CAP, compact_wg);
     compact_stage_done("round 4", compact_event);
     auto compact_tail = submit_compact_final_thin(
-      q, *state.bundle, reinterpret_cast<const BeamLevel4Row*>(state.compact[0]),
+      q, reinterpret_cast<const BeamLevel4Row*>(state.compact[0]),
       state.compact_ns[0], state.compact[1], state.cand, state.cand_count,
       BeamState::CAND_CAP, compact_wg);
     compact_stage_done("round 5", compact_tail);
@@ -151,7 +151,7 @@ int beamhash3(
   const uint64_t t_gen0 = prof ? BeamState::now_ms() : 0;
   auto gen_clear = q.memset(state.bucket_ns[0], 0, (size_t)NBUCKETS * sizeof(uint32_t));
   if (!async_pipeline) sycl_wait_and_throw(gen_clear, state.device);
-  auto gen_scatter = submit_mix_scatter<1>(q, *state.bundle, nullptr, (uint32_t)NUM_ENTRIES,
+  auto gen_scatter = submit_mix_scatter<1>(q, nullptr, (uint32_t)NUM_ENTRIES,
                                            state.bucket[0], state.bucket_ns[0], scatter_wg,
                                            state.prePow);
   if (!async_pipeline) sycl_wait_and_throw(gen_scatter, state.device);
@@ -179,7 +179,7 @@ int beamhash3(
       // 8--33% there. One reusable max-stride bucket and one reusable linear arena still fit in
       // 6.76 GiB, while preserving the packed source-ID representation and fused leaf generation.
       auto collide = submit_collide<R, false, false>(
-        q, *state.bundle, state.bucket[0], state.bucket_ns[0], state.linear_mixed,
+        q, state.bucket[0], state.bucket_ns[0], state.linear_mixed,
         state.mixed_count + R, state.tree[R], nullptr, nullptr, wg);
       if (async_cuda) fused_tail = collide;
       else sycl_wait_and_throw(collide, state.device);
@@ -191,10 +191,10 @@ int beamhash3(
         const uint32_t out_count = async_cuda ? (uint32_t)MIXED_CAP
           : std::min<uint32_t>(state.mixed_count[R], (uint32_t)MIXED_CAP);
         auto scatter = async_cuda ? submit_mix_scatter<R + 1, true>(
-          q, *state.bundle, state.linear_mixed, out_count, state.bucket[0], state.bucket_ns[0],
+          q, state.linear_mixed, out_count, state.bucket[0], state.bucket_ns[0],
           scatter_wg, state.prePow, state.mixed_count + R)
           : submit_mix_scatter<R + 1, false>(
-          q, *state.bundle, state.linear_mixed, out_count, state.bucket[0], state.bucket_ns[0],
+          q, state.linear_mixed, out_count, state.bucket[0], state.bucket_ns[0],
           scatter_wg, state.prePow, nullptr);
         if (async_cuda) fused_tail = scatter;
         else sycl_wait_and_throw(scatter, state.device);
@@ -202,7 +202,7 @@ int beamhash3(
     } else {
       if (level_zero_layout) {
         auto collide = submit_collide<R, true, true>(
-          q, *state.bundle, state.bucket[CUR], state.bucket_ns[CUR], state.final_mixed,
+          q, state.bucket[CUR], state.bucket_ns[CUR], state.final_mixed,
           state.mixed_count + R, state.tree[R],
           R < NUM_ROUNDS ? state.bucket[NEXT] : nullptr,
           R < NUM_ROUNDS ? state.bucket_ns[NEXT] : nullptr, wg);
@@ -210,7 +210,7 @@ int beamhash3(
         else sycl_wait_and_throw(collide, state.device);
       } else {
         auto collide = submit_collide<R, true, false>(
-          q, *state.bundle, state.bucket[CUR], state.bucket_ns[CUR], state.final_mixed,
+          q, state.bucket[CUR], state.bucket_ns[CUR], state.final_mixed,
           state.mixed_count + R, state.tree[R],
           R < NUM_ROUNDS ? state.bucket[NEXT] : nullptr,
           R < NUM_ROUNDS ? state.bucket_ns[NEXT] : nullptr, wg);
@@ -269,7 +269,7 @@ int beamhash3(
   BeamLevels lv;
   for (unsigned L = 0; L <= NUM_ROUNDS; ++L) lv.tree[L] = state.tree[L];
   const uint32_t fin_count = std::min<uint32_t>(state.mixed_count[NUM_ROUNDS], (uint32_t)MIXED_CAP);
-  sycl_wait_and_throw(submit_final(q, *state.bundle,
+  sycl_wait_and_throw(submit_final(q,
                                    cuda_layout ? state.linear_mixed : state.final_mixed, fin_count, lv,
                                    state.cand, state.cand_count, BeamState::CAND_CAP), state.device);
   }

@@ -144,7 +144,6 @@ static sycl::async_handler c29_exception_handler() {
 struct C29State {
   sycl::device device;
   sycl::queue queue;
-  MomKernelBundle bundle;
   C29Buffers buffers;
 
   explicit C29State(const std::string& dev_str)
@@ -154,35 +153,24 @@ struct C29State {
                         sycl::property_list{sycl::property::queue::in_order{},
                                             sycl::property::queue::enable_profiling{}}}
           : sycl::queue{device, c29_exception_handler(),
-                        sycl::property_list{sycl::property::queue::in_order{}}}),
-        bundle(mom_get_exec_bundle(queue.get_context())) {}
+                        sycl::property_list{sycl::property::queue::in_order{}}}) {}
 
   ~C29State() { sycl_cleanup_noexcept("c29", [&] { queue.wait_and_throw(); }); }
 };
 
-using C29StateMap = std::map<std::string, std::unique_ptr<C29State>>;
 
-static C29StateMap& c29_states() {
-  static C29StateMap* const states = new C29StateMap;
-  return *states;
-}
-
-static std::mutex& c29_states_mutex() {
-  static std::mutex* const mutex = new std::mutex;
-  return *mutex;
+static DeviceStateRegistry<C29State>& c29_registry() {
+  static auto* const registry = new DeviceStateRegistry<C29State>;
+  return *registry;
 }
 
 static C29State& c29_state(const std::string& dev_str) {
-  std::lock_guard<std::mutex> lock(c29_states_mutex());
-  auto& state = c29_states()[dev_str];
-  if (!state) state = std::make_unique<C29State>(dev_str);
-  return *state;
+  return c29_registry().get(dev_str, [&] { return std::make_unique<C29State>(dev_str); });
 }
 
 void c29_cleanup_states() noexcept {
   try {
-    std::lock_guard<std::mutex> lock(c29_states_mutex());
-    c29_states().clear();
+    c29_registry().clear();
   } catch (...) {
     std::fprintf(stderr, "c29: ordered SYCL cleanup failed\n");
   }

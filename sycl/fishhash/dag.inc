@@ -1,12 +1,11 @@
 class FishDagKernel;
 static sycl::event submit_fishhash_dag_gen(
-  sycl::queue& q, MomKernelBundle& kb, const uint64_t* __restrict d_cache, uint64_t* __restrict d_dag,
+  sycl::queue& q, const uint64_t* __restrict d_cache, uint64_t* __restrict d_dag,
   uint32_t start, uint32_t count
 ) {
   constexpr unsigned WG = 64;
   const size_t global = (static_cast<size_t>(count) + WG - 1) / WG * WG;
   return q.submit([&](sycl::handler& h) {
-    mom_use_bundle(h, kb);
     h.parallel_for<FishDagKernel>(sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(WG)), [=](sycl::nd_item<1> it) {
       const uint32_t i = (uint32_t)it.get_global_id(0);
       if (i >= count) return;

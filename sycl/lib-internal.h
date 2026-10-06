@@ -5,7 +5,6 @@
 #include <sycl/sycl.hpp>
 
 #include <algorithm>
-#include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <cstdint>
@@ -20,7 +19,9 @@
 #include <intrin.h>
 #endif
 
+#include "device-state.h"
 #include "lib.h"
+#include "workgroup-limits.h"
 
 // Keep the build-system define at this boundary. Algorithm code should prefer this compile-time
 // policy value and `if constexpr` over scattering preprocessor branches through kernels.
@@ -34,6 +35,19 @@ inline constexpr bool mom_sycl_portable_opencl = false;
 inline constexpr bool mom_sycl_adaptivecpp = true;
 #else
 inline constexpr bool mom_sycl_adaptivecpp = false;
+#endif
+
+inline constexpr uint64_t KiB = 1024ULL;
+inline constexpr uint64_t MiB = 1024ULL * KiB;
+inline constexpr uint64_t GiB = 1024ULL * MiB;
+
+// This is an unchecked promise that every accessor and USM kernel argument addresses
+// non-overlapping storage for the kernel lifetime. Apply it only after tracing the complete
+// allocation and call-site provenance.
+#if __has_cpp_attribute(intel::kernel_args_restrict)
+#define MOM_SYCL_KERNEL_ARGS_RESTRICT [[intel::kernel_args_restrict]]
+#else
+#define MOM_SYCL_KERNEL_ARGS_RESTRICT
 #endif
 
 // Device storage used by the standards-only OpenCL profile. Native compiler artifacts retain USM
@@ -53,20 +67,30 @@ public:
   MomBufferAllocation& operator=(const MomBufferAllocation&) = delete;
 
   void allocate(const size_t count) {
-    if (buffer_ && count_ >= count) return;
+    if (!count)
+      throw std::string("SYCL buffer allocation size must be nonzero");
+    if (buffer_ && count_ >= count)
+      return;
     buffer_.reset();
     buffer_ = std::make_unique<sycl::buffer<T, 1>>(sycl::range<1>{count});
     count_ = count;
   }
 
-  void release() { buffer_.reset(); count_ = 0; }
+  void release() {
+    buffer_.reset();
+    count_ = 0;
+  }
 
   template <sycl::access_mode Mode>
   auto device_view(sycl::handler& handler) {
+    if (!buffer_)
+      throw std::string("SYCL buffer is not allocated");
     return sycl::accessor<T, 1, Mode, sycl::target::device>{*buffer_, handler};
   }
 
   sycl::event write(sycl::queue& queue, const T* const source, const size_t count) {
+    if (!buffer_ || count > count_ || (!source && count))
+      throw std::string("Invalid SYCL buffer write");
     return queue.submit([&](sycl::handler& handler) {
       auto view = sycl::accessor<T, 1, sycl::access_mode::write, sycl::target::device>{
         *buffer_, handler, sycl::range<1>{count}};
@@ -75,6 +99,8 @@ public:
   }
 
   sycl::event fill(sycl::queue& queue, const T& value) {
+    if (!buffer_)
+      throw std::string("SYCL buffer is not allocated");
     return queue.submit([&](sycl::handler& handler) {
       auto view = device_view<sycl::access_mode::write>(handler);
       handler.fill(view, value);
@@ -82,6 +108,8 @@ public:
   }
 
   void read(T* const destination, const size_t count) {
+    if (!buffer_ || count > count_ || (!destination && count))
+      throw std::string("Invalid SYCL buffer read");
     sycl::host_accessor view{*buffer_, sycl::read_only};
     std::copy_n(view.begin(), count, destination);
   }
@@ -103,26 +131,17 @@ public:
 // lane within the sub-group, correct at both 16 and 32 lanes. Gating on the per-pass
 // __NVPTX__ (not a build macro) lets the combined build emit sg16 in its spir64 image and
 // no requirement in its nvptx image, so each device loads the image that fits it.
-#if defined(__NVPTX__) || defined(__AMDGCN__) || defined(MOM_SYCL_ADAPTIVECPP) || \
+#if defined(__NVPTX__) || defined(MOM_SYCL_ADAPTIVECPP) || \
     defined(MOM_SYCL_PORTABLE_OPENCL)
   #define MOM_REQD_SG_16
 #else
   #define MOM_REQD_SG_16 [[sycl::reqd_sub_group_size(16)]]
 #endif
 
-// Bind the context's executable kernel bundle to each handler as a build-cache hint.
 #if defined(MOM_SYCL_ADAPTIVECPP) || defined(MOM_SYCL_PORTABLE_OPENCL)
-struct MomKernelBundle {};
-inline MomKernelBundle mom_get_exec_bundle(const sycl::context&) { return {}; }
-inline void mom_use_bundle(sycl::handler&, MomKernelBundle&) {}
+struct MomExecutableKernelBundle {};
 #else
-using MomKernelBundle = sycl::kernel_bundle<sycl::bundle_state::executable>;
-inline MomKernelBundle mom_get_exec_bundle(const sycl::context& context) {
-  return sycl::get_kernel_bundle<sycl::bundle_state::executable>(context);
-}
-inline void mom_use_bundle(sycl::handler& handler, MomKernelBundle& bundle) {
-  handler.use_kernel_bundle(bundle);
-}
+using MomExecutableKernelBundle = sycl::kernel_bundle<sycl::bundle_state::executable>;
 #endif
 
 // Thin wrappers kept for call-site readability. Clang's rotate builtins are available in every
@@ -150,14 +169,18 @@ template <typename T> inline T mo_bitselect(const T a, const T b, const T c) {
 template <typename VecT, typename T>
 inline void mo_vec_load(VecT& v, const size_t offset, const T* const p) {
   if constexpr (mom_sycl_adaptivecpp)
-    for (size_t i = 0; i < v.size(); ++i) v[i] = p[offset * v.size() + i];
+    for (size_t i = 0; i < v.size(); ++i) {
+      v[i] = p[offset * v.size() + i];
+    }
   else
     v.load(offset, p);
 }
 template <typename VecT, typename T>
 inline void mo_vec_store(const VecT& v, const size_t offset, T* const p) {
   if constexpr (mom_sycl_adaptivecpp)
-    for (size_t i = 0; i < v.size(); ++i) p[offset * v.size() + i] = v[i];
+    for (size_t i = 0; i < v.size(); ++i) {
+      p[offset * v.size() + i] = v[i];
+    }
   else
     v.store(offset, p);
 }
@@ -173,19 +196,61 @@ inline void set_sycl_env(const char* name, const char* value) {
 // Parse a base-10 unsigned long, requiring the variable to be present, non-empty, and fully numeric.
 inline bool mom_parse_env_ulong(const char* const name, unsigned long& out) {
   const char* const value = std::getenv(name);
-  if (!value || !*value) return false;
-  char* end = nullptr;
-  errno = 0;
-  const unsigned long parsed = std::strtoul(value, &end, 10);
-  if (errno || end == value || *end) return false;
+  if (!value || !*value)
+    return false;
+  unsigned long parsed = 0;
+  for (const char* cursor = value; *cursor; ++cursor) {
+    if (*cursor < '0' || *cursor > '9')
+      return false;
+    const unsigned long digit = static_cast<unsigned long>(*cursor - '0');
+    if (parsed > (std::numeric_limits<unsigned long>::max() - digit) / 10)
+      return false;
+    parsed = parsed * 10 + digit;
+  }
   out = parsed;
   return true;
+}
+
+// Optional Intel geometry for host-side performance policy, not a requested subgroup size.
+// Unavailable/failed queries retain each caller's existing unknown-device default.
+inline unsigned mom_intel_eu_simd_width(const sycl::device& device) {
+#if !defined(MOM_SYCL_ADAPTIVECPP) && !defined(MOM_SYCL_PORTABLE_OPENCL)
+  try {
+    if (device.is_gpu() &&
+        device.get_info<sycl::info::device::vendor>().find("Intel") != std::string::npos &&
+        device.has(sycl::aspect::ext_intel_gpu_eu_simd_width))
+      return device.get_info<sycl::ext::intel::info::device::gpu_eu_simd_width>();
+  } catch (const sycl::exception&) {
+    // Optional performance information must not make an otherwise usable device fail.
+  }
+#else
+  (void)device;
+#endif
+  return 0;
 }
 
 inline bool sycl_is_level_zero_gpu(const sycl::device& device) {
   return
     device.is_gpu() &&
     device.get_platform().get_info<sycl::info::platform::name>().find("Level-Zero") != std::string::npos;
+}
+
+inline bool is_integrated_gpu(const sycl::device& device) {
+  if (!device.is_gpu())
+    return false;
+  // SYCL 2020 deprecated this query in favor of USM aspects, but those describe allocation
+  // support rather than whether GPU memory is physically shared with the host. Device discovery
+  // needs the latter distinction and every supported runtime still implements this SYCL 1.2.1
+  // property. Keep the unavoidable warning local instead of hiding unrelated deprecations.
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
+  const bool integrated = device.get_info<sycl::info::device::host_unified_memory>();
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
+  return integrated;
 }
 
 // Intel exposes versions such as 1.6.32224 (Level Zero) or 24.52.032224 (OpenCL). Return the
@@ -220,8 +285,6 @@ inline bool mom_is_cuda(const sycl::device& device) {
 inline bool mom_is_hip(const sycl::device& device) {
 #if defined(MOM_SYCL_ADAPTIVECPP)
   return device.get_backend() == sycl::backend::hip;
-#elif defined(MOM_SYCL_HAS_HIP)
-  return device.get_backend() == sycl::backend::ext_oneapi_hip;
 #else
   (void)device;
   return false;
@@ -244,12 +307,7 @@ inline bool mom_has_usm_shared(const sycl::device& device) {
 // __spirv_GroupNonUniformShuffle{,Down} calls at device link. The lane arguments used by the miner
 // are subgroup-relative and DPC++ maps one subgroup to one AMD wave.
 inline uint32_t mom_select_from_group(const sycl::sub_group& group, uint32_t value, uint32_t lane) {
-#if defined(__AMDGCN__) && !defined(MOM_SYCL_ADAPTIVECPP)
-  (void)group;
-  return __builtin_amdgcn_ds_bpermute(lane * 4U, value);
-#else
   return sycl::select_from_group(group, value, lane);
-#endif
 }
 
 inline uint64_t mom_select_from_group(const sycl::sub_group& group, uint64_t value, uint32_t lane) {
@@ -259,12 +317,7 @@ inline uint64_t mom_select_from_group(const sycl::sub_group& group, uint64_t val
 }
 
 inline uint32_t mom_shift_group_left(const sycl::sub_group& group, uint32_t value, uint32_t delta) {
-#if defined(__AMDGCN__) && !defined(MOM_SYCL_ADAPTIVECPP)
-  return mom_select_from_group(group, value,
-    static_cast<uint32_t>(group.get_local_linear_id()) + delta);
-#else
   return sycl::shift_group_left(group, value, delta);
-#endif
 }
 
 inline sycl::uint4 mom_select_from_group(const sycl::sub_group& group, const sycl::uint4 value,
@@ -303,18 +356,60 @@ inline uint64_t mo_mul_hi_u64(const uint64_t a, const uint64_t b) {
 #endif
 }
 
+inline bool sycl_local_memory_fits(const sycl::device& device, const size_t bytes) {
+  return bytes <= device.get_info<sycl::info::device::local_mem_size>();
+}
+
+inline bool sycl_workgroup_fits(const sycl::device& device, const unsigned workgroup,
+                                const size_t fixed_local_bytes = 0,
+                                const size_t local_bytes_per_item = 0,
+                                const size_t local_bytes_per_team = 0,
+                                const unsigned team_size = 1) {
+  return mom_workgroup_fits(
+      workgroup, device.get_info<sycl::info::device::max_work_group_size>(),
+      device.get_info<sycl::info::device::max_work_item_sizes<1>>()[0],
+      device.get_info<sycl::info::device::local_mem_size>(), fixed_local_bytes,
+      local_bytes_per_item, local_bytes_per_team, team_size);
+}
+
+// The DPC++ SPIR image requests subgroup 16. CUDA and AdaptiveCpp deliberately omit that attribute
+// and use their native subgroup, while the standards-only OpenCL image uses local-memory fallbacks.
+inline bool sycl_reqd_subgroup_16_supported(const sycl::device& device) {
+  if constexpr (mom_sycl_adaptivecpp || mom_sycl_portable_opencl)
+    return true;
+  if (mom_is_cuda(device) || mom_is_hip(device))
+    return true;
+  const auto sizes = device.get_info<sycl::info::device::sub_group_sizes>();
+  return std::find(sizes.begin(), sizes.end(), 16u) != sizes.end();
+}
+
 inline unsigned sycl_default_workgroup(
-  const sycl::device& device, const std::initializer_list<unsigned> allowed, const unsigned preferred
+  const sycl::device& device, const std::initializer_list<unsigned> allowed,
+  const unsigned preferred, const size_t fixed_local_bytes = 0,
+  const size_t local_bytes_per_item = 0, const size_t local_bytes_per_team = 0,
+  const unsigned team_size = 1
 ) {
-  const size_t reported_max = device.get_info<sycl::info::device::max_work_group_size>();
-  // Clamp the reported limit into [1, UINT_MAX] before comparing against unsigned candidates.
-  const unsigned max_workgroup = std::max<unsigned>(1u, static_cast<unsigned>(
-    std::min<size_t>(reported_max, std::numeric_limits<unsigned>::max())));
   unsigned selected = 0;
   for (const unsigned candidate : allowed) {
-    if (candidate <= preferred && candidate <= max_workgroup) selected = std::max(selected, candidate);
+    if (candidate <= preferred && sycl_workgroup_fits(
+          device, candidate, fixed_local_bytes, local_bytes_per_item,
+          local_bytes_per_team, team_size)) {
+      selected = std::max(selected, candidate);
+    }
   }
-  return selected ? selected : *std::min_element(allowed.begin(), allowed.end());
+  if (selected)
+    return selected;
+
+  unsigned smallest = 0;
+  for (const unsigned candidate : allowed) {
+    if (sycl_workgroup_fits(device, candidate, fixed_local_bytes, local_bytes_per_item,
+                           local_bytes_per_team, team_size) &&
+        (!smallest || candidate < smallest))
+      smallest = candidate;
+  }
+  if (!smallest)
+    throw std::string("No valid SYCL workgroup size");
+  return smallest;
 }
 
 // Branch-free modulo by a runtime divisor via multiply-shift (Granlund-Montgomery).
@@ -333,6 +428,8 @@ inline uint32_t clz32_host(const uint32_t value) {
 }
 
 inline FastModData make_fast_mod_data(const uint32_t divisor) {
+  if (!divisor)
+    throw std::string("Fast modulus divisor must be positive");
   FastModData data{};  // increment defaults to 0
   data.divisor = divisor;
   if ((divisor & (divisor - 1U)) == 0) {  // power of two: exact shift, reciprocal 1
@@ -368,11 +465,13 @@ inline void sycl_wait_and_throw(sycl::event event, const sycl::device& device) {
   if constexpr (mom_sycl_portable_opencl) {
     // The OpenCL specification permits implementations to publish coarse event status updates.
     // Rusticl can leave a completed command reported as submitted until a blocking wait flushes the
-    // queue, so status polling would wait forever with an idle GPU. Use the standardized wait here;
-    // native CUDA/HIP/Level-Zero artifacts keep the low-CPU polling path measured below.
-    (void)device;
-    event.wait_and_throw();
-    return;
+    // queue, so status polling would wait forever with an idle GPU. Restrict the standardized wait
+    // to actual OpenCL devices: this portable artifact can also run on Level Zero, whose native wait
+    // busy-spins a host core and should use the low-CPU polling path below.
+    if (mom_is_opencl(device)) {
+      event.wait_and_throw();
+      return;
+    }
   }
   // Several GPU backends busy-spin a host core inside native event waits. Polling the event status
   // with a short sleep keeps GPU mining from pinning one CPU thread while preserving exact completion.

@@ -2,14 +2,13 @@ template <bool NAIVE_TWIST> class ZelHashGenTestKernel;
 
 template <bool NAIVE_TWIST>
 static sycl::event submit_gen_test(
-  sycl::queue& q, MomKernelBundle& kb, const uint64_t* d_base_h, const uint8_t* d_base_pending,
+  sycl::queue& q, const uint64_t* d_base_h, const uint8_t* d_base_pending,
   uint8_t* d_rows /* EQUIHASH_TEST_ROWS * HASH_LENGTH */
 ) {
   if constexpr (NAIVE_TWIST) {
     constexpr unsigned WG = 64;
     const size_t global = (EQUIHASH_TEST_ROWS + WG - 1) / WG * WG;
     return q.submit([&](sycl::handler& h) {
-      mom_use_bundle(h, kb);
       h.parallel_for<ZelHashGenTestKernel<true>>(
         sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(WG)), [=](sycl::nd_item<1> it) {
         const uint32_t e = (uint32_t)it.get_global_id(0);
@@ -34,7 +33,6 @@ static sycl::event submit_gen_test(
     constexpr unsigned SG = 16;
     const size_t global = (size_t)NUM_BLOCKS * SG;
     return q.submit([&](sycl::handler& h) {
-      mom_use_bundle(h, kb);
       h.parallel_for<ZelHashGenTestKernel<false>>(
         sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(SG)),
         [=](sycl::nd_item<1> it) MOM_REQD_SG_16 {
@@ -175,7 +173,7 @@ inline void zelhash_scan16_words(const sycl::sub_group& sg, const uint32_t mine[
 template <bool GPU_COMPACT> class ZelHashGenFillKernelT;
 template <bool GPU_COMPACT = false>
 static sycl::event submit_gen_fill(
-  sycl::queue& q, MomKernelBundle& kb, const uint64_t* d_base_h, const uint8_t* d_base_pending,
+  sycl::queue& q, const uint64_t* d_base_h, const uint8_t* d_base_pending,
   uint32_t* d_level0, uint32_t* d_l0_index, uint32_t* d_nslots, unsigned slot_capacity
 ) {
   constexpr uint32_t NUM_HASHES = (uint32_t)(NUM_ENTRIES / INDICES_PER_HASH);   // 2^24
@@ -197,7 +195,6 @@ static sycl::event submit_gen_fill(
   std::memcpy(base_capture.h, d_base_h, sizeof(base_capture.h));
   std::memcpy(base_capture.pending, d_base_pending, sizeof(base_capture.pending));
   return q.submit([&](sycl::handler& h) {
-    mom_use_bundle(h, kb);
     h.parallel_for<ZelHashGenFillKernelT<GPU_COMPACT>>(
       sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(WG)),
       [=](sycl::nd_item<1> it) MOM_REQD_SG_16 {

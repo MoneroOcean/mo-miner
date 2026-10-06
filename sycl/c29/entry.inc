@@ -10,7 +10,6 @@ int c29(const unsigned job_ref, const unsigned c29_proof_size,
 
     C29State& state = c29_state(dev_str);
     sycl::queue& compute_queue = state.queue;
-    MomKernelBundle& kernel_bundle = state.bundle;
 
     // Pop the oldest queued solution that belongs to the current job (older jobs are discarded).
     bool has_solution = false;
@@ -52,7 +51,6 @@ int c29(const unsigned job_ref, const unsigned c29_proof_size,
         sycl::accessor acc_edges{buffer_edges, handler, sycl::read_only};
         sycl::accessor acc_nonces{buffer_nonces, handler, sycl::write_only, sycl::no_init};
         sycl::local_accessor<uint32_t, 1> local_nonces{sycl::range<1>{c29_proof_size}, handler};
-        mom_use_bundle(handler, kernel_bundle);
         handler.parallel_for(sycl::nd_range<1>(sycl::range<1>(2048 * 256), sycl::range<1>(256)),
                             [=](sycl::nd_item<1> item) {
           const uint32_t gid = item.get_global_id(0);
@@ -124,7 +122,7 @@ int c29(const unsigned job_ref, const unsigned c29_proof_size,
       union { uint8_t blake_output[32]; uint64_t k[4]; };
       rx_blake2b(blake_output, 32, input, input_size);
       start_new_c29_solution_search(k[0], k[1], k[2], k[3], job_ref, *pnonce, c29_proof_size,
-                                    compute_queue, kernel_bundle, state.buffers);
+                                    compute_queue, state.buffers);
 
       return 0; // no immediate results
     } else { // poll: -1 once every worker has drained, otherwise 0 (still searching)

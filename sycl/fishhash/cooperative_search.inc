@@ -1,6 +1,6 @@
 class FishCoopKernel;
 static sycl::event submit_fishhash_search_coop(
-  sycl::queue& q, MomKernelBundle& kb, const uint8_t* d_input, unsigned input_size, uint64_t start_nonce,
+  sycl::queue& q, const uint8_t* d_input, unsigned input_size, uint64_t start_nonce,
   const uint64_t* __restrict d_dag, uint32_t intensity, const uint8_t* d_target,
   FishResult* d_result, bool is_test, unsigned nonce_off, bool nonce_be, bool target_be,
   unsigned workgroup
@@ -8,7 +8,6 @@ static sycl::event submit_fishhash_search_coop(
   const size_t work_items = static_cast<size_t>(intensity) * FISH_TEAM;
   const size_t global = (work_items + workgroup - 1) / workgroup * workgroup;
   return q.submit([&](sycl::handler& h) {
-    mom_use_bundle(h, kb);
     sycl::local_accessor<uint8_t, 1> stage(
       sycl::range<1>((workgroup / FISH_TEAM) * FISH_STAGE_BYTES), h);
     h.parallel_for<FishCoopKernel>(
@@ -89,14 +88,13 @@ static sycl::event submit_fishhash_search_coop(
 
 class KarlsenCoopKernel;
 static sycl::event submit_karlsenhashv2_search_coop(
-  sycl::queue& q, MomKernelBundle& kb, const uint8_t* d_input, unsigned input_size, uint64_t start_nonce,
+  sycl::queue& q, const uint8_t* d_input, unsigned input_size, uint64_t start_nonce,
   const uint64_t* __restrict d_dag, uint32_t intensity, const uint8_t* d_target,
   FishResult* d_result, bool is_test, unsigned workgroup
 ) {
   const size_t work_items = static_cast<size_t>(intensity) * FISH_TEAM;
   const size_t global = (work_items + workgroup - 1) / workgroup * workgroup;
   return q.submit([&](sycl::handler& h) {
-    mom_use_bundle(h, kb);
     sycl::local_accessor<uint8_t, 1> stage(
       sycl::range<1>((workgroup / FISH_TEAM) * FISH_STAGE_BYTES), h);
     h.parallel_for<KarlsenCoopKernel>(

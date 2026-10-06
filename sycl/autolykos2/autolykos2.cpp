@@ -57,13 +57,9 @@ static void format_duration_ms(char* out, size_t out_size, uint64_t ms) {
 // variable is set to a clean, fully-consumed, in-range integer; otherwise returns false
 // (unset, empty, trailing junk, overflow) so the caller can keep its fallback.
 static bool env_u32(const char* name, uint32_t& out) {
-  const char* const value = std::getenv(name);
-  if (!value || !*value) return false;
-
-  char* end = nullptr;
-  errno = 0;
-  const unsigned long parsed = std::strtoul(value, &end, 10);
-  if (errno || end == value || *end || parsed > std::numeric_limits<uint32_t>::max()) return false;
+  unsigned long parsed = 0;
+  if (!mom_parse_env_ulong(name, parsed) || parsed > std::numeric_limits<uint32_t>::max())
+    return false;
   out = static_cast<uint32_t>(parsed);
   return true;
 }

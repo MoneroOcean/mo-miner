@@ -1,10 +1,9 @@
 #if !defined(MOM_SYCL_PORTABLE_OPENCL)
 class BeamCompactSeedKernel;
-static sycl::event submit_compact_seed(sycl::queue& q, MomKernelBundle& kb, const uint64_t* d_prePow,
+static sycl::event submit_compact_seed(sycl::queue& q, const uint64_t* d_prePow,
                                        BeamCompactRow* d_out, uint32_t* d_out_ns, unsigned wg) {
   const size_t global = ((size_t)NUM_ENTRIES + wg - 1) / wg * wg;
   return q.submit([&](sycl::handler& h) {
-    mom_use_bundle(h, kb);
     constexpr uint32_t SENTINEL = 0xffffffffu;
     constexpr unsigned ROW_U32 = sizeof(BeamCompactRow) / sizeof(uint32_t);
     sycl::local_accessor<uint32_t, 1> stage(sycl::range<1>((size_t)wg * ROW_U32), h);
@@ -56,7 +55,7 @@ static sycl::event submit_compact_seed(sycl::queue& q, MomKernelBundle& kb, cons
 
 template <unsigned R> class BeamCompactRoundKernel;
 template <unsigned R>
-static sycl::event submit_compact_round(sycl::queue& q, MomKernelBundle& kb,
+static sycl::event submit_compact_round(sycl::queue& q,
                                         const BeamCompactRow* d_in, const uint32_t* d_in_ns,
                                         BeamCompactRow* d_out, uint32_t* d_out_ns,
                                         BeamCandidate* d_cand, uint32_t* d_cand_count,
@@ -68,7 +67,6 @@ static sycl::event submit_compact_round(sycl::queue& q, MomKernelBundle& kb,
   constexpr unsigned mergeLen = ROUND_MERGELEN[R];
   const size_t global = (size_t)COMPACT_NBUCKETS * COMPACT_SUBGROUPS * wg;
   return q.submit([&](sycl::handler& h) {
-    mom_use_bundle(h, kb);
     sycl::local_accessor<uint32_t, 1> bin_head(sycl::range<1>(COMPACT_NRESTBINS), h);
     sycl::local_accessor<uint32_t, 1> bin_next(sycl::range<1>(COMPACT_LOCAL_CAP), h);
     sycl::local_accessor<uint32_t, 1> slot_index(sycl::range<1>(COMPACT_LOCAL_CAP), h);
@@ -184,12 +182,11 @@ static sycl::event submit_compact_round(sycl::queue& q, MomKernelBundle& kb,
 
 class BeamCompactFinalThinKernel;
 static sycl::event submit_compact_final_thin(
-    sycl::queue& q, MomKernelBundle& kb, const BeamLevel4Row* d_in,
+    sycl::queue& q, const BeamLevel4Row* d_in,
     const uint32_t* d_in_ns, const BeamCompactRow* d_level3,
     BeamCandidate* d_cand, uint32_t* d_cand_count, uint32_t cand_cap, unsigned wg) {
   const size_t global = (size_t)COMPACT_NBUCKETS * COMPACT_SUBGROUPS * wg;
   return q.submit([&](sycl::handler& h) {
-    mom_use_bundle(h, kb);
     sycl::local_accessor<uint32_t, 1> bin_head(sycl::range<1>(COMPACT_NRESTBINS), h);
     sycl::local_accessor<uint32_t, 1> bin_next(sycl::range<1>(COMPACT_LOCAL_CAP), h);
     sycl::local_accessor<uint32_t, 1> slot_index(sycl::range<1>(COMPACT_LOCAL_CAP), h);

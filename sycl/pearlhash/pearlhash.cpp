@@ -60,7 +60,6 @@
 #include "blake3.inc"
 
 #include "matrix.inc"
-#include "amd_sycl_wmma.inc"
 
 #include "sycl_search.inc"
 
@@ -83,7 +82,6 @@
 #include "cuda_jit.inc"
 
 #include "hip_jit.inc"
-#include "amd_wmma_dispatch.inc"
 
 #include "dispatch.inc"
 #include "host.inc"

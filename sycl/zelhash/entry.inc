@@ -23,7 +23,7 @@ int zelhash(
     // on-device before handing the rows back. The standalone checker diffs them vs the JS oracle.
     const size_t rows_bytes = (size_t)EQUIHASH_TEST_ROWS * HASH_LENGTH;
     std::memset(state.rows, 0, rows_bytes);
-    sycl_wait_and_throw(submit_gen_test<true>(state.queue, *state.bundle, state.base_h, state.base_pending, state.rows), state.device);
+    sycl_wait_and_throw(submit_gen_test<true>(state.queue, state.base_h, state.base_pending, state.rows), state.device);
     std::vector<uint8_t> naive(state.rows, state.rows + rows_bytes);
 
     // CPU devices are the standards-portability oracle. Some OpenCL CPU implementations under
@@ -36,7 +36,7 @@ int zelhash(
     }
 
     std::memset(state.rows, 0, rows_bytes);
-    sycl_wait_and_throw(submit_gen_test<false>(state.queue, *state.bundle, state.base_h, state.base_pending, state.rows), state.device);
+    sycl_wait_and_throw(submit_gen_test<false>(state.queue, state.base_h, state.base_pending, state.rows), state.device);
     std::vector<uint8_t> scan(state.rows, state.rows + rows_bytes);
 
     const bool match = (naive == scan);
@@ -104,12 +104,12 @@ int zelhash(
   const uint64_t t_gen0 = ZelHashState::now_ms();
 #if defined(MOM_EQ_ALIGNED_GPU_RECORDS)
   auto gen = state.gpu_compact
-    ? submit_gen_fill<true>(q, *state.bundle, state.base_h, state.base_pending,
+    ? submit_gen_fill<true>(q, state.base_h, state.base_pending,
         state.level[0], state.l0_index, state.nslots + 0u * NBUCKETS, state.slot_capacity)
-    : submit_gen_fill<false>(q, *state.bundle, state.base_h, state.base_pending,
+    : submit_gen_fill<false>(q, state.base_h, state.base_pending,
         state.level[0], nullptr, state.nslots + 0u * NBUCKETS, state.slot_capacity);
 #else
-  auto gen = submit_gen_fill<false>(q, *state.bundle, state.base_h, state.base_pending,
+  auto gen = submit_gen_fill<false>(q, state.base_h, state.base_pending,
     state.level[0], nullptr, state.nslots + 0u * NBUCKETS, state.slot_capacity);
 #endif
   if (wait_stages) sycl_wait_and_throw(gen, state.device);
@@ -137,15 +137,15 @@ int zelhash(
   auto submit_recovery = [&](uint32_t count, const uint32_t* device_count) {
 #if defined(MOM_SYCL_HAS_CUDA)
     if (state.gpu_compact)
-      return submit_recover<true>(q, *state.bundle, lv, state.nslots, state.ref, count,
+      return submit_recover<true>(q, lv, state.nslots, state.ref, count,
         state.cand, state.cand_count, ZelHashState::CAND_CAP, wg, state.slot_capacity, device_count);
-    return submit_recover<false>(q, *state.bundle, lv, state.nslots, state.ref, count,
+    return submit_recover<false>(q, lv, state.nslots, state.ref, count,
       state.cand, state.cand_count, ZelHashState::CAND_CAP, wg, state.slot_capacity, device_count);
 #elif defined(MOM_SYCL_HAS_HIP) || defined(MOM_SYCL_ADAPTIVECPP)
-    return submit_recover<true>(q, *state.bundle, lv, state.nslots, state.ref, count,
+    return submit_recover<true>(q, lv, state.nslots, state.ref, count,
       state.cand, state.cand_count, ZelHashState::CAND_CAP, wg, state.slot_capacity, device_count);
 #else
-    return submit_recover<false>(q, *state.bundle, lv, state.nslots, state.ref, count,
+    return submit_recover<false>(q, lv, state.nslots, state.ref, count,
       state.cand, state.cand_count, ZelHashState::CAND_CAP, wg, state.slot_capacity, device_count);
 #endif
   };
@@ -163,7 +163,7 @@ int zelhash(
   if (state.gpu_compact) {
     const uint32_t recovered = std::min<uint32_t>(*state.cand_count, ZelHashState::CAND_CAP);
     if (recovered != 0) {
-      sycl_wait_and_throw(submit_l0_invert(q, *state.bundle, state.l0_index, state.cand,
+      sycl_wait_and_throw(submit_l0_invert(q, state.l0_index, state.cand,
         recovered * (1u << K), state.invert_target, state.invert_next, state.invert_head),
         state.device);
     }

@@ -41,7 +41,6 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
                                           const unsigned job_ref, const uint64_t nonce,
                                           const unsigned c29_proof_size,
                                           sycl::queue& compute_queue,
-                                          MomKernelBundle& kernel_bundle,
                                           C29Buffers& c29_buffers) {
   try {
     C29Profile profile(job_ref, nonce, c29_proof_size, compute_queue, compute_queue.get_device().get_info<sycl::info::device::name>());

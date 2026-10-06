@@ -1,9 +1,9 @@
-enum class PearlHashSearchBackend { sycl, amd_sycl_wmma, hip_jit, cuda_jit };
+enum class PearlHashSearchBackend { sycl, hip_jit, cuda_jit };
 
 static PearlHashSearchBackend attempt(
     sycl::queue& q, const Buffers& b, uint32_t seed, int m, int n, int k, int rank,
     const std::string& backend = "auto", PearlHashHipSearch* hip = nullptr,
-    PearlHashCudaSearch* cuda = nullptr, PearlHashAmdWmmaSearch* amd_wmma = nullptr,
+    PearlHashCudaSearch* cuda = nullptr,
     sycl::queue* hip_prep_queue = nullptr, bool validate_native = false) {
   static thread_local unsigned stats_attempts = 0;
   const bool stats = std::getenv("MOM_PEARLHASH_STATS") && stats_attempts++ < 3;
@@ -99,14 +99,6 @@ static PearlHashSearchBackend attempt(
       b.result->found = 0;
       b.result->chk = 0;
     }
-  }
-  // DPC++ HIP can lower its gfx12 builtin directly. Shipped AdaptiveCpp workers omit this
-  // experimental branch and fall through to portable SYCL.
-  if (tuned_sycl && amd_wmma && amd_wmma->ensure(q, m, n, k, rank)) {
-    compute_ab(q, b, seed, m, n, k, rank, /*portable=*/true);
-    mark("ab");
-    amd_wmma->launch(q, b, seed, m, n, k, rank, dbg);
-    return PearlHashSearchBackend::amd_sycl_wmma;
   }
 #endif
 #if defined(MOM_SYCL_HAS_CUDA)

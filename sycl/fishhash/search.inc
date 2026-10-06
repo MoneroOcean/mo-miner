@@ -6,7 +6,7 @@ template <bool FULL> class FishKernel;
 // live Iron Fish). target_be selects BE compare (Iron Fish) vs LE (offline test).
 template <bool FULL>
 static sycl::event submit_fishhash_search(
-  sycl::queue& q, MomKernelBundle& kb, const uint8_t* d_input, unsigned input_size, uint64_t start_nonce,
+  sycl::queue& q, const uint8_t* d_input, unsigned input_size, uint64_t start_nonce,
   const uint64_t* __restrict d_cache, const uint64_t* __restrict d_dag, uint32_t intensity,
   const uint8_t* d_target, FishResult* d_result, bool is_test,
   unsigned nonce_off, bool nonce_be, bool target_be
@@ -14,7 +14,6 @@ static sycl::event submit_fishhash_search(
   constexpr unsigned WG = 128;  // Latency-bound gathers benefit from more in-flight subgroups.
   const size_t global = (static_cast<size_t>(intensity) + WG - 1) / WG * WG;
   return q.submit([&](sycl::handler& h) {
-    mom_use_bundle(h, kb);
     h.parallel_for<FishKernel<FULL>>(sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(WG)), [=](sycl::nd_item<1> it) {
       const uint32_t gid = (uint32_t)it.get_global_id(0);
       if (gid >= intensity) return;
@@ -115,14 +114,13 @@ static sycl::event submit_fishhash_search(
 template <bool FULL> class KarlsenKernel;
 template <bool FULL>
 static sycl::event submit_karlsenhashv2_search(
-  sycl::queue& q, MomKernelBundle& kb, const uint8_t* d_input, unsigned input_size, uint64_t start_nonce,
+  sycl::queue& q, const uint8_t* d_input, unsigned input_size, uint64_t start_nonce,
   const uint64_t* __restrict d_cache, const uint64_t* __restrict d_dag, uint32_t intensity,
   const uint8_t* d_target, FishResult* d_result, bool is_test
 ) {
   constexpr unsigned WG = 128;
   const size_t global = (static_cast<size_t>(intensity) + WG - 1) / WG * WG;
   return q.submit([&](sycl::handler& h) {
-    mom_use_bundle(h, kb);
     h.parallel_for<KarlsenKernel<FULL>>(sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(WG)), [=](sycl::nd_item<1> it) {
       const uint32_t gid = (uint32_t)it.get_global_id(0);
       if (gid >= intensity) return;

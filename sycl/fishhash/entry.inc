@@ -32,17 +32,17 @@ int fishhash(
 
   sycl::event search;
   if (is_test && !full_test) {
-    search = submit_fishhash_search<false>(state.queue, *state.bundle, state.input, input_size, start_nonce,
+    search = submit_fishhash_search<false>(state.queue, state.input, input_size, start_nonce,
       state.cache, nullptr, intensity, state.target, state.result, is_test,
       nonce_off, nonce_be, target_be);
 #if !defined(MOM_SYCL_PORTABLE_OPENCL)
   } else if (cooperative) {
-    search = submit_fishhash_search_coop(state.queue, *state.bundle, state.input, input_size, start_nonce,
+    search = submit_fishhash_search_coop(state.queue, state.input, input_size, start_nonce,
       state.dag, intensity, state.target, state.result, is_test,
       nonce_off, nonce_be, target_be, state.coop_workgroup);
 #endif
   } else {
-    search = submit_fishhash_search<true>(state.queue, *state.bundle, state.input, input_size, start_nonce,
+    search = submit_fishhash_search<true>(state.queue, state.input, input_size, start_nonce,
       nullptr, state.dag, intensity, state.target, state.result, is_test,
       nonce_off, nonce_be, target_be);
   }
@@ -92,15 +92,15 @@ int karlsenhashv2(
 
   sycl::event search;
   if (is_test && !full_test) {
-    search = submit_karlsenhashv2_search<false>(state.queue, *state.bundle, state.input, input_size,
+    search = submit_karlsenhashv2_search<false>(state.queue, state.input, input_size,
       start_nonce, state.cache, nullptr, intensity, state.target, state.result, is_test);
 #if !defined(MOM_SYCL_PORTABLE_OPENCL)
   } else if (cooperative) {
-    search = submit_karlsenhashv2_search_coop(state.queue, *state.bundle, state.input, input_size,
+    search = submit_karlsenhashv2_search_coop(state.queue, state.input, input_size,
       start_nonce, state.dag, intensity, state.target, state.result, is_test, state.coop_workgroup);
 #endif
   } else {
-    search = submit_karlsenhashv2_search<true>(state.queue, *state.bundle, state.input, input_size,
+    search = submit_karlsenhashv2_search<true>(state.queue, state.input, input_size,
       start_nonce, nullptr, state.dag, intensity, state.target, state.result, is_test);
   }
   sycl_wait_and_throw(search, state.device);

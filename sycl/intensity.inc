@@ -1,7 +1,4 @@
-// Round down to a whole multiple of step (step > 0) so intensities stay workgroup-aligned.
-static unsigned round_down_to_multiple(const unsigned value, const unsigned step) {
-  return value - value % step;
-}
+#include "pow-intensity.h"
 
 static unsigned parse_pow_workgroup_override(
   const sycl::device& dev, const char* const env_name, const unsigned fallback_override = 0
@@ -16,7 +13,9 @@ static unsigned parse_pow_workgroup_override(
     case 128:
     case 256:
     case 512:
-      return static_cast<unsigned>(parsed);
+      if (sycl_workgroup_fits(dev, static_cast<unsigned>(parsed)))
+        return static_cast<unsigned>(parsed);
+      break;
   }
   return fallback;
 }
@@ -27,24 +26,6 @@ static unsigned parse_pow_intensity_override(const unsigned local, const char* c
       parsed < local || parsed > std::numeric_limits<unsigned>::max()) return 0;
   return round_down_to_multiple(static_cast<unsigned>(parsed), local);
 }
-
-struct PowDeviceProfile {
-  unsigned compute_units;
-  uint64_t global_mem;
-  uint64_t max_alloc;
-};
-
-struct PowIntensityScale {
-  unsigned fallback_workgroup;
-  unsigned base_work_items;
-  unsigned compute_unit_divisor;
-};
-
-struct PowIntensityHeuristic {
-  PowIntensityScale compact;
-  PowIntensityScale balanced;
-  PowIntensityScale wide;
-};
 
 static PowDeviceProfile pow_device_profile(const sycl::device& dev) {
   return {
@@ -62,30 +43,8 @@ static bool pow_has_dataset_memory(
   // DPC++'s HIP adapter reports a 4 GiB max allocation on this Windows/Linux ROCm stack even though
   // hipMalloc and SYCL USM successfully allocate the 4.3--5 GiB datasets on a 16 GiB card. Trust the
   // physical-memory check for HIP; explicit etchash/KawPow vector and benchmark runs exercise it.
-  return (mom_is_hip(dev) || profile.max_alloc >= dataset_bytes) &&
+  return (mom_is_hip(dev) || sycl_is_level_zero_gpu(dev) || profile.max_alloc >= dataset_bytes) &&
          profile.global_mem >= std::max(min_global_mem, dataset_bytes + reserve);
-}
-
-static unsigned pow_device_score(const PowDeviceProfile& profile) {
-  // Favor deeper in-flight batches only on GPUs with enough parallelism and memory headroom.
-  const uint64_t mem_per_cu = profile.global_mem / profile.compute_units;
-  unsigned score = 0;
-  if (profile.compute_units >= 128) score += 2;
-  else if (profile.compute_units >= 64) score += 1;
-  if (profile.global_mem >= 8ULL * GiB) score += 2;
-  else if (profile.global_mem >= 6ULL * GiB) score += 1;
-  if (profile.max_alloc >= 2ULL * GiB) score += 1;
-  if (mem_per_cu >= 48ULL * MiB) score += 1;
-  return score;
-}
-
-static PowIntensityScale select_pow_intensity_scale(
-  const PowDeviceProfile& profile, const PowIntensityHeuristic& heuristic
-) {
-  const unsigned score = pow_device_score(profile);
-  if (score >= 5) return heuristic.wide;
-  if (score >= 3) return heuristic.balanced;
-  return heuristic.compact;
 }
 
 static unsigned pow_intensity(
@@ -101,18 +60,7 @@ static unsigned pow_intensity(
   const unsigned override = parse_pow_intensity_override(local, intensity_env);
   if (override) return override;
 
-  uint64_t intensity64 = static_cast<uint64_t>(local) * scale.base_work_items * profile.compute_units;
-  intensity64 /= scale.compute_unit_divisor;
-  if (max_work_items_per_gib) {
-    // Backends count execution slices/EUs/CUs/SMs at different granularities. A memory-scaled cap
-    // prevents that reporting difference from creating an unnecessarily deep search dispatch.
-    const uint64_t memory_depth_cap =
-      std::max<uint64_t>(1, profile.global_mem / GiB) * max_work_items_per_gib * MiB;
-    intensity64 = std::min(intensity64, memory_depth_cap);
-  }
-  intensity64 = std::min<uint64_t>(intensity64, std::numeric_limits<unsigned>::max());
-  const unsigned intensity = round_down_to_multiple(static_cast<unsigned>(intensity64), local);
-  return std::max(intensity, local * 4096u);
+  return pow_intensity(profile, heuristic, local, max_work_items_per_gib);
 }
 
 static unsigned kawpow_intensity(const sycl::device& dev) {
@@ -193,7 +141,8 @@ static unsigned autolykos2_intensity(const sycl::device& dev) {
 // profile identical without recognizing individual GPU products.
 static unsigned pearlhash_intensity(const sycl::device& dev) {
   unsigned long parsed = 0;
-  if (mom_parse_env_ulong("MOM_PEARLHASH_INTENSITY", parsed) && parsed >= 256)
+  if (mom_parse_env_ulong("MOM_PEARLHASH_INTENSITY", parsed) && parsed >= 256 &&
+      parsed <= std::numeric_limits<unsigned>::max())
     return round_down_to_multiple(static_cast<unsigned>(parsed), 64);
   std::string vendor = dev.get_info<sycl::info::device::vendor>();
   std::transform(vendor.begin(), vendor.end(), vendor.begin(),

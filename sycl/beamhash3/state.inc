@@ -33,14 +33,13 @@ inline bool beam_leaves_distinct(const uint32_t* leaves, unsigned n) {
 }
 
 class BeamFinalKernel;
-static sycl::event submit_final(sycl::queue& q, MomKernelBundle& kb, const uint32_t* d_mixed5,
+static sycl::event submit_final(sycl::queue& q, const uint32_t* d_mixed5,
                                 uint32_t in_count, BeamLevels lv, BeamCandidate* d_cand,
                                 uint32_t* d_cand_count, uint32_t cand_cap) {
   constexpr unsigned IN_ST = mixed_stride_u32(NUM_ROUNDS);   // level-5 stride (1 word + 0 idx) = 2
   constexpr unsigned WG = 128;
   const size_t global = ((size_t)in_count + WG - 1) / WG * WG;
   return q.submit([&](sycl::handler& h) {
-    mom_use_bundle(h, kb);
     h.parallel_for<BeamFinalKernel>(
       sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(WG)), [=](sycl::nd_item<1> it) {
       const uint32_t s = (uint32_t)it.get_global_id(0);
@@ -60,11 +59,11 @@ static sycl::event submit_final(sycl::queue& q, MomKernelBundle& kb, const uint3
 }
 
 // ===========================================================================================
-// Per-device state: queue + bundle + USM arenas.
+// Per-device state: queue + USM arenas.
 // ===========================================================================================
 class BeamState {
 public:
-  sycl::device device; sycl::queue queue; std::unique_ptr<MomKernelBundle> bundle; bool shared_io;
+  sycl::device device; sycl::queue queue; bool shared_io;
   // M1 I/O
   uint64_t* prePow = nullptr;   // 4 u64 (the SipHash key / IndividualWork)
   uint8_t*  rows = nullptr;     // BEAMHASH3_TEST_ROWS * ROW_BYTES (raw 448-bit leaf rows)
@@ -89,7 +88,6 @@ public:
       shared_io(device.is_cpu() || !mom_has_usm_device(device)) {
     if (!mom_has_usm_shared(device) || (!device.is_cpu() && !mom_has_usm_device(device)))
       throw std::string("beamhash3 SYCL device does not support required allocations");
-    bundle = std::make_unique<MomKernelBundle>(mom_get_exec_bundle(queue.get_context()));
   }
   ~BeamState() {
     // Miner workers exit immediately after a benchmark sample. Keep process teardown noexcept like
@@ -190,29 +188,19 @@ public:
   }
 };
 
-using BeamStateMap = std::map<std::string, std::unique_ptr<BeamState>>;
 
-static BeamStateMap& beam_states() {
-  static BeamStateMap* const states = new BeamStateMap;
-  return *states;
-}
-
-static std::mutex& beam_states_mutex() {
-  static std::mutex* const mutex = new std::mutex;
-  return *mutex;
+static DeviceStateRegistry<BeamState>& beam_registry() {
+  static auto* const registry = new DeviceStateRegistry<BeamState>;
+  return *registry;
 }
 
 static BeamState& beam_state(const std::string& dev_str) {
-  std::lock_guard<std::mutex> lock(beam_states_mutex());
-  auto& state = beam_states()[dev_str];
-  if (!state) state = std::make_unique<BeamState>(dev_str);
-  return *state;
+  return beam_registry().get(dev_str, [&] { return std::make_unique<BeamState>(dev_str); });
 }
 
 void beamhash3_cleanup_states() noexcept {
   try {
-    std::lock_guard<std::mutex> lock(beam_states_mutex());
-    beam_states().clear();
+    beam_registry().clear();
   } catch (...) {
     std::fprintf(stderr, "beamhash3: ordered SYCL cleanup failed\n");
   }

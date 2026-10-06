@@ -16,7 +16,6 @@
     auto zero_buffer = [&](const char* name, sycl::buffer<uint32_t, 1>& buffer) {
       const sycl::event event = compute_queue.submit([&](sycl::handler& handler) {
         sycl::accessor accessor{buffer, handler, sycl::write_only, sycl::no_init};
-        mom_use_bundle(handler, kernel_bundle);
         handler.fill(accessor, static_cast<uint32_t>(0));
       });
       profile.add_event(name, event);
@@ -41,7 +40,6 @@
         sycl::accessor acc_buffer_a1{buffer_a1_u2, handler, sycl::write_only, sycl::no_init};
         sycl::accessor acc_buffer_a2{buffer_a2_u2, handler, sycl::write_only, sycl::no_init};
         sycl::accessor acc_index_2{buffer_i2, handler, sycl::read_write};
-        mom_use_bundle(handler, kernel_bundle);
         handler.parallel_for(sycl::nd_range<1>(sycl::range<1>(seed_work_items), sycl::range<1>(seed_local_size)),
                             [=](sycl::nd_item<1> item) {
           const uint32_t global_id = item.get_global_id(0);
@@ -82,7 +80,6 @@
         // Local memory for temporary edge storage and bucket counters
         sycl::local_accessor<uint64_t, 2> temp_storage{sycl::range<2>(64, 16), handler};
         sycl::local_accessor<uint32_t, 1> bucket_counters{sycl::range<1>(64), handler};
-        mom_use_bundle(handler, kernel_bundle);
         handler.parallel_for(sycl::nd_range<1>(sycl::range<1>(seed_work_items), sycl::range<1>(seed_local_size)),
                             [=](sycl::nd_item<1> item) {
           const uint32_t global_id = item.get_global_id(0);
@@ -147,7 +144,7 @@
       auto redistribute_edges = [](sycl::queue& queue, sycl::buffer<sycl::uint2, 1>& source_buffer,
                                    sycl::buffer<sycl::ulong4, 1>& dest_buffer_1, sycl::buffer<sycl::ulong4, 1>& dest_buffer_2,
                                    sycl::buffer<uint32_t, 1>& source_indexes, sycl::buffer<uint32_t, 1>& dest_indexes,
-                                   const uint32_t start_block, const uint32_t duck_edges_a, auto& kernel_bundle) {
+                                   const uint32_t start_block, const uint32_t duck_edges_a) {
         return queue.submit([&](sycl::handler& handler) {
           sycl::accessor acc_source{source_buffer, handler, sycl::read_only};
           sycl::accessor acc_dest_1{dest_buffer_1, handler, sycl::write_only, sycl::no_init};
@@ -157,7 +154,6 @@
           const constexpr uint32_t BUCKET_GRANULARITY = 32;
           sycl::local_accessor<uint64_t, 2> temp_storage{sycl::range<2>(64, 16), handler};
           sycl::local_accessor<uint32_t, 1> bucket_counters{sycl::range<1>(64), handler};
-          mom_use_bundle(handler, kernel_bundle);
           handler.parallel_for(sycl::nd_range<1>(sycl::range<1>(1024 * 128), sycl::range<1>(128)),
                               [=](sycl::nd_item<1> item) {
             const uint32_t local_id      = item.get_local_id(0);
@@ -217,8 +213,8 @@
       };
 
       profile.add_event("redistribute_32",
-        redistribute_edges(compute_queue, buffer_a1_u2, buffer_a1_ul4, buffer_a2_ul4, buffer_i1, buffer_i2, 32, duck_edges_a, kernel_bundle));
+        redistribute_edges(compute_queue, buffer_a1_u2, buffer_a1_ul4, buffer_a2_ul4, buffer_i1, buffer_i2, 32, duck_edges_a));
       profile.add_event("redistribute_0",
-        redistribute_edges(compute_queue, buffer_b_u2, buffer_a1_ul4, buffer_a2_ul4, buffer_i1, buffer_i2, 0, duck_edges_a, kernel_bundle));
+        redistribute_edges(compute_queue, buffer_b_u2, buffer_a1_ul4, buffer_a2_ul4, buffer_i1, buffer_i2, 0, duck_edges_a));
       zero_buffer("clear_i1_seed", buffer_i1);
     }

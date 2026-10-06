@@ -23,10 +23,6 @@ struct Uint2 {
   uint32_t y;
 };
 
-inline uint32_t round_up(const uint32_t value, const uint32_t step) {
-  return ((value + step - 1) / step) * step;
-}
-
 inline uint32_t fnv_dev(const uint32_t x, const uint32_t y) {
   return x * FNV_PRIME ^ y;
 }
@@ -399,19 +395,4 @@ uint32_t seed_epoch_from_hash(const uint8_t* const seed_hash) {
     if (std::memcmp(current.b, seed_hash, HASH_LEN) == 0) return seed_epoch;
   }
   throw std::string("Unknown etchash seed hash");
-}
-
-void resolve_epochs(
-  const uint32_t block_height,
-  const uint8_t* const seed_hash,
-  uint32_t& epoch,
-  uint32_t& seed_epoch
-) {
-  if (seed_hash && !is_zero_hash(seed_hash)) {
-    seed_epoch = seed_epoch_from_hash(seed_hash);
-    epoch = seed_epoch < ETCHASH_FORK_BLOCK / ETHASH_EPOCH ? seed_epoch : seed_epoch / 2;
-    return;
-  }
-  epoch = etchash_epoch(block_height);
-  seed_epoch = etchash_seed_epoch(block_height);
 }

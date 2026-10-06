@@ -1,26 +1,19 @@
 // sycl_cleanup() clears the device-owning values before the compiler runtime unloads. Keep only
 // this now-empty registry shell alive so C++ static destruction cannot race runtime DLL teardown.
-static AutolykosStateMap& autolykos_states() {
-  static AutolykosStateMap* const states = new AutolykosStateMap;
-  return *states;
-}
-
-static std::mutex& autolykos_states_mutex() {
-  static std::mutex* const mutex = new std::mutex;
-  return *mutex;
+static DeviceStateRegistry<AutolykosState>& autolykos_registry() {
+  static auto* const registry = new DeviceStateRegistry<AutolykosState>;
+  return *registry;
 }
 
 static AutolykosState& autolykos_state(const std::string& dev_str) {
-  std::lock_guard<std::mutex> lock(autolykos_states_mutex());
-  auto& state = autolykos_states()[dev_str];
-  if (!state) state = std::make_unique<AutolykosState>(dev_str);
-  return *state;
+  return autolykos_registry().get(dev_str, [&] {
+    return std::make_unique<AutolykosState>(dev_str);
+  });
 }
 
 void autolykos2_cleanup_states() noexcept {
   try {
-    std::lock_guard<std::mutex> lock(autolykos_states_mutex());
-    autolykos_states().clear();
+    autolykos_registry().clear();
   } catch (...) {
     std::fprintf(stderr, "autolykos2: ordered SYCL cleanup failed\n");
   }
@@ -46,7 +39,8 @@ int autolykos2(
   uint8_t* const output, uint64_t* const pnonce, const uint8_t* const target,
   const unsigned intensity, const bool is_test, const bool is_benchmark, const std::string& dev_str
 ) {
-  if (input_size < 40) throw std::string("Bad autolykos2 input length");
+  if (!input || !output || !pnonce || !target || input_size < 40 || !intensity)
+    throw std::string("Autolykos2 requires input, output, target, nonce, and nonzero intensity");
 
   AutolykosState& state = autolykos_state(dev_str);
   std::lock_guard<std::mutex> state_lock(state.mutex);
@@ -63,7 +57,11 @@ int autolykos2(
   uint64_t start_nonce = 0;
   std::memcpy(&start_nonce, input + HASH_LEN, sizeof(start_nonce));
   const uint32_t effective_intensity = is_test ? 1 : intensity;
-  const uint32_t global_size = round_up(std::max(effective_intensity, state.workgroup), state.workgroup);
+  if (effective_intensity >
+      (std::numeric_limits<uint32_t>::max() - (state.workgroup - 1)) / 8U)
+    throw std::string("Autolykos2 intensity is too large");
+  const size_t global_size =
+      round_up_size(std::max(effective_intensity, state.workgroup), state.workgroup);
   if constexpr (mom_sycl_portable_opencl) {
     state.ensure_portable_results(effective_intensity);
     AutolykosPortableResult empty_portable_result{};
@@ -73,7 +71,6 @@ int autolykos2(
   }
 
   sycl::queue& q = state.queue;
-  auto& kb = *state.bundle;
   const uint32_t* const __restrict__ d_table = state.table;
   // Split-table kernels are unreachable in this profile, but retain a well-typed placeholder so
   // the common source remains compilable and device-code splitting can discard those images.
@@ -88,10 +85,9 @@ int autolykos2(
 
     const uint64_t profile_t0 = profile ? now_us() : 0;
     sycl::event index_event = q.submit([&](sycl::handler& h) {
-      mom_use_bundle(h, kb);
       h.parallel_for(
         sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(local_size)),
-        [=](sycl::nd_item<1> item) {
+        [=](sycl::nd_item<1> item) MOM_SYCL_KERNEL_ARGS_RESTRICT {
           const uint32_t gid = item.get_global_id(0);
           if (gid >= effective_intensity) return;
 
@@ -119,12 +115,12 @@ int autolykos2(
       throw std::string("Can't allocate Autolykos2 subgroup verification buffer");
     sycl::event search_event;
     if (subgroup_coop) {
-      const uint32_t coop_global = round_up(effective_intensity * 8U, local_size);
+      const size_t coop_global =
+          round_up_size(static_cast<uint64_t>(effective_intensity) * 8U, local_size);
       search_event = q.submit([&](sycl::handler& h) {
-        mom_use_bundle(h, kb);
         h.parallel_for(
           sycl::nd_range<1>(sycl::range<1>(coop_global), sycl::range<1>(local_size)),
-          [=](sycl::nd_item<1> item) {
+          [=](sycl::nd_item<1> item) MOM_SYCL_KERNEL_ARGS_RESTRICT {
             const uint32_t thread = item.get_global_id(0);
             const uint32_t gid = thread >> 3;
             const bool active = gid < effective_intensity;
@@ -193,10 +189,9 @@ int autolykos2(
       });
     } else {
       search_event = q.submit([&](sycl::handler& h) {
-        mom_use_bundle(h, kb);
         h.parallel_for(
           sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(local_size)),
-          [=](sycl::nd_item<1> item) {
+          [=](sycl::nd_item<1> item) MOM_SYCL_KERNEL_ARGS_RESTRICT {
             const uint32_t gid = item.get_global_id(0);
             if (gid >= effective_intensity) return;
 
@@ -244,12 +239,11 @@ int autolykos2(
         throw std::string("Can't allocate Autolykos2 subgroup verification counter");
       }
       *mismatches = 0;
-      const uint32_t verify_global = round_up(verify_count, local_size);
+      const size_t verify_global = round_up_size(verify_count, local_size);
       sycl_wait_and_throw(q.submit([&](sycl::handler& h) {
-        mom_use_bundle(h, kb);
         h.parallel_for(
           sycl::nd_range<1>(sycl::range<1>(verify_global), sycl::range<1>(local_size)),
-          [=](sycl::nd_item<1> item) {
+          [=](sycl::nd_item<1> item) MOM_SYCL_KERNEL_ARGS_RESTRICT {
             const uint32_t gid = item.get_global_id(0);
             if (gid >= verify_count) return;
             const uint32_t* const hash_words = d_bhashes + static_cast<uint64_t>(gid) * 8U;
@@ -355,12 +349,11 @@ int autolykos2(
     });
 #else
     search_event = q.submit([&](sycl::handler& h) {
-      mom_use_bundle(h, kb);
       sycl::local_accessor<uint32_t, 1> shared_index(sycl::range<1>(64), h);
       sycl::local_accessor<uint32_t, 1> shared_data(sycl::range<1>(512), h);
       h.parallel_for(
         sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(local_size)),
-        [=](sycl::nd_item<1> item) {
+        [=](sycl::nd_item<1> item) MOM_SYCL_KERNEL_ARGS_RESTRICT {
         const uint32_t gid = item.get_global_id(0);
         const uint32_t local_id = item.get_local_id(0);
         const bool active = gid < effective_intensity;

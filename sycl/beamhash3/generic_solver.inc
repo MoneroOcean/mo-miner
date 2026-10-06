@@ -21,7 +21,7 @@
 // order-independent) tolerates. Drops past NSLOTS / past in_count are honored via a sentinel.
 template <unsigned R, bool DEVICE_COUNT = false> class BeamMixScatterKernel;
 template <unsigned R, bool DEVICE_COUNT = false>
-static sycl::event submit_mix_scatter(sycl::queue& q, MomKernelBundle& kb, const uint32_t* d_mixed,
+static sycl::event submit_mix_scatter(sycl::queue& q, const uint32_t* d_mixed,
                                       uint32_t in_count, uint32_t* d_bucket, uint32_t* d_bucket_ns,
                                       unsigned WG, const uint64_t* d_prePow = nullptr,
                                       const uint32_t* d_in_count = nullptr) {
@@ -35,7 +35,6 @@ static sycl::event submit_mix_scatter(sycl::queue& q, MomKernelBundle& kb, const
   static_assert(NBUCKETS <= (1u << (32 - SLOT_BITS)), "bucket must fit the packed dst");
   const size_t global = ((size_t)in_count + WG - 1) / WG * WG;
   return q.submit([&](sycl::handler& h) {
-    mom_use_bundle(h, kb);
     // Per-WG staging: each lane's OUT_ST-u32 record + its packed (bucket,slot) destination.
     sycl::local_accessor<uint32_t, 1> stage(sycl::range<1>((size_t)WG * OUT_ST), h);
     sycl::local_accessor<uint32_t, 1> dst(sycl::range<1>(WG), h);
@@ -132,7 +131,7 @@ static sycl::event submit_mix_scatter(sycl::queue& q, MomKernelBundle& kb, const
 // and four standalone scatter launches from the steady solve.
 template <unsigned R, bool FUSED, bool PREDECESSOR_ONLY> class BeamCollideKernel;
 template <unsigned R, bool FUSED, bool PREDECESSOR_ONLY>
-static sycl::event submit_collide(sycl::queue& q, MomKernelBundle& kb, const uint32_t* d_bucket,
+static sycl::event submit_collide(sycl::queue& q, const uint32_t* d_bucket,
                                   const uint32_t* d_bucket_ns, uint32_t* d_final_out,
                                   uint32_t* d_out_count, uint32_t* d_tree, uint32_t* d_next_bucket,
                                   uint32_t* d_next_bucket_ns, unsigned wg) {
@@ -144,7 +143,6 @@ static sycl::event submit_collide(sycl::queue& q, MomKernelBundle& kb, const uin
   constexpr unsigned mergeLen = ROUND_MERGELEN[R];
   const size_t global = (size_t)NBUCKETS * wg;
   return q.submit([&](sycl::handler& h) {
-    mom_use_bundle(h, kb);
     sycl::local_accessor<uint32_t, 1> bin_head(sycl::range<1>(NRESTBINS), h);
     sycl::local_accessor<uint32_t, 1> bin_next(sycl::range<1>(NSLOTS), h);
     // Stage every slot's 24-bit collision key in SLM. The wide bucket records are read once here (the

@@ -10,7 +10,6 @@ void cn_gpu(
   const unsigned batch_eff = (batch + 1u) & ~1u;
   state.ensure_capacity(batch_eff, input_size);
   sycl::queue& q = state.queue;
-  auto& kb = *state.bundle;
   uint8_t* const d_inputs = state.inputs;
   uint8_t* const d_outputs = state.outputs;
   const unsigned input_bytes = input_size * batch;
@@ -31,7 +30,6 @@ void cn_gpu(
   // Initial Keccak pads each input into its 200-byte state.
   q.submit([&](sycl::handler& h) {
     CnGpuActiveViews cn_views(state, h);
-    mom_use_bundle(h, kb);
     h.parallel_for(sycl::nd_range(sycl::range((batch + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE * WORKGROUP_SIZE),
                                  sycl::range(WORKGROUP_SIZE)),
                    [=](sycl::nd_item<1> nd) {
@@ -80,7 +78,6 @@ void cn_gpu(
     q.submit([&](sycl::handler& h) {
       CnGpuActiveViews cn_views(state, h);
       const unsigned stripes = CN_MEMORY8 / 64; // 512-byte stripes per scratchpad
-      mom_use_bundle(h, kb);
       const unsigned total_threads = batch * stripes;
       unsigned expand_wg = WORKGROUP_SIZE;
 #if defined(_WIN32)
@@ -126,7 +123,6 @@ void cn_gpu(
     const auto vi0 = sycl::local_accessor<sycl::int4, 1>(sycl::range(2 * WORKGROUP_SIZE), h);
     const auto vi1 = sycl::local_accessor<sycl::int4, 1>(sycl::range(2 * WORKGROUP_SIZE), h);
     const auto vf0 = sycl::local_accessor<sycl::float4, 1>(sycl::range(2 * WORKGROUP_SIZE), h);
-    mom_use_bundle(h, kb);
     h.parallel_for(sycl::nd_range(sycl::range(batch_eff * WORKGROUP_SIZE),
                                   sycl::range(2 * WORKGROUP_SIZE)),
                    [=](sycl::nd_item<1> nd) MOM_REQD_SG_16 {
@@ -196,7 +192,6 @@ void cn_gpu(
       CnGpuActiveViews cn_views(state, h);
       const AesTable aes0(sycl::range(256), h), aes1(sycl::range(256), h),
                      aes2(sycl::range(256), h), aes3(sycl::range(256), h);
-      mom_use_bundle(h, kb);
       h.parallel_for(sycl::nd_range(sycl::range(batch, 8), sycl::range(aes_wg, 8)),
                      [=](sycl::nd_item<2> nd) MOM_REQD_SG_16 {
         const auto [d_inputs, d_spads, d_lpads, d_outputs,
@@ -259,7 +254,6 @@ void cn_gpu(
                      aes2(sycl::range(256), h), aes3(sycl::range(256), h);
       const auto x1 = sycl::local_accessor<sycl::uint4, 2>(sycl::range(aes_wg, 8), h);
       const auto x2 = sycl::local_accessor<sycl::uint4, 2>(sycl::range(aes_wg, 8), h);
-      mom_use_bundle(h, kb);
       h.parallel_for(sycl::nd_range(sycl::range(batch, 8), sycl::range(aes_wg, 8)),
                      [=](sycl::nd_item<2> nd) {
         const auto [d_inputs, d_spads, d_lpads, d_outputs,
@@ -311,7 +305,6 @@ void cn_gpu(
 
   sycl::event final_event = q.submit([&](sycl::handler& h) { // Final Keccak stays on device; the host scratchpad argument is unused.
     CnGpuActiveViews cn_views(state, h);
-    mom_use_bundle(h, kb);
     h.parallel_for(sycl::nd_range(sycl::range((batch + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE * WORKGROUP_SIZE),
                                  sycl::range(WORKGROUP_SIZE)),
                    [=](sycl::nd_item<1> nd) {

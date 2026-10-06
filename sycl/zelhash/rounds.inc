@@ -6,7 +6,7 @@ class ZelHashCudaTiledRound0Kernel;
 template <unsigned R> class ZelHashCudaTiledLaterRoundKernel;
 template <unsigned R, bool GPU_COMPACT = false>
 static sycl::event submit_round(
-  sycl::queue& q, MomKernelBundle& kb, const uint32_t* d_in, uint32_t* d_out,
+  sycl::queue& q, const uint32_t* d_in, uint32_t* d_out,
   const uint32_t* d_in_nslots, uint32_t* d_out_nslots, unsigned wg, unsigned slot_capacity,
   EqCandidateRef* d_ref = nullptr, uint32_t* d_ref_count = nullptr, uint32_t cand_cap = 0
 ) {
@@ -28,7 +28,6 @@ static sycl::event submit_round(
     const unsigned split_wg = R < 2u ? 512u : wg;
     const size_t global = (size_t)NBUCKETS * SPLITS * split_wg;
     return q.submit([&](sycl::handler& h) {
-      mom_use_bundle(h, kb);
       sycl::local_accessor<uint32_t, 1> heads(sycl::range<1>(LOCAL_RESTBINS), h);
       sycl::local_accessor<uint32_t, 1> fields(sycl::range<1>(LOCAL_SLOTS * (IN_FIELDS - 1u)), h);
       sycl::local_accessor<uint16_t, 1> next(sycl::range<1>(LOCAL_SLOTS), h);
@@ -106,7 +105,6 @@ static sycl::event submit_round(
   if constexpr (!ROUND_DIRECT_CHAINS) {
     const size_t global = (size_t)NBUCKETS * wg;
     return q.submit([&](sycl::handler& h) {
-    mom_use_bundle(h, kb);
     // One reusable SLM arena implements the fast block-local sequence used by mature Equihash solvers:
     // build exact-bin chains, overwrite the now-dead heads with a compact pair list, retain a bounded
     // number of pair IDs in each lane's registers, then overwrite the pair list with staged record

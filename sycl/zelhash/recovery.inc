@@ -26,7 +26,7 @@ inline uint32_t recovery_follower(const uint32_t* g, unsigned level, unsigned k)
 template <bool GPU_COMPACT> class ZelHashRecoverKernel;
 template <bool GPU_COMPACT = false>
 static sycl::event submit_recover(
-  sycl::queue& q, MomKernelBundle& kb, EqLevels lv, const uint32_t* d_nslots,
+  sycl::queue& q, EqLevels lv, const uint32_t* d_nslots,
   const EqCandidateRef* d_ref, uint32_t ref_count, EqCandidate* d_cand,
   uint32_t* d_cand_count, uint32_t cand_cap, unsigned wg, unsigned slot_capacity,
   const uint32_t* d_ref_count = nullptr
@@ -34,7 +34,6 @@ static sycl::event submit_recover(
   if (!ref_count) return sycl::event{};
   const size_t global = (size_t)ref_count * wg;
   return q.submit([&](sycl::handler& h) {
-    mom_use_bundle(h, kb);
     sycl::local_accessor<uint32_t, 1> bin_head(sycl::range<1>(NRESTBINS), h);
     sycl::local_accessor<uint16_t, 1> bin_next(sycl::range<1>(MAX_SLOTS), h);
     sycl::local_accessor<uint32_t, 1> node_bucket(sycl::range<1>(1u << K), h);

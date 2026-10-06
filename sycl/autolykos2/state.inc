@@ -1,7 +1,6 @@
 struct AutolykosState {
   sycl::device device;
   sycl::queue queue;
-  std::unique_ptr<MomKernelBundle> bundle;
   uint32_t* table = nullptr;
   uint32_t* bhashes = nullptr;
   MomBufferAllocation<AutolykosPortableResult> portable_results;
@@ -38,12 +37,12 @@ struct AutolykosState {
     }
 
     set_sycl_env("SYCL_PROGRAM_COMPILE_OPTIONS", autolykos_compile_options(device));
-    bundle = std::make_unique<MomKernelBundle>(
-      mom_get_exec_bundle(queue.get_context())
-    );
   }
 
-  ~AutolykosState() { sycl_cleanup_noexcept("autolykos2", [&] { release(); }); }
+  ~AutolykosState() {
+    sycl_cleanup_noexcept("autolykos2 wait", [&] { queue.wait_and_throw(); });
+    sycl_cleanup_noexcept("autolykos2 release", [&] { release(); });
+  }
 
   static unsigned autolykos_workgroup(const sycl::device& dev) {
     // CUDA/HIP: 128 is a reliable default for both the scalar diagnostic and the eight-lane
@@ -57,20 +56,20 @@ struct AutolykosState {
       64;
 #endif
     const unsigned fallback = sycl_default_workgroup(dev, {32, 64, 128, 256}, preferred);
-    return env_workgroup("MOM_AUTOLYKOS2_WORKGROUP", fallback);
+    return env_workgroup(dev, "MOM_AUTOLYKOS2_WORKGROUP", fallback);
   }
 
   static unsigned autolykos_prehash_workgroup(const sycl::device& dev) {
     const unsigned fallback = sycl_default_workgroup(dev, {32, 64, 128, 256}, 64);
-    return env_workgroup("MOM_AUTOLYKOS2_PREHASH_WORKGROUP", fallback);
+    return env_workgroup(dev, "MOM_AUTOLYKOS2_PREHASH_WORKGROUP", fallback);
   }
 
   // Accept an env override only if it is one of the supported workgroup sizes.
-  static unsigned env_workgroup(const char* name, const unsigned fallback) {
+  static unsigned env_workgroup(const sycl::device& dev, const char* name, const unsigned fallback) {
     uint32_t parsed = 0;
-    if (env_u32(name, parsed) && (parsed == 32 || parsed == 64 || parsed == 128 || parsed == 256)) {
+    if (env_u32(name, parsed) && (parsed == 32 || parsed == 64 || parsed == 128 || parsed == 256) &&
+        sycl_workgroup_fits(dev, static_cast<unsigned>(parsed)))
       return parsed;
-    }
     return fallback;
   }
 
@@ -121,7 +120,6 @@ struct AutolykosState {
   }
 
   void release() {
-    queue.wait_and_throw();
     free_ptr(table);
     free_ptr(bhashes);
     if constexpr (mom_sycl_portable_opencl) {
@@ -159,24 +157,42 @@ struct AutolykosState {
   }
 
   void ensure_bhashes(const uint32_t intensity) {
-    if (bhashes && bhashes_cap >= intensity) return;
+    if (bhashes && bhashes_cap >= intensity)
+      return;
     queue.wait_and_throw();
     free_ptr(bhashes);
-    bhashes_cap = intensity;
+    bhashes_cap = 0;
     bhashes = sycl::malloc_device<uint32_t>(static_cast<uint64_t>(intensity) * 8U, queue);
-    if (!bhashes) throw std::string("Can't allocate autolykos2 intermediate buffer");
+    if (!bhashes)
+      throw std::string("Can't allocate autolykos2 intermediate buffer");
+    bhashes_cap = intensity;
   }
 
-  bool should_use_table(const bool is_test) const {
+  bool should_use_table(const bool is_test, const uint32_t n_len) const {
     if constexpr (mom_sycl_portable_opencl) {
       // Some conforming ICDs cap individual buffers at 2 GiB. Recompute rows instead of requiring
       // the ~6.9-GiB fast table in the no-USM profile.
       (void)is_test;
+      (void)n_len;
       return false;
     } else {
-      if (is_test || device.is_cpu()) return false;
+      if (is_test || device.is_cpu())
+        return false;
       const char* const value = std::getenv("MOM_AUTOLYKOS2_TABLE");
-      return !(value && value[0] == '0');
+      if (value)
+        return value[0] != '0'; // Preserve the explicit diagnostic force-on/force-off behavior.
+      if (!mom_has_usm_device(device))
+        return false;
+
+      // The correct on-the-fly path needs no table. Select it automatically on lower-memory GPUs so
+      // the advertised 3-GiB minimum is real; 8-GiB-class devices retain the full-speed table.
+      const uint64_t table_bytes = static_cast<uint64_t>(n_len) * TABLE_ENTRY_BYTES;
+      const uint64_t global_bytes = device.get_info<sycl::info::device::global_mem_size>();
+      constexpr uint64_t reserve = 512ULL * MiB;
+      if (table_bytes > global_bytes || global_bytes - table_bytes < reserve)
+        return false;
+      return mom_is_hip(device) || sycl_is_level_zero_gpu(device) ||
+             device.get_info<sycl::info::device::max_mem_alloc_size>() >= table_bytes;
     }
   }
 
@@ -200,10 +216,9 @@ struct AutolykosState {
     const uint32_t local = prehash_workgroup;
 
     sycl_wait_and_throw(queue.submit([&](sycl::handler& h) {
-      mom_use_bundle(h, *bundle);
       h.parallel_for(
-        sycl::nd_range<1>(sycl::range<1>(round_up(count, local)), sycl::range<1>(local)),
-        [=](sycl::nd_item<1> item) {
+        sycl::nd_range<1>(sycl::range<1>(round_up_size(count, local)), sycl::range<1>(local)),
+        [=](sycl::nd_item<1> item) MOM_SYCL_KERNEL_ARGS_RESTRICT {
           const uint32_t gid = item.get_global_id(0);
           if (gid >= count) return;
           const uint32_t row = gid * stride;
@@ -235,9 +250,11 @@ struct AutolykosState {
   }
 
   void ensure_table(const uint32_t height, const uint32_t n_len, const bool is_test, const bool should_log) {
-    if (!should_use_table(is_test)) {
-      queue.wait_and_throw();
-      free_ptr(table);
+    if (!should_use_table(is_test, n_len)) {
+      if (table) {
+        queue.wait_and_throw();
+        free_ptr(table);
+      }
       table_height = UINT32_MAX;
       table_n = 0;
       table_cap_n = 0;
@@ -263,7 +280,6 @@ struct AutolykosState {
 
     uint32_t* const d_table = table;
     sycl::queue& q = queue;
-    auto& kb = *bundle;
     const uint32_t local = prehash_workgroup;
 
     const uint32_t chunk_rows = autolykos_table_chunk_rows();
@@ -272,9 +288,8 @@ struct AutolykosState {
       const uint32_t current_rows = chunk_rows ? std::min(chunk_rows, n_len - start_row) : n_len;
       const uint32_t chunk_start = start_row;
       build_event = q.submit([&](sycl::handler& h) {
-        mom_use_bundle(h, kb);
         h.parallel_for(
-          sycl::nd_range<1>(sycl::range<1>(round_up(current_rows, local)), sycl::range<1>(local)),
+          sycl::nd_range<1>(sycl::range<1>(round_up_size(current_rows, local)), sycl::range<1>(local)),
           [=](sycl::nd_item<1> item) {
             const uint32_t local_row = item.get_global_id(0);
             if (local_row >= current_rows) return;
@@ -297,5 +312,3 @@ struct AutolykosState {
     }
   }
 };
-
-using AutolykosStateMap = std::map<std::string, std::unique_ptr<AutolykosState>>;

@@ -3,9 +3,12 @@
 #include "lib-internal.h"
 #include <algorithm>
 #include <cctype>
+#include <cstring>
+#include <iostream>
 #include <limits>
 #include <list>
 #include <sstream>
+#include <vector>
 
 #include "runtime.inc"
 #include "intensity.inc"

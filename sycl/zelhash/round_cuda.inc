@@ -8,7 +8,6 @@
     constexpr unsigned STAGE_U32 = 2u * MAX_SLOTS;
     const size_t global = (size_t)NBUCKETS * wg;
     return q.submit([&](sycl::handler& h) {
-      mom_use_bundle(h, kb);
       // The chain/pair-list phase needs ~52 KiB. Once pair codes are in registers, reuse the same
       // arena as two 32-KiB field planes, matching the GPU's 64-KiB fast shared-memory shape.
       sycl::local_accessor<uint32_t, 1> scratch(sycl::range<1>(STAGE_U32), h);
@@ -147,7 +146,6 @@
     constexpr unsigned STAGE_U32 = 2u * MAX_SLOTS;
     const size_t global = (size_t)NBUCKETS * wg;
     return q.submit([&](sycl::handler& h) {
-      mom_use_bundle(h, kb);
       sycl::local_accessor<uint32_t, 1> scratch(sycl::range<1>(STAGE_U32), h);
       h.parallel_for<ZelHashCudaTiledLaterRoundKernel<R>>(
         sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(wg)),

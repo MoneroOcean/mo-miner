@@ -5,13 +5,21 @@
 #include <windows.h>
 
 void mom_sycl_poll_pause() {
-  static thread_local HANDLE timer = CreateWaitableTimerExW(
-    nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
-    TIMER_MODIFY_STATE | SYNCHRONIZE);
+  struct PollTimer {
+    HANDLE handle = CreateWaitableTimerExW(
+        nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_MODIFY_STATE | SYNCHRONIZE);
+    ~PollTimer() {
+      if (handle) {
+        CloseHandle(handle);
+      }
+    }
+  };
+  // Release the waitable timer when the worker thread exits.
+  static thread_local PollTimer timer;
   LARGE_INTEGER due{};
   due.QuadPart = -1000; // relative 100 microseconds, expressed in 100-ns units
-  if (timer && SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE)) {
-    WaitForSingleObject(timer, INFINITE);
+  if (timer.handle && SetWaitableTimer(timer.handle, &due, 0, nullptr, nullptr, FALSE)) {
+    WaitForSingleObject(timer.handle, INFINITE);
   } else {
     Sleep(1);
   }
@@ -75,8 +83,6 @@ void sycl_cleanup() noexcept {
   str2dev.clear();
 }
 
-constexpr uint64_t MiB = 1024ULL * 1024ULL;
-constexpr uint64_t GiB = 1024ULL * MiB;
 
 static std::string gpu_identity_key(const sycl::device& device, const unsigned platform_gpu_num) {
   return device.get_info<sycl::info::device::vendor>() + "|" +

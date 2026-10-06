@@ -3,14 +3,15 @@ int etchash(
   uint8_t* const mix_hash, uint64_t* const pnonce, const uint8_t* const target, const uint8_t* const seed_hash,
   const unsigned intensity, const bool is_test, const bool is_benchmark, const std::string& dev_str
 ) {
-  if (input_size < 40) throw std::string("Bad etchash input length");
+  if (!input || !output || !mix_hash || !pnonce || !target || input_size < 40 || !intensity)
+    throw std::string("Etchash requires input, output, target, nonce, and nonzero intensity");
 
   EtchashState& state = etchash_state(dev_str);
   std::lock_guard<std::mutex> state_lock(state.mutex);
   state.ensure_input(input_size);
   uint32_t epoch = 0;
   uint32_t seed_epoch = 0;
-  resolve_epochs(block_height, seed_hash, epoch, seed_epoch);
+  state.resolve_epochs(block_height, seed_hash, epoch, seed_epoch);
   state.ensure_epoch(epoch, seed_epoch, !is_benchmark);
 
   uint64_t start_nonce = 0;
@@ -28,7 +29,6 @@ int etchash(
   std::memset(state.result, 0, sizeof(EtchashResult));
 
   sycl::queue& q = state.queue;
-  auto& kb = *state.bundle;
   const uint8_t* const d_input = state.input;
   const uint8_t* const d_target = state.target;
   const uint32_t* const __restrict__ d_dag = state.dag;
@@ -46,12 +46,11 @@ int etchash(
     // noinline so the dataset is correct regardless.
     sycl_wait_and_throw(
       state.use_inline_pair()
-        ? submit_etchash_search_gpu<true >(q, kb, d_input, start_nonce, d_dag, dag_mod, intensity, d_target, d_result, is_test)
-        : submit_etchash_search_gpu<false>(q, kb, d_input, start_nonce, d_dag, dag_mod, intensity, d_target, d_result, is_test),
+        ? submit_etchash_search_gpu<true >(q, d_input, start_nonce, d_dag, dag_mod, intensity, d_target, d_result, is_test)
+        : submit_etchash_search_gpu<false>(q, d_input, start_nonce, d_dag, dag_mod, intensity, d_target, d_result, is_test),
       state.device);
   } else {
     sycl_wait_and_throw(q.submit([&](sycl::handler& h) {
-      mom_use_bundle(h, kb);
       sycl::local_accessor<uint32_t, 1> scratch(sycl::range<1>(SCRATCH_WORDS), h);
       h.parallel_for(
         sycl::nd_range<1>(

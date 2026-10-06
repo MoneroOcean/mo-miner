@@ -15,7 +15,6 @@ class KawpowState {
 public:
   sycl::device device;
   sycl::queue queue;
-  std::unique_ptr<MomKernelBundle> bundle;
   bool shared_io;
   bool shared_dag;
   uint8_t* input = nullptr;
@@ -54,7 +53,7 @@ public:
   // Per-period executable bundles (Intel: program/dag spec constants baked in; CUDA: source-JIT'd
   // kernel). The next period's bundle is built on a worker thread while the current one mines, so
   // the period switch no longer stalls hashing on the build.
-  std::unique_ptr<MomKernelBundle> period_bundle;
+  std::unique_ptr<MomExecutableKernelBundle> period_bundle;
   uint64_t period_bundle_period = UINT64_MAX;
   uint32_t period_bundle_epoch = UINT32_MAX;
   SealMode period_bundle_seal = SealMode::KAWPOW;
@@ -62,7 +61,7 @@ public:
   uint32_t period_bundle_regs = KAWPOW_REGS;
   uint32_t period_bundle_cnt_cache = KAWPOW_CNT_CACHE;
   uint32_t period_bundle_cnt_math = KAWPOW_CNT_MATH;
-  std::unique_ptr<MomKernelBundle> next_bundle;
+  std::unique_ptr<MomExecutableKernelBundle> next_bundle;
   uint64_t next_bundle_period = UINT64_MAX;
   uint32_t next_bundle_epoch = UINT32_MAX;
   SealMode next_bundle_seal = SealMode::KAWPOW;
@@ -93,9 +92,6 @@ public:
     }
 
     set_sycl_env("SYCL_PROGRAM_COMPILE_OPTIONS", kawpow_compile_options());
-    bundle = std::make_unique<MomKernelBundle>(
-      mom_get_exec_bundle(queue.get_context())
-    );
     if (device.is_gpu() && sycl_is_level_zero_gpu(device) && !default_subgroup_exchange) {
       std::fprintf(stderr, "kawpow: Intel driver build %u uses stable local-memory exchange\n",
                    mom_driver_build(device));
@@ -249,15 +245,12 @@ public:
     uint32_t* const d_light = light_cache;
     uint32_t* const d_dag = dag;
     sycl::queue& q = queue;
-    auto& kb = *bundle;
-    (void)kb;
 
     sycl::event dag_event;
     for (uint32_t start_node = 0; start_node < total;) {
       const uint32_t current_nodes = chunk_nodes ? std::min(chunk_nodes, total - start_node) : total;
       const uint32_t chunk_start = start_node;
       dag_event = q.submit([&](sycl::handler& h) {
-        mom_use_bundle(h, kb);
         h.parallel_for(
           sycl::nd_range<1>(sycl::range<1>(round_up(current_nodes, dag_workgroup)), sycl::range<1>(dag_workgroup)),
           [=](sycl::nd_item<1> item) {
@@ -321,7 +314,7 @@ public:
   // prefetch thread, which calls this off the state mutex, never races kawpow_core writing state.*. Only
   // the source-JIT path bakes the seal/shape; the Intel spec-const path gets seal+shape via SealParams at
   // launch (and the per-shape make_program already bakes the right program into the spec constant).
-  std::unique_ptr<MomKernelBundle>
+  std::unique_ptr<MomExecutableKernelBundle>
   build_period_bundle(const uint64_t new_period, const FastModData dag_mod,
                       const SealMode build_seal, const uint32_t build_magic[15],
                       const uint32_t build_regs, const uint32_t build_cnt_cache,
@@ -329,7 +322,7 @@ public:
 #if defined(MOM_SYCL_ADAPTIVECPP) || defined(MOM_SYCL_PORTABLE_OPENCL)
     (void)new_period; (void)dag_mod; (void)build_seal; (void)build_magic;
     (void)build_regs; (void)build_cnt_cache; (void)build_cnt_math;
-    return std::make_unique<MomKernelBundle>();
+    return std::make_unique<MomExecutableKernelBundle>();
 #else
 #if defined(MOM_SYCL_HAS_CUDA)
     // CUDA: the source-JIT folds the per-period program to straight-line const ops (full speed); the
@@ -461,6 +454,5 @@ public:
   }
 };
 
-using KawpowStateMap = std::map<std::string, std::unique_ptr<KawpowState>>;
 
 // Heap-own the registry and lock so they have no competing C++ static destructors. Node's explicit

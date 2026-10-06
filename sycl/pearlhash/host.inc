@@ -131,7 +131,13 @@ static Buffers alloc_buffers(sycl::queue& q, int m, int n, int k, int rank,
   const uint64_t transcript_bytes = static_cast<uint64_t>(m / 16) * (n / 16) * 16U * sizeof(uint32_t);
   const uint64_t transcript_limit = cuda_jit ? 4ULL * 1024U * 1024U * 1024U
                                              : 256ULL * 1024U * 1024U;
-  if (transcript_bytes <= transcript_limit)
+    const sycl::device device = q.get_device();
+    const PowDeviceProfile capacity = {
+        1, device.get_info<sycl::info::device::global_mem_size>(),
+        device.get_info<sycl::info::device::max_mem_alloc_size>()};
+    const bool transcript_fits = !cuda_jit ||
+        pearlhash_optional_allocation_fits(capacity, counts, transcript_bytes);
+  if (transcript_bytes > 0 && transcript_bytes <= transcript_limit && transcript_fits)
     b.transcript=alloc_buffer<uint32_t>(q, static_cast<size_t>(transcript_bytes / sizeof(uint32_t)));
   b.result=sycl::malloc_shared<Result>(1,q); b.result->found=0;
   return b;
@@ -148,7 +154,6 @@ struct PearlHashState {
   sycl::queue prep_queue;
   PearlHashHipSearch hip;
   PearlHashCudaSearch cuda;
-  PearlHashAmdWmmaSearch amd_wmma;
   int m = 0, n = 0, k = 0, rank = 0;
   bool hip_jit_buffers = false;
   bool cuda_jit_buffers = false;
@@ -283,7 +288,7 @@ int pearlhash(
 
   const uint32_t attempt_seed = static_cast<uint32_t>(*pseed);
   PearlHashSearchBackend search_backend =
-    attempt(q, b, attempt_seed, m, n, k, rank, backend, &st.hip, &st.cuda, &st.amd_wmma,
+    attempt(q, b, attempt_seed, m, n, k, rank, backend, &st.hip, &st.cuda,
             &st.prep_queue, is_test);
   // Start after submission: a first call can include synchronous device-image/JIT setup, and feeding
   // that one-off cost into the wait EMA makes later completed GPU attempts sleep needlessly.
@@ -313,7 +318,7 @@ int pearlhash(
       b.result->found = 0;
       b.result->chk = 0;
       search_backend = attempt(q, b, attempt_seed, m, n, k, rank, "sycl-native",
-                               nullptr, nullptr, &st.amd_wmma, nullptr, is_test);
+                               nullptr, nullptr, nullptr, is_test);
       q.wait_and_throw();
     }
   } else q.wait_and_throw();
