@@ -1,14 +1,34 @@
 class KawpowSgKernel;
 
+static bool kawpow_subgroup_exchange_supported(const sycl::device& device) {
+  if (!device.is_gpu() || mom_sycl_portable_opencl)
+    return false;
+  try {
+    if (!sycl_reqd_subgroup_16_supported(device))
+      return false;
+    if (!mom_sycl_adaptivecpp || mom_is_cuda(device))
+      return true;
+    // AdaptiveCpp drops the required-width attribute. Every possible native width must hold a
+    // complete ProgPoW team; knowing that some wider subgroup exists does not force its selection.
+    const auto sizes = device.get_info<sycl::info::device::sub_group_sizes>();
+    return !sizes.empty() && std::all_of(sizes.begin(), sizes.end(), [](const size_t size) {
+      return mom_subgroup_supports_team(size, KAWPOW_LANES);
+    });
+  } catch (...) {
+    return false;
+  }
+}
+
 static bool kawpow_default_subgroup_exchange(const sycl::device& device) {
-  if (!device.is_gpu()) return false;
-  if (!sycl_is_level_zero_gpu(device)) return true;
+  if (!kawpow_subgroup_exchange_supported(device))
+    return false;
+  if (!sycl_is_level_zero_gpu(device))
+    return true;
   const uint32_t build = mom_driver_build(device);
-  // NEO 32224 aborts inside the subgroup-exchange ProgPoW kernel on Arc A-series, while the common
-  // local-memory exchange is bit-exact and reached 21.8 MH/s on A770. Current NEO 37020 executes the
-  // subgroup path correctly and it is 26% faster on B580, so keep that fast path outside the affected
-  // driver family. MOM_KAWPOW_EXCHANGE=sg|slm remains an explicit diagnostic override.
-  return build < 30000u || build >= 35000u;
+  // Keep the affected NEO driver family's local-memory correctness workaround. Native Level Zero
+  // EU width 8 also benefits from local-memory exchange (+4.5--5.4% in matched runs); unknown and
+  // other widths retain the subgroup default. MOM_KAWPOW_EXCHANGE=sg|slm remains an override.
+  return (build < 30000u || build >= 35000u) && mom_intel_eu_simd_width(device) != 8;
 }
 
 class KawpowState {
@@ -99,32 +119,39 @@ public:
   }
 
   ~KawpowState() {
-    if (prefetch_thread.joinable()) prefetch_thread.join();
-    sycl_cleanup_noexcept("kawpow", [&] { release(); });
+    if (prefetch_thread.joinable())
+      prefetch_thread.join();
+    sycl_cleanup_noexcept("kawpow wait", [&] { queue.wait_and_throw(); });
+    sycl_cleanup_noexcept("kawpow release", [&] { release(); });
   }
 
-  // Parse env var `name` as base-10 unsigned; returns false (leaving `out` untouched) on unset,
-  // empty, malformed, or out-of-uint32-range input so callers fall back to their default.
+  // Parse env var `name` as a u32, leaving the caller's fallback intact on invalid input.
   static bool parse_env_u32(const char* name, uint32_t& out) {
-    const char* const value = std::getenv(name);
-    if (!value || !*value) return false;
-    char* end = nullptr;
-    errno = 0;
-    const unsigned long parsed = std::strtoul(value, &end, 10);
-    if (errno || end == value || *end || parsed > std::numeric_limits<uint32_t>::max()) return false;
+    unsigned long parsed = 0;
+    if (!mom_parse_env_ulong(name, parsed) || parsed > std::numeric_limits<uint32_t>::max())
+      return false;
     out = static_cast<uint32_t>(parsed);
     return true;
   }
 
   // Pick a work-group size: honor `name` if set to one of `allowed`, else `sycl_default_workgroup`.
-  static unsigned select_workgroup(
-    const char* name, const sycl::device& dev,
-    const std::initializer_list<unsigned> allowed, const unsigned preferred
-  ) {
-    const unsigned fallback = sycl_default_workgroup(dev, allowed, preferred);
+  static unsigned select_workgroup(const char* name, const sycl::device& dev,
+                                   const std::initializer_list<unsigned> allowed,
+                                   const unsigned preferred, const size_t fixed_local_bytes = 0,
+                                   const size_t local_bytes_per_item = 0,
+                                   const size_t local_bytes_per_team = 0,
+                                   const unsigned team_size = 1) {
+    const unsigned fallback = sycl_default_workgroup(
+        dev, allowed, preferred, fixed_local_bytes, local_bytes_per_item,
+        local_bytes_per_team, team_size);
     uint32_t parsed;
-    if (!parse_env_u32(name, parsed)) return fallback;
-    for (const unsigned candidate : allowed) if (candidate == parsed) return parsed;
+    if (!parse_env_u32(name, parsed))
+      return fallback;
+    for (const unsigned candidate : allowed)
+      if (candidate == parsed && sycl_workgroup_fits(
+            dev, candidate, fixed_local_bytes, local_bytes_per_item,
+            local_bytes_per_team, team_size))
+        return parsed;
     return fallback;
   }
 
@@ -136,21 +163,35 @@ public:
 #if defined(_WIN32)
     const unsigned gpu_default = 256;
 #else
-    const bool wide_cuda = mom_is_cuda(dev) &&
-      dev.get_info<sycl::info::device::max_compute_units>() >= 48;
+    const bool wide_cuda =
+        mom_is_cuda(dev) && dev.get_info<sycl::info::device::max_compute_units>() >= 48;
     const unsigned gpu_default = wide_cuda ? 128 : 256;
 #endif
-    return select_workgroup("MOM_KAWPOW_WORKGROUP", dev, {64, 128, 256, 512}, dev.is_cpu() ? 128 : gpu_default);
+    // Both exchanges use the cache; reserve the exact share[WG] and offsets[WG/16] footprint so
+    // changing to the SLM fallback never inherits a workgroup that only fits the subgroup path.
+    return select_workgroup(
+        "MOM_KAWPOW_WORKGROUP", dev, {64, 128, 256, 512}, dev.is_cpu() ? 128 : gpu_default,
+        KAWPOW_CACHE_WORDS * sizeof(uint32_t), sizeof(uint32_t), sizeof(uint32_t), KAWPOW_LANES);
   }
 
   static unsigned kawpow_dag_workgroup(const sycl::device& dev) {
     return select_workgroup("MOM_KAWPOW_DAG_WORKGROUP", dev, {32, 64, 128, 256, 512}, dev.is_cpu() ? 128 : 64);
   }
 
-  static uint32_t kawpow_dag_chunk_nodes() {
-    uint32_t parsed = 0;  // 0 means "single full-DAG dispatch" (chunking disabled)
-    parse_env_u32("MOM_KAWPOW_DAG_CHUNK_NODES", parsed);
-    return parsed;
+  static uint32_t kawpow_dag_chunk_nodes(const sycl::device& dev) {
+    uint32_t parsed;
+    if (parse_env_u32("MOM_KAWPOW_DAG_CHUNK_NODES", parsed))
+      return parsed;
+    // Integrated GPUs also serve the desktop and need short, completed command lists between
+    // dispatches. Limit each launch to 256 KiB; this only affects one-time DAG construction.
+    if (is_integrated_gpu(dev))
+      return 1u << 12;
+#if defined(_WIN32)
+    // Bound WDDM dispatch time: a full ProgPoW DAG can otherwise remain in a GPU driver for minutes.
+    if (mom_is_cuda(dev) || mom_is_hip(dev))
+      return 1u << 18;
+#endif
+    return 0; // Single full-DAG dispatch for other discrete GPUs.
   }
 
   static const char* kawpow_compile_options() {
@@ -171,7 +212,6 @@ public:
   }
 
   void release() {
-    queue.wait_and_throw();
     // Source-built bundles must die while DPC++'s ProgramManager is still alive. In particular, the
     // CUDA kernel_compiler registers dynamic device images whose bundle destructor calls
     // ProgramManager::removeImages(). Keep this explicit (rather than relying on member destruction)
@@ -191,22 +231,34 @@ public:
   }
 
   void ensure_input(const unsigned input_size) {
-    if (input_size <= input_cap && result) return;
+    if (input && input_size <= input_cap && result)
+      return;
     queue.wait_and_throw();
     free_ptr(input);
     free_ptr(result);
+    input_cap = 0;
+    try {
+      input = allocate<uint8_t>(input_size, shared_io);
+      result = sycl::malloc_shared<KawpowResult>(1, queue);
+      if (!input || !result)
+        throw std::string("Can't allocate kawpow SYCL input buffers");
+    } catch (...) {
+      free_ptr(input);
+      free_ptr(result);
+      input_cap = 0;
+      throw;
+    }
     input_cap = input_size;
-    input = allocate<uint8_t>(input_cap, shared_io);
-    result = sycl::malloc_shared<KawpowResult>(1, queue);
-    if (!input || !result) throw std::string("Can't allocate kawpow SYCL input buffers");
   }
 
   // new_epoch is the REAL epoch (the seed/period-bundle key); new_cache_bytes/new_dag_bytes are the
   // (possibly MeowPow-scaled) sizes; seed_epoch is the epoch the keccak seedhash derives from (== epoch
   // except MeowPow >= dag-change). The cache key includes dag_bytes so a size change forces a rebuild.
-  void ensure_epoch(const uint32_t new_epoch, const uint64_t new_cache_bytes, const uint64_t new_dag_bytes,
-                    const uint32_t seed_epoch, const bool should_log) {
-    if (epoch == new_epoch && dag_bytes == new_dag_bytes) return;
+  void ensure_epoch(const uint32_t new_epoch, const uint64_t new_cache_bytes,
+                    const uint64_t new_dag_bytes, const uint32_t seed_epoch,
+                    const bool should_log) {
+    if (epoch == new_epoch && dag_bytes == new_dag_bytes && light_cache && dag)
+      return;
     if (new_epoch >= 2048 || !new_cache_bytes || !new_dag_bytes ||
         new_cache_bytes % (NODE_WORDS * sizeof(uint32_t)) != 0 ||
         new_dag_bytes % (NODE_WORDS * sizeof(uint32_t)) != 0) {
@@ -215,76 +267,100 @@ public:
 
     const uint64_t new_light_cache_words = new_cache_bytes / sizeof(uint32_t);
     const uint64_t new_dag_words = new_dag_bytes / sizeof(uint32_t);
+    // DAG generation indexes 32-bit words; the exact 2^32-word boundary still fits.
+    if (new_dag_words > uint64_t{UINT32_MAX} + 1)
+      throw std::string("KawPow DAG exceeds 32-bit word addressing");
 
     std::vector<uint32_t> host_cache;
     const uint64_t start_ms = now_ms();
     compute_light_cache(host_cache, new_cache_bytes, seed_epoch);
 
     queue.wait_and_throw();
-    if (new_light_cache_words != light_cache_words) {
+    // Invalidate the old key before an in-place rebuild can fail; it must not remain reusable.
+    epoch = UINT32_MAX;
+    dag_bytes = 0;
+    if (new_light_cache_words != light_cache_words || !light_cache) {
       free_ptr(light_cache);
+      light_cache_words = 0;
       light_cache = allocate<uint32_t>(new_light_cache_words, shared_dag);
-      light_cache_words = new_light_cache_words;
+      if (light_cache)
+        light_cache_words = new_light_cache_words;
     }
-    if (new_dag_words != dag_words) {
+    if (new_dag_words != dag_words || !dag) {
       free_ptr(dag);
+      dag_words = 0;
       dag = allocate<uint32_t>(new_dag_words, shared_dag);
-      dag_words = new_dag_words;
+      if (dag)
+        dag_words = new_dag_words;
     }
-    if (!light_cache || !dag) throw std::string("Can't allocate kawpow DAG buffers");
+    if (!light_cache || !dag)
+      throw std::string("Can't allocate kawpow DAG buffers");
 
-    if (shared_dag) std::memcpy(light_cache, host_cache.data(), host_cache.size() * sizeof(uint32_t));
-    else sycl_wait_and_throw(queue.memcpy(light_cache, host_cache.data(), host_cache.size() * sizeof(uint32_t)), device);
+    if (shared_dag)
+      std::memcpy(light_cache, host_cache.data(), host_cache.size() * sizeof(uint32_t));
+    else
+      sycl_wait_and_throw(
+          queue.memcpy(light_cache, host_cache.data(), host_cache.size() * sizeof(uint32_t)),
+          device);
 
     const uint32_t light_nodes = static_cast<uint32_t>(new_light_cache_words / NODE_WORDS);
     const FastModData light_mod = make_fast_mod_data(light_nodes);
 
     const uint32_t dag_workgroup = kawpow_dag_workgroup(device);
-    const uint32_t total = static_cast<uint32_t>(new_dag_words / NODE_WORDS);  // DAG node count
-    const uint32_t chunk_nodes = kawpow_dag_chunk_nodes();
+    const uint32_t total = static_cast<uint32_t>(new_dag_words / NODE_WORDS); // DAG node count
+    const uint32_t chunk_nodes = kawpow_dag_chunk_nodes(device);
     uint32_t* const d_light = light_cache;
     uint32_t* const d_dag = dag;
     sycl::queue& q = queue;
 
     sycl::event dag_event;
     for (uint32_t start_node = 0; start_node < total;) {
-      const uint32_t current_nodes = chunk_nodes ? std::min(chunk_nodes, total - start_node) : total;
+      const uint32_t current_nodes =
+          chunk_nodes ? std::min(chunk_nodes, total - start_node) : total;
       const uint32_t chunk_start = start_node;
       dag_event = q.submit([&](sycl::handler& h) {
-        h.parallel_for(
-          sycl::nd_range<1>(sycl::range<1>(round_up(current_nodes, dag_workgroup)), sycl::range<1>(dag_workgroup)),
-          [=](sycl::nd_item<1> item) {
-            const uint32_t local_node = item.get_global_id(0);
-            if (local_node >= current_nodes) return;
-            const uint32_t node_index = chunk_start + local_node;
+        h.parallel_for(sycl::nd_range<1>(sycl::range<1>(round_up_size(current_nodes, dag_workgroup)),
+                                         sycl::range<1>(dag_workgroup)),
+                       [=](sycl::nd_item<1> item) MOM_SYCL_KERNEL_ARGS_RESTRICT {
+                         const uint32_t local_node = item.get_global_id(0);
+                         if (local_node >= current_nodes)
+                           return;
+                         const uint32_t node_index = chunk_start + local_node;
 
-            uint32_t dag_node[NODE_WORDS];
-            const uint32_t init = fast_mod_dev(node_index, light_mod);
+                         uint32_t dag_node[NODE_WORDS];
+                         const uint32_t init = fast_mod_dev(node_index, light_mod);
 #pragma unroll
-            for (unsigned w = 0; w < NODE_WORDS; ++w) dag_node[w] = d_light[init * NODE_WORDS + w];
-            dag_node[0] ^= node_index;
-            keccak_512_words_dev(dag_node);
+                         for (unsigned w = 0; w < NODE_WORDS; ++w)
+                           dag_node[w] = d_light[init * NODE_WORDS + w];
+                         dag_node[0] ^= node_index;
+                         keccak_512_words_dev(dag_node);
 
-            for (uint32_t i = 0; i < KAWPOW_DATASET_PARENTS; ++i) {
-              const uint32_t parent_index = fast_mod_dev(fnv_dev(node_index ^ i, dag_node[i & (NODE_WORDS - 1)]), light_mod);
-              const uint32_t parent_base = parent_index * NODE_WORDS;
+                         for (uint32_t i = 0; i < KAWPOW_DATASET_PARENTS; ++i) {
+                           const uint32_t parent_index = fast_mod_dev(
+                               fnv_dev(node_index ^ i, dag_node[i & (NODE_WORDS - 1)]), light_mod);
+                           const uint32_t parent_base = parent_index * NODE_WORDS;
 #pragma unroll
-              for (unsigned w = 0; w < NODE_WORDS; ++w) {
-                dag_node[w] = fnv_dev(dag_node[w], d_light[parent_base + w]);
-              }
-            }
-            keccak_512_words_dev(dag_node);
+                           for (unsigned w = 0; w < NODE_WORDS; ++w) {
+                             dag_node[w] = fnv_dev(dag_node[w], d_light[parent_base + w]);
+                           }
+                         }
+                         keccak_512_words_dev(dag_node);
 
-            const uint32_t base = node_index * NODE_WORDS;
+                         const uint32_t base = node_index * NODE_WORDS;
 #pragma unroll
-            for (unsigned w = 0; w < NODE_WORDS; ++w) d_dag[base + w] = dag_node[w];
-          }
-        );
+                         for (unsigned w = 0; w < NODE_WORDS; ++w)
+                           d_dag[base + w] = dag_node[w];
+                       });
       });
-      if (!chunk_nodes) break;
+      if (!chunk_nodes)
+        break;
+      // Force the runtime to submit and retire this command list before recording the next one.
+      // Merely queuing smaller kernels can still appear to the driver as one watchdog-length batch.
+      sycl_wait_and_throw(dag_event, device);
       start_node += current_nodes;
     }
-    sycl_wait_and_throw(dag_event, device);
+    if (!chunk_nodes)
+      sycl_wait_and_throw(dag_event, device);
 
     epoch = new_epoch;
     dag_bytes = new_dag_bytes;
@@ -331,8 +407,9 @@ public:
     // unavailable (see cuda_use_jit). MOM_KAWPOW_JIT=0/1 forces a path (1 = JIT, no fallback).
     if (mom_is_cuda(device)) {
       if (cuda_use_jit.load() < 0) {
-        const char* const force = std::getenv("MOM_KAWPOW_JIT");
-        if (force) cuda_use_jit.store(std::atoi(force) != 0 ? 1 : 0);
+        unsigned long force = 0;
+        if (mom_parse_env_ulong("MOM_KAWPOW_JIT", force))
+          cuda_use_jit.store(force != 0 ? 1 : 0);
       }
       if (cuda_use_jit.load() != 0) {  // 1 (committed JIT) or -1 (undecided -> try JIT)
         try {
@@ -399,34 +476,51 @@ public:
     return true;
   }
 
-  void ensure_period_bundle(const uint64_t new_period, const uint32_t new_epoch, const FastModData dag_mod) {
-    if (period_bundle && period_bundle_period == new_period && period_bundle_epoch == new_epoch &&
+  void ensure_period_bundle(const uint64_t new_period, const uint32_t new_epoch,
+                            const FastModData dag_mod, const bool prefetch_next) {
+    const bool current_matches =
+        period_bundle && period_bundle_period == new_period &&
+        period_bundle_epoch == new_epoch &&
         bundle_key_eq(period_bundle_seal, period_bundle_magic, period_bundle_regs,
-                      period_bundle_cnt_cache, period_bundle_cnt_math,
-                      seal, magic, regs, cnt_cache, cnt_math)) return;
-
-    if (prefetch_thread.joinable()) prefetch_thread.join();
-    if (next_bundle && next_bundle_period == new_period && next_bundle_epoch == new_epoch &&
-        bundle_key_eq(next_bundle_seal, next_bundle_magic, next_bundle_regs,
-                      next_bundle_cnt_cache, next_bundle_cnt_math,
-                      seal, magic, regs, cnt_cache, cnt_math)) {
-      period_bundle = std::move(next_bundle);
+                      period_bundle_cnt_cache, period_bundle_cnt_math, seal, magic, regs, cnt_cache,
+                      cnt_math);
+    if (current_matches) {
+      // A mining job following a benchmark may reuse the benchmark's current bundle. Start the
+      // normal next-period prefetch then, without rebuilding the current period.
+      if (!prefetch_next || prefetch_thread.joinable() || next_bundle)
+        return;
     } else {
-      period_bundle = build_period_bundle(new_period, dag_mod, seal, magic, regs, cnt_cache, cnt_math);
-    }
-    period_bundle_period = new_period;
-    period_bundle_epoch = new_epoch;
-    period_bundle_seal = seal;
-    for (unsigned i = 0; i < 15; ++i) period_bundle_magic[i] = magic[i];
-    period_bundle_regs = regs;
-    period_bundle_cnt_cache = cnt_cache;
-    period_bundle_cnt_math = cnt_math;
+      if (prefetch_thread.joinable())
+        prefetch_thread.join();
+      if (next_bundle && next_bundle_period == new_period && next_bundle_epoch == new_epoch &&
+          bundle_key_eq(next_bundle_seal, next_bundle_magic, next_bundle_regs,
+                        next_bundle_cnt_cache, next_bundle_cnt_math, seal, magic, regs, cnt_cache,
+                        cnt_math)) {
+        period_bundle = std::move(next_bundle);
+      } else {
+        period_bundle =
+            build_period_bundle(new_period, dag_mod, seal, magic, regs, cnt_cache, cnt_math);
+      }
+      period_bundle_period = new_period;
+      period_bundle_epoch = new_epoch;
+      period_bundle_seal = seal;
+      for (unsigned i = 0; i < 15; ++i)
+        period_bundle_magic[i] = magic[i];
+      period_bundle_regs = regs;
+      period_bundle_cnt_cache = cnt_cache;
+      period_bundle_cnt_math = cnt_math;
 
-    next_bundle.reset();
+      next_bundle.reset();
+    }
+
+    if (!prefetch_next)
+      return;
+
     next_bundle_period = new_period + 1;
     next_bundle_epoch = new_epoch;
     next_bundle_seal = seal;
-    for (unsigned i = 0; i < 15; ++i) next_bundle_magic[i] = magic[i];
+    for (unsigned i = 0; i < 15; ++i)
+      next_bundle_magic[i] = magic[i];
     next_bundle_regs = regs;
     next_bundle_cnt_cache = cnt_cache;
     next_bundle_cnt_math = cnt_math;
@@ -434,13 +528,14 @@ public:
     // switch writing state.* on the next call (FiroPow rebuilds every block, so this runs).
     SealMode pf_seal = seal;
     std::array<uint32_t, 15> pf_magic;
-    for (unsigned i = 0; i < 15; ++i) pf_magic[i] = magic[i];
+    for (unsigned i = 0; i < 15; ++i)
+      pf_magic[i] = magic[i];
     const uint32_t pf_regs = regs, pf_cnt_cache = cnt_cache, pf_cnt_math = cnt_math;
     prefetch_thread = std::thread([this, next_period = new_period + 1, dag_mod, pf_seal, pf_magic,
                                    pf_regs, pf_cnt_cache, pf_cnt_math] {
       try {
-        next_bundle = build_period_bundle(next_period, dag_mod, pf_seal, pf_magic.data(),
-                                          pf_regs, pf_cnt_cache, pf_cnt_math);
+        next_bundle = build_period_bundle(next_period, dag_mod, pf_seal, pf_magic.data(), pf_regs,
+                                          pf_cnt_cache, pf_cnt_math);
       } catch (...) {
         next_bundle.reset();
       }

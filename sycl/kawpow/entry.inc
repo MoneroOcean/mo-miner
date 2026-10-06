@@ -35,7 +35,8 @@ static int kawpow_core(
   uint8_t* const mix_hash, uint64_t* const pnonce, const uint64_t target,
   const unsigned intensity, const bool is_test, const bool is_benchmark, const std::string& dev_str
 ) {
-  if (input_size < 40) throw std::string("Bad kawpow input length");
+  if (!input || !output || !mix_hash || !pnonce || input_size < 40 || !intensity)
+    throw std::string("KawPow requires input, output, nonce, and nonzero intensity");
 
   const bool loop_stats = kawpow_loop_stats();
   const uint64_t t_enter = loop_stats ? kawpow_now_us() : 0;
@@ -57,7 +58,9 @@ static int kawpow_core(
   state.cnt_math = variant.cnt_math;
   state.ensure_input(input_size);
 
-  const uint32_t epoch = block_height / variant.epoch_length;
+  const uint32_t epoch = variant.seal == SealMode::FIRO
+                             ? firopow_epoch(block_height)
+                             : block_height / variant.epoch_length;
   const uint64_t period = block_height / variant.period_length;
   // FiroPow's full dataset uses chfast/EIP-1057 sizing (1.5 GiB init); KawPoW/EvrProgPow use the
   // classic Ethereum dataset table. The cache sizing is the classic table EXCEPT for MeowPow.
@@ -84,7 +87,10 @@ static int kawpow_core(
   uint64_t start_nonce = 0;
   std::memcpy(&start_nonce, input + 32, sizeof(start_nonce));
   uint32_t search_intensity = intensity;
-  uint32_t global_size = round_up(std::max(search_intensity, state.workgroup), state.workgroup);
+  if (search_intensity > std::numeric_limits<uint32_t>::max() - (state.workgroup - 1))
+    throw std::string("KawPow intensity is too large");
+  const size_t global_size =
+      round_up_size(std::max(search_intensity, state.workgroup), state.workgroup);
   const uint32_t dag_elements = static_cast<uint32_t>(dag_bytes / 256);
   const FastModData dag_mod = make_fast_mod_data(dag_elements);
 
@@ -104,7 +110,8 @@ static int kawpow_core(
 #if !defined(MOM_SYCL_PORTABLE_OPENCL)
   const char* const exchange_env = std::getenv("MOM_KAWPOW_EXCHANGE");
   bool use_sg = state.default_subgroup_exchange;
-  if (exchange_env && std::strcmp(exchange_env, "sg") == 0) use_sg = state.device.is_gpu();
+  if (exchange_env && std::strcmp(exchange_env, "sg") == 0)
+    use_sg = kawpow_subgroup_exchange_supported(state.device);
   else if (exchange_env && std::strcmp(exchange_env, "slm") == 0) use_sg = false;
 #endif
   // The Intel (spec-const) kernels can't bake REGS/CNT_* at JIT time the way the CUDA path does, so they
@@ -120,7 +127,9 @@ static int kawpow_core(
     // The per-period ProgPoW program is folded to constants: Intel via SYCL-2020 specialization
     // constants + kernel_bundle; CUDA via a runtime source-compiled kernel (jit.inc).
     const uint64_t t_io = loop_stats ? kawpow_now_us() : 0;
-    state.ensure_period_bundle(period, epoch, dag_mod);
+    // A benchmark never crosses a ProgPoW period. Avoid compiling the unused next-period CUDA
+    // kernel: the worker otherwise waits for that background compile during shutdown.
+    state.ensure_period_bundle(period, epoch, dag_mod, !is_benchmark);
     const uint64_t t_bundle = loop_stats ? kawpow_now_us() : 0;
     sycl::event search_event;
 #if defined(MOM_SYCL_HAS_CUDA)
@@ -156,7 +165,7 @@ static int kawpow_core(
       const sycl::specialized<bool> adaptive_meowpow_shape{meowpow_shape};
       h.parallel_for<KawpowSgKernel>(
         sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(local_size)),
-        [=](sycl::nd_item<1> item) MOM_REQD_SG_16 {
+        [=](sycl::nd_item<1> item) MOM_REQD_SG_16 MOM_SYCL_KERNEL_ARGS_RESTRICT {
           const KawpowProgram program = adaptive_program;
           const FastModData dag_mod = adaptive_dag_mod;
           const bool specialized_meowpow_shape = adaptive_meowpow_shape;
@@ -165,14 +174,14 @@ static int kawpow_core(
       const FastModData adaptive_dag_mod = dag_mod;
       h.parallel_for<KawpowSgKernel>(
         sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(local_size)),
-        [=](sycl::nd_item<1> item) MOM_REQD_SG_16 {
+        [=](sycl::nd_item<1> item) MOM_REQD_SG_16 MOM_SYCL_KERNEL_ARGS_RESTRICT {
           const KawpowProgram program = adaptive_program;
           const FastModData dag_mod = adaptive_dag_mod;
           const bool specialized_meowpow_shape = meowpow_shape;
 #else
       h.parallel_for<KawpowSgKernel>(
         sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(local_size)),
-        [=](sycl::nd_item<1> item, sycl::kernel_handler kh) MOM_REQD_SG_16 {
+        [=](sycl::nd_item<1> item, sycl::kernel_handler kh) MOM_REQD_SG_16 MOM_SYCL_KERNEL_ARGS_RESTRICT {
           const KawpowProgram program = kh.get_specialization_constant<kawpow_program_id>();
           const FastModData dag_mod = kh.get_specialization_constant<kawpow_dag_mod_id>();
           const bool specialized_meowpow_shape = meowpow_shape;
@@ -244,7 +253,7 @@ static int kawpow_core(
       const bool adaptive_cpu_offset_barrier = state.device.is_cpu();
       h.parallel_for(
         sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(local_size)),
-        [=](sycl::nd_item<1> item) {
+        [=](sycl::nd_item<1> item) MOM_SYCL_KERNEL_ARGS_RESTRICT {
           const KawpowProgram program = adaptive_program;
           const FastModData dag_mod = adaptive_dag_mod;
           const bool cpu_offset_barrier = adaptive_cpu_offset_barrier;
@@ -254,7 +263,7 @@ static int kawpow_core(
       h.set_specialization_constant<kawpow_cpu_offset_barrier_id>(state.device.is_cpu());
       h.parallel_for(
         sycl::nd_range<1>(sycl::range<1>(global_size), sycl::range<1>(local_size)),
-        [=](sycl::nd_item<1> item, sycl::kernel_handler kh) {
+        [=](sycl::nd_item<1> item, sycl::kernel_handler kh) MOM_SYCL_KERNEL_ARGS_RESTRICT {
           const KawpowProgram program = kh.get_specialization_constant<kawpow_program_id>();
           const FastModData dag_mod = kh.get_specialization_constant<kawpow_dag_mod_id>();
           const bool cpu_offset_barrier = kh.get_specialization_constant<kawpow_cpu_offset_barrier_id>();

@@ -1,9 +1,10 @@
+#include "epoch.h"
+
 namespace mom_kawpow {
 
 constexpr uint32_t KAWPOW_EPOCH_LENGTH  = 7500;
 constexpr uint32_t KAWPOW_PERIOD_LENGTH = 3;
-// FiroPow: DAG epoch every 1300 blocks, ProgPoW program changes every block (period == height).
-constexpr uint32_t FIROPOW_EPOCH_LENGTH  = 1300;
+// FiroPow: consensus DAG epoch selection is in epoch.h; the ProgPoW program changes every block.
 constexpr uint32_t FIROPOW_PERIOD_LENGTH = 1;
 // EvrProgPow: same seal structure as KawPoW (different magic), DAG epoch every 12000 blocks.
 constexpr uint32_t EVRPROGPOW_EPOCH_LENGTH  = 12000;

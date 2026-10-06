@@ -3,10 +3,6 @@
 // after a prelude that defines the constants/structs/FastModData). Keep it self-contained:
 // it may rely only on constants/structs/FastModData/fast_mod_dev being already defined.
 
-inline uint32_t round_up(const uint32_t value, const uint32_t step) {
-  return ((value + step - 1) / step) * step;
-}
-
 // Force-inline the program-application chain ONLY on the runtime-JIT path, where a baked
 // `const KawpowProgram` must const-propagate through it (the interpreter switches then fold to
 // single ops). On the AOT build (Intel icx / NVIDIA AOT) plain `inline` is used so the compiler
