@@ -11,7 +11,7 @@ test("ZelHash-family pools build the 140-byte header from the ZIP-301 notify", a
   const ntime    = "90e44f5d";
   const bits     = "ce28421d";
   const target   = "0000000a42ce000000000000000000000000000000000000000000000000000c";
-  for (const algo of ["zelhash", "zhash"]) {
+  for (const algo of ["zelhash", "zhash", "equihash192_7"]) {
     await withMockPool({
       pool: {is_keepalive: true, login: "t1fluxwallet.worker"},
       opt: {job: {algo}}, pool_time: {keepalive: 0.001, first_job_wait: 0.001},
@@ -124,5 +124,25 @@ test("ZHash submits the entire CompactSize-prefixed 100-byte proof", async () =>
   assert.equal(miner.poolWrites[0].json.method, "mining.submit");
   assert.deepEqual(miner.poolWrites[0].json.params, [
     "zhash.worker", "job1", "90e44f5d", "0700000000000000" + "0".repeat(44), solution,
+  ]);
+});
+
+test("Equihash192_7 submits the entire CompactSize-prefixed 400-byte proof", async () => {
+  const miner = await loadMinerWithStubs();
+  const solution = "fd9001" + "cd".repeat(400);
+  const poolConfig = miner.global.opt.pools[0];
+  poolConfig.submit_mode = "zelhash";
+  poolConfig.login = "equihash192_7.worker";
+  poolConfig.last_job = {
+    algo: "equihash192_7", job_id: "job1", ntime: "90e44f5d", nonce1_len: 2,
+    blob: "0".repeat(216) + "0a1b" + "0".repeat(60),
+  };
+  miner.messageHandler({type: "result", value: {
+    pool_id: 0, worker_id: "worker", job_id: "job1", nonce: "0000000000000007", solution,
+  }});
+  assert.equal(miner.poolWrites.length, 1);
+  assert.equal(miner.poolWrites[0].json.method, "mining.submit");
+  assert.deepEqual(miner.poolWrites[0].json.params, [
+    "equihash192_7.worker", "job1", "90e44f5d", "0700000000000000" + "0".repeat(44), solution,
   ]);
 });

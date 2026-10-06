@@ -35,6 +35,7 @@ namespace mom_zelhash {
 void zelhash_cleanup_states() noexcept;
 unsigned zelhash_slot_capacity(const sycl::device&);
 }
+namespace mom_equihash192_7 { void cleanup_states() noexcept; }
 namespace mom_zhash {
 void zhash_cleanup_states() noexcept;
 }
@@ -82,6 +83,7 @@ void sycl_cleanup() noexcept {
   cn_gpu_cleanup_states();
   mom_zelhash::zelhash_cleanup_states();
   mom_zhash::zhash_cleanup_states();
+  mom_equihash192_7::cleanup_states();
   mom_etchash::etchash_cleanup_states();
   mom_fishhash::fishhash_cleanup_states();
   mom_kawpow::kawpow_cleanup_states();

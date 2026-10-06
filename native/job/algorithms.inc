@@ -105,7 +105,8 @@ static const std::map<std::string, gpu_karlsenhashv2_hash_fun> gpu_karlsenhashv2
 
 static const std::map<std::string, gpu_zelhash_hash_fun> gpu_zelhash_algo2fn = {
   { "zelhash", zelhash },
-  { "zhash", zhash }
+  { "zhash", zhash },
+  { "equihash192_7", equihash192_7 }
 };
 
 static const std::map<std::string, gpu_beamhash3_hash_fun> gpu_beamhash3_algo2fn = {
@@ -128,6 +129,7 @@ static const std::map<std::string, unsigned> algo2mem = [](){
     { "karlsenhashv2", 0 },
     { "zelhash", 0 },
     { "zhash", 0 },
+    { "equihash192_7", 0 },
     { "beamhash3", 0 }
   };
   for (const auto& i : cpu_name2algo) result[i.first] = xmrig::Algorithm(i.second).l3();

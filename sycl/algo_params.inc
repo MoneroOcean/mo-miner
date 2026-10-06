@@ -276,7 +276,11 @@ std::map<std::string, std::string> algo_params(
     else if (gpu_karlsenhashv2_algos.contains(algo)) add_gpu_dataset_algo_dev(result_dev, 4608 * MiB, 6 * GiB, fishhash_intensity,
                                "intensity", GpuUsm::both, 128); // FishHashPlus: same 4.6 GiB DAG/intensity as fishhash
     else if (gpu_zelhash_algos.contains(algo)) {
-      if (algo == "zhash")
+      if (algo == "equihash192_7")
+        add_gpu_dataset_algo_dev(
+            result_dev, 1152 * MiB, 8 * GiB, [](const sycl::device&) { return 1u; },
+            "intensity", GpuUsm::device, 1024, 34 * KiB);
+      else if (algo == "zhash")
         add_gpu_dataset_algo_dev(
           result_dev, 906 * MiB, 4 * GiB, [](const sycl::device&) { return 1u; },
           "intensity", GpuUsm::device, 1024, 34 * KiB);

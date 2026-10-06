@@ -207,4 +207,51 @@ module.exports = [
       "99d00156409438c98000163ced617c007c9aeba740c1524ca571ba20a274af37011cd20e6538e1170261cc902a7b168306cc01c224146d99d7f883e4b3bccc4e592320b569bffb9c6cee3fea1f27d09cb869264a49dd99256655657c263318966b87b0fe00000000" +
       "0".repeat(10240 - 2 - 208 * 3),
   },
+  {
+    // Recorded Zclassic Equihash 192,7 header. Test mode returns the sorted first of four valid
+    // 400-byte proofs and pads the shared Equihash output buffer.
+    name: "equihash192_7 gpu1 recorded-mainnet",
+    gpu: true,
+    timeoutMs: 15 * 60 * 1000,
+    env: {MOM_EQUIHASH192_7_SOLVE: "1"},
+    job: {
+      algo: "equihash192_7",
+      dev: "gpu1*[intensity=1]",
+      noncebytes: 8,
+      nonceoffset: 108,
+      target: "ff".repeat(32),
+      blob_hex:
+        "04000000ecf888bb9e8440dff1eca5ff69c277e85462f306ec785719a76e4dd20f0b0000" +
+        "c450f3fd2a66b462f4133c48cc636655ac055de95072bd693514c9c7156dfa8de" +
+        "2004d086a6929b60cb4e4efbbfcf41d3fda50ad985fc421c990217a1daef400c5" +
+        "8d776ad03c141e8001fde00f6dcbadb169c9131b3a07c44e9b11ca00000000000000005b15db75",
+    },
+    expected:
+      "01" +
+      "000870397e46deb5da1b012d60132a670f44b56bcc3d62efab0f5fe274a4d7c74b5ac57ba1f80d89873459c67a1dbd5c11b10af944f4a507b01d143e4c10fa3f99975a00fb4f2b9dc5c9db0c9ce7fd89d8aeab27b9ab4b65974673cfd566c56e63c90e4911756fab9a579ed290934b91545505ecb0796eaed74172eac24232aec77064e87335363a5e67a282a69cfd3e15abe16cabcb28bbb9b268e90a9785c80be303e2713b47b43188f7e3361c8045200feefe0368b5a1fdd5527a45c3365f2ccebaf29576a7e801eae51de4694c3a678da0f0b04ce00a654cfc20fe0eb132ae0d295a07afb7c51514124bdd8180dd614363f5bca625f9dd2d02cdf0d40a0066ad121de47c736e894bf5de9b8bd29ff09a72284877514d695635121f1a4b63c2859da3279a6ad375fba1e7022f9428b76950fea7140ab892e5c64adb33f90ed025ec12a417c13551ab551408d72d1111a4b14ea4efa729bf64db883f38131bdb8aa6324f1fd4bfe2f99781bc554e5d6635d4e15b4335301b0cc3272d1f18c13226aef428fe049fe36241d98fafc610" +
+      "0".repeat(10240 - 2 - 800),
+  },
+  {
+    // Light portable guard: BLAKE2b digest zero for the same Zclassic header.
+    name: "equihash192_7 gpu1 generation",
+    gpu: true,
+    syclCpu: true,
+    portableOnly: true,
+    timeoutMs: 5 * 60 * 1000,
+    job: {
+      algo: "equihash192_7",
+      dev: "gpu1*[intensity=1]",
+      noncebytes: 8,
+      nonceoffset: 108,
+      target: "ff".repeat(32),
+      blob_hex:
+        "04000000ecf888bb9e8440dff1eca5ff69c277e85462f306ec785719a76e4dd20f0b0000" +
+        "c450f3fd2a66b462f4133c48cc636655ac055de95072bd693514c9c7156dfa8de" +
+        "2004d086a6929b60cb4e4efbbfcf41d3fda50ad985fc421c990217a1daef400c5" +
+        "8d776ad03c141e8001fde00f6dcbadb169c9131b3a07c44e9b11ca00000000000000005b15db75",
+    },
+    expected:
+      "d22c1ef2a4fcd68dbc24ef7b7ac6df11c264375afae2010eba986ec05717f17ef9617c716cd961115eff3f21fd401b73" +
+      "0".repeat(10240 - 96),
+  },
 ];

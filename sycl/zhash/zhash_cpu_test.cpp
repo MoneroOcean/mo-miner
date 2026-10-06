@@ -458,6 +458,8 @@ int main() {
     return 40 + result;
   if (const int result = test_blake2b_pair<mom_equihash::ZHash144_5>())
     return 60 + result;
+  if (const int result = test_blake2b_pair<mom_equihash::Equihash192_7>())
+    return 70 + result;
   std::uint8_t header[Spec::header_length], solution[Spec::solution_length];
   from_hex("0400000008e9694cc2120ec1b5733cc12687b609058eec4f7046a521ad1d1e3049b400003e7420ed6f40659"
            "de0305ef9b7ec037f4380ed9848bc1c015691c90aa16ff39300000000000000000000000000000000000000"

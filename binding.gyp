@@ -307,6 +307,7 @@
         "sycl/kawpow/kawpow.cpp",
         "sycl/fishhash/fishhash.cpp",
         "sycl/zhash/zhash.cpp",
+        "sycl/equihash192_7/equihash192_7.cpp",
         "sycl/zelhash/zelhash.cpp",
         "sycl/beamhash3/beamhash3.cpp"
       ],

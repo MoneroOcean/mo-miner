@@ -318,12 +318,12 @@ void Core::Execute() {
         continue;
       }
 
-      // PearlHash's work unit is GEMM MACs (m*n*k) so its rate matches the "TH/s" GEMM bench. Equihash's
-      // unit is a Wagner SOLUTION (the solver finds ~1.88 distinct proofs per nonce); the solver returns
-      // that distinct count in dev_sols when benching, so the rate reads out as Sol/s. Others = 1/batch.
+      // PearlHash's work unit is GEMM MACs (m*n*k) so its rate matches the "TH/s" GEMM bench.
+      // Equihash 192,7 counts input headers; other Equihash solvers count returned proofs.
+      // All remaining GPU paths count the requested batch.
       m_hash_count += (m_dev == DEV::PEARLHASH_GPU)
         ? pearlhash_attempt_hashes(m_batch, m_pearlhash_n, m_pearlhash_k)
-                    : (m_dev == DEV::ZELHASH_GPU || m_dev == DEV::BEAMHASH3_GPU) ? static_cast<uint64_t>(dev_sols < 0 ? 0 : dev_sols)
+                    : ((m_dev == DEV::ZELHASH_GPU && m_algo_str != "equihash192_7") || m_dev == DEV::BEAMHASH3_GPU) ? static_cast<uint64_t>(dev_sols < 0 ? 0 : dev_sols)
                     : m_batch;
       if (m_dev == DEV::KAWPOW_GPU || m_dev == DEV::ETCHASH_GPU) {
         const uint64_t prev_nonce = m_nonce64;
@@ -359,7 +359,7 @@ void Core::Execute() {
         // Each ZIP-301 share carries its CompactSize-prefixed compressed proof.
         const uint64_t prev_nonce = m_nonce64;
         if (dev_sols > 0 && m_target) {
-          const unsigned solution_size = m_algo_str == "zhash" ? 100 : 52;
+          const unsigned solution_size = m_algo_str == "equihash192_7" ? 400 : m_algo_str == "zhash" ? 100 : 52;
           send_equihash_results(dev_nonce, solution_size, true);
         }
 

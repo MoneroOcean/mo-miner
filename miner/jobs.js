@@ -177,7 +177,7 @@ module.exports = ({
   }
 
   function isZelHashAlgo(algo) {
-    return algo === "zelhash" || algo === "zhash";
+    return algo === "zelhash" || algo === "zhash" || algo === "equihash192_7";
   }
 
   // A deterministic 140-byte Flux header for benching the Equihash 125,4 GPU solver (mainnet block
@@ -356,7 +356,7 @@ module.exports = ({
       ? gpuTuning.parseDeviceEntry(devEntry, algo).tuning : {};
     const tuningEnv = gpuTuning.tuningEnvironment(
       algo, {...configuredTuning(algo), ...entryTuning});
-    if (algo !== "c29" && algo !== "zhash") {return Object.assign(env, tuningEnv);}
+    if (algo !== "c29" && algo !== "zhash" && algo !== "equihash192_7") {return Object.assign(env, tuningEnv);}
 
     // C29 submits hundreds of short SYCL kernels per second; legacy non-immediate
     // Level Zero command lists avoid the one-core immediate-list path on Intel GPUs.
@@ -401,6 +401,12 @@ module.exports = ({
     return job;
   }
 
+  const EQUIHASH192_7_BENCH_BLOB =
+    "04000000ecf888bb9e8440dff1eca5ff69c277e85462f306ec785719a76e4dd20f0b0000" +
+    "c450f3fd2a66b462f4133c48cc636655ac055de95072bd693514c9c7156dfa8de" +
+    "2004d086a6929b60cb4e4efbbfcf41d3fda50ad985fc421c990217a1daef400c5" +
+    "8d776ad03c141e8001fde00f6dcbadb169c9131b3a07c44e9b11ca00000000000000005b15db75";
+
   const C30_BENCH_HEADER =
     "8bbb8897a7967634e15bae662ee23e16e8c85669f3ca0a9e6584f8f4aa41f220";
 
@@ -443,6 +449,13 @@ module.exports = ({
       job.noncebytes = 8;
       job.nonceoffset = 108;
       if (!job.blob_hex || job.blob_hex.length !== 280) {job.blob_hex = ZHASH_BENCH_BLOB;}
+      job.blob_hex = job.blob_hex.slice(0, 216) + "00".repeat(8) + job.blob_hex.slice(232);
+      job.height = job.height || 400000;
+    }
+    if (job.algo === "equihash192_7") {
+      job.noncebytes = 8;
+      job.nonceoffset = 108;
+      if (!job.blob_hex || job.blob_hex.length !== 280) {job.blob_hex = EQUIHASH192_7_BENCH_BLOB;}
       job.blob_hex = job.blob_hex.slice(0, 216) + "00".repeat(8) + job.blob_hex.slice(232);
       job.height = job.height || 400000;
     }

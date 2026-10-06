@@ -12,7 +12,7 @@ bool Core::process_message(const std::string& type, const MessageValues& v) {
     // etchash/autolykos2/pearlhash/fishhash use a full 32-byte target instead of a single 64-bit word
     // (fishhash: live Iron Fish sends a 256-bit big-endian target -> m_target_bin -> meets_target_be_dev)
     const bool is_big_target = algo == "etchash" || algo == "autolykos2" || algo == "pearlhash" ||
-      algo == "fishhash" || algo == "zelhash" || algo == "zhash" || algo == "beamhash3" ||
+      algo == "fishhash" || algo == "zelhash" || algo == "zhash" || algo == "equihash192_7" || algo == "beamhash3" ||
       // KarlsenHashV2 compares the 32-byte hash against a full 256-bit BE boundary via
       // m_target_bin; without this the bin stays zero and live mining finds no shares.
       algo == "karlsenhashv2" || algo == "c30";

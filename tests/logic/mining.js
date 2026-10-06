@@ -292,7 +292,7 @@ test("donation pool mines a MoneroOcean algo while the rig is configured for pea
 });
 
 test("ZHash-family benchmark jobs use fixed 140-byte headers and nonce metadata", async () => {
-  for (const algo of ["zhash"]) {
+  for (const algo of ["zhash", "equihash192_7"]) {
     const miner = await loadMinerWithStubs({
       argv: ["node", "mom.js", "bench", algo], waitForMessageType: "bench",
     });

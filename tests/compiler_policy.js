@@ -398,3 +398,61 @@ test("compiler workers select the backend matching their artifact", () => {
   }, "linux"), /Invalid MOM_GPU_INDEX/);
   fs.rmSync(root, {recursive: true, force: true});
 });
+
+test("Equihash 192,7 scopes wider first-round partitioning to HIP", () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, "../sycl/equihash192_7/equihash192_7_direct_session.hpp"), "utf8");
+  assert.match(source,
+    /defined\(MOM_SYCL_HAS_HIP\)[\s\S]*?default_round0_partitions = 8;[\s\S]*?#else[\s\S]*?default_round0_partitions = 2;/);
+  assert.match(source, /unsigned Round0Partitions = default_round0_partitions/);
+});
+
+test("Equihash 192,7 derives first split partitions from the active bucket width", () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, "../sycl/equihash192_7/equihash192_7_direct_session.hpp"), "utf8");
+  assert.match(source,
+    /constexpr unsigned partitions = 1u << \(15 - ActiveRound1::bucket_bits\);/);
+  assert.match(source,
+    /typename ActiveArena::Round2Record, partitions>/);
+});
+
+test("Equihash 192,7 scopes split-record partitioning to Level Zero", () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, "../sycl/equihash192_7/equihash192_7_direct_session.hpp"), "utf8");
+  const splitOutput = source.indexOf("submit_collision_round_bucketed_split_output_partitioned");
+  const start = source.lastIndexOf("if (level_zero_)", splitOutput);
+  const end = source.indexOf("if (level_zero_)", splitOutput);
+  const splitRounds = source.slice(start, end);
+  assert.equal((splitRounds.match(/submit_collision_round_bucketed_split_output_partitioned</g) || []).length, 1);
+  assert.equal((splitRounds.match(/submit_split_collision_round_bucketed_partitioned</g) || []).length, 1);
+  assert.equal((splitRounds.match(/submit_collision_round_bucketed_split_output</g) || []).length, 1);
+  assert.equal((splitRounds.match(/submit_split_collision_round_bucketed</g) || []).length, 1);
+  assert.match(splitRounds,
+    /constexpr unsigned partitions =\s*std::is_same_v<ActiveArena, HybridArena> \? 2 : 4;/);
+  assert.match(splitRounds, /typename ActiveArena::Round3Record, partitions>/);
+  assert.match(splitRounds, /typename ActiveArena::Round4Record, 4>/);
+});
+
+test("Equihash 192,7 scopes late-round partitioning to Level Zero", () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, "../sycl/equihash192_7/equihash192_7_direct_session.hpp"), "utf8");
+  const start = source.indexOf("submit_split_collision_round_bucketed<");
+  const end = source.indexOf("#endif", start);
+  const lateRounds = source.slice(start, end);
+  assert.match(lateRounds, /if \(level_zero_\)/);
+  assert.equal((lateRounds.match(/submit_collision_round_bucketed_partitioned</g) || []).length, 2);
+  assert.equal((lateRounds.match(/submit_collision_round_bucketed</g) || []).length, 2);
+});
+
+test("Equihash 192,7 gates its HIP input cache on local memory", () => {
+  const session = fs.readFileSync(
+    path.join(__dirname, "../sycl/equihash192_7/equihash192_7_direct_session.hpp"), "utf8");
+  const shared = fs.readFileSync(
+    path.join(__dirname, "../sycl/zhash/equihash_sycl.hpp"), "utf8");
+  assert.match(shared, /bool CacheInput = false/);
+  assert.match(shared, /partitioned_collision_local_bytes/);
+  assert.match(session,
+    /local_mem_size>\(\) >= required_cache_local_bytes/);
+  assert.match(session,
+    /if \(cache_partition_inputs_\) return run_with_cache<true>\(header\);/);
+});

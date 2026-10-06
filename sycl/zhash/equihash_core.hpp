@@ -65,6 +65,16 @@ struct ZHash144_5 : EquihashConfig<144, 5, 3> {
   }
 };
 
+struct Equihash192_7 : EquihashConfig<192, 7, 2> {
+
+  static constexpr std::uint8_t personal_byte(const unsigned i) {
+    return i == 0 ? 'Z' : i == 1 ? 'c' : i == 2 ? 'a' : i == 3 ? 's' :
+           i == 4 ? 'h' : i == 5 ? 'P' : i == 6 ? 'o' : i == 7 ? 'W' :
+           i == 8 ? 192 : i == 12 ? 7 : i == 9 ? 0 : i == 10 ? 0 : i == 11 ? 0 :
+           i == 13 ? 0 : i == 14 ? 0 : i == 15 ? 0 : 0;
+  }
+};
+
 template <typename Spec>
 struct Row {
   std::uint32_t fields[Spec::rounds];

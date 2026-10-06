@@ -87,13 +87,14 @@ void Core::set_job(
     new_algo_str == "karlsenhashv2" ? DEV::KARLSENHASHV2_GPU :
     new_algo_str == "zelhash" ? DEV::ZELHASH_GPU :
     new_algo_str == "zhash" ? DEV::ZELHASH_GPU :
+    new_algo_str == "equihash192_7" ? DEV::ZELHASH_GPU :
     new_algo_str == "beamhash3" ? DEV::BEAMHASH3_GPU :
     new_algo_str == "c29" ? DEV::C29_GPU :
     new_algo_str == "c30" ? DEV::C30_GPU : DEV::GPU;
 
   uint64_t c30_initial_nonce = 0;
   uint64_t zhash_initial_nonce = 0;
-  if (new_dev == DEV::C30_GPU || new_algo_str == "zhash") {
+  if (new_dev == DEV::C30_GPU || new_algo_str == "zhash" || new_algo_str == "equihash192_7") {
     for (const char* field : {"height", "thread_id", "thread_num", "noncebytes", "nonceoffset", "proofsize", "intensity"}) {
       unsigned value = 0;
       if (v.contains(field) && !mom::job_boundary::parse_unsigned(v.at(field), value))
@@ -116,7 +117,7 @@ void Core::set_job(
           new_nicehash_mask, c30_initial_nonce))
       throw std::string("c30 starting nonce is exhausted");
   }
-  if (new_algo_str == "zhash") {
+  if (new_algo_str == "zhash" || new_algo_str == "equihash192_7") {
     if (new_batch != 1)
       throw std::string("Single-header solvers require intensity 1");
     if (new_thread_num == 0 || new_thread_id >= new_thread_num)
@@ -265,7 +266,7 @@ void Core::set_job(
     : new_dev == DEV::ZELHASH_GPU ? 140   // full Zcash/Flux header
     : new_dev == DEV::BEAMHASH3_GPU ? 44         // prework(32)||nonce(8)||extranonce(4)
     : is_nonce_at_32_gpu_dev(new_dev) ? 40 : 0;
-  if (new_input_len < min_input_len || (new_algo_str == "zhash" && new_input_len != 140))
+  if (new_input_len < min_input_len || ((new_algo_str == "zhash" || new_algo_str == "equihash192_7") && new_input_len != 140))
     throw std::string("Bad " + new_algo_str + " input length");
 
   const unsigned new_mem_size = algo2mem.at(new_algo_str);
@@ -492,7 +493,7 @@ void Core::set_job(
         const uint64_t embed = ironfish ? bswap_64(current_nonce) : current_nonce;
         std::memcpy(m_input + m_nonce_offset, &embed, sizeof(embed));
       }
-      m_nonce64 = is_set_nonce ? (new_algo_str == "zhash"
+      m_nonce64 = is_set_nonce ? (new_algo_str == "zhash" || new_algo_str == "equihash192_7"
         ? zhash_initial_nonce : current_nonce + m_nonce_step) : 0;
       m_nonce32 = 0;
       return;
