@@ -3,6 +3,7 @@
 #pragma once
 
 #include "async-worker.h"
+#include "job-boundary.h"
 #include "ctpl-stl.h" // used for randomx threads
 #include "crypto/common/VirtualMemory.h"
 #include "crypto/cn/CnHash.h"
@@ -120,14 +121,14 @@ class Core: public AsyncWorker {
   uint32_t m_nonce32; // next nonce that will be used in an input
   uint64_t m_nonce64, m_nicehash_mask, m_target, m_timestamp, m_hash_count;
   std::string m_algo_str, m_dev_str, m_seed_hex, m_input_hex, m_pool_id, m_worker_id, m_job_id,
-              m_header_hash, m_backend;
+              m_header_hash, m_backend, m_job_token;
   std::string m_pearlhash_proof_job;   // job_id of the last pearlhash share emitted (one share built per pool job)
   bool m_is_rx_jit, m_is_bench;
   randomx_cache*   m_rx_cache;
   randomx_dataset* m_rx_dataset;
   ctpl::thread_pool* m_thread_pool;
   randomx_vm** m_vm;
-  SimpleMutex m_mutex_hashrate;
+  std::mutex m_mutex_hashrate;
 
   inline uint32_t* get_nonce32(uint8_t* const input, const unsigned batch) {
     return reinterpret_cast<uint32_t*>(input + (batch * m_input_len) + m_nonce_offset);
@@ -167,7 +168,8 @@ class Core: public AsyncWorker {
     const uint8_t* commitment = nullptr, const uint8_t* mix_hash = nullptr,
     const uint8_t* solution = nullptr, unsigned solution_len = 0
   );
-  void send_last_nonce(uint64_t nonce, unsigned noncebytes, const std::string& pool_id);
+  void send_last_nonce(uint64_t nonce, unsigned noncebytes, const std::string& pool_id,
+                       const std::string& job_id = {}, const std::string& job_token = {});
   void free_memory(
     const bool is_batch_changed    = true,
     const bool is_mem_size_changed = true,
@@ -189,7 +191,7 @@ class Core: public AsyncWorker {
 
   Core(
     napi_env env, napi_value data, napi_value complete,
-    napi_value error_callback, napi_value options
+    napi_value error_callback
   ) : AsyncWorker(env, data, complete, error_callback),
       m_dev(CPU), m_lpads(nullptr), m_rx_cache_mem(nullptr), m_rx_dataset_mem(nullptr),
       m_spads(nullptr), m_ctx(nullptr), m_input(nullptr), m_output(nullptr),
@@ -201,6 +203,11 @@ class Core: public AsyncWorker {
       m_thread_pool(nullptr), m_vm(nullptr)
   {
     m_fn.any = nullptr;
+  }
+
+  ~Core() override {
+    // The worker's close handler still needs the derived resources and job metadata.
+    stop();
   }
 
   void Execute() override;

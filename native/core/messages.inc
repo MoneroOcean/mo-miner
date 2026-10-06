@@ -87,8 +87,8 @@ char* Core::hash_bin2hex(char* const hash, const unsigned batch) const {
 }
 
 void Core::send_msg(const std::string key, const MessageValues& values) {
-  static SimpleMutex mutex_message;
-  SimpleLock lock(mutex_message);
+  static std::mutex mutex_message;
+  const std::lock_guard<std::mutex> lock(mutex_message);
   debug_startup(("Core::send_msg " + key).c_str());
   sendToNode(Message(key, values));
   debug_startup(("Core::send_msg done " + key).c_str());
@@ -161,14 +161,18 @@ void Core::send_result(
   values["pool_id"]   = m_pool_id;
   values["worker_id"] = m_worker_id;
   values["job_id"]    = m_job_id;
+  if (!m_job_token.empty()) values["job_token"] = m_job_token;
   if (!m_header_hash.empty()) values["header_hash"] = m_header_hash;
   send_msg("result", values);
 }
 
-void Core::send_last_nonce(const uint64_t nonce, const unsigned noncebytes, const std::string& pool_id) {
+void Core::send_last_nonce(const uint64_t nonce, const unsigned noncebytes, const std::string& pool_id,
+                           const std::string& job_id, const std::string& job_token) {
   MessageValues result;
   result["nonce"]   = nonce_to_hex(nonce, noncebytes);
   result["pool_id"] = pool_id;
+  if (!job_id.empty()) result["job_id"] = job_id;
+  if (!job_token.empty()) result["job_token"] = job_token;
   send_msg("last_nonce", result);
 }
 

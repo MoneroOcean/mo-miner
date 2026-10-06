@@ -13,7 +13,9 @@ const llvm_ptx88_fallback_advisory =
   /^'\+ptx88' is not a recognized feature for this target \(ignoring feature\)\r?$/;
 const windows_hip_library_path =
   /^HIP Library Path: [A-Za-z]:\\.*\\amdhip64(?:_\d+)?\.dll\r?$/i;
+const max_pending_stderr = 64 * 1024;
 
+/** @param {string} line */
 function hideWorkerStderrLine(line) {
   const plainLine = line.split(ansi_sgr_prefix).map(function(part, index) {
     if (index === 0) {return part;}
@@ -39,8 +41,9 @@ function hideWorkerStderrLine(line) {
 // requests PTX 8.8 for sm_120, while its Windows LLVM 20.1.8 runtime supports through PTX 8.7.
 // LLVM's exact advisory is harmless here: the emitted JIT object is still `.version 8.7` with
 // `.target sm_120` (the PTX version that introduced sm_120). Keep every other target-feature line.
+/** @param {string} pending @param {string | Buffer} chunk @param {boolean} [flush] */
 function filterWorkerStderr(pending, chunk, flush = false) {
-  let input = pending + chunk;
+  let input = pending + chunk.toString();
   let visible = "";
   let eol;
   while ((eol = input.indexOf("\n")) !== -1) {
@@ -51,11 +54,15 @@ function filterWorkerStderr(pending, chunk, flush = false) {
   if (flush) {
     if (input && !hideWorkerStderrLine(input)) {visible += input;}
     input = "";
+  } else if (input.length > max_pending_stderr) {
+    visible += input.slice(0, input.length - max_pending_stderr);
+    input = input.slice(-max_pending_stderr);
   }
   return {pending: input, visible};
 }
 
 module.exports.filterWorkerStderr = filterWorkerStderr;
+/** @param {string} line */
 module.exports.filterWorkerStdoutLine = function(line) {
   return windows_hip_library_path.test(line) ? "" : line;
 };

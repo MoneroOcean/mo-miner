@@ -76,7 +76,7 @@ void Core::Execute() {
     }
 
     std::deque<Message> messages;
-    fromNode.readAll(messages);
+    messages = fromNode.drain();
     for (const auto& message : messages) {
       try {
         debug_startup(("message " + message.name).c_str());
@@ -479,8 +479,8 @@ void Core::Execute() {
   }
 }
 
-AsyncWorker* create_worker(
-  napi_env env, napi_value data, napi_value complete, napi_value error_callback, napi_value options
+std::unique_ptr<AsyncWorker> create_worker(
+  napi_env env, napi_value data, napi_value complete, napi_value error_callback
 ) {
-  return new Core(env, data, complete, error_callback, options);
+  return std::make_unique<Core>(env, data, complete, error_callback);
 }

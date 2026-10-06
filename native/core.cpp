@@ -27,13 +27,18 @@
 static void cleanup_sycl_runtime(void*) { sycl_cleanup(); }
 
 static napi_value init_module(napi_env env, napi_value exports) {
-  napi_value result = AsyncWorkerWrapper::Init(env, exports);
-  // Run after every compute worker/TSFN has drained but before Node unloads this addon or the SYCL
-  // runtime. DPC++ source-JIT images have module destructors of their own, while AdaptiveCpp CUDA
-  // otherwise reaches cudaErrorCudartUnloading (error 4) from late queue/allocator destruction.
-  // Releasing every algorithm registry here avoids depending on cross-DLL C++ static order.
-  AsyncWorker::check(env, napi_add_env_cleanup_hook(env, cleanup_sycl_runtime, nullptr));
-  return result;
+  try {
+    napi_value result = AsyncWorkerWrapper::Init(env, exports);
+    // Run after every compute worker/TSFN has drained but before Node unloads this addon or the SYCL
+    // runtime. DPC++ source-JIT images have module destructors of their own, while AdaptiveCpp CUDA
+    // otherwise reaches cudaErrorCudartUnloading (error 4) from late queue/allocator destruction.
+    // Ordered algorithm cleanup here avoids depending on cross-DLL C++ static order.
+    AsyncWorker::check(env, napi_add_env_cleanup_hook(env, cleanup_sycl_runtime, nullptr));
+    return result;
+  } catch (...) {
+    AsyncWorker::report_current_exception(env);
+    return nullptr;
+  }
 }
 
 NAPI_MODULE(NODE_GYP_MODULE_NAME, init_module)

@@ -13,13 +13,25 @@ const is_windows_process = process.platform === "win32";
 const development_build_platform = is_windows_process ? "win" : "lin";
 const is_explicit_worker = process.env.MOM_CLUSTER_WORKER === "1";
 const is_worker_process = is_explicit_worker ||
-  (!is_windows_process && !cluster.isMaster);
+  (!is_windows_process && !cluster.isPrimary);
 const use_subprocess_workers = is_windows_process ||
   process.env.MOM_USE_SUBPROCESS_WORKERS === "1" ||
   (process.env.MOM_GPU_BACKEND || "").toLowerCase() === "amd";
-const thread_id = is_worker_process ? Number.parseInt(process.env.thread_id, 10) : "master";
+/** @returns {number | "master"} */
+function processThreadId() {
+  if (!is_worker_process) {return "master";}
+  const value = process.env["thread_id"] || "";
+  const id = Number(value);
+  if (!/^\d+$/.test(value) || !Number.isSafeInteger(id)) {
+    throw new Error(`Invalid worker thread id: ${value || "<missing>"}`);
+  }
+  return id;
+}
+
+const thread_id = processThreadId();
 let worker_ids = []; // active worker ids (cluster.workers can contain not yet closed workers)
 let worker_procs = {};
+let worker_generation = 0;
 let core_module_for_exit = null;
 const worker_message_prefix = "MOM_WORKER_MESSAGE ";
 const diagnostics = require("./helper/diagnostics");
@@ -483,7 +495,18 @@ function createClusterThread(i, env, messageHandler) {
 // map 0..N-1 thread IDs into worker.id (that might be not sequential)
 // need to recreate threads from 0 for every algo change since huge memory reallocations
 // can have issues
+/** @param {WorkerMessageHandler} messageHandler @param {number} generation */
+function forWorkerGeneration(messageHandler, generation) {
+  return function(/** @type {WorkerEvent} */ message) {
+    if (generation === worker_generation) {
+      messageHandler(message);
+    }
+  };
+}
+
 module.exports.recreate_threads = function(dev, messageHandler, extraEnv = {}) {
+  const generation = ++worker_generation;
+  const currentMessageHandler = forWorkerGeneration(messageHandler, generation);
   module.exports.closeWorkers(5000);
   worker_ids = [];
   worker_procs = {};
@@ -491,9 +514,9 @@ module.exports.recreate_threads = function(dev, messageHandler, extraEnv = {}) {
   for (let i = 0; i < curr_thread_count; ++ i) {
     const selectedDev = this.get_thread_dev(i, dev);
     const selectedEnv = typeof extraEnv === "function" ? extraEnv(selectedDev, i) : extraEnv;
-    const env = childEnv({thread_id: i, log_level: global.opt.log_level, ...selectedEnv});
-    if (use_subprocess_workers) {createSubprocessThread(i, env, messageHandler);}
-    else {createClusterThread(i, env, messageHandler);}
+    const env = childEnv({thread_id: String(i), log_level: global.opt.log_level, ...selectedEnv});
+    if (use_subprocess_workers) {createSubprocessThread(i, env, currentMessageHandler);}
+    else {createClusterThread(i, env, currentMessageHandler);}
   }
 };
 

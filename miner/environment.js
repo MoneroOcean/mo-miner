@@ -1,5 +1,7 @@
 "use strict";
 
+/** @typedef {{cpu_sockets: number, cpu_threads: number, cpu_l3cache: number}} CpuInfo */
+
 module.exports = ({
   fs, os, process, o, opt, compilerPolicy, gpuTuning, normalizeAlgoName,
   requestedJobBackend, jobBackend, resolvedDeviceList, configuredTuning,
@@ -13,24 +15,31 @@ module.exports = ({
     };
   }
 
+  /** @param {string} cpuinfo */
   function cpuSocketCount(cpuinfo) {
     const physical_ids = new Set();
     for (const match of cpuinfo.matchAll(/^physical id\s*:\s*(.+)$/gm)) {physical_ids.add(match[1]);}
     return physical_ids.size || 1;
   }
 
+  /** @param {string} size_text */
   function cacheSizeBytes(size_text) {
     const size = size_text.match(/^(\d+)([KMG])$/i);
     if (!size) {return 0;}
-    const multiplier = { K: 1024, M: 1024 * 1024, G: 1024 * 1024 * 1024 }[size[2].toUpperCase()];
-    return Number(size[1]) * multiplier;
+    const unit = size[2] && size[2].toUpperCase();
+    const multiplier = unit === "K" ? 1024 : unit === "M" ? 1024 * 1024 :
+      unit === "G" ? 1024 * 1024 * 1024 : 0;
+    const bytes = Number(size[1]) * multiplier;
+    return Number.isSafeInteger(bytes) ? bytes : 0;
   }
 
+  /** @param {string} base */
   function cacheSharedId(base) {
     const shared_cpu_list = `${base}/shared_cpu_list`;
     return fs.existsSync(shared_cpu_list) ? fs.readFileSync(shared_cpu_list, "utf8").trim() : base;
   }
 
+  /** @param {string} base @param {Set<string>} l3_ids */
   function l3CacheEntryBytes(base, l3_ids) {
     try {
       if (!isUnifiedL3Cache(base)) {return 0;}
@@ -43,6 +52,7 @@ module.exports = ({
     }
   }
 
+  /** @param {string} base */
   function isUnifiedL3Cache(base) {
     return fs.readFileSync(`${base}/type`, "utf8").trim() === "Unified" &&
          fs.readFileSync(`${base}/level`, "utf8").trim() === "3";
@@ -62,15 +72,18 @@ module.exports = ({
 
   function detect_cpu() {
     const fallback = fallbackCpuInfo();
-    if (!hasProcCpuInfo()) {return fallback;}
-
-    const cpuinfo = fs.readFileSync("/proc/cpuinfo", "utf8");
-    const processor_count = (cpuinfo.match(/^processor\s*:/gm) || []).length;
-    return {
-      cpu_sockets: cpuSocketCount(cpuinfo),
-      cpu_threads: processor_count || fallback.cpu_threads,
-      cpu_l3cache: l3CacheBytes(),
-    };
+    try {
+      if (!hasProcCpuInfo()) {return fallback;}
+      const cpuinfo = fs.readFileSync("/proc/cpuinfo", "utf8");
+      const processor_count = (cpuinfo.match(/^processor\s*:/gm) || []).length;
+      return {
+        cpu_sockets: cpuSocketCount(cpuinfo),
+        cpu_threads: processor_count || fallback.cpu_threads,
+        cpu_l3cache: l3CacheBytes(),
+      };
+    } catch {
+      return fallback;
+    }
   }
 
   function hasProcCpuInfo() {
@@ -78,7 +91,7 @@ module.exports = ({
   }
 
   function use_msr_tuning() {
-    return process.platform !== "win32" && process.env.MOM_SKIP_MSR !== "1";
+    return process.platform !== "win32" && process.env["MOM_SKIP_MSR"] !== "1";
   }
 
   function add_algo_params(params) {

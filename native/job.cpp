@@ -1,6 +1,7 @@
 // Copyright GNU GPLv3 (c) 2023-2025 MoneroOcean <support@moneroocean.stream>
 
 #include "core.h"
+#include "cpu-scheduling.h"
 #include "../sycl/lib.h"
 
 #include "backend/cpu/Cpu.h"
@@ -13,7 +14,6 @@
 
 #include <algorithm>
 #include <ranges>
-#include <list>
 #include <set>
 #include <thread>
 #include <cstdlib>

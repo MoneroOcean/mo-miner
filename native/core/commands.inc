@@ -32,15 +32,17 @@ bool Core::process_message(const std::string& type, const MessageValues& v) {
 
     const uint64_t prev_last_nonce = last_nonce();
     const std::string prev_pool_id = m_pool_id;
+    const std::string prev_job_id = m_job_id, prev_job_token = m_job_token;
     set_job(true, true, v, [&]() {
       m_target    = new_target;
       if (is_big_target) std::memcpy(m_target_bin, new_target_bin, HASH_LEN);
       m_pool_id   = v.at("pool_id");
       m_worker_id = v.at("worker_id");
       m_job_id    = v.at("job_id");
+      m_job_token = v.contains("job_token") ? v.at("job_token") : "";
       m_header_hash = v.contains("header_hash") ? v.at("header_hash") : "";
     });
-    if (prev_last_nonce) send_last_nonce(prev_last_nonce, m_nonce_bytes, prev_pool_id);
+    if (prev_last_nonce) send_last_nonce(prev_last_nonce, m_nonce_bytes, prev_pool_id, prev_job_id, prev_job_token);
 
   } else if (type == "bench") {
     debug_startup("process bench start");

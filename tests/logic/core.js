@@ -2,6 +2,44 @@
 
 const s = require("./support");
 const { test, assert, spawnSync, opts, helper, pool, compilerPolicy, formatHashrate, parseFormattedHashrate, specReporter, repoRoot, noOp, loadMinerWithStubs, mockPoolOptions } = s;
+const {normalizeAlgoName} = require("../../miner/algorithms");
+const makeEnvironment = require("../../miner/environment");
+/** @param {NodeJS.Platform} platform @param {NodeJS.ProcessEnv} env */
+function mockProcess(platform, env) {
+  return {platform, env};
+}
+/** @param {(path: string, encoding: "utf8") => string} readFileSync
+ * @param {(path: string) => string[]} readdirSync */
+function mockFileSystem(readFileSync, readdirSync) {
+  return {existsSync: () => true, readFileSync, readdirSync};
+}
+/** @param {Array<import("node:os").CpuInfo>} cpus */
+function mockOperatingSystem(cpus) {
+  return {cpus: () => cpus};
+}
+const environmentDeps = {};
+
+test("Cuckaroo aliases normalize to the short algorithm names", () => {
+  for (const name of ["c29", "cuckaroo", "cuckaroo29", "c29xtm"]) {
+    assert.equal(normalizeAlgoName(name), "c29");
+  }
+  for (const name of ["kawpow", "kawpow1", "kawpow4"]) {
+    assert.equal(normalizeAlgoName(name), "kawpow");
+  }
+});
+
+test("algorithm normalization preserves empty values and rejects non-strings", () => {
+  assert.equal(normalizeAlgoName("CUCKAROO"), "c29");
+  assert.equal(normalizeAlgoName(null), null);
+  assert.equal(normalizeAlgoName(undefined), undefined);
+  assert.equal(normalizeAlgoName(""), "");
+
+  /** @type {unknown[]} */
+  const invalid = [0, false, NaN, 1, true, {}, []];
+  for (const value of invalid) {
+    assert.throws(() => Reflect.apply(normalizeAlgoName, null, [value]), TypeError);
+  }
+});
 
 test("MSR tuning can be disabled for portable deployment tests", () => {
   const environment = require("../../miner/environment")({
@@ -13,6 +51,28 @@ test("MSR tuning can be disabled for portable deployment tests", () => {
     process: {platform: "linux", env: {}},
   });
   assert.equal(normal.use_msr_tuning(), true);
+});
+
+test("CPU discovery falls back when proc or sysfs is inaccessible", () => {
+  const environment = makeEnvironment({
+    ...environmentDeps,
+    fs: mockFileSystem(
+      (file, _encoding) => {
+        if (file === "/proc/cpuinfo") {return "processor: 0\nprocessor: 1\n";}
+        throw Object.assign(new Error("denied"), {code: "EACCES"});
+      },
+      () => { throw Object.assign(new Error("denied"), {code: "EACCES"}); },
+    ),
+    os: mockOperatingSystem([
+      {model: "", speed: 0, times: {user: 0, nice: 0, sys: 0, idle: 0, irq: 0}},
+      {model: "", speed: 0, times: {user: 0, nice: 0, sys: 0, idle: 0, irq: 0}},
+      {model: "", speed: 0, times: {user: 0, nice: 0, sys: 0, idle: 0, irq: 0}},
+    ]),
+    process: mockProcess("linux", {}),
+  });
+  assert.deepEqual(environment.detect_cpu(), {
+    cpu_sockets: 1, cpu_threads: 3, cpu_l3cache: 0,
+  });
 });
 
 test("correctness mode blocks real pool sockets", () => {
@@ -42,6 +102,11 @@ test("ROCr signal-pool shutdown warning is hidden without losing worker stderr",
   filtered = helper.filterWorkerStderr("", "partial diagnostic", true);
   assert.equal(filtered.pending, "");
   assert.equal(filtered.visible, "partial diagnostic");
+
+  const longLine = "x".repeat(128 * 1024);
+  filtered = helper.filterWorkerStderr("", longLine);
+  assert.ok(filtered.pending.length < longLine.length);
+  assert.equal(filtered.visible + filtered.pending, longLine);
 });
 
 test("known colored AdaptiveCpp advisories are hidden without hiding errors or unfamiliar warnings", () => {
