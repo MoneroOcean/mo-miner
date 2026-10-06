@@ -1,116 +1,192 @@
-# About
+# MO-Miner
 
-mom (short name for the **MO-Miner**) is an open-source cryptocurrency miner
-that is built upon high performance xmrig CPU miner sources with front-end and network backend
-rewritten in Node.js to significantly simplify its code. GPU implementations share SYCL sources
-across vendors, with narrowly scoped source-JIT overrides where they provide a material gain. The
-main goal of this project is to make a simple, easy-to-extend open-source miner with native miner
-performance.
+`mom` is an open-source cryptocurrency miner for CPU and GPU
+algorithms. It supports pool algorithm switching and a simple command-line configuration.
 
-Miner supports algo switching on pools such as `gulf.moneroocean.stream`. By default, startup
-algo-parameter benchmarking covers active MoneroOcean coin algos implemented by mom plus `rx/2`
-and `pearlhash`.
+mom supports algorithm switching through `mom.moneroocean.stream`.
 
-## Supported algos
+## Supported algorithms
 
-* CPU: All xmrig miner CPU supported algos with similar performance.
-* GPU/SYCL: Check table below.
+- CPU: the algorithms reported by `mom algorithms`, using the bundled XMRig engine.
+- GPU: the algorithms in the table below when supported by the selected device.
 
-Missing measurements use `-`; `timeout` means the implementation exists but did not reach a
-steady production rate. Percentages compare mom with the best same-GPU reference named in `SOTA`.
-`A770*` in the SOTA column means that a same-algorithm A770 mom/SOTA ratio is applied to B580; `%?`
-means no defensible same-vendor reference was available. Hashrate.no entries are public A770 results
-whose miner is not listed and which we could not reproduce locally. Windows percentages use a
-fresh same-GPU Windows reference where the reference miner ran successfully; otherwise they use
-the same-GPU Linux reference. Cross-algorithm scaling is not used.
-`lolMiner B580` is lolMiner 1.98a's unchanged required Intel Flux kernels rebuilt by the current
-Intel driver after removing unused legacy entry points that crash IGC; they measured 30.9 Sol/s
-directly on the B580.
+NVIDIA compatibility targets Maxwell (GeForce GTX 750 Ti) and newer, subject to the memory
+requirements below. Older-card validation is ongoing.
 
-Support: `mo` = MoneroOcean can serve it; `mom` = implemented by mom; `-` = backlog/not implemented.
-`Coin` is the highest-market-cap known mineable coin for the exact algo/variant.
+Percentages compare mom with the named reference. A plain miner name is a controlled same-GPU,
+same-OS comparison. A `(Linux)` or `(Windows)` suffix identifies the reference OS. An asterisk marks
+a cell whose comparison is approximate: a limited measured average, another GPU or OS, a published
+result, a scaled estimate, or the best result found when no controlled same-GPU reference was available.
+`best peer*` is the fastest credible result found on a comparable GPU when no controlled same-model
+reference exists; it is context, not a same-hardware target.
+`TBD` means the reference comparison is being rechecked.
 
-Linux and Windows columns were measured on the local hardware listed below, one GPU selected at a time.
+Every listed algorithm is implemented by mom; `/ MO` marks algorithms served by MoneroOcean.
+Preferred Cuckaroo names are `c29` and `c30`; accepted aliases are `cuckaroo`/`cuckaroo29`/`c29xtm` and
+`cuckaroo30`/`c30ctx`, respectively.
 
-| Algo                | Sup.   | Coin | Intel B580 Lin     | Intel B580 Win     | RTX 5060 Ti Lin   | RTX 5060 Ti Win   | RX 9060 XT Lin     | RX 9060 XT Win    | SOTA source: Intel / NVIDIA / AMD    |
-| ------------------- | ------ | ---- | ------------------ | ------------------ | ----------------- | ----------------- | ------------------ | ----------------- | ------------------------------------ |
-| **Cuckoo Cycle**    |        |      |                    |                    |                   |                   |                    |                   |                                      |
-| `c29`               | mo,mom | TARI | 2.82 g/s (%?)      | 2.79 g/s (%?)      | 6.32 g/s (85%)    | 6.28 g/s (85%)    | 6.15 g/s (106%)    | 5.95 g/s (103%)   | - / lolMiner / lolMiner              |
-| `cuckaroo30`        | -      | CTXC | -                  | -                  | -                 | -                 | -                  | -                 | - / lolMiner / lolMiner              |
-| **ProgPoW family**  |        |      |                    |                    |                   |                   |                    |                   |                                      |
-| `kawpow`            | mo,mom | RVN  | 20.97 MH/s (110%)  | 20.93 MH/s (110%)  | 21.98 MH/s (85%)  | 21.75 MH/s (82%)  | 19.45 MH/s (99%)   | 16.74 MH/s (84%)  | SRBMiner / Rigel / SRBMiner          |
-| `evrprogpow`        | mom    | EVR  | 21.03 MH/s (110%)  | 21.02 MH/s (110%)  | 21.08 MH/s (80%)  | 21.12 MH/s (81%)  | 19.49 MH/s (99%)   | 17.35 MH/s (88%)  | SRBMiner                             |
-| `firopow`           | mom    | FIRO | 20.96 MH/s (112%)  | 20.97 MH/s (112%)  | 21.81 MH/s (83%)  | 21.13 MH/s (80%)  | 19.46 MH/s (99%)   | 16.91 MH/s (85%)  | SRBMiner                             |
-| `meowpow`           | mom    | MEWC | 21.09 MH/s (112%)  | 21.09 MH/s (112%)  | 25.09 MH/s (99%)  | 25.04 MH/s (94%)  | 19.56 MH/s (100%)  | 17.29 MH/s (86%)  | SRBMiner                             |
-| `progpowz`          | -      | ZANO | -                  | -                  | -                 | -                 | -                  | -                 | SRBMiner                             |
-| **FishHash family** |        |      |                    |                    |                   |                   |                    |                   |                                      |
-| `fishhash`          | mom    | IRON | 13.98 MH/s (109%)  | 14.03 MH/s (109%)  | 33.29 MH/s (94%)  | 33.48 MH/s (97%)  | 13.07 MH/s (100%)  | 11.57 MH/s (100%) | SRBMiner / miniZ / lolMiner          |
-| `karlsenhashv2`     | mom    | KLS  | 13.35 MH/s (107%)  | 12.44 MH/s (100%)  | 31.52 MH/s (89%)  | 32.98 MH/s (95%)  | 13.09 MH/s (100%)  | 11.58 MH/s (100%) | SRBMiner / miniZ / SRBMiner          |
-| **Equihash**        |        |      |                    |                    |                   |                   |                    |                   |                                      |
-| `beamhash3`         | mom    | BEAM | 14.74 Sol/s (104%) | 16.13 Sol/s (113%) | 32.92 Sol/s (80%) | 32.99 Sol/s (80%) | 21.19 Sol/s (109%) | 19.58 Sol/s (99%) | Hashrate.no A770* / miniZ / lolMiner |
-| `zelhash`           | mom    | FLUX | 45.68 Sol/s (148%) | 45.59 Sol/s (148%) | 63.68 Sol/s (83%) | 61.70 Sol/s (81%) | 42.01 Sol/s (90%)  | 41.88 Sol/s (91%) | lolMiner B580 / lolMiner / lolMiner  |
-| `equihash192_7`     | -      | ZCL  | -                  | -                  | -                 | -                 | -                  | -                 | lolMiner / miniZ / lolMiner          |
-| `zhash`             | -      | BTG  | -                  | -                  | -                 | -                 | -                  | -                 | lolMiner / miniZ / lolMiner          |
-| **Misc**            |        |      |                    |                    |                   |                   |                    |                   |                                      |
-| `autolykos2`        | mo,mom | ERG  | 37.72 MH/s (112%)  | 38.84 MH/s (116%)  | 104.30 MH/s (88%) | 101.85 MH/s (86%) | 37.44 MH/s (100%)  | 31.44 MH/s (103%) | SRBMiner / Rigel / lolMiner          |
-| `cn/gpu`            | mo,mom | RYO  | 2.86 KH/s (104%)   | 2.89 KH/s (105%)   | 3.39 KH/s (88%)   | 3.48 KH/s (90%)   | 2.55 KH/s (95%)    | 2.81 KH/s (108%)  | SRBMiner / XMR-Stak / SRBMiner       |
-| `pearlhash`         | mom    | PRL  | 51.97 TH/s (149%)  | 49.96 TH/s (143%)  | 71.50 TH/s (82%)  | 71.32 TH/s (81%)  | 41.77 TH/s (98%)   | 42.94 TH/s (99%)  | ARC-miner / WildRig / KRig-Miner     |
-| `hoohashv2`         | -      | HTN  | -                  | -                  | -                 | -                 | -                  | -                 | SRBMiner                             |
-| `nxlhash`           | -      | NXL  | -                  | -                  | -                 | -                 | -                  | -                 | SRBMiner                             |
-| `octopus`           | -      | CFX  | -                  | -                  | -                 | -                 | -                  | -                 | lolMiner / GMiner / lolMiner         |
-| `verthash`          | -      | VTC  | -                  | -                  | -                 | -                 | -                  | -                 | VerthashMiner                        |
-| `walahash`          | -      | WALA | -                  | -                  | -                 | -                 | -                  | -                 | SRBMiner / Rigel / -                 |
-| **ASIC-exposed**    |        |      |                    |                    |                   |                   |                    |                   |                                      |
-| `etchash`           | mo,mom | ETC  | 21.13 MH/s (100%)  | 21.13 MH/s (100%)  | 51.99 MH/s (100%) | 51.73 MH/s (100%) | 19.60 MH/s (100%)  | 17.39 MH/s (89%)  | lolMiner / Rigel / SRBMiner          |
+GPU cells use `A770` and `B580` for Intel Arc A770 and B580, `5060 Ti` for NVIDIA RTX 5060 Ti,
+and `9060 XT` for AMD RX 9060 XT. Measurements ran one selected GPU at a time. Each algorithm groups
+the GPUs on adjacent rows; the last column names the comparison source.
 
-Platform notes:
+| Algo / coin / pool      | GPU     | Linux               | Windows             | Reference / evidence           |
+| ----------------------- | ------- | ------------------- | ------------------- | ------------------------------ |
+| `c29` / TARI / MO       | B580    | 5.94 g/s (80%*)     | 6.13 g/s (83%*)     | best peer*                     |
+|                         | A770    | 4.13 g/s (56%*)     | -                   | best peer*                     |
+|                         | 5060 Ti | 6.32 g/s (82%)      | 6.28 g/s (101%)     | BZMiner                        |
+|                         | 9060 XT | 6.15 g/s (93%)      | 5.95 g/s (90%)      | BZMiner                        |
+| `c30` / CTXC            | B580    | 1.41 g/s (124%*)    | 1.49 g/s (135%*)    | MoM 12-GiB-limited peer*       |
+|                         | A770    | 1.41 g/s (124%*)    | -                   | MoM 12-GiB-limited peer*       |
+|                         | 5060 Ti | 2.89 g/s (89%*)     | 2.83 g/s (87%*)     | Hashrate.no/cross-GPU*         |
+|                         | 9060 XT | 1.64 g/s (103%*)    | 1.35 g/s (84%*)     | Hashrate.no/cross-GPU*         |
+| `kawpow` / RVN / MO     | B580    | 20.97 MH/s (110%)   | 20.93 MH/s (110%)   | SRBMiner                       |
+|                         | A770    | 13.96 MH/s (148%*)  | -                   | WildRig*                       |
+|                         | 5060 Ti | 21.98 MH/s (85%)    | 21.75 MH/s (82%)    | Rigel                          |
+|                         | 9060 XT | 19.45 MH/s (99%)    | 16.74 MH/s (84%)    | SRBMiner                       |
+| `evrprogpow` / EVR      | B580    | 21.03 MH/s (110%)   | 21.02 MH/s (110%)   | SRBMiner                       |
+|                         | A770    | 21.67 MH/s (122%)   | -                   | WildRig                        |
+|                         | 5060 Ti | 21.08 MH/s (80%)    | 21.12 MH/s (81%)    | SRBMiner                       |
+|                         | 9060 XT | 19.49 MH/s (99%)    | 17.35 MH/s (88%)    | SRBMiner                       |
+| `firopow` / FIRO        | B580    | 20.96 MH/s (112%)   | 20.97 MH/s (112%)   | SRBMiner                       |
+|                         | A770    | 15.33 MH/s (165%)   | -                   | WildRig                        |
+|                         | 5060 Ti | 21.13 MH/s (80%)    | 21.13 MH/s (80%)    | SRBMiner                       |
+|                         | 9060 XT | 19.46 MH/s (99%)    | 16.91 MH/s (85%)    | SRBMiner                       |
+| `meowpow` / MEWC        | B580    | 21.09 MH/s (112%)   | 21.09 MH/s (112%)   | SRBMiner                       |
+|                         | A770    | 17.79 MH/s (99%)    | -                   | WildRig                        |
+|                         | 5060 Ti | 25.09 MH/s (99%)    | 25.04 MH/s (94%)    | SRBMiner                       |
+|                         | 9060 XT | 19.56 MH/s (100%)   | 17.29 MH/s (86%)    | SRBMiner                       |
+| `fishhash` / IRON       | B580    | 12.60 MH/s (98%)    | 13.07 MH/s (102%)   | SRBMiner                       |
+|                         | A770    | 12.90 MH/s (81%*)   | -                   | SRBMiner*                      |
+|                         | 5060 Ti | 31.20 MH/s (88%)    | 31.32 MH/s (91%)    | miniZ                          |
+|                         | 9060 XT | 13.07 MH/s (100%)   | 11.57 MH/s (100%)   | lolMiner                       |
+| `karlsenhashv2` / KLS   | B580    | 12.75 MH/s (102%)   | 12.44 MH/s (100%)   | SRBMiner                       |
+|                         | A770    | 14.69 MH/s (97%)    | -                   | SRBMiner                       |
+|                         | 5060 Ti | 31.52 MH/s (89%)    | 32.98 MH/s (95%)    | miniZ                          |
+|                         | 9060 XT | 13.09 MH/s (100%)   | 11.58 MH/s (100%)   | SRBMiner                       |
+| `beamhash3` / BEAM      | B580    | 24.72 Sol/s (60%*)  | 23.78 Sol/s (58%*)  | best peer*                     |
+|                         | A770    | 24.16 Sol/s (105%*) | -                   | lolMiner*                      |
+|                         | 5060 Ti | 32.42 Sol/s (78%)   | 32.99 Sol/s (80%)   | miniZ                          |
+|                         | 9060 XT | 22.05 Sol/s (113%)  | 21.81 Sol/s (110%)  | lolMiner                       |
+| `zelhash` / CS          | B580    | 47.12 Sol/s (153%)  | 45.59 Sol/s (148%)  | lolMiner                       |
+|                         | A770    | 44.40 Sol/s (118%*) | -                   | lolMiner*                      |
+|                         | 5060 Ti | 63.68 Sol/s (83%)   | 61.70 Sol/s (81%)   | lolMiner                       |
+|                         | 9060 XT | 43.41 Sol/s (93%)   | 43.29 Sol/s (94%)   | lolMiner                       |
+| `equihash192_7` / ZCL   | B580    | 15.64 I/s (51%*)    | 15.93 I/s (52%*)    | best peer*                     |
+|                         | A770    | 17.16 I/s (55%*)    | -                   | best peer*                     |
+|                         | 5060 Ti | 26.85 I/s (87%)     | 24.70 I/s (80%)     | miniZ                          |
+|                         | 9060 XT | 20.00 I/s (99%)     | 19.31 I/s (96%)     | lolMiner                       |
+| `zhash` / BTG           | B580    | 60.77 Sol/s (56%*)  | 61.70 Sol/s (58%*)  | best peer*                     |
+|                         | A770    | 57.10 Sol/s (86%*)  | -                   | lolMiner*                      |
+|                         | 5060 Ti | 87.63 Sol/s (81%)   | 86.32 Sol/s (80%)   | miniZ                          |
+|                         | 9060 XT | 74.92 Sol/s (90%)   | 71.16 Sol/s (86%)   | lolMiner                       |
+| `autolykos2` / ERG / MO | B580    | 39.02 MH/s (96%)    | 38.84 MH/s (102%)   | BZMiner                        |
+|                         | A770    | 27.09 MH/s (100%*)  | -                   | SRBMiner*                      |
+|                         | 5060 Ti | 104.30 MH/s (87%)   | 101.85 MH/s (85%)   | BZMiner                        |
+|                         | 9060 XT | 37.44 MH/s (100%)   | 31.44 MH/s (86%)    | lolMiner / BZMiner             |
+| `cn/gpu` / RYO / MO     | B580    | 2.94 KH/s (107%)    | 2.89 KH/s (105%)    | SRBMiner                       |
+|                         | A770    | 2.41 KH/s (106%*)   | -                   | SRBMiner*                      |
+|                         | 5060 Ti | 3.39 KH/s (88%)     | 3.48 KH/s (90%)     | XMR-Stak                       |
+|                         | 9060 XT | 3.17 KH/s (118%)    | 2.81 KH/s (107%)    | SRBMiner / BZMiner             |
+| `pearlhash` / PRL       | B580    | 45.43 TH/s (122%)   | 41.74 TH/s (111%)   | BZMiner                        |
+|                         | A770    | 46.07 TH/s (123%*)  | -                   | best peer*                     |
+|                         | 5060 Ti | 80.48 TH/s (88%)    | 80.34 TH/s (88%)    | BZMiner                        |
+|                         | 9060 XT | 42.80 TH/s (92%)    | 42.78 TH/s (92%*)   | KRig (Linux)                   |
+| `hoohash` / HTN         | B580    | 3.03 MH/s (174%*)   | 2.99 MH/s (180%*)   | best peer*                     |
+|                         | A770    | Unsupported         | -                   | No FP64                        |
+|                         | 5060 Ti | 1.44 MH/s (83%)     | 1.42 MH/s (81%*)    | hoo_gpu (Linux)                |
+|                         | 9060 XT | 1.71 MH/s (115%)    | 1.66 MH/s (111%*)   | hoo_gpu_amd (Linux)            |
+| `octopus` / CFX         | B580    | 31.27 MH/s (61%*)   | 31.24 MH/s (61%*)   | best peer*                     |
+|                         | A770    | 16.60 MH/s (32%*)   | -                   | best peer*                     |
+|                         | 5060 Ti | 45.62 MH/s (88%)    | 45.44 MH/s (89%)    | lolMiner                       |
+|                         | 9060 XT | 32.80 MH/s (86%)    | 26.49 MH/s (82%)    | lolMiner                       |
+| `xelishashv3` / XEL     | B580    | 2.15 KH/s (31%*)    | 2.16 KH/s (31%*)    | best peer*                     |
+|                         | A770    | 1.91 KH/s (32%)     | -                   | SRBMiner                       |
+|                         | 5060 Ti | 5.88 KH/s (85%)     | 5.90 KH/s (85%)     | Rigel                          |
+|                         | 9060 XT | 2.62 KH/s (99%)     | 2.61 KH/s (110%)    | SRBMiner / BZMiner             |
+| `verthash` / VTC        | B580    | 299.83 KH/s (95%)   | 298.59 KH/s (94%)   | SRBMiner                       |
+|                         | A770    | 607.68 KH/s (62%)   | -                   | SRBMiner                       |
+|                         | 5060 Ti | 908.06 KH/s (98%)   | 873.84 KH/s (94%)   | TBMiner                        |
+|                         | 9060 XT | 293.48 KH/s (101%)  | 292.17 KH/s (100%)  | TBMiner                        |
+| `walahash` / WALA       | B580    | 623.38 MH/s (172%)  | 566.97 MH/s (140%)  | SRBMiner                       |
+|                         | A770    | 686.08 MH/s (106%*) | -                   | SRBMiner*                      |
+|                         | 5060 Ti | 873.49 MH/s (85%)   | 892.07 MH/s (87%)   | SRBMiner                       |
+|                         | 9060 XT | 679.50 MH/s (87%)   | 667.68 MH/s (85%)   | SRBMiner                       |
+| `etchash` / ETC / MO    | B580    | 21.13 MH/s (100%)   | 21.13 MH/s (100%)   | lolMiner                       |
+|                         | A770    | 20.43 MH/s (76%*)   | -                   | Nanominer*                     |
+|                         | 5060 Ti | 51.99 MH/s (100%)   | 51.73 MH/s (100%)   | Rigel                          |
+|                         | 9060 XT | 19.60 MH/s (100%)   | 17.39 MH/s (89%)    | SRBMiner                       |
+| `nexapow` / NEXA        | B580    | 28.06 MH/s (37%*)   | 27.01 MH/s (35%*)   | best peer*                     |
+|                         | A770    | 25.04 MH/s (86%*)   | -                   | WildRig*                       |
+|                         | 5060 Ti | 76.10 MH/s (80%)    | 77.97 MH/s (82%)    | lolMiner                       |
+|                         | 9060 XT | 28.21 MH/s (87%)    | 26.79 MH/s (86%)    | WildRig                        |
 
-| Platform        | OS / kernel                       | GPU / backend                | Driver / runtime                                         | Toolchain                         |
-| --------------- | --------------------------------- | ---------------------------- | -------------------------------------------------------- | --------------------------------- |
-| Intel B580 Lin  | Linux `7.0.0-27-generic`          | Arc B580 / Level Zero        | `xe`; Intel GPU `26.05.37020.3-1`; Level Zero `1.28.2-2` | oneAPI 2026                       |
-| Intel B580 Win  | Windows 11 Pro 24H2 (build 26100) | Arc B580 / Level Zero        | Intel Graphics `32.0.101.8860`                           | oneAPI 2026.1                     |
-| RTX 5060 Ti Lin | Linux `7.0.0-27-generic`          | RTX 5060 Ti Blackwell / CUDA | NVIDIA `595.71.05`; CUDA `13.2`                          | DPC++ + AdaptiveCpp overrides     |
-| RTX 5060 Ti Win | Windows 11 Pro 24H2 (build 26100) | RTX 5060 Ti Blackwell / CUDA | NVIDIA `610.62`; CUDA UMD `13.3`                         | DPC++ + AdaptiveCpp overrides     |
-| RX 9060 XT Lin  | Linux `7.0.0-27-generic`          | RX 9060 XT / HIP             | `amdgpu`; ROCm/HIP `7.1`; gfx1200                        | AdaptiveCpp SSCP + HIP source-JIT |
-| RX 9060 XT Win  | Windows 11 Pro 24H2 (build 26100) | RX 9060 XT / HIP             | AMD Graphics `32.0.22042.14002`; HIP SDK `7.1.1`         | AdaptiveCpp SSCP + HIP source-JIT |
+Rates are steady-state measurements from the listed local GPUs on Ubuntu 26.04 LTS and Windows 11
+24H2, one GPU per process. The RTX 5060 Ti and RX 9060 XT used 150 W and 145 W limits; the B580 was
+not power-limited. Actual speed varies with drivers, clocks, power limits, and pool workload.
 
-Benchmark conditions:
+A770 measurements are Linux-only, with an observed 190 W cap. Starred miner names use measured
+averages where available; thermal throttling, short benchmarks or different pool workloads make
+these approximate comparisons. When a matched A770 reference is unavailable, `best peer*` uses a
+measured reference from another GPU. Some A770 rates use earlier MoM builds:
+FishHash, KarlsenHashV2, BeamHash3, Equihash192_7, Verthash, Walahash and Etchash.
 
-- Linux measurements used Ubuntu 26.04 LTS and the unified multicompiler container. Intel used
-  `intel-opencl-icd`/`libze-intel-gpu1` and `libze1` packages.
-- Intel B580 Linux used `ONEAPI_DEVICE_SELECTOR=level_zero:gpu` and `ZE_AFFINITY_MASK=0`.
-- RTX 5060 Ti Linux used `ONEAPI_DEVICE_SELECTOR=cuda:*`, a 150 W limit, 3090 MHz core,
-  14001 MHz memory, and 16311 MiB VRAM. Windows used a 150 W limit and 16311 MiB VRAM.
-- RX 9060 XT Linux used a 145 W test cap; Windows used the driver's `-15%` setting (about 145 W
-  from its 170 W default). The Linux driver exposed up to 2700 MHz core, 1258 MHz memory, and
-  16304 MiB VRAM.
-- Windows measurements used the High-performance power plan.
+## GPU memory requirements
+
+These are practical card-memory classes for the current automatic/default settings. Leave some
+headroom for the OS and display use; DAG- and table-based networks can grow over time.
+
+- **1 GiB minimum:** `hoohash`, `cn/gpu`, `xelishashv3`
+- **1 GiB minimum; 5 GiB recommended:** `nexapow`
+- **2 GiB minimum:** `verthash`
+- **2 GiB minimum; 8 GiB recommended:** `pearlhash`
+- **2 GiB minimum; 8 GiB recommended:** `walahash`
+- **3 GiB minimum; 8 GiB recommended:** `autolykos2`
+- **4 GiB minimum:** `zhash`
+- **5 GiB minimum:** `etchash`
+- **6 GiB minimum:** `kawpow`, `firopow`, `evrprogpow`, `meowpow`, `octopus`, `fishhash`,
+  `karlsenhashv2`
+- **8 GiB minimum:** `c29`, `zelhash`, `equihash192_7`, `beamhash3`
+- **12 GiB minimum; 16 GiB recommended:** `c30`
+
+`hoohash` is unavailable on Intel Arc A770 and Intel UHD 750 because these devices
+lack double-precision (FP64) support. On UHD 750, `c29`, `zelhash`, `equihash192_7`,
+and `zhash` are also unavailable: their solvers require 1,024 threads per GPU group,
+while this integrated GPU supports 512.
+
+Use `./mom algorithms` to list supported algorithms and their automatic CPU/GPU settings.
+
+Optional controls are listed under [GPU tuning](#gpu-tuning).
 
 # Install
 
+The commands below assume the release archive has been extracted and the current directory is its
+top-level folder. Examples use `./mom` on Linux; use `mom.cmd` on Windows.
+
 ## Linux
 
-The release archive bundles its compiler and SYCL user-space. Run the bundled installer once to
-auto-detect every GPU and install the required host support:
+The release archive includes the application libraries. On Ubuntu 24.04 or 26.04, run the bundled
+installer once to detect supported GPU vendors and install missing host runtime prerequisites:
 
 ```
 sudo ./install.sh
 ```
 
-Or run the same installer directly from this repository:
+Or download the v0.9.0 installer from this repository, inspect it, and then run it:
 
 ```
-curl -fsSL https://raw.githubusercontent.com/MoneroOcean/mo-miner/master/scripts/install.sh | sudo bash
+curl --fail --location --proto '=https' --tlsv1.2 \
+  --output mom-install.sh \
+  https://raw.githubusercontent.com/MoneroOcean/mo-miner/v0.9.0/scripts/install.sh
+sudo bash mom-install.sh
 ```
 
-For Intel it installs the Level Zero and OpenCL runtime, for NVIDIA the driver/runtime and source-JIT
-tools needed by full-speed ProgPoW and PearlHash, and for AMD the HIP runtime. Other vendors use the OpenCL ICD
-from their display driver. It preserves a suitable existing driver and does nothing on GPU-less
-systems. Reboot if requested, then run `./mom algorithms`; each
-detected GPU should appear as a `gpuN` device. When running mom inside Docker on NVIDIA, add
+The installer preserves suitable existing drivers, adds the invoking user to existing `render` and
+`video` groups when needed, and makes no GPU changes on CPU-only systems. Reboot or sign out and
+back in if requested, then run `./mom algorithms`; supported GPUs for the selected backend appear
+as `gpuN` devices. When running mom inside Docker on NVIDIA, add
 `--gpus all` and install the NVIDIA container toolkit on the host.
-For Intel Arc, enable **Above 4G Decoding** and **Resizable BAR** in UEFI; mom enables Level Zero's
-large-allocation support automatically.
+For Intel Arc, [Intel recommends](https://www.intel.com/content/www/us/en/support/articles/000090831/graphics.html)
+enabling **Above 4G Decoding** and **Resizable BAR** in UEFI.
 
 ## Windows
 
@@ -121,15 +197,25 @@ Administrator Command Prompt:
 install.bat
 ```
 
-Or run the same installer directly from this repository:
+Or download the v0.9.0 installer from this repository, inspect it, and then run it:
 
-```
-curl -fsSL -o "%TEMP%\mom-install.ps1" https://raw.githubusercontent.com/MoneroOcean/mo-miner/master/scripts/install.ps1 && powershell -NoProfile -ExecutionPolicy Bypass -File "%TEMP%\mom-install.ps1"
+```bat
+curl --fail --location ^
+  --output "%TEMP%\mom-install.ps1" ^
+  https://raw.githubusercontent.com/MoneroOcean/mo-miner/v0.9.0/scripts/install.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File "%TEMP%\mom-install.ps1"
 ```
 
-The installer verifies the bundled runtimes and automatically adds missing NVIDIA source-JIT support
-needed for full-speed ProgPoW and PearlHash. Intel, AMD, and generic OpenCL GPUs use their current display drivers.
-Run `mom.cmd algorithms` afterward; each detected GPU should appear as a `gpuN` device.
+The release includes its application GPU runtimes. Current vendor display drivers remain a
+prerequisite for Intel, AMD, and NVIDIA devices. The generic OpenCL path additionally requires a
+driver that accepts SPIR-V programs.
+On NVIDIA systems, the installer also adds missing CUDA/C++ components used by runtime-compiled
+kernels; pass `-SkipCudaToolkit` only when those components are managed separately.
+Run `mom.cmd algorithms` afterward; supported GPUs for the selected backend appear as `gpuN`
+devices.
+
+Some GPU algorithms have a slow first launch while the driver compiles device code. Let that launch
+finish and keep the miner's cache directory; later launches normally reuse the compiled code.
 
 # GPU selection
 
@@ -138,85 +224,86 @@ select which GPU runtime mom should use for that process:
 
 ```
 MOM_GPU_BACKEND=intel ./mom algorithms       # Linux
-set MOM_GPU_BACKEND=intel && mom.cmd algorithms  # Windows Command Prompt
+set "MOM_GPU_BACKEND=intel" && mom.cmd algorithms  # Windows Command Prompt
 ```
 
 Valid values are `intel`, `nvidia`, `amd`, and `opencl`. The first three select a vendor device
-group; `opencl` is the generic path for another GPU vendor. Run separate mom processes with
-different values to use multiple GPU vendors concurrently. To expose just one GPU from the selected
-vendor, add the zero-based `MOM_GPU_INDEX`:
+group; `opencl` is the generic path for another GPU vendor and defaults to GPU devices. Set
+`MOM_OPENCL_DEVICE_TYPE=cpu` to use its portable CPU path. Run separate mom processes with different
+values to use multiple GPU vendors concurrently. To select one GPU, add the zero-based
+`MOM_GPU_INDEX`:
 
 ```
-MOM_GPU_BACKEND=intel MOM_GPU_INDEX=1 ./mom algorithms
-set MOM_GPU_BACKEND=intel && set MOM_GPU_INDEX=1 && mom.cmd algorithms
+MOM_GPU_BACKEND=intel MOM_GPU_INDEX=0 ./mom algorithms
+set "MOM_GPU_BACKEND=intel" && set "MOM_GPU_INDEX=0" && mom.cmd algorithms
 ```
 
 First run `algorithms` without the index to see each numbered GPU and its full hardware name.
-`MOM_GPU_INDEX` is zero-based within the selected vendor. Only that physical GPU is benchmarked;
-CUDA/HIP may renumber the isolated device to `gpu1`, so use the name printed by the selected run in
-explicit `--job.dev` settings.
+Intel and OpenCL indices follow the displayed devices; NVIDIA and AMD indices use their vendor
+runtime's logical ordering, which need not match displayed `gpuN` names or `nvidia-smi` rows.
+CUDA/HIP renumber an isolated device to `gpu1`; use the selected run's reported name in explicit
+`--job.dev` settings. With an inherited CUDA/HIP visibility mask, use a single-device mask and
+`MOM_GPU_INDEX=0`, or omit the index and select a reported `--job.dev`. Indexed inherited lists
+are rejected rather than widening visibility. The portable OpenCL CPU path lists `cpuN` devices.
 
 # Per-algorithm GPU backend
 
-Each `algo_params.<algo>.backend` value selects the implementation independently of the physical
-`gpuN` device name:
+Each `algo_params.<algo>.backend` value selects an implementation; `auto` uses
+[GPU-CONFIG.md](GPU-CONFIG.md):
 
-| Value         | Meaning                                                            |
-| ------------- | ------------------------------------------------------------------ |
-| `auto`        | Use the measured `GPU-COMPILERS.md` choice (default).              |
-| `sycl`        | Generic SYCL implementation.                                       |
-| `sycl-opencl` | Generic SYCL through OpenCL.                                       |
-| `sycl-l0`     | Generic SYCL through Intel Level Zero.                             |
-| `sycl-native` | SYCL using vendor-specific extensions or target-specific tuning.   |
-| `native`      | Source-JIT HIP/CUDA override when available, with `sycl` fallback. |
+| Value         | Meaning                                                          |
+| ------------- | ---------------------------------------------------------------- |
+| `auto`        | Use the configured choice for the selected GPU (default).        |
+| `sycl`        | Use the portable GPU path.                                       |
+| `sycl-opencl` | Use the OpenCL driver path.                                      |
+| `sycl-l0`     | Use the Intel Level Zero path.                                   |
+| `sycl-native` | Use the vendor-tuned GPU path.                                   |
+| `native`      | Use the vendor-native path when available; otherwise use `sycl`. |
 
-For example, setting `"backend": "sycl"` in the `pearlhash` entry of `config.json` disables its
-policy-selected native or tuned hot kernel without changing its API-neutral `dev` device selection.
-Device identifiers never encode an execution API; switch implementations with `backend` and keep
-`dev` API-neutral. Status output makes the choice visible: `auto[sycl-native]` means `auto` resolved
-to `sycl-native`, while an explicit selection is printed directly.
+Status output shows the resolved backend, for example `auto[sycl-native]`; an explicit selection is
+printed directly.
 
 ## GPU tuning
 
-mom derives tuning from the GPU's compute units, memory limits, runtime, and algorithm. The short
-`gpuN*VALUE` form sets the algorithm's primary control; its unambiguous expanded form is
+Defaults normally need no manual tuning. The short `gpuN*VALUE` form sets an algorithm's primary
+control; its expanded form is
 `gpuN*[name=value;name=value]`. For example, `gpu1*4194304` and
 `gpu1*[intensity=4194304]` are equivalent for KawPow, while
-`gpu1*[workgroup=128]` overrides only its workgroup and leaves intensity automatic. A bare `gpuN`
-leaves every tuning field automatic; brackets are accepted only in the starred `*[...]` form.
+`gpu1*[workgroup=128]` overrides only its workgroup and leaves intensity at its configured or
+automatic value. A bare `gpuN` adds no inline tuning overrides; brackets are accepted only in the
+starred `*[...]` form.
 
-| Algorithms                                      | `*VALUE` means   | Additional tuning fields                                         |
-| ----------------------------------------------- | ---------------- | ---------------------------------------------------------------- |
-| `cn/gpu`                                        | `intensity`      | —                                                                |
-| `c29`                                           | `seed_workgroup` | `seed_blocks`                                                    |
-| `kawpow`, `firopow`, `evrprogpow`, `meowpow`    | `intensity`      | `workgroup`, `dag_workgroup`, `dag_chunk`                        |
-| `etchash`                                       | `intensity`      | `dag_workgroup`, `dag_chunk`                                     |
-| `autolykos2`                                    | `intensity`      | `workgroup`, `prehash_workgroup`, `table_chunk`, `search_mode`   |
-| `fishhash`, `karlsenhashv2`                     | `intensity`      | `workgroup`, `search_mode`                                       |
-| `pearlhash`                                     | `m`              | `n`, `k`, `rank`, `workgroup`, `cache_block`, `tile`             |
-| `zelhash`                                       | `slots`          | —                                                                |
-| `beamhash3`                                     | `workgroup`      | `compact_workgroup`, `scatter_workgroup`, `layout`               |
+| Algorithms                                   | `*VALUE` means   | Other fields / limits                                          |
+| -------------------------------------------- | ---------------- | -------------------------------------------------------------- |
+| `cn/gpu`, `octopus`, `walahash`              | `intensity`      | —                                                              |
+| `c30`                                        | `intensity`      | fixed at `1`                                                   |
+| `xelishashv3`, `nexapow`, `verthash`         | `intensity`      | —                                                              |
+| `c29`                                        | `seed_workgroup` | `seed_blocks`                                                  |
+| `kawpow`, `firopow`, `evrprogpow`, `meowpow` | `intensity`      | `workgroup`, `dag_workgroup`, `dag_chunk`                      |
+| `etchash`                                    | `intensity`      | `dag_workgroup`, `dag_chunk`                                   |
+| `autolykos2`                                 | `intensity`      | `workgroup`, `prehash_workgroup`, `table_chunk`, `search_mode` |
+| `fishhash`, `karlsenhashv2`                  | `intensity`      | `workgroup`, `search_mode`                                     |
+| `hoohash`                                    | `intensity`      | `workgroup`                                                    |
+| `pearlhash`                                  | `m`              | `n`, `k`, `rank`, `cache_block`, `tile`                        |
+| `equihash192_7`, `zhash`                     | `intensity`      | fixed at `1`                                                   |
+| `zelhash`                                    | `slots`          | —                                                              |
+| `beamhash3`                                  | `workgroup`      | `compact_workgroup`, `scatter_workgroup`, `layout`             |
 
-Entry-local fields take precedence over the optional `algo_params.<algo>.tuning` object, which takes
-precedence over automatic heuristics. Fields may be omitted at either level. `search_mode` accepts
+Fields may be supplied inline or in the optional `algo_params.<algo>.tuning` object; inline values
+take precedence. `search_mode` accepts
 `auto`, `scalar`, or `cooperative`; `layout` accepts `auto`, `compact`, or `full`. Pearl's `tile`
-accepts `auto`, `1x1`, `2x2`, `2x4`, `4x2`, `4x4`, or `8x2`; it only affects its AMD DP4A path.
+accepts `auto`, `1x1`, `2x2`, `2x4`, `4x2`, `4x4`, or `8x2`; the setting applies to AMD GPUs.
 Other secondary fields affect only implementations that expose the corresponding launch control.
 
-The device-derived heuristic is the default and needs no setup. For an opt-in empirical pass, add
-`--gpu_tune 1` to the first `mine` command together with `--save_config config.json`. Before each
-missing GPU hashrate is benchmarked, mom tries a bounded set of safe nearby hash-path settings where
-a stable comparison is available. It compares two steady-state samples per candidate, saving one
-only when it is at least 2% faster than the heuristic. Existing non-null `perf` entries are not
-retuned, and the one-shot flag is reset before the resulting configuration is saved. This is
-normally overkill: testing every supported GPU algorithm can take hours and may rebuild
-multi-gigabyte datasets repeatedly. Dataset-construction and capacity-only controls retain their
-stability-oriented heuristics; explicit fields remain available for specialized experiments.
+For an optional empirical pass, add `--gpu_tune 1` to the first `mine` command together with
+`--save_config config.json`. It can take hours, especially for algorithms with large datasets.
 
 The object form is useful for a saved configuration, while the inline form can override one worker:
 
 ```
-"algo_params": {"kawpow": {"dev": "gpu1", "backend": "auto", "tuning": {"workgroup": 256}}}
+{
+  "algo_params": {"kawpow": {"dev": "gpu1", "backend": "auto", "tuning": {"workgroup": 256}}}
+}
 ```
 
 Repeated entries run independent workers on one GPU:
@@ -226,174 +313,94 @@ gpu1*[intensity=2097152],gpu1*[intensity=4194304]
 gpu1*[workgroup=256]^2
 ```
 
-# Usage example
+# Mining
 
-On Linux if you run miner like that for the first time it will benchmark MoneroOcean pool algos
-supported by mom plus `rx/2`, then start mining. Use `--bench_algo_params 2` to benchmark
-every algo supported locally before mining instead. See [CPU performance setup](#cpu-performance-setup)
-before benchmarking CPU algorithms. This example explicitly selects the Intel GPU backend; see
-[GPU selection](#gpu-selection) for other GPUs and mixed-vendor systems.
+Donation mining defaults to a 60-second window every 100 minutes through
+`mom.moneroocean.stream`. It reuses the current algorithm when supported, including fixed
+PearlHash, or uses measured compatible MoneroOcean algorithms on the same selected devices.
+Donation mining is disabled when no compatible algorithm is available.
+
+On its first run, this Linux example benchmarks MoneroOcean algorithms supported by mom plus `rx/2`
+and `pearlhash`, then starts mining. Use `--bench_algo_params 2` to benchmark every locally supported
+algorithm instead. The example selects Intel; see [GPU selection](#gpu-selection) for other GPUs.
+
+The example uses MoneroOcean's donation address. Replace it with your own wallet address to receive
+payouts.
 
 ```
-$ MOM_GPU_BACKEND=intel MOM_GPU_INDEX=0 ./mom mine gulf.moneroocean.stream:20001tls 89TxfrUmqJJcb1V124WsUzA78Xa3UYHt7Bg8RGMhXVeZYPN8cE5CZEk58Y1m23ZMLHN7wYeJ9da5n5MXharEjrm41hSnWHL --save_config config.json
-gpu1: Intel(R) Arc(TM) B580 Graphics via Intel(R) oneAPI Unified Runtime over Level-Zero V2
-2026-07-19 15:25:33 Doing algo benchmarks...
-2026-07-19 15:27:30 Algo autolykos2 (gpu1*[intensity=8388608]:auto[sycl]) hashrate: 37.72 MH/s (37.72 MH/s)
-2026-07-19 15:28:35 Algo c29 (gpu1*[seed_workgroup=128;seed_blocks=16]:auto[sycl]) hashrate: 2.78 H/s (2.78 H/s)
-2026-07-19 15:30:25 Algo cn/gpu (gpu1*[intensity=1280]:auto[sycl-opencl]) hashrate: 2.88 KH/s (2.88 KH/s)
-2026-07-19 15:31:56 Algo etchash (gpu1*[intensity=33554432]:auto[sycl]) hashrate: 21.13 MH/s (21.13 MH/s)
-2026-07-19 15:32:57 Algo ghostrider (cpu*8^8) hashrate: 1.64 KH/s (209.21 H/s, 210.00 H/s, 202.30 H/s, 201.68 H/s, 210.02 H/s, 198.13 H/s, 197.82 H/s, 207.49 H/s)
-2026-07-19 15:34:58 Algo kawpow (gpu1*[intensity=37282560]:auto[sycl-native]) hashrate: 20.95 MH/s (20.95 MH/s)
-2026-07-19 15:36:07 Algo panthera (cpu*4^16) hashrate: 5.16 KH/s (326.78 H/s, 314.66 H/s, 324.24 H/s, 319.90 H/s, 323.86 H/s, 324.56 H/s, 331.25 H/s, 319.02 H/s, 317.66 H/s, 323.39 H/s, 322.89 H/s, 328.28 H/s, 317.52 H/s, 326.35 H/s, 322.83 H/s, 313.86 H/s)
-2026-07-19 15:37:12 Algo pearlhash (gpu1*[m=131072]:auto[sycl-native]) hashrate: 52.00 TH/s (52.00 TH/s)
-2026-07-19 15:38:14 Algo rx/0 (cpu*8) hashrate: 5.92 KH/s (5.92 KH/s)
-2026-07-19 15:39:16 Algo rx/2 (cpu*8) hashrate: 5.25 KH/s (5.25 KH/s)
-2026-07-19 15:40:18 Algo rx/arq (cpu*16) hashrate: 41.49 KH/s (41.49 KH/s)
-2026-07-19 15:40:18 Saving config file to config.json
-2026-07-19 15:40:18 Connecting to primary gulf.moneroocean.stream:20001tls pool
-2026-07-19 15:40:18 Got new c29 algo job with 1 H/share target and 306965 height
-2026-07-19 15:40:25 Share accepted by the pool (1/0)
-...
+MOM_GPU_BACKEND=intel MOM_GPU_INDEX=0 ./mom mine \
+  mom.moneroocean.stream:20001tls \
+  89TxfrUmqJJcb1V124WsUzA78Xa3UYHt7Bg8RGMhXVeZYPN8cE5CZEk58Y1m23ZMLHN7wYeJ9da5n5MXharEjrm41hSnWHL \
+  --save_config config.json
 ```
 
 Next time you can reuse saved config.json file to avoid running benchmarks again before mining:
 
 ```
-$ ./mom mine ./config.json
-2026-06-15 13:30:01 Loading config file ./config.json
-2026-06-15 13:30:01 Connecting to primary gulf.moneroocean.stream:20001tls pool
-2026-06-15 13:30:01 Got new cn/gpu algo job with 341.49 KH/share target and 2095460 height
-2026-06-15 13:30:09 Share accepted by the pool (1/0)
-...
+MOM_GPU_BACKEND=intel MOM_GPU_INDEX=0 ./mom mine ./config.json
 ```
 
-Saved `algo_params.*.perf` values are local hashrates in H/s. mom advertises KawPow to
-MoneroOcean as `kawpow1` with raw H/s while continuing to mine pool jobs named `kawpow`. Cycle
-algorithms whose protocol units are solutions per second, currently `c29`, are converted
-automatically when sending `algo-perf`. `pearlhash` reports GEMM multiply-accumulate throughput (TH/s),
-not H/s; MoneroOcean does not switch to it, so its perf is informational only.
+Keep the same backend and device-selection environment controls when reusing a config; they are
+not stored in the JSON file.
 
 ## Mining on other pools
 
-Use this template for non-MoneroOcean pools. mom infers the stratum dialect from `--job.algo`.
+Use this template for other pools, choosing the algorithm with `--job.algo`.
 
 ```
-./mom mine <endpoint> <wallet.worker> <dev / command suffix> --bench_algo_params 0
+./mom mine <endpoint> <address.worker> --job.algo <algo> --bench_algo_params 0
 ```
 
-| Coin | Algo          | Endpoint                           | Donation address (owner)                                                                            | Dev / command suffix                               |
-| ---- | ------------- | ---------------------------------- | --------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
-| RVN  | kawpow        | stratum.ravenminer.com:13838tls    | `RSJZNSvzt3PJdGVKahSczRrhinc24KA6wU` (hans-schmidt, Ravencoin/Evrmore maintainer)                   | --job.algo kawpow --job.dev gpu1                   |
-| FIRO | firopow       | pool.woolypooly.com:3104tls        | `a4vQ7zr5CEBDEdNQBFVvHcM1BRVYKEnuEv` (Firo Core Team funding proposal)                              | --job.algo firopow --job.dev gpu1                  |
-| EVR  | evrprogpow    | us-east.mining4people.com:24173tls | `EaBGnWtDiAseYZiyvNT1u3WTjAeYtAR7MV` (hans-schmidt, Evrmore maintainer)                             | --job.algo evrprogpow --job.dev gpu1               |
-| MEWC | meowpow       | stratum-eu.rplant.xyz:17120tls     | `MPyNGZSSZ4rbjkVJRLn3v64pMcktpEYJnU` (MeowCoin donation address)                                    | --job.algo meowpow --job.dev gpu1                  |
-| PRL  | pearlhash     | pearl.herominers.com:1200tls       | `prl1p79wzxcvatcsmnzp9xp0ep0rvfe9ans05mjtxnt4d9x0qqej0mtdqfrezc0` (ARC-miner PRL donation address)  | --job.algo pearlhash --job.dev gpu1                |
-| IRON | fishhash      | ironfish.herominers.com:1145tls    | `66e044578b31c6c4c05810b0e5281bdf36138ad41bf6844ba317dc7c506bf9ac` (GMiner/Rigel bundled sample)    | --job.algo fishhash --job.dev gpu1                 |
-| KLS  | karlsenhashv2 | pool.woolypooly.com:3132           | `qzrq7v5jhsc5znvtfdg6vxg7dz5x8dqe4wrh90jkdnwehp6vr8uj7csdss2l7` (Karlsen Devfund)                   | --job.algo karlsenhashv2 --job.dev gpu1            |
-| FLUX | zelhash       | flux.herominers.com:1200tls        | `t1Mzja9iJcEYeW5B4m4s1tJG8M42odFZ16A` (Flux development address)                                    | --job.algo zelhash --job.dev gpu1                  |
-| BEAM | beamhash3     | beam.2miners.com:5252tls           | `2346a827cb56ca74e34680593e50d7b1fa4a169332415a1d5984c6f874395c3684b` (Wilke Trei, Beam)            | --job.algo beamhash3 --job.dev gpu1                |
+Options follow the two positional arguments. Add `--job.dev gpuN` only when a specific device must
+be pinned; normal single-GPU discovery does not require it.
 
-Without parameters miner will show help:
+For Pearl pools using `mining.subscribe` that send final jackpot targets, set
+`pearlhash_target_format` to `"jackpot"` in the pool configuration; the default is `"base"`.
 
-```
-$ ./mom
+| Coin | Algo          | Endpoint                            | Address                                                                  | Owner / purpose                                                |
+| ---- | ------------- | ----------------------------------- | ------------------------------------------------------------------------ | -------------------------------------------------------------- |
+| RVN  | kawpow        | stratum.ravenminer.com:13838tls     | `RSJZNSvzt3PJdGVKahSczRrhinc24KA6wU`                                     | hans-schmidt, Ravencoin/Evrmore maintainer                     |
+| FIRO | firopow       | firo.cedric-crispin.com:4064        | `a4vQ7zr5CEBDEdNQBFVvHcM1BRVYKEnuEv`                                     | Firo Core Team funding proposal                                |
+| EVR  | evrprogpow    | eu.evrpool.org:1111                 | `EaBGnWtDiAseYZiyvNT1u3WTjAeYtAR7MV`                                     | hans-schmidt, Evrmore maintainer                               |
+| MEWC | meowpow       | stratum-eu.rplant.xyz:17120tls      | `MPyNGZSSZ4rbjkVJRLn3v64pMcktpEYJnU`                                     | MeowCoin project donation                                      |
+| PRL  | pearlhash     | pearl.herominers.com:1200tls        | `prl1pfu7yr6u6mfkku3mh2deyuwegcnpaunjz4vlsvaj2shg2qjkaux2q76uyud`        | Pearl-Miner development (PrimeAI Foundation)                   |
+| IRON | fishhash      | de.ironfish.herominers.com:1145tls  | `0a88574634e8eba1bc90e6b4e6c381b65de2660d72e1dfe0c5ed6c2aba3826d6`       | Nanopool test address; fallback                                |
+| KLS  | karlsenhashv2 | pool.tr.woolypooly.com:3132         | `karlsen:qzrq7v5jhsc5znvtfdg6vxg7dz5x8dqe4wrh90jkdnwehp6vr8uj7csdss2l7`  | Karlsen Dev Fund                                               |
+| HTN  | hoohash       | zenithpool.net:42494                | `hoosat:qp4ad2eh72xc8dtjjyz4llxzq9utn6k26uyl644xxw70wskdfl85zsqj9k4vz`   | Hoosat development                                             |
+| CFX  | octopus       | cfx-eu.kryptex.network:7027         | `cfx:aatnhz2z908skxhxa0shn15tg64c2ejbeajs3s48dh`                         | Public test recipient; ownership unverified                    |
+| NEXA | nexapow       | nexa.kryptex.network:7026           | `nexa:nqtsq5g5utr3g40hpkul9gf07j707epzqaeana3tl3p68dmw`                  | Nexa community funding                                         |
+| CTXC | c30           | pool.tr.woolypooly.com:40000tls     | `0x90dd8bf208c9c29f8033935ee82742ad5424c679`                             | Cortex Labs/Foundation holdings                                |
+| ZCL  | equihash192_7 | equihash192.eu.mine.zpool.ca:2192   | `t1f1xRt73TWgVWJQEFAW6DLwKtwmQvFahrN`                                    | hellcatz, LuckPool development and maintenance                 |
+| WALA | walahash      | mine.xdag1usa.com:3094              | `waglayla:qqnz8s8xcrvjykdq326umlaz0xnp49wf3gxnun5rcp2xjzfux9p6sg2acf7jd` | WagLayla Dev/Ops Fund                                          |
+| XEL  | xelishashv3   | de.xelis.herominers.com:1225        | `xel:vs3mfyywt0fjys0rgslue7mm4wr23xdgejsjk0ld7f2kxng4d4nqqnkdufz`        | Xelis development (daemon developer fee)                       |
+| CS   | zelhash       | nl.rabbitminer.cc:1103              | `t1Lz6NHYByyDVWhRFn32hwd42nUtDdBpLc1`                                    | Cloud Service Dev Fund (source-defined; controller unverified) |
+| BTG  | zhash         | btg.2miners.com:14040tls            | `GQb77ZuMCyJGZFyxpzqNfm7GB1rQreP4n6`                                     | Miningcore development                                         |
+| BEAM | beamhash3     | beam.2miners.com:5252tls            | `e17cc06481d9ae88e1e0181efee407fa8c36a861b9df723845eddc8fb1ba552048`     | Beam Light Wallet development (@vsnation)                      |
+| VTC  | verthash      | vertcoin.cedric-crispin.com:3334    | `VertionJAZJ7ZMauEdXaagRb4XP7cw6FXV`                                     | Electrum-VTC development                                       |
 
-# Node.js/SYCL based CPU/GPU miner v0.8.0
-$ ./mom <directive> <parameter>+ [<option>+]
+These are public example recipients; verified ownership or purpose is shown where known. Use your
+own wallet address to receive payouts. Pool minimum payouts still apply.
+For CFX on Kryptex, append `.worker` to the address when passing it to `mom mine`.
 
-Directives:
-  mine  (<pool_address:port[tls]> <login> [<pass>]|<config.json>)
-  test  <algo> <result_hash_hex_str>
-  bench <algo>
-  algorithms
+On first Verthash use, mom generates and verifies the 1.20-GiB `verthash.dat` file in the current
+directory. A message is printed before this one-time operation, which usually takes a few minutes.
+Use a trusted writable directory and keep the file for later runs; `MOM_VERTHASH_DATA` remains
+available as an optional path override.
 
-Options:
---job '{...}':                      JSON string of the default job params (mostly used in test/bench mode)
-  --job.algo:                       algo name of the job (only used with "mine" directive) (null by default)
-  --job.dev:                        device config "[<dev>[*MAIN|*[name=value;...]][^P],]+", dev = {cpu, gpu<N>, cpu<N>}, N = device number, MAIN = algorithm primary tuning value, P = number of parallel processes ("cpu" by default)
-  --job.blob_hex:                   hexadecimal string of input blob ("0305A0DBD6BF05CF16E503F3A66F78007CBF34144332ECBFC22ED95C8700383B309ACE1923A0964B00000008BA939A62724C0D7581FCE5761E9D8A0E6A1C3F924FDD8493D1115649C05EB601" by default)
-  --job.seed_hex:                   hexadecimal string of seed hash blob (used for rx algos) ("3132333435363738393031323334353637383930313233343536373839303132" by default)
-  --job.height:                     Block height used by some algos (0 by default)
-  --job.backend:                    GPU implementation (see README backend table) ("auto" by default)
-
---pool_time '{...}':                JSON string of pool related timings (in seconds)
-  --pool_time.stats:                time to show pool mining stats (600 by default)
-  --pool_time.connect_throttle:     time between pool connection attempts (60 by default)
-  --pool_time.primary_reconnect:    time to try to use primary pool if currently on backup pool (90 by default)
-  --pool_time.first_job_wait:       consider pool bad if no first job after connection (15 by default)
-  --pool_time.close_wait:           keep pool socket to submit delayed jobs (10 by default)
-  --pool_time.donate_interval:      time before donation pool is activated (6000 by default)
-  --pool_time.donate_length:        donation pool work time (60 by default)
-  --pool_time.keepalive:            interval to send keepalive messages (300 by default)
-
---add.pool '{["<key>": <value>,]+}': add backup pool, defined by the following keys:
-  url:                              pool DNS or IP address
-  port:                             pool port
-  is_tls:                           is pool port is encrypted using TLS/SSL (false by default)
-  protocol:                         pool protocol override: login, raven, eth, ethproxy, erg, pearlhash, zelhash, kaspa, beam, or ironfish (null by default)
-  tls_verify:                       verify pool TLS/SSL certificate (false by default)
-  is_nicehash:                      nicehash nonce mining mode support (false by default)
-  is_keepalive:                     sends keepalive messages to the pool to avoid disconnect (true by default)
-  use_subscribe:                    PearlHash pools: use mining.subscribe+authorize handshake; set false for pearlpool.cloud's login dialect and the MoneroOcean donate pool (true by default)
-  worker:                           PearlHash subscribe-dialect worker name (mining.authorize) ("mom" by default)
-  login:                            pool login data
-  pass:                             pool password ("" by default)
-
---new.default_msr.<name> '{["<key>": <value>,]+}': stores default MSR register values to restore them without reboot, keys should be hex strings with 0x prefix
-  value:                            MSR register value in hex string with 0x prefix format
-  mask:                             MSR register mask in hex string with 0x prefix format ("0xFFFFFFFFFFFFFFFF" by default)
-
---new.algo_param.<name> '{["<key>": <value>,]+}': new algo params, defined by the following keys:
-  dev:                              device config "[<dev>[*MAIN|*[name=value;...]][^P],]+", dev = {cpu, gpu<N>, cpu<N>}, N = device number, MAIN = algorithm primary tuning value, P = number of parallel processes ("cpu" by default)
-  perf:                             local algo hashrate (pool protocol normalization is automatic) (null by default)
-  backend:                          GPU implementation (see README backend table) ("auto" by default)
-  tuning:                           partial algorithm-specific GPU tuning object; omitted fields use auto heuristics ({} by default)
-
---log_level:                        log level: 0=minimal, 1=verbose, 2=network debug, 3=compute core debug (0 by default)
---bench_algo_params:                benchmark algo params before mining: 0=skip, 1=active MoneroOcean coin algos plus rx/2, 2=all supported algos (1 by default)
---gpu_tune:                         one-shot empirical tuning before missing GPU benchmarks: 0=off, 1=bounded search (slow) (0 by default)
---save_config:                      file name to save config in JSON format (only for mine directive) ("" by default)
-2026-06-15 13:58:03 ERROR: No directive specified
-```
-
-You can run test and benchmark separately for algo you need like this:
+You can benchmark an algorithm directly:
 
 ```
-./mom test cn/gpu e55cb23e51649a59b127b96b515f2bf7bfea199741a0216cf838ded06eff82df --job '{"algo":"cn/gpu","dev":"gpu1*[intensity=8]"}'
-./mom bench cn/gpu --job '{"algo":"cn/gpu","dev":"gpu1*[intensity=1280]"}'
-./mom bench etchash --job '{"algo":"etchash","dev":"gpu1*[intensity=256]"}'
-./mom bench autolykos2 --job '{"algo":"autolykos2","dev":"gpu1*[intensity=1]"}'
-./mom bench pearlhash --job '{"algo":"pearlhash","dev":"gpu1*[m=131072]"}'
+./mom bench cn/gpu --job.dev "gpu1*[intensity=1280]"
+./mom bench etchash --job.dev "gpu1*[intensity=256]"
+./mom bench autolykos2 --job.dev "gpu1*[intensity=1]"
+./mom bench pearlhash --job.dev "gpu1*[m=131072]"
 ```
 
 ## CPU performance setup
 
-Run mom as root, or grant it MSR and huge-page capabilities, so RandomX can apply its MSR tuning and
-use large pages. Without them, CPU RandomX performance can be about 40% lower; GPU performance is
-unaffected.
-
-Enable huge pages for better performance (check [Huge Pages](https://xmrig.com/docs/miner/hugepages)):
-
-```
-sudo sysctl -w vm.nr_hugepages=1280
-sudo bash -c "echo vm.nr_hugepages=1280 >> /etc/sysctl.conf"
-```
-
-For repeatable RandomX performance tests, make sure other services are not consuming huge pages or
-CPU. A local `monerod` can reserve hugetlb pages and lower `rx/0` hashrate; stop it before perf
-tests, or increase `vm.nr_hugepages` enough for both processes. On systems that run it as
-`xmr.service`:
-
-```
-sudo systemctl stop xmr.service
-sudo ./mom bench rx/0
-sudo systemctl start xmr.service
-```
-
-# Development and releases
-
-Compiler selection, development setup, and release packaging are documented in
-[DEVELOPMENT.md](DEVELOPMENT.md). Release notes are attached to versioned GitHub releases.
+RandomX performs best with MSR tuning and large pages. Run mom as root or configure the required
+permissions and [huge pages](https://xmrig.com/docs/miner/hugepages). These settings affect CPU
+mining only.
 
 # License
 
