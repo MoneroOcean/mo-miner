@@ -1,6 +1,7 @@
 // Copyright GNU GPLv3 (c) 2023-2025 MoneroOcean <support@moneroocean.stream>
 
 #include "lib-internal.h"
+#include "cn_gpu/launch.h"
 #include "../native/cpu-scheduling.h"
 #include <algorithm>
 #include <cctype>

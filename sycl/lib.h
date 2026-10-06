@@ -36,7 +36,7 @@ MOM_SYCL_API std::map<std::string, std::string> algo_params(
 
 MOM_SYCL_API void cn_gpu(
   const uint8_t* inputs, unsigned input_size, uint8_t* output,
-  void* Spads, unsigned batch, const std::string& dev_str, const std::string& backend
+  unsigned batch, const std::string& dev_str, const std::string& backend
 );
 
 MOM_SYCL_API int c29(

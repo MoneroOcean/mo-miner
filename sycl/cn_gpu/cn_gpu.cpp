@@ -21,6 +21,8 @@
 
 #include "../lib-internal.h"
 #include "../../native/consts.h"
+#include "launch.h"
+#include "reductions.h"
 
 #include "crypto.inc"
 

@@ -144,8 +144,7 @@ void Core::Execute() {
             m_fn.cpu(m_input, m_input_len, m_output, m_ctx, m_height);
             break;
           case DEV::GPU:
-            m_fn.gpu_cn(
-              m_input, m_input_len, m_output, m_spads, m_batch, m_dev_str, m_backend);
+            m_fn.gpu_cn(m_input, m_input_len, m_output, m_batch, m_dev_str, m_backend);
             break;
           case DEV::C29_GPU:
             dev_nonce = m_nonce_bytes == 4 ? bswap_32(*get_nonce32()) : bswap_64(*get_nonce64());

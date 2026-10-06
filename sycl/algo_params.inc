@@ -34,19 +34,19 @@ static unsigned cn_gpu_env_intensity(const unsigned default_batch, const unsigne
   return static_cast<unsigned>(requested);
 }
 
-static void add_gpu_cn_algo_dev(
-  std::string& result_dev, const std::string& algo,
-  const std::map<std::string, unsigned>& algo2mem, std::string* const backend_hint = nullptr
-) {
+static void add_gpu_cn_algo_dev(std::string& result_dev, const std::string& algo,
+                                const std::map<std::string, unsigned>& algo2mem,
+                                std::string& backend_hint) {
 #if defined(_WIN32)
   constexpr unsigned hip_cn_total_per_cu = 96;
-  constexpr unsigned hip_cn_worker_per_cu = 48;
+  constexpr unsigned hip_cn_worker_per_cu = 96;
 #else
   constexpr unsigned hip_cn_total_per_cu = 120;
   constexpr unsigned hip_cn_worker_per_cu = 40;
 #endif
   bool saw_intel_level_zero = false;
   bool needs_intel_opencl = false;
+  bool all_intel_native_width8 = true;
   const auto eligible_device = [](const sycl::device& dev) {
     if constexpr (!mom_sycl_portable_opencl) {
       if (!mom_has_usm_shared(dev) || !mom_has_usm_device(dev) ||
@@ -55,6 +55,34 @@ static void add_gpu_cn_algo_dev(
     }
     return true;
   };
+  const auto intel_level_zero = [](const sycl::device& dev) {
+    return sycl_is_level_zero_gpu(dev) &&
+        dev.get_info<sycl::info::device::vendor>().find("Intel") != std::string::npos;
+  };
+  const auto prefers_level_zero = [&](const sycl::device& dev, const unsigned compute_units) {
+    // Older NEO builds and whole 64-EU slice groups prefer Level Zero. Other Intel geometry
+    // requires OpenCL to avoid long-dispatch scheduler resets; no product-name table is needed.
+    const uint32_t build = sycl_is_level_zero_gpu(dev) ? mom_driver_build(dev) : 0;
+    return (build >= 30000u && build < 35000u) ||
+        (intel_level_zero(dev) && compute_units % 64u == 0u);
+  };
+  if (algo == "cn/gpu") {
+    // The transport hint is shared: qualify every eligible Intel device before emitting batches.
+    for_each_default_gpu([&](const std::string&, const sycl::device& dev) {
+      if (!eligible_device(dev) || !intel_level_zero(dev))
+        return;
+      const unsigned compute_units = dev.get_info<sycl::info::device::max_compute_units>();
+      if (!compute_units)
+        return;
+      saw_intel_level_zero = true;
+      needs_intel_opencl = needs_intel_opencl || !prefers_level_zero(dev, compute_units);
+      all_intel_native_width8 = all_intel_native_width8 &&
+          mom_intel_eu_simd_width(dev) == 8;
+    });
+    if (saw_intel_level_zero)
+      backend_hint = cn_gpu_intel_backend(needs_intel_opencl, all_intel_native_width8);
+  }
+  const bool native_intel_batches = backend_hint == "sycl-native";
   for_each_default_gpu([&](const std::string& dev_str, const sycl::device& dev) {
     if (!eligible_device(dev))
       return;
@@ -64,19 +92,7 @@ static void add_gpu_cn_algo_dev(
     if (algo == "cn/gpu") {
       if (!max_compute_units)
         return;
-      // Backend choice is policy/configuration, not part of the device name. Older NEO builds and
-      // Intel GPUs exposing whole 64-EU slice groups run this long recurrence much faster through
-      // Level Zero with a shallow queue. Current Xe2-class geometry does not expose that grouping
-      // and needs OpenCL to avoid long-dispatch scheduler resets. Use reported execution geometry,
-      // not a product-name/device-ID table, so the rule extends to unlisted cards.
-      const uint32_t build = sycl_is_level_zero_gpu(dev) ? mom_driver_build(dev) : 0;
-      prefer_intel_level_zero = build >= 30000u && build < 35000u;
-      if (sycl_is_level_zero_gpu(dev) &&
-          dev.get_info<sycl::info::device::vendor>().find("Intel") != std::string::npos) {
-        saw_intel_level_zero = true;
-        prefer_intel_level_zero = prefer_intel_level_zero || max_compute_units % 64u == 0u;
-        needs_intel_opencl = needs_intel_opencl || !prefer_intel_level_zero;
-      }
+      prefer_intel_level_zero = prefers_level_zero(dev, max_compute_units);
       const unsigned score = pow_device_score(pow_device_profile(dev));
       batch_multiplier = score >= 5 ? 8 : (score >= 3 ? 6 : 4);
       if (mom_is_cuda(dev)) {
@@ -85,39 +101,58 @@ static void add_gpu_cn_algo_dev(
         // compute_units*64 (~3.7k hashes); below that throughput scales with batch.
         // MOM_CN_GPU_INTENSITY still overrides this.
         batch_multiplier = 64;
+#if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
+        // The pre-sm80 SSCP path peaks at 40 hashes/SM (V100S: 2.89 vs 2.27 KH/s at 64).
+        batch_multiplier = 40;
+#endif
       }
       if (mom_is_hip(dev)) {
         // HIP reaches its broad knee through independent queues. Linux peaks near three workers
-        // of forty hashes per reported CU. AdaptiveCpp/HIP on Windows favors two workers of
-        // forty-eight; a third worker can overlap independent JIT/runtime initialization and stall
-        // every queue. Scale both total work and worker depth from execution geometry so the rule
-        // extends to unlisted devices rather than depending on a product ID.
+        // of forty hashes per reported CU. Overlapping AdaptiveCpp/HIP workers can stall on
+        // Windows, while one worker of ninety-six retains throughput. Scale both dimensions from
+        // execution geometry so the rule extends to unlisted devices rather than a product ID.
         batch_multiplier = hip_cn_total_per_cu;
       }
     }
     const auto mem = algo2mem.find(algo);
-    if (mem == algo2mem.end()) return add_result_dev(result_dev, dev_str + "*" + std::to_string(max_compute_units));
+    if (mem == algo2mem.end())
+      return add_result_dev(result_dev, dev_str + "*" + std::to_string(max_compute_units));
 
-    if (!mem->second)
+    const unsigned batch_mem = mem->second;
+    if (!batch_mem)
       return;
-    const unsigned batch_mem        = mem->second,
-                   // &~7: keep per-allocation batch a multiple of 8 hashes
-                   max_alloc_batch  = (dev.get_info<sycl::info::device::max_mem_alloc_size>() / batch_mem) & 0xFFFFFFF8,
-                   max_batch        = dev.get_info<sycl::info::device::global_mem_size>() / batch_mem,
-                   // HIP's long recurrence scales through independent queues/processes, not a
-                   // single deeper queue. Keep the platform's geometry-scaled worker count inside
-                   // the total heuristic; an allocation-only split collapses it to one worker.
-                   transport_batch = algo == "cn/gpu" && mom_is_hip(dev)
-                     ? std::max(8u, max_compute_units * hip_cn_worker_per_cu)
-                     : max_alloc_batch,
-                   max_thread_batch = std::min(std::min(max_alloc_batch, transport_batch), max_batch),
-                   // Intel Level Zero's measured broad knee is 2--3 hashes per reported compute
-                   // unit. Three retains peak throughput while avoiding the severe deep-dispatch
-                   // cliff; other transports use their independently measured occupancy scales.
-                   default_batch    = prefer_intel_level_zero
-                     ? std::min(std::max(8u, (max_compute_units * 3u) & ~7u), max_batch)
-                     : std::min(max_compute_units * batch_multiplier, max_batch),
-                   best_batch       = algo == "cn/gpu" ? cn_gpu_env_intensity(default_batch, max_batch) : default_batch;
+    if (algo == "cn/gpu" && prefer_intel_level_zero) {
+      const uint64_t global_mem = dev.get_info<sycl::info::device::global_mem_size>();
+      const uint64_t max_alloc = dev.get_info<sycl::info::device::max_mem_alloc_size>();
+      // Matched native width-8 runs favor eight hashes/EU; wider and unknown widths retain three.
+      const bool native_width8 = native_intel_batches && intel_level_zero(dev);
+      const unsigned default_batch = cn_gpu_intel_level_zero_batch(
+          max_compute_units, native_width8, global_mem, max_alloc);
+      const unsigned requested_batch = cn_gpu_env_intensity(
+          default_batch, std::numeric_limits<unsigned>::max());
+      const unsigned best_batch = cn_gpu_intel_level_zero_batch(
+          max_compute_units, native_width8, global_mem, max_alloc, requested_batch);
+      if (best_batch)
+        add_result_dev(result_dev, gpu_tuning_entry(dev_str, "intensity", best_batch));
+      return;
+    }
+    // Keep each allocation batch a multiple of eight hashes.
+    const unsigned max_alloc_batch =
+        (dev.get_info<sycl::info::device::max_mem_alloc_size>() / batch_mem) & 0xFFFFFFF8;
+    const unsigned max_batch = dev.get_info<sycl::info::device::global_mem_size>() / batch_mem;
+    // HIP's long recurrence scales through independent queues/processes, not a single deeper
+    // queue. Keep the platform's geometry-scaled worker count inside the total heuristic; an
+    // allocation-only split collapses it to one worker.
+    const unsigned transport_batch =
+        algo == "cn/gpu" && mom_is_hip(dev)
+            ? std::max(8u, max_compute_units * hip_cn_worker_per_cu)
+            : max_alloc_batch;
+    const unsigned max_thread_batch =
+        std::min(std::min(max_alloc_batch, transport_batch), max_batch);
+    const unsigned default_batch = std::min(max_compute_units * batch_multiplier, max_batch);
+    const unsigned best_batch = algo == "cn/gpu"
+                                    ? cn_gpu_env_intensity(default_batch, max_batch)
+                                    : default_batch;
     if (!max_thread_batch)
       return;
     unsigned used_batch = 0;
@@ -127,9 +162,6 @@ static void add_gpu_cn_algo_dev(
       used_batch += current_batch;
     }
   });
-  if (backend_hint && saw_intel_level_zero) {
-    *backend_hint = needs_intel_opencl ? "sycl-opencl" : "sycl-l0";
-  }
 }
 
 static void add_gpu_c29_algo_dev(std::string& result_dev) {
@@ -257,7 +289,7 @@ std::map<std::string, std::string> algo_params(
     // Dataset bytes (largest single allocation) and minimum global memory per GPU algo.
     if (gpu_cn_algos.contains(algo)) {
       std::string backend_hint;
-      add_gpu_cn_algo_dev(result_dev, algo, algo2mem, &backend_hint);
+      add_gpu_cn_algo_dev(result_dev, algo, algo2mem, backend_hint);
       if (!backend_hint.empty()) result["@backend:" + algo] = backend_hint;
     }
     else if (gpu_c29_algos.contains(algo)) {

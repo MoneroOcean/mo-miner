@@ -13,7 +13,7 @@
 typedef void (*cn_any_hash_fun)();
 typedef void (*gpu_cn_hash_fun)(
   const uint8_t* input, unsigned input_size, uint8_t* output,
-  void* Spads, unsigned batch, const std::string& dev_str, const std::string& backend
+  unsigned batch, const std::string& dev_str, const std::string& backend
 );
 typedef int (*gpu_c29_hash_fun)(
   unsigned job_ref, unsigned c29_proof_size,

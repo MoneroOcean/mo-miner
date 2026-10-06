@@ -347,6 +347,8 @@ void Core::set_job(
       (new_dev == DEV::VERTHASH_GPU && new_input_len != 80) ||
       ((new_algo_str == "zhash" || new_algo_str == "equihash192_7") && new_input_len != 140))
     throw std::string("Bad " + new_algo_str + " input length");
+  if (new_dev == DEV::GPU && !mom::job_boundary::valid_cn_gpu_input(new_input_len))
+    throw std::string("cn/gpu input must be 1 to 135 bytes");
 
   const unsigned new_mem_size = algo2mem.at(new_algo_str);
   const auto clear_mining_state = [&]() {

@@ -463,6 +463,13 @@ inline FastModData make_fast_mod_data(const uint32_t divisor) {
   return data;
 }
 
+inline size_t round_up_size(const uint64_t value, const uint64_t step) {
+  const uint64_t maximum = std::numeric_limits<size_t>::max();
+  if (!step || step > maximum || value > maximum - (step - 1))
+    throw std::string("SYCL range is too large");
+  return static_cast<size_t>(((value + step - 1) / step) * step);
+}
+
 inline uint32_t fast_mod_dev(const uint32_t a, const FastModData d) {
   const uint64_t t = a;
   const uint32_t q = static_cast<uint32_t>(((t + d.increment) * d.reciprocal) >> d.shift);

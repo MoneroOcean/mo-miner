@@ -717,3 +717,308 @@ int main() {
     fs.rmSync(fixture, {recursive: true, force: true});
   }
 });
+
+test("CN/gpu completes kernels before readback without startup or stale-batch pacing", {
+  skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
+}, () => {
+  const cn = path.join(__dirname, "../sycl/cn_gpu");
+  const entry = fs.readFileSync(path.join(cn, "entry.inc"), "utf8");
+  const finalMarker = "  sycl::event final_event =";
+  assert.equal(entry.split(finalMarker).length, 2, "one final-kernel submission");
+  const finalStart = entry.indexOf(finalMarker);
+  const submitEnd = entry.indexOf("\n      });", finalStart);
+  const end = entry.lastIndexOf("\n}");
+  assert.ok(submitEnd > finalStart && end > submitEnd && entry.slice(end).trim() === "}");
+  const tail = entry.slice(submitEnd + "\n      });".length, end)
+    .replaceAll("std::chrono::steady_clock::now()", "fixture::clock::now()")
+    .replaceAll("std::this_thread::sleep_until", "fixture::sleep_until");
+  const finalBodyStart = entry.indexOf("uint64_t* const spad = &d_spads[25 * t];", finalStart);
+  const finalBodyEnd = entry.indexOf("out[3] = spad[3];", finalBodyStart);
+  assert.ok(finalBodyStart > finalStart && finalBodyEnd > finalBodyStart && finalBodyEnd < submitEnd);
+  const finalBody = entry.slice(finalBodyStart, finalBodyEnd + "out[3] = spad[3];".length);
+  const starts = [...entry.matchAll(/const auto batch_start\s*=\s*std::chrono::steady_clock::now\(\);[^\n]*/g)];
+  assert.ok(starts.length <= 1);
+  const startMatch = starts[0];
+  const batchStart = startMatch ? startMatch[0]
+    .replaceAll("std::chrono::steady_clock::now()", "fixture::clock::now()") : "";
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-cn-readback-"));
+  const source = path.join(fixture, "readback.cpp");
+  const executable = path.join(fixture, "readback");
+  try {
+    fs.writeFileSync(source, String.raw`
+#include <algorithm>
+#include <array>
+#include <bit>
+#include <chrono>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <exception>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+// Integer intrinsics for the production Keccak, not a replacement hash implementation.
+namespace sycl {
+using uint4 = std::array<uint32_t, 4>;
+inline uint64_t rotate(const uint64_t value, const uint64_t amount) {
+  return std::rotl(value, static_cast<int>(amount & 63U));
+}
+inline uint64_t bitselect(const uint64_t a, const uint64_t b, const uint64_t c) {
+  return (a & ~c) | (b & c);
+}
+} // namespace sycl
+
+inline constexpr unsigned cn_gpu_lanes_per_hash = 16;
+template <typename T> inline T mo_rotate(const T value, const T amount) {
+  return std::rotl(value, static_cast<int>(amount & (sizeof(T) * 8 - 1)));
+}
+template <typename T> inline T mo_bitselect(const T a, const T b, const T c) {
+  return (a & ~c) | (b & c);
+}
+#include "crypto.inc"
+
+namespace fixture {
+inline int64_t now_us = 0;
+inline unsigned sleep_calls = 0;
+struct clock {
+  static std::chrono::steady_clock::time_point now() {
+    return std::chrono::steady_clock::time_point{std::chrono::microseconds{now_us}};
+  }
+};
+inline void sleep_until(const std::chrono::steady_clock::time_point deadline) {
+  ++sleep_calls;
+  now_us = std::max(now_us, std::chrono::duration_cast<std::chrono::microseconds>(
+                                deadline.time_since_epoch()).count());
+}
+
+constexpr size_t HASH_LEN = 32;
+enum class Failure { none, final_pending, final_retired, copy_submit, copy_pending, copy_retired,
+                     buffer_read };
+enum class Kind { final, copy };
+struct Context {
+  unsigned batch;
+  Failure failure;
+  bool kernels_done = false;
+  bool copy_done = false;
+  bool consumed = false;
+  bool kernels_ready_at_copy = true;
+  unsigned final_waits = 0;
+  unsigned copy_submits = 0;
+  unsigned copy_waits = 0;
+  unsigned buffer_reads = 0;
+  alignas(uint64_t) std::array<uint8_t, 4 * HASH_LEN> device_bytes{};
+  std::array<uint64_t, 4 * 25> spads{};
+  uint8_t* copy_destination = nullptr;
+  const uint8_t* copy_source = nullptr;
+  size_t copy_bytes = 0;
+
+  void finish_kernels() {
+    if (kernels_done)
+      return;
+    if (failure == Failure::final_pending)
+      throw std::runtime_error("final-pending");
+    auto* const d_spads = spads.data();
+    auto* const d_outputs = device_bytes.data();
+    for (unsigned t = 0; t < batch; ++t) {
+${finalBody}
+    }
+    kernels_done = true;
+    now_us += 300;
+    if (failure == Failure::final_retired)
+      throw std::runtime_error("final-retired");
+  }
+};
+struct Event { Context* context; Kind kind; };
+struct Queue {
+  Context* context;
+  Event memcpy(uint8_t* destination, const uint8_t* source, const size_t bytes) {
+    ++context->copy_submits;
+    context->kernels_ready_at_copy &= context->kernels_done;
+    if (context->failure == Failure::copy_submit)
+      throw std::runtime_error("copy-submit");
+    context->copy_destination = destination;
+    context->copy_source = source;
+    context->copy_bytes = bytes;
+    return {context, Kind::copy};
+  }
+};
+struct Buffer {
+  Context* context;
+  void read(uint8_t* destination, const size_t bytes) {
+    ++context->buffer_reads;
+    context->kernels_ready_at_copy &= context->kernels_done;
+    if (context->failure == Failure::buffer_read)
+      throw std::runtime_error("buffer-read");
+    std::memcpy(destination, context->device_bytes.data(), bytes);
+    context->copy_done = true;
+  }
+};
+struct State {
+  int device = 0;
+  bool shared_io;
+  // Superset lets the same fixture execute historical and fixed source blocks.
+  double wait_ema_us = 0;
+  bool wait_warmup_done = false;
+  Buffer buffered_outputs;
+};
+
+inline void sycl_wait_and_throw(const Event event, const int) {
+  auto& context = *event.context;
+  if (event.kind == Kind::final) {
+    ++context.final_waits;
+    context.finish_kernels();
+    return;
+  }
+  ++context.copy_waits;
+  // An in-order queue eventually retires earlier kernels, but this cannot repair a
+  // host driver that blocks while submitting the copy, before returning this event.
+  context.finish_kernels();
+  if (context.failure == Failure::copy_pending)
+    throw std::runtime_error("copy-pending");
+  std::memcpy(context.copy_destination, context.copy_source, context.copy_bytes);
+  context.copy_done = true;
+  now_us += 30;
+  if (context.failure == Failure::copy_retired)
+    throw std::runtime_error("copy-retired");
+}
+
+template <bool mom_sycl_portable_opencl>
+void readback(State& state, Context& context, uint8_t* output, const size_t output_bytes) {
+  Queue q{&context};
+  [[maybe_unused]] auto* const d_outputs = context.device_bytes.data();
+  const Event final_event{&context, Kind::final};
+${batchStart}
+${tail}
+}
+
+unsigned checks = 0;
+unsigned failures = 0;
+void require(const bool condition, const char* const route, const char* const label) {
+  ++checks;
+  if (condition)
+    return;
+  ++failures;
+  std::fprintf(stderr, "FAIL %s: %s\n", route, label);
+}
+
+template <bool Portable>
+void run(const bool shared, const unsigned batch, const Failure failure,
+         const double stale_ema, const bool warmup) {
+  const char* const route = Portable ? "portable-buffer" : shared ? "shared-USM" : "device-USM";
+  now_us = 0;
+  sleep_calls = 0;
+  Context context{batch, failure};
+  context.device_bytes.fill(0xd7);
+  std::array<uint8_t, 4 * HASH_LEN + 16> output;
+  output.fill(0x5a);
+  const auto untouched = output;
+  // Varied nonce-bearing inputs seed existing Keccak state; CN's preceding GPU
+  // arithmetic is deliberately not modeled or claimed validated by this test.
+  std::array<uint8_t, 4 * 80> inputs{};
+  for (size_t i = 0; i < inputs.size(); ++i)
+    inputs[i] = static_cast<uint8_t>((i * 37 + batch * 11) & 255);
+  const auto original_inputs = inputs;
+  for (size_t i = 0; i < context.spads.size(); ++i)
+    context.spads[i] = uint64_t{inputs[i % inputs.size()]} * 0x0101010101010101ULL + i;
+  auto oracle = context.spads;
+  std::array<uint8_t, 4 * HASH_LEN> expected{};
+  for (unsigned t = 0; t < batch; ++t) {
+    keccak(oracle.data() + 25 * t);
+    std::memcpy(expected.data() + HASH_LEN * t, oracle.data() + 25 * t, HASH_LEN);
+  }
+  State state{0, shared, stale_ema, warmup, Buffer{&context}};
+  std::string error;
+  try {
+    readback<Portable>(state, context, output.data(), HASH_LEN * batch);
+    context.consumed = true;
+  } catch (const std::exception& e) {
+    error = e.what();
+  }
+  require(context.final_waits == 1, route, "exactly one final-kernel wait");
+  require(context.kernels_ready_at_copy, route, "kernels complete before any readback submission");
+  require(sleep_calls == 0, route, "no stale-EMA pre-read sleep");
+  require(state.wait_ema_us == stale_ema && state.wait_warmup_done == warmup,
+          route, "readback has no EMA/warmup state mutation");
+  require(inputs == original_inputs, route, "nonce-bearing input bytes unchanged");
+  require(std::equal(output.begin() + HASH_LEN * batch, output.end(),
+                     untouched.begin() + HASH_LEN * batch), route, "padding and output guard unchanged");
+  if (failure == Failure::none) {
+    require(error.empty() && context.consumed, route, "successful result consumed");
+    require(context.kernels_done, route, "final kernel finished");
+    require(std::equal(output.begin(), output.begin() + HASH_LEN * batch, expected.begin()),
+            route, "production final-Keccak/hash output bytes unchanged");
+  } else {
+    const char* const expected_error = failure == Failure::final_pending ? "final-pending" :
+        failure == Failure::final_retired ? "final-retired" :
+        failure == Failure::copy_submit ? "copy-submit" :
+        failure == Failure::copy_pending ? "copy-pending" :
+        failure == Failure::copy_retired ? "copy-retired" : "buffer-read";
+    require(error == expected_error && !context.consumed, route, "original error prevents consumption");
+    if (failure != Failure::copy_retired)
+      require(output == untouched, route, "failure before readback leaves host output untouched");
+    if (failure == Failure::final_pending || failure == Failure::final_retired)
+      require(context.copy_submits == 0 && context.buffer_reads == 0,
+              route, "final-kernel error prevents all readback");
+  }
+  if constexpr (Portable) {
+    if (failure == Failure::none || failure == Failure::buffer_read)
+      require(context.buffer_reads == 1, route, "one buffered host read");
+    require(context.copy_submits == 0 && context.copy_waits == 0, route, "no USM copy for buffer route");
+  } else if (shared) {
+    require(context.copy_submits == 0 && context.copy_waits == 0 && context.buffer_reads == 0,
+            route, "shared route uses host memcpy only");
+  } else {
+    if (failure == Failure::none || failure == Failure::copy_pending || failure == Failure::copy_retired)
+      require(context.copy_submits == 1 && context.copy_waits == 1,
+              route, "deferred device copy waited exactly once");
+    if (failure == Failure::copy_submit)
+      require(context.copy_submits == 1 && context.copy_waits == 0,
+              route, "submission failure cannot wait a nonexistent event");
+    if (failure == Failure::none)
+      require(context.copy_done, route, "device copy completed before consumption");
+  }
+}
+} // namespace fixture
+
+int main() {
+  using namespace fixture;
+  for (const unsigned batch : {1U, 2U, 3U, 4U}) {
+    for (const double ema : {0.0, 8000000.0}) {
+      for (const bool warmup : {false, true}) {
+        run<false>(false, batch, Failure::none, ema, warmup);
+        run<false>(true, batch, Failure::none, ema, warmup);
+        run<true>(false, batch, Failure::none, ema, warmup);
+        run<true>(true, batch, Failure::none, ema, warmup);
+      }
+    }
+  }
+  for (const Failure failure : {Failure::final_pending, Failure::final_retired}) {
+    run<false>(false, 3, failure, 0, false);
+    run<false>(true, 3, failure, 0, false);
+    run<true>(false, 3, failure, 0, false);
+    run<true>(true, 3, failure, 0, false);
+  }
+  for (const Failure failure : {Failure::copy_submit, Failure::copy_pending, Failure::copy_retired})
+    run<false>(false, 3, failure, 0, false);
+  run<true>(false, 3, Failure::buffer_read, 0, false);
+  std::printf("CN/GPU source-derived readback host fixture: %u checks, %u failures\n", checks, failures);
+  return failures ? 1 : 0;
+}
+
+`);
+    const compiled = spawnSync("c++", ["-std=c++20", "-O2", "-Wall", "-Wextra", "-Werror",
+      "-pedantic", "-I", cn, source, "-o", executable], {encoding: "utf8"});
+    assert.equal(compiled.error, undefined);
+    assert.equal(compiled.signal, null);
+    assert.equal(compiled.status, 0, compiled.stderr);
+    const result = spawnSync(executable, [], {encoding: "utf8"});
+    assert.equal(result.error, undefined);
+    assert.equal(result.signal, null);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "CN/GPU source-derived readback host fixture: 802 checks, 0 failures\n");
+  } finally {
+    fs.rmSync(fixture, {recursive: true, force: true});
+  }
+});
