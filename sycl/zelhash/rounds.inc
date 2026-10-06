@@ -35,7 +35,7 @@ static sycl::event submit_round(
       sycl::local_accessor<uint32_t, 1> local_count(sycl::range<1>(1), h);
       h.parallel_for<ZelHashSplitRoundKernel<R, GPU_COMPACT>>(
         sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(split_wg)),
-        [=](sycl::nd_item<1> it) {
+        [=](sycl::nd_item<1> it) MOM_SYCL_KERNEL_ARGS_RESTRICT {
           const unsigned group = (unsigned)it.get_group(0);
           const uint32_t bucket = group / SPLITS;
           const uint32_t split = group & (SPLITS - 1u);
@@ -128,7 +128,7 @@ static sycl::event submit_round(
     constexpr unsigned FOLLOWERS = IN_FIELDS - 1u;
     h.parallel_for<ZelHashRoundKernel<R, GPU_COMPACT>>(
       sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(wg)),
-      [=](sycl::nd_item<1> it) {
+      [=](sycl::nd_item<1> it) MOM_SYCL_KERNEL_ARGS_RESTRICT {
       const uint32_t bucket = (uint32_t)it.get_group(0);
       const unsigned lid = (unsigned)it.get_local_id(0);
       const unsigned lsz = (unsigned)it.get_local_range(0);

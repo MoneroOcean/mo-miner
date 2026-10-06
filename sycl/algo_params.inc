@@ -356,10 +356,13 @@ std::map<std::string, std::string> algo_params(
         add_gpu_dataset_algo_dev(
           result_dev, 906 * MiB, 4 * GiB, [](const sycl::device&) { return 1u; },
           "intensity", GpuUsm::device, 1024, 34 * KiB);
-      else add_gpu_dataset_algo_dev(
-        result_dev, 1856 * MiB, 8 * GiB, mom_zelhash::zelhash_slot_capacity, "slots",
-        GpuUsm::both, 1024, 0, true
-      ); // The reported slot count and the solver use the same allocation-derived heuristic.
+      else {
+        // Validate that the solver has usable capacity, but let each workload process derive its
+        // own aligned slot count. A discovery process may see a different allocation limit.
+        add_gpu_dataset_algo_dev(
+            result_dev, 1856 * MiB, 8 * GiB, mom_zelhash::zelhash_slot_capacity, "slots",
+            GpuUsm::both, 1024, 0, true, false);
+      }
     }
     else if (gpu_beamhash3_algos.contains(algo)) add_gpu_dataset_algo_dev(
       result_dev, 3000 * MiB, 8 * GiB, mom_beamhash3::beamhash3_workgroup, "workgroup",

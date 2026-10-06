@@ -49,7 +49,7 @@ constexpr unsigned bucket_capacity(unsigned buckets, unsigned deviations, unsign
 // ---- Wagner solver memory plan. Intel oneAPI gains from 16384 super-buckets and 1024-lane groups:
 // its ~29-KiB scratch arena amortizes each bucket with fewer register-held pairs per lane. CUDA/HIP
 // instead lose materially with that geometry and retain 8192 buckets, 1024 lanes, and a ~53-KiB
-// arena. AdaptiveCpp CUDA cannot opt a Windows kernel into >48 KiB dynamic shared memory, so its
+// arena. AdaptiveCpp CUDA cannot opt a kernel into >48 KiB dynamic shared memory, so its
 // lower-priority fallback uses 32768 smaller buckets and the same common collision code with a
 // ~16-KiB scratch arena.
 // Four materialized levels hold the gen output and round-0..2 survivors. Round 3 filters its final
@@ -59,7 +59,7 @@ constexpr unsigned RESTBITS  = 10;
 constexpr unsigned BUCKBITS  = COLLISION_BIT_LENGTH - RESTBITS;     // 15
 constexpr unsigned NBUCKETS  = 1u << BUCKBITS;                      // 32768
 constexpr unsigned NRESTBINS = 1u << RESTBITS;                      // 1024 exact bins per bucket
-constexpr unsigned MAX_SLOTS = bucket_capacity(NBUCKETS, 1u, 64u);
+constexpr unsigned MAX_SLOTS = bucket_capacity(NBUCKETS, 6u, 64u);
 constexpr unsigned ROUND_WG   = 1024;
 #elif !defined(MOM_SYCL_HAS_CUDA) && !defined(MOM_SYCL_HAS_HIP) && !defined(MOM_SYCL_ADAPTIVECPP)
 constexpr unsigned RESTBITS  = 11;

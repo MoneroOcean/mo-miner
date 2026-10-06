@@ -1,9 +1,14 @@
 int zelhash(
   const unsigned, const uint32_t, const uint8_t* const input, const unsigned input_size,
   uint8_t* const solution_out, uint64_t* const /*pnonce*/, const uint8_t* const target,
-  const unsigned /*intensity*/, const bool is_test, const bool is_benchmark, const std::string& dev_str
+  const unsigned intensity, const bool is_test, const bool is_benchmark, const std::string& dev_str
 ) {
-  if (input_size < HEADER_LEN) throw std::string("Bad zelhash input length");
+  const bool filter_target = !is_test && !is_benchmark;
+  if (!input || !solution_out || (filter_target && !target) ||
+      input_size != HEADER_LEN || intensity != 1)
+    throw std::string(
+      "zelhash requires input, output, a mining target, a 140-byte header, and intensity 1");
+
   ZelHashState& state = zelhash_state(dev_str);
   std::lock_guard<std::mutex> lock(state.mutex);
   state.ensure_io();
@@ -246,7 +251,10 @@ int zelhash(
     std::vector<std::array<uint8_t, 52>> emit;
     emit.reserve(seen.size());
     for (const auto& sol : seen) {
-      if (is_test) { emit.push_back(sol); continue; }   // SOLVE-test: emit every distinct solution
+      if (!filter_target) {
+        if (is_test) emit.push_back(sol); // SOLVE-test: emit every distinct solution
+        continue;                         // benchmark: count proofs without touching a target
+      }
       uint8_t blockhash[32];
       flux_block_hash(input, sol.data(), blockhash);
       if (flux_meets_target(blockhash, target)) emit.push_back(sol);

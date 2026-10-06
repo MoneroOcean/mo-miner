@@ -45,7 +45,7 @@ static sycl::event submit_recover(
     sycl::local_accessor<uint32_t, 1> valid(sycl::range<1>(1), h);
     h.parallel_for<ZelHashRecoverKernel<GPU_COMPACT>>(
       sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(wg)),
-      [=](sycl::nd_item<1> it) {
+      [=](sycl::nd_item<1> it) MOM_SYCL_KERNEL_ARGS_RESTRICT {
       const unsigned candidate = (unsigned)it.get_group(0);
       const unsigned lid = (unsigned)it.get_local_id(0);
       const unsigned lsz = (unsigned)it.get_local_range(0);
@@ -152,25 +152,24 @@ static sycl::event submit_recover(
       }
 
       constexpr unsigned PROOF = 1u << K;
-      if (lid < PROOF && valid[0]) {
-        const size_t leaf_pos = (size_t)node_bucket[lid] * slot_capacity + node_slot[lid];
-#if defined(MOM_EQ_FORWARD_MAP)
+          if (lid < PROOF && valid[0]) {
+            const size_t leaf_pos = (size_t)node_bucket[lid] * slot_capacity + node_slot[lid];
 #if defined(MOM_EQ_ALIGNED_GPU_RECORDS)
-        if constexpr (GPU_COMPACT) {
-          // Generation stores a coalesced leaf->position map. Keep the physical position as
-          // the recovery target; a single linear inversion pass resolves all final leaves together.
-          next_slot[lid] = (node_bucket[lid] << 14) | node_slot[lid];
+            if constexpr (GPU_COMPACT) {
+#if defined(MOM_EQ_FORWARD_MAP)
+              // Generation stores a coalesced leaf->position map. Keep the physical position as
+              // the recovery target; a single linear inversion pass resolves all final leaves together.
+              next_slot[lid] = (node_bucket[lid] << 14) | node_slot[lid];
 #else
           next_slot[lid] = lv.l0_index[leaf_pos];
 #endif
-        }
-        else
+            } else
 #endif
-        {
-          const uint32_t* leaf = lv.level[0] + leaf_pos * level_u32(0, GPU_COMPACT);
-          next_slot[lid] = dense_l0_load_index(leaf);
-        }
-      }
+            {
+              const uint32_t* leaf = lv.level[0] + leaf_pos * level_u32(0, GPU_COMPACT);
+              next_slot[lid] = dense_l0_load_index(leaf);
+            }
+          }
       sycl::group_barrier(it.get_group());
       if (lid == 0 && valid[0]) {
         bool distinct = true;

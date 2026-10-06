@@ -99,54 +99,10 @@ inline void stock_hash_words(const uint64_t base_h[8], const uint8_t base_pendin
 // 32 -> half-swap, by 24/16/63 -> shift pairs, add -> add-with-carry). Same technique as autolykos2's
 // prehash (~1.7x there). Bit-identical to stock_hash_words; the gen output is the 16 LE u32 lanes
 // out[2w]=h[w].lo, out[2w+1]=h[w].hi -- so the pair form maps to the output with NO recombination.
-struct B2bPair { uint32_t lo, hi; };
+using B2bPair = mom_blake2b_pair::Word;
 
 inline void b2b_g_pair(B2bPair& a, B2bPair& b, B2bPair& c, B2bPair& d, B2bPair x, B2bPair y) {
-#if defined(__NVPTX__)
-  uint32_t al = a.lo, ah = a.hi, bl = b.lo, bh = b.hi;
-  uint32_t cl = c.lo, ch = c.hi, dl = d.lo, dh = d.hi;
-  // Keep the complete 64-bit G primitive in registers. PTX carry chains avoid the compare/select
-  // sequences generated for portable uint32_t carry detection, and funnel shifts map each cross-half
-  // rotate to one instruction per half.
-  asm volatile(
-    "{ .reg .u32 t0, t1;\n"
-    "add.cc.u32 %0, %0, %2; addc.u32 %1, %1, %3;\n"
-    "add.cc.u32 %0, %0, %8; addc.u32 %1, %1, %9;\n"
-    "xor.b32 t0, %6, %0; xor.b32 t1, %7, %1; mov.b32 %6, t1; mov.b32 %7, t0;\n"
-    "add.cc.u32 %4, %4, %6; addc.u32 %5, %5, %7;\n"
-    "xor.b32 t0, %2, %4; xor.b32 t1, %3, %5;\n"
-    "shf.r.wrap.b32 %2, t0, t1, 24; shf.r.wrap.b32 %3, t1, t0, 24;\n"
-    "add.cc.u32 %0, %0, %2; addc.u32 %1, %1, %3;\n"
-    "add.cc.u32 %0, %0, %10; addc.u32 %1, %1, %11;\n"
-    "xor.b32 t0, %6, %0; xor.b32 t1, %7, %1;\n"
-    "shf.r.wrap.b32 %6, t0, t1, 16; shf.r.wrap.b32 %7, t1, t0, 16;\n"
-    "add.cc.u32 %4, %4, %6; addc.u32 %5, %5, %7;\n"
-    "xor.b32 t0, %2, %4; xor.b32 t1, %3, %5;\n"
-    "shf.l.wrap.b32 %2, t1, t0, 1; shf.l.wrap.b32 %3, t0, t1, 1;\n"
-    "}\n"
-    : "+&r"(al), "+&r"(ah), "+&r"(bl), "+&r"(bh),
-      "+&r"(cl), "+&r"(ch), "+&r"(dl), "+&r"(dh)
-    : "r"(x.lo), "r"(x.hi), "r"(y.lo), "r"(y.hi));
-  a = B2bPair{al, ah}; b = B2bPair{bl, bh};
-  c = B2bPair{cl, ch}; d = B2bPair{dl, dh};
-#else
-  uint32_t lo = a.lo + b.lo;
-  uint32_t carry = lo < b.lo ? 1u : 0u;
-  a.lo = lo + x.lo; carry += a.lo < x.lo ? 1u : 0u;
-  a.hi = a.hi + b.hi + x.hi + carry;
-  { const uint32_t t = d.lo ^ a.lo; d.lo = d.hi ^ a.hi; d.hi = t; }      // rotr64(.,32): swap halves
-  lo = c.lo + d.lo; c.hi = c.hi + d.hi + (lo < d.lo ? 1u : 0u); c.lo = lo;
-  { const uint32_t bl = b.lo ^ c.lo, bh = b.hi ^ c.hi;                   // rotr64(.,24)
-    b.lo = (bl >> 24) | (bh << 8); b.hi = (bh >> 24) | (bl << 8); }
-  lo = a.lo + b.lo; carry = lo < b.lo ? 1u : 0u;
-  a.lo = lo + y.lo; carry += a.lo < y.lo ? 1u : 0u;
-  a.hi = a.hi + b.hi + y.hi + carry;
-  { const uint32_t dl = d.lo ^ a.lo, dh = d.hi ^ a.hi;                   // rotr64(.,16)
-    d.lo = (dl >> 16) | (dh << 16); d.hi = (dh >> 16) | (dl << 16); }
-  lo = c.lo + d.lo; c.hi = c.hi + d.hi + (lo < d.lo ? 1u : 0u); c.lo = lo;
-  { const uint32_t bl = b.lo ^ c.lo, bh = b.hi ^ c.hi;                   // rotr64(.,63) == rotl64(.,1)
-    b.lo = (bl << 1) | (bh >> 31); b.hi = (bh << 1) | (bl >> 31); }
-#endif
+  mom_blake2b_pair::mix(a, b, c, d, x, y);
 }
 
 template <uint8_t I>

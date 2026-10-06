@@ -13,7 +13,7 @@
       sycl::local_accessor<uint32_t, 1> scratch(sycl::range<1>(STAGE_U32), h);
       h.parallel_for<ZelHashCudaTiledRound0Kernel>(
         sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(wg)),
-        [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(32)]] {
+        [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(32)]] MOM_SYCL_KERNEL_ARGS_RESTRICT {
         const uint32_t bucket = (uint32_t)it.get_group(0);
         const unsigned lid = (unsigned)it.get_local_id(0);
         uint32_t* const scratch32 = scratch.template get_multi_ptr<sycl::access::decorated::no>().get();
@@ -149,7 +149,7 @@
       sycl::local_accessor<uint32_t, 1> scratch(sycl::range<1>(STAGE_U32), h);
       h.parallel_for<ZelHashCudaTiledLaterRoundKernel<R>>(
         sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(wg)),
-        [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(32)]] {
+        [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(32)]] MOM_SYCL_KERNEL_ARGS_RESTRICT {
         const uint32_t bucket = (uint32_t)it.get_group(0);
         const unsigned lid = (unsigned)it.get_local_id(0);
         uint32_t* const scratch32 = scratch.template get_multi_ptr<sycl::access::decorated::no>().get();

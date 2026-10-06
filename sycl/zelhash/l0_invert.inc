@@ -16,7 +16,7 @@ static sycl::event submit_l0_invert(
     h.parallel_for<ZelHashL0InvertSetupKernel>(
       sycl::nd_range<1>(sycl::range<1>(((size_t)target_count + WG - 1u) / WG * WG),
                         sycl::range<1>(WG)),
-      [=](sycl::nd_item<1> it) {
+      [=](sycl::nd_item<1> it) MOM_SYCL_KERNEL_ARGS_RESTRICT {
         const uint32_t i = (uint32_t)it.get_global_id(0);
         if (i >= target_count) return;
         const uint32_t key = output[i];
@@ -28,7 +28,7 @@ static sycl::event submit_l0_invert(
   return q.submit([&](sycl::handler& h) {
     h.parallel_for<ZelHashL0InvertKernel>(
       sycl::nd_range<1>(sycl::range<1>(NUM_ENTRIES), sycl::range<1>(WG)),
-      [=](sycl::nd_item<1> it) {
+      [=](sycl::nd_item<1> it) MOM_SYCL_KERNEL_ARGS_RESTRICT {
         const uint32_t leaf = (uint32_t)it.get_global_id(0);
         const uint32_t key = d_forward[leaf];
         if (key == 0xffffffffu) return;
