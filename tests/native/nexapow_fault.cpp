@@ -24,7 +24,11 @@ static bool first_only = false, numerical_mismatch = false;
 static bool found_candidate = true, invalid_candidate = false;
 static bool cleanup_wait_error = false;
 static bool retire_then_throw = false;
-static bool probe_mode = false;
+static bool probe_mode = false, cpu_device = false;
+static bool staged_test_enabled = false, staged_require_enabled = false;
+static unsigned hash_calls = 0;
+static bool later_winner = false;
+static std::vector<uint64_t> scanned_nonces;
 static unsigned probe_allocation_attempts = 0, probe_free_fault_mask = 0;
 static std::exception_ptr probe_primary;
 static void* failed_retirement = nullptr;
@@ -108,6 +112,7 @@ class SearchKernel;
 namespace sycl {
 namespace info { namespace device { struct global_mem_size {}; } }
 struct device {
+  bool is_cpu() const { return cpu_device; }
   template <typename T> uint64_t get_info() const {
     ++counts.query;
     inject("memory-query");
@@ -279,11 +284,12 @@ static void np_sha256d_49(const uint8_t input[49], uint8_t output[32]) {
               const uint8_t[32], uint32_t count, unsigned, uint64_t& found) {
     ++counts.searches;
     inject("search");
-    found = first + (invalid_candidate ? count : 1);
+    found = first + (invalid_candidate ? count : count == 1 ? 0 : 1);
     return found_candidate;
   }
 };
 
+static bool np_hash_one(const uint8_t*, const uint8_t*, uint64_t, uint8_t*, unsigned);
 #include "caller-support.inc"
 struct State {
   sycl::device device;
@@ -300,7 +306,10 @@ struct State {
 };
 static std::unique_ptr<State> state;
 static State& state_for(const std::string&) { return *state; }
-static bool env_enabled(const char*) { return false; }
+static bool env_enabled(const char* name) {
+  return (std::strcmp(name, "MOM_NEXAPOW_STAGED_TEST") == 0 && staged_test_enabled) ||
+      (std::strcmp(name, "MOM_NEXAPOW_STAGED_REQUIRE") == 0 && staged_require_enabled);
+}
 static const char* staged_field_name(const sycl::device&) { return "host-fixture"; }
 static void test_recorded_vector(State&, const uint8_t*, uint8_t*, uint64_t*) {
   throw std::logic_error("unexpected recorded-vector path");
@@ -308,8 +317,10 @@ static void test_recorded_vector(State&, const uint8_t*, uint8_t*, uint64_t*) {
 static constexpr uint8_t kRecordedHeader[32]{}, kRecordedExtranonce[8]{};
 static constexpr uint8_t kRecordedMinerNonceBytes[8]{}, kRecordedHash[32]{};
 static constexpr uint64_t kRecordedMinerNonce = 0;
-static bool np_hash_one(const uint8_t*, const uint8_t*, uint64_t, uint8_t* output, unsigned) {
-  std::memset(output, 0x11, 32);
+static bool np_hash_one(const uint8_t*, const uint8_t*, uint64_t nonce, uint8_t* output, unsigned) {
+  scanned_nonces.push_back(nonce);
+  std::memset(output, later_winner && !hash_calls ? 0x22 : 0x11, 32);
+  ++hash_calls;
   return true;
 }
 namespace mom { namespace job_boundary {
@@ -329,6 +340,9 @@ static void reset() {
   cleanup_wait_error = false;
   retire_then_throw = false;
   probe_mode = false;
+  cpu_device = staged_test_enabled = staged_require_enabled = later_winner = false;
+  hash_calls = 0;
+  scanned_nonces.clear();
   probe_allocation_attempts = probe_free_fault_mask = 0;
   probe_primary = {};
   failed_retirement = nullptr;
@@ -341,6 +355,8 @@ static void reset() {
 struct Attempt {
   uint8_t input[48]{}, output[32], target[32];
   uint64_t nonce = 19;
+  unsigned input_size = 44, intensity = 2;
+  bool is_test = false;
   int result = -1;
   std::exception_ptr error;
   Attempt() {
@@ -349,8 +365,8 @@ struct Attempt {
   }
   void run() {
     try {
-      result = nexapow(0, 0, input, 44, output, nullptr, &nonce, target, nullptr, 2,
-                       false, false, "same-device-epoch");
+      result = nexapow(0, 0, input, input_size, output, nullptr, &nonce, target, nullptr, intensity,
+                       is_test, false, "same-device-epoch");
     } catch (...) {
       error = std::current_exception();
     }
@@ -505,6 +521,84 @@ int main(int argc, char** argv) {
                 passed + failed, passed + failed, passed, failed);
     return failed ? 1 : 0;
   }
+  for (unsigned width : {40u, 44u, 48u}) {
+    for (bool hit : {false, true}) {
+      test("CPU complete scan width=" + std::to_string(width) + (hit ? " hit" : " nohit"), [=] {
+        cpu_device = true;
+        Attempt a;
+        a.input_size = width;
+        a.intensity = 3;
+        if (!hit)
+          std::memset(a.target, 0, 32);
+        a.run();
+        require(!a.error && a.result == int(hit), "CPU search result mismatch");
+        require(hash_calls == 3 && scanned_nonces == std::vector<uint64_t>{19, 20, 21},
+                "CPU did not scan entire accounted batch");
+        require(!counts.query && !counts.setup && !counts.submits && !counts.monolithic &&
+                    !counts.searches && !counts.copies, "CPU entered a SYCL search path");
+        if (hit)
+          require(a.nonce == 19 && a.output[0] == 0x11, "CPU did not retain first winner");
+        else
+          a.unchanged();
+      });
+    }
+  }
+  test("CPU equal target and later winner", [] {
+    cpu_device = later_winner = true;
+    Attempt a;
+    std::memset(a.target, 0x11, 32);
+    a.intensity = 3;
+    a.run();
+    require(!a.error && a.result == 1 && a.nonce == 20 && hash_calls == 3,
+            "CPU equal target or later winner mismatch");
+  });
+  test("CPU nonce wraps through uint64 boundary", [] {
+    cpu_device = true;
+    Attempt a;
+    a.nonce = UINT64_MAX;
+    a.run();
+    require(!a.error && a.result == 1 && a.nonce == UINT64_MAX &&
+                scanned_nonces == std::vector<uint64_t>{UINT64_MAX, 0},
+            "CPU unsigned nonce progression changed");
+  });
+  test("CPU count one test ignores target", [] {
+    cpu_device = true;
+    Attempt a;
+    a.input_size = 40;
+    a.is_test = true;
+    std::memset(a.target, 0, 32);
+    a.run();
+    require(!a.error && a.result == 1 && a.nonce == 19 && hash_calls == 1 && !counts.setup,
+            "CPU count-one test semantics changed");
+  });
+  test("CPU count one production nohit leaves outputs unchanged", [] {
+    cpu_device = true;
+    Attempt a;
+    a.intensity = 1;
+    std::memset(a.target, 0, 32);
+    a.run();
+    require(!a.error && a.result == 0 && hash_calls == 1 && !counts.setup,
+            "CPU count-one nohit mismatch");
+    a.unchanged();
+  });
+  test("CPU staged test opt-in retains SYCL search", [] {
+    cpu_device = staged_test_enabled = true;
+    Attempt a;
+    a.input_size = 40;
+    a.is_test = true;
+    a.run();
+    require(!a.error && a.result == 1 && counts.setup == 1 && counts.searches == 1,
+            "CPU staged-test opt-in bypassed staged search");
+  });
+  test("CPU staged require retains fail-closed contract", [] {
+    cpu_device = staged_require_enabled = true;
+    device_memory = uint64_t{4} << 30;
+    Attempt a;
+    a.run();
+    require(a.error && !counts.monolithic && !hash_calls,
+            "CPU staged requirement did not fail closed");
+    a.unchanged();
+  });
   for (unsigned gib : {4u, 5u, 10u}) {
     test("memory threshold " + std::to_string(gib) + " GiB", [=] {
       device_memory = uint64_t{gib} << 30;

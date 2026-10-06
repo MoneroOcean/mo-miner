@@ -4535,8 +4535,8 @@ test("NexaPoW submitted faults abort without fallback and do not latch failed se
     assert.equal(result.error, undefined);
     assert.equal(result.signal, null);
     assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(result.stdout, /^# tests 194$/m);
-    assert.match(result.stdout, /^# pass 194$/m);
+    assert.match(result.stdout, /^# tests 206$/m);
+    assert.match(result.stdout, /^# pass 206$/m);
     assert.match(result.stdout, /^# fail 0$/m);
     assert.match(result.stdout, /^# skipped 0$/m);
   } finally {

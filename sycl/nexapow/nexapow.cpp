@@ -96,6 +96,27 @@ inline bool np_meets_target(const uint8_t hash[32], const uint8_t target[32]) {
   return true;
 }
 
+static int scan_host(const uint8_t* input, unsigned extra_bytes, uint64_t first, unsigned count,
+                     const uint8_t* target, bool is_test, uint8_t* output, uint64_t* pnonce) {
+  Result found{};
+  for (unsigned i = 0; i < count; ++i) {
+    uint8_t hash[32];
+    const uint64_t nonce = first + i;
+    if (np_hash_one(input, input + 32, nonce, hash, extra_bytes) &&
+        (is_test || np_meets_target(hash, target)) && !found.count) {
+      found.count = 1;
+      found.miner_nonce = nonce;
+      std::memcpy(found.hash, hash, 32);
+    }
+  }
+  // The caller accounts for the entire batch even when its first nonce wins.
+  if (!found.count)
+    return 0;
+  *pnonce = found.miner_nonce;
+  std::memcpy(output, found.hash, 32);
+  return 1;
+}
+
 #ifndef MOM_NEXAPOW_HOST_TEST
 #include "sycl_pipeline.inc"
 
@@ -239,6 +260,9 @@ int nexapow(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint8
     test_recorded_vector(state, input, output, pnonce);
     return 1;
   }
+  // Explicit CPU work reuses host consensus math instead of building GPU tables/search kernels.
+  if (state.device.is_cpu() && !staged_required)
+    return scan_host(input, extra_bytes, first, count, target, is_test, output, pnonce);
 
   std::string reason;
   if (state.portable.ensure(state.queue, state.device, &reason)) {
@@ -344,18 +368,17 @@ int nexapow(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint8
        !np_equal(input + 40, kRecordedMinerNonceBytes, 8)))
     throw std::runtime_error("nexapow test requires the recorded Echelon vector");
   const uint64_t first = recorded_test ? kRecordedMinerNonce : *pnonce;
-  for (unsigned i = 0; i < (is_test ? 1u : intensity); ++i) {
-    uint8_t hash[32];
-    if (np_hash_one(input, input + 32, first + i, hash, extra_bytes) &&
-        (is_test || np_meets_target(hash, target))) {
-      if (recorded_test && !np_equal(hash, kRecordedHash, 32))
-        throw std::runtime_error("nexapow host vector mismatch");
-      *pnonce = first + i;
-      std::memcpy(output, hash, 32);
-      return 1;
-    }
+  Result result{};
+  result.miner_nonce = first;
+  const int found = scan_host(input, extra_bytes, first, is_test ? 1u : intensity,
+                              target, is_test, result.hash, &result.miner_nonce);
+  if (found && recorded_test && !np_equal(result.hash, kRecordedHash, 32))
+    throw std::runtime_error("nexapow host vector mismatch");
+  if (found) {
+    *pnonce = result.miner_nonce;
+    std::memcpy(output, result.hash, 32);
   }
-  return 0;
+  return found;
 }
 #endif
 

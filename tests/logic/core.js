@@ -2056,9 +2056,10 @@ test("PearlHash pool targets use the selected GPU profile", async () => {
 
 test("PearlHash final pool targets remain unchanged after GPU profile selection", async () => {
   const target = "00000000d1b71758e219652bd3c36113404ea4a8c154c985f06f694467381d7d";
+  // Simulate a modern NVIDIA device; this test must not depend on built fallback workers.
   for (const backend of ["amd", "nvidia", "intel"]) {
     const miner = await loadMinerWithStubs({
-      env: {MOM_GPU_BACKEND: backend},
+      env: {MOM_GPU_BACKEND: backend, MOM_NVIDIA_COMPUTE_CAPABILITY: "12.0"},
       argv: ["node", "mom.js", "mine", "pool.example:1", "user", "--job.dev", "gpu1"],
     });
     miner.getSetJob()({algo: "pearlhash", blob: "00".repeat(76), job_id: "final", target});
