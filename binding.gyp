@@ -383,6 +383,7 @@
                 "/DWALAHASH_ESIMD",
                 "/DOCTOPUS_ESIMD",
                 "/DMOM_OCTOPUS_HAS_SYCL_NATIVE",
+                "/DMOM_C29_INTEL",
                 "/DMOM_BEAMHASH3_INTEL_PAIR32",
                 "/DMOM_ZHASH_INTEL_LATE_BUCKETS",
                 "/clang:-fno-strict-aliasing"
@@ -452,7 +453,7 @@
             } ],
             [ "mom_sycl_impl=='dpcpp'", {
               "cflags+": [
-                "-std=c++20 -O3 -fsycl -fsycl-device-code-split=per_kernel -DNDEBUG -DMOM_NEXAPOW_PORTABLE_FIELD32 -DPEARLHASH_ESIMD -DWALAHASH_ESIMD -DOCTOPUS_ESIMD -DMOM_OCTOPUS_HAS_SYCL_NATIVE -DMOM_BEAMHASH3_INTEL_PAIR32 -DMOM_ZHASH_INTEL_LATE_BUCKETS"
+                "-std=c++20 -O3 -fsycl -fsycl-device-code-split=per_kernel -DNDEBUG -DMOM_NEXAPOW_PORTABLE_FIELD32 -DPEARLHASH_ESIMD -DWALAHASH_ESIMD -DOCTOPUS_ESIMD -DMOM_OCTOPUS_HAS_SYCL_NATIVE -DMOM_C29_INTEL -DMOM_BEAMHASH3_INTEL_PAIR32 -DMOM_ZHASH_INTEL_LATE_BUCKETS"
               ],
               "ldflags+": [ "-fsycl-device-code-split=per_kernel" ]
             } ]

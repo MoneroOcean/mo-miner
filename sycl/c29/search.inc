@@ -35,35 +35,84 @@ inline __attribute__((always_inline)) void c29_write8(
     store[bucket][base + 6], store[bucket][base + 7]);
 }
 
+struct C29SearchCompletionGuard {
+  std::shared_ptr<C29ResultState> result_state;
+  unsigned job_ref;
+
+  C29SearchCompletionGuard(std::shared_ptr<C29ResultState> state, const unsigned ref)
+      : result_state(std::move(state)), job_ref(ref) {
+    std::lock_guard<std::mutex> lock(result_state->mutex);
+    ++result_state->running_searches[job_ref];
+  }
+
+  C29SearchCompletionGuard(const C29SearchCompletionGuard&) = delete;
+  C29SearchCompletionGuard& operator=(const C29SearchCompletionGuard&) = delete;
+  C29SearchCompletionGuard(C29SearchCompletionGuard&& other) noexcept
+      : result_state(std::move(other.result_state)), job_ref(other.job_ref) {
+  }
+
+  ~C29SearchCompletionGuard() noexcept {
+    if (!result_state)
+      return;
+
+    std::lock_guard<std::mutex> lock(result_state->mutex);
+    const auto it = result_state->running_searches.find(job_ref);
+    if (it == result_state->running_searches.end())
+      return;
+    if (it->second > 1)
+      --it->second;
+    else
+      result_state->running_searches.erase(it);
+  }
+};
+
 // Worker function that performs GPU trimming and cycle finding in separate thread
 static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t seed_k1,
                                           const uint64_t seed_k2, const uint64_t seed_k3,
                                           const unsigned job_ref, const uint64_t nonce,
-                                          const unsigned c29_proof_size,
-                                          sycl::queue& compute_queue,
-                                          C29Buffers& c29_buffers) {
+                                          const unsigned c29_proof_size, sycl::queue& compute_queue,
+                                          C29Buffers& c29_buffers,
+                                          std::shared_ptr<C29ResultState> result_state) {
   try {
-    C29Profile profile(job_ref, nonce, c29_proof_size, compute_queue, compute_queue.get_device().get_info<sycl::info::device::name>());
+    const sycl::device device = compute_queue.get_device();
+    C29Profile profile(job_ref, nonce, c29_proof_size, device);
 
 #include "seed.inc"
 #include "trim.inc"
     // Cycle search runs on a detached thread so the GPU queue is freed for the next graph.
-    running_search_threads.fetch_add(1);
-    std::thread([=]() {
-      const std::list<std::vector<sycl::uint2>> solutions = find_cycles(trimmed_edges, c29_proof_size);
+    try {
+      C29SearchCompletionGuard completion_guard(result_state, job_ref);
+      std::thread([=, completion_guard = std::move(completion_guard)]() mutable {
+        try {
+          const auto solutions = mom_c29::find_cycles(trimmed_edges, c29_proof_size);
 
-      if (!solutions.empty()) {
-        C29SolutionLock lock(global_solutions_mutex);
-        for (const auto& solution : solutions) {
-          global_solutions.push_back(solution);
-          global_seeds.push_back(std::vector<uint64_t>{seed_k0, seed_k1, seed_k2, seed_k3});
-          global_job_refs.push_back(job_ref);
-          global_nonces.push_back(nonce);
+          if (!solutions.empty()) {
+            std::lock_guard<std::mutex> lock(result_state->mutex);
+            if (result_state->active_job_ref == job_ref) {
+              for (const auto& solution : solutions) {
+                C29QueuedSolution queued_solution;
+                queued_solution.edges = solution;
+                queued_solution.seed[0] = seed_k0;
+                queued_solution.seed[1] = seed_k1;
+                queued_solution.seed[2] = seed_k2;
+                queued_solution.seed[3] = seed_k3;
+                queued_solution.job_ref = job_ref;
+                queued_solution.nonce = nonce;
+                result_state->solutions.push_back(std::move(queued_solution));
+              }
+            }
+          }
+        } catch (const std::exception& e) {
+          printf("Error in solution search worker: %s\n", e.what());
+        } catch (...) {
+          printf("Error in solution search worker: unknown exception\n");
         }
-      }
-
-      running_search_threads.fetch_sub(1);
-    }).detach();
+      }).detach();
+    } catch (const std::exception& e) {
+      printf("Error starting solution search worker: %s\n", e.what());
+    } catch (...) {
+      printf("Error starting solution search worker: unknown exception\n");
+    }
   } catch (const sycl::exception& e) {
     printf("Error in solution search worker: %s\n", e.what());
   }

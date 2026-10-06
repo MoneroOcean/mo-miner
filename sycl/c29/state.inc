@@ -1,27 +1,37 @@
 #include "../lib-internal.h"
 #include "../../native/consts.h"
 #include "crypto/randomx/blake2/blake2.h"
+#include "cycle.h"
 
 #if defined(_WIN32)
 #include <windows.h>
 #endif
 
 // Cuckaroo Cycle algorithm constants and fixed kernel sizing.
-const constexpr uint64_t DUCK_SIZE_A = 129, DUCK_SIZE_B = 83, INDEX_SIZE = 4096;
+const constexpr uint64_t DUCK_SIZE_A = 129, DUCK_SIZE_B = 83, INDEX_SIZE = 4096,
+                         MAX_INITIAL_INDEX_SIZE = 65536;
 
 const constexpr uint64_t BUFFER_SIZE_A1 = DUCK_SIZE_A * 1024 * (4096 - 128) * 2,
                          BUFFER_SIZE_A2 = DUCK_SIZE_A * 1024 * 256 * 2,
-                         BUFFER_SIZE_B  = DUCK_SIZE_B * 1024 * 4096 * 2;
+                         BUFFER_SIZE_B = DUCK_SIZE_B * 1024 * 4096 * 2;
 
-const constexpr uint32_t COMPUTE_THREADS = 1024, TRIMMING_ROUNDS = 80,
-                         EDGE_BLOCK_SIZE = 64, EDGE_BITS = 29,
-                         BUCKET_MASK_4K = 4095, BUCKET_OFFSET = 255,
-                         BUCKET_STEP = 32, EDGE_COUNTER_WORDS = 8192,
-                         DEFAULT_SEED_BLOCKS = 16;
+const constexpr uint32_t COMPUTE_THREADS = 1024, PORTABLE_TRIMMING_ROUNDS = 80,
+                         INTEL_TRIMMING_ROUNDS = 42, EDGE_BLOCK_SIZE = 64,
+                         EDGE_BITS = mom_c29::kEdgeBits,
+                         BUCKET_OFFSET = 255, BUCKET_STEP = 32;
+#ifdef MOM_C29_INTEL
+const constexpr uint32_t MAX_TRIMMED_EDGE_COUNT = 512 * COMPUTE_THREADS, DEFAULT_SEED_BLOCKS = 4,
+                         DEFAULT_SEED_LOCAL_SIZE = 256;
+#else
+const constexpr uint32_t MAX_TRIMMED_EDGE_COUNT = 128 * COMPUTE_THREADS, DEFAULT_SEED_BLOCKS = 16,
+                         DEFAULT_SEED_LOCAL_SIZE = 128;
+#endif
 
-const constexpr uint32_t MAX_TRIMMED_EDGE_COUNT = 128 * COMPUTE_THREADS,
-                         EDGE_BLOCK_MASK = EDGE_BLOCK_SIZE - 1,
-                         NUM_EDGES = (1u << EDGE_BITS),
+// Trimming uses fixed-capacity GPU buckets and a bounded host handoff. An overfull bucket or final
+// handoff discards excess edges, which can make this nonce miss a cycle but cannot fabricate one:
+// recovery accepts only edges regenerated from the nonce. Raising these limits is therefore a
+// measured memory/performance trade-off, not a correctness fallback to add to the mining hot path.
+const constexpr uint32_t EDGE_BLOCK_MASK = EDGE_BLOCK_SIZE - 1, NUM_EDGES = mom_c29::kNumEdges,
                          EDGE_MASK = NUM_EDGES - 1;
 
 static uint32_t c29_env_u32(const char* name, const uint32_t default_value) {
@@ -36,9 +46,31 @@ static bool c29_profile_enabled() { static const bool v = [](){ const char* e = 
 
 static uint32_t c29_profile_limit() { static const uint32_t v = [](){ const char* e = std::getenv("MOM_C29_PROFILE_LIMIT"); if (!e || !e[0]) return 1u; const unsigned long p = std::strtoul(e, nullptr, 10); return p == 0 ? UINT32_MAX : static_cast<uint32_t>(p); }(); return v; }
 
-uint32_t c29_seed_local_size() { static const uint32_t v = [](){ const uint32_t r = c29_env_u32("MOM_C29_SEED_LOCAL_SIZE", 128u); return (r == 64u || r == 128u || r == 256u) ? r : 128u; }(); return v; }
+uint32_t c29_seed_local_size() {
+  static const uint32_t v = []() {
+    const uint32_t r = c29_env_u32("MOM_C29_SEED_LOCAL_SIZE", DEFAULT_SEED_LOCAL_SIZE);
+    return (r == 64u || r == 128u || r == 256u) ? r : DEFAULT_SEED_LOCAL_SIZE;
+  }();
+  return v;
+}
 
-uint32_t c29_seed_blocks_per_item() { static const uint32_t v = [](){ const uint32_t r = c29_env_u32("MOM_C29_SEED_BLOCKS", DEFAULT_SEED_BLOCKS); return (r == 4u || r == 8u || r == 16u || r == 32u) ? r : DEFAULT_SEED_BLOCKS; }(); return v; }
+uint32_t c29_seed_blocks_per_item() {
+  static const uint32_t v = []() {
+    const uint32_t r = c29_env_u32("MOM_C29_SEED_BLOCKS", DEFAULT_SEED_BLOCKS);
+    return (r == 4u || r == 8u || r == 16u || r == 32u) ? r : DEFAULT_SEED_BLOCKS;
+  }();
+  return v;
+}
+
+static uint32_t c29_trim_rounds(const sycl::device& device) {
+#ifdef MOM_C29_INTEL
+  // The combined DPC++ artifact also contains a CUDA image; keep its established trim depth.
+  return mom_is_cuda(device) ? PORTABLE_TRIMMING_ROUNDS : INTEL_TRIMMING_ROUNDS;
+#else
+  (void)device;
+  return PORTABLE_TRIMMING_ROUNDS;
+#endif
+}
 
 static bool c29_direct_seed_enabled() { static const bool v = [](){ const char* e = std::getenv("MOM_C29_DIRECT_SEED"); return !(e && e[0] == '0'); }(); return v; }
 
@@ -48,7 +80,10 @@ static uint64_t c29_now_us() {
   ).count();
 }
 
-struct C29ProfileEvent { const char* name; sycl::event event; };
+struct C29ProfileEvent {
+  const char* name;
+  sycl::event event;
+};
 
 struct C29Profile {
   bool enabled;
@@ -56,20 +91,23 @@ struct C29Profile {
   uint64_t last_us;
   std::vector<C29ProfileEvent> events;
   C29Profile(const unsigned job_ref, const uint64_t nonce, const unsigned proof_size,
-             const sycl::queue& queue, const std::string& dev_str)
+             const sycl::device& device)
       : enabled(false), start_us(c29_now_us()), last_us(start_us) {
     static std::atomic<uint32_t> profiled_graphs{0};
-    enabled = c29_profile_enabled() && profiled_graphs.fetch_add(1, std::memory_order_relaxed) < c29_profile_limit();
-    if (!enabled) return;
+    enabled = c29_profile_enabled() &&
+              profiled_graphs.fetch_add(1, std::memory_order_relaxed) < c29_profile_limit();
+    if (!enabled)
+      return;
 
-    const sycl::device dev = queue.get_device();
-    std::printf("[c29-profile] graph start job=%u nonce=%llu proof=%u dev=%s device=\"%s\" platform=\"%s\" "
-                "index_size=%llu trim_rounds=%u compute_threads=%u seed_local=%u seed_blocks=%u direct_seed=%u\n",
-                job_ref, static_cast<unsigned long long>(nonce), proof_size, dev_str.c_str(),
-                dev.get_info<sycl::info::device::name>().c_str(),
-                dev.get_platform().get_info<sycl::info::platform::name>().c_str(),
-                static_cast<unsigned long long>(INDEX_SIZE), TRIMMING_ROUNDS, COMPUTE_THREADS,
-                c29_seed_local_size(), c29_seed_blocks_per_item(), c29_direct_seed_enabled() ? 1u : 0u);
+    std::printf(
+        "[c29-profile] graph start job=%u nonce=%llu proof=%u device=\"%s\" platform=\"%s\" "
+        "index_size=%llu trim_rounds=%u compute_threads=%u seed_local=%u seed_blocks=%u "
+        "direct_seed=%u\n",
+        job_ref, static_cast<unsigned long long>(nonce), proof_size,
+        device.get_info<sycl::info::device::name>().c_str(),
+        device.get_platform().get_info<sycl::info::platform::name>().c_str(),
+        static_cast<unsigned long long>(INDEX_SIZE), c29_trim_rounds(device), COMPUTE_THREADS,
+        c29_seed_local_size(), c29_seed_blocks_per_item(), c29_direct_seed_enabled() ? 1u : 0u);
   }
 
   void mark(const char* name) {
@@ -113,20 +151,35 @@ struct C29Buffers {
   sycl::buffer<uint32_t, 1> buffer_a1{sycl::range<1>{BUFFER_SIZE_A1}};
   sycl::buffer<uint32_t, 1> buffer_a2{sycl::range<1>{BUFFER_SIZE_A2}};
   sycl::buffer<uint32_t, 1> buffer_b{sycl::range<1>{BUFFER_SIZE_B}};
-  sycl::buffer<uint32_t, 1> buffer_i1{sycl::range<1>{INDEX_SIZE}};
-  sycl::buffer<uint32_t, 1> buffer_i2{sycl::range<1>{INDEX_SIZE}};
+  sycl::buffer<uint32_t, 1> buffer_i1{sycl::range<1>{MAX_INITIAL_INDEX_SIZE}};
+  sycl::buffer<uint32_t, 1> buffer_i2{sycl::range<1>{MAX_INITIAL_INDEX_SIZE}};
   sycl::buffer<uint32_t, 1> buffer_trimmed_edge_count{sycl::range<1>{1}};
   sycl::buffer<sycl::uint2, 1> buffer_trimmed_edges_u2{sycl::range<1>{MAX_TRIMMED_EDGE_COUNT}};
 };
 
-using C29GlobalAtomicRef = sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed,
-  sycl::memory_scope::device, sycl::access::address_space::global_space>;
+using C29GlobalAtomicRef =
+    sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
+                     sycl::access::address_space::global_space>;
 
 template <typename Accessor>
 inline C29GlobalAtomicRef c29_global_atomic(const Accessor& accessor, const size_t index) {
   auto pointer = accessor.template get_multi_ptr<sycl::access::decorated::yes>();
   return C29GlobalAtomicRef{pointer[index]};
 }
+
+struct C29QueuedSolution {
+  std::vector<sycl::uint2> edges;
+  uint64_t seed[4];
+  unsigned job_ref;
+  uint64_t nonce;
+};
+
+struct C29ResultState {
+  std::mutex mutex;
+  std::vector<C29QueuedSolution> solutions;
+  std::map<unsigned, uint32_t> running_searches;
+  unsigned active_job_ref = 0;
+};
 
 static sycl::async_handler c29_exception_handler() {
   return [](sycl::exception_list exceptions) {
@@ -145,19 +198,25 @@ struct C29State {
   sycl::device device;
   sycl::queue queue;
   C29Buffers buffers;
+  std::shared_ptr<C29ResultState> result_state;
 
   explicit C29State(const std::string& dev_str)
       : device(get_dev(dev_str)),
         queue(c29_profile_enabled()
-          ? sycl::queue{device, c29_exception_handler(),
-                        sycl::property_list{sycl::property::queue::in_order{},
-                                            sycl::property::queue::enable_profiling{}}}
-          : sycl::queue{device, c29_exception_handler(),
-                        sycl::property_list{sycl::property::queue::in_order{}}}) {}
+                  ? sycl::queue{device, c29_exception_handler(),
+                                sycl::property_list{sycl::property::queue::in_order{},
+                                                    sycl::property::queue::enable_profiling{}}}
+                  : sycl::queue{device, c29_exception_handler(),
+                                sycl::property_list{sycl::property::queue::in_order{}}}) {
+    result_state = std::make_shared<C29ResultState>();
+  }
 
-  ~C29State() { sycl_cleanup_noexcept("c29", [&] { queue.wait_and_throw(); }); }
+  ~C29State() {
+    sycl_cleanup_noexcept("c29", [&] {
+      queue.wait_and_throw();
+    });
+  }
 };
-
 
 static DeviceStateRegistry<C29State>& c29_registry() {
   static auto* const registry = new DeviceStateRegistry<C29State>;
@@ -190,139 +249,18 @@ static void c29_read_buffer(sycl::queue& queue, sycl::buffer<T, 1>& buffer,
   sycl_wait_and_throw(event, queue.get_device());
 }
 
-// Global solution management
-class C29SolutionMutex {
-  std::atomic_flag m_flag = ATOMIC_FLAG_INIT;
+static void c29_activate_job(const std::shared_ptr<C29ResultState>& result_state,
+                             const unsigned job_ref) {
+  std::lock_guard<std::mutex> lock(result_state->mutex);
+  if (result_state->active_job_ref == job_ref)
+    return;
 
-public:
-  void lock() {
-    while (m_flag.test_and_set(std::memory_order_acquire)) {
-#if defined(_WIN32)
-      Sleep(0);
-#else
-      std::this_thread::yield();
-#endif
-    }
+  result_state->active_job_ref = job_ref;
+  // Keep detached searches isolated to the device's current job.
+  for (auto it = result_state->solutions.begin(); it != result_state->solutions.end();) {
+    if (it->job_ref != job_ref)
+      it = result_state->solutions.erase(it);
+    else
+      ++it;
   }
-
-  void unlock() { m_flag.clear(std::memory_order_release); }
-};
-
-class C29SolutionLock {
-  C29SolutionMutex& m_mutex;
-
-public:
-  explicit C29SolutionLock(C29SolutionMutex& mutex) : m_mutex(mutex) { m_mutex.lock(); }
-  ~C29SolutionLock() { m_mutex.unlock(); }
-
-  C29SolutionLock(const C29SolutionLock&) = delete;
-  C29SolutionLock& operator=(const C29SolutionLock&) = delete;
-};
-
-static std::list<std::vector<sycl::uint2>> global_solutions;
-static std::list<std::vector<uint64_t>> global_seeds;
-static std::list<unsigned> global_job_refs;
-static std::list<uint64_t> global_nonces;
-static C29SolutionMutex global_solutions_mutex;
-static std::atomic<uint32_t> running_search_threads{0};
-
-// Walk the alternating bipartite graph from start_node, following each node's stored
-// successor until a dead end (or max_path_length) is reached.
-static std::vector<uint32_t> create_path(const std::unordered_map<uint32_t, uint32_t>& graph_u,
-    const std::unordered_map<uint32_t, uint32_t>& graph_v, const bool start_in_u,
-    const uint32_t start_node, const uint32_t max_path_length = 8192) {
-  std::vector<uint32_t> path;
-  path.reserve(64);
-  path.push_back(start_node);
-
-  const std::unordered_map<uint32_t, uint32_t>* current_graph = start_in_u ? &graph_u : &graph_v;
-  bool current_in_u = start_in_u;
-  auto it = current_graph->find(start_node);
-
-  while (it != current_graph->end() && path.size() < max_path_length) {
-    const uint32_t next_node = it->second;
-    path.push_back(next_node);
-    current_in_u = !current_in_u;
-    current_graph = current_in_u ? &graph_u : &graph_v;
-    it = current_graph->find(next_node);
-  }
-
-  return path;
-}
-
-// Reverse the direction of every edge along path, flipping which side (u/v) each link is stored on.
-static void reverse_path(std::unordered_map<uint32_t, uint32_t>& graph_u, std::unordered_map<uint32_t, uint32_t>& graph_v,
-    const std::vector<uint32_t>& path, const bool starts_in_u) {
-  std::unordered_map<uint32_t, uint32_t>* graphs[2] = {&graph_u, &graph_v};
-
-  for (int32_t i = static_cast<int32_t>(path.size()) - 2; i >= 0; i--) {
-    const uint32_t node_a = path[i], node_b = path[i + 1];
-    const uint32_t idx_remove = (starts_in_u ? (i & 1) : !(i & 1)) ? 1 : 0;
-    const uint32_t idx_add    = 1 - idx_remove;
-    graphs[idx_remove]->erase(node_a);
-    (*graphs[idx_add])[node_b] = node_a;
-  }
-}
-
-// Main function to find cycles in trimmed graph - returns all valid target_cycle_length-cycles
-static std::list<std::vector<sycl::uint2>> find_cycles(const std::vector<sycl::uint2>& trimmed_edges,
-                                                       const uint32_t target_cycle_length) {
-  const uint32_t edge_count = trimmed_edges.size();
-
-  std::unordered_map<uint32_t, uint32_t> graph_u, graph_v;
-  graph_u.reserve(edge_count);
-  graph_v.reserve(edge_count);
-  std::list<std::vector<sycl::uint2>> solutions;
-
-  for (uint32_t edge_idx = 0; edge_idx < edge_count; edge_idx++) {
-    const uint32_t node_u = trimmed_edges[edge_idx].x(), node_v = trimmed_edges[edge_idx].y();
-
-    // Skip edges already present (find result reused to avoid a second lookup).
-    auto it_u = graph_u.find(node_u);
-    if (it_u != graph_u.end() && it_u->second == node_v) continue;
-
-    auto it_v = graph_v.find(node_v);
-    if (it_v != graph_v.end() && it_v->second == node_u) continue;
-
-    // Walk from both endpoints; a shared node means the new edge closes a cycle.
-    const std::vector<uint32_t> path_from_u = create_path(graph_u, graph_v, true, node_u);
-    const std::vector<uint32_t> path_from_v = create_path(graph_u, graph_v, false, node_v);
-
-    // Find the first intersection with a simple O(n*m) scan.
-    int64_t join_a = -1, join_b = -1;
-    for (uint32_t i = 0; i < path_from_u.size(); i++) {
-      const auto it = std::find(path_from_v.begin(), path_from_v.end(), path_from_u[i]);
-      if (it != path_from_v.end()) {
-        join_a = i;
-        join_b = it - path_from_v.begin();
-        break;
-      }
-    }
-
-    const int64_t cycle_length = join_a != -1 ? 1 + join_a + join_b : 0;
-
-    if (cycle_length == target_cycle_length) {
-      // Closing edge plus the two paths back to the join point form the cycle.
-      std::vector<sycl::uint2> cycle_edges;
-      cycle_edges.reserve(target_cycle_length);
-      cycle_edges.push_back({node_u, node_v});
-      for (int64_t i = 0; i < join_a; i++)
-        cycle_edges.push_back({path_from_u[i + 1], path_from_u[i]});
-      for (int64_t i = 0; i < join_b; i++)
-        cycle_edges.push_back({path_from_v[i + 1], path_from_v[i]});
-
-      solutions.push_back(std::move(cycle_edges));
-    } else {
-      // No cycle yet: splice the new edge in by reversing the shorter path (cheaper).
-      if (path_from_u.size() > path_from_v.size()) {
-        reverse_path(graph_u, graph_v, path_from_v, false);
-        graph_v[node_v] = node_u;
-      } else {
-        reverse_path(graph_u, graph_v, path_from_u, true);
-        graph_u[node_u] = node_v;
-      }
-    }
-  }
-
-  return solutions;
 }
