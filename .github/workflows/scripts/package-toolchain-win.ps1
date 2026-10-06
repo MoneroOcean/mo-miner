@@ -1,12 +1,12 @@
 # Package the from-source intel/llvm `--cuda` DPC++ toolchain (Windows) into a single tarball that CI
 # restores to build the unified spir64+nvptx sycl.dll, instead of rebuilding the ~1.5h LLVM toolchain on
 # every run (which cannot finish inside a GitHub-hosted Windows job anyway: 6h timeout, 2-4 vCPU). Run
-# this ONCE on the build VM after `buildbot/compile.py` (see scripts/build-windows-nvidia.md); the
+# this ONCE on the build VM following scripts/windows-multicompiler.md; the
 # resulting asset is uploaded to a GitHub release (NOT committed to git). gzip is used so the CI runner's
 # built-in tar.exe can extract it with no extra tooling.
 param(
   [string]$BuildDir = "C:\llvm\build",
-  [string]$OutFile  = "C:\mom\dpcpp-cuda-win.tar.gz"
+  [string]$OutFile  = "C:\mom\dpcpp-cuda-win-matched.tar.gz"
 )
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"

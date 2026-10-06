@@ -273,7 +273,7 @@
                 "-fno-sycl-instrument-device-code"
               ]
             } ],
-            [ "mom_sycl_impl=='dpcpp-hip' or mom_sycl_impl=='adaptivecpp-hip'", {
+            [ "mom_sycl_impl=='adaptivecpp-hip'", {
               "libraries": [ "-lamdhip64" ]
             } ]
           ]
@@ -297,7 +297,6 @@
       "win_delay_load_hook": "false",
       "sources": [
         "sycl/lib.cpp",
-        "sycl/etchash/ethash.cpp",
         "sycl/etchash/etchash.cpp",
         "sycl/autolykos2/autolykos2.cpp",
         "sycl/pearlhash/pearlhash.cpp",
@@ -329,6 +328,9 @@
             }
           },
           "sources": [
+            # The main addon already supplies libethash symbols for the static Unix link;
+            # the shared Windows SYCL DLL needs its local shim.
+            "sycl/etchash/ethash.cpp",
             "sycl/c29/blake2b.cpp",
             "xmrig/crypto/randomx/blake2/blake2b.c",
             "xmrig/base/crypto/keccak.cpp",
@@ -345,6 +347,7 @@
               "AdditionalOptions": [
                 "/O2",
                 "/fsycl",
+                "/clang:-fsycl-device-code-split=per_kernel",
                 "/DNDEBUG",
                 "/DPEARLHASH_ESIMD",
                 "/clang:-fno-strict-aliasing"
@@ -399,13 +402,6 @@
                 "-std=c++20 -O3 -ffp-contract=off -fsycl -fno-sycl-rdc -fsycl-device-code-split=per_kernel -fno-sycl-instrument-device-code -DNDEBUG -DMOM_SYCL_PORTABLE_OPENCL"
               ]
             } ],
-            [ "mom_sycl_impl=='dpcpp-hip'", {
-              "cflags_cc!": [ "-std=gnu++20" ],
-              "cflags+": [
-                "-std=c++20 -O3 -ffp-contract=off -fsycl -fsycl-embed-ir -DNDEBUG -DMOM_SYCL_HAS_HIP -D__HIP_PLATFORM_AMD__"
-              ],
-              "libraries": [ "-lamdhip64" ]
-            } ],
             [ "mom_sycl_impl=='adaptivecpp-hip'", {
               "cflags_cc!": [ "-std=gnu++20" ],
               "cflags+": [
@@ -421,8 +417,9 @@
             } ],
             [ "mom_sycl_impl=='dpcpp'", {
               "cflags+": [
-                "-std=c++20 -O3 -fsycl -DNDEBUG -DPEARLHASH_ESIMD"
-              ]
+                "-std=c++20 -O3 -fsycl -fsycl-device-code-split=per_kernel -DNDEBUG -DPEARLHASH_ESIMD"
+              ],
+              "ldflags+": [ "-fsycl-device-code-split=per_kernel" ]
             } ]
           ]
         } ]

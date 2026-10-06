@@ -69,7 +69,7 @@ $bundlePath = (Resolve-Path release-build).Path + "\mom.bundle.cjs"
   --format=cjs `
   --outfile="$bundlePath"
 if ($LASTEXITCODE -ne 0) {
-  throw "esbuild failed with exit code $LASTEXITCODE. Run npm ci --ignore-scripts first."
+  throw "esbuild failed with exit code $LASTEXITCODE. Run npm install --ignore-scripts first."
 }
 Assert-BuildArtifact $bundlePath "esbuild did not produce the release bundle."
 Copy-Item $nodeExe "$packageDir/mom-node.exe"

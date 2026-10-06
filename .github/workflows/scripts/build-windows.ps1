@@ -2,12 +2,12 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
 trap {
-  if ($env:GITHUB_ACTIONS) {
+  if ($env:GITHUB_ACTIONS -eq 'true') {
     # GitHub Actions workflow commands require %/CR/LF percent-encoded in the message.
     $message = $_.Exception.Message.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
     Write-Host "::error title=Windows build failed::$message"
   }
-  break
+  throw $_.Exception
 }
 
 function Invoke-MominerNative {

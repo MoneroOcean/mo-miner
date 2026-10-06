@@ -22,9 +22,29 @@ ICPX="${MOM_ICPX:-icpx}"
 # AOT targets baked into the SYCL device objects and the final link: Intel SPIR-V + NVIDIA PTX.
 # Default to ONE low NVIDIA arch (sm_80): a multi-arch nvptx fatbin is mis-selected at runtime by the
 # nightly clang (CUDA_ERROR_NO_BINARY), while a single sm_80 image's forward-compatible PTX is JIT'd
-# by the driver to the real GPU at load -- one build runs natively on Ampere/Ada/Hopper. Keep in sync
-# with scripts/combined-build.sh's default. Must match between the sycl-TU compile and the link.
-TARGETS="${MOM_COMBINED_TARGETS:-spir64,nvidia_gpu_sm_80}"
+# by the driver to the real GPU at load -- one build runs natively on Ampere/Ada/Hopper. The build
+# orchestrator owns this default; requiring its exported value prevents compile/link target drift.
+: "${MOM_COMBINED_TARGETS:?MOM_COMBINED_TARGETS must be set by combined-build.sh}"
+TARGETS="$MOM_COMBINED_TARGETS"
+intel_aot_args=()
+intel_aot_device="${MOM_INTEL_AOT_DEVICE:-}"
+if [ -n "$intel_aot_device" ]; then
+  case ",$TARGETS," in
+    *,spir64_gen,*) ;;
+    *)
+      echo "MOM_INTEL_AOT_DEVICE requires spir64_gen in MOM_COMBINED_TARGETS" >&2
+      exit 2
+      ;;
+  esac
+  [ -x /usr/bin/ocloc ] || {
+    echo "MOM_INTEL_AOT_DEVICE requires the pinned /usr/bin/ocloc" >&2
+    exit 2
+  }
+  # oneAPI setvars exposes an older VTune-private ocloc first. Use the compute-runtime-matched
+  # package explicitly for AOT so the compiler recognizes the same devices as the runtime.
+  export PATH="/usr/bin:$PATH"
+  intel_aot_args=(-Xsycl-target-backend=spir64_gen "-device $intel_aot_device")
+fi
 spirv_translator_args=()
 if [ "${MOM_DPCPP_IMPL:-dpcpp-combined}" = dpcpp-opencl ]; then
   # Keep the fallback image within the portable OpenCL SPIR-V environment. The translator otherwise
@@ -72,6 +92,7 @@ if [ "$is_link" = 1 ]; then
     intel_libs=(-Wl,-Bstatic -limf -lsvml -lirng -lirc -Wl,-Bdynamic -lintlc)
   fi
   exec "$CLANGXX" -fsycl -fsycl-targets="$TARGETS" "${spirv_translator_args[@]}" \
+    "${intel_aot_args[@]}" \
     "${rpaths[@]}" "$@" "${intel_libs[@]}"
 fi
 
@@ -86,7 +107,7 @@ if [ "$is_compile" = 1 ] && [[ "$src" == sycl/*.cpp || "$src" == */sycl/*.cpp ]]
     exec "$CLANGXX" -fsycl-targets=spir64 "$@"
   fi
   log "SYCL   -> clang   : $src"
-  exec "$CLANGXX" -fsycl-targets="$TARGETS" "$@"
+  exec "$CLANGXX" -fsycl-targets="$TARGETS" "${intel_aot_args[@]}" "$@"
 fi
 
 [ "$is_compile" = 1 ] && log "HOST   -> icpx    : $src"

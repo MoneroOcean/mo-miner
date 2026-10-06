@@ -127,7 +127,8 @@ function Test-MominerWindowsPath {
 
   $windows = [System.IO.Path]::GetFullPath($env:WINDIR).TrimEnd('\')
   $full = [System.IO.Path]::GetFullPath($Path)
-  return $full.StartsWith($windows, [System.StringComparison]::OrdinalIgnoreCase)
+  return $full.Equals($windows, [System.StringComparison]::OrdinalIgnoreCase) -or
+    $full.StartsWith("$windows\", [System.StringComparison]::OrdinalIgnoreCase)
 }
 
 function Get-MominerOneApiBinDirs {
@@ -425,16 +426,4 @@ function Copy-MominerDllClosure {
   )
 
   Invoke-MominerDllClosure -PackageDir $PackageDir -EntryPaths $EntryPaths -CopyMissing
-}
-
-function Test-MominerDllClosure {
-  param(
-    [Parameter(Mandatory = $true)]
-    [string]$PackageDir,
-
-    [Parameter(Mandatory = $true)]
-    [string[]]$EntryPaths
-  )
-
-  Invoke-MominerDllClosure -PackageDir $PackageDir -EntryPaths $EntryPaths
 }

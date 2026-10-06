@@ -141,7 +141,7 @@ package_windows_release() {
     WIN_MOM_RUN_BASE="$WIN_MOM_DEV_BASE" "$WIN_RUN" \
     --release --download build/win --download "$WINDOWS_ARCHIVE" -- \
     powershell -NoProfile -ExecutionPolicy Bypass -Command \
-    'npm ci --ignore-scripts; if ($LASTEXITCODE) { exit $LASTEXITCODE }; & .github\workflows\scripts\build-windows-multicompiler.ps1; if ($LASTEXITCODE) { exit $LASTEXITCODE }; & .github\workflows\scripts\package-windows.ps1; if ($LASTEXITCODE) { exit $LASTEXITCODE }'
+    'npm install --ignore-scripts; if ($LASTEXITCODE) { exit $LASTEXITCODE }; & .github\workflows\scripts\build-windows-multicompiler.ps1; if ($LASTEXITCODE) { exit $LASTEXITCODE }; & .github\workflows\scripts\package-windows.ps1; if ($LASTEXITCODE) { exit $LASTEXITCODE }'
   sudo chown -R "$(id -u):$(id -g)" build/win "$WINDOWS_ARCHIVE"
 }
 

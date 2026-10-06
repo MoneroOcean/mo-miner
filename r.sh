@@ -36,7 +36,7 @@ build_image() {
     fi
   fi
   case "$scope" in
-    amd-dpcpp|acpp-cuda|acpp-hip)
+    acpp-cuda|acpp-hip)
       [ -z "${MOM_BUILD_JOBS:-}" ] || build_args+=(--build-arg "MOM_BUILD_JOBS=$MOM_BUILD_JOBS")
       ;;
   esac
@@ -62,7 +62,6 @@ build_image() {
 }
 
 case "${MOM_BUILD_ONLY_SCOPE:-}" in
-  amd-dpcpp) build_image mom-build-amd scripts/build-amd.dockerfile amd-dpcpp; exit ;;
   acpp-cuda)
     build_image mom-build-nvidia-adaptivecpp scripts/build-nvidia-adaptivecpp.dockerfile acpp-cuda
     exit ;;
@@ -186,6 +185,8 @@ esac
 for var in \
   MOM_PORTABLE_BUILD MOM_LTO MOM_PERF_SAMPLES MOM_COMBINED_TARGETS MOM_FORCE_REBUILD \
   MOM_BUILD_VERBOSE MOM_BUILD_JOBS MOM_GPU_INDEX MOM_OPENCL_DEVICE_TYPE MOM_CN_GPU_INTENSITY \
+  MOM_INTEL_AOT_DEVICE MOM_ICPX MOM_DPCPP_ROOT \
+  MOM_LINUX_BUILD_COMPILER MOM_REUSE_BUILT_WORKER \
   MOM_AUTOLYKOS2_WORKGROUP MOM_AUTOLYKOS2_SPLIT MOM_AUTOLYKOS2_PROFILE MOM_ZELHASH_SLOTS \
   ONEAPI_DEVICE_SELECTOR ZE_AFFINITY_MASK UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS MOM_AMD_TARGET
 do

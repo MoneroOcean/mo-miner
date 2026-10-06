@@ -17,6 +17,8 @@ if (-not $RepoRoot) {
 }
 Set-Location $RepoRoot
 . (Join-Path $RepoRoot 'scripts\import-vcvars.ps1')
+. (Join-Path $RepoRoot 'scripts\windows-sycl-sources.ps1')
+. (Join-Path $RepoRoot 'scripts\windows-install-helpers.ps1')
 
 # The VM may launch PowerShell from a generic or x86 Visual Studio environment.
 # AdaptiveCpp invokes clang/lld underneath, so an x86 LIB here silently selects
@@ -41,12 +43,15 @@ if ($Backend -eq 'cuda') { $backendDefines += '-DMOM_SYCL_ADAPTIVECPP_CUDA' }
 # must use the portable kernel path, as does the Linux AdaptiveCpp build.
 $backendFlags = @()
 if ($Backend -eq 'hip') {
-  if (-not (Test-Path "$HipPath\lib\amdhip64.lib")) { throw "HIP SDK is incomplete at $HipPath" }
+  if (-not (Test-MomHipSdk $HipPath)) { throw "HIP SDK is incomplete at $HipPath" }
+  $HipPath = (Resolve-Path -LiteralPath $HipPath).Path
   $env:ROCM_PATH = $HipPath
   $env:HIP_PATH = $HipPath
   $env:PATH = "$HipPath\bin;$env:PATH"
   $backendFlags = @("-I$HipPath\include", "-L$HipPath\lib", '-lamdhip64')
-} elseif ($CudaPath) {
+} else {
+  if (-not (Test-MomCudaCompilerSdk $CudaPath)) { throw "CUDA SDK is incomplete at $CudaPath" }
+  $CudaPath = (Resolve-Path -LiteralPath $CudaPath).Path
   $env:CUDA_PATH = $CudaPath
   $env:PATH = "$CudaPath\bin;$env:PATH"
   $backendFlags = @("-I$CudaPath\include", "-L$CudaPath\lib\x64", '-lnvrtc', '-lcuda')
@@ -61,20 +66,8 @@ $common = @('--acpp-targets=generic','-std=c++20','-O3','-ffp-contract=off','-DN
   '-DMOM_SYCL_BUILD','-DMOM_SYCL_ADAPTIVECPP') + $backendDefines + @('-DNOMINMAX',
   '-DWIN32_LEAN_AND_MEAN','-fno-strict-aliasing',"-I$(Join-Path $RepoRoot 'xmrig')")
 if ($Backend -eq 'hip') { $common += '-D__HIP_PLATFORM_AMD__', "-I$HipPath\include" }
-$sources = [ordered]@{
-  lib         = 'sycl\lib.cpp'
-  ethash      = 'sycl\etchash\ethash.cpp'
-  etchash     = 'sycl\etchash\etchash.cpp'
-  autolykos2  = 'sycl\autolykos2\autolykos2.cpp'
-  pearlhash   = 'sycl\pearlhash\pearlhash.cpp'
-  c29         = 'sycl\c29\c29.cpp'
-  cn_gpu      = 'sycl\cn_gpu\cn_gpu.cpp'
-  kawpow      = 'sycl\kawpow\kawpow.cpp'
-  fishhash    = 'sycl\fishhash\fishhash.cpp'
-  zelhash     = 'sycl\zelhash\zelhash.cpp'
-  beamhash3   = 'sycl\beamhash3\beamhash3.cpp'
-  blake2b     = 'sycl\c29\blake2b.cpp'
-}
+if ($Backend -eq 'cuda' -and $CudaPath) { $common += "-I$CudaPath\include" }
+$sources = Get-MomWindowsSyclSources
 $objects = @()
 foreach ($entry in $sources.GetEnumerator()) {
   $source = $entry.Key

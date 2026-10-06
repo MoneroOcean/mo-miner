@@ -22,12 +22,51 @@ foreach ($entry in $paths) {
   $path = if ($entry -is [IO.FileInfo]) { $entry } else { Get-Item -LiteralPath $entry }
   $tokens = $null
   $errors = $null
-  [System.Management.Automation.Language.Parser]::ParseFile(
-    $path.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+  $scriptAst = [System.Management.Automation.Language.Parser]::ParseFile(
+    $path.FullName, [ref]$tokens, [ref]$errors)
   foreach ($error in @($errors)) {
     Write-Error "$($path.FullName)`:$($error.Extent.StartLineNumber): $($error.Message)"
     $failed = $true
   }
+  if ($null -ne $scriptAst) {
+    foreach ($command in $scriptAst.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.CommandAst]
+      }, $true)) {
+      $hasLiteralPath = @($command.CommandElements | Where-Object {
+        $_ -is [System.Management.Automation.Language.CommandParameterAst] -and
+        $_.ParameterName -ieq 'LiteralPath'
+      }).Count -gt 0
+      if ($command.GetCommandName() -ieq 'New-Item' -and $hasLiteralPath) {
+        Write-Error "$($path.FullName)`:$($command.Extent.StartLineNumber): New-Item does not support -LiteralPath in Windows PowerShell 5.1."
+        $failed = $true
+      }
+    }
+  }
 }
 if ($failed) { throw 'PowerShell syntax validation failed.' }
-Write-Host 'PowerShell syntax validation passed.'
+
+$windirWasPresent = $null -ne (Get-Item Env:WINDIR -ErrorAction SilentlyContinue)
+$originalWindir = $env:WINDIR
+try {
+  . (Join-Path $PSScriptRoot 'windows-dll-deps.ps1')
+  $env:WINDIR = 'C:\Windows'
+  if (-not (Test-MominerWindowsPath 'C:\Windows')) {
+    throw 'Test-MominerWindowsPath rejected C:\Windows.'
+  }
+  if (-not (Test-MominerWindowsPath 'C:\Windows\System32')) {
+    throw 'Test-MominerWindowsPath rejected C:\Windows\System32.'
+  }
+  if (Test-MominerWindowsPath 'C:\WindowsEvil') {
+    throw 'Test-MominerWindowsPath accepted C:\WindowsEvil.'
+  }
+}
+finally {
+  if ($windirWasPresent) {
+    $env:WINDIR = $originalWindir
+  } else {
+    Remove-Item Env:WINDIR -ErrorAction SilentlyContinue
+  }
+}
+
+Write-Host 'PowerShell syntax validation and helper checks passed.'

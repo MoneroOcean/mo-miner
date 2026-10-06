@@ -8,11 +8,54 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 if ($PSVersionTable.PSVersion.Major -ge 7) { $PSNativeCommandUseErrorActionPreference = $true }
 if ($Jobs -lt 1) { throw '-Jobs must be a positive integer' }
+. (Join-Path $PSScriptRoot 'windows-install-helpers.ps1')
+. (Join-Path $PSScriptRoot 'import-vcvars.ps1')
 if (-not [IO.Path]::IsPathRooted($InstallDir)) {
   $InstallDir = Join-Path (Get-Location).Path $InstallDir
 }
 $InstallDir = [IO.Path]::GetFullPath($InstallDir)
 $Workspace = [IO.Path]::GetFullPath($Workspace)
+$trimChars = [char[]]@('\', '/')
+$installLeaf = [IO.Path]::GetFileName($InstallDir.TrimEnd($trimChars))
+$workspaceLeaf = [IO.Path]::GetFileName($Workspace.TrimEnd($trimChars))
+if ($installLeaf -notmatch '^acpp-[A-Za-z0-9_.-]+$') {
+  throw '-InstallDir must name a dedicated acpp-* directory'
+}
+if ($workspaceLeaf -notmatch '^mom-dev-[A-Za-z0-9_.-]+$') {
+  throw '-Workspace must name a dedicated mom-dev-* directory'
+}
+foreach ($path in @($InstallDir, $Workspace)) {
+  $trimmed = $path.TrimEnd($trimChars)
+  $root = [IO.Path]::GetPathRoot($path).TrimEnd($trimChars)
+  if ([string]::Equals($trimmed, $root, [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'AdaptiveCpp paths must not be filesystem roots'
+  }
+  $item = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+  if ($item -and -not $item.PSIsContainer) {
+    throw "AdaptiveCpp path must be a real directory: $path"
+  }
+  Assert-NoReparseAncestor $path 'AdaptiveCpp path'
+}
+$installItem = Get-Item -LiteralPath $InstallDir -Force -ErrorAction SilentlyContinue
+if ($installItem) {
+  $invalidMarker = -not (Test-MomMarker (Join-Path $InstallDir '.mom-acpp-toolchain') `
+    'mom AdaptiveCpp toolchain')
+  if ($invalidMarker -and
+      (Get-ChildItem -LiteralPath $InstallDir -Force | Select-Object -First 1)) {
+    throw '-InstallDir exists without the .mom-acpp-toolchain ownership marker'
+  }
+}
+if (-not (Test-MomMarker (Join-Path $Workspace '.mom-dev-workspace') `
+    'mom development workspace')) {
+  throw '-Workspace must be initialized by scripts\install-dev.bat'
+}
+$separator = [IO.Path]::DirectorySeparatorChar
+$installPrefix = $InstallDir.TrimEnd($trimChars) + $separator
+$workspacePrefix = $Workspace.TrimEnd($trimChars) + $separator
+if ($InstallDir.StartsWith($workspacePrefix, [StringComparison]::OrdinalIgnoreCase) -or
+    $Workspace.StartsWith($installPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+  throw '-InstallDir and -Workspace must be separate directories'
+}
 
 $adaptiveCppCommit = 'da2463e45aa90aa36306c45abcfc05b87de51bc6'
 $llvmTag = 'llvmorg-20.1.8'
@@ -20,60 +63,32 @@ $llvmCommit = '87f0227cb60147a26a1eeb4fb06e3b505e9c7261'
 $bootstrapUrl = 'https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.7/LLVM-19.1.7-win64.exe'
 $bootstrapSha256 = 'f19ae5bc4823ac69ec01dc2ded503ec80a04ad2208dda1595d1f0413c148ef90'
 $bootstrapDir = Join-Path $Workspace 'llvm-bootstrap'
+$bootstrapMarker = Join-Path $bootstrapDir '.mom-llvm-bootstrap'
 $adaptiveCppSource = Join-Path $Workspace 'AdaptiveCpp-base-src'
 $llvmSource = Join-Path $Workspace 'llvm-project'
 $buildDir = Join-Path $Workspace 'AdaptiveCpp-base-build'
 
-function Invoke-Checked([string]$File, [string[]]$Arguments) {
-  & $File @Arguments
-  if ($LASTEXITCODE -ne 0) { throw "$File failed with exit code $LASTEXITCODE" }
-}
-
-function Download([string]$Url, [string]$OutFile) {
-  New-Item -ItemType Directory -Force (Split-Path -Parent $OutFile) | Out-Null
-  Invoke-Checked 'curl.exe' @('-fL','--retry','5','--retry-delay','5','-o',$OutFile,$Url)
-}
-
-function Assert-Sha256([string]$Path, [string]$Expected) {
-  $actual = (Get-FileHash -Algorithm SHA256 $Path).Hash.ToLowerInvariant()
-  if ($actual -ne $Expected) {
-    Remove-Item $Path -Force -ErrorAction SilentlyContinue
-    throw "SHA256 mismatch for $Path`: expected $Expected, got $actual"
-  }
-}
-
-function Import-VsX64Environment {
-  $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-  $vsRoot = if (Test-Path $vswhere) {
-    & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-      -property installationPath | Select-Object -First 1
-  } else { $null }
-  $vcvars = @(
-    $(if ($vsRoot) { Join-Path $vsRoot 'VC\Auxiliary\Build\vcvars64.bat' }),
-    'C:\BuildTools\VC\Auxiliary\Build\vcvars64.bat'
-  ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
-  if (-not $vcvars) { throw 'vcvars64.bat not found' }
-  $lines = & cmd.exe /d /s /c "call `"$vcvars`" >nul && set"
-  if ($LASTEXITCODE -ne 0) { throw 'vcvars64.bat failed' }
-  foreach ($line in $lines) {
-    if ($line -match '^([^=]+)=(.*)$') {
-      [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], 'Process')
-    }
-  }
-}
-
-Import-VsX64Environment
+Import-MomVcVars64
 New-Item -ItemType Directory -Force $Workspace | Out-Null
 
 # Bootstrap LLVM only compiles the pinned LLVM 20 tree. It is not shipped in the final toolchain.
 $bootstrapInstaller = Join-Path $Workspace 'LLVM-19.1.7-win64.exe'
-if (-not (Test-Path (Join-Path $bootstrapDir 'bin\clang-cl.exe'))) {
+$bootstrapReady = (Test-MomMarker $bootstrapMarker $bootstrapSha256) -and
+  (Test-Path (Join-Path $bootstrapDir 'bin\clang-cl.exe') -PathType Leaf) -and
+  (Test-Path (Join-Path $bootstrapDir 'bin\lld-link.exe') -PathType Leaf)
+if (-not $bootstrapReady) {
   if (-not (Test-Path $bootstrapInstaller)) { Download $bootstrapUrl $bootstrapInstaller }
   Assert-Sha256 $bootstrapInstaller $bootstrapSha256
   Remove-Item $bootstrapDir -Recurse -Force -ErrorAction SilentlyContinue
   $process = Start-Process $bootstrapInstaller -ArgumentList @('/S',"/D=$bootstrapDir") `
     -Wait -PassThru
   if ($process.ExitCode -ne 0) { throw "LLVM bootstrap install failed: $($process.ExitCode)" }
+  foreach ($required in @('bin\clang-cl.exe', 'bin\lld-link.exe')) {
+    if (-not (Test-Path (Join-Path $bootstrapDir $required) -PathType Leaf)) {
+      throw "LLVM bootstrap install is missing $required"
+    }
+  }
+  Set-Content -LiteralPath $bootstrapMarker -Value $bootstrapSha256 -NoNewline
 }
 $env:Path = "$bootstrapDir\bin;$env:Path"
 $env:CC = 'clang-cl'
@@ -82,6 +97,8 @@ $env:CXX = 'clang-cl'
 Remove-Item $InstallDir, $adaptiveCppSource, $llvmSource, $buildDir `
   -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $InstallDir | Out-Null
+Set-Content -LiteralPath (Join-Path $InstallDir '.mom-acpp-toolchain') `
+  -Value 'mom AdaptiveCpp toolchain' -NoNewline
 
 Invoke-Checked 'git.exe' @(
   'clone','--quiet','--filter=blob:none','https://github.com/AdaptiveCpp/AdaptiveCpp.git',

@@ -22,11 +22,21 @@ function Test-Administrator {
   return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+function Assert-Authenticode([string]$Path) {
+  $signature = Get-AuthenticodeSignature -LiteralPath $Path
+  if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+    throw "Authenticode verification failed for $Path`: $($signature.Status)"
+  }
+}
+
 $tempRoot = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { "/tmp" }
 $fallbackCudaToolkitUrl = "https://developer.download.nvidia.com/compute/cuda/12.6.0/network_installers/cuda_12.6.0_windows_network.exe"
 $cudaToolkitRoot = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6"
 $cudaNvrtcUrl = "https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvrtc/windows-x86_64/cuda_nvrtc-windows-x86_64-13.1.115-archive.zip"
 $cudaNvrtcSha256 = "4ddd5a1e34fd62bb41e78c0725edfbf5609f4ecedd7fe118eddf2148b097fc91"
+$openClCpuUrl = "https://registrationcenter-download.intel.com/akdlm/IRC_NAS/ad824c04-01c8-4ae5-b5e8-164a04f67609/w_opencl_runtime_p_2025.3.1.762.exe"
+$sevenZipUrl = "https://www.7-zip.org/a/7z2409-x64.msi"
+$sevenZipSha256 = "ec6af1ea0367d16dde6639a89a080a524cebc4d4bedfe00ed0cac4b865a918d8"
 $fallbackVsBuildToolsUrl = "https://aka.ms/vs/17/release/vs_BuildTools.exe"
 $cudaToolkitPackages = @(
   "nvcc_12.6", "cudart_12.6", "nvrtc_12.6", "nvrtc_dev_12.6"
@@ -42,6 +52,87 @@ function Get-AmdPnpDevice {
   Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue |
     Where-Object { $_.PNPDeviceID -like "PCI\VEN_1002*" } |
     Select-Object -First 1
+}
+
+function Install-MsiPackage([string]$Path) {
+  if (-not (Test-Administrator)) {
+    throw "Run install.bat from an elevated Administrator command prompt."
+  }
+  $install = Start-Process msiexec.exe `
+    -ArgumentList @('/i', "`"$Path`"", '/qn', '/norestart') -Wait -PassThru
+  if ($install.ExitCode -notin @(0, 3010, 1641)) {
+    throw "MSI install failed with exit code $($install.ExitCode): $Path"
+  }
+}
+
+function Get-OpenClCpuRuntime {
+  $sharedRoot = "C:\Program Files (x86)\Common Files\Intel\Shared Libraries"
+  $registry = "HKLM:\SOFTWARE\Khronos\OpenCL\Vendors"
+  if (Test-Path $registry) {
+    $properties = Get-ItemProperty $registry
+    foreach ($property in $properties.PSObject.Properties) {
+      if ($property.Name.StartsWith($sharedRoot, [StringComparison]::OrdinalIgnoreCase) -and
+          $property.Name -like '*intelocl64.dll' -and (Test-Path $property.Name)) {
+        return $property.Name
+      }
+    }
+  }
+  Get-ChildItem $sharedRoot -Filter intelocl64.dll -File -Recurse -ErrorAction SilentlyContinue |
+    Select-Object -First 1 -ExpandProperty FullName
+}
+
+function Get-7ZipExecutable {
+  $command = Get-Command 7z.exe -ErrorAction SilentlyContinue
+  if ($command) { return $command.Source }
+  $installed = "C:\Program Files\7-Zip\7z.exe"
+  if (Test-Path $installed) { return $installed }
+  return $null
+}
+
+function Install-OpenClCpuRuntime {
+  if (Get-OpenClCpuRuntime) {
+    Write-Host "Intel CPU OpenCL runtime is already available."
+    return
+  }
+  if (-not (Test-Administrator)) {
+    throw "Run install.bat from an elevated Administrator command prompt."
+  }
+
+  $workspace = Join-Path $tempRoot ("mom-opencl-cpu-{0}" -f [Guid]::NewGuid().ToString('N'))
+  [IO.Directory]::CreateDirectory($workspace) | Out-Null
+  try {
+    $sevenZip = Get-7ZipExecutable
+    if (-not $sevenZip) {
+      $sevenZipMsi = Join-Path $workspace '7zip.msi'
+      Invoke-WebRequest -UseBasicParsing -Uri $sevenZipUrl -OutFile $sevenZipMsi
+      $actual = (Get-FileHash -Algorithm SHA256 $sevenZipMsi).Hash.ToLowerInvariant()
+      if ($actual -ne $sevenZipSha256) {
+        throw "7-Zip MSI SHA256 mismatch: expected $sevenZipSha256, got $actual"
+      }
+      Install-MsiPackage $sevenZipMsi
+      $sevenZip = Get-7ZipExecutable
+      if (-not $sevenZip) { throw '7-Zip installation completed but 7z.exe was not found.' }
+    }
+
+    $installer = Join-Path $workspace 'opencl-cpu-runtime.exe'
+    Invoke-WebRequest -UseBasicParsing -Uri $openClCpuUrl -OutFile $installer
+    Assert-Authenticode $installer
+    # Intel's silent wrapper can outlive its MSI on headless systems; installing the signed payload
+    # directly gives setup one deterministic process and exit code.
+    $extractDir = Join-Path $workspace 'payload'
+    [IO.Directory]::CreateDirectory($extractDir) | Out-Null
+    & $sevenZip x -y -bso0 "-o$extractDir" $installer
+    if ($LASTEXITCODE -ne 0) { throw "7-Zip extraction failed with exit code $LASTEXITCODE" }
+    $msi = Get-ChildItem $extractDir -Filter '*.msi' -File | Select-Object -First 1
+    if (-not $msi) { throw 'Intel CPU OpenCL wrapper did not contain an MSI payload.' }
+    Install-MsiPackage $msi.FullName
+  } finally {
+    Remove-Item -LiteralPath $workspace -Recurse -Force -ErrorAction SilentlyContinue
+  }
+  if (-not (Get-OpenClCpuRuntime)) {
+    throw 'Intel CPU OpenCL runtime did not register its ICD.'
+  }
+  Write-Host "Intel CPU OpenCL runtime installed."
 }
 
 function Get-NvidiaSmi {
@@ -98,7 +189,7 @@ function Install-CudaNvrtc {
     throw "Run install.bat from an elevated Administrator command prompt."
   }
 
-  $archive = Join-Path $tempRoot "mom-cuda-nvrtc-13.1.115.zip"
+  $archive = Join-Path $tempRoot ("mom-cuda-nvrtc-{0}.zip" -f [Guid]::NewGuid().ToString('N'))
   Invoke-WebRequest -UseBasicParsing -Uri $cudaNvrtcUrl -OutFile $archive
   $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
   if ($actual -ne $cudaNvrtcSha256) {
@@ -153,14 +244,14 @@ function Install-CppToolchain {
     throw "Run install.bat from an elevated Administrator command prompt."
   }
 
-  $vsDir = Join-Path $tempRoot "mom-vs-build-tools"
+  $vsDir = Join-Path $tempRoot ("mom-vs-build-tools-{0}" -f [Guid]::NewGuid().ToString('N'))
   $vsInstaller = Join-Path $vsDir "vs_BuildTools.exe"
-  Remove-Item -Recurse -Force $vsDir -ErrorAction SilentlyContinue
-  New-Item -ItemType Directory -Force $vsDir | Out-Null
+  [IO.Directory]::CreateDirectory($vsDir) | Out-Null
 
   try {
     Write-Host "Downloading Visual Studio Build Tools from $fallbackVsBuildToolsUrl"
     Invoke-WebRequest -UseBasicParsing -Uri $fallbackVsBuildToolsUrl -OutFile $vsInstaller
+    Assert-Authenticode $vsInstaller
 
     $args = @(
       "--quiet", "--wait", "--norestart", "--nocache",
@@ -196,14 +287,14 @@ function Install-CudaToolkit([switch]$Force) {
   }
 
   $url = if ($CudaToolkitUrl) { $CudaToolkitUrl } else { $fallbackCudaToolkitUrl }
-  $cudaDir = Join-Path $tempRoot "mom-cuda-toolkit"
+  $cudaDir = Join-Path $tempRoot ("mom-cuda-toolkit-{0}" -f [Guid]::NewGuid().ToString('N'))
   $cudaInstaller = Join-Path $cudaDir "cuda-toolkit-network.exe"
-  Remove-Item -Recurse -Force $cudaDir -ErrorAction SilentlyContinue
-  New-Item -ItemType Directory -Force $cudaDir | Out-Null
+  [IO.Directory]::CreateDirectory($cudaDir) | Out-Null
 
   try {
     Write-Host "Downloading CUDA toolkit network installer from $url"
     Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $cudaInstaller
+    Assert-Authenticode $cudaInstaller
 
     $install = Start-Process -FilePath $cudaInstaller -ArgumentList (@("-s") + $cudaToolkitPackages) -Wait -PassThru
     if ($install.ExitCode -ne 0 -and $install.ExitCode -ne 3010) {
@@ -225,19 +316,27 @@ function Install-CudaToolkit([switch]$Force) {
 }
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$cutlassHelperSha256 = "319405c20146e2ad20324d2ae895e222c5e5b58fdad0cccb93d360995aada893"
 $needsCudaSupport = [bool]((Get-NvidiaPnpDevice) -or $InstallCudaToolkit)
 if ($needsCudaSupport) {
   $helper = Join-Path $scriptDir "install-cutlass.ps1"
-  $temporary = $false
-  if (-not (Test-Path $helper)) {
-    $helper = Join-Path $tempRoot "mom-install-cutlass-$PID.ps1"
-    Invoke-WebRequest -UseBasicParsing `
-      -Uri "https://raw.githubusercontent.com/MoneroOcean/mo-miner/master/scripts/install-cutlass.ps1" `
-      -OutFile $helper
-    $temporary = $true
+  if (Test-Path $helper) {
+    . $helper
+  } else {
+    $helper = Join-Path $tempRoot ("mom-install-cutlass-{0}.ps1" -f [Guid]::NewGuid().ToString('N'))
+    try {
+      Invoke-WebRequest -UseBasicParsing `
+        -Uri "https://raw.githubusercontent.com/MoneroOcean/mo-miner/v0.9.0/scripts/install-cutlass.ps1" `
+        -OutFile $helper
+      $actual = (Get-FileHash -Algorithm SHA256 $helper).Hash.ToLowerInvariant()
+      if ($actual -ne $cutlassHelperSha256) {
+        throw "CUTLASS helper SHA256 mismatch: expected $cutlassHelperSha256, got $actual"
+      }
+      . $helper
+    } finally {
+      Remove-Item $helper -Force -ErrorAction SilentlyContinue
+    }
   }
-  . $helper
-  if ($temporary) { Remove-Item $helper -Force -ErrorAction SilentlyContinue }
 }
 
 function Install-CutlassHeaders {
@@ -292,6 +391,7 @@ if ($DryRun) {
   if (Get-AmdPnpDevice) {
     Write-Host "AMD GPU detected; the bundled HIP workers use the installed AMD display driver."
   }
+  Write-Host "Intel CPU OpenCL runtime ready: $([bool](Get-OpenClCpuRuntime))"
   Write-Host "Dry run completed; no packages were installed."
   exit 0
 }
@@ -313,6 +413,8 @@ if ($InstallCudaToolkit) {
 } elseif ((Get-NvidiaPnpDevice) -and $SkipCudaToolkit) {
   Write-Host "NVIDIA CUDA/C++ provisioning was explicitly skipped."
 }
+
+Install-OpenClCpuRuntime
 
 Write-Host "GPU drivers are prerequisites: native Intel/NVIDIA/AMD support and other vendors' OpenCL ICDs come from their current display drivers."
 Write-Host "GPU runtime setup completed."

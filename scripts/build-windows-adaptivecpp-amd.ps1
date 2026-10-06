@@ -1,8 +1,43 @@
 param(
-  [string]$Workspace = $PSScriptRoot,
-  [string]$BaseToolchain = 'C:\Tools\acpp-cuda'
+  [string]$Workspace = 'C:\mom-dev-bootstrap',
+  [string]$BaseToolchain = 'C:\Tools\acpp-cuda',
+  [string]$HipPath = 'C:\Program Files\AMD\ROCm\7.1'
 )
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'windows-install-helpers.ps1')
+. (Join-Path $PSScriptRoot 'import-vcvars.ps1')
+$Workspace = [IO.Path]::GetFullPath($Workspace).TrimEnd([char[]]@('\', '/'))
+$BaseToolchain = [IO.Path]::GetFullPath($BaseToolchain).TrimEnd([char[]]@('\', '/'))
+$HipPath = [IO.Path]::GetFullPath($HipPath).TrimEnd([char[]]@('\', '/'))
+$workspaceLeaf = [IO.Path]::GetFileName($Workspace)
+if ($workspaceLeaf -notmatch '^mom-dev-[A-Za-z0-9_.-]+$') {
+  throw '-Workspace must name a dedicated mom-dev-* directory'
+}
+$workspaceItem = Get-Item -LiteralPath $Workspace -Force -ErrorAction SilentlyContinue
+if (-not $workspaceItem -or -not $workspaceItem.PSIsContainer) {
+  throw '-Workspace must be a real directory initialized by scripts\install-dev.bat'
+}
+Assert-NoReparseAncestor $Workspace 'AdaptiveCpp workspace'
+if (-not (Test-MomMarker (Join-Path $Workspace '.mom-dev-workspace') `
+    'mom development workspace')) {
+  throw '-Workspace must be initialized by scripts\install-dev.bat'
+}
+$baseItem = Get-Item -LiteralPath $BaseToolchain -Force -ErrorAction SilentlyContinue
+if ([IO.Path]::GetFileName($BaseToolchain) -notmatch '^acpp-[A-Za-z0-9_.-]+$' -or
+    -not $baseItem -or -not $baseItem.PSIsContainer -or
+    -not (Test-MomMarker (Join-Path $BaseToolchain '.mom-acpp-toolchain') `
+      'mom AdaptiveCpp toolchain')) {
+  throw '-BaseToolchain must be an owned acpp-* toolchain'
+}
+Assert-NoReparseAncestor $BaseToolchain 'AdaptiveCpp base toolchain'
+Assert-NoReparseAncestor $HipPath 'HIP SDK path'
+$separator = [IO.Path]::DirectorySeparatorChar
+$workspacePrefix = $Workspace + $separator
+$basePrefix = $BaseToolchain + $separator
+if ($BaseToolchain.StartsWith($workspacePrefix, [StringComparison]::OrdinalIgnoreCase) -or
+    $Workspace.StartsWith($basePrefix, [StringComparison]::OrdinalIgnoreCase)) {
+  throw '-BaseToolchain and -Workspace must be separate directories'
+}
 Set-Location $Workspace
 
 $buildJobs = 8
@@ -15,7 +50,7 @@ if ($env:MOM_BUILD_JOBS) {
 }
 $subprojectJobs = [Math]::Min(4, $buildJobs)
 
-function Invoke-Checked {
+function Invoke-CheckedCommand {
   param([Parameter(Mandatory = $true)][scriptblock]$Command)
   & $Command
   if ($LASTEXITCODE -ne 0) {
@@ -28,35 +63,11 @@ function Replace-RequiredText([string]$Text, [string]$Old, [string]$New, [string
   $Text.Replace($Old, $New)
 }
 
-# The runner starts in a generic VS prompt whose LIB can point at x86 CRTs.
-# Import the x64 environment explicitly before any CMake try-link or DLL link.
-$vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-$vsRoot = if (Test-Path $vswhere) {
-  & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath |
-    Select-Object -First 1
-} else { $null }
-$vcvars = @(
-  $(if ($vsRoot) { Join-Path $vsRoot 'VC\Auxiliary\Build\vcvars64.bat' }),
-  'C:\BuildTools\VC\Auxiliary\Build\vcvars64.bat'
-) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
-if (-not $vcvars) { throw 'vcvars64.bat not found' }
-$vcenv = & cmd.exe /d /s /c "call `"$vcvars`" >nul && set"
-if ($LASTEXITCODE -ne 0) { throw 'vcvars64.bat failed' }
-foreach ($line in $vcenv) {
-  if ($line -match '^([^=]+)=(.*)$') {
-    [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], 'Process')
-  }
-}
+Import-MomVcVars64
 
-$rocm = 'C:\Program Files\AMD\ROCm\7.1'
-if (-not (Test-Path "$rocm\lib\amdhip64.lib")) {
-  foreach ($msi in @('ROCm_SDK_Core.msi', 'ROCm_RTC_RT.msi', 'ROCm_RTC_Dev.msi')) {
-    $path = Join-Path $PWD $msi
-    if (-not (Test-Path $path)) { throw "Required HIP SDK installer is missing: $path" }
-    $process = Start-Process msiexec.exe -ArgumentList @('/i', "`"$path`"", '/qn', '/norestart') -Wait -PassThru
-    Write-Host "INSTALL $msi EXIT $($process.ExitCode)"
-    if ($process.ExitCode -notin @(0, 3010)) { exit $process.ExitCode }
-  }
+$rocm = $HipPath
+if (-not (Test-MomHipSdk $rocm)) {
+  throw 'HIP SDK is missing; install it with scripts\install-dev.bat -Component hip.'
 }
 $acpp = Join-Path $PWD 'acpp-toolchain'
 $source = Join-Path $PWD 'AdaptiveCpp-src'
@@ -64,13 +75,13 @@ $build = Join-Path $PWD 'AdaptiveCpp-build-hip'
 $env:PATH = "$rocm\bin;$acpp\bin;$env:PATH"
 $env:ROCM_PATH = $rocm
 
-Remove-Item -Recurse -Force $acpp, $source, $build -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $acpp, $source, $build -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $acpp, $source, $build | Out-Null
 if (-not (Test-Path (Join-Path $BaseToolchain 'bin\acpp'))) {
   throw "AdaptiveCpp base toolchain is missing: $BaseToolchain"
 }
 Copy-Item (Join-Path $BaseToolchain '*') $acpp -Recurse -Force
-Invoke-Checked { & "$env:SystemRoot\System32\tar.exe" -xzf (Join-Path $PWD 'AdaptiveCpp-src.tar.gz') -C $source }
+Invoke-CheckedCommand { & "$env:SystemRoot\System32\tar.exe" -xzf (Join-Path $PWD 'AdaptiveCpp-src.tar.gz') -C $source }
 
 # Keep imported LLVM exports relocatable if an older locally cached base still refers to Visual
 # Studio Enterprise. The current pinned source build disables DIA and therefore needs no rewrite.
@@ -89,9 +100,9 @@ Get-ChildItem "$rocm\bin" -File |
   Where-Object { $_.Name -match '^(clang|hipcc|hipInfo|llvm-link|opt|lld)' } |
   Select-Object -ExpandProperty Name
 
-$deviceLib = Get-ChildItem $rocm -Recurse -Filter ockl.bc -File | Select-Object -First 1
-if (-not $deviceLib) { throw 'ROCm device library ockl.bc was not found' }
-$deviceLibDir = $deviceLib.DirectoryName
+$deviceLibPath = Get-MomHipDeviceLib $rocm
+if (-not $deviceLibPath) { throw 'ROCm device library ockl.bc was not found' }
+$deviceLibDir = Split-Path -Parent $deviceLibPath
 Write-Host "ROCm device libraries: $deviceLibDir"
 $windowsLibraries = 'kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib'
 
@@ -133,7 +144,22 @@ Set-Content -Path $libkernelCmake -Value $libkernelText -Encoding UTF8
 # This addon is GPU-only. Upstream currently hard-enables the OpenMP host
 # backend, whose Windows discovery is unrelated and fails without libomp.
 $rootCmake = Join-Path $source 'CMakeLists.txt'
-$rootCmakeText = Get-Content -Raw $rootCmake
+$rootCmakeText = (Get-Content -Raw $rootCmake).Replace("`r`n", "`n")
+$rootGitStatusOld = 'execute_process(' + "`n" +
+  '        COMMAND git status' + "`n" +
+  '        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}' + "`n" +
+  '        RESULT_VARIABLE GIT_STATUS' + "`n" +
+  ')' + "`n"
+$rootGitStatusNew = 'execute_process(' + "`n" +
+  '        COMMAND git status' + "`n" +
+  '        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}' + "`n" +
+  '        RESULT_VARIABLE GIT_STATUS' + "`n" +
+  '        ERROR_QUIET' + "`n" +
+  ')' + "`n"
+# The exported release source intentionally lacks .git; silence the upstream
+# optional version probe so its expected failure does not print fatal stderr.
+$rootCmakeText = Replace-RequiredText $rootCmakeText $rootGitStatusOld $rootGitStatusNew `
+  'silence expected git status failure in exported source'
 $rootCmakeText = Replace-RequiredText $rootCmakeText 'set(WITH_CPU_BACKEND true)' `
   'set(WITH_CPU_BACKEND false)' 'disable the unrelated Windows OpenMP backend build'
 Set-Content -Path $rootCmake -Value $rootCmakeText -Encoding UTF8
@@ -182,8 +208,8 @@ $cmakeArgs = @(
   '-DWITH_VULKAN_BACKEND=OFF',
   "-DACPP_SUBPROJECT_PARALLEL_JOBS=$subprojectJobs"
 )
-Invoke-Checked { & cmake.exe @cmakeArgs }
-Invoke-Checked { & cmake.exe --build $build --target rt-backend-hip libkernel-sscp-amdgpu-amdhsa --parallel $buildJobs }
+Invoke-CheckedCommand { & cmake.exe @cmakeArgs }
+Invoke-CheckedCommand { & cmake.exe --build $build --target rt-backend-hip libkernel-sscp-amdgpu-amdhsa --parallel $buildJobs }
 
 $hipBackend = Get-ChildItem $build -Recurse -Filter rt-backend-hip.dll -File | Select-Object -First 1
 $amdBitcode = Get-ChildItem $build -Recurse -Filter libkernel-sscp-amdgpu-amdhsa-full.bc -File | Select-Object -First 1
@@ -192,11 +218,12 @@ if (-not $amdBitcode) { throw 'AMDGPU libkernel bitcode was not produced' }
 New-Item -ItemType Directory -Force "$acpp\bin\hipSYCL", "$acpp\lib\hipSYCL\bitcode" | Out-Null
 Copy-Item -Force $hipBackend.FullName "$acpp\bin\hipSYCL\rt-backend-hip.dll"
 Copy-Item -Force $amdBitcode.FullName "$acpp\lib\hipSYCL\bitcode\libkernel-sscp-amdgpu-amdhsa-full.bc"
+Set-Content -LiteralPath (Join-Path $acpp '.mom-acpp-toolchain') `
+  -Value 'mom AdaptiveCpp toolchain' -NoNewline
 Write-Host "Installed HIP backend: $($hipBackend.FullName)"
 Write-Host "Installed AMDGPU bitcode: $($amdBitcode.FullName)"
 
 $env:ACPP_VISIBILITY_MASK = 'hip'
-Remove-Item -Recurse -Force (Join-Path $env:LOCALAPPDATA 'acpp') -ErrorAction SilentlyContinue
 Write-Host 'AdaptiveCpp device inventory:'
-Invoke-Checked { & "$acpp\bin\acpp-info.exe" }
+Invoke-CheckedCommand { & "$acpp\bin\acpp-info.exe" }
 Write-Host "AdaptiveCpp Windows HIP toolchain ready at $acpp"

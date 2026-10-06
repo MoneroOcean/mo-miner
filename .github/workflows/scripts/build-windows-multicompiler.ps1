@@ -11,6 +11,7 @@ $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
 Set-Location $repo
 . "$PSScriptRoot\windows-dll-deps.ps1"
+. "$repo\scripts\windows-install-helpers.ps1"
 $supportedCompilers = switch ($Backend) {
   'all'    { @('all') }
   'intel'  { @('all','oneapi','dpcpp','portable') }
@@ -56,6 +57,9 @@ if (Test-Path $platformRoot) {
   Move-Item $platformRoot $platformsHold
 }
 New-Item -ItemType Directory -Force $platformRoot | Out-Null
+$cutlassRoot = Join-Path $platformRoot 'cutlass'
+$cachedCutlass = Join-Path $platformsHold 'win\cutlass'
+if (Test-Path $cachedCutlass) { Copy-Item $cachedCutlass $cutlassRoot -Recurse }
 # AdaptiveCpp's application database is runtime state, not node-gyp output. Carry it through a
 # source rebuild so build/win can be round-tripped by run.sh without repeating every SSCP JIT.
 $cachedAppDb = Join-Path $platformsHold 'win\.acpp'
@@ -82,8 +86,11 @@ function Save-Compiler(
   [string]$DeviceLibDir = ''
 ) {
   $dest = Join-Path $out $Name
+  if (Test-Path -LiteralPath $dest) {
+    Remove-Item -LiteralPath $dest -Recurse -Force
+  }
   New-Item -ItemType Directory -Force $dest | Out-Null
-  Copy-Item build\Release\mom.node, build\Release\sycl.dll $dest
+  Copy-Item build\Release\mom.node, build\Release\sycl.dll $dest -Force
   if ($ToolchainDir) {
     # Snapshot the production accelerator and required host backend, not the entire installation.
     # The AdaptiveCpp bin tree also contains libclang/LLVM-C/LTO and every enabled backend; none is
@@ -163,6 +170,10 @@ function Save-DpcppRuntime(
   [string]$RuntimeToolchainDir = $DpcppDir
 ) {
   $dest = Join-Path $out $Name
+  New-Item -ItemType Directory -Force $dest | Out-Null
+  Get-ChildItem -LiteralPath $dest -File -Force |
+    Where-Object { $_.Name -notin @('mom.node','sycl.dll') } |
+    Remove-Item -Force
   $savedDpcpp = $env:MOM_DPCPP_DIR
   $savedAcpp = $env:MOM_ACPP_DIR
   $savedHip = $env:HIP_PATH
@@ -190,15 +201,14 @@ function Save-DpcppRuntime(
 
 try {
   & "$PSScriptRoot\build-windows.ps1"
-  if ($LASTEXITCODE -ne 0) { throw 'Windows host/oneAPI build failed' }
   if ($Backend -in @('all','intel')) {
     if ($Compiler -in @('all','oneapi')) { Save-Compiler oneapi }
 
-    # Intel must be a real second compiler snapshot, not another invocation of the oneAPI addon.
-    # Build open DPC++ for generic SPIR-V/Level Zero without CUDA or HIP target dependencies.
-    if ($Compiler -in @('all','dpcpp')) {
-      & "$PSScriptRoot\build-sycl-cuda-win.ps1" -ToolchainDir $DpcppDir -CudaPath '' -HipPath ''
-      if ($LASTEXITCODE -ne 0) { throw 'open-source DPC++ Intel build failed' }
+    # Targeted Intel builds may request native DPC++ without CUDA/HIP dependencies. The combined
+    # release uses dpcpp-opencl for generic SPIR-V and fills dpcpp with the NVIDIA worker below;
+    # building an Intel dpcpp snapshot here would immediately overwrite and discard that work.
+    if ($Backend -eq 'intel' -and $Compiler -in @('all','dpcpp')) {
+      & "$PSScriptRoot\build-sycl-cuda-win.ps1" -ToolchainDir $DpcppDir -CudaPath ''
       $env:MOM_DPCPP_DIR = $DpcppDir
       Save-Compiler dpcpp
       Save-DpcppRuntime
@@ -210,8 +220,7 @@ try {
   # Intel integrated GPUs. Keep it in targeted vendor builds so any config can select a portable
   # backend without first rebuilding under MOM_GPU_BACKEND=opencl.
   if ($Backend -in @('all','intel','nvidia','amd','opencl') -and $Compiler -in @('all','portable')) {
-    & "$PSScriptRoot\build-sycl-cuda-win.ps1" -ToolchainDir $DpcppDir -CudaPath '' -HipPath '' -PortableOpencl
-    if ($LASTEXITCODE -ne 0) { throw 'portable OpenCL/Level Zero DPC++ build failed' }
+    & "$PSScriptRoot\build-sycl-cuda-win.ps1" -ToolchainDir $DpcppDir -CudaPath '' -PortableOpencl
     Save-Compiler dpcpp-opencl
     # A targeted portable rebuild may select a newer/pinned DPC++ over a preserved build/win tree.
     # Always refresh the shared runtime from that same toolchain; mixing a newly compiled addon with
@@ -220,8 +229,9 @@ try {
   }
 
   if ($Backend -in @('all','nvidia') -and $Compiler -in @('all','dpcpp')) {
-    & "$PSScriptRoot\build-sycl-cuda-win.ps1" -ToolchainDir $DpcppDir -CudaPath $CudaPath -HipPath ''
-    if ($LASTEXITCODE -ne 0) { throw 'open-source DPC++ build failed' }
+    . (Join-Path $repo 'scripts\install-cutlass.ps1')
+    Install-MomCutlass $cutlassRoot
+    & "$PSScriptRoot\build-sycl-cuda-win.ps1" -ToolchainDir $DpcppDir -CudaPath $CudaPath -RequireCuda
   # DPC++ workers need the runtime DLLs, not a redistributable compiler. package-windows.ps1 copies
   # its release runtime/adapters from this canonical tree and resolves their transitive closure.
   # Treating DPC++ like AdaptiveCpp here used to add opt/llc/lld plus every debug adapter/runtime to
@@ -233,16 +243,14 @@ try {
   }
   if ($Backend -in @('all','nvidia') -and $Compiler -in @('all','adaptivecpp')) {
     & "$PSScriptRoot\build-sycl-adaptivecpp-win.ps1" -ToolchainDir $AcppCudaDir -Backend cuda -CudaPath $CudaPath
-    if ($LASTEXITCODE -ne 0) { throw 'AdaptiveCpp CUDA build failed' }
     Save-Compiler acpp-cuda $AcppCudaDir
   }
 
   if ($Backend -in @('all','amd') -and $Compiler -in @('all','adaptivecpp')) {
-    $amdDeviceLib = Get-ChildItem $HipPath -Recurse -Filter 'ockl.bc' -File | Select-Object -First 1
+    $amdDeviceLib = Get-MomHipDeviceLib $HipPath
     if (-not $amdDeviceLib) { throw "ROCm device libraries not found under $HipPath" }
     & "$PSScriptRoot\build-sycl-adaptivecpp-win.ps1" -ToolchainDir $AcppHipDir -Backend hip -HipPath $HipPath
-    if ($LASTEXITCODE -ne 0) { throw 'AdaptiveCpp HIP build failed' }
-    Save-Compiler acpp-hip $AcppHipDir (Join-Path $HipPath 'bin') $amdDeviceLib.Directory.FullName
+    Save-Compiler acpp-hip $AcppHipDir (Join-Path $HipPath 'bin') (Split-Path -Parent $amdDeviceLib)
   }
 
   Write-Host 'Built Windows compiler workers:'

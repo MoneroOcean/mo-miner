@@ -11,19 +11,17 @@ FROM ubuntu:24.04
 
 SHELL ["/bin/bash", "-c"]
 
-ARG NODE_VERSION=24.15.0
-# Pin a nightly that ships the kernel_compiler SYCL-source JIT (libsycl-jit.so) the kawpow
-# algo needs, matching scripts/build-nvidia.dockerfile. Bump together with that file.
-ARG DPCPP_RELEASE=nightly-2026-07-11
-ARG DPCPP_ASSET=sycl_linux.tar.gz
-
 COPY scripts/install-dev.sh scripts/install-cutlass.sh /tmp/mom-install-dev/
 
 # Install common tooling and every prebuilt compiler dependency in one canonical pass. Expensive
 # source-built AdaptiveCpp stages remain independently cached by the multicompiler image.
-RUN MOM_NODE_VERSION="$NODE_VERSION" MOM_DPCPP_RELEASE="$DPCPP_RELEASE" \
-      MOM_DPCPP_ASSET="$DPCPP_ASSET" bash /tmp/mom-install-dev/install-dev.sh \
+RUN bash /tmp/mom-install-dev/install-dev.sh \
       --component base,node,oneapi,cuda,dpcpp && rm -rf /var/lib/apt/lists/*
+
+# Keep the GPU user-mode driver independent of the expensive compiler layer. The host supplies the
+# kernel driver; this pin avoids silently inheriting an old distro compute runtime in the image.
+COPY scripts/install-intel-compute-runtime.sh /tmp/mom-install-dev/
+RUN bash /tmp/mom-install-dev/install-intel-compute-runtime.sh && rm -rf /var/lib/apt/lists/*
 
 RUN chmod g=u /root
 ENV PATH=/usr/local/cuda/bin:$PATH \
@@ -39,11 +37,13 @@ RUN echo $'#!/usr/bin/env bash\n\
 useradd user -u $(stat -c "%g" /root/mom) -G root,video -m -s /bin/bash;\n\
 echo "user ALL=(ALL) NOPASSWD:ALL" >/etc/sudoers.d/user-user\n\
 portable_build="${MOM_PORTABLE_BUILD:-0}"\n\
-# AOT device target set for the combined build (e.g. release CI widens to multi-arch NVIDIA via\n\
-# -e MOM_COMBINED_TARGETS=spir64,nvidia_gpu_sm_80,nvidia_gpu_sm_89,nvidia_gpu_sm_90). Captured in\n\
-# the root shell so the unquoted heredoc below carries it into the user build shell; empty -> the\n\
-# combined-build.sh default (spir64,nvidia_gpu_sm_89).\n\
+# AOT target set for the combined build (e.g. release CI widens to multi-arch NVIDIA via\n\
+# -e MOM_COMBINED_TARGETS=spir64,nvidia_gpu_sm_80,nvidia_gpu_sm_89,nvidia_gpu_sm_90). The Intel AOT\n\
+# device is carried alongside it. Both values are captured in the root shell so the unquoted\n\
+# heredoc below carries caller overrides into the user build shell; empty leaves the build script's\n\
+# defaults (spir64,spir64_gen,nvidia_gpu_sm_80, with bmg-g21 for spir64_gen).\n\
 combined_targets="${MOM_COMBINED_TARGETS:-}"\n\
+intel_aot_device="${MOM_INTEL_AOT_DEVICE:-}"\n\
 su - user <<EOF\n\
 cd /root/mom # su - resets to home dir and we need to keep /root/mom pwd\n\
 . /opt/intel/oneapi/setvars.sh >/dev/null\n\
@@ -65,8 +65,9 @@ export MOM_AUTOLYKOS2_PROFILE="${MOM_AUTOLYKOS2_PROFILE:-}"\n\
 export ONEAPI_DEVICE_SELECTOR="${ONEAPI_DEVICE_SELECTOR:-}"\n\
 export ZE_AFFINITY_MASK="${ZE_AFFINITY_MASK:-}"\n\
 export MOM_COMBINED_TARGETS="$combined_targets"\n\
+export MOM_INTEL_AOT_DEVICE="$intel_aot_device"\n\
 export SYCL_CACHE_PERSISTENT=1\n\
-{ ping -c1 -W2 8.8.8.8 >/dev/null 2>&1; } && npm update --silent || echo "Skip npm update since there is no internet access"\n\
+if ! npm ls --depth=0 --silent >/dev/null 2>&1; then npm install --ignore-scripts --no-audit --no-fund --silent; fi\n\
 bash scripts/combined-build.sh &&\n\
 sudo_env=(LD_LIBRARY_PATH=/opt/dpcpp/lib:$LD_LIBRARY_PATH MOM_PERF_SAMPLES="\$MOM_PERF_SAMPLES")\n\
 for v in MOM_CN_GPU_INTENSITY MOM_AUTOLYKOS2_WORKGROUP MOM_AUTOLYKOS2_SPLIT MOM_AUTOLYKOS2_PROFILE ONEAPI_DEVICE_SELECTOR ZE_AFFINITY_MASK; do\n\

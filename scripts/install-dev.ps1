@@ -2,12 +2,11 @@ param(
   [Alias('Components')][string[]]$Component = @('all'),
   [int]$Jobs = $(if ($env:MOM_BUILD_JOBS) { [int]$env:MOM_BUILD_JOBS } else { [Environment]::ProcessorCount }),
   [string]$DpcppDir = 'C:\Tools\dpcpp',
-  [string]$DpcppHipDir = 'C:\Tools\dpcpp-amd',
   [string]$AcppCudaDir = 'C:\Tools\acpp-cuda',
   [string]$AcppHipDir = 'C:\Tools\acpp-amd',
   [string]$HipDir = 'C:\Program Files\AMD\ROCm\7.1',
   [string]$CudaDir = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6',
-  [string]$DpcppSha256 = '7a61b81cc15484656c80d3927dfc890d14d98689d64f05e3b88f5b45a1e4bb34',
+  [string]$DpcppSha256 = '81b116580a84ac29221c459ffa354045fae69d95338a8c1db70b76d16be7e472',
   [string]$Workspace = 'C:\mom-dev-bootstrap',
   [switch]$ValidateOnly,
   [switch]$KeepWorkspace
@@ -19,6 +18,7 @@ if ($PSVersionTable.PSVersion.Major -ge 7) { $PSNativeCommandUseErrorActionPrefe
 if ($Jobs -lt 1) { throw '-Jobs must be a positive integer' }
 $env:MOM_BUILD_JOBS = [string]$Jobs
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+. (Join-Path $PSScriptRoot 'windows-install-helpers.ps1')
 . (Join-Path $PSScriptRoot "install-cutlass.ps1")
 
 function Resolve-FromRepo([string]$Path) {
@@ -30,19 +30,49 @@ function Resolve-FromRepo([string]$Path) {
 # location first so a relative path continues to mean "relative to the repository", as it does for
 # the rest of the development and VM tooling.
 $DpcppDir = Resolve-FromRepo $DpcppDir
-$DpcppHipDir = Resolve-FromRepo $DpcppHipDir
 $AcppCudaDir = Resolve-FromRepo $AcppCudaDir
 $AcppHipDir = Resolve-FromRepo $AcppHipDir
 $HipDir = Resolve-FromRepo $HipDir
 $CudaDir = Resolve-FromRepo $CudaDir
 $Workspace = Resolve-FromRepo $Workspace
+$pathTrimChars = [char[]]@('\', '/')
+$pathSeparator = [IO.Path]::DirectorySeparatorChar
+$Workspace = $Workspace.TrimEnd($pathTrimChars)
+$workspaceLeaf = [IO.Path]::GetFileName($Workspace)
+if ($workspaceLeaf -notmatch '^mom-dev-[A-Za-z0-9_.-]+$') {
+  throw '-Workspace must name a dedicated mom-dev-* directory'
+}
+$workspaceMarker = Join-Path $Workspace '.mom-dev-workspace'
+Assert-NoReparseAncestor $Workspace 'Development workspace'
+
+function Initialize-Workspace {
+  $workspaceItem = Get-Item -LiteralPath $Workspace -Force -ErrorAction SilentlyContinue
+  if ($workspaceItem) {
+    if (-not $workspaceItem.PSIsContainer) { throw '-Workspace must be an owned directory' }
+    if ($workspaceItem.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+      throw '-Workspace must not be a reparse point'
+    }
+    if (-not (Test-MomMarker $workspaceMarker 'mom development workspace')) {
+      throw '-Workspace exists without the .mom-dev-workspace marker'
+    }
+    return
+  }
+  [IO.Directory]::CreateDirectory($Workspace) | Out-Null
+  Set-Content -LiteralPath $workspaceMarker -Value 'mom development workspace' -NoNewline
+}
 
 # Versions and destinations are shared by local VM provisioning and hosted CI. GPU drivers are the
 # only deliberate external prerequisite; CUDA/HIP below are compiler SDK payloads, not display drivers.
 $nodeVersion = '24.15.0'
+$nodeSha256 = 'feffb8e5cb5ac47f793666636d496ef3e975be82c84c4da5d20e6aa8fa4eb806'
+$momToolsRoot = 'C:\Tools\mom'
 $pythonVersion = '3.12.10'
-$pythonRoot = 'C:\Program Files\Python312'
+$pythonSha256 = '4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3'
+$pythonRoot = Join-Path $momToolsRoot "python-$pythonVersion"
 $gitVersion = '2.50.1'
+$gitSha256 = '6f672aebe9e488a246efd6875f9197dbc0d9a40100e218acc3877cba2b206c45'
+$gitRoot = Join-Path $momToolsRoot "git-$gitVersion"
+$sevenZipSha256 = 'ec6af1ea0367d16dde6639a89a080a524cebc4d4bedfe00ed0cac4b865a918d8'
 $adaptiveCppCommit = 'da2463e45aa90aa36306c45abcfc05b87de51bc6'
 $hipSdkUrl = 'https://download.amd.com/developer/eula/rocm-hub/AMD-Software-PRO-Edition-26.Q1-Win11-For-HIP.exe'
 $hipSdkSha256 = 'f9e1fd7ae6004ce448ef39dcac2c3b45fed741f2d83210259bfda61b86f78f84'
@@ -61,7 +91,7 @@ foreach ($entry in $Component) {
   }
 }
 if (-not $requested.Count) { $requested.Add('all') }
-$valid = @('base','node','oneapi','opencl-cpu','cuda','hip','dpcpp','dpcpp-hip','acpp-cuda','acpp-hip')
+$valid = @('base','node','oneapi','opencl-cpu','cuda','hip','dpcpp','acpp-cuda','acpp-hip')
 $defaultComponents = @('base','node','oneapi','opencl-cpu','cuda','hip','dpcpp','acpp-cuda','acpp-hip')
 $components = [System.Collections.Generic.List[string]]::new()
 foreach ($name in $requested) {
@@ -70,16 +100,68 @@ foreach ($name in $requested) {
   else { throw "Unknown development component '$name'. Valid: all, $($valid -join ', ')" }
 }
 
+if (($components -contains 'cuda') -or ($components -contains 'acpp-cuda') -or
+    ($components -contains 'acpp-hip')) {
+  Assert-NoReparseAncestor $CudaDir 'CUDA SDK destination'
+}
+if ($components -contains 'dpcpp') {
+  Assert-NoReparseAncestor $DpcppDir 'DPC++ destination'
+}
+if (($components -contains 'hip') -or ($components -contains 'acpp-hip')) {
+  Assert-NoReparseAncestor $HipDir 'HIP SDK destination'
+}
+
+$acppDestinations = @()
+if (($components -contains 'acpp-cuda') -or ($components -contains 'acpp-hip')) {
+  $acppDestinations += $AcppCudaDir
+}
+if ($components -contains 'acpp-hip') { $acppDestinations += $AcppHipDir }
+foreach ($path in ($acppDestinations | Select-Object -Unique)) {
+  $trimmed = $path.TrimEnd($pathTrimChars)
+  $root = [IO.Path]::GetPathRoot($path).TrimEnd($pathTrimChars)
+  if ([string]::Equals($trimmed, $root, [StringComparison]::OrdinalIgnoreCase) -or
+      [IO.Path]::GetFileName($trimmed) -notmatch '^acpp-[A-Za-z0-9_.-]+$') {
+    throw 'AdaptiveCpp destinations must be dedicated acpp-* directories, not filesystem roots'
+  }
+  $item = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+  if ($item -and -not $item.PSIsContainer) {
+    throw "AdaptiveCpp destination must be a real directory: $path"
+  }
+  Assert-NoReparseAncestor $path 'AdaptiveCpp destination'
+  $workspacePrefix = $Workspace + $pathSeparator
+  $destinationPrefix = $trimmed + $pathSeparator
+  if ($trimmed.StartsWith($workspacePrefix, [StringComparison]::OrdinalIgnoreCase) -or
+      $Workspace.StartsWith($destinationPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "AdaptiveCpp destination must be separate from -Workspace: $path"
+  }
+  if ($item) {
+    if (-not (Test-MomMarker (Join-Path $path '.mom-acpp-toolchain') `
+        'mom AdaptiveCpp toolchain')) {
+      $contents = Get-ChildItem -LiteralPath $path -Force | Select-Object -First 1
+      if ($contents) {
+        throw "AdaptiveCpp destination exists without its ownership marker: $path"
+      }
+    }
+  }
+}
+$uniqueAcppDestinations = @($acppDestinations | Select-Object -Unique)
+if ($uniqueAcppDestinations.Count -eq 2 -and
+    -not [string]::Equals($uniqueAcppDestinations[0], $uniqueAcppDestinations[1],
+      [StringComparison]::OrdinalIgnoreCase)) {
+  $first = $uniqueAcppDestinations[0].TrimEnd($pathTrimChars)
+  $second = $uniqueAcppDestinations[1].TrimEnd($pathTrimChars)
+  if ($first.StartsWith($second + $pathSeparator, [StringComparison]::OrdinalIgnoreCase) -or
+      $second.StartsWith($first + $pathSeparator, [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'AdaptiveCpp CUDA and HIP destinations must be equal or separate directories'
+  }
+}
+
 function Test-Administrator {
   $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
   $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 function Require-Administrator {
   if (-not (Test-Administrator)) { throw 'Run scripts\install-dev.bat from an elevated Administrator prompt.' }
-}
-function Invoke-Checked([string]$File, [string[]]$Arguments) {
-  & $File @Arguments
-  if ($LASTEXITCODE -ne 0) { throw "$File failed with exit code $LASTEXITCODE" }
 }
 function Add-MachinePath([string]$Entry) {
   if (-not (Test-Path $Entry)) { return }
@@ -100,31 +182,23 @@ function Export-DevelopmentEnvironment([string]$Name, [string]$Value) {
   Set-Item "Env:$Name" $Value
   if ($env:GITHUB_ENV) { "$Name=$Value" | Out-File $env:GITHUB_ENV -Append -Encoding utf8 }
 }
-function Download([string]$Url, [string]$OutFile) {
-  New-Item -ItemType Directory -Force (Split-Path -Parent $OutFile) | Out-Null
-  Invoke-Checked 'curl.exe' @('-fL','--retry','5','--retry-delay','5','-o',$OutFile,$Url)
-}
-function Assert-Sha256([string]$Path, [string]$Expected) {
-  $actual = (Get-FileHash -Algorithm SHA256 $Path).Hash.ToLowerInvariant()
-  if ($actual -ne $Expected.ToLowerInvariant()) {
-    Remove-Item $Path -Force -ErrorAction SilentlyContinue
-    throw "SHA256 mismatch for $Path`: expected $Expected, got $actual"
-  }
-}
 function Install-Msi([string]$Path, [string[]]$Properties = @()) {
   Require-Administrator
+  # Callers authenticate direct downloads or the signed/hash-pinned container they extract from.
   $process = Start-Process msiexec.exe -ArgumentList (@('/i',"`"$Path`"",'/qn','/norestart') + $Properties) -Wait -PassThru
   if ($process.ExitCode -notin @(0,3010,1641)) { throw "MSI $Path failed with exit code $($process.ExitCode)" }
 }
 function Test-VsBuildTools {
   $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
   if (Test-Path $vswhere) {
-    $root = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+    $root = & $vswhere -latest -products * `
+      -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+      -requires Microsoft.VisualStudio.Component.Windows11SDK.26100 `
+      -requires Microsoft.VisualStudio.Component.VC.CMake.Project `
       -property installationPath | Select-Object -First 1
     if ($root -and (Test-Path (Join-Path $root 'VC\Auxiliary\Build\vcvars64.bat'))) { return $true }
   }
-  [bool](Get-ChildItem 'C:\BuildTools\VC\Tools\MSVC' -Filter cl.exe -Recurse -File -ErrorAction SilentlyContinue |
-    Select-Object -First 1)
+  $false
 }
 function Test-Python {
   $python = Join-Path $pythonRoot 'python.exe'
@@ -132,12 +206,28 @@ function Test-Python {
   $reported = (& $python --version 2>&1 | Select-Object -First 1).ToString().Trim()
   ($LASTEXITCODE -eq 0) -and ($reported -eq "Python $pythonVersion")
 }
+function Test-Git {
+  $git = Join-Path $gitRoot 'cmd\git.exe'
+  if (-not (Test-Path $git)) { return $false }
+  & $git --version >$null 2>&1
+  $LASTEXITCODE -eq 0
+}
+function Install-7Zip {
+  if (-not (Get-Command 7z.exe -ErrorAction SilentlyContinue)) {
+    $sevenZip = Join-Path $Workspace '7zip.msi'
+    Download 'https://www.7-zip.org/a/7z2409-x64.msi' $sevenZip
+    Assert-Sha256 $sevenZip $sevenZipSha256
+    Install-Msi $sevenZip
+  }
+  Add-MachinePath 'C:\Program Files\7-Zip'
+}
 function Install-Base {
   Require-Administrator
-  New-Item -ItemType Directory -Force $Workspace, 'C:\Tools' | Out-Null
+  [IO.Directory]::CreateDirectory($momToolsRoot) | Out-Null
   if (-not (Test-VsBuildTools)) {
     $installer = Join-Path $Workspace 'vs_BuildTools.exe'
     Download 'https://aka.ms/vs/17/release/vs_BuildTools.exe' $installer
+    Assert-Authenticode $installer
     $arguments = @(
       '--quiet','--wait','--norestart','--nocache','--installPath','C:\BuildTools',
       '--add','Microsoft.VisualStudio.Component.VC.Tools.x86.x64',
@@ -155,6 +245,7 @@ function Install-Base {
   if (-not (Test-Python)) {
     $python = Join-Path $Workspace "python-$pythonVersion-embed-amd64.zip"
     Download "https://www.python.org/ftp/python/$pythonVersion/python-$pythonVersion-embed-amd64.zip" $python
+    Assert-Sha256 $python $pythonSha256
     Remove-Item $pythonRoot -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force $pythonRoot | Out-Null
     Invoke-Checked "$env:SystemRoot\System32\tar.exe" @('-xf',$python,'-C',$pythonRoot)
@@ -166,21 +257,17 @@ function Install-Base {
   Add-MachinePath $pythonRoot
   Add-MachinePath (Join-Path $pythonRoot 'Scripts')
 
-  if (-not (Get-Command git.exe -ErrorAction SilentlyContinue)) {
+  if (-not (Test-Git)) {
     $mingit = Join-Path $Workspace 'mingit.zip'
     Download "https://github.com/git-for-windows/git/releases/download/v$gitVersion.windows.1/MinGit-$gitVersion-64-bit.zip" $mingit
-    Remove-Item 'C:\Tools\git' -Recurse -Force -ErrorAction SilentlyContinue
-    New-Item -ItemType Directory -Force 'C:\Tools\git' | Out-Null
-    Invoke-Checked "$env:SystemRoot\System32\tar.exe" @('-xf',$mingit,'-C','C:\Tools\git')
+    Assert-Sha256 $mingit $gitSha256
+    Remove-Item $gitRoot -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force $gitRoot | Out-Null
+    Invoke-Checked "$env:SystemRoot\System32\tar.exe" @('-xf',$mingit,'-C',$gitRoot)
   }
-  Add-MachinePath 'C:\Tools\git\cmd'
+  Add-MachinePath (Join-Path $gitRoot 'cmd')
 
-  if (-not (Get-Command 7z.exe -ErrorAction SilentlyContinue)) {
-    $sevenZip = Join-Path $Workspace '7zip.msi'
-    Download 'https://www.7-zip.org/a/7z2409-x64.msi' $sevenZip
-    Install-Msi $sevenZip
-  }
-  Add-MachinePath 'C:\Program Files\7-Zip'
+  Install-7Zip
   Add-MachinePath 'C:\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin'
   Add-MachinePath 'C:\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja'
 }
@@ -188,6 +275,7 @@ function Install-Node {
   if (-not (Test-Node)) {
     $msi = Join-Path $Workspace "node-v$nodeVersion-x64.msi"
     Download "https://nodejs.org/dist/v$nodeVersion/node-v$nodeVersion-x64.msi" $msi
+    Assert-Sha256 $msi $nodeSha256
     Install-Msi $msi
   }
   Add-MachinePath 'C:\Program Files\nodejs'
@@ -235,8 +323,11 @@ function Get-OpenClCpuRuntime {
 function Install-OpenClCpu {
   if (Get-OpenClCpuRuntime) { return }
   Require-Administrator
+  # This runtime needs an extractor, not Visual Studio, Python, Git, or the compiler SDKs.
+  Install-7Zip
   $installer = Join-Path $Workspace 'opencl-cpu-runtime.exe'
   Download $openClCpuUrl $installer
+  Assert-Authenticode $installer
   # Intel wraps one ordinary MSI in StubWebImage.exe. Its documented silent wrapper can remain
   # alive indefinitely after the MSI transaction on headless Windows/CI. Extract and install that
   # signed payload directly so setup has deterministic completion and exit-code handling.
@@ -283,12 +374,11 @@ function Install-CudaNvrtc {
   if (-not (Test-CudaNvrtc)) { throw 'CUDA 13 NVRTC runtime install failed validation' }
 }
 function Install-Cuda {
-  if (-not ((Test-Path (Join-Path $CudaDir 'bin\ptxas.exe')) -and
-            (Test-Path (Join-Path $CudaDir 'nvvm\libdevice\libdevice.10.bc')) -and
-            (Test-Path (Join-Path $CudaDir 'include\nvrtc.h')))) {
+  if (-not (Test-MomCudaCompilerSdk $CudaDir)) {
     Require-Administrator
     $installer = Join-Path $Workspace 'cuda-network.exe'
     Download $cudaUrl $installer
+    Assert-Authenticode $installer
     $process = Start-Process $installer -ArgumentList @(
       '-s','nvcc_12.6','cudart_12.6','nvrtc_12.6','nvrtc_dev_12.6'
     ) -Wait -PassThru
@@ -302,42 +392,24 @@ function Install-Cuda {
 }
 function Test-Dpcpp {
   $marker = Join-Path $DpcppDir '.mom-toolchain-sha256'
-  (Test-Path (Join-Path $DpcppDir 'bin\clang++.exe')) -and
-    (Test-Path (Join-Path $DpcppDir 'bin\sycl9.dll')) -and
-    (Test-Path (Join-Path $DpcppDir 'bin\ur_adapter_opencl.dll')) -and
-    (Test-Path $marker) -and
-    ((Get-Content $marker -Raw).Trim() -eq $DpcppSha256.ToLowerInvariant())
+  (Test-MomDpcppToolchain $DpcppDir) -and
+    (Test-MomMarker $marker $DpcppSha256.ToLowerInvariant())
 }
 function Install-Dpcpp {
   if (-not (Test-Dpcpp)) {
     & (Join-Path $repo '.github\workflows\scripts\restore-toolchain-win.ps1') `
       -Dest $DpcppDir -ExpectedSha256 $DpcppSha256
-    if ($LASTEXITCODE -ne 0) { throw "DPC++ restore failed: $LASTEXITCODE" }
   }
   Export-DevelopmentEnvironment MOM_DPCPP_DIR $DpcppDir
-}
-function Install-DpcppHip {
-  if (-not (Test-Path (Join-Path $DpcppHipDir 'bin\ur_adapter_hip.dll'))) {
-    Install-Hip
-    & (Join-Path $repo 'scripts\build-windows-dpcpp-amd.ps1') `
-      -RocmPath $HipDir `
-      -SourceDir (Join-Path $Workspace 'intel-llvm-hip') `
-      -BuildDir (Join-Path $Workspace 'dpcpp-hip-build') `
-      -InstallDir $DpcppHipDir `
-      -Jobs $Jobs
-    if ($LASTEXITCODE -ne 0) { throw "DPC++ HIP build failed: $LASTEXITCODE" }
-  }
-  Export-DevelopmentEnvironment MOM_DPCPP_HIP_DIR $DpcppHipDir
 }
 function Install-AcppCuda {
   if (Test-Acpp $AcppCudaDir cuda) { return }
   Install-Cuda
   & (Join-Path $repo 'scripts\build-windows-adaptivecpp-base.ps1') `
     -InstallDir $AcppCudaDir -Workspace $Workspace -Jobs $Jobs
-  if ($LASTEXITCODE -ne 0) { throw "AdaptiveCpp base build failed: $LASTEXITCODE" }
 }
 function Install-Hip {
-  if (-not (Test-Path (Join-Path $HipDir 'lib\amdhip64.lib'))) {
+  if (-not (Test-MomHipSdk $HipDir)) {
     Require-Administrator
     $sdkExe = Join-Path $Workspace 'hip-sdk.exe'
     Download $hipSdkUrl $sdkExe
@@ -355,6 +427,7 @@ function Install-Hip {
       Install-Msi (Join-Path $Workspace $msi)
     }
   }
+  if (-not (Test-MomHipSdk $HipDir)) { throw "HIP SDK install failed validation: $HipDir" }
   Export-DevelopmentEnvironment HIP_PATH $HipDir
   Export-DevelopmentEnvironment ROCM_PATH $HipDir
 }
@@ -369,8 +442,7 @@ function Install-AcppHip {
   Invoke-Checked 'git.exe' @('-C',$sourceRepo,'archive','--format=tar.gz','-o',
     (Join-Path $Workspace 'AdaptiveCpp-src.tar.gz'),$adaptiveCppCommit)
   & (Join-Path $repo 'scripts\build-windows-adaptivecpp-amd.ps1') `
-    -Workspace $Workspace -BaseToolchain $AcppCudaDir
-  if ($LASTEXITCODE -ne 0) { throw "AdaptiveCpp HIP build failed: $LASTEXITCODE" }
+    -Workspace $Workspace -BaseToolchain $AcppCudaDir -HipPath $HipDir
   Remove-Item $AcppHipDir -Recurse -Force -ErrorAction SilentlyContinue
   Move-Item (Join-Path $Workspace 'acpp-toolchain') $AcppHipDir
 }
@@ -402,7 +474,16 @@ function Test-Acpp([string]$Path, [string]$Backend) {
     default { $false }
   }
   $devicePayload -and
+    (Test-MomMarker (Join-Path $Path '.mom-acpp-toolchain') `
+      'mom AdaptiveCpp toolchain') -and
     (Test-Path (Join-Path $Path 'bin\acpp')) -and
+    (Test-Path (Join-Path $Path 'bin\clang.exe') -PathType Leaf) -and
+    (Test-Path (Join-Path $Path 'bin\acpp-common.dll') -PathType Leaf) -and
+    (Test-Path (Join-Path $Path 'bin\acpp-rt.dll') -PathType Leaf) -and
+    (Test-Path (Join-Path $Path 'bin\opt.exe') -PathType Leaf) -and
+    (Test-Path (Join-Path $Path 'bin\llc.exe') -PathType Leaf) -and
+    (Test-Path (Join-Path $Path 'bin\lld-link.exe') -PathType Leaf) -and
+    (Test-Path (Join-Path $Path 'lib\hipSYCL\bitcode\libkernel-sscp-host-full.bc') -PathType Leaf) -and
     (Test-Path (Join-Path $Path 'bin\libomp.dll')) -and
     (Test-Path (Join-Path $Path 'bin\hipSYCL\rt-backend-omp.dll')) -and
     (Test-Path (Join-Path $Path "bin\hipSYCL\rt-backend-$Backend.dll")) -and
@@ -411,24 +492,21 @@ function Test-Acpp([string]$Path, [string]$Backend) {
 
 function Test-Component([string]$Name) {
   switch ($Name) {
-    base { return (Test-VsBuildTools) -and (Test-Python) -and [bool](Get-Command git.exe -ErrorAction SilentlyContinue) -and
-      [bool](Get-Command cmake.exe -ErrorAction SilentlyContinue) -and [bool](Get-Command 7z.exe -ErrorAction SilentlyContinue) }
+    base { return (Test-VsBuildTools) -and (Test-Python) -and (Test-Git) -and
+      [bool](Get-Command cmake.exe -ErrorAction SilentlyContinue) -and
+      [bool](Get-Command ninja.exe -ErrorAction SilentlyContinue) -and
+      [bool](Get-Command 7z.exe -ErrorAction SilentlyContinue) }
     node { return Test-Node }
     oneapi { return (Test-OneApi) -and [bool](Get-OpenClCpuRuntime) }
     'opencl-cpu' { return [bool](Get-OpenClCpuRuntime) }
     cuda {
-      return (Test-Path (Join-Path $CudaDir 'bin\ptxas.exe')) -and
-        (Test-Path (Join-Path $CudaDir 'nvvm\libdevice\libdevice.10.bc')) -and
-        (Test-Path (Join-Path $CudaDir 'include\nvrtc.h')) -and
+      return (Test-MomCudaCompilerSdk $CudaDir) -and
         (Test-CudaNvrtc) -and
         (Test-MomCccl $CudaDir) -and
         (Test-MomCutlass)
     }
-    hip { return Test-Path (Join-Path $HipDir 'lib\amdhip64.lib') }
+    hip { return Test-MomHipSdk $HipDir }
     dpcpp { return Test-Dpcpp }
-    'dpcpp-hip' { return (Test-Path (Join-Path $DpcppHipDir 'bin\clang++.exe')) -and
-                         (Test-Path (Join-Path $DpcppHipDir 'bin\sycl9.dll')) -and
-                         (Test-Path (Join-Path $DpcppHipDir 'bin\ur_adapter_hip.dll')) }
     'acpp-cuda' { return Test-Acpp $AcppCudaDir cuda }
     'acpp-hip' { return Test-Acpp $AcppHipDir hip }
   }
@@ -441,29 +519,70 @@ if ($ValidateOnly) {
   exit 0
 }
 
-if ($components -contains 'base') { Install-Base }
-if ($components -contains 'node') { Install-Base; Install-Node }
-if ($components -contains 'oneapi') { Install-Base; Install-OneApi }
-if ($components -contains 'opencl-cpu') { Install-Base; Install-OpenClCpu }
-if ($components -contains 'cuda') { Install-Base; Install-Cuda }
-if ($components -contains 'hip') { Install-Base; Install-Hip }
-if ($components -contains 'dpcpp') { Install-Base; Install-Dpcpp }
-if ($components -contains 'dpcpp-hip') { Install-Base; Install-Hip; Install-DpcppHip }
-if ($components -contains 'acpp-cuda') { Install-Base; Install-Cuda; Install-AcppCuda }
-if ($components -contains 'acpp-hip') { Install-Base; Install-Hip; Install-AcppHip }
+Require-Administrator
+Initialize-Workspace
+
+if ($components -contains 'base') {
+  Install-Base
+}
+if ($components -contains 'node') {
+  Install-Base
+  Install-Node
+}
+if ($components -contains 'oneapi') {
+  Install-Base
+  Install-OneApi
+}
+if ($components -contains 'opencl-cpu') {
+  Install-OpenClCpu
+}
+if ($components -contains 'cuda') {
+  Install-Base
+  Install-Cuda
+}
+if ($components -contains 'hip') {
+  Install-Base
+  Install-Hip
+}
+if ($components -contains 'dpcpp') {
+  Install-Base
+  Install-Dpcpp
+}
+if ($components -contains 'acpp-cuda') {
+  Install-Base
+  Install-Cuda
+  Install-AcppCuda
+}
+if ($components -contains 'acpp-hip') {
+  Install-Base
+  Install-Hip
+  Install-AcppHip
+}
 
 foreach ($name in $components) {
   if (-not (Test-Component $name)) { throw "Installed component failed validation: $name" }
   Write-Host "dev component ready: $name"
 }
+[IO.Directory]::CreateDirectory('C:\Tools') | Out-Null
 @(
   'mom Windows multi-compiler development environment',
   "oneAPI=C:\Program Files (x86)\Intel\oneAPI",
   "DPCPP=$DpcppDir",
-  "DPCPP-HIP=$DpcppHipDir",
   "AdaptiveCpp-CUDA=$AcppCudaDir",
   "AdaptiveCpp-HIP=$AcppHipDir",
   "CUDA=$CudaDir",
   "HIP=$HipDir"
 ) | Set-Content 'C:\Tools\mom-toolchains.txt' -Encoding UTF8
-if (-not $KeepWorkspace) { Remove-Item $Workspace -Recurse -Force -ErrorAction SilentlyContinue }
+if (-not $KeepWorkspace) {
+  # Build helpers may change the process working directory into their workspace.
+  # Leave it before removing the owned tree; Windows cannot delete the current directory.
+  Set-Location -LiteralPath $repo
+  Assert-NoReparseAncestor $Workspace 'Development workspace'
+  if (-not (Test-MomMarker $workspaceMarker 'mom development workspace')) {
+    throw 'Development workspace ownership changed before cleanup'
+  }
+  Remove-Item -LiteralPath $Workspace -Recurse -Force
+  if (Test-Path -LiteralPath $Workspace) {
+    throw "Development workspace cleanup failed: $Workspace"
+  }
+}
