@@ -85,6 +85,7 @@ void Core::set_job(
     new_algo_str == "pearlhash" ? DEV::PEARLHASH_GPU :
     new_algo_str == "fishhash" ? DEV::FISHHASH_GPU :
     new_algo_str == "karlsenhashv2" ? DEV::KARLSENHASHV2_GPU :
+    new_algo_str == "hoohash" ? DEV::MISC_GPU :
     new_algo_str == "zelhash" ? DEV::ZELHASH_GPU :
     new_algo_str == "zhash" ? DEV::ZELHASH_GPU :
     new_algo_str == "equihash192_7" ? DEV::ZELHASH_GPU :
@@ -154,6 +155,8 @@ void Core::set_job(
   // KarlsenHashV2 uses an 8-byte nonce at offset 72 of its 80-byte Kaspa blob.
   if (new_dev == DEV::KARLSENHASHV2_GPU && (new_nonce_bytes != 8 || new_nonce_offset != 72))
     throw std::string("karlsenhashv2 requires an 8-byte nonce at offset 72");
+  if (new_dev == DEV::MISC_GPU && (new_nonce_bytes != 8 || new_nonce_offset != 72))
+    throw std::string("hoohash requires an 8-byte nonce at offset 72");
   // Zcash-family headers carry a 32-byte nonce at offset 108. Advance an 8-byte counter after any
   // fixed pool prefix while keeping it entirely inside that nonce.
   if (new_dev == DEV::ZELHASH_GPU &&
@@ -232,6 +235,10 @@ void Core::set_job(
       new_fn.gpu_karlsenhashv2 = algo_lookup(gpu_karlsenhashv2_algo2fn, new_algo_str);
       break;
 
+    case DEV::MISC_GPU:
+      new_fn.gpu_misc = algo_lookup(gpu_misc_algo2fn, new_algo_str);
+      break;
+
     case DEV::ZELHASH_GPU:
       new_fn.gpu_zelhash = algo_lookup(gpu_zelhash_algo2fn, new_algo_str);
       break;
@@ -263,9 +270,12 @@ void Core::set_job(
   // header (pearlhash); min lengths differ by algo
   const unsigned min_input_len = new_dev == DEV::PEARLHASH_GPU ? 76
     : new_dev == DEV::KARLSENHASHV2_GPU ? 80
+    : new_dev == DEV::MISC_GPU ? 80
     : new_dev == DEV::ZELHASH_GPU ? 140   // full Zcash/Flux header
     : new_dev == DEV::BEAMHASH3_GPU ? 44         // prework(32)||nonce(8)||extranonce(4)
     : is_nonce_at_32_gpu_dev(new_dev) ? 40 : 0;
+  if (new_dev == DEV::MISC_GPU && new_input_len != 80)
+    throw std::string("hoohash requires an 80-byte header");
   if (new_input_len < min_input_len || ((new_algo_str == "zhash" || new_algo_str == "equihash192_7") && new_input_len != 140))
     throw std::string("Bad " + new_algo_str + " input length");
 
@@ -481,7 +491,7 @@ void Core::set_job(
     // Single-blob GPU pow with an embedded nonce: kawpow/etchash/autolykos2 (nonce at offset 32) and
     // KarlsenHashV2 (8-byte nonce at offset 72). One header blob (not a per-batch buffer); the kernel
     // searches start_nonce..start_nonce+batch. m_nonce_offset (not a hardcoded 32) places the nonce.
-    if (is_nonce_at_32_gpu_dev(new_dev) || new_dev == DEV::KARLSENHASHV2_GPU || is_equihash_gpu_dev(new_dev)) {
+    if (is_nonce_at_32_gpu_dev(new_dev) || new_dev == DEV::KARLSENHASHV2_GPU || new_dev == DEV::MISC_GPU || is_equihash_gpu_dev(new_dev)) {
       memcpy(m_input, new_input, m_input_len);
       const uint64_t current_nonce = new_nonce + static_cast<uint64_t>(new_thread_id) * m_batch;
       m_nonce_step = new_thread_num * m_batch;

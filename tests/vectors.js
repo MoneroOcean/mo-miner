@@ -22,7 +22,7 @@ const benchHeightByAlgo = {
 // Build a perf job from a hash vector's source job. Nonce-at-32 algos (see nonceAt32Algos above)
 // carry a blob and need a live-sized DAG, so we keep the source job (clearing its dev for autoDev)
 // and stamp the sampled height; all other algos only need the algo name.
-const sourceJobAlgos = new Set(["c30", "zhash", "equihash192_7"]);
+const sourceJobAlgos = new Set(["c30", "zhash", "equihash192_7", "hoohash"]);
 
 function perfJob(sourceJob) {
   const algo = sourceJob.algo;

@@ -113,6 +113,7 @@ function protocolForAlgo(algo) {
     case "equihash192_7": return "zelhash";
     case "beamhash3":  return "beam";
     case "karlsenhashv2": return "kaspa";
+    case "hoohash": return "hoosat";
     case "c30": return "cortex";
     default:           return null;
   }
@@ -139,7 +140,7 @@ function poolProtocol(pool) {
 function usesMiningSubscribe(pool) {
   const protocol = poolProtocol(pool);
   return protocol === "raven" || protocol === "eth" || protocol === "erg" ||
-         protocol === "zelhash" || protocol === "kaspa";
+         protocol === "zelhash" || protocol === "kaspa" || protocol === "hoosat";
 }
 
 function usesEthProxy(pool) {
@@ -247,7 +248,7 @@ function applyLoginExtensions(pool_id, extensions) {
 
 function algoFromPass(pool) {
   const pass = String(pool.pass || "");
-  const m = pass.match(/(?:^|[~;,])(?:algo=)?(kawpow|firopow|evrprogpow|meowpow|etchash|autolykos2|pearlhash|fishhash|zelhash|zhash|equihash192_7)(?:$|[~;,])/i);
+  const m = pass.match(/(?:^|[~;,])(?:algo=)?(kawpow|firopow|evrprogpow|meowpow|etchash|autolykos2|pearlhash|fishhash|hoohash|zelhash|zhash|equihash192_7)(?:$|[~;,])/i);
   return m ? normalizeAlgoName(m[1]) : "";
 }
 
@@ -287,7 +288,7 @@ function jobTargetWork(job) {
   // etchash/autolykos2/fishhash carry a full 256-bit target too, but their hashrate is in hashes -> H/share.
   if (job.algo === "etchash" || job.algo === "autolykos2" || job.algo === "fishhash" ||
       job.algo === "zelhash" || job.algo === "zhash" || job.algo === "equihash192_7" ||
-      job.algo === "karlsenhashv2" || job.algo === "c30")
+      job.algo === "karlsenhashv2" || job.algo === "hoohash" || job.algo === "c30")
   {return h.target256ToWork(job.target);}
   return h.target2diff(job.target);
 }

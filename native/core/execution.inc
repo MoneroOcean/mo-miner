@@ -208,6 +208,14 @@ void Core::Execute() {
               m_batch, is_test, m_is_bench, m_dev_str
             );
             break;
+          case DEV::MISC_GPU:
+            dev_nonce = mom::job_boundary::load_nonce<uint64_t>(m_input + m_nonce_offset, false);
+            dev_sols = m_fn.gpu_misc(
+              m_job_ref, m_height, m_input, m_input_len, m_output,
+              nullptr, &dev_nonce, m_target_bin, m_seed,
+              m_batch, is_test, m_is_bench, m_dev_str
+            );
+            break;
           case DEV::ZELHASH_GPU:
             // The solver writes compressed proofs (or test rows) out-of-band into m_spads.
             std::memcpy(&dev_nonce, m_input + m_nonce_offset, sizeof(dev_nonce));
@@ -263,7 +271,7 @@ void Core::Execute() {
           set_fn(nullptr);
           continue;
         }
-        if (m_dev == DEV::AUTOLYKOS2_GPU || m_dev == DEV::FISHHASH_GPU || m_dev == DEV::KARLSENHASHV2_GPU) {
+        if (m_dev == DEV::AUTOLYKOS2_GPU || m_dev == DEV::FISHHASH_GPU || m_dev == DEV::KARLSENHASHV2_GPU || m_dev == DEV::MISC_GPU) {
           if (dev_sols == 1) {
             char hash[HASH_LEN*2+1];
             send_msg("test", "result", hash_bin2hex(hash, 0));
@@ -340,7 +348,7 @@ void Core::Execute() {
       }
       // Autolykos2, FishHash, and KarlsenHashV2 share the mine-result handling: 8-byte nonce,
       // single 32-byte hash, no mix, nonce embedded in the header at m_nonce_offset.
-      if (m_dev == DEV::AUTOLYKOS2_GPU || m_dev == DEV::FISHHASH_GPU || m_dev == DEV::KARLSENHASHV2_GPU) {
+      if (m_dev == DEV::AUTOLYKOS2_GPU || m_dev == DEV::FISHHASH_GPU || m_dev == DEV::KARLSENHASHV2_GPU || m_dev == DEV::MISC_GPU) {
         const uint64_t prev_nonce = m_nonce64;
         if (dev_sols == 1 && m_target)
           send_result(dev_nonce, 8, m_output);

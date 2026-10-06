@@ -1,6 +1,6 @@
 "use strict";
 
-module.exports = [
+const vectors = [
   {
     name: "etchash gpu1*[intensity=256]",
     gpu: true,
@@ -147,4 +147,63 @@ module.exports = [
     },
     expected: "2028e22aa12ab3b07ec6f0c574b28298565d47d8b02625fbfb85b37da0e9b4e4",
   },
+  {
+    // Authoritative HTND HooHash v1.1.0 vector. Blob = prePow||timestamp LE||zero(32)||nonce LE.
+    name: "hoohash gpu1*[intensity=1]",
+    gpu: true,
+    job: {
+      algo: "hoohash",
+      dev: "gpu1*[intensity=1]",
+      noncebytes: 8,
+      nonceoffset: 72,
+      target: "00".repeat(32),
+      blob_hex: "a49dbc7d44ae83253823592fd388f219f3cb83639d54c9e4c3154db36f2b5157" +
+        "079856b891010000" + "00".repeat(32) + "a73d6b8876c27369",
+    },
+    expected: "ef799688a9be14c60f0e62bba2e86bac14427a0b9d48ae16f1a937217b167987",
+  },
+  {
+    // HTND reference digest for a nonce where the accelerated search filter differs. This keeps
+    // test mode and candidate verification tied to the exact consensus path.
+    name: "hoohash exact-candidate gpu1*[intensity=1]",
+    gpu: true,
+    job: {
+      algo: "hoohash",
+      dev: "gpu1*[intensity=1]",
+      noncebytes: 8,
+      nonceoffset: 72,
+      target: "00".repeat(32),
+      blob_hex: "a49dbc7d44ae83253823592fd388f219f3cb83639d54c9e4c3154db36f2b5157" +
+        "079856b891010000" + "00".repeat(32) + "83436b8876c27369",
+    },
+    expected: "65eba5343cf2adffa5db81d59b4ddf91d24caaf45a6a038242a76197a4da50a9",
+  },
+  {
+    // Captured Intel candidate independently reproduced by the HTND C verifier. Device
+    // transcendental math produced a different digest, so this guards the host canonical check.
+    name: "hoohash canonical-host gpu1*[intensity=1]",
+    gpu: true,
+    syclCpu: true,
+    job: {
+      algo: "hoohash",
+      dev: "gpu1*[intensity=1]",
+      noncebytes: 8,
+      nonceoffset: 72,
+      target: "00".repeat(32),
+      blob_hex: "976a8b2b4b4982bfec000f68719cf11ddad42f69aa2d5aa2f6b1a6fa868f3a88" +
+        "228983aea0010000" + "00".repeat(32) + "fa6b70180000e939",
+    },
+    expected: "03abbe817ab99fabd4be8bd6e6d6731fcf39f6f73528bfb68d5d2cd7f9d590ea",
+  },
 ];
+
+const miscIntensity2Algos = new Set(["hoohash"]);
+for (const vector of vectors.filter(({job}) => miscIntensity2Algos.has(job.algo))) {
+  const regression = {...vector};
+  delete regression.syclCpu;
+  regression.name = vector.name.replace("intensity=1", "intensity=2");
+  regression.job = {...vector.job, dev: vector.job.dev.replace("intensity=1", "intensity=2")};
+  vectors.push(regression);
+}
+
+module.exports = vectors;

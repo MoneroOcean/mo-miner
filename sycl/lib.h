@@ -28,6 +28,7 @@ MOM_SYCL_API std::map<std::string, std::string> algo_params(
   const std::set<std::string>& gpu_pearlhash_algos,
   const std::set<std::string>& gpu_fishhash_algos,
   const std::set<std::string>& gpu_karlsenhashv2_algos,
+  const std::set<std::string>& gpu_misc_algos,
   const std::set<std::string>& gpu_zelhash_algos,
   const std::set<std::string>& gpu_beamhash3_algos
 );
@@ -101,6 +102,12 @@ MOM_SYCL_API int fishhash(
 // KarlsenHashV2 (Karlsen KLS): FishHashPlus -- the FishHash 4.6 GB DAG with a folded index derivation
 // and plain-BLAKE3 wrapping. Same etchash ABI; 80-byte Kaspa blob with the 8-byte nonce at offset 72.
 MOM_SYCL_API int karlsenhashv2(
+  unsigned job_id, uint32_t height, const uint8_t* input, unsigned input_size, uint8_t* output,
+  uint8_t* mix_hash, uint64_t* pnonce, const uint8_t* target, const uint8_t* seed_hash,
+  unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
+);
+
+MOM_SYCL_API int hoohash(
   unsigned job_id, uint32_t height, const uint8_t* input, unsigned input_size, uint8_t* output,
   uint8_t* mix_hash, uint64_t* pnonce, const uint8_t* target, const uint8_t* seed_hash,
   unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str

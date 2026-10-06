@@ -15,7 +15,7 @@ bool Core::process_message(const std::string& type, const MessageValues& v) {
       algo == "fishhash" || algo == "zelhash" || algo == "zhash" || algo == "equihash192_7" || algo == "beamhash3" ||
       // KarlsenHashV2 compares the 32-byte hash against a full 256-bit BE boundary via
       // m_target_bin; without this the bin stays zero and live mining finds no shares.
-      algo == "karlsenhashv2" || algo == "c30";
+      algo == "karlsenhashv2" || algo == "hoohash" || algo == "c30";
     const uint64_t new_target = is_big_target ? 1 : parse_target_hex(new_target_str, is_kawpow_target);
     uint8_t new_target_bin[HASH_LEN]{};
     if (is_big_target) parse_big_target_hex(new_target_str, new_target_bin);
@@ -23,7 +23,7 @@ bool Core::process_message(const std::string& type, const MessageValues& v) {
     // against a little-endian target array (index 31 = MSB), but the share target hex is big-endian.
     // Reverse the bytes so target[31] is the MSB, matching the hash's LE byte layout. (is_test passes a
     // zero target, which is symmetric, so the offline vector path is unaffected.)
-    if (is_big_target && algo == "karlsenhashv2")
+    if (is_big_target && (algo == "karlsenhashv2" || algo == "hoohash"))
       for (unsigned i = 0; i < HASH_LEN / 2; ++i) {
         const uint8_t t = new_target_bin[i];
         new_target_bin[i] = new_target_bin[HASH_LEN - 1 - i];

@@ -344,13 +344,25 @@ inline bool mom_is_opencl(const sycl::device& device) {
 #endif
 }
 
+inline uint64_t mo_mul_wide_u32(const uint32_t a, const uint32_t b) {
+#if defined(MOM_SYCL_PORTABLE_OPENCL)
+  const uint32_t a0 = static_cast<uint16_t>(a), a1 = a >> 16,
+                 b0 = static_cast<uint16_t>(b), b1 = b >> 16;
+  const uint64_t p0 = a0 * b0, p1 = a0 * b1, p2 = a1 * b0, p3 = a1 * b1;
+  return p0 + ((p1 + p2) << 16) + (p3 << 32);
+#else
+  return static_cast<uint64_t>(a) * b;
+#endif
+}
+
 inline uint64_t mo_mul_hi_u64(const uint64_t a, const uint64_t b) {
-#if defined(MOM_SYCL_ADAPTIVECPP)
-    const uint64_t a0 = static_cast<uint32_t>(a), a1 = a >> 32;
-    const uint64_t b0 = static_cast<uint32_t>(b), b1 = b >> 32;
-    const uint64_t p0 = a0 * b0, p1 = a0 * b1, p2 = a1 * b0, p3 = a1 * b1;
-    const uint64_t carry = (p0 >> 32) + static_cast<uint32_t>(p1) + static_cast<uint32_t>(p2);
-    return p3 + (p1 >> 32) + (p2 >> 32) + (carry >> 32);
+#if defined(MOM_SYCL_ADAPTIVECPP) || defined(MOM_SYCL_PORTABLE_OPENCL)
+  const uint32_t a0 = static_cast<uint32_t>(a), a1 = a >> 32,
+                 b0 = static_cast<uint32_t>(b), b1 = b >> 32;
+  const uint64_t p0 = mo_mul_wide_u32(a0, b0), p1 = mo_mul_wide_u32(a0, b1),
+                 p2 = mo_mul_wide_u32(a1, b0), p3 = mo_mul_wide_u32(a1, b1);
+  const uint64_t carry = (p0 >> 32) + static_cast<uint32_t>(p1) + static_cast<uint32_t>(p2);
+  return p3 + (p1 >> 32) + (p2 >> 32) + (carry >> 32);
 #else
   return sycl::mul_hi(a, b);
 #endif

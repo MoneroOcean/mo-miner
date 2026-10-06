@@ -183,3 +183,23 @@ static unsigned fishhash_intensity(const sycl::device& dev) {
 // Equihash 125,4: the "intensity" is the number of header nonces searched per solve (one full Wagner
 // pass over a 3.72--4.25 GiB accelerator-specific arena), so one process searches one nonce per
 // dispatch. MOM_ZELHASH_INTENSITY overrides that process batch.
+
+static bool hoohash_supported(const sycl::device& dev) {
+  return dev.has(sycl::aspect::fp64) && mom_has_usm_device(dev);
+}
+
+static unsigned hoohash_intensity(const sycl::device& dev) {
+  const unsigned override = parse_pow_intensity_override(1, "MOM_HOOHASH_INTENSITY");
+  if (override)
+    return override;
+#if defined(_WIN32)
+  // A longer WDDM/CUDA batch amortizes dispatch cost: 114688 measured 1.4164 MH/s versus
+  // 1.3392 MH/s at 65536. Raising it to 262144 added only 0.45% while more than doubling
+  // job-switch latency, so keep the smaller point on the throughput plateau.
+  if (mom_is_cuda(dev))
+    return 114688;
+#else
+  (void)dev;
+#endif
+  return 65536;
+}

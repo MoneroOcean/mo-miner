@@ -219,6 +219,7 @@ std::map<std::string, std::string> algo_params(
   const std::set<std::string>& gpu_pearlhash_algos,
   const std::set<std::string>& gpu_fishhash_algos,
   const std::set<std::string>& gpu_karlsenhashv2_algos,
+  const std::set<std::string>& gpu_misc_algos,
   const std::set<std::string>& gpu_zelhash_algos,
   const std::set<std::string>& gpu_beamhash3_algos
 ) {
@@ -226,7 +227,7 @@ std::map<std::string, std::string> algo_params(
                                  !gpu_kawpow_algos.empty() || !gpu_etchash_algos.empty() ||
                                  !gpu_autolykos2_algos.empty() || !gpu_pearlhash_algos.empty() ||
                                  !gpu_fishhash_algos.empty() ||
-                                 !gpu_karlsenhashv2_algos.empty() ||
+                                 !gpu_karlsenhashv2_algos.empty() || !gpu_misc_algos.empty() ||
                                  !gpu_zelhash_algos.empty() || !gpu_beamhash3_algos.empty();
   if (need_sycl_devices && str2dev.empty()) update_str2dev(true);
   const unsigned socket_count = std::max(1u, cpu_sockets);
@@ -244,6 +245,7 @@ std::map<std::string, std::string> algo_params(
   algos.insert(gpu_pearlhash_algos.begin(), gpu_pearlhash_algos.end());
   algos.insert(gpu_fishhash_algos.begin(), gpu_fishhash_algos.end());
   algos.insert(gpu_karlsenhashv2_algos.begin(), gpu_karlsenhashv2_algos.end());
+  algos.insert(gpu_misc_algos.begin(), gpu_misc_algos.end());
   algos.insert(gpu_zelhash_algos.begin(), gpu_zelhash_algos.end());
   algos.insert(gpu_beamhash3_algos.begin(), gpu_beamhash3_algos.end());
   for (const auto& algo : algos) {
@@ -275,6 +277,12 @@ std::map<std::string, std::string> algo_params(
                                "intensity", GpuUsm::both, 128, 6 * KiB, true); // 4.6 GiB DAG + 72 MiB light cache
     else if (gpu_karlsenhashv2_algos.contains(algo)) add_gpu_dataset_algo_dev(result_dev, 4608 * MiB, 6 * GiB, fishhash_intensity,
                                "intensity", GpuUsm::both, 128); // FishHashPlus: same 4.6 GiB DAG/intensity as fishhash
+    else if (gpu_misc_algos.contains(algo)) {
+      for_each_default_gpu([&](const std::string& dev_str, const sycl::device& dev) {
+        if (hoohash_supported(dev))
+          add_result_dev(result_dev, gpu_tuning_entry(dev_str, "intensity", hoohash_intensity(dev)));
+      });
+    }
     else if (gpu_zelhash_algos.contains(algo)) {
       if (algo == "equihash192_7")
         add_gpu_dataset_algo_dev(

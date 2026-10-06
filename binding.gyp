@@ -292,9 +292,27 @@
       ]
     },
     {
+      "target_name": "hoohash_host",
+      "type": "static_library",
+      "sources": [ "sycl/hoohash/host_math.c" ],
+      "cflags!": [ "-O3", "-ffast-math" ],
+      "cflags+": [ "-O2", "-fno-fast-math", "-ffp-contract=off", "-fno-builtin" ],
+      "conditions": [
+        [ "OS=='win'", {
+          "msvs_settings": {
+            "VCCLCompilerTool": {
+              "Optimization": 2,
+              "AdditionalOptions": [ "/fp:strict" ]
+            }
+          }
+        } ]
+      ]
+    },
+    {
       "target_name": "sycl",
       "type": "static_library",
       "win_delay_load_hook": "false",
+      "dependencies": [ "hoohash_host" ],
       "sources": [
         "sycl/lib.cpp",
         "sycl/etchash/etchash.cpp",
@@ -308,6 +326,7 @@
         "sycl/fishhash/fishhash.cpp",
         "sycl/zhash/zhash.cpp",
         "sycl/equihash192_7/equihash192_7.cpp",
+        "sycl/hoohash/hoohash.cpp",
         "sycl/zelhash/zelhash.cpp",
         "sycl/beamhash3/beamhash3.cpp"
       ],

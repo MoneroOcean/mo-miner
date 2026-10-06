@@ -51,6 +51,10 @@ module.exports = ({
     // pool parses it big-endian with the extranonce as the leading bytes, which is exactly this layout.
     if (submit_mode === "kaspa")
     {return send({ method: "mining.submit", params: [pool.login, v.job_id, "0x" + v.nonce] });}
+    if (submit_mode === "hoosat") {
+      if (typeof v.hash !== "string") {return h.log_err("Invalid compute core message");}
+      return send({method: "mining.submit", params: [pool.login, v.job_id, "0x" + v.nonce, v.hash]});
+    }
     if (submit_mode === "cortex") {
       const job = pool.last_job;
       if (!job || String(job.job_id) !== String(v.job_id) ||

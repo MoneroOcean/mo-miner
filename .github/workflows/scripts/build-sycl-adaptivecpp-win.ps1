@@ -85,6 +85,10 @@ $blakeObject = Join-Path $obj 'blake2brx.obj'
 Invoke-Checked { & $clang -O3 -DNDEBUG -D_CRT_SECURE_NO_WARNINGS "-I$(Join-Path $RepoRoot 'xmrig')" -c `
   'xmrig\crypto\randomx\blake2\blake2b.c' -o $blakeObject } 'compile blake2b.c'
 $objects += $blakeObject
+$hoohashObject = Join-Path $obj 'hoohash_host.obj'
+Invoke-Checked { & $clang -O2 -fno-fast-math -ffp-contract=off -fno-builtin -DNDEBUG `
+  -D_CRT_SECURE_NO_WARNINGS -c 'sycl\hoohash\host_math.c' -o $hoohashObject } 'compile hoohash host math'
+$objects += $hoohashObject
 
 $out = Join-Path $RepoRoot (Join-Path $OutDir 'sycl.dll')
 Invoke-Checked { & python.exe $acpp '--acpp-targets=generic' -shared @objects @backendFlags -o $out } 'AdaptiveCpp link sycl.dll'

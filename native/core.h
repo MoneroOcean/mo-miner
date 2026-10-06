@@ -86,10 +86,11 @@ union FN {
   gpu_pearlhash_hash_fun gpu_pearlhash;
   gpu_fishhash_hash_fun gpu_fishhash;
   gpu_karlsenhashv2_hash_fun gpu_karlsenhashv2;
+  gpu_etchash_hash_fun gpu_misc;
   gpu_zelhash_hash_fun gpu_zelhash;
   gpu_beamhash3_hash_fun gpu_beamhash3;
 };
-enum DEV { CPU, RX_CPU, GPU, C29_GPU, C30_GPU, KAWPOW_GPU, ETCHASH_GPU, AUTOLYKOS2_GPU, PEARLHASH_GPU, FISHHASH_GPU, KARLSENHASHV2_GPU, ZELHASH_GPU, BEAMHASH3_GPU };
+enum DEV { CPU, RX_CPU, GPU, C29_GPU, C30_GPU, KAWPOW_GPU, ETCHASH_GPU, AUTOLYKOS2_GPU, PEARLHASH_GPU, FISHHASH_GPU, KARLSENHASHV2_GPU, MISC_GPU, ZELHASH_GPU, BEAMHASH3_GPU };
 
 inline bool is_nonce_at_32_gpu_dev(const DEV dev) {
   return dev == DEV::KAWPOW_GPU || dev == DEV::ETCHASH_GPU || dev == DEV::AUTOLYKOS2_GPU || dev == DEV::FISHHASH_GPU;
@@ -103,7 +104,7 @@ inline bool is_equihash_gpu_dev(const DEV dev) {
 // KarlsenHashV2 is small-blob (80-byte header) but its nonce is at offset 72, not 32.
 // Equihash carries a 32-byte nonce at offset 108 and a 52-byte out-of-band solution buffer.
 inline bool is_small_blob_gpu_dev(const DEV dev) {
-  return is_nonce_at_32_gpu_dev(dev) || dev == DEV::C30_GPU || dev == DEV::PEARLHASH_GPU || dev == DEV::KARLSENHASHV2_GPU || is_equihash_gpu_dev(dev);
+  return is_nonce_at_32_gpu_dev(dev) || dev == DEV::C30_GPU || dev == DEV::PEARLHASH_GPU || dev == DEV::KARLSENHASHV2_GPU || dev == DEV::MISC_GPU || is_equihash_gpu_dev(dev);
 }
 
 class Core: public AsyncWorker {

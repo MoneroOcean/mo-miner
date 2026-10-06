@@ -16,6 +16,7 @@ const algoFields = new Map([
   ])],
   ["fishhash", new Set(["intensity", "workgroup", "search_mode"])],
   ["karlsenhashv2", new Set(["intensity", "workgroup", "search_mode"])],
+  ["hoohash", new Set(["intensity", "workgroup"])],
   ["pearlhash", new Set(["m", "n", "k", "rank", "workgroup", "cache_block", "tile"])],
   ["zelhash", new Set(["slots"])],
   ["beamhash3", new Set(["workgroup", "compact_workgroup", "scatter_workgroup", "layout"])],
@@ -47,6 +48,7 @@ const workgroupsByAlgo = new Map([
   ["autolykos2", [32, 64, 128, 256]],
   ["fishhash", [64, 128, 256, 512]],
   ["karlsenhashv2", [64, 128, 256, 512]],
+  ["hoohash", [64, 128, 256]],
   ["pearlhash", [32, 64, 128, 256]],
 ]);
 const tuningFieldOrder = [
@@ -266,6 +268,7 @@ const envByAlgo = {
   },
   "fishhash": {workgroup: "MOM_FISHHASH_WORKGROUP"},
   "karlsenhashv2": {workgroup: "MOM_FISHHASH_WORKGROUP"},
+  "hoohash": {intensity: "MOM_HOOHASH_INTENSITY", workgroup: "MOM_HOOHASH_WORKGROUP"},
   "pearlhash": {
     workgroup: "MOM_PEARLHASH_AMD_WMMA_THREADS",
     cache_block: [
@@ -360,6 +363,8 @@ function autotuneCandidates(algo, entry) {
   } else if (algo === "fishhash" || algo === "karlsenhashv2") {
     add("workgroup", [64, 128, 256]);
     add("search_mode", ["scalar", "cooperative"]);
+  } else if (algo === "hoohash") {
+    add("workgroup", [64, 128, 256]);
   } else if (algo === "pearlhash" && base.m) {
     add("m", [
       alignedScale(base.m, 1, 4, 64),

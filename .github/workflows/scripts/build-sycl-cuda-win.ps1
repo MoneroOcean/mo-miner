@@ -213,6 +213,10 @@ $objs += $sha3, $keccak
 $b2b = Join-Path $obj "blake2brx.obj"
 $compileTasks += New-ClangTask $clangc @("-O3","-DNDEBUG",$inc,"-c","xmrig\crypto\randomx\blake2\blake2b.c","-o",$b2b) "blake2b.c"
 $objs += $b2b
+$hoo = Join-Path $obj "hoohash_host.obj"
+$compileTasks += New-ClangTask $clangc @("-O2","-fno-fast-math","-ffp-contract=off","-fno-builtin",
+  "-DNDEBUG","-D_CRT_SECURE_NO_WARNINGS","-c","sycl\hoohash\host_math.c","-o",$hoo) "hoohash host math"
+$objs += $hoo
 Invoke-ClangTasks $compileTasks $buildJobs
 
 # Link the unified sycl.dll.

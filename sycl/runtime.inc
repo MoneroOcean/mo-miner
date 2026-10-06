@@ -41,6 +41,7 @@ void zhash_cleanup_states() noexcept;
 }
 namespace mom_etchash { void etchash_cleanup_states() noexcept; }
 namespace mom_fishhash { void fishhash_cleanup_states() noexcept; }
+namespace mom_hoohash { void hoohash_cleanup_states() noexcept; }
 namespace mom_kawpow { void kawpow_cleanup_states() noexcept; }
 void cn_gpu_cleanup_states() noexcept;
 void c29_cleanup_states() noexcept;
@@ -86,6 +87,7 @@ void sycl_cleanup() noexcept {
   mom_equihash192_7::cleanup_states();
   mom_etchash::etchash_cleanup_states();
   mom_fishhash::fishhash_cleanup_states();
+  mom_hoohash::hoohash_cleanup_states();
   mom_kawpow::kawpow_cleanup_states();
   pearlhash_cleanup_states();
   str2dev.clear();

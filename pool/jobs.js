@@ -225,7 +225,7 @@ module.exports = ({
     blob += "0000000000000000";         // nonce placeholder at offset 72 (native re-embeds the seed)
 
     return {
-      algo: fixedAlgoJobName(json, "karlsenhashv2"),
+      algo: fixedAlgoJobName(json, poolProtocol(pool) === "hoosat" ? (algoFromPass(pool) || "hoohash") : "karlsenhashv2"),
       blob: blob,                        // 160 hex = 80 bytes
       job_id: String(p[0]),
       target: pool.kaspa_target || kaspaDiffToTarget(pool.kaspa_difficulty || 1),
@@ -361,7 +361,7 @@ module.exports = ({
     if (poolProtocol(pool) === "pearlhash") {pool.pearlhash_difficulty = json.params[0];}
     // Kaspa pushes mining.set_difficulty [diff] (a float). Stash it and precompute the BE share target;
     // the next mining.notify (which carries no target) picks it up via kaspaNotifyJob.
-    if (poolProtocol(pool) === "kaspa") {
+    if (poolProtocol(pool) === "kaspa" || poolProtocol(pool) === "hoosat") {
       pool.kaspa_difficulty = json.params[0];
       pool.kaspa_target = kaspaDiffToTarget(json.params[0]);
     }
@@ -516,9 +516,9 @@ module.exports = ({
         xn: pool.ironfish_xn || "",
       };
     }
-    if (poolProtocol(pool) === "kaspa" && isKaspaJobNotification(json)) {
+    if ((poolProtocol(pool) === "kaspa" || poolProtocol(pool) === "hoosat") && isKaspaJobNotification(json)) {
       if (!pool.logged_in) {return null;}
-      pool.submit_mode = "kaspa";
+      pool.submit_mode = poolProtocol(pool);
       return kaspaNotifyJob(pool, json);
     }
     if (poolProtocol(pool) === "beam" && isBeamJobNotification(json)) {

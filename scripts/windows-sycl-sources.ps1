@@ -13,6 +13,7 @@ function Get-MomWindowsSyclSources {
     fishhash     = 'sycl\fishhash\fishhash.cpp'
     equihash192  = 'sycl\equihash192_7\equihash192_7.cpp'
     zhash        = 'sycl\zhash\zhash.cpp'
+    hoohash      = 'sycl\hoohash\hoohash.cpp'
     zelhash      = 'sycl\zelhash\zelhash.cpp'
     beamhash3    = 'sycl\beamhash3\beamhash3.cpp'
     blake2b      = 'sycl\c29\blake2b.cpp'

@@ -456,3 +456,64 @@ test("Equihash 192,7 gates its HIP input cache on local memory", () => {
   assert.match(session,
     /if \(cache_partition_inputs_\) return run_with_cache<true>\(header\);/);
 });
+
+test("HooHash portable OpenCL avoids unsupported 64-bit mul_hi", () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, "../sycl/hoohash/hoohash.cpp"), "utf8");
+  const shared = fs.readFileSync(path.join(__dirname, "../sycl/lib-internal.h"), "utf8");
+  assert.match(source, /return mo_mul_hi_u64\(a, b\);/);
+  assert.match(shared,
+    /#if defined\(MOM_SYCL_PORTABLE_OPENCL\)\s+const uint32_t a0 = static_cast<uint16_t>\(a\), a1 = a >> 16,[\s\S]*?return p0 \+ \(\(p1 \+ p2\) << 16\) \+ \(p3 << 32\);/);
+  assert.match(shared,
+    /#if defined\(MOM_SYCL_ADAPTIVECPP\) \|\| defined\(MOM_SYCL_PORTABLE_OPENCL\)[\s\S]*?mo_mul_wide_u32\(a1, b1\)/);
+});
+
+test("HooHash verifies GPU filter candidates with the canonical host hash", () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, "../sycl/hoohash/hoohash.cpp"), "utf8");
+  const hostMath = fs.readFileSync(
+    path.join(__dirname, "../sycl/hoohash/host_math.c"), "utf8");
+  const binding = fs.readFileSync(path.join(__dirname, "../binding.gyp"), "utf8");
+  const searchStart = source.indexOf("static sycl::event search(");
+  const testStart = source.indexOf("static sycl::event test_hash(");
+  const testEnd = source.indexOf("} // namespace mom_hoohash", testStart);
+  assert.ok(searchStart >= 0 && testStart > searchStart && testEnd > testStart,
+    "HooHash search/test functions must be inside the expected namespace");
+  const testKernel = source.slice(testStart, testEnd);
+  const searchKernel = source.slice(searchStart, testStart);
+  assert.match(testKernel, /single_task<TestKernel>[\s\S]*?filter_hash\(/);
+  assert.match(searchKernel, /filter_hash\([\s\S]*?meets_target\(/);
+  assert.doesNotMatch(searchKernel, /canonical_hash\(/);
+  assert.doesNotMatch(searchKernel, /\bis_test\b/);
+  assert.match(source,
+    /mom_hoohash_canonical_hash\(input, candidate_nonce, output\);[\s\S]*?if \(meets_target\(output, target\)\)/);
+  assert.match(source,
+    /fetch_min\(static_cast<uint32_t>\(id\)\)[\s\S]*?remaining -= consumed;[\s\S]*?first_nonce = candidate_nonce \+ 1;/);
+  assert.match(source,
+    /\+\+rejected_candidates == MAX_FILTER_RETRIES[\s\S]*?return 0;/);
+  assert.match(hostMath,
+    /return mom_hoohash_exp\(mom_hoohash_sin\(y\) \+ mom_hoohash_cos\(y\)\);[\s\S]*?return 1 \/ mom_hoohash_sqrt\(mom_hoohash_fabs\(y\) \+ 1\);/);
+  assert.match(hostMath,
+    /dlvsym\(RTLD_NEXT, #name, "GLIBC_2\.2\.5"\)[\s\S]*?pthread_once\(&math_once, resolve_math\);[\s\S]*?MOM_HOST_MATH_WRAPPER\(sin\)[\s\S]*?MOM_HOST_MATH_WRAPPER\(fabs\)/);
+  assert.match(source,
+    /if \(const char\* error = mom_hoohash_math_error\(\)\)[\s\S]*?throw std::string\(error\);/);
+  assert.equal(binding.match(/"sycl\/hoohash\/host_math\.c"/g)?.length, 1);
+  assert.match(binding,
+    /"target_name": "hoohash_host"[\s\S]*?"-fno-fast-math"[\s\S]*?"\/fp:strict"[\s\S]*?"target_name": "sycl"[\s\S]*?"dependencies": \[ "hoohash_host" \]/);
+  assert.match(hostMath,
+    /if \(y == pi \/ 2 \|\| y == 3 \* pi \/ 2\)[\s\S]*?return 0;/);
+});
+
+test("Windows unified GPU workers link HooHash's strict host verifier", () => {
+  const cuda = fs.readFileSync(path.join(__dirname,
+    "../.github/workflows/scripts/build-sycl-cuda-win.ps1"), "utf8");
+  const acpp = fs.readFileSync(path.join(__dirname,
+    "../.github/workflows/scripts/build-sycl-adaptivecpp-win.ps1"), "utf8");
+  for (const script of [cuda, acpp]) {
+    assert.match(script, /-fno-fast-math[\s\S]*?-ffp-contract=off[\s\S]*?-fno-builtin/);
+    assert.match(script, /sycl\\hoohash\\host_math\.c/);
+    assert.match(script, /hoohash_host\.obj/);
+  }
+  assert.match(cuda, /\$objs \+= \$hoo[\s\S]*?"-shared" @objs/);
+  assert.match(acpp, /\$objects \+= \$hoohashObject[\s\S]*?-shared @objects/);
+});
