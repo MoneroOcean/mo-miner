@@ -263,6 +263,10 @@
             "-Wl,-rpath,'$$ORIGIN/mom'"
           ],
           "conditions": [
+            # Device post-link runs at the final addon link, not the static sycl archive.
+            [ "mom_sycl_impl=='dpcpp' or mom_sycl_impl=='dpcpp-combined'", {
+              "ldflags+": [ "-fsycl-device-code-split=per_kernel" ]
+            } ],
             [ "mom_sycl_impl=='dpcpp-cuda'", {
               "ldflags+": [ "-fsycl-targets=<(mom_cuda_arch)" ]
             } ],
@@ -396,7 +400,8 @@
               ],
               "AdditionalOptions": [
                 "/DLL",
-                "/fsycl"
+                "/fsycl",
+                "/clang:-fsycl-device-code-split=per_kernel"
               ]
             }
           }

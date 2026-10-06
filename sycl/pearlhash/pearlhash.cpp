@@ -87,6 +87,7 @@
 #include "cuda_sycl_search.inc"
 
 #include "esimd_search.inc"
+#include "dpasw_search.inc"
 
 #ifdef MOM_PEARLHASH_ESIMD_TU
 } // namespace mom_pearlhash

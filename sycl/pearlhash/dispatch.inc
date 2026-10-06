@@ -147,6 +147,12 @@ attempt(sycl::queue& q, const Buffers& b, uint32_t seed, int m, int n, int k, in
     }
   }
 #endif
+#if defined(PEARLHASH_ESIMD)
+  // Paired DG2 proofs/rates are qualified on oneAPI Level Zero; combined AOT/OpenCL stay ordinary.
+  const bool use_dpasw = pearlhash_dpasw_route(
+      !use_portable && q.get_backend() == sycl::backend::ext_oneapi_level_zero, esimd_width,
+      esimd_width == 8u && dpasw_esimd_device(q.get_device()), rank);
+#endif
   if (q.get_device().is_cpu()) {
     q.wait_and_throw();
     compute_ab_cpu(b, seed, m, n, k, rank);
@@ -156,7 +162,12 @@ attempt(sycl::queue& q, const Buffers& b, uint32_t seed, int m, int n, int k, in
     const bool tiled_cuda_b =
         cuda_sycl && checked_elements(n, k, "N*K") >
                          static_cast<size_t>(std::numeric_limits<int>::max());
-    compute_ab(q, b, seed, m, n, k, rank, /*portable=*/use_portable || tiled_cuda_b);
+#if defined(PEARLHASH_ESIMD)
+    if (use_dpasw)
+      compute_ab<true>(q, b, seed, m, n, k, rank, /*portable=*/false);
+    else
+#endif
+      compute_ab(q, b, seed, m, n, k, rank, /*portable=*/use_portable || tiled_cuda_b);
   }
   mark("ab");
 #if defined(MOM_SYCL_HAS_CUDA)
@@ -182,8 +193,16 @@ attempt(sycl::queue& q, const Buffers& b, uint32_t seed, int m, int n, int k, in
 #endif
 #if defined(PEARLHASH_ESIMD) || defined(MOM_PEARLHASH_HAS_ESIMD)
   // B580: about 45.4 TH/s with the canonical M=N=131072, K=2048, rank=128 profile.
-  search_esimd(q, b, seed, m, n, k, rank, dbg, esimd_width);
-  mark("search_esimd");
+#if defined(PEARLHASH_ESIMD)
+  if (use_dpasw) {
+    search_esimd_dpasw(q, b, seed, m, n, k, rank, dbg);
+    mark("search_esimd_dpasw");
+  } else
+#endif
+  {
+    search_esimd(q, b, seed, m, n, k, rank, dbg, esimd_width);
+    mark("search_esimd");
+  }
 #else
   search(q, b, seed, m, n, k, rank, dbg); // Defensive fallback if future backend selection skips use_portable.
   mark("search_portable");

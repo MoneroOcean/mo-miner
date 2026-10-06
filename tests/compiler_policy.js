@@ -1251,3 +1251,19 @@ int main() {
     fs.rmSync(fixture, {recursive: true, force: true});
   }
 });
+
+test("DPC++ final addon and Windows SYCL links split device code per kernel", () => {
+  const build = fs.readFileSync(path.join(__dirname, "../binding.gyp"), "utf8");
+  const momStart = build.indexOf('"target_name": "mom"');
+  const syclStart = build.indexOf('"target_name": "sycl"', momStart);
+  const syclEnd = build.indexOf('"target_name":', syclStart + 1);
+  assert(momStart >= 0 && syclStart > momStart && syclEnd > syclStart);
+  const finalAddon = build.slice(momStart, syclStart);
+  const syclDll = build.slice(syclStart, syclEnd);
+  assert.match(finalAddon,
+    /mom_sycl_impl=='dpcpp' or mom_sycl_impl=='dpcpp-combined'[\s\S]*?"ldflags\+":\s*\[ "-fsycl-device-code-split=per_kernel" \]/);
+  const linker = syclDll.indexOf('"VCLinkerTool"');
+  assert(linker >= 0);
+  assert.match(syclDll.slice(linker),
+    /"AdditionalOptions":\s*\[\s*"\/DLL",\s*"\/fsycl",\s*"\/clang:-fsycl-device-code-split=per_kernel"/);
+});

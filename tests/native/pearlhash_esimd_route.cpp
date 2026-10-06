@@ -39,6 +39,36 @@ int main() {
       return 1;
     }
   }
-  std::puts("PearlHash ESIMD routing host test passed (15 fixtures)");
+  const struct {
+    const char* name;
+    bool esimd_allowed;
+    unsigned width;
+    bool dg2;
+    int rank;
+    bool expected;
+  } paired[] = {
+    {"DG2 P128", true, 8u, true, 128, true},
+    {"DG2 P256", true, 8u, true, 256, true},
+    {"B580 width16 unchanged", true, 16u, false, 128, false},
+    {"width16 even if mislabeled DG2", true, 16u, true, 256, false},
+    {"unknown architecture", true, 8u, false, 128, false},
+    {"failed width query", true, 0u, true, 128, false},
+    {"portable backend", false, 8u, true, 128, false},
+    {"unqualified OpenCL retains ordinary", false, 8u, true, 128, false},
+    {"CPU or integrated GPU", false, 8u, false, 256, false},
+    {"rank512 retains ordinary DPAS", true, 8u, true, 512, false},
+    {"rank1024 retains ordinary DPAS", true, 8u, true, 1024, false},
+    {"rank0", true, 8u, true, 0, false},
+    {"negative rank", true, 8u, true, -1, false},
+    {"malformed rank", true, 8u, true, 129, false}
+  };
+  for (const auto& fixture : paired) {
+    if (pearlhash_dpasw_route(fixture.esimd_allowed, fixture.width, fixture.dg2,
+                            fixture.rank) != fixture.expected) {
+      std::fprintf(stderr, "PearlHash DPASW routing mismatch: %s\n", fixture.name);
+      return 1;
+    }
+  }
+  std::puts("PearlHash ESIMD routing host test passed (15 ordinary + 14 paired fixtures)");
   return 0;
 }

@@ -330,6 +330,7 @@ static void prepare_noise_cpu(const Buffers& B, int m, int n, int k, int rank) {
 }
 #endif
 
+template <bool Dpasw = false>
 [[maybe_unused]] static sycl::event compute_ab(sycl::queue& q, const Buffers& bb, uint32_t seed,
                                                 int m, int n, int k, int rank, bool portable) {
   auto B = bb;
@@ -435,6 +436,10 @@ static void prepare_noise_cpu(const Buffers& B, int m, int n, int k, int rank) {
     (void)n;
     if (portable) {
       bp[j * static_cast<size_t>(k) + r] = v;   // col-major B'[r,j] for the dp4a search()
+    } else if constexpr (Dpasw) {
+      // DG2 paired search consumes one contiguous 32x8 VNNI fragment per column bank.
+      bp[(j / 8) * static_cast<size_t>(k) * 8 + (r / 4) * 32 + (j % 8) * 4 +
+          (r % 4)] = v;
     } else {
       bp[(j / 16) * static_cast<size_t>(k) * 16 + (r / 4) * 64 + (j % 16) * 4 +
           (r % 4)] = v;
