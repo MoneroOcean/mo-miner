@@ -22,8 +22,15 @@ const benchHeightByAlgo = {
 // Build a perf job from a hash vector's source job. Nonce-at-32 algos (see nonceAt32Algos above)
 // carry a blob and need a live-sized DAG, so we keep the source job (clearing its dev for autoDev)
 // and stamp the sampled height; all other algos only need the algo name.
+const sourceJobAlgos = new Set(["c30"]);
+
 function perfJob(sourceJob) {
   const algo = sourceJob.algo;
+  if (sourceJobAlgos.has(algo)) {
+    const job = {...sourceJob};
+    delete job.dev;
+    return job;
+  }
   if (!nonceAt32Algos.has(algo)) {return { algo };}
 
   const job = { ...sourceJob, dev: undefined };
@@ -44,7 +51,7 @@ for (const definition of hashTests) {
     gpu: definition.gpu,
     autoDev: true,
     name: algo,
-    timeoutMs: definition.timeoutMs || 3 * 60 * 1000,
+    timeoutMs: definition.timeoutMs || (algo === "c30" ? 6 : 3) * 60 * 1000,
     job: perfJob(definition.job),
   });
 }

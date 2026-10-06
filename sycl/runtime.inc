@@ -40,6 +40,7 @@ namespace mom_fishhash { void fishhash_cleanup_states() noexcept; }
 namespace mom_kawpow { void kawpow_cleanup_states() noexcept; }
 void cn_gpu_cleanup_states() noexcept;
 void c29_cleanup_states() noexcept;
+void c30_cleanup_states() noexcept;
 uint32_t c29_seed_local_size();
 uint32_t c29_seed_blocks_per_item();
 void pearlhash_cleanup_states() noexcept;
@@ -74,6 +75,7 @@ void sycl_cleanup() noexcept {
   mom_autolykos2::autolykos2_cleanup_states();
   mom_beamhash3::beamhash3_cleanup_states();
   c29_cleanup_states();
+  c30_cleanup_states();
   cn_gpu_cleanup_states();
   mom_zelhash::zelhash_cleanup_states();
   mom_etchash::etchash_cleanup_states();

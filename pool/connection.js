@@ -4,7 +4,7 @@ module.exports = ({
   h, o, net, tls, systemNetConnect, systemTlsConnect, max_pool_data_buffer,
   clear_pool_connection, isCurrentPoolSocket, pearlhashUsesSubscribe,
   poolProtocol, pool_log, pool_log1, pool_log2, pool_log_err, pool_log_str,
-  pool_message, pool_str, usesEthProxy, usesIronfish, usesMiningSubscribe,
+  pool_message, pool_str, usesCortex, usesEthProxy, usesIronfish, usesMiningSubscribe,
   poolWrite, switchPool,
 }) => {
 
@@ -147,6 +147,14 @@ module.exports = ({
       return poolWrite(pool_id, {
         id: 1, method: "mining.subscribe",
         body: { version: 3, agent: o.agent_str, publicAddress: pool.login, extend: ["mining.submitted"] }
+      });
+    }
+    if (usesCortex(pool)) {
+      // Live Cortex pools use request-style JSON-RPC rather than mining.subscribe/authorize.
+      pool.pending_cortex_login = true;
+      return poolWrite(pool_id, {
+        id: 72, jsonrpc: "2.0", method: "ctxc_submitLogin",
+        params: [pool.login], worker: pool.worker || "mom",
       });
     }
     if (pearlhashUsesSubscribe(pool)) {

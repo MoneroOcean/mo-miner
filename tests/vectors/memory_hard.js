@@ -120,4 +120,31 @@ module.exports = [
     },
     expected: "71e8a7ff50f4eba67fbf00af449c12e6e74b1edfc1577b59c41c77922e546f87",
   },
+  {
+    // Four endpoint pairs from the official block key exercise the portable device SipHash path
+    // without allocating the full 14-GiB C30 graph.
+    name: "c30 gpu1 portable edge generation",
+    gpu: true,
+    syclCpu: true,
+    portableOnly: true,
+    env: {MOM_C30_TEST_EDGE: "1"},
+    job: {
+      algo: "c30", dev: "gpu1", proofsize: 42, noncebytes: 8, nonceoffset: 32,
+      blob_hex: "8bbb8897a7967634e15bae662ee23e16e8c85669f3ca0a9e6584f8f4aa41f220" +
+        "d42008d90000001e",
+    },
+    expected: "c48b882d2d166f29779c36235d4c8e140833a20f387ad915e26cae3fae4be53c",
+  },
+  {
+    // Cortex block 0xee4093: seal hash followed by the winning nonce in little-endian byte order.
+    name: "c30 gpu1 recorded-mainnet block 0xee4093",
+    gpu: true,
+    timeoutMs: 15 * 60 * 1000,
+    job: {
+      algo: "c30", dev: "gpu1", proofsize: 42, noncebytes: 8, nonceoffset: 32,
+      blob_hex: "8bbb8897a7967634e15bae662ee23e16e8c85669f3ca0a9e6584f8f4aa41f220" +
+        "d42008d90000001e",
+    },
+    expected: "2028e22aa12ab3b07ec6f0c574b28298565d47d8b02625fbfb85b37da0e9b4e4",
+  },
 ];

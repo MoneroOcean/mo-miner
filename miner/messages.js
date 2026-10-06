@@ -7,10 +7,24 @@ module.exports = ({
 
   let thread_hashrates = {};
 
+  const cortex_pending_limit = 4096;
+  let cortex_submit_id = 72;
+
+  function nextCortexSubmitId() {
+    if (cortex_submit_id === Number.MAX_SAFE_INTEGER) {
+      throw new Error("Cortex submit request id space exhausted");
+    }
+    cortex_submit_id++;
+    // ID 100 belongs to the concurrent ctxc_getWork request and must never identify a share.
+    if (cortex_submit_id === 100) {cortex_submit_id++;}
+    return cortex_submit_id;
+  }
+
   function handleResult(msg) {
     const v = msg.value;
     const pool = opt.pools[v.pool_id];
-    const submit_mode = pool && pool.submit_mode;
+    const submit_mode = pool && (pool.last_job?.submit_mode === "cortex"
+      ? "cortex" : pool.submit_mode);
     const send = (body) => p.pool_write(v.pool_id, { jsonrpc: "2.0", id: 3, ...body });
 
     // PearlHash: the worker already built the base64 PlainProof, and the native core emits at most one
@@ -37,6 +51,25 @@ module.exports = ({
     // pool parses it big-endian with the extranonce as the leading bytes, which is exactly this layout.
     if (submit_mode === "kaspa")
     {return send({ method: "mining.submit", params: [pool.login, v.job_id, "0x" + v.nonce] });}
+    if (submit_mode === "cortex") {
+      const job = pool.last_job;
+      if (!job || String(job.job_id) !== String(v.job_id) ||
+          typeof v.job_token !== "string" || v.job_token !== job.job_token) return;
+      if (typeof v.nonce !== "string" || !/^[0-9a-f]{1,16}$/i.test(v.nonce) ||
+          typeof v.edges !== "string" || !/^[0-9a-f]{336}$/i.test(v.edges))
+        return h.log_err("Invalid compute core message");
+      const headerHash = resultHeaderHash(msg, pool).replace(/^0x/i, "");
+      if (!/^[0-9a-f]{64}$/i.test(headerHash))
+        return h.log_err("Invalid compute core message");
+      let pending = pool.pending_cortex_submit_ids;
+      if (!pending) {pending = new Set(); pool.pending_cortex_submit_ids = pending;}
+      if (pending.size >= cortex_pending_limit) return h.log_err("Too many pending Cortex submissions");
+      const requestId = nextCortexSubmitId();
+      pending.add(requestId);
+      return send({id: requestId, method: "ctxc_submitWork",
+        params: ["0x" + v.nonce, "0x" + headerHash, "0x" + v.edges],
+        worker: pool.worker || "mom"});
+    }
     if (submit_mode === "beam") {
     // Beam JSON-RPC `solution`: TOP-LEVEL {id, nonce(16hex), output(208hex=104B)}. The native emits the
     // nonce as the big-endian hex of the LE-stored 8-byte blob nonce, so reverse it back to the raw
@@ -81,7 +114,10 @@ module.exports = ({
     // pool_id can be "" for benchmark jobs. can not use === here since
     // opt.pool_ids.active is integer here
     if (!shouldStoreLastNonce(pool_id)) {return;}
-    const prev_nonce = opt.pools[pool_id].last_job.nonce;
+    const job = opt.pools[pool_id].last_job;
+    if (job.algo === "c30" && (job.job_token !== msg.value.job_token ||
+        String(job.job_id) !== String(msg.value.job_id))) return;
+    const prev_nonce = job.nonce;
     const new_nonce  = msg.value.nonce;
     if (isNewerNonce(prev_nonce, new_nonce))
     {opt.pools[pool_id].last_job.nonce = new_nonce;}

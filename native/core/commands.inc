@@ -15,7 +15,7 @@ bool Core::process_message(const std::string& type, const MessageValues& v) {
       algo == "fishhash" || algo == "zelhash" || algo == "beamhash3" ||
       // KarlsenHashV2 compares the 32-byte hash against a full 256-bit BE boundary via
       // m_target_bin; without this the bin stays zero and live mining finds no shares.
-      algo == "karlsenhashv2";
+      algo == "karlsenhashv2" || algo == "c30";
     const uint64_t new_target = is_big_target ? 1 : parse_target_hex(new_target_str, is_kawpow_target);
     uint8_t new_target_bin[HASH_LEN]{};
     if (is_big_target) parse_big_target_hex(new_target_str, new_target_bin);

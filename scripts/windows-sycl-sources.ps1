@@ -6,6 +6,8 @@ function Get-MomWindowsSyclSources {
     autolykos2   = 'sycl\autolykos2\autolykos2.cpp'
     pearlhash    = 'sycl\pearlhash\pearlhash.cpp'
     c29          = 'sycl\c29\c29.cpp'
+    c30          = 'sycl\c30\c30.cpp'
+    c30_host     = 'sycl\c30\c30_host.cpp'
     cn_gpu       = 'sycl\cn_gpu\cn_gpu.cpp'
     kawpow       = 'sycl\kawpow\kawpow.cpp'
     fishhash     = 'sycl\fishhash\fishhash.cpp'

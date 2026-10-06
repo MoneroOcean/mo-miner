@@ -3,6 +3,7 @@
 const algoFields = new Map([
   ["cn/gpu", new Set(["intensity"])],
   ["c29", new Set(["seed_workgroup", "seed_blocks"])],
+  ["c30", new Set(["intensity"])],
   ["kawpow", new Set(["intensity", "workgroup", "dag_workgroup", "dag_chunk"])],
   ["firopow", new Set(["intensity", "workgroup", "dag_workgroup", "dag_chunk"])],
   ["evrprogpow", new Set(["intensity", "workgroup", "dag_workgroup", "dag_chunk"])],
@@ -115,6 +116,9 @@ function validateTuning(algo, tuning, context = "tuning") {
       throw new Error(`${context}.${field} must be a multiple of 16 between 16 and ${maximum}`);
     }
   }
+  if (algo === "c30" && result.intensity !== undefined && result.intensity !== 1) {
+    throw new Error(`${context}.intensity must be 1 for ${algo}`);
+  }
   return result;
 }
 
@@ -149,6 +153,9 @@ function parseDeviceEntry(entry, algo = "") {
     const field = device.startsWith("cpu") ? "intensity" : (mainFieldByAlgo.get(algo) || "intensity");
     if (tuning[field] && tuning[field] !== mainValue) {
       throw new Error(`${text} specifies conflicting ${field} values`);
+    }
+    if (algo === "c30" && field === "intensity" && mainValue !== 1) {
+      throw new Error(`${text}.intensity must be 1 for ${algo}`);
     }
     tuning[field] = validateInteger(field, mainValue, `${text}.${field}`);
   }
@@ -327,7 +334,7 @@ function autotuneCandidates(algo, entry) {
     }
   };
   const intensity = Number(base.intensity || 0);
-  if (intensity) {
+  if (intensity && algo !== "c30") {
     if (algo === "cn/gpu") {
       add("intensity", [
         alignedScale(intensity, 1, 2, 8),

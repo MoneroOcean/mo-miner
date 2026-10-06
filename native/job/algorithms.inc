@@ -72,7 +72,8 @@ static const std::map<std::string, gpu_cn_hash_fun> gpu_cn_algo2fn = {
 };
 
 static const std::map<std::string, gpu_c29_hash_fun> gpu_c29_algo2fn = {
-  { "c29", c29 }
+  { "c29", c29 },
+  { "c30", c30 }
 };
 
 static const std::map<std::string, gpu_kawpow_hash_fun> gpu_kawpow_algo2fn = {
@@ -113,7 +114,8 @@ static const std::map<std::string, gpu_beamhash3_hash_fun> gpu_beamhash3_algo2fn
 static const std::map<std::string, unsigned> algo2mem = [](){
   std::map<std::string, unsigned> result = {
     { "cn/gpu", 2*1024*1024 }, // host memory is not really used (number used only for algo_params calcs)
-    { "c29",    0 },           // host memory is not used even for algo_params calcs
+    { "c29",    0 },
+    { "c30",    0 },           // host memory is not used even for algo_params calcs
     { "kawpow", 0 },
     { "firopow", 0 },
     { "evrprogpow", 0 },

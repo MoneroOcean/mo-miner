@@ -301,6 +301,8 @@
         "sycl/autolykos2/autolykos2.cpp",
         "sycl/pearlhash/pearlhash.cpp",
         "sycl/c29/c29.cpp",
+        "sycl/c30/c30.cpp",
+        "sycl/c30/c30_host.cpp",
         "sycl/cn_gpu/cn_gpu.cpp",
         "sycl/kawpow/kawpow.cpp",
         "sycl/fishhash/fishhash.cpp",

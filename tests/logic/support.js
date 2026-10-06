@@ -124,9 +124,13 @@ function mockPoolOptions(options = {}) {
     log_level: 0,
     job: {},
     pools: [mockPoolConfig(options.pool)],
-    pool_ids: { active: 0, primary: 0, donate: null },
-    pool_time: { first_job_wait: 0.001, connect_throttle: 60, close_wait: 60, keepalive: 60, ...options.pool_time },
+    pool_ids: {active: 0, primary: 0, donate: null},
+    pool_time: {first_job_wait: 0.001, connect_throttle: 60, close_wait: 60, keepalive: 60, ...options.pool_time},
     algo_params: {},
+    bench_algo_params: 1,
+    default_msrs: {},
+    gpu_tune: 0,
+    save_config: "",
     ...options.opt,
   };
 }
@@ -134,25 +138,35 @@ function mockPoolOptions(options = {}) {
 async function withMockPool(options, callback) {
   const originalConnect = net.connect;
   const originalSwitchPool = pool.switch_pool;
-  const previousOpt = global.opt;
-  const socket = options.socket || new events.EventEmitter();
+  const previousOpt = testGlobal.opt;
+  /** @type {MockSocket} */
+  const socket = options.socket || /** @type {MockSocket} */ (new events.EventEmitter());
+  /** @type {JsonObject[]} */
   const writes = [];
   let switched = false;
 
   socket.write = options.write || function(message) { writes.push(JSON.parse(message)); };
-  socket.destroy = options.destroy || function() { this.destroyed = true; };
-  net.connect = function() { return socket; };
-  if (options.switchPool) {pool.switch_pool = function() { switched = true; };}
-  global.opt = mockPoolOptions(options);
+  socket.destroy = options.destroy || function() { socket.destroyed = true; };
+  net.connect = /** @type {typeof net.connect} */ (/** @type {unknown} */ (function() { return socket; }));
+  pool.switch_pool = function() { switched = true; };
+  testGlobal.opt = mockPoolOptions(options);
 
   try {
-    return await callback({ socket, writes, switched: () => switched, poolConfig: global.opt.pools[0] });
+    const mockPool = testGlobal.opt && testGlobal.opt.pools[0];
+    if (!mockPool) {throw new Error("mock pool was not created");}
+    return await callback({socket, writes, switched: () => switched, poolConfig: mockPool});
   } finally {
-    for (const poolConfig of global.opt.pools) {poolConfig.socket = null;}
+    if (testGlobal.opt) {
+      for (const poolConfig of testGlobal.opt.pools) {
+        if (poolConfig.keepalive !== null) {clearTimeout(poolConfig.keepalive);}
+        poolConfig.keepalive = null;
+        poolConfig.socket = null;
+      }
+    }
     await new Promise((resolve) => setTimeout(resolve, 5));
     net.connect = originalConnect;
     pool.switch_pool = originalSwitchPool;
-    global.opt = previousOpt;
+    if (previousOpt) {testGlobal.opt = previousOpt;} else {delete testGlobal.opt;}
   }
 }
 
@@ -166,3 +180,16 @@ module.exports = {
   specReporter, repoRoot, noOp, loadMinerWithStubs, mockPoolConfig,
   mockPoolOptions, withMockPool, completeOneBenchmark
 };
+
+const testGlobal = /** @type {{opt?: TestOptions}} */ (/** @type {unknown} */ (globalThis));
+function unexpectedPoolJob(_job) {
+  throw new Error("unexpected pool job");
+}
+function completeMiningJob(job) {
+  if (typeof job.algo !== "string") {
+    throw new Error("pool job is missing mining fields");
+  }
+  const {submit_mode: _submitMode, ...nativeJob} = job;
+  return {...nativeJob, algo: job.algo, dev: typeof job.dev === "string" ? job.dev : "cpu"};
+}
+Object.assign(module.exports, {unexpectedPoolJob, completeMiningJob});

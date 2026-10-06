@@ -43,6 +43,12 @@ MOM_SYCL_API int c29(
   uint32_t* output_edges, uint64_t* pnonce, const std::string& dev_str
 );
 
+MOM_SYCL_API int c30(
+  unsigned job_id, unsigned proof_size,
+  const uint8_t* input, unsigned input_size, uint8_t* output,
+  uint32_t* output_edges, uint64_t* pnonce, const std::string& dev_str
+);
+
 MOM_SYCL_API int kawpow(
   unsigned job_id, uint32_t height, const uint8_t* input, unsigned input_size, uint8_t* output,
   uint8_t* mix_hash, uint64_t* pnonce, uint64_t target,

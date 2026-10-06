@@ -2,6 +2,7 @@
 
 const aliases = new Map([
   ["cuckaroo", "c29"], ["cuckaroo29", "c29"], ["c29xtm", "c29"],
+  ["cuckaroo30", "c30"], ["c30ctx", "c30"],
   ["kawpow1", "kawpow"], ["kawpow4", "kawpow"],
 ]);
 

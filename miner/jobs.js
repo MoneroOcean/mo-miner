@@ -6,6 +6,8 @@ module.exports = ({
   getComputeCore, getLastJob, setLastJob,
 }) => {
 
+  let liveJobToken = 0n;
+
   function set_algo_msr(algo) {
     const compute_core = getComputeCore();
     if (!compute_core || !Object.keys(opt.default_msrs).length) {return;}
@@ -123,6 +125,7 @@ module.exports = ({
       worker_id:  firstTruthyOr(opt.pools[pool_id].worker_id || opt.pools[pool_id].login,
         prev_job.id, prev_job.worker_id),
       job_id:     orDefault(prev_job.job_id, ""),
+      job_token:  prev_job.job_token,
       header_hash: orDefault(prev_job.header_hash, ""),
       nonce:      orDefault(prev_job.nonce, 0),
       height:     orDefault(prev_job.height, 0),
@@ -195,7 +198,7 @@ module.exports = ({
 
   function jobTarget(prev_job, algo) {
     const explicitTarget = orDefault(prev_job.target, "");
-    if (algo === "pearlhash" || isZelHashAlgo(algo)) {
+    if (algo === "pearlhash" || algo === "c30" || isZelHashAlgo(algo)) {
     // HeroMiners-style pools precompute the verifier bound (pool.js pearlhashNbitsBound -> prev_job.target);
     // Flux set_target also delivers a 256-bit big-endian hex share target. When a pool does not send a
     // target, use the lenient floor(2^256 / difficulty) fallback.
@@ -233,6 +236,15 @@ module.exports = ({
       job.blob_hex    = prev_job.blob_hex;
       job.nonceoffset = prev_job.nonceoffset;
     }
+  }
+
+  /** @param {MiningJob} job @param {PoolJob} prev_job */
+  function addC30JobFields(job, prev_job) {
+    job.proofsize = 42;
+    job.noncebytes = 8;
+    job.nonceoffset = 0;
+    const blob = prev_job.blob || prev_job.blob_hex;
+    if (blob !== undefined) {job.blob_hex = blob;}
   }
 
   function addEthHashJobFields(job, prev_job) {
@@ -356,12 +368,14 @@ module.exports = ({
   // prev_job can be either job json from the pool or
   // previous job restored from the pool switch (with nonce that we need to take into account)
   function set_job(prev_job) {
+    prev_job.job_token = (++liveJobToken).toString();
     const algo = normalizeAlgoName(prev_job.algo || opt.job.algo);
     const dev = jobDev(algo);
     ensureWorkersForJob(algo, dev);
     const pool_id = opt.pool_ids.active;
     const job = baseJob(prev_job, algo, dev, pool_id);
     if (algo === "c29") {addC29JobFields(job, prev_job);}
+    else if (algo === "c30") {addC30JobFields(job, prev_job);}
     else if (algo === "beamhash3") {addBeamhash3JobFields(job, prev_job, opt.pools[pool_id]);}
     else if (isKaspaHeaderAlgo(algo)) {addKaspaHeaderJobFields(job, prev_job);}
     else if (isZelHashAlgo(algo)) {addZelHashJobFields(job, prev_job);}
@@ -380,6 +394,9 @@ module.exports = ({
     return job;
   }
 
+  const C30_BENCH_HEADER =
+    "8bbb8897a7967634e15bae662ee23e16e8c85669f3ca0a9e6584f8f4aa41f220";
+
   function prepareBenchmarkJob(job) {
     job.backend_request = compilerPolicy.validateBackend(job.backend || "auto");
     job.backend = job.backend_request !== "auto"
@@ -387,6 +404,21 @@ module.exports = ({
       : jobBackend(normalizeAlgoName(job.algo));
     if (normalizeAlgoName(job.algo) === "pearlhash") {
       addPearlHashJobFields(job);
+    }
+    if (job.algo === "c30") {
+      job.proofsize = 42;
+      job.noncebytes = 8;
+      job.nonceoffset = 0;
+      if (job.blob_hex?.length === 80) {
+        // Normalize the old test-vector header||nonce form to the one live search representation:
+        // a 32-byte Cortex seal hash plus an external 64-bit nonce counter.
+        if (/[^0-9a-f]/i.test(job.blob_hex)) {throw new Error("Invalid c30 job blob");}
+        job.nonce ||= Buffer.from(job.blob_hex.slice(64), "hex").reverse().toString("hex");
+        job.blob_hex = job.blob_hex.slice(0, 64);
+      } else if (!job.blob_hex || job.blob_hex.length !== 64) {
+        job.blob_hex = C30_BENCH_HEADER;
+      }
+      job.nonce = job.nonce || "1e000000d90820d4";
     }
     if (isNonceAt32Algo(job.algo)) {
       job.noncebytes = 8;

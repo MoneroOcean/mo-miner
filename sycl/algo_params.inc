@@ -144,6 +144,21 @@ static void add_gpu_c29_algo_dev(std::string& result_dev) {
   });
 }
 
+static void add_gpu_c30_algo_dev(std::string& result_dev) {
+#if defined(MOM_SYCL_HAS_HIP)
+  constexpr uint64_t minimum_local_memory = 64 * KiB;
+#else
+  constexpr uint64_t minimum_local_memory = 32 * KiB;
+#endif
+  for_each_default_gpu([&](const std::string& dev_str, const sycl::device& dev) {
+    if (!pow_has_dataset_memory(dev, 6240 * MiB, 11 * GiB) ||
+        !mom_has_usm_shared(dev) || !mom_has_usm_device(dev) ||
+        !sycl_workgroup_fits(dev, 512) ||
+        !sycl_local_memory_fits(dev, minimum_local_memory)) return;
+    add_result_dev(result_dev, gpu_tuning_entry(dev_str, "intensity", 1));
+  });
+}
+
 // Emit the resolved primary tuning dimension for each GPU that has room for the
 // algorithm's dataset. Secondary launch controls stay algorithm-specific and
 // can be overridden in the same bracket/object tuning model.
@@ -241,7 +256,10 @@ std::map<std::string, std::string> algo_params(
       add_gpu_cn_algo_dev(result_dev, algo, algo2mem, &backend_hint);
       if (!backend_hint.empty()) result["@backend:" + algo] = backend_hint;
     }
-    else if (gpu_c29_algos.contains(algo)) add_gpu_c29_algo_dev(result_dev);
+    else if (gpu_c29_algos.contains(algo)) {
+      if (algo == "c30") add_gpu_c30_algo_dev(result_dev);
+      else add_gpu_c29_algo_dev(result_dev);
+    }
     else if (gpu_kawpow_algos.contains(algo)) add_gpu_dataset_algo_dev(
       result_dev, 5 * GiB, 6 * GiB, algo == "firopow" ? firopow_intensity : kawpow_intensity,
       "intensity", GpuUsm::shared, 64, 20 * KiB, true

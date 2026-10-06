@@ -16,6 +16,49 @@ const systemTlsConnect = tls.connect;
 
 const max_pool_data_buffer = 1024 * 1024;
 
+function poolAt(pool_id) {
+  if (!Number.isInteger(pool_id) || pool_id < 0 || pool_id >= global.opt.pools.length) {
+    throw new Error("Invalid pool id");
+  }
+  const pool = global.opt.pools[pool_id];
+  if (!pool) {
+    throw new Error("Invalid pool id");
+  }
+  return pool;
+}
+
+function redactPoolText(pool_id, value) {
+  const pool = poolAt(pool_id);
+  const login = String(pool.login || "");
+  const workerSeparator = login.lastIndexOf(".");
+  let text = String(value);
+  const credentials = [
+    login,
+    login.split(".")[0] || "",
+    workerSeparator > 0 ? login.slice(0, workerSeparator) : "",
+    workerSeparator > 0 ? login.slice(workerSeparator + 1) : "",
+    String(pool.worker || ""),
+    String(pool.pass || ""),
+  ].filter(Boolean);
+  const needles = [...new Set(credentials.flatMap((credential) => [
+    credential, JSON.stringify(credential).slice(1, -1),
+  ]))].sort((left, right) => right.length - left.length);
+  for (const needle of needles) {
+    if (text === needle) {
+      text = "<redacted>";
+    } else if (needle.length >= 4) {
+      text = text.split(needle).join("<redacted>");
+    } else {
+      const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      text = text.replace(
+        new RegExp(`(^|[^a-z0-9])${escaped}(?=$|[^a-z0-9])`, "gi"),
+        "$1<redacted>"
+      );
+    }
+  }
+  return text;
+}
+
 function pool_str(pool_id) {
   const pool = global.opt.pools[pool_id];
   return pool.url + ":" + pool.port + (pool.is_tls ? "tls" : "");
@@ -38,6 +81,10 @@ function clear_pool_connection(pool_id, socket) {
   pool.last_job = null;
   pool.logged_in = false;
   pool.pending_authorize = false;
+  pool.pending_cortex_login = false;
+  pool.pending_cortex_work = false;
+  delete pool.pending_cortex_submit_ids;
+  delete pool.cortex_nonce;
   return true;
 }
 
@@ -64,6 +111,7 @@ function protocolForAlgo(algo) {
     case "zelhash":    return "zelhash";
     case "beamhash3":  return "beam";
     case "karlsenhashv2": return "kaspa";
+    case "c30": return "cortex";
     default:           return null;
   }
 }
@@ -94,6 +142,10 @@ function usesMiningSubscribe(pool) {
 
 function usesEthProxy(pool) {
   return poolProtocol(pool) === "ethproxy";
+}
+
+function usesCortex(pool) {
+  return poolProtocol(pool) === "cortex";
 }
 
 function usesIronfish(pool) {
@@ -177,8 +229,11 @@ function poolShareStats(pool_id) {
   return "(" + pool.good_shares + "/" + pool.bad_shares + ")";
 }
 
-function poolErrorText(error) {
-  return error instanceof Object && typeof error.message === "string" ? ": " + error.message : "";
+function poolErrorText(error, pool_id) {
+  const message = error instanceof Object && typeof error.message === "string" ? error.message : "";
+  if (!message) return "";
+  return pool_id === undefined ? ": " + message
+    : ": " + JSON.stringify(redactPoolText(pool_id, message).slice(0, 200));
 }
 
 function applyLoginExtensions(pool_id, extensions) {
@@ -230,7 +285,7 @@ function jobTargetWork(job) {
   // etchash/autolykos2/fishhash carry a full 256-bit target too, but their hashrate is in hashes -> H/share.
   if (job.algo === "etchash" || job.algo === "autolykos2" || job.algo === "fishhash" ||
       job.algo === "zelhash" ||
-      job.algo === "karlsenhashv2")
+      job.algo === "karlsenhashv2" || job.algo === "c30")
   {return h.target256ToWork(job.target);}
   return h.target2diff(job.target);
 }
@@ -293,6 +348,16 @@ function loginFailed(pool_id, reason) {
 }
 
 function handleLoginResponse(pool_id, is_err, is_ok, err_msg, json) {
+  const pool = global.opt.pools[pool_id];
+  if (usesCortex(pool)) {
+    pool.pending_cortex_login = false;
+    if (is_err || !is_ok) return loginFailed(pool_id, err_msg || ": Login rejected");
+    loginSucceeded(pool_id);
+    pool.pending_cortex_work = true;
+    return module.exports.pool_write(pool_id, {
+      id: 100, jsonrpc: "2.0", method: "ctxc_getWork", params: [""],
+    });
+  }
   if (is_err || json.result === false) {return loginFailed(pool_id, err_msg || ": Login rejected");}
   if (is_ok) {return loginSucceeded(pool_id);}
 }
@@ -327,7 +392,8 @@ function handleShareResponse(pool_id, is_err, is_ok, err_msg) {
 
 function handlePoolResponse(pool_id, json) {
   const is_err  = "error" in json && json.error !== null;
-  const err_msg = is_err ? poolErrorText(json.error) : "";
+  const err_msg = is_err ? poolErrorText(json.error,
+    usesCortex(global.opt.pools[pool_id]) ? pool_id : undefined) : "";
   const is_ok   = "result" in json && json.result !== null && json.result !== false;
   const handler = poolResponseHandler(pool_id, json.id);
   const result = handler(pool_id, is_err, is_ok, err_msg, json);
@@ -349,8 +415,27 @@ function ignorePoolResponse() {
   return undefined;
 }
 
+function normalizedResponseId(id) {
+  if (typeof id !== "string" || !/^(?:0|[1-9]\d*)$/.test(id)) {return id;}
+  const numeric = Number(id);
+  return Number.isSafeInteger(numeric) ? numeric : id;
+}
+
 function poolResponseHandler(pool_id, id) {
   const pool = global.opt.pools[pool_id];
+  if (usesCortex(pool)) {
+    if (id === 72) return pool.pending_cortex_login ? handleLoginResponse : ignorePoolResponse;
+    if (id === 100) {
+      if (!pool.pending_cortex_work) return ignorePoolResponse;
+      return (pool_id, _is_err, _is_ok, err_msg) => {
+        pool.pending_cortex_work = false;
+        return pool_log_err(pool_id, "Cortex getWork failed" +
+          (_is_err && err_msg ? err_msg : ": Invalid work response"));
+      };
+    }
+    return typeof id === "number" && pool.pending_cortex_submit_ids?.delete(id)
+      ? handleShareResponse : ignorePoolResponse;
+  }
   if (pearlhashUsesSubscribe(pool)) {
     if (id === 1) {return ignorePoolResponse;}           // subscribe ack/err (authorize already sent)
     if (id === 2) {return pool.pending_authorize ? handleAuthorizeResponse : ignorePoolResponse;}
@@ -421,6 +506,14 @@ function handleBeamResult(pool_id, json) {
 }
 
 function pool_message(pool_id, json, set_job) {
+  const cortexPool = global.opt.pools[pool_id];
+  if (usesCortex(cortexPool)) {
+    const responseId = normalizedResponseId(json.id);
+    if (responseId !== json.id) json = {...json, id: responseId};
+    if (json.id === 100 && cortexPool.pending_cortex_work &&
+        "error" in json && json.error !== null)
+      return handlePoolResponse(pool_id, json);
+  }
   if (poolProtocol(global.opt.pools[pool_id]) === "beam" && isBeamResult(json))
   {return handleBeamResult(pool_id, json);}
   if (handleIronfishMessage(pool_id, json, set_job)) {return;}
@@ -437,8 +530,13 @@ function pool_message(pool_id, json, set_job) {
     {global.opt.pools[pool_id].extra_nonce2_size = Number(json.params[1]);}
     return;
   }
+  const pool = global.opt.pools[pool_id];
+  if (usesCortex(pool) && json.id === 100 && !pool.pending_cortex_work) return;
   const job = jobFromPoolMessage(pool_id, json);
-  if (job) {return handlePoolJob(pool_id, job, set_job);}
+  if (job) {
+    if (usesCortex(pool) && json.id === 100) pool.pending_cortex_work = false;
+    return handlePoolJob(pool_id, job, set_job);
+  }
   if ("id" in json) {return handlePoolResponse(pool_id, json);}
 
   pool_log1(pool_id, "Unknown message from the pool: " + JSON.stringify(json));
@@ -448,7 +546,7 @@ const { connectPoolThrottle } = require("./pool/connection")({
   h, o, net, tls, systemNetConnect, systemTlsConnect, max_pool_data_buffer,
   clear_pool_connection, isCurrentPoolSocket, pearlhashUsesSubscribe,
   poolProtocol, pool_log, pool_log1, pool_log2, pool_log_err, pool_log_str,
-  pool_message, pool_str, usesEthProxy, usesIronfish, usesMiningSubscribe,
+  pool_message, pool_str, usesCortex, usesEthProxy, usesIronfish, usesMiningSubscribe,
   poolWrite: (...args) => module.exports.pool_write(...args),
   switchPool: (...args) => module.exports.switch_pool(...args),
 });

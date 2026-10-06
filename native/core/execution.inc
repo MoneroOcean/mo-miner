@@ -152,6 +152,13 @@ void Core::Execute() {
               static_cast<uint32_t*>(m_spads), &dev_nonce, m_dev_str
             );
             break;
+          case DEV::C30_GPU:
+            dev_nonce = m_nonce64;
+            dev_sols = m_fn.gpu_c29(
+              m_job_ref, m_c29_proof_size, m_input, m_input_len, m_output,
+              static_cast<uint32_t*>(m_spads), &dev_nonce, m_dev_str
+            );
+            break;
           case DEV::KAWPOW_GPU:
             std::memcpy(&dev_nonce, m_input + m_nonce_offset, sizeof(dev_nonce));
             dev_sols = m_fn.gpu_kawpow(
@@ -423,6 +430,18 @@ void Core::Execute() {
         if (m_target && nonce_overflowed(prev_nonce, m_nonce64, m_nicehash_mask)) {
           set_fn(nullptr);
           send_last_nonce(prev_nonce, 8, m_pool_id);   // pearlhash seed is 64-bit
+        }
+        continue;
+      }
+      if (m_dev == DEV::C30_GPU) {
+        const uint64_t prev_nonce = m_nonce64;
+        if (dev_sols == 1 && m_target && std::memcmp(m_output, m_target_bin, HASH_LEN) <= 0)
+          send_result(dev_nonce, 8, m_output, static_cast<uint32_t*>(m_spads), 42);
+        m_nonce64 += m_nonce_step;
+        if (m_target && mom::job_boundary::nonce_overflowed(
+            prev_nonce, m_nonce64, m_nicehash_mask)) {
+          set_fn(nullptr);
+          send_last_nonce(prev_nonce, 8, m_pool_id, m_job_id, m_job_token);
         }
         continue;
       }

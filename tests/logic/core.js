@@ -23,6 +23,9 @@ test("Cuckaroo aliases normalize to the short algorithm names", () => {
   for (const name of ["c29", "cuckaroo", "cuckaroo29", "c29xtm"]) {
     assert.equal(normalizeAlgoName(name), "c29");
   }
+  for (const name of ["c30", "cuckaroo30", "c30ctx"]) {
+    assert.equal(normalizeAlgoName(name), "c30");
+  }
   for (const name of ["kawpow", "kawpow1", "kawpow4"]) {
     assert.equal(normalizeAlgoName(name), "kawpow");
   }

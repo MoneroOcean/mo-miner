@@ -1,5 +1,7 @@
 "use strict";
 
+const crypto = require("node:crypto");
+
 module.exports = ({
   h, normalizeAlgoName, poolProtocol, usesEthProxy, pearlhashUsesSubscribe,
   pearlhashDiffFromJobId, pearlhashNbitsBound, beamPackedTarget, pool_close_wait,
@@ -380,8 +382,48 @@ module.exports = ({
     return normalizeAlgoName(json.algo || (global.opt.job && global.opt.job.algo) || fallback);
   }
 
+  function validHexBytes(value, bytes) {
+    if (typeof value !== "string") return null;
+    const hex = hexWithoutPrefix(value);
+    return hex.length === bytes * 2 && /^[0-9a-f]+$/i.test(hex) ? hex : null;
+  }
+
+  /** @param {unknown} value */
+  function parseCortexHeight(value) {
+    if (value === undefined || value === null || value === "") {return 0;}
+    const hex = hexWithoutPrefix(value);
+    if (!hex || /[^0-9a-f]/i.test(hex)) {
+      return null;
+    }
+    const height = Number.parseInt(hex, 16);
+    return Number.isSafeInteger(height) ? height : null;
+  }
+
+  /** @param {PoolConfig} pool @param {ResultArrayPoolMessage} json @returns {PoolJob | null} */
+  function cortexWorkJob(pool, json) {
+    const header = validHexBytes(json.result[0], 32);
+    const target = validHexBytes(json.result[2], 32);
+    const height = parseCortexHeight(json.result[3]);
+    if (!header || !target || height === null) {
+      return null;
+    }
+    pool.cortex_nonce ??= crypto.randomBytes(6).toString("hex");
+    return {
+      algo: "c30", blob: header, header_hash: "0x" + header, job_id: header,
+      target, proofsize: 42, noncebytes: 8, nonceoffset: 0, nonce: pool.cortex_nonce,
+      height,
+    };
+  }
+
   function jobFromPoolMessage(pool_id, json) {
     const pool = global.opt.pools[pool_id];
+    if (poolProtocol(pool) === "cortex" && (json.id === 100 || json.id === 0) &&
+        Array.isArray(json.result) && json.result.length >= 3) {
+      if (!pool.logged_in) return null;
+      const job = cortexWorkJob(pool, json);
+      if (job) {pool.submit_mode = job.submit_mode = "cortex";}
+      return job;
+    }
     if (isJobNotification(json)) {
       if (!pool.logged_in) {return null;}
       pool.submit_mode = null;

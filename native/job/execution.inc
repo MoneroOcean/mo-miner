@@ -87,8 +87,31 @@ void Core::set_job(
     new_algo_str == "karlsenhashv2" ? DEV::KARLSENHASHV2_GPU :
     new_algo_str == "zelhash" ? DEV::ZELHASH_GPU :
     new_algo_str == "beamhash3" ? DEV::BEAMHASH3_GPU :
-    new_algo_str == "c29" ? DEV::C29_GPU : DEV::GPU;
+    new_algo_str == "c29" ? DEV::C29_GPU :
+    new_algo_str == "c30" ? DEV::C30_GPU : DEV::GPU;
 
+  uint64_t c30_initial_nonce = 0;
+  if (new_dev == DEV::C30_GPU) {
+    for (const char* field : {"height", "thread_id", "thread_num", "noncebytes", "nonceoffset", "proofsize", "intensity"}) {
+      unsigned value = 0;
+      if (v.contains(field) && !mom::job_boundary::parse_unsigned(v.at(field), value))
+        throw std::string("Invalid c30 unsigned job field: ") + field;
+    }
+    for (const char* field : {"nonce", "nicehash_mask"}) {
+      uint64_t value = 0;
+      if (v.contains(field) && !mom::job_boundary::parse_unsigned(v.at(field), value, 16))
+        throw std::string("Invalid c30 hexadecimal job field: ") + field;
+    }
+    if (new_batch != 1 || new_c29_proof_size != 42)
+      throw std::string("c30 requires intensity 1 and proof size 42");
+    if (new_thread_num == 0 || new_thread_id >= new_thread_num)
+      throw std::string("Invalid c30 worker thread index/count");
+    if (is_set_nonce &&
+        !mom::job_boundary::nonce_with_offset<uint64_t>(
+          new_nonce, uint64_t{new_thread_id} + new_thread_num, 1,
+          new_nicehash_mask, c30_initial_nonce))
+      throw std::string("c30 starting nonce is exhausted");
+  }
   if (new_dev == DEV::C29_GPU && new_batch != 1)
     throw std::string("Invalid batch size for c29 algo. Should be 1.");
   if (new_backend != "auto" && new_backend != "sycl" &&
@@ -162,6 +185,7 @@ void Core::set_job(
       break;
 
     case DEV::C29_GPU:
+    case DEV::C30_GPU:
       new_fn.gpu_c29 = algo_lookup(gpu_c29_algo2fn, new_algo_str);
       break;
 
@@ -208,6 +232,18 @@ void Core::set_job(
     throw std::string("Bad input length");
   if (!hex2bin(new_input_hex.c_str(), new_input_len, new_input))
     throw std::string("Bad input hex");
+  if (new_dev == DEV::C30_GPU) {
+    const bool canonical_search = new_input_len == 32 && new_nonce_bytes == 8 &&
+      new_nonce_offset == 0;
+    const bool test_vector = !is_set_nonce && new_input_len == 40 &&
+      new_nonce_bytes == 8 && new_nonce_offset == 32;
+    // Mining advances an external nonce over the canonical 32-byte header; accepting the
+    // embedded 40-byte form outside test mode would repeat one fixed nonce indefinitely.
+    if (!canonical_search && !test_vector)
+      throw std::string(
+        "c30 requires a canonical 32-byte search header with an 8-byte nonce at offset 0; "
+        "only test mode accepts the 40-byte header-plus-nonce vector at offset 32");
+  }
   // header must be long enough to hold the nonce (kawpow/etchash/autolykos2) or the full PoUW
   // header (pearlhash); min lengths differ by algo
   const unsigned min_input_len = new_dev == DEV::PEARLHASH_GPU ? 76
@@ -408,6 +444,14 @@ void Core::set_job(
       }
     );
   } else {
+    if (new_dev == DEV::C30_GPU) {
+      memcpy(m_input, new_input, m_input_len);
+      m_nonce_step = new_thread_num;
+      // This existing core uses zero as its test sentinel; JobMode migration is a later topic.
+      m_nonce64 = is_set_nonce ? c30_initial_nonce : 0;
+      m_nonce32 = 0;
+      return;
+    }
     if (new_dev == DEV::PEARLHASH_GPU) {
       // pearlhash has a single header blob with NO embedded nonce; the search variable is an internal
       // seed counter (one seeded attempt per Execute call), so step by worker count, not by batch.
