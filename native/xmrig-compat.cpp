@@ -1,4 +1,4 @@
-// Copyright GNU GPLv3 (c) 2026-2026 MoneroOcean <support@moneroocean.stream>
+// Copyright GNU GPLv3 (c) 2026 MoneroOcean <support@moneroocean.stream>
 
 #include "xmrig/base/io/log/Log.h"
 #include "xmrig/base/tools/Chrono.h"
@@ -21,14 +21,13 @@ void Log::init() {}
 void Log::print(const char*, ...) {}
 void Log::print(Level, const char*, ...) {}
 
-double Chrono::highResolutionMSecs()
-{
-    using namespace std::chrono;
+double Chrono::highResolutionMSecs() {
+  using namespace std::chrono;
 
-    // Pick high_resolution_clock only when it is steady, else steady_clock, so the
-    // result stays monotonic (mirrors Chrono::steadyMSecs).
-    using Clock = std::conditional_t<high_resolution_clock::is_steady, high_resolution_clock, steady_clock>;
-    return duration<double, std::milli>(Clock::now().time_since_epoch()).count();
+  // Pick high_resolution_clock only when it is steady, else steady_clock, so the
+  // result stays monotonic (mirrors Chrono::steadyMSecs).
+  using Clock = std::conditional_t<high_resolution_clock::is_steady, high_resolution_clock, steady_clock>;
+  return duration<double, std::milli>(Clock::now().time_since_epoch()).count();
 }
 
 } // namespace xmrig

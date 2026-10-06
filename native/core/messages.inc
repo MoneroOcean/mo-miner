@@ -1,13 +1,5 @@
-static const xmrig::ICpuInfo& cpu_info() { return *xmrig::Cpu::info(); }
-#define ci cpu_info()
 void (*rx_blake2b_compress)(blake2b_state* S, const uint8_t * block) = rx_blake2b_compress_integer;
 int (*rx_blake2b)(void* out, size_t outlen, const void* in, size_t inlen) = rx_blake2b_default;
-
-static void debug_startup(const char* message) {
-  if (!std::getenv("MOM_DEBUG_STARTUP")) return;
-  fprintf(stderr, "MOM_DEBUG_STARTUP %s\n", message);
-  fflush(stderr);
-}
 
 struct MsrValue {
   uint64_t value, mask;
@@ -57,24 +49,13 @@ bool Core::hex2bin(const char* in, unsigned int len, unsigned char* out) {
   return true;
 }
 
-std::vector<std::string> Core::tokenize(const std::string& str, const char delim) {
-  std::vector<std::string> out;
-  size_t start;
-  size_t end = 0;
-  while ((start = str.find_first_not_of(delim, end)) != std::string::npos) {
-    end = str.find(delim, start);
-    out.push_back(str.substr(start, end - start));
-  }
-  return out;
-}
-
 static inline char hf_bin2hex(const unsigned n) {
   return n < 10 ? '0' + n : 'a' + (n - 10);
 }
 
 char* Core::hash_bin2hex(const uint8_t* const output, char* hash, const unsigned batch) const {
   char* hash0 = hash;
-  for (unsigned i = 0, offset = batch * HASH_LEN; i != HASH_LEN; ++ i, ++ offset) {
+  for (unsigned i = 0, offset = batch * HASH_LEN; i != HASH_LEN; ++i, ++offset) {
     *hash++ = hf_bin2hex(output[offset] >> 4);
     *hash++ = hf_bin2hex(output[offset] & 0xF);
   }
@@ -87,16 +68,16 @@ char* Core::hash_bin2hex(char* const hash, const unsigned batch) const {
 }
 
 void Core::send_msg(const std::string key, const MessageValues& values) {
-  static std::mutex mutex_message;
-  const std::lock_guard<std::mutex> lock(mutex_message);
-  debug_startup(("Core::send_msg " + key).c_str());
+  debug_async_worker(("Core::send_msg " + key).c_str());
   sendToNode(Message(key, values));
-  debug_startup(("Core::send_msg done " + key).c_str());
+  debug_async_worker(("Core::send_msg done " + key).c_str());
 }
 
 void Core::send_msg(const std::string& topic, const std::string& key, const std::string& value) {
   MessageValues values;
-  if (!key.empty()) values[key] = value;
+  if (!key.empty()) {
+    values[key] = value;
+  }
   send_msg(topic, values);
 }
 
@@ -107,8 +88,11 @@ void Core::send_error(const std::string& str) {
 // Format a nonce as fixed-width little-endian-display hex: 8 digits for 4-byte nonces, else 16.
 static std::string nonce_to_hex(const uint64_t nonce, const unsigned noncebytes) {
   char hex[sizeof(uint64_t) * 2 + 1];
-  if (noncebytes == 4) snprintf(hex, sizeof(hex), "%08x", static_cast<uint32_t>(nonce));
-  else                 snprintf(hex, sizeof(hex), "%016" PRIx64, nonce);
+  if (noncebytes == 4) {
+    snprintf(hex, sizeof(hex), "%08x", static_cast<uint32_t>(nonce));
+  } else {
+    snprintf(hex, sizeof(hex), "%016" PRIx64, nonce);
+  }
   return hex;
 }
 
@@ -126,9 +110,7 @@ void Core::send_result(
     values["hash"] = hash_bin2hex(output, hash_hex);
   }
 
-  // Out-of-band proof bytes for algos whose share isn't a 32-byte hash (zelhash: the Flux/ZIP-301
-  // stratum submit carries the full compactSize-prefixed solution -- 0x34 || 52-byte compressed proof =
-  // 53 bytes / 106 hex). Serialized like edges: caller passes the already-prefixed byte run.
+  // ZIP-301 shares carry a compactSize-prefixed Equihash proof instead of a 32-byte hash.
   if (solution && solution_len) {
     std::string solution_hex;
     solution_hex.reserve(solution_len * 2);
@@ -163,8 +145,12 @@ void Core::send_result(
   values["pool_id"]   = m_pool_id;
   values["worker_id"] = m_worker_id;
   values["job_id"]    = m_job_id;
-  if (!m_job_token.empty()) values["job_token"] = m_job_token;
-  if (!m_header_hash.empty()) values["header_hash"] = m_header_hash;
+  if (!m_job_token.empty()) {
+    values["job_token"] = m_job_token;
+  }
+  if (!m_header_hash.empty()) {
+    values["header_hash"] = m_header_hash;
+  }
   send_msg("result", values);
 }
 
@@ -202,13 +188,18 @@ void Core::send_equihash_results(
   }
 }
 
-void Core::send_last_nonce(const uint64_t nonce, const unsigned noncebytes, const std::string& pool_id,
-                           const std::string& job_id, const std::string& job_token) {
+void Core::send_last_nonce(
+  const uint64_t nonce, const unsigned noncebytes, const std::string& pool_id,
+  const std::string& job_id, const std::string& job_token
+) {
+  if (pool_id.empty() || job_token.empty()) {
+    return;
+  }
   MessageValues result;
   result["nonce"]   = nonce_to_hex(nonce, noncebytes);
   result["pool_id"] = pool_id;
-  if (!job_id.empty()) result["job_id"] = job_id;
-  if (!job_token.empty()) result["job_token"] = job_token;
+  result["job_id"]  = job_id;
+  result["job_token"] = job_token;
   send_msg("last_nonce", result);
 }
 
@@ -227,11 +218,15 @@ static uint64_t parse_padded_le_hex(const std::string& hex, const unsigned bytes
 }
 
 static uint64_t parse_high_target_word(const std::string& target) {
+  if (target.empty() || target.size() > HASH_LEN * 2)
+    throw std::string("Bad target hex");
+  bool error = false;
+  for (const char c : target) {
+    hf_hex2bin(c, error);
+  }
+  if (error) throw std::string("Bad target hex");
   std::string target64 = target.substr(0, sizeof(uint64_t) * 2);
   target64.resize(sizeof(uint64_t) * 2, '0');
-  bool error = false;
-  for (const char c : target64) hf_hex2bin(c, error);
-  if (error) throw std::string("Bad target hex");
   char* end = nullptr;
   const uint64_t value = strtoull(target64.c_str(), &end, 16);
   if (end == target64.c_str() || *end || value == 0) throw std::string("Bad target hex");
@@ -267,11 +262,20 @@ static void parse_big_target_hex(const std::string& target, uint8_t* const out) 
   if (!any) throw std::string("Bad target hex"); // reject all-zero target
 }
 
-static bool nonce_overflowed(const uint64_t previous, const uint64_t next, const uint64_t mask) {
-  return mask ? (previous & mask) != (next & mask) : previous > next;
+static void free_mem(void* const mem) { _mm_free(mem); }
+
+void Core::stop_rx_threads() noexcept {
+  if (m_rx_threads.empty()) {
+    return;
+  }
+  next_job_ref();
+  join_threads(m_rx_threads);
+  m_rx_threads.clear();
 }
 
-static void free_mem(void* const mem) { _mm_free(mem); }
+void Core::destroy_rx_vms() noexcept {
+  m_vms.clear();
+}
 
 void Core::free_memory(
   const bool is_batch_changed,
@@ -279,38 +283,69 @@ void Core::free_memory(
   const bool is_free_cn,
   const bool is_free_rx
 ) {
-  // m_thread_pool need to be deleted first if anything rx related is deleted
-  if (is_batch_changed || is_free_rx) {
-    // ++ m_job_ref is to stop rx threads if any
-    if (m_thread_pool) { ++ m_job_ref; delete m_thread_pool; m_thread_pool = nullptr; }
-    if (m_vm) {
-      for (unsigned i = 0; i != m_batch; ++ i) randomx_destroy_vm(m_vm[i]);
-      delete [] m_vm; m_vm = nullptr;
-    }
+  if (is_batch_changed || is_mem_size_changed || is_free_rx) {
+    stop_rx_threads();
+    destroy_rx_vms();
   }
   if (is_batch_changed || is_mem_size_changed) {
-    if (m_lpads) { delete m_lpads; m_lpads = nullptr; }
+    if (m_lpads) {
+      delete m_lpads;
+      m_lpads = nullptr;
+    }
   }
   if (is_batch_changed) {
-    if (m_input)  { free_mem(m_input);  m_input  = nullptr; }
-    if (m_output) { free_mem(m_output); m_output = nullptr; }
+    if (m_input) {
+      free_mem(m_input);
+      m_input = nullptr;
+    }
+    if (m_output) {
+      free_mem(m_output);
+      m_output = nullptr;
+    }
   }
   if (is_batch_changed || is_mem_size_changed || is_free_cn) {
-    if (m_ctx) { xmrig::CnCtx::release(m_ctx, m_batch); delete [] m_ctx; m_ctx = nullptr; }
+    if (m_ctx) {
+      xmrig::CnCtx::release(m_ctx, m_batch);
+      delete [] m_ctx;
+      m_ctx = nullptr;
+    }
   }
   if (is_batch_changed || is_free_cn) {
-    if (m_spads) { free_mem(m_spads); m_spads = nullptr; }
+    if (m_spads) {
+      free_mem(m_spads);
+      m_spads = nullptr;
+    }
   }
   if (is_free_rx) {
-    if (m_rx_dataset)     { randomx_release_dataset(m_rx_dataset); m_rx_dataset = nullptr; }
-    if (m_rx_cache)       { randomx_release_cache(m_rx_cache); m_rx_cache = nullptr; }
-    if (m_rx_dataset_mem) { delete m_rx_dataset_mem; m_rx_dataset_mem = nullptr; }
-    if (m_rx_cache_mem)   { delete m_rx_cache_mem; m_rx_cache_mem = nullptr; }
+    if (m_rx_dataset) {
+      randomx_release_dataset(m_rx_dataset);
+      m_rx_dataset = nullptr;
+    }
+    if (m_rx_cache) {
+      randomx_release_cache(m_rx_cache);
+      m_rx_cache = nullptr;
+    }
+    if (m_rx_dataset_mem) {
+      delete m_rx_dataset_mem;
+      m_rx_dataset_mem = nullptr;
+    }
+    if (m_rx_cache_mem) {
+      delete m_rx_cache_mem;
+      m_rx_cache_mem = nullptr;
+    }
   }
 }
 
-void Core::set_fn(cn_any_hash_fun fn) {
-  m_fn.any     = fn;
-  m_timestamp  = 0;
-  m_hash_count = 0;
+void Core::set_fn(const FN& fn) {
+  m_fn         = fn;
+  m_has_fn     = true;
+}
+
+void Core::clear_fn(const bool reset_hashrate) {
+  m_fn         = {};
+  m_has_fn     = false;
+  if (reset_hashrate) {
+    m_timestamp = 0;
+    m_hash_count.store(0, std::memory_order_relaxed);
+  }
 }

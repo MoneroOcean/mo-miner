@@ -9,8 +9,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <limits>
-#include <map>
 #include <memory>
 #include <mutex>
 #include <vector>

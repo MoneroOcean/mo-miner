@@ -204,6 +204,33 @@ public:
   }
 };
 
+// Own only the temporary compiler program; release it before loading the resulting module.
+class NvrtcProgram {
+  NvrtcApi& api_;
+  nvrtcProgram program_ = nullptr;
+
+public:
+  // Construct after ptx_available()/cubin_available() validates the compiler entry points.
+  explicit NvrtcProgram(NvrtcApi& api) noexcept : api_(api) {}
+  NvrtcProgram(const NvrtcProgram&) = delete;
+  NvrtcProgram& operator=(const NvrtcProgram&) = delete;
+
+  nvrtcProgram* address() noexcept { return &program_; }
+  nvrtcProgram get() const noexcept { return program_; }
+
+  void reset() noexcept {
+    if (!program_)
+      return;
+    nvrtcProgram program = program_;
+    program_ = nullptr;
+    (void)api_.destroy_program(&program);
+  }
+
+  ~NvrtcProgram() {
+    reset();
+  }
+};
+
 inline void cuda_check(CudaDriverApi& api, const CUresult status,
                        const char* const operation) {
   if (status == CUDA_SUCCESS)

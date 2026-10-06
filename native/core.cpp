@@ -1,7 +1,8 @@
-// Copyright GNU GPLv3 (c) 2023-2025 MoneroOcean <support@moneroocean.stream>
+// Copyright GNU GPLv3 (c) 2023-2026 MoneroOcean <support@moneroocean.stream>
 
 #include "core.h"
-#include "../sycl/lib.h"   // pearlhash_proof()
+#include "hashrate-sampling.h"
+#include "../sycl/lib.h"   // pearlhash_claim()
 
 #include "3rdparty/fmt/core.h"
 #include "backend/cpu/Cpu.h"
@@ -19,6 +20,13 @@
 #include <inttypes.h>
 #include <thread>
 #include <cstring>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 #include "core/messages.inc"
 

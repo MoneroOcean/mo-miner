@@ -66,16 +66,11 @@ void cn_gpu(const uint8_t* const inputs, const unsigned input_size, uint8_t* con
     if (native_requested && mom_is_cuda(state.device)) {
       std::string reason;
       if (state.cuda_expand.ensure(q, &reason)) {
-        try {
-          sycl_wait_and_throw(initial_keccak, state.device);
-          state.cuda_expand.launch(state.spads, state.lpads, batch_eff);
-          state.cuda_expand.wait();
-          native_expansion = true;
-        } catch (const std::string& error) {
-          state.cuda_expand.fail(error);
-        } catch (const std::exception& error) {
-          state.cuda_expand.fail(error.what());
-        }
+        // Submitted-work faults must abort this dispatch, not retry on a faulted queue.
+        sycl_wait_and_throw(initial_keccak, state.device);
+        state.cuda_expand.launch(state.spads, state.lpads, batch_eff);
+        state.cuda_expand.wait();
+        native_expansion = true;
       } else if (!state.native_notice) {
         state.native_notice = true;
         std::fprintf(stderr, "cn/gpu native expansion unavailable, using SYCL: %s\n",

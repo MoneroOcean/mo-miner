@@ -80,8 +80,10 @@ static bool native_matrix_supported(sycl::queue& queue) {
 #elif defined(MOM_SYCL_HAS_HIP)
   hipDevice_t device = -1;
   hipDeviceProp_t properties{};
-  return mom_is_hip(queue.get_device()) && mom::hip_queue_device(queue, device) &&
-         hipGetDeviceProperties(&properties, device) == hipSuccess &&
+  if (!mom_is_hip(queue.get_device()))
+    return false;
+  mom::hip_queue_device(queue, device);
+  return hipGetDeviceProperties(&properties, device) == hipSuccess &&
          mom::amd::has_gfx12_int8_wmma(properties.gcnArchName);
 #else
   (void)queue;
@@ -1012,8 +1014,9 @@ public:
   void ensure_dag(const bool log) {
     if (full_dag || dag_attempted)
       return;
+    const bool available = wants_full_dag();
     dag_attempted = true;
-    if (!wants_full_dag())
+    if (!available)
       return;
     const uint64_t bytes = dataset_size(epoch);
     const uint32_t nodes = static_cast<uint32_t>(bytes / (CACHE_NODE_WORDS * sizeof(uint32_t)));
@@ -1035,10 +1038,11 @@ public:
         sycl_wait_and_throw(build_dag(queue, cache, cache_nodes, candidate, offset, count), device);
       }
     } catch (...) {
+      sycl_cleanup_noexcept("octopus DAG wait", [&] { queue.wait_and_throw(); });
       free_ptr(candidate);
-      if (log)
-        std::fprintf(stderr, "Octopus DAG build unavailable; using light cache\n");
-      return;
+      // A submitted DAG fault must not become cached light-path availability.
+      dag_attempted = false;
+      throw;
     }
     free_ptr(dag);
     dag = candidate;

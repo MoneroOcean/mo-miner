@@ -1,16 +1,88 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const {spawnSync} = require("node:child_process");
+const {createHash} = require("node:crypto");
 const {test} = require("node:test");
-const policy = require("../compiler-policy");
+const policyModule = require("../compiler-policy");
+const opts = require("../opts");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const gpuTuning = require("../gpu-tuning");
 const helper = require("../helper");
+const createJobApi = require("../miner/jobs");
+const {normalizeAlgoName} = require("../miner/algorithms");
+const {hexWithoutPrefix} = require("../miner/submission");
 const {
+  cloneForDiscreteGpu, cloneForIntelIntegrated, cloneForOpenclSycl, openclSyclEnv,
+} = require("./common/gpu_test_modes");
+const {
+  createAlgoParamsReportCache,
+  isMissingGpuOutput,
+  maxCapturedOutputBytes,
   parseDiscreteGpuDevices, parseGpuDevices,
+  runNode, wrapWindowsCmd,
 } = require("./common/miner_command");
+
+
+/** @typedef {{key: string, addon: string, backend: string, pearlhashProfile: {m: number, n: number, k: number, rank: number} | null}} CompilerSelection */
+/** @typedef {Record<string, string | undefined>} TestEnv */
+/** @typedef {NodeJS.ProcessEnv & {MOM_SYCL_COMPILER?: string | undefined, ACPP_VISIBILITY_MASK?: string | undefined, CUDA_VISIBLE_DEVICES?: string | undefined, HIP_VISIBLE_DEVICES?: string | undefined, MOM_NATIVE_PATH?: string | undefined, MOM_RUNTIME_DIR?: string | undefined, LD_LIBRARY_PATH?: string | undefined, PATH?: string | undefined, ONEAPI_DEVICE_SELECTOR?: string | undefined, UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS?: string | undefined, MOM_NEXAPOW_NATIVE?: string | undefined, MOM_OCTOPUS_SYCL_NATIVE?: string | undefined, MOM_XELISHASHV3_SYCL_NATIVE?: string | undefined, MOM_WALAHASH_SYCL_NATIVE?: string | undefined}} CompilerEnv */
+
+/** @param {string} algo @param {string} gpu @param {NodeJS.Platform} [platform] @param {number | null} [nvidiaSm] @returns {CompilerSelection} */
+function selectPolicy(algo, gpu, platform = process.platform, nvidiaSm = null) {
+  const selected = policyModule.selection(algo, gpu, platform, nvidiaSm);
+  if (!selected) {throw new Error(`No compiler policy for ${algo}/${gpu}/${platform}`);}
+  return selected;
+}
+
+/** @param {string} algo @param {NodeJS.ProcessEnv} [env] @param {NodeJS.Platform} [platform] @param {string} [requestedBackend] @returns {CompilerEnv} */
+function workerEnvironment(algo, env = process.env, platform = process.platform, requestedBackend = "auto") {
+  return policyModule.workerEnv(algo, env, platform, requestedBackend);
+}
+
+const policy = {...policyModule, selection: selectPolicy, workerEnv: workerEnvironment};
+
+/** @param {NodeJS.ProcessEnv} [env] */
+function testJobApi(env = process.env) {
+  const opt = opts.create_default_opts();
+  const testProcess = Object.assign(Object.create(process), {env});
+  return createJobApi({
+    h: helper,
+    opt,
+    process: testProcess,
+    compilerPolicy: policyModule,
+    gpuTuning,
+    hexWithoutPrefix,
+    normalizeAlgoName,
+    messageHandler: () => undefined,
+    isExiting: () => false,
+    getComputeCore: () => null,
+    getLastJob: () => null,
+    setLastJob: () => undefined,
+  });
+}
+
+/** @param {string} compiler @param {string} backend @param {string} profile */
+function policyFixture(compiler = "—", backend = "—", profile = "—") {
+  const lines = [
+    "| Key | Linux | Windows |",
+    "| --- | --- | --- |",
+    "| dpcpp | dpcpp/mom.node | dpcpp/mom.node |",
+    "",
+    "| OS | GPU | Compiler | Backend | PearlHash MxNxK/rank |",
+    "| --- | --- | --- | --- | --- |",
+    `| Linux | Intel | dpcpp | sycl | ${profile} |`,
+    "",
+    "| Algorithm | OS | GPU | Compiler | Backend |",
+    "| --- | --- | --- | --- | --- |",
+  ];
+  if (compiler !== "—" || backend !== "—") {
+    lines.push(`| foo | Linux | Intel | ${compiler} | ${backend} |`);
+  }
+  return lines.join("\n");
+}
 
 async function tuneCnGpu(rates) {
   const opt = {algo_params: {"cn/gpu": {dev: "gpu1*[intensity=1536]"}}};
@@ -76,6 +148,19 @@ test("GPU tuning syntax preserves per-device workers and partial overrides", () 
     "gpu1*[m=8192]");
   assert.equal(gpuTuning.formatDeviceList(gpuTuning.parseDeviceList("gpu1*176", "zelhash")),
     "gpu1*[slots=176]");
+  assert.equal(gpuTuning.formatDeviceList(gpuTuning.parseDeviceList("gpu1*1", "zhash")),
+    "gpu1*[intensity=1]");
+  assert.throws(() => gpuTuning.parseDeviceList("gpu1*2", "zhash"), /intensity must be 1/);
+  assert.equal(gpuTuning.formatDeviceList(
+    gpuTuning.parseDeviceList("gpu1*1", "equihash192_7")), "gpu1*[intensity=1]");
+  assert.throws(() => gpuTuning.parseDeviceList("gpu1*2", "equihash192_7"),
+    /intensity must be 1/);
+  assert.equal(gpuTuning.formatDeviceList(gpuTuning.parseDeviceList("gpu1*1", "c30")),
+    "gpu1*[intensity=1]");
+  assert.throws(() => gpuTuning.parseDeviceList("gpu1*2", "c30"), /intensity must be 1/);
+  assert.deepEqual(gpuTuning.tuningEnvironment("zelhash", {slots: 176}), {
+    MOM_ZELHASH_SLOTS: "176",
+  });
   assert.equal(gpuTuning.formatDeviceList(gpuTuning.parseDeviceList("gpu1*256", "beamhash3")),
     "gpu1*[workgroup=256]");
   assert.throws(() => gpuTuning.parseDeviceList("gpu1*[]", "kawpow"), /must not be empty/);
@@ -87,15 +172,20 @@ test("GPU tuning syntax preserves per-device workers and partial overrides", () 
     /must be one of/);
   assert.throws(() => gpuTuning.parseDeviceList("gpu1*[intensity=1e3]", "kawpow"),
     /base-10 integer/);
-  assert.deepEqual(gpuTuning.parseDeviceList(
-    "gpu1*[dag_chunk=0]", "kawpow"
-  )[0].tuning, {dag_chunk: 0});
-  assert.deepEqual(gpuTuning.parseDeviceList(
-    "gpu1*[cache_block=0]", "pearlhash"
-  )[0].tuning, {cache_block: 0});
+  assert.throws(() => gpuTuning.validateTuning("fishhash", {intensity: true}),
+    /base-10 integer/);
+  assert.throws(() => gpuTuning.parseDeviceList("gpu1024", "kawpow"), /index must be at most 1023/);
+  assert.throws(() => gpuTuning.parseDeviceList("gpu1^9007199254740992", "kawpow"),
+    /process count must be at most 1024/);
+  const dagEntry = gpuTuning.parseDeviceList("gpu1*[dag_chunk=0]", "kawpow")[0];
+  const cacheEntry = gpuTuning.parseDeviceList("gpu1*[cache_block=0]", "pearlhash")[0];
+  assert.ok(dagEntry && cacheEntry);
+  assert.deepEqual(dagEntry.tuning, {dag_chunk: 0});
+  assert.deepEqual(cacheEntry.tuning, {cache_block: 0});
 });
 
 test("empirical GPU tuning candidates stay bounded around portable heuristics", () => {
+  /** @param {string} algo @param {string} dev */
   const formats = (algo, dev) => gpuTuning.autotuneCandidates(
     algo, gpuTuning.parseDeviceEntry(dev, algo)
   ).map(gpuTuning.formatDeviceEntry);
@@ -107,7 +197,19 @@ test("empirical GPU tuning candidates stay bounded around portable heuristics", 
   const autolykos = formats("autolykos2", "gpu2*[intensity=26843520;workgroup=64]^2");
   assert(autolykos.includes("gpu2*[intensity=33554176;workgroup=64]^2"));
   assert(autolykos.includes("gpu2*[intensity=26843520;workgroup=256]^2"));
+  assert.deepEqual(formats("autolykos2", "gpu1*[intensity=4294967295;workgroup=64]"), [
+    "gpu1*[intensity=4294967295;workgroup=64]",
+    "gpu1*[intensity=2147483392;workgroup=64]",
+    "gpu1*[intensity=3221225216;workgroup=64]",
+    "gpu1*[intensity=4294967040;workgroup=64]",
+    "gpu1*[intensity=4294967295;workgroup=32]",
+    "gpu1*[intensity=4294967295;workgroup=128]",
+    "gpu1*[intensity=4294967295;workgroup=256]",
+  ]);
   assert.equal(formats("zelhash", "gpu1*[slots=4480]").length, 1);
+  for (const algo of ["c30", "equihash192_7", "zhash"]) {
+    assert.deepEqual(formats(algo, "gpu1*[intensity=1]"), ["gpu1*[intensity=1]"]);
+  }
   assert(formats("beamhash3", "gpu1*[workgroup=640]")
     .every((dev) => !dev.includes("workgroup=768") && !dev.includes("workgroup=1024")));
   assert.equal(formats("kawpow", "cpu1*8").length, 1);
@@ -132,19 +234,48 @@ test("empirical tuner keeps the heuristic across benchmark noise", async () => {
 });
 
 test("Pearl tuning is applied independently to each native worker job", () => {
-  const first = {algo: "pearlhash", pearlhash_n: 131072, pearlhash_k: 4096, pearlhash_rank: 256};
+  const first = {
+    algo: "pearlhash",
+    dev: "gpu1",
+    pearlhash_base_target: "1",
+    pearlhash_n: 131072,
+    pearlhash_k: 4096,
+    pearlhash_rank: 256,
+  };
   gpuTuning.applyNativeJobTuning(
-    first, gpuTuning.parseDeviceEntry("gpu1*[m=8192;k=2048]", "pearlhash"), "pearlhash");
+    first, gpuTuning.parseDeviceEntry("gpu1*[m=8192;k=2048;rank=128]", "pearlhash"), "pearlhash");
   assert.deepEqual(first, {
-    algo: "pearlhash", dev: "gpu1", intensity: 8192,
-    pearlhash_n: 8192, pearlhash_k: 2048, pearlhash_rank: 256,
+    algo: "pearlhash",
+    dev: "gpu1",
+    intensity: 8192,
+    pearlhash_base_target: "1",
+    pearlhash_n: 8192,
+    pearlhash_k: 2048,
+    pearlhash_rank: 128,
+    target: "0".repeat(59) + "80000",
   });
-  const second = {algo: "pearlhash", pearlhash_n: 131072, pearlhash_k: 4096, pearlhash_rank: 256};
-  gpuTuning.applyNativeJobTuning(second,
-    gpuTuning.parseDeviceEntry("gpu1*[m=16384;n=32768;rank=128]", "pearlhash"), "pearlhash");
+  const second = {
+    algo: "pearlhash",
+    dev: "gpu1",
+    pearlhash_base_target: "1",
+    pearlhash_n: 131072,
+    pearlhash_k: 4096,
+    pearlhash_rank: 256,
+  };
+  gpuTuning.applyNativeJobTuning(
+    second,
+    gpuTuning.parseDeviceEntry("gpu1*[m=16384;n=32768;rank=256]", "pearlhash"),
+    "pearlhash",
+  );
   assert.deepEqual(second, {
-    algo: "pearlhash", dev: "gpu1", intensity: 16384,
-    pearlhash_n: 32768, pearlhash_k: 4096, pearlhash_rank: 128,
+    algo: "pearlhash",
+    dev: "gpu1",
+    intensity: 16384,
+    pearlhash_base_target: "1",
+    pearlhash_n: 32768,
+    pearlhash_k: 4096,
+    pearlhash_rank: 256,
+    target: "0".repeat(59) + "80000",
   });
 });
 
@@ -157,11 +288,13 @@ test("thread selection preserves algorithm-specific *B shorthand until worker re
 
   const c29 = gpuTuning.parseDeviceEntry(helper.get_thread_dev(0, "gpu1*128^2"), "c29");
   assert.deepEqual(c29.tuning, {seed_workgroup: 128});
-  const job = {algo: "c29"};
+  const job = {algo: "c29", dev: "gpu1"};
   gpuTuning.applyNativeJobTuning(job, c29, "c29");
   assert.deepEqual(job, {algo: "c29", dev: "gpu1", intensity: 1});
   assert.deepEqual(gpuTuning.tuningEnvironment("c29", c29.tuning),
     {MOM_C29_SEED_LOCAL_SIZE: "128"});
+  assert.deepEqual(gpuTuning.parseDeviceEntry("gpu1*[intensity=1]", "c30").tuning,
+    {intensity: 1});
   assert.deepEqual(gpuTuning.tuningEnvironment("beamhash3", {workgroup: 256}), {
     MOM_BEAMHASH3_WORKGROUP: "256",
     MOM_BEAMHASH3_COMPACT_WG: "256",
@@ -170,10 +303,8 @@ test("thread selection preserves algorithm-specific *B shorthand until worker re
 
 test("portable Pearl tuning maps generic controls onto relevant vendor kernels", () => {
   assert.deepEqual(gpuTuning.tuningEnvironment("pearlhash", {
-    workgroup: 128, cache_block: 32, tile: "4x2",
+    cache_block: 32, tile: "4x2",
   }), {
-    MOM_PEARLHASH_AMD_WMMA_THREADS: "128",
-    MOM_PEARLHASH_AMD_WMMA_CACHE_BLOCK: "32",
     MOM_PEARLHASH_AMD_DP4A_CACHE_BLOCK: "32",
     MOM_PEARLHASH_CU_BLK: "32",
     MOM_PEARLHASH_AMD_DP4A_TILE: "4x2",
@@ -184,15 +315,29 @@ test("GPU compiler Markdown selects platform defaults and overrides", () => {
   assert.equal(policy.selection("etchash", "intel", "linux").key, "oneapi");
   assert.equal(policy.selection("fishhash", "intel", "linux").key, "oneapi");
   assert.equal(policy.selection("karlsenhashv2", "intel", "linux").key, "oneapi");
+  assert.equal(policy.selection("zhash", "intel", "linux").key, "dpcpp");
+  assert.equal(policy.selection("zhash", "intel", "linux").backend, "sycl");
+  assert.equal(policy.selection("zhash", "intel", "win32").key, "oneapi");
+  assert.equal(policy.selection("xelishashv3", "intel", "linux").backend, "sycl-native");
+  assert.equal(policy.selection("xelishashv3", "intel", "win32").backend, "sycl-native");
   assert.equal(policy.selection("autolykos2", "nvidia", "linux").key, "acpp-cuda");
+  assert.equal(policy.selection("c30", "nvidia", "linux").key, "acpp-cuda");
   assert.equal(policy.selection("beamhash3", "nvidia", "linux").key, "dpcpp");
+  assert.equal(policy.selection("equihash192_7", "nvidia", "linux").key, "acpp-cuda");
   assert.equal(policy.selection("fishhash", "nvidia", "linux").key, "acpp-cuda");
   assert.equal(policy.selection("karlsenhashv2", "nvidia", "linux").key, "acpp-cuda");
   assert.equal(policy.selection("zelhash", "nvidia", "linux").key, "dpcpp");
+  assert.equal(policy.selection("zhash", "nvidia", "linux").key, "acpp-cuda");
+  assert.equal(policy.selection("zhash", "nvidia", "linux").backend, "sycl");
   assert.equal(policy.selection("pearlhash", "nvidia", "linux").backend, "native");
+  assert.equal(policy.selection("octopus", "nvidia", "linux").backend, "sycl-native");
+  assert.equal(policy.selection("xelishashv3", "nvidia", "linux").backend, "sycl-native");
+  assert.equal(policy.selection("nexapow", "nvidia", "linux").backend, "sycl-native");
+  assert.equal(policy.selection("walahash", "nvidia", "linux").backend, "sycl-native");
   assert.deepEqual(policy.selection("pearlhash", "nvidia", "linux").pearlhashProfile,
-    {m: 65536, n: 65536, k: 4096, rank: 256});
+    {m: 131072, n: 524288, k: 8192, rank: 128});
   assert.equal(policy.selection("autolykos2", "nvidia", "win32").key, "acpp-cuda");
+  assert.equal(policy.selection("c30", "nvidia", "win32").key, "acpp-cuda");
   assert.equal(policy.selection("beamhash3", "nvidia", "win32").key, "dpcpp");
   assert.equal(policy.selection("cn/gpu", "nvidia", "win32").key, "dpcpp");
   assert.equal(policy.selection("cn/gpu", "nvidia", "win32").backend, "native");
@@ -200,18 +345,23 @@ test("GPU compiler Markdown selects platform defaults and overrides", () => {
   assert.equal(policy.selection("karlsenhashv2", "nvidia", "win32").key, "acpp-cuda");
   assert.equal(policy.selection("etchash", "nvidia", "win32").key, "dpcpp");
   assert.equal(policy.selection("pearlhash", "nvidia", "win32").backend, "native");
+  assert.equal(policy.selection("octopus", "nvidia", "win32").backend, "sycl-native");
+  assert.equal(policy.selection("walahash", "nvidia", "win32").backend, "sycl-native");
   assert.deepEqual(policy.selection("pearlhash", "nvidia", "win32").pearlhashProfile,
-    {m: 65536, n: 65536, k: 4096, rank: 256});
+    {m: 131072, n: 524288, k: 8192, rank: 128});
   assert.equal(policy.selection("autolykos2", "amd", "linux").key, "acpp-hip");
   assert.equal(policy.selection("beamhash3", "amd", "linux").key, "acpp-hip");
   assert.equal(policy.selection("karlsenhashv2", "amd", "linux").key, "acpp-hip");
   assert.equal(policy.selection("pearlhash", "amd", "linux").key, "acpp-hip");
   assert.equal(policy.selection("pearlhash", "amd", "linux").backend, "native");
   assert.deepEqual(policy.selection("pearlhash", "amd", "linux").pearlhashProfile,
-    {m: 32768, n: 32768, k: 2048, rank: 128});
+    {m: 131072, n: 131072, k: 2048, rank: 128});
   assert.equal(policy.selection("etchash", "amd", "linux").backend, "sycl");
   assert.equal(policy.selection("autolykos2", "amd", "linux").backend, "sycl-native");
-  assert.equal(policy.selection("pearlhash", "intel", "linux").pearlhashProfile, null);
+  assert.deepEqual(policy.selection("pearlhash", "intel", "linux").pearlhashProfile,
+    {m: 131072, n: 131072, k: 2048, rank: 128});
+  assert.deepEqual(policy.selection("pearlhash", "intel", "win32").pearlhashProfile,
+    {m: 131072, n: 131072, k: 2048, rank: 128});
   assert.equal(policy.selection("etchash", "amd", "win32").key, "acpp-hip");
   assert.equal(policy.selection("pearlhash", "amd", "win32").key, "acpp-hip");
   assert.equal(policy.selection("pearlhash", "amd", "win32").backend, "native");
@@ -220,12 +370,14 @@ test("GPU compiler Markdown selects platform defaults and overrides", () => {
   assert.equal(policy.selection("cn/gpu", "intel", "linux").backend, "sycl-opencl");
   assert.equal(policy.selection("etchash", "intel", "linux").backend, "sycl");
   assert.equal(policy.selection("pearlhash", "intel", "linux").backend, "sycl-native");
+  assert.equal(policy.selection("walahash", "intel", "linux").backend, "sycl-native");
+  assert.equal(policy.selection("walahash", "amd", "linux").backend, "sycl-native");
+  assert.equal(policy.selection("walahash", "amd", "win32").backend, "sycl-native");
+  assert.equal(policy.selection("octopus", "intel", "linux").backend, "sycl-native");
   assert.equal(policy.selection("fishhash", "nvidia", "linux").backend, "sycl-native");
   assert.equal(policy.selection("c29", "nvidia", "linux").backend, "sycl");
   assert.equal(policy.selection("etchash", "opencl", "linux").backend, "sycl-opencl");
   assert.equal(policy.selection("etchash", "opencl", "linux").key, "dpcpp-opencl");
-  assert.equal(policy.selection("etchash", "opencl", "linux").allocation,
-    "buffers where available; USM fallback");
   assert.equal(policy.selection("etchash", "opencl", "win32").key, "dpcpp-opencl");
 });
 
@@ -249,11 +401,13 @@ test("Linux worker environment isolates the selected compiler runtime", () => {
   fs.writeFileSync(path.join(root, "acpp-cuda", "mom.node"), "test");
   const env = policy.workerEnv("autolykos2", {
     MOM_GPU_BACKEND: "nvidia", MOM_GPU_INDEX: "2", MOM_NATIVE_DIR: root,
+    MOM_NVIDIA_COMPUTE_CAPABILITY: "120",
     LD_LIBRARY_PATH: "/system/lib"
   }, "linux");
   assert.equal(env.MOM_SYCL_COMPILER, "acpp-cuda");
   assert.equal(env.ACPP_VISIBILITY_MASK, "cuda");
   assert.equal(env.CUDA_VISIBLE_DEVICES, "2");
+  assert.equal(env["MOM_GPU_INDEX"], "0");
   assert.equal(env.MOM_NATIVE_PATH, path.join(root, "acpp-cuda", "mom.node"));
   assert.equal(env.MOM_RUNTIME_DIR, path.join(root, "acpp-cuda"));
   assert.equal(env.LD_LIBRARY_PATH, [path.join(root, "acpp-cuda"),
@@ -291,6 +445,7 @@ test("launcher default native path does not disable per-algorithm policy", () =>
   fs.writeFileSync(path.join(root, "acpp-cuda", "mom.node"), "test");
   const env = policy.workerEnv("autolykos2", {
     MOM_GPU_BACKEND: "nvidia",
+    MOM_NVIDIA_COMPUTE_CAPABILITY: "120",
     MOM_NATIVE_DIR: root,
     MOM_NATIVE_PATH: path.join(root, "dpcpp", "mom.node"),
     MOM_NATIVE_PATH_LAUNCHER_DEFAULT: path.join(root, "dpcpp", "mom.node"),
@@ -306,11 +461,14 @@ test("compiler workers select the backend matching their artifact", () => {
     fs.mkdirSync(path.join(root, key));
     fs.writeFileSync(path.join(root, key, "mom.node"), "test");
   }
-  assert.equal(policy.workerEnv("etchash", {MOM_GPU_BACKEND: "nvidia", MOM_NATIVE_DIR: root}, "linux")
+  assert.equal(policy.workerEnv("etchash", {
+    MOM_GPU_BACKEND: "nvidia", MOM_NVIDIA_COMPUTE_CAPABILITY: "8.0", MOM_NATIVE_DIR: root
+  }, "linux")
     .ONEAPI_DEVICE_SELECTOR, "cuda:gpu");
   assert.equal(policy.workerEnv("etchash", {
-    MOM_GPU_BACKEND: "nvidia", MOM_GPU_INDEX: "2", MOM_NATIVE_DIR: root
-  }, "linux").ONEAPI_DEVICE_SELECTOR, "cuda:2");
+    MOM_GPU_BACKEND: "nvidia", MOM_NVIDIA_COMPUTE_CAPABILITY: "8.0",
+    MOM_GPU_INDEX: "2", MOM_NATIVE_DIR: root
+  }, "linux").ONEAPI_DEVICE_SELECTOR, "cuda:0");
   assert.equal(policy.workerEnv("etchash", {MOM_GPU_BACKEND: "amd", MOM_NATIVE_DIR: root}, "linux")
     .ACPP_VISIBILITY_MASK, "hip");
   assert.equal(policy.workerEnv("etchash", {
@@ -356,9 +514,10 @@ test("compiler workers select the backend matching their artifact", () => {
     Path: "C:\\Windows\\System32"
   }, "win32");
   assert.equal(windowsPortable.ONEAPI_DEVICE_SELECTOR, "opencl:cpu");
-  assert.equal(windowsPortable.PATH, [path.join(root, "dpcpp-opencl"),
-    path.join(root, "dpcpp-opencl", "hipSYCL"), path.join(root, "dpcpp"),
+  assert.equal(windowsPortable["Path"], [path.join(root, "dpcpp-opencl"),
+    path.join(root, "dpcpp-opencl", "hipSYCL"), path.join(root, "oneapi"),
     "C:\\Windows\\System32"].join(path.delimiter));
+  assert.equal(Object.hasOwn(windowsPortable, "PATH"), false);
   const opencl = policy.workerEnv("etchash", {MOM_GPU_BACKEND: "opencl", MOM_NATIVE_DIR: root}, "linux");
   assert.equal(opencl.MOM_SYCL_COMPILER, "dpcpp-opencl");
   assert.equal(opencl.ONEAPI_DEVICE_SELECTOR, "opencl:gpu");
@@ -396,6 +555,13 @@ test("compiler workers select the backend matching their artifact", () => {
   assert.throws(() => policy.workerEnv("etchash", {
     MOM_GPU_BACKEND: "intel", MOM_GPU_INDEX: "not-a-number", MOM_NATIVE_DIR: root
   }, "linux"), /Invalid MOM_GPU_INDEX/);
+  assert.throws(() => policy.workerEnv("etchash", {
+    MOM_GPU_BACKEND: "intel", MOM_GPU_INDEX: "1024", MOM_NATIVE_DIR: root
+  }, "linux"), /Invalid MOM_GPU_INDEX/);
+  assert.throws(() => policy.workerEnv("etchash", {
+    MOM_GPU_BACKEND: "nvidia", MOM_NVIDIA_COMPUTE_CAPABILITY: "9".repeat(400),
+    MOM_NATIVE_DIR: root
+  }, "linux"), /Invalid MOM_NVIDIA_COMPUTE_CAPABILITY/);
   fs.rmSync(root, {recursive: true, force: true});
 });
 
@@ -639,7 +805,7 @@ struct Worker {
   }
   void send_msg(const std::string& name, const MessageValues& values) { sent.emplace_back(name, values); }
   void send_error(const std::string& message) { send_msg("error", {{"message", message}}); }
-  void set_fn(decltype(nullptr)) { active = false; }
+  void clear_fn() { active = false; }
   void send_last_nonce(uint64_t nonce, unsigned width, const std::string& pool,
                        const std::string& job, const std::string& token) {
     send_msg("last_nonce", {{"nonce", nonce_to_hex(nonce, width)}, {"pool_id", pool},
@@ -1027,10 +1193,10 @@ test("PearlHash Intel SYCL pacing progresses before low-CPU completion polling",
   skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
 }, () => {
   const host = fs.readFileSync(path.join(__dirname, "../sycl/pearlhash/host.inc"), "utf8");
-  const startMarker = "  const auto attempt_start = std::chrono::steady_clock::now();\n";
+  const startMarker = "    attempt_start = std::chrono::steady_clock::now();\n";
   assert.equal(host.split(startMarker).length, 2);
   const start = host.indexOf(startMarker) + startMarker.length;
-  const end = host.indexOf("  if (is_test && q.get_device().is_gpu()) {", start);
+  const end = host.indexOf("    st.have_header = true;", start);
   assert.ok(end > start, "complete PearlHash pacing/wait block is missing");
   const block = host.slice(start, end)
     .replaceAll("std::chrono::", "fixture::chrono::")
@@ -1051,6 +1217,7 @@ test("PearlHash Intel SYCL pacing progresses before low-CPU completion polling",
 #include <cassert>
 #include <chrono>
 #include <cstdio>
+#include <exception>
 #include <string>
 #include <stdexcept>
 #include <vector>
@@ -1063,9 +1230,24 @@ namespace sycl::info { enum class event_command_status { submitted, complete }; 
 struct EventState {
   unsigned pending = 2, queries = 0, waits = 0;
   bool active = false, progressed = false, complete = false, completed_before_wait = false;
-  bool status_error = false, wait_error = false;
+  bool status_error = false, sleep_error = false, wait_error = false;
+  unsigned* host_destination = nullptr;
 };
 static EventState event_state;
+static int error_kind;
+static std::exception_ptr polling_error;
+static void fail_polling(const char* message) {
+  try {
+    if (error_kind == 1)
+      throw std::string(message);
+    if (error_kind == 2)
+      throw 73;
+    throw std::runtime_error(message);
+  } catch (...) {
+    polling_error = std::current_exception();
+    throw;
+  }
+}
 enum class PearlHashSearchBackend { sycl, hip_jit, cuda_jit };
 struct Device {
   bool gpu; unsigned vendor;
@@ -1076,7 +1258,8 @@ struct Device {
 struct Event {
   template<class T> sycl::info::event_command_status get_info() {
     ++event_state.queries;
-    if (event_state.status_error) throw std::runtime_error("status-query");
+    if (event_state.status_error)
+      fail_polling("status-query");
     event_state.progressed = true;
     if (event_state.pending) {
       --event_state.pending;
@@ -1088,12 +1271,20 @@ struct Event {
   void wait_and_throw() {
     ++event_state.waits;
     event_state.completed_before_wait = event_state.complete;
-    if (event_state.wait_error) throw std::runtime_error("final-wait");
     event_state.complete = true;
+    if (event_state.host_destination)
+      *event_state.host_destination = 1;
+    if (event_state.wait_error)
+      throw std::runtime_error("final-wait");
   }
 };
 namespace sycl { using event = Event; using device = Device; }
-static constexpr bool mom_sycl_portable_opencl = false;
+static constexpr bool mom_sycl_portable_opencl =
+#if defined(MOM_FIXTURE_PORTABLE_OPENCL)
+  true;
+#else
+  false;
+#endif
 static bool mom_is_opencl(const Device& device) { return device.opencl; }
 struct Queue {
   Device device; unsigned waits = 0, barriers = 0;
@@ -1110,15 +1301,8 @@ struct Queue {
 struct Jit {
   unsigned waits = 0;
   void wait(double) { ++waits; }
-  void fail(const std::string&) {}
 };
 struct State { double wait_ema_us; Jit hip{}, cuda{}; bool cuda_tensor = false; };
-struct Result { unsigned found = 1, chk = 1; };
-struct Buffers { Result* result; };
-static PearlHashSearchBackend attempt(Queue&, Buffers&, unsigned, int, int, int, int,
-                                     const char*, void*, void*, void*, bool, bool) {
-  return PearlHashSearchBackend::sycl;
-}
 namespace fixture {
 namespace chrono {
 using microseconds = std::chrono::microseconds;
@@ -1136,6 +1320,8 @@ void sleep_for(chrono::microseconds value) {
   ++calls;
   duration = value.count();
   durations.push_back(duration);
+  if (event_state.sleep_error)
+    fail_polling("sleep");
   if (event_state.active) {
     assert(event_state.progressed && event_state.queries > 0);
     assert(duration == 100);
@@ -1154,11 +1340,6 @@ static void run(PearlHashSearchBackend search_backend, bool gpu, unsigned vendor
   auto attempt_start = fixture::chrono::steady_clock::time_point{};
   Queue q{{gpu, vendor, opencl}};
   State st{ema};
-  Result result{};
-  Buffers b{&result};
-  const unsigned attempt_seed = 1;
-  const int m = 128, n = 128, k = 2048, rank = 128;
-  const bool is_test = false;
 ${block}
 #if defined(SYCL_EXT_ONEAPI_ENQUEUE_BARRIER)
   const bool intel_poll = search_backend == PearlHashSearchBackend::sycl && gpu &&
@@ -1178,28 +1359,47 @@ ${block}
   assert(st.hip.waits == static_cast<unsigned>(search_backend == PearlHashSearchBackend::hip_jit));
   assert(st.cuda.waits == static_cast<unsigned>(search_backend == PearlHashSearchBackend::cuda_jit));
 }
-static void check_helper(bool gpu, unsigned pending, const std::string& failure = {}) {
+static void check_helper(bool gpu, unsigned pending, const std::string& failure = {},
+                         int kind = 0, bool cleanup_error = false, bool opencl = false) {
   event_state = {};
   event_state.active = true;
   event_state.pending = pending;
   event_state.status_error = failure == "status-query";
-  event_state.wait_error = failure == "final-wait";
+  event_state.sleep_error = failure == "sleep";
+  event_state.wait_error = cleanup_error || failure == "final-wait";
+  unsigned host_destination = 0;
+  event_state.host_destination = &host_destination;
+  error_kind = kind;
+  polling_error = {};
   fixture::this_thread::calls = 0;
   fixture::this_thread::durations.clear();
-  bool caught = false;
+  bool committed = false;
+  std::exception_ptr caught;
   try {
-    sycl_wait_and_throw(Event{}, Device{gpu, 0x8086});
-  } catch (const std::runtime_error& error) {
-    caught = true;
-    assert(error.what() == failure);
+    sycl_wait_and_throw(Event{}, Device{gpu, 0x8086, opencl});
+    committed = true;
+  } catch (...) {
+    caught = std::current_exception();
   }
-  assert(caught == !failure.empty());
-  const unsigned sleeps = gpu && !event_state.status_error ? pending : 0;
+  assert(static_cast<bool>(caught) == !failure.empty());
+  assert(committed == failure.empty());
+  if (polling_error) {
+    assert(caught == polling_error);
+  } else if (caught) {
+    try {
+      std::rethrow_exception(caught);
+    } catch (const std::runtime_error& error) {
+      assert(error.what() == failure);
+    }
+  }
+  const bool polling = gpu && !(mom_sycl_portable_opencl && opencl);
+  const unsigned sleeps = !polling || event_state.status_error ? 0 :
+      event_state.sleep_error ? 1 : pending;
   assert(fixture::this_thread::calls == sleeps);
   assert(fixture::this_thread::durations == std::vector<long>(sleeps, 100));
-  assert(event_state.queries == (gpu ? event_state.status_error ? 1u : pending + 1 : 0u));
-  assert(event_state.waits == static_cast<unsigned>(!event_state.status_error));
-  assert(!gpu || event_state.status_error || event_state.completed_before_wait);
+  assert(event_state.queries == (polling ? polling_error ? 1u : pending + 1 : 0u));
+  assert(event_state.waits == 1 && event_state.complete && host_destination == 1);
+  assert(!polling || polling_error || event_state.completed_before_wait);
 }
 int main() {
   using B = PearlHashSearchBackend;
@@ -1227,25 +1427,44 @@ int main() {
   check_helper(true, 0);
   check_helper(true, 3);
   check_helper(false, 3);
-  check_helper(true, 0, "status-query");
   check_helper(true, 0, "final-wait");
+  check_helper(false, 3, "final-wait");
+  check_helper(true, 3, {}, 0, false, true);
+  check_helper(true, 3, "final-wait", 0, false, true);
+  for (int kind : {0, 1, 2}) {
+    for (bool cleanup_error : {false, true}) {
+      check_helper(true, 3, "status-query", kind, cleanup_error);
+      check_helper(true, 3, "sleep", kind, cleanup_error);
+    }
+  }
 #if defined(SYCL_EXT_ONEAPI_ENQUEUE_BARRIER)
-  std::puts("PASS PearlHash actual-source pacing/polling: 17 pacing + 5 helper cases; barrier=available");
+  std::printf("PASS PearlHash actual-source pacing/polling: 17 pacing + 19 helper cases; barrier=available; ");
 #else
-  std::puts("PASS PearlHash actual-source pacing/polling: 17 pacing + 5 helper cases; barrier=absent");
+  std::printf("PASS PearlHash actual-source pacing/polling: 17 pacing + 19 helper cases; barrier=absent; ");
 #endif
+  std::printf("portable_opencl=%d\\n", mom_sycl_portable_opencl);
 }
 `);
   try {
     for (const available of [true, false]) {
-      const flags = available ? [] : ["-DMOM_FIXTURE_NO_BARRIER=1"];
-      const compiled = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
-        "-pedantic", ...flags, source, "-o", executable], {encoding: "utf8"});
-      assert.equal(compiled.status, 0, compiled.error?.message || compiled.stderr);
-      const result = spawnSync(executable, [], {encoding: "utf8"});
-      assert.equal(result.status, 0, result.error?.message || result.stderr);
-      assert.equal(result.stdout, "PASS PearlHash actual-source pacing/polling: 17 pacing + 5 helper cases; " +
-        "barrier=" + (available ? "available" : "absent") + "\n");
+      for (const portable of [false, true]) {
+        const flags = [
+          ...(available ? [] : ["-DMOM_FIXTURE_NO_BARRIER=1"]),
+          ...(portable ? ["-DMOM_FIXTURE_PORTABLE_OPENCL=1"] : []),
+        ];
+        const compiled = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
+          "-pedantic", ...flags, source, "-o", executable], {encoding: "utf8"});
+        assert.equal(compiled.error, undefined);
+        assert.equal(compiled.signal, null);
+        assert.equal(compiled.status, 0, compiled.stderr);
+        const result = spawnSync(executable, [], {encoding: "utf8"});
+        assert.equal(result.error, undefined);
+        assert.equal(result.signal, null);
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(result.stdout, "PASS PearlHash actual-source pacing/polling: 17 pacing + 19 helper cases; " +
+          "barrier=" + (available ? "available" : "absent") +
+          "; portable_opencl=" + Number(portable) + "\n");
+      }
     }
   } finally {
     fs.rmSync(fixture, {recursive: true, force: true});
@@ -1266,4 +1485,1632 @@ test("DPC++ final addon and Windows SYCL links split device code per kernel", ()
   assert(linker >= 0);
   assert.match(syclDll.slice(linker),
     /"AdditionalOptions":\s*\[\s*"\/DLL",\s*"\/fsycl",\s*"\/clang:-fsycl-device-code-split=per_kernel"/);
+});
+
+test("GPU availability detection preserves actionable SYCL diagnostics", () => {
+  /** @param {string} stderr */
+  const result = (stderr) => ({code: 1, signal: null, error: null, stdout: "", stderr});
+  assert.equal(isMissingGpuOutput(result("No device of requested type was found")), true);
+  assert.equal(isMissingGpuOutput(result("No SYCL GPU device is available")), true);
+  assert.equal(isMissingGpuOutput(result("SYCL GPU device unavailable")), true);
+  assert.equal(isMissingGpuOutput(result("No GPUs detected")), true);
+  assert.equal(isMissingGpuOutput(result("XelisHashV3 SYCL error on device submission")), false);
+  assert.equal(isMissingGpuOutput(result("No GPU kernel was emitted after compiler error")), false);
+});
+
+test("PearlHash routes integrated Intel GPUs away from ESIMD prefetch", () => {
+  const dispatch = fs.readFileSync(path.join(__dirname, "../sycl/pearlhash/dispatch.inc"), "utf8");
+  assert.match(dispatch,
+    /const bool discrete_gpu = device\.is_gpu\(\) && !is_integrated_gpu\(device\);/);
+  assert.match(dispatch,
+    /pearlhash_esimd_route\(tuned_sycl, supported_backend, discrete_gpu, intel_matrix, width\)/);
+  assert.match(dispatch, /use_portable = !cuda_sycl && esimd_width == 0u;/);
+  assert(dispatch.indexOf("pearlhash_esimd_route(") < dispatch.indexOf("compute_ab("),
+    "ESIMD capability gating must precede matrix layout selection");
+});
+
+test("PearlHash discovery emits complete measured profiles with a low-memory fallback", () => {
+  const intensity = fs.readFileSync(path.join(__dirname, "../sycl/intensity.inc"), "utf8");
+  const params = fs.readFileSync(path.join(__dirname, "../sycl/algo_params.inc"), "utf8");
+  assert.ok(intensity.includes("global_mem_size>() >= 8 * GiB"));
+  assert.ok(intensity.includes("pearlhash_profile_t{131072, 524288, 8192, 128}"));
+  assert.ok(intensity.includes("pearlhash_profile_t{65536, 65536, 4096, 256}"));
+  assert.ok(params.includes("\"*[m=\" + std::to_string(profile.m)"));
+  for (const field of ["n", "k", "rank"]) {
+    assert.ok(params.includes(`";${field}=" + std::to_string(profile.${field})`));
+  }
+});
+
+test("compiler policy cells reject malformed and duplicate entries", () => {
+  const parsed = policyModule.parse(policyFixture("dpcpp", "—"));
+  const parsedRow = parsed.policies[0];
+  assert.ok(parsedRow);
+  assert.deepEqual(parsedRow.overrides, {foo: {compiler: "dpcpp"}});
+  assert.throws(() => policyModule.parse(policyFixture("dpcpp=extra", "—")),
+    /Unknown GPU compiler key: dpcpp=extra/);
+  assert.throws(() => policyModule.parse(policyFixture("", "")),
+    /GPU override row is empty/);
+  assert.throws(() => policyModule.parse(
+    `${policyFixture("dpcpp", "—")}\n| foo | Linux | Intel | — | sycl |`
+  ), /Duplicate GPU override/);
+  const absent = policyModule.parse(policyFixture()).policies[0];
+  const dashedCompiler = policyModule.parse(policyFixture("dpcpp", "-")).policies[0];
+  const dashedBackend = policyModule.parse(policyFixture("-", "sycl")).policies[0];
+  assert.ok(absent && dashedCompiler && dashedBackend);
+  assert.deepEqual(absent.overrides, {});
+  assert.deepEqual(dashedCompiler.overrides, {foo: {compiler: "dpcpp"}});
+  assert.deepEqual(dashedBackend.overrides, {foo: {backend: "sycl"}});
+
+  const duplicateArtifact = policyFixture().replace(
+    "| dpcpp | dpcpp/mom.node | dpcpp/mom.node |",
+    "| dpcpp | dpcpp/mom.node | dpcpp/mom.node |\n" +
+    "| dpcpp | other/mom.node | other/mom.node |"
+  );
+  assert.throws(() => policyModule.parse(duplicateArtifact), /duplicate GPU artifact key/i);
+  const duplicatePolicy = policyFixture().replace(
+    "| Linux | Intel | dpcpp | sycl | — |",
+    "| Linux | Intel | dpcpp | sycl | — |\n| Linux | Intel | dpcpp | sycl | — |"
+  );
+  assert.throws(() => policyModule.parse(duplicatePolicy), /Duplicate GPU policy row/);
+  assert.throws(() => policyModule.parse(policyFixture("missing", "—")),
+    /Unknown GPU compiler key: missing/);
+  assert.throws(() => policyModule.parse(policyFixture("—", "invalid")),
+    /Invalid GPU backend/);
+});
+
+test("PearlHash profiles and native shapes enforce safe individual and relational bounds", () => {
+  const maxDimension = 1 << 24;
+  const maxM = Math.floor(0x7fffffff / 2048 / 32) * 32;
+  const maxN = Math.floor(0x7fffffff / 128 / 32) * 32;
+  assert.deepEqual(gpuTuning.validatePearlHashShape("128", 128, 2048, 128), {
+    m: 128, n: 128, k: 2048, rank: 128,
+  });
+  assert.deepEqual(gpuTuning.validatePearlHashShape(160, 160, 8192, 128), {
+    m: 160, n: 160, k: 8192, rank: 128,
+  });
+  assert.deepEqual(gpuTuning.validatePearlHashShape(131072, 524288, 8192, 128), {
+    m: 131072, n: 524288, k: 8192, rank: 128,
+  });
+  assert.deepEqual(gpuTuning.validatePearlHashShape(maxM, 128, 2048, 128), {
+    m: maxM, n: 128, k: 2048, rank: 128,
+  });
+  assert.deepEqual(gpuTuning.validatePearlHashShape(128, maxN, 2048, 128), {
+    m: 128, n: maxN, k: 2048, rank: 128,
+  });
+  assert.deepEqual(gpuTuning.validatePearlHashShape(128, 128, 65536, 1024), {
+    m: 128, n: 128, k: 65536, rank: 1024,
+  });
+  /** @type {Array<[unknown, unknown, unknown, unknown]>} */
+  const invalidShapes = [
+    [96, 128, 2048, 128],
+    [161, 128, 2048, 128],
+    [maxDimension + 32, 128, 2048, 128],
+    [128, 96, 2048, 128],
+    [128, 161, 2048, 128],
+    [128, 128, 960, 128],
+    [128, 128, 1024, 128],
+    [128, 128, 1025, 128],
+    [128, 128, 65600, 1024],
+    [128, 128, 16384, 2048],
+    [128, 128, 3072, 192],
+    [maxM + 32, 128, 2048, 128],
+    [128, maxN + 32, 2048, 128],
+    [131072, 4194304, 2048, 128],
+    [{toString: () => "128"}, 128, 2048, 128],
+  ];
+  for (const shape of invalidShapes) {
+    assert.throws(() => Reflect.apply(gpuTuning.validatePearlHashShape, null, shape),
+      /PearlHash shape/);
+  }
+  assert.throws(() => policyModule.parse(policyFixture("—", "—", "128x128x16/16")),
+    /PearlHash profile/);
+  assert.throws(() => gpuTuning.parseDeviceEntry("gpu1*[m=96]", "pearlhash"),
+    /at least 128/);
+  assert.deepEqual(gpuTuning.parseDeviceEntry(`gpu1*[m=${maxDimension}]`, "pearlhash").tuning,
+    {m: maxDimension});
+  assert.throws(() => gpuTuning.parseDeviceEntry(`gpu1*[m=${maxDimension + 32}]`, "pearlhash"),
+    /at most 16777216/);
+  assert.throws(() => gpuTuning.parseDeviceEntry(`gpu1*[n=${maxDimension + 32}]`, "pearlhash"),
+    /at most 16777216/);
+  assert.throws(() => gpuTuning.parseDeviceEntry("gpu1*[m=161]", "pearlhash"),
+    /multiple of 32/);
+  assert.throws(() => gpuTuning.parseDeviceEntry("gpu1*[k=960]", "pearlhash"),
+    /at least 1024/);
+  assert.deepEqual(gpuTuning.parseDeviceEntry("gpu1*[k=1024]", "pearlhash").tuning,
+    {k: 1024});
+  assert.deepEqual(gpuTuning.parseDeviceEntry("gpu1*[k=65536]", "pearlhash").tuning,
+    {k: 65536});
+  assert.throws(() => gpuTuning.parseDeviceEntry("gpu1*[k=65600]", "pearlhash"),
+    /at most 65536/);
+  assert.deepEqual(gpuTuning.parseDeviceEntry("gpu1*[rank=1024]", "pearlhash").tuning,
+    {rank: 1024});
+  assert.throws(() => gpuTuning.parseDeviceEntry("gpu1*[rank=48]", "pearlhash"),
+    /between 128 and 1024/);
+  assert.throws(() => gpuTuning.parseDeviceEntry("gpu1*[rank=64]", "pearlhash"),
+    /between 128 and 1024/);
+  assert.throws(() => gpuTuning.parseDeviceEntry("gpu1*[rank=2048]", "pearlhash"),
+    /between 128 and 1024/);
+  assert.deepEqual(gpuTuning.parseDeviceEntry("gpu1*[k=4160;rank=256]", "pearlhash").tuning,
+    {k: 4160, rank: 256});
+  assert.deepEqual(gpuTuning.parseDeviceEntry("gpu1*[k=2048;rank=128]", "pearlhash").tuning,
+    {k: 2048, rank: 128});
+  assert.deepEqual(gpuTuning.parseDeviceEntry("gpu1*[k=8192;rank=128]", "pearlhash").tuning,
+    {k: 8192, rank: 128});
+  assert.deepEqual(gpuTuning.parseDeviceEntry("gpu1*[k=16640;rank=256]", "pearlhash").tuning,
+    {k: 16640, rank: 256});
+});
+
+test("GPU backend and compiler policy boundaries reject prefixes and coercive objects", () => {
+  assert.equal(policyModule.gpuFromEnv({MOM_GPU_BACKEND: "nvidia-extra"}), "");
+  assert.equal(policyModule.gpuFromEnv({MOM_GPU_BACKEND: "NVIDIA"}), "nvidia");
+  assert.equal(policyModule.gpuFromEnv({MOM_GPU_BACKEND: "all"}), "");
+  assert.equal(policyModule.gpuFromEnv({MOM_GPU_BACKEND: "nvidia"}), "nvidia");
+  assert.equal(policyModule.selection("etchash", "future-gpu", "linux"), null);
+  assert.throws(() => policyModule.selection({toString: () => "etchash"}, "intel", "linux"),
+    /algorithm must be a string/);
+  assert.throws(() => policyModule.selection("etchash", {toString: () => "intel"}, "linux"),
+    /GPU name must be a string/);
+  assert.throws(() => policyModule.selection("etchash", "intel", {toString: () => "linux"}),
+    /Platform must be a string/);
+  assert.throws(() => Reflect.apply(policyModule.nvidiaComputeCapability, null, [{
+    MOM_NVIDIA_COMPUTE_CAPABILITY: {toString: () => "8.0"},
+  }]), /Invalid MOM_NVIDIA_COMPUTE_CAPABILITY/);
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-policy-contract-"));
+  try {
+    fs.mkdirSync(path.join(root, "oneapi"));
+    fs.writeFileSync(path.join(root, "oneapi", "mom.node"), "test");
+    fs.mkdirSync(path.join(root, "dpcpp-opencl"));
+    fs.writeFileSync(path.join(root, "dpcpp-opencl", "mom.node"), "test");
+    assert.throws(() => Reflect.apply(policyModule.workerEnv, null, ["etchash", {
+      MOM_GPU_BACKEND: "intel", MOM_GPU_INDEX: {toString: () => "1"}, MOM_NATIVE_DIR: root,
+    }, "linux"]), /Invalid MOM_GPU_INDEX/);
+    assert.throws(() => Reflect.apply(policyModule.workerEnv, null, ["etchash", {
+      MOM_GPU_BACKEND: "opencl", MOM_OPENCL_DEVICE_TYPE: {toString: () => "gpu"},
+      MOM_NATIVE_DIR: root,
+    }, "linux"]), /Invalid MOM_OPENCL_DEVICE_TYPE/);
+  } finally {
+    fs.rmSync(root, {recursive: true, force: true});
+  }
+});
+
+test("PearlHash default M survives CPU worker tuning", () => {
+  const api = testJobApi({...process.env, MOM_GPU_BACKEND: "intel"});
+  const job = api.prepareBenchmarkJob({
+    algo: "pearlhash", dev: "cpu", blob_hex: "00".repeat(76),
+  });
+  assert.equal(job.intensity, 131072);
+  gpuTuning.applyNativeJobTuning(
+    job, gpuTuning.parseDeviceEntry("cpu", "pearlhash"), "pearlhash"
+  );
+  assert.equal(job.intensity, 131072);
+  assert.equal(job.pearlhash_n, 131072);
+  assert.equal(job.pearlhash_k, 4096);
+  assert.equal(job.pearlhash_rank, 256);
+
+  const explicitJob = api.prepareBenchmarkJob({
+    algo: "pearlhash", dev: "cpu", blob_hex: "00".repeat(76),
+  });
+  gpuTuning.applyNativeJobTuning(
+    explicitJob, gpuTuning.parseDeviceEntry("cpu*[m=256]", "pearlhash"), "pearlhash"
+  );
+  assert.equal(explicitJob.intensity, 256);
+  assert.equal(explicitJob.pearlhash_n, 256);
+  assert.equal(explicitJob.pearlhash_k, 4096);
+  assert.equal(explicitJob.pearlhash_rank, 256);
+
+  const gpuJob = api.prepareBenchmarkJob({
+    algo: "pearlhash", dev: "gpu1", blob_hex: "00".repeat(76),
+  });
+  assert.equal(gpuJob.pearlhash_k, 2048);
+  assert.equal(gpuJob.pearlhash_rank, 128);
+
+  const mixedJob = api.prepareBenchmarkJob({
+    algo: "pearlhash",
+    dev: "gpu1*[m=131072;n=524288;k=8192;rank=128],cpu",
+    blob_hex: "00".repeat(76),
+  });
+  assert.equal(mixedJob.pearlhash_k, 4096);
+  assert.equal(mixedJob.pearlhash_rank, 256);
+  gpuTuning.applyNativeJobTuning(
+    mixedJob,
+    gpuTuning.parseDeviceEntry("gpu1*[m=131072;n=524288;k=8192;rank=128]", "pearlhash"),
+    "pearlhash"
+  );
+  assert.equal(mixedJob.pearlhash_k, 8192);
+  assert.equal(mixedJob.pearlhash_rank, 128);
+});
+
+test("CPU thread batches do not leak into algorithm tuning", () => {
+  const api = testJobApi();
+  api.workerRuntimeEnv("ghostrider", "cpu*8");
+  assert.equal(api.workerRuntimeEnv("hoohash", "cpu1*8")["MOM_HOOHASH_INTENSITY"], "8");
+});
+
+test("Intel command-list policy keeps short staged workers off the one-core path", () => {
+  const api = testJobApi();
+  for (const algo of ["c29", "equihash192_7", "zhash"]) {
+    const env = api.workerRuntimeEnv(algo);
+    assert.equal(env["SYCL_UR_USE_LEVEL_ZERO_V2"], "0");
+    assert.equal(env["SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS"], "0");
+  }
+  assert.equal(api.workerRuntimeEnv("hoohash")["SYCL_UR_USE_LEVEL_ZERO_V2"], undefined);
+});
+
+test("test-only nonce offsets stay optional but explicit invalid offsets fail", () => {
+  const api = testJobApi();
+  const job = api.prepareTestJob({algo: "rx/0", dev: "cpu", blob_hex: "00"});
+  assert.equal(job.nonceoffset, undefined);
+  const pearlJob = api.prepareTestJob({
+    algo: "pearlhash", dev: "gpu1*[m=256]", blob_hex: "00".repeat(76),
+  });
+  assert.equal(pearlJob.nonceoffset, undefined);
+  assert.equal(pearlJob.noncebytes, 8);
+  assert.throws(() => api.prepareTestJob({
+    algo: "rx/0", dev: "cpu", blob_hex: "00", nonceoffset: 999,
+  }), /Invalid rx\/0 nonce offset/);
+  assert.throws(() => api.prepareTestJob({
+    algo: "kawpow", dev: "gpu1", blob_hex: "00".repeat(40), noncebytes: 8,
+  }), /Invalid kawpow nonce offset/);
+});
+
+test("C30 benchmark normalization rejects a malformed legacy nonce tail", () => {
+  const api = testJobApi();
+  assert.throws(() => api.prepareBenchmarkJob({
+    algo: "c30", dev: "gpu1", blob_hex: "ab".repeat(32) + "zz".repeat(8),
+  }), /Invalid c30 job blob/);
+  const job = api.prepareBenchmarkJob({
+    algo: "c30", dev: "gpu1", blob_hex: "ab".repeat(32) + "0102030405060708",
+  });
+  assert.equal(job.blob_hex, "ab".repeat(32));
+  assert.equal(job.nonce, "0807060504030201");
+});
+
+test("FishHash benchmarks use protocol-valid header and nonce layouts", () => {
+  const api = testJobApi();
+  const defaultJob = api.prepareBenchmarkJob({
+    algo: "fishhash", dev: "gpu1", blob_hex: opts.create_default_opts().job.blob_hex,
+  });
+  assert.equal(defaultJob.blob_hex, "00".repeat(180));
+  assert.equal(defaultJob.noncebytes, 8);
+  assert.equal(defaultJob.nonceoffset, 172);
+
+  const offlinePrefix = api.prepareBenchmarkJob({
+    algo: "fishhash", dev: "gpu1", blob_hex: "ab".repeat(32),
+  });
+  assert.equal(offlinePrefix.blob_hex, "ab".repeat(32) + "00".repeat(8));
+  assert.equal(offlinePrefix.nonceoffset, 32);
+
+  const offlineHeader = api.prepareBenchmarkJob({
+    algo: "fishhash", dev: "gpu1", blob_hex: "cd".repeat(40),
+  });
+  assert.equal(offlineHeader.blob_hex, "cd".repeat(40));
+  assert.equal(offlineHeader.nonceoffset, 32);
+
+  const poolHeader = api.prepareBenchmarkJob({
+    algo: "fishhash", dev: "gpu1", blob_hex: "ef".repeat(180),
+  });
+  assert.equal(poolHeader.blob_hex, "ef".repeat(180));
+  assert.equal(poolHeader.nonceoffset, 172);
+});
+
+test("tuning environments normalize validated values and native intensity is numeric", () => {
+  assert.deepEqual(gpuTuning.tuningEnvironment("zelhash", {slots: "176"}), {
+    MOM_ZELHASH_SLOTS: "176",
+  });
+  assert.throws(() => gpuTuning.tuningEnvironment("zelhash", {
+    slots: {toString: () => "176"},
+  }), /base-10 integer/);
+  /** @type {MiningJob} */
+  const defaultJob = {algo: "kawpow", dev: ""};
+  gpuTuning.applyNativeJobTuning(defaultJob, {device: "gpu1", processes: 1, tuning: {}}, "kawpow");
+  assert.equal(defaultJob.intensity, 1);
+  /** @type {MiningJob} */
+  const zeroJob = {algo: "kawpow", dev: ""};
+  gpuTuning.applyNativeJobTuning(
+    zeroJob, {device: "gpu1", processes: 1, tuning: {intensity: 0}}, "kawpow");
+  assert.equal(zeroJob.intensity, 0);
+  assert.throws(() => Reflect.apply(gpuTuning.applyNativeJobTuning, null, [
+    {algo: "kawpow", dev: ""},
+    {device: "gpu1", processes: 1, tuning: {intensity: {toString: () => "8"}}},
+    "kawpow",
+  ]), /finite number/);
+});
+
+test("NVRTC temporary programs release once across source-JIT failures", {
+  skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
+}, async (t) => {
+  const root = path.join(__dirname, "../sycl");
+  const header = fs.readFileSync(path.join(root, "cuda-api.h"), "utf8");
+  const helpers = header.indexOf("inline void cuda_check(");
+  const namespaceEnd = header.lastIndexOf("} // namespace mom");
+  assert.ok(helpers >= 0 && namespaceEnd > helpers);
+  const ownerStart = header.indexOf("class NvrtcProgram {");
+  const owner = ownerStart < 0 ? "" : header.slice(ownerStart, helpers);
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-nvrtc-program-"));
+  const source = path.join(fixture, "nvrtc_program.cpp");
+  const executable = path.join(fixture, "nvrtc_program");
+  try {
+    fs.copyFileSync(path.join(__dirname, "native/nvrtc_program.cpp"), source);
+    fs.writeFileSync(path.join(fixture, "api.inc"), "namespace mom {\n" + owner +
+      header.slice(helpers, namespaceEnd) + "\n}\n");
+    const cn = fs.readFileSync(path.join(root, "cn_gpu/cuda_jit.inc"), "utf8");
+    const cnEnd = cn.indexOf("  void launch(");
+    const cnDestructor = cn.indexOf("  ~CnGpuCudaExpand()");
+    const cnClassEnd = cn.indexOf("\n};", cnDestructor);
+    assert.ok(cnEnd > 0 && cnDestructor > cnEnd && cnClassEnd > cnDestructor);
+    fs.writeFileSync(path.join(fixture, "cn.inc"), cn.slice(0, cnEnd) +
+      cn.slice(cnDestructor, cnClassEnd) + "\n};\n#endif\n");
+    const pearl = fs.readFileSync(path.join(root, "pearlhash/cuda_search.inc"), "utf8");
+    const pearlEnd = pearl.indexOf("  void launch(");
+    const pearlDestructor = pearl.indexOf("  ~PearlHashCudaSearch()");
+    const pearlClassEnd = pearl.indexOf("\n};", pearlDestructor);
+    assert.ok(pearlEnd > 0 && pearlDestructor > pearlEnd && pearlClassEnd > pearlDestructor);
+    fs.writeFileSync(path.join(fixture, "pearl.inc"), pearl.slice(0, pearlEnd) +
+      pearl.slice(pearlDestructor, pearlClassEnd) + "\n};\n");
+    const flags = owner ? ["-DMOM_FIXTURE_HAS_OWNER=1"] : [];
+    const compiled = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
+      "-pedantic", "-DMOM_SYCL_HAS_CUDA=1", ...flags, "-I", path.join(root, "cn_gpu"),
+      "-I", path.join(root, "pearlhash"), source, "-o", executable], {encoding: "utf8"});
+    assert.equal(compiled.status, 0, compiled.error?.message || compiled.stderr);
+    const cases = [
+      {id: 0, name: "success releases before module loading"},
+      {id: 1, name: "unavailable API creates no program"},
+      {id: 2, name: "failed creation with a null handle"},
+      {id: 3, name: "failed creation with a returned handle"},
+      {id: 4, name: "compile failure retains diagnostic fallback"},
+      {id: 5, name: "log-size failure retains diagnostic fallback"},
+      {id: 6, name: "log retrieval failure retains diagnostic fallback"},
+      {id: 7, name: "code-size failure releases the program"},
+      {id: 8, name: "code retrieval failure releases the program"},
+      {id: 9, name: "log allocation failure releases the program"},
+      {id: 10, name: "code allocation failure releases the program"},
+      {id: 11, name: "unsupported capability creates no program"},
+      {id: 12, name: "null program is not destroyed"},
+      {id: 15, name: "cache hit loads without creating a program"},
+      {id: 16, name: "non-CUDA device creates no program"},
+    ];
+    for (const [variant, name] of ["CN PTX", "Pearl CUBIN", "Pearl forward PTX"].entries()) {
+      for (const {id, name: description} of cases) {
+        await t.test(name + ": " + description, () => {
+          const result = spawnSync(executable, [String(variant + 1), String(id)], {encoding: "utf8"});
+          assert.equal(result.status, 0, result.error?.message || result.stderr);
+          assert.equal(result.signal, null);
+          assert.equal(result.stdout, "PASS actual-source NVRTC lifetime\n");
+        });
+      }
+    }
+    if (owner) {
+      for (const {id, name, output} of [
+        {id: 13, name: "empty owner/reset is a no-op", output: "PASS empty owner\n"},
+        {id: 14, name: "reset and destructor do not repeat destruction", output: "PASS explicit reset\n"},
+      ]) {
+        await t.test(name, () => {
+          const result = spawnSync(executable, ["1", String(id)], {encoding: "utf8"});
+          assert.equal(result.status, 0, result.error?.message || result.stderr);
+          assert.equal(result.signal, null);
+          assert.equal(result.stdout, output);
+        });
+      }
+    }
+  } finally {
+    fs.rmSync(fixture, {recursive: true, force: true});
+  }
+});
+
+test("CN/gpu CUDA expansion falls back only before native submission", {
+  skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
+}, async (t) => {
+  const directory = path.join(__dirname, "../sycl/cn_gpu");
+  const header = fs.readFileSync(path.join(directory, "../cuda-api.h"), "utf8");
+  const ownerStart = header.indexOf("class NvrtcProgram {");
+  const helpers = header.indexOf("inline void cuda_check(");
+  assert.ok(helpers >= 0);
+  const owner = ownerStart < 0 ? "" : header.slice(ownerStart, helpers);
+  const entry = fs.readFileSync(path.join(directory, "entry.inc"), "utf8");
+  const start = entry.indexOf("  bool native_expansion = false;");
+  const end = entry.indexOf("  if (!native_expansion) {", start);
+  assert.ok(start >= 0 && end > start);
+  const dispatch = entry.slice(start, end);
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-cn-cuda-"));
+  const source = path.join(fixture, "cuda.cpp");
+  const executable = path.join(fixture, "cuda");
+  fs.writeFileSync(source, `
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <iomanip>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <thread>
+#include <vector>
+using CUresult = int;
+using CUdevice = int;
+using CUmodule = void*;
+using CUfunction = void*;
+using CUevent = void*;
+using CUcontext = void*;
+using nvrtcProgram = void*;
+using nvrtcResult = int;
+constexpr int CUDA_SUCCESS = 0;
+constexpr int CUDA_ERROR_NOT_READY = 600;
+constexpr int NVRTC_SUCCESS = 0;
+constexpr int CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR = 1;
+constexpr int CU_EVENT_DEFAULT = 0;
+static int fault;
+static bool driver_available = true;
+struct Counts {
+  unsigned retain = 0;
+  unsigned unload = 0;
+  unsigned release = 0;
+  unsigned destroy = 0;
+  unsigned launch = 0;
+  unsigned record = 0;
+  unsigned query = 0;
+  unsigned create_program = 0;
+  unsigned destroy_program = 0;
+  unsigned initial_wait = 0;
+  unsigned generic = 0;
+} counts;
+static int handles[4];
+namespace sycl {
+enum class backend { ext_oneapi_cuda };
+struct device { bool cuda = true; };
+struct queue { device get_device() const { return {}; } };
+template<backend> CUdevice get_native(const device&) { return 0; }
+}
+static bool mom_is_cuda(const sycl::device& device) { return device.cuda; }
+namespace mom {
+struct CudaDriverApi {
+  std::string error = "driver-unavailable";
+  static CudaDriverApi& instance() {
+    static CudaDriverApi api;
+    return api;
+  }
+  bool basic_available() const { return driver_available; }
+  int (*init)(unsigned) = +[](unsigned) { return 0; };
+  int (*device_attribute)(int*, int, int) = +[](int* out, int, int) {
+    *out = 9;
+    return 0;
+  };
+  int (*retain_primary)(void**, int) = +[](void** out, int) {
+    ++counts.retain;
+    *out = &handles[0];
+    return 0;
+  };
+  int (*set_current)(void*) = +[](void*) { return 0; };
+  int (*module_load)(void**, const void*) = +[](void** out, const void*) {
+    *out = &handles[1];
+    return 0;
+  };
+  int (*module_function)(void**, void*, const char*) = +[](void** out, void*, const char*) {
+    if (fault == 5) return 999;
+    *out = &handles[2];
+    return 0;
+  };
+  int (*event_create)(void**, unsigned) = +[](void** out, unsigned) {
+    *out = &handles[3];
+    return 0;
+  };
+  int (*event_destroy)(void*) = +[](void*) {
+    ++counts.destroy;
+    return 0;
+  };
+  int (*module_unload)(void*) = +[](void*) {
+    ++counts.unload;
+    return 0;
+  };
+  int (*release_primary)(int) = +[](int) {
+    ++counts.release;
+    return 0;
+  };
+  int (*launch)(void*, unsigned, unsigned, unsigned, unsigned, unsigned, unsigned,
+                unsigned, void*, void**, void**) =
+      +[](void*, unsigned, unsigned, unsigned, unsigned, unsigned, unsigned,
+          unsigned, void*, void**, void**) {
+        ++counts.launch;
+        return fault == 2 ? 999 : 0;
+      };
+  int (*event_record)(void*, void*) = +[](void*, void*) {
+    ++counts.record;
+    return fault == 4 ? 999 : 0;
+  };
+  int (*event_query)(void*) = +[](void*) {
+    ++counts.query;
+    if (fault == 3) return 999;
+    return counts.query == 1 ? CUDA_ERROR_NOT_READY : CUDA_SUCCESS;
+  };
+};
+struct NvrtcApi {
+  std::string error = "rtc-unavailable";
+  static NvrtcApi& instance() {
+    static NvrtcApi api;
+    return api;
+  }
+  bool ptx_available() const { return true; }
+  int (*create_program)(void**, const char*, const char*, int, const char* const*, const char* const*) =
+      +[](void** out, const char*, const char*, int, const char* const*, const char* const*) {
+        ++counts.create_program;
+        *out = &handles[2];
+        return 0;
+      };
+  int (*compile_program)(void*, int, const char* const*) =
+      +[](void*, int, const char* const*) { return 0; };
+  int (*get_ptx_size)(void*, size_t*) = +[](void*, size_t* out) {
+    *out = 1;
+    return 0;
+  };
+  int (*get_ptx)(void*, char*) = +[](void*, char* out) {
+    *out = 0;
+    return 0;
+  };
+  int (*destroy_program)(void**) = +[](void** program) {
+    ++counts.destroy_program;
+    *program = nullptr;
+    return 0;
+  };
+};
+${owner}
+void cuda_check(const CudaDriverApi&, int status, const char* message) {
+  if (status != CUDA_SUCCESS) throw std::string(message);
+}
+std::string rtc_error(const NvrtcApi&, int, void*, const char* message) { return message; }
+namespace jit_cache {
+uint64_t hash(const std::string&) { return 1; }
+std::filesystem::path directory() { return {}; }
+std::vector<char> read(const std::filesystem::path&) { return {}; }
+void write(const std::filesystem::path&, const std::vector<char>&) {}
+}
+}
+#include "cuda_jit.inc"
+struct State {
+  sycl::device device;
+  CnGpuCudaExpand cuda_expand;
+  bool native_notice = false;
+  uint64_t storage[8]{};
+  uint64_t* spads = storage;
+  uint64_t* lpads = storage;
+};
+static constexpr bool mom_sycl_portable_opencl = false;
+static void sycl_wait_and_throw(int, const sycl::device&) {
+  ++counts.initial_wait;
+  if (fault == 1) throw std::runtime_error("initial-event");
+}
+static bool dispatch(State& state) {
+  sycl::queue q;
+  const std::string backend = "auto";
+  const int initial_keccak = 0;
+  const unsigned batch_eff = 4;
+${dispatch}
+  if (!native_expansion) ++counts.generic;
+  return native_expansion;
+}
+static void check(bool valid, const char* message) {
+  if (!valid) throw std::runtime_error(message);
+}
+int main(int argc, char** argv) {
+  try {
+    if (argc != 2) throw std::runtime_error("case argument");
+    const int id = std::atoi(argv[1]);
+#if defined(MOM_SYCL_HAS_CUDA)
+    if (id == 6) {
+      fault = 5;
+      {
+        CnGpuCudaExpand expand;
+        sycl::queue queue;
+        check(!expand.ensure(queue, nullptr), "nullable startup error did not return false");
+        check(expand.checked && !expand.enabled && !expand.context && !expand.module &&
+              !expand.kernel && !expand.done && !expand.retained_primary,
+              "partial startup resources survived");
+        check(counts.retain == 1 && counts.release == 1 && counts.unload == 1 &&
+              counts.destroy == 0 && counts.create_program == counts.destroy_program,
+              "partial startup cleanup changed");
+      }
+      check(counts.release == 1 && counts.unload == 1, "startup cleanup ran twice");
+    } else {
+      driver_available = id != 1;
+      fault = id == 3 ? 1 : id == 4 ? 2 : id == 5 ? 3 : id == 7 ? 4 : 0;
+      const bool expected_fault = id == 3 || id == 4 || id == 5 || id == 7;
+      {
+        State state;
+        bool native = false;
+        std::string caught;
+        try {
+          native = dispatch(state);
+        } catch (const std::string& error) {
+          caught = error;
+        } catch (const std::exception& error) {
+          caught = error.what();
+        }
+        std::printf("OBS case=%d native=%d generic=%u caught=%s retain=%u release=%u unload=%u destroy=%u launch=%u record=%u query=%u\\n",
+                    id, native, counts.generic, caught.c_str(), counts.retain, counts.release,
+                    counts.unload, counts.destroy, counts.launch, counts.record, counts.query);
+        if (expected_fault) {
+          check(!caught.empty(), "post-submit fault was swallowed");
+          check(counts.generic == 0, "post-submit fault retried generic expansion");
+          check(state.cuda_expand.enabled && counts.release == 0 && counts.unload == 0 &&
+                counts.destroy == 0, "post-submit resources released before owner cleanup");
+          const std::string expected = id == 3 ? "initial-event" :
+              id == 4 ? "cuLaunchKernel(cn/gpu)" :
+              id == 5 ? "cuEventQuery(cn/gpu)" : "cuEventRecord(cn/gpu)";
+          check(caught == expected, "fault identity changed");
+        } else if (id == 1) {
+          check(!native && counts.generic == 1 && caught.empty() && counts.launch == 0 &&
+                state.native_notice, "startup unavailability did not fall back");
+        } else {
+          check(id == 2 && native && counts.generic == 0 && caught.empty() &&
+                counts.launch == 1 && counts.record == 1 && counts.query == 2,
+                "native success changed");
+        }
+      }
+      check(counts.release == (id == 1 ? 0u : 1u) &&
+            counts.unload == counts.release && counts.destroy == counts.release,
+            "owner cleanup did not release resources once");
+      check(counts.create_program == counts.destroy_program, "NVRTC program leaked");
+    }
+#else
+    check(id == 8, "unsupported-worker case argument");
+    {
+      State state;
+      check(!dispatch(state) && counts.generic == 1 && counts.initial_wait == 0,
+            "unsupported worker did not fall back");
+      sycl::queue queue;
+      check(!state.cuda_expand.ensure(queue, nullptr), "stub nullable reason changed");
+    }
+#endif
+    std::printf("PASS case=%d\\n", id);
+    return 0;
+  } catch (const std::exception& error) {
+    std::fprintf(stderr, "FAIL %s\\n", error.what());
+    return 1;
+  }
+}
+`);
+  const cases = [
+    "startup unavailability retains generic expansion",
+    "native success retains deferred owner cleanup",
+    "initial SYCL event fault propagates without generic retry",
+    "native launch fault propagates without generic retry",
+    "native event-query fault propagates without generic retry",
+    "nullable startup reason cleans partial resources once",
+    "post-launch event-record fault propagates without generic retry",
+    "unsupported worker retains nullable-reason fallback",
+  ];
+  try {
+    for (const enabled of [true, false]) {
+      const target = executable + (enabled ? "-enabled" : "-stub");
+      const flags = enabled ? ["-DMOM_SYCL_HAS_CUDA=1"] : [];
+      const compiled = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
+        "-pedantic", ...flags, "-I", directory, source, "-o", target], {encoding: "utf8"});
+      assert.equal(compiled.status, 0, compiled.error?.message || compiled.stderr);
+      const indexes = enabled ? cases.slice(0, 7).map((_name, index) => index) : [7];
+      for (const index of indexes) {
+        const name = cases[index];
+        assert.ok(name);
+        await t.test(name, () => {
+          const result = spawnSync(target, [String(index + 1)], {encoding: "utf8"});
+          assert.equal(result.status, 0, result.error?.message || result.stderr);
+          assert.equal(result.signal, null);
+          assert.ok(result.stdout.endsWith("PASS case=" + (index + 1) + "\n"));
+        });
+      }
+    }
+  } finally {
+    fs.rmSync(fixture, {recursive: true, force: true});
+  }
+});
+
+test("HIPRTC temporary programs release once across source-JIT failures", {
+  skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
+}, async (t) => {
+  const root = path.join(__dirname, "../sycl");
+  const header = fs.readFileSync(path.join(root, "hiprtc-api.h"), "utf8");
+  const ownerStart = header.indexOf("class HiprtcProgram {");
+  const owner = ownerStart < 0 ? "" :
+    header.slice(ownerStart, header.lastIndexOf("} // namespace mom")).trim();
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-hiprtc-program-"));
+  const source = path.join(fixture, "hiprtc_program.cpp");
+  const executable = path.join(fixture, "hiprtc_program");
+  try {
+    fs.copyFileSync(path.join(__dirname, "native/hiprtc_program.cpp"), source);
+    fs.writeFileSync(path.join(fixture, "owner.inc"), owner ? "namespace mom {\n" + owner + "\n}\n" : "");
+    for (const algorithm of ["octopus", "walahash"]) {
+      const caller = fs.readFileSync(path.join(root, algorithm, "amd_wmma.inc"), "utf8");
+      const start = caller.indexOf("struct ");
+      const end = caller.indexOf("  bool launch(");
+      assert.ok(start >= 0 && end > start);
+      fs.writeFileSync(path.join(fixture, algorithm + ".inc"), caller.slice(start, end) + "};\n");
+    }
+    const pearl = fs.readFileSync(path.join(root, "pearlhash/hip_jit.inc"), "utf8");
+    const pearlEnd = pearl.indexOf("  void launch(");
+    assert.ok(pearlEnd > 0);
+    fs.writeFileSync(path.join(fixture, "pearl.inc"), pearl.slice(0, pearlEnd) + "#endif\n};\n");
+    const flags = owner ? ["-DMOM_FIXTURE_HAS_OWNER=1"] : [];
+    const compiled = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
+      "-pedantic", "-DMOM_SYCL_HAS_HIP=1", ...flags, "-I", path.join(root, "pearlhash"),
+      source, "-o", executable], {encoding: "utf8"});
+    assert.equal(compiled.status, 0, compiled.error?.message || compiled.stderr);
+    const cases = [
+      "successful compilation releases before module loading",
+      "unavailable API creates no program",
+      "failed creation with a null handle",
+      "failed creation with a returned handle",
+      "compile failure preserves diagnostic fallback",
+      "log-size failure preserves diagnostic fallback",
+      "log retrieval failure preserves diagnostic fallback",
+      "code-size failure releases the program",
+      "code retrieval failure releases the program",
+      "log allocation failure releases the program",
+      "code allocation failure releases the program",
+      "unsupported architecture creates no program",
+      "null program is not destroyed",
+    ];
+    for (const [algorithm, name] of ["Octopus", "WalaHash", "PearlHash"].entries()) {
+      for (const [id, description] of cases.entries()) {
+        await t.test(name + ": " + description, () => {
+          const result = spawnSync(executable, [String(algorithm + 1), String(id)], {encoding: "utf8"});
+          assert.equal(result.status, 0, result.error?.message || result.stderr);
+          assert.equal(result.signal, null);
+          assert.equal(result.stdout, "PASS actual-source RTC lifetime\n");
+        });
+      }
+    }
+    if (owner) {
+      for (const {id, name, output} of [
+        {id: 13, name: "empty owner/reset is a no-op", output: "PASS empty owner\n"},
+        {id: 14, name: "reset and destructor do not repeat destruction", output: "PASS explicit reset\n"},
+      ]) {
+        await t.test(name, () => {
+          const result = spawnSync(executable, ["1", String(id)], {encoding: "utf8"});
+          assert.equal(result.status, 0, result.error?.message || result.stderr);
+          assert.equal(result.signal, null);
+          assert.equal(result.stdout, output);
+        });
+      }
+    }
+  } finally {
+    fs.rmSync(fixture, {recursive: true, force: true});
+  }
+});
+
+test("HIP interop and Octopus submitted faults propagate without fallback", {
+  skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
+}, async (t) => {
+  const root = path.join(__dirname, "../sycl");
+  const header = fs.readFileSync(path.join(root, "hiprtc-api.h"), "utf8");
+  const identityFunction = header.indexOf(" hip_queue_identity(");
+  const identityStart = header.lastIndexOf("inline ", identityFunction);
+  const identityEnd = header.indexOf("// HIPRTC is optional", identityStart);
+  const octopus = fs.readFileSync(path.join(root, "octopus/nvidia_tensor.inc"), "utf8");
+  const classStart = octopus.indexOf("class OctopusSyclNativeSearch {");
+  const contextStart = octopus.indexOf("struct NativeGemmContext {");
+  const contextEnd = octopus.indexOf("\n};", contextStart);
+  const wmma = fs.readFileSync(path.join(root, "octopus/amd_wmma.inc"), "utf8");
+  const wmmaStart = wmma.indexOf("  bool ensure(");
+  const wmmaEnd = wmma.indexOf("    hipDeviceProp_t properties{}", wmmaStart);
+  assert.ok(identityStart > 0 && identityEnd > identityStart && classStart > contextEnd &&
+    contextStart > 0 && contextEnd > contextStart && wmmaStart > 0 && wmmaEnd > wmmaStart);
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-hip-interop-"));
+  const source = path.join(fixture, "hip_queue_identity.cpp");
+  const executable = path.join(fixture, "hip_queue_identity");
+  try {
+    fs.copyFileSync(path.join(__dirname, "native/hip_queue_identity.cpp"), source);
+    fs.writeFileSync(path.join(fixture, "identity.inc"),
+      "namespace mom {\n" + header.slice(identityStart, identityEnd) + "}\n");
+    fs.writeFileSync(path.join(fixture, "octopus.inc"), octopus.slice(classStart));
+    fs.writeFileSync(path.join(fixture, "gemm-context.inc"), octopus.slice(contextStart, contextEnd + 3));
+    fs.writeFileSync(path.join(fixture, "wmma-init.inc"), wmma.slice(wmmaStart, wmmaEnd));
+    const compiled = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
+      "-pedantic", "-DMOM_SYCL_HAS_HIP=1", source, "-o", executable], {encoding: "utf8"});
+    assert.equal(compiled.error, undefined);
+    assert.equal(compiled.signal, null);
+    assert.equal(compiled.status, 0, compiled.stderr);
+    const cases = [];
+    for (const [target, name] of ["identity", "device alias", "Octopus search"].entries()) {
+      cases.push({target, stage: 0, kind: 0, name: name + " success/cache/pipeline"});
+      for (const [kind, error] of [[1, "InvalidValue"], [3, "NotInitialized"], [4, "Deinitialized"],
+        [201, "InvalidContext"], [400, "InvalidHandle"], [709, "ContextIsDestroyed"], [999, "Unknown"]]) {
+        cases.push({target, stage: 14, kind, name: name + " rejects HIP " + error});
+      }
+      for (const [kind, error] of ["std::exception", "std::string", "unknown"].entries()) {
+        for (const [stage, operation] of [[1, "submit"], [2, "native queue"], [3, "interop wait"]]) {
+          cases.push({target, stage, kind, name: name + " " + operation + " propagates " + error});
+        }
+        if (target === 2) {
+          for (const [stage, operation] of [[4, "B preparation"], [5, "B preparation wait"],
+            [6, "A preparation"], [7, "GEMM launch"], [8, "finish launch"], [9, "completion"],
+            [10, "compiler exception"]]) {
+            cases.push({target, stage, kind, name: name + " " + operation + " propagates " + error});
+          }
+        }
+      }
+    }
+    for (const [stage, name] of [[11, "queue allocation"], [12, "buffer allocation"],
+      [13, "compiler/capability absence"], [15, "point-version cache invalidation"],
+      [16, "non-HIP device fallback"]]) {
+      cases.push({target: 2, stage, kind: 0, name: "Octopus retains " + name + " behavior"});
+    }
+    for (const {target, stage, kind, name} of cases) {
+      await t.test(name, () => {
+        const result = spawnSync(executable, [String(target), String(stage), String(kind)],
+          {encoding: "utf8"});
+        assert.equal(result.error, undefined);
+        assert.equal(result.signal, null);
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(result.stdout, "PASS actual-source HIP interop/Octopus fault boundary\n");
+      });
+    }
+  } finally {
+    fs.rmSync(fixture, {recursive: true, force: true});
+  }
+});
+
+test("algo params probes share identical effective environments only", async () => {
+  let probeCount = 0;
+  const cache = createAlgoParamsReportCache((/** @type {TestEnv} */ _env) => {
+    ++probeCount;
+    return Promise.resolve({params: {}, stdout: "", stderr: ""});
+  });
+  const dpcppKawpow = {
+    MOM_GPU_BACKEND: "nvidia",
+    MOM_NATIVE_PATH: "runtime/dpcpp/mom.node",
+    MOM_SYCL_COMPILER: "dpcpp",
+    ONEAPI_DEVICE_SELECTOR: "cuda:gpu",
+  };
+  const dpcppEtchash = {
+    ONEAPI_DEVICE_SELECTOR: "cuda:gpu",
+    MOM_SYCL_COMPILER: "dpcpp",
+    MOM_NATIVE_PATH: "runtime/dpcpp/mom.node",
+    MOM_GPU_BACKEND: "nvidia",
+  };
+  const acppFishhash = {
+    ...dpcppKawpow,
+    MOM_NATIVE_PATH: "runtime/acpp-cuda/mom.node",
+    MOM_SYCL_COMPILER: "acpp-cuda",
+    ACPP_VISIBILITY_MASK: "cuda",
+  };
+
+  const [first, second] = await Promise.all([
+    cache(dpcppKawpow), cache(dpcppEtchash),
+  ]);
+  assert.strictEqual(first, second);
+  assert.equal(probeCount, 1);
+  await cache(acppFishhash);
+  assert.equal(probeCount, 2);
+
+  let envProbeCount = 0;
+  const envCache = createAlgoParamsReportCache((/** @type {TestEnv} */ _env) => {
+    ++envProbeCount;
+    return Promise.resolve({params: {}, stdout: "", stderr: ""});
+  });
+  const envWithSentinel = {
+    ...dpcppKawpow,
+    MOM_ALGO_PARAMS_CACHE_SENTINEL: "inherited",
+  };
+  const deletedEnvValue = await envCache({
+    ...envWithSentinel,
+    MOM_ALGO_PARAMS_CACHE_SENTINEL: undefined,
+  });
+  const emptyEnvValue = await envCache({
+    ...envWithSentinel,
+    MOM_ALGO_PARAMS_CACHE_SENTINEL: "",
+  });
+  assert.notStrictEqual(deletedEnvValue, emptyEnvValue);
+  assert.equal(envProbeCount, 2);
+});
+
+test("algo params probe cache retries rejected probes without duplicating concurrent work", async () => {
+  let probeCount = 0;
+  let shouldReject = true;
+  const cache = createAlgoParamsReportCache((/** @type {TestEnv} */ _env) => {
+    ++probeCount;
+    return shouldReject
+      ? Promise.reject(new Error("probe failed"))
+      : Promise.resolve({params: {}, stdout: "", stderr: ""});
+  });
+  const env = {MOM_ALGO_PARAMS_CACHE_RETRY: "1"};
+  const [first, concurrent] = [cache(env), cache({...env})];
+  assert.strictEqual(first, concurrent);
+  assert.equal(probeCount, 1);
+  await assert.rejects(first, /probe failed/);
+
+  shouldReject = false;
+  const retry = cache(env);
+  assert.notStrictEqual(retry, first);
+  assert.equal(probeCount, 2);
+  await retry;
+});
+
+test("Pearl tuning preserves V3 targets after worker handoff", () => {
+  /** @returns {MiningJob} */
+  const makeJob = () => ({
+    algo: "pearlhash",
+    dev: "gpu1",
+    intensity: 131072,
+    pearlhash_base_target: "1",
+    pearlhash_n: 131072,
+    pearlhash_k: 4096,
+    pearlhash_rank: 256,
+    pearlhash_cert_version: 3,
+  });
+  const v3Target = helper.pearlhashTarget("1", 4096, 256, 3);
+
+  const v3 = makeJob();
+  gpuTuning.applyNativeJobTuning(
+    v3, gpuTuning.parseDeviceEntry("gpu1*[m=8192]", "pearlhash"), "pearlhash");
+  assert.equal(v3.target, v3Target);
+
+  for (const rank of [128, 256]) {
+    const k = rank * 16;
+    const overridden = makeJob();
+    gpuTuning.applyNativeJobTuning(
+      overridden,
+      gpuTuning.parseDeviceEntry(`gpu1*[m=8192;k=${k};rank=${rank}]`, "pearlhash"),
+      "pearlhash",
+    );
+    assert.equal(overridden.pearlhash_k, k);
+    assert.equal(overridden.pearlhash_rank, rank);
+    assert.equal(overridden.target, helper.pearlhashTarget("1", k, rank, 3));
+  }
+
+  const explicit = makeJob();
+  explicit.target = "ab".repeat(32);
+  delete explicit.pearlhash_base_target;
+  gpuTuning.applyNativeJobTuning(
+    explicit,
+    gpuTuning.parseDeviceEntry("gpu1*[m=8192;k=4096;rank=256]", "pearlhash"),
+    "pearlhash",
+  );
+  assert.equal(explicit.target, "ab".repeat(32));
+
+  for (const certVersion of [1, 2, 4]) {
+    const unsupported = makeJob();
+    Reflect.set(unsupported, "pearlhash_cert_version", certVersion);
+    assert.throws(() => gpuTuning.applyNativeJobTuning(
+      unsupported, gpuTuning.parseDeviceEntry("gpu1*[m=8192]", "pearlhash"), "pearlhash"
+    ), /certificate version/);
+  }
+});
+
+test("NVIDIA capability override selects compatibility paths", () => {
+  assert.equal(policy.selection("pearlhash", "nvidia", "linux", 70).key, "acpp-cuda");
+  assert.equal(policy.selection("pearlhash", "nvidia", "linux", 70).backend, "sycl-native");
+  assert.equal(policy.selection("cn/gpu", "nvidia", "win32", 70).key, "acpp-cuda");
+  assert.equal(policy.selection("cn/gpu", "nvidia", "win32", 70).backend, "sycl");
+  assert.equal(policy.selection("etchash", "nvidia", "linux", 75).key, "acpp-cuda");
+  assert.equal(policy.selection("etchash", "nvidia", "linux", 80).key, "dpcpp");
+  assert.equal(policy.selection("octopus", "nvidia", "linux", 75).key, "acpp-cuda");
+  assert.equal(policy.selection("octopus", "nvidia", "linux", 75).backend, "sycl");
+  assert.equal(policy.selection("octopus", "nvidia", "linux", 80).key, "dpcpp");
+  assert.equal(policy.selection("octopus", "nvidia", "linux", 80).backend, "sycl-native");
+  assert.equal(policy.selection("xelishashv3", "nvidia", "linux", 75).backend, "sycl-native");
+  assert.equal(policy.selection("xelishashv3", "nvidia", "linux", 80).backend, "sycl-native");
+  assert.equal(policy.selection("nexapow", "nvidia", "linux", 70).backend, "sycl");
+  assert.equal(policy.selection("nexapow", "nvidia", "linux", 75).backend, "sycl");
+  assert.equal(policy.selection("nexapow", "nvidia", "linux", 80).backend, "sycl-native");
+  assert.equal(policy.selection("walahash", "nvidia", "win32", 60).backend, "sycl");
+  assert.equal(policy.selection("walahash", "nvidia", "win32", 61).backend, "sycl-native");
+  assert.equal(policy.selection("walahash", "nvidia", "win32", 80).key, "dpcpp");
+  assert.equal(policy.selection("walahash", "nvidia", "win32", 80).backend, "sycl-native");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-policy-"));
+  for (const key of ["oneapi", "dpcpp", "dpcpp-opencl", "acpp-cuda", "acpp-hip"]) {
+    fs.mkdirSync(path.join(root, key));
+    fs.writeFileSync(path.join(root, key, "mom.node"), "test");
+  }
+  const volta = policy.workerEnv("pearlhash", {
+    MOM_GPU_BACKEND: "nvidia", MOM_NATIVE_DIR: root,
+    MOM_NVIDIA_COMPUTE_CAPABILITY: "7.0"
+  }, "linux");
+  assert.equal(volta.MOM_SYCL_COMPILER, "acpp-cuda");
+  assert.equal(volta.ACPP_VISIBILITY_MASK, "cuda");
+  const ampere = policy.workerEnv("etchash", {
+    MOM_GPU_BACKEND: "nvidia", MOM_NATIVE_DIR: root,
+    MOM_NVIDIA_COMPUTE_CAPABILITY: "8.0"
+  }, "linux");
+  assert.equal(ampere.MOM_SYCL_COMPILER, "dpcpp");
+  const turingNexa = policy.workerEnv("nexapow", {
+    MOM_GPU_BACKEND: "nvidia", MOM_NATIVE_DIR: root,
+    MOM_NVIDIA_COMPUTE_CAPABILITY: "7.5"
+  }, "linux");
+  assert.equal(turingNexa.MOM_SYCL_COMPILER, "acpp-cuda");
+  assert.equal(turingNexa.MOM_NEXAPOW_NATIVE, undefined);
+  const legacyNexa = policy.workerEnv("nexapow", {
+    MOM_GPU_BACKEND: "nvidia", MOM_NATIVE_DIR: root,
+    MOM_NVIDIA_COMPUTE_CAPABILITY: "7.0"
+  }, "linux");
+  assert.equal(legacyNexa.MOM_NEXAPOW_NATIVE, undefined);
+  const ampereNexa = policy.workerEnv("nexapow", {
+    MOM_GPU_BACKEND: "nvidia", MOM_NATIVE_DIR: root,
+    MOM_NVIDIA_COMPUTE_CAPABILITY: "8.0"
+  }, "linux");
+  assert.equal(ampereNexa.MOM_SYCL_COMPILER, "dpcpp");
+  assert.equal(ampereNexa.MOM_NEXAPOW_NATIVE, undefined);
+  const portableNexa = policy.workerEnv("nexapow", {
+    MOM_GPU_BACKEND: "nvidia", MOM_NATIVE_DIR: root,
+    MOM_NVIDIA_COMPUTE_CAPABILITY: "8.0"
+  }, "linux", "sycl");
+  assert.equal(portableNexa.MOM_SYCL_COMPILER, "acpp-cuda");
+  assert.equal(portableNexa.MOM_NEXAPOW_NATIVE, undefined);
+  const syclNativeOctopus = policy.workerEnv("octopus", {
+    MOM_GPU_BACKEND: "nvidia", MOM_NATIVE_DIR: root,
+    MOM_NVIDIA_COMPUTE_CAPABILITY: "8.0"
+  }, "linux");
+  assert.equal(syclNativeOctopus.MOM_OCTOPUS_SYCL_NATIVE, "1");
+  assert.equal(policy.workerEnv("octopus", {
+    MOM_GPU_BACKEND: "amd", MOM_NATIVE_DIR: root
+  }, "linux", "sycl-native").MOM_OCTOPUS_SYCL_NATIVE, "1");
+  assert.equal(policy.workerEnv("octopus", {
+    MOM_GPU_BACKEND: "nvidia", MOM_NATIVE_DIR: root,
+    MOM_NVIDIA_COMPUTE_CAPABILITY: "8.0"
+  }, "linux", "sycl").MOM_OCTOPUS_SYCL_NATIVE, "0");
+  const nativeXelis = policy.workerEnv("xelishashv3", {
+    MOM_GPU_BACKEND: "nvidia", MOM_NATIVE_DIR: root,
+    MOM_NVIDIA_COMPUTE_CAPABILITY: "8.0"
+  }, "linux");
+  assert.equal(nativeXelis.MOM_XELISHASHV3_SYCL_NATIVE, "1");
+  assert.equal(policy.workerEnv("xelishashv3", {
+    MOM_GPU_BACKEND: "intel", MOM_NATIVE_DIR: root
+  }, "linux").MOM_XELISHASHV3_SYCL_NATIVE, "1");
+  assert.equal(policy.workerEnv("xelishashv3", {
+    MOM_GPU_BACKEND: "nvidia", MOM_NATIVE_DIR: root,
+    MOM_NVIDIA_COMPUTE_CAPABILITY: "8.0"
+  }, "linux", "sycl").MOM_XELISHASHV3_SYCL_NATIVE, "0");
+  const nativeWala = policy.workerEnv("walahash", {
+    MOM_GPU_BACKEND: "intel", MOM_NATIVE_DIR: root
+  }, "linux");
+  assert.equal(nativeWala.MOM_WALAHASH_SYCL_NATIVE, "1");
+  const portableWala = policy.workerEnv("walahash", {
+    MOM_GPU_BACKEND: "intel", MOM_NATIVE_DIR: root
+  }, "linux", "sycl");
+  assert.equal(portableWala.MOM_SYCL_COMPILER, "dpcpp-opencl");
+  assert.equal(portableWala.MOM_WALAHASH_SYCL_NATIVE, "0");
+  assert.equal(policy.workerEnv("walahash", {
+    MOM_GPU_BACKEND: "amd", MOM_NATIVE_DIR: root
+  }, "linux").MOM_WALAHASH_SYCL_NATIVE, "1");
+  const nativeNvidiaWala = policy.workerEnv("walahash", {
+    MOM_GPU_BACKEND: "nvidia", MOM_NATIVE_DIR: root,
+    MOM_NVIDIA_COMPUTE_CAPABILITY: "8.0"
+  }, "win32");
+  assert.equal(nativeNvidiaWala.MOM_SYCL_COMPILER, "dpcpp");
+  assert.equal(nativeNvidiaWala.MOM_WALAHASH_SYCL_NATIVE, "1");
+  assert.equal(policy.workerEnv("walahash", {
+    MOM_GPU_BACKEND: "nvidia", MOM_NATIVE_DIR: root,
+    MOM_NVIDIA_COMPUTE_CAPABILITY: "8.0"
+  }, "win32", "sycl").MOM_WALAHASH_SYCL_NATIVE, "0");
+  fs.rmSync(root, {recursive: true, force: true});
+});
+
+test("SYCL workers persist kernels and preserve cache controls", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-policy-cache-"));
+  const localBuild = path.resolve(__dirname, "..", "build", "win");
+  const exists = fs.existsSync;
+  let developmentBuild = false;
+  t.mock.method(fs, "existsSync", (/** @type {import("node:fs").PathLike} */ file) =>
+    String(file) === localBuild
+      ? developmentBuild : exists(file));
+  try {
+    for (const key of ["oneapi", "dpcpp", "dpcpp-opencl", "acpp-hip"]) {
+      fs.mkdirSync(path.join(root, key));
+      fs.writeFileSync(path.join(root, key, "mom.node"), "test");
+    }
+    /** @type {NodeJS.Platform[]} */
+    const platforms = ["linux", "win32"];
+    for (const platform of platforms) {
+      for (const gpu of ["intel", "nvidia", "opencl"]) {
+        const env = {MOM_NATIVE_DIR: root, MOM_GPU_BACKEND: gpu,
+          MOM_NVIDIA_COMPUTE_CAPABILITY: "100", LOCALAPPDATA: "C:\\Users\\test\\AppData\\Local"};
+        const defaults = policy.workerEnv("etchash", env, platform);
+        assert.equal(defaults["SYCL_CACHE_PERSISTENT"], "1");
+        assert.equal(defaults["SYCL_CACHE_DIR"], platform === "win32" && gpu === "intel"
+          ? path.join(env.LOCALAPPDATA, "mom-sycl-cache", "oneapi", "etchash")
+          : undefined);
+        const custom = {...env, SYCL_CACHE_PERSISTENT: "0", SYCL_CACHE_DIR: "custom-cache"};
+        const overridden = {...custom, ...policy.workerEnv("etchash", custom, platform)};
+        assert.equal(overridden["SYCL_CACHE_PERSISTENT"], "0");
+        assert.equal(overridden["SYCL_CACHE_DIR"], platform === "win32" && gpu === "intel"
+          ? path.join("custom-cache", "oneapi", "etchash")
+          : "custom-cache");
+      }
+    }
+    const windowsIntel = {MOM_NATIVE_DIR: root, MOM_GPU_BACKEND: "intel",
+      LOCALAPPDATA: "C:\\Users\\test\\AppData\\Local"};
+    assert.equal(policy.workerEnv("walahash", windowsIntel, "win32")["SYCL_CACHE_DIR"],
+      path.join(windowsIntel.LOCALAPPDATA, "mom-sycl-cache", "oneapi", "walahash"));
+    assert.equal(policy.workerEnv("xelishashv3", windowsIntel, "win32")["SYCL_CACHE_DIR"],
+      path.join(windowsIntel.LOCALAPPDATA, "mom-sycl-cache", "oneapi", "xelishashv3"));
+    developmentBuild = true;
+    const env = {MOM_NATIVE_DIR: root, MOM_GPU_BACKEND: "intel"};
+    assert.equal(policy.workerEnv("nexapow", env, "win32")["SYCL_CACHE_DIR"],
+      path.join(localBuild, ".sycl-cache", "oneapi", "nexapow"));
+    const custom = {...env, SYCL_CACHE_PERSISTENT: "0", SYCL_CACHE_DIR: "retained-cache"};
+    const overridden = {...custom, ...policy.workerEnv("nexapow", custom, "win32")};
+    assert.equal(overridden["SYCL_CACHE_PERSISTENT"], "0");
+    assert.equal(overridden["SYCL_CACHE_DIR"],
+      path.join("retained-cache", "oneapi", "nexapow"));
+    const amd = policy.workerEnv("etchash", {...env, MOM_GPU_BACKEND: "amd"}, "win32");
+    assert.equal(amd["SYCL_CACHE_PERSISTENT"], undefined);
+
+  } finally {
+    fs.rmSync(root, {recursive: true, force: true});
+  }
+});
+
+test("OpenCL helper selects the portable addon despite an inherited native override", (
+  /** @type {import("node:test").TestContext} */ t,
+) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-opencl-policy-"));
+  const candidate = path.join(root, "acpp-cuda", "mom.node");
+  const portable = path.join(root, "dpcpp-opencl", "mom.node");
+  fs.mkdirSync(path.dirname(candidate), {recursive: true});
+  fs.mkdirSync(path.dirname(portable), {recursive: true});
+  fs.writeFileSync(candidate, "candidate");
+  fs.writeFileSync(portable, "portable");
+  const previousNativeDir = process.env["MOM_NATIVE_DIR"];
+  const previousNativePath = process.env["MOM_NATIVE_PATH"];
+  process.env["MOM_NATIVE_DIR"] = root;
+  process.env["MOM_NATIVE_PATH"] = candidate;
+  try {
+    const env = openclSyclEnv("cpu");
+    assert.equal(env["MOM_SYCL_COMPILER"], "dpcpp-opencl");
+    assert.equal(env["MOM_NATIVE_PATH"], portable);
+    assert.notEqual(env["MOM_NATIVE_PATH"], candidate);
+    assert.equal(env["ONEAPI_DEVICE_SELECTOR"], "opencl:cpu");
+
+    fs.rmSync(path.dirname(portable), {recursive: true});
+    t.mock.method(fs, "existsSync", () => false);
+    assert.throws(() => openclSyclEnv("cpu"), /Missing dpcpp-opencl\/mom\.node/);
+  } finally {
+    if (previousNativeDir === undefined) {
+      delete process.env["MOM_NATIVE_DIR"];
+    } else {
+      process.env["MOM_NATIVE_DIR"] = previousNativeDir;
+    }
+    if (previousNativePath === undefined) {
+      delete process.env["MOM_NATIVE_PATH"];
+    } else {
+      process.env["MOM_NATIVE_PATH"] = previousNativePath;
+    }
+    fs.rmSync(root, {recursive: true, force: true});
+  }
+});
+
+test("PearlHash submitted native faults propagate without fallback", {
+  skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
+}, async (t) => {
+  const root = path.join(__dirname, "../sycl/pearlhash");
+  const dispatch = fs.readFileSync(path.join(root, "dispatch.inc"), "utf8");
+  const dispatchEnd = dispatch.indexOf("} // namespace mom_pearlhash");
+  const host = fs.readFileSync(path.join(root, "host.inc"), "utf8");
+  const invalidateStart = host.indexOf("  g_pf.valid = false;");
+  const invalidateEnd = host.indexOf("  PearlHashState& st =", invalidateStart);
+  const waitStart = host.indexOf("  if (search_backend == PearlHashSearchBackend::hip_jit ||");
+  const uploadEnd = host.indexOf("  if (is_test && q.get_device().is_gpu())", waitStart);
+  const drainStart = host.indexOf("\n  } catch (...)", waitStart);
+  const waitEnd = drainStart < 0 ? uploadEnd : drainStart;
+  const uploadStart = Math.min(host.indexOf("  if (!st.have_header ||"),
+    host.indexOf("  uint8_t tgtLE[32];"));
+  const readbackEnd = host.indexOf("  // search() retains", uploadEnd);
+  const commitStart = host.indexOf("  if (!b.result->found)", waitEnd);
+  const commitEnd = host.indexOf("\n}\n// Builds", commitStart);
+  assert.ok(dispatchEnd > 0 && invalidateStart > 0 && invalidateEnd > invalidateStart &&
+    waitStart > invalidateEnd && waitEnd > waitStart && commitStart > waitEnd && commitEnd > commitStart &&
+    uploadStart > invalidateEnd && uploadEnd >= waitEnd && readbackEnd > uploadEnd);
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-pearl-native-fault-"));
+  const source = path.join(fixture, "pearlhash_fault.cpp");
+  const executable = path.join(fixture, "pearlhash_fault");
+  try {
+    fs.copyFileSync(path.join(__dirname, "native/pearlhash_fault.cpp"), source);
+    fs.writeFileSync(path.join(fixture, "dispatch.inc"), dispatch.slice(0, dispatchEnd));
+    fs.writeFileSync(path.join(fixture, "invalidate.inc"), host.slice(invalidateStart, invalidateEnd));
+    fs.writeFileSync(path.join(fixture, "wait.inc"), host.slice(waitStart, waitEnd));
+    fs.writeFileSync(path.join(fixture, "upload.inc"), host.slice(uploadStart, uploadEnd));
+    fs.writeFileSync(path.join(fixture, "readback.inc"), host.slice(uploadEnd, readbackEnd));
+    fs.writeFileSync(path.join(fixture, "commit.inc"), host.slice(commitStart, commitEnd));
+    const compiled = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
+      "-pedantic", "-DMOM_SYCL_HAS_CUDA=1", "-DMOM_SYCL_HAS_HIP=1", source, "-o", executable],
+    {encoding: "utf8"});
+    assert.equal(compiled.error, undefined);
+    assert.equal(compiled.signal, null);
+    assert.equal(compiled.status, 0, compiled.stderr);
+    const cases = [];
+    for (const [hip, name] of ["CUDA", "HIP"].entries()) {
+      cases.push({dispatch: 0, hip, stage: 0, stringError: 0, name: name + " wait succeeds"});
+      cases.push({dispatch: 1, hip, stage: 0, stringError: 0, name: name + " native attempt succeeds"});
+      cases.push({dispatch: 1, hip, stage: 1, stringError: 0, name: name + " unavailable JIT retains SYCL"});
+      for (const [stringError, error] of ["std::exception", "std::string"].entries()) {
+        cases.push({dispatch: 0, hip, stage: 7, stringError, name: name + " wait propagates " + error});
+        for (const [stage, operation] of [[2, "queue wait"], [3, "preparation"], [6, "launch"]]) {
+          cases.push({dispatch: 1, hip, stage, stringError,
+            name: name + " " + operation + " propagates " + error});
+        }
+        if (hip) {
+          for (const [stage, operation] of [[4, "A event wait"], [5, "B event wait"],
+            [8, "A event query"], [9, "B event query"]]) {
+            cases.push({dispatch: 1, hip, stage, stringError,
+              name: name + " " + operation + " propagates " + error});
+          }
+        }
+      }
+    }
+    for (const {dispatch: dispatchCase, hip, stage, stringError, name} of cases) {
+      await t.test(name, () => {
+        const result = spawnSync(executable,
+          [String(dispatchCase), String(hip), String(stage), String(stringError)], {encoding: "utf8"});
+        assert.equal(result.error, undefined);
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(result.signal, null);
+        assert.equal(result.stdout, "PASS actual-source Pearl native fault boundary\n");
+      });
+    }
+    const copyCases = [
+      {readback: 0, stage: 0, error: 0, name: "healthy deferred target upload"},
+      {readback: 1, stage: 0, error: 0, name: "healthy deferred commitment readbacks"},
+    ];
+    /** @type {[number, string][]} */
+    const copyFaults = [[2, "upload completion"], [7, "native completion"],
+      [10, "roots submission"], [11, "noise submission"],
+      [12, "key upload submission"], [13, "target upload submission"],
+      [14, "first commitment readback"], [15, "second commitment readback"]];
+    for (const [stage, operation] of copyFaults) {
+      for (let error = 0; error < 4; ++error) {
+        copyCases.push({readback: stage >= 14 ? 1 : 0, stage, error,
+          name: operation + " retains owners and original " + (error % 2 ? "string" : "exception") +
+            (error >= 2 ? " despite cleanup failure" : "")});
+      }
+    }
+    for (const {readback, stage, error, name} of copyCases) {
+      await t.test(name, () => {
+        const result = spawnSync(executable,
+          ["copies", String(readback), String(stage), String(error)], {encoding: "utf8"});
+        assert.equal(result.error, undefined);
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(result.signal, null);
+        assert.equal(result.stdout, "PASS actual-source Pearl queued-copy lifetime\n");
+      });
+    }
+  } finally {
+    fs.rmSync(fixture, {recursive: true, force: true});
+  }
+});
+
+test("Octopus DAG faults propagate without light-search fallback", {
+  skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
+}, async (t) => {
+  const root = path.join(__dirname, "..");
+  const octopus = fs.readFileSync(path.join(root, "sycl/octopus/octopus.cpp"), "utf8");
+  const execution = fs.readFileSync(path.join(root, "native/core/execution.inc"), "utf8");
+  const library = fs.readFileSync(path.join(root, "sycl/lib-internal.h"), "utf8");
+  /** @param {string} source @param {string} start @param {string} end */
+  const extract = (source, start, end) => {
+    const first = source.indexOf(start);
+    const last = source.indexOf(end, first);
+    assert.ok(first >= 0 && last > first, start);
+    return source.slice(first, last);
+  };
+  const catchStart = execution.indexOf("      } catch (const std::string& err) {",
+    execution.indexOf("switch (m_dev)"));
+  const catchEnd = execution.indexOf("      if (loop_stats)", catchStart);
+  const callerStart = octopus.indexOf("int octopus(unsigned,");
+  assert.ok(catchStart > 0 && catchEnd > catchStart && callerStart > 0);
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-octopus-dag-fault-"));
+  const source = path.join(fixture, "octopus_dag_fault.cpp");
+  const executable = path.join(fixture, "octopus_dag_fault");
+  try {
+    fs.copyFileSync(path.join(__dirname, "native/octopus_dag_fault.cpp"), source);
+    fs.writeFileSync(path.join(fixture, "state.inc"),
+      extract(octopus, "  template <typename T> void free_ptr", "\n  void release()") +
+      extract(octopus, "  void ensure_dag(", "\n};\n\nstatic DeviceStateRegistry<State>& registry()"));
+    fs.writeFileSync(path.join(fixture, "result.inc"),
+      extract(octopus, "struct Result {", "inline uint32_t load32("));
+    fs.writeFileSync(path.join(fixture, "caller.inc"), octopus.slice(callerStart));
+    fs.copyFileSync(path.join(root, "sycl/octopus/validation.h"), path.join(fixture, "validation.inc"));
+    fs.writeFileSync(path.join(fixture, "compute-catch.inc"), execution.slice(catchStart, catchEnd));
+    fs.writeFileSync(path.join(fixture, "cleanup.inc"),
+      extract(library, "inline void sycl_log_cleanup_exception(", "sycl::device get_dev("));
+    const compiled = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
+      "-pedantic", "-DMOM_SYCL_PORTABLE_OPENCL=1", source, "-o", executable], {encoding: "utf8"});
+    assert.equal(compiled.error, undefined);
+    assert.equal(compiled.signal, null);
+    assert.equal(compiled.status, 0, compiled.stderr);
+    const modes = ["full DAG/cache/release", "unsupported memory", "null allocation",
+      "allocation std::exception", "allocation std::string", "allocation unknown",
+      "first build", "second build", "first completion", "second completion",
+      "unresolved memory query", "completion fault plus cleanup wait fault"];
+    for (const scalar of [0, 1]) {
+      for (const [mode, name] of modes.entries()) {
+        const kinds = mode >= 6 ? [0, 1, 2] : [mode >= 3 ? mode - 3 : 0];
+        for (const kind of kinds) {
+          const error = mode >= 6 ? ": " + ["std::exception", "std::string", "unknown"][kind] : "";
+          await t.test((scalar ? "scalar: " : "batched: ") + name + error, () => {
+            const result = spawnSync(executable, [String(mode), String(kind), String(scalar)],
+              {encoding: "utf8", timeout: 2000});
+            assert.equal(result.error, undefined);
+            assert.equal(result.signal, null);
+            assert.equal(result.status, 0, result.stderr);
+            assert.equal(result.stdout, "PASS actual-source Octopus DAG fault boundary\n");
+          });
+        }
+      }
+    }
+  } finally {
+    fs.rmSync(fixture, {recursive: true, force: true});
+  }
+});
+
+test("Etchash submitted probe faults do not select a fallback search", {
+  skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
+}, async (t) => {
+  const root = path.join(__dirname, "../sycl");
+  const state = fs.readFileSync(path.join(root, "etchash/state.inc"), "utf8");
+  const entry = fs.readFileSync(path.join(root, "etchash/entry.inc"), "utf8");
+  const device = fs.readFileSync(path.join(root, "etchash/device.inc"), "utf8");
+  const library = fs.readFileSync(path.join(root, "lib-internal.h"), "utf8");
+  /** @param {string} source @param {string} start @param {string} end */
+  const extract = (source, start, end) => {
+    const first = source.indexOf(start);
+    const last = source.indexOf(end, first);
+    assert.ok(first >= 0 && last > first, start);
+    return source.slice(first, last);
+  };
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-etchash-probe-fault-"));
+  const source = path.join(fixture, "etchash_probe_fault.cpp");
+  const executable = path.join(fixture, "etchash_probe_fault");
+  try {
+    fs.copyFileSync(path.join(__dirname, "native/etchash_probe_fault.cpp"), source);
+    fs.writeFileSync(path.join(fixture, "probe.inc"),
+      extract(state, "  bool use_inline_pair()", "  explicit EtchashState("));
+    fs.writeFileSync(path.join(fixture, "result.inc"),
+      extract(device, "struct EtchashResult {", "struct Uint2 {"));
+    fs.writeFileSync(path.join(fixture, "cleanup.inc"),
+      extract(library, "inline void sycl_log_cleanup_exception(", "sycl::device get_dev("));
+    fs.writeFileSync(path.join(fixture, "selection.inc"),
+      extract(entry, "    sycl_wait_and_throw(\n        state.use_inline_pair()", "\n  } else {"));
+    fs.writeFileSync(path.join(fixture, "commit.inc"),
+      extract(entry, "  const uint32_t count = state.result->count;", "\n}"));
+    const compiled = spawnSync("c++", ["-std=c++17", "-O1", "-Wall", "-Wextra", "-Werror",
+      "-pedantic", "-fsanitize=address", "-fsanitize-address-use-after-scope",
+      "-fno-omit-frame-pointer", ...(process.platform === "linux" ? ["-fno-pie", "-no-pie"] : []),
+      source, "-o", executable], {encoding: "utf8"});
+    assert.equal(compiled.error, undefined);
+    assert.equal(compiled.signal, null);
+    assert.equal(compiled.status, 0, compiled.stderr);
+    const cases = ["numeric match", "output mismatch", "mix mismatch", "count mismatch"].map(
+      (name, scenario) => ({name, scenario, stage: 0, kind: 0}));
+    cases.push({name: "forced noinline", scenario: 13, stage: 0, kind: 0},
+      {name: "forced inline", scenario: 14, stage: 0, kind: 0});
+    const errors = ["std::exception", "std::string", "unknown"];
+    for (let stage = 1; stage <= 5; ++stage) {
+      cases.push({name: "allocation " + stage + " null", scenario: 4, stage, kind: 0});
+      for (const [kind, error] of errors.entries()) {
+        cases.push({name: "allocation " + stage + ": " + error, scenario: 5, stage, kind});
+      }
+    }
+    const operations = ["copy", "copy completion", "inline submit", "inline completion",
+      "reference submit", "reference completion", "reference fault plus cleanup fault"];
+    for (const [offset, operation] of operations.entries()) {
+      const scenario = offset + 6;
+      for (const [kind, error] of errors.entries()) {
+        for (const stage of scenario === 6 ? [1, 2, 3] : [0]) {
+          cases.push({name: operation + (stage ? " " + stage : "") + ": " + error,
+            scenario, stage, kind});
+        }
+      }
+    }
+    for (const [kind, error] of errors.entries()) {
+      cases.push({name: "successful probe cleanup: " + error, scenario: 15, stage: 0, kind});
+    }
+    for (const {name, scenario, stage, kind} of cases) {
+      await t.test(name, () => {
+        const result = spawnSync(executable, [String(scenario), String(stage), String(kind)],
+          {encoding: "utf8", timeout: 2000});
+        assert.equal(result.error, undefined);
+        assert.equal(result.signal, null);
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(result.stdout, "PASS actual-source Etchash probe fault boundary\n");
+      });
+    }
+  } finally {
+    fs.rmSync(fixture, {recursive: true, force: true});
+  }
+});
+
+test("NexaPoW submitted faults abort without fallback and do not latch failed setup", {
+  skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
+}, () => {
+  const root = path.join(__dirname, "../sycl/nexapow");
+  const host = fs.readFileSync(path.join(root, "nexapow.cpp"), "utf8");
+  const pipeline = fs.readFileSync(path.join(root, "sycl_pipeline.inc"), "utf8");
+  const section = (/** @type {string} */ source, /** @type {string} */ start,
+    /** @type {string} */ end) => {
+    const begin = source.indexOf(start);
+    assert.ok(begin >= 0 && source.indexOf(start, begin + start.length) === -1, start);
+    const stop = source.indexOf(end, begin + start.length);
+    assert.ok(stop > begin, end);
+    return source.slice(begin, stop);
+  };
+  const prefix = section(pipeline, "class NexaPowSyclSearch {", "  bool search(");
+  const caller = section(host,
+    "int nexapow(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint8_t* output,\n" +
+    "            uint8_t*, uint64_t* pnonce, const uint8_t* target, const uint8_t*, unsigned intensity,\n" +
+    "            bool is_test, bool, const std::string& dev) {", "\n#else\nint nexapow");
+  const support = section(host, "struct Result {", "\nstatic constexpr uint8_t") + "\n" +
+    section(host, "inline bool np_equal(", "\n#ifndef MOM_NEXAPOW_HOST_TEST");
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-nexapow-fault-"));
+  const source = path.join(fixture, "nexapow_fault.cpp");
+  const executable = path.join(fixture, "nexapow_fault");
+  try {
+    fs.copyFileSync(path.join(__dirname, "native/nexapow_fault.cpp"), source);
+    fs.writeFileSync(path.join(fixture, "search-prefix.inc"), prefix);
+    fs.writeFileSync(path.join(fixture, "caller.inc"), caller);
+    fs.writeFileSync(path.join(fixture, "caller-support.inc"), support);
+    const compiled = spawnSync("c++", ["-std=c++17", "-O0", "-Wall", "-Wextra", "-Werror",
+      "-pedantic", "-fsanitize=address", "-fsanitize-address-use-after-scope",
+      "-fno-omit-frame-pointer", ...(process.platform === "linux" ? ["-fno-pie", "-no-pie"] : []),
+      source, "-o", executable], {encoding: "utf8"});
+    assert.equal(compiled.error, undefined);
+    assert.equal(compiled.signal, null);
+    assert.equal(compiled.status, 0, compiled.stderr);
+    const result = spawnSync(executable, [], {encoding: "utf8"});
+    assert.equal(result.error, undefined);
+    assert.equal(result.signal, null);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /^# tests 125$/m);
+    assert.match(result.stdout, /^# pass 125$/m);
+    assert.match(result.stdout, /^# fail 0$/m);
+    assert.match(result.stdout, /^# skipped 0$/m);
+  } finally {
+    fs.rmSync(fixture, {recursive: true, force: true});
+  }
+});
+
+test("C30 asynchronous completion faults stop solver stages and Core commits", {
+  skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
+}, async (t) => {
+  const root = path.join(__dirname, "..");
+  const c30 = fs.readFileSync(path.join(root, "sycl/c30/c30.cpp"), "utf8");
+  const execution = fs.readFileSync(path.join(root, "native/core/execution.inc"), "utf8");
+  /** @param {string} source @param {string} start @param {string} end */
+  const extract = (source, start, end) => {
+    const first = source.indexOf(start);
+    const last = source.indexOf(end, first);
+    assert.ok(first >= 0 && last > first, start);
+    return source.slice(first, last);
+  };
+  const catchStart = execution.indexOf("      } catch (const std::string& err) {",
+    execution.indexOf("switch (m_dev)"));
+  const catchEnd = execution.indexOf("      if (loop_stats)", catchStart);
+  assert.ok(catchStart > 0 && catchEnd > catchStart);
+  const entryStart = c30.indexOf("int c30(unsigned,");
+  assert.ok(entryStart > 0);
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-c30-async-fault-"));
+  const source = path.join(fixture, "c30_async_fault.cpp");
+  const executable = path.join(fixture, "c30_async_fault");
+  try {
+    fs.copyFileSync(path.join(__dirname, "native/c30_async_fault.cpp"), source);
+    fs.copyFileSync(path.join(root, "sycl/c30/c30.h"), path.join(fixture, "c30-types.inc"));
+    fs.copyFileSync(path.join(root, "native/job-boundary.h"), path.join(fixture, "job-boundary.inc"));
+    fs.writeFileSync(path.join(fixture, "solver.inc"),
+      extract(c30, "struct Solver {", "\n} // namespace mom::c30"));
+    fs.writeFileSync(path.join(fixture, "entry.inc"), c30.slice(entryStart));
+    fs.writeFileSync(path.join(fixture, "active-guard.inc"),
+      extract(execution, "    if (!m_has_fn) {", "\n    { // A compute function is active"));
+    fs.writeFileSync(path.join(fixture, "dispatch.inc"),
+      extract(execution, "          case DEV::C30_GPU:", "          case DEV::KAWPOW_GPU:"));
+    fs.writeFileSync(path.join(fixture, "compute-catch.inc"), execution.slice(catchStart, catchEnd));
+    fs.writeFileSync(path.join(fixture, "accounting.inc"),
+      extract(execution, "      uint64_t completed = m_batch;",
+        "      if (m_dev == DEV::KAWPOW_GPU || m_dev == DEV::ETCHASH_GPU) {"));
+    fs.writeFileSync(path.join(fixture, "nonce-commit.inc"),
+      extract(execution, "      if (m_dev == DEV::C30_GPU) {", "      if (m_nonce_bytes == 4) {"));
+    const compiled = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
+      "-pedantic", source, "-o", executable], {encoding: "utf8"});
+    assert.equal(compiled.error, undefined);
+    assert.equal(compiled.signal, null);
+    assert.equal(compiled.status, 0, compiled.stderr);
+    const stages = ["seed", "trim", "count readback", "compact", "compact readback",
+      "edge readback", "recovery", "nonce readback"];
+    for (const layout of [0, 1]) {
+      for (const owner of [0, 1]) {
+        const cases = [{kind: 0, stage: 0, name: "empty asynchronous error lists"}];
+        for (const [stage, name] of stages.entries()) {
+          for (const [kind, errors] of ["one SYCL", "multiple SYCL", "non-SYCL"].entries()) {
+            cases.push({kind: kind + 1, stage: stage + 1, name: name + ": " + errors});
+          }
+        }
+        for (const {kind, stage, name} of cases) {
+          await t.test((owner ? "Core" : "entry") + (layout ? " packed: " : " wide: ") + name, () => {
+            const result = spawnSync(executable,
+              [String(kind), String(stage), String(layout), String(owner)], {encoding: "utf8"});
+            assert.equal(result.error, undefined);
+            assert.equal(result.signal, null);
+            assert.equal(result.status, 0, result.stderr);
+            assert.equal(result.stdout, "PASS actual-source C30 asynchronous completion boundary\n");
+          });
+        }
+      }
+    }
+  } finally {
+    fs.rmSync(fixture, {recursive: true, force: true});
+  }
+});
+
+test("C29 submitted graph faults propagate before cycle search or accounting", {
+  skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
+}, async (t) => {
+  const root = path.join(__dirname, "..");
+  const search = fs.readFileSync(path.join(root, "sycl/c29/search.inc"), "utf8");
+  const entry = fs.readFileSync(path.join(root, "sycl/c29/entry.inc"), "utf8");
+  const state = fs.readFileSync(path.join(root, "sycl/c29/state.inc"), "utf8");
+  const trim = fs.readFileSync(path.join(root, "sycl/c29/trim.inc"), "utf8");
+  const execution = fs.readFileSync(path.join(root, "native/core/execution.inc"), "utf8");
+  /** @param {string} source @param {string} start @param {string} end */
+  const extract = (source, start, end) => {
+    const first = source.indexOf(start);
+    const last = source.indexOf(end, first);
+    assert.ok(first >= 0 && last > first, start);
+    return source.slice(first, last);
+  };
+  const completeSearch = search.slice(search.indexOf("struct C29SearchCompletionGuard {"));
+  assert.ok(completeSearch.startsWith("struct C29SearchCompletionGuard {"));
+  assert.equal(completeSearch.split("std::thread(").length, 2);
+  const catchStart = execution.indexOf("      } catch (const std::string& err) {",
+    execution.indexOf("switch (m_dev)"));
+  const catchEnd = execution.indexOf("      if (loop_stats)", catchStart);
+  assert.ok(catchStart > 0 && catchEnd > catchStart);
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-c29-submitted-fault-"));
+  const source = path.join(fixture, "c29_submitted_fault.cpp");
+  const executable = path.join(fixture, "c29_submitted_fault");
+  try {
+    fs.copyFileSync(path.join(__dirname, "native/c29_submitted_fault.cpp"), source);
+    fs.writeFileSync(path.join(fixture, "search.inc"),
+      completeSearch.replace("std::thread(", "TestThread("));
+    fs.writeFileSync(path.join(fixture, "entry.inc"), entry);
+    fs.writeFileSync(path.join(fixture, "result-state.inc"),
+      extract(state, "struct C29QueuedSolution {", "static sycl::async_handler c29_exception_handler()"));
+    fs.writeFileSync(path.join(fixture, "activate.inc"), state.slice(state.indexOf("static void c29_activate_job(")));
+    fs.copyFileSync(path.join(root, "sycl/c29/cycle.h"), path.join(fixture, "cycle.inc"));
+    fs.copyFileSync(path.join(root, "native/job-boundary.h"), path.join(fixture, "job-boundary.inc"));
+    fs.writeFileSync(path.join(fixture, "seed.inc"), "(void)c29_buffers;\n++seeds;\nif (mode == 2) inject();\n");
+    fs.writeFileSync(path.join(fixture, "trim.inc"),
+      "++trims;\nif (mode == 3) inject();\n" +
+      "const sycl::event tail_event{};\nuint32_t trimmed_edge_count = 0;\n" +
+      "sycl::buffer<uint32_t, 1> buffer_trimmed_edge_count{sycl::range<1>{1}};\n" +
+      "sycl::buffer<sycl::uint2, 1> buffer_trimmed_edges_u2{sycl::range<1>{64}};\n" +
+      extract(trim, "profile.mark(\"before tail wait\");", "profile.finish(trimmed_edge_count);") +
+      "profile.finish(trimmed_edge_count);\n");
+    fs.writeFileSync(path.join(fixture, "active-guard.inc"),
+      extract(execution, "    if (!m_has_fn) {", "\n    { // A compute function is active"));
+    fs.writeFileSync(path.join(fixture, "dispatch.inc"),
+      extract(execution, "          case DEV::C29_GPU:", "          case DEV::C30_GPU:"));
+    fs.writeFileSync(path.join(fixture, "compute-catch.inc"), execution.slice(catchStart, catchEnd));
+    fs.writeFileSync(path.join(fixture, "accounting.inc"),
+      extract(execution, "      uint64_t completed = m_batch;",
+        "      if (m_dev == DEV::KAWPOW_GPU || m_dev == DEV::ETCHASH_GPU) {"));
+    const compiled = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
+      "-pedantic", source, "-o", executable], {encoding: "utf8"});
+    assert.equal(compiled.error, undefined);
+    assert.equal(compiled.signal, null);
+    assert.equal(compiled.status, 0, compiled.stderr);
+    const modes = ["valid graph", "device lookup", "seed submission", "trim submission",
+      "tail completion", "count readback", "edge readback", "legacy thread-start failure"];
+    for (const proof of [32, 42]) {
+      for (const owner of [0, 1]) {
+        for (const [mode, name] of modes.entries()) {
+          await t.test((owner ? "Core" : "entry") + " proof" + proof + ": " + name, () => {
+            const result = spawnSync(executable, [String(mode), String(proof), String(owner)],
+              {encoding: "utf8"});
+            assert.equal(result.error, undefined);
+            assert.equal(result.signal, null);
+            assert.equal(result.status, 0, result.stderr);
+            assert.match(result.stdout, /PASS actual-source C29 submitted fault boundary\n$/);
+          });
+        }
+      }
+    }
+  } finally {
+    fs.rmSync(fixture, {recursive: true, force: true});
+  }
 });

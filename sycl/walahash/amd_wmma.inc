@@ -7,10 +7,13 @@ struct WalaHashAmdWmma {
   bool checked = false;
 
   bool ensure(sycl::queue& queue) {
+    if (!mom_is_hip(queue.get_device()))
+      return false;
     if (checked)
       return kernel != nullptr;
+    mom::hip_queue_device(queue, device);
     checked = true;
-    if (!mom::hip_queue_device(queue, device) || hipSetDevice(device) != hipSuccess)
+    if (hipSetDevice(device) != hipSuccess)
       return false;
     hipDeviceProp_t properties{};
     mom::HiprtcApi& rtc = mom::HiprtcApi::instance();
@@ -88,28 +91,26 @@ extern "C" __global__ void walahash_wmma(
 })";
     const std::string arch_option = "--offload-arch=" + arch;
     const char* options[] = {"-O3", "--std=c++17", arch_option.c_str()};
-    hiprtcProgram program = nullptr;
-    if (rtc.create_program(&program, source, "walahash-wmma.hip", 0, nullptr, nullptr) !=
+    mom::HiprtcProgram program(rtc);
+    if (rtc.create_program(program.address(), source, "walahash-wmma.hip", 0, nullptr, nullptr) !=
         HIPRTC_SUCCESS)
       return false;
-    if (rtc.compile_program(program, 3, options) != HIPRTC_SUCCESS) {
+    if (rtc.compile_program(program.get(), 3, options) != HIPRTC_SUCCESS) {
       size_t size = 0;
-      rtc.get_log_size(program, &size);
+      rtc.get_log_size(program.get(), &size);
       std::string log(size, '\0');
       if (size)
-        rtc.get_log(program, log.data());
+        rtc.get_log(program.get(), log.data());
       std::fprintf(stderr, "WalaHash gfx12 WMMA compile failed: %s\n", log.c_str());
-      rtc.destroy_program(&program);
       return false;
     }
     size_t size = 0;
-    if (rtc.get_code_size(program, &size) != HIPRTC_SUCCESS) {
-      rtc.destroy_program(&program);
+    if (rtc.get_code_size(program.get(), &size) != HIPRTC_SUCCESS) {
       return false;
     }
     std::vector<char> code(size);
-    const bool ok = rtc.get_code(program, code.data()) == HIPRTC_SUCCESS;
-    rtc.destroy_program(&program);
+    const bool ok = rtc.get_code(program.get(), code.data()) == HIPRTC_SUCCESS;
+    program.reset();
     return ok && hipModuleLoadData(&module, code.data()) == hipSuccess &&
            hipModuleGetFunction(&kernel, module, "walahash_wmma") == hipSuccess;
   }

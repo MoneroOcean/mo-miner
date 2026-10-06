@@ -3,14 +3,13 @@
 // PearlHashHash (PRL) NoisyGEMM proof-of-useful-work GPU search kernel (SYCL / Level-Zero).
 // Per seed: counter-RNG A/B -> keyed-BLAKE3 commitment roots -> sparse low-rank noise -> noised
 // int8 A'*B' XMX GEMM tiles -> per-16x16-tile XOR/rotl13 transcript -> keyed-BLAKE3 jackpot vs
-// target. On a win the host builds the pool PlainProof (Merkle openings) directly -- see the
-// PEARLHASH_STANDALONE block. Validated against the real verify_plain_proof_v2 (pearl-research-labs).
+// target. Current certificate V3 binds each raw Merkle root to its matrix dimension before the
+// shared salted-noise chain and requires rank >= 128; older certificates are intentionally rejected.
+// On a win the host builds the pool PlainProof (with raw Merkle openings) directly.
 //
-// Throughput notes (Arc B580, k=1024, rank=64, m=n=16384): the search GEMM sustains ~32-34
-// TH/s (DPAS MAC/s); the full per-seed attempt ~28-30 TH/s, the rest being the mandatory
-// BLAKE3 commitment over A/Bt. Key optimizations: A/B are never materialized (regenerated from
-// the counter-RNG inside the consumers), the commitment Merkle tree is reduced in parallel,
-// the search uses a PEARLHASH_HR x PEARLHASH_NTILE register tile with software-pipelined B loads.
+// A/B are never materialized (they are regenerated from the counter-RNG inside each consumer),
+// the commitment Merkle tree is reduced in parallel, and the search uses a PEARLHASH_HR x
+// PEARLHASH_NTILE register tile with software-pipelined B loads.
 
 #include <sycl/sycl.hpp>
 #include "../lib-internal.h"
@@ -21,18 +20,18 @@
 #include "../nvidia-dot.h"
 #endif
 #endif
+#include "../../native/job-boundary.h"
+#include "../pow-intensity.h"
 #include "esimd_route.h"
-#if defined(MOM_SYCL_HAS_CUDA) && !defined(__SYCL_DEVICE_ONLY__) && \
-    !defined(MOM_PEARLHASH_ESIMD_TU)
-#include <cuda.h>
-#include <nvrtc.h>
+#if defined(MOM_SYCL_HAS_CUDA) && !defined(__SYCL_DEVICE_ONLY__) && !defined(MOM_PEARLHASH_ESIMD_TU)
+#include "../cuda-api.h"
 #endif
 #if defined(MOM_SYCL_HAS_HIP)
 #ifndef __HIP_PLATFORM_AMD__
 #define __HIP_PLATFORM_AMD__
 #endif
 #include <hip/hip_runtime_api.h>
-#include <hip/hiprtc.h>
+#include "../hiprtc-api.h"
 #endif
 #ifdef PEARLHASH_ESIMD
 #include "../intel-dpas.h"
@@ -45,23 +44,21 @@
 #endif
 #include <array>
 #include <chrono>
-#include <cstdio>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <utility>
-#include <string>
-#include <vector>
-#include <set>
-#include <array>
-#include <map>
-#include <mutex>
-#include <memory>
-#include <thread>
 #include <filesystem>
-#include <fstream>
-#include <sstream>
 #include <iomanip>
+#include <limits>
+#include <memory>
+#include <mutex>
+#include <set>
+#include <sstream>
+#include <string>
+#include <thread>
+#include <utility>
+#include <vector>
 #if defined(MOM_SYCL_HAS_HIP) || defined(MOM_SYCL_HAS_CUDA)
 #if defined(_WIN32)
 #include <windows.h>
@@ -69,10 +66,10 @@
 #include <dlfcn.h>
 #endif
 #endif
+#if !defined(__SYCL_DEVICE_ONLY__)
+#include "../jit-cache.h"
+#endif
 
-#include "../../native/job-boundary.h"
-#include "../pow-intensity.h"
-#include <limits>
 #include "blake3.inc"
 #include "seed.inc"
 
@@ -92,8 +89,6 @@
 #ifdef MOM_PEARLHASH_ESIMD_TU
 } // namespace mom_pearlhash
 #else
-#include "jit_cache.inc"
-
 // PearlHash's shared SYCL CUDA kernel already uses cp.async, ldmatrix, and mma.sync, but the SYCL
 // execution model cannot express CUTE's staged CTA mainloop without manually duplicating a large
 // part of CUTE's layout machinery. That path plateaus near 55.5 TH/s on RTX 5060 Ti; compiling the

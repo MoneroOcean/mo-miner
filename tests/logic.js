@@ -1,6 +1,6 @@
 "use strict";
 
-const { describe } = require("./logic/support");
+const {describe} = require("./logic/support");
 
 describe("JavaScript logic tests", () => {
   require("./logic/core");
@@ -13,6 +13,9 @@ describe("JavaScript logic tests", () => {
   require("./logic/fishhash");
   require("./logic/beamhash");
   require("./logic/cortex");
-  require("./logic/nexapow");
+  require("./sota-benchmark");
   require("./logic/verthash");
+  require("./logic/xelishashv3");
+  require("./logic/nexapow");
+  require("./ipc_followon");
 });

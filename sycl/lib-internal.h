@@ -1,4 +1,4 @@
-// Copyright GNU GPLv3 (c) 2023-2025 MoneroOcean <support@moneroocean.stream>
+// Copyright GNU GPLv3 (c) 2023-2026 MoneroOcean <support@moneroocean.stream>
 
 #pragma once
 
@@ -115,14 +115,10 @@ public:
   }
 };
 
-// SYCL builds, all DPC++: oneAPI icx for Intel GPU / Windows (default), the intel/llvm
-// nightly clang CUDA backend for NVIDIA (-Dmom_sycl_impl=dpcpp-cuda), and the combined
-// build that AOTs both spir64 + nvptx in one mom.node (scripts/build-combined.dockerfile).
-// They share almost all code; the NVIDIA-specific spots are gated three ways:
-//   * device code           -> per device-compilation pass via the compiler's __NVPTX__
-//   * host code that must be COMPILED for CUDA capability -> MOM_SYCL_HAS_CUDA (set by
-//     binding.gyp for the dpcpp-cuda and dpcpp-combined modes)
-//   * host runtime decisions -> mom_is_cuda(device) below (the actual device backend)
+// DPC++ and AdaptiveCpp share these helpers. Keep device-compilation guards (such as
+// __NVPTX__), host build capabilities (MOM_SYCL_HAS_CUDA / MOM_SYCL_HAS_HIP), and
+// runtime device checks (mom_is_cuda / mom_is_hip) distinct: a multi-backend build's
+// capabilities do not identify the device selected for a particular job.
 
 // The cooperative ProgPoW / Ethash / cn-gpu kernels run on 16-wide sub-groups on Intel
 // GPUs, requested via reqd_sub_group_size(16). NVIDIA warps are fixed at 32 lanes (no
@@ -302,10 +298,6 @@ inline bool mom_has_usm_shared(const sycl::device& device) {
   return mom_is_hip(device) || device.has(sycl::aspect::usm_shared_allocations);
 }
 
-// The DPC++ AMD libclc built by --hip currently omits the SPIR-V subgroup shuffle entry points.
-// gfx1200 has native wave32 DS permutes, so use them directly instead of leaving unresolved
-// __spirv_GroupNonUniformShuffle{,Down} calls at device link. The lane arguments used by the miner
-// are subgroup-relative and DPC++ maps one subgroup to one AMD wave.
 inline uint32_t mom_select_from_group(const sycl::sub_group& group, uint32_t value, uint32_t lane) {
   return sycl::select_from_group(group, value, lane);
 }
@@ -500,17 +492,26 @@ inline void sycl_wait_and_throw(sycl::event event, const sycl::device& device) {
     event.wait_and_throw();
     return;
   }
-  while (event.get_info<sycl::info::event::command_execution_status>() !=
-         sycl::info::event_command_status::complete) {
+  try {
+    while (event.get_info<sycl::info::event::command_execution_status>() !=
+           sycl::info::event_command_status::complete) {
 #if defined(_WIN32)
-    // std::this_thread::sleep_for(100us) can round up to Windows' default 15.6-ms timer quantum.
-    // That fixed delay dominated short GPU dispatches even though the device event had completed.
-    // A high-resolution waitable timer retains the low-CPU polling design without a busy-spin or
-    // process-wide timeBeginPeriod() side effect.
-    mom_sycl_poll_pause();
+      // std::this_thread::sleep_for(100us) can round up to Windows' default 15.6-ms timer quantum.
+      // That fixed delay dominated short GPU dispatches even though the device event had completed.
+      // A high-resolution waitable timer retains the low-CPU polling design without a busy-spin or
+      // process-wide timeBeginPeriod() side effect.
+      mom_sycl_poll_pause();
 #else
-    std::this_thread::sleep_for(std::chrono::microseconds(100));
+      std::this_thread::sleep_for(std::chrono::microseconds(100));
 #endif
+    }
+  } catch (...) {
+    // A failed status query can leave the command using its caller's live host buffers.
+    try {
+      event.wait_and_throw();
+    } catch (...) {
+    }
+    throw;
   }
   event.wait_and_throw();
 }
@@ -526,8 +527,6 @@ template <typename Fn>
 inline void sycl_cleanup_noexcept(const char* const scope, Fn&& fn) noexcept {
   try {
     fn();
-  } catch (const sycl::exception& e) {
-    sycl_log_cleanup_exception(scope, e.what());
   } catch (const std::exception& e) {
     sycl_log_cleanup_exception(scope, e.what());
   } catch (...) {

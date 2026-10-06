@@ -914,14 +914,19 @@ class NexaPowSyclSearch {
   uint32_t searches_ = 0;
   std::string error_;
 
-  template <typename T> static void release_one(T*& pointer, sycl::queue& queue) noexcept {
+  template <typename T> static void release_one(T*& pointer, sycl::queue& queue,
+                                               const bool checked = false) {
     if (!pointer)
       return;
-    try {
-      sycl::free(pointer, queue);
-    } catch (...) {
-    }
+    // A throwing free may already have retired it; never retry the same pointer.
+    T* allocation = pointer;
     pointer = nullptr;
+    try {
+      sycl::free(allocation, queue);
+    } catch (...) {
+      if (checked)
+        throw;
+    }
   }
 
   void release_buffers(sycl::queue& queue) noexcept {
@@ -974,7 +979,8 @@ class NexaPowSyclSearch {
     capacity_ = count;
   }
 
-  void setup_tables(sycl::queue& queue, const sycl_pipeline::TableLayout layout) {
+  bool setup_tables(sycl::queue& queue, const sycl_pipeline::TableLayout layout,
+                    std::string& failure) {
     Affine* compact = nullptr;
     Affine* shifted = nullptr;
     try {
@@ -985,6 +991,17 @@ class NexaPowSyclSearch {
       table_ = sycl::malloc_device<Affine>(sycl_pipeline::table_points(layout), queue);
       if (!table_)
         throw std::string("NexaPoW staged SYCL table allocation failed");
+    } catch (...) {
+      // Allocation-only absence is recoverable: no table commands have been submitted yet.
+      release_one(compact, queue);
+      release_one(shifted, queue);
+      release_one(table_, queue);
+      failure = "NexaPoW staged SYCL table allocation failed";
+      return false;
+    }
+    // The readback destination must outlive the catch-path queue drain.
+    Affine check{};
+    try {
       queue.memcpy(compact, kGeneratorWindow8, sizeof(kGeneratorWindow8));
       queue.submit([&](sycl::handler& handler) {
         handler.parallel_for<sycl_pipeline::ShiftedTableKernel>(
@@ -1041,14 +1058,20 @@ class NexaPowSyclSearch {
       // Do not submit the host copy behind the long table build: some runtimes busy-spin during
       // that submission. Finish the self-check with the shared low-CPU wait first.
       sycl_wait_and_throw(table_check, queue.get_device());
-      Affine check{};
       sycl_wait_and_throw(queue.memcpy(&check, shifted, sizeof(check)), queue.get_device());
       const Point expected = np_affine(np_scalar_mul(check_scalar));
-      if (np_cmp(check.x, expected.x) || np_cmp(check.y, expected.y))
-        throw std::string("NexaPoW staged SYCL table self-check failed");
-      release_one(compact, queue);
-      release_one(shifted, queue);
+      release_one(compact, queue, true);
+      release_one(shifted, queue, true);
+      if (np_cmp(check.x, expected.x) || np_cmp(check.y, expected.y)) {
+        // Completed, wrong arithmetic can try the smaller layout; a failed dispatch cannot.
+        release_one(table_, queue, true);
+        failure = "NexaPoW staged SYCL table self-check failed";
+        return false;
+      }
+      return true;
     } catch (...) {
+      // Earlier table commands can still own these pointers after a later submission fails.
+      sycl_cleanup_noexcept("nexapow staged setup wait", [&] { queue.wait_and_throw(); });
       release_one(compact, queue);
       release_one(shifted, queue);
       release_one(table_, queue);
@@ -1075,9 +1098,9 @@ public:
         *reason = error_;
       return enabled_;
     }
-    checked_ = true;
     const uint64_t memory = device.get_info<sycl::info::device::global_mem_size>();
     if (memory < (uint64_t{5} << 30)) {
+      checked_ = true;
       error_ = "the staged SYCL table requires at least 5 GiB of device memory";
       if (reason)
         *reason = error_;
@@ -1093,21 +1116,11 @@ public:
 #endif
     const auto try_setup = [&](const sycl_pipeline::TableLayout layout, std::string& failure) {
       layout_ = layout;
-      try {
-        setup_tables(queue, layout);
+      if (setup_tables(queue, layout, failure)) {
         enabled_ = true;
         error_.clear();
         return true;
-      } catch (const sycl::exception& exception) {
-        failure = exception.what();
-      } catch (const std::string& exception) {
-        failure = exception;
-      } catch (const std::exception& exception) {
-        failure = exception.what();
-      } catch (...) {
-        failure = "NexaPoW staged SYCL initialization failed";
       }
-      release_one(table_, queue);
       return false;
     };
 
@@ -1122,6 +1135,8 @@ public:
     } else if (!first_failure.empty()) {
       error_ = first_failure;
     }
+    // Latch only a completed setup decision, never a submitted-work exception.
+    checked_ = true;
     if (reason)
       *reason = error_;
     return enabled_;
@@ -1131,13 +1146,6 @@ public:
     release_buffers(queue);
     release_one(table_, queue);
     enabled_ = false;
-  }
-
-  void disable(sycl::queue& queue, const std::string& error) {
-    sycl_cleanup_noexcept("nexapow staged wait", [&] { queue.wait_and_throw(); });
-    release(queue);
-    checked_ = true;
-    error_ = error;
   }
 
   bool search(sycl::queue& queue, const uint8_t header[32], const uint8_t extranonce[8],

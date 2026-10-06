@@ -6,6 +6,8 @@
 // Memory/performance notes:
 // - Twelve-GiB devices use the packed 48-bit graph representation. Larger GPUs may use the wider
 //   layout, but comparisons must force the same layout before attributing a speed difference.
+//   Native width-8 Intel EUs also prefer packed: matched A770 tests gained about 76%, mainly in
+//   trimming. Width-16 and unknown geometry keep the memory-based default; this is not a ceiling.
 // - The packed path is bit-exact and includes the portable device-SipHash guard; it is not a reduced
 //   correctness mode. Current B580 results exceed the local NVIDIA/AMD packed-layout peers.
 // - Published NVIDIA/AMD C30 figures from different GPU generations remain context only. On the local
@@ -252,6 +254,7 @@ struct Solver {
                     std::rethrow_exception(error);
                   } catch (const sycl::exception& exception) {
                     std::fprintf(stderr, "c30 asynchronous SYCL error: %s\n", exception.what());
+                    throw;
                   }
                 }
               }),

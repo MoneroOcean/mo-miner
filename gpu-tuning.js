@@ -1,38 +1,44 @@
 "use strict";
 
 const {pearlhashTarget} = require("./helper/hash");
-const INT32_MAX = 0x7fffffff;
-const PEARLHASH_MAX_DIMENSION = 1 << 24;
-const PEARLHASH_MAX_K = 1 << 16;
-const PEARLHASH_MAX_RANK = 1024;
-const UINT64_MAX = (1n << 64n) - 1n;
-const algoFields = new Map([
+
+const progpowAlgos = ["kawpow", "firopow", "evrprogpow", "meowpow"];
+const fishhashAlgos = ["fishhash", "karlsenhashv2"];
+const fixedIntensityAlgos = new Set(["c30", "equihash192_7", "zhash"]);
+/** @type {Set<keyof GpuTuning>} */
+const progpowFields = new Set(["intensity", "workgroup", "dag_workgroup", "dag_chunk"]);
+/** @type {Set<keyof GpuTuning>} */
+const fishhashFields = new Set(["intensity", "workgroup", "search_mode"]);
+/** @type {Array<[string, Set<keyof GpuTuning>]>} */
+const algoEntries = [
   ["cn/gpu", new Set(["intensity"])],
   ["c29", new Set(["seed_workgroup", "seed_blocks"])],
   ["c30", new Set(["intensity"])],
-  ["zhash", new Set(["intensity"])],
-  ["equihash192_7", new Set(["intensity"])],
-  ["kawpow", new Set(["intensity", "workgroup", "dag_workgroup", "dag_chunk"])],
-  ["firopow", new Set(["intensity", "workgroup", "dag_workgroup", "dag_chunk"])],
-  ["evrprogpow", new Set(["intensity", "workgroup", "dag_workgroup", "dag_chunk"])],
-  ["meowpow", new Set(["intensity", "workgroup", "dag_workgroup", "dag_chunk"])],
   ["etchash", new Set(["intensity", "dag_workgroup", "dag_chunk"])],
   ["octopus", new Set(["intensity"])],
   ["autolykos2", new Set([
     "intensity", "workgroup", "prehash_workgroup", "table_chunk", "search_mode",
   ])],
-  ["fishhash", new Set(["intensity", "workgroup", "search_mode"])],
-  ["karlsenhashv2", new Set(["intensity", "workgroup", "search_mode"])],
   ["hoohash", new Set(["intensity", "workgroup"])],
   ["walahash", new Set(["intensity"])],
   ["xelishashv3", new Set(["intensity"])],
   ["nexapow", new Set(["intensity"])],
+  ["equihash192_7", new Set(["intensity"])],
+  ["zhash", new Set(["intensity"])],
   ["verthash", new Set(["intensity"])],
-  ["pearlhash", new Set(["m", "n", "k", "rank", "workgroup", "cache_block", "tile"])],
+  ["pearlhash", new Set(["m", "n", "k", "rank", "cache_block", "tile"])],
   ["zelhash", new Set(["slots"])],
   ["beamhash3", new Set(["workgroup", "compact_workgroup", "scatter_workgroup", "layout"])],
-]);
+];
+const algoFields = new Map(algoEntries);
+for (const algo of progpowAlgos) {algoFields.set(algo, progpowFields);}
+for (const algo of fishhashAlgos) {algoFields.set(algo, fishhashFields);}
+/** @type {Set<keyof GpuTuning>} */
+const allAlgoFields = new Set([...algoFields.values()].flatMap((fields) => [...fields]));
+/** @type {Set<string>} */
+const tuningFieldNames = new Set(allAlgoFields);
 
+/** @type {Set<keyof GpuTuning>} */
 const integerFields = new Set([
   "intensity", "workgroup", "seed_workgroup", "seed_blocks",
   "dag_workgroup", "dag_chunk", "prehash_workgroup", "table_chunk",
@@ -40,28 +46,39 @@ const integerFields = new Set([
   "compact_workgroup", "scatter_workgroup",
 ]);
 const zeroAllowedFields = new Set(["dag_chunk", "table_chunk", "cache_block"]);
+/** @type {Partial<Record<keyof GpuTuning, Set<string>>>} */
 const enumFields = {
   search_mode: new Set(["auto", "scalar", "cooperative"]),
   layout: new Set(["auto", "compact", "full"]),
   tile: new Set(["auto", "1x1", "2x2", "2x4", "4x2", "4x4", "8x2"]),
 };
+const INT32_MAX = 0x7fffffff;
+const PEARLHASH_MAX_DIMENSION = 1 << 24;
+const PEARLHASH_MAX_K = 1 << 16;
+const PEARLHASH_MAX_RANK = 1024;
+const UINT64_MAX = (1n << 64n) - 1n;
+
+/** @param {string} field @returns {field is keyof GpuTuning} */
+function isTuningField(field) {
+  return tuningFieldNames.has(field);
+}
+
+/** @type {Map<string, keyof GpuTuning>} */
 const mainFieldByAlgo = new Map([
   ["c29", "seed_workgroup"],
   ["pearlhash", "m"],
   ["zelhash", "slots"],
   ["beamhash3", "workgroup"],
 ]);
+const progpowWorkgroups = [64, 128, 256, 512];
+const fishhashWorkgroups = [64, 128, 256, 512];
 const workgroupsByAlgo = new Map([
-  ["kawpow", [64, 128, 256, 512]],
-  ["firopow", [64, 128, 256, 512]],
-  ["evrprogpow", [64, 128, 256, 512]],
-  ["meowpow", [64, 128, 256, 512]],
   ["autolykos2", [32, 64, 128, 256]],
-  ["fishhash", [64, 128, 256, 512]],
-  ["karlsenhashv2", [64, 128, 256, 512]],
   ["hoohash", [64, 128, 256]],
   ["pearlhash", [32, 64, 128, 256]],
 ]);
+for (const algo of progpowAlgos) {workgroupsByAlgo.set(algo, progpowWorkgroups);}
+for (const algo of fishhashAlgos) {workgroupsByAlgo.set(algo, fishhashWorkgroups);}
 const tuningFieldOrder = [
   "intensity", "seed_workgroup", "m", "slots", "workgroup",
   "seed_blocks", "dag_workgroup", "dag_chunk", "prehash_workgroup",
@@ -70,13 +87,19 @@ const tuningFieldOrder = [
 ];
 const tuningFieldPosition = new Map(tuningFieldOrder.map((field, index) => [field, index]));
 
+/** @param {string} algo */
 function allowedFields(algo) {
   if (algo) {return algoFields.get(algo) || new Set();}
-  return new Set([...algoFields.values()].flatMap((fields) => [...fields]));
+  return allAlgoFields;
 }
 
+/**
+ * @param {keyof GpuTuning} field
+ * @param {unknown} value
+ * @param {string} label
+ */
 function validateInteger(field, value, label) {
-  if (typeof value === "string" && !/^\d+$/.test(value)) {
+  if (typeof value !== "number" && (typeof value !== "string" || !/^\d+$/.test(value))) {
     throw new Error(`${label} must be a base-10 integer`);
   }
   const number = Number(value);
@@ -96,6 +119,15 @@ function validateInteger(field, value, label) {
   return number;
 }
 
+/**
+ * Validate and normalize a complete PearlHash matrix shape.
+ * @param {unknown} m
+ * @param {unknown} n
+ * @param {unknown} k
+ * @param {unknown} rank
+ * @param {string} [context]
+ * @returns {{m: number, n: number, k: number, rank: number}}
+ */
 function validatePearlHashShape(m, n, k, rank, context = "PearlHash shape") {
   /** @param {unknown} value @param {string} field */
   function normalize(value, field) {
@@ -148,43 +180,63 @@ function validatePearlHashShape(m, n, k, rank, context = "PearlHash shape") {
   return shape;
 }
 
+/**
+ * Validate an untrusted tuning object and return its normalized form.
+ * @param {string} algo
+ * @param {unknown} tuning
+ * @param {string} [context]
+ * @returns {GpuTuning}
+ */
 function validateTuning(algo, tuning, context = "tuning") {
   if (!tuning || typeof tuning !== "object" || Array.isArray(tuning)) {
     throw new Error(`${context} must be an object`);
   }
   const allowed = allowedFields(algo);
+  /** @type {GpuTuning} */
   const result = {};
   for (const [field, value] of Object.entries(tuning)) {
-    if (!allowed.has(field)) {throw new Error(`${context}.${field} is not supported for ${algo}`);}
+    if (!isTuningField(field) || !allowed.has(field)) {
+      throw new Error(`${context}.${field} is not supported for ${algo}`);
+    }
     if (integerFields.has(field)) {
-      result[field] = validateInteger(field, value, `${context}.${field}`);
-    } else if (enumFields[field]) {
-      const normalized = String(value).toLowerCase();
-      if (!enumFields[field].has(normalized)) {
-        throw new Error(`${context}.${field} must be one of ${[...enumFields[field]].join(", ")}`);
+      Object.assign(result, {[field]: validateInteger(field, value, `${context}.${field}`)});
+    } else {
+      const choices = enumFields[field];
+      if (!choices) {throw new Error(`${context}.${field} has no validator`);}
+      if (typeof value !== "string") {
+        throw new Error(`${context}.${field} must be one of ${[...choices].join(", ")}`);
       }
-      result[field] = normalized;
+      const normalized = value.toLowerCase();
+      if (!choices.has(normalized)) {
+        throw new Error(`${context}.${field} must be one of ${[...choices].join(", ")}`);
+      }
+      Object.assign(result, {[field]: normalized});
     }
   }
-  const workgroupChoices = {
-    workgroup: workgroupsByAlgo.get(algo),
-    dag_workgroup: [32, 64, 128, 256, 512],
-    prehash_workgroup: [32, 64, 128, 256],
-  };
-  for (const [field, choices] of Object.entries(workgroupChoices)) {
-    if (choices && result[field] !== undefined && !choices.includes(result[field])) {
+  if (fixedIntensityAlgos.has(algo) && result.intensity !== undefined && result.intensity !== 1) {
+    throw new Error(`${context}.intensity must be 1 for ${algo}`);
+  }
+  /** @type {Array<[keyof GpuTuning, number[] | undefined]>} */
+  const workgroupChoices = [
+    ["workgroup", workgroupsByAlgo.get(algo)],
+    ["dag_workgroup", [32, 64, 128, 256, 512]],
+    ["prehash_workgroup", [32, 64, 128, 256]],
+  ];
+  for (const [field, choices] of workgroupChoices) {
+    const value = result[field];
+    if (choices && typeof value === "number" && !choices.includes(value)) {
       throw new Error(`${context}.${field} must be one of ${choices.join(", ")}`);
     }
   }
-  for (const field of ["workgroup", "compact_workgroup", "scatter_workgroup"]) {
-    if (algo !== "beamhash3" || result[field] === undefined) {continue;}
+  /** @type {(keyof GpuTuning)[]} */
+  const beamWorkgroupFields = ["workgroup", "compact_workgroup", "scatter_workgroup"];
+  for (const field of beamWorkgroupFields) {
+    const value = result[field];
+    if (algo !== "beamhash3" || typeof value !== "number") {continue;}
     const maximum = field === "compact_workgroup" ? 512 : 1024;
-    if (result[field] < 16 || result[field] > maximum || result[field] % 16 !== 0) {
+    if (value < 16 || value > maximum || value % 16 !== 0) {
       throw new Error(`${context}.${field} must be a multiple of 16 between 16 and ${maximum}`);
     }
-  }
-  if ((algo === "c30" || algo === "zhash" || algo === "equihash192_7") && result.intensity !== undefined && result.intensity !== 1) {
-    throw new Error(`${context}.intensity must be 1 for ${algo}`);
   }
   if (algo === "pearlhash") {
     /** @type {("m" | "n")[]} */
@@ -218,9 +270,15 @@ function validateTuning(algo, tuning, context = "tuning") {
   return result;
 }
 
+/**
+ * @param {string} algo
+ * @param {string | undefined} text
+ * @param {string} context
+ */
 function parseExpandedTuning(algo, text, context) {
   if (text === undefined) {return {};}
   if (!text) {throw new Error(`${context} tuning list must not be empty`);}
+  /** @type {Record<string, string>} */
   const raw = {};
   for (const part of text.split(";")) {
     const separator = part.indexOf("=");
@@ -236,41 +294,64 @@ function parseExpandedTuning(algo, text, context) {
   return validateTuning(algo, raw, context);
 }
 
+/**
+ * @param {unknown} entry
+ * @param {string} [algo]
+ * @returns {DeviceEntry}
+ */
 function parseDeviceEntry(entry, algo = "") {
-  const text = String(entry).trim();
+  if (typeof entry !== "string") {throw new Error("device entry must be a string");}
+  const text = entry.trim();
   const match = text.match(
     /^(cpu\d*|gpu\d+)(?:\*([1-9]\d*)|\*\[([^\]]*)\])?(?:\^([1-9]\d*))?$/i
   );
   if (!match) {throw new Error(`invalid device entry: ${entry}`);}
-  const device = match[1].toLowerCase();
+  const matchedDevice = match[1];
+  if (!matchedDevice) {throw new Error(`invalid device entry: ${entry}`);}
+  const device = matchedDevice.toLowerCase();
+  const deviceIndex = Number((device.match(/\d+$/) || [0])[0]);
+  if (!Number.isSafeInteger(deviceIndex) || deviceIndex > 1023) {
+    throw new Error(`${device} index must be at most 1023`);
+  }
   const tuning = parseExpandedTuning(algo, match[3], text);
   if (match[2]) {
     const mainValue = Number.parseInt(match[2], 10);
     const field = device.startsWith("cpu") ? "intensity" : (mainFieldByAlgo.get(algo) || "intensity");
+    if (fixedIntensityAlgos.has(algo) && field === "intensity" && mainValue !== 1) {
+      throw new Error(`${text}.intensity must be 1 for ${algo}`);
+    }
     if (tuning[field] && tuning[field] !== mainValue) {
       throw new Error(`${text} specifies conflicting ${field} values`);
     }
-    if ((algo === "c30" || algo === "zhash" || algo === "equihash192_7") && field === "intensity" && mainValue !== 1) {
-      throw new Error(`${text}.intensity must be 1 for ${algo}`);
-    }
-    tuning[field] = validateInteger(field, mainValue, `${text}.${field}`);
+    Object.assign(tuning, {[field]: validateInteger(field, mainValue, `${text}.${field}`)});
+  }
+  const processes = match[4] ? Number(match[4]) : 1;
+  if (!Number.isSafeInteger(processes) || processes > 1024) {
+    throw new Error(`${text} process count must be at most 1024`);
   }
   return {
     device,
     tuning,
-    processes: match[4] ? Number.parseInt(match[4], 10) : 1,
+    processes,
   };
 }
 
+/**
+ * @param {unknown} dev
+ * @param {string} [algo]
+ * @returns {DeviceEntry[]}
+ */
 function parseDeviceList(dev, algo = "") {
   if (typeof dev !== "string" || !dev.trim()) {throw new Error("device list must be a string");}
   return dev.split(",").map((entry) => parseDeviceEntry(entry, algo));
 }
 
+/** @param {string} algo @returns {keyof GpuTuning} */
 function primaryTuningField(algo) {
   return mainFieldByAlgo.get(algo) || "intensity";
 }
 
+/** @param {string} dev @param {string} algo */
 function needsPrimaryTuning(dev, algo) {
   const field = primaryTuningField(algo);
   return parseDeviceList(dev, algo).some(
@@ -278,6 +359,7 @@ function needsPrimaryTuning(dev, algo) {
   );
 }
 
+/** @param {DeviceEntry} entry */
 function formatDeviceEntry(entry) {
   const tuningValues = entry.tuning || {};
   const isCpu = entry.device.startsWith("cpu");
@@ -294,21 +376,34 @@ function formatDeviceEntry(entry) {
   return `${entry.device}${cpuIntensity ? `*${cpuIntensity}` : ""}${tuning}${processes}`;
 }
 
+/** @param {DeviceEntry[]} entries */
 function formatDeviceList(entries) {
   return entries.map((entry) => formatDeviceEntry(entry)).join(",");
 }
 
+/** @param {DeviceEntry} entry */
 function nativeJobDevice(entry) {
   if (!entry.device.startsWith("cpu")) {return entry.device;}
   const intensity = entry.tuning && entry.tuning.intensity;
   return `${entry.device}${intensity ? `*${intensity}` : ""}`;
 }
 
+/** @param {DeviceEntry} entry @param {string} [algo] */
 function nativeJobIntensity(entry, algo = "") {
   if (!entry.device.startsWith("gpu")) {return 0;}
-  return Number((entry.tuning || {})[algo === "pearlhash" ? "m" : "intensity"] || 1);
+  const value = (entry.tuning || {})[algo === "pearlhash" ? "m" : "intensity"];
+  if (value === undefined) {return 1;}
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error("GPU tuning intensity must be a finite number");
+  }
+  return value;
 }
 
+/**
+ * @param {MiningJob} job
+ * @param {DeviceEntry} entry
+ * @param {string} [algo]
+ */
 function applyNativeJobTuning(job, entry, algo = "") {
   const inheritedPearlM = algo === "pearlhash" ? job.intensity : undefined;
   const pearlM = entry.tuning.m ?? inheritedPearlM;
@@ -353,31 +448,19 @@ function applyNativeJobTuning(job, entry, algo = "") {
   return job;
 }
 
+const progpowEnv = {
+  workgroup: "MOM_KAWPOW_WORKGROUP",
+  dag_workgroup: "MOM_KAWPOW_DAG_WORKGROUP",
+  dag_chunk: "MOM_KAWPOW_DAG_CHUNK_NODES",
+};
+const fishhashEnv = {workgroup: "MOM_FISHHASH_WORKGROUP"};
+/** @type {Record<string, Partial<Record<keyof GpuTuning, string | string[]>>>} */
 const envByAlgo = {
   "c29": {
     seed_workgroup: "MOM_C29_SEED_LOCAL_SIZE",
     seed_blocks: "MOM_C29_SEED_BLOCKS",
   },
-  "kawpow": {
-    workgroup: "MOM_KAWPOW_WORKGROUP",
-    dag_workgroup: "MOM_KAWPOW_DAG_WORKGROUP",
-    dag_chunk: "MOM_KAWPOW_DAG_CHUNK_NODES",
-  },
-  "firopow": {
-    workgroup: "MOM_KAWPOW_WORKGROUP",
-    dag_workgroup: "MOM_KAWPOW_DAG_WORKGROUP",
-    dag_chunk: "MOM_KAWPOW_DAG_CHUNK_NODES",
-  },
-  "evrprogpow": {
-    workgroup: "MOM_KAWPOW_WORKGROUP",
-    dag_workgroup: "MOM_KAWPOW_DAG_WORKGROUP",
-    dag_chunk: "MOM_KAWPOW_DAG_CHUNK_NODES",
-  },
-  "meowpow": {
-    workgroup: "MOM_KAWPOW_WORKGROUP",
-    dag_workgroup: "MOM_KAWPOW_DAG_WORKGROUP",
-    dag_chunk: "MOM_KAWPOW_DAG_CHUNK_NODES",
-  },
+  ...Object.fromEntries(progpowAlgos.map((algo) => [algo, progpowEnv])),
   "etchash": {
     dag_workgroup: "MOM_ETCHASH_DAG_WORKGROUP",
     dag_chunk: "MOM_ETCHASH_DAG_CHUNK_NODES",
@@ -387,16 +470,13 @@ const envByAlgo = {
     prehash_workgroup: "MOM_AUTOLYKOS2_PREHASH_WORKGROUP",
     table_chunk: "MOM_AUTOLYKOS2_TABLE_CHUNK",
   },
-  "fishhash": {workgroup: "MOM_FISHHASH_WORKGROUP"},
-  "karlsenhashv2": {workgroup: "MOM_FISHHASH_WORKGROUP"},
+  ...Object.fromEntries(fishhashAlgos.map((algo) => [algo, fishhashEnv])),
   "hoohash": {intensity: "MOM_HOOHASH_INTENSITY", workgroup: "MOM_HOOHASH_WORKGROUP"},
   "walahash": {intensity: "MOM_WALAHASH_INTENSITY"},
   "xelishashv3": {intensity: "MOM_XELISHASHV3_INTENSITY"},
   "nexapow": {intensity: "MOM_NEXAPOW_INTENSITY"},
   "pearlhash": {
-    workgroup: "MOM_PEARLHASH_AMD_WMMA_THREADS",
     cache_block: [
-      "MOM_PEARLHASH_AMD_WMMA_CACHE_BLOCK",
       "MOM_PEARLHASH_AMD_DP4A_CACHE_BLOCK",
       "MOM_PEARLHASH_CU_BLK",
     ],
@@ -409,32 +489,38 @@ const envByAlgo = {
   },
 };
 
+/** @param {string} algo @param {unknown} tuning @returns {NodeJS.ProcessEnv} */
 function tuningEnvironment(algo, tuning) {
+  const normalized = validateTuning(algo, tuning, `${algo} tuning`);
+  /** @type {NodeJS.ProcessEnv} */
   const env = {};
   for (const [field, envNames] of Object.entries(envByAlgo[algo] || {})) {
-    if (tuning[field] === undefined) {continue;}
+    if (!isTuningField(field)) {throw new Error(`Invalid ${algo} tuning environment field: ${field}`);}
+    if (normalized[field] === undefined) {continue;}
     for (const envName of Array.isArray(envNames) ? envNames : [envNames]) {
-      env[envName] = String(tuning[field]);
+      env[envName] = String(normalized[field]);
     }
   }
-  if (algo === "autolykos2" && tuning.search_mode !== undefined) {
-    if (tuning.search_mode !== "auto") {
-      env.MOM_AUTOLYKOS2_SUBGROUP_COOP = tuning.search_mode === "cooperative" ? "1" : "0";
+  if (algo === "autolykos2" && normalized.search_mode !== undefined) {
+    if (normalized.search_mode !== "auto") {
+      env["MOM_AUTOLYKOS2_SUBGROUP_COOP"] =
+        normalized.search_mode === "cooperative" ? "1" : "0";
     }
   }
-  if ((algo === "fishhash" || algo === "karlsenhashv2") &&
-      tuning.search_mode !== undefined && tuning.search_mode !== "auto") {
-    env.MOM_FISHHASH_COOP = tuning.search_mode === "cooperative" ? "1" : "0";
+  if (fishhashAlgos.includes(algo) &&
+      normalized.search_mode !== undefined && normalized.search_mode !== "auto") {
+    env["MOM_FISHHASH_COOP"] = normalized.search_mode === "cooperative" ? "1" : "0";
   }
-  if (algo === "beamhash3" && tuning.layout !== undefined && tuning.layout !== "auto") {
-    env.MOM_BEAMHASH3_COMPACT = tuning.layout === "compact" ? "1" : "0";
+  if (algo === "beamhash3" && normalized.layout !== undefined && normalized.layout !== "auto") {
+    env["MOM_BEAMHASH3_COMPACT"] = normalized.layout === "compact" ? "1" : "0";
   }
-  if (algo === "pearlhash" && tuning.tile !== undefined && tuning.tile !== "auto") {
-    env.MOM_PEARLHASH_AMD_DP4A_TILE = tuning.tile;
+  if (algo === "pearlhash" && normalized.tile !== undefined && normalized.tile !== "auto") {
+    env["MOM_PEARLHASH_AMD_DP4A_TILE"] = normalized.tile;
   }
   return env;
 }
 
+/** @param {DeviceEntry} entry @param {Partial<GpuTuning>} changes @returns {DeviceEntry} */
 function tuningCandidate(entry, changes) {
   return {
     device: entry.device,
@@ -443,27 +529,34 @@ function tuningCandidate(entry, changes) {
   };
 }
 
+/** @param {number} value @param {number} numerator @param {number} denominator @param {number} [alignment] */
 function alignedScale(value, numerator, denominator, alignment = 256) {
   const scaled = Math.floor(value * numerator / denominator / alignment) * alignment;
-  return Math.max(alignment, scaled);
+  const maximum = Math.floor(0xffffffff / alignment) * alignment;
+  return Math.min(maximum, Math.max(alignment, scaled));
 }
 
 // Return a deliberately bounded empirical-search set around the device heuristic. Variants change
 // one launch dimension at a time: this keeps the optional first-run tuner useful without turning it
 // into a combinatorial multi-hour search for every algorithm. Dataset-construction-only controls
 // remain on their stability-oriented heuristics because steady-state hashrate cannot rank them.
+/** @param {string} algo @param {DeviceEntry} entry @returns {DeviceEntry[]} */
 function autotuneCandidates(algo, entry) {
   if (!entry.device.startsWith("gpu")) {return [entry];}
   const base = entry.tuning || {};
   const candidates = [tuningCandidate(entry, {})];
+  /** @param {keyof GpuTuning} field @param {(number | string)[]} values */
   const add = (field, values) => {
     for (const value of values) {
       if (base[field] === value) {continue;}
-      candidates.push(tuningCandidate(entry, {[field]: value}));
+      /** @type {Partial<GpuTuning>} */
+      const changes = {};
+      Object.assign(changes, {[field]: value});
+      candidates.push(tuningCandidate(entry, changes));
     }
   };
   const intensity = Number(base.intensity || 0);
-  if (intensity && algo !== "c30" && algo !== "zhash" && algo !== "equihash192_7") {
+  if (intensity && !fixedIntensityAlgos.has(algo)) {
     if (algo === "cn/gpu") {
       add("intensity", [
         alignedScale(intensity, 1, 2, 8),
@@ -480,11 +573,11 @@ function autotuneCandidates(algo, entry) {
   if (algo === "c29") {
     add("seed_workgroup", [64, 128, 256]);
     add("seed_blocks", [8, 16, 32]);
-  } else if (["kawpow", "firopow", "evrprogpow", "meowpow"].includes(algo)) {
+  } else if (progpowAlgos.includes(algo)) {
     add("workgroup", [64, 128, 256]);
   } else if (algo === "autolykos2") {
     add("workgroup", [32, 64, 128, 256]);
-  } else if (algo === "fishhash" || algo === "karlsenhashv2") {
+  } else if (fishhashAlgos.includes(algo)) {
     add("workgroup", [64, 128, 256]);
     add("search_mode", ["scalar", "cooperative"]);
   } else if (algo === "hoohash") {
@@ -495,7 +588,8 @@ function autotuneCandidates(algo, entry) {
       alignedScale(base.m, 1, 2, 64),
     ]);
   } else if (algo === "beamhash3" && base.workgroup) {
-    add("workgroup", [384, 512, 640, 768, 1024].filter((value) => value <= base.workgroup));
+    const maximum = base.workgroup;
+    add("workgroup", [384, 512, 640, 768, 1024].filter((value) => value <= maximum));
     add("scatter_workgroup", [64, 128, 256]);
   }
   const unique = new Map();
@@ -516,6 +610,6 @@ module.exports = {
   parseDeviceList,
   primaryTuningField,
   tuningEnvironment,
-  validateTuning,
   validatePearlHashShape,
+  validateTuning,
 };

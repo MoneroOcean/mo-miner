@@ -82,27 +82,10 @@ void pearlhash_cleanup_states() noexcept;
 static std::map<std::string, sycl::device>& str2dev = *new std::map<std::string, sycl::device>;
 static std::string available_dev_str();
 
-static bool is_integrated_gpu(const sycl::device& device) {
-  if (!device.is_gpu()) return false;
-  // SYCL 2020 deprecated this query in favor of USM aspects, but those describe allocation
-  // support rather than whether GPU memory is physically shared with the host. Device discovery
-  // needs the latter distinction and every supported runtime still implements this SYCL 1.2.1
-  // property. Keep the unavoidable warning local instead of hiding unrelated deprecations.
-#if defined(__clang__)
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-#endif
-  const bool integrated = device.get_info<sycl::info::device::host_unified_memory>();
-#if defined(__clang__)
-#pragma clang diagnostic pop
-#endif
-  return integrated;
-}
-
 void sycl_cleanup() noexcept {
-  // Release every queue, bundle, USM allocation, runtime-compiled module, and device handle before
-  // Node unloads the compiler runtime DLL. This specifically prevents AdaptiveCpp/CUDA error 4
-  // (cudaErrorCudartUnloading) from late C++ static destruction on Windows and Linux.
+  // Release algorithm-owned runtime state before Node unloads the compiler runtime DLL. This
+  // prevents AdaptiveCpp/CUDA error 4 (cudaErrorCudartUnloading) from late C++ static destruction.
+  // PearlHash deliberately retains Windows CPU state whose OpenCL ICD faults during teardown.
   mom_autolykos2::autolykos2_cleanup_states();
   mom_beamhash3::beamhash3_cleanup_states();
   c29_cleanup_states();
@@ -123,7 +106,6 @@ void sycl_cleanup() noexcept {
   pearlhash_cleanup_states();
   str2dev.clear();
 }
-
 
 static std::string gpu_identity_key(const sycl::device& device, const unsigned platform_gpu_num) {
   return device.get_info<sycl::info::device::vendor>() + "|" +
@@ -168,19 +150,14 @@ static void sort_gpus_by_name() {
   }
   std::sort(physical_gpus.begin(), physical_gpus.end());
 
-  std::map<unsigned, unsigned> old_to_new;
-  for (size_t pos = 0; pos < physical_gpus.size(); ++pos) {
-    old_to_new[physical_gpus[pos].second] = static_cast<unsigned>(pos) + 1u;
-  }
-
   std::map<std::string, sycl::device> sorted;
   for (const auto& pair : str2dev) {
-    const unsigned old_number = gpu_number(pair.first);
-    if (old_number == 0) {
+    if (!gpu_number(pair.first))
       sorted.emplace(pair.first, pair.second);
-      continue;
-    }
-    sorted.emplace("gpu" + std::to_string(old_to_new.at(old_number)), pair.second);
+  }
+  for (size_t pos = 0; pos < physical_gpus.size(); ++pos) {
+    sorted.emplace("gpu" + std::to_string(static_cast<unsigned>(pos) + 1u),
+                   str2dev.at("gpu" + std::to_string(physical_gpus[pos].second)));
   }
   str2dev.swap(sorted);
 }

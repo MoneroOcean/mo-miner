@@ -1,9 +1,6 @@
 const constexpr unsigned SPAD_LEN        = 200;
 const constexpr unsigned MAX_CN_CPU_WAYS = 5;
 
-static const xmrig::ICpuInfo& cpu_info() { return *xmrig::Cpu::info(); }
-#define ci cpu_info()
-
 // Look up algo->value in a name map, throwing the standard error if absent.
 template<class Map> static const typename Map::mapped_type& algo_lookup(
   const Map& map, const std::string& algo
@@ -116,9 +113,9 @@ static const std::map<std::string, gpu_verthash_hash_fun> gpu_verthash_algo2fn =
 };
 
 static const std::map<std::string, gpu_zelhash_hash_fun> gpu_zelhash_algo2fn = {
+  { "equihash192_7", equihash192_7 },
   { "zelhash", zelhash },
-  { "zhash", zhash },
-  { "equihash192_7", equihash192_7 }
+  { "zhash", zhash }
 };
 
 static const std::map<std::string, gpu_beamhash3_hash_fun> gpu_beamhash3_algo2fn = {
@@ -128,8 +125,8 @@ static const std::map<std::string, gpu_beamhash3_hash_fun> gpu_beamhash3_algo2fn
 static const std::map<std::string, unsigned> algo2mem = [](){
   std::map<std::string, unsigned> result = {
     { "cn/gpu", 2*1024*1024 }, // host memory is not really used (number used only for algo_params calcs)
-    { "c29",    0 },
-    { "c30",    0 },           // host memory is not used even for algo_params calcs
+    { "c29",    0 },           // host memory is not used even for algo_params calcs
+    { "c30",    0 },
     { "kawpow", 0 },
     { "firopow", 0 },
     { "evrprogpow", 0 },
@@ -145,12 +142,14 @@ static const std::map<std::string, unsigned> algo2mem = [](){
     { "xelishashv3", 0 },
     { "nexapow", 0 },
     { "verthash", 0 },
+    { "equihash192_7", 0 },
     { "zelhash", 0 },
     { "zhash", 0 },
-    { "equihash192_7", 0 },
     { "beamhash3", 0 }
   };
-  for (const auto& i : cpu_name2algo) result[i.first] = xmrig::Algorithm(i.second).l3();
+  for (const auto& i : cpu_name2algo) {
+    result[i.first] = xmrig::Algorithm(i.second).l3();
+  }
   return result;
 }();
 
@@ -185,7 +184,14 @@ static std::map<std::string, std::string> cpu_only_algo_params(
 static xmrig::VirtualMemory* alloc_huge_mem(const unsigned size) {
   xmrig::VirtualMemory* const mem = new xmrig::VirtualMemory(size, true, false, false);
   if (mem->raw()) return mem;
+  delete mem;
   throw std::string("Can't allocate " + std::to_string(size) + " bytes of memory");
+}
+
+static unsigned allocation_size(const unsigned count, const unsigned item_size) {
+  if (count && item_size > std::numeric_limits<unsigned>::max() / count)
+    throw std::string("Requested allocation is too large");
+  return count * item_size;
 }
 
 static void* alloc_mem(const unsigned size) {

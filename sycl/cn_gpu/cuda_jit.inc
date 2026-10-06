@@ -100,33 +100,23 @@ struct CnGpuCudaExpand {
         code.clear();
       }
       if (code.empty()) {
-        nvrtcProgram program = nullptr;
+        mom::NvrtcProgram program(rtc);
         nvrtcResult status =
-            rtc.create_program(&program, source.c_str(), "cn-gpu-expand.cu", 0, nullptr, nullptr);
+            rtc.create_program(program.address(), source.c_str(), "cn-gpu-expand.cu", 0, nullptr, nullptr);
         if (status != NVRTC_SUCCESS)
-          throw rtc_error(rtc, status, program, "nvrtcCreateProgram(cn/gpu)");
-        status = rtc.compile_program(program, static_cast<int>(options.size()), options.data());
-        if (status != NVRTC_SUCCESS) {
-          const std::string message =
-              rtc_error(rtc, status, program, "nvrtcCompileProgram(cn/gpu)");
-          (void)rtc.destroy_program(&program);
-          throw message;
-        }
+          throw rtc_error(rtc, status, program.get(), "nvrtcCreateProgram(cn/gpu)");
+        status = rtc.compile_program(program.get(), static_cast<int>(options.size()), options.data());
+        if (status != NVRTC_SUCCESS)
+          throw rtc_error(rtc, status, program.get(), "nvrtcCompileProgram(cn/gpu)");
         size_t size = 0;
-        status = rtc.get_ptx_size(program, &size);
-        if (status != NVRTC_SUCCESS) {
-          const std::string message = rtc_error(rtc, status, program, "nvrtcGetPTXSize(cn/gpu)");
-          (void)rtc.destroy_program(&program);
-          throw message;
-        }
+        status = rtc.get_ptx_size(program.get(), &size);
+        if (status != NVRTC_SUCCESS)
+          throw rtc_error(rtc, status, program.get(), "nvrtcGetPTXSize(cn/gpu)");
         code.resize(size);
-        status = rtc.get_ptx(program, code.data());
-        if (status != NVRTC_SUCCESS) {
-          const std::string message = rtc_error(rtc, status, program, "nvrtcGetPTX(cn/gpu)");
-          (void)rtc.destroy_program(&program);
-          throw message;
-        }
-        (void)rtc.destroy_program(&program);
+        status = rtc.get_ptx(program.get(), code.data());
+        if (status != NVRTC_SUCCESS)
+          throw rtc_error(rtc, status, program.get(), "nvrtcGetPTX(cn/gpu)");
+        program.reset();
         cuda_check(driver, driver.module_load(&module, code.data()), "cuModuleLoadData(cn/gpu)");
         mom::jit_cache::write(path, code);
       }
@@ -177,11 +167,6 @@ struct CnGpuCudaExpand {
 #endif
     }
   }
-  void fail(const std::string& error) noexcept {
-    release();
-    checked = true;
-    std::fprintf(stderr, "cn/gpu CUDA source-JIT failed, using SYCL: %s\n", error.c_str());
-  }
   ~CnGpuCudaExpand() {
     release();
   }
@@ -196,8 +181,6 @@ struct CnGpuCudaExpand {
   void launch(uint64_t*, uint64_t*, unsigned) {
   }
   void wait() {
-  }
-  void fail(const std::string&) noexcept {
   }
 };
 #endif

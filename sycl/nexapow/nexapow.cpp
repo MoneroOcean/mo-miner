@@ -257,31 +257,10 @@ int nexapow(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint8
     if (is_test)
       std::memset(test_target, 0xff, sizeof(test_target));
     const uint8_t* portable_target = is_test ? test_target : target;
-    bool search_failed = false;
-    bool found_candidate = false;
-    try {
-      found_candidate = state.portable.search(
-          state.queue, input, input + 32, first, portable_target, count, extra_bytes, found);
-    } catch (const sycl::exception& error) {
-      reason = error.what();
-      search_failed = true;
-    } catch (const std::string& error) {
-      reason = error;
-      search_failed = true;
-    } catch (const std::exception& error) {
-      reason = error.what();
-      search_failed = true;
-    } catch (...) {
-      reason = "NexaPoW staged SYCL search failed";
-      search_failed = true;
-    }
-    if (search_failed) {
-      // The staged table is only an optimization. Release its large allocations before trying the
-      // monolithic path so a recoverable runtime/allocation failure cannot strand device memory.
-      if (reason.empty())
-        reason = "NexaPoW staged SYCL search failed";
-      state.portable.disable(state.queue, reason);
-    } else if (!found_candidate) {
+    // Once search can submit work, a failure must abort rather than reuse its queue for fallback.
+    const bool found_candidate = state.portable.search(
+        state.queue, input, input + 32, first, portable_target, count, extra_bytes, found);
+    if (!found_candidate) {
       if (recorded_test)
         throw std::string("NexaPoW staged SYCL recorded vector found no candidate");
       if (is_test)

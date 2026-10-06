@@ -1,12 +1,34 @@
 struct LoopStats {
   uint64_t window_start = 0, dispatch = 0, msg = 0, post = 0, iters = 0, jobs = 0,
            max_msg = 0, max_post = 0, dispatch_end = 0;
+  double cpu_start = -1.0;
 };
 
 static uint64_t loop_now_us() {
   return std::chrono::duration_cast<std::chrono::microseconds>(
     std::chrono::steady_clock::now().time_since_epoch()
   ).count();
+}
+
+static double loop_cpu_seconds() {
+#if defined(_WIN32)
+  // MSVC clock() is elapsed wall time. Sum every thread's kernel and user time so the worker's
+  // aggregate process load remains comparable with POSIX clock(), including values above 100%.
+  FILETIME creation_time{}, exit_time{}, kernel_time{}, user_time{};
+  if (!GetProcessTimes(GetCurrentProcess(), &creation_time, &exit_time, &kernel_time, &user_time))
+    return -1.0;
+  ULARGE_INTEGER kernel_ticks{}, user_ticks{};
+  kernel_ticks.LowPart = kernel_time.dwLowDateTime;
+  kernel_ticks.HighPart = kernel_time.dwHighDateTime;
+  user_ticks.LowPart = user_time.dwLowDateTime;
+  user_ticks.HighPart = user_time.dwHighDateTime;
+  return static_cast<double>(kernel_ticks.QuadPart + user_ticks.QuadPart) / 10000000.0;
+#else
+  const std::clock_t value = std::clock();
+  if (value == static_cast<std::clock_t>(-1))
+    return -1.0;
+  return static_cast<double>(value) / static_cast<double>(CLOCKS_PER_SEC);
+#endif
 }
 
 // log a one-off stall line when a single loop phase blocks the compute loop for >100ms
@@ -18,36 +40,48 @@ static void loop_stall(const char* phase, const uint64_t us) {
 
 static void loop_stats_report(LoopStats& ls, const uint64_t now) {
   const uint64_t wall = now - ls.window_start;
+  const double cpu_now = loop_cpu_seconds();
+  const bool valid_cpu = ls.cpu_start >= 0.0 && cpu_now >= ls.cpu_start;
+  const double cpu_percent = valid_cpu
+      ? 100.0 * (cpu_now - ls.cpu_start) / (wall / 1.0e6)
+      : -1.0;
   fprintf(stderr,
-    "LOOPSTAT t=%llu wall=%.1fs dispatch=%.1f%% msg=%.3fs post=%.3fs iters=%llu jobs=%llu"
+    "LOOPSTAT t=%llu wall=%.1fs cpu=%.1f%% dispatch=%.1f%% msg=%.3fs post=%.3fs"
+    " iters=%llu jobs=%llu"
     " max_msg=%.1fms max_post=%.1fms\n",
     static_cast<unsigned long long>(time(nullptr)),
-    wall / 1e6, 100.0 * ls.dispatch / wall, ls.msg / 1e6, ls.post / 1e6,
+    wall / 1e6, cpu_percent, 100.0 * ls.dispatch / wall, ls.msg / 1e6, ls.post / 1e6,
     static_cast<unsigned long long>(ls.iters), static_cast<unsigned long long>(ls.jobs),
     ls.max_msg / 1e3, ls.max_post / 1e3);
   fflush(stderr);
   ls = LoopStats{};
   ls.window_start = now;
+  ls.cpu_start = cpu_now;
 }
 
-void Core::Execute() {
-  debug_startup("Core::Execute entered");
+void Core::Execute() try {
+  debug_async_worker("Core::Execute entered");
   const bool loop_stats = std::getenv("MOM_LOOP_STATS") != nullptr;
   LoopStats ls;
   bool runtime_initialized = false;
   auto init_runtime = [&]() {
     if (runtime_initialized) return;
     runtime_initialized = true;
-    debug_startup("runtime init start");
+    debug_async_worker("runtime init start");
 
     argon2_select_impl();
-    debug_startup((std::string("argon2 impl ") + argon2_get_impl_name()).c_str());
+    debug_async_worker((std::string("argon2 impl ") + argon2_get_impl_name()).c_str());
 
 #if !defined(_WIN32)
-    if (ci.arch() == xmrig::ICpuInfo::ARCH_ZEN)
+    const xmrig::ICpuInfo* const cpu = xmrig::Cpu::info();
+    if (cpu->arch() == xmrig::ICpuInfo::ARCH_ZEN)
       xmrig::RxFix::setupMainLoopExceptionFrame();
-    if (ci.has(xmrig::ICpuInfo::FLAG_SSE41)) rx_blake2b_compress = rx_blake2b_compress_sse41;
-    if (ci.hasAVX2())                        rx_blake2b          = blake2b_avx2;
+    if (cpu->has(xmrig::ICpuInfo::FLAG_SSE41)) {
+      rx_blake2b_compress = rx_blake2b_compress_sse41;
+    }
+    if (cpu->hasAVX2()) {
+      rx_blake2b = blake2b_avx2;
+    }
 #endif
 
     randomx_set_scratchpad_prefetch_mode(0);
@@ -58,77 +92,82 @@ void Core::Execute() {
     randomx_set_huge_pages_jit(true);
     randomx_set_optimized_dataset_init(1);
 #endif
-    debug_startup("runtime init done");
+    debug_async_worker("runtime init done");
   };
 
+  unsigned hashrate_check_counter = HASHRATE_COUNTER_INTERVAL;
   while (true) {
     const uint64_t t_loop_start = loop_stats ? loop_now_us() : 0;
     if (loop_stats) {
       if (ls.dispatch_end) {
         const uint64_t post_us = t_loop_start - ls.dispatch_end;
         ls.post += post_us;
-        if (post_us > ls.max_post) ls.max_post = post_us;
+        if (post_us > ls.max_post) {
+          ls.max_post = post_us;
+        }
         loop_stall("post", post_us);
         ls.dispatch_end = 0;
       }
-      if (!ls.window_start) ls.window_start = t_loop_start;
-      else if (t_loop_start - ls.window_start > 10*1000*1000) loop_stats_report(ls, t_loop_start);
+      if (!ls.window_start) {
+        ls.window_start = t_loop_start;
+        ls.cpu_start = loop_cpu_seconds();
+      } else if (t_loop_start - ls.window_start > 10*1000*1000) {
+        loop_stats_report(ls, t_loop_start);
+      }
     }
 
-    std::deque<Message> messages;
-    messages = fromNode.drain();
+    const std::deque<Message> messages = fromNode.drain();
     for (const auto& message : messages) {
       try {
-        debug_startup(("message " + message.name).c_str());
+        debug_async_worker(("message " + message.name).c_str());
         if (message.name == "job" || message.name == "bench" || message.name == "test")
           init_runtime();
-        if (loop_stats && (message.name == "job" || message.name == "bench")) ++ls.jobs;
+        if (loop_stats && (message.name == "job" || message.name == "bench")) {
+          ++ls.jobs;
+        }
         if (!process_message(message.name, message.values)) return;
-      } catch(const std::string& err) {
+      } catch (const std::string& err) {
         send_error(std::string("Message processing exception: ") + err);
       }
     }
     if (loop_stats && !messages.empty()) {
       const uint64_t msg_us = loop_now_us() - t_loop_start;
       ls.msg += msg_us;
-      if (msg_us > ls.max_msg) ls.max_msg = msg_us;
+      if (msg_us > ls.max_msg) {
+        ls.max_msg = msg_us;
+      }
       loop_stall("msg", msg_us);
     }
 
     // we skip first hash function run using m_hash_count check to exclude GPU compile time
     // that effectively skips it in test mode too
-    static unsigned hashrate_check_counter = HASHRATE_COUNTER_INTERVAL;
-    if (m_dev == DEV::RX_CPU) m_mutex_hashrate.lock();
-    const uint64_t hash_count = m_hash_count;   // 64-bit: pearlhash's MAC count per attempt is 2^46, which truncated to 0 mod 2^32
-    if (m_dev == DEV::RX_CPU) m_mutex_hashrate.unlock();
-    // Most kernels dispatch fast enough that checking wall time every ten loop iterations avoids
-    // pointless clock reads. A production PearlHash attempt lasts several seconds, however: after the
-    // gfx12 WMMA optimization ten attempts can land just below 60 s, miss the reporting threshold,
-    // and make a benchmark wait a further ten attempts. Check PearlHash after every completed attempt;
-    // one host clock read per multi-second GPU dispatch is negligible and makes the 60 s window exact.
-    if (hash_count && (m_dev == DEV::PEARLHASH_GPU || --hashrate_check_counter == 0)) {
-      hashrate_check_counter = HASHRATE_COUNTER_INTERVAL;
+    const uint64_t hash_count = m_hash_count.load(std::memory_order_relaxed);
+    // GPU batches can last seconds: check the 10 s benchmark / 60 s mining clock after each.
+    // Keep ten-batch clock sampling for short CPU dispatches.
+    const bool is_gpu = m_dev != DEV::CPU && m_dev != DEV::RX_CPU;
+    if (mom::hashrate_check_due(hash_count, is_gpu, hashrate_check_counter,
+                                HASHRATE_COUNTER_INTERVAL)) {
       const uint64_t new_timestamp = std::chrono::time_point_cast<std::chrono::milliseconds>(
-        std::chrono::high_resolution_clock::now()
+        std::chrono::steady_clock::now()
       ).time_since_epoch().count();
       const uint64_t interval_ms = m_job_mode == JobMode::bench ? 10*1000 : 60*1000;
       if (!m_timestamp || new_timestamp - m_timestamp > interval_ms) {
-        if (m_timestamp) send_msg("hashrate", "hashrate", std::to_string(
-          static_cast<float>(hash_count) / (new_timestamp - m_timestamp) * 1000.0f
-        ));
+        const uint64_t completed = m_hash_count.exchange(0, std::memory_order_relaxed);
+        if (m_timestamp) {
+          send_msg("hashrate", "hashrate", std::to_string(
+            static_cast<float>(completed) / (new_timestamp - m_timestamp) * 1000.0f
+          ));
+        }
         m_timestamp = new_timestamp;
-        if (m_dev == DEV::RX_CPU) m_mutex_hashrate.lock();
-        m_hash_count = 0;
-        if (m_dev == DEV::RX_CPU) m_mutex_hashrate.unlock();
       }
     }
 
-    if (!m_fn.any) {
+    if (!m_has_fn) {
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
       continue;
     }
 
-    { // m_fn.any is non-null here (early-continue above), so compute a batch
+    { // A compute function is active here (early-continue above), so compute a batch.
       init_runtime();
       // Only one device runs per dispatch, so a single solution-count + nonce/seed pair is shared
       // across all the GPU cases. dev_nonce doubles as the kernel's in/out found-nonce slot (and as
@@ -137,6 +176,7 @@ void Core::Execute() {
       uint64_t dev_nonce = 0;
       const bool is_test = m_job_mode == JobMode::test;
       const bool is_benchmark = m_job_mode == JobMode::bench;
+      const unsigned dispatch_job_ref = m_job_ref.load(std::memory_order_relaxed);
       const uint64_t t_dispatch = loop_stats ? loop_now_us() : 0;
       try {
         switch (m_dev) {
@@ -147,39 +187,47 @@ void Core::Execute() {
             m_fn.gpu_cn(m_input, m_input_len, m_output, m_batch, m_dev_str, m_backend);
             break;
           case DEV::C29_GPU:
-            dev_nonce = m_nonce_bytes == 4 ? bswap_32(*get_nonce32()) : bswap_64(*get_nonce64());
+            // Test vectors solve the supplied blob directly; their reported nonce is irrelevant and
+            // may not use the mining layout. Keep it deterministic without reading outside the blob.
+            if (is_test) {
+              dev_nonce = 0;
+            } else if (m_nonce_bytes == 4) {
+              dev_nonce = mom::job_boundary::load_nonce<uint32_t>(nonce_address(), true);
+            } else {
+              dev_nonce = mom::job_boundary::load_nonce<uint64_t>(nonce_address(), true);
+            }
             dev_sols = m_fn.gpu_c29(
-              m_job_ref, m_c29_proof_size, m_input, m_input_len, m_output,
+              dispatch_job_ref, m_c29_proof_size, m_input, m_input_len, m_output,
               static_cast<uint32_t*>(m_spads), &dev_nonce, m_dev_str
             );
             break;
           case DEV::C30_GPU:
             dev_nonce = m_nonce64;
             dev_sols = m_fn.gpu_c29(
-              m_job_ref, m_c29_proof_size, m_input, m_input_len, m_output,
+              dispatch_job_ref, m_c29_proof_size, m_input, m_input_len, m_output,
               static_cast<uint32_t*>(m_spads), &dev_nonce, m_dev_str
             );
             break;
           case DEV::KAWPOW_GPU:
-            std::memcpy(&dev_nonce, m_input + m_nonce_offset, sizeof(dev_nonce));
+            dev_nonce = mom::job_boundary::load_nonce<uint64_t>(nonce_address(), false);
             dev_sols = m_fn.gpu_kawpow(
-              m_job_ref, m_height, m_input, m_input_len, m_output,
+              dispatch_job_ref, m_height, m_input, m_input_len, m_output,
               static_cast<uint8_t*>(m_spads), &dev_nonce, m_target,
               m_batch, is_test, is_benchmark, m_dev_str
             );
             break;
           case DEV::ETCHASH_GPU:
-            std::memcpy(&dev_nonce, m_input + m_nonce_offset, sizeof(dev_nonce));
+            dev_nonce = mom::job_boundary::load_nonce<uint64_t>(nonce_address(), false);
             dev_sols = m_fn.gpu_etchash(
-              m_job_ref, m_height, m_input, m_input_len, m_output,
+              dispatch_job_ref, m_height, m_input, m_input_len, m_output,
               static_cast<uint8_t*>(m_spads), &dev_nonce, m_target_bin, m_seed,
               m_batch, is_test, is_benchmark, m_dev_str
             );
             break;
           case DEV::AUTOLYKOS2_GPU:
-            std::memcpy(&dev_nonce, m_input + m_nonce_offset, sizeof(dev_nonce));
+            dev_nonce = mom::job_boundary::load_nonce<uint64_t>(nonce_address(), false);
             dev_sols = m_fn.gpu_autolykos2(
-              m_job_ref, m_height, m_input, m_input_len, m_output,
+              dispatch_job_ref, m_height, m_input, m_input_len, m_output,
               &dev_nonce, m_target_bin,
               m_batch, is_test, is_benchmark, m_dev_str
             );
@@ -187,51 +235,53 @@ void Core::Execute() {
           case DEV::PEARLHASH_GPU:
             dev_nonce = m_nonce64;   // the search seed is internal (not embedded in the blob)
             dev_sols = m_fn.gpu_pearlhash(
-              m_job_ref, m_height, m_input, m_input_len, m_output,
+              dispatch_job_ref, m_height, m_input, m_input_len, m_output,
               &dev_nonce, m_target_bin,
               m_batch, is_test, is_benchmark, m_dev_str, m_backend,
               m_pearlhash_n, m_pearlhash_k, m_pearlhash_rank, m_pearlhash_cert_version
             );
             break;
           case DEV::FISHHASH_GPU:
-            std::memcpy(&dev_nonce, m_input + m_nonce_offset, sizeof(dev_nonce));  // nonce at offset 32
+            dev_nonce = mom::job_boundary::load_nonce<uint64_t>(
+              nonce_address(), mom::job_boundary::nonce_big_endian(m_algo_str, m_input_len));
             dev_sols = m_fn.gpu_fishhash(
-              m_job_ref, m_height, m_input, m_input_len, m_output,
+              dispatch_job_ref, m_height, m_input, m_input_len, m_output,
               static_cast<uint8_t*>(m_spads), &dev_nonce, m_target_bin, m_seed,
               m_batch, is_test, is_benchmark, m_dev_str
             );
             break;
           case DEV::KARLSENHASHV2_GPU:
-            std::memcpy(&dev_nonce, m_input + m_nonce_offset, sizeof(dev_nonce));  // nonce at offset 72
+            dev_nonce = mom::job_boundary::load_nonce<uint64_t>(nonce_address(), false);
             dev_sols = m_fn.gpu_karlsenhashv2(
-              m_job_ref, m_height, m_input, m_input_len, m_output,
+              dispatch_job_ref, m_height, m_input, m_input_len, m_output,
               static_cast<uint8_t*>(m_spads), &dev_nonce, m_target_bin, m_seed,
               m_batch, is_test, is_benchmark, m_dev_str
             );
             break;
           case DEV::MISC_GPU:
             dev_nonce = mom::job_boundary::load_nonce<uint64_t>(
-              m_input + m_nonce_offset, mom::job_boundary::nonce_big_endian(m_algo_str, m_input_len));
+              nonce_address(), mom::job_boundary::nonce_big_endian(m_algo_str, m_input_len));
             dev_sols = m_fn.gpu_misc(
-              m_job_ref, m_height, m_input, m_input_len, m_output,
+              dispatch_job_ref, m_height, m_input, m_input_len, m_output,
               nullptr, &dev_nonce, m_target_bin, m_seed,
               m_batch, is_test, is_benchmark, m_dev_str
             );
             break;
           case DEV::VERTHASH_GPU: {
-            dev_nonce = mom::job_boundary::load_nonce<uint32_t>(m_input + m_nonce_offset, false);
+            dev_nonce = mom::job_boundary::load_nonce<uint32_t>(nonce_address(), false);
             dev_sols = m_fn.gpu_verthash(
-              m_job_ref, m_height, m_input, m_input_len, m_output,
+              dispatch_job_ref, m_height, m_input, m_input_len, m_output,
               nullptr, &dev_nonce, m_target_bin, m_seed,
               m_batch, is_test, is_benchmark, m_dev_str
             );
             break;
           }
           case DEV::ZELHASH_GPU:
-            // The solver writes compressed proofs (or test rows) out-of-band into m_spads.
-            std::memcpy(&dev_nonce, m_input + m_nonce_offset, sizeof(dev_nonce));
+            // The 32-byte nonce starts at offset 108; the counter follows any pool prefix. Solvers
+            // write compact proofs (or test rows) out-of-band into m_spads.
+            dev_nonce = mom::job_boundary::load_nonce<uint64_t>(nonce_address(), false);
             dev_sols = m_fn.gpu_zelhash(
-              m_job_ref, m_height, m_input, m_input_len,
+              dispatch_job_ref, m_height, m_input, m_input_len,
               static_cast<uint8_t*>(m_spads), &dev_nonce, m_target_bin,
               m_batch, is_test, is_benchmark, m_dev_str
             );
@@ -240,27 +290,31 @@ void Core::Execute() {
             // c29-like: input is the prework||nonce||extranonce blob; the 8-byte Beam nonce is at
             // offset 32. The solver writes the 104-byte solution(s) out-of-band into m_spads (or, in
             // is_test, the gen-validation rows).
-            std::memcpy(&dev_nonce, m_input + m_nonce_offset, sizeof(dev_nonce));  // 8-byte nonce @32
+            // Keep the numeric value matching a native little-endian read: Beam submissions reverse
+            // this display value back to the physical nonce bytes sent in the solved header.
+            dev_nonce = mom::job_boundary::load_nonce<uint64_t>(nonce_address(), false);
             dev_sols = m_fn.gpu_beamhash3(
-              m_job_ref, m_height, m_input, m_input_len,
+              dispatch_job_ref, m_height, m_input, m_input_len,
               static_cast<uint8_t*>(m_spads), &dev_nonce, m_target_bin,
               m_batch, is_test, is_benchmark, m_dev_str
             );
             break;
-          case DEV::RX_CPU: throw "Internal error: Unreachable code executed";
+          case DEV::RX_CPU:
+            // RandomX work runs only in the per-job thread pool.
+            break;
         }
-      } catch(const std::string& err) {
+      } catch (const std::string& err) {
         send_error(std::string("Compute function exception: ") + err);
-        set_fn(nullptr);
+        clear_fn();
         continue;
-      } catch(const std::exception& e) {
+      } catch (const std::exception& e) {
         // Surface sycl::exception (and any std::exception) detail instead of a bare message.
         send_error(std::string("Compute function exception: ") + e.what());
-        set_fn(nullptr);
+        clear_fn();
         continue;
-      } catch(...) {
+      } catch (...) {
         send_error("Compute function exception");
-        set_fn(nullptr);
+        clear_fn();
         continue;
       }
       if (loop_stats) {
@@ -282,25 +336,31 @@ void Core::Execute() {
             }
             send_msg("test", "result", result);
           } else {
-            send_error(std::string("No ") + (m_dev == DEV::KAWPOW_GPU ? "kawpow" : "etchash") + " test result");
+            send_error("No " + m_algo_str + " test result");
           }
-          set_fn(nullptr);
+          clear_fn();
           continue;
         }
-        if (m_dev == DEV::AUTOLYKOS2_GPU || m_dev == DEV::FISHHASH_GPU || m_dev == DEV::KARLSENHASHV2_GPU || m_dev == DEV::MISC_GPU || m_dev == DEV::VERTHASH_GPU) {
+        // MISC GPU test APIs return one hash; intensity controls tested lanes, not output hashes.
+        if (m_dev == DEV::AUTOLYKOS2_GPU || m_dev == DEV::FISHHASH_GPU ||
+            m_dev == DEV::KARLSENHASHV2_GPU || m_dev == DEV::VERTHASH_GPU ||
+            m_dev == DEV::MISC_GPU) {
           if (dev_sols == 1) {
             char hash[HASH_LEN*2+1];
             send_msg("test", "result", hash_bin2hex(hash, 0));
           } else {
             send_error("No " + m_algo_str + " test result");
           }
-          set_fn(nullptr);
+          clear_fn();
           continue;
         }
         if (m_dev == DEV::PEARLHASH_GPU) {
-          if (dev_sols == 1) send_msg("test", "result", "ok");
-          else send_error("No pearlhash test result");
-          set_fn(nullptr);
+          if (dev_sols == 1) {
+            send_msg("test", "result", "ok");
+          } else {
+            send_error("No pearlhash test result");
+          }
+          clear_fn();
           continue;
         }
         if (m_dev == DEV::ZELHASH_GPU || m_dev == DEV::BEAMHASH3_GPU) {
@@ -308,16 +368,17 @@ void Core::Execute() {
           // m_spads; emit the whole buffer as hex so the standalone checker can diff it against the oracle.
           if (dev_sols == 1) {
             const uint8_t* const rows = static_cast<const uint8_t*>(m_spads);
-            std::string hex; hex.reserve(SMALL_BLOB_SOL_LEN * 2);
+            std::string hex;
+            hex.reserve(SMALL_BLOB_SOL_LEN * 2);
             for (unsigned i = 0; i != SMALL_BLOB_SOL_LEN; ++i) {
               hex += hf_bin2hex(rows[i] >> 4);
               hex += hf_bin2hex(rows[i] & 0xF);
             }
             send_msg("test", "result", hex);
           } else {
-            send_error(m_dev == DEV::BEAMHASH3_GPU ? "No beamhash3 test result" : "No zelhash test result");
+            send_error("No " + m_algo_str + " test result");
           }
-          set_fn(nullptr);
+          clear_fn();
           continue;
         }
         if (m_dev == DEV::C29_GPU && dev_sols == 0) {
@@ -326,31 +387,42 @@ void Core::Execute() {
         }
         if (m_dev == DEV::C29_GPU && dev_sols == -1) {
           send_msg("test", "result", "EOL");
-          set_fn(nullptr);
+          clear_fn();
           continue;
         }
         if (m_dev != DEV::C29_GPU || dev_sols == 1) {
           std::string result_hash_str;
-          for (unsigned i = 0; i != m_batch; ++ i) {
-            if (i) result_hash_str += " ";
+          for (unsigned i = 0; i != m_batch; ++i) {
+            if (i) {
+              result_hash_str += " ";
+            }
             char hash[HASH_LEN*2+1];
             result_hash_str += hash_bin2hex(hash, i);
           }
           send_msg("test", "result", result_hash_str);
-          if (m_dev != DEV::C29_GPU) set_fn(nullptr); // no async solutions anymore
+          if (m_dev != DEV::C29_GPU) {
+            clear_fn(); // no async solutions anymore
+          }
         }
         continue;
       }
 
-      // PearlHash's work unit is GEMM MACs (m*n*k) so its rate matches the "TH/s" GEMM bench.
-      // Equihash 192,7 counts input headers; other Equihash solvers count returned proofs.
-      // All remaining GPU paths count the requested batch.
-      m_hash_count += (m_dev == DEV::PEARLHASH_GPU)
-        ? pearlhash_attempt_hashes(m_batch, m_pearlhash_n, m_pearlhash_k, m_pearlhash_rank)
-                    : ((m_dev == DEV::ZELHASH_GPU && m_algo_str != "equihash192_7") || m_dev == DEV::BEAMHASH3_GPU) ? static_cast<uint64_t>(dev_sols < 0 ? 0 : dev_sols)
-                    : m_batch;
+      // C29 counts new graphs, not proof recovery. PearlHash counts rank-128-equivalent GEMM MACs.
+      // Equihash 192,7 counts input headers like miniZ; the other
+      // Equihash solvers count returned proofs. All remaining GPU paths count the requested batch.
+      uint64_t completed = m_batch;
+      if (m_dev == DEV::C29_GPU) {
+        completed = mom::job_boundary::c29_completed_graphs(dev_sols);
+      } else if (m_dev == DEV::PEARLHASH_GPU) {
+        completed = pearlhash_attempt_hashes(
+          m_batch, m_pearlhash_n, m_pearlhash_k, m_pearlhash_rank
+        );
+      } else if ((m_dev == DEV::ZELHASH_GPU && m_algo_str != "equihash192_7") ||
+                 m_dev == DEV::BEAMHASH3_GPU) {
+        completed = static_cast<uint64_t>(dev_sols < 0 ? 0 : dev_sols);
+      }
+      m_hash_count.fetch_add(completed, std::memory_order_relaxed);
       if (m_dev == DEV::KAWPOW_GPU || m_dev == DEV::ETCHASH_GPU) {
-        const uint64_t prev_nonce = m_nonce64;
         if (dev_sols == 1 && m_target) {
           if (m_algo_str == "octopus") {
             send_result(dev_nonce, 8, m_output);
@@ -361,12 +433,34 @@ void Core::Execute() {
           }
         }
 
-        std::memcpy(m_input + m_nonce_offset, &m_nonce64, sizeof(m_nonce64));
-        m_nonce64 += m_nonce_step;
-        if (m_target && nonce_overflowed(prev_nonce, m_nonce64, m_nicehash_mask)) {
+        if (m_nonce_exhausted) {
           send_error("Nonce overflow");
-          set_fn(nullptr);
+          clear_fn();
+          continue;
         }
+        const uint64_t first_nonce = m_nonce64;
+        std::memcpy(m_input + m_nonce_offset, &m_nonce64, sizeof(m_nonce64));
+        m_nonce64 = next_nonce_after_batch(
+          first_nonce, m_batch, 1, m_nonce_step, m_nicehash_mask);
+        continue;
+      }
+      // These single-blob algorithms share an 8-byte nonce, one 32-byte hash, and no mix hash.
+      if (m_dev == DEV::AUTOLYKOS2_GPU || m_dev == DEV::FISHHASH_GPU ||
+          m_dev == DEV::KARLSENHASHV2_GPU || m_dev == DEV::MISC_GPU) {
+        if (dev_sols == 1 && m_target)
+          send_result(dev_nonce, 8, m_output);
+
+        if (m_nonce_exhausted) {
+          clear_fn();
+          send_last_nonce(m_nonce64, m_nonce_bytes, m_pool_id, m_job_id, m_job_token);
+          continue;
+        }
+        const uint64_t first_nonce = m_nonce64;
+        mom::job_boundary::store_nonce(
+          nonce_address(), m_nonce64,
+          mom::job_boundary::nonce_big_endian(m_algo_str, m_input_len));
+        m_nonce64 = next_nonce_after_batch(
+          first_nonce, m_batch, 1, m_nonce_step, m_nicehash_mask);
         continue;
       }
       if (m_dev == DEV::VERTHASH_GPU) {
@@ -386,38 +480,25 @@ void Core::Execute() {
           static_cast<uint32_t>(m_nicehash_mask));
         continue;
       }
-      // Autolykos2, FishHash, and KarlsenHashV2 share the mine-result handling: 8-byte nonce,
-      // single 32-byte hash, no mix, nonce embedded in the header at m_nonce_offset.
-      if (m_dev == DEV::AUTOLYKOS2_GPU || m_dev == DEV::FISHHASH_GPU || m_dev == DEV::KARLSENHASHV2_GPU || m_dev == DEV::MISC_GPU) {
-        const uint64_t prev_nonce = m_nonce64;
-        if (dev_sols == 1 && m_target)
-          send_result(dev_nonce, 8, m_output);
-
-        // live Iron Fish (fishhash, 180-byte header) reads the nonce big-endian; embed BE there, LE otherwise
-        const uint64_t embed = ((m_dev == DEV::FISHHASH_GPU && m_input_len >= 140) || m_algo_str == "nexapow" || m_algo_str == "xelishashv3") ? bswap_64(m_nonce64) : m_nonce64;
-        std::memcpy(m_input + m_nonce_offset, &embed, sizeof(embed));
-        m_nonce64 += m_nonce_step;
-        if (m_target && nonce_overflowed(prev_nonce, m_nonce64, m_nicehash_mask)) {
-          set_fn(nullptr);
-          send_last_nonce(prev_nonce, m_nonce_bytes, m_pool_id);
-        }
-        continue;
-      }
       if (m_dev == DEV::ZELHASH_GPU) {
-        // Each ZIP-301 share carries its CompactSize-prefixed compressed proof.
-        const uint64_t prev_nonce = m_nonce64;
+        // M5 mining path: the solver writes the target-passing solutions out-of-band into m_spads as
+        // [count:u8][compressed solutions]. Prefix each proof with its CompactSize for ZIP-301.
         if (dev_sols > 0 && m_target) {
-          const unsigned solution_size = m_algo_str == "equihash192_7" ? 400 : m_algo_str == "zhash" ? 100 : 52;
+          const unsigned solution_size = m_algo_str == "equihash192_7" ? 400 :
+                                         m_algo_str == "zhash" ? 100 : 52;
           send_equihash_results(dev_nonce, solution_size, true);
         }
 
         // Advance the low 8 bytes of the 32-byte header nonce (offset 108) as the search counter.
-        std::memcpy(m_input + m_nonce_offset, &m_nonce64, sizeof(m_nonce64));
-        m_nonce64 += m_nonce_step;
-        if (m_target && nonce_overflowed(prev_nonce, m_nonce64, m_nicehash_mask)) {
-          set_fn(nullptr);
-          send_last_nonce(prev_nonce, m_nonce_bytes, m_pool_id);
+        if (m_nonce_exhausted) {
+          clear_fn();
+          send_last_nonce(m_nonce64, m_nonce_bytes, m_pool_id, m_job_id, m_job_token);
+          continue;
         }
+        const uint64_t first_nonce = m_nonce64;
+        std::memcpy(m_input + m_nonce_offset, &m_nonce64, sizeof(m_nonce64));
+        m_nonce64 = next_nonce_after_batch(
+          first_nonce, m_batch, 1, m_nonce_step, m_nicehash_mask);
         continue;
       }
       if (m_dev == DEV::BEAMHASH3_GPU) {
@@ -425,22 +506,20 @@ void Core::Execute() {
         // difficulty (carried in m_target_bin), and wrote the passing ones out-of-band into m_spads as
         // [count:u8][count * 104-byte solution]. For each, emit a result carrying the 8-byte Beam nonce
         // (offset 32) and the 104-byte solution (208 hex) the Beam JSON-RPC `solution` submit needs.
-        const uint64_t prev_nonce = m_nonce64;
         if (dev_sols > 0 && m_target) {
           send_equihash_results(dev_nonce, 104, false);
         }
 
-        // Advance the 8-byte Beam nonce (offset 32) as the search counter. The nonce is written to the
-        // blob BIG-endian (bswap), matching set_job's convention -- so the pool nonceprefix occupies the
-        // LEADING physical bytes = the HIGH bytes of m_nonce64, which m_nicehash_mask fixes (standard
-        // nonce-at-32 nicehash). The low bytes are the free search counter, advanced normally.
-        const uint64_t embed = bswap_64(m_nonce64);
-        std::memcpy(m_input + m_nonce_offset, &embed, sizeof(embed));
-        m_nonce64 += m_nonce_step;
-        if (m_target && nonce_overflowed(prev_nonce, m_nonce64, m_nicehash_mask)) {
-          set_fn(nullptr);
-          send_last_nonce(prev_nonce, m_nonce_bytes, m_pool_id);
+        // The pool prefix occupies the leading physical bytes, so Beam stores its counter big-endian.
+        if (m_nonce_exhausted) {
+          clear_fn();
+          send_last_nonce(m_nonce64, m_nonce_bytes, m_pool_id, m_job_id, m_job_token);
+          continue;
         }
+        const uint64_t first_nonce = m_nonce64;
+        mom::job_boundary::store_nonce(nonce_address(), m_nonce64, true);
+        m_nonce64 = next_nonce_after_batch(
+          first_nonce, m_batch, 1, m_nonce_step, m_nicehash_mask);
         continue;
       }
       if (m_dev == DEV::PEARLHASH_GPU) {
@@ -473,7 +552,7 @@ void Core::Execute() {
           static_cast<std::uint64_t>(m_thread_num) * m_pearlhash_seed_stride;
         if (!mom::job_boundary::pearl_seed_next(
               static_cast<std::uint32_t>(prev_nonce), pearl_seed_step, next_seed)) {
-          set_fn(nullptr);
+          clear_fn();
           if (m_target) {
             send_last_nonce(prev_nonce, 8, m_pool_id, m_job_id, m_job_token);
           }
@@ -489,62 +568,71 @@ void Core::Execute() {
         m_nonce64 += m_nonce_step;
         if (m_target && mom::job_boundary::nonce_overflowed(
             prev_nonce, m_nonce64, m_nicehash_mask)) {
-          set_fn(nullptr);
+          clear_fn();
           send_last_nonce(prev_nonce, 8, m_pool_id, m_job_id, m_job_token);
         }
         continue;
       }
       if (m_nonce_bytes == 4) {
-        const uint32_t prev_nonce = m_nonce32;
-
         if (m_dev != DEV::C29_GPU) {
           for (unsigned i = 0; i != m_batch; ++i) {
-            uint32_t* const pnonce = get_nonce32(i);
-            if (m_target && *get_result(i) < m_target)
-              send_result(bswap_32(*pnonce), 4, m_output + HASH_LEN * i);
-            *pnonce = m_nonce32;
-            m_nonce32 += m_nonce_step;
+            const uint32_t nonce = mom::job_boundary::load_nonce<uint32_t>(
+              nonce_address(i), false);
+            if (m_target && result_word(i) < m_target)
+              send_result(bswap_32(nonce), 4, m_output + HASH_LEN * i);
           }
         } else {
-          if (dev_sols == 1 && m_target && *get_result() < m_target)
+          if (dev_sols == 1 && m_target && result_word() < m_target)
             send_result(dev_nonce, 4, m_output, static_cast<uint32_t*>(m_spads), m_c29_proof_size);
-          *get_nonce32() = bswap_32(m_nonce32);
-          m_nonce32 += m_nonce_step;
         }
 
-        // fail if the nonce wrapped, or the nicehash-protected high bits changed
-        if (m_target && nonce_overflowed(prev_nonce, m_nonce32, static_cast<uint32_t>(m_nicehash_mask))) {
+        if (m_nonce_exhausted) {
           send_error("Nonce overflow");
-          set_fn(nullptr);
+          clear_fn();
           continue;
         }
+        const uint32_t first_nonce = m_nonce32;
+        for (unsigned i = 0; i != m_batch; ++i)
+          mom::job_boundary::store_nonce(
+            nonce_address(i), first_nonce + i * m_nonce_step, true);
+        m_nonce32 = next_nonce_after_batch(
+          first_nonce, m_batch, m_nonce_step,
+          static_cast<uint64_t>(m_batch) * m_nonce_step,
+          static_cast<uint32_t>(m_nicehash_mask));
       } else {
-        const uint64_t prev_nonce = m_nonce64;
-
         if (m_dev != DEV::C29_GPU) {
           for (unsigned i = 0; i != m_batch; ++i) {
-            uint64_t* const pnonce = get_nonce64(i);
-            if (m_target && *get_result(i) < m_target)
-              send_result(bswap_64(*pnonce), 8, m_output + HASH_LEN * i);
-            *pnonce = m_nonce64;
-            m_nonce64 += m_nonce_step;
+            const uint64_t nonce = mom::job_boundary::load_nonce<uint64_t>(
+              nonce_address(i), false);
+            if (m_target && result_word(i) < m_target)
+              send_result(bswap_64(nonce), 8, m_output + HASH_LEN * i);
           }
         } else {
-          if (dev_sols == 1 && m_target && *get_result() < m_target)
+          if (dev_sols == 1 && m_target && result_word() < m_target)
             send_result(dev_nonce, 8, m_output, static_cast<uint32_t*>(m_spads), m_c29_proof_size);
-          *get_nonce64() = bswap_64(m_nonce64);
-          m_nonce64 += m_nonce_step;
         }
 
-        // fail if the nonce wrapped, or the nicehash-protected high bits changed
-        if (m_target && nonce_overflowed(prev_nonce, m_nonce64, m_nicehash_mask)) {
+        if (m_nonce_exhausted) {
           send_error("Nonce overflow");
-          set_fn(nullptr);
+          clear_fn();
           continue;
         }
+        const uint64_t first_nonce = m_nonce64;
+        for (unsigned i = 0; i != m_batch; ++i)
+          mom::job_boundary::store_nonce(
+            nonce_address(i), first_nonce + i * m_nonce_step, true);
+        m_nonce64 = next_nonce_after_batch(
+          first_nonce, m_batch, m_nonce_step,
+          static_cast<uint64_t>(m_batch) * m_nonce_step,
+          m_nicehash_mask);
       }
     }
   }
+} catch (...) {
+  // The normal close message releases these resources in process_message(). If the compute loop
+  // unwinds first, release them here while the Core object is still alive.
+  free_memory();
+  throw;
 }
 
 std::unique_ptr<AsyncWorker> create_worker(

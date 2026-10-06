@@ -5,8 +5,8 @@
 // compiler can instead optimize this one integer kernel for the installed GPU and bypass that
 // Windows SYCL code-generation ceiling. Releases ship only this architecture-neutral CUDA source;
 // NVRTC compiles and caches forward-compatible PTX locally, the installed driver lowers it for the
-// actual GPU, and any unavailable/unsupported compiler or launch automatically falls back to the
-// complete SYCL pipeline.
+// actual GPU. Unavailable or unsupported compilation/loading retains the complete SYCL pipeline;
+// submitted-work faults propagate rather than retry on a potentially invalid queue.
 R"===CUDA(
 typedef unsigned int uint32_t;
 typedef unsigned long long uint64_t;
@@ -53,11 +53,31 @@ __device__ __forceinline__ void cn_keccak(uint64_t* const s) {
             rotl64(s[0] ^ s[5] ^ s[10] ^ s[15] ^ s[20], 1);
     bc[4] = s[4] ^ s[9] ^ s[14] ^ s[19] ^ s[24] ^
             rotl64(s[1] ^ s[6] ^ s[11] ^ s[16] ^ s[21], 1);
-    s[0] ^= bc[4]; s[5] ^= bc[4]; s[10] ^= bc[4]; s[15] ^= bc[4]; s[20] ^= bc[4];
-    s[1] ^= bc[0]; s[6] ^= bc[0]; s[11] ^= bc[0]; s[16] ^= bc[0]; s[21] ^= bc[0];
-    s[2] ^= bc[1]; s[7] ^= bc[1]; s[12] ^= bc[1]; s[17] ^= bc[1]; s[22] ^= bc[1];
-    s[3] ^= bc[2]; s[8] ^= bc[2]; s[13] ^= bc[2]; s[18] ^= bc[2]; s[23] ^= bc[2];
-    s[4] ^= bc[3]; s[9] ^= bc[3]; s[14] ^= bc[3]; s[19] ^= bc[3]; s[24] ^= bc[3];
+    s[0] ^= bc[4];
+    s[5] ^= bc[4];
+    s[10] ^= bc[4];
+    s[15] ^= bc[4];
+    s[20] ^= bc[4];
+    s[1] ^= bc[0];
+    s[6] ^= bc[0];
+    s[11] ^= bc[0];
+    s[16] ^= bc[0];
+    s[21] ^= bc[0];
+    s[2] ^= bc[1];
+    s[7] ^= bc[1];
+    s[12] ^= bc[1];
+    s[17] ^= bc[1];
+    s[22] ^= bc[1];
+    s[3] ^= bc[2];
+    s[8] ^= bc[2];
+    s[13] ^= bc[2];
+    s[18] ^= bc[2];
+    s[23] ^= bc[2];
+    s[4] ^= bc[3];
+    s[9] ^= bc[3];
+    s[14] ^= bc[3];
+    s[19] ^= bc[3];
+    s[24] ^= bc[3];
 
     uint64_t t = s[1];
     #pragma unroll
@@ -96,14 +116,18 @@ void cn_gpu_expand_cuda(
   uint64_t hash[25];
   hash[0] = input[0] ^ stripe;
   #pragma unroll
-  for (unsigned i = 1; i < 25; ++i) hash[i] = input[i];
+  for (unsigned i = 1; i < 25; ++i) {
+    hash[i] = input[i];
+  }
 
   #pragma unroll
   for (unsigned part = 0; part < 3; ++part) {
     cn_keccak(hash);
     const unsigned words = part == 0 ? 20U : 22U;
     #pragma unroll
-    for (unsigned i = 0; i < words; ++i) output[i] = hash[i];
+    for (unsigned i = 0; i < words; ++i) {
+      output[i] = hash[i];
+    }
     output += words;
   }
 }

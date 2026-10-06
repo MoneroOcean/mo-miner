@@ -1,38 +1,50 @@
 // SipHash helpers for edge generation. These used to be statement macros, although every operand
 // is strongly typed and visible to the device optimizer through ordinary inline functions.
-inline __attribute__((always_inline)) void siphash_round(
-  uint64_t& v0, uint64_t& v1, uint64_t& v2, uint64_t& v3
-) {
-  v0 += v1; v2 += v3; v1 = mo_rotate(v1, static_cast<uint64_t>(13));
-  v3 = mo_rotate(v3, static_cast<uint64_t>(16)); v1 ^= v0; v3 ^= v2;
-  v0 = mo_rotate(v0, static_cast<uint64_t>(32)); v2 += v1; v0 += v3;
-  v1 = mo_rotate(v1, static_cast<uint64_t>(17)); v3 = mo_rotate(v3, static_cast<uint64_t>(21));
-  v1 ^= v2; v3 ^= v0; v2 = mo_rotate(v2, static_cast<uint64_t>(32));
+inline __attribute__((always_inline)) void siphash_round(uint64_t& v0, uint64_t& v1, uint64_t& v2,
+                                                         uint64_t& v3) {
+  v0 += v1;
+  v2 += v3;
+  v1 = mo_rotate(v1, static_cast<uint64_t>(13));
+  v3 = mo_rotate(v3, static_cast<uint64_t>(16));
+  v1 ^= v0;
+  v3 ^= v2;
+  v0 = mo_rotate(v0, static_cast<uint64_t>(32));
+  v2 += v1;
+  v0 += v3;
+  v1 = mo_rotate(v1, static_cast<uint64_t>(17));
+  v3 = mo_rotate(v3, static_cast<uint64_t>(21));
+  v1 ^= v2;
+  v3 ^= v0;
+  v2 = mo_rotate(v2, static_cast<uint64_t>(32));
 }
 
-inline __attribute__((always_inline)) void siphash_fill_block(
-  uint64_t& v0, uint64_t& v1, uint64_t& v2, uint64_t& v3,
-  const uint64_t base, uint64_t* const output
-) {
+inline __attribute__((always_inline)) void siphash_fill_block(uint64_t& v0, uint64_t& v1,
+                                                              uint64_t& v2, uint64_t& v3,
+                                                              const uint64_t base,
+                                                              uint64_t* const output) {
 #pragma vector always
   for (uint32_t offset = 0; offset < EDGE_BLOCK_SIZE; ++offset) {
-    v3 ^= base + offset; siphash_round(v0, v1, v2, v3); siphash_round(v0, v1, v2, v3);
-    v0 ^= base + offset; v2 ^= 0xff;
-    siphash_round(v0, v1, v2, v3); siphash_round(v0, v1, v2, v3);
-    siphash_round(v0, v1, v2, v3); siphash_round(v0, v1, v2, v3);
+    v3 ^= base + offset;
+    siphash_round(v0, v1, v2, v3);
+    siphash_round(v0, v1, v2, v3);
+    v0 ^= base + offset;
+    v2 ^= 0xff;
+    siphash_round(v0, v1, v2, v3);
+    siphash_round(v0, v1, v2, v3);
+    siphash_round(v0, v1, v2, v3);
+    siphash_round(v0, v1, v2, v3);
     output[offset] = (v0 ^ v1) ^ (v2 ^ v3);
   }
 }
 
 template <typename Destination, typename Store>
-inline __attribute__((always_inline)) void c29_write8(
-  Destination& destination, const uint32_t index, const Store& store,
-  const uint32_t bucket, const uint32_t base
-) {
+inline __attribute__((always_inline)) void c29_write8(Destination& destination,
+                                                      const uint32_t index, const Store& store,
+                                                      const uint32_t bucket, const uint32_t base) {
   destination[index] = sycl::ulong4(store[bucket][base], store[bucket][base + 1],
-    store[bucket][base + 2], store[bucket][base + 3]);
+                                    store[bucket][base + 2], store[bucket][base + 3]);
   destination[index + 1] = sycl::ulong4(store[bucket][base + 4], store[bucket][base + 5],
-    store[bucket][base + 6], store[bucket][base + 7]);
+                                        store[bucket][base + 6], store[bucket][base + 7]);
 }
 
 struct C29SearchCompletionGuard {
@@ -115,6 +127,7 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
     }
   } catch (const sycl::exception& e) {
     printf("Error in solution search worker: %s\n", e.what());
+    throw;
   }
 }
 

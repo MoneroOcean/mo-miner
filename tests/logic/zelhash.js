@@ -1,7 +1,13 @@
 "use strict";
 
 const s = require("./support");
-const {test, assert, pool, loadMinerWithStubs, withMockPool, completeMiningJob} = s;
+const {test, pool, loadMinerWithStubs, withMockPool} = s;
+/** @type {typeof import("node:assert/strict")} */
+const assert = s.assert;
+/** @type {(job: PoolJob) => MiningJob} */
+const completeMiningJob = s.completeMiningJob;
+
+/** @typedef {PoolJob} ZelJob */
 
 test("ZelHash-family pools build the 140-byte header from the ZIP-301 notify", async () => {
   const version  = "04000000";
@@ -109,6 +115,37 @@ test("ZelHash submit uses stored ZIP-301 metadata for its current job", async ()
     "0700000000000000" + "0".repeat(60 - 16),
     solution,
   ]));
+});
+
+test("ZelHash counter serialization preserves padding, byte order, and the job tail", async () => {
+  const {zelhashSubmitParams} = require("../../miner/submission");
+  const miner = await loadMinerWithStubs();
+  const poolConfig = miner.global.opt.pools[0];
+  assert.ok(poolConfig);
+  const cases = [
+    ["7", "0700000000000000"],
+    ["0", "0000000000000000"],
+    ["0123456789abcdef", "efcdab8967452301"],
+    ["0x0123456789ABCDEF", "EFCDAB8967452301"],
+  ];
+  for (const prefixBytes of [0, 2, 24]) {
+    const tail = "ab".repeat(24 - prefixBytes);
+    const job = {
+      job_id: "counter-job", ntime: "01020304", nonce1_len: prefixBytes,
+      blob: "00".repeat(108) + "cd".repeat(prefixBytes) + "77".repeat(8) + tail,
+    };
+    const original = {...job};
+    for (const [nonce, wire] of cases) {
+      assert.ok(nonce && wire);
+      assert.deepEqual(zelhashSubmitParams(poolConfig, job, {nonce, job_id: job.job_id}, "34abcd"),
+        [poolConfig.login, "counter-job", "01020304", wire + tail, "34abcd"]);
+    }
+    for (const nonce of ["", "gg", "f".repeat(17), "0x"]) {
+      assert.throws(() => zelhashSubmitParams(poolConfig, job,
+        {nonce, job_id: job.job_id}, "34abcd"), /Invalid nonce/);
+    }
+    assert.deepEqual(job, original);
+  }
 });
 
 test("ZHash variants submit their full CompactSize-prefixed proofs", async () => {

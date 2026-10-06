@@ -19,35 +19,26 @@
 
 namespace mom {
 
-inline bool hip_queue_identity(sycl::queue& queue, hipDevice_t& device, hipStream_t& stream,
-                               std::string* const reason = nullptr) {
+inline void hip_queue_identity(sycl::queue& queue, hipDevice_t& device, hipStream_t& stream) {
   hipError_t status = hipErrorUnknown;
-  try {
-    sycl::event event = queue.AdaptiveCpp_enqueue_custom_operation(
-        [&](sycl::interop_handle& handle) {
-          stream = handle.get_native_queue<sycl::backend::hip>();
-          status = hipStreamGetDevice(stream, &device);
-        });
-    event.wait_and_throw();
-  } catch (const std::exception& error) {
-    if (reason)
-      *reason = std::string("HIP queue interop: ") + error.what();
-    return false;
-  } catch (...) {
-    if (reason)
-      *reason = "HIP queue interop failed";
-    return false;
-  }
-  if (status == hipSuccess)
-    return true;
-  if (reason)
-    *reason = std::string("hipStreamGetDevice: ") + hipGetErrorString(status);
-  return false;
+  hipDevice_t candidate_device = -1;
+  hipStream_t candidate_stream = nullptr;
+  // Submitted interop and native identity faults are not optional-backend unavailability.
+  sycl::event event = queue.AdaptiveCpp_enqueue_custom_operation(
+      [&](sycl::interop_handle& handle) {
+        candidate_stream = handle.get_native_queue<sycl::backend::hip>();
+        status = hipStreamGetDevice(candidate_stream, &candidate_device);
+      });
+  event.wait_and_throw();
+  if (status != hipSuccess)
+    throw std::string("hipStreamGetDevice: ") + hipGetErrorString(status);
+  device = candidate_device;
+  stream = candidate_stream;
 }
 
-inline bool hip_queue_device(sycl::queue& queue, hipDevice_t& device) {
+inline void hip_queue_device(sycl::queue& queue, hipDevice_t& device) {
   hipStream_t stream = nullptr;
-  return hip_queue_identity(queue, device, stream);
+  hip_queue_identity(queue, device, stream);
 }
 
 // HIPRTC is optional at runtime. Keeping its entry points behind one dynamic loader lets each
@@ -121,6 +112,33 @@ public:
   static HiprtcApi& instance() {
     static HiprtcApi api;
     return api;
+  }
+};
+
+// Own only the temporary compiler program; release it before loading the resulting module.
+class HiprtcProgram {
+  HiprtcApi& api_;
+  hiprtcProgram program_ = nullptr;
+
+public:
+  // Construct after available() validates the compiler entry points.
+  explicit HiprtcProgram(HiprtcApi& api) noexcept : api_(api) {}
+  HiprtcProgram(const HiprtcProgram&) = delete;
+  HiprtcProgram& operator=(const HiprtcProgram&) = delete;
+
+  hiprtcProgram* address() noexcept { return &program_; }
+  hiprtcProgram get() const noexcept { return program_; }
+
+  void reset() noexcept {
+    if (!program_)
+      return;
+    hiprtcProgram program = program_;
+    program_ = nullptr;
+    (void)api_.destroy_program(&program);
+  }
+
+  ~HiprtcProgram() {
+    reset();
   }
 };
 

@@ -2,8 +2,7 @@
 
 const zlib = require("node:zlib");
 
-const MAX_PEARL_PROOF_BYTES = 8 * 1024 * 1024;
-const MAX_PEARL_PROOF_BASE64 = Math.ceil(MAX_PEARL_PROOF_BYTES / 3) * 4;
+const {MAX_PEARL_PROOF_BYTES, MAX_PEARL_PROOF_BASE64} = require("../helper/worker-protocol");
 const MAX_JOB_TOKEN_CHARS = 256;
 const MAX_WORKER_ID_CHARS = 4096;
 const MAX_HEADER_HASH_HEX_CHARS = 256 * 2;
@@ -11,14 +10,30 @@ const MAX_HEADER_HASH_HEX_CHARS = 256 * 2;
 const MAX_SOLUTION_HEX_CHARS = 403 * 2;
 const MAX_EDGES_HEX_CHARS = 42 * 8;
 
-
+/**
+ * @param {{
+ *   fs: typeof import("node:fs"),
+ *   h: typeof import("../helper"),
+ *   p: {pool_write(poolId: number, message: UnknownRecord): unknown},
+ *   opt: MinerOptions,
+ *   submission: typeof import("./submission"),
+ *   test: MinerTestState,
+ *   normalizeExpectedResults(algo: string | null, value: string): string[],
+ *   matchesTestResult(algo: string | null, actual: string, expected: string): boolean,
+ *   exit(code: number, force?: boolean): false,
+ *   getLastJob(): MiningJob | null,
+ *   getAlgoParamsBenchCallback(): ((hashrate: number) => unknown) | null,
+ * }} dependencies
+ */
 module.exports = ({
-  fs, h, p, opt, submission, test, firstTruthyOr, normalizeExpectedResults,
+  fs, h, p, opt, submission, test, normalizeExpectedResults,
   matchesTestResult, exit, getLastJob, getAlgoParamsBenchCallback,
 }) => {
 
-  let thread_hashrates = {};
-
+  /** @type {Record<number, number>} */
+  let thread_hashrates = Object.create(null);
+  /** @type {string | null} */
+  let hashrate_job_identity = null;
   const cortex_pending_limit = 4096;
   let cortex_submit_id = 72;
 
@@ -32,10 +47,12 @@ module.exports = ({
     return cortex_submit_id;
   }
 
+  /** @param {unknown} value @returns {value is UnknownRecord} */
   function isObject(value) {
     return value !== null && typeof value === "object" && !Array.isArray(value);
   }
 
+  /** @param {unknown} pool_id @returns {PoolConfig | null} */
   function poolAt(pool_id) {
     const index = typeof pool_id === "number" ? pool_id :
       typeof pool_id === "string" && /^\d+$/.test(pool_id) ? Number(pool_id) : -1;
@@ -47,17 +64,23 @@ module.exports = ({
     return h.log_err("Invalid compute core message");
   }
 
+  /** @param {string} proof @returns {Buffer | null} */
+  function decodePearlProof(proof) {
+    if (proof.length > MAX_PEARL_PROOF_BASE64) {return null;}
+    const raw = Buffer.from(proof, "base64");
+    return raw.length > 0 && raw.length <= MAX_PEARL_PROOF_BYTES &&
+      raw.toString("base64") === proof ? raw : null;
+  }
+
+  /** @param {unknown} value @returns {value is WorkerResult} */
   function isWorkerResult(value) {
     if (!isObject(value)) {return false;}
-    const jobId = value["job_id"];
     if (typeof value["pool_id"] !== "string" || !/^\d+$/.test(value["pool_id"]) ||
-        !((typeof jobId === "string" && jobId.length > 0 && jobId.length <= 256) ||
-          (typeof jobId === "number" && Number.isSafeInteger(jobId))) ||
+        !isJobId(value["job_id"]) ||
         typeof value["job_token"] !== "string" || value["job_token"].length === 0 ||
         value["job_token"].length > MAX_JOB_TOKEN_CHARS ||
         typeof value["worker_id"] !== "string" || value["worker_id"].length > MAX_WORKER_ID_CHARS ||
-        typeof value["nonce"] !== "string" ||
-        !/^[0-9a-f]{1,16}$/i.test(value["nonce"])) {
+        !isNonce(value["nonce"])) {
       return false;
     }
     for (const field of ["commitment", "hash", "mix_hash"]) {
@@ -103,19 +126,14 @@ module.exports = ({
     return true;
   }
 
+  /** @param {PoolConfig} pool @param {{job_id: unknown, job_token: unknown}} value */
   function matchingPoolJob(pool, value) {
     const job = pool.last_job;
     return job && job.job_token === value.job_token &&
       String(job.job_id) === String(value.job_id) ? job : null;
   }
 
-  function decodePearlProof(proof) {
-    if (proof.length > MAX_PEARL_PROOF_BASE64) {return null;}
-    const raw = Buffer.from(proof, "base64");
-    return raw.length > 0 && raw.length <= MAX_PEARL_PROOF_BYTES &&
-      raw.toString("base64") === proof ? raw : null;
-  }
-
+  /** @param {WorkerEvent} msg */
   function handleResult(msg) {
     if (!isWorkerResult(msg.value)) {return invalidWorkerMessage();}
     const v = msg.value;
@@ -256,12 +274,6 @@ module.exports = ({
         params: [pool.login, jobId, "0x" + v.nonce, "0x" + headerHash,
           "0x" + v.mix_hash]});
     }
-    if (submit_mode === "ethproxy" && typeof v.mix_hash === "string") {
-      const headerHash = resultHeaderHash(v, job);
-      if (!headerHash) {return invalidWorkerMessage();}
-      return send({method: "eth_submitWork",
-        params: ["0x" + v.nonce, "0x" + headerHash, "0x" + v.mix_hash]});
-    }
     if (v.mix_hash) {
       const headerHash = resultHeaderHash(v, job);
       params.mixhash = v.mix_hash;
@@ -288,12 +300,14 @@ module.exports = ({
     return send({method: "submit", params});
   }
 
+  /** @param {PoolConfig} pool */
   function xelisWorkerName(pool) {
     const login = pool.login;
     const separator = login.indexOf(".");
     return separator < 0 ? (pool.worker || "mom") : login.slice(separator + 1) || pool.worker || "mom";
   }
 
+  /** @param {WorkerResult} value @param {PoolJob} job */
   function resultHeaderHash(value, job) {
     const headerHash = value.header_hash || job.header_hash || job.blob || job.blob_hex;
     const raw = submission.hexWithoutPrefix(headerHash);
@@ -301,10 +315,10 @@ module.exports = ({
   }
 
   // store max last nonce for background pool job to resume it from there
+  /** @param {WorkerEvent} msg */
   function handleLastNonce(msg) {
     const pool_id = msg.value["pool_id"];
-    // pool_id can be "" for benchmark jobs. can not use === here since
-    // opt.pool_ids.active is integer here
+    // Benchmark jobs have no pool; mining worker IDs are strings, unlike the active numeric ID.
     if (pool_id === "") {
       return;
     }
@@ -317,7 +331,7 @@ module.exports = ({
         job_token.length > MAX_JOB_TOKEN_CHARS) {
       return invalidWorkerMessage();
     }
-    if (!shouldStoreLastNonce(pool_id)) {
+    if (Number(pool_id) === opt.pool_ids.active) {
       return;
     }
     const job = matchingPoolJob(pool, {job_id, job_token});
@@ -326,26 +340,23 @@ module.exports = ({
         !submission.isValidNonce(nonce, job.noncebytes, job.xn, job.algo === "beamhash3")) {
       return invalidWorkerMessage();
     }
-    const prev_nonce = job.nonce;
-    const new_nonce = nonce;
-    if (isNewerNonce(prev_nonce, new_nonce)) {
-      job.nonce = new_nonce;
+    if (isNewerNonce(job.nonce, nonce)) {
+      job.nonce = nonce;
     }
   }
 
-  function shouldStoreLastNonce(pool_id) {
-    return Number(pool_id) !== opt.pool_ids.active;
-  }
-
+  /** @param {unknown} value @returns {value is string} */
   function isNonce(value) {
     return typeof value === "string" && /^[0-9a-f]{1,16}$/i.test(value);
   }
 
+  /** @param {unknown} value @returns {value is string | number} */
   function isJobId(value) {
     return (typeof value === "string" && value.length > 0 && value.length <= 256) ||
       (typeof value === "number" && Number.isSafeInteger(value));
   }
 
+  /** @param {unknown} prev_nonce @param {string} new_nonce */
   function isNewerNonce(prev_nonce, new_nonce) {
     if (typeof prev_nonce === "number" && Number.isSafeInteger(prev_nonce) && prev_nonce >= 0) {
       return BigInt(prev_nonce) < BigInt("0x" + new_nonce);
@@ -353,72 +364,132 @@ module.exports = ({
     return !isNonce(prev_nonce) || BigInt("0x" + prev_nonce) < BigInt("0x" + new_nonce);
   }
 
+  /** @param {string | null} algo */
   function isRandomXAlgo(algo) {
-    return algo.startsWith("rx/") || algo === "panthera";
+    return Boolean(algo && (algo.startsWith("rx/") || algo === "panthera"));
   }
 
+  /** @param {{thread_id: number}} msg */
   function expectedTestThreads(msg) {
     const threads = h.get_dev_threads(opt.job.dev);
     if (isRandomXAlgo(opt.job.algo)) {
-      const batch = h.get_dev_batch(h.get_thread_dev(msg.thread_id, opt.job.dev));
-      return batch * threads;
+      if (!validThreadId(msg.thread_id, opt.job.dev)) {return 0;}
+      let results = 0;
+      for (const dev of opt.job.dev.split(",")) {
+        results += h.get_dev_threads(dev) * h.get_dev_batch(dev);
+      }
+      return results;
     }
-    return opt.job.algo === "c29" ? test.result_hash_hex.trim().split(/\s+/).length : threads;
+    return opt.job.algo === "c29" && test.result_hash_hex
+      ? test.result_hash_hex.trim().split(/\s+/).length : threads;
   }
 
+  /** @param {WorkerEvent} msg */
   function handleTestResult(msg) {
+    const result = msg.value["result"];
+    if (typeof result !== "string" || typeof test.result_hash_hex !== "string" ||
+        !validThreadId(msg.thread_id, opt.job.dev)) {
+      return invalidWorkerMessage();
+    }
     const test_threads = expectedTestThreads(msg);
-    test.result = (test.result ? test.result + " " : "") + msg.value.result;
-    if (++test.thread_tested < test_threads) {return;}
+    test.result = (test.result ? test.result + " " : "") + result;
+    if (++test.thread_tested < test_threads) {
+      return;
+    }
 
     const expectedResults = normalizeExpectedResults(opt.job.algo, test.result_hash_hex);
     if (!expectedResults.some(
       (expected) => matchesTestResult(opt.job.algo, test.result, expected)
     )) {
       fs.writeSync(2, "FAILED: " + test.result + " != " + test.result_hash_hex + " " + test_threads + "\n");
-      return exit(1);
+      return exit(1, false);
     }
     fs.writeSync(1, "PASSED\n");
-    return exit(0);
+    return exit(0, false);
   }
 
   function collectedHashrate() {
-    const rates = Object.values(thread_hashrates).map(Number.parseFloat);
+    const rates = Object.values(thread_hashrates);
     const total_hashrate = rates.reduce((total, rate) => total + rate, 0);
     const thread_hashrate_str = rates.map(h.formatHashrate).join(", ");
-    return { total_hashrate, thread_hashrate_str };
+    return {total_hashrate, thread_hashrate_str};
   }
 
+  /** @param {WorkerEvent} msg */
   function handleHashrate(msg) {
     const last_job = getLastJob();
-    thread_hashrates[msg.thread_id] = msg.value.hashrate;
-    if (Object.keys(thread_hashrates).length < h.get_dev_threads(last_job.dev)) {return;}
+    const rawRate = msg.value["hashrate"];
+    const rate = typeof rawRate === "string" && rawRate.trim() ? Number(rawRate) : Number.NaN;
+    if (!last_job || typeof last_job.dev !== "string" ||
+        !validThreadId(msg.thread_id, last_job.dev) || !Number.isFinite(rate) || rate < 0) {
+      return invalidWorkerMessage();
+    }
+    const job_identity = [last_job.algo, last_job.dev, last_job.backend, last_job.backend_request,
+      last_job.job_token]
+      .map((value) => typeof value === "string" ? value : "")
+      .join("\u0000");
+    if (hashrate_job_identity !== job_identity) {
+      thread_hashrates = Object.create(null);
+      hashrate_job_identity = job_identity;
+    }
+    thread_hashrates[msg.thread_id] = rate;
+    if (Object.keys(thread_hashrates).length < h.get_dev_threads(last_job.dev)) {
+      return;
+    }
 
     const hashrate = collectedHashrate();
     const backend = last_job.backend_request === "auto"
       ? `auto[${last_job.backend}]` : last_job.backend;
     h.log("Algo " + last_job.algo + " (" + last_job.dev + ":" + backend + ") hashrate: " +
         h.formatHashrate(hashrate.total_hashrate) + " (" + hashrate.thread_hashrate_str + ")");
-    thread_hashrates = {};
+    thread_hashrates = Object.create(null);
     const callback = getAlgoParamsBenchCallback();
-    if (callback) {return callback(hashrate.total_hashrate);}
+    if (callback) {
+      return callback(hashrate.total_hashrate);
+    }
+    return undefined;
   }
 
+  /** @param {unknown} thread_id @param {string} dev @returns {thread_id is number} */
+  function validThreadId(thread_id, dev) {
+    return typeof thread_id === "number" && Number.isSafeInteger(thread_id) &&
+      thread_id >= 0 && thread_id < h.get_dev_threads(dev);
+  }
+
+  /** @param {WorkerEvent} msg */
   function handleWorkerError(msg) {
-    if (msg.value.message === "Ignore duplicate job") {return;}
-    h.log_err("Compute core error: " + JSON.stringify(msg.value));
-    if (test.result_hash_hex) {exit(1);} // exit with error
+    if (msg.value["message"] === "Ignore duplicate job") {
+      return;
+    }
+    const message = typeof msg.value["message"] === "string" ? msg.value["message"] : "Unknown error";
+    h.log_err("Compute core error: " + JSON.stringify(message.slice(0, 1024)));
+    if (test.result_hash_hex) {
+      return exit(1);
+    }
     const callback = getAlgoParamsBenchCallback();
-    if (callback) {return callback(0);}
+    if (callback) {
+      return callback(0);
+    }
+    if (msg.value["fatal"] === true) {
+      // A fatal worker loss leaves normal mining without a worker to recover.
+      return exit(1);
+    }
+    return undefined;
   }
 
   // handles messages sent to the master thread from worker threads
+  /** @param {unknown} msg */
   function messageHandler(msg) {
-    const handler = masterMessageHandlers[msg.type];
-    if (handler) {return handler(msg);}
-    return h.log_err("Unknown master thread message: " + JSON.stringify(msg));
+    if (!h.is_worker_event(msg)) {return invalidWorkerMessage();}
+    const type = msg.type;
+    const handler = Object.hasOwn(masterMessageHandlers, type) ? masterMessageHandlers[type] : null;
+    if (handler) {
+      return handler(msg);
+    }
+    return h.log_err("Unknown compute core message type");
   }
 
+  /** @type {Record<string, (message: WorkerEvent) => unknown>} */
   const masterMessageHandlers = {
     result:     handleResult,
     last_nonce: handleLastNonce,
@@ -430,6 +501,9 @@ module.exports = ({
   return {
     expectedTestThreads,
     messageHandler,
-    resetHashrates: () => { thread_hashrates = {}; },
+    resetHashrates: () => {
+      thread_hashrates = Object.create(null);
+      hashrate_job_identity = null;
+    },
   };
 };

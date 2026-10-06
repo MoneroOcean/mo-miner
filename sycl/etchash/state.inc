@@ -58,16 +58,36 @@ public:
     uint8_t* d_tgt_t = nullptr;
     EtchashResult* r_inl = nullptr;
     EtchashResult* r_ref = nullptr;
+    // Upload sources must outlive the catch-path drain of accepted copies.
+    std::vector<uint32_t> hdag;
+    uint8_t hin[40], htgt[HASH_LEN];
     bool ok = false;
+    bool submitted = false;
+    const auto release = [&](const bool propagate_error) {
+      void* const pointers[] = {d_dag_t, d_in_t, d_tgt_t, r_inl, r_ref};
+      std::exception_ptr error;
+      for (void* const pointer : pointers)
+        if (pointer) {
+          try {
+            sycl::free(pointer, queue);
+          } catch (...) {
+            if (!error)
+              error = std::current_exception();
+          }
+        }
+      if (propagate_error && error)
+        std::rethrow_exception(error);
+    };
     try {
       d_dag_t = sycl::malloc_device<uint32_t>(WORDS, queue);
       d_in_t = sycl::malloc_device<uint8_t>(40, queue);
       d_tgt_t = sycl::malloc_device<uint8_t>(HASH_LEN, queue);
       r_inl = sycl::malloc_shared<EtchashResult>(1, queue);
       r_ref = sycl::malloc_shared<EtchashResult>(1, queue);
+      if (!d_dag_t || !d_in_t || !d_tgt_t || !r_inl || !r_ref)
+        throw std::string("Can't allocate Etchash inline-pair probe");
 
-      std::vector<uint32_t> hdag(
-          WORDS); // deterministic fill; content is irrelevant, only equality is
+      hdag.resize(WORDS); // deterministic fill; content is irrelevant, only equality is
       uint32_t s = 0x9e3779b9u;
       for (auto& v : hdag) {
         s ^= s << 13;
@@ -75,17 +95,16 @@ public:
         s ^= s << 5;
         v = s;
       }
-      uint8_t hin[40];
       for (unsigned i = 0; i < 40; ++i)
         hin[i] = static_cast<uint8_t>(i * 7 + 1);
-      uint8_t htgt[HASH_LEN];
       std::memset(
           htgt, 0,
           HASH_LEN); // all-zero target: meets_target never fires, only is_test stores nonce 0
+      submitted = true;
       queue.memcpy(d_dag_t, hdag.data(), WORDS * sizeof(uint32_t));
       queue.memcpy(d_in_t, hin, 40);
       queue.memcpy(d_tgt_t, htgt, HASH_LEN);
-      queue.wait();
+      queue.wait_and_throw();
 
       const FastModData m = make_fast_mod_data(PAGES);
       std::memset(r_inl, 0, sizeof(EtchashResult));
@@ -101,18 +120,15 @@ public:
            std::memcmp(r_inl->output[0], r_ref->output[0], HASH_LEN) == 0 &&
            std::memcmp(r_inl->mix_hash[0], r_ref->mix_hash[0], HASH_LEN) == 0;
     } catch (...) {
-      ok = false; // any failure -> conservatively use the safe noinline path
+      if (submitted)
+        sycl_cleanup_noexcept("etchash probe wait", [&] { queue.wait_and_throw(); });
+      release(!submitted);
+      // Allocation absence is optional; a submitted fault must not select another search kernel.
+      if (submitted)
+        throw;
+      return false;
     }
-    if (d_dag_t)
-      sycl::free(d_dag_t, queue);
-    if (d_in_t)
-      sycl::free(d_in_t, queue);
-    if (d_tgt_t)
-      sycl::free(d_tgt_t, queue);
-    if (r_inl)
-      sycl::free(r_inl, queue);
-    if (r_ref)
-      sycl::free(r_ref, queue);
+    release(true);
     return ok;
   }
 
@@ -358,7 +374,6 @@ public:
         .count();
   }
 };
-
 
 static DeviceStateRegistry<EtchashState>& etchash_registry() {
   static auto* const registry = new DeviceStateRegistry<EtchashState>;

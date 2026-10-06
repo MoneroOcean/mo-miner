@@ -1,17 +1,27 @@
 #ifndef MOM_PEARLHASH_ESIMD_TU
 #include "claim.h"
+
 using namespace mom_pearlhash;
 
 // 52-byte NoisyGEMM config block hashed with the 76-byte header into the per-job key (k, rank, and
 // the two sparsity bytes at [9]/[15]); bytes 0..3 = k LE, 4..5 = rank LE.
 static void config_bytes(uint8_t cfg[52], int k, int rank) {
   memset(cfg, 0, 52);
-  cfg[0]=k&0xff; cfg[1]=(k>>8)&0xff; cfg[2]=(k>>16)&0xff; cfg[3]=(k>>24)&0xff; cfg[4]=rank&0xff; cfg[5]=(rank>>8)&0xff; cfg[9]=15; cfg[15]=15;
+  cfg[0] = k & 0xff;
+  cfg[1] = (k >> 8) & 0xff;
+  cfg[2] = (k >> 16) & 0xff;
+  cfg[3] = (k >> 24) & 0xff;
+  cfg[4] = rank & 0xff;
+  cfg[5] = (rank >> 8) & 0xff;
+  cfg[9] = 15;
+  cfg[15] = 15;
 }
 // Per-job key = unkeyed BLAKE3 of the 76-byte header concatenated with the 52-byte config block.
 static void derive_key(const uint8_t* header76, int k, int rank, uint8_t key32[32]) {
-  uint8_t cfg[52], kb[128]; config_bytes(cfg, k, rank);
-  memcpy(kb, header76, 76); memcpy(kb + 76, cfg, 52);
+  uint8_t cfg[52], kb[128];
+  config_bytes(cfg, k, rank);
+  memcpy(kb, header76, 76);
+  memcpy(kb + 76, cfg, 52);
   pearlhash_b3::b3(kb, 128, nullptr, key32);
 }
 
@@ -19,7 +29,8 @@ static void derive_key(const uint8_t* header76, int k, int rank, uint8_t key32[3
 // On a winning tile the server builds the pool submission itself: it regenerates the A / Bt byte
 // streams from the counter-RNG, builds the keyed-BLAKE3 Merkle tree, opens the 16 revealed rows
 // (A) and cols (Bt), bincode-serializes and base64-encodes. Mirrors pearl-blake3 merkle.rs and is
-// byte-identical to the old JS path (validated against verify_plain_proof_v2). Runs once per found
+// byte-identical to the pool's raw-root proof format. Certificate V3 changes only the noise-seed
+// commitment chain, not these serialized roots. Runs once per found
 // share (rare), so plain host code -- no GPU. CHUNK=1024; leaves use non-root chunk_cv, the root
 // uses merge_root (ROOT at top); for power-of-two leaf counts the pairwise odd-carry layer tree
 // (siblings) is identical to merge_root's tree.
@@ -180,11 +191,11 @@ static std::string build_plain_proof(uint32_t seed, int m, int n, int k, int ran
   buf.push_back(0x00); // moe: Option::None
   return base64(buf);
 }
-template <typename T>
-static T* alloc_buffer(sycl::queue& q, size_t count) {
+template <typename T> static T* alloc_buffer(sycl::queue& q, size_t count) {
   return q.get_device().is_cpu() ? sycl::malloc_shared<T>(count, q)
                                  : sycl::malloc_device<T>(count, q);
 }
+
 template <typename T>
 static T* alloc_required(sycl::queue& q, const size_t count, const char* const name) {
   T* const result = alloc_buffer<T>(q, count);
@@ -227,8 +238,8 @@ static Buffers alloc_buffers(sycl::queue& q, int m, int n, int k, int rank, bool
     b.Ap = alloc_required<int8_t>(q, counts.m_k, "Ap");
     b.Bp = alloc_required<int8_t>(q, counts.n_k, "Bp");
 #if defined(MOM_SYCL_HAS_HIP)
-    // HIPRTC WMMA consumes an architecture-native fragment layout. Keep it separate from the
-    // portable SYCL layout so a failed native launch can immediately fall back without regenerating.
+    // HIPRTC WMMA consumes an architecture-native fragment layout; keep its matrices separate
+    // from the portable SYCL layout used when source-JIT initialization is unavailable.
     if (hip_jit) {
       b.ApWmma = alloc_required<int8_t>(q, counts.m_k, "WMMA Ap");
       b.BpWmma = alloc_required<int8_t>(q, counts.n_k, "WMMA Bp");
@@ -280,7 +291,7 @@ static Buffers alloc_buffers(sycl::queue& q, int m, int n, int k, int rank, bool
 // ---- native mom entry point (DEV::PEARLHASH_GPU) ----
 namespace {
 // PlainProof carries M/N/K/rank, so the job can select a device-efficient profile without changing
-// proof semantics. mom.js obtains defaults from GPU-COMPILERS.md and passes explicit config values.
+// proof semantics. mom.js obtains defaults from GPU-CONFIG.md and passes explicit config values.
 // One persistent in-order queue + device buffer set per GPU; the seed search reuses them.
 struct PearlHashState {
   sycl::queue queue;
@@ -303,51 +314,51 @@ struct PearlHashState {
   double wait_ema_us = 0.0; // EMA of recent attempt wall times (us); paces the pre-wait sleep below
   std::mutex mutex;
   explicit PearlHashState(const std::string& dev_str)
-    : queue(get_dev(dev_str), sycl::property::queue::in_order{}),
-      prep_queue(queue.get_context(), queue.get_device(),
-                 sycl::property::queue::in_order{}) {}
-  void free_buffers() {
-    // Free every non-null member independently (sycl::free is no-op'd by the per-element `if (p)`),
-    // so a partial-allocation failure where Ap is null but earlier members (EAL/EBR/EBRt/...) are
-    // not still releases them instead of leaking. No early return on !b.Ap.
-    queue.wait();
-    prep_queue.wait();
+      : queue(get_dev(dev_str), sycl::property::queue::in_order{}),
+        prep_queue(queue.get_context(), queue.get_device(), sycl::property::queue::in_order{}) {
+  }
+  void release() noexcept {
+    sycl_cleanup_noexcept("pearlhash queue", [&] {
+      queue.wait_and_throw();
+    });
+    sycl_cleanup_noexcept("pearlhash prep queue", [&] {
+      prep_queue.wait_and_throw();
+    });
     hip.release();
     cuda.release();
-    for (void* p : {(void*)b.EAL,(void*)b.EBR,(void*)b.EBRt,(void*)b.Ap,(void*)b.Bp,
-                    (void*)b.ApWmma,(void*)b.BpWmma,
-                    (void*)b.EARp1,(void*)b.EARp2,(void*)b.EBLq1,(void*)b.EBLq2,
-                    (void*)b.cA,(void*)b.cB,(void*)b.key,(void*)b.target,
-                    (void*)b.CVA,(void*)b.CVB,(void*)b.transcript,(void*)b.result})
-      if (p) sycl::free(p, queue);
-    b = Buffers{};
-  }
-  void ensure(int m_, int n_, int k_, int rank_, bool hip_jit_, bool cuda_jit_) {
-    if (b.Ap && m == m_ && n == n_ && k == k_ && rank == rank_ &&
-        hip_jit_buffers == hip_jit_ && cuda_jit_buffers == cuda_jit_) return;
-    free_buffers();
-    m = m_; n = n_; k = k_; rank = rank_;
-    hip_jit_buffers = hip_jit_;
-    cuda_jit_buffers = cuda_jit_;
-    b = alloc_buffers(queue, m, n, k, rank, hip_jit_buffers, cuda_jit_buffers);
+    free_allocations(queue, b);
+    m = n = k = rank = 0;
+    hip_jit_buffers = false;
+    cuda_jit_buffers = false;
     have_header = false;
   }
-  ~PearlHashState() { sycl_cleanup_noexcept("pearlhash", [&] { free_buffers(); }); }
+  void ensure(int m_, int n_, int k_, int rank_, bool hip_jit_, bool cuda_jit_) {
+    if (b.Ap && m == m_ && n == n_ && k == k_ && rank == rank_ && hip_jit_buffers == hip_jit_ &&
+        cuda_jit_buffers == cuda_jit_)
+      return;
+    release();
+    Buffers next = alloc_buffers(queue, m_, n_, k_, rank_, hip_jit_, cuda_jit_);
+    b = next;
+    m = m_;
+    n = n_;
+    k = k_;
+    rank = rank_;
+    hip_jit_buffers = hip_jit_;
+    cuda_jit_buffers = cuda_jit_;
+    have_header = false;
+  }
+  ~PearlHashState() {
+    release();
+  }
 };
-using PearlHashStateMap = std::map<std::string, std::unique_ptr<PearlHashState>>;
-PearlHashStateMap& pearlhash_states() {
-  static PearlHashStateMap* const states = new PearlHashStateMap;
-  return *states;
-}
-std::mutex& pearlhash_states_mutex() {
-  static std::mutex* const mutex = new std::mutex;
-  return *mutex;
+DeviceStateRegistry<PearlHashState>& pearlhash_registry() {
+  static auto* const registry = new DeviceStateRegistry<PearlHashState>;
+  return *registry;
 }
 PearlHashState& pearlhash_state(const std::string& dev_str) {
-  std::lock_guard<std::mutex> lock(pearlhash_states_mutex());
-  auto& st = pearlhash_states()[dev_str];
-  if (!st) st = std::make_unique<PearlHashState>(dev_str);
-  return *st;
+  return pearlhash_registry().get(dev_str, [&] {
+    return std::make_unique<PearlHashState>(dev_str);
+  });
 }
 thread_local std::string
     g_pearlhash_proof; // last built proof, fetched right after pearlhash() returns 1
@@ -365,19 +376,17 @@ thread_local struct PearlHashFound {
 
 void pearlhash_cleanup_states() noexcept {
   try {
-    std::lock_guard<std::mutex> lock(pearlhash_states_mutex());
 #if defined(_WIN32)
     // Intel's standalone Windows CPU OpenCL ICD can fault after a successful PearlHash result while
     // DPC++ destroys this algorithm's shared-USM allocation/queue graph. The state registry itself
     // is deliberately heap-owned and has no process-exit destructor, so retain only CPU states and
     // let process teardown reclaim them. Discrete GPU states still require ordered cleanup (notably
     // AdaptiveCpp/CUDA, which otherwise reports cudaErrorCudartUnloading) and are erased normally.
-    for (auto it = pearlhash_states().begin(); it != pearlhash_states().end();) {
-      if (it->second->queue.get_device().is_cpu()) ++it;
-      else it = pearlhash_states().erase(it);
-    }
+    pearlhash_registry().clear([](const auto& entry) {
+      return !entry.second->queue.get_device().is_cpu();
+    });
 #else
-    pearlhash_states().clear();
+    pearlhash_registry().clear();
 #endif
   } catch (...) {
     std::fprintf(stderr, "pearlhash: ordered SYCL cleanup failed\n");
@@ -385,14 +394,13 @@ void pearlhash_cleanup_states() noexcept {
 }
 
 // One seeded NoisyGEMM attempt per call (seed = *pseed). Returns 1 on a winning tile, writes the
-// winning seed back to *pseed, and stashes the base64 PlainProof for pearlhash_proof(). intensity = M.
-int pearlhash(
-  const unsigned job_ref, const uint32_t, const uint8_t* const input, const unsigned input_size,
-  uint8_t* const, uint64_t* const pseed, const uint8_t* const target,
-  const unsigned intensity, const bool is_test, const bool, const std::string& dev_str,
-  const std::string& backend, const unsigned requested_n, const unsigned requested_k,
-  const unsigned requested_rank, const unsigned cert_version
-) {
+// winning seed back to *pseed, and stashes the base64 PlainProof for pearlhash_claim(). intensity = M.
+int pearlhash(const unsigned job_ref, const uint32_t, const uint8_t* const input,
+              const unsigned input_size, uint8_t* const, uint64_t* const pseed,
+              const uint8_t* const target, const unsigned intensity, const bool is_test, const bool,
+              const std::string& dev_str, const std::string& backend, const unsigned requested_n,
+              const unsigned requested_k, const unsigned requested_rank,
+              const unsigned cert_version) {
   if (!input || !pseed || input_size < 76)
     throw std::string("Bad pearlhash input length (need 76-byte header)");
   if (!is_test && !target)
@@ -438,71 +446,78 @@ int pearlhash(
     cuda_reason = "the selected PearlHash profile requires the shared SYCL path";
   if (native_requested && !hip_jit && !cuda_jit && !st.native_notice) {
     st.native_notice = true;
-    std::fprintf(stderr, "PearlHash native backend unavailable, using SYCL: %s\n",
-                 (PearlHashCudaSearch::is_cuda(st.queue.get_device()) ? cuda_reason : hip_reason).c_str());
+    std::fprintf(
+        stderr, "PearlHash native backend unavailable, using SYCL: %s\n",
+        (PearlHashCudaSearch::is_cuda(st.queue.get_device()) ? cuda_reason : hip_reason).c_str());
   }
   st.ensure(m, n, k, rank, hip_jit, cuda_jit);
   sycl::queue& q = st.queue;
   Buffers& b = st.b;
 
-  if (!st.have_header || std::memcmp(st.header, input, 76) != 0) {  // (re)derive key on header change
-    std::memcpy(st.header, input, 76);
-    derive_key(input, k, rank, st.key); q.memcpy(b.key, st.key, 32); st.have_header = true;
-  }
-  (void)job_ref;
   uint8_t tgtLE[32];
-  if (is_test) std::memset(tgtLE, 0xff, 32);                         // test: the first tile wins
-  else for (int i = 0; i < 32; i++) tgtLE[i] = target[31 - i];       // core gives BE; kernel wants LE
-  q.memcpy(b.target, tgtLE, 32);
-  b.result->found = 0;
-  b.result->chk =
-      0; // whole-search checksum (filled only when MOM_PEARLHASH_CHK is set; see tile_mix)
-
   const uint32_t attempt_seed = static_cast<uint32_t>(*pseed);
-  PearlHashSearchBackend search_backend =
-      attempt(q, b, attempt_seed, m, n, k, rank, backend, &st.hip, &st.cuda,
-              &st.prep_queue, is_test, st.cuda_tensor);
-  // Start after submission: a first call can include synchronous device-image/JIT setup, and feeding
-  // that one-off cost into the wait EMA makes later completed GPU attempts sleep needlessly.
-  const auto attempt_start = std::chrono::steady_clock::now();
-  // Intel SYCL waits must drive queue progress before updating the attempt-time EMA;
-  // sleeping first can feed the delay back into subsequent attempts. Keep other backends' pacing.
-  const bool intel_sycl_gpu = search_backend == PearlHashSearchBackend::sycl &&
-      q.get_device().is_gpu() &&
-      q.get_device().get_info<sycl::info::device::vendor_id>() == 0x8086;
-  if (st.wait_ema_us > 2000.0 && !intel_sycl_gpu) {
-    const double elapsed_us = static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
-      std::chrono::steady_clock::now() - attempt_start).count());
-    const double sleep_us = st.wait_ema_us * 0.90 - elapsed_us;
-    if (sleep_us > 0.0)
-      std::this_thread::sleep_for(std::chrono::microseconds(static_cast<long>(sleep_us)));
-  }
-  if (search_backend == PearlHashSearchBackend::hip_jit ||
-      search_backend == PearlHashSearchBackend::cuda_jit) {
-    try {
+  PearlHashSearchBackend search_backend;
+  std::chrono::steady_clock::time_point attempt_start;
+  try {
+    if (!st.have_header ||
+        std::memcmp(st.header, input, 76) != 0) { // (re)derive key on header change
+      st.have_header = false;
+      std::memcpy(st.header, input, 76);
+      derive_key(input, k, rank, st.key);
+      q.memcpy(b.key, st.key, 32);
+    }
+    (void)job_ref;
+    if (is_test)
+      std::memset(tgtLE, 0xff, 32); // test: the first tile wins
+    else
+      for (int i = 0; i < 32; i++)
+        tgtLE[i] = target[31 - i]; // core gives BE; kernel wants LE
+    q.memcpy(b.target, tgtLE, 32);
+    b.result->found = 0;
+    b.result->chk =
+        0; // whole-search checksum (filled only when MOM_PEARLHASH_CHK is set; see tile_mix)
+
+    search_backend =
+        attempt(q, b, attempt_seed, m, n, k, rank, backend, &st.hip, &st.cuda,
+                &st.prep_queue, is_test, st.cuda_tensor);
+    // Start after submission: a first call can include synchronous device-image/JIT setup, and feeding
+    // that one-off cost into the wait EMA makes later completed GPU attempts sleep needlessly.
+    attempt_start = std::chrono::steady_clock::now();
+    // Intel SYCL waits must drive queue progress before updating the attempt-time EMA;
+    // sleeping first can feed the delay back into subsequent attempts. Keep other backends' pacing.
+    const bool intel_sycl_gpu = search_backend == PearlHashSearchBackend::sycl &&
+        q.get_device().is_gpu() &&
+        q.get_device().get_info<sycl::info::device::vendor_id>() == 0x8086;
+    if (st.wait_ema_us > 2000.0 && !intel_sycl_gpu) {
+      const double elapsed_us =
+          static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                  std::chrono::steady_clock::now() - attempt_start)
+                                  .count());
+      const double sleep_us = st.wait_ema_us * 0.90 - elapsed_us;
+      if (sleep_us > 0.0)
+        std::this_thread::sleep_for(std::chrono::microseconds(static_cast<long>(sleep_us)));
+    }
+    if (search_backend == PearlHashSearchBackend::hip_jit ||
+        search_backend == PearlHashSearchBackend::cuda_jit) {
       if (search_backend == PearlHashSearchBackend::hip_jit)
         st.hip.wait(st.wait_ema_us);
       else
         st.cuda.wait(st.wait_ema_us);
-    } catch (const std::string& error) {
-      if (search_backend == PearlHashSearchBackend::hip_jit) st.hip.fail(error);
-      else st.cuda.fail(error);
-      b.result->found = 0;
-      b.result->chk = 0;
-      search_backend =
-          attempt(q, b, attempt_seed, m, n, k, rank, "sycl-native", nullptr,
-                  nullptr, nullptr, is_test, st.cuda_tensor);
-      q.wait_and_throw();
-    }
-  } else {
+    } else {
 #if defined(SYCL_EXT_ONEAPI_ENQUEUE_BARRIER)
-    // OpenCL keeps its native wait/progress semantics; other Intel GPU queues poll completion
-    // before sleeping, without reintroducing EMA pre-wait delays.
-    if (intel_sycl_gpu && !mom_is_opencl(q.get_device()))
-      sycl_wait_and_throw(q.ext_oneapi_submit_barrier(), q.get_device());
-    else
+      // OpenCL keeps its native wait/progress semantics; other Intel GPU queues poll completion
+      // before sleeping, without reintroducing EMA pre-wait delays.
+      if (intel_sycl_gpu && !mom_is_opencl(q.get_device()))
+        sycl_wait_and_throw(q.ext_oneapi_submit_barrier(), q.get_device());
+      else
 #endif
-      q.wait_and_throw();
+        q.wait_and_throw();
+    }
+    st.have_header = true;
+  } catch (...) {
+    // Keep the staged target alive until any accepted copy has retired.
+    sycl_cleanup_noexcept("pearlhash target upload", [&] { q.wait_and_throw(); });
+    throw;
   }
   if (is_test && q.get_device().is_gpu()) {
     // Search backends share GPU preparation, so agreement between them cannot validate the
@@ -518,9 +533,14 @@ int pearlhash(
     reference.cA = expected_a.data();
     reference.cB = expected_b.data();
     prepare_roots_cpu(reference, attempt_seed, m, n, k);
-    q.memcpy(observed_a.data(), b.cA, observed_a.size());
-    q.memcpy(observed_b.data(), b.cB, observed_b.size());
-    q.wait_and_throw();
+    try {
+      q.memcpy(observed_a.data(), b.cA, observed_a.size());
+      q.memcpy(observed_b.data(), b.cB, observed_b.size());
+      q.wait_and_throw();
+    } catch (...) {
+      sycl_cleanup_noexcept("pearlhash commitment readback", [&] { q.wait_and_throw(); });
+      throw;
+    }
     if (observed_a != expected_a || observed_b != expected_b)
       throw std::string("PearlHash GPU/host commitment seed mismatch");
     const char* const search_name = search_backend == PearlHashSearchBackend::cuda_jit
@@ -551,14 +571,19 @@ int pearlhash(
   }
   {
     const double us = static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
-      std::chrono::steady_clock::now() - attempt_start).count());
+                                              std::chrono::steady_clock::now() - attempt_start)
+                                              .count());
     st.wait_ema_us = st.wait_ema_us == 0.0 ? us : st.wait_ema_us * 0.8 + us * 0.2;
   }
-  if (std::getenv("MOM_PEARLHASH_CHK"))   // cross-validation: same A'/B' -> identical chk on every search path
-    std::fprintf(stderr, "PEARLHASH_CHK dev=%s seed=%u chk=%08x\n", dev_str.c_str(), (uint32_t)*pseed, b.result->chk);
-  if (!b.result->found) return 0;
+  if (std::getenv(
+          "MOM_PEARLHASH_CHK")) // cross-validation: same A'/B' -> identical chk on every search path
+    std::fprintf(stderr, "PEARLHASH_CHK dev=%s seed=%u chk=%08x\n", dev_str.c_str(),
+                 (uint32_t)*pseed, b.result->chk);
+  if (!b.result->found)
+    return 0;
   *pseed = b.result->seed;
-  if (is_test) return 1;                                             // test: core only needs "ok", no proof
+  if (is_test)
+    return 1; // test: core only needs "ok", no proof
   // Capture the winning tile; rebuild its expensive PlainProof only when the core requests a claim.
   // Distinct winning seeds under one job are separate shares; retries reuse the captured claim.
   g_pf.seed = b.result->seed;

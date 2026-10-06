@@ -94,57 +94,39 @@ attempt(sycl::queue& q, const Buffers& b, uint32_t seed, int m, int n, int k, in
   if (is_cuda && !cuda_sycl)
     use_portable = true;
 
+  // Only JIT unavailability permits fallback. Preparation, launch and completion faults must
+  // escape: retrying another kernel on the same potentially invalid queue is not recovery.
 #if defined(MOM_SYCL_HAS_HIP)
   if ((backend == "auto" || backend == "native") && hip && hip->ensure(q, m, n, k, rank)) {
-    try {
-      q.wait_and_throw(); // both independent prep streams consume the completed noise tables
-      sycl::queue& prep = hip_prep_queue ? *hip_prep_queue : q;
-      PearlHashPrepEvents ready = compute_ab_amd_wmma(q, prep, b, seed, m, n, k, rank);
-      while (ready.a.get_info<sycl::info::event::command_execution_status>() !=
-                 sycl::info::event_command_status::complete ||
-             ready.b.get_info<sycl::info::event::command_execution_status>() !=
-                 sycl::info::event_command_status::complete)
+    q.wait_and_throw(); // both independent prep streams consume the completed noise tables
+    sycl::queue& prep = hip_prep_queue ? *hip_prep_queue : q;
+    PearlHashPrepEvents ready = compute_ab_amd_wmma(q, prep, b, seed, m, n, k, rank);
+    while (ready.a.get_info<sycl::info::event::command_execution_status>() !=
+               sycl::info::event_command_status::complete ||
+           ready.b.get_info<sycl::info::event::command_execution_status>() !=
+               sycl::info::event_command_status::complete)
 #if defined(_WIN32)
-        mom_sycl_poll_pause();
+      mom_sycl_poll_pause();
 #else
-        std::this_thread::sleep_for(std::chrono::microseconds(100));
+      std::this_thread::sleep_for(std::chrono::microseconds(100));
 #endif
-      ready.a.wait_and_throw();
-      ready.b.wait_and_throw();
-      mark("ab");
-      hip->launch(b, seed, m, n, k, rank, dbg);
-      return PearlHashSearchBackend::hip_jit;
-    } catch (const std::string& error) {
-      hip->fail(error);
-      b.result->found = 0;
-      b.result->chk = 0;
-    } catch (const std::exception& error) {
-      hip->fail(error.what());
-      b.result->found = 0;
-      b.result->chk = 0;
-    }
+    ready.a.wait_and_throw();
+    ready.b.wait_and_throw();
+    mark("ab");
+    hip->launch(b, seed, m, n, k, rank, dbg);
+    return PearlHashSearchBackend::hip_jit;
   }
 #endif
 #if defined(MOM_SYCL_HAS_CUDA)
   if ((backend == "auto" || backend == "native") && is_cuda && cuda &&
       cuda->ensure(q, b, m, n, k, rank)) {
-    try {
-      // CUTE consumes the common row-major A / column-major B representation. The preparation
-      // remains the shared SYCL kernel; only the matrix mainloop and transcript hash are native.
-      compute_ab(q, b, seed, m, n, k, rank, /*portable=*/true);
-      q.wait_and_throw();
-      mark("ab");
-      cuda->launch(b, seed, m, n, k, dbg);
-      return PearlHashSearchBackend::cuda_jit;
-    } catch (const std::string& error) {
-      cuda->fail(error);
-      b.result->found = 0;
-      b.result->chk = 0;
-    } catch (const std::exception& error) {
-      cuda->fail(error.what());
-      b.result->found = 0;
-      b.result->chk = 0;
-    }
+    // CUTE consumes the common row-major A / column-major B representation. The preparation
+    // remains the shared SYCL kernel; only the matrix mainloop and transcript hash are native.
+    compute_ab(q, b, seed, m, n, k, rank, /*portable=*/true);
+    q.wait_and_throw();
+    mark("ab");
+    cuda->launch(b, seed, m, n, k, dbg);
+    return PearlHashSearchBackend::cuda_jit;
   }
 #endif
 #if defined(PEARLHASH_ESIMD)

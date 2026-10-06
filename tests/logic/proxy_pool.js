@@ -126,7 +126,7 @@ test("Pearl seed slots are validated, randomized, and resumed only when negotiat
     miner.global.opt.algo_params["pearlhash"] = {
       dev: "cpu", perf: 1, backend: "auto", tuning: {},
     };
-    miner.global.opt.pools[miner.global.opt.pool_ids.active]["extensions"] = extensions;
+    miner.global.opt.pools[0]["extensions"] = extensions;
   };
   const work = {
     algo: "pearlhash", blob_hex: "00".repeat(76), difficulty: 1,
@@ -177,7 +177,8 @@ test("Pearl seed metadata strings are bounded before bigint conversion", async (
   miner.global.opt.algo_params["pearlhash"] = {
     dev: "cpu", perf: 1, backend: "auto", tuning: {},
   };
-  const poolConfig = miner.global.opt.pools[miner.global.opt.pool_ids.active];
+  const poolConfig = /** @type {import("./support").TestPoolConfig} */
+    (miner.global.opt.pools[/** @type {number} */ (miner.global.opt.pool_ids.active)]);
   poolConfig["extensions"] = ["mo-native", "pearl-seed-split"];
   const setJob = miner.getSetJob();
   assert.ok(setJob);

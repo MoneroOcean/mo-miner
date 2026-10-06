@@ -1,11 +1,15 @@
 "use strict";
 
 const compilerPolicy = require("../../compiler-policy");
-const {intelIgpuAlgos} = require("./compatibility_algos");
 const {hashTests} = require("../vectors");
 
 const TEST_TIMEOUT_MS = 15 * 60 * 1000;
+// UHD 750 epoch-0 KawPow DAG construction measured exactly 120 minutes; retain an hour for hashing
+// and cooperative teardown instead of expiring at the setup boundary.
+const INTEGRATED_DAG_TIMEOUT_MS = 3 * 60 * 60 * 1000;
 const supportedVendors = ["intel", "nvidia", "amd"];
+const progpowAlgos = new Set(["kawpow", "firopow", "evrprogpow", "meowpow"]);
+const integratedDagAlgos = new Set([...progpowAlgos, "etchash"]);
 
 // A few algorithms use a deliberately tiny vector only for the portable SYCL CPU lane and a
 // separate mainnet-sized vector on real GPUs. Do not duplicate those slow/non-representative
@@ -36,7 +40,7 @@ for (const algo of gpuAlgos) {
 }
 
 function requestedVendors() {
-  const configured = process.env.MOM_GPU_TEST_VENDORS;
+  const configured = process.env["MOM_GPU_TEST_VENDORS"];
   if (configured) {
     const vendors = configured.split(",").map((value) => value.trim().toLowerCase()).filter(Boolean);
     if (vendors.includes("all")) {
@@ -51,7 +55,7 @@ function requestedVendors() {
     }
     return [...new Set(vendors)];
   }
-  const backend = (process.env.MOM_GPU_BACKEND || "").toLowerCase();
+  const backend = (process.env["MOM_GPU_BACKEND"] || "").toLowerCase();
   // The OpenCL lane discovers devices through its generic compatibility matrix. Treating
   // "opencl" as a hardware vendor would either reject it or duplicate the native vendor lanes.
   if (backend === "opencl") {return [];}
@@ -59,25 +63,47 @@ function requestedVendors() {
   return selected ? [selected] : supportedVendors;
 }
 
+function requestedAlgos() {
+  const configured = process.env["MOM_GPU_TEST_ALGO"];
+  if (!configured) {return gpuAlgos;}
+  if (!gpuAlgos.includes(configured)) {
+    throw new Error(`Unknown MOM_GPU_TEST_ALGO: ${configured}`);
+  }
+  return [configured];
+}
+
+/** @param {HashVectorDefinition} definition @returns {HashVectorDefinition} */
 function copyDefinition(definition) {
   return JSON.parse(JSON.stringify(definition));
 }
 
+/** @param {HashVectorDefinition} copy @param {string} dev */
 function replaceDevice(copy, dev) {
   copy.name = copy.name.replace(/gpu1/g, dev);
+  if (typeof copy.job.dev !== "string") {throw new Error(`Vector ${copy.name} has no device`);}
   copy.job.dev = copy.job.dev.replace(/gpu1/g, dev);
 }
 
+/** @param {HashVectorDefinition} copy @param {string} backend */
 function labelBackend(copy, backend) {
+  if (typeof copy.job.dev !== "string") {throw new Error(`Vector ${copy.name} has no device`);}
   copy.name = copy.name.replace(copy.job.dev, `${copy.job.dev}:${backend}`);
 }
 
+/** @param {HashVectorDefinition} definition @param {string} vendor @param {string} dev @param {string} backend @returns {HashVectorDefinition} */
 function cloneForDiscreteGpu(definition, vendor, dev, backend) {
   const copy = copyDefinition(definition);
   replaceDevice(copy, dev);
-  copy.job.backend = backend;
+  copy.job["backend"] = backend;
   labelBackend(copy, backend);
-  copy.env = {...copy.env, MOM_GPU_BACKEND: vendor};
+  copy.env = {
+    ...copy.env,
+    MOM_GPU_BACKEND: vendor,
+    // The release test parent has one launcher-selected control addon. Each vendor case is a new
+    // process and must derive its own control runtime before it derives device-specific tuning.
+    MOM_NATIVE_PATH: undefined,
+    MOM_NATIVE_PATH_LAUNCHER_DEFAULT: undefined,
+  };
   // Discrete vectors must exercise the mining DAG path; CPU/portable vectors retain light mode.
   if (copy.job.algo === "octopus") {
     copy.env["MOM_OCTOPUS_TEST_FULL_DAG"] = "1";
@@ -87,48 +113,59 @@ function cloneForDiscreteGpu(definition, vendor, dev, backend) {
   return copy;
 }
 
+/** @param {"cpu" | "gpu"} deviceType @returns {Record<string, string | undefined>} */
 function openclSyclEnv(deviceType) {
   const base = {
     MOM_GPU_BACKEND: "opencl",
     MOM_OPENCL_DEVICE_TYPE: deviceType,
     MOM_COMPILER_POLICY_STRICT: "1",
+    // OpenCL compatibility checks must select the portable runtime, not an inherited addon.
+    MOM_NATIVE_PATH: undefined,
   };
   return {...base, ...compilerPolicy.workerEnv("__control__", {...process.env, ...base})};
 }
 
+/** @param {HashVectorDefinition} definition @param {string} dev @param {"cpu" | "gpu"} deviceType @returns {HashVectorDefinition} */
 function cloneForOpenclSycl(definition, dev, deviceType) {
   const copy = copyDefinition(definition);
   replaceDevice(copy, dev);
   copy.gpu = deviceType === "gpu";
   copy.timeoutMs = Math.max(copy.timeoutMs || 0, TEST_TIMEOUT_MS);
-  copy.job.backend = "sycl-opencl";
-  labelBackend(copy, copy.job.backend);
+  copy.job["backend"] = "sycl-opencl";
+  labelBackend(copy, copy.job["backend"]);
   copy.env = {...copy.env, ...openclSyclEnv(deviceType)};
   return copy;
 }
 
-function cloneForIntelIntegrated(definition, dev) {
+/** @param {HashVectorDefinition} definition @param {string} dev @param {string} backend @returns {HashVectorDefinition} */
+function cloneForIntelIntegrated(definition, dev, backend) {
   const copy = copyDefinition(definition);
   replaceDevice(copy, dev);
-  copy.job.backend = "sycl-l0";
-  labelBackend(copy, copy.job.backend);
-  copy.env = {...copy.env, MOM_GPU_BACKEND: "intel"};
-  copy.timeoutMs = Math.max(copy.timeoutMs || 0, TEST_TIMEOUT_MS);
+  copy.job["backend"] = backend;
+  labelBackend(copy, backend);
+  copy.env = {
+    ...copy.env,
+    MOM_COMPILER_POLICY_STRICT: "1",
+    MOM_GPU_BACKEND: "intel",
+  };
+  const minimumTimeout = integratedDagAlgos.has(copy.job.algo)
+    ? INTEGRATED_DAG_TIMEOUT_MS
+    : TEST_TIMEOUT_MS;
+  copy.timeoutMs = Math.max(copy.timeoutMs || 0, minimumTimeout);
   return copy;
 }
 
+/** @param {string} algo @returns {HashVectorDefinition[]} */
 function gpuVectorsFor(algo) {
   return gpuVectorsByAlgo.get(algo) || [];
 }
 
+/** @param {string} algo @returns {HashVectorDefinition | undefined} */
 function fastVectorFor(algo) {
   return fastVectorByAlgo.get(algo);
 }
 
-function supportsIntelIgpu(algo) {
-  return intelIgpuAlgos.has(algo);
-}
-
+/** @param {Record<string, string> | undefined} params @param {string} algo @param {string} dev */
 function configuredDeviceSupports(params, algo, dev) {
   const configured = params && params[algo];
   if (!configured) {return false;}
@@ -148,7 +185,7 @@ module.exports = {
   gpuAlgos,
   gpuVectorsFor,
   openclSyclEnv,
+  requestedAlgos,
   requestedVendors,
   supportedVendors,
-  supportsIntelIgpu,
 };

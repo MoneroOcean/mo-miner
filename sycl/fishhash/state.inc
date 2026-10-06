@@ -144,7 +144,6 @@ public:
   }
 };
 
-
 static DeviceStateRegistry<FishState>& fishhash_registry() {
   static auto* const registry = new DeviceStateRegistry<FishState>;
   return *registry;
@@ -185,6 +184,7 @@ static bool select_karlsen_cooperative(FishState& state, const unsigned input_si
   constexpr uint32_t warmup_intensity = 65536;
   constexpr uint32_t sample_intensity = 1048576;
   const auto run = [&](const bool cooperative, const uint32_t count) {
+    std::memset(state.result, 0, sizeof(*state.result));
     const auto begin = std::chrono::steady_clock::now();
     const sycl::event event =
         cooperative

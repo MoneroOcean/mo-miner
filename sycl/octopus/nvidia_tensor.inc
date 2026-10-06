@@ -784,7 +784,6 @@ class OctopusSyclNativeSearch {
   sycl::queue* base_queue_ = nullptr;
   uint64_t points_version_ = ~uint64_t(0);
   bool ready_ = false;
-  bool native_failed_ = false;
 #if defined(OCTOPUS_ESIMD)
   const bool profile_ = [] {
     const char* value = std::getenv("MOM_OCTOPUS_PROFILE");
@@ -797,9 +796,10 @@ class OctopusSyclNativeSearch {
     if (ready_)
       return true;
     base_queue_ = &base;
+    // Interop/JIT exceptions must propagate before the allocation-only fallback boundary.
+    if (!gemm_.ensure(base))
+      return false;
     try {
-      if (!gemm_.ensure(base))
-        return false;
       for (Slot& slot : slots_) {
 #if defined(OCTOPUS_ESIMD)
         if (profile_) {
@@ -833,12 +833,11 @@ class OctopusSyclNativeSearch {
     }
   }
 
-  bool prepare_b(sycl::queue& base, const uint32_t* const points, const uint64_t points_version) {
+  void prepare_b(sycl::queue& base, const uint32_t* const points, const uint64_t points_version) {
     if (points_version_ == points_version)
-      return true;
+      return;
     sycl_wait_and_throw(native_make_b(base, points, b_), base.get_device());
     points_version_ = points_version;
-    return true;
   }
 
 public:
@@ -897,97 +896,73 @@ public:
               const FastModData page_mod, const uint32_t* const points,
               const uint64_t points_version, const uint64_t start, const uint32_t count,
               const uint8_t* const target, Result* const result, const bool is_test) {
-    if (native_failed_)
-      return false;
-    try {
-      if (!ensure(base)) {
-        release();
-        return false;
-      }
-      if (!prepare_b(base, points, points_version)) {
-        release();
-        return false;
-      }
-
-      const unsigned search_count = is_test ? 1u : count;
-      unsigned offset = 0;
-      unsigned chunk_index = 0;
-      std::array<sycl::event, NativeSlots> completed{};
-#if defined(OCTOPUS_ESIMD)
-      const bool collect_profile = profile_ && profile_reports_ < 8;
-      std::vector<std::array<sycl::event, 3>> profile_events;
-#endif
-      while (offset < search_count) {
-        const unsigned slot_index = chunk_index % NativeSlots;
-        Slot& slot = slots_[slot_index];
-        const uint64_t batch_start = start + offset;
-        const unsigned capacity =
-            NativeGroups * NativeSubgroup - static_cast<unsigned>(batch_start & 31ULL);
-        const unsigned chunk = std::min(search_count - offset, capacity);
-#if defined(OCTOPUS_ESIMD)
-        const sycl::event make_a = native_make_a(*slot.queue, header, batch_start, slot.a);
-        const sycl::event gemm = native_gemm(*slot.queue, gemm_, slot.a, b_, slot.products);
-        const auto finish = gemm_.dpas_width == 8 ? native_finish_esimd<2> : native_finish_esimd<4>;
-        completed[slot_index] =
-            finish(*slot.queue, header, dag, page_mod, slot.products, batch_start, chunk,
-                   target, result, is_test);
-        if (collect_profile)
-          profile_events.push_back({make_a, gemm, completed[slot_index]});
-#else
-        native_make_a(*slot.queue, header, batch_start, slot.a);
-        native_gemm(*slot.queue, gemm_, slot.a, b_, slot.products);
-        completed[slot_index] =
-            native_finish(*slot.queue, header, dag, page_mod, slot.products, batch_start, chunk,
-                          target, result, is_test);
-#endif
-        offset += chunk;
-        ++chunk_index;
-      }
-      const unsigned active_slots = std::min<unsigned>(chunk_index, NativeSlots);
-      for (unsigned slot = 0; slot < active_slots; ++slot)
-        sycl_wait_and_throw(completed[slot], base.get_device());
-#if defined(OCTOPUS_ESIMD)
-      if (collect_profile) {
-        ++profile_reports_;
-        try {
-          std::array<double, 3> elapsed{};
-          for (const auto& batch : profile_events) {
-            for (unsigned stage = 0; stage < elapsed.size(); ++stage) {
-              const uint64_t begin =
-                  batch[stage].get_profiling_info<sycl::info::event_profiling::command_start>();
-              const uint64_t end =
-                  batch[stage].get_profiling_info<sycl::info::event_profiling::command_end>();
-              elapsed[stage] += static_cast<double>(end - begin) / 1.0e6;
-            }
-          }
-          std::fprintf(stderr,
-                       "Octopus ESIMD fused profile make_a_ms=%.3f gemm_ms=%.3f "
-                       "finish_ms=%.3f batches=%zu\n",
-                       elapsed[0], elapsed[1], elapsed[2], profile_events.size());
-        } catch (...) {
-          std::fprintf(stderr, "Octopus ESIMD profile unavailable\n");
-        }
-      }
-#endif
-      return true;
-    } catch (const std::exception& error) {
-      native_failed_ = true;
-      if (std::getenv("MOM_OCTOPUS_SYCL_NATIVE_LOG"))
-        std::fprintf(stderr, "Octopus SYCL-native unavailable: %s\n", error.what());
-      release();
-      return false;
-    } catch (const std::string& error) {
-      native_failed_ = true;
-      if (std::getenv("MOM_OCTOPUS_SYCL_NATIVE_LOG"))
-        std::fprintf(stderr, "Octopus SYCL-native unavailable: %s\n", error.c_str());
-      release();
-      return false;
-    } catch (...) {
-      native_failed_ = true;
-      if (std::getenv("MOM_OCTOPUS_SYCL_NATIVE_LOG"))
-        std::fprintf(stderr, "Octopus SYCL-native unavailable: unknown error\n");
+    if (!ensure(base)) {
       release();
       return false;
     }
+    // Preparation and search submit work; a failure must abort instead of retrying that queue.
+    prepare_b(base, points, points_version);
+
+    const unsigned search_count = is_test ? 1u : count;
+    unsigned offset = 0;
+    unsigned chunk_index = 0;
+    std::array<sycl::event, NativeSlots> completed{};
+#if defined(OCTOPUS_ESIMD)
+    const bool collect_profile = profile_ && profile_reports_ < 8;
+    std::vector<std::array<sycl::event, 3>> profile_events;
+#endif
+    while (offset < search_count) {
+      const unsigned slot_index = chunk_index % NativeSlots;
+      Slot& slot = slots_[slot_index];
+      const uint64_t batch_start = start + offset;
+      const unsigned capacity =
+          NativeGroups * NativeSubgroup - static_cast<unsigned>(batch_start & 31ULL);
+      const unsigned chunk = std::min(search_count - offset, capacity);
+#if defined(OCTOPUS_ESIMD)
+      const sycl::event make_a = native_make_a(*slot.queue, header, batch_start, slot.a);
+      const sycl::event gemm = native_gemm(*slot.queue, gemm_, slot.a, b_, slot.products);
+      const auto finish = gemm_.dpas_width == 8 ? native_finish_esimd<2> : native_finish_esimd<4>;
+      completed[slot_index] =
+          finish(*slot.queue, header, dag, page_mod, slot.products, batch_start, chunk,
+                 target, result, is_test);
+      if (collect_profile)
+        profile_events.push_back({make_a, gemm, completed[slot_index]});
+#else
+      native_make_a(*slot.queue, header, batch_start, slot.a);
+      native_gemm(*slot.queue, gemm_, slot.a, b_, slot.products);
+      completed[slot_index] =
+          native_finish(*slot.queue, header, dag, page_mod, slot.products, batch_start, chunk,
+                        target, result, is_test);
+#endif
+      offset += chunk;
+      ++chunk_index;
+    }
+    const unsigned active_slots = std::min<unsigned>(chunk_index, NativeSlots);
+    for (unsigned slot = 0; slot < active_slots; ++slot)
+      sycl_wait_and_throw(completed[slot], base.get_device());
+#if defined(OCTOPUS_ESIMD)
+    if (collect_profile) {
+      ++profile_reports_;
+      try {
+        std::array<double, 3> elapsed{};
+        for (const auto& batch : profile_events) {
+          for (unsigned stage = 0; stage < elapsed.size(); ++stage) {
+            const uint64_t begin =
+                batch[stage].get_profiling_info<sycl::info::event_profiling::command_start>();
+            const uint64_t end =
+                batch[stage].get_profiling_info<sycl::info::event_profiling::command_end>();
+            elapsed[stage] += static_cast<double>(end - begin) / 1.0e6;
+          }
+        }
+        std::fprintf(stderr,
+                     "Octopus ESIMD fused profile make_a_ms=%.3f gemm_ms=%.3f "
+                     "finish_ms=%.3f batches=%zu\n",
+                     elapsed[0], elapsed[1], elapsed[2], profile_events.size());
+      } catch (...) {
+        std::fprintf(stderr, "Octopus ESIMD profile unavailable\n");
+      }
+    }
+#endif
+    return true;
   }
 };

@@ -1,29 +1,23 @@
 "use strict";
 
-module.exports = ({h, o, opt, path, normalizeAlgoName}) => {
-  function mergeNestedConfigOption(key, values) {
-    for (const nestedKey in values) {opt[key][nestedKey] = values[nestedKey];}
-  }
+const net = require("node:net");
 
-  function mergeConfigOptions(values) {
-    for (const key in values) {
-      switch (key) {
-        case "job":
-        case "pool_time":
-          mergeNestedConfigOption(key, values[key]);
-          break;
-        default:
-          opt[key] = values[key];
-      }
-    }
-  }
-
-  function loadConfigFile(configFile) {
-    const filename = path.resolve(configFile);
-    h.log("Loading config file " + filename);
-    mergeConfigOptions(require(filename));
-  }
-
+/**
+ * @param {{
+ *   o: {
+ *     is_config_file(file: string): boolean,
+ *     load_config(opt: MinerOptions, file: string): unknown,
+ *     opt_help: UnknownRecord,
+ *     parse_opt(opt: object, help: UnknownRecord, arg: string, value: string, base: string): boolean,
+ *     pool_create(url: string, port: number, tls: boolean, login: string, pass: string): PoolConfig,
+ *     print_help(message?: string): never,
+ *   },
+ *   opt: MinerOptions,
+ *   normalizeAlgoName(algo: string | null | undefined): string | null | undefined,
+ * }} dependencies
+ */
+module.exports = ({o, opt, normalizeAlgoName}) => {
+  /** @param {string} value */
   function parsePoolPort(value) {
     const match = value.match(/^(\d+)((?:tls)?)$/);
     if (!match) {return o.print_help("Wrong pool port: " + value);}
@@ -32,66 +26,98 @@ module.exports = ({h, o, opt, path, normalizeAlgoName}) => {
     return {port, is_tls: match[2] === "tls"};
   }
 
+  /** @param {string} uri */
   function parsePoolUri(uri) {
+    if (uri.startsWith("[")) {
+      const match = uri.match(/^\[([^[]+)\]:(\d+(?:tls)?)$/);
+      const host = match?.[1];
+      const portText = match?.[2];
+      if (!host || !portText || net.isIP(host) !== 6) {
+        return o.print_help("Wrong pool URI: " + uri);
+      }
+      const parsed = parsePoolPort(portText);
+      return {url: host, port: parsed.port, is_tls: parsed.is_tls};
+    }
     const parts = uri.split(":");
     if (parts.length !== 2) {return o.print_help("Wrong pool URI: " + uri);}
-    const parsed = parsePoolPort(parts[1]);
-    if (!parsed) {return parsed;}
-    return {url: parts[0], port: parsed.port, is_tls: parsed.is_tls};
+    const url = parts[0];
+    const port = parts[1];
+    if (!url || port === undefined) {return o.print_help("Wrong pool URI: " + uri);}
+    const parsed = parsePoolPort(port);
+    return {url, port: parsed.port, is_tls: parsed.is_tls};
   }
 
+  /** @param {string} uri @param {string} login @param {string} pass */
   function addPrimaryPool(uri, login, pass) {
     const pool = parsePoolUri(uri);
     opt.pool_ids.primary = opt.pools.length;
     opt.pools.push(o.pool_create(pool.url, pool.port, pool.is_tls, login, pass));
   }
 
+  /** @param {string[]} args */
   function optionalPoolPass(args) {
-    return args.length > 0 && !args[0].match(/^--/) ? args.shift() : "";
+    const first = args[0];
+    return first !== undefined && !first.match(/^--/) ? args.shift() || "" : "";
   }
 
+  /** @param {string[]} args */
   function parseMineArgs(args) {
-    if (args.length < 1) {return o.print_help("Directive \"mine\" needs 1+ parameters");}
     const first = args.shift();
-    if (o.is_config_file(first)) {return loadConfigFile(first);}
-    if (args.length < 1) {return o.print_help("Directive \"mine\" needs 2+ parameters");}
-    return addPrimaryPool(first, args.shift(), optionalPoolPass(args));
+    if (first === undefined) {return o.print_help("Directive \"mine\" needs 1+ parameters");}
+    if (o.is_config_file(first)) {return o.load_config(opt, first);}
+    const login = args.shift();
+    if (login === undefined) {return o.print_help("Directive \"mine\" needs 2+ parameters");}
+    return addPrimaryPool(first, login, optionalPoolPass(args));
   }
 
+  /** @param {string[]} args */
   function parseTestArgs(args) {
-    if (args.length < 2) {return o.print_help("Directive \"test\" needs two parameters");}
-    opt.job.algo = normalizeAlgoName(args.shift());
-    return args.shift();
+    const algo = args.shift();
+    const expected = args.shift();
+    if (algo === undefined || expected === undefined) {
+      return o.print_help("Directive \"test\" needs two parameters");
+    }
+    opt.job.algo = normalizeAlgoName(algo) || null;
+    return expected;
   }
 
+  /** @param {string[]} args */
   function parseBenchArgs(args) {
-    if (args.length < 1) {return o.print_help("Directive \"bench\" needs one parameter");}
-    opt.job.algo = normalizeAlgoName(args.shift());
+    const algo = args.shift();
+    if (algo === undefined) {return o.print_help("Directive \"bench\" needs one parameter");}
+    opt.job.algo = normalizeAlgoName(algo) || null;
   }
 
+  /** @param {string[]} args */
   function parseRemainingOptions(args) {
     while (args.length) {
       const arg = args.shift();
-      if (args.length >= 1 && o.parse_opt(opt, o.opt_help, arg, args[0], "")) {args.shift();}
-      else {return o.print_help("Unparsed option: " + arg);}
+      const value = args[0];
+      if (arg !== undefined && value !== undefined && o.parse_opt(opt, o.opt_help, arg, value, "")) {
+        args.shift();
+      } else {
+        return o.print_help("Unparsed option: " + arg);
+      }
     }
   }
 
+  /** @param {string[]} argv @param {MinerTestState} test */
   return function parseArgs(argv, test) {
     const args = argv.slice(2);
-    if (args.length === 0) {return o.print_help("No directive specified");}
     const directive = args.shift();
+    if (directive === undefined) {return o.print_help("No directive specified");}
+    /** @type {Record<string, (args: string[]) => unknown>} */
     const parsers = {
       mine: parseMineArgs,
       test: (remaining) => { test.result_hash_hex = parseTestArgs(remaining); },
       bench: parseBenchArgs,
       algorithms: () => undefined,
     };
-    const parser = parsers[directive];
+    const parser = Object.hasOwn(parsers, directive) ? parsers[directive] : null;
     if (!parser) {return o.print_help("Unknown directive " + directive);}
     parser(args);
     parseRemainingOptions(args);
-    opt.job.algo = normalizeAlgoName(opt.job.algo);
+    opt.job.algo = normalizeAlgoName(opt.job.algo) || null;
     return directive;
   };
 };
