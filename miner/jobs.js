@@ -1,6 +1,10 @@
 "use strict";
 
 const crypto = require("node:crypto");
+const {isValidNonce} = require("./submission");
+
+// Supported headers are small; leave ample room without forwarding an unbounded pool blob.
+const MAX_MINING_BLOB_HEX_CHARS = 64 * 1024 * 2;
 
 module.exports = ({
   h, opt, process, compilerPolicy, gpuTuning, orDefault, nonceOffsetOr, firstTruthyOr,
@@ -432,18 +436,94 @@ module.exports = ({
     job.nonceoffset = nonceOffsetOr(prev_job, job.algo === "ghostrider" ? 76 : 39);
   }
 
+  function validateMiningBlob(job, requireNonceOffset = true) {
+    if (!job.blob_hex || job.blob_hex.length > MAX_MINING_BLOB_HEX_CHARS ||
+        job.blob_hex.length % 2 !== 0 || /[^0-9a-f]/i.test(job.blob_hex)) {
+      throw new Error(`Invalid ${job.algo} job blob`);
+    }
+    const noncebytes = nonceByteCount(job);
+    const nonceHexLength = noncebytes * 2;
+    const nonce = job.nonce;
+    if (nonce !== undefined && !isValidNonce(nonce, noncebytes)) {
+      throw new Error(`Invalid ${job.algo} nonce`);
+    }
+    const nonceMask = job.nicehash_mask;
+    if (nonceMask !== undefined &&
+        (typeof nonceMask !== "string" || !/^[0-9a-f]+$/i.test(nonceMask) ||
+          nonceMask.length > nonceHexLength)) {
+      throw new Error(`Invalid ${job.algo} nonce mask`);
+    }
+    const nonceoffset = job.nonceoffset;
+    const invalidNonceOffset = nonceoffset === undefined
+      ? requireNonceOffset
+      : !Number.isSafeInteger(nonceoffset) || nonceoffset < 0 ||
+        nonceoffset + noncebytes > job.blob_hex.length / 2;
+    if (invalidNonceOffset) {
+      throw new Error(`Invalid ${job.algo} nonce offset`);
+    }
+    return Object.assign(job, {blob_hex: job.blob_hex});
+  }
+
+  function validateLiveMiningJob(job) {
+    const nativeJob = validateMiningBlob(job);
+    const target = nativeJob.target;
+    if (typeof target !== "string" || !/^[0-9a-f]{1,64}$/i.test(target.replace(/^0x/i, ""))) {
+      throw new Error(`Invalid ${job.algo} target`);
+    }
+    const job_token = nativeJob.job_token;
+    if (typeof job_token !== "string" || job_token.length === 0) {
+      throw new Error(`Invalid ${job.algo} job token`);
+    }
+    const {job_id, pool_id, worker_id} = nativeJob;
+    /** @param {unknown} value @returns {value is string | number} */
+    const validId = (value) => typeof value === "string" ||
+      (typeof value === "number" && Number.isSafeInteger(value));
+    if (!validId(job_id)) {throw new Error(`Invalid ${job.algo} job_id`);}
+    if (!validId(pool_id)) {throw new Error(`Invalid ${job.algo} pool_id`);}
+    if (!validId(worker_id)) {throw new Error(`Invalid ${job.algo} worker_id`);}
+    return Object.assign(nativeJob, {target, job_id, pool_id, worker_id, job_token});
+  }
+
+  function nonceByteCount(job) {
+    if (job.noncebytes !== 4 && job.noncebytes !== 8) {
+      throw new Error(`Invalid ${job.algo} nonce size`);
+    }
+    return job.noncebytes;
+  }
+
   function addNoncePrefix(job, prev_job) {
-  // we need to create nonce with xn prefix and update nicehash_mask to cover it
-    const nicehash_prefix = Buffer.from(prev_job.xn, "hex").subarray(0, job.noncebytes);
-    job.nicehash_mask = Buffer.alloc(job.noncebytes, 0).fill(0xFF, 0, nicehash_prefix.length).toString("hex");
-    job.nonce = Buffer.concat([nicehash_prefix, Buffer.alloc(job.noncebytes - nicehash_prefix.length, 0x00)]).toString("hex");
+    // we need to create nonce with xn prefix and update nicehash_mask to cover it
+    const noncebytes = nonceByteCount(job);
+    const xn = prev_job.xn || "";
+    if (xn.length % 2 !== 0 || /[^0-9a-f]/i.test(xn)) {throw new Error("Invalid extranonce");}
+    const nicehash_prefix = Buffer.from(xn, "hex").subarray(0, noncebytes);
+    job.nicehash_mask = Buffer.alloc(noncebytes, 0)
+      .fill(0xFF, 0, nicehash_prefix.length).toString("hex");
+    let suffix = Buffer.alloc(noncebytes - nicehash_prefix.length, 0x00);
+    if (job.algo === "c29" && prev_job.nonce === undefined && suffix.length > 0) {
+      // A same-template C29 job after an algorithm switch must not replay deterministic proof search.
+      suffix = crypto.randomBytes(suffix.length);
+      suffix[0] = (suffix[0] ?? 0) & 0x7f; // Leave room to advance without crossing the pool prefix.
+    }
+    const seed = Buffer.concat([nicehash_prefix, suffix]).toString("hex");
+    // Resume only this accepted job's counter, keeping its protected prefix unchanged.
+    job.nonce = prev_job.nonce === undefined ? seed : prev_job.nonce;
+    if (!isValidNonce(job.nonce, noncebytes, xn)) {throw new Error(`Invalid ${job.algo} nonce`);}
   }
 
   function defaultNicehashMask(job, pool_id, last_job_can_be_used) {
     const last_job = getLastJob();
-    if (last_job_can_be_used && last_job.nicehash_mask) {return last_job.nicehash_mask;}
-    return Buffer.alloc(job.noncebytes, 0)
-      .fill(0xFF, 0, opt.pools[pool_id].is_nicehash ? 1 : 0)
+    if (last_job_can_be_used && last_job?.nicehash_mask) {return last_job.nicehash_mask;}
+    const pool = opt.pools[pool_id];
+    if (!pool) {throw new Error(`Unknown pool ${pool_id}`);}
+    const noncebytes = nonceByteCount(job);
+    const nicehash = pool.is_nicehash || pool.negotiated_nicehash === true;
+    if (nicehash && noncebytes === 4 &&
+        job.algo !== "c29" && job.algo !== "verthash") {
+      return "000000ff";
+    }
+    return Buffer.alloc(noncebytes, 0)
+      .fill(0xFF, 0, nicehash ? 1 : 0)
       .toString("hex");
   }
 
@@ -451,16 +531,17 @@ module.exports = ({
     if (prev_job.xn) {return addNoncePrefix(job, prev_job);}
 
     const last_job = getLastJob();
-    const last_job_can_be_used = last_job && last_job.algo === job.algo;
-    // use existing nicehash_mask or make a new one with FF00..00 that job.noncebytes long
-    job.nicehash_mask = orDefault(prev_job.nicehash_mask,
-      defaultNicehashMask(job, pool_id, last_job_can_be_used));
-    job.nonce = orDefault(prev_job.nonce, reusableLastNonce(last_job_can_be_used));
+    const last_job_can_be_used = Boolean(
+      last_job && last_job.pool_id === pool_id && last_job.algo === job.algo);
+    // Reuse the existing mask or choose the protocol-specific default for this nonce layout.
+    job.nicehash_mask = prev_job.nicehash_mask ??
+      defaultNicehashMask(job, pool_id, last_job_can_be_used);
+    job.nonce = prev_job.nonce ?? reusableLastNonce(last_job_can_be_used);
   }
 
   function reusableLastNonce(last_job_can_be_used) {
     const last_job = getLastJob();
-    return last_job_can_be_used && last_job.nonce ? last_job.nonce : "0";
+    return last_job_can_be_used && last_job?.nonce !== undefined ? last_job.nonce : "0";
   }
 
   function workerRuntimeEnv(algo, devEntry = null) {
@@ -494,7 +575,6 @@ module.exports = ({
     prev_job.job_token = (++liveJobToken).toString();
     const algo = normalizeAlgoName(prev_job.algo || opt.job.algo);
     const dev = jobDev(algo);
-    ensureWorkersForJob(algo, dev);
     const pool_id = opt.pool_ids.active;
     const job = baseJob(prev_job, algo, dev, pool_id);
     if (algo === "c29") {addC29JobFields(job, prev_job);}
@@ -514,6 +594,9 @@ module.exports = ({
       job.nicehash_mask = orDefault(job.nicehash_mask, "0000000000000000");
       job.nonce = orDefault(job.nonce, "0000000000000000");
     }
+    const nativeJob = validateLiveMiningJob(job);
+    prev_job.noncebytes = nonceByteCount(nativeJob);
+    ensureWorkersForJob(algo, dev);
     set_algo_msr(algo);
     setLastJob(job);
     h.messageWorkers({type: "job", job});

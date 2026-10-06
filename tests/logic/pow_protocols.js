@@ -68,27 +68,32 @@ test("KawPow submit uses the header hash carried by the worker result", async ()
   const miner = await loadMinerWithStubs();
   const oldHeaderHash = "11".repeat(32);
   const newHeaderHash = "22".repeat(32);
-  miner.global.opt.pools[0].submit_mode = "raven";
   miner.global.opt.pools[0].last_job = {
-    job_id: "new",
+    job_id: "old",
+    job_token: "token",
+    submit_mode: "raven",
     header_hash: newHeaderHash,
   };
 
   miner.messageHandler({
+    thread_id: 0,
     type: "result",
     value: {
-      pool_id: 0,
+      pool_id: "0",
       worker_id: "worker",
       job_id: "old",
+      job_token: "token",
       nonce: "ff81000000000001",
       hash: "00".repeat(32),
       mix_hash: "33".repeat(32),
-      header_hash: oldHeaderHash,
+      header_hash: "0x" + oldHeaderHash + "aa",
     },
   });
 
   assert.equal(miner.poolWrites.length, 1);
-  assert.equal(JSON.stringify(miner.poolWrites[0].json.params), JSON.stringify([
+  const write = miner.poolWrites[0];
+  assert.ok(write);
+  assert.equal(JSON.stringify(write.json.params), JSON.stringify([
     "user",
     "old",
     "0xff81000000000001",
@@ -100,23 +105,27 @@ test("KawPow submit uses the header hash carried by the worker result", async ()
 test("Etchash submit uses Eth mining.submit format", async () => {
   const miner = await loadMinerWithStubs();
   const headerHash = "22".repeat(32);
-  miner.global.opt.pools[0].submit_mode = "eth";
+  miner.global.opt.pools[0].last_job = {job_id: "203d", job_token: "token", submit_mode: "eth"};
 
   miner.messageHandler({
+    thread_id: 0,
     type: "result",
     value: {
-      pool_id: 0,
+      pool_id: "0",
       worker_id: "worker",
       job_id: "203d",
+      job_token: "token",
       nonce: "080c000000000001",
       hash: "00".repeat(32),
       mix_hash: "33".repeat(32),
-      header_hash: headerHash,
+      header_hash: "0X" + headerHash + "bb",
     },
   });
 
   assert.equal(miner.poolWrites.length, 1);
-  assert.equal(JSON.stringify(miner.poolWrites[0].json.params), JSON.stringify([
+  const write = miner.poolWrites[0];
+  assert.ok(write);
+  assert.equal(JSON.stringify(write.json.params), JSON.stringify([
     "user",
     "203d",
     "0x080c000000000001",
@@ -128,14 +137,15 @@ test("Etchash submit uses Eth mining.submit format", async () => {
 test("Etchash submit uses ethproxy eth_submitWork format", async () => {
   const miner = await loadMinerWithStubs();
   const headerHash = "22".repeat(32);
-  miner.global.opt.pools[0].submit_mode = "ethproxy";
+  miner.global.opt.pools[0].last_job = {job_id: headerHash, job_token: "token", submit_mode: "ethproxy"};
 
   miner.messageHandler({
     type: "result",
     value: {
-      pool_id: 0,
+      pool_id: "0",
       worker_id: "worker",
       job_id: headerHash,
+      job_token: "token",
       nonce: "080c000000000001",
       hash: "00".repeat(32),
       mix_hash: "33".repeat(32),
@@ -376,24 +386,28 @@ test("PearlHash claim fields cannot change another algorithm's submission", asyn
 
 test("Autolykos2 submit uses Ergo mining.submit format", async () => {
   const miner = await loadMinerWithStubs();
-  miner.global.opt.pools[0].submit_mode = "erg";
-  miner.global.opt.pools[0].erg_submit_jobs = {
-    "203d": { extra_nonce: "080c", extra_nonce2_size: 6, ntime: "00000002" },
+  miner.global.opt.pools[0].last_job = {
+    job_id: "203d", job_token: "token", submit_mode: "erg",
+    extra_nonce: "080c", extra_nonce2_size: 6, ntime: "00000002",
   };
 
   miner.messageHandler({
+    thread_id: 0,
     type: "result",
     value: {
-      pool_id: 0,
+      pool_id: "0",
       worker_id: "worker",
       job_id: "203d",
+      job_token: "token",
       nonce: "080c000000000001",
       hash: "00".repeat(32),
     },
   });
 
   assert.equal(miner.poolWrites.length, 1);
-  assert.equal(JSON.stringify(miner.poolWrites[0].json.params), JSON.stringify([
+  const write = miner.poolWrites[0];
+  assert.ok(write);
+  assert.equal(JSON.stringify(write.json.params), JSON.stringify([
     "user",
     "203d",
     "000000000001",
@@ -408,8 +422,9 @@ test("nicehash xn prefixes longer than noncebytes are truncated", async () => {
 
   assert.doesNotThrow(() => setJob({
     algo: "cn/0",
-    blob_hex: "abcd",
+    blob_hex: "00".repeat(4),
     noncebytes: 4,
+    nonceoffset: 0,
     xn: "001122334455",
     difficulty: 1,
     id: "worker",
@@ -417,6 +432,86 @@ test("nicehash xn prefixes longer than noncebytes are truncated", async () => {
   }));
 
   const jobMessage = miner.sentMessages.find((msg) => msg.type === "job");
+  assert.ok(jobMessage);
+  assert.ok(jobMessage.job);
   assert.equal(jobMessage.job.nonce, "00112233");
   assert.equal(jobMessage.job.nicehash_mask, "ffffffff");
+});
+
+test("nicehash xn jobs preserve valid saved nonce values and types", async () => {
+  const miner = await loadMinerWithStubs();
+  for (const {noncebytes, xn, nonce} of [
+    {noncebytes: 4, xn: "a1b2", nonce: "A1B20017"},
+    {noncebytes: 4, xn: "00", nonce: "123"},
+    {noncebytes: 4, xn: "00", nonce: 0},
+    {noncebytes: 4, xn: "a1b2", nonce: 0xa1b20017},
+    {noncebytes: 8, xn: "a1b2", nonce: "a1b2000000000017"},
+    {noncebytes: 8, xn: "00", nonce: Number.MAX_SAFE_INTEGER},
+    {noncebytes: 4, xn: "001122334455", nonce: "00112233"},
+  ]) {
+    const job = miner.getSetJob()({
+      algo: "cn/0", blob_hex: "00".repeat(noncebytes), noncebytes, nonceoffset: 0,
+      xn, nonce, difficulty: 1, job_id: "resume",
+    });
+    assert.equal(job.nonce, nonce);
+    assert.equal(job.nicehash_mask, "ff".repeat(Math.min(xn.length / 2, noncebytes))
+      .padEnd(noncebytes * 2, "0"));
+  }
+});
+
+test("nicehash xn jobs reject invalid saved progress before dispatch", async () => {
+  const miner = await loadMinerWithStubs();
+  for (const {noncebytes, xn, nonce} of [
+    {noncebytes: 4, xn: "a1", nonce: "a2000000"},
+    {noncebytes: 4, xn: "00", nonce: "100000000"},
+    {noncebytes: 4, xn: "00", nonce: 0x100000000},
+    {noncebytes: 4, xn: "00", nonce: -1},
+    {noncebytes: 4, xn: "00", nonce: 0.5},
+    {noncebytes: 8, xn: "00", nonce: Number.MAX_SAFE_INTEGER + 1},
+    {noncebytes: 8, xn: "00", nonce: "10000000000000000"},
+    {noncebytes: 8, xn: "00", nonce: "0x10"},
+    {noncebytes: 8, xn: "00", nonce: ""},
+    {noncebytes: 8, xn: "00", nonce: "xyz"},
+  ]) {
+    assert.throws(() => miner.getSetJob()({
+      algo: "cn/0", blob_hex: "00".repeat(noncebytes), noncebytes, nonceoffset: 0,
+      xn, nonce, difficulty: 1, job_id: "invalid-resume",
+    }), /Invalid .*nonce/);
+  }
+  assert.deepEqual(miner.sentMessages, []);
+});
+
+test("a reused pool job ID resets the previous submission dialect", async () => {
+  const miner = await loadMinerWithStubs();
+  await withMockPool({pool: {protocol: "eth", logged_in: true}, opt: {job: {algo: "etchash"}}},
+    async ({socket, poolConfig}) => {
+      miner.global.opt.pools[0] = poolConfig;
+      let token = 0;
+      pool.connect_pool_throttle(0, (job) => {
+        job.job_token = String(++token);
+        return s.completeMiningJob(job);
+      });
+      socket.emit("data", Buffer.from(JSON.stringify({
+        method: "mining.notify", params: ["reused", "11".repeat(32), "22".repeat(32), true],
+      }) + "\n"));
+      socket.emit("data", Buffer.from(JSON.stringify({
+        method: "job", params: {
+          algo: "cn/0", job_id: "reused", blob: "00".repeat(43), target: "ff".repeat(8),
+        },
+      }) + "\n"));
+      poolConfig.inferred_protocol = "eth";
+      const value = {
+        pool_id: "0", worker_id: "worker", job_id: "reused", nonce: "00000001",
+        hash: "33".repeat(32),
+      };
+      miner.messageHandler({type: "result", thread_id: 0, value: {...value, job_token: "1"}});
+      assert.equal(miner.poolWrites.length, 0);
+      miner.messageHandler({type: "result", thread_id: 0, value: {...value, job_token: "2"}});
+      assert.equal(miner.poolWrites.length, 1);
+      assert.deepEqual(miner.poolWrites[0]?.json, {
+        jsonrpc: "2.0", id: 3, method: "submit",
+        params: {job_id: "reused", nonce: "00000001", id: "worker", result: "33".repeat(32)},
+      });
+      assert.equal(poolConfig.last_job?.["submit_mode"], null);
+    });
 });

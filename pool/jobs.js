@@ -5,11 +5,132 @@ const crypto = require("node:crypto");
 module.exports = ({
   h, normalizeAlgoName, poolAt, poolProtocol, usesEthProxy, pearlhashUsesSubscribe,
   pearlhashDiffFromJobId, pearlhashNbitsBound, beamPackedTarget, pool_close_wait,
-  pool_log, pool_str, algoFromPass, applyLoginExtensions, connectPoolThrottle,
+  pool_log, pool_str, algoFromPass, connectPoolThrottle,
 }) => {
 
+  // Accommodates a 64-KiB field encoded as hexadecimal while bounding every generic job string.
+  const MAX_POOL_JOB_STRING_CHARS = 128 * 1024;
+
+  const poolJobStringFields = [
+    "backend", "backend_request", "blob", "blob_hex", "dev", "extra_nonce", "extranonce2",
+    "header_hash", "id", "nicehash_mask", "ntime", "pearlhash_base_target", "pre_pow",
+    "seed_hex", "seed_hash", "solution", "submit_mode", "target", "xn", "nbits",
+  ];
+  const poolJobNumberFields = [
+    "difficulty", "extra_nonce2_size", "height", "intensity", "nonce1_len", "noncebytes",
+    "nonceoffset", "pearlhash_cert_version", "pearlhash_k", "pearlhash_n", "pearlhash_rank",
+    "proofsize", "thread_id", "thread_num",
+  ];
+  const poolJobStringOrNumberFields = ["job_id", "nonce", "pool_id", "worker_id"];
+  const poolJobIntegerFields = new Set([
+    "extra_nonce2_size", "height", "nonce1_len", "nonceoffset", "thread_id",
+  ]);
+  const poolJobPositiveIntegerFields = new Set([
+    "intensity", "noncebytes", "pearlhash_k", "pearlhash_n",
+    "pearlhash_rank", "proofsize", "thread_num",
+  ]);
+
   function isObject(value) {
-    return value instanceof Object;
+    return value !== null && typeof value === "object" && !Array.isArray(value);
+  }
+
+  function isPoolJob(value) {
+    if (!isObject(value) || (value["algo"] != null &&
+        (typeof value["algo"] !== "string" || value["algo"].length > 128))) {
+      return false;
+    }
+    for (const key of poolJobStringFields) {
+      if (value[key] !== undefined &&
+          (typeof value[key] !== "string" || value[key].length > MAX_POOL_JOB_STRING_CHARS)) {
+        return false;
+      }
+    }
+    for (const key of poolJobNumberFields) {
+      if (value[key] !== undefined &&
+          (typeof value[key] !== "number" || !Number.isFinite(value[key]))) {return false;}
+    }
+    for (const key of poolJobStringOrNumberFields) {
+      const field = value[key];
+      const maxStringChars = key === "worker_id" ? 4096 : 256;
+      if (field !== undefined &&
+          !((typeof field === "string" && field.length <= maxStringChars) ||
+            (typeof field === "number" && Number.isSafeInteger(field)))) {
+        return false;
+      }
+    }
+    if (poolJobId(value["job_id"]) === null ||
+        !["blob", "blob_hex", "header_hash", "pre_pow"].some((key) =>
+          typeof value[key] === "string" && value[key].length > 0)) {
+      return false;
+    }
+    const difficulty = value["difficulty"];
+    if (difficulty !== undefined && (typeof difficulty !== "number" || difficulty <= 0)) {return false;}
+    for (const key of poolJobIntegerFields) {
+      const field = value[key];
+      if (field !== undefined &&
+          (typeof field !== "number" || !Number.isSafeInteger(field) || field < 0)) {return false;}
+    }
+    const nonce = value["nonce"];
+    if (nonce !== undefined &&
+        !(typeof nonce === "string" && /^[0-9a-f]{1,16}$/i.test(nonce)) &&
+        !(typeof nonce === "number" && Number.isSafeInteger(nonce) && nonce >= 0)) {
+      return false;
+    }
+    for (const key of poolJobPositiveIntegerFields) {
+      const field = value[key];
+      if (field !== undefined &&
+          (typeof field !== "number" || !Number.isSafeInteger(field) || field <= 0)) {return false;}
+    }
+    const certVersion = value["pearlhash_cert_version"];
+    if (certVersion !== undefined && certVersion !== 3) {
+      return false;
+    }
+    return true;
+  }
+
+  function hasLoginJob(json) {
+    return !("error" in json && json.error !== null) &&
+      isObject(json.result) && Object.hasOwn(json.result, "job");
+  }
+
+  function isSetTargetNotification(json) {
+    return json.method === "mining.set_target" && Array.isArray(json.params) && json.params.length >= 1;
+  }
+
+  function handleSetTarget(pool_id, target) {
+    const pool = poolAt(pool_id);
+    if (typeof target !== "string") {throw new Error("Invalid pool target message");}
+    const protocol = poolProtocol(pool);
+    if (protocol === "raven") {
+      pool.raven_target = ravenTarget(pool, target);
+      return;
+    }
+    const hex = hexWithoutPrefix(target);
+    h.target256ToWork(hex);
+    switch (protocol) {
+      case "eth":
+        pool.eth_target = hex;
+        return;
+      case "zelhash":
+        pool.zelhash_target = hex.padStart(64, "0");
+        return;
+      case "ironfish":
+        pool.ironfish_target = hex.padStart(64, "0");
+        return;
+      default:
+        // Preserve an early target until a later notify identifies the dialect.
+        pool.stratum_target = hex;
+    }
+  }
+
+  function boundedHex(value, maximumBytes) {
+    const hex = hexWithoutPrefix(value);
+    return hex.length > 0 && hex.length <= maximumBytes * 2 && !/[^0-9a-f]/i.test(hex) ? hex : "";
+  }
+
+  function isCortexWorkResponse(json) {
+    return (json.id === 100 || json.id === 0) &&
+      Array.isArray(json.result) && json.result.length >= 3;
   }
 
   function isConfluxJobNotification(json) {
@@ -118,10 +239,6 @@ module.exports = ({
     return Array.isArray(json.result) && json.result.length >= 3;
   }
 
-  function isRavenSetTargetNotification(json) {
-    return json.method === "mining.set_target" && Array.isArray(json.params) && json.params.length >= 1;
-  }
-
   function isSetDifficultyNotification(json) {
     return json.method === "mining.set_difficulty" && Array.isArray(json.params) && json.params.length >= 1;
   }
@@ -134,7 +251,7 @@ module.exports = ({
   }
 
   function hexWithoutPrefix(value) {
-    return String(value || "").replace(/^0x/i, "");
+    return typeof value === "string" ? value.replace(/^0x/i, "") : "";
   }
 
   function validExtraNonce(value) {
@@ -176,14 +293,20 @@ module.exports = ({
 
   function rememberPoolExtraNonceHex(pool_id, value) {
     const extra_nonce = validExtraNonce(value);
-    if (extra_nonce) {global.opt.pools[pool_id].extra_nonce = extra_nonce;}
+    const pool = poolAt(pool_id);
+    if (extra_nonce || value === "") {pool.extra_nonce = extra_nonce;}
   }
 
   function rememberSubscribeExtraNonce(pool_id, result) {
-    if (poolProtocol(poolAt(pool_id)) === "xelis") {return rememberXelisSubscribeExtraNonce(pool_id, result);}
+    const pool = poolAt(pool_id);
+    if (poolProtocol(pool) === "xelis") {
+      return rememberXelisSubscribeExtraNonce(pool_id, result);
+    }
     rememberPoolExtraNonceHex(pool_id, subscribeExtraNonceCandidates(result).find(validExtraNonce));
     const extra_nonce2_size = subscribeExtraNonce2Size(result);
-    if (extra_nonce2_size !== null) {global.opt.pools[pool_id].extra_nonce2_size = extra_nonce2_size;}
+    if (extra_nonce2_size !== null) {
+      pool.extra_nonce2_size = extra_nonce2_size;
+    }
   }
 
   function fixedHexBytesLE(hex, bytes) {
@@ -211,22 +334,6 @@ module.exports = ({
     const hex = hexWithoutPrefix(value);
     if (!hex || /[^0-9a-f]/i.test(hex)) {return 0;}
     return Number.parseInt(hex, 16);
-  }
-
-  function ergTarget(bound) {
-    return h.decimalTargetToHex(bound);
-  }
-
-  function rememberErgSubmitJob(pool, job) {
-    if (!pool.erg_submit_jobs) {pool.erg_submit_jobs = {};}
-    pool.erg_submit_jobs[job.job_id] = {
-      extra_nonce: poolExtraNonce(pool),
-      extra_nonce2_size: pool.extra_nonce2_size,
-      ntime: job.ntime || "",
-    };
-
-    const jobIds = Object.keys(pool.erg_submit_jobs);
-    while (jobIds.length > 16) {delete pool.erg_submit_jobs[jobIds.shift()];}
   }
 
   // Build the ZelHash (Equihash 125,4, Flux/ZIP-301) job from a mining.notify. The 8 notify fields go straight
@@ -319,26 +426,36 @@ module.exports = ({
   }
 
   function ravenTarget(pool, notifyTarget) {
-    const target = hexWithoutPrefix(notifyTarget || pool.raven_target || "");
+    const rawTarget = notifyTarget === undefined || notifyTarget === null || notifyTarget === ""
+      ? pool.raven_target || pool.stratum_target || "" : notifyTarget;
+    const target = hexWithoutPrefix(rawTarget);
+    if (!boundedHex(target, 32)) {throw new Error("Invalid Raven target");}
     return target.padEnd(64, "0");
   }
 
   function ethTarget(pool) {
-    const target = hexWithoutPrefix(pool.eth_target || "");
-    return target ? target.padStart(64, "0") : h.ethDiff2Target(pool.eth_difficulty || 1);
+    const target = hexWithoutPrefix(pool.eth_target || pool.stratum_target || "");
+    if (!target) {return h.ethDiff2Target(pool.eth_difficulty || 1);}
+    if (!boundedHex(target, 32)) {throw new Error("Invalid Ethash target");}
+    return target.padStart(64, "0");
   }
 
   function isLoginJob(json) {
-    return !("error" in json && json.error !== null) &&
-         isObject(json.result) && isObject(json.result.job);
+    return hasLoginJob(json) && json.id === 1 &&
+      isObject(json.result) && isObject(json.result["job"]);
   }
 
   function loginJobWithResultMetadata(result) {
-    const job = { ...result.job };
-    for (const key of ["algo", "height", "seed_hash", "target", "difficulty", "pearlhash_cert_version"]) {
-      if (!(key in job) && key in result) {job[key] = result[key];}
+    const job = {...result.job};
+    for (const key of [
+      "algo", "height", "seed_hash", "target", "difficulty", "extra_nonce", "extra_nonce2_size",
+      "noncebytes", "nonceoffset", "xn", "nicehash_mask", "pearlhash_cert_version", "worker_id",
+    ]) {
+      if (!Object.hasOwn(job, key) && Object.hasOwn(result, key)) {
+        job[key] = result[key];
+      }
     }
-    return job;
+    return isPoolJob(job) ? job : null;
   }
 
   function pearlHashJob(pool, params, messageAlgo) {
@@ -457,20 +574,6 @@ module.exports = ({
     return reactivatePrimaryPool(set_job) || reactivateBackupPool(active_pool, set_job);
   }
 
-  function handleRavenSetTarget(pool_id, json) {
-    global.opt.pools[pool_id].raven_target = hexWithoutPrefix(json.params[0]);
-  }
-
-  function handleEthSetTarget(pool_id, json) {
-    global.opt.pools[pool_id].eth_target = hexWithoutPrefix(json.params[0]);
-  }
-
-  // ZelHash mining.set_target carries a verbatim 64-hex BE 256-bit share target; store it as-is
-  // (left zero-padded to 64), like Iron Fish -- NOT left-justified the way ravenTarget treats its target.
-  function handleZelHashSetTarget(pool_id, json) {
-    global.opt.pools[pool_id].zelhash_target = hexWithoutPrefix(json.params[0]).padStart(64, "0");
-  }
-
   // Iron Fish set_target carries a verbatim 64-hex BE 256-bit target; store it as-is (zero-padded on
   // the left to 64 hex), unlike ravenTarget which left-justifies its share target.
   function handleIronfishSetTarget(pool_id, json) {
@@ -543,30 +646,35 @@ module.exports = ({
   }
 
   function handleSetDifficulty(pool_id, json) {
-    const pool = global.opt.pools[pool_id];
-    if (poolProtocol(pool) === "xelis") {
-      const raw = json.params[0];
+    const pool = poolAt(pool_id);
+    const protocol = poolProtocol(pool);
+    const raw = json.params[0];
+    if (protocol === "xelis") {
+      // XELIS difficulty is an integer up to 256 bits, so keep its decimal string exact.
       const exactDifficulty = xelisDifficulty(raw);
-      pool.xelis_difficulty = typeof raw === "string" ? raw : Number(exactDifficulty);
+      pool.xelis_difficulty = typeof raw === "string" ? raw :
+        Number(exactDifficulty);
       return;
     }
-    if (poolProtocol(pool) === "verthash") {
-      pool.verthash_difficulty = positiveDifficulty(json.params[0], "pool");
-    }
-    pool.eth_difficulty = json.params[0];
-    if (poolProtocol(pool) === "echelon") {
-      const difficulty = positiveDifficulty(json.params[0], "pool");
-      pool.nexa_difficulty = difficulty;
-      pool.nexa_target = h.ethDiff2Target(difficulty);
+    const difficulty = positiveDifficulty(raw, "pool");
+    pool.eth_difficulty = difficulty;
+    if (protocol === "verthash") {
+      pool.verthash_difficulty = difficulty;
     }
     // Var-diff PearlHash pools may push a standalone set_difficulty; stash it so the next job picks
     // it up if the notify itself omits a diff field (otherwise jobTarget would fall back to MAX).
-    if (poolProtocol(pool) === "pearlhash") {pool.pearlhash_difficulty = positiveDifficulty(json.params[0], "PearlHash");}
+    if (protocol === "pearlhash") {
+      pool.pearlhash_difficulty = difficulty;
+    }
     // Kaspa pushes mining.set_difficulty [diff] (a float). Stash it and precompute the BE share target;
     // the next mining.notify (which carries no target) picks it up via kaspaNotifyJob.
-    if (poolProtocol(pool) === "kaspa" || poolProtocol(pool) === "hoosat") {
-      pool.kaspa_difficulty = json.params[0];
-      pool.kaspa_target = kaspaDiffToTarget(json.params[0]);
+    if (protocol === "kaspa" || protocol === "hoosat") {
+      pool.kaspa_difficulty = difficulty;
+      pool.kaspa_target = kaspaDiffToTarget(raw);
+    }
+    if (protocol === "echelon") {
+      pool.nexa_difficulty = difficulty;
+      pool.nexa_target = h.ethDiff2Target(difficulty);
     }
   }
 
@@ -632,7 +740,8 @@ module.exports = ({
   }
 
   function fixedAlgoJobName(json, fallback) {
-    return normalizeAlgoName(json.algo || (global.opt.job && global.opt.job.algo) || fallback);
+    const messageAlgo = typeof json.algo === "string" ? json.algo : null;
+    return normalizeAlgoName(messageAlgo || global.opt.job.algo || fallback) || fallback;
   }
 
   function validHexBytes(value, bytes) {
@@ -725,15 +834,79 @@ module.exports = ({
   }
 
   function jobFromPoolMessage(pool_id, json) {
-    const pool = global.opt.pools[pool_id];
+    const pool = poolAt(pool_id);
+    if (json.id === 1 && hasLoginJob(json)) {
+      if (!isLoginJob(json)) {
+        throw new Error("Malformed login job: expected response id 1");
+      }
+      const rawJob = json.result.job;
+      const messageAlgo = json.result["algo"] ?? rawJob["algo"];
+      const loginAlgo = typeof messageAlgo === "string" ? normalizeAlgoName(messageAlgo) : null;
+      const nativePearl = (loginAlgo === "pearlhash" || poolProtocol(pool) === "pearlhash") &&
+        typeof rawJob["header"] === "string";
+      const job = nativePearl
+        ? pearlHashJob(pool, rawJob, messageAlgo)
+        : loginJobWithResultMetadata(json.result);
+      if (!job) {
+        throw new Error("Malformed login job");
+      }
+      pool.logged_in = true;
+      return commitSubmitMode(nativePearl ? "pearlhash" : null, job);
+    }
+    if (!pool.logged_in) {
+      return null;
+    }
+    const protocol = poolProtocol(pool);
+
+    if (protocol === "cortex" && isCortexWorkResponse(json)) {
+      return commitSubmitMode("cortex", cortexWorkJob(pool, json));
+    }
     if (isPearlHashJobNotification(json) &&
-        (poolProtocol(pool) === "pearlhash" || pool.last_job?.submit_mode === "pearlhash")) {
-      if (!pool.logged_in) {return null;}
+        (protocol === "pearlhash" || pool.last_job?.submit_mode === "pearlhash")) {
       return commitSubmitMode("pearlhash", pearlHashJob(pool, json.params, json.algo));
     }
-
-    if (poolProtocol(pool) === "conflux" && isConfluxJobNotification(json)) {
-      if (!pool.logged_in) {return null;}
+    if (protocol !== "pearlhash" && isJobNotification(json)) {
+      if (!isPoolJob(json.params)) {
+        throw new Error("Invalid generic pool job");
+      }
+      return commitSubmitMode(null, json.params);
+    }
+    if (protocol === "raven" && isRavenJobNotification(json)) {
+      const jobId = poolJobId(json.params[0]);
+      const headerHash = validHexBytes(json.params[1], 32);
+      const seedHash = validHexBytes(json.params[2], 32);
+      if (jobId === null || !headerHash || !seedHash) {return null;}
+      const job = nonceAt32Job(pool, {
+        // raven dialect is shared by kawpow/firopow/evrprogpow; resolve the actual algo from the job,
+        // the configured global job, or the pool pass (falling back to kawpow) so firopow/evrprogpow
+        // pools select the right seal/epoch instead of always hashing kawpow.
+        algo: fixedAlgoJobName(json, algoFromPass(pool) || "kawpow"),
+        header_hash: headerHash,
+        seed_hash: seedHash,
+        target: ravenTarget(pool, json.params[3]),
+        job_id: jobId,
+        height: poolHeight(json.params[5], "Raven"),
+      });
+      return commitSubmitMode("raven", job);
+    }
+    if (protocol === "verthash" && isVerthashJobNotification(json)) {
+      return commitSubmitMode("verthash", verthashNotifyJob(pool, json));
+    }
+    if (protocol === "eth" && isEthJobNotification(json)) {
+      const jobId = poolJobId(json.params[0]);
+      const seedHash = validHexBytes(json.params[1], 32);
+      const headerHash = validHexBytes(json.params[2], 32);
+      if (jobId === null || !seedHash || !headerHash) {return null;}
+      const job = nonceAt32Job(pool, {
+        algo: fixedAlgoJobName(json, "etchash"),
+        header_hash: headerHash,
+        seed_hash: seedHash,
+        target: ethTarget(pool),
+        job_id: jobId,
+      });
+      return commitSubmitMode("eth", job);
+    }
+    if (protocol === "conflux" && isConfluxJobNotification(json)) {
       const jobId = poolJobId(json.params[0]);
       const headerHash = validHexBytes(json.params[2], 32);
       if (jobId === null || !headerHash) {return null;}
@@ -758,149 +931,98 @@ module.exports = ({
       });
       return commitSubmitMode("conflux", job);
     }
-    if (poolProtocol(pool) === "xelis" && isXelisJobNotification(json)) {
-      if (!pool.logged_in) {return null;}
-      return commitSubmitMode("xelis", xelisNotifyJob(pool, json));
-    }
-    if (poolProtocol(pool) === "echelon" && isNexaJobNotification(json)) {
-      if (!pool.logged_in) {return null;}
+    if (protocol === "echelon" && isNexaJobNotification(json)) {
       return commitSubmitMode("echelon", nexaNotifyJob(pool, json));
-    }
-    if (poolProtocol(pool) === "cortex" && (json.id === 100 || json.id === 0) &&
-        Array.isArray(json.result) && json.result.length >= 3) {
-      if (!pool.logged_in) return null;
-      const job = cortexWorkJob(pool, json);
-      if (job) {pool.submit_mode = job.submit_mode = "cortex";}
-      return job;
-    }
-    if (isJobNotification(json)) {
-      if (!pool.logged_in) {return null;}
-      pool.submit_mode = null;
-      return json.params;
-    }
-    if (poolProtocol(pool) === "raven" && isRavenJobNotification(json)) {
-      if (!pool.logged_in) {return null;}
-      pool.submit_mode = "raven";
-      return nonceAt32Job(pool, {
-      // raven dialect is shared by kawpow/firopow/evrprogpow; resolve the actual algo from the job,
-      // the configured global job, or the pool pass (falling back to kawpow) so firopow/evrprogpow
-      // pools select the right seal/epoch instead of always hashing kawpow.
-        algo: fixedAlgoJobName(json, algoFromPass(pool) || "kawpow"),
-        header_hash: hexWithoutPrefix(json.params[1]),
-        seed_hash: hexWithoutPrefix(json.params[2]),
-        target: ravenTarget(pool, json.params[3]),
-        job_id: json.params[0],
-        height: json.params[5],
-      });
-    }
-    if (poolProtocol(pool) === "verthash" && isVerthashJobNotification(json)) {
-      if (!pool.logged_in) {return null;}
-      const job = commitSubmitMode("verthash", verthashNotifyJob(pool, json));
-      if (job) {pool.submit_mode = "verthash";}
-      return job;
-    }
-    if (poolProtocol(pool) === "eth" && isEthJobNotification(json)) {
-      if (!pool.logged_in) {return null;}
-      pool.submit_mode = "eth";
-      return nonceAt32Job(pool, {
-        algo: fixedAlgoJobName(json, "etchash"),
-        header_hash: hexWithoutPrefix(json.params[2]),
-        seed_hash: hexWithoutPrefix(json.params[1]),
-        target: ethTarget(pool),
-        job_id: json.params[0],
-      });
     }
     if (usesEthProxy(pool) && isEthProxyWork(json)) {
       if (!pool.logged_in) {return null;}
       const headerHash = hexWithoutPrefix(json.result[0]);
-      pool.submit_mode = "ethproxy";
-      return nonceAt32Job(pool, {
+      return commitSubmitMode("ethproxy", nonceAt32Job(pool, {
         algo: fixedAlgoJobName(json, "etchash"),
         header_hash: headerHash,
         seed_hash: hexWithoutPrefix(json.result[1]),
         target: hexWithoutPrefix(json.result[2]).padStart(64, "0"),
         job_id: headerHash, // ethproxy has no job_id field; the header hash uniquely identifies the job
         height: parseHexHeight(json.result[3]),
-      });
+      }));
     }
-    if (poolProtocol(pool) === "erg" && isErgJobNotification(json)) {
-      if (!pool.logged_in) {return null;}
-      pool.submit_mode = "erg";
+    if (protocol === "erg" && isErgJobNotification(json)) {
+      const jobId = poolJobId(json.params[0]);
+      const headerHash = validHexBytes(json.params[2], 32);
+      const rawNtime = json.params[7];
+      const ntime = rawNtime === undefined || rawNtime === "" ? "" : validHexBytes(rawNtime, 4);
+      if (jobId === null || !headerHash || (rawNtime !== undefined && rawNtime !== "" && !ntime)) {
+        return null;
+      }
+      const targetValue = unsignedDecimal(
+        json.params[6], (1n << 256n) - 1n, "Autolykos2 target");
+      if (targetValue === 0n) {throw new Error("Autolykos2 target must be positive");}
+      const extraNonce = poolExtraNonce(pool);
       const job = nonceAt32Job(pool, {
         algo: fixedAlgoJobName(json, "autolykos2"),
-        header_hash: hexWithoutPrefix(json.params[2]),
-        target: ergTarget(json.params[6]),
-        job_id: json.params[0],
-        height: json.params[1],
-        ntime: hexWithoutPrefix(json.params[7]),
+        header_hash: headerHash,
+        target: h.decimalTargetToHex(targetValue.toString()),
+        job_id: jobId,
+        height: poolHeight(json.params[1], "Autolykos2"),
+        ntime,
+        extra_nonce: extraNonce,
+        extra_nonce2_size: pool.extra_nonce2_size ?? Math.max(0, 8 - Math.ceil(extraNonce.length / 2)),
       });
-      rememberErgSubmitJob(pool, job);
-      return job;
+      return commitSubmitMode("erg", job);
     }
-    if (poolProtocol(pool) === "zelhash" && isZelHashJobNotification(json)) {
-      if (!pool.logged_in) {return null;}
-      pool.submit_mode = "zelhash";
-      return zelhashNotifyJob(pool, json);
+    if (protocol === "zelhash" && isZelHashJobNotification(json)) {
+      return commitSubmitMode("zelhash", zelhashNotifyJob(pool, json));
     }
-    if (poolProtocol(pool) === "ironfish" && isIronfishJobNotification(json)) {
-      if (!pool.logged_in) {return null;}
-      pool.submit_mode = "ironfish";
+    if (protocol === "ironfish" && isIronfishJobNotification(json)) {
       const body = json.body;
-      return {
+      const requestId = poolJobId(body["miningRequestId"]);
+      const header = validHexBytes(body["header"], 180);
+      if (requestId === null || !header) {return null;}
+      /** @type {PoolJob} */
+      const job = {
         algo: fixedAlgoJobName(json, "fishhash"),
-        blob: hexWithoutPrefix(body.header), // the 180-byte block header (first 8 bytes = randomness)
-        job_id: body.miningRequestId,
+        blob: header, // 180-byte header.
+        job_id: requestId,
         noncebytes: 8,
         nonceoffset: 0,
-        target: pool.ironfish_target,
         xn: pool.ironfish_xn || "",
       };
+      if (pool.ironfish_target !== undefined) {job.target = pool.ironfish_target;}
+      return commitSubmitMode("ironfish", job);
     }
-    if ((poolProtocol(pool) === "kaspa" || poolProtocol(pool) === "hoosat") && isKaspaJobNotification(json)) {
-      if (!pool.logged_in) {return null;}
-      pool.submit_mode = poolProtocol(pool);
-      return commitSubmitMode(pool.submit_mode, kaspaNotifyJob(pool, json));
+    if ((protocol === "kaspa" || protocol === "hoosat") && isKaspaJobNotification(json)) {
+      return commitSubmitMode(protocol, kaspaNotifyJob(pool, json));
     }
-    if (poolProtocol(pool) === "beam" && isBeamJobNotification(json)) {
-      if (!pool.logged_in) {return null;}
-      pool.submit_mode = "beam";
-      if (typeof json.difficulty === "number") {pool.beam_difficulty = json.difficulty;}
-      const packed = typeof json.difficulty === "number" ? json.difficulty : (pool.beam_difficulty || 0);
-      return {
+    if (protocol === "xelis" && isXelisJobNotification(json)) {
+      return commitSubmitMode("xelis", xelisNotifyJob(pool, json));
+    }
+    if (protocol === "beam" && isBeamJobNotification(json)) {
+      const jobId = poolJobId(json.id);
+      const input = validHexBytes(json.input, 32);
+      if (jobId === null || !input) {return null;}
+      const rawPacked = json.difficulty ?? pool.beam_difficulty;
+      const target = beamPackedTarget(rawPacked);
+      const packed = typeof rawPacked === "number" ? rawPacked : Number(rawPacked);
+      const job = {
         algo:        "beamhash3",
-        header_hash: hexWithoutPrefix(json.input),   // 64hex = 32-byte prework (goes at blob offset 0)
-        job_id:      String(json.id),
+        header_hash: input,                           // 64hex = 32-byte prework (goes at blob offset 0)
+        job_id:      jobId,
         difficulty:  packed,                          // raw packed int32, for reporting
-        target:      beamPackedTarget(packed),        // native re-derives the packed int from the target
+        target,                                       // native re-derives the packed int from the target
+        // A retained job resumes with its accepted prefix, even after later pool settings change.
+        xn: pool.beam_nonceprefix ?? "",
       };
-    }
-    if (isLoginJob(json) &&
-        (normalizeAlgoName(json.result?.algo || json.result?.job?.algo || global.opt.job.algo) === "pearlhash" ||
-         poolProtocol(pool) === "pearlhash") && typeof json.result?.job?.header === "string") {
-      const job = pearlHashJob(pool, json.result.job, json.result.algo);
-      if (!job) {throw new Error("Malformed PearlHash login job");}
-      pool.logged_in = true;
-      if ("id" in json.result) {pool.worker_id = json.result.id;}
-      applyLoginExtensions(pool_id, json.result.extensions);
-      pool.submit_mode = "pearlhash";
-      return commitSubmitMode("pearlhash", job);
-    }
-    if (isLoginJob(json)) {
-      pool.logged_in = true;
-      pool.submit_mode = null;
-      if ("id" in json.result) {pool.worker_id = json.result.id;}
-      rememberPoolExtraNonceHex(pool_id, json.result.extra_nonce);
-      applyLoginExtensions(pool_id, json.result.extensions);
-      return loginJobWithResultMetadata(json.result);
+      pool.beam_difficulty = packed;
+      return commitSubmitMode("beam", job);
     }
     return null;
   }
 
   return {
-    isObject, isIronfishSetTargetNotification, isRavenSetTargetNotification,
+    isObject, isIronfishSetTargetNotification, isSetTargetNotification,
     isSetDifficultyNotification, isSetExtranonceNotification, hexWithoutPrefix,
     validExtraNonce, rememberPoolExtraNonceHex, rememberSubscribeExtraNonce,
-    switchPool, handleRavenSetTarget, handleEthSetTarget, handleZelHashSetTarget,
-    handleIronfishSetTarget, rememberXelisExtranonce, handleSetDifficulty, jobFromPoolMessage,
+    switchPool,
+    handleIronfishSetTarget, handleSetTarget, rememberXelisExtranonce, handleSetDifficulty, jobFromPoolMessage,
   };
 };

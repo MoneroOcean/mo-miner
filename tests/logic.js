@@ -6,6 +6,8 @@ describe("JavaScript logic tests", () => {
   require("./logic/core");
   require("./logic/mining");
   require("./logic/pool");
+  require("./logic/proxy_submit");
+  require("./logic/proxy_pool");
   require("./logic/pow_protocols");
   require("./logic/zelhash");
   require("./logic/fishhash");

@@ -31,31 +31,34 @@ test("Iron Fish pools build fishhash jobs from object stratum notify", async () 
   });
 });
 
-test("Iron Fish submit uses mining.submit object body", async () => {
-  const miner = await loadMinerWithStubs();
-  miner.global.opt.pools[0].submit_mode = "ironfish";
-
-  miner.messageHandler({
-    type: "result",
-    value: {
-      pool_id: 0,
-      worker_id: "worker",
-      job_id: "17",
-      nonce: "0000000000000005",
+test("Iron Fish submit preserves pool ID and emits the v3 body", async () => {
+  const cases = [
+    {job_id: 17},
+    {job_id: "17"},
+  ];
+  for (const item of cases) {
+    const miner = await loadMinerWithStubs();
+    const job = {job_id: item.job_id, job_token: "token", submit_mode: "ironfish"};
+    miner.global.opt.pools[0].last_job = job;
+    const nonce = "0000000000000005";
+    const value = {
+      pool_id: "0", worker_id: "internal-worker", job_id: "17", job_token: "token", nonce,
       hash: "00".repeat(32),
-    },
-  });
+    };
 
-  assert.equal(miner.poolWrites.length, 1);
-  assert.equal(JSON.stringify(miner.poolWrites[0].json), JSON.stringify({
-    id: 2,
-    method: "mining.submit",
-    body: {
-      miningRequestId: "17",
-      randomness: "0000000000000005",
-      graffiti: "00".repeat(32),
-    },
-  }));
+    miner.messageHandler({thread_id: 0, type: "result", value});
+
+    assert.equal(miner.poolWrites.length, 1);
+    const write = miner.poolWrites[0];
+    assert.ok(write);
+    assert.equal(write.json.id, 2);
+    assert.equal(write.json.method, "mining.submit");
+    assert.deepEqual(write.json["body"], {
+      miningRequestId: item.job_id, randomness: nonce,
+    });
+    assert.equal(value.nonce, nonce);
+    assert.equal(miner.global.opt.pools[0].last_job, job);
+  }
 });
 
 test("Kaspa-family pools build 80-byte jobs from exact 64-bit notify words", async () => {
@@ -97,15 +100,17 @@ test("Kaspa-family pools build 80-byte jobs from exact 64-bit notify words", asy
 
 test("Kaspa-family submit uses mining.submit [wallet.worker, job_id, 0x+nonce]", async () => {
   const miner = await loadMinerWithStubs();
-  miner.global.opt.pools[0].submit_mode = "kaspa";
   miner.global.opt.pools[0].login = "kaspa:qzwallet.mom";
+  miner.global.opt.pools[0].last_job = {job_id: "7a", job_token: "token", submit_mode: "kaspa"};
 
   miner.messageHandler({
+    thread_id: 0,
     type: "result",
     value: {
-      pool_id: 0,
+      pool_id: "0",
       worker_id: "worker",
       job_id: "7a",
+      job_token: "token",
       // native nonce_to_hex(%016PRIx64): the winning 8-byte nonce big-endian; the extranonce (high
       // bytes) leads, so the pool re-parses it big-endian with no further work -- pass it through as-is.
       nonce: "56e0000000abcdef",
@@ -114,8 +119,10 @@ test("Kaspa-family submit uses mining.submit [wallet.worker, job_id, 0x+nonce]",
   });
 
   assert.equal(miner.poolWrites.length, 1);
-  assert.equal(miner.poolWrites[0].json.method, "mining.submit");
-  assert.equal(JSON.stringify(miner.poolWrites[0].json.params), JSON.stringify([
+  const write = miner.poolWrites[0];
+  assert.ok(write);
+  assert.equal(write.json.method, "mining.submit");
+  assert.equal(JSON.stringify(write.json.params), JSON.stringify([
     "kaspa:qzwallet.mom",
     "7a",
     "0x56e0000000abcdef",

@@ -31,18 +31,32 @@ module.exports = ({
 
   function poolLoginParams(pool) {
     const algos = [];
+    /** @type {Record<string, number>} */
     const algo_perfs = {};
-    for (const algo in global.opt.algo_params) {
-      if (!global.opt.algo_params[algo].perf) {continue;}
-      const poolAlgo = poolAlgoName(algo);
+    const algoParams = pool.algo_params || global.opt.algo_params;
+    const fixedAlgo = normalizeAlgoName(global.opt.job.algo);
+    for (const [algo, params] of Object.entries(algoParams)) {
+      const perf = params?.perf;
+      const measured = typeof perf === "number" && Number.isFinite(perf) && perf > 0;
+      // A fixed unbenchmarked job still advertises its capability so a proxy cannot assign a
+      // default algorithm; omitting its unknown rate is safer than inventing one.
+      if (!measured && algo !== fixedAlgo) {continue;}
+      // The pool's historical KawPow identifier is kawpow1, and cycle-algorithm performance is
+      // reported in solutions rather than raw edges.
+      const poolAlgo = algo === "kawpow" ? "kawpow1" : algo;
       algos.push(poolAlgo);
-      algo_perfs[poolAlgo] = normalizedPoolAlgoPerf(algo, global.opt.algo_params[algo].perf);
+      if (measured) {algo_perfs[poolAlgo] = algo === "c29" ? perf / 42 : perf;}
     }
-    if (normalizeAlgoName(global.opt.job.algo) === "pearlhash" &&
-        !algos.some((algo) => normalizeAlgoName(algo) === "pearlhash")) {algos.push("pearlhash");}
+    pool.requested_algos = algos.map((algo) => normalizeAlgoName(algo) || algo);
+    pool.requested_extensions = algos.length ? ["mo-native"] : [];
+    // The proxy treats submit-result as a connection-wide promise, including after a switch.
+    if (algos.length) {
+      pool.requested_extensions.push("submit-result");
+    }
     return {
       login: pool.login, pass: pool.pass, agent: o.agent_str,
-      algo: algos, "algo-perf": algo_perfs
+      algo: algos, "algo-perf": algo_perfs,
+      ...(pool.requested_extensions.length ? {extensions: pool.requested_extensions} : {}),
     };
   }
 
@@ -55,17 +69,6 @@ module.exports = ({
     const worker = typeof pool.worker === "string" && pool.worker.length > 0
       ? pool.worker : embeddedWorker || "mom";
     return {wallet, worker, pass: pool.pass};
-  }
-
-  function poolAlgoName(algo) {
-  // Historical mom KawPow perf values were already raw H/s.
-    return algo === "kawpow" ? "kawpow1" : algo;
-  }
-
-  function normalizedPoolAlgoPerf(algo, perf) {
-  // Cycle algorithms are reported to the pool in solutions per second.
-    if (algo === "c29") {return perf / 42;}
-    return perf;
   }
 
   function parsePoolLine(pool_id, message) {
@@ -168,6 +171,11 @@ module.exports = ({
       return poolWrite(pool_id, {
         id: 72, jsonrpc: "2.0", method: "ctxc_submitLogin",
         params: [pool.login], worker: pool.worker || "mom",
+      });
+    }
+    if (pool.use_subscribe === false) {
+      return poolWrite(pool_id, {
+        jsonrpc: "2.0", id: 1, method: "login", params: poolLoginParams(pool)
       });
     }
     if (poolProtocol(pool) === "conflux") {

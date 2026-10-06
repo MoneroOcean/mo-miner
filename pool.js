@@ -86,27 +86,60 @@ function pool_log1(pool_id, str)    { h.log1(pool_log_str(pool_id, str)); }
 function pool_log2(pool_id, str)    { h.log2(pool_log_str(pool_id, str)); }
 function pool_log_err(pool_id, str) { h.log_err(pool_log_str(pool_id, str)); }
 
-function clear_pool_connection(pool_id, socket) {
-  const pool = global.opt.pools[pool_id];
-  if (socket && !isCurrentPoolSocket(pool_id, socket)) {return false;}
-  clearPoolKeepalive(pool);
-  if (pool.socket) {pool.socket.destroy();}
-  pool.socket   = null;
-  pool.last_job = null;
-  delete pool.pearlhash_difficulty;
-  delete pool.pearlhash_proof_encodings;
-  pool.logged_in = false;
-  pool.pending_authorize = false;
-  pool.pending_cortex_login = false;
-  pool.pending_cortex_work = false;
-  delete pool.pending_cortex_submit_ids;
+function clearPoolJobState(pool) {
+  delete pool.beam_difficulty;
+  delete pool.beam_nonceprefix;
   delete pool.cortex_nonce;
+  delete pool.eth_difficulty;
+  delete pool.eth_target;
+  delete pool.extra_nonce;
+  delete pool.extra_nonce2_size;
+  delete pool.ironfish_target;
+  delete pool.ironfish_xn;
+  delete pool.kaspa_difficulty;
+  delete pool.kaspa_target;
   delete pool.nexa_difficulty;
   delete pool.nexa_target;
+  delete pool.pearlhash_difficulty;
+  delete pool.pearlhash_proof_encodings;
+  delete pool.raven_target;
+  delete pool.stratum_target;
   delete pool.verthash_difficulty;
   delete pool.xelis_difficulty;
   delete pool.xelis_extra_nonce;
   delete pool.xelis_public_key;
+  delete pool.zelhash_target;
+  delete pool.pending_job;
+}
+
+function clear_pool_connection(pool_id, socket) {
+  const pool = poolAt(pool_id);
+  if (socket && !isCurrentPoolSocket(pool_id, socket)) {
+    return false;
+  }
+  clearPoolKeepalive(pool);
+  if (pool.socket) {
+    pool.socket.destroy();
+  }
+  pool.socket = null;
+  pool.last_job = null;
+  clearPoolJobState(pool);
+  delete pool.inferred_protocol;
+  delete pool.negotiated_keepalive;
+  delete pool.negotiated_nicehash;
+  delete pool.worker_id;
+  delete pool.extensions;
+  delete pool.requested_extensions;
+  delete pool.requested_algos;
+  delete pool.job_algo;
+  delete pool.pending_controls;
+  delete pool.pending_cortex_submit_ids;
+  pool.pending_cortex_login = false;
+  pool.pending_cortex_work = false;
+  pool.pending_subscribe = false;
+  pool.logged_in = false;
+  pool.pending_authorize = false;
+  pool.pending_submit_count = 0;
   return true;
 }
 
@@ -161,6 +194,9 @@ function defaultPoolProtocol() {
 }
 
 function poolProtocol(pool) {
+  if (pool.extensions?.includes("mo-native") && pool.inferred_protocol) {
+    return pool.inferred_protocol;
+  }
   const protocol = pool.protocol || pool.inferred_protocol || defaultPoolProtocol();
   return typeof protocol === "string" && protocol.toLowerCase() === "xelis" ? "xelis" : protocol;
 }
@@ -235,12 +271,13 @@ module.exports.pool_write = function(pool_id, json) {
   pool_log_json(pool_id, 2, "Sent to the pool: ", json);
   pool.socket.write(message + "\n");
   // sends keepalive if no submit/keepalive to pool for more than global.opt.pool_time.keepalive
-  if (!pool.is_keepalive || usesMiningSubscribe(pool) || usesEthProxy(pool) || pearlhashUsesSubscribe(pool) || usesIronfish(pool)) {return;}
+  if (!(pool.is_keepalive || pool.negotiated_keepalive) || usesMiningSubscribe(pool) || usesEthProxy(pool) || pearlhashUsesSubscribe(pool) || usesIronfish(pool) || usesCortex(pool)) {return;}
   clearPoolKeepalive(pool);
   pool.keepalive = setTimeout(function() {
     pool.keepalive = null;
+    const params = pool.worker_id === undefined ? {} : {id: pool.worker_id};
     module.exports.pool_write(pool_id, {
-      jsonrpc: "2.0", id: 2, method: "keepalive", params: {}
+      jsonrpc: "2.0", id: 2, method: "keepalived", params
     });
   }, global.opt.pool_time.keepalive * 1000);
 };
@@ -274,10 +311,13 @@ function poolErrorText(pool_id, error) {
 }
 
 function applyLoginExtensions(pool_id, extensions) {
-  if (!Array.isArray(extensions)) {return;}
-  const pool = global.opt.pools[pool_id];
-  if (extensions.includes("nicehash")) {pool.is_nicehash = true;}
-  if (extensions.includes("keepalive")) {pool.is_keepalive = true;}
+  if (!Array.isArray(extensions)) {
+    return;
+  }
+  const pool = poolAt(pool_id);
+  pool.extensions = (pool.requested_extensions || []).filter((name) => extensions.includes(name));
+  pool.negotiated_nicehash = extensions.includes("nicehash");
+  pool.negotiated_keepalive = extensions.includes("keepalive");
 }
 
 function algoFromPass(pool) {
@@ -295,26 +335,100 @@ function xelisAuthorizeParams(pool) {
 }
 
 function rememberPoolProtocol(pool_id, result) {
-  const pool = global.opt.pools[pool_id];
-  if (pool.protocol) {return;}
-  const protocol = protocolForAlgo((result && result.algo) || algoFromPass(pool));
-  if (!protocol) {return;}
-  pool.inferred_protocol = protocol;
-  if (usesMiningSubscribe(pool) || usesEthProxy(pool)) {clearPoolKeepalive(pool);}
+  const pool = poolAt(pool_id);
+  if (pool.protocol && !pool.extensions?.includes("mo-native")) {
+    return;
+  }
+  const offered = pool.use_subscribe === false && pool.algo_params
+    ? Object.keys(pool.algo_params) : [];
+  let resultAlgo = null;
+  if (isObject(result)) {
+    if (typeof result["algo"] === "string") {
+      resultAlgo = result["algo"];
+    } else if (isObject(result["job"]) && typeof result["job"]["algo"] === "string") {
+      resultAlgo = result["job"]["algo"];
+    }
+  }
+  const protocol = protocolForAlgo(
+    resultAlgo || (offered.length === 1 ? offered[0] : null) || algoFromPass(pool)
+  );
+  if (!protocol && !resultAlgo) {
+    return;
+  }
+  pool.inferred_protocol = protocol || "login";
+  if (usesMiningSubscribe(pool) || usesEthProxy(pool)) {
+    clearPoolKeepalive(pool);
+  }
+}
+
+function messageAlgorithm(value) {
+  if (!isObject(value)) {return "";}
+  const nested = isObject(value["params"]) ? value["params"] :
+    isObject(value["job"]) ? value["job"] : null;
+  const outer = typeof value["algo"] === "string" ? normalizeAlgoName(value["algo"]) || "" : "";
+  const inner = typeof nested?.["algo"] === "string" ? normalizeAlgoName(nested["algo"]) || "" : "";
+  if (outer && inner && outer !== inner) {throw new Error("Conflicting pool algorithm markers");}
+  return outer || inner;
+}
+
+function preparePoolFamily(pool_id, algo) {
+  const pool = poolAt(pool_id);
+  if (!pool.requested_algos?.includes(algo)) {
+    throw new Error("Pool assigned an unadvertised algorithm: " + algo);
+  }
+  if (pool.job_algo && pool.job_algo !== algo) {clearPoolJobState(pool);}
+  pool.job_algo = algo;
+  pool.inferred_protocol = protocolForAlgo(algo) || "login";
+}
+
+function rememberExtraNonceSize(pool, value) {
+  if (value === undefined) {return;}
+  const size = typeof value === "number" ? value :
+    typeof value === "string" && /^\d+$/.test(value) ? Number(value) : Number.NaN;
+  if (!Number.isInteger(size) || size < 0 || size > 8) {
+    throw new Error("Invalid extra_nonce2_size");
+  }
+  pool.extra_nonce2_size = size;
+}
+
+function controlKind(json) {
+  if (isSetTargetNotification(json) || isIronfishSetTargetNotification(json)) {return "target";}
+  if (isSetDifficultyNotification(json)) {return "difficulty";}
+  return isSetExtranonceNotification(json) ? "extranonce" : "";
+}
+
+function applyPoolControl(pool_id, json) {
+  const pool = poolAt(pool_id);
+  if (isSetTargetNotification(json)) {return handleSetTarget(pool_id, json.params[0]);}
+  if (isIronfishSetTargetNotification(json)) {return handleSetTarget(pool_id, json.body["target"]);}
+  if (isSetDifficultyNotification(json)) {return handleSetDifficulty(pool_id, json);}
+  if (isSetExtranonceNotification(json)) {
+    if (poolProtocol(pool) === "xelis") {return rememberXelisExtranonce(pool_id, json.params);}
+    const value = json.params[0];
+    const prefix = validExtraNonce(value);
+    if (!prefix && value !== "") {throw new Error("Invalid pool extranonce");}
+    rememberPoolExtraNonceHex(pool_id, prefix);
+    if (poolProtocol(pool) === "ironfish") {pool.ironfish_xn = prefix;}
+    if (poolProtocol(pool) === "beam") {
+      if (prefix.length > 12) {throw new Error("Invalid Beam nonce prefix");}
+      pool.beam_nonceprefix = prefix;
+    }
+    rememberExtraNonceSize(pool, json.params[1]);
+  }
 }
 
 const poolJobs = require("./pool/jobs")({
   h, normalizeAlgoName, poolAt, poolProtocol, usesEthProxy, pearlhashUsesSubscribe,
   pearlhashDiffFromJobId, pearlhashNbitsBound, beamPackedTarget, pool_close_wait,
-  pool_log, pool_str, algoFromPass, applyLoginExtensions,
+  pool_log, pool_str, algoFromPass,
   connectPoolThrottle: (...args) => module.exports.connect_pool_throttle(...args),
 });
 const {
-  isObject, isIronfishSetTargetNotification, isRavenSetTargetNotification,
+  isObject, isIronfishSetTargetNotification, isSetTargetNotification,
   isSetDifficultyNotification, isSetExtranonceNotification, hexWithoutPrefix,
   validExtraNonce, rememberPoolExtraNonceHex, rememberSubscribeExtraNonce,
-  switchPool, rememberXelisExtranonce, handleRavenSetTarget, handleEthSetTarget, handleZelHashSetTarget,
-  handleIronfishSetTarget, handleSetDifficulty, jobFromPoolMessage,
+  switchPool, rememberXelisExtranonce,
+  handleIronfishSetTarget, handleSetTarget, handleSetDifficulty, jobFromPoolMessage,
 } = poolJobs;
 module.exports.switch_pool = switchPool;
 function jobTargetWork(job) {
@@ -373,13 +487,35 @@ function poolActivator(pool_id) {
 }
 
 function handlePoolJob(pool_id, job, set_job) {
-  activatePoolForJob(pool_id, global.opt.pool_ids.active);
+  const pool = poolAt(pool_id);
+  const algo = normalizeAlgoName(job.algo || pool.job_algo || global.opt.job.algo);
+  if (!algo) {throw new Error("Pool job has no algorithm");}
+  if (pool.extensions?.includes("mo-native")) {
+    if (algo !== pool.job_algo) {throw new Error("Decoded pool job does not match its algorithm marker");}
+    if (job.submit_mode == null && job.xn === undefined && pool.extra_nonce !== undefined &&
+        pool.extra_nonce2_size !== undefined) {
+      const width = job.noncebytes ?? (algo === "c29" && job.blob ? 8 : 4);
+      if ((width !== 4 && width !== 8) || pool.extra_nonce.length / 2 + pool.extra_nonce2_size !== width) {
+        throw new Error("Pool extranonce does not fit the job nonce");
+      }
+      job.xn ??= pool.extra_nonce;
+      job.extra_nonce ??= pool.extra_nonce;
+      job.extra_nonce2_size ??= pool.extra_nonce2_size;
+      job.noncebytes ??= width;
+      if (job.xn === "") {job.nicehash_mask ??= "00".repeat(width);}
+    }
+  }
+  job.algo = algo;
   if (job.target) {
     // Pearl's K/rank are selected by set_job; validate the final threshold before that selection.
     if (algo === "pearlhash") {h.target256ToWork(job.target);} else {jobTargetWork(job);}
   } // throws early on a malformed target before we store the job
+  activatePoolForJob(pool_id, global.opt.pool_ids.active);
 
-  global.opt.pools[pool_id].last_job = job;
+  job.submit_mode ??= null;
+  job.protocol = poolProtocol(pool);
+  job.submit_result = pool.extensions?.includes("submit-result") === true;
+  pool.last_job = job;
   if (pool_id === global.opt.pool_ids.active) {
     const last_job = set_job(job);
     pool_log(pool_id, "Got new " + last_job.algo + " algo job with " +
@@ -387,7 +523,7 @@ function handlePoolJob(pool_id, job, set_job) {
                      (last_job.height ? " and " + last_job.height + " height" : "")
     );
   } else {
-    pool_log2(pool_id, "Storing not active pool job " + JSON.stringify(job));
+    pool_log_json(pool_id, 2, "Storing not active pool job ", job);
   }
 }
 
@@ -456,18 +592,31 @@ function handlePoolResponse(pool_id, json) {
     if (!is_err && !is_ok) {err_msg = poolErrorText(pool_id, json.result[1]);}
   }
   const result = handler(pool_id, is_err, is_ok, err_msg, json);
-  if (!is_err && is_ok) {rememberPoolResponseMetadata(pool_id, json.result);}
+  if (handler !== ignorePoolResponse && !is_err && is_ok && json.id === 1) {
+    rememberPoolResponseMetadata(pool_id, json.result);
+  }
   return result;
 }
 
 function rememberPoolResponseMetadata(pool_id, result) {
-  if (!isObject(result)) {return;}
+  if (!isObject(result)) {
+    return;
+  }
 
-  const pool = global.opt.pools[pool_id];
-  if ("id" in result) {pool.worker_id = result.id;}
-  rememberPoolExtraNonceHex(pool_id, result.extra_nonce);
+  const pool = poolAt(pool_id);
+  const worker_id = result["id"];
+  if (typeof worker_id === "string" ||
+      (typeof worker_id === "number" && Number.isSafeInteger(worker_id))) {
+    pool.worker_id = worker_id;
+  }
+  applyLoginExtensions(pool_id, result["extensions"]);
+  const algo = messageAlgorithm(result);
+  if (algo && pool.extensions?.includes("mo-native")) {
+    preparePoolFamily(pool_id, algo);
+  }
+  rememberPoolExtraNonceHex(pool_id, result["extra_nonce"]);
+  rememberExtraNonceSize(pool, result["extra_nonce2_size"]);
   rememberPoolProtocol(pool_id, result);
-  applyLoginExtensions(pool_id, result.extensions);
 }
 
 function ignorePoolResponse() {
@@ -482,6 +631,10 @@ function normalizedResponseId(id) {
 
 function poolResponseHandler(pool_id, id) {
   const pool = global.opt.pools[pool_id];
+  if (typeof id !== "string" && !(typeof id === "number" && Number.isSafeInteger(id))) {
+    return ignorePoolResponse;
+  }
+  if (id === 1 && pool.requested_extensions !== undefined) {return handleLoginResponse;}
   if (usesCortex(pool)) {
     if (id === 72) return pool.pending_cortex_login ? handleLoginResponse : ignorePoolResponse;
     if (id === 100) {
@@ -567,44 +720,75 @@ function handleBeamResult(pool_id, json) {
 }
 
 function pool_message(pool_id, json, set_job) {
-  const cortexPool = global.opt.pools[pool_id];
-  if (usesCortex(cortexPool)) {
+  const responseEnvelope = typeof json.method !== "string" && Object.hasOwn(json, "id") &&
+    (Object.hasOwn(json, "result") || Object.hasOwn(json, "error"));
+  if (responseEnvelope) {
     const responseId = normalizedResponseId(json.id);
-    if (responseId !== json.id) json = {...json, id: responseId};
-    if (json.id === 100 && cortexPool.pending_cortex_work &&
-        "error" in json && json.error !== null)
-      return handlePoolResponse(pool_id, json);
+    if (responseId !== json.id) {json = {...json, id: responseId};}
   }
-  if (poolProtocol(global.opt.pools[pool_id]) === "beam" && isBeamResult(json))
-  {return handleBeamResult(pool_id, json);}
-  if (handleIronfishMessage(pool_id, json, set_job)) {return;}
-  if (isRavenSetTargetNotification(json)) {
-    const protocol = poolProtocol(global.opt.pools[pool_id]);
-    if (protocol === "eth") {return handleEthSetTarget(pool_id, json);}
-    if (protocol === "zelhash") {return handleZelHashSetTarget(pool_id, json);}
-    return handleRavenSetTarget(pool_id, json);
+  // A login response must be routed using the dialect that sent the login. Pushed messages may
+  // announce the assigned algorithm before their protocol-specific fields are decoded.
+  const pool = poolAt(pool_id);
+  const nativeSwitching = pool.extensions?.includes("mo-native") === true;
+  const jobAnnouncement = json.method === "job" || json.method === "mining.notify";
+  if (!nativeSwitching && typeof json.method === "string") {
+    rememberPoolProtocol(pool_id, json);
   }
-  if (isSetDifficultyNotification(json)) {return handleSetDifficulty(pool_id, json);}
-  if (poolProtocol(global.opt.pools[pool_id]) === "xelis" && json.method === "mining.ping") {
-    return module.exports.pool_write(pool_id, {jsonrpc: "2.0", id: json.id, method: "mining.pong"});
-  }
-  if (isSetExtranonceNotification(json)) {
-    if (poolProtocol(global.opt.pools[pool_id]) === "xelis") {return rememberXelisExtranonce(pool_id, json.params);}
-    rememberPoolExtraNonceHex(pool_id, json.params[0]);
-    if (Number.isInteger(Number(json.params[1])))
-    {global.opt.pools[pool_id].extra_nonce2_size = Number(json.params[1]);}
+  const kind = controlKind(json);
+  if (kind) {
+    if (!nativeSwitching) {return applyPoolControl(pool_id, json);}
+    const algo = messageAlgorithm(json);
+    if (algo && !pool.requested_algos?.includes(algo)) {return;}
+    // Retain one control per kind/advertised family (plus unmarked). A stale marked control
+    // must not overwrite an unmarked setting intended for the next job.
+    pool.pending_controls = (pool.pending_controls || []).filter((pending) =>
+      controlKind(pending) !== kind || messageAlgorithm(pending) !== algo);
+    pool.pending_controls.push(json);
     return;
   }
-  const pool = global.opt.pools[pool_id];
-  if (usesCortex(pool) && json.id === 100 && !pool.pending_cortex_work) return;
+  if (nativeSwitching && jobAnnouncement) {
+    const algo = messageAlgorithm(json) || pool.job_algo;
+    if (!algo) {throw new Error("Native pool job has no algorithm");}
+    preparePoolFamily(pool_id, algo);
+    const controls = pool.pending_controls || [];
+    delete pool.pending_controls;
+    for (const control of controls) {
+      const markedAlgo = messageAlgorithm(control);
+      if (!markedAlgo || markedAlgo === algo) {applyPoolControl(pool_id, control);}
+    }
+    json = {...json, algo};
+  }
+  if (poolProtocol(pool) === "beam" && isBeamResult(json)) {
+    return handleBeamResult(pool_id, json);
+  }
+  if (handleIronfishMessage(pool_id, json, set_job)) {
+    return;
+  }
+  if (poolProtocol(pool) === "xelis" && json.method === "mining.ping") {
+    return module.exports.pool_write(pool_id, {jsonrpc: "2.0", id: json.id, method: "mining.pong"});
+  }
+  if (usesCortex(pool) && json.id === 100 && pool.pending_cortex_work &&
+      "error" in json && json.error !== null) {
+    return handlePoolResponse(pool_id, json, set_job);
+  }
+  // Miningcore answers the initial getWork as id 100, then pushes new protocol-v1 work as id 0.
+  if (usesCortex(pool) && json.id === 100 && !pool.pending_cortex_work) {return;}
   const job = jobFromPoolMessage(pool_id, json);
   if (job) {
-    if (usesCortex(pool) && json.id === 100) pool.pending_cortex_work = false;
+    if (usesCortex(pool) && json.id === 100) {pool.pending_cortex_work = false;}
+    if (json.id === 1 && isObject(json.result) && Object.hasOwn(json.result, "job")) {
+      rememberPoolResponseMetadata(pool_id, json.result);
+    }
     return handlePoolJob(pool_id, job, set_job);
   }
-  if ("id" in json) {return handlePoolResponse(pool_id, json);}
+  if (nativeSwitching && jobAnnouncement) {
+    throw new Error("Invalid native pool job");
+  }
+  if (responseEnvelope) {
+    return handlePoolResponse(pool_id, json, set_job);
+  }
 
-  pool_log1(pool_id, "Unknown message from the pool: " + JSON.stringify(json));
+  pool_log_json(pool_id, 1, "Unknown message from the pool: ", json);
 }
 
 const { connectPoolThrottle } = require("./pool/connection")({

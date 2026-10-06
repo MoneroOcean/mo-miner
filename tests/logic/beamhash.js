@@ -40,16 +40,18 @@ test("BeamHash III pools build jobs from login nonceprefix and job push", async 
 
 test("BeamHash III submit uses solution message with raw nonce byte order", async () => {
   const miner = await loadMinerWithStubs();
-  miner.global.opt.pools[0].submit_mode = "beam";
   miner.global.opt.pools[0].login = "beamwallet.worker";
+  miner.global.opt.pools[0].last_job = {job_id: "beam-job", job_token: "token", submit_mode: "beam"};
   const solution = "ab".repeat(104);
 
   miner.messageHandler({
+    thread_id: 0,
     type: "result",
     value: {
-      pool_id: 0,
+      pool_id: "0",
       worker_id: "worker",
       job_id: "beam-job",
+      job_token: "token",
       nonce: "a1b2000000000007",
       hash: "00".repeat(32),
       solution,
@@ -57,7 +59,9 @@ test("BeamHash III submit uses solution message with raw nonce byte order", asyn
   });
 
   assert.equal(miner.poolWrites.length, 1);
-  assert.equal(JSON.stringify(miner.poolWrites[0].json), JSON.stringify({
+  const write = miner.poolWrites[0];
+  assert.ok(write);
+  assert.equal(JSON.stringify(write.json), JSON.stringify({
     jsonrpc: "2.0",
     id: "beam-job",
     method: "solution",

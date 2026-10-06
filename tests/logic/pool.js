@@ -364,11 +364,12 @@ test("job notification before login success does not start mining", async () => 
 });
 
 test("login job inherits height from login result metadata", async () => {
-  let jobMessage = null;
-  await withMockPool({}, async ({ socket }) => {
-    pool.connect_pool_throttle(0, (job) => {
-      jobMessage = job;
-      return job;
+  /** @type {PoolJob[]} */
+  const jobs = [];
+  await withMockPool({}, async ({socket, poolConfig}) => {
+    pool.connect_pool_throttle(0, /** @param {PoolJob} job */ (job) => {
+      jobs.push(job);
+      return keepMiningJob(job);
     });
     socket.emit("data", Buffer.from(JSON.stringify({
       id: 1,
@@ -380,13 +381,29 @@ test("login job inherits height from login result metadata", async () => {
         job: {
           algo: "etchash",
           blob: "00".repeat(32),
+          job_id: "login-job",
           seed_hash: "11".repeat(32),
           target: "00000000ffff0000000000000000000000000000000000000000000000000000",
         },
       },
     }) + "\n"));
 
-    assert.equal(jobMessage.height, 1799914);
+    assert.equal(jobs.length, 1);
+    const firstJob = jobs[0];
+    assert.ok(firstJob);
+    assert.equal(firstJob.height, 1799914);
+    assert.equal(poolConfig.inferred_protocol, "eth");
+
+    socket.emit("data", Buffer.from(JSON.stringify({
+      method: "mining.notify",
+      params: ["notify-job", "11".repeat(32), "22".repeat(32), true],
+    }) + "\n"));
+
+    assert.equal(jobs.length, 2);
+    const secondJob = jobs[1];
+    assert.ok(secondJob);
+    assert.equal(secondJob.job_id, "notify-job");
+    assert.equal(secondJob.algo, "etchash");
   });
 });
 
@@ -446,7 +463,7 @@ test("non-C29 pool jobs preserve provided blob_hex and nonceoffset", async () =>
 
   setJob({
     algo: "cn/0",
-    blob_hex: "abcd",
+    blob_hex: "ab".repeat(11),
     nonceoffset: 7,
     difficulty: 1,
     id: "worker",
@@ -454,7 +471,9 @@ test("non-C29 pool jobs preserve provided blob_hex and nonceoffset", async () =>
   });
 
   const jobMessage = miner.sentMessages.find((msg) => msg.type === "job");
-  assert.equal(jobMessage.job.blob_hex, "abcd");
+  assert.ok(jobMessage);
+  assert.ok(jobMessage.job);
+  assert.equal(jobMessage.job.blob_hex, "ab".repeat(11));
   assert.equal(jobMessage.job.nonceoffset, 7);
 });
 
@@ -893,4 +912,68 @@ test("Pearl rejects malformed final jackpot targets before accepting a job", asy
       assert.equal(socket.destroyed, true);
     });
   }
+});
+
+test("login-dialect keepalived carries the upstream worker id and reschedules", async () => {
+  await withMockPool({
+    pool: {is_keepalive: true, use_subscribe: false},
+    pool_time: {keepalive: 0.02, first_job_wait: 0.001},
+  }, async ({socket, writes, poolConfig}) => {
+    pool.connect_pool_throttle(0, unexpectedPoolJob);
+    socket.emit("connect");
+    poolConfig.last_job = {};
+    socket.emit("data", Buffer.from(JSON.stringify({
+      jsonrpc: "2.0", id: 1, error: null,
+      result: {id: "upstream-session", extensions: ["keepalive"]},
+    }) + "\n"));
+    assert.equal(poolConfig.worker_id, "upstream-session");
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    const firstKeepalive = writes.find((message) => message.method === "keepalived");
+    assert.deepEqual(firstKeepalive, {
+      jsonrpc: "2.0", id: 2, method: "keepalived", params: {id: "upstream-session"},
+    });
+    socket.emit("data", Buffer.from(
+      '{"jsonrpc":"2.0","id":2,"error":null,"result":true}\n'
+    ));
+    assert.equal(poolConfig.good_shares, 0);
+    assert.equal(poolConfig.bad_shares, 0);
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.ok(writes.filter((message) => message.method === "keepalived").length >= 2);
+  });
+});
+
+test("login-dialect keepalived omits an unavailable worker id", async () => {
+  await withMockPool({
+    pool: {is_keepalive: true, use_subscribe: false},
+    pool_time: {keepalive: 0.01, first_job_wait: 0.001},
+  }, async ({socket, writes, poolConfig}) => {
+    pool.connect_pool_throttle(0, unexpectedPoolJob);
+    socket.emit("connect");
+    poolConfig.last_job = {};
+    socket.emit("data", Buffer.from(
+      '{"jsonrpc":"2.0","id":1,"error":null,"result":{}}\n'
+    ));
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    assert.deepEqual(writes.find((message) => message.method === "keepalived"), {
+      jsonrpc: "2.0", id: 2, method: "keepalived", params: {},
+    });
+  });
+});
+
+test("subscribe-only pools do not schedule login-dialect keepalived", async () => {
+  await withMockPool({
+    pool: {is_keepalive: true, protocol: "eth"},
+    pool_time: {keepalive: 0.01},
+  }, async ({socket, writes, poolConfig}) => {
+    pool.connect_pool_throttle(0, unexpectedPoolJob);
+    socket.emit("connect");
+    poolConfig.last_job = {};
+    assert.ok(writes[0]);
+    assert.equal(writes[0].method, "mining.subscribe");
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    assert.equal(writes.some((message) => message.method === "keepalived"), false);
+    assert.equal(poolConfig.keepalive, null);
+  });
 });

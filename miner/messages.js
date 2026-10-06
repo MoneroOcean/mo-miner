@@ -36,6 +36,17 @@ module.exports = ({
     return value !== null && typeof value === "object" && !Array.isArray(value);
   }
 
+  function poolAt(pool_id) {
+    const index = typeof pool_id === "number" ? pool_id :
+      typeof pool_id === "string" && /^\d+$/.test(pool_id) ? Number(pool_id) : -1;
+    return Number.isSafeInteger(index) && Object.hasOwn(opt.pools, index)
+      ? opt.pools[index] || null : null;
+  }
+
+  function invalidWorkerMessage() {
+    return h.log_err("Invalid compute core message");
+  }
+
   function isWorkerResult(value) {
     if (!isObject(value)) {return false;}
     const jobId = value["job_id"];
@@ -106,115 +117,112 @@ module.exports = ({
   }
 
   function handleResult(msg) {
+    if (!isWorkerResult(msg.value)) {return invalidWorkerMessage();}
     const v = msg.value;
-    const pool = opt.pools[v.pool_id];
-    const submit_mode = pool && (((pool.last_job?.algo === "walahash" &&
-      pool.last_job?.submit_mode === "kaspa") || pool.last_job?.submit_mode === "pearlhash" || pool.last_job?.submit_mode === "cortex" ||
-      pool.last_job?.submit_mode === "echelon" ||
-      pool.last_job?.submit_mode === "conflux" ||
-      pool.last_job?.submit_mode === "verthash" ||
-      pool.last_job?.submit_mode === "xelis") ? pool.last_job.submit_mode : pool.submit_mode);
-    const send = (body) => p.pool_write(v.pool_id, { jsonrpc: "2.0", id: 3, ...body });
-
-    if (submit_mode === "verthash") {
-      if (!isWorkerResult(v)) {return h.log_err("Invalid compute core message");}
-      const job = matchingPoolJob(pool, v);
-      if (!job) {return;}
-      return send({method: "mining.submit", params: submission.verthashSubmitParams(pool, job, v)});
+    const pool_id = Number(v.pool_id);
+    const pool = poolAt(pool_id);
+    if (!pool) {
+      return invalidWorkerMessage();
     }
+    const job = matchingPoolJob(pool, v);
+    if (!job) {return;}
+    const jobId = job.job_id;
+    if (typeof jobId !== "string" && typeof jobId !== "number") {
+      return invalidWorkerMessage();
+    }
+    const submit_mode = job.submit_mode;
+    const nativeResult = job.submit_result === true && typeof v.hash === "string"
+      ? v.hash.toLowerCase() : null;
+    const send = (/** @type {UnknownRecord} */ body) =>
+      p.pool_write(pool_id, {jsonrpc: "2.0", id: 3, ...body,
+        ...(body["method"] === "mining.submit" && nativeResult !== null ? {result: nativeResult} : {})});
+    const submit = (/** @type {unknown[] | UnknownRecord | null} */ params) => params
+      ? send({method: "mining.submit", params}) : invalidWorkerMessage();
+    // The native worker may stringify IDs; forward the stored pool ID after token/string matching.
 
     // PearlHash: relay each captured proof; distinct winning seeds can share a job/header.
     // Token matching above excludes stale work without suppressing subsequent proofs.
     if (submit_mode === "pearlhash") {
-      if (!isWorkerResult(v) || typeof v.plain_proof !== "string" ||
-          typeof v.jackpot !== "string" || typeof v.adjustment_factor !== "string") {return h.log_err("Invalid compute core message");}
+      if (typeof v.plain_proof !== "string" || typeof v.jackpot !== "string" ||
+          typeof v.adjustment_factor !== "string") {return invalidWorkerMessage();}
       const rawProof = decodePearlProof(v.plain_proof);
-      if (rawProof === null) {return h.log_err("Invalid compute core message");}
-      const job = matchingPoolJob(pool, v);
-      if (!job) {return;}
+      if (rawProof === null) {return invalidWorkerMessage();}
       const gzip = pool.pearlhash_proof_encodings?.includes("gzip") === true;
       let plainProof = v.plain_proof;
       if (gzip) {
         try {
           plainProof = zlib.gzipSync(rawProof).toString("base64");
         } catch {
-          return h.log_err("Invalid compute core message");
+          return invalidWorkerMessage();
         }
       }
       return send({method: "mining.submit", params: {
-        job_id: job.job_id,
+        job_id: jobId,
         plain_proof: plainProof,
         ...(gzip ? {proof_encoding: "gzip"} : {}),
         jackpot: v.jackpot,
         adjustment_factor: Number(v.adjustment_factor),
       }});
     }
-    if (submit_mode === "erg")
-    {return send({ method: "mining.submit", params: submission.ergSubmitParams(pool, v) });}
-    // Equihash 125,4 (Flux/ZIP-301): mining.submit [worker, job_id, time(8hex), nonce2(hex), solution(hex)].
-    // The native solver returns the 8-byte search counter (v.nonce, big-endian hex) + the 106-hex
-    // 0x34-prefixed 52-byte solution (v.solution). Rebuild nonce2 = the 32-byte header nonce minus the
-    // pool's nonce1 prefix, with the search counter written little-endian at its nonceoffset.
-    if (submit_mode === "zelhash")
-    {return send({ method: "mining.submit",
-      params: [pool.login, v.job_id, submission.zelhashSubmitNtime(pool),
-        submission.zelhashNonce2(pool, v.nonce), v.solution] });}
-    // Iron Fish custom OBJECT stratum: submit {miningRequestId, randomness (8-byte BE nonce), graffiti}.
-    if (submit_mode === "ironfish")
-    {return p.pool_write(v.pool_id, { id: 2, method: "mining.submit",
-      body: { miningRequestId: v.job_id, randomness: v.nonce, graffiti: "00".repeat(32) } });}
+    if (submit_mode === "erg") {
+      return submit(submission.ergSubmitParams(pool, job, v));
+    }
+    if (submit_mode === "verthash") {
+      return submit(submission.verthashSubmitParams(pool, job, v));
+    }
+    if (submit_mode === "echelon") {
+      return submit(submission.nexaSubmitParams(pool, job, v));
+    }
+    // ZIP-301 Equihash: mining.submit [worker, job_id, time, nonce2, compactSize-prefixed solution].
+    // Rebuild nonce2 from the native search counter and the job's fixed nonce prefix/tail.
+    if (submit_mode === "zelhash") {
+      if (typeof v.solution !== "string") {return invalidWorkerMessage();}
+      return submit(submission.zelhashSubmitParams(pool, job, v, v.solution));
+    }
+    // Iron Fish custom OBJECT Stratum v3: submit {miningRequestId, randomness (8-byte BE nonce)}.
+    if (submit_mode === "ironfish") {
+      // Preserve the pool's request-ID type; the worker job_id is only used for matching.
+      const message = {id: 2, method: "mining.submit",
+        body: {miningRequestId: jobId, randomness: v.nonce},
+        ...(nativeResult === null ? {} : {result: nativeResult})};
+      return p.pool_write(pool_id, message);
+    }
     // Kaspa-family submit: mining.submit [wallet.worker, job_id, nonce_hex].
     // The native returns the winning 8-byte nonce as 16-hex big-endian (nonce_to_hex %016PRIx64); the
     // pool parses it big-endian with the extranonce as the leading bytes, which is exactly this layout.
     if (submit_mode === "kaspa") {
-      if (pool.last_job?.algo === "walahash") {
-        if (!isWorkerResult(v)) {return h.log_err("Invalid compute core message");}
-        const job = matchingPoolJob(pool, v);
-        if (!job) {return;}
-        return send({method: "mining.submit", params: [pool.login, job.job_id, "0x" + v.nonce]});
-      }
-      return send({ method: "mining.submit", params: [pool.login, v.job_id, "0x" + v.nonce] });
+      return send({method: "mining.submit", params: [pool.login, jobId, "0x" + v.nonce]});
     }
     if (submit_mode === "hoosat") {
-      if (typeof v.hash !== "string") {return h.log_err("Invalid compute core message");}
-      return send({method: "mining.submit", params: [pool.login, v.job_id, "0x" + v.nonce, v.hash]});
-    }
-    if (submit_mode === "echelon") {
-      if (!isWorkerResult(v)) {return h.log_err("Invalid compute core message");}
-      const job = matchingPoolJob(pool, v);
-      if (!job) {return;}
-      return send({method: "mining.submit", params: submission.nexaSubmitParams(pool, job, v)});
+      if (typeof v.hash !== "string") {return invalidWorkerMessage();}
+      return send({method: "mining.submit", params: [pool.login, jobId, "0x" + v.nonce, v.hash]});
     }
     if (submit_mode === "xelis") {
-      if (!isWorkerResult(v)) {return h.log_err("Invalid compute core message");}
-      const job = matchingPoolJob(pool, v);
-      if (!job) {return;}
-      // Preserve an opaque numeric pool ID; the worker string only matches the current job.
-      return send({method: "mining.submit", params: [xelisWorkerName(pool), job.job_id, v.nonce]});
+      // Preserve an opaque numeric pool ID; the worker string is used only to match the current job.
+      return send({method: "mining.submit", params: [xelisWorkerName(pool), jobId, v.nonce]});
     }
     if (submit_mode === "conflux") {
-      if (!isWorkerResult(v)) {return h.log_err("Invalid compute core message");}
-      const job = matchingPoolJob(pool, v);
-      if (!job) {return;}
       const headerHash = resultHeaderHash(v, job);
-      if (!headerHash) {return h.log_err("Invalid compute core message");}
-      return send({method: "mining.submit", params: [pool.login, job.job_id,
+      if (!headerHash) {return invalidWorkerMessage();}
+      return send({method: "mining.submit", params: [pool.login, jobId,
         "0x" + v.nonce,
         "0x" + headerHash]});
     }
     if (submit_mode === "cortex") {
-      const job = pool.last_job;
-      if (!job || String(job.job_id) !== String(v.job_id) ||
-          typeof v.job_token !== "string" || v.job_token !== job.job_token) return;
-      if (typeof v.nonce !== "string" || !/^[0-9a-f]{1,16}$/i.test(v.nonce) ||
-          typeof v.edges !== "string" || !/^[0-9a-f]{336}$/i.test(v.edges))
-        return h.log_err("Invalid compute core message");
       const headerHash = resultHeaderHash(v, job);
-      if (!/^[0-9a-f]{64}$/i.test(headerHash))
-        return h.log_err("Invalid compute core message");
+      if (!headerHash || typeof v.edges !== "string" || v.edges.length !== 42 * 8) {
+        return invalidWorkerMessage();
+      }
+      // C30 can find another proof before the prior response arrives. Distinct JSON-RPC IDs keep
+      // those responses unambiguous even when a pool processes submissions concurrently.
       let pending = pool.pending_cortex_submit_ids;
-      if (!pending) {pending = new Set(); pool.pending_cortex_submit_ids = pending;}
-      if (pending.size >= cortex_pending_limit) return h.log_err("Too many pending Cortex submissions");
+      if (!pending) {
+        pending = new Set();
+        pool.pending_cortex_submit_ids = pending;
+      }
+      if (pending.size >= cortex_pending_limit) {
+        return h.log_err("Too many pending Cortex submissions");
+      }
       const requestId = nextCortexSubmitId();
       pending.add(requestId);
       return send({id: requestId, method: "ctxc_submitWork",
@@ -222,37 +230,62 @@ module.exports = ({
         worker: pool.worker || "mom"});
     }
     if (submit_mode === "beam") {
-    // Beam JSON-RPC `solution`: TOP-LEVEL {id, nonce(16hex), output(208hex=104B)}. The native emits the
-    // nonce as the big-endian hex of the LE-stored 8-byte blob nonce, so reverse it back to the raw
-    // blob byte order the pool (and the nonceprefix) expect. The 104-byte solution is already raw.
+      // Beam JSON-RPC `solution`: TOP-LEVEL {id, nonce(16hex), output(208hex=104B)}. The native emits the
+      // nonce as the big-endian hex of the LE-stored 8-byte blob nonce, so reverse it back to the raw
+      // blob byte order the pool (and the nonceprefix) expect. The 104-byte solution is already raw.
+      if (typeof v.nonce !== "string" || typeof v.solution !== "string" ||
+          !/^[0-9a-f]{208}$/i.test(v.solution) ||
+          !/^[0-9a-f]{16}$/i.test(v.nonce)) {
+        return invalidWorkerMessage();
+      }
       return send({
-        id: v.job_id, method: "solution",
+        id: jobId, method: "solution",
         nonce: submission.reverseHexBytes(v.nonce), output: v.solution,
       });
     }
 
-    const params = { id: v.worker_id, job_id: v.job_id, nonce: v.nonce, result: v.hash };
-    if (v.mix_hash) {
-      const headerJob = pool && pool.last_job &&
-        (!pool.last_job.job_id || !v.job_id || pool.last_job.job_id === v.job_id)
-        ? pool.last_job : {};
-      const headerHash = resultHeaderHash(v, headerJob);
-      if (submit_mode === "ethproxy")
-      {return send({ method: "eth_submitWork",
-        params: ["0x" + v.nonce, "0x" + headerHash.slice(0, 64), "0x" + v.mix_hash] });}
-      if (submit_mode === "raven" || submit_mode === "eth")
-      {return send({ method: "mining.submit",
-        params: [pool.login, v.job_id, "0x" + v.nonce, "0x" + headerHash.slice(0, 64), "0x" + v.mix_hash] });}
-      params.mixhash = v.mix_hash;
-      if (headerHash) {params.header_hash = headerHash.slice(0, 64);}
+    /** @type {SubmitParams} */
+    const params = {job_id: jobId, nonce: v.nonce};
+    params.id = v.worker_id;
+    if (v.hash !== undefined) {params.result = v.hash;}
+    if (submit_mode === "raven" || submit_mode === "eth") {
+      if (typeof v.mix_hash !== "string") {return invalidWorkerMessage();}
+      const headerHash = resultHeaderHash(v, job);
+      if (!headerHash) {return invalidWorkerMessage();}
+      return send({method: "mining.submit",
+        params: [pool.login, jobId, "0x" + v.nonce, "0x" + headerHash,
+          "0x" + v.mix_hash]});
     }
-    if (v.commitment) {params.commitment = v.commitment;}
+    if (submit_mode === "ethproxy" && typeof v.mix_hash === "string") {
+      const headerHash = resultHeaderHash(v, job);
+      if (!headerHash) {return invalidWorkerMessage();}
+      return send({method: "eth_submitWork",
+        params: ["0x" + v.nonce, "0x" + headerHash, "0x" + v.mix_hash]});
+    }
+    if (v.mix_hash) {
+      const headerHash = resultHeaderHash(v, job);
+      params.mixhash = v.mix_hash;
+      if (headerHash) {
+        params.header_hash = headerHash;
+      }
+    }
+    if (v.commitment) {
+      params.commitment = v.commitment;
+    }
     if (v.edges) {
+      const proofsize = job.proofsize ?? 42;
+      if (typeof proofsize !== "number" || !Number.isSafeInteger(proofsize) || proofsize <= 0 ||
+          v.edges.length !== proofsize * 8) {
+        return invalidWorkerMessage();
+      }
       params.pow = h.edge_hex2arr(v.edges);
       // for proofsize == 42 (Tari C29) we return nonce hex as usual
-      if (params.pow.length !== 42) {params.nonce = Number.parseInt(params.nonce, 16);}
+      if (params.pow.length !== 42) {
+        params.nonce = Number.parseInt(v.nonce, 16);
+      }
     }
-    send({ method: "submit", params: params });
+    if (!v.hash && !v.mix_hash && !v.commitment && !v.edges) {return invalidWorkerMessage();}
+    return send({method: "submit", params});
   }
 
   function xelisWorkerName(pool) {
@@ -269,28 +302,55 @@ module.exports = ({
 
   // store max last nonce for background pool job to resume it from there
   function handleLastNonce(msg) {
-    const pool_id = msg.value.pool_id;
+    const pool_id = msg.value["pool_id"];
     // pool_id can be "" for benchmark jobs. can not use === here since
     // opt.pool_ids.active is integer here
-    if (!shouldStoreLastNonce(pool_id)) {return;}
-    const job = opt.pools[pool_id].last_job;
-    if (job.algo === "c30" && (job.job_token !== msg.value.job_token ||
-        String(job.job_id) !== String(msg.value.job_id))) return;
-    if (job.algo === "verthash" && !matchingPoolJob(opt.pools[pool_id], msg.value)) {return;}
+    if (pool_id === "") {
+      return;
+    }
+    const pool = poolAt(pool_id);
+    const nonce = msg.value["nonce"];
+    const job_id = msg.value["job_id"];
+    const job_token = msg.value["job_token"];
+    if (!pool || !isNonce(nonce) || !isJobId(job_id) ||
+        typeof job_token !== "string" || job_token.length === 0 ||
+        job_token.length > MAX_JOB_TOKEN_CHARS) {
+      return invalidWorkerMessage();
+    }
+    if (!shouldStoreLastNonce(pool_id)) {
+      return;
+    }
+    const job = matchingPoolJob(pool, {job_id, job_token});
+    if (!job) {return;}
+    if (job.noncebytes !== undefined &&
+        !submission.isValidNonce(nonce, job.noncebytes, job.xn, job.algo === "beamhash3")) {
+      return invalidWorkerMessage();
+    }
     const prev_nonce = job.nonce;
-    const new_nonce  = msg.value.nonce;
-    if (isNewerNonce(prev_nonce, new_nonce))
-    {opt.pools[pool_id].last_job.nonce = new_nonce;}
+    const new_nonce = nonce;
+    if (isNewerNonce(prev_nonce, new_nonce)) {
+      job.nonce = new_nonce;
+    }
   }
 
   function shouldStoreLastNonce(pool_id) {
-  // eslint-disable-next-line eqeqeq -- pool_id is "" | number; loose != is intentional coercion
-    return pool_id !== "" && pool_id != opt.pool_ids.active &&
-         opt.pools[pool_id].last_job;
+    return Number(pool_id) !== opt.pool_ids.active;
+  }
+
+  function isNonce(value) {
+    return typeof value === "string" && /^[0-9a-f]{1,16}$/i.test(value);
+  }
+
+  function isJobId(value) {
+    return (typeof value === "string" && value.length > 0 && value.length <= 256) ||
+      (typeof value === "number" && Number.isSafeInteger(value));
   }
 
   function isNewerNonce(prev_nonce, new_nonce) {
-    return !prev_nonce || BigInt("0x" + prev_nonce) < BigInt("0x" + new_nonce);
+    if (typeof prev_nonce === "number" && Number.isSafeInteger(prev_nonce) && prev_nonce >= 0) {
+      return BigInt(prev_nonce) < BigInt("0x" + new_nonce);
+    }
+    return !isNonce(prev_nonce) || BigInt("0x" + prev_nonce) < BigInt("0x" + new_nonce);
   }
 
   function isRandomXAlgo(algo) {
