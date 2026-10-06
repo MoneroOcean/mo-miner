@@ -35,6 +35,7 @@ struct PearlHashResult {
   uint32_t row;
   uint32_t col;
   uint32_t chk;
+  uint8_t jackpot[32];
 };
 
 #define DEV __device__ __forceinline__
@@ -85,8 +86,8 @@ DEV void b3_keyed_64(const uint32_t block[16], const uint8_t* key, uint32_t out[
   for (int i = 0; i < 8; ++i) out[i] = s[i] ^ s[i + 8];
 }
 
-DEV bool tile_wins(const uint32_t tr[16], const uint8_t* key, const uint8_t* target) {
-  uint32_t jackpot[8];
+DEV bool tile_wins(const uint32_t tr[16], const uint8_t* key, const uint8_t* target,
+                   uint32_t jackpot[8]) {
   b3_keyed_64(tr, key, jackpot);
   for (int i = 31; i >= 0; --i) {
     const uint8_t byte = (uint8_t)(jackpot[i >> 2] >> ((i & 3) * 8));
@@ -205,10 +206,17 @@ void pearlhash_hash_search(const uint32_t* transcript, const uint8_t* key, const
   const uint32_t row = (uint32_t)(row_group * PEARLHASH_ER + local_tile / PEARLHASH_EC) * 16u;
   const uint32_t col = (uint32_t)(col_group * PEARLHASH_EC + local_tile % PEARLHASH_EC) * 16u;
   if (debug_checksum) atomicAdd(&result->chk, tile_mix(row, col, tr));
-  if (tile_wins(tr, key, target) && atomicExch(&result->found, 1) == 0) {
+  uint32_t jackpot[8];
+  if (tile_wins(tr, key, target, jackpot) && atomicExch(&result->found, 1) == 0) {
     result->seed = seed;
     result->row = row;
     result->col = col;
+    for (int i = 0; i < 8; ++i) {
+      result->jackpot[i * 4] = (uint8_t)jackpot[i];
+      result->jackpot[i * 4 + 1] = (uint8_t)(jackpot[i] >> 8);
+      result->jackpot[i * 4 + 2] = (uint8_t)(jackpot[i] >> 16);
+      result->jackpot[i * 4 + 3] = (uint8_t)(jackpot[i] >> 24);
+    }
   }
 }
 )===HIP"

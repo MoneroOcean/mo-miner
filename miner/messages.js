@@ -96,11 +96,18 @@ module.exports = ({
       String(job.job_id) === String(value.job_id) ? job : null;
   }
 
+  function decodePearlProof(proof) {
+    if (proof.length > MAX_PEARL_PROOF_BASE64) {return null;}
+    const raw = Buffer.from(proof, "base64");
+    return raw.length > 0 && raw.length <= MAX_PEARL_PROOF_BYTES &&
+      raw.toString("base64") === proof ? raw : null;
+  }
+
   function handleResult(msg) {
     const v = msg.value;
     const pool = opt.pools[v.pool_id];
     const submit_mode = pool && (((pool.last_job?.algo === "walahash" &&
-      pool.last_job?.submit_mode === "kaspa") || pool.last_job?.submit_mode === "cortex" ||
+      pool.last_job?.submit_mode === "kaspa") || pool.last_job?.submit_mode === "pearlhash" || pool.last_job?.submit_mode === "cortex" ||
       pool.last_job?.submit_mode === "echelon" ||
       pool.last_job?.submit_mode === "conflux" ||
       pool.last_job?.submit_mode === "verthash" ||
@@ -114,11 +121,19 @@ module.exports = ({
       return send({method: "mining.submit", params: submission.verthashSubmitParams(pool, job, v)});
     }
 
-    // PearlHash: the worker already built the base64 PlainProof, and the native core emits at most one
-    // solution per unit of work (job_id + header), so just relay it -- no JS-side per-job dedup
-    // (which would mis-fire on HeroMiners' constant job_id).
-    if (submit_mode === "pearlhash")
-    {return send({ method: "mining.submit", params: { job_id: v.job_id, plain_proof: v.plain_proof } });}
+    // PearlHash: relay each captured proof; distinct winning seeds can share a job/header.
+    // Token matching above excludes stale work without suppressing subsequent proofs.
+    if (submit_mode === "pearlhash") {
+      if (!isWorkerResult(v) || typeof v.plain_proof !== "string" ||
+          typeof v.jackpot !== "string" || typeof v.adjustment_factor !== "string" ||
+          decodePearlProof(v.plain_proof) === null) {return h.log_err("Invalid compute core message");}
+      const job = matchingPoolJob(pool, v);
+      if (!job) {return;}
+      return send({method: "mining.submit", params: {
+        job_id: job.job_id, plain_proof: v.plain_proof, jackpot: v.jackpot,
+        adjustment_factor: Number(v.adjustment_factor),
+      }});
+    }
     if (submit_mode === "erg")
     {return send({ method: "mining.submit", params: submission.ergSubmitParams(pool, v) });}
     // Equihash 125,4 (Flux/ZIP-301): mining.submit [worker, job_id, time(8hex), nonce2(hex), solution(hex)].

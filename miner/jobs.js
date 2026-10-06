@@ -1,5 +1,7 @@
 "use strict";
 
+const crypto = require("node:crypto");
+
 module.exports = ({
   h, opt, process, compilerPolicy, gpuTuning, orDefault, nonceOffsetOr, firstTruthyOr,
   hexWithoutPrefix, normalizeAlgoName, messageHandler,
@@ -94,34 +96,98 @@ module.exports = ({
     return (opt.algo_params[algo] && opt.algo_params[algo].tuning) || {};
   }
 
-  function pearlhashShape() {
-    const configured = opt.algo_params.pearlhash || {};
-    const tuning = configured.tuning || {};
-    const gpu = compilerPolicy.gpuFromEnv(process.env);
-    const selected = gpu && compilerPolicy.selection("pearlhash", gpu, process.platform);
+  function pearlhashShape(dev) {
+    const configured = opt.algo_params["pearlhash"];
+    const entries = typeof dev === "string" ? gpuTuning.parseDeviceList(dev, "pearlhash") : [];
+    // CPU workers cannot share every GPU profile. Use a CPU entry as the common job shape when
+    // present; complete GPU tuning is applied independently at the worker boundary.
+    const baseEntry = entries.find((entry) => !entry.device.startsWith("gpu")) || entries[0];
+    const entryTuning = baseEntry?.tuning || {};
+    /** @type {GpuTuning} */
+    const tuning = {...configured?.tuning, ...entryTuning};
+    const usesGpu = baseEntry?.device.startsWith("gpu") === true;
+    const gpu = usesGpu ? compilerPolicy.gpuFromEnv(process.env) : "";
+    const selected = gpu ? compilerPolicy.selection("pearlhash", gpu, process.platform) : null;
     const profile = selected && selected.pearlhashProfile;
+    const m = tuning.m ?? (profile && profile.m) ?? 131072;
     return {
-      m: Number(tuning.m || (profile && profile.m) || 131072),
-      n: Number(tuning.n || (profile && profile.n) || tuning.m ||
-      (profile && profile.m) || 131072),
-      k: Number(tuning.k || (profile && profile.k) || 4096),
-      rank: Number(tuning.rank || (profile && profile.rank) || 256),
+      m,
+      // An explicit M alone means a square matrix, matching per-worker tuning.
+      n: tuning.n ?? (tuning.m !== undefined ? m : (profile && profile.n) ?? m),
+      k: tuning.k ?? (profile && profile.k) ?? 4096,
+      rank: tuning.rank ?? (profile && profile.rank) ?? 256,
     };
   }
 
+  /** @param {number} slot @param {number} stride @param {number} thread_num @returns {string} */
+  function randomPearlSeed(slot, stride, thread_num) {
+    const maximum = 0xffffffffn - BigInt(thread_num - 1) * BigInt(stride);
+    const slotWide = BigInt(slot);
+    if (thread_num < 1 || maximum < slotWide) {
+      throw new Error("PearlHash seed range is exhausted");
+    }
+    const choices = (maximum - slotWide) / BigInt(stride) + 1n;
+    const random = BigInt(crypto.randomBytes(4).readUInt32BE(0));
+    const start = (random % choices) * BigInt(stride) + slotWide;
+    return Number(start).toString(16).padStart(8, "0");
+  }
+
+  /** @param {unknown} value @returns {number | null} */
+  function pearlSeedHexValue(value) {
+    if (typeof value === "number") {
+      return Number.isSafeInteger(value) && value >= 0 && value <= 0xffffffff ? value : null;
+    }
+    if (typeof value !== "string" || !/^[0-9a-f]{1,8}$/i.test(value)) {return null;}
+    return Number.parseInt(value, 16);
+  }
+
+  /** @param {PoolJob} prev_job @param {number} pool_id @returns {string | undefined} */
+  function reusablePearlSeed(prev_job, pool_id) {
+    const last = getLastJob();
+    if (!last || last.algo !== "pearlhash" || last.pool_id !== pool_id) {return undefined;}
+    const input = prev_job.blob || prev_job.blob_hex || "";
+    if (!input || last.blob_hex !== input) {return undefined;}
+    const lastSeed = pearlSeedHexValue(last.nonce);
+    return lastSeed === null ? undefined : lastSeed.toString(16).padStart(8, "0");
+  }
+
+  /** @param {MiningJob} job @param {PoolJob} prev_job @param {number} pool_id */
+  function finalizePearlSeed(job, prev_job, pool_id) {
+    job.nonce = reusablePearlSeed(prev_job, pool_id) ||
+      randomPearlSeed(0, 1, h.get_dev_threads(job.dev));
+    delete job.nonce_stride;
+  }
+
+  /** @param {MiningJob} job */
   function addPearlHashJobFields(job) {
-    const shape = pearlhashShape();
+    const shape = pearlhashShape(job.dev);
+    if (job.pearlhash_cert_version === undefined) {job.pearlhash_cert_version = 3;}
+    if (job.pearlhash_cert_version !== 3) {
+      throw new Error("Unsupported PearlHash certificate version");
+    }
+    if (shape.rank < 128) {
+      throw new Error("PearlHash certificate version 3 requires rank >= 128");
+    }
+    job.noncebytes = 8;
+    job.intensity = shape.m;
     job.pearlhash_n = shape.n;
     job.pearlhash_k = shape.k;
     job.pearlhash_rank = shape.rank;
   }
 
+  /**
+   * @param {PoolJob} prev_job
+   * @param {string} algo
+   * @param {string} dev
+   * @param {number} pool_id
+   * @returns {MiningJob}
+   */
   function baseJob(prev_job, algo, dev, pool_id) {
     const job = {
       algo:       algo,
       dev:        dev,
       seed_hex:   orDefault(prev_job.seed_hash, prev_job.seed_hex),
-      target:     jobTarget(prev_job, algo),
+      target:     algo === "pearlhash" ? "" : jobTarget(prev_job, algo),
       worker_id:  firstTruthyOr(opt.pools[pool_id].worker_id || opt.pools[pool_id].login,
         prev_job.id, prev_job.worker_id),
       job_id:     orDefault(prev_job.job_id, ""),
@@ -135,7 +201,12 @@ module.exports = ({
       backend_request: requestedJobBackend(algo),
       backend:    jobBackend(algo),
     };
-    if (algo === "pearlhash") {addPearlHashJobFields(job);}
+    if (algo === "pearlhash") {
+      if (prev_job.pearlhash_cert_version !== undefined) {job.pearlhash_cert_version = prev_job.pearlhash_cert_version;}
+      if (prev_job.pearlhash_base_target !== undefined) {job.pearlhash_base_target = prev_job.pearlhash_base_target;}
+      addPearlHashJobFields(job);
+      job.target = jobTarget(prev_job, algo, job);
+    }
     return job;
   }
 
@@ -215,13 +286,25 @@ module.exports = ({
     return value;
   }
 
-  function jobTarget(prev_job, algo) {
+  function jobTarget(prev_job, algo, job = {}) {
     const explicitTarget = orDefault(prev_job.target, "");
+    if (algo === "pearlhash") {
+      if (prev_job.pearlhash_base_target) {
+        if (!job.pearlhash_k || !job.pearlhash_rank) {
+          throw new Error("PearlHash job shape is incomplete");
+        }
+        return h.pearlhashTarget(
+          prev_job.pearlhash_base_target, job.pearlhash_k, job.pearlhash_rank,
+          job.pearlhash_cert_version);
+      }
+      if (explicitTarget) {return hexWithoutPrefix(explicitTarget).padStart(64, "0");}
+      return h.fullDiff2Target(validDifficulty(prev_job.difficulty, algo));
+    }
     if (algo === "nexapow") {
       if (explicitTarget) {return hexWithoutPrefix(explicitTarget).padStart(64, "0");}
       return h.fullDiff2Target(prev_job.difficulty);
     }
-    if (algo === "pearlhash" || algo === "c30" || isZelHashAlgo(algo)) {
+    if (algo === "c30" || isZelHashAlgo(algo)) {
     // HeroMiners-style pools precompute the verifier bound (pool.js pearlhashNbitsBound -> prev_job.target);
     // Flux set_target also delivers a 256-bit big-endian hex share target. When a pool does not send a
     // target, use the lenient floor(2^256 / difficulty) fallback.
@@ -344,7 +427,7 @@ module.exports = ({
     "10000000000000001182dc5800000000";
 
   function addStandardJobFields(job, prev_job) {
-    job.noncebytes  = orDefault(prev_job.noncebytes, 4);
+    job.noncebytes  = orDefault(prev_job.noncebytes, job.noncebytes || 4);
     job.blob_hex    = orDefault(prev_job.blob, prev_job.blob_hex);
     job.nonceoffset = nonceOffsetOr(prev_job, job.algo === "ghostrider" ? 76 : 39);
   }
@@ -425,7 +508,8 @@ module.exports = ({
     else {addStandardJobFields(job, prev_job);}
     // BeamHash III seeds its nonce from the pool nonceprefix inside addBeamhash3JobFields; the generic
     // nonce/nicehash defaults would clobber that, so only run them for the other algos.
-    if (algo !== "beamhash3") {addNonceFields(job, prev_job, pool_id);}
+    if (algo === "pearlhash") {finalizePearlSeed(job, prev_job, pool_id);}
+    else if (algo !== "beamhash3") {addNonceFields(job, prev_job, pool_id);}
     else {
       job.nicehash_mask = orDefault(job.nicehash_mask, "0000000000000000");
       job.nonce = orDefault(job.nonce, "0000000000000000");

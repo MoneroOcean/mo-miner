@@ -128,9 +128,18 @@ function target256ToHex(target) {
   return (target > UINT256_MAX ? UINT256_MAX : target).toString(16).padStart(64, "0");
 }
 
+function targetHex(target, maxLength) {
+  const hex = typeof target === "string" ? target.replace(/^0x/i, "") : "";
+  if (!hex || hex.length > maxLength || /[^0-9a-f]/i.test(hex)) {
+    throw new Error("Invalid target");
+  }
+  return hex;
+}
+
 // parse a (possibly 0x-prefixed, short) 256-bit target hex string into a BigInt
 function parseTarget256(target) {
-  return BigInt("0x" + String(target || "").replace(/^0x/i, "").padStart(64, "0"));
+  const hex = targetHex(target, 64);
+  return BigInt("0x" + hex.padStart(64, "0"));
 }
 
 /** @param {unknown} diff @param {bigint} [multiplier=1n] */
@@ -169,6 +178,42 @@ module.exports.target256ToWork = function(target) {
   const div = parseTarget256(target);
   if (div === 0n) {return 0n;}
   return UINT256_MAX / div;
+};
+
+function pearlhashEffectiveK(k, rank) {
+  if (!Number.isSafeInteger(k) || k < 1024 || k > 0x10000 || k % 64 !== 0) {
+    throw new Error("Invalid PearlHash K");
+  }
+  if (!Number.isSafeInteger(rank) || rank < 128 || rank > 1024 ||
+      (rank & (rank - 1)) !== 0) {
+    throw new Error("Invalid PearlHash rank");
+  }
+  if (k < 16 * rank || k > 4 * rank * rank) {
+    throw new Error("Invalid PearlHash K/rank");
+  }
+  return k - (k % rank);
+}
+
+/** @param {unknown} baseTarget @param {number} k @param {number} rank
+ * @param {number} [certVersion] */
+module.exports.pearlhashTarget = function(baseTarget, k, rank, certVersion = 3) {
+  if (certVersion !== 3) {
+    throw new Error("Unsupported PearlHash certificate version");
+  }
+  if (rank < 128) {
+    throw new Error("PearlHash certificate version 3 requires rank >= 128");
+  }
+  const base = parseTarget256(baseTarget);
+  // V3 normalizes the target to rank 128. The miner reports rank-128-equivalent GEMM MACs.
+  const effectiveK = pearlhashEffectiveK(k, rank);
+  const scale = 16n * 16n * BigInt(effectiveK / rank * 128);
+  return target256ToHex(base * scale);
+};
+
+/** @param {unknown} target @param {number} k @param {number} rank */
+module.exports.pearlhashTargetWork = function(target, k, rank) {
+  const scale = 16n * 16n * BigInt(pearlhashEffectiveK(k, rank) / rank * 128);
+  return module.exports.target256ToWork(target) * scale;
 };
 
 // Inverse of target2diff: diff -> compact BE target hex (4 bytes when it fits).

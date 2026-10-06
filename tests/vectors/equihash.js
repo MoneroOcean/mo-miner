@@ -117,13 +117,14 @@ module.exports = [
     // PearlHash is a NoisyGEMM search, not a fixed-hash algo. Test mode uses a compact deterministic
     // matrix (2048 square for `native` so cache-block mapping is covered, 256 otherwise), sets the
     // target to all-0xFF, and runs one attempt, so the core returns "ok".
-    name: "pearlhash gpu1*[m=256]",
+    name: "pearlhash v3 portable gpu1*[m=256]",
     gpu: true,
     syclCpu: true,
     timeoutMs: 10 * 60 * 1000,
     job: {
       algo: "pearlhash",
       dev: "gpu1*[m=256]",
+      pearlhash_cert_version: /** @type {3} */ (3),
       blob_hex: "000040205d1cd9b9049d9f594cd0d05697f99a8a6770bbd59a2aefcf669be71e3b3eb253866bc496a00224b6bdf05ed1983a52622fc90bc3ef86969c27bc0d6686afacdfa9db2c6a21000118",
     },
     expected: "ok",

@@ -99,7 +99,8 @@ module.exports = ({
 
   // pearlpool.cloud pushes mining.notify with OBJECT params {job_id, header, target, difficulty, height, mode}.
   function isPearlHashJobNotification(json) {
-    return json.method === "mining.notify" && isObject(json.params) && typeof json.params.header === "string";
+    return (json.method === "mining.notify" || json.method === "job") && isObject(json.params) &&
+      typeof json.params["header"] === "string";
   }
 
   // Iron Fish uses a custom OBJECT-based stratum: every push is {id, method, body:{...}} (NOT params).
@@ -334,9 +335,60 @@ module.exports = ({
 
   function loginJobWithResultMetadata(result) {
     const job = { ...result.job };
-    for (const key of ["algo", "height", "seed_hash", "target", "difficulty"]) {
+    for (const key of ["algo", "height", "seed_hash", "target", "difficulty", "pearlhash_cert_version"]) {
       if (!(key in job) && key in result) {job[key] = result[key];}
     }
+    return job;
+  }
+
+  function pearlHashJob(pool, params, messageAlgo) {
+    const jobId = poolJobId(params["job_id"]);
+    const header = validHexBytes(params["header"], 76);
+    if (jobId === null || !header) {return null;}
+    const rawTarget = params["target"];
+    const target = typeof rawTarget === "string" ? hexWithoutPrefix(rawTarget) : "";
+    if (rawTarget !== undefined) {
+      if (typeof rawTarget !== "string") {throw new Error("Invalid PearlHash target");}
+      h.target256ToWork(target);
+    }
+    // LuckyPool calls this field "diff"; variable difficulty may arrive separately.
+    const suppliedDifficulty = params["difficulty"] ?? params["diff"];
+    const difficulty = suppliedDifficulty === undefined
+      ? pearlhashDiffFromJobId(jobId) || pool.pearlhash_difficulty
+      : positiveDifficulty(suppliedDifficulty, "PearlHash");
+    const certVersion = params["cert_version"] === undefined
+      ? 3 : poolHeight(params["cert_version"], "PearlHash certificate version");
+    if (certVersion !== 3) {
+      throw new Error("Unsupported PearlHash certificate version");
+    }
+    const advertisedEncodings = params["proof_encodings"];
+    const proofEncodings = Array.isArray(advertisedEncodings) &&
+      advertisedEncodings.length <= 8 &&
+      advertisedEncodings.every((encoding) => typeof encoding === "string")
+      ? [...new Set(advertisedEncodings.filter((encoding) =>
+        encoding === "none" || encoding === "gzip"))]
+      : [];
+    const markedAlgo = typeof messageAlgo === "string" ? messageAlgo :
+      typeof params["algo"] === "string" ? params["algo"] : null;
+    /** @type {PoolJob} */
+    const job = {
+      algo: normalizeAlgoName(markedAlgo || global.opt.job.algo || "pearlhash") || "pearlhash",
+      blob: header, // 76-byte incomplete header (input for the kernel)
+      job_id: jobId,
+      height: params["height"] === undefined ? 0 : poolHeight(params["height"], "PearlHash"),
+      pearlhash_cert_version: certVersion,
+    };
+    if (difficulty !== undefined) {job.difficulty = difficulty;}
+    // Default base targets are scaled after final K/rank tuning. Subscribe pools that already
+    // supply the final jackpot threshold can opt out; the login dialect stays unchanged.
+    if (target) {
+      if (pool.use_subscribe && pool.pearlhash_target_format === "jackpot") {
+        job.target = target;
+      } else {
+        job.pearlhash_base_target = target;
+      }
+    }
+    pool.pearlhash_proof_encodings = proofEncodings;
     return job;
   }
 
@@ -509,7 +561,7 @@ module.exports = ({
     }
     // Var-diff PearlHash pools may push a standalone set_difficulty; stash it so the next job picks
     // it up if the notify itself omits a diff field (otherwise jobTarget would fall back to MAX).
-    if (poolProtocol(pool) === "pearlhash") {pool.pearlhash_difficulty = json.params[0];}
+    if (poolProtocol(pool) === "pearlhash") {pool.pearlhash_difficulty = positiveDifficulty(json.params[0], "PearlHash");}
     // Kaspa pushes mining.set_difficulty [diff] (a float). Stash it and precompute the BE share target;
     // the next mining.notify (which carries no target) picks it up via kaspaNotifyJob.
     if (poolProtocol(pool) === "kaspa" || poolProtocol(pool) === "hoosat") {
@@ -674,6 +726,12 @@ module.exports = ({
 
   function jobFromPoolMessage(pool_id, json) {
     const pool = global.opt.pools[pool_id];
+    if (isPearlHashJobNotification(json) &&
+        (poolProtocol(pool) === "pearlhash" || pool.last_job?.submit_mode === "pearlhash")) {
+      if (!pool.logged_in) {return null;}
+      return commitSubmitMode("pearlhash", pearlHashJob(pool, json.params, json.algo));
+    }
+
     if (poolProtocol(pool) === "conflux" && isConfluxJobNotification(json)) {
       if (!pool.logged_in) {return null;}
       const jobId = poolJobId(json.params[0]);
@@ -779,21 +837,6 @@ module.exports = ({
       rememberErgSubmitJob(pool, job);
       return job;
     }
-    if (poolProtocol(pool) === "pearlhash" && isPearlHashJobNotification(json)) {
-      if (!pool.logged_in) {return null;}
-      pool.submit_mode = "pearlhash";
-      const pp = json.params;
-      return {
-        algo: fixedAlgoJobName(json, "pearlhash"),
-        blob: hexWithoutPrefix(pp.header),   // the 76-byte incomplete header (input for the kernel)
-        job_id: pp.job_id,
-        height: pp.height || 0,
-        difficulty: pp.difficulty || pp.diff || pearlhashDiffFromJobId(pp.job_id) || pool.pearlhash_difficulty, // LuckyPool names it "diff"; var-diff may send it via set_difficulty
-        // HeroMiners-style pools: precompute the verifier's jackpot bound from the base target field.
-        // pearlpool-style: leave unset so jobTarget falls back to 2^256/diff.
-        target: pearlhashUsesSubscribe(pool) ? pearlhashNbitsBound(pp.target) : undefined,
-      };
-    }
     if (poolProtocol(pool) === "zelhash" && isZelHashJobNotification(json)) {
       if (!pool.logged_in) {return null;}
       pool.submit_mode = "zelhash";
@@ -830,6 +873,17 @@ module.exports = ({
         difficulty:  packed,                          // raw packed int32, for reporting
         target:      beamPackedTarget(packed),        // native re-derives the packed int from the target
       };
+    }
+    if (isLoginJob(json) &&
+        (normalizeAlgoName(json.result?.algo || json.result?.job?.algo || global.opt.job.algo) === "pearlhash" ||
+         poolProtocol(pool) === "pearlhash") && typeof json.result?.job?.header === "string") {
+      const job = pearlHashJob(pool, json.result.job, json.result.algo);
+      if (!job) {throw new Error("Malformed PearlHash login job");}
+      pool.logged_in = true;
+      if ("id" in json.result) {pool.worker_id = json.result.id;}
+      applyLoginExtensions(pool_id, json.result.extensions);
+      pool.submit_mode = "pearlhash";
+      return commitSubmitMode("pearlhash", job);
     }
     if (isLoginJob(json)) {
       pool.logged_in = true;

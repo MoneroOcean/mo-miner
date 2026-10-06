@@ -1,7 +1,7 @@
 "use strict";
 
 const s = require("./support");
-const { test, assert, loadMinerWithStubs } = s;
+const { test, assert, pool, loadMinerWithStubs, withMockPool } = s;
 
 test("KawPow pool jobs append the nonce field to a header hash", async () => {
   const miner = await loadMinerWithStubs();
@@ -151,26 +151,187 @@ test("Etchash submit uses ethproxy eth_submitWork format", async () => {
   ]));
 });
 
+test("PearlHash pools default to V3 and advertise supported proof encodings", async () => {
+  for (const version of [undefined, 1, 2, 3, "3", 4, 0, null, 2.5]) {
+    await withMockPool({pool: {protocol: "pearlhash", logged_in: true, use_subscribe: true},
+      opt: {job: {algo: "pearlhash"}}}, async ({socket, poolConfig}) => {
+      /** @type {PoolJob[]} */
+      const jobs = [];
+      pool.connect_pool_throttle(0, (job) => {
+        jobs.push(job);
+        return s.completeMiningJob(job);
+      });
+      socket.emit("data", Buffer.from(JSON.stringify({
+        method: "mining.notify", params: {
+          job_id: "pearl-job", header: "00".repeat(76), target: "1", height: 1,
+          proof_encodings: ["none", "gzip"],
+          ...(version === undefined ? {} : {cert_version: version}),
+        },
+      }) + "\n"));
+      const expected = version === undefined ? 3 : Number(version);
+      assert.deepEqual(jobs.map((job) => job.pearlhash_cert_version),
+        expected === 3 ? [3] : []);
+      assert.deepEqual(poolConfig["pearlhash_proof_encodings"],
+        expected === 3 ? ["none", "gzip"] : undefined);
+    });
+  }
+});
+
+test("PearlHash login-dialect jobs preserve a supplied target", async () => {
+  await withMockPool({pool: {protocol: "pearlhash", logged_in: true, use_subscribe: false},
+    opt: {job: {algo: "pearlhash"}}}, async ({socket}) => {
+    /** @type {PoolJob[]} */
+    const jobs = [];
+    pool.connect_pool_throttle(0, (job) => {
+      jobs.push(job);
+      return s.completeMiningJob(job);
+    });
+    const target = "01".repeat(32);
+    socket.emit("data", Buffer.from(JSON.stringify({
+      method: "mining.notify", params: {
+        job_id: "451610", header: "00".repeat(76), target, cert_version: 3,
+      },
+    }) + "\n"));
+    assert.equal(jobs.length, 1);
+    assert.equal(jobs[0]?.pearlhash_base_target, target);
+    assert.equal(jobs[0]?.difficulty, undefined);
+  });
+});
+
+test("PearlHash accepts proxy job updates after out-of-order handshake replies", async () => {
+  await withMockPool({
+    pool: {protocol: "pearlhash", use_subscribe: true},
+    opt: {job: {algo: "pearlhash"}},
+  }, async ({socket, switched, poolConfig}) => {
+    /** @type {PoolJob[]} */
+    const jobs = [];
+    pool.connect_pool_throttle(0, (job) => {
+      jobs.push(job);
+      return s.completeMiningJob(job);
+    });
+    socket.emit("connect");
+    const target = "01".repeat(32);
+    /** @param {string} job_id */
+    const params = (job_id) => ({
+      job_id, header: "00".repeat(76), target, cert_version: 3,
+    });
+    socket.emit("data", Buffer.from([
+      {id: 2, jsonrpc: "2.0", error: null, result: true},
+      {method: "mining.notify", params: params("first"), id: null, jsonrpc: "2.0"},
+      {id: 1, jsonrpc: "2.0", error: null,
+        result: [["mining.notify", "session", "EthereumStratum/1.0.0"], "ff81ee", 5]},
+      {method: "job", params: {...params("second"), id: "session"}},
+    ].map((message) => JSON.stringify(message)).join("\n") + "\n"));
+
+    assert.equal(poolConfig.logged_in, true);
+    assert.deepEqual(jobs.map((job) => job.job_id), ["first", "second"]);
+    assert.equal(switched(), false);
+    assert.notEqual(socket.destroyed, true);
+  });
+});
+
 test("PearlHash submit uses its canonical submit mode", async () => {
   const miner = await loadMinerWithStubs();
-  miner.global.opt.pools[0].submit_mode = "pearlhash";
+  miner.global.opt.pools[0].last_job = {job_id: "job1", job_token: "token", submit_mode: "pearlhash"};
+  const proof = Buffer.from("proof").toString("base64");
 
   miner.messageHandler({
+    thread_id: 0,
     type: "result",
     value: {
-      pool_id: 0,
+      pool_id: "0",
       job_id: "job1",
-      plain_proof: "proof",
+      job_token: "token",
+      worker_id: "worker",
+      nonce: "0000000000000001",
+      plain_proof: proof,
+      jackpot: "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      adjustment_factor: "524288",
     },
   });
 
   assert.equal(miner.poolWrites.length, 1);
-  assert.deepEqual(JSON.parse(JSON.stringify(miner.poolWrites[0].json)), {
+  const write = miner.poolWrites[0];
+  assert.ok(write);
+  assert.deepEqual(JSON.parse(JSON.stringify(write.json)), {
     jsonrpc: "2.0",
     id: 3,
     method: "mining.submit",
-    params: { job_id: "job1", plain_proof: "proof" },
+    params: {
+      job_id: "job1",
+      plain_proof: proof,
+      jackpot: "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      adjustment_factor: 524288,
+    },
   });
+});
+
+test("PearlHash claims are atomic, native-endian, and stable across retries", async () => {
+  const miner = await loadMinerWithStubs();
+  miner.global.opt.pools[0].last_job = {
+    job_id: "job1", job_token: "token", submit_mode: "pearlhash",
+  };
+  const base = {
+    pool_id: "0", job_id: "job1", job_token: "token", worker_id: "worker",
+    nonce: "0000000000000001", plain_proof: Buffer.from("proof").toString("base64"),
+    jackpot: "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    adjustment_factor: "65536",
+  };
+  for (let retry = 0; retry < 2; retry++) {
+    miner.messageHandler({thread_id: 0, type: "result", value: {...base}});
+  }
+  assert.equal(miner.poolWrites.length, 2);
+  const first = JSON.stringify(miner.poolWrites[0]?.json);
+  const second = JSON.stringify(miner.poolWrites[1]?.json);
+  assert.equal(second, first);
+  assert.match(first, /"jackpot":"0001020304050607/);
+  assert.doesNotMatch(first, /"jackpot":"1f1e1d1c1b1a1918/);
+  assert.match(first, /"adjustment_factor":65536/);
+
+  const next = {...base, nonce: "0000000000000002",
+    plain_proof: Buffer.from("next proof").toString("base64"), jackpot: "12".repeat(32)};
+  miner.messageHandler({thread_id: 0, type: "result", value: next});
+  assert.equal(miner.poolWrites.length, 3);
+  const nextParams = /** @type {Record<string, unknown>} */ (miner.poolWrites[2]?.json.params);
+  assert.equal(nextParams["plain_proof"], next.plain_proof);
+  assert.equal(nextParams["jackpot"], next.jackpot);
+  miner.messageHandler({thread_id: 0, type: "result", value: {...next, job_token: "stale"}});
+  assert.equal(miner.poolWrites.length, 3);
+
+  for (const value of [
+    {...base, jackpot: undefined},
+    {...base, adjustment_factor: undefined},
+    {...base, jackpot: base.jackpot.toUpperCase()},
+    {...base, adjustment_factor: "0"},
+    {...base, adjustment_factor: "4294967296"},
+    {...base, plain_proof: "not canonical base64"},
+    {...base, plain_proof: Buffer.alloc(8 * 1024 * 1024 + 1).toString("base64")},
+    {...base, job_token: "stale"},
+  ]) {
+    miner.messageHandler({thread_id: 0, type: "result", value});
+  }
+  assert.equal(miner.poolWrites.length, 3);
+});
+
+test("PearlHash claim fields cannot change another algorithm's submission", async () => {
+  const result = {
+    pool_id: "0", worker_id: "worker", job_id: "job", job_token: "token",
+    nonce: "0000000000000001", hash: "00".repeat(32), mix_hash: "11".repeat(32),
+    header_hash: "22".repeat(32),
+  };
+  const serialize = async (extra = {}) => {
+    const miner = await loadMinerWithStubs();
+    miner.global.opt.pools[0].last_job = {
+      job_id: "job", job_token: "token", submit_mode: "eth",
+    };
+    miner.messageHandler({thread_id: 0, type: "result", value: {...result, ...extra}});
+    return JSON.stringify(miner.poolWrites[0]?.json);
+  };
+  const baseline = await serialize();
+  const withClaim = await serialize({
+    jackpot: "0123456789abcdef".repeat(4), adjustment_factor: "524288",
+  });
+  assert.equal(withClaim, baseline);
 });
 
 test("Autolykos2 submit uses Ergo mining.submit format", async () => {

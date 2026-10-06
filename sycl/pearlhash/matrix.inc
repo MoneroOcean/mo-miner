@@ -2,6 +2,25 @@ namespace mom_pearlhash {
 
 using pearlhash_b3::b3;
 
+static size_t checked_elements(const int rows, const int columns, const char* const name) {
+  if (rows <= 0 || columns <= 0)
+    throw std::string("Invalid pearlhash ") + name + " dimensions";
+  const size_t row_count = static_cast<size_t>(rows);
+  const size_t column_count = static_cast<size_t>(columns);
+  if (row_count > std::numeric_limits<size_t>::max() / column_count)
+    throw std::string("Invalid pearlhash ") + name + " dimensions";
+  return row_count * column_count;
+}
+
+static size_t checked_chunk_count(const size_t bytes, const char* const name) {
+  const size_t chunks = bytes / 1024 + (bytes % 1024 != 0);
+  if (chunks > static_cast<size_t>(std::numeric_limits<int>::max()))
+    throw std::string("Invalid pearlhash ") + name + " chunk count";
+  return chunks;
+}
+
+
+
 // --- IGC multi-accumulator codegen workaround -------------------------------
 // Holding several joint_matrix accumulator fragments live in a C-array and
 // iterating over that array with a plain `for` / `#pragma unroll` miscompiles on
@@ -44,7 +63,15 @@ static inline void dev_randHash(int index, const uint8_t* seed32, const uint8_t*
   b3(mb, 64, key32, out);
 }
 
-struct Result { int found; uint32_t seed; uint32_t row; uint32_t col; uint32_t chk; };
+struct Result {
+  int found;
+  uint32_t seed;
+  uint32_t row;
+  uint32_t col;
+  uint32_t chk;
+  uint8_t jackpot[32];
+};
+
 
 struct Buffers {
   int8_t *EAL, *EBR, *EBRt, *Ap, *Bp;       // A'/B' (noised, search inputs); A/B regenerated from RNG
@@ -88,41 +115,73 @@ static int reduce_tree_pow2(sycl::queue& q, uint8_t* cvs, const uint8_t* key, in
   }
   return rd;
 }
-static void k_roots(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k) {
+[[maybe_unused]] static void k_roots(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n,
+                                     int k) {
   auto B = bb;
-  const int lenA = m * k, lenB = n * k; const uint32_t tot = (uint32_t)(m * k);
-  const int ncA = (lenA + 1023) / 1024, ncB = (lenB + 1023) / 1024;
+  const size_t lenA = checked_elements(m, k, "M*K roots");
+  const size_t lenB = checked_elements(n, k, "N*K roots");
+  const uint32_t tot = static_cast<uint32_t>(lenA);
+  const size_t ncA = checked_chunk_count(lenA, "A root");
+  const size_t ncB = checked_chunk_count(lenB, "B root");
   // A bytes are regenerated on the fly (A[idx]=gv(seed,idx)) -- no A buffer materialized.
-  q.parallel_for(sycl::range<1>(ncA), [=](sycl::id<1> id) { int ci = (int)id[0]; int off = ci * 1024; int len = lenA - off < 1024 ? lenA - off : 1024;
+  q.parallel_for(sycl::range<1>(ncA), [=](sycl::id<1> id) MOM_SYCL_KERNEL_ARGS_RESTRICT {
+    const size_t ci = id[0];
+    const size_t off = ci * 1024;
+    const size_t remaining = lenA - off;
+    const size_t len = remaining < 1024 ? remaining : 1024;
     uint8_t buf[1024];
-    for (int t = 0; t < len; t++) buf[t] = (uint8_t)gv(seed, (uint32_t)(off + t));
-    pearlhash_b3::chunk_cv(buf, (uint32_t)len, (uint64_t)ci, B.key, B.CVA + ci * 32); });
+    for (size_t t = 0; t < len; t++)
+      buf[t] = static_cast<uint8_t>(gv(seed, static_cast<uint32_t>(off + t)));
+    pearlhash_b3::chunk_cv(buf, static_cast<uint32_t>(len), static_cast<uint64_t>(ci), B.key,
+                           B.CVA + ci * 32);
+  });
   // B' root is over Bt (n x k); each 1024-byte chunk of the Bt byte-stream is regenerated straight
   // from B's RNG (B[i]=gv(seed,tot+i)) so neither B nor a transposed Bt buffer exists. Bt byte
   // b -> B[(b%k)*n + b/k].
-  q.parallel_for(sycl::range<1>(ncB), [=](sycl::id<1> id) { int ci = (int)id[0]; int off = ci * 1024; int len = lenB - off < 1024 ? lenB - off : 1024;
+  q.parallel_for(sycl::range<1>(ncB), [=](sycl::id<1> id) MOM_SYCL_KERNEL_ARGS_RESTRICT {
+    const size_t ci = id[0];
+    const size_t off = ci * 1024;
+    const size_t remaining = lenB - off;
+    const size_t len = remaining < 1024 ? remaining : 1024;
     uint8_t buf[1024];
-    int j = off / k, r = off % k;        // Bt byte (off+t) -> column j, depth r of B; advance incrementally
-    for (int t = 0; t < len; t++) { buf[t] = (uint8_t)gv(seed, tot + (uint32_t)(r * n + j)); if (++r == k) { r = 0; j++; } }
-    pearlhash_b3::chunk_cv(buf, (uint32_t)len, (uint64_t)ci, B.key, B.CVB + ci * 32); });
-  // Both branches finish the same commitment chain (cB = B3(key||rootB), cA = B3(cB||rootA)); they
-  // differ only in how each tree's root is obtained (parallel pairwise reduce vs serial merge_root).
+    size_t j = off / static_cast<size_t>(k);
+    size_t r = off % static_cast<size_t>(k); // Bt byte -> column j, depth r of B
+    for (size_t t = 0; t < len; t++) {
+      const size_t source_offset = r * static_cast<size_t>(n) + j;
+      buf[t] = static_cast<uint8_t>(gv(seed, tot + static_cast<uint32_t>(source_offset)));
+      if (++r == static_cast<size_t>(k)) {
+        r = 0;
+        j++;
+      }
+    }
+    pearlhash_b3::chunk_cv(buf, static_cast<uint32_t>(len), static_cast<uint64_t>(ci), B.key,
+                           B.CVB + ci * 32);
+  });
+  // Both branches bind the raw roots and matrix dimensions into the same salted commitment chain;
+  // they differ only in how each tree root is obtained (parallel reduction or serial merge_root).
   const bool pow2 = ((ncA & (ncA - 1)) == 0) && ((ncB & (ncB - 1)) == 0);
+  const int ncA_int = static_cast<int>(ncA);
+  const int ncB_int = static_cast<int>(ncB);
   if (pow2) {
-    int offA = reduce_tree_pow2(q, B.CVA, B.key, ncA);
-    int offB = reduce_tree_pow2(q, B.CVB, B.key, ncB);
-    q.single_task([=]() {
-      uint8_t buf[64];
-      for (int i = 0; i < 32; i++) { buf[i] = B.key[i]; buf[32 + i] = B.CVB[(size_t)offB * 32 + i]; } b3(buf, 64, nullptr, B.cB);
-      for (int i = 0; i < 32; i++) { buf[i] = B.cB[i]; buf[32 + i] = B.CVA[(size_t)offA * 32 + i]; } b3(buf, 64, nullptr, B.cA);
+    int offA = reduce_tree_pow2(q, B.CVA, B.key, ncA_int);
+    int offB = reduce_tree_pow2(q, B.CVB, B.key, ncB_int);
+    q.single_task([=]() MOM_SYCL_KERNEL_ARGS_RESTRICT {
+      uint8_t rootA[32], rootB[32];
+      for (int i = 0; i < 32; i++) {
+        rootB[i] = B.CVB[(size_t)offB * 32 + i];
+      }
+      for (int i = 0; i < 32; i++)
+        rootA[i] = B.CVA[(size_t)offA * 32 + i];
+      pearlhash_commitment_seeds(B.key, rootA, rootB, static_cast<uint32_t>(m),
+                                 static_cast<uint32_t>(n), B.cB, B.cA);
     });
   } else {
-    q.single_task([=]() {
-      uint8_t rootA[32], rootB[32], buf[64];
-      pearlhash_b3::merge_root(B.CVA, ncA, B.key, rootA);
-      pearlhash_b3::merge_root(B.CVB, ncB, B.key, rootB);
-      for (int i = 0; i < 32; i++) { buf[i] = B.key[i]; buf[32 + i] = rootB[i]; } b3(buf, 64, nullptr, B.cB);
-      for (int i = 0; i < 32; i++) { buf[i] = B.cB[i]; buf[32 + i] = rootA[i]; } b3(buf, 64, nullptr, B.cA);
+    q.single_task([=]() MOM_SYCL_KERNEL_ARGS_RESTRICT {
+      uint8_t rootA[32], rootB[32];
+      pearlhash_b3::merge_root(B.CVA, ncA_int, B.key, rootA);
+      pearlhash_b3::merge_root(B.CVB, ncB_int, B.key, rootB);
+      pearlhash_commitment_seeds(B.key, rootA, rootB, static_cast<uint32_t>(m),
+                                 static_cast<uint32_t>(n), B.cB, B.cA);
     });
   }
 }
@@ -160,36 +219,41 @@ static void k_noise(sycl::queue& q, const Buffers& bb, int m, int n, int k, int 
 // by producing the same roots and sparse-noise tables here. GPU paths and Linux CPU kernel coverage
 // remain unchanged. CPU Pearl mining is not a performance target, while deterministic archive
 // validation across supported Windows CPUs is valuable.
-static void prepare_roots_cpu(
-    const Buffers& B, uint32_t seed, int m, int n, int k) {
-  const int lenA = m * k, lenB = n * k;
-  const int ncA = (lenA + 1023) / 1024, ncB = (lenB + 1023) / 1024;
-  const uint32_t tot = static_cast<uint32_t>(m * k);
+static void prepare_roots_cpu(const Buffers& B, uint32_t seed, int m, int n, int k) {
+  const size_t lenA = checked_elements(m, k, "M*K roots");
+  const size_t lenB = checked_elements(n, k, "N*K roots");
+  const size_t ncA = checked_chunk_count(lenA, "A root");
+  const size_t ncB = checked_chunk_count(lenB, "B root");
+  const uint32_t tot = static_cast<uint32_t>(lenA);
   uint8_t chunk[1024];
-  for (int ci = 0; ci < ncA; ++ci) {
-    const int off = ci * 1024, len = std::min(1024, lenA - off);
-    for (int t = 0; t < len; ++t)
+  for (size_t ci = 0; ci < ncA; ++ci) {
+    const size_t off = ci * 1024;
+    const size_t len = std::min(size_t{1024}, lenA - off);
+    for (size_t t = 0; t < len; ++t)
       chunk[t] = static_cast<uint8_t>(gv(seed, static_cast<uint32_t>(off + t)));
-    pearlhash_b3::chunk_cv(chunk, static_cast<uint32_t>(len), static_cast<uint64_t>(ci),
-                          B.key, B.CVA + static_cast<size_t>(ci) * 32);
+    pearlhash_b3::chunk_cv(chunk, static_cast<uint32_t>(len), static_cast<uint64_t>(ci), B.key,
+                           B.CVA + ci * 32);
   }
-  for (int ci = 0; ci < ncB; ++ci) {
-    const int off = ci * 1024, len = std::min(1024, lenB - off);
-    int j = off / k, r = off % k;
-    for (int t = 0; t < len; ++t) {
-      chunk[t] = static_cast<uint8_t>(gv(seed, tot + static_cast<uint32_t>(r * n + j)));
-      if (++r == k) { r = 0; ++j; }
+  for (size_t ci = 0; ci < ncB; ++ci) {
+    const size_t off = ci * 1024;
+    const size_t len = std::min(size_t{1024}, lenB - off);
+    size_t j = off / static_cast<size_t>(k), r = off % static_cast<size_t>(k);
+    for (size_t t = 0; t < len; ++t) {
+      const size_t source_offset = r * static_cast<size_t>(n) + j;
+      chunk[t] = static_cast<uint8_t>(gv(seed, tot + static_cast<uint32_t>(source_offset)));
+      if (++r == static_cast<size_t>(k)) {
+        r = 0;
+        ++j;
+      }
     }
-    pearlhash_b3::chunk_cv(chunk, static_cast<uint32_t>(len), static_cast<uint64_t>(ci),
-                          B.key, B.CVB + static_cast<size_t>(ci) * 32);
+    pearlhash_b3::chunk_cv(chunk, static_cast<uint32_t>(len), static_cast<uint64_t>(ci), B.key,
+                           B.CVB + ci * 32);
   }
-  uint8_t rootA[32], rootB[32], input[64];
-  pearlhash_b3::merge_root(B.CVA, ncA, B.key, rootA);
-  pearlhash_b3::merge_root(B.CVB, ncB, B.key, rootB);
-  for (int i = 0; i < 32; ++i) { input[i] = B.key[i]; input[32 + i] = rootB[i]; }
-  b3(input, 64, nullptr, B.cB);
-  for (int i = 0; i < 32; ++i) { input[i] = B.cB[i]; input[32 + i] = rootA[i]; }
-  b3(input, 64, nullptr, B.cA);
+  uint8_t rootA[32], rootB[32];
+  pearlhash_b3::merge_root(B.CVA, static_cast<int>(ncA), B.key, rootA);
+  pearlhash_b3::merge_root(B.CVB, static_cast<int>(ncB), B.key, rootB);
+  pearlhash_commitment_seeds(B.key, rootA, rootB, static_cast<uint32_t>(m),
+                             static_cast<uint32_t>(n), B.cB, B.cA);
 }
 
 static void prepare_noise_cpu(const Buffers& B, int m, int n, int k, int rank) {
@@ -226,10 +290,12 @@ static void prepare_noise_cpu(const Buffers& B, int m, int n, int k, int rank) {
 }
 #endif
 
-static sycl::event compute_ab(sycl::queue& q, const Buffers& bb, uint32_t seed,
-           int m, int n, int k, int rank,
-           bool portable) {
-  auto B = bb; const uint32_t tot = (uint32_t)(m * k);
+[[maybe_unused]] static sycl::event compute_ab(sycl::queue& q, const Buffers& bb, uint32_t seed,
+                                                int m, int n, int k, int rank, bool portable) {
+  auto B = bb;
+  const size_t a_elements = checked_elements(m, k, "M*K");
+  const size_t b_elements = checked_elements(n, k, "N*K");
+  const uint32_t tot = static_cast<uint32_t>(a_elements);
   // Explicit capture list (not [=]): capturing the extra `portable` bool under [=] makes the host
   // (icx) and device (clang) compilers disagree on the lambda layout in the dual-compiler combined
   // build ("Unexpected kernel lambda size"). Listing the captures explicitly keeps them in sync.
@@ -237,12 +303,16 @@ static sycl::event compute_ab(sycl::queue& q, const Buffers& bb, uint32_t seed,
   int8_t* const ap = B.Ap;
   int32_t* const earp1 = B.EARp1;
   int32_t* const earp2 = B.EARp2;
-  q.parallel_for(sycl::range<1>((size_t)m * k), [eal, ap, earp1, earp2, seed, k, rank, portable](sycl::id<1> id) { int idx = (int)id[0], i = idx / k, c = idx % k;
-    int acc = (int)eal[i * rank + earp1[c]] - (int)eal[i * rank + earp2[c]];
-    int8_t v = (int8_t)(gv(seed, (uint32_t)idx) + acc);
+  q.parallel_for(sycl::range<1>(a_elements), [eal, ap, earp1, earp2, seed, k, rank,
+                                               portable](sycl::id<1> id)
+      MOM_SYCL_KERNEL_ARGS_RESTRICT {
+    const size_t idx = id[0], i = idx / static_cast<size_t>(k), c = idx % static_cast<size_t>(k);
+    const int acc = static_cast<int>(eal[i * static_cast<size_t>(rank) + earp1[c]]) -
+                    static_cast<int>(eal[i * static_cast<size_t>(rank) + earp2[c]]);
+    const int8_t v = static_cast<int8_t>(gv(seed, static_cast<uint32_t>(idx)) + acc);
 #if defined(__NVPTX__) && (!defined(MOM_SYCL_ADAPTIVECPP) || defined(__CUDA_ARCH__))
     (void)portable;
-    ap[idx] = v;   // row-major A' for the NVIDIA mma.sync search_cuda (nvptx device pass)
+    ap[idx] = v; // row-major A' for the NVIDIA mma.sync search_cuda (nvptx device pass)
 #else
     // The spir64 image carries BOTH searches; the host sets `portable` to match the one it will launch:
     //  - portable (the dp4a int8 GEMM search(), used by every OpenCL device -- AMD, the CPU device, and
@@ -250,13 +320,16 @@ static sycl::event compute_ab(sycl::queue& q, const Buffers& bb, uint32_t seed,
     //    packs into the 4-wide dp4a operand.
     //  - else (ESIMD search_esimd): TILE-MAJOR -- each 8x32 dpas-A fragment is one contiguous 256-byte
     //    block_load (the fast Intel path on Level-Zero).
-    if (portable) ap[idx] = v;
-    else ap[((size_t)((i >> 3) * (k / 32) + (c >> 5)) * 256) + (i & 7) * 32 + (c & 31)] = v;
+    if (portable) {
+      ap[idx] = v;
+    } else {
+      ap[((i >> 3) * static_cast<size_t>(k / 32) + (c >> 5)) * 256 + (i & 7) * 32 +
+          (c & 31)] = v;
+    }
 #endif
   });
   // B' layout matches the search variant that will run (explicit capture, same reason as above):
-  //  - nvptx (__NVPTX__): ROW-MAJOR B'[r,j] for the joint_matrix B operand, else COLUMN-major for the
-  //    default mma.sync B operand (coalesced 32-bit loads).
+  //  - nvptx (__NVPTX__): COLUMN-major for the mma.sync B operand (coalesced 32-bit loads).
   //  - portable (dp4a search()): COLUMN-major B'[r,j] at j*k+r, so each output column reads a
   //    contiguous int8 run over k -- the dp4a counterpart to the row-major A'.
   //  - else (Intel XMX ESIMD): TILE-MAJOR VNNI, each 16-wide N-tile's k*16 block contiguous (stride 64),
@@ -275,44 +348,57 @@ static sycl::event compute_ab(sycl::queue& q, const Buffers& bb, uint32_t seed,
       const size_t groups_r = (static_cast<size_t>(k) + 31) / 32;
       const size_t groups_j = (static_cast<size_t>(n) + 31) / 32;
       h.parallel_for(
-        sycl::nd_range<2>(sycl::range<2>(groups_r * 8, groups_j * 32),
-                          sycl::range<2>(8, 32)),
-        [ebr, bp, eblq1, eblq2, seed, tot, k, n, tile](sycl::nd_item<2> item) {
-          const int lr = static_cast<int>(item.get_local_id(0));
-          const int lj = static_cast<int>(item.get_local_id(1));
-          const int r0 = static_cast<int>(item.get_group(0)) * 32;
-          const int j0 = static_cast<int>(item.get_group(1)) * 32;
+          sycl::nd_range<2>(sycl::range<2>(groups_r * 8, groups_j * 32), sycl::range<2>(8, 32)),
+          [ebr, bp, eblq1, eblq2, seed, tot, k, n, tile](sycl::nd_item<2> item)
+              MOM_SYCL_KERNEL_ARGS_RESTRICT {
+            const int lr = static_cast<int>(item.get_local_id(0));
+            const int lj = static_cast<int>(item.get_local_id(1));
+            const size_t r0 = item.get_group(0) * 32;
+            const size_t j0 = item.get_group(1) * 32;
 #pragma unroll
-          for (int d = 0; d < 32; d += 8) {
-            const int r = r0 + lr + d, j = j0 + lj;
-            if (r < k && j < n) {
-              const int acc = static_cast<int>(ebr[eblq1[r] * n + j]) -
-                              static_cast<int>(ebr[eblq2[r] * n + j]);
-              tile[lr + d][lj] =
-                static_cast<int8_t>(gv(seed, tot + static_cast<uint32_t>(r * n + j)) + acc);
+            for (int d = 0; d < 32; d += 8) {
+              const size_t r = r0 + static_cast<size_t>(lr + d);
+              const size_t j = j0 + static_cast<size_t>(lj);
+              if (r < static_cast<size_t>(k) && j < static_cast<size_t>(n)) {
+                const size_t first = static_cast<size_t>(eblq1[r]) * static_cast<size_t>(n) + j;
+                const size_t second = static_cast<size_t>(eblq2[r]) * static_cast<size_t>(n) + j;
+                const int acc = static_cast<int>(ebr[first]) - static_cast<int>(ebr[second]);
+                tile[lr + d][lj] =
+                    static_cast<int8_t>(gv(seed, tot + static_cast<uint32_t>(r * n + j)) + acc);
+              }
             }
-          }
-          item.barrier(sycl::access::fence_space::local_space);
+            sycl::group_barrier(item.get_group());
 #pragma unroll
-          for (int d = 0; d < 32; d += 8) {
-            const int j = j0 + lr + d, r = r0 + lj;
-            if (j < n && r < k) bp[static_cast<size_t>(j) * k + r] = tile[lj][lr + d];
-          }
-        });
+            for (int d = 0; d < 32; d += 8) {
+              const size_t j = j0 + static_cast<size_t>(lr + d);
+              const size_t r = r0 + static_cast<size_t>(lj);
+              if (j < static_cast<size_t>(n) && r < static_cast<size_t>(k))
+                bp[j * static_cast<size_t>(k) + r] = tile[lj][lr + d];
+            }
+          });
     });
   }
-  return q.parallel_for(sycl::range<1>((size_t)k * n), [ebr, bp, eblq1, eblq2, seed, tot, k, n, portable](sycl::id<1> id) { int idx = (int)id[0], r = idx / n, j = idx % n;
-    int acc = (int)ebr[eblq1[r] * n + j] - (int)ebr[eblq2[r] * n + j];
-    int8_t v = (int8_t)(gv(seed, tot + (uint32_t)idx) + acc);
+  return q.parallel_for(sycl::range<1>(b_elements), [ebr, bp, eblq1, eblq2, seed, tot, k, n,
+                                                      portable](sycl::id<1> id)
+      MOM_SYCL_KERNEL_ARGS_RESTRICT {
+    const size_t idx = id[0], r = idx / static_cast<size_t>(n), j = idx % static_cast<size_t>(n);
+    const size_t first = static_cast<size_t>(eblq1[r]) * static_cast<size_t>(n) + j;
+    const size_t second = static_cast<size_t>(eblq2[r]) * static_cast<size_t>(n) + j;
+    const int acc = static_cast<int>(ebr[first]) - static_cast<int>(ebr[second]);
+    const int8_t v = static_cast<int8_t>(gv(seed, tot + static_cast<uint32_t>(idx)) + acc);
 #if defined(__NVPTX__) && (!defined(MOM_SYCL_ADAPTIVECPP) || defined(__CUDA_ARCH__))
     (void)portable;
 #endif
 #if defined(__NVPTX__)
-    bp[(size_t)j * k + r] = v;                 // col-major B'[r,j] for mma.sync B operand (coalesced loads)
+    bp[j * static_cast<size_t>(k) + r] = v; // col-major B'[r,j] for mma.sync B operand (coalesced loads)
 #else
     (void)n;
-    if (portable) bp[(size_t)j * k + r] = v;   // col-major B'[r,j] for the dp4a search()
-    else bp[(size_t)(j / 16) * k * 16 + (size_t)(r / 4) * 64 + (size_t)(j % 16) * 4 + (r % 4)] = v;
+    if (portable) {
+      bp[j * static_cast<size_t>(k) + r] = v;   // col-major B'[r,j] for the dp4a search()
+    } else {
+      bp[(j / 16) * static_cast<size_t>(k) * 16 + (r / 4) * 64 + (j % 16) * 4 +
+          (r % 4)] = v;
+    }
 #endif
   });
 }
@@ -320,34 +406,33 @@ static sycl::event compute_ab(sycl::queue& q, const Buffers& bb, uint32_t seed,
 #if defined(MOM_SYCL_HAS_HIP)
 struct PearlHashPrepEvents { sycl::event a, b; };
 
-static PearlHashPrepEvents compute_ab_amd_wmma(
-    sycl::queue& a_queue, sycl::queue& b_queue, const Buffers& b,
-    uint32_t seed, int m, int n, int k, int rank) {
-  const uint32_t tot = static_cast<uint32_t>(m * k);
+static PearlHashPrepEvents compute_ab_amd_wmma(sycl::queue& a_queue, sycl::queue& b_queue,
+                                               const Buffers& b, uint32_t seed, int m, int n, int k,
+                                               int rank) {
+  const uint32_t tot = static_cast<uint32_t>(checked_elements(m, k, "M*K"));
   sycl::event a_event = a_queue.parallel_for(
-    sycl::range<1>(static_cast<size_t>(m) * k / 8U),
-    [eal=b.EAL, ap=b.ApWmma, earp1=b.EARp1, earp2=b.EARp2,
-     seed, k, rank](sycl::id<1> id) {
-      const size_t packed_chunk = id[0];
-      const int lane = static_cast<int>(packed_chunk & 31U);
-      const size_t fragment = packed_chunk >> 5;
-      const size_t row_block = fragment / static_cast<size_t>(k / 16);
-      const int k_block = static_cast<int>(
-        fragment - row_block * static_cast<size_t>(k / 16));
-      const size_t row = row_block * 16U + static_cast<size_t>(lane & 15);
-      const int col = k_block * 16 + (lane >> 4) * 8;
-      uint64_t packed = 0;
+      sycl::range<1>(static_cast<size_t>(m) * k / 8U),
+      [eal = b.EAL, ap = b.ApWmma, earp1 = b.EARp1, earp2 = b.EARp2, seed, k,
+       rank](sycl::id<1> id) MOM_SYCL_KERNEL_ARGS_RESTRICT {
+        const size_t packed_chunk = id[0];
+        const int lane = static_cast<int>(packed_chunk & 31U);
+        const size_t fragment = packed_chunk >> 5;
+        const size_t row_block = fragment / static_cast<size_t>(k / 16);
+        const int k_block = static_cast<int>(fragment - row_block * static_cast<size_t>(k / 16));
+        const size_t row = row_block * 16U + static_cast<size_t>(lane & 15);
+        const int col = k_block * 16 + (lane >> 4) * 8;
+        uint64_t packed = 0;
 #pragma unroll
-      for (int byte = 0; byte < 8; ++byte) {
-        const int c = col + byte;
-        const int acc = static_cast<int>(eal[row * rank + earp1[c]]) -
-                        static_cast<int>(eal[row * rank + earp2[c]]);
-        const int8_t value = static_cast<int8_t>(
-          gv(seed, static_cast<uint32_t>(row * k + c)) + acc);
-        packed |= static_cast<uint64_t>(static_cast<uint8_t>(value)) << (byte * 8);
-      }
-      reinterpret_cast<uint64_t*>(ap)[packed_chunk] = packed;
-    });
+        for (int byte = 0; byte < 8; ++byte) {
+          const int c = col + byte;
+          const int acc = static_cast<int>(eal[row * rank + earp1[c]]) -
+                          static_cast<int>(eal[row * rank + earp2[c]]);
+          const int8_t value =
+              static_cast<int8_t>(gv(seed, static_cast<uint32_t>(row * k + c)) + acc);
+          packed |= static_cast<uint64_t>(static_cast<uint8_t>(value)) << (byte * 8);
+        }
+        reinterpret_cast<uint64_t*>(ap)[packed_chunk] = packed;
+      });
   // Generate B in row-major 32x32 tiles (coalesced EBR reads), transpose in local memory, and
   // write the exact packed fragment bytes consumed by gfx12 WMMA. This avoids materializing and
   // rereading the 64 MiB portable B matrix on every nonce.
@@ -356,37 +441,37 @@ static PearlHashPrepEvents compute_ab_amd_wmma(
     const size_t groups_r = (static_cast<size_t>(k) + 31) / 32;
     const size_t groups_j = (static_cast<size_t>(n) + 31) / 32;
     h.parallel_for(
-      sycl::nd_range<2>(sycl::range<2>(groups_r * 8, groups_j * 32),
-                        sycl::range<2>(8, 32)),
-      [ebr=b.EBR, bp=b.BpWmma, eblq1=b.EBLq1, eblq2=b.EBLq2,
-       seed, tot, k, n, tile](sycl::nd_item<2> item) {
-        const int lr = static_cast<int>(item.get_local_id(0));
-        const int lj = static_cast<int>(item.get_local_id(1));
-        const int r0 = static_cast<int>(item.get_group(0)) * 32;
-        const int j0 = static_cast<int>(item.get_group(1)) * 32;
+        sycl::nd_range<2>(sycl::range<2>(groups_r * 8, groups_j * 32), sycl::range<2>(8, 32)),
+        [ebr = b.EBR, bp = b.BpWmma, eblq1 = b.EBLq1, eblq2 = b.EBLq2, seed, tot, k, n,
+         tile](sycl::nd_item<2> item) MOM_SYCL_KERNEL_ARGS_RESTRICT {
+          const int lr = static_cast<int>(item.get_local_id(0));
+          const int lj = static_cast<int>(item.get_local_id(1));
+          const size_t r0 = item.get_group(0) * 32;
+          const size_t j0 = item.get_group(1) * 32;
 #pragma unroll
-        for (int d = 0; d < 32; d += 8) {
-          const int r = r0 + lr + d, j = j0 + lj;
-          if (r < k && j < n) {
-            const int acc = static_cast<int>(ebr[eblq1[r] * n + j]) -
-                            static_cast<int>(ebr[eblq2[r] * n + j]);
-            tile[lr + d][lj] = static_cast<int8_t>(
-              gv(seed, tot + static_cast<uint32_t>(r * n + j)) + acc);
+          for (int d = 0; d < 32; d += 8) {
+            const size_t r = r0 + static_cast<size_t>(lr + d);
+            const size_t j = j0 + static_cast<size_t>(lj);
+            if (r < static_cast<size_t>(k) && j < static_cast<size_t>(n)) {
+              const size_t first = static_cast<size_t>(eblq1[r]) * static_cast<size_t>(n) + j;
+              const size_t second = static_cast<size_t>(eblq2[r]) * static_cast<size_t>(n) + j;
+              const int acc = static_cast<int>(ebr[first]) - static_cast<int>(ebr[second]);
+              tile[lr + d][lj] =
+                  static_cast<int8_t>(gv(seed, tot + static_cast<uint32_t>(r * n + j)) + acc);
+            }
           }
-        }
-        item.barrier(sycl::access::fence_space::local_space);
+          item.barrier(sycl::access::fence_space::local_space);
 #pragma unroll
-        for (int d = 0; d < 32; d += 8) {
-          const int j = j0 + lr + d, r = r0 + lj;
-          if (j < n && r < k) {
-            const size_t fragment =
-              (static_cast<size_t>(j / 16) * (k / 16) + r / 16) * 256U;
-            const int lane = (j & 15) + ((r & 8) ? 16 : 0);
-            bp[fragment + static_cast<size_t>(lane) * 8U + (r & 7)] =
-              tile[lj][lr + d];
+          for (int d = 0; d < 32; d += 8) {
+            const size_t j = j0 + static_cast<size_t>(lr + d);
+            const size_t r = r0 + static_cast<size_t>(lj);
+            if (j < static_cast<size_t>(n) && r < static_cast<size_t>(k)) {
+              const size_t fragment = (j / 16 * static_cast<size_t>(k / 16) + r / 16) * 256U;
+              const size_t lane = (j & 15) + ((r & 8) ? 16 : 0);
+              bp[fragment + lane * 8U + (r & 7)] = tile[lj][lr + d];
+            }
           }
-        }
-      });
+        });
   });
   return {a_event, b_event};
 }
@@ -396,19 +481,22 @@ static PearlHashPrepEvents compute_ab_amd_wmma(
 // the same SPIR-V is correct on Linux and Intel GPUs. CPU allocations are shared USM, so prepare
 // the two modest test/fallback matrices directly on the host and still exercise the expensive,
 // algorithm-defining GEMM/search as SYCL. GPUs never take this path.
-static void compute_ab_cpu(const Buffers& B, uint32_t seed, int m, int n, int k, int rank) {
-  const uint32_t tot = (uint32_t)(m * k);
+[[maybe_unused]] static void compute_ab_cpu(const Buffers& B, uint32_t seed, int m, int n, int k,
+                                            int rank) {
+  const uint32_t tot = static_cast<uint32_t>(checked_elements(m, k, "M*K"));
   for (int idx = 0; idx < m * k; ++idx) {
     const int i = idx / k, c = idx % k;
-    const int acc = (int)B.EAL[i * rank + B.EARp1[c]] -
-                    (int)B.EAL[i * rank + B.EARp2[c]];
+    const int acc = (int)B.EAL[i * rank + B.EARp1[c]] - (int)B.EAL[i * rank + B.EARp2[c]];
     B.Ap[idx] = (int8_t)(gv(seed, (uint32_t)idx) + acc);
   }
-  for (int idx = 0; idx < k * n; ++idx) {
-    const int r = idx / n, j = idx % n;
-    const int acc = (int)B.EBR[B.EBLq1[r] * n + j] -
-                    (int)B.EBR[B.EBLq2[r] * n + j];
-    B.Bp[(size_t)j * k + r] = (int8_t)(gv(seed, tot + (uint32_t)idx) + acc);
+  const size_t b_elements = checked_elements(n, k, "N*K");
+  for (size_t idx = 0; idx < b_elements; ++idx) {
+    const size_t r = idx / static_cast<size_t>(n), j = idx % static_cast<size_t>(n);
+    const size_t first = static_cast<size_t>(B.EBLq1[r]) * static_cast<size_t>(n) + j;
+    const size_t second = static_cast<size_t>(B.EBLq2[r]) * static_cast<size_t>(n) + j;
+    const int acc = static_cast<int>(B.EBR[first]) - static_cast<int>(B.EBR[second]);
+    B.Bp[j * static_cast<size_t>(k) + r] =
+        static_cast<int8_t>(gv(seed, tot + static_cast<uint32_t>(idx)) + acc);
   }
 }
 
@@ -421,12 +509,23 @@ constexpr int pearlhash_portable_ec = 4;
 // jackpot, and test jackpot <= target as a little-endian u256. Shared by both search paths; the
 // winner-claim atomic differs and stays in the caller (joint_matrix uses sycl::atomic_ref, ESIMD
 // esimd::atomic_update). Scalar-only, so it compiles in both the SYCL and ESIMD kernel contexts.
-static inline bool tile_wins(const uint32_t tr[16], const uint8_t* key, const uint8_t* target) {
+static inline bool tile_wins(const uint32_t tr[16], const uint8_t* key, const uint8_t* target,
+                             uint8_t jackpot[32]) {
   uint8_t tb[64];
-  for (int w = 0; w < 16; w++) { tb[w*4]=tr[w]&0xff; tb[w*4+1]=(tr[w]>>8)&0xff; tb[w*4+2]=(tr[w]>>16)&0xff; tb[w*4+3]=(tr[w]>>24)&0xff; }
-  uint8_t jp[32]; b3(tb, 64, key, jp);
-  for (int i = 31; i >= 0; i--) { if (jp[i] < target[i]) return true; if (jp[i] > target[i]) return false; }
-  return true;   // jackpot == target: still within bound
+  for (int w = 0; w < 16; w++) {
+    tb[w * 4] = tr[w] & 0xff;
+    tb[w * 4 + 1] = (tr[w] >> 8) & 0xff;
+    tb[w * 4 + 2] = (tr[w] >> 16) & 0xff;
+    tb[w * 4 + 3] = (tr[w] >> 24) & 0xff;
+  }
+  b3(tb, 64, key, jackpot);
+  for (int i = 31; i >= 0; i--) {
+    if (jackpot[i] < target[i])
+      return true;
+    if (jackpot[i] > target[i])
+      return false;
+  }
+  return true; // jackpot == target: still within bound
 }
 // Position-weighted mix of a tile's (row,col) + its 16-word transcript. When MOM_PEARLHASH_CHK is set every
 // search path atomically sums tile_mix over ALL tiles into result->chk -- a whole-search checksum used to

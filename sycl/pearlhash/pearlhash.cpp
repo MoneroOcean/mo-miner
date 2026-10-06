@@ -57,7 +57,11 @@
 #endif
 #endif
 
+#include "../../native/job-boundary.h"
+#include "../pow-intensity.h"
+#include <limits>
 #include "blake3.inc"
+#include "seed.inc"
 
 #include "matrix.inc"
 

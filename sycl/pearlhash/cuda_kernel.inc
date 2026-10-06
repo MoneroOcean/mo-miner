@@ -19,6 +19,7 @@ R"===CUDA(
 
 using namespace cute;
 using cuda::std::int8_t;
+using cuda::std::int64_t;
 using cuda::std::uint32_t;
 using cuda::std::uint64_t;
 
@@ -63,6 +64,7 @@ struct PearlHashResult {
   uint32_t row;
   uint32_t col;
   uint32_t chk;
+  unsigned char jackpot[32];
 };
 
 __device__ __forceinline__ uint32_t load32(const unsigned char* p) {
@@ -142,6 +144,13 @@ void pearlhash_cuda_hash(const uint32_t* transcript, const unsigned char* key,
     result->seed = seed;
     result->row = row;
     result->col = col;
+    for (int i = 0; i < 8; ++i) {
+      const uint32_t word = state[i] ^ state[i + 8];
+      result->jackpot[i * 4] = static_cast<unsigned char>(word);
+      result->jackpot[i * 4 + 1] = static_cast<unsigned char>(word >> 8);
+      result->jackpot[i * 4 + 2] = static_cast<unsigned char>(word >> 16);
+      result->jackpot[i * 4 + 3] = static_cast<unsigned char>(word >> 24);
+    }
   }
 }
 
@@ -149,8 +158,14 @@ extern "C" __global__ __launch_bounds__(256)
 void pearlhash_cuda_gemm(const int8_t* __restrict__ ap, const int8_t* __restrict__ bp,
                      int m, int n, int k, uint32_t* transcript_out) {
   auto shape_mnk = make_shape(m, n, k);
-  Tensor mA = make_tensor(make_gmem_ptr(ap), select<0, 2>(shape_mnk), make_stride(k, _1{}));
-  Tensor mB = make_tensor(make_gmem_ptr(bp), select<1, 2>(shape_mnk), make_stride(k, _1{}));
+  // The rank-128 reference profile has a 4-GiB B matrix; CUTE's offset arithmetic follows
+  // the stride type, so an int stride would wrap above 2 GiB despite the 64-bit pointer.
+  const auto input_stride = make_stride(static_cast<int64_t>(k), _1{});
+  Tensor mA = make_tensor(make_gmem_ptr(ap), select<0, 2>(shape_mnk), input_stride);
+  Tensor mB = make_tensor(make_gmem_ptr(bp), select<1, 2>(shape_mnk), input_stride);
+  static_assert(sizeof(decltype(mB.layout()(make_coord(0, 0)))) >= sizeof(int64_t),
+                "PearlHash global matrix offsets must be 64-bit");
+
   // CUDA normally advances blockIdx.x across the full M dimension. On a large PearlHash matrix that
   // repeatedly streams A once for every N tile. Traverse 16x16 CTA supertiles instead: their 8 MiB
   // A plus 16 MiB B working set fits RTX 5060 Ti's 32 MiB L2, so both operands are reused without

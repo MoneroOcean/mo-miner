@@ -579,3 +579,141 @@ test("Xelis portable OpenCL avoids vendor-specific 64-bit mul_hi", () => {
   assert.match(source,
     /#if defined\(MOM_SYCL_ADAPTIVECPP\) \|\| defined\(MOM_SYCL_PORTABLE_OPENCL\)[\s\S]*?return mul_hi64_portable\(a, b\);[\s\S]*?#else\s+return sycl::mul_hi\(a, b\);/);
 });
+
+test("PearlHash emits subsequent winning proofs and preserves its seed lifecycle", {
+  skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
+}, () => {
+  const core = fs.readFileSync(path.join(__dirname, "../native/core/execution.inc"), "utf8");
+  const branch = core.match(
+    /if\s*\(m_dev\s*==\s*DEV::PEARLHASH_GPU\)\s*\{\s*const\s+uint64_t\s+prev_nonce\s*=\s*m_nonce64;[\s\S]*?(?=\s*if\s*\(m_dev\s*==\s*DEV::C30_GPU\))/
+  )?.[0];
+  assert.ok(branch, "native PearlHash result branch is missing");
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-pearl-results-"));
+  const source = path.join(fixture, "results.cpp");
+  const executable = path.join(fixture, "results");
+  fs.writeFileSync(source, `
+#include <cassert>
+#include <cstdio>
+#include <cstdint>
+#include <map>
+#include <string>
+#include <utility>
+#include <vector>
+#include "native/job-boundary.h"
+constexpr unsigned HASH_LEN = 32;
+enum class DEV { PEARLHASH_GPU };
+using MessageValues = std::map<std::string, std::string>;
+static std::string nonce_to_hex(uint64_t nonce, unsigned width) {
+  assert(width == 8);
+  char hex[17];
+  std::snprintf(hex, sizeof(hex), "%016llx", static_cast<unsigned long long>(nonce));
+  return hex;
+}
+struct Worker {
+  DEV m_dev = DEV::PEARLHASH_GPU;
+  uint64_t m_nonce64 = 10, m_target = 1, found_seed = 0;
+  unsigned m_thread_num = 2, m_pearlhash_seed_stride = 3, claim_calls = 0;
+  std::string m_pool_id = "pool", m_worker_id = "worker", m_job_id = "job", m_job_token = "token";
+  bool available = true, active = true;
+  std::string proof;
+  std::vector<std::pair<std::string, MessageValues>> sent;
+  // Keep historical gate inputs in this mock so the regression also compiles before the fix.
+  uint8_t m_input[76]{};
+  unsigned m_input_len = 76, m_batch = 128, m_pearlhash_n = 128, m_pearlhash_k = 2048,
+           m_pearlhash_rank = 128, m_pearlhash_cert_version = 3;
+  unsigned m_pearlhash_proof_n = 0, m_pearlhash_proof_k = 0, m_pearlhash_proof_rank = 0,
+           m_pearlhash_proof_cert_version = 0, m_pearlhash_proof_m = 0;
+  std::string m_pearlhash_proof_pool, m_pearlhash_proof_job, m_pearlhash_proof_header;
+  const char* pearlhash_claim(uint8_t* jackpot, uint32_t* factor) {
+    ++claim_calls;
+    if (!available) return nullptr;
+    for (unsigned i = 0; i < HASH_LEN; ++i) jackpot[i] = static_cast<uint8_t>(found_seed);
+    *factor = 524288;
+    proof = "captured-proof-" + std::to_string(found_seed);
+    return proof.c_str();
+  }
+  char* hash_bin2hex(const uint8_t* hash, char* hex, unsigned batch) {
+    assert(batch == 0);
+    for (unsigned i = 0; i < HASH_LEN; ++i) std::snprintf(hex + 2 * i, 3, "%02x", hash[i]);
+    return hex;
+  }
+  void send_msg(const std::string& name, const MessageValues& values) { sent.emplace_back(name, values); }
+  void send_error(const std::string& message) { send_msg("error", {{"message", message}}); }
+  void set_fn(decltype(nullptr)) { active = false; }
+  void send_last_nonce(uint64_t nonce, unsigned width, const std::string& pool,
+                       const std::string& job, const std::string& token) {
+    send_msg("last_nonce", {{"nonce", nonce_to_hex(nonce, width)}, {"pool_id", pool},
+                            {"job_id", job}, {"job_token", token}});
+  }
+  void run(int dev_sols, uint64_t dev_nonce) {
+    found_seed = dev_nonce;
+    for (unsigned once = 0; once < 1; ++once) {
+      ${branch}
+    }
+  }
+};
+static void expect_result(const Worker& worker, unsigned index, uint64_t seed) {
+  const auto& event = worker.sent.at(index);
+  assert(event.first == "result" && event.second.size() == 8);
+  const auto& result = event.second;
+  assert(result.at("nonce") == nonce_to_hex(seed, 8));
+  assert(result.at("plain_proof") == "captured-proof-" + std::to_string(seed));
+  char byte[3];
+  std::snprintf(byte, sizeof(byte), "%02x", static_cast<unsigned>(seed & 255));
+  std::string jackpot;
+  for (unsigned i = 0; i < HASH_LEN; ++i) jackpot += byte;
+  assert(result.at("jackpot") == jackpot && result.at("adjustment_factor") == "524288");
+  assert(result.at("pool_id") == worker.m_pool_id && result.at("worker_id") == worker.m_worker_id);
+  assert(result.at("job_id") == worker.m_job_id && result.at("job_token") == worker.m_job_token);
+}
+int main() {
+  Worker wins;
+  wins.run(1, 10);
+  wins.run(1, 16);
+  assert(wins.sent.size() == 2 && wins.claim_calls == 2 && wins.m_nonce64 == 22 && wins.active);
+  expect_result(wins, 0, 10);
+  expect_result(wins, 1, 16);
+  Worker retry;
+  retry.available = false;
+  retry.run(1, 10);
+  retry.available = true;
+  retry.run(1, 16);
+  assert(retry.sent.size() == 2 && retry.claim_calls == 2 && retry.m_nonce64 == 22 && retry.active);
+  assert(retry.sent[0].first == "error");
+  assert(retry.sent[0].second.at("message") == "PearlHash proof claim unavailable");
+  expect_result(retry, 1, 16);
+  for (int solutions : {-1, 0, 2}) {
+    Worker pending;
+    pending.run(solutions, 10);
+    assert(pending.sent.empty() && pending.claim_calls == 0 && pending.m_nonce64 == 16 && pending.active);
+  }
+  Worker no_target;
+  no_target.m_target = 0;
+  no_target.run(1, 10);
+  assert(no_target.sent.empty() && no_target.claim_calls == 0 && no_target.m_nonce64 == 16);
+  Worker exhausted;
+  exhausted.m_nonce64 = UINT32_MAX - 5;
+  exhausted.run(1, exhausted.m_nonce64);
+  assert(!exhausted.active && exhausted.sent.size() == 2 && exhausted.claim_calls == 1);
+  expect_result(exhausted, 0, UINT32_MAX - 5);
+  assert(exhausted.sent[1].first == "last_nonce");
+  assert(exhausted.sent[1].second.at("nonce") == nonce_to_hex(UINT32_MAX - 5, 8));
+  assert(exhausted.sent[1].second.at("pool_id") == "pool" &&
+         exhausted.sent[1].second.at("job_id") == "job" && exhausted.sent[1].second.at("job_token") == "token");
+  no_target.m_nonce64 = UINT32_MAX - 5;
+  no_target.run(1, no_target.m_nonce64);
+  assert(!no_target.active && no_target.sent.empty());
+  std::puts("PASS PearlHash subsequent proofs, claims and seed lifecycle");
+}
+`);
+  try {
+    const compiled = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
+      "-pedantic", "-I", path.join(__dirname, ".."), source, "-o", executable], {encoding: "utf8"});
+    assert.equal(compiled.status, 0, compiled.error?.message || compiled.stderr);
+    const result = spawnSync(executable, [], {encoding: "utf8"});
+    assert.equal(result.status, 0, result.error?.message || result.stderr);
+    assert.equal(result.stdout, "PASS PearlHash subsequent proofs, claims and seed lifecycle\n");
+  } finally {
+    fs.rmSync(fixture, {recursive: true, force: true});
+  }
+});

@@ -1,5 +1,11 @@
 "use strict";
 
+const {pearlhashTarget} = require("./helper/hash");
+const INT32_MAX = 0x7fffffff;
+const PEARLHASH_MAX_DIMENSION = 1 << 24;
+const PEARLHASH_MAX_K = 1 << 16;
+const PEARLHASH_MAX_RANK = 1024;
+const UINT64_MAX = (1n << 64n) - 1n;
 const algoFields = new Map([
   ["cn/gpu", new Set(["intensity"])],
   ["c29", new Set(["seed_workgroup", "seed_blocks"])],
@@ -90,6 +96,58 @@ function validateInteger(field, value, label) {
   return number;
 }
 
+function validatePearlHashShape(m, n, k, rank, context = "PearlHash shape") {
+  /** @param {unknown} value @param {string} field */
+  function normalize(value, field) {
+    if (typeof value !== "number" &&
+        (typeof value !== "string" || !/^\d+$/.test(value))) {
+      throw new Error(`${context}.${field} must be a decimal integer`);
+    }
+    const number = typeof value === "number" ? value : Number(value);
+    if (!Number.isSafeInteger(number) || number < 1 || number > INT32_MAX) {
+      throw new Error(`${context}.${field} must be a positive integer at most ${INT32_MAX}`);
+    }
+    return number;
+  }
+
+  const shape = {
+    m: normalize(m, "m"), n: normalize(n, "n"),
+    k: normalize(k, "k"), rank: normalize(rank, "rank"),
+  };
+  /** @type {("m" | "n")[]} */
+  const matrixFields = ["m", "n"];
+  for (const field of matrixFields) {
+    const value = shape[field];
+    if (value < 128 || value > PEARLHASH_MAX_DIMENSION || value % 32 !== 0) {
+      throw new Error(`${context}.${field} must be a multiple of 32 between 128 and ` +
+        PEARLHASH_MAX_DIMENSION);
+    }
+  }
+  if (shape.k < 1024 || shape.k > PEARLHASH_MAX_K || shape.k % 64 !== 0) {
+    throw new Error(`${context}.k must be a multiple of 64 between 1024 and ` +
+      PEARLHASH_MAX_K);
+  }
+  if (shape.rank < 128 || shape.rank > PEARLHASH_MAX_RANK ||
+      (shape.rank & (shape.rank - 1)) !== 0) {
+    throw new Error(`${context}.rank must be a power of two between 128 and ` +
+      PEARLHASH_MAX_RANK);
+  }
+  if (shape.k < 16 * shape.rank || shape.k > 4 * shape.rank * shape.rank) {
+    throw new Error(`${context}.k must be between 16*rank and 4*rank^2`);
+  }
+  if (shape.m * shape.rank > INT32_MAX || shape.n * shape.rank > INT32_MAX ||
+      shape.m * shape.k > INT32_MAX) {
+    throw new Error(`${context} exceeds the supported signed-index range`);
+  }
+  if ((shape.m / 16) * (shape.n / 16) > INT32_MAX) {
+    throw new Error(`${context} exceeds the supported tile range`);
+  }
+  if (BigInt(shape.m) * BigInt(shape.n) * BigInt(shape.k) > UINT64_MAX) {
+    throw new Error(`${context} exceeds the supported matrix-product range`);
+  }
+  return shape;
+}
+
 function validateTuning(algo, tuning, context = "tuning") {
   if (!tuning || typeof tuning !== "object" || Array.isArray(tuning)) {
     throw new Error(`${context} must be an object`);
@@ -127,6 +185,35 @@ function validateTuning(algo, tuning, context = "tuning") {
   }
   if ((algo === "c30" || algo === "zhash" || algo === "equihash192_7") && result.intensity !== undefined && result.intensity !== 1) {
     throw new Error(`${context}.intensity must be 1 for ${algo}`);
+  }
+  if (algo === "pearlhash") {
+    /** @type {("m" | "n")[]} */
+    const matrixFields = ["m", "n"];
+    for (const field of matrixFields) {
+      const value = result[field];
+      if (value !== undefined && value > PEARLHASH_MAX_DIMENSION) {
+        throw new Error(`${context}.${field} must be at most ${PEARLHASH_MAX_DIMENSION}`);
+      }
+      if (value !== undefined && (value < 128 || value % 32 !== 0)) {
+        throw new Error(`${context}.${field} must be at least 128 and a multiple of 32`);
+      }
+    }
+    if (result.k !== undefined && result.k > PEARLHASH_MAX_K) {
+      throw new Error(`${context}.k must be at most ${PEARLHASH_MAX_K}`);
+    }
+    if (result.k !== undefined && (result.k < 1024 || result.k % 64 !== 0)) {
+      throw new Error(`${context}.k must be at least 1024 and a multiple of 64`);
+    }
+    if (result.rank !== undefined &&
+        (result.rank < 128 || result.rank > PEARLHASH_MAX_RANK ||
+         (result.rank & (result.rank - 1)) !== 0)) {
+      throw new Error(`${context}.rank must be a power of two between 128 and ` +
+        PEARLHASH_MAX_RANK);
+    }
+    if (result.k !== undefined && result.rank !== undefined &&
+        (result.k < 16 * result.rank || result.k > 4 * result.rank * result.rank)) {
+      throw new Error(`${context}.k must be between 16*rank and 4*rank^2`);
+    }
   }
   return result;
 }
@@ -223,16 +310,45 @@ function nativeJobIntensity(entry, algo = "") {
 }
 
 function applyNativeJobTuning(job, entry, algo = "") {
+  const inheritedPearlM = algo === "pearlhash" ? job.intensity : undefined;
+  const pearlM = entry.tuning.m ?? inheritedPearlM;
   job.dev = nativeJobDevice(entry);
-  job.intensity = nativeJobIntensity(entry, algo);
+  job.intensity = algo === "pearlhash" && pearlM !== undefined
+    ? pearlM : nativeJobIntensity(entry, algo);
   if (algo !== "pearlhash") {return job;}
   const tuning = entry.tuning || {};
   // Pearl workers are independent processes, so each may use its own matrix
   // shape. When only m is specified, retain the established square-matrix
   // behavior by using it as n as well.
   if (tuning.m !== undefined && tuning.n === undefined) {job.pearlhash_n = tuning.m;}
-  for (const field of ["n", "k", "rank"]) {
-    if (tuning[field] !== undefined) {job[`pearlhash_${field}`] = tuning[field];}
+  if (tuning.n !== undefined) {job.pearlhash_n = tuning.n;}
+  if (tuning.k !== undefined) {job.pearlhash_k = tuning.k;}
+  if (tuning.rank !== undefined) {job.pearlhash_rank = tuning.rank;}
+  const hasShape = Boolean(job.pearlhash_base_target) ||
+    tuning.m !== undefined || tuning.n !== undefined ||
+    tuning.k !== undefined || tuning.rank !== undefined ||
+    job.pearlhash_n !== undefined || job.pearlhash_k !== undefined ||
+    job.pearlhash_rank !== undefined;
+  if (hasShape) {
+    if (job.pearlhash_n === undefined || job.pearlhash_k === undefined ||
+        job.pearlhash_rank === undefined) {
+      throw new Error("PearlHash job shape is incomplete");
+    }
+    const shape = validatePearlHashShape(
+      job.intensity, job.pearlhash_n, job.pearlhash_k, job.pearlhash_rank, "PearlHash job");
+    job.intensity = shape.m;
+    job.pearlhash_n = shape.n;
+    job.pearlhash_k = shape.k;
+    job.pearlhash_rank = shape.rank;
+  }
+  if (job.pearlhash_base_target) {
+    if (job.pearlhash_k === undefined || job.pearlhash_rank === undefined) {
+      throw new Error("PearlHash job shape is incomplete");
+    }
+    // Retuning a worker's matrix must preserve the job's certificate scaling.
+    job.target = pearlhashTarget(
+      job.pearlhash_base_target, job.pearlhash_k, job.pearlhash_rank,
+      job.pearlhash_cert_version);
   }
   return job;
 }
@@ -401,4 +517,5 @@ module.exports = {
   primaryTuningField,
   tuningEnvironment,
   validateTuning,
+  validatePearlHashShape,
 };

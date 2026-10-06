@@ -45,7 +45,7 @@ typedef int (*gpu_pearlhash_hash_fun)(
   const uint8_t* input, unsigned input_size, uint8_t* output,
   uint64_t* pseed, const uint8_t* target,
   unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str,
-  const std::string& backend, unsigned n, unsigned k, unsigned rank
+  const std::string& backend, unsigned n, unsigned k, unsigned rank, unsigned cert_version
 );
 // FishHash variants share the etchash hash-fun ABI (32-byte LE target; seed_hash unused).
 typedef gpu_etchash_hash_fun gpu_fishhash_hash_fun;
@@ -94,6 +94,12 @@ union FN {
 };
 enum DEV { CPU, RX_CPU, GPU, C29_GPU, C30_GPU, KAWPOW_GPU, ETCHASH_GPU, AUTOLYKOS2_GPU, PEARLHASH_GPU, FISHHASH_GPU, KARLSENHASHV2_GPU, MISC_GPU, VERTHASH_GPU, ZELHASH_GPU, BEAMHASH3_GPU };
 
+enum class JobMode {
+  mine,
+  bench,
+  test,
+};
+
 inline bool is_nonce_at_32_gpu_dev(const DEV dev) {
   return dev == DEV::KAWPOW_GPU || dev == DEV::ETCHASH_GPU || dev == DEV::AUTOLYKOS2_GPU || dev == DEV::FISHHASH_GPU;
 }
@@ -120,13 +126,15 @@ class Core: public AsyncWorker {
   uint8_t m_target_bin[HASH_LEN]{}, m_seed[HASH_LEN]{};
   unsigned m_job_ref, m_height, m_batch, m_mem_size, m_input_len, m_nonce_step,
            m_nonce_bytes, m_nonce_offset, m_c29_proof_size,
-           m_pearlhash_n, m_pearlhash_k, m_pearlhash_rank;
+           m_pearlhash_n, m_pearlhash_k, m_pearlhash_rank, m_pearlhash_cert_version,
+           m_pearlhash_seed_stride;
+  uint32_t m_pearlhash_seed_start;
   uint32_t m_nonce32; // next nonce that will be used in an input
   uint64_t m_nonce64, m_nicehash_mask, m_target, m_timestamp, m_hash_count;
   std::string m_algo_str, m_dev_str, m_seed_hex, m_input_hex, m_pool_id, m_worker_id, m_job_id,
               m_header_hash, m_backend, m_job_token;
-  std::string m_pearlhash_proof_job;   // job_id of the last pearlhash share emitted (one share built per pool job)
-  bool m_is_rx_jit, m_is_bench;
+  bool m_is_rx_jit;
+  JobMode m_job_mode;
   randomx_cache*   m_rx_cache;
   randomx_dataset* m_rx_dataset;
   ctpl::thread_pool* m_thread_pool;
@@ -182,7 +190,7 @@ class Core: public AsyncWorker {
   );
   void set_fn(cn_any_hash_fun fn);
   void set_job(
-    const bool is_set_nonce, const bool is_no_same_input, const MessageValues& v,
+    JobMode mode, const bool is_no_same_input, const MessageValues& v,
     std::function<void(void)> fn_extra_setup = [](){}
   );
   void get_algo_params(const MessageValues& v);
@@ -202,8 +210,9 @@ class Core: public AsyncWorker {
       m_job_ref(0), m_height(0), m_batch(0), m_mem_size(0), m_input_len(0),
       m_nonce_step(1), m_nonce_bytes(4), m_nonce_offset(39), m_c29_proof_size(32),
       m_pearlhash_n(131072), m_pearlhash_k(4096), m_pearlhash_rank(256),
+      m_pearlhash_cert_version(3), m_pearlhash_seed_stride(1), m_pearlhash_seed_start(0),
       m_nonce32(0), m_nonce64(0), m_nicehash_mask(0), m_target(0), m_timestamp(0),
-      m_hash_count(0), m_is_rx_jit(true), m_is_bench(false), m_rx_cache(nullptr), m_rx_dataset(nullptr),
+      m_hash_count(0), m_is_rx_jit(true), m_job_mode(JobMode::mine), m_rx_cache(nullptr), m_rx_dataset(nullptr),
       m_thread_pool(nullptr), m_vm(nullptr)
   {
     m_fn.any = nullptr;

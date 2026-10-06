@@ -1,11 +1,42 @@
 "use strict";
 
 const s = require("./support");
-const { test, assert, events, tls, opts, helper, pool, noOp, loadMinerWithStubs, withMockPool, unexpectedPoolJob, completeMiningJob } = s;
+const { test, assert, events, tls, opts, helper, pool, noOp, loadMinerWithStubs, withMockPool, unexpectedPoolJob, completeMiningJob, mockPoolOptions } = s;
+const testGlobal = /** @type {{opt: ReturnType<typeof mockPoolOptions>}} */
+  (/** @type {unknown} */ (globalThis));
+
 
 function keepMiningJob(job) {
   return completeMiningJob(job);
 }
+
+test("pool debug logs redact Pearl proof bodies without changing wire messages", () => {
+  const previousOpt = testGlobal.opt;
+  const previousLog2 = helper.log2;
+  /** @type {string[]} */
+  const writes = [];
+  /** @type {string[]} */
+  const logs = [];
+  testGlobal.opt = mockPoolOptions({
+    pool: {socket: {write: (message) => {writes.push(message); return true;}}},
+    opt: {log_level: 2},
+  });
+  helper.log2 = (message) => logs.push(message);
+  try {
+    pool.pool_write(0, {
+      id: 3, method: "mining.submit",
+      params: {job_id: "job", plain_proof: "proof-payload", proof_encoding: "gzip"},
+    });
+  } finally {
+    helper.log2 = previousLog2;
+    testGlobal.opt = previousOpt;
+  }
+  assert.equal(writes[0], '{"id":3,"method":"mining.submit","params":{"job_id":"job",' +
+    '"plain_proof":"proof-payload","proof_encoding":"gzip"}}\n');
+  assert.equal(logs.length, 1);
+  assert.doesNotMatch(logs[0] || "", /proof-payload/);
+  assert.match(logs[0] || "", /"plain_proof":"<redacted>"/);
+});
 
 test("fixed KawPow pools use Raven stratum subscribe and authorize", async () => {
   let jobMessage = null;
@@ -709,6 +740,157 @@ test("pass-only Kaspa-family metadata selects the matching jobs and submit mode"
       assert.equal(poolConfig.inferred_protocol, protocol, algo);
       assert.equal(jobMessage?.submit_mode, protocol, algo);
       assert.equal(jobMessage?.algo, algo);
+    });
+  }
+});
+
+test("login job inherits PearlHash certificate version from result metadata", async () => {
+  /** @type {PoolJob[]} */
+  const jobs = [];
+  await withMockPool({}, async ({socket}) => {
+    pool.connect_pool_throttle(0, /** @param {PoolJob} job */ (job) => {
+      jobs.push(job);
+      return keepMiningJob(job);
+    });
+    socket.emit("data", Buffer.from(JSON.stringify({
+      id: 1,
+      jsonrpc: "2.0",
+      error: null,
+      result: {
+        pearlhash_cert_version: 3,
+        job: {
+          algo: "pearlhash",
+          blob: "00".repeat(76),
+          job_id: "pearl-login-job",
+          pearlhash_k: 4096,
+          pearlhash_rank: 256,
+          target: "1".padStart(64, "0"),
+        },
+      },
+    }) + "\n"));
+
+    assert.equal(jobs.length, 1);
+    assert.equal(jobs[0]?.pearlhash_cert_version, 3);
+  });
+});
+
+test("native PearlHash login jobs use the Pearl notification parser", async () => {
+  /** @type {PoolJob[]} */
+  const jobs = [];
+  const header = "12".repeat(76);
+  const baseTarget = "0f".repeat(32);
+  await withMockPool({}, async ({socket}) => {
+    pool.connect_pool_throttle(0, /** @param {PoolJob} job */ (job) => {
+      jobs.push(job);
+      return keepMiningJob(job);
+    });
+    socket.emit("data", Buffer.from(JSON.stringify({
+      id: 1,
+      jsonrpc: "2.0",
+      error: null,
+      result: {
+        id: "worker",
+        algo: "pearlhash",
+        job: {
+          algo: "pearlhash",
+          job_id: "proxy-pearl-login",
+          header,
+          target: baseTarget,
+          cert_version: 3,
+          height: 42,
+        },
+      },
+    }) + "\n"));
+  });
+
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0]?.algo, "pearlhash");
+  assert.equal(jobs[0]?.blob, header);
+  assert.equal(jobs[0]?.pearlhash_base_target, baseTarget);
+  assert.equal(jobs[0]?.pearlhash_cert_version, 3);
+  assert.equal(jobs[0]?.height, 42);
+  assert.equal(jobs[0]?.submit_mode, "pearlhash");
+  assert.equal(jobs[0]?.target, undefined);
+});
+
+test("PearlHash login inference persists for later untagged proxy jobs", async () => {
+  /** @type {PoolJob[]} */
+  const jobs = [];
+  const header = "12".repeat(76);
+  const target = "0f".repeat(32);
+  await withMockPool({pool: {protocol: "login"}}, async ({socket}) => {
+    pool.connect_pool_throttle(0, /** @param {PoolJob} job */ (job) => {
+      jobs.push(job);
+      return keepMiningJob(job);
+    });
+    socket.emit("data", Buffer.from([
+      {
+        id: 1,
+        jsonrpc: "2.0",
+        error: null,
+        result: {
+          id: "worker",
+          algo: "pearlhash",
+          job: {job_id: "login", header, target, cert_version: 3},
+        },
+      },
+      {
+        id: null,
+        jsonrpc: "2.0",
+        method: "job",
+        params: {job_id: "update", header, target, cert_version: 3},
+      },
+    ].map((message) => JSON.stringify(message)).join("\n") + "\n"));
+  });
+
+  assert.deepEqual(jobs.map((job) => job.job_id), ["login", "update"]);
+  assert.deepEqual(jobs.map((job) => job.submit_mode), ["pearlhash", "pearlhash"]);
+});
+
+test("PearlHash subscribe pools distinguish base and final jackpot targets", async () => {
+  const target = "00000000d1b71758e219652bd3c36113404ea4a8c154c985f06f694467381d7d";
+  for (const format of ["default", "base", "jackpot"]) {
+    await withMockPool({
+      pool: {
+        protocol: "pearlhash", use_subscribe: true,
+        ...(format === "default" ? {} : {pearlhash_target_format: format}),
+      },
+      opt: {job: {algo: "pearlhash"}},
+    }, async ({socket, poolConfig}) => {
+      /** @type {PoolJob[]} */
+      const jobs = [];
+      pool.connect_pool_throttle(0, /** @param {PoolJob} job */ (job) => {
+        jobs.push(job);
+        return keepMiningJob({...job, pearlhash_k: 4096, pearlhash_rank: 256});
+      });
+      socket.emit("connect");
+      socket.emit("data", Buffer.from('{"id":1,"result":true,"error":null}\n'));
+      socket.emit("data", Buffer.from('{"id":2,"result":true,"error":null}\n'));
+      socket.emit("data", Buffer.from(JSON.stringify({id: null, method: "mining.notify", params: {
+        header: "00".repeat(76), job_id: "target", target: "0x" + target,
+      }}) + "\n"));
+      assert.equal(jobs.length, 1);
+      assert.equal(jobs[0]?.target, format === "jackpot" ? target : undefined);
+      assert.equal(jobs[0]?.pearlhash_base_target, format === "jackpot" ? undefined : target);
+      assert.notEqual(socket.destroyed, true);
+      assert.equal(poolConfig.logged_in, true);
+      assert.equal(poolConfig.bad_shares, 0);
+    });
+  }
+});
+
+test("Pearl rejects malformed final jackpot targets before accepting a job", async () => {
+  for (const target of [null, 0, {}, "", "0x", "not-hex", "f".repeat(65)]) {
+    await withMockPool({
+      pool: {protocol: "pearlhash", use_subscribe: true, logged_in: true, pearlhash_target_format: "jackpot"},
+      opt: {job: {algo: "pearlhash"}},
+    }, async ({socket, poolConfig}) => {
+      pool.connect_pool_throttle(0, unexpectedPoolJob);
+      socket.emit("data", Buffer.from(JSON.stringify({id: null, method: "mining.notify", params: {
+        header: "00".repeat(76), job_id: "invalid", target,
+      }}) + "\n"));
+      assert.equal(poolConfig.last_job, null);
+      assert.equal(socket.destroyed, true);
     });
   }
 });

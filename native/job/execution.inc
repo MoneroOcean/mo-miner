@@ -31,12 +31,23 @@ static randomx_flags get_rx_vm_flags(
 }
 
 void Core::set_job(
-  const bool is_set_nonce, const bool is_no_same_input, const MessageValues& v,
+  const JobMode mode, const bool is_no_same_input, const MessageValues& v,
   std::function<void(void)> fn_extra_setup
 ) {
   if (!v.contains("dev"))      throw std::string("Missing dev job key");
   if (!v.contains("algo"))     throw std::string("Missing algo job key");
   if (!v.contains("blob_hex")) throw std::string("Missing blob_hex job key");
+  const bool is_set_nonce = mode != JobMode::test;
+
+  const auto parse_uint = [](
+    const std::string& value, const unsigned base, const uint64_t max, const char* const key
+  ) {
+    uint64_t parsed = 0;
+    if (!mom::job_boundary::parse_unsigned(value, parsed, base, base == 16) || parsed > max) {
+      throw std::string("Invalid unsigned job key: ") + key;
+    }
+    return parsed;
+  };
 
   // optional job keys fall back to a default when absent; *_hex16 keys are parsed as base-16
   const auto opt_str = [&](const char* k) { return v.contains(k) ? v.at(k) : std::string(); };
@@ -59,7 +70,8 @@ void Core::set_job(
                     new_c29_proof_size = opt_uint("proofsize", 32),
                     new_pearlhash_n        = opt_uint("pearlhash_n", 131072),
                     new_pearlhash_k        = opt_uint("pearlhash_k", 4096),
-                    new_pearlhash_rank     = opt_uint("pearlhash_rank", 256);
+                    new_pearlhash_rank     = opt_uint("pearlhash_rank", 256),
+                    new_pearlhash_cert_version = opt_uint("pearlhash_cert_version", 3);
   const uint64_t    new_nonce          = opt_u64_hex("nonce"),
                     new_nicehash_mask  = opt_u64_hex("nicehash_mask");
 
@@ -98,6 +110,26 @@ void Core::set_job(
     new_algo_str == "c29" ? DEV::C29_GPU :
     new_algo_str == "c30" ? DEV::C30_GPU : DEV::GPU;
 
+  std::uint32_t new_pearlhash_seed_base = 0;
+  std::uint32_t new_pearlhash_seed_stride = 1;
+  std::uint32_t new_pearlhash_seed_start = 0;
+  if (new_dev == DEV::PEARLHASH_GPU) {
+    if (v.contains("nonce_stride")) {
+      const uint64_t stride = parse_uint(
+        v.at("nonce_stride"), 10, std::numeric_limits<std::uint32_t>::max(), "nonce_stride");
+      if (!stride || (stride & (stride - 1)) != 0)
+        throw std::string("PearlHash nonce stride must be a positive power of two");
+      new_pearlhash_seed_stride = static_cast<std::uint32_t>(stride);
+    }
+    if (new_nonce > std::numeric_limits<std::uint32_t>::max())
+      throw std::string("PearlHash seed slot exceeds uint32_t");
+    new_pearlhash_seed_base = static_cast<std::uint32_t>(new_nonce);
+    if (!mom::job_boundary::pearl_seed_start(
+          new_pearlhash_seed_base, new_thread_id, new_thread_num,
+          new_pearlhash_seed_stride, new_pearlhash_seed_start)) {
+      throw std::string("PearlHash seed partition overflows uint32_t");
+    }
+  }
   uint64_t c30_initial_nonce = 0;
   uint64_t zhash_initial_nonce = 0;
   if (new_dev == DEV::C30_GPU || new_algo_str == "zhash" || new_algo_str == "equihash192_7") {
@@ -140,14 +172,26 @@ void Core::set_job(
       new_backend != "sycl-native" &&
       new_backend != "native")
     throw std::string("Invalid GPU backend");
-  if (new_dev == DEV::PEARLHASH_GPU &&
-      (new_pearlhash_n < 256 || new_pearlhash_n % 32 || new_pearlhash_k < 16 ||
-       new_pearlhash_k % 16 || new_pearlhash_rank < 16 || new_pearlhash_rank % 16 ||
-       new_pearlhash_k % new_pearlhash_rank))
-    throw std::string("Invalid pearlhash M/N/K/rank profile");
+  if (new_dev == DEV::PEARLHASH_GPU) {
+    if (new_pearlhash_cert_version != 3)
+      throw std::string("Unsupported pearlhash certificate version");
+    const uint64_t pearlhash_m = mode == JobMode::test
+      ? (new_backend == "native" ? 2048 : 256)
+      : (new_batch >= 128 ? new_batch : 131072);
+    const uint64_t pearlhash_n = mode == JobMode::test ? pearlhash_m : new_pearlhash_n;
+    // Align effective matrices before allocation so transcript chunks, kernel indices, tile
+    // searches, 32-depth matrix loads, transcript boundaries, and PlainProof accesses stay bounded.
+    if (!mom::job_boundary::valid_pearlhash_shape(
+          pearlhash_m, pearlhash_n, new_pearlhash_k, new_pearlhash_rank))
+      throw std::string("Invalid pearlhash M/N/K/rank profile");
+    if (new_pearlhash_rank < 128)
+      throw std::string("PearlHash certificate V3 requires rank >= 128");
+  }
   // batch carries the intensity for the small-blob GPU pow algos, so 0 is never valid
   if (new_batch == 0 && is_small_blob_gpu_dev(new_dev))
     throw std::string("Invalid " + new_algo_str + " intensity");
+  if (new_dev == DEV::PEARLHASH_GPU && new_nonce_bytes != 8)
+    throw std::string("pearlhash requires an 8-byte external seed");
   if (new_nonce_bytes != 4 && new_nonce_bytes != 8)
     throw std::string("Only support 4 or 8 bytes long nonces");
   // kawpow/etchash/autolykos2 embed an 8-byte nonce at offset 32 in the header blob; fishhash uses
@@ -298,14 +342,25 @@ void Core::set_job(
   if (new_dev == DEV::MISC_GPU && new_algo_str != "nexapow" &&
       new_input_len != (new_algo_str == "xelishashv3" ? 112 : 80))
     throw std::string("Bad ") + new_algo_str + " input length";
-  if (new_input_len < min_input_len ||
+  if ((new_dev == DEV::PEARLHASH_GPU && new_input_len != 76) ||
+      new_input_len < min_input_len ||
       (new_dev == DEV::VERTHASH_GPU && new_input_len != 80) ||
       ((new_algo_str == "zhash" || new_algo_str == "equihash192_7") && new_input_len != 140))
     throw std::string("Bad " + new_algo_str + " input length");
 
   const unsigned new_mem_size = algo2mem.at(new_algo_str);
+  const auto clear_mining_state = [&]() {
+    // Bench/test nonces must never be reported as resumable work for the previous pool job.
+    m_target = 0;
+    std::memset(m_target_bin, 0, HASH_LEN);
+    m_pool_id.clear();
+    m_worker_id.clear();
+    m_job_id.clear();
+    m_job_token.clear();
+    m_header_hash.clear();
+  };
   const bool same_compute_input =
-    is_no_same_input && new_input_hex == m_input_hex &&
+    is_no_same_input && m_job_mode == mode && new_input_hex == m_input_hex &&
     m_batch == new_batch && m_mem_size == new_mem_size &&
     m_seed_hex == new_seed_hex && m_algo_str == new_algo_str &&
     m_dev == new_dev && m_dev_str == new_dev_name &&
@@ -313,10 +368,16 @@ void Core::set_job(
     m_nonce_offset == new_nonce_offset && m_c29_proof_size == new_c29_proof_size &&
     m_input_len == new_input_len && m_nicehash_mask == new_nicehash_mask &&
     m_backend == new_backend && m_pearlhash_n == new_pearlhash_n &&
-    m_pearlhash_k == new_pearlhash_k && m_pearlhash_rank == new_pearlhash_rank;
+    m_pearlhash_k == new_pearlhash_k && m_pearlhash_rank == new_pearlhash_rank &&
+    m_pearlhash_cert_version == new_pearlhash_cert_version &&
+    m_pearlhash_seed_start == new_pearlhash_seed_start &&
+    m_pearlhash_seed_stride == new_pearlhash_seed_stride;
   if (same_compute_input) {
     // Pools can retarget c29 by sending the same work with a new target/job id.
     // Keep the existing nonce/search state and only refresh submit metadata.
+    m_job_mode = mode;
+    if (mode != JobMode::mine)
+      clear_mining_state();
     fn_extra_setup();
     return;
   }
@@ -423,7 +484,13 @@ void Core::set_job(
   m_pearlhash_n        = new_pearlhash_n;
   m_pearlhash_k        = new_pearlhash_k;
   m_pearlhash_rank     = new_pearlhash_rank;
+  m_pearlhash_cert_version = new_pearlhash_cert_version;
+  m_pearlhash_seed_start = new_pearlhash_seed_start;
+  m_pearlhash_seed_stride = new_pearlhash_seed_stride;
+  m_job_mode       = mode;
   std::memcpy(m_seed, new_seed, HASH_LEN);
+  if (mode != JobMode::mine)
+    clear_mining_state();
   fn_extra_setup();
 
   // start rx job compute threads
@@ -433,6 +500,8 @@ void Core::set_job(
     memcpy(new_input2, new_input, m_input_len);
     const unsigned job_ref = m_job_ref;
     const bool is_rx_v2 = new_algo_str == "rx/2";
+    const bool is_mining = mode == JobMode::mine;
+    const bool is_test = mode == JobMode::test;
     const xmrig::Algorithm rx_algo(cpu_name2algo.at(new_algo_str));
     for (unsigned batch_id = 0; batch_id != m_batch; ++batch_id) m_thread_pool->push(
       [=, this, &m_job_ref = m_job_ref, &m_hash_count = m_hash_count](int) {
@@ -470,7 +539,7 @@ void Core::set_job(
               memcpy(prev_input, input, m_input_len);
               commitment = raw_hash;
             }
-            if (!is_set_nonce) { // test job
+            if (is_test) { // test job
               char hash[HASH_LEN*2+1];
               send_msg("test", "result", hash_bin2hex(output, hash));
               break;
@@ -485,7 +554,7 @@ void Core::set_job(
               send_result(nonce - nonce_step, 4, output, nullptr, 32, commitment);
           }
           // only send for mine jobs
-          if (m_target) send_last_nonce(nonce, 4, m_pool_id);
+          if (is_mining && m_target) send_last_nonce(nonce, 4, m_pool_id);
         } catch(const std::string& err) {
           send_error(std::string("Compute function thread exception: ") + err);
         } catch(...) {
@@ -497,7 +566,6 @@ void Core::set_job(
     if (new_dev == DEV::C30_GPU) {
       memcpy(m_input, new_input, m_input_len);
       m_nonce_step = new_thread_num;
-      // This existing core uses zero as its test sentinel; JobMode migration is a later topic.
       m_nonce64 = is_set_nonce ? c30_initial_nonce : 0;
       m_nonce32 = 0;
       return;
@@ -507,8 +575,7 @@ void Core::set_job(
       // seed counter (one seeded attempt per Execute call), so step by worker count, not by batch.
       memcpy(m_input, new_input, m_input_len);
       m_nonce_step = new_thread_num;
-      // keep the seed non-zero in mine mode (m_nonce64==0 is the test-job sentinel in Execute)
-      m_nonce64 = is_set_nonce ? new_nonce + new_thread_id + m_nonce_step : 0;
+      m_nonce64 = is_set_nonce ? new_pearlhash_seed_start : 0;
       m_nonce32 = 0;
       return;
     }
@@ -543,8 +610,8 @@ void Core::set_job(
       memcpy(m_input, new_input, m_input_len);
       const uint64_t current_nonce = new_nonce + static_cast<uint64_t>(new_thread_id) * m_batch;
       m_nonce_step = new_thread_num * m_batch;
-      // mine mode embeds the starting nonce and points m_nonce64 at the next one; m_nonce64==0
-      // is the test-job sentinel consumed by Execute. Live Iron Fish (fishhash, 180-byte header) reads
+      // Mine mode embeds the starting nonce and points m_nonce64 at the next one.
+      // Live Iron Fish (fishhash, 180-byte header) reads
       // the 8-byte nonce big-endian, so embed it byte-swapped there; every other layout stays LE.
       if (is_set_nonce) {
         const bool ironfish = (new_dev == DEV::FISHHASH_GPU && m_input_len >= 140) || new_algo_str == "nexapow" || new_algo_str == "xelishashv3";

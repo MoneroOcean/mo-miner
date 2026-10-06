@@ -2,8 +2,8 @@
 
 module.exports = ({
   h, o, net, tls, systemNetConnect, systemTlsConnect, max_pool_data_buffer,
-  clear_pool_connection, isCurrentPoolSocket, pearlhashUsesSubscribe,
-  poolProtocol, pool_log, pool_log1, pool_log2, pool_log_err, pool_log_str,
+  clear_pool_connection, isCurrentPoolSocket, pearlhashUsesSubscribe, normalizeAlgoName,
+  poolProtocol, pool_log, pool_log1, pool_log2, pool_log_json, pool_log_err, pool_log_str,
   poolErrorText,
   pool_message, pool_str, usesCortex, usesEthProxy, usesIronfish, usesMiningSubscribe,
   poolWrite, switchPool,
@@ -38,10 +38,23 @@ module.exports = ({
       algos.push(poolAlgo);
       algo_perfs[poolAlgo] = normalizedPoolAlgoPerf(algo, global.opt.algo_params[algo].perf);
     }
+    if (normalizeAlgoName(global.opt.job.algo) === "pearlhash" &&
+        !algos.some((algo) => normalizeAlgoName(algo) === "pearlhash")) {algos.push("pearlhash");}
     return {
       login: pool.login, pass: pool.pass, agent: o.agent_str,
       algo: algos, "algo-perf": algo_perfs
     };
+  }
+
+  function pearlhashAuthorizeParams(pool) {
+    const login = typeof pool.login === "string" ? pool.login : "";
+    const separator = login.lastIndexOf(".");
+    const hasWorker = separator > 0 && separator < login.length - 1;
+    const wallet = hasWorker ? login.slice(0, separator) : login;
+    const embeddedWorker = hasWorker ? login.slice(separator + 1) : "";
+    const worker = typeof pool.worker === "string" && pool.worker.length > 0
+      ? pool.worker : embeddedWorker || "mom";
+    return {wallet, worker, pass: pool.pass};
   }
 
   function poolAlgoName(algo) {
@@ -83,7 +96,7 @@ module.exports = ({
   }
 
   function processPoolJson(pool_id, json, set_job, pool_err) {
-    pool_log2(pool_id, "Got from the pool: " + JSON.stringify(json));
+    pool_log_json(pool_id, 2, "Got from the pool: ", json);
     try {
       pool_message(pool_id, json, set_job);
     } catch (err) {
@@ -172,7 +185,7 @@ module.exports = ({
       poolWrite(pool_id, { jsonrpc: "2.0", id: 1, method: "mining.subscribe", params: [o.agent_str] });
       return poolWrite(pool_id, {
         jsonrpc: "2.0", id: 2, method: "mining.authorize",
-        params: { wallet: pool.login, worker: pool.worker || "mom", pass: pool.pass }
+        params: pearlhashAuthorizeParams(pool)
       });
     }
     if (poolProtocol(pool) === "beam") {

@@ -1,6 +1,5 @@
 bool Core::process_message(const std::string& type, const MessageValues& v) {
   if (type == "job") {
-    m_is_bench = false;
     if (!v.contains("target"))    throw std::string("Missing target job key");
     if (!v.contains("pool_id"))   throw std::string("Missing pool_id job key");
     if (!v.contains("worker_id")) throw std::string("Missing worker_id job key");
@@ -33,7 +32,7 @@ bool Core::process_message(const std::string& type, const MessageValues& v) {
     const uint64_t prev_last_nonce = last_nonce();
     const std::string prev_pool_id = m_pool_id;
     const std::string prev_job_id = m_job_id, prev_job_token = m_job_token;
-    set_job(true, true, v, [&]() {
+    set_job(JobMode::mine, true, v, [&]() {
       m_target    = new_target;
       if (is_big_target) std::memcpy(m_target_bin, new_target_bin, HASH_LEN);
       m_pool_id   = v.at("pool_id");
@@ -44,21 +43,19 @@ bool Core::process_message(const std::string& type, const MessageValues& v) {
     });
     if (prev_last_nonce) send_last_nonce(prev_last_nonce, m_nonce_bytes, prev_pool_id, prev_job_id, prev_job_token);
 
-  } else if (type == "bench") {
-    debug_startup("process bench start");
-    m_is_bench = true;
-    set_job(true, true, v);
-    debug_startup("process bench done");
-    m_target = 0;
-
-  } else if (type == "test") {
-    debug_startup("process test start");
-    m_is_bench = false;
-    set_job(false, false, v);
-    debug_startup("process test done");
-    m_nonce32 = 0;
-    m_nonce64 = 0;
-    m_target  = 0;
+  } else if (type == "bench" || type == "test") {
+    const bool is_bench = type == "bench";
+    debug_startup(is_bench ? "process bench start" : "process test start");
+    const uint64_t prev_last_nonce = last_nonce();
+    const unsigned prev_nonce_bytes = m_nonce_bytes;
+    const std::string prev_pool_id = m_pool_id;
+    const std::string prev_job_id = m_job_id;
+    const std::string prev_job_token = m_job_token;
+    set_job(is_bench ? JobMode::bench : JobMode::test, is_bench, v);
+    if (prev_last_nonce) {
+      send_last_nonce(prev_last_nonce, prev_nonce_bytes, prev_pool_id, prev_job_id, prev_job_token);
+    }
+    debug_startup(is_bench ? "process bench done" : "process test done");
 
   } else if (type == "pause") {
     ++ m_job_ref; // to stop rx threads if any

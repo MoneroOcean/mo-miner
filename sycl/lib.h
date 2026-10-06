@@ -191,17 +191,17 @@ MOM_SYCL_API int beamhash3(
 // pearlhash: input is the 76-byte incomplete header; pseed is the search seed (in/out, set to the
 // winning seed on a hit); intensity carries M and the explicit shape fields may select rectangular
 // M/N/K/rank profiles. On a hit returns 1 and the pool-ready base64 PlainProof is available from
-// pearlhash_proof().
+// pearlhash_claim(). Only the current certificate V3 salted noise-seed chain is supported.
 MOM_SYCL_API int pearlhash(
   unsigned job_id, uint32_t height, const uint8_t* input, unsigned input_size, uint8_t* output,
   uint64_t* pseed, const uint8_t* target,
   unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str,
-  const std::string& backend, unsigned n, unsigned k, unsigned rank
+  const std::string& backend, unsigned n, unsigned k, unsigned rank, unsigned cert_version
 );
-MOM_SYCL_API const char* pearlhash_proof();
-// GEMM MACs per pearlhash attempt (m*n*k) -- the work unit the pearlhash "TH/s" hashrate is quoted in, so
-// the core counts this rather than the seed/intensity batch. Mirrors pearlhash()'s shape selection.
-MOM_SYCL_API uint64_t pearlhash_attempt_hashes(unsigned intensity, unsigned n, unsigned k);
+MOM_SYCL_API const char* pearlhash_claim(uint8_t jackpot[32], uint32_t* adjustment_factor);
+// Rank-128-equivalent GEMM MACs per PearlHash attempt: m*n*k*128/rank.  This is the
+// pool accounting unit, so different valid V3 ranks remain directly comparable.
+MOM_SYCL_API uint64_t pearlhash_attempt_hashes(unsigned intensity, unsigned n, unsigned k, unsigned rank);
 
 // Release process-scoped SYCL state while the Node environment and compiler runtime are still
 // alive. The addon registers this as an environment cleanup hook; it is intentionally separate from

@@ -59,6 +59,20 @@ function redactPoolText(pool_id, value) {
   return text;
 }
 
+function pool_log_json(pool_id, level, prefix, json) {
+  if (global.opt.log_level < level) {
+    return;
+  }
+  let message;
+  try {
+    message = redactPoolText(pool_id, JSON.stringify(json, (key, value) =>
+      key === "plain_proof" ? "<redacted>" : value) ?? "undefined");
+  } catch {
+    message = '"<unprintable pool JSON>"';
+  }
+  (level === 1 ? pool_log1 : pool_log2)(pool_id, prefix + message);
+}
+
 function pool_str(pool_id) {
   const pool = global.opt.pools[pool_id];
   return pool.url + ":" + pool.port + (pool.is_tls ? "tls" : "");
@@ -79,6 +93,8 @@ function clear_pool_connection(pool_id, socket) {
   if (pool.socket) {pool.socket.destroy();}
   pool.socket   = null;
   pool.last_job = null;
+  delete pool.pearlhash_difficulty;
+  delete pool.pearlhash_proof_encodings;
   pool.logged_in = false;
   pool.pending_authorize = false;
   pool.pending_cortex_login = false;
@@ -183,8 +199,11 @@ function pearlhashUsesSubscribe(pool) {
 // Pearl difficulty is carried in the job_id suffix "<hex>_<diff>" (HeroMiners omits the difficulty
 // field that pearlpool.cloud sends); used to derive the 2^256/diff kernel target.
 function pearlhashDiffFromJobId(job_id) {
-  const m = String(job_id || "").match(/_(\d+)$/);
-  return m ? Number(m[1]) : undefined;
+  const text = typeof job_id === "string" ? job_id :
+    typeof job_id === "number" && Number.isSafeInteger(job_id) ? String(job_id) : "";
+  const m = text.match(/_(\d+)$/);
+  const difficulty = m && m[1] ? Number(m[1]) : Number.NaN;
+  return Number.isSafeInteger(difficulty) && difficulty > 0 ? difficulty : undefined;
 }
 
 // k - k%rank (the "dot_product_length"), from the same env the native kernel reads. Defaults MUST
@@ -211,9 +230,9 @@ function pearlhashNbitsBound(baseTargetHex) {
 module.exports.pool_write = function(pool_id, json) {
   const message = JSON.stringify(json);
   const pool = global.opt.pools[pool_id];
-  if (!pool.socket) {return pool_log2(pool_id, "Sent to the closed pool socket: " + message);}
+  if (!pool.socket) {return pool_log_json(pool_id, 2, "Sent to the closed pool socket: ", json);}
 
-  pool_log2(pool_id, "Sent to the pool: " + message);
+  pool_log_json(pool_id, 2, "Sent to the pool: ", json);
   pool.socket.write(message + "\n");
   // sends keepalive if no submit/keepalive to pool for more than global.opt.pool_time.keepalive
   if (!pool.is_keepalive || usesMiningSubscribe(pool) || usesEthProxy(pool) || pearlhashUsesSubscribe(pool) || usesIronfish(pool)) {return;}
@@ -307,7 +326,13 @@ function jobTargetWork(job) {
   {return h.kawpowTarget2diff(job.target);}
   // PearlHash reports the share target in GEMM MACs to match the MAC/s hashrate (so time-per-share =
   // target/hashrate). work/share = (tiles/share = 2^256/bound) * (MACs/tile = 16*16*k_eff).
-  if (job.algo === "pearlhash") {return h.target256ToWork(job.target) * BigInt(16 * 16 * pearlhashKEff());}
+  if (job.algo === "pearlhash") {
+    if (typeof job.pearlhash_k !== "number" || typeof job.pearlhash_rank !== "number") {
+      throw new Error("Invalid PearlHash K/rank");
+    }
+    return h.pearlhashTargetWork(job.target, job.pearlhash_k, job.pearlhash_rank);
+  }
+
   // etchash/autolykos2/fishhash carry a full 256-bit target too, but their hashrate is in hashes -> H/share.
   if (job.algo === "etchash" || job.algo === "octopus" || job.algo === "autolykos2" || job.algo === "fishhash" ||
       job.algo === "zelhash" || job.algo === "zhash" || job.algo === "equihash192_7" ||
@@ -349,7 +374,10 @@ function poolActivator(pool_id) {
 
 function handlePoolJob(pool_id, job, set_job) {
   activatePoolForJob(pool_id, global.opt.pool_ids.active);
-  if (job.target) {jobTargetWork(job);} // throws early on a malformed target before we store the job
+  if (job.target) {
+    // Pearl's K/rank are selected by set_job; validate the final threshold before that selection.
+    if (algo === "pearlhash") {h.target256ToWork(job.target);} else {jobTargetWork(job);}
+  } // throws early on a malformed target before we store the job
 
   global.opt.pools[pool_id].last_job = job;
   if (pool_id === global.opt.pool_ids.active) {
@@ -581,8 +609,8 @@ function pool_message(pool_id, json, set_job) {
 
 const { connectPoolThrottle } = require("./pool/connection")({
   h, o, net, tls, systemNetConnect, systemTlsConnect, max_pool_data_buffer,
-  clear_pool_connection, isCurrentPoolSocket, pearlhashUsesSubscribe,
-  poolProtocol, pool_log, pool_log1, pool_log2, pool_log_err, pool_log_str,
+  clear_pool_connection, isCurrentPoolSocket, pearlhashUsesSubscribe, normalizeAlgoName,
+  poolProtocol, pool_log, pool_log1, pool_log2, pool_log_json, pool_log_err, pool_log_str,
   poolErrorText,
   pool_message, pool_str, usesCortex, usesEthProxy, usesIronfish, usesMiningSubscribe,
   poolWrite: (...args) => module.exports.pool_write(...args),

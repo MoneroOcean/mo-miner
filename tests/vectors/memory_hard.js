@@ -168,6 +168,41 @@ const vectors = [
     expected: "b555131f962db9c12e402d8ae792f1428af2b42353b155e1a6d4831f83dc9954",
   },
   {
+    // PearlHash certificate-v3 native-profile regression: reuse the deterministic 76-byte header
+    // and expected test marker from the portable vector in tests/vectors/equihash.js.
+    name: "pearlhash v3 gpu1*[m=256;k=4096;rank=256]",
+    gpu: true,
+    syclCpu: false,
+    timeoutMs: 600000,
+    job: {
+      algo: "pearlhash",
+      dev: "gpu1*[m=256;k=4096;rank=256]",
+      pearlhash_cert_version: /** @type {3} */ (3),
+      blob_hex:
+        "000040205d1cd9b9049d9f594cd0d05697f99a8a6770bbd59a2aefcf669be71e3b3eb253866b" +
+        "c496a00224b6bdf05ed1983a52622fc90bc3ef86969c27bc0d6686afacdfa9db2c6a21000118",
+    },
+    expected: "ok",
+  },
+  {
+    // Exercise four transcript folds per slot (K/rank=64) without the full comparison profile's
+    // memory footprint. GPU tests check commitment seeds; all tuned GPU paths, including Intel ESIMD,
+    // also cross-check the search checksum against portable SYCL.
+    name: "pearlhash v3 ratio64 gpu1*[m=256;n=256;k=8192;rank=128]",
+    gpu: true,
+    syclCpu: false,
+    timeoutMs: 600000,
+    job: {
+      algo: "pearlhash",
+      dev: "gpu1*[m=256;n=256;k=8192;rank=128]",
+      pearlhash_cert_version: /** @type {3} */ (3),
+      blob_hex:
+        "000040205d1cd9b9049d9f594cd0d05697f99a8a6770bbd59a2aefcf669be71e3b3eb253866b" +
+        "c496a00224b6bdf05ed1983a52622fc90bc3ef86969c27bc0d6686afacdfa9db2c6a21000118",
+    },
+    expected: "ok",
+  },
+  {
     // KarlsenHashV2 (FishHashPlus): same 4.6 GB FishHash DAG, folded index derivation + plain-BLAKE3
     // wrapping. 80-byte Kaspa blob, 8-byte LE nonce at offset 72. From
     // the authoritative rusty-karlsen test_khashv2 vector (prePow=0x2a*32, ts=5435345234, nonce=432432432).

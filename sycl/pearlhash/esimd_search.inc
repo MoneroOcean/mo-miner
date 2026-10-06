@@ -105,11 +105,12 @@ static void search_esimd(sycl::queue& q, const Buffers& bb, uint32_t seed, int m
           esimd_ns::atomic_update<esimd_ns::atomic_op::add>(
               &B.result->chk, esimd_ns::simd<uint32_t, 1>(0), esimd_ns::simd<uint32_t, 1>(mx), esimd_ns::simd_mask<1>(1));
         }
-        if (!tile_wins(tr[r * EC + c], B.cA, B.target)) continue;
+        uint8_t jackpot[32];
+        if (!tile_wins(tr[r * EC + c], B.cA, B.target, jackpot)) continue;
         // ESIMD has no sycl::atomic_ref; use esimd::atomic_update<xchg> to pick one winner
         esimd_ns::simd<int, 1> old = esimd_ns::atomic_update<esimd_ns::atomic_op::xchg>(
             &B.result->found, esimd_ns::simd<uint32_t, 1>(0), esimd_ns::simd<int, 1>(1), esimd_ns::simd_mask<1>(1));
-        if (old[0] == 0) { B.result->seed = seed; B.result->row = (uint32_t)(rowBase + r * HT); B.result->col = (uint32_t)((colBase + c) * HT); }
+        if (old[0] == 0) { B.result->seed = seed; B.result->row = (uint32_t)(rowBase + r * HT); B.result->col = (uint32_t)((colBase + c) * HT); for (int i = 0; i < 32; ++i) B.result->jackpot[i] = jackpot[i]; }
       }
     });
   });

@@ -184,9 +184,10 @@ static void search_cuda_direct(sycl::queue& q, const Buffers& bb, uint32_t seed,
           uint32_t full[16];
 #pragma unroll
           for (int s = 0; s < 16; s++) full[s] = trbuf[t * 16 + s];
-          if (!tile_wins(full, B.cA, B.target)) continue;
+          uint8_t jackpot[32];
+          if (!tile_wins(full, B.cA, B.target, jackpot)) continue;
           sycl::atomic_ref<int, sycl::memory_order::relaxed, sycl::memory_scope::device, sycl::access::address_space::global_space> at(B.result->found);
-          if (at.exchange(1) == 0) { B.result->seed = seed; B.result->row = (uint32_t)(rowBase + r * 16); B.result->col = (uint32_t)(colBase + c * 16); }
+          if (at.exchange(1) == 0) { B.result->seed = seed; B.result->row = (uint32_t)(rowBase + r * 16); B.result->col = (uint32_t)(colBase + c * 16); for (int i = 0; i < 32; ++i) B.result->jackpot[i] = jackpot[i]; }
         }
       }
     });
@@ -292,9 +293,10 @@ static void search_cuda_pipe(sycl::queue& q, const Buffers& bb, uint32_t seed, i
         uint32_t full[16];
 #pragma unroll
         for (int i = 0; i < 8; i++) { full[i * 2] = tr[i]; full[i * 2 + 1] = other[i]; }
-        if (tile_wins(full, B.cA, B.target)) {
+        uint8_t jackpot[32];
+        if (tile_wins(full, B.cA, B.target, jackpot)) {
           sycl::atomic_ref<int, sycl::memory_order::relaxed, sycl::memory_scope::device, sycl::access::address_space::global_space> at(B.result->found);
-          if (at.exchange(1) == 0) { B.result->seed = seed; B.result->row = (uint32_t)(rowBlock + warpRow + mt * 16); B.result->col = (uint32_t)(colBlock + warpCol + nt * 16); }
+          if (at.exchange(1) == 0) { B.result->seed = seed; B.result->row = (uint32_t)(rowBlock + warpRow + mt * 16); B.result->col = (uint32_t)(colBlock + warpCol + nt * 16); for (int i = 0; i < 32; ++i) B.result->jackpot[i] = jackpot[i]; }
         }
       }
     });

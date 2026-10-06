@@ -111,7 +111,8 @@ void Core::Execute() {
       const uint64_t new_timestamp = std::chrono::time_point_cast<std::chrono::milliseconds>(
         std::chrono::high_resolution_clock::now()
       ).time_since_epoch().count();
-      if (!m_timestamp || new_timestamp - m_timestamp > 60*1000) {
+      const uint64_t interval_ms = m_job_mode == JobMode::bench ? 10*1000 : 60*1000;
+      if (!m_timestamp || new_timestamp - m_timestamp > interval_ms) {
         if (m_timestamp) send_msg("hashrate", "hashrate", std::to_string(
           static_cast<float>(hash_count) / (new_timestamp - m_timestamp) * 1000.0f
         ));
@@ -134,7 +135,8 @@ void Core::Execute() {
       // pearlhash's search seed); dev_sols is the per-call solution count (or C29's -1 EOL / 0 pending).
       int dev_sols = 0;
       uint64_t dev_nonce = 0;
-      const bool is_test = !m_nonce32 && !m_nonce64;
+      const bool is_test = m_job_mode == JobMode::test;
+      const bool is_benchmark = m_job_mode == JobMode::bench;
       const uint64_t t_dispatch = loop_stats ? loop_now_us() : 0;
       try {
         switch (m_dev) {
@@ -164,7 +166,7 @@ void Core::Execute() {
             dev_sols = m_fn.gpu_kawpow(
               m_job_ref, m_height, m_input, m_input_len, m_output,
               static_cast<uint8_t*>(m_spads), &dev_nonce, m_target,
-              m_batch, is_test, m_is_bench, m_dev_str
+              m_batch, is_test, is_benchmark, m_dev_str
             );
             break;
           case DEV::ETCHASH_GPU:
@@ -172,7 +174,7 @@ void Core::Execute() {
             dev_sols = m_fn.gpu_etchash(
               m_job_ref, m_height, m_input, m_input_len, m_output,
               static_cast<uint8_t*>(m_spads), &dev_nonce, m_target_bin, m_seed,
-              m_batch, is_test, m_is_bench, m_dev_str
+              m_batch, is_test, is_benchmark, m_dev_str
             );
             break;
           case DEV::AUTOLYKOS2_GPU:
@@ -180,7 +182,7 @@ void Core::Execute() {
             dev_sols = m_fn.gpu_autolykos2(
               m_job_ref, m_height, m_input, m_input_len, m_output,
               &dev_nonce, m_target_bin,
-              m_batch, is_test, m_is_bench, m_dev_str
+              m_batch, is_test, is_benchmark, m_dev_str
             );
             break;
           case DEV::PEARLHASH_GPU:
@@ -188,8 +190,8 @@ void Core::Execute() {
             dev_sols = m_fn.gpu_pearlhash(
               m_job_ref, m_height, m_input, m_input_len, m_output,
               &dev_nonce, m_target_bin,
-              m_batch, is_test, m_is_bench, m_dev_str, m_backend,
-              m_pearlhash_n, m_pearlhash_k, m_pearlhash_rank
+              m_batch, is_test, is_benchmark, m_dev_str, m_backend,
+              m_pearlhash_n, m_pearlhash_k, m_pearlhash_rank, m_pearlhash_cert_version
             );
             break;
           case DEV::FISHHASH_GPU:
@@ -197,7 +199,7 @@ void Core::Execute() {
             dev_sols = m_fn.gpu_fishhash(
               m_job_ref, m_height, m_input, m_input_len, m_output,
               static_cast<uint8_t*>(m_spads), &dev_nonce, m_target_bin, m_seed,
-              m_batch, is_test, m_is_bench, m_dev_str
+              m_batch, is_test, is_benchmark, m_dev_str
             );
             break;
           case DEV::KARLSENHASHV2_GPU:
@@ -205,7 +207,7 @@ void Core::Execute() {
             dev_sols = m_fn.gpu_karlsenhashv2(
               m_job_ref, m_height, m_input, m_input_len, m_output,
               static_cast<uint8_t*>(m_spads), &dev_nonce, m_target_bin, m_seed,
-              m_batch, is_test, m_is_bench, m_dev_str
+              m_batch, is_test, is_benchmark, m_dev_str
             );
             break;
           case DEV::MISC_GPU:
@@ -214,7 +216,7 @@ void Core::Execute() {
             dev_sols = m_fn.gpu_misc(
               m_job_ref, m_height, m_input, m_input_len, m_output,
               nullptr, &dev_nonce, m_target_bin, m_seed,
-              m_batch, is_test, m_is_bench, m_dev_str
+              m_batch, is_test, is_benchmark, m_dev_str
             );
             break;
           case DEV::VERTHASH_GPU: {
@@ -232,7 +234,7 @@ void Core::Execute() {
             dev_sols = m_fn.gpu_zelhash(
               m_job_ref, m_height, m_input, m_input_len,
               static_cast<uint8_t*>(m_spads), &dev_nonce, m_target_bin,
-              m_batch, is_test, m_is_bench, m_dev_str
+              m_batch, is_test, is_benchmark, m_dev_str
             );
             break;
           case DEV::BEAMHASH3_GPU:
@@ -243,7 +245,7 @@ void Core::Execute() {
             dev_sols = m_fn.gpu_beamhash3(
               m_job_ref, m_height, m_input, m_input_len,
               static_cast<uint8_t*>(m_spads), &dev_nonce, m_target_bin,
-              m_batch, is_test, m_is_bench, m_dev_str
+              m_batch, is_test, is_benchmark, m_dev_str
             );
             break;
           case DEV::RX_CPU: throw "Internal error: Unreachable code executed";
@@ -345,7 +347,7 @@ void Core::Execute() {
       // Equihash 192,7 counts input headers; other Equihash solvers count returned proofs.
       // All remaining GPU paths count the requested batch.
       m_hash_count += (m_dev == DEV::PEARLHASH_GPU)
-        ? pearlhash_attempt_hashes(m_batch, m_pearlhash_n, m_pearlhash_k)
+        ? pearlhash_attempt_hashes(m_batch, m_pearlhash_n, m_pearlhash_k, m_pearlhash_rank)
                     : ((m_dev == DEV::ZELHASH_GPU && m_algo_str != "equihash192_7") || m_dev == DEV::BEAMHASH3_GPU) ? static_cast<uint64_t>(dev_sols < 0 ? 0 : dev_sols)
                     : m_batch;
       if (m_dev == DEV::KAWPOW_GPU || m_dev == DEV::ETCHASH_GPU) {
@@ -444,26 +446,40 @@ void Core::Execute() {
       }
       if (m_dev == DEV::PEARLHASH_GPU) {
         const uint64_t prev_nonce = m_nonce64;
-        // Emit at most once per (job_id, header) pair since the PlainProof rebuild is heavy and the
-        // pool credits one share per job. PearlHashpool varies job_id (reuses header); HeroMiners the reverse.
+        // Distinct winning seeds may be credited under the same pool job/header.
         if (dev_sols == 1 && m_target) {
-          std::string pearlhash_key = m_job_id;
-          pearlhash_key.append(reinterpret_cast<const char*>(m_input), m_input_len);
-          if (pearlhash_key != m_pearlhash_proof_job) {
-            m_pearlhash_proof_job = pearlhash_key;
-            MessageValues values;
-            values["nonce"]       = nonce_to_hex(dev_nonce, 8); // winning seed, for logging/traceability
-            values["plain_proof"] = pearlhash_proof();     // builds the proof for the captured tile (lazy)
+          MessageValues values;
+          values["nonce"]       = nonce_to_hex(dev_nonce, 8); // winning seed, for logging/traceability
+          uint8_t jackpot[HASH_LEN];
+          uint32_t adjustment_factor = 0;
+          const char* const plain_proof = pearlhash_claim(jackpot, &adjustment_factor);
+          if (!plain_proof) {
+            send_error("PearlHash proof claim unavailable");
+          } else {
+            values["plain_proof"] = plain_proof; // builds the proof for the captured tile (lazy)
+            char jackpot_hex[HASH_LEN * 2 + 1];
+            values["jackpot"] = hash_bin2hex(jackpot, jackpot_hex, 0);
+            values["adjustment_factor"] = std::to_string(adjustment_factor);
             values["pool_id"]     = m_pool_id;
             values["worker_id"]   = m_worker_id;
             values["job_id"]      = m_job_id;
+            values["job_token"]   = m_job_token;
             send_msg("result", values);
           }
         }
-        m_nonce64 += m_nonce_step;   // advance to the next seed (the blob is not touched)
-        if (m_target && nonce_overflowed(prev_nonce, m_nonce64, m_nicehash_mask)) {
+        // PearlHash kernels consume only the low 32 bits of the external seed. Advance in the
+        // negotiated worker partition and stop before the next value would wrap/repeat there.
+        std::uint32_t next_seed = 0;
+        const std::uint64_t pearl_seed_step =
+          static_cast<std::uint64_t>(m_thread_num) * m_pearlhash_seed_stride;
+        if (!mom::job_boundary::pearl_seed_next(
+              static_cast<std::uint32_t>(prev_nonce), pearl_seed_step, next_seed)) {
           set_fn(nullptr);
-          send_last_nonce(prev_nonce, 8, m_pool_id);   // pearlhash seed is 64-bit
+          if (m_target) {
+            send_last_nonce(prev_nonce, 8, m_pool_id, m_job_id, m_job_token);
+          }
+        } else {
+          m_nonce64 = next_seed;
         }
         continue;
       }

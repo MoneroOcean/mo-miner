@@ -1,4 +1,5 @@
 #ifndef MOM_PEARLHASH_ESIMD_TU
+#include "claim.h"
 using namespace mom_pearlhash;
 
 // 52-byte NoisyGEMM config block hashed with the 76-byte header into the per-job key (k, rank, and
@@ -24,80 +25,159 @@ static void derive_key(const uint8_t* header76, int k, int rank, uint8_t key32[3
 // (siblings) is identical to merge_root's tree.
 using CV = std::array<uint8_t, 32>;
 // Regenerate leaf `leaf` (1024 bytes, zero-padded) of A ('A') or Bt ('B') from the seed RNG.
-static int gen_leaf(char which, uint32_t seed, int leaf, int m, int n, int k, uint8_t out[1024]) {
-  const uint32_t tot = (uint32_t)(m * k);
-  const int total = (which == 'A' ? m : n) * k, off = leaf * 1024;
-  int len = total - off < 1024 ? total - off : 1024;
-  for (int t = 0; t < len; t++) {
-    int b = off + t;
-    out[t] = which == 'A' ? (uint8_t)gv(seed, (uint32_t)b)
-                          : (uint8_t)gv(seed, tot + (uint32_t)((b % k) * n + (b / k)));
+static size_t gen_leaf(char which, uint32_t seed, size_t leaf, int m, int n, int k,
+                       uint8_t out[1024]) {
+  const size_t total = checked_elements(which == 'A' ? m : n, k, "PlainProof matrix");
+  const size_t num_leaves = checked_chunk_count(total, "PlainProof matrix");
+  if (leaf >= num_leaves)
+    throw std::string("Invalid pearlhash PlainProof leaf");
+  const size_t offset = leaf * 1024;
+  const size_t len = std::min(size_t{1024}, total - offset);
+  const uint32_t tot = static_cast<uint32_t>(checked_elements(m, k, "M*K PlainProof"));
+  for (size_t t = 0; t < len; t++) {
+    const size_t byte = offset + t;
+    if (which == 'A') {
+      out[t] = static_cast<uint8_t>(gv(seed, static_cast<uint32_t>(byte)));
+    } else {
+      const size_t source_offset =
+          (byte % static_cast<size_t>(k)) * static_cast<size_t>(n) + byte / k;
+      out[t] = static_cast<uint8_t>(gv(seed, tot + static_cast<uint32_t>(source_offset)));
+    }
   }
-  for (int t = len; t < 1024; t++) out[t] = 0;
+  for (size_t t = len; t < 1024; t++)
+    out[t] = 0;
   return len;
 }
-static std::vector<std::vector<CV>> build_layers(char which, uint32_t seed, int numLeaves, int m, int n, int k, const uint8_t* key) {
-  std::vector<CV> l0(numLeaves); uint8_t chunk[1024];
-  for (int i = 0; i < numLeaves; i++) { int len = gen_leaf(which, seed, i, m, n, k, chunk); pearlhash_b3::chunk_cv(chunk, (uint32_t)len, (uint64_t)i, key, l0[i].data()); }
-  std::vector<std::vector<CV>> layers; layers.push_back(std::move(l0));
+static std::vector<std::vector<CV>> build_layers(char which, uint32_t seed, int numLeaves, int m,
+                                                 int n, int k, const uint8_t* key) {
+  std::vector<CV> l0(numLeaves);
+  uint8_t chunk[1024];
+  for (int i = 0; i < numLeaves; i++) {
+    int len = gen_leaf(which, seed, i, m, n, k, chunk);
+    pearlhash_b3::chunk_cv(chunk, (uint32_t)len, (uint64_t)i, key, l0[i].data());
+  }
+  std::vector<std::vector<CV>> layers;
+  layers.push_back(std::move(l0));
   while (layers.back().size() > 2) {
-    auto& prev = layers.back(); std::vector<CV> next;
+    auto& prev = layers.back();
+    std::vector<CV> next;
     for (size_t i = 0; i < prev.size(); i += 2) {
-      if (i + 1 < prev.size()) { CV p; pearlhash_b3::parent_cv(prev[i].data(), prev[i + 1].data(), key, false, p.data()); next.push_back(p); }
-      else next.push_back(prev[i]);
+      if (i + 1 < prev.size()) {
+        CV p;
+        pearlhash_b3::parent_cv(prev[i].data(), prev[i + 1].data(), key, false, p.data());
+        next.push_back(p);
+      } else
+        next.push_back(prev[i]);
     }
     layers.push_back(std::move(next));
   }
   return layers;
 }
-static void put_u64le(std::vector<uint8_t>& v, uint64_t n) { for (int i = 0; i < 8; i++) v.push_back((uint8_t)(n >> (8 * i))); }
-static void put_bytes(std::vector<uint8_t>& v, const uint8_t* p, int n) { v.insert(v.end(), p, p + n); }
+static void put_u64le(std::vector<uint8_t>& v, uint64_t n) {
+  for (int i = 0; i < 8; i++)
+    v.push_back((uint8_t)(n >> (8 * i)));
+}
+static void put_bytes(std::vector<uint8_t>& v, const uint8_t* p, size_t n) {
+  v.insert(v.end(), p, p + n);
+}
 // Append a serialized MatrixMerkleProof for the 16 contiguous `rows` of matrix `which` (cols wide).
-static void ser_matrix_proof(std::vector<uint8_t>& out, char which, uint32_t seed, int m, int n, int k,
-                             const uint8_t* key, int cols, const std::vector<int>& rows) {
-  const int numLeaves = ((which == 'A' ? m : n) * k) / 1024;
+static void ser_matrix_proof(std::vector<uint8_t>& out, char which, uint32_t seed, int m, int n,
+                             int k, const uint8_t* key, int cols, const std::vector<int>& rows) {
+  const size_t total_bytes = checked_elements(which == 'A' ? m : n, k, "PlainProof matrix");
+  const size_t num_leaves_size = checked_chunk_count(total_bytes, "PlainProof matrix");
+  const int numLeaves = static_cast<int>(num_leaves_size);
   auto layers = build_layers(which, seed, numLeaves, m, n, k, key);
-  uint8_t root[32]; { std::vector<CV> tmp = layers[0]; pearlhash_b3::merge_root((uint8_t*)tmp.data(), numLeaves, key, root); }
+  uint8_t root[32];
+  {
+    std::vector<CV> tmp = layers[0];
+    pearlhash_b3::merge_root((uint8_t*)tmp.data(), numLeaves, key, root);
+  }
   std::set<int> leafset;
-  for (int row : rows) { int first = (int)((long)row * cols / 1024), last = (int)(((long)(row + 1) * cols - 1) / 1024); for (int i = first; i <= last; i++) leafset.insert(i); }
+  for (int row : rows) {
+    const size_t row_start = static_cast<size_t>(row) * static_cast<size_t>(cols);
+    const size_t row_end = (static_cast<size_t>(row) + 1) * static_cast<size_t>(cols);
+    const size_t first = row_start / 1024;
+    const size_t last = (row_end - 1) / 1024;
+    if (last >= num_leaves_size || last > static_cast<size_t>(std::numeric_limits<int>::max()))
+      throw std::string("Invalid pearlhash PlainProof row leaf range");
+    for (size_t i = first; i <= last; i++)
+      leafset.insert(static_cast<int>(i));
+  }
   std::vector<int> leaves(leafset.begin(), leafset.end());
   // MerkleProof: leaf_data (Vec<[u8;1024]>), leaf_indices, total_leaves, root, siblings
   put_u64le(out, leaves.size());
   uint8_t chunk[1024];
-  for (int li : leaves) { gen_leaf(which, seed, li, m, n, k, chunk); put_u64le(out, 1024); put_bytes(out, chunk, 1024); }
-  put_u64le(out, leaves.size()); for (int li : leaves) put_u64le(out, (uint64_t)li);
+  for (int li : leaves) {
+    gen_leaf(which, seed, static_cast<size_t>(li), m, n, k, chunk);
+    put_u64le(out, 1024);
+    put_bytes(out, chunk, 1024);
+  }
+  put_u64le(out, leaves.size());
+  for (int li : leaves)
+    put_u64le(out, (uint64_t)li);
   put_u64le(out, (uint64_t)numLeaves);
   put_bytes(out, root, 32);
   // siblings: walk up, emit each node whose sibling is not itself in the active set
-  std::set<int> cur(leafset); int levelLen = numLeaves, level = 0; std::vector<CV> sib;
+  std::set<int> cur(leafset);
+  size_t levelLen = num_leaves_size;
+  size_t level = 0;
+  std::vector<CV> sib;
   while (levelLen > 1 && !cur.empty()) {
     auto& nodes = layers[level];
-    for (int i : cur) { if (i % 2 == 1) { if (!cur.count(i - 1)) sib.push_back(nodes[i - 1]); }
-                        else if (!cur.count(i + 1) && i + 1 < levelLen) sib.push_back(nodes[i + 1]); }
-    std::set<int> nx; for (int i : cur) nx.insert(i >> 1); cur.swap(nx);
-    levelLen = (levelLen + 1) / 2; level++;
+    for (int i : cur) {
+      if (i % 2 == 1) {
+        if (!cur.count(i - 1))
+          sib.push_back(nodes[i - 1]);
+      } else if (!cur.count(i + 1) && static_cast<size_t>(i + 1) < levelLen)
+        sib.push_back(nodes[i + 1]);
+    }
+    std::set<int> nx;
+    for (int i : cur)
+      nx.insert(i >> 1);
+    cur.swap(nx);
+    levelLen = levelLen / 2 + levelLen % 2;
+    level++;
   }
-  put_u64le(out, sib.size()); for (auto& s : sib) put_bytes(out, s.data(), 32);
+  put_u64le(out, sib.size());
+  for (auto& s : sib)
+    put_bytes(out, s.data(), 32);
   // MatrixMerkleProof tail: row_indices
-  put_u64le(out, rows.size()); for (int r : rows) put_u64le(out, (uint64_t)r);
+  put_u64le(out, rows.size());
+  for (int r : rows)
+    put_u64le(out, (uint64_t)r);
 }
 static std::string base64(const std::vector<uint8_t>& d) {
   static const char* T = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  std::string o; for (size_t i = 0; i < d.size(); i += 3) {
-    uint32_t x = d[i] << 16 | (i + 1 < d.size() ? d[i + 1] << 8 : 0) | (i + 2 < d.size() ? d[i + 2] : 0);
-    o += T[(x >> 18) & 63]; o += T[(x >> 12) & 63];
-    o += (i + 1 < d.size()) ? T[(x >> 6) & 63] : '='; o += (i + 2 < d.size()) ? T[x & 63] : '=';
+  std::string o;
+  for (size_t i = 0; i < d.size(); i += 3) {
+    uint32_t x =
+        d[i] << 16 | (i + 1 < d.size() ? d[i + 1] << 8 : 0) | (i + 2 < d.size() ? d[i + 2] : 0);
+    o += T[(x >> 18) & 63];
+    o += T[(x >> 12) & 63];
+    o += (i + 1 < d.size()) ? T[(x >> 6) & 63] : '=';
+    o += (i + 2 < d.size()) ? T[x & 63] : '=';
   }
   return o;
 }
 // Full PlainProof (base64) for a winning tile, from the seed + job key (no noised matrices needed).
-static std::string build_plain_proof(uint32_t seed, int m, int n, int k, int rank, const uint8_t* key, int row, int col) {
-  std::vector<int> aRows, btRows; for (int r = 0; r < 16; r++) { aRows.push_back(row + r); btRows.push_back(col + r); }
+static std::string build_plain_proof(uint32_t seed, int m, int n, int k, int rank,
+                                     const uint8_t* key, int row, int col,
+                                     uint32_t* adjustment_factor) {
+  std::vector<int> aRows, btRows;
+  for (int r = 0; r < 16; r++) {
+    aRows.push_back(row + r);
+    btRows.push_back(col + r);
+  }
+  if (!pearlhash_adjustment_factor(aRows.size(), btRows.size(), k, rank, adjustment_factor))
+    return {};
   std::vector<uint8_t> buf;
-  put_u64le(buf, (uint64_t)m); put_u64le(buf, (uint64_t)n); put_u64le(buf, (uint64_t)k); put_u64le(buf, (uint64_t)rank);
+  put_u64le(buf, (uint64_t)m);
+  put_u64le(buf, (uint64_t)n);
+  put_u64le(buf, (uint64_t)k);
+  put_u64le(buf, (uint64_t)rank);
   ser_matrix_proof(buf, 'A', seed, m, n, k, key, k, aRows);
   ser_matrix_proof(buf, 'B', seed, m, n, k, key, k, btRows);
-  buf.push_back(0x00);   // moe: Option::None
+  buf.push_back(0x00); // moe: Option::None
   return base64(buf);
 }
 template <typename T>
@@ -105,26 +185,65 @@ static T* alloc_buffer(sycl::queue& q, size_t count) {
   return q.get_device().is_cpu() ? sycl::malloc_shared<T>(count, q)
                                  : sycl::malloc_device<T>(count, q);
 }
-static Buffers alloc_buffers(sycl::queue& q, int m, int n, int k, int rank,
-                             bool hip_jit = false, bool cuda_jit = false) {
-  Buffers b{};
-  b.EAL=alloc_buffer<int8_t>(q,m*rank); b.EBR=alloc_buffer<int8_t>(q,rank*n);
-  b.EBRt=alloc_buffer<int8_t>(q,n*rank);
-  b.Ap=alloc_buffer<int8_t>(q,m*k); b.Bp=alloc_buffer<int8_t>(q,k*n);
-#if defined(MOM_SYCL_HAS_HIP)
-  // HIPRTC WMMA consumes an architecture-native fragment layout. Keep it separate from the
-  // portable SYCL layout so a failed native launch can immediately fall back without regenerating.
-  if (hip_jit) {
-    b.ApWmma=alloc_buffer<int8_t>(q,m*k);
-    b.BpWmma=alloc_buffer<int8_t>(q,k*n);
+template <typename T>
+static T* alloc_required(sycl::queue& q, const size_t count, const char* const name) {
+  T* const result = alloc_buffer<T>(q, count);
+  if (!result)
+    throw std::string("Can't allocate pearlhash ") + name;
+  return result;
+}
+
+static void free_allocations(sycl::queue& q, Buffers& b) noexcept {
+  for (void* pointer :
+       {static_cast<void*>(b.EAL), static_cast<void*>(b.EBR), static_cast<void*>(b.EBRt),
+        static_cast<void*>(b.Ap), static_cast<void*>(b.Bp), static_cast<void*>(b.ApWmma),
+        static_cast<void*>(b.BpWmma), static_cast<void*>(b.EARp1), static_cast<void*>(b.EARp2),
+        static_cast<void*>(b.EBLq1), static_cast<void*>(b.EBLq2), static_cast<void*>(b.cA),
+        static_cast<void*>(b.cB), static_cast<void*>(b.key), static_cast<void*>(b.target),
+        static_cast<void*>(b.CVA), static_cast<void*>(b.CVB),
+        static_cast<void*>(b.transcript), static_cast<void*>(b.result)}) {
+    if (pointer)
+      try {
+        sycl::free(pointer, q);
+      } catch (...) {
+      }
   }
+  b = Buffers{};
+}
+
+static Buffers alloc_buffers(sycl::queue& q, int m, int n, int k, int rank, bool hip_jit = false,
+                             bool cuda_jit = false) {
+  static_assert(sizeof(Result) <= pearlhash_result_allocation_bytes);
+  Buffers b{};
+  PearlHashAllocationCounts counts{};
+  if (!pearlhash_allocation_counts({static_cast<unsigned>(m), static_cast<unsigned>(n),
+                                   static_cast<unsigned>(k), static_cast<unsigned>(rank)},
+                                  counts, hip_jit))
+    throw std::string("Invalid pearlhash allocation dimensions");
+  try {
+    b.EAL = alloc_required<int8_t>(q, counts.m_rank, "EAL");
+    b.EBR = alloc_required<int8_t>(q, counts.n_rank, "EBR");
+    b.EBRt = alloc_required<int8_t>(q, counts.n_rank, "EBRt");
+    b.Ap = alloc_required<int8_t>(q, counts.m_k, "Ap");
+    b.Bp = alloc_required<int8_t>(q, counts.n_k, "Bp");
+#if defined(MOM_SYCL_HAS_HIP)
+    // HIPRTC WMMA consumes an architecture-native fragment layout. Keep it separate from the
+    // portable SYCL layout so a failed native launch can immediately fall back without regenerating.
+    if (hip_jit) {
+      b.ApWmma = alloc_required<int8_t>(q, counts.m_k, "WMMA Ap");
+      b.BpWmma = alloc_required<int8_t>(q, counts.n_k, "WMMA Bp");
+    }
 #endif
-  b.EARp1=alloc_buffer<int32_t>(q,k); b.EARp2=alloc_buffer<int32_t>(q,k);
-  b.EBLq1=alloc_buffer<int32_t>(q,k); b.EBLq2=alloc_buffer<int32_t>(q,k);
-  b.cA=alloc_buffer<uint8_t>(q,32); b.cB=alloc_buffer<uint8_t>(q,32);
-  b.key=alloc_buffer<uint8_t>(q,32); b.target=alloc_buffer<uint8_t>(q,32);
-  b.CVA=alloc_buffer<uint8_t>(q,(2*((m*k+1023)/1024)+2)*32);
-  b.CVB=alloc_buffer<uint8_t>(q,(2*((n*k+1023)/1024)+2)*32);
+    b.EARp1 = alloc_required<int32_t>(q, static_cast<size_t>(k), "EARp1");
+    b.EARp2 = alloc_required<int32_t>(q, static_cast<size_t>(k), "EARp2");
+    b.EBLq1 = alloc_required<int32_t>(q, static_cast<size_t>(k), "EBLq1");
+    b.EBLq2 = alloc_required<int32_t>(q, static_cast<size_t>(k), "EBLq2");
+    b.cA = alloc_required<uint8_t>(q, 32, "cA");
+    b.cB = alloc_required<uint8_t>(q, 32, "cB");
+    b.key = alloc_required<uint8_t>(q, 32, "key");
+    b.target = alloc_required<uint8_t>(q, 32, "target");
+    b.CVA = alloc_required<uint8_t>(q, counts.cva_bytes, "CVA");
+    b.CVB = alloc_required<uint8_t>(q, counts.cvb_bytes, "CVB");
   // Separating jackpot BLAKE3 from the matrix loop restores occupancy. Portable paths retain a
   // conservative 256 MiB cap; the explicitly selected CUDA source-JIT path can use a larger
   // transcript to amortize the common seed/root/noise preparation without affecting other workers.
@@ -139,8 +258,15 @@ static Buffers alloc_buffers(sycl::queue& q, int m, int n, int k, int rank,
         pearlhash_optional_allocation_fits(capacity, counts, transcript_bytes);
   if (transcript_bytes > 0 && transcript_bytes <= transcript_limit && transcript_fits)
     b.transcript=alloc_buffer<uint32_t>(q, static_cast<size_t>(transcript_bytes / sizeof(uint32_t)));
-  b.result=sycl::malloc_shared<Result>(1,q); b.result->found=0;
-  return b;
+    b.result = sycl::malloc_shared<Result>(1, q);
+    if (!b.result)
+      throw std::string("Can't allocate pearlhash result");
+    b.result->found = 0;
+    return b;
+  } catch (...) {
+    free_allocations(q, b);
+    throw;
+  }
 }
 
 #ifndef PEARLHASH_STANDALONE
@@ -210,9 +336,18 @@ PearlHashState& pearlhash_state(const std::string& dev_str) {
   if (!st) st = std::make_unique<PearlHashState>(dev_str);
   return *st;
 }
-thread_local std::string g_pearlhash_proof;   // last built proof, fetched right after pearlhash() returns 1
-// Winning tile captured by pearlhash() on a find; consumed by pearlhash_proof() to build the proof lazily.
-thread_local struct PearlHashFound { uint32_t seed; int row, col, m, n, k, rank; uint8_t key[32]; bool valid; } g_pf{};
+thread_local std::string
+    g_pearlhash_proof; // last built proof, fetched right after pearlhash() returns 1
+// Winning tile captured by pearlhash() on a find; consumed by pearlhash_claim() to build the proof lazily.
+thread_local struct PearlHashFound {
+  uint32_t seed;
+  int row, col, m, n, k, rank;
+  uint8_t key[32];
+  uint8_t jackpot[32];
+  uint32_t adjustment_factor;
+  bool claim_ready;
+  bool valid;
+} g_pf{};
 } // namespace
 
 void pearlhash_cleanup_states() noexcept {
@@ -243,19 +378,39 @@ int pearlhash(
   uint8_t* const, uint64_t* const pseed, const uint8_t* const target,
   const unsigned intensity, const bool is_test, const bool, const std::string& dev_str,
   const std::string& backend, const unsigned requested_n, const unsigned requested_k,
-  const unsigned requested_rank
+  const unsigned requested_rank, const unsigned cert_version
 ) {
-  if (input_size < 76) throw std::string("Bad pearlhash input length (need 76-byte header)");
+  if (!input || !pseed || input_size < 76)
+    throw std::string("Bad pearlhash input length (need 76-byte header)");
+  if (!is_test && !target)
+    throw std::string("PearlHash target is required outside test mode");
+  constexpr unsigned max_dimension =
+      static_cast<unsigned>(std::numeric_limits<int>::max());
+  if (intensity > max_dimension || requested_n > max_dimension || requested_k > max_dimension ||
+      requested_rank > max_dimension)
+    throw std::string("PearlHash dimensions exceed 32-bit kernel indexing");
   const int k = static_cast<int>(requested_k);
   const int rank = static_cast<int>(requested_rank);
+  if (cert_version != 3)
+    throw std::string("Unsupported pearlhash certificate version");
+  if (rank < 128)
+    throw std::string("PearlHash certificate V3 requires rank >= 128");
   // M arrives as the worker's explicit primary tuning value; N can be selected independently. Native HIP
   // tests use the smallest square that activates the 32x32 cache-block traversal, so the
   // native-vs-SYCL checksum comparison covers production tile mapping without making CPU tests
   // expensive. Other implementations retain the compact 256x256 vector.
   const int test_edge = backend == "native" ? 2048 : 256;
-  int m = is_test ? test_edge : ((int)intensity >= 128 ? (int)intensity : 131072);
+  const int m = is_test ? test_edge
+                        : (intensity >= 128 ? static_cast<int>(intensity) : 131072);
   const int n = is_test ? m : static_cast<int>(requested_n);
+  if (!mom::job_boundary::valid_pearlhash_shape(
+          static_cast<uint64_t>(m), static_cast<uint64_t>(n), static_cast<uint64_t>(k),
+          static_cast<uint64_t>(rank)))
+    throw std::string("Invalid pearlhash M/N/K/rank profile");
+  (void)pearlhash_attempt_hashes(intensity, requested_n, requested_k, requested_rank);
 
+  g_pf.valid = false;
+  g_pf.claim_ready = false;
   PearlHashState& st = pearlhash_state(dev_str);
   std::lock_guard<std::mutex> lock(st.mutex);
   const bool native_requested = backend == "auto" || backend == "native";
@@ -348,28 +503,53 @@ int pearlhash(
   if (!b.result->found) return 0;
   *pseed = b.result->seed;
   if (is_test) return 1;                                             // test: core only needs "ok", no proof
-  // Capture the winning tile; DEFER the heavy host PlainProof rebuild (regenerate A/Bt + the BLAKE3
-  // Merkle tree, ~tens of ms at m=n=16384) to pearlhash_proof(), which core calls ONCE per pool job_id.
-  // Building it here on every find would starve the DPAS search: at a low pool difficulty a tile is
-  // found on most attempts, yet the pool credits only one share per job. Deferring keeps the search
-  // running flat out (~6x faster live).
-  g_pf.seed = b.result->seed; g_pf.row = (int)b.result->row; g_pf.col = (int)b.result->col;
-  g_pf.m = m; g_pf.n = n; g_pf.k = k; g_pf.rank = rank; std::memcpy(g_pf.key, st.key, 32); g_pf.valid = true;
+  // Capture the winning tile; rebuild its expensive PlainProof only when the core requests a claim.
+  // Distinct winning seeds under one job are separate shares; retries reuse the captured claim.
+  g_pf.seed = b.result->seed;
+  g_pf.row = (int)b.result->row;
+  g_pf.col = (int)b.result->col;
+  g_pf.m = m;
+  g_pf.n = n;
+  g_pf.k = k;
+  g_pf.rank = rank;
+  std::memcpy(g_pf.key, st.key, 32);
+  std::memcpy(g_pf.jackpot, b.result->jackpot, 32);
+  g_pf.claim_ready = false;
+  g_pf.valid = true;
   return 1;
 }
-// Builds the PlainProof for the last winning tile captured by pearlhash() (lazy: called once per job_id
-// by core, off the search hot path). Returns "" if no tile has been found yet.
-const char* pearlhash_proof() {
-  if (g_pf.valid)
-    g_pearlhash_proof = build_plain_proof(g_pf.seed, g_pf.m, g_pf.n, g_pf.k, g_pf.rank, g_pf.key, g_pf.row, g_pf.col);
+// Builds and caches the PlainProof plus its matching trusted-share metadata for the last winning tile.
+// Repeated calls for the captured tile return the same claim.
+const char* pearlhash_claim(uint8_t jackpot[32], uint32_t* adjustment_factor) {
+  if (!g_pf.valid || !jackpot || !adjustment_factor)
+    return nullptr;
+  if (!g_pf.claim_ready) {
+    g_pearlhash_proof = build_plain_proof(g_pf.seed, g_pf.m, g_pf.n, g_pf.k, g_pf.rank, g_pf.key,
+                                          g_pf.row, g_pf.col, &g_pf.adjustment_factor);
+    if (g_pearlhash_proof.empty())
+      return nullptr;
+    g_pf.claim_ready = true;
+  }
+  std::memcpy(jackpot, g_pf.jackpot, 32);
+  *adjustment_factor = g_pf.adjustment_factor;
   return g_pearlhash_proof.c_str();
 }
-// GEMM MACs per attempt = m*n*k, mirroring pearlhash()'s shape selection. This is the work unit
-// the pearlhash hashrate is reported in, so the core's display matches the "TH/s" GEMM benchmark.
-uint64_t pearlhash_attempt_hashes(unsigned intensity, unsigned n, unsigned k) {
+// Rank-128-equivalent GEMM MACs per attempt. V3's target is normalized to rank 128,
+// so this is also the stable accounting unit advertised to switching pools.
+uint64_t pearlhash_attempt_hashes(unsigned intensity, unsigned n, unsigned k, unsigned rank) {
   const uint64_t m = intensity >= 128 ? intensity : 131072;
-  return m * static_cast<uint64_t>(n) * static_cast<uint64_t>(k);
+  const uint64_t maximum = std::numeric_limits<uint64_t>::max();
+  if (!mom::job_boundary::valid_pearlhash_shape(m, n, k, rank))
+    throw std::string("Invalid PearlHash work factor");
+  if (n && m > maximum / n)
+    throw std::string("PearlHash work count overflows");
+  const uint64_t mn = m * n;
+  const uint64_t effective_k = static_cast<uint64_t>(k / rank) * 128;
+  if (effective_k && mn > maximum / effective_k)
+    throw std::string("PearlHash work count overflows");
+  return mn * effective_k;
 }
+
 #endif  // !PEARLHASH_STANDALONE
 
 #ifdef PEARLHASH_STANDALONE
@@ -414,7 +594,8 @@ static int run_server(int k, int rank, int m, int n) {
     if (!haveJob) { if(!poll_stdin(100)) break; continue; }
     attempt(q, b, seed, m, n, k, rank); q.wait();
     if (b.result->found) {     // build the pool-ready PlainProof here; JS only relays it
-      std::string proof = build_plain_proof(b.result->seed, m, n, k, rank, curKey, (int)b.result->row, (int)b.result->col);
+      uint32_t adjustment_factor = 0;
+      std::string proof = build_plain_proof(b.result->seed, m, n, k, rank, curKey, (int)b.result->row, (int)b.result->col, &adjustment_factor);
       printf("found %u %s\n", b.result->seed, proof.c_str()); fflush(stdout); b.result->found=0;
     }
     seed++;
@@ -429,7 +610,8 @@ int main(int argc, char** argv) {
     int k = atoi(argv[3]), rank = atoi(argv[4]), m = atoi(argv[5]), n = atoi(argv[6]);
     uint8_t header[76], key[32];
     parse_hex(argv[2], header, 76); derive_key(header, k, rank, key);
-    std::printf("%s\n", build_plain_proof((uint32_t)strtoul(argv[7], nullptr, 10), m, n, k, rank, key, atoi(argv[8]), atoi(argv[9])).c_str());
+    uint32_t adjustment_factor = 0;
+    std::printf("%s\n", build_plain_proof((uint32_t)strtoul(argv[7], nullptr, 10), m, n, k, rank, key, atoi(argv[8]), atoi(argv[9]), &adjustment_factor).c_str());
     return 0;
   }
   const char* headerHex = argv[1];

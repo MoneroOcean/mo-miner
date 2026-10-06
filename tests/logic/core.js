@@ -515,6 +515,53 @@ test("kawpowTarget2diff uses the Eth-style high target word", () => {
   );
 });
 
+test("PearlHash V3 targets use the final worker matrix shape", () => {
+  const amdTarget = helper.pearlhashTarget("1", 2048, 128);
+  const nvidiaTarget = helper.pearlhashTarget("1", 4096, 256);
+
+  assert.equal(amdTarget, "0".repeat(59) + "80000");
+  assert.equal(nvidiaTarget, "0".repeat(59) + "80000");
+  assert.equal(helper.pearlhashTargetWork(amdTarget, 2048, 128),
+    (1n << 256n) - 524288n);
+  assert.equal(helper.pearlhashTargetWork(nvidiaTarget, 4096, 256),
+    (1n << 256n) - 524288n);
+});
+
+test("PearlHash V3 target overflow saturates at the largest usable target", () => {
+  assert.equal(helper.pearlhashTarget("f".repeat(64), 2048, 128), "f".repeat(64));
+});
+
+test("PearlHash V3 targets apply rank normalization and reject legacy versions", () => {
+  const target = helper.pearlhashTarget("1", 4096, 256);
+  assert.equal(helper.pearlhashTarget("1", 2048, 128, 3),
+    helper.pearlhashTarget("1", 2048, 128));
+  assert.equal(helper.pearlhashTargetWork(target, 4096, 256),
+    helper.target256ToWork(target) * 524288n);
+  assert.doesNotThrow(() => helper.pearlhashTarget("1", 8192, 128));
+  assert.throws(() => helper.pearlhashTarget("1", 2048, 64, 3), /requires rank >= 128/);
+  assert.doesNotThrow(() => helper.pearlhashTarget("1", 4160, 256));
+  assert.doesNotThrow(() => helper.pearlhashTarget("1", 8320, 128));
+  assert.doesNotThrow(() => helper.pearlhashTargetWork(target, 8320, 128));
+  assert.throws(() => helper.pearlhashTarget("1", 4096, 192), /rank/);
+  assert.throws(() => helper.pearlhashTargetWork(target, 2147483648, 256), /PearlHash K/);
+  for (const version of [0, 1, 2, 4, 2.5, NaN]) {
+    assert.throws(() => helper.pearlhashTarget("1", 4096, 256, version), /certificate version/);
+  }
+});
+
+test("fractional PearlHash difficulty produces a full target", async () => {
+  const miner = await loadMinerWithStubs();
+  miner.getSetJob()({
+    algo: "pearlhash", blob: "00".repeat(76), difficulty: 1.5, job_id: "job",
+  });
+  const message = miner.sentMessages.find((item) => item.type === "job");
+  assert.ok(message);
+  assert.ok(message.job);
+  const job = message.job;
+  assert.equal(job.target, "aa".repeat(32));
+  assert.equal(job.noncebytes, 8);
+});
+
 test("256-bit targets convert to share work", () => {
   const diffOneTarget = "00000000ffff0000000000000000000000000000000000000000000000000000";
   assert.equal(helper.target256ToWork(diffOneTarget), 4295032833n);
@@ -573,4 +620,39 @@ test("repeated GPU workers may return identical multi-field test results", async
   const result = "final_hash mix_hash";
   assert.equal(miner.matchesTestResult("kawpow", `${result} ${result}`, result), true);
   assert.equal(miner.matchesTestResult("kawpow", `${result} wrong_hash`, result), false);
+});
+
+test("JSON pool options reject an unknown PearlHash target format", () => {
+  const result = spawnSync(process.execPath, [
+    "mom.js", "bench", "rx/0", "--add.pool",
+    JSON.stringify({url: "pool.example", port: 1234, login: "user", pearlhash_target_format: "guess"}),
+  ], {cwd: repoRoot, encoding: "utf8", timeout: 5000});
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /pearlhash_target_format must be base or jackpot/);
+  assert.doesNotMatch(result.stderr, /Cannot find module|Compute core/);
+});
+
+test("JSON pool options retain both supported PearlHash target formats", () => {
+  for (const format of ["base", "jackpot"]) {
+    const opt = opts.create_default_opts();
+    assert.equal(opts.parse_opt(opt, opts.opt_help, "--add.pool", JSON.stringify({
+      url: "pool.example", port: 1234, login: "user", pearlhash_target_format: format,
+    }), ""), true);
+    assert.equal(opt.pools.at(-1)?.pearlhash_target_format, format);
+  }
+});
+
+test("PearlHash final pool targets remain unchanged after GPU profile selection", async () => {
+  const target = "00000000d1b71758e219652bd3c36113404ea4a8c154c985f06f694467381d7d";
+  for (const backend of ["amd", "nvidia", "intel"]) {
+    const miner = await loadMinerWithStubs({
+      env: {MOM_GPU_BACKEND: backend},
+      argv: ["node", "mom.js", "mine", "pool.example:1", "user", "--job.dev", "gpu1"],
+    });
+    miner.getSetJob()({algo: "pearlhash", blob: "00".repeat(76), job_id: "final", target});
+    const job = miner.sentMessages.find((item) => item.type === "job")?.job;
+    assert.ok(job);
+    assert.equal(job.target, target, backend);
+    assert.equal(job["pearlhash_base_target"], undefined);
+  }
 });

@@ -19,6 +19,7 @@ module.exports.pool_create = function(url, port, is_tls, login, pass) {
     tls_verify:   false,
     is_nicehash:  url.includes("nicehash"),
     is_keepalive: true,
+    pearlhash_target_format: "base",
     logged_in:    false,
   };
 };
@@ -39,6 +40,7 @@ module.exports.opt_help = {
       "hexadecimal string of seed hash blob (used for rx algos)" ],
     height:   [ 0, "Block height used by some algos"],
     backend:  [ "auto", "GPU implementation (see README backend table)" ],
+    pearlhash_cert_version: [ undefined, "PearlHash certificate version (3)" ],
   },
   pool_time: {
     _help:             "JSON string of pool related timings (in seconds)",
@@ -63,6 +65,7 @@ module.exports.opt_help = {
       is_keepalive:       [ true, "sends keepalive messages to the pool to avoid disconnect" ],
       use_subscribe:      [ true, "PearlHash pools: use mining.subscribe+authorize handshake; set false for pearlpool.cloud's login dialect and the MoneroOcean donate pool" ],
       worker:             [ "mom", "PearlHash subscribe-dialect worker name (mining.authorize)" ],
+      pearlhash_target_format: [ "base", "PearlHash subscribe target: base (scaled) or jackpot (final)" ],
       login:              [ undefined, "pool login data" ],
       pass:               [ "", "pool password" ],
       _socket:            [ null, "network socket object" ],
@@ -158,6 +161,9 @@ function validatePoolProtocol(pool) {
 }
 
 function validatePool(pool) {
+  if (pool.pearlhash_target_format !== "base" && pool.pearlhash_target_format !== "jackpot") {
+    return "pearlhash_target_format must be base or jackpot";
+  }
   return validatePoolUrl(pool) || validatePoolPort(pool) ||
          validatePoolBooleans(pool) || validatePoolProtocol(pool);
 }
@@ -293,10 +299,31 @@ function applyTemplateOption(opt, key, key_help, key_path_str, new_str_prefix, a
          addMapTemplateOption(opt, key, key_help, new_str_prefix, arg, value);
 }
 
+function parseNonNegativeInteger(arg, val) {
+  const num = parseNonNegativeNumber(arg, val);
+  if (!Number.isSafeInteger(num)) {
+    return module.exports.print_help("Option " + arg + " param must be a safe integer: " + val);
+  }
+  return num;
+}
+
+/** @param {string} arg @param {unknown} val */
+function parsePearlHashCertVersion(arg, val) {
+  const version = parseNonNegativeInteger(arg, val);
+  if (version !== 3) {
+    return module.exports.print_help(
+      "Option " + arg + " only supports PearlHash certificate version 3: " + val
+    );
+  }
+  return version;
+}
+
 function applyJsonOption(opt, key, key_help, arg, parsed) {
   for (const key2 in parsed) {
     const help = key_help[key2];
-    opt[key][key2] = isNumberOption(help) ? parseNonNegativeNumber(arg + "." + key2, parsed[key2]) : parsed[key2];
+    opt[key][key2] = key === "job" && key2 === "pearlhash_cert_version"
+      ? parsePearlHashCertVersion(arg + "." + key2, parsed[key2])
+      : isNumberOption(help) ? parseNonNegativeNumber(arg + "." + key2, parsed[key2]) : parsed[key2];
   }
   return true;
 }
@@ -434,7 +461,9 @@ function parseObjectOption(opt, key, key_help, key_path_str, arg, val) {
 
 function parseSimpleOption(opt, key, key_help, key_path_str, arg, val) {
   if (arg !== "--" + key_path_str) {return false;}
-  opt[key] = isNumberOption(key_help) ? parseNonNegativeNumber(arg, val) : val;
+  opt[key] = key_path_str === "job.pearlhash_cert_version"
+    ? parsePearlHashCertVersion(arg, val)
+    : isNumberOption(key_help) ? parseNonNegativeNumber(arg, val) : val;
   return true;
 }
 

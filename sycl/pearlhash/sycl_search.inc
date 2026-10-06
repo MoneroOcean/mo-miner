@@ -33,7 +33,7 @@ static void search_cpu(
   const int nb = k / rank;
   for (int row_base = 0; row_base < m; row_base += HT) {
     for (int col_base = 0; col_base < n; col_base += HT) {
-      int32_t acc[HT][HT]{};
+      uint32_t acc[HT][HT]{};
       uint32_t transcript[16]{};
       for (int boundary = 0; boundary < nb; ++boundary) {
         const int end = (boundary + 1) * rank;
@@ -44,22 +44,26 @@ static void search_cpu(
             for (int j = 0; j < HT; ++j) {
               const int b = static_cast<int>(
                 bb.Bp[static_cast<size_t>(col_base + j) * k + depth]);
-              acc[i][j] += a * b;
+              acc[i][j] += static_cast<uint32_t>(a * b);
             }
           }
         }
+        uint32_t part = 0;
         for (int i = 0; i < HT; ++i)
           for (int j = 0; j < HT; ++j)
-            transcript[boundary] ^= static_cast<uint32_t>(acc[i][j]);
+            part ^= static_cast<uint32_t>(acc[i][j]);
+        const int slot = boundary % 16;
+        transcript[slot] = rotl(transcript[slot], 13) ^ part;
       }
       if (dbg)
         bb.result->chk += tile_mix(
           static_cast<uint32_t>(row_base), static_cast<uint32_t>(col_base), transcript);
-      if (!bb.result->found && tile_wins(transcript, bb.cA, bb.target)) {
+      uint8_t jackpot[32];
+      if (!bb.result->found && tile_wins(transcript, bb.cA, bb.target, jackpot)) {
         bb.result->found = 1;
         bb.result->seed = seed;
         bb.result->row = static_cast<uint32_t>(row_base);
-        bb.result->col = static_cast<uint32_t>(col_base);
+        bb.result->col = static_cast<uint32_t>(col_base); for (int i = 0; i < 32; ++i) bb.result->jackpot[i] = jackpot[i];
         if (!dbg) return;
       }
     }
@@ -126,7 +130,7 @@ static void search_t(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, in
                    reinterpret_cast<const int32_t*>(B.Ap));
       auto B32 = sycl::address_space_cast<sycl::access::address_space::global_space, sycl::access::decorated::no>(
                    reinterpret_cast<const int32_t*>(B.Bp));
-      int32_t acc[ER][EC]; for (int i = 0; i < ER; i++) for (int j = 0; j < EC; j++) acc[i][j] = 0;
+      uint32_t acc[ER][EC]; for (int i = 0; i < ER; i++) for (int j = 0; j < EC; j++) acc[i][j] = 0;
       uint32_t pX[16]; for (int w = 0; w < 16; w++) pX[w] = 0;   // this work-item's per-boundary partial XOR
       for (int rc = 0; rc < nb; rc++) {
         const int c4lo = rc * (rank / 4), c4hi = c4lo + (rank / 4);
@@ -137,12 +141,13 @@ static void search_t(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, in
             const int a0 = (int8_t)aw, a1 = (int8_t)(aw >> 8), a2 = (int8_t)(aw >> 16), a3 = (int8_t)(aw >> 24);
             for (int j = 0; j < EC; j++) {           // dp4a: 4 int8 MACs (one ALU op on Intel/AMD GPUs)
               const int32_t b = bw[j];
-              acc[i][j] += a0*(int8_t)b + a1*(int8_t)(b >> 8) + a2*(int8_t)(b >> 16) + a3*(int8_t)(b >> 24);
+              acc[i][j] += static_cast<uint32_t>(a0*(int8_t)b + a1*(int8_t)(b >> 8) + a2*(int8_t)(b >> 16) + a3*(int8_t)(b >> 24));
             }
           }
         }
         uint32_t lx = 0; for (int i = 0; i < ER; i++) for (int j = 0; j < EC; j++) lx ^= (uint32_t)acc[i][j];
-        pX[rc] = lx;   // cumulative tile XOR at this rank boundary (rc < nb <= 16)
+        const int slot = rc % 16;
+        pX[slot] = rotl(pX[slot], 13) ^ lx;
       }
       // Single batched work-group reduction: XOR every work-item's 16-word partial transcript together.
       auto grp = it.get_group();
@@ -160,9 +165,10 @@ static void search_t(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, in
           sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device, sycl::access::address_space::global_space> c(B.result->chk);
           c.fetch_add(tile_mix((uint32_t)rowBase, (uint32_t)colBase, t16));
         }
-        if (tile_wins(t16, B.cA, B.target)) {
+        uint8_t jackpot[32];
+        if (tile_wins(t16, B.cA, B.target, jackpot)) {
           sycl::atomic_ref<int, sycl::memory_order::relaxed, sycl::memory_scope::device, sycl::access::address_space::global_space> a(B.result->found);
-          if (a.exchange(1) == 0) { B.result->seed = seed; B.result->row = (uint32_t)rowBase; B.result->col = (uint32_t)colBase; }
+          if (a.exchange(1) == 0) { B.result->seed = seed; B.result->row = (uint32_t)rowBase; B.result->col = (uint32_t)colBase; for (int i = 0; i < 32; ++i) B.result->jackpot[i] = jackpot[i]; }
         }
       }
       });
