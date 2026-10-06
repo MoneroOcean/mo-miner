@@ -72,7 +72,7 @@ build\win\compilers\
 ```
 
 `package-windows.ps1` preserves those directories. `mom.cmd` auto-detects a single GPU vendor and
-loads its default addon before `algo_params` discovery; `GPU-COMPILERS.md` then selects each worker
+loads its default addon before `algorithms` discovery; `GPU-COMPILERS.md` then selects each worker
 before it is spawned, so incompatible `sycl9.dll`/AdaptiveCpp runtimes never enter the same process.
 Set `MOM_GPU_BACKEND=intel|nvidia|amd` on a mixed-vendor host.
 

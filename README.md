@@ -106,7 +106,7 @@ curl -fsSL https://raw.githubusercontent.com/MoneroOcean/mo-miner/master/scripts
 For Intel it installs the Level Zero and OpenCL runtime, for NVIDIA the driver/runtime and source-JIT
 tools needed by full-speed ProgPoW and PearlHash, and for AMD the HIP runtime. Other vendors use the OpenCL ICD
 from their display driver. It preserves a suitable existing driver and does nothing on GPU-less
-systems. Reboot if requested, then run `./mom algo_params`; each
+systems. Reboot if requested, then run `./mom algorithms`; each
 detected GPU should appear as a `gpuN` device. When running mom inside Docker on NVIDIA, add
 `--gpus all` and install the NVIDIA container toolkit on the host.
 For Intel Arc, enable **Above 4G Decoding** and **Resizable BAR** in UEFI; mom enables Level Zero's
@@ -129,7 +129,7 @@ curl -fsSL -o "%TEMP%\mom-install.ps1" https://raw.githubusercontent.com/MoneroO
 
 The installer verifies the bundled runtimes and automatically adds missing NVIDIA source-JIT support
 needed for full-speed ProgPoW and PearlHash. Intel, AMD, and generic OpenCL GPUs use their current display drivers.
-Run `mom.cmd algo_params` afterward; each detected GPU should appear as a `gpuN` device.
+Run `mom.cmd algorithms` afterward; each detected GPU should appear as a `gpuN` device.
 
 # GPU selection
 
@@ -137,8 +137,8 @@ The release launcher auto-detects the backend on a single-vendor system. On a mi
 select which GPU runtime mom should use for that process:
 
 ```
-MOM_GPU_BACKEND=intel ./mom algo_params       # Linux
-set MOM_GPU_BACKEND=intel && mom.cmd algo_params  # Windows Command Prompt
+MOM_GPU_BACKEND=intel ./mom algorithms       # Linux
+set MOM_GPU_BACKEND=intel && mom.cmd algorithms  # Windows Command Prompt
 ```
 
 Valid values are `intel`, `nvidia`, `amd`, and `opencl`. The first three select a vendor device
@@ -147,11 +147,11 @@ different values to use multiple GPU vendors concurrently. To expose just one GP
 vendor, add the zero-based `MOM_GPU_INDEX`:
 
 ```
-MOM_GPU_BACKEND=intel MOM_GPU_INDEX=1 ./mom algo_params
-set MOM_GPU_BACKEND=intel && set MOM_GPU_INDEX=1 && mom.cmd algo_params
+MOM_GPU_BACKEND=intel MOM_GPU_INDEX=1 ./mom algorithms
+set MOM_GPU_BACKEND=intel && set MOM_GPU_INDEX=1 && mom.cmd algorithms
 ```
 
-First run `algo_params` without the index to see each numbered GPU and its full hardware name.
+First run `algorithms` without the index to see each numbered GPU and its full hardware name.
 `MOM_GPU_INDEX` is zero-based within the selected vendor. Only that physical GPU is benchmarked;
 CUDA/HIP may renumber the isolated device to `gpu1`, so use the name printed by the selected run in
 explicit `--job.dev` settings.
@@ -305,7 +305,7 @@ Directives:
   mine  (<pool_address:port[tls]> <login> [<pass>]|<config.json>)
   test  <algo> <result_hash_hex_str>
   bench <algo>
-  algo_params
+  algorithms
 
 Options:
 --job '{...}':                      JSON string of the default job params (mostly used in test/bench mode)

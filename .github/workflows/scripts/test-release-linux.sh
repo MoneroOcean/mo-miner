@@ -182,7 +182,7 @@ fi
 
 # Run the extracted ./mom from inside the package dir, with LD_LIBRARY_PATH
 # unset so the loader must find the bundled libs via rpath alone.
-run_mom() { (cd "$package_dir" && env -u LD_LIBRARY_PATH "$@" ./mom algo_params); }
+run_mom() { (cd "$package_dir" && env -u LD_LIBRARY_PATH "$@" ./mom algorithms); }
 
 capture run_mom
 smoke_output="$CAPTURE_OUT"
@@ -201,7 +201,7 @@ $CAPTURE_OUT
 EOF
 )"
 fi
-if ! grep -q '^MOM_ALGO_PARAMS ' <<<"$smoke_output"; then
+if ! grep -q '^MOM_ALGORITHMS ' <<<"$smoke_output"; then
   fail "Linux release smoke test missing marker" "$(printf '%s\n%s' \
     "Direct executable smoke test did not print algo params marker." "$smoke_output")"
 fi
@@ -210,8 +210,8 @@ fi
 # shellcheck disable=SC2016 # JavaScript is intentionally single-quoted shell data
 capture "$node_bin" -e '
 const fs = require("node:fs");
-const marker = fs.readFileSync(0, "utf8").split(/\r?\n/).find((line) => line.startsWith("MOM_ALGO_PARAMS "));
-const params = JSON.parse(marker.slice("MOM_ALGO_PARAMS ".length));
+const marker = fs.readFileSync(0, "utf8").split(/\r?\n/).find((line) => line.startsWith("MOM_ALGORITHMS "));
+const params = JSON.parse(marker.slice("MOM_ALGORITHMS ".length));
 for (const [algo, dev] of Object.entries(params)) {
   if (typeof dev !== "string" || !dev || /(?:^|,)[^,]*(?:\*0|\^0)(?:,|$)/.test(dev)) {
     console.error(`Invalid algo params for ${algo}: ${dev}`);
@@ -234,7 +234,7 @@ fi
 if [[ "$suite" = gpu || "$suite" = gpu-discrete ]] &&
   ! grep -Eq ':"gpu[0-9]+' <<<"$smoke_output"; then
   fail "Linux release GPU discovery missing" \
-    "The $suite suite requires launcher-time GPU discovery, but algo_params returned no GPU job."
+    "The $suite suite requires launcher-time GPU discovery, but algorithms returned no GPU job."
 fi
 
 case "$suite" in

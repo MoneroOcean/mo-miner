@@ -229,7 +229,7 @@ try {
     $previous = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     try {
-      $output = & .\mom.cmd algo_params 2>&1
+      $output = & .\mom.cmd algorithms 2>&1
       return [pscustomobject]@{ Output = $output; Exit = $LASTEXITCODE }
     } finally {
       $ErrorActionPreference = $previous
@@ -244,11 +244,11 @@ try {
     Remove-Item Env:MOM_DEBUG_STARTUP -ErrorAction SilentlyContinue
     throw "Direct executable smoke test failed with exit code $($smoke.Exit). Output: $($smokeOutput -join ' | '). Debug exit code: $($debug.Exit). Debug output: $($debug.Output -join ' | ')"
   }
-  $marker = $smokeOutput | Where-Object { $_ -match '^MOM_ALGO_PARAMS ' } | Select-Object -First 1
+  $marker = $smokeOutput | Where-Object { $_ -match '^MOM_ALGORITHMS ' } | Select-Object -First 1
   if (-not $marker) {
     throw "Direct executable smoke test did not print algo params marker.`n$($smokeOutput -join "`n")"
   }
-  $params = ($marker -replace '^MOM_ALGO_PARAMS ', '') | ConvertFrom-Json
+  $params = ($marker -replace '^MOM_ALGORITHMS ', '') | ConvertFrom-Json
   foreach ($prop in $params.PSObject.Properties) {
     $dev = [string]$prop.Value
     if (-not $dev -or $dev -match '(^|,)[^,]*(\*0|\^0)(,|$)') {
@@ -259,12 +259,12 @@ try {
     $gpuParam = $params.PSObject.Properties | Where-Object { [string]$_.Value -match '(^|,)gpu\d+' } |
       Select-Object -First 1
     if (-not $gpuParam) {
-      throw "Windows $Suite release test requires launcher-time GPU discovery, but algo_params returned no GPU job."
+      throw "Windows $Suite release test requires launcher-time GPU discovery, but algorithms returned no GPU job."
     }
   }
   $syclCpuDevices = Get-SyclCpuDevicesFromOutput $smokeOutput
   if (($Suite -eq "all" -or $Suite -eq "gpu-portable-cpu") -and $syclCpuDevices.Count -eq 0) {
-    throw "Windows $Suite release test requires a CPU SYCL device, but algo_params did not report one.`n$($smokeOutput -join "`n")"
+    throw "Windows $Suite release test requires a CPU SYCL device, but algorithms did not report one.`n$($smokeOutput -join "`n")"
   }
 
   if ($Suite -notin @("all", "cpu", "gpu", "gpu-discrete", "gpu-portable-cpu")) {

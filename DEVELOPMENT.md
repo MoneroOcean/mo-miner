@@ -47,10 +47,10 @@ On Linux, `r.sh` builds and runs one multicompiler development image. Docker bui
 ```bash
 git clone https://github.com/MoneroOcean/mo-miner.git
 cd mo-miner
-MOM_GPU_BACKEND=intel ./r.sh node mom.js algo_params
-MOM_GPU_BACKEND=nvidia ./r.sh node mom.js algo_params
-MOM_GPU_BACKEND=amd ./r.sh node mom.js algo_params
-MOM_GPU_BACKEND=opencl ./r.sh node mom.js algo_params
+MOM_GPU_BACKEND=intel ./r.sh node mom.js algorithms
+MOM_GPU_BACKEND=nvidia ./r.sh node mom.js algorithms
+MOM_GPU_BACKEND=amd ./r.sh node mom.js algorithms
+MOM_GPU_BACKEND=opencl ./r.sh node mom.js algorithms
 ```
 
 Normal runs reuse the installed compiler image and rebuild miner objects only. Set

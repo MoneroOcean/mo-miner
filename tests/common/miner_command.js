@@ -298,19 +298,19 @@ function detectAlgoParams(env) {
   // Invoke the miner directly. The old extra Node wrapper applied the selected compiler
   // environment twice around release launchers, allowing an inherited libsycl with the same SONAME
   // to pre-empt the runtime beside the selected addon.
-  const args = ["mom.js", "algo_params"];
+  const args = ["mom.js", "algorithms"];
   return runNode(args, {timeoutMs: 60 * 1000, env}).then((result) => {
     if (result.error || result.code !== 0) {
       throw new Error(formatFailure("Unable to detect algo params", args, result));
     }
 
     const line = result.stdout.trim().split(/\r?\n/).reverse()
-      .find((entry) => entry.startsWith("MOM_ALGO_PARAMS "));
+      .find((entry) => entry.startsWith("MOM_ALGORITHMS "));
     if (!line) {
       throw new Error(formatFailure("Algo params output did not contain JSON marker", args, result));
     }
     return {
-      params: JSON.parse(line.slice("MOM_ALGO_PARAMS ".length)),
+      params: JSON.parse(line.slice("MOM_ALGORITHMS ".length)),
       stdout: result.stdout,
       stderr: result.stderr,
     };
@@ -413,7 +413,7 @@ async function getFirstSyclCpuDevice(env) {
   if (devices.length) {return { skipped: false, ...devices[0] };}
 
   const message = [
-    "No SYCL CPU device was reported by algo_params output.",
+    "No SYCL CPU device was reported by algorithms output.",
     formatOutput("stdout", report.stdout),
     formatOutput("stderr", report.stderr),
   ].join("\n");

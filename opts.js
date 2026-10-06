@@ -432,7 +432,7 @@ Directives:
   mine  (<pool_address:port[tls]> <login> [<pass>]|<config.json>)
   test  <algo> <result_hash_hex_str>
   bench <algo>
-  algo_params
+  algorithms
 
 Options:`;
   console.log(str);

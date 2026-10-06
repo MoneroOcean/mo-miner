@@ -27,19 +27,36 @@ async function loadMinerWithStubs(options = {}) {
   const sentMessages = [];
   const poolWrites = [];
   const loggedErrors = [];
+  const writtenStdout = [];
+  const exitCodes = [];
+  const workerCloseDeadlines = [];
+  let createdCoreCount = 0;
   let capturedSetJob = null;
   const algoParams = options.algoParams || {};
   const helperStub = {
     ...helper,
     cluster_process: () => false,
-    create_core: () => ({
-      from: coreEvents,
-      emit_to: (name) => {
-        if (name === "algo_params") {setImmediate(() => coreEvents.emit("algo_params", algoParams));}
-        if (name === "read_msr") {setImmediate(() => coreEvents.emit("error", { message: "skip" }));}
-      },
-    }),
+    create_core: () => {
+      ++createdCoreCount;
+      return {
+        from: coreEvents,
+        emit_to: /** @param {string} name */ (name) => {
+          if (options.deferCoreResponses) {return;}
+          if (name === "algo_params") {
+            const event = options.algoParamsError ? "error" : "algo_params";
+            const value = options.algoParamsError ? {message: "algo params failed"} : algoParams;
+            setImmediate(() => coreEvents.emit(event, value));
+          }
+          if (name === "read_msr") {setImmediate(() => coreEvents.emit("error", {message: "skip"}));}
+        },
+      };
+    },
+    exit_now: /** @param {number} code */ (code) => exitCodes.push(code),
     recreate_threads: noOp,
+    closeWorkers: /** @param {number} deadline */ (deadline) => {
+      workerCloseDeadlines.push(deadline);
+      return options.closeWorkerTargets || [];
+    },
     messageWorkers: (msg) => sentMessages.push(msg),
     log: noOp,
     log1: noOp,
@@ -62,14 +79,26 @@ async function loadMinerWithStubs(options = {}) {
     stderr: process.stderr,
     stdin: process.stdin,
     stdout: process.stdout,
+    exitCode: null,
     exit: (code) => { throw new Error(`unexpected exit ${code}`); },
   });
+  const fsStub = {
+    ...fs,
+    writeSync: /** @param {number} fd @param {string} data */ (fd, data) => {
+      if (fd === 1) {
+        writtenStdout.push(data);
+        return data.length;
+      }
+      return fs.writeSync(fd, data);
+    },
+  };
   const detachedSetTimeout = (...args) => {
     const timer = setTimeout(...args);
     if (timer.unref) {timer.unref();}
     return timer;
   };
   const requireStub = (id) => {
+    if (id === "fs") {return fsStub;}
     if (id === "./helper.js") {return helperStub;}
     if (id === "./pool.js") {return poolStub;}
     if (id === "./opts.js") {return opts;}
@@ -96,6 +125,10 @@ async function loadMinerWithStubs(options = {}) {
     matchesTestResult: moduleStub.exports.__test.matchesTestResult,
     messageHandler: moduleStub.exports.__test.messageHandler,
     publicAlgoParams: moduleStub.exports.__test.publicAlgoParams,
+    process: processStub,
+    writtenStdout: writtenStdout.join(""),
+    exitCodes,
+    workerCloseDeadlines,
     poolWrites,
     sentMessages,
     loggedErrors,

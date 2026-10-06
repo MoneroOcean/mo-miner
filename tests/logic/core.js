@@ -400,7 +400,7 @@ test("PearlHash CLI algo params preserve named matrix tuning controls", () => {
 test("PearlHash tuning rejects removed top-level shape fields", () => {
   const result = spawnSync(process.execPath, [
     "mom.js",
-    "algo_params",
+    "algorithms",
     "--new.algo_param.pearlhash",
     JSON.stringify({dev: "gpu1*8192", m: 8192}),
   ], {
@@ -411,6 +411,36 @@ test("PearlHash tuning rejects removed top-level shape fields", () => {
 
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /unsupported field: m/);
+});
+
+/** @param {number} [count] */
+async function flushLifecycleCallbacks(count = 2) {
+  for (let i = 0; i < count; ++i) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
+
+test("algorithms CLI reports mocked parameters and exits successfully", async () => {
+  const miner = await loadMinerWithStubs({
+    argv: ["node", "mom.js", "algorithms"],
+    algoParams: {"rx/0": "cpu"},
+  });
+  await flushLifecycleCallbacks();
+  assert.equal(miner.process.exitCode, 0);
+  assert.equal(miner.createdCoreCount(), 1);
+  assert.equal(miner.writtenStdout, 'MOM_ALGORITHMS {"rx/0":"cpu"}\n');
+  assert.equal(miner.writtenStdout.includes("MOM_ALGO_PARAMS"), false);
+});
+
+test("removed algo_params CLI directive is rejected", () => {
+  const result = spawnSync(process.execPath, ["mom.js", "algo_params"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    timeout: 5000,
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stdout, /algorithms/);
+  assert.match(result.stderr, /Unknown directive algo_params/);
 });
 
 test("algo_params reports requested and resolved GPU backends without changing CPU specs", async () => {

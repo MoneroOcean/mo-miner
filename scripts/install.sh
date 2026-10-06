@@ -330,9 +330,9 @@ ldconfig
 configure_gpu_access_groups
 
 if [ "$reboot_needed" = 1 ]; then
-  echo "Done. An NVIDIA driver was installed -- REBOOT, then run './mom algo_params' to confirm a gpu1 device is listed."
+  echo "Done. An NVIDIA driver was installed -- REBOOT, then run './mom algorithms' to confirm a gpu1 device is listed."
 elif [ "$gpu_groups_changed" = 1 ]; then
-  echo "Done. Sign out and back in, then run './mom algo_params' to confirm a gpu1 device is listed."
+  echo "Done. Sign out and back in, then run './mom algorithms' to confirm a gpu1 device is listed."
 else
-  echo "Done. Run './mom algo_params' to confirm a gpu1 device is listed."
+  echo "Done. Run './mom algorithms' to confirm a gpu1 device is listed."
 fi

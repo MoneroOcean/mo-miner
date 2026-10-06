@@ -73,7 +73,7 @@ function parse(markdown = fs.readFileSync(policyFile, "utf8")) {
 
 function osName(platform) { return platform === "win32" ? "windows" : "linux"; }
 
-// algo_params is user-facing and annotates each GPU job with the selected backend. Callers that
+// The algorithms output is user-facing and annotates each GPU job with the selected backend. Callers that
 // feed a reported job back to mom must remove that annotation first; otherwise mom would append it
 // again and eventually hand an invalid device string such as gpu1*[intensity=8]:auto[sycl]:auto[sycl] to a
 // worker.

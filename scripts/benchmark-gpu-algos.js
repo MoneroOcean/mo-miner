@@ -26,14 +26,14 @@ function minerArgs(args) {
 }
 
 function discoverGpuJobs() {
-  const report = spawnSync(process.execPath, minerArgs(["algo_params"]), {
+  const report = spawnSync(process.execPath, minerArgs(["algorithms"]), {
     encoding: "utf8", env: process.env, timeout: timeoutMs,
   });
   const text = `${report.stdout || ""}\n${report.stderr || ""}`;
-  const match = text.match(/MOM_ALGO_PARAMS\s+(\{[^\r\n]+\})/);
-  if (!match) {throw new Error(`algo_params did not return MOM_ALGO_PARAMS:\n${text}`);}
+  const match = text.match(/MOM_ALGORITHMS\s+(\{[^\r\n]+\})/);
+  if (!match) {throw new Error(`algorithms did not return MOM_ALGORITHMS:\n${text}`);}
   const params = JSON.parse(match[1]);
-  // algo_params includes a human-readable backend annotation. Feed only the underlying device
+  // algorithms includes a human-readable backend annotation. Feed only the underlying device
   // specification back to bench; the miner will resolve and display the backend for that run.
   return Object.fromEntries(Object.entries(params)
     .filter(([, dev]) => /^gpu\d+/.test(dev))
@@ -146,7 +146,7 @@ function benchmark(algo, dev) {
 async function main() {
   const jobs = discoverGpuJobs();
   if (Object.keys(jobs).length === 0) {
-    throw new Error("algo_params did not report any GPU jobs");
+    throw new Error("algorithms did not report any GPU jobs");
   }
   const algos = requested.length ? requested : Object.keys(jobs).sort();
   const report = {

@@ -97,7 +97,7 @@ function closeComputeCore() {
 }
 
 function shouldExitAfterWorkerShutdown() {
-  return directive === "test" || directive === "algo_params";
+  return directive === "test" || directive === "algorithms";
 }
 
 function exit(code, force = forceExitByDefault()) {
@@ -447,14 +447,14 @@ switch (directive) {
     startWithDirectJobTuning(startDirectBenchmark);
     break;
 
-  case "algo_params":
+  case "algorithms":
     createComputeCore();
     compute_core.from.on("algo_params", function(v) {
-      fs.writeSync(1, "MOM_ALGO_PARAMS " + JSON.stringify(publicAlgoParams(v)) + "\n");
+      fs.writeSync(1, "MOM_ALGORITHMS " + JSON.stringify(publicAlgoParams(v)) + "\n");
       exit(0);
     });
     compute_core.from.on("error", function(v) {
-      err_exit("Can't detect algo params: " + JSON.stringify(v.message ? v.message : v));
+      err_exit("Can't detect algorithms: " + JSON.stringify(v.message ? v.message : v));
     });
     compute_core.emit_to("algo_params", detect_cpu());
     break;

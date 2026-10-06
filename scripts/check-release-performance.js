@@ -112,7 +112,7 @@ function bestReportedRate(text, algo) {
 }
 
 async function main() {
-  const discovery = await run(["algo_params"]);
+  const discovery = await run(["algorithms"]);
   const discoveryOutput = output(discovery);
   if (discovery.code !== 0) {
     throw new Error(`Release device discovery failed:\n${discoveryOutput.trim()}`);
@@ -122,9 +122,9 @@ async function main() {
     return;
   }
   const marker = discoveryOutput.split(/\r?\n/)
-    .find((line) => line.startsWith("MOM_ALGO_PARAMS "));
-  if (!marker) {throw new Error("Release device discovery omitted MOM_ALGO_PARAMS");}
-  const algoParams = JSON.parse(marker.slice("MOM_ALGO_PARAMS ".length));
+    .find((line) => line.startsWith("MOM_ALGORITHMS "));
+  if (!marker) {throw new Error("Release device discovery omitted MOM_ALGORITHMS");}
+  const algoParams = JSON.parse(marker.slice("MOM_ALGORITHMS ".length));
 
   const rows = readPerformanceFile(readme)
     .map((row) => ({algo: row.algo, reference: row.performance[platform]}))
