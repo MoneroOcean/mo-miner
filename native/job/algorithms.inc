@@ -84,7 +84,8 @@ static const std::map<std::string, gpu_kawpow_hash_fun> gpu_kawpow_algo2fn = {
 };
 
 static const std::map<std::string, gpu_etchash_hash_fun> gpu_etchash_algo2fn = {
-  { "etchash", etchash }
+  { "etchash", etchash },
+  { "octopus", octopus }
 };
 
 static const std::map<std::string, gpu_autolykos2_hash_fun> gpu_autolykos2_algo2fn = {
@@ -128,6 +129,7 @@ static const std::map<std::string, unsigned> algo2mem = [](){
     { "evrprogpow", 0 },
     { "meowpow", 0 },
     { "etchash", 0 },
+    { "octopus", 0 },
     { "autolykos2", 0 },
     { "pearlhash", 0 },
     { "fishhash", 0 },

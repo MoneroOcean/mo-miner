@@ -112,6 +112,7 @@ $targetList = @("spir64")
 if ($withCuda) {
   $targetList += $CudaArch
   $F += @("-DMOM_SYCL_HAS_CUDA",
+          "-DMOM_OCTOPUS_HAS_SYCL_NATIVE",
           "-DMOM_NEXAPOW_SYCL_NATIVE_FIELD",
           "-I$env:CUDA_PATH\include")
 }

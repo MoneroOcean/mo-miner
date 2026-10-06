@@ -4,6 +4,7 @@ module.exports = ({
   h, o, net, tls, systemNetConnect, systemTlsConnect, max_pool_data_buffer,
   clear_pool_connection, isCurrentPoolSocket, pearlhashUsesSubscribe,
   poolProtocol, pool_log, pool_log1, pool_log2, pool_log_err, pool_log_str,
+  poolErrorText,
   pool_message, pool_str, usesCortex, usesEthProxy, usesIronfish, usesMiningSubscribe,
   poolWrite, switchPool,
 }) => {
@@ -86,9 +87,8 @@ module.exports = ({
     try {
       pool_message(pool_id, json, set_job);
     } catch (err) {
-      pool_err(pool_log_str(pool_id,
-        "Can't process message from the pool: " + (err && err.message ? err.message : err)
-      ));
+      pool_err(pool_log_str(pool_id, "Can't process message from the pool") +
+        poolErrorText(pool_id, err));
       return true;
     }
     return false;
@@ -155,6 +155,12 @@ module.exports = ({
       return poolWrite(pool_id, {
         id: 72, jsonrpc: "2.0", method: "ctxc_submitLogin",
         params: [pool.login], worker: pool.worker || "mom",
+      });
+    }
+    if (poolProtocol(pool) === "conflux") {
+      return poolWrite(pool_id, {
+        jsonrpc: "2.0", id: 1, method: "mining.subscribe",
+        params: [pool.login, ""]
       });
     }
     if (pearlhashUsesSubscribe(pool)) {

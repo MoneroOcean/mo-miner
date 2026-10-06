@@ -43,6 +43,7 @@ namespace mom_etchash { void etchash_cleanup_states() noexcept; }
 namespace mom_fishhash { void fishhash_cleanup_states() noexcept; }
 namespace mom_hoohash { void hoohash_cleanup_states() noexcept; }
 namespace mom_kawpow { void kawpow_cleanup_states() noexcept; }
+namespace mom_octopus { void octopus_cleanup_states() noexcept; }
 namespace mom_nexapow {
 void nexapow_cleanup_states() noexcept;
 }
@@ -93,6 +94,7 @@ void sycl_cleanup() noexcept {
   mom_hoohash::hoohash_cleanup_states();
   mom_nexapow::nexapow_cleanup_states();
   mom_kawpow::kawpow_cleanup_states();
+  mom_octopus::octopus_cleanup_states();
   pearlhash_cleanup_states();
   str2dev.clear();
 }

@@ -100,6 +100,16 @@ static unsigned etchash_intensity(const sycl::device& dev) {
   }, 4);
 }
 
+static unsigned octopus_intensity(const sycl::device& dev) {
+  if (!mom_is_hip(dev))
+    return etchash_intensity(dev);
+  // AMD's queue-native WMMA pipeline reaches its throughput plateau with a deeper dispatch. On the
+  // RX 9060 XT, 4,194,304 work-items sustained 29.18 MH/s while Etchash's 1,864,128 held 26.34 MH/s.
+  // Scale the same device profiles instead of introducing a card-specific setting.
+  return pow_intensity(dev, "MOM_ETCHASH_WORKGROUP", "MOM_ETCHASH_INTENSITY",
+                       {{64, 73728, 36}, {64, 147456, 36}, {64, 294912, 40}}, 9);
+}
+
 static unsigned autolykos2_intensity(const sycl::device& dev) {
   if (mom_is_cuda(dev)) {
     // NVIDIA: larger batches amortize per-iteration host/sync overhead; throughput

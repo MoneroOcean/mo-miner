@@ -112,7 +112,7 @@ module.exports.opt_help = {
 const isObject = function(a) { return (!!a) && (a.constructor === Object); };
 const poolBooleanFields = ["is_tls", "tls_verify", "is_nicehash", "is_keepalive"];
 const poolProtocols = new Set([
-  "login", "raven", "eth", "ethproxy", "erg", "pearlhash", "zelhash", "kaspa", "beam", "ironfish"
+  "login", "raven", "eth", "ethproxy", "erg", "pearlhash", "zelhash", "kaspa", "beam", "ironfish", "conflux"
 ]);
 const templateValidators = {
   pool: validatePoolOption,

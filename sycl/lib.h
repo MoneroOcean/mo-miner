@@ -85,6 +85,14 @@ MOM_SYCL_API int etchash(
   unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
 );
 
+// Conflux Octopus: 32-byte problem hash plus an 8-byte nonce at offset 32.
+// SYCL-native acceleration retains the portable SYCL fallback on unsupported devices.
+MOM_SYCL_API int octopus(
+  unsigned job_id, uint32_t height, const uint8_t* input, unsigned input_size, uint8_t* output,
+  uint8_t* mix_hash, uint64_t* pnonce, const uint8_t* target, const uint8_t* seed_hash,
+  unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
+);
+
 MOM_SYCL_API int autolykos2(
   unsigned job_id, uint32_t height, const uint8_t* input, unsigned input_size, uint8_t* output,
   uint64_t* pnonce, const uint8_t* target,

@@ -107,6 +107,7 @@ function protocolForAlgo(algo) {
     case "evrprogpow": return "raven";
     case "meowpow":    return "raven";
     case "etchash":    return "eth";
+    case "octopus":    return "conflux";
     case "autolykos2": return "erg";
     case "pearlhash":  return "pearlhash";
     case "fishhash":   return "ironfish";
@@ -142,7 +143,7 @@ function poolProtocol(pool) {
 
 function usesMiningSubscribe(pool) {
   const protocol = poolProtocol(pool);
-  return protocol === "raven" || protocol === "eth" || protocol === "erg" ||
+  return protocol === "raven" || protocol === "eth" || protocol === "conflux" || protocol === "erg" ||
          protocol === "zelhash" || protocol === "kaspa" || protocol === "hoosat" || protocol === "echelon";
 }
 
@@ -235,11 +236,13 @@ function poolShareStats(pool_id) {
   return "(" + pool.good_shares + "/" + pool.bad_shares + ")";
 }
 
-function poolErrorText(error, pool_id) {
-  const message = error instanceof Object && typeof error.message === "string" ? error.message : "";
-  if (!message) return "";
-  return pool_id === undefined ? ": " + message
-    : ": " + JSON.stringify(redactPoolText(pool_id, message).slice(0, 200));
+function poolErrorText(pool_id, error) {
+  const message = typeof error === "string" ? error :
+    error instanceof Error ? error.message :
+      Array.isArray(error) && typeof error[1] === "string" ? error[1] :
+        isObject(error) && typeof error["message"] === "string" ? error["message"] :
+          isObject(error) && typeof error["msg"] === "string" ? error["msg"] : "";
+  return message ? ": " + JSON.stringify(redactPoolText(pool_id, message).slice(0, 200)) : "";
 }
 
 function applyLoginExtensions(pool_id, extensions) {
@@ -289,7 +292,7 @@ function jobTargetWork(job) {
   // target/hashrate). work/share = (tiles/share = 2^256/bound) * (MACs/tile = 16*16*k_eff).
   if (job.algo === "pearlhash") {return h.target256ToWork(job.target) * BigInt(16 * 16 * pearlhashKEff());}
   // etchash/autolykos2/fishhash carry a full 256-bit target too, but their hashrate is in hashes -> H/share.
-  if (job.algo === "etchash" || job.algo === "autolykos2" || job.algo === "fishhash" ||
+  if (job.algo === "etchash" || job.algo === "octopus" || job.algo === "autolykos2" || job.algo === "fishhash" ||
       job.algo === "zelhash" || job.algo === "zhash" || job.algo === "equihash192_7" ||
       job.algo === "karlsenhashv2" || job.algo === "hoohash" || job.algo === "c30" || job.algo === "nexapow")
   {return h.target256ToWork(job.target);}
@@ -398,10 +401,14 @@ function handleShareResponse(pool_id, is_err, is_ok, err_msg) {
 
 function handlePoolResponse(pool_id, json) {
   const is_err  = "error" in json && json.error !== null;
-  const err_msg = is_err ? poolErrorText(json.error,
-    usesCortex(global.opt.pools[pool_id]) ? pool_id : undefined) : "";
-  const is_ok   = "result" in json && json.result !== null && json.result !== false;
+  let err_msg = is_err ? poolErrorText(pool_id, json.error) : "";
+  let is_ok   = "result" in json && json.result !== null && json.result !== false;
   const handler = poolResponseHandler(pool_id, json.id);
+  if (handler === handleShareResponse &&
+      poolProtocol(global.opt.pools[pool_id]) === "conflux" && Array.isArray(json.result)) {
+    is_ok = json.result[0] === true;
+    if (!is_err && !is_ok) {err_msg = poolErrorText(pool_id, json.result[1]);}
+  }
   const result = handler(pool_id, is_err, is_ok, err_msg, json);
   if (!is_err && is_ok) {rememberPoolResponseMetadata(pool_id, json.result);}
   return result;
@@ -442,7 +449,9 @@ function poolResponseHandler(pool_id, id) {
     return typeof id === "number" && pool.pending_cortex_submit_ids?.delete(id)
       ? handleShareResponse : ignorePoolResponse;
   }
-  if (pearlhashUsesSubscribe(pool)) {
+  if (poolProtocol(pool) === "conflux") {
+    if (id === 1) {return handleLoginResponse;}
+  } else if (pearlhashUsesSubscribe(pool)) {
     if (id === 1) {return ignorePoolResponse;}           // subscribe ack/err (authorize already sent)
     if (id === 2) {return pool.pending_authorize ? handleAuthorizeResponse : ignorePoolResponse;}
   } else if (usesMiningSubscribe(pool)) {
@@ -552,6 +561,7 @@ const { connectPoolThrottle } = require("./pool/connection")({
   h, o, net, tls, systemNetConnect, systemTlsConnect, max_pool_data_buffer,
   clear_pool_connection, isCurrentPoolSocket, pearlhashUsesSubscribe,
   poolProtocol, pool_log, pool_log1, pool_log2, pool_log_err, pool_log_str,
+  poolErrorText,
   pool_message, pool_str, usesCortex, usesEthProxy, usesIronfish, usesMiningSubscribe,
   poolWrite: (...args) => module.exports.pool_write(...args),
   switchPool: (...args) => module.exports.switch_pool(...args),

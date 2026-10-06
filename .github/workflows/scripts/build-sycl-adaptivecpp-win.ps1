@@ -36,7 +36,7 @@ if (-not (Test-Path $acpp)) { throw "AdaptiveCpp wrapper not found at $acpp" }
 if (-not (Test-Path $clang)) { throw "AdaptiveCpp clang not found at $clang" }
 
 $backendDefines = @()
-if ($Backend -eq 'hip') { $backendDefines += '-DMOM_SYCL_HAS_HIP' }
+if ($Backend -eq 'hip') { $backendDefines += '-DMOM_SYCL_HAS_HIP', '-DMOM_OCTOPUS_HAS_SYCL_NATIVE' }
 if ($Backend -eq 'cuda') { $backendDefines += '-DMOM_SYCL_ADAPTIVECPP_CUDA' }
 # Do not define MOM_SYCL_HAS_CUDA for AdaptiveCpp. That macro enables the
 # DPC++ runtime-compiled sycl::kernel ProgPoW path; AdaptiveCpp generic/SSCP

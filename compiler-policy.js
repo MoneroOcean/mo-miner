@@ -5,6 +5,9 @@ const path = require("path");
 
 const policyFile = path.join(__dirname, "GPU-COMPILERS.md");
 let cached;
+const syclNativeVariables = {
+  octopus: "MOM_OCTOPUS_SYCL_NATIVE",
+};
 
 function cells(line) {
   return line.trim().replace(/^\||\|$/g, "").split("|").map((v) =>
@@ -180,6 +183,10 @@ function workerEnv(algo, env = process.env, platform = process.platform, request
     MOM_RUNTIME_DIR: libDir,
     MOM_SYCL_COMPILER: selected.key,
   };
+  const syclNativeVariable = syclNativeVariables[algo];
+  if (syclNativeVariable) {
+    result[syclNativeVariable] = backend === "sycl-native" ? "1" : "0";
+  }
   const localBuild = path.join(__dirname, "build", platform === "win32" ? "win" : "lin");
   if (fs.existsSync(localBuild)) {
     result.MOM_JIT_CACHE_DIR = path.join(localBuild, ".jit-cache");

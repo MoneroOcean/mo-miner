@@ -3,6 +3,7 @@ function Get-MomWindowsSyclSources {
     lib          = 'sycl\lib.cpp'
     ethash       = 'sycl\etchash\ethash.cpp'
     etchash      = 'sycl\etchash\etchash.cpp'
+    octopus      = 'sycl\octopus\octopus.cpp'
     autolykos2   = 'sycl\autolykos2\autolykos2.cpp'
     pearlhash    = 'sycl\pearlhash\pearlhash.cpp'
     c29          = 'sycl\c29\c29.cpp'

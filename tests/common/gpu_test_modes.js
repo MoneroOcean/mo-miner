@@ -78,6 +78,12 @@ function cloneForDiscreteGpu(definition, vendor, dev, backend) {
   copy.job.backend = backend;
   labelBackend(copy, backend);
   copy.env = {...copy.env, MOM_GPU_BACKEND: vendor};
+  // Discrete vectors must exercise the mining DAG path; CPU/portable vectors retain light mode.
+  if (copy.job.algo === "octopus") {
+    copy.env["MOM_OCTOPUS_TEST_FULL_DAG"] = "1";
+    // The worker proves native execution only when the actual device supports its matrix ISA.
+    copy.env["MOM_OCTOPUS_TEST_NATIVE"] = backend === "sycl-native" ? "1" : undefined;
+  }
   return copy;
 }
 

@@ -81,6 +81,7 @@ void Core::set_job(
     new_algo_str == "evrprogpow" ? DEV::KAWPOW_GPU :
     new_algo_str == "meowpow" ? DEV::KAWPOW_GPU :
     new_algo_str == "etchash" ? DEV::ETCHASH_GPU :
+    new_algo_str == "octopus" ? DEV::ETCHASH_GPU :
     new_algo_str == "autolykos2" ? DEV::AUTOLYKOS2_GPU :
     new_algo_str == "pearlhash" ? DEV::PEARLHASH_GPU :
     new_algo_str == "fishhash" ? DEV::FISHHASH_GPU :

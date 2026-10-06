@@ -2,6 +2,26 @@
 
 const vectors = [
   {
+    // Accepted Conflux mainnet block vector, independently reconstructed from the RLP header and
+    // Conflux Rust consensus implementation by tests/reference/octopus_conflux.cpp. Height 100,000,000
+    // selects stage 190; test mode deliberately uses the light cache so CPU SYCL remains practical.
+    name: "octopus gpu1*[intensity=1] recorded-mainnet h100000000",
+    gpu: true,
+    syclCpu: true,
+    timeoutMs: 15 * 60 * 1000,
+    job: {
+      algo: "octopus",
+      dev: "gpu1*[intensity=1]",
+      height: 100000000,
+      noncebytes: 8,
+      nonceoffset: 32,
+      target: "ff".repeat(32),
+      blob_hex: "8c03f99c72afad07ad0fe89d28c83a6aad5118558d52a2800fcfaec46bd5d97f" +
+        "95071b0600778435",
+    },
+    expected: "000000000013df09cedb71556c0744d461ab9acb3cce92a4b4ec924be585e704",
+  },
+  {
     // Recorded Echelon vector, independently checked by the CPU consensus oracle.
     name: "nexapow gpu1*[intensity=1] recorded-vector",
     gpu: true,

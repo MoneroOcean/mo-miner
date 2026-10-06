@@ -12,6 +12,33 @@ module.exports = ({
     return value instanceof Object;
   }
 
+  function isConfluxJobNotification(json) {
+    return isMiningNotification(json, 4);
+  }
+
+  function unsignedDecimal(value, maximum, label) {
+    let text;
+    if (typeof value === "number") {
+      if (!Number.isSafeInteger(value) || value < 0) {
+        throw new Error(`Invalid ${label}`);
+      }
+      text = String(value);
+    } else if (typeof value === "string") {
+      text = value;
+      if (!/^(0|[1-9]\d*)$/.test(text)) {
+        throw new Error(`Invalid ${label}`);
+      }
+    } else {
+      throw new Error(`Invalid ${label}`);
+    }
+    if (text.length > maximum.toString().length) {
+      throw new Error(`${label} is out of range`);
+    }
+    const parsed = BigInt(text);
+    if (parsed > maximum) {throw new Error(`${label} is out of range`);}
+    return parsed;
+  }
+
   function isJobNotification(json) {
     return json.method === "job" && isObject(json.params);
   }
@@ -505,6 +532,32 @@ module.exports = ({
 
   function jobFromPoolMessage(pool_id, json) {
     const pool = global.opt.pools[pool_id];
+    if (poolProtocol(pool) === "conflux" && isConfluxJobNotification(json)) {
+      if (!pool.logged_in) {return null;}
+      const jobId = poolJobId(json.params[0]);
+      const headerHash = validHexBytes(json.params[2], 32);
+      if (jobId === null || !headerHash) {return null;}
+      const rawTarget = json.params[3];
+      let target;
+      if (typeof rawTarget === "string" && /^0x[0-9a-f]{1,64}$/i.test(rawTarget)) {
+        target = rawTarget.slice(2).padStart(64, "0");
+      } else {
+        if (typeof rawTarget !== "string") {throw new Error("Invalid Conflux target");}
+        const targetValue = unsignedDecimal(
+          rawTarget, (1n << 256n) - 1n, "Conflux target");
+        if (targetValue === 0n) {throw new Error("Conflux target must be positive");}
+        target = h.decimalTargetToHex(targetValue.toString());
+      }
+      if (/^0+$/.test(target)) {throw new Error("Conflux target must be positive");}
+      const job = nonceAt32Job(pool, {
+        algo: "octopus",
+        header_hash: headerHash,
+        target,
+        job_id: jobId,
+        height: poolHeight(json.params[1], "Conflux"),
+      });
+      return commitSubmitMode("conflux", job);
+    }
     if (poolProtocol(pool) === "echelon" && isNexaJobNotification(json)) {
       if (!pool.logged_in) {return null;}
       return commitSubmitMode("echelon", nexaNotifyJob(pool, json));

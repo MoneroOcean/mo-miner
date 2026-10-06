@@ -1,7 +1,11 @@
 "use strict";
 
 const s = require("./support");
-const { test, assert, events, tls, opts, pool, noOp, loadMinerWithStubs, withMockPool } = s;
+const { test, assert, events, tls, opts, helper, pool, noOp, loadMinerWithStubs, withMockPool, unexpectedPoolJob, completeMiningJob } = s;
+
+function keepMiningJob(job) {
+  return completeMiningJob(job);
+}
 
 test("fixed KawPow pools use Raven stratum subscribe and authorize", async () => {
   let jobMessage = null;
@@ -421,4 +425,262 @@ test("non-C29 pool jobs preserve provided blob_hex and nonceoffset", async () =>
   const jobMessage = miner.sentMessages.find((msg) => msg.type === "job");
   assert.equal(jobMessage.job.blob_hex, "abcd");
   assert.equal(jobMessage.job.nonceoffset, 7);
+});
+
+
+test("fixed Octopus pools use Conflux subscribe-only stratum jobs", async () => {
+  /** @type {PoolJob | undefined} */
+  let jobMessage;
+  const headerHash = "22".repeat(32);
+  const boundary = "00000000ffff" + "00".repeat(26);
+  await withMockPool({
+    pool: {is_keepalive: true, login: "cfx:wallet.rig"},
+    opt: {job: {algo: "octopus"}},
+  }, async ({socket, writes, poolConfig}) => {
+    pool.connect_pool_throttle(0, /** @param {PoolJob} job */ (job) => {
+      jobMessage = job;
+      return keepMiningJob(job);
+    });
+    socket.emit("connect");
+    assert.ok(writes[0]);
+    assert.deepEqual(writes[0], {
+      jsonrpc: "2.0", id: 1, method: "mining.subscribe", params: ["cfx:wallet.rig", ""],
+    });
+
+    socket.emit("data", Buffer.from(
+      '{"jsonrpc":"2.0","id":1,"error":null,"result":true}\n' +
+      '{"jsonrpc":"2.0","method":"mining.notify","params":["job1","152521905","0x' +
+      headerHash + '","0x' + boundary + '"]}\n'
+    ));
+
+    assert.ok(jobMessage);
+    assert.equal(poolConfig.logged_in, true);
+    assert.equal(jobMessage.submit_mode, "conflux");
+    assert.equal(jobMessage.algo, "octopus");
+    assert.equal(jobMessage.job_id, "job1");
+    assert.equal(jobMessage.height, 152521905);
+    assert.equal(jobMessage.header_hash, headerHash);
+    assert.equal(jobMessage.blob, headerHash + "0000000000000000");
+    assert.equal(jobMessage.target, boundary);
+    assert.equal(writes.length, 1);
+  });
+});
+
+test("Conflux decimal notify targets reach the job as full-width hex", async () => {
+  /** @type {PoolJob | undefined} */
+  let jobMessage;
+  const headerHash = "33".repeat(32);
+  const decimalTarget = "1".repeat(64);
+  const expectedTarget = BigInt(decimalTarget).toString(16).padStart(64, "0");
+  await withMockPool({
+    pool: {is_keepalive: true, login: "cfx:wallet.rig"},
+    opt: {job: {algo: "octopus"}},
+  }, async ({socket, poolConfig}) => {
+    pool.connect_pool_throttle(0, /** @param {PoolJob} job */ (job) => {
+      jobMessage = job;
+      return keepMiningJob(job);
+    });
+    socket.emit("connect");
+    socket.emit("data", Buffer.from(
+      JSON.stringify({jsonrpc: "2.0", id: 1, error: null, result: true}) + "\n" +
+      JSON.stringify({
+        jsonrpc: "2.0", method: "mining.notify",
+        params: ["decimal-job", "123", "0x" + headerHash, decimalTarget],
+      }) + "\n"
+    ));
+
+    assert.ok(jobMessage);
+    assert.equal(poolConfig.logged_in, true);
+    assert.equal(jobMessage.submit_mode, "conflux");
+    assert.equal(jobMessage.target, expectedTarget);
+    assert.equal(jobMessage.target.length, 64);
+    assert.match(jobMessage.target, /^[0-9a-f]{64}$/);
+  });
+});
+
+test("Conflux prefixed short hex notify targets are left-padded", async () => {
+  /** @type {PoolJob | undefined} */
+  let jobMessage;
+  const shortHexTarget = "0x" + "ab".repeat(28);
+  const expectedTarget = "0".repeat(8) + "ab".repeat(28);
+  await withMockPool({
+    pool: {is_keepalive: true, login: "cfx:wallet.rig"},
+    opt: {job: {algo: "octopus"}},
+  }, async ({socket, poolConfig}) => {
+    pool.connect_pool_throttle(0, /** @param {PoolJob} job */ (job) => {
+      jobMessage = job;
+      return keepMiningJob(job);
+    });
+    socket.emit("connect");
+    socket.emit("data", Buffer.from(
+      JSON.stringify({jsonrpc: "2.0", id: 1, error: null, result: true}) + "\n" +
+      JSON.stringify({
+        jsonrpc: "2.0", method: "mining.notify",
+        params: ["short-hex-job", "123", "0x" + "55".repeat(32), shortHexTarget],
+      }) + "\n"
+    ));
+
+    assert.ok(jobMessage);
+    assert.equal(poolConfig.logged_in, true);
+    assert.equal(jobMessage.target, expectedTarget);
+    assert.equal(jobMessage.target.length, 64);
+  });
+});
+
+test("Conflux invalid notify targets are rejected before dispatch", async () => {
+  for (const target of [
+    "0", "01", "not-decimal", (1n << 256n).toString(),
+    "a".repeat(64), "0x0", "0x" + "00".repeat(32),
+  ]) {
+    let dispatched = false;
+    await withMockPool({
+      pool: {is_keepalive: true, login: "cfx:wallet.rig"},
+      opt: {job: {algo: "octopus"}},
+    }, async ({socket, switched}) => {
+      pool.connect_pool_throttle(0, /** @param {PoolJob} _job */ (_job) => {
+        dispatched = true;
+        return keepMiningJob(_job);
+      });
+      socket.emit("connect");
+      socket.emit("data", Buffer.from(
+        JSON.stringify({jsonrpc: "2.0", id: 1, error: null, result: true}) + "\n" +
+        JSON.stringify({
+          jsonrpc: "2.0", method: "mining.notify",
+          params: ["invalid-job", "123", "0x" + "44".repeat(32), target],
+        }) + "\n"
+      ));
+
+      assert.equal(dispatched, false, target);
+      assert.equal(socket.destroyed, true, target);
+      assert.equal(switched(), true, target);
+    });
+  }
+});
+
+test("Conflux overlong prefixed hex notify targets are rejected before dispatch", async () => {
+  let dispatched = false;
+  await withMockPool({
+    pool: {is_keepalive: true, login: "cfx:wallet.rig"},
+    opt: {job: {algo: "octopus"}},
+  }, async ({socket, switched}) => {
+    pool.connect_pool_throttle(0, /** @param {PoolJob} _job */ (_job) => {
+      dispatched = true;
+      return keepMiningJob(_job);
+    });
+    socket.emit("connect");
+    socket.emit("data", Buffer.from(
+      JSON.stringify({jsonrpc: "2.0", id: 1, error: null, result: true}) + "\n" +
+      JSON.stringify({
+        jsonrpc: "2.0", method: "mining.notify",
+        params: ["overlong-hex-job", "123", "0x" + "66".repeat(32), "0x" + "ab".repeat(33)],
+      }) + "\n"
+    ));
+
+    assert.equal(dispatched, false);
+    assert.equal(socket.destroyed, true);
+    assert.equal(switched(), true);
+  });
+});
+
+test("malformed Conflux jobs log a redacted parser reason", async () => {
+  const previousLogError = helper.log_err;
+  /** @type {string[]} */
+  const logs = [];
+  helper.log_err = (message) => logs.push(message);
+  try {
+    await withMockPool({
+      pool: {login: "cfx:secret-wallet.worker", pass: "secret-pass"},
+      opt: {job: {algo: "octopus"}},
+    }, async ({socket, switched}) => {
+      pool.connect_pool_throttle(0, unexpectedPoolJob);
+      socket.emit("connect");
+      socket.emit("data", Buffer.from(
+        JSON.stringify({jsonrpc: "2.0", id: 1, error: null, result: true}) + "\n" +
+        JSON.stringify({
+          jsonrpc: "2.0", method: "mining.notify",
+          params: ["malformed-job", "123", "0x" + "44".repeat(32), "0"],
+        }) + "\n"
+      ));
+      assert.equal(socket.destroyed, true);
+      assert.equal(switched(), true);
+    });
+  } finally {
+    helper.log_err = previousLogError;
+  }
+  assert.equal(logs.length, 1);
+  assert.ok(logs[0]);
+  assert.match(logs[0], /Can't process message from the pool: "Conflux target must be positive"/);
+  assert.doesNotMatch(logs[0], /secret-wallet|secret-pass/);
+});
+
+test("Conflux share result arrays require an explicit true", async () => {
+  const previousLogError = helper.log_err;
+  /** @type {string[]} */
+  const logs = [];
+  helper.log_err = (message) => logs.push(message);
+  const responses = [
+    {result: true, good: 1, bad: 0},
+    {result: false, good: 0, bad: 1},
+    {result: [true], good: 1, bad: 0},
+    {result: [false, "array rejection reason"], good: 0, bad: 1},
+    {result: [], good: 0, bad: 1},
+    {result: [1], good: 0, bad: 1},
+    {result: [true], error: {code: 31, message: "rpc rejection reason"}, good: 0, bad: 1},
+    {
+      result: [false, "array-reason-marker cfx-test-user.worker cfx-test-password"],
+      pool: {login: "cfx-test-user.worker", pass: "cfx-test-password"}, good: 0, bad: 1,
+    },
+  ];
+  try {
+    for (const response of responses) {
+      await withMockPool({pool: {protocol: "conflux", ...response.pool}}, async ({socket, poolConfig}) => {
+        pool.connect_pool_throttle(0, unexpectedPoolJob);
+        poolConfig["pending_submit_count"] = 1;
+        socket.emit("data", Buffer.from(JSON.stringify({
+          jsonrpc: "2.0", id: 3, error: response.error || null, result: response.result,
+        }) + "\n"));
+        assert.equal(poolConfig.good_shares, response.good);
+        assert.equal(poolConfig.bad_shares, response.bad);
+      });
+    }
+  } finally {
+    helper.log_err = previousLogError;
+  }
+  assert.ok(logs.some((message) => message.includes("array rejection reason")));
+  const rpcErrors = logs.filter((message) => message.includes("rpc rejection reason"));
+  assert.equal(rpcErrors.length, 1);
+  const rpcError = rpcErrors[0];
+  assert.ok(rpcError);
+  assert.equal(rpcError.includes("array rejection reason"), false);
+  const redactedArrayReason = logs.find((message) => message.includes("array-reason-marker"));
+  assert.ok(redactedArrayReason);
+  assert.equal(redactedArrayReason.includes("cfx-test-user.worker"), false);
+  assert.equal(redactedArrayReason.includes("cfx-test-password"), false);
+  assert.match(redactedArrayReason, /<redacted>/);
+});
+
+
+test("Octopus submit uses Conflux mining.submit format", async () => {
+  const miner = await loadMinerWithStubs();
+  const headerHash = "22".repeat(32);
+  miner.global.opt.pools[0].login = "cfx:wallet.rig";
+  miner.global.opt.pools[0].last_job = {
+    submit_mode: "conflux",
+    job_id: "job1", job_token: "token", header_hash: headerHash,
+  };
+
+  miner.messageHandler({
+    thread_id: 0,
+    type: "result",
+    value: {
+      pool_id: "0", worker_id: "worker", job_id: "job1", job_token: "token", nonce: "0000000000000001",
+      hash: "00".repeat(32), header_hash: "0x" + headerHash + "cc",
+    },
+  });
+
+  const write = miner.poolWrites[0];
+  assert.ok(write);
+  assert.equal(JSON.stringify(write.json.params), JSON.stringify([
+    "cfx:wallet.rig", "job1", "0x0000000000000001", "0x" + headerHash,
+  ]));
 });

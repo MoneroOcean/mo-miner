@@ -139,13 +139,14 @@ module.exports = ({
     return job;
   }
 
-  const nonceAt32Algos = new Set(["kawpow", "firopow", "evrprogpow", "meowpow", "etchash", "autolykos2", "fishhash"]);
+  const nonceAt32Algos = new Set(["kawpow", "firopow", "evrprogpow", "meowpow", "etchash", "octopus", "autolykos2", "fishhash"]);
   // KarlsenHashV2 uses the Kaspa 80-byte header / 8-byte nonce-at-72 layout.
   const kaspaHeaderAlgos = new Set(["karlsenhashv2", "hoohash"]);
   // Heights sampled from coin mainnets so benchmark DAG/table sizes match live pool jobs
   // (epoch-0 sizes overstate hashrate by ~7-10% on these algos): ETC 2026-06-04, RVN and ERG 2026-06-12.
   const benchHeightByAlgo = {
     etchash:    24689903,
+    octopus:    152521905,
     kawpow:     4407982,
     firopow:    600000,
     evrprogpow: 1800000,

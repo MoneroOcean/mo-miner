@@ -517,3 +517,23 @@ test("Windows unified GPU workers link HooHash's strict host verifier", () => {
   assert.match(cuda, /\$objs \+= \$hoo[\s\S]*?"-shared" @objs/);
   assert.match(acpp, /\$objects \+= \$hoohashObject[\s\S]*?-shared @objects/);
 });
+
+
+test("Octopus native runtime failure disables repeated retries", () => {
+  const source = fs.readFileSync(path.join(__dirname, "../sycl/octopus/nvidia_tensor.inc"), "utf8");
+  assert.match(source, /if \(native_failed_\)\s*return false;/);
+  assert.match(source, /native_failed_ = true;/);
+});
+
+test("Octopus NVIDIA DAG loads retain the measured cache policy", () => {
+  const source = fs.readFileSync(path.join(__dirname, "../sycl/octopus/nvidia_tensor.inc"), "utf8");
+  assert.match(source, /ld\.global\.L1::evict_first\.v4\.u32/);
+});
+
+test("Octopus portable OpenCL uses exact field multiply-add reduction", () => {
+  const source = fs.readFileSync(path.join(__dirname, "../sycl/octopus/octopus.cpp"), "utf8");
+  assert.match(source,
+    /if constexpr \(mom_sycl_portable_opencl\) \{[\s\S]*?return mod_field\(static_cast<uint64_t>\(a\) \* b \+ c\);/);
+  assert.match(source,
+    /#if defined\(MOM_SYCL_ADAPTIVECPP\) \|\| defined\(MOM_SYCL_PORTABLE_OPENCL\)[\s\S]*?static_cast<uint64_t>\(static_cast<uint32_t>\(value\)\) \* RECIPROCAL/);
+});

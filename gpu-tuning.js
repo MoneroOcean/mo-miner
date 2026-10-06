@@ -11,6 +11,7 @@ const algoFields = new Map([
   ["evrprogpow", new Set(["intensity", "workgroup", "dag_workgroup", "dag_chunk"])],
   ["meowpow", new Set(["intensity", "workgroup", "dag_workgroup", "dag_chunk"])],
   ["etchash", new Set(["intensity", "dag_workgroup", "dag_chunk"])],
+  ["octopus", new Set(["intensity"])],
   ["autolykos2", new Set([
     "intensity", "workgroup", "prehash_workgroup", "table_chunk", "search_mode",
   ])],

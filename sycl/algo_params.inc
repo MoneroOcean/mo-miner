@@ -266,8 +266,14 @@ std::map<std::string, std::string> algo_params(
       result_dev, 5 * GiB, 6 * GiB, algo == "firopow" ? firopow_intensity : kawpow_intensity,
       "intensity", GpuUsm::shared, 64, 20 * KiB, true
     );
-    else if (gpu_etchash_algos.contains(algo)) add_gpu_dataset_algo_dev(result_dev, 4300 * MiB, 5 * GiB, etchash_intensity,
+    else if (gpu_etchash_algos.contains(algo)) {
+      if (algo == "octopus")
+        add_gpu_dataset_algo_dev(result_dev, 4300 * MiB, 6 * GiB, octopus_intensity,
+                                 "intensity", GpuUsm::both, 128);
+      else
+        add_gpu_dataset_algo_dev(result_dev, 4300 * MiB, 5 * GiB, etchash_intensity,
                                  "intensity", GpuUsm::both, 128, 9 * KiB, true);
+    }
     else if (gpu_autolykos2_algos.contains(algo)) add_gpu_dataset_algo_dev(result_dev, 1 * GiB, 3 * GiB, autolykos2_intensity,
                                "intensity", mom_sycl_portable_opencl ? GpuUsm::none : GpuUsm::both, 32);
     else if (gpu_pearlhash_algos.contains(algo)) add_gpu_dataset_algo_dev(

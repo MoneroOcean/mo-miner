@@ -263,9 +263,14 @@ void Core::Execute() {
         m_input_len = 0; // do not produce any more test jobs for async GPU code like in c29
         if (m_dev == DEV::KAWPOW_GPU || m_dev == DEV::ETCHASH_GPU) {
           if (dev_sols == 1) {
-            char hash[HASH_LEN*2+1], mix[HASH_LEN*2+1];
-            send_msg("test", "result", std::string(hash_bin2hex(hash, 0)) + " " +
-                                      hash_bin2hex(static_cast<uint8_t*>(m_spads), mix));
+            char hash[HASH_LEN*2+1];
+            std::string result = hash_bin2hex(hash, 0);
+            if (m_algo_str != "octopus") {
+              char mix[HASH_LEN*2+1];
+              result += " ";
+              result += hash_bin2hex(static_cast<uint8_t*>(m_spads), mix);
+            }
+            send_msg("test", "result", result);
           } else {
             send_error(std::string("No ") + (m_dev == DEV::KAWPOW_GPU ? "kawpow" : "etchash") + " test result");
           }
@@ -336,8 +341,15 @@ void Core::Execute() {
                     : m_batch;
       if (m_dev == DEV::KAWPOW_GPU || m_dev == DEV::ETCHASH_GPU) {
         const uint64_t prev_nonce = m_nonce64;
-        if (dev_sols == 1 && m_target)
-          send_result(dev_nonce, 8, m_output, nullptr, 32, nullptr, static_cast<uint8_t*>(m_spads));
+        if (dev_sols == 1 && m_target) {
+          if (m_algo_str == "octopus") {
+            send_result(dev_nonce, 8, m_output);
+          } else {
+            send_result(
+              dev_nonce, 8, m_output, nullptr, 32, nullptr, static_cast<uint8_t*>(m_spads)
+            );
+          }
+        }
 
         std::memcpy(m_input + m_nonce_offset, &m_nonce64, sizeof(m_nonce64));
         m_nonce64 += m_nonce_step;

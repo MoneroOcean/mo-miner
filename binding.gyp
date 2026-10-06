@@ -316,6 +316,7 @@
       "sources": [
         "sycl/lib.cpp",
         "sycl/etchash/etchash.cpp",
+        "sycl/octopus/octopus.cpp",
         "sycl/autolykos2/autolykos2.cpp",
         "sycl/pearlhash/pearlhash.cpp",
         "sycl/c29/c29.cpp",
@@ -376,6 +377,8 @@
                 "/DNDEBUG",
                 "/DMOM_NEXAPOW_PORTABLE_FIELD32",
                 "/DPEARLHASH_ESIMD",
+                "/DOCTOPUS_ESIMD",
+                "/DMOM_OCTOPUS_HAS_SYCL_NATIVE",
                 "/DMOM_ZHASH_INTEL_LATE_BUCKETS",
                 "/clang:-fno-strict-aliasing"
               ]
@@ -401,7 +404,7 @@
               # kawpow runtime kernel-compiler. Multi-arch AOT, NVIDIA-wide (Ampere/Ada/Hopper). No ESIMD.
               "cflags_cc!": [ "-std=gnu++20" ],
               "cflags+": [
-                "-std=c++20 -O3 -ffp-contract=off -fsycl -fsycl-embed-ir -fsycl-targets=<(mom_cuda_arch) -DNDEBUG -DMOM_SYCL_HAS_CUDA -DMOM_NEXAPOW_SYCL_NATIVE_FIELD"
+                "-std=c++20 -O3 -ffp-contract=off -fsycl -fsycl-embed-ir -fsycl-targets=<(mom_cuda_arch) -DNDEBUG -DMOM_SYCL_HAS_CUDA -DMOM_NEXAPOW_SYCL_NATIVE_FIELD -DMOM_OCTOPUS_HAS_SYCL_NATIVE"
               ]
             } ],
             [ "mom_sycl_impl=='dpcpp-combined'", {
@@ -416,7 +419,7 @@
               "sources": [ "sycl/pearlhash/esimd.cpp" ],
               "cflags_cc!": [ "-std=gnu++20" ],
               "cflags+": [
-                "-std=c++20 -O3 -ffp-contract=off -fsycl -fsycl-embed-ir -DNDEBUG -DMOM_SYCL_HAS_CUDA -DMOM_NEXAPOW_SYCL_NATIVE_FIELD -DMOM_PEARLHASH_HAS_ESIMD"
+                "-std=c++20 -O3 -ffp-contract=off -fsycl -fsycl-embed-ir -DNDEBUG -DMOM_SYCL_HAS_CUDA -DMOM_NEXAPOW_SYCL_NATIVE_FIELD -DMOM_PEARLHASH_HAS_ESIMD -DMOM_OCTOPUS_HAS_SYCL_NATIVE"
               ]
             } ],
             [ "mom_sycl_impl=='dpcpp-opencl'", {
@@ -432,7 +435,7 @@
             [ "mom_sycl_impl=='adaptivecpp-hip'", {
               "cflags_cc!": [ "-std=gnu++20" ],
               "cflags+": [
-                "-std=c++20 -O3 -ffp-contract=off -DNDEBUG -DMOM_SYCL_ADAPTIVECPP -DMOM_SYCL_HAS_HIP -D__HIP_PLATFORM_AMD__"
+                "-std=c++20 -O3 -ffp-contract=off -DNDEBUG -DMOM_SYCL_ADAPTIVECPP -DMOM_SYCL_HAS_HIP -D__HIP_PLATFORM_AMD__ -DMOM_OCTOPUS_HAS_SYCL_NATIVE"
               ],
               "libraries": [ "-lamdhip64" ]
             } ],
@@ -444,7 +447,7 @@
             } ],
             [ "mom_sycl_impl=='dpcpp'", {
               "cflags+": [
-                "-std=c++20 -O3 -fsycl -fsycl-device-code-split=per_kernel -DNDEBUG -DMOM_NEXAPOW_PORTABLE_FIELD32 -DPEARLHASH_ESIMD -DMOM_ZHASH_INTEL_LATE_BUCKETS"
+                "-std=c++20 -O3 -fsycl -fsycl-device-code-split=per_kernel -DNDEBUG -DMOM_NEXAPOW_PORTABLE_FIELD32 -DPEARLHASH_ESIMD -DOCTOPUS_ESIMD -DMOM_OCTOPUS_HAS_SYCL_NATIVE -DMOM_ZHASH_INTEL_LATE_BUCKETS"
               ],
               "ldflags+": [ "-fsycl-device-code-split=per_kernel" ]
             } ]

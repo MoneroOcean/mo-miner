@@ -100,7 +100,8 @@ module.exports = ({
     const v = msg.value;
     const pool = opt.pools[v.pool_id];
     const submit_mode = pool && ((pool.last_job?.submit_mode === "cortex" ||
-      pool.last_job?.submit_mode === "echelon") ? pool.last_job.submit_mode : pool.submit_mode);
+      pool.last_job?.submit_mode === "echelon" ||
+      pool.last_job?.submit_mode === "conflux") ? pool.last_job.submit_mode : pool.submit_mode);
     const send = (body) => p.pool_write(v.pool_id, { jsonrpc: "2.0", id: 3, ...body });
 
     // PearlHash: the worker already built the base64 PlainProof, and the native core emits at most one
@@ -137,6 +138,16 @@ module.exports = ({
       if (!job) {return;}
       return send({method: "mining.submit", params: submission.nexaSubmitParams(pool, job, v)});
     }
+    if (submit_mode === "conflux") {
+      if (!isWorkerResult(v)) {return h.log_err("Invalid compute core message");}
+      const job = matchingPoolJob(pool, v);
+      if (!job) {return;}
+      const headerHash = resultHeaderHash(v, job);
+      if (!headerHash) {return h.log_err("Invalid compute core message");}
+      return send({method: "mining.submit", params: [pool.login, job.job_id,
+        "0x" + v.nonce,
+        "0x" + headerHash]});
+    }
     if (submit_mode === "cortex") {
       const job = pool.last_job;
       if (!job || String(job.job_id) !== String(v.job_id) ||
@@ -144,7 +155,7 @@ module.exports = ({
       if (typeof v.nonce !== "string" || !/^[0-9a-f]{1,16}$/i.test(v.nonce) ||
           typeof v.edges !== "string" || !/^[0-9a-f]{336}$/i.test(v.edges))
         return h.log_err("Invalid compute core message");
-      const headerHash = resultHeaderHash(msg, pool).replace(/^0x/i, "");
+      const headerHash = resultHeaderHash(v, job);
       if (!/^[0-9a-f]{64}$/i.test(headerHash))
         return h.log_err("Invalid compute core message");
       let pending = pool.pending_cortex_submit_ids;
@@ -168,7 +179,10 @@ module.exports = ({
 
     const params = { id: v.worker_id, job_id: v.job_id, nonce: v.nonce, result: v.hash };
     if (v.mix_hash) {
-      const headerHash = resultHeaderHash(msg, pool);
+      const headerJob = pool && pool.last_job &&
+        (!pool.last_job.job_id || !v.job_id || pool.last_job.job_id === v.job_id)
+        ? pool.last_job : {};
+      const headerHash = resultHeaderHash(v, headerJob);
       if (submit_mode === "ethproxy")
       {return send({ method: "eth_submitWork",
         params: ["0x" + v.nonce, "0x" + headerHash.slice(0, 64), "0x" + v.mix_hash] });}
@@ -187,11 +201,10 @@ module.exports = ({
     send({ method: "submit", params: params });
   }
 
-  function resultHeaderHash(msg, pool) {
-    if (msg.value.header_hash) {return msg.value.header_hash;}
-    if (!pool || !pool.last_job) {return "";}
-    if (pool.last_job.job_id && msg.value.job_id && pool.last_job.job_id !== msg.value.job_id) {return "";}
-    return firstTruthyOr("", pool.last_job.header_hash, pool.last_job.blob, pool.last_job.blob_hex);
+  function resultHeaderHash(value, job) {
+    const headerHash = value.header_hash || job.header_hash || job.blob || job.blob_hex;
+    const raw = submission.hexWithoutPrefix(headerHash);
+    return raw.length >= 64 && /^[0-9a-f]+$/i.test(raw) ? raw.slice(0, 64) : "";
   }
 
   // store max last nonce for background pool job to resume it from there
