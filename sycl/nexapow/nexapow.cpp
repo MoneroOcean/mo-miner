@@ -236,7 +236,7 @@ static const char* staged_field_name(const sycl::device& device) {
 
 int nexapow(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint8_t* output,
             uint8_t*, uint64_t* pnonce, const uint8_t* target, const uint8_t*, unsigned intensity,
-            bool is_test, bool, const std::string& dev) {
+            bool is_test, bool is_benchmark, const std::string& dev) {
   if ((input_size != 40 && input_size != 44 && input_size != 48) || !intensity)
     throw std::string("nexapow requires a 40-, 44-, or 48-byte work blob and nonzero intensity");
   if (!input || !output || !pnonce || (!target && !is_test))
@@ -256,16 +256,22 @@ int nexapow(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint8
   const unsigned count = is_test ? 1u : intensity;
   const bool staged_test = is_test && env_enabled("MOM_NEXAPOW_STAGED_TEST");
   const bool staged_required = staged_test || env_enabled("MOM_NEXAPOW_STAGED_REQUIRE");
-  if (recorded_test && !staged_test) {
+  // CPU CI runs the existing one-nonce SYCL ECC/search fallback, not just the SHA probe plus
+  // host ECC. This test-only route avoids the multi-GiB staged table without changing mining.
+  const bool portable_cpu_test = is_test && !is_benchmark && state.device.is_cpu() &&
+                                 env_enabled("MOM_SYCL_PORTABLE_TEST");
+  if (portable_cpu_test && staged_required)
+    throw std::string("NexaPoW monolithic CPU test conflicts with required staged search");
+  if (recorded_test && !staged_test && !portable_cpu_test) {
     test_recorded_vector(state, input, output, pnonce);
     return 1;
   }
   // Explicit CPU work reuses host consensus math instead of building GPU tables/search kernels.
-  if (state.device.is_cpu() && !staged_required)
+  if (state.device.is_cpu() && !staged_required && !portable_cpu_test)
     return scan_host(input, extra_bytes, first, count, target, is_test, output, pnonce);
 
   std::string reason;
-  if (state.portable.ensure(state.queue, state.device, &reason)) {
+  if (!portable_cpu_test && state.portable.ensure(state.queue, state.device, &reason)) {
     if (env_enabled("MOM_NEXAPOW_STAGED_LOG") && !state.staged_logged) {
       std::fprintf(
           stderr,
@@ -304,7 +310,7 @@ int nexapow(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint8
     }
   }
 
-  if (!state.staged_failure_logged) {
+  if (!portable_cpu_test && !state.staged_failure_logged) {
     std::fprintf(stderr, "NexaPoW staged SYCL unavailable: %s; using monolithic fallback\n",
                  reason.empty() ? "unknown initialization failure" : reason.c_str());
     state.staged_failure_logged = true;

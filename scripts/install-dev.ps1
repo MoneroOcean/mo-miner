@@ -443,8 +443,22 @@ function Install-AcppHip {
     (Join-Path $Workspace 'AdaptiveCpp-src.tar.gz'),$adaptiveCppCommit)
   & (Join-Path $repo 'scripts\build-windows-adaptivecpp-amd.ps1') `
     -Workspace $Workspace -BaseToolchain $AcppCudaDir -HipPath $HipDir
-  Remove-Item $AcppHipDir -Recurse -Force -ErrorAction SilentlyContinue
-  Move-Item (Join-Path $Workspace 'acpp-toolchain') $AcppHipDir
+  # Copy the completed overlay rather than renaming its cache-derived directory: Windows may
+  # deny a directory move even when every payload file is readable. Keep staging intact until
+  # validation, including when HIP replaces the CUDA destination used to build it.
+  $stagedToolchain = Join-Path $Workspace 'acpp-toolchain'
+  Assert-NoReparseAncestor $AcppHipDir 'AdaptiveCpp destination'
+  $destination = Get-Item -LiteralPath $AcppHipDir -Force -ErrorAction SilentlyContinue
+  if ($destination) {
+    if (-not $destination.PSIsContainer) { throw "AdaptiveCpp destination must be a real directory: $AcppHipDir" }
+    if (-not (Test-MomMarker (Join-Path $AcppHipDir '.mom-acpp-toolchain') 'mom AdaptiveCpp toolchain') -and
+        (Get-ChildItem -LiteralPath $AcppHipDir -Force | Select-Object -First 1)) {
+      throw "AdaptiveCpp destination exists without its ownership marker: $AcppHipDir"
+    }
+    Remove-Item -LiteralPath $AcppHipDir -Recurse -Force -ErrorAction Stop
+  }
+  Copy-Item -LiteralPath $stagedToolchain -Destination $AcppHipDir -Recurse -Force -ErrorAction Stop
+  if (-not (Test-Acpp $AcppHipDir hip)) { throw "AdaptiveCpp HIP install failed validation: $AcppHipDir" }
 }
 
 function Test-AcppLlvmTargets([string]$Path) {

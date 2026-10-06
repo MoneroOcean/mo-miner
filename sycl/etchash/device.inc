@@ -394,9 +394,8 @@ static void format_duration_ms(char* out, size_t out_size, uint64_t ms) {
   }
 }
 
-void compute_light_cache(std::vector<uint32_t>& cache, const uint32_t epoch,
+void compute_light_cache(std::vector<uint32_t>& cache, const uint64_t cache_bytes,
                          const uint32_t seed_epoch) {
-  const uint64_t cache_bytes = cache_sizes[epoch];
   cache.assign(cache_bytes / sizeof(uint32_t), 0);
 
   const ethash_h256_t seed = ethash_get_seedhash(seed_epoch);

@@ -1,5 +1,6 @@
 "use strict";
 
+/** @type {Array<HashVectorDefinition & {job: HashJob & {dev: string, blob_hex: string}}>} */
 const vectors = [
   {
     // Recorded Echelon vector, independently checked by the CPU consensus oracle.
@@ -78,6 +79,9 @@ const vectors = [
     name: "etchash gpu1*[intensity=256]",
     gpu: true,
     syclCpu: true,
+    syclCpuExpected:
+      "a57562c7a275ab2bae0b3a6afd5b6b425d9dc3b5f6e3d106adfc5401b687b424 " +
+      "c854bad41b003055e79a241a6e071341021b972d0a0090064210b95bb60db98a",
     timeoutMs: 15 * 60 * 1000,
     job: {
       algo: "etchash",
@@ -348,6 +352,7 @@ vectors.push({
   name: "verthash official dataset gpu1*[intensity=16]",
   gpu: true,
   syclCpu: true,
+  syclCpuExpected: "24e6b892aaf2511e232a7552c2528af1b3fb7cdcae8a5a552a8b26c240fe20d6",
   // First-use dataset generation can take 30 minutes; retain five minutes for the proof.
   timeoutMs: 35 * 60 * 1000,
   perfTimeoutMs: 5 * 60 * 1000,

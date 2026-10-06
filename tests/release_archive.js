@@ -95,6 +95,28 @@ function archiveStageEntries(directory) {
   return fs.readdirSync(directory).filter(name => name.startsWith(".mom-archive."));
 }
 
+/** @param {string} source @param {string} jobId @returns {string} */
+function workflowJob(source, jobId) {
+  const lines = source.split(/\r?\n/);
+  const start = lines.findIndex((line) => line === `  ${jobId}:`);
+  assert.notEqual(start, -1, `Workflow job ${jobId} is missing`);
+  let end = start + 1;
+  for (; end < lines.length; ++end) {
+    const line = lines[end];
+    if (line !== undefined && /^ {2}[A-Za-z0-9_-]+:\s*$/.test(line)) {break;}
+  }
+  return lines.slice(start, end).join("\n");
+}
+
+/** @param {string} source @param {string} jobId @param {(job: string) => string} mutate
+ * @returns {string} */
+function mutateWorkflowJob(source, jobId, mutate) {
+  const original = workflowJob(source, jobId);
+  const mutated = mutate(original);
+  assert.notEqual(mutated, original, "Fixture did not mutate workflow job " + jobId);
+  return source.replace(original, mutated);
+}
+
 /** @param {string} archive @param {string} workDirectory @param {NodeJS.ProcessEnv} [extraEnv] */
 function validateLinuxArchive(archive, workDirectory, extraEnv = {}) {
   return run("bash", [LINUX_RELEASE_TEST_SCRIPT, archive], {
@@ -428,6 +450,67 @@ test("release workflow discovers exactly the package-versioned archives", () => 
   assert.doesNotMatch(source, /Select-Object\s+-First\s+1/);
 });
 
+/** @param {string} source */
+function assertPortableCpuWorkflowContract(source) {
+  const sourceQuality = workflowJob(source, "source-quality");
+  const packageLinux = workflowJob(source, "package-linux-x64");
+  assert.match(sourceQuality, /npm run test:github/);
+  assert.doesNotMatch(source, /test-linux-portable-cpu:|MOM_GPU_TEST_ALGO|MOM_RELEASE_EMULATE_INTEL_CPU|QEMU_CPU|qemu-user/,
+    "normal CI must run the complete native suite, without shards, filtering or emulation");
+
+  assert.match(packageLinux, /timeout-minutes:\s*30/);
+  assert.match(packageLinux, /MOM_TEST_NO_POOL_NETWORK=1[^\n]*test-release-linux\.sh\s+"\$archive"\s+cpu\s*$/m);
+  assert.match(packageLinux,
+    /MOM_TEST_NO_POOL_NETWORK=1[^\n]*test-release-linux\.sh\s+"\$archive"\s+gpu-portable-cpu/);
+  assert.equal((packageLinux.match(/gpu-portable-cpu/g) || []).length, 1,
+    "the complete portable CPU suite must run exactly once");
+  const testStart = packageLinux.indexOf("      - name: Test extracted release archive");
+  const uploadStart = packageLinux.indexOf("      - name: Upload Linux release artifact");
+  assert.ok(testStart >= 0 && uploadStart > testStart, "archive test/upload steps are missing or reordered");
+  assert.doesNotMatch(packageLinux.slice(0, packageLinux.indexOf("\n    steps:")), /^\s+if:/m,
+    "the package job must remain required");
+  const testStep = packageLinux.slice(testStart, uploadStart);
+  assert.doesNotMatch(testStep, /^\s+if:/m, "archive tests must not be optional");
+  assert.match(packageLinux, /uses:\s*actions\/upload-artifact@v7/);
+  assert.match(packageLinux, /name:\s*mom-lin/);
+  assert.match(packageLinux, /- name: Upload Linux release artifact\s+if:\s*inputs\.upload_artifacts/,
+    "only Release should upload the Linux archive");
+}
+
+test("Linux release workflow tests all portable CPU algorithms in the package job", () => {
+  assertPortableCpuWorkflowContract(fs.readFileSync(RELEASE_WORKFLOW, "utf8"));
+});
+
+test("Linux portable CPU workflow rejects incomplete or emulated suite controls", () => {
+  const source = fs.readFileSync(RELEASE_WORKFLOW, "utf8");
+  /** @type {Array<[string, string]>} */
+  const fixtures = [
+    ["missing CPU suite", mutateWorkflowJob(source, "package-linux-x64", job =>
+      job.replace(/^.*test-release-linux\.sh.*"\$archive" cpu\n/m, "")
+    )],
+    ["missing suite", mutateWorkflowJob(source, "package-linux-x64", job =>
+      job.replace(/^.*test-release-linux\.sh.*gpu-portable-cpu.*\n/m, "")
+    )],
+    ["algorithm filter", mutateWorkflowJob(source, "package-linux-x64", job =>
+      job.replace("MOM_TEST_NO_POOL_NETWORK=1", "MOM_GPU_TEST_ALGO=kawpow MOM_TEST_NO_POOL_NETWORK=1")
+    )],
+    ["optional tests", mutateWorkflowJob(source, "package-linux-x64", job =>
+      job.replace("- name: Test extracted release archive", "- name: Test extracted release archive\n        if: inputs.upload_artifacts")
+    )],
+    ["Stability artifact", mutateWorkflowJob(source, "package-linux-x64", job =>
+      job.replace(/\s+if: inputs\.upload_artifacts/, "")
+    )],
+    ["forced emulation", mutateWorkflowJob(source, "package-linux-x64", job =>
+      job.replace("MOM_TEST_NO_POOL_NETWORK=1", "MOM_RELEASE_EMULATE_INTEL_CPU=1 MOM_TEST_NO_POOL_NETWORK=1")
+    )],
+  ];
+  for (const [label, fixture] of fixtures) {
+    assert.notEqual(fixture, source, label + " fixture did not mutate the workflow");
+    assert.throws(() => assertPortableCpuWorkflowContract(fixture),
+      {name: "AssertionError"}, label + " regression was accepted");
+  }
+});
+
 /** @param {string} archive */
 function assertArchivePayload(archive) {
   const extracted = run("tar", ["-xOf", archive, "mom-vfixture/payload.txt"]);
@@ -625,6 +708,79 @@ test("Linux release launcher honors the documented OpenCL device type", {
     });
     assert.equal(invalid.status, 2, invalid.stdout + invalid.stderr);
     assert.match(invalid.stderr, /MOM_OPENCL_DEVICE_TYPE must be gpu or cpu/);
+  } finally {
+    fs.rmSync(fixture, {recursive: true, force: true});
+  }
+});
+
+test("Linux release launcher keeps an explicit addon with its runtime cohort", {
+  skip: process.platform === "win32",
+}, () => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-release-runtime-"));
+  try {
+    const launcher = path.join(fixture, "mom");
+    const executable = path.join(fixture, "mom-bin");
+    fs.mkdirSync(path.join(fixture, "libs", "dpcpp"), {recursive: true});
+    fs.mkdirSync(path.join(fixture, "libs", "dpcpp-opencl"), {recursive: true});
+    fs.writeFileSync(launcher, linuxReleaseLauncher());
+    fs.chmodSync(launcher, 0o755);
+    writeExecutable(executable, [
+      "#!/usr/bin/env sh",
+      "printf '%s\\n' \"$MOM_NATIVE_PATH\" \"$MOM_RUNTIME_DIR\" \"$LD_LIBRARY_PATH\"",
+    ].join("\n"));
+
+    const dpcpp = run(launcher, ["algorithms"], {
+      env: {
+        PATH: process.env["PATH"] ?? "",
+        MOM_GPU_BACKEND: "intel",
+        MOM_NATIVE_PATH: path.join(fixture, "libs", "dpcpp", "mom.node"),
+        LD_LIBRARY_PATH: "/host/lib",
+      },
+    });
+    assert.equal(dpcpp.status, 0, dpcpp.stdout + dpcpp.stderr);
+    assert.deepEqual(dpcpp.stdout.trim().split(/\r?\n/), [
+      path.join(fixture, "libs", "dpcpp", "mom.node"), "",
+      [path.join(fixture, "libs", "dpcpp"),
+        path.join(fixture, "libs", "dpcpp", "hipSYCL"), "/host/lib"].join(":"),
+    ]);
+    assert.doesNotMatch(dpcpp.stdout, /oneapi/);
+
+    const opencl = run(launcher, ["algorithms"], {
+      env: {
+        PATH: process.env["PATH"] ?? "",
+        MOM_GPU_BACKEND: "opencl",
+        MOM_NATIVE_PATH: path.join(fixture, "libs", "dpcpp-opencl", "mom.node"),
+        MOM_RUNTIME_DIR: path.join(fixture, "libs", "dpcpp-opencl"),
+        LD_LIBRARY_PATH: "/host/lib",
+      },
+    });
+    assert.equal(opencl.status, 0, opencl.stdout + opencl.stderr);
+    assert.deepEqual(opencl.stdout.trim().split(/\r?\n/), [
+      path.join(fixture, "libs", "dpcpp-opencl", "mom.node"),
+      path.join(fixture, "libs", "dpcpp-opencl"),
+      [path.join(fixture, "libs", "dpcpp-opencl"),
+        path.join(fixture, "libs", "dpcpp-opencl", "hipSYCL"),
+        path.join(fixture, "libs", "dpcpp"), "/host/lib"].join(":"),
+    ]);
+    assert.doesNotMatch(opencl.stdout, /oneapi/);
+
+    const explicitOneapi = run(launcher, ["algorithms"], {
+      env: {
+        PATH: process.env["PATH"] ?? "",
+        MOM_GPU_BACKEND: "opencl",
+        MOM_NATIVE_PATH: path.join(fixture, "libs", "oneapi", "mom.node"),
+        MOM_RUNTIME_DIR: path.join(fixture, "libs", "oneapi"),
+        LD_LIBRARY_PATH: "/host/lib",
+      },
+    });
+    assert.equal(explicitOneapi.status, 0, explicitOneapi.stdout + explicitOneapi.stderr);
+    assert.deepEqual(explicitOneapi.stdout.trim().split(/\r?\n/), [
+      path.join(fixture, "libs", "oneapi", "mom.node"),
+      path.join(fixture, "libs", "oneapi"),
+      [path.join(fixture, "libs", "oneapi"),
+        path.join(fixture, "libs", "oneapi", "hipSYCL"), "/host/lib"].join(":"),
+    ]);
+    assert.doesNotMatch(explicitOneapi.stdout, /dpcpp/);
   } finally {
     fs.rmSync(fixture, {recursive: true, force: true});
   }

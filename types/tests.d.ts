@@ -21,6 +21,8 @@ declare global {
 
   interface HashVectorDefinition extends HashDefinition {
     expected: string | string[];
+    // Only the bounded CPU dataset differs; GPU/iGPU clones retain the consensus vector.
+    syclCpuExpected?: string | string[];
   }
 
   interface PerfDefinition extends HashDefinition {

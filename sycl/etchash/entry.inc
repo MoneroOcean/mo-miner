@@ -1,3 +1,13 @@
+constexpr uint64_t ETCHASH_PORTABLE_TEST_CACHE_BYTES = 16u * 1024u;
+constexpr uint64_t ETCHASH_PORTABLE_TEST_DAG_BYTES = 80u * 1024u;
+
+static bool etchash_portable_test(const bool is_test, const bool is_benchmark,
+                                  const sycl::device& device) {
+  unsigned long enabled = 0;
+  return is_test && !is_benchmark && device.is_cpu() &&
+         mom_parse_env_ulong("MOM_SYCL_PORTABLE_TEST", enabled) && enabled != 0;
+}
+
 int etchash(const unsigned, const uint32_t block_height, const uint8_t* const input,
             const unsigned input_size, uint8_t* const output, uint8_t* const mix_hash,
             uint64_t* const pnonce, const uint8_t* const target, const uint8_t* const seed_hash,
@@ -12,11 +22,14 @@ int etchash(const unsigned, const uint32_t block_height, const uint8_t* const in
   uint32_t epoch = 0;
   uint32_t seed_epoch = 0;
   state.resolve_epochs(block_height, seed_hash, epoch, seed_epoch);
-  state.ensure_epoch(epoch, seed_epoch, !is_benchmark);
+  const bool compact_test = etchash_portable_test(is_test, is_benchmark, state.device);
+  const uint64_t cache_bytes = compact_test ? ETCHASH_PORTABLE_TEST_CACHE_BYTES : cache_sizes[epoch];
+  const uint64_t dag_bytes = compact_test ? ETCHASH_PORTABLE_TEST_DAG_BYTES : dag_sizes[epoch];
+  state.ensure_epoch(epoch, seed_epoch, cache_bytes, dag_bytes, !is_benchmark);
 
   uint64_t start_nonce = 0;
   std::memcpy(&start_nonce, input + 32, sizeof(start_nonce));
-  const uint32_t dag_pages = static_cast<uint32_t>(dag_sizes[epoch] / ETHASH_MIX_BYTES);
+  const uint32_t dag_pages = static_cast<uint32_t>(dag_bytes / ETHASH_MIX_BYTES);
   const FastModData dag_mod = make_fast_mod_data(dag_pages);
   MomSyclHostTransferGuard host_transfers(state.queue, "etchash host transfers");
 

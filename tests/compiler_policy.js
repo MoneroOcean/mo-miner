@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const {spawnSync} = require("node:child_process");
 const {createHash} = require("node:crypto");
 const {test} = require("node:test");
+const {runInNewContext} = require("node:vm");
 const policyModule = require("../compiler-policy");
 const opts = require("../opts");
 const fs = require("node:fs");
@@ -866,6 +867,209 @@ test("Discrete Octopus vectors select the full DAG test path", (/** @type {impor
   assert.equal(JSON.stringify(octopus), original);
 });
 
+test("bounded CPU gold and geometry never replace GPU or integrated vectors", (
+  /** @type {import("node:test").TestContext} */ t,
+) => {
+  t.mock.method(policyModule, "workerEnv", () => ({}));
+  const definitions = hashTests.filter(({syclCpuExpected}) => syclCpuExpected !== undefined);
+  assert.equal(definitions.length, 6);
+  for (const definition of definitions) {
+    const original = JSON.stringify(definition);
+    const cpu = cloneForOpenclSycl(definition, "cpu1", "cpu");
+    assert.equal(cpu.expected, definition.syclCpuExpected);
+    assert.equal(cpu.env?.["MOM_SYCL_PORTABLE_TEST"], "1");
+    for (const gpu of [cloneForOpenclSycl(definition, "gpu2", "gpu"),
+      cloneForDiscreteGpu(definition, "intel", "gpu2", "sycl"),
+      cloneForIntelIntegrated(definition, "gpu2", "sycl")]) {
+      assert.equal(gpu.expected, definition.expected);
+      assert.notEqual(gpu.env?.["MOM_SYCL_PORTABLE_TEST"], "1");
+    }
+    assert.equal(JSON.stringify(definition), original);
+  }
+});
+
+test("Verthash bounded CPU fixture checks its route and independent scalar gold", {
+  skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
+}, () => {
+  const root = path.join(__dirname, "..");
+  const source = fs.readFileSync(path.join(root, "sycl/verthash/verthash.cpp"), "utf8");
+  const begin = source.indexOf("static State& get_state(");
+  const end = source.indexOf("\nvoid verthash_cleanup_states()", begin);
+  assert.ok(begin >= 0 && end > begin);
+  assert.match(source, /get_state\(dev_str, is_test && !is_benchmark\)/);
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-verthash-small-"));
+  try {
+    fs.copyFileSync(path.join(__dirname, "native/verthash_test_route.cpp"),
+      path.join(directory, "route.cpp"));
+    fs.writeFileSync(path.join(directory, "verthash_get_state.inc"), source.slice(begin, end));
+    /** @type {[string, string][]} */
+    const cases = [
+      [path.join(directory, "route.cpp"), "verthash-test-route:passed"],
+      [path.join(__dirname, "reference/verthash_small.cpp"), "verthash-small-reference:passed"],
+    ];
+    for (const [file, marker] of cases) {
+      const executable = path.join(directory, path.basename(file, ".cpp"));
+      const built = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
+        "-pedantic", "-I", path.join(__dirname, "native"), file, "-o", executable],
+      {encoding: "utf8", timeout: 30000});
+      assert.equal(built.status, 0, built.stderr);
+      const run = spawnSync(executable, [], {encoding: "utf8", timeout: 10000});
+      assert.equal(run.status, 0, run.stderr);
+      assert.equal(run.stdout.trim(), marker);
+    }
+  } finally {
+    fs.rmSync(directory, {recursive: true, force: true});
+  }
+});
+
+test("Etchash bounded CPU gold matches the independent scalar reference", {
+  skip: process.platform === "win32" ? "requires host C/C++ compilers" : false,
+}, () => {
+  const root = path.join(__dirname, "..");
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-etchash-small-"));
+  try {
+    const object = path.join(directory, "ethash.o");
+    const executable = path.join(directory, "reference");
+    const c = spawnSync("cc", ["-std=c11", "-O2", "-I", path.join(root, "xmrig"),
+      "-c", path.join(root, "xmrig/3rdparty/libethash/ethash_internal.c"), "-o", object],
+    {encoding: "utf8", timeout: 30000});
+    assert.equal(c.status, 0, c.stderr);
+    const cpp = spawnSync("c++", ["-std=c++17", "-O2", "-I", path.join(root, "xmrig"),
+      path.join(__dirname, "reference/etchash_small.cpp"),
+      path.join(root, "xmrig/base/crypto/sha3.cpp"),
+      path.join(root, "xmrig/base/crypto/keccak.cpp"), object, "-o", executable],
+    {encoding: "utf8", timeout: 30000});
+    assert.equal(cpp.status, 0, cpp.stderr);
+    const run = spawnSync(executable, [], {encoding: "utf8", timeout: 10000});
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(run.stdout.trim(), "etchash-small-reference:passed");
+  } finally {
+    fs.rmSync(directory, {recursive: true, force: true});
+  }
+});
+
+test("portable CPU emulation timeout is isolated from native CPU and GPU clones", (
+  /** @type {import("node:test").TestContext} */ t,
+) => {
+  const definition = hashTests.find(({job, syclCpu}) => syclCpu && job.algo === "kawpow");
+  assert.ok(definition, "the real portable KawPow vector must exist");
+  const original = JSON.stringify(definition);
+  const expectedHash = definition.expected;
+  const expectedBlob = definition.job.blob_hex;
+  const baseTimeout = Math.max(definition.timeoutMs || 0, 15 * 60 * 1000);
+  const previousEmulation = process.env["MOM_RELEASE_EMULATE_INTEL_CPU"];
+  t.mock.method(policyModule, "workerEnv", () => ({}));
+
+  try {
+    delete process.env["MOM_RELEASE_EMULATE_INTEL_CPU"];
+    const nativeCpu = cloneForOpenclSycl(definition, "gpu2", "cpu");
+    assert.equal(nativeCpu.timeoutMs, baseTimeout);
+
+    process.env["MOM_RELEASE_EMULATE_INTEL_CPU"] = "1";
+    const emulatedCpu = cloneForOpenclSycl(definition, "gpu2", "cpu");
+    assert.equal(emulatedCpu.timeoutMs, 60 * 60 * 1000);
+    assert.equal(emulatedCpu.gpu, false);
+
+    const openclGpu = cloneForOpenclSycl(definition, "gpu2", "gpu");
+    assert.equal(openclGpu.timeoutMs, baseTimeout);
+    assert.equal(openclGpu.gpu, true);
+
+    const discreteGpu = cloneForDiscreteGpu(definition, "nvidia", "gpu2", "sycl");
+    assert.equal(discreteGpu.timeoutMs, definition.timeoutMs);
+    const nativeIntegrated = cloneForIntelIntegrated(definition, "gpu2", "sycl-native");
+    assert.equal(nativeIntegrated.timeoutMs, 3 * 60 * 60 * 1000);
+
+    for (const copy of [nativeCpu, emulatedCpu]) {
+      assert.equal(copy.expected, definition.syclCpuExpected);
+      assert.equal(copy.job.blob_hex, expectedBlob);
+    }
+    for (const copy of [openclGpu, discreteGpu, nativeIntegrated]) {
+      assert.equal(copy.expected, expectedHash);
+      assert.equal(copy.job.blob_hex, expectedBlob);
+    }
+  } finally {
+    if (previousEmulation === undefined) {
+      delete process.env["MOM_RELEASE_EMULATE_INTEL_CPU"];
+    } else {
+      process.env["MOM_RELEASE_EMULATE_INTEL_CPU"] = previousEmulation;
+    }
+    assert.equal(JSON.stringify(definition), original,
+      "cloning a portable vector must not mutate its input or hashes");
+  }
+});
+
+test("RandomX resume fixture tolerates cold setup but still diagnoses a stalled phase", async () => {
+  const source = fs.readFileSync(path.join(__dirname, "native_addon.js"), "utf8");
+  const start = source.indexOf('test("native RandomX labels its first result and resumes the same job"');
+  assert(start >= 0, "RandomX resume fixture must exist");
+  const fixture = source.slice(start);
+
+  /** @param {string} body @param {boolean} stall */
+  const run = async (body, stall) => {
+    let now = 0;
+    let nextId = 0;
+    let closeCount = 0;
+    let outcome = Promise.resolve();
+    /** @type {Map<number, {at: number, callback: () => void}>} */
+    const timers = new Map();
+    /** @param {() => void} callback @param {number} delay */
+    const schedule = (callback, delay) => {
+      const id = ++nextId;
+      timers.set(id, {at: now + delay, callback});
+      return id;
+    };
+    class Worker {
+      /** @param {(name: string, values: Record<string, string>) => void} progress
+       * @param {() => void} complete */
+      constructor(progress, complete) {
+        this.progress = progress;
+        this.complete = complete;
+      }
+      /** @param {string} name @param {Record<string, string>} [job] */
+      sendToCpp(name, job = {}) {
+        if (name === "test" && !stall) {
+          schedule(() => this.progress("test", {result: "fixture-hash"}), 13000);
+        } else if (name === "job") {
+          schedule(() => this.progress("result", {
+            job_id: job["job_id"] || "", nonce: "00000000", hash: "fixture-hash",
+          }), 100);
+        } else if (name === "close") {
+          ++closeCount;
+          schedule(this.complete, 0);
+        }
+      }
+    }
+    runInNewContext(body, {
+      assert, core: {AsyncWorker: Worker}, setTimeout: schedule,
+      clearTimeout: (/** @type {number} */ id) => timers.delete(id),
+      test: (/** @type {string} */ name,
+        /** @type {{timeout: number}} */ options,
+        /** @type {() => Promise<void>} */ execute) => {
+        assert.match(name, /RandomX labels/);
+        assert(options.timeout > 30000 && options.timeout <= 60000);
+        outcome = execute();
+      },
+    });
+    for (let count = 0; timers.size; ++count) {
+      assert(count < 10, "fixture must finish with bounded work");
+      const next = [...timers].sort((a, b) => a[1].at - b[1].at)[0];
+      assert(next);
+      timers.delete(next[0]);
+      now = next[1].at;
+      next[1].callback();
+    }
+    try {
+      await outcome;
+    } finally {
+      assert.equal(closeCount, 1, "fixture closes exactly once on success or failure");
+    }
+  };
+  await run(fixture, false);
+  await assert.rejects(run(fixture.replace("}, 30000);", "}, 10000);"), false),
+    /timed out in phase test/);
+  await assert.rejects(run(fixture, true), /timed out in phase test/);
+});
+
 test("PearlHash routes integrated Intel GPUs away from ESIMD prefetch", () => {
   const dispatch = fs.readFileSync(path.join(__dirname, "../sycl/pearlhash/dispatch.inc"), "utf8");
   assert.match(dispatch,
@@ -1185,7 +1389,9 @@ test("Verthash keeps the large portable CPU dataset in shared USM", () => {
   assert.match(source,
     /const bool cpu_data = device\.is_cpu\(\);[\s\S]*?cpu_data \? sycl::malloc_shared<Uint2>[\s\S]*?: sycl::malloc_device<Uint2>/);
   assert.match(source,
-    /if \(cpu_data\)\s+std::memcpy\(data, host\.data\(\), DATA_BYTES\);\s+else\s+sycl_wait_and_throw\(queue\.memcpy/);
+    /const size_t data_bytes = host\.size\(\) \* sizeof\(Uint2\);/);
+  assert.match(source,
+    /if \(cpu_data\)\s+std::memcpy\(data, host\.data\(\), data_bytes\);\s+else\s+sycl_wait_and_throw\(queue\.memcpy\(data, host\.data\(\), data_bytes\)/);
 });
 
 test("Xelis portable OpenCL avoids vendor-specific 64-bit mul_hi", () => {
@@ -1438,7 +1644,7 @@ test("NexaPoW vectors keep the bounded default and expose a fail-closed staged g
   assert.match(source, /MOM_NEXAPOW_STAGED_REQUIRE/);
   assert.match(source, /NexaPoW staged SYCL active \(field=%s, table=%s, points=%u, bytes=%llu, count=%u\)/);
   assert.equal((source.match(/const bool recorded_test = is_test && input_size == 48u;/g) || []).length, 2);
-  assert.match(source, /if \(recorded_test && !staged_test\) \{\s*test_recorded_vector\(/);
+  assert.match(source, /if \(recorded_test && !staged_test && !portable_cpu_test\) \{\s*test_recorded_vector\(/);
   assert.match(source, /NexaPoW staged SYCL recorded vector mismatch/);
   const vector = require("./vectors").hashTests.find(({job}) => job.algo === "nexapow");
   assert.ok(vector);
@@ -4516,7 +4722,7 @@ test("NexaPoW submitted faults abort without fallback and do not latch failed se
   const caller = section(host,
     "int nexapow(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint8_t* output,\n" +
     "            uint8_t*, uint64_t* pnonce, const uint8_t* target, const uint8_t*, unsigned intensity,\n" +
-    "            bool is_test, bool, const std::string& dev) {", "\n#else\nint nexapow");
+    "            bool is_test, bool is_benchmark, const std::string& dev) {", "\n#else\nint nexapow");
   const support = section(host, "struct Result {", "\nstatic constexpr uint8_t") + "\n" +
     section(host, "inline bool np_equal(", "\n#ifndef MOM_NEXAPOW_HOST_TEST");
   const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-nexapow-fault-"));
@@ -4542,8 +4748,8 @@ test("NexaPoW submitted faults abort without fallback and do not latch failed se
     assert.equal(result.error, undefined);
     assert.equal(result.signal, null);
     assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(result.stdout, /^# tests 206$/m);
-    assert.match(result.stdout, /^# pass 206$/m);
+    assert.match(result.stdout, /^# tests 211$/m);
+    assert.match(result.stdout, /^# pass 211$/m);
     assert.match(result.stdout, /^# fail 0$/m);
     assert.match(result.stdout, /^# skipped 0$/m);
   } finally {

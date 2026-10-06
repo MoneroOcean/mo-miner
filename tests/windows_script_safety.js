@@ -40,6 +40,11 @@ function makeDriver(fixture, source) {
   return driver;
 }
 
+/** @param {string} file @returns {string} */
+function readSource(file) {
+  return fs.readFileSync(file, "utf8").replace(/\r\n/g, "\n");
+}
+
 for (const fixtureCase of [
   {name: "benign linker warning", output: "LINK : warning LNK4099: PDB was not found", code: 0, accepted: true},
   {name: "ordinary compiler warning", output: "source.cpp(1): warning C4100: unreferenced parameter", code: 0, accepted: true},
@@ -51,7 +56,7 @@ for (const fixtureCase of [
   {name: "missing native status despite stale success", output: "No native status", code: null, accepted: false},
 ]) {
   test(`Windows MSBuild publication guard: ${fixtureCase.name}`, {skip: !WINDOWS}, () => {
-    const source = fs.readFileSync(path.join(repo, ".github", "workflows", "scripts", "build-windows.ps1"), "utf8");
+    const source = readSource(path.join(repo, ".github", "workflows", "scripts", "build-windows.ps1"));
     const start = source.indexOf("$msbuildCapturePreference = ");
     const end = source.indexOf("\nNew-Item -ItemType Directory -Force build\\Release", start);
     assert(start >= 0 && end > start, "MSBuild publication boundary is missing");
@@ -92,7 +97,7 @@ for (const fixtureCase of [
 }
 
 test("Windows MSBuild SYCL hook forwards the exact driver property before publication", {skip: !WINDOWS}, () => {
-  const source = fs.readFileSync(path.join(repo, ".github", "workflows", "scripts", "build-windows.ps1"), "utf8");
+  const source = readSource(path.join(repo, ".github", "workflows", "scripts", "build-windows.ps1"));
   const start = source.indexOf("$msbuildCapturePreference = ");
   const end = source.indexOf("\nNew-Item -ItemType Directory -Force build\\Release", start);
   assert(start >= 0 && end > start, "MSBuild publication boundary is missing");
@@ -138,7 +143,7 @@ for (const fixtureCase of [
   {name: "missing executable with stale success", stderr: "", code: null, accepted: false},
 ]) {
   test(`Windows MSBuild native stderr capture: ${fixtureCase.name}`, {skip: !WINDOWS}, () => {
-    const source = fs.readFileSync(path.join(repo, ".github", "workflows", "scripts", "build-windows.ps1"), "utf8");
+    const source = readSource(path.join(repo, ".github", "workflows", "scripts", "build-windows.ps1"));
     const start = source.indexOf("$msbuildCapturePreference = ");
     const end = source.indexOf("\nNew-Item -ItemType Directory -Force build\\Release", start);
     assert(start >= 0 && end > start, "MSBuild publication boundary is missing");
@@ -223,10 +228,10 @@ test("Windows executable discovery selects one candidate and preserves explicit 
   }
 });
 
-/** @returns {string} */
-function extractWindowsArchiveRunBlock() {
-  const workflow = fs.readFileSync(
-    path.join(repo, ".github", "workflows", "build-release-artifacts.yml"), "utf8");
+/** @param {string} [workflow] @returns {string} */
+function extractWindowsArchiveRunBlock(workflow = readSource(
+  path.join(repo, ".github", "workflows", "build-release-artifacts.yml"))) {
+  workflow = workflow.replace(/\r\n/g, "\n");
   const windowsJob = workflow.indexOf("  warm-windows-acpp-cuda:");
   assert.notEqual(windowsJob, -1, "Windows release job is missing");
   const archiveTest = workflow.indexOf("      - name: Test extracted release archive", windowsJob);
@@ -245,6 +250,25 @@ function extractWindowsArchiveRunBlock() {
   assert.ok(body.length > 0, "Windows archive test run block is empty");
   return body.join("\n");
 }
+
+test("Windows archive fixture parses LF and CRLF workflow source identically", () => {
+  const workflow = readSource(path.join(repo, ".github", "workflows", "build-release-artifacts.yml"));
+  const lfBlock = extractWindowsArchiveRunBlock(workflow);
+  const crlfBlock = extractWindowsArchiveRunBlock(workflow.replace(/\n/g, "\r\n"));
+  assert.equal(crlfBlock, lfBlock);
+  assert.match(crlfBlock, /test-release-windows\.ps1[\s\S]*CPU release suite failed/);
+  assert.match(crlfBlock, /test-release-windows\.ps1[\s\S]*GPU portable CPU release suite failed/);
+});
+
+test("Windows archive fixture still rejects a missing run block", () => {
+  const workflow = readSource(path.join(repo, ".github", "workflows", "build-release-artifacts.yml"));
+  const malformed = workflow.replace(
+    "        run: |\n          $version =",
+    "        command: |\n          $version =");
+  assert.notEqual(malformed, workflow);
+  assert.throws(() => extractWindowsArchiveRunBlock(malformed),
+    /Windows archive test run block is missing/);
+});
 
 /** @param {string} workflowBlock @returns {string} */
 function makeArchiveWorkflowDriverSource(workflowBlock) {
@@ -324,8 +348,8 @@ test("Windows archive workflow gates the portable suite on the CPU suite exit st
 test("Windows release packager uses only tag refs as implicit versions", {
   skip: !WINDOWS,
 }, () => {
-  const source = fs.readFileSync(
-    path.join(repo, ".github", "workflows", "scripts", "package-windows.ps1"), "utf8");
+  const source = readSource(
+    path.join(repo, ".github", "workflows", "scripts", "package-windows.ps1"));
   const start = source.indexOf("if (-not $Version) {");
   const end = source.indexOf('\n. "$PSScriptRoot/windows-dll-deps.ps1"', start);
   assert.notEqual(start, -1, "version selection is missing");
@@ -471,6 +495,167 @@ if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) {
 }
 `;
 
+/** @param {string} [source] @returns {string} */
+function extractAcppHipPublishBlock(source = readSource(
+  path.join(repo, "scripts", "install-dev.ps1"))) {
+  source = source.replace(/\r\n/g, "\n");
+  const functionStart = source.indexOf("function Install-AcppHip {");
+  const publishStart = source.indexOf("# Copy the completed overlay", functionStart);
+  const functionEnd = source.indexOf(
+    "\n}\n\nfunction Test-AcppLlvmTargets", publishStart);
+  assert(functionStart >= 0 && publishStart > functionStart && functionEnd > publishStart,
+    "AdaptiveCpp HIP publish boundary is missing");
+  return source.slice(publishStart, functionEnd);
+}
+
+const acppHipPublishDriverSource = String.raw`
+param(
+  [string]$ScriptPath,
+  [string]$Helper,
+  [string]$Workspace,
+  [string]$PublishPath,
+  [ValidateSet('publish', 'copy-failure', 'validation-failure', 'move-evidence', 'unsafe-move')]
+  [string]$Mode = 'publish',
+  [switch]$ReadOnlySource,
+  [switch]$ExpectFailure
+)
+$ErrorActionPreference = 'Stop'
+. $Helper
+$source = [IO.File]::ReadAllText($ScriptPath)
+$source = $source.Replace(([char]13).ToString() + ([char]10).ToString(), ([char]10).ToString())
+$functionStart = $source.IndexOf('function Install-AcppHip {')
+$publishStart = $source.IndexOf('# Copy the completed overlay', $functionStart)
+$endMarker = ([char]10).ToString() + '}' + ([char]10).ToString() +
+  ([char]10).ToString() + 'function Test-AcppLlvmTargets'
+$functionEnd = $source.IndexOf($endMarker, $publishStart)
+if ($functionStart -lt 0 -or $publishStart -le $functionStart -or $functionEnd -le $publishStart) {
+  throw 'ACPP_HIP_PUBLISH_BOUNDARY_MISSING'
+}
+$publishBlock = $source.Substring($publishStart, $functionEnd - $publishStart)
+if ($publishBlock -notmatch '\$stagedToolchain\s*=') { throw 'ACPP_HIP_STAGE_VARIABLE_MISSING' }
+
+$AcppHipDir = $PublishPath
+$AcppCudaDir = $PublishPath
+$stagedToolchain = Join-Path $Workspace 'acpp-toolchain'
+if ($ReadOnlySource) {
+  foreach ($entry in @(Get-ChildItem -LiteralPath $stagedToolchain -Force -Recurse)) {
+    $entry.Attributes = $entry.Attributes -bor [IO.FileAttributes]::ReadOnly
+  }
+  $stageItem = Get-Item -LiteralPath $stagedToolchain -Force
+  $stageItem.Attributes = $stageItem.Attributes -bor [IO.FileAttributes]::ReadOnly
+}
+
+function Test-Acpp([string]$Path, [string]$Backend) {
+  if ($Mode -eq 'validation-failure') { return $false }
+  if ($Backend -ne 'hip') { throw 'UNEXPECTED_BACKEND' }
+  foreach ($relative in @(
+    '.mom-acpp-toolchain',
+    'bin\cuda-base.dll',
+    'bin\hipSYCL\rt-backend-hip.dll',
+    'lib\hipSYCL\bitcode\libkernel-sscp-amdgpu-amdhsa-full.bc'
+  )) {
+    if (-not (Test-Path -LiteralPath (Join-Path $Path $relative) -PathType Leaf)) {
+      return $false
+    }
+  }
+  if (-not (Test-MomMarker (Join-Path $Path '.mom-acpp-toolchain') 'mom AdaptiveCpp toolchain')) {
+    return $false
+  }
+  if (Test-Path -LiteralPath (Join-Path $Path 'acpp-toolchain')) { return $false }
+  $script:ValidatedPath = $Path
+  return $true
+}
+
+if ($Mode -eq 'copy-failure') {
+  function Copy-Item {
+    [CmdletBinding()]
+    param(
+      [string[]]$LiteralPath,
+      [string]$Destination,
+      [switch]$Recurse,
+      [switch]$Force
+    )
+    throw 'COPY_STOP'
+  }
+}
+if ($Mode -eq 'move-evidence') {
+  try {
+    Move-Item -LiteralPath $stagedToolchain -Destination $PublishPath -ErrorAction Stop
+    Write-Output 'ORIGINAL_MOVE=success'
+  } catch {
+    Write-Output ('ORIGINAL_MOVE=failure:' + $_.Exception.Message)
+  }
+  exit 0
+}
+if ($Mode -eq 'unsafe-move') {
+  Remove-Item -LiteralPath $PublishPath -Recurse -Force -ErrorAction SilentlyContinue
+  try {
+    Move-Item -LiteralPath $stagedToolchain -Destination $PublishPath -ErrorAction Stop
+    Write-Output 'UNSAFE_MOVE=success'
+  } catch {
+    Write-Output ('UNSAFE_MOVE=failure:' + $_.Exception.Message)
+  }
+  exit 0
+}
+
+$failure = $null
+try {
+  Invoke-Expression $publishBlock
+} catch {
+  $failure = $_.Exception.Message
+}
+if ($ExpectFailure) {
+  if (-not $failure) { throw 'EXPECTED_PUBLISH_FAILURE_DID_NOT_FAIL' }
+  Write-Output ('EXPECTED_REJECTION ' + $failure)
+  exit 0
+}
+if ($failure) {
+  [Console]::Error.WriteLine($failure)
+  exit 1
+}
+Write-Output 'PUBLISH_OK'
+`;
+
+/** @type {Array<[string, string]>} */
+const acppHipPublishPayload = [
+  [".mom-acpp-toolchain", "mom AdaptiveCpp toolchain"],
+  ["bin/cuda-base.dll", "cuda base"],
+  ["bin/hipSYCL/rt-backend-hip.dll", "hip backend"],
+  ["lib/hipSYCL/bitcode/libkernel-sscp-amdgpu-amdhsa-full.bc", "amdgpu bitcode"],
+];
+
+/** @param {string} root @returns {{root: string, workspace: string, staged: string, destination: string}} */
+function makeAcppHipPublishFixture(root) {
+  const workspace = path.join(root, "mom-dev-publish");
+  const staged = path.join(workspace, "acpp-toolchain");
+  const destination = path.join(root, "acpp-amd");
+  fs.mkdirSync(staged, {recursive: true});
+  fs.writeFileSync(path.join(workspace, ".mom-dev-workspace"),
+    "mom development workspace");
+  for (const [relative, contents] of acppHipPublishPayload) {
+    const file = path.join(staged, ...relative.split("/"));
+    fs.mkdirSync(path.dirname(file), {recursive: true});
+    fs.writeFileSync(file, contents);
+  }
+  return {root, workspace, staged, destination};
+}
+
+/** @param {{root: string, workspace: string, destination: string}} fixture
+ * @param {{mode?: string, readOnlySource?: boolean, expectFailure?: boolean}} [options]
+ * @returns {{status: number | null, stdout: string, stderr: string}} */
+function runAcppHipPublish(fixture, options = {}) {
+  const args = [
+    "-ScriptPath", path.join(repo, "scripts", "install-dev.ps1"),
+    "-Helper", path.join(repo, "scripts", "windows-install-helpers.ps1"),
+    "-Workspace", fixture.workspace,
+    "-PublishPath", fixture.destination,
+    "-Mode", options.mode ?? "publish",
+  ];
+  if (options.readOnlySource) { args.push("-ReadOnlySource"); }
+  if (options.expectFailure) { args.push("-ExpectFailure"); }
+  return runPowerShell(makeDriver(fixture.root, acppHipPublishDriverSource), args);
+}
+
 /** @param {string} driver @param {string[]} args @param {string} label */
 function assertRejected(driver, args, label) {
   const result = runPowerShell(driver, args);
@@ -577,8 +762,8 @@ $ErrorActionPreference = 'Stop'
 });
 
 test("Windows portable source runtime ownership is explicit", () => {
-  const build = fs.readFileSync(
-    path.join(repo, ".github/workflows/scripts/build-windows-multicompiler.ps1"), "utf8");
+  const build = readSource(
+    path.join(repo, ".github/workflows/scripts/build-windows-multicompiler.ps1"));
   const portable = build.match(/Save-Compiler dpcpp-opencl\r?\n([\s\S]*?)\r?\n {2}\}/)?.[1];
   assert.ok(portable, "portable source-build branch is missing");
   assert.match(portable, /^ {4}Save-DpcppRuntime -Name dpcpp-opencl$/m);
@@ -586,24 +771,60 @@ test("Windows portable source runtime ownership is explicit", () => {
     "portable rebuild must not refresh the preserved CUDA worker");
 });
 
-test("Windows portable source runtime staging and consumer preserve the CUDA sibling", {
-  skip: !WINDOWS,
-}, () => {
-  const source = fs.readFileSync(
-    path.join(repo, ".github/workflows/scripts/build-windows-multicompiler.ps1"), "utf8");
-  const start = source.indexOf("function Save-DpcppRuntime(");
-  const end = source.indexOf("\n}\n\ntry {", start);
-  const portable = source.match(/Save-Compiler dpcpp-opencl\r?\n([\s\S]*?)\r?\n {2}\}/)?.[1];
+/** @param {string} build @param {string} consumer @returns {{runtime: string, call: string, selectors: string, portable: string}} */
+function extractWindowsPortableRuntimeFixture(build, consumer) {
+  build = build.replace(/\r\n/g, "\n");
+  consumer = consumer.replace(/\r\n/g, "\n");
+  const start = build.indexOf("function Save-DpcppRuntime(");
+  const end = build.indexOf("\n}\n\ntry {", start);
+  const portable = build.match(/Save-Compiler dpcpp-opencl\r?\n([\s\S]*?)\r?\n {2}\}/)?.[1];
   const call = portable?.match(/^ {4}(Save-DpcppRuntime[^\r\n]*)$/m)?.[1];
   assert.ok(start >= 0 && end > start && call, "source runtime staging contract is missing");
-  const consumer = fs.readFileSync(
-    path.join(repo, "scripts/test-windows-current-multicompiler.ps1"), "utf8");
   const selectorStart = consumer.indexOf("function Clear-SelectorEnvironment {");
   const selectorEnd = consumer.indexOf("\nfunction Invoke-GpuSuite(", selectorStart);
   const consumerStart = consumer.indexOf("function Invoke-PortableSuite(");
   const consumerEnd = consumer.indexOf("\n}\n\n$compilerLanes", consumerStart);
   assert.ok(selectorStart >= 0 && selectorEnd > selectorStart &&
     consumerStart >= 0 && consumerEnd > consumerStart, "portable suite consumer is missing");
+  return {
+    runtime: build.slice(start, end + 2),
+    call,
+    selectors: consumer.slice(selectorStart, selectorEnd),
+    portable: consumer.slice(consumerStart, consumerEnd + 2),
+  };
+}
+
+test("Windows portable runtime fixture extracts LF and CRLF source identically", () => {
+  const build = readSource(
+    path.join(repo, ".github/workflows/scripts/build-windows-multicompiler.ps1"));
+  const consumer = readSource(path.join(repo, "scripts/test-windows-current-multicompiler.ps1"));
+  const lf = extractWindowsPortableRuntimeFixture(build, consumer);
+  const crlf = extractWindowsPortableRuntimeFixture(
+    build.replace(/\n/g, "\r\n"), consumer.replace(/\n/g, "\r\n"));
+  assert.deepEqual(crlf, lf);
+  assert.match(lf.runtime, /function Save-DpcppRuntime\(/);
+  assert.equal(lf.call, "Save-DpcppRuntime -Name dpcpp-opencl");
+  assert.match(lf.portable, /function Invoke-PortableSuite\(/);
+});
+
+test("Windows portable runtime fixture still rejects missing source or consumer boundaries", () => {
+  const build = readSource(
+    path.join(repo, ".github/workflows/scripts/build-windows-multicompiler.ps1"));
+  const consumer = readSource(path.join(repo, "scripts/test-windows-current-multicompiler.ps1"));
+  assert.throws(() => extractWindowsPortableRuntimeFixture(
+    build.replace("function Save-DpcppRuntime(", "function Save-DpcppRuntimeMissing("), consumer),
+  /source runtime staging contract is missing/);
+  assert.throws(() => extractWindowsPortableRuntimeFixture(
+    build, consumer.replace("function Invoke-PortableSuite(", "function Invoke-PortableSuiteMissing(")),
+  /portable suite consumer is missing/);
+});
+
+test("Windows portable source runtime staging and consumer preserve the CUDA sibling", {
+  skip: !WINDOWS,
+}, () => {
+  const runtime = extractWindowsPortableRuntimeFixture(
+    readSource(path.join(repo, ".github/workflows/scripts/build-windows-multicompiler.ps1")),
+    readSource(path.join(repo, "scripts/test-windows-current-multicompiler.ps1")));
   for (const sibling of [false, true]) {
     const fixture = makeFixture();
     try {
@@ -661,8 +882,8 @@ function node.exe {
   $script:NodeCalls++
   $global:LASTEXITCODE = 0
 }
-` + source.slice(start, end + 2) + "\n" + call + "\n" +
-      consumer.slice(selectorStart, selectorEnd) + consumer.slice(consumerStart, consumerEnd + 2) + String.raw`
+` + runtime.runtime + "\n" + runtime.call + "\n" +
+      runtime.selectors + runtime.portable + String.raw`
 if ($DropPortableRuntime) { Remove-Item -LiteralPath (Join-Path $out 'dpcpp-opencl\sycl9.dll') }
 $env:MOM_NATIVE_PATH = 'stale-addon'
 $env:MOM_GPU_TEST_VENDORS = 'cuda'
@@ -704,8 +925,8 @@ if ($script:NodeCalls -ne 1) { throw 'portable suite did not reach its runner ex
 });
 
 test("Windows packaging preserves distinct coherent UR runtime cohorts", (t) => {
-  const source = fs.readFileSync(
-    path.join(repo, ".github", "workflows", "scripts", "package-windows.ps1"), "utf8");
+  const source = readSource(
+    path.join(repo, ".github", "workflows", "scripts", "package-windows.ps1"));
   const assertions = source.slice(source.indexOf("function Assert-BuildArtifact"),
     source.indexOf("if (Test-Path -LiteralPath $Archive"));
   const cleanupStart = source.indexOf("foreach ($worker in @('dpcpp', 'dpcpp-opencl')) {");
@@ -1005,6 +1226,222 @@ test("Windows AdaptiveCpp builders reject broad destinations and unowned workspa
       /must be separate from -Workspace/);
   } finally {
     fs.rmSync(fixture, {recursive: true, force: true});
+  }
+});
+
+test("Windows HIP publish block is source-bounded and staged-copy based", () => {
+  const block = extractAcppHipPublishBlock();
+  assert.match(block, /# Copy the completed overlay/);
+  assert.match(block, /\$stagedToolchain\s*=\s*Join-Path\s+\$Workspace/);
+  assert.match(block, /Assert-NoReparseAncestor\s+\$AcppHipDir/);
+  assert.match(block, /Test-MomMarker/);
+  assert.match(block, /Remove-Item[\s\S]*-ErrorAction Stop/);
+  assert.match(block, /Copy-Item\s+-LiteralPath\s+\$stagedToolchain[\s\S]*-Force/);
+  assert.match(block, /Test-Acpp\s+\$AcppHipDir\s+hip/);
+  assert.doesNotMatch(block, /\bMove-Item\b/,
+    "HIP publication must not depend on a directory rename");
+});
+
+test("Windows HIP staged publish preserves payloads across absent, owned, readonly and same-destination cases", {
+  skip: !WINDOWS,
+}, () => {
+  /** @type {Array<{name: string, prepare?: (fixture: ReturnType<typeof makeAcppHipPublishFixture>) => void, options?: {readOnlySource?: boolean}}>} */
+  const cases = [
+    {name: "absent destination"},
+    {
+      name: "owned empty destination",
+      prepare: fixture => fs.mkdirSync(fixture.destination),
+    },
+    {
+      name: "owned replacement",
+      prepare: fixture => {
+        fs.mkdirSync(path.join(fixture.destination, "bin"), {recursive: true});
+        fs.writeFileSync(path.join(fixture.destination, ".mom-acpp-toolchain"),
+          "mom AdaptiveCpp toolchain");
+        fs.writeFileSync(path.join(fixture.destination, "old-sentinel"), "remove me");
+      },
+    },
+    {
+      name: "readonly staged source",
+      options: {readOnlySource: true},
+    },
+    {
+      // The fixture represents an AcppHipDir == AcppCudaDir staged merge: the staged
+      // tree contains the CUDA base payload plus the newly built HIP overlay.
+      name: "same CUDA and HIP destination",
+      prepare: fixture => {
+        fs.mkdirSync(path.join(fixture.destination, "bin"), {recursive: true});
+        fs.writeFileSync(path.join(fixture.destination, ".mom-acpp-toolchain"),
+          "mom AdaptiveCpp toolchain");
+        fs.writeFileSync(path.join(fixture.destination, "cuda-before-build"), "base");
+      },
+    },
+  ];
+  for (const entry of cases) {
+    const fixture = makeAcppHipPublishFixture(makeFixture());
+    try {
+      entry.prepare?.(fixture);
+      const result = runAcppHipPublish(fixture, entry.options);
+      assert.equal(result.status, 0, `${entry.name}: ${result.stdout}\n${result.stderr}`);
+      assert.match(result.stdout, /PUBLISH_OK/);
+      for (const [relative, contents] of acppHipPublishPayload) {
+        const destination = path.join(fixture.destination, ...relative.split("/"));
+        assert.equal(fs.readFileSync(destination, "utf8"), contents,
+          `${entry.name}: missing or changed ${relative}`);
+      }
+      assert.equal(fs.existsSync(path.join(fixture.destination, "acpp-toolchain")), false,
+        `${entry.name}: staged root was copied as a nested directory`);
+      assert.equal(fs.existsSync(fixture.staged), true,
+        `${entry.name}: source staging must remain for outer workspace cleanup`);
+      if (entry.name === "owned replacement") {
+        assert.equal(fs.existsSync(path.join(fixture.destination, "old-sentinel")), false);
+      }
+    } finally {
+      fs.rmSync(fixture.root, {recursive: true, force: true});
+    }
+  }
+});
+
+test("Windows HIP staged publish rejects unsafe destinations and preserves the staged source", {
+  skip: !WINDOWS,
+}, (/** @type {import("node:test").TestContext} */ t) => {
+  /** @type {Array<{name: string, expected: RegExp, prepare: (fixture: ReturnType<typeof makeAcppHipPublishFixture>) => void}>} */
+  const cases = [
+    {
+      name: "unowned nonempty destination",
+      expected: /ownership marker/,
+      prepare: fixture => {
+        fs.mkdirSync(fixture.destination);
+        fs.writeFileSync(path.join(fixture.destination, "sentinel"), "preserve");
+      },
+    },
+    {
+      name: "wrong ownership marker",
+      expected: /ownership marker/,
+      prepare: fixture => {
+        fs.mkdirSync(fixture.destination);
+        fs.writeFileSync(path.join(fixture.destination, ".mom-acpp-toolchain"), "wrong owner");
+        fs.writeFileSync(path.join(fixture.destination, "sentinel"), "preserve");
+      },
+    },
+    {
+      name: "file destination",
+      expected: /real directory/,
+      prepare: fixture => fs.writeFileSync(fixture.destination, "preserve"),
+    },
+  ];
+  for (const entry of cases) {
+    const fixture = makeAcppHipPublishFixture(makeFixture());
+    try {
+      entry.prepare(fixture);
+      const before = fs.existsSync(fixture.destination) && fs.statSync(fixture.destination).isFile()
+        ? fs.readFileSync(fixture.destination, "utf8")
+        : fs.existsSync(path.join(fixture.destination, "sentinel"))
+          ? fs.readFileSync(path.join(fixture.destination, "sentinel"), "utf8")
+          : null;
+      const result = runAcppHipPublish(fixture, {expectFailure: true});
+      assert.equal(result.status, 0, `${entry.name}: ${result.stdout}\n${result.stderr}`);
+      assert.match(result.stdout, /EXPECTED_REJECTION/);
+      assert.match(result.stdout, entry.expected);
+      assert.equal(fs.existsSync(fixture.staged), true,
+        `${entry.name}: staged source was removed after rejection`);
+      if (before !== null) {
+        const after = fs.statSync(fixture.destination).isFile()
+          ? fs.readFileSync(fixture.destination, "utf8")
+          : fs.readFileSync(path.join(fixture.destination, "sentinel"), "utf8");
+        assert.equal(after, before, `${entry.name}: destination sentinel changed`);
+      }
+    } finally {
+      fs.rmSync(fixture.root, {recursive: true, force: true});
+    }
+  }
+
+  // Negative control for the former publish sequence: its unconditional removal would
+  // erase an unowned sentinel before Move-Item was attempted. The real block above must
+  // reject the same fixture and preserve that sentinel.
+  const unsafeFixture = makeAcppHipPublishFixture(makeFixture());
+  try {
+    fs.mkdirSync(unsafeFixture.destination);
+    const sentinel = path.join(unsafeFixture.destination, "sentinel");
+    fs.writeFileSync(sentinel, "unowned");
+    const result = runAcppHipPublish(unsafeFixture, {mode: "unsafe-move"});
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /UNSAFE_MOVE=(success|failure)/);
+    assert.equal(fs.existsSync(sentinel), false,
+      "the former unconditional Remove-Item deleted the unowned sentinel");
+  } finally {
+    fs.rmSync(unsafeFixture.root, {recursive: true, force: true});
+  }
+
+  const junctionFixture = makeAcppHipPublishFixture(makeFixture());
+  try {
+    const target = path.join(junctionFixture.root, "reparse-target");
+    fs.mkdirSync(target);
+    fs.writeFileSync(path.join(target, "sentinel"), "preserve");
+    if (tryMakeJunction(junctionFixture.destination, target)) {
+      const result = runAcppHipPublish(junctionFixture, {expectFailure: true});
+      assert.equal(result.status, 0, result.stdout + result.stderr);
+      assert.match(result.stdout, /EXPECTED_REJECTION/);
+      assert.match(result.stdout, /reparse point/);
+      assert.equal(fs.readFileSync(path.join(target, "sentinel"), "utf8"), "preserve");
+    } else {
+      t.diagnostic("destination junction creation unavailable");
+    }
+  } finally {
+    fs.rmSync(junctionFixture.root, {recursive: true, force: true});
+  }
+
+  const ancestorFixture = makeAcppHipPublishFixture(makeFixture());
+  try {
+    const target = path.join(ancestorFixture.root, "ancestor-target");
+    const link = path.join(ancestorFixture.root, "ancestor-junction");
+    fs.mkdirSync(target);
+    fs.writeFileSync(path.join(target, "sentinel"), "preserve");
+    ancestorFixture.destination = path.join(link, "acpp-amd");
+    if (tryMakeJunction(link, target)) {
+      const result = runAcppHipPublish(ancestorFixture, {expectFailure: true});
+      assert.equal(result.status, 0, result.stdout + result.stderr);
+      assert.match(result.stdout, /EXPECTED_REJECTION/);
+      assert.match(result.stdout, /reparse point/);
+      assert.equal(fs.readFileSync(path.join(target, "sentinel"), "utf8"), "preserve");
+    } else {
+      t.diagnostic("ancestor junction creation unavailable");
+    }
+  } finally {
+    fs.rmSync(ancestorFixture.root, {recursive: true, force: true});
+  }
+
+  for (const mode of ["copy-failure", "validation-failure"]) {
+    const fixture = makeAcppHipPublishFixture(makeFixture());
+    try {
+      const result = runAcppHipPublish(fixture, {mode, expectFailure: true});
+      assert.equal(result.status, 0, `${mode}: ${result.stdout}\n${result.stderr}`);
+      assert.match(result.stdout, /EXPECTED_REJECTION/);
+      assert.match(result.stdout, mode === "copy-failure" ? /COPY_STOP/ : /failed validation/);
+      assert.equal(fs.existsSync(fixture.staged), true,
+        `${mode}: staged source was removed after failure`);
+    } finally {
+      fs.rmSync(fixture.root, {recursive: true, force: true});
+    }
+  }
+});
+
+test("Windows HIP original directory-move outcome is diagnostic only", {
+  skip: !WINDOWS,
+}, (/** @type {import("node:test").TestContext} */ t) => {
+  const fixture = makeAcppHipPublishFixture(makeFixture());
+  try {
+    const result = runAcppHipPublish(fixture, {
+      mode: "move-evidence", readOnlySource: true,
+    });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    const evidence = result.stdout.split(/\r?\n/).find(line => line.startsWith("ORIGINAL_MOVE="));
+    assert.ok(evidence, result.stdout + result.stderr);
+    t.diagnostic(evidence.includes("failure")
+      ? `original Move-Item readonly fixture failed: ${evidence}`
+      : "original Move-Item readonly fixture did not reproduce a failure");
+  } finally {
+    fs.rmSync(fixture.root, {recursive: true, force: true});
   }
 });
 
@@ -1436,8 +1873,8 @@ function runWindowsPackageBoundary(state) {
 
 /** @returns {string} */
 function extractWindowsArchivePublicationBlock() {
-  const source = fs.readFileSync(
-    path.join(repo, ".github", "workflows", "scripts", "package-windows.ps1"), "utf8");
+  const source = readSource(
+    path.join(repo, ".github", "workflows", "scripts", "package-windows.ps1"));
   const startMarker = "$archiveDirectory = ";
   const endMarker = "Write-Output $Archive";
   const start = source.indexOf(startMarker);

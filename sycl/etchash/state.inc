@@ -253,23 +253,30 @@ public:
   }
 
   void ensure_epoch(const uint32_t new_epoch, const uint32_t new_seed_epoch,
+                    const uint64_t new_cache_bytes, const uint64_t new_dag_bytes,
                     const bool should_log) {
-    if (epoch == new_epoch && seed_epoch == new_seed_epoch && light_cache && dag)
-      return;
-    if (new_epoch >= 2048 || !dag_sizes[new_epoch] || !cache_sizes[new_epoch]) {
+    // The entrypoint supplies consensus-table sizes for ordinary calls and only supplies the
+    // bounded fixture sizes for the explicitly gated portable CPU test.
+    if (new_epoch >= 2048 || !new_cache_bytes || !new_dag_bytes ||
+        new_cache_bytes % (ETHASH_NODE_WORDS * sizeof(uint32_t)) != 0 ||
+        new_dag_bytes % ETHASH_MIX_BYTES != 0) {
       throw std::string("Bad etchash epoch");
     }
 
-    const uint64_t new_light_cache_words = cache_sizes[new_epoch] / sizeof(uint32_t);
-    const uint64_t new_dag_words = dag_sizes[new_epoch] / sizeof(uint32_t);
-    const uint64_t new_dag_nodes = dag_sizes[new_epoch] / (ETHASH_NODE_WORDS * sizeof(uint32_t));
+    const uint64_t new_light_cache_words = new_cache_bytes / sizeof(uint32_t);
+    const uint64_t new_dag_words = new_dag_bytes / sizeof(uint32_t);
+    const uint64_t new_dag_nodes = new_dag_bytes / (ETHASH_NODE_WORDS * sizeof(uint32_t));
     // Node and page bases use uint32_t word indexes; exactly 2^32 words fit.
     if (new_dag_words > uint64_t{UINT32_MAX} + 1)
       throw std::string("Etchash DAG exceeds 32-bit word addressing");
+    if (epoch == new_epoch && seed_epoch == new_seed_epoch &&
+        light_cache_words == new_light_cache_words && dag_words == new_dag_words && light_cache &&
+        dag)
+      return;
 
     std::vector<uint32_t> host_cache;
     const uint64_t start_ms = now_ms();
-    compute_light_cache(host_cache, new_epoch, new_seed_epoch);
+    compute_light_cache(host_cache, new_cache_bytes, new_seed_epoch);
 
     queue.wait_and_throw();
     // Invalidate the old key before an in-place rebuild can fail; it must not remain reusable.

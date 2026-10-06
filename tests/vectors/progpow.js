@@ -2,13 +2,16 @@
 
 module.exports = [
   {
-    // Keep the tiny epoch-0 case for standards-only SYCL CPU coverage. Windows CUDA can spend
+    // Keep the bounded CPU fixture for standards-only SYCL coverage. Windows CUDA can spend
     // minutes in this synthetic initialization path; the following recorded mainnet share is the
     // representative GPU correctness test.
     name: "kawpow gpu1*[intensity=1] height 0",
     gpu: true,
     syclCpu: true,
     portableOnly: true,
+    syclCpuExpected:
+      "9a56e073b5f2bd60721df42a8074a1dd99fa4240da4552db3a5b03cc63ab93e5 " +
+      "15fba995c63a7fa3d8aee12849b910ba795de3684fd423bbc975b07280579595",
     timeoutMs: 15 * 60 * 1000,
     job: {
       algo: "kawpow",
@@ -47,10 +50,13 @@ module.exports = [
     // constant keccak seal (no magic array). Vectors are firoorg/firo's own firopow_test_vectors.hpp.
     // dev gpu1*[intensity=1] runs a single hash at gid 0; blob_hex = 32-byte header + 8-byte nonce LITTLE-ENDIAN
     // (the firo vector lists nonce big-endian: 85f22c9b3cd2f123 -> stored 23f1d23c9b2cf285).
-    // expected = "<final_hash> <mix_hash>". height 1 = epoch 0 (tiny DAG): clears seal + fill_mix.
+    // expected = "<final_hash> <mix_hash>". Height 1 selects epoch 0; CPU coverage uses a compact DAG.
     name: "firopow gpu1*[intensity=1] height 1",
     gpu: true,
     syclCpu: true,
+    syclCpuExpected:
+      "9dc31ee7b1fdf86c95143e4214f3b2ee68c550b02a9962ad51542db409f408cf " +
+      "984aa8ab93d7b280e6e37c8934e934bdd9e65e088f764495ac92f1529bb7599a",
     timeoutMs: 15 * 60 * 1000,
     job: {
       algo: "firopow",
@@ -115,6 +121,9 @@ module.exports = [
     name: "evrprogpow gpu1*[intensity=1] height 0",
     gpu: true,
     syclCpu: true,
+    syclCpuExpected:
+      "72bb4607f05a34b791c9974e080764b7db976b7b21b5a8a5a3e3c8d271d1819a " +
+      "c9fdcdb3d7fcee061aebc77a9caeb5c729d07f3e8510b7fe5c21fa858857d3c5",
     timeoutMs: 15 * 60 * 1000,
     job: {
       algo: "evrprogpow",
@@ -173,11 +182,14 @@ module.exports = [
       "fddd5a68df54c35c14e5a2eacaf123ee561d01eb6257bd618316265b0b52665b",
   },
   {
-    // MeowPow epoch-0 sanity vector. This keeps the SYCL CPU suite off the live/mainnet DAGs while still
-    // exercising the MeowPow-specific reduced ProgPoW shape and seal.
+    // MeowPow epoch-0 sanity vector. CPU coverage uses compact data while exercising the same
+    // MeowPow-specific ProgPoW shape and seal; physical GPUs retain the consensus dataset.
     name: "meowpow gpu1*[intensity=1] height 0",
     gpu: true,
     syclCpu: true,
+    syclCpuExpected:
+      "edfdd011449d92655d9b2e52813f5a640ddba397b2e52738ed6c9fe780f4ffd6 " +
+      "b25808c6cc2a6f12631530e9294d47bc78dae965b3989a102ff141326194be7c",
     timeoutMs: 15 * 60 * 1000,
     job: {
       algo: "meowpow",

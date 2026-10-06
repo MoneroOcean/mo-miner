@@ -4,6 +4,9 @@ const compilerPolicy = require("../../compiler-policy");
 const {hashTests} = require("../vectors");
 
 const TEST_TIMEOUT_MS = 15 * 60 * 1000;
+// QEMU executes the packaged Intel CPU ICD on non-Intel CI hosts; bound cold JIT/emulation
+// separately even though the CPU dataset fixtures use compact geometry.
+const EMULATED_CPU_TIMEOUT_MS = 60 * 60 * 1000;
 // UHD 750 epoch-0 KawPow DAG construction measured exactly 120 minutes; retain an hour for hashing
 // and cooperative teardown instead of expiring at the setup boundary.
 const INTEGRATED_DAG_TIMEOUT_MS = 3 * 60 * 60 * 1000;
@@ -11,9 +14,8 @@ const supportedVendors = ["intel", "nvidia", "amd"];
 const progpowAlgos = new Set(["kawpow", "firopow", "evrprogpow", "meowpow"]);
 const integratedDagAlgos = new Set([...progpowAlgos, "etchash"]);
 
-// A few algorithms use a deliberately tiny vector only for the portable SYCL CPU lane and a
-// separate mainnet-sized vector on real GPUs. Do not duplicate those slow/non-representative
-// synthetic paths in every discrete backend.
+// CPU CI exercises shared kernels with bounded work, not GPU-sized datasets/solvers. Synthetic
+// dataset gold is applied only to CPU clones; GPU and iGPU vectors keep their consensus gold.
 const gpuVectors = hashTests.filter((definition) => definition.gpu && !definition.portableOnly);
 const fastVectors = hashTests.filter((definition) => definition.syclCpu);
 const gpuAlgos = [...new Set(gpuVectors.map((definition) => definition.job.algo))];
@@ -130,10 +132,18 @@ function cloneForOpenclSycl(definition, dev, deviceType) {
   const copy = copyDefinition(definition);
   replaceDevice(copy, dev);
   copy.gpu = deviceType === "gpu";
-  copy.timeoutMs = Math.max(copy.timeoutMs || 0, TEST_TIMEOUT_MS);
+  if (deviceType === "cpu") {copy.expected = definition.syclCpuExpected ?? copy.expected;}
+  const minimumTimeout = deviceType === "cpu" &&
+      process.env["MOM_RELEASE_EMULATE_INTEL_CPU"] === "1"
+    ? EMULATED_CPU_TIMEOUT_MS
+    : TEST_TIMEOUT_MS;
+  copy.timeoutMs = Math.max(copy.timeoutMs || 0, minimumTimeout);
   copy.job["backend"] = "sycl-opencl";
   labelBackend(copy, copy.job["backend"]);
-  copy.env = {...copy.env, ...openclSyclEnv(deviceType)};
+  copy.env = {
+    ...copy.env, ...openclSyclEnv(deviceType),
+    MOM_SYCL_PORTABLE_TEST: deviceType === "cpu" ? "1" : undefined,
+  };
   return copy;
 }
 

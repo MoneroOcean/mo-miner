@@ -28,7 +28,7 @@
     "lint": "eslint .",
     "pretest": "npm run check",
     "test": "node tests/run_hash.js",
-    "test:logic": "node --require ./tests/common/no_pool_network.js --test tests/logic.js tests/compiler_policy.js tests/nvidia_compatibility.js tests/readme_performance.js tests/benchmark_scripts.js tests/windows_command.js tests/pool_transport.js tests/helper_workers.js tests/release_archive.js",
+    "test:logic": "node --require ./tests/common/no_pool_network.js --test tests/logic.js tests/compiler_policy.js tests/portable_dag_modes.js tests/nvidia_compatibility.js tests/readme_performance.js tests/benchmark_scripts.js tests/windows_command.js tests/pool_transport.js tests/helper_workers.js tests/release_archive.js",
     "test:github": "npm run check && npm run test:gpu-foundations && npm run test:xelishashv3-ops && npm run test:zhash-ref && npm run test:equihash192-ref && npm run test:nexapow-ref && npm run test:octopus-ref && npm run test:c30-ref && npm run test:hoohash-ref && npm run test:pearlhash-ref && npm run test:pearlhash-claim && npm run test:logic",
     "test:gpu-foundations": "bash scripts/test-gpu-foundations.sh",
     "test:xelishashv3-ops": "out=/tmp/mom-xelishashv3-ops-$$; trap 'rm -f \"$out\"' EXIT; for xelis_flags in '' '-DMOM_SYCL_PORTABLE_OPENCL'; do c++ -std=c++20 -O2 $xelis_flags tests/logic/xelishashv3_operations.cpp -o \"$out\" && \"$out\" || exit; done",

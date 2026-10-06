@@ -12,8 +12,8 @@ esac
 export MOM_SKIP_MSR=1
 if [ "$suite" = gpu-portable-cpu ]; then
   # Select the packaged standards-only OpenCL worker before the launcher smoke test as well as the
-  # vector suite. Otherwise a host with an Intel GPU can make QEMU probe Level Zero/DRM before the
-  # CPU-only selector is applied, making this nominally hardware-independent gate abort.
+  # vector suite. Do not probe Level Zero/DRM on a host with an Intel GPU before applying the
+  # CPU-only selector: this gate must remain hardware-independent.
   export MOM_RELEASE_RUNTIME_KEY=dpcpp-opencl
   export MOM_GPU_BACKEND=opencl
   export MOM_OPENCL_DEVICE_TYPE=cpu
@@ -269,11 +269,10 @@ check_ldd() {
 
 check_ldd
 
-# GitHub's x64 runners do not promise a CPU vendor, while Intel's OpenCL CPU runtime intentionally
-# enumerates only Intel CPUs. QEMU user-mode gives the exact packaged executable an Intel CPUID on
-# any x86-64 host; the kernels and bundled runtime remain unchanged, and Haswell is old enough to
-# keep this a conservative portability gate. The wrapper is created only in the extracted test
-# directory after dependency closure was checked, never in the release archive itself.
+# Optional diagnostic emulation changes the test process's CPUID/ISA, not its packaged kernels or
+# Intel OpenCL runtime. CPU vendor alone does not establish that emulation is necessary: the
+# Windows Intel runtime already runs on AMD. CI tests natively; enable this route only to diagnose
+# a reproduced native failure. Its wrapper is confined to the extracted test workspace.
 if [ "${MOM_RELEASE_EMULATE_INTEL_CPU:-0}" = 1 ]; then
   command -v qemu-x86_64 >/dev/null ||
     die "MOM_RELEASE_EMULATE_INTEL_CPU=1 requires qemu-x86_64."
@@ -420,8 +419,7 @@ if [ "$suite" = gpu-multi ]; then
 fi
 if [ "$suite" = gpu-portable-cpu ]; then
   export MOM_REQUIRE_PORTABLE_CPU_TESTS=1
-  # Exercise every CPU-sized GPU algorithm vector from the extracted archive. These cases avoid
-  # production-size DAGs but prove that the complete portable kernel set and runtime closure JIT.
+  # Exercise portable GPU vectors from the archive with bounded CPU datasets and checked results.
   # Use the standards-only SPIR-V worker: unlike AdaptiveCpp's OpenMP backend it has the same
   # semantics as the generic OpenCL deployment path and passes the complete vector set.
 fi

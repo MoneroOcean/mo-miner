@@ -875,7 +875,9 @@ test("native RandomX rejects scaled initial and step overflow", {timeout: 5000},
   }
 });
 
-test("native RandomX labels its first result and resumes the same job", {timeout: 15000}, async () => {
+// Cold dataset setup exceeded 13 seconds on hosted two-core runners. Bound the whole
+// result/resume sequence separately from the outer deadline's worker-shutdown grace.
+test("native RandomX labels its first result and resumes the same job", {timeout: 45000}, async () => {
   const job = {
     algo: "rx/0",
     blob_hex: "00".repeat(43),
@@ -892,8 +894,14 @@ test("native RandomX labels its first result and resumes the same job", {timeout
 
   await new Promise((resolve, reject) => {
     let phase = "test";
+    let closed = false;
     /** @type {string | undefined} */
     let expectedHash;
+    const close = () => {
+      if (closed) {return;}
+      closed = true;
+      worker.sendToCpp("close");
+    };
     const worker = new core.AsyncWorker(
       (/** @type {string} */ name, /** @type {NativeValues} */ values) => {
         if (phase === "test" && name === "test") {
@@ -909,13 +917,13 @@ test("native RandomX labels its first result and resumes the same job", {timeout
         } else if (phase === "resumed" && name === "result" && values.job_id === "resumed") {
           phase = "done";
           clearTimeout(timeout);
-          worker.sendToCpp("close");
+          close();
         } else if (name === "error") {
           const message = typeof values.message === "string"
             ? values.message : "Native error omitted its message";
           phase = "error";
           clearTimeout(timeout);
-          worker.sendToCpp("close");
+          close();
           reject(new Error(message));
         }
       },
@@ -930,9 +938,10 @@ test("native RandomX labels its first result and resumes the same job", {timeout
       reject
     );
     const timeout = setTimeout(() => {
-      phase = "timeout";
-      worker.sendToCpp("close");
-    }, 10000);
+      const timedOutPhase = phase;
+      close();
+      reject(new Error(`RandomX first-result/resume timed out in phase ${timedOutPhase}`));
+    }, 30000);
     worker.sendToCpp("test", job);
   });
 });

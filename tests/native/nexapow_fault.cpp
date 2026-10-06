@@ -26,6 +26,7 @@ static bool cleanup_wait_error = false;
 static bool retire_then_throw = false;
 static bool probe_mode = false, cpu_device = false;
 static bool staged_test_enabled = false, staged_require_enabled = false;
+static bool monolithic_test_enabled = false;
 static unsigned hash_calls = 0;
 static bool later_winner = false;
 static std::vector<uint64_t> scanned_nonces;
@@ -308,7 +309,8 @@ static std::unique_ptr<State> state;
 static State& state_for(const std::string&) { return *state; }
 static bool env_enabled(const char* name) {
   return (std::strcmp(name, "MOM_NEXAPOW_STAGED_TEST") == 0 && staged_test_enabled) ||
-      (std::strcmp(name, "MOM_NEXAPOW_STAGED_REQUIRE") == 0 && staged_require_enabled);
+      (std::strcmp(name, "MOM_NEXAPOW_STAGED_REQUIRE") == 0 && staged_require_enabled) ||
+      (std::strcmp(name, "MOM_SYCL_PORTABLE_TEST") == 0 && monolithic_test_enabled);
 }
 static const char* staged_field_name(const sycl::device&) { return "host-fixture"; }
 static void test_recorded_vector(State&, const uint8_t*, uint8_t*, uint64_t*) {
@@ -341,6 +343,7 @@ static void reset() {
   retire_then_throw = false;
   probe_mode = false;
   cpu_device = staged_test_enabled = staged_require_enabled = later_winner = false;
+  monolithic_test_enabled = false;
   hash_calls = 0;
   scanned_nonces.clear();
   probe_allocation_attempts = probe_free_fault_mask = 0;
@@ -356,7 +359,7 @@ struct Attempt {
   uint8_t input[48]{}, output[32], target[32];
   uint64_t nonce = 19;
   unsigned input_size = 44, intensity = 2;
-  bool is_test = false;
+  bool is_test = false, is_benchmark = false;
   int result = -1;
   std::exception_ptr error;
   Attempt() {
@@ -366,7 +369,7 @@ struct Attempt {
   void run() {
     try {
       result = nexapow(0, 0, input, input_size, output, nullptr, &nonce, target, nullptr, intensity,
-                       is_test, false, "same-device-epoch");
+                       is_test, is_benchmark, "same-device-epoch");
     } catch (...) {
       error = std::current_exception();
     }
@@ -597,6 +600,47 @@ int main(int argc, char** argv) {
     a.run();
     require(a.error && !counts.monolithic && !hash_calls,
             "CPU staged requirement did not fail closed");
+    a.unchanged();
+  });
+  test("CPU portable test executes one SYCL hash without staged setup", [] {
+    cpu_device = monolithic_test_enabled = true;
+    Attempt a;
+    a.input_size = 48;
+    a.is_test = true;
+    a.run();
+    require(!a.error && a.result == 1 && a.nonce == kRecordedMinerNonce && hash_calls == 1,
+            "portable CPU test bypassed the recorded-nonce SYCL hash");
+    require(counts.monolithic == 1 && counts.submits == 1 && !counts.query && !counts.setup &&
+                !counts.searches, "portable CPU test built the staged table or skipped SYCL");
+  });
+  for (const bool benchmark : {false, true}) {
+    test(std::string("CPU compact test switch does not change ") +
+             (benchmark ? "benchmarking" : "mining"), [=] {
+      cpu_device = monolithic_test_enabled = true;
+      Attempt a;
+      a.is_benchmark = benchmark;
+      a.run();
+      require(!a.error && a.result == 1 && hash_calls == a.intensity && !counts.monolithic &&
+                  !counts.setup && !counts.submits, "test switch changed production CPU routing");
+    });
+  }
+  test("GPU test ignores CPU-only monolithic switch", [] {
+    monolithic_test_enabled = true;
+    Attempt a;
+    a.is_test = true;
+    a.input_size = 40;
+    a.run();
+    require(!a.error && a.result == 1 && counts.setup == 1 && counts.searches == 1 &&
+                !counts.monolithic, "CPU test switch changed GPU routing");
+  });
+  test("CPU monolithic test rejects a required staged route", [] {
+    cpu_device = monolithic_test_enabled = staged_require_enabled = true;
+    Attempt a;
+    a.is_test = true;
+    a.input_size = 40;
+    a.run();
+    require(a.error && !counts.monolithic && !counts.setup && !counts.submits && !hash_calls,
+            "conflicting test routes were not rejected before work");
     a.unchanged();
   });
   for (unsigned gib : {4u, 5u, 10u}) {

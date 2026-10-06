@@ -1,3 +1,16 @@
+// The portable CPU fixture still builds and searches a real ProgPoW cache/DAG, but keeps the
+// allocation bounded. It is intentionally opt-in: a test flag alone must not change a benchmark,
+// mining call, or physical GPU geometry.
+constexpr uint64_t KAWPOW_PORTABLE_TEST_CACHE_BYTES = KAWPOW_CACHE_WORDS * sizeof(uint32_t);
+constexpr uint64_t KAWPOW_PORTABLE_TEST_DAG_BYTES = 80u * 1024u;
+
+static bool kawpow_portable_test(const bool is_test, const bool is_benchmark,
+                                 const sycl::device& device) {
+  unsigned long enabled = 0;
+  return is_test && !is_benchmark && device.is_cpu() &&
+         mom_parse_env_ulong("MOM_SYCL_PORTABLE_TEST", enabled) && enabled != 0;
+}
+
 // The environment cleanup hook calls kawpow_cleanup_states() at the correct runtime-lifetime boundary.
 static DeviceStateRegistry<KawpowState>& kawpow_registry() {
   static auto* const registry = new DeviceStateRegistry<KawpowState>;
@@ -70,20 +83,26 @@ static int kawpow_core(const KawpowVariant& variant, const uint32_t block_height
   // MeowPow epoch-110 "dag change" (Meowcoin core create_epoch_context): for epoch >= dagchange_epoch
   // the dataset AND cache SIZES use a scaled epoch (epoch*4), while the keccak SEED keeps the real
   // epoch. size_epoch == epoch for the other variants and for MeowPow below the fork.
+  const bool compact_test = kawpow_portable_test(is_test, is_benchmark, state.device);
   const uint32_t size_epoch =
       (variant.dagchange_epoch && epoch >= variant.dagchange_epoch) ? epoch * 4 : epoch;
   if (size_epoch >= 2048)
     throw std::string("Bad kawpow epoch");
   const uint64_t dag_bytes =
-      variant.chfast_init_items
-          ? chfast_dag_bytes(size_epoch, variant.chfast_init_items, variant.chfast_growth_items)
-          : dag_sizes[epoch];
+      compact_test
+          ? KAWPOW_PORTABLE_TEST_DAG_BYTES
+          : (variant.chfast_init_items
+                 ? chfast_dag_bytes(size_epoch, variant.chfast_init_items, variant.chfast_growth_items)
+                 : dag_sizes[epoch]);
   // Light cache: MeowPow uses chfast cache sizing (scales with the dag change); everyone else uses the
   // classic cache_sizes[] table. The SEED always uses the real epoch (passed separately below).
-  const uint64_t cache_bytes = variant.chfast_cache_init_items
-                                   ? chfast_cache_bytes(size_epoch, variant.chfast_cache_init_items,
-                                                        variant.chfast_cache_growth_items)
-                                   : cache_sizes[epoch];
+  const uint64_t cache_bytes =
+      compact_test
+          ? KAWPOW_PORTABLE_TEST_CACHE_BYTES
+          : (variant.chfast_cache_init_items
+                 ? chfast_cache_bytes(size_epoch, variant.chfast_cache_init_items,
+                                      variant.chfast_cache_growth_items)
+                 : cache_sizes[epoch]);
   const uint64_t t_state = loop_stats ? kawpow_now_us() : 0;
   state.ensure_epoch(epoch, cache_bytes, dag_bytes, epoch, !is_benchmark);
   const uint64_t t_epoch = loop_stats ? kawpow_now_us() : 0;

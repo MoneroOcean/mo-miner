@@ -27,7 +27,6 @@ jobs:
     name: Source / lint and logic
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -64,7 +63,7 @@ jobs:
       - name: Install JavaScript tooling
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends patchelf
+          sudo apt-get install -y --no-install-recommends patchelf libboost-dev
           npm install --ignore-scripts
 
       - name: Test GitHub-safe source subset
@@ -223,15 +222,14 @@ jobs:
       - name: Package release archive
         run: .github/workflows/scripts/package-linux-combined.sh
 
-      # Test the archive itself, not the source tree. Keeping both short suites in this job avoids
-      # uploading and downloading the already-compressed 380+ MiB stability artifact twice on every
-      # PR. Release publishing still uploads the same archive after these gates pass.
+      # Native CPU execution fits the complete bounded GPU-kernel suite in this job, like Windows.
+      # Test the archive itself; Stability need not transfer it to separate algorithm runners.
       - name: Test extracted release archive
         timeout-minutes: 30
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends libnuma1 ocl-icd-libopencl1 qemu-user
+          sudo apt-get install -y --no-install-recommends libnuma1 ocl-icd-libopencl1
           version="$(node -p "require('./package.json').version")"
           case "$version" in
             ''|*[!0-9A-Za-z.-]*) echo "Invalid package version: $version" >&2; exit 1 ;;
@@ -243,9 +241,10 @@ jobs:
             exit 1
           fi
           archive="${archives[0]}"
+          lscpu | sed -n -e '/^Architecture:/p' -e '/^Vendor ID:/p' -e '/^Model name:/p'
+          echo 'CPU runtime mode: native Intel OpenCL'
           MOM_TEST_NO_POOL_NETWORK=1 .github/workflows/scripts/test-release-linux.sh "$archive" cpu
-          MOM_TEST_NO_POOL_NETWORK=1 MOM_RELEASE_EMULATE_INTEL_CPU=1 \
-            .github/workflows/scripts/test-release-linux.sh "$archive" gpu-portable-cpu
+          MOM_TEST_NO_POOL_NETWORK=1 .github/workflows/scripts/test-release-linux.sh "$archive" gpu-portable-cpu
 
       - name: Upload Linux release artifact
         if: inputs.upload_artifacts

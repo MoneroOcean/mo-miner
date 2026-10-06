@@ -329,11 +329,22 @@ if [ -n "${MOM_RELEASE_RUNTIME_KEY:-}" ]; then
   esac
 fi
 export ONEAPI_DEVICE_SELECTOR
-runtime="$libs/$key"
 export MOM_NATIVE_DIR="$libs"
 if [ -z "${MOM_NATIVE_PATH:-}" ]; then
+  runtime="$libs/$key"
   export MOM_NATIVE_PATH="$runtime/mom.node"
   export MOM_NATIVE_PATH_LAUNCHER_DEFAULT="$MOM_NATIVE_PATH"
+else
+  # An explicit addon may belong to a different compiler cohort than the vendor default. Keep
+  # that addon's runtime first so same-SONAME SYCL libraries cannot cross-load (for example,
+  # dpcpp/mom.node with oneapi/libsycl.so.9).
+  runtime=${MOM_RUNTIME_DIR:-}
+  if [ -z "$runtime" ]; then
+    case "$MOM_NATIVE_PATH" in
+      */*) runtime=${MOM_NATIVE_PATH%/*} ;;
+      *) runtime=. ;;
+    esac
+  fi
 fi
 # install.sh exposes the NVIDIA source-JIT payload at this stable path. Development images already
 # export CUDA_PATH, but a release host normally does not; ProgPoW uses its compiler/libdevice tools,
@@ -346,7 +357,9 @@ if [ "${MOM_GPU_BACKEND:-}" = nvidia ]; then
   fi
 fi
 library_dirs="$runtime:$runtime/hipSYCL"
-if [ "$key" = dpcpp-opencl ]; then library_dirs="$library_dirs:$libs/dpcpp"; fi
+if [ "$runtime" = "$libs/dpcpp-opencl" ]; then
+  library_dirs="$library_dirs:$libs/dpcpp"
+fi
 if [ -n "${LD_LIBRARY_PATH:-}" ]; then library_dirs="$library_dirs:$LD_LIBRARY_PATH"; fi
 export LD_LIBRARY_PATH="$library_dirs"
 if [ "${MOM_GPU_BACKEND:-}" != opencl ] && \
