@@ -40,6 +40,168 @@ function makeDriver(fixture, source) {
   return driver;
 }
 
+for (const fixtureCase of [
+  {name: "benign linker warning", output: "LINK : warning LNK4099: PDB was not found", code: 0, accepted: true},
+  {name: "ordinary compiler warning", output: "source.cpp(1): warning C4100: unreferenced parameter", code: 0, accepted: true},
+  {name: "SYCL command text", output: "icx-cl.exe /fsycl /clang:-fsycl-device-code-split=per_kernel /link /DLL", code: 0, accepted: true},
+  {name: "ignored SYCL flag", output: "LINK : warning LNK4044: unrecognized option '/fsycl'; ignored", code: 0, accepted: false},
+  {name: "ignored split policy", output: "LINK : warning LNK4044: unrecognized option '/clang:-fsycl-device-code-split=per_kernel'; ignored", code: 0, accepted: false},
+  {name: "case-insensitive ignored option", output: "LINK : warning lnk4044: unrecognized option '/required'; ignored", code: 0, accepted: false},
+  {name: "native failure despite later status overwrite", output: "MSBuild failed", code: 7, accepted: false},
+  {name: "missing native status despite stale success", output: "No native status", code: null, accepted: false},
+]) {
+  test(`Windows MSBuild publication guard: ${fixtureCase.name}`, {skip: !WINDOWS}, () => {
+    const source = fs.readFileSync(path.join(repo, ".github", "workflows", "scripts", "build-windows.ps1"), "utf8");
+    const start = source.indexOf("$msbuildCapturePreference = ");
+    const end = source.indexOf("\nNew-Item -ItemType Directory -Force build\\Release", start);
+    assert(start >= 0 && end > start, "MSBuild publication boundary is missing");
+    const block = source.slice(start, end);
+    const fixture = makeFixture();
+    try {
+      const prefix = [
+        "$ErrorActionPreference = 'Stop'",
+        "$msbuild = 'Invoke-FixtureMSBuild'",
+        "$buildJobs = 1",
+        "function Invoke-FixtureMSBuild {",
+        `  [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${Buffer.from(fixtureCase.output).toString("base64")}'))`,
+        ...(fixtureCase.code === null ? [] : [`  $global:LASTEXITCODE = ${fixtureCase.code}`]),
+        "}",
+        // Prove the native status is captured before any subsequent output handling.
+        "function Write-Host { $global:LASTEXITCODE = 0 }",
+        "$global:LASTEXITCODE = 0",
+      ].join("\n");
+      /** @param {string} body */
+      const run = body => runPowerShell(makeDriver(fixture,
+        prefix + "\n" + body + "\nWrite-Output 'FIXTURE_ARTIFACT_BOUNDARY'\n"), []);
+      const result = run(block);
+      assert.equal(result.status === 0, fixtureCase.accepted, result.stdout + result.stderr);
+      assert.equal(result.stdout.includes("FIXTURE_ARTIFACT_BOUNDARY"), fixtureCase.accepted);
+      if (!fixtureCase.accepted && fixtureCase.code === 0) {
+        assert.match(result.stdout + result.stderr, /MSBuild ignored a compiler\/linker option/);
+        // Negative control executes the original unguarded success path, not a text assertion.
+        const guardStart = block.indexOf("# An ignored linker option");
+        assert(guardStart >= 0, "ignored-option guard is missing");
+        const before = run(block.slice(0, guardStart));
+        assert.equal(before.status, 0, before.stdout + before.stderr);
+        assert(before.stdout.includes("FIXTURE_ARTIFACT_BOUNDARY"));
+      }
+    } finally {
+      fs.rmSync(fixture, {recursive: true, force: true});
+    }
+  });
+}
+
+test("Windows MSBuild SYCL hook forwards the exact driver property before publication", {skip: !WINDOWS}, () => {
+  const source = fs.readFileSync(path.join(repo, ".github", "workflows", "scripts", "build-windows.ps1"), "utf8");
+  const start = source.indexOf("$msbuildCapturePreference = ");
+  const end = source.indexOf("\nNew-Item -ItemType Directory -Force build\\Release", start);
+  assert(start >= 0 && end > start, "MSBuild publication boundary is missing");
+  const block = source.slice(start, end);
+  const argument = '"/p:DPCPPLINKOptions=/clang:-fsycl-device-code-split=per_kernel"';
+  const fixture = makeFixture();
+  try {
+    const prefix = [
+      "$ErrorActionPreference = 'Stop'",
+      "$msbuild = 'Invoke-FixtureMSBuild'",
+      "$buildJobs = 1",
+      "function Invoke-FixtureMSBuild {",
+      "  $expected = '/p:DPCPPLINKOptions=/clang:-fsycl-device-code-split=per_kernel'",
+      "  if (@($args | Where-Object { [string]$_ -ceq $expected }).Count -ne 1) {",
+      "    $global:LASTEXITCODE = 9; Write-Output 'FIXTURE_MISSING_DRIVER_PROPERTY'; return",
+      "  }",
+      "  $global:LASTEXITCODE = 0; Write-Output 'FIXTURE_DRIVER_PROPERTY_FORWARDED'",
+      "}",
+    ].join("\n");
+    /** @param {string} body */
+    const run = body => runPowerShell(makeDriver(fixture,
+      prefix + "\n" + body + "\nWrite-Output 'FIXTURE_ARTIFACT_BOUNDARY'\n"), []);
+    const after = run(block);
+    assert.equal(after.status, 0, after.stdout + after.stderr);
+    assert(after.stdout.includes("FIXTURE_DRIVER_PROPERTY_FORWARDED"));
+    assert(after.stdout.includes("FIXTURE_ARTIFACT_BOUNDARY"));
+    // The same runtime fixture rejects the previous producer, which did not forward this property.
+    const beforeBlock = block.replace(argument, "");
+    assert.notEqual(beforeBlock, block);
+    const before = run(beforeBlock);
+    assert.notEqual(before.status, 0);
+    assert(before.stdout.includes("FIXTURE_MISSING_DRIVER_PROPERTY"));
+    assert(!before.stdout.includes("FIXTURE_ARTIFACT_BOUNDARY"));
+  } finally {
+    fs.rmSync(fixture, {recursive: true, force: true});
+  }
+});
+
+for (const fixtureCase of [
+  {name: "stderr with success", stderr: "FIXTURE_NATIVE_STDERR", code: 0, accepted: true},
+  {name: "stderr with exit 17", stderr: "FIXTURE_NATIVE_STDERR", code: 17, accepted: false},
+  {name: "ignored option on stderr", stderr: "LINK : warning LNK4044: unrecognized option '/required'; ignored", code: 0, accepted: false},
+  {name: "missing executable with stale success", stderr: "", code: null, accepted: false},
+]) {
+  test(`Windows MSBuild native stderr capture: ${fixtureCase.name}`, {skip: !WINDOWS}, () => {
+    const source = fs.readFileSync(path.join(repo, ".github", "workflows", "scripts", "build-windows.ps1"), "utf8");
+    const start = source.indexOf("$msbuildCapturePreference = ");
+    const end = source.indexOf("\nNew-Item -ItemType Directory -Force build\\Release", start);
+    assert(start >= 0 && end > start, "MSBuild publication boundary is missing");
+    const block = source.slice(start, end);
+    const invocation = block.match(/\$msbuildOutput = & \$msbuild [\s\S]*? 2>&1/);
+    assert(invocation, "native MSBuild capture invocation is missing");
+    const fixture = makeFixture();
+    try {
+      const nativeScript = path.join(fixture, "native-stderr.cjs");
+      fs.writeFileSync(nativeScript,
+        `process.exitCode = ${fixtureCase.code ?? 0}; process.stderr.write(${JSON.stringify(fixtureCase.stderr + "\n")});\n`);
+      const executable = fixtureCase.code === null ? path.join(fixture, "missing.exe") : process.execPath;
+      /** @param {string} value */
+      const quote = value => "'" + value.replace(/'/g, "''") + "'";
+      const nativeCall = `$msbuildOutput = & $msbuild ${quote(nativeScript)} 2>&1`;
+      const afterBlock = block.replace(invocation[0], () => nativeCall);
+      /** @param {string} body */
+      const run = body => {
+        const driver = makeDriver(fixture, [
+          "$ErrorActionPreference = 'Stop'",
+          "$global:LASTEXITCODE = 0",
+          `$msbuild = ${quote(executable)}`,
+          "$published = $false; $failure = ''; $errorId = ''; $msbuildExitCode = $null",
+          "try {",
+          body,
+          "  $published = $true",
+          "} catch { $failure = $_.Exception.Message; $errorId = $_.FullyQualifiedErrorId }",
+          "Write-Output ('FIXTURE_RESULT ' + ([PSCustomObject]@{published=$published; status=$msbuildExitCode; preference=[string]$ErrorActionPreference; failure=$failure; errorId=$errorId} | ConvertTo-Json -Compress))",
+        ].join("\n"));
+        const result = runPowerShell(driver, []);
+        assert.equal(result.status, 0, result.stdout + result.stderr);
+        const line = result.stdout.split(/\r?\n/).find(value => value.startsWith("FIXTURE_RESULT "));
+        assert(line, result.stdout + result.stderr);
+        return {result, observed: JSON.parse(line.slice("FIXTURE_RESULT ".length))};
+      };
+      const after = run(afterBlock);
+      assert.equal(after.observed.published, fixtureCase.accepted, after.result.stdout + after.result.stderr);
+      assert.equal(after.observed.preference, "Stop");
+      if (fixtureCase.code !== null) {
+        assert.equal(after.observed.status, fixtureCase.code);
+        assert((after.result.stdout + after.result.stderr).includes(fixtureCase.stderr));
+      }
+      if (fixtureCase.code === 17) {
+        assert.match(after.observed.failure, /MSBuild failed with exit code 17/);
+      } else if (fixtureCase.code === null) {
+        assert.equal(after.observed.status, null);
+        assert(after.observed.failure.length > 0);
+      } else if (!fixtureCase.accepted) {
+        assert.match(after.observed.failure, /MSBuild ignored a compiler\/linker option/);
+      } else {
+        // Execute the original Stop capture with the same real native process: it rejects stderr+0.
+        const tail = block.slice(block.indexOf("$msbuildOutput | ForEach-Object"));
+        const before = run(nativeCall + "\n$msbuildExitCode = $LASTEXITCODE\n" + tail);
+        assert.equal(before.observed.published, false);
+        assert.match(before.observed.errorId, /NativeCommandError/);
+        assert.equal(before.observed.preference, "Stop");
+      }
+    } finally {
+      fs.rmSync(fixture, {recursive: true, force: true});
+    }
+  });
+}
+
 test("Windows executable discovery selects one candidate and preserves explicit paths", {
   skip: !WINDOWS,
 }, () => {

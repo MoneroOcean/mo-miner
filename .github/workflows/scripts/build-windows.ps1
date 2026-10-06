@@ -146,14 +146,29 @@ if ($msbuildCmd) {
 # Capture output (rather than letting it stream) so the tail can be re-shown in the failure message.
 # ICInstallDir/IDPCInstallDir passed as global /p: properties so the Intel toolset can't override them
 # from a stale integration registry (see the compiler-dir resolution above).
-$msbuildOutput = & $msbuild build\mom.vcxproj /clp:Verbosity=minimal /nologo /nodeReuse:false `
-  "/m:$buildJobs" /p:Configuration=Release /p:Platform=x64 `
-  "/p:CL_MPCount=$buildJobs" /p:UseMultiToolTask=true /p:TrackFileAccess=false `
-  "/p:ICInstallDir=$($env:ICInstallDir)" "/p:IDPCInstallDir=$($env:IDPCInstallDir)" 2>&1
+$msbuildCapturePreference = $ErrorActionPreference
+$global:LASTEXITCODE = $null
+try {
+  # PowerShell 5.1 turns redirected native stderr into error records, even on success.
+  $ErrorActionPreference = 'Continue'
+  $msbuildOutput = & $msbuild build\mom.vcxproj /clp:Verbosity=minimal /nologo /nodeReuse:false `
+    "/m:$buildJobs" /p:Configuration=Release /p:Platform=x64 `
+    "/p:CL_MPCount=$buildJobs" /p:UseMultiToolTask=true /p:TrackFileAccess=false `
+    "/p:DPCPPLINKOptions=/clang:-fsycl-device-code-split=per_kernel" `
+    "/p:ICInstallDir=$($env:ICInstallDir)" "/p:IDPCInstallDir=$($env:IDPCInstallDir)" 2>&1
+  $msbuildExitCode = $LASTEXITCODE
+} finally {
+  $ErrorActionPreference = $msbuildCapturePreference
+}
 $msbuildOutput | ForEach-Object { Write-Host $_ }
-if ($LASTEXITCODE -ne 0) {
+if ($null -eq $msbuildExitCode -or $msbuildExitCode -ne 0) {
   $tail = ($msbuildOutput | Select-Object -Last 80) -join "`n"
-  throw "MSBuild failed with exit code $LASTEXITCODE.`n$tail"
+  throw "MSBuild failed with exit code $msbuildExitCode.`n$tail"
+}
+# An ignored linker option can silently drop a required SYCL device-link policy.
+$ignoredOptions = $msbuildOutput | Where-Object { [string]$_ -match '(?i)\bLNK4044\b' }
+if ($ignoredOptions) {
+  throw ("MSBuild ignored a compiler/linker option.`n" + ($ignoredOptions -join "`n"))
 }
 
 New-Item -ItemType Directory -Force build\Release | Out-Null

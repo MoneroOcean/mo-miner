@@ -1489,8 +1489,15 @@ test("DPC++ final addon and Windows SYCL links split device code per kernel", ()
     /mom_sycl_impl=='dpcpp' or mom_sycl_impl=='dpcpp-combined'[\s\S]*?"ldflags\+":\s*\[ "-fsycl-device-code-split=per_kernel" \]/);
   const linker = syclDll.indexOf('"VCLinkerTool"');
   assert(linker >= 0);
-  assert.match(syclDll.slice(linker),
-    /"AdditionalOptions":\s*\[\s*"\/DLL",\s*"\/fsycl",\s*"\/clang:-fsycl-device-code-split=per_kernel"/);
+  const linkerOptions = syclDll.slice(linker).match(/"AdditionalOptions":\s*\[([^\]]*)\]/)?.[1];
+  assert(linkerOptions);
+  assert.match(linkerOptions, /"\/DLL"/);
+  assert.doesNotMatch(linkerOptions, /fsycl|device-code-split/);
+  const producer = fs.readFileSync(path.join(__dirname,
+    "../.github/workflows/scripts/build-windows.ps1"), "utf8");
+  const driverProperty = producer.match(/"\/p:DPCPPLINKOptions=([^"\r\n]+)"/);
+  assert(driverProperty, "Windows SYCL link must forward the driver-prefix property");
+  assert.equal(driverProperty[1], "/clang:-fsycl-device-code-split=per_kernel");
 });
 
 test("Nexa performance tests retain their extended timeout", () => {

@@ -399,9 +399,7 @@
                 "%(AdditionalLibraryDirectories)"
               ],
               "AdditionalOptions": [
-                "/DLL",
-                "/fsycl",
-                "/clang:-fsycl-device-code-split=per_kernel"
+                "/DLL"
               ]
             }
           }
