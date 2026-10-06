@@ -6,8 +6,8 @@
 param(
   [string]$Repo  = "MoneroOcean/mo-miner",
   [string]$Tag   = "toolchain-win-dpcpp-cuda",
-  [string]$Asset = "dpcpp-cuda-win-matched.tar.gz",
-  [string]$ExpectedSha256 = "81b116580a84ac29221c459ffa354045fae69d95338a8c1db70b76d16be7e472",
+  [string]$Asset = "dpcpp-cuda-win-v7.1.1.tar.gz",
+  [string]$ExpectedSha256 = "8e5e9de06ed46c5e28aac4c574811a68f0a85dbb1cb65508187b0b8cf2e573cb",
   [string]$Dest  = ""
 )
 $ErrorActionPreference = "Stop"
@@ -23,9 +23,11 @@ if ([string]::IsNullOrWhiteSpace($ExpectedSha256) -or
   throw 'ExpectedSha256 must be exactly 64 hexadecimal characters.'
 }
 $expected = $ExpectedSha256.ToLowerInvariant()
-# Only the recorded predecessor may migrate to the pinned matching UR cohort.
+# Only recorded owned predecessors may migrate to the pinned stable-source SDK cohort.
 $knownPriorExpected = '7a61b81cc15484656c80d3927dfc890d14d98689d64f05e3b88f5b45a1e4bb34'
-$acceptKnownPrior = $expected -eq '81b116580a84ac29221c459ffa354045fae69d95338a8c1db70b76d16be7e472'
+$knownMatchedExpected = '81b116580a84ac29221c459ffa354045fae69d95338a8c1db70b76d16be7e472'
+$acceptKnownPrior = $expected -eq $knownMatchedExpected -or $expected -eq '8e5e9de06ed46c5e28aac4c574811a68f0a85dbb1cb65508187b0b8cf2e573cb'
+$acceptKnownMatched = $expected -eq '8e5e9de06ed46c5e28aac4c574811a68f0a85dbb1cb65508187b0b8cf2e573cb'
 # Default destination only when -Dest is not given: RUNNER_TEMP in CI, else under the cwd for local runs.
 # (Must not clobber an explicit -Dest -- that was a bug found provisioning a dev box.)
 if (-not $Dest) {
@@ -53,7 +55,8 @@ if ($destExists) {
   if ($destHasContents) {
     $ownershipMarker = Join-Path $Dest '.mom-toolchain-sha256'
     if (-not (Test-MomMarker $ownershipMarker $expected) -and
-        -not ($acceptKnownPrior -and (Test-MomMarker $ownershipMarker $knownPriorExpected))) {
+        -not ($acceptKnownPrior -and (Test-MomMarker $ownershipMarker $knownPriorExpected)) -and
+        -not ($acceptKnownMatched -and (Test-MomMarker $ownershipMarker $knownMatchedExpected))) {
       throw "Refusing to replace unowned nonempty toolchain destination: $Dest"
     }
   }
@@ -108,7 +111,8 @@ try {
     if ($currentChildren.Count -gt 0) {
       $ownershipMarker = Join-Path $Dest '.mom-toolchain-sha256'
       if (-not (Test-MomMarker $ownershipMarker $expected) -and
-          -not ($acceptKnownPrior -and (Test-MomMarker $ownershipMarker $knownPriorExpected))) {
+          -not ($acceptKnownPrior -and (Test-MomMarker $ownershipMarker $knownPriorExpected)) -and
+          -not ($acceptKnownMatched -and (Test-MomMarker $ownershipMarker $knownMatchedExpected))) {
         throw "Refusing to replace unowned nonempty toolchain destination: $Dest"
       }
       Remove-Item -LiteralPath $Dest -Recurse -Force

@@ -222,10 +222,9 @@ try {
   if ($Backend -in @('all','intel','nvidia','amd','opencl') -and $Compiler -in @('all','portable')) {
     & "$PSScriptRoot\build-sycl-cuda-win.ps1" -ToolchainDir $DpcppDir -CudaPath '' -PortableOpencl
     Save-Compiler dpcpp-opencl
-    # A targeted portable rebuild may select a newer/pinned DPC++ over a preserved build/win tree.
-    # Always refresh the shared runtime from that same toolchain; mixing a newly compiled addon with
-    # an older sycl9/UR loader can pass compilation yet fail during device teardown.
-    Save-DpcppRuntime
+    # Keep this compiler-matched source runtime local; a targeted portable rebuild must not
+    # overwrite a preserved CUDA worker's cohort. Packaging replaces it with the release cohort.
+    Save-DpcppRuntime -Name dpcpp-opencl
   }
 
   if ($Backend -in @('all','nvidia') -and $Compiler -in @('all','dpcpp')) {

@@ -421,14 +421,16 @@ test("Windows worker environment puts only the selected compiler runtime first",
   fs.writeFileSync(path.join(root, "acpp-hip", "mom.node"), "test");
   const env = policy.workerEnv("pearlhash", {
     MOM_GPU_BACKEND: "amd", MOM_GPU_INDEX: "3", MOM_NATIVE_DIR: root,
-    Path: "C:\\Windows\\System32"
+    Path: "C:\\Windows\\System32", ROCM_PATH: "C:\\ROCm", CUDA_PATH: "C:\\CUDA",
   }, "win32");
   assert.equal(env.MOM_SYCL_COMPILER, "acpp-hip");
   assert.equal(env.ACPP_VISIBILITY_MASK, "hip");
   assert.equal(env.HIP_VISIBLE_DEVICES, "3");
+  assert.equal(env["MOM_GPU_INDEX"], "0");
   assert.equal(env.MOM_RUNTIME_DIR, path.join(root, "acpp-hip"));
-  assert.equal(env.PATH, [path.join(root, "acpp-hip"),
+  assert.equal(env["Path"], [path.join(root, "acpp-hip"),
     path.join(root, "acpp-hip", "hipSYCL"), "C:\\Windows\\System32"].join(path.delimiter));
+  assert.equal(Object.hasOwn(env, "PATH"), false);
   fs.rmSync(root, {recursive: true, force: true});
 });
 
@@ -3112,5 +3114,706 @@ test("C29 submitted graph faults propagate before cycle search or accounting", {
     }
   } finally {
     fs.rmSync(fixture, {recursive: true, force: true});
+  }
+});
+
+test("release packagers never recursively remove a caller-selected archive", () => {
+  const scripts = path.join(__dirname, "../.github/workflows/scripts");
+  const linux = fs.readFileSync(path.join(scripts, "package-linux-combined.sh"), "utf8");
+  assert.match(linux, /\[ -d "\$archive" \]/);
+  assert.doesNotMatch(linux, /rm -f -- "\$archive"/);
+  assert.doesNotMatch(linux, /rm -rf[^\n]*"\$archive"/);
+
+  const windows = fs.readFileSync(path.join(scripts, "package-windows.ps1"), "utf8");
+  assert.match(windows, /Test-Path -LiteralPath \$Archive -PathType Container/);
+  assert.doesNotMatch(windows, /Remove-Item -Force -LiteralPath \$Archive/);
+  assert.doesNotMatch(windows, /Remove-Item[^\n]*-Recurse[^\n]*\$Archive/);
+  assert.match(windows, /\[IO\.Path\]::GetFullPath\(\$Archive\)/);
+  assert.match(windows, /\[StringComparison\]::OrdinalIgnoreCase/);
+});
+
+test("Windows package launcher keeps the selected runtime ahead of shared oneAPI", () => {
+  const script = fs.readFileSync(
+    path.join(__dirname, "../.github/workflows/scripts/package-windows.ps1"), "utf8");
+  const runtimePathLine = String.raw`if defined MOM_RUNTIME_DIR set "PATH=%MOM_RUNTIME_DIR%;%MOM_RUNTIME_DIR%\hipSYCL;%PATH%"`;
+  const sharedDpcppPathLine = String.raw`if /I "%MOM_GPU_BACKEND%"=="opencl" set "PATH=%MOM_LIBS%\oneapi;%PATH%"`;
+  assert.equal(script.split(runtimePathLine).length - 1, 1);
+  assert.deepEqual(script.split(/\r?\n/).filter((line) =>
+    line.includes('set "PATH=%MOM_LIBS%\\oneapi;')), [sharedDpcppPathLine]);
+  assert.ok(script.indexOf(sharedDpcppPathLine) < script.indexOf(runtimePathLine),
+    "OpenCL fallback dependencies must be prepended before the selected runtime");
+});
+
+test("Linux combined packager protects cleanup roots before build checks", () => {
+  const root = path.join(__dirname, "..");
+  const script = path.join(root, ".github/workflows/scripts/package-linux-combined.sh");
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-package-safety-test-"));
+  const marker = path.join(temp, "release-combined", "marker");
+  const archive = path.join(temp, "release-combined", "nested", "archive.tgz");
+  fs.mkdirSync(path.dirname(marker), {recursive: true});
+  fs.writeFileSync(marker, "keep");
+  try {
+    const result = spawnSync("bash", [script, "1.2.3", archive], {
+      cwd: temp, encoding: "utf8",
+    });
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /Archive path must not be inside cleanup directory/);
+    assert.doesNotMatch(result.stdout + result.stderr, /missing; run|docker image inspect/i);
+    assert.equal(fs.readFileSync(marker, "utf8"), "keep");
+  } finally {
+    fs.rmSync(temp, {recursive: true, force: true});
+  }
+});
+
+test("Linux combined packager exposes every worker through its read-only container mount", {
+  skip: process.platform === "win32",
+}, () => {
+  const root = path.join(__dirname, "..");
+  const script = path.join(root, ".github/workflows/scripts/package-linux-combined.sh");
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-package-mount-test-"));
+  const fakeBin = path.join(temp, "bin");
+  const dockerLog = path.join(temp, "docker.log");
+  fs.mkdirSync(fakeBin);
+  for (const file of ["package.json", "compiler-policy.js", "gpu-tuning.js", "README.md", "GPU-CONFIG.md", "LICENSE",
+    "helper/hash.js", "scripts/install.sh", "scripts/install-cutlass.sh", "sycl/kawpow/device.inc",
+    "sycl/kawpow/keccak.inc"]) {
+    const destination = path.join(temp, file);
+    fs.mkdirSync(path.dirname(destination), {recursive: true});
+    fs.writeFileSync(destination, "fixture\n");
+  }
+  for (const compiler of ["oneapi", "dpcpp", "dpcpp-opencl", "acpp-cuda", "acpp-hip"]) {
+    const addon = path.join(temp, "build/lin/Release", compiler, "mom.node");
+    fs.mkdirSync(path.dirname(addon), {recursive: true});
+    const contents = "fixture\n";
+    fs.writeFileSync(addon, contents);
+    fs.writeFileSync(`${addon}.build-profile`, [
+      "schema=1",
+      `worker=${compiler}`,
+      `sha256=${createHash("sha256").update(contents).digest("hex")}`,
+      "portable=1",
+      "cpu=unset",
+      "",
+    ].join("\n"));
+  }
+  const fakeNode = path.join(fakeBin, "node");
+  fs.writeFileSync(fakeNode, [
+    "#!/bin/sh",
+    "# NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2",
+    "output=$(sed -n 's/.*\"output\":\"\\([^\"]*\\)\".*/\\1/p' \"$2\")",
+    "[ -n \"$output\" ] || exit 1",
+    ": > \"$output\"",
+  ].join("\n"));
+  const fakeNpx = path.join(fakeBin, "npx");
+  fs.writeFileSync(fakeNpx, [
+    "#!/bin/sh",
+    "case \" $* \" in",
+    "  *' esbuild '*)",
+    "    output=",
+    "    for argument do",
+    "      case \"$argument\" in --outfile=*) output=$(printf '%s\\n' \"$argument\" | sed 's/^--outfile=//') ;; esac",
+    "    done",
+    "    [ -n \"$output\" ] || exit 1",
+    "    : > \"$output\"",
+    "    ;;",
+    "  *' postject '*) ;;",
+    "  *) exit 1 ;;",
+    "esac",
+  ].join("\n"));
+  const fakeDocker = path.join(fakeBin, "docker");
+  fs.writeFileSync(fakeDocker, [
+    "#!/bin/sh",
+    "printf '%s\\n' \"$*\" >> \"$MOM_DOCKER_LOG\"",
+    "[ \"$1\" != image ] || exit 0",
+    "[ \"$1\" != rm ] || exit 0",
+    "[ \"$1\" != run ] || exit 0",
+    "if [ \"$1\" = exec ]; then",
+    "  case \"$*\" in *'/acpp-hip/mom.node'*) exit 1 ;; *) exit 0 ;; esac",
+    "fi",
+    "exit 1",
+  ].join("\n"));
+  for (const executable of [fakeNode, fakeNpx, fakeDocker]) {
+    fs.chmodSync(executable, 0o755);
+  }
+  try {
+    const result = spawnSync("bash", [script, "1.2.3"], {
+      cwd: temp,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        MOM_DOCKER_LOG: dockerLog,
+        NODE_BIN: fakeNode,
+        PATH: `${fakeBin}${path.delimiter}${process.env["PATH"] || ""}`,
+      },
+    });
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stderr,
+      /Packaging container cannot read \/repo\/build\/lin\/Release\/acpp-hip\/mom\.node/);
+    const invocations = fs.readFileSync(dockerLog, "utf8");
+    assert.ok(invocations.includes(
+      `--mount type=bind,src=${temp}/build/lin/Release,dst=/repo/build/lin/Release,readonly`));
+    for (const compiler of ["oneapi", "dpcpp", "dpcpp-opencl", "acpp-cuda", "acpp-hip"]) {
+      assert.ok(invocations.includes(`test -s /repo/build/lin/Release/${compiler}/mom.node`));
+    }
+  } finally {
+    fs.rmSync(temp, {recursive: true, force: true});
+  }
+});
+
+test("Linux combined packager rejects incomplete or non-portable worker provenance before mutation", {
+  skip: process.platform === "win32",
+}, () => {
+  const root = path.join(__dirname, "..");
+  const script = path.join(root, ".github/workflows/scripts/package-linux-combined.sh");
+  const workers = ["oneapi", "dpcpp", "dpcpp-opencl", "acpp-cuda", "acpp-hip"];
+  const contents = "worker fixture\n";
+  const sha256 = createHash("sha256").update(contents).digest("hex");
+  /** @typedef {{name: string, target: string, kind: string, expected: RegExp}} ProfileCase */
+  /** @type {ProfileCase[]} */
+  const profileCases = [
+    ...workers.map((worker) => ({
+      name: `${worker} portable=0`, target: worker, kind: "portable-zero",
+      expected: /is not a portable release worker/,
+    })),
+    {name: "missing sidecar", target: "oneapi", kind: "missing-sidecar",
+      expected: /\.build-profile is missing/},
+    {name: "missing field", target: "oneapi", kind: "missing-field",
+      expected: /has missing or duplicate fields/},
+    {name: "duplicate field", target: "oneapi", kind: "duplicate-field",
+      expected: /has missing or duplicate fields/},
+    {name: "wrong worker key", target: "oneapi", kind: "wrong-worker",
+      expected: /does not identify .*mom\.node exactly/},
+    {name: "invalid hash", target: "oneapi", kind: "invalid-hash",
+      expected: /does not identify .*mom\.node exactly/},
+    {name: "mismatched hash", target: "oneapi", kind: "mismatched-hash",
+      expected: /does not identify .*mom\.node exactly/},
+    {name: "cpu=native", target: "oneapi", kind: "cpu-native",
+      expected: /is not a portable release worker/},
+    {name: "cpu=x86-64-v4", target: "oneapi", kind: "cpu-v4",
+      expected: /is not a portable release worker/},
+  ];
+
+  for (const profileCase of profileCases) {
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-package-profile-test-"));
+    const fakeBin = path.join(temp, "bin");
+    const dockerSentinel = path.join(temp, "docker-used");
+    fs.mkdirSync(fakeBin);
+    const fakeDocker = path.join(fakeBin, "docker");
+    fs.writeFileSync(fakeDocker, [
+      "#!/bin/sh",
+      'printf "%s\\n" invoked > "$MOM_TEST_DOCKER_SENTINEL"',
+      "exit 0",
+      "",
+    ].join("\n"));
+    fs.chmodSync(fakeDocker, 0o755);
+
+    try {
+      for (const worker of workers) {
+        const addon = path.join(temp, "build/lin/Release", worker, "mom.node");
+        fs.mkdirSync(path.dirname(addon), {recursive: true});
+        fs.writeFileSync(addon, contents);
+        if (profileCase.kind === "missing-sidecar" && worker === profileCase.target) {
+          continue;
+        }
+        const lines = [
+          "schema=1",
+          `worker=${profileCase.kind === "wrong-worker" && worker === profileCase.target
+            ? "dpcpp" : worker}`,
+          `sha256=${profileCase.kind === "invalid-hash" && worker === profileCase.target
+            ? "not-a-digest" : profileCase.kind === "mismatched-hash" && worker === profileCase.target
+              ? "0".repeat(64) : sha256}`,
+          `portable=${profileCase.kind === "portable-zero" && worker === profileCase.target
+            ? "0" : "1"}`,
+          `cpu=${profileCase.kind === "cpu-native" && worker === profileCase.target
+            ? "native" : profileCase.kind === "cpu-v4" && worker === profileCase.target
+              ? "x86-64-v4" : "unset"}`,
+        ];
+        if (profileCase.kind === "missing-field" && worker === profileCase.target) {
+          lines.pop();
+        }
+        if (profileCase.kind === "duplicate-field" && worker === profileCase.target) {
+          lines.push("portable=1");
+        }
+        fs.writeFileSync(`${addon}.build-profile`, `${lines.join("\n")}\n`);
+      }
+
+      const result = spawnSync("bash", [script, "1.2.3", "published.tgz"], {
+        cwd: temp,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          MOM_TEST_DOCKER_SENTINEL: dockerSentinel,
+          PATH: `${fakeBin}${path.delimiter}${process.env["PATH"] || ""}`,
+        },
+      });
+      assert.equal(result.status, 1, `${profileCase.name}: ${result.stdout}${result.stderr}`);
+      assert.match(result.stderr, profileCase.expected);
+      assert.equal(fs.existsSync(dockerSentinel), false, `${profileCase.name}: Docker was used`);
+      assert.equal(fs.existsSync(path.join(temp, "release-combined")), false);
+      assert.equal(fs.existsSync(path.join(temp, "release-combined-build")), false);
+      assert.equal(fs.existsSync(path.join(temp, "published.tgz")), false);
+    } finally {
+      fs.rmSync(temp, {recursive: true, force: true});
+    }
+  }
+});
+
+test("release scripts reject traversal versions before build or deploy phases", () => {
+  const root = path.join(__dirname, "..");
+  const traversalVersion = "../release-pwn";
+  const linux = spawnSync("bash", [
+    path.join(root, ".github/workflows/scripts/package-linux-combined.sh"), traversalVersion,
+  ], {cwd: root, encoding: "utf8"});
+  assert.equal(linux.status, 2, linux.error?.message);
+  assert.match(linux.stderr, /^Invalid release version:/);
+  assert.doesNotMatch(linux.stdout + linux.stderr, /missing; run|▶|docker/i);
+
+  const deploy = spawnSync("bash", [path.join(root, "scripts/test-deploy.sh")], {
+    cwd: root,
+    encoding: "utf8",
+    env: {...process.env, MOM_DEPLOY_TARGET: "linux", MOM_RELEASE_VERSION: traversalVersion},
+  });
+  assert.equal(deploy.status, 2, deploy.error?.message);
+  assert.match(deploy.stderr, /^Invalid release version:/);
+  assert.doesNotMatch(deploy.stdout + deploy.stderr, /▶|docker|Building|Packaging/i);
+
+  if (process.platform === "win32") {
+    const windows = spawnSync("powershell.exe", [
+      "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+      path.join(root, ".github/workflows/scripts/package-windows.ps1"),
+      "-Version", traversalVersion,
+    ], {cwd: root, encoding: "utf8"});
+    assert.notEqual(windows.status, 0, windows.error?.message);
+    assert.match(windows.stdout + windows.stderr, /Invalid release version:/);
+    assert.doesNotMatch(windows.stdout + windows.stderr, /Building|Packaging/i);
+  }
+});
+
+test("r.sh keeps process locks in private Git metadata", {
+  skip: process.platform === "win32",
+}, () => {
+  const root = path.join(__dirname, "..");
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-r-sh-lock-test-"));
+  const fakeBin = path.join(temp, "bin");
+  fs.mkdirSync(fakeBin);
+  fs.copyFileSync(path.join(root, "r.sh"), path.join(temp, "r.sh"));
+  fs.writeFileSync(path.join(fakeBin, "docker"), "#!/bin/sh\nexit 1\n");
+  fs.chmodSync(path.join(fakeBin, "docker"), 0o755);
+  try {
+    const initialized = spawnSync("git", ["init", "-q"], {cwd: temp, encoding: "utf8"});
+    assert.equal(initialized.status, 0, initialized.stderr);
+    const result = spawnSync("bash", [path.join(temp, "r.sh")], {
+      cwd: temp,
+      encoding: "utf8",
+      env: {...process.env, PATH: `${fakeBin}${path.delimiter}${process.env["PATH"] || ""}`},
+    });
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, /Docker buildx is required/);
+    assert.equal(fs.existsSync(path.join(temp, ".git", "mom-locks",
+      `mom-r-sh-${process.getuid?.()}.build.lock`)), true);
+  } finally {
+    fs.rmSync(temp, {recursive: true, force: true});
+  }
+});
+
+test("r.sh keeps OpenCL out of GPU vendors and forwards controls once", {
+  skip: process.platform === "win32",
+}, () => {
+  const root = path.join(__dirname, "..");
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-r-sh-opencl-test-"));
+  const fakeBin = path.join(temp, "bin");
+  const dockerArgs = path.join(temp, "docker-args");
+  const verthashData = path.join(temp, "verthash.dat");
+  fs.mkdirSync(fakeBin);
+  fs.writeFileSync(verthashData, "fixture");
+  fs.copyFileSync(path.join(root, "r.sh"), path.join(temp, "r.sh"));
+  const docker = path.join(fakeBin, "docker");
+  fs.writeFileSync(docker, [
+    "#!/bin/sh",
+    'case "$1:$2" in',
+    "  buildx:version|image:inspect) exit 0 ;;",
+    "  container:inspect) exit 1 ;;",
+    '  run:*) shift; printf \'%s\\n\' "$@" > "$MOM_TEST_DOCKER_ARGS"; exit 0 ;;',
+    "esac",
+    "exit 1",
+  ].join("\n"));
+  fs.chmodSync(docker, 0o755);
+  try {
+    const initialized = spawnSync("git", ["init", "-q"], {cwd: temp, encoding: "utf8"});
+    assert.equal(initialized.status, 0, initialized.stderr);
+    const env = Object.fromEntries(Object.entries(process.env)
+      .filter(([key]) => !key.startsWith("MOM_")));
+    Object.assign(env, {
+      MOM_DOCKER_GPUS: "0",
+      MOM_CONTAINER_CPUS: "2",
+      MOM_CONTAINER_MEMORY: "4g",
+      MOM_CONTAINER_NETWORK: "none",
+      MOM_CONTAINER_PIDS: "256",
+      MOM_GPU_BACKEND: "opencl",
+      MOM_NEXAPOW_PROFILE: "1",
+      MOM_TEST_DOCKER_ARGS: dockerArgs,
+      MOM_VERTHASH_DATA: verthashData,
+      PATH: `${fakeBin}${path.delimiter}${process.env["PATH"] || ""}`,
+    });
+    const result = spawnSync("bash", [path.join(temp, "r.sh"), "npm", "run", "test:gpu"], {
+      cwd: temp, encoding: "utf8", env,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const args = fs.readFileSync(dockerArgs, "utf8").trim().split(/\r?\n/);
+    assert.deepEqual(args.filter((arg) => arg.startsWith("MOM_GPU_BACKEND")),
+      ["MOM_GPU_BACKEND=opencl"]);
+    assert.equal(args.some((arg) => arg.startsWith("MOM_GPU_TEST_VENDORS")), false);
+    assert.equal(args.includes("MOM_NEXAPOW_PROFILE"), true);
+    assert.deepEqual(args.filter((arg) => arg.startsWith("MOM_VERTHASH_DATA")),
+      ["MOM_VERTHASH_DATA=/verthash.dat"]);
+    assert.equal(args.includes("--device"), false);
+    assert.equal(args.includes(
+      `type=bind,source=${verthashData},target=/verthash.dat,readonly`), true);
+    assert.equal(args.includes("--privileged"), false);
+    /** @param {string} flag */
+    const flagValue = (flag) => args[args.indexOf(flag) + 1];
+    assert.equal(flagValue("--cap-drop"), "ALL");
+    assert.deepEqual(args.filter((_arg, index) => args[index - 1] === "--cap-add"),
+      ["CHOWN", "DAC_OVERRIDE", "FOWNER"]);
+    assert.equal(flagValue("--security-opt"), "no-new-privileges:true");
+    assert.equal(flagValue("--cpus"), "2");
+    assert.equal(flagValue("--memory"), "4g");
+    assert.equal(flagValue("--memory-swap"), "4g");
+    assert.equal(flagValue("--pids-limit"), "256");
+    assert.equal(flagValue("--network"), "none");
+    assert.equal(args.some((arg) => arg.startsWith("MOM_CONTAINER_")), false);
+  } finally {
+    fs.rmSync(temp, {recursive: true, force: true});
+  }
+});
+
+test("deployment lanes require a test summary before passing", {
+  skip: process.platform === "win32",
+}, () => {
+  const root = path.join(__dirname, "..");
+  const deploySource = fs.readFileSync(path.join(root, "scripts", "test-deploy.sh"), "utf8");
+  assert.match(deploySource, /apt-get install[^\n]*\bpython3\b/);
+  assert.match(deploySource, /MOM_VERTHASH_DATA:\/verthash\.dat:ro/);
+  assert.match(deploySource, /win-mom-dev-base\.qcow2/);
+  assert.doesNotMatch(deploySource, /win-mom-dev\.qcow2/);
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-deploy-summary-test-"));
+  const scripts = path.join(temp, "scripts");
+  const fakeBin = path.join(temp, "bin");
+  fs.mkdirSync(scripts);
+  fs.mkdirSync(fakeBin);
+  fs.copyFileSync(path.join(root, "scripts", "test-deploy.sh"),
+    path.join(scripts, "test-deploy.sh"));
+  for (const command of ["docker", "nvidia-smi"]) {
+    const executable = path.join(fakeBin, command);
+    fs.writeFileSync(executable, "#!/bin/sh\nexit 0\n");
+    fs.chmodSync(executable, 0o755);
+  }
+  fs.writeFileSync(path.join(temp, "mom-v1.2.3-lin.tgz"), "fixture");
+  try {
+    const result = spawnSync("bash", [path.join(scripts, "test-deploy.sh")], {
+      cwd: temp,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${fakeBin}${path.delimiter}${process.env["PATH"] || ""}`,
+        MOM_DEPLOY_TARGET: "linux-nvidia",
+        MOM_DEPLOY_REUSE_ARCHIVE: "1",
+        MOM_RELEASE_VERSION: "1.2.3",
+      },
+    });
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stdout, /nvidia-linux \(test summary missing\)/);
+  } finally {
+    fs.rmSync(temp, {recursive: true, force: true});
+  }
+  const multiRelease = deploySource.match(/^test_windows_multi_release\(\) \{\n[\s\S]*?\n\}\n/m)?.[0];
+  assert.ok(multiRelease, "mixed-vendor release function must exist");
+  for (const status of [0, 37]) {
+    /** @type {import("node:child_process").SpawnSyncReturns<string>} */
+    const result = spawnSync("bash", ["-c", [
+      "set +e",
+      "mkdir() { :; }",
+      "cp() { :; }",
+      "run_windows_root() { return \"$MOM_DEPLOY_FIXTURE_EXIT\"; }",
+      multiRelease,
+      "test_windows_multi_release",
+    ].join("\n")], {
+      encoding: "utf8",
+      env: {...process.env, MOM_DEPLOY_FIXTURE_EXIT: String(status),
+        DEPLOY_SKIP_VECTORS: "0", MOM_DEPLOY_ALGO: "", WINDOWS_STAGE: "fixture",
+        WINDOWS_ARCHIVE: "fixture.zip", WIN_RUN: "fixture-only"},
+    });
+    assert.equal(result.status, status, result.stdout + result.stderr);
+    assert.equal(result.stdout.includes("MOM_TEST_SUMMARY 1 1 0 0"), status === 0);
+  }
+});
+
+test("Linux release builds force portable compiler mode", {
+  skip: process.platform === "win32",
+}, () => {
+  const root = path.join(__dirname, "..");
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-deploy-portable-test-"));
+  const scripts = path.join(temp, "scripts");
+  const fakeBin = path.join(temp, "bin");
+  const rLog = path.join(temp, "r-env");
+  const dockerLog = path.join(temp, "docker-invocations");
+  fs.mkdirSync(scripts);
+  fs.mkdirSync(fakeBin);
+  fs.copyFileSync(path.join(root, "scripts", "test-deploy.sh"),
+    path.join(scripts, "test-deploy.sh"));
+  const fakeR = path.join(temp, "r.sh");
+  fs.writeFileSync(fakeR, [
+    "#!/bin/sh",
+    'printf "%s\\n" "$MOM_PORTABLE_BUILD" > "$MOM_TEST_R_LOG"',
+    'printf "%s\\n" "$MOM_GPU_BACKEND" >> "$MOM_TEST_R_LOG"',
+    "exit 42",
+  ].join("\n"));
+  fs.chmodSync(fakeR, 0o755);
+  const fakeDocker = path.join(fakeBin, "docker");
+  fs.writeFileSync(fakeDocker, [
+    "#!/bin/sh",
+    'printf "%s\\n" "$*" >> "$MOM_TEST_DOCKER_LOG"',
+    "exit 0",
+  ].join("\n"));
+  fs.chmodSync(fakeDocker, 0o755);
+  try {
+    const result = spawnSync("bash", [path.join(scripts, "test-deploy.sh")], {
+      cwd: temp,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${fakeBin}${path.delimiter}${process.env["PATH"] || ""}`,
+        MOM_DEPLOY_TARGET: "linux-nvidia",
+        MOM_DEPLOY_REUSE_ARCHIVE: "0",
+        MOM_PORTABLE_BUILD: "0",
+        MOM_RELEASE_VERSION: "1.2.3",
+        MOM_TEST_DOCKER_LOG: dockerLog,
+        MOM_TEST_R_LOG: rLog,
+      },
+    });
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.equal(fs.readFileSync(rLog, "utf8"), "1\nall\n");
+    assert.equal(fs.existsSync(dockerLog), false);
+    assert.equal(fs.existsSync(path.join(temp, "mom-v1.2.3-lin.tgz")), false);
+    assert.match(result.stdout, /Build Linux release \(exit 42\)/);
+    assert.doesNotMatch(result.stdout + result.stderr, /Packaging Linux release archive/);
+    assert.doesNotMatch(result.stdout + result.stderr, /Testing every nvidia GPU/);
+  } finally {
+    fs.rmSync(temp, {recursive: true, force: true});
+  }
+});
+
+test("Windows AdaptiveCpp exported source silences only its expected Git probe failure", () => {
+  const build = fs.readFileSync(path.join(__dirname,
+    "../scripts/build-windows-adaptivecpp-amd.ps1"), "utf8");
+  const oldStart = build.indexOf("$rootGitStatusOld =");
+  const newStart = build.indexOf("$rootGitStatusNew =", oldStart);
+  const replaceStart = build.indexOf(
+    "Replace-RequiredText $rootCmakeText $rootGitStatusOld $rootGitStatusNew", newStart);
+  assert.ok(oldStart >= 0 && newStart > oldStart && replaceStart > newStart,
+    "the checked exported-source workaround must remain intact");
+  assert.match(build.slice(oldStart, newStart), /RESULT_VARIABLE GIT_STATUS/);
+  assert.doesNotMatch(build.slice(oldStart, newStart), /ERROR_QUIET/);
+  assert.match(build.slice(newStart, replaceStart), /RESULT_VARIABLE GIT_STATUS[\s\S]*ERROR_QUIET/);
+});
+
+test("combined builds preserve an unchanged linked CUDA image", () => {
+  const build = fs.readFileSync(
+    path.join(__dirname, "../scripts/combined-build.sh"), "utf8");
+  assert.match(build, /link_target="\$ROOT\/build\/Release\/obj\.target\/mom\.node"/);
+  assert.match(build, /\$WRAP -nt \$link_target/);
+  assert.doesNotMatch(build, /octopus_archive/);
+  assert.doesNotMatch(build, /\nrm -f build\/Release\/mom\.node build\/Release\/obj\.target\/mom\.node/);
+});
+
+test("Linux runner locks mutable build state without advisory GPU locks", () => {
+  const runner = fs.readFileSync(path.join(__dirname, "../r.sh"), "utf8");
+  const entrypoint = fs.readFileSync(
+    path.join(__dirname, "../scripts/multicompiler-entrypoint.sh"), "utf8");
+
+  assert.match(runner, /name="mom-\$backend"/);
+  assert.doesNotMatch(runner, /--privileged/);
+  assert.match(runner, /--cap-drop ALL/);
+  assert.match(runner, /--security-opt no-new-privileges:true/);
+  assert.match(runner, /add_drm_vendor 0x8086/);
+  assert.match(runner, /add_drm_vendor 0x1002/);
+  assert.match(runner,
+    /sycl_cache_volume=\$\{MOM_SYCL_CACHE_VOLUME:-mom-sycl-cache-\$backend\}/);
+  const reuseStart = runner.indexOf('if [ "$reuse_built_worker" = 1 ]; then');
+  const reuseEnd = runner.indexOf("\nelse\n  flock 9", reuseStart);
+  assert.ok(reuseStart >= 0 && reuseEnd > reuseStart, "reuse lock branch must exist");
+  const reuseLocks = runner.slice(reuseStart, reuseEnd);
+  assert.match(reuseLocks, /flock -s 9/);
+  assert.match(runner, /exec 9>"\$build_lock"/);
+  assert.doesNotMatch(runner, /MOM_GPU_LOCK_KEY|gpu_lock_key|exec 8>|\.gpu-/);
+  assert.equal((runner.match(/\bflock\b/g) || []).length, 2);
+  assert.match(runner,
+    /if \[ "\$reuse_built_worker" != 1 \]; then[\s\S]*docker_flags\+=\(-it\)[\s\S]*docker_flags\+=\(-i\)[\s\S]*fi/);
+  assert.match(runner,
+    /elif \[ "\$container_stdin" = 1 \]; then[\s\S]*docker_flags\+=\(-i\)/);
+  assert.doesNotMatch(runner, /docker rm -f "\$name"/);
+  assert.match(runner,
+    /if container_running=\$\(docker container inspect[\s\S]*if \[ "\$container_running" = true \][\s\S]*exit 2/);
+
+  const reuseBranchStart = entrypoint.search(/case "\$\{MOM_REUSE_BUILT_WORKER:-0\}" in/);
+  const buildTreeMutation = entrypoint.indexOf("platforms_hold=build-platforms-hold");
+  assert.ok(reuseBranchStart >= 0 && buildTreeMutation > reuseBranchStart,
+    "worker reuse branch must precede build-tree mutation");
+  assert.match(entrypoint, /if \[\[ -e "\$platforms_hold" \|\| -L "\$platforms_hold" \]\]/);
+  assert.match(entrypoint,
+    /if \[\[ -e build \|\| -L build \]\] && \[\[ ! -d build \|\| -L build \]\]; then/);
+  const reuseBranch = entrypoint.slice(reuseBranchStart, buildTreeMutation);
+  assert.match(reuseBranch, /reused_worker="\$PWD\/build\/lin\/Release\/\$default\/mom\.node"/);
+  assert.match(reuseBranch, /\[ ! -s "\$reused_worker" \]/);
+  assert.match(entrypoint,
+    /source_fingerprint\(\)[\s\S]*binding\.gyp[\s\S]*native[\s\S]*sycl[\s\S]*sha256sum/);
+  assert.match(reuseBranch, /fingerprint_file="\$reused_worker\.sources\.sha256"/);
+  assert.match(reuseBranch,
+    /recorded_fingerprint[\s\S]*current_fingerprint[\s\S]*source fingerprint differs/);
+  assert.doesNotMatch(reuseBranch, /-newer/);
+  assert.match(reuseBranch, /exec "\$@"/);
+});
+
+test("coinstalled ROCm versions cannot reproduce the v0.8.0 mixed-runtime crash", {
+  skip: process.platform !== "linux",
+}, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-policy-"));
+  try {
+    fs.mkdirSync(path.join(root, "native", "acpp-hip"), {recursive: true});
+    fs.writeFileSync(path.join(root, "native", "acpp-hip", "mom.node"), "test");
+
+    const rocm = path.join(root, "rocm", "core-7.14");
+    const rocmBin = path.join(rocm, "bin");
+    const rocmLib = path.join(rocm, "lib");
+    const distroRocmLib = path.join(root, "usr-lib-rocm-7.1");
+    const pathBin = path.join(root, "path-bin");
+    fs.mkdirSync(rocmBin, {recursive: true});
+    fs.mkdirSync(rocmLib);
+    fs.mkdirSync(distroRocmLib);
+    fs.mkdirSync(pathBin);
+    fs.writeFileSync(path.join(rocmBin, "hipconfig"), "#!/bin/sh\n", {mode: 0o755});
+    fs.symlinkSync(path.join(rocmBin, "hipconfig"), path.join(pathBin, "hipconfig"));
+    for (const library of [
+      "libamdhip64.so.7", "libamd_comgr.so.3", "libhsa-runtime64.so.1",
+      "libhiprtc.so.7", "libhiprtc-builtins.so.7",
+    ]) {
+      fs.writeFileSync(path.join(rocmLib, library), "test");
+    }
+    const amd = policy.workerEnv("kawpow", {
+      MOM_GPU_BACKEND: "amd", MOM_NATIVE_DIR: path.join(root, "native"),
+      PATH: pathBin, LD_LIBRARY_PATH: distroRocmLib,
+    }, "linux");
+    assert.equal(amd.MOM_SYCL_COMPILER, "acpp-hip");
+    assert.equal(amd.LD_LIBRARY_PATH, [path.join(root, "native", "acpp-hip"),
+      path.join(root, "native", "acpp-hip", "hipSYCL"), rocmLib, distroRocmLib]
+      .join(path.delimiter));
+
+    const incompleteRocm = path.join(root, "incomplete-rocm");
+    fs.mkdirSync(path.join(incompleteRocm, "lib"), {recursive: true});
+    for (const library of [
+      "libamdhip64.so.7", "libamd_comgr.so.3", "libhsa-runtime64.so.1", "libhiprtc.so.7",
+    ]) {
+      fs.writeFileSync(path.join(incompleteRocm, "lib", library), "test");
+    }
+    const fallback = policy.workerEnv("kawpow", {
+      MOM_GPU_BACKEND: "amd", MOM_NATIVE_DIR: path.join(root, "native"),
+      ROCM_PATH: incompleteRocm, PATH: pathBin,
+    }, "linux");
+    assert.ok(fallback.LD_LIBRARY_PATH?.split(path.delimiter).includes(rocmLib));
+    assert.ok(!fallback.LD_LIBRARY_PATH?.split(path.delimiter)
+      .includes(path.join(incompleteRocm, "lib")));
+  } finally {
+    fs.rmSync(root, {recursive: true, force: true});
+  }
+});
+
+test("vendor toolkit paths remain scoped to their matching Linux worker", {
+  skip: process.platform !== "linux",
+}, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-policy-"));
+  try {
+    for (const key of ["acpp-cuda", "oneapi", "dpcpp-opencl"]) {
+      fs.mkdirSync(path.join(root, "native", key), {recursive: true});
+      fs.writeFileSync(path.join(root, "native", key, "mom.node"), "test");
+    }
+    const cuda = path.join(root, "cuda");
+    fs.mkdirSync(path.join(cuda, "lib64"), {recursive: true});
+    fs.writeFileSync(path.join(cuda, "lib64", "libnvrtc.so.12"), "test");
+    const rocm = path.join(root, "rocm");
+    fs.mkdirSync(path.join(rocm, "lib"), {recursive: true});
+    for (const library of [
+      "libamdhip64.so.7", "libamd_comgr.so.3", "libhsa-runtime64.so.1",
+    ]) {
+      fs.writeFileSync(path.join(rocm, "lib", library), "test");
+    }
+    const nvidia = policy.workerEnv("autolykos2", {
+      MOM_GPU_BACKEND: "nvidia", MOM_NATIVE_DIR: path.join(root, "native"), CUDA_PATH: cuda,
+    }, "linux");
+    assert.equal(nvidia.MOM_SYCL_COMPILER, "acpp-cuda");
+    assert.ok(nvidia.LD_LIBRARY_PATH?.split(path.delimiter).includes(path.join(cuda, "lib64")));
+    assert.ok(policy.workerEnv("autolykos2", {
+      MOM_GPU_BACKEND: "nvidia", MOM_NATIVE_DIR: path.join(root, "native"), CUDA_HOME: cuda,
+    }, "linux").LD_LIBRARY_PATH?.split(path.delimiter).includes(path.join(cuda, "lib64")));
+
+    const intel = policy.workerEnv("etchash", {
+      MOM_GPU_BACKEND: "intel", MOM_NATIVE_DIR: path.join(root, "native"),
+      ROCM_PATH: rocm, CUDA_PATH: cuda,
+    }, "linux");
+    const opencl = policy.workerEnv("etchash", {
+      MOM_GPU_BACKEND: "opencl", MOM_NATIVE_DIR: path.join(root, "native"),
+      ROCM_PATH: rocm, CUDA_PATH: cuda,
+    }, "linux");
+    assert.ok(!intel.LD_LIBRARY_PATH?.includes(path.join(rocm, "lib")));
+    assert.ok(!intel.LD_LIBRARY_PATH?.includes(path.join(cuda, "lib64")));
+    assert.ok(!opencl.LD_LIBRARY_PATH?.includes(path.join(rocm, "lib")));
+    assert.ok(!opencl.LD_LIBRARY_PATH?.includes(path.join(cuda, "lib64")));
+  } finally {
+    fs.rmSync(root, {recursive: true, force: true});
+  }
+});
+
+test("Windows portable workers share oneAPI JIT without crossing into nightly runtimes", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-runtime-cohort-"));
+  try {
+    for (const key of ["oneapi", "dpcpp", "dpcpp-opencl", "acpp-hip"]) {
+      fs.mkdirSync(path.join(root, key));
+      fs.writeFileSync(path.join(root, key, "mom.node"), "fixture");
+    }
+    fs.writeFileSync(path.join(root, "oneapi", "sycl-jit.dll"), "matching-oneapi");
+    fs.writeFileSync(path.join(root, "dpcpp", "sycl-jit.dll"), "poisoned-nightly");
+    const inheritedPath = path.join(root, "dpcpp");
+    const base = {MOM_NATIVE_DIR: root, Path: inheritedPath, UR_ADAPTERS_FORCE_LOAD: "caller-adapter",
+      OCL_ICD_FILENAMES: "caller-icd", SYCL_CACHE_PERSISTENT: "0"};
+    const portable = {...base, ...policy.workerEnv("etchash", {
+      ...base, MOM_GPU_BACKEND: "opencl", MOM_OPENCL_DEVICE_TYPE: "cpu",
+    }, "win32")};
+    const portablePath = portable["Path"];
+    assert.ok(portablePath);
+    const jit = portablePath.split(path.delimiter).map(dir => path.join(dir, "sycl-jit.dll"))
+      .find(fs.existsSync);
+    assert.equal(jit, path.join(root, "oneapi", "sycl-jit.dll"));
+    assert.ok(jit);
+    assert.equal(fs.readFileSync(jit, "utf8"), "matching-oneapi");
+    assert.equal(portablePath.split(path.delimiter).at(-1), inheritedPath);
+    assert.equal(portable.UR_ADAPTERS_FORCE_LOAD, base.UR_ADAPTERS_FORCE_LOAD);
+    assert.equal(portable.OCL_ICD_FILENAMES, base.OCL_ICD_FILENAMES);
+    assert.equal(portable.SYCL_CACHE_PERSISTENT, "0");
+    assert.deepEqual(policy.workerEnv("etchash", {...base, MOM_GPU_BACKEND: "opencl",
+      MOM_NATIVE_PATH: "caller-addon"}, "win32"), {});
+    /** @type {Array<[string, string]>} */
+    const vendors = [["nvidia", "dpcpp"], ["amd", "acpp-hip"]];
+    for (const [gpu, key] of vendors) {
+      const vendor = policy.workerEnv("etchash", {...base, MOM_GPU_BACKEND: gpu,
+        MOM_NVIDIA_COMPUTE_CAPABILITY: "90", MOM_GPU_INDEX: "2"}, "win32");
+      assert.equal(vendor.MOM_RUNTIME_DIR, path.join(root, key));
+      assert.equal(vendor["Path"], [path.join(root, key), path.join(root, key, "hipSYCL"),
+        inheritedPath].join(path.delimiter));
+    }
+    const linux = policy.workerEnv("etchash", {MOM_NATIVE_DIR: root, MOM_GPU_BACKEND: "opencl",
+      LD_LIBRARY_PATH: "caller-linux"}, "linux");
+    assert.equal(linux.LD_LIBRARY_PATH, [path.join(root, "dpcpp-opencl"),
+      path.join(root, "dpcpp-opencl", "hipSYCL"), path.join(root, "dpcpp"), "caller-linux"]
+      .join(path.delimiter));
+  } finally {
+    fs.rmSync(root, {recursive: true, force: true});
   }
 });

@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 function Get-MominerDumpBin {
-  $onPath = Get-Command dumpbin.exe -ErrorAction SilentlyContinue
+  $onPath = Get-Command dumpbin.exe -ErrorAction SilentlyContinue | Select-Object -First 1
   if ($onPath) {
     return $onPath.Source
   }
@@ -225,7 +225,7 @@ function Get-MominerDllSearchRoots {
   foreach ($dir in Get-MominerCudaBinDir) { & $addRoot $dir }
   foreach ($dir in Get-MominerHipBinDir) { & $addRoot $dir }
 
-  $node = Get-Command node.exe -ErrorAction SilentlyContinue
+  $node = Get-Command node.exe -ErrorAction SilentlyContinue | Select-Object -First 1
   if ($node) { & $addRoot (Split-Path -Parent $node.Source) }
 
   foreach ($dir in Get-MominerOneApiBinDirs) { & $addRoot $dir }
@@ -297,7 +297,8 @@ function Resolve-MominerDependency {
 function Copy-MominerOptionalRuntimeFiles {
   param(
     [Parameter(Mandatory = $true)]
-    [string]$PackageDir
+    [string]$PackageDir,
+    [string[]]$SourceRoots
   )
 
   New-Item -ItemType Directory -Force $PackageDir | Out-Null
@@ -317,6 +318,7 @@ function Copy-MominerOptionalRuntimeFiles {
     'libirc*.dll',
     'tbb*.dll',
     'umf*.dll',
+    'libhwloc*.dll',
     'ze_loader*.dll',
     'clbltfn*.rtl',
     'cllibrary*.rtl',
@@ -327,8 +329,10 @@ function Copy-MominerOptionalRuntimeFiles {
 
   # DPC++ CUDA toolchain bin first (combined build), then oneAPI. First to provide a name wins, so the
   # nightly sycl9.dll/ur adapters/sycl-jit.dll are taken over any same-named oneAPI lib.
-  $sources = @(Get-MominerDpcppBinDir) + @(Get-MominerAdaptiveCppBinDir) +
-    @(Get-MominerCudaBinDir) + @(Get-MominerHipBinDir) + @(Get-MominerOneApiBinDirs)
+  $sources = if ($null -ne $SourceRoots) { $SourceRoots } else {
+    @(Get-MominerDpcppBinDir) + @(Get-MominerAdaptiveCppBinDir) +
+      @(Get-MominerCudaBinDir) + @(Get-MominerHipBinDir) + @(Get-MominerOneApiBinDirs)
+  }
   foreach ($root in $sources) {
     if (-not (Test-Path $root)) { continue }
     foreach ($pattern in $patterns) {

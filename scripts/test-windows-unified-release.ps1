@@ -13,7 +13,52 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$output = Join-Path $repo $OutputDirectory
+. (Join-Path $repo 'scripts\windows-install-helpers.ps1')
+$repoCanonical = [IO.Path]::GetFullPath($repo).TrimEnd([char[]]@('\', '/'))
+$outputInput = if ([IO.Path]::IsPathRooted($OutputDirectory)) { $OutputDirectory } else {
+  Join-Path $repo $OutputDirectory
+}
+$output = [IO.Path]::GetFullPath($outputInput).TrimEnd([char[]]@('\', '/'))
+if ($output.Equals($repoCanonical, [StringComparison]::OrdinalIgnoreCase) -or
+    -not $output.StartsWith("$repoCanonical\", [StringComparison]::OrdinalIgnoreCase)) {
+  throw "OutputDirectory must stay inside the repository: $OutputDirectory"
+}
+Assert-NoReparseAncestor $output 'OutputDirectory reparse-point ancestor'
+$outputMarker = Join-Path $output '.mom-windows-unified-results'
+$outputItem = Get-Item -LiteralPath $output -Force -ErrorAction SilentlyContinue
+if ($null -ne $outputItem) {
+  if (($outputItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "Refusing OutputDirectory reparse point: $OutputDirectory"
+  }
+  if (-not $outputItem.PSIsContainer) {
+    throw "Refusing OutputDirectory that is not a directory: $OutputDirectory"
+  }
+  $outputChildren = @(Get-ChildItem -LiteralPath $output -Force -ErrorAction Stop)
+  if ($outputChildren.Count -gt 0) {
+    $markerItem = Get-Item -LiteralPath $outputMarker -Force -ErrorAction SilentlyContinue
+    if ($null -eq $markerItem) {
+      throw "Refusing to replace unowned OutputDirectory: $OutputDirectory"
+    }
+    if (($markerItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        $markerItem.PSIsContainer) {
+      throw "Refusing invalid OutputDirectory ownership marker: $outputMarker"
+    }
+    if (-not (Test-MomMarker $outputMarker 'mom-windows-unified-results')) {
+      throw "Refusing OutputDirectory with an invalid ownership marker: $outputMarker"
+    }
+    Assert-NoReparseAncestor $output 'OutputDirectory reparse-point ancestor'
+    $preRemoveItem = Get-Item -LiteralPath $output -Force -ErrorAction Stop
+    if (-not $preRemoveItem.PSIsContainer -or
+        ($preRemoveItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        -not (Test-MomMarker $outputMarker 'mom-windows-unified-results')) {
+      throw "OutputDirectory changed before recursive removal: $output"
+    }
+    Remove-Item -LiteralPath $output -Recurse -Force
+  }
+}
+$ownershipValue = 'mom-windows-unified-results'
+[IO.Directory]::CreateDirectory($output) | Out-Null
+$ownershipValue | Set-Content -LiteralPath $outputMarker -Encoding ascii -NoNewline
 $pausedUpdateServices = @()
 Set-Location $repo
 $version = (& node.exe -p "require('./package.json').version").Trim()
@@ -40,17 +85,14 @@ function Set-CompilerEnvironment(
   Set-Item "Env:$SelectorName" $SelectorValue
 }
 
-Remove-Item $output -Recurse -Force -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Force $output | Out-Null
 $basePath = $env:Path
 $env:SYCL_CACHE_PERSISTENT = '1'
 
 try {
   & "$repo\.github\workflows\scripts\test-powershell-syntax.ps1"
-  if ($LASTEXITCODE -ne 0) { throw "PowerShell syntax gate failed: $LASTEXITCODE" }
 
-  & npm.cmd ci --ignore-scripts
-  if ($LASTEXITCODE -ne 0) { throw "Pinned JavaScript tooling install failed: $LASTEXITCODE" }
+  & npm.cmd install --ignore-scripts --no-audit --no-fund
+  if ($LASTEXITCODE -ne 0) { throw "JavaScript tooling install failed: $LASTEXITCODE" }
 
   # A servicing restart invalidates an hours-long multi-GPU gate and can strand its throwaway disk.
   # Cancel only a pending restart and resume any service that this script actually stopped.
@@ -70,14 +112,12 @@ try {
     & "$repo\.github\workflows\scripts\build-windows-multicompiler.ps1" `
       -Backend all -DpcppDir $DpcppDir -AcppCudaDir $AcppCudaDir -AcppHipDir $AcppHipDir `
       -HipPath $HipPath -CudaPath $CudaPath
-    if ($LASTEXITCODE -ne 0) { throw "Windows unified compiler build failed: $LASTEXITCODE" }
   }
 
   if (-not $SkipCompilerGates) {
     foreach ($vendor in @('intel', 'nvidia', 'amd')) {
       Write-Host "=== Sequential $vendor compiler-vector gate ==="
       & "$repo\scripts\test-windows-current-multicompiler.ps1" -Backend $vendor -SkipBuild
-      if ($LASTEXITCODE -ne 0) { throw "$vendor compiler-vector gate failed: $LASTEXITCODE" }
     }
 
     # The vector suites leave all small-state algorithms resident in one process. These independent
@@ -86,7 +126,7 @@ try {
     Set-CompilerEnvironment 'acpp-cuda' 'ACPP_VISIBILITY_MASK' 'cuda'
     & node.exe scripts\benchmark-gpu-algos.js `
       --label windows-nvidia-acpp-lifecycle `
-      --algos autolykos2,beamhash3,c29,cn/gpu,zelhash,etchash,fishhash,karlsenhashv2 `
+      --algos autolykos2,beamhash3,c29,cn/gpu,equihash192_7,zelhash,zhash,etchash,fishhash,karlsenhashv2,xelishashv3 `
       --samples 1 --warmup-samples 0 --timeout-ms $LifecycleTimeoutMs `
       --output (Join-Path $output 'windows-nvidia-acpp-lifecycle.json')
     if ($LASTEXITCODE -ne 0) { throw "AdaptiveCpp CUDA lifecycle gate failed: $LASTEXITCODE" }
@@ -95,7 +135,6 @@ try {
   $archiveName = "mom-v$version-win.zip"
   $archive = Join-Path $output $archiveName
   & "$repo\.github\workflows\scripts\package-windows.ps1" -Archive $archive
-  if ($LASTEXITCODE -ne 0) { throw "Windows unified packaging failed: $LASTEXITCODE" }
 
   Clear-CompilerEnvironment
   foreach ($suite in @('cpu', 'gpu-portable-cpu')) {

@@ -7,46 +7,178 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
+if ($Suite -notin @("all", "cpu", "gpu", "gpu-discrete", "gpu-integrated", "gpu-multi", "gpu-portable-cpu")) {
+  throw "Unknown release test suite: $Suite"
+}
 $env:MOM_SKIP_MSR = "1"
+if ($Suite -eq 'gpu-portable-cpu') {
+  # The missing-ICD path must fail closed before it can emit a successful SKIP.
+  $env:MOM_REQUIRE_PORTABLE_CPU_TESTS = '1'
+}
 if ($PSVersionTable.PSVersion.Major -ge 7) {
   $PSNativeCommandUseErrorActionPreference = $true
 }
 
 trap {
-  if ($env:GITHUB_ACTIONS) {
+  if ($env:GITHUB_ACTIONS -eq 'true') {
     $message = $_.Exception.Message.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
     Write-Host "::error title=Windows release test failed::$message"
   }
-  break
+  throw $_.Exception
 }
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "../../..")).Path
 Set-Location $repoRoot
+. (Join-Path $repoRoot 'scripts\windows-install-helpers.ps1')
 
-$workDir = if ($env:MOM_RELEASE_TEST_DIR) { $env:MOM_RELEASE_TEST_DIR } else { "release-test" }
+$workDir = if ($env:MOM_RELEASE_TEST_DIR) { $env:MOM_RELEASE_TEST_DIR } else { "mom-release-test" }
+if (-not [IO.Path]::IsPathRooted($workDir)) { $workDir = Join-Path $repoRoot $workDir }
+$workDir = [IO.Path]::GetFullPath($workDir).TrimEnd([char[]]@('\', '/'))
+$workLeaf = [IO.Path]::GetFileName($workDir)
+if ($workLeaf -notmatch '^mom-release-[A-Za-z0-9_.-]+$') {
+  throw 'MOM_RELEASE_TEST_DIR must name a dedicated mom-release-* directory'
+}
+Assert-NoReparseAncestor $workDir 'Release test workspace'
+$workspaceMarker = Join-Path $workDir '.mom-release-test-workspace'
+$packageVersion = (Get-Content -LiteralPath (Join-Path $repoRoot 'package.json') -Raw |
+  ConvertFrom-Json).version
+if ([string]::IsNullOrWhiteSpace([string]$packageVersion) -or
+    [string]$packageVersion -notmatch '^[0-9][0-9A-Za-z.-]*$') {
+  throw "Invalid package version: $packageVersion"
+}
+$expectedRoot = "mom-v$packageVersion"
+Assert-NoReparseAncestor $Archive 'Release archive'
+$archiveItem = Get-Item -LiteralPath $Archive -Force -ErrorAction Stop
+if ($archiveItem.PSIsContainer -or
+    ($archiveItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+  throw 'Release archive must be a regular non-reparse file.'
+}
+$archivePath = $archiveItem.FullName
+$privateArchive = Join-Path $workDir '.mom-release-input.zip'
+if ($archivePath.Equals($workDir, [StringComparison]::OrdinalIgnoreCase) -or
+    $archivePath.StartsWith("$workDir\", [StringComparison]::OrdinalIgnoreCase)) {
+  throw 'Release archive must be outside the test workspace.'
+}
+
+$workItem = Get-Item -LiteralPath $workDir -Force -ErrorAction SilentlyContinue
+if ($workItem) {
+  if (-not $workItem.PSIsContainer) {
+    throw 'MOM_RELEASE_TEST_DIR must be an owned directory'
+  }
+  if ($workItem.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+    throw 'MOM_RELEASE_TEST_DIR must not be a reparse point'
+  }
+  if (-not (Test-MomMarker $workspaceMarker 'mom release test workspace')) {
+    throw 'MOM_RELEASE_TEST_DIR exists without the .mom-release-test-workspace marker'
+  }
+  Assert-NoReparseAncestor $workDir 'Release test workspace'
+  Remove-Item -LiteralPath $workDir -Recurse -Force
+}
+[IO.Directory]::CreateDirectory($workDir) | Out-Null
+Set-Content -LiteralPath $workspaceMarker -Value 'mom release test workspace' -NoNewline
+Copy-Item -LiteralPath $archivePath -Destination $privateArchive -ErrorAction Stop
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
-$zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $Archive).Path)
+$zip = [System.IO.Compression.ZipFile]::OpenRead($privateArchive)
 try {
-  $rootEntry = $zip.Entries | Where-Object { $_.FullName -match '^[^/\\]+[/\\]$' } | Select-Object -First 1
-  $root = if ($rootEntry) { $rootEntry.FullName.TrimEnd('/', '\') } else { "" }
-  if (-not $root) {
-    $root = (($zip.Entries | Select-Object -First 1).FullName -split '[/\\]')[0]
+  $members = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+  $hasRootEntry = $false
+  $hasRootPayload = $false
+  foreach ($entry in $zip.Entries) {
+    $rawName = $entry.FullName
+    if ($rawName -match '(^[/\\]|(^|[/\\])\.\.([/\\]|$)|:|[/\\]{2}|(^|[/\\])\.([/\\]|$))') {
+      throw "Release archive contains an unsafe path: $($entry.FullName)"
+    }
+    $normalizedName = $rawName.Replace('\', '/')
+    $isDirectory = $normalizedName.EndsWith('/')
+    $member = $normalizedName.TrimEnd('/')
+    if (-not $member) {
+      throw 'Release archive contains an empty member name.'
+    }
+    if (-not $members.Add($member)) {
+      throw "Release archive contains a duplicate member: $($entry.FullName)"
+    }
+    if ($member -cne $expectedRoot -and
+        -not $member.StartsWith("$expectedRoot/", [StringComparison]::Ordinal)) {
+      throw 'Release archive must contain only the expected package root.'
+    }
+    if ($member -ceq $expectedRoot) {
+      if (-not $isDirectory -or $normalizedName -cne "$expectedRoot/") {
+        throw 'Release archive must contain an explicit package root directory.'
+      }
+      $hasRootEntry = $true
+    } else {
+      $hasRootPayload = $true
+    }
+    $unixType = ($entry.ExternalAttributes -shr 16) -band 0xF000
+    if ($unixType -eq 0xA000) {
+      throw "Release archive contains a symbolic link: $($entry.FullName)"
+    }
   }
+  if (-not $hasRootEntry) {
+    throw 'Release archive must contain an explicit package root directory.'
+  }
+  if (-not $hasRootPayload) {
+    throw 'Release archive must contain the expected package root.'
+  }
+  $root = $expectedRoot
   if ($zip.Entries | Where-Object { $_.FullName -match '(^|[/\\])tests([/\\]|$)' }) {
     throw "Release archive must not contain tests/."
+  }
+  if ($zip.Entries | Where-Object { $_.FullName -match '(^|[/\\])DEVELOPMENT\.md$' }) {
+    throw "Release archive must not contain DEVELOPMENT.md."
   }
 } finally {
   $zip.Dispose()
 }
 
-Remove-Item -Recurse -Force $workDir -ErrorAction SilentlyContinue
-Expand-Archive $Archive $workDir
-$packageDir = (Resolve-Path (Join-Path $workDir $root)).Path
+# Focused archive tests set this after the structural checks; release CI leaves it unset.
+if ($env:MOM_RELEASE_ARCHIVE_VALIDATION_ONLY -eq '1') {
+  exit 0
+}
+
+Expand-Archive -LiteralPath $privateArchive -DestinationPath $workDir
+$pending = [Collections.Generic.Stack[string]]::new()
+$pending.Push($workDir)
+while ($pending.Count -gt 0) {
+  $current = $pending.Pop()
+  $attributes = [IO.File]::GetAttributes($current)
+  if ($attributes -band [IO.FileAttributes]::ReparsePoint) {
+    throw 'Release extraction produced a reparse point.'
+  }
+  if (-not ($attributes -band [IO.FileAttributes]::Directory)) { continue }
+  foreach ($child in [IO.Directory]::EnumerateFileSystemEntries($current)) {
+    $pending.Push($child)
+  }
+}
+$packageDir = Join-Path $workDir $root
+$packageItem = Get-Item -LiteralPath $packageDir -Force -ErrorAction Stop
+if (-not $packageItem.PSIsContainer) {
+  throw 'Extracted release package root is not a directory.'
+}
 $libsDir = Join-Path $packageDir "libs"
-$node = (Resolve-Path (Join-Path $packageDir 'mom-node.exe')).Path
+$node = Join-Path $packageDir 'mom-node.exe'
+foreach ($sidecar in @('kawpow_device.inc', 'kawpow_keccak.inc')) {
+  $sidecarPath = Join-Path $libsDir "dpcpp\$sidecar"
+  if (-not (Test-Path -LiteralPath $sidecarPath -PathType Leaf) -or
+      (Get-Item -LiteralPath $sidecarPath -Force).Length -le 0) {
+    throw "Windows release package is missing nonempty libs/dpcpp/$sidecar."
+  }
+}
 if (Test-Path (Join-Path $packageDir "tests")) {
   throw "Extracted release package unexpectedly contains tests/."
+}
+if (-not (Test-Path (Join-Path $packageDir "GPU-CONFIG.md"))) {
+  throw "Extracted release package is missing GPU-CONFIG.md."
+}
+if (-not (Test-Path (Join-Path $packageDir "gpu-tuning.js"))) {
+  throw "Extracted release package is missing gpu-tuning.js."
+}
+if (-not (Test-Path (Join-Path $packageDir "helper/hash.js"))) {
+  throw "Extracted release package is missing helper/hash.js."
+}
+if (Test-Path (Join-Path $packageDir "DEVELOPMENT.md")) {
+  throw "Extracted release package unexpectedly contains DEVELOPMENT.md."
 }
 
 foreach ($compiler in @('oneapi','dpcpp','dpcpp-opencl','acpp-cuda','acpp-hip')) {
@@ -117,6 +249,7 @@ if ($Suite -in @('all', 'cpu')) {
 Copy-Item tests (Join-Path $packageDir "tests") -Recurse
 New-Item -ItemType Directory -Force (Join-Path $packageDir 'scripts') | Out-Null
 Copy-Item scripts\validate-portable-opencl.js (Join-Path $packageDir 'scripts\validate-portable-opencl.js')
+Copy-Item scripts\windows-command.js (Join-Path $packageDir 'scripts\windows-command.js')
 
 # A developer image may already point OCL_ICD_FILENAMES at oneAPI's GPU ICD. CPU deployment gates
 # deliberately select Intel's separately installed CPU ICD so a headless runner cannot silently
@@ -143,7 +276,7 @@ if ($Suite -eq 'gpu-portable-cpu') {
   }
   $cpuIcd = $cpuIcdPaths | Select-Object -Unique -First 1
   if (-not $cpuIcd) {
-    $message = 'Intel CPU OpenCL ICD is missing; run scripts\install-dev.bat -Component opencl-cpu.'
+    $message = 'Intel CPU OpenCL ICD is missing; run the release package install.bat.'
     if ($env:GITHUB_ACTIONS -or $env:MOM_REQUIRE_PORTABLE_CPU_TESTS -eq "1") {throw $message}
     Write-Host "SKIP gpu-portable-cpu: $message"
     exit 0
@@ -152,9 +285,15 @@ if ($Suite -eq 'gpu-portable-cpu') {
 }
 
 # Minimal PATH: package/libs first, then the Windows system dirs the EXE needs.
-$externalOpenClDir = if ($env:OCL_ICD_FILENAMES) {
-  Split-Path -Parent (($env:OCL_ICD_FILENAMES -split ';')[0])
-} else { $null }
+$openClIcdFiles = @($env:OCL_ICD_FILENAMES -split ';' |
+  Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+$externalOpenClDir = if ($openClIcdFiles.Count -gt 0) {
+  $env:OCL_ICD_FILENAMES = $openClIcdFiles -join ';'
+  Split-Path -Parent $openClIcdFiles[0]
+} else {
+  Remove-Item Env:OCL_ICD_FILENAMES -ErrorAction SilentlyContinue
+  $null
+}
 $env:Path = @(
   $libsDir,
   $packageDir,
@@ -169,6 +308,23 @@ $env:Path = @(
 # individual test.  Mirror the small part of mom.cmd's launcher environment that selects the initial
 # worker; compiler-policy.js still performs any per-algorithm worker override in child processes.
 $env:MOM_NATIVE_DIR = $libsDir
+$restoreUnsetGpuBackendAfterSmoke = $false
+if ($Suite -in @('gpu', 'gpu-discrete', 'gpu-multi') -and
+    $null -eq [Environment]::GetEnvironmentVariable('MOM_GPU_BACKEND', 'Process')) {
+  # The launcher can auto-select only a single detected vendor. Select one present GPU for this
+  # pre-matrix smoke check; the matrix itself must see the original unset value and all vendors.
+  $knownGpuVendorIds = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+    ForEach-Object {
+      if ([string]$_.PNPDeviceID -match 'VEN_(10DE|1002|8086)') { $Matches[1] }
+    } | Sort-Object -Unique)
+  $smokeBackend = if ($knownGpuVendorIds -contains '10DE') { 'nvidia' } elseif (
+    $knownGpuVendorIds -contains '1002') { 'amd' } elseif (
+    $knownGpuVendorIds -contains '8086') { 'intel' } else { $null }
+  if ($smokeBackend) {
+    $env:MOM_GPU_BACKEND = $smokeBackend
+    $restoreUnsetGpuBackendAfterSmoke = $true
+  }
+}
 if ($Suite -eq 'gpu-portable-cpu') {
   # Development/release jobs install Intel's redistributable CPU OpenCL implementation. Use the
   # portable SPIR-V worker so this archive gate needs no GPU and exercises the generic fallback ABI.
@@ -186,15 +342,31 @@ $env:MOM_NATIVE_PATH = Join-Path $libsDir "$defaultWorker\mom.node"
 $env:MOM_NATIVE_PATH_LAUNCHER_DEFAULT = $env:MOM_NATIVE_PATH
 $workerDir = Join-Path $libsDir $defaultWorker
 $env:MOM_RUNTIME_DIR = $workerDir
-$sharedDpcppDir = if ($defaultWorker -eq 'dpcpp-opencl') { Join-Path $libsDir 'dpcpp' } else { $null }
+if ($Suite -eq 'gpu-portable-cpu' -and -not $env:UR_ADAPTERS_FORCE_LOAD) {
+  # Direct Node tests bypass mom.cmd; mirror its isolated OpenCL adapter binding.
+  # UR requires quotes inside the value for Windows drive-letter paths.
+  $env:UR_ADAPTERS_FORCE_LOAD = '"' + (Join-Path $workerDir 'ur_adapter_opencl.dll') + '"'
+}
+$sharedOneApiDir = if ($defaultWorker -eq 'dpcpp-opencl') { Join-Path $libsDir 'oneapi' } else { $null }
 # For the CPU suite, an explicitly supplied CPU OpenCL runtime must provide OpenCL.dll ahead of the
-# bundled generic loader. The shared DPC++ directory still follows it for sycl9/UR dependencies.
+# bundled generic loader. Shared oneAPI follows it for the matching JIT library.
 $env:Path = @($workerDir, (Join-Path $workerDir 'hipSYCL'), $externalOpenClDir,
-  $sharedDpcppDir, $env:Path) -join ';'
+  $sharedOneApiDir, $env:Path) -join ';'
 
 function Enable-IntelOpenCL {
   if ($Suite -eq 'gpu-portable-cpu' -or $env:MOM_OPENCL_DEVICE_TYPE -eq 'cpu') {
     return
+  }
+  # Generic OpenCL normally uses the passed-through vendor's system ICD. Some Intel driver packages
+  # have no Khronos registry entry, so their ICD disappears when the archive test minimizes PATH.
+  # Use the packaged Intel ICD only when Intel is the sole hardware GPU vendor; leave mixed, AMD,
+  # and NVIDIA environments untouched.
+  if ($env:MOM_GPU_BACKEND -eq 'opencl') {
+    $gpuVendors = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+      ForEach-Object {
+        if ([string]$_.PNPDeviceID -match 'VEN_(8086|10DE|1002)') { $Matches[1] }
+      } | Sort-Object -Unique)
+    if ($gpuVendors.Count -ne 1 -or $gpuVendors[0] -ne '8086') { return }
   }
   if ($env:OCL_ICD_FILENAMES) {
     return
@@ -246,20 +418,29 @@ try {
   }
   $marker = $smokeOutput | Where-Object { $_ -match '^MOM_ALGORITHMS ' } | Select-Object -First 1
   if (-not $marker) {
-    throw "Direct executable smoke test did not print algo params marker.`n$($smokeOutput -join "`n")"
+    throw "Direct executable smoke test did not print algorithms marker.`n$($smokeOutput -join "`n")"
   }
   $params = ($marker -replace '^MOM_ALGORITHMS ', '') | ConvertFrom-Json
   foreach ($prop in $params.PSObject.Properties) {
     $dev = [string]$prop.Value
     if (-not $dev -or $dev -match '(^|,)[^,]*(\*0|\^0)(,|$)') {
-      throw "Invalid algo params for $($prop.Name): $dev"
+      throw "Invalid algorithms entry for $($prop.Name): $dev"
     }
   }
-  if ($Suite -in @('gpu', 'gpu-discrete')) {
+  if ($Suite -in @('gpu', 'gpu-discrete', 'gpu-integrated', 'gpu-multi')) {
     $gpuParam = $params.PSObject.Properties | Where-Object { [string]$_.Value -match '(^|,)gpu\d+' } |
       Select-Object -First 1
     if (-not $gpuParam) {
       throw "Windows $Suite release test requires launcher-time GPU discovery, but algorithms returned no GPU job."
+    }
+  }
+  if ($Suite -eq 'gpu-integrated') {
+    $integratedGpu = $smokeOutput | Where-Object {
+      $_ -match '^gpu\d+: .*Intel.*\[integrated\]$'
+    } |
+      Select-Object -First 1
+    if (-not $integratedGpu) {
+      throw "Windows gpu-integrated release test requires an Intel integrated GPU, but algorithms reported none."
     }
   }
   $syclCpuDevices = Get-SyclCpuDevicesFromOutput $smokeOutput
@@ -267,15 +448,12 @@ try {
     throw "Windows $Suite release test requires a CPU SYCL device, but algorithms did not report one.`n$($smokeOutput -join "`n")"
   }
 
-  if ($Suite -notin @("all", "cpu", "gpu", "gpu-discrete", "gpu-portable-cpu")) {
-    throw "Unknown release test suite: $Suite"
+  if ($restoreUnsetGpuBackendAfterSmoke) {
+    Remove-Item Env:MOM_GPU_BACKEND -ErrorAction SilentlyContinue
   }
-  if ($Suite -in @('gpu', 'gpu-discrete')) { $env:MOM_REQUIRE_GPU_TESTS = '1' }
-  if ($Suite -eq 'gpu-portable-cpu') {
-    # Keep the archive gate fail-closed outside GitHub Actions as well. A missing or broken CPU
-    # OpenCL device must never turn the per-algorithm portable kernel coverage into skipped tests.
-    $env:MOM_REQUIRE_PORTABLE_CPU_TESTS = '1'
-  }
+  if ($Suite -in @('gpu', 'gpu-discrete', 'gpu-integrated', 'gpu-multi')) { $env:MOM_REQUIRE_GPU_TESTS = '1' }
+  if ($Suite -eq 'gpu-integrated') { $env:MOM_REQUIRE_INTEGRATED_GPU_TESTS = '1' }
+  if ($Suite -eq 'gpu-multi') { $env:MOM_REQUIRE_MULTI_GPU_TESTS = '1' }
   & $node tests/run_hash.js $Suite
   if ($LASTEXITCODE -ne 0) {
     throw "Hash suite failed: $Suite"

@@ -1,6 +1,6 @@
 param(
   [Parameter(Mandatory = $true)]
-  [ValidateSet('intel','nvidia','amd')]
+  [ValidateSet('intel','nvidia','amd','opencl')]
   [string]$Backend,
   [ValidateSet('all','oneapi','dpcpp','portable','adaptivecpp')]
   [string]$Compiler = 'all',
@@ -13,7 +13,6 @@ Set-Location $repo
 
 if (-not $SkipBuild) {
   & "$repo\.github\workflows\scripts\build-windows-multicompiler.ps1" -Backend $Backend -Compiler $Compiler
-  if ($LASTEXITCODE -ne 0) { throw "Windows multi-compiler build failed: $LASTEXITCODE" }
 }
 
 $basePath = $env:Path
@@ -67,20 +66,18 @@ function Invoke-GpuSuite(
   Start-Sleep -Seconds 3
 }
 
-function Invoke-PortableSuite {
+function Invoke-PortableSuite(
+  [string]$DisplayVendorName
+) {
   Clear-SelectorEnvironment
   $portable = Join-Path $nativeDir 'dpcpp-opencl'
-  $sharedRuntime = Join-Path $nativeDir 'dpcpp'
   $portableAddon = Join-Path $portable 'mom.node'
-  foreach ($required in @($portableAddon, (Join-Path $portable 'sycl.dll'))) {
+  # A targeted portable build stages its matching runtime locally, without a CUDA sibling.
+  foreach ($required in @($portableAddon, (Join-Path $portable 'sycl.dll'),
+                          (Join-Path $portable 'sycl9.dll'), (Join-Path $portable 'ur_adapter_opencl.dll'))) {
     if (-not (Test-Path $required)) { throw "Portable DPC++ worker dependency is missing: $required" }
   }
-  foreach ($required in @('sycl9.dll', 'ur_adapter_opencl.dll')) {
-    if (-not (Test-Path (Join-Path $sharedRuntime $required))) {
-      throw "Portable DPC++ shared runtime is missing under ${sharedRuntime}: $required"
-    }
-  }
-  $env:Path = "$portable;$sharedRuntime;$basePath"
+  $env:Path = "$portable;$basePath"
   # Let compiler-policy.js set MOM_NATIVE_PATH together with the per-subtest OpenCL CPU/GPU
   # selector. Pinning the addon here would intentionally disable policy environment selection and
   # let an Intel Level Zero device leak into what is meant to be the OpenCL compatibility gate.
@@ -88,17 +85,18 @@ function Invoke-PortableSuite {
   $env:MOM_COMPILER_POLICY_STRICT = '1'
   $env:MOM_REQUIRE_PORTABLE_CPU_TESTS = '1'
 
-  Write-Host '=== Portable OpenCL: CPU and Intel GPU ==='
+  Write-Host "=== Portable OpenCL: CPU and $DisplayVendorName GPU ==="
   $env:MOM_GPU_BACKEND = 'opencl'
   Remove-Item Env:MOM_GPU_TEST_VENDORS -ErrorAction SilentlyContinue
   & node.exe .\tests\run_hash.js gpu
   if ($LASTEXITCODE -ne 0) { throw "Portable OpenCL compatibility suite failed: $LASTEXITCODE" }
 }
 
+$compilerLanes = 0
+$portableLanes = 0
+
 switch ($Backend) {
   'intel' {
-    $compilerLanes = 0
-    $portableLanes = 0
     if ($Compiler -in @('all','oneapi')) {
       Invoke-GpuSuite 'Intel oneAPI' 'oneapi' 'ONEAPI_DEVICE_SELECTOR' 'level_zero:gpu'
       $compilerLanes++
@@ -108,12 +106,11 @@ switch ($Backend) {
       $compilerLanes++
     }
     if ($Compiler -in @('all','portable')) {
-      Invoke-PortableSuite
+      Invoke-PortableSuite 'Intel'
       $portableLanes = 1
     }
   }
   'nvidia' {
-    $compilerLanes = 0
     if ($Compiler -in @('all','dpcpp')) {
       Invoke-GpuSuite 'NVIDIA open DPC++' 'dpcpp' 'ONEAPI_DEVICE_SELECTOR' 'cuda:gpu'
       $compilerLanes++
@@ -122,12 +119,25 @@ switch ($Backend) {
       Invoke-GpuSuite 'NVIDIA AdaptiveCpp' 'acpp-cuda' 'ACPP_VISIBILITY_MASK' 'cuda'
       $compilerLanes++
     }
+    if ($Compiler -in @('all','portable')) {
+      Invoke-PortableSuite 'NVIDIA'
+      $portableLanes = 1
+    }
   }
   'amd' {
-    $compilerLanes = 0
     if ($Compiler -in @('all','adaptivecpp')) {
       Invoke-GpuSuite 'AMD AdaptiveCpp' 'acpp-hip' 'ACPP_VISIBILITY_MASK' 'hip'
       $compilerLanes++
+    }
+    if ($Compiler -in @('all','portable')) {
+      Invoke-PortableSuite 'AMD'
+      $portableLanes = 1
+    }
+  }
+  'opencl' {
+    if ($Compiler -in @('all','portable')) {
+      Invoke-PortableSuite 'OpenCL'
+      $portableLanes = 1
     }
   }
 }

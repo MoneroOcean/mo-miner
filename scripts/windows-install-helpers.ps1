@@ -62,9 +62,11 @@ function Test-MomCudaCompilerSdk([string]$Root) {
     'include\cuda.h',
     'include\cuda_runtime.h',
     'include\nvrtc.h',
+    'include\nvml.h',
     'lib\x64\cuda.lib',
     'lib\x64\cudart_static.lib',
-    'lib\x64\nvrtc.lib'
+    'lib\x64\nvrtc.lib',
+    'lib\x64\nvml.lib'
   )) {
     if (-not (Test-Path -LiteralPath (Join-Path $Root $relative) -PathType Leaf)) {
       return $false
@@ -113,9 +115,9 @@ function Test-MomDpcppToolchain([string]$Root) {
     'bin\clang-offload-wrapper.exe',
     'bin\sycl9.dll',
     'bin\sycl-jit.dll',
-    # The open toolchain intentionally carries the proxy; package-windows.ps1 supplies oneAPI's
-    # ABI-compatible ur_loader.dll beside each released worker.
+    # The proxy and real loader must come from this verified toolchain, not oneAPI's DDI cohort.
     'bin\ur_win_proxy_loader.dll',
+    'bin\ur_loader.dll',
     'bin\ur_adapter_cuda.dll',
     'bin\ur_adapter_opencl.dll',
     'bin\ur_adapter_level_zero_v2.dll'

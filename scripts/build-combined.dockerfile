@@ -59,6 +59,8 @@ export LD_LIBRARY_PATH=/opt/dpcpp/lib:$LD_LIBRARY_PATH\n\
 export MOM_PORTABLE_BUILD="$portable_build"\n\
 export MOM_PERF_SAMPLES="${MOM_PERF_SAMPLES:-}"\n\
 export MOM_CN_GPU_INTENSITY="${MOM_CN_GPU_INTENSITY:-}"\n\
+export MOM_NEXAPOW_INTENSITY="${MOM_NEXAPOW_INTENSITY:-}"\n\
+export MOM_AUTOLYKOS2_INTENSITY="${MOM_AUTOLYKOS2_INTENSITY:-}"\n\
 export MOM_AUTOLYKOS2_WORKGROUP="${MOM_AUTOLYKOS2_WORKGROUP:-}"\n\
 export MOM_AUTOLYKOS2_SPLIT="${MOM_AUTOLYKOS2_SPLIT:-}"\n\
 export MOM_AUTOLYKOS2_PROFILE="${MOM_AUTOLYKOS2_PROFILE:-}"\n\
@@ -70,7 +72,7 @@ export SYCL_CACHE_PERSISTENT=1\n\
 if ! npm ls --depth=0 --silent >/dev/null 2>&1; then npm install --ignore-scripts --no-audit --no-fund --silent; fi\n\
 bash scripts/combined-build.sh &&\n\
 sudo_env=(LD_LIBRARY_PATH=/opt/dpcpp/lib:$LD_LIBRARY_PATH MOM_PERF_SAMPLES="\$MOM_PERF_SAMPLES")\n\
-for v in MOM_CN_GPU_INTENSITY MOM_AUTOLYKOS2_WORKGROUP MOM_AUTOLYKOS2_SPLIT MOM_AUTOLYKOS2_PROFILE ONEAPI_DEVICE_SELECTOR ZE_AFFINITY_MASK; do\n\
+for v in MOM_CN_GPU_INTENSITY MOM_NEXAPOW_INTENSITY MOM_AUTOLYKOS2_INTENSITY MOM_AUTOLYKOS2_WORKGROUP MOM_AUTOLYKOS2_SPLIT MOM_AUTOLYKOS2_PROFILE ONEAPI_DEVICE_SELECTOR ZE_AFFINITY_MASK; do\n\
   [ -n "\${!v:-}" ] && sudo_env+=("\$v=\${!v}")\n\
 done\n\
 ({ test $# -eq 1; } && { echo "One param mode"; sudo "\${sudo_env[@]}" -- /bin/bash -c ${*@Q}; } || sudo "\${sudo_env[@]}" -- ${*@Q})\n\

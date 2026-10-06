@@ -7,7 +7,8 @@ trap {
     $message = $_.Exception.Message.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
     Write-Host "::error title=Windows build failed::$message"
   }
-  throw $_.Exception
+  # A trap is not a catch: break rethrows the original exception instead of replacing it.
+  break
 }
 
 function Invoke-MominerNative {
@@ -32,15 +33,22 @@ function Get-MominerBuildJobs {
 function Find-MominerNodeGyp {
   $candidates = @()
 
-  $nodeRoot = Split-Path (Get-Command node -ErrorAction Stop).Source -Parent
+  $nodeRoot = Split-Path (Get-Command node -ErrorAction Stop | Select-Object -First 1).Source -Parent
   $candidates += Join-Path $nodeRoot "node_modules\npm\node_modules\node-gyp\bin\node-gyp.js"
 
-  $npmCommand = Get-Command npm -ErrorAction SilentlyContinue
+  $npmCommand = Get-Command npm -ErrorAction SilentlyContinue | Select-Object -First 1
   if ($npmCommand) {
     $npmRoot = Split-Path $npmCommand.Source -Parent
     $candidates += Join-Path $npmRoot "node_modules\npm\node_modules\node-gyp\bin\node-gyp.js"
   }
 
+  # Bundled node-gyp needs no optional global query, which can emit fatal stderr on PS5.1.
+  foreach ($candidate in ($candidates | Select-Object -Unique)) {
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+      return (Resolve-Path -LiteralPath $candidate).Path
+    }
+  }
+  $candidates = @()
   $globalRootOutput = & npm root -g 2>$null
   if ($LASTEXITCODE -eq 0 -and $globalRootOutput) {
     $globalRoot = ($globalRootOutput | Select-Object -First 1).Trim()
@@ -49,8 +57,8 @@ function Find-MominerNodeGyp {
   }
 
   foreach ($candidate in ($candidates | Select-Object -Unique)) {
-    if (Test-Path $candidate) {
-      return (Resolve-Path $candidate).Path
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+      return (Resolve-Path -LiteralPath $candidate).Path
     }
   }
   return $null
@@ -120,7 +128,7 @@ Write-Host "MOM_BUILD_JOBS = $buildJobs"
 Invoke-MominerNative { node $nodeGyp configure --msvs_version=2022 } "node-gyp configure"
 # MSBuild is on PATH inside a VS Developer/Native-Tools shell (and on CI runners), but not on a bare
 # VS Build Tools box. Fall back to locating it via vswhere so a local Windows build works either way.
-$msbuildCmd = Get-Command MSBuild.exe -ErrorAction SilentlyContinue
+$msbuildCmd = Get-Command MSBuild.exe -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($msbuildCmd) {
   $msbuild = $msbuildCmd.Source
 } else {

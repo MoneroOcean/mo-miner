@@ -8,7 +8,30 @@ backend_was_explicit=0
 backend=${MOM_GPU_BACKEND:-intel}
 case "$backend" in intel|nvidia|amd|opencl|all) ;; *) echo "Unknown MOM_GPU_BACKEND: $backend" >&2; exit 2 ;; esac
 image=mom-build-multicompiler
-name=mom
+name="mom-$backend"
+reuse_built_worker=${MOM_REUSE_BUILT_WORKER:-0}
+container_stdin=${MOM_CONTAINER_STDIN:-0}
+sycl_cache_volume=${MOM_SYCL_CACHE_VOLUME:-mom-sycl-cache-$backend}
+
+case "$reuse_built_worker" in 0|1) ;; *) echo "MOM_REUSE_BUILT_WORKER must be 0 or 1" >&2; exit 2 ;; esac
+case "$container_stdin" in 0|1) ;; *) echo "MOM_CONTAINER_STDIN must be 0 or 1" >&2; exit 2 ;; esac
+if [[ ! $sycl_cache_volume =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
+  echo "MOM_SYCL_CACHE_VOLUME must be a valid Docker volume name" >&2
+  exit 2
+fi
+
+# Ordinary runs own the mutable build tree exclusively. Explicit reuse runs take a shared lock,
+# and skip every build mutation in the container. GPU occupancy and ownership must be coordinated
+# from fresh device evidence by the caller; no advisory GPU lock is used.
+lock_dir=$(git -C "$SCRIPT_DIR" rev-parse --path-format=absolute --git-path mom-locks)
+mkdir -p -m 700 "$lock_dir"
+build_lock="$lock_dir/mom-r-sh-${UID}.build.lock"
+exec 9>"$build_lock"
+if [ "$reuse_built_worker" = 1 ]; then
+  flock -s 9
+else
+  flock 9
+fi
 
 if ! docker buildx version >/dev/null 2>&1; then
   echo "Docker buildx is required. Install docker-buildx-plugin or see README.md." >&2
@@ -93,10 +116,35 @@ else
   build_image mom-build-combined scripts/build-combined.dockerfile combined
   build_image "$image" scripts/build-multicompiler.dockerfile multicompiler
 fi
-docker rm -f "$name" >/dev/null 2>&1 || true
+if container_running=$(docker container inspect -f '{{.State.Running}}' "$name" 2>/dev/null); then
+  if [ "$container_running" = true ]; then
+    echo "Docker container '$name' is already running for backend '$backend'" >&2
+    exit 2
+  fi
+  docker rm "$name" >/dev/null
+fi
+
+host_cpus=$(nproc)
+container_cpus=${MOM_CONTAINER_CPUS:-$((host_cpus > 1 ? host_cpus - 1 : 1))}
+container_memory=${MOM_CONTAINER_MEMORY:-$(( $(awk '/MemTotal:/ {print $2}' /proc/meminfo) * 4 / 5 / 1024 ))m}
+container_pids=${MOM_CONTAINER_PIDS:-2048}
+container_network=${MOM_CONTAINER_NETWORK:-}
+if [ -z "$container_network" ]; then
+  [ "$reuse_built_worker" = 1 ] && container_network=none || container_network=bridge
+fi
 
 docker_flags=(
-  --privileged
+  --cap-drop ALL
+  --cap-add CHOWN
+  --cap-add DAC_OVERRIDE
+  --cap-add FOWNER
+  --security-opt no-new-privileges:true
+  --cpus "$container_cpus"
+  --memory "$container_memory"
+  --memory-swap "$container_memory"
+  --pids-limit "$container_pids"
+  --network "$container_network"
+  --tmpfs /tmp:rw,nosuid,nodev,exec,size=8g
   --rm
   --name "$name"
   --hostname "$name"
@@ -105,7 +153,8 @@ docker_flags=(
   --mount "type=bind,source=$SCRIPT_DIR,target=/root/mom"
   # DPC++'s device binaries are keyed by image, driver, and device. Keep that cache across the
   # disposable development containers so large OpenCL kernels are not recompiled on every r.sh run.
-  --mount "type=volume,source=mom-sycl-cache,target=/root/.cache/libsycl_cache"
+  --env "SYCL_CACHE_PERSISTENT=${SYCL_CACHE_PERSISTENT:-1}"
+  --mount "type=volume,source=$sycl_cache_volume,target=/root/.cache/libsycl_cache"
 )
 if [ -n "${MOM_VERTHASH_DATA:-}" ]; then
   verthash_data=$(realpath "$MOM_VERTHASH_DATA")
@@ -116,23 +165,47 @@ if [ -n "${MOM_GPU_TEST_VENDORS:-}" ]; then
 elif [ "$backend_was_explicit" = 1 ]; then
   # An explicitly selected backend narrows correctness tests; the default development container
   # discovers and tests every supported discrete-GPU vendor visible on the host.
-  if [ "$backend" = all ]; then
-    docker_flags+=(--env "MOM_GPU_TEST_VENDORS=intel,nvidia,amd")
-  else
-    docker_flags+=(--env "MOM_GPU_TEST_VENDORS=$backend")
-  fi
+  case "$backend" in
+    all) docker_flags+=(--env "MOM_GPU_TEST_VENDORS=intel,nvidia,amd") ;;
+    opencl) ;; # OpenCL is a compiler/runtime backend, not a hardware vendor.
+    *) docker_flags+=(--env "MOM_GPU_TEST_VENDORS=$backend") ;;
+  esac
 fi
 
 # The NVIDIA nvptx images are AOT-built (no GPU needed to build); expose the GPU only when a host
 # driver is present so GPU runs/tests work (needs nvidia-container-toolkit). CI runners have none
-# and just build + package + run the CPU and SYCL-CPU suites. An Intel GPU is reached via --privileged
-# (/dev/dri). The build picks dpcpp-combined itself in scripts/combined-build.sh, so no MOM_SYCL_IMPL.
+# and just build + package + run the CPU and SYCL-CPU suites. DRM backends receive only render nodes
+# for their selected vendor. The build picks its compiler in scripts/combined-build.sh.
 nvidia_gpu_available() {
   nvidia-smi -L >/dev/null 2>&1 && return 0
   command -v nvidia-container-cli >/dev/null 2>&1 || return 1
   [ -e /dev/nvidiactl ] || return 1
   find /sys/bus/pci/drivers/nvidia -maxdepth 1 -type l -name '0000:*' -print -quit 2>/dev/null | grep -q .
 }
+
+add_drm_vendor() {
+  local wanted_vendor=$1 render vendor node
+  for render in /sys/class/drm/renderD*; do
+    [ -r "$render/device/vendor" ] || continue
+    read -r vendor < "$render/device/vendor"
+    [ "$vendor" = "$wanted_vendor" ] || continue
+    node="/dev/dri/${render##*/}"
+    [ ! -c "$node" ] || docker_flags+=(--device "$node:$node")
+  done
+}
+
+docker_gpu_mode=${MOM_DOCKER_GPUS:-auto}
+if [ "$docker_gpu_mode" != 0 ]; then
+  case "$backend" in
+    intel) add_drm_vendor 0x8086 ;;
+    amd) add_drm_vendor 0x1002; [ ! -c /dev/kfd ] || docker_flags+=(--device /dev/kfd:/dev/kfd) ;;
+    opencl|all)
+      add_drm_vendor 0x8086
+      add_drm_vendor 0x1002
+      [ ! -c /dev/kfd ] || docker_flags+=(--device /dev/kfd:/dev/kfd)
+      ;;
+  esac
+fi
 
 command_env_value() {
   local name="$1"; shift
@@ -163,13 +236,13 @@ selector_requests_cuda() {
   esac
 }
 
-case "${MOM_DOCKER_GPUS:-auto}" in
+case "$docker_gpu_mode" in
   0) ;;
   1|all) docker_flags+=(--gpus all) ;;
   auto)
     if [ "$backend" = opencl ]; then
       # Generic OpenCL may still be provided by NVIDIA's driver. The container runtime mounts its
-      # ICD/user-space libraries only with --gpus, while --privileged already covers DRM GPUs.
+      # ICD/user-space libraries only with --gpus; selected DRM nodes cover Intel and AMD.
       nvidia_gpu_available && docker_flags+=(--gpus all)
     elif [ "$backend" != amd ]; then
       if selector_requests_cuda "$@"; then
@@ -180,27 +253,33 @@ case "${MOM_DOCKER_GPUS:-auto}" in
     fi
     ;;
   *)
-    docker_flags+=(--gpus "${MOM_DOCKER_GPUS}")
+    docker_flags+=(--gpus "$docker_gpu_mode")
     ;;
 esac
 
-# Forward these build-tuning env vars into the container only when set. MOM_COMBINED_TARGETS lets a
-# build widen/narrow its AOT arch set; MOM_FORCE_REBUILD forces a clean reconfigure.
-for var in \
-  MOM_PORTABLE_BUILD MOM_LTO MOM_PERF_SAMPLES MOM_COMBINED_TARGETS MOM_FORCE_REBUILD \
-  MOM_BUILD_VERBOSE MOM_BUILD_JOBS MOM_GPU_INDEX MOM_OPENCL_DEVICE_TYPE MOM_CN_GPU_INTENSITY \
-  MOM_INTEL_AOT_DEVICE MOM_ICPX MOM_DPCPP_ROOT \
-  MOM_LINUX_BUILD_COMPILER MOM_REUSE_BUILT_WORKER MOM_VERTHASH_INTENSITY MOM_WALAHASH_INTENSITY \
-  MOM_AUTOLYKOS2_WORKGROUP MOM_AUTOLYKOS2_SPLIT MOM_AUTOLYKOS2_PROFILE MOM_ZELHASH_SLOTS \
-  ONEAPI_DEVICE_SELECTOR ZE_AFFINITY_MASK UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS MOM_AMD_TARGET
-do
+# Forward remaining MoM controls plus the non-MoM runtime selectors. Backend and test-vendor values
+# were canonicalized above. The host dataset was bind-mounted as `/verthash.dat`; forwarding its host
+# value again would append a second environment entry and override that mapping.
+while IFS= read -r var; do
+  case "$var" in
+    MOM_GPU_BACKEND|MOM_GPU_TEST_VENDORS|MOM_VERTHASH_DATA|MOM_DOCKER_GPUS|MOM_CONTAINER_*)
+      continue ;;
+  esac
+  docker_flags+=(--env "$var")
+done < <(compgen -e | grep '^MOM_')
+for var in ONEAPI_DEVICE_SELECTOR ZE_AFFINITY_MASK UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS; do
   if [ -n "${!var:-}" ]; then docker_flags+=(--env "$var"); fi
 done
 
-# Allocate a TTY only when both stdin and stdout are terminals.
-if [ -t 0 ] && [ -t 1 ]; then
-  docker_flags+=(-it)
-else
+# Reuse runs omit stdin by default. Finite live checks may opt into plain stdin so `close` reaches
+# MoM without adding a pseudo-TTY or rebuilding the verified worker.
+if [ "$reuse_built_worker" != 1 ]; then
+  if [ -t 0 ] && [ -t 1 ]; then
+    docker_flags+=(-it)
+  else
+    docker_flags+=(-i)
+  fi
+elif [ "$container_stdin" = 1 ]; then
   docker_flags+=(-i)
 fi
 

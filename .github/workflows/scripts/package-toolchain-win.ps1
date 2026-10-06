@@ -6,16 +6,20 @@
 # built-in tar.exe can extract it with no extra tooling.
 param(
   [string]$BuildDir = "C:\llvm\build",
-  [string]$OutFile  = "C:\mom\dpcpp-cuda-win-matched.tar.gz"
+  [string]$OutFile  = "C:\mom\dpcpp-cuda-win-v7.1.1.tar.gz"
 )
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
+. (Join-Path $PSScriptRoot '../../../scripts/windows-install-helpers.ps1')
 
 if (-not (Test-Path (Join-Path $BuildDir "bin\clang++.exe"))) {
   throw "clang++.exe not found under $BuildDir\bin - point -BuildDir at the from-source --cuda build dir."
 }
 foreach ($d in @("bin", "lib", "include")) {
   if (-not (Test-Path (Join-Path $BuildDir $d))) { throw "$BuildDir\$d is missing." }
+}
+if (-not (Test-MomDpcppToolchain $BuildDir)) {
+  throw 'DPC++ toolchain is incomplete; package its matching real UR loader with the compiler.'
 }
 
 $outDir = Split-Path $OutFile -Parent

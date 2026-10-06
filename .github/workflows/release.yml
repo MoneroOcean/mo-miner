@@ -30,6 +30,9 @@ jobs:
       contents: write
 
     steps:
+      - name: Checkout release metadata
+        uses: actions/checkout@v7
+
       - name: Download release artifacts
         uses: actions/download-artifact@v8
         with:
@@ -40,14 +43,44 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          mapfile -d '' files < <(find artifacts -type f -print0)
-          mapfile -t linux_files < <(find artifacts -type f -name 'mom-*-lin.tgz' -print)
-          mapfile -t windows_files < <(find artifacts -type f -name 'mom-*-win.zip' -print)
-          if (( ${#files[@]} != 2 || ${#linux_files[@]} != 1 || ${#windows_files[@]} != 1 )); then
-            printf 'Expected exactly one unified Linux tgz and one unified Windows zip; found:\n' >&2
-            printf '  %s\n' "${files[@]}" >&2
+          version="$(node -p 'require("./package.json").version')"
+          case "$version" in
+            ''|*[!0-9A-Za-z.-]*)
+              printf 'Invalid package version: %s\n' "$version" >&2
+              exit 1
+              ;;
+          esac
+          expected_tag="v$version"
+          if [[ "${GITHUB_REF_NAME}" != "$expected_tag" ]]; then
+            printf 'Release tag does not match package version: expected %s\n' "$expected_tag" >&2
             exit 1
           fi
+          linux_name="mom-${expected_tag}-lin.tgz"
+          windows_name="mom-${expected_tag}-win.zip"
+          mapfile -d '' archives < <(find artifacts -type f -print0)
+          mapfile -d '' linux_files < <(find artifacts -type f -name "$linux_name" -print0)
+          mapfile -d '' windows_files < <(find artifacts -type f -name "$windows_name" -print0)
+          if (( ${#archives[@]} != 2 || ${#linux_files[@]} != 1 || ${#windows_files[@]} != 1 )); then
+            printf 'Expected exactly one unified Linux tgz and one unified Windows zip; found:\n' >&2
+            printf '  %s\n' "${archives[@]}" >&2
+            exit 1
+          fi
+          for archive in "${archives[@]}"; do
+            case "$(basename "$archive")" in
+              "$linux_name"|"$windows_name") ;;
+              *) printf 'Unexpected release archive name: %s\n' "$(basename "$archive")" >&2; exit 1 ;;
+            esac
+          done
+          checksums=()
+          for archive in "${archives[@]}"; do
+            directory="$(dirname "$archive")"
+            filename="$(basename "$archive")"
+            checksum="$archive.sha256"
+            (cd "$directory" && sha256sum "$filename" > "$filename.sha256")
+            (cd "$directory" && sha256sum -c "$filename.sha256" >/dev/null)
+            checksums+=("$checksum")
+          done
+          files=("${archives[@]}" "${checksums[@]}")
           meta=(--repo "${GITHUB_REPOSITORY}" --title "${GITHUB_REF_NAME}" --notes "mom ${GITHUB_REF_NAME}")
           if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             # Release already exists (e.g. a re-run): refresh metadata, then overwrite assets.

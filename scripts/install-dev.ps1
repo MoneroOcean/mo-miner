@@ -6,7 +6,7 @@ param(
   [string]$AcppHipDir = 'C:\Tools\acpp-amd',
   [string]$HipDir = 'C:\Program Files\AMD\ROCm\7.1',
   [string]$CudaDir = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6',
-  [string]$DpcppSha256 = '81b116580a84ac29221c459ffa354045fae69d95338a8c1db70b76d16be7e472',
+  [string]$DpcppSha256 = '8e5e9de06ed46c5e28aac4c574811a68f0a85dbb1cb65508187b0b8cf2e573cb',
   [string]$Workspace = 'C:\mom-dev-bootstrap',
   [switch]$ValidateOnly,
   [switch]$KeepWorkspace
@@ -380,7 +380,7 @@ function Install-Cuda {
     Download $cudaUrl $installer
     Assert-Authenticode $installer
     $process = Start-Process $installer -ArgumentList @(
-      '-s','nvcc_12.6','cudart_12.6','nvrtc_12.6','nvrtc_dev_12.6'
+      '-s','nvcc_12.6','cudart_12.6','nvrtc_12.6','nvrtc_dev_12.6','nvml_dev_12.6'
     ) -Wait -PassThru
     if ($process.ExitCode -notin @(0,3010)) { throw "CUDA toolkit install failed: $($process.ExitCode)" }
   }
@@ -414,7 +414,7 @@ function Install-Hip {
     $sdkExe = Join-Path $Workspace 'hip-sdk.exe'
     Download $hipSdkUrl $sdkExe
     Assert-Sha256 $sdkExe $hipSdkSha256
-    $sevenZip = (Get-Command 7z.exe -ErrorAction Stop).Source
+    $sevenZip = (Get-Command 7z.exe -ErrorAction Stop | Select-Object -First 1).Source
     $sdkItems = @(
       'Packages/Apps/ROCmSDKPackages/SDKCore/ROCm_SDK_Core.msi',
       'Packages/Apps/ROCmSDKPackages/RTCDevelopment/ROCm_RTC_Dev.msi',
