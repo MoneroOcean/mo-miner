@@ -79,12 +79,13 @@ struct Buffers {
   int32_t *EARp1, *EARp2, *EBLq1, *EBLq2;
   uint8_t *cA, *cB, *key, *target, *CVA, *CVB;
   uint32_t* transcript;
+  int transcript_rows;
   Result* result;
 };
 
 template <bool DirectLayout>
 static void k_noise_ebr(sycl::queue& q, const Buffers& B, int n, int rank, int blocks) {
-  q.parallel_for(sycl::range<1>(blocks), [=](sycl::id<1> id) {
+  q.parallel_for(sycl::range<1>(blocks), [=](sycl::id<1> id) MOM_SYCL_KERNEL_ARGS_RESTRICT {
     const int i = (int)id[0];
     uint8_t sd[32]; mk_seed(sd, 'B');
     uint8_t h[32]; dev_randHash(i, sd, B.cB, 0, h);
@@ -108,10 +109,18 @@ static void k_noise_ebr(sycl::queue& q, const Buffers& B, int n, int rank, int b
 static int reduce_tree_pow2(sycl::queue& q, uint8_t* cvs, const uint8_t* key, int nc) {
   int rd = 0, wr = nc, cnt = nc;
   while (cnt > 1) {
-    int half = cnt / 2; bool isRoot = (half == 1); int rd0 = rd, wr0 = wr;
-    q.parallel_for(sycl::range<1>(half), [=](sycl::id<1> id) { int i = (int)id[0];
-      pearlhash_b3::parent_cv(cvs + (size_t)(rd0 + 2 * i) * 32, cvs + (size_t)(rd0 + 2 * i + 1) * 32, key, isRoot, cvs + (size_t)(wr0 + i) * 32); });
-    rd = wr; wr += half; cnt = half;
+    int half = cnt / 2;
+    bool isRoot = (half == 1);
+    int rd0 = rd, wr0 = wr;
+    q.parallel_for(sycl::range<1>(half), [=](sycl::id<1> id) MOM_SYCL_KERNEL_ARGS_RESTRICT {
+      int i = (int)id[0];
+      pearlhash_b3::parent_cv(cvs + (size_t)(rd0 + 2 * i) * 32,
+                              cvs + (size_t)(rd0 + 2 * i + 1) * 32, key, isRoot,
+                              cvs + (size_t)(wr0 + i) * 32);
+    });
+    rd = wr;
+    wr += half;
+    cnt = half;
   }
   return rd;
 }
@@ -189,8 +198,19 @@ static int reduce_tree_pow2(sycl::queue& q, uint8_t* cvs, const uint8_t* key, in
 static void k_noise(sycl::queue& q, const Buffers& bb, int m, int n, int k, int rank) {
   auto B = bb;
   const int dAL = (m * rank + 31) / 32, dBR = (n * rank + 31) / 32, dP = (k * 4 + 31) / 32;
-  q.parallel_for(sycl::range<1>(dAL), [=](sycl::id<1> id) { int i = (int)id[0]; uint8_t sd[32]; mk_seed(sd, 'A'); uint8_t h[32]; dev_randHash(i, sd, B.cA, 0, h);
-    int total = m * rank; for (int j = 0; j < 32; j++) { int o = i * 32 + j; if (o < total) B.EAL[o] = (int8_t)((h[j] & 63) - 32); } });
+  q.parallel_for(sycl::range<1>(dAL), [=](sycl::id<1> id) MOM_SYCL_KERNEL_ARGS_RESTRICT {
+    int i = (int)id[0];
+    uint8_t sd[32];
+    mk_seed(sd, 'A');
+    uint8_t h[32];
+    dev_randHash(i, sd, B.cA, 0, h);
+    int total = m * rank;
+    for (int j = 0; j < 32; j++) {
+      int o = i * 32 + j;
+      if (o < total)
+        B.EAL[o] = (int8_t)((h[j] & 63) - 32);
+    }
+  });
   const bool cpu = q.get_device().is_cpu();
   if (cpu) {
     // The Windows OpenCL CPU runtime faults in the otherwise-trivial transpose kernel. Its small
@@ -200,25 +220,42 @@ static void k_noise(sycl::queue& q, const Buffers& bb, int m, int n, int k, int 
   } else {
     k_noise_ebr<false>(q, B, n, rank, dBR);
   }
-  q.parallel_for(sycl::range<1>(dP), [=](sycl::id<1> id) { int i = (int)id[0]; uint8_t sd[32]; mk_seed(sd, 'A'); uint8_t h[32]; dev_randHash(i, sd, B.cA, 1, h);
-    for (int kk = 0; kk < 8; kk++) { int idx = i * 8 + kk; if (idx >= k) break; perm_pair(rd_u32le(h + kk*4), rank, B.EARp1[idx], B.EARp2[idx]); } });
-  q.parallel_for(sycl::range<1>(dP), [=](sycl::id<1> id) { int i = (int)id[0]; uint8_t sd[32]; mk_seed(sd, 'B'); uint8_t h[32]; dev_randHash(i, sd, B.cB, 1, h);
-    for (int kk = 0; kk < 8; kk++) { int idx = i * 8 + kk; if (idx >= k) break; perm_pair(rd_u32le(h + kk*4), rank, B.EBLq1[idx], B.EBLq2[idx]); } });
+  q.parallel_for(sycl::range<1>(dP), [=](sycl::id<1> id) MOM_SYCL_KERNEL_ARGS_RESTRICT {
+    int i = (int)id[0];
+    uint8_t sd[32];
+    mk_seed(sd, 'A');
+    uint8_t h[32];
+    dev_randHash(i, sd, B.cA, 1, h);
+    for (int kk = 0; kk < 8; kk++) {
+      int idx = i * 8 + kk;
+      if (idx >= k)
+        break;
+      perm_pair(rd_u32le(h + kk * 4), rank, B.EARp1[idx], B.EARp2[idx]);
+    }
+  });
+  q.parallel_for(sycl::range<1>(dP), [=](sycl::id<1> id) MOM_SYCL_KERNEL_ARGS_RESTRICT {
+    int i = (int)id[0];
+    uint8_t sd[32];
+    mk_seed(sd, 'B');
+    uint8_t h[32];
+    dev_randHash(i, sd, B.cB, 1, h);
+    for (int kk = 0; kk < 8; kk++) {
+      int idx = i * 8 + kk;
+      if (idx >= k)
+        break;
+      perm_pair(rd_u32le(h + kk * 4), rank, B.EBLq1[idx], B.EBLq2[idx]);
+    }
+  });
   if (!cpu) {
-    q.parallel_for(sycl::range<1>((size_t)rank * n), [=](sycl::id<1> id) {
+    q.parallel_for(
+        sycl::range<1>((size_t)rank * n), [=](sycl::id<1> id) MOM_SYCL_KERNEL_ARGS_RESTRICT {
       const int idx = (int)id[0], r = idx / n, c = idx % n;
       B.EBR[idx] = B.EBRt[c * rank + r];
     });
   }
 }
 
-#if defined(_WIN32)
-// Intel's standalone Windows CPU OpenCL runtime can access-violate while JITing/executing Pearl's
-// otherwise portable commitment/noise kernels on older x86 CPUs. The final matrix preparation and
-// search already use shared USM on the host for this device class; complete that compatibility path
-// by producing the same roots and sparse-noise tables here. GPU paths and Linux CPU kernel coverage
-// remain unchanged. CPU Pearl mining is not a performance target, while deterministic archive
-// validation across supported Windows CPUs is valuable.
+// Host reference for GPU commitment-seed checks and the Windows CPU compatibility path.
 static void prepare_roots_cpu(const Buffers& B, uint32_t seed, int m, int n, int k) {
   const size_t lenA = checked_elements(m, k, "M*K roots");
   const size_t lenB = checked_elements(n, k, "N*K roots");
@@ -256,6 +293,9 @@ static void prepare_roots_cpu(const Buffers& B, uint32_t seed, int m, int n, int
                              static_cast<uint32_t>(n), B.cB, B.cA);
 }
 
+#if defined(_WIN32)
+// Intel's Windows CPU OpenCL runtime can access-violate in commitment/noise kernels on older CPUs.
+// Its shared-USM fallback uses host preparation; GPU mining keeps the device kernels unchanged.
 static void prepare_noise_cpu(const Buffers& B, int m, int n, int k, int rank) {
   const int dAL = (m * rank + 31) / 32, dBR = (n * rank + 31) / 32;
   for (int i = 0; i < dAL; ++i) {

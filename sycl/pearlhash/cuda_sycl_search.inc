@@ -108,6 +108,11 @@ static inline int cu_swizzle_128(int off) { return off ^ ((off & 0x380) >> 3); }
 // (pearlhash's inner-hash needs CUMULATIVE C, so tiles cannot be evicted like a normal GEMM), inner-hash
 // folds them per rank via direct register reads. ~34 TH/s on an L4 -- correct and the best working
 // config; occupancy-bound by the resident-accumulator register tile.
+static bool cuda_sycl_search_supports_shape(const int m, const int n) {
+  return m % (16 * pearlhash_cuda_er) == 0 && n % (16 * pearlhash_cuda_ec) == 0;
+}
+
+template <bool Debug>
 static void search_cuda_direct(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k, int rank) {
   constexpr int SG = 32, ER = pearlhash_cuda_er, EC = pearlhash_cuda_ec;
   auto B = bb;
@@ -119,8 +124,13 @@ static void search_cuda_direct(sycl::queue& q, const Buffers& bb, uint32_t seed,
   // Slice ~= BLK*16*k*(ER+EC) int8 bytes. MOM_PEARLHASH_CU_BLK overrides. BLK must evenly divide both
   // tile dimensions or the super-block swizzle disables (falls back to row-major).
   int BLK = pearlhash_cuda_block_floor;
-  if (const char* e = std::getenv("MOM_PEARLHASH_CU_BLK")) {
-    BLK = std::atoi(e); if (BLK < 1) BLK = pearlhash_cuda_block_floor;
+  if (std::getenv("MOM_PEARLHASH_CU_BLK")) {
+    unsigned long configured = 0;
+    if (!mom_parse_env_ulong("MOM_PEARLHASH_CU_BLK", configured) || configured < 1 ||
+        configured > static_cast<unsigned long>(std::numeric_limits<int>::max()))
+      BLK = pearlhash_cuda_block_floor;
+    else
+      BLK = static_cast<int>(configured);
   } else {
     const size_t l2 = q.get_device().get_info<sycl::info::device::global_mem_cache_size>();
     const size_t cache_budget = l2 <= (size_t(32) << 20) ? l2 / 2 : l2;
@@ -132,18 +142,27 @@ static void search_cuda_direct(sycl::queue& q, const Buffers& bb, uint32_t seed,
   const bool blocked = BLK > 1 && (tilesW % BLK) == 0 && (tilesH % BLK) == 0;
   const int blocksW = blocked ? tilesW / BLK : 0;
   q.submit([&](sycl::handler& h) {
-    sycl::local_accessor<uint32_t, 1> trbuf(sycl::range<1>(ER * EC * 16), h);  // per-warp transcripts in SLM
-    h.parallel_for(sycl::nd_range<1>(nWarp * SG, SG), [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(32)]] {
-      auto sg = it.get_sub_group();
-      const int lane = (int)sg.get_local_linear_id(), gid = lane >> 2, tid = lane & 3;
-      const int warp = (int)it.get_group(0);
-      int Rg, Cg;
-      if (blocked) { const int blk = warp / (BLK * BLK), intra = warp % (BLK * BLK);
-        Rg = (blk / blocksW) * BLK + (intra / BLK); Cg = (blk % blocksW) * BLK + (intra % BLK); }
-      else { Rg = warp / tilesW; Cg = warp % tilesW; }
-      const int rowBase = Rg * 16 * ER, colBase = Cg * 16 * EC;
-      const int8_t* __restrict__ Ap = B.Ap; const int8_t* __restrict__ Bp = B.Bp;   // A' row-major (i*k+c), B' col-major (j*k+c)
-      int32_t acc[ER * EC * 2][4];
+    sycl::local_accessor<uint32_t, 1> trbuf(sycl::range<1>(ER * EC * 16),
+                                            h); // per-warp transcripts in SLM
+    h.parallel_for(
+        sycl::nd_range<1>(nWarp * SG, SG),
+        [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(32)]] MOM_SYCL_KERNEL_ARGS_RESTRICT {
+          auto sg = it.get_sub_group();
+          const int lane = (int)sg.get_local_linear_id(), gid = lane >> 2, tid = lane & 3;
+          const int warp = (int)it.get_group(0);
+          int Rg, Cg;
+          if (blocked) {
+            const int blk = warp / (BLK * BLK), intra = warp % (BLK * BLK);
+            Rg = (blk / blocksW) * BLK + (intra / BLK);
+            Cg = (blk % blocksW) * BLK + (intra % BLK);
+          } else {
+            Rg = warp / tilesW;
+            Cg = warp % tilesW;
+          }
+          const int rowBase = Rg * 16 * ER, colBase = Cg * 16 * EC;
+          const int8_t* __restrict__ Ap = B.Ap;
+          const int8_t* __restrict__ Bp = B.Bp; // A' row-major (i*k+c), B' col-major (j*k+c)
+          int32_t acc[ER * EC * 2][4];
 #pragma unroll
       for (int i = 0; i < ER * EC * 2; i++) { acc[i][0] = acc[i][1] = acc[i][2] = acc[i][3] = 0; }
       if (lane == 0)
@@ -184,6 +203,10 @@ static void search_cuda_direct(sycl::queue& q, const Buffers& bb, uint32_t seed,
           uint32_t full[16];
 #pragma unroll
           for (int s = 0; s < 16; s++) full[s] = trbuf[t * 16 + s];
+          if constexpr (Debug) {
+            sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device, sycl::access::address_space::global_space> checksum(B.result->chk);
+            checksum.fetch_add(tile_mix(static_cast<uint32_t>(rowBase + r * 16), static_cast<uint32_t>(colBase + c * 16), full));
+          }
           uint8_t jackpot[32];
           if (!tile_wins(full, B.cA, B.target, jackpot)) continue;
           sycl::atomic_ref<int, sycl::memory_order::relaxed, sycl::memory_scope::device, sycl::access::address_space::global_space> at(B.result->found);
@@ -205,6 +228,7 @@ constexpr int pearlhash_cuda_tile_rows = 4;
 constexpr int pearlhash_cuda_tile_columns = 4;
 // K staged per SMEM chunk; multiple of 16 for cp.async and 32 for the matrix K dimension.
 constexpr int pearlhash_cuda_block_k = 128;
+template <bool Debug>
 static void search_cuda_pipe(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k, int rank) {
   constexpr int WM = pearlhash_cuda_warp_rows, WN = pearlhash_cuda_warp_columns,
                 TM = pearlhash_cuda_tile_rows, TN = pearlhash_cuda_tile_columns,
@@ -215,22 +239,26 @@ static void search_cuda_pipe(sycl::queue& q, const Buffers& bb, uint32_t seed, i
   const int mB = m / BM, nB = n / BN, nChunks = k / BK;
   const size_t nBlocks = (size_t)mB * nB;
   q.submit([&](sycl::handler& h) {
-    sycl::local_accessor<int8_t, 1> As(sycl::range<1>(2 * AB), h);                 // double-buffered A' [2][BM][BK]
-    sycl::local_accessor<int8_t, 1> Bs(sycl::range<1>(2 * BB), h);                 // double-buffered B' [2][BN][BK] (col-major B')
-    h.parallel_for(sycl::nd_range<1>(nBlocks * TBSZ, TBSZ), [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(32)]] {
-      auto grp = it.get_group();
-      const int tid = (int)it.get_local_linear_id();
-      const int warp = tid >> 5, lane = tid & 31;
-      const int wM = warp / WN, wN = warp % WN;
-      // CUDA's dim3(mBlocks,nBlocks) traversal varies x/row fastest, preserving the twice-larger
-      // B slice while successive row blocks stream their smaller A slices.
-      const int block = (int)it.get_group(0), bR = block % mB, bC = block / mB;
-      const int rowBlock = bR * BM, colBlock = bC * BN;
-      const int8_t* __restrict__ Ap = B.Ap; const int8_t* __restrict__ Bp = B.Bp;
-      int8_t* Asp = As.get_multi_ptr<sycl::access::decorated::no>().get();
-      int8_t* Bsp = Bs.get_multi_ptr<sycl::access::decorated::no>().get();
-      uint32_t tr[8] = {};
-      int32_t acc[TM * TN * 2][4];
+    sycl::local_accessor<int8_t, 1> As(sycl::range<1>(2 * AB), h); // double-buffered A' [2][BM][BK]
+    sycl::local_accessor<int8_t, 1> Bs(sycl::range<1>(2 * BB),
+                                       h); // double-buffered B' [2][BN][BK] (col-major B')
+    h.parallel_for(
+        sycl::nd_range<1>(nBlocks * TBSZ, TBSZ),
+        [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(32)]] MOM_SYCL_KERNEL_ARGS_RESTRICT {
+          auto grp = it.get_group();
+          const int tid = (int)it.get_local_linear_id();
+          const int warp = tid >> 5, lane = tid & 31;
+          const int wM = warp / WN, wN = warp % WN;
+          // CUDA's dim3(mBlocks,nBlocks) traversal varies x/row fastest, preserving the twice-larger
+          // B slice while successive row blocks stream their smaller A slices.
+          const int block = (int)it.get_group(0), bR = block % mB, bC = block / mB;
+          const int rowBlock = bR * BM, colBlock = bC * BN;
+          const int8_t* __restrict__ Ap = B.Ap;
+          const int8_t* __restrict__ Bp = B.Bp;
+          int8_t* Asp = As.get_multi_ptr<sycl::access::decorated::no>().get();
+          int8_t* Bsp = Bs.get_multi_ptr<sycl::access::decorated::no>().get();
+          uint32_t tr[8] = {};
+          int32_t acc[TM * TN * 2][4];
 #pragma unroll
       for (int i = 0; i < TM * TN * 2; i++) { acc[i][0] = acc[i][1] = acc[i][2] = acc[i][3] = 0; }
       const int warpRow = wM * TM * 16, warpCol = wN * TN * 16;
@@ -246,8 +274,12 @@ static void search_cuda_pipe(sycl::queue& q, const Buffers& bb, uint32_t seed, i
       int rc = 0;
       for (int c = 0; c < nChunks; c++) {
         const int buf = c & 1;
-        if (c + 1 < nChunks) load_chunk((c + 1) & 1, (c + 1) * BK);   // prefetch next chunk (overlaps the mma below)
-        cu_cp_wait<1>();              // current chunk's copy done (keep the prefetch in flight)
+        if (c + 1 < nChunks) {
+          load_chunk((c + 1) & 1, (c + 1) * BK);
+          cu_cp_wait<1>(); // current copy done; keep the next prefetch in flight
+        } else {
+          cu_cp_wait<0>(); // final copy has no next prefetch to keep in flight
+        }
         sycl::group_barrier(grp);     // make the cp.async writes visible to all warps
         const int8_t* Ab = Asp + buf * AB; const int8_t* Bb = Bsp + buf * BB;
 #pragma unroll
@@ -255,14 +287,14 @@ static void search_cuda_pipe(sycl::queue& q, const Buffers& bb, uint32_t seed, i
           uint32_t ra[TM][4], rb[TN][2][2];
 #pragma unroll
           for (int mt = 0; mt < TM; mt++) {
-            const int logical = (warpRow + mt * 16 + (lane >> 1)) * BK + ks + (lane & 1) * 16;
+            const int logical = (warpRow + mt * 16 + (lane & 15)) * BK + ks + (lane >> 4) * 16;
             cu_ldmatrix_x4(ra[mt], cu_smem_addr(Ab + cu_swizzle_128(logical)));
           }
 #pragma unroll
           for (int nt = 0; nt < TN; nt++)
 #pragma unroll
             for (int hh = 0; hh < 2; hh++) {
-              const int logical = (warpCol + nt * 16 + hh * 8 + ((lane >> 1) & 7)) * BK + ks + (lane & 1) * 16;
+              const int logical = (warpCol + nt * 16 + hh * 8 + (lane & 7)) * BK + ks + ((lane >> 3) & 1) * 16;
               cu_ldmatrix_x2(rb[nt][hh], cu_smem_addr(Bb + cu_swizzle_128(logical)));
             }
 #pragma unroll
@@ -278,7 +310,8 @@ static void search_cuda_pipe(sycl::queue& q, const Buffers& bb, uint32_t seed, i
               uint32_t part = (uint32_t)acc[t*2][0] ^ (uint32_t)acc[t*2][1] ^ (uint32_t)acc[t*2][2] ^ (uint32_t)acc[t*2][3]
                             ^ (uint32_t)acc[t*2+1][0] ^ (uint32_t)acc[t*2+1][1] ^ (uint32_t)acc[t*2+1][2] ^ (uint32_t)acc[t*2+1][3];
               part = sycl::reduce_over_group(it.get_sub_group(), part, sycl::bit_xor<uint32_t>{});
-              if (lane == t * 2 + (rc & 1)) tr[rc >> 1] = part;
+              if (lane == t * 2 + (rc & 1))
+                tr[(rc & 15) >> 1] = rotl(tr[(rc & 15) >> 1], 13) ^ part;
             }
             rc++;
           }
@@ -293,6 +326,10 @@ static void search_cuda_pipe(sycl::queue& q, const Buffers& bb, uint32_t seed, i
         uint32_t full[16];
 #pragma unroll
         for (int i = 0; i < 8; i++) { full[i * 2] = tr[i]; full[i * 2 + 1] = other[i]; }
+        if constexpr (Debug) {
+          sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device, sycl::access::address_space::global_space> checksum(B.result->chk);
+          checksum.fetch_add(tile_mix(static_cast<uint32_t>(rowBlock + warpRow + mt * 16), static_cast<uint32_t>(colBlock + warpCol + nt * 16), full));
+        }
         uint8_t jackpot[32];
         if (tile_wins(full, B.cA, B.target, jackpot)) {
           sycl::atomic_ref<int, sycl::memory_order::relaxed, sycl::memory_scope::device, sycl::access::address_space::global_space> at(B.result->found);
@@ -302,14 +339,23 @@ static void search_cuda_pipe(sycl::queue& q, const Buffers& bb, uint32_t seed, i
     });
   });
 }
-static void search_cuda(sycl::queue& q, const Buffers& b, uint32_t seed, int m, int n, int k, int rank) {
+[[maybe_unused]] static void search_cuda(sycl::queue& q, const Buffers& b, uint32_t seed, int m,
+                                         int n, int k, int rank, const bool debug) {
   const std::string name = q.get_device().get_info<sycl::info::device::name>();
   // RTX 50 / Blackwell benefits from operand sharing across eight warps. Ada and older retain the
-  // direct L2 path, which is faster there. The distributed transcript maps exactly 16 rank chunks.
-  const bool blackwell = name.find("RTX 50") != std::string::npos || name.find("Blackwell") != std::string::npos;
-  if (blackwell && k == 4096 && rank == 256 && m % 128 == 0 && n % 256 == 0)
-    search_cuda_pipe(q, b, seed, m, n, k, rank);
-  else
-    search_cuda_direct(q, b, seed, m, n, k, rank);
+  // direct L2 path, which is faster there. Longer profiles rotate back through the 16-word transcript.
+  const bool blackwell =
+      name.find("RTX 50") != std::string::npos || name.find("Blackwell") != std::string::npos;
+  if (blackwell && ((k == 4096 && rank == 256) || (k == 8192 && rank == 128)) &&
+      m % 128 == 0 && n % 256 == 0) {
+    if (debug)
+      search_cuda_pipe<true>(q, b, seed, m, n, k, rank);
+    else
+      search_cuda_pipe<false>(q, b, seed, m, n, k, rank);
+  } else if (debug) {
+    search_cuda_direct<true>(q, b, seed, m, n, k, rank);
+  } else {
+    search_cuda_direct<false>(q, b, seed, m, n, k, rank);
+  }
 }
 #endif  // MOM_SYCL_HAS_CUDA

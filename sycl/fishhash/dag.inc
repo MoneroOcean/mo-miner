@@ -6,14 +6,17 @@ static sycl::event submit_fishhash_dag_gen(
   constexpr unsigned WG = 64;
   const size_t global = (static_cast<size_t>(count) + WG - 1) / WG * WG;
   return q.submit([&](sycl::handler& h) {
-    h.parallel_for<FishDagKernel>(sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(WG)), [=](sycl::nd_item<1> it) {
-      const uint32_t i = (uint32_t)it.get_global_id(0);
-      if (i >= count) return;
-      const uint32_t idx = start + i;
-      uint64_t item[16];
-      fish_dataset_item(d_cache, idx, item);
-      for (unsigned k = 0; k < 16; ++k) d_dag[(size_t)idx * 16 + k] = item[k];
-    });
+    h.parallel_for<FishDagKernel>(sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(WG)),
+                                  [=](sycl::nd_item<1> it) MOM_SYCL_KERNEL_ARGS_RESTRICT {
+                                    const uint32_t i = (uint32_t)it.get_global_id(0);
+                                    if (i >= count)
+                                      return;
+                                    const uint32_t idx = start + i;
+                                    uint64_t item[16];
+                                    fish_dataset_item(d_cache, idx, item);
+                                    for (unsigned k = 0; k < 16; ++k)
+                                      d_dag[(size_t)idx * 16 + k] = item[k];
+                                  });
   });
 }
 

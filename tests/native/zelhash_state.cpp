@@ -125,7 +125,9 @@ static bool entry_rejects([[maybe_unused]] const uint8_t *input,
                           [[maybe_unused]] unsigned intensity, [[maybe_unused]] bool is_test,
                           [[maybe_unused]] bool is_benchmark) {
   try {
+    {
 #include "zelhash_entry_guard.inc"
+    }
     return false;
   } catch (const std::string &) {
     return true;
@@ -173,14 +175,22 @@ static void test_capacity() {
     } catch (const std::string &) {
       rejected = true;
     }
-    require(rejected, "malformed or out-of-range capacity rejected");
+    require(rejected && allocations == 0 && live.empty(),
+            "malformed or out-of-range capacity rejected without allocation");
   }
   const std::string valid = std::to_string(minimum);
   setenv("MOM_ZELHASH_SLOTS", valid.c_str(), 1);
   require(zelhash_slot_capacity(d) == minimum, "minimum override");
   const std::string whitespace = " " + valid;
   setenv("MOM_ZELHASH_SLOTS", whitespace.c_str(), 1);
-  require(zelhash_slot_capacity(d) == minimum, "strtoul whitespace preserved");
+  rejected = false;
+  try {
+    (void)zelhash_slot_capacity(d);
+  } catch (const std::string &) {
+    rejected = true;
+  }
+  require(rejected && allocations == 0 && live.empty(),
+          "leading whitespace rejected without allocation");
   unsetenv("MOM_ZELHASH_SLOTS");
 }
 static void test_lifetime() {

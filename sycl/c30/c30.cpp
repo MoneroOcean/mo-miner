@@ -104,7 +104,8 @@ struct DeviceMemory {
     const char* const force_low_memory = std::getenv("MOM_C30_FORCE_LOW_MEMORY");
     low_memory = (force_low_memory && force_low_memory[0] != '0') ||
                  max_alloc < kMaxEdgeArrayBytes ||
-                 global_bytes < kRequiredDeviceBytes + kSafetyReserve;
+                 global_bytes < kRequiredDeviceBytes + kSafetyReserve ||
+                 mom_intel_eu_simd_width(device) == 8;
     if (low_memory && global_bytes < kLowMemoryRequiredDeviceBytes + kLowMemoryReserve)
       throw std::runtime_error("c30 needs 10.2-GiB low-memory graph storage plus reserve");
 

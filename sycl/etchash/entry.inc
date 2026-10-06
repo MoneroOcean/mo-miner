@@ -53,13 +53,11 @@ int etchash(
     sycl_wait_and_throw(q.submit([&](sycl::handler& h) {
       sycl::local_accessor<uint32_t, 1> scratch(sycl::range<1>(SCRATCH_WORDS), h);
       h.parallel_for(
-        sycl::nd_range<1>(
-          sycl::range<1>(static_cast<size_t>(intensity) * ETCHASH_LANES),
-          sycl::range<1>(ETCHASH_LANES)
-        ),
-        [=](sycl::nd_item<1> item) {
-          const uint32_t gid = static_cast<uint32_t>(item.get_group(0));
-          const uint32_t lane = static_cast<uint32_t>(item.get_local_id(0));
+          sycl::nd_range<1>(sycl::range<1>(static_cast<size_t>(intensity) * ETCHASH_LANES),
+                            sycl::range<1>(ETCHASH_LANES)),
+          [=](sycl::nd_item<1> item) MOM_SYCL_KERNEL_ARGS_RESTRICT {
+            const uint32_t gid = static_cast<uint32_t>(item.get_group(0));
+            const uint32_t lane = static_cast<uint32_t>(item.get_local_id(0));
 
           const uint64_t nonce = start_nonce + gid;
           if (lane == 0) {

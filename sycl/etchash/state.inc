@@ -298,15 +298,16 @@ public:
           chunk_nodes ? std::min(chunk_nodes, total - start_node) : total;
       const uint32_t chunk_start = start_node;
       dag_event = q.submit([&](sycl::handler& h) {
-        h.parallel_for(
-          sycl::nd_range<1>(sycl::range<1>(round_up_size(current_nodes, dag_workgroup)), sycl::range<1>(dag_workgroup)),
-          [=](sycl::nd_item<1> item) {
-            const uint32_t local_node = item.get_global_id(0);
-            if (local_node >= current_nodes) return;
-            const uint32_t node_index = chunk_start + local_node;
+        h.parallel_for(sycl::nd_range<1>(sycl::range<1>(round_up_size(current_nodes, dag_workgroup)),
+                                         sycl::range<1>(dag_workgroup)),
+                       [=](sycl::nd_item<1> item) MOM_SYCL_KERNEL_ARGS_RESTRICT {
+                         const uint32_t local_node = item.get_global_id(0);
+                         if (local_node >= current_nodes)
+                           return;
+                         const uint32_t node_index = chunk_start + local_node;
 
-            uint32_t dag_node[ETHASH_NODE_WORDS];
-            const uint32_t init = fast_mod_dev(node_index, light_mod);
+                         uint32_t dag_node[ETHASH_NODE_WORDS];
+                         const uint32_t init = fast_mod_dev(node_index, light_mod);
 #pragma unroll
                          for (unsigned w = 0; w < ETHASH_NODE_WORDS; ++w)
                            dag_node[w] = d_light[init * ETHASH_NODE_WORDS + w];

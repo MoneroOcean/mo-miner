@@ -26,27 +26,29 @@ void mom_sycl_poll_pause() {
 }
 #endif
 
-namespace mom_autolykos2 { void autolykos2_cleanup_states() noexcept; }
+namespace mom_autolykos2 {
+void autolykos2_cleanup_states() noexcept;
+}
 namespace mom_beamhash3 {
 void beamhash3_cleanup_states() noexcept;
 unsigned beamhash3_workgroup(const sycl::device&);
-}
+} // namespace mom_beamhash3
 namespace mom_zelhash {
 void zelhash_cleanup_states() noexcept;
 unsigned zelhash_slot_capacity(const sycl::device&);
+} // namespace mom_zelhash
+namespace mom_etchash {
+void etchash_cleanup_states() noexcept;
 }
-namespace mom_equihash192_7 { void cleanup_states() noexcept; }
-namespace mom_zhash {
-void zhash_cleanup_states() noexcept;
+namespace mom_fishhash {
+void fishhash_cleanup_states() noexcept;
 }
-namespace mom_etchash { void etchash_cleanup_states() noexcept; }
-namespace mom_fishhash { void fishhash_cleanup_states() noexcept; }
-namespace mom_hoohash { void hoohash_cleanup_states() noexcept; }
-namespace mom_verthash {
-void verthash_cleanup_states() noexcept;
+namespace mom_kawpow {
+void kawpow_cleanup_states() noexcept;
 }
-namespace mom_kawpow { void kawpow_cleanup_states() noexcept; }
-namespace mom_octopus { void octopus_cleanup_states() noexcept; }
+namespace mom_hoohash {
+void hoohash_cleanup_states() noexcept;
+}
 namespace mom_walahash {
 void walahash_cleanup_states() noexcept;
 }
@@ -55,6 +57,18 @@ void xelishashv3_cleanup_states() noexcept;
 }
 namespace mom_nexapow {
 void nexapow_cleanup_states() noexcept;
+}
+namespace mom_octopus {
+void octopus_cleanup_states() noexcept;
+}
+namespace mom_verthash {
+void verthash_cleanup_states() noexcept;
+}
+namespace mom_zhash {
+void zhash_cleanup_states() noexcept;
+}
+namespace mom_equihash192_7 {
+void cleanup_states() noexcept;
 }
 void cn_gpu_cleanup_states() noexcept;
 void c29_cleanup_states() noexcept;
@@ -65,8 +79,7 @@ void pearlhash_cleanup_states() noexcept;
 
 // The registry values are cleared explicitly on runtimes that support ordered destruction. The
 // heap-owned shell itself has no process-exit destructor, matching the per-algorithm registries.
-static std::map<std::string, sycl::device>& str2dev =
-  *new std::map<std::string, sycl::device>;
+static std::map<std::string, sycl::device>& str2dev = *new std::map<std::string, sycl::device>;
 static std::string available_dev_str();
 
 static bool is_integrated_gpu(const sycl::device& device) {
@@ -96,17 +109,17 @@ void sycl_cleanup() noexcept {
   c30_cleanup_states();
   cn_gpu_cleanup_states();
   mom_zelhash::zelhash_cleanup_states();
-  mom_zhash::zhash_cleanup_states();
-  mom_equihash192_7::cleanup_states();
   mom_etchash::etchash_cleanup_states();
   mom_fishhash::fishhash_cleanup_states();
+  mom_kawpow::kawpow_cleanup_states();
   mom_hoohash::hoohash_cleanup_states();
   mom_walahash::walahash_cleanup_states();
   mom_xelishashv3::xelishashv3_cleanup_states();
   mom_nexapow::nexapow_cleanup_states();
-  mom_verthash::verthash_cleanup_states();
-  mom_kawpow::kawpow_cleanup_states();
   mom_octopus::octopus_cleanup_states();
+  mom_verthash::verthash_cleanup_states();
+  mom_zhash::zhash_cleanup_states();
+  mom_equihash192_7::cleanup_states();
   pearlhash_cleanup_states();
   str2dev.clear();
 }
@@ -114,30 +127,34 @@ void sycl_cleanup() noexcept {
 
 static std::string gpu_identity_key(const sycl::device& device, const unsigned platform_gpu_num) {
   return device.get_info<sycl::info::device::vendor>() + "|" +
-         device.get_info<sycl::info::device::name>() + "|" +
-         std::to_string(platform_gpu_num);
+         device.get_info<sycl::info::device::name>() + "|" + std::to_string(platform_gpu_num);
 }
 
 static unsigned gpu_number(const std::string& name) {
-  if (!name.starts_with("gpu") || name.size() < 4) return 0;
+  if (!name.starts_with("gpu") || name.size() < 4)
+    return 0;
   size_t pos = 3;
   unsigned number = 0;
   while (pos < name.size() && name[pos] >= '0' && name[pos] <= '9') {
     const unsigned digit = static_cast<unsigned>(name[pos++] - '0');
-    if (number > (std::numeric_limits<unsigned>::max() - digit) / 10u) return 0;
+    if (number > (std::numeric_limits<unsigned>::max() - digit) / 10u)
+      return 0;
     number = number * 10u + digit;
   }
-  if (number == 0 || pos != name.size()) return 0;
+  if (number == 0 || pos != name.size())
+    return 0;
   return number;
 }
 
 static unsigned selected_stable_gpu_number() {
   const char* const backend = std::getenv("MOM_GPU_BACKEND");
-  if (!backend || (std::strncmp(backend, "intel", 5) != 0 &&
-      std::strncmp(backend, "opencl", 6) != 0)) return 0;
+  if (!backend || (std::strcmp(backend, "intel") != 0 && std::strcmp(backend, "opencl") != 0))
+    return 0;
   unsigned long index = 0;
-  if (!mom_parse_env_ulong("MOM_GPU_INDEX", index)) return 0;
-  if (index >= std::numeric_limits<unsigned>::max()) return std::numeric_limits<unsigned>::max();
+  if (!mom_parse_env_ulong("MOM_GPU_INDEX", index))
+    return 0;
+  if (index >= std::numeric_limits<unsigned>::max())
+    return std::numeric_limits<unsigned>::max();
   return static_cast<unsigned>(index) + 1u; // MOM_GPU_INDEX is zero-based; mom names start at gpu1.
 }
 
@@ -185,18 +202,20 @@ static void update_str2dev(const bool verbose = false) {
           gpu2base[identity_key] = std::string("gpu") + std::to_string(++next_gpu_num);
         }
         const std::string& gpuN = gpu2base.at(identity_key);
-        const bool supported = mom_is_cuda(device) || mom_is_hip(device) ||
-                               mom_is_opencl(device) || sycl_is_level_zero_gpu(device);
+        const bool supported = mom_is_cuda(device) || mom_is_hip(device) || mom_is_opencl(device) ||
+                               sycl_is_level_zero_gpu(device);
         if (!supported) {
           if (verbose) {
-            std::cout << "Found unsupported " << platform_name << " GPU platform device" << std::endl;
+            std::cout << "Found unsupported " << platform_name << " GPU platform device"
+                      << std::endl;
           }
           continue;
         }
         // The process selects one execution API before loading this addon. Keep the public device
         // identity API-neutral; if a caller exposes duplicate APIs anyway, prefer Level Zero over
         // OpenCL for the canonical entry.
-        if (!str2dev.contains(gpuN) || sycl_is_level_zero_gpu(device)) str2dev[gpuN] = device;
+        if (!str2dev.contains(gpuN) || sycl_is_level_zero_gpu(device))
+          str2dev[gpuN] = device;
       }
     }
   }
@@ -217,27 +236,28 @@ static void update_str2dev(const bool verbose = false) {
       return number != 0 && number != selected_gpu;
     });
   }
-  if (verbose) for (const auto& pair : str2dev) {
-    std::cout << pair.first << ": " << pair.second.get_info<sycl::info::device::name>()
-              << " via " << pair.second.get_platform().get_info<sycl::info::platform::name>();
-    // host_unified_memory is the backend-independent SYCL distinction between an integrated GPU
-    // sharing system memory and a discrete GPU with its own memory. Test discovery consumes this
-    // marker instead of maintaining a product-name or PCI-ID allow/deny list.
-    if (is_integrated_gpu(pair.second)) {
-      std::cout << " [integrated]";
+  if (verbose)
+    for (const auto& pair : str2dev) {
+      std::cout << pair.first << ": " << pair.second.get_info<sycl::info::device::name>() << " via "
+                << pair.second.get_platform().get_info<sycl::info::platform::name>();
+      // host_unified_memory is the backend-independent SYCL distinction between an integrated GPU
+      // sharing system memory and a discrete GPU with its own memory. Test discovery consumes this
+      // marker instead of maintaining a product-name or PCI-ID allow/deny list.
+      if (is_integrated_gpu(pair.second)) {
+        std::cout << " [integrated]";
+      }
+      std::cout << std::endl;
     }
-    std::cout << std::endl;
-  }
 }
 
 static std::string available_dev_str() {
   std::ostringstream devices;
   bool first = true;
   for (const auto& pair : str2dev) {
-    if (!first) devices << ", ";
+    if (!first)
+      devices << ", ";
     first = false;
-    devices << pair.first << " ("
-            << pair.second.get_info<sycl::info::device::name>() << " via "
+    devices << pair.first << " (" << pair.second.get_info<sycl::info::device::name>() << " via "
             << pair.second.get_platform().get_info<sycl::info::platform::name>() << ")";
   }
   return first ? "none" : devices.str();

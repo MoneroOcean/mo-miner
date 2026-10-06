@@ -11,18 +11,18 @@ static sycl::event submit_fishhash_search_coop(
     sycl::local_accessor<uint8_t, 1> stage(
       sycl::range<1>((workgroup / FISH_TEAM) * FISH_STAGE_BYTES), h);
     h.parallel_for<FishCoopKernel>(
-      sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(workgroup)),
-      [=](sycl::nd_item<1> it) MOM_REQD_SG_16 {
-      const unsigned local_id = static_cast<unsigned>(it.get_local_id(0));
-      const unsigned team_local = local_id / FISH_TEAM;
-      const auto sg = it.get_sub_group();
-      const unsigned sg_lane = static_cast<unsigned>(sg.get_local_linear_id());
-      const unsigned team_lane = sg_lane & (FISH_TEAM - 1u);
-      const unsigned team_base = sg_lane - team_lane;
-      const uint32_t gid = static_cast<uint32_t>(it.get_global_id(0) / FISH_TEAM);
-      const bool active = gid < intensity;
-      const uint64_t nonce = start_nonce + gid;
-      uint8_t* const work = &stage[team_local * FISH_STAGE_BYTES];
+        sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(workgroup)),
+        [=](sycl::nd_item<1> it) MOM_REQD_SG_16 MOM_SYCL_KERNEL_ARGS_RESTRICT {
+          const unsigned local_id = static_cast<unsigned>(it.get_local_id(0));
+          const unsigned team_local = local_id / FISH_TEAM;
+          const auto sg = it.get_sub_group();
+          const unsigned sg_lane = static_cast<unsigned>(sg.get_local_linear_id());
+          const unsigned team_lane = sg_lane & (FISH_TEAM - 1u);
+          const unsigned team_base = sg_lane - team_lane;
+          const uint32_t gid = static_cast<uint32_t>(it.get_global_id(0) / FISH_TEAM);
+          const bool active = gid < intensity;
+          const uint64_t nonce = start_nonce + gid;
+          uint8_t* const work = &stage[team_local * FISH_STAGE_BYTES];
 
       const unsigned hlen = input_size <= FISH_STAGE_BYTES ? input_size : FISH_STAGE_BYTES;
       for (unsigned i = team_lane; i < hlen; i += FISH_TEAM) work[i] = d_input[i];
@@ -98,18 +98,18 @@ static sycl::event submit_karlsenhashv2_search_coop(
     sycl::local_accessor<uint8_t, 1> stage(
       sycl::range<1>((workgroup / FISH_TEAM) * FISH_STAGE_BYTES), h);
     h.parallel_for<KarlsenCoopKernel>(
-      sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(workgroup)),
-      [=](sycl::nd_item<1> it) MOM_REQD_SG_16 {
-      const unsigned local_id = static_cast<unsigned>(it.get_local_id(0));
-      const unsigned team_local = local_id / FISH_TEAM;
-      const auto sg = it.get_sub_group();
-      const unsigned sg_lane = static_cast<unsigned>(sg.get_local_linear_id());
-      const unsigned team_lane = sg_lane & (FISH_TEAM - 1u);
-      const unsigned team_base = sg_lane - team_lane;
-      const uint32_t gid = static_cast<uint32_t>(it.get_global_id(0) / FISH_TEAM);
-      const bool active = gid < intensity;
-      const uint64_t nonce = start_nonce + gid;
-      uint8_t* const work = &stage[team_local * FISH_STAGE_BYTES];
+        sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(workgroup)),
+        [=](sycl::nd_item<1> it) MOM_REQD_SG_16 MOM_SYCL_KERNEL_ARGS_RESTRICT {
+          const unsigned local_id = static_cast<unsigned>(it.get_local_id(0));
+          const unsigned team_local = local_id / FISH_TEAM;
+          const auto sg = it.get_sub_group();
+          const unsigned sg_lane = static_cast<unsigned>(sg.get_local_linear_id());
+          const unsigned team_lane = sg_lane & (FISH_TEAM - 1u);
+          const unsigned team_base = sg_lane - team_lane;
+          const uint32_t gid = static_cast<uint32_t>(it.get_global_id(0) / FISH_TEAM);
+          const bool active = gid < intensity;
+          const uint64_t nonce = start_nonce + gid;
+          uint8_t* const work = &stage[team_local * FISH_STAGE_BYTES];
 
       for (unsigned i = team_lane; i < 80; i += FISH_TEAM)
         work[i] = i < input_size ? d_input[i] : 0;

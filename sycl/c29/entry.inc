@@ -12,6 +12,10 @@ int c29(const unsigned job_ref, const unsigned c29_proof_size, const uint8_t* co
     [[maybe_unused]] static const bool sycl_compile_env_set =
         (set_sycl_env("SYCL_PROGRAM_COMPILE_OPTIONS", ""), true);
 
+    // The bounded guard starts no asynchronous search, so its empty-input poll drains immediately.
+    if (std::getenv("MOM_C29_TEST_EDGE"))
+      return input_size ? c29_portable_test(input, input_size, output, dev_str) : -1;
+
     C29State& state = c29_state(dev_str);
     sycl::queue& compute_queue = state.queue;
     const std::shared_ptr<C29ResultState> result_state = state.result_state;

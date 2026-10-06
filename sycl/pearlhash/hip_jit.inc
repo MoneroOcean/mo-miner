@@ -59,6 +59,18 @@ struct PearlHashHipSearch {
     return unavailable(std::string("gfx12 WMMA is unavailable on ") +
                        (properties.gcnArchName[0] ? properties.gcnArchName : "an unknown architecture"));
   }
+  static bool supports_shape(const int m, const int n, const int k, const int rank) {
+    constexpr int rows_per_wave = 16 * 4;
+    constexpr int columns_per_wave = 16 * 4;
+    constexpr int waves_per_launch = 256 / 32;
+    const uint64_t waves = m > 0 && n > 0
+        ? static_cast<uint64_t>(m / rows_per_wave) * static_cast<uint64_t>(n / columns_per_wave)
+        : 0;
+    return m > 0 && n > 0 && k > 0 && rank > 0 && m % rows_per_wave == 0 &&
+        n % columns_per_wave == 0 && k % 16 == 0 &&
+        rank % 16 == 0 && k % rank == 0 && k / rank == 16 &&
+        waves % waves_per_launch == 0;
+  }
   void release() noexcept {
     if (done) (void)hipEventDestroy(done);
     if (wmma_done) (void)hipEventDestroy(wmma_done);
@@ -79,12 +91,9 @@ struct PearlHashHipSearch {
   }
   bool ensure(sycl::queue& q, int m, int n, int k, int rank) {
     if (!supports(q)) return false;
-    // The fixed wave tile and cumulative transcript require these divisibilities. All shipped
-    // PearlHash shapes satisfy them; retaining the check keeps custom research shapes safe.
-    const int rows_per_wave = 16 * tile_er, cols_per_wave = 16 * tile_ec;
-    const uint64_t waves = m > 0 && n > 0 ? (uint64_t)(m / rows_per_wave) * (uint64_t)(n / cols_per_wave) : 0;
-    if (m % rows_per_wave || n % cols_per_wave || k % 16 || rank % 16 || k % rank ||
-        k / rank != 16 || waves % (wmma_threads / 32)) {
+    // This source-JIT path implements the ratio-16 transcript. Other valid profiles use the shared
+    // SYCL path, so they must be rejected before its duplicate WMMA matrices are allocated.
+    if (!supports_shape(m, n, k, rank)) {
       return false;
     }
     if (checked && (compiled_k != k || compiled_rank != rank)) {
@@ -266,6 +275,7 @@ struct PearlHashHipSearch {
     if (reason) *reason = "HIP source-JIT support is not part of this worker";
     return false;
   }
+  static bool supports_shape(int, int, int, int) { return false; }
   bool ensure(sycl::queue&, int, int, int, int) { return false; }
   void wait(double) {}
   void release() noexcept {}

@@ -35,6 +35,22 @@ awk '
 test -s "$out/zelhash_generator_guard.inc"
 test -s "$out/zelhash_generator_dispatch.inc"
 
+awk '
+  /const char\* const force_low_memory = std::getenv/ { copies++; copying = 1 }
+  copying { print }
+  copying && /throw std::runtime_error/ { copying = 0; complete = 1 }
+  END { if (copies != 1 || !complete) exit 1 }
+' "$root/sycl/c30/c30.cpp" > "$out/c30_layout_policy.inc"
+awk '
+  /^static bool kawpow_default_subgroup_exchange\(/ { copies++; copying = 1 }
+  copying { print }
+  copying && /^}/ { copying = 0; complete = 1 }
+  END { if (copies != 1 || !complete) exit 1 }
+' "$root/sycl/kawpow/state.inc" > "$out/kawpow_exchange_policy.inc"
+test -s "$out/intel_geometry_helper.inc"
+test -s "$out/c30_layout_policy.inc"
+test -s "$out/kawpow_exchange_policy.inc"
+
 for profile in native acpp portable cuda hip acpp-cuda; do
   flags=()
   case "$profile" in

@@ -3,10 +3,6 @@
 #include "crypto/randomx/blake2/blake2.h"
 #include "cycle.h"
 
-#if defined(_WIN32)
-#include <windows.h>
-#endif
-
 // Cuckaroo Cycle algorithm constants and fixed kernel sizing.
 const constexpr uint64_t DUCK_SIZE_A = 129, DUCK_SIZE_B = 83, INDEX_SIZE = 4096,
                          MAX_INITIAL_INDEX_SIZE = 65536;
@@ -35,16 +31,31 @@ const constexpr uint32_t EDGE_BLOCK_MASK = EDGE_BLOCK_SIZE - 1, NUM_EDGES = mom_
                          EDGE_MASK = NUM_EDGES - 1;
 
 static uint32_t c29_env_u32(const char* name, const uint32_t default_value) {
-  const char* const value = std::getenv(name);
-  if (!value || !value[0]) return default_value;
-
-  const unsigned long parsed = std::strtoul(value, nullptr, 10);
-  return parsed == 0 ? default_value : static_cast<uint32_t>(parsed);
+  unsigned long parsed = 0;
+  if (!mom_parse_env_ulong(name, parsed) || parsed == 0 ||
+      parsed > std::numeric_limits<uint32_t>::max())
+    return default_value;
+  return static_cast<uint32_t>(parsed);
 }
 
-static bool c29_profile_enabled() { static const bool v = [](){ const char* e = std::getenv("MOM_C29_PROFILE"); return e && e[0] && e[0] != '0'; }(); return v; }
+static bool c29_profile_enabled() {
+  static const bool v = []() {
+    const char* e = std::getenv("MOM_C29_PROFILE");
+    return e && e[0] && e[0] != '0';
+  }();
+  return v;
+}
 
-static uint32_t c29_profile_limit() { static const uint32_t v = [](){ const char* e = std::getenv("MOM_C29_PROFILE_LIMIT"); if (!e || !e[0]) return 1u; const unsigned long p = std::strtoul(e, nullptr, 10); return p == 0 ? UINT32_MAX : static_cast<uint32_t>(p); }(); return v; }
+static uint32_t c29_profile_limit() {
+  static const uint32_t v = []() {
+    unsigned long parsed = 0;
+    if (!mom_parse_env_ulong("MOM_C29_PROFILE_LIMIT", parsed) ||
+        parsed > std::numeric_limits<uint32_t>::max())
+      return 1u;
+    return parsed == 0 ? UINT32_MAX : static_cast<uint32_t>(parsed);
+  }();
+  return v;
+}
 
 uint32_t c29_seed_local_size() {
   static const uint32_t v = []() {
@@ -72,12 +83,18 @@ static uint32_t c29_trim_rounds(const sycl::device& device) {
 #endif
 }
 
-static bool c29_direct_seed_enabled() { static const bool v = [](){ const char* e = std::getenv("MOM_C29_DIRECT_SEED"); return !(e && e[0] == '0'); }(); return v; }
+static bool c29_direct_seed_enabled() {
+  static const bool v = []() {
+    const char* e = std::getenv("MOM_C29_DIRECT_SEED");
+    return !(e && e[0] == '0');
+  }();
+  return v;
+}
 
 static uint64_t c29_now_us() {
   return std::chrono::duration_cast<std::chrono::microseconds>(
-    std::chrono::steady_clock::now().time_since_epoch()
-  ).count();
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
 }
 
 struct C29ProfileEvent {
@@ -111,24 +128,31 @@ struct C29Profile {
   }
 
   void mark(const char* name) {
-    if (!enabled) return;
+    if (!enabled)
+      return;
 
     const uint64_t now_us = c29_now_us();
     std::printf("[c29-profile] host %-28s %.3f ms\n", name, (now_us - last_us) / 1000.0);
     last_us = now_us;
   }
 
-  void add_event(const char* name, const sycl::event& event) { if (enabled) events.push_back({name, event}); }
+  void add_event(const char* name, const sycl::event& event) {
+    if (enabled)
+      events.push_back({name, event});
+  }
 
   void print_events() {
-    if (!enabled) return;
+    if (!enabled)
+      return;
 
     double total_ms = 0.0;
 
     for (const C29ProfileEvent& entry : events) {
       try {
-        const uint64_t start = entry.event.get_profiling_info<sycl::info::event_profiling::command_start>();
-        const uint64_t end   = entry.event.get_profiling_info<sycl::info::event_profiling::command_end>();
+        const uint64_t start =
+            entry.event.get_profiling_info<sycl::info::event_profiling::command_start>();
+        const uint64_t end =
+            entry.event.get_profiling_info<sycl::info::event_profiling::command_end>();
         const double ms = static_cast<double>(end - start) / 1000000.0;
         total_ms += ms;
         std::printf("[c29-profile] device %-26s %.3f ms\n", entry.name, ms);
@@ -140,10 +164,12 @@ struct C29Profile {
   }
 
   void finish(const uint32_t trimmed_edges) {
-    if (!enabled) return;
+    if (!enabled)
+      return;
 
     const uint64_t now_us = c29_now_us();
-    std::printf("[c29-profile] graph end trimmed=%u host_total=%.3f ms\n", trimmed_edges, (now_us - start_us) / 1000.0);
+    std::printf("[c29-profile] graph end trimmed=%u host_total=%.3f ms\n", trimmed_edges,
+                (now_us - start_us) / 1000.0);
   }
 };
 
@@ -236,14 +262,14 @@ void c29_cleanup_states() noexcept {
 }
 
 template <typename T>
-static void c29_read_buffer(sycl::queue& queue, sycl::buffer<T, 1>& buffer,
-                            T* const dest, const size_t count) {
-  if (count == 0) return;
+static void c29_read_buffer(sycl::queue& queue, sycl::buffer<T, 1>& buffer, T* const dest,
+                            const size_t count) {
+  if (count == 0)
+    return;
 
   const sycl::event event = queue.submit([&](sycl::handler& handler) {
-    sycl::accessor accessor{
-      buffer, handler, sycl::range<1>{count}, sycl::id<1>{0}, sycl::read_only
-    };
+    sycl::accessor accessor{buffer, handler, sycl::range<1>{count}, sycl::id<1>{0},
+                            sycl::read_only};
     handler.copy(accessor, dest);
   });
   sycl_wait_and_throw(event, queue.get_device());

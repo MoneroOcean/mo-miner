@@ -23,14 +23,13 @@ static sycl::event submit_etchash_search_gpu(
     sycl::local_accessor<uint32_t, 1> exchange(sycl::range<1>(GROUP4_WORKGROUP * 2), h);
 #endif
     h.parallel_for<EtchashSearchKernel<INLINE_PAIR>>(
-      sycl::nd_range<1>(
-        sycl::range<1>(round_up_size(intensity, GROUP4_WORKGROUP)),
-        sycl::range<1>(GROUP4_WORKGROUP)
-      ),
-      [=](sycl::nd_item<1> item) MOM_REQD_SG_16 {
-        const uint32_t lid = static_cast<uint32_t>(item.get_local_id(0));
-        const uint32_t group_hash_base = static_cast<uint32_t>(item.get_group(0)) * GROUP4_WORKGROUP;
-        const uint32_t own_hash = group_hash_base + lid;
+        sycl::nd_range<1>(sycl::range<1>(round_up_size(intensity, GROUP4_WORKGROUP)),
+                          sycl::range<1>(GROUP4_WORKGROUP)),
+        [=](sycl::nd_item<1> item) MOM_REQD_SG_16 MOM_SYCL_KERNEL_ARGS_RESTRICT {
+          const uint32_t lid = static_cast<uint32_t>(item.get_local_id(0));
+          const uint32_t group_hash_base =
+              static_cast<uint32_t>(item.get_group(0)) * GROUP4_WORKGROUP;
+          const uint32_t own_hash = group_hash_base + lid;
 
         if constexpr (mom_sycl_portable_opencl) {
           uint32_t seed[16] = {};

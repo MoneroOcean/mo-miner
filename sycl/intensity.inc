@@ -6,38 +6,37 @@ static unsigned parse_pow_workgroup_override(
   const unsigned preferred = fallback_override ? fallback_override : (dev.is_cpu() ? 128 : 256);
   const unsigned fallback = sycl_default_workgroup(dev, {32, 64, 128, 256, 512}, preferred);
   unsigned long parsed = 0;
-  if (!mom_parse_env_ulong(env_name, parsed)) return fallback;
+  if (!mom_parse_env_ulong(env_name, parsed))
+    return fallback;
   switch (parsed) {
-    case 32:
-    case 64:
-    case 128:
-    case 256:
-    case 512:
-      if (sycl_workgroup_fits(dev, static_cast<unsigned>(parsed)))
-        return static_cast<unsigned>(parsed);
-      break;
+  case 32:
+  case 64:
+  case 128:
+  case 256:
+  case 512:
+    if (sycl_workgroup_fits(dev, static_cast<unsigned>(parsed)))
+      return static_cast<unsigned>(parsed);
+    break;
   }
   return fallback;
 }
 
 static unsigned parse_pow_intensity_override(const unsigned local, const char* const env_name) {
   unsigned long parsed = 0;
-  if (!mom_parse_env_ulong(env_name, parsed) ||
-      parsed < local || parsed > std::numeric_limits<unsigned>::max()) return 0;
+  if (!mom_parse_env_ulong(env_name, parsed) || parsed < local ||
+      parsed > std::numeric_limits<unsigned>::max())
+    return 0;
   return round_down_to_multiple(static_cast<unsigned>(parsed), local);
 }
 
 static PowDeviceProfile pow_device_profile(const sycl::device& dev) {
-  return {
-    std::max(1u, dev.get_info<sycl::info::device::max_compute_units>()),
-    dev.get_info<sycl::info::device::global_mem_size>(),
-    dev.get_info<sycl::info::device::max_mem_alloc_size>()
-  };
+  return {std::max(1u, dev.get_info<sycl::info::device::max_compute_units>()),
+          dev.get_info<sycl::info::device::global_mem_size>(),
+          dev.get_info<sycl::info::device::max_mem_alloc_size>()};
 }
 
-static bool pow_has_dataset_memory(
-  const sycl::device& dev, const uint64_t dataset_bytes, const uint64_t min_global_mem
-) {
+static bool pow_has_dataset_memory(const sycl::device& dev, const uint64_t dataset_bytes,
+                                   const uint64_t min_global_mem) {
   const PowDeviceProfile profile = pow_device_profile(dev);
   const uint64_t reserve = 512ULL * MiB; // headroom for runtime/scratch allocations
   // DPC++'s HIP adapter reports a 4 GiB max allocation on this Windows/Linux ROCm stack even though
@@ -64,11 +63,9 @@ static unsigned pow_intensity(
 }
 
 static unsigned kawpow_intensity(const sycl::device& dev) {
-  return pow_intensity(dev, "MOM_KAWPOW_WORKGROUP", "MOM_KAWPOW_INTENSITY", {
-    {256, 16384, 48},
-    {256, 32768, 48},
-    {256, 32768, 36}
-  });
+  // Bound the shared ProgPoW path; non-CUDA Firo, Evr and Meow use this heuristic too.
+  return pow_intensity(dev, "MOM_KAWPOW_WORKGROUP", "MOM_KAWPOW_INTENSITY",
+                       progpow_intensity_heuristic);
 }
 
 static unsigned firopow_intensity(const sycl::device& dev) {
@@ -77,27 +74,22 @@ static unsigned firopow_intensity(const sycl::device& dev) {
   // 21.01--21.09 MH/s, so keep the cross-ProgPoW Windows heuristic.
   return kawpow_intensity(dev);
 #else
-  if (!mom_is_cuda(dev)) return kawpow_intensity(dev);
+  if (!mom_is_cuda(dev))
+    return kawpow_intensity(dev);
   // Firo's one-period source-JIT kernel needs less queued work than the other ProgPoW variants.
-  // On Linux RTX 5060 Ti, the generic 6,291,456-item depth settled at 21.02--21.11 MH/s, while the
-  // adjacent 4,194,304-item depth held 21.79--21.84 MH/s after warm-up. Retain the shared kernel
-  // and scale the portable device heuristic instead of introducing an NVIDIA algorithm fork.
-  return pow_intensity(dev, "MOM_KAWPOW_WORKGROUP", "MOM_KAWPOW_INTENSITY", {
-    {256, 16384, 48},
-    {256, 21846, 48},
-    {256, 21846, 36}
-  });
+  // A Linux RTX 5060 Ti sweep at 150 W retained workgroup 256 and 4,194,304 items at about
+  // 21.1--21.2 MH/s; exact old/current-source runs agreed within 0.4%. Keep the shared kernel and
+  // scale the portable device heuristic instead of introducing an NVIDIA algorithm fork.
+  return pow_intensity(dev, "MOM_KAWPOW_WORKGROUP", "MOM_KAWPOW_INTENSITY",
+                       {{256, 16384, 48}, {256, 21846, 48}, {256, 21846, 36}});
 #endif
 }
 
 static unsigned etchash_intensity(const sycl::device& dev) {
   // Four Mi work-items/GiB places high-EU devices on the measured broad Etchash plateau; current
   // Xe2, NVIDIA, and AMD heuristics are already shallower and therefore remain unchanged.
-  return pow_intensity(dev, "MOM_ETCHASH_WORKGROUP", "MOM_ETCHASH_INTENSITY", {
-    {64, 32768, 36},
-    {64, 65536, 36},
-    {64, 131072, 40}
-  }, 4);
+  return pow_intensity(dev, "MOM_ETCHASH_WORKGROUP", "MOM_ETCHASH_INTENSITY",
+                       {{64, 32768, 36}, {64, 65536, 36}, {64, 131072, 40}}, 4);
 }
 
 static unsigned octopus_intensity(const sycl::device& dev) {
@@ -114,59 +106,48 @@ static unsigned autolykos2_intensity(const sycl::device& dev) {
   if (mom_is_cuda(dev)) {
     // NVIDIA: larger batches amortize per-iteration host/sync overhead; throughput
     // climbs to a ~70 MH/s plateau on an L4 around these intensities.
-    return pow_intensity(dev, "MOM_AUTOLYKOS2_WORKGROUP", "MOM_AUTOLYKOS2_INTENSITY", {
-      {64, 16384, 12},
-      {64, 32768, 16},
-      {64, 32768, 10}
-    });
+    return pow_intensity(dev, "MOM_AUTOLYKOS2_WORKGROUP", "MOM_AUTOLYKOS2_INTENSITY",
+                         {{64, 16384, 12}, {64, 32768, 16}, {64, 32768, 10}});
   }
   if (mom_is_hip(dev)) {
 #if defined(_WIN32)
     // Windows AdaptiveCpp/HIP has materially higher per-batch submission overhead. On RX 9060 XT,
     // 2.1M -> 8.4M raised the cooperative kernel from 26.49 to 30.97 MH/s; 16.8M added only 0.02.
     // Scale every device-profile tier by four so other cards keep the same memory/CU heuristic.
-    return pow_intensity(dev, "MOM_AUTOLYKOS2_WORKGROUP", "MOM_AUTOLYKOS2_INTENSITY", {
-      {128, 32768, 12},
-      {128, 65536, 16},
-      {128, 65536, 10}
-    });
+    return pow_intensity(dev, "MOM_AUTOLYKOS2_WORKGROUP", "MOM_AUTOLYKOS2_INTENSITY",
+                         {{128, 32768, 12}, {128, 65536, 16}, {128, 65536, 10}});
 #else
     // DPC++ HIP is fastest with wave32-friendly local 128 and enough work to amortize UR submits.
-    return pow_intensity(dev, "MOM_AUTOLYKOS2_WORKGROUP", "MOM_AUTOLYKOS2_INTENSITY", {
-      {128, 8192, 12},
-      {128, 16384, 16},
-      {128, 16384, 10}
-    });
+    return pow_intensity(dev, "MOM_AUTOLYKOS2_WORKGROUP", "MOM_AUTOLYKOS2_INTENSITY",
+                         {{128, 8192, 12}, {128, 16384, 16}, {128, 16384, 10}});
 #endif
   }
-  return pow_intensity(dev, "MOM_AUTOLYKOS2_WORKGROUP", "MOM_AUTOLYKOS2_INTENSITY", {
-    {64, 4096, 12},
-    {64, 8192, 16},
-    {64, 8192, 10}
-  });
+  return pow_intensity(dev, "MOM_AUTOLYKOS2_WORKGROUP", "MOM_AUTOLYKOS2_INTENSITY",
+                       {{64, 4096, 12}, {64, 8192, 16}, {64, 8192, 10}});
 }
 
-// PearlHash's device batch carries M (not a nonce count). Choose the same vendor/OS profile used
-// for N/K/rank by the compiler policy: this keeps automatic discovery and an explicitly saved
-// profile identical without recognizing individual GPU products.
-static unsigned pearlhash_intensity(const sycl::device& dev) {
+// Rank changes proof work, so automatic tuning selects complete measured profiles rather than
+// varying M alone. NVIDIA profiles must also fit required allocations and runtime headroom.
+static pearlhash_profile_t pearlhash_profile(const sycl::device& dev) {
+  std::string vendor = dev.get_info<sycl::info::device::vendor>();
+  std::transform(vendor.begin(), vendor.end(), vendor.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  pearlhash_profile_t profile = {131072, 131072, 2048, 128};
+  const bool nvidia = vendor.find("nvidia") != std::string::npos;
+  if (nvidia) {
+    profile = dev.get_info<sycl::info::device::global_mem_size>() >= 8 * GiB
+      ? pearlhash_profile_t{131072, 524288, 8192, 128}
+      : pearlhash_profile_t{65536, 65536, 4096, 256};
+  }
   unsigned long parsed = 0;
   if (mom_parse_env_ulong("MOM_PEARLHASH_INTENSITY", parsed) && parsed >= 256 &&
-      parsed <= std::numeric_limits<unsigned>::max())
-    return round_down_to_multiple(static_cast<unsigned>(parsed), 64);
-  std::string vendor = dev.get_info<sycl::info::device::vendor>();
-  std::transform(vendor.begin(), vendor.end(), vendor.begin(),
-                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-  if (vendor.find("nvidia") != std::string::npos) return 65536;
-  if (vendor.find("amd") != std::string::npos ||
-      vendor.find("advanced micro") != std::string::npos) {
-#if defined(_WIN32)
-    return 131072;
-#else
-    return 32768;
-#endif
+      parsed <= std::numeric_limits<unsigned>::max()) {
+    profile.m = round_down_to_multiple(static_cast<unsigned>(parsed), 64);
+    profile.n = profile.m;
+    return profile;
   }
-  return 131072;
+  return nvidia ? pearlhash_capacity_profile(pow_device_profile(dev), profile) : profile;
 }
 
 // FishHash: memory-gather over the 4.6 GiB DAG (bandwidth-bound like etchash). etchash-class intensities.
@@ -176,18 +157,88 @@ static unsigned fishhash_intensity(const sycl::device& dev) {
     // The Windows HIP cooperative path reaches its throughput knee at 7.46M (11.43/11.41 MH/s)
     // versus 10.71/10.67 at the old 1.86M default. 14.9M gains under 1%, so retain the lower-latency
     // 4x point. Local 128 matches FishState's AMD workgroup while preserving all profile tiers.
-    return pow_intensity(dev, "MOM_FISHHASH_WORKGROUP", "MOM_FISHHASH_INTENSITY", {
-      {128, 65536, 36},
-      {128, 131072, 36},
-      {128, 262144, 40}
-    });
+    return pow_intensity(dev, "MOM_FISHHASH_WORKGROUP", "MOM_FISHHASH_INTENSITY",
+                         {{128, 65536, 36}, {128, 131072, 36}, {128, 262144, 40}});
   }
 #endif
-  return pow_intensity(dev, "MOM_FISHHASH_WORKGROUP", "MOM_FISHHASH_INTENSITY", {
-    {64, 32768, 36},
-    {64, 65536, 36},
-    {64, 131072, 40}
-  });
+  unsigned fallback_workgroup = 64;
+#if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
+  if (mom_is_cuda(dev) && dev.get_info<sycl::info::device::max_compute_units>() >= 64)
+    fallback_workgroup = 256;
+#endif
+  return pow_intensity(dev, "MOM_FISHHASH_WORKGROUP", "MOM_FISHHASH_INTENSITY",
+                       {{fallback_workgroup, 32768, 36},
+                        {fallback_workgroup, 65536, 36},
+                        {fallback_workgroup, 131072, 40}});
+}
+
+static bool hoohash_supported(const sycl::device& dev) {
+  return dev.has(sycl::aspect::fp64) && mom_has_usm_device(dev);
+}
+
+static unsigned hoohash_intensity(const sycl::device& dev) {
+  const unsigned override = parse_pow_intensity_override(1, "MOM_HOOHASH_INTENSITY");
+  if (override)
+    return override;
+#if defined(_WIN32)
+  // A longer WDDM/CUDA batch amortizes dispatch cost: 114688 measured 1.4164 MH/s versus
+  // 1.3392 MH/s at 65536. Raising it to 262144 added only 0.45% while more than doubling
+  // job-switch latency, so keep the smaller point on the throughput plateau.
+  if (mom_is_cuda(dev))
+    return 114688;
+#else
+  (void)dev;
+#endif
+  return 65536;
+}
+
+// Equihash 125,4: the "intensity" is the number of header nonces searched per solve (one full Wagner
+// pass over a 3.72--4.25 GiB accelerator-specific arena), so one process searches one nonce per
+// dispatch. MOM_ZELHASH_INTENSITY overrides that process batch.
+
+static bool xelishashv3_supported(const sycl::device& dev) {
+  return mom_has_usm_device(dev);
+}
+
+static uint64_t xelishashv3_scratch_capacity(const sycl::device& dev) {
+  constexpr uint64_t scratch_bytes = 531ULL * 1024;
+  const uint64_t global_mem = dev.get_info<sycl::info::device::global_mem_size>();
+  const uint64_t global_limit = (global_mem / 5) * 2 + (global_mem % 5) * 2 / 5;
+  return std::min<uint64_t>(dev.get_info<sycl::info::device::max_mem_alloc_size>(), global_limit) /
+         scratch_bytes;
+}
+
+static unsigned xelishashv3_intensity(const sycl::device& dev) {
+  if (!xelishashv3_supported(dev))
+    return 0;
+  const uint64_t memory_limit = xelishashv3_scratch_capacity(dev);
+  if (!memory_limit)
+    return 0;
+  const unsigned override = parse_pow_intensity_override(1, "MOM_XELISHASHV3_INTENSITY");
+  if (override)
+    return static_cast<unsigned>(std::min<uint64_t>(override, memory_limit));
+  const uint64_t compute_limit =
+      static_cast<uint64_t>(dev.get_info<sycl::info::device::max_compute_units>()) * 384ULL;
+  const uint64_t automatic_limit = std::min(
+      {memory_limit, compute_limit, static_cast<uint64_t>(std::numeric_limits<unsigned>::max())});
+  return static_cast<unsigned>(automatic_limit & ~255ULL);
+}
+
+static unsigned nexapow_intensity(const sycl::device& dev) {
+  const unsigned override = parse_pow_intensity_override(1, "MOM_NEXAPOW_INTENSITY");
+  if (override)
+    return override;
+  const uint64_t memory = dev.get_info<sycl::info::device::global_mem_size>();
+  // The portable Level Zero path is compute-bound in its two fixed-base curve kernels. On the
+  // 12-GiB B580, 2^21 is fully occupied and slightly faster than 2^22 through 2^24 while also
+  // reducing transient allocations. Keep the larger batches for the separately measured backends.
+  if (sycl_is_level_zero_gpu(dev) && memory >= 10 * GiB)
+    return 1u << 21;
+  if (memory >= 15 * GiB)
+    return 1u << 23;
+  if (memory >= 10 * GiB)
+    return 1u << 22;
+  return std::max(256u, dev.get_info<sycl::info::device::max_compute_units>() * 64u);
 }
 
 static bool walahash_supported(const sycl::device& dev) {
@@ -233,63 +284,3 @@ static unsigned verthash_intensity(const sycl::device& dev) {
 // Equihash 125,4: the "intensity" is the number of header nonces searched per solve (one full Wagner
 // pass over a 3.72--4.25 GiB accelerator-specific arena), so one process searches one nonce per
 // dispatch. MOM_ZELHASH_INTENSITY overrides that process batch.
-
-static bool xelishashv3_supported(const sycl::device& dev) {
-  return mom_has_usm_device(dev);
-}
-
-static uint64_t xelishashv3_scratch_capacity(const sycl::device& dev) {
-  constexpr uint64_t scratch_bytes = 531ULL * 1024;
-  const uint64_t global_mem = dev.get_info<sycl::info::device::global_mem_size>();
-  const uint64_t global_limit = (global_mem / 5) * 2 + (global_mem % 5) * 2 / 5;
-  return std::min<uint64_t>(dev.get_info<sycl::info::device::max_mem_alloc_size>(), global_limit) /
-         scratch_bytes;
-}
-
-static unsigned xelishashv3_intensity(const sycl::device& dev) {
-  if (!xelishashv3_supported(dev))
-    return 0;
-  const uint64_t memory_limit = xelishashv3_scratch_capacity(dev);
-  if (!memory_limit)
-    return 0;
-  const unsigned override = parse_pow_intensity_override(1, "MOM_XELISHASHV3_INTENSITY");
-  if (override)
-    return static_cast<unsigned>(std::min<uint64_t>(override, memory_limit));
-  const uint64_t compute_limit =
-      static_cast<uint64_t>(dev.get_info<sycl::info::device::max_compute_units>()) * 384ULL;
-  const uint64_t automatic_limit = std::min(
-      {memory_limit, compute_limit, static_cast<uint64_t>(std::numeric_limits<unsigned>::max())});
-  return static_cast<unsigned>(automatic_limit & ~255ULL);
-}
-
-static unsigned nexapow_intensity(const sycl::device& dev) {
-  const unsigned override = parse_pow_intensity_override(1, "MOM_NEXAPOW_INTENSITY");
-  if (override)
-    return override;
-  const uint64_t memory = dev.get_info<sycl::info::device::global_mem_size>();
-  if (memory >= 15 * GiB)
-    return 1u << 23;
-  if (memory >= 10 * GiB)
-    return 1u << 22;
-  return std::max(256u, dev.get_info<sycl::info::device::max_compute_units>() * 64u);
-}
-
-static bool hoohash_supported(const sycl::device& dev) {
-  return dev.has(sycl::aspect::fp64) && mom_has_usm_device(dev);
-}
-
-static unsigned hoohash_intensity(const sycl::device& dev) {
-  const unsigned override = parse_pow_intensity_override(1, "MOM_HOOHASH_INTENSITY");
-  if (override)
-    return override;
-#if defined(_WIN32)
-  // A longer WDDM/CUDA batch amortizes dispatch cost: 114688 measured 1.4164 MH/s versus
-  // 1.3392 MH/s at 65536. Raising it to 262144 added only 0.45% while more than doubling
-  // job-switch latency, so keep the smaller point on the throughput plateau.
-  if (mom_is_cuda(dev))
-    return 114688;
-#else
-  (void)dev;
-#endif
-  return 65536;
-}

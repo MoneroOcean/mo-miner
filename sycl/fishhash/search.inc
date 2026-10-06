@@ -14,10 +14,13 @@ static sycl::event submit_fishhash_search(
   constexpr unsigned WG = 128;  // Latency-bound gathers benefit from more in-flight subgroups.
   const size_t global = (static_cast<size_t>(intensity) + WG - 1) / WG * WG;
   return q.submit([&](sycl::handler& h) {
-    h.parallel_for<FishKernel<FULL>>(sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(WG)), [=](sycl::nd_item<1> it) {
-      const uint32_t gid = (uint32_t)it.get_global_id(0);
-      if (gid >= intensity) return;
-      const uint64_t nonce = start_nonce + gid;
+    h.parallel_for<FishKernel<FULL>>(
+        sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(WG)),
+        [=](sycl::nd_item<1> it) MOM_SYCL_KERNEL_ARGS_RESTRICT {
+          const uint32_t gid = (uint32_t)it.get_global_id(0);
+          if (gid >= intensity)
+            return;
+          const uint64_t nonce = start_nonce + gid;
 
       uint8_t header[180];
       const unsigned hlen = input_size <= 180 ? input_size : 180;
@@ -121,10 +124,13 @@ static sycl::event submit_karlsenhashv2_search(
   constexpr unsigned WG = 128;
   const size_t global = (static_cast<size_t>(intensity) + WG - 1) / WG * WG;
   return q.submit([&](sycl::handler& h) {
-    h.parallel_for<KarlsenKernel<FULL>>(sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(WG)), [=](sycl::nd_item<1> it) {
-      const uint32_t gid = (uint32_t)it.get_global_id(0);
-      if (gid >= intensity) return;
-      const uint64_t nonce = start_nonce + gid;
+    h.parallel_for<KarlsenKernel<FULL>>(
+        sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(WG)),
+        [=](sycl::nd_item<1> it) MOM_SYCL_KERNEL_ARGS_RESTRICT {
+          const uint32_t gid = (uint32_t)it.get_global_id(0);
+          if (gid >= intensity)
+            return;
+          const uint64_t nonce = start_nonce + gid;
 
       uint8_t pre[80];
       for (unsigned i = 0; i < 80; ++i) pre[i] = (i < input_size) ? d_input[i] : 0;

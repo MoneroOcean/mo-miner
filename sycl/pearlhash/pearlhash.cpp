@@ -13,9 +13,15 @@
 // the search uses a PEARLHASH_HR x PEARLHASH_NTILE register tile with software-pipelined B loads.
 
 #include <sycl/sycl.hpp>
-#ifndef PEARLHASH_STANDALONE
 #include "../lib-internal.h"
+#ifndef MOM_PEARLHASH_ESIMD_TU
+// The standalone Intel ESIMD image has no CUDA host dispatch or toolkit include path.
+#include "../nvidia-features.h"
+#if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
+#include "../nvidia-dot.h"
 #endif
+#endif
+#include "esimd_route.h"
 #if defined(MOM_SYCL_HAS_CUDA) && !defined(__SYCL_DEVICE_ONLY__) && \
     !defined(MOM_PEARLHASH_ESIMD_TU)
 #include <cuda.h>
@@ -29,8 +35,15 @@
 #include <hip/hiprtc.h>
 #endif
 #ifdef PEARLHASH_ESIMD
-#include <sycl/ext/intel/esimd.hpp>   // experimental register-resident DPAS search path
+#include "../intel-dpas.h"
+#if __has_include(<sycl/ext/intel/experimental/grf_size_properties.hpp>) && \
+    __has_include(<sycl/ext/oneapi/experimental/enqueue_functions.hpp>)
+#include <sycl/ext/intel/experimental/grf_size_properties.hpp>
+#include <sycl/ext/oneapi/experimental/enqueue_functions.hpp>
+#define MOM_PEARLHASH_INTEL_LARGE_GRF 1
 #endif
+#endif
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <cstdint>
@@ -75,6 +88,9 @@
 
 #include "esimd_search.inc"
 
+#ifdef MOM_PEARLHASH_ESIMD_TU
+} // namespace mom_pearlhash
+#else
 #include "jit_cache.inc"
 
 // PearlHash's shared SYCL CUDA kernel already uses cp.async, ldmatrix, and mma.sync, but the SYCL
@@ -89,3 +105,4 @@
 
 #include "dispatch.inc"
 #include "host.inc"
+#endif

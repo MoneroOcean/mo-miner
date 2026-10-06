@@ -169,8 +169,9 @@ struct PearlHashCudaSearch {
     if (reason) *reason = "CUDA source-JIT support is not part of this worker";
     return false;
   }
+  static bool supports_shape(int, int, int, int) { return false; }
   bool ensure(sycl::queue&, const Buffers&, int, int, int, int) { return false; }
-  void launch(const Buffers&, uint32_t, int, int, bool) {}
+  void launch(const Buffers&, uint32_t, int, int, int, bool) {}
   void wait(double) {}
   void release() noexcept {}
   void fail(const std::string&) noexcept {}

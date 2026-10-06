@@ -4,7 +4,6 @@ struct PearlHashCudaSearch {
   CUfunction gemm_kernel = nullptr;
   CUfunction hash_kernel = nullptr;
   CUevent started = nullptr;
-  CUevent gemm_done = nullptr;
   CUevent done = nullptr;
   CUcontext context = nullptr;
   CUdevice device = 0;
@@ -64,16 +63,19 @@ struct PearlHashCudaSearch {
     return true;
   }
 
+  static bool supports_shape(const int m, const int n, const int k, const int rank) {
+    return m > 0 && n > 0 && m % 128 == 0 && n % 256 == 0 &&
+           ((k == 4096 && rank == 256) || (k == 8192 && rank == 128));
+  }
+
   void release() noexcept {
     PearlHashCudaDriverApi& api = PearlHashCudaDriverApi::instance();
     if (api.available() && context) (void)api.set_current(context);
     if (done && api.event_destroy) (void)api.event_destroy(done);
-    if (gemm_done && api.event_destroy) (void)api.event_destroy(gemm_done);
     if (started && api.event_destroy) (void)api.event_destroy(started);
     if (module && api.module_unload) (void)api.module_unload(module);
     if (retained_primary && api.release_primary) (void)api.release_primary(device);
     done = nullptr;
-    gemm_done = nullptr;
     started = nullptr;
     module = nullptr;
     gemm_kernel = nullptr;
@@ -84,13 +86,13 @@ struct PearlHashCudaSearch {
   }
 
   bool ensure(sycl::queue& q, const Buffers& b, int m, int n, int k, int rank) {
-    if (!supports(q) || m % 128 || n % 256 || k != 4096 || rank != 256)
+    if (!supports(q) || !supports_shape(m, n, k, rank))
       return false;
-    // The two-stage native path requires a complete transcript surface. Never launch the CUTE
-    // producer when an oversized or failed USM allocation left it null; the shared SYCL path can
-    // still execute without that surface.
-    if (!b.transcript) return false;
-    if (checked) return enabled;
+    // Both kernels reuse a bounded transcript slice in the same CUDA stream.
+    if (!b.transcript || b.transcript_rows < 128)
+      return false;
+    if (checked)
+      return enabled;
     checked = true;
     try {
       PearlHashCudaDriverApi& driver = PearlHashCudaDriverApi::instance();
@@ -176,6 +178,7 @@ struct PearlHashCudaSearch {
       );
       std::vector<std::string> option_storage{
         "--std=c++17",
+        "-DPEARLHASH_RANK=" + std::to_string(rank),
         "--gpu-architecture=" + std::string(emit_cubin ? "sm_" : "compute_") +
           std::to_string(target_arch),
         "--include-path=" + cutlass_include.generic_string(),
@@ -259,8 +262,6 @@ struct PearlHashCudaSearch {
         "cuFuncSetAttribute(PearlHash carveout)");
       cuda_check(driver, driver.event_create(&started, CU_EVENT_DEFAULT),
                  "cuEventCreate(PearlHash start)");
-      cuda_check(driver, driver.event_create(&gemm_done, CU_EVENT_DEFAULT),
-                 "cuEventCreate(PearlHash GEMM done)");
       cuda_check(driver, driver.event_create(&done, CU_EVENT_DEFAULT),
                  "cuEventCreate(PearlHash done)");
       enabled = true;
@@ -288,38 +289,40 @@ struct PearlHashCudaSearch {
                  error.c_str());
   }
 
-  void launch(const Buffers& b, uint32_t seed, int m, int n, bool debug) {
+  void launch(const Buffers& b, uint32_t seed, int m, int n, int k, bool debug) {
     PearlHashCudaDriverApi& api = PearlHashCudaDriverApi::instance();
     cuda_check(api, api.set_current(context), "cuCtxSetCurrent(PearlHash launch)");
-    void* a = b.Ap;
     void* bp = b.Bp;
     void* transcript = b.transcript;
     void* key = b.cA;
     void* target = b.target;
     void* result = b.result;
-    int k = 4096;
     int debug_int = debug ? 1 : 0;
-    void* gemm_args[] = {&a, &bp, &m, &n, &k, &transcript};
-    void* hash_args[] = {&transcript, &key, &target, &result, &seed,
-                         &m, &n, &debug_int};
+    // Checksum validation also exercises nonzero row offsets on the reduced test matrix.
+    const int chunk_rows = debug
+        ? std::min(b.transcript_rows, std::max(128, (m / 2 / 128) * 128))
+        : b.transcript_rows;
     constexpr unsigned threads = 256;
     constexpr unsigned shared_bytes = 98304;
-    cuda_check(api, api.event_record(started, nullptr),
-               "cuEventRecord(PearlHash start)");
-    cuda_check(api, api.launch(gemm_kernel, static_cast<unsigned>(m / 128),
-                               static_cast<unsigned>(n / 256), 1,
-                               threads, 1, 1, shared_bytes, nullptr,
-                               gemm_args, nullptr),
-               "cuLaunchKernel(PearlHash GEMM)");
-    cuda_check(api, api.event_record(gemm_done, nullptr),
-               "cuEventRecord(PearlHash GEMM done)");
-    const uint64_t tiles = static_cast<uint64_t>(m / 16) *
-                           static_cast<uint64_t>(n / 16);
-    cuda_check(api, api.launch(hash_kernel,
-                               static_cast<unsigned>((tiles + threads - 1) / threads),
-                               1, 1, threads, 1, 1, 0, nullptr,
-                               hash_args, nullptr),
-               "cuLaunchKernel(PearlHash hash)");
+    cuda_check(api, api.event_record(started, nullptr), "cuEventRecord(PearlHash start)");
+    for (int row_offset = 0; row_offset < m; row_offset += chunk_rows) {
+      int rows = std::min(chunk_rows, m - row_offset);
+      void* a = b.Ap + static_cast<size_t>(row_offset) * static_cast<size_t>(k);
+      void* gemm_args[] = {&a, &bp, &rows, &n, &k, &transcript};
+      void* hash_args[] = {
+          &transcript, &key, &target, &result, &seed, &rows, &n, &row_offset, &debug_int};
+      cuda_check(api,
+                 api.launch(gemm_kernel, static_cast<unsigned>(rows / 128),
+                            static_cast<unsigned>(n / 256), 1, threads, 1, 1, shared_bytes, nullptr,
+                            gemm_args, nullptr),
+                 "cuLaunchKernel(PearlHash GEMM)");
+      const uint64_t tiles = static_cast<uint64_t>(rows / 16) * static_cast<uint64_t>(n / 16);
+      cuda_check(api,
+                 api.launch(hash_kernel,
+                            static_cast<unsigned>((tiles + threads - 1) / threads),
+                            1, 1, threads, 1, 1, 0, nullptr, hash_args, nullptr),
+                 "cuLaunchKernel(PearlHash hash)");
+    }
     cuda_check(api, api.event_record(done, nullptr), "cuEventRecord(PearlHash done)");
   }
 
@@ -335,13 +338,10 @@ struct PearlHashCudaSearch {
       const CUresult status = api.event_query(done);
       if (status == CUDA_SUCCESS) {
         if (std::getenv("MOM_PEARLHASH_STATS") && stats_printed++ < 4) {
-          float gemm_ms = 0.0f, hash_ms = 0.0f;
-          cuda_check(api, api.event_elapsed(&gemm_ms, started, gemm_done),
-                     "cuEventElapsedTime(PearlHash CUDA GEMM)");
-          cuda_check(api, api.event_elapsed(&hash_ms, gemm_done, done),
-                     "cuEventElapsedTime(PearlHash CUDA hash)");
-          std::fprintf(stderr, "PEARLHASH_CUDA_STATS gemm=%.3fms hash=%.3fms\n",
-                       gemm_ms, hash_ms);
+          float search_ms = 0.0f;
+          cuda_check(api, api.event_elapsed(&search_ms, started, done),
+                     "cuEventElapsedTime(PearlHash CUDA search)");
+          std::fprintf(stderr, "PEARLHASH_CUDA_STATS search=%.3fms\n", search_ms);
         }
         return;
       }

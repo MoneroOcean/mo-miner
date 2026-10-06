@@ -1022,3 +1022,232 @@ int main() {
     fs.rmSync(fixture, {recursive: true, force: true});
   }
 });
+
+test("PearlHash Intel SYCL pacing progresses before low-CPU completion polling", {
+  skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
+}, () => {
+  const host = fs.readFileSync(path.join(__dirname, "../sycl/pearlhash/host.inc"), "utf8");
+  const startMarker = "  const auto attempt_start = std::chrono::steady_clock::now();\n";
+  assert.equal(host.split(startMarker).length, 2);
+  const start = host.indexOf(startMarker) + startMarker.length;
+  const end = host.indexOf("  if (is_test && q.get_device().is_gpu()) {", start);
+  assert.ok(end > start, "complete PearlHash pacing/wait block is missing");
+  const block = host.slice(start, end)
+    .replaceAll("std::chrono::", "fixture::chrono::")
+    .replaceAll("std::this_thread::", "fixture::this_thread::");
+  const internal = fs.readFileSync(path.join(__dirname, "../sycl/lib-internal.h"), "utf8");
+  const waitStartMarker = "inline void sycl_wait_and_throw(";
+  assert.equal(internal.split(waitStartMarker).length, 2);
+  const waitStart = internal.indexOf(waitStartMarker);
+  const waitEnd = internal.indexOf("\ninline void sycl_log_cleanup_exception", waitStart);
+  assert.ok(waitEnd > waitStart, "complete shared SYCL wait helper is missing");
+  const wait = internal.slice(waitStart, waitEnd)
+    .replaceAll("std::chrono::", "fixture::chrono::")
+    .replaceAll("std::this_thread::", "fixture::this_thread::");
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-pearl-pacing-"));
+  const source = path.join(fixture, "pacing.cpp");
+  const executable = path.join(fixture, "pacing");
+  fs.writeFileSync(source, `
+#include <cassert>
+#include <chrono>
+#include <cstdio>
+#include <string>
+#include <stdexcept>
+#include <vector>
+#if !defined(MOM_FIXTURE_NO_BARRIER)
+#define SYCL_EXT_ONEAPI_ENQUEUE_BARRIER 1
+#endif
+namespace sycl::info::device { struct vendor_id {}; }
+namespace sycl::info::event { struct command_execution_status {}; }
+namespace sycl::info { enum class event_command_status { submitted, complete }; }
+struct EventState {
+  unsigned pending = 2, queries = 0, waits = 0;
+  bool active = false, progressed = false, complete = false, completed_before_wait = false;
+  bool status_error = false, wait_error = false;
+};
+static EventState event_state;
+enum class PearlHashSearchBackend { sycl, hip_jit, cuda_jit };
+struct Device {
+  bool gpu; unsigned vendor;
+  bool opencl = false;
+  bool is_gpu() const { return gpu; }
+  template<class T> unsigned get_info() const { return vendor; }
+};
+struct Event {
+  template<class T> sycl::info::event_command_status get_info() {
+    ++event_state.queries;
+    if (event_state.status_error) throw std::runtime_error("status-query");
+    event_state.progressed = true;
+    if (event_state.pending) {
+      --event_state.pending;
+      return sycl::info::event_command_status::submitted;
+    }
+    event_state.complete = true;
+    return sycl::info::event_command_status::complete;
+  }
+  void wait_and_throw() {
+    ++event_state.waits;
+    event_state.completed_before_wait = event_state.complete;
+    if (event_state.wait_error) throw std::runtime_error("final-wait");
+    event_state.complete = true;
+  }
+};
+namespace sycl { using event = Event; using device = Device; }
+static constexpr bool mom_sycl_portable_opencl = false;
+static bool mom_is_opencl(const Device& device) { return device.opencl; }
+struct Queue {
+  Device device; unsigned waits = 0, barriers = 0;
+  Device get_device() const { return device; }
+  void wait_and_throw() { ++waits; }
+#if defined(SYCL_EXT_ONEAPI_ENQUEUE_BARRIER)
+  Event ext_oneapi_submit_barrier() {
+    ++barriers;
+    event_state.active = true;
+    return {};
+  }
+#endif
+};
+struct Jit {
+  unsigned waits = 0;
+  void wait(double) { ++waits; }
+  void fail(const std::string&) {}
+};
+struct State { double wait_ema_us; Jit hip{}, cuda{}; bool cuda_tensor = false; };
+struct Result { unsigned found = 1, chk = 1; };
+struct Buffers { Result* result; };
+static PearlHashSearchBackend attempt(Queue&, Buffers&, unsigned, int, int, int, int,
+                                     const char*, void*, void*, void*, bool, bool) {
+  return PearlHashSearchBackend::sycl;
+}
+namespace fixture {
+namespace chrono {
+using microseconds = std::chrono::microseconds;
+long elapsed;
+struct steady_clock {
+  using time_point = std::chrono::steady_clock::time_point;
+  static time_point now() { return time_point(microseconds(elapsed)); }
+};
+template<class T, class U> T duration_cast(U value) { return std::chrono::duration_cast<T>(value); }
+}
+namespace this_thread {
+unsigned calls; long duration;
+std::vector<long> durations;
+void sleep_for(chrono::microseconds value) {
+  ++calls;
+  duration = value.count();
+  durations.push_back(duration);
+  if (event_state.active) {
+    assert(event_state.progressed && event_state.queries > 0);
+    assert(duration == 100);
+  }
+}
+}
+}
+${wait}
+static void run(PearlHashSearchBackend search_backend, bool gpu, unsigned vendor,
+                double ema, long elapsed, long sleep, bool opencl = false) {
+  fixture::chrono::elapsed = elapsed;
+  fixture::this_thread::calls = 0;
+  fixture::this_thread::duration = 0;
+  fixture::this_thread::durations.clear();
+  event_state = {};
+  auto attempt_start = fixture::chrono::steady_clock::time_point{};
+  Queue q{{gpu, vendor, opencl}};
+  State st{ema};
+  Result result{};
+  Buffers b{&result};
+  const unsigned attempt_seed = 1;
+  const int m = 128, n = 128, k = 2048, rank = 128;
+  const bool is_test = false;
+${block}
+#if defined(SYCL_EXT_ONEAPI_ENQUEUE_BARRIER)
+  const bool intel_poll = search_backend == PearlHashSearchBackend::sycl && gpu &&
+    vendor == 0x8086 && !opencl;
+#else
+  const bool intel_poll = false;
+#endif
+  const std::vector<long> expected_sleeps = intel_poll ? std::vector<long>{100, 100} :
+    sleep > 0 ? std::vector<long>{sleep} : std::vector<long>{};
+  assert(fixture::this_thread::durations == expected_sleeps);
+  assert(fixture::this_thread::calls == expected_sleeps.size());
+  assert(q.barriers == static_cast<unsigned>(intel_poll));
+  assert(q.waits == static_cast<unsigned>(search_backend == PearlHashSearchBackend::sycl && !intel_poll));
+  assert(event_state.queries == (intel_poll ? 3u : 0u));
+  assert(event_state.waits == static_cast<unsigned>(intel_poll));
+  assert(!intel_poll || event_state.completed_before_wait);
+  assert(st.hip.waits == static_cast<unsigned>(search_backend == PearlHashSearchBackend::hip_jit));
+  assert(st.cuda.waits == static_cast<unsigned>(search_backend == PearlHashSearchBackend::cuda_jit));
+}
+static void check_helper(bool gpu, unsigned pending, const std::string& failure = {}) {
+  event_state = {};
+  event_state.active = true;
+  event_state.pending = pending;
+  event_state.status_error = failure == "status-query";
+  event_state.wait_error = failure == "final-wait";
+  fixture::this_thread::calls = 0;
+  fixture::this_thread::durations.clear();
+  bool caught = false;
+  try {
+    sycl_wait_and_throw(Event{}, Device{gpu, 0x8086});
+  } catch (const std::runtime_error& error) {
+    caught = true;
+    assert(error.what() == failure);
+  }
+  assert(caught == !failure.empty());
+  const unsigned sleeps = gpu && !event_state.status_error ? pending : 0;
+  assert(fixture::this_thread::calls == sleeps);
+  assert(fixture::this_thread::durations == std::vector<long>(sleeps, 100));
+  assert(event_state.queries == (gpu ? event_state.status_error ? 1u : pending + 1 : 0u));
+  assert(event_state.waits == static_cast<unsigned>(!event_state.status_error));
+  assert(!gpu || event_state.status_error || event_state.completed_before_wait);
+}
+int main() {
+  using B = PearlHashSearchBackend;
+  const struct { B backend; bool gpu; unsigned vendor; double ema; long elapsed, sleep; } cases[] = {
+    {B::sycl, true, 0x8086, 10000, 0, 0},
+    {B::sycl, true, 0x8086, 2001, 0, 0},
+    {B::sycl, true, 0x8086, 2000, 0, 0},
+    {B::sycl, true, 0x8086, 0, 0, 0},
+    {B::sycl, false, 0x8086, 10000, 0, 9000},
+    {B::sycl, true, 0x1002, 10000, 0, 9000},
+    {B::sycl, true, 0x10de, 10000, 0, 9000},
+    {B::sycl, true, 0, 10000, 0, 9000},
+    {B::hip_jit, true, 0x8086, 10000, 0, 9000},
+    {B::cuda_jit, true, 0x8086, 10000, 0, 9000},
+    {B::sycl, true, 0x1002, 2000, 0, 0},
+    {B::sycl, true, 0x1002, 2001, 0, 1800},
+    {B::sycl, true, 0x1002, 10000, 9000, 0},
+    {B::sycl, true, 0x1002, 10000, 8999, 1},
+  };
+  for (const auto& test : cases)
+    run(test.backend, test.gpu, test.vendor, test.ema, test.elapsed, test.sleep);
+  run(B::sycl, true, 0x8086, 10000, 0, 0, true);
+  run(B::sycl, true, 0x1002, 10000, 0, 9000, true);
+  run(B::sycl, false, 0x8086, 10000, 0, 9000, true);
+  check_helper(true, 0);
+  check_helper(true, 3);
+  check_helper(false, 3);
+  check_helper(true, 0, "status-query");
+  check_helper(true, 0, "final-wait");
+#if defined(SYCL_EXT_ONEAPI_ENQUEUE_BARRIER)
+  std::puts("PASS PearlHash actual-source pacing/polling: 17 pacing + 5 helper cases; barrier=available");
+#else
+  std::puts("PASS PearlHash actual-source pacing/polling: 17 pacing + 5 helper cases; barrier=absent");
+#endif
+}
+`);
+  try {
+    for (const available of [true, false]) {
+      const flags = available ? [] : ["-DMOM_FIXTURE_NO_BARRIER=1"];
+      const compiled = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
+        "-pedantic", ...flags, source, "-o", executable], {encoding: "utf8"});
+      assert.equal(compiled.status, 0, compiled.error?.message || compiled.stderr);
+      const result = spawnSync(executable, [], {encoding: "utf8"});
+      assert.equal(result.status, 0, result.error?.message || result.stderr);
+      assert.equal(result.stdout, "PASS PearlHash actual-source pacing/polling: 17 pacing + 5 helper cases; " +
+        "barrier=" + (available ? "available" : "absent") + "\n");
+    }
+  } finally {
+    fs.rmSync(fixture, {recursive: true, force: true});
+  }
+});

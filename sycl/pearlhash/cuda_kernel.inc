@@ -98,7 +98,7 @@ __device__ __forceinline__ uint32_t tile_mix(
 extern "C" __global__ __launch_bounds__(256)
 void pearlhash_cuda_hash(const uint32_t* transcript, const unsigned char* key,
                      const unsigned char* target, PearlHashResult* result,
-                     uint32_t seed, int m, int n, int debug_checksum) {
+                     uint32_t seed, int m, int n, int row_offset, int debug_checksum) {
   const uint32_t tile = blockIdx.x * blockDim.x + threadIdx.x;
   const uint32_t tile_columns = uint32_t(n) / 16u;
   const uint32_t tile_count = (uint32_t(m) / 16u) * tile_columns;
@@ -137,7 +137,7 @@ void pearlhash_cuda_hash(const uint32_t* transcript, const unsigned char* key,
       break;
     }
   }
-  const uint32_t row = (tile / tile_columns) * 16u;
+  const uint32_t row = uint32_t(row_offset) + (tile / tile_columns) * 16u;
   const uint32_t col = (tile % tile_columns) * 16u;
   if (debug_checksum) atomicAdd(&result->chk, tile_mix(row, col, transcript_words));
   if (wins && atomicExch(&result->found, 1) == 0) {
@@ -166,22 +166,21 @@ void pearlhash_cuda_gemm(const int8_t* __restrict__ ap, const int8_t* __restrict
   static_assert(sizeof(decltype(mB.layout()(make_coord(0, 0)))) >= sizeof(int64_t),
                 "PearlHash global matrix offsets must be 64-bit");
 
-  // CUDA normally advances blockIdx.x across the full M dimension. On a large PearlHash matrix that
-  // repeatedly streams A once for every N tile. Traverse 16x16 CTA supertiles instead: their 8 MiB
-  // A plus 16 MiB B working set fits RTX 5060 Ti's 32 MiB L2, so both operands are reused without
-  // changing the common SYCL preparation or transcript mapping.
+  // Nearby CTAs reuse A/B through L2. Rank-128 groups also leave room for the neighboring
+  // group, which can begin while the previous group's final CTAs are still active.
   int block_m = int(blockIdx.x);
   int block_n = int(blockIdx.y);
-  constexpr int block_swizzle = 16;
+  constexpr int swizzle_m = 16;
+  const int swizzle_n = k == 8192 ? 4 : 16;
   const int grid_m = m / 128;
   const int grid_n = n / 256;
-  if (grid_m % block_swizzle == 0 && grid_n % block_swizzle == 0) {
+  if (grid_m % swizzle_m == 0 && grid_n % swizzle_n == 0) {
     const int linear = int(blockIdx.y) * grid_m + int(blockIdx.x);
-    const int supertile = linear / (block_swizzle * block_swizzle);
-    const int local = linear % (block_swizzle * block_swizzle);
-    const int supertiles_n = grid_n / block_swizzle;
-    block_m = (supertile / supertiles_n) * block_swizzle + local / block_swizzle;
-    block_n = (supertile % supertiles_n) * block_swizzle + local % block_swizzle;
+    const int supertile = linear / (swizzle_m * swizzle_n);
+    const int local = linear % (swizzle_m * swizzle_n);
+    const int supertiles_n = grid_n / swizzle_n;
+    block_m = (supertile / supertiles_n) * swizzle_m + local / swizzle_n;
+    block_n = (supertile % supertiles_n) * swizzle_n + local % swizzle_n;
   }
   auto cta_coord = make_coord(block_m, block_n, _);
   Tensor gA = local_tile(mA, CtaTile{}, cta_coord, Step<_1, X, _1>{});
@@ -272,8 +271,10 @@ void pearlhash_cuda_gemm(const int8_t* __restrict__ ap, const int8_t* __restrict
       gemm(mma, fragment_a(_, _, kb), fragment_b(_, _, kb), accumulator);
     }
     ++rank_chunk;
-    if ((rank_chunk & 1) == 0) { // rank=256, K stage=128
-      const int transcript_word = (rank_chunk >> 1) - 1;
+    constexpr int stages_per_rank = PEARLHASH_RANK / 128;
+    if (rank_chunk % stages_per_rank == 0) {
+      const int transcript_word = (rank_chunk / stages_per_rank - 1) & 15;
+      uint32_t lane_part = 0;
       CUTE_UNROLL
       for (int tile = 0; tile < 16; ++tile) {
         const int tile_r = tile >> 2;
@@ -284,13 +285,21 @@ void pearlhash_cuda_gemm(const int8_t* __restrict__ ap, const int8_t* __restrict
                         uint32_t(accumulator(lo + 2)) ^ uint32_t(accumulator(lo + 3)) ^
                         uint32_t(accumulator(hi)) ^ uint32_t(accumulator(hi + 1)) ^
                         uint32_t(accumulator(hi + 2)) ^ uint32_t(accumulator(hi + 3));
-        part ^= __shfl_xor_sync(0xffffffffu, part, 16);
-        part ^= __shfl_xor_sync(0xffffffffu, part, 8);
-        part ^= __shfl_xor_sync(0xffffffffu, part, 4);
-        part ^= __shfl_xor_sync(0xffffffffu, part, 2);
-        part ^= __shfl_xor_sync(0xffffffffu, part, 1);
-        if (lane == tile * 2 + (transcript_word & 1))
-          transcript[transcript_word >> 1] = part;
+        // Every lane contributes to this tile. The native path already requires SM 8.0+,
+        // where one warp reduction replaces the five shuffle/XOR steps.
+        part = __reduce_xor_sync(0xffffffffu, part);
+        if ((lane >> 1) == tile)
+          lane_part = part;
+      }
+      // A lane pair owns one tile. Rotate its eight words instead of dynamically indexing them:
+      // NVRTC can keep this fixed-index queue in registers. Both supported profiles complete whole
+      // 16-word cycles, so the queue finishes in canonical transcript order.
+      if ((lane & 1) == (transcript_word & 1)) {
+        const uint32_t previous = transcript[0];
+        CUTE_UNROLL
+        for (int word = 0; word < 7; ++word)
+          transcript[word] = transcript[word + 1];
+        transcript[7] = ((previous << 13) | (previous >> 19)) ^ lane_part;
       }
     }
   }

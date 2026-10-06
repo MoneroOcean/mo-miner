@@ -1,6 +1,5 @@
-static std::string gpu_tuning_entry(
-  const std::string& dev_str, const char* const field, const unsigned value
-) {
+static std::string gpu_tuning_entry(const std::string& dev_str, const char* const field,
+                                    const unsigned value) {
   return dev_str + "*[" + field + "=" + std::to_string(value) + "]";
 }
 
@@ -8,29 +7,30 @@ static bool is_default_gpu_dev(const std::string& dev_str) {
   return dev_str.starts_with("gpu");
 }
 
-template <typename Fn>
-static void for_each_default_gpu(Fn&& fn) {
+template <typename Fn> static void for_each_default_gpu(Fn&& fn) {
   for (const auto& dev_pair : str2dev) {
-    if (is_default_gpu_dev(dev_pair.first)) fn(dev_pair.first, dev_pair.second);
+    if (is_default_gpu_dev(dev_pair.first))
+      fn(dev_pair.first, dev_pair.second);
   }
 }
 
-static void add_cpu_algo_dev(
-  std::string& result_dev, const std::string& algo, const unsigned max_cpu_batch,
-  const unsigned socket_count, const unsigned thread_count, const unsigned l3cache,
-  const std::map<std::string, unsigned>& algo2mem
-) {
+static void add_cpu_algo_dev(std::string& result_dev, const std::string& algo,
+                             const unsigned max_cpu_batch, const unsigned socket_count,
+                             const unsigned thread_count, const unsigned l3cache,
+                             const std::map<std::string, unsigned>& algo2mem) {
   const auto mem = algo2mem.find(algo);
-  if (mem == algo2mem.end()) return add_result_dev(result_dev, "cpu^" + std::to_string(thread_count));
-  append_grouped_cpu_devs(result_dev, cpu_thread_batches(
-    algo, max_cpu_batch, socket_count, thread_count, l3cache, mem->second
-  ));
+  if (mem == algo2mem.end())
+    return add_result_dev(result_dev, "cpu^" + std::to_string(thread_count));
+  append_grouped_cpu_devs(result_dev, cpu_thread_batches(algo, max_cpu_batch, socket_count,
+                                                         thread_count, l3cache, mem->second));
 }
 
 static unsigned cn_gpu_env_intensity(const unsigned default_batch, const unsigned max_batch) {
   unsigned long requested = 0;
-  if (!mom_parse_env_ulong("MOM_CN_GPU_INTENSITY", requested) || requested == 0) return default_batch;
-  if (requested > max_batch) return max_batch;
+  if (!mom_parse_env_ulong("MOM_CN_GPU_INTENSITY", requested) || requested == 0)
+    return default_batch;
+  if (requested > max_batch)
+    return max_batch;
   return static_cast<unsigned>(requested);
 }
 
@@ -176,25 +176,16 @@ static void add_gpu_c29_algo_dev(std::string& result_dev) {
   });
 }
 
-static void add_gpu_c30_algo_dev(std::string& result_dev) {
-#if defined(MOM_SYCL_HAS_HIP)
-  constexpr uint64_t minimum_local_memory = 64 * KiB;
-#else
-  constexpr uint64_t minimum_local_memory = 32 * KiB;
-#endif
-  for_each_default_gpu([&](const std::string& dev_str, const sycl::device& dev) {
-    if (!pow_has_dataset_memory(dev, 6240 * MiB, 11 * GiB) ||
-        !mom_has_usm_shared(dev) || !mom_has_usm_device(dev) ||
-        !sycl_workgroup_fits(dev, 512) ||
-        !sycl_local_memory_fits(dev, minimum_local_memory)) return;
-    add_result_dev(result_dev, gpu_tuning_entry(dev_str, "intensity", 1));
-  });
-}
-
 // Emit the resolved primary tuning dimension for each GPU that has room for the
 // algorithm's dataset. Secondary launch controls stay algorithm-specific and
 // can be overridden in the same bracket/object tuning model.
 enum class GpuUsm { none, shared, device, both };
+
+#if defined(MOM_SYCL_HAS_HIP)
+constexpr uint64_t c30_minimum_local_memory = 64 * KiB;
+#else
+constexpr uint64_t c30_minimum_local_memory = 32 * KiB;
+#endif
 
 static bool gpu_usm_supported(const sycl::device& dev, const GpuUsm required) {
   switch (required) {
@@ -229,40 +220,53 @@ static void add_gpu_dataset_algo_dev(std::string& result_dev, const uint64_t dat
   });
 }
 
+static void add_gpu_pearlhash_algo_dev(std::string& result_dev) {
+  for_each_default_gpu([&](const std::string& dev_str, const sycl::device& dev) {
+    if (!pow_has_dataset_memory(dev, 512 * MiB, 2 * GiB) ||
+        !gpu_usm_supported(dev, GpuUsm::both) || !sycl_workgroup_fits(dev, 256))
+      return;
+    const auto profile = pearlhash_profile(dev);
+    if (!profile.m)
+      return;
+    add_result_dev(result_dev,
+                   dev_str + "*[m=" + std::to_string(profile.m) +
+                       ";n=" + std::to_string(profile.n) +
+                       ";k=" + std::to_string(profile.k) +
+                       ";rank=" + std::to_string(profile.rank) + "]");
+  });
+}
+
 sycl::device get_dev(const std::string& dev_str) {
-  if (str2dev.empty()) update_str2dev();
+  if (str2dev.empty())
+    update_str2dev();
   if (!str2dev.contains(dev_str)) {
-    throw std::string("Unknown compute platform " + dev_str + ". Available compute platforms: " + available_dev_str());
+    throw std::string("Unknown compute platform " + dev_str +
+                      ". Available compute platforms: " + available_dev_str());
   }
   return str2dev.at(dev_str);
 }
 
 // return list of supported algos with the best device config
 std::map<std::string, std::string> algo_params(
-  const unsigned max_cpu_batch,
-  const unsigned cpu_sockets, const unsigned cpu_threads, const unsigned cpu_l3cache,
-  const std::map<std::string, unsigned>& algo2mem,
-  const std::set<std::string>& cpu_algos,
-  const std::set<std::string>& gpu_cn_algos,
-  const std::set<std::string>& gpu_c29_algos,
-  const std::set<std::string>& gpu_kawpow_algos,
-  const std::set<std::string>& gpu_etchash_algos,
-  const std::set<std::string>& gpu_autolykos2_algos,
-  const std::set<std::string>& gpu_pearlhash_algos,
-  const std::set<std::string>& gpu_fishhash_algos,
-  const std::set<std::string>& gpu_karlsenhashv2_algos,
-  const std::set<std::string>& gpu_misc_algos,
-  const std::set<std::string>& gpu_verthash_algos,
-  const std::set<std::string>& gpu_zelhash_algos,
-  const std::set<std::string>& gpu_beamhash3_algos
-) {
-  const bool need_sycl_devices = !gpu_cn_algos.empty() || !gpu_c29_algos.empty() ||
-                                 !gpu_kawpow_algos.empty() || !gpu_etchash_algos.empty() ||
-                                 !gpu_autolykos2_algos.empty() || !gpu_pearlhash_algos.empty() ||
-                                 !gpu_fishhash_algos.empty() ||
-                                 !gpu_karlsenhashv2_algos.empty() || !gpu_misc_algos.empty() ||
-                                 !gpu_verthash_algos.empty() || !gpu_zelhash_algos.empty() || !gpu_beamhash3_algos.empty();
-  if (need_sycl_devices && str2dev.empty()) update_str2dev(true);
+    const unsigned max_cpu_batch, const unsigned cpu_sockets, const unsigned cpu_threads,
+    const unsigned cpu_l3cache, const std::map<std::string, unsigned>& algo2mem,
+    const std::set<std::string>& cpu_algos, const std::set<std::string>& gpu_cn_algos,
+    const std::set<std::string>& gpu_c29_algos, const std::set<std::string>& gpu_kawpow_algos,
+    const std::set<std::string>& gpu_etchash_algos,
+    const std::set<std::string>& gpu_autolykos2_algos,
+    const std::set<std::string>& gpu_pearlhash_algos,
+    const std::set<std::string>& gpu_fishhash_algos,
+    const std::set<std::string>& gpu_karlsenhashv2_algos,
+    const std::set<std::string>& gpu_misc_algos, const std::set<std::string>& gpu_verthash_algos,
+    const std::set<std::string>& gpu_zelhash_algos,
+    const std::set<std::string>& gpu_beamhash3_algos) {
+  const bool need_sycl_devices =
+      !gpu_cn_algos.empty() || !gpu_c29_algos.empty() || !gpu_kawpow_algos.empty() ||
+      !gpu_etchash_algos.empty() || !gpu_autolykos2_algos.empty() || !gpu_pearlhash_algos.empty() ||
+      !gpu_fishhash_algos.empty() || !gpu_karlsenhashv2_algos.empty() || !gpu_misc_algos.empty() ||
+      !gpu_verthash_algos.empty() || !gpu_zelhash_algos.empty() || !gpu_beamhash3_algos.empty();
+  if (need_sycl_devices && str2dev.empty())
+    update_str2dev(true);
   const unsigned socket_count = std::max(1u, cpu_sockets);
   const unsigned thread_count = std::max(1u, cpu_threads);
   // Some platforms do not expose L3 topology. Estimate enough cache for at
@@ -285,21 +289,25 @@ std::map<std::string, std::string> algo_params(
   for (const auto& algo : algos) {
     std::string result_dev;
     if (cpu_algos.contains(algo))
-      add_cpu_algo_dev(result_dev, algo, max_cpu_batch, socket_count, thread_count, l3cache, algo2mem);
+      add_cpu_algo_dev(result_dev, algo, max_cpu_batch, socket_count, thread_count, l3cache,
+                       algo2mem);
     // Dataset bytes (largest single allocation) and minimum global memory per GPU algo.
     if (gpu_cn_algos.contains(algo)) {
       std::string backend_hint;
       add_gpu_cn_algo_dev(result_dev, algo, algo2mem, backend_hint);
-      if (!backend_hint.empty()) result["@backend:" + algo] = backend_hint;
-    }
-    else if (gpu_c29_algos.contains(algo)) {
-      if (algo == "c30") add_gpu_c30_algo_dev(result_dev);
-      else add_gpu_c29_algo_dev(result_dev);
-    }
-    else if (gpu_kawpow_algos.contains(algo)) add_gpu_dataset_algo_dev(
-      result_dev, 5 * GiB, 6 * GiB, algo == "firopow" ? firopow_intensity : kawpow_intensity,
-      "intensity", GpuUsm::shared, 64, 20 * KiB, true
-    );
+      if (!backend_hint.empty())
+        result["@backend:" + algo] = backend_hint;
+    } else if (gpu_c29_algos.contains(algo)) {
+      if (algo == "c30")
+        add_gpu_dataset_algo_dev(
+            result_dev, 6240 * MiB, 11 * GiB, [](const sycl::device&) { return 1u; },
+            "intensity", GpuUsm::both, 512, c30_minimum_local_memory);
+      else
+        add_gpu_c29_algo_dev(result_dev);
+    } else if (gpu_kawpow_algos.contains(algo))
+      add_gpu_dataset_algo_dev(result_dev, 5 * GiB, 6 * GiB,
+                               algo == "firopow" ? firopow_intensity : kawpow_intensity,
+                               "intensity", GpuUsm::shared, 64, 20 * KiB, true);
     else if (gpu_etchash_algos.contains(algo)) {
       if (algo == "octopus")
         add_gpu_dataset_algo_dev(result_dev, 4300 * MiB, 6 * GiB, octopus_intensity,
@@ -307,22 +315,27 @@ std::map<std::string, std::string> algo_params(
       else
         add_gpu_dataset_algo_dev(result_dev, 4300 * MiB, 5 * GiB, etchash_intensity,
                                  "intensity", GpuUsm::both, 128, 9 * KiB, true);
-    }
-    else if (gpu_autolykos2_algos.contains(algo)) add_gpu_dataset_algo_dev(result_dev, 1 * GiB, 3 * GiB, autolykos2_intensity,
-                               "intensity", mom_sycl_portable_opencl ? GpuUsm::none : GpuUsm::both, 32);
-    else if (gpu_pearlhash_algos.contains(algo)) add_gpu_dataset_algo_dev(
-      result_dev, 512 * MiB, 2 * GiB, pearlhash_intensity, "m", GpuUsm::both, 256
-    );
-    else if (gpu_fishhash_algos.contains(algo)) add_gpu_dataset_algo_dev(result_dev, 4608 * MiB, 6 * GiB, fishhash_intensity,
-                               "intensity", GpuUsm::both, 128, 6 * KiB, true); // 4.6 GiB DAG + 72 MiB light cache
-    else if (gpu_karlsenhashv2_algos.contains(algo)) add_gpu_dataset_algo_dev(result_dev, 4608 * MiB, 6 * GiB, fishhash_intensity,
-                               "intensity", GpuUsm::both, 128); // FishHashPlus: same 4.6 GiB DAG/intensity as fishhash
-    else if (gpu_misc_algos.contains(algo)) {
+    } else if (gpu_autolykos2_algos.contains(algo))
+      add_gpu_dataset_algo_dev(
+          result_dev, 1 * GiB, 3 * GiB, autolykos2_intensity, "intensity",
+          mom_sycl_portable_opencl ? GpuUsm::none : GpuUsm::both, 32);
+    else if (gpu_pearlhash_algos.contains(algo))
+      add_gpu_pearlhash_algo_dev(result_dev);
+    else if (gpu_fishhash_algos.contains(algo)) {
+      // 4.6 GiB DAG + 72 MiB light cache.
+      add_gpu_dataset_algo_dev(result_dev, 4608 * MiB, 6 * GiB, fishhash_intensity,
+                               "intensity", GpuUsm::both, 128, 6 * KiB, true);
+    } else if (gpu_karlsenhashv2_algos.contains(algo)) {
+      // FishHashPlus uses the same DAG and intensity as FishHash.
+      add_gpu_dataset_algo_dev(
+          result_dev, 4608 * MiB, 6 * GiB, fishhash_intensity, "intensity", GpuUsm::both, 128);
+    } else if (gpu_misc_algos.contains(algo)) {
       if (algo == "hoohash")
-      for_each_default_gpu([&](const std::string& dev_str, const sycl::device& dev) {
-        if (hoohash_supported(dev))
-          add_result_dev(result_dev, gpu_tuning_entry(dev_str, "intensity", hoohash_intensity(dev)));
-      });
+        for_each_default_gpu([&](const std::string& dev_str, const sycl::device& dev) {
+          if (hoohash_supported(dev))
+            add_result_dev(result_dev,
+                           gpu_tuning_entry(dev_str, "intensity", hoohash_intensity(dev)));
+        });
       else if (algo == "walahash")
         for_each_default_gpu([&](const std::string& dev_str, const sycl::device& dev) {
           if (walahash_supported(dev))
@@ -343,8 +356,7 @@ std::map<std::string, std::string> algo_params(
             add_result_dev(result_dev,
                            gpu_tuning_entry(dev_str, "intensity", nexapow_intensity(dev)));
         });
-    }
-    else if (gpu_verthash_algos.contains(algo))
+    } else if (gpu_verthash_algos.contains(algo))
       add_gpu_dataset_algo_dev(result_dev, 1224 * MiB, 2 * GiB, verthash_intensity,
                                "intensity", GpuUsm::both, 64, 8 * KiB);
     else if (gpu_zelhash_algos.contains(algo)) {
@@ -354,8 +366,8 @@ std::map<std::string, std::string> algo_params(
             "intensity", GpuUsm::device, 1024, 34 * KiB);
       else if (algo == "zhash")
         add_gpu_dataset_algo_dev(
-          result_dev, 906 * MiB, 4 * GiB, [](const sycl::device&) { return 1u; },
-          "intensity", GpuUsm::device, 1024, 34 * KiB);
+            result_dev, 906 * MiB, 4 * GiB, [](const sycl::device&) { return 1u; },
+            "intensity", GpuUsm::device, 1024, 34 * KiB);
       else {
         // Validate that the solver has usable capacity, but let each workload process derive its
         // own aligned slot count. A discovery process may see a different allocation limit.
@@ -363,12 +375,14 @@ std::map<std::string, std::string> algo_params(
             result_dev, 1856 * MiB, 8 * GiB, mom_zelhash::zelhash_slot_capacity, "slots",
             GpuUsm::both, 1024, 0, true, false);
       }
+    } else if (gpu_beamhash3_algos.contains(algo)) {
+      // The reported workgroup and solver share one device/compiler heuristic.
+      add_gpu_dataset_algo_dev(
+          result_dev, 3000 * MiB, 8 * GiB, mom_beamhash3::beamhash3_workgroup,
+          "workgroup", GpuUsm::both, 128, 24580);
     }
-    else if (gpu_beamhash3_algos.contains(algo)) add_gpu_dataset_algo_dev(
-      result_dev, 3000 * MiB, 8 * GiB, mom_beamhash3::beamhash3_workgroup, "workgroup",
-      GpuUsm::both, 128, 24580
-    ); // The reported workgroup and the solver share one device/compiler heuristic.
-    if (!result_dev.empty()) result[algo] = result_dev;
+    if (!result_dev.empty())
+      result[algo] = result_dev;
   }
   return result;
 }

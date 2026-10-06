@@ -70,35 +70,48 @@ static void search_cpu(
   }
 }
 
+#if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
+template <int ER, int EC, bool Native = false>
+#else
 template <int ER, int EC>
-static void search_t(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k, int rank, bool dbg) {
+#endif
+static void search_t(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k,
+                     int rank, bool dbg) {
   constexpr int HT = 16;
   constexpr int WG = (HT * HT) / (ER * EC);                 // work-items per tile
   [[maybe_unused]] constexpr int BW = HT / EC;              // micro-tile blocks per row (unused on the empty nvptx pass)
   static_assert(HT % ER == 0 && HT % EC == 0, "pearlhash portable: ER/EC must divide 16");
   static_assert((WG & (WG - 1)) == 0, "pearlhash portable: work-group size must be a power of two");
   auto B = bb;
-  const int tilesH = m / HT, tilesW = n / HT, k4 = k / 4, nb = k / rank;
-  const size_t ntiles = (size_t)tilesH * tilesW;
+  const uint32_t tilesH = static_cast<uint32_t>(m / HT), tilesW = static_cast<uint32_t>(n / HT);
+  const int k4 = k / 4, nb = k / rank;
+  const size_t ntiles = static_cast<size_t>(tilesH) * tilesW;
   // The production A'/B' matrices are 512 MiB each. Plain row-major tile order re-streams all of B'
   // for each A' band; on HIP, visit square tile blocks instead so both slices remain in L2/Infinity
   // Cache. This is only a group-id remap: arithmetic, allocations, and every non-HIP path are unchanged.
   int cache_block = 0;
 #if defined(MOM_SYCL_HAS_HIP)
-  #if defined(MOM_SYCL_ADAPTIVECPP)
-  const bool is_hip = q.get_device().get_backend() == sycl::backend::hip;
-  #else
-  const bool is_hip = q.get_device().get_backend() == sycl::backend::ext_oneapi_hip;
-  #endif
+  const bool is_hip = mom_is_hip(q.get_device());
   if (is_hip) {
     cache_block = 64;
-    if (const char* value = std::getenv("MOM_PEARLHASH_AMD_DP4A_CACHE_BLOCK"))
-      cache_block = std::atoi(value);
+    if (std::getenv("MOM_PEARLHASH_AMD_DP4A_CACHE_BLOCK")) {
+      unsigned long configured = 0;
+      if (mom_parse_env_ulong("MOM_PEARLHASH_AMD_DP4A_CACHE_BLOCK", configured) &&
+          configured <= static_cast<unsigned long>(std::numeric_limits<int>::max()))
+        cache_block = static_cast<int>(configured);
+      else
+        cache_block = 0;
+    }
+
   }
 #endif
-  const bool blocked = cache_block > 1 && tilesH % cache_block == 0 &&
-                       tilesW % cache_block == 0;
-  const int blocksW = blocked ? tilesW / cache_block : 0;
+  const bool blocked = cache_block > 1 &&
+                       static_cast<uint64_t>(cache_block) * cache_block <=
+                         std::numeric_limits<uint32_t>::max() &&
+                       tilesH % static_cast<uint32_t>(cache_block) == 0 &&
+                       tilesW % static_cast<uint32_t>(cache_block) == 0;
+  const uint32_t blocksW = blocked ? tilesW / static_cast<uint32_t>(cache_block) : 0;
+
   // A full 131072-square 2x2 search contains exactly 2^32 work-items. AdaptiveCpp's HIP launcher
   // cannot represent that as one ND-range (hipErrorInvalidValue), even though the group count is
   // legal. Submit bounded contiguous pieces on the in-order queue and add their group base in the
@@ -111,37 +124,67 @@ static void search_t(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, in
       // Explicit capture list (not [=]): keeps the kernel-lambda layout identical across the host, spir64
       // and nvptx passes (the nvptx body is #ifdef'd out below), so the dual-compiler combined build's
       // "Unexpected kernel lambda size" static assert stays satisfied.
-      h.parallel_for(sycl::nd_range<1>(group_count * WG, WG),
-                   [B, seed, red, tilesW, k4, rank, nb, dbg, cache_block, blocked, blocksW,
-                    group_base](sycl::nd_item<1> it) {
-      const int g = static_cast<int>(group_base + it.get_group(0));
-      int R, C;
-      if (blocked) {
-        const int area = cache_block * cache_block, block = g / area, inner = g % area;
-        R = (block / blocksW) * cache_block + inner / cache_block;
-        C = (block % blocksW) * cache_block + inner % cache_block;
-      } else { R = g / tilesW; C = g % tilesW; }
-      const int lid = (int)it.get_local_linear_id();
-      const int r0 = (lid / BW) * ER, c0 = (lid % BW) * EC;     // this work-item's micro-tile origin
-      const int rowBase = R * HT, colBase = C * HT;
-      // A'/B' read as int32 words (4 packed int8) straight from global -- the L2 absorbs the per-tile
-      // reuse (each 128KB tile slice stays resident), which is why no SLM staging is needed.
-      auto A32 = sycl::address_space_cast<sycl::access::address_space::global_space, sycl::access::decorated::no>(
-                   reinterpret_cast<const int32_t*>(B.Ap));
-      auto B32 = sycl::address_space_cast<sycl::access::address_space::global_space, sycl::access::decorated::no>(
-                   reinterpret_cast<const int32_t*>(B.Bp));
-      uint32_t acc[ER][EC]; for (int i = 0; i < ER; i++) for (int j = 0; j < EC; j++) acc[i][j] = 0;
-      uint32_t pX[16]; for (int w = 0; w < 16; w++) pX[w] = 0;   // this work-item's per-boundary partial XOR
-      for (int rc = 0; rc < nb; rc++) {
-        const int c4lo = rc * (rank / 4), c4hi = c4lo + (rank / 4);
-        for (int c4 = c4lo; c4 < c4hi; c4++) {        // each step = 4 columns packed into one int32 word
-          int32_t bw[EC]; for (int j = 0; j < EC; j++) bw[j] = B32[(size_t)(colBase + c0 + j) * k4 + c4];
-          for (int i = 0; i < ER; i++) {
-            const int32_t aw = A32[(size_t)(rowBase + r0 + i) * k4 + c4];
-            const int a0 = (int8_t)aw, a1 = (int8_t)(aw >> 8), a2 = (int8_t)(aw >> 16), a3 = (int8_t)(aw >> 24);
-            for (int j = 0; j < EC; j++) {           // dp4a: 4 int8 MACs (one ALU op on Intel/AMD GPUs)
-              const int32_t b = bw[j];
-              acc[i][j] += static_cast<uint32_t>(a0*(int8_t)b + a1*(int8_t)(b >> 8) + a2*(int8_t)(b >> 16) + a3*(int8_t)(b >> 24));
+      h.parallel_for(
+          sycl::nd_range<1>(group_count * WG, WG),
+          [B, seed, red, tilesW, k4, rank, nb, dbg, cache_block, blocked, blocksW,
+           group_base](sycl::nd_item<1> it) MOM_SYCL_KERNEL_ARGS_RESTRICT {
+        const uint32_t g = static_cast<uint32_t>(group_base + it.get_group(0));
+        uint32_t R, C;
+        if (blocked) {
+          const uint32_t block_size = static_cast<uint32_t>(cache_block);
+          const uint32_t area = block_size * block_size, block = g / area, inner = g % area;
+          R = (block / blocksW) * block_size + inner / block_size;
+          C = (block % blocksW) * block_size + inner % block_size;
+        } else {
+          R = g / tilesW;
+          C = g % tilesW;
+        }
+        const int lid = (int)it.get_local_linear_id();
+        const int r0 = (lid / BW) * ER, c0 = (lid % BW) * EC; // this work-item's micro-tile origin
+        const uint32_t rowBase = R * HT, colBase = C * HT;
+        // A'/B' read as int32 words (4 packed int8) straight from global -- the L2 absorbs the per-tile
+        // reuse (each 128KB tile slice stays resident), which is why no SLM staging is needed.
+        auto A32 = sycl::address_space_cast<sycl::access::address_space::global_space,
+                                            sycl::access::decorated::no>(
+            reinterpret_cast<const int32_t*>(B.Ap));
+        auto B32 = sycl::address_space_cast<sycl::access::address_space::global_space,
+                                            sycl::access::decorated::no>(
+            reinterpret_cast<const int32_t*>(B.Bp));
+        uint32_t acc[ER][EC];
+        for (int i = 0; i < ER; i++)
+          for (int j = 0; j < EC; j++)
+            acc[i][j] = 0;
+        uint32_t pX[16];
+        for (int w = 0; w < 16; w++)
+          pX[w] = 0; // this work-item's partial 16-word transcript
+        for (int rc = 0; rc < nb; rc++) {
+          const int c4lo = rc * (rank / 4), c4hi = c4lo + (rank / 4);
+          for (int c4 = c4lo; c4 < c4hi; c4++) { // each step = 4 columns packed into one int32 word
+            int32_t bw[EC];
+            for (int j = 0; j < EC; j++)
+              bw[j] = B32[(colBase + static_cast<size_t>(c0 + j)) * static_cast<size_t>(k4) +
+                          static_cast<size_t>(c4)];
+            for (int i = 0; i < ER; i++) {
+              const int32_t aw =
+                  A32[(rowBase + static_cast<size_t>(r0 + i)) * static_cast<size_t>(k4) +
+                      static_cast<size_t>(c4)];
+#if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
+              if constexpr (Native) {
+                for (int j = 0; j < EC; j++)
+                  acc[i][j] = mom::nvidia::dot4_s8<true>(static_cast<uint32_t>(aw),
+                                                       static_cast<uint32_t>(bw[j]), acc[i][j]);
+              } else
+#endif
+              {
+                const int a0 = (int8_t)aw, a1 = (int8_t)(aw >> 8), a2 = (int8_t)(aw >> 16),
+                          a3 = (int8_t)(aw >> 24);
+                for (int j = 0; j < EC; j++) { // dp4a: 4 int8 MACs (one ALU op on Intel/AMD GPUs)
+                  const int32_t b = bw[j];
+                  const int product =
+                      a0 * static_cast<int8_t>(b) + a1 * static_cast<int8_t>(b >> 8) +
+                      a2 * static_cast<int8_t>(b >> 16) + a3 * static_cast<int8_t>(b >> 24);
+                  acc[i][j] += static_cast<uint32_t>(product);
+                }
             }
           }
         }
@@ -183,22 +226,22 @@ static void search(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int 
   // gfx12 normally takes the SYCL WMMA specialization below. Keep its measured-best 2x2 dp4a
   // fallback for unsupported shapes/compilers (RX 9060 XT: 750 vs 496 GH/s for 2x2 versus the
   // Intel-tuned 4x4). Non-HIP devices retain their own 4x4 default.
-  bool is_hip = false;
-  #if defined(MOM_SYCL_ADAPTIVECPP)
-  is_hip = q.get_device().get_backend() == sycl::backend::hip;
-  #else
-  is_hip = q.get_device().get_backend() == sycl::backend::ext_oneapi_hip;
-  #endif
+  const bool is_hip = mom_is_hip(q.get_device());
   if (is_hip) {
     // Keep several fully typed dp4a micro-tiles in the architecture-neutral image. This is a host
     // dispatch, so each hot kernel contains no runtime tile branch. MOM_PEARLHASH_AMD_DP4A_TILE is a
     // tuning/validation override; 2x2 remains the measured default until the final AMD SSCP sweep.
     const char* const tile = std::getenv("MOM_PEARLHASH_AMD_DP4A_TILE");
-    if (tile && !std::strcmp(tile, "1x1")) return search_t<1, 1>(q, bb, seed, m, n, k, rank, dbg);
-    if (tile && !std::strcmp(tile, "2x4")) return search_t<2, 4>(q, bb, seed, m, n, k, rank, dbg);
-    if (tile && !std::strcmp(tile, "4x2")) return search_t<4, 2>(q, bb, seed, m, n, k, rank, dbg);
-    if (tile && !std::strcmp(tile, "4x4")) return search_t<4, 4>(q, bb, seed, m, n, k, rank, dbg);
-    if (tile && !std::strcmp(tile, "8x2")) return search_t<8, 2>(q, bb, seed, m, n, k, rank, dbg);
+    if (tile && !std::strcmp(tile, "1x1"))
+      return search_t<1, 1>(q, bb, seed, m, n, k, rank, dbg);
+    if (tile && !std::strcmp(tile, "2x4"))
+      return search_t<2, 4>(q, bb, seed, m, n, k, rank, dbg);
+    if (tile && !std::strcmp(tile, "4x2"))
+      return search_t<4, 2>(q, bb, seed, m, n, k, rank, dbg);
+    if (tile && !std::strcmp(tile, "4x4"))
+      return search_t<4, 4>(q, bb, seed, m, n, k, rank, dbg);
+    if (tile && !std::strcmp(tile, "8x2"))
+      return search_t<8, 2>(q, bb, seed, m, n, k, rank, dbg);
     return search_t<2, 2>(q, bb, seed, m, n, k, rank, dbg);
   }
 #endif

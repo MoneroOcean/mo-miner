@@ -244,20 +244,28 @@ static Buffers alloc_buffers(sycl::queue& q, int m, int n, int k, int rank, bool
     b.target = alloc_required<uint8_t>(q, 32, "target");
     b.CVA = alloc_required<uint8_t>(q, counts.cva_bytes, "CVA");
     b.CVB = alloc_required<uint8_t>(q, counts.cvb_bytes, "CVB");
-  // Separating jackpot BLAKE3 from the matrix loop restores occupancy. Portable paths retain a
-  // conservative 256 MiB cap; the explicitly selected CUDA source-JIT path can use a larger
-  // transcript to amortize the common seed/root/noise preparation without affecting other workers.
-  const uint64_t transcript_bytes = static_cast<uint64_t>(m / 16) * (n / 16) * 16U * sizeof(uint32_t);
-  const uint64_t transcript_limit = cuda_jit ? 4ULL * 1024U * 1024U * 1024U
-                                             : 256ULL * 1024U * 1024U;
+    // Keep BLAKE3 separate from the matrix loop to preserve occupancy. CUDA processes row slices:
+    // the full reference profile would otherwise need a 16-GiB transcript in addition to A'/B'.
+    // Other backends still require a complete transcript and keep their existing 256-MiB cap.
+    const int transcript_rows = cuda_jit
+        ? std::min(m, static_cast<int>(((1ULL << 32) / static_cast<unsigned>(n)) / 128) * 128)
+        : m;
+    const uint64_t transcript_bytes =
+        static_cast<uint64_t>(transcript_rows / 16) * (n / 16) * 16U * sizeof(uint32_t);
+    const uint64_t transcript_limit =
+        cuda_jit ? 1ULL << 30 : 256ULL * 1024U * 1024U;
     const sycl::device device = q.get_device();
     const PowDeviceProfile capacity = {
         1, device.get_info<sycl::info::device::global_mem_size>(),
         device.get_info<sycl::info::device::max_mem_alloc_size>()};
     const bool transcript_fits = !cuda_jit ||
         pearlhash_optional_allocation_fits(capacity, counts, transcript_bytes);
-  if (transcript_bytes > 0 && transcript_bytes <= transcript_limit && transcript_fits)
-    b.transcript=alloc_buffer<uint32_t>(q, static_cast<size_t>(transcript_bytes / sizeof(uint32_t)));
+    if (transcript_bytes > 0 && transcript_bytes <= transcript_limit && transcript_fits) {
+      b.transcript =
+          alloc_buffer<uint32_t>(q, static_cast<size_t>(transcript_bytes / sizeof(uint32_t)));
+      if (b.transcript)
+        b.transcript_rows = transcript_rows;
+    }
     b.result = sycl::malloc_shared<Result>(1, q);
     if (!b.result)
       throw std::string("Can't allocate pearlhash result");
@@ -269,7 +277,6 @@ static Buffers alloc_buffers(sycl::queue& q, int m, int n, int k, int rank, bool
   }
 }
 
-#ifndef PEARLHASH_STANDALONE
 // ---- native mom entry point (DEV::PEARLHASH_GPU) ----
 namespace {
 // PlainProof carries M/N/K/rank, so the job can select a device-efficient profile without changing
@@ -278,6 +285,12 @@ namespace {
 struct PearlHashState {
   sycl::queue queue;
   sycl::queue prep_queue;
+#ifdef MOM_SYCL_HAS_CUDA
+  const bool cuda_tensor = mom::nvidia::has_int8_async_matrix(
+      mom::nvidia::compute_capability(queue.get_device()));
+#else
+  static constexpr bool cuda_tensor = false;
+#endif
   PearlHashHipSearch hip;
   PearlHashCudaSearch cuda;
   int m = 0, n = 0, k = 0, rank = 0;
@@ -415,10 +428,14 @@ int pearlhash(
   std::lock_guard<std::mutex> lock(st.mutex);
   const bool native_requested = backend == "auto" || backend == "native";
   std::string hip_reason, cuda_reason;
-  const bool hip_jit = native_requested &&
-                       PearlHashHipSearch::supports(st.queue, &hip_reason);
-  const bool cuda_jit = native_requested &&
-                        PearlHashCudaSearch::supports(st.queue, &cuda_reason);
+  const bool hip_device = native_requested && PearlHashHipSearch::supports(st.queue, &hip_reason);
+  const bool cuda_device = native_requested && PearlHashCudaSearch::supports(st.queue, &cuda_reason);
+  const bool hip_jit = hip_device && PearlHashHipSearch::supports_shape(m, n, k, rank);
+  const bool cuda_jit = cuda_device && PearlHashCudaSearch::supports_shape(m, n, k, rank);
+  if (hip_device && !hip_jit)
+    hip_reason = "the selected PearlHash profile requires the shared SYCL path";
+  if (cuda_device && !cuda_jit)
+    cuda_reason = "the selected PearlHash profile requires the shared SYCL path";
   if (native_requested && !hip_jit && !cuda_jit && !st.native_notice) {
     st.native_notice = true;
     std::fprintf(stderr, "PearlHash native backend unavailable, using SYCL: %s\n",
@@ -438,22 +455,22 @@ int pearlhash(
   else for (int i = 0; i < 32; i++) tgtLE[i] = target[31 - i];       // core gives BE; kernel wants LE
   q.memcpy(b.target, tgtLE, 32);
   b.result->found = 0;
-  b.result->chk = 0;   // whole-search checksum (filled only when MOM_PEARLHASH_CHK is set; see tile_mix)
-  q.wait();
+  b.result->chk =
+      0; // whole-search checksum (filled only when MOM_PEARLHASH_CHK is set; see tile_mix)
 
   const uint32_t attempt_seed = static_cast<uint32_t>(*pseed);
   PearlHashSearchBackend search_backend =
-    attempt(q, b, attempt_seed, m, n, k, rank, backend, &st.hip, &st.cuda,
-            &st.prep_queue, is_test);
+      attempt(q, b, attempt_seed, m, n, k, rank, backend, &st.hip, &st.cuda,
+              &st.prep_queue, is_test, st.cuda_tensor);
   // Start after submission: a first call can include synchronous device-image/JIT setup, and feeding
   // that one-off cost into the wait EMA makes later completed GPU attempts sleep needlessly.
   const auto attempt_start = std::chrono::steady_clock::now();
-  // The in-order queue's wait busy-spins a host core on both backends (CUDA's native sync and the
-  // Intel GPU wait), and pearlhash waits once per attempt -- a long, very stable GEMM. So sleep through
-  // most of the attempt (an EMA of recent attempt wall times) before waiting, leaving only a short
-  // spinning tail; the result is read from shared USM afterwards so completion stays exact. The 90%
-  // sleep stays under the attempt time, adding no latency. Mirrors the cn/gpu pre-read sleep.
-  if (st.wait_ema_us > 2000.0) {
+  // Intel SYCL waits must drive queue progress before updating the attempt-time EMA;
+  // sleeping first can feed the delay back into subsequent attempts. Keep other backends' pacing.
+  const bool intel_sycl_gpu = search_backend == PearlHashSearchBackend::sycl &&
+      q.get_device().is_gpu() &&
+      q.get_device().get_info<sycl::info::device::vendor_id>() == 0x8086;
+  if (st.wait_ema_us > 2000.0 && !intel_sycl_gpu) {
     const double elapsed_us = static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
       std::chrono::steady_clock::now() - attempt_start).count());
     const double sleep_us = st.wait_ema_us * 0.90 - elapsed_us;
@@ -472,27 +489,66 @@ int pearlhash(
       else st.cuda.fail(error);
       b.result->found = 0;
       b.result->chk = 0;
-      search_backend = attempt(q, b, attempt_seed, m, n, k, rank, "sycl-native",
-                               nullptr, nullptr, nullptr, is_test);
+      search_backend =
+          attempt(q, b, attempt_seed, m, n, k, rank, "sycl-native", nullptr,
+                  nullptr, nullptr, is_test, st.cuda_tensor);
       q.wait_and_throw();
     }
-  } else q.wait_and_throw();
-#if defined(MOM_SYCL_HAS_HIP) || defined(MOM_SYCL_HAS_CUDA)
-  if (is_test && search_backend != PearlHashSearchBackend::sycl) {
-    const uint32_t native_checksum = b.result->chk;
+  } else {
+#if defined(SYCL_EXT_ONEAPI_ENQUEUE_BARRIER)
+    // OpenCL keeps its native wait/progress semantics; other Intel GPU queues poll completion
+    // before sleeping, without reintroducing EMA pre-wait delays.
+    if (intel_sycl_gpu && !mom_is_opencl(q.get_device()))
+      sycl_wait_and_throw(q.ext_oneapi_submit_barrier(), q.get_device());
+    else
+#endif
+      q.wait_and_throw();
+  }
+  if (is_test && q.get_device().is_gpu()) {
+    // Search backends share GPU preparation, so agreement between them cannot validate the
+    // commitment roots or V3 noise seeds. Recompute these independently on the host in tests.
+    const std::size_t chunks_a = (static_cast<std::size_t>(m) * k + 1023) / 1024;
+    const std::size_t chunks_b = (static_cast<std::size_t>(n) * k + 1023) / 1024;
+    std::vector<uint8_t> cvs_a(chunks_a * 32), cvs_b(chunks_b * 32);
+    std::array<uint8_t, 32> expected_a{}, expected_b{}, observed_a{}, observed_b{};
+    Buffers reference{};
+    reference.key = st.key;
+    reference.CVA = cvs_a.data();
+    reference.CVB = cvs_b.data();
+    reference.cA = expected_a.data();
+    reference.cB = expected_b.data();
+    prepare_roots_cpu(reference, attempt_seed, m, n, k);
+    q.memcpy(observed_a.data(), b.cA, observed_a.size());
+    q.memcpy(observed_b.data(), b.cB, observed_b.size());
+    q.wait_and_throw();
+    if (observed_a != expected_a || observed_b != expected_b)
+      throw std::string("PearlHash GPU/host commitment seed mismatch");
+    const char* const search_name = search_backend == PearlHashSearchBackend::cuda_jit
+      ? "cuda-jit" : search_backend == PearlHashSearchBackend::hip_jit ? "hip-jit" : "sycl";
+    std::fprintf(stderr, "PEARLHASH_TEST search=%s cert_version=%u host_seeds_match=true\n",
+                 search_name, cert_version);
+    // Automatic capability fallback may resolve to the reference, not a tuned search.
+    if (backend == "sycl")
+      std::fprintf(stderr, "PEARLHASH_TEST reference_search=true\n");
+  }
+  // search() retains the scalar MAC expression, independent of the optional NVIDIA packed-dot path.
+  // Explicit "sycl" already uses this reference; tuned searches must compare against it.
+  // Keep this outside vendor guards so Intel ESIMD receives the same correctness check.
+  if (is_test && q.get_device().is_gpu() && backend != "sycl") {
+    const uint32_t accelerated_checksum = b.result->chk;
     b.result->found = 0;
     b.result->chk = 0;
     compute_ab(q, b, attempt_seed, m, n, k, rank, /*portable=*/true);
     search(q, b, attempt_seed, m, n, k, rank, /*dbg=*/true);
-    q.wait();
-    if (b.result->chk != native_checksum) {
+    q.wait_and_throw();
+    if (b.result->chk != accelerated_checksum) {
       std::ostringstream message;
-      message << "PearlHash native/SYCL checksum mismatch (native=0x" << std::hex
-              << native_checksum << ", SYCL=0x" << b.result->chk << ')';
+      message << "PearlHash accelerated/SYCL checksum mismatch (accelerated=0x" << std::hex
+              << accelerated_checksum << ", SYCL=0x" << b.result->chk << ')';
       throw message.str();
     }
+    std::fprintf(stderr, "PEARLHASH_TEST search_checksum_match=true\n");
   }
-#endif
   {
     const double us = static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
       std::chrono::steady_clock::now() - attempt_start).count());
@@ -550,99 +606,4 @@ uint64_t pearlhash_attempt_hashes(unsigned intensity, unsigned n, unsigned k, un
   return mn * effective_k;
 }
 
-#endif  // !PEARLHASH_STANDALONE
-
-#ifdef PEARLHASH_STANDALONE
-#include <cstdio>
-#include <chrono>
-#include <poll.h>
-#include <unistd.h>
-static void parse_hex(const char* hex, uint8_t* out, int nbytes) {
-  for (int i = 0; i < nbytes; i++) { unsigned x; sscanf(hex + 2 * i, "%2x", &x); out[i] = (uint8_t)x; }
-}
-
-// Persistent search server: stdin lines `job <headerHex(152)> <targetHexLE(64)>` set the
-// current work; the GPU searches incrementing seeds continuously and prints
-// `found <seed> <plainProofBase64>` on hits. (Standalone test/bench harness only.)
-static int run_server(int k, int rank, int m, int n) {
-  sycl::queue q{sycl::gpu_selector_v, sycl::property::queue::in_order{}};
-  fprintf(stderr, "pearlhash-server dev: %s  m=%d n=%d k=%d rank=%d\n", q.get_device().get_info<sycl::info::device::name>().c_str(), m, n, k, rank);
-  Buffers b = alloc_buffers(q, m, n, k, rank);
-
-  bool haveJob=false; uint32_t seed=1; std::string inbuf; uint8_t curKey[32]={0};
-  char rd[8192];
-  auto poll_stdin=[&](int timeout_ms){
-    pollfd pfd{0, POLLIN, 0};
-    if (poll(&pfd,1,timeout_ms)>0 && (pfd.revents&POLLIN)) { int nr=read(0,rd,sizeof(rd)); if(nr<=0) return false; inbuf.append(rd,nr); }
-    size_t nl;
-    while ((nl=inbuf.find('\n'))!=std::string::npos) {
-      std::string line=inbuf.substr(0,nl); inbuf.erase(0,nl+1);
-      if (line.rfind("job ",0)==0) {
-        char hh[160], tt[80]; if (sscanf(line.c_str(),"job %159s %79s",hh,tt)==2) {
-          uint8_t header[76], tgt[32];
-          parse_hex(hh,header,76); derive_key(header,k,rank,curKey); parse_hex(tt,tgt,32);
-          q.memcpy(b.key,curKey,32); q.memcpy(b.target,tgt,32); q.wait();
-          haveJob=true; seed=1; b.result->found=0;
-        }
-      } else if (line=="quit") return false;
-    }
-    return true;
-  };
-  if (!poll_stdin(-1)) return 0;  // block for first job
-  while (true) {
-    if (!poll_stdin(0)) break;
-    if (!haveJob) { if(!poll_stdin(100)) break; continue; }
-    attempt(q, b, seed, m, n, k, rank); q.wait();
-    if (b.result->found) {     // build the pool-ready PlainProof here; JS only relays it
-      uint32_t adjustment_factor = 0;
-      std::string proof = build_plain_proof(b.result->seed, m, n, k, rank, curKey, (int)b.result->row, (int)b.result->col, &adjustment_factor);
-      printf("found %u %s\n", b.result->seed, proof.c_str()); fflush(stdout); b.result->found=0;
-    }
-    seed++;
-  }
-  return 0;
-}
-
-int main(int argc, char** argv) {
-  if (argc >= 6 && std::string(argv[1]) == "server")
-    return run_server(atoi(argv[2]), atoi(argv[3]), atoi(argv[4]), atoi(argv[5]));
-  if (std::string(argv[1]) == "proof") {   // proof <hdr> k rank m n seed row col -> base64 (host, no GPU)
-    int k = atoi(argv[3]), rank = atoi(argv[4]), m = atoi(argv[5]), n = atoi(argv[6]);
-    uint8_t header[76], key[32];
-    parse_hex(argv[2], header, 76); derive_key(header, k, rank, key);
-    uint32_t adjustment_factor = 0;
-    std::printf("%s\n", build_plain_proof((uint32_t)strtoul(argv[7], nullptr, 10), m, n, k, rank, key, atoi(argv[8]), atoi(argv[9]), &adjustment_factor).c_str());
-    return 0;
-  }
-  const char* headerHex = argv[1];
-  int k = atoi(argv[2]), rank = atoi(argv[3]), m = atoi(argv[4]), n = atoi(argv[5]);
-  uint32_t seedBase = (uint32_t)strtoul(argv[6], nullptr, 10);
-  int count = atoi(argv[7]);
-  const char* tgtHexLE = argv[8];
-
-  uint8_t header[76], key[32], target[32];
-  parse_hex(headerHex, header, 76); derive_key(header, k, rank, key);
-  parse_hex(tgtHexLE, target, 32);
-
-  sycl::queue q{sycl::gpu_selector_v, sycl::property::queue::in_order{}};
-  std::printf("dev: %s\n", q.get_device().get_info<sycl::info::device::name>().c_str());
-  Buffers b = alloc_buffers(q, m, n, k, rank);
-  q.memcpy(b.key, key, 32); q.memcpy(b.target, target, 32); q.wait();
-
-  attempt(q, b, seedBase, m, n, k, rank); q.wait();           // warm up JIT
-  bool warmHit = b.result->found; b.result->found = 0;
-
-  auto t0 = std::chrono::steady_clock::now();
-  int found = 0, done = 0; uint32_t startSeed = warmHit ? seedBase : seedBase + 1;
-  for (int i = 0; i < count; i++, done++) { uint32_t seed = startSeed + i; attempt(q, b, seed, m, n, k, rank); q.wait();
-    if (b.result->found) { std::printf("FOUND seed=%u row=%u col=%u (attempt %d)\n", b.result->seed, b.result->row, b.result->col, i); found = 1; break; } }
-  auto t1 = std::chrono::steady_clock::now();
-  double secs = std::chrono::duration<double>(t1 - t0).count();
-  double aps = done / (secs > 0 ? secs : 1);
-  double macPerAttempt = (double)m*n*k + (double)m*k + (double)k*n;
-  std::printf("%s  %.3fs  %.1f attempts/s  ~%.4g MAC/s  (%.4g TH/s-equiv)\n",
-              found ? "OK" : "no-hit", secs, aps, aps * macPerAttempt, aps * macPerAttempt / 1e12);
-  return 0;
-}
-#endif
-#endif  // !MOM_PEARLHASH_ESIMD_TU
+#endif // !MOM_PEARLHASH_ESIMD_TU
