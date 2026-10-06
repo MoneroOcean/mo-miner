@@ -390,6 +390,11 @@ function startTestJob() {
     ? compilerPolicy.validateBackend(global.opt.job.backend)
     : jobBackend(normalizeAlgoName(global.opt.job.algo));
   if (normalizeAlgoName(global.opt.job.algo) === "pearlhash") {
+    // Direct pool/bench/test jobs have no negotiated downstream extension. Ignore a stray
+    // proxy-only stride rather than allowing it to alter the established seed-0/stride-1 path.
+    delete global.opt.job.nonce_stride;
+    delete global.opt.job.nonce_slot;
+    global.opt.job.nonce ??= 0;
     addPearlHashJobFields(global.opt.job);
   }
   h.recreate_threads(global.opt.job.dev, messageHandler,

@@ -49,6 +49,12 @@ module.exports = ({
     }
     pool.requested_algos = algos.map((algo) => normalizeAlgoName(algo) || algo);
     pool.requested_extensions = algos.length ? ["mo-native"] : [];
+    // PearlHash seed slots are meaningful only when the native object-login capability is
+    // advertised.  The pool-side extension filter will retain this request only after the pool
+    // acknowledges it; until then any proxy-only slot/stride fields stay inert.
+    if (pool.requested_algos.includes("pearlhash")) {
+      pool.requested_extensions.push("pearl-seed-split");
+    }
     // The proxy treats submit-result as a connection-wide promise, including after a switch.
     if (algos.length) {
       pool.requested_extensions.push("submit-result");

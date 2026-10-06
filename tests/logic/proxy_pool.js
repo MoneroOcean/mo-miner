@@ -55,10 +55,10 @@ test("object login advertises only accepted native capabilities", async () => {
       ack: ["mo-native", "submit-result"],
     },
     {
-      name: "Pearl native/result capabilities are retained only after acknowledgement",
+      name: "Pearl seed split is retained only after acknowledgement",
       algoParams: {pearlhash: {dev: "gpu1", perf: 1}},
       algos: ["pearlhash"], perfs: {pearlhash: 1},
-      extensions: ["mo-native", "submit-result"],
+      extensions: ["mo-native", "pearl-seed-split", "submit-result"],
       accepted: ["mo-native", "submit-result"],
       ack: ["mo-native", "submit-result"],
     },
@@ -116,6 +116,163 @@ test("object login advertises only accepted native capabilities", async () => {
       }
     });
   }
+});
+
+test("Pearl seed slots are validated, randomized, and resumed only when negotiated", async () => {
+  /** @param {Awaited<ReturnType<typeof loadMinerWithStubs>>} miner @param {string[]} extensions */
+  const configurePearl = (miner, extensions) => {
+    miner.global.opt.job.algo = "pearlhash";
+    miner.global.opt.job.dev = "cpu";
+    miner.global.opt.algo_params["pearlhash"] = {
+      dev: "cpu", perf: 1, backend: "auto", tuning: {},
+    };
+    miner.global.opt.pools[miner.global.opt.pool_ids.active]["extensions"] = extensions;
+  };
+  const work = {
+    algo: "pearlhash", blob_hex: "00".repeat(76), difficulty: 1,
+    job_id: "pearl-1", nonce_slot: 7, nonce_stride: 256,
+  };
+
+  const negotiated = await loadMinerWithStubs();
+  configurePearl(negotiated, ["mo-native", "pearl-seed-split"]);
+  const setNegotiatedJob = negotiated.getSetJob();
+  const first = setNegotiatedJob(work);
+  const firstNonce = String(first.nonce);
+  const firstSeed = Number.parseInt(firstNonce, 16);
+  assert.equal(first.nonce_stride, 256);
+  assert.equal(firstSeed % 256, 7);
+  assert.ok(firstSeed >= 0 && firstSeed <= 0xffffffff);
+  const retarget = setNegotiatedJob({...work, job_id: "pearl-2"});
+  assert.equal(retarget.nonce, first.nonce);
+  const resumed = setNegotiatedJob({...work, job_id: "pearl-3", nonce: firstNonce});
+  assert.equal(resumed.nonce, first.nonce);
+
+  const direct = await loadMinerWithStubs();
+  configurePearl(direct, []);
+  const directJob = direct.getSetJob()({...work, job_id: "direct"});
+  assert.equal(directJob.nonce_stride, undefined);
+  assert.match(String(directJob.nonce), /^[0-9a-f]{8}$/i);
+
+  for (const invalid of [
+    {nonce_slot: 256, nonce_stride: 256},
+    {nonce_slot: 0, nonce_stride: 0},
+    {nonce_slot: 0, nonce_stride: "4294967296"},
+    {nonce_slot: 1, nonce_stride: 3},
+  ]) {
+    assert.throws(() => setNegotiatedJob({...work, ...invalid}), /PearlHash seed/);
+  }
+
+  const benchmark = await loadMinerWithStubs({
+    argv: ["node", "mom.js", "bench", "pearlhash"], waitForMessageType: "bench",
+  });
+  const benchmarkJob = benchmark.sentMessages.find((message) => message.type === "bench")?.job;
+  assert.ok(benchmarkJob);
+  assert.equal(benchmarkJob.nonce, 0);
+  assert.equal((/** @type {UnknownRecord} */ (/** @type {unknown} */ (benchmarkJob)))["nonce_stride"], undefined);
+});
+
+test("Pearl seed metadata strings are bounded before bigint conversion", async () => {
+  const miner = await loadMinerWithStubs();
+  miner.global.opt.job.algo = "pearlhash";
+  miner.global.opt.algo_params["pearlhash"] = {
+    dev: "cpu", perf: 1, backend: "auto", tuning: {},
+  };
+  const poolConfig = miner.global.opt.pools[miner.global.opt.pool_ids.active];
+  poolConfig["extensions"] = ["mo-native", "pearl-seed-split"];
+  const setJob = miner.getSetJob();
+  assert.ok(setJob);
+  const work = {
+    algo: "pearlhash", blob_hex: "00".repeat(76), difficulty: 1, job_id: "seed-bounds",
+  };
+  const originalBigInt = global.BigInt;
+  let oversizedConversions = 0;
+  global.BigInt = new Proxy(originalBigInt, {
+    apply(target, thisArg, args) {
+      if (typeof args[0] === "string" && args[0].length > 16 && /^\d+$/.test(args[0])) {
+        oversizedConversions++;
+      }
+      return Reflect.apply(target, thisArg, args);
+    },
+  });
+  try {
+    for (const value of ["0".repeat(16) + "1", "0".repeat(100000) + "1", "9".repeat(100000)]) {
+      const messageCount = miner.sentMessages.length;
+      assert.throws(() => setJob({...work, nonce_stride: value}), /Invalid PearlHash seed stride/);
+      assert.equal(oversizedConversions, 0);
+      assert.equal(miner.sentMessages.length, messageCount);
+    }
+    const maximum = setJob({...work, nonce_slot: "2147483647", nonce_stride: "2147483648"});
+    assert.equal(maximum.nonce_stride, 2147483648);
+    assert.equal(Number.parseInt(String(maximum.nonce), 16) % 2147483648, 2147483647);
+    const padded = setJob({...work, nonce_slot: "0000000000000000", nonce_stride: "0000000000000001"});
+    assert.equal(padded.nonce_stride, 1);
+    assert.match(String(padded.nonce), /^[0-9a-f]{8}$/i);
+    const numeric = setJob({...work, nonce_slot: 2147483647, nonce_stride: 2147483648});
+    assert.equal(numeric.nonce_stride, 2147483648);
+    assert.throws(() => setJob({...work, nonce_slot: "0".repeat(17), nonce_stride: 1}),
+      /Invalid PearlHash seed slot/);
+    assert.equal(oversizedConversions, 0);
+    poolConfig["extensions"] = [];
+    const direct = setJob({...work, nonce_slot: "0".repeat(100000), nonce_stride: "0".repeat(100000) + "1"});
+    assert.equal(direct.nonce_stride, undefined);
+    const other = setJob({...work, algo: "cn/0", nonce_slot: "0".repeat(100000), nonce_stride: "0".repeat(100000) + "1"});
+    assert.equal(other.algo, "cn/0");
+    assert.equal(oversizedConversions, 0);
+  } finally {
+    global.BigInt = originalBigInt;
+  }
+});
+
+test("Pearl proxy login jobs preserve the negotiated seed partition", async () => {
+  /** @type {PoolJob[]} */
+  const jobs = [];
+  await withMockPool({
+    pool: {use_subscribe: false, login: "wallet", pass: "x"},
+    opt: {job: {algo: "pearlhash"}, algo_params: positiveAlgoParams(["pearlhash"])},
+  }, async ({socket}) => {
+    pool.connect_pool_throttle(0, (job) => {
+      jobs.push(job);
+      return completeMiningJob(job);
+    });
+    socket.emit("connect");
+    emitPoolMessage(socket, {
+      id: 1, jsonrpc: "2.0", error: null,
+      result: {
+        id: "worker", algo: "pearlhash",
+        extensions: ["mo-native", "pearl-seed-split", "submit-result"],
+        job: {
+          algo: "pearlhash", job_id: "pearl-login", header: "00".repeat(76),
+          target: "01".repeat(32), cert_version: 3, nonce_slot: 7, nonce_stride: 256,
+        },
+      },
+    });
+  });
+
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0]?.nonce_slot, 7);
+  assert.equal(jobs[0]?.nonce_stride, 256);
+
+  await withMockPool({
+    pool: {use_subscribe: false, login: "wallet", pass: "x"},
+    opt: {job: {algo: "pearlhash"}, algo_params: positiveAlgoParams(["pearlhash"])},
+  }, async ({socket}) => {
+    pool.connect_pool_throttle(0, () => {
+      assert.fail("malformed Pearl seed partition reached the miner");
+    });
+    socket.emit("connect");
+    emitPoolMessage(socket, {
+      id: 1, jsonrpc: "2.0", error: null,
+      result: {
+        id: "worker", algo: "pearlhash",
+        extensions: ["mo-native", "pearl-seed-split", "submit-result"],
+        job: {
+          algo: "pearlhash", job_id: "pearl-bad", header: "00".repeat(76),
+          target: "01".repeat(32), cert_version: 3, nonce_slot: 7, nonce_stride: null,
+        },
+      },
+    });
+    assert.equal(socket.destroyed, true);
+  });
 });
 
 test("login metadata survives a generic job and malformed login jobs close the pool", async () => {

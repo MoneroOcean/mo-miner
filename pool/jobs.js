@@ -496,6 +496,22 @@ module.exports = ({
       pearlhash_cert_version: certVersion,
     };
     if (difficulty !== undefined) {job.difficulty = difficulty;}
+    // Preserve the proxy's negotiated seed partition for finalizePearlSeed(). That boundary owns
+    // validation and ignores these fields unless pearl-seed-split was acknowledged.
+    const nonceSlot = params["nonce_slot"];
+    if (nonceSlot !== undefined) {
+      if (typeof nonceSlot !== "number" && typeof nonceSlot !== "string") {
+        throw new Error("Invalid PearlHash seed slot");
+      }
+      job.nonce_slot = nonceSlot;
+    }
+    const nonceStride = params["nonce_stride"];
+    if (nonceStride !== undefined) {
+      if (typeof nonceStride !== "number" && typeof nonceStride !== "string") {
+        throw new Error("Invalid PearlHash seed stride");
+      }
+      job.nonce_stride = nonceStride;
+    }
     // Default base targets are scaled after final K/rank tuning. Subscribe pools that already
     // supply the final jackpot threshold can opt out; the login dialect stays unchanged.
     if (target) {

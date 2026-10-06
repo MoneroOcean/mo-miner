@@ -123,6 +123,32 @@ module.exports = ({
     };
   }
 
+  /** @param {unknown} value @param {boolean} decimalOnly @returns {number | null} */
+  function pearlSeedValue(value, decimalOnly = false) {
+    if (typeof value === "number") {
+      return Number.isSafeInteger(value) && value >= 0 && value <= 0xffffffff ? value : null;
+    }
+    if (typeof value !== "string" || value.length > 16 ||
+        !(decimalOnly ? /^\d+$/.test(value) : /^[0-9a-f]{1,16}$/i.test(value))) {return null;}
+    try {
+      const parsed = decimalOnly || /^\d+$/.test(value) ? BigInt(value) : BigInt("0x" + value);
+      return parsed <= 0xffffffffn ? Number(parsed) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** @param {unknown} value @returns {number | null} */
+  function pearlSeedStride(value) {
+    const stride = pearlSeedValue(value, true);
+    if (stride === null) {return null;}
+    const wide = BigInt(stride);
+    if (wide === 0n || (wide & (wide - 1n)) !== 0n) {
+      return null;
+    }
+    return stride;
+  }
+
   /** @param {number} slot @param {number} stride @param {number} thread_num @returns {string} */
   function randomPearlSeed(slot, stride, thread_num) {
     const maximum = 0xffffffffn - BigInt(thread_num - 1) * BigInt(stride);
@@ -145,21 +171,49 @@ module.exports = ({
     return Number.parseInt(value, 16);
   }
 
-  /** @param {PoolJob} prev_job @param {number} pool_id @returns {string | undefined} */
-  function reusablePearlSeed(prev_job, pool_id) {
+  /** @param {PoolJob} prev_job @param {number} pool_id @param {number} slot @param {number} stride
+   * @param {boolean} accepted @returns {string | undefined} */
+  function reusablePearlSeed(prev_job, pool_id, slot, stride, accepted) {
+    if (accepted && prev_job.nonce !== undefined) {
+      const carried = pearlSeedHexValue(prev_job.nonce);
+      if (carried !== null && carried % stride === slot) {
+        return carried.toString(16).padStart(8, "0");
+      }
+    }
     const last = getLastJob();
-    if (!last || last.algo !== "pearlhash" || last.pool_id !== pool_id) {return undefined;}
+    if (!last || last.algo !== "pearlhash" || last.pool_id !== pool_id ||
+        (last.nonce_stride !== undefined) !== accepted) {return undefined;}
     const input = prev_job.blob || prev_job.blob_hex || "";
     if (!input || last.blob_hex !== input) {return undefined;}
+    const lastStride = last.nonce_stride === undefined ? 1 : pearlSeedStride(last.nonce_stride);
     const lastSeed = pearlSeedHexValue(last.nonce);
-    return lastSeed === null ? undefined : lastSeed.toString(16).padStart(8, "0");
+    if (lastStride !== stride || lastSeed === null || lastSeed % stride !== slot) {return undefined;}
+    return lastSeed.toString(16).padStart(8, "0");
   }
 
   /** @param {MiningJob} job @param {PoolJob} prev_job @param {number} pool_id */
   function finalizePearlSeed(job, prev_job, pool_id) {
-    job.nonce = reusablePearlSeed(prev_job, pool_id) ||
-      randomPearlSeed(0, 1, h.get_dev_threads(job.dev));
-    delete job.nonce_stride;
+    const accepted = opt.pools[pool_id]?.extensions?.includes("pearl-seed-split") === true;
+    const rawStride = accepted ? prev_job.nonce_stride : undefined;
+    const stride = rawStride === undefined ? 1 : pearlSeedStride(rawStride);
+    if (stride === null) {
+      throw new Error("Invalid PearlHash seed stride");
+    }
+    const slot = accepted && prev_job.nonce_slot !== undefined
+      ? pearlSeedValue(prev_job.nonce_slot) : 0;
+    if (slot === null || slot >= stride) {
+      throw new Error("Invalid PearlHash seed slot");
+    }
+    const resumed = reusablePearlSeed(prev_job, pool_id, slot, stride, accepted);
+    job.nonce = resumed || randomPearlSeed(slot, stride, h.get_dev_threads(job.dev));
+    if (accepted) {
+      // Carry the validated effective stride even when the proxy omitted its default of one.
+      job.nonce_stride = stride;
+    } else {
+      // A downstream proxy may include these fields without an acknowledged extension. Ignore
+      // them, while still assigning a random direct-pool seed to avoid an all-zero overlap.
+      delete job.nonce_stride;
+    }
   }
 
   /** @param {MiningJob} job */
@@ -618,6 +672,11 @@ module.exports = ({
       ? compilerPolicy.validateBackend(job.backend)
       : jobBackend(normalizeAlgoName(job.algo));
     if (normalizeAlgoName(job.algo) === "pearlhash") {
+      // Direct pool/bench/test jobs have no negotiated downstream extension. Ignore a stray
+      // proxy-only stride rather than allowing it to alter the established seed-0/stride-1 path.
+      delete job.nonce_stride;
+      delete job.nonce_slot;
+      job.nonce ??= 0;
       addPearlHashJobFields(job);
     }
     if (job.algo === "c30") {
