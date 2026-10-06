@@ -1,16 +1,18 @@
 "use strict";
 
-const { Transform } = require("node:stream");
-const { spec } = require("node:test/reporters");
+const {Transform} = require("node:stream");
+const {spec} = require("node:test/reporters");
 
 // `raw` is the original numeric token from the reporter; sub-second durations
 // echo it verbatim so we never reformat (and thus widen) the printed value.
+/** @param {number} durationMs @param {string} [raw] */
 function formatDurationMs(durationMs, raw = String(durationMs)) {
   if (durationMs >= 60 * 1000) {return `${(durationMs / (60 * 1000)).toFixed(2)} min`;}
   if (durationMs >= 1000) {return `${(durationMs / 1000).toFixed(2)} s`;}
   return `${raw}ms`;
 }
 
+/** @param {string} text */
 function rewriteReporterDurations(text) {
   return text
     .replace(/\(([0-9]+(?:\.[0-9]+)?)ms\)/g, (_match, raw) =>
@@ -23,7 +25,7 @@ function rewriteReporterDurations(text) {
 
 class SpacedSpecReporter extends Transform {
   constructor() {
-    super({ writableObjectMode: true });
+    super({writableObjectMode: true});
     this.pendingText = "";
     this.lastPrintedNonEmptyLine = "";
     this.reporter = spec();
@@ -33,6 +35,7 @@ class SpacedSpecReporter extends Transform {
   }
 
   // Rewrite complete lines as they arrive; buffer any trailing partial line.
+  /** @param {string} text */
   rewriteText(text) {
     this.pendingText += text;
     let output = "";
@@ -45,21 +48,33 @@ class SpacedSpecReporter extends Transform {
 
   // Insert a blank line before each test-group header (▶) so groups stand apart,
   // but only once we've already printed something.
+  /** @param {string} text */
   spaceBeforeGroupHeader(text) {
     return /^\s*▶ /.test(text) && this.lastPrintedNonEmptyLine ? "\n" + text : text;
   }
 
+  /** @param {string} line */
   rewriteLine(line) {
     const rewritten = this.spaceBeforeGroupHeader(rewriteReporterDurations(line));
     if (rewritten.trim()) {this.lastPrintedNonEmptyLine = rewritten.trimEnd();}
     return rewritten;
   }
 
+  /**
+   * @override
+   * @param {unknown} event
+   * @param {BufferEncoding} encoding
+   * @param {(error?: Error | null) => void} callback
+   */
   _transform(event, encoding, callback) {
     if (this.reporter.write(event, encoding)) {return callback();}
     this.reporter.once("drain", callback);
   }
 
+  /**
+   * @override
+   * @param {(error?: Error | null) => void} callback
+   */
   _flush(callback) {
     this.reporter.end();
     this.reporter.once("end", () => {
@@ -72,6 +87,6 @@ class SpacedSpecReporter extends Transform {
   }
 }
 
+SpacedSpecReporter.formatDurationMs = formatDurationMs;
+SpacedSpecReporter.rewriteReporterDurations = rewriteReporterDurations;
 module.exports = SpacedSpecReporter;
-module.exports.formatDurationMs = formatDurationMs;
-module.exports.rewriteReporterDurations = rewriteReporterDurations;

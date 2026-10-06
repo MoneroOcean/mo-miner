@@ -1,5 +1,6 @@
 "use strict";
 
+/** @type {HashVectorDefinition[]} */
 const hashTests = [
   ...require("./vectors/cpu"),
   ...require("./vectors/progpow"),
@@ -7,40 +8,27 @@ const hashTests = [
   ...require("./vectors/equihash"),
 ];
 
-const nonceAt32Algos = new Set(["kawpow", "firopow", "evrprogpow", "meowpow", "etchash", "octopus", "autolykos2"]);
-// Heights sampled from coin mainnets so perf DAG/table sizes match live pool jobs
-// (ETC 2026-06-04, RVN and ERG 2026-06-12). Keep in sync with benchHeightByAlgo in mom.js.
-const benchHeightByAlgo = {
-  etchash:    24689903,
-    octopus:    152521905,
-  kawpow:     4407982,
-  firopow:    600000,
-  evrprogpow: 1800000,
-  meowpow:    825000,
-  autolykos2: 1806198,
-};
+const sourceJobAlgos = new Set([
+  "kawpow", "firopow", "evrprogpow", "meowpow", "etchash", "octopus", "autolykos2",
+  "c30", "hoohash", "walahash", "xelishashv3", "nexapow", "equihash192_7", "zhash",
+]);
 
-// Build a perf job from a hash vector's source job. Nonce-at-32 algos (see nonceAt32Algos above)
-// carry a blob and need a live-sized DAG, so we keep the source job (clearing its dev for autoDev)
-// and stamp the sampled height; all other algos only need the algo name.
-const sourceJobAlgos = new Set(["c30", "zhash", "equihash192_7", "hoohash", "walahash", "xelishashv3", "nexapow"]);
-
+// Keep source blobs when the algorithm needs header data to initialize its benchmark state;
+// other algos only need their name. MoM's benchmark-job preparation supplies representative
+// heights for direct/perf jobs.
+/** @param {HashJob} sourceJob @returns {HashJob} */
 function perfJob(sourceJob) {
   const algo = sourceJob.algo;
-  if (sourceJobAlgos.has(algo)) {
-    const job = {...sourceJob};
-    delete job.dev;
-    if (algo === "nexapow") {job["target"] = "00".repeat(32);}
-    return job;
-  }
-  if (!nonceAt32Algos.has(algo)) {return { algo };}
+  if (!sourceJobAlgos.has(algo)) {return {algo};}
 
-  const job = { ...sourceJob, dev: undefined };
-  if (benchHeightByAlgo[algo]) {job.height = benchHeightByAlgo[algo];}
+  const job = {...sourceJob};
+  delete job.dev;
+  if (algo === "nexapow") {job["target"] = "00".repeat(32);}
   return job;
 }
 
 // One perf entry per distinct algo, taken from its first hash vector.
+/** @type {PerfDefinition[]} */
 const perfTests = [];
 const seenAlgos = new Set();
 for (const definition of hashTests) {
@@ -48,14 +36,17 @@ for (const definition of hashTests) {
   if (seenAlgos.has(algo)) {continue;}
   seenAlgos.add(algo);
 
-  perfTests.push({
+  /** @type {PerfDefinition} */
+  const perfDefinition = {
     algo,
-    gpu: definition.gpu,
     autoDev: true,
     name: algo,
-    timeoutMs: definition.perfTimeoutMs || definition.timeoutMs || (algo === "c30" ? 6 : 3) * 60 * 1000,
+    timeoutMs: definition.perfTimeoutMs || definition.timeoutMs ||
+      (algo === "c30" ? 6 : algo === "nexapow" ? 5 : 3) * 60 * 1000,
     job: perfJob(definition.job),
-  });
+  };
+  if (definition.gpu !== undefined) {perfDefinition.gpu = definition.gpu;}
+  perfTests.push(perfDefinition);
 }
 
 module.exports = {

@@ -2,6 +2,132 @@
 
 module.exports = [
   {
+    // CPU-compatible bounded guard for C29 edge generation; full GPU vectors retain end-to-end
+    // solver coverage.
+    name: "c29 portable edge generation",
+    gpu: true,
+    syclCpu: true,
+    portableOnly: true,
+    env: {MOM_C29_TEST_EDGE: "1"},
+    job: {
+      algo: "c29",
+      dev: "gpu1",
+      blob_hex: "000000000000001e3695b4b53bb00358b0ad38dc160feb9e004eece09b83a72ef6ba9864d3510c88",
+      proofsize: 32,
+    },
+    expected: "4c5f0f1e04d1bb14b20d421e15500902632d200dcf967d0d9ca6251352544806 EOL",
+  },
+  {
+    name: "c29 proofsize 32 gpu1*[seed_workgroup=128;seed_blocks=16]",
+    gpu: true,
+    timeoutMs: 10 * 60 * 1000,
+    job: {
+      algo: "c29",
+      dev: "gpu1*[seed_workgroup=128;seed_blocks=16]",
+      blob_hex:
+        "0001000000000000202e000000005c2e43ce014ca55dc4e0dffe987ee3eef9ca78e517f5ae7383c40797a4e8a9dd75ddf57eafac5471135202aa6054a2cc66aa5510ebdd58edcda0662a9e02d8232a4c90e90b7bddec1f32031d2894d76e3c390fc12b2dcc7a6f12b52be1d7aea70eac7b8ae0dc3f0ffb267e39b95a77e44e66d523399312a812d538afd00c7fd87275f4be7ef2f447ca918435d537c3db3c1d3e5d4f3b830432e5a283fab48917a5695324a319860a329cb1f6d1520ad0078c0f1dd9147f347f4c34e26d3063f117858d75000000000000babd0000000000007f23000000001ac67b3b0000015545f385f2",
+      proofsize: 32,
+    },
+    expected:
+      "9f89402d614224adc4da5bd7c98f70e9e8b72841cfaa28fe61420af6ef1514ca " +
+      "793a07f3e629809f7a0d06287fbfb138e1f6266946610d0279e2f8e04ade52f8 EOL",
+  },
+  {
+    name: "c29 proofsize 42 gpu1*[seed_workgroup=128;seed_blocks=16]",
+    gpu: true,
+    timeoutMs: 10 * 60 * 1000,
+    job: {
+      algo: "c29",
+      dev: "gpu1*[seed_workgroup=128;seed_blocks=16]",
+      blob_hex: "000000000000001e3695b4b53bb00358b0ad38dc160feb9e004eece09b83a72ef6ba9864d3510c88",
+      proofsize: 42,
+    },
+    expected: "68005b0465cf34675f804de6ef37b3ea2fed0f4796236fc55d1ecd996b54db2d EOL",
+  },
+  {
+    // Equihash 125,4 (ZelHash / Flux): the GPU Wagner solver run end-to-end on Flux mainnet block
+    // 400000. With MOM_ZELHASH_SOLVE the native is_test path runs the full solve (M2 rounds + M3
+    // recovery) and dumps the whole SMALL_BLOB_SOL_LEN(=5120 B) out-of-band buffer as hex:
+    // [count:u8][count * 52-byte compressed solution][zero pad]. The solver finds the 2 distinct
+    // proofs for this header (sorted), the first being the known block-400000 solution 0898985c...199b.
+    // Heavy: a full solve needs up to ~4.3 GiB of Wagner arenas (progressive per-level slot shrink),
+    // so this needs a discrete GPU with at least 8 GiB and is gated behind MOM_ZELHASH_SOLVE -- the default GPU
+    // suite without it skips straight past.
+    name: "zelhash gpu1 (block 400000 solve)",
+    gpu: true,
+    timeoutMs: 15 * 60 * 1000,
+    env: {MOM_ZELHASH_SOLVE: "1"},
+    job: {
+      algo: "zelhash",
+      dev: "gpu1",
+      noncebytes: 8,
+      nonceoffset: 108,
+      target: "ff".repeat(32),
+      height: 400000,
+      // 140-byte Flux block-400000 header (version || prevBlock || merkleRoot || finalSapling ||
+      // nTime || nBits || 32-byte nonce); the solver's 32-byte nonce lives at offset 108.
+      blob_hex:
+        "04000000a8675c842f7a1342fadd00cd9b4e4909526b1c0ab5a747c5529b4deb13000000" +
+        "ce7d6ea2452245925fc70c3a08a3c3dd2ca4beab7481f237a19751666bfd25c3" +
+        "0fd282d94b1e1a7f2c57eb3fb9e2853d990753fa137e13c99bd43f220d4fce69" +
+        "90e44f5dce28421d" +
+        "600000160000000000000000000000000000000000000000000000009cfd1100",
+    },
+    // [02][known sol 0898985c...199b][second sol 08abd63b...88aa][zero pad to 5120 bytes].
+    expected:
+      "02" +
+      "0898985c54d7c66d04fbe9509445c19e664aca4b8d16a701f9f90eda443a556f37cc4627335201339b001ea2ed29eeeec7da199b" +
+      "08abd63ba97c17abd02ba77b782f5a810c84fcd6edb26fad50cc1a690d930ec62ed67183c146d4943590b475c7fba048ff8888aa" +
+      "0".repeat(10240 - 2 - 104 * 2),
+  },
+  {
+    // Recorded Zclassic Equihash 192,7 header. Test mode returns the sorted first of four valid
+    // 400-byte proofs and pads the shared Equihash output buffer.
+    name: "equihash192_7 gpu1 recorded-mainnet",
+    gpu: true,
+    timeoutMs: 15 * 60 * 1000,
+    env: {MOM_EQUIHASH192_7_SOLVE: "1"},
+    job: {
+      algo: "equihash192_7",
+      dev: "gpu1*[intensity=1]",
+      noncebytes: 8,
+      nonceoffset: 108,
+      target: "ff".repeat(32),
+      blob_hex:
+        "04000000ecf888bb9e8440dff1eca5ff69c277e85462f306ec785719a76e4dd20f0b0000" +
+        "c450f3fd2a66b462f4133c48cc636655ac055de95072bd693514c9c7156dfa8de" +
+        "2004d086a6929b60cb4e4efbbfcf41d3fda50ad985fc421c990217a1daef400c5" +
+        "8d776ad03c141e8001fde00f6dcbadb169c9131b3a07c44e9b11ca00000000000000005b15db75",
+    },
+    expected:
+      "01" +
+      "000870397e46deb5da1b012d60132a670f44b56bcc3d62efab0f5fe274a4d7c74b5ac57ba1f80d89873459c67a1dbd5c11b10af944f4a507b01d143e4c10fa3f99975a00fb4f2b9dc5c9db0c9ce7fd89d8aeab27b9ab4b65974673cfd566c56e63c90e4911756fab9a579ed290934b91545505ecb0796eaed74172eac24232aec77064e87335363a5e67a282a69cfd3e15abe16cabcb28bbb9b268e90a9785c80be303e2713b47b43188f7e3361c8045200feefe0368b5a1fdd5527a45c3365f2ccebaf29576a7e801eae51de4694c3a678da0f0b04ce00a654cfc20fe0eb132ae0d295a07afb7c51514124bdd8180dd614363f5bca625f9dd2d02cdf0d40a0066ad121de47c736e894bf5de9b8bd29ff09a72284877514d695635121f1a4b63c2859da3279a6ad375fba1e7022f9428b76950fea7140ab892e5c64adb33f90ed025ec12a417c13551ab551408d72d1111a4b14ea4efa729bf64db883f38131bdb8aa6324f1fd4bfe2f99781bc554e5d6635d4e15b4335301b0cc3272d1f18c13226aef428fe049fe36241d98fafc610" +
+      "0".repeat(10240 - 2 - 800),
+  },
+  {
+    // Light portable guard: BLAKE2b digest zero for the same Zclassic header.
+    name: "equihash192_7 gpu1 generation",
+    gpu: true,
+    syclCpu: true,
+    portableOnly: true,
+    timeoutMs: 5 * 60 * 1000,
+    job: {
+      algo: "equihash192_7",
+      dev: "gpu1*[intensity=1]",
+      noncebytes: 8,
+      nonceoffset: 108,
+      target: "ff".repeat(32),
+      blob_hex:
+        "04000000ecf888bb9e8440dff1eca5ff69c277e85462f306ec785719a76e4dd20f0b0000" +
+        "c450f3fd2a66b462f4133c48cc636655ac055de95072bd693514c9c7156dfa8de" +
+        "2004d086a6929b60cb4e4efbbfcf41d3fda50ad985fc421c990217a1daef400c5" +
+        "8d776ad03c141e8001fde00f6dcbadb169c9131b3a07c44e9b11ca00000000000000005b15db75",
+    },
+    expected:
+      "d22c1ef2a4fcd68dbc24ef7b7ac6df11c264375afae2010eba986ec05717f17ef9617c716cd961115eff3f21fd401b73" +
+      "0".repeat(10240 - 96),
+  },
+  {
     // Bitcoin Gold's authoritative Equihash 144,5 regression header and first canonical proof.
     // The solver can find other valid proofs; test mode emits the sorted first proof and zero pads
     // the standard Equihash test buffer for deterministic cross-backend comparison.
@@ -48,70 +174,6 @@ module.exports = [
         "c9310d5874e0001f000000000000000000000000000000010b000000000000000000000000666666",
     },
     expected: "1ac423f4775bd7ad17f7ebfaf388f780f0940000" + "0".repeat(10240 - 40),
-  },
-  {
-    name: "c29 proofsize 32 gpu1*[seed_workgroup=128;seed_blocks=16]",
-    gpu: true,
-    syclCpu: true,
-    timeoutMs: 10 * 60 * 1000,
-    job: {
-      algo: "c29",
-      dev: "gpu1*[seed_workgroup=128;seed_blocks=16]",
-      blob_hex:
-        "0001000000000000202e000000005c2e43ce014ca55dc4e0dffe987ee3eef9ca78e517f5ae7383c40797a4e8a9dd75ddf57eafac5471135202aa6054a2cc66aa5510ebdd58edcda0662a9e02d8232a4c90e90b7bddec1f32031d2894d76e3c390fc12b2dcc7a6f12b52be1d7aea70eac7b8ae0dc3f0ffb267e39b95a77e44e66d523399312a812d538afd00c7fd87275f4be7ef2f447ca918435d537c3db3c1d3e5d4f3b830432e5a283fab48917a5695324a319860a329cb1f6d1520ad0078c0f1dd9147f347f4c34e26d3063f117858d75000000000000babd0000000000007f23000000001ac67b3b0000015545f385f2",
-      proofsize: 32,
-    },
-    expected:
-      "9f89402d614224adc4da5bd7c98f70e9e8b72841cfaa28fe61420af6ef1514ca " +
-      "793a07f3e629809f7a0d06287fbfb138e1f6266946610d0279e2f8e04ade52f8 EOL",
-  },
-  {
-    name: "c29 proofsize 42 gpu1*[seed_workgroup=128;seed_blocks=16]",
-    gpu: true,
-    timeoutMs: 10 * 60 * 1000,
-    job: {
-      algo: "c29",
-      dev: "gpu1*[seed_workgroup=128;seed_blocks=16]",
-      blob_hex: "000000000000001e3695b4b53bb00358b0ad38dc160feb9e004eece09b83a72ef6ba9864d3510c88",
-      proofsize: 42,
-    },
-    expected: "68005b0465cf34675f804de6ef37b3ea2fed0f4796236fc55d1ecd996b54db2d EOL",
-  },
-  {
-    // Equihash 125,4 (ZelHash / Flux): the GPU Wagner solver run end-to-end on Flux mainnet block
-    // 400000. With MOM_ZELHASH_SOLVE the native is_test path runs the full solve (M2 rounds + M3
-    // recovery) and dumps the whole SMALL_BLOB_SOL_LEN(=5120 B) out-of-band buffer as hex:
-    // [count:u8][count * 52-byte compressed solution][zero pad]. The solver finds the 2 distinct
-    // proofs for this header (sorted), the first being the known block-400000 solution 0898985c...199b.
-    // Heavy: a full solve needs up to ~4.3 GiB of Wagner arenas (progressive per-level slot shrink),
-    // so this needs a discrete GPU with at least 8 GiB and is gated behind MOM_ZELHASH_SOLVE -- the default GPU
-    // suite without it skips straight past.
-    name: "zelhash gpu1 (block 400000 solve)",
-    gpu: true,
-    timeoutMs: 15 * 60 * 1000,
-    env: { MOM_ZELHASH_SOLVE: "1" },
-    job: {
-      algo: "zelhash",
-      dev: "gpu1",
-      noncebytes: 8,
-      nonceoffset: 108,
-      target: "ff".repeat(32),
-      height: 400000,
-      // 140-byte Flux block-400000 header (version || prevBlock || merkleRoot || finalSapling ||
-      // nTime || nBits || 32-byte nonce); the solver's 32-byte nonce lives at offset 108.
-      blob_hex:
-        "04000000a8675c842f7a1342fadd00cd9b4e4909526b1c0ab5a747c5529b4deb13000000" +
-        "ce7d6ea2452245925fc70c3a08a3c3dd2ca4beab7481f237a19751666bfd25c3" +
-        "0fd282d94b1e1a7f2c57eb3fb9e2853d990753fa137e13c99bd43f220d4fce69" +
-        "90e44f5dce28421d" +
-        "600000160000000000000000000000000000000000000000000000009cfd1100",
-    },
-    // [02][known sol 0898985c...199b][second sol 08abd63b...88aa][zero pad to 5120 bytes].
-    expected:
-      "02" +
-      "0898985c54d7c66d04fbe9509445c19e664aca4b8d16a701f9f90eda443a556f37cc4627335201339b001ea2ed29eeeec7da199b" +
-      "08abd63ba97c17abd02ba77b782f5a810c84fcd6edb26fad50cc1a690d930ec62ed67183c146d4943590b475c7fba048ff8888aa" +
-      "0".repeat(10240 - 2 - 104 * 2),
   },
   {
     // PearlHash is a NoisyGEMM search, not a fixed-hash algo. Test mode uses a compact deterministic
@@ -192,7 +254,7 @@ module.exports = [
     name: "beamhash3 gpu1*[workgroup=128] (M4 keystone solve)",
     gpu: true,
     timeoutMs: 15 * 60 * 1000,
-    env: { MOM_BEAMHASH3_SOLVE: "1" },
+    env: {MOM_BEAMHASH3_SOLVE: "1"},
     job: {
       algo: "beamhash3",
       dev: "gpu1*[workgroup=128]",
@@ -207,52 +269,5 @@ module.exports = [
       "929901b03918d93f53013be378a69eac442e64dda1c06d3deceef104940d4bd45df4990c2f5782158baeb9f4fe55b7915f9fa6f6146e6bb0671375fcd0149c3af5e16c8eec930bd011eaea15d16666bce61545cc52d75b8ce31c6a789c565efd5118e9b500000000" +
       "99d00156409438c98000163ced617c007c9aeba740c1524ca571ba20a274af37011cd20e6538e1170261cc902a7b168306cc01c224146d99d7f883e4b3bccc4e592320b569bffb9c6cee3fea1f27d09cb869264a49dd99256655657c263318966b87b0fe00000000" +
       "0".repeat(10240 - 2 - 208 * 3),
-  },
-  {
-    // Recorded Zclassic Equihash 192,7 header. Test mode returns the sorted first of four valid
-    // 400-byte proofs and pads the shared Equihash output buffer.
-    name: "equihash192_7 gpu1 recorded-mainnet",
-    gpu: true,
-    timeoutMs: 15 * 60 * 1000,
-    env: {MOM_EQUIHASH192_7_SOLVE: "1"},
-    job: {
-      algo: "equihash192_7",
-      dev: "gpu1*[intensity=1]",
-      noncebytes: 8,
-      nonceoffset: 108,
-      target: "ff".repeat(32),
-      blob_hex:
-        "04000000ecf888bb9e8440dff1eca5ff69c277e85462f306ec785719a76e4dd20f0b0000" +
-        "c450f3fd2a66b462f4133c48cc636655ac055de95072bd693514c9c7156dfa8de" +
-        "2004d086a6929b60cb4e4efbbfcf41d3fda50ad985fc421c990217a1daef400c5" +
-        "8d776ad03c141e8001fde00f6dcbadb169c9131b3a07c44e9b11ca00000000000000005b15db75",
-    },
-    expected:
-      "01" +
-      "000870397e46deb5da1b012d60132a670f44b56bcc3d62efab0f5fe274a4d7c74b5ac57ba1f80d89873459c67a1dbd5c11b10af944f4a507b01d143e4c10fa3f99975a00fb4f2b9dc5c9db0c9ce7fd89d8aeab27b9ab4b65974673cfd566c56e63c90e4911756fab9a579ed290934b91545505ecb0796eaed74172eac24232aec77064e87335363a5e67a282a69cfd3e15abe16cabcb28bbb9b268e90a9785c80be303e2713b47b43188f7e3361c8045200feefe0368b5a1fdd5527a45c3365f2ccebaf29576a7e801eae51de4694c3a678da0f0b04ce00a654cfc20fe0eb132ae0d295a07afb7c51514124bdd8180dd614363f5bca625f9dd2d02cdf0d40a0066ad121de47c736e894bf5de9b8bd29ff09a72284877514d695635121f1a4b63c2859da3279a6ad375fba1e7022f9428b76950fea7140ab892e5c64adb33f90ed025ec12a417c13551ab551408d72d1111a4b14ea4efa729bf64db883f38131bdb8aa6324f1fd4bfe2f99781bc554e5d6635d4e15b4335301b0cc3272d1f18c13226aef428fe049fe36241d98fafc610" +
-      "0".repeat(10240 - 2 - 800),
-  },
-  {
-    // Light portable guard: BLAKE2b digest zero for the same Zclassic header.
-    name: "equihash192_7 gpu1 generation",
-    gpu: true,
-    syclCpu: true,
-    portableOnly: true,
-    timeoutMs: 5 * 60 * 1000,
-    job: {
-      algo: "equihash192_7",
-      dev: "gpu1*[intensity=1]",
-      noncebytes: 8,
-      nonceoffset: 108,
-      target: "ff".repeat(32),
-      blob_hex:
-        "04000000ecf888bb9e8440dff1eca5ff69c277e85462f306ec785719a76e4dd20f0b0000" +
-        "c450f3fd2a66b462f4133c48cc636655ac055de95072bd693514c9c7156dfa8de" +
-        "2004d086a6929b60cb4e4efbbfcf41d3fda50ad985fc421c990217a1daef400c5" +
-        "8d776ad03c141e8001fde00f6dcbadb169c9131b3a07c44e9b11ca00000000000000005b15db75",
-    },
-    expected:
-      "d22c1ef2a4fcd68dbc24ef7b7ac6df11c264375afae2010eba986ec05717f17ef9617c716cd961115eff3f21fd401b73" +
-      "0".repeat(10240 - 96),
   },
 ];

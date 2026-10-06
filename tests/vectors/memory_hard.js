@@ -2,26 +2,6 @@
 
 const vectors = [
   {
-    // Accepted Conflux mainnet block vector, independently reconstructed from the RLP header and
-    // Conflux Rust consensus implementation by tests/reference/octopus_conflux.cpp. Height 100,000,000
-    // selects stage 190; test mode deliberately uses the light cache so CPU SYCL remains practical.
-    name: "octopus gpu1*[intensity=1] recorded-mainnet h100000000",
-    gpu: true,
-    syclCpu: true,
-    timeoutMs: 15 * 60 * 1000,
-    job: {
-      algo: "octopus",
-      dev: "gpu1*[intensity=1]",
-      height: 100000000,
-      noncebytes: 8,
-      nonceoffset: 32,
-      target: "ff".repeat(32),
-      blob_hex: "8c03f99c72afad07ad0fe89d28c83a6aad5118558d52a2800fcfaec46bd5d97f" +
-        "95071b0600778435",
-    },
-    expected: "000000000013df09cedb71556c0744d461ab9acb3cce92a4b4ec924be585e704",
-  },
-  {
     // Recorded Echelon vector, independently checked by the CPU consensus oracle.
     name: "nexapow gpu1*[intensity=1] recorded-vector",
     gpu: true,
@@ -68,6 +48,33 @@ const vectors = [
     expected: "a254ce16b11c81a3bebf46569b2598d28e3fd2223a565a9245cfa8bbca03e997",
   },
   {
+    // Four endpoint pairs from the official block key exercise the portable device SipHash path
+    // without allocating the full 14-GiB C30 graph.
+    name: "c30 gpu1 portable edge generation",
+    gpu: true,
+    syclCpu: true,
+    portableOnly: true,
+    env: {MOM_C30_TEST_EDGE: "1"},
+    job: {
+      algo: "c30", dev: "gpu1", proofsize: 42, noncebytes: 8, nonceoffset: 32,
+      blob_hex: "8bbb8897a7967634e15bae662ee23e16e8c85669f3ca0a9e6584f8f4aa41f220" +
+        "d42008d90000001e",
+    },
+    expected: "c48b882d2d166f29779c36235d4c8e140833a20f387ad915e26cae3fae4be53c",
+  },
+  {
+    // Cortex block 0xee4093: seal hash followed by the winning nonce in little-endian byte order.
+    name: "c30 gpu1 recorded-mainnet block 0xee4093",
+    gpu: true,
+    timeoutMs: 15 * 60 * 1000,
+    job: {
+      algo: "c30", dev: "gpu1", proofsize: 42, noncebytes: 8, nonceoffset: 32,
+      blob_hex: "8bbb8897a7967634e15bae662ee23e16e8c85669f3ca0a9e6584f8f4aa41f220" +
+        "d42008d90000001e",
+    },
+    expected: "2028e22aa12ab3b07ec6f0c574b28298565d47d8b02625fbfb85b37da0e9b4e4",
+  },
+  {
     name: "etchash gpu1*[intensity=256]",
     gpu: true,
     syclCpu: true,
@@ -84,6 +91,26 @@ const vectors = [
     expected:
       "f31cafe3b6ec655c82ebe64a470f6599f513674420a32490402ad897c827cf7e " +
       "756598185990f2143a94d65787ce5fea2b1feae6bed481e79dd216ef426c3eaa",
+  },
+  {
+    // Accepted Conflux mainnet block vector, independently reconstructed from the RLP header and
+    // Conflux Rust consensus implementation by tests/reference/octopus_conflux.cpp. Height 100,000,000
+    // selects stage 190; test mode deliberately uses the light cache so CPU SYCL remains practical.
+    name: "octopus gpu1*[intensity=1] recorded-mainnet h100000000",
+    gpu: true,
+    syclCpu: true,
+    timeoutMs: 15 * 60 * 1000,
+    job: {
+      algo: "octopus",
+      dev: "gpu1*[intensity=1]",
+      height: 100000000,
+      noncebytes: 8,
+      nonceoffset: 32,
+      target: "ff".repeat(32),
+      blob_hex: "8c03f99c72afad07ad0fe89d28c83a6aad5118558d52a2800fcfaec46bd5d97f" +
+        "95071b0600778435",
+    },
+    expected: "000000000013df09cedb71556c0744d461ab9acb3cce92a4b4ec924be585e704",
   },
   {
     // REAL pool-ACCEPTED share captured live from the MoneroOcean pool (gulf.moneroocean.stream:20001
@@ -128,7 +155,6 @@ const vectors = [
     // lookup). dev gpu1*[intensity=1]: the lazy kernel recomputes dataset items, so one nonce only for the vector.
     name: "fishhash gpu1*[intensity=1]",
     gpu: true,
-    syclCpu: true,
     timeoutMs: 15 * 60 * 1000,
     job: {
       algo: "fishhash",
@@ -141,31 +167,28 @@ const vectors = [
     expected: "d30e3afb6f50be1bbb8544ad6ad2a303169c5192409a42c85a73706953f04d57",
   },
   {
-    // FishHash (Iron Fish) LIVE-POOL vector: a real mining.notify from ironfish.herominers.com:1145 (TLS),
-    // miningRequestId 0. The Iron Fish custom OBJECT stratum (pool.js handleIronfishMessage) delivered this
-    // 180-byte block header in body.header; the fishhash job builder carries it through verbatim with the
-    // 8-byte nonce ("randomness") at offset 0. Hash captured here is for nonce 0 (gid 0), bit-exact from
-    // the GPU solver AND the SYCL-CPU device (light cache, no 4.6 GiB DAG) -- the same value the live share
-    // submit hashes against the pool target. (Live mining connected/logged in/jobs+set_target parsed and a
-    // structurally-valid mining.submit was accepted+mapped by the pool; shares only rejected "Job expired"
-    // because herominers' 1 GH/share minimum static-difficulty floor exceeds the per-job window.)
-    name: "fishhash recorded-job gpu1*[intensity=1]",
+    // FishHash modern FIP9 header reference: graffiti[32], sequence[4] LE, three hashes[96],
+    // target[32] BE, time[8] LE, and randomness/nonce[8] BE at offset 172.
+    // Serializer provenance: https://raw.githubusercontent.com/iron-fish/ironfish/master/ironfish/src/blockHasher.ts
+    // Pool nonce provenance: https://raw.githubusercontent.com/iron-fish/ironfish/master/ironfish/src/poolMiner.ts
+    // Independent C++ reference checkout: upstream FishHash commit 823531c002e78259759f8b1f36ac9121c32059b1.
+    name: "fishhash modern-fip9-180b gpu1*[intensity=1]",
     gpu: true,
+    syclCpu: true,
     timeoutMs: 15 * 60 * 1000,
     job: {
       algo: "fishhash",
       dev: "gpu1*[intensity=1]",
       noncebytes: 8,
-      nonceoffset: 0,
-      target: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      nonceoffset: 172,
+      target: "2222222222222222222222222222222222222222222222222222222222222222",
       blob_hex:
-        "4d696e6564206279206865726f6d696e6572732e636f6d20313231303332363187811900000000000004" +
-        "f9b7ccc6451ac540edba4270b85229935561e0f15ff66cfeb1f30ae9c776536abc9ccaf5ad6bde50d7d28" +
-        "7522fefae5d9183f4c2e195f232be657bd40a70f2aa4c246662195b7860036594090543f74014f8d1f3af" +
-        "0c196869c700000000000bd8c1067d7a9d5be59a30ad1470fe654b7fd8a54ce41a83c282ecc65f32e29e0" +
-        "100000000000000000000",
+        "1112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f3004030201414243444546474849" +
+        "4a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f70717273747576" +
+        "7778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0222222" +
+        "222222222222222222222222222222222222222222222222222222222208070605040302011122334455667788",
     },
-    expected: "b555131f962db9c12e402d8ae792f1428af2b42353b155e1a6d4831f83dc9954",
+    expected: "393727b8a9d30260566c5668359d501995ce30b09c40192123713cb14ad1e072",
   },
   {
     // PearlHash certificate-v3 native-profile regression: reuse the deterministic 76-byte header
@@ -222,33 +245,6 @@ const vectors = [
     expected: "71e8a7ff50f4eba67fbf00af449c12e6e74b1edfc1577b59c41c77922e546f87",
   },
   {
-    // Four endpoint pairs from the official block key exercise the portable device SipHash path
-    // without allocating the full 14-GiB C30 graph.
-    name: "c30 gpu1 portable edge generation",
-    gpu: true,
-    syclCpu: true,
-    portableOnly: true,
-    env: {MOM_C30_TEST_EDGE: "1"},
-    job: {
-      algo: "c30", dev: "gpu1", proofsize: 42, noncebytes: 8, nonceoffset: 32,
-      blob_hex: "8bbb8897a7967634e15bae662ee23e16e8c85669f3ca0a9e6584f8f4aa41f220" +
-        "d42008d90000001e",
-    },
-    expected: "c48b882d2d166f29779c36235d4c8e140833a20f387ad915e26cae3fae4be53c",
-  },
-  {
-    // Cortex block 0xee4093: seal hash followed by the winning nonce in little-endian byte order.
-    name: "c30 gpu1 recorded-mainnet block 0xee4093",
-    gpu: true,
-    timeoutMs: 15 * 60 * 1000,
-    job: {
-      algo: "c30", dev: "gpu1", proofsize: 42, noncebytes: 8, nonceoffset: 32,
-      blob_hex: "8bbb8897a7967634e15bae662ee23e16e8c85669f3ca0a9e6584f8f4aa41f220" +
-        "d42008d90000001e",
-    },
-    expected: "2028e22aa12ab3b07ec6f0c574b28298565d47d8b02625fbfb85b37da0e9b4e4",
-  },
-  {
     // Authoritative HTND HooHash v1.1.0 vector. Blob = prePow||timestamp LE||zero(32)||nonce LE.
     name: "hoohash gpu1*[intensity=1]",
     gpu: true,
@@ -296,9 +292,7 @@ const vectors = [
     },
     expected: "03abbe817ab99fabd4be8bd6e6d6731fcf39f6f73528bfb68d5d2cd7f9d590ea",
   },
-];
-
-vectors.push({
+  {
     // Authoritative waglaylad-rusty v0.14.5 vector, independently evaluated with its PowHash,
     // SHA3-256, and Matrix implementations. Blob = prePow||timestamp LE||zero(32)||nonce LE.
     name: "walahash gpu1*[intensity=1]",
@@ -314,9 +308,8 @@ vectors.push({
         "e2860c6d8f010000" + "00".repeat(32) + "f2b5fd5e8b4d0a9b",
     },
     expected: "c72d158213c8337ef62e2e364858255ab36606264ce214053f8247e7ff29b683",
-  });
-
-vectors.push({
+  },
+  {
     // Authoritative XELIS xelis-hash V3 Rust reference vector: src/v3.rs::test_verify_output
     // (https://github.com/xelis-project/xelis-hash/blob/master/src/v3.rs). The 112 input bytes are
     // copied verbatim; bytes 40..47 are 19865a6b746eec35 (big-endian serialization of nonce
@@ -337,8 +330,11 @@ vectors.push({
         "4a025c2f19dc87f97aacdc898fea44bc",
     },
     expected: "f208b0decb1b68bb162844494f4f41538a650a74c22999155ca30ccee79c4653",
-  });
+  },
+];
 
+// MISC GPU test APIs return one hash even when intensity exercises multiple lanes. Reuse each
+// existing vector's blob and expected hash to guard that single-result contract at intensity 2.
 const miscIntensity2Algos = new Set(["hoohash", "walahash", "xelishashv3", "nexapow"]);
 for (const vector of vectors.filter(({job}) => miscIntensity2Algos.has(job.algo))) {
   const regression = {...vector};

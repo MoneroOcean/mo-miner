@@ -1,7 +1,7 @@
 "use strict";
 
-const { resolveNodeRunner, spawnAndExit } = require("./common/miner_command");
-const { perfTests } = require("./vectors");
+const {resolveNodeRunner, spawnAndExit} = require("./common/miner_command");
+const {perfTests} = require("./vectors");
 
 const algo = process.argv[2];
 const availableAlgos = perfTests.map((definition) => definition.algo);
@@ -20,10 +20,14 @@ const testArgs = [
   "tests/perf.js",
 ];
 // perf.js reads these; MOM_PERF_SAMPLES is forwarded as-is when set.
+/** @type {Record<string, string | undefined>} */
 const testEnv = {};
-if (algo === "gpu") {testEnv.MOM_PERF_GPU_ONLY = "1";}
-else if (algo) {testEnv.MOM_PERF_ALGO = algo;}
-if (process.env.MOM_PERF_SAMPLES) {testEnv.MOM_PERF_SAMPLES = process.env.MOM_PERF_SAMPLES;}
+if (algo === "gpu") {
+  testEnv["MOM_PERF_GPU_ONLY"] = "1";
+} else if (algo) {
+  testEnv["MOM_PERF_ALGO"] = algo;
+}
+if (process.env["MOM_PERF_SAMPLES"]) {testEnv["MOM_PERF_SAMPLES"] = process.env["MOM_PERF_SAMPLES"];}
 
 const runner = resolveNodeRunner(testArgs, testEnv);
-spawnAndExit(runner.command, runner.args, { env: runner.env });
+spawnAndExit(runner.command, runner.args, {env: runner.env});

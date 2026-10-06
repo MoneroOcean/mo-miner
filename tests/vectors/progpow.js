@@ -66,7 +66,8 @@ module.exports = [
   },
   {
     // REAL share captured live from WoolyPooly FIRO (pool.woolypooly.com:3104 TLS), 2026-06-18, at
-    // mainnet height 1326124 = epoch 1020 (~10 GiB DAG). The pool's vardiff (4.29 GH) outruns a single
+    // mainnet height 1326124 = protocol epoch 1020; post-fork consensus uses terminal epoch 650
+    // (~7.06 GB DAG). The pool's vardiff (4.29 GH) outruns a single
     // GPU so it was submitted stale, but the hash is a genuine mainnet-job result and reproduces offline
     // (correctness anchored by firo's own height 1/2/1300 reference vectors above). blob = 32-byte header
     // + 8-byte winning nonce LE (nonce 0x2e6f000020c42945).
@@ -81,9 +82,29 @@ module.exports = [
       nonceoffset: 32,
       blob_hex: "308c3193f94225113edb4a8727a753c10b97dff393eda9b227a880208768f1814529c42000006f2e",
     },
+    // Recomputed with pinned firoorg/firo 88d16dc7; terminal epoch 650, original height retained
+    // for the ProgPoW program period.
     expected:
-      "00000000ebdedafd5e17a6ccd9ef312dd5322363a7afb02415340446b741ebe5 " +
-      "51839afd7148b3121aac84b0bb4ef0b081a2ab3283a41b15ea59821bab64e381",
+      "60c1108b120370ec1840d8464c2653872a6235d3dd9c51aacb177f8c9a50904c " +
+      "c86cf08db2d1adf4855ab0b782d06ce7b6ad815b7b570c40d540c04afed65042",
+  },
+  {
+    // Deterministic post-fork boundary vector: zero header, nonce 1, and height 1205100.
+    // Pinned firoorg/firo 88d16dc7 uses terminal epoch 650; GPU-only because the dataset is large.
+    name: "firopow gpu1*[intensity=1] synthetic post-fork h1205100",
+    gpu: true,
+    timeoutMs: 15 * 60 * 1000,
+    job: {
+      algo: "firopow",
+      dev: "gpu1*[intensity=1]",
+      height: 1205100,
+      noncebytes: 8,
+      nonceoffset: 32,
+      blob_hex: "00000000000000000000000000000000000000000000000000000000000000000100000000000000",
+    },
+    expected:
+      "d0c49015e0882a9301ee6abcac9c12480de2aad70b0014b27f2e530e44dcdc52 " +
+      "fc7f6f7f5ececb99fd42beb2fbd47aa31bee1c1e1bad781fe75349fddd343408",
   },
   {
     // EvrProgPow (Evrmore): KawPoW with epoch=12000, period=3, "EVRMORE-PROGPOW" seal magic, and

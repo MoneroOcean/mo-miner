@@ -12,11 +12,18 @@ const DECORATION_LINKAGE_ATTRIBUTES = 41;
 const CAPABILITY_GENERIC_POINTER = 38;
 const LINKAGE_IMPORT = 1;
 
+/** @typedef {{text: string, next: number}} StringOperand */
+/** @typedef {{errors: string[], warnings: string[]}} ModuleReport */
+/** @typedef {{files: string[], errors: string[], warnings: string[]}} DirectoryReport */
+
+/** @param {Uint32Array} words @param {number} start @param {number} end
+ * @returns {StringOperand} */
 function stringOperand(words, start, end) {
   const bytes = [];
   let index = start;
   for (; index < end; ++index) {
     const word = words[index];
+    if (word === undefined) {throw new Error("SPIR-V string operand exceeds module bounds");}
     for (let shift = 0; shift < 32; shift += 8) {
       const byte = (word >>> shift) & 0xff;
       if (byte === 0) {return {text: Buffer.from(bytes).toString("utf8"), next: index + 1};}
@@ -26,6 +33,7 @@ function stringOperand(words, start, end) {
   throw new Error("unterminated SPIR-V string operand");
 }
 
+/** @param {string} filePath @returns {ModuleReport} */
 function validateModule(filePath) {
   const data = fs.readFileSync(filePath);
   if (data.length < 20 || data.length % 4 !== 0) {
@@ -34,10 +42,13 @@ function validateModule(filePath) {
   const words = new Uint32Array(data.buffer, data.byteOffset, data.length / 4);
   if (words[0] !== SPIRV_MAGIC) {return {errors: ["invalid SPIR-V magic"], warnings: []};}
 
+  /** @type {string[]} */
   const errors = [];
+  /** @type {string[]} */
   const warnings = [];
   for (let cursor = 5; cursor < words.length;) {
     const instruction = words[cursor];
+    if (instruction === undefined) {break;}
     const wordCount = instruction >>> 16;
     const opcode = instruction & 0xffff;
     if (wordCount === 0 || cursor + wordCount > words.length) {
@@ -45,31 +56,47 @@ function validateModule(filePath) {
       break;
     }
     const end = cursor + wordCount;
-    if (opcode === OP_EXTENSION) {
-      const extension = stringOperand(words, cursor + 1, end).text;
-      if (/^SPV_(?:INTEL|NV|AMD)_/.test(extension)) {
-        errors.push(`vendor SPIR-V extension ${extension}`);
+    try {
+      if (opcode === OP_EXTENSION) {
+        if (wordCount < 2) {throw new Error("missing extension name");}
+        const extension = stringOperand(words, cursor + 1, end).text;
+        if (/^SPV_(?:INTEL|NV|AMD)_/.test(extension)) {
+          errors.push(`vendor SPIR-V extension ${extension}`);
+        }
+      } else if (opcode === OP_CAPABILITY) {
+        if (wordCount < 2) {throw new Error("missing capability operand");}
+        if (words[cursor + 1] === CAPABILITY_GENERIC_POINTER) {
+          warnings.push("GenericPointer capability (not accepted by every ICD; runtime compatibility test required)");
+        }
+      } else if (opcode === OP_DECORATE) {
+        if (wordCount < 3) {throw new Error("missing decoration operands");}
+        if (words[cursor + 2] === DECORATION_LINKAGE_ATTRIBUTES) {
+          if (wordCount < 5) {throw new Error("incomplete linkage attributes");}
+          const linkage = stringOperand(words, cursor + 3, end);
+          if (linkage.next < end && words[linkage.next] === LINKAGE_IMPORT && /^llvm\./.test(linkage.text)) {
+            warnings.push(`LLVM intrinsic import ${linkage.text} (covered by runtime compatibility tests)`);
+          }
+        }
       }
-    } else if (opcode === OP_CAPABILITY && words[cursor + 1] === CAPABILITY_GENERIC_POINTER) {
-      warnings.push("GenericPointer capability (not accepted by every ICD; runtime compatibility test required)");
-    } else if (opcode === OP_DECORATE && words[cursor + 2] === DECORATION_LINKAGE_ATTRIBUTES) {
-      const linkage = stringOperand(words, cursor + 3, end);
-      if (linkage.next < end && words[linkage.next] === LINKAGE_IMPORT && /^llvm\./.test(linkage.text)) {
-        warnings.push(`LLVM intrinsic import ${linkage.text} (covered by runtime compatibility tests)`);
-      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      errors.push(`malformed instruction at word ${cursor}: ${message}`);
     }
     cursor = end;
   }
   return {errors, warnings};
 }
 
+/** @param {string} directory @returns {DirectoryReport} */
 function validateDirectory(directory) {
   const files = fs.readdirSync(directory)
     .filter((name) => name.endsWith(".spv"))
     .sort((a, b) => a.localeCompare(b, undefined, {numeric: true}));
   if (!files.length) {return {files, errors: ["no dumped .spv images found"], warnings: []};}
 
+  /** @type {string[]} */
   const errors = [];
+  /** @type {Set<string>} */
   const warningSet = new Set();
   for (const file of files) {
     const result = validateModule(path.join(directory, file));
@@ -96,4 +123,4 @@ function main() {
 
 if (require.main === module) {main();}
 
-module.exports = {validateDirectory, validateModule};
+module.exports = {validateDirectory};

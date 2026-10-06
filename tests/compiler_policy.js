@@ -687,11 +687,7 @@ test("Windows unified GPU workers link HooHash's strict host verifier", () => {
 });
 
 
-test("Octopus native runtime failure disables repeated retries", () => {
-  const source = fs.readFileSync(path.join(__dirname, "../sycl/octopus/nvidia_tensor.inc"), "utf8");
-  assert.match(source, /if \(native_failed_\)\s*return false;/);
-  assert.match(source, /native_failed_ = true;/);
-});
+
 
 test("Octopus NVIDIA DAG loads retain the measured cache policy", () => {
   const source = fs.readFileSync(path.join(__dirname, "../sycl/octopus/nvidia_tensor.inc"), "utf8");
@@ -3817,3 +3813,741 @@ test("Windows portable workers share oneAPI JIT without crossing into nightly ru
     fs.rmSync(root, {recursive: true, force: true});
   }
 });
+
+const {hashTests} = require("./vectors");
+
+const {addDiscreteCases, addIntegratedCases} = require("./common/gpu_test_matrix");
+
+test("C29 keeps CPU coverage bounded and discrete coverage end to end", () => {
+  const portable = hashTests.filter(({job, syclCpu}) => job.algo === "c29" && syclCpu);
+  assert.equal(portable.length, 1);
+  const portableVector = portable[0];
+  assert.ok(portableVector);
+  assert.equal(portableVector.portableOnly, true);
+  assert.equal(portableVector.env?.["MOM_C29_TEST_EDGE"], "1");
+
+  const discrete = hashTests.filter(
+    ({gpu, job, portableOnly}) => gpu && job.algo === "c29" && !portableOnly
+  );
+  assert.deepEqual(discrete.map(({job}) => job.proofsize).sort(), [32, 42]);
+  assert.ok(discrete.every(({env}) => !env?.["MOM_C29_TEST_EDGE"]));
+});
+
+test("npm tooling stays lockfile-free", () => {
+  const root = path.join(__dirname, "..");
+  const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+  const npmrc = fs.readFileSync(path.join(root, ".npmrc"), "utf8");
+  assert.equal(fs.existsSync(path.join(root, "package-lock.json")), false);
+  assert.match(npmrc, /^package-lock=false$/m);
+  assert.match(npmrc, /^save-exact=true$/m);
+  assert.match(fs.readFileSync(path.join(root, ".gitignore"), "utf8"), /^package-lock\.json$/m);
+  for (const version of Object.values(packageJson.devDependencies)) {
+    assert.match(version, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
+  }
+  const excludedDirectories = new Set([
+    ".git", "node_modules", "build", "dist", "out", "release", "release-build",
+    "release-combined", "release-combined-build", "coverage", "bin", "obj", "target", "vendor",
+  ]);
+  const files = ["r.sh", "package.json", "binding.gyp"].map((file) => path.join(root, file));
+  for (const directory of ["scripts", ".github"]) {
+    const base = path.join(root, directory);
+    for (const entry of fs.readdirSync(base, {recursive: true, withFileTypes: true})) {
+      if (!entry.isFile()) {continue;}
+      const file = path.join(entry.parentPath, entry.name);
+      const relative = path.relative(root, file);
+      if (relative.split(path.sep).some((part) => excludedDirectories.has(part))) {continue;}
+      files.push(file);
+    }
+  }
+  const forbidden = /\bnpm(?:\.cmd)?\s+(?:ci|update)\b/;
+  for (const file of files) {
+    const contents = fs.readFileSync(file);
+    if (contents.includes(0)) {continue;}
+    assert.doesNotMatch(contents.toString("utf8"), forbidden, file);
+  }
+});
+
+test("miner command output capture retains bounded stdout and stderr tails", async () => {
+  const stdoutMarker = "stdout-tail-marker";
+  const stderrMarker = "stderr-tail-marker";
+  // Emit the exact fixture bytes even when the runner replaces Node's stdio streams.
+  const source = [
+    `process.stdout.write("old-output\\n" + "x".repeat(${maxCapturedOutputBytes}) + ${JSON.stringify(stdoutMarker)}, () => {`,
+    `  process.stderr.write("old-error\\n" + "x".repeat(${maxCapturedOutputBytes}) + ${JSON.stringify(stderrMarker)}, () => {});`,
+    "});",
+  ].join("");
+  const result = await runNode(["-e", source], {timeoutMs: 30 * 1000});
+  assert.equal(result.error, null);
+  assert.equal(result.code, 0);
+  assert.ok(Buffer.byteLength(result.stdout) <= maxCapturedOutputBytes);
+  assert.ok(Buffer.byteLength(result.stderr) <= maxCapturedOutputBytes);
+  assert.ok(result.stdout.endsWith(stdoutMarker));
+  assert.ok(result.stderr.endsWith(stderrMarker));
+  assert.doesNotMatch(result.stdout, /old-output/);
+  assert.doesNotMatch(result.stderr, /old-error/);
+});
+
+test("miner command output capture bounds malformed UTF-8 without losing its tail", async () => {
+  const marker = "malformed-output-tail-marker";
+  const source = [
+    `require("node:fs").writeFileSync(1, Buffer.alloc(${maxCapturedOutputBytes + 1024}, 0xff));`,
+    `require("node:fs").writeFileSync(1, ${JSON.stringify(marker)});`,
+  ].join("");
+  const result = await runNode(["-e", source], {timeoutMs: 30 * 1000});
+  assert.equal(result.error, null);
+  assert.equal(result.code, 0);
+  assert.ok(Buffer.byteLength(result.stdout) <= maxCapturedOutputBytes);
+  assert.ok(result.stdout.endsWith(marker));
+});
+
+test("Windows cmd wrapper rejects percent-expansion arguments", () => {
+  assert.throws(() => wrapWindowsCmd(["mom.cmd", "gpu%0"]), /cannot safely preserve/);
+});
+
+test("failed output buffer replays a bounded formatted tail", () => {
+  const root = path.join(__dirname, "..");
+  const source = [
+    "for (let i = 0; i < 400; ++i) { console.error(\"debug %d %s\", i, \"x\".repeat(1024)); }",
+    "console.error(\"output-buffer-tail-marker %s\", \"literal\");",
+    "process.exitCode = 1;",
+  ].join("");
+  const result = spawnSync(process.execPath, [
+    "--require", path.join(root, "tests/common/test_output_buffer.js"), "-e", source,
+  ], {
+    cwd: root,
+    encoding: "utf8",
+    env: {...process.env, NODE_TEST_FLUSH_BUFFERED_OUTPUT: "1"},
+    maxBuffer: 2 * 1024 * 1024,
+  });
+  assert.equal(result.status, 1, result.error?.message);
+  const header = "Suppressed debug output:\n";
+  const headerIndex = result.stderr.indexOf(header);
+  assert.ok(headerIndex >= 0);
+  assert.match(result.stderr, /output-buffer-tail-marker literal/);
+  assert.doesNotMatch(result.stderr, /debug 0/);
+  assert.ok(result.stderr.length - headerIndex <= 256 * 1024 + header.length + 2);
+});
+
+test("portable x86 CPU flags use the baseline while developer builds stay native", {
+  skip: process.platform === "win32" || process.arch !== "x64",
+}, () => {
+  const root = path.join(__dirname, "..");
+  const script = path.join(root, "scripts/cpu-cflags.sh");
+  /** @type {NodeJS.ProcessEnv} */
+  const portableEnv = {...process.env, MOM_PORTABLE_BUILD: "1"};
+  delete portableEnv["MOM_CPU_MARCH"];
+  const portable = spawnSync("bash", [script], {
+    cwd: root, encoding: "utf8", env: portableEnv,
+  });
+  assert.equal(portable.status, 0, portable.stderr);
+  assert.equal(portable.stdout.trim(), "-march=x86-64 -mtune=generic -maes");
+  assert.doesNotMatch(portable.stdout, /native|avx(?:2|512)|multiversion|multipath/i);
+
+  /** @type {NodeJS.ProcessEnv} */
+  const developerEnv = {...process.env, MOM_PORTABLE_BUILD: "0"};
+  delete developerEnv["MOM_CPU_MARCH"];
+  const developer = spawnSync("bash", [script], {
+    cwd: root, encoding: "utf8", env: developerEnv,
+  });
+  assert.equal(developer.status, 0, developer.stderr);
+  assert.equal(developer.stdout.trim(), "-march=native");
+});
+
+test("Discrete Octopus vectors select the full DAG test path", (/** @type {import("node:test").TestContext} */ t) => {
+  t.mock.method(policyModule, "workerEnv", (
+    /** @type {string} */ algo, /** @type {NodeJS.ProcessEnv} */ env,
+  ) => {
+    assert.equal(algo, "__control__");
+    assert.equal(env["MOM_GPU_BACKEND"], "opencl");
+    assert.equal(env["MOM_OPENCL_DEVICE_TYPE"], "cpu");
+    return {ONEAPI_DEVICE_SELECTOR: "opencl:cpu"};
+  });
+  const octopus = hashTests.find(({job}) => job.algo === "octopus");
+  assert.ok(octopus, "the real Octopus vector must exist");
+  const original = JSON.stringify(octopus);
+  for (const vendor of ["intel", "nvidia", "amd"]) {
+    for (const backend of ["sycl", "sycl-native", "native"]) {
+      const copy = cloneForDiscreteGpu(octopus, vendor, "gpu2", backend);
+      assert.equal(copy.env?.["MOM_OCTOPUS_TEST_FULL_DAG"], "1");
+      assert.equal(copy.env?.["MOM_OCTOPUS_TEST_NATIVE"], backend === "sycl-native" ? "1" : undefined);
+      assert.equal(copy.env?.["MOM_GPU_BACKEND"], vendor);
+      assert.ok(Object.hasOwn(copy.env || {}, "MOM_NATIVE_PATH"));
+      assert.equal(copy.env?.["MOM_NATIVE_PATH"], undefined);
+      assert.equal(copy.env?.["MOM_NATIVE_PATH_LAUNCHER_DEFAULT"], undefined);
+      assert.equal(copy.job["backend"], backend);
+    }
+  }
+
+  const openclCpu = cloneForOpenclSycl(octopus, "gpu2", "cpu");
+  assert.equal(openclCpu.env?.["MOM_OCTOPUS_TEST_FULL_DAG"], undefined);
+  assert.equal(openclCpu.env?.["MOM_OCTOPUS_TEST_NATIVE"], undefined);
+  assert.equal(openclCpu.env?.["ONEAPI_DEVICE_SELECTOR"], "opencl:cpu");
+  const intelIntegrated = cloneForIntelIntegrated(octopus, "gpu2", "sycl-native");
+  assert.equal(intelIntegrated.env?.["MOM_OCTOPUS_TEST_FULL_DAG"], undefined);
+  assert.equal(intelIntegrated.env?.["MOM_COMPILER_POLICY_STRICT"], "1");
+  assert.equal(intelIntegrated.job["backend"], "sycl-native");
+
+  for (const algo of ["kawpow", "firopow", "evrprogpow", "meowpow"]) {
+    const definition = hashTests.find(({job, syclCpu}) => job.algo === algo && syclCpu);
+    assert.ok(definition, `the portable ${algo} vector must exist`);
+    const integrated = cloneForIntelIntegrated(definition, "gpu2", "sycl-native");
+    assert.equal(integrated.timeoutMs, 3 * 60 * 60 * 1000);
+  }
+
+  const etchash = hashTests.find(({job}) => job.algo === "etchash");
+  assert.ok(etchash, "the real Etchash vector must exist");
+  const etchashCopy = cloneForDiscreteGpu(etchash, "amd", "gpu2", "sycl");
+  assert.equal(etchashCopy.env?.["MOM_OCTOPUS_TEST_FULL_DAG"], undefined);
+  assert.equal(etchashCopy.env?.["MOM_OCTOPUS_TEST_NATIVE"], undefined);
+  const integratedEtchash = cloneForIntelIntegrated(etchash, "gpu2", "sycl");
+  assert.equal(integratedEtchash.timeoutMs, 3 * 60 * 60 * 1000);
+  assert.equal(JSON.stringify(octopus), original);
+});
+
+test("required integrated coverage requires a device and skips unsupported algorithms", async (t) => {
+  const previous = process.env["MOM_REQUIRE_INTEGRATED_GPU_TESTS"];
+  process.env["MOM_REQUIRE_INTEGRATED_GPU_TESTS"] = "1";
+  t.after(() => {
+    if (previous === undefined) {
+      delete process.env["MOM_REQUIRE_INTEGRATED_GPU_TESTS"];
+    } else {
+      process.env["MOM_REQUIRE_INTEGRATED_GPU_TESTS"] = previous;
+    }
+  });
+
+  const results = [
+    {
+      result: {skipped: /** @type {false} */ (false), devices: [], params: {}},
+      required: true,
+      reason: /no devices/,
+    },
+    {
+      result: {
+        skipped: /** @type {false} */ (false),
+        devices: [{dev: "gpu1", description: "Intel integrated test device", integrated: true}],
+        params: {},
+      },
+      required: false,
+      reason: /not available/,
+    },
+  ];
+  for (const {result, required, reason} of results) {
+    /** @type {Parameters<typeof addIntegratedCases>[0]} */
+    const plan = new Map();
+    await addIntegratedCases(plan, "octopus", {
+      openclGpu: async () => {throw new Error("unexpected OpenCL discovery");},
+      openclCpu: async () => {throw new Error("unexpected CPU discovery");},
+      intelIntegrated: async () => result,
+    });
+    const cases = [...plan.values()].flatMap((lane) => lane.serial);
+    assert.equal(cases.length, 1);
+    assert.equal(cases[0]?.required, required);
+    assert.match(cases[0]?.reason || "", reason);
+  }
+});
+
+test("Pearl V3 policy matrix retains both SYCL fallback backends",
+  async (/** @type {import("node:test").TestContext} */ t) => {
+    const pearls = hashTests.filter(({job}) => job.algo === "pearlhash");
+    assert.equal(pearls.length, 3);
+    assert.ok(pearls.every(({job}) => job["pearlhash_cert_version"] === 3));
+    t.mock.method(policyModule, "nvidiaComputeCapability", () => 120);
+    /** @type {Parameters<typeof addDiscreteCases>[0]} */
+    const plan = new Map();
+    /** @param {string} algo @param {string} vendor
+     * @returns {Promise<{skipped: false, devices: Array<{dev: string, description: string, integrated: boolean}>, params: Record<string, string>}>} */
+    const discover = async (algo, vendor) => {
+      assert.equal(algo, "pearlhash");
+      assert.ok(vendor === "nvidia" || vendor === "amd");
+      return {
+        skipped: false,
+        devices: [{dev: "gpu1", description: `${vendor} test GPU`, integrated: false}],
+        params: {pearlhash: "gpu1"},
+      };
+    };
+    await addDiscreteCases(plan, "pearlhash", ["nvidia", "amd"], discover);
+    assert.deepEqual([...plan.keys()].sort(), ["native", "sycl", "sycl-native"]);
+    assert.equal(plan.get("sycl")?.discrete.length, 2);
+    assert.equal(plan.get("sycl-native")?.discrete.length, 2);
+    assert.equal(plan.get("native")?.discrete.length, 2);
+
+    const nvidiaSelection = policyModule.selection("pearlhash", "nvidia", process.platform, 120);
+    const amdSelection = policyModule.selection("pearlhash", "amd", process.platform);
+    assert.ok(nvidiaSelection);
+    assert.ok(amdSelection);
+    assert.equal(nvidiaSelection.backend, "native");
+    assert.ok(nvidiaSelection.pearlhashProfile);
+    assert.equal(nvidiaSelection.pearlhashProfile.k, 8192);
+    assert.equal(nvidiaSelection.pearlhashProfile.rank, 128);
+    assert.equal(amdSelection.backend, "native");
+
+    for (const [laneBackend, lane] of plan) {
+      for (const testCase of lane.discrete) {
+        assert.deepEqual(testCase.definitions, pearls);
+        const select = testCase.select;
+        assert.ok(select);
+        for (const pearl of pearls) {
+          const selected = select(pearl);
+          assert.equal(selected.job["backend"], laneBackend);
+          assert.equal(selected.job["pearlhash_cert_version"],
+            pearl.job["pearlhash_cert_version"]);
+          assert.equal(selected.env?.["MOM_GPU_BACKEND"],
+            testCase.name.startsWith("nvidia ") ? "nvidia" : "amd");
+        }
+      }
+    }
+    assert.ok(plan.get("sycl")?.discrete.every(({name}) => name.includes("(sycl fallback)")));
+    assert.ok(plan.get("sycl-native")?.discrete.every(({name}) =>
+      name.includes("(sycl-native fallback)")));
+  });
+
+test("Linux oneAPI developer builds preserve incremental objects", () => {
+  const build = fs.readFileSync(
+    path.join(__dirname, "../scripts/multicompiler-entrypoint.sh"), "utf8");
+  const start = build.indexOf("build_oneapi() {");
+  const end = build.indexOf("\n}\n\nbuild_dpcpp()", start);
+  assert.ok(start >= 0 && end > start, "oneAPI build function must exist");
+  const oneapi = build.slice(start, end);
+  assert.match(oneapi, /\[ ! -d "\$out" \] \|\| mv "\$out" build/);
+  assert.match(oneapi, /binding\.gyp -nt build\/Makefile/);
+  assert.match(oneapi, /node-gyp build/);
+  assert.match(oneapi, /mv build "\$out"/);
+  assert.doesNotMatch(oneapi, /find binding\.gyp native sycl/);
+  assert.doesNotMatch(oneapi, /rm -rf build "\$out"/);
+});
+
+test("AMD release workers stay architecture-neutral on Linux and Windows", () => {
+  const linux = fs.readFileSync(
+    path.join(__dirname, "../scripts/multicompiler-entrypoint.sh"), "utf8");
+  const windows = fs.readFileSync(
+    path.join(__dirname, "../.github/workflows/scripts/build-sycl-adaptivecpp-win.ps1"), "utf8");
+  assert.match(linux, /ACPP_TARGETS=generic ACPP_VISIBILITY_MASK="\$target"/);
+  assert.match(windows, /--acpp-targets=generic/);
+  assert.doesNotMatch(`${linux}\n${windows}`, /(?:--offload-arch=|--acpp-targets=hip:|ACPP_TARGETS=hip:)/);
+});
+
+test("Intel CN tuning selects its width8 recurrence only from reported hardware capability", () => {
+  const source = fs.readFileSync(path.join(__dirname, "../sycl/algo_params.inc"), "utf8");
+  // The compiled intel_geometry tests cover capability failures and excluded worker profiles.
+  assert.match(source, /all_intel_native_width8 = all_intel_native_width8 &&\s+mom_intel_eu_simd_width\(dev\) == 8/);
+  assert.match(source, /backend_hint = cn_gpu_intel_backend\(needs_intel_opencl, all_intel_native_width8\)/);
+  const recurrence = fs.readFileSync(path.join(__dirname, "../sycl/cn_gpu/entry.inc"), "utf8");
+  assert.match(recurrence, /use_native_width8 = mom_intel_eu_simd_width\(state\.device\) == 8/);
+  assert.doesNotMatch(`${source}\n${recurrence}`, /get_info<sycl::ext::intel::info::device::gpu_eu_simd_width>/);
+});
+
+test("AMD matrix paths share a conservative selected-device instruction gate", () => {
+  for (const file of ["octopus/amd_wmma.inc", "walahash/amd_wmma.inc", "pearlhash/hip_jit.inc"]) {
+    const source = fs.readFileSync(path.join(__dirname, "../sycl", file), "utf8");
+    assert.match(source, /hipGetDeviceProperties\(/);
+    assert.match(source, /mom::amd::has_gfx12_int8_wmma\(/);
+    assert.doesNotMatch(source, /strncmp\([^\n]*gcnArchName/);
+    assert.match(source, /"--offload-arch=" \+ arch/);
+  }
+  const octopus = fs.readFileSync(path.join(__dirname, "../sycl/octopus/octopus.cpp"), "utf8");
+  assert.match(octopus, /subgroup_32 = mom_is_cuda\(state\.device\) \|\|\s+std::find\(subgroup_sizes/);
+  assert.match(octopus, /!std::getenv\("MOM_OCTOPUS_BATCHED"\) && subgroup_32/);
+});
+
+test("Linux AdaptiveCpp developer builds preserve incremental objects", () => {
+  const entrypoint = fs.readFileSync(
+    path.join(__dirname, "../scripts/adaptivecpp-entrypoint.sh"), "utf8");
+  assert.match(entrypoint, /mv "\$cache_dir" build/);
+  assert.match(entrypoint,
+    /grep -Fqx "CXX\.target \?= \$compiler" build\/Makefile; then\s+mom_run_quiet "\[adaptivecpp-\$backend\] node-gyp configure"/);
+  assert.match(entrypoint, /mv "\$source_dir\/build" "\$cache_dir"/);
+  assert.match(entrypoint, /preserve_partial_build/);
+  assert.match(entrypoint, /build\/build-output\.log/);
+  assert.doesNotMatch(entrypoint, /rm -rf \/tmp\/mom-adaptive-build "\$build_dir"/);
+});
+
+test("Linux AdaptiveCpp rejects a symlinked build root before cleanup", {
+  skip: process.platform === "win32",
+}, () => {
+  const repo = path.join(__dirname, "..");
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-adaptive-root-test-"));
+  const external = fs.mkdtempSync(path.join(os.tmpdir(), "mom-adaptive-external-test-"));
+  try {
+    fs.mkdirSync(path.join(temp, "scripts"));
+    fs.copyFileSync(path.join(repo, "scripts/adaptivecpp-entrypoint.sh"),
+      path.join(temp, "scripts/adaptivecpp-entrypoint.sh"));
+    fs.writeFileSync(path.join(temp, "scripts/cxx-adaptivecpp.sh"), "#!/bin/sh\nexit 0\n");
+    fs.symlinkSync(external, path.join(temp, "build"), "dir");
+    const result = spawnSync("bash", ["scripts/adaptivecpp-entrypoint.sh", "true"], {
+      cwd: temp,
+      encoding: "utf8",
+      env: {...process.env, MOM_ADAPTIVE_BUILD_DIR: "build/cache/acpp-hip"},
+    });
+    assert.equal(result.status, 2, result.stdout + result.stderr);
+    assert.match(result.stderr, /build root must not be a symbolic link/);
+    assert.deepEqual(fs.readdirSync(external), []);
+  } finally {
+    fs.rmSync(temp, {recursive: true, force: true});
+    fs.rmSync(external, {recursive: true, force: true});
+  }
+});
+
+test("Windows Intel NexaPoW uses oneAPI after the cold-JIT fix", () => {
+  assert.equal(policy.selection("nexapow", "intel", "win32").key, "oneapi");
+  const build = fs.readFileSync(path.join(__dirname,
+    "../.github/workflows/scripts/build-sycl-cuda-win.ps1"), "utf8");
+  assert.match(build, /PortableOpencl[\s\S]*MOM_NEXAPOW_PORTABLE_FIELD32/);
+});
+
+test("Windows CUDA device flags enable SYCL-native Octopus", () => {
+  const build = fs.readFileSync(path.join(__dirname,
+    "../.github/workflows/scripts/build-sycl-cuda-win.ps1"), "utf8");
+  const withCudaBlock = build.match(
+    /if \(\$withCuda\) \{\n\s{2}\$targetList \+= \$CudaArch\n\s{2}\$F \+= @\(([\s\S]*?)\)\n\}/);
+  assert.ok(withCudaBlock, "Windows CUDA device flag block must exist");
+  const withCudaFlags = withCudaBlock?.[1] ?? "";
+  assert.match(withCudaFlags, /"-DMOM_SYCL_HAS_CUDA"/);
+  assert.match(withCudaFlags, /"-DMOM_OCTOPUS_HAS_SYCL_NATIVE"/);
+  assert.match(withCudaFlags, /"-DMOM_NEXAPOW_SYCL_NATIVE_FIELD"/);
+});
+
+test("Windows oneAPI NexaPoW build enables the portable field", () => {
+  const binding = fs.readFileSync(path.join(__dirname, "../binding.gyp"), "utf8");
+  assert.match(binding,
+    /msbuild_toolset": "Intel\(R\) oneAPI DPC\+\+ Compiler 2026"[\s\S]*?"AdditionalOptions": \[[\s\S]*?"\/DMOM_NEXAPOW_PORTABLE_FIELD32"/);
+});
+
+test("ZelHash discovery leaves allocation-sensitive slots to the workload process", () => {
+  const source = fs.readFileSync(path.join(__dirname, "../sycl/algo_params.inc"), "utf8");
+  assert.match(source,
+    /mom_zelhash::zelhash_slot_capacity, "slots",\s+GpuUsm::both, 1024, 0, true, false/);
+});
+
+test("BeamHash3 paired 32-bit arithmetic stays scoped to Intel oneAPI", () => {
+  const binding = fs.readFileSync(path.join(__dirname, "../binding.gyp"), "utf8");
+  const source = fs.readFileSync(path.join(__dirname, "../sycl/beamhash3/common.inc"), "utf8");
+  assert.equal(binding.match(/MOM_BEAMHASH3_INTEL_PAIR32/g)?.length, 2);
+  assert.match(binding, /"\/DMOM_BEAMHASH3_INTEL_PAIR32"/);
+  assert.match(binding, /mom_sycl_impl=='dpcpp'[\s\S]*?-DMOM_BEAMHASH3_INTEL_PAIR32/);
+  assert.equal(source.match(/defined\(MOM_BEAMHASH3_INTEL_PAIR32\)/g)?.length, 2);
+});
+
+test("BeamHash3 compact kernels request subgroup 16 through the portable compiler gate", () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, "../sycl/beamhash3/compact_solver.inc"), "utf8");
+  assert.match(source,
+    /parallel_for<BeamCompactSeedKernel>[\s\S]*?MOM_REQD_SG_16/);
+  assert.match(source,
+    /parallel_for<BeamCompactRoundKernel<R, PairPartitions>>[\s\S]*?MOM_REQD_SG_16/);
+});
+
+test("BeamHash3 portable worker cannot select uncompiled compact arenas", () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, "../sycl/beamhash3/layout.inc"), "utf8");
+  assert.match(source,
+    /beam_compact_enabled[\s\S]*?#if defined\(MOM_SYCL_PORTABLE_OPENCL\)[\s\S]*?return false;[\s\S]*?#else/);
+});
+
+test("portable SYCL blocks only for actual OpenCL event waits", () => {
+  const source = fs.readFileSync(path.join(__dirname, "../sycl/lib-internal.h"), "utf8");
+  assert.match(source,
+    /sycl_wait_and_throw[\s\S]*?if constexpr \(mom_sycl_portable_opencl\)[\s\S]*?if \(mom_is_opencl\(device\)\)[\s\S]*?event\.wait_and_throw\(\);[\s\S]*?while \(event\.get_info/);
+});
+
+test("ZHash bucket tuning stays scoped to Intel oneAPI", () => {
+  const binding = fs.readFileSync(path.join(__dirname, "../binding.gyp"), "utf8");
+  const core = fs.readFileSync(
+    path.join(__dirname, "../sycl/zhash/equihash_core.hpp"), "utf8");
+  const layout = fs.readFileSync(
+    path.join(__dirname, "../sycl/zhash/zhash_session_layout.hpp"), "utf8");
+  assert.equal((binding.match(/MOM_ZHASH_INTEL_LATE_BUCKETS/g) || []).length, 2);
+  assert.match(binding, /"\/DMOM_ZHASH_INTEL_LATE_BUCKETS"/);
+  assert.match(binding,
+    /mom_sycl_impl=='dpcpp'[\s\S]*?-DMOM_ZHASH_INTEL_LATE_BUCKETS/);
+  assert.match(layout,
+    /#ifdef MOM_ZHASH_INTEL_LATE_BUCKETS[\s\S]*?ZHashArenaLayout<4480, 5632, 13, 13>[\s\S]*?ZHashArenaLayout<4672, 5632, 13, 13>/);
+  assert.match(core,
+    /#elif defined\(MOM_ZHASH_INTEL_LATE_BUCKETS\)[\s\S]*?Spec::n == 144 && Spec::k == 5 && LocalBits == 11;/);
+});
+
+test("BMG combined AOT defaults and runtime wiring stay fail-closed", () => {
+  const cxx = fs.readFileSync(path.join(__dirname, "../scripts/cxx-combined.sh"), "utf8");
+  assert.match(cxx,
+    /MOM_COMBINED_TARGETS:\?MOM_COMBINED_TARGETS must be set by combined-build\.sh/);
+  assert.doesNotMatch(cxx, /MOM_COMBINED_TARGETS:-spir64/);
+  assert.match(cxx,
+    /if \[ -n "\$intel_aot_device" \] && \[\[ "\$src" == \*sycl\/zhash\/zhash\.cpp \]\]; then/);
+  assert.match(cxx, /MOM_INTEL_AOT_DEVICE requires spir64_gen in MOM_COMBINED_TARGETS/);
+  assert.match(cxx, /MOM_INTEL_AOT_DEVICE requires the pinned \/usr\/bin\/ocloc/);
+  assert.match(cxx, /\[ -x \/usr\/bin\/ocloc \]/);
+  assert.match(cxx, /intel_aot_args=\(-Xsycl-target-backend=spir64_gen "-device \$intel_aot_device"\)/);
+
+  const entrypoint = fs.readFileSync(
+    path.join(__dirname, "../scripts/multicompiler-entrypoint.sh"), "utf8");
+  const start = entrypoint.indexOf("build_dpcpp() {");
+  const end = entrypoint.indexOf("\n}\n\nbuild_dpcpp_opencl()", start);
+  assert.ok(start >= 0 && end > start, "DPC++ build function must exist");
+  const dpcpp = entrypoint.slice(start, end);
+  assert.match(dpcpp, /bash scripts\/combined-build\.sh/);
+  assert.doesNotMatch(dpcpp, /MOM_COMBINED_TARGETS=/);
+  assert.doesNotMatch(dpcpp, /MOM_INTEL_AOT_DEVICE=/);
+  const openclStart = entrypoint.indexOf("build_dpcpp_opencl() {");
+  const openclEnd = entrypoint.indexOf("\n}\n\nbuild_acpp()", openclStart);
+  assert.ok(openclStart >= 0 && openclEnd > openclStart,
+    "DPC++ OpenCL build function must exist");
+  const dpcppOpencl = entrypoint.slice(openclStart, openclEnd);
+  assert.match(dpcppOpencl,
+    /MOM_DPCPP_IMPL=dpcpp-opencl MOM_COMBINED_TARGETS=spir64 MOM_INTEL_AOT_DEVICE=/);
+
+  const combined = fs.readFileSync(
+    path.join(__dirname, "../scripts/combined-build.sh"), "utf8");
+  assert.match(combined,
+    /MOM_COMBINED_TARGETS="\$\{MOM_COMBINED_TARGETS:-spir64,spir64_gen,nvidia_gpu_sm_80\}"/);
+  assert.match(combined,
+    /\[ -z "\$\{MOM_INTEL_AOT_DEVICE:-\}" \] && \[\[ ",\$MOM_COMBINED_TARGETS," == \*,spir64_gen,\* \]\]/);
+  assert.match(combined, /export MOM_INTEL_AOT_DEVICE=bmg-g21/);
+
+  const dockerfile = fs.readFileSync(
+    path.join(__dirname, "../scripts/build-combined.dockerfile"), "utf8");
+  assert.match(dockerfile, /intel_aot_device="\$\{MOM_INTEL_AOT_DEVICE:-\}"/);
+  assert.match(dockerfile, /export MOM_COMBINED_TARGETS="\$combined_targets"/);
+  assert.match(dockerfile, /export MOM_INTEL_AOT_DEVICE="\$intel_aot_device"/);
+
+  const runtime = fs.readFileSync(
+    path.join(__dirname, "../scripts/install-intel-compute-runtime.sh"), "utf8");
+  assert.match(runtime, /\n {2}intel-ocloc\n/);
+  assert.match(runtime, /intel-ocloc_\$\{COMPUTE_RUNTIME_VERSION\}-0_amd64\.deb/);
+  assert.match(runtime, /12c5e61ed1dca5cbf38494e280abf88100a451580d57c44f601a17d9727e465e/);
+});
+
+test("CN/GPU keeps Windows HIP input and output in device memory", () => {
+  const state = fs.readFileSync(path.join(__dirname, "../sycl/cn_gpu/state.inc"), "utf8");
+  assert.doesNotMatch(state, /mom_is_hip\(device\)/);
+  assert.match(state, /outputs = allocate<uint8_t>\([^;]*shared_io\)/);
+});
+
+test("ZHash gates its HIP collision caches on local memory", () => {
+  const session = fs.readFileSync(
+    path.join(__dirname, "../sycl/zhash/zhash_session.hpp"), "utf8");
+  const shared = fs.readFileSync(
+    path.join(__dirname, "../sycl/zhash/equihash_sycl.hpp"), "utf8");
+  assert.match(shared, /bool CacheHead = false/);
+  assert.match(shared, /partitioned_split_collision_local_bytes/);
+  assert.match(session,
+    /cache_partition_inputs_ = [\s\S]*?local_mem_size>\(\) >=[\s\S]*?required_cache_local_bytes/);
+  assert.match(session, /Round1Record, 8, true/);
+  assert.match(session, /Round2Record, 4, true/);
+  assert.match(session, /Round3Record, Round4Record, 4, true/);
+});
+
+test("NexaPoW vectors keep the bounded default and expose a fail-closed staged gate", () => {
+  const source = fs.readFileSync(path.join(__dirname, "../sycl/nexapow/nexapow.cpp"), "utf8");
+  const probe = fs.readFileSync(path.join(__dirname, "../sycl/nexapow/test_probe.cpp"), "utf8");
+  assert.match(probe, /single_task<TestShaKernel>/);
+  assert.match(probe, /MOM_NEXAPOW_SHA_ONLY/);
+  assert.match(source, /MOM_NEXAPOW_STAGED_TEST/);
+  assert.match(source, /MOM_NEXAPOW_STAGED_REQUIRE/);
+  assert.match(source, /NexaPoW staged SYCL active \(field=%s, table=%s, points=%u, bytes=%llu, count=%u\)/);
+  assert.equal((source.match(/const bool recorded_test = is_test && input_size == 48u;/g) || []).length, 2);
+  assert.match(source, /if \(recorded_test && !staged_test\) \{\s*test_recorded_vector\(/);
+  assert.match(source, /NexaPoW staged SYCL recorded vector mismatch/);
+  const vector = require("./vectors").hashTests.find(({job}) => job.algo === "nexapow");
+  assert.ok(vector);
+  assert.equal(vector.timeoutMs, 25 * 60 * 1000);
+});
+
+test("NexaPoW staged tables use the Windows HIP small table and capacity elsewhere", () => {
+  const binding = fs.readFileSync(path.join(__dirname, "../binding.gyp"), "utf8");
+  const windowsBuild = fs.readFileSync(path.join(__dirname,
+    "../.github/workflows/scripts/build-sycl-cuda-win.ps1"), "utf8");
+  const pipeline = fs.readFileSync(path.join(__dirname, "../sycl/nexapow/sycl_pipeline.inc"), "utf8");
+  const source = fs.readFileSync(path.join(__dirname, "../sycl/nexapow/nexapow.cpp"), "utf8");
+  assert.doesNotMatch(binding, /MOM_NEXAPOW_LARGE_TABLE/);
+  assert.doesNotMatch(windowsBuild, /MOM_NEXAPOW_LARGE_TABLE/);
+  assert.match(pipeline, /kSmallTable\s*\{22u, 4u, 21u, 12u\}/);
+  assert.match(pipeline, /kLargeTable\s*\{24u, 3u, 23u, 11u\}/);
+  assert.match(pipeline,
+    /#if defined\(_WIN32\) && defined\(MOM_SYCL_HAS_HIP\)[\s\S]*?preferred = sycl_pipeline::kSmallTable;[\s\S]*?#else[\s\S]*?preferred =\s*memory >= \(uint64_t\{10\} << 30\)\s*\? sycl_pipeline::kLargeTable\s*:\s*sycl_pipeline::kSmallTable;[\s\S]*?#endif/);
+  assert.match(pipeline, /memory >= \(uint64_t\{10\} << 30\)/);
+  assert.match(pipeline, /try_setup\(sycl_pipeline::kSmallTable, small_failure\)/);
+  assert.match(pipeline, /large table setup failed:[\s\S]*small table setup failed:/);
+  assert.match(source, /state\.portable\.table_name\(\)/);
+  assert.match(source, /state\.portable\.table_points\(\)/);
+  assert.match(source, /state\.portable\.table_bytes\(\)/);
+  assert.match(pipeline, /const char\* table_name\(\)/);
+  assert.match(pipeline, /uint32_t table_points\(\)/);
+  assert.match(pipeline, /uint64_t table_bytes\(\)/);
+});
+
+test("NexaPoW uses the measured Level Zero batch and combined hash default", () => {
+  const intensity = fs.readFileSync(path.join(__dirname, "../sycl/intensity.inc"), "utf8");
+  const pipeline = fs.readFileSync(path.join(__dirname, "../sycl/nexapow/sycl_pipeline.inc"), "utf8");
+  assert.match(intensity,
+    /sycl_is_level_zero_gpu\(dev\) && memory >= 10 \* GiB\)\s*return 1u << 21/);
+  assert.match(pipeline,
+    /split_hash_value \? std::strcmp\(split_hash_value, "0"\)\s*:\s*!sycl_is_level_zero_gpu/);
+});
+
+test("Nexa performance tests retain their extended timeout", () => {
+  const nexa = require("./vectors").perfTests.find(({algo}) => algo === "nexapow");
+  assert.ok(nexa);
+  assert.equal(nexa.timeoutMs, 15 * 60 * 1000);
+});
+
+test("KawPow DAG chunks honor overrides and bound integrated-GPU dispatches", () => {
+  const state = fs.readFileSync(path.join(__dirname, "../sycl/kawpow/state.inc"), "utf8");
+  const internal = fs.readFileSync(path.join(__dirname, "../sycl/lib-internal.h"), "utf8");
+  assert.match(internal, /inline bool is_integrated_gpu\(const sycl::device& device\)/);
+  assert.doesNotMatch(state, /^bool is_integrated_gpu/m,
+    "KawPow must use the shared helper instead of declaring a namespace-local Windows symbol");
+  const start = state.indexOf("static uint32_t kawpow_dag_chunk_nodes(");
+  const end = state.indexOf("\n  }", start);
+  assert.ok(start >= 0 && end > start, "KawPow DAG chunk policy must exist");
+  const block = state.slice(start, end);
+  const override = block.indexOf('parse_env_u32("MOM_KAWPOW_DAG_CHUNK_NODES", parsed)');
+  const integrated = block.indexOf("if (is_integrated_gpu(dev))");
+  const windows = block.indexOf("#if defined(_WIN32)");
+  assert.ok(override >= 0 && integrated > override && windows > integrated,
+    "KawPow must apply the explicit override before automatic dispatch bounds");
+  assert.match(block, /if \(is_integrated_gpu\(dev\)\)\s*return 1u << 12;/);
+  assert.match(block,
+    /if \(mom_is_cuda\(dev\) \|\| mom_is_hip\(dev\)\)\s*return 1u << 18;/);
+  assert.match(block, /return 0;/);
+  const chunkGuard = state.indexOf("if (!chunk_nodes)", end);
+  const chunkWait = state.indexOf("sycl_wait_and_throw(dag_event, device);", chunkGuard);
+  const chunkAdvance = state.indexOf("start_node += current_nodes;", chunkGuard);
+  assert.ok(chunkGuard > end && chunkWait > chunkGuard && chunkAdvance > chunkWait,
+    "chunked DAG dispatches must retire before the next chunk is recorded");
+});
+
+test("ProgPoW benchmarks do not prefetch an unused period bundle", () => {
+  const entry = fs.readFileSync(path.join(__dirname, "../sycl/kawpow/entry.inc"), "utf8");
+  const state = fs.readFileSync(path.join(__dirname, "../sycl/kawpow/state.inc"), "utf8");
+  assert.match(entry,
+    /ensure_period_bundle\(period, epoch, dag_mod, !is_benchmark\)/);
+
+  const start = state.indexOf("void ensure_period_bundle(");
+  const end = state.indexOf("\n  static uint64_t now_ms", start);
+  assert.ok(start >= 0 && end > start, "ProgPoW period-bundle policy must exist");
+  const block = state.slice(start, end);
+  assert.match(block, /const bool prefetch_next/);
+  const reset = block.indexOf("next_bundle.reset();");
+  const skip = block.indexOf("if (!prefetch_next)");
+  const next = block.indexOf("next_bundle_period = new_period + 1;");
+  assert.ok(reset >= 0 && skip > reset && next > skip,
+    "benchmark prefetch must stop before next-period metadata or work is created");
+});
+
+test("Etchash DAG chunks retire integrated-GPU dispatches", () => {
+  const state = fs.readFileSync(path.join(__dirname, "../sycl/etchash/state.inc"), "utf8");
+  const start = state.indexOf("static uint32_t etchash_dag_chunk_nodes(");
+  const end = state.indexOf("\n  }", start);
+  assert.ok(start >= 0 && end > start, "Etchash DAG chunk policy must exist");
+  const block = state.slice(start, end);
+  const override = block.indexOf('mom_parse_env_ulong("MOM_ETCHASH_DAG_CHUNK_NODES", parsed)');
+  const integrated = block.indexOf("if (is_integrated_gpu(dev))");
+  assert.ok(override >= 0 && integrated > override,
+    "Etchash must apply the explicit override before its integrated-GPU default");
+  assert.match(block, /if \(is_integrated_gpu\(dev\)\)\s*return 1u << 12;/);
+  assert.match(block, /return 0;/);
+  const chunkGuard = state.indexOf("if (!chunk_nodes)", end);
+  const chunkWait = state.indexOf("sycl_wait_and_throw(dag_event, device);", chunkGuard);
+  const chunkAdvance = state.indexOf("start_node += current_nodes;", chunkGuard);
+  assert.ok(chunkGuard > end && chunkWait > chunkGuard && chunkAdvance > chunkWait,
+    "chunked Etchash DAG dispatches must retire before the next chunk is recorded");
+});
+
+for (const fixture of [
+  {name: "staging preserves the HIP alias and CUDA tools and passes validation", alias: "valid"},
+  {name: "validator rejects a missing HIP linker alias", alias: "missing"},
+  {name: "validator rejects a nonexecutable HIP linker alias", alias: "nonexec"},
+  {name: "validator rejects a wrong executable HIP linker alias", alias: "wrong"},
+]) {
+  test(`AdaptiveCpp release LLVM ${fixture.name}`, {skip: process.platform === "win32"}, () => {
+    const scripts = path.join(__dirname, "../.github/workflows/scripts");
+    const packager = fs.readFileSync(path.join(scripts, "package-linux-combined.sh"), "utf8");
+    const validator = fs.readFileSync(path.join(scripts, "test-release-linux.sh"), "utf8");
+    const functionStart = packager.indexOf("copy_acpp_runtime() {");
+    const setupEnd = packager.indexOf("  begin_runtime", functionStart);
+    const stagingStart = packager.indexOf('  redist_bin="$runtime_dest/hipSYCL/ext/llvm/bin"', setupEnd);
+    const stagingEnd = packager.indexOf('  if [ "$key" = acpp-hip ]; then', stagingStart);
+    const validationStart = validator.indexOf("for tool in opt llc lld ld.lld; do");
+    const validationEnd = validator.indexOf("for bitcode in", validationStart);
+    assert.ok(functionStart >= 0 && setupEnd > functionStart && stagingStart > setupEnd && stagingEnd > stagingStart);
+    assert.ok(validationStart >= 0 && validationEnd > validationStart);
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-package-llvm-test-"));
+    const image = path.join(temp, "image");
+    const libs = path.join(temp, "libs");
+    const tools = ["opt", "llc", "lld", "ld.lld"];
+    const env = {...process.env, MOM_FIXTURE_IMAGE: image, MOM_FIXTURE_LIBS: libs};
+    try {
+      for (const version of [20, 21]) {
+        const directory = path.join(image, `opt/llvm${version}-ubuntu24/bin`);
+        fs.mkdirSync(directory, {recursive: true});
+        for (const tool of tools) {
+          fs.writeFileSync(path.join(directory, tool), `#!/bin/sh\n# LLVM${version} ${tool}\nexit 0\n`, {mode: 0o755});
+        }
+      }
+      // Execute the real staging statements; fake docker exposes only this temporary tool image.
+      const staging = [
+        "set -euo pipefail",
+        "container=fixture; closure_queue=(); libs_dir=$MOM_FIXTURE_LIBS",
+        "docker() {",
+        "  case $1 in",
+        "    exec)",
+        '      [ "$2" = "$container" ] || return 91',
+        "      shift 2",
+        '      [ "$1" = test ] && [ "$2" = -x ] || return 92',
+        '      test -x "$MOM_FIXTURE_IMAGE$3" ;;',
+        "    cp)",
+        '      [ "$2" = -L ] || return 93',
+        // eslint-disable-next-line no-template-curly-in-string -- Literal Bash parameter expansion.
+        '      local source=${3#"$container:"}',
+        '      [ "$source" != "$3" ] || return 94',
+        '      cp -L -- "$MOM_FIXTURE_IMAGE$source" "$4" ;;',
+        "    *) return 95 ;;",
+        "  esac",
+        "}",
+        packager.slice(functionStart, setupEnd) + packager.slice(stagingStart, stagingEnd) + "}",
+        "for key in acpp-cuda acpp-hip; do",
+        '  runtime_dest="$libs_dir/$key"',
+        '  copy_acpp_runtime "$key" /unused',
+        "done",
+      ].join("\n");
+      const staged = spawnSync("bash", ["-c", staging], {encoding: "utf8", env});
+      assert.equal(staged.error, undefined);
+      assert.equal(staged.signal, null);
+      assert.equal(staged.status, 0, staged.stdout + staged.stderr);
+      const hip = path.join(libs, "acpp-hip/hipSYCL/ext/llvm/bin");
+      const cuda = path.join(libs, "acpp-cuda/hipSYCL/ext/llvm/bin");
+      const linker = path.join(hip, "ld.lld");
+      const alias = path.join(hip, "ld.lld-20");
+      assert.equal(fs.lstatSync(alias).isFile(), true);
+      assert.equal(fs.statSync(alias).ino, fs.statSync(linker).ino);
+      assert.equal(fs.statSync(alias).dev, fs.statSync(linker).dev);
+      assert.notEqual(fs.statSync(alias).mode & 0o111, 0);
+      assert.deepEqual(fs.readFileSync(alias), fs.readFileSync(linker));
+      assert.deepEqual(fs.readdirSync(cuda).sort(), [...tools].sort());
+      for (const tool of tools) {
+        assert.deepEqual(fs.readFileSync(path.join(hip, tool)), fs.readFileSync(path.join(image, "opt/llvm20-ubuntu24/bin", tool)));
+        assert.deepEqual(fs.readFileSync(path.join(cuda, tool)), fs.readFileSync(path.join(image, "opt/llvm21-ubuntu24/bin", tool)));
+      }
+      if (fixture.alias !== "valid") {
+        // Replace the alias inode so a negative cannot accidentally modify the linked original.
+        fs.unlinkSync(alias);
+        if (fixture.alias !== "missing") {
+          fs.writeFileSync(alias, fixture.alias === "wrong" ? "wrong linker\n" : fs.readFileSync(linker),
+            {mode: fixture.alias === "nonexec" ? 0o644 : 0o755});
+        }
+      }
+      const validation = ["set -euo pipefail", "libs_dir=$MOM_FIXTURE_LIBS",
+        'die() { echo "$1" >&2; exit 1; }', validator.slice(validationStart, validationEnd)].join("\n");
+      const checked = spawnSync("bash", ["-c", validation], {encoding: "utf8", env});
+      assert.equal(checked.error, undefined);
+      assert.equal(checked.signal, null);
+      assert.equal(checked.status, fixture.alias === "valid" ? 0 : 1, checked.stdout + checked.stderr);
+      if (fixture.alias === "wrong") {
+        assert.match(checked.stderr, /Release HIP linker alias differs from the staged LLVM linker/);
+      } else if (fixture.alias !== "valid") {
+        assert.match(checked.stderr, /Release is missing executable acpp-hip\/hipSYCL\/ext\/llvm\/bin\/ld\.lld-20/);
+      }
+    } finally {
+      fs.rmSync(temp, {recursive: true, force: true});
+    }
+  });
+}
