@@ -110,7 +110,8 @@ class State {
 public:
   sycl::device device;
   sycl::queue queue;
-  bool shared_io = true, target_ready = false, full_dag = false, dag_attempted = false;
+  bool shared_io = true, target_ready = false, points_ready = false;
+  bool full_dag = false, dag_attempted = false;
   uint32_t epoch = 0, cache_nodes = 1, dag_nodes = 0;
   uint8_t header_storage[HASH_LEN]{}, target_storage[HASH_LEN]{};
   uint8_t* header = header_storage;

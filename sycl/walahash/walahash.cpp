@@ -964,6 +964,7 @@ int walahash(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint
     throw std::string("WalaHash intensity is too large");
   State& state = state_for(dev);
   std::lock_guard<std::mutex> lock(state.mutex);
+  MomSyclHostTransferGuard host_transfers(state.queue, "walahash host transfers");
   state.queue.memcpy(state.input, input, 72);
 #if defined(WALAHASH_ESIMD) || defined(MOM_SYCL_HAS_CUDA) || defined(MOM_SYCL_HAS_HIP)
   b3_first_block_cv(state.prehash_cv, input);
@@ -1002,6 +1003,7 @@ int walahash(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint
     state.ensure(intensity);
 #endif
   if (!state.matrix_ready || std::memcmp(state.matrix_seed, input, 32)) {
+    state.matrix_ready = false;
     uint8_t matrix[4096];
     make_matrix(input, matrix);
 #ifdef WALAHASH_ESIMD

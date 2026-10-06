@@ -24,6 +24,9 @@ static bool first_only = false, numerical_mismatch = false;
 static bool found_candidate = true, invalid_candidate = false;
 static bool cleanup_wait_error = false;
 static bool retire_then_throw = false;
+static bool probe_mode = false;
+static unsigned probe_allocation_attempts = 0, probe_free_fault_mask = 0;
+static std::exception_ptr probe_primary;
 static void* failed_retirement = nullptr;
 static size_t expected_uncertain_allocations = 0;
 static std::exception_ptr injected;
@@ -43,8 +46,8 @@ struct exception : std::runtime_error {
   using std::runtime_error::runtime_error;
 };
 }
-static void inject(const char* stage) {
-  if (fault != stage)
+static void inject(const char* stage, bool forced = false) {
+  if (!forced && fault != stage)
     return;
   try {
     if (error_kind == 0)
@@ -56,6 +59,8 @@ static void inject(const char* stage) {
     throw 37;
   } catch (...) {
     injected = std::current_exception();
+    if (probe_mode && !probe_primary)
+      probe_primary = injected;
     throw;
   }
 }
@@ -122,13 +127,18 @@ struct handler {
     if constexpr (std::is_same_v<K, SearchKernel>)
       f(id<1>{0});
   }
-  template <typename K, typename F> void single_task(F) {}
+  template <typename K, typename F> void single_task(F f) {
+    if (probe_mode)
+      f();
+  }
 };
 struct event { bool copy; };
 struct queue {
   device get_device() const { return {}; }
   event memcpy(void* dest, const void* source, size_t bytes) {
     ++counts.copies;
+    if (probe_mode && counts.copies == 2)
+      inject("probe-copy");
     if (bytes == sizeof(Point)) {
       ++counts.readbacks;
       inject("readback");
@@ -147,6 +157,8 @@ struct queue {
   }
   template <typename F> event submit(F f) {
     ++counts.submits;
+    if (probe_mode)
+      inject("probe-dispatch");
     inject("dispatch");
     if (counts.submits == 2)
       inject("table-row-dispatch");
@@ -166,6 +178,19 @@ struct queue {
   }
 };
 template <typename T> T* malloc_device(size_t count, queue&) {
+  if (probe_mode) {
+    ++probe_allocation_attempts;
+    if (fault == "probe-allocation" && probe_allocation_attempts == unsigned(allocation_step)) {
+      if (error_kind == -1)
+        return nullptr;
+      inject("probe-allocation");
+    }
+    auto* result = new T[count]{};
+    allocations.insert(result);
+    mock_owners[result] = [=] { delete[] result; };
+    mock_sizes[result] = count;
+    return result;
+  }
   int step = count == sycl_pipeline::kCompactPoints ? 1 :
       count == 7 * sycl_pipeline::kCompactPoints ? 2 : 3;
   if (step == 1)
@@ -189,6 +214,16 @@ template <typename T> void free(T* value, queue&) {
   if (counts.pending)
     ++counts.free_before_drain;
   const size_t size = mock_sizes.at(value);
+  if (probe_mode && (probe_free_fault_mask & (size == 49 ? 1u : 2u))) {
+    ++counts.free_faults;
+    if (retire_then_throw) {
+      require(allocations.erase(value) == 1, "probe free retired a foreign pointer");
+      mock_owners.erase(value);
+      mock_sizes.erase(value);
+      delete[] value;
+    }
+    inject(size == 49 ? "probe-free-input" : "probe-free-output", true);
+  }
   const char* cleanup_stage = size == sycl_pipeline::kCompactPoints ? "free-compact" :
       size == 7 * sycl_pipeline::kCompactPoints ? "free-shifted" : "free-table";
   if (!counts.free_faults && fault == cleanup_stage) {
@@ -224,15 +259,20 @@ static void sycl_wait_and_throw(sycl::event event, const sycl::device&) {
   if (!counts.monolithic)
     ++counts.waits;
   inject(event.copy ? "readback-wait" : "kernel-wait");
+  if (probe_mode)
+    inject("probe-wait");
   complete_readback();
   counts.pending = 0;
 }
-template <typename F> void sycl_cleanup_noexcept(const char*, F f) noexcept {
-  try {
-    f();
-  } catch (...) {
-  }
+#include "cleanup.inc"
+
+class TestShaKernel;
+static void np_sha256d_49(const uint8_t input[49], uint8_t output[32]) {
+  // Probe lifecycle tests isolate allocation/retirement, not SHA numerical qualification.
+  for (unsigned i = 0; i < 32; ++i)
+    output[i] = input[i] ^ input[48] ^ uint8_t(i);
 }
+#include "probe.inc"
 
 #include "search-prefix.inc"
   bool search(sycl::queue&, const uint8_t[32], const uint8_t[8], uint64_t first,
@@ -288,6 +328,9 @@ static void reset() {
   first_only = numerical_mismatch = invalid_candidate = false;
   cleanup_wait_error = false;
   retire_then_throw = false;
+  probe_mode = false;
+  probe_allocation_attempts = probe_free_fault_mask = 0;
+  probe_primary = {};
   failed_retirement = nullptr;
   expected_uncertain_allocations = 0;
   release_attempts.clear();
@@ -344,8 +387,124 @@ static void test(const std::string& name, const std::function<void()>& body) {
   mock_sizes.clear();
   allocations.clear();
 }
-int main() {
+static void probe_tests() {
+  const auto probe_test = [](const std::string& name, const std::function<void()>& body) {
+    test("probe " + name, [&] {
+      state.reset();
+      probe_mode = true;
+      body();
+      require(counts.free_before_drain == 0, "probe freed pending device memory");
+      for (const auto& attempt : release_attempts)
+        require(attempt.second == 1, "probe retried an uncertain or retired pointer");
+    });
+  };
+  const auto run = [] {
+    uint8_t input[49], output[32]{};
+    for (unsigned i = 0; i < 49; ++i)
+      input[i] = uint8_t(i + 17);
+    sycl::queue queue;
+    try {
+      nexapow_test_sha256d_49(queue, input, output);
+    } catch (...) {
+      return std::current_exception();
+    }
+    for (unsigned i = 0; i < 32; ++i)
+      require(output[i] == uint8_t(input[i] ^ input[48] ^ uint8_t(i)),
+              "probe cleanup changed successful mock digest bytes");
+    return std::exception_ptr{};
+  };
+  probe_test("success completes copies then frees once", [&] {
+    require(!run(), "healthy probe failed");
+    require(counts.copies == 2 && counts.submits == 1 && counts.waits == 1 &&
+            counts.cleanup_waits == 0 && release_attempts.size() == 2,
+            "healthy probe changed completion/free trace");
+  });
+  for (int step : {1, 2}) {
+    for (int kind : {-1, 0, 1, 2, 3}) {
+      probe_test("allocation step=" + std::to_string(step) + " kind=" + std::to_string(kind), [=] {
+        fault = "probe-allocation";
+        allocation_step = step;
+        error_kind = kind;
+        const auto error = run();
+        require(bool(error), "probe allocation failure was hidden");
+        if (kind >= 0)
+          require(error == probe_primary, "probe allocation exception was replaced");
+        require(allocations.empty() && counts.copies == 0 && counts.submits == 0 &&
+                counts.cleanup_waits == 0, "probe partial allocation leaked or queued work");
+      });
+    }
+  }
+  for (int kind : {-1, 0, 1, 2, 3}) {
+    for (bool retired : {false, true}) {
+      probe_test("second allocation with free fault kind=" + std::to_string(kind) +
+                 (retired ? " retired" : " uncertain"), [=] {
+        fault = "probe-allocation";
+        allocation_step = 2;
+        error_kind = kind;
+        probe_free_fault_mask = 1;
+        retire_then_throw = retired;
+        expected_uncertain_allocations = retired ? 0 : 1;
+        const auto error = run();
+        require(bool(error), "probe second allocation failure hidden");
+        if (kind >= 0)
+          require(error == probe_primary, "probe free replaced the allocation exception");
+        else {
+          try { std::rethrow_exception(error); }
+          catch (const std::runtime_error& value) {
+            require(std::string(value.what()) == "NexaPoW test probe allocation failed",
+                    "probe free replaced null-allocation failure");
+          }
+        }
+        require(release_attempts.size() == 1 && counts.cleanup_waits == 0,
+                "probe allocation cleanup attempted an absent pointer or queue work");
+      });
+    }
+  }
+  for (const char* stage : {"probe-copy", "probe-dispatch", "probe-wait"}) {
+    for (int kind : {0, 1, 2, 3}) {
+      for (bool retired : {false, true}) {
+        probe_test(std::string(stage) + " dual cleanup fault kind=" + std::to_string(kind) +
+                   (retired ? " retired" : " uncertain"), [=] {
+          fault = stage;
+          error_kind = kind;
+          probe_free_fault_mask = 3;
+          retire_then_throw = retired;
+          expected_uncertain_allocations = retired ? 0 : 2;
+          const auto error = run();
+          require(error && error == probe_primary, "probe cleanup replaced submitted failure");
+          require(release_attempts.size() == 2 && counts.free_faults == 2 &&
+                  counts.cleanup_waits == 1 && counts.pending == 0,
+                  "probe primary cleanup skipped a pointer or drain");
+        });
+      }
+    }
+  }
+  for (unsigned mask : {1u, 2u, 3u}) {
+    for (int kind : {0, 1, 2, 3}) {
+      for (bool retired : {false, true}) {
+        probe_test("completed free mask=" + std::to_string(mask) + " kind=" + std::to_string(kind) +
+                   (retired ? " retired" : " uncertain"), [=] {
+          error_kind = kind;
+          probe_free_fault_mask = mask;
+          retire_then_throw = retired;
+          expected_uncertain_allocations = retired ? 0 : unsigned(bool(mask & 1)) + unsigned(bool(mask & 2));
+          const auto error = run();
+          require(error && error == probe_primary, "probe success free failure was hidden/replaced");
+          require(release_attempts.size() == 2 && counts.cleanup_waits <= 1 && counts.pending == 0,
+                  "probe success free failure skipped peer cleanup or retried retirement");
+        });
+      }
+    }
+  }
+}
+int main(int argc, char** argv) {
   std::puts("TAP version 13");
+  if (argc > 1 && std::string(argv[1]) == "probe") {
+    probe_tests();
+    std::printf("1..%d\n# tests %d\n# pass %d\n# fail %d\n# skipped 0\n",
+                passed + failed, passed + failed, passed, failed);
+    return failed ? 1 : 0;
+  }
   for (unsigned gib : {4u, 5u, 10u}) {
     test("memory threshold " + std::to_string(gib) + " GiB", [=] {
       device_memory = uint64_t{gib} << 30;
@@ -485,6 +644,7 @@ int main() {
     a.unchanged();
   });
   state.reset();
+  probe_tests();
   std::printf("1..%d\n# tests %d\n# pass %d\n# fail %d\n# skipped 0\n",
               passed + failed, passed + failed, passed, failed);
   return failed ? 1 : 0;

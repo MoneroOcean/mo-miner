@@ -1112,114 +1112,121 @@ int octopus(unsigned, uint32_t height, const uint8_t* input, unsigned input_size
   sycl::event input_copy_event;
   bool has_input_copy_event = false;
 #endif
-  if (state.shared_io) {
-    if (header_changed)
-      std::memcpy(state.header, input, HASH_LEN);
-    if (target_changed)
-      std::memcpy(state.target, target, HASH_LEN);
-  } else {
-    if (header_changed) {
+  try {
+    MomSyclHostTransferGuard host_transfers(state.queue, "octopus host transfers");
+    if (state.shared_io) {
+      if (header_changed)
+        std::memcpy(state.header, input, HASH_LEN);
+      if (target_changed)
+        std::memcpy(state.target, target, HASH_LEN);
+    } else {
+      if (header_changed) {
 #ifdef MOM_OCTOPUS_HAS_SYCL_NATIVE
-      input_copy_event = state.queue.memcpy(state.header, input, HASH_LEN);
-      has_input_copy_event = true;
+        input_copy_event = state.queue.memcpy(state.header, input, HASH_LEN);
+        has_input_copy_event = true;
 #else
-      state.queue.memcpy(state.header, input, HASH_LEN);
+        state.queue.memcpy(state.header, input, HASH_LEN);
 #endif
+      }
+      if (target_changed) {
+#ifdef MOM_OCTOPUS_HAS_SYCL_NATIVE
+        input_copy_event = state.queue.memcpy(state.target, target, HASH_LEN);
+        has_input_copy_event = true;
+#else
+        state.queue.memcpy(state.target, target, HASH_LEN);
+#endif
+      }
     }
     if (target_changed) {
-#ifdef MOM_OCTOPUS_HAS_SYCL_NATIVE
-      input_copy_event = state.queue.memcpy(state.target, target, HASH_LEN);
-      has_input_copy_event = true;
-#else
-      state.queue.memcpy(state.target, target, HASH_LEN);
-#endif
+      std::memcpy(state.target_copy.data(), target, HASH_LEN);
+      state.target_ready = true;
     }
-  }
-  if (target_changed) {
-    std::memcpy(state.target_copy.data(), target, HASH_LEN);
-    state.target_ready = true;
-  }
-  std::memset(state.result, 0, sizeof(*state.result));
-  const FastModData cache_mod = make_fast_mod_data(state.cache_nodes);
-  const FastModData page_mod = make_fast_mod_data(dataset_size(state.epoch) / 256);
-  // MOM_OCTOPUS_SCALAR keeps the original one-nonce/full-DAG kernel available
-  // as a correctness oracle while the default path uses the cooperative kernel.
-  const bool scalar = std::getenv("MOM_OCTOPUS_SCALAR") != nullptr;
+    std::memset(state.result, 0, sizeof(*state.result));
+    const FastModData cache_mod = make_fast_mod_data(state.cache_nodes);
+    const FastModData page_mod = make_fast_mod_data(dataset_size(state.epoch) / 256);
+    // MOM_OCTOPUS_SCALAR keeps the original one-nonce/full-DAG kernel available
+    // as a correctness oracle while the default path uses the cooperative kernel.
+    const bool scalar = std::getenv("MOM_OCTOPUS_SCALAR") != nullptr;
 #if !defined(MOM_SYCL_PORTABLE_OPENCL)
-  const auto subgroup_sizes = state.device.get_info<sycl::info::device::sub_group_sizes>();
-  // Older HIP GPUs can use wave64; their fallback must not launch a wave32-only kernel.
-  const bool subgroup_32 = mom_is_cuda(state.device) ||
-      std::find(subgroup_sizes.begin(), subgroup_sizes.end(), 32u) != subgroup_sizes.end();
+    const auto subgroup_sizes = state.device.get_info<sycl::info::device::sub_group_sizes>();
+    // Older HIP GPUs can use wave64; their fallback must not launch a wave32-only kernel.
+    const bool subgroup_32 = mom_is_cuda(state.device) ||
+        std::find(subgroup_sizes.begin(), subgroup_sizes.end(), 32u) != subgroup_sizes.end();
 #endif
-  bool searched = false;
-  const bool prove_native = is_test && std::getenv("MOM_OCTOPUS_TEST_NATIVE");
-  bool native_supported = false;
+    bool searched = false;
+    const bool prove_native = is_test && std::getenv("MOM_OCTOPUS_TEST_NATIVE");
+    bool native_supported = false;
 #ifdef MOM_OCTOPUS_HAS_SYCL_NATIVE
-  // Qualify hardware before a failed native launch can invalidate queue/interop queries. JIT
-  // availability is deliberately not part of this predicate: supported-device failures must fail.
-  if (prove_native)
-    native_supported = native_matrix_supported(state.queue);
-  const bool sycl_native_device =
+    // Qualify hardware before a failed native launch can invalidate queue/interop queries. JIT
+    // availability is deliberately not part of this predicate: supported-device failures must fail.
+    if (prove_native)
+      native_supported = native_matrix_supported(state.queue);
+    const bool sycl_native_device =
 #ifdef OCTOPUS_ESIMD
-      sycl_is_level_zero_gpu(state.device) && state.device.has(sycl::aspect::ext_intel_matrix);
+        sycl_is_level_zero_gpu(state.device) && state.device.has(sycl::aspect::ext_intel_matrix);
 #else
-      mom_is_cuda(state.device) || mom_is_hip(state.device);
+        mom_is_cuda(state.device) || mom_is_hip(state.device);
 #endif
-  if (sycl_native_requested() && state.full_dag && sycl_native_device && !scalar) {
-    if (has_input_copy_event)
-      sycl_wait_and_throw(input_copy_event, state.device);
-    searched = state.sycl_native.search(state.queue, state.header, state.dag, page_mod,
-                                        state.points, state.points_version, start_nonce, intensity,
-                                        state.target, state.result, is_test);
-    if (!searched)
-      std::memset(state.result, 0, sizeof(*state.result));
-  }
+    if (sycl_native_requested() && state.full_dag && sycl_native_device && !scalar) {
+      if (has_input_copy_event)
+        sycl_wait_and_throw(input_copy_event, state.device);
+      searched = state.sycl_native.search(state.queue, state.header, state.dag, page_mod,
+                                          state.points, state.points_version, start_nonce, intensity,
+                                          state.target, state.result, is_test);
+      if (!searched)
+        std::memset(state.result, 0, sizeof(*state.result));
+    }
 #endif
-  const auto validation_failure = mom::octopus::test_path_failure(
-      is_test && std::getenv("MOM_OCTOPUS_TEST_FULL_DAG"), state.full_dag,
-      prove_native, native_supported, searched);
-  if (validation_failure == mom::octopus::TestPathFailure::full_dag)
-    throw std::string("Octopus full-DAG validation could not run");
-  if (validation_failure == mom::octopus::TestPathFailure::native)
-    throw std::string("Octopus SYCL-native full-DAG validation could not run");
-  if (!searched && state.full_dag) {
-    if (scalar) {
-      sycl_wait_and_throw(search_scalar<true>(state.queue, state.header, state.cache, cache_mod,
-                                              state.dag, page_mod, start_nonce, intensity,
-                                              state.target, state.result, is_test),
-                          state.device);
+    const auto validation_failure = mom::octopus::test_path_failure(
+        is_test && std::getenv("MOM_OCTOPUS_TEST_FULL_DAG"), state.full_dag,
+        prove_native, native_supported, searched);
+    if (validation_failure == mom::octopus::TestPathFailure::full_dag)
+      throw std::string("Octopus full-DAG validation could not run");
+    if (validation_failure == mom::octopus::TestPathFailure::native)
+      throw std::string("Octopus SYCL-native full-DAG validation could not run");
+    if (!searched && state.full_dag) {
+      if (scalar) {
+        sycl_wait_and_throw(search_scalar<true>(state.queue, state.header, state.cache, cache_mod,
+                                                state.dag, page_mod, start_nonce, intensity,
+                                                state.target, state.result, is_test),
+                            state.device);
 #if !defined(MOM_SYCL_PORTABLE_OPENCL)
-    } else if (!std::getenv("MOM_OCTOPUS_BATCHED") && subgroup_32) {
-      sycl_wait_and_throw(search_cooperative(state.queue, state.header, state.dag, page_mod,
-                                             state.points, start_nonce, intensity, state.target,
-                                             state.result, is_test),
-                          state.device);
+      } else if (!std::getenv("MOM_OCTOPUS_BATCHED") && subgroup_32) {
+        sycl_wait_and_throw(search_cooperative(state.queue, state.header, state.dag, page_mod,
+                                               state.points, start_nonce, intensity, state.target,
+                                               state.result, is_test),
+                            state.device);
 #endif
-    } else {
-      sycl_wait_and_throw(search_batched<true>(state.queue, state.header, state.cache, cache_mod,
-                                               state.dag, page_mod, state.points, start_nonce,
-                                               intensity, state.target, state.result, is_test),
-                          state.device);
+      } else {
+        sycl_wait_and_throw(search_batched<true>(state.queue, state.header, state.cache, cache_mod,
+                                                 state.dag, page_mod, state.points, start_nonce,
+                                                 intensity, state.target, state.result, is_test),
+                            state.device);
+      }
+    } else if (!searched) {
+      if (scalar) {
+        sycl_wait_and_throw(search_scalar<false>(state.queue, state.header, state.cache, cache_mod,
+                                                 nullptr, page_mod, start_nonce, intensity,
+                                                 state.target, state.result, is_test),
+                            state.device);
+      } else {
+        sycl_wait_and_throw(search_batched<false>(state.queue, state.header, state.cache, cache_mod,
+                                                  nullptr, page_mod, state.points, start_nonce,
+                                                  intensity, state.target, state.result, is_test),
+                            state.device);
+      }
     }
-  } else if (!searched) {
-    if (scalar) {
-      sycl_wait_and_throw(search_scalar<false>(state.queue, state.header, state.cache, cache_mod,
-                                               nullptr, page_mod, start_nonce, intensity,
-                                               state.target, state.result, is_test),
-                          state.device);
-    } else {
-      sycl_wait_and_throw(search_batched<false>(state.queue, state.header, state.cache, cache_mod,
-                                                nullptr, page_mod, state.points, start_nonce,
-                                                intensity, state.target, state.result, is_test),
-                          state.device);
-    }
+    if (!state.result->count)
+      return 0;
+    const uint32_t index = std::min(state.result->count, MAX_RESULTS) - 1;
+    *nonce = state.result->nonce[index];
+    std::memcpy(output, state.result->hash[index], HASH_LEN);
+    if (mix_hash)
+      std::memset(mix_hash, 0, HASH_LEN);
+    return 1;
+  } catch (...) {
+    // A failed upload must not make a same-header retry skip its header or target copy.
+    state.points_ready = state.target_ready = false;
+    throw;
   }
-  if (!state.result->count)
-    return 0;
-  const uint32_t index = std::min(state.result->count, MAX_RESULTS) - 1;
-  *nonce = state.result->nonce[index];
-  std::memcpy(output, state.result->hash[index], HASH_LEN);
-  if (mix_hash)
-    std::memset(mix_hash, 0, HASH_LEN);
-  return 1;
 }

@@ -15,6 +15,7 @@ void cn_gpu(const uint8_t* const inputs, const unsigned input_size, uint8_t* con
   const size_t input_bytes = static_cast<size_t>(input_size) * batch;
   const size_t output_bytes = static_cast<size_t>(HASH_LEN) * batch;
   const bool use_native_width8 = mom_intel_eu_simd_width(state.device) == 8;
+  MomSyclHostTransferGuard host_transfers(q, "cn/gpu host transfers");
 
   if constexpr (mom_sycl_portable_opencl) {
     state.buffered_inputs.write(q, inputs, input_bytes);

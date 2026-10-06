@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
+#include <exception>
 #include <initializer_list>
 #include <limits>
 #include <memory>
@@ -473,40 +474,33 @@ void mom_sycl_poll_pause();
 #endif
 
 inline void sycl_wait_and_throw(sycl::event event, const sycl::device& device) {
-  if constexpr (mom_sycl_portable_opencl) {
+  try {
     // The OpenCL specification permits implementations to publish coarse event status updates.
     // Rusticl can leave a completed command reported as submitted until a blocking wait flushes the
     // queue, so status polling would wait forever with an idle GPU. Restrict the standardized wait
     // to actual OpenCL devices: this portable artifact can also run on Level Zero, whose native wait
     // busy-spins a host core and should use the low-CPU polling path below.
-    if (mom_is_opencl(device)) {
-      event.wait_and_throw();
-      return;
-    }
-  }
-  // Several GPU backends busy-spin a host core inside native event waits. Polling the event status
-  // with a short sleep keeps GPU mining from pinning one CPU thread while preserving exact completion.
-  // CPU devices keep the native wait because their "kernel" work is host work and should not be hidden.
-  const bool poll_wait = device.is_gpu();
-  if (!poll_wait) {
-    event.wait_and_throw();
-    return;
-  }
-  try {
-    while (event.get_info<sycl::info::event::command_execution_status>() !=
-           sycl::info::event_command_status::complete) {
+    // Several GPU backends busy-spin a host core inside native event waits. Polling the event status
+    // with a short sleep keeps GPU mining from pinning one CPU thread while preserving exact completion.
+    // CPU devices keep the native wait because their "kernel" work is host work and should not be hidden.
+    const bool poll_wait = (!mom_sycl_portable_opencl || !mom_is_opencl(device)) &&
+                           device.is_gpu();
+    if (poll_wait) {
+      while (event.get_info<sycl::info::event::command_execution_status>() !=
+             sycl::info::event_command_status::complete) {
 #if defined(_WIN32)
-      // std::this_thread::sleep_for(100us) can round up to Windows' default 15.6-ms timer quantum.
-      // That fixed delay dominated short GPU dispatches even though the device event had completed.
-      // A high-resolution waitable timer retains the low-CPU polling design without a busy-spin or
-      // process-wide timeBeginPeriod() side effect.
-      mom_sycl_poll_pause();
+        // std::this_thread::sleep_for(100us) can round up to Windows' default 15.6-ms timer quantum.
+        // That fixed delay dominated short GPU dispatches even though the device event had completed.
+        // A high-resolution waitable timer retains the low-CPU polling design without a busy-spin or
+        // process-wide timeBeginPeriod() side effect.
+        mom_sycl_poll_pause();
 #else
-      std::this_thread::sleep_for(std::chrono::microseconds(100));
+        std::this_thread::sleep_for(std::chrono::microseconds(100));
 #endif
+      }
     }
   } catch (...) {
-    // A failed status query can leave the command using its caller's live host buffers.
+    // A failed device/backend/status query can leave accepted work using caller-owned host buffers.
     try {
       event.wait_and_throw();
     } catch (...) {
@@ -533,5 +527,24 @@ inline void sycl_cleanup_noexcept(const char* const scope, Fn&& fn) noexcept {
     sycl_log_cleanup_exception(scope, "non-standard exception");
   }
 }
+
+// Declare after the host buffers it protects and before their first asynchronous transfer. On
+// unwind, retire accepted commands before those buffers die; success keeps its existing waits.
+class MomSyclHostTransferGuard {
+  sycl::queue& queue_;
+  const char* scope_;
+  int exceptions_;
+
+public:
+  MomSyclHostTransferGuard(sycl::queue& queue, const char* scope) noexcept
+      : queue_(queue), scope_(scope), exceptions_(std::uncaught_exceptions()) {}
+  MomSyclHostTransferGuard(const MomSyclHostTransferGuard&) = delete;
+  MomSyclHostTransferGuard& operator=(const MomSyclHostTransferGuard&) = delete;
+
+  ~MomSyclHostTransferGuard() noexcept {
+    if (std::uncaught_exceptions() > exceptions_)
+      sycl_cleanup_noexcept(scope_, [&] { queue_.wait_and_throw(); });
+  }
+};
 
 sycl::device get_dev(const std::string& dev_str);

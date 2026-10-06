@@ -241,6 +241,7 @@ public:
         exp_host[i] = std::exp(sine + std::cos(angle));
         sin2_host[i] = sine * sine;
       }
+      MomSyclHostTransferGuard host_transfers(queue, "hoohash LUT uploads");
       queue.memcpy(exp_lut, exp_host.get(), sizeof(double) * (PERIODIC_LUT_SIZE + 1));
       sycl_wait_and_throw(
           queue.memcpy(sin2_lut, sin2_host.get(), sizeof(double) * (PERIODIC_LUT_SIZE + 1)),
@@ -418,7 +419,9 @@ int hoohash(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint8
   State& state = state_for(dev_str);
   std::lock_guard<std::mutex> lock(state.mutex);
   std::unique_ptr<FloatPair[]> normal;
+  MomSyclHostTransferGuard host_transfers(state.queue, "hoohash host transfers");
   if (!state.matrix_ready || std::memcmp(state.matrix_seed, input, 32)) {
+    state.matrix_ready = false;
     normal = std::make_unique<FloatPair[]>(4096 * 16);
     make_matrix(input, state.canonical_matrix);
     state.queue.memcpy(state.matrix, state.canonical_matrix, sizeof(state.canonical_matrix));

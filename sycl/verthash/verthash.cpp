@@ -384,6 +384,7 @@ int verthash(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint
   for (unsigned i = 0; i < 8; ++i)
     make_state(header, i + 1, states[i]);
   uint32_t start_nonce = static_cast<uint32_t>(*pnonce);
+  MomSyclHostTransferGuard host_transfers(state.queue, "verthash host transfers");
   state.queue.memcpy(state.header, header, sizeof(header));
   state.queue.memcpy(state.states, states, sizeof(states));
   state.queue.memcpy(state.target, target, HASH_LEN);

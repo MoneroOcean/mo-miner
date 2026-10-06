@@ -290,6 +290,8 @@ int nexapow(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint8
         (reason.empty() ? "unknown initialization failure" : reason);
 
   state.init_portable();
+  Result found{};
+  MomSyclHostTransferGuard host_transfers(state.queue, "nexapow monolithic host transfers");
   state.queue.memcpy(state.header, input, 32);
   state.queue.memcpy(state.extranonce, input + 32, 8);
   if (is_test)
@@ -321,7 +323,6 @@ int nexapow(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint8
     });
   });
   sycl_wait_and_throw(search_event, state.device);
-  Result found{};
   sycl_wait_and_throw(state.queue.memcpy(&found, state.result, sizeof(found)), state.device);
   if (!found.count)
     return 0;

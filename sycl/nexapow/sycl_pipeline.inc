@@ -1169,6 +1169,8 @@ public:
       last = now;
     };
     allocate_buffers(queue, count);
+    SearchResult found{};
+    MomSyclHostTransferGuard host_transfers(queue, "nexapow staged host transfers");
     queue.memcpy(target_, target, 32);
     queue.memset(result_, 0, sizeof(SearchResult));
     U256* private_keys = private_keys_;
@@ -1378,7 +1380,6 @@ public:
     // submission. Complete the final kernel with the shared low-CPU wait first.
     sycl_wait_and_throw(finish, queue.get_device());
     mark("finish");
-    SearchResult found{};
     sycl_wait_and_throw(queue.memcpy(&found, result_, sizeof(found)), queue.get_device());
     if (!found.count)
       return false;

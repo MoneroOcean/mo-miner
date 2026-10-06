@@ -118,6 +118,7 @@ public:
       alignas(std::uint64_t) std::uint8_t input[input_storage_bytes]{};
       std::memcpy(input, header, Spec::header_length);
       std::memcpy(input + midstate_offset, midstate, sizeof(midstate));
+      MomSyclHostTransferGuard input_transfer(queue_, "zhash input upload");
       queue_.memcpy(input_storage_, input, sizeof(input));
 
       std::array<sycl::event, 6> stages;
@@ -159,6 +160,7 @@ public:
       std::array<std::uint32_t, fast_candidate_roots * Spec::proof_indices> fast_leaves{};
       std::array<std::uint8_t, fast_candidate_roots> fast_valid{};
       std::array<std::uint32_t, 6> result_counts{};
+      MomSyclHostTransferGuard fast_readback(queue_, "zhash fast readback");
       if (options_.collect_round_counts)
         queue_.memcpy(report.flat_counts.data(), flat_counts_, sizeof(report.flat_counts));
       queue_.memcpy(result_counts.data(), result_counts_storage_, sizeof(result_counts));
@@ -213,6 +215,7 @@ public:
         std::copy(fast_leaves.begin(), fast_leaves.end(), leaves.begin());
         std::copy(fast_valid.begin(), fast_valid.end(), valid.begin());
         const std::size_t tail = report.zero_root_count - fast_candidate_roots;
+        MomSyclHostTransferGuard tail_readback(queue_, "zhash tail readback");
         queue_.memcpy(leaves.data() + fast_candidate_roots * Spec::proof_indices,
                       recovered_leaves_ + fast_candidate_roots * Spec::proof_indices,
                       tail * Spec::proof_indices * sizeof(leaves[0]));

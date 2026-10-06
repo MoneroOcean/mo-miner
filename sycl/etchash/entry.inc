@@ -18,6 +18,7 @@ int etchash(const unsigned, const uint32_t block_height, const uint8_t* const in
   std::memcpy(&start_nonce, input + 32, sizeof(start_nonce));
   const uint32_t dag_pages = static_cast<uint32_t>(dag_sizes[epoch] / ETHASH_MIX_BYTES);
   const FastModData dag_mod = make_fast_mod_data(dag_pages);
+  MomSyclHostTransferGuard host_transfers(state.queue, "etchash host transfers");
 
   if (state.shared_io) {
     std::memcpy(state.input, input, input_size);

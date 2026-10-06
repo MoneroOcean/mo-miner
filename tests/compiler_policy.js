@@ -1285,12 +1285,6 @@ test("BeamHash3 portable worker cannot select uncompiled compact arenas", () => 
     /beam_compact_enabled[\s\S]*?#if defined\(MOM_SYCL_PORTABLE_OPENCL\)[\s\S]*?return false;[\s\S]*?#else/);
 });
 
-test("portable SYCL blocks only for actual OpenCL event waits", () => {
-  const source = fs.readFileSync(path.join(__dirname, "../sycl/lib-internal.h"), "utf8");
-  assert.match(source,
-    /sycl_wait_and_throw[\s\S]*?if constexpr \(mom_sycl_portable_opencl\)[\s\S]*?if \(mom_is_opencl\(device\)\)[\s\S]*?event\.wait_and_throw\(\);[\s\S]*?while \(event\.get_info/);
-});
-
 test("Equihash 192,7 scopes wider first-round partitioning to HIP", () => {
   const source = fs.readFileSync(
     path.join(__dirname, "../sycl/equihash192_7/equihash192_7_direct_session.hpp"), "utf8");
@@ -2143,6 +2137,8 @@ struct EventState {
   unsigned pending = 2, queries = 0, waits = 0;
   bool active = false, progressed = false, complete = false, completed_before_wait = false;
   bool status_error = false, sleep_error = false, wait_error = false;
+  bool gpu_error = false, opencl_error = false;
+  unsigned gpu_queries = 0, opencl_queries = 0;
   unsigned* host_destination = nullptr;
 };
 static EventState event_state;
@@ -2164,7 +2160,11 @@ enum class PearlHashSearchBackend { sycl, hip_jit, cuda_jit };
 struct Device {
   bool gpu; unsigned vendor;
   bool opencl = false;
-  bool is_gpu() const { return gpu; }
+  bool is_gpu() const {
+    ++event_state.gpu_queries;
+    if (event_state.gpu_error) fail_polling("gpu-query");
+    return gpu;
+  }
   template<class T> unsigned get_info() const { return vendor; }
 };
 struct Event {
@@ -2197,7 +2197,11 @@ static constexpr bool mom_sycl_portable_opencl =
 #else
   false;
 #endif
-static bool mom_is_opencl(const Device& device) { return device.opencl; }
+static bool mom_is_opencl(const Device& device) {
+  ++event_state.opencl_queries;
+  if (event_state.opencl_error) fail_polling("opencl-query");
+  return device.opencl;
+}
 struct Queue {
   Device device; unsigned waits = 0, barriers = 0;
   Device get_device() const { return device; }
@@ -2276,6 +2280,8 @@ static void check_helper(bool gpu, unsigned pending, const std::string& failure 
   event_state = {};
   event_state.active = true;
   event_state.pending = pending;
+  event_state.gpu_error = failure == "gpu-query";
+  event_state.opencl_error = failure == "opencl-query";
   event_state.status_error = failure == "status-query";
   event_state.sleep_error = failure == "sleep";
   event_state.wait_error = cleanup_error || failure == "final-wait";
@@ -2305,11 +2311,14 @@ static void check_helper(bool gpu, unsigned pending, const std::string& failure 
     }
   }
   const bool polling = gpu && !(mom_sycl_portable_opencl && opencl);
-  const unsigned sleeps = !polling || event_state.status_error ? 0 :
+  const bool predicate_error = event_state.gpu_error || event_state.opencl_error;
+  const unsigned sleeps = predicate_error || !polling || event_state.status_error ? 0 :
       event_state.sleep_error ? 1 : pending;
   assert(fixture::this_thread::calls == sleeps);
   assert(fixture::this_thread::durations == std::vector<long>(sleeps, 100));
-  assert(event_state.queries == (polling ? polling_error ? 1u : pending + 1 : 0u));
+  assert(event_state.queries == (predicate_error ? 0u : polling ? polling_error ? 1u : pending + 1 : 0u));
+  assert(event_state.opencl_queries == (mom_sycl_portable_opencl ? 1u : 0u));
+  assert(event_state.gpu_queries == (mom_sycl_portable_opencl && (opencl || event_state.opencl_error) ? 0u : 1u));
   assert(event_state.waits == 1 && event_state.complete && host_destination == 1);
   assert(!polling || polling_error || event_state.completed_before_wait);
 }
@@ -2347,12 +2356,20 @@ int main() {
     for (bool cleanup_error : {false, true}) {
       check_helper(true, 3, "status-query", kind, cleanup_error);
       check_helper(true, 3, "sleep", kind, cleanup_error);
+      check_helper(true, 3, "gpu-query", kind, cleanup_error);
+      check_helper(false, 3, "gpu-query", kind, cleanup_error);
+      if (mom_sycl_portable_opencl) {
+        check_helper(true, 3, "opencl-query", kind, cleanup_error);
+        check_helper(false, 3, "opencl-query", kind, cleanup_error);
+      }
     }
   }
 #if defined(SYCL_EXT_ONEAPI_ENQUEUE_BARRIER)
-  std::printf("PASS PearlHash actual-source pacing/polling: 17 pacing + 19 helper cases; barrier=available; ");
+  std::printf("PASS PearlHash actual-source pacing/polling: 17 pacing + %u helper cases; barrier=available; ",
+              mom_sycl_portable_opencl ? 43u : 31u);
 #else
-  std::printf("PASS PearlHash actual-source pacing/polling: 17 pacing + 19 helper cases; barrier=absent; ");
+  std::printf("PASS PearlHash actual-source pacing/polling: 17 pacing + %u helper cases; barrier=absent; ",
+              mom_sycl_portable_opencl ? 43u : 31u);
 #endif
   std::printf("portable_opencl=%d\\n", mom_sycl_portable_opencl);
 }
@@ -2373,9 +2390,115 @@ int main() {
         assert.equal(result.error, undefined);
         assert.equal(result.signal, null);
         assert.equal(result.status, 0, result.stderr);
-        assert.equal(result.stdout, "PASS PearlHash actual-source pacing/polling: 17 pacing + 19 helper cases; " +
+        assert.equal(result.stdout, "PASS PearlHash actual-source pacing/polling: 17 pacing + " +
+          (portable ? 43 : 31) + " helper cases; " +
           "barrier=" + (available ? "available" : "absent") +
           "; portable_opencl=" + Number(portable) + "\n");
+      }
+    }
+  } finally {
+    fs.rmSync(fixture, {recursive: true, force: true});
+  }
+});
+
+test("SYCL host readback faults retain actual storage through unwind", {
+  skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
+}, (t) => {
+  const root = path.join(__dirname, "../sycl");
+  const library = fs.readFileSync(path.join(root, "lib-internal.h"), "utf8");
+  const nexa = fs.readFileSync(path.join(root, "nexapow/sycl_pipeline.inc"), "utf8");
+  const monolithic = fs.readFileSync(path.join(root, "nexapow/nexapow.cpp"), "utf8");
+  const equi = fs.readFileSync(path.join(root, "equihash192_7/equihash192_7_direct_session.hpp"), "utf8");
+  /** @param {string} source @param {string} start @param {string} end */
+  const cut = (source, start, end) => {
+    const a = source.indexOf(start), b = source.indexOf(end, a);
+    assert.ok(a >= 0 && b > a, start);
+    return source.slice(a, b);
+  };
+  const nexaScope = cut(nexa, "  bool search(sycl::queue&", "    if (!found.count)");
+  const nexaOwners = nexaScope.split("\n").filter(line => /SearchResult found|MomSyclHostTransferGuard host_transfers/.test(line)).join("\n") + "\n";
+  const monolithicScope = cut(monolithic, "  state.init_portable();", "  if (!found.count)");
+  const monolithicOwners = monolithicScope.split("\n").filter(line => /Result found|MomSyclHostTransferGuard host_transfers/.test(line)).join("\n") + "\n";
+  const statusScope = cut(equi, "    std::array<std::uint64_t, 10> input{};", "    const std::uint32_t overflow =");
+  const statusOwners = statusScope.split("\n").filter(line => /std::array<std::uint64_t, 10> input|std::uint32_t status\[2\]|MomSyclHostTransferGuard input_transfer/.test(line)).join("\n") + "\n";
+  const statusCopy = cut(equi, "    sycl_wait_and_throw(queue_.memcpy(status,", "    const std::uint32_t overflow =");
+  const routes = [
+    {id: 1, name: "Nexa found", owner: "    SearchResult found{};\n", guard: "    MomSyclHostTransferGuard host_transfers(queue, \"nexapow staged host transfers\");\n",
+      entry: nexaOwners + cut(nexa, "    sycl_wait_and_throw(queue.memcpy(&found,", "    if (!found.count)")},
+    {id: 2, name: "Equihash status", owner: "    std::uint32_t status[2]{};\n", guard: "    MomSyclHostTransferGuard input_transfer(queue_, \"equihash192_7 input upload\");\n",
+      entry: statusOwners + statusCopy},
+    {id: 3, name: "Equihash overflow counts", entry: statusOwners + statusCopy +
+      cut(equi, "    const std::uint32_t overflow =", "    if (root_count > root_capacity)")},
+    {id: 4, name: "Nexa monolithic found", owner: "  Result found{};\n", guard: "  MomSyclHostTransferGuard host_transfers(state.queue, \"nexapow monolithic host transfers\");\n",
+      entry: monolithicOwners + cut(monolithic, "  sycl_wait_and_throw(state.queue.memcpy(&found,", "  if (!found.count)")},
+  ];
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-readback-wait-"));
+  try {
+    fs.copyFileSync(path.join(__dirname, "native/readback_wait_fault.cpp"), path.join(fixture, "readback.cpp"));
+    fs.writeFileSync(path.join(fixture, "wait.inc"), cut(library, "inline void sycl_wait_and_throw(", "\ninline void sycl_log_cleanup_exception("));
+    fs.writeFileSync(path.join(fixture, "cleanup.inc"), cut(library, "inline void sycl_log_cleanup_exception(", "sycl::device get_dev("));
+    fs.writeFileSync(path.join(fixture, "search-result.inc"), cut(nexa, "struct SearchResult {", "struct HeaderContext {"));
+    fs.writeFileSync(path.join(fixture, "monolithic-result.inc"), cut(monolithic, "struct Result {", "static constexpr uint8_t kRecordedHeader"));
+    for (const route of routes) {
+      // Revert only the lifetime placement/local guard. The actual copy expression retains
+      // the compiler's legal argument order; GCC commonly queries before accepting a copy.
+      // Monolithic Nexa instead passes its cached device and faults the accepted copy's wait.
+      const baseline = route.owner && route.guard ?
+        route.entry.replace(route.owner, "").replace(route.guard, route.guard + route.owner) :
+        route.entry.replace(/^\s*MomSyclHostTransferGuard overflow_transfer[^\n]+\n/m, "");
+      /** @type {{copies: number, waits: number, drains: number} | null} */
+      let baselineHealthy = null;
+      /** @type {[string, string][]} */
+      const variants = [["baseline", baseline], ["current", route.entry]];
+      for (const [variant, entry] of variants) {
+        fs.writeFileSync(path.join(fixture, "entry.inc"), entry);
+        const executable = path.join(fixture, "readback-" + route.id + "-" + variant);
+        const compiled = spawnSync("c++", ["-std=c++17", "-O0", "-g", "-fno-pie", "-no-pie", "-fsanitize=address",
+          "-fsanitize-address-use-after-scope", "-DROUTE=" + route.id, path.join(fixture, "readback.cpp"), "-o", executable], {encoding: "utf8"});
+        assert.equal(compiled.error, undefined);
+        assert.equal(compiled.signal, null);
+        assert.equal(compiled.status, 0, compiled.stderr);
+        const env = {...process.env, ASAN_OPTIONS: "abort_on_error=0:exitcode=70:detect_leaks=0"};
+        const healthy = spawnSync(executable, ["0", "0", "0"], {encoding: "utf8", env});
+        assert.equal(healthy.error, undefined);
+        assert.equal(healthy.signal, null);
+        assert.equal(healthy.status, 0, healthy.stderr);
+        const counts = /^PASS original=0 copies=(\d+) waits=(\d+) drains=(\d+) pending=0\n$/.exec(healthy.stdout);
+        assert.ok(counts, route.name + " must record the healthy wait trace");
+        const trace = {copies: Number(counts[1]), waits: Number(counts[2]), drains: Number(counts[3])};
+        if (variant === "baseline") {
+          baselineHealthy = trace;
+        } else {
+          assert.ok(baselineHealthy);
+          // Overflow already throws; only its added local lifetime guard may add a drain.
+          assert.deepEqual(trace, {
+            copies: baselineHealthy.copies,
+            waits: baselineHealthy.waits,
+            drains: baselineHealthy.drains + Number(route.id === 3),
+          });
+        }
+        for (const kind of [0, 1, 2]) {
+          for (const secondary of [0, 1]) {
+            const result = spawnSync(executable, ["1", String(kind), String(secondary)], {encoding: "utf8", env});
+            assert.equal(result.error, undefined);
+            assert.equal(result.signal, null);
+            const order = /(?:QUERY|WAIT) order=(copy-first|query-first) copies=([0-9]+)/.exec(result.stdout);
+            assert.ok(order, route.name + " must record its fault boundary and accepted copies");
+            // GCC may leave a trivial stack object's bytes unpoisoned during exception unwind.
+            // Keep that baseline explicitly inconclusive; Clang's ASan exposes the same scope bug.
+            const unpoisonedBaseline = route.id === 4 && variant === "baseline" && result.status === 0;
+            if (unpoisonedBaseline) {
+              t.diagnostic("Monolithic baseline lifetime negative not exposed by this compiler's unwind poisoning");
+            }
+            if (variant === "baseline" && order[1] === "copy-first" && !unpoisonedBaseline) {
+              assert.equal(result.status, 70, result.stderr);
+              assert.match(result.stderr, /AddressSanitizer: (stack-use-after-scope|heap-use-after-free)/);
+            } else {
+              assert.equal(result.status, 0, result.stderr);
+              assert.match(result.stdout, /PASS original=1 .*pending=0/);
+            }
+          }
+        }
       }
     }
   } finally {
@@ -4372,6 +4495,7 @@ test("NexaPoW submitted faults abort without fallback and do not latch failed se
   const root = path.join(__dirname, "../sycl/nexapow");
   const host = fs.readFileSync(path.join(root, "nexapow.cpp"), "utf8");
   const pipeline = fs.readFileSync(path.join(root, "sycl_pipeline.inc"), "utf8");
+  const library = fs.readFileSync(path.join(root, "../lib-internal.h"), "utf8");
   const section = (/** @type {string} */ source, /** @type {string} */ start,
     /** @type {string} */ end) => {
     const begin = source.indexOf(start);
@@ -4381,6 +4505,7 @@ test("NexaPoW submitted faults abort without fallback and do not latch failed se
     return source.slice(begin, stop);
   };
   const prefix = section(pipeline, "class NexaPowSyclSearch {", "  bool search(");
+  const probe = fs.readFileSync(path.join(__dirname, "../sycl/nexapow/test_probe.cpp"), "utf8");
   const caller = section(host,
     "int nexapow(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint8_t* output,\n" +
     "            uint8_t*, uint64_t* pnonce, const uint8_t* target, const uint8_t*, unsigned intensity,\n" +
@@ -4393,8 +4518,12 @@ test("NexaPoW submitted faults abort without fallback and do not latch failed se
   try {
     fs.copyFileSync(path.join(__dirname, "native/nexapow_fault.cpp"), source);
     fs.writeFileSync(path.join(fixture, "search-prefix.inc"), prefix);
+    fs.writeFileSync(path.join(fixture, "probe.inc"),
+      section(probe, "void nexapow_test_sha256d_49(", "\n} // namespace mom_nexapow"));
     fs.writeFileSync(path.join(fixture, "caller.inc"), caller);
     fs.writeFileSync(path.join(fixture, "caller-support.inc"), support);
+    fs.writeFileSync(path.join(fixture, "cleanup.inc"),
+      section(library, "inline void sycl_log_cleanup_exception(", "sycl::device get_dev("));
     const compiled = spawnSync("c++", ["-std=c++17", "-O0", "-Wall", "-Wextra", "-Werror",
       "-pedantic", "-fsanitize=address", "-fsanitize-address-use-after-scope",
       "-fno-omit-frame-pointer", ...(process.platform === "linux" ? ["-fno-pie", "-no-pie"] : []),
@@ -4406,8 +4535,8 @@ test("NexaPoW submitted faults abort without fallback and do not latch failed se
     assert.equal(result.error, undefined);
     assert.equal(result.signal, null);
     assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(result.stdout, /^# tests 125$/m);
-    assert.match(result.stdout, /^# pass 125$/m);
+    assert.match(result.stdout, /^# tests 194$/m);
+    assert.match(result.stdout, /^# pass 194$/m);
     assert.match(result.stdout, /^# fail 0$/m);
     assert.match(result.stdout, /^# skipped 0$/m);
   } finally {
@@ -4421,6 +4550,7 @@ test("C30 asynchronous completion faults stop solver stages and Core commits", {
   const root = path.join(__dirname, "..");
   const c30 = fs.readFileSync(path.join(root, "sycl/c30/c30.cpp"), "utf8");
   const execution = fs.readFileSync(path.join(root, "native/core/execution.inc"), "utf8");
+  const library = fs.readFileSync(path.join(root, "sycl/lib-internal.h"), "utf8");
   /** @param {string} source @param {string} start @param {string} end */
   const extract = (source, start, end) => {
     const first = source.indexOf(start);
@@ -4444,6 +4574,8 @@ test("C30 asynchronous completion faults stop solver stages and Core commits", {
     fs.writeFileSync(path.join(fixture, "solver.inc"),
       extract(c30, "struct Solver {", "\n} // namespace mom::c30"));
     fs.writeFileSync(path.join(fixture, "entry.inc"), c30.slice(entryStart));
+    fs.writeFileSync(path.join(fixture, "cleanup.inc"),
+      extract(library, "inline void sycl_log_cleanup_exception(", "sycl::device get_dev("));
     fs.writeFileSync(path.join(fixture, "active-guard.inc"),
       extract(execution, "    if (!m_has_fn) {", "\n    { // A compute function is active"));
     fs.writeFileSync(path.join(fixture, "dispatch.inc"),
@@ -4454,8 +4586,10 @@ test("C30 asynchronous completion faults stop solver stages and Core commits", {
         "      if (m_dev == DEV::KAWPOW_GPU || m_dev == DEV::ETCHASH_GPU) {"));
     fs.writeFileSync(path.join(fixture, "nonce-commit.inc"),
       extract(execution, "      if (m_dev == DEV::C30_GPU) {", "      if (m_nonce_bytes == 4) {"));
-    const compiled = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
-      "-pedantic", source, "-o", executable], {encoding: "utf8"});
+    const compiled = spawnSync("c++", ["-std=c++17", "-O1", "-Wall", "-Wextra", "-Werror",
+      "-pedantic", "-fsanitize=address", "-fsanitize-address-use-after-scope",
+      "-fno-omit-frame-pointer", ...(process.platform === "linux" ? ["-fno-pie", "-no-pie"] : []),
+      source, "-o", executable], {encoding: "utf8"});
     assert.equal(compiled.error, undefined);
     assert.equal(compiled.signal, null);
     assert.equal(compiled.status, 0, compiled.stderr);
@@ -4478,6 +4612,22 @@ test("C30 asynchronous completion faults stop solver stages and Core commits", {
             assert.equal(result.status, 0, result.stderr);
             assert.equal(result.stdout, "PASS actual-source C30 asynchronous completion boundary\n");
           });
+        }
+      }
+      for (const copy of [2, 6]) {
+        for (const [kind, error] of ["std::exception", "std::string", "unknown"].entries()) {
+          for (const cleanupError of [0, 1]) {
+            await t.test((layout ? "packed" : "wide") + " deferred copy " + copy + ": " + error +
+              (cleanupError ? " with secondary cleanup fault" : ""), () => {
+              const result = spawnSync(executable,
+                ["copies", String(copy), String(kind), String(cleanupError), String(layout)],
+                {encoding: "utf8"});
+              assert.equal(result.error, undefined);
+              assert.equal(result.signal, null);
+              assert.equal(result.status, 0, result.stderr);
+              assert.equal(result.stdout, "PASS actual-source C30 asynchronous completion boundary\n");
+            });
+          }
         }
       }
     }
@@ -4558,6 +4708,357 @@ test("C29 submitted graph faults propagate before cycle search or accounting", {
           });
         }
       }
+    }
+  } finally {
+    fs.rmSync(fixture, {recursive: true, force: true});
+  }
+});
+
+test("Host upload guards retire accepted copies before caller-owned buffers", {
+  skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
+}, async (t) => {
+  const root = path.join(__dirname, "../sycl");
+  const library = fs.readFileSync(path.join(root, "lib-internal.h"), "utf8");
+  /** @param {string} source @param {string} start @param {string} end */
+  const extract = (source, start, end) => {
+    const first = source.indexOf(start);
+    const last = source.indexOf(end, first);
+    assert.ok(first >= 0 && last > first, start);
+    return source.slice(first, last);
+  };
+  const cleanup = extract(library, "inline void sycl_log_cleanup_exception(", "sycl::device get_dev(");
+  const routes = [
+    {name: "cn/gpu", file: "cn_gpu/entry.inc", end: "  // Initial Keccak", uploads: 1},
+    {name: "Etchash", file: "etchash/entry.inc", end: "  sycl::queue& q = state.queue;", uploads: 2},
+    {name: "KawPow", file: "kawpow/entry.inc", end: "  sycl::queue& q = state.queue;", uploads: 1},
+    {name: "FishHash", file: "fishhash/entry.inc", end: "  sycl::event search;", uploads: 2},
+    {name: "KarlsenHashV2", file: "fishhash/entry.inc", scope: "int karlsenhashv2(",
+      end: "#if !defined(MOM_SYCL_PORTABLE_OPENCL)\n  const bool cooperative =",
+      uploads: 2, focused: true, shared: true},
+    {name: "Nexa monolithic", file: "nexapow/nexapow.cpp", scope: "  state.init_portable();",
+      end: "  sycl_wait_and_throw(state.queue.memset(state.result,", uploads: 3, focused: true},
+  ];
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-host-transfer-fault-"));
+  const source = path.join(fixture, "host_transfer_fault.cpp");
+  try {
+    fs.copyFileSync(path.join(__dirname, "native/host_transfer_fault.cpp"), source);
+    fs.writeFileSync(path.join(fixture, "cleanup.inc"), cleanup);
+    for (const route of routes) {
+      await t.test(route.name, async (routeTest) => {
+        const entry = fs.readFileSync(path.join(root, route.file), "utf8");
+        const scope = route.scope ? entry.slice(entry.indexOf(route.scope)) : entry;
+        if (route.scope) {
+          assert.ok(entry.includes(route.scope), route.scope);
+        }
+        const upload = extract(scope, "  MomSyclHostTransferGuard ", route.end);
+        fs.writeFileSync(path.join(fixture, "upload.after.inc"), upload);
+        // The negative removes only the fix from the otherwise identical real upload scope.
+        fs.writeFileSync(path.join(fixture, "upload.before.inc"),
+          upload.replace(/^\s*MomSyclHostTransferGuard[^\n]+\n/, ""));
+        for (const guarded of [0, 1]) {
+          const executable = path.join(fixture, "host_transfer_fault_" + guarded);
+          const compiled = spawnSync("c++", ["-std=c++17", "-O1", "-Wall", "-Wextra", "-Werror",
+            "-pedantic", "-fsanitize=address", "-fsanitize-address-use-after-scope",
+            "-fno-omit-frame-pointer", ...(process.platform === "linux" ? ["-fno-pie", "-no-pie"] : []),
+            "-DMOM_HOST_TRANSFER_WITH_GUARD=" + guarded,
+            "-DMOM_HOST_TRANSFER_UPLOADS=" + route.uploads, source, "-o", executable],
+          {encoding: "utf8"});
+          assert.equal(compiled.error, undefined);
+          assert.equal(compiled.signal, null);
+          assert.equal(compiled.status, 0, compiled.stderr);
+          const cases = [];
+          if (route.focused) {
+            for (const [kind, error] of ["std::exception", "std::string", "unknown"].entries()) {
+              cases.push({stage: 4, kind, secondary: kind ? 1 : 0, mode: 0,
+                name: "second upload: " + error + (kind ? " and cleanup fault" : "")});
+            }
+            cases.push({stage: 1, kind: 0, secondary: 1, mode: 0,
+              name: "first submit and cleanup fault"});
+          } else {
+            for (const [stage, operation] of ["first submit", "later submit", "device query"].entries()) {
+              for (const [kind, error] of ["std::exception", "std::string", "unknown"].entries()) {
+                for (const secondary of [0, 1]) {
+                  cases.push({stage: stage + 1, kind, secondary, mode: 0,
+                    name: operation + ": " + error + (secondary ? " and cleanup fault" : "")});
+                }
+              }
+            }
+          }
+          cases.push({stage: 0, kind: 0, secondary: 0, mode: 0, name: "device success wait trace"});
+          if (!route.focused || route.shared) {
+            cases.push({stage: 0, kind: 0, secondary: 0, mode: 1, name: "shared success wait trace"});
+          }
+          if (route.name === "cn/gpu") {
+            cases.push({stage: 0, kind: 0, secondary: 0, mode: 2, name: "portable success wait trace"});
+          }
+          for (const {stage, kind, secondary, mode, name} of cases) {
+            await routeTest.test((guarded ? "fixed: " : "baseline: ") + name, () => {
+              const result = spawnSync(executable,
+                [String(stage), String(kind), String(secondary), String(mode)],
+                {encoding: "utf8", timeout: 2000});
+              assert.equal(result.error, undefined);
+              assert.equal(result.signal, null);
+              if (!guarded && stage) {
+                assert.equal(result.status, 1, result.stdout + result.stderr);
+                assert.equal(result.stderr, "FAIL accepted transfer outlived its host owner\n");
+              } else {
+                assert.equal(result.status, 0, result.stderr);
+                assert.equal(result.stdout, "PASS actual-source host-transfer lifetime\n");
+              }
+            });
+          }
+        }
+      });
+    }
+  } finally {
+    fs.rmSync(fixture, {recursive: true, force: true});
+  }
+});
+
+test("Changed HooHash and WalaHash matrices invalidate readiness before fallible preparation", {
+  skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
+}, async (t) => {
+  const root = path.join(__dirname, "../sycl");
+  const library = fs.readFileSync(path.join(root, "lib-internal.h"), "utf8");
+  /** @param {string} source @param {string} start @param {string} end */
+  const extract = (source, start, end) => {
+    const first = source.indexOf(start);
+    const last = source.indexOf(end, first);
+    assert.ok(first >= 0 && last > first, start);
+    return source.slice(first, last);
+  };
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-matrix-readiness-fault-"));
+  const source = path.join(fixture, "host_transfer_fault.cpp");
+  try {
+    fs.copyFileSync(path.join(__dirname, "native/host_transfer_fault.cpp"), source);
+    fs.writeFileSync(path.join(fixture, "cleanup.inc"),
+      extract(library, "inline void sycl_log_cleanup_exception(", "sycl::device get_dev("));
+    for (const [hoo, name] of ["walahash", "hoohash"].entries()) {
+      await t.test(name, async (matrixTest) => {
+        const host = fs.readFileSync(path.join(root, name, name + ".cpp"), "utf8");
+        const matrix = hoo
+          ? extract(host, "  std::unique_ptr<FloatPair[]> normal;", "  state.queue.memcpy(state.input")
+          : extract(host, "  MomSyclHostTransferGuard ", "\n") + "\n" +
+            extract(host, "  if (!state.matrix_ready || std::memcmp(state.matrix_seed, input, 32)) {",
+              "  state.queue.memset(state.result");
+        for (const fixed of [0, 1]) {
+          fs.writeFileSync(path.join(fixture, "matrix.inc"), fixed ? matrix :
+            matrix.replace("    state.matrix_ready = false;\n", ""));
+          const executable = path.join(fixture, "matrix_fault_" + fixed);
+          const compiled = spawnSync("c++", ["-std=c++17", "-O1", "-Wall", "-Wextra", "-Werror",
+            "-pedantic", "-fsanitize=address", "-fsanitize-address-use-after-scope",
+            "-fno-omit-frame-pointer", ...(process.platform === "linux" ? ["-fno-pie", "-no-pie"] : []),
+            "-DMOM_MATRIX_FIXTURE=1", "-DMOM_MATRIX_HOO=" + hoo, source, "-o", executable],
+          {encoding: "utf8"});
+          assert.equal(compiled.error, undefined);
+          assert.equal(compiled.signal, null);
+          assert.equal(compiled.status, 0, compiled.stderr);
+          const cases = [{stage: 0, kind: 0, secondary: 0, name: "success, old-header change and cache hit"}];
+          for (const [stage, operation] of ["preparation", "copy submission", "copy completion"].entries()) {
+            for (const [kind, error] of ["std::exception", "std::string", "unknown"].entries()) {
+              for (const secondary of [0, 1]) {
+                cases.push({stage: stage + 1, kind, secondary,
+                  name: operation + ": " + error + (secondary ? " and cleanup fault" : "")});
+              }
+            }
+          }
+          for (const {stage, kind, secondary, name} of cases) {
+            await matrixTest.test((fixed ? "fixed: " : "baseline: ") + name, () => {
+              const result = spawnSync(executable, [String(stage), String(kind), String(secondary)],
+                {encoding: "utf8", timeout: 2000});
+              assert.equal(result.error, undefined);
+              assert.equal(result.signal, null);
+              if (!fixed && stage) {
+                assert.equal(result.status, 1, result.stdout + result.stderr);
+                assert.equal(result.stderr, "FAIL failed changed header kept the previous matrix ready\n");
+              } else {
+                assert.equal(result.status, 0, result.stderr);
+                assert.equal(result.stdout, "PASS actual-source matrix readiness and retry\n");
+              }
+            });
+          }
+        }
+      });
+    }
+  } finally {
+    fs.rmSync(fixture, {recursive: true, force: true});
+  }
+});
+
+test("ZHash nested readbacks retire before catches convert device errors", {
+  skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
+}, async (t) => {
+  const root = path.join(__dirname, "../sycl");
+  const library = fs.readFileSync(path.join(root, "lib-internal.h"), "utf8");
+  const session = fs.readFileSync(path.join(root, "zhash/zhash_session.hpp"), "utf8");
+  /** @param {string} source @param {string} start @param {string} end */
+  const extract = (source, start, end) => {
+    const first = source.indexOf(start);
+    const last = source.indexOf(end, first);
+    assert.ok(first >= 0 && last > first, start);
+    return source.slice(first, last);
+  };
+  const routes = [
+    {name: "fast", copies: 4, failCopy: 3, body: extract(session,
+      "      std::array<std::uint32_t, fast_candidate_roots * Spec::proof_indices> fast_leaves{};",
+      "      std::copy_n(result_counts.begin()")},
+    {name: "tail", copies: 2, failCopy: 2, body: extract(session,
+      "        std::vector<std::uint32_t> leaves(",
+      "        recover_roots(report, leaves.data(), valid.data());")},
+  ];
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-nested-readback-fault-"));
+  const source = path.join(fixture, "host_transfer_fault.cpp");
+  try {
+    fs.copyFileSync(path.join(__dirname, "native/host_transfer_fault.cpp"), source);
+    fs.writeFileSync(path.join(fixture, "cleanup.inc"),
+      extract(library, "inline void sycl_log_cleanup_exception(", "sycl::device get_dev("));
+    fs.writeFileSync(path.join(fixture, "converted-catch.inc"),
+      extract(session, "    } catch (const sycl::exception& error) {", "\nprivate:"));
+    fs.writeFileSync(path.join(fixture, "error-report.inc"),
+      extract(session, "  RunReport& device_error_report(", "  void recover_roots("));
+    for (const route of routes) {
+      await t.test(route.name, async (readbackTest) => {
+        for (const fixed of [0, 1]) {
+          fs.writeFileSync(path.join(fixture, "nested.inc"), fixed ? route.body :
+            route.body.replace(/^\s*MomSyclHostTransferGuard[^\n]+\n/m, ""));
+          const executable = path.join(fixture, "nested_fault_" + fixed);
+          const compiled = spawnSync("c++", ["-std=c++17", "-O1", "-Wall", "-Wextra", "-Werror",
+            "-pedantic", "-fsanitize=address", "-fsanitize-address-use-after-scope",
+            "-fno-omit-frame-pointer", ...(process.platform === "linux" ? ["-fno-pie", "-no-pie"] : []),
+            "-DMOM_NESTED_FIXTURE=1", "-DMOM_NESTED_FAIL_COPY=" + route.failCopy,
+            "-DMOM_NESTED_COPIES=" + route.copies, source, "-o", executable], {encoding: "utf8"});
+          assert.equal(compiled.error, undefined);
+          assert.equal(compiled.signal, null);
+          assert.equal(compiled.status, 0, compiled.stderr);
+          const cases = [{stage: 0, kind: 0, secondary: 0, name: "success wait trace"}];
+          for (const [kind, error] of ["std::exception conversion", "std::string", "unknown"].entries()) {
+            for (const secondary of [0, 1]) {
+              cases.push({stage: 1, kind, secondary,
+                name: error + (secondary ? " and cleanup fault" : "")});
+            }
+          }
+          for (const {stage, kind, secondary, name} of cases) {
+            await readbackTest.test((fixed ? "fixed: " : "baseline: ") + name, () => {
+              const result = spawnSync(executable, [String(stage), String(kind), String(secondary)],
+                {encoding: "utf8", timeout: 2000});
+              assert.equal(result.error, undefined);
+              assert.equal(result.signal, null);
+              if (!fixed && stage) {
+                assert.equal(result.status, 1, result.stdout + result.stderr);
+                assert.equal(result.stderr, "FAIL nested readback left its try-local destination pending\n");
+              } else {
+                assert.equal(result.status, 0, result.stderr);
+                assert.equal(result.stdout, "PASS actual-source nested readback and converted status\n");
+              }
+            });
+          }
+        }
+      });
+    }
+  } finally {
+    fs.rmSync(fixture, {recursive: true, force: true});
+  }
+});
+
+test("Nexa staged and Octopus entry faults retire uploads and invalidate retry caches", {
+  skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
+}, async (t) => {
+  const root = path.join(__dirname, "../sycl");
+  const library = fs.readFileSync(path.join(root, "lib-internal.h"), "utf8");
+  const octopus = fs.readFileSync(path.join(root, "octopus/octopus.cpp"), "utf8");
+  const nexa = fs.readFileSync(path.join(root, "nexapow/sycl_pipeline.inc"), "utf8");
+  /** @param {string} source @param {string} start @param {string} end */
+  const extract = (source, start, end) => {
+    const first = source.indexOf(start);
+    const last = source.indexOf(end, first);
+    assert.ok(first >= 0 && last > first, start);
+    return source.slice(first, last);
+  };
+  const catchStart = octopus.lastIndexOf("  } catch (...) {");
+  const catchEnd = octopus.lastIndexOf("\n}");
+  assert.ok(catchStart > 0 && catchEnd > catchStart);
+  const routes = [
+    {name: "Nexa staged", octopus: 0, entry: extract(nexa,
+      "    MomSyclHostTransferGuard host_transfers(queue, \"nexapow staged host transfers\");",
+      "    U256* private_keys = private_keys_;")},
+    {name: "Octopus", octopus: 1, entry: extract(octopus,
+      "  const bool header_changed = state.ensure_points(input);", "    const FastModData cache_mod =")},
+  ];
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-entry-transfer-fault-"));
+  const source = path.join(fixture, "host_transfer_fault.cpp");
+  try {
+    fs.copyFileSync(path.join(__dirname, "native/host_transfer_fault.cpp"), source);
+    fs.writeFileSync(path.join(fixture, "cleanup.inc"),
+      extract(library, "inline void sycl_log_cleanup_exception(", "sycl::device get_dev("));
+    fs.writeFileSync(path.join(fixture, "search-result.inc"),
+      extract(nexa, "struct SearchResult {", "struct HeaderContext {"));
+    fs.writeFileSync(path.join(fixture, "points-cache-hit.inc"),
+      extract(octopus, "    if (points_ready && std::memcmp(points_header.data()",
+        "    const uint64_t v0 ="));
+    fs.writeFileSync(path.join(fixture, "points-cache-commit.inc"),
+      extract(octopus, "    std::memcpy(points_header.data(), next_header, HASH_LEN);",
+        "    points_version ="));
+    for (const route of routes) {
+      await t.test(route.name, async (entryTest) => {
+        const variants = [{name: "baseline lifetime", guard: 0, ready: 1},
+          ...(route.octopus ? [{name: "baseline readiness", guard: 1, ready: 0}] : []),
+          {name: "fixed", guard: 1, ready: 1}];
+        for (const variant of variants) {
+          fs.writeFileSync(path.join(fixture, "entry.inc"), variant.guard ? route.entry :
+            route.entry.replace(/^\s*MomSyclHostTransferGuard[^\n]+\n/m, ""));
+          const caught = octopus.slice(catchStart, catchEnd);
+          fs.writeFileSync(path.join(fixture, "entry-catch.inc"), variant.ready ? caught :
+            caught.replace("    state.points_ready = state.target_ready = false;\n", ""));
+          const executable = path.join(fixture, "entry_fault_" + route.octopus + "_" + variant.name);
+          const compiled = spawnSync("c++", ["-std=c++17", "-O1", "-Wall", "-Wextra", "-Werror",
+            "-pedantic", "-fsanitize=address", "-fsanitize-address-use-after-scope",
+            "-fno-omit-frame-pointer", ...(process.platform === "linux" ? ["-fno-pie", "-no-pie"] : []),
+            "-DMOM_ENTRY_FIXTURE=1", "-DMOM_ENTRY_OCTOPUS=" + route.octopus,
+            "-DMOM_SYCL_PORTABLE_OPENCL=1", source, "-o", executable], {encoding: "utf8"});
+          assert.equal(compiled.error, undefined);
+          assert.equal(compiled.signal, null);
+          assert.equal(compiled.status, 0, compiled.stderr);
+          const cases = [{stage: 0, kind: 0, secondary: 0, shared: 0, name: "device success wait trace"}];
+          if (route.octopus) {
+            cases.push({stage: 0, kind: 0, secondary: 0, shared: 1, name: "shared success wait trace"});
+          }
+          const operations = route.octopus
+            ? ["first submit", "later submit", "device query", "second upload"]
+            : ["result memset submit", "later submit", "device query"];
+          for (const [offset, operation] of operations.entries()) {
+            const stage = offset + 1;
+            for (const [kind, error] of ["std::exception", "std::string", "unknown"].entries()) {
+              for (const secondary of [0, 1]) {
+                const modes = route.octopus && variant.guard && stage !== 4 ? [0, 1] : [0];
+                for (const shared of modes) {
+                  cases.push({stage, kind, secondary, shared,
+                    name: (shared ? "shared " : "device ") + operation + ": " + error +
+                      (secondary ? " and cleanup fault" : "")});
+                }
+              }
+            }
+          }
+          for (const {stage, kind, secondary, shared, name} of cases) {
+            await entryTest.test(variant.name + ": " + name, () => {
+              const result = spawnSync(executable,
+                [String(stage), String(kind), String(secondary), String(shared)],
+                {encoding: "utf8", timeout: 2000});
+              assert.equal(result.error, undefined);
+              assert.equal(result.signal, null);
+              if (stage && !variant.guard) {
+                assert.equal(result.status, 1, result.stdout + result.stderr);
+                assert.equal(result.stderr, "FAIL accepted entry transfer outlived its host owner\n");
+              } else if (stage && !variant.ready) {
+                assert.equal(result.status, 1, result.stdout + result.stderr);
+                assert.equal(result.stderr, "FAIL Octopus fault kept header or target cache ready\n");
+              } else {
+                assert.equal(result.status, 0, result.stderr);
+                assert.equal(result.stdout, "PASS actual-source entry transfers and cache readiness\n");
+              }
+            });
+          }
+        }
+      });
     }
   } finally {
     fs.rmSync(fixture, {recursive: true, force: true});

@@ -98,6 +98,7 @@ static int kawpow_core(const KawpowVariant& variant, const uint32_t block_height
       round_up_size(std::max(search_intensity, state.workgroup), state.workgroup);
   const uint32_t dag_elements = static_cast<uint32_t>(dag_bytes / 256);
   const FastModData dag_mod = make_fast_mod_data(dag_elements);
+  MomSyclHostTransferGuard host_transfers(state.queue, "kawpow host transfers");
 
   if (state.shared_io)
     std::memcpy(state.input, input, input_size);

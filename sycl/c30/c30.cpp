@@ -345,9 +345,12 @@ struct Solver {
     // the copy submission waits for hundreds of queued kernels.
     sycl_wait_and_throw(trim_event, device);
     std::uint32_t overflow = 0;
-    queue.memcpy(counts.data(), memory.bucket_counts[input_index],
-                 C30_BUCKET_COUNT * sizeof(std::uint32_t));
-    sycl_wait_and_throw(queue.memcpy(&overflow, memory.overflow, sizeof(overflow)), device);
+    {
+      MomSyclHostTransferGuard host_transfers(queue, "c30 count readback");
+      queue.memcpy(counts.data(), memory.bucket_counts[input_index],
+                   C30_BUCKET_COUNT * sizeof(std::uint32_t));
+      sycl_wait_and_throw(queue.memcpy(&overflow, memory.overflow, sizeof(overflow)), device);
+    }
     if (overflow)
       throw std::runtime_error("c30 fixed bucket overflow");
     const std::uint32_t survivor_count = count_edges(counts);
@@ -399,13 +402,16 @@ struct Solver {
       target_u[i] = (*cycle)[i].u;
       target_v[i] = (*cycle)[i].v;
     }
-    queue.memcpy(memory.target_u, target_u.data(), sizeof(target_u));
-    queue.memcpy(memory.target_v, target_v.data(), sizeof(target_v));
-    queue.fill(memory.recovered, std::numeric_limits<std::uint32_t>::max(), kProofSize);
-    const sycl::event recover_event = pair32
-        ? c30_recover32(queue, key, memory.target_u, memory.target_v, memory.recovered)
-        : c30_recover(queue, key, memory.target_u, memory.target_v, memory.recovered);
-    sycl_wait_and_throw(recover_event, device);
+    {
+      MomSyclHostTransferGuard host_transfers(queue, "c30 recovery uploads");
+      queue.memcpy(memory.target_u, target_u.data(), sizeof(target_u));
+      queue.memcpy(memory.target_v, target_v.data(), sizeof(target_v));
+      queue.fill(memory.recovered, std::numeric_limits<std::uint32_t>::max(), kProofSize);
+      const sycl::event recover_event = pair32
+          ? c30_recover32(queue, key, memory.target_u, memory.target_v, memory.recovered)
+          : c30_recover(queue, key, memory.target_u, memory.target_v, memory.recovered);
+      sycl_wait_and_throw(recover_event, device);
+    }
 
     Solution solution;
     solution.nonce = job.nonce;

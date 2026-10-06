@@ -142,6 +142,8 @@ private:
     mom_equihash::hash_header_midstate<Spec>(header, input.data());
     input[8] = mom_equihash::load64_le(header + 128);
     input[9] = mom_equihash::load32_le(header + 136);
+    std::uint32_t status[2]{};
+    MomSyclHostTransferGuard input_transfer(queue_, "equihash192_7 input upload");
     queue_.memcpy(input_, input.data(), sizeof(input));
     clear();
     std::array<sycl::event, 9> stages;
@@ -240,12 +242,12 @@ private:
     // A D2H submission behind live kernels can itself busy-spin. Complete recovery first so the
     // low-CPU result-copy wait starts after submission has become nonblocking.
     sycl_wait_and_throw(stages.back(), queue_.get_device());
-    std::uint32_t status[2]{};
     sycl_wait_and_throw(queue_.memcpy(status, overflow_, sizeof(status)), queue_.get_device());
     const std::uint32_t overflow = status[0], root_count = status[1];
     if (overflow != 0) {
       std::string detail;
       std::vector<std::uint32_t> bucket_counts(count_stride);
+      MomSyclHostTransferGuard overflow_transfer(queue_, "equihash192_7 overflow readback");
       constexpr std::array<std::uint32_t, 7> capacities{
           ActiveRound0::bucket_slot_capacity, ActiveRound1::bucket_slot_capacity,
           ActiveRound2::bucket_slot_capacity, ActiveRound3::bucket_slot_capacity,
@@ -269,6 +271,7 @@ private:
     std::vector<std::uint32_t> leaves(
         static_cast<std::size_t>(root_count) * Spec::proof_indices);
     std::vector<std::uint8_t> valid(root_count);
+    MomSyclHostTransferGuard result_transfer(queue_, "equihash192_7 readback");
     if (root_count != 0) {
       queue_.memcpy(valid.data(), valid_, valid.size());
       sycl_wait_and_throw(

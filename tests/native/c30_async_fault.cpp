@@ -19,6 +19,8 @@
 
 static int kind, fault_wait, layout, owner;
 static int waits, kernels, copies, cycles, calls, errors, clears, results;
+static int copy_fault, copy_error_kind, cleanup_waits;
+static bool cleanup_error;
 static bool m_has_fn = true;
 static std::string last_error;
 static std::exception_ptr original_error;
@@ -44,6 +46,12 @@ struct uint2 {
   std::uint32_t y() const { return b; }
 };
 struct queue;
+struct PendingCopy {
+  void* destination;
+  const void* source;
+  std::size_t bytes;
+};
+static std::vector<PendingCopy> pending_copies;
 struct event {
   queue* value = nullptr;
   void wait_and_throw() const;
@@ -53,17 +61,30 @@ struct queue {
   queue(device, async_handler h, property_list) : handler(std::move(h)) {}
   event memcpy(void* out, const void* in, std::size_t n) {
     ++copies;
-    std::memcpy(out, in, n);
+    if (copy_fault == copies)
+      std::rethrow_exception(original_error);
+    pending_copies.push_back({out, in, n});
     return {this};
   }
   template <typename T> event fill(T* out, T value, std::size_t n) {
     std::fill_n(out, n, value);
     return {this};
   }
-  void wait_and_throw() {}
+  void complete() {
+    for (const PendingCopy& copy : pending_copies)
+      std::memcpy(copy.destination, copy.source, copy.bytes);
+    pending_copies.clear();
+  }
+  void wait_and_throw() {
+    ++cleanup_waits;
+    complete();
+    if (cleanup_error)
+      throw std::string("secondary C30 cleanup fault");
+  }
 };
 void event::wait_and_throw() const {
   ++waits;
+  value->complete();
   exception_list pending;
   if (kind && waits == fault_wait) {
     if (kind == 3)
@@ -82,12 +103,7 @@ static sycl::device get_dev(const std::string& dev) {
   return {};
 }
 static void sycl_wait_and_throw(sycl::event event, sycl::device) { event.wait_and_throw(); }
-template <typename F> static void sycl_cleanup_noexcept(const char*, F fn) noexcept {
-  try {
-    fn();
-  } catch (...) {
-  }
-}
+#include "cleanup.inc"
 static bool mom_parse_env_ulong(const char*, unsigned long&) { return false; }
 struct C30DeviceKey { std::uint64_t k0, k1, k2, k3; };
 struct C30PackedEdge {};
@@ -310,17 +326,58 @@ static void run() {
   require(calls == before + (owner ? 2 : 1) && output[0] == 42 && edges[41] == 41,
           "later explicit job did not resume the normal success path");
 }
+static void run_copy_fault() {
+  C30State state;
+  active = &state;
+  std::uint8_t input[32]{}, output[32];
+  std::memset(output, 23, sizeof(output));
+  std::uint32_t edges[42];
+  std::fill_n(edges, 42, 99);
+  std::uint64_t nonce = 71;
+  try {
+    if (copy_error_kind == 0)
+      throw std::runtime_error("C30 copy submission fault");
+    if (copy_error_kind == 1)
+      throw std::string("C30 copy submission fault");
+    throw 37;
+  } catch (...) {
+    original_error = std::current_exception();
+  }
+  std::exception_ptr caught;
+  try {
+    call(9, 42, input, sizeof(input), output, edges, &nonce, "fixture");
+  } catch (...) {
+    caught = std::current_exception();
+  }
+  require(caught == original_error, "copy submission changed the original exception");
+  require(sycl::pending_copies.empty(), "copy submission unwound host locals before drain");
+  require(cleanup_waits == 1, "copy failure did not retire exactly once before solver destruction");
+  require(copies == copy_fault && calls == 1, "copy submission retried another graph or transfer");
+  require(cycles == (copy_fault == 6 ? 1 : 0), "copy failure advanced the cycle search");
+  require(output[0] == 23 && edges[0] == 99 && nonce == 71, "copy failure committed output/nonce");
+}
 int main(int argc, char** argv) {
-  if (argc != 5)
+  if (argc != 5 && argc != 6)
     return 2;
-  kind = std::atoi(argv[1]);
-  fault_wait = std::atoi(argv[2]);
-  layout = std::atoi(argv[3]);
-  owner = std::atoi(argv[4]);
+  const bool copy_case = argc == 6 && std::strcmp(argv[1], "copies") == 0;
+  if (copy_case) {
+    copy_fault = std::atoi(argv[2]);
+    copy_error_kind = std::atoi(argv[3]);
+    cleanup_error = std::atoi(argv[4]) != 0;
+    layout = std::atoi(argv[5]);
+  } else {
+    kind = std::atoi(argv[1]);
+    fault_wait = std::atoi(argv[2]);
+    layout = std::atoi(argv[3]);
+    owner = std::atoi(argv[4]);
+  }
   unsetenv("MOM_C30_TEST_EDGE");
   unsetenv("MOM_C30_PROFILE");
   try {
-    run();
+    if (copy_case)
+      run_copy_fault();
+    else
+      run();
     std::puts("PASS actual-source C30 asynchronous completion boundary");
     return 0;
   } catch (const std::exception& error) {

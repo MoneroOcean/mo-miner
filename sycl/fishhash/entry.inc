@@ -40,6 +40,7 @@ int fishhash(const unsigned, const uint32_t, const uint8_t* const input, const u
   } else {
     std::memcpy(&start_nonce, input + nonce_off, sizeof(start_nonce));
   }
+  MomSyclHostTransferGuard host_transfers(state.queue, "fishhash host transfers");
   if (state.shared_io) {
     std::memcpy(state.input, input, input_size);
     std::memcpy(state.target, target, HASH_LEN);
@@ -119,6 +120,7 @@ int karlsenhashv2(const unsigned, const uint32_t, const uint8_t* const input,
 
   uint64_t start_nonce = 0;
   std::memcpy(&start_nonce, input + 72, sizeof(start_nonce)); // nonce@72 LE
+  MomSyclHostTransferGuard host_transfers(state.queue, "karlsenhashv2 host transfers");
   if (state.shared_io) {
     std::memcpy(state.input, input, input_size);
     std::memcpy(state.target, target, HASH_LEN);
