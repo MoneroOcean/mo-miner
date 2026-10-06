@@ -17,6 +17,7 @@ const algoFields = new Map([
   ["fishhash", new Set(["intensity", "workgroup", "search_mode"])],
   ["karlsenhashv2", new Set(["intensity", "workgroup", "search_mode"])],
   ["hoohash", new Set(["intensity", "workgroup"])],
+  ["nexapow", new Set(["intensity"])],
   ["pearlhash", new Set(["m", "n", "k", "rank", "workgroup", "cache_block", "tile"])],
   ["zelhash", new Set(["slots"])],
   ["beamhash3", new Set(["workgroup", "compact_workgroup", "scatter_workgroup", "layout"])],
@@ -269,6 +270,7 @@ const envByAlgo = {
   "fishhash": {workgroup: "MOM_FISHHASH_WORKGROUP"},
   "karlsenhashv2": {workgroup: "MOM_FISHHASH_WORKGROUP"},
   "hoohash": {intensity: "MOM_HOOHASH_INTENSITY", workgroup: "MOM_HOOHASH_WORKGROUP"},
+  "nexapow": {intensity: "MOM_NEXAPOW_INTENSITY"},
   "pearlhash": {
     workgroup: "MOM_PEARLHASH_AMD_WMMA_THREADS",
     cache_block: [

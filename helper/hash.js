@@ -92,19 +92,33 @@ const ETH_STRATUM_DIFF1_TARGET = BigInt("0x00000000ffff0000000000000000000000000
 const UINT256_MAX = (1n << 256n) - 1n;
 
 function decimalToRatio(value) {
-  const text = String(value || "0").trim().toLowerCase();
-  const m = text.match(/^([+-])?(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/);
-  if (!m) {return [0n, 1n];}
-  const digits = (m[2] + (m[3] || "")).replace(/^0+/, "") || "0";
-  const scale = BigInt((m[3] || "").length);
-  const exp = BigInt(m[4] || "0");
-  // Targets/difficulties are 256-bit (< ~78 decimal digits); reject absurd exponents/mantissas so a hostile
-  // pool can't force a multi-million-digit BigInt (10n ** exp) that synchronously hangs the event loop / OOMs.
-  if (exp > 1000n || exp < -1000n || digits.length > 1000) {return [0n, 1n];}
+  if (typeof value !== "string" && typeof value !== "number" && typeof value !== "bigint") {
+    throw new Error("Invalid decimal value");
+  }
+  if (typeof value === "number" && !Number.isFinite(value)) {
+    throw new Error("Invalid decimal value");
+  }
+  const raw = String(value);
+  if (raw.length > 4096) {throw new Error("Decimal value is too large");}
+  const text = raw.trim().toLowerCase();
+  const m = text.match(/^([+-])?(?:(\d+)(?:\.(\d*))?|\.(\d+))(?:e([+-]?\d+))?$/);
+  if (!m) {throw new Error("Invalid decimal value");}
+  const fraction = m[3] ?? m[4] ?? "";
+  const digits = ((m[2] || "0") + fraction).replace(/^0+/, "") || "0";
+  const exp = BigInt(m[5] || "0");
+  // Targets/difficulties are 256-bit (< ~78 decimal digits); bound every decimal component before
+  // exponentiation so hostile pool input cannot synchronously exhaust the event loop or memory.
+  if (exp > 1000n || exp < -1000n || digits.length > 1000 || fraction.length > 1000) {
+    throw new Error("Decimal value is too large");
+  }
+  const scale = BigInt(fraction.length);
   let numerator = BigInt(digits);
   let denominator = 10n ** scale;
-  if (exp > 0n) {numerator *= 10n ** exp;}
-  else if (exp < 0n) {denominator *= 10n ** (-exp);}
+  if (exp > 0n) {
+    numerator *= 10n ** exp;
+  } else if (exp < 0n) {
+    denominator *= 10n ** (-exp);
+  }
   if (m[1] === "-") {numerator = -numerator;}
   return [numerator, denominator];
 }
@@ -119,10 +133,14 @@ function parseTarget256(target) {
   return BigInt("0x" + String(target || "").replace(/^0x/i, "").padStart(64, "0"));
 }
 
-module.exports.ethDiff2Target = function(diff) {
+/** @param {unknown} diff @param {bigint} [multiplier=1n] */
+module.exports.ethDiff2Target = function(diff, multiplier = 1n) {
+  if (typeof multiplier !== "bigint" || multiplier <= 0n) {
+    throw new Error("Eth difficulty multiplier must be a positive bigint");
+  }
   const [numerator, denominator] = decimalToRatio(diff);
   if (numerator <= 0n) {return "0".repeat(64);}
-  return target256ToHex((ETH_STRATUM_DIFF1_TARGET * denominator) / numerator);
+  return target256ToHex((ETH_STRATUM_DIFF1_TARGET * multiplier * denominator) / numerator);
 };
 
 module.exports.decimalTargetToHex = function(value) {
@@ -135,6 +153,16 @@ module.exports.ethTarget2diff = function(target) {
   const div = parseTarget256(target);
   if (div === 0n) {return 0;}
   return Number(ETH_STRATUM_DIFF1_TARGET) / Number(div);
+};
+
+/** @param {unknown} diff @param {bigint} [base=UINT256_MAX] */
+module.exports.fullDiff2Target = function(diff, base = UINT256_MAX) {
+  if (typeof base !== "bigint" || base <= 0n) {
+    throw new Error("Full difficulty base must be a positive bigint");
+  }
+  const [numerator, denominator] = decimalToRatio(diff);
+  if (numerator <= 0n) {return target256ToHex(UINT256_MAX);}
+  return target256ToHex((base * denominator) / numerator);
 };
 
 module.exports.target256ToWork = function(target) {

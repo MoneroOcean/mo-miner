@@ -521,6 +521,25 @@ test("256-bit targets convert to share work", () => {
   assert.equal(helper.formatHashCount(583796823439n), "583.80 GH");
   assert.equal(helper.formatHashCount(56546580n), "56.55 MH");
   assert.equal(helper.formatHashCount(12004n), "12.00 KH");
+  assert.equal(helper.fullDiff2Target(1.5), "aa".repeat(32));
+  assert.equal(helper.fullDiff2Target(".5"), "ff".repeat(32));
+  assert.equal(helper.fullDiff2Target("1."), "ff".repeat(32));
+  assert.equal(helper.fullDiff2Target("1.e1"),
+    (((1n << 256n) - 1n) / 10n).toString(16).padStart(64, "0"));
+  assert.throws(() => helper.fullDiff2Target("not-a-number"), /Invalid decimal value/);
+});
+
+test("scaled target conversions validate positive bigint arguments before difficulty", () => {
+  assert.equal(helper.ethDiff2Target(0, 2n), "0".repeat(64));
+  assert.equal(helper.fullDiff2Target(0, 2n), "ff".repeat(32));
+  /** @type {unknown[]} */
+  const invalid = [0n, -1n, 1, "1"];
+  for (const value of invalid) {
+    assert.throws(() => Reflect.apply(helper.ethDiff2Target, null, [1, value]), /positive bigint/);
+    assert.throws(() => Reflect.apply(helper.fullDiff2Target, null, [1, value]), /positive bigint/);
+    assert.throws(() => Reflect.apply(helper.ethDiff2Target, null, [0, value]), /positive bigint/);
+    assert.throws(() => Reflect.apply(helper.fullDiff2Target, null, [0, value]), /positive bigint/);
+  }
 });
 
 test("perf hashrate formatting uses scaled units", () => {

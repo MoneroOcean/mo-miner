@@ -16,6 +16,15 @@ module.exports = ({
     return json.method === "job" && isObject(json.params);
   }
 
+  function isNexaJobNotification(json) {
+    return isMiningNotification(json, 4) && json.params.length <= 5;
+  }
+
+  function isMiningNotification(json, minimumParams) {
+    return json.method === "mining.notify" && Array.isArray(json.params) &&
+           json.params.length >= minimumParams;
+  }
+
   function isRavenJobNotification(json) {
     return json.method === "mining.notify" && Array.isArray(json.params) && json.params.length >= 6;
   }
@@ -353,9 +362,32 @@ module.exports = ({
     global.opt.pools[pool_id].ironfish_target = hexWithoutPrefix(json.body.target).padStart(64, "0");
   }
 
+  function commitSubmitMode(mode, job) {
+    if (job) {job.submit_mode = mode;}
+    return job;
+  }
+
+  function positiveDifficulty(value, label) {
+    if (typeof value !== "number" &&
+        !(typeof value === "string" &&
+          /^(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(value))) {
+      throw new Error(`Invalid ${label} difficulty`);
+    }
+    const difficulty = typeof value === "number" ? value : Number(value);
+    if (!Number.isFinite(difficulty) || difficulty <= 0) {
+      throw new Error(`Invalid ${label} difficulty`);
+    }
+    return difficulty;
+  }
+
   function handleSetDifficulty(pool_id, json) {
     const pool = global.opt.pools[pool_id];
     pool.eth_difficulty = json.params[0];
+    if (poolProtocol(pool) === "echelon") {
+      const difficulty = positiveDifficulty(json.params[0], "pool");
+      pool.nexa_difficulty = difficulty;
+      pool.nexa_target = h.ethDiff2Target(difficulty);
+    }
     // Var-diff PearlHash pools may push a standalone set_difficulty; stash it so the next job picks
     // it up if the notify itself omits a diff field (otherwise jobTarget would fall back to MAX).
     if (poolProtocol(pool) === "pearlhash") {pool.pearlhash_difficulty = json.params[0];}
@@ -389,6 +421,62 @@ module.exports = ({
   }
 
   /** @param {unknown} value */
+  function poolJobId(value) {
+    if (typeof value === "string") {return value.length > 0 && value.length <= 256 ? value : null;}
+    return typeof value === "number" && Number.isSafeInteger(value) ? value : null;
+  }
+
+  function poolHeight(value, label) {
+    if (typeof value !== "number" && typeof value !== "string") {
+      throw new Error(`Invalid ${label} height`);
+    }
+    const text = String(value);
+    if (typeof value === "string" && !/^(?:\d+|0x[0-9a-f]+)$/i.test(text)) {
+      throw new Error(`Invalid ${label} height`);
+    }
+    const height = Number(text);
+    if (!Number.isSafeInteger(height) || height < 0) {
+      throw new Error(`Invalid ${label} height`);
+    }
+    return height;
+  }
+
+  function nexaNotifyJob(pool, json) {
+    const p = json.params;
+    const shortNonce = p.length === 4;
+    const jobId = poolJobId(p[0]);
+    const header = validHexBytes(p[1], 32);
+    const extra_nonce = validHexBytes(pool.extra_nonce, shortNonce ? 4 : 8);
+    if (jobId === null || !header || !extra_nonce ||
+        pool.extra_nonce2_size !== (shortNonce ? 4 : 8)) {
+      return null;
+    }
+    const common = {
+      algo: "nexapow", job_id: jobId, extra_nonce, noncebytes: 8,
+      target: pool.nexa_target || h.ethDiff2Target(pool.nexa_difficulty || 1),
+      difficulty: pool.nexa_difficulty || 1,
+    };
+    if (shortNonce) {
+      const nbits = validHexBytes(p[3], 4);
+      if (!nbits) {return null;}
+      // Normalize the wire's serialized header to the native display-order ABI. The fixed pool
+      // prefix is separate from the worker's eight-byte search nonce.
+      return {
+        ...common,
+        blob: Buffer.from(header, "hex").reverse().toString("hex") +
+          extra_nonce + "00".repeat(8),
+        height: poolHeight(p[2], "Nexa"), nbits, extra_nonce2_size: 4, nonceoffset: 36,
+        nonce: "0000000000000000", nicehash_mask: "0000000000000000",
+      };
+    }
+    const nbits = validHexBytes(p[2], 4);
+    const ntime = validHexBytes(p[3], 8);
+    if (!nbits || !ntime || typeof p[4] !== "boolean") {return null;}
+    return {
+      ...common, blob: header + extra_nonce + "00".repeat(8), nbits, ntime, nonceoffset: 40,
+    };
+  }
+
   function parseCortexHeight(value) {
     if (value === undefined || value === null || value === "") {return 0;}
     const hex = hexWithoutPrefix(value);
@@ -417,6 +505,10 @@ module.exports = ({
 
   function jobFromPoolMessage(pool_id, json) {
     const pool = global.opt.pools[pool_id];
+    if (poolProtocol(pool) === "echelon" && isNexaJobNotification(json)) {
+      if (!pool.logged_in) {return null;}
+      return commitSubmitMode("echelon", nexaNotifyJob(pool, json));
+    }
     if (poolProtocol(pool) === "cortex" && (json.id === 100 || json.id === 0) &&
         Array.isArray(json.result) && json.result.length >= 3) {
       if (!pool.logged_in) return null;

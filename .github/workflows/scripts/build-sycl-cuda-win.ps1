@@ -93,7 +93,7 @@ $F = @("-std=c++20","-O3","-ffp-contract=off","-DNDEBUG","-D_CRT_SECURE_NO_WARNI
 $portableSpirvArgs = @()
 if ($PortableOpencl) {
   # Device IR is translated and embedded during this standards-only link.
-  $F += @("-DMOM_SYCL_PORTABLE_OPENCL", "-fno-sycl-rdc", "-fsycl-device-code-split=per_kernel",
+  $F += @("-DMOM_SYCL_PORTABLE_OPENCL", "-DMOM_NEXAPOW_PORTABLE_FIELD32", "-fno-sycl-rdc", "-fsycl-device-code-split=per_kernel",
           "-fno-sycl-instrument-device-code")
   # SPIR-V 1.3 has core subgroup operations. The pinned CI translator otherwise falls back to
   # SPV_INTEL_subgroups when that extension is enabled, or rejects standard SYCL collectives when
@@ -112,6 +112,7 @@ $targetList = @("spir64")
 if ($withCuda) {
   $targetList += $CudaArch
   $F += @("-DMOM_SYCL_HAS_CUDA",
+          "-DMOM_NEXAPOW_SYCL_NATIVE_FIELD",
           "-I$env:CUDA_PATH\include")
 }
 $targets = $targetList -join ','

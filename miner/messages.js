@@ -1,5 +1,15 @@
 "use strict";
 
+const MAX_PEARL_PROOF_BYTES = 8 * 1024 * 1024;
+const MAX_PEARL_PROOF_BASE64 = Math.ceil(MAX_PEARL_PROOF_BYTES / 3) * 4;
+const MAX_JOB_TOKEN_CHARS = 256;
+const MAX_WORKER_ID_CHARS = 4096;
+const MAX_HEADER_HASH_HEX_CHARS = 256 * 2;
+// CompactSize plus the largest supported Equihash proof: (192,7) at 403 bytes.
+const MAX_SOLUTION_HEX_CHARS = 403 * 2;
+const MAX_EDGES_HEX_CHARS = 42 * 8;
+
+
 module.exports = ({
   fs, h, p, opt, submission, test, firstTruthyOr, normalizeExpectedResults,
   matchesTestResult, exit, getLastJob, getAlgoParamsBenchCallback,
@@ -20,11 +30,77 @@ module.exports = ({
     return cortex_submit_id;
   }
 
+  function isObject(value) {
+    return value !== null && typeof value === "object" && !Array.isArray(value);
+  }
+
+  function isWorkerResult(value) {
+    if (!isObject(value)) {return false;}
+    const jobId = value["job_id"];
+    if (typeof value["pool_id"] !== "string" || !/^\d+$/.test(value["pool_id"]) ||
+        !((typeof jobId === "string" && jobId.length > 0 && jobId.length <= 256) ||
+          (typeof jobId === "number" && Number.isSafeInteger(jobId))) ||
+        typeof value["job_token"] !== "string" || value["job_token"].length === 0 ||
+        value["job_token"].length > MAX_JOB_TOKEN_CHARS ||
+        typeof value["worker_id"] !== "string" || value["worker_id"].length > MAX_WORKER_ID_CHARS ||
+        typeof value["nonce"] !== "string" ||
+        !/^[0-9a-f]{1,16}$/i.test(value["nonce"])) {
+      return false;
+    }
+    for (const field of ["commitment", "hash", "mix_hash"]) {
+      const hex = value[field];
+      if (hex !== undefined && (typeof hex !== "string" || !/^[0-9a-f]{64}$/i.test(hex))) {
+        return false;
+      }
+    }
+    const headerHash = value["header_hash"];
+    if (headerHash !== undefined) {
+      if (typeof headerHash !== "string") {return false;}
+      const rawHeaderHash = headerHash.replace(/^0x/i, "");
+      if (rawHeaderHash.length > MAX_HEADER_HASH_HEX_CHARS || !/^[0-9a-f]{64,}$/i.test(rawHeaderHash)) {
+        return false;
+      }
+    }
+    const plainProof = value["plain_proof"];
+    if (plainProof !== undefined &&
+        (typeof plainProof !== "string" || plainProof.length > MAX_PEARL_PROOF_BASE64)) {
+      return false;
+    }
+    const jackpot = value["jackpot"];
+    if (jackpot !== undefined &&
+        (typeof jackpot !== "string" || !/^[0-9a-f]{64}$/.test(jackpot))) {return false;}
+    const adjustmentFactor = value["adjustment_factor"];
+    if (adjustmentFactor !== undefined &&
+        (typeof adjustmentFactor !== "string" || !/^[1-9]\d*$/.test(adjustmentFactor) ||
+         !Number.isSafeInteger(Number(adjustmentFactor)) || Number(adjustmentFactor) > 0xffffffff)) {
+      return false;
+    }
+    const solution = value["solution"];
+    if (solution !== undefined &&
+        (typeof solution !== "string" || solution.length > MAX_SOLUTION_HEX_CHARS ||
+         !/^(?:[0-9a-f]{2})+$/i.test(solution))) {
+      return false;
+    }
+    const edges = value["edges"];
+    if (edges !== undefined &&
+        (typeof edges !== "string" || edges.length > MAX_EDGES_HEX_CHARS ||
+         !/^(?:[0-9a-f]{8})+$/i.test(edges))) {
+      return false;
+    }
+    return true;
+  }
+
+  function matchingPoolJob(pool, value) {
+    const job = pool.last_job;
+    return job && job.job_token === value.job_token &&
+      String(job.job_id) === String(value.job_id) ? job : null;
+  }
+
   function handleResult(msg) {
     const v = msg.value;
     const pool = opt.pools[v.pool_id];
-    const submit_mode = pool && (pool.last_job?.submit_mode === "cortex"
-      ? "cortex" : pool.submit_mode);
+    const submit_mode = pool && ((pool.last_job?.submit_mode === "cortex" ||
+      pool.last_job?.submit_mode === "echelon") ? pool.last_job.submit_mode : pool.submit_mode);
     const send = (body) => p.pool_write(v.pool_id, { jsonrpc: "2.0", id: 3, ...body });
 
     // PearlHash: the worker already built the base64 PlainProof, and the native core emits at most one
@@ -54,6 +130,12 @@ module.exports = ({
     if (submit_mode === "hoosat") {
       if (typeof v.hash !== "string") {return h.log_err("Invalid compute core message");}
       return send({method: "mining.submit", params: [pool.login, v.job_id, "0x" + v.nonce, v.hash]});
+    }
+    if (submit_mode === "echelon") {
+      if (!isWorkerResult(v)) {return h.log_err("Invalid compute core message");}
+      const job = matchingPoolJob(pool, v);
+      if (!job) {return;}
+      return send({method: "mining.submit", params: submission.nexaSubmitParams(pool, job, v)});
     }
     if (submit_mode === "cortex") {
       const job = pool.last_job;

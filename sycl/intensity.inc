@@ -184,6 +184,18 @@ static unsigned fishhash_intensity(const sycl::device& dev) {
 // pass over a 3.72--4.25 GiB accelerator-specific arena), so one process searches one nonce per
 // dispatch. MOM_ZELHASH_INTENSITY overrides that process batch.
 
+static unsigned nexapow_intensity(const sycl::device& dev) {
+  const unsigned override = parse_pow_intensity_override(1, "MOM_NEXAPOW_INTENSITY");
+  if (override)
+    return override;
+  const uint64_t memory = dev.get_info<sycl::info::device::global_mem_size>();
+  if (memory >= 15 * GiB)
+    return 1u << 23;
+  if (memory >= 10 * GiB)
+    return 1u << 22;
+  return std::max(256u, dev.get_info<sycl::info::device::max_compute_units>() * 64u);
+}
+
 static bool hoohash_supported(const sycl::device& dev) {
   return dev.has(sycl::aspect::fp64) && mom_has_usm_device(dev);
 }

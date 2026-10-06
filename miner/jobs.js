@@ -205,6 +205,10 @@ module.exports = ({
 
   function jobTarget(prev_job, algo) {
     const explicitTarget = orDefault(prev_job.target, "");
+    if (algo === "nexapow") {
+      if (explicitTarget) {return hexWithoutPrefix(explicitTarget).padStart(64, "0");}
+      return h.fullDiff2Target(prev_job.difficulty);
+    }
     if (algo === "pearlhash" || algo === "c30" || isZelHashAlgo(algo)) {
     // HeroMiners-style pools precompute the verifier bound (pool.js pearlhashNbitsBound -> prev_job.target);
     // Flux set_target also delivers a 256-bit big-endian hex share target. When a pool does not send a
@@ -310,6 +314,10 @@ module.exports = ({
     job.nicehash_mask = "ff".repeat(prefixBytes).padEnd(16, "0");
   }
 
+  const NEXAPOW_BENCH_BLOB =
+    "0a4ac49b2d02e3c8d12c7093255ba7c49624f9c374d9f1c2f8e37c58705e74b0" +
+    "10000000000000001182dc5800000000";
+
   function addStandardJobFields(job, prev_job) {
     job.noncebytes  = orDefault(prev_job.noncebytes, 4);
     job.blob_hex    = orDefault(prev_job.blob, prev_job.blob_hex);
@@ -387,6 +395,7 @@ module.exports = ({
     else if (isKaspaHeaderAlgo(algo)) {addKaspaHeaderJobFields(job, prev_job);}
     else if (isZelHashAlgo(algo)) {addZelHashJobFields(job, prev_job);}
     else if (isNonceAt32Algo(algo)) {addEthHashJobFields(job, prev_job);}
+    else if (algo === "nexapow") {addFixedNonceBlobFields(job, prev_job, 40);}
     else {addStandardJobFields(job, prev_job);}
     // BeamHash III seeds its nonce from the pool nonceprefix inside addBeamhash3JobFields; the generic
     // nonce/nicehash defaults would clobber that, so only run them for the other algos.
@@ -475,6 +484,13 @@ module.exports = ({
       if (!job.blob_hex || job.blob_hex.length !== 88) {job.blob_hex = BEAMHASH3_BENCH_BLOB;}
       job.nonce = job.nonce || "0100000000000000";
       job.nicehash_mask = job.nicehash_mask || "0000000000000000";
+    }
+    if (job.algo === "nexapow") {
+      job.noncebytes = 8;
+      job.nonceoffset = 40;
+      if (!job.blob_hex || job.blob_hex.length !== 96) {job.blob_hex = NEXAPOW_BENCH_BLOB;}
+      job.nonce = job.nonce || "1182dc5800000000";
+      job.target = "00".repeat(32); // benchmark the steady no-share path, not the all-candidate test target
     }
     if (benchHeightByAlgo[job.algo]) {job.height = job.height || benchHeightByAlgo[job.algo];}
     if (job.algo === "etchash") {job.seed_hex = "";}

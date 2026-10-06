@@ -278,10 +278,17 @@ std::map<std::string, std::string> algo_params(
     else if (gpu_karlsenhashv2_algos.contains(algo)) add_gpu_dataset_algo_dev(result_dev, 4608 * MiB, 6 * GiB, fishhash_intensity,
                                "intensity", GpuUsm::both, 128); // FishHashPlus: same 4.6 GiB DAG/intensity as fishhash
     else if (gpu_misc_algos.contains(algo)) {
+      if (algo == "hoohash")
       for_each_default_gpu([&](const std::string& dev_str, const sycl::device& dev) {
         if (hoohash_supported(dev))
           add_result_dev(result_dev, gpu_tuning_entry(dev_str, "intensity", hoohash_intensity(dev)));
       });
+      else if (algo == "nexapow")
+        for_each_default_gpu([&](const std::string& dev_str, const sycl::device& dev) {
+          if (mom_has_usm_device(dev))
+            add_result_dev(result_dev,
+                           gpu_tuning_entry(dev_str, "intensity", nexapow_intensity(dev)));
+        });
     }
     else if (gpu_zelhash_algos.contains(algo)) {
       if (algo == "equihash192_7")

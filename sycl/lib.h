@@ -113,6 +113,14 @@ MOM_SYCL_API int hoohash(
   unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
 );
 
+// NexaPoW/Echelon: either a 40-byte header with an 8-byte nonce at offset 32, or a 48-byte header
+// with a fixed 8-byte extranonce followed by the 8-byte big-endian miner nonce.
+MOM_SYCL_API int nexapow(
+  unsigned job_id, uint32_t height, const uint8_t* input, unsigned input_size, uint8_t* output,
+  uint8_t* mix_hash, uint64_t* pnonce, const uint8_t* target, const uint8_t* seed_hash,
+  unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
+);
+
 // Equihash 125,4 (ZelHash / Flux): Wagner bucket-collision solver (Tromp/djezo lineage). C29-like
 // ABI -- the 32-byte nonce lives in the 140-byte header (offset 108); the solver returns a solution
 // COUNT and writes the 52-byte compressed solution(s) out-of-band into solution_out. 256-bit big

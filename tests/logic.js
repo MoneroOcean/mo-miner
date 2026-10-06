@@ -11,4 +11,5 @@ describe("JavaScript logic tests", () => {
   require("./logic/fishhash");
   require("./logic/beamhash");
   require("./logic/cortex");
+  require("./logic/nexapow");
 });

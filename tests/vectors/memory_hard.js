@@ -2,6 +2,52 @@
 
 const vectors = [
   {
+    // Recorded Echelon vector, independently checked by the CPU consensus oracle.
+    name: "nexapow gpu1*[intensity=1] recorded-vector",
+    gpu: true,
+    syclCpu: true,
+    // Windows oneAPI cold initialization can finish device compilation near 15 minutes and still
+    // need to build the fixed-base table. Keep enough margin for a genuinely cold qualification;
+    // persistent-cache repeats remain much faster.
+    timeoutMs: 25 * 60 * 1000,
+    perfTimeoutMs: 15 * 60 * 1000,
+    job: {
+      algo: "nexapow", dev: "gpu1*[intensity=1]", noncebytes: 8, nonceoffset: 40,
+      target: "ff".repeat(32),
+      blob_hex: "0a4ac49b2d02e3c8d12c7093255ba7c49624f9c374d9f1c2f8e37c58705e74b0" +
+        "10000000000000001182dc5800000000",
+    },
+    expected: "00000042cbc240375242e14641488a0e2dca7b54458a2cea23dc1d2c178bb188",
+  },
+  {
+    // Independent CPU oracle case: short-zero exercises the generic short-nonce GPU path.
+    name: "nexapow gpu1*[intensity=1] short-zero-vector",
+    gpu: true,
+    syclCpu: false,
+    timeoutMs: 25 * 60 * 1000,
+    perfTimeoutMs: 15 * 60 * 1000,
+    job: {
+      algo: "nexapow", dev: "gpu1*[intensity=1]", noncebytes: 8, nonceoffset: 32,
+      target: "ff".repeat(32),
+      blob_hex: "00000000000000000000000000000000000000000000000000000000000000000000000000000000",
+    },
+    expected: "b034dd02a3ba15d16b1f0325e44de3e374489182b2305ca13740772184c3bcd9",
+  },
+  {
+    // Independent CPU oracle case: short-pattern exercises the generic short-nonce GPU path.
+    name: "nexapow gpu1*[intensity=1] short-pattern-vector",
+    gpu: true,
+    syclCpu: false,
+    timeoutMs: 25 * 60 * 1000,
+    perfTimeoutMs: 15 * 60 * 1000,
+    job: {
+      algo: "nexapow", dev: "gpu1*[intensity=1]", noncebytes: 8, nonceoffset: 32,
+      target: "ff".repeat(32),
+      blob_hex: "0104070a0d101316191c1f2225282b2e3134373a3d404346494c4f5255585b5e0102030405060708",
+    },
+    expected: "a254ce16b11c81a3bebf46569b2598d28e3fd2223a565a9245cfa8bbca03e997",
+  },
+  {
     name: "etchash gpu1*[intensity=256]",
     gpu: true,
     syclCpu: true,
@@ -197,7 +243,7 @@ const vectors = [
   },
 ];
 
-const miscIntensity2Algos = new Set(["hoohash"]);
+const miscIntensity2Algos = new Set(["hoohash", "nexapow"]);
 for (const vector of vectors.filter(({job}) => miscIntensity2Algos.has(job.algo))) {
   const regression = {...vector};
   delete regression.syclCpu;

@@ -327,6 +327,8 @@
         "sycl/zhash/zhash.cpp",
         "sycl/equihash192_7/equihash192_7.cpp",
         "sycl/hoohash/hoohash.cpp",
+        "sycl/nexapow/nexapow.cpp",
+        "sycl/nexapow/test_probe.cpp",
         "sycl/zelhash/zelhash.cpp",
         "sycl/beamhash3/beamhash3.cpp"
       ],
@@ -372,6 +374,7 @@
                 "/fsycl",
                 "/clang:-fsycl-device-code-split=per_kernel",
                 "/DNDEBUG",
+                "/DMOM_NEXAPOW_PORTABLE_FIELD32",
                 "/DPEARLHASH_ESIMD",
                 "/DMOM_ZHASH_INTEL_LATE_BUCKETS",
                 "/clang:-fno-strict-aliasing"
@@ -398,7 +401,7 @@
               # kawpow runtime kernel-compiler. Multi-arch AOT, NVIDIA-wide (Ampere/Ada/Hopper). No ESIMD.
               "cflags_cc!": [ "-std=gnu++20" ],
               "cflags+": [
-                "-std=c++20 -O3 -ffp-contract=off -fsycl -fsycl-embed-ir -fsycl-targets=<(mom_cuda_arch) -DNDEBUG -DMOM_SYCL_HAS_CUDA"
+                "-std=c++20 -O3 -ffp-contract=off -fsycl -fsycl-embed-ir -fsycl-targets=<(mom_cuda_arch) -DNDEBUG -DMOM_SYCL_HAS_CUDA -DMOM_NEXAPOW_SYCL_NATIVE_FIELD"
               ]
             } ],
             [ "mom_sycl_impl=='dpcpp-combined'", {
@@ -413,7 +416,7 @@
               "sources": [ "sycl/pearlhash/esimd.cpp" ],
               "cflags_cc!": [ "-std=gnu++20" ],
               "cflags+": [
-                "-std=c++20 -O3 -ffp-contract=off -fsycl -fsycl-embed-ir -DNDEBUG -DMOM_SYCL_HAS_CUDA -DMOM_PEARLHASH_HAS_ESIMD"
+                "-std=c++20 -O3 -ffp-contract=off -fsycl -fsycl-embed-ir -DNDEBUG -DMOM_SYCL_HAS_CUDA -DMOM_NEXAPOW_SYCL_NATIVE_FIELD -DMOM_PEARLHASH_HAS_ESIMD"
               ]
             } ],
             [ "mom_sycl_impl=='dpcpp-opencl'", {
@@ -423,7 +426,7 @@
               # required to understand that optional extension.
               "cflags_cc!": [ "-std=gnu++20" ],
               "cflags+": [
-                "-std=c++20 -O3 -ffp-contract=off -fsycl -fno-sycl-rdc -fsycl-device-code-split=per_kernel -fno-sycl-instrument-device-code -DNDEBUG -DMOM_SYCL_PORTABLE_OPENCL"
+                "-std=c++20 -O3 -ffp-contract=off -fsycl -fno-sycl-rdc -fsycl-device-code-split=per_kernel -fno-sycl-instrument-device-code -DNDEBUG -DMOM_SYCL_PORTABLE_OPENCL -DMOM_NEXAPOW_PORTABLE_FIELD32"
               ]
             } ],
             [ "mom_sycl_impl=='adaptivecpp-hip'", {
@@ -441,7 +444,7 @@
             } ],
             [ "mom_sycl_impl=='dpcpp'", {
               "cflags+": [
-                "-std=c++20 -O3 -fsycl -fsycl-device-code-split=per_kernel -DNDEBUG -DPEARLHASH_ESIMD -DMOM_ZHASH_INTEL_LATE_BUCKETS"
+                "-std=c++20 -O3 -fsycl -fsycl-device-code-split=per_kernel -DNDEBUG -DMOM_NEXAPOW_PORTABLE_FIELD32 -DPEARLHASH_ESIMD -DMOM_ZHASH_INTEL_LATE_BUCKETS"
               ],
               "ldflags+": [ "-fsycl-device-code-split=per_kernel" ]
             } ]

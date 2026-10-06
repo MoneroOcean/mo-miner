@@ -209,7 +209,8 @@ void Core::Execute() {
             );
             break;
           case DEV::MISC_GPU:
-            dev_nonce = mom::job_boundary::load_nonce<uint64_t>(m_input + m_nonce_offset, false);
+            dev_nonce = mom::job_boundary::load_nonce<uint64_t>(
+              m_input + m_nonce_offset, mom::job_boundary::nonce_big_endian(m_algo_str, m_input_len));
             dev_sols = m_fn.gpu_misc(
               m_job_ref, m_height, m_input, m_input_len, m_output,
               nullptr, &dev_nonce, m_target_bin, m_seed,
@@ -354,7 +355,7 @@ void Core::Execute() {
           send_result(dev_nonce, 8, m_output);
 
         // live Iron Fish (fishhash, 180-byte header) reads the nonce big-endian; embed BE there, LE otherwise
-        const uint64_t embed = (m_dev == DEV::FISHHASH_GPU && m_input_len >= 140) ? bswap_64(m_nonce64) : m_nonce64;
+        const uint64_t embed = ((m_dev == DEV::FISHHASH_GPU && m_input_len >= 140) || m_algo_str == "nexapow") ? bswap_64(m_nonce64) : m_nonce64;
         std::memcpy(m_input + m_nonce_offset, &embed, sizeof(embed));
         m_nonce64 += m_nonce_step;
         if (m_target && nonce_overflowed(prev_nonce, m_nonce64, m_nicehash_mask)) {

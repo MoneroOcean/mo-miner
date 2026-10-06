@@ -5,7 +5,9 @@ function hexWithoutPrefix(value) {
 }
 
 function normalizedFullNonce(value) {
-  return hexWithoutPrefix(value).padStart(16, "0").slice(-16);
+  const hex = hexWithoutPrefix(value);
+  if (!/^[0-9a-f]{1,16}$/i.test(hex)) {throw new Error("Invalid nonce");}
+  return hex.padStart(16, "0");
 }
 
 function reverseHexBytes(value) {
@@ -43,6 +45,24 @@ function counterHexToWireLE(nonceHex) {
 // The submit nonce2 = the 32-byte header nonce after the pool's nonce1 prefix. The header nonce is
 // nonce1 (nonce1_len bytes) || nonce2; the solver advances an 8-byte counter at the start of nonce2,
 // the remaining nonce2 bytes stay as the job delivered them (zeros). Returns wire-order hex.
+function nexaSubmitParams(pool, job, value) {
+  const extraNonce = hexWithoutPrefix(job.extra_nonce);
+  if (job.extra_nonce2_size === 4) {
+    const nonce = normalizedFullNonce(value.nonce);
+    if (!/^[0-9a-f]{8}$/i.test(extraNonce)) {throw new Error("Invalid Nexa fixed nonce prefix");}
+    // Four-field jobs have no time field. This dialect ignores the timestamp slot and hashes
+    // the concatenation of submit fields 2 and 4 (MagicPool's WildRig-compatible ParseWork):
+    // fixed extranonce(4) || complete worker nonce(8).
+    return [pool.login, job.job_id, extraNonce, "00000000", nonce];
+  }
+  return [
+    pool.login,
+    job.job_id,
+    extraNonce + normalizedFullNonce(value.nonce),
+    hexWithoutPrefix(job.ntime),
+  ];
+}
+
 function zelhashNonce2(pool, nonceHex) {
   const job = (pool && pool.last_job) || {};
   const nonce1_len = Number(job.nonce1_len) || 0;
@@ -63,6 +83,7 @@ function zelhashSubmitNtime(pool) {
 
 module.exports = {
   ergSubmitParams,
+  nexaSubmitParams,
   hexWithoutPrefix,
   reverseHexBytes,
   zelhashNonce2,

@@ -26,6 +26,7 @@ async function loadMinerWithStubs(options = {}) {
   const coreEvents = new events.EventEmitter();
   const sentMessages = [];
   const poolWrites = [];
+  const loggedErrors = [];
   let capturedSetJob = null;
   const algoParams = options.algoParams || {};
   const helperStub = {
@@ -44,7 +45,7 @@ async function loadMinerWithStubs(options = {}) {
     log1: noOp,
     log2: noOp,
     log3: noOp,
-    log_err: noOp,
+    log_err: (message) => loggedErrors.push(message),
   };
   const poolStub = {
     connect_pool_throttle: (pool_id, setJob) => { capturedSetJob = setJob; },
@@ -97,6 +98,7 @@ async function loadMinerWithStubs(options = {}) {
     publicAlgoParams: moduleStub.exports.__test.publicAlgoParams,
     poolWrites,
     sentMessages,
+    loggedErrors,
   };
 }
 

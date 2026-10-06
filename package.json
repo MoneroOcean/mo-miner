@@ -34,6 +34,7 @@
     "test:gpu-discrete": "node tests/run_hash.js gpu-discrete",
     "test:gpu-multi": "node tests/run_hash.js gpu-multi",
     "test:perf": "node tests/run_perf.js",
+    "test:nexapow-ref": "out=/tmp/mom-nexapow-ref-$$; trap 'rm -f \"$out\"' EXIT; c++ -std=c++17 -O2 -Wall -Wextra -Werror -pedantic tests/reference/nexapow_echelon.cpp -o \"$out\" && \"$out\"",
     "test:deploy": "bash scripts/test-deploy.sh"
   },
   "keywords": [
@@ -58,6 +59,7 @@
     "equihash192_7",
     "beamhash3",
     "pearlhash",
+    "nexapow",
     "sycl",
     "opencl",
     "level-zero",
