@@ -204,6 +204,17 @@ module.exports = ({
   "0100000000000000" +
   "00000000";
 
+  function validDifficulty(value, algo) {
+    if (typeof value === "bigint") {
+      if (value > 0n) {return value;}
+      throw new Error(`Invalid ${algo} job difficulty`);
+    }
+    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+      throw new Error(`Invalid ${algo} job difficulty`);
+    }
+    return value;
+  }
+
   function jobTarget(prev_job, algo) {
     const explicitTarget = orDefault(prev_job.target, "");
     if (algo === "nexapow") {
@@ -216,6 +227,10 @@ module.exports = ({
     // target, use the lenient floor(2^256 / difficulty) fallback.
       if (explicitTarget) {return hexWithoutPrefix(explicitTarget).padStart(64, "0");}
       return fullTargetFromDifficulty(prev_job.difficulty);
+    }
+    if (algo === "verthash") {
+      if (explicitTarget) {return hexWithoutPrefix(explicitTarget).padStart(64, "0");}
+      return h.ethDiff2Target(validDifficulty(prev_job.difficulty, algo), 256n);
     }
     if (!isNonceAt32Algo(algo)) {return explicitTarget || h.diff2target(prev_job.difficulty);}
     // autolykos2 (erg) may deliver the target as a DECIMAL string. Every other nonce-at-32 algo
@@ -294,6 +309,15 @@ module.exports = ({
   // at offset 32. The pool's nonceprefix (0-6 bytes) must occupy the LEADING physical bytes of that nonce
   // field. The native search counter is the LE-stored uint64 there, seeded big-endian from job.nonce and
   // fixed by nicehash_mask -- so both are the reverse of the desired physical {prefix || 0...} layout.
+  function addVerthashJobFields(job, prev_job) {
+    job.noncebytes = 4;
+    job.nonceoffset = 76;
+    const blob = prev_job.blob || prev_job.blob_hex;
+    if (blob !== undefined) {job.blob_hex = blob;}
+    job.extranonce2 = prev_job.extranonce2 || "";
+    job.ntime = prev_job.ntime || "";
+  }
+
   function addBeamhash3JobFields(job, prev_job, pool) {
     job.noncebytes  = 8;
     job.nonceoffset = 32;
@@ -392,6 +416,7 @@ module.exports = ({
     const job = baseJob(prev_job, algo, dev, pool_id);
     if (algo === "c29") {addC29JobFields(job, prev_job);}
     else if (algo === "c30") {addC30JobFields(job, prev_job);}
+    else if (algo === "verthash") {addVerthashJobFields(job, prev_job);}
     else if (algo === "beamhash3") {addBeamhash3JobFields(job, prev_job, opt.pools[pool_id]);}
     else if (isKaspaHeaderAlgo(algo)) {addKaspaHeaderJobFields(job, prev_job);}
     else if (isZelHashAlgo(algo)) {addZelHashJobFields(job, prev_job);}
@@ -492,6 +517,11 @@ module.exports = ({
       if (!job.blob_hex || job.blob_hex.length !== 96) {job.blob_hex = NEXAPOW_BENCH_BLOB;}
       job.nonce = job.nonce || "1182dc5800000000";
       job.target = "00".repeat(32); // benchmark the steady no-share path, not the all-candidate test target
+    }
+    if (job.algo === "verthash") {
+      job.noncebytes = 4;
+      job.nonceoffset = 76;
+      if (!job.blob_hex || job.blob_hex.length !== 160) {job.blob_hex = "00".repeat(80);}
     }
     if (benchHeightByAlgo[job.algo]) {job.height = job.height || benchHeightByAlgo[job.algo];}
     if (job.algo === "etchash") {job.seed_hex = "";}

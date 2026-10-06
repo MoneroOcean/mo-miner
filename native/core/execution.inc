@@ -217,6 +217,15 @@ void Core::Execute() {
               m_batch, is_test, m_is_bench, m_dev_str
             );
             break;
+          case DEV::VERTHASH_GPU: {
+            dev_nonce = mom::job_boundary::load_nonce<uint32_t>(m_input + m_nonce_offset, false);
+            dev_sols = m_fn.gpu_verthash(
+              m_job_ref, m_height, m_input, m_input_len, m_output,
+              nullptr, &dev_nonce, m_target_bin, m_seed,
+              m_batch, is_test, is_benchmark, m_dev_str
+            );
+            break;
+          }
           case DEV::ZELHASH_GPU:
             // The solver writes compressed proofs (or test rows) out-of-band into m_spads.
             std::memcpy(&dev_nonce, m_input + m_nonce_offset, sizeof(dev_nonce));
@@ -277,7 +286,7 @@ void Core::Execute() {
           set_fn(nullptr);
           continue;
         }
-        if (m_dev == DEV::AUTOLYKOS2_GPU || m_dev == DEV::FISHHASH_GPU || m_dev == DEV::KARLSENHASHV2_GPU || m_dev == DEV::MISC_GPU) {
+        if (m_dev == DEV::AUTOLYKOS2_GPU || m_dev == DEV::FISHHASH_GPU || m_dev == DEV::KARLSENHASHV2_GPU || m_dev == DEV::MISC_GPU || m_dev == DEV::VERTHASH_GPU) {
           if (dev_sols == 1) {
             char hash[HASH_LEN*2+1];
             send_msg("test", "result", hash_bin2hex(hash, 0));
@@ -357,6 +366,23 @@ void Core::Execute() {
           send_error("Nonce overflow");
           set_fn(nullptr);
         }
+        continue;
+      }
+      if (m_dev == DEV::VERTHASH_GPU) {
+        if (dev_sols == 1 && m_target) {
+          send_result(dev_nonce, 4, m_output);
+        }
+
+        if (m_nonce_exhausted) {
+          clear_fn();
+          send_last_nonce(m_nonce32, 4, m_pool_id, m_job_id, m_job_token);
+          continue;
+        }
+        const uint32_t first_nonce = m_nonce32;
+        std::memcpy(m_input + m_nonce_offset, &m_nonce32, sizeof(m_nonce32));
+        m_nonce32 = next_nonce_after_batch(
+          first_nonce, m_batch, 1, m_nonce_step,
+          static_cast<uint32_t>(m_nicehash_mask));
         continue;
       }
       // Autolykos2, FishHash, and KarlsenHashV2 share the mine-result handling: 8-byte nonce,

@@ -51,7 +51,7 @@ void Core::get_algo_params(const MessageValues& v) {
     MAX_CN_CPU_WAYS, cpu_sockets, cpu_threads, cpu_l3cache, algo2mem, keys2set(cpu_name2algo),
     gpu_set(gpu_cn_algo2fn), gpu_set(gpu_c29_algo2fn), gpu_set(gpu_kawpow_algo2fn),
     gpu_set(gpu_etchash_algo2fn), gpu_set(gpu_autolykos2_algo2fn), gpu_set(gpu_pearlhash_algo2fn),
-    gpu_set(gpu_fishhash_algo2fn), gpu_set(gpu_karlsenhashv2_algo2fn), gpu_set(gpu_misc_algo2fn),
+    gpu_set(gpu_fishhash_algo2fn), gpu_set(gpu_karlsenhashv2_algo2fn), gpu_set(gpu_misc_algo2fn), gpu_set(gpu_verthash_algo2fn),
     gpu_set(gpu_zelhash_algo2fn), gpu_set(gpu_beamhash3_algo2fn)
   ));
 }

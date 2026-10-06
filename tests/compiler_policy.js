@@ -537,3 +537,22 @@ test("Octopus portable OpenCL uses exact field multiply-add reduction", () => {
   assert.match(source,
     /#if defined\(MOM_SYCL_ADAPTIVECPP\) \|\| defined\(MOM_SYCL_PORTABLE_OPENCL\)[\s\S]*?static_cast<uint64_t>\(static_cast<uint32_t>\(value\)\) \* RECIPROCAL/);
 });
+
+test("Verthash keeps the large portable CPU dataset in shared USM", () => {
+  const source = fs.readFileSync(path.join(__dirname, "../sycl/verthash/verthash.cpp"), "utf8");
+  assert.match(source,
+    /const bool cpu_data = device\.is_cpu\(\);[\s\S]*?cpu_data \? sycl::malloc_shared<Uint2>[\s\S]*?: sycl::malloc_device<Uint2>/);
+  assert.match(source,
+    /if \(cpu_data\)\s+std::memcpy\(data, host\.data\(\), DATA_BYTES\);\s+else\s+sycl_wait_and_throw\(queue\.memcpy/);
+});
+
+test("Verthash defaults use safe Level Zero batches", () => {
+  const intensity = fs.readFileSync(path.join(__dirname, "../sycl/intensity.inc"), "utf8");
+  const start = intensity.indexOf("static unsigned verthash_intensity");
+  const end = intensity.indexOf("\n}\n", start);
+  assert.ok(start >= 0 && end > start, "Verthash intensity function must exist");
+  const block = intensity.slice(start, end);
+  assert.match(block, /sycl_is_level_zero_gpu\(dev\) && !is_integrated_gpu\(dev\)/);
+  assert.match(block, /#ifdef _WIN32[\s\S]*return 1u << 18;[\s\S]*#else[\s\S]*return 1u << 19;/);
+  assert.match(block, /return 1u << 16;/);
+});

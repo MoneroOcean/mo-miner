@@ -88,6 +88,7 @@ void Core::set_job(
     new_algo_str == "karlsenhashv2" ? DEV::KARLSENHASHV2_GPU :
     new_algo_str == "hoohash" ? DEV::MISC_GPU :
     new_algo_str == "nexapow" ? DEV::MISC_GPU :
+    new_algo_str == "verthash" ? DEV::VERTHASH_GPU :
     new_algo_str == "zelhash" ? DEV::ZELHASH_GPU :
     new_algo_str == "zhash" ? DEV::ZELHASH_GPU :
     new_algo_str == "equihash192_7" ? DEV::ZELHASH_GPU :
@@ -159,6 +160,8 @@ void Core::set_job(
     throw std::string("karlsenhashv2 requires an 8-byte nonce at offset 72");
   if (new_dev == DEV::MISC_GPU && new_algo_str != "nexapow" && (new_nonce_bytes != 8 || new_nonce_offset != 72))
     throw std::string("hoohash requires an 8-byte nonce at offset 72");
+  if (new_dev == DEV::VERTHASH_GPU && (new_nonce_bytes != 4 || new_nonce_offset != 76))
+    throw std::string("verthash requires a 4-byte nonce at offset 76");
   // Zcash-family headers carry a 32-byte nonce at offset 108. Advance an 8-byte counter after any
   // fixed pool prefix while keeping it entirely inside that nonce.
   if (new_dev == DEV::ZELHASH_GPU &&
@@ -241,6 +244,10 @@ void Core::set_job(
       new_fn.gpu_misc = algo_lookup(gpu_misc_algo2fn, new_algo_str);
       break;
 
+    case DEV::VERTHASH_GPU:
+      new_fn.gpu_verthash = algo_lookup(gpu_verthash_algo2fn, new_algo_str);
+      break;
+
     case DEV::ZELHASH_GPU:
       new_fn.gpu_zelhash = algo_lookup(gpu_zelhash_algo2fn, new_algo_str);
       break;
@@ -273,6 +280,7 @@ void Core::set_job(
   const unsigned min_input_len = new_dev == DEV::PEARLHASH_GPU ? 76
     : new_dev == DEV::KARLSENHASHV2_GPU ? 80
     : new_dev == DEV::MISC_GPU ? (new_algo_str == "nexapow" ? 40 : 80)
+    : new_dev == DEV::VERTHASH_GPU ? 80
     : new_dev == DEV::ZELHASH_GPU ? 140   // full Zcash/Flux header
     : new_dev == DEV::BEAMHASH3_GPU ? 44         // prework(32)||nonce(8)||extranonce(4)
     : is_nonce_at_32_gpu_dev(new_dev) ? 40 : 0;
@@ -284,7 +292,9 @@ void Core::set_job(
   }
   if (new_dev == DEV::MISC_GPU && new_algo_str != "nexapow" && new_input_len != 80)
     throw std::string("hoohash requires an 80-byte header");
-  if (new_input_len < min_input_len || ((new_algo_str == "zhash" || new_algo_str == "equihash192_7") && new_input_len != 140))
+  if (new_input_len < min_input_len ||
+      (new_dev == DEV::VERTHASH_GPU && new_input_len != 80) ||
+      ((new_algo_str == "zhash" || new_algo_str == "equihash192_7") && new_input_len != 140))
     throw std::string("Bad " + new_algo_str + " input length");
 
   const unsigned new_mem_size = algo2mem.at(new_algo_str);
@@ -494,6 +504,30 @@ void Core::set_job(
       // keep the seed non-zero in mine mode (m_nonce64==0 is the test-job sentinel in Execute)
       m_nonce64 = is_set_nonce ? new_nonce + new_thread_id + m_nonce_step : 0;
       m_nonce32 = 0;
+      return;
+    }
+    if (new_dev == DEV::VERTHASH_GPU) {
+      memcpy(m_input, new_input, m_input_len);
+      m_nonce_step = new_thread_num * m_batch;
+      m_nonce32 = 0;
+      if (is_set_nonce) {
+        const uint32_t mask = static_cast<uint32_t>(new_nicehash_mask);
+        uint32_t current_nonce = static_cast<uint32_t>(new_nonce) + new_thread_id * m_batch;
+        uint32_t last_nonce = current_nonce + m_batch - 1;
+        if (m_target && (!mom::job_boundary::nonce_with_offset<uint32_t>(
+              static_cast<uint32_t>(new_nonce), new_thread_id, m_batch, mask,
+              current_nonce) ||
+            !mom::job_boundary::nonce_with_offset<uint32_t>(
+              current_nonce, m_batch - 1, 1, mask, last_nonce))) {
+          throw std::string("Initial worker nonce range overflows");
+        }
+        std::memcpy(m_input + m_nonce_offset, &current_nonce, sizeof(current_nonce));
+
+        m_nonce32 = next_nonce_after_batch(
+          current_nonce, m_batch, 1, m_nonce_step, mask);
+      }
+      m_nonce64 = 0;
+      set_fn(new_fn.any);
       return;
     }
     // Single-blob GPU pow with an embedded nonce: kawpow/etchash/autolykos2 (nonce at offset 32) and

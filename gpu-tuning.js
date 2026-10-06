@@ -19,6 +19,7 @@ const algoFields = new Map([
   ["karlsenhashv2", new Set(["intensity", "workgroup", "search_mode"])],
   ["hoohash", new Set(["intensity", "workgroup"])],
   ["nexapow", new Set(["intensity"])],
+  ["verthash", new Set(["intensity"])],
   ["pearlhash", new Set(["m", "n", "k", "rank", "workgroup", "cache_block", "tile"])],
   ["zelhash", new Set(["slots"])],
   ["beamhash3", new Set(["workgroup", "compact_workgroup", "scatter_workgroup", "layout"])],

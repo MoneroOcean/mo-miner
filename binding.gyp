@@ -330,6 +330,7 @@
         "sycl/hoohash/hoohash.cpp",
         "sycl/nexapow/nexapow.cpp",
         "sycl/nexapow/test_probe.cpp",
+        "sycl/verthash/verthash.cpp",
         "sycl/zelhash/zelhash.cpp",
         "sycl/beamhash3/beamhash3.cpp"
       ],

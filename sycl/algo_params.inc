@@ -220,6 +220,7 @@ std::map<std::string, std::string> algo_params(
   const std::set<std::string>& gpu_fishhash_algos,
   const std::set<std::string>& gpu_karlsenhashv2_algos,
   const std::set<std::string>& gpu_misc_algos,
+  const std::set<std::string>& gpu_verthash_algos,
   const std::set<std::string>& gpu_zelhash_algos,
   const std::set<std::string>& gpu_beamhash3_algos
 ) {
@@ -228,7 +229,7 @@ std::map<std::string, std::string> algo_params(
                                  !gpu_autolykos2_algos.empty() || !gpu_pearlhash_algos.empty() ||
                                  !gpu_fishhash_algos.empty() ||
                                  !gpu_karlsenhashv2_algos.empty() || !gpu_misc_algos.empty() ||
-                                 !gpu_zelhash_algos.empty() || !gpu_beamhash3_algos.empty();
+                                 !gpu_verthash_algos.empty() || !gpu_zelhash_algos.empty() || !gpu_beamhash3_algos.empty();
   if (need_sycl_devices && str2dev.empty()) update_str2dev(true);
   const unsigned socket_count = std::max(1u, cpu_sockets);
   const unsigned thread_count = std::max(1u, cpu_threads);
@@ -246,6 +247,7 @@ std::map<std::string, std::string> algo_params(
   algos.insert(gpu_fishhash_algos.begin(), gpu_fishhash_algos.end());
   algos.insert(gpu_karlsenhashv2_algos.begin(), gpu_karlsenhashv2_algos.end());
   algos.insert(gpu_misc_algos.begin(), gpu_misc_algos.end());
+  algos.insert(gpu_verthash_algos.begin(), gpu_verthash_algos.end());
   algos.insert(gpu_zelhash_algos.begin(), gpu_zelhash_algos.end());
   algos.insert(gpu_beamhash3_algos.begin(), gpu_beamhash3_algos.end());
   for (const auto& algo : algos) {
@@ -296,6 +298,9 @@ std::map<std::string, std::string> algo_params(
                            gpu_tuning_entry(dev_str, "intensity", nexapow_intensity(dev)));
         });
     }
+    else if (gpu_verthash_algos.contains(algo))
+      add_gpu_dataset_algo_dev(result_dev, 1224 * MiB, 2 * GiB, verthash_intensity,
+                               "intensity", GpuUsm::both, 64, 8 * KiB);
     else if (gpu_zelhash_algos.contains(algo)) {
       if (algo == "equihash192_7")
         add_gpu_dataset_algo_dev(

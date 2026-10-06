@@ -52,6 +52,10 @@ module.exports = ({
            json.params.length >= minimumParams;
   }
 
+  function isVerthashJobNotification(json) {
+    return isMiningNotification(json, 9);
+  }
+
   function isRavenJobNotification(json) {
     return json.method === "mining.notify" && Array.isArray(json.params) && json.params.length >= 6;
   }
@@ -409,6 +413,9 @@ module.exports = ({
 
   function handleSetDifficulty(pool_id, json) {
     const pool = global.opt.pools[pool_id];
+    if (poolProtocol(pool) === "verthash") {
+      pool.verthash_difficulty = positiveDifficulty(json.params[0], "pool");
+    }
     pool.eth_difficulty = json.params[0];
     if (poolProtocol(pool) === "echelon") {
       const difficulty = positiveDifficulty(json.params[0], "pool");
@@ -435,6 +442,56 @@ module.exports = ({
       noncebytes: 8,
       nonceoffset: 32,
     };
+  }
+
+  function verthashNotifyJob(pool, json) {
+    const p = json.params;
+    const extraNonce2Size = pool.extra_nonce2_size ?? 4;
+    if (!Number.isSafeInteger(extraNonce2Size) || extraNonce2Size < 0 || extraNonce2Size > 8) {
+      throw new Error("Invalid Verthash extranonce2 size");
+    }
+    const xnonce2 = "00".repeat(extraNonce2Size);
+    const jobId = poolJobId(p[0]);
+    if (!Array.isArray(p[4]) || p[4].length > 64) {
+      throw new Error("Invalid Verthash merkle branch");
+    }
+    const branches = p[4].map((branch) => validHexBytes(branch, 32));
+    if (branches.some((branch) => !branch)) {throw new Error("Invalid Verthash merkle branch");}
+    if (typeof p[2] !== "string" || typeof p[3] !== "string") {
+      throw new Error("Invalid Verthash job fields");
+    }
+    const previousHash = validHexBytes(p[1], 32);
+    const coinbase1 = hexWithoutPrefix(p[2]);
+    const coinbase2 = hexWithoutPrefix(p[3]);
+    const version = validHexBytes(p[5], 4);
+    const bits = validHexBytes(p[6], 4);
+    const ntime = validHexBytes(p[7], 4);
+    if (jobId === null || !previousHash || !version || !bits || !ntime ||
+        /[^0-9a-f]/i.test(coinbase1 + coinbase2) || coinbase1.length % 2 !== 0 ||
+        coinbase2.length % 2 !== 0) {
+      throw new Error("Invalid Verthash job fields");
+    }
+    /** @param {Buffer} data @returns {Buffer} */
+    const hash256 = (data) => crypto.createHash("sha256").update(
+      crypto.createHash("sha256").update(data).digest()).digest();
+    let merkle = hash256(Buffer.from(coinbase1 + poolExtraNonce(pool) + xnonce2 + coinbase2, "hex"));
+    for (const branch of branches) {
+      merkle = hash256(Buffer.concat([merkle, Buffer.from(branch, "hex")]));
+    }
+    /** @param {string} hex */
+    const reverseWord = (hex) => Buffer.from(hex, "hex").reverse().toString("hex");
+    const previousHeader = [...Array(8).keys()].map((i) =>
+      reverseWord(previousHash.slice(i * 8, i * 8 + 8))).join("");
+    // Verthash hashes the reference miner's internal 32-bit-word header: Stratum scalars and the
+    // previous hash are byte-reversed per word, while the computed Merkle digest stays unchanged.
+    const job = {
+      algo: "verthash", job_id: jobId,
+      blob: reverseWord(version) + previousHeader + merkle.toString("hex") +
+        reverseWord(ntime) + reverseWord(bits) + "00000000",
+      noncebytes: 4, nonceoffset: 76, difficulty: pool.verthash_difficulty || 1,
+      extranonce2: xnonce2, ntime,
+    };
+    return job;
   }
 
   function fixedAlgoJobName(json, fallback) {
@@ -588,6 +645,12 @@ module.exports = ({
         job_id: json.params[0],
         height: json.params[5],
       });
+    }
+    if (poolProtocol(pool) === "verthash" && isVerthashJobNotification(json)) {
+      if (!pool.logged_in) {return null;}
+      const job = commitSubmitMode("verthash", verthashNotifyJob(pool, json));
+      if (job) {pool.submit_mode = "verthash";}
+      return job;
     }
     if (poolProtocol(pool) === "eth" && isEthJobNotification(json)) {
       if (!pool.logged_in) {return null;}

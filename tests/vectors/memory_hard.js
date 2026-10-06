@@ -272,4 +272,21 @@ for (const vector of vectors.filter(({job}) => miscIntensity2Algos.has(job.algo)
   vectors.push(regression);
 }
 
+vectors.push({
+  name: "verthash official dataset gpu1*[intensity=16]",
+  gpu: true,
+  syclCpu: true,
+  // First-use dataset generation can take 30 minutes; retain five minutes for the proof.
+  timeoutMs: 35 * 60 * 1000,
+  perfTimeoutMs: 5 * 60 * 1000,
+  job: {
+    algo: "verthash", dev: "gpu1*[intensity=16]", noncebytes: 4, nonceoffset: 76,
+    target: "00".repeat(32),
+    blob_hex: "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f" +
+      "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f" +
+      "404142434445464748494a4b00000000",
+  },
+  expected: "26e66d827ac59889008c30f2d9cc2fee6544f5e43bcdd4f1b85928ecb63f9412",
+});
+
 module.exports = vectors;

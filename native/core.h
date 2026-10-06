@@ -50,6 +50,7 @@ typedef int (*gpu_pearlhash_hash_fun)(
 // FishHash variants share the etchash hash-fun ABI (32-byte LE target; seed_hash unused).
 typedef gpu_etchash_hash_fun gpu_fishhash_hash_fun;
 typedef gpu_etchash_hash_fun gpu_karlsenhashv2_hash_fun;
+typedef gpu_etchash_hash_fun gpu_verthash_hash_fun;
 // Equihash 125,4 (ZelHash / Flux): Wagner bucket-collision solver. C29-like ABI -- the 32-byte nonce
 // lives IN the 140-byte header (offset 108) and the solver returns a solution COUNT, writing the
 // 52-byte compressed solution(s) out-of-band into solution_out (like c29's output_edges). 256-bit
@@ -87,10 +88,11 @@ union FN {
   gpu_fishhash_hash_fun gpu_fishhash;
   gpu_karlsenhashv2_hash_fun gpu_karlsenhashv2;
   gpu_etchash_hash_fun gpu_misc;
+  gpu_verthash_hash_fun gpu_verthash;
   gpu_zelhash_hash_fun gpu_zelhash;
   gpu_beamhash3_hash_fun gpu_beamhash3;
 };
-enum DEV { CPU, RX_CPU, GPU, C29_GPU, C30_GPU, KAWPOW_GPU, ETCHASH_GPU, AUTOLYKOS2_GPU, PEARLHASH_GPU, FISHHASH_GPU, KARLSENHASHV2_GPU, MISC_GPU, ZELHASH_GPU, BEAMHASH3_GPU };
+enum DEV { CPU, RX_CPU, GPU, C29_GPU, C30_GPU, KAWPOW_GPU, ETCHASH_GPU, AUTOLYKOS2_GPU, PEARLHASH_GPU, FISHHASH_GPU, KARLSENHASHV2_GPU, MISC_GPU, VERTHASH_GPU, ZELHASH_GPU, BEAMHASH3_GPU };
 
 inline bool is_nonce_at_32_gpu_dev(const DEV dev) {
   return dev == DEV::KAWPOW_GPU || dev == DEV::ETCHASH_GPU || dev == DEV::AUTOLYKOS2_GPU || dev == DEV::FISHHASH_GPU;
@@ -104,7 +106,7 @@ inline bool is_equihash_gpu_dev(const DEV dev) {
 // KarlsenHashV2 is small-blob (80-byte header) but its nonce is at offset 72, not 32.
 // Equihash carries a 32-byte nonce at offset 108 and a 52-byte out-of-band solution buffer.
 inline bool is_small_blob_gpu_dev(const DEV dev) {
-  return is_nonce_at_32_gpu_dev(dev) || dev == DEV::C30_GPU || dev == DEV::PEARLHASH_GPU || dev == DEV::KARLSENHASHV2_GPU || dev == DEV::MISC_GPU || is_equihash_gpu_dev(dev);
+  return is_nonce_at_32_gpu_dev(dev) || dev == DEV::C30_GPU || dev == DEV::PEARLHASH_GPU || dev == DEV::KARLSENHASHV2_GPU || dev == DEV::MISC_GPU || dev == DEV::VERTHASH_GPU || is_equihash_gpu_dev(dev);
 }
 
 class Core: public AsyncWorker {

@@ -107,6 +107,10 @@ docker_flags=(
   # disposable development containers so large OpenCL kernels are not recompiled on every r.sh run.
   --mount "type=volume,source=mom-sycl-cache,target=/root/.cache/libsycl_cache"
 )
+if [ -n "${MOM_VERTHASH_DATA:-}" ]; then
+  verthash_data=$(realpath "$MOM_VERTHASH_DATA")
+  docker_flags+=(--env MOM_VERTHASH_DATA=/verthash.dat --mount "type=bind,source=$verthash_data,target=/verthash.dat,readonly")
+fi
 if [ -n "${MOM_GPU_TEST_VENDORS:-}" ]; then
   docker_flags+=(--env "MOM_GPU_TEST_VENDORS=$MOM_GPU_TEST_VENDORS")
 elif [ "$backend_was_explicit" = 1 ]; then
@@ -186,7 +190,7 @@ for var in \
   MOM_PORTABLE_BUILD MOM_LTO MOM_PERF_SAMPLES MOM_COMBINED_TARGETS MOM_FORCE_REBUILD \
   MOM_BUILD_VERBOSE MOM_BUILD_JOBS MOM_GPU_INDEX MOM_OPENCL_DEVICE_TYPE MOM_CN_GPU_INTENSITY \
   MOM_INTEL_AOT_DEVICE MOM_ICPX MOM_DPCPP_ROOT \
-  MOM_LINUX_BUILD_COMPILER MOM_REUSE_BUILT_WORKER \
+  MOM_LINUX_BUILD_COMPILER MOM_REUSE_BUILT_WORKER MOM_VERTHASH_INTENSITY \
   MOM_AUTOLYKOS2_WORKGROUP MOM_AUTOLYKOS2_SPLIT MOM_AUTOLYKOS2_PROFILE MOM_ZELHASH_SLOTS \
   ONEAPI_DEVICE_SELECTOR ZE_AFFINITY_MASK UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS MOM_AMD_TARGET
 do

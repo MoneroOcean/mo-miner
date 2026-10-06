@@ -101,8 +101,16 @@ module.exports = ({
     const pool = opt.pools[v.pool_id];
     const submit_mode = pool && ((pool.last_job?.submit_mode === "cortex" ||
       pool.last_job?.submit_mode === "echelon" ||
-      pool.last_job?.submit_mode === "conflux") ? pool.last_job.submit_mode : pool.submit_mode);
+      pool.last_job?.submit_mode === "conflux" ||
+      pool.last_job?.submit_mode === "verthash") ? pool.last_job.submit_mode : pool.submit_mode);
     const send = (body) => p.pool_write(v.pool_id, { jsonrpc: "2.0", id: 3, ...body });
+
+    if (submit_mode === "verthash") {
+      if (!isWorkerResult(v)) {return h.log_err("Invalid compute core message");}
+      const job = matchingPoolJob(pool, v);
+      if (!job) {return;}
+      return send({method: "mining.submit", params: submission.verthashSubmitParams(pool, job, v)});
+    }
 
     // PearlHash: the worker already built the base64 PlainProof, and the native core emits at most one
     // solution per unit of work (job_id + header), so just relay it -- no JS-side per-job dedup
@@ -216,6 +224,7 @@ module.exports = ({
     const job = opt.pools[pool_id].last_job;
     if (job.algo === "c30" && (job.job_token !== msg.value.job_token ||
         String(job.job_id) !== String(msg.value.job_id))) return;
+    if (job.algo === "verthash" && !matchingPoolJob(opt.pools[pool_id], msg.value)) {return;}
     const prev_nonce = job.nonce;
     const new_nonce  = msg.value.nonce;
     if (isNewerNonce(prev_nonce, new_nonce))

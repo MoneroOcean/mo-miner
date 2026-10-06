@@ -81,11 +81,16 @@ function zelhashSubmitNtime(pool) {
   return hexWithoutPrefix(job.ntime || "");
 }
 
+function verthashSubmitParams(pool, job, value) {
+  return [pool.login, job.job_id, job.extranonce2, job.ntime, value.nonce];
+}
+
 module.exports = {
   ergSubmitParams,
   nexaSubmitParams,
   hexWithoutPrefix,
   reverseHexBytes,
+  verthashSubmitParams,
   zelhashNonce2,
   zelhashSubmitNtime,
 };

@@ -12,4 +12,5 @@ describe("JavaScript logic tests", () => {
   require("./logic/beamhash");
   require("./logic/cortex");
   require("./logic/nexapow");
+  require("./logic/verthash");
 });

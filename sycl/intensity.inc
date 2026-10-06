@@ -190,6 +190,20 @@ static unsigned fishhash_intensity(const sycl::device& dev) {
   });
 }
 
+static unsigned verthash_intensity(const sycl::device& dev) {
+  const unsigned override = parse_pow_intensity_override(16, "MOM_VERTHASH_INTENSITY");
+  if (override)
+    return override;
+  if (sycl_is_level_zero_gpu(dev) && !is_integrated_gpu(dev)) {
+#ifdef _WIN32
+    return 1u << 18; // 0.8% below the 524K peak with about twice the WDDM dispatch headroom.
+#else
+    return 1u << 19; // Measured B580 throughput knee.
+#endif
+  }
+  return 1u << 16;
+}
+
 // Equihash 125,4: the "intensity" is the number of header nonces searched per solve (one full Wagner
 // pass over a 3.72--4.25 GiB accelerator-specific arena), so one process searches one nonce per
 // dispatch. MOM_ZELHASH_INTENSITY overrides that process batch.

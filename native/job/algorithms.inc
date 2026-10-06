@@ -109,6 +109,10 @@ static const std::map<std::string, gpu_etchash_hash_fun> gpu_misc_algo2fn = {
   { "nexapow", nexapow }
 };
 
+static const std::map<std::string, gpu_verthash_hash_fun> gpu_verthash_algo2fn = {
+  { "verthash", verthash }
+};
+
 static const std::map<std::string, gpu_zelhash_hash_fun> gpu_zelhash_algo2fn = {
   { "zelhash", zelhash },
   { "zhash", zhash },
@@ -136,6 +140,7 @@ static const std::map<std::string, unsigned> algo2mem = [](){
     { "karlsenhashv2", 0 },
     { "hoohash", 0 },
     { "nexapow", 0 },
+    { "verthash", 0 },
     { "zelhash", 0 },
     { "zhash", 0 },
     { "equihash192_7", 0 },
