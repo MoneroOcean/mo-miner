@@ -87,6 +87,7 @@ void Core::set_job(
     new_algo_str == "fishhash" ? DEV::FISHHASH_GPU :
     new_algo_str == "karlsenhashv2" ? DEV::KARLSENHASHV2_GPU :
     new_algo_str == "hoohash" ? DEV::MISC_GPU :
+    new_algo_str == "walahash" ? DEV::MISC_GPU :
     new_algo_str == "nexapow" ? DEV::MISC_GPU :
     new_algo_str == "verthash" ? DEV::VERTHASH_GPU :
     new_algo_str == "zelhash" ? DEV::ZELHASH_GPU :

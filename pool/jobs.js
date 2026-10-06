@@ -265,7 +265,8 @@ module.exports = ({
     blob += "0000000000000000";         // nonce placeholder at offset 72 (native re-embeds the seed)
 
     return {
-      algo: fixedAlgoJobName(json, poolProtocol(pool) === "hoosat" ? (algoFromPass(pool) || "hoohash") : "karlsenhashv2"),
+      algo: fixedAlgoJobName(json,
+        algoFromPass(pool) || (poolProtocol(pool) === "hoosat" ? "hoohash" : "karlsenhashv2")),
       blob: blob,                        // 160 hex = 80 bytes
       job_id: String(p[0]),
       target: pool.kaspa_target || kaspaDiffToTarget(pool.kaspa_difficulty || 1),
@@ -727,7 +728,7 @@ module.exports = ({
     if ((poolProtocol(pool) === "kaspa" || poolProtocol(pool) === "hoosat") && isKaspaJobNotification(json)) {
       if (!pool.logged_in) {return null;}
       pool.submit_mode = poolProtocol(pool);
-      return kaspaNotifyJob(pool, json);
+      return commitSubmitMode(pool.submit_mode, kaspaNotifyJob(pool, json));
     }
     if (poolProtocol(pool) === "beam" && isBeamJobNotification(json)) {
       if (!pool.logged_in) {return null;}

@@ -140,6 +140,14 @@ MOM_SYCL_API int zelhash(
   unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
 );
 
+// WagLayla WalaHash: BLAKE3/SHA3-256 HeavyHash with a per-header 64x64 nibble matrix.
+// Same 80-byte header and etchash ABI as the other small-blob variants.
+MOM_SYCL_API int walahash(
+  unsigned job_id, uint32_t height, const uint8_t* input, unsigned input_size, uint8_t* output,
+  uint8_t* mix_hash, uint64_t* pnonce, const uint8_t* target, const uint8_t* seed_hash,
+  unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str
+);
+
 // Verthash: fixed external 1.20-GiB dataset, 80-byte Bitcoin header, 4-byte nonce at offset 76.
 // Shares the etchash ABI; mix_hash and seed_hash are unused and pnonce's low 32 bits carry the nonce.
 MOM_SYCL_API int verthash(

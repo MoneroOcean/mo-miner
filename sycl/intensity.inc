@@ -190,6 +190,32 @@ static unsigned fishhash_intensity(const sycl::device& dev) {
   });
 }
 
+static bool walahash_supported(const sycl::device& dev) {
+  return dev.is_gpu() && mom_has_usm_device(dev) && sycl_workgroup_fits(dev, 32);
+}
+
+static unsigned walahash_intensity(const sycl::device& dev) {
+  const unsigned override = parse_pow_intensity_override(1, "MOM_WALAHASH_INTENSITY");
+  if (override)
+    return override;
+  const uint64_t global_mem = dev.get_info<sycl::info::device::global_mem_size>();
+  const uint64_t max_alloc = dev.get_info<sycl::info::device::max_mem_alloc_size>();
+  if (mom_is_cuda(dev))
+    return 67108864;
+  // The 33,554,432-nonce accelerated layout allocates two 1-GiB buffers. High-memory HIP
+  // devices sustain this batch on both operating systems; select by backend/capacity rather than
+  // a GPU model so future compatible devices inherit the measured default.
+  if (mom_is_hip(dev) && global_mem >= 8ULL * GiB)
+    return 33554432;
+  if (sycl_is_level_zero_gpu(dev) && global_mem >= 8ULL * GiB && max_alloc >= 2ULL * GiB)
+    return 33554432; // Memory-guarded Intel matrix batch also fits under WDDM.
+#ifdef _WIN32
+  return 16777216; // smaller fallback for constrained Windows devices.
+#else
+  return sycl_is_level_zero_gpu(dev) ? 2097152 : 524288;
+#endif
+}
+
 static unsigned verthash_intensity(const sycl::device& dev) {
   const unsigned override = parse_pow_intensity_override(16, "MOM_VERTHASH_INTENSITY");
   if (override)

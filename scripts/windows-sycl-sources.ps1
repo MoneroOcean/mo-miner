@@ -17,6 +17,7 @@ function Get-MomWindowsSyclSources {
     nexapow      = 'sycl\nexapow\nexapow.cpp'
     nexapow_test = 'sycl\nexapow\test_probe.cpp'
     hoohash      = 'sycl\hoohash\hoohash.cpp'
+    walahash     = 'sycl\walahash\walahash.cpp'
     verthash     = 'sycl\verthash\verthash.cpp'
     zelhash      = 'sycl\zelhash\zelhash.cpp'
     beamhash3    = 'sycl\beamhash3\beamhash3.cpp'

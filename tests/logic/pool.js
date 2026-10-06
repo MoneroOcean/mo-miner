@@ -684,3 +684,31 @@ test("Octopus submit uses Conflux mining.submit format", async () => {
     "cfx:wallet.rig", "job1", "0x0000000000000001", "0x" + headerHash,
   ]));
 });
+
+test("pass-only Kaspa-family metadata selects the matching jobs and submit mode", async () => {
+  for (const {algo, protocol} of [
+    {algo: "karlsenhashv2", protocol: "kaspa"},
+    {algo: "walahash", protocol: "kaspa"},
+    {algo: "hoohash", protocol: "hoosat"},
+  ]) {
+    /** @type {PoolJob | undefined} */
+    let jobMessage;
+    await withMockPool({pool: {pass: `x~${algo}`, use_subscribe: false}}, async ({socket, poolConfig}) => {
+      pool.connect_pool_throttle(0, /** @param {PoolJob} job */ (job) => {
+        jobMessage = job;
+        return completeMiningJob(job);
+      });
+      socket.emit("connect");
+      socket.emit("data", Buffer.from(JSON.stringify({
+        jsonrpc: "2.0", id: 1, error: null, result: {id: "worker"},
+      }) + "\n"));
+      socket.emit("data", Buffer.from([
+        {id: null, method: "mining.set_difficulty", params: [4.25]},
+        {id: null, method: "mining.notify", params: ["job", [1, 2, 3, 4], 1781909733171]},
+      ].map((message) => JSON.stringify(message)).join("\n") + "\n"));
+      assert.equal(poolConfig.inferred_protocol, protocol, algo);
+      assert.equal(jobMessage?.submit_mode, protocol, algo);
+      assert.equal(jobMessage?.algo, algo);
+    });
+  }
+});

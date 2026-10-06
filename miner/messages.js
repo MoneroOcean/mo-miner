@@ -99,7 +99,8 @@ module.exports = ({
   function handleResult(msg) {
     const v = msg.value;
     const pool = opt.pools[v.pool_id];
-    const submit_mode = pool && ((pool.last_job?.submit_mode === "cortex" ||
+    const submit_mode = pool && (((pool.last_job?.algo === "walahash" &&
+      pool.last_job?.submit_mode === "kaspa") || pool.last_job?.submit_mode === "cortex" ||
       pool.last_job?.submit_mode === "echelon" ||
       pool.last_job?.submit_mode === "conflux" ||
       pool.last_job?.submit_mode === "verthash") ? pool.last_job.submit_mode : pool.submit_mode);
@@ -134,8 +135,15 @@ module.exports = ({
     // Kaspa-family submit: mining.submit [wallet.worker, job_id, nonce_hex].
     // The native returns the winning 8-byte nonce as 16-hex big-endian (nonce_to_hex %016PRIx64); the
     // pool parses it big-endian with the extranonce as the leading bytes, which is exactly this layout.
-    if (submit_mode === "kaspa")
-    {return send({ method: "mining.submit", params: [pool.login, v.job_id, "0x" + v.nonce] });}
+    if (submit_mode === "kaspa") {
+      if (pool.last_job?.algo === "walahash") {
+        if (!isWorkerResult(v)) {return h.log_err("Invalid compute core message");}
+        const job = matchingPoolJob(pool, v);
+        if (!job) {return;}
+        return send({method: "mining.submit", params: [pool.login, job.job_id, "0x" + v.nonce]});
+      }
+      return send({ method: "mining.submit", params: [pool.login, v.job_id, "0x" + v.nonce] });
+    }
     if (submit_mode === "hoosat") {
       if (typeof v.hash !== "string") {return h.log_err("Invalid compute core message");}
       return send({method: "mining.submit", params: [pool.login, v.job_id, "0x" + v.nonce, v.hash]});

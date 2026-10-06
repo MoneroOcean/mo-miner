@@ -263,7 +263,25 @@ const vectors = [
   },
 ];
 
-const miscIntensity2Algos = new Set(["hoohash", "nexapow"]);
+vectors.push({
+    // Authoritative waglaylad-rusty v0.14.5 vector, independently evaluated with its PowHash,
+    // SHA3-256, and Matrix implementations. Blob = prePow||timestamp LE||zero(32)||nonce LE.
+    name: "walahash gpu1*[intensity=1]",
+    gpu: true,
+    syclCpu: true,
+    job: {
+      algo: "walahash",
+      dev: "gpu1*[intensity=1]",
+      noncebytes: 8,
+      nonceoffset: 72,
+      target: "00".repeat(32),
+      blob_hex: "63e71d5599e1ebcf24ed03376a15dd7a1c33f94cbe8099f4bd681ab2aa04b167" +
+        "e2860c6d8f010000" + "00".repeat(32) + "f2b5fd5e8b4d0a9b",
+    },
+    expected: "c72d158213c8337ef62e2e364858255ab36606264ce214053f8247e7ff29b683",
+  });
+
+const miscIntensity2Algos = new Set(["hoohash", "walahash", "nexapow"]);
 for (const vector of vectors.filter(({job}) => miscIntensity2Algos.has(job.algo))) {
   const regression = {...vector};
   delete regression.syclCpu;

@@ -7,6 +7,7 @@ const policyFile = path.join(__dirname, "GPU-COMPILERS.md");
 let cached;
 const syclNativeVariables = {
   octopus: "MOM_OCTOPUS_SYCL_NATIVE",
+  walahash: "MOM_WALAHASH_SYCL_NATIVE",
 };
 
 function cells(line) {
