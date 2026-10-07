@@ -8,9 +8,9 @@
 // - Intel uses 42 trim pairs and at most a 4 MiB handoff to the dense host cycle finder.
 //   Shallower trimming can overflow that capacity and lose proofs; 42 pairs is not a fundamental
 //   minimum. Portable builds retain 80 pairs and a 1 MiB handoff.
-// - The B580 comparison uses a local NVIDIA peer because no controlled Intel reference miner is
-//   available. That identifies optimization headroom, not an established hardware ceiling.
-//   The lolMiner/RTX 5060 Ti peer target is 7.40 g/s, reproduced in three local runs at 150 W.
+// - BZMiner 100.45 provides a controlled B580 reference: 2.62 g/s on Linux and 2.55 g/s on
+//   Windows (final five warmed samples, offline benchmark). Its Intel path explicitly rejects
+//   A770, whose comparison still uses the 7.40 g/s NVIDIA peer, not a proven hardware ceiling.
 // - Keep the complete portable SYCL path available; vendor-specific changes must be capability-gated.
 #include <sycl/sycl.hpp>
 #include <algorithm>

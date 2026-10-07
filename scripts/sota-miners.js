@@ -133,6 +133,31 @@ module.exports = {
       nexapow: {accepted: [15], evidence: "positive Average speed line"},
     },
   },
+  bzminer10045: {
+    name: "BZMiner 100.45",
+    url: "https://github.com/bzminer/bzminer/releases/download/v100.45/bzminer_v100.45_linux.tar.gz",
+    sha256: "e52cceefb78b88dd57197dd833c17424fa40644b7d49b4c194f74efeb3d5054c",
+    windowsAsset: {
+      url: "https://github.com/bzminer/bzminer/releases/download/v100.45/bzminer_v100.45_windows.zip",
+      sha256: "f925f0fb03b1244ea0182296acba8dd7fef9aee655483a08ecc3f6a948abfc91",
+    },
+    strip: 1,
+    exe: "bzminer",
+    linuxEvidence: {
+      c29: {
+        platform: "linux", vendor: "intel", gpu: "B580",
+        samples: [2.62, 2.62, 2.65, 2.62, 2.62], referenceRate: 2.62, unit: "g/s",
+        reason: "median of the final five warmed rates from a 180-second isolated offline benchmark",
+      },
+    },
+    windowsEvidence: {
+      c29: {
+        platform: "windows", vendor: "intel", gpu: "B580",
+        samples: [2.55, 2.56, 2.54, 2.57, 2.53], referenceRate: 2.55, unit: "g/s",
+        reason: "median of the final five warmed rates from a 180-second disposable-VM offline benchmark",
+      },
+    },
+  },
   bzminer10036: {
     name: "BZMiner 100.36",
     url: "https://github.com/bzminer/bzminer/releases/download/v100.36/" +

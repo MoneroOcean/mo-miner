@@ -901,6 +901,24 @@ test("failed replacement preserves the prior corrupt cache and HTTPS-only size l
   }
 });
 
+test("BZMiner 100.45 C29 reference is measured on B580 separately for each OS", () => {
+  const miner = miners.bzminer10045;
+  assert.equal(miner.name, "BZMiner 100.45");
+  assert.match(miner.sha256, /^[0-9a-f]{64}$/);
+  assert.match(miner.windowsAsset.sha256, /^[0-9a-f]{64}$/);
+  for (const {platform, evidence} of [{platform: "linux", evidence: miner.linuxEvidence.c29},
+    {platform: "windows", evidence: miner.windowsEvidence.c29}]) {
+    assert.equal(evidence.platform, platform);
+    assert.equal(evidence.vendor, "intel");
+    assert.equal(evidence.gpu, "B580");
+    assert.equal(evidence.samples.length, 5);
+    assert.equal([...evidence.samples].sort((a, b) => a - b)[2], evidence.referenceRate);
+    assert.equal(evidence.unit, "g/s");
+  }
+  assert.equal(miner.linuxEvidence.c29.referenceRate, 2.62);
+  assert.equal(miner.windowsEvidence.c29.referenceRate, 2.55);
+});
+
 test("source-bound CLI fakes execute only the constrained container and never a pool miner", () => {
   const vm = require("node:vm");
   const source = fs.readFileSync(require.resolve("../scripts/sota-benchmark"), "utf8");

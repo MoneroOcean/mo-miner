@@ -31,7 +31,7 @@ the GPUs on adjacent rows; the last column names the comparison source.
 
 | Algo / coin / pool      | GPU     | Linux               | Windows             | Reference / evidence           |
 | ----------------------- | ------- | ------------------- | ------------------- | ------------------------------ |
-| `c29` / TARI / MO       | B580    | 5.94 g/s (80%*)     | 6.13 g/s (83%*)     | best peer*                     |
+| `c29` / TARI / MO       | B580    | 5.94 g/s (227%)     | 6.13 g/s (240%)     | BZMiner                        |
 |                         | A770    | 4.13 g/s (56%*)     | -                   | best peer*                     |
 |                         | 5060 Ti | 6.32 g/s (82%)      | 6.28 g/s (101%)     | BZMiner                        |
 |                         | 9060 XT | 6.15 g/s (93%)      | 5.95 g/s (90%)      | BZMiner                        |
