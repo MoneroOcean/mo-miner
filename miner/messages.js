@@ -1,6 +1,7 @@
 "use strict";
 
 const zlib = require("node:zlib");
+const gpuTuning = require("../gpu-tuning");
 
 const {MAX_PEARL_PROOF_BYTES, MAX_PEARL_PROOF_BASE64} = require("../helper/worker-protocol");
 const MAX_JOB_TOKEN_CHARS = 256;
@@ -440,7 +441,11 @@ module.exports = ({
     const hashrate = collectedHashrate();
     const backend = last_job.backend_request === "auto"
       ? `auto[${last_job.backend}]` : last_job.backend;
-    h.log("Algo " + last_job.algo + " (" + last_job.dev + ":" + backend + ") hashrate: " +
+    // Bare cpu uses XMRig; numbered cpu devices use SYCL and still need the backend label.
+    const nativeCpuOnly = gpuTuning.parseDeviceList(last_job.dev, last_job.algo)
+      .every((entry) => entry.device === "cpu");
+    const device = nativeCpuOnly ? last_job.dev : `${last_job.dev}:${backend}`;
+    h.log("Algo " + last_job.algo + " (" + device + ") hashrate: " +
         h.formatHashrate(hashrate.total_hashrate) + " (" + hashrate.thread_hashrate_str + ")");
     thread_hashrates = Object.create(null);
     const callback = getAlgoParamsBenchCallback();
