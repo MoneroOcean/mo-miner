@@ -72,7 +72,7 @@ module.exports.opt_help = {
   job: {
     _help:        "JSON string of the default job params (mostly used in test/bench mode)",
     algo:         [ null,  'algo name of the job (only used with "mine" directive)' ],
-    dev:          [ "cpu", dev_help ],
+    dev:          [ "cpu", dev_help + "; in mine auto mode, restrict switching to these devices" ],
     blob_hex: [ "0305A0DBD6BF05CF16E503F3A66F78007CBF34144332ECBFC22ED95C8700383B309ACE1923A0964B"
               + "00000008BA939A62724C0D7581FCE5761E9D8A0E6A1C3F924FDD8493D1115649C05EB601",
     "hexadecimal string of input blob" ],
@@ -384,6 +384,21 @@ function parsePearlHashCertVersion(arg, val) {
     );
   }
   return version;
+}
+
+/** @param {string} arg @param {unknown} value @returns {string} */
+function parseDeviceRequest(arg, value) {
+  if (typeof value !== "string") {
+    return module.exports.print_help("Option " + arg + " device list must be a string");
+  }
+  try {
+    // Validate the shared grammar independently of option order; resolution checks each algorithm.
+    gpuTuning.parseDeviceList(value);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return module.exports.print_help("Option " + arg + " has invalid device list: " + message);
+  }
+  return value;
 }
 
 /** @param {string} arg @param {unknown} val @param {number} max */
@@ -745,6 +760,8 @@ module.exports.saved_config = function(opt) {
   const {active: _active, ...pool_ids} = opt.pool_ids;
   return {
     ...saved,
+    // Keep automatic-mode selection durable without saving transient jobs or changing fixed mode.
+    ...(!opt.job.algo && opt.job.dev_request !== undefined ? {job: {dev: opt.job.dev_request}} : {}),
     pools: opt.pools.map(durablePoolFields),
     pool_ids,
   };
@@ -1067,7 +1084,9 @@ function parseSimpleOption(opt, key, key_help, key_path_str, arg, val) {
   if (arg !== "--" + key_path_str) {
     return false;
   }
-  if (key_path_str === "job.pearlhash_cert_version") {
+  if (key_path_str === "job.dev") {
+    opt[key] = parseDeviceRequest(arg, val);
+  } else if (key_path_str === "job.pearlhash_cert_version") {
     opt[key] = parsePearlHashCertVersion(arg, val);
   } else {
     const max = boundedIntegerOptions.get(key_path_str);

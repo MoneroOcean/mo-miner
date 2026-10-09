@@ -30,8 +30,8 @@ module.exports = ({
 }) => {
 
   const reservedAlgoParamKeys = new Set(["__proto__", "constructor", "prototype"]);
-  // Donation respects discovery's per-device/VRAM eligibility beyond saved or primary overrides.
-  /** @type {Map<string, Set<string>>} */
+  // Device selection and donation respect discovery's per-device/VRAM eligibility.
+  /** @type {Map<string, ReturnType<typeof gpuTuning.parseDeviceList>>} */
   const discoveredDevices = new Map();
 
   /** @returns {CpuInfo} */
@@ -148,7 +148,7 @@ module.exports = ({
     for (const [algo, rawDev] of entries) {
       if (algo.startsWith("@")) {continue;}
       const discovered = gpuTuning.parseDeviceList(rawDev, algo);
-      discoveredDevices.set(algo, new Set(discovered.map((entry) => entry.device)));
+      discoveredDevices.set(algo, discovered);
       const configured = Object.hasOwn(opt.algo_params, algo) ? opt.algo_params[algo] : undefined;
       const backendKey = `@backend:${algo}`;
       const backendHint = Object.hasOwn(params, backendKey) ? params[backendKey] : "auto";
@@ -170,7 +170,8 @@ module.exports = ({
   function donationAlgoSupported(algo, dev) {
     const discovered = discoveredDevices.get(algo);
     if (!discovered) {return false;}
-    return gpuTuning.parseDeviceList(dev, algo).every((entry) => discovered.has(entry.device));
+    return gpuTuning.parseDeviceList(dev, algo).every((entry) =>
+      discovered.some((candidate) => candidate.device === entry.device));
   }
 
   /** @param {Record<string, string>} params @returns {Record<string, string>} */
@@ -201,14 +202,14 @@ module.exports = ({
     return result;
   }
 
-  function prepare_fixed_algo_params() {
+  function prepare_algo_params() {
     const algo = normalizeAlgoName(opt.job.algo);
-    if (!algo) {return;}
-    const detected = Object.hasOwn(opt.algo_params, algo) ? opt.algo_params[algo] : undefined;
+    const requestedDev = opt.job.dev_request;
+    if (!algo && requestedDev === undefined) {return true;}
+    const detected = algo && Object.hasOwn(opt.algo_params, algo) ? opt.algo_params[algo] : undefined;
     let algo_param = detected || {dev: opt.job.dev, perf: null, backend: "auto", tuning: {}};
     // An explicit device, including "cpu", overrides discovery while inheriting omitted GPU tuning.
-    const requestedDev = opt.job.dev_request;
-    if (requestedDev !== undefined) {
+    if (algo && requestedDev !== undefined) {
       algo_param = {
         ...algo_param,
         dev: resolvedDeviceList(
@@ -216,22 +217,89 @@ module.exports = ({
           algo_param.tuning || {}),
       };
     }
-    opt.job.algo = algo;
+    if (algo) {opt.job.algo = algo;}
     // Donation must never widen the user's mining device set or process count. Retain discovery's
-    // per-algorithm capability and VRAM decisions within the fixed job's per-device process budget.
+    // per-algorithm capability and VRAM decisions within the selected per-device process budget.
     const selectedProcesses = new Map();
-    for (const entry of gpuTuning.parseDeviceList(algo_param.dev, algo)) {
+    const selectedEntries = gpuTuning.parseDeviceList(
+      algo ? algo_param.dev : /** @type {string} */ (requestedDev), algo || "");
+    const boundedDevices = new Set();
+    const requestedParts = requestedDev?.split(",") || [];
+    for (const [index, entry] of selectedEntries.entries()) {
+      // Bare auto selectors retain discovery's optimized worker geometry. An explicit process
+      // suffix (including ^1), or repeated entries for one device, sets a concrete total budget.
+      if (requestedParts[index]?.includes("^") || selectedProcesses.has(entry.device)) {
+        boundedDevices.add(entry.device);
+      }
       selectedProcesses.set(
         entry.device, (selectedProcesses.get(entry.device) || 0) + entry.processes
       );
     }
+
+    /** @param {string} candidateAlgo @param {AlgoParam} candidate
+     * @param {ReturnType<typeof gpuTuning.parseDeviceList>} discovery */
+    function select_auto_entries(candidateAlgo, candidate, discovery) {
+      const configured = gpuTuning.parseDeviceList(candidate.dev, candidateAlgo);
+      const configuredDevices = new Set(configured.map((entry) => entry.device));
+      // Retain saved per-device tuning, but recover actual discovery geometry for new devices.
+      const heuristic = [...configured, ...discovery.filter((entry) =>
+        !configuredDevices.has(entry.device))];
+      /** @type {ReturnType<typeof gpuTuning.parseDeviceList>} */
+      const result = [];
+      for (const [index, part] of requestedParts.entries()) {
+        const device = selectedEntries[index]?.device;
+        if (!discovery.some((entry) => entry.device === device)) {continue;}
+        let requested;
+        try {
+          // Keep *B in its original form until the algorithm determines its primary tuning field.
+          requested = gpuTuning.parseDeviceEntry(part, candidateAlgo);
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          throw new Error(`Selected device tuning is not supported for ${candidateAlgo}: ${reason}`, {cause: error});
+        }
+        const matches = heuristic.filter((entry) => entry.device === device);
+        const bounded = boundedDevices.has(device);
+        if (requested.device.startsWith("cpu")) {
+          for (const match of matches) {
+            result.push({
+              ...requested,
+              tuning: {...match.tuning, ...requested.tuning},
+              processes: bounded ? requested.processes : match.processes,
+            });
+          }
+          continue;
+        }
+        // Bare selectors retain each optimized worker geometry. An explicit budget repeats the
+        // first profile instead of inventing an aggregate shape for algorithm-specific fields.
+        const selectedMatches = bounded ? matches.slice(0, 1) : matches;
+        for (const match of selectedMatches) {
+          const resolved = resolvedDeviceList(candidateAlgo, part,
+            gpuTuning.formatDeviceEntry(match), candidate.tuning || {});
+          for (const entry of gpuTuning.parseDeviceList(resolved, candidateAlgo)) {
+            result.push({...entry, processes: bounded ? entry.processes : match.processes});
+          }
+        }
+      }
+      return result;
+    }
+
     /** @type {Record<string, AlgoParam>} */
     const compatible = {};
     for (const [candidateAlgo, candidate] of Object.entries(opt.algo_params)) {
-      const discovered = discoveredDevices.get(candidateAlgo);
-      if (!discovered) {continue;}
+      const discovery = discoveredDevices.get(candidateAlgo);
+      if (!discovery) {continue;}
+      const discovered = new Set(discovery.map((entry) => entry.device));
+      const resolvedEntries = algo ? gpuTuning.parseDeviceList(candidate.dev, candidateAlgo)
+        : select_auto_entries(candidateAlgo, candidate, discovery);
       const remainingProcesses = new Map(selectedProcesses);
-      const entries = gpuTuning.parseDeviceList(candidate.dev, candidateAlgo)
+      if (!algo) {
+        for (const device of discovered) {
+          if (boundedDevices.has(device)) {continue;}
+          remainingProcesses.set(device, resolvedEntries.filter((entry) => entry.device === device)
+            .reduce((total, entry) => total + entry.processes, 0));
+        }
+      }
+      const entries = resolvedEntries
         .filter((entry) => discovered.has(entry.device))
         .map((entry) => {
           const remaining = remainingProcesses.get(entry.device) || 0;
@@ -241,18 +309,27 @@ module.exports = ({
         })
         .filter((entry) => entry !== null);
       if (entries.length) {
+        const dev = gpuTuning.formatDeviceList(entries);
+        // A measured rate belongs to its effective device geometry, not a narrowed selection.
+        // Disabled (zero) entries must remain disabled rather than becoming missing benchmarks.
+        const previous = gpuTuning.parseDeviceList(candidate.dev, candidateAlgo)
+          .map(gpuTuning.formatDeviceEntry).sort().join(",");
+        const selected = entries.map(gpuTuning.formatDeviceEntry).sort().join(",");
         compatible[candidateAlgo] = {
           ...candidate,
-          dev: gpuTuning.formatDeviceList(entries),
+          dev,
+          perf: !algo && candidate.perf !== null && candidate.perf > 0 && previous !== selected
+            ? null : candidate.perf,
         };
       }
     }
-    compatible[algo] = algo_param;
+    if (algo) {compatible[algo] = algo_param;}
     opt.algo_params = compatible;
+    return Object.keys(compatible).length > 0;
   }
 
   return {
     detect_cpu, use_msr_tuning, add_algo_params, publicAlgoParams,
-    prepare_fixed_algo_params, donationAlgoSupported,
+    prepare_algo_params, donationAlgoSupported,
   };
 };

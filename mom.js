@@ -448,11 +448,17 @@ if (!h.cluster_process()) {
   });
   const {
     detect_cpu, use_msr_tuning, add_algo_params, publicAlgoParams,
-    prepare_fixed_algo_params, donationAlgoSupported,
+    prepare_algo_params, donationAlgoSupported,
   } = environment;
 
   function start_after_algo_params() {
-    prepare_fixed_algo_params();
+    try {
+      if (!prepare_algo_params()) {
+        return err_exit("No supported algorithms for the selected mining devices");
+      }
+    } catch (error) {
+      return err_exit(errorMessage(error));
+    }
     if (global.opt.bench_algo_params !== 0) {return bench_algos(start_mining);}
     return start_mining();
   }

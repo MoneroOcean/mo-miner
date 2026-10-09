@@ -52,6 +52,7 @@ module.exports = ({o, opt, normalizeAlgoName}) => {
     const pool = parsePoolUri(uri);
     opt.pool_ids.primary = opt.pools.length;
     opt.pools.push(o.pool_create(pool.url, pool.port, pool.is_tls, login, pass));
+    return opt.pool_ids.primary;
   }
 
   /** @param {string[]} args */
@@ -64,7 +65,10 @@ module.exports = ({o, opt, normalizeAlgoName}) => {
   function parseMineArgs(args) {
     const first = args.shift();
     if (first === undefined) {return o.print_help("Directive \"mine\" needs 1+ parameters");}
-    if (o.is_config_file(first)) {return o.load_config(opt, first);}
+    if (o.is_config_file(first)) {
+      o.load_config(opt, first);
+      return null;
+    }
     const login = args.shift();
     if (login === undefined) {return o.print_help("Directive \"mine\" needs 2+ parameters");}
     return addPrimaryPool(first, login, optionalPoolPass(args));
@@ -115,9 +119,17 @@ module.exports = ({o, opt, normalizeAlgoName}) => {
     };
     const parser = Object.hasOwn(parsers, directive) ? parsers[directive] : null;
     if (!parser) {return o.print_help("Unknown directive " + directive);}
-    parser(args);
+    const positionalPrimary = parser(args);
     parseRemainingOptions(args);
     opt.job.algo = normalizeAlgoName(opt.job.algo) || null;
+    if (directive === "mine" && typeof positionalPrimary === "number" &&
+        positionalPrimary === opt.pool_ids.primary && !opt.job.algo) {
+      const pool = opt.pools[positionalPrimary];
+      if (!pool) {return o.print_help("Positional primary pool is missing");}
+      // Subscribe requires a preset algorithm; automatic switching consumes pushed login jobs.
+      // Config-file pools retain their explicit handshake, and backup/donation pools are untouched.
+      pool.use_subscribe = false;
+    }
     return directive;
   };
 };

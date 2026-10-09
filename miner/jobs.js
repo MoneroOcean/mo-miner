@@ -121,7 +121,9 @@ module.exports = ({
         continue;
       }
       const onlyMatch = matches[0];
-      const heuristicTuning = matches.length === 1 && onlyMatch ? onlyMatch.tuning :
+      // Summing intensity only makes sense for intensity-based algorithms. Other primary fields
+      // describe a profile (for example Pearl's matrix rows or C29's seed workgroup), not a sum.
+      const heuristicTuning = onlyMatch && (matches.length === 1 || primaryField !== "intensity") ? onlyMatch.tuning :
         matches.length > 1
           ? {intensity: matches.reduce((total, candidate) =>
             total + (candidate.tuning.intensity || 0), 0)}
