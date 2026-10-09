@@ -1,5 +1,3 @@
-namespace mom_etchash {
-
 constexpr uint32_t ETCHASH_FORK_BLOCK = 11700000;
 constexpr uint32_t ETHASH_EPOCH = 30000;
 constexpr uint32_t ETCHASH_EPOCH = 60000;
@@ -28,6 +26,7 @@ inline uint32_t fnv_dev(const uint32_t x, const uint32_t y) {
 }
 
 // Compress 4 consecutive mix words into one via the ethash FNV chain.
+// Collapse four mix words in the consensus FNV order.
 inline uint32_t fnv_fold4_dev(const uint32_t* const v) {
   return fnv_dev(fnv_dev(fnv_dev(v[0], v[1]), v[2]), v[3]);
 }
@@ -53,6 +52,7 @@ inline uint64_t rotl64_dev(const uint64_t value, const unsigned shift) {
   return (value << shift) | (value >> (64U - shift));
 }
 
+// Apply one Keccak round with native 64-bit lanes.
 inline void keccakf1600_u64_round_dev(uint64_t st[25], const unsigned round) {
   static constexpr uint64_t rndc[24] = {
       0x0000000000000001ULL, 0x0000000000008082ULL, 0x800000000000808aULL, 0x8000000080008000ULL,
@@ -93,6 +93,7 @@ inline void keccakf1600_u64_round_dev(uint64_t st[25], const unsigned round) {
   st[0] ^= rndc[round];
 }
 
+// Run the complete 24-round native-lane permutation.
 inline void keccakf1600_u64_dev(uint64_t st[25]) {
   for (unsigned round = 0; round < 24; ++round)
     keccakf1600_u64_round_dev(st, round);
@@ -132,6 +133,7 @@ inline void store_pair_words_dev(uint32_t* const out, const unsigned lane, const
   out[lane * 2 + 1] = value.y;
 }
 
+// Rotate a split lane with explicit zero and half-word shift handling.
 inline Uint2 rotl64_pair_dev(const Uint2 value, const unsigned shift) {
   const unsigned s = shift & 63U;
   if (s == 0)
@@ -146,6 +148,7 @@ inline Uint2 rotl64_pair_dev(const Uint2 value, const unsigned shift) {
                  (value.x << (s - 32U)) | (value.y >> (64U - s)));
 }
 
+// Read chi from a row snapshot to prevent in-place input corruption.
 inline void keccakf1600_pair_chi_dev(Uint2 st[25], const unsigned row, const Uint2 t[25]) {
   st[row + 0] = t[row + 0] ^ ((~t[row + 1]) & t[row + 2]);
   st[row + 1] = t[row + 1] ^ ((~t[row + 2]) & t[row + 3]);
@@ -154,6 +157,7 @@ inline void keccakf1600_pair_chi_dev(Uint2 st[25], const unsigned row, const Uin
   st[row + 4] = t[row + 4] ^ ((~t[row + 0]) & t[row + 1]);
 }
 
+// Apply one Keccak round to paired 32-bit lanes.
 inline void keccakf1600_pair_round_dev(Uint2 st[25], const unsigned round) {
   static constexpr Uint2 rndc[24] = {
       {0x00000001, 0x00000000}, {0x00008082, 0x00000000}, {0x0000808a, 0x80000000},
@@ -278,6 +282,7 @@ template <bool INLINE_PAIR> inline void keccakf1600_pair_sel_dev(Uint2 st[25]) {
   }
 }
 
+// Hash one DAG node in place with legacy Keccak padding.
 inline void keccak_512_words_dev(uint32_t words[ETHASH_NODE_WORDS]) {
   Uint2 st[25]{};
   for (unsigned i = 0; i < 8; ++i)
@@ -288,6 +293,7 @@ inline void keccak_512_words_dev(uint32_t words[ETHASH_NODE_WORDS]) {
     store_pair_words_dev(words, i, st[i]);
 }
 
+// Derive the seed from the header and little-endian nonce.
 inline void keccak_512_header_nonce_dev(const uint8_t* const header_hash, const uint64_t nonce,
                                         uint32_t out[16]) {
   uint64_t st[25]{};
@@ -302,6 +308,7 @@ inline void keccak_512_header_nonce_dev(const uint8_t* const header_hash, const 
 }
 
 template <bool INLINE_PAIR>
+// Derive the seed with paired lanes and the compiler-safe permutation selection.
 inline void keccak_512_header_nonce_pair_dev(const uint8_t* const header_hash, const uint64_t nonce,
                                              uint32_t out[16]) {
   Uint2 st[25]{};
@@ -316,6 +323,7 @@ inline void keccak_512_header_nonce_pair_dev(const uint8_t* const header_hash, c
     store_pair_words_dev(out, i, st[i]);
 }
 
+// Seal the 64-byte seed and collapsed mix into the final digest.
 inline void keccak_256_seed_mix_dev(const uint32_t seed[16], const uint32_t mix[8],
                                     uint8_t out[32]) {
   uint64_t st[25]{};
@@ -333,6 +341,7 @@ inline void keccak_256_seed_mix_dev(const uint32_t seed[16], const uint32_t mix[
 }
 
 template <bool INLINE_PAIR>
+// Seal seed and mix with the selected paired-lane permutation.
 inline void keccak_256_seed_mix_pair_dev(const uint32_t seed[16], const uint32_t mix[8],
                                          uint8_t out[32]) {
   Uint2 st[25]{};
@@ -349,6 +358,7 @@ inline void keccak_256_seed_mix_pair_dev(const uint32_t seed[16], const uint32_t
   }
 }
 
+// Compare the complete hash and target as big-endian unsigned integers.
 inline bool meets_target_dev(const uint8_t output[32], const uint8_t* const target) {
   for (unsigned i = 0; i < 32; ++i) {
     if (output[i] == target[i])
@@ -358,6 +368,7 @@ inline bool meets_target_dev(const uint8_t output[32], const uint8_t* const targ
   return true;
 }
 
+// Reserve a bounded hit slot; queue completion publishes its payload.
 inline void store_etchash_result(EtchashResult* const result, const uint64_t nonce,
                                  const uint8_t output[32], const uint32_t mix_hash_words[8]) {
   using atomic_ref =
@@ -374,12 +385,14 @@ inline void store_etchash_result(EtchashResult* const result, const uint64_t non
     store32_le_dev(result->mix_hash[index] + i * 4, mix_hash_words[i]);
 }
 
+// Apply doubled DAG epochs after the fork while retaining pre-fork Ethash epochs.
 inline uint32_t etchash_epoch(const uint32_t height) {
   // ETC doubled the epoch length at the ECIP-1099 fork: 30000 blocks before, 60000 after.
   // The two divisors differ (ETHASH_EPOCH vs ETCHASH_EPOCH) despite their similar names.
   return height < ETCHASH_FORK_BLOCK ? height / ETHASH_EPOCH : height / ETCHASH_EPOCH;
 }
 
+// Keep the seed chain on 30,000-block epochs after DAG epochs double.
 inline uint32_t etchash_seed_epoch(const uint32_t height) {
   return height / ETHASH_EPOCH;
 }
@@ -394,6 +407,7 @@ static void format_duration_ms(char* out, size_t out_size, uint64_t ms) {
   }
 }
 
+// Build light-cache nodes from the seed epoch, which need not equal the DAG epoch.
 void compute_light_cache(std::vector<uint32_t>& cache, const uint64_t cache_bytes,
                          const uint32_t seed_epoch) {
   cache.assign(cache_bytes / sizeof(uint32_t), 0);
@@ -404,6 +418,7 @@ void compute_light_cache(std::vector<uint32_t>& cache, const uint64_t cache_byte
   }
 }
 
+// Treat an all-zero pool seed as absent for height-based selection.
 bool is_zero_hash(const uint8_t* const hash) {
   for (unsigned i = 0; i < HASH_LEN; ++i)
     if (hash[i])
@@ -411,6 +426,7 @@ bool is_zero_hash(const uint8_t* const hash) {
   return true;
 }
 
+// Resolve a pool seed through the bounded consensus seed chain.
 uint32_t seed_epoch_from_hash(const uint8_t* const seed_hash) {
   constexpr uint32_t max_seed_epoch = 4096;
   for (uint32_t seed_epoch = 0; seed_epoch != max_seed_epoch; ++seed_epoch) {

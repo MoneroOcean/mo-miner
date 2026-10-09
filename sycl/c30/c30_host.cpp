@@ -27,6 +27,7 @@ std::uint64_t rotate_left(const std::uint64_t value, const unsigned bits) {
   return (value << bits) | (value >> (64 - bits));
 }
 
+// Apply one Cortex SipHash mixing round; its 4/8 round counts differ from C29.
 void sip_round(std::uint64_t& v0, std::uint64_t& v1, std::uint64_t& v2, std::uint64_t& v3) {
   v0 += v1;
   v2 += v3;
@@ -46,6 +47,7 @@ void sip_round(std::uint64_t& v0, std::uint64_t& v1, std::uint64_t& v2, std::uin
 
 using Graph = std::unordered_map<std::uint32_t, std::uint32_t>;
 
+// Follow alternating U/V parent links with a bounded walk; the numeric endpoint spaces overlap.
 std::vector<std::uint32_t> create_path(const Graph& graph_u, const Graph& graph_v,
                                        const bool starts_in_u, const std::uint32_t start) {
   std::vector<std::uint32_t> path{start};
@@ -62,6 +64,7 @@ std::vector<std::uint32_t> create_path(const Graph& graph_u, const Graph& graph_
   return path;
 }
 
+// Reverse a nonempty forest path while retaining the alternating graph-side ownership.
 void reverse_path(Graph& graph_u, Graph& graph_v, const std::vector<std::uint32_t>& path,
                   const bool starts_in_u) {
   Graph* graphs[2] = {&graph_u, &graph_v};
@@ -73,6 +76,7 @@ void reverse_path(Graph& graph_u, Graph& graph_v, const std::vector<std::uint32_
 }
 
 std::optional<std::array<Endpoints, kProofSize>>
+// Maintain a bipartite forest and return the first 42-edge cycle within the bounded host handoff.
 find_cycle_graph(const std::vector<Endpoints>& edges) {
   if (edges.size() > (1u << 22))
     return std::nullopt;
@@ -127,6 +131,7 @@ find_cycle_graph(const std::vector<Endpoints>& edges) {
 
 } // namespace
 
+// Derive the graph key from the 32-byte header and little-endian nonce using BLAKE2b-256.
 SipKey graph_key(const std::array<std::uint8_t, 32>& header, const std::uint64_t nonce) {
   std::array<std::uint8_t, 40> header_nonce{};
   std::copy(header.begin(), header.end(), header_nonce.begin());
@@ -141,6 +146,7 @@ SipKey graph_key(const std::array<std::uint8_t, 32>& header, const std::uint64_t
           load_le64(digest.data() + 24)};
 }
 
+// Provide the single-nonce 4/8 SipHash primitive; graph edges require the stateful block variant.
 std::uint64_t siphash48(const SipKey& key, const std::uint64_t nonce) {
   std::uint64_t v0 = key.k0;
   std::uint64_t v1 = key.k1;
@@ -187,6 +193,7 @@ Endpoints edge(const SipKey& key, const std::uint32_t nonce) {
           static_cast<std::uint32_t>(value >> 32) & kEdgeMask};
 }
 
+// Regenerate sorted in-range nonces and require one unbranched 42-edge bipartite cycle.
 bool verify(const SipKey& key, const std::array<std::uint32_t, kProofSize>& edges) {
   std::array<std::uint32_t, 2 * kProofSize> endpoints{};
   std::uint32_t xor_u = 0;
@@ -223,6 +230,7 @@ bool verify(const SipKey& key, const std::array<std::uint32_t, kProofSize>& edge
   return length == kProofSize;
 }
 
+// Hash the sorted proof's big-endian 32-bit nonces with Cortex's Keccak encoding.
 std::array<std::uint8_t, 32> solution_hash(const std::array<std::uint32_t, kProofSize>& edges) {
   std::array<std::uint8_t, kProofSize * sizeof(std::uint32_t)> bytes{};
   for (unsigned i = 0; i < kProofSize; ++i) {
@@ -240,6 +248,7 @@ find_cycle(const std::vector<Endpoints>& trimmed_edges) {
 }
 
 std::optional<std::array<std::uint32_t, kProofSize>>
+// Map a recovered endpoint cycle back to distinct input nonces, then verify the canonical proof.
 find_cycle(const SipKey& key, const std::vector<std::uint32_t>& trimmed_edges) {
   if (trimmed_edges.size() > (1u << 22))
     return std::nullopt;

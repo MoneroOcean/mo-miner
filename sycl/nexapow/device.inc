@@ -78,6 +78,7 @@ inline bool np_zero_p(const U256& a) {
   return value == 0;
 }
 
+// Convert protocol big-endian bytes into the internal little-endian 32-bit limb representation.
 inline U256 np_from_be(const uint8_t* bytes) {
   U256 result{};
   for (unsigned i = 0; i < 8; ++i) {
@@ -89,6 +90,7 @@ inline U256 np_from_be(const uint8_t* bytes) {
   return result;
 }
 
+// Serialize internal little-endian limbs into protocol big-endian bytes.
 inline void np_to_be(const U256& value, uint8_t* bytes) {
   for (unsigned i = 0; i < 8; ++i) {
     const unsigned j = 31u - 4u * i;
@@ -99,6 +101,7 @@ inline void np_to_be(const U256& value, uint8_t* bytes) {
   }
 }
 
+// Add all eight limbs and return the carry without applying a modulus.
 inline uint32_t np_add_raw(const U256& a, const U256& b, U256& out) {
   uint64_t carry = 0;
   for (unsigned i = 0; i < 8; ++i) {
@@ -109,6 +112,7 @@ inline uint32_t np_add_raw(const U256& a, const U256& b, U256& out) {
   return static_cast<uint32_t>(carry);
 }
 
+// Subtract all eight limbs and return the borrow without applying a modulus.
 inline uint32_t np_sub_raw(const U256& a, const U256& b, U256& out) {
   uint32_t borrow = 0;
   for (unsigned i = 0; i < 8; ++i) {
@@ -128,6 +132,7 @@ inline U256 np_add_mod(const U256& a, const U256& b, const U256& modulus) {
   return result;
 }
 
+// Subtract canonical values modulo the supplied modulus, restoring it on borrow.
 inline U256 np_sub_mod(const U256& a, const U256& b, const U256& modulus) {
   U256 result{};
   if (np_cmp(a, b) >= 0) {
@@ -230,6 +235,7 @@ inline void np_comba_mul(const U256& a, const U256& b, uint32_t product[16]) {
   }
 }
 
+// Expand a 256-bit square into sixteen limbs while accounting for doubled cross terms.
 inline void np_comba_square(const U256& a, uint32_t product[16]) {
   uint64_t carry = 0;
   for (unsigned column = 0; column < 16; ++column) {
@@ -307,6 +313,7 @@ inline Point np_infinity() {
   return {np_zero(), np_zero(), np_zero(), true};
 }
 
+// Double a Jacobian secp256k1 point, retaining the infinity convention.
 inline Point np_double(const Point& point) {
   if (point.infinity || np_zero_p(point.y))
     return np_infinity();
@@ -348,6 +355,7 @@ inline Point np_add_affine(const Point& point, const U256& ax, const U256& ay) {
   return {x, y, z, false};
 }
 
+// Multiply the generator with the reference bitwise ladder used by consensus checks.
 inline Point np_scalar_mul(const U256& scalar) {
   Point result = np_infinity();
   for (int bit = 255; bit >= 0; --bit) {
@@ -383,6 +391,7 @@ struct FieldPowerChain {
   U256 x2, x22, x223;
 };
 
+// Share the fixed secp256k1 exponentiation chain between inverse and residue checks.
 inline FieldPowerChain np_field_power_chain(const U256& value) {
   const auto square_n = [](U256 x, const unsigned count) {
     for (unsigned i = 0; i < count; ++i)
@@ -403,6 +412,7 @@ inline FieldPowerChain np_field_power_chain(const U256& value) {
   return {x2, x22, x223};
 }
 
+// Invert a secp256k1 field element using the fixed p-2 exponentiation chain.
 inline U256 np_field_inverse(const U256& value) {
   const auto chain = np_field_power_chain(value);
   U256 high = chain.x223;
@@ -427,6 +437,7 @@ inline Point np_affine(const Point& point) {
   return {np_field_mul(point.x, inverse2), np_field_mul(point.y, inverse3), np_one(), false};
 }
 
+// Check the secp256k1 Legendre symbol through the shared fixed exponentiation chain.
 inline bool np_quadratic_residue_power(const U256& value) {
   // Since p == 3 (mod 4), value is a residue iff value^((p + 1) / 4) squares back.
   const auto chain = np_field_power_chain(value);
@@ -450,6 +461,7 @@ inline void np_shift_right(U256& value) {
   }
 }
 
+// Compute the field quadratic-residue predicate required by Schnorr signing.
 inline bool np_quadratic_residue(const U256& value) {
   if (np_zero_p(value))
     return true;
@@ -495,6 +507,7 @@ inline uint32_t np_rotr(const uint32_t x, const unsigned n) {
 #ifndef MOM_NEXAPOW_SHA_ATTR
 #define MOM_NEXAPOW_SHA_ATTR inline
 #endif
+// Compress one SHA-256 block already decoded into big-endian words.
 MOM_NEXAPOW_SHA_ATTR void np_sha256_words(uint32_t state[8], const uint32_t block[16]) {
   uint32_t w[16];
 #if defined(__SYCL_DEVICE_ONLY__)
@@ -539,6 +552,7 @@ MOM_NEXAPOW_SHA_ATTR void np_sha256_words(uint32_t state[8], const uint32_t bloc
   state[7] += h;
 }
 
+// Decode one byte block into SHA-256 words before compression.
 inline void np_sha256_block(uint32_t state[8], const uint8_t block[64]) {
   uint32_t words[16];
   for (unsigned i = 0; i < 16; ++i) {
@@ -586,18 +600,21 @@ inline void np_sha256_fixed(const uint8_t* input, uint8_t output[32]) {
   np_sha256_output(state, output);
 }
 
+// Double-hash the 49-byte Echelon serialization with the fixed SHA padding layout.
 inline void np_sha256d_49(const uint8_t input[49], uint8_t output[32]) {
   uint8_t first[32];
   np_sha256_fixed<49, 1>(input, first);
   np_sha256_fixed<32, 1>(first, output);
 }
 
+// Double-hash the 41-byte Nexa serialization with the fixed SHA padding layout.
 inline void np_sha256d_41(const uint8_t input[41], uint8_t output[32]) {
   uint8_t first[32];
   np_sha256_fixed<41, 1>(input, first);
   np_sha256_fixed<32, 1>(first, output);
 }
 
+// Double-hash the 45-byte prefixed serialization with the fixed SHA padding layout.
 inline void np_sha256d_45(const uint8_t input[45], uint8_t output[32]) {
   uint8_t first[32];
   np_sha256_fixed<45, 1>(input, first);
@@ -605,6 +622,7 @@ inline void np_sha256d_45(const uint8_t input[45], uint8_t output[32]) {
 }
 
 #ifndef MOM_NEXAPOW_SHA_ONLY
+// Precompute SHA-256 states for the HMAC key's inner and outer pads.
 MOM_NEXAPOW_SHA_ATTR void np_hmac_states(const uint32_t key[8], uint32_t inner[8],
                                          uint32_t outer[8]) {
   uint32_t block[16];
@@ -618,6 +636,7 @@ MOM_NEXAPOW_SHA_ATTR void np_hmac_states(const uint32_t key[8], uint32_t inner[8
   np_sha256_words(outer, block);
 }
 
+// Finalize one HMAC digest from its precomputed outer-pad state.
 MOM_NEXAPOW_SHA_ATTR void np_hmac_outer(const uint32_t digest[8], const uint32_t outer[8],
                                         uint32_t output[8]) {
   uint32_t block[16]{};
@@ -630,6 +649,7 @@ MOM_NEXAPOW_SHA_ATTR void np_hmac_outer(const uint32_t digest[8], const uint32_t
   np_sha256_words(output, block);
 }
 
+// Hash one fixed 32-byte HMAC message from the cached pad states.
 MOM_NEXAPOW_SHA_ATTR void np_hmac32(const uint32_t inner[8], const uint32_t outer[8],
                                     const uint32_t data[8], uint32_t output[8]) {
   uint32_t block[16]{}, digest[8];
@@ -643,6 +663,7 @@ MOM_NEXAPOW_SHA_ATTR void np_hmac32(const uint32_t inner[8], const uint32_t oute
   np_hmac_outer(digest, outer, output);
 }
 
+// Hash the fixed RFC6979 update message without materializing generic HMAC buffers.
 MOM_NEXAPOW_SHA_ATTR void np_hmac_update113(const uint32_t inner[8], const uint32_t outer[8],
                                             const uint32_t v[8], const uint8_t marker,
                                             const uint32_t key[8], const uint32_t message[8],
@@ -678,6 +699,7 @@ MOM_NEXAPOW_SHA_ATTR void np_hmac_update113(const uint32_t inner[8], const uint3
 #ifndef MOM_NEXAPOW_RFC6979_ATTR
 #define MOM_NEXAPOW_RFC6979_ATTR inline
 #endif
+// Derive the requested deterministic Schnorr nonce candidate from the reduced message and private key.
 MOM_NEXAPOW_RFC6979_ATTR U256 np_rfc6979(const uint8_t message[32], const U256& key,
                                          const unsigned counter) {
   static constexpr uint32_t initial_inner[8] = {
@@ -711,6 +733,7 @@ MOM_NEXAPOW_RFC6979_ATTR U256 np_rfc6979(const uint8_t message[32], const U256& 
   return result;
 }
 
+// Build the Schnorr challenge from r, the public key, and the 32-byte message.
 inline bool np_challenge(const U256& r, const Point& public_key, const uint8_t message[32],
                          U256& out) {
   uint8_t input[97], compressed[33];
@@ -727,6 +750,7 @@ inline bool np_challenge(const U256& r, const Point& public_key, const uint8_t m
   return !np_zero_p(out) && np_cmp(out, kGroupOrder) < 0;
 }
 
+// Create the deterministic Schnorr signature, rejecting invalid nonce or point outcomes.
 inline bool np_sign(const uint8_t h1[32], const U256& private_key, uint8_t signature[64]) {
   if (np_zero_p(private_key) || np_cmp(private_key, kGroupOrder) >= 0)
     return false;
@@ -749,6 +773,7 @@ inline bool np_sign(const uint8_t h1[32], const U256& private_key, uint8_t signa
   return false;
 }
 
+// Serialize the selected fixed extranonce width and miner nonce in the work-blob byte order.
 inline void np_nonce_bytes(const uint8_t header[32], const uint8_t extranonce[8],
                            const uint64_t miner_nonce, uint8_t serialized[49],
                            const unsigned extra_bytes = 8u) {
@@ -761,6 +786,7 @@ inline void np_nonce_bytes(const uint8_t header[32], const uint8_t extranonce[8]
     serialized[33 + extra_bytes + i] = static_cast<uint8_t>(miner_nonce >> (8u * (7u - i)));
 }
 
+// Run the complete consensus hash/sign/hash chain for one work nonce.
 inline bool np_hash_one(const uint8_t header[32], const uint8_t extranonce[8],
                         const uint64_t miner_nonce, uint8_t final_hash[32],
                         const unsigned extra_bytes = 8u) {

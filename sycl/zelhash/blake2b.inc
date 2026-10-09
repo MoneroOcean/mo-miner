@@ -10,6 +10,7 @@ inline uint32_t b2b_load32le(const uint8_t* p) {
   return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
+// Apply the prescribed BLAKE2b G primitive for the Flux generation hash.
 inline void b2b_g(uint64_t* v, unsigned a, unsigned b, unsigned c, unsigned d, uint64_t x,
                   uint64_t y) {
   v[a] = v[a] + v[b] + x;
@@ -23,6 +24,7 @@ inline void b2b_g(uint64_t* v, unsigned a, unsigned b, unsigned c, unsigned d, u
 }
 
 // Compress a 128-byte block (16 u64 m[]) into the 8-word chain h[] with counter t0/t1 and final flag.
+// Compress one personalized block with explicit byte-count and last-block state.
 inline void b2b_compress(uint64_t h[8], const uint64_t m[16], uint64_t t0, uint64_t t1, bool last) {
   uint64_t v[16];
   for (unsigned i = 0; i < 8; ++i) {
@@ -57,6 +59,7 @@ struct BaseState {
 };
 
 // Build the personalized base state on the host from the 140-byte header.
+// Personalize the ZelProof hash and retain the header's pending tail for indexed generation.
 static BaseState make_base_state(const uint8_t* header140) {
   // Personalization param block (64 bytes): out_len=64, fanout=1, depth=1, personal[48..63].
   // personal = "ZelProof" || htole32(125) || htole32(4).
@@ -100,6 +103,7 @@ static BaseState make_base_state(const uint8_t* header140) {
 
 // ---- Device-side stock hash: blake2b( base || htole32(g) ), 64 bytes -> 16 LE u32 lanes (acc[16]).
 // base->pending(12) + 4 nonce-index bytes = 16 pending bytes, then finalize (t0 = 128 + 16 = 144).
+// Hash one indexed header before applying ZelHash's stateful twist.
 inline void stock_hash_words(const uint64_t base_h[8], const uint8_t base_pending[12], uint32_t g,
                              uint32_t out[16]) {
   uint8_t blk[128];
@@ -151,6 +155,7 @@ template <uint8_t I> inline B2bPair b2b_message_pair(const B2bPair m0, const B2b
 // indexed loop from the 2^24-invocation generator while keeping b2b_g_pair and all arithmetic common
 // across backends. It cuts Arc B580 gen-fill from roughly 20 to 12--13 ms.
 template <unsigned R>
+// Unroll the final two-word BLAKE2b block using paired arithmetic for the device hashing path.
 inline void b2b_rounds_pair(B2bPair (&v)[16], const B2bPair m0, const B2bPair m1) {
   static_assert(R < 12);
   b2b_g_pair(v[0], v[4], v[8], v[12], b2b_message_pair<B2B_SIGMA[R][0]>(m0, m1),
@@ -176,6 +181,7 @@ inline void b2b_rounds_pair(B2bPair (&v)[16], const B2bPair m0, const B2bPair m1
 // Pair-form stock hash. The message block is base_pending[0..11] || htole32(g) || zeros, so only the
 // first two message words are non-zero: m0={pending[0..3], pending[4..7]}, m1={pending[8..11], g}.
 // Pass those two precomputed (loop-invariant across the 16-block) as m0/m1.
+// Generate the stock indexed digest with paired words, matching native 64-bit BLAKE2b.
 inline void stock_hash_words_pair(const B2bPair base_h[8], B2bPair m0, B2bPair m1, uint32_t g,
                                   uint32_t out[16]) {
   m1.hi = g; // bytes 12..15 of the block (htole32(g)); pending fills lo + m0
@@ -218,6 +224,7 @@ inline void stock_hash_words_pair(const B2bPair base_h[8], B2bPair m0, B2bPair m
 
 // ---- ZelHash twist (NAIVE): for entry g sum stock hashes over [g & ~0xF .. g] lane-wise (u32 wrap),
 // then mask raw bytes 15/31/47/63 with &0xF8. Produces the 64-byte (16 u32) generator output.
+// Compute the reference twist by walking the aligned 16-hash block in scalar order.
 inline void zelhash_twist_naive(const uint64_t base_h[8], const uint8_t base_pending[12],
                                 uint32_t g, uint32_t acc[16]) {
   const uint32_t start = g & 0xFFFFFFF0u;
@@ -238,6 +245,7 @@ inline void zelhash_twist_naive(const uint64_t base_h[8], const uint8_t base_pen
 
 // ---- ExpandArray(in16, bitLen=25, bytePad=0) -> 20 bytes (5 fields of 25 bits in 4-byte BE slots).
 // Bit-exact port of Zcash util.cpp ExpandArray. Used on the (g%4) sub-element.
+// Expand the digest segment into big-endian padded 25-bit Equihash collision fields.
 inline void expand_array_25(const uint8_t in[SUB_ELEMENT_BYTES], uint8_t out[HASH_LENGTH]) {
   constexpr unsigned BIT_LEN = COLLISION_BIT_LENGTH;  // 25
   constexpr unsigned OUT_WIDTH = (BIT_LEN + 7) >> 3;  // 4
@@ -261,6 +269,7 @@ inline void expand_array_25(const uint8_t in[SUB_ELEMENT_BYTES], uint8_t out[HAS
 
 // ---- The expanded 20-byte collision row for entry index e (== ref indexHashRow(e)). ----
 // generateZelHash(e/4) -> 64B; take the (e%4) 16-byte sub-element; ExpandArray(25) -> 20 bytes.
+// Build one reference Flux leaf row from its stock hash segment and scalar twist.
 inline void entry_row_naive(const uint64_t base_h[8], const uint8_t base_pending[12], uint32_t e,
                             uint8_t row[HASH_LENGTH]) {
   uint32_t acc[16];
@@ -281,6 +290,7 @@ inline void entry_row_naive(const uint64_t base_h[8], const uint8_t base_pending
 // ---- Decode the 20-byte expanded row (5 big-endian 25-bit fields in 4-byte slots) into 5 u32s.
 // This matches the JS reference's xorRows()/hasCollision() field granularity exactly: field f lives
 // in row bytes [4f, 4f+4) big-endian, value in [0, 2^25). Collisions zero a whole field.
+// Decode the padded reference row into the solver's 25-bit collision fields.
 inline void row_to_fields(const uint8_t row[HASH_LENGTH], uint32_t f[NLEVELS]) {
   for (unsigned k = 0; k < NLEVELS; ++k) {
     const unsigned o = k * COLLISION_BYTE_LENGTH;
@@ -293,6 +303,7 @@ inline void row_to_fields(const uint8_t row[HASH_LENGTH], uint32_t f[NLEVELS]) {
 // ExpandArray row. Extract the same consecutive 25-bit big-endian bit groups directly from four
 // little-endian accumulator words. Besides removing two short-lived private arrays, this exposes a
 // fixed shift/or network to the device compiler instead of a byte loop with a running bit counter.
+// Extract collision fields directly from twisted hash words without materializing padded bytes.
 inline void words_to_fields_25(const uint32_t* w, uint32_t f[NLEVELS]) {
 #if defined(__NVPTX__)
   const uint32_t q0 = __builtin_bswap32(w[0]);

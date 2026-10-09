@@ -13,6 +13,7 @@ struct
   size_t input_cap = 0;
   unsigned batch_cap = 0;
   std::mutex mutex;
+  // Bind batch buffers and deterministic FP policy to one in-order queue.
   CnGpuState(const std::string& dev_str)
       : device(get_dev(dev_str)), queue(device, cn_gpu_exception_handler(),
                                         sycl::property_list{sycl::property::queue::in_order{}}),
@@ -34,11 +35,13 @@ struct
     }
   }
 
+  // Drain SYCL kernels before releasing batch allocations.
   ~CnGpuState() {
     sycl_cleanup_noexcept("cn/gpu wait", [&] { queue.wait_and_throw(); });
     sycl_cleanup_noexcept("cn/gpu release", [&] { release(); });
   }
 
+  // Release buffer or USM storage and invalidate capacity keys.
   void release() {
     if constexpr (mom_sycl_portable_opencl) {
       buffered_inputs.release();
@@ -63,6 +66,7 @@ struct
     return shared ? sycl::malloc_shared<T>(count, queue) : sycl::malloc_device<T>(count, queue);
   }
 
+  // Resize only after queued users finish; failure leaves no reusable capacity.
   void ensure_capacity(const unsigned batch, const unsigned input_size) {
     const size_t requested_input_cap = static_cast<size_t>(input_size) * batch;
     if (batch <= batch_cap && requested_input_cap <= input_cap)
@@ -96,6 +100,7 @@ struct
   }
 };
 
+// Keep the registry shell alive across static teardown; ordered cleanup releases its values.
 static DeviceStateRegistry<CnGpuState>& cn_gpu_registry() {
   static auto* const registry = new DeviceStateRegistry<CnGpuState>;
   return *registry;
@@ -105,6 +110,7 @@ static CnGpuState& cn_gpu_state(const std::string& dev_str) {
   return cn_gpu_registry().get(dev_str, [&] { return std::make_unique<CnGpuState>(dev_str); });
 }
 
+// Release device state before the compiler runtime unloads without escaping exceptions.
 void cn_gpu_cleanup_states() noexcept {
   try {
     cn_gpu_registry().clear();
@@ -131,6 +137,7 @@ template <> class CnGpuViews<false> {
   CnGpuDevicePointers pointers_;
 
 public:
+  // Capture USM pointers with intentionally aliasing typed scratchpad views.
   CnGpuViews(CnGpuState& state, sycl::handler& handler)
       : pointers_{state.inputs,
                   state.spads,
@@ -154,6 +161,7 @@ template <> class CnGpuViews<true> {
   WordView spads_, lpads_;
 
 public:
+  // Bind buffer accessors to this submission before exposing their aliasing typed views.
   CnGpuViews(CnGpuState& state, sycl::handler& handler)
       : inputs_(state.buffered_inputs.device_view<sycl::access_mode::read_write>(handler)),
         outputs_(state.buffered_outputs.device_view<sycl::access_mode::read_write>(handler)),

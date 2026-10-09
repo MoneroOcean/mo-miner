@@ -27,6 +27,7 @@ struct PearlHashCudaSearch {
     return sycl::get_native<sycl::backend::ext_oneapi_cuda>(device);
 #endif
   }
+  // Require the CUDA backend and async int8 tensor hardware before probing the optional NVRTC path.
   static bool supports(sycl::queue& q, std::string* const reason = nullptr) {
     const auto unavailable = [&](const std::string& message) {
       if (reason)
@@ -49,11 +50,13 @@ struct PearlHashCudaSearch {
     return true;
   }
 
+  // Restrict native GEMM to the supported tile-aligned dimensions and noise profile.
   static bool supports_shape(const int m, const int n, const int k, const int rank) {
     return m > 0 && n > 0 && m % 128 == 0 && n % 256 == 0 &&
            ((k == 4096 && rank == 256) || (k == 8192 && rank == 128));
   }
 
+  // Release the CUDA event/module and clear cached compilation state on the owning context.
   void release() noexcept {
     PearlHashCudaDriverApi& api = PearlHashCudaDriverApi::instance();
     if (api.extended_available() && context)
@@ -77,6 +80,7 @@ struct PearlHashCudaSearch {
     enabled = false;
   }
 
+  // Compile/cache the optional NVRTC kernels for this device and shape; unsupported setups retain SYCL fallback.
   bool ensure(sycl::queue& q, const Buffers& b, int m, int n, int k, int rank) {
     if (!supports(q) || !supports_shape(m, n, k, rank))
       return false;
@@ -272,6 +276,7 @@ struct PearlHashCudaSearch {
     return enabled;
   }
 
+  // Launch GEMM and transcript hashing on the native stream, then record the completion event.
   void launch(const Buffers& b, uint32_t seed, int m, int n, int k, bool debug) {
     PearlHashCudaDriverApi& api = PearlHashCudaDriverApi::instance();
     cuda_check(api, api.set_current(context), "cuCtxSetCurrent(PearlHash launch)");
@@ -309,6 +314,7 @@ struct PearlHashCudaSearch {
     cuda_check(api, api.event_record(done, nullptr), "cuEventRecord(PearlHash done)");
   }
 
+  // Poll native completion with the existing learned-duration cadence instead of a CPU-spinning synchronize.
   void wait(double learned_us) {
     PearlHashCudaDriverApi& api = PearlHashCudaDriverApi::instance();
 #if !defined(_WIN32)

@@ -16,6 +16,7 @@
 
 namespace mom::jit_cache {
 
+// Stable cache-key fingerprint, not an authentication or integrity check.
 inline uint64_t hash(const std::string_view value) {
   uint64_t result = 1469598103934665603ULL;
   for (const unsigned char byte : value) {
@@ -25,6 +26,7 @@ inline uint64_t hash(const std::string_view value) {
   return result;
 }
 
+// Honor an explicit cache location before OS defaults; no usable home disables disk caching.
 inline std::filesystem::path directory() {
   if (const char* configured = std::getenv("MOM_JIT_CACHE_DIR"); configured && *configured)
     return configured;
@@ -40,6 +42,7 @@ inline std::filesystem::path directory() {
   return {};
 }
 
+// Bound cache input before allocation; a missing, oversized or unreadable entry is just a miss.
 inline std::vector<char> read(const std::filesystem::path& path,
                               const size_t max_bytes = 64 * 1024 * 1024) {
   try {
@@ -60,6 +63,7 @@ inline std::vector<char> read(const std::filesystem::path& path,
   }
 }
 
+// Publish a complete cache file by rename; failed caching must not stop a working mining module.
 inline void write(const std::filesystem::path& path, const std::vector<char>& bytes) noexcept {
   std::filesystem::path temporary;
   try {

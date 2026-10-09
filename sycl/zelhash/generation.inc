@@ -1,6 +1,7 @@
 template <bool NAIVE_TWIST> class ZelHashGenTestKernel;
 
 template <bool NAIVE_TWIST>
+// Generate reference or subgroup-scan rows over a bounded prefix for cross-path/oracle comparison.
 static sycl::event submit_gen_test(sycl::queue& q, const uint64_t* d_base_h,
                                    const uint8_t* d_base_pending,
                                    uint8_t* d_rows /* EQUIHASH_TEST_ROWS * HASH_LENGTH */
@@ -118,6 +119,7 @@ using slm_atomic_u32 =
     sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::work_group,
                      sycl::access::address_space::local_space>;
 
+// Preserve the 16-lane twist prefix sum across supported subgroup implementations.
 inline uint32_t zelhash_scan16(const sycl::sub_group& sg, uint32_t x) {
 #if defined(__NVPTX__)
   // SYCL's generic segmented scan expands into a much larger NVPTX shuffle network. ZelHash always
@@ -157,6 +159,7 @@ inline uint32_t zelhash_scan16(const sycl::sub_group& sg, uint32_t x) {
 }
 
 #if defined(__NVPTX__)
+// Apply the same inclusive twist scan independently to each hash word.
 inline void zelhash_scan16_words(const sycl::sub_group& sg, const uint32_t mine[16],
                                  uint32_t acc[16]) {
   const unsigned lane = sg.get_local_linear_id() & 15u;
@@ -200,6 +203,7 @@ template <bool GPU_COMPACT> class ZelHashGenFillKernelT;
 template <bool GPU_COMPACT> class ZelHashGenFillLargeGrfKernelT;
 #endif
 template <bool GPU_COMPACT, bool LARGE_GRF = false>
+// Generate the full twisted leaf space and scatter only bounded bucket reservations.
 static sycl::event submit_gen_fill_impl(sycl::queue& q, const uint64_t* d_base_h,
                                    const uint8_t* d_base_pending, uint32_t* d_level0,
                                    uint32_t* d_l0_index, uint32_t* d_nslots,
@@ -333,6 +337,7 @@ static sycl::event submit_gen_fill_impl(sycl::queue& q, const uint64_t* d_base_h
 }
 
 template <bool GPU_COMPACT = false>
+// Select the generation specialization matching the backend record layout.
 static sycl::event submit_gen_fill(sycl::queue& q, const uint64_t* d_base_h,
                                    const uint8_t* d_base_pending, uint32_t* d_level0,
                                    uint32_t* d_l0_index, uint32_t* d_nslots,

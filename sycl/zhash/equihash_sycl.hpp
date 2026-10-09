@@ -7,6 +7,7 @@
 namespace mom_equihash {
 
 template <std::size_t Count>
+// Reject non-final zero remainders that otherwise amplify duplicate-provenance candidates.
 inline bool has_nonzero_remainder(const std::uint32_t (&values)[Count]) {
   std::uint32_t combined = 0;
   for (const std::uint32_t value : values) combined |= value;
@@ -18,6 +19,7 @@ struct alignas(16) SplitRecordHead {
 };
 
 template <typename Record>
+// Separate the hot four-word head from cold trailing words without changing record contents.
 inline void store_split_record(SplitRecordHead* const heads, std::uint32_t* const tails,
                                const std::size_t index, const Record& record) {
   static_assert(Record::word_count == 5);
@@ -29,6 +31,7 @@ inline void store_split_record(SplitRecordHead* const heads, std::uint32_t* cons
 }
 
 template <typename Record>
+// Reassemble the exact packed record from disjoint head and tail streams.
 inline Record load_split_record(const SplitRecordHead* const heads,
                                 const std::uint32_t* const tails, const std::size_t index) {
   static_assert(Record::word_count == 5);
@@ -42,6 +45,7 @@ inline Record load_split_record(const SplitRecordHead* const heads,
 }
 
 template <typename Record>
+// Use vector stores only when the record's compile-time size/alignment supports them.
 inline void store_aligned_record(Record* const output, const Record& record) {
   if constexpr (sizeof(Record) == 32 && Record::word_count <= 7) {
     auto* const dst = reinterpret_cast<sycl::uint4*>(output);
@@ -102,6 +106,7 @@ inline std::uint32_t load_bucket_parent(
 
 template <typename Spec, unsigned FieldCount, unsigned LocalBits, unsigned ParentBucketBits,
           unsigned ParentSlots>
+// Detect shared immediate parents from bucket-relative provenance before generating another collision.
 inline bool bucket_parents_overlap(
     const PackedBucketCollisionRecord<Spec, FieldCount, LocalBits, ParentBucketBits, ParentSlots>& a,
     const PackedBucketCollisionRecord<Spec, FieldCount, LocalBits, ParentBucketBits, ParentSlots>& b) {
@@ -143,6 +148,7 @@ inline void store_bucket_output(
 }
 
 template <typename Spec, typename InputRecord, typename OutputRecord>
+// Build an initial collision with slot-ordered parents; full canonical leaf order is checked after recovery.
 inline bool make_generated_collision_unordered(
     const InputRecord& a, const InputRecord& b, const std::uint32_t bucket,
     const std::uint32_t a_slot, const std::uint32_t b_slot, const std::uint32_t input_slots,
@@ -167,6 +173,7 @@ inline bool make_generated_collision_unordered(
 }
 
 template <typename Spec, unsigned LocalBits, typename OutputRecord>
+// Generate the first collision from hot heads, deferring omitted tail-bit validation to proof rehash.
 inline bool make_split_generated_collision_unordered(
     const SplitRecordHead& a, const SplitRecordHead& b, const std::uint32_t bucket,
     const std::uint32_t a_slot, const std::uint32_t b_slot, const std::uint32_t input_slots,
@@ -214,6 +221,7 @@ inline bool make_split_generated_collision_unordered(
 
 template <typename Spec, unsigned FieldCount, unsigned LocalBits, typename InputRecord,
           typename OutputRecord>
+// Join split records, consulting cold tails for parent overlap while XOR fields stay in hot heads.
 inline bool make_split_bucket_collision_unordered(
     const SplitRecordHead& a, const SplitRecordHead& b, const std::uint32_t bucket,
     const std::uint32_t* tails, const std::size_t a_index, const std::size_t b_index,
@@ -272,6 +280,7 @@ inline bool make_split_bucket_collision_unordered(
 }
 
 template <typename Spec, typename InputRecord, typename OutputRecord>
+// Build a later collision after immediate-parent overlap rejection; rehash validates compact trailing fields.
 inline bool make_bucket_collision_unordered(
     const InputRecord& a, const InputRecord& b, const std::uint32_t bucket,
     const std::uint32_t a_slot, const std::uint32_t b_slot, const std::uint32_t input_slots,
@@ -322,6 +331,7 @@ inline bool make_bucket_collision_unordered(
 }
 
 template <typename Spec, typename InputRecord>
+// Accept only zero-remainder final pairs with distinct immediate parents and retain their root references.
 inline bool make_bucket_root_unordered(
     const InputRecord& a, const InputRecord& b, const std::uint32_t bucket,
     const std::uint32_t a_slot, const std::uint32_t b_slot,
@@ -405,6 +415,7 @@ inline sycl::event submit_generation_bucketed(
 
 template <typename Spec, typename Layout> class GenerateBucketedFullKernel;
 template <typename Spec, typename Layout>
+// Generate full level-zero records directly into bounded buckets with explicit overflow accounting.
 inline sycl::event submit_generation_bucketed_full(
     sycl::queue& queue, const std::uint64_t* device_midstate, const std::uint64_t* device_tail,
     PackedBucketLevel0Record<Spec, Layout::local_bits>* device_bucket,
@@ -454,6 +465,7 @@ template <typename Spec, typename InputLayout, typename OutputLayout, typename O
 class BucketCollisionDirectKernel;
 
 template <typename Spec, typename InputLayout, typename OutputLayout, typename OutputRecord>
+// Collide split level-zero heads per bucket and retain split parent records for later recovery.
 inline sycl::event submit_bucket_round_bucketed(
     sycl::queue& queue, const SplitRecordHead* device_input_heads,
     const std::uint32_t* device_input_tails, const std::uint32_t* device_input_counts,
@@ -534,6 +546,7 @@ template <typename Spec, typename InputLayout, typename OutputLayout, typename O
 class BucketCollisionDirectFullKernel;
 template <typename Spec, typename InputLayout, typename OutputLayout, typename OutputRecord,
           unsigned Partitions = 4>
+// Partition full-record first-round collisions into disjoint local-bin ranges, preserving bounded output.
 inline sycl::event submit_bucket_round_bucketed_full(
     sycl::queue& queue,
     const PackedBucketLevel0Record<Spec, InputLayout::local_bits>* device_input,
@@ -653,6 +666,7 @@ class BucketCollisionPartitionedKernel;
 // collision key belongs to exactly one partition; a skewed partition reports overflow for retry.
 template <typename Spec, typename InputLayout, typename OutputLayout, typename OutputRecord,
           unsigned Partitions, bool CacheHead = false>
+// Partition split-head first-round work; optional head caching changes loads, not collision coverage.
 inline sycl::event submit_bucket_round_bucketed_partitioned(
     sycl::queue& queue, const SplitRecordHead* device_input_heads,
     const std::uint32_t* device_input_tails, const std::uint32_t* device_input_counts,
@@ -792,6 +806,7 @@ class CollisionBucketSplitOutputPartitionedKernel;
 
 template <typename Spec, unsigned FieldCount, typename InputLayout, typename OutputLayout,
           typename InputRecord, typename OutputRecord, unsigned Partitions>
+// Partition later full-record collisions and emit hot/cold split records with bounded reservations.
 inline sycl::event submit_collision_round_bucketed_split_output_partitioned(
     sycl::queue& queue, const InputRecord* device_input,
     const std::uint32_t* device_input_counts, SplitRecordHead* device_output_heads,
@@ -894,6 +909,7 @@ inline sycl::event submit_collision_round_bucketed_split_output_partitioned(
 
 template <typename Spec, unsigned FieldCount, typename InputLayout, typename OutputLayout,
           typename InputRecord, typename OutputRecord>
+// Collide full records per bucket and split the output head from cold provenance storage.
 inline sycl::event submit_collision_round_bucketed_split_output(
     sycl::queue& queue, const InputRecord* device_input,
     const std::uint32_t* device_input_counts, SplitRecordHead* device_output_heads,
@@ -971,6 +987,7 @@ class SplitCollisionBucketKernel;
 
 template <typename Spec, unsigned FieldCount, unsigned LocalBits, typename InputLayout,
           typename OutputLayout, typename InputRecord, typename OutputRecord>
+// Collide split input records per bucket, consulting cold tails only for exact parent-overlap checks.
 inline sycl::event submit_split_collision_round_bucketed(
     sycl::queue& queue, const SplitRecordHead* device_input_heads,
     const std::uint32_t* device_input_tails, const std::uint32_t* device_input_counts,
@@ -1051,6 +1068,7 @@ class SplitCollisionBucketPartitionedKernel;
 template <typename Spec, unsigned FieldCount, unsigned LocalBits, typename InputLayout,
           typename OutputLayout, typename InputRecord, typename OutputRecord,
           unsigned Partitions, bool CacheHead = false>
+// Partition split input collisions into disjoint bins; optional caching retains the same overflow contract.
 inline sycl::event submit_split_collision_round_bucketed_partitioned(
     sycl::queue& queue, const SplitRecordHead* device_input_heads,
     const std::uint32_t* device_input_tails, const std::uint32_t* device_input_counts,
@@ -1178,6 +1196,7 @@ template <typename Spec, unsigned FieldCount, typename InputLayout, typename Out
 class CollisionBucketDirectKernel;
 template <typename Spec, unsigned FieldCount, typename InputLayout, typename OutputLayout,
           typename InputRecord, typename OutputRecord>
+// Collide materialized records per bucket, retaining bounded writes and immediate-parent overlap rejection.
 inline sycl::event submit_collision_round_bucketed(
     sycl::queue& queue, const InputRecord* device_input, const std::uint32_t* device_input_counts,
     OutputRecord* device_output,
@@ -1391,6 +1410,7 @@ inline sycl::event submit_collision_round_bucketed_partitioned(
 
 template <typename Spec, typename Layout, typename InputRecord> class ZeroRootBucketKernel;
 template <typename Spec, typename Layout, typename InputRecord>
+// Emit only zero-XOR root pairs; reservation counts may exceed capacity but writes never do.
 inline sycl::event submit_zero_root_round_bucketed(
     sycl::queue& queue, const InputRecord* device_input,
     const std::uint32_t* device_input_counts, ZHashRootRecord<Spec>* device_roots,
@@ -1450,6 +1470,7 @@ inline sycl::event submit_zero_root_round_bucketed(
 
 template <typename Layout> class SumBucketCountsKernel;
 template <typename Layout>
+// Sum stored rows rather than overflow reservations for diagnostic round totals.
 inline sycl::event submit_sum_bucket_counts(sycl::queue& queue,
                                             const std::uint32_t* device_counts,
                                             std::uint32_t* device_total) {
@@ -1480,6 +1501,7 @@ inline sycl::event submit_sum_bucket_counts(sycl::queue& queue,
 
 template <typename Spec, typename Round2, typename Round3, typename Round4>
 class RecoverRootLeavesKernel;
+// Expand one absolute-reference provenance layer after checking each record slot.
 template <typename Spec, unsigned FieldCount>
 inline bool expand_recovery_round(const PackedCollisionRecord<Spec, FieldCount>* records,
                                   std::uint32_t* current, std::uint32_t* next,
@@ -1497,6 +1519,7 @@ inline bool expand_recovery_round(const PackedCollisionRecord<Spec, FieldCount>*
   return true;
 }
 
+// Expand bucket-relative parent references with the same slot bounds as absolute recovery.
 template <typename Spec, unsigned FieldCount, unsigned LocalBits, unsigned ParentBucketBits,
           unsigned ParentSlots>
 inline bool expand_recovery_round(
@@ -1518,6 +1541,7 @@ inline bool expand_recovery_round(
 }
 
 template <typename Record>
+// Expand one split-record provenance layer only after checking every parent reference.
 inline bool expand_split_recovery_round(
     const SplitRecordHead* heads, const std::uint32_t* tails, std::uint32_t* current,
     std::uint32_t* next, unsigned& count, const std::uint32_t arena_capacity) {
@@ -1536,6 +1560,7 @@ inline bool expand_split_recovery_round(
 
 template <typename Spec, unsigned Level0LocalBits, typename Round1, typename Round2,
           typename Round3, typename Round4>
+// Expand bounded parent trees and canonicalize recovered leaf subtrees before independent verification.
 inline sycl::event submit_recover_root_leaves(
     sycl::queue& queue, const SplitRecordHead* level0_heads, const std::uint32_t* level0_tails,
     const SplitRecordHead* round1_heads, const std::uint32_t* round1_tails,
@@ -1590,6 +1615,7 @@ inline sycl::event submit_recover_root_leaves(
 template <typename Spec> class HashRecoveredLeavesKernel;
 template <typename Spec> class VerifyRecoveredLeavesKernel;
 template <typename Spec>
+// Rehash recovered leaves and verify their complete collision tree; invalid roots remain rejected.
 inline sycl::event submit_verify_recovered_leaves(
     sycl::queue& queue, const std::uint8_t* header, const std::uint64_t* midstate,
     const std::uint32_t* candidate_count, const std::uint32_t* leaves,

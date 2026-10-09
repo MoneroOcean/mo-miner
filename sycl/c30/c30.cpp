@@ -74,6 +74,7 @@ static_assert(sizeof(std::size_t) >= 8, "c30 requires a 64-bit host");
 static_assert(kEdgeCount == (1ull << 30), "Cortex c30 must use edge_bits=30");
 static_assert(kProofSize == 42, "Cortex c30 must use proof_size=42");
 
+// Sum bucket counts in a wider type and reject impossible totals before narrowing kernel counters.
 std::uint32_t count_edges(const std::vector<std::uint32_t>& counts) {
   std::uint64_t total = 0;
   for (const std::uint32_t count : counts)
@@ -97,6 +98,7 @@ struct DeviceMemory {
   std::uint32_t* recovered = nullptr;
   bool low_memory = false;
 
+  // Select a device-safe edge layout and release every partial allocation if construction fails.
   explicit DeviceMemory(sycl::queue& q) : queue(q) {
     const sycl::device device = queue.get_device();
     const std::uint64_t global_bytes = device.get_info<sycl::info::device::global_mem_size>();
@@ -142,6 +144,7 @@ struct DeviceMemory {
   DeviceMemory(const DeviceMemory&) = delete;
   DeviceMemory& operator=(const DeviceMemory&) = delete;
 
+  // Grow one graph arena after its prior work has completed; failed growth leaves no live capacity.
   void allocate_edges(const unsigned index, const std::uint64_t count) {
     if (edge_capacity[index] >= count)
       return;
@@ -162,6 +165,7 @@ struct DeviceMemory {
     }
   }
 
+  // Grow the packed graph arena, clearing its old capacity before allocation can fail.
   void allocate_packed(const unsigned index, const std::uint64_t count) {
     if (packed_capacity[index] >= count)
       return;
@@ -175,6 +179,7 @@ struct DeviceMemory {
     packed_capacity[index] = count;
   }
 
+  // Drop one packed arena during a completed-stage handoff; teardown must remain noexcept.
   void release_packed(const unsigned index) noexcept {
     if (packed_edges[index])
       try {
@@ -185,6 +190,7 @@ struct DeviceMemory {
     packed_capacity[index] = 0;
   }
 
+  // Release all owned allocations, including partially constructed arenas, without throwing.
   void release() noexcept {
     for (unsigned i = 0; i < edges.size(); ++i) {
       if (edges[i])
@@ -246,6 +252,7 @@ struct Solver {
   sycl::queue queue;
   DeviceMemory memory;
 
+  // Create an in-order pipeline so seed, trim, compact, and recovery submissions share dependencies.
   explicit Solver(const std::string& dev_str)
       : device(get_dev(dev_str)),
         queue(device, sycl::async_handler([](sycl::exception_list errors) {
@@ -268,6 +275,7 @@ struct Solver {
     });
   }
 
+  // Trim one graph, find a host cycle, then recover and verify exact sorted nonces before hashing.
   std::optional<Solution> solve(const Job& job) {
     using Clock = std::chrono::steady_clock;
     const bool profile = std::getenv("MOM_C30_PROFILE") != nullptr;
@@ -440,6 +448,7 @@ struct C30State {
   }
 };
 
+// Keep device state alive until ordered cleanup instead of relying on static runtime destruction.
 DeviceStateRegistry<C30State>& c30_registry() {
   static auto* const registry = new DeviceStateRegistry<C30State>;
   return *registry;
@@ -449,6 +458,7 @@ C30State& c30_state(const std::string& dev_str) {
   return c30_registry().get(dev_str, [&] { return std::make_unique<C30State>(dev_str); });
 }
 
+// Check four block-boundary endpoints on device without allocating the full C30 graph.
 int c30_portable_test(const mom::c30::Job& job, std::uint8_t* output, const std::string& dev_str) {
   sycl::queue queue(get_dev(dev_str), sycl::property::queue::in_order{});
   const mom::c30::host::SipKey host_key = mom::c30::host::graph_key(job.header, job.nonce);
@@ -479,6 +489,7 @@ int c30_portable_test(const mom::c30::Job& job, std::uint8_t* output, const std:
 
 } // namespace
 
+// Release cached solvers at ordered shutdown; errors must not escape the cleanup ABI.
 void c30_cleanup_states() noexcept {
   try {
     c30_registry().clear();
@@ -487,6 +498,7 @@ void c30_cleanup_states() noexcept {
   }
 }
 
+// Solve one Cortex header/nonce synchronously; the 40-byte test form supplies its own nonce.
 int c30(unsigned, const unsigned proof_size, const std::uint8_t* input, const unsigned input_size,
         std::uint8_t* output, std::uint32_t* output_edges, std::uint64_t* nonce,
         const std::string& dev_str) {

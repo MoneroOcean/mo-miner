@@ -13,6 +13,7 @@ namespace mom::intel_matrix {
 
 namespace esimd = sycl::ext::intel::esimd;
 
+// Discover the physical int8 DPAS width, using EU geometry only when matrix shapes are unavailable.
 inline unsigned dpas_width(const sycl::device& device) {
   namespace matrix = sycl::ext::oneapi::experimental::matrix;
   try {

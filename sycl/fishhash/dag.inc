@@ -1,4 +1,5 @@
 class FishDagKernel;
+// Generate a bounded dataset slice; callers retire chunks to limit watchdog exposure.
 static sycl::event submit_fishhash_dag_gen(sycl::queue& q, const uint64_t* __restrict d_cache,
                                            uint64_t* __restrict d_dag, uint32_t start,
                                            uint32_t count) {
@@ -20,9 +21,11 @@ static sycl::event submit_fishhash_dag_gen(sycl::queue& q, const uint64_t* __res
 }
 
 // ---- HOST: build the 72 MB light cache (keccak512 chain + 3 rounds), == ethash light cache ----
+// Reuse the padded device permutation for host cache derivation.
 static void keccak512_host(uint64_t out[8], const uint8_t* in, unsigned in_len) {
   keccak512_dev(out, in, in_len);
 }
+// Build the fixed-seed cache with ordered in-place parent mixing.
 static void build_light_cache_host(std::vector<uint64_t>& cache /* N*8 */) {
   cache.resize((size_t)LIGHT_CACHE_NUM_ITEMS * 8);
   keccak512_host(&cache[0], FISH_SEED, 32);

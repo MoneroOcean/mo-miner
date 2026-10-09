@@ -1,3 +1,5 @@
+// Bounded device validation shipped with the miner: SHA-only compilation avoids the ECC kernels
+// when correctness tests probe a low-memory CPU/OpenCL device.
 #include <sycl/sycl.hpp>
 
 #include <cstdint>
@@ -13,6 +15,7 @@ namespace mom_nexapow {
 
 class TestShaKernel;
 
+// Check the consensus 49-byte double-SHA path, retaining host buffers until transfers finish.
 void nexapow_test_sha256d_49(sycl::queue& queue, const std::uint8_t input[49],
                              std::uint8_t output[32]) {
   std::uint8_t* device_input = nullptr;

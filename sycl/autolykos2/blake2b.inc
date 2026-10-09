@@ -1,5 +1,3 @@
-namespace mom_autolykos2 {
-
 #if defined(MOM_SYCL_PORTABLE_OPENCL)
 #define AUTOLYKOS_DEVICE_INLINE inline __attribute__((always_inline))
 #else
@@ -34,6 +32,7 @@ constexpr uint8_t BLAKE2B_SIGMA[12][16] = {{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11
                                            {14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3}};
 
 template <bool Portable = mom_sycl_portable_opencl>
+// Select an IV word without device-global tables on the portable backend.
 inline uint64_t blake2b_iv(const unsigned index) {
   if constexpr (Portable) {
     switch (index) {
@@ -59,6 +58,7 @@ inline uint64_t blake2b_iv(const unsigned index) {
   }
 }
 
+// Decode packed schedule selectors to avoid portable device-global constant loads.
 AUTOLYKOS_DEVICE_INLINE uint8_t blake2b_sigma(const unsigned round, const unsigned index) {
   // Rounds 1 and 11 share this permutation. Keeping it as the initialized/default value avoids an
   // llvm-spirv switch phi with two identical incoming edges, which Mesa's SPIR-V validator rejects.
@@ -121,6 +121,7 @@ struct AutolykosPortableResult {
 // and n_len is a per-height runtime value. Keeping this divide-free helps both NVIDIA's nvptx image
 // and Intel Level Zero on Arc. M = floor(2^64 / n_len) + 1 is precomputed once on the host (mo_modM),
 // then x % n_len == hi64( (M*x mod 2^64) * n_len ). Bit-exact for x, n_len in [1, 2^32).
+// Build the reciprocal for 32-bit remainder; zero denotes an unused modulus.
 inline uint64_t mo_modM(const uint32_t d) {
   return d ? (0xFFFFFFFFFFFFFFFFULL / d) + 1ULL : 0ULL;
 }
@@ -129,6 +130,7 @@ AUTOLYKOS_DEVICE_INLINE uint32_t mo_mod_u32(const uint32_t x, const uint32_t d, 
       mo_mul_hi_u64(M * static_cast<uint64_t>(x), static_cast<uint64_t>(d)));
 }
 
+// Build a floor reciprocal for 64-bit division, handling exact reciprocal boundaries.
 inline uint64_t mo_divM64(const uint32_t d) {
   if (!d)
     return 0;
@@ -139,6 +141,7 @@ inline uint64_t mo_divM64(const uint32_t d) {
 // Exact Barrett reduction for h3 = uint64 % n_len. For x < 2^64 and d < 2^32,
 // q = high64(x * floor(2^64/d)) is at most one low, so one subtraction after
 // x - q*d produces the exact remainder.
+// Reduce a 64-bit input with one correction; the floor reciprocal cannot overestimate.
 AUTOLYKOS_DEVICE_INLINE uint32_t mo_mod_u64(const uint64_t x, const uint32_t d, const uint64_t M) {
   if (d <= 1)
     return 0;
@@ -149,6 +152,7 @@ AUTOLYKOS_DEVICE_INLINE uint32_t mo_mod_u64(const uint64_t x, const uint32_t d, 
   return static_cast<uint32_t>(r);
 }
 
+// Preserve explicit byte operations on portable stacks that mislower canonical swaps.
 AUTOLYKOS_DEVICE_INLINE uint64_t bswap64_dev(const uint64_t value) {
   if constexpr (mom_sycl_portable_opencl) {
     // Keep this as ordinary shifts for OpenCL SPIR-V consumers. LLVM otherwise recognizes the
@@ -169,6 +173,7 @@ AUTOLYKOS_DEVICE_INLINE uint64_t bswap64_dev(const uint64_t value) {
   }
 }
 
+// Use volatile byte extraction to retain the portable compiler workaround.
 AUTOLYKOS_DEVICE_INLINE uint32_t bswap32_dev(const uint32_t value) {
   volatile uint32_t source = value;
   uint32_t result = 0;
@@ -180,6 +185,7 @@ AUTOLYKOS_DEVICE_INLINE uint32_t bswap32_dev(const uint32_t value) {
   return result;
 }
 
+// Retain explicit portable shift halves; callers use nonzero shifts below 64.
 AUTOLYKOS_DEVICE_INLINE uint64_t rotr64_dev(const uint64_t value, const unsigned shift) {
   if constexpr (mom_sycl_portable_opencl) {
     volatile uint64_t right = value >> shift;
@@ -190,6 +196,7 @@ AUTOLYKOS_DEVICE_INLINE uint64_t rotr64_dev(const uint64_t value, const unsigned
   }
 }
 
+// Load consensus words bytewise, retaining the portable volatile-input workaround.
 AUTOLYKOS_DEVICE_INLINE uint32_t load32_be_dev(const uint8_t* const input) {
   if constexpr (mom_sycl_portable_opencl) {
     const volatile uint8_t* const bytes = input;
@@ -216,6 +223,7 @@ AUTOLYKOS_DEVICE_INLINE uint64_t load64_le_dev(const uint8_t* const input) {
          (static_cast<uint64_t>(input[6]) << 48) | (static_cast<uint64_t>(input[7]) << 56);
 }
 
+// Store consensus word bytes explicitly on both native and portable paths.
 AUTOLYKOS_DEVICE_INLINE void store32_be_dev(uint8_t* const output, const uint32_t value) {
   if constexpr (mom_sycl_portable_opencl) {
     volatile uint8_t* const bytes = output;
@@ -235,6 +243,7 @@ AUTOLYKOS_DEVICE_INLINE uint8_t word_byte_be_dev(const uint32_t word, const unsi
   return static_cast<uint8_t>(word >> ((3U - byte_index) * 8U));
 }
 
+// Absorb big-endian consensus words as a little-endian Blake2b message lane.
 AUTOLYKOS_DEVICE_INLINE uint64_t pack_be32_pair_as_blake_word(const uint32_t a, const uint32_t b) {
   if constexpr (mom_sycl_portable_opencl) {
     volatile uint32_t av = a, bv = b;
@@ -259,6 +268,7 @@ AUTOLYKOS_DEVICE_INLINE uint64_t pack_be32_pair_as_blake_word(const uint32_t a, 
   }
 }
 
+// Apply Blake2b G with unsigned 64-bit wraparound and the reference rotation sequence.
 AUTOLYKOS_DEVICE_INLINE void blake2b_g(uint64_t& a, uint64_t& b, uint64_t& c, uint64_t& d,
                                        const uint64_t x, const uint64_t y) {
   a = a + b + x;
@@ -271,6 +281,7 @@ AUTOLYKOS_DEVICE_INLINE void blake2b_g(uint64_t& a, uint64_t& b, uint64_t& c, ui
   b = rotr64_dev(b ^ c, 63);
 }
 
+// Compress one block with its cumulative byte count and optional final-block flag.
 AUTOLYKOS_DEVICE_INLINE void blake2b_compress_dev(uint64_t h[8], const uint64_t m[16],
                                                   const uint64_t t, const bool last) {
   uint64_t v[16];
@@ -324,6 +335,7 @@ AUTOLYKOS_DEVICE_INLINE void blake2b_compress_dev(uint64_t h[8], const uint64_t 
     h[i] ^= v[i] ^ v[i + 8];
 }
 
+// Initialize the unkeyed 32-byte digest parameters, not the 64-byte Blake2b default.
 AUTOLYKOS_DEVICE_INLINE void blake2b256_init_dev(uint64_t h[8]) {
 #pragma unroll
   for (unsigned i = 0; i < 8; ++i) {
@@ -335,12 +347,14 @@ AUTOLYKOS_DEVICE_INLINE void blake2b256_init_dev(uint64_t h[8]) {
   h[0] ^= 0x01010020ULL;
 }
 
+// Serialize the truncated digest as little-endian Blake2b lanes.
 AUTOLYKOS_DEVICE_INLINE void blake2b256_output_dev(const uint64_t h[8], uint8_t out[32]) {
 #pragma unroll
   for (unsigned i = 0; i < 32; ++i)
     out[i] = static_cast<uint8_t>(h[i >> 3] >> ((i & 7U) * 8U));
 }
 
+// Hash at most one 128-byte block; the short search messages need no streaming state.
 AUTOLYKOS_DEVICE_INLINE void blake2b256_oneblock_dev(const uint8_t* const input, const uint32_t len,
                                                      uint8_t out[32]) {
   uint64_t h[8];
@@ -356,6 +370,7 @@ AUTOLYKOS_DEVICE_INLINE void blake2b256_oneblock_dev(const uint8_t* const input,
   blake2b256_output_dev(h, out);
 }
 
+// Reference row derivation for the no-table path and independent fast-table verification.
 AUTOLYKOS_DEVICE_INLINE void
 autolykos_prehash_digest_dev(const uint32_t index, const uint32_t height, uint8_t digest[32]) {
   uint64_t h[8];
@@ -385,12 +400,3 @@ autolykos_prehash_digest_dev(const uint32_t index, const uint32_t height, uint8_
   blake2b_compress_dev(h, m, total, true);
   blake2b256_output_dev(h, digest);
 }
-
-// Fast table-row prehash. Two differences from autolykos_prehash_digest_dev above (which is
-// kept unchanged as the no-table mining path and the verification reference):
-// 1. Explicit 32-bit pair arithmetic — Xe2 has no native 64-bit integer ALU and the uint64_t
-//    lowering leaves throughput on the table (same finding as the kawpow keccak, which uses
-//    Uint2 pairs). rotr64 by 32 becomes a half swap, 24/16/63 become shift pairs.
-// 2. The 8192-byte Autolykos2 pad is the 64-bit big-endian integers 0..1023, so every pad
-//    message word is bswap64(item) with item < 1024: zero low half, two-shift high half.
-//    Message providers feed these without materializing a 16-word block.

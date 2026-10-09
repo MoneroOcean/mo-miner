@@ -154,6 +154,7 @@ class ZHashSessionLifecycle {
 public:
   explicit ZHashSessionLifecycle(const std::size_t capacity) : capacity_(capacity) {}
 
+  // Discard the previous attempt's status and counters before admitting a new header.
   void reset() {
     status_ = SessionStatus::idle;
     stage_ = 0;
@@ -163,6 +164,7 @@ public:
     zero_root_count_ = 0;
   }
 
+  // Admit one attempt at a time; completed or failed attempts restart from a clean state.
   bool begin() {
     if (status_ == SessionStatus::running) return false;
     reset();
@@ -170,6 +172,7 @@ public:
     return true;
   }
 
+  // Advance past generation only when no leaf was lost to a bounded bucket write.
   bool generated(const std::uint32_t overflow_count) {
     if (!running() || stage_ != 0) return false;
     if (overflow_count != 0) return fail_capacity(overflow_count);
@@ -177,6 +180,7 @@ public:
     return true;
   }
 
+  // Record a materialized round total and make oversized output terminal for this attempt.
   bool flat_output(const std::uint32_t count) {
     if (!running() || stage_ == 0 || stage_ > 5) return false;
     flat_count_ = count;
@@ -184,6 +188,7 @@ public:
     return true;
   }
 
+  // Advance one collision stage only after all reservations fit the selected bucket layout.
   bool scattered(const std::uint32_t overflow_count) {
     if (!running() || stage_ == 0 || stage_ >= 5) return false;
     if (overflow_count != 0) return fail_capacity(overflow_count);
@@ -191,6 +196,7 @@ public:
     return true;
   }
 
+  // Admit root recovery only after all collision stages and consistent bounded root counts.
   bool roots(const std::uint32_t root_count, const std::uint32_t zero_root_count) {
     if (!running() || stage_ != 5 || root_count > capacity_ || zero_root_count > root_count) {
       return fail_capacity(root_count > capacity_ ? root_count - static_cast<std::uint32_t>(capacity_) : 1u);
@@ -201,12 +207,14 @@ public:
     return true;
   }
 
+  // Publish the proof outcome without overwriting a terminal overflow or device failure.
   void finish(const bool solved) {
     if (running()) {
       status_ = solved ? SessionStatus::solved : SessionStatus::no_solution;
     }
   }
 
+  // Stop an active attempt on runtime failure while retaining earlier terminal statuses.
   void device_error() {
     if (running()) {
       status_ = SessionStatus::device_error;
@@ -223,6 +231,7 @@ public:
   std::uint32_t zero_root_count() const { return zero_root_count_; }
 
 private:
+  // Accumulate truncation evidence and prevent incomplete work from being reported as a solve.
   bool fail_capacity(const std::uint32_t count) {
     overflow_count_ += count;
     status_ = SessionStatus::capacity_overflow;

@@ -1,4 +1,3 @@
-namespace mom_beamhash3 {
 
 // ---- BeamHash III parameters (beamHashIII.h) ----
 constexpr unsigned WORK_BIT_SIZE = 448;
@@ -53,6 +52,7 @@ inline uint64_t b2b_load64(const uint8_t* p) {
          ((uint64_t)p[4] << 32) | ((uint64_t)p[5] << 40) | ((uint64_t)p[6] << 48) |
          ((uint64_t)p[7] << 56);
 }
+// Apply the BLAKE2b G primitive with the algorithm's prescribed rotation constants.
 inline void b2b_g(uint64_t* v, unsigned a, unsigned b, unsigned c, unsigned d, uint64_t x,
                   uint64_t y) {
   v[a] = v[a] + v[b] + x;
@@ -64,6 +64,7 @@ inline void b2b_g(uint64_t* v, unsigned a, unsigned b, unsigned c, unsigned d, u
   v[c] = v[c] + v[d];
   v[b] = b2b_rotr64(v[b] ^ v[c], 63);
 }
+// Compress one personalized BLAKE2b block with explicit byte count and final-block flag.
 inline void b2b_compress(uint64_t h[8], const uint64_t m[16], uint64_t t0, uint64_t t1, bool last) {
   uint64_t v[16];
   for (unsigned i = 0; i < 8; ++i) {
@@ -141,6 +142,7 @@ inline uint64_t rotl64(uint64_t x, unsigned b) {
   return mo_rotate(x, static_cast<uint64_t>(b));
 }
 
+// Generate one Beam SipHash value with two message rounds and four finalization rounds.
 inline uint64_t siphash24(uint64_t s0, uint64_t s1, uint64_t s2, uint64_t s3, uint64_t nonce) {
   uint64_t v0 = s0, v1 = s1, v2 = s2, v3 = s3;
   auto sip_round = [&]() {
@@ -187,6 +189,7 @@ inline uint64_t beam_pair_to_u64(BeamU64Pair value) {
   return static_cast<uint64_t>(value.lo) | (static_cast<uint64_t>(value.hi) << 32);
 }
 
+// Carry split-word addition exactly for the portable paired-integer hashing path.
 inline BeamU64Pair beam_pair_add(BeamU64Pair a, BeamU64Pair b) {
   const uint32_t lo = a.lo + b.lo;
   return {lo, a.hi + b.hi + static_cast<uint32_t>(lo < a.lo)};
@@ -197,6 +200,7 @@ inline BeamU64Pair beam_pair_xor(BeamU64Pair a, BeamU64Pair b) {
 }
 
 template <unsigned Bits>
+// Rotate the paired words at compile-time constants without requiring native 64-bit shifts.
 inline BeamU64Pair beam_pair_rotl(BeamU64Pair value) {
   static_assert(Bits > 0 && Bits < 64);
   if constexpr (Bits < 32) {
@@ -211,6 +215,7 @@ inline BeamU64Pair beam_pair_rotl(BeamU64Pair value) {
   }
 }
 
+// Keep paired-integer leaf hashing bit-equivalent to the native SipHash implementation.
 inline BeamU64Pair siphash24_pair(BeamU64Pair s0, BeamU64Pair s1, BeamU64Pair s2,
                                   BeamU64Pair s3, BeamU64Pair nonce) {
   BeamU64Pair v0 = s0;
@@ -261,6 +266,7 @@ inline BeamU64Pair beam_pair_nonce(uint32_t index, uint32_t offset) {
 // ===========================================================================================
 
 // makeLeaf: workBits word i = siphash24(prePow, (index<<3)+i). indexTree=[index].
+// Build the 448-bit Beam leaf work from its SipHash index-derived nonce sequence.
 inline void make_leaf(const uint64_t prePow[4], uint32_t index, uint64_t w[WORK_WORDS]) {
 #if defined(MOM_BEAMHASH3_INTEL_PAIR32)
   const BeamU64Pair s0 = beam_pair_from_u64(prePow[0]);
@@ -282,6 +288,7 @@ inline void make_leaf(const uint64_t prePow[4], uint32_t index, uint64_t w[WORK_
 }
 
 // 448-bit right shift by COLLISION_BIT_SIZE (24) across WORK_WORDS u64 words, then mask to remLen bits.
+// XOR child work and discard the collision prefix before the next mixing stage.
 inline void merge_workbits(const uint64_t a[WORK_WORDS], const uint64_t b[WORK_WORDS],
                            unsigned remLen, uint64_t out[WORK_WORDS]) {
   uint64_t x[WORK_WORDS];
@@ -351,6 +358,7 @@ inline uint32_t collision_bits(const uint64_t w[WORK_WORDS]) {
 // inverse). The JS reference builds a bitset<800> LSB-first: field i occupies bits [i*25, i*25+25).
 // So byte b's bit k (LSB) = stream bit (b*8+k). We emit 100 bytes little-endian-bit-packed.
 // ===========================================================================================
+// Pack canonical 25-bit leaf indices into Beam's 100-byte solution payload.
 static void compress_indices(const uint32_t idx[NUM_LEAVES], uint8_t out[100]) {
   // Build the 800-bit little-endian bit stream: out[byte] bit-k = field(byte*8+k).
   for (unsigned i = 0; i < 100; ++i)
@@ -392,6 +400,7 @@ inline uint32_t sha256_rotr(uint32_t x, unsigned n) {
   return mo_rotate(x, uint32_t{32 - n});
 }
 
+// Compute the standard SHA-256 digest used to evaluate Beam proof difficulty.
 static void sha256(const uint8_t* msg, size_t len, uint8_t out[32]) {
   uint32_t h[8] = {0x6a09e667u, 0xbb67ae85u, 0x3c6ef372u, 0xa54ff53au,
                    0x510e527fu, 0x9b05688cu, 0x1f83d9abu, 0x5be0cd19u};
@@ -448,6 +457,7 @@ static void sha256(const uint8_t* msg, size_t len, uint8_t out[32]) {
 
 // Beam Difficulty::IsTargetReached: hash(32B, big-endian) * mantissa < 2^(280-order).
 // hash_be[0] is the most-significant byte. The product (256 + 25 bits) is held in 16-bit limbs.
+// Compare the proof hash against Beam's packed difficulty representation.
 static bool beam_target_reached(const uint8_t hash_be[32], uint32_t packed) {
   constexpr uint32_t MANTISSA_BITS = 24;
   constexpr uint32_t MAX_ORDER = 256u - MANTISSA_BITS - 1u; // s_MaxOrder

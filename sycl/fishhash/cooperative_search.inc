@@ -1,4 +1,5 @@
 class FishCoopKernel;
+// Cooperate within 16-lane teams; padded teams still participate in every collective.
 static sycl::event submit_fishhash_search_coop(sycl::queue& q, const uint8_t* d_input,
                                                unsigned input_size,
                                                uint64_t start_nonce,
@@ -101,6 +102,7 @@ static sycl::event submit_fishhash_search_coop(sycl::queue& q, const uint8_t* d_
 }
 
 class KarlsenCoopKernel;
+// Share Karlsen dataset gathers across each complete team without crossing nonce boundaries.
 static sycl::event submit_karlsenhashv2_search_coop(
     sycl::queue& q, const uint8_t* d_input, unsigned input_size, uint64_t start_nonce,
     const uint64_t* __restrict d_dag, uint32_t intensity, const uint8_t* d_target,

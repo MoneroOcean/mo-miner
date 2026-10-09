@@ -47,6 +47,7 @@ template <unsigned Width> class OctopusSyclNativeGemmIntel;
 #endif
 class OctopusSyclNativeFinish;
 
+// Decompose a field value into signed int8 products for exact native-matrix reconstruction.
 inline void native_split_field(const uint32_t value, int8_t out[NativeProducts]) {
   int8_t limb[3];
   uint32_t remaining = value;
@@ -66,6 +67,7 @@ inline void native_split_field(const uint32_t value, int8_t out[NativeProducts])
   out[5] = static_cast<int8_t>(limb[1] + limb[2]);
 }
 
+// Return the radix weight used to reconstruct one signed-int8 product plane.
 inline int64_t native_weight(const unsigned product) {
   constexpr int64_t b = 128, b2 = b * b, b3 = b2 * b, b4 = b2 * b2;
   switch (product) {
@@ -136,12 +138,14 @@ inline octopus_esimd::simd<int32_t, 128> native_reduce(
 }
 #endif
 
+// Fold weighted matrix products back into an exact Octopus prime-field value.
 inline uint32_t native_field_value(const NativeProduct* const products, const unsigned group,
                                    const unsigned column) {
   const size_t index = static_cast<size_t>(group) * NativeN + column;
   return static_cast<uint32_t>(products[index]);
 }
 
+// Prepare nonce-group coefficient planes for the native GEMM slots.
 static sycl::event native_make_a(sycl::queue& queue, const uint8_t* const header,
                                  const uint64_t start, int8_t* const digits) {
   const size_t global = static_cast<size_t>(NativeGroups / 4) * NativeWorkgroup;
@@ -179,6 +183,7 @@ static sycl::event native_make_a(sycl::queue& queue, const uint8_t* const header
   });
 }
 
+// Prepare header-dependent evaluation-point planes in the native GEMM layout.
 static sycl::event native_make_b(sycl::queue& queue, const uint32_t* const points,
                                  int8_t* const digits) {
   return queue.submit([&](sycl::handler& handler) {
@@ -218,6 +223,7 @@ struct NativeGemmContext {
   OctopusAmdWmma wmma;
   bool logged = false;
 
+  // Initialize the selected native GEMM resources; unsupported hardware leaves the portable path available.
   bool ensure(sycl::queue& queue) {
     return wmma.ensure(queue, NativeM);
   }
@@ -225,6 +231,7 @@ struct NativeGemmContext {
   bool checked = false;
   bool supported = false;
 
+  // Initialize the selected native GEMM resources; unsupported hardware leaves the portable path available.
   bool ensure(sycl::queue& queue) {
     if (!mom_is_cuda(queue.get_device()))
       return true;
@@ -236,6 +243,7 @@ struct NativeGemmContext {
     return supported;
   }
 #else
+  // Initialize the selected native GEMM resources; unsupported hardware leaves the portable path available.
   bool ensure(sycl::queue&) {
     return true;
   }
@@ -304,6 +312,7 @@ inline unsigned octopus_cuda_swizzle(const unsigned offset) {
 #endif
 
 #if defined(OCTOPUS_ESIMD)
+// Combine weighted int8 polynomial products, widening each DPAS result before modular reduction.
 template <unsigned Width> struct NativeIntelGemm {
   const int8_t* a;
   const int8_t* b;
@@ -392,6 +401,7 @@ template <unsigned Width> struct NativeIntelGemm {
 #endif
 };
 
+// Submit Intel DPAS polynomial products with the selected accumulator width.
 template <unsigned Width>
 static sycl::event native_gemm_intel(sycl::queue& queue, const int8_t* a, const int8_t* b,
                                     NativeProduct* products) {
@@ -403,6 +413,7 @@ static sycl::event native_gemm_intel(sycl::queue& queue, const int8_t* a, const 
 }
 #endif
 
+// Dispatch exact polynomial products to the supported GPU matrix implementation.
 static sycl::event native_gemm(sycl::queue& queue, NativeGemmContext& context,
                                const int8_t* const a, const int8_t* const b,
                                NativeProduct* const products) {
@@ -577,6 +588,7 @@ static sycl::event native_gemm(sycl::queue& queue, NativeGemmContext& context,
 }
 
 #if !defined(OCTOPUS_ESIMD)
+// Consume polynomial products, mix the DAG, and test only nonces in the requested range.
 static sycl::event native_finish(sycl::queue& queue, const uint8_t* const header,
                                  const uint32_t* const dag, const FastModData page_mod,
                                  const NativeProduct* const products, const uint64_t start,
@@ -792,6 +804,7 @@ class OctopusSyclNativeSearch {
   unsigned profile_reports_ = 0;
 #endif
 
+  // Initialize the selected native GEMM resources; unsupported hardware leaves the portable path available.
   bool ensure(sycl::queue& base) {
     if (ready_)
       return true;
@@ -833,6 +846,7 @@ class OctopusSyclNativeSearch {
     }
   }
 
+  // Regenerate shared B planes only when the header-derived point version changes.
   void prepare_b(sycl::queue& base, const uint32_t* const points, const uint64_t points_version) {
     if (points_version_ == points_version)
       return;
@@ -845,6 +859,7 @@ public:
     release();
   }
 
+  // Drain base/slot queues before freeing shared planes and each pipelined slot.
   void release() noexcept {
     for (Slot& slot : slots_)
       if (slot.queue)
@@ -892,6 +907,7 @@ public:
     ready_ = false;
   }
 
+  // Pipeline requested nonce groups through coefficient generation, GEMM, and final DAG mixing.
   bool search(sycl::queue& base, const uint8_t* const header, const uint32_t* const dag,
               const FastModData page_mod, const uint32_t* const points,
               const uint64_t points_version, const uint64_t start, const uint32_t count,

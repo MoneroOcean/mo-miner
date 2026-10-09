@@ -9,6 +9,7 @@ template <unsigned R, bool GPU_COMPACT> class ZelHashSplitRoundKernel;
 class ZelHashCudaTiledRound0Kernel;
 template <unsigned R> class ZelHashCudaTiledLaterRoundKernel;
 template <unsigned R, bool GPU_COMPACT = false>
+// Join one round's collision buckets, selecting compact backend fragments without changing round order.
 static sycl::event submit_round(sycl::queue& q, const uint32_t* d_in, uint32_t* d_out,
                                 const uint32_t* d_in_nslots,
                                 uint32_t* d_out_nslots, unsigned wg, unsigned slot_capacity,

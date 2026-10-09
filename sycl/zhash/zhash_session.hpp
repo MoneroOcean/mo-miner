@@ -65,6 +65,7 @@ public:
   static constexpr unsigned fast_candidate_roots =
       Layout::max_candidate_roots < 256 ? Layout::max_candidate_roots : 256;
 
+  // Create an independent ordered queue and allocate only a device-supported arena plan.
   explicit Session(const sycl::queue& source, const SessionOptions& options = {})
       : queue_(make_queue(source, options.collect_stage_times)),
         options_(options), lifecycle_(Layout::slot_count) {
@@ -75,6 +76,7 @@ public:
     allocate();
   }
 
+  // Drain live submissions before freeing their storage; destructor errors remain contained.
   ~Session() {
     try {
       queue_.wait_and_throw();
@@ -101,6 +103,7 @@ public:
     last_error_.clear();
   }
 
+  // Run a complete header attempt with overflow accounting, then recover and independently verify bounded roots.
   RunReport run(const std::uint8_t (&header)[Spec::header_length]) {
     RunReport report;
     report.device_bytes = Layout::device_bytes;
@@ -236,6 +239,7 @@ public:
   }
 
 private:
+  // Preserve the source device/context while enforcing ordered dependencies and optional profiling.
   static sycl::queue make_queue(const sycl::queue& source, const bool profile) {
     if (profile)
       return sycl::queue(source.get_context(), source.get_device(),
@@ -292,6 +296,7 @@ private:
     return result;
   }
 
+  // Validate memory, allocation, launch, and counter-width limits before allocating persistent arenas.
   void allocate() {
     const sycl::device device = queue_.get_device();
     if (!mom_has_usm_device(device))
@@ -357,6 +362,7 @@ private:
   }
 
   template <typename T>
+  // Clear one owned pointer after nonthrowing release, including partial-construction cleanup.
   void free_ptr(T*& pointer) noexcept {
     if (pointer != nullptr) {
       try {
@@ -367,6 +373,7 @@ private:
     }
   }
 
+  // Release owned buffers and invalidate all aliases into their shared counter/header storage.
   void free_all() noexcept {
     free_ptr(input_storage_);
     device_header_ = nullptr;
@@ -389,6 +396,7 @@ private:
     free_ptr(verified_fields_);
   }
 
+  // Reset attempt counters in queue order; retained arena records are bounded by the new counts.
   void clear_device_state() {
     if (options_.collect_round_counts) {
       queue_.fill(flat_counts_, 0u, 5);
@@ -396,6 +404,7 @@ private:
     queue_.fill(counts_storage_, 0u, bucket_count_size + 6u);
   }
 
+  // Select the backend's first collision launch while preserving split-head output and overflow reporting.
   sycl::event submit_first_round() {
 #ifdef MOM_SYCL_HAS_HIP
     if (cache_partition_inputs_)
@@ -415,6 +424,7 @@ private:
 #endif
   }
 
+  // Transition split first-round records into the later arena using supported partition/cache settings.
   sycl::event submit_second_round() {
 #ifdef MOM_SYCL_HAS_HIP
     if (cache_partition_inputs_)
@@ -434,6 +444,7 @@ private:
 #endif
   }
 
+  // Dispatch the next bounded collision stage with HIP partitioning only where configured.
   sycl::event submit_third_round() {
 #ifdef MOM_SYCL_HAS_HIP
     if (cache_partition_inputs_)
@@ -449,6 +460,7 @@ private:
 #endif
   }
 
+  // Dispatch the final materialized collision stage, retaining parents for zero-root recovery.
   sycl::event submit_fourth_round() {
 #ifdef MOM_SYCL_HAS_HIP
     if (cache_partition_inputs_)
@@ -464,6 +476,7 @@ private:
 #endif
   }
 
+  // Publish truncation as an incomplete attempt instead of returning potentially missing solutions.
   RunReport& capacity_report(RunReport& report, const char* const message) {
     report.status = SessionStatus::capacity_overflow;
     report.error = message;
@@ -471,6 +484,7 @@ private:
     return report;
   }
 
+  // Mark runtime failure terminal for this attempt and retain its diagnostic for the caller.
   RunReport& device_error_report(RunReport& report, const char* const message) {
     lifecycle_.device_error();
     report.status = SessionStatus::device_error;
@@ -479,6 +493,7 @@ private:
     return report;
   }
 
+  // Encode verified leaves and deduplicate canonical proofs; invalid roots contribute only rejection counts.
   void recover_roots(RunReport& report, const std::uint32_t* leaves,
                      const std::uint8_t* valid) {
     for (std::size_t candidate = 0; candidate < report.zero_root_count; ++candidate) {

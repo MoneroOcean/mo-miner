@@ -18,10 +18,12 @@ union EthashNode {
 
 static_assert(sizeof(EthashNode) == ETHASH_HASH_BYTES);
 
+// Use legacy Keccak domain padding for the Ethash seed chain, not SHA3 padding.
 void keccak256(void* out, const void* in, const unsigned bytes) {
   sha3_HashBuffer(256, SHA3_FLAGS_KECCAK, in, bytes, out, 32);
 }
 
+// Use legacy Keccak domain padding for the light-cache nodes.
 void keccak512(void* out, const void* in, const unsigned bytes) {
   sha3_HashBuffer(512, SHA3_FLAGS_KECCAK, in, bytes, out, 64);
 }
@@ -36,6 +38,7 @@ extern "C" ethash_h256_t ethash_get_seedhash(uint64_t epoch) {
   return result;
 }
 
+// Validate node dimensions, then build the cache in consensus in-place mixing order.
 extern "C" bool ethash_compute_cache_nodes(void* nodes_ptr, uint64_t cache_size,
                                            const ethash_h256_t* seed) {
   if (!nodes_ptr || !seed || cache_size < sizeof(EthashNode) ||

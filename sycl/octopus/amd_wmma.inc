@@ -7,6 +7,7 @@ struct OctopusAmdWmma {
   unsigned rows = 0;
   bool checked = false;
 
+  // Compile/cache the gfx12 WMMA specialization for the requested row count.
   bool ensure(sycl::queue& queue, const unsigned requested_rows) {
     if (!requested_rows || requested_rows % 64 || !mom_is_hip(queue.get_device()))
       return false;
@@ -132,6 +133,7 @@ extern "C" __global__ void octopus_wmma(const signed char* A, const signed char*
     return true;
   }
 
+  // Launch the compiled WMMA tile with the supplied stream and exact matrix strides.
   bool launch(const int8_t* a, const int8_t* b, int32_t* c, hipStream_t stream) {
     if (hipSetDevice(device) != hipSuccess)
       return false;
@@ -154,6 +156,7 @@ extern "C" __global__ void octopus_wmma(const signed char* A, const signed char*
   }
 };
 
+// Launch the HIP-compiled WMMA polynomial kernel with the caller's stream ordering.
 static sycl::event octopus_amd_gemm(sycl::queue& queue, OctopusAmdWmma& wmma,
                                     const int8_t* a, const int8_t* b, int32_t* c,
                                     bool& logged) {

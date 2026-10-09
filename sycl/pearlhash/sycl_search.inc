@@ -75,6 +75,7 @@ template <int ER, int EC, bool Native = false>
 #else
 template <int ER, int EC>
 #endif
+// Submit the selected portable/native SYCL tile specialization without changing proof semantics.
 static void search_t(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k,
                      int rank, bool dbg) {
   constexpr int HT = 16;

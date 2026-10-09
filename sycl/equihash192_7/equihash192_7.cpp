@@ -83,6 +83,7 @@ using Solver = direct::Session<>;
 
 class GenerationTestKernel;
 
+// Return the first personalized device hash as a bounded generation guard, without solving.
 static int run_generation_test(const std::string& device_name, const std::uint8_t* input,
                                std::uint8_t* output) {
   using Spec = direct::Spec;
@@ -114,6 +115,7 @@ struct MiningState {
   }
 };
 
+// Keep persistent solver ownership under explicit shutdown control rather than static destruction.
 static DeviceStateRegistry<MiningState>& registry() {
   static auto* const value = new DeviceStateRegistry<MiningState>;
   return *value;
@@ -123,6 +125,7 @@ static MiningState& state_for(const std::string& device_name) {
   return registry().get(device_name, [&] { return std::make_unique<MiningState>(device_name); });
 }
 
+// Release cached device solvers at ordered shutdown without propagating late runtime failures.
 void cleanup_states() noexcept {
   try {
     registry().clear();
@@ -133,6 +136,7 @@ void cleanup_states() noexcept {
 
 } // namespace mom_equihash192_7
 
+// Solve one header and emit bounded count-prefixed canonical proofs; mining alone filters the target.
 int equihash192_7(unsigned, std::uint32_t, const std::uint8_t* input, const unsigned input_size,
                   std::uint8_t* solution_out, std::uint64_t*, const std::uint8_t* target,
                   const unsigned intensity, const bool is_test, const bool is_benchmark,

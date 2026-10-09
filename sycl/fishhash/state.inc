@@ -14,6 +14,7 @@ public:
   bool dag_built = false;
   int karlsen_cooperative = -1;
   std::mutex mutex;
+  // Bind the fixed dataset and job buffers to a device with required USM support.
   explicit FishState(const std::string& dev_str)
       : device(get_dev(dev_str)),
         queue(device, sycl::property_list{sycl::property::queue::in_order{}}),
@@ -40,6 +41,7 @@ public:
         return candidate;
     return fallback;
   }
+  // Drain kernels before releasing cache, DAG, and job buffers.
   ~FishState() {
     sycl_cleanup_noexcept("fishhash wait", [&] { queue.wait_and_throw(); });
     sycl_cleanup_noexcept("fishhash release", [&] { free_all(); });
@@ -59,6 +61,7 @@ public:
     free_ptr(dag);
     free_ptr(result);
   }
+  // Grow header buffers after queue completion, retaining production-header capacity.
   void ensure_io(unsigned in_sz) {
     if (input && in_sz <= input_cap && target && result)
       return;
@@ -84,6 +87,7 @@ public:
       throw;
     }
   }
+  // Build/upload the cache once; failures never publish cache_built.
   void ensure_cache(bool log) {
     if (cache_built)
       return;
@@ -111,6 +115,7 @@ public:
       throw;
     }
   }
+  // Build watchdog-bounded chunks and publish dag_built only after every slice completes.
   void ensure_dag(bool log) {
     if (dag_built)
       return;
@@ -144,6 +149,7 @@ public:
   }
 };
 
+// Keep the registry shell alive across static teardown; ordered cleanup releases its values.
 static DeviceStateRegistry<FishState>& fishhash_registry() {
   static auto* const registry = new DeviceStateRegistry<FishState>;
   return *registry;
@@ -153,6 +159,7 @@ static FishState& fishhash_state(const std::string& dev_str) {
   return fishhash_registry().get(dev_str, [&] { return std::make_unique<FishState>(dev_str); });
 }
 
+// Cache backend search policy, timing both real kernels on Level Zero.
 static bool select_karlsen_cooperative(FishState& state, const unsigned input_size,
                                        const uint64_t start_nonce) {
 #if defined(MOM_SYCL_PORTABLE_OPENCL)
@@ -214,6 +221,7 @@ static bool select_karlsen_cooperative(FishState& state, const unsigned input_si
 #endif
 }
 
+// Release device state before the compiler runtime unloads without escaping exceptions.
 void fishhash_cleanup_states() noexcept {
   try {
     fishhash_registry().clear();
@@ -221,7 +229,3 @@ void fishhash_cleanup_states() noexcept {
     std::fprintf(stderr, "fishhash: ordered SYCL cleanup failed\n");
   }
 }
-
-} // namespace mom_fishhash
-
-using namespace mom_fishhash;

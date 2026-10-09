@@ -10,6 +10,7 @@ static constexpr uint8_t PEARLHASH_SEED_SALT_B[32] = {
   0x1a, 0xe9, 0xc6, 0x39, 0x88, 0xe8, 0xcc, 0x04, 0x48, 0x44, 0x30, 0x1d, 0x71, 0xb8, 0x9a, 0xa9,
 };
 
+// Bind a raw Merkle root to its little-endian matrix dimension using the V3 salted key.
 static inline void pearlhash_bind_root(const uint8_t raw_root[32], const uint32_t dimension,
                                         const uint8_t salt[32], uint8_t bound_root[32]) {
   uint8_t message[64]{};

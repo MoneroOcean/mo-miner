@@ -6,6 +6,7 @@ struct WalaHashAmdWmma {
   hipDevice_t device = -1;
   bool checked = false;
 
+  // Compile/cache the optional gfx12 WMMA mix kernel in the owning SYCL context.
   bool ensure(sycl::queue& queue) {
     if (!mom_is_hip(queue.get_device()))
       return false;
@@ -115,6 +116,7 @@ extern "C" __global__ void walahash_wmma(
            hipModuleGetFunction(&kernel, module, "walahash_wmma") == hipSuccess;
   }
 
+  // Launch the matrix mix on the supplied native stream with the padded nonce layout.
   bool launch(const int8_t* a, const uint8_t* hashes, uint8_t* mixed, const unsigned count,
               hipStream_t stream) {
     if (hipSetDevice(device) != hipSuccess)
@@ -138,6 +140,7 @@ extern "C" __global__ void walahash_wmma(
   }
 };
 
+// Launch the runtime-compiled HIP WMMA mix on the caller's stream.
 static sycl::event walahash_amd_mix(sycl::queue& queue, WalaHashAmdWmma& wmma,
                                     const int8_t* matrix, const uint8_t* hashes, uint8_t* mixed,
                                     const unsigned count) {

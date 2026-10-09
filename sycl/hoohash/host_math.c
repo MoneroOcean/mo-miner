@@ -16,6 +16,7 @@ static pthread_once_t math_once = PTHREAD_ONCE_INIT;
 static MathFunction sin_function, cos_function, exp_function;
 static MathFunction sqrt_function, floor_function, fabs_function;
 
+// Resolve system libm explicitly so SYCL frontend substitutions cannot alter consensus math.
 static void resolve_math(void) {
 #define MOM_RESOLVE_MATH(name) \
   name##_function = (MathFunction)dlvsym(RTLD_NEXT, #name, "GLIBC_2.2.5")
@@ -28,6 +29,7 @@ static void resolve_math(void) {
 #undef MOM_RESOLVE_MATH
 }
 
+// Fail before hashing if any canonical system-math symbol is unavailable.
 const char* mom_hoohash_math_error(void) {
   pthread_once(&math_once, resolve_math);
   return sin_function && cos_function && exp_function && sqrt_function && floor_function &&
@@ -89,6 +91,7 @@ static uint32_t rotr32(uint32_t value, unsigned count) {
   return value >> count | value << (32 - count);
 }
 
+// Apply one Blake3 G mixing step with unsigned wraparound arithmetic.
 static void b3_mix(uint32_t state[16], unsigned a, unsigned b, unsigned c, unsigned d,
                    uint32_t x, uint32_t y) {
   state[a] += state[b] + x;
@@ -101,6 +104,7 @@ static void b3_mix(uint32_t state[16], unsigned a, unsigned b, unsigned c, unsig
   state[b] = rotr32(state[b] ^ state[c], 7);
 }
 
+// Apply column and diagonal mixing using the consensus message permutation.
 static void b3_round(uint32_t state[16], const uint32_t message[16], unsigned round) {
   const uint8_t* schedule = B3_MSG[round];
   b3_mix(state, 0, 4, 8, 12, message[schedule[0]], message[schedule[1]]);
@@ -113,6 +117,7 @@ static void b3_round(uint32_t state[16], const uint32_t message[16], unsigned ro
   b3_mix(state, 3, 4, 9, 14, message[schedule[14]], message[schedule[15]]);
 }
 
+// Compress a block at chunk counter zero with caller-supplied root/chunk flags.
 static void b3_compress(const uint32_t cv[8], const uint8_t block[64], uint8_t block_length,
                         uint8_t flags, uint8_t output[64]) {
   uint32_t message[16], state[16];
@@ -132,6 +137,7 @@ static void b3_compress(const uint32_t cv[8], const uint8_t block[64], uint8_t b
   }
 }
 
+// Hash the short single-chunk messages used here; this is not a general Blake3 tree hash.
 static void b3_hash(const uint8_t* input, unsigned length, uint8_t output[32]) {
   uint32_t cv[8];
   for (unsigned i = 0; i < 8; ++i)
@@ -170,6 +176,7 @@ static uint64_t rotl64(uint64_t value, unsigned count) {
   return value << count | value >> (64 - count);
 }
 
+// Expand the seed with the reference PRNG and preserve the FP64 scaling operation order.
 static void make_matrix(const uint8_t seed[32], double matrix[4096]) {
   uint64_t s0 = load64le(seed), s1 = load64le(seed + 8), s2 = load64le(seed + 16),
            s3 = load64le(seed + 24);
@@ -186,6 +193,7 @@ static void make_matrix(const uint8_t seed[32], double matrix[4096]) {
   }
 }
 
+// Evaluate the reference nonlinear branches with system libm and the exact pole special case.
 static double canonical_complex_value(double x) {
   const double a = x * .000001 / 8 - mom_hoohash_floor(x * .000001 / 8);
   const double b = x * .000001 / 4 - mom_hoohash_floor(x * .000001 / 4);
@@ -205,6 +213,7 @@ static double canonical_complex_value(double x) {
   return 1 / mom_hoohash_sqrt(mom_hoohash_fabs(y) + 1);
 }
 
+// Retry nonfinite results with scaled input, retaining the reference cutoff and retry factor.
 static double canonical_finite_complex(double x) {
   double result = canonical_complex_value(x);
   unsigned rounds = 1;
@@ -218,6 +227,7 @@ static double canonical_finite_complex(double x) {
   return result * rounds;
 }
 
+// Preserve row/column accumulation order and carry the branch state across matrix rows.
 static void canonical_mix(const uint8_t first[32], uint32_t hash_mod, uint64_t nonce,
                           const double matrix[4096], uint8_t mixed[32]) {
   uint64_t even = 0;
@@ -246,6 +256,7 @@ static void canonical_mix(const uint8_t first[32], uint32_t hash_mod, uint64_t n
   }
 }
 
+// Recompute a candidate independently of GPU approximations before accepting its target test.
 void mom_hoohash_canonical_hash(const uint8_t input[72], uint64_t nonce, uint8_t output[32]) {
   uint8_t header[80], first[32], mixed[32];
   for (unsigned i = 0; i < 72; ++i)

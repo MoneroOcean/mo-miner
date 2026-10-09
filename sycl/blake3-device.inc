@@ -20,6 +20,7 @@ inline void store32_le_dev(uint8_t* p, uint32_t v) {
 inline uint32_t rotr32_dev(uint32_t w, uint32_t c) {
   return (w >> c) | (w << (32 - c));
 }
+// Mix one BLAKE3 column/diagonal with the protocol's fixed rotations and 32-bit wraparound.
 inline void b3_g(uint32_t* s, unsigned a, unsigned b, unsigned c, unsigned d, uint32_t x,
                  uint32_t y) {
   s[a] = s[a] + s[b] + x;
@@ -31,6 +32,7 @@ inline void b3_g(uint32_t* s, unsigned a, unsigned b, unsigned c, unsigned d, ui
   s[c] = s[c] + s[d];
   s[b] = rotr32_dev(s[b] ^ s[c], 7);
 }
+// Apply the fixed message schedule for one of the seven compression rounds.
 inline void b3_round(uint32_t st[16], const uint32_t* m, unsigned r) {
   const uint8_t* sc = B3_MSG[r];
   b3_g(st, 0, 4, 8, 12, m[sc[0]], m[sc[1]]);
@@ -42,6 +44,7 @@ inline void b3_round(uint32_t st[16], const uint32_t* m, unsigned r) {
   b3_g(st, 2, 7, 8, 13, m[sc[12]], m[sc[13]]);
   b3_g(st, 3, 4, 9, 14, m[sc[14]], m[sc[15]]);
 }
+// Compress a padded block into both output halves; callers provide its valid length and tree flags.
 inline void b3_compress_xof(const uint32_t cv[8], const uint8_t block[64], uint8_t block_len,
                             uint64_t counter, uint8_t flags, uint8_t out[64]) {
   uint32_t m[16];
@@ -70,6 +73,7 @@ inline void b3_compress_xof(const uint32_t cv[8], const uint8_t block[64], uint8
     store32_le_dev(out + (i + 8) * 4, st[i + 8] ^ cv[i]);
   }
 }
+// Advance the chaining value without retaining the extended-output half.
 inline void b3_compress_inplace(uint32_t cv[8], const uint8_t block[64], uint8_t block_len,
                                 uint64_t counter, uint8_t flags) {
   uint8_t out[64];
@@ -77,6 +81,8 @@ inline void b3_compress_inplace(uint32_t cv[8], const uint8_t block[64], uint8_t
   for (unsigned i = 0; i < 8; ++i)
     cv[i] = load32_le_dev(out + i * 4);
 }
+// Hash a single chunk (at most 1024 bytes) and return at most 64 root-output bytes.
+// Bounds are a caller invariant: device code deliberately has no general multi-chunk path.
 inline void blake3_dev(uint8_t* out, unsigned out_len, const uint8_t* in, unsigned in_len) {
   uint32_t cv[8];
   for (unsigned i = 0; i < 8; ++i)

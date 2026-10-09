@@ -88,6 +88,7 @@ inline bool np_equal(const uint8_t* a, const uint8_t* b, const unsigned count) {
   return difference == 0;
 }
 
+// Compare display-order hash bytes against the inclusive target.
 inline bool np_meets_target(const uint8_t hash[32], const uint8_t target[32]) {
   for (unsigned i = 0; i < 32; ++i) {
     if (hash[i] != target[i])
@@ -96,6 +97,7 @@ inline bool np_meets_target(const uint8_t hash[32], const uint8_t target[32]) {
   return true;
 }
 
+// Evaluate the complete requested nonce batch with consensus ECC; retain only its first qualifying hash.
 static int scan_host(const uint8_t* input, unsigned extra_bytes, uint64_t first, unsigned count,
                      const uint8_t* target, bool is_test, uint8_t* output, uint64_t* pnonce) {
   Result found{};
@@ -120,79 +122,7 @@ static int scan_host(const uint8_t* input, unsigned extra_bytes, uint64_t first,
 #ifndef MOM_NEXAPOW_HOST_TEST
 #include "sycl_pipeline.inc"
 
-class SearchKernel;
-void nexapow_test_sha256d_49(sycl::queue&, const uint8_t[49], uint8_t[32]);
-class State {
-public:
-  sycl::device device;
-  sycl::queue queue;
-  uint8_t *header = nullptr, *extranonce = nullptr, *target = nullptr;
-  Result* result = nullptr;
-  NexaPowSyclSearch portable;
-  bool staged_logged = false;
-  bool staged_failure_logged = false;
-  std::mutex mutex;
-
-  explicit State(const std::string& dev)
-      : device(get_dev(dev)), queue(device, sycl::property::queue::in_order{}) {
-    if (!mom_has_usm_device(device))
-      throw std::string("nexapow requires SYCL device USM");
-#ifdef MOM_NEXAPOW_SYCL_NATIVE_FIELD
-    if (mom_is_cuda(device)) {
-      const char* options = std::getenv("MOM_NEXAPOW_COMPILE_OPTIONS");
-      if (!options)
-        options = std::getenv("SYCL_PROGRAM_COMPILE_OPTIONS");
-      set_sycl_env("SYCL_PROGRAM_COMPILE_OPTIONS", options ? options : "--maxrregcount=128");
-    }
-#endif
-  }
-
-  void init_portable() {
-    if (header)
-      return;
-    try {
-      header = sycl::malloc_device<uint8_t>(32, queue);
-      extranonce = sycl::malloc_device<uint8_t>(8, queue);
-      target = sycl::malloc_device<uint8_t>(32, queue);
-      result = sycl::malloc_device<Result>(1, queue);
-      if (!header || !extranonce || !target || !result)
-        throw std::string("Can't allocate nexapow buffers");
-    } catch (...) {
-      free_all();
-      throw;
-    }
-  }
-
-  ~State() {
-    sycl_cleanup_noexcept("nexapow wait", [&] { queue.wait_and_throw(); });
-    portable.release(queue);
-    free_all();
-  }
-
-  void free_all() noexcept {
-    auto release = [&](auto*& pointer) {
-      if (!pointer)
-        return;
-      try {
-        sycl::free(pointer, queue);
-      } catch (...) {
-      }
-      pointer = nullptr;
-    };
-    release(result);
-    release(target);
-    release(extranonce);
-    release(header);
-  }
-};
-
-static DeviceStateRegistry<State>& registry() {
-  static auto* const value = new DeviceStateRegistry<State>;
-  return *value;
-}
-static State& state_for(const std::string& dev) {
-  return registry().get(dev, [&] { return std::make_unique<State>(dev); });
-}
+#include "state.inc"
 
 void nexapow_cleanup_states() noexcept {
   try {
@@ -202,38 +132,9 @@ void nexapow_cleanup_states() noexcept {
   }
 }
 
-static void test_recorded_vector(State& state, const uint8_t* input, uint8_t* output,
-                                 uint64_t* nonce) {
-  uint8_t serialized[49], mining_hash[32], final_hash[32];
-  np_nonce_bytes(input, input + 32, kRecordedMinerNonce, serialized);
-  nexapow_test_sha256d_49(state.queue, serialized, mining_hash);
-  if (!np_equal(mining_hash, kRecordedMiningHash, sizeof(mining_hash)) ||
-      !np_hash_one(input, input + 32, kRecordedMinerNonce, final_hash) ||
-      !np_equal(final_hash, kRecordedHash, sizeof(final_hash)))
-    throw std::string("NexaPoW recorded Echelon vector mismatch");
-  *nonce = kRecordedMinerNonce;
-  std::memcpy(output, final_hash, sizeof(final_hash));
-}
+#include "host.inc"
 
-static bool env_enabled(const char* name) {
-  const char* value = std::getenv(name);
-  return value && *value && std::strcmp(value, "0");
-}
-
-static const char* staged_field_name(const sycl::device& device) {
-#if defined(MOM_NEXAPOW_SYCL_NATIVE_FIELD)
-  if (mom_is_cuda(device))
-    return "nvptx-native";
-  return "portable-10x26";
-#elif defined(MOM_NEXAPOW_PORTABLE_FIELD32)
-  (void)device;
-  return "portable-8x32";
-#else
-  (void)device;
-  return "portable-10x26";
-#endif
-}
-
+// Validate the work-blob ABI and dispatch a serialized nonce batch without altering its fixed extranonce.
 int nexapow(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint8_t* output,
             uint8_t*, uint64_t* pnonce, const uint8_t* target, const uint8_t*, unsigned intensity,
             bool is_test, bool is_benchmark, const std::string& dev) {
@@ -361,6 +262,7 @@ int nexapow(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint8
   return 1;
 }
 #else
+// Validate the work-blob ABI and dispatch a serialized nonce batch without altering its fixed extranonce.
 int nexapow(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint8_t* output,
             uint8_t*, uint64_t* pnonce, const uint8_t* target, const uint8_t*, unsigned intensity,
             bool is_test, bool, const std::string&) {
@@ -391,98 +293,12 @@ int nexapow(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint8
 } // namespace mom_nexapow
 
 #ifndef MOM_NEXAPOW_HOST_TEST
+// Validate the work-blob ABI and dispatch a serialized nonce batch without altering its fixed extranonce.
 int nexapow(unsigned job_id, uint32_t height, const uint8_t* input, unsigned input_size,
             uint8_t* output, uint8_t* mix_hash, uint64_t* pnonce, const uint8_t* target,
             const uint8_t* seed_hash, unsigned intensity, bool is_test, bool is_benchmark,
             const std::string& dev) {
   return mom_nexapow::nexapow(job_id, height, input, input_size, output, mix_hash, pnonce, target,
                               seed_hash, intensity, is_test, is_benchmark, dev);
-}
-#endif
-
-#ifdef MOM_NEXAPOW_HOST_TEST
-int main() {
-  uint8_t input[48]{};
-  const uint8_t header[32] = {
-      0x0a, 0x4a, 0xc4, 0x9b, 0x2d, 0x02, 0xe3, 0xc8, 0xd1, 0x2c, 0x70,
-      0x93, 0x25, 0x5b, 0xa7, 0xc4, 0x96, 0x24, 0xf9, 0xc3, 0x74, 0xd9,
-      0xf1, 0xc2, 0xf8, 0xe3, 0x7c, 0x58, 0x70, 0x5e, 0x74, 0xb0,
-  };
-  for (unsigned i = 0; i < 32; ++i)
-    input[i] = header[i];
-  input[32] = 0x10;
-  const uint64_t nonce = 0x1182dc5800000000ULL;
-  for (unsigned i = 0; i < 8; ++i)
-    input[40 + i] = static_cast<uint8_t>(nonce >> (8u * (7u - i)));
-  const uint8_t header2[32] = {
-      0x0a, 0x4a, 0xc4, 0x9b, 0x2d, 0x02, 0xe3, 0xc8, 0xd1, 0x2c, 0x70,
-      0x93, 0x25, 0x5b, 0xa7, 0xc4, 0x96, 0x24, 0xf9, 0xc3, 0x74, 0xd9,
-      0xf1, 0xc2, 0xf8, 0xe3, 0x7c, 0x58, 0x70, 0x5e, 0x74, 0xb0,
-  };
-  const uint8_t extranonce2[8] = {0x10, 0, 0, 0, 0, 0, 0, 0};
-  const uint64_t nonce2 = 0xb787915d00000000ULL;
-  const uint8_t expected2[32] = {
-      0x00, 0x00, 0x00, 0x5f, 0x0b, 0x59, 0xe1, 0x10, 0x86, 0x35, 0x66,
-      0xe7, 0x7d, 0x85, 0xe1, 0xb4, 0xfc, 0x71, 0x37, 0x54, 0xe5, 0xc7,
-      0x5f, 0x8f, 0xc3, 0xdf, 0x44, 0x13, 0x38, 0x66, 0xa6, 0x69,
-  };
-  uint8_t hash2[32];
-  if (!mom_nexapow::np_hash_one(header2, extranonce2, nonce2, hash2) ||
-      !mom_nexapow::np_equal(hash2, expected2, sizeof(hash2)))
-    return 1;
-  uint8_t target[32];
-  for (uint8_t& byte : target)
-    byte = 0xff;
-  uint8_t output[32]{};
-  uint64_t found = 0;
-  if (mom_nexapow::nexapow(0, 0, input, sizeof(input), output, nullptr, &found, target, nullptr, 1,
-                           true, false, "") != 1 ||
-      found != nonce)
-    return 1;
-
-  const uint8_t short_expected[32] = {
-      0xb0, 0x34, 0xdd, 0x02, 0xa3, 0xba, 0x15, 0xd1, 0x6b, 0x1f, 0x03,
-      0x25, 0xe4, 0x4d, 0xe3, 0xe3, 0x74, 0x48, 0x91, 0x82, 0xb2, 0x30,
-      0x5c, 0xa1, 0x37, 0x40, 0x77, 0x21, 0x84, 0xc3, 0xbc, 0xd9,
-  };
-  uint8_t short_input[40]{};
-  uint8_t short_output[32]{};
-  uint64_t short_nonce = 0;
-  if (mom_nexapow::nexapow(0, 0, short_input, sizeof(short_input), short_output, nullptr,
-                           &short_nonce, target, nullptr, 1, true, false, "") != 1 ||
-      short_nonce != 0 ||
-      !mom_nexapow::np_equal(short_output, short_expected, sizeof(short_output)))
-    return 1;
-
-  uint8_t prefixed_input[44]{};
-  const uint8_t prefix[4] = {0x10, 0x20, 0x30, 0x40};
-  std::memcpy(prefixed_input, mom_nexapow::kRecordedHeader,
-              sizeof(mom_nexapow::kRecordedHeader));
-  std::memcpy(prefixed_input + 32, prefix, sizeof(prefix));
-  uint64_t prefixed_nonce = 0x0102030405060708ULL;
-  uint8_t prefixed_output[32]{};
-  const uint8_t prefixed_expected_hash[32] = {
-      0xa9, 0xbd, 0x7f, 0xfd, 0xfc, 0xc1, 0x81, 0x9e, 0xa1, 0xe4, 0x06, 0x87,
-      0x45, 0xb4, 0x3e, 0xe2, 0x33, 0xa2, 0xcf, 0xe0, 0x4f, 0x42, 0xe3, 0x36,
-      0xe3, 0xd9, 0x3c, 0x24, 0xf3, 0xaf, 0x9d, 0xee,
-  };
-  uint8_t prefixed_serialized[49]{};
-  mom_nexapow::np_nonce_bytes(mom_nexapow::kRecordedHeader, prefix, prefixed_nonce,
-                              prefixed_serialized, sizeof(prefix));
-  bool serialized_ok = prefixed_serialized[32] == 0x0c;
-  for (unsigned i = 0; i < 32; ++i)
-    serialized_ok = serialized_ok &&
-        prefixed_serialized[i] == mom_nexapow::kRecordedHeader[31u - i];
-  for (unsigned i = 0; i < sizeof(prefix); ++i)
-    serialized_ok = serialized_ok && prefixed_serialized[33u + i] == prefix[i];
-  for (unsigned i = 0; i < 8; ++i)
-    serialized_ok = serialized_ok && prefixed_serialized[37u + i] ==
-        static_cast<uint8_t>(prefixed_nonce >> (8u * (7u - i)));
-  if (mom_nexapow::nexapow(0, 0, prefixed_input, sizeof(prefixed_input), prefixed_output,
-                           nullptr, &prefixed_nonce, target, nullptr, 1, true, false, "") != 1 ||
-      prefixed_nonce != 0x0102030405060708ULL || !serialized_ok ||
-      !mom_nexapow::np_equal(prefixed_output, prefixed_expected_hash, sizeof(prefixed_output)))
-    return 1;
-  return 0;
 }
 #endif

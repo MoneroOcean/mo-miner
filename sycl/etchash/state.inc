@@ -49,6 +49,7 @@ public:
     return inline_pair_ok == 1;
   }
 
+  // Compare real search kernels on a synthetic DAG; submitted faults must propagate.
   bool probe_inline_pair() {
     constexpr uint32_t PAGES = 4096; // tiny synthetic DAG: 4096 * 128 B = 512 KiB
     constexpr uint32_t WORDS = PAGES * ETHASH_MIX_WORDS;
@@ -132,6 +133,7 @@ public:
     return ok;
   }
 
+  // Bind allocation policy and compile options to one in-order queue.
   explicit EtchashState(const std::string& dev_str)
       : device(get_dev(dev_str)),
         queue(device, sycl::property_list{sycl::property::queue::in_order{}}),
@@ -144,11 +146,13 @@ public:
     set_sycl_env("SYCL_PROGRAM_COMPILE_OPTIONS", etchash_compile_options());
   }
 
+  // Drain accepted work before releasing persistent storage.
   ~EtchashState() {
     sycl_cleanup_noexcept("etchash wait", [&] { queue.wait_and_throw(); });
     sycl_cleanup_noexcept("etchash release", [&] { release(); });
   }
 
+  // Accept only supported device-fitting DAG workgroup overrides.
   static unsigned etchash_dag_workgroup(const sycl::device& dev) {
     const unsigned fallback =
         sycl_default_workgroup(dev, {32, 64, 128, 256, 512}, dev.is_cpu() ? 128 : 64);
@@ -187,6 +191,7 @@ public:
     return value ? value : "";
   }
 
+  // Cache pool-seed resolution separately from the fork-adjusted DAG epoch.
   void resolve_epochs(const uint32_t block_height, const uint8_t* const seed_hash,
                       uint32_t& epoch, uint32_t& seed_epoch) {
     if (!seed_hash || is_zero_hash(seed_hash)) {
@@ -215,6 +220,7 @@ public:
     ptr = nullptr;
   }
 
+  // Free allocations and invalidate epoch/capacity keys.
   void release() {
     free_ptr(input);
     free_ptr(target);
@@ -228,6 +234,7 @@ public:
     seed_epoch = UINT32_MAX;
   }
 
+  // Grow job buffers after queue completion; failed allocation leaves capacity invalid.
   void ensure_input(const unsigned input_size) {
     if (input && input_size <= input_cap && result && target)
       return;
@@ -252,6 +259,7 @@ public:
     input_cap = input_size;
   }
 
+  // Validate dimensions and publish the rebuilt key only after all DAG chunks finish.
   void ensure_epoch(const uint32_t new_epoch, const uint32_t new_seed_epoch,
                     const uint64_t new_cache_bytes, const uint64_t new_dag_bytes,
                     const bool should_log) {
@@ -382,6 +390,7 @@ public:
   }
 };
 
+// Keep the registry shell alive across static teardown; ordered cleanup releases its values.
 static DeviceStateRegistry<EtchashState>& etchash_registry() {
   static auto* const registry = new DeviceStateRegistry<EtchashState>;
   return *registry;
@@ -391,6 +400,7 @@ static EtchashState& etchash_state(const std::string& dev_str) {
   return etchash_registry().get(dev_str, [&] { return std::make_unique<EtchashState>(dev_str); });
 }
 
+// Release device state before the compiler runtime unloads without escaping exceptions.
 void etchash_cleanup_states() noexcept {
   try {
     etchash_registry().clear();
@@ -398,7 +408,3 @@ void etchash_cleanup_states() noexcept {
     std::fprintf(stderr, "etchash: ordered SYCL cleanup failed\n");
   }
 }
-
-} // namespace mom_etchash
-
-using namespace mom_etchash;

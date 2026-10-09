@@ -1,5 +1,6 @@
 // M1 generation validation: dump the first BEAMHASH3_TEST_ROWS raw leaf rows on-device.
 class BeamGenTestKernel;
+// Generate a bounded raw leaf-row prefix for the independent JavaScript generation oracle.
 static sycl::event submit_gen_test(sycl::queue& q, const uint64_t* d_prePow, uint8_t* d_rows) {
   constexpr unsigned WG = 64;
   const size_t global = (BEAMHASH3_TEST_ROWS + WG - 1) / WG * WG;

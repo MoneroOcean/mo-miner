@@ -39,6 +39,7 @@ struct PearlHashAllocationCounts {
   uint64_t max_alloc, total_bytes;
 };
 
+// Compute the exact allocation footprint for a legal shape; leave no partial counts on failure.
 inline bool pearlhash_allocation_counts(const pearlhash_profile_t& shape,
                                         PearlHashAllocationCounts& out,
                                         const bool hip_jit = false) {
@@ -67,6 +68,7 @@ inline bool pearlhash_allocation_counts(const pearlhash_profile_t& shape,
   return true;
 }
 
+// Admit required buffers only when both per-allocation and total memory leave runtime headroom.
 inline bool pearlhash_required_memory_fits(const PowDeviceProfile& device,
                                            const pearlhash_profile_t& shape) {
   PearlHashAllocationCounts counts{};
@@ -75,6 +77,7 @@ inline bool pearlhash_required_memory_fits(const PowDeviceProfile& device,
       counts.total_bytes <= device.global_mem - pearlhash_runtime_reserve_bytes;
 }
 
+// Admit an optional fast-path buffer without stealing the required buffers' reserved capacity.
 inline bool pearlhash_optional_allocation_fits(const PowDeviceProfile& device,
                                                const PearlHashAllocationCounts& required,
                                                const uint64_t optional_bytes) {
@@ -85,6 +88,7 @@ inline bool pearlhash_optional_allocation_fits(const PowDeviceProfile& device,
           device.global_mem - pearlhash_runtime_reserve_bytes - required.total_bytes;
 }
 
+// Keep the preferred complete configuration, fall back to the compact one, or reject known limits.
 inline pearlhash_profile_t pearlhash_capacity_profile(const PowDeviceProfile& device,
                                                      const pearlhash_profile_t& preferred) {
   // Unknown limits retain the existing profile for ordinary discovery/admission to reject;
@@ -113,6 +117,7 @@ struct PowIntensityHeuristic {
 inline constexpr PowIntensityHeuristic progpow_intensity_heuristic = {
     {256, 16384, 48}, {256, 32768, 48}, {256, 32768, 36}, 4};
 
+// Classify dispatch capacity from reported resource dimensions; compute_units must be nonzero.
 inline unsigned pow_device_score(const PowDeviceProfile& profile) {
   // Favor deeper in-flight batches only on GPUs with enough parallelism and memory headroom.
   const uint64_t mem_per_cu = profile.global_mem / profile.compute_units;
@@ -142,6 +147,7 @@ inline PowIntensityScale select_pow_intensity_scale(const PowDeviceProfile& prof
   return heuristic.compact;
 }
 
+// Scale an aligned batch while capping memory depth; local and profile.compute_units must be nonzero.
 inline unsigned pow_intensity(const PowDeviceProfile& profile,
                               const PowIntensityHeuristic& heuristic, const unsigned local,
                               const unsigned explicit_max_work_items_per_gib = 0) {

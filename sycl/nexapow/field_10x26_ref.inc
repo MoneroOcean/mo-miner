@@ -8,6 +8,7 @@
 
 namespace mom_nexa_field10_ref {
 
+// Multiply bounded 10x26 field limbs with the reference secp256k1 reduction schedule.
 inline void mul(uint32_t r[10], const uint32_t a[10], const uint32_t b[10]) {
   uint64_t c, d;
   uint64_t u0, u1, u2, u3, u4, u5, u6, u7, u8;
@@ -209,6 +210,7 @@ inline void mul(uint32_t r[10], const uint32_t a[10], const uint32_t b[10]) {
   /* [r9 r8 r7 r6 r5 r4 r3 r2 r1 r0] = [p18 p17 p16 p15 p14 p13 p12 p11 p10 p9 p8 p7 p6 p5 p4 p3 p2 p1 p0] */
 }
 
+// Square bounded 10x26 field limbs with the reference secp256k1 reduction schedule.
 inline void square(uint32_t r[10], const uint32_t a[10]) {
   uint64_t c, d;
   uint64_t u0, u1, u2, u3, u4, u5, u6, u7, u8;

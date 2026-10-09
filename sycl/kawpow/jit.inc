@@ -138,6 +138,7 @@ void KAWPOW_JIT_KERNEL_NAME(const uint8_t* d_input, const DagLoad* __restrict__ 
 }
 )KJW";
 
+// Read an optional JIT source candidate; empty/unreadable files allow the next candidate.
 static std::string kawpow_read_file(const std::string& path) {
   if (path.empty())
     return {};
@@ -238,6 +239,7 @@ static const std::string& kawpow_device_src() {
   return src;
 }
 
+// Serialize the program and modulus in declaration order so JIT compilation can fold selectors.
 static std::string kawpow_emit_baked(const KawpowProgram& p, const FastModData& m) {
   // Emit one struct's brace-init "{a,b,c,...},"; pass fields in declaration order (no field names,
   // so order is the only thing binding the literal to the struct layout).
@@ -322,6 +324,7 @@ static std::string kawpow_jit_kernel_name(const uint64_t period, const FastModDa
   return name.str();
 }
 
+// Replace the wrapper's single export placeholder with the bundle-specific kernel symbol.
 static std::string kawpow_named_jit_wrapper(const std::string& kernel_name) {
   constexpr const char token[] = "KAWPOW_JIT_KERNEL_NAME";
   std::string wrapper = KAWPOW_JIT_WRAPPER;

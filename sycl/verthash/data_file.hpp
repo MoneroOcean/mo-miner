@@ -31,6 +31,7 @@ inline constexpr std::array<std::uint8_t, 32> expected_sha256 = {
     0xa5, 0x55, 0x31, 0xe8, 0x43, 0xcd, 0x56, 0xb0, 0x10, 0x11, 0x4a, 0xaf, 0x63, 0x25, 0xb0, 0xd5,
     0x29, 0xec, 0xf8, 0x8f, 0x8a, 0xd4, 0x76, 0x39, 0xb6, 0xed, 0xed, 0xaf, 0xd7, 0x21, 0xaa, 0x48};
 
+// Permute SHA3 state with 24 rounds; padding is supplied by sha3_256.
 inline void keccak(std::uint64_t state[25]) {
   static constexpr std::uint64_t constants[24] = {
       0x0000000000000001ULL, 0x0000000000008082ULL, 0x800000000000808aULL,
@@ -72,6 +73,7 @@ inline void keccak(std::uint64_t state[25]) {
   }
 }
 
+// Hash the short graph-node messages; callers must fit within the 136-byte SHA3 rate.
 inline Node sha3_256(const std::uint8_t* input, const std::size_t size) {
   if (size >= 136)
     throw std::runtime_error("Verthash generator SHA3 input is too large");
@@ -92,6 +94,7 @@ inline Node sha3_256(const std::uint8_t* input, const std::size_t size) {
 
 class Sha256 {
 public:
+  // Buffer arbitrary input while compressing complete SHA256 blocks.
   void update(const std::uint8_t* input, std::size_t size) {
     total_bytes_ += size;
     while (size) {
@@ -107,6 +110,7 @@ public:
     }
   }
 
+  // Finalize once with big-endian bit length and serialize the SHA256 digest.
   Node finish() {
     const std::uint64_t bits = total_bytes_ * 8;
     block_[buffered_++] = 0x80;
@@ -134,6 +138,7 @@ private:
     return (value >> bits) | (value << (32 - bits));
   }
 
+  // Compress one 64-byte SHA256 block using unsigned wraparound arithmetic.
   void transform(const std::uint8_t* input) {
     static constexpr std::uint32_t constants[64] = {
         0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
@@ -198,12 +203,14 @@ private:
   std::uint64_t total_bytes_ = 0;
 };
 
+// Hash in-memory dataset bytes for validation before device upload.
 inline Node sha256(const std::uint8_t* input, const std::size_t size) {
   Sha256 hash;
   hash.update(input, size);
   return hash.finish();
 }
 
+// Stream dataset validation without materializing the entire file in host memory.
 inline Node sha256_file(const std::filesystem::path& path) {
   std::ifstream input(path, std::ios::binary);
   if (!input)
@@ -221,6 +228,7 @@ inline Node sha256_file(const std::filesystem::path& path) {
   return hash.finish();
 }
 
+// Bound supported graph dimensions before calculating node count.
 inline constexpr std::uint64_t graph_nodes(const unsigned index) {
   return index >= 1 && index <= expected_index
              ? (std::uint64_t{1} << index) * (index + 1) * index
@@ -229,6 +237,7 @@ inline constexpr std::uint64_t graph_nodes(const unsigned index) {
 
 static_assert(graph_nodes(expected_index) * Node{}.size() == expected_bytes);
 
+// Encode the signed node identifier as a zero-padded zigzag varint consensus field.
 inline Node varint(const std::int64_t value) {
   Node result{};
   std::uint64_t encoded = static_cast<std::uint64_t>(value) << 1;
@@ -245,6 +254,7 @@ inline Node varint(const std::int64_t value) {
 
 class Graph {
 public:
+  // Create the private graph file and reserve a high identifier bit for storage addressing.
   Graph(const std::filesystem::path& path, const unsigned index, const Node& public_key)
       : file_(path, std::ios::binary | std::ios::in | std::ios::out | std::ios::trunc),
         index_(index), public_key_(public_key) {
@@ -258,6 +268,7 @@ public:
     power_ = power;
   }
 
+  // Generate nested graph stages iteratively in reference node order.
   void generate() {
     std::uint64_t count = power_;
     const std::uint64_t width = std::uint64_t{1} << index_;
@@ -324,10 +335,12 @@ public:
   }
 
 private:
+  // Remove the reserved identifier bit to obtain the zero-based file node index.
   std::uint64_t stored_id(const std::uint64_t id) const {
     return id & ~power_;
   }
 
+  // Seek/read one graph node; switching read/write direction requires clearing stream state.
   Node read_node(const std::uint64_t id) {
     Node result{};
     file_.clear();
@@ -338,6 +351,7 @@ private:
     return result;
   }
 
+  // Seek/write one graph node and surface short writes before generation proceeds.
   void write_node(const std::uint64_t id, const Node& value) {
     file_.clear();
     file_.seekp(static_cast<std::streamoff>(stored_id(id) * value.size()));
@@ -346,6 +360,7 @@ private:
       throw std::runtime_error("Failed writing temporary Verthash graph");
   }
 
+  // Hash the public key, padded identifier, and ordered parent nodes into one graph node.
   Node make_node(const std::uint64_t id, const Node* first = nullptr,
                  const Node* second = nullptr) const {
     std::array<std::uint8_t, 128> input{};
@@ -363,6 +378,7 @@ private:
     return sha3_256(input.data(), size);
   }
 
+  // Append butterfly levels in reference parent order, including the index-zero base case.
   void butterfly(unsigned index, std::uint64_t& count) {
     if (index == 0)
       index = 1;
@@ -388,16 +404,19 @@ private:
   Node public_key_;
 };
 
+// Require a regular file with the official byte count before expensive digest validation.
 inline bool has_expected_size(const std::filesystem::path& path) {
   std::error_code error;
   return std::filesystem::is_regular_file(path, error) && !error &&
          std::filesystem::file_size(path, error) == expected_bytes && !error;
 }
 
+// Verify both official dimensions and the canonical SHA256 digest.
 inline bool has_expected_hash(const std::filesystem::path& path) {
   return has_expected_size(path) && sha256_file(path) == expected_sha256;
 }
 
+// Choose a currently absent sibling name; this probe is not an exclusive file reservation.
 inline std::filesystem::path temporary_path(const std::filesystem::path& path) {
   static std::atomic<std::uint64_t> sequence{0};
   std::random_device random;
@@ -419,6 +438,7 @@ inline std::filesystem::path temporary_path(const std::filesystem::path& path) {
   throw std::runtime_error("Cannot allocate a unique Verthash temporary path");
 }
 
+// Generate and verify a private sibling, retaining any pre-existing invalid target for diagnosis.
 inline void generate(const std::filesystem::path& path, const unsigned index = expected_index) {
   if (graph_nodes(index) == 0)
     throw std::runtime_error("Unsupported Verthash data index");
@@ -486,6 +506,7 @@ inline void generate(const std::filesystem::path& path, const unsigned index = e
   }
 }
 
+// Honor the explicit dataset path override, otherwise use the working-directory default.
 inline std::filesystem::path selection() {
   if (const char* configured = std::getenv("MOM_VERTHASH_DATA"); configured && *configured)
     return configured;

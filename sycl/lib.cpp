@@ -11,6 +11,8 @@
 #include <sstream>
 #include <vector>
 
+// Shared runtime/discovery, launch heuristics, then algorithm admission. Algorithm entrypoints
+// themselves live in their named .cpp files; these fragments share this registry's lifetime.
 #include "runtime.inc"
 #include "intensity.inc"
 using mom::cpu::add_result_dev;

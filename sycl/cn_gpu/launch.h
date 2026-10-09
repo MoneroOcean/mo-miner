@@ -18,6 +18,7 @@ inline constexpr unsigned cn_gpu_padded_batch(const unsigned batch) {
   return batch && batch != std::numeric_limits<unsigned>::max() ? (batch + 1U) & ~1U : 0U;
 }
 
+// Clamp requested/default batches to even global-memory and individual-allocation budgets.
 inline constexpr unsigned cn_gpu_intel_level_zero_batch(
     const unsigned compute_units, const bool native_width8, const uint64_t global_mem,
     const uint64_t max_alloc, const unsigned requested_batch = 0) {
@@ -38,6 +39,7 @@ inline constexpr unsigned cn_gpu_intel_level_zero_batch(
       requested_batch ? requested_batch : default_batch, even_capacity));
 }
 
+// A validated width-8 launch contains one hash team; the portable shape contains two.
 inline constexpr unsigned cn_gpu_recurrence_group_size(const bool native_width8) {
   return cn_gpu_lanes_per_hash * (native_width8 ? 1U : 2U);
 }

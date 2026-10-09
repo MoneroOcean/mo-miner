@@ -24,6 +24,7 @@ struct PearlHashHipSearch {
     if (status != hipSuccess)
       throw std::string(operation) + ": " + hipGetErrorString(status);
   }
+  // Attach the available HIPRTC compiler log to a failed compilation operation.
   static std::string rtc_error(mom::HiprtcApi& api, hiprtcResult status, hiprtcProgram program,
                                const char* operation) {
     size_t size = 0;
@@ -35,6 +36,7 @@ struct PearlHashHipSearch {
     return std::string(operation) + ": " + api.error_string(status) +
            (log.empty() ? "" : "\n" + log);
   }
+  // Require HIP and gfx12 int8 WMMA before enabling the optional runtime-compiled route.
   static bool supports(sycl::queue& q, std::string* const reason = nullptr) {
     const auto unavailable = [&](const std::string& message) {
       if (reason)
@@ -57,6 +59,7 @@ struct PearlHashHipSearch {
         std::string("gfx12 WMMA is unavailable on ") +
         (properties.gcnArchName[0] ? properties.gcnArchName : "an unknown architecture"));
   }
+  // Require complete WMMA wave tiles and the kernel's fixed K/rank noise profile.
   static bool supports_shape(const int m, const int n, const int k, const int rank) {
     constexpr int rows_per_wave = 16 * 4;
     constexpr int columns_per_wave = 16 * 4;
@@ -69,6 +72,7 @@ struct PearlHashHipSearch {
         rank % 16 == 0 && k % rank == 0 && k / rank == 16 &&
         waves % waves_per_launch == 0;
   }
+  // Best-effort release on the owning HIP device; reset handles so partial setup remains retryable.
   void release() noexcept {
     if (native_device >= 0)
       (void)hipSetDevice(native_device);
@@ -100,6 +104,7 @@ struct PearlHashHipSearch {
   void activate() const {
     hip_check(hipSetDevice(native_device), "hipSetDevice(PearlHash)");
   }
+  // Compile/cache the selected HIP WMMA specialization and allocate its transcript storage.
   bool ensure(sycl::queue& q, int m, int n, int k, int rank) {
     if (!mom_is_hip(q.get_device()))
       return false;
@@ -237,6 +242,7 @@ struct PearlHashHipSearch {
     }
     return true;
   }
+  // Enqueue WMMA and transcript hashing in native-stream order, then record completion.
   void launch(const Buffers& b, uint32_t seed, int m, int n, int k, int rank, bool debug) {
     activate();
     const unsigned threads = wmma_threads;
@@ -301,19 +307,23 @@ struct PearlHashHipSearch {
     release();
   }
 #else
+  // Require HIP and gfx12 int8 WMMA before enabling the optional runtime-compiled route.
   static bool supports(sycl::queue&, std::string* const reason = nullptr) {
     if (reason)
       *reason = "HIP source-JIT support is not part of this worker";
     return false;
   }
+  // Require complete WMMA wave tiles and the kernel's fixed K/rank noise profile.
   static bool supports_shape(int, int, int, int) {
     return false;
   }
+  // Compile/cache the selected HIP WMMA specialization and allocate its transcript storage.
   bool ensure(sycl::queue&, int, int, int, int) {
     return false;
   }
   void wait(double) {
   }
+  // Best-effort release on the owning HIP device; reset handles so partial setup remains retryable.
   void release() noexcept {
   }
 #endif

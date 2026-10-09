@@ -34,6 +34,7 @@ template <int N> static inline uint32_t esimd_xor_reduce(esimd_ns::simd<uint32_t
   }
 }
 
+// Submit the selected Intel DPAS tile variant with the common jackpot/target check.
 template <unsigned Width>
 static void search_esimd_impl(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n,
                                int k, int rank, bool dbg) {
@@ -203,6 +204,7 @@ unsigned esimd_search_width(const sycl::device& device) noexcept {
 #ifndef MOM_PEARLHASH_ESIMD_TU
 static
 #endif
+// Dispatch Intel ESIMD tile variants; combined builds export this symbol from the spir64-only TU.
 void search_esimd(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k, int rank,
                   bool dbg, const unsigned width) {
   if (width == 8u)
@@ -218,6 +220,7 @@ void search_esimd(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n
 // declare it here so attempt() can call it. (When PEARLHASH_ESIMD is set this is the same TU, defined above.)
 #if defined(MOM_PEARLHASH_HAS_ESIMD) && !defined(PEARLHASH_ESIMD)
 unsigned esimd_search_width(const sycl::device& device) noexcept;
+// Dispatch Intel ESIMD tile variants; combined builds export this symbol from the spir64-only TU.
 void search_esimd(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k, int rank,
                   bool dbg, unsigned width);
 #endif

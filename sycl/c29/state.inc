@@ -1,7 +1,4 @@
-#include "../lib-internal.h"
-#include "../../native/consts.h"
-#include "crypto/randomx/blake2/blake2.h"
-#include "cycle.h"
+
 
 // Cuckaroo Cycle algorithm constants and fixed kernel sizing.
 const constexpr uint64_t DUCK_SIZE_A = 129, DUCK_SIZE_B = 83, INDEX_SIZE = 4096,
@@ -30,6 +27,7 @@ const constexpr uint32_t MAX_TRIMMED_EDGE_COUNT = 128 * COMPUTE_THREADS, DEFAULT
 const constexpr uint32_t EDGE_BLOCK_MASK = EDGE_BLOCK_SIZE - 1, NUM_EDGES = mom_c29::kNumEdges,
                          EDGE_MASK = NUM_EDGES - 1;
 
+// Accept a positive bounded tuning value, otherwise preserve the established default.
 static uint32_t c29_env_u32(const char* name, const uint32_t default_value) {
   unsigned long parsed = 0;
   if (!mom_parse_env_ulong(name, parsed) || parsed == 0 ||
@@ -38,6 +36,7 @@ static uint32_t c29_env_u32(const char* name, const uint32_t default_value) {
   return static_cast<uint32_t>(parsed);
 }
 
+// Sample the diagnostic opt-in once so queue profiling properties remain stable for this process.
 static bool c29_profile_enabled() {
   static const bool v = []() {
     const char* e = std::getenv("MOM_C29_PROFILE");
@@ -46,6 +45,7 @@ static bool c29_profile_enabled() {
   return v;
 }
 
+// Bound diagnostic graph sampling; explicit zero means unlimited profiling.
 static uint32_t c29_profile_limit() {
   static const uint32_t v = []() {
     unsigned long parsed = 0;
@@ -57,6 +57,7 @@ static uint32_t c29_profile_limit() {
   return v;
 }
 
+// Restrict the seed workgroup override to the kernel's supported launch sizes.
 uint32_t c29_seed_local_size() {
   static const uint32_t v = []() {
     const uint32_t r = c29_env_u32("MOM_C29_SEED_LOCAL_SIZE", DEFAULT_SEED_LOCAL_SIZE);
@@ -65,6 +66,7 @@ uint32_t c29_seed_local_size() {
   return v;
 }
 
+// Restrict per-item seed work to the supported divisors of the edge space.
 uint32_t c29_seed_blocks_per_item() {
   static const uint32_t v = []() {
     const uint32_t r = c29_env_u32("MOM_C29_SEED_BLOCKS", DEFAULT_SEED_BLOCKS);
@@ -83,6 +85,7 @@ static uint32_t c29_trim_rounds(const sycl::device& device) {
 #endif
 }
 
+// Use direct seeding by default; values beginning with 0 retain the legacy staging path.
 static bool c29_direct_seed_enabled() {
   static const bool v = []() {
     const char* e = std::getenv("MOM_C29_DIRECT_SEED");
@@ -107,6 +110,7 @@ struct C29Profile {
   uint64_t start_us;
   uint64_t last_us;
   std::vector<C29ProfileEvent> events;
+  // Sample a bounded number of graphs across callers; profiling never changes graph parameters.
   C29Profile(const unsigned job_ref, const uint64_t nonce, const unsigned proof_size,
              const sycl::device& device)
       : enabled(false), start_us(c29_now_us()), last_us(start_us) {
@@ -127,6 +131,7 @@ struct C29Profile {
         c29_seed_local_size(), c29_seed_blocks_per_item(), c29_direct_seed_enabled() ? 1u : 0u);
   }
 
+  // Measure host progress since the prior mark, independently of device event timings.
   void mark(const char* name) {
     if (!enabled)
       return;
@@ -141,6 +146,7 @@ struct C29Profile {
       events.push_back({name, event});
   }
 
+  // Read completed profiling events; unsupported runtime timestamps remain diagnostic failures only.
   void print_events() {
     if (!enabled)
       return;
@@ -163,6 +169,7 @@ struct C29Profile {
     std::printf("[c29-profile] device total                    %.3f ms\n", total_ms);
   }
 
+  // Report end-to-end host time and the bounded host handoff size.
   void finish(const uint32_t trimmed_edges) {
     if (!enabled)
       return;
@@ -207,6 +214,7 @@ struct C29ResultState {
   unsigned active_job_ref = 0;
 };
 
+// Surface queued device errors through the explicit SYCL wait path.
 static sycl::async_handler c29_exception_handler() {
   return [](sycl::exception_list exceptions) {
     for (const std::exception_ptr& exception : exceptions) {
@@ -226,6 +234,7 @@ struct C29State {
   C29Buffers buffers;
   std::shared_ptr<C29ResultState> result_state;
 
+  // Bind buffers and results to one ordered device queue, enabling timestamps only on diagnostic runs.
   explicit C29State(const std::string& dev_str)
       : device(get_dev(dev_str)),
         queue(c29_profile_enabled()
@@ -237,6 +246,7 @@ struct C29State {
     result_state = std::make_shared<C29ResultState>();
   }
 
+  // Drain graph submissions before buffer destruction; detached host searches own their result state.
   ~C29State() {
     sycl_cleanup_noexcept("c29", [&] {
       queue.wait_and_throw();
@@ -244,6 +254,7 @@ struct C29State {
   }
 };
 
+// Retain the registry until explicit ordered cleanup; avoid static SYCL teardown after runtime unload.
 static DeviceStateRegistry<C29State>& c29_registry() {
   static auto* const registry = new DeviceStateRegistry<C29State>;
   return *registry;
@@ -253,6 +264,7 @@ static C29State& c29_state(const std::string& dev_str) {
   return c29_registry().get(dev_str, [&] { return std::make_unique<C29State>(dev_str); });
 }
 
+// Destroy persistent device states through the ordered cleanup path without throwing at shutdown.
 void c29_cleanup_states() noexcept {
   try {
     c29_registry().clear();
@@ -262,6 +274,7 @@ void c29_cleanup_states() noexcept {
 }
 
 template <typename T>
+// Copy only the requested prefix through the queue, then wait before host consumption.
 static void c29_read_buffer(sycl::queue& queue, sycl::buffer<T, 1>& buffer, T* const dest,
                             const size_t count) {
   if (count == 0)
@@ -275,6 +288,7 @@ static void c29_read_buffer(sycl::queue& queue, sycl::buffer<T, 1>& buffer, T* c
   sycl_wait_and_throw(event, queue.get_device());
 }
 
+// Publish the active job and discard stale queued proofs while holding the result mutex.
 static void c29_activate_job(const std::shared_ptr<C29ResultState>& result_state,
                              const unsigned job_ref) {
   std::lock_guard<std::mutex> lock(result_state->mutex);

@@ -16,6 +16,8 @@ class DeviceStateRegistry {
   std::mutex mutex_;
 
 public:
+  // Construct each device's state once under the registry lock. The returned reference remains
+  // valid until clear(); callers must finish all work before registry teardown.
   template <typename Factory>
   State& get(const std::string& device_key, Factory&& factory) {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -34,6 +36,7 @@ public:
     clear([](const auto&) { return true; });
   }
 
+  // Retain states whose runtime cannot be safely torn down; callers must exclude active users.
   template <typename Predicate>
   void clear(Predicate&& should_erase) {
     std::lock_guard<std::mutex> lock(mutex_);

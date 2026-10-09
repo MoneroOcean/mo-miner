@@ -50,6 +50,7 @@ inline uint64_t rotl64(uint64_t x, unsigned n) {
   return (x << n) | (x >> (64 - n));
 }
 
+// Expand the header seed with the reference PRNG and FP64 scaling order.
 static void make_matrix(const uint8_t hash[32], double matrix[4096]) {
   uint64_t s0 = load64le(hash), s1 = load64le(hash + 8), s2 = load64le(hash + 16),
            s3 = load64le(hash + 24);
@@ -65,6 +66,7 @@ static void make_matrix(const uint8_t hash[32], double matrix[4096]) {
   }
 }
 
+// Canonical host recomputation must not inherit a caller's nondefault rounding mode.
 class RoundingToNearest {
   int previous_;
 
@@ -92,6 +94,7 @@ inline uint64_t shl_join(uint64_t a, uint64_t b, unsigned shift) {
 inline uint64_t mul_hi64(uint64_t a, uint64_t b) {
   return mo_mul_hi_u64(a, b);
 }
+// Reduce large positive finite arguments with the multiword 4/pi table.
 inline void trig_reduce(double x, uint64_t& octant, double& reduced) {
   uint64_t bits = sycl::bit_cast<uint64_t>(x);
   const int exponent = static_cast<int>((bits >> 52) & 0x7ff) - 1023 - 52;
@@ -119,6 +122,7 @@ inline void trig_reduce(double x, uint64_t& octant, double& reduced) {
 
 static constexpr unsigned PERIODIC_LUT_SIZE = 98304;
 static constexpr unsigned MAX_FILTER_RETRIES = 8;
+// Map the filter's argument onto one LUT period, retaining precision for large angles.
 inline bool periodic_position(double x, double& position) {
   double reduced;
   if (sycl::fabs(x) >= 14100000000000000.0) {
@@ -143,6 +147,7 @@ inline bool periodic_position(double x, double& position) {
   position = reduced * 15645.56752570568075;
   return true;
 }
+// Interpolate the filter LUT; the duplicated endpoint permits the final interval's read.
 inline double periodic_lookup(const double* table, double x) {
   double position;
   periodic_position(x, position);
@@ -151,6 +156,7 @@ inline double periodic_lookup(const double* table, double x) {
     index = PERIODIC_LUT_SIZE - 1;
   return sycl::fma(position - index, table[index + 1] - table[index], table[index]);
 }
+// Approximate the consensus nonlinear branch for candidate filtering, not submission.
 inline double complex_value(double x, const double* exp_lut, const double* sin2_lut) {
   const double a = x * .000001 / 8 - sycl::floor(x * .000001 / 8),
                b = x * .000001 / 4 - sycl::floor(x * .000001 / 4);
@@ -164,6 +170,7 @@ inline double complex_value(double x, const double* exp_lut, const double* sin2_
     return periodic_lookup(sin2_lut, y);
   return static_cast<double>(sycl::rsqrt(static_cast<float>(sycl::fabs(y) + 1)));
 }
+// Retry nonfinite nonlinear values with scaled input and retain the reference retry factor.
 inline double finite_complex(double x, const double* exp_lut, const double* sin2_lut) {
   double result = complex_value(x, exp_lut, sin2_lut);
   unsigned rounds = 1;
@@ -176,12 +183,14 @@ inline double finite_complex(double x, const double* exp_lut, const double* sin2
   }
   return result * rounds;
 }
+// Accumulate a float pair while carrying its rounding residual into the low component.
 inline void pair_add(float& hi, float& lo, float add_hi, float add_lo) {
   const float sum = hi + add_hi, bv = sum - hi;
   float error = (hi - (sum - bv)) + (add_hi - bv) + lo + add_lo;
   hi = sum + error;
   lo = error - (hi - sum);
 }
+// Test the product's fractional branch boundary without discarding the low component.
 inline bool pair_complex_branch(float hi, float lo) {
   int quotient = static_cast<int>(hi * (1.0f / 1024));
   pair_add(hi, lo, -static_cast<float>(quotient) * 1024, 0);
@@ -209,6 +218,7 @@ public:
   std::mutex mutex;
   uint8_t matrix_seed[32]{};
   bool matrix_ready = false;
+  // Require FP64/device USM and upload immutable filter LUTs once per device.
   explicit State(const std::string& dev_str)
       : device(get_dev(dev_str)),
         queue(device, sycl::property_list{sycl::property::queue::in_order{}}),
@@ -251,6 +261,7 @@ public:
       throw;
     }
   }
+  // Drain accepted work before releasing device storage; teardown cannot throw.
   ~State() {
     try {
       queue.wait_and_throw();
@@ -266,6 +277,7 @@ public:
       }
     pointer = nullptr;
   }
+  // Release partial construction as well as fully initialized device state.
   void free_all() noexcept {
     free_ptr(result);
     free_ptr(target);
@@ -276,6 +288,7 @@ public:
     free_ptr(matrix);
   }
 };
+// Keep the registry shell alive across static teardown; ordered cleanup releases its values.
 static DeviceStateRegistry<State>& registry() {
   static auto* const value = new DeviceStateRegistry<State>;
   return *value;
@@ -283,6 +296,7 @@ static DeviceStateRegistry<State>& registry() {
 static State& state_for(const std::string& dev) {
   return registry().get(dev, [&] { return std::make_unique<State>(dev); });
 }
+// Release device state before the compiler runtime unloads without escaping exceptions.
 void hoohash_cleanup_states() noexcept {
   try {
     registry().clear();
@@ -291,6 +305,7 @@ void hoohash_cleanup_states() noexcept {
   }
 }
 
+// Append the little-endian nonce and derive the first digest plus its big-endian word XOR.
 inline uint32_t prepare_first(const uint8_t* input, uint64_t nonce, uint8_t first[32]) {
   uint8_t pre[80];
   for (unsigned i = 0; i < 72; ++i)
@@ -306,6 +321,7 @@ inline uint32_t prepare_first(const uint8_t* input, uint64_t nonce, uint8_t firs
   return hash_mod;
 }
 
+// Approximate matrix mixing for GPU filtering; canonical host math decides valid shares.
 inline __attribute__((always_inline)) void
 filter_hash(const uint8_t first[32], uint32_t hash_mod, uint64_t nonce, const double* matrix,
             const double* exp_lut, const double* sin2_lut, const FloatPair* normal,
@@ -347,6 +363,7 @@ filter_hash(const uint8_t first[32], uint32_t hash_mod, uint64_t nonce, const do
   blake3_dev(out, 32, mixed, 32);
 }
 
+// Compare the hash and target as little-endian 256-bit unsigned integers.
 inline bool meets_target(const uint8_t hash[32], const uint8_t target[32]) {
   for (int i = 31; i >= 0; --i)
     if (hash[i] != target[i])
@@ -354,6 +371,7 @@ inline bool meets_target(const uint8_t hash[32], const uint8_t target[32]) {
   return true;
 }
 
+// Retain the earliest filter candidate so host rejection can resume the remaining range.
 static sycl::event search(State& s, uint64_t first_nonce, unsigned count) {
   const double* matrix = s.matrix;
   const double* exp_lut = s.exp_lut;
@@ -385,6 +403,7 @@ static sycl::event search(State& s, uint64_t first_nonce, unsigned count) {
   });
 }
 
+// Exercise the GPU filter at one nonce; the public test returns the canonical host digest.
 static sycl::event test_hash(State& s, uint64_t nonce) {
   const double* matrix = s.matrix;
   const double* exp_lut = s.exp_lut;
@@ -407,6 +426,7 @@ static sycl::event test_hash(State& s, uint64_t nonce) {
 } // namespace mom_hoohash
 
 using namespace mom_hoohash;
+// Search with the GPU filter, then recompute each candidate under canonical host math.
 int hoohash(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint8_t* output,
             uint8_t*, uint64_t* pnonce, const uint8_t* target, const uint8_t*, unsigned intensity,
             bool is_test, bool, const std::string& dev_str) {

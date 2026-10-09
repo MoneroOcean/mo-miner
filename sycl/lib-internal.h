@@ -67,6 +67,7 @@ public:
   MomBufferAllocation(const MomBufferAllocation&) = delete;
   MomBufferAllocation& operator=(const MomBufferAllocation&) = delete;
 
+  // Reuse sufficient capacity; growth replaces storage only after the caller retires its work.
   void allocate(const size_t count) {
     if (!count)
       throw std::string("SYCL buffer allocation size must be nonzero");
@@ -89,6 +90,7 @@ public:
     return sycl::accessor<T, 1, Mode, sycl::target::device>{*buffer_, handler};
   }
 
+  // Enqueue an upload; source storage must outlive the returned event, including error unwind.
   sycl::event write(sycl::queue& queue, const T* const source, const size_t count) {
     if (!buffer_ || count > count_ || (!source && count))
       throw std::string("Invalid SYCL buffer write");
@@ -108,6 +110,7 @@ public:
     });
   }
 
+  // A host accessor waits for pending buffer users before exposing completed values.
   void read(T* const destination, const size_t count) {
     if (!buffer_ || count > count_ || (!destination && count))
       throw std::string("Invalid SYCL buffer read");
@@ -172,6 +175,7 @@ inline void mo_vec_load(VecT& v, const size_t offset, const T* const p) {
   else
     v.load(offset, p);
 }
+// Mirror mo_vec_load's vector-sized offset on runtimes without compatible vec::store support.
 template <typename VecT, typename T>
 inline void mo_vec_store(const VecT& v, const size_t offset, T* const p) {
   if constexpr (mom_sycl_adaptivecpp)
@@ -232,6 +236,7 @@ inline bool sycl_is_level_zero_gpu(const sycl::device& device) {
     device.get_platform().get_info<sycl::info::platform::name>().find("Level-Zero") != std::string::npos;
 }
 
+// Identify physically shared GPU memory, not the separate capability to allocate shared USM.
 inline bool is_integrated_gpu(const sycl::device& device) {
   if (!device.is_gpu())
     return false;
@@ -303,6 +308,7 @@ inline uint32_t mom_select_from_group(const sycl::sub_group& group, uint32_t val
   return sycl::select_from_group(group, value, lane);
 }
 
+// Shuffle both halves so runtimes need only the universally supported 32-bit subgroup operation.
 inline uint64_t mom_select_from_group(const sycl::sub_group& group, uint64_t value, uint32_t lane) {
   const uint32_t lo = mom_select_from_group(group, static_cast<uint32_t>(value), lane);
   const uint32_t hi = mom_select_from_group(group, static_cast<uint32_t>(value >> 32), lane);
@@ -313,6 +319,7 @@ inline uint32_t mom_shift_group_left(const sycl::sub_group& group, uint32_t valu
   return sycl::shift_group_left(group, value, delta);
 }
 
+// Apply lane selection component-wise; all participating lanes must execute the same operation.
 inline sycl::uint4 mom_select_from_group(const sycl::sub_group& group, const sycl::uint4 value,
                                          uint32_t lane) {
   return sycl::uint4(mom_select_from_group(group, value.x(), lane),
@@ -321,6 +328,7 @@ inline sycl::uint4 mom_select_from_group(const sycl::sub_group& group, const syc
                      mom_select_from_group(group, value.w(), lane));
 }
 
+// Shift each component identically; callers must not consume lanes beyond the subgroup boundary.
 inline sycl::uint4 mom_shift_group_left(const sycl::sub_group& group, const sycl::uint4 value,
                                         uint32_t delta) {
   return sycl::uint4(mom_shift_group_left(group, value.x(), delta),
@@ -337,6 +345,7 @@ inline bool mom_is_opencl(const sycl::device& device) {
 #endif
 }
 
+// Form an exact 32x32 product using 16-bit partials on the portable OpenCL translation path.
 inline uint64_t mo_mul_wide_u32(const uint32_t a, const uint32_t b) {
 #if defined(MOM_SYCL_PORTABLE_OPENCL)
   const uint32_t a0 = static_cast<uint16_t>(a), a1 = a >> 16,
@@ -348,6 +357,7 @@ inline uint64_t mo_mul_wide_u32(const uint32_t a, const uint32_t b) {
 #endif
 }
 
+// Return the upper product half, retaining carries on runtimes without a usable 64-bit mul_hi.
 inline uint64_t mo_mul_hi_u64(const uint64_t a, const uint64_t b) {
 #if defined(MOM_SYCL_ADAPTIVECPP) || defined(MOM_SYCL_PORTABLE_OPENCL)
   const uint32_t a0 = static_cast<uint32_t>(a), a1 = a >> 32,
@@ -365,6 +375,7 @@ inline bool sycl_local_memory_fits(const sycl::device& device, const size_t byte
   return bytes <= device.get_info<sycl::info::device::local_mem_size>();
 }
 
+// Validate one-dimensional launch and scratch requirements against the selected device's limits.
 inline bool sycl_workgroup_fits(const sycl::device& device, const unsigned workgroup,
                                 const size_t fixed_local_bytes = 0,
                                 const size_t local_bytes_per_item = 0,
@@ -388,6 +399,7 @@ inline bool sycl_reqd_subgroup_16_supported(const sycl::device& device) {
   return std::find(sizes.begin(), sizes.end(), 16u) != sizes.end();
 }
 
+// Prefer the largest admissible size at or below the request, then the smallest legal fallback.
 inline unsigned sycl_default_workgroup(
   const sycl::device& device, const std::initializer_list<unsigned> allowed,
   const unsigned preferred, const size_t fixed_local_bytes = 0,
@@ -422,6 +434,7 @@ inline unsigned sycl_default_workgroup(
 // with the FastModData mirror in kawpow/jit.inc.
 struct FastModData { uint32_t reciprocal, increment, shift, divisor; };
 
+// Count leading zeroes for a nonzero host value; zero is excluded by make_fast_mod_data.
 inline uint32_t clz32_host(const uint32_t value) {
 #if defined(_MSC_VER)
   unsigned long index;
@@ -432,6 +445,7 @@ inline uint32_t clz32_host(const uint32_t value) {
 #endif
 }
 
+// Precompute the exact reciprocal/shift representation for a positive 32-bit modulus.
 inline FastModData make_fast_mod_data(const uint32_t divisor) {
   if (!divisor)
     throw std::string("Fast modulus divisor must be positive");
@@ -456,6 +470,7 @@ inline FastModData make_fast_mod_data(const uint32_t divisor) {
   return data;
 }
 
+// Align a range upward without wrapping either uint64_t arithmetic or the host's size_t.
 inline size_t round_up_size(const uint64_t value, const uint64_t step) {
   const uint64_t maximum = std::numeric_limits<size_t>::max();
   if (!step || step > maximum || value > maximum - (step - 1))
@@ -463,6 +478,7 @@ inline size_t round_up_size(const uint64_t value, const uint64_t step) {
   return static_cast<size_t>(((value + step - 1) / step) * step);
 }
 
+// Reduce using an unchanged descriptor from make_fast_mod_data; divisor zero is never valid.
 inline uint32_t fast_mod_dev(const uint32_t a, const FastModData d) {
   const uint64_t t = a;
   const uint32_t q = static_cast<uint32_t>(((t + d.increment) * d.reciprocal) >> d.shift);
@@ -473,6 +489,7 @@ inline uint32_t fast_mod_dev(const uint32_t a, const FastModData d) {
 void mom_sycl_poll_pause();
 #endif
 
+// Retire one event and propagate asynchronous faults, using low-CPU polling only where safe.
 inline void sycl_wait_and_throw(sycl::event event, const sycl::device& device) {
   try {
     // The OpenCL specification permits implementations to publish coarse event status updates.
@@ -510,6 +527,7 @@ inline void sycl_wait_and_throw(sycl::event event, const sycl::device& device) {
   event.wait_and_throw();
 }
 
+// Make suppressed teardown failures opt-in diagnostics without replacing the original failure.
 inline void sycl_log_cleanup_exception(const char* const scope, const char* const message) noexcept {
   if (!std::getenv("MOM_SYCL_CLEANUP_DEBUG")) return;
   std::fprintf(stderr, "MOM_SYCL_CLEANUP_DEBUG %s ignored cleanup exception: %s\n",
@@ -517,6 +535,7 @@ inline void sycl_log_cleanup_exception(const char* const scope, const char* cons
   std::fflush(stderr);
 }
 
+// Attempt cleanup once, preserving the active exception even for non-standard runtime failures.
 template <typename Fn>
 inline void sycl_cleanup_noexcept(const char* const scope, Fn&& fn) noexcept {
   try {

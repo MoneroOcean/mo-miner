@@ -332,7 +332,7 @@
         "sycl/walahash/walahash.cpp",
         "sycl/xelishashv3/xelishashv3.cpp",
         "sycl/nexapow/nexapow.cpp",
-        "sycl/nexapow/test_probe.cpp",
+        "sycl/nexapow/validation.cpp",
         "sycl/verthash/verthash.cpp",
         "sycl/zhash/zhash.cpp",
         "sycl/equihash192_7/equihash192_7.cpp",

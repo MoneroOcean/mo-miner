@@ -43,6 +43,7 @@ static inline void mma_m16n8k32_s8(int32_t c[4], const uint32_t a[4], const uint
   (void)b; // host pass: never executed
 #endif
 }
+// Load one aligned packed int8 operand with the native CUDA cache hint when available.
 static inline uint32_t ld_u32(const int8_t* __restrict__ p) {
 #if defined(__NVPTX__) && (!defined(MOM_SYCL_ADAPTIVECPP) || defined(__CUDA_ARCH__))
   uint32_t value;
@@ -67,6 +68,7 @@ static inline uint32_t cu_smem_addr(const void* p) {
 #endif
   return a;
 }
+// Stage one aligned 16-byte global chunk into shared memory for the CUDA tile pipeline.
 static inline void cu_cp_async16(uint32_t smem, const int8_t* g) {
 #if defined(__NVPTX__) && (!defined(MOM_SYCL_ADAPTIVECPP) || defined(__CUDA_ARCH__))
   asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" ::"r"(smem), "l"(g));
@@ -75,16 +77,19 @@ static inline void cu_cp_async16(uint32_t smem, const int8_t* g) {
   (void)g;
 #endif
 }
+// Commit the current asynchronous shared-memory copy group before its matching wait.
 static inline void cu_cp_commit() {
 #if defined(__NVPTX__) && (!defined(MOM_SYCL_ADAPTIVECPP) || defined(__CUDA_ARCH__))
   asm volatile("cp.async.commit_group;\n");
 #endif
 }
+// Wait until at most N committed copy groups remain before consuming staged tiles.
 template <int N> static inline void cu_cp_wait() {
 #if defined(__NVPTX__) && (!defined(MOM_SYCL_ADAPTIVECPP) || defined(__CUDA_ARCH__))
   asm volatile("cp.async.wait_group %0;\n" ::"n"(N));
 #endif
 }
+// Load an A tile from shared memory into the lane layout required by mma.sync.
 static inline void cu_ldmatrix_x4(uint32_t out[4], uint32_t smem) {
 #if defined(__NVPTX__) && (!defined(MOM_SYCL_ADAPTIVECPP) || defined(__CUDA_ARCH__))
   asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];\n"
@@ -95,6 +100,7 @@ static inline void cu_ldmatrix_x4(uint32_t out[4], uint32_t smem) {
   (void)smem;
 #endif
 }
+// Load a B tile from shared memory into the lane layout required by mma.sync.
 static inline void cu_ldmatrix_x2(uint32_t out[2], uint32_t smem) {
 #if defined(__NVPTX__) && (!defined(MOM_SYCL_ADAPTIVECPP) || defined(__CUDA_ARCH__))
   asm volatile("ldmatrix.sync.aligned.m8n8.x2.shared.b16 {%0,%1}, [%2];\n"
@@ -120,6 +126,7 @@ static bool cuda_sycl_search_supports_shape(const int m, const int n) {
   return m % (16 * pearlhash_cuda_er) == 0 && n % (16 * pearlhash_cuda_ec) == 0;
 }
 
+// Submit the shared-memory CUDA tensor route without changing the common transcript/target semantics.
 template <bool Debug>
 static void search_cuda_direct(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n,
                                int k, int rank) {
@@ -267,6 +274,7 @@ constexpr int pearlhash_cuda_tile_rows = 4;
 constexpr int pearlhash_cuda_tile_columns = 4;
 // K staged per SMEM chunk; multiple of 16 for cp.async and 32 for the matrix K dimension.
 constexpr int pearlhash_cuda_block_k = 128;
+// Submit the Blackwell double-buffered tensor route; padded lanes retain common transcript semantics.
 template <bool Debug>
 static void search_cuda_pipe(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k,
                              int rank) {

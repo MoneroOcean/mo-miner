@@ -1,4 +1,3 @@
-namespace mom_zelhash {
 
 // CUDA needs aligned stores on both compilers; HIP is faster with the denser scalar record stream.
 #if defined(MOM_SYCL_HAS_CUDA) || defined(MOM_SYCL_ADAPTIVECPP_CUDA)

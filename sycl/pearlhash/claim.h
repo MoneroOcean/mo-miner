@@ -7,6 +7,7 @@
 
 namespace mom_pearlhash {
 
+// Compute the rank-128-equivalent work factor for opened rows/columns, rejecting zero or uint32 overflow.
 inline bool pearlhash_adjustment_factor(const uint64_t selected_rows,
                                         const uint64_t selected_columns, const uint64_t k,
                                         const uint64_t rank, uint32_t* const output) {

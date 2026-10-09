@@ -19,6 +19,7 @@ MO_KAW_AINLINE uint32_t fnv1a(uint32_t& h, const uint32_t d) {
   return h;
 }
 
+// Advance the consensus PRNG; draw order determines the generated program.
 inline uint32_t kiss99(Kiss99& st) {
   st.z = 36969 * (st.z & 65535) + (st.z >> 16);
   st.w = 18000 * (st.w & 65535) + (st.w >> 16);
@@ -52,6 +53,7 @@ MO_KAW_AINLINE uint32_t mul_hi_dev(const uint32_t a, const uint32_t b) {
   return static_cast<uint32_t>((static_cast<uint64_t>(a) * b) >> 32);
 }
 
+// Interpret the consensus math selector; the final selector maps to population count.
 MO_KAW_AINLINE uint32_t random_math_dev(const uint32_t a, const uint32_t b,
                                         const uint32_t selector) {
   switch (selector) {
@@ -80,6 +82,7 @@ MO_KAW_AINLINE uint32_t random_math_dev(const uint32_t a, const uint32_t b,
   }
 }
 
+// Merge a program result with consensus unsigned wraparound arithmetic.
 MO_KAW_AINLINE void random_merge_dev(uint32_t& a, const uint32_t b, const uint32_t mode,
                                      const uint32_t shift) {
   switch (mode) {
@@ -121,6 +124,7 @@ MO_KAW_AINLINE void apply_progpow_ops_dev(uint32_t* mix, const LocalDag& c_dag,
 }
 
 template <unsigned I>
+// Unroll DAG-load merges so baked JIT selectors can constant-fold.
 MO_KAW_AINLINE void apply_progpow_data_dev(uint32_t* mix, const DagLoad data_dag,
                                            const KawpowProgram& program) {
   if constexpr (I < KAWPOW_DATA_LOADS) {
@@ -152,15 +156,18 @@ struct KawpowSgExchange {
     return base + l;
   }
 
+  // Broadcast the selected nonce seed without crossing the 16-lane team boundary.
   inline void seed(uint32_t& s0, uint32_t& s1, const uint32_t state2[8], const uint32_t h0) const {
     s0 = mom_select_from_group(sg, state2[0], lane(h0));
     s1 = mom_select_from_group(sg, state2[1], lane(h0));
   }
 
+  // Shuffle the next DAG index from its owning team lane.
   inline uint32_t offset(const uint32_t mix0, const uint32_t src_lane) const {
     return mom_select_from_group(sg, mix0, lane(src_lane));
   }
 
+  // Fold team lane hashes and retain only this work-item's nonce digest.
   inline void digest(uint32_t digest_out[8], const uint32_t lane_hash, const bool keep) const {
     // Each lane j folds fnv1a(fnv1a(basis, lane_hash[j]), lane_hash[j + 8]); lanes
     // 0..7 hold the eight results, which are then distributed to every lane.
@@ -186,6 +193,7 @@ struct KawpowSlmExchange {
   uint32_t lane_id;
   bool cpu_offset_barrier;
 
+  // Publish the selected seed through local memory before all lanes consume it.
   inline void seed(uint32_t& s0, uint32_t& s1, const uint32_t state2[8], const uint32_t h0) const {
     if (lane_id == h0) {
       share[0] = state2[0];
@@ -196,6 +204,7 @@ struct KawpowSlmExchange {
     s1 = share[1];
   }
 
+  // Broadcast via local memory; CPU scheduling needs a second fence before reuse.
   inline uint32_t offset(const uint32_t mix0, const uint32_t src_lane) const {
     if (lane_id == src_lane)
       *offsets = mix0;
@@ -206,6 +215,7 @@ struct KawpowSlmExchange {
     return selected;
   }
 
+  // Fold published lane hashes, then fence before the shared slots are reused.
   inline void digest(uint32_t digest_out[8], const uint32_t lane_hash, const bool keep) const {
     share[lane_id] = lane_hash;
     item.barrier(sycl::access::fence_space::local_space);
@@ -315,6 +325,7 @@ inline void kawpow_final_dev(const uint32_t state2[8], const uint32_t digest[8],
   keccak_f800_dev(final_state);
 }
 
+// Compare the leading big-endian 64 bits against the compact pool target.
 inline bool kawpow_meets_target_words(const uint32_t output[8], const uint64_t target) {
   const uint32_t hash_hi = bswap32_dev(output[0]);
   const uint32_t hash_lo = bswap32_dev(output[1]);
@@ -323,6 +334,7 @@ inline bool kawpow_meets_target_words(const uint32_t output[8], const uint64_t t
   return hash_hi < target_hi || (hash_hi == target_hi && hash_lo <= target_lo);
 }
 
+// Reserve a bounded hit slot; excess hits increment count but store no payload.
 inline void store_kawpow_result(KawpowResult* const result, const uint64_t nonce,
                                 const uint32_t output[8], const uint32_t mix_hash[8]) {
   using atomic_ref =

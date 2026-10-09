@@ -19,6 +19,7 @@
 
 namespace mom {
 
+// Resolve the queue's actual native device/stream and propagate any submitted interop failure.
 inline void hip_queue_identity(sycl::queue& queue, hipDevice_t& device, hipStream_t& stream) {
   hipError_t status = hipErrorUnknown;
   hipDevice_t candidate_device = -1;
@@ -63,6 +64,7 @@ class HiprtcApi {
     return false;
   }
 
+  // Probe supported library names once; incomplete installations stay unavailable to all callers.
   HiprtcApi() {
 #if defined(_WIN32)
     const char* const names[] = {"hiprtc.dll",     "hiprtc0701.dll", "hiprtc0700.dll",
@@ -129,6 +131,7 @@ public:
   hiprtcProgram* address() noexcept { return &program_; }
   hiprtcProgram get() const noexcept { return program_; }
 
+  // Relinquish ownership before the runtime call so error cleanup cannot destroy a handle twice.
   void reset() noexcept {
     if (!program_)
       return;

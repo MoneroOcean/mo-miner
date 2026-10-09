@@ -11,6 +11,7 @@ inline std::uint32_t rotr(const std::uint32_t value, const unsigned bits) {
   return (value >> bits) | (value << (32 - bits));
 }
 
+// Hash a bounded host proof preimage; this is target verification, not the Equihash device kernel.
 inline void sha256(const std::uint8_t* message, const std::size_t length,
                    std::uint8_t output[32]) {
   static constexpr std::uint32_t k[64] = {
@@ -83,6 +84,8 @@ inline void sha256(const std::uint8_t* message, const std::size_t length,
   }
 }
 
+// Hash header plus CompactSize-prefixed proof, then compare the reversed SHA256d digest to target.
+// Callers supply canonical proofs shorter than 65536 bytes and a 32-byte big-endian target.
 inline bool meets_target(const std::uint8_t* header, const std::size_t header_length,
                          const std::uint8_t* solution, const std::size_t solution_length,
                          const std::uint8_t* target) {

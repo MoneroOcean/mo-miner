@@ -4,11 +4,13 @@
 #include <bit>
 #include <cstdint>
 
+// Fold the four interleaved integer columns belonging to this recurrence lane.
 inline int32_t cn_gpu_reduce_int(const int32_t* const raw, const unsigned lane) {
   const unsigned b = (lane / 4U) * 16U + lane % 4U;
   return raw[b] ^ raw[b + 4] ^ raw[b + 8] ^ raw[b + 12];
 }
 
+// Preserve the reference pairwise float-add order; reassociation changes recurrence hashes.
 inline float cn_gpu_reduce_float(const float* const raw, const unsigned lane) {
   const unsigned b = (lane / 4U) * 16U + lane % 4U;
   return (raw[b] + raw[b + 4]) + (raw[b + 8] + raw[b + 12]);
@@ -23,6 +25,7 @@ inline int32_t cn_gpu_reduce_staged_int(const int32_t* const raw,
   return partials[lane] ^ load(lane + 4) ^ load(lane + 8) ^ load(lane + 12);
 }
 
+// Read completed first-stage float bits from partials and the untouched tail from raw.
 inline float cn_gpu_reduce_staged_float(const float* const raw,
                                        const int32_t* const partials, const unsigned lane) {
   const unsigned b = (lane / 4U) * 16U + lane % 4U;

@@ -136,6 +136,7 @@
 namespace mom_nexa_field64_ptx {
 namespace detail {
 
+// Add canonical field limbs with PTX carries and conditionally subtract the secp256k1 modulus.
 inline void mom_nexa_field64_ptx_mod_add256(uint64_t* r, const uint64_t* a, const uint64_t* b) {
   uint64_t rr[5];
 
@@ -154,6 +155,7 @@ inline void mom_nexa_field64_ptx_mod_add256(uint64_t* r, const uint64_t* a, cons
   }
 }
 
+// Subtract field limbs with PTX borrows and restore the secp256k1 modulus on underflow.
 inline void mom_nexa_field64_ptx_mod_sub256(uint64_t* r, const uint64_t* a, const uint64_t* b) {
   uint64_t t;
   uint64_t T[4];
@@ -224,6 +226,7 @@ inline void mom_nexa_field64_ptx_mod_mult(uint64_t* r, const uint64_t* a, const 
   MOM_NEXA_F64_PTX_UADD(r[3], r512[3], 0ULL);
 }
 
+// Square with PTX carry chains and fold the wide result by the prime complement.
 inline void mom_nexa_field64_ptx_mod_sqr(uint64_t* rp, const uint64_t* up) {
   uint64_t r512[8];
 
@@ -351,6 +354,7 @@ inline void mom_nexa_field64_ptx_mod_sqr(uint64_t* rp, const uint64_t* up) {
   MOM_NEXA_F64_PTX_UADD(rp[3], r512[3], 0ULL);
 }
 
+// Shift the extended signed divstep state by 62 bits, retaining its high carry/sign information.
 inline void mom_nexa_field64_ptx_shift_r62(uint64_t* r) {
   r[0] = (r[1] << 2) | (r[0] >> 62);
   r[1] = (r[2] << 2) | (r[1] >> 62);
@@ -359,6 +363,7 @@ inline void mom_nexa_field64_ptx_shift_r62(uint64_t* r) {
   r[4] = (int64_t)(r[4]) >> 62;
 }
 
+// Shift the extended signed divstep state by 62 bits, retaining its high carry/sign information.
 inline void mom_nexa_field64_ptx_shift_r62(uint64_t dest[5], uint64_t r[5], uint64_t carry) {
   dest[0] = (r[1] << 2) | (r[0] >> 62);
   dest[1] = (r[2] << 2) | (r[1] >> 62);
@@ -367,6 +372,7 @@ inline void mom_nexa_field64_ptx_shift_r62(uint64_t dest[5], uint64_t r[5], uint
   dest[4] = (carry << 2) | (r[4] >> 62);
 }
 
+// Multiply extended divstep limbs by a bounded signed matrix coefficient.
 inline void mom_nexa_field64_ptx_imult(uint64_t* r, uint64_t* a, int64_t b) {
   uint64_t t[MOM_NEXA_F64_PTX_NBBLOCK];
 
@@ -392,6 +398,7 @@ inline void mom_nexa_field64_ptx_imult(uint64_t* r, uint64_t* a, int64_t b) {
   MOM_NEXA_F64_PTX_MADD(r[4], t[3], b, r[4]);
 }
 
+// Multiply extended signed divstep limbs and return the extra high carry limb.
 inline uint64_t mom_nexa_field64_ptx_imult_c(uint64_t* r, uint64_t* a, int64_t b) {
   uint64_t t[MOM_NEXA_F64_PTX_NBBLOCK];
   uint64_t carry;
@@ -421,6 +428,7 @@ inline uint64_t mom_nexa_field64_ptx_imult_c(uint64_t* r, uint64_t* a, int64_t b
   return carry;
 }
 
+// Form the extended limb product of a scalar with the secp256k1 field modulus.
 inline void mom_nexa_field64_ptx_mul_p(uint64_t* r, uint64_t a) {
   uint64_t ah;
   uint64_t al;
@@ -435,6 +443,7 @@ inline void mom_nexa_field64_ptx_mul_p(uint64_t* r, uint64_t a) {
   MOM_NEXA_F64_PTX_USUB(r[4], a, 0ULL);
 }
 
+// Count trailing zeros with the zero-input convention used by batched divsteps.
 inline uint32_t mom_nexa_field64_ptx_ctz(uint64_t x) {
   uint32_t n;
   asm("{\n\t"
@@ -447,6 +456,7 @@ inline uint32_t mom_nexa_field64_ptx_ctz(uint64_t x) {
   return n;
 }
 
+// Batch 62 binary-GCD steps into the signed transformation matrix used for field inversion.
 inline void mom_nexa_field64_ptx_div_step62(uint64_t u[5], uint64_t v[5], int32_t* pos, int64_t* uu,
                                             int64_t* uv, int64_t* vu, int64_t* vv,
                                             int* jac = nullptr) {
@@ -510,6 +520,7 @@ inline void mom_nexa_field64_ptx_div_step62(uint64_t u[5], uint64_t v[5], int32_
   }
 }
 
+// Apply one row of the divstep transformation to extended signed limbs.
 inline void mom_nexa_field64_ptx_matrix_vec_mul_half(uint64_t dest[5], uint64_t u[5], uint64_t v[5],
                                                      int64_t _11, int64_t _12, uint64_t* carry) {
   uint64_t t1[MOM_NEXA_F64_PTX_NBBLOCK];
@@ -527,6 +538,7 @@ inline void mom_nexa_field64_ptx_matrix_vec_mul_half(uint64_t dest[5], uint64_t 
   MOM_NEXA_F64_PTX_UADD(*carry, c1, c2);
 }
 
+// Apply the complete divstep matrix while preserving signed carry limbs.
 inline void mom_nexa_field64_ptx_matrix_vec_mul(uint64_t u[5], uint64_t v[5], int64_t _11,
                                                 int64_t _12, int64_t _21, int64_t _22) {
   uint64_t t1[MOM_NEXA_F64_PTX_NBBLOCK];
@@ -552,6 +564,7 @@ inline void mom_nexa_field64_ptx_matrix_vec_mul(uint64_t u[5], uint64_t v[5], in
   MOM_NEXA_F64_PTX_UADD(v[4], t3[4], t4[4]);
 }
 
+// Add extended limbs and propagate the supplied extra carry.
 inline uint64_t mom_nexa_field64_ptx_add_ch(uint64_t r[5], uint64_t a[5], uint64_t carry) {
   uint64_t carryOut;
 
@@ -565,6 +578,7 @@ inline uint64_t mom_nexa_field64_ptx_add_ch(uint64_t r[5], uint64_t a[5], uint64
   return carryOut;
 }
 
+// Invert a field value in place through batched binary-GCD transformations.
 inline void mom_nexa_field64_ptx_mod_inv(uint64_t* R) {
   uint64_t u[MOM_NEXA_F64_PTX_NBBLOCK];
   uint64_t v[MOM_NEXA_F64_PTX_NBBLOCK];
@@ -661,6 +675,7 @@ inline void mom_nexa_field64_ptx_mod_inv(uint64_t* R) {
   MOM_NEXA_F64_PTX_LOAD(R, r);
 }
 
+// Evaluate the field residue predicate with the native extended-limb path.
 inline bool mom_nexa_field64_ptx_is_quad(const uint64_t r[4]) {
   uint64_t u[5] = {0xFFFFFFFEFFFFFC2FULL, UINT64_MAX, UINT64_MAX, UINT64_MAX, 0};
   uint64_t v[5] = {r[0], r[1], r[2], r[3], 0};
@@ -696,6 +711,7 @@ inline void sub(uint64_t* r, const uint64_t* a, const uint64_t* b) {
   detail::mom_nexa_field64_ptx_mod_sub256(r, a, b);
 }
 
+// Add canonical four-limb values modulo the supplied modulus with explicit carry handling.
 inline void add_mod(uint64_t* r, const uint64_t* a, const uint64_t* b, const uint64_t* modulus) {
   uint64_t sum[5], reduced[5];
   MOM_NEXA_F64_PTX_UADDO(sum[0], a[0], b[0]);
@@ -713,6 +729,7 @@ inline void add_mod(uint64_t* r, const uint64_t* a, const uint64_t* b, const uin
     r[i] = (reduced[i] & ~underflow) | (sum[i] & underflow);
 }
 
+// Subtract canonical four-limb values modulo the supplied modulus with explicit borrow handling.
 inline void sub_mod(uint64_t* r, const uint64_t* a, const uint64_t* b, const uint64_t* modulus) {
   uint64_t borrow;
   MOM_NEXA_F64_PTX_USUBO(r[0], a[0], b[0]);

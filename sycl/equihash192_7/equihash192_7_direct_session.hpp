@@ -56,6 +56,7 @@ public:
   // of failing an otherwise healthy device when a header narrowly exceeds the former 4096 limit.
   static constexpr std::uint32_t root_capacity = 8192;
 
+  // Create an ordered queue and allocate persistent storage after checking the device limits.
   explicit Session(const sycl::device& device)
       : queue_(make_queue(device, std::getenv("MOM_EQUIHASH192_7_PROFILE") != nullptr)),
         level_zero_(sycl_is_level_zero_gpu(device)) {
@@ -77,6 +78,7 @@ public:
   Session(const Session&) = delete;
   Session& operator=(const Session&) = delete;
 
+  // Choose a locally supported cached-input variant and return independently verified canonical proofs.
   std::vector<Solution> run(const std::uint8_t (&header)[Spec::header_length]) {
 #ifdef MOM_SYCL_HAS_HIP
     if (cache_partition_inputs_) return run_with_cache<true>(header);
@@ -86,6 +88,7 @@ public:
 
 private:
   template <bool CacheInput>
+  // Retry the same header after bounded arena overflow; explicit diagnostic layout overrides stay strict.
   std::vector<Solution> run_with_cache(const std::uint8_t (&header)[Spec::header_length]) {
     if (std::getenv("MOM_EQUIHASH192_7_HYBRID_ARENA"))
       return run_layout<HybridArena, CacheInput>(header);
@@ -112,6 +115,7 @@ private:
   }
 
   template <typename ActiveArena, bool CacheInput>
+  // Run all collision stages in compatible retained storage, then recover, verify, and deduplicate roots.
   std::vector<Solution> run_layout(const std::uint8_t (&header)[Spec::header_length]) {
     const auto started = std::chrono::steady_clock::now();
     const bool profile = std::getenv("MOM_EQUIHASH192_7_PROFILE") && profile_reports_ < 8;
@@ -328,6 +332,7 @@ private:
     return solutions;
   }
 
+  // Preserve in-order stage dependencies, adding timestamps only for requested profiling.
   static sycl::queue make_queue(const sycl::device& device, const bool profile) {
     if (profile)
       return sycl::queue(device, sycl::property_list{
@@ -336,6 +341,7 @@ private:
   }
 
 #ifdef MOM_SYCL_HAS_HIP
+  // Calculate the worst cached-input local-memory demand across this arena's collision stages.
   template <typename ActiveArena> static constexpr std::size_t cache_local_bytes() {
     return std::max(
         {mom_equihash::partitioned_collision_local_bytes<
@@ -393,6 +399,7 @@ private:
     throw std::bad_alloc();
   }
 
+  // Check device headroom and allocate all retained levels; any partial failure releases owned storage.
   void allocate() {
     const auto device = queue_.get_device();
     const std::uint64_t required = Arena::arena_bytes +
@@ -432,11 +439,13 @@ private:
     }
   }
 
+  // Reset attempt counters in queue order; prior record bytes remain unreachable behind zero counts.
   void clear() {
     queue_.fill(counts_storage_, 0u, 7 * count_stride + 2);
   }
 
   template <typename T>
+  // Release one allocation without throwing and clear its pointer for partial-construction cleanup.
   void free(T*& value) noexcept {
     if (value) {
       try {
@@ -447,6 +456,7 @@ private:
     }
   }
 
+  // Release owned buffers and clear counter aliases; callers drain the queue first.
   void release() noexcept {
     free(input_);
     free(level0_);

@@ -26,6 +26,7 @@ void generate512(const unsigned idx, const uint64_t* const in,
   }
 }
 
+// Mask the recurrence byte offset before selecting a 16-byte scratchpad lane.
 inline int32_t* lpad_ptr(const unsigned idx, const unsigned n, int32_t* const lpad) {
   return reinterpret_cast<int32_t*>(reinterpret_cast<uint8_t*>(lpad) + (idx & CN_GPU_MASK) +
                                     n * 16);
@@ -63,6 +64,7 @@ inline sycl::float4 fma_break(const sycl::float4 x) { // Breaks the FMA dependen
   return my_and_or_ps(x, 0xFEFFFFFF, 0x00800000);
 }
 
+// Retain correctly rounded division and prevent backend reassociation of the chaotic recurrence.
 inline const char* cn_gpu_fp_compile_options(const sycl::device& dev) {
   constexpr const char* optimized = "-cl-fp32-correctly-rounded-divide-sqrt -cl-mad-enable "
                                     "-cl-fast-relaxed-math -cl-no-signed-zeros";
@@ -81,6 +83,7 @@ inline const char* cn_gpu_fp_compile_options(const sycl::device& dev) {
   }
 }
 
+// Accumulate one numerator/divisor step in the consensus floating-point operation order.
 inline void sub_round(const sycl::float4 n0, const sycl::float4 n1, const sycl::float4 n2,
                       const sycl::float4 n3, const sycl::float4 rnd_c, sycl::float4* const pn,
                       sycl::float4* const pd, sycl::float4* const pc) {
@@ -112,6 +115,7 @@ inline void round_compute( // The divisor mask also prevents divide-by-near-zero
   *pr += mo_div_rn(n, my_and_or_ps(d, 0xFF7FFFFF, 0x40000000));
 }
 
+// Run four recurrence rounds and convert the shaped result with round-to-nearest-even.
 inline sycl::int4 single_comupte(const sycl::float4 n0, const sycl::float4 n1,
                                  const sycl::float4 n2, const sycl::float4 n3, const float cnt,
                                  const sycl::float4 rnd_c, sycl::float4* const psum) {
@@ -127,6 +131,7 @@ inline sycl::int4 single_comupte(const sycl::float4 n0, const sycl::float4 n1,
   return (r2 * sycl::float4(536870880.0f)).convert<int32_t, sycl::rounding_mode::rte>();
 }
 
+// Rotate the 128-bit result by a nonzero byte count, preserving bits across signed lanes.
 inline sycl::int4 my_alignr_epi8(const sycl::int4 a, const unsigned rot) {
   const unsigned right = 8 * rot;
   const unsigned left = 32 - right;
@@ -138,6 +143,7 @@ inline sycl::int4 my_alignr_epi8(const sycl::int4 a, const unsigned rot) {
                     (u[2] >> right) | (u[3] << left), (u[3] >> right) | (u[0] << left));
 }
 
+// Convert integer lanes to float, run recurrence, and apply the lane-specific byte rotation.
 inline void single_comupte_wrap(const sycl::int4 v0, const sycl::int4 v1, const sycl::int4 v2,
                                 const sycl::int4 v3, const unsigned rot, const float cnt,
                                 const sycl::float4 rnd_c, sycl::float4* const psum,
@@ -152,6 +158,7 @@ inline void single_comupte_wrap(const sycl::int4 v0, const sycl::int4 v1, const 
 }
 
 template <bool NarrowSupported = !mom_sycl_adaptivecpp && !mom_sycl_portable_opencl>
+// Use subgroup fencing only for a validated narrow team; otherwise synchronize the workgroup.
 inline void cn_recurrence_barrier(const sycl::nd_item<1>& item, const sycl::sub_group& subgroup,
                                   const bool use_narrow) {
   if constexpr (NarrowSupported) {
@@ -163,6 +170,7 @@ inline void cn_recurrence_barrier(const sycl::nd_item<1>& item, const sycl::sub_
   item.barrier(sycl::access::fence_space::local_space);
 }
 
+// Use subgroup fencing only for a validated narrow team; otherwise synchronize the workgroup.
 inline void cn_recurrence_barrier(const sycl::nd_item<1>& item, const bool use_narrow) {
   if constexpr (mom_sycl_portable_opencl) {
     item.barrier(sycl::access::fence_space::local_space);
@@ -172,6 +180,7 @@ inline void cn_recurrence_barrier(const sycl::nd_item<1>& item, const bool use_n
 }
 
 template <bool Portable = mom_sycl_portable_opencl>
+// Select the reference lane permutation, using packed constants for portable compilation.
 inline unsigned cn_lane_select(const unsigned lane, const unsigned column) {
   if constexpr (Portable) {
     uint32_t packed;
@@ -236,6 +245,7 @@ inline unsigned cn_lane_select(const unsigned lane, const unsigned column) {
 }
 
 template <bool Portable = mom_sycl_portable_opencl>
+// Return the reference lane-dependent recurrence seed without portable global table loads.
 inline float cn_lane_count(const unsigned lane) {
   if constexpr (Portable) {
     unsigned numerator;
@@ -367,6 +377,7 @@ void aes_expend_key(uint32_t* const keybuf) { // Unrolled AES-256 key expansion.
 using AesTable = sycl::local_accessor<uint32_t, 1>;
 
 // Cooperatively fill the four rotated T-tables; caller must barrier before first use.
+// Populate local AES round tables cooperatively before their workgroup consumers run.
 inline void aes_fill_tables(const AesTable& aes0, const AesTable& aes1, const AesTable& aes2,
                             const AesTable& aes3, const sycl::nd_item<2>& nd) {
   const unsigned linear = nd.get_local_id(0) * nd.get_local_range(1) + nd.get_local_id(1);
@@ -384,6 +395,7 @@ inline void aes_fill_tables(const AesTable& aes0, const AesTable& aes1, const Ae
   }
 }
 
+// Apply one table-based AES round with the reference lane-byte layout.
 inline void aes_round(sycl::uint4* const px, const sycl::uint4 key, const AesTable& aes0,
                       const AesTable& aes1, const AesTable& aes2, const AesTable& aes3) {
   union {
@@ -409,6 +421,7 @@ union AesKey {
   } // explicit default ctor: sycl::vec has a non-trivial default ctor, so the union needs one to stay default-constructible (uninitialized).
 };
 
+// Surface asynchronous queue failures through the worker error-reporting contract.
 inline sycl::async_handler cn_gpu_exception_handler() {
   return [](sycl::exception_list exceptions) {
     for (std::exception_ptr const& e : exceptions) {

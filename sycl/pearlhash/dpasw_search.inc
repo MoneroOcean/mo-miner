@@ -3,6 +3,7 @@
 // Adapted from friskens' Alchemist PearlHash search: https://github.com/MoneroOcean/mo-miner/pull/3.
 // The combined AOT profile keeps ordinary ESIMD: Xe2 cannot compile a DPASW entry even if unselected.
 #if defined(PEARLHASH_ESIMD) && !defined(MOM_PEARLHASH_ESIMD_TU)
+// Gate split DPASW to the supported Intel device family; discovery failure leaves ordinary DPAS available.
 static bool dpasw_esimd_device(const sycl::device& device) noexcept {
 #if defined(SYCL_EXT_ONEAPI_DEVICE_ARCHITECTURE)
   try {
@@ -26,6 +27,7 @@ constexpr int pearlhash_dpasw_columns = 1;
 constexpr int pearlhash_dpasw_block_rows = 64;
 constexpr int pearlhash_dpasw_block_columns = 64;
 
+// Accumulate one split DPASW tile using the paired-lane layout selected by the caller.
 template <int AN>
 static inline esimd_ns::simd<int32_t, 64> dpasw_mad(
     esimd_ns::simd<int32_t, 64> c, esimd_ns::simd<int8_t, 256> b,
@@ -33,6 +35,7 @@ static inline esimd_ns::simd<int32_t, 64> dpasw_mad(
   return esimd_ns::xmx::dpasw<8, 8, int32_t, int8_t, int8_t>(c, b, a);
 }
 
+// Submit the selected DPASW tile variant while preserving the common winning-tile transcript.
 template <int FixedRank>
 static sycl::event search_esimd_dpasw_impl(
     sycl::queue& q, const Buffers& bb, uint32_t seed,
@@ -140,6 +143,7 @@ static sycl::event search_esimd_dpasw_impl(
   });
 }
 
+// Choose the DPASW tile variant from the explicit runtime tuning configuration.
 static sycl::event search_esimd_dpasw(sycl::queue& q, const Buffers& bb, uint32_t seed,
                                       int m, int n, int k, int rank, bool dbg) {
   if (rank == 256)

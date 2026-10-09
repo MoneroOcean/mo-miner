@@ -1,6 +1,7 @@
 struct BeamLevels {
   const uint32_t* tree[NUM_ROUNDS + 1]; // tree[L] (L=1..5): 2 u32/slot = parent mixed[L-1] indices
 };
+// Expand retained parent trees in canonical leader-first order; bounded stack/output failures reject the root.
 inline unsigned beam_walk_leaves(const BeamLevels& lv, uint32_t final_slot, uint32_t* leaves) {
   struct Frame {
     unsigned level;
@@ -30,6 +31,7 @@ inline unsigned beam_walk_leaves(const BeamLevels& lv, uint32_t final_slot, uint
   }
   return n;
 }
+// Reject repeated leaves before publishing a recovered Beam proof candidate.
 inline bool beam_leaves_distinct(const uint32_t* leaves, unsigned n) {
   for (unsigned i = 0; i < n; ++i)
     for (unsigned j = i + 1; j < n; ++j)
@@ -39,6 +41,7 @@ inline bool beam_leaves_distinct(const uint32_t* leaves, unsigned n) {
 }
 
 class BeamFinalKernel;
+// Recover only zero-XOR roots with distinct leaves; candidate writes remain capacity bounded.
 static sycl::event submit_final(sycl::queue& q, const uint32_t* d_mixed5, uint32_t in_count,
                                 BeamLevels lv, BeamCandidate* d_cand,
                                 uint32_t* d_cand_count, uint32_t cand_cap) {
@@ -99,6 +102,7 @@ public:
   bool arenas_built = false;
   std::mutex mutex;
 
+  // Create the per-device ordered pipeline and require host-visible I/O plus GPU device allocations.
   explicit BeamState(const std::string& dev_str)
       : device(get_dev(dev_str)),
         queue(device, sycl::property_list{sycl::property::queue::in_order{}}),
@@ -121,11 +125,13 @@ public:
       sycl::free(p, queue);
     p = nullptr;
   }
+  // Release both test I/O and mining arenas after the queue has been drained.
   void free_all() {
     free_ptr(prePow);
     free_ptr(rows);
     free_all_arenas();
   }
+  // Allocate tiny shared test/header buffers lazily and unwind partial allocation on failure.
   void ensure_io() {
     if (prePow && rows)
       return;
@@ -142,6 +148,7 @@ public:
       throw;
     }
   }
+  // Allocate only the selected compact, CUDA, or fused layout; partial construction releases all arenas.
   void ensure_arenas(bool log) {
     if (arenas_built)
       return;
@@ -220,6 +227,7 @@ public:
       throw;
     }
   }
+  // Clear all layout-specific allocations and the built flag so a later solve can recreate state.
   void free_all_arenas() {
     free_ptr(final_mixed);
     free_ptr(linear_mixed);
@@ -245,6 +253,7 @@ public:
   }
 };
 
+// Retain device ownership until explicit cleanup rather than late static SYCL destruction.
 static DeviceStateRegistry<BeamState>& beam_registry() {
   static auto* const registry = new DeviceStateRegistry<BeamState>;
   return *registry;
@@ -254,6 +263,7 @@ static BeamState& beam_state(const std::string& dev_str) {
   return beam_registry().get(dev_str, [&] { return std::make_unique<BeamState>(dev_str); });
 }
 
+// Release persistent solver states without allowing teardown failures to escape shutdown.
 void beamhash3_cleanup_states() noexcept {
   try {
     beam_registry().clear();

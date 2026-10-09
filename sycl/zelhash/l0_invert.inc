@@ -5,6 +5,7 @@ inline uint32_t l0_invert_hash(uint32_t x) {
 
 class ZelHashL0InvertSetupKernel;
 class ZelHashL0InvertKernel;
+// Build the cold inverse leaf-position lookup used when recovery retains a forward map.
 static sycl::event submit_l0_invert(sycl::queue& q, const uint32_t* d_forward,
                                     EqCandidate* d_cand, uint32_t target_count, uint32_t* d_target,
                                     uint32_t* d_next, uint32_t* d_head) {

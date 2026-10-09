@@ -158,6 +158,7 @@ template <unsigned WorkGroup, typename Layout> struct LaunchLayout : Layout {
 };
 
 template <typename Record>
+// Expand a bounded layer of parent references; invalid slots reject the candidate before dereference.
 inline bool expand_round(const Record* const records, std::uint32_t* const current,
                          std::uint32_t* const next, const unsigned count,
                          const std::uint32_t capacity) {
@@ -175,6 +176,7 @@ inline bool expand_round(const Record* const records, std::uint32_t* const curre
 
 #ifndef MOM_SYCL_HAS_HIP
 template <typename Record>
+// Expand split-head records with the same bounds checks as packed-record recovery.
 inline bool expand_split_round(const mom_equihash::SplitRecordHead* const heads,
                                const std::uint32_t* const tails,
                                std::uint32_t* const current, std::uint32_t* const next,
@@ -197,6 +199,7 @@ template <typename Arena>
 class RecoverLeavesKernel;
 
 template <typename Arena>
+// Walk retained root provenance on device and mark candidates invalid if any parent escapes its arena.
 inline sycl::event submit_recover_leaves(
     sycl::queue& queue, const typename Arena::Level0Record* const level0,
     const typename Arena::Round1Record* const round1,

@@ -14,6 +14,7 @@ struct CnGpuCudaExpand {
   bool checked = false;
   bool enabled = false;
 
+  // Get the native driver ordinal; the AdaptiveCpp branch currently uses ordinal zero.
   static CUdevice native_device(const sycl::device& device) {
 #if defined(MOM_SYCL_ADAPTIVECPP)
     (void)device;
@@ -22,6 +23,7 @@ struct CnGpuCudaExpand {
     return sycl::get_native<sycl::backend::ext_oneapi_cuda>(device);
 #endif
   }
+  // Release owned driver resources after selecting their retained context.
   void release() noexcept {
     CnGpuCudaDriverApi& api = CnGpuCudaDriverApi::instance();
     if (api.basic_available() && context)
@@ -40,6 +42,7 @@ struct CnGpuCudaExpand {
     enabled = false;
   }
 
+  // Try native expansion once; unavailable CUDA JIT retains the SYCL fallback.
   bool ensure(sycl::queue& queue, std::string* const reason = nullptr) {
     const auto unavailable = [&](const std::string& message) {
       if (reason)
@@ -136,6 +139,7 @@ struct CnGpuCudaExpand {
     return enabled;
   }
 
+  // Launch native expansion and record the completion event consumed before SYCL resumes.
   void launch(uint64_t* states, uint64_t* scratchpads, const unsigned batch) {
     CnGpuCudaDriverApi& api = CnGpuCudaDriverApi::instance();
     cuda_check(api, api.set_current(context), "cuCtxSetCurrent(cn/gpu launch)");
@@ -152,6 +156,7 @@ struct CnGpuCudaExpand {
     cuda_check(api, api.event_record(done, nullptr), "cuEventRecord(cn/gpu)");
   }
 
+  // Poll native completion without busy-spinning and propagate driver faults.
   void wait() {
     CnGpuCudaDriverApi& api = CnGpuCudaDriverApi::instance();
     for (;;) {

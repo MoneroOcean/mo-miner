@@ -1,5 +1,3 @@
-namespace mom_fishhash {
-
 constexpr uint32_t MAX_OUTPUTS = 15;
 constexpr uint32_t FNV_PRIME = 0x01000193u;
 constexpr int LIGHT_CACHE_NUM_ITEMS = 1179641;   // x 64B  = 72 MiB
@@ -28,6 +26,7 @@ inline uint64_t load64_le_dev(const uint8_t* p) {
 inline uint64_t rotl64_dev(uint64_t v, unsigned s) {
   return (v << s) | (v >> (64 - s));
 }
+// Run the permutation used by fixed-cache and dataset derivation.
 inline void keccakf1600_dev(uint64_t st[25]) {
   static constexpr uint64_t rndc[24] = {
       0x0000000000000001ULL, 0x0000000000008082ULL, 0x800000000000808aULL, 0x8000000080008000ULL,
@@ -66,6 +65,7 @@ inline void keccakf1600_dev(uint64_t st[25]) {
   }
 }
 // Keccak-512 (original Keccak, 0x01 pad; rate 72B/9 words). in_len <= 72. Output 8 u64 (64 bytes).
+// Hash one padded Keccak-512 block; callers must fit within its 72-byte rate.
 inline void keccak512_dev(uint64_t out[8], const uint8_t* in, unsigned in_len) {
   uint8_t buf[72];
   for (unsigned i = 0; i < 72; ++i)
@@ -95,6 +95,7 @@ inline uint32_t fnv1_dev(uint32_t u, uint32_t v) {
 
 // ---- dataset item (calculate_dataset_item_1024): 128 bytes = 16 u64 = 32 u32 ----
 // item_state for one 64-byte half. cache: light cache (LIGHT_CACHE_NUM_ITEMS x 8 u64).
+// Derive one dataset half through the ordered light-cache parent accesses.
 inline void fish_item_half(const uint64_t* __restrict cache, uint32_t index, uint64_t mix[8]) {
   for (unsigned i = 0; i < 8; ++i)
     mix[i] = cache[(index % LIGHT_CACHE_NUM_ITEMS) * 8 + i];
@@ -118,11 +119,13 @@ inline void fish_item_half(const uint64_t* __restrict cache, uint32_t index, uin
   keccak512_words_dev(mix);
 }
 // item -> 16 u64 (128 bytes)
+// Join two independently derived halves into a 128-byte dataset item.
 inline void fish_dataset_item(const uint64_t* __restrict cache, uint32_t index, uint64_t out[16]) {
   fish_item_half(cache, index * 2, out);         // out[0..7]
   fish_item_half(cache, index * 2 + 1, out + 8); // out[8..15]
 }
 
+// Compare output and target as little-endian 256-bit unsigned integers.
 inline bool meets_target_le_dev(const uint8_t out[32], const uint8_t* target) {
   for (int i = 31; i >= 0; --i) {
     if (out[i] == target[i])
@@ -132,6 +135,7 @@ inline bool meets_target_le_dev(const uint8_t out[32], const uint8_t* target) {
   return true;
 }
 // Big-endian compare (Iron Fish: hashValue and set_target are both 256-bit BE, byte 0 = MSB).
+// Compare output and target as big-endian 256-bit unsigned integers.
 inline bool meets_target_be_dev(const uint8_t out[32], const uint8_t* target) {
   for (int i = 0; i < 32; ++i) {
     if (out[i] == target[i])
@@ -140,6 +144,7 @@ inline bool meets_target_be_dev(const uint8_t out[32], const uint8_t* target) {
   }
   return true;
 }
+// Reserve a bounded shared hit slot; kernel completion publishes its payload.
 inline void store_fish_result(FishResult* r, uint64_t nonce, const uint8_t out[32]) {
   using ar = sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
                               sycl::access::address_space::global_space>;

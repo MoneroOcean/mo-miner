@@ -59,6 +59,7 @@ inline uint8_t cn_aes_xtime(const uint8_t value) {
   return static_cast<uint8_t>((value << 1) ^ ((value & 0x80U) ? 0x1bU : 0U));
 }
 
+// Multiply bytes in the AES field for the computed S-box fallback.
 inline uint8_t cn_aes_mul(uint8_t a, uint8_t b) {
   uint8_t result = 0;
   for (unsigned bit = 0; bit < 8; ++bit) {
@@ -70,6 +71,7 @@ inline uint8_t cn_aes_mul(uint8_t a, uint8_t b) {
   return result;
 }
 
+// Compute the AES inverse/affine transform without device-global table loads.
 inline uint8_t cn_aes_sbox(const uint8_t value) {
   // x^254 is the multiplicative inverse in GF(2^8); zero maps to zero. The affine transform then
   // produces the standard AES S-box without a program-scope initialized table.
@@ -89,12 +91,14 @@ inline uint8_t cn_aes_sbox(const uint8_t value) {
                               rotl8(inverse, 4) ^ 0x63U);
 }
 
+// Pack the S-box and field multiples into the round-table layout.
 inline uint32_t cn_aes_table(const uint8_t index) {
   const uint32_t s = cn_aes_sbox(index);
   const uint32_t s2 = cn_aes_xtime(static_cast<uint8_t>(s));
   return s2 | (s << 8) | (s << 16) | ((s2 ^ s) << 24);
 }
 
+// Select a Keccak round-constant half without a device-global table.
 inline uint32_t cn_keccak_round_constant(const unsigned round, const bool high) {
   switch (round) {
   case 0:
@@ -267,6 +271,7 @@ template <unsigned R> static inline void mo_rotl64_32(uint32_t& lo, uint32_t& hi
 }
 
 template <unsigned Position, unsigned Rotation>
+// Rotate/relocate one split lane while preserving the displaced lane for the next step.
 static inline void mo_rho_pi_32(uint32_t* const lo, uint32_t* const hi, uint32_t& tlo,
                                 uint32_t& thi) {
   const uint32_t next_lo = lo[Position], next_hi = hi[Position];
@@ -278,6 +283,7 @@ static inline void mo_rho_pi_32(uint32_t* const lo, uint32_t* const hi, uint32_t
   thi = next_hi;
 }
 
+// Permute paired words to avoid costly native 64-bit arithmetic.
 void keccak32(uint64_t* const s) {
 #if !defined(MOM_SYCL_PORTABLE_OPENCL)
   static const uint32_t rndc_lo[24] = {0x00000001, 0x00008082, 0x0000808a, 0x80008000, 0x0000808b,
@@ -404,6 +410,7 @@ void keccak32(uint64_t* const s) {
   }
 }
 
+// Select native or paired Keccak according to backend lowering and the launch specialization.
 template <bool IntelNative64 = false> void keccak(uint64_t* const s) {
 #if defined(__NVPTX__) && !defined(MOM_CNGPU_K32)
   keccak64<false>(s);

@@ -24,6 +24,7 @@ struct AutolykosState {
   // GPU cost). The prehash's GPU-seconds cannot co-execute with mining on this hardware,
   // so the cheapest place to pay them is one concentrated rebuild per height.
 
+  // Bind launch policy to one device; portable builds use buffers instead of shared USM.
   explicit AutolykosState(const std::string& dev_str)
       : device(get_dev(dev_str)),
         queue(device, sycl::property_list{sycl::property::queue::in_order{}}),
@@ -38,6 +39,7 @@ struct AutolykosState {
     set_sycl_env("SYCL_PROGRAM_COMPILE_OPTIONS", autolykos_compile_options(device));
   }
 
+  // Drain accepted kernels before releasing allocations without throwing during teardown.
   ~AutolykosState() {
     sycl_cleanup_noexcept("autolykos2 wait", [&] { queue.wait_and_throw(); });
     sycl_cleanup_noexcept("autolykos2 release", [&] { release(); });
@@ -60,6 +62,7 @@ struct AutolykosState {
     return env_workgroup(dev, "MOM_AUTOLYKOS2_WORKGROUP", fallback);
   }
 
+  // Tune prehash independently of the search workgroup within supported device limits.
   static unsigned autolykos_prehash_workgroup(const sycl::device& dev) {
     const unsigned fallback = sycl_default_workgroup(dev, {32, 64, 128, 256}, 64);
     return env_workgroup(dev, "MOM_AUTOLYKOS2_PREHASH_WORKGROUP", fallback);
@@ -101,6 +104,7 @@ struct AutolykosState {
     return env_u32("MOM_AUTOLYKOS2_VERIFY_TABLE", parsed) && parsed <= 2 ? parsed : 1;
   }
 
+  // Keep split search enabled unless a diagnostic override starts with zero.
   static bool autolykos_split_table() {
     const char* const value = std::getenv("MOM_AUTOLYKOS2_SPLIT");
     return !(value && value[0] == '0');
@@ -116,6 +120,7 @@ struct AutolykosState {
     return !value || (std::strcmp(value, "0") && std::strcmp(value, "false"));
   }
 
+  // Opt into one scalar/cooperative cross-check per state, including the legacy HIP alias.
   static bool autolykos_subgroup_coop_verify() {
     const char* value = std::getenv("MOM_AUTOLYKOS2_SUBGROUP_COOP_VERIFY");
     if (!value)
@@ -123,6 +128,7 @@ struct AutolykosState {
     return value && (!std::strcmp(value, "1") || !std::strcmp(value, "true"));
   }
 
+  // Release allocations and invalidate all table and capacity reuse keys.
   void release() {
     free_ptr(table);
     free_ptr(bhashes);
@@ -145,6 +151,7 @@ struct AutolykosState {
     ptr = nullptr;
   }
 
+  // Allocate shared hits lazily; portable builds instead retain per-nonce buffer results.
   void ensure_result() {
     if constexpr (!mom_sycl_portable_opencl) {
       if (result)
@@ -155,6 +162,7 @@ struct AutolykosState {
     }
   }
 
+  // Drain outstanding users before growing the portable per-nonce output buffer.
   void ensure_portable_results(const uint32_t count) {
     if constexpr (!mom_sycl_portable_opencl)
       return;
@@ -165,6 +173,7 @@ struct AutolykosState {
     portable_result_cap = count;
   }
 
+  // Grow split-search intermediate storage only after its queued users finish.
   void ensure_bhashes(const uint32_t intensity) {
     if (bhashes && bhashes_cap >= intensity)
       return;
@@ -177,6 +186,7 @@ struct AutolykosState {
     bhashes_cap = intensity;
   }
 
+  // Choose precomputed rows only when backend capabilities and the memory reserve permit.
   bool should_use_table(const bool is_test, const uint32_t n_len) const {
     if constexpr (mom_sycl_portable_opencl) {
       // Some conforming ICDs cap individual buffers at 2 GiB. Recompute rows instead of requiring
@@ -264,6 +274,7 @@ struct AutolykosState {
     }
   }
 
+  // Rebuild and verify the height-specific table before publishing its reuse key.
   void ensure_table(const uint32_t height, const uint32_t n_len, const bool is_test,
                     const bool should_log) {
     if (!should_use_table(is_test, n_len)) {

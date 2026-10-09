@@ -44,6 +44,7 @@ constexpr size_t TEST_DATA_BYTES = (static_cast<size_t>(TEST_MDIV) * 2 + 2) * si
 constexpr size_t TEST_DATA_ELEMENTS = TEST_DATA_BYTES / sizeof(Uint2);
 constexpr unsigned WG = 64;
 
+// Derive deterministic bounded-fixture words; these are never production dataset values.
 inline uint32_t test_data_word(uint64_t index, uint64_t seed) {
   uint64_t value = index + seed;
   value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9ULL;
@@ -61,6 +62,7 @@ inline uint64_t rotl64(uint64_t value, unsigned shift) {
   return (value << shift) | (value >> (64 - shift));
 }
 
+// Run the 24-round permutation shared by header seed and final hash construction.
 inline void keccakf1600(uint64_t state[25]) {
   static constexpr uint64_t rc[24] = {
       0x0000000000000001ULL, 0x0000000000008082ULL, 0x800000000000808aULL, 0x8000000080008000ULL,
@@ -99,6 +101,7 @@ inline void keccakf1600(uint64_t state[25]) {
   }
 }
 
+// Precompute a seed state with a low-byte header increment before per-nonce work.
 inline void make_state(const uint32_t* header, unsigned first, uint64_t state[25]) {
   for (unsigned i = 0; i < 25; ++i)
     state[i] = 0;
@@ -131,6 +134,7 @@ public:
   unsigned hash_capacity = 0;
   std::mutex mutex;
 
+  // Bind official or explicitly gated CPU-fixture data to one persistent device state.
   explicit State(const std::string& dev_str, const bool use_compact_test_data)
       : device(get_dev(dev_str)),
         queue(device, sycl::property_list{sycl::property::queue::in_order{}}),
@@ -153,6 +157,7 @@ public:
   ~State() {
     release();
   }
+  // Drain accepted kernels before releasing all allocations, including partial construction.
   void release() noexcept {
     sycl_cleanup_noexcept("verthash wait", [&] {
       queue.wait_and_throw();
@@ -167,6 +172,7 @@ public:
       }
     p = nullptr;
   }
+  // Release every owned allocation without letting teardown errors escape.
   void free_all() noexcept {
     free_ptr(result);
     free_ptr(target);
@@ -175,6 +181,7 @@ public:
     free_ptr(header);
     free_ptr(data);
   }
+  // Grow per-nonce scratch storage only after queued consumers finish.
   void ensure_hashes(unsigned count) {
     if (hashes && count <= hash_capacity)
       return;
@@ -189,6 +196,7 @@ public:
   }
 
 private:
+  // Validate official dataset bytes before upload; only gated CPU tests use synthetic data.
   void load_data() {
     std::vector<Uint2> host;
     if (compact_test_data) {
@@ -247,11 +255,13 @@ private:
   }
 };
 
+// Keep the registry shell alive across static teardown; ordered cleanup releases its values.
 static DeviceStateRegistry<State>& registry() {
   static auto* const value = new DeviceStateRegistry<State>;
   return *value;
 }
 
+// Keep compact CPU fixtures separate from the official dataset registry key.
 static State& get_state(const std::string& dev_str, const bool is_test) {
   const char* const configured = std::getenv("MOM_SYCL_PORTABLE_TEST");
   const bool requested = is_test && configured && std::strcmp(configured, "1") == 0;
@@ -262,6 +272,7 @@ static State& get_state(const std::string& dev_str, const bool is_test) {
   return registry().get(key, [&] { return std::make_unique<State>(dev_str, compact); });
 }
 
+// Release device state before the compiler runtime unloads without escaping exceptions.
 void verthash_cleanup_states() noexcept {
   try {
     registry().clear();
@@ -271,6 +282,7 @@ void verthash_cleanup_states() noexcept {
 }
 
 template <bool Compact>
+// Sequence seed generation and four-lane dependent dataset mixing for the nonce range.
 static sycl::event submit_search(State& s, uint32_t start_nonce, unsigned count, bool is_test) {
   uint32_t* const header = s.header;
   uint64_t* const states = s.states;
@@ -403,6 +415,7 @@ static sycl::event submit_search(State& s, uint32_t start_nonce, unsigned count,
 } // namespace mom_verthash
 
 using namespace mom_verthash;
+// Validate the header and dispatch against official data or the gated compact CPU fixture.
 int verthash(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint8_t* output,
              uint8_t*, uint64_t* pnonce, const uint8_t* target, const uint8_t*, unsigned intensity,
              bool is_test, bool is_benchmark, const std::string& dev_str) {

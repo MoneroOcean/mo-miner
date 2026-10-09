@@ -99,6 +99,7 @@ static_assert(bucket_source_capacity(1) >= SOURCE_BITS &&
                   bucket_source_capacity(4) >= SOURCE_BITS,
               "Every fused Beam level must carry its source ID losslessly");
 
+// Embed the recovery source reference in this level's spare record bits without changing work fields.
 template <unsigned L> inline void bucket_store_source(uint32_t* rec, uint32_t source) {
   source &= SOURCE_MASK;
   if constexpr (L == 0) {
@@ -133,6 +134,7 @@ template <unsigned L> inline void bucket_store_source(uint32_t* rec, uint32_t so
   }
 }
 
+// Recover the source reference from the level-specific spare-bit placement.
 template <unsigned L> inline uint32_t bucket_load_source(const uint32_t* rec) {
   if constexpr (L == 0) {
     return rec[2 * BUCKET_WORDS[L]] & INDEX_MASK;
@@ -272,6 +274,7 @@ static_assert(COMPACT_EARLY_NSLOTS <= UINT16_MAX && COMPACT_LATE_NSLOTS <= UINT1
               "Compact paired slot indices must fit uint16_t");
 constexpr size_t COMPACT_SEED_LOCAL_BYTES_PER_ITEM = sizeof(BeamCompactRow) + sizeof(uint32_t);
 
+// Keep arena selection consistent with compiled backend kernels and the compact-layout opt-out.
 inline bool beam_compact_enabled(const sycl::device& device) {
 #if defined(MOM_SYCL_PORTABLE_OPENCL)
   // The portable worker does not compile the compact kernels, so its arena selection must also
@@ -287,6 +290,7 @@ inline bool beam_compact_enabled(const sycl::device& device) {
 #endif
 }
 
+// Choose a supported launch width bounded by fixed collision and per-item scatter local-memory costs.
 unsigned beamhash3_workgroup(const sycl::device& device) {
   const bool compact = beam_compact_enabled(device);
   const size_t fixed_local =
@@ -332,6 +336,7 @@ constexpr unsigned compact_tree_len(unsigned L) {
   return 1u << L;
 }
 
+// Read a packed 25-bit tree index, including a possible work-word crossing.
 inline uint32_t compact_get_index(const BeamCompactRow& row, unsigned work_bits, unsigned index) {
   const unsigned bit = work_bits + index * INDEX_BITS;
   const unsigned wi = bit >> 6;
@@ -342,6 +347,7 @@ inline uint32_t compact_get_index(const BeamCompactRow& row, unsigned work_bits,
   return (uint32_t)value & INDEX_MASK;
 }
 
+// Replace one packed tree index without disturbing the neighboring work/index bits.
 inline void compact_put_index(BeamCompactRow& row, unsigned work_bits, unsigned index,
                               uint32_t value) {
   const unsigned bit = work_bits + index * INDEX_BITS;
@@ -354,6 +360,7 @@ inline void compact_put_index(BeamCompactRow& row, unsigned work_bits, unsigned 
 }
 
 template <unsigned L>
+// Pack this level's live work and tree into the fixed 64-byte compact row.
 inline BeamCompactRow compact_make_row(const uint64_t work[WORK_WORDS], const uint32_t* tree) {
   BeamCompactRow row{};
   constexpr unsigned live_bits = compact_work_bits(L);
@@ -369,6 +376,7 @@ inline BeamCompactRow compact_make_row(const uint64_t work[WORK_WORDS], const ui
 }
 
 template <unsigned L>
+// Expand compact work bits into the mixing representation without reading packed tree bits as work.
 inline void compact_load_work(const BeamCompactRow& row, uint64_t work[WORK_WORDS]) {
   constexpr unsigned live_bits = compact_work_bits(L);
   constexpr unsigned full_words = live_bits / 64;
@@ -385,6 +393,7 @@ inline void compact_load_work(const BeamCompactRow& row, uint64_t work[WORK_WORD
 // applyMix, then stores all 16 parent indices starting at bit 48 in the level-4 row. Express those two
 // operations as fixed bitstream splices instead of decoding 16 u32s into private memory and packing
 // them again. On CUDA that temporary array caused a register-pressure cliff in round 4.
+// Expand the level-three packed tree into the word stream consumed by the final mix.
 inline void compact_l3_tree_stream(const BeamCompactRow& row, uint64_t tree[4]) {
   tree[0] = (row.word[4] >> 56) | (row.word[5] << 8);
   tree[1] = (row.word[5] >> 56) | (row.word[6] << 8);
@@ -392,6 +401,7 @@ inline void compact_l3_tree_stream(const BeamCompactRow& row, uint64_t tree[4]) 
   tree[3] = row.word[7] >> 56; // only the low eight bits are live
 }
 
+// Apply the last tree-dependent Beam mix using the retained level-three child trees.
 inline void compact_round4_mix(uint64_t work[WORK_WORDS], const uint64_t leader[4],
                                const uint64_t follower[4]) {
   // applyMix(remLen=288, padNum=9): append leader's eight indices and the low 24 live bits of the

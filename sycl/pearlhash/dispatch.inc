@@ -4,6 +4,7 @@ enum class PearlHashSearchBackend {
   cuda_jit
 };
 
+// Prepare this seed's commitments/matrices, select a compatible search, and report the backend used.
 static PearlHashSearchBackend
 attempt(sycl::queue& q, const Buffers& b, uint32_t seed, int m, int n, int k, int rank,
         const std::string& backend = "auto", PearlHashHipSearch* hip = nullptr,
@@ -191,8 +192,3 @@ attempt(sycl::queue& q, const Buffers& b, uint32_t seed, int m, int n, int k, in
 #endif
   return PearlHashSearchBackend::sycl;
 }
-
-} // namespace mom_pearlhash
-
-// The standalone spir64-only ESIMD TU only needs the device kernels inside the namespace above; the
-// host-side entry point and PlainProof builder below belong to the main TU.

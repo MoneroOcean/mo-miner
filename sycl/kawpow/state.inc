@@ -1,5 +1,6 @@
 class KawpowSgKernel;
 
+// Admit shuffles only when selected subgroup widths can hold complete 16-lane teams.
 static bool kawpow_subgroup_exchange_supported(const sycl::device& device) {
   if (!device.is_gpu() || mom_sycl_portable_opencl)
     return false;
@@ -19,6 +20,7 @@ static bool kawpow_subgroup_exchange_supported(const sycl::device& device) {
   }
 }
 
+// Choose exchange policy while retaining driver-correctness and EU-width workarounds.
 static bool kawpow_default_subgroup_exchange(const sycl::device& device) {
   if (!kawpow_subgroup_exchange_supported(device))
     return false;
@@ -99,6 +101,7 @@ public:
   // Atomic because the prefetch thread reads/writes it while the launch path reads it.
   std::atomic<int> cuda_use_jit{-1};
 
+  // Bind allocations and launch policy to one device shared by all variants.
   explicit KawpowState(const std::string& dev_str)
       : device(get_dev(dev_str)),
         queue(device, sycl::property_list{sycl::property::queue::in_order{}}),
@@ -117,6 +120,7 @@ public:
     }
   }
 
+  // Join background compilation and drain kernels before releasing their state.
   ~KawpowState() {
     if (prefetch_thread.joinable())
       prefetch_thread.join();
@@ -134,6 +138,7 @@ public:
   }
 
   // Pick a work-group size: honor `name` if set to one of `allowed`, else `sycl_default_workgroup`.
+  // Accept only supported device-fitting workgroup overrides.
   static unsigned select_workgroup(const char* name, const sycl::device& dev,
                                    const std::initializer_list<unsigned> allowed,
                                    const unsigned preferred, const size_t fixed_local_bytes = 0,
@@ -154,6 +159,7 @@ public:
     return fallback;
   }
 
+  // Choose the backend search default, then apply its validated override.
   static unsigned kawpow_workgroup(const sycl::device& dev) {
     // Windows CUDA, Intel, and HIP use 256 as before. On Linux CUDA, compact GPUs benefit from
     // local 256 (36-CU RTX 5060 Ti: +5--6%), while wider GPUs have enough resident blocks at local
@@ -173,6 +179,7 @@ public:
         KAWPOW_CACHE_WORDS * sizeof(uint32_t), sizeof(uint32_t), sizeof(uint32_t), KAWPOW_LANES);
   }
 
+  // Tune DAG generation independently of the search launch shape.
   static unsigned kawpow_dag_workgroup(const sycl::device& dev) {
     return select_workgroup("MOM_KAWPOW_DAG_WORKGROUP", dev, {32, 64, 128, 256, 512},
                             dev.is_cpu() ? 128 : 64);
@@ -211,6 +218,7 @@ public:
     ptr = nullptr;
   }
 
+  // Invalidate DAG/program keys along with their persistent allocations.
   void release() {
     // Source-built bundles must die while DPC++'s ProgramManager is still alive. In particular, the
     // CUDA kernel_compiler registers dynamic device images whose bundle destructor calls
@@ -230,6 +238,7 @@ public:
     period = UINT64_MAX;
   }
 
+  // Grow job buffers only after queued consumers finish.
   void ensure_input(const unsigned input_size) {
     if (input && input_size <= input_cap && result)
       return;
@@ -254,6 +263,7 @@ public:
   // new_epoch is the REAL epoch (the seed/period-bundle key); new_cache_bytes/new_dag_bytes are the
   // (possibly MeowPow-scaled) sizes; seed_epoch is the epoch the keccak seedhash derives from (== epoch
   // except MeowPow >= dag-change). The cache key includes dag_bytes so a size change forces a rebuild.
+  // Validate dimensions and publish the DAG key only after rebuilding completes.
   void ensure_epoch(const uint32_t new_epoch, const uint64_t new_cache_bytes,
                     const uint64_t new_dag_bytes, const uint32_t seed_epoch,
                     const bool should_log) {
@@ -371,6 +381,7 @@ public:
     }
   }
 
+  // Regenerate the deterministic program when period or variant shape changes.
   void ensure_period(const uint64_t new_period) {
     // The program shape (regs/cnt_*) can change with the algo even at an unchanged period, so rebuild
     // when either changes. period_shape tracks the shape the cached program was generated with.
@@ -491,6 +502,7 @@ public:
     return true;
   }
 
+  // Reuse or await the matching executable, then prefetch the following period.
   void ensure_period_bundle(const uint64_t new_period, const uint32_t new_epoch,
                             const FastModData dag_mod, const bool prefetch_next) {
     const bool current_matches =

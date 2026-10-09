@@ -4,6 +4,7 @@
 #endif
 #include <windows.h>
 
+// Yield between GPU event queries without changing Windows' process-wide timer resolution.
 void mom_sycl_poll_pause() {
   struct PollTimer {
     HANDLE handle = CreateWaitableTimerExW(
@@ -82,6 +83,7 @@ void pearlhash_cleanup_states() noexcept;
 static std::map<std::string, sycl::device>& str2dev = *new std::map<std::string, sycl::device>;
 static std::string available_dev_str();
 
+// Retire registered algorithm state before unloading compiler runtimes; invoke after workers stop.
 void sycl_cleanup() noexcept {
   // Release algorithm-owned runtime state before Node unloads the compiler runtime DLL. This
   // prevents AdaptiveCpp/CUDA error 4 (cudaErrorCudartUnloading) from late C++ static destruction.
@@ -112,6 +114,7 @@ static std::string gpu_identity_key(const sycl::device& device, const unsigned p
          device.get_info<sycl::info::device::name>() + "|" + std::to_string(platform_gpu_num);
 }
 
+// Parse positive gpuN names, rejecting suffixes and integer overflow.
 static unsigned gpu_number(const std::string& name) {
   if (!name.starts_with("gpu") || name.size() < 4)
     return 0;
@@ -128,6 +131,7 @@ static unsigned gpu_number(const std::string& name) {
   return number;
 }
 
+// Normalize the launcher's ASCII backend selector without locale-dependent vendor matching.
 static std::string selected_gpu_backend() {
   const char* const backend = std::getenv("MOM_GPU_BACKEND");
   std::string selected = backend ? backend : "";
@@ -138,6 +142,7 @@ static std::string selected_gpu_backend() {
   return selected;
 }
 
+// Convert the launcher's zero-based index only for backends whose public numbering we control.
 static unsigned selected_stable_gpu_number() {
   const std::string backend = selected_gpu_backend();
   if (backend != "intel" && backend != "intel_igpu" && backend != "opencl")
@@ -150,6 +155,7 @@ static unsigned selected_stable_gpu_number() {
   return static_cast<unsigned>(index) + 1u; // MOM_GPU_INDEX is zero-based; mom names start at gpu1.
 }
 
+// Assign API-independent public names before filtering, retaining CPU device names unchanged.
 static void sort_gpus_by_name() {
   std::vector<std::pair<std::string, unsigned>> physical_gpus;
   for (const auto& pair : str2dev) {
@@ -172,6 +178,7 @@ static void sort_gpus_by_name() {
   str2dev.swap(sorted);
 }
 
+// Rebuild device discovery atomically from the caller's perspective; a failed query leaves it empty.
 static void update_str2dev(const bool verbose = false) try {
   str2dev.clear();
   unsigned cpu_num = 0, next_gpu_num = 0;
@@ -253,6 +260,7 @@ static void update_str2dev(const bool verbose = false) try {
   throw;
 }
 
+// Include both hardware and runtime identity in device-selection errors.
 static std::string available_dev_str() {
   std::ostringstream devices;
   bool first = true;

@@ -1,7 +1,3 @@
-#include "epoch.h"
-
-namespace mom_kawpow {
-
 constexpr uint32_t KAWPOW_EPOCH_LENGTH = 7500;
 constexpr uint32_t KAWPOW_PERIOD_LENGTH = 3;
 // FiroPow: consensus DAG epoch selection is in epoch.h; the ProgPoW program changes every block.
@@ -76,6 +72,7 @@ constexpr int MEOW_LIGHT_CACHE_INIT_ITEMS = (1 << 24) / 64;     // 262144 (16 Mi
 constexpr int MEOW_LIGHT_CACHE_GROWTH_ITEMS = (1 << 17) / 64;   // 2048 per epoch
 constexpr uint32_t MEOWPOW_DAGCHANGE_EPOCH = 110;               // block 960000 / 7500 -> *4 sizing
 
+// Trial-divide an odd candidate greater than one; callers remove even candidates.
 static bool firo_is_odd_prime(const int number) {
   for (int64_t d = 3; d * d <= static_cast<int64_t>(number); d += 2)
     if (number % d == 0)
@@ -83,6 +80,7 @@ static bool firo_is_odd_prime(const int number) {
   return true;
 }
 
+// Round consensus item counts down to a prime, returning zero below the valid range.
 static int firo_find_largest_prime(int n) {
   if (n < 2)
     return 0;

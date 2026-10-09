@@ -1,5 +1,6 @@
 #include "pow-intensity.h"
 
+// Accept only supported, device-admissible workgroup sizes; malformed overrides use the heuristic.
 static unsigned parse_pow_workgroup_override(const sycl::device& dev, const char* const env_name,
                                              const unsigned fallback_override) {
   const unsigned preferred = fallback_override ? fallback_override : (dev.is_cpu() ? 128 : 256);
@@ -20,6 +21,7 @@ static unsigned parse_pow_workgroup_override(const sycl::device& dev, const char
   return fallback;
 }
 
+// Return an aligned explicit batch, or zero when no usable override was supplied.
 static unsigned parse_pow_intensity_override(const unsigned local, const char* const env_name) {
   unsigned long parsed = 0;
   if (!mom_parse_env_ulong(env_name, parsed) || parsed < local ||
@@ -28,12 +30,14 @@ static unsigned parse_pow_intensity_override(const unsigned local, const char* c
   return round_down_to_multiple(static_cast<unsigned>(parsed), local);
 }
 
+// Normalize optional compute-unit reporting before capacity heuristics divide by it.
 static PowDeviceProfile pow_device_profile(const sycl::device& dev) {
   return {std::max(1u, dev.get_info<sycl::info::device::max_compute_units>()),
           dev.get_info<sycl::info::device::global_mem_size>(),
           dev.get_info<sycl::info::device::max_mem_alloc_size>()};
 }
 
+// Admit dataset memory plus runtime headroom, accounting for backends with conservative max_alloc.
 static bool pow_has_dataset_memory(const sycl::device& dev, const uint64_t dataset_bytes,
                                    const uint64_t min_global_mem) {
   const PowDeviceProfile profile = pow_device_profile(dev);
@@ -45,6 +49,7 @@ static bool pow_has_dataset_memory(const sycl::device& dev, const uint64_t datas
          profile.global_mem >= std::max(min_global_mem, dataset_bytes + reserve);
 }
 
+// Resolve launch size and explicit batch overrides before applying the shared capacity heuristic.
 static unsigned pow_intensity(const sycl::device& dev, const char* const workgroup_env,
                               const char* const intensity_env,
                               const PowIntensityHeuristic& heuristic,
@@ -64,6 +69,7 @@ static unsigned kawpow_intensity(const sycl::device& dev) {
                        progpow_intensity_heuristic);
 }
 
+// Retain ProgPoW defaults except where Firo's measured CUDA source-JIT dispatch needs less depth.
 static unsigned firopow_intensity(const sycl::device& dev) {
 #if defined(_WIN32)
   // WDDM retained 21.13 MH/s at the generic depth; reducing it to 4,194,304 settled at
@@ -98,6 +104,7 @@ static unsigned octopus_intensity(const sycl::device& dev) {
                        {{64, 73728, 36}, {64, 147456, 36}, {64, 294912, 40}}, 9);
 }
 
+// Match launch depth to backend overhead while leaving the shared Autolykos2 kernels unchanged.
 static unsigned autolykos2_intensity(const sycl::device& dev) {
   if (mom_is_cuda(dev)) {
     // NVIDIA: larger batches amortize per-iteration host/sync overhead; throughput
@@ -172,6 +179,7 @@ static bool hoohash_supported(const sycl::device& dev) {
   return dev.has(sycl::aspect::fp64) && mom_has_usm_device(dev);
 }
 
+// Bound HooHash dispatch latency, with a larger measured WDDM/CUDA batch to amortize submission.
 static unsigned hoohash_intensity(const sycl::device& dev) {
   const unsigned override = parse_pow_intensity_override(1, "MOM_HOOHASH_INTENSITY");
   if (override)
@@ -192,6 +200,7 @@ static bool xelishashv3_supported(const sycl::device& dev) {
   return mom_has_usm_device(dev);
 }
 
+// Fit independent 531-KiB scratchpads within max_alloc and at most forty percent of device memory.
 static uint64_t xelishashv3_scratch_capacity(const sycl::device& dev) {
   constexpr uint64_t scratch_bytes = 531ULL * 1024;
   const uint64_t global_mem = dev.get_info<sycl::info::device::global_mem_size>();
@@ -200,6 +209,7 @@ static uint64_t xelishashv3_scratch_capacity(const sycl::device& dev) {
          scratch_bytes;
 }
 
+// Cap both explicit and automatic Xelis batches by scratch capacity; zero means unsupported.
 static unsigned xelishashv3_intensity(const sycl::device& dev) {
   if (!xelishashv3_supported(dev))
     return 0;
@@ -216,6 +226,7 @@ static unsigned xelishashv3_intensity(const sycl::device& dev) {
   return static_cast<unsigned>(automatic_limit & ~255ULL);
 }
 
+// Keep the measured Level Zero occupancy knee; size other defaults by available device memory.
 static unsigned nexapow_intensity(const sycl::device& dev) {
   const unsigned override = parse_pow_intensity_override(1, "MOM_NEXAPOW_INTENSITY");
   if (override)
@@ -237,6 +248,7 @@ static bool walahash_supported(const sycl::device& dev) {
   return dev.is_gpu() && mom_has_usm_device(dev) && sycl_workgroup_fits(dev, 32);
 }
 
+// Choose backend matrix-batch plateaus, guarding larger HIP/Level Zero defaults by memory.
 static unsigned walahash_intensity(const sycl::device& dev) {
   const unsigned override = parse_pow_intensity_override(1, "MOM_WALAHASH_INTENSITY");
   if (override)
@@ -259,6 +271,7 @@ static unsigned walahash_intensity(const sycl::device& dev) {
 #endif
 }
 
+// Amortize Verthash dispatch on discrete Intel GPUs without imposing that depth on shared-memory GPUs.
 static unsigned verthash_intensity(const sycl::device& dev) {
   const unsigned override = parse_pow_intensity_override(16, "MOM_VERTHASH_INTENSITY");
   if (override)

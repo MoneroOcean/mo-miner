@@ -20,6 +20,7 @@
 
 namespace mom {
 
+// Process-lifetime driver entrypoints; optional acceleration must check availability before use.
 class CudaDriverApi {
 #if defined(_WIN32)
   HMODULE library_ = nullptr;
@@ -40,6 +41,7 @@ class CudaDriverApi {
     return false;
   }
 
+  // Load required calls first, then optional extended calls without losing basic driver support.
   CudaDriverApi() {
 #if defined(_WIN32)
     library_ = LoadLibraryA("nvcuda.dll");
@@ -112,6 +114,7 @@ public:
   }
 };
 
+// Load NVRTC lazily so missing compiler libraries do not prevent portable SYCL mining.
 class NvrtcApi {
 #if defined(_WIN32)
   HMODULE library_ = nullptr;
@@ -132,6 +135,7 @@ class NvrtcApi {
     return false;
   }
 
+  // Prefer installed current libraries; older PTX-only APIs remain usable without CUBIN support.
   NvrtcApi() {
 #if defined(_WIN32)
     const char* const names[] = {
@@ -218,6 +222,7 @@ public:
   nvrtcProgram* address() noexcept { return &program_; }
   nvrtcProgram get() const noexcept { return program_; }
 
+  // Clear ownership before destruction so cleanup faults cannot cause a repeated destroy.
   void reset() noexcept {
     if (!program_)
       return;
@@ -231,6 +236,7 @@ public:
   }
 };
 
+// Preserve the failing native operation in a recoverable host exception.
 inline void cuda_check(CudaDriverApi& api, const CUresult status,
                        const char* const operation) {
   if (status == CUDA_SUCCESS)
@@ -241,6 +247,7 @@ inline void cuda_check(CudaDriverApi& api, const CUresult status,
   throw std::string(operation) + ": " + (detail ? detail : "CUDA driver error");
 }
 
+// Attach the compiler's build log while the temporary program still owns it.
 inline std::string rtc_error(NvrtcApi& api, const nvrtcResult status, nvrtcProgram program,
                              const char* const operation) {
   size_t size = 0;

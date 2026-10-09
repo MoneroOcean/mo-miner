@@ -1,5 +1,6 @@
 #if defined(OCTOPUS_ESIMD)
 
+// Permute independent Keccak states across ESIMD lanes without changing scalar lane order.
 template <int Width>
 inline void native_keccak_esimd(octopus_esimd::simd<uint64_t, Width> (&state)[25]) {
   using Word = octopus_esimd::simd<uint64_t, Width>;

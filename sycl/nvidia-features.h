@@ -33,6 +33,7 @@ constexpr bool has_int8_async_matrix(const int sm) {
 
 namespace mom::nvidia {
 
+// Query the selected native device; unavailable interop returns unknown rather than enabling code.
 inline int compute_capability(const sycl::device& device) noexcept {
 #if !defined(__SYCL_DEVICE_ONLY__) && !defined(MOM_SYCL_ADAPTIVECPP)
   try {

@@ -20,6 +20,7 @@ inline Uint2& operator^=(Uint2& a, const Uint2 b) {
   return a;
 }
 
+// Rotate split 64-bit lanes without native 64-bit device rotation.
 inline Uint2 rotl64_pair_dev(const Uint2 value, const unsigned shift) {
   const unsigned s = shift & 63U;
   if (s == 0)
@@ -34,6 +35,7 @@ inline Uint2 rotl64_pair_dev(const Uint2 value, const unsigned shift) {
                  (value.x << (s - 32U)) | (value.y >> (64U - s)));
 }
 
+// Read chi from a row snapshot so writes cannot corrupt later inputs.
 inline void keccakf1600_pair_chi_dev(Uint2 st[25], const unsigned row, const Uint2 t[25]) {
   st[row + 0] = t[row + 0] ^ ((~t[row + 1]) & t[row + 2]);
   st[row + 1] = t[row + 1] ^ ((~t[row + 2]) & t[row + 3]);
@@ -42,6 +44,7 @@ inline void keccakf1600_pair_chi_dev(Uint2 st[25], const unsigned row, const Uin
   st[row + 4] = t[row + 4] ^ ((~t[row + 0]) & t[row + 1]);
 }
 
+// Apply one Keccak-f1600 round to paired 32-bit lanes.
 inline void keccakf1600_pair_round_dev(Uint2 st[25], const unsigned round) {
   static constexpr Uint2 rndc[24] = {
       {0x00000001, 0x00000000}, {0x00008082, 0x00000000}, {0x0000808a, 0x80000000},
@@ -151,6 +154,7 @@ inline __attribute__((noinline)) void keccakf1600_pair_dev(Uint2 st[25]) {
 }
 #endif
 
+// Hash a 64-byte DAG node with legacy Keccak padding, not SHA3 padding.
 inline void keccak_512_words_dev(uint32_t words[NODE_WORDS]) {
   Uint2 st[25]{};
   for (unsigned i = 0; i < 8; ++i)
@@ -163,6 +167,7 @@ inline void keccak_512_words_dev(uint32_t words[NODE_WORDS]) {
   }
 }
 
+// Apply one 32-bit Keccak-f800 round used by the seal.
 inline void keccak_f800_round_dev(uint32_t st[25], const unsigned round) {
   static constexpr uint32_t rndc[22] = {0x00000001, 0x00008082, 0x0000808a, 0x80008000, 0x0000808b,
                                         0x80000001, 0x80008081, 0x00008009, 0x0000008a, 0x00000088,
@@ -201,6 +206,7 @@ inline void keccak_f800_round_dev(uint32_t st[25], const unsigned round) {
   st[0] ^= rndc[round];
 }
 
+// Run the 22-round seal permutation, distinct from 24-round Keccak-f1600.
 inline void keccak_f800_dev(uint32_t st[25]) {
   for (unsigned round = 0; round < 22; ++round)
     keccak_f800_round_dev(st, round);

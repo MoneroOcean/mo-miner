@@ -1,3 +1,4 @@
+// Bound the aligned bucket capacity by total memory, single-allocation limits, and a minimum safe mean.
 unsigned zelhash_slot_capacity(const sycl::device& device) {
   const bool gpu_compact = mom_is_cuda(device) || mom_is_hip(device);
   // Preserve the statistically selected fast capacity when it fits. On smaller or conservatively
@@ -77,6 +78,7 @@ public:
   bool arenas_built = false;
   std::mutex mutex;
 
+  // Select backend record layout and capacity before creating persistent ordered solver state.
   explicit ZelHashState(const std::string& dev_str)
       : device(get_dev(dev_str)),
         queue(device, sycl::property_list{sycl::property::queue::in_order{}}),
@@ -86,6 +88,7 @@ public:
     if (!mom_has_usm_shared(device) || (!device.is_cpu() && !mom_has_usm_device(device)))
       throw std::string("zelhash SYCL device does not support required allocations");
   }
+  // Drain submitted work before freeing allocations; late runtime teardown errors cannot escape.
   ~ZelHashState() {
     sycl_cleanup_noexcept("zelhash wait", [&] { queue.wait_and_throw(); });
     sycl_cleanup_noexcept("zelhash release", [&] { free_all(); });
@@ -98,12 +101,14 @@ public:
       sycl::free(p, queue);
     p = nullptr;
   }
+  // Release tiny shared I/O together with every lazily allocated mining arena.
   void free_all() {
     free_ptr(base_h);
     free_ptr(base_pending);
     free_ptr(rows);
     free_all_arenas();
   }
+  // Clear layout-specific arenas and recovery scratch so failed construction can be retried cleanly.
   void free_all_arenas() {
     for (unsigned L = 0; L < NSTORED_LEVELS; ++L)
       free_ptr(level[L]);
@@ -120,6 +125,7 @@ public:
 #endif
     arenas_built = false;
   }
+  // Lazily allocate shared header/test buffers, rolling back all partial I/O on failure.
   void ensure_io() {
     if (base_h && base_pending && rows)
       return;
@@ -142,6 +148,7 @@ public:
     }
   }
   // Allocate the four materialized Wagner levels, per-level counters, and bounded recovery output.
+  // Allocate the capacity-selected Wagner arenas only for solving, with complete failure rollback.
   void ensure_arenas(bool log) {
     if (arenas_built)
       return;
@@ -207,6 +214,7 @@ public:
   }
 };
 
+// Keep runtime-owned state under explicit shutdown control instead of static destructor order.
 static DeviceStateRegistry<ZelHashState>& zelhash_registry() {
   static auto* const registry = new DeviceStateRegistry<ZelHashState>;
   return *registry;
@@ -216,6 +224,7 @@ static ZelHashState& zelhash_state(const std::string& dev_str) {
   return zelhash_registry().get(dev_str, [&] { return std::make_unique<ZelHashState>(dev_str); });
 }
 
+// Drain persistent device states during ordered shutdown without propagating cleanup errors.
 void zelhash_cleanup_states() noexcept {
   try {
     zelhash_registry().clear();

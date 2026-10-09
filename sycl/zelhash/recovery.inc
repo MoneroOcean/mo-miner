@@ -8,6 +8,7 @@ struct EqLevels {
 // rare (~44 zero nodes before DistinctIndices) and therefore much cheaper than carrying a 26-bit
 // parent-pair identifier through all ~67 million survivors in every round.
 template <bool GPU_COMPACT>
+// Decode the retained remainder fields needed while reconstructing compact parent collisions.
 inline uint32_t recovery_follower(const uint32_t* g, unsigned level, unsigned k) {
   if (level == 0) {
 #if defined(MOM_SYCL_HAS_CUDA)
@@ -30,6 +31,7 @@ inline uint32_t recovery_follower(const uint32_t* g, unsigned level, unsigned k)
 
 template <bool GPU_COMPACT> class ZelHashRecoverKernel;
 template <bool GPU_COMPACT = false>
+// Reconstruct rare zero-root candidates from retained buckets, rejecting duplicate leaves before bounded publication.
 static sycl::event submit_recover(sycl::queue& q, EqLevels lv, const uint32_t* d_nslots,
                                   const EqCandidateRef* d_ref,
                                   uint32_t ref_count, EqCandidate* d_cand, uint32_t* d_cand_count,

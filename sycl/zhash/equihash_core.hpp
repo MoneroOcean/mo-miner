@@ -92,6 +92,7 @@ struct alignas(8) PackedLevel0Record {
   std::uint32_t words[Spec::level0_words];
 };
 
+// Preserve compact natural record strides where backend measurements favor them over wider alignment.
 constexpr unsigned packed_record_alignment(const unsigned words) {
   return words == 4 ? 16 : words >= 5 ? 8 : 4;
 }
@@ -114,6 +115,7 @@ struct alignas(packed_record_alignment(
 template <typename Spec, unsigned Round>
 using CollisionRoundRecord = PackedCollisionRecord<Spec, Spec::rounds - Round>;
 
+// Select collision-record alignment without changing its bit layout or parent-reference width.
 constexpr unsigned packed_bucket_collision_alignment(const unsigned n,
                                                        const unsigned field_count) {
 #if defined(MOM_SYCL_HAS_HIP) || defined(__INTEL_LLVM_COMPILER)
@@ -137,6 +139,7 @@ constexpr unsigned packed_bucket_collision_alignment(const unsigned n,
   return field_count >= 5 ? 4 : 16;
 }
 
+// Return the bits needed for bounded slot references, including non-power-of-two capacities.
 constexpr unsigned bits_for_capacity(std::uint32_t capacity) {
   unsigned bits = 0;
   for (--capacity; capacity != 0; capacity >>= 1) {
@@ -145,6 +148,7 @@ constexpr unsigned bits_for_capacity(std::uint32_t capacity) {
   return bits;
 }
 
+// Keep level-zero allocation alignment consistent with the backend's selected record stride.
 constexpr unsigned packed_bucket_level0_alignment([[maybe_unused]] const unsigned n,
                                                    [[maybe_unused]] const unsigned k,
                                                    const unsigned word_count) {
@@ -221,6 +225,7 @@ inline std::uint64_t packed_mask(const unsigned bits) {
   return bits == 32 ? 0xffffffffull : ((1ull << bits) - 1ull);
 }
 
+// Extract a bounded bit field across adjacent words; absent high words read as zero.
 inline std::uint32_t packed_load(const std::uint32_t* const words, const unsigned word_count,
                                  const unsigned bit, const unsigned width) {
   const unsigned word = bit >> 5;
@@ -232,6 +237,7 @@ inline std::uint32_t packed_load(const std::uint32_t* const words, const unsigne
   return static_cast<std::uint32_t>((value >> shift) & packed_mask(width));
 }
 
+// Replace one bit field without disturbing neighboring packed fields, including word crossings.
 inline void packed_store(std::uint32_t* const words, const unsigned word_count, const unsigned bit,
                          const unsigned width, const std::uint32_t value) {
   const unsigned word = bit >> 5;
@@ -256,6 +262,7 @@ inline void clear_packed(PackedLevel0Record<Spec>& record) {
 }
 
 template <typename Spec>
+// Pack the generated collision fields and original leaf index into a zeroed level-zero record.
 inline void store_level0(PackedLevel0Record<Spec>& record,
                          const std::uint32_t fields[Spec::rounds], const std::uint32_t leaf) {
   clear_packed<Spec>(record);
@@ -285,6 +292,7 @@ inline void clear_packed(PackedCollisionRecord<Spec, FieldCount>& record) {
 }
 
 template <typename Spec, unsigned FieldCount>
+// Pack remaining XOR fields and both parent references for later provenance recovery.
 inline void store_collision(PackedCollisionRecord<Spec, FieldCount>& record,
                             const std::uint32_t fields[FieldCount],
                             const std::uint32_t left_ref, const std::uint32_t right_ref) {
@@ -321,6 +329,7 @@ inline std::uint32_t load_collision_right(const PackedCollisionRecord<Spec, Fiel
 
 template <typename Spec, unsigned FieldCount, unsigned LocalBits, unsigned ParentBucketBits,
           unsigned ParentSlots>
+// Store the bucket-relative collision representation, retaining enough parent bits for exact recovery.
 inline void store_bucket_collision(
     PackedBucketCollisionRecord<Spec, FieldCount, LocalBits, ParentBucketBits, ParentSlots>& record,
     const std::uint32_t fields[FieldCount], const std::uint32_t parent_bucket,
@@ -402,6 +411,7 @@ inline std::uint32_t load_bucket_collision_parent(
 }
 
 template <typename Spec, unsigned LocalBits>
+// Pack bucket-local generation fields and leaf provenance in the selected backend layout.
 inline void store_bucket_level0(PackedBucketLevel0Record<Spec, LocalBits>& record,
                                 const std::uint32_t fields[Spec::rounds],
                                 const std::uint32_t leaf) {
@@ -501,6 +511,7 @@ struct LeafSet {
 };
 
 template <typename Spec>
+// Reject repeated leaves when joining reconstructed provenance subtrees.
 inline bool leaf_sets_disjoint(const LeafSet<Spec>& left, const LeafSet<Spec>& right) {
   for (std::uint32_t i = 0; i < left.count; ++i)
     for (std::uint32_t j = 0; j < right.count; ++j)
@@ -509,6 +520,7 @@ inline bool leaf_sets_disjoint(const LeafSet<Spec>& left, const LeafSet<Spec>& r
 }
 
 template <typename Spec>
+// Join distinct child leaf sets only when their combined size fits the complete proof.
 inline bool leaf_set_append(const LeafSet<Spec>& left, const LeafSet<Spec>& right,
                             LeafSet<Spec>& out) {
   if (left.count + right.count > Spec::proof_indices || !leaf_sets_disjoint(left, right))
@@ -528,6 +540,7 @@ inline bool recover_node(const ProvenanceView<Spec>& view, const unsigned round,
                          const std::uint32_t ref, LeafSet<Spec>& out);
 
 template <typename Spec>
+// Read one retained provenance field only after checking round, slot, and field bounds.
 inline bool load_node_field(const ProvenanceView<Spec>& view, const unsigned round,
                             const std::uint32_t ref, const unsigned field,
                             std::uint32_t& value) {
@@ -565,6 +578,7 @@ inline bool load_node_field(const ProvenanceView<Spec>& view, const unsigned rou
 }
 
 template <typename Spec, unsigned FieldCount>
+// Validate child collision fields, canonical order, and disjoint leaves while reconstructing provenance.
 inline bool recover_collision_record(const ProvenanceView<Spec>& view,
                                      const PackedCollisionRecord<Spec, FieldCount>& record,
                                      const unsigned parent_round, LeafSet<Spec>& out) {
@@ -595,6 +609,7 @@ inline bool recover_collision_record(const ProvenanceView<Spec>& view,
   return leaf_set_append<Spec>(left, right, out);
 }
 
+// Dispatch bounded provenance recovery to the retained level, rejecting unsupported rounds.
 template <typename Spec>
 inline bool recover_node(const ProvenanceView<Spec>& view, const unsigned round,
                          const std::uint32_t ref, LeafSet<Spec>& out) {
@@ -631,6 +646,7 @@ inline bool is_zero_root(const ZHashRootRecord<Spec>& root) {
 }
 
 template <typename Spec>
+// Expand a zero-XOR root only if its checked provenance contains exactly one complete proof.
 inline bool recover_root(const ProvenanceView<Spec>& view, const ZHashRootRecord<Spec>& root,
                          std::uint32_t leaves[Spec::proof_indices]) {
   if (!is_zero_root<Spec>(root)) return false;
@@ -649,6 +665,7 @@ inline void encode_indices(const std::uint32_t indices[Spec::proof_indices],
                            std::uint8_t solution[Spec::solution_length]);
 
 template <typename Spec>
+// Encode only a root whose retained provenance passes complete recovery checks.
 inline bool recover_solution(const ProvenanceView<Spec>& view, const ZHashRootRecord<Spec>& root,
                              std::uint32_t leaves[Spec::proof_indices],
                              std::uint8_t solution[Spec::solution_length]) {
@@ -658,6 +675,7 @@ inline bool recover_solution(const ProvenanceView<Spec>& view, const ZHashRootRe
 }
 
 template <typename Spec>
+// Build the first collision record only for matching fields and canonical distinct leaf order.
 inline bool make_collision(const PackedLevel0Record<Spec>& a, const PackedLevel0Record<Spec>& b,
                            const std::uint32_t a_ref, const std::uint32_t b_ref,
                            PackedCollisionRecord<Spec, Spec::rounds - 1>& out) {
@@ -768,6 +786,7 @@ inline bool make_collision_checked(
 }
 
 template <typename Spec, typename Layout>
+// Provide the host first-round bucket oracle with bounded output and explicit truncation accounting.
 inline std::uint32_t bucket_round_reference(
     const PackedLevel0Record<Spec>* const input, const std::uint32_t* const bucket_counts,
     PackedCollisionRecord<Spec>* const output, const std::uint32_t output_capacity) {
@@ -811,6 +830,7 @@ inline std::uint32_t bucket_round_reference(
 }
 
 template <typename Spec, typename Layout>
+// Run the first-round host oracle with checked provenance rather than trusting parent references.
 inline std::uint32_t bucket_round_reference_checked(
     const PackedLevel0Record<Spec>* const input, const std::uint32_t* const bucket_counts,
     PackedCollisionRecord<Spec>* const output, std::uint32_t* const output_min_indices,
@@ -875,6 +895,7 @@ inline std::uint32_t scatter_level0_reference(
 }
 
 template <typename Spec, unsigned FieldCount, typename Layout>
+// Scatter reference collision records into bounded buckets while recording dropped reservations.
 inline std::uint32_t scatter_collision_reference(
     const PackedCollisionRecord<Spec, FieldCount>* const input,
     const std::uint32_t* const input_min_indices, const std::uint32_t input_count,
@@ -898,6 +919,7 @@ inline std::uint32_t scatter_collision_reference(
 }
 
 template <typename Spec, unsigned FieldCount, typename Layout>
+// Provide the host later-round collision oracle, preserving bounded output counters.
 inline std::uint32_t collision_round_reference(
     const PackedCollisionRecord<Spec, FieldCount>* const input,
     const std::uint32_t* const input_min_indices, const std::uint32_t* const bucket_counts,
@@ -946,6 +968,7 @@ inline std::uint32_t collision_round_reference(
 }
 
 template <typename Spec, unsigned FieldCount, typename Layout>
+// Run the later-round host oracle with provenance checks before accepting collision output.
 inline std::uint32_t collision_round_reference_checked(
     const PackedCollisionRecord<Spec, FieldCount>* const input,
     const std::uint32_t* const input_min_indices, const std::uint32_t* const bucket_counts,
@@ -1038,6 +1061,7 @@ inline std::uint32_t load32_le(const std::uint8_t* const p) {
          (static_cast<std::uint32_t>(p[3]) << 24);
 }
 
+// Apply the prescribed BLAKE2b G mixing primitive shared by host and device generation.
 inline void b2_g(std::uint64_t& a, std::uint64_t& b, std::uint64_t& c, std::uint64_t& d,
                  const std::uint64_t x, const std::uint64_t y) {
   a += b + x;
@@ -1050,6 +1074,7 @@ inline void b2_g(std::uint64_t& a, std::uint64_t& b, std::uint64_t& c, std::uint
   b = rotr64(b ^ c, 63);
 }
 
+// Compress a full BLAKE2b block with an explicit byte count and finalization flag.
 inline void b2_compress(std::uint64_t h[8], const std::uint8_t block[128],
                         const std::uint64_t count, const bool last) {
   std::uint64_t m[16];
@@ -1089,6 +1114,7 @@ inline std::uint64_t b2_tail_word(const std::uint64_t first, const std::uint64_t
 }
 
 template <unsigned Round>
+// Specialize one BLAKE2b round for a two-word final block; all other message words are zero.
 inline void b2_tail_round(std::uint64_t v[16], const std::uint64_t first,
                           const std::uint64_t second) {
   b2_g(v[0], v[4], v[8], v[12],
@@ -1145,6 +1171,7 @@ inline Blake2bPair b2_tail_pair_word(const Blake2bPair first, const Blake2bPair 
 }
 
 template <unsigned Round>
+// Apply the same specialized final-block round using split words for the paired ALU path.
 inline void b2_tail_pair_round(Blake2bPair v[16], const Blake2bPair first,
                                const Blake2bPair second) {
   b2_g_pair(v[0], v[4], v[8], v[12],
@@ -1173,6 +1200,7 @@ inline void b2_tail_pair_round(Blake2bPair v[16], const Blake2bPair first,
             b2_tail_pair_word<BLAKE2B_SIGMA[Round][15]>(first, second));
 }
 
+// Finalize the 140-byte header plus hash index using bit-exact paired BLAKE2b arithmetic.
 inline void hash_words_from_tail_pair(const std::uint64_t midstate[8],
                                       const std::uint64_t first,
                                       const std::uint32_t second_low,
@@ -1208,6 +1236,7 @@ inline void hash_words_from_tail_pair(const std::uint64_t midstate[8],
 }
 
 template <typename Spec>
+// Finalize the header tail and index, selecting paired arithmetic only for the supported device compiler.
 inline void hash_words_from_tail(const std::uint64_t midstate[8], const std::uint64_t first,
                                  const std::uint32_t second_low, const std::uint32_t index,
                                  std::uint64_t digest[8]) {
@@ -1248,6 +1277,7 @@ inline void hash_words_from_midstate(const std::uint64_t midstate[8],
                              load32_le(header + 136), index, digest);
 }
 
+// Extract one little-endian 24-bit collision field, including a possible 64-bit word crossing.
 inline std::uint32_t digest24(const std::uint64_t digest[8], const unsigned byte) {
   const unsigned word = byte / 8, shift = 8 * (byte % 8);
   std::uint64_t value = digest[word] >> shift;
@@ -1258,6 +1288,7 @@ inline std::uint32_t digest24(const std::uint64_t digest[8], const unsigned byte
 }
 
 template <typename Spec>
+// Personalize BLAKE2b for the Equihash parameters and hash the reusable first 128 header bytes.
 inline void hash_header_midstate(const std::uint8_t header[Spec::header_length],
                                  std::uint64_t h[8]) {
   std::uint8_t parameter[64] = {}, block[128];
@@ -1276,6 +1307,7 @@ inline void hash_header_midstate(const std::uint8_t header[Spec::header_length],
 }
 
 template <typename Spec>
+// Serialize the indexed digest from a prehashed header, retaining the specification's output length.
 inline void hash_index_from_midstate(const std::uint64_t midstate[8],
                                      const std::uint8_t header[Spec::header_length],
                                      const std::uint32_t index,
@@ -1287,6 +1319,7 @@ inline void hash_index_from_midstate(const std::uint64_t midstate[8],
 }
 
 template <typename Spec>
+// Hash one indexed header from scratch as the independent generation/verification path.
 inline void hash_index(const std::uint8_t header[Spec::header_length], const std::uint32_t index,
                        std::uint8_t digest[Spec::hash_length]) {
   std::uint64_t midstate[8];
@@ -1295,6 +1328,7 @@ inline void hash_index(const std::uint8_t header[Spec::header_length], const std
 }
 
 template <typename Spec>
+// Select the indexed digest segment and expand its collision fields while retaining the leaf index.
 inline void row_from_index_midstate(const std::uint64_t midstate[8],
                                     const std::uint8_t header[Spec::header_length],
                                     const std::uint32_t index, Row<Spec>& row) {
@@ -1309,6 +1343,7 @@ inline void row_from_index_midstate(const std::uint64_t midstate[8],
 }
 
 template <typename Spec>
+// Construct an independently hashed leaf row without relying on cached solver state.
 inline void row_from_index(const std::uint8_t header[Spec::header_length], const std::uint32_t index,
                            Row<Spec>& row) {
   std::uint64_t midstate[8];
@@ -1317,6 +1352,7 @@ inline void row_from_index(const std::uint8_t header[Spec::header_length], const
 }
 
 template <typename Spec>
+// Merge canonically ordered children after their collision prefix has matched.
 inline void merge_ordered(const Node<Spec>& left, const Node<Spec>& right, Node<Spec>& out) {
   out.first_index = left.first_index;
   for (unsigned i = 0; i < Spec::rounds - 1; ++i) {
@@ -1326,6 +1362,7 @@ inline void merge_ordered(const Node<Spec>& left, const Node<Spec>& right, Node<
 }
 
 template <typename Spec>
+// Decode fixed-width big-endian minimal-solution bits into the canonical leaf sequence.
 inline void decode_indices(const std::uint8_t solution[Spec::solution_length],
                            std::uint32_t indices[Spec::proof_indices]) {
   for (unsigned i = 0; i < Spec::proof_indices; ++i) {
@@ -1338,6 +1375,7 @@ inline void decode_indices(const std::uint8_t solution[Spec::solution_length],
   }
 }
 
+// Pack already validated leaf indices into fixed-width big-endian minimal-solution bits.
 template <typename Spec>
 inline void encode_indices(const std::uint32_t indices[Spec::proof_indices],
                            std::uint8_t solution[Spec::solution_length]) {
@@ -1353,6 +1391,7 @@ inline void encode_indices(const std::uint32_t indices[Spec::proof_indices],
 }
 
 template <typename Spec>
+// Recursively enforce every collision and lower-minimum-leaf child order in the supplied proof tree.
 inline bool verify_subtree(const Node<Spec> leaves[Spec::proof_indices], const unsigned begin,
                            const unsigned level, Node<Spec>& result) {
   if (level == 0) {
@@ -1371,6 +1410,7 @@ inline bool verify_subtree(const Node<Spec> leaves[Spec::proof_indices], const u
 }
 
 template <typename Spec>
+// Rehash all distinct leaves and verify the complete canonical tree reaches zero XOR.
 inline bool verify_solution(const std::uint8_t header[Spec::header_length],
                             const std::uint8_t solution[Spec::solution_length]) {
   std::uint32_t indices[Spec::proof_indices];

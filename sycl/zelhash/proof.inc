@@ -1,4 +1,5 @@
 template <bool GPU_COMPACT>
+// Submit the fixed collision chain; optional per-stage waits are diagnostic/backend policy only.
 static void run_collision_rounds(ZelHashState& state, unsigned wg, bool wait_stages, bool prof,
                                  uint64_t t_round[4]) {
   sycl::queue& q = state.queue;
@@ -112,6 +113,7 @@ inline uint32_t sha256_rotr(uint32_t x, unsigned n) {
   return (x >> n) | (x << (32 - n));
 }
 
+// Compute the SHA-256 primitive used by Flux's double-hashed block header.
 static void sha256(const uint8_t* msg, size_t len, uint8_t out[32]) {
   uint32_t h[8] = {0x6a09e667u, 0xbb67ae85u, 0x3c6ef372u, 0xa54ff53au,
                    0x510e527fu, 0x9b05688cu, 0x1f83d9abu, 0x5be0cd19u};
@@ -168,6 +170,7 @@ static void sha256(const uint8_t* msg, size_t len, uint8_t out[32]) {
 }
 
 // dSHA256 of (header(140) || 0x34 || solution(52)) -> the 32-byte internal (LE) block hash.
+// Double-hash the header and compact-size-prefixed solution in Flux wire order.
 static void flux_block_hash(const uint8_t* header140, const uint8_t solution[52], uint8_t out[32]) {
   uint8_t preimage[HEADER_LEN + 1 + 52];
   std::memcpy(preimage, header140, HEADER_LEN);
@@ -180,6 +183,7 @@ static void flux_block_hash(const uint8_t* header140, const uint8_t solution[52]
 
 // PoW target test: hash read little-endian <= target (m_target_bin is a 256-bit BIG-endian array).
 // Equivalent big-endian byte compare of the reversed hash vs the target (cf. fishhash meets_target_be).
+// Compare little-endian block-hash bytes against the pool's big-endian target, including equality.
 static bool flux_meets_target(const uint8_t hash_le[32], const uint8_t* target_be) {
   for (int i = 0; i < 32; ++i) {
     const uint8_t hb = hash_le[31 - i]; // most-significant byte of the LE-read hash first
@@ -188,7 +192,3 @@ static bool flux_meets_target(const uint8_t hash_le[32], const uint8_t* target_b
   }
   return true; // exactly equal still meets target
 }
-
-} // namespace mom_zelhash
-
-using namespace mom_zelhash;

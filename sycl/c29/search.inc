@@ -18,6 +18,7 @@ inline __attribute__((always_inline)) void siphash_round(uint64_t& v0, uint64_t&
   v2 = mo_rotate(v2, static_cast<uint64_t>(32));
 }
 
+// Walk the stateful 64-nonce SipHash block; callers apply the final-word XOR to its edges.
 inline __attribute__((always_inline)) void siphash_fill_block(uint64_t& v0, uint64_t& v1,
                                                               uint64_t& v2, uint64_t& v3,
                                                               const uint64_t base,
@@ -38,6 +39,7 @@ inline __attribute__((always_inline)) void siphash_fill_block(uint64_t& v0, uint
 }
 
 template <typename Destination, typename Store>
+// Copy one full eight-edge scatter group; the caller reserves both destination vectors.
 inline __attribute__((always_inline)) void c29_write8(Destination& destination,
                                                       const uint32_t index, const Store& store,
                                                       const uint32_t bucket, const uint32_t base) {
@@ -51,6 +53,7 @@ struct C29SearchCompletionGuard {
   std::shared_ptr<C29ResultState> result_state;
   unsigned job_ref;
 
+  // Count a detached search before launch; transferred ownership decrements it on every exit.
   C29SearchCompletionGuard(std::shared_ptr<C29ResultState> state, const unsigned ref)
       : result_state(std::move(state)), job_ref(ref) {
     std::lock_guard<std::mutex> lock(result_state->mutex);
@@ -63,6 +66,7 @@ struct C29SearchCompletionGuard {
       : result_state(std::move(other.result_state)), job_ref(other.job_ref) {
   }
 
+  // Release this job's running count without disturbing searches belonging to other jobs.
   ~C29SearchCompletionGuard() noexcept {
     if (!result_state)
       return;
@@ -130,5 +134,3 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
     throw;
   }
 }
-
-#include "entry.inc"

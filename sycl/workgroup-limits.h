@@ -8,6 +8,7 @@ constexpr bool mom_subgroup_supports_team(const std::size_t subgroup, const unsi
   return team_size && subgroup >= team_size && subgroup % team_size == 0u;
 }
 
+// Check launch dimensions and local memory without overflow; workgroup/team sizes must be nonzero.
 constexpr bool mom_workgroup_fits(
     const unsigned workgroup, const std::size_t max_workgroup,
     const std::size_t max_work_items, const std::size_t local_bytes,

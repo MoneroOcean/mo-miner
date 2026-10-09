@@ -1,7 +1,6 @@
-namespace mom_pearlhash {
-
 using pearlhash_b3::b3;
 
+// Validate positive matrix dimensions and checked host-size multiplication before allocation.
 static size_t checked_elements(const int rows, const int columns, const char* const name) {
   if (rows <= 0 || columns <= 0)
     throw std::string("Invalid pearlhash ") + name + " dimensions";
@@ -12,6 +11,7 @@ static size_t checked_elements(const int rows, const int columns, const char* co
   return row_count * column_count;
 }
 
+// Round a byte count to Merkle leaves while enforcing the tree's signed-index limit.
 static size_t checked_chunk_count(const size_t bytes, const char* const name) {
   const size_t chunks = bytes / 1024 + (bytes % 1024 != 0);
   if (chunks > static_cast<size_t>(std::numeric_limits<int>::max()))
@@ -67,11 +67,13 @@ static inline void perm_pair(uint32_t u, int rank, int32_t& f, int32_t& se) {
   f = (int32_t)a;
   se = (int32_t)(a ^ (1 + mulhi(rank - 1, u)));
 }
+// Construct the protocol's zero-padded A_tensor or B_tensor domain-separation seed.
 static inline void mk_seed(uint8_t out[32], char c0) {
   const char* s = c0 == 'A' ? "A_tensor" : "B_tensor";
   for (int i = 0; i < 32; i++)
     out[i] = i < 8 ? (uint8_t)s[i] : 0;
 }
+// Derive one keyed noise block with the protocol counter position and seed layout.
 static inline void dev_randHash(int index, const uint8_t* seed32, const uint8_t* key32, int prepend,
                                 uint8_t out[32]) {
   uint8_t mb[64]{}; // (1+index) LE at word `prepend`, seed32 at bytes 32..63, rest zero
@@ -104,6 +106,7 @@ struct Buffers {
   Result* result;
 };
 
+// Generate B-side rank noise and write either the direct or transposed search layout.
 template <bool DirectLayout>
 static void k_noise_ebr(sycl::queue& q, const Buffers& B, int n, int rank, int blocks) {
   q.parallel_for(sycl::range<1>(blocks), [=](sycl::id<1> id) MOM_SYCL_KERNEL_ARGS_RESTRICT {
@@ -487,6 +490,7 @@ struct PearlHashPrepEvents {
   sycl::event a, b;
 };
 
+// Prepare A/B WMMA layouts on separate owning queues; the caller joins both returned events.
 static PearlHashPrepEvents compute_ab_amd_wmma(sycl::queue& a_queue, sycl::queue& b_queue,
                                                const Buffers& b, uint32_t seed, int m, int n, int k,
                                                int rank) {

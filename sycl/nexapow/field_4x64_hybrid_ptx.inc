@@ -50,6 +50,7 @@ namespace detail {
 #define MOM_NEXAPOW_FIELD32_INLINE inline
 #endif
 
+// Expand the full 256-bit product with PTX 32-bit carry chains and Comba columns.
 MOM_NEXAPOW_FIELD32_INLINE void mul_256_comba32(const uint32_t a32[8], const uint32_t b32[8],
                                                 uint32_t t32[16]) {
   uint32_t r0 = 0, r1 = 0, r2 = 0;
@@ -218,6 +219,7 @@ MOM_NEXAPOW_FIELD32_INLINE void mul_256_comba32(const uint32_t a32[8], const uin
 #undef MUL32_ACC
 }
 
+// Subtract a full PTX Comba product from sixteen limbs and return its final borrow.
 MOM_NEXAPOW_FIELD32_INLINE uint32_t sub_mul_256_comba32(uint32_t t[16], const uint32_t a[8],
                                                         const uint32_t b[8]) {
   uint32_t r0 = 0, r1 = 0, r2 = 0, borrow = 0;
@@ -326,6 +328,7 @@ MOM_NEXAPOW_FIELD32_INLINE uint32_t sub_mul_256_comba32(uint32_t t[16], const ui
   return 0u - borrow;
 }
 
+// Expand the square with PTX carry chains while doubling off-diagonal terms exactly.
 MOM_NEXAPOW_FIELD32_INLINE void sqr_256_comba32(const uint32_t a[8], uint32_t t[16]) {
   uint32_t r0 = 0, r1 = 0, r2 = 0;
   uint32_t s0 = 0, s1 = 0, s2 = 0;
@@ -435,6 +438,7 @@ MOM_NEXAPOW_FIELD32_INLINE void sqr_256_comba32(const uint32_t a[8], uint32_t t[
 #undef SQR32_OFF
 }
 
+// Fold the wide product by p=2^256-2^32-977 and retain overflow through canonicalization.
 MOM_NEXAPOW_FIELD32_INLINE void reduce_512_to_256_32(uint32_t t32[16], uint32_t r[8]) {
   constexpr uint32_t k_mod = 977U;
 
@@ -578,6 +582,7 @@ MOM_NEXAPOW_FIELD32_INLINE void field_mul_hybrid(const uint32_t a[8], const uint
   reduce_512_to_256_32(t32, r);
 }
 
+// Reduce a*b-c*d after the wide-product subtraction, correcting its borrow modulo p.
 MOM_NEXAPOW_FIELD32_INLINE void field_mul_sub_mul_hybrid(const uint32_t a[8], const uint32_t b[8],
                                                          const uint32_t c[8], const uint32_t d[8],
                                                          uint32_t r[8]) {
@@ -631,6 +636,7 @@ MOM_NEXAPOW_FIELD32_INLINE void square(uint32_t out[8], const uint32_t value[8])
   detail::field_sqr_hybrid(value, out);
 }
 
+// Subtract canonical field limbs and restore p on underflow.
 MOM_NEXAPOW_FIELD32_INLINE void sub(uint32_t out[8], const uint32_t lhs[8], const uint32_t rhs[8]) {
   uint32_t borrow;
   asm volatile("sub.cc.u32 %0, %9, %17;\n\t"

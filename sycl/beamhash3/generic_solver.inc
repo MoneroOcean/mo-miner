@@ -21,6 +21,7 @@
 // order-independent) tolerates. Drops past NSLOTS / past in_count are honored via a sentinel.
 template <unsigned R, bool DEVICE_COUNT = false> class BeamMixScatterKernel;
 template <unsigned R, bool DEVICE_COUNT = false>
+// Mix and rebucket linear work rows while retaining their source reference for tree recovery.
 static sycl::event submit_mix_scatter(sycl::queue& q, const uint32_t* d_mixed, uint32_t in_count,
                                       uint32_t* d_bucket, uint32_t* d_bucket_ns,
                                       unsigned WG, const uint64_t* d_prePow = nullptr,
@@ -138,6 +139,7 @@ static sycl::event submit_mix_scatter(sycl::queue& q, const uint32_t* d_mixed, u
 // and four standalone scatter launches from the steady solve.
 template <unsigned R, bool FUSED, bool PREDECESSOR_ONLY> class BeamCollideKernel;
 template <unsigned R, bool FUSED, bool PREDECESSOR_ONLY>
+// Join matching bucket rows and retain parent sources for the generic Wagner pipeline.
 static sycl::event submit_collide(sycl::queue& q, const uint32_t* d_bucket,
                                   const uint32_t* d_bucket_ns, uint32_t* d_final_out,
                                   uint32_t* d_out_count, uint32_t* d_tree, uint32_t* d_next_bucket,

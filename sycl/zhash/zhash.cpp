@@ -57,6 +57,7 @@ namespace mom_zhash {
 class ZHashGenerationTestKernel;
 using FastSession = Session<FastZHashArenaLayout>;
 
+// Return a bounded device-generated reference row without allocating the full solver arenas.
 static int run_generation_test(const std::string& device_name, const std::uint8_t* input,
                                std::uint8_t* output) {
   std::array<std::uint8_t, ZHashSpec::header_length> header;
@@ -105,6 +106,7 @@ public:
     create_fast_session();
   }
 
+  // Retry an overflowing compact solve with the safe layout; only one large arena remains resident.
   RunReport run(const std::uint8_t (&header)[ZHashSpec::header_length],
                 const bool force_safe_retry) {
     if (!fast_session)
@@ -151,6 +153,7 @@ private:
   }
 };
 
+// Keep persistent sessions under explicit shutdown control to avoid late static SYCL teardown.
 static DeviceStateRegistry<MiningState>& registry() {
   static auto* const value = new DeviceStateRegistry<MiningState>;
   return *value;
@@ -162,6 +165,7 @@ static MiningState& state_for(const std::string& device_name) {
   });
 }
 
+// Release cached mining sessions at ordered shutdown without propagating cleanup failures.
 void zhash_cleanup_states() noexcept {
   try {
     registry().clear();
@@ -172,6 +176,7 @@ void zhash_cleanup_states() noexcept {
 
 } // namespace mom_zhash
 
+// Adapt canonical solver results to the count-prefixed miner ABI, filtering targets only in mining mode.
 int zhash(unsigned, std::uint32_t, const std::uint8_t* input, const unsigned input_size,
           std::uint8_t* solution_out, std::uint64_t*, const std::uint8_t* target,
           const unsigned intensity, const bool is_test, const bool is_benchmark,

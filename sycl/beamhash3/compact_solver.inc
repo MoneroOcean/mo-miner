@@ -16,6 +16,7 @@ SYCL_ESIMD_FUNCTION inline U32 mask_to_u32(Mask mask) {
   return result;
 }
 
+// Carry each SIMD lane's split-word addition exactly without native 64-bit arithmetic.
 SYCL_ESIMD_FUNCTION inline U64Pair add(U64Pair a, U64Pair b) {
   const U32 lo = a.lo + b.lo;
   const U32 carry = mask_to_u32(lo < a.lo);
@@ -27,6 +28,7 @@ SYCL_ESIMD_FUNCTION inline U64Pair bit_xor(U64Pair a, U64Pair b) {
 }
 
 template <unsigned Bits>
+// Rotate each lane's paired words at the SipHash compile-time constants.
 SYCL_ESIMD_FUNCTION inline U64Pair rotl(U64Pair value) {
   static_assert(Bits > 0 && Bits < 64);
   if constexpr (Bits < 32) {
@@ -50,6 +52,7 @@ SYCL_ESIMD_FUNCTION inline U64Pair nonce(U32 index) {
   return {nonce_lo, base_hi + carry};
 }
 
+// Apply the Beam SipHash mixing round independently in every ESIMD lane.
 SYCL_ESIMD_FUNCTION inline void sip_round(U64Pair& v0, U64Pair& v1, U64Pair& v2,
                                           U64Pair& v3) {
   v0 = add(v0, v1);
@@ -68,6 +71,7 @@ SYCL_ESIMD_FUNCTION inline void sip_round(U64Pair& v0, U64Pair& v1, U64Pair& v2,
   v2 = rotl<32>(v2);
 }
 
+// Generate the vectorized Beam leaf hash with the same 2/4 rounds as the scalar path.
 SYCL_ESIMD_FUNCTION inline U64Pair siphash24(U64Pair s0, U64Pair s1, U64Pair s2,
                                              U64Pair s3, U64Pair msg) {
   U64Pair v0 = s0, v1 = s1, v2 = s2, v3 = s3;
@@ -83,6 +87,7 @@ SYCL_ESIMD_FUNCTION inline U64Pair siphash24(U64Pair s0, U64Pair s1, U64Pair s2,
   return bit_xor(bit_xor(v0, v1), bit_xor(v2, v3));
 }
 
+// Scatter SIMD compact rows only into reserved in-capacity bucket slots.
 SYCL_ESIMD_FUNCTION inline void store_rows(uint32_t* output, U32 buckets, U32 slots,
                                             U32 indices, U64Pair w0, U64Pair w1,
                                             U64Pair w2, U64Pair w3, U64Pair w4,
@@ -117,6 +122,7 @@ SYCL_ESIMD_FUNCTION inline void store_rows(uint32_t* output, U32 buckets, U32 sl
 } // namespace beamhash3_esimd
 
 class BeamCompactSeedEsimdKernel;
+// Seed compact buckets through ESIMD while retaining bounded reservations and the scalar path's leaf work.
 static sycl::event submit_compact_seed_esimd(sycl::queue& q, const uint64_t* d_prePow,
                                              BeamCompactRow* d_out, uint32_t* d_out_ns) {
   static_assert(NUM_ENTRIES % 16 == 0, "ESIMD seed requires 16 leaves per work-item");
@@ -161,6 +167,7 @@ static sycl::event submit_compact_seed_esimd(sycl::queue& q, const uint64_t* d_p
 #endif
 
 class BeamCompactSeedKernel;
+// Generate and scatter compact leaf rows for the supported GPU pipeline.
 static sycl::event submit_compact_seed(sycl::queue& q, const uint64_t* d_prePow,
                                        BeamCompactRow* d_out,
                                        uint32_t* d_out_ns, unsigned wg) {
@@ -268,6 +275,7 @@ static sycl::event submit_compact_seed(sycl::queue& q, const uint64_t* d_prePow,
 
 template <unsigned R, bool PairPartitions = false> class BeamCompactRoundKernel;
 template <unsigned R, bool PairPartitions = false>
+// Join compact collisions, carrying packed trees through level three and thin parents at level four.
 static sycl::event submit_compact_round(sycl::queue& q, const BeamCompactRow* d_in,
                                         const uint32_t* d_in_ns,
                                         BeamCompactRow* d_out, uint32_t* d_out_ns,
@@ -425,6 +433,7 @@ static sycl::event submit_compact_round(sycl::queue& q, const BeamCompactRow* d_
 }
 
 class BeamCompactFinalThinKernel;
+// Filter thin zero-XOR roots and reconstruct distinct canonical leaf trees into bounded candidates.
 static sycl::event submit_compact_final_thin(sycl::queue& q, const BeamLevel4Row* d_in,
                                              const uint32_t* d_in_ns,
                                              const BeamCompactRow* d_level3, BeamCandidate* d_cand,

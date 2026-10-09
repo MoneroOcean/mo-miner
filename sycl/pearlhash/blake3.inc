@@ -11,6 +11,7 @@ constexpr uint32_t B3_ROOT = 1u << 3;
 constexpr uint32_t B3_KEYED = 1u << 4;
 constexpr uint32_t B3_CHUNK_LEN = 1024;
 
+// Load the fixed BLAKE3 IV into device-compatible words.
 inline void iv_words(uint32_t o[8]) {
   o[0] = 0x6a09e667;
   o[1] = 0xbb67ae85;
@@ -28,6 +29,7 @@ inline uint32_t le32(const uint8_t* p) {
   return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
+// Mix one BLAKE3 column/diagonal with its two scheduled message words.
 inline void b3_g(uint32_t* s, int a, int b, int c, int d, uint32_t mx, uint32_t my) {
   s[a] = s[a] + s[b] + mx;
   s[d] = b3_rotr(s[d] ^ s[a], 16);
@@ -38,6 +40,7 @@ inline void b3_g(uint32_t* s, int a, int b, int c, int d, uint32_t mx, uint32_t 
   s[c] = s[c] + s[d];
   s[b] = b3_rotr(s[b] ^ s[c], 7);
 }
+// Apply one BLAKE3 round before the caller advances the message schedule.
 inline void b3_round(uint32_t* s, const uint32_t* m) {
   b3_g(s, 0, 4, 8, 12, m[0], m[1]);
   b3_g(s, 1, 5, 9, 13, m[2], m[3]);
@@ -83,6 +86,7 @@ inline void b3_compress(const uint32_t cv[8], const uint32_t block[16], uint64_t
   }
 }
 
+// Decode a partial block into zero-padded little-endian BLAKE3 words.
 inline void words_from_le(const uint8_t* b, uint32_t len, uint32_t out[16]) {
   for (int i = 0; i < 16; i++) {
     uint32_t w = 0;
@@ -103,12 +107,14 @@ struct Output {
   uint32_t block_len;
   uint32_t flags;
 };
+// Compress an output descriptor into its non-root chaining value.
 inline void output_cv(const Output& o, uint32_t cv[8]) {
   uint32_t t[16];
   b3_compress(o.input_cv, o.block_words, o.counter, o.block_len, o.flags, t);
   for (int i = 0; i < 8; i++)
     cv[i] = t[i];
 }
+// Compress an output descriptor with ROOT to produce the final 32-byte digest.
 inline void output_root(const Output& o, uint8_t out[32]) {
   uint32_t t[16];
   b3_compress(o.input_cv, o.block_words, 0, o.block_len, o.flags | B3_ROOT, t);
@@ -119,6 +125,7 @@ inline void output_root(const Output& o, uint8_t out[32]) {
     out[i * 4 + 3] = t[i] >> 24;
   }
 }
+// Create the binary-tree parent descriptor from two chaining values and the keyed-hash flags.
 inline void parent_output(const uint32_t left[8], const uint32_t right[8], const uint32_t key[8],
                           uint32_t flags, Output& o) {
   for (int i = 0; i < 8; i++) {

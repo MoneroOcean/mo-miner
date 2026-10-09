@@ -25,6 +25,7 @@ MOM_NEXAPOW_PORTABLE_INLINE void add_value(Accumulator& acc, const uint32_t low,
   acc.high += high + (acc.middle < old_middle);
 }
 
+// Accumulate an exact 32x32 product while keeping column carry chains independent.
 MOM_NEXAPOW_PORTABLE_INLINE void add_product(Accumulator& acc, const uint32_t a, const uint32_t b) {
 #if defined(__SYCL_DEVICE_ONLY__)
   add_value(acc, a * b, sycl::mul_hi(a, b), 0u);
@@ -34,6 +35,7 @@ MOM_NEXAPOW_PORTABLE_INLINE void add_product(Accumulator& acc, const uint32_t a,
 #endif
 }
 
+// Accumulate a doubled off-diagonal square term without losing its 65th bit.
 MOM_NEXAPOW_PORTABLE_INLINE void add_doubled_product(Accumulator& acc, const uint32_t a,
                                                      const uint32_t b) {
 #if defined(__SYCL_DEVICE_ONLY__)
@@ -45,6 +47,7 @@ MOM_NEXAPOW_PORTABLE_INLINE void add_doubled_product(Accumulator& acc, const uin
   add_value(acc, low << 1u, (high << 1u) | (low >> 31u), high >> 31u);
 }
 
+// Emit the low column and normalize carries into the next accumulator column.
 MOM_NEXAPOW_PORTABLE_INLINE void output_limb(Accumulator& acc, uint32_t& output) {
   output = acc.low;
   const uint32_t old_middle = acc.middle;
@@ -54,6 +57,7 @@ MOM_NEXAPOW_PORTABLE_INLINE void output_limb(Accumulator& acc, uint32_t& output)
   acc.low_carry = 0;
 }
 
+// Expand a full 256x256 product into sixteen little-endian limbs with bounded column carries.
 MOM_NEXAPOW_PORTABLE_INLINE void multiply_wide(const uint32_t a[8], const uint32_t b[8],
                                                uint32_t output[16]) {
   Accumulator acc{};
@@ -143,6 +147,7 @@ MOM_NEXAPOW_PORTABLE_INLINE void multiply_wide(const uint32_t a[8], const uint32
 #undef MOM_NEXAPOW_ACC
 }
 
+// Subtract one emitted product limb and propagate the exact one-bit borrow.
 MOM_NEXAPOW_PORTABLE_INLINE void subtract_product_limb(uint32_t& output, const uint32_t product,
                                                        uint32_t& borrow) {
   const uint32_t difference = output - product;
@@ -151,6 +156,7 @@ MOM_NEXAPOW_PORTABLE_INLINE void subtract_product_limb(uint32_t& output, const u
   borrow = product_borrow | (difference < borrow);
 }
 
+// Subtract a full 256x256 product from sixteen limbs and return the final borrow.
 MOM_NEXAPOW_PORTABLE_INLINE uint32_t subtract_product_wide(uint32_t output[16], const uint32_t a[8],
                                                           const uint32_t b[8]) {
   Accumulator acc{};
@@ -274,6 +280,7 @@ MOM_NEXAPOW_PORTABLE_INLINE uint32_t reduce_limb(
   return high;
 }
 
+// Fold the high product limbs using p=2^256-2^32-977, then canonicalize the result.
 MOM_NEXAPOW_PORTABLE_INLINE void reduce(const uint32_t input[16], uint32_t output[8]) {
   uint32_t r0, r1, r2, r3, r4, r5, r6, r7;
   uint32_t carry = reduce_limb(input[0], input[8], 0u, 0u, r0);
@@ -339,12 +346,14 @@ MOM_NEXAPOW_PORTABLE_INLINE void reduce(const uint32_t input[16], uint32_t outpu
   output[7] = r7;
 }
 
+// Compute a canonical field product through the full-width limb expansion.
 MOM_NEXAPOW_PORTABLE_INLINE void mul(uint32_t output[8], const uint32_t a[8], const uint32_t b[8]) {
   uint32_t wide[16];
   multiply_wide(a, b, wide);
   reduce(wide, output);
 }
 
+// Exploit symmetric product terms while retaining exact canonical field reduction.
 MOM_NEXAPOW_PORTABLE_INLINE void square(uint32_t output[8], const uint32_t value[8]) {
   Accumulator acc{};
   uint32_t wide[16];
@@ -409,6 +418,7 @@ MOM_NEXAPOW_PORTABLE_INLINE void square(uint32_t output[8], const uint32_t value
   reduce(wide, output);
 }
 
+// Subtract canonical field values and restore the modulus on borrow.
 MOM_NEXAPOW_PORTABLE_INLINE void sub(uint32_t output[8], const uint32_t a[8], const uint32_t b[8]) {
   // Use 32-bit borrow steps; read both operands before storing an aliased output.
   uint32_t borrow = 0;
@@ -432,6 +442,7 @@ MOM_NEXAPOW_PORTABLE_INLINE void sub(uint32_t output[8], const uint32_t a[8], co
   }
 }
 
+// Compute a*b-c*d with full-width products before final field reduction.
 MOM_NEXAPOW_PORTABLE_INLINE void mul_sub_mul(uint32_t output[8], const uint32_t a[8],
                                              const uint32_t b[8], const uint32_t c[8],
                                              const uint32_t d[8]) {

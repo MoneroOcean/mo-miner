@@ -48,6 +48,7 @@ struct C30PackedEdge {
 };
 static_assert(sizeof(C30PackedEdge) == 6);
 
+// Pack the low U bits with V; the containing bucket carries the omitted high U bits.
 inline C30PackedEdge c30_pack_edge(const std::uint32_t u, const std::uint32_t v) {
   const std::uint32_t u_high = u >> C30_BUCKET_BITS;
   return {static_cast<std::uint16_t>(u_high), static_cast<std::uint16_t>(v),
@@ -80,10 +81,12 @@ inline C30U64 c30_pair(const std::uint64_t value) {
 inline C30U64 c30_xor(const C30U64 a, const C30U64 b) {
   return {a.lo ^ b.lo, a.hi ^ b.hi};
 }
+// Add split 64-bit words with carry for devices whose native integer path is slower.
 inline C30U64 c30_add(const C30U64 a, const C30U64 b) {
   const std::uint32_t lo = a.lo + b.lo;
   return {lo, a.hi + b.hi + (lo < a.lo)};
 }
+// Rotate split words at the SipHash constants; handle the 32-bit half swap without a full-width shift.
 inline C30U64 c30_rotate_left(const C30U64 value, const unsigned bits) {
   if (bits == 32u)
     return {value.hi, value.lo};
@@ -95,6 +98,7 @@ inline std::uint64_t c30_rotate_left(const std::uint64_t value, const unsigned b
   return (value << bits) | (value >> (64u - bits));
 }
 
+// Apply one native 4/8 SipHash round used by Cortex edge generation.
 inline void c30_sip_round(std::uint64_t& v0, std::uint64_t& v1, std::uint64_t& v2,
                           std::uint64_t& v3) {
   v0 += v1;
@@ -113,6 +117,7 @@ inline void c30_sip_round(std::uint64_t& v0, std::uint64_t& v1, std::uint64_t& v
   v2 = c30_rotate_left(v2, 32);
 }
 
+// Keep the split-word round bit-equivalent to the native Cortex SipHash path.
 inline void c30_sip_round(C30U64& v0, C30U64& v1, C30U64& v2, C30U64& v3) {
   v0 = c30_add(v0, v1);
   v2 = c30_add(v2, v3);
@@ -126,6 +131,7 @@ inline void c30_sip_round(C30U64& v0, C30U64& v1, C30U64& v2, C30U64& v3) {
   v2 = c30_rotate_left(v2, 32);
 }
 
+// Regenerate one edge from its complete stateful block, including final-word XOR.
 inline std::uint64_t c30_edge_hash(const C30DeviceKey key, const std::uint32_t nonce) {
   const std::uint32_t target = nonce & C30_EDGE_BLOCK_MASK;
   const std::uint64_t first = static_cast<std::uint64_t>(nonce & ~C30_EDGE_BLOCK_MASK);
@@ -168,6 +174,7 @@ using C30LocalAtomic =
     sycl::atomic_ref<std::uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::work_group,
                      sycl::access::address_space::local_space>;
 
+// Atomically saturate packed local degree bits; only degree one versus at least two matters.
 inline void c30_degree_add(sycl::local_accessor<std::uint32_t, 1> counters,
                            const std::uint32_t endpoint) {
   const std::uint32_t high = endpoint >> C30_BUCKET_BITS;
@@ -178,6 +185,7 @@ inline void c30_degree_add(sycl::local_accessor<std::uint32_t, 1> counters,
     C30LocalAtomic(counters[word + C30_COUNTER_WORDS]).fetch_or(bit);
 }
 
+// Test whether the local saturating counter retained an endpoint with degree at least two.
 inline bool c30_degree_two(const sycl::local_accessor<std::uint32_t, 1>& counters,
                            const std::uint32_t endpoint) {
   const std::uint32_t high = endpoint >> C30_BUCKET_BITS;
@@ -196,6 +204,7 @@ inline std::uint32_t c30_sparse_slot(const std::uint32_t key) {
   return (key * 0x9e3779b1u) & C30_SPARSE_TABLE_MASK;
 }
 
+// Insert or mark a repeated endpoint in the bounded local sparse degree table.
 inline void c30_sparse_add(sycl::local_accessor<std::uint32_t, 1> table, const std::uint32_t key) {
   std::uint32_t slot = c30_sparse_slot(key);
   for (std::uint32_t probe = 0; probe < C30_SPARSE_TABLE_SIZE; ++probe) {
@@ -217,6 +226,7 @@ inline void c30_sparse_add(sycl::local_accessor<std::uint32_t, 1> table, const s
   }
 }
 
+// Probe the sparse degree table for an endpoint seen at least twice.
 inline bool c30_sparse_degree_two(const sycl::local_accessor<std::uint32_t, 1>& table,
                                   const std::uint32_t key) {
   std::uint32_t slot = c30_sparse_slot(key);
@@ -237,6 +247,7 @@ inline std::uint32_t c30_recover_slot(const std::uint32_t u, const std::uint32_t
   return hash & C30_RECOVER_TABLE_MASK;
 }
 
+// Index target edge pairs in the local recovery hash table for nonce matching.
 inline void c30_recover_insert(sycl::local_accessor<std::uint32_t, 1> table,
                                const std::uint32_t* target_u, const std::uint32_t* target_v,
                                const std::uint32_t index) {
@@ -250,6 +261,7 @@ inline void c30_recover_insert(sycl::local_accessor<std::uint32_t, 1> table,
   }
 }
 
+// Match regenerated endpoints to target pairs and atomically retain their smallest nonce.
 inline void c30_recover_matches(const sycl::local_accessor<std::uint32_t, 1>& table,
                                 const std::uint32_t* target_u, const std::uint32_t* target_v,
                                 std::uint32_t* recovered, const std::uint32_t u,
@@ -289,6 +301,7 @@ inline void c30_sip_block(const C30DeviceKey key, const std::uint32_t first,
   }
 }
 
+// Generate the same stateful 64-edge block with split words instead of native 64-bit arithmetic.
 inline void c30_sip_block32(const C30DeviceKey key, const std::uint32_t first, C30U64* values) {
   C30U64 v0 = c30_pair(key.k0), v1 = c30_pair(key.k1);
   C30U64 v2 = c30_pair(key.k2), v3 = c30_pair(key.k3);
@@ -305,6 +318,7 @@ inline void c30_sip_block32(const C30DeviceKey key, const std::uint32_t first, C
   }
 }
 
+// Generate all edge blocks into fixed-capacity buckets and flag every bounded-write overflow.
 sycl::event c30_seed_fixed(sycl::queue& queue, const C30DeviceKey key, std::uint32_t* counts,
                            const std::uint32_t output_stride, sycl::uint2* output_edges,
                            std::uint32_t* overflow) {
@@ -339,6 +353,7 @@ sycl::event c30_seed_fixed(sycl::queue& queue, const C30DeviceKey key, std::uint
   });
 }
 
+// Generate bucketed edges in the six-byte layout, preserving overflow detection.
 sycl::event c30_seed_packed(sycl::queue& queue, const C30DeviceKey key, std::uint32_t* counts,
                             const std::uint32_t output_stride, C30PackedEdge* output_edges,
                             std::uint32_t* overflow) {
@@ -372,6 +387,7 @@ sycl::event c30_seed_packed(sycl::queue& queue, const C30DeviceKey key, std::uin
   });
 }
 
+// Remove degree-one endpoints and rebucket survivors using the packed edge layout.
 sycl::event c30_trim_packed(sycl::queue& queue, const C30PackedEdge* input_edges,
                             const std::uint32_t* input_counts,
                             const std::uint32_t input_stride, std::uint32_t* output_counts,
@@ -411,6 +427,7 @@ sycl::event c30_trim_packed(sycl::queue& queue, const C30PackedEdge* input_edges
   });
 }
 
+// Trim sparse packed buckets with a local hash table instead of the dense degree bitmap.
 sycl::event c30_trim_sparse_packed(sycl::queue& queue, const C30PackedEdge* input_edges,
                                    const std::uint32_t* input_counts,
                                    const std::uint32_t input_stride, std::uint32_t* output_counts,
@@ -467,6 +484,7 @@ sycl::event c30_trim_sparse_packed(sycl::queue& queue, const C30PackedEdge* inpu
   });
 }
 
+// Unpack bounded survivors into the flat edge stream consumed by host cycle search.
 sycl::event c30_compact_packed(sycl::queue& queue, const C30PackedEdge* input_edges,
                                const std::uint32_t* input_counts,
                                const std::uint32_t input_stride, sycl::uint2* output_edges,
@@ -490,6 +508,7 @@ sycl::event c30_compact_packed(sycl::queue& queue, const C30PackedEdge* input_ed
   });
 }
 
+// Remove degree-one endpoints and rebucket survivors in the wide edge layout.
 sycl::event c30_trim_fixed(sycl::queue& queue, const sycl::uint2* input_edges,
                            const std::uint32_t* input_counts, const std::uint32_t input_stride,
                            std::uint32_t* output_counts, const std::uint32_t output_stride,
@@ -529,6 +548,7 @@ sycl::event c30_trim_fixed(sycl::queue& queue, const sycl::uint2* input_edges,
   });
 }
 
+// Trim sparse wide buckets with the local degree hash table and bounded output writes.
 sycl::event c30_trim_sparse_fixed(sycl::queue& queue, const sycl::uint2* input_edges,
                                   const std::uint32_t* input_counts,
                                   const std::uint32_t input_stride,
@@ -585,6 +605,7 @@ sycl::event c30_trim_sparse_fixed(sycl::queue& queue, const sycl::uint2* input_e
   });
 }
 
+// Flatten surviving wide buckets for the bounded host graph handoff.
 sycl::event c30_compact(sycl::queue& queue, const sycl::uint2* input_edges,
                         const std::uint32_t* input_counts, const std::uint32_t input_stride,
                         sycl::uint2* output_edges, std::uint32_t* output_count) {
@@ -606,6 +627,7 @@ sycl::event c30_compact(sycl::queue& queue, const sycl::uint2* input_edges,
   });
 }
 
+// Regenerate graph blocks and recover exact nonces for the selected cycle endpoints.
 sycl::event c30_recover(sycl::queue& queue, const C30DeviceKey key,
                         const std::uint32_t* target_u, const std::uint32_t* target_v,
                         std::uint32_t* recovered) {
@@ -638,6 +660,7 @@ sycl::event c30_recover(sycl::queue& queue, const C30DeviceKey key,
   });
 }
 
+// Recover cycle nonces with split-word SipHash while retaining the native path's matching rules.
 sycl::event c30_recover32(sycl::queue& queue, const C30DeviceKey key,
                           const std::uint32_t* target_u, const std::uint32_t* target_v,
                           std::uint32_t* recovered) {

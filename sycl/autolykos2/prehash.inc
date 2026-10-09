@@ -1,7 +1,11 @@
+// Fast row derivation uses paired 32-bit arithmetic to avoid Xe2's costly 64-bit lowering.
+// The constant pad is big-endian integers 0..1023: each Blake2b lane has a zero low half
+// and a cheaply generated high half, so message providers need no materialized block.
 struct B2bWord {
   uint32_t lo, hi;
 };
 
+// Pack a constant-pad index into the high half of its little-endian Blake2b lane.
 inline uint32_t pad_message_hi_dev(const uint32_t item) {
   return ((item & 0xFFU) << 24) | ((item >> 8) << 16);
 }
@@ -27,6 +31,7 @@ struct PrehashFinalMessage { // word 0 is pad item 1023, the rest is padding zer
   }
 };
 
+// Execute Blake2b G with explicit carries between the two 32-bit halves.
 inline void blake2b_g_pair(B2bWord& a, B2bWord& b, B2bWord& c, B2bWord& d, const B2bWord x,
                            const B2bWord y) {
   uint32_t lo = a.lo + b.lo;
@@ -68,6 +73,7 @@ inline void blake2b_g_pair(B2bWord& a, B2bWord& b, B2bWord& c, B2bWord& d, const
 }
 
 template <typename Message>
+// Compress a generated prehash block with a byte counter that fits in 32 bits.
 inline void blake2b_compress_pair_dev(B2bWord h[8], const Message& msg, const uint32_t t,
                                       const bool last) {
   B2bWord v[16];
@@ -135,6 +141,7 @@ inline void blake2b_compress_pair_dev(B2bWord h[8], const Message& msg, const ui
   }
 }
 
+// Hash the index/height and generated constant pad without materializing its 8200-byte message.
 inline void autolykos_prehash_digest_fast_dev(const uint32_t index, const uint32_t height,
                                               uint8_t digest[32]) {
   B2bWord h[8];
@@ -177,6 +184,7 @@ AUTOLYKOS_DEVICE_INLINE void digest_to_limbs_dev(const uint8_t digest[32], uint3
     limbs[i] = load32_be_dev(digest + i * 4);
 }
 
+// Store the truncated 248-bit row in the accumulator limb order used by search.
 inline void autolykos_table_row_store_dev(uint32_t* const table, const uint32_t gid,
                                           const uint32_t height) {
   uint8_t digest[32];
@@ -185,6 +193,7 @@ inline void autolykos_table_row_store_dev(uint32_t* const table, const uint32_t 
                       table + static_cast<uint64_t>(gid) * (TABLE_ENTRY_BYTES / sizeof(uint32_t)));
 }
 
+// Load a precomputed row or derive identical limbs when the memory-saving path has no table.
 AUTOLYKOS_DEVICE_INLINE void table_item_limbs_dev(const uint32_t* const table, const uint32_t index,
                                                   const uint32_t height, uint32_t limbs[8]) {
   if (table) {
@@ -212,6 +221,7 @@ AUTOLYKOS_DEVICE_INLINE void add_limbs_dev(uint32_t sum[8], const uint32_t* cons
   }
 }
 
+// Extract an overlapping big-endian four-byte index and reduce it to the current row count.
 AUTOLYKOS_DEVICE_INLINE uint32_t autolykos_index_from_words_dev(const uint32_t word0,
                                                                 const uint32_t word1,
                                                                 const unsigned byte_offset,
@@ -247,6 +257,7 @@ AUTOLYKOS_DEVICE_INLINE uint32_t autolykos_index_from_words_dev(const uint32_t w
   return mo_mod_u32(idx, n_len, n_len_M);
 }
 
+// Compare the full hash and target as big-endian 256-bit integers.
 AUTOLYKOS_DEVICE_INLINE bool meets_target_dev(const uint8_t output[32], const uint8_t target[32]) {
   for (unsigned i = 0; i < 32; ++i) {
     if (output[i] == target[i])
@@ -256,6 +267,7 @@ AUTOLYKOS_DEVICE_INLINE bool meets_target_dev(const uint8_t output[32], const ui
   return true;
 }
 
+// Reserve a bounded hit slot; kernel completion publishes the non-atomic payload.
 inline void store_autolykos_result(AutolykosResult* const result, const uint64_t nonce,
                                    const uint8_t output[32]) {
   using atomic_ref =
@@ -322,6 +334,7 @@ autolykos_index_hash_dev(const uint8_t message[32], const uint64_t nonce,
 }
 
 #if defined(MOM_SYCL_PORTABLE_OPENCL)
+// Derive the index hash without pointer-dependent table branches in the portable kernel.
 AUTOLYKOS_DEVICE_INLINE void
 autolykos_index_hash_portable_dev(const uint8_t message[32], const uint64_t nonce,
                                   const uint32_t height, const uint32_t n_len,

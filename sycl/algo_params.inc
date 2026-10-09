@@ -10,6 +10,7 @@ template <typename Fn> static void for_each_default_gpu(Fn&& fn) {
   }
 }
 
+// Select native CPU process/batch geometry from cache capacity and the algorithm's scratch size.
 static void add_cpu_algo_dev(std::string& result_dev, const std::string& algo,
                              const unsigned max_cpu_batch, const unsigned socket_count,
                              const unsigned thread_count, const unsigned l3cache,
@@ -21,6 +22,7 @@ static void add_cpu_algo_dev(std::string& result_dev, const std::string& algo,
                                                          thread_count, l3cache, mem->second));
 }
 
+// Clamp an explicit CN batch to the supplied bound; zero/malformed input keeps the default.
 static unsigned cn_gpu_env_intensity(const unsigned default_batch, const unsigned max_batch) {
   unsigned long requested = 0;
   if (!mom_parse_env_ulong("MOM_CN_GPU_INTENSITY", requested) || requested == 0)
@@ -30,6 +32,7 @@ static unsigned cn_gpu_env_intensity(const unsigned default_batch, const unsigne
   return static_cast<unsigned>(requested);
 }
 
+// Admit CN-capable devices and partition scratch batches, retaining backend-specific pacing hints.
 static void add_gpu_cn_algo_dev(std::string& result_dev, const std::string& algo,
                                 const std::map<std::string, unsigned>& algo2mem,
                                 std::string& backend_hint) {
@@ -160,6 +163,7 @@ static void add_gpu_cn_algo_dev(std::string& result_dev, const std::string& algo
   });
 }
 
+// Advertise full C29 solves only when fixed arenas and the largest workgroup fit.
 static void add_gpu_c29_algo_dev(std::string& result_dev) {
   for_each_default_gpu([&](const std::string& dev_str, const sycl::device& dev) {
     // The fixed C29 arenas, 1024-work-item stages, and largest trim counter all have to fit.
@@ -183,6 +187,7 @@ constexpr uint64_t c30_minimum_local_memory = 64 * KiB;
 constexpr uint64_t c30_minimum_local_memory = 32 * KiB;
 #endif
 
+// Check the allocation model required by the selected implementation, not just GPU vendor.
 static bool gpu_usm_supported(const sycl::device& dev, const GpuUsm required) {
   switch (required) {
   case GpuUsm::none:
@@ -197,6 +202,7 @@ static bool gpu_usm_supported(const sycl::device& dev, const GpuUsm required) {
   return false;
 }
 
+// Apply shared dataset/launch admission, then expose the algorithm's own primary tuning dimension.
 static void add_gpu_dataset_algo_dev(std::string& result_dev, const uint64_t dataset_bytes,
                                      const uint64_t min_global_mem,
                                      unsigned (*intensity)(const sycl::device&),
@@ -220,6 +226,7 @@ static void add_gpu_dataset_algo_dev(std::string& result_dev, const uint64_t dat
   });
 }
 
+// Expose the complete Pearl shape so benchmarking and mining use the same memory-safe profile.
 static void add_gpu_pearlhash_algo_dev(std::string& result_dev) {
   for_each_default_gpu([&](const std::string& dev_str, const sycl::device& dev) {
     if (!pow_has_dataset_memory(dev, 512 * MiB, 2 * GiB) ||
@@ -236,6 +243,7 @@ static void add_gpu_pearlhash_algo_dev(std::string& result_dev) {
   });
 }
 
+// Resolve a filtered public device name; never silently substitute another device after failure.
 sycl::device get_dev(const std::string& dev_str) {
   if (str2dev.empty())
     update_str2dev();
@@ -246,7 +254,7 @@ sycl::device get_dev(const std::string& dev_str) {
   return str2dev.at(dev_str);
 }
 
-// return list of supported algos with the best device config
+// Return eligible algorithms with resource-based defaults; these are heuristics, not measured optima.
 std::map<std::string, std::string> algo_params(
     const unsigned max_cpu_batch, const unsigned cpu_sockets, const unsigned cpu_threads,
     const unsigned cpu_l3cache, const std::map<std::string, unsigned>& algo2mem,
