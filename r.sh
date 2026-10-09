@@ -6,7 +6,8 @@ SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 backend_was_explicit=0
 [ -z "${MOM_GPU_BACKEND+x}" ] || backend_was_explicit=1
 backend=${MOM_GPU_BACKEND:-intel}
-case "$backend" in intel|nvidia|amd|opencl|all) ;; *) echo "Unknown MOM_GPU_BACKEND: $backend" >&2; exit 2 ;; esac
+case "${backend,,}" in intel|intel_igpu) backend=${backend,,} ;; esac
+case "$backend" in intel|intel_igpu|nvidia|amd|opencl|all) ;; *) echo "Unknown MOM_GPU_BACKEND: $backend" >&2; exit 2 ;; esac
 image=mom-build-multicompiler
 name="mom-$backend"
 reuse_built_worker=${MOM_REUSE_BUILT_WORKER:-0}
@@ -167,6 +168,7 @@ elif [ "$backend_was_explicit" = 1 ]; then
   # discovers and tests every supported discrete-GPU vendor visible on the host.
   case "$backend" in
     all) docker_flags+=(--env "MOM_GPU_TEST_VENDORS=intel,nvidia,amd") ;;
+    intel_igpu) docker_flags+=(--env "MOM_GPU_TEST_VENDORS=intel") ;;
     opencl) ;; # OpenCL is a compiler/runtime backend, not a hardware vendor.
     *) docker_flags+=(--env "MOM_GPU_TEST_VENDORS=$backend") ;;
   esac
@@ -197,7 +199,7 @@ add_drm_vendor() {
 docker_gpu_mode=${MOM_DOCKER_GPUS:-auto}
 if [ "$docker_gpu_mode" != 0 ]; then
   case "$backend" in
-    intel) add_drm_vendor 0x8086 ;;
+    intel|intel_igpu) add_drm_vendor 0x8086 ;;
     amd) add_drm_vendor 0x1002; [ ! -c /dev/kfd ] || docker_flags+=(--device /dev/kfd:/dev/kfd) ;;
     opencl|all)
       add_drm_vendor 0x8086

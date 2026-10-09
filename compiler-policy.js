@@ -322,7 +322,8 @@ function validateBackend(value) {
 /** @param {NodeJS.ProcessEnv} [env] */
 function gpuFromEnv(env = process.env) {
   const value = (env["MOM_GPU_BACKEND"] || "").toLowerCase();
-  return value === "intel" || value === "nvidia" || value === "amd" || value === "opencl"
+  return value === "intel" || value === "intel_igpu" || value === "nvidia" ||
+    value === "amd" || value === "opencl"
     ? value : "";
 }
 
@@ -468,6 +469,7 @@ function workerEnv(algo, env = process.env, platform = process.platform, request
   if (!gpu) {
     return {};
   }
+  const intelGpu = gpu === "intel" || gpu === "intel_igpu";
   const deviceEnv = vendorDeviceEnv(env);
   const sm = gpu === "nvidia" ? nvidiaComputeCapability(env) : null;
   let selected = selection(algo, gpu, platform, gpu === "nvidia" ? sm ?? 0 : null);
@@ -505,7 +507,9 @@ function workerEnv(algo, env = process.env, platform = process.platform, request
   const addon = roots.map((root) => path.resolve(root, selected.addon)).find(fs.existsSync);
   if (!addon) {
     const missing = `Missing ${selected.addon} for ${gpu}/${algo}`;
-    if (env["MOM_COMPILER_POLICY_STRICT"] === "1") {
+    // Falling back to the default tuned image is not safe on integrated Intel GPUs: XeLP
+    // can fail linking its ESIMD/DPAS code before the requested portable kernel is submitted.
+    if (env["MOM_COMPILER_POLICY_STRICT"] === "1" || gpu === "intel_igpu") {
       throw new Error(missing);
     }
     if (gpu === "nvidia" && (sm ?? 0) < 80) {
@@ -536,7 +540,7 @@ function workerEnv(algo, env = process.env, platform = process.platform, request
     // Windows Intel workers isolate algorithms because sharing one persistent cache can make a
     // WalaHash compile return incorrect XelisHashV3 code. Other workers preserve their cache path.
     result["SYCL_CACHE_PERSISTENT"] = env["SYCL_CACHE_PERSISTENT"] ?? "1";
-    if (platform === "win32" && gpu === "intel") {
+    if (platform === "win32" && intelGpu) {
       const cacheRoot = env["SYCL_CACHE_DIR"] || (fs.existsSync(localBuild)
         ? path.join(localBuild, ".sycl-cache")
         : env["LOCALAPPDATA"] && path.join(env["LOCALAPPDATA"], "mom-sycl-cache"));
@@ -581,7 +585,7 @@ function workerEnv(algo, env = process.env, platform = process.platform, request
     // that the same standards-only SPIR-V artifact also runs through an OpenCL CPU implementation.
     // Intel integrated GPUs use Level Zero because it is their native low-overhead interface;
     // generic/unknown vendors use the portable OpenCL contract.
-    const genericDefaultL0 = backend === "sycl" && gpu === "intel";
+    const genericDefaultL0 = backend === "sycl" && intelGpu;
     result["ONEAPI_DEVICE_SELECTOR"] = backend === "sycl-l0" || genericDefaultL0
       ? "level_zero:gpu"
       : `opencl:${openclDeviceType(env)}`;

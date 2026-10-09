@@ -2,6 +2,12 @@
 set -euo pipefail
 
 backend=${MOM_GPU_BACKEND:-intel}
+case "${backend,,}" in
+  intel|intel_igpu)
+    backend=${backend,,}
+    export MOM_GPU_BACKEND=$backend
+    ;;
+esac
 build_compiler=${MOM_LINUX_BUILD_COMPILER:-all}
 jobs=${MOM_BUILD_JOBS:-$(nproc)}
 opencl_device_type=${MOM_OPENCL_DEVICE_TYPE:-gpu}
@@ -10,7 +16,7 @@ case "$build_compiler" in
   *) echo "MOM_LINUX_BUILD_COMPILER must be all, oneapi, dpcpp, dpcpp-opencl, acpp-cuda, or acpp-hip" >&2; exit 2 ;;
 esac
 case "$backend:$build_compiler" in
-  intel:all|intel:oneapi|intel:dpcpp-opencl|nvidia:all|nvidia:dpcpp|\
+  intel:all|intel:oneapi|intel:dpcpp-opencl|intel_igpu:all|intel_igpu:dpcpp-opencl|nvidia:all|nvidia:dpcpp|\
   nvidia:dpcpp-opencl|nvidia:acpp-cuda|amd:all|amd:dpcpp-opencl|amd:acpp-hip|\
   opencl:all|opencl:dpcpp-opencl|all:*) ;;
   *) echo "MOM_LINUX_BUILD_COMPILER=$build_compiler is incompatible with MOM_GPU_BACKEND=$backend" >&2; exit 2 ;;
@@ -33,7 +39,7 @@ case "$backend" in
     selected dpcpp-opencl && build_compilers+=(dpcpp-opencl)
     selected acpp-hip && build_compilers+=(acpp-hip)
     default=${build_compiler/all/acpp-hip} ;;
-  opencl)
+  intel_igpu|opencl)
     build_compilers+=(dpcpp-opencl)
     default=dpcpp-opencl ;;
   all)
@@ -61,13 +67,13 @@ if [ -n "${MOM_GPU_INDEX:-}" ]; then
   case "$MOM_GPU_INDEX" in *[!0-9]*) echo "MOM_GPU_INDEX must be a non-negative integer" >&2; exit 2 ;; esac
   case "$backend" in
     # Device names are sorted by hardware name before the addon applies MOM_GPU_INDEX.
-    intel) export ONEAPI_DEVICE_SELECTOR="${ONEAPI_DEVICE_SELECTOR:-level_zero:gpu}" ;;
+    intel|intel_igpu) export ONEAPI_DEVICE_SELECTOR="${ONEAPI_DEVICE_SELECTOR:-level_zero:gpu}" ;;
     nvidia) export ONEAPI_DEVICE_SELECTOR="${ONEAPI_DEVICE_SELECTOR:-cuda:$MOM_GPU_INDEX}" ;;
     amd) export HIP_VISIBLE_DEVICES="${HIP_VISIBLE_DEVICES:-$MOM_GPU_INDEX}" ;;
     opencl) export ONEAPI_DEVICE_SELECTOR="${ONEAPI_DEVICE_SELECTOR:-opencl:$opencl_device_type}" ;;
   esac
 fi
-if [ "$backend" = intel ]; then
+if [ "$backend" = intel ] || [ "$backend" = intel_igpu ]; then
   export ONEAPI_DEVICE_SELECTOR="${ONEAPI_DEVICE_SELECTOR:-level_zero:gpu}"
 fi
 if [ "$backend" = nvidia ]; then
@@ -115,7 +121,7 @@ source_fingerprint() {
 case "${MOM_REUSE_BUILT_WORKER:-0}" in
   0) ;;
   1)
-    if [ "$backend" = nvidia ] || [ "$backend" = opencl ]; then
+    if [ "$backend" = nvidia ] || [ "$backend" = opencl ] || [ "$backend" = intel_igpu ]; then
       export PATH="/opt/dpcpp/bin:$PATH"
       export LD_LIBRARY_PATH="/opt/dpcpp/lib:${LD_LIBRARY_PATH:-}"
     fi
@@ -191,12 +197,12 @@ restore_platform_tree() {
   if [ -d "$platforms_hold" ]; then mv "$platforms_hold" build; else mkdir -p build; fi
 }
 trap restore_platform_tree EXIT
-# The NVIDIA and generic OpenCL workers are built by the open-source DPC++ tree, not oneAPI. Keep
+# NVIDIA, Intel integrated, and generic OpenCL workers use the open-source DPC++ tree, not oneAPI. Keep
 # its compiler/runtime first; NVIDIA also needs CUDA tools for KawPow's runtime SYCL-source JIT.
 # Without this, libsycl-jit resolves its resource directory as /lib/clang/... and silently falls
 # back to the roughly 3x slower AOT ProgPoW kernel. Packaged workers carry the same files beside the
 # addon; this path setup is specifically for the consolidated development container used by r.sh.
-if [ "$backend" = nvidia ] || [ "$backend" = opencl ]; then
+if [ "$backend" = nvidia ] || [ "$backend" = opencl ] || [ "$backend" = intel_igpu ]; then
   export PATH="/opt/dpcpp/bin:$PATH"
   export LD_LIBRARY_PATH="/opt/dpcpp/lib:${LD_LIBRARY_PATH:-}"
 fi

@@ -1,6 +1,6 @@
 param(
   [Parameter(Mandatory = $true)]
-  [ValidateSet('intel','nvidia','amd','opencl')]
+  [ValidateSet('intel','intel_igpu','nvidia','amd','opencl')]
   [string]$Backend,
   [ValidateSet('all','oneapi','dpcpp','portable','adaptivecpp')]
   [string]$Compiler = 'all',
@@ -20,7 +20,8 @@ $nativeDir = Join-Path $repo 'build\win\compilers'
 $env:MOM_NATIVE_DIR = $nativeDir
 $env:MOM_REQUIRE_GPU_TESTS = '1'
 $env:MOM_GPU_BACKEND = $Backend
-$env:MOM_GPU_TEST_VENDORS = $Backend
+$env:MOM_GPU_TEST_VENDORS = if ($Backend -eq 'intel_igpu') { 'intel' } else { $Backend }
+if ($Backend -eq 'intel_igpu') { $env:MOM_REQUIRE_INTEGRATED_GPU_TESTS = '1' }
 $env:NODE_TEST_FLUSH_BUFFERED_OUTPUT = '1'
 $env:SYCL_CACHE_PERSISTENT = '1'
 
@@ -34,7 +35,8 @@ function Invoke-GpuSuite(
   [string]$Label,
   [string]$Compiler,
   [string]$SelectorName = '',
-  [string]$SelectorValue = ''
+  [string]$SelectorValue = '',
+  [string]$Suite = 'discrete_gpu'
 ) {
   Clear-SelectorEnvironment
   $runtime = Join-Path $nativeDir $Compiler
@@ -56,7 +58,7 @@ function Invoke-GpuSuite(
 
   $log = Join-Path $env:TEMP ("mom-gpu-{0}.log" -f ($Label -replace '[^A-Za-z0-9_.-]', '-'))
   Write-Host "=== $Label ==="
-  & node.exe --require .\tests\common\test_output_buffer.js --test --test-concurrency=1 .\tests\discrete_gpu.js *> $log
+  & node.exe --require .\tests\common\test_output_buffer.js --test --test-concurrency=1 ".\tests\$Suite.js" *> $log
   $status = $LASTEXITCODE
   if ($status -ne 0) {
     Get-Content $log
@@ -96,6 +98,12 @@ $compilerLanes = 0
 $portableLanes = 0
 
 switch ($Backend) {
+  'intel_igpu' {
+    if ($Compiler -in @('all','portable')) {
+      Invoke-GpuSuite 'Intel integrated portable' 'dpcpp-opencl' 'ONEAPI_DEVICE_SELECTOR' 'level_zero:gpu' 'integrated_gpu'
+      $compilerLanes++
+    }
+  }
   'intel' {
     if ($Compiler -in @('all','oneapi')) {
       Invoke-GpuSuite 'Intel oneAPI' 'oneapi' 'ONEAPI_DEVICE_SELECTOR' 'level_zero:gpu'

@@ -194,7 +194,8 @@ if (!h.cluster_process()) {
     // Intel and AMD CryptoNight-GPU workers need two complete windows to reach their steady rate on
     // both operating systems. Exclude those cold windows from profitability and tuning decisions.
     const gpuVendor = compilerPolicy.gpuFromEnv(process.env);
-    const warmupSamples = algo === "cn/gpu" && (gpuVendor === "intel" || gpuVendor === "amd") ? 2 : 0;
+    const warmupSamples = algo === "cn/gpu" &&
+      ["intel", "intel_igpu", "amd"].includes(gpuVendor) ? 2 : 0;
     /** @type {number[]} */
     const rates = [];
     /** @param {number} hashrate */

@@ -346,6 +346,9 @@ fi
 
 # Run the extracted ./mom from inside the package dir, with LD_LIBRARY_PATH
 # unset so the loader must find the bundled libs via rpath alone.
+if [ "$suite" = gpu-integrated ]; then
+  export MOM_GPU_BACKEND=intel_igpu
+fi
 run_mom() { (cd "$package_dir" && env -u LD_LIBRARY_PATH "$@" ./mom algorithms); }
 
 capture run_mom

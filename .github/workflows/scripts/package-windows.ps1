@@ -115,9 +115,11 @@ if defined MOM_GPU_INDEX for /f "delims=0123456789" %%I in ("%MOM_GPU_INDEX%") d
 set "MOM_NATIVE_DIR=%MOM_LIBS%"
 if not defined MOM_NATIVE_PATH set "MOM_NATIVE_PATH_WAS_UNSET=1"
 if /I "%MOM_GPU_BACKEND%"=="intel" if not defined MOM_NATIVE_PATH set "MOM_NATIVE_PATH=%MOM_LIBS%\oneapi\mom.node"
+if /I "%MOM_GPU_BACKEND%"=="intel_igpu" if not defined MOM_NATIVE_PATH set "MOM_NATIVE_PATH=%MOM_LIBS%\dpcpp-opencl\mom.node"
 if /I "%MOM_GPU_BACKEND%"=="intel" if not defined UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS set "UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS=1"
 rem Keep every Intel GPU visible: the addon applies MOM_GPU_INDEX after stable hardware-name sorting.
 if /I "%MOM_GPU_BACKEND%"=="intel" if not defined ONEAPI_DEVICE_SELECTOR set "ONEAPI_DEVICE_SELECTOR=level_zero:gpu"
+if /I "%MOM_GPU_BACKEND%"=="intel_igpu" if not defined ONEAPI_DEVICE_SELECTOR set "ONEAPI_DEVICE_SELECTOR=level_zero:gpu"
 rem Only trusted policy keys and newly isolated numeric masks cross the cmd assignment boundary.
 rem Inherited masks stay untouched; query failure selects portable, invalid indexed masks abort.
 set "MOM_VENDOR_RUNTIME="
@@ -142,17 +144,20 @@ rem UR's Windows proxy loader only searches beside its own DLL. Force the one is
 rem selected by this launcher; drive-letter paths must be quoted inside UR_ADAPTERS_FORCE_LOAD.
 rem Quote DLL values directly: outer SET quotes would expose path punctuation.
 if /I "%MOM_GPU_BACKEND%"=="intel" if not defined UR_ADAPTERS_FORCE_LOAD set UR_ADAPTERS_FORCE_LOAD="%MOM_LIBS%\oneapi\ur_adapter_level_zero_v2.dll","%MOM_LIBS%\oneapi\ur_adapter_opencl.dll"
+if /I "%MOM_GPU_BACKEND%"=="intel_igpu" if not defined UR_ADAPTERS_FORCE_LOAD set UR_ADAPTERS_FORCE_LOAD="%MOM_LIBS%\dpcpp-opencl\ur_adapter_level_zero_v2.dll","%MOM_LIBS%\dpcpp-opencl\ur_adapter_opencl.dll"
 if /I "%MOM_VENDOR_RUNTIME%"=="dpcpp" if not defined UR_ADAPTERS_FORCE_LOAD set UR_ADAPTERS_FORCE_LOAD="%MOM_LIBS%\dpcpp\ur_adapter_cuda.dll"
 if /I "%MOM_GPU_BACKEND%"=="opencl" if not defined UR_ADAPTERS_FORCE_LOAD set UR_ADAPTERS_FORCE_LOAD="%MOM_LIBS%\dpcpp-opencl\ur_adapter_opencl.dll"
 if not defined MOM_NATIVE_PATH set "MOM_NATIVE_PATH=%MOM_LIBS%\oneapi\mom.node"
 if defined MOM_NATIVE_PATH_WAS_UNSET set "MOM_NATIVE_PATH_LAUNCHER_DEFAULT=%MOM_NATIVE_PATH%"
 set "MOM_NATIVE_PATH_WAS_UNSET="
 if not defined MOM_RUNTIME_DIR if /I "%MOM_GPU_BACKEND%"=="intel" set "MOM_RUNTIME_DIR=%MOM_LIBS%\oneapi"
+if not defined MOM_RUNTIME_DIR if /I "%MOM_GPU_BACKEND%"=="intel_igpu" set "MOM_RUNTIME_DIR=%MOM_LIBS%\dpcpp-opencl"
 if not defined MOM_RUNTIME_DIR if defined MOM_VENDOR_RUNTIME set "MOM_RUNTIME_DIR=%MOM_LIBS%\%MOM_VENDOR_RUNTIME%"
 if not defined MOM_RUNTIME_DIR if /I "%MOM_GPU_BACKEND%"=="opencl" set "MOM_RUNTIME_DIR=%MOM_LIBS%\dpcpp-opencl"
 if not defined MOM_RUNTIME_DIR set "MOM_RUNTIME_DIR=%MOM_LIBS%\oneapi"
 rem Share oneAPI JIT dependencies; the selected runtime's sycl.dll must win PATH lookup.
 if /I "%MOM_GPU_BACKEND%"=="opencl" set "PATH=%MOM_LIBS%\oneapi;%PATH%"
+if /I "%MOM_GPU_BACKEND%"=="intel_igpu" set "PATH=%MOM_LIBS%\oneapi;%PATH%"
 if defined MOM_RUNTIME_DIR set "PATH=%MOM_RUNTIME_DIR%;%MOM_RUNTIME_DIR%\hipSYCL;%PATH%"
 if /I not "%MOM_GPU_BACKEND%"=="opencl" if not defined OCL_ICD_FILENAMES for %%F in ("%MOM_LIBS%\intelocl*.dll") do if exist "%%~fF" set "OCL_ICD_FILENAMES=%%~fF"
 "%MOM_DIR%mom-node.exe" "%MOM_DIR%mom.bundle.cjs" %*

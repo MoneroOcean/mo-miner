@@ -152,9 +152,13 @@ script_dir=$(CDPATH= cd -- "$script_dir" && pwd -P)
 libs="$script_dir/libs"
 MOM_COMMAND=${MOM_COMMAND:-./mom}
 export MOM_COMMAND
+case "${MOM_GPU_BACKEND:-}" in
+  [iI][nN][tT][eE][lL]) export MOM_GPU_BACKEND=intel ;;
+  [iI][nN][tT][eE][lL]_[iI][gG][pP][uU]) export MOM_GPU_BACKEND=intel_igpu ;;
+esac
 
 # Auto-select only on single-vendor systems. On a mixed-vendor host the requested worker/device is
-# ambiguous, so MOM_GPU_BACKEND=intel|nvidia|amd|opencl is intentionally explicit. `opencl` is the
+# ambiguous, so MOM_GPU_BACKEND=intel|intel_igpu|nvidia|amd|opencl is intentionally explicit. `opencl` is the
 # best-effort generic SPIR-V fallback for a driver not covered by those native vendor paths.
 if [ -z "${MOM_GPU_BACKEND:-}" ]; then
   intel=0
@@ -249,6 +253,9 @@ case "${MOM_GPU_BACKEND:-}" in
     UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS=${UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS:-1}
     export UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS
     ;;
+  intel_igpu)
+    key=dpcpp-opencl; selector_backend=level_zero; selector_default="level_zero:gpu"
+    ;;
   nvidia)
     capabilities=
     if [ -z "${MOM_NVIDIA_COMPUTE_CAPABILITY:-}" ]; then
@@ -307,7 +314,7 @@ case "${MOM_GPU_BACKEND:-}" in
 esac
 if [ -n "$selector_backend" ] && [ -z "${ONEAPI_DEVICE_SELECTOR:-}" ]; then
   if [ -n "${MOM_GPU_INDEX:-}" ]; then
-    if [ "${MOM_GPU_BACKEND:-}" = intel ]; then
+    if [ "${MOM_GPU_BACKEND:-}" = intel ] || [ "${MOM_GPU_BACKEND:-}" = intel_igpu ]; then
       ONEAPI_DEVICE_SELECTOR="level_zero:gpu"
     elif [ "${MOM_GPU_BACKEND:-}" = opencl ]; then
       # Keep all matching ICD devices visible; the addon applies the index after stable sorting.

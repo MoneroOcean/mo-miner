@@ -1,5 +1,5 @@
 param(
-  [ValidateSet('all','intel','nvidia','amd','opencl')][string]$Backend = 'all',
+  [ValidateSet('all','intel','intel_igpu','nvidia','amd','opencl')][string]$Backend = 'all',
   [ValidateSet('all','oneapi','dpcpp','portable','adaptivecpp')][string]$Compiler = 'all',
   [string]$DpcppDir = $(if ($env:MOM_DPCPP_DIR) { $env:MOM_DPCPP_DIR } else { 'C:\Tools\dpcpp' }),
   [string]$AcppCudaDir = 'C:\Tools\acpp-cuda',
@@ -15,6 +15,7 @@ Set-Location $repo
 $supportedCompilers = switch ($Backend) {
   'all'    { @('all') }
   'intel'  { @('all','oneapi','dpcpp','portable') }
+  'intel_igpu' { @('all','portable') }
   'nvidia' { @('all','dpcpp','portable','adaptivecpp') }
   'amd'    { @('all','portable','adaptivecpp') }
   'opencl' { @('all','portable') }
@@ -219,7 +220,7 @@ try {
   # The same standards-only SPIR-V image serves generic OpenCL on every vendor and Level Zero on
   # Intel integrated GPUs. Keep it in targeted vendor builds so any config can select a portable
   # backend without first rebuilding under MOM_GPU_BACKEND=opencl.
-  if ($Backend -in @('all','intel','nvidia','amd','opencl') -and $Compiler -in @('all','portable')) {
+  if ($Backend -in @('all','intel','intel_igpu','nvidia','amd','opencl') -and $Compiler -in @('all','portable')) {
     & "$PSScriptRoot\build-sycl-cuda-win.ps1" -ToolchainDir $DpcppDir -CudaPath '' -PortableOpencl
     Save-Compiler dpcpp-opencl
     # Keep this compiler-matched source runtime local; a targeted portable rebuild must not

@@ -128,9 +128,19 @@ static unsigned gpu_number(const std::string& name) {
   return number;
 }
 
-static unsigned selected_stable_gpu_number() {
+static std::string selected_gpu_backend() {
   const char* const backend = std::getenv("MOM_GPU_BACKEND");
-  if (!backend || (std::strcmp(backend, "intel") != 0 && std::strcmp(backend, "opencl") != 0))
+  std::string selected = backend ? backend : "";
+  for (char& c : selected) {
+    if (c >= 'A' && c <= 'Z')
+      c = static_cast<char>(c + ('a' - 'A'));
+  }
+  return selected;
+}
+
+static unsigned selected_stable_gpu_number() {
+  const std::string backend = selected_gpu_backend();
+  if (backend != "intel" && backend != "intel_igpu" && backend != "opencl")
     return 0;
   unsigned long index = 0;
   if (!mom_parse_env_ulong("MOM_GPU_INDEX", index))
@@ -162,7 +172,7 @@ static void sort_gpus_by_name() {
   str2dev.swap(sorted);
 }
 
-static void update_str2dev(const bool verbose = false) {
+static void update_str2dev(const bool verbose = false) try {
   str2dev.clear();
   unsigned cpu_num = 0, next_gpu_num = 0;
   std::map<std::string, std::string> gpu2base;
@@ -199,6 +209,18 @@ static void update_str2dev(const bool verbose = false) {
   // Backend enumeration order can change with runtime/driver versions. Assign mom's public gpuN
   // names by the full hardware-name string so a mixed iGPU/dGPU system remains deterministic.
   sort_gpus_by_name();
+  const std::string backend = selected_gpu_backend();
+  if (backend == "intel" || backend == "intel_igpu") {
+    // Filter after naming: an excluded device must not shift another physical GPU's public index.
+    // Metadata errors propagate; an unknown memory class must never be treated as discrete.
+    std::erase_if(str2dev, [&backend](const auto& pair) {
+      if (!pair.second.is_gpu())
+        return false;
+      return pair.second.template get_info<sycl::info::device::vendor>().find("Intel") ==
+                 std::string::npos ||
+             is_integrated_gpu(pair.second) != (backend == "intel_igpu");
+    });
+  }
   // A multi-vendor runtime does not promise stable device order. Sort first, then apply
   // MOM_GPU_INDEX to mom's stable physical gpuN names.
   const unsigned selected_gpu = selected_stable_gpu_number();
@@ -225,6 +247,10 @@ static void update_str2dev(const bool verbose = false) {
       }
       std::cout << std::endl;
     }
+} catch (...) {
+  // A retry must repeat discovery, never consume a partially validated device registry.
+  str2dev.clear();
+  throw;
 }
 
 static std::string available_dev_str() {

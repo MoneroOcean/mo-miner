@@ -12,16 +12,18 @@
 
 ## Defaults
 
-| OS      | GPU    | Compiler     | Backend     | PearlHash MxNxK/rank   |
-| ------- | ------ | ------------ | ----------- | ---------------------- |
-| Linux   | Intel  | oneapi       | sycl        | 131072x131072x2048/128 |
-| Windows | Intel  | oneapi       | sycl        | 131072x131072x2048/128 |
-| Linux   | NVIDIA | dpcpp        | sycl        | 131072x524288x8192/128 |
-| Windows | NVIDIA | dpcpp        | sycl        | 131072x524288x8192/128 |
-| Linux   | AMD    | acpp-hip     | sycl        | 131072x131072x2048/128 |
-| Windows | AMD    | acpp-hip     | sycl        | 131072x131072x2048/128 |
-| Linux   | OpenCL | dpcpp-opencl | sycl-opencl | —                      |
-| Windows | OpenCL | dpcpp-opencl | sycl-opencl | —                      |
+| OS      | GPU        | Compiler     | Backend     | PearlHash MxNxK/rank   |
+| ------- | ---------- | ------------ | ----------- | ---------------------- |
+| Linux   | Intel      | oneapi       | sycl        | 131072x131072x2048/128 |
+| Windows | Intel      | oneapi       | sycl        | 131072x131072x2048/128 |
+| Linux   | Intel_iGPU | dpcpp-opencl | sycl        | —                      |
+| Windows | Intel_iGPU | dpcpp-opencl | sycl        | —                      |
+| Linux   | NVIDIA     | dpcpp        | sycl        | 131072x524288x8192/128 |
+| Windows | NVIDIA     | dpcpp        | sycl        | 131072x524288x8192/128 |
+| Linux   | AMD        | acpp-hip     | sycl        | 131072x131072x2048/128 |
+| Windows | AMD        | acpp-hip     | sycl        | 131072x131072x2048/128 |
+| Linux   | OpenCL     | dpcpp-opencl | sycl-opencl | —                      |
+| Windows | OpenCL     | dpcpp-opencl | sycl-opencl | —                      |
 
 ## Overrides
 
@@ -111,3 +113,6 @@
 | beamhash3     | Windows | AMD    | —         | sycl-native |
 
 Legend: `—` means inherit the default in the matching Defaults row.
+
+Intel selects discrete GPUs (`MOM_GPU_BACKEND=intel`); Intel_iGPU selects integrated GPUs
+(`MOM_GPU_BACKEND=intel_igpu`).
