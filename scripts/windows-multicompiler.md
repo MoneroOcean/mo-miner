@@ -101,7 +101,8 @@ build\win\compilers\
 a single GPU vendor and loads its default addon before `algorithms` discovery. `GPU-CONFIG.md` then
 selects each worker before it is spawned, so incompatible `sycl9.dll`/AdaptiveCpp runtimes never
 enter the same process.
-Set `MOM_GPU_BACKEND=intel|nvidia|amd|opencl` on a mixed-vendor host.
+Set `MOM_GPU_BACKEND=intel|intel_igpu|nvidia|amd|opencl` on a mixed-vendor host.
+`intel` selects discrete Intel GPUs; `intel_igpu` uses the portable worker for integrated GPUs.
 
 Release builds move the copied `build/` tree aside, compile into a clean Windows tree, then restore
 the preserved caches and replace only `build/win`; this prevents a Linux ELF addon from surviving an

@@ -1,7 +1,18 @@
+<div align="center">
+
 # MO-Miner
 
 `mom` is an open-source cryptocurrency miner for CPU and GPU
 algorithms. It supports pool algorithm switching and a simple command-line configuration.
+
+<p>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg" alt="License: GPL-3.0-or-later"></a>
+  <img src="https://img.shields.io/badge/platform-Linux%20%7C%20Windows-lightgrey.svg" alt="Platform: Linux and Windows">
+  <img src="https://img.shields.io/badge/focus-CPU%20%26%20GPU%20mining-2da44e.svg" alt="Focus: CPU and GPU mining">
+  <a href="https://github.com/MoneroOcean"><img src="https://img.shields.io/badge/MoneroOcean-ecosystem-6f42c1.svg" alt="MoneroOcean ecosystem"></a>
+</p>
+
+</div>
 
 mom supports algorithm switching through `mom.moneroocean.stream`.
 
@@ -227,11 +238,11 @@ MOM_GPU_BACKEND=intel ./mom algorithms       # Linux
 set "MOM_GPU_BACKEND=intel" && mom.cmd algorithms  # Windows Command Prompt
 ```
 
-Valid values are `intel`, `nvidia`, `amd`, and `opencl`. The first three select a vendor device
-group; `opencl` is the generic path for another GPU vendor and defaults to GPU devices. Set
-`MOM_OPENCL_DEVICE_TYPE=cpu` to use its portable CPU path. Run separate mom processes with different
-values to use multiple GPU vendors concurrently. To select one GPU, add the zero-based
-`MOM_GPU_INDEX`:
+Valid values are `intel` (Intel discrete GPUs only), `intel_igpu` (Intel integrated GPUs only),
+`nvidia`, `amd`, and `opencl` (generic OpenCL GPUs). Use `MOM_GPU_BACKEND=intel_igpu` to select
+Intel integrated GPUs; `intel` never falls back to them. Set `MOM_OPENCL_DEVICE_TYPE=cpu`
+with `opencl` for the portable CPU path. Run separate mom processes to use different groups
+concurrently. To select one GPU, add the zero-based `MOM_GPU_INDEX`:
 
 ```
 MOM_GPU_BACKEND=intel MOM_GPU_INDEX=0 ./mom algorithms
@@ -239,8 +250,10 @@ set "MOM_GPU_BACKEND=intel" && set "MOM_GPU_INDEX=0" && mom.cmd algorithms
 ```
 
 First run `algorithms` without the index to see each numbered GPU and its full hardware name.
-Intel and OpenCL indices follow the displayed devices; NVIDIA and AMD indices use their vendor
-runtime's logical ordering, which need not match displayed `gpuN` names or `nvidia-smi` rows.
+For Intel and OpenCL, displayed `gpuN` uses index `N-1`. Intel device numbers stay unchanged when
+switching between `intel` and `intel_igpu`, so the list can have gaps. NVIDIA and AMD indices use
+their vendor runtime's logical ordering, which need not match displayed `gpuN` names or
+`nvidia-smi` rows.
 CUDA/HIP renumber an isolated device to `gpu1`; use the selected run's reported name in explicit
 `--job.dev` settings. With an inherited CUDA/HIP visibility mask, use a single-device mask and
 `MOM_GPU_INDEX=0`, or omit the index and select a reported `--job.dev`. Indexed inherited lists
@@ -324,24 +337,28 @@ On its first run, this Linux example benchmarks MoneroOcean algorithms supported
 and `pearlhash`, then starts mining. Use `--bench_algo_params 2` to benchmark every locally supported
 algorithm instead. The example selects Intel; see [GPU selection](#gpu-selection) for other GPUs.
 
+Use `--job.dev gpu1` to switch algorithms on that GPU only, including benchmarks and donations.
+Choose a device reported by `mom algorithms`; `cpu` selects the CPU and `gpu1,gpu2` selects two GPUs.
+No per-algorithm configuration is needed.
+
 The example uses MoneroOcean's donation address. Replace it with your own wallet address to receive
 payouts.
 
 ```
-MOM_GPU_BACKEND=intel MOM_GPU_INDEX=0 ./mom mine \
+MOM_GPU_BACKEND=intel ./mom mine \
   mom.moneroocean.stream:20001tls \
   89TxfrUmqJJcb1V124WsUzA78Xa3UYHt7Bg8RGMhXVeZYPN8cE5CZEk58Y1m23ZMLHN7wYeJ9da5n5MXharEjrm41hSnWHL \
-  --save_config config.json
+  --job.dev gpu1 --save_config config.json
 ```
 
 Next time you can reuse saved config.json file to avoid running benchmarks again before mining:
 
 ```
-MOM_GPU_BACKEND=intel MOM_GPU_INDEX=0 ./mom mine ./config.json
+MOM_GPU_BACKEND=intel ./mom mine ./config.json
 ```
 
-Keep the same backend and device-selection environment controls when reusing a config; they are
-not stored in the JSON file.
+The saved config retains the selected mining devices and benchmark results. Keep the same backend
+and any device-selection environment controls when reusing it; environment controls are not saved.
 
 ## Mining on other pools
 
