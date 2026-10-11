@@ -188,20 +188,23 @@ module.exports = ({
       let settled = false;
       /** @type {ReturnType<typeof schedule> | null} */
       let shutdownTimer = null;
+      const shutdownGraceMs = benchmarkShutdownGraceMs(definition);
 
       const stop = () => {
         if (stopping) {return;}
         stopping = true;
+        // Measurement is complete; a long cooperative close must not overwrite a valid sample.
+        cancel(timeout);
         shutdownTimer = schedule(() => {
           result.error = result.error || new Error(
-            `Benchmark child did not exit after ${BENCHMARK_SHUTDOWN_GRACE_MS}ms`
+            `Benchmark child did not exit after ${shutdownGraceMs}ms`
           );
           result.signal = result.signal || "SIGKILL";
           killProcessTree(child);
           child.stdout.destroy();
           child.stderr.destroy();
           finish();
-        }, BENCHMARK_SHUTDOWN_GRACE_MS);
+        }, shutdownGraceMs);
         if (child.stdin?.writable) {
           child.stdin.write("close\n");
         } else {
@@ -287,8 +290,16 @@ module.exports = ({
   }
 
   /** @param {HashDefinition} definition */
+  function benchmarkShutdownGraceMs(definition) {
+    // Pearl drains the active search dispatch before processing close.
+    return definition.job.algo === "pearlhash" ? 180 * 1000 : BENCHMARK_SHUTDOWN_GRACE_MS;
+  }
+
+  /** @param {HashDefinition} definition */
   function benchmarkTestTimeoutMs(definition) {
-    return benchmarkTimeoutMs(definition) + BENCHMARK_TEST_MARGIN_MS;
+    const cleanupBudget = definition.job.algo === "pearlhash"
+      ? benchSampleCount(definition) * benchmarkShutdownGraceMs(definition) : 0;
+    return benchmarkTimeoutMs(definition) + cleanupBudget + BENCHMARK_TEST_MARGIN_MS;
   }
 
   return {benchmarkTestTimeoutMs, benchmarkTimeoutMs, runMinerBench, runMinerTest};

@@ -77,6 +77,8 @@ const repoRoot = path.join(__dirname, "..", "..");
  *   startDonationWindow: () => void
  * }} MinerTestExports */
 /** @typedef {{__test?: MinerTestExports}} VmExports */
+/** @typedef {{callback: () => void, delay: number, cleared: boolean}} MinerTimer */
+/** @typedef {Parameters<typeof import("../../miner/gpu_autotune")>[0]["benchAlgo"]} BenchAlgo */
 /** @typedef {{opt: TestOptions}} TestGlobal */
 /** @typedef {import("node:events").EventEmitter & {
  *   argv: string[], env: NodeJS.ProcessEnv, platform: NodeJS.Platform,
@@ -125,7 +127,8 @@ function completeMiningJob(job) {
  *   process: StubProcess, loggedErrors: string[], loggedMessages: string[], poolConnects: number[],
  *   poolSwitches: number[], poolWrites: Array<{pool_id: number, json: JsonObject}>, sentMessages: TestMessage[],
  *   workerCloseDeadlines: number[], exitCodes: number[], recreatedThreadCount: () => number,
- *   createdCoreCount: () => number, writtenStdout: string
+ *   createdCoreCount: () => number, writtenStdout: string,
+ *   timers: MinerTimer[], benchAlgo: BenchAlgo
  * }>} */
 async function loadMinerWithStubs(options = {}) {
   const source = fs.readFileSync(path.join(repoRoot, "mom.js"), "utf8");
@@ -156,6 +159,12 @@ async function loadMinerWithStubs(options = {}) {
   const writtenStdout = [];
   /** @type {((job: TestJob) => LiveNativeJob) | null} */
   let capturedSetJob = null;
+  /** @type {BenchAlgo | null} */
+  let capturedBenchAlgo = null;
+  /** @type {MinerTimer[]} */
+  const timers = [];
+  /** @type {Map<ReturnType<typeof setTimeout>, MinerTimer>} */
+  const capturedTimers = new Map();
   const algoParams = options.algoParams || {};
   const helperStub = {
     ...helper,
@@ -231,9 +240,22 @@ async function loadMinerWithStubs(options = {}) {
   /** @param {(...args: never[]) => void} callback @param {number | undefined} delay
    * @param {...never} args */
   const detachedSetTimeout = function(callback, delay, ...args) {
-    const timer = setTimeout(() => callback(...args), delay);
+    const record = {callback: () => {
+      clearTimeout(timer);
+      record.cleared = true;
+      callback(...args);
+    }, delay: delay ?? 0, cleared: false};
+    const timer = setTimeout(record.callback, delay);
+    timers.push(record);
+    capturedTimers.set(timer, record);
     if (timer.unref) {timer.unref();}
     return timer;
+  };
+  /** @param {ReturnType<typeof setTimeout> | undefined} timer */
+  const capturedClearTimeout = (timer) => {
+    const record = timer && capturedTimers.get(timer);
+    if (record) {record.cleared = true;}
+    clearTimeout(timer);
   };
   /** @param {string} id */
   const requireStub = (id) => {
@@ -243,6 +265,13 @@ async function loadMinerWithStubs(options = {}) {
     if (id === "./opts.js") {return opts;}
     if (id === "./compiler-policy.js") {return require("../../compiler-policy.js");}
     if (id === "./gpu-tuning.js") {return require("../../gpu-tuning.js");}
+    if (id === "./miner/gpu_autotune") {
+      const create = require(path.join(repoRoot, id));
+      return (/** @type {Parameters<typeof import("../../miner/gpu_autotune")>[0]} */ dependencies) => {
+        capturedBenchAlgo = dependencies.benchAlgo;
+        return create(dependencies);
+      };
+    }
     if (id.startsWith("./miner/")) {return require(path.join(repoRoot, id));}
     return require(id);
   };
@@ -255,7 +284,7 @@ async function loadMinerWithStubs(options = {}) {
   })`;
   vm.runInNewContext(wrappedSource, {})(
     requireStub, moduleStub, moduleStub.exports, processStub, globalStub, console, Buffer,
-    detachedSetTimeout, clearTimeout, noOp, setImmediate,
+    detachedSetTimeout, capturedClearTimeout, noOp, setImmediate,
   );
 
   const hasExpectedMessage = () =>
@@ -266,6 +295,7 @@ async function loadMinerWithStubs(options = {}) {
   const testExports = moduleStub.exports.__test;
   if (!testExports) {throw new Error("VM miner did not expose test helpers");}
   if (!globalStub.opt) {throw new Error("VM miner did not initialize global options");}
+  if (!capturedBenchAlgo) {throw new Error("VM miner did not initialize benchmarking");}
   return {
     getSetJob: () => {
       if (!capturedSetJob) {throw new Error("VM miner did not register a pool job callback");}
@@ -290,6 +320,8 @@ async function loadMinerWithStubs(options = {}) {
     recreatedThreadCount: () => recreatedThreadCount,
     createdCoreCount: () => createdCoreCount,
     writtenStdout: writtenStdout.join(""),
+    timers,
+    benchAlgo: capturedBenchAlgo,
   };
 }
 

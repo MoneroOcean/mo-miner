@@ -1363,6 +1363,70 @@ describe("Donation discovery and runtime device isolation", () => {
 });
 
 describe("Algorithm benchmarks and job metadata", () => {
+  test("Pearl startup benchmarking accepts the first production-sized rate after 289 seconds", async () => {
+    const miner = await loadMinerWithStubs({
+      algoParams: {pearlhash: "gpu1*[m=131072;n=524288;k=8192;rank=128]"},
+      waitForMessageType: "bench",
+    });
+    const deadline = miner.timers.find(({delay}) => delay >= 4 * 60 * 1000);
+    assert.ok(deadline);
+    if (deadline.delay <= 289000) {deadline.callback();}
+    completeOneBenchmark(miner, "3940000000000");
+    assert.equal(requireAlgoParam(miner, "pearlhash").perf, 3940000000000);
+    assert.equal(deadline.delay, 6 * 60 * 1000);
+    assert.equal(deadline.cleared, true);
+    assert.deepEqual(miner.loggedErrors, []);
+  });
+
+  test("Pearl additional startup samples tolerate 143-second dispatch intervals", async () => {
+    const miner = await loadMinerWithStubs({
+      argv: ["node", "mom.js", "bench", "pearlhash"],
+      waitForMessageType: "bench",
+    });
+    /** @type {number[]} */
+    const rates = [];
+    miner.benchAlgo("pearlhash", (rate) => rates.push(rate), "gpu1", 3);
+    const deadline = miner.timers.at(-1);
+    assert.ok(deadline);
+    for (const elapsed of [289000, 432000, 575000]) {
+      if (!deadline.cleared && deadline.delay <= elapsed) {deadline.callback();}
+      completeOneBenchmark(miner, "3940000000000");
+    }
+    assert.deepEqual(rates, [3940000000000]);
+    assert.equal(deadline.delay, 12 * 60 * 1000);
+    assert.equal(deadline.cleared, true);
+  });
+
+  test("startup benchmark timeouts preserve other algorithms and genuine Pearl failures", async () => {
+    const miner = await loadMinerWithStubs({
+      argv: ["node", "mom.js", "bench", "pearlhash"],
+      waitForMessageType: "bench",
+    });
+    for (const [algo, samples, minutes] of [["etchash", 1, 4], ["etchash", 3, 8],
+      ["verthash", 1, 34], ["verthash", 3, 38]]) {
+      miner.benchAlgo(String(algo), noOp, "gpu1", Number(samples));
+      assert.equal(miner.timers.at(-1)?.delay, Number(minutes) * 60 * 1000);
+    }
+    /** @type {number[]} */
+    const failed = [];
+    miner.benchAlgo("pearlhash", (rate) => failed.push(rate), "gpu1", 1);
+    miner.timers.at(-1)?.callback();
+    assert.deepEqual(failed, [0]);
+    assert.match(miner.loggedErrors.at(-1) || "", /Benchmark pearlhash.*timeout/);
+    miner.benchAlgo("pearlhash", (rate) => failed.push(rate), "gpu1", 1);
+    completeOneBenchmark(miner, "0");
+    assert.deepEqual(failed, [0, 0]);
+    assert.equal(miner.timers.at(-1)?.cleared, true);
+  });
+
+  test("standalone Pearl bench leaves its measurement deadline to the controlling harness", async () => {
+    const miner = await loadMinerWithStubs({
+      argv: ["node", "mom.js", "bench", "pearlhash"],
+      waitForMessageType: "bench",
+    });
+    assert.equal(miner.timers.some(({delay}) => delay >= 4 * 60 * 1000), false);
+  });
+
   test("default algo benchmarking only includes MoneroOcean algos plus rx/2", async () => {
     const miner = await loadMinerWithStubs({
       algoParams: {
@@ -1439,6 +1503,7 @@ describe("Algorithm benchmarks and job metadata", () => {
       });
 
       assert.equal(requireJobMessage(miner.sentMessages[0]).algo, "cn/gpu");
+      assert.equal(miner.timers.find(({delay}) => delay >= 4 * 60 * 1000)?.delay, 8 * 60 * 1000);
       const completeWorkerPair = (/** @type {number} */ rate) => {
         miner.messageHandler({type: "hashrate", thread_id: 0, value: {hashrate: String(rate / 2)}});
         miner.messageHandler({type: "hashrate", thread_id: 1, value: {hashrate: String(rate / 2)}});
@@ -1588,6 +1653,62 @@ describe("Algorithm benchmarks and job metadata", () => {
 });
 
 describe("Benchmark harness lifecycle and fault handling", () => {
+  test("Pearl performance samples allow natural dispatch cleanup beyond 30 seconds", async () => {
+    const harness = benchmarkHarness(false);
+    const definition = {name: "pearlhash", timeoutMs: 300000, job: {algo: "pearlhash", dev: "gpu1"}};
+    const run = harness.execution.runMinerBench(definition);
+    const child = await benchChild(harness);
+    const measurement = requireTimer(harness.timers[0]);
+    child.stdout.write("Algo pearlhash (gpu1) hashrate: 3940000000000 H/s\n");
+    assert.equal(measurement.cleared, true);
+    const shutdown = requireTimer(harness.timers.at(-1));
+    if (shutdown.delay <= 143000) {shutdown.callback();}
+    child.emit("close", 0, null);
+    assert.equal(requireBenchmarkResult(await run).hashrate, 3940000000000);
+    assert.equal(shutdown.delay, 180000);
+    assert.equal(shutdown.cleared, true);
+  });
+
+  test("Pearl performance cleanup remains bounded and retains timeout and compute failures", async () => {
+    const definition = {name: "pearlhash", timeoutMs: 600000, job: {algo: "pearlhash", dev: "gpu1"}};
+    for (const fault of ["cleanup", "timeout", "compute"]) {
+      const harness = benchmarkHarness(false);
+      const run = harness.execution.runMinerBench(definition);
+      const failure = assert.rejects(run, fault === "cleanup" ? /did not exit after 180000ms/
+        : fault === "timeout" ? /Timed out/ : /Compute core error/);
+      const child = await benchChild(harness);
+      if (fault === "timeout") {
+        requireTimer(harness.timers[0]).callback();
+      } else if (fault === "compute") {
+        child.stderr.write("Compute core error: controlled fixture\n");
+      } else {
+        child.stdout.write("Algo pearlhash (gpu1) hashrate: 3940000000000 H/s\n");
+      }
+      if (fault === "cleanup") {
+        requireTimer(harness.timers.at(-1)).callback();
+      } else {
+        child.emit("close", 0, null);
+      }
+      await failure;
+    }
+  });
+
+  test("Pearl multi-sample performance outer budget covers every full cleanup", () => {
+    const previous = process.env["MOM_PERF_SAMPLES"];
+    process.env["MOM_PERF_SAMPLES"] = "3";
+    try {
+      const definition = {name: "pearlhash", job: {algo: "pearlhash"}, timeoutMs: 600000};
+      assert.equal(benchmarkTimeoutMs(definition), 1800000);
+      assert.equal(benchmarkTestTimeoutMs(definition), 3 * (600000 + 180000) + 60000);
+    } finally {
+      if (previous === undefined) {
+        delete process.env["MOM_PERF_SAMPLES"];
+      } else {
+        process.env["MOM_PERF_SAMPLES"] = previous;
+      }
+    }
+  });
+
   test("performance harness shares the scaled child timeout and teardown margin", () => {
     const previous = process.env["MOM_PERF_SAMPLES"];
     process.env["MOM_PERF_SAMPLES"] = "3";

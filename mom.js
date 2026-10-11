@@ -217,10 +217,14 @@ if (!h.cluster_process()) {
     // Verthash may generate its dataset on the first dispatch. Native timing discards that dispatch,
     // so generation cannot dilute the reported rate; only give the one-time setup room to finish.
     const setupTimeout = algo === "verthash" ? 30*60*1000 : 0;
+    // Large Pearl profiles need two long dispatches before the first timed rate, then one per sample.
+    const firstSampleMinutes = algo === "pearlhash" ? 6 : 4;
+    const additionalSampleMinutes = algo === "pearlhash" ? 3 : 2;
     const timeout = setTimeout(function() {
       h.log_err("Benchmark " + algo + " algo (" + job.dev + ") timeout");
       return finish(0);
-    }, setupTimeout + (4 + Math.max(0, samples + warmupSamples - 1) * 2)*60*1000);
+    }, setupTimeout + (firstSampleMinutes +
+      Math.max(0, samples + warmupSamples - 1) * additionalSampleMinutes)*60*1000);
     algo_params_bench_cb = record;
     set_algo_msr(algo);
     h.messageWorkers({type: "bench", job: last_job = job});
