@@ -20,7 +20,9 @@ void mom_sycl_poll_pause() {
   LARGE_INTEGER due{};
   due.QuadPart = -1000; // relative 100 microseconds, expressed in 100-ns units
   if (timer.handle && SetWaitableTimer(timer.handle, &due, 0, nullptr, nullptr, FALSE)) {
-    WaitForSingleObject(timer.handle, INFINITE);
+    // This timer only paces polling: bound a lost signal, then recheck the GPU event.
+    if (WaitForSingleObject(timer.handle, 10) == WAIT_FAILED)
+      Sleep(1);
   } else {
     Sleep(1);
   }

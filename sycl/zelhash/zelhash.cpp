@@ -13,9 +13,8 @@
 // filtering. The default is_test path still uses the cheaper gen-kernel cross-check; set
 // MOM_ZELHASH_SOLVE to run the full block-400000 proof recovery vector.
 //
-// Performance/portability note: all vendors run the same complete proof pipeline and exact vectors.
-// Like-for-like stage timing shows no inherent Windows/AMD regression; stale mixed-source rates must
-// not be used to infer an OS or hardware limitation.
+// All vendors run the same complete proof pipeline and exact vectors. Compare matching binaries,
+// configurations, and steady samples before attributing a throughput difference to the backend.
 
 #include <sycl/sycl.hpp>
 
@@ -134,14 +133,12 @@ int zelhash(const unsigned, const uint32_t, const uint8_t* const input, const un
   }
 
   // ---- M2/M3 full Wagner solve over the gen output for this exact 140-byte header. -----------------
-  state.ensure_arenas(!is_benchmark);
-  std::memset(solution_out, 0, SMALL_BLOB_SOL_LEN);
-  const bool log = !is_benchmark;
-  // Per-phase profiler: MOM_ZELHASH_PROF prints a gen-fill / per-round / device- and host-recovery
-  // ms breakdown even under bench (where `log` is off). It inserts an extra barrier + per-round host
-  // waits, so it is a SEPARATE gate from MOM_ZELHASH_PERF (the Sol/s logger) -- enabling it perturbs
-  // throughput slightly, so leave it off when measuring Sol/s.
+  // Profiling enables verbose counters and per-stage waits; keep both off during ordinary mining
+  // and throughput measurements. Full-solve tests retain their diagnostics.
   static const bool prof = std::getenv("MOM_ZELHASH_PROF") != nullptr;
+  const bool log = is_test || prof;
+  state.ensure_arenas(log);
+  std::memset(solution_out, 0, SMALL_BLOB_SOL_LEN);
   const uint64_t t_start = ZelHashState::now_ms();
   sycl::queue& q = state.queue;
 
@@ -201,15 +198,16 @@ int zelhash(const unsigned, const uint32_t, const uint8_t* const input, const un
   uint64_t t_round[4] = {0, 0, 0, 0};
 #if defined(MOM_SYCL_HAS_CUDA)
   // The combined Intel+CUDA build must retain both layouts and select by the actual queue backend.
-  if (state.gpu_compact)
-    run_collision_rounds<true>(state, wg, wait_stages, prof, t_round);
-  else
-    run_collision_rounds<false>(state, wg, wait_stages, prof, t_round);
+  [[maybe_unused]] const auto round_events = state.gpu_compact
+      ? run_collision_rounds<true>(state, wg, wait_stages, prof, t_round)
+      : run_collision_rounds<false>(state, wg, wait_stages, prof, t_round);
 #elif defined(MOM_SYCL_HAS_HIP) || defined(MOM_SYCL_ADAPTIVECPP)
-  run_collision_rounds<true>(state, wg, wait_stages, prof, t_round);
+  [[maybe_unused]] const auto round_events =
+      run_collision_rounds<true>(state, wg, wait_stages, prof, t_round);
 #else
   // oneAPI Intel-only artifact: do not instantiate the bad-on-Xe 16-byte writer at all.
-  run_collision_rounds<false>(state, wg, wait_stages, prof, t_round);
+  [[maybe_unused]] const auto round_events =
+      run_collision_rounds<false>(state, wg, wait_stages, prof, t_round);
 #endif
   const uint64_t t_rounds_end = ZelHashState::now_ms();
 
@@ -279,8 +277,7 @@ int zelhash(const unsigned, const uint32_t, const uint8_t* const input, const un
   const uint32_t cand_n = std::min<uint32_t>(cand_count, ZelHashState::CAND_CAP);
 
   if (log) {
-    // Per-level survivor counts are diagnostic-only. Do not add a 640 KiB device-to-host transfer and
-    // queue synchronization to every benchmark/mining solve merely to populate the verbose report.
+    // Survivor counters are diagnostic-only; normal mining needs just the candidate readback below.
     std::vector<uint32_t> ns_host((size_t)NSTORED_LEVELS * NBUCKETS);
     sycl_wait_and_throw(q.memcpy(ns_host.data(), state.nslots, ns_host.size() * sizeof(uint32_t)),
                         state.device);

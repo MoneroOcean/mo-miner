@@ -125,10 +125,11 @@ int beamhash3(const unsigned, const uint32_t, const uint8_t* const input, const 
   }
 
   // ---- M2/M3 full Wagner solve. -------------------------------------------------------------------
-  state.ensure_arenas(!is_benchmark);
-  std::memset(solution_out, 0, SMALL_BLOB_SOL_LEN);
-  const bool log = !is_benchmark;
+  // Per-solve reports are test/profiling diagnostics, not ordinary mining output.
   static const bool prof = std::getenv("MOM_BEAMHASH3_PROF") != nullptr;
+  const bool log = is_test || prof;
+  state.ensure_arenas(log);
+  std::memset(solution_out, 0, SMALL_BLOB_SOL_LEN);
   const uint64_t t_start = BeamState::now_ms();
   sycl::queue& q = state.queue;
   const bool cuda_layout = mom_is_cuda(state.device);

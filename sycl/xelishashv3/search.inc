@@ -22,13 +22,16 @@ static void search(State& s, uint64_t first, unsigned count, bool test, bool use
       const sycl::event event = submit();
       if (required || s.profile)
         sycl_wait_and_throw(event, s.device);
+      return event;
     } catch (...) {
       std::fprintf(stderr, "XelisHashV3 %s failed\n", stage);
       throw;
     }
   };
   const auto stage1_start = s.profile ? Clock::now() : Clock::time_point{};
-  run_stage("stage 1", false, [&] {
+  // Keep stage events owned until the final wait. This defensively avoids pending-handle reuse
+  // in AdaptiveCpp's HIP event pool without adding barriers; it does not establish a stall cause.
+  [[maybe_unused]] const auto stage1_event = run_stage("stage 1", false, [&] {
     return s.queue.submit([&](sycl::handler& h) {
       h.parallel_for<Stage1Kernel<Native>>(
           sycl::range<1>(count), [=](sycl::id<1> id) MOM_SYCL_KERNEL_ARGS_RESTRICT {
@@ -43,7 +46,7 @@ static void search(State& s, uint64_t first, unsigned count, bool test, bool use
 #ifdef MOM_XELISHASHV3_ESIMD
     if constexpr (Native) {
       if (use_esimd) {
-        run_stage("stage 3", false, [&] {
+        return run_stage("stage 3", false, [&] {
           return s.queue.submit([&](sycl::handler& h) {
             h.parallel_for<Stage3EsimdKernel<Native, Fp64>>(
                 sycl::range<1>(count),
@@ -52,11 +55,10 @@ static void search(State& s, uint64_t first, unsigned count, bool test, bool use
                 });
           });
         });
-        return;
       }
     }
 #endif
-    run_stage("stage 3", false, [&] {
+    return run_stage("stage 3", false, [&] {
       return s.queue.submit([&](sycl::handler& h) {
         h.parallel_for<Stage3Kernel<Native, Fp64>>(
             sycl::range<1>(count), [=](sycl::id<1> id) MOM_SYCL_KERNEL_ARGS_RESTRICT {
@@ -65,10 +67,8 @@ static void search(State& s, uint64_t first, unsigned count, bool test, bool use
       });
     });
   };
-  if (lut)
-    submit_stage3.template operator()<true>();
-  else
-    submit_stage3.template operator()<false>();
+  [[maybe_unused]] const auto stage3_event = lut ? submit_stage3.template operator()<true>()
+                                                : submit_stage3.template operator()<false>();
   const auto stage3_end = s.profile ? Clock::now() : Clock::time_point{};
   const auto stage4_start = s.profile ? Clock::now() : Clock::time_point{};
   run_stage("stage 4", true, [&] {

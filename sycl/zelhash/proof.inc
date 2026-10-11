@@ -1,7 +1,8 @@
 template <bool GPU_COMPACT>
-// Submit the fixed collision chain; optional per-stage waits are diagnostic/backend policy only.
-static void run_collision_rounds(ZelHashState& state, unsigned wg, bool wait_stages, bool prof,
-                                 uint64_t t_round[4]) {
+// Return the events so their native handles stay owned until recovery completes the whole chain.
+// Optional per-stage waits remain diagnostic/backend policy only.
+static std::array<sycl::event, 4> run_collision_rounds(
+    ZelHashState& state, unsigned wg, bool wait_stages, bool prof, uint64_t t_round[4]) {
   sycl::queue& q = state.queue;
   auto r0 = submit_round<0, GPU_COMPACT>(q, state.level[0], state.level[1],
                                          state.nslots + 0u * NBUCKETS,
@@ -31,6 +32,7 @@ static void run_collision_rounds(ZelHashState& state, unsigned wg, bool wait_sta
     sycl_wait_and_throw(r3, state.device);
   if (prof)
     t_round[3] = ZelHashState::now_ms();
+  return {r0, r1, r2, r3};
 }
 
 // ===========================================================================================
