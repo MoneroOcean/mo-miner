@@ -718,131 +718,182 @@ ConvertTo-Json -InputObject $results -Compress
     }
   });
 
-  test("Linux release launcher honors the documented OpenCL device type", {
-    skip: process.platform === "win32",
-  }, () => {
-    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-release-launcher-"));
-    try {
-      const launcher = path.join(fixture, "mom");
-      const executable = path.join(fixture, "mom-bin");
-      fs.mkdirSync(path.join(fixture, "libs", "dpcpp-opencl"), {recursive: true});
-      fs.writeFileSync(launcher, linuxReleaseLauncher());
-      fs.writeFileSync(executable, [
-        "#!/usr/bin/env sh",
-        "printf '%s\\n' \"$ONEAPI_DEVICE_SELECTOR\" \"$MOM_NATIVE_PATH\" \"$MOM_COMMAND\"",
-      ].join("\n"));
-      fs.chmodSync(launcher, 0o755);
-      fs.chmodSync(executable, 0o755);
-
-      const cpu = run(launcher, ["algorithms"], {
-        env: {
-          PATH: process.env["PATH"] ?? "",
-          MOM_GPU_BACKEND: "opencl",
-          MOM_OPENCL_DEVICE_TYPE: "cpu",
-        },
+  test.describe("Linux GPU runtime selection", {concurrency: false}, () => {
+    const autoDetectCases = [
+      {name: "NVIDIA alone", devices: [["0x10de", "0x1df6"]], backend: "nvidia", key: "acpp-cuda"},
+      {name: "NVIDIA with a Cirrus console", devices: [["0x10de", "0x1df6"], ["0x1013", "0x00b8"]], backend: "nvidia", key: "acpp-cuda"},
+      {name: "a Cirrus console alone", devices: [["0x1013", "0x00b8"]], backend: "", key: "oneapi"},
+      {name: "a real unknown GPU", devices: [["0x9999", "0x0001"]], backend: "opencl", key: "dpcpp-opencl"},
+      {name: "NVIDIA and a real unknown GPU", devices: [["0x10de", "0x1df6"], ["0x9999", "0x0001"]], backend: "", key: "oneapi"},
+      {name: "NVIDIA and AMD", devices: [["0x10de", "0x1df6"], ["0x1002", "0x744c"]], backend: "", key: "oneapi"},
+      {name: "another Cirrus device", devices: [["0x1013", "0x9999"]], backend: "opencl", key: "dpcpp-opencl"},
+      {name: "an explicit backend override", devices: [["0x10de", "0x1df6"], ["0x1013", "0x00b8"]], override: "opencl", backend: "opencl", key: "dpcpp-opencl"},
+    ];
+    for (const entry of autoDetectCases) {
+      test(`Linux release launcher vendor autodetection: ${entry.name}`, {
+        skip: process.platform === "win32",
+      }, () => {
+        const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-release-autodetect-"));
+        try {
+          const sysfs = path.join(fixture, "pci");
+          fs.mkdirSync(sysfs);
+          for (const [index, [vendor, device]] of entry.devices.entries()) {
+            const directory = path.join(sysfs, `0000:00:${index.toString().padStart(2, "0")}.0`);
+            fs.mkdirSync(directory);
+            fs.writeFileSync(path.join(directory, "vendor"), vendor + "\n");
+            fs.writeFileSync(path.join(directory, "device"), device + "\n");
+            fs.writeFileSync(path.join(directory, "class"), "0x030000\n");
+          }
+          const launcher = path.join(fixture, "mom");
+          // Exercise the generated launcher unchanged except for its read-only sysfs fixture root.
+          fs.writeFileSync(launcher, linuxReleaseLauncher().replaceAll("/sys/bus/pci/devices", sysfs));
+          fs.chmodSync(launcher, 0o755);
+          writeExecutable(path.join(fixture, "mom-bin"), [
+            "#!/usr/bin/env sh",
+            "printf '%s|%s\\n' \"$MOM_GPU_BACKEND\" \"$MOM_NATIVE_PATH\"",
+          ].join("\n"));
+          const result = run(launcher, ["algorithms"], {
+            env: {
+              PATH: process.env["PATH"] ?? "",
+              // A fixture capability avoids querying any real host GPU.
+              MOM_NVIDIA_COMPUTE_CAPABILITY: "7.0",
+              ...(entry.override ? {MOM_GPU_BACKEND: entry.override} : {}),
+            },
+          });
+          assert.equal(result.status, 0, result.stdout + result.stderr);
+          assert.equal(result.stdout.trim(), `${entry.backend}|${path.join(fixture, "libs", entry.key, "mom.node")}`);
+        } finally {
+          fs.rmSync(fixture, {recursive: true, force: true});
+        }
       });
-      assert.equal(cpu.status, 0, cpu.stdout + cpu.stderr);
-      assert.deepEqual(cpu.stdout.trim().split(/\r?\n/), [
-        "opencl:cpu", path.join(fixture, "libs", "dpcpp-opencl", "mom.node"), "./mom",
-      ]);
-
-      const gpu = run(launcher, ["algorithms"], {
-        env: {
-          PATH: process.env["PATH"] ?? "",
-          MOM_COMMAND: "custom-mom",
-          MOM_GPU_BACKEND: "opencl",
-        },
-      });
-      assert.equal(gpu.status, 0, gpu.stdout + gpu.stderr);
-      assert.deepEqual(gpu.stdout.trim().split(/\r?\n/), [
-        "opencl:gpu", path.join(fixture, "libs", "dpcpp-opencl", "mom.node"), "custom-mom",
-      ]);
-
-      const invalid = run(launcher, [], {
-        env: {
-          PATH: process.env["PATH"] ?? "",
-          MOM_GPU_BACKEND: "opencl",
-          MOM_OPENCL_DEVICE_TYPE: "accelerator",
-        },
-      });
-      assert.equal(invalid.status, 2, invalid.stdout + invalid.stderr);
-      assert.match(invalid.stderr, /MOM_OPENCL_DEVICE_TYPE must be gpu or cpu/);
-    } finally {
-      fs.rmSync(fixture, {recursive: true, force: true});
     }
-  });
 
-  test("Linux release launcher keeps an explicit addon with its runtime cohort", {
-    skip: process.platform === "win32",
-  }, () => {
-    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-release-runtime-"));
-    try {
-      const launcher = path.join(fixture, "mom");
-      const executable = path.join(fixture, "mom-bin");
-      fs.mkdirSync(path.join(fixture, "libs", "dpcpp"), {recursive: true});
-      fs.mkdirSync(path.join(fixture, "libs", "dpcpp-opencl"), {recursive: true});
-      fs.writeFileSync(launcher, linuxReleaseLauncher());
-      fs.chmodSync(launcher, 0o755);
-      writeExecutable(executable, [
-        "#!/usr/bin/env sh",
-        "printf '%s\\n' \"$MOM_NATIVE_PATH\" \"$MOM_RUNTIME_DIR\" \"$LD_LIBRARY_PATH\"",
-      ].join("\n"));
+    test("Linux release launcher honors the documented OpenCL device type", {
+      skip: process.platform === "win32",
+    }, () => {
+      const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-release-launcher-"));
+      try {
+        const launcher = path.join(fixture, "mom");
+        const executable = path.join(fixture, "mom-bin");
+        fs.mkdirSync(path.join(fixture, "libs", "dpcpp-opencl"), {recursive: true});
+        fs.writeFileSync(launcher, linuxReleaseLauncher());
+        fs.writeFileSync(executable, [
+          "#!/usr/bin/env sh",
+          "printf '%s\\n' \"$ONEAPI_DEVICE_SELECTOR\" \"$MOM_NATIVE_PATH\" \"$MOM_COMMAND\"",
+        ].join("\n"));
+        fs.chmodSync(launcher, 0o755);
+        fs.chmodSync(executable, 0o755);
 
-      const dpcpp = run(launcher, ["algorithms"], {
-        env: {
-          PATH: process.env["PATH"] ?? "",
-          MOM_GPU_BACKEND: "intel",
-          MOM_NATIVE_PATH: path.join(fixture, "libs", "dpcpp", "mom.node"),
-          LD_LIBRARY_PATH: "/host/lib",
-        },
-      });
-      assert.equal(dpcpp.status, 0, dpcpp.stdout + dpcpp.stderr);
-      assert.deepEqual(dpcpp.stdout.trim().split(/\r?\n/), [
-        path.join(fixture, "libs", "dpcpp", "mom.node"), "",
-        [path.join(fixture, "libs", "dpcpp"),
-          path.join(fixture, "libs", "dpcpp", "hipSYCL"), "/host/lib"].join(":"),
-      ]);
-      assert.doesNotMatch(dpcpp.stdout, /oneapi/);
+        const cpu = run(launcher, ["algorithms"], {
+          env: {
+            PATH: process.env["PATH"] ?? "",
+            MOM_GPU_BACKEND: "opencl",
+            MOM_OPENCL_DEVICE_TYPE: "cpu",
+          },
+        });
+        assert.equal(cpu.status, 0, cpu.stdout + cpu.stderr);
+        assert.deepEqual(cpu.stdout.trim().split(/\r?\n/), [
+          "opencl:cpu", path.join(fixture, "libs", "dpcpp-opencl", "mom.node"), "./mom",
+        ]);
 
-      const opencl = run(launcher, ["algorithms"], {
-        env: {
-          PATH: process.env["PATH"] ?? "",
-          MOM_GPU_BACKEND: "opencl",
-          MOM_NATIVE_PATH: path.join(fixture, "libs", "dpcpp-opencl", "mom.node"),
-          MOM_RUNTIME_DIR: path.join(fixture, "libs", "dpcpp-opencl"),
-          LD_LIBRARY_PATH: "/host/lib",
-        },
-      });
-      assert.equal(opencl.status, 0, opencl.stdout + opencl.stderr);
-      assert.deepEqual(opencl.stdout.trim().split(/\r?\n/), [
-        path.join(fixture, "libs", "dpcpp-opencl", "mom.node"),
-        path.join(fixture, "libs", "dpcpp-opencl"),
-        [path.join(fixture, "libs", "dpcpp-opencl"),
-          path.join(fixture, "libs", "dpcpp-opencl", "hipSYCL"),
-          path.join(fixture, "libs", "dpcpp"), "/host/lib"].join(":"),
-      ]);
-      assert.doesNotMatch(opencl.stdout, /oneapi/);
+        const gpu = run(launcher, ["algorithms"], {
+          env: {
+            PATH: process.env["PATH"] ?? "",
+            MOM_COMMAND: "custom-mom",
+            MOM_GPU_BACKEND: "opencl",
+          },
+        });
+        assert.equal(gpu.status, 0, gpu.stdout + gpu.stderr);
+        assert.deepEqual(gpu.stdout.trim().split(/\r?\n/), [
+          "opencl:gpu", path.join(fixture, "libs", "dpcpp-opencl", "mom.node"), "custom-mom",
+        ]);
 
-      const explicitOneapi = run(launcher, ["algorithms"], {
-        env: {
-          PATH: process.env["PATH"] ?? "",
-          MOM_GPU_BACKEND: "opencl",
-          MOM_NATIVE_PATH: path.join(fixture, "libs", "oneapi", "mom.node"),
-          MOM_RUNTIME_DIR: path.join(fixture, "libs", "oneapi"),
-          LD_LIBRARY_PATH: "/host/lib",
-        },
-      });
-      assert.equal(explicitOneapi.status, 0, explicitOneapi.stdout + explicitOneapi.stderr);
-      assert.deepEqual(explicitOneapi.stdout.trim().split(/\r?\n/), [
-        path.join(fixture, "libs", "oneapi", "mom.node"),
-        path.join(fixture, "libs", "oneapi"),
-        [path.join(fixture, "libs", "oneapi"),
-          path.join(fixture, "libs", "oneapi", "hipSYCL"), "/host/lib"].join(":"),
-      ]);
-      assert.doesNotMatch(explicitOneapi.stdout, /dpcpp/);
-    } finally {
-      fs.rmSync(fixture, {recursive: true, force: true});
-    }
+        const invalid = run(launcher, [], {
+          env: {
+            PATH: process.env["PATH"] ?? "",
+            MOM_GPU_BACKEND: "opencl",
+            MOM_OPENCL_DEVICE_TYPE: "accelerator",
+          },
+        });
+        assert.equal(invalid.status, 2, invalid.stdout + invalid.stderr);
+        assert.match(invalid.stderr, /MOM_OPENCL_DEVICE_TYPE must be gpu or cpu/);
+      } finally {
+        fs.rmSync(fixture, {recursive: true, force: true});
+      }
+    });
+
+    test("Linux release launcher keeps an explicit addon with its runtime cohort", {
+      skip: process.platform === "win32",
+    }, () => {
+      const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-release-runtime-"));
+      try {
+        const launcher = path.join(fixture, "mom");
+        const executable = path.join(fixture, "mom-bin");
+        fs.mkdirSync(path.join(fixture, "libs", "dpcpp"), {recursive: true});
+        fs.mkdirSync(path.join(fixture, "libs", "dpcpp-opencl"), {recursive: true});
+        fs.writeFileSync(launcher, linuxReleaseLauncher());
+        fs.chmodSync(launcher, 0o755);
+        writeExecutable(executable, [
+          "#!/usr/bin/env sh",
+          "printf '%s\\n' \"$MOM_NATIVE_PATH\" \"$MOM_RUNTIME_DIR\" \"$LD_LIBRARY_PATH\"",
+        ].join("\n"));
+
+        const dpcpp = run(launcher, ["algorithms"], {
+          env: {
+            PATH: process.env["PATH"] ?? "",
+            MOM_GPU_BACKEND: "intel",
+            MOM_NATIVE_PATH: path.join(fixture, "libs", "dpcpp", "mom.node"),
+            LD_LIBRARY_PATH: "/host/lib",
+          },
+        });
+        assert.equal(dpcpp.status, 0, dpcpp.stdout + dpcpp.stderr);
+        assert.deepEqual(dpcpp.stdout.trim().split(/\r?\n/), [
+          path.join(fixture, "libs", "dpcpp", "mom.node"), "",
+          [path.join(fixture, "libs", "dpcpp"),
+            path.join(fixture, "libs", "dpcpp", "hipSYCL"), "/host/lib"].join(":"),
+        ]);
+        assert.doesNotMatch(dpcpp.stdout, /oneapi/);
+
+        const opencl = run(launcher, ["algorithms"], {
+          env: {
+            PATH: process.env["PATH"] ?? "",
+            MOM_GPU_BACKEND: "opencl",
+            MOM_NATIVE_PATH: path.join(fixture, "libs", "dpcpp-opencl", "mom.node"),
+            MOM_RUNTIME_DIR: path.join(fixture, "libs", "dpcpp-opencl"),
+            LD_LIBRARY_PATH: "/host/lib",
+          },
+        });
+        assert.equal(opencl.status, 0, opencl.stdout + opencl.stderr);
+        assert.deepEqual(opencl.stdout.trim().split(/\r?\n/), [
+          path.join(fixture, "libs", "dpcpp-opencl", "mom.node"),
+          path.join(fixture, "libs", "dpcpp-opencl"),
+          [path.join(fixture, "libs", "dpcpp-opencl"),
+            path.join(fixture, "libs", "dpcpp-opencl", "hipSYCL"),
+            path.join(fixture, "libs", "dpcpp"), "/host/lib"].join(":"),
+        ]);
+        assert.doesNotMatch(opencl.stdout, /oneapi/);
+
+        const explicitOneapi = run(launcher, ["algorithms"], {
+          env: {
+            PATH: process.env["PATH"] ?? "",
+            MOM_GPU_BACKEND: "opencl",
+            MOM_NATIVE_PATH: path.join(fixture, "libs", "oneapi", "mom.node"),
+            MOM_RUNTIME_DIR: path.join(fixture, "libs", "oneapi"),
+            LD_LIBRARY_PATH: "/host/lib",
+          },
+        });
+        assert.equal(explicitOneapi.status, 0, explicitOneapi.stdout + explicitOneapi.stderr);
+        assert.deepEqual(explicitOneapi.stdout.trim().split(/\r?\n/), [
+          path.join(fixture, "libs", "oneapi", "mom.node"),
+          path.join(fixture, "libs", "oneapi"),
+          [path.join(fixture, "libs", "oneapi"),
+            path.join(fixture, "libs", "oneapi", "hipSYCL"), "/host/lib"].join(":"),
+        ]);
+        assert.doesNotMatch(explicitOneapi.stdout, /dpcpp/);
+      } finally {
+        fs.rmSync(fixture, {recursive: true, force: true});
+      }
+    });
   });
 
   test("Linux QEMU release wrapper re-enters emulation for fork and subprocess workers", {

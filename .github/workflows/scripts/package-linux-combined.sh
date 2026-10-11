@@ -159,6 +159,11 @@ if [ -z "${MOM_GPU_BACKEND:-}" ]; then
     class_file="${vendor%/vendor}/class"
     [ -r "$class_file" ] || continue
     case "$(cat "$class_file")" in 0x03*) ;; *) continue ;; esac
+    # QEMU's Cirrus console is display-only, not a competing compute backend.
+    device_file="${vendor%/vendor}/device"
+    case "$(cat "$vendor"):$(cat "$device_file" 2>/dev/null)" in
+      0x1013:0x00b8) continue ;;
+    esac
     case "$(cat "$vendor")" in 0x8086) intel=1 ;; 0x10de) nvidia=1 ;; 0x1002) amd=1 ;; esac
     case "$(cat "$vendor")" in 0x8086|0x10de|0x1002) ;; *) opencl=1 ;; esac
   done
