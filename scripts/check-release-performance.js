@@ -19,8 +19,14 @@ const INTEL_WINDOWS_NEXAPOW_TIMEOUT_MS = 30 * 60 * 1000;
 const C30_TIMEOUT_MS = 15 * 60 * 1000;
 const STEADY_SAMPLE_COUNT = 3;
 const STOCHASTIC_SAMPLE_COUNT = 9;
+// Match the existing GPU benchmark lifecycle gate: some runtime faults still exit cleanly.
+const runtimeFaultPattern = /\[AdaptiveCpp Error\]|cudaErrorCudartUnloading|error code\s*=\s*CUDA:4/i;
 const stochasticSolutionAlgos = new Set(["beamhash3", "zelhash", "zhash"]);
 const cpuAssistedAlgos = new Set(["c29", "c30"]);
+
+function deploymentDebugEnabled() {
+  return process.env["MOM_DEPLOY_DEBUG"] === "1";
+}
 
 /** @typedef {{value: number, displayValue: number, unit: string}} Rate */
 /** @typedef {{timestamp: number, wall_seconds: number, cpu_percent: number,
@@ -216,6 +222,39 @@ function createRunner(miner, defaultTimeoutMs) {
     const benchmark = args[0] === "bench";
     const windowsCmd = process.platform === "win32" && /\.cmd$/i.test(miner);
     return new Promise((resolve, reject) => {
+      /** @type {Partial<Record<"stdout" | "stderr", {fd: number, bytes: number}>>} */
+      const liveFiles = {};
+      const fields = /** @type {const} */ (["stdout", "stderr"]);
+      const closeLiveFiles = () => {
+        /** @type {Error | undefined} */
+        let failure;
+        for (const field of fields) {
+          const file = liveFiles[field];
+          if (file) {
+            delete liveFiles[field];
+            try {fs.fsyncSync(file.fd);} catch (error) {failure ||= /** @type {Error} */ (error);}
+            try {fs.closeSync(file.fd);} catch (error) {failure ||= /** @type {Error} */ (error);}
+          }
+        }
+        return failure;
+      };
+      try {
+        const evidenceRoot = process.env["MOM_RELEASE_PERF_EVIDENCE_DIR"];
+        if (benchmark && evidenceRoot) {
+          ensurePrivateEvidenceRoot(evidenceRoot);
+          const base = path.join(evidenceRoot, encodeURIComponent(args[1] || "benchmark").replace(/\./g, "%2E"));
+          // These bounded startup captures survive a stuck child. Final v3 metadata retains tails.
+          for (const field of fields) {
+            liveFiles[field] = {
+              fd: fs.openSync(`${base}.${field}.log`, "wx", 0o600), bytes: 0,
+            };
+          }
+        }
+      } catch (error) {
+        closeLiveFiles();
+        reject(error);
+        return;
+      }
       const child = spawn(command, commandArgs, {
         cwd: path.dirname(miner),
         detached: process.platform !== "win32",
@@ -228,6 +267,7 @@ function createRunner(miner, defaultTimeoutMs) {
       if (!child.stdout || !child.stderr) {
         child.once("error", () => undefined);
         hardStop(child);
+        closeLiveFiles();
         reject(new Error("release miner did not provide output streams"));
         return;
       }
@@ -250,6 +290,8 @@ function createRunner(miner, defaultTimeoutMs) {
         clearTimeout(forceTimer);
         process.off("SIGINT", interrupt);
         process.off("SIGTERM", interrupt);
+        const captureFailure = closeLiveFiles();
+        if (!terminationError && captureFailure) {terminationError = captureFailure;}
       };
       /** @param {number | null} code @param {NodeJS.Signals | null} signal */
       const finish = (code, signal) => {
@@ -274,6 +316,23 @@ function createRunner(miner, defaultTimeoutMs) {
       };
       /** @param {"stdout" | "stderr"} field @param {Buffer | string} chunk */
       const append = (field, chunk) => {
+        const live = liveFiles[field];
+        if (live && live.bytes < maxCapturedOutput) {
+          try {
+            const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+            const captured = bytes.subarray(0, maxCapturedOutput - live.bytes);
+            let written = 0;
+            while (written < captured.length) {
+              const count = fs.writeSync(live.fd, captured, written, captured.length - written);
+              if (!count) {throw new Error("Live benchmark evidence write made no progress");}
+              written += count;
+            }
+            live.bytes += written;
+          } catch (error) {
+            if (!terminationError) {terminationError = /** @type {Error} */ (error);}
+            requestClose();
+          }
+        }
         const incoming = (field === "stdout" ? stdout : stderr).slice(-32) + chunk.toString();
         if (field === "stdout") {
           stdout = appendOutputTail(stdout, chunk);
@@ -300,18 +359,33 @@ function createRunner(miner, defaultTimeoutMs) {
         const combined = `${stdout}\n${stderr}`;
         // Keep observing faults during cooperative close; the callback freezes its sample window.
         // Inspect faults before tail trimming can discard an oversized chunk's leading diagnostic.
-        const observed = /\bCompute core error:/u.test(incoming) ? incoming : combined;
+        const observed = /\bCompute core error:/u.test(incoming) || runtimeFaultPattern.test(incoming)
+          ? incoming : combined;
         const shouldStop = stopWhen && stopWhen(observed);
         if (!gracefulCloseRequested && shouldStop) {
-          gracefulCloseRequested = true;
-          clearTimeout(timeout);
-          forceTimer = requestGracefulClose(child, () => { forced = true; });
+          requestClose();
         }
+      };
+      const requestClose = () => {
+        if (gracefulCloseRequested) {return;}
+        gracefulCloseRequested = true;
+        clearTimeout(timeout);
+        for (const file of Object.values(liveFiles)) {
+          try {fs.fsyncSync(file.fd);} catch (error) {
+            if (!terminationError) {terminationError = /** @type {Error} */ (error);}
+          }
+        }
+        if (deploymentDebugEnabled()) {
+          console.error(`[perf] ${benchmark ? args[1] : "discovery"}: requesting cooperative close`);
+        }
+        forceTimer = requestGracefulClose(child, () => { forced = true; });
       };
       const interrupt = () => {
         if (terminationError && (forceTimer || forced)) {return;}
         if (!terminationError) {terminationError = new Error("Release benchmark interrupted");}
-        forceTimer = stop(child, () => { forced = true; });
+        if (process.env["MOM_BENCHMARK_GRACEFUL_ONLY"] === "1") {requestClose();} else {
+          forceTimer = stop(child, () => { forced = true; });
+        }
       };
       process.once("SIGINT", interrupt);
       process.once("SIGTERM", interrupt);
@@ -333,11 +407,14 @@ function createRunner(miner, defaultTimeoutMs) {
         const gracefulOnly = process.env["MOM_BENCHMARK_GRACEFUL_ONLY"] === "1";
         console.error(
           `Release command deadline reached after ${commandTimeoutMs} ms; ` +
-          (gracefulOnly ? "waiting for natural completion." : "stopping the command."),
+          (gracefulOnly && benchmark ? "requesting cooperative close; waiting for native cleanup." :
+            gracefulOnly ? "waiting for natural completion." : "stopping the command."),
         );
         terminationError = new Error(`Timed out after ${commandTimeoutMs} ms:`);
-        // A deadline disqualifies this run; only its completion boundary may close GPU work.
-        if (!gracefulOnly) {forceTimer = stop(child, () => { forced = true; });}
+        // Timeout remains a failure even if cooperative native cleanup succeeds.
+        if (gracefulOnly && benchmark) {requestClose();} else if (!gracefulOnly) {
+          forceTimer = stop(child, () => { forced = true; });
+        }
       }, commandTimeoutMs);
     });
   };
@@ -426,13 +503,8 @@ function writePrivateEvidence(file, content) {
   }
 }
 
-/** @param {string | undefined} root @param {ReleaseOptions} options @param {string} algo
- * @param {RunResult} result @param {string} combined @param {number} startedAt
- * @param {number} endedAt @param {number} warmupCount @param {number} sampleCount
- * @param {number} requiredRates @param {BenchmarkVerdict} verdict */
-function saveBenchmarkEvidence(root, options, algo, result, combined, startedAt, endedAt,
-  warmupCount, sampleCount, requiredRates, verdict) {
-  if (!root) {return;}
+/** @param {string} root */
+function ensurePrivateEvidenceRoot(root) {
   let rootStat;
   try {rootStat = fs.lstatSync(root);} catch (error) {
     if ((/** @type {NodeJS.ErrnoException} */ (error)).code !== "ENOENT") {throw error;}
@@ -442,6 +514,16 @@ function saveBenchmarkEvidence(root, options, algo, result, combined, startedAt,
   if (rootStat.isSymbolicLink()) {throw new Error(`Evidence root must not be a symlink: ${root}`);}
   if (!rootStat.isDirectory()) {throw new Error(`Evidence root must be a directory: ${root}`);}
   if (process.platform !== "win32") {fs.chmodSync(root, 0o700);}
+}
+
+/** @param {string | undefined} root @param {ReleaseOptions} options @param {string} algo
+ * @param {RunResult} result @param {string} combined @param {number} startedAt
+ * @param {number} endedAt @param {number} warmupCount @param {number} sampleCount
+ * @param {number} requiredRates @param {BenchmarkVerdict} verdict */
+function saveBenchmarkEvidence(root, options, algo, result, combined, startedAt, endedAt,
+  warmupCount, sampleCount, requiredRates, verdict) {
+  if (!root) {return;}
+  ensurePrivateEvidenceRoot(root);
   const safeAlgo = encodeURIComponent(algo).replace(/\./g, "%2E");
   const base = path.join(root, safeAlgo);
   const rates = reportedRates(combined, algo);
@@ -478,6 +560,9 @@ function saveBenchmarkEvidence(root, options, algo, result, combined, startedAt,
     gracefulClose: result.gracefulClose,
     stdoutBytes: Buffer.byteLength(result.stdout),
     stderrBytes: Buffer.byteLength(result.stderr),
+    // Keep bounded raw output in the private evidence file for runtime-path diagnosis.
+    stdout: result.stdout,
+    stderr: result.stderr,
     verdict,
   }, null, 2)}\n`);
 }
@@ -552,15 +637,23 @@ async function main(options, onSummary = null) {
     }
     if (selected.backend) {benchArgs.push("--job.backend", selected.backend);}
     const benchmarkStartedAt = Date.now();
+    const commandTimeoutMs = benchmarkTimeout(platform, algo, timeoutMs, warmupCount);
+    if (deploymentDebugEnabled()) {
+      console.log(`[perf] ${algo}: starting benchmark (deadline ${commandTimeoutMs} ms)`);
+    }
     /** @type {RunResult} */
     let result;
     try {
       result = await run(benchArgs, {
-        commandTimeoutMs: benchmarkTimeout(platform, algo, timeoutMs, warmupCount),
+        commandTimeoutMs,
         /** @param {string} text */
         stopWhen(text) {
           if (/\bCompute core error:/u.test(text)) {
             computeFailure = "Compute core error was reported";
+            return true;
+          }
+          if (runtimeFaultPattern.test(text)) {
+            computeFailure = "AdaptiveCpp runtime error was reported";
             return true;
           }
           if (rate) {return true;}
@@ -653,7 +746,12 @@ async function main(options, onSummary = null) {
     } else if (!sampleWindowComplete) {
       failures.push(`${algo}: insufficient hashrate samples (need ${requiredRates})`);
     } else if (!performanceOk) {
-      failures.push(`${algo}: ${rate.value} H/s is below ${minimum} H/s`);
+      // Retain the measured window in ordinary deployment failures, even without an evidence path.
+      const samples = reportedRates(benchmarkOutput, algo)
+        .filter((sample) => sample.value > 0).slice(0, requiredRates)
+        .map((sample) => `${sample.displayValue} ${sample.unit}`).join(", ");
+      failures.push(`${algo}: ${rate.value} H/s is below ${minimum} H/s; ` +
+        `samples: [${samples}] (first ${warmupCount} warm-up)`);
     }
     if (ok) {summary.passed++;}
   }

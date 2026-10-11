@@ -44,8 +44,11 @@ if ($workLeaf -notmatch '^mom-release-[A-Za-z0-9_.-]+$') {
 }
 Assert-NoReparseAncestor $workDir 'Release test workspace'
 $workspaceMarker = Join-Path $workDir '.mom-release-test-workspace'
-$packageVersion = (Get-Content -LiteralPath (Join-Path $repoRoot 'package.json') -Raw |
-  ConvertFrom-Json).version
+$packageVersion = if ($env:MOM_RELEASE_VERSION) {
+  $env:MOM_RELEASE_VERSION -replace '^[vV]', ''
+} else {
+  (Get-Content -LiteralPath (Join-Path $repoRoot 'package.json') -Raw | ConvertFrom-Json).version
+}
 if ([string]::IsNullOrWhiteSpace([string]$packageVersion) -or
     [string]$packageVersion -notmatch '^[0-9][0-9A-Za-z.-]*$') {
   throw "Invalid package version: $packageVersion"
