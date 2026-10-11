@@ -17,10 +17,6 @@ verbose_build="${MOM_BUILD_VERBOSE:-0}"
 MOM_BUILD_LOG="$build_log"
 source "$ROOT/scripts/build-helpers.sh"
 
-compiler_first_line() {
-  "$@" --version 2>&1 | sed -n '1p'
-}
-
 # Dual-compiler builds link at the OBJECT level: icx host objects + clang -fsycl link. LTO is
 # impossible across the two (icx LLVM bitcode != nightly clang bitcode, and the nightly tarball
 # ships no LLVMgold.so/lld plugin for the link), so force LTO off. The icx CPU-codegen advantage
@@ -45,60 +41,27 @@ if [ -z "${MOM_INTEL_AOT_DEVICE:-}" ] && [[ ",$MOM_COMBINED_TARGETS," == *,spir6
 fi
 export MOM_DPCPP_IMPL="${MOM_DPCPP_IMPL:-dpcpp-combined}"
 
-dpcpp_identity="$(compiler_first_line "$DPCPP/bin/clang++")"
-icpx_identity="$(compiler_first_line "$ICPX")"
+node scripts/linux-build-state.js prepare build "$MOM_DPCPP_IMPL" icx "$ICPX" "$DPCPP/bin/clang++"
 
-# Reconfigure (and wipe build/) only on a real change of mode/targets/node, NOT merely because a
-# prior build failed -- so iterating on one source recompiles just that TU + relinks. The marker
-# includes the target set so changing it forces a clean reconfigure. MOM_FORCE_REBUILD=1 forces it.
-node_build_version="$(printf '%s\n' \
-  "node=$(node -p process.version)" \
-  "compiler=$MOM_DPCPP_IMPL" \
-  "host=dual-icx-clang" \
-  "targets=$MOM_COMBINED_TARGETS" \
-  "intel_aot_device=${MOM_INTEL_AOT_DEVICE:-unset}" \
-  "cpu=${MOM_CPU_MARCH:-unset}" \
-  "portable=${MOM_PORTABLE_BUILD:-0}" \
-  "dpcpp_root=$DPCPP" \
-  "icpx=$ICPX" \
-  "cmplr_root=${CMPLR_ROOT:-unset}" \
-  "dpcpp_clang_id=$dpcpp_identity" \
-  "icpx_id=$icpx_identity")"
-if [ "${MOM_FORCE_REBUILD:-0}" = 1 ] \
-   || [ "$(cat build/.node-version 2>/dev/null || true)" != "$node_build_version" ] \
-   || [ binding.gyp -nt build/Makefile ] \
-   || [ scripts/cpu-cflags.sh -nt build/Makefile ] \
-   || [ scripts/cpu-optflags.sh -nt build/Makefile ] \
-   || [ scripts/cpu-feature.sh -nt build/Makefile ] \
-   || [ "$WRAP" -nt build/Makefile ] \
-   || ! grep -q "/root/mom" build/Makefile 2>/dev/null; then
-  rm -rf build
+# Content preparation owns invalidation; retain admission for absolute wrapper paths after moves.
+if [ ! -s build/Makefile ] \
+   || ! grep -Fq -- "$ROOT" build/Makefile 2>/dev/null; then
   mom_run_quiet "[combined] node-gyp configure (CXX=cxx-combined.sh, CC=icx, impl=$MOM_DPCPP_IMPL, targets=$MOM_COMBINED_TARGETS)" \
     env CC=icx CXX="$WRAP" LINK="$WRAP" node-gyp configure --nodedir=/usr/local -- -Dmom_sycl_impl="$MOM_DPCPP_IMPL"
-  # Stamp the marker right after configure so a later failed build still skips the reconfigure.
-  mkdir -p build && echo "$node_build_version" > build/.node-version
 fi
 
 export MOM_COMBINED_LOG="$ROOT/build/combined-routing.log"
 : > "$MOM_COMBINED_LOG"
-# node-gyp already relinks when an object or recorded command changes. A wrapper edit leaves the
-# recorded command path unchanged, so invalidate only for that linker-only input. An unconditional
-# relink takes several minutes because DPC++ must regenerate every CUDA image.
-link_target="$ROOT/build/Release/obj.target/mom.node"
-if [[ -s $link_target ]] && [[ $WRAP -nt $link_target ]]; then
-  rm -f "$ROOT/build/Release/mom.node" "$link_target"
-fi
 mom_run_quiet "[combined] node-gyp build" \
   env JOBS="$build_jobs" CC=icx CXX="$WRAP" LINK="$WRAP" MAKEFLAGS="-s -j${build_jobs}" \
-    node-gyp build --nodedir=/usr/local --jobs "$build_jobs" --silent
+    node-gyp build --nodedir=/usr/local --jobs "$build_jobs" --silent -- "${mom_make_dependency_args[@]}"
+node scripts/linux-build-state.js finish build "$MOM_DPCPP_IMPL" icx "$ICPX" "$DPCPP/bin/clang++"
 
 if [ "$verbose_build" = 1 ]; then
   echo "[combined] compiler routing (want: 7 SYCL->clang, rest HOST->icpx, 1 LINK->clang):"
   sort "$MOM_COMBINED_LOG" | uniq -c | sed 's/^/    /'
   echo "    --- SYCL TUs routed to clang: $(grep -c '^SYCL' "$MOM_COMBINED_LOG") ---"
 fi
-
-mkdir -p build && echo "$node_build_version" > build/.node-version
 
 if [ "$verbose_build" = 1 ]; then
   echo "[combined] build OK:"

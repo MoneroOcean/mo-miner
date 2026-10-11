@@ -53,8 +53,7 @@ function Assert-NoReparseAncestor([string]$Path, [string]$Label) {
   }
 }
 
-function Test-MomCudaCompilerSdk([string]$Root) {
-  if ([string]::IsNullOrWhiteSpace($Root)) { return $false }
+function Get-MomCudaCompilerSdkMissingFiles([string]$Root) {
   foreach ($relative in @(
     'bin\nvcc.exe',
     'bin\ptxas.exe',
@@ -68,11 +67,22 @@ function Test-MomCudaCompilerSdk([string]$Root) {
     'lib\x64\nvrtc.lib',
     'lib\x64\nvml.lib'
   )) {
-    if (-not (Test-Path -LiteralPath (Join-Path $Root $relative) -PathType Leaf)) {
-      return $false
+    if ([string]::IsNullOrWhiteSpace($Root) -or
+        -not (Test-Path -LiteralPath (Join-Path $Root $relative) -PathType Leaf)) {
+      $relative
     }
   }
-  return $true
+}
+
+function Test-MomCudaCompilerSdk([string]$Root) {
+  return @(Get-MomCudaCompilerSdkMissingFiles $Root).Count -eq 0
+}
+
+function Assert-MomCudaCompilerSdk([string]$Root) {
+  $missing = @(Get-MomCudaCompilerSdkMissingFiles $Root)
+  if ($missing.Count) {
+    throw "CUDA compiler SDK is incomplete at '$Root'. Missing: $($missing -join ', '). Run scripts\install-dev.bat -Component cuda to repair the pinned SDK."
+  }
 }
 
 function Get-MomHipDeviceLib([string]$Root) {

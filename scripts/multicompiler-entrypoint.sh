@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$PWD/scripts/build-helpers.sh"
 
 backend=${MOM_GPU_BACKEND:-intel}
 case "${backend,,}" in
@@ -81,16 +82,25 @@ if [ "$backend" = nvidia ]; then
 elif [ "$backend" = amd ]; then
   export ACPP_VISIBILITY_MASK="${ACPP_VISIBILITY_MASK:-hip}"
 fi
+if [ ! -r /opt/intel/oneapi/setvars.sh ]; then
+  echo 'Missing oneAPI development tools. Run sudo scripts/install-dev.sh --component all --jobs 8 first.' >&2
+  exit 2
+fi
+# Native and container development share the same mutable cache, so use the existing build lock.
+# This protects build-tree mutations, not GPU scheduling or ownership.
+if [ "${MOM_DEV_HOST:-0}" = 1 ] && [ "${MOM_NATIVE_BUILD_LOCK:-0}" != 1 ] && [ "${MOM_R_SH:-0}" != 1 ]; then
+  lock_dir=$(git rev-parse --path-format=absolute --git-path mom-locks)
+  mkdir -p -m 700 "$lock_dir"
+  exec 9>"$lock_dir/mom-r-sh-${UID}.build.lock"
+  flock 9
+  export MOM_NATIVE_BUILD_LOCK=1
+fi
 set +u
 # The disk-efficient multicompiler image inherits the combined oneAPI image, whose Docker build has
 # already sourced setvars. Force a clean process-local refresh instead of treating that inherited
 # marker as an error; the previous Ubuntu scratch final did not carry the marker.
 . /opt/intel/oneapi/setvars.sh --force >/dev/null
 set -u
-compiler_first_line() {
-  "$@" --version 2>&1 | sed -n '1p'
-}
-
 source_fingerprint() {
   local key=$1
   local -a inputs=(
@@ -99,6 +109,10 @@ source_fingerprint() {
     sycl
     xmrig
     scripts/multicompiler-entrypoint.sh
+    scripts/linux-build-state.js
+    scripts/build-helpers.sh
+    scripts/build-environment.js
+    scripts/cxx-oneapi.sh
     scripts/cpu-cflags.sh
     scripts/cpu-optflags.sh
     scripts/cpu-feature.sh
@@ -116,7 +130,8 @@ source_fingerprint() {
 }
 
 # Concurrent Linux GPU measurements reuse an immutable worker produced by an earlier ordinary
-# r.sh invocation. Fail closed if that worker is absent or stale and, most importantly, do not
+# development container invocation. Fail closed if that worker is absent or stale and, most
+# importantly, do not
 # rename or otherwise mutate the shared build tree in this mode.
 case "${MOM_REUSE_BUILT_WORKER:-0}" in
   0) ;;
@@ -175,6 +190,15 @@ if [[ -e build || -L build ]] && [[ ! -d build || -L build ]]; then
   echo "The repository build root must be a real directory: $PWD/build" >&2
   exit 2
 fi
+mom_assert_linux_cache_paths build/cache
+if [ "${MOM_DEV_HOST:-0}" = 1 ]; then
+  for cache_path in build build/cache "${build_compilers[@]/#/build/cache/}"; do
+    if [ -d "$cache_path" ] && [ ! -w "$cache_path" ]; then
+      echo "Native development requires a writable cache: $cache_path. Repair its ownership before retrying; see DEVELOPMENT.md." >&2
+      exit 2
+    fi
+  done
+fi
 if [ -d build ]; then mv build "$platforms_hold"; else mkdir -p "$platforms_hold"; fi
 cache_root="$platforms_hold/cache"
 artifact_dir="$platforms_hold/lin/Release"
@@ -185,7 +209,7 @@ mkdir -p "$cache_root" "$artifact_dir"
 rm -f "$artifact_dir"/mom-*.node
 restore_platform_tree() {
   # Preserve a partially rebuilt object tree on ordinary command failure or Ctrl-C. It remains
-  # eligible for the same marker/dependency checks on the next run instead of losing all progress.
+  # eligible for content-receipt checks on the next run instead of losing all progress.
   if [ -n "$active_cache" ] && [ -d build ]; then
     rm -rf "$active_cache"
     mkdir -p "$(dirname "$active_cache")"
@@ -201,7 +225,7 @@ trap restore_platform_tree EXIT
 # its compiler/runtime first; NVIDIA also needs CUDA tools for KawPow's runtime SYCL-source JIT.
 # Without this, libsycl-jit resolves its resource directory as /lib/clang/... and silently falls
 # back to the roughly 3x slower AOT ProgPoW kernel. Packaged workers carry the same files beside the
-# addon; this path setup is specifically for the consolidated development container used by r.sh.
+# addon; native and container development use the installed SDK paths instead.
 if [ "$backend" = nvidia ] || [ "$backend" = opencl ] || [ "$backend" = intel_igpu ]; then
   export PATH="/opt/dpcpp/bin:$PATH"
   export LD_LIBRARY_PATH="/opt/dpcpp/lib:${LD_LIBRARY_PATH:-}"
@@ -218,10 +242,14 @@ fi
 
 publish() {
   local source=$1 key=$2 destination binary_sha
+  if [ "$(source_fingerprint "$key")" != "$worker_source_fingerprint" ]; then
+    echo "Worker source inputs changed during build; refusing to publish $key" >&2
+    exit 2
+  fi
   mkdir -p "$artifact_dir/$key"
   destination="$artifact_dir/$key/mom.node"
   install -m 0755 "$source" "$destination"
-  source_fingerprint "$key" >"$destination.sources.sha256"
+  printf '%s\n' "$worker_source_fingerprint" >"$destination.sources.sha256"
   binary_sha="$(sha256sum "$destination" | awk '{print $1}')"
   printf '%s\n' \
     'schema=1' \
@@ -232,35 +260,21 @@ publish() {
 }
 
 build_oneapi() {
+  worker_source_fingerprint=$(source_fingerprint oneapi)
   # CPU flags are part of the artifact ABI. In particular, a cached developer build made with
   # -march=native must never be reused after MOM_PORTABLE_BUILD=1 is selected for packaging.
   local out="$cache_root/oneapi"
-  local marker
-  marker="$(printf '%s\n' \
-    "node=$(node -p process.version)" \
-    "compiler=oneapi-2026" \
-    "cpu=${MOM_CPU_MARCH:-unset}" \
-    "portable=${MOM_PORTABLE_BUILD:-0}" \
-    "lto=${MOM_LTO:-auto}" \
-    "icx_id=$(compiler_first_line icx)" \
-    "icpx_id=$(compiler_first_line icpx)")"
   active_cache="$out"
   rm -rf build
   [ ! -d "$out" ] || mv "$out" build
-  # Keep node-gyp's dependency/object tree across ordinary source iterations. Make already knows
-  # which translation units changed; a clean configure is needed only when the compiler/CPU mode or
-  # generated build graph changes. The previous source-mtime gate discarded every object whenever
-  # one SYCL file changed, turning a targeted worker build into a full project rebuild.
-  if [ "$(cat build/.node-version 2>/dev/null || true)" != "$marker" ] ||
-     [ ! -s build/Makefile ] || [ binding.gyp -nt build/Makefile ] ||
-     [ scripts/cpu-cflags.sh -nt build/Makefile ] ||
-     [ scripts/cpu-optflags.sh -nt build/Makefile ] ||
-     [ scripts/cpu-feature.sh -nt build/Makefile ]; then
-    rm -rf build
-    CC=icx CXX=icpx node-gyp configure --nodedir=/usr/local -- -Dmom_sycl_impl=dpcpp
-    printf '%s\n' "$marker" >build/.node-version
+  node scripts/linux-build-state.js prepare build oneapi icx icpx
+  # Content preparation owns graph/toolchain invalidation and removes stale Makefiles.
+  if [ ! -s build/Makefile ] ||
+     ! grep -Fqx "CXX.target ?= $PWD/scripts/cxx-oneapi.sh" build/Makefile; then
+    CC=icx CXX="$PWD/scripts/cxx-oneapi.sh" node-gyp configure --nodedir=/usr/local -- -Dmom_sycl_impl=dpcpp
   fi
-  JOBS="$jobs" CC=icx CXX=icpx node-gyp build --nodedir=/usr/local --jobs "$jobs"
+  JOBS="$jobs" CC=icx CXX="$PWD/scripts/cxx-oneapi.sh" node-gyp build --nodedir=/usr/local --jobs "$jobs" -- "${mom_make_dependency_args[@]}"
+  node scripts/linux-build-state.js finish build oneapi icx icpx
   rm -rf "$out"
   mv build "$out"
   active_cache=
@@ -268,6 +282,7 @@ build_oneapi() {
 }
 
 build_dpcpp() {
+  worker_source_fingerprint=$(source_fingerprint dpcpp)
   local out="$cache_root/dpcpp"
   active_cache="$out"
   rm -rf build
@@ -280,6 +295,7 @@ build_dpcpp() {
 }
 
 build_dpcpp_opencl() {
+  worker_source_fingerprint=$(source_fingerprint dpcpp-opencl)
   local out="$cache_root/dpcpp-opencl"
   active_cache="$out"
   rm -rf build
@@ -294,6 +310,7 @@ build_dpcpp_opencl() {
 
 build_acpp() {
   local target=$1 path=$2 out=$3 key=$4
+  worker_source_fingerprint=$(source_fingerprint "$key")
   PATH="$path/bin:$PATH" LD_LIBRARY_PATH="$path/lib:$LD_LIBRARY_PATH" \
     ACPP_TARGETS=generic ACPP_VISIBILITY_MASK="$target" MOM_ADAPTIVE_BACKEND="$target" \
     MOM_ADAPTIVE_BUILD_DIR="$out" bash scripts/adaptivecpp-entrypoint.sh true
@@ -321,14 +338,16 @@ cp "$artifact_dir/$default/mom.node.build-profile" "$artifact_dir/mom.node.build
 # checkout owner; otherwise a first Linux build leaves a root-owned build/ directory that prevents
 # run.sh from creating build/win beside it.
 chown -R --reference="$PWD" "$platforms_hold/lin"
+# Root container builds must leave reusable objects writable for later native development.
+if [ "$EUID" -eq 0 ]; then chown -R --reference="$PWD" "$cache_root"; fi
 restore_platform_tree
 trap - EXIT
 chown --reference="$PWD" build
 export MOM_NATIVE_DIR="$PWD/build/lin/Release"
 export MOM_NATIVE_PATH="$MOM_NATIVE_DIR/$default/mom.node"
 export MOM_NATIVE_PATH_LAUNCHER_DEFAULT="$MOM_NATIVE_PATH"
-# A fresh checkout has no host node_modules. Keep `./r.sh npm test` self-contained without making
-# ordinary miner/build commands pay for a package-registry check.
+# Bootstrap missing dependencies for npm commands, without making ordinary miner/build commands
+# pay for a package-registry check.
 if [ "${1:-}" = npm ] && ! npm ls --depth=0 --silent >/dev/null 2>&1; then
   npm install --ignore-scripts --no-audit --no-fund
 fi

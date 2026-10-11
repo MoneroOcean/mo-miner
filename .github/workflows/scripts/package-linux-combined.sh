@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Package every policy-selected Linux worker from the one multicompiler image. Each worker and its
-# runtime live in an isolated directory so the incompatible oneAPI/nightly/AdaptiveCpp libraries
-# never share a process. compiler-policy.js chooses the directory before spawning each worker.
+# Package every policy-selected Linux worker from the prepared host toolchain. Each worker and its
+# runtime live in an isolated directory so incompatible oneAPI/nightly/AdaptiveCpp libraries never
+# share a process. compiler-policy.js chooses the directory before spawning each worker.
 set -euo pipefail
 
 version="${1:-}"
@@ -18,18 +18,11 @@ package_dir="release-combined/$root"
 libs_dir="$package_dir/libs"
 build_dir=release-combined-build
 node_bin="${NODE_BIN:-}"
-image="${MOM_MULTICOMPILER_IMAGE:-mom-build-multicompiler}"
 compiler_build_dir=build/lin/Release
-node_container=
-container=
 archive_stage=
 
-cleanup_containers() {
-  local status=$? candidate
-  for candidate in "$node_container" "$container"; do
-    [ -n "$candidate" ] || continue
-    docker rm -f "$candidate" >/dev/null 2>&1 || true
-  done
+cleanup_package() {
+  local status=$?
   if [ -n "$archive_stage" ]; then
     rm -rf -- "$archive_stage" || true
   fi
@@ -37,13 +30,6 @@ cleanup_containers() {
 }
 
 compilers=(oneapi dpcpp dpcpp-opencl acpp-cuda acpp-hip)
-
-for tool in patchelf readelf; do
-  command -v "$tool" >/dev/null 2>&1 || {
-    echo "Linux release packaging requires $tool (install patchelf and binutils)." >&2
-    exit 1
-  }
-done
 
 profile_value() {
   local file=$1 field=$2
@@ -82,7 +68,7 @@ for key in "${compilers[@]}"; do
   worker="$compiler_build_dir/$key/mom.node"
   profile="$worker.build-profile"
   [ -s "$worker" ] || {
-    echo "$worker is missing; run MOM_PORTABLE_BUILD=1 MOM_GPU_BACKEND=all ./r.sh true." >&2
+    echo "$worker is missing; run npm run build:release with the native SDKs installed." >&2
     exit 1
   }
   [ -s "$profile" ] || {
@@ -101,32 +87,33 @@ for key in "${compilers[@]}"; do
   fi
   if [ "$portable" != 1 ] || [ "$cpu" != unset ]; then
     echo "$worker is not a portable release worker (portable=$portable, cpu=$cpu)." >&2
-    echo "Run MOM_PORTABLE_BUILD=1 MOM_GPU_BACKEND=all ./r.sh true before packaging." >&2
+    echo "Run npm run build:release with the native SDKs installed before packaging." >&2
     exit 1
   fi
 done
-docker image inspect "$image" >/dev/null
+# Validate the host Node before any destructive staging cleanup. The packager never obtains a
+# fallback binary from Docker; CI supplies the same official SEA-capable toolchain through scripts/dev-container.sh.
+if [ -z "$node_bin" ]; then node_bin="$(command -v node || true)"; fi
+if [ -z "$node_bin" ] || [ ! -x "$node_bin" ]; then
+  echo "Native Linux packaging requires an executable official Node binary with SEA support" >&2
+  exit 1
+fi
+if ! LC_ALL=C grep -aq 'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2' "$node_bin"; then
+  echo "Native Linux packaging requires an official Node binary with the SEA fuse; install the pinned Node toolchain" >&2
+  exit 1
+fi
 
+# Reject invalid inputs first, but require the packaging tools before changing any output.
+for tool in patchelf readelf; do
+  command -v "$tool" >/dev/null 2>&1 || {
+    echo "Linux release packaging requires $tool (install patchelf and binutils)." >&2
+    exit 1
+  }
+done
+
+trap cleanup_package EXIT
 rm -rf release-combined "$build_dir"
 mkdir -p "$package_dir" "$libs_dir" "$build_dir"
-
-# SEA blobs must be produced by the exact Node executable that receives them. Distribution Node
-# binaries can omit the SEA fuse even when their version nominally supports SEA, so fall back to
-# the tested Node 24 executable already carried by the unified build image.
-if [ -z "$node_bin" ]; then node_bin="$(command -v node)"; fi
-trap cleanup_containers EXIT
-if ! LC_ALL=C grep -aq 'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2' "$node_bin"; then
-  node_container="mom-multicompiler-node-$$"
-  docker rm -f "$node_container" >/dev/null 2>&1 || true
-  docker create --name "$node_container" --network none --user 65534:65534 --read-only \
-    --cap-drop ALL --security-opt no-new-privileges=true --pids-limit 16 --memory 128m --cpus 0.25 \
-    --entrypoint /bin/true "$image" >/dev/null
-  docker cp "$node_container:/usr/local/bin/node" "$build_dir/node"
-  docker rm "$node_container" >/dev/null
-  node_container=
-  chmod +x "$build_dir/node"
-  node_bin="$PWD/$build_dir/node"
-fi
 
 # Build the standalone Node executable payload. The Markdown policy remains an external, readable
 # config and is copied beside the executable; esbuild intentionally leaves the fs read at runtime.
@@ -135,9 +122,11 @@ blob_path="$PWD/$build_dir/mom.blob"
 npx --no-install esbuild mom.js --bundle --platform=node --format=cjs \
   --banner:js="const { createRequire } = require('node:module'); require = createRequire(process.execPath);" \
   --outfile="$bundle_path"
-cat >"$build_dir/sea-config.json" <<EOF
-{"main":"$bundle_path","output":"$blob_path","disableExperimentalSEAWarning":true,"useCodeCache":false,"useSnapshot":false}
-EOF
+"$node_bin" - "$bundle_path" "$blob_path" >"$build_dir/sea-config.json" <<'NODE_SEA_CONFIG'
+const [main, output] = process.argv.slice(2);
+process.stdout.write(JSON.stringify({main, output, disableExperimentalSEAWarning: true,
+  useCodeCache: false, useSnapshot: false}) + "\n");
+NODE_SEA_CONFIG
 "$node_bin" --experimental-sea-config "$build_dir/sea-config.json"
 cp "$node_bin" "$package_dir/mom-bin"
 npx --no-install postject "$package_dir/mom-bin" NODE_SEA_BLOB "$blob_path" \
@@ -353,7 +342,7 @@ else
     esac
   fi
 fi
-# install.sh exposes the NVIDIA source-JIT payload at this stable path. Development images already
+# install.sh exposes the NVIDIA source-JIT payload at this stable path. The prepared toolchain
 # export CUDA_PATH, but a release host normally does not; ProgPoW uses its compiler/libdevice tools,
 # while Pearl discovers NVRTC and CUDA/CCCL headers below the same root.
 if [ "${MOM_GPU_BACKEND:-}" = nvidia ]; then
@@ -390,16 +379,9 @@ done
 # in every runtime directory has no consumer.
 cp sycl/kawpow/device.inc "$libs_dir/dpcpp/kawpow_device.inc"
 cp sycl/kawpow/keccak.inc "$libs_dir/dpcpp/kawpow_keccak.inc"
-container="mom-multicompiler-package-$$"
-docker rm -f "$container" >/dev/null 2>&1 || true
-docker run -d --name "$container" --network none --user 65534:65534 --read-only \
-  --cap-drop ALL --security-opt no-new-privileges=true --pids-limit 64 --memory 512m --cpus 1 \
-  --env HOME=/tmp --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m \
-  --mount "type=bind,src=$PWD/$compiler_build_dir,dst=/repo/$compiler_build_dir,readonly" \
-  --entrypoint sleep "$image" infinity >/dev/null
 for key in "${compilers[@]}"; do
-  docker exec "$container" test -s "/repo/$compiler_build_dir/$key/mom.node" || {
-    echo "Packaging container cannot read /repo/$compiler_build_dir/$key/mom.node" >&2
+  [ -s "$compiler_build_dir/$key/mom.node" ] || {
+    echo "Native Linux packaging cannot read $compiler_build_dir/$key/mom.node" >&2
     exit 1
   }
 done
@@ -424,43 +406,40 @@ copy_runtime_file() {
   local src="$1" name
   name="$(basename "$src")"
   is_base_lib "$name" && return 0
-  if [ ! -e "$runtime_dest/$name" ]; then docker cp -L "$container:$src" "$runtime_dest/$name"; fi
+  if [ ! -e "$runtime_dest/$name" ]; then cp -L "$src" "$runtime_dest/$name"; fi
   closure_queue+=("$src")
 }
-
-image_matches() {
-  local expression="$1"
-  docker exec "$container" bash -lc "for f in $expression; do [ -f \"\$f\" ] && [[ \"\$f\" != *-gdb.py ]] && printf '%s\\n' \"\$f\"; done"
-}
-
+runtime_matches() (
+  # Expand trusted whitespace-separated file patterns, never evaluate shell commands.
+  shopt -s nullglob
+  local file
+  for file in $1; do [ ! -f "$file" ] || printf '%s\n' "$file"; done
+)
 copy_matches() {
   local expression="$1" src
-  while IFS= read -r src; do [ -z "$src" ] || copy_runtime_file "$src"; done < <(image_matches "$expression")
+  while IFS= read -r src; do [ -z "$src" ] || copy_runtime_file "$src"; done < <(runtime_matches "$expression")
 }
 
 copy_dependency_closure() {
   local index=0 current dep name output
   while [ "$index" -lt "${#closure_queue[@]}" ]; do
     current="${closure_queue[$index]}"; index=$((index+1))
-    [ -z "${closure_seen[$current]:-}" ] || continue
+    [ -z "${closure_seen[$current]+x}" ] || continue
     closure_seen[$current]=1
-    output="$(docker exec "$container" bash -lc \
-      "LD_LIBRARY_PATH='$runtime_roots' ldd '$current' 2>/dev/null || true")"
+    output="$(LD_LIBRARY_PATH="$runtime_roots" ldd "$current" 2>/dev/null || true)"
     while IFS= read -r dep; do
       [ -n "$dep" ] || continue
       name="$(basename "$dep")"
       is_base_lib "$name" && continue
       copy_runtime_file "$dep"
-    done < <(awk '/=> \/[^ ]+/{print $3} /^\/[^( ]+/{print $1}' <<<"$output" | sort -u)
+    done < <(awk '/=> \/[^ ]+/{print $3} /^\/[^ (]+/{print $1}' <<<"$output" | sort -u)
   done
 }
-
 begin_runtime() {
   runtime_key="$1"; runtime_roots="$2"; runtime_dest="$libs_dir/$runtime_key"
-  closure_queue=("/repo/$compiler_build_dir/$runtime_key/mom.node")
+  closure_queue=("$compiler_build_dir/$runtime_key/mom.node")
   closure_seen=()
 }
-
 normalize_runtime_elfs() {
   local compiler_root file dir dynamic relative origin rpath old_rpath entry resolved
   compiler_root="$(realpath -e -- "$1")"
@@ -507,12 +486,17 @@ normalize_runtime_elfs() {
 
 copy_oneapi_opencl_runtime() {
   copy_matches '/opt/intel/oneapi/compiler/latest/lib/libintelocl.so'
-  # shellcheck disable=SC2016 # evaluated inside the build container by copy_matches
-  copy_matches '$(find /opt/intel/oneapi/compiler/latest/lib /opt/intel/oneapi/tbb /opt/intel/oneapi/tcm /opt/intel/oneapi/umf -type f,l \( -name "libocl_svml_*.so" -o -name "libtbbmalloc.so.2" -o -name "libtcm.so.1" -o -name "libiomp5.so" \) 2>/dev/null)'
   local blob
+  # These libraries are loaded indirectly, so ldd alone does not discover them.
+  while IFS= read -r -d '' blob; do
+    copy_runtime_file "$blob"
+  done < <(find /opt/intel/oneapi/compiler/latest/lib /opt/intel/oneapi/tbb \
+    /opt/intel/oneapi/tcm /opt/intel/oneapi/umf -type f,l \
+    \( -name 'libocl_svml_*.so' -o -name 'libtbbmalloc.so.2' -o -name 'libtcm.so.1' \
+       -o -name 'libiomp5.so' \) -print0 2>/dev/null)
   while IFS= read -r blob; do
-    [ -z "$blob" ] || docker cp -L "$container:$blob" "$runtime_dest/$(basename "$blob")"
-  done < <(image_matches '/opt/intel/oneapi/compiler/latest/lib/clbltfn*.rtl /opt/intel/oneapi/compiler/latest/lib/cllibrary*.rtl /opt/intel/oneapi/compiler/latest/lib/cllibrary*.o')
+    [ -z "$blob" ] || cp -L "$blob" "$runtime_dest/$(basename "$blob")"
+  done < <(runtime_matches '/opt/intel/oneapi/compiler/latest/lib/clbltfn*.rtl /opt/intel/oneapi/compiler/latest/lib/cllibrary*.rtl /opt/intel/oneapi/compiler/latest/lib/cllibrary*.o')
 }
 
 begin_runtime oneapi '/opt/intel/oneapi/compiler/latest/lib:/opt/intel/oneapi/tbb/latest/lib:/opt/intel/oneapi/tcm/latest/lib:/opt/intel/oneapi/umf/latest/lib'
@@ -528,10 +512,19 @@ copy_matches '/opt/dpcpp/lib/libsycl.so.9 /opt/dpcpp/lib/libur_adapter_cuda.so.0
 copy_dependency_closure
 
 copy_acpp_runtime() {
-  local key="$1" prefix="$2" so tool redist_bin llvm_root=/opt/llvm21-ubuntu24
-  [ "$key" != acpp-hip ] || llvm_root=/opt/llvm20-ubuntu24
+  local key="$1" prefix="$2" so tool redist_bin llvm_root identity sdk_version
+  identity="$(cat "$prefix/.mom-build-identity" 2>/dev/null)" || identity=
+  # install-dev records the compiler's LLVM major; CI preserves this marker and exposes the
+  # relocated SDK at /usr/lib/llvm-N. Unrelated SDK directories must not select JIT tools.
+  if [[ ! $identity =~ ^[[:xdigit:]]{40}:([1-9][0-9]*):(cuda|hip):([0-9][0-9.-]*):[A-Za-z0-9.-]+:([[:xdigit:]]{64}|none)$ ]] ||
+     [ "acpp-${BASH_REMATCH[2]:-}" != "$key" ]; then
+    echo "AdaptiveCpp $key packaging requires a valid matching .mom-build-identity; rerun install-dev.sh for this compiler" >&2
+    exit 1
+  fi
+  llvm_root="/usr/lib/llvm-${BASH_REMATCH[1]}"
+  sdk_version="${BASH_REMATCH[3]}"
   begin_runtime "$key" "$prefix/lib:$prefix/lib/hipSYCL:/opt/ubuntu24-libs:$llvm_root/lib:/usr/lib/x86_64-linux-gnu"
-  docker cp -L "$container:$prefix/lib/." "$runtime_dest/"
+  cp -rL "$prefix/lib/." "$runtime_dest/"
   rm -rf "$runtime_dest/cmake"
   if [ "$key" = acpp-hip ]; then
     # Keep the driver-facing HIP stack host-owned and version-coherent. The packaged compiler/JIT
@@ -545,7 +538,7 @@ copy_acpp_runtime() {
   # emit a misleading loader warning; the SPIR-V translator has no remaining consumer either.
   rm -f "$runtime_dest/hipSYCL/librt-backend-ocl.so" \
     "$runtime_dest/hipSYCL/llvm-to-backend/libllvm-to-spirv.so"
-  # AdaptiveCpp's supported relocatable JIT layout. Without these, a package works in the dev image
+  # AdaptiveCpp's supported relocatable JIT layout. Without these, a package works in the build
   # (which has LLVM globally) but fails on a driver-only target when generic/SSCP first compiles.
   redist_bin="$runtime_dest/hipSYCL/ext/llvm/bin"
   mkdir -p "$redist_bin"
@@ -553,38 +546,54 @@ copy_acpp_runtime() {
   # `ld.lld`, not the multicall binary's `lld` name; omitting the symlink made the otherwise-complete
   # OpenMP JIT payload fall back to the build-only /usr/lib/llvm-21 path.
   for tool in opt llc lld ld.lld; do
-    if ! docker exec "$container" test -x "$llvm_root/bin/$tool"; then
+    if ! test -x "$llvm_root/bin/$tool"; then
       echo "AdaptiveCpp $key packaging requires executable LLVM JIT tool: $llvm_root/bin/$tool" >&2
       exit 1
     fi
-    docker cp -L "$container:$llvm_root/bin/$tool" "$redist_bin/$tool"
+    cp -L "$llvm_root/bin/$tool" "$redist_bin/$tool"
     closure_queue+=("$llvm_root/bin/$tool")
   done
-  # The pinned HIP translator resolves this compiled basename when relocated.
+  # Retain the compiled basename used by the CI LLVM20 HIP translator alongside native LLVM tools.
   [ "$key" != acpp-hip ] || ln -- "$redist_bin/ld.lld" "$redist_bin/ld.lld-20"
   if [ "$key" = acpp-hip ]; then
     mkdir -p "$runtime_dest/hipSYCL/ext/bitcode/amdgcn"
-    local device_bitcode
-    if ! device_bitcode="$(image_matches '/opt/rocm-device-libs-ubuntu24/*.bc')"; then
-      echo "AdaptiveCpp acpp-hip packaging could not inspect ROCm device bitcode: /opt/rocm-device-libs-ubuntu24/*.bc" >&2
+    local device_bitcode rocm_device_glob
+    if [[ ! $sdk_version =~ ^[0-9]+(\.[0-9]+)+$ ]] ||
+       { [ -n "${MOM_ROCM_VERSION:-}" ] && [ "$MOM_ROCM_VERSION" != "$sdk_version" ]; }; then
+      echo 'AdaptiveCpp HIP bitcode must match the recorded ROCm SDK version' >&2
+      exit 1
+    fi
+    # CI preserves the compiler cohort's install-relative bitcode. Native installs retain the
+    # versioned SDK root; unrelated legacy directories or mutable /opt/rocm links cannot select it.
+    if [ -n "$(runtime_matches "$prefix/lib/hipSYCL/ext/bitcode/amdgcn/*.bc")" ]; then
+      rocm_device_glob="$prefix/lib/hipSYCL/ext/bitcode/amdgcn/*.bc"
+    else
+      rocm_device_glob="/opt/rocm-${sdk_version}/amdgcn/bitcode/*.bc"
+    fi
+    if ! device_bitcode="$(runtime_matches "$rocm_device_glob")"; then
+      echo "AdaptiveCpp acpp-hip packaging could not inspect the pinned ROCm device bitcode root" >&2
       exit 1
     fi
     if [ -z "$device_bitcode" ]; then
-      echo "AdaptiveCpp acpp-hip packaging found no ROCm device bitcode: /opt/rocm-device-libs-ubuntu24/*.bc" >&2
+      echo "AdaptiveCpp acpp-hip packaging found no bitcode for its recorded ROCm SDK: $sdk_version" >&2
       exit 1
     fi
     while IFS= read -r tool; do
-      docker cp -L "$container:$tool" "$runtime_dest/hipSYCL/ext/bitcode/amdgcn/$(basename "$tool")"
+      cp -L "$tool" "$runtime_dest/hipSYCL/ext/bitcode/amdgcn/$(basename "$tool")"
     done <<<"$device_bitcode"
   elif [ "$key" = acpp-cuda ]; then
+    [[ $sdk_version =~ ^[0-9]+-[0-9]+$ ]] || {
+      echo 'AdaptiveCpp CUDA bitcode requires a recorded major-minor SDK version' >&2
+      exit 1
+    }
     # Destination prescribed by AdaptiveCpp's deployment manifest. The runtime resolves this
-    # relative to its own libraries, avoiding the build-image-only /usr/local/cuda path.
+    # relative to its own libraries; the recorded SDK, not a mutable cuda link, selects the source.
     mkdir -p "$runtime_dest/hipSYCL/ext/bitcode/ptx"
-    docker cp -L "$container:/usr/local/cuda/nvvm/libdevice/libdevice.10.bc" \
+    cp -L "/usr/local/cuda-${sdk_version/-/.}/nvvm/libdevice/libdevice.10.bc" \
       "$runtime_dest/hipSYCL/ext/bitcode/ptx/libdevice.10.bc"
   fi
   while IFS= read -r so; do closure_queue+=("$so"); done < <(
-    docker exec "$container" find "$prefix/lib" -type f -name '*.so*' -print)
+    find "$prefix/lib" -type f -name '*.so*' -print)
   copy_dependency_closure
 }
 copy_acpp_runtime acpp-cuda /opt/adaptivecpp-cuda
@@ -597,8 +606,8 @@ for key in "${compilers[@]}"; do
 done
 
 # Keep the AdaptiveCpp runtime directories isolated for loader safety, but hard-link any
-# byte-identical support files so tar stores one copy. The CUDA and HIP translators use LLVM 21 and
-# LLVM 20 respectively; cmp naturally keeps those versioned JIT payloads separate.
+# byte-identical support files so tar stores one copy. Compiler identities choose the LLVM majors;
+# cmp naturally keeps differing JIT payloads separate.
 while IFS= read -r -d '' file; do
   relative="${file#"$libs_dir/acpp-hip/"}"
   peer="$libs_dir/acpp-cuda/$relative"
@@ -633,7 +642,13 @@ while IFS= read -r -d '' file; do
 done < <(find "$libs_dir" -type f \( -name 'mom.node' -o -name '*.so' -o -name '*.so.*' \) -print0)
 [ "$failed" -eq 0 ] || exit 1
 
-archive_stage="$(mktemp -d -- "$(dirname -- "$archive")/.mom-archive.XXXXXX")"
+# Normal npm outputs share the disposable build stage, so a hard-killed publication is
+# reclaimed by the next package run. Resolve only the parent: mv replaces a final symlink.
+archive_stage_parent="$(dirname -- "$archive")"
+if [ "$(realpath -m -- "$archive_stage_parent")" = "$(pwd -P)" ]; then
+  archive_stage_parent="$build_dir"
+fi
+archive_stage="$(mktemp -d -- "$archive_stage_parent/.mom-archive.XXXXXX")"
 tar -C release-combined -czf "$archive_stage/archive.tgz" "$root"
 mv -fT -- "$archive_stage/archive.tgz" "$archive"
 rmdir -- "$archive_stage"

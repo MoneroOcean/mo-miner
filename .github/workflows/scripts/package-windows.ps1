@@ -346,8 +346,13 @@ if (Test-Path "$packageDir/tests") {
 }
 
 $archiveDirectory = [IO.Path]::GetDirectoryName($archiveFullPath)
+# Normal npm output uses the owned staging tree, so a killed package leaves no
+# historical GUID ZIP after the next staging reset. Custom destinations stay adjacent.
+$archiveTempDirectory = if ([string]::Equals($archiveDirectory, $repoRoot, [StringComparison]::OrdinalIgnoreCase)) {
+  (Resolve-Path release-build).Path
+} else { $archiveDirectory }
 do {
-  $archiveTempPath = Join-Path $archiveDirectory ".mom-archive-$([Guid]::NewGuid().ToString('N')).zip"
+  $archiveTempPath = Join-Path $archiveTempDirectory ".mom-archive-$([Guid]::NewGuid().ToString('N')).zip"
 } while (Test-Path -LiteralPath $archiveTempPath)
 try {
   Compress-Archive -Path $packageDir -DestinationPath $archiveTempPath

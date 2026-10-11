@@ -503,6 +503,11 @@ function workerEnv(algo, env = process.env, platform = process.platform, request
   const platformBuild = platform === "win32" ? "win" : "lin";
   const roots = [path.join(__dirname, "libs"),
     path.join(__dirname, "build", platformBuild, "Release")];
+  // The Windows multicompiler build exports worker/runtime pairs separately from node-gyp.
+  // Keep packaged and legacy workers first, and resolve runtimes beside the selected addon.
+  if (platform === "win32") {
+    roots.push(path.join(__dirname, "build", "win", "compilers"));
+  }
   if (env["MOM_NATIVE_DIR"]) {roots.unshift(env["MOM_NATIVE_DIR"]);}
   const addon = roots.map((root) => path.resolve(root, selected.addon)).find(fs.existsSync);
   if (!addon) {

@@ -384,6 +384,7 @@ function Install-Cuda {
     ) -Wait -PassThru
     if ($process.ExitCode -notin @(0,3010)) { throw "CUDA toolkit install failed: $($process.ExitCode)" }
   }
+  Assert-MomCudaCompilerSdk $CudaDir
   Install-CudaNvrtc
   if (-not (Test-MomCccl $CudaDir)) { Require-Administrator; Install-MomCccl $CudaDir }
   if (-not (Test-MomCutlass)) { Require-Administrator; Install-MomCutlass }

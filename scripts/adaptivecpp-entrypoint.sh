@@ -2,6 +2,7 @@
 set -euo pipefail
 
 host_root=$PWD
+source "$host_root/scripts/build-helpers.sh"
 build_jobs="${MOM_BUILD_JOBS:-$(nproc)}"
 compiler="$host_root/scripts/cxx-adaptivecpp.sh"
 host_cc=${MOM_ADAPTIVE_HOST_CC:-clang-21}
@@ -33,44 +34,30 @@ if [ -L "$build_root_path" ]; then
   exit 2
 fi
 build_root="$(realpath -m -- "$build_root_path")"
+mom_assert_linux_cache_paths "$build_root_path/cache"
+if [ -L "$selected_build_path" ]; then
+  echo 'The selected AdaptiveCpp cache must not be a symbolic link' >&2
+  exit 2
+fi
 case "$cache_dir" in
   "$build_root"/*) ;;
   *) echo "MOM_ADAPTIVE_BUILD_DIR must resolve below the repository build/ directory: $build_dir" >&2; exit 2 ;;
 esac
-work_root=/tmp/mom-adaptive-build
+# Gyp records absolute include paths: keep this checkout's staging path stable across invocations,
+# but never share it with another checkout or overwrite an interrupted/foreign staging tree.
+work_key="$(printf '%s' "$host_root" | sha256sum | cut -c1-24)"
+work_root="/tmp/mom-adaptive-build.$work_key"
 source_dir="$work_root/source"
 MOM_BUILD_LOG="$work_root/build-output.log"
-source "$host_root/scripts/build-helpers.sh"
-# Include host CPU policy so portable packages cannot inherit cached -march=native objects.
-compiler_first_line() {
-  "$@" --version 2>&1 | sed -n '1p'
-}
-host_cc_identity="$(compiler_first_line "$host_cc")"
-host_cxx_identity="$(compiler_first_line "$host_cxx")"
-acpp_identity="$(compiler_first_line acpp)"
-rocm_marker=
 if [ "$backend" = hip ]; then
   rocm_root=${MOM_ROCM_ROOT:-${ROCM_PATH:-/opt/rocm}}
-  rocm_marker=$'\n'"rocm_root=$rocm_root"
 fi
-marker="$(printf '%s\n' \
-  "node=$(node -p process.version)" \
-  "compiler=adaptivecpp-$backend" \
-  "targets=${ACPP_TARGETS:-}" \
-  "cpu=${MOM_CPU_MARCH:-unset}" \
-  "portable=${MOM_PORTABLE_BUILD:-0}" \
-  "lto=${MOM_LTO:-auto}" \
-  "host_cc=$host_cc" \
-  "host_cxx=$host_cxx" \
-  "host_cc_id=$host_cc_identity" \
-  "host_cxx_id=$host_cxx_identity" \
-  "acpp_id=$acpp_identity")$rocm_marker"
-if [ "$(cat "$cache_dir/.node-version" 2>/dev/null || true)" != "$marker" ] ||
-   [ ! -s "$cache_dir/Release/mom.node" ] ||
-   find binding.gyp native sycl xmrig scripts/cpu-cflags.sh scripts/cpu-optflags.sh scripts/cpu-feature.sh scripts/cxx-adaptivecpp.sh -type f \
-     ! -name '*.md' \
-     -newer "$cache_dir/Release/mom.node" -print -quit | grep -q .; then
-  rm -rf "$work_root"
+if ! mkdir -m 0700 -- "$work_root"; then
+  echo "AdaptiveCpp staging tree already exists; refusing to overwrite $work_root" >&2
+  exit 2
+fi
+trap 'rm -rf -- "$work_root"' EXIT
+(
   mkdir -p "$source_dir"
   # Only these tracked inputs participate in the native addon. Copying the entire checkout also
   # copied persistent Linux/Windows compiler caches after they moved under build/, wasting hundreds
@@ -95,16 +82,12 @@ if [ "$(cat "$cache_dir/.node-version" 2>/dev/null || true)" != "$marker" ] ||
   }
   trap preserve_partial_build EXIT
 
-  if [ "$(cat "$cache_dir/.node-version" 2>/dev/null || true)" = "$marker" ] &&
-     [ -s "$cache_dir/Makefile" ] && [ ! binding.gyp -nt "$cache_dir/Makefile" ] &&
-     [ ! scripts/cpu-cflags.sh -nt "$cache_dir/Makefile" ] &&
-     [ ! scripts/cpu-optflags.sh -nt "$cache_dir/Makefile" ] &&
-     [ ! scripts/cpu-feature.sh -nt "$cache_dir/Makefile" ] &&
-     [ ! scripts/cxx-adaptivecpp.sh -nt "$cache_dir/Makefile" ]; then
+  if [ -d "$cache_dir" ]; then
     mv "$cache_dir" build
-  else
-    rm -rf "$cache_dir"
   fi
+  state_tools=("$host_cc" "$host_cxx" acpp)
+  if [ "$backend" = hip ]; then state_tools+=("$rocm_root/llvm/bin/clang++"); fi
+  node scripts/linux-build-state.js prepare build "adaptivecpp-$backend" "${state_tools[@]}"
   # node-gyp records the compiler's absolute path. Reconfigure a relocated cache in place so its
   # valid Release objects survive a different constrained-container mount point.
   if [ ! -s build/Makefile ] ||
@@ -114,10 +97,10 @@ if [ "$(cat "$cache_dir/.node-version" 2>/dev/null || true)" != "$marker" ] ||
       -- -Dmom_sycl_impl="adaptivecpp-$backend"
   fi
 
-  printf '%s\n' "$marker" >build/.node-version
   mom_run_quiet "[adaptivecpp-$backend] node-gyp build" env JOBS="$build_jobs" \
     CC="$host_cc" CXX="$compiler" LINK="$compiler" \
-    node-gyp build --nodedir=/usr/local --jobs "$build_jobs"
+    node-gyp build --nodedir=/usr/local --jobs "$build_jobs" -- "${mom_make_dependency_args[@]}"
+  node scripts/linux-build-state.js finish build "adaptivecpp-$backend" "${state_tools[@]}"
   [ ! -f "$MOM_BUILD_LOG" ] || cp "$MOM_BUILD_LOG" build/build-output.log
   cd "$host_root"
   rm -rf "$cache_dir"
@@ -126,6 +109,7 @@ if [ "$(cat "$cache_dir/.node-version" 2>/dev/null || true)" != "$marker" ] ||
   chown -R --reference="$host_root" "$cache_dir"
   trap - EXIT
   rm -rf "$work_root"
-fi
+)
+trap - EXIT
 export MOM_NATIVE_PATH="$cache_dir/Release/mom.node"
 exec "$@"

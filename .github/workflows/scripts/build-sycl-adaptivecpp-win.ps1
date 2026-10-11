@@ -16,6 +16,8 @@ if (-not $RepoRoot) {
   $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
 }
 Set-Location $RepoRoot
+. (Join-Path $RepoRoot 'scripts\windows-incremental-build.ps1')
+Initialize-MomBuildEnvironment $RepoRoot
 . (Join-Path $RepoRoot 'scripts\import-vcvars.ps1')
 . (Join-Path $RepoRoot 'scripts\windows-sycl-sources.ps1')
 . (Join-Path $RepoRoot 'scripts\windows-install-helpers.ps1')
@@ -59,9 +61,28 @@ if ($Backend -eq 'hip') {
 $env:ACPP_VISIBILITY_MASK = $Backend
 $env:PATH = "$ToolchainDir\bin;$env:PATH"
 
-$obj = Join-Path $RepoRoot "obj-acpp-$Backend"
-Remove-Item $obj -Recurse -Force -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Force $obj, (Join-Path $RepoRoot $OutDir) | Out-Null
+$obj = Resolve-MomBuildPath (Join-Path $RepoRoot "build\.incremental\sycl-acpp-$Backend")
+$publishedOutput = Resolve-MomBuildPath (Join-Path $OutDir 'sycl.dll')
+$out = Join-Path $obj 'sycl.dll'
+$buildRoot = Resolve-MomBuildPath 'build'
+Assert-MomBuildArtifactPath $out $buildRoot
+Assert-MomBuildArtifactPath $publishedOutput $buildRoot
+New-Item -ItemType Directory -Force $obj, (Split-Path -Parent $publishedOutput) | Out-Null
+$publishSeparate = (Resolve-MomBuildPath $publishedOutput) -ne (Resolve-MomBuildPath $out)
+if ($publishSeparate) { Remove-Item -LiteralPath $publishedOutput -Force -ErrorAction SilentlyContinue }
+$python = (Get-Command python.exe -ErrorAction Stop).Source
+$buildContext = Initialize-MomIncrementalBuild $obj @($python, $acpp, $clang, $PSCommandPath,
+  (Join-Path $RepoRoot 'scripts\windows-incremental-build.ps1')) @($ToolchainDir,
+  $(if ($Backend -eq 'hip') { $HipPath } else { $CudaPath }), $env:VCToolsInstallDir, $env:WindowsSdkDir)
+function Invoke-IncrementalCompile([string]$Exe, [string[]]$CompilerArgs, [string]$Source, [string]$Object, [string]$Name) {
+  $task = New-MomCompileTask $Exe $CompilerArgs $Source $Object $Name $buildContext
+  if ($task.Skip) { Write-Host "  [cached] $Name"; return }
+  Remove-Item -LiteralPath $publishedOutput -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $out, (Join-Path $obj 'link.json') -Force -ErrorAction SilentlyContinue
+  & $task.Exe @($task.Args)
+  if ($LASTEXITCODE -ne 0) { throw "$Name failed with exit code $LASTEXITCODE" }
+  Complete-MomCompileTask $task
+}
 $common = @('--acpp-targets=generic','-std=c++20','-O3','-ffp-contract=off','-DNDEBUG','-D_CRT_SECURE_NO_WARNINGS',
   '-DMOM_SYCL_BUILD','-DMOM_SYCL_ADAPTIVECPP') + $backendDefines + @('-DNOMINMAX',
   '-DWIN32_LEAN_AND_MEAN','-fno-strict-aliasing',"-I$(Join-Path $RepoRoot 'xmrig')")
@@ -72,24 +93,25 @@ $objects = @()
 foreach ($entry in $sources.GetEnumerator()) {
   $source = $entry.Key
   $object = Join-Path $obj "$source.obj"
-  Invoke-Checked { & python.exe $acpp @common -c $entry.Value -o $object } "AdaptiveCpp compile $source"
+  Invoke-IncrementalCompile $python (@($acpp) + $common + @('-c', $entry.Value, '-o', $object)) $entry.Value $object "AdaptiveCpp compile $source"
   $objects += $object
 }
 foreach ($source in @('xmrig\base\crypto\sha3.cpp','xmrig\base\crypto\keccak.cpp')) {
   $name = [IO.Path]::GetFileNameWithoutExtension($source)
   $object = Join-Path $obj "$name.obj"
-  Invoke-Checked { & python.exe $acpp @common -c $source -o $object } "AdaptiveCpp compile $source"
+  Invoke-IncrementalCompile $python (@($acpp) + $common + @('-c', $source, '-o', $object)) $source $object "AdaptiveCpp compile $source"
   $objects += $object
 }
 $blakeObject = Join-Path $obj 'blake2brx.obj'
-Invoke-Checked { & $clang -O3 -DNDEBUG -D_CRT_SECURE_NO_WARNINGS "-I$(Join-Path $RepoRoot 'xmrig')" -c `
-  'xmrig\crypto\randomx\blake2\blake2b.c' -o $blakeObject } 'compile blake2b.c'
+Invoke-IncrementalCompile $clang @('-O3', '-DNDEBUG', '-D_CRT_SECURE_NO_WARNINGS', "-I$(Join-Path $RepoRoot 'xmrig')", '-c',
+  'xmrig\crypto\randomx\blake2\blake2b.c', '-o', $blakeObject) 'xmrig\crypto\randomx\blake2\blake2b.c' $blakeObject 'compile blake2b.c'
 $objects += $blakeObject
 $hoohashObject = Join-Path $obj 'hoohash_host.obj'
-Invoke-Checked { & $clang -O2 -fno-fast-math -ffp-contract=off -fno-builtin -DNDEBUG `
-  -D_CRT_SECURE_NO_WARNINGS -c 'sycl\hoohash\host_math.c' -o $hoohashObject } 'compile hoohash host math'
+Invoke-IncrementalCompile $clang @('-O2', '-fno-fast-math', '-ffp-contract=off', '-fno-builtin', '-DNDEBUG',
+  '-D_CRT_SECURE_NO_WARNINGS', '-c', 'sycl\hoohash\host_math.c', '-o', $hoohashObject) 'sycl\hoohash\host_math.c' $hoohashObject 'compile hoohash host math'
 $objects += $hoohashObject
 
-$out = Join-Path $RepoRoot (Join-Path $OutDir 'sycl.dll')
-Invoke-Checked { & python.exe $acpp '--acpp-targets=generic' -shared @objects @backendFlags -o $out } 'AdaptiveCpp link sycl.dll'
+Invoke-MomIncrementalLink $python (@($acpp, '--acpp-targets=generic', '-shared') + $objects + $backendFlags + @('-o', $out)) $objects $out (Join-Path $obj 'link.json') $buildContext
+Remove-MomObsoleteCompileOutputs $obj $objects
+if ($publishSeparate) { Copy-Item -LiteralPath $out -Destination $publishedOutput -Force }
 Write-Host ("Built {0} ({1:N1} MB, AdaptiveCpp generic/{2})" -f $out, ((Get-Item $out).Length/1MB), $Backend)

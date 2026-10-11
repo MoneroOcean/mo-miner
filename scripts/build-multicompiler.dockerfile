@@ -1,5 +1,6 @@
 # One development image containing every SYCL compiler used by the policy table.
 # The component images remain BuildKit stages/cache only; users run this final image.
+ARG MOM_RELEASE_TOOLS_BASE=compiler-runtime
 FROM mom-build-combined:latest AS combined
 FROM mom-build-amd-acpp-baseline:latest AS acpp_hip
 FROM mom-build-nvidia-adaptivecpp:latest AS acpp_cuda
@@ -9,7 +10,7 @@ FROM mom-build-nvidia-adaptivecpp:latest AS acpp_cuda
 # almost no shared layers and exceeding the practical disk budget of GitHub-hosted runners. Adding
 # ROCm and the two source-built compiler payloads here preserves the exact compiler binaries while
 # sharing all large Intel/NVIDIA layers with mom-build-combined.
-FROM combined
+FROM combined AS compiler-runtime
 SHELL ["/bin/bash", "-c"]
 COPY scripts/install-cutlass.sh /tmp/mom-install-dev/install-cutlass.sh
 # The combined image supplies CUDA/NVRTC. CUTLASS is a small header-only source-JIT dependency and
@@ -56,3 +57,11 @@ ENV PATH=/opt/dpcpp/bin:/usr/local/cuda/bin:/usr/local/bin:/usr/bin:/bin \
     HIP_PATH=/opt/rocm
 WORKDIR /root/mom
 ENTRYPOINT ["bash", "scripts/multicompiler-entrypoint.sh"]
+
+# Reused compiler images can receive small packaging prerequisites without rebuilding SDKs.
+FROM ${MOM_RELEASE_TOOLS_BASE} AS release-tools
+RUN if ! command -v patchelf >/dev/null || ! command -v readelf >/dev/null; then \
+      apt-get update && \
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends binutils patchelf && \
+      rm -rf /var/lib/apt/lists/*; \
+    fi && command -v patchelf >/dev/null && command -v readelf >/dev/null

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )/.." &> /dev/null && pwd )
 
 backend_was_explicit=0
 [ -z "${MOM_GPU_BACKEND+x}" ] || backend_was_explicit=1
@@ -103,7 +103,16 @@ esac
 # compiler/runtime Docker stage.
 if [ "${MOM_REBUILD_DEV_IMAGE:-0}" != 1 ] && [ -z "${MOM_BUILDX_CACHE_DIR:-}" ] && \
    docker image inspect "$image" >/dev/null 2>&1; then
-  : # Reuse the installed compiler runtimes.
+  # Older pinned compiler images may predate release packaging prerequisites. Probe without GPU,
+  # network or workspace access, then update only the small final stage if tools are missing.
+  if ! docker run --rm --network none --read-only --cap-drop ALL \
+      --security-opt no-new-privileges:true --cpus 1 --memory 128m --memory-swap 128m \
+      --pids-limit 32 --entrypoint /bin/bash "$image" \
+      -ec 'command -v patchelf >/dev/null && command -v readelf >/dev/null'; then
+    docker buildx build --builder default --load --progress=none -t "$image" --pull=false \
+      --target release-tools --build-arg "MOM_RELEASE_TOOLS_BASE=$image" \
+      -f "$SCRIPT_DIR/scripts/build-multicompiler.dockerfile" "$SCRIPT_DIR"
+  fi
 else
   # Materialize the cached source toolchains first. In CI this also lets build_image remove each
   # restored cache directory before the much larger oneAPI/CUDA combined image is downloaded.
@@ -153,7 +162,7 @@ docker_flags=(
   --env "MOM_GPU_BACKEND=$backend"
   --mount "type=bind,source=$SCRIPT_DIR,target=/root/mom"
   # DPC++'s device binaries are keyed by image, driver, and device. Keep that cache across the
-  # disposable development containers so large OpenCL kernels are not recompiled on every r.sh run.
+  # disposable development containers so large OpenCL kernels are not recompiled on every run.
   --env "SYCL_CACHE_PERSISTENT=${SYCL_CACHE_PERSISTENT:-1}"
   --mount "type=volume,source=$sycl_cache_volume,target=/root/.cache/libsycl_cache"
 )

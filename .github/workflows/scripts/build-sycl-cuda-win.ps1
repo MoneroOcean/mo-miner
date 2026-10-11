@@ -22,6 +22,8 @@ if (-not $RepoRoot) {
   $RepoRoot = (Resolve-Path $RepoRoot).Path
 }
 Set-Location $RepoRoot
+. (Join-Path $RepoRoot 'scripts\windows-incremental-build.ps1')
+Initialize-MomBuildEnvironment $RepoRoot
 . (Join-Path $RepoRoot 'scripts\import-vcvars.ps1')
 . (Join-Path $RepoRoot 'scripts\windows-sycl-sources.ps1')
 . (Join-Path $RepoRoot 'scripts\windows-install-helpers.ps1')
@@ -61,9 +63,7 @@ if ($CudaPath) {
     throw "CudaPath does not resolve to an existing directory: $CudaPath"
   }
   $CudaPath = (Resolve-Path -LiteralPath $CudaPath).Path
-  if (-not (Test-MomCudaCompilerSdk $CudaPath)) {
-    throw "CUDA compiler SDK is incomplete at $CudaPath."
-  }
+  Assert-MomCudaCompilerSdk $CudaPath
   $withCuda = $true
 }
 if ($RequireCuda -and -not $withCuda) {
@@ -81,10 +81,18 @@ if ($PortableOpencl -and $withCuda) {
 }
 Write-Host "MOM_BUILD_JOBS = $buildJobs"
 
-$obj = Join-Path $RepoRoot "obj"
-if (Test-Path $obj) { Remove-Item -Recurse -Force $obj }
-New-Item -ItemType Directory -Force $obj | Out-Null
-New-Item -ItemType Directory -Force $OutDir | Out-Null
+$variant = if ($PortableOpencl) { 'portable' } elseif ($withCuda) { 'cuda' } else { 'spir64' }
+$obj = Join-Path $RepoRoot "build\.incremental\sycl-dpcpp-$variant"
+$publishedOutput = Resolve-MomBuildPath (Join-Path $OutDir 'sycl.dll')
+$out = Join-Path $obj 'sycl.dll'
+$buildRoot = Resolve-MomBuildPath 'build'
+Assert-MomBuildArtifactPath $out $buildRoot
+Assert-MomBuildArtifactPath $publishedOutput $buildRoot
+New-Item -ItemType Directory -Force $obj, (Split-Path -Parent $publishedOutput) | Out-Null
+$publishSeparate = (Resolve-MomBuildPath $publishedOutput) -ne (Resolve-MomBuildPath $out)
+if ($publishSeparate) { Remove-Item -LiteralPath $publishedOutput -Force -ErrorAction SilentlyContinue }
+$buildContext = Initialize-MomIncrementalBuild $obj @($clang, $clangc, $lld, $PSCommandPath,
+  (Join-Path $RepoRoot 'scripts\windows-incremental-build.ps1')) @($ToolchainDir, $CudaPath, $env:VCToolsInstallDir, $env:WindowsSdkDir)
 
 $inc = "-I" + (Join-Path $RepoRoot "xmrig")
 # SYCL device TU flags (match the Linux dpcpp-combined build) and the host-helper flags.
@@ -119,7 +127,9 @@ $targets = $targetList -join ','
 
 function New-ClangTask {
   param([string]$Exe, [string[]]$ClangArgs, [string]$What)
-  [PSCustomObject]@{ Exe = $Exe; Args = $ClangArgs; What = $What }
+  $sourceIndex = [Array]::IndexOf($ClangArgs, '-c') + 1
+  $objectIndex = [Array]::IndexOf($ClangArgs, '-o') + 1
+  New-MomCompileTask $Exe $ClangArgs $ClangArgs[$sourceIndex] $ClangArgs[$objectIndex] $What $buildContext
 }
 
 function Complete-ClangJob {
@@ -130,17 +140,22 @@ function Complete-ClangJob {
   if ($receiveErrors) { $receiveErrors | ForEach-Object { Write-Host $_.ToString() } }
   $ok = $Job.State -eq 'Completed'
   $name = $Job.Name
+  $task = $Job | Select-Object -ExpandProperty MomTask
   Remove-Job -Job $Job -Force
   if (-not $ok) { throw "clang failed compiling $name." }
+  Complete-MomCompileTask $task
 }
 
 function Invoke-ClangTasks {
   param([object[]]$Tasks, [int]$Throttle)
+  foreach ($task in @($Tasks | Where-Object { $_.Skip })) { Write-Host "  [cached] $($task.What)" }
+  $Tasks = @($Tasks | Where-Object { -not $_.Skip })
   if ($Throttle -le 1) {
     foreach ($task in $Tasks) {
       Write-Host "  [$($task.What)]"
       & $task.Exe @($task.Args)
       if ($LASTEXITCODE -ne 0) { throw "clang failed compiling $($task.What) ($LASTEXITCODE)." }
+      Complete-MomCompileTask $task
     }
     return
   }
@@ -170,6 +185,7 @@ function Invoke-ClangTasks {
         & ([string]$task.Exe) @clangArgs 2>&1 | ForEach-Object { $_ }
         if ($LASTEXITCODE -ne 0) { throw "clang failed compiling $($task.What) ($LASTEXITCODE)." }
       } -ArgumentList $taskJson
+      $job | Add-Member -NotePropertyName MomTask -NotePropertyValue $task
       $running += $job
     }
 
@@ -218,18 +234,22 @@ $hoo = Join-Path $obj "hoohash_host.obj"
 $compileTasks += New-ClangTask $clangc @("-O2","-fno-fast-math","-ffp-contract=off","-fno-builtin",
   "-DNDEBUG","-D_CRT_SECURE_NO_WARNINGS","-c","sycl\hoohash\host_math.c","-o",$hoo) "hoohash host math"
 $objs += $hoo
+if (@($compileTasks | Where-Object { -not $_.Skip }).Count -gt 0) {
+  Remove-Item -LiteralPath $publishedOutput -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $out, (Join-Path $obj 'link.json') -Force -ErrorAction SilentlyContinue
+}
 Invoke-ClangTasks $compileTasks $buildJobs
 
 # Link the unified sycl.dll.
-$out = Join-Path $OutDir "sycl.dll"
 Write-Host "  [link] $out"
 $linkArgs = @("-fsycl", "-fsycl-targets=$targets") + $portableSpirvArgs
 if ($PortableOpencl) {
   $linkArgs += @("-fno-sycl-rdc", "-fsycl-device-code-split=per_kernel",
                  "-fno-sycl-instrument-device-code")
 }
-& $clang @linkArgs "-shared" @objs "-o" $out
-if ($LASTEXITCODE -ne 0) { throw "clang failed linking sycl.dll ($LASTEXITCODE)." }
+Invoke-MomIncrementalLink $clang ($linkArgs + @('-shared') + $objs + @('-o', $out)) $objs $out (Join-Path $obj 'link.json') $buildContext
+Remove-MomObsoleteCompileOutputs $obj $objs
 if (-not (Test-Path $out)) { throw "sycl.dll was not produced at $out." }
+if ($publishSeparate) { Copy-Item -LiteralPath $out -Destination $publishedOutput -Force }
 $profile = if ($PortableOpencl) { 'portable OpenCL/Level Zero' } else { $targets }
 Write-Host ("Built unified sycl.dll ({0:N1} MB, $profile)" -f ((Get-Item $out).Length/1MB))

@@ -15,6 +15,8 @@
 # CC stays icx directly (all .c sources are host code). Both compilers are intel/llvm-based
 # and ABI-compatible, so cross-linking icx objects with a clang -fsycl link is sound.
 set -euo pipefail
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$script_dir/build-helpers.sh"
 
 DPCPP="${MOM_DPCPP_ROOT:-/opt/dpcpp}"
 CLANGXX="$DPCPP/bin/clang++"
@@ -104,7 +106,8 @@ if [ "$is_compile" = 1 ] && [[ "$src" == sycl/*.cpp || "$src" == */sycl/*.cpp ]]
   # it spir64-only; everything else gets the full spir64+nvptx target set.
   if [[ "$src" == *pearlhash/esimd.cpp ]]; then
     log "SYCL   -> clang   : $src (spir64-only ESIMD)"
-    exec "$CLANGXX" -fsycl-targets=spir64 "$@"
+    mom_compile_sycl_dependencies spir64 "$script_dir/linux-build-state.js" "$CLANGXX" -fsycl-targets=spir64 "$@"
+    exit $?
   fi
   source_args=()
   if [ -n "$intel_aot_device" ] && [[ "$src" == *sycl/zhash/zhash.cpp ]]; then
@@ -113,7 +116,8 @@ if [ "$is_compile" = 1 ] && [[ "$src" == sycl/*.cpp || "$src" == */sycl/*.cpp ]]
     source_args=(-DMOM_ZHASH_INTEL_LATE_BUCKETS)
   fi
   log "SYCL   -> clang   : $src"
-  exec "$CLANGXX" -fsycl-targets="$TARGETS" "${intel_aot_args[@]}" "${source_args[@]}" "$@"
+  mom_compile_sycl_dependencies "$TARGETS" "$script_dir/linux-build-state.js" "$CLANGXX" -fsycl-targets="$TARGETS" "${intel_aot_args[@]}" "${source_args[@]}" "$@"
+  exit $?
 fi
 
 [ "$is_compile" = 1 ] && log "HOST   -> icpx    : $src"

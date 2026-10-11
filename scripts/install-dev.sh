@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# SDK files and public repository keys must remain readable by nonroot builders and apt's _apt.
+umask 022
+
 # Canonical Linux development-toolchain installer. GPU drivers are deliberately out of scope; this
 # installs the SDKs, compilers, Node/C++ build prerequisites, and all three SYCL compiler families
 # used by GPU-CONFIG.md. Components are independently selectable so Docker BuildKit and hosted
@@ -179,20 +182,38 @@ install_base() {
   # Keep the generic base resolvable from stock Ubuntu 24.04/26.04. LLVM 21 is added from apt.llvm.org
   # only by the AdaptiveCpp components that need it.
   apt_install build-essential ca-certificates cmake curl git gnupg iputils-ping libboost-context-dev \
+    binutils patchelf \
     libboost-fiber-dev libhwloc-dev libzstd-dev ninja-build pkg-config python3 python3-psutil \
     python3-yaml lsb-release sudo xz-utils
   BASE_INSTALLED=1
 }
 
+node_ready() {
+  local node_bin header_version file
+  node_bin=$(command -v node) || return 1
+  [[ -x $node_bin && $("$node_bin" -p process.version) == "v$NODE_VERSION" ]] || return 1
+  LC_ALL=C grep -aqF 'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2' "$node_bin" || return 1
+  # Native node-gyp builds use --nodedir=/usr/local even when Node comes from another PATH entry.
+  for file in node.h node_version.h common.gypi config.gypi; do
+    [[ -s /usr/local/include/node/$file ]] || return 1
+  done
+  header_version=$(awk '
+    $1 == "#define" && $2 == "NODE_MAJOR_VERSION" { major=$3; count++ }
+    $1 == "#define" && $2 == "NODE_MINOR_VERSION" { minor=$3; count++ }
+    $1 == "#define" && $2 == "NODE_PATCH_VERSION" { patch=$3; count++ }
+    END { if (count == 3) print major "." minor "." patch }
+  ' /usr/local/include/node/node_version.h)
+  [[ $header_version == "$NODE_VERSION" ]] && command -v node-gyp >/dev/null
+}
+
 install_node() {
-  if command -v node >/dev/null 2>&1 && [[ $(node -p process.version) == "v$NODE_VERSION" ]] &&
-     command -v node-gyp >/dev/null 2>&1; then
-    return
-  fi
+  node_ready && return
   local archive="$WORKSPACE/node-v${NODE_VERSION}-linux-x64.tar.xz"
   curl -fsSL --retry 5 "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" -o "$archive"
   verify_sha256 "$archive" "$NODE_SHA256"
   tar -C /usr/local --strip-components=1 -xf "$archive"
+  export PATH="/usr/local/bin:$PATH"
+  hash -r
   npm install -g node-gyp@12.2.0
 }
 
@@ -358,6 +379,8 @@ install_dpcpp() {
     echo "DPC++ staged payload is missing required files: $staging" >&2
     exit 1
   fi
+  # mktemp creates 0700 directories independently of umask; this becomes the public SDK root.
+  chmod 755 "$staging"
   printf '%s\n' "$DPCPP_SHA256" >"$staging/.mom-toolchain-sha256"
   if ! replace_staged_directory "$staging" /opt/dpcpp; then
     echo "DPC++ staged payload replacement failed" >&2
@@ -371,7 +394,8 @@ ensure_llvm() {
   apt_install software-properties-common
   curl -fsSL --retry 5 "$LLVM_INSTALLER_URL" -o "$WORKSPACE/llvm.sh"
   verify_sha256 "$WORKSPACE/llvm.sh" "$LLVM_INSTALLER_SHA256"
-  bash "$WORKSPACE/llvm.sh" "$LLVM_VERSION" all
+  # Optional libc++ packages can conflict across LLVM majors; AdaptiveCpp uses libstdc++.
+  bash "$WORKSPACE/llvm.sh" "$LLVM_VERSION"
   APT_UPDATED=0
   apt_install "libclang-${LLVM_VERSION}-dev" "libomp-${LLVM_VERSION}-dev" "llvm-${LLVM_VERSION}-dev"
 }
@@ -407,7 +431,7 @@ build_adaptivecpp() {
       -DWITH_CUDA_BACKEND=OFF -DWITH_ROCM_BACKEND=ON
       -DROCM_DEVICE_LIBS_PATH="$rocm_dir/amdgcn/bitcode"
       -DAMDHIP64_LIBRARY="$rocm_dir/lib/libamdhip64.so"
-      -DACPP_LLD_PATH="/usr/bin/ld.lld-${LLVM_VERSION}"
+      -DACPP_LLD_PATH="/usr/lib/llvm-${LLVM_VERSION}/bin/ld.lld"
     )
   fi
   cmake -S "$src" -B "$build" "${options[@]}"
@@ -440,16 +464,17 @@ adaptivecpp_payload_ready() {
 }
 
 adaptivecpp_identity() {
-  local backend=$1 sdk_version patch_hash=none
+  local backend=$1 sdk_version patch_hash=none recipe_version=$ADAPTIVECPP_RECIPE_VERSION
   if [[ $backend == cuda ]]; then
     sdk_version=$CUDA_VERSION
     patch_hash=$(sha256sum "$SCRIPT_DIR/patches/adaptivecpp-cuda-unloading.patch")
     patch_hash=${patch_hash%% *}
   else
     sdk_version=$ROCM_VERSION
+    recipe_version+=-hip-lld1
   fi
   printf '%s\n' \
-    "$ADAPTIVECPP_COMMIT:$LLVM_VERSION:$backend:$sdk_version:$ADAPTIVECPP_RECIPE_VERSION:$patch_hash"
+    "$ADAPTIVECPP_COMMIT:$LLVM_VERSION:$backend:$sdk_version:$recipe_version:$patch_hash"
 }
 
 adaptivecpp_ready() {
@@ -460,8 +485,11 @@ adaptivecpp_ready() {
 
 validate_component() {
   case "$1" in
-    base) command -v cmake >/dev/null && command -v ninja >/dev/null && command -v git >/dev/null ;;
-    node) [[ $(node -p process.version 2>/dev/null) == "v$NODE_VERSION" ]] && command -v node-gyp >/dev/null ;;
+    base)
+      command -v cmake >/dev/null && command -v ninja >/dev/null && command -v git >/dev/null &&
+        command -v patchelf >/dev/null && command -v readelf >/dev/null
+      ;;
+    node) node_ready ;;
     oneapi) [[ -x /opt/intel/oneapi/compiler/latest/bin/icpx ]] &&
       /opt/intel/oneapi/compiler/latest/bin/icpx --version 2>/dev/null | grep -q '2026\.0\.0' ;;
     cuda)

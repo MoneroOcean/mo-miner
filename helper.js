@@ -301,23 +301,37 @@ module.exports.log_err = function(str) {
   console.error(log_str("ERROR: " + str));
 };
 
-/** @returns {ComputeCore} */
-module.exports.create_core = function() {
-  this.log3("Starting compute core in " + thread_id + " thread");
+/** Resolve the addon and prepare only its matching Windows loader directory.
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {NodeJS.Platform} [platform]
+ * @returns {string}
+ */
+module.exports.prepare_native_core_path = function(env = process.env, platform = process.platform) {
   const appDir = path.dirname(process.execPath);
+  const platformBuild = platform === "win32" ? "win" : "lin";
   // The selected addon and runtime are one choice; a missing addon must not load a different worker.
-  const core_path = process.env["MOM_NATIVE_PATH"] || firstExistingPath([
+  const core_path = env["MOM_NATIVE_PATH"] || firstExistingPath([
     path.join(appDir, "libs", "mom.node"),
     path.join(appDir, "mom.node"),
     path.join(appDir, "mom", "mom.node"),
-    path.join(appDir, "build", development_build_platform, "Release", "mom.node"),
+    platform === "win32" ? path.join(appDir, "build", "win", "compilers", "oneapi", "mom.node") : undefined,
+    path.join(appDir, "build", platformBuild, "Release", "mom.node"),
     path.join(process.cwd(), "libs", "mom.node"),
     path.join(process.cwd(), "mom.node"),
     path.join(process.cwd(), "mom", "mom.node"),
     path.join(__dirname, "libs", "mom.node"),
     path.join(__dirname, "mom.node"),
-    path.join(__dirname, "build", development_build_platform, "Release", "mom.node"),
+    platform === "win32" ? path.join(__dirname, "build", "win", "compilers", "oneapi", "mom.node") : undefined,
+    path.join(__dirname, "build", platformBuild, "Release", "mom.node"),
   ]);
+  if (platform === "win32") {withWindowsPathEntries(env, [path.dirname(core_path)]);}
+  return core_path;
+};
+
+/** @returns {ComputeCore} */
+module.exports.create_core = function() {
+  this.log3("Starting compute core in " + thread_id + " thread");
+  const core_path = module.exports.prepare_native_core_path();
   debugStartup("requiring " + core_path);
   /** @type {unknown} */
   const loaded_module = require(core_path);

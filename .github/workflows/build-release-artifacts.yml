@@ -52,7 +52,7 @@ jobs:
           docker run --rm -v "$PWD:/repo:ro" -w /repo \
             rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 \
             -color .github/workflows/*.yml
-          git ls-files -z -- '*.sh' 'r.sh' | xargs -0 -n1 bash -n
+          git ls-files -z -- '*.sh' | xargs -0 -n1 bash -n
           fake_icx="$(mktemp)"
           printf '#!/usr/bin/env sh\nprintf "Intel(R) oneAPI DPC++/C++ Compiler\\n"\n' >"$fake_icx"
           chmod +x "$fake_icx"
@@ -66,8 +66,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends patchelf libboost-dev
           npm install --ignore-scripts
 
-      - name: Test GitHub-safe source subset
-        run: npm run test:github
+      - name: Test offline source gate
+        run: npm test -- host
 
   windows-script-quality:
     name: Source / Windows scripts
@@ -83,12 +83,20 @@ jobs:
         with:
           node-version: 24.15.0
 
-      - name: Test Windows scripts
+      - name: Install JavaScript tooling
         shell: powershell
-        run: scripts\test-windows-command.ps1
+        run: |
+          npm install --ignore-scripts
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Test NVIDIA release launcher without GPU libraries
-        run: node --test tests/nvidia_compatibility.js
+      - name: Test native Windows source gate
+        shell: powershell
+        run: |
+          .github\workflows\scripts\test-powershell-syntax.ps1
+          npm test -- logic
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --test tests/windows_script_safety.js
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   warm-linux-toolchains:
     name: Linux toolchain / ${{ matrix.scope }}
@@ -143,7 +151,7 @@ jobs:
 
       - name: Build uncached compiler image
         if: steps.compiler-cache.outputs.cache-hit != 'true'
-        run: ./r.sh
+        run: ./scripts/dev-container.sh
 
   package-linux-x64:
     name: Ubuntu / package
@@ -217,10 +225,10 @@ jobs:
           restore-keys: linux-x64-sycl-acpp-hip-v3-
 
       - name: Build all policy-selected native addons
-        run: MOM_GPU_BACKEND=all MOM_DOCKER_GPUS=0 ./r.sh node -e "console.log('mom multi-compiler build ready')"
+        run: MOM_GPU_BACKEND=all MOM_DOCKER_GPUS=0 ./scripts/dev-container.sh node -e "console.log('mom multi-compiler build ready')"
 
       - name: Package release archive
-        run: .github/workflows/scripts/package-linux-combined.sh
+        run: MOM_GPU_BACKEND=all MOM_DOCKER_GPUS=0 MOM_REUSE_BUILT_WORKER=1 ./scripts/dev-container.sh npm run build:release -- --package-only
 
       # Native CPU execution fits the complete bounded GPU-kernel suite in this job, like Windows.
       # Test the archive itself; Stability need not transfer it to separate algorithm runners.
@@ -435,7 +443,7 @@ jobs:
 
       - name: Package release archive
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File .github\workflows\scripts\package-windows.ps1
+        run: npm run build:release -- --package-only
 
       # oneAPI setup above installs the CPU OpenCL ICD needed by the portable SYCL gate. Run both
       # suites against the zip in-place so stability does not transfer the 490+ MiB archive twice.
