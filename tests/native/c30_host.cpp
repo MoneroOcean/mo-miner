@@ -1,5 +1,5 @@
 // CPU-only test for the c30 Cortex primitives.
-#include "c30_host.h"
+#include "../../sycl/c30/c30_host.h"
 
 #include "crypto/randomx/blake2/blake2.h"
 

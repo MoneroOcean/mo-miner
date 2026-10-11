@@ -1,5 +1,5 @@
 // Host-only differential test.  Compile with:
-// c++ -std=c++17 -O2 -Wall -Wextra -Werror -pedantic test_fixed_base.cpp -o /tmp/nexapow-fixed-base && /tmp/nexapow-fixed-base
+// Run through npm test -- host, or scripts/test-nexapow.sh for compiler coverage too.
 
 #include <array>
 #include <cstdint>
@@ -7,8 +7,8 @@
 #include <cstring>
 
 namespace mom_nexapow {
-#include "device.inc"
-#include "field_8x32_portable.inc"
+#include "../../sycl/nexapow/device.inc"
+#include "../../sycl/nexapow/field_8x32_portable.inc"
 
 inline bool same_point(const Point& left, const Point& right) {
   if (left.infinity || right.infinity)

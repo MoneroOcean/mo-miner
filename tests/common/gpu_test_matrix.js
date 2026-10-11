@@ -26,6 +26,7 @@ const {
   openclSyclEnv,
   requestedAlgos,
   requestedVendors,
+  supportedVendors,
 } = require("./gpu_test_modes");
 
 /** @typedef {{dev: string, description: string, integrated: boolean}} GpuDevice */
@@ -34,7 +35,7 @@ const {
 /** @typedef {SkippedDiscovery | GpuDiscovery} GpuDiscoveryResult */
 /** @typedef {{skipped: false, dev: string, description: string} | SkippedDiscovery} CpuDiscoveryResult */
 /** @typedef {{algo?: string, integrated?: boolean | null, backend?: string, env?: Record<string, string | undefined>}} DiscoveryOptions */
-/** @typedef {{name: string, reason?: string, required?: boolean, definitions: HashVectorDefinition[], select?: (definition: HashVectorDefinition) => HashVectorDefinition}} MatrixCase */
+/** @typedef {{name: string, vendor?: string, reason?: string, required?: boolean, definitions: HashVectorDefinition[], select?: (definition: HashVectorDefinition) => HashVectorDefinition}} MatrixCase */
 /** @typedef {{discrete: MatrixCase[], serial: MatrixCase[]}} MatrixLane */
 /** @typedef {Map<string, MatrixLane>} MatrixPlan */
 /** @typedef {(algo: string, vendor: string) => Promise<GpuDiscoveryResult>} DiscreteDiscover */
@@ -45,12 +46,31 @@ const BACKEND_TIMEOUT_MS = 3 * 60 * 60 * 1000;
 const ALGO_TIMEOUT_MS = 4 * 60 * 60 * 1000;
 const MATRIX_TIMEOUT_MS = 8 * 60 * 60 * 1000;
 
-/** @param {MatrixPlan} plan @param {string} backend @param {"discrete" | "serial"} kind @param {MatrixCase} testCase */
-function addCase(plan, backend, kind, testCase) {
+/** @param {MatrixPlan} plan @param {string} backend @param {"discrete" | "serial"} kind @param {MatrixCase} testCase @param {string} [vendor] */
+function addCase(plan, backend, kind, testCase, vendor = "other") {
   if (!plan.has(backend)) {plan.set(backend, {discrete: [], serial: []});}
   const lane = plan.get(backend);
   if (!lane) {throw new Error(`Missing matrix lane ${backend}`);}
-  lane[kind].push(testCase);
+  lane[kind].push({...testCase, vendor});
+}
+
+/** @param {MatrixPlan} plan @returns {{name: string, lane: MatrixLane}[]} */
+function orderedLanes(plan) {
+  const lanes = [];
+  // Vendor order must span backend groups, including native fallback and OpenCL cases.
+  // CPU/unknown-device cases follow the hardware vendors; mixed concurrency has its own suite.
+  for (const vendor of [...supportedVendors, "other"]) {
+    for (const backend of [...plan.keys()].sort()) {
+      const source = plan.get(backend);
+      if (!source) {throw new Error(`Missing matrix lane ${backend}`);}
+      const lane = {
+        discrete: source.discrete.filter((entry) => entry.vendor === vendor),
+        serial: source.serial.filter((entry) => entry.vendor === vendor),
+      };
+      if (lane.discrete.length || lane.serial.length) {lanes.push({name: `${vendor} ${backend}`, lane});}
+    }
+  }
+  return lanes;
 }
 
 /** @param {string} name @param {string} reason @param {boolean} [required] @returns {MatrixCase} */
@@ -162,16 +182,23 @@ function sharedDiscovery() {
       return openclCpu;
     },
     intelIntegrated(algo, backend) {
-      const env = {MOM_COMPILER_POLICY_STRICT: "1"};
-      return discover("intel", {algo, integrated: true, backend, env});
+      const env = {
+        MOM_COMPILER_POLICY_STRICT: "1",
+        MOM_NATIVE_PATH: undefined,
+        MOM_NATIVE_PATH_LAUNCHER_DEFAULT: undefined,
+      };
+      return discover("intel_igpu", {algo, integrated: true, backend, env});
     },
   };
 }
 
 /** @param {MatrixPlan} plan @param {string} algo @param {string[]} vendors @param {DiscreteDiscover} discover */
 async function addDiscreteCases(plan, algo, vendors, discover) {
+  const invalid = vendors.filter((vendor) => !supportedVendors.includes(vendor));
+  if (invalid.length) {throw new Error(`Unknown GPU matrix vendors: ${invalid.join(", ")}`);}
+  const selectedVendors = supportedVendors.filter((vendor) => vendors.includes(vendor));
   const definitions = gpuVectorsFor(algo);
-  const discoveries = await Promise.all(vendors.map(async (vendor) => ({
+  const discoveries = await Promise.all(selectedVendors.map(async (vendor) => ({
     vendor,
     result: await discover(algo, vendor),
   })));
@@ -181,7 +208,7 @@ async function addDiscreteCases(plan, algo, vendors, discover) {
     if (result.skipped) {
       const required = process.env["MOM_REQUIRE_GPU_TESTS"] === "1";
       addCase(plan, backendGroup(backend), "discrete",
-        unavailableCase(`${vendor} (unavailable)`, result.reason, required));
+        unavailableCase(`${vendor} (unavailable)`, result.reason, required), vendor);
       continue;
     }
 
@@ -189,7 +216,7 @@ async function addDiscreteCases(plan, algo, vendors, discover) {
       const name = `${vendor} ${device.dev}: ${device.description}`;
       if (!configuredDeviceSupports(result.params, algo, device.dev)) {
         addCase(plan, backendGroup(backend), "discrete", unavailableCase(name,
-          `${algo} is not available on ${device.description}`));
+          `${algo} is not available on ${device.description}`), vendor);
         continue;
       }
       if (backend === "native") {
@@ -199,13 +226,13 @@ async function addDiscreteCases(plan, algo, vendors, discover) {
           addCase(plan, backendGroup(fallbackBackend), "discrete",
             deviceCase(`${name} (${fallbackBackend} fallback)`, definitions,
               (definition) => cloneForDiscreteGpu(
-                definition, vendor, device.dev, fallbackBackend)));
+                definition, vendor, device.dev, fallbackBackend)), vendor);
         }
         addCase(plan, "native", "discrete", deviceCase(name, definitions,
-          (definition) => cloneForDiscreteGpu(definition, vendor, device.dev, "native")));
+          (definition) => cloneForDiscreteGpu(definition, vendor, device.dev, "native")), vendor);
       } else {
         addCase(plan, backendGroup(backend), "discrete", deviceCase(name, definitions,
-          (definition) => cloneForDiscreteGpu(definition, vendor, device.dev, backend)));
+          (definition) => cloneForDiscreteGpu(definition, vendor, device.dev, backend)), vendor);
       }
     }
   }
@@ -220,7 +247,10 @@ async function addGenericCases(plan, algo, discover) {
     addCase(plan, "sycl", "discrete",
       unavailableCase("OpenCL GPU devices (unavailable)", openclResult.reason));
   } else {
-    for (const device of openclResult.devices) {
+    const vendorOrder = [...supportedVendors, "other"];
+    const devices = [...openclResult.devices].sort((left, right) =>
+      vendorOrder.indexOf(deviceVendor(left.description)) - vendorOrder.indexOf(deviceVendor(right.description)));
+    for (const device of devices) {
       const vendor = deviceVendor(device.description);
       const name = `OpenCL ${vendor} ${device.dev}: ${device.description}`;
       // cn/gpu on Intel already selects this exact OpenCL artifact and transport. Other direct
@@ -229,13 +259,13 @@ async function addGenericCases(plan, algo, discover) {
           selectedBackend(algo, vendor) === "sycl-opencl") {continue;}
       if (!configuredDeviceSupports(openclResult.params, algo, device.dev)) {
         addCase(plan, "sycl", "serial",
-          unavailableCase(name, `${algo} is not available on ${device.description}`));
+          unavailableCase(name, `${algo} is not available on ${device.description}`), vendor);
         continue;
       }
       // The OpenCL and native-transport entries can name the same physical GPU. Run this short
       // compatibility case after the parallel discrete batch to avoid overlapping work on it.
       addCase(plan, "sycl", "serial", deviceCase(name, [definition],
-        (entry) => cloneForOpenclSycl(entry, device.dev, "gpu")));
+        (entry) => cloneForOpenclSycl(entry, device.dev, "gpu")), vendor);
     }
   }
 
@@ -256,29 +286,29 @@ async function addGenericCases(plan, algo, discover) {
 async function addIntegratedCases(plan, algo, discover) {
   const definition = fastVectorFor(algo);
   if (!definition) {throw new Error(`No fast vector for ${algo}`);}
-  const backend = selectedBackend(algo, "intel");
+  const backend = selectedBackend(algo, "intel_igpu");
   const requireDevice = process.env["MOM_REQUIRE_INTEGRATED_GPU_TESTS"] === "1";
   const integratedResult = await discover.intelIntegrated(algo, backend);
   if (integratedResult.skipped) {
     addCase(plan, backendGroup(backend), "serial",
-      unavailableCase("Intel integrated GPU (unavailable)", integratedResult.reason, requireDevice));
+      unavailableCase("Intel integrated GPU (unavailable)", integratedResult.reason, requireDevice), "intel");
     return;
   }
   if (!integratedResult.devices.length) {
     addCase(plan, backendGroup(backend), "serial",
       unavailableCase("Intel integrated GPU (unavailable)",
-        "Intel integrated GPU discovery returned no devices", requireDevice));
+        "Intel integrated GPU discovery returned no devices", requireDevice), "intel");
     return;
   }
   for (const device of integratedResult.devices) {
     const name = `intel ${device.dev}: ${device.description}`;
     if (!configuredDeviceSupports(integratedResult.params, algo, device.dev)) {
       addCase(plan, backendGroup(backend), "serial",
-        unavailableCase(name, `${algo} is not available on ${device.description}`));
+        unavailableCase(name, `${algo} is not available on ${device.description}`), "intel");
       continue;
     }
     addCase(plan, backendGroup(backend), "serial", deviceCase(name, [definition],
-      (entry) => cloneForIntelIntegrated(entry, device.dev, backend)));
+      (entry) => cloneForIntelIntegrated(entry, device.dev, backend)), "intel");
   }
 }
 
@@ -323,7 +353,8 @@ function defineGpuTestMatrix({
   discreteOnly = false, integratedOnly = false, portableCpuOnly = false,
 } = {}) {
   // The portable CPU lane does not discover hardware vendors. Ignore a caller's GPU selection
-  // (for example r.sh's explicit MOM_GPU_BACKEND=opencl) instead of treating a backend as a vendor.
+  // (for example development container's explicit MOM_GPU_BACKEND=opencl) instead of treating a
+  // backend as a vendor.
   const vendors = portableCpuOnly || integratedOnly ? [] : requestedVendors();
   const discoverDiscrete = discreteDiscovery();
   const discoverShared = sharedDiscovery();
@@ -352,14 +383,12 @@ function defineGpuTestMatrix({
           await addDiscreteCases(plan, algo, vendors, discoverDiscrete);
           if (!discreteOnly) {await addGenericCases(plan, algo, discoverShared);}
         }
-        for (const backend of [...plan.keys()].sort()) {
-          const lane = plan.get(backend);
-          if (!lane) {throw new Error(`Missing matrix lane ${backend}`);}
-          await runBackend(algoTest, backend, lane);
+        for (const {name, lane} of orderedLanes(plan)) {
+          await runBackend(algoTest, name, lane);
         }
       });
     }
   });
 }
 
-module.exports = {addDiscreteCases, addIntegratedCases, defineGpuTestMatrix};
+module.exports = {addDiscreteCases, addGenericCases, addIntegratedCases, defineGpuTestMatrix, orderedLanes, sharedDiscovery};

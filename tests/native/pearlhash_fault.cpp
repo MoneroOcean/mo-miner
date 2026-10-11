@@ -70,7 +70,7 @@ struct vendor_id {};
 namespace event {
 struct command_execution_status {};
 }
-enum class event_command_status {complete};
+enum class event_command_status {submitted, running, complete};
 }
 struct device {
   backend selected;

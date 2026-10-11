@@ -199,7 +199,8 @@ function isInsideRsh() {
 }
 
 function shouldUseDirectNode() {
-  return process.platform === "win32" || isInsideRsh() || hasReleaseExecutable;
+  return process.platform === "win32" || process.env["MOM_DEV_HOST"] === "1" ||
+    isInsideRsh() || hasReleaseExecutable;
 }
 
 /** @param {string[]} testArgs @param {TestEnvironment} env @returns {Runner} */
@@ -211,14 +212,14 @@ function resolveRshRunner(testArgs, env) {
     .map(([key, value]) => `${key}=${value}`);
   const envArgs = [...unsetArgs, ...valueArgs];
   const args = envArgs.length ? ["env", ...envArgs, "node", ...testArgs] : ["node", ...testArgs];
-  return {command: "./r.sh", args};
+  return {command: "./scripts/dev-container.sh", args};
 }
 
 /** @param {string[]} testArgs @param {TestEnvironment} [env] @returns {Runner} */
 function resolveNodeRunner(testArgs, env = {}) {
   if (shouldUseDirectNode()) {return {command: process.execPath, args: testArgs, env};}
 
-  if (fs.existsSync(path.join(repoRoot, "r.sh"))) {return resolveRshRunner(testArgs, env);}
+  if (fs.existsSync(path.join(repoRoot, "scripts/dev-container.sh"))) {return resolveRshRunner(testArgs, env);}
 
   return {command: "./docker-mom.sh", args: ["node", ...testArgs], env};
 }

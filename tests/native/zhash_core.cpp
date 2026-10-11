@@ -6,7 +6,7 @@
 #include <cstdlib>
 #include <cstring>
 
-#include "equihash_core.hpp"
+#include "../../sycl/zhash/equihash_core.hpp"
 
 namespace {
 

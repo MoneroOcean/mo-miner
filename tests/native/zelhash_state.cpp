@@ -98,6 +98,7 @@ static void sycl_wait_and_throw(sycl::event, const sycl::device &) {
   if (fail_memset) throw std::runtime_error("event failure");
 }
 #include "ulong_parser.inc"
+namespace mom_zelhash {
 #include "zelhash_layout_math.inc"
 struct EqCandidateRef {
   uint32_t bucket, slot_a, slot_b;

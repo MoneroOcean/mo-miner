@@ -4,23 +4,27 @@ const fs = require("node:fs");
 const path = require("node:path");
 const {repoRoot, resolveNodeRunner, spawnAndExit} = require("./common/miner_command");
 
-// Only run the logic suite from a source checkout (opts.js is absent in release packages).
+// Release packages contain hash vectors but omit source-only policy and build tests.
 const hasLogicSuite = fs.existsSync(path.join(repoRoot, "opts.js"));
 const addonSuite = ["tests/native_addon.js"];
+const logicSuite = [
+  "tests/logic.js", "tests/compiler_policy.js", "tests/portable_dag_modes.js",
+  "tests/nvidia_compatibility.js", "tests/intel_device_selection.js", "tests/gpu_test_matrix_order.js",
+  "tests/readme_performance.js", "tests/benchmark_scripts.js", "tests/windows_command.js",
+  "tests/pool_transport.js", "tests/helper_workers.js", "tests/release_archive.js",
+  "tests/build_release.js", "tests/build_environment.js", "tests/incremental_linux_build.js",
+  "tests/windows_incremental_build.js", "tests/windows_incremental_orchestration.js",
+  "tests/windows_worker_discovery.js", "tests/dev.js", "tests/native_deploy.js",
+];
 
 /** @type {Record<string, string[]>} */
 const suites = {
   all: [
-    ...(hasLogicSuite
-      ? [
-        "tests/logic.js", "tests/compiler_policy.js", "tests/nvidia_compatibility.js",
-        "tests/readme_performance.js",
-        "tests/benchmark_scripts.js", "tests/pool_transport.js", "tests/helper_workers.js",
-        ...addonSuite,
-      ]
-      : []),
+    ...(hasLogicSuite ? [...logicSuite, ...addonSuite] : []),
     "tests/all.js",
   ],
+  logic: logicSuite,
+  host: ["tests/host.js", ...logicSuite, "tests/hoohash_host.js", "tests/pearlhash_claim.js"],
   cpu: ["tests/cpu.js", ...addonSuite],
   gpu: ["tests/gpu.js"],
   "gpu-discrete": ["tests/discrete_gpu.js"],
@@ -31,14 +35,24 @@ const suites = {
 };
 
 const suite = process.argv[2] || "all";
-const selectedSuites = suites[suite];
+const selectedSuites = Object.hasOwn(suites, suite) ? suites[suite] : undefined;
 if (!selectedSuites) {
-  console.error(`Unknown hash test suite: ${suite}`);
+  console.error(`Unknown test suite: ${suite}. Choose: ${Object.keys(suites).join(", ")}`);
+  process.exit(1);
+}
+const sourceOnly = suite === "logic" || suite === "host";
+if (sourceOnly && !hasLogicSuite) {
+  console.error(`The ${suite} suite requires a source checkout.`);
+  process.exit(1);
+}
+if (suite === "host" && process.platform !== "linux") {
+  console.error("The host suite requires Linux, Bash and a C++ compiler. Use the logic suite on Windows.");
   process.exit(1);
 }
 
 const testArgs = [
-  ...(suite === "all" ? ["--require", "./tests/common/no_pool_network.js"] : []),
+  "--require",
+  "./tests/common/no_pool_network.js",
   "--require",
   "./tests/common/test_output_buffer.js",
   "--test",
@@ -57,5 +71,8 @@ const configuredVendors = process.env["MOM_GPU_TEST_VENDORS"];
 const runnerEnv = usesVendorMatrix && configuredVendors
   ? {MOM_GPU_TEST_VENDORS: portableOpencl ? undefined : configuredVendors}
   : {};
-const runner = resolveNodeRunner(testArgs, runnerEnv);
+// Source checks must not build a development container or probe GPU runtimes.
+const runner = sourceOnly
+  ? {command: process.execPath, args: testArgs, env: runnerEnv}
+  : resolveNodeRunner(testArgs, runnerEnv);
 spawnAndExit(runner.command, runner.args, {env: runner.env});

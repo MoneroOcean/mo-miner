@@ -15,7 +15,8 @@ const {hashTests} = require("./vectors");
 const vendor = process.env["MOM_GPU_BACKEND"] || "";
 const root = path.join(__dirname, "..");
 
-// Opt-in full-DAG test: run through r.sh with one vendor selected. One-nonce vectors cannot
+// Opt-in full-DAG test: run through development container with one vendor selected. One-nonce
+// vectors cannot
 // detect lanes overwriting the leader's nonce with the original header during a mining batch.
 /** @param {Core} core @param {HashVectorDefinition} definition */
 async function checkBatch(core, definition) {
@@ -121,21 +122,23 @@ if (process.argv[2] === "--worker") {
     process.exitCode = 1;
   });
 } else {
-  test("FishHash/Karlsen mining batches match the independent scalar path", () => {
-    assert.ok(["intel", "nvidia", "amd"].includes(vendor), "Set MOM_GPU_BACKEND to one GPU vendor");
-    /** @type {NodeJS.ProcessEnv} */
-    const base = {...process.env, MOM_COMPILER_POLICY_STRICT: "1", MOM_FISHHASH_COOP: "1"};
-    delete base["MOM_NATIVE_PATH"];
-    delete base["MOM_NATIVE_PATH_LAUNCHER_DEFAULT"];
-    delete base["MOM_NATIVE_DIR"];
-    // Mining uses the full DAG; test mode uses its independent scalar/light-cache oracle.
-    // Set flags before loading the addon, including on Windows where CRT getenv is separate.
-    delete base["MOM_FISHHASH_FULL_TEST"];
-    const env = {...base, ...policy.workerEnv("fishhash", base)};
-    assert.ok(env["MOM_NATIVE_PATH"] && fs.existsSync(env["MOM_NATIVE_PATH"]), "FishHash worker is missing");
-    const result = spawnSync(process.execPath, [__filename, "--worker"], {cwd: root, env, stdio: "inherit"});
-    if (result.error) {throw result.error;}
-    assert.equal(result.signal, null, "Nonce-batch child did not exit naturally");
-    assert.equal(result.status, 0, "Nonce-batch scalar comparison failed");
+  test.describe("FishHash/Karlsen mining batches", {concurrency: false}, () => {
+    test("FishHash/Karlsen mining batches match the independent scalar path", () => {
+      assert.ok(["intel", "nvidia", "amd"].includes(vendor), "Set MOM_GPU_BACKEND to one GPU vendor");
+      /** @type {NodeJS.ProcessEnv} */
+      const base = {...process.env, MOM_COMPILER_POLICY_STRICT: "1", MOM_FISHHASH_COOP: "1"};
+      delete base["MOM_NATIVE_PATH"];
+      delete base["MOM_NATIVE_PATH_LAUNCHER_DEFAULT"];
+      delete base["MOM_NATIVE_DIR"];
+      // Mining uses the full DAG; test mode uses its independent scalar/light-cache oracle.
+      // Set flags before loading the addon, including on Windows where CRT getenv is separate.
+      delete base["MOM_FISHHASH_FULL_TEST"];
+      const env = {...base, ...policy.workerEnv("fishhash", base)};
+      assert.ok(env["MOM_NATIVE_PATH"] && fs.existsSync(env["MOM_NATIVE_PATH"]), "FishHash worker is missing");
+      const result = spawnSync(process.execPath, [__filename, "--worker"], {cwd: root, env, stdio: "inherit"});
+      if (result.error) {throw result.error;}
+      assert.equal(result.signal, null, "Nonce-batch child did not exit naturally");
+      assert.equal(result.status, 0, "Nonce-batch scalar comparison failed");
+    });
   });
 }

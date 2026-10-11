@@ -55,7 +55,7 @@ function requestedVendors() {
     if (invalid.length) {
       throw new Error(`Unknown MOM_GPU_TEST_VENDORS: ${invalid.join(", ")}`);
     }
-    return [...new Set(vendors)];
+    return supportedVendors.filter((vendor) => vendors.includes(vendor));
   }
   const backend = (process.env["MOM_GPU_BACKEND"] || "").toLowerCase();
   // The OpenCL lane discovers devices through its generic compatibility matrix. Treating
@@ -156,7 +156,9 @@ function cloneForIntelIntegrated(definition, dev, backend) {
   copy.env = {
     ...copy.env,
     MOM_COMPILER_POLICY_STRICT: "1",
-    MOM_GPU_BACKEND: "intel",
+    MOM_GPU_BACKEND: "intel_igpu",
+    MOM_NATIVE_PATH: undefined,
+    MOM_NATIVE_PATH_LAUNCHER_DEFAULT: undefined,
   };
   const minimumTimeout = integratedDagAlgos.has(copy.job.algo)
     ? INTEGRATED_DAG_TIMEOUT_MS

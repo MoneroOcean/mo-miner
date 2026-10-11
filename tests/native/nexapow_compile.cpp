@@ -1,11 +1,11 @@
-// Compile-only device probe. test.sh builds this translation unit but never links or runs it.
+// Compile-only device probe. scripts/test-nexapow.sh builds it but never links or runs it.
 
 #include <sycl/sycl.hpp>
 
 #include <cstdint>
 
 namespace mom_nexapow {
-#include "device.inc"
+#include "../../sycl/nexapow/device.inc"
 } // namespace mom_nexapow
 
 class NexaPowCompileProbe;

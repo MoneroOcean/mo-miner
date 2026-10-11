@@ -16,7 +16,7 @@
 #include <vector>
 
 namespace mom_nexapow {
-#include "device.inc"
+#include "../../sycl/nexapow/device.inc"
 } // namespace mom_nexapow
 
 namespace {

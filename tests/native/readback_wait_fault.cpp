@@ -32,7 +32,7 @@ static Control control;
 
 namespace sycl {
 namespace info {
-enum class event_command_status { complete };
+enum class event_command_status { submitted, running, complete };
 namespace event {
 struct command_execution_status {};
 }

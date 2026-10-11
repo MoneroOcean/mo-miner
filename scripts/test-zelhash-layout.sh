@@ -48,8 +48,8 @@ awk '
   copying && /^  ZelHashState& state/ { complete++; copying = 0 }
   copying { print }
   END { if (copies != 1 || complete != 1 || copying) exit 1 }
-' "$root/sycl/zelhash/entry.inc" > "$out/zelhash_entry_guard.inc"
-test "$(grep -cF 'if (!filter_target)' "$root/sycl/zelhash/entry.inc")" -eq 1
+' "$root/sycl/zelhash/zelhash.cpp" > "$out/zelhash_entry_guard.inc"
+test "$(grep -cF 'if (!filter_target)' "$root/sycl/zelhash/zelhash.cpp")" -eq 1
 awk '
   /^inline bool mom_parse_env_ulong\(/ { copies++; copying = 1 }
   copying { print }
