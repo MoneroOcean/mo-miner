@@ -24,7 +24,8 @@ test.describe("Windows incremental build orchestration", {concurrency: false}, (
     assert(start > 0 && selectionEnd > start && end > selectionEnd);
     const cleanup = packageSource.match(/^Remove-Item -Recurse -Force release, release-build -ErrorAction SilentlyContinue$/m);
     assert(cleanup);
-    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-package-retention-"));
+    // Use one absolute identity across Node and PowerShell, not a TEMP path alias.
+    const fixture = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "mom-package-retention-")));
     /** @param {string} value */
     const quote = value => `'${value.replace(/'/g, "''")}'`;
     const driver = path.join(fixture, "driver.ps1");
@@ -116,7 +117,7 @@ Write-Output 'PACKAGE_RETENTION_FIXTURE_OK'
   test("Windows environment boundary consumes only successful npm scaffolds and rejects missing native status", {
     skip: process.platform !== "win32",
   }, () => {
-    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-build-environment-"));
+    const fixture = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "mom-build-environment-")));
     const helper = fs.readFileSync(path.join(repo, "scripts/windows-incremental-build.ps1"), "utf8");
     const start = helper.indexOf("function Initialize-MomBuildEnvironment");
     const end = helper.indexOf("\nfunction Remove-MomAbandonedBuildReceipts", start);
@@ -200,7 +201,7 @@ Write-Output 'PACKAGE_RETENTION_FIXTURE_OK'
   test("Windows configure gate skips edits but invalidates membership and force changes", {
     skip: process.platform !== "win32",
   }, () => {
-    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-incremental-configure-"));
+    const fixture = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "mom-incremental-configure-")));
     const start = oneapi.indexOf("# Keep node-gyp's generated projects");
     const end = oneapi.indexOf("# Capture output", start);
     assert(start >= 0 && end > start);
@@ -288,7 +289,7 @@ Write-Output 'PACKAGE_RETENTION_FIXTURE_OK'
   test("Windows tracker receipts invalidate only matched objects and corrupt outputs", {
     skip: process.platform !== "win32",
   }, () => {
-    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-incremental-tracker-"));
+    const fixture = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "mom-incremental-tracker-")));
     /** @param {string} value */
     const quote = value => `'${value.replace(/'/g, "''")}'`;
     try {
@@ -355,7 +356,7 @@ Write-Output 'PACKAGE_RETENTION_FIXTURE_OK'
   test("oneAPI graph refresh clears only local generated Release and refuses nested junctions", {
     skip: process.platform !== "win32",
   }, () => {
-    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-msbuild-retention-"));
+    const fixture = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "mom-msbuild-retention-")));
     /** @param {string} value @returns {string} */
     const quote = value => "'" + value.replaceAll("'", "''") + "'";
     const driver = path.join(fixture, "driver.ps1");
@@ -365,6 +366,8 @@ $ErrorActionPreference = 'Stop'
 Set-Location __DIRECTORY__
 function Assert-Fixture($Condition, [string]$Name) { if (-not $Condition) { throw $Name } }
 $build = Join-Path __DIRECTORY__ 'build'
+$expectedBuild = [IO.Path]::GetFullPath((Join-Path (Get-Location).ProviderPath 'build'))
+Assert-Fixture ($build -eq $expectedBuild) "fixture build identity changed: expected=$expectedBuild actual=$build"
 $release = Join-Path $build 'Release'
 New-Item -ItemType Directory -Force (Join-Path $release 'obj/old-target') | Out-Null
 Set-Content (Join-Path $release 'obj/old-target/orphan.obj') 'obsolete object'
@@ -410,7 +413,7 @@ Write-Output 'MSBUILD_RETENTION_FIXTURE_OK'
   test("Windows staging rejects root and restored destination junctions before mutation", {
     skip: process.platform !== "win32",
   }, () => {
-    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-staging-boundary-"));
+    const fixture = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "mom-staging-boundary-")));
     /** @param {string} value @returns {string} */
     const quote = value => "'" + value.replaceAll("'", "''") + "'";
     const admission = source.slice(source.indexOf("$platformRoot ="), source.indexOf("function Resolve-RepoPath"));
@@ -479,7 +482,7 @@ Write-Output 'STAGING_BOUNDARY_FIXTURE_OK'
     test(`Windows orchestration restores objects and the other platform after ${failure}`, {
       skip: process.platform !== "win32",
     }, () => {
-      const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-incremental-orchestration-"));
+      const fixture = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "mom-incremental-orchestration-")));
       const dir = path.join(fixture, ".github/workflows/scripts");
       fs.mkdirSync(dir, {recursive: true});
       fs.mkdirSync(path.join(fixture, "scripts"));
@@ -493,8 +496,19 @@ Write-Output 'STAGING_BOUNDARY_FIXTURE_OK'
       fs.writeFileSync(path.join(fixture, "build/win/.incremental/oneapi/configure.json"), "configure-receipt");
       fs.writeFileSync(path.join(fixture, "build/win/compilers/preserved/sycl.dll"), "other-worker");
       fs.writeFileSync(path.join(fixture, "build/lin/marker"), "linux");
-      fs.writeFileSync(path.join(dir, "windows-dll-deps.ps1"), "# fixture\n");
-      fs.writeFileSync(path.join(fixture, "scripts/windows-install-helpers.ps1"), "# fixture\n");
+      fs.writeFileSync(path.join(dir, "windows-dll-deps.ps1"), [
+        "function Copy-MominerOptionalRuntimeFiles {",
+        "  param([string]$PackageDir, [string[]]$SourceRoots)",
+        "  if ($PackageDir -ne (Join-Path $out 'oneapi') -or $SourceRoots.Count -ne 1 -or $SourceRoots[0] -ne (Join-Path $repo 'fixture-oneapi-bin')) { throw 'Unexpected fixture runtime export' }",
+        "}",
+        "function Copy-MominerDllClosure {",
+        "  param([string]$PackageDir, [string[]]$EntryPaths)",
+        "  if ($PackageDir -ne (Join-Path $out 'oneapi') -or $EntryPaths.Count -ne 2) { throw 'Unexpected fixture DLL closure' }",
+        "  foreach ($entry in $EntryPaths) { if (-not (Test-Path -LiteralPath $entry -PathType Leaf)) { throw 'Missing fixture runtime entry' } }",
+        "}",
+      ].join("\n"));
+      fs.writeFileSync(path.join(fixture, "scripts/windows-install-helpers.ps1"),
+        "function Get-MominerOneApiBinDirs { Join-Path $repo 'fixture-oneapi-bin' }\n");
       for (const name of ["windows-msbuild-cache.ps1", "windows-incremental-build.ps1", "build-environment.js"]) {
         fs.copyFileSync(path.join(repo, "scripts", name), path.join(fixture, "scripts", name));
       }

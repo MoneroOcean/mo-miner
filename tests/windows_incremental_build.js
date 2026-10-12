@@ -23,7 +23,8 @@ test.describe("Windows incremental builds", {concurrency: false}, () => {
   });
 
   test("MSBuild tracker admission rejects missing intermediates and empty inputs before publication", {skip: process.platform !== "win32"}, () => {
-    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-win-tracker-coverage-"));
+    // Canonicalize only the new private root; leave deliberate junction/escape paths untouched.
+    const fixture = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "mom-win-tracker-coverage-")));
     /** @param {string} value @returns {string} */
     const quote = value => "'" + value.replaceAll("'", "''") + "'";
     const source = fs.readFileSync(path.join(repo, ".github/workflows/scripts/build-windows.ps1"), "utf8").replace(/\r\n/g, "\n");
@@ -37,6 +38,8 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 . __HELPER__
 $repoRoot = __ROOT__
+$canonicalRoot = [IO.Path]::GetFullPath($repoRoot)
+if ($canonicalRoot -ne $repoRoot) { throw "fixture root identity changed: expected=$repoRoot actual=$canonicalRoot" }
 $build = Join-Path $repoRoot 'build'
 $release = Join-Path $build 'Release'
 $logs = Join-Path $release 'obj/tracker'
@@ -119,7 +122,7 @@ Write-Output 'TRACKER_COVERAGE_FIXTURE_OK'
   for (const shadow of ["0", "$null"]) {
     for (const status of [0, 17, null]) {
       test(`Windows incremental linker status ${status ?? "missing"} ignores local shadow ${shadow}`, {skip: process.platform !== "win32"}, () => {
-        const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-win-link-status-"));
+        const fixture = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "mom-win-link-status-")));
         /** @param {string} value @returns {string} */
         const quote = value => "'" + value.replaceAll("'", "''") + "'";
         const driver = path.join(fixture, "driver.ps1");
@@ -210,7 +213,7 @@ Write-Output 'LINK_STATUS_FIXTURE_OK'
   });
 
   test("Windows publication rejects junction escapes without changing external sentinels", {skip: process.platform !== "win32"}, () => {
-    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-win-publication-"));
+    const fixture = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "mom-win-publication-")));
     /** @param {string} value @returns {string} */
     const quote = value => "'" + value.replaceAll("'", "''") + "'";
     /** @param {string} source @param {string} startText @param {string} endText @returns {string} */
@@ -318,7 +321,7 @@ Write-Output 'PUBLICATION_FIXTURE_OK'
   });
 
   test("Windows retention prunes only obsolete current-variant outputs and abandoned receipts", {skip: process.platform !== "win32"}, () => {
-    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-win-retention-"));
+    const fixture = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "mom-win-retention-")));
     /** @param {string} value @returns {string} */
     const quote = value => "'" + value.replaceAll("'", "''") + "'";
     const driver = path.join(fixture, "driver.ps1");
@@ -379,7 +382,7 @@ Write-Output 'RETENTION_FIXTURE_OK'
   });
 
   test("PowerShell incremental receipts reject changed inputs, corruption and interrupted builds", {skip: process.platform !== "win32"}, () => {
-    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-win-incremental-"));
+    const fixture = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "mom-win-incremental-")));
     /** @param {string} value @returns {string} */
     const quote = value => "'" + value.replaceAll("'", "''") + "'";
     const driver = path.join(fixture, "driver.ps1");
@@ -398,7 +401,8 @@ $output = Join-Path __DIRECTORY__ 'sycl.dll'
 Set-Content $source 'source'
 Set-Content $header 'header'
 Set-Content $deviceHeader 'device-only header'
-Assert-Fixture ((Resolve-MomBuildPath 'source with spaces.cpp') -eq $source) 'relative path used native cwd'
+$resolvedSource = Resolve-MomBuildPath 'source with spaces.cpp'
+Assert-Fixture ($resolvedSource -eq $source) "relative path used native cwd: expected=$source actual=$resolvedSource provider=$((Get-Location).ProviderPath) native=$([Environment]::CurrentDirectory)"
 $script:compiles = 0
 $script:links = 0
 $script:fail = $false

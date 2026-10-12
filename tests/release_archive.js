@@ -480,6 +480,34 @@ ConvertTo-Json -InputObject $results -Compress
     assert.doesNotMatch(source, /Select-Object\s+-First\s+1/);
   });
 
+  test("source checkout preserves authenticated text and binary bytes with Windows autocrlf", () => {
+    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-checkout-bytes-"));
+    const files = new Map([
+      ["helper.sh", Buffer.from("#!/bin/sh\nprintf 'fixture\\n'\n")],
+      ["worker.cpp", Buffer.from("int main() { return 0; }\n")],
+      ["installer.ps1", Buffer.from("Write-Output 'fixture'\n")],
+      ["binary.dat", Buffer.from([0, 10, 13, 10, 255])],
+    ]);
+    /** @param {string[]} args */
+    const git = args => {
+      const result = run("git", ["-c", "core.autocrlf=true", ...args], {cwd: fixture});
+      assert.equal(result.status, 0, result.stderr);
+    };
+    try {
+      fs.copyFileSync(path.join(repo, ".gitattributes"), path.join(fixture, ".gitattributes"));
+      git(["init", "--quiet"]);
+      for (const [name, bytes] of files) {fs.writeFileSync(path.join(fixture, name), bytes);}
+      git(["add", "--", ".gitattributes", ...files.keys()]);
+      for (const name of files.keys()) {fs.unlinkSync(path.join(fixture, name));}
+      git(["checkout-index", "--all"]);
+      for (const [name, bytes] of files) {
+        assert.ok(fs.readFileSync(path.join(fixture, name)).equals(bytes), `${name}: checkout changed bytes`);
+      }
+    } finally {
+      fs.rmSync(fixture, {recursive: true, force: true});
+    }
+  });
+
   /** @param {string} source */
   function assertPortableCpuWorkflowContract(source) {
     const sourceQuality = workflowJob(source, "source-quality");

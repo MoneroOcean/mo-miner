@@ -1,2 +1,5 @@
+# Keep authenticated helper hashes and source/build contracts identical on every OS.
+* text=auto eol=lf
+
 # Patch context must preserve upstream whitespace for exact application.
 scripts/patches/*.patch whitespace=-blank-at-eol

@@ -16,7 +16,7 @@ test.describe("Cross-platform development dispatcher", () => {
     assert.equal(runDev("linux", "x64", env, args, (command, forwarded, options) => {
       calls++;
       assert.equal(command, "bash");
-      assert.ok(forwarded[0]?.endsWith("scripts/dev-container.sh"));
+      assert.equal(forwarded[0], path.resolve(__dirname, "../scripts/dev-container.sh"));
       assert.deepEqual(forwarded.slice(1), args);
       assert.equal(options.env, env);
       assert.equal(options.stdio, "inherit");
@@ -186,7 +186,7 @@ test.describe("Native host development dispatch", () => {
     assert.equal(runDev("linux", "x64", env, args, (command, forwarded, options) => {
       calls++;
       assert.equal(command, "bash");
-      assert.ok(forwarded[0]?.endsWith("scripts/multicompiler-entrypoint.sh"));
+      assert.equal(forwarded[0], path.resolve(__dirname, "../scripts/multicompiler-entrypoint.sh"));
       assert.deepEqual(forwarded.slice(1), args);
       assert.equal(options.cwd, path.resolve(__dirname, ".."));
       assert.equal(options.env?.["MOM_DEV_HOST"], "1");
@@ -204,7 +204,7 @@ test.describe("Native host development dispatch", () => {
   test("Linux host defaults to MoM and treats ordinary arguments as MoM arguments", () => {
     for (const args of [[], ["mine", "config.json"], ["--", "--host", "value"]]) {
       runDev("linux", "x64", {MOM_DEV_HOST: "1"}, args, (_command, forwarded) => {
-        assert.ok(forwarded[0]?.endsWith("scripts/multicompiler-entrypoint.sh"));
+        assert.equal(forwarded[0], path.resolve(__dirname, "../scripts/multicompiler-entrypoint.sh"));
         assert.deepEqual(forwarded.slice(1), ["node", "mom.js", ...args]);
         return {status: 0};
       });
@@ -214,7 +214,7 @@ test.describe("Native host development dispatch", () => {
   test("host flags and separators are literal MoM arguments, not wrapper options", () => {
     for (const args of [["--host", "value"], ["--", "--host", "value"], ["--unknown", "value"]]) {
       runDev("linux", "x64", {}, args, (_command, forwarded) => {
-        assert.ok(forwarded[0]?.endsWith("scripts/dev-container.sh"));
+        assert.equal(forwarded[0], path.resolve(__dirname, "../scripts/dev-container.sh"));
         assert.deepEqual(forwarded.slice(1), ["node", "mom.js", ...args]);
         return {status: 0};
       });
@@ -229,7 +229,7 @@ test.describe("Native host development dispatch", () => {
     for (const value of ["true", "false", "", "example.invalid"]) {
       const env = {npm_config_host: value};
       runDev("linux", "x64", env, ["node", "mom.js"], (_command, forwarded, options) => {
-        assert.ok(forwarded[0]?.endsWith("scripts/dev-container.sh"));
+        assert.equal(forwarded[0], path.resolve(__dirname, "../scripts/dev-container.sh"));
         assert.equal(options.env, env);
         return {status: 0};
       });
@@ -306,7 +306,8 @@ test.describe("Native host development dispatch", () => {
   test("Linux host selection accepts only the environment marker", () => {
     for (const marker of [undefined, "", "0", "1"]) {
       runDev("linux", "x64", {MOM_DEV_HOST: marker}, [], (_command, args) => {
-        assert.ok(args[0]?.endsWith(marker === "1" ? "scripts/multicompiler-entrypoint.sh" : "scripts/dev-container.sh"));
+        assert.equal(args[0], path.resolve(__dirname, "../scripts",
+          marker === "1" ? "multicompiler-entrypoint.sh" : "dev-container.sh"));
         return {status: 0};
       });
     }

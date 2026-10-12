@@ -141,7 +141,7 @@ static void test_layout() {
 #if defined(MOM_EQ_FORWARD_MAP)
   require(recover_leaf<true>(records, indices, bucket, slot, capacity) == (bucket << 14 | slot),
           "CUDA recovery produces forward inversion target");
-  for (const auto [edge_bucket, edge_slot] :
+  for (const auto& [edge_bucket, edge_slot] :
        {std::pair{0u, 0u}, std::pair{NBUCKETS - 1u, MAX_SLOTS - 1u}}) {
     const auto key = recover_leaf<true>({}, {}, edge_bucket, edge_slot, MAX_SLOTS);
     require((key >> 14) == edge_bucket && (key & 0x3fffu) == edge_slot && key != 0xffffffffu,

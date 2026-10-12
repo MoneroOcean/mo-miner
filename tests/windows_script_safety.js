@@ -63,7 +63,7 @@ test.describe("Windows script safety", {concurrency: false}, () => {
           {skip: !WINDOWS}, () => {
             const source = readSource(path.join(repo, "scripts/test-windows-release-gpu.ps1"));
             const start = source.indexOf(boundary === "installer"
-              ? "    $global:LASTEXITCODE = $null" : "  $global:LASTEXITCODE = $null\n  & $node");
+              ? "    $global:LASTEXITCODE = $null" : "  $gateCapturePreference = $ErrorActionPreference");
             const end = source.indexOf(boundary === "installer" ? "\n  } finally {" : "\n} finally {", start);
             assert(start >= 0 && end > start, "native release boundary is missing");
             const block = source.slice(start, end).replace("& .\\install.bat", () => "& $fixtureCommand");
@@ -84,6 +84,8 @@ test.describe("Windows script safety", {concurrency: false}, () => {
                   `  $LASTEXITCODE = ${shadow}`,
                   "  $global:LASTEXITCODE = 0",
                   "  $fixtureCommand = 'Invoke-FixtureNative'; $node = $fixtureCommand; $gateArgs = @()",
+                  // Real capture paths must exist so logging cannot mask the native status verdict.
+                  `  $debugDir = '${fixture.replaceAll("'", "''")}'`,
                   "  $rejected = $false",
                   "  try {", body, "  } catch { $rejected = $true }",
                   "  [pscustomobject]@{ rejected = $rejected } | ConvertTo-Json -Compress",
@@ -1790,6 +1792,9 @@ try {
       }
       fs.copyFileSync(path.join(repo, "scripts/windows-install-helpers.ps1"),
         path.join(fixture, "scripts/windows-install-helpers.ps1"));
+      for (const name of ["windows-incremental-build.ps1", "windows-msbuild-cache.ps1", "build-environment.js"]) {
+        fs.copyFileSync(path.join(repo, "scripts", name), path.join(fixture, "scripts", name));
+      }
       fs.writeFileSync(path.join(scripts, "build-windows.ps1"), "throw 'COMPILE_REACHED'\n");
       const build = path.join(fixture, "build");
       fs.mkdirSync(build);
