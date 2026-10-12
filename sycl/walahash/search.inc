@@ -5,7 +5,7 @@ static sycl::event search(State& s, uint64_t first, unsigned count, bool is_test
   const size_t global = (static_cast<size_t>(count) + work_group - 1) / work_group * work_group;
   const uint8_t* matrix = s.matrix;
   const uint8_t* input = s.input;
-#ifdef MOM_SYCL_HAS_CUDA
+#if defined(MOM_SYCL_HAS_CUDA) || defined(MOM_SYCL_ADAPTIVECPP_CUDA)
   const Blake3Cv prehash_cv = s.prehash_cv;
 #endif
   const uint8_t* target = s.target;
@@ -24,7 +24,7 @@ static sycl::event search(State& s, uint64_t first, unsigned count, bool is_test
           const uint64_t nonce = first + gid;
           uint32_t pow_words[8];
           uint8_t* pow = reinterpret_cast<uint8_t*>(pow_words);
-#ifdef MOM_SYCL_HAS_CUDA
+#if defined(MOM_SYCL_HAS_CUDA) || defined(MOM_SYCL_ADAPTIVECPP_CUDA)
           if constexpr (FixedHashes) {
             b3_80_from_cv(pow_words, prehash_cv, input + 64, nonce);
             sha3_words64(pow_words);
@@ -68,7 +68,7 @@ static sycl::event search(State& s, uint64_t first, unsigned count, bool is_test
             mixed[i / 2] = pow[i / 2] ^ static_cast<uint8_t>(nibble[0] << 4 | nibble[1]);
             mixed[i / 2 + 1] = pow[i / 2 + 1] ^ static_cast<uint8_t>(nibble[2] << 4 | nibble[3]);
           }
-#ifdef MOM_SYCL_HAS_CUDA
+#if defined(MOM_SYCL_HAS_CUDA) || defined(MOM_SYCL_ADAPTIVECPP_CUDA)
           if constexpr (FixedHashes)
             b3_32(pow_words, mixed_words);
           else

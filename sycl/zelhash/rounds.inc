@@ -128,10 +128,11 @@ static sycl::event submit_round(sycl::queue& q, const uint32_t* d_in, uint32_t* 
       // build exact-bin chains, overwrite the now-dead heads with a compact pair list, retain a bounded
       // number of pair IDs in each lane's registers, then overwrite the pair list with staged record
       // fields. Keeping links behind the maximum pair list makes these lifetimes non-overlapping; the
-      // selected Intel path uses at most 29 KiB, CUDA/HIP about 53 KiB, and AdaptiveCpp/CUDA's
-      // small-bucket fallback about 16 KiB. This avoids a random global load for every collision partner.
+      // selected Intel and AdaptiveCpp/CUDA paths use at most 29 KiB, CUDA/HIP about 53 KiB.
+      // This avoids a random global load for every collision partner.
 #if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
-      constexpr unsigned PAIRS_PER_LANE = 3u;
+      // Increase pair headroom with the larger buckets, not just their slot capacity.
+      constexpr unsigned PAIRS_PER_LANE = 5u;
 #elif !defined(MOM_SYCL_HAS_CUDA) && !defined(MOM_SYCL_HAS_HIP) && !defined(MOM_SYCL_ADAPTIVECPP)
       // WG1024 x 5 covers every measured Intel pair (a sixth slot did not change survivor counts).
       // The former WG512 x 9 cap silently discarded 150 pairs in the block-400000 exact profile.
@@ -143,6 +144,10 @@ static sycl::event submit_round(sycl::queue& q, const uint32_t* d_in, uint32_t* 
       constexpr unsigned LINK_U16_OFF = 2u * PAIR_CAP;
       constexpr unsigned COUNTER_U16_OFF = LINK_U16_OFF + MAX_SLOTS;
       constexpr unsigned SCRATCH_U32 = (COUNTER_U16_OFF + 3u) / 2u;
+#if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
+      static_assert(SCRATCH_U32 * sizeof(uint32_t) <= 48u * 1024u);
+      static_assert(PAIR_CAP >= MAX_SLOTS && PAIR_CAP >= NRESTBINS);
+#endif
       sycl::local_accessor<uint32_t, 1> scratch(sycl::range<1>(SCRATCH_U32), h);
       constexpr unsigned FOLLOWERS = IN_FIELDS - 1u;
       h.parallel_for<ZelHashRoundKernel<R, GPU_COMPACT>>(

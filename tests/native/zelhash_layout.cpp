@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <initializer_list>
+#include <utility>
 #include <vector>
 
 #include "../../sycl/blake2b_pair.hpp"
@@ -71,7 +72,8 @@ static void test_layout() {
   require(MAX_SLOTS < (1u << 14) && MAX_SLOTS % 16 == 0, "encoded slot width");
   require(NBUCKETS < (1u << 16), "encoded bucket width");
 #if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
-  require(MAX_SLOTS == 2368 && NBUCKETS == 32768, "ACPP CUDA six-deviation capacity");
+  require(MAX_SLOTS == 4480 && NBUCKETS == 16384 && NRESTBINS == 2048 && RESTBITS == 11,
+          "ACPP CUDA six-deviation intermediate geometry");
 #elif defined(MOM_SYCL_HAS_CUDA)
   require(MAX_SLOTS == 8192 && NBUCKETS == 8759, "native CUDA geometry preserved");
 #elif defined(MOM_SYCL_HAS_HIP)
@@ -139,6 +141,15 @@ static void test_layout() {
 #if defined(MOM_EQ_FORWARD_MAP)
   require(recover_leaf<true>(records, indices, bucket, slot, capacity) == (bucket << 14 | slot),
           "CUDA recovery produces forward inversion target");
+  for (const auto [edge_bucket, edge_slot] :
+       {std::pair{0u, 0u}, std::pair{NBUCKETS - 1u, MAX_SLOTS - 1u}}) {
+    const auto key = recover_leaf<true>({}, {}, edge_bucket, edge_slot, MAX_SLOTS);
+    require((key >> 14) == edge_bucket && (key & 0x3fffu) == edge_slot && key != 0xffffffffu,
+            "forward recovery boundary key and sentinel separation");
+  }
+  require(recover_leaf<true>({}, {}, NBUCKETS - 1u, MAX_SLOTS - 1u, MAX_SLOTS, false) ==
+              0xabcdef12u,
+          "invalid compact node does not touch forward target");
 #else
   require(recover_leaf<true>(records, indices, bucket, slot, capacity) == indices[position],
           "ACPP compact recovery reads separate index");

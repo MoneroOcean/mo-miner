@@ -84,6 +84,10 @@ build_run c29-cycle "$root/tests/native/c29_cycle.cpp"
 build_run c29-recovery-range "$root/tests/native/c29_recovery_range.cpp"
 build_run job-boundary -I "$root/native" "$root/tests/native/job_boundary.cpp"
 build_run hashrate-sampling "$root/tests/native/hashrate_sampling.cpp"
+build_run walahash-fixed-acpp -std=c++20 -Wno-unknown-pragmas -Wno-unused-function \
+  "$root/tests/native/walahash_fixed.cpp"
+build_run walahash-fixed-dpcpp -std=c++20 -Wno-unknown-pragmas -Wno-unused-function \
+  -DTEST_WALAHASH_DPCPP "$root/tests/native/walahash_fixed.cpp"
 
 awk '
   /^    if \(new_dag_words > / { copies++; copying = 1 }

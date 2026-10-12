@@ -72,7 +72,7 @@ int walahash(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint
   std::lock_guard<std::mutex> lock(state.mutex);
   MomSyclHostTransferGuard host_transfers(state.queue, "walahash host transfers");
   state.queue.memcpy(state.input, input, 72);
-#if defined(WALAHASH_ESIMD) || defined(MOM_SYCL_HAS_CUDA) || defined(MOM_SYCL_HAS_HIP)
+#if defined(WALAHASH_ESIMD) || defined(MOM_SYCL_HAS_CUDA) || defined(MOM_SYCL_ADAPTIVECPP_CUDA) || defined(MOM_SYCL_HAS_HIP)
   b3_first_block_cv(state.prehash_cv, input);
 #endif
   state.queue.memcpy(state.target, target, 32);
@@ -90,14 +90,14 @@ int walahash(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint
 #endif
   unsigned fused_work_group =
       sycl_default_workgroup(state.device, {32, 64, 128, 256}, 256);
-#ifdef MOM_SYCL_HAS_CUDA
+#if defined(MOM_SYCL_HAS_CUDA) || defined(MOM_SYCL_ADAPTIVECPP_CUDA)
+  // Fixed hashes need only integer math; AdaptiveCpp independently gates DP4A at JIT target reflection.
   const char* cuda_required = std::getenv("MOM_WALAHASH_CUDA_REQUIRE");
   const bool cuda_require = cuda_required && *cuda_required && std::strcmp(cuda_required, "0");
-  const bool cuda_device =
-      state.device.is_gpu() && state.device.get_backend() == sycl::backend::ext_oneapi_cuda;
+  const bool cuda_device = state.device.is_gpu() && mom_is_cuda(state.device);
   const bool cuda_fast = native && cuda_device && sycl_workgroup_fits(state.device, 128);
   if (cuda_require && !cuda_fast)
-    throw std::string("WalaHash CUDA DP4A/fixed-hash path required but unavailable");
+    throw std::string("WalaHash CUDA fixed-hash path required but unavailable");
 #endif
 #ifdef MOM_SYCL_HAS_HIP
   const bool amd_fast =
@@ -140,7 +140,7 @@ int walahash(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint
     dispatched = true;
   }
 #endif
-#ifdef MOM_SYCL_HAS_CUDA
+#if defined(MOM_SYCL_HAS_CUDA) || defined(MOM_SYCL_ADAPTIVECPP_CUDA)
   if (!dispatched && cuda_fast) {
     search_event = search<true, true>(state, *pnonce, intensity, is_test, 128);
     dispatched = true;

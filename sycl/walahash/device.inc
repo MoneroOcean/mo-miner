@@ -205,7 +205,7 @@ inline void sha3_256(uint8_t out[32], const uint8_t in[32]) {
     out[i] = static_cast<uint8_t>(st[i / 8] >> (8 * (i % 8)));
 }
 
-#if defined(MOM_SYCL_HAS_CUDA)
+#if defined(MOM_SYCL_HAS_CUDA) || defined(MOM_SYCL_ADAPTIVECPP_CUDA)
 // Apply SHA3-256 to eight packed words for the CUDA fixed-hash path.
 inline void sha3_words64(uint32_t io[8]) {
   uint64_t st[25]{};
@@ -225,7 +225,7 @@ inline void sha3_words64(uint32_t io[8]) {
 #include "amd_wmma.inc"
 #endif
 
-#if defined(WALAHASH_ESIMD) || defined(MOM_SYCL_HAS_CUDA) || defined(MOM_SYCL_HAS_HIP)
+#if defined(WALAHASH_ESIMD) || defined(MOM_SYCL_HAS_CUDA) || defined(MOM_SYCL_ADAPTIVECPP_CUDA) || defined(MOM_SYCL_HAS_HIP)
 #if defined(__clang__) || defined(__GNUC__)
 #define MOM_WALAHASH_ALWAYS_INLINE inline __attribute__((always_inline))
 #else

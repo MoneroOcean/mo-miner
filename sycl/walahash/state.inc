@@ -16,7 +16,7 @@ public:
 #ifdef MOM_SYCL_HAS_HIP
   WalaHashAmdWmma amd_wmma;
 #endif
-#if defined(WALAHASH_ESIMD) || defined(MOM_SYCL_HAS_CUDA) || defined(MOM_SYCL_HAS_HIP)
+#if defined(WALAHASH_ESIMD) || defined(MOM_SYCL_HAS_CUDA) || defined(MOM_SYCL_ADAPTIVECPP_CUDA) || defined(MOM_SYCL_HAS_HIP)
   Blake3Cv prehash_cv{};
 #endif
 #if defined(WALAHASH_ESIMD) || defined(MOM_SYCL_HAS_HIP)

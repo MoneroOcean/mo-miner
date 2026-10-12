@@ -3,9 +3,8 @@
 #if defined(MOM_SYCL_HAS_CUDA) || defined(MOM_SYCL_ADAPTIVECPP_CUDA)
 #define MOM_EQ_ALIGNED_GPU_RECORDS 1
 #endif
-// DPC++ lowers a coalesced leaf->position map much better than four random reverse-map stores.
-// The rare recovery pass resolves final leaves with one linear inversion scan.
-#if defined(MOM_SYCL_HAS_CUDA)
+// Coalesced leaf->position stores defer the reverse lookup to one cold recovery scan.
+#if defined(MOM_SYCL_HAS_CUDA) || defined(MOM_SYCL_ADAPTIVECPP_CUDA)
 #define MOM_EQ_FORWARD_MAP 1
 #endif
 
@@ -50,17 +49,17 @@ constexpr unsigned bucket_capacity(unsigned buckets, unsigned deviations, unsign
 
 // ---- Wagner solver memory plan. Intel oneAPI gains from 16384 super-buckets and 1024-lane groups:
 // its ~29-KiB scratch arena amortizes each bucket with fewer register-held pairs per lane. CUDA/HIP
-// instead lose materially with that geometry and retain 8192 buckets, 1024 lanes, and a ~53-KiB
-// arena. AdaptiveCpp CUDA cannot opt a kernel into >48 KiB dynamic shared memory, so its
-// lower-priority fallback uses 32768 smaller buckets and the same common collision code with a
-// ~16-KiB scratch arena.
+// instead lose materially with that geometry and retain about 8192 buckets, 1024 lanes, and a ~53-KiB
+// arena. AdaptiveCpp CUDA cannot opt a kernel into >48 KiB dynamic shared memory. Its intermediate
+// 16384-bucket geometry keeps six-sigma slot headroom and five pairs per lane in a ~29-KiB scratch
+// arena, instead of doubling the bucket launches to fit a ~16-KiB arena.
 // Four materialized levels hold the gen output and round-0..2 survivors. Round 3 filters its final
 // field in-place and emits only zero pairs, so the otherwise 0.27--0.53-GiB level-4 stream is absent.
 #if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
-constexpr unsigned RESTBITS = 10;
-constexpr unsigned BUCKBITS = COLLISION_BIT_LENGTH - RESTBITS; // 15
-constexpr unsigned NBUCKETS = 1u << BUCKBITS;                  // 32768
-constexpr unsigned NRESTBINS = 1u << RESTBITS;                 // 1024 exact bins per bucket
+constexpr unsigned RESTBITS = 11;
+constexpr unsigned BUCKBITS = COLLISION_BIT_LENGTH - RESTBITS; // 14
+constexpr unsigned NBUCKETS = 1u << BUCKBITS;                  // 16384
+constexpr unsigned NRESTBINS = 1u << RESTBITS;                 // 2048 exact bins per bucket
 constexpr unsigned MAX_SLOTS = bucket_capacity(NBUCKETS, 6u, 64u);
 constexpr unsigned ROUND_WG = 1024;
 #elif !defined(MOM_SYCL_HAS_CUDA) && !defined(MOM_SYCL_HAS_HIP) && !defined(MOM_SYCL_ADAPTIVECPP)
@@ -103,6 +102,10 @@ constexpr bool ROUND_DIRECT_CHAINS = false;
 constexpr unsigned NLEVELS = K + 1;    // five progressive field counts
 constexpr unsigned NSTORED_LEVELS = K; // final zero pairs replace level 4
 static_assert(MAX_SLOTS < (1u << 16));
+#if defined(MOM_EQ_FORWARD_MAP)
+// The recovery key reserves 14 low bits for a slot; its upper bits identify the bucket.
+static_assert(MAX_SLOTS < (1u << 14) && NBUCKETS < (1u << 18));
+#endif
 inline uint32_t stored_rest(uint32_t word) {
   return word & ((1u << RESTBITS) - 1u);
 }
