@@ -100,8 +100,10 @@ esac
 # objects through the bind mount. Reconfiguring LLVM merely because MOM_BUILD_JOBS or an unrelated
 # repository file changed wastes tens of minutes. CI component jobs still take the explicit
 # MOM_BUILD_ONLY_SCOPE path above; set MOM_REBUILD_DEV_IMAGE=1 after intentionally changing a
-# compiler/runtime Docker stage.
-if [ "${MOM_REBUILD_DEV_IMAGE:-0}" != 1 ] && [ -z "${MOM_BUILDX_CACHE_DIR:-}" ] && \
+# compiler/runtime Docker stage. Explicit worker reuse also keeps CI's loaded image after its
+# imported cache directories have been consumed; worker source admission remains in the entrypoint.
+if [ "${MOM_REBUILD_DEV_IMAGE:-0}" != 1 ] && \
+   { [ -z "${MOM_BUILDX_CACHE_DIR:-}" ] || [ "$reuse_built_worker" = 1 ]; } && \
    docker image inspect "$image" >/dev/null 2>&1; then
   # Older pinned compiler images may predate release packaging prerequisites. Probe without GPU,
   # network or workspace access, then update only the small final stage if tools are missing.

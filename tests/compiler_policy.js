@@ -1167,6 +1167,9 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       const temp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-r-sh-opencl-test-"));
       const fakeBin = path.join(temp, "bin");
       const dockerArgs = path.join(temp, "docker-args");
+      const dockerEvents = path.join(temp, "docker-events");
+      const dockerProbe = path.join(temp, "docker-probe");
+      const dockerBuild = path.join(temp, "docker-build");
       const verthashData = path.join(temp, "verthash.dat");
       fs.mkdirSync(fakeBin);
       fs.writeFileSync(verthashData, "fixture");
@@ -1175,10 +1178,18 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       const docker = path.join(fakeBin, "docker");
       fs.writeFileSync(docker, [
         "#!/bin/sh",
+        'printf "%s\\n" "$1:$2" >> "$MOM_TEST_DOCKER_EVENTS"',
         'case "$1:$2" in',
-        "  buildx:version|image:inspect) exit 0 ;;",
+        "  buildx:version|buildx:prune) exit 0 ;;",
+        '  buildx:build) printf \'%s\\n\' "$@" > "$MOM_TEST_DOCKER_BUILD"; exit 0 ;;',
+        '  image:inspect) exit "$MOM_TEST_IMAGE_MISSING" ;;',
         "  container:inspect) exit 1 ;;",
-        '  run:*) shift; printf \'%s\\n\' "$@" > "$MOM_TEST_DOCKER_ARGS"; exit 0 ;;',
+        "  run:*)",
+        '    shift; printf \'%s\\n\' "$@" > "$MOM_TEST_DOCKER_ARGS"',
+        '    case " $* " in',
+        '      *" --entrypoint "*) printf \'%s\\n\' "$@" > "$MOM_TEST_DOCKER_PROBE"; exit "$MOM_TEST_TOOLS_MISSING" ;;',
+        "    esac",
+        "    exit 0 ;;",
         "esac",
         "exit 1",
       ].join("\n"));
@@ -1197,6 +1208,11 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
           MOM_GPU_BACKEND: "opencl",
           MOM_NEXAPOW_PROFILE: "1",
           MOM_TEST_DOCKER_ARGS: dockerArgs,
+          MOM_TEST_DOCKER_EVENTS: dockerEvents,
+          MOM_TEST_DOCKER_PROBE: dockerProbe,
+          MOM_TEST_DOCKER_BUILD: dockerBuild,
+          MOM_TEST_IMAGE_MISSING: "0",
+          MOM_TEST_TOOLS_MISSING: "0",
           MOM_VERTHASH_DATA: verthashData,
           PATH: `${fakeBin}${path.delimiter}${process.env["PATH"] || ""}`,
         });
@@ -1227,6 +1243,46 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
         assert.equal(flagValue("--pids-limit"), "256");
         assert.equal(flagValue("--network"), "none");
         assert.equal(args.some((arg) => arg.startsWith("MOM_CONTAINER_")), false);
+        // CI consumes imported caches before packaging re-enters this wrapper. Explicit worker
+        // reuse must keep the loaded image, but normal/forced/missing-image paths still rebuild.
+        for (const variant of ["reuse-ci-cache", "ordinary-ci-cache", "forced-image", "missing-image",
+          "missing-tools", "ordinary-image"]) {
+          fs.writeFileSync(dockerEvents, "");
+          const reuse = !variant.startsWith("ordinary");
+          const runEnv = {...env, MOM_GPU_BACKEND: "all", MOM_REUSE_BUILT_WORKER: reuse ? "1" : "0",
+            MOM_BUILDX_CACHE_DIR: variant === "ordinary-image" ? "" : path.join(temp, "consumed-cache"),
+            MOM_BUILDX_CACHE_SCOPES: "acpp-cuda,acpp-hip",
+            MOM_BUILDX_CACHE_READ_ONLY: "1", MOM_BUILDX_CACHE_DELETE_AFTER_LOAD: "1",
+            MOM_REBUILD_DEV_IMAGE: variant === "forced-image" ? "1" : "0",
+            MOM_TEST_IMAGE_MISSING: variant === "missing-image" ? "1" : "0",
+            MOM_TEST_TOOLS_MISSING: variant === "missing-tools" ? "1" : "0"};
+          const invoked = spawnSync("bash", [path.join(temp, "scripts/dev-container.sh"),
+            "npm", "run", "build:release", "--", "--package-only"], {
+            cwd: temp, encoding: "utf8", timeout: 10000, env: runEnv,
+          });
+          assert.equal(invoked.error, undefined);
+          assert.equal(invoked.status, 0, `${variant}: ${invoked.stderr}`);
+          const events = fs.readFileSync(dockerEvents, "utf8").trim().split("\n");
+          const rebuild = ["ordinary-ci-cache", "forced-image", "missing-image"].includes(variant);
+          assert.equal(events.filter(event => event === "buildx:build").length,
+            rebuild ? 4 : variant === "missing-tools" ? 1 : 0, variant);
+          assert.equal(events.includes("buildx:prune"), rebuild, variant);
+          assert.equal(events.filter(event => event.startsWith("run:")).length, rebuild ? 1 : 2, variant);
+          if (!rebuild) {
+            const probe = fs.readFileSync(dockerProbe, "utf8").trim().split("\n");
+            assert.ok(probe.includes("--read-only") && probe.includes("no-new-privileges:true"));
+            assert.equal(probe[probe.indexOf("--network") + 1], "none");
+            assert.deepEqual(probe.slice(-2), ["-ec", "command -v patchelf >/dev/null && command -v readelf >/dev/null"]);
+          }
+          if (variant === "missing-tools") {
+            const repair = fs.readFileSync(dockerBuild, "utf8").trim().split("\n");
+            assert.equal(repair[repair.indexOf("--target") + 1], "release-tools");
+            assert.ok(repair.includes("MOM_RELEASE_TOOLS_BASE=mom-build-multicompiler"));
+          }
+          const launched = fs.readFileSync(dockerArgs, "utf8").trim().split("\n");
+          assert.deepEqual(launched.slice(-6), ["mom-build-multicompiler", "npm", "run", "build:release", "--", "--package-only"]);
+          assert.ok(launched.includes("MOM_REUSE_BUILT_WORKER"));
+        }
       } finally {
         fs.rmSync(temp, {recursive: true, force: true});
       }
