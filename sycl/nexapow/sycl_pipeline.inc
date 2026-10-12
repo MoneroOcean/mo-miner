@@ -1,11 +1,31 @@
+#if defined(MOM_SYCL_ADAPTIVECPP_CUDA) && !defined(MOM_NEXAPOW_FORCE_PORTABLE) && \
+    !defined(MOM_NEXAPOW_PORTABLE_FIELD32)
+#define MOM_NEXAPOW_ACPP_PTX_FIELD
+#endif
 #include "field_10x26_ref.inc"
 #include "field_8x32_portable.inc"
-#ifdef MOM_NEXAPOW_SYCL_NATIVE_FIELD
+#if defined(MOM_NEXAPOW_SYCL_NATIVE_FIELD) || defined(MOM_NEXAPOW_ACPP_PTX_FIELD)
 #include "field_4x64_ptx.inc"
 #include "field_4x64_hybrid_ptx.inc"
 #endif
 
 namespace sycl_pipeline {
+
+#ifdef MOM_NEXAPOW_ACPP_PTX_FIELD
+// Every representation-dependent operation specializes identically; no Field crosses to the host.
+inline __attribute__((always_inline)) bool field_uses_acpp_ptx() {
+  __acpp_if_target_sscp(
+    namespace jit = sycl::AdaptiveCpp_jit;
+    namespace q = jit::reflection_query;
+    return jit::knows<q::compiler_backend>() &&
+           jit::reflect<q::compiler_backend>() == jit::compiler_backend::ptx &&
+           jit::knows<q::target_vendor_id>() &&
+           jit::reflect<q::target_vendor_id>() == jit::vendor_id::nvidia &&
+           jit::knows<q::target_arch>() && jit::reflect<q::target_arch>() >= 61;
+  )
+  return false;
+}
+#endif
 
 #if defined(__clang__) || defined(__GNUC__)
 #define MOM_NEXAPOW_ALWAYS_INLINE inline __attribute__((always_inline))
@@ -16,7 +36,8 @@ namespace sycl_pipeline {
     defined(__SYCL_DEVICE_ONLY__) && defined(__NVPTX__)
 #define MOM_NEXAPOW_USE_NATIVE_FIELD
 #endif
-#if defined(MOM_NEXAPOW_USE_NATIVE_FIELD) || defined(MOM_NEXAPOW_PORTABLE_FIELD32)
+#if defined(MOM_NEXAPOW_USE_NATIVE_FIELD) || defined(MOM_NEXAPOW_PORTABLE_FIELD32) || \
+    defined(MOM_NEXAPOW_ACPP_PTX_FIELD)
 #define MOM_NEXAPOW_FIELD_INLINE MOM_NEXAPOW_ALWAYS_INLINE
 #else
 #define MOM_NEXAPOW_FIELD_INLINE inline
@@ -206,6 +227,13 @@ MOM_NEXAPOW_FIELD_INLINE Field field_inverse(const Field& value) {
 }
 #else
 MOM_NEXAPOW_FIELD_INLINE Field field_from_u256(const U256& value) {
+#ifdef MOM_NEXAPOW_ACPP_PTX_FIELD
+  if (field_uses_acpp_ptx()) {
+    Field result{};
+    for (uint32_t i = 0; i != 8u; ++i) result.n[i] = value.w[i];
+    return result;
+  }
+#endif
   Field result{};
   for (uint32_t i = 0; i != 10u; ++i)
     result.n[i] = np_window_value(value, 26u * i, i == 9u ? 22u : 26u);
@@ -214,6 +242,9 @@ MOM_NEXAPOW_FIELD_INLINE Field field_from_u256(const U256& value) {
 
 // Canonicalize the selected field representation before conversion or comparison.
 MOM_NEXAPOW_FIELD_INLINE void field_normalize(Field& value) {
+#ifdef MOM_NEXAPOW_ACPP_PTX_FIELD
+  if (field_uses_acpp_ptx()) return;
+#endif
   uint32_t t0 = value.n[0], t1 = value.n[1], t2 = value.n[2], t3 = value.n[3], t4 = value.n[4],
            t5 = value.n[5], t6 = value.n[6], t7 = value.n[7], t8 = value.n[8], t9 = value.n[9], m,
            x = t9 >> 22u;
@@ -274,6 +305,13 @@ MOM_NEXAPOW_FIELD_INLINE void field_normalize(Field& value) {
 
 // Canonicalize as needed and convert field limbs to the shared 8x32 integer representation.
 MOM_NEXAPOW_FIELD_INLINE U256 field_to_u256(Field value) {
+#ifdef MOM_NEXAPOW_ACPP_PTX_FIELD
+  if (field_uses_acpp_ptx()) {
+    U256 result{};
+    for (uint32_t i = 0; i != 8u; ++i) result.w[i] = value.n[i];
+    return result;
+  }
+#endif
   field_normalize(value);
   U256 result{};
   for (uint32_t i = 0; i != 10u; ++i) {
@@ -296,17 +334,32 @@ MOM_NEXAPOW_FIELD_INLINE Field field_one() {
 // Multiply exact field values using the backend-selected limb representation.
 MOM_NEXAPOW_FIELD_INLINE Field field_mul(const Field& a, const Field& b) {
   Field result{};
+#ifdef MOM_NEXAPOW_ACPP_PTX_FIELD
+  if (field_uses_acpp_ptx()) {
+    mom_nexa_field32_hybrid_ptx::mul(result.n, a.n, b.n);
+    return result;
+  }
+#endif
   mom_nexa_field10_ref::mul(result.n, a.n, b.n);
   return result;
 }
 // Square exact field values using the backend-selected limb representation.
 MOM_NEXAPOW_FIELD_INLINE Field field_square(const Field& value) {
   Field result{};
+#ifdef MOM_NEXAPOW_ACPP_PTX_FIELD
+  if (field_uses_acpp_ptx()) {
+    mom_nexa_field32_hybrid_ptx::square(result.n, value.n);
+    return result;
+  }
+#endif
   mom_nexa_field10_ref::square(result.n, value.n);
   return result;
 }
 // Reduce limb magnitude without requiring a fully canonical field encoding.
 MOM_NEXAPOW_FIELD_INLINE void field_normalize_weak(Field& value) {
+#ifdef MOM_NEXAPOW_ACPP_PTX_FIELD
+  if (field_uses_acpp_ptx()) return;
+#endif
   uint32_t carry = value.n[9] >> 22u;
   value.n[9] &= 0x03fffffu;
   value.n[0] += carry * 0x3d1u;
@@ -323,12 +376,32 @@ MOM_NEXAPOW_FIELD_INLINE Field field_sub(const Field& a, const Field& b) {
       0x3ffffffu, 0x3ffffffu, 0x3ffffffu, 0x3ffffffu, 0x03fffffu,
   };
   Field result{};
+#ifdef MOM_NEXAPOW_ACPP_PTX_FIELD
+  if (field_uses_acpp_ptx()) {
+    mom_nexa_field32_hybrid_ptx::sub(result.n, a.n, b.n);
+    return result;
+  }
+#endif
   for (uint32_t i = 0; i != 10u; ++i)
     result.n[i] = 4u * prime[i] - b.n[i] + a.n[i];
   return result;
 }
 // Invert the field value using the selected representation's exact secp256k1 arithmetic.
 MOM_NEXAPOW_FIELD_INLINE Field field_inverse(const Field& value) {
+#ifdef MOM_NEXAPOW_ACPP_PTX_FIELD
+  if (field_uses_acpp_ptx()) {
+    uint64_t limbs[4];
+    for (uint32_t i = 0; i != 4u; ++i)
+      limbs[i] = value.n[2u * i] | (static_cast<uint64_t>(value.n[2u * i + 1u]) << 32u);
+    mom_nexa_field64_ptx::inverse(limbs);
+    Field result{};
+    for (uint32_t i = 0; i != 4u; ++i) {
+      result.n[2u * i] = static_cast<uint32_t>(limbs[i]);
+      result.n[2u * i + 1u] = static_cast<uint32_t>(limbs[i] >> 32u);
+    }
+    return result;
+  }
+#endif
   return field_from_u256(np_field_inverse(field_to_u256(value)));
 }
 #endif
@@ -336,14 +409,22 @@ MOM_NEXAPOW_FIELD_INLINE Field field_inverse(const Field& value) {
 // Compute a*b-c*d in the selected field representation for curve-point updates.
 MOM_NEXAPOW_FIELD_INLINE Field field_mul_sub_mul(const Field& a, const Field& b, const Field& c,
                                                  const Field& d) {
-#if defined(MOM_NEXAPOW_USE_NATIVE_FIELD) || defined(MOM_NEXAPOW_PORTABLE_FIELD32)
+#if defined(MOM_NEXAPOW_USE_NATIVE_FIELD) || defined(MOM_NEXAPOW_PORTABLE_FIELD32) || \
+    defined(MOM_NEXAPOW_ACPP_PTX_FIELD)
+#ifdef MOM_NEXAPOW_ACPP_PTX_FIELD
+  if (field_uses_acpp_ptx()) {
+#endif
   Field result{};
-#ifdef MOM_NEXAPOW_USE_NATIVE_FIELD
+#if defined(MOM_NEXAPOW_USE_NATIVE_FIELD) || defined(MOM_NEXAPOW_ACPP_PTX_FIELD)
   mom_nexa_field32_hybrid_ptx::mul_sub_mul(result.n, a.n, b.n, c.n, d.n);
 #else
   mom_nexa_field32_portable::mul_sub_mul(result.n, a.n, b.n, c.n, d.n);
 #endif
   return result;
+#ifdef MOM_NEXAPOW_ACPP_PTX_FIELD
+  }
+  return field_sub(field_mul(a, b), field_mul(c, d));
+#endif
 #else
   return field_sub(field_mul(a, b), field_mul(c, d));
 #endif
@@ -351,11 +432,18 @@ MOM_NEXAPOW_FIELD_INLINE Field field_mul_sub_mul(const Field& a, const Field& b,
 
 // Select the exact field residue predicate required by Schnorr signing.
 MOM_NEXAPOW_FIELD_INLINE bool field_quadratic_residue(const Field& value) {
-#ifdef MOM_NEXAPOW_USE_NATIVE_FIELD
+#if defined(MOM_NEXAPOW_USE_NATIVE_FIELD) || defined(MOM_NEXAPOW_ACPP_PTX_FIELD)
+#ifdef MOM_NEXAPOW_ACPP_PTX_FIELD
+  if (field_uses_acpp_ptx()) {
+#endif
   uint64_t limbs[4];
   for (uint32_t i = 0; i != 4u; ++i)
     limbs[i] = value.n[2u * i] | (static_cast<uint64_t>(value.n[2u * i + 1u]) << 32u);
   return mom_nexa_field64_ptx::is_quadratic_residue(limbs);
+#ifdef MOM_NEXAPOW_ACPP_PTX_FIELD
+  }
+  return np_quadratic_residue(field_to_u256(value));
+#endif
 #else
   return np_quadratic_residue(field_to_u256(value));
 #endif
@@ -363,7 +451,10 @@ MOM_NEXAPOW_FIELD_INLINE bool field_quadratic_residue(const Field& value) {
 
 // Add or subtract modulo the secp256k1 group order, preserving carry/borrow reduction.
 template <bool Add> MOM_NEXAPOW_ALWAYS_INLINE U256 group_op(const U256& a, const U256& b) {
-#ifdef MOM_NEXAPOW_USE_NATIVE_FIELD
+#if defined(MOM_NEXAPOW_USE_NATIVE_FIELD) || defined(MOM_NEXAPOW_ACPP_PTX_FIELD)
+#ifdef MOM_NEXAPOW_ACPP_PTX_FIELD
+  if (field_uses_acpp_ptx()) {
+#endif
   constexpr uint64_t order[4] = {
       0xbfd25e8cd0364141ULL,
       0xbaaedce6af48a03bULL,
@@ -385,6 +476,10 @@ template <bool Add> MOM_NEXAPOW_ALWAYS_INLINE U256 group_op(const U256& a, const
     result.w[2u * i + 1u] = static_cast<uint32_t>(output[i] >> 32u);
   }
   return result;
+#ifdef MOM_NEXAPOW_ACPP_PTX_FIELD
+  }
+  return Add ? np_add_mod(a, b, kGroupOrder) : np_sub_mod(a, b, kGroupOrder);
+#endif
 #else
   return Add ? np_add_mod(a, b, kGroupOrder) : np_sub_mod(a, b, kGroupOrder);
 #endif
@@ -426,6 +521,11 @@ MOM_NEXAPOW_ALWAYS_INLINE U256 group_mul(const U256& a, const U256& b) {
   uint32_t product[16], work[13], high[5];
 #ifdef MOM_NEXAPOW_USE_NATIVE_FIELD
   mom_nexa_field32_hybrid_ptx::detail::mul_256_comba32(a.w, b.w, product);
+#elif defined(MOM_NEXAPOW_ACPP_PTX_FIELD)
+  if (field_uses_acpp_ptx())
+    mom_nexa_field32_hybrid_ptx::detail::mul_256_comba32(a.w, b.w, product);
+  else
+    np_comba_mul(a, b, product);
 #else
   np_comba_mul(a, b, product);
 #endif
@@ -922,6 +1022,7 @@ inline void tree_down(const sycl::nd_item<1>& item, const sycl::local_accessor<F
   }
 }
 #undef MOM_NEXAPOW_USE_NATIVE_FIELD
+#undef MOM_NEXAPOW_ACPP_PTX_FIELD
 #undef MOM_NEXAPOW_FIELD_INLINE
 #undef MOM_NEXAPOW_ALWAYS_INLINE
 class ShiftedTableKernel;

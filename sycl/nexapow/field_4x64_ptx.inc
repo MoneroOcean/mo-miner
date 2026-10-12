@@ -15,7 +15,7 @@
 * along with this program. If not, see <http://www.gnu.org/licenses/>.
 */
 
-#if defined(__SYCL_DEVICE_ONLY__) && defined(__NVPTX__)
+#if (defined(__SYCL_DEVICE_ONLY__) && defined(__NVPTX__)) || defined(MOM_NEXAPOW_ACPP_PTX_FIELD)
 
 #ifndef MOM_NEXAPOW_NO_STDINT
 #include <stdint.h>
@@ -446,6 +446,12 @@ inline void mom_nexa_field64_ptx_mul_p(uint64_t* r, uint64_t a) {
 // Count trailing zeros with the zero-input convention used by batched divsteps.
 inline uint32_t mom_nexa_field64_ptx_ctz(uint64_t x) {
   uint32_t n;
+#ifdef MOM_NEXAPOW_ACPP_PTX_FIELD
+  // Generic frontend braces mean asm-dialect alternatives, not a PTX register scope.
+  uint64_t reversed;
+  asm("brev.b64 %0, %1;" : "=l"(reversed) : "l"(x));
+  asm("clz.b64 %0, %1;" : "=r"(n) : "l"(reversed));
+#else
   asm("{\n\t"
       " .reg .u64 tmp;\n\t"
       " brev.b64 tmp, %1;\n\t"
@@ -453,6 +459,7 @@ inline uint32_t mom_nexa_field64_ptx_ctz(uint64_t x) {
       "}"
       : "=r"(n)
       : "l"(x));
+#endif
   return n;
 }
 

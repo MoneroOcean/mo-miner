@@ -18,7 +18,7 @@ static bool env_enabled(const char* name) {
   return value && *value && std::strcmp(value, "0");
 }
 
-// Report the compile-time field representation chosen for the current backend.
+// Describe the compiled field policy; AdaptiveCpp selects its representation at device JIT time.
 static const char* staged_field_name(const sycl::device& device) {
 #if defined(MOM_NEXAPOW_SYCL_NATIVE_FIELD)
   if (mom_is_cuda(device))
@@ -27,6 +27,9 @@ static const char* staged_field_name(const sycl::device& device) {
 #elif defined(MOM_NEXAPOW_PORTABLE_FIELD32)
   (void)device;
   return "portable-8x32";
+#elif defined(MOM_SYCL_ADAPTIVECPP_CUDA) && !defined(MOM_NEXAPOW_FORCE_PORTABLE)
+  (void)device;
+  return "jit-ptx-or-10x26";
 #else
   (void)device;
   return "portable-10x26";

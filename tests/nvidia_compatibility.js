@@ -13,6 +13,7 @@ const createJobApi = require("../miner/jobs");
 const {normalizeAlgoName} = require("../miner/algorithms");
 const {hexWithoutPrefix} = require("../miner/submission");
 const {windowsCmdArgs} = require("../scripts/windows-command");
+const {extractCppBlock} = require("./common/cpp_source");
 
 /** @typedef {typeof import("../compiler-policy")} CompilerPolicy */
 /** @typedef {{command: string, args: string[], options: object}} QueryCall */
@@ -20,6 +21,34 @@ const {windowsCmdArgs} = require("../scripts/windows-command");
 /** @typedef {{policy: CompilerPolicy, calls: QueryCall[]}} PolicyContext */
 
 test.describe("NVIDIA compatibility", {concurrency: false}, () => {
+  test("Nexa field specialization keeps unknown and non-PTX targets on the existing representation", () => {
+    const root = path.join(__dirname, "../sycl/nexapow");
+    const pipeline = fs.readFileSync(path.join(root, "sycl_pipeline.inc"), "utf8");
+    const gate = extractCppBlock(pipeline,
+      "inline __attribute__((always_inline)) bool field_uses_acpp_ptx()");
+    assert.match(pipeline,
+      /^#if defined\(MOM_SYCL_ADAPTIVECPP_CUDA\) && !defined\(MOM_NEXAPOW_FORCE_PORTABLE\) && \\\r?\n\s*!defined\(MOM_NEXAPOW_PORTABLE_FIELD32\)\r?\n#define MOM_NEXAPOW_ACPP_PTX_FIELD/);
+    for (const [query, expected] of [
+      ["compiler_backend", "== jit::compiler_backend::ptx"],
+      ["target_vendor_id", "== jit::vendor_id::nvidia"],
+      ["target_arch", ">= 61"],
+    ]) {
+      assert.ok(gate.includes(`jit::knows<q::${query}>() &&`));
+      assert.ok(gate.includes(`jit::reflect<q::${query}>() ${expected}`));
+    }
+    assert.match(gate, /__acpp_if_target_sscp\([\s\S]*?\)\s*return false;/);
+    assert.match(pipeline, /#if defined\(MOM_NEXAPOW_PORTABLE_FIELD32\)\s*struct Field \{\s*uint32_t n\[8\];\s*\};\s*#else\s*struct Field \{\s*uint32_t n\[10\];/);
+    assert.match(pipeline,
+      /defined\(MOM_NEXAPOW_SYCL_NATIVE_FIELD\) && !defined\(MOM_NEXAPOW_FORCE_PORTABLE\)[\s\S]*?defined\(__SYCL_DEVICE_ONLY__\) && defined\(__NVPTX__\)\s*#define MOM_NEXAPOW_USE_NATIVE_FIELD/);
+    assert.match(pipeline,
+      /#if defined\(MOM_NEXAPOW_SYCL_NATIVE_FIELD\) \|\| defined\(MOM_NEXAPOW_ACPP_PTX_FIELD\)\s*#include "field_4x64_ptx.inc"\s*#include "field_4x64_hybrid_ptx.inc"/);
+    assert.match(pipeline,
+      /if \(field_uses_acpp_ptx\(\)\) \{\s*Field result\{\};\s*for \(uint32_t i = 0; i != 8u; \+\+i\) result.n\[i\] = value.w\[i\];\s*return result;/);
+    const source = fs.readFileSync(path.join(root, "nexapow.cpp"), "utf8");
+    const jitInclude = source.indexOf("#include <hipSYCL/sycl/jit.hpp>");
+    assert.ok(jitInclude >= 0 && jitInclude < source.indexOf("namespace mom_nexapow"));
+  });
+
   const policyPath = require.resolve("../compiler-policy");
   const originalSpawnSync = childProcess.spawnSync;
 

@@ -5971,6 +5971,46 @@ int main(int argc, char** argv) {
       }
     });
 
+    test("Nexa staged fields preserve fallback arithmetic and reflected target admission", {
+      skip: process.platform === "win32" ? "requires a POSIX host C++ compiler" : false,
+    }, async (t) => {
+      const root = path.join(__dirname, "../sycl/nexapow");
+      const pipeline = fs.readFileSync(path.join(root, "sycl_pipeline.inc"), "utf8");
+      const boundary = "// Precompute SHA blocks";
+      assert.equal(pipeline.split(boundary).length, 2);
+      const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-nexa-fields-"));
+      try {
+        fs.writeFileSync(path.join(fixture, "nexapow_fields.inc"),
+          pipeline.slice(0, pipeline.indexOf(boundary)) + "} // namespace sycl_pipeline\n");
+        fs.writeFileSync(path.join(fixture, "nexapow_field_gate.inc"), extractCppBlock(pipeline,
+          "inline __attribute__((always_inline)) bool field_uses_acpp_ptx()"));
+        for (const [name, defines] of Object.entries({
+          ordinary: [], hip: ["MOM_SYCL_HAS_HIP"],
+          "acpp-host": ["TEST_NEXAPOW_ACPP_HOST"],
+          "acpp-forced-portable": ["TEST_NEXAPOW_ACPP_HOST", "MOM_NEXAPOW_FORCE_PORTABLE"],
+          "dpcpp-host": ["MOM_NEXAPOW_SYCL_NATIVE_FIELD"],
+        })) {
+          await t.test(name, () => {
+            const executable = path.join(fixture, name);
+            const compiled = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra",
+              "-Werror", "-pedantic", "-UNDEBUG", ...defines.map(value => "-D" + value),
+              "-I" + fixture, "-I" + root, path.join(__dirname, "native/nexapow_field_arithmetic.cpp"),
+              "-o", executable], {encoding: "utf8", timeout: 60000});
+            assert.equal(compiled.error, undefined);
+            assert.equal(compiled.status, 0, compiled.stderr);
+            const result = spawnSync(executable, [], {encoding: "utf8", timeout: 5000});
+            assert.equal(result.error, undefined);
+            assert.equal(result.signal, null);
+            assert.equal(result.status, 0, result.stderr);
+            assert.equal(result.stdout,
+              "Nexa field fallback: 52 arithmetic cases; 960 reflected admission cases passed\n");
+          });
+        }
+      } finally {
+        fs.rmSync(fixture, {recursive: true, force: true});
+      }
+    });
+
     test("NexaPoW submitted faults abort without fallback and do not latch failed setup", {
       skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
     }, () => {

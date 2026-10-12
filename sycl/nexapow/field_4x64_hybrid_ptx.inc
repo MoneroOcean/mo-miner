@@ -33,7 +33,7 @@ SOFTWARE.
 // - Applies early-clobber constraints only where a later instruction still
 //   consumes an input operand in the same multi-instruction asm block.
 
-#if defined(__SYCL_DEVICE_ONLY__) && defined(__NVPTX__)
+#if (defined(__SYCL_DEVICE_ONLY__) && defined(__NVPTX__)) || defined(MOM_NEXAPOW_ACPP_PTX_FIELD)
 
 #ifndef MOM_NEXAPOW_NO_STDINT
 #include <stdint.h>

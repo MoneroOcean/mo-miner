@@ -27,6 +27,9 @@
 
 #ifndef MOM_NEXAPOW_HOST_TEST
 #include <sycl/sycl.hpp>
+#if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
+#include <hipSYCL/sycl/jit.hpp>
+#endif
 
 #include <cstdint>
 #include <chrono>
