@@ -9,7 +9,7 @@ static PearlHashSearchBackend
 attempt(sycl::queue& q, const Buffers& b, uint32_t seed, int m, int n, int k, int rank,
         const std::string& backend = "auto", PearlHashHipSearch* hip = nullptr,
         PearlHashCudaSearch* cuda = nullptr, sycl::queue* hip_prep_queue = nullptr,
-        bool validate_native = false, bool cuda_tensor = false) {
+        bool validate_native = false, bool cuda_tensor = false, bool cuda_f16 = false) {
   static thread_local unsigned stats_attempts = 0;
   const bool stats = std::getenv("MOM_PEARLHASH_STATS") && stats_attempts++ < 3;
   auto stats_last = std::chrono::steady_clock::now();
@@ -55,6 +55,9 @@ attempt(sycl::queue& q, const Buffers& b, uint32_t seed, int m, int n, int k, in
 #endif
 #else
   const bool is_cuda = false;
+#endif
+#if !defined(MOM_SYCL_ADAPTIVECPP_CUDA)
+  (void)cuda_f16;
 #endif
   const bool dbg = validate_native || std::getenv("MOM_PEARLHASH_CHK") != nullptr;
   const bool tuned_sycl = backend == "auto" || backend == "sycl-native" || backend == "native";
@@ -153,6 +156,13 @@ attempt(sycl::queue& q, const Buffers& b, uint32_t seed, int m, int n, int k, in
       compute_ab(q, b, seed, m, n, k, rank, /*portable=*/use_portable || tiled_cuda_b);
   }
   mark("ab");
+#if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
+  if (is_cuda && tuned_sycl && cuda_f16 && rank > 0 && rank <= 1024 && rank % 16 == 0) {
+    search_t<2, 4, true, true>(q, b, seed, m, n, k, rank, dbg);
+    mark("search_f16_matrix");
+    return PearlHashSearchBackend::sycl;
+  }
+#endif
 #if defined(MOM_SYCL_HAS_CUDA)
   if (cuda_sycl) {
     search_cuda(q, b, seed, m, n, k, rank, dbg);

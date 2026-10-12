@@ -112,6 +112,14 @@ struct PearlHashState {
 #else
   static constexpr bool cuda_tensor = false;
 #endif
+#if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
+  const bool cuda_f16 = [&] {
+    const int sm = mom::nvidia::compute_capability(queue.get_device());
+    return mom::nvidia::has_f16_mma_8x8x4(sm) && !mom::nvidia::has_int8_mma(sm);
+  }();
+#else
+  static constexpr bool cuda_f16 = false;
+#endif
   PearlHashHipSearch hip;
   PearlHashCudaSearch cuda;
   int m = 0, n = 0, k = 0, rank = 0;

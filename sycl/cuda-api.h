@@ -2,7 +2,8 @@
 
 #pragma once
 
-#if defined(MOM_SYCL_HAS_CUDA) && !defined(__SYCL_DEVICE_ONLY__)
+#if (defined(MOM_SYCL_HAS_CUDA) || defined(MOM_SYCL_ADAPTIVECPP_CUDA)) && \
+    !defined(__SYCL_DEVICE_ONLY__)
 
 #include <cuda.h>
 #include <nvrtc.h>

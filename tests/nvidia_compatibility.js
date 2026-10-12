@@ -49,6 +49,129 @@ test.describe("NVIDIA compatibility", {concurrency: false}, () => {
     assert.ok(jitInclude >= 0 && jitInclude < source.indexOf("namespace mom_nexapow"));
   });
 
+  test("Production selected-device query handles ACPP/DPC interop and fails closed", {
+    skip: process.platform === "win32",
+  }, () => {
+    const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "mom-nvidia-interop-"));
+    const driverSymbols = ["cuDevicePrimaryCtxRetain", "cuDevicePrimaryCtxRelease", "cuCtxSetCurrent",
+      "cuCtxSynchronize", "cuModuleLoadData", "cuModuleUnload", "cuModuleGetFunction",
+      "cuFuncSetAttribute", "cuLaunchKernel", "cuEventCreate", "cuEventDestroy", "cuEventRecord",
+      "cuEventQuery", "cuEventElapsedTime", "cuGetErrorString"];
+    const rtcSymbols = ["nvrtcCreateProgram", "nvrtcCompileProgram", "nvrtcGetProgramLogSize",
+      "nvrtcGetProgramLog", "nvrtcGetPTXSize", "nvrtcGetPTX", "nvrtcGetCUBINSize", "nvrtcGetCUBIN",
+      "nvrtcGetNumSupportedArchs", "nvrtcGetSupportedArchs", "nvrtcDestroyProgram"];
+    // Stub declarations/loader prevent real CUDA libraries or device access. The code under test
+    // remains the actual production headers, including their dynamic-driver control flow.
+    const headers = {
+      "sycl/sycl.hpp": `#pragma once
+#include <stdexcept>
+namespace sycl {
+enum class backend {cuda, ext_oneapi_cuda, other};
+inline int native_calls=0;
+struct device {
+  backend kind; int native; bool throws=false;
+  backend get_backend() const {return kind;}
+};
+template<backend B> int get_native(const device& d) {
+  ++native_calls;
+  if(d.throws || d.kind!=B) throw std::runtime_error("interop");
+  return d.native;
+}
+}
+`,
+      "cuda.h": `#pragma once
+#include <cstddef>
+using CUdevice=int; using CUresult=int;
+inline constexpr int CUDA_SUCCESS=0;
+inline constexpr int CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR=75;
+inline constexpr int CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR=76;
+CUresult cuInit(unsigned);
+CUresult cuDeviceGetAttribute(int*,int,CUdevice);
+${driverSymbols.map(name => `CUresult ${name}(...);`).join("\n")}
+`,
+      "nvrtc.h": `#pragma once
+#include <cstddef>
+using nvrtcProgram=void*; using nvrtcResult=int;
+inline constexpr int NVRTC_SUCCESS=0;
+${rtcSymbols.map(name => `nvrtcResult ${name}(...);`).join("\n")}
+const char* nvrtcGetErrorString(...);
+`,
+      "dlfcn.h": `#pragma once
+inline constexpr int RTLD_NOW=2, RTLD_LOCAL=0;
+void* mock_dlopen(const char*,int);
+void* mock_dlsym(void*,const char*);
+#define dlopen mock_dlopen
+#define dlsym mock_dlsym
+`,
+    };
+    try {
+      fs.mkdirSync(path.join(temporary, "sycl"));
+      for (const [file, source] of Object.entries(headers)) {
+        fs.writeFileSync(path.join(temporary, file), source);
+      }
+      /** @type {Array<[string, string[]]>} */
+      const lanes = [
+        ["acpp", ["-DMOM_SYCL_ADAPTIVECPP", "-DMOM_SYCL_ADAPTIVECPP_CUDA"]],
+        ["dpcpp", ["-DMOM_SYCL_HAS_CUDA"]],
+      ];
+      for (const [lane, defines] of lanes) {
+        const executable = path.join(temporary, lane);
+        const compiled = childProcess.spawnSync(process.env["CXX"] || "c++", [
+          "-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror", ...defines,
+          "-I", temporary, path.join(__dirname, "native/nvidia_feature_interop.cpp"), "-o", executable,
+        ], {encoding: "utf8", timeout: 30000});
+        assert.equal(compiled.error, undefined);
+        assert.equal(compiled.status, 0, `${lane}: ${compiled.stderr}`);
+        const ran = childProcess.spawnSync(executable, [], {encoding: "utf8", timeout: 10000});
+        assert.equal(ran.error, undefined);
+        assert.equal(ran.status, 0, `${lane}: ${ran.stderr}`);
+        assert.match(ran.stdout, /selected-device nonzero native IDs.*PASS/);
+      }
+    } finally {
+      fs.rmSync(temporary, {recursive: true, force: true});
+    }
+  });
+
+  test("AdaptiveCpp CUDA wrapper supplies SDK includes without linking or changing host/HIP routing", {
+    skip: process.platform === "win32",
+  }, () => {
+    const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "mom-acpp-cuda-args-"));
+    const wrapper = path.join(__dirname, "../scripts/cxx-adaptivecpp.sh");
+    const host = path.join(temporary, "host-cxx");
+    try {
+      fs.writeFileSync(path.join(temporary, "acpp"), '#!/bin/sh\nprintf "ACPP\\n"\nprintf "%s\\n" "$@"\n', {mode: 0o755});
+      fs.writeFileSync(host, '#!/bin/sh\nprintf "HOST\\n"\nprintf "%s\\n" "$@"\n', {mode: 0o755});
+      /** @param {string} backend @param {string} cuda @param {string[]} args */
+      function invoke(backend, cuda, args) {
+        const result = childProcess.spawnSync("bash", [wrapper, ...args], {
+          encoding: "utf8", timeout: 10000,
+          env: {...process.env, PATH: temporary + path.delimiter + (process.env["PATH"] || ""),
+            MOM_ADAPTIVE_BACKEND: backend, MOM_ADAPTIVE_HOST_CXX: host, CUDA_PATH: cuda,
+            MOM_ROCM_ROOT: "/fixture/rocm root"},
+        });
+        assert.equal(result.error, undefined);
+        assert.equal(result.status, 0, result.stderr);
+        return result.stdout.trimEnd().split("\n");
+      }
+      const source = "sycl/pearlhash/pearlhash.cpp";
+      const argumentsIn = ["-fsycl", "-c", source, "-Ioriginal", "-o", "pearl.o"];
+      for (const cuda of ["", "/fixture/cuda sdk"]) {
+        const include = `-I${cuda || "/usr/local/cuda"}/include`;
+        assert.deepEqual(invoke("cuda", cuda, argumentsIn),
+          ["ACPP", include, "-c", source, "-Ioriginal", "-o", "pearl.o"]);
+        assert.deepEqual(invoke("cuda", cuda, ["-fsycl", "-shared", "pearl.o", "-o", "mom.node"]),
+          ["ACPP", include, "-shared", "pearl.o", "-o", "mom.node"]);
+      }
+      assert.deepEqual(invoke("cuda", "/fixture/cuda sdk", ["-c", "native/core.cpp", "-o", "core.o"]),
+        ["HOST", "-c", "native/core.cpp", "-o", "core.o"]);
+      assert.deepEqual(invoke("hip", "/fixture/cuda sdk", argumentsIn),
+        ["ACPP", "-I/fixture/rocm root/include", "-L/fixture/rocm root/lib",
+          "-c", source, "-Ioriginal", "-o", "pearl.o"]);
+    } finally {
+      fs.rmSync(temporary, {recursive: true, force: true});
+    }
+  });
+
   const policyPath = require.resolve("../compiler-policy");
   const originalSpawnSync = childProcess.spawnSync;
 

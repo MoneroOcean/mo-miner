@@ -57,6 +57,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 #if defined(MOM_SYCL_HAS_HIP) || defined(MOM_SYCL_HAS_CUDA)
@@ -218,7 +219,7 @@ int pearlhash(const unsigned job_ref, const uint32_t, const uint8_t* const input
 
     search_backend =
         attempt(q, b, attempt_seed, m, n, k, rank, backend, &st.hip, &st.cuda,
-                &st.prep_queue, is_test, st.cuda_tensor);
+                &st.prep_queue, is_test, st.cuda_tensor, st.cuda_f16);
     // Start after submission: a first call can include synchronous device-image/JIT setup, and feeding
     // that one-off cost into the wait EMA makes later completed GPU attempts sleep needlessly.
     attempt_start = std::chrono::steady_clock::now();

@@ -5,7 +5,7 @@
 // laid out by compute_ab(portable=true) -- A' row-major, B' column-major -- so each output cell reads a
 // contiguous int8 run over k that the compiler packs (4 int8 at a time, loaded as one int32) into the
 // 4-wide integer dot product: dp4a on Intel/AMD GPUs, plain scalar int MACs on the CPU -- bit-identical
-// either way, since int8*int8->int32 is exact everywhere. There is NO SLM staging and NO per-rank
+// either way, since int8*int8->int32 is exact everywhere. Ordinary DP4A has no SLM staging or per-rank
 // barrier: A'/B' reuse is left to the L2 cache, and each work-item folds its own cells into a private
 // 16-word partial transcript during the k-loop, so the ONLY work-group synchronisation is a single
 // XOR-reduction tree at the end (a plain barrier tree -- not a sub-group op, so no reqd_sub_group_size
@@ -13,6 +13,7 @@
 // (found/seed/row/col) and transcript are bit-identical to search_esimd / search_cuda for the same A'/B'
 // (cross-checked via MOM_PEARLHASH_CHK), so this path finds the same tiles. Each complete rank-boundary
 // part folds into one of the 16 transcript words; the verifier likewise excludes K % rank trailing cells.
+// The optional Volta FP16 specialization stages canonical K16 slices for WMMA before this same fold.
 // Compiled in every build that carries attempt() -- including the Windows/dpcpp Intel build where it
 // shares the TU with search_esimd -- and EXCLUDED only from the separate spir64-only ESIMD TU
 // (esimd.cpp, which sets MOM_PEARLHASH_ESIMD_TU and re-includes this file just for search_esimd).
@@ -71,7 +72,101 @@ static void search_cpu(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, 
 }
 
 #if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
-template <int ER, int EC, bool Native = false>
+// The SSCP reflection pass resolves this existing runtime field by its query suffix.
+extern "C" bool __acpp_sscp_jit_reflect_knows_ptx_version();
+extern "C" int __acpp_sscp_jit_reflect_ptx_version();
+struct PearlPtxVersion {
+  static bool is_known() { return __acpp_sscp_jit_reflect_knows_ptx_version(); }
+  static int get() { return __acpp_sscp_jit_reflect_ptx_version(); }
+};
+// Target reflection is immutable across the warp/rank loop, including the rare DP4A fallback.
+static inline bool pearlhash_uses_wmma_f16() {
+  __acpp_if_target_sscp(
+    namespace jit = sycl::AdaptiveCpp_jit;
+    namespace query = jit::reflection_query;
+    if (jit::knows<query::compiler_backend>() &&
+        jit::reflect<query::compiler_backend>() == jit::compiler_backend::ptx &&
+        jit::knows<query::target_vendor_id>() &&
+        jit::reflect<query::target_vendor_id>() == jit::vendor_id::nvidia &&
+        jit::knows<query::target_arch>() &&
+        jit::reflect<query::target_arch>() >= 70 &&
+        !mom::nvidia::has_int8_mma(jit::reflect<query::target_arch>()) &&
+        jit::knows<PearlPtxVersion>() && jit::reflect<PearlPtxVersion>() >= 60)
+      return true;
+  )
+  return false;
+}
+
+// All signed int8 inputs are exact half values; the first element occupies the low 16 bits.
+static inline uint32_t pearlhash_f16x2_s8(int8_t low, int8_t high) {
+  __acpp_if_target_sscp(
+    if (pearlhash_uses_wmma_f16()) {
+      // Avoid the generic half type's software IEEE conversion in this inner loop.
+      uint32_t packed;
+      asm volatile("%{ .reg .b16 lo,hi;\n"
+                   "cvt.rn.f16.s32 lo,%1; cvt.rn.f16.s32 hi,%2;\n"
+                   "mov.b32 %0,%{lo,hi%}; %}\n"
+                   : "=r"(packed)
+                   : "r"(static_cast<int>(low)), "r"(static_cast<int>(high)));
+      return packed;
+    }
+  )
+  const uint32_t lo = sycl::bit_cast<uint16_t>(static_cast<sycl::half>(static_cast<int>(low)));
+  const uint32_t hi = sycl::bit_cast<uint16_t>(static_cast<sycl::half>(static_cast<int>(high)));
+  return lo | (hi << 16);
+}
+
+// WMMA loads distribute opaque fragments from canonical shared A-row/B-column matrices.
+static inline void pearlhash_wmma_m16n16k16_f16(
+    float c[8], const uint32_t* a, const uint32_t* b) {
+#define MOM_PEARLHASH_WMMA(SUFFIX) \
+      asm volatile("%{ .reg .f32 f<8>; .reg .b32 a<8>, b<8>;\n" \
+                   ".reg .u64 ap, bp; .reg .u32 as, bs;\n" \
+                   "cvta.to.shared.u64 ap,%8; cvta.to.shared.u64 bp,%9;\n" \
+                   "cvt.u32.u64 as,ap; cvt.u32.u64 bs,bp;\n" \
+                   "wmma.load.a.sync" SUFFIX ".m16n16k16.row.shared.f16 " \
+                   "%{a0,a1,a2,a3,a4,a5,a6,a7%}, [as], 16;\n" \
+                   "wmma.load.b.sync" SUFFIX ".m16n16k16.col.shared.f16 " \
+                   "%{b0,b1,b2,b3,b4,b5,b6,b7%}, [bs], 16;\n" \
+                   "mov.b32 f0,%0; mov.b32 f1,%1; mov.b32 f2,%2; mov.b32 f3,%3;\n" \
+                   "mov.b32 f4,%4; mov.b32 f5,%5; mov.b32 f6,%6; mov.b32 f7,%7;\n" \
+                   "wmma.mma.sync" SUFFIX ".m16n16k16.row.col.f32.f32 " \
+                   "%{f0,f1,f2,f3,f4,f5,f6,f7%}, %{a0,a1,a2,a3,a4,a5,a6,a7%}, " \
+                   "%{b0,b1,b2,b3,b4,b5,b6,b7%}, %{f0,f1,f2,f3,f4,f5,f6,f7%};\n" \
+                   "mov.b32 %0,f0; mov.b32 %1,f1; mov.b32 %2,f2; mov.b32 %3,f3;\n" \
+                   "mov.b32 %4,f4; mov.b32 %5,f5; mov.b32 %6,f6; mov.b32 %7,f7; %}\n" \
+                   : "+r"(bits[0]), "+r"(bits[1]), "+r"(bits[2]), "+r"(bits[3]), \
+                     "+r"(bits[4]), "+r"(bits[5]), "+r"(bits[6]), "+r"(bits[7]) \
+                   : "l"(a_address), "l"(b_address) \
+                   : "memory");
+  __acpp_if_target_sscp(
+    if (pearlhash_uses_wmma_f16()) {
+      // Integer constraints survive the SSCP host frontend. PTX mov.b32 only reinterprets
+      // the same FP32 bits, avoiding either a host-only floating constraint or conversion.
+      uint32_t bits[8];
+      for (int i = 0; i < 8; ++i)
+        bits[i] = sycl::bit_cast<uint32_t>(c[i]);
+      const uint64_t a_address = reinterpret_cast<uintptr_t>(a);
+      const uint64_t b_address = reinterpret_cast<uintptr_t>(b);
+      // Convert generic pointers, not their low bits; the clobber orders hidden shared reads.
+      // PTX before 6.3 implies alignment; later versions require the explicit modifier.
+      if (sycl::AdaptiveCpp_jit::reflect<PearlPtxVersion>() >= 63) {
+        MOM_PEARLHASH_WMMA(".aligned");
+      } else {
+        MOM_PEARLHASH_WMMA("");
+      }
+      for (int i = 0; i < 8; ++i)
+        c[i] = sycl::bit_cast<float>(bits[i]);
+    }
+  )
+#undef MOM_PEARLHASH_WMMA
+}
+// ACPP's dynamic shared base is only declared 4-byte aligned. Leave headroom and
+// align the interior pointer explicitly; over-aligning this type can hide that gap.
+struct PearlF16Scratch { uint32_t words[520]; };
+static_assert(alignof(PearlF16Scratch) == alignof(uint32_t) && sizeof(PearlF16Scratch) == 2080,
+              "WMMA scratch needs 32-byte headroom before its 512-word reduction");
+template <int ER, int EC, bool Native = false, bool FP16Matrix = false>
 #else
 template <int ER, int EC>
 #endif
@@ -84,13 +179,17 @@ static void search_t(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, in
       HT / EC; // micro-tile blocks per row (unused on the empty nvptx pass)
   static_assert(HT % ER == 0 && HT % EC == 0, "pearlhash portable: ER/EC must divide 16");
   static_assert((WG & (WG - 1)) == 0, "pearlhash portable: work-group size must be a power of two");
+#if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
+  static_assert(!FP16Matrix || (Native && ER * EC == 8),
+                "pearlhash f16: one full warp owns one 16x16 tile");
+#endif
   auto B = bb;
   const uint32_t tilesH = static_cast<uint32_t>(m / HT), tilesW = static_cast<uint32_t>(n / HT);
   const int k4 = k / 4, nb = k / rank;
   const size_t ntiles = static_cast<size_t>(tilesH) * tilesW;
   // The production A'/B' matrices are 512 MiB each. Plain row-major tile order re-streams all of B'
   // for each A' band; on HIP, visit square tile blocks instead so both slices remain in L2/Infinity
-  // Cache. This is only a group-id remap: arithmetic, allocations, and every non-HIP path are unchanged.
+  // Cache. This is only a group-id remap: arithmetic and allocations are unchanged.
   int cache_block = 0;
 #if defined(MOM_SYCL_HAS_HIP)
   const bool is_hip = mom_is_hip(q.get_device());
@@ -104,6 +203,15 @@ static void search_t(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, in
       else
         cache_block = 0;
     }
+  }
+#endif
+#if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
+  if constexpr (FP16Matrix) {
+    // Reuse the native CUDA cache-order override without changing the default order.
+    unsigned long configured = 0;
+    if (mom_parse_env_ulong("MOM_PEARLHASH_CU_BLK", configured) &&
+        configured <= static_cast<unsigned long>(std::numeric_limits<int>::max()))
+      cache_block = static_cast<int>(configured);
   }
 #endif
   const bool blocked = cache_block > 1 &&
@@ -120,8 +228,12 @@ static void search_t(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, in
   for (size_t group_base = 0; group_base < ntiles; group_base += max_groups_per_launch) {
     const size_t group_count = std::min(max_groups_per_launch, ntiles - group_base);
     q.submit([&](sycl::handler& h) {
-      sycl::local_accessor<uint32_t, 1> red(WG * 16,
-                                            h); // batched per-boundary XOR reduction scratch
+#if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
+      using Scratch = std::conditional_t<FP16Matrix, PearlF16Scratch, uint32_t>;
+      sycl::local_accessor<Scratch, 1> red(FP16Matrix ? 1 : WG * 16, h);
+#else
+      sycl::local_accessor<uint32_t, 1> red(WG * 16, h);
+#endif
       // Explicit capture list (not [=]): keeps the kernel-lambda layout identical across the host, spir64
       // and nvptx passes (the nvptx body is #ifdef'd out below), so the dual-compiler combined build's
       // "Unexpected kernel lambda size" static assert stays satisfied.
@@ -141,6 +253,21 @@ static void search_t(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, in
           C = g % tilesW;
         }
         const int lid = (int)it.get_local_linear_id();
+        auto red_word = [&](int index) -> uint32_t& {
+#if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
+          if constexpr (FP16Matrix) {
+            const uintptr_t raw = reinterpret_cast<uintptr_t>(&red[0].words[0]);
+            return reinterpret_cast<uint32_t*>((raw + 31) & ~uintptr_t{31})[index];
+          } else
+#endif
+            return red[index];
+        };
+#if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
+        const bool f16_matrix = FP16Matrix && pearlhash_uses_wmma_f16();
+        const int c4step = f16_matrix ? 4 : 1;
+#else
+        constexpr int c4step = 1;
+#endif
         const int r0 = (lid / BW) * ER, c0 = (lid % BW) * EC; // this work-item's micro-tile origin
         const uint32_t rowBase = R * HT, colBase = C * HT;
         // A'/B' read as int32 words (4 packed int8) straight from global -- the L2 absorbs the per-tile
@@ -159,36 +286,78 @@ static void search_t(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, in
         for (int w = 0; w < 16; w++)
           pX[w] = 0; // this work-item's partial 16-word transcript
         for (int rc = 0; rc < nb; rc++) {
-          const int c4lo = rc * (rank / 4), c4hi = c4lo + (rank / 4);
-          for (int c4 = c4lo; c4 < c4hi; c4++) { // each step = 4 columns packed into one int32 word
-            int32_t bw[EC];
-            for (int j = 0; j < EC; j++)
-              bw[j] = B32[(colBase + static_cast<size_t>(c0 + j)) * static_cast<size_t>(k4) +
-                          static_cast<size_t>(c4)];
-            for (int i = 0; i < ER; i++) {
-              const int32_t aw =
-                  A32[(rowBase + static_cast<size_t>(r0 + i)) * static_cast<size_t>(k4) +
-                      static_cast<size_t>(c4)];
 #if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
-              if constexpr (Native) {
-                for (int j = 0; j < EC; j++)
-                  acc[i][j] = mom::nvidia::dot4_s8<true>(static_cast<uint32_t>(aw),
-                                                       static_cast<uint32_t>(bw[j]), acc[i][j]);
-              } else
+          [[maybe_unused]] float rank_acc[8]{};
 #endif
-              {
-                const int a0 = (int8_t)aw, a1 = (int8_t)(aw >> 8), a2 = (int8_t)(aw >> 16),
-                          a3 = (int8_t)(aw >> 24);
-                for (int j = 0; j < EC; j++) { // dp4a: 4 int8 MACs (one ALU op on Intel/AMD GPUs)
-                  const int32_t b = bw[j];
-                  const int product =
-                      a0 * static_cast<int8_t>(b) + a1 * static_cast<int8_t>(b >> 8) +
-                      a2 * static_cast<int8_t>(b >> 16) + a3 * static_cast<int8_t>(b >> 24);
-                  acc[i][j] += static_cast<uint32_t>(product);
+          const int c4lo = rc * (rank / 4), c4hi = c4lo + (rank / 4);
+          for (int c4 = c4lo; c4 < c4hi; c4 += c4step) {
+#if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
+            bool f16_step = false;
+            if constexpr (FP16Matrix)
+              if (f16_matrix) {
+                for (int part = 0; part < 2; ++part) {
+                  const int word = lid + part * WG, row = word / 4, depth = word % 4;
+                  const uint32_t aw = static_cast<uint32_t>(
+                      A32[(rowBase + static_cast<size_t>(row)) * k4 + c4 + depth]);
+                  const uint32_t bw = static_cast<uint32_t>(
+                      B32[(colBase + static_cast<size_t>(row)) * k4 + c4 + depth]);
+                  red_word(2 * word) =
+                      pearlhash_f16x2_s8(static_cast<int8_t>(aw), static_cast<int8_t>(aw >> 8));
+                  red_word(2 * word + 1) =
+                      pearlhash_f16x2_s8(static_cast<int8_t>(aw >> 16), static_cast<int8_t>(aw >> 24));
+                  red_word(128 + 2 * word) =
+                      pearlhash_f16x2_s8(static_cast<int8_t>(bw), static_cast<int8_t>(bw >> 8));
+                  red_word(128 + 2 * word + 1) =
+                      pearlhash_f16x2_s8(static_cast<int8_t>(bw >> 16), static_cast<int8_t>(bw >> 24));
+                }
+                // This specialization is one full CUDA warp; order its shared writes explicitly.
+                sycl::group_barrier(it.get_sub_group(), sycl::memory_scope::sub_group);
+                pearlhash_wmma_m16n16k16_f16(rank_acc, &red_word(0), &red_word(128));
+                // Consume before the next stage, and before reusing this object for reduction.
+                sycl::group_barrier(it.get_sub_group(), sycl::memory_scope::sub_group);
+                f16_step = true;
+              }
+            // Uniform unknown reflection retains exact 2x4 DP4A, not a trap or mixed C mapping.
+            if (!f16_step)
+#endif
+            {
+              int32_t bw[EC];
+              for (int j = 0; j < EC; j++)
+                bw[j] = B32[(colBase + static_cast<size_t>(c0 + j)) * static_cast<size_t>(k4) +
+                            static_cast<size_t>(c4)];
+              for (int i = 0; i < ER; i++) {
+                const int32_t aw =
+                    A32[(rowBase + static_cast<size_t>(r0 + i)) * static_cast<size_t>(k4) +
+                        static_cast<size_t>(c4)];
+#if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
+                if constexpr (Native) {
+                  for (int j = 0; j < EC; j++)
+                    acc[i][j] = mom::nvidia::dot4_s8<true>(static_cast<uint32_t>(aw),
+                                                         static_cast<uint32_t>(bw[j]), acc[i][j]);
+                } else
+#endif
+                {
+                  const int a0 = (int8_t)aw, a1 = (int8_t)(aw >> 8), a2 = (int8_t)(aw >> 16),
+                            a3 = (int8_t)(aw >> 24);
+                  for (int j = 0; j < EC; j++) { // dp4a: 4 int8 MACs (one ALU op on Intel/AMD GPUs)
+                    const int32_t b = bw[j];
+                    const int product =
+                        a0 * static_cast<int8_t>(b) + a1 * static_cast<int8_t>(b >> 8) +
+                        a2 * static_cast<int8_t>(b >> 16) + a3 * static_cast<int8_t>(b >> 24);
+                    acc[i][j] += static_cast<uint32_t>(product);
+                  }
                 }
               }
             }
           }
+#if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
+          if constexpr (FP16Matrix)
+            for (int cell = 0; cell < 8; ++cell)
+              // rank<=1024 bounds every partial by 2^24. Convert signed first, then add
+              // modulo 2^32; retaining cumulative C in FP32 would change the transcript.
+              acc[cell / EC][cell % EC] +=
+                  static_cast<uint32_t>(static_cast<int32_t>(rank_acc[cell]));
+#endif
           uint32_t lx = 0;
           for (int i = 0; i < ER; i++)
             for (int j = 0; j < EC; j++)
@@ -199,12 +368,12 @@ static void search_t(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, in
         // Single batched work-group reduction: XOR every work-item's 16-word partial transcript together.
         auto grp = it.get_group();
         for (int w = 0; w < 16; w++)
-          red[lid * 16 + w] = pX[w];
+          red_word(lid * 16 + w) = pX[w];
         sycl::group_barrier(grp);
         for (int half = WG >> 1; half > 0; half >>= 1) {
           if (lid < half)
             for (int w = 0; w < 16; w++)
-              red[lid * 16 + w] ^= red[(lid + half) * 16 + w];
+              red_word(lid * 16 + w) ^= red_word((lid + half) * 16 + w);
           sycl::group_barrier(grp);
         }
         if (lid == 0) {
@@ -212,7 +381,7 @@ static void search_t(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, in
           // rotl-fold of each cumulative tile part used by search_esimd and CUDA-SYCL.
           uint32_t t16[16];
           for (int w = 0; w < 16; w++)
-            t16[w] = red[w];
+            t16[w] = red_word(w);
           if (dbg) {
             sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
                              sycl::access::address_space::global_space>

@@ -20,6 +20,9 @@ if [ "$is_link" = 1 ] || [[ "$src" == sycl/*.cpp || "$src" == */sycl/*.cpp ]]; t
   if [ "${MOM_ADAPTIVE_BACKEND:-}" = hip ]; then
     rocm_root=${MOM_ROCM_ROOT:-${ROCM_PATH:-/opt/rocm}}
     args=("-I$rocm_root/include" "-L$rocm_root/lib" "${args[@]}")
+  elif [ "${MOM_ADAPTIVE_BACKEND:-}" = cuda ]; then
+    cuda_root=${CUDA_PATH:-/usr/local/cuda}
+    args=("-I$cuda_root/include" "${args[@]}")
   fi
   exec acpp "${args[@]}"
 fi
