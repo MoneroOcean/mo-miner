@@ -94,6 +94,11 @@ public:
   SessionStatus status() const { return lifecycle_.status(); }
   const std::string& last_error() const { return last_error_; }
 
+#ifdef MOM_SYCL_ADAPTIVECPP_CUDA
+  // Change scheduling only between completed runs; both paths share the same bounded arenas.
+  void set_cuda_partition(const bool enabled) { cuda_partition_ = enabled; }
+#endif
+
   // Discards all counters and starts a clean attempt.  It is safe to call after an overflow or a
   // rejected root; a different capacity requires a different Session<Layout> instantiation.
   void reset() {
@@ -253,6 +258,9 @@ private:
   SessionOptions options_;
   ZHashSessionLifecycle lifecycle_;
   std::string last_error_;
+#ifdef MOM_SYCL_ADAPTIVECPP_CUDA
+  bool cuda_partition_ = false;
+#endif
 
   std::uint8_t* device_header_ = nullptr;
   std::uint64_t* device_midstate_ = nullptr;
@@ -406,17 +414,23 @@ private:
 
   // Select the backend's first collision launch while preserving split-head output and overflow reporting.
   sycl::event submit_first_round() {
+#if defined(MOM_SYCL_HAS_HIP) || defined(MOM_SYCL_ADAPTIVECPP_CUDA)
 #ifdef MOM_SYCL_HAS_HIP
     if (cache_partition_inputs_)
       return mom_equihash::submit_bucket_round_bucketed_partitioned<
           Spec, InitialLayout, InitialLayout, Round1Record, 8, true>(
           queue_, level0_heads_, level0_tails_, bucket_counts_[0], round1_heads_, round1_tails_,
           bucket_counts_[1], overflow_counts_ + 1);
+#else
+    // CUDA measures both schedules; HIP's cached variant can exceed CUDA's 48 KiB budget.
+    if (cuda_partition_)
+#endif
     return mom_equihash::submit_bucket_round_bucketed_partitioned<
         Spec, InitialLayout, InitialLayout, Round1Record, 8>(
         queue_, level0_heads_, level0_tails_, bucket_counts_[0], round1_heads_, round1_tails_,
         bucket_counts_[1], overflow_counts_ + 1);
-#else
+#endif
+#ifndef MOM_SYCL_HAS_HIP
     return mom_equihash::submit_bucket_round_bucketed<Spec, InitialLayout, InitialLayout,
                                                        Round1Record>(
         queue_, level0_heads_, level0_tails_, bucket_counts_[0], round1_heads_, round1_tails_,
@@ -426,17 +440,22 @@ private:
 
   // Transition split first-round records into the later arena using supported partition/cache settings.
   sycl::event submit_second_round() {
+#if defined(MOM_SYCL_HAS_HIP) || defined(MOM_SYCL_ADAPTIVECPP_CUDA)
 #ifdef MOM_SYCL_HAS_HIP
     if (cache_partition_inputs_)
       return mom_equihash::submit_split_collision_round_bucketed_partitioned<
           Spec, 5, InitialLayout::local_bits, InitialLayout, LaterLayout, Round1Record,
           Round2Record, 4, true>(queue_, round1_heads_, round1_tails_, bucket_counts_[1], round2_,
                                 bucket_counts_[2], overflow_counts_ + 2);
+#else
+    if (cuda_partition_)
+#endif
     return mom_equihash::submit_split_collision_round_bucketed_partitioned<
         Spec, 5, InitialLayout::local_bits, InitialLayout, LaterLayout, Round1Record,
         Round2Record, 4>(queue_, round1_heads_, round1_tails_, bucket_counts_[1], round2_,
                          bucket_counts_[2], overflow_counts_ + 2);
-#else
+#endif
+#ifndef MOM_SYCL_HAS_HIP
     return mom_equihash::submit_split_collision_round_bucketed<
         Spec, 5, InitialLayout::local_bits, InitialLayout, LaterLayout, Round1Record,
         Round2Record>(queue_, round1_heads_, round1_tails_, bucket_counts_[1], round2_,
@@ -444,17 +463,22 @@ private:
 #endif
   }
 
-  // Dispatch the next bounded collision stage with HIP partitioning only where configured.
+  // Dispatch the next bounded collision stage with partitioning only where configured.
   sycl::event submit_third_round() {
+#if defined(MOM_SYCL_HAS_HIP) || defined(MOM_SYCL_ADAPTIVECPP_CUDA)
 #ifdef MOM_SYCL_HAS_HIP
     if (cache_partition_inputs_)
       return mom_equihash::submit_collision_round_bucketed_partitioned<
           Spec, 4, LaterLayout, LaterLayout, Round2Record, Round3Record, 4, true>(
           queue_, round2_, bucket_counts_[2], round3_, bucket_counts_[3], overflow_counts_ + 3);
+#else
+    if (cuda_partition_)
+#endif
     return mom_equihash::submit_collision_round_bucketed_partitioned<
         Spec, 4, LaterLayout, LaterLayout, Round2Record, Round3Record, 4>(
         queue_, round2_, bucket_counts_[2], round3_, bucket_counts_[3], overflow_counts_ + 3);
-#else
+#endif
+#ifndef MOM_SYCL_HAS_HIP
     return mom_equihash::submit_collision_round_bucketed<Spec, 4, LaterLayout, LaterLayout>(
         queue_, round2_, bucket_counts_[2], round3_, bucket_counts_[3], overflow_counts_ + 3);
 #endif
@@ -462,15 +486,20 @@ private:
 
   // Dispatch the final materialized collision stage, retaining parents for zero-root recovery.
   sycl::event submit_fourth_round() {
+#if defined(MOM_SYCL_HAS_HIP) || defined(MOM_SYCL_ADAPTIVECPP_CUDA)
 #ifdef MOM_SYCL_HAS_HIP
     if (cache_partition_inputs_)
       return mom_equihash::submit_collision_round_bucketed_partitioned<
           Spec, 3, LaterLayout, LaterLayout, Round3Record, Round4Record, 4, true>(
           queue_, round3_, bucket_counts_[3], round4_, bucket_counts_[4], overflow_counts_ + 4);
+#else
+    if (cuda_partition_)
+#endif
     return mom_equihash::submit_collision_round_bucketed_partitioned<
         Spec, 3, LaterLayout, LaterLayout, Round3Record, Round4Record, 4>(
         queue_, round3_, bucket_counts_[3], round4_, bucket_counts_[4], overflow_counts_ + 4);
-#else
+#endif
+#ifndef MOM_SYCL_HAS_HIP
     return mom_equihash::submit_collision_round_bucketed<Spec, 3, LaterLayout, LaterLayout>(
         queue_, round3_, bucket_counts_[3], round4_, bucket_counts_[4], overflow_counts_ + 4);
 #endif

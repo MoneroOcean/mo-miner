@@ -25,7 +25,8 @@
 // - HIP divides the first four collision rounds into 8/4/4/4 disjoint bin ranges and caches each
 //   selected record when that layout fits the device's reported local memory. This preserves every
 //   collision and the same overflow retry while raising RX 9060 XT Linux throughput from 42.01 to
-//   55.84 Sol/s; other backends retain the simpler one-workgroup-per-bucket path. Keeping the last
+//   55.84 Sol/s. CUDA measures the uncached partitioned schedule against one workgroup per bucket;
+//   other backends retain the latter. Keeping the last
 //   round's parent references bucket-relative reduces its HIP record from 16 to 12 bytes and raises
 //   the same card to 57.89 Sol/s. Round three also omits trailing field bits that cannot exclude a
 //   valid proof; the final full-proof rehash rejects the extra candidates. Its 12-byte HIP record
@@ -41,6 +42,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
@@ -111,7 +113,18 @@ public:
                 const bool force_safe_retry) {
     if (!fast_session)
       create_fast_session();
-    RunReport report = fast_session->run(header);
+    RunReport report;
+#ifdef MOM_SYCL_ADAPTIVECPP_CUDA
+    if (cuda_schedule_ < 0 && !profile && mom_is_cuda(queue.get_device()))
+      report = select_cuda_schedule(header);
+    else
+#endif
+      report = fast_session->run(header);
+    if (profile && profile_reports < 8)
+      std::fprintf(stderr, "ZHash fast overflow=%u,%u,%u,%u,%u bytes=%llu\n",
+                   report.overflow_counts[0], report.overflow_counts[1], report.overflow_counts[2],
+                   report.overflow_counts[3], report.overflow_counts[4],
+                   static_cast<unsigned long long>(report.device_bytes));
     if (report.status == SessionStatus::device_error)
       return report;
     if (report.status != SessionStatus::capacity_overflow && !force_safe_retry)
@@ -127,19 +140,10 @@ public:
       Session<> safe_session(queue, session_options);
       report = safe_session.run(header);
     }
-    if (compare_retries) {
-      bool matches = fast_report.status == report.status &&
-                     fast_report.solutions.size() == report.solutions.size();
-      for (const Solution& fast_solution : fast_report.solutions) {
-        matches = matches && std::any_of(
-            report.solutions.begin(), report.solutions.end(), [&](const Solution& safe_solution) {
-              return fast_solution.encoded == safe_solution.encoded;
-            });
-      }
-      if (!matches) {
-        report.status = SessionStatus::device_error;
-        report.error = "ZHash compact and safe layouts disagree";
-      }
+    if (compare_retries && report.status != SessionStatus::device_error &&
+        report.status != SessionStatus::capacity_overflow && !same_solutions(fast_report, report)) {
+      report.status = SessionStatus::device_error;
+      report.error = "ZHash compact and safe layouts disagree";
     }
     if (report.status != SessionStatus::capacity_overflow &&
         report.status != SessionStatus::device_error)
@@ -148,8 +152,68 @@ public:
   }
 
 private:
+  // Session deduplicates canonical proofs, but parallel schedules need not return them in order.
+  static bool same_solutions(const RunReport& left, const RunReport& right) {
+    return left.status == right.status && left.solutions.size() == right.solutions.size() &&
+           std::all_of(left.solutions.begin(), left.solutions.end(), [&](const Solution& solution) {
+             return std::any_of(right.solutions.begin(), right.solutions.end(),
+                                [&](const Solution& other) { return solution.encoded == other.encoded; });
+           });
+  }
+
+#ifdef MOM_SYCL_ADAPTIVECPP_CUDA
+  int cuda_schedule_ = -1;
+
+  // Warm both existing schedules, then compare ABBA on one header without extra allocations.
+  // Return its first result only; probes must agree on every proof and never hide a device fault.
+  RunReport select_cuda_schedule(const std::uint8_t (&header)[ZHashSpec::header_length]) {
+    RunReport first;
+    double seconds[2]{};
+    bool valid_timings = true;
+    const int schedules[]{0, 1, 0, 1, 1, 0};
+    for (unsigned step = 0; step < 6; ++step) {
+      const int schedule = schedules[step];
+      fast_session->set_cuda_partition(schedule != 0);
+      const auto begin = std::chrono::steady_clock::now();
+      RunReport report = fast_session->run(header);
+      const double elapsed =
+          std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
+      if (report.status == SessionStatus::device_error)
+        return report;
+      if (report.status == SessionStatus::capacity_overflow) {
+        // Leave bounded recovery to the normal safe-layout retry, with the legacy schedule.
+        cuda_schedule_ = 0;
+        fast_session->set_cuda_partition(false);
+        return report;
+      }
+      if (step == 0) {
+        first = report;
+      } else if (!same_solutions(first, report)) {
+        report.status = SessionStatus::device_error;
+        report.error = "ZHash CUDA scheduling proof mismatch";
+        return report;
+      }
+      if (step >= 2) {
+        valid_timings = valid_timings && std::isfinite(elapsed) && elapsed > 0;
+        seconds[schedule] += elapsed;
+      }
+    }
+    valid_timings = valid_timings && std::isfinite(seconds[0]) && std::isfinite(seconds[1]);
+    cuda_schedule_ = valid_timings && seconds[1] <= seconds[0] / 1.05 ? 1 : 0;
+    fast_session->set_cuda_partition(cuda_schedule_ != 0);
+    if (valid_timings)
+      std::fprintf(stderr, "ZHash: selected %s scheduling (flat %.2f, partitioned %.2f I/s)\n",
+                   cuda_schedule_ ? "partitioned" : "flat", 2 / seconds[0], 2 / seconds[1]);
+    return first;
+  }
+#endif
+
+  // Restore the measured fast schedule after the temporary, always-conservative safe retry.
   void create_fast_session() {
     fast_session = std::make_unique<FastSession>(queue, session_options);
+#ifdef MOM_SYCL_ADAPTIVECPP_CUDA
+    fast_session->set_cuda_partition(cuda_schedule_ == 1);
+#endif
   }
 };
 

@@ -5722,6 +5722,101 @@ int main(int argc, char** argv) {
       }
     });
 
+    test("Autolykos CUDA pipeline selection preserves batches, overrides, and noise margins", {
+      skip: process.platform === "win32" ? "requires a POSIX host C++ compiler" : false,
+    }, () => {
+      const state = readSyclSource(path.join(__dirname, "../sycl/autolykos2/state.inc"));
+      const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-autolykos-pipeline-"));
+      try {
+        fs.writeFileSync(path.join(fixture, "autolykos_pipeline_selector.inc"),
+          extractCppBlock(state, "struct AutolykosPipelineSelection {") + ";\n");
+        const executable = path.join(fixture, "selector");
+        const compiled = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
+          "-pedantic", "-I" + fixture, path.join(__dirname, "native/autolykos_pipeline_selection.cpp"),
+          "-o", executable], {encoding: "utf8"});
+        assert.equal(compiled.error, undefined);
+        assert.equal(compiled.status, 0, compiled.stderr);
+        const result = spawnSync(executable, [], {encoding: "utf8", timeout: 2000});
+        assert.equal(result.error, undefined);
+        assert.equal(result.signal, null);
+        assert.equal(result.status, 0, result.stderr);
+      } finally {
+        fs.rmSync(fixture, {recursive: true, force: true});
+      }
+    });
+
+    test("ZHash CUDA scheduling selection preserves canonical proofs, retries, and timing margins", {
+      skip: process.platform === "win32" ? "requires a POSIX host C++ compiler" : false,
+    }, () => {
+      const root = path.join(__dirname, "..");
+      const state = readSyclSource(path.join(root, "sycl/zhash/zhash.cpp"));
+      const session = readSyclSource(path.join(root, "sycl/zhash/zhash_session.hpp"));
+      const layout = readSyclSource(path.join(root, "sycl/zhash/zhash_session_layout.hpp"));
+      const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-zhash-scheduling-"));
+      try {
+        fs.writeFileSync(path.join(fixture, "reports.inc"),
+          extractCppBlock(layout, "enum class SessionStatus : std::uint8_t {") + ";\n" +
+          extractCppBlock(session, "struct Solution {") + ";\n" +
+          extractCppBlock(session, "struct RunReport {") + ";\n");
+        for (const [name, anchor] of Object.entries({same_solutions: "  static bool same_solutions(",
+          run: "  RunReport run(", select_cuda_schedule: "  RunReport select_cuda_schedule(",
+          create_fast_session: "  void create_fast_session("})) {
+          fs.writeFileSync(path.join(fixture, `${name}.inc`),
+            extractCppBlock(state, anchor).replaceAll("std::chrono::", "fixture_clock::"));
+        }
+        fs.writeFileSync(path.join(fixture, "set_cuda_partition.inc"),
+          extractCppBlock(session, "  void set_cuda_partition("));
+        for (const adaptiveCuda of [false, true]) {
+          const executable = path.join(fixture, adaptiveCuda ? "acpp-cuda" : "other-backend");
+          const compiled = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
+            "-pedantic", ...(adaptiveCuda ? ["-DMOM_SYCL_ADAPTIVECPP_CUDA=1"] : []), "-I" + fixture,
+            path.join(__dirname, "native/zhash_schedule_selection.cpp"), "-o", executable], {encoding: "utf8"});
+          assert.equal(compiled.error, undefined);
+          assert.equal(compiled.signal, null);
+          assert.equal(compiled.status, 0, compiled.stderr);
+          const result = spawnSync(executable, [], {encoding: "utf8", timeout: 2000});
+          assert.equal(result.error, undefined);
+          assert.equal(result.signal, null);
+          assert.equal(result.status, 0, result.stderr);
+          assert.equal(result.stdout, "PASS actual-source ZHash scheduling selection\n");
+        }
+      } finally {
+        fs.rmSync(fixture, {recursive: true, force: true});
+      }
+    });
+
+    test("Equihash192 CUDA arena selection compares full proofs and preserves fault boundaries", {
+      skip: process.platform === "win32" ? "requires a POSIX host C++ compiler" : false,
+    }, () => {
+      const session = readSyclSource(path.join(__dirname,
+        "../sycl/equihash192_7/equihash192_7_direct_session.hpp"));
+      const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-e192-arena-selection-"));
+      try {
+        const source = path.join(fixture, "fixture.cpp");
+        fs.copyFileSync(path.join(__dirname, "native/equihash192_arena_selection.cpp"), source);
+        for (const name of ["run_with_cache", "select_cuda_arena"]) {
+          const definition = extractCppBlock(session, `  std::vector<Solution> ${name}(`);
+          fs.writeFileSync(path.join(fixture, `${name}.inc`),
+            "  template <bool CacheInput>\n" + definition.replaceAll("std::chrono::", "fixture_clock::"));
+        }
+        for (const adaptiveCuda of [false, true]) {
+          const executable = path.join(fixture, adaptiveCuda ? "acpp-cuda" : "other-backend");
+          const compiled = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra",
+            "-Werror", "-pedantic", ...(adaptiveCuda ? ["-DMOM_SYCL_ADAPTIVECPP_CUDA=1"] : []),
+            source, "-o", executable], {encoding: "utf8"});
+          assert.equal(compiled.error, undefined);
+          assert.equal(compiled.status, 0, compiled.stderr);
+          const result = spawnSync(executable, [], {encoding: "utf8", timeout: 2000});
+          assert.equal(result.error, undefined);
+          assert.equal(result.signal, null);
+          assert.equal(result.status, 0, result.stderr);
+          assert.equal(result.stdout, "PASS actual-source Equihash192 arena selection\n");
+        }
+      } finally {
+        fs.rmSync(fixture, {recursive: true, force: true});
+      }
+    });
+
     test("Octopus DAG faults propagate without light-search fallback", {
       skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
     }, async (t) => {

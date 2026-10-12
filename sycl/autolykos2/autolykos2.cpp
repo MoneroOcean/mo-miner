@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cinttypes>
 #include <cstdint>
 #include <cstdio>
@@ -152,7 +153,16 @@ int autolykos2(const unsigned, const uint32_t height, const uint8_t* const input
   const bool profile = std::getenv("MOM_AUTOLYKOS2_PROFILE") != nullptr;
 
 #if !defined(MOM_SYCL_PORTABLE_OPENCL)
-  if (d_table && !is_test && AutolykosState::autolykos_split_table()) {
+  bool split_table = AutolykosState::autolykos_split_table();
+#if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
+  const bool auto_pipeline = AutolykosPipelineSelection::eligible(
+      mom_is_cuda(state.device), d_table != nullptr, is_test,
+      std::getenv("MOM_AUTOLYKOS2_SPLIT") != nullptr, profile);
+  split_table = state.pipeline_selection.select(n_len, effective_intensity, local_size,
+                                               auto_pipeline, split_table);
+  const uint64_t pipeline_started = auto_pipeline && state.pipeline_selection.phase < 6 ? now_us() : 0;
+#endif
+  if (d_table && !is_test && split_table) {
     state.ensure_bhashes(effective_intensity);
     uint32_t* const d_bhashes = state.bhashes;
 
@@ -402,7 +412,12 @@ int autolykos2(const unsigned, const uint32_t height, const uint8_t* const input
     if constexpr (mom_sycl_portable_opencl) {
       throw std::string("Autolykos2 portable OpenCL table path is unavailable");
     } else {
-      return take_autolykos_result(state.result, output, pnonce);
+      const int found = take_autolykos_result(state.result, output, pnonce);
+#if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
+      if (pipeline_started)
+        state.pipeline_selection.observe(static_cast<double>(now_us() - pipeline_started));
+#endif
+      return found;
     }
   }
 #endif
@@ -558,6 +573,11 @@ int autolykos2(const unsigned, const uint32_t height, const uint8_t* const input
   }
   return 0;
 #else
-  return take_autolykos_result(state.result, output, pnonce);
+  const int found = take_autolykos_result(state.result, output, pnonce);
+#if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
+  if (pipeline_started)
+    state.pipeline_selection.observe(static_cast<double>(now_us() - pipeline_started));
+#endif
+  return found;
 #endif
 }

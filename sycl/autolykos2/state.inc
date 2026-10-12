@@ -1,3 +1,51 @@
+#if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
+// Learn from six completed, distinct batches: two warmups, then split/mono/mono/split.
+// The caller holds the state mutex and observes only a successful dispatch's normal result.
+struct AutolykosPipelineSelection {
+  uint32_t n = 0, intensity = 0;
+  unsigned workgroup = 0, phase = 0;
+  double split_us = 0, mono_us = 0;
+  bool monolithic = false;
+
+  static bool eligible(const bool cuda, const bool table, const bool test,
+                       const bool split_override, const bool profile_override) {
+    return cuda && table && !test && !split_override && !profile_override;
+  }
+
+  // Relearn only when the workload shape changes; an override never alters the cached choice.
+  bool select(const uint32_t next_n, const uint32_t next_intensity,
+              const unsigned next_workgroup, const bool allowed, const bool fallback) {
+    if (!allowed)
+      return fallback;
+    if (n != next_n || intensity != next_intensity || workgroup != next_workgroup) {
+      *this = {};
+      n = next_n;
+      intensity = next_intensity;
+      workgroup = next_workgroup;
+    }
+    return phase < 6 ? phase == 0 || phase == 2 || phase == 5 : !monolithic;
+  }
+
+  // Count only completed batches and keep split across noise; 5% is a throughput margin.
+  void observe(const double elapsed_us) {
+    if (phase >= 6 || !std::isfinite(elapsed_us) || elapsed_us <= 0)
+      return;
+    if (phase >= 2) {
+      double& total = phase == 2 || phase == 5 ? split_us : mono_us;
+      if (!std::isfinite(total + elapsed_us))
+        return;
+      total += elapsed_us;
+    }
+    if (++phase == 6) {
+      monolithic = mono_us <= split_us / 1.05;
+      std::fprintf(stderr, "Autolykos2: selected %s pipeline (split %.2f, monolithic %.2f MH/s)\n",
+                   monolithic ? "monolithic" : "split", 2.0 * intensity / split_us,
+                   2.0 * intensity / mono_us);
+    }
+  }
+};
+#endif
+
 struct AutolykosState {
   sycl::device device;
   sycl::queue queue;
@@ -14,6 +62,9 @@ struct AutolykosState {
   bool subgroup_coop_verified = false;
   unsigned workgroup;
   unsigned prehash_workgroup;
+#if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
+  AutolykosPipelineSelection pipeline_selection;
+#endif
   std::mutex mutex;
 
   // Background prebuild of the next height's table was tried three ways and measured
