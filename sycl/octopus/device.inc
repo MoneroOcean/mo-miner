@@ -599,19 +599,26 @@ inline void octopus_hash_cooperative(sycl::nd_item<1> item, const uint8_t* const
 
   make_polynomial_coefficients(header, block_start, lane, offset, coefficients);
   sycl::group_barrier(item.get_group());
+#if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
+  // Fewer live Horner chains improve this compiler's CUDA path on both older and newer GPUs.
+  // Each nonce still evaluates all 32 points and folds them into FNV in the same order.
+  constexpr uint32_t POLYNOMIAL_STEP = 8;
+#else
+  constexpr uint32_t POLYNOMIAL_STEP = POLYNOMIAL_BATCH;
+#endif
   uint32_t polynomial[POLYNOMIAL_LANES];
   uint64_t polynomial_hash = 0;
-  for (uint32_t first = 0; first < POLYNOMIAL_LANES; first += POLYNOMIAL_BATCH) {
-    uint32_t value[POLYNOMIAL_BATCH]{};
-    uint32_t x[POLYNOMIAL_BATCH];
-    for (unsigned packed = 0; packed < POLYNOMIAL_BATCH; ++packed)
+  for (uint32_t first = 0; first < POLYNOMIAL_LANES; first += POLYNOMIAL_STEP) {
+    uint32_t value[POLYNOMIAL_STEP]{};
+    uint32_t x[POLYNOMIAL_STEP];
+    for (unsigned packed = 0; packed < POLYNOMIAL_STEP; ++packed)
       x[packed] = points[lane + (first + packed) * WARP];
     for (uint32_t coefficient = POLYNOMIAL_SIZE; coefficient-- != 0;) {
       const uint32_t term = coefficients[offset + coefficient];
-      for (unsigned packed = 0; packed < POLYNOMIAL_BATCH; ++packed)
+      for (unsigned packed = 0; packed < POLYNOMIAL_STEP; ++packed)
         value[packed] = mad_field(value[packed], x[packed], term);
     }
-    for (unsigned packed = 0; packed < POLYNOMIAL_BATCH; ++packed) {
+    for (unsigned packed = 0; packed < POLYNOMIAL_STEP; ++packed) {
       polynomial[first + packed] = value[packed];
       polynomial_hash = fnv64(polynomial_hash, value[packed]);
     }

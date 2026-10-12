@@ -2287,6 +2287,52 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
         /#if defined\(MOM_SYCL_ADAPTIVECPP\) \|\| defined\(MOM_SYCL_PORTABLE_OPENCL\)[\s\S]*?static_cast<uint64_t>\(static_cast<uint32_t>\(value\)\) \* RECIPROCAL/);
     });
 
+    test("Octopus cooperative polynomial batches preserve every point and ordered FNV", {
+      skip: process.platform === "win32" ? "requires a POSIX host C++ compiler" : false,
+    }, async (t) => {
+      const source = fs.readFileSync(path.join(__dirname, "../sycl/octopus/device.inc"), "utf8");
+      const cooperative = extractCppBlock(source, "inline void octopus_hash_cooperative(");
+      const begin = cooperative.indexOf("#if defined(MOM_SYCL_ADAPTIVECPP_CUDA)");
+      const end = cooperative.indexOf("  uint32_t seed[CACHE_NODE_WORDS];", begin);
+      assert.ok(begin >= 0 && end > begin);
+      const constants = ["MOD", "POLYNOMIAL_SIZE", "POLYNOMIAL_LANES", "POLYNOMIAL_BATCH", "FNV_PRIME"]
+        .map(name => {
+          const declaration = source.match(new RegExp("^constexpr uint32_t " + name + " = [^;]+;", "m"));
+          assert.ok(declaration, name);
+          return declaration[0];
+        });
+      const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-octopus-polynomial-"));
+      try {
+        fs.writeFileSync(path.join(fixture, "field.inc"), constants.join("\n") + "\n" +
+          ["inline uint64_t fnv64(", "inline uint32_t mod_field(", "inline uint32_t mad_field("]
+            .map(anchor => extractCppBlock(source, anchor)).join("\n"));
+        fs.writeFileSync(path.join(fixture, "polynomial.inc"), cooperative.slice(begin, end));
+        for (const [name, defines] of Object.entries({
+          ordinary: [], "acpp-cuda": ["MOM_SYCL_ADAPTIVECPP", "MOM_SYCL_ADAPTIVECPP_CUDA"],
+          "acpp-hip": ["MOM_SYCL_ADAPTIVECPP", "MOM_SYCL_HAS_HIP"],
+          portable: ["MOM_SYCL_PORTABLE_OPENCL"],
+        })) {
+          await t.test(name, () => {
+            const executable = path.join(fixture, name);
+            const compiled = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
+              "-pedantic", "-UNDEBUG", ...defines.map(value => "-D" + value), "-I" + fixture,
+              path.join(__dirname, "native/octopus_polynomial.cpp"), "-o", executable],
+            {encoding: "utf8", timeout: 60000});
+            assert.equal(compiled.error, undefined);
+            assert.equal(compiled.status, 0, compiled.stderr);
+            const result = spawnSync(executable, [], {encoding: "utf8", timeout: 10000});
+            assert.equal(result.error, undefined);
+            assert.equal(result.signal, null);
+            assert.equal(result.status, 0, result.stderr);
+            assert.equal(result.stdout,
+              "Octopus polynomial: 512 lanes / 16384 points and ordered FNV passed\n");
+          });
+        }
+      } finally {
+        fs.rmSync(fixture, {recursive: true, force: true});
+      }
+    });
+
     test("Verthash keeps the large portable CPU dataset in shared USM", () => {
       const source = fs.readFileSync(path.join(__dirname, "../sycl/verthash/verthash.cpp"), "utf8");
       assert.match(source,
