@@ -182,12 +182,12 @@ installer once to detect supported GPU vendors and install missing host runtime 
 sudo ./install.sh
 ```
 
-Or download the v0.9.0 installer from this repository, inspect it, and then run it:
+Or download the v0.9.1 installer from this repository, inspect it, and then run it:
 
 ```
 curl --fail --location --proto '=https' --tlsv1.2 \
   --output mom-install.sh \
-  https://raw.githubusercontent.com/MoneroOcean/mo-miner/v0.9.0/scripts/install.sh
+  https://raw.githubusercontent.com/MoneroOcean/mo-miner/v0.9.1/scripts/install.sh
 sudo bash mom-install.sh
 ```
 
@@ -208,12 +208,12 @@ Administrator Command Prompt:
 install.bat
 ```
 
-Or download the v0.9.0 installer from this repository, inspect it, and then run it:
+Or download the v0.9.1 installer from this repository, inspect it, and then run it:
 
 ```bat
 curl --fail --location ^
   --output "%TEMP%\mom-install.ps1" ^
-  https://raw.githubusercontent.com/MoneroOcean/mo-miner/v0.9.0/scripts/install.ps1
+  https://raw.githubusercontent.com/MoneroOcean/mo-miner/v0.9.1/scripts/install.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File "%TEMP%\mom-install.ps1"
 ```
 
