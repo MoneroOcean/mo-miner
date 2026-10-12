@@ -260,12 +260,17 @@ test.describe("Deployment dispatcher failure boundaries", {concurrency: false,
     const eventsPath = path.join(temp, "events.jsonl");
     const helpersPath = path.join(temp, "helpers.jsonl");
     const credentialPath = path.join(temp, "credential");
+    const refreshRequestPath = path.join(temp, "refresh-request");
+    const refreshFailurePath = path.join(temp, "refresh-failed");
     // Events contain only fixed labels/booleans: never capture sudo stdin or credentials.
     const stub = [
       `#!${process.execPath}`,
       'const fs = require("node:fs"), path = require("node:path"), cp = require("node:child_process");',
       "const tool = path.basename(process.argv[1]), args = process.argv.slice(2), env = process.env;",
       'const event = (kind, extra = {}) => fs.appendFileSync(env.FIXTURE_EVENTS, JSON.stringify({kind, ...extra}) + "\\n");',
+      // Atomic publication keeps concurrent credential readers away from transient empty files.
+      'const publish = (file, value) => { const temporary = file + "." + process.pid; fs.writeFileSync(temporary, String(value)); fs.renameSync(temporary, file); };',
+      'const epoch = file => fs.existsSync(file) ? Number(fs.readFileSync(file, "utf8")) : 0;',
       'const exec = (command, argv, more = {}) => { const result = cp.spawnSync(command, argv, {env: {...env, ...more}, stdio: "inherit"}); process.exit(result.status ?? 99); };',
       'if (tool === "setsid") { event("active"); if (env.FIXTURE_REAL_SESSION === "1") exec("/usr/bin/setsid", args); exec(args[0], args.slice(1), {FIXTURE_ACTIVE: "1"}); }',
       'if (tool === "git") { console.log(path.join(env.FIXTURE_ROOT, "locks")); process.exit(0); }',
@@ -278,7 +283,8 @@ test.describe("Deployment dispatcher failure boundaries", {concurrency: false,
       '  fs.appendFileSync(env.FIXTURE_HELPERS, JSON.stringify([process.pid, process.ppid]) + "\\n"); event("refresh-wait");',
       '  process.on("SIGTERM", () => { event("refresh-wait-stopped"); process.exit(0); });',
       '  process.on("SIGINT", () => { event("refresh-wait-stopped"); process.exit(0); });',
-      '  setTimeout(() => process.exit(0), env.FIXTURE_LONG_LINUX === "1" ? 50 : 10000);',
+      '  if (env.FIXTURE_LONG_LINUX === "1") { const poll = setInterval(() => { if (epoch(env.FIXTURE_REFRESH_REQUEST) > epoch(env.FIXTURE_CREDENTIAL)) { clearInterval(poll); process.exit(0); } }, 10); setTimeout(() => { event("fixture-timeout"); process.exit(91); }, 10000); }',
+      "  else setTimeout(() => process.exit(0), 10000);",
       "}",
       'if (tool === "cp") { event("copy", {exists: fs.existsSync(args[1])}); if (env.FIXTURE_COPY_FAIL === "1") process.exit(55); exec("/bin/cp", args); }',
       'if (tool === "sudo") {',
@@ -286,9 +292,9 @@ test.describe("Deployment dispatcher failure boundaries", {concurrency: false,
       '  if (env.FIXTURE_REAL_SESSION === "1") { const groups = cp.spawnSync("/usr/bin/ps", ["-o", "sid=,pgid=", "-p", String(process.pid)], {encoding: "utf8"}).stdout.trim().split(/\\s+/); event("session", {sameSession: groups[0] === env.FIXTURE_EXPECTED_SID, sameCallerGroup: groups[1] === env.FIXTURE_EXPECTED_PGID, auth}); }',
       '  event(auth ? "auth" : "sudo", {active: env.FIXTURE_ACTIVE === "1", captured: fs.fstatSync(2).isFile(), noninteractive: args.includes("-n"), passwordInput: args.includes("-S")});',
       '  if (env.FIXTURE_AUTH_FAIL === "1") { console.error("sudo: fixture authentication required"); process.exit(1); }',
-      '  if (auth && env.FIXTURE_REFRESH_FAIL === "1" && fs.existsSync(env.FIXTURE_CREDENTIAL)) { event("refresh-failed"); process.exit(1); }',
-      "  if (auth) { fs.writeFileSync(env.FIXTURE_CREDENTIAL, String(Date.now())); process.exit(0); }",
-      '  if (env.FIXTURE_LONG_LINUX === "1" && !args.includes("-S") && Date.now() - Number(fs.readFileSync(env.FIXTURE_CREDENTIAL, "utf8")) > 800) { event("credential-expired"); process.exit(1); }',
+      '  if (auth && env.FIXTURE_REFRESH_FAIL === "1" && fs.existsSync(env.FIXTURE_CREDENTIAL)) { event("refresh-failed"); publish(env.FIXTURE_REFRESH_FAILURE, 1); process.exit(1); }',
+      "  if (auth) { publish(env.FIXTURE_CREDENTIAL, epoch(env.FIXTURE_REFRESH_REQUEST)); process.exit(0); }",
+      '  if (env.FIXTURE_LONG_LINUX === "1" && !args.includes("-S") && epoch(env.FIXTURE_CREDENTIAL) !== epoch(env.FIXTURE_REFRESH_REQUEST)) { event("credential-expired"); process.exit(1); }',
       '  const at = args.indexOf("--"); const command = args[at + 1];',
       '  if (command === "chown") process.exit(0);',
       "  if (!command) process.exit(98);",
@@ -318,7 +324,10 @@ test.describe("Deployment dispatcher failure boundaries", {concurrency: false,
       '  if (args[0] === "run") {',
       '    if (args.includes("--entrypoint")) { event("tools-probe", {safe: args.includes("none") && args.includes("--read-only") && args.includes("ALL") && args.includes("no-new-privileges:true"), complete: args.some(arg => arg.includes("command -v patchelf") && arg.includes("command -v readelf"))}); process.exit(env.FIXTURE_MISSING_TOOLS === "1" ? 1 : 0); }',
       '    if (!args.includes("mom-all")) { event("linux-lane"); console.log("MOM_TEST_SUMMARY 1 1 0 0"); process.exit(0); }',
-      '    event("linux-build"); if (env.FIXTURE_SIGNAL && env.MOM_DEPLOY_TARGET === "linux") { if (env.FIXTURE_IGNORE_STOP === "1") process.on("SIGTERM", () => {}); process.kill(Number(env.FIXTURE_DEPLOY_PID), "SIG" + env.FIXTURE_SIGNAL); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10000); } if (env.FIXTURE_LONG_LINUX === "1") Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000); process.exit(env.FIXTURE_LINUX_FAIL === "1" ? 41 : 0);',
+      '    event("linux-build"); if (env.FIXTURE_SIGNAL && env.MOM_DEPLOY_TARGET === "linux") { if (env.FIXTURE_IGNORE_STOP === "1") process.on("SIGTERM", () => {}); process.kill(Number(env.FIXTURE_DEPLOY_PID), "SIG" + env.FIXTURE_SIGNAL); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10000); }',
+      // Two handshakes force both a sleep and a refresh inside Linux work, regardless of scheduling.
+      '    if (env.FIXTURE_LONG_LINUX === "1") for (const requested of [1, 2]) { publish(env.FIXTURE_REFRESH_REQUEST, requested); const deadline = Date.now() + 10000; while (epoch(env.FIXTURE_CREDENTIAL) !== requested && !fs.existsSync(env.FIXTURE_REFRESH_FAILURE)) { if (Date.now() >= deadline) { event("fixture-timeout"); process.exit(91); } Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10); } if (fs.existsSync(env.FIXTURE_REFRESH_FAILURE)) break; event("credential-renewed"); }',
+      '    process.exit(env.FIXTURE_LINUX_FAIL === "1" ? 41 : 0);',
       "  }",
       '  if (args[0] === "buildx" && args[1] === "build") { event("tools-upgrade", {incremental: args.includes("release-tools") && args.includes("MOM_RELEASE_TOOLS_BASE=mom-build-multicompiler") && args[args.indexOf("--builder") + 1] === "default"}); process.exit(env.FIXTURE_UPGRADE_FAIL === "1" ? 43 : 0); }',
       "  process.exit(0);",
@@ -353,7 +362,8 @@ test.describe("Deployment dispatcher failure boundaries", {concurrency: false,
           HOME: temp, MOM_DEPLOY_TARGET: "windows", MOM_RELEASE_VERSION: "9.8.7",
           WIN_RUN: path.join(bin, "fixture-win"), WIN_MOM_DEV_BASE: "fixture-base",
           FIXTURE_ROOT: temp, FIXTURE_EVENTS: eventsPath, FIXTURE_HELPERS: helpersPath,
-          FIXTURE_CREDENTIAL: credentialPath, ...controls},
+          FIXTURE_CREDENTIAL: credentialPath, FIXTURE_REFRESH_REQUEST: refreshRequestPath,
+          FIXTURE_REFRESH_FAILURE: refreshFailurePath, ...controls},
       });
       assert.equal(result.error, undefined);
       /** @type {{kind: string, active?: boolean, captured?: boolean, noninteractive?: boolean, passwordInput?: boolean, exists?: boolean, safe?: boolean, complete?: boolean, incremental?: boolean, sameSession?: boolean, sameCallerGroup?: boolean, auth?: boolean, multi?: boolean, discreteGroup?: boolean}[]} */
@@ -494,12 +504,13 @@ test.describe("Deployment dispatcher failure boundaries", {concurrency: false,
       assert.ok(sid && pgid);
       const result = deploy({MOM_DEPLOY_TARGET: "all", FIXTURE_LONG_LINUX: "1",
         FIXTURE_REAL_SESSION: "1", FIXTURE_EXPECTED_SID: sid, FIXTURE_EXPECTED_PGID: pgid});
-      assert.equal(result.status, 0, result.output);
+      assert.equal(result.status, 0, result.output + "\n" + JSON.stringify(result.events));
       const linuxAt = result.events.findIndex(event => event.kind === "linux-build");
       const windowsAt = result.events.findIndex(event => event.kind === "windows-build");
       const duringLinux = result.events.slice(linuxAt + 1, windowsAt);
       assert.ok(duringLinux.some(event => event.kind === "refresh-wait"));
       assert.ok(duringLinux.some(event => event.kind === "auth" && event.noninteractive));
+      assert.equal(duringLinux.filter(event => event.kind === "credential-renewed").length, 2);
       assert.equal(result.events.filter(event => event.kind === "credential-expired").length, 0);
       assert.ok(result.events.filter(event => event.kind === "auth" || event.kind === "sudo")
         .every(event => event.noninteractive), "refresh and Windows dispatch must never prompt");
