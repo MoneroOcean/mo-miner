@@ -206,17 +206,19 @@ function benchmarkHarness(graceful = true, missingGpu = false, runNodeResult = {
 }
 
 describe("Native PearlHash verification evidence", () => {
-  test("native Pearl GPU tests require the search checksum marker", async () => {
+  test("native Pearl GPU tests require checksum and exact-winner jackpot evidence", async () => {
     const definition = {name: "pearl", gpu: true, expected: "ok", job: {algo: "pearlhash", dev: "gpu1"}};
     for (const backend of [undefined, "auto", "native", "sycl-native"]) {
-      for (const marker of ["", "PEARLHASH_TEST search_checksum_match=false"]) {
+      for (const marker of ["", "PEARLHASH_TEST search_checksum_match=false",
+        "PEARLHASH_TEST search_checksum_match=true", "PEARLHASH_TEST jackpot_match=true",
+        "PEARLHASH_TEST search_checksum_match=true\nPEARLHASH_TEST jackpot_match=false"]) {
         const harness = benchmarkHarness(true, false, {code: 0, stdout: `PASSED\n${marker}`});
         const selected = backend === undefined
           ? definition : {...definition, job: {...definition.job, backend}};
         await assert.rejects(harness.execution.runMinerTest(selected), /did not report a clean pass/);
       }
       const harness = benchmarkHarness(true, false, {
-        code: 0, stdout: "PASSED\nPEARLHASH_TEST search_checksum_match=true",
+        code: 0, stdout: "PASSED\nPEARLHASH_TEST search_checksum_match=true\nPEARLHASH_TEST jackpot_match=true",
       });
       const selected = backend === undefined
         ? definition : {...definition, job: {...definition.job, backend}};

@@ -142,10 +142,12 @@ struct Buffers {
   uint8_t* cA = nullptr;
   uint8_t* cB = nullptr;
 };
+using CV = std::array<uint8_t, 32>;
 struct Proof {
   uint32_t seed;
   int row, col, m, n, k, rank;
   uint8_t key[32], jackpot[32];
+  std::vector<CV> leaves_a, leaves_b;
   bool claim_ready = true;
   bool valid = true;
 } g_pf;
@@ -212,6 +214,9 @@ static bool cuda_sycl_search_supports_shape(int, int) {
 static size_t checked_elements(int n, int k, const char*) {
   return static_cast<size_t>(n) * static_cast<size_t>(k);
 }
+static size_t checked_chunk_count(size_t bytes, const char*) {
+  return bytes / 1024 + (bytes % 1024 != 0);
+}
 static void search(sycl::queue&, const Buffers&, uint32_t seed, int, int, int, int, bool) {
   require(seed == original_seed, "fallback changed the attempt seed");
   ++counts.fallback;
@@ -272,6 +277,8 @@ static int check_copies(bool readback) {
   sycl::queue q{{sycl::backend::ext_oneapi_cuda, readback}, {}};
   State st{{}, {}, {q.get_device(), {}}};
   Result result;
+  g_pf.leaves_a.emplace_back();
+  g_pf.leaves_b.emplace_back();
   std::array<uint8_t, 32> key{}, target{}, root_a{}, root_b{};
   root_a.fill(3);
   root_b.fill(4);
@@ -303,7 +310,8 @@ static int check_copies(bool readback) {
     }
   }
   require(counts.fallback == 0 && counts.fail == 0, "queued-copy fault retried another search");
-  require(seed == original_seed && !g_pf.valid && !g_pf.claim_ready,
+  require(seed == original_seed && !g_pf.valid && !g_pf.claim_ready && g_pf.leaves_a.empty() &&
+              g_pf.leaves_b.empty(),
           "queued-copy path committed a seed or proof");
   if (fault) {
     require(same_exception, "queue drain replaced the original exception");
@@ -350,6 +358,52 @@ static int run(bool dispatch, bool hip, sycl::queue& q, Buffers& b, uint64_t* ps
 #include "commit.inc"
 }
 
+// Exercise the real native winner-capture block with deferred copies, including failed readbacks.
+static int check_native_capture(bool hip) {
+  sycl::queue q{{hip ? sycl::backend::hip : sycl::backend::ext_oneapi_cuda, true}, {}};
+  const size_t chunks = checked_chunk_count(checked_elements(2048, 2048, "fixture"), "fixture");
+  std::vector<CV> a(chunks), b(chunks);
+  for (size_t i = 0; i < chunks; ++i)
+    for (size_t j = 0; j < 32; ++j) {
+      a[i][j] = static_cast<uint8_t>(i * 13 + j);
+      b[i][j] = static_cast<uint8_t>(i * 37 + j + 1);
+    }
+  Result result;
+  Buffers buffers{&result};
+  buffers.CVA = reinterpret_cast<uint8_t*>(a.data());
+  buffers.CVB = reinterpret_cast<uint8_t*>(b.data());
+  q.root_a_address = buffers.CVA;
+  g_pf.leaves_a.emplace_back();
+  g_pf.leaves_b.emplace_back();
+  uint64_t seed = original_seed;
+  bool caught = false, same_exception = false;
+  try {
+    require(run(false, hip, q, buffers, &seed) == 1, "native winner was lost");
+  } catch (const std::string& error) {
+    caught = true;
+    same_exception = string_error && &error == thrown_address;
+  } catch (const std::exception& error) {
+    caught = true;
+    same_exception = !string_error && &error == thrown_address;
+  }
+  const bool fault = failure_stage != Stage::success;
+  require(caught == fault, "native capture fault was swallowed or success failed");
+  require(q.pending.empty(), "native capture left a queued copy targeting proof storage");
+  if (fault) {
+    require(same_exception, "native capture changed the original exception");
+    require(seed == original_seed && !g_pf.valid && !g_pf.claim_ready,
+            "failed native capture committed a seed or exposed a stale claim");
+  } else {
+    require(seed == result.seed && g_pf.valid && !g_pf.claim_ready &&
+                g_pf.leaves_a == a && g_pf.leaves_b == b,
+            "native capture did not retain the winning seed's exact leaves");
+    require(counts.copies == 2 && counts.retired_copies == 2,
+            "native capture failed to finish both readbacks");
+  }
+  std::puts("PASS actual-source Pearl native proof capture");
+  return 0;
+}
+
 int main(int argc, char** argv) {
   if (argc != 5)
     return 2;
@@ -357,6 +411,16 @@ int main(int argc, char** argv) {
   const bool hip = std::atoi(argv[2]) != 0;
   failure_stage = static_cast<Stage>(std::atoi(argv[3]));
   string_error = std::atoi(argv[4]) != 0;
+  if (std::string(argv[1]) == "capture") {
+    string_error = std::atoi(argv[4]) % 2 != 0;
+    cleanup_error = std::atoi(argv[4]) >= 2;
+    try {
+      return check_native_capture(hip);
+    } catch (const std::exception& error) {
+      std::fprintf(stderr, "%s\n", error.what());
+      return 1;
+    }
+  }
   if (std::string(argv[1]) == "copies") {
     string_error = std::atoi(argv[4]) % 2 != 0;
     cleanup_error = std::atoi(argv[4]) >= 2;
@@ -376,6 +440,8 @@ int main(int argc, char** argv) {
 #endif
   sycl::queue q{{hip ? sycl::backend::hip : sycl::backend::ext_oneapi_cuda}, {}};
   Result result;
+  g_pf.leaves_a.emplace_back();
+  g_pf.leaves_b.emplace_back();
   Buffers b{&result};
   uint64_t seed = original_seed;
   bool caught = false;
@@ -400,10 +466,12 @@ int main(int argc, char** argv) {
       require(result.found == 41 && result.chk == 73 && result.seed == 777,
               "submitted fault reset the result");
       require(seed == original_seed, "submitted fault committed a winning seed");
-      require(!g_pf.valid && !g_pf.claim_ready, "submitted fault published a proof");
+      require(!g_pf.valid && !g_pf.claim_ready && g_pf.leaves_a.empty() && g_pf.leaves_b.empty(),
+              "submitted fault published a proof");
       require(completed == -1, "submitted fault reached the result commit");
     } else {
-      require(completed == 1 && seed == 777 && g_pf.valid && !g_pf.claim_ready,
+      require(completed == 1 && seed == 777 && g_pf.valid && !g_pf.claim_ready &&
+                  g_pf.leaves_a.empty() && g_pf.leaves_b.empty(),
               "successful path failed to capture the winning result");
       const bool unavailable = failure_stage == Stage::unavailable;
       require(counts.fallback == (unavailable ? 1 : 0), "unavailability fallback changed");

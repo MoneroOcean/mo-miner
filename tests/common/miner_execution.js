@@ -111,7 +111,8 @@ module.exports = ({
     if (definition.job.algo !== "pearlhash" || !definition.gpu ||
         ![undefined, "auto", "native", "sycl-native"].includes(backend)) {return true;}
     const lines = output.split(/\r?\n/);
-    return lines.includes("PEARLHASH_TEST search_checksum_match=true") ||
+    return (lines.includes("PEARLHASH_TEST search_checksum_match=true") &&
+      lines.includes("PEARLHASH_TEST jackpot_match=true")) ||
       (lines.includes("PEARLHASH_TEST reference_search=true") &&
        lines.some(line => /^PEARLHASH_TEST search=sycl cert_version=\d+ host_seeds_match=true$/.test(line)));
   }

@@ -100,6 +100,8 @@ awk '
 build_run progpow-epoch -I "$out" "$root/tests/native/progpow_epoch.cpp"
 
 build_run pearlhash-seed "$root/tests/reference/pearlhash_seed.cpp"
+build_run pearlhash-jackpot "$root/tests/native/pearlhash_jackpot.cpp"
+build_run pearlhash-plain-proof "$root/tests/native/pearlhash_plain_proof.cpp"
 
 bash "$root/scripts/test-intel-geometry.sh"
 bash "$root/scripts/test-zelhash-layout.sh"

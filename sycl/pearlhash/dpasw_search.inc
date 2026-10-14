@@ -36,20 +36,27 @@ static inline esimd_ns::simd<int32_t, 64> dpasw_mad(
 }
 
 // Submit the selected DPASW tile variant while preserving the common winning-tile transcript.
-template <int FixedRank>
+template <int FixedRank, int Columns = pearlhash_dpasw_columns,
+          int Rows = pearlhash_dpasw_rows, int FixedK = 0>
 static sycl::event search_esimd_dpasw_impl(
     sycl::queue& q, const Buffers& bb, uint32_t seed,
-    int m, int n, int k, int rank, bool dbg) {
-  constexpr int ER = pearlhash_dpasw_rows, EC = pearlhash_dpasw_columns, HT = 16;
-  constexpr int BH = pearlhash_dpasw_block_rows, BW = pearlhash_dpasw_block_columns;
+    int m, int n, int requested_k, int rank, bool dbg) {
+  const int k = FixedK ? FixedK : requested_k;
+  constexpr int ER = Rows, EC = Columns, HT = 16;
+  // Four-row tiles favor B reuse over a 4096x2048 matrix window (12 MiB at K2048).
+  // Smaller tiles retain the original square proof-tile block.
+  constexpr int BH = pearlhash_dpasw_block_rows;
+  constexpr int BW = ER == 4 ? 128 : pearlhash_dpasw_block_columns;
   constexpr int AN = 128;
+  constexpr int Tiles = ER * EC;
   auto B = bb;
   const int tilesH = m / (HT * ER), tilesW = n / (HT * EC);
   const size_t nWI = size_t(tilesH) * tilesW;
   const bool blocked = tilesW % BW == 0 && tilesH % BH == 0;
   const int blocksW = blocked ? tilesW / BW : 0;
   // Validated N is a multiple of 32: every row has an even number of paired column tiles.
-  const size_t localSize = nWI % 32 == 0 ? 32 : 2;
+  constexpr size_t preferredLocal = ER == 4 ? 16 : 32;
+  const size_t localSize = nWI % preferredLocal == 0 ? preferredLocal : 2;
   return q.submit([&](sycl::handler& h) {
     const auto kernel = [=](sycl::nd_item<1> id) SYCL_ESIMD_KERNEL MOM_SYCL_KERNEL_ARGS_RESTRICT {
       using esimd_ns::simd;
@@ -68,6 +75,16 @@ static sycl::event search_esimd_dpasw_impl(
       const int rowBase = Rg * HT * ER, colBase = Cg * EC;
       const int8_t* Ap = B.Ap;
       const int8_t* Bp = B.Bp;
+      const int8_t* aBand0[ER], *aBand1[ER], *bBand[2 * EC];
+      // Matrix-band bases do not change along K; only the bounded inner-byte offset advances.
+      MU<ER>([&](auto r) {
+        const size_t band = static_cast<size_t>((rowBase + int(r) * HT) >> 3);
+        aBand0[r] = Ap + band * k * 8 + aHalfOffset;
+        aBand1[r] = Ap + (band + 1) * k * 8 + aHalfOffset;
+      });
+      MU<2 * EC>([&](auto i) {
+        bBand[i] = Bp + static_cast<size_t>(2 * colBase + int(i)) * k * 8;
+      });
       simd<int32_t, 64> accTL[ER * EC], accTR[ER * EC];
       simd<int32_t, 64> accBL[ER * EC], accBR[ER * EC];
       MU<ER * EC>([&](auto t) {
@@ -76,21 +93,23 @@ static sycl::event search_esimd_dpasw_impl(
         accBL[t] = 0;
         accBR[t] = 0;
       });
-      uint32_t tr[ER * EC][16] = {};
+      // Keep one tile per vector lane through folding and the shared keyed jackpot hash.
+      simd<uint32_t, ER * EC> tr[16];
+      MU<16>([&](auto i) { tr[i] = 0; });
       int rc = 0;
-#pragma unroll 8
+#pragma unroll 4
       for (int p = 0; p < k; p += 32) {
+        const unsigned innerOffset = static_cast<unsigned>(p) * 8;
         simd<int8_t, AN> a0[ER], a1[ER];
         MU<ER>([&](auto r) {
-          const int band0 = (rowBase + int(r) * HT) >> 3;
-          a0[r] = esimd_ns::block_load<int8_t, AN>(Ap + size_t(band0 * (k / 32) + (p >> 5)) * 256 + aHalfOffset);
-          a1[r] = esimd_ns::block_load<int8_t, AN>(Ap + size_t((band0 + 1) * (k / 32) + (p >> 5)) * 256 + aHalfOffset);
+          a0[r] = esimd_ns::block_load<int8_t, AN>(aBand0[r] + innerOffset);
+          a1[r] = esimd_ns::block_load<int8_t, AN>(aBand1[r] + innerOffset);
         });
         MU<EC>([&](auto c) {
           simd<int8_t, 256> earlyB[2];
           MU<2>([&](auto half) {
             earlyB[half] = esimd_ns::block_load<int8_t, 256>(
-                Bp + size_t(2 * (colBase + int(c)) + int(half)) * k * 8 + size_t(p) * 8);
+                bBand[2 * c + half] + innerOffset);
           });
           MU<2>([&](auto half) {
             simd<int8_t, 256> bf = earlyB[half];
@@ -107,39 +126,68 @@ static sycl::event search_esimd_dpasw_impl(
           });
         });
         if ((p + 32) % (FixedRank ? FixedRank : rank) == 0) {
+          simd<uint32_t, ER * EC> folded;
           MU<ER * EC>([&](auto t) {
             simd<uint32_t, 64> x = accTL[t].template bit_cast_view<uint32_t>() ^
                 accTR[t].template bit_cast_view<uint32_t>() ^ accBL[t].template bit_cast_view<uint32_t>() ^
                 accBR[t].template bit_cast_view<uint32_t>();
-            tr[t][rc % 16] = rotl(tr[t][rc % 16], 13) ^ esimd_xor_reduce<64>(x);
+            folded[t] = esimd_xor_reduce<64>(x);
           });
+          if constexpr (FixedK > 0 && FixedRank > 0 && FixedK <= 16 * FixedRank)
+            // Every slot is written once, so its previous value is zero and needs no rotation.
+            tr[rc] = folded;
+          else
+            tr[rc % 16] = ((tr[rc % 16] << 13) | (tr[rc % 16] >> 19)) ^ folded;
           rc++;
         }
       }
-      for (int r = 0; r < ER; r++) {
-        for (int c = 0; c < EC; c++) {
-          if (dbg) {
-            const uint32_t mx = tile_mix(uint32_t(rowBase + r * HT),
-                                         uint32_t((colBase + c) * HT), tr[r * EC + c]);
-            esimd_ns::atomic_update<esimd_ns::atomic_op::add>(
-                &B.result->chk, simd<uint32_t, 1>(0), simd<uint32_t, 1>(mx), esimd_ns::simd_mask<1>(1));
-          }
-          uint8_t jackpot[32];
-          if (!tile_wins(tr[r * EC + c], B.cA, B.target, jackpot))
-            continue;
-          simd<int, 1> old = esimd_ns::atomic_update<esimd_ns::atomic_op::xchg>(
-              &B.result->found, simd<uint32_t, 1>(0), simd<int, 1>(1), esimd_ns::simd_mask<1>(1));
-          if (old[0] == 0) {
-            B.result->seed = seed;
-            B.result->row = uint32_t(rowBase + r * HT);
-            B.result->col = uint32_t((colBase + c) * HT);
-            for (int i = 0; i < 32; ++i)
-              B.result->jackpot[i] = jackpot[i];
-          }
+      if (dbg) {
+        for (int t = 0; t < Tiles; ++t) {
+          uint32_t tile_transcript[16];
+          MU<16>([&](auto i) { tile_transcript[i] = tr[i][t]; });
+          const uint32_t mx = tile_mix(uint32_t(rowBase + (t / EC) * HT),
+                                      uint32_t((colBase + t % EC) * HT), tile_transcript);
+          esimd_ns::atomic_update<esimd_ns::atomic_op::add>(
+              &B.result->chk, simd<uint32_t, 1>(0), simd<uint32_t, 1>(mx), esimd_ns::simd_mask<1>(1));
+        }
+      }
+      simd<uint32_t, Tiles> jackpots[8];
+      esimd_jackpots(tr, B.cA, jackpots);
+      auto target_bytes = esimd_ns::block_load<uint8_t, 32>(B.target);
+      simd<uint32_t, 8> target_words = target_bytes.template bit_cast_view<uint32_t>().read();
+      esimd_ns::simd_mask<Tiles> less = 0, equal = 1;
+      MU<8>([&](auto i) {
+        constexpr int word = 7 - decltype(i)::value;
+        const uint32_t bound = target_words[word];
+        less |= equal & (jackpots[word] < bound);
+        equal &= jackpots[word] == bound;
+      });
+      const auto wins = less | equal;
+      for (int t = 0; t < Tiles; ++t) {
+        if (!wins[t])
+          continue;
+        simd<int, 1> old = esimd_ns::atomic_update<esimd_ns::atomic_op::xchg>(
+            &B.result->found, simd<uint32_t, 1>(0), simd<int, 1>(1), esimd_ns::simd_mask<1>(1));
+        if (old[0] == 0) {
+          B.result->seed = seed;
+          B.result->row = uint32_t(rowBase + (t / EC) * HT);
+          B.result->col = uint32_t((colBase + t % EC) * HT);
+          for (int i = 0; i < 32; ++i)
+            B.result->jackpot[i] = static_cast<uint8_t>(
+                jackpots[i / 4][t] >> (8 * (i % 4)));
         }
       }
     };
-    h.parallel_for(sycl::nd_range<1>(sycl::range<1>(nWI), sycl::range<1>(localSize)), kernel);
+#if defined(MOM_PEARLHASH_INTEL_LARGE_GRF)
+    if constexpr (ER * EC > 2) {
+      // Four proof tiles need more than 128 GRFs, but still share the paired A layout.
+      namespace exp = sycl::ext::oneapi::experimental;
+      exp::nd_launch(h, exp::launch_config{
+          sycl::nd_range<1>{sycl::range<1>(nWI), sycl::range<1>(localSize)},
+          exp::properties{sycl::ext::intel::experimental::grf_size<256>}}, kernel);
+    } else
+#endif
+      h.parallel_for(sycl::nd_range<1>(sycl::range<1>(nWI), sycl::range<1>(localSize)), kernel);
   });
 }
 
@@ -148,6 +196,17 @@ static sycl::event search_esimd_dpasw(sycl::queue& q, const Buffers& bb, uint32_
                                       int m, int n, int k, int rank, bool dbg) {
   if (rank == 256)
     return search_esimd_dpasw_impl<256>(q, bb, seed, m, n, k, rank, dbg);
+#if defined(MOM_PEARLHASH_INTEL_LARGE_GRF)
+  if (rank == 128 && m % 64 == 0 && k == 2048)
+    return search_esimd_dpasw_impl<128, 1, 4, 2048>(q, bb, seed, m, n, k, rank, dbg);
+  if (rank == 128 && m % 64 == 0)
+    return search_esimd_dpasw_impl<128, 1, 4>(q, bb, seed, m, n, k, rank, dbg);
+  // Keep each pair on one A band: widening columns requires an even number of wider groups.
+  if (rank == 128 && n % 64 == 0)
+    return search_esimd_dpasw_impl<128, 2>(q, bb, seed, m, n, k, rank, dbg);
+#endif
+  if (rank == 128)
+    return search_esimd_dpasw_impl<128>(q, bb, seed, m, n, k, rank, dbg);
   return search_esimd_dpasw_impl<0>(q, bb, seed, m, n, k, rank, dbg);
 }
 #endif // oneAPI main-TU ESIMD only

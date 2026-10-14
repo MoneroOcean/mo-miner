@@ -26,9 +26,8 @@ static void derive_key(const uint8_t* header76, int k, int rank, uint8_t key32[3
 // (A) and cols (Bt), bincode-serializes and base64-encodes. Mirrors pearl-blake3 merkle.rs and is
 // byte-identical to the pool's raw-root proof format. Certificate V3 changes only the noise-seed
 // commitment chain, not these serialized roots. Runs once per found
-// share (rare), so plain host code -- no GPU. CHUNK=1024; leaves use non-root chunk_cv, the root
-// uses merge_root (ROOT at top); for power-of-two leaf counts the pairwise odd-carry layer tree
-// (siblings) is identical to merge_root's tree.
+// share. CHUNK=1024; leaves use non-root chunk_cv, while the root combines the retained top
+// layer with ROOT set. Odd carries preserve the canonical left-power-of-two tree.
 using CV = std::array<uint8_t, 32>;
 // Regenerate leaf `leaf` (1024 bytes, zero-padded) of A ('A') or Bt ('B') from the seed RNG.
 static size_t gen_leaf(char which, uint32_t seed, size_t leaf, int m, int n, int k,
@@ -55,13 +54,22 @@ static size_t gen_leaf(char which, uint32_t seed, size_t leaf, int m, int n, int
   return len;
 }
 // Build non-root Merkle layers, carrying an unmatched node unchanged for proof openings.
+// `leaves`, when present, contains the exact raw non-root CVs for this seed/key; parent layers
+// and the root remain rebuilt here so cached and regenerated proof paths share serialization.
 static std::vector<std::vector<CV>> build_layers(char which, uint32_t seed, int numLeaves, int m,
-                                                 int n, int k, const uint8_t* key) {
+                                                 int n, int k, const uint8_t* key,
+                                                 const std::vector<CV>* leaves = nullptr) {
+  if (leaves && leaves->size() != static_cast<size_t>(numLeaves))
+    throw std::string("Invalid pearlhash PlainProof cached leaf count");
   std::vector<CV> l0(numLeaves);
-  uint8_t chunk[1024];
-  for (int i = 0; i < numLeaves; i++) {
-    int len = gen_leaf(which, seed, i, m, n, k, chunk);
-    pearlhash_b3::chunk_cv(chunk, (uint32_t)len, (uint64_t)i, key, l0[i].data());
+  if (leaves) {
+    l0 = *leaves;
+  } else {
+    uint8_t chunk[1024];
+    for (int i = 0; i < numLeaves; i++) {
+      int len = gen_leaf(which, seed, i, m, n, k, chunk);
+      pearlhash_b3::chunk_cv(chunk, (uint32_t)len, (uint64_t)i, key, l0[i].data());
+    }
   }
   std::vector<std::vector<CV>> layers;
   layers.push_back(std::move(l0));
@@ -89,15 +97,17 @@ static void put_bytes(std::vector<uint8_t>& v, const uint8_t* p, size_t n) {
 }
 // Append a serialized MatrixMerkleProof for the 16 contiguous `rows` of matrix `which` (cols wide).
 static void ser_matrix_proof(std::vector<uint8_t>& out, char which, uint32_t seed, int m, int n,
-                             int k, const uint8_t* key, int cols, const std::vector<int>& rows) {
+                             int k, const uint8_t* key, int cols, const std::vector<int>& rows,
+                             const std::vector<CV>* cached_leaves = nullptr) {
   const size_t total_bytes = checked_elements(which == 'A' ? m : n, k, "PlainProof matrix");
   const size_t num_leaves_size = checked_chunk_count(total_bytes, "PlainProof matrix");
   const int numLeaves = static_cast<int>(num_leaves_size);
-  auto layers = build_layers(which, seed, numLeaves, m, n, k, key);
+  auto layers = build_layers(which, seed, numLeaves, m, n, k, key, cached_leaves);
   uint8_t root[32];
   {
-    std::vector<CV> tmp = layers[0];
-    pearlhash_b3::merge_root((uint8_t*)tmp.data(), numLeaves, key, root);
+    // Parent layers already exist for the openings; only their final root remains to hash.
+    std::vector<CV> tmp = layers.back();
+    pearlhash_b3::merge_root((uint8_t*)tmp.data(), static_cast<int>(tmp.size()), key, root);
   }
   std::set<int> leafset;
   for (int row : rows) {
@@ -170,7 +180,9 @@ static std::string base64(const std::vector<uint8_t>& d) {
 // Full PlainProof (base64) for a winning tile, from the seed + job key (no noised matrices needed).
 static std::string build_plain_proof(uint32_t seed, int m, int n, int k, int rank,
                                      const uint8_t* key, int row, int col,
-                                     uint32_t* adjustment_factor) {
+                                     uint32_t* adjustment_factor,
+                                     const std::vector<CV>* cached_a = nullptr,
+                                     const std::vector<CV>* cached_b = nullptr) {
   std::vector<int> aRows, btRows;
   for (int r = 0; r < 16; r++) {
     aRows.push_back(row + r);
@@ -183,8 +195,8 @@ static std::string build_plain_proof(uint32_t seed, int m, int n, int k, int ran
   put_u64le(buf, (uint64_t)n);
   put_u64le(buf, (uint64_t)k);
   put_u64le(buf, (uint64_t)rank);
-  ser_matrix_proof(buf, 'A', seed, m, n, k, key, k, aRows);
-  ser_matrix_proof(buf, 'B', seed, m, n, k, key, k, btRows);
+  ser_matrix_proof(buf, 'A', seed, m, n, k, key, k, aRows, cached_a);
+  ser_matrix_proof(buf, 'B', seed, m, n, k, key, k, btRows, cached_b);
   buf.push_back(0x00); // moe: Option::None
   return base64(buf);
 }

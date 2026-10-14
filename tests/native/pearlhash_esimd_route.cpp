@@ -3,6 +3,7 @@
 #include "../../sycl/pearlhash/esimd_route.h"
 
 #include <cstdio>
+#include <vector>
 
 int main() {
   const struct {
@@ -69,6 +70,44 @@ int main() {
       return 1;
     }
   }
-  std::puts("PearlHash ESIMD routing host test passed (15 ordinary + 14 paired fixtures)");
+  const struct {
+    unsigned width;
+    int rank;
+    int columns;
+    bool expected;
+  } wide[] = {
+    {16u, 128, 131072, true},
+    {16u, 128, 192, true},
+    {16u, 128, 160, false},
+    {16u, 128, 0, false},
+    {16u, 128, -64, false},
+    {16u, 256, 131072, false},
+    {16u, 512, 131072, false},
+    {8u, 128, 131072, false},
+    {0u, 128, 131072, false}
+  };
+  for (const auto& fixture : wide) {
+    if (pearlhash_wide_pipeline_route(fixture.width, fixture.rank, fixture.columns) !=
+        fixture.expected) {
+      std::fprintf(stderr, "PearlHash wide pipeline routing mismatch: width=%u rank=%d n=%d\n",
+                   fixture.width, fixture.rank, fixture.columns);
+      return 1;
+    }
+  }
+  for (const unsigned rows : {64u, 128u, 256u}) {
+    for (const unsigned columns : {2u, 8u, 64u}) {
+      std::vector<bool> seen(rows * columns);
+      for (unsigned wi = 0; wi < rows * columns; ++wi) {
+        unsigned row, column;
+        pearlhash_esimd_stripe_position(wi, columns, row, column);
+        if (row >= rows || column >= columns || seen[row * columns + column]) {
+          std::fputs("PearlHash striped traversal is not a bijection\n", stderr);
+          return 1;
+        }
+        seen[row * columns + column] = true;
+      }
+    }
+  }
+  std::puts("PearlHash ESIMD routing and striped traversal host tests passed");
   return 0;
 }

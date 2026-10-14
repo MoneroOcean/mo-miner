@@ -1871,6 +1871,8 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       assert.ok(intensity.includes("global_mem_size>() >= 8 * GiB"));
       assert.ok(intensity.includes("pearlhash_profile_t{131072, 524288, 8192, 128}"));
       assert.ok(intensity.includes("pearlhash_profile_t{65536, 65536, 4096, 256}"));
+      assert.match(intensity, /sycl_is_level_zero_gpu\(dev\) && !is_integrated_gpu\(dev\)/);
+      assert.match(intensity, /pearlhash_intel_capability_profile\(\s*mom_intel_eu_simd_width\(dev\)/);
       assert.ok(params.includes("\"*[m=\" + std::to_string(profile.m)"));
       for (const field of ["n", "k", "rank"]) {
         assert.ok(params.includes(`";${field}=" + std::to_string(profile.${field})`));
@@ -5720,6 +5722,49 @@ int main(int argc, char** argv) {
   });
 
   test.describe("Submitted faults, upload ownership, and cache readiness", {concurrency: false}, () => {
+    test("PearlHash HIP shape admission bounds transcript word indexing", {
+      skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
+    }, () => {
+      const source = fs.readFileSync(path.join(__dirname, "../sycl/pearlhash/hip_jit.inc"), "utf8");
+      const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-pearl-hip-shape-"));
+      try {
+        fs.writeFileSync(path.join(fixture, "hip-shape.inc"),
+          extractCppBlock(source, "  static bool supports_shape(const int"));
+        const executable = path.join(fixture, "hip-shape");
+        const compiled = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
+          "-pedantic", "-I" + fixture, path.join(__dirname, "native/pearlhash_hip_shape.cpp"),
+          "-o", executable], {encoding: "utf8"});
+        assert.equal(compiled.status, 0, compiled.stderr);
+        const result = spawnSync(executable, [], {encoding: "utf8"});
+        assert.equal(result.status, 0, result.stderr);
+        assert.match(result.stdout, /within 32-bit word offsets/);
+      } finally {
+        fs.rmSync(fixture, {recursive: true, force: true});
+      }
+    });
+
+    test("PearlHash portable OpenCL launches bound work without changing other backends", {
+      skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
+    }, () => {
+      const source = fs.readFileSync(path.join(__dirname, "../sycl/pearlhash/sycl_search.inc"), "utf8");
+      const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-pearl-launch-budget-"));
+      try {
+        fs.writeFileSync(path.join(fixture, "launch-budget.inc"),
+          extractCppBlock(source, "static size_t pearlhash_portable_launch_groups("));
+        const executable = path.join(fixture, "launch-budget");
+        const compiled = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
+          "-pedantic", "-I" + fixture, path.join(__dirname, "native/pearlhash_launch_budget.cpp"),
+          "-o", executable], {encoding: "utf8"});
+        assert.equal(compiled.status, 0, compiled.stderr);
+        const result = spawnSync(executable, [], {encoding: "utf8"});
+        assert.equal(result.status, 0, result.stderr);
+        assert.match(result.stdout, /bounded with complete tile coverage/);
+        assert.match(source, /if \(bounded_opencl\)\s+launch\.wait_and_throw\(\);/u);
+      } finally {
+        fs.rmSync(fixture, {recursive: true, force: true});
+      }
+    });
+
     test("PearlHash submitted native faults propagate without fallback", {
       skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
     }, async (t) => {
@@ -5727,7 +5772,10 @@ int main(int argc, char** argv) {
       const dispatch = fs.readFileSync(path.join(root, "dispatch.inc"), "utf8");
       const host = fs.readFileSync(path.join(root, "pearlhash.cpp"), "utf8");
       const invalidateStart = host.indexOf("  g_pf.valid = false;");
-      const invalidateEnd = host.indexOf("  PearlHashState& st =", invalidateStart);
+      // Keep only the entry invalidation block. It intentionally precedes argument validation so
+      // a rejected call cannot expose a previous share; the validation body is not self-contained
+      // in the native fault fixture and must not be copied into it.
+      const invalidateEnd = host.indexOf("  if (!input ||", invalidateStart);
       const waitStart = host.indexOf("  if (search_backend == PearlHashSearchBackend::hip_jit ||");
       const uploadEnd = host.indexOf("  if (is_test && q.get_device().is_gpu())", waitStart);
       const drainStart = host.indexOf("\n  } catch (...)", waitStart);
@@ -5788,6 +5836,29 @@ int main(int argc, char** argv) {
               assert.equal(result.status, 0, result.stderr);
               assert.equal(result.signal, null);
               assert.equal(result.stdout, "PASS actual-source Pearl native fault boundary\n");
+            });
+          });
+        const captureCases = [];
+        for (const [hip, name] of ["CUDA", "HIP"].entries()) {
+          captureCases.push({hip, stage: 0, error: 0, name: name + " retains exact winning leaves"});
+          for (const [stage, operation] of [[14, "A readback"], [15, "B readback"], [2, "completion"]]) {
+            for (let error = 0; error < 4; ++error) {
+              captureCases.push({hip, stage, error,
+                name: name + " " + operation + " fails closed with " + (error % 2 ? "string" : "exception") +
+                  (error >= 2 ? " despite cleanup failure" : "")});
+            }
+          }
+        }
+        await runGroupedCases(t, captureCases,
+          ({hip}) => hip ? "HIP winning proof readbacks" : "CUDA winning proof readbacks",
+          async (caseTest, {hip, stage, error, name}) => {
+            await caseTest.test(name, () => {
+              const result = spawnSync(executable,
+                ["capture", String(hip), String(stage), String(error)], {encoding: "utf8"});
+              assert.equal(result.error, undefined);
+              assert.equal(result.status, 0, result.stderr);
+              assert.equal(result.signal, null);
+              assert.equal(result.stdout, "PASS actual-source Pearl native proof capture\n");
             });
           });
         const copyCases = [

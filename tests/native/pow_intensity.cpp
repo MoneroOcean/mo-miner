@@ -139,6 +139,41 @@ void test_pearlhash_capacity() {
   expect_true("Pearl zero shape rejected", !pearlhash_allocation_counts({}, ordinary_counts));
 }
 
+void test_pearlhash_intel_capability_profile() {
+  const pearlhash_profile_t ordinary = {131072, 131072, 2048, 128};
+  const pearlhash_profile_t wide = {131072, 131072, 4096, 128};
+  const uint64_t eight_gib = 8 * kGiB;
+
+  expect_pearl_profile("Pearl Intel width16 Level Zero profile",
+                       pearlhash_intel_capability_profile(16, true, true, eight_gib), wide);
+  expect_pearl_profile("Pearl Intel width16 larger memory profile",
+                       pearlhash_intel_capability_profile(16, true, true, 12 * kGiB), wide);
+  for (const unsigned width : {0u, 8u, 32u})
+    expect_pearl_profile("Pearl Intel unsupported width fallback",
+                         pearlhash_intel_capability_profile(width, true, true, eight_gib), ordinary);
+  expect_pearl_profile("Pearl Intel width16 low memory fallback",
+                       pearlhash_intel_capability_profile(16, true, true, eight_gib - 1), ordinary);
+  expect_pearl_profile("Pearl Intel width16 non-Level-Zero fallback",
+                       pearlhash_intel_capability_profile(16, false, true, eight_gib), ordinary);
+  expect_pearl_profile("Pearl integrated width16 fallback",
+                       pearlhash_intel_capability_profile(16, true, false, eight_gib), ordinary);
+  expect_pearl_profile("Pearl Intel narrow larger device",
+      pearlhash_intel_capability_profile(8, true, true, eight_gib, 512),
+      {524288, 131072, 2048, 128});
+  expect_pearl_profile("Pearl Intel narrow intermediate device",
+      pearlhash_intel_capability_profile(8, true, true, eight_gib, 511),
+      {262144, 131072, 2048, 128});
+  expect_pearl_profile("Pearl Intel narrow smaller device",
+      pearlhash_intel_capability_profile(8, true, true, eight_gib, 255), ordinary);
+  expect_pearl_profile("Pearl Intel narrow low memory fallback",
+      pearlhash_intel_capability_profile(8, true, true, eight_gib - 1, 512), ordinary);
+  expect_pearl_profile("Pearl Intel narrow row count capped",
+      pearlhash_intel_capability_profile(8, true, true, eight_gib,
+          std::numeric_limits<unsigned>::max()), {524288, 131072, 2048, 128});
+  expect_pearl_profile("Pearl Intel wide profile does not inherit narrow scaling",
+      pearlhash_intel_capability_profile(16, true, true, eight_gib, 512), wide);
+}
+
 } // namespace
 
 int main() {
@@ -207,6 +242,7 @@ int main() {
                pow_intensity(sub_gib_profile, progpow_intensity_heuristic, 256), 4 * kMiB);
 
   const unsigned before_pearl = assertions;
+  test_pearlhash_intel_capability_profile();
   test_pearlhash_capacity();
   std::printf("Pearl capacity host test passed (%u assertions)\n", assertions - before_pearl);
   std::printf("Pow intensity host test passed (%u assertions total)\n", assertions);

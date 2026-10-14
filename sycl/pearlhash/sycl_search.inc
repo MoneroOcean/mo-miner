@@ -18,6 +18,18 @@
 // shares the TU with search_esimd -- and EXCLUDED only from the separate spir64-only ESIMD TU
 // (esimd.cpp, which sets MOM_PEARLHASH_ESIMD_TU and re-includes this file just for search_esimd).
 #if !defined(MOM_PEARLHASH_ESIMD_TU)
+// Portable OpenCL can hit driver watchdogs long before the ND-range size limit. Bound MACs
+// as K grows; other backends retain their existing launcher limit. Shapes validate K upstream.
+static size_t pearlhash_portable_launch_groups(int k, bool opencl) {
+  if (k <= 0)
+    throw std::string("Invalid PearlHash launch K");
+  constexpr size_t max_groups = size_t{1} << 22;
+  if (!opencl)
+    return max_groups;
+  const uint64_t groups = (uint64_t{1} << 32) / (uint64_t{256} * k);
+  return static_cast<size_t>(std::max<uint64_t>(1, std::min<uint64_t>(max_groups, groups)));
+}
+
 // Intel's Windows CPU OpenCL JIT corrupts its host heap after the work-group search below (the
 // failure is an access violation/STATUS_HEAP_CORRUPTION after the kernel has otherwise completed).
 // The failure is sensitive to the DPC++ build: even standards-only single-task/range variants can
@@ -224,10 +236,11 @@ static void search_t(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, in
   // cannot represent that as one ND-range (hipErrorInvalidValue), even though the group count is
   // legal. Submit bounded contiguous pieces on the in-order queue and add their group base in the
   // kernel. This also keeps custom larger shapes away from the same 32-bit launcher edge.
-  constexpr size_t max_groups_per_launch = size_t{1} << 22;
+  const bool bounded_opencl = mom_is_opencl(q.get_device());
+  const size_t max_groups_per_launch = pearlhash_portable_launch_groups(k, bounded_opencl);
   for (size_t group_base = 0; group_base < ntiles; group_base += max_groups_per_launch) {
     const size_t group_count = std::min(max_groups_per_launch, ntiles - group_base);
-    q.submit([&](sycl::handler& h) {
+    auto launch = q.submit([&](sycl::handler& h) {
 #if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
       using Scratch = std::conditional_t<FP16Matrix, PearlF16Scratch, uint32_t>;
       sycl::local_accessor<Scratch, 1> red(FP16Matrix ? 1 : WG * 16, h);
@@ -404,6 +417,9 @@ static void search_t(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, in
         }
       });
     });
+    // Force completion between portable pieces rather than coalescing them into one long batch.
+    if (bounded_opencl)
+      launch.wait_and_throw();
   }
 }
 // Run the portable search at the measured B580 OpenCL 4x4 micro-tile. Retuning changes the typed

@@ -30,6 +30,24 @@ struct pearlhash_profile_t {
   unsigned m, n, k, rank;
 };
 
+// Select the measured Intel PearlHash shape only when the device has the matching native
+// execution capability and enough memory. Unknown widths/backend information retain the
+// conservative profile; callers can omit execution-unit scaling for short-dispatch policies.
+inline constexpr pearlhash_profile_t pearlhash_intel_capability_profile(
+    const unsigned simd_width, const bool level_zero_gpu, const bool discrete_gpu,
+    const uint64_t global_mem, const unsigned execution_units = 0) {
+  const pearlhash_profile_t ordinary = {131072, 131072, 2048, 128};
+  if (!level_zero_gpu || !discrete_gpu || global_mem < 8 * pow_intensity_detail::kGiB)
+    return ordinary;
+  if (simd_width == 16)
+    return {131072, 131072, 4096, 128};
+  // Keep power-of-two dimensions while amortizing preparation over the available execution units.
+  if (simd_width == 8)
+    return {131072u * (execution_units >= 512 ? 4u : execution_units >= 256 ? 2u : 1u),
+            131072, 2048, 128};
+  return ordinary;
+}
+
 inline constexpr uint64_t pearlhash_result_allocation_bytes = 64;
 inline constexpr uint64_t pearlhash_runtime_reserve_bytes =
     512 * pow_intensity_detail::kMiB;

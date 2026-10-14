@@ -10,6 +10,7 @@ constexpr uint32_t B3_PARENT = 1u << 2;
 constexpr uint32_t B3_ROOT = 1u << 3;
 constexpr uint32_t B3_KEYED = 1u << 4;
 constexpr uint32_t B3_CHUNK_LEN = 1024;
+constexpr int B3_PERM[16] = {2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8};
 
 // Load the fixed BLAKE3 IV into device-compatible words.
 inline void iv_words(uint32_t o[8]) {
@@ -55,7 +56,6 @@ inline void b3_round(uint32_t* s, const uint32_t* m) {
 // compress -> full 16-word state.
 inline void b3_compress(const uint32_t cv[8], const uint32_t block[16], uint64_t counter,
                         uint32_t block_len, uint32_t flags, uint32_t out[16]) {
-  static const int PERM[16] = {2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8};
   uint32_t s[16];
   for (int i = 0; i < 8; i++)
     s[i] = cv[i];
@@ -75,7 +75,7 @@ inline void b3_compress(const uint32_t cv[8], const uint32_t block[16], uint64_t
     if (r < 6) {
       uint32_t p[16];
       for (int i = 0; i < 16; i++)
-        p[i] = m[PERM[i]];
+        p[i] = m[B3_PERM[i]];
       for (int i = 0; i < 16; i++)
         m[i] = p[i];
     }
@@ -84,6 +84,17 @@ inline void b3_compress(const uint32_t cv[8], const uint32_t block[16], uint64_t
     out[i] = s[i] ^ s[i + 8];
     out[i + 8] = s[i + 8] ^ cv[i];
   }
+}
+
+// Pearl jackpots hash exactly one keyed 64-byte block, already stored as little-endian words.
+// This is the root compression itself, not a chaining value or a second hash of that value.
+inline void b3_keyed_64_words(const uint32_t words[16], const uint8_t key32[32], uint8_t out[32]) {
+  uint32_t key[8], compressed[16];
+  for (int i = 0; i < 8; ++i)
+    key[i] = le32(key32 + i * 4);
+  b3_compress(key, words, 0, 64, B3_KEYED | B3_CHUNK_START | B3_CHUNK_END | B3_ROOT, compressed);
+  for (int i = 0; i < 32; ++i)
+    out[i] = static_cast<uint8_t>(compressed[i / 4] >> (8 * (i % 4)));
 }
 
 // Decode a partial block into zero-padded little-endian BLAKE3 words.

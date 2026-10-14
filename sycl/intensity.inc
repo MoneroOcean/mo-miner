@@ -130,7 +130,8 @@ static unsigned autolykos2_intensity(const sycl::device& dev) {
 }
 
 // Rank changes proof work, so automatic tuning selects complete measured profiles rather than
-// varying M alone. NVIDIA profiles must also fit required allocations and runtime headroom.
+// varying M alone. Intel's wider native DPAS path has a separate measured K; NVIDIA profiles must
+// also fit required allocations and runtime headroom.
 static pearlhash_profile_t pearlhash_profile(const sycl::device& dev) {
   std::string vendor = dev.get_info<sycl::info::device::vendor>();
   std::transform(vendor.begin(), vendor.end(), vendor.begin(), [](unsigned char c) {
@@ -142,6 +143,26 @@ static pearlhash_profile_t pearlhash_profile(const sycl::device& dev) {
     profile = dev.get_info<sycl::info::device::global_mem_size>() >= 8 * GiB
       ? pearlhash_profile_t{131072, 524288, 8192, 128}
       : pearlhash_profile_t{65536, 65536, 4096, 256};
+  } else if (vendor.find("intel") != std::string::npos) {
+    // Keep width and backend probing optional: failed or unsupported queries retain the ordinary
+    // profile instead of making discovery reject an otherwise usable Intel/portable device.
+    try {
+      const bool level_zero_discrete = sycl_is_level_zero_gpu(dev) && !is_integrated_gpu(dev);
+      if (level_zero_discrete) {
+        unsigned execution_units = 0;
+#ifndef _WIN32
+        // Keep WDDM dispatches conservative; large DG2 searches are qualified on Linux.
+        execution_units = dev.get_info<sycl::info::device::max_compute_units>();
+#endif
+        const auto candidate = pearlhash_intel_capability_profile(
+            mom_intel_eu_simd_width(dev), true, true,
+            dev.get_info<sycl::info::device::global_mem_size>(), execution_units);
+        if (pearlhash_required_memory_fits(pow_device_profile(dev), candidate))
+          profile = candidate;
+      }
+    } catch (...) {
+      // Keep the conservative K2048/rank128 profile on incomplete device metadata.
+    }
   }
   unsigned long parsed = 0;
   if (mom_parse_env_ulong("MOM_PEARLHASH_INTENSITY", parsed) && parsed >= 256 &&

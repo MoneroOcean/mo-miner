@@ -141,6 +141,11 @@ int pearlhash(const unsigned job_ref, const uint32_t, const uint8_t* const input
               const std::string& dev_str, const std::string& backend, const unsigned requested_n,
               const unsigned requested_k, const unsigned requested_rank,
               const unsigned cert_version) {
+  // Even a rejected next call must not leave the previous seed's claim available.
+  g_pf.valid = false;
+  g_pf.claim_ready = false;
+  g_pf.leaves_a.clear();
+  g_pf.leaves_b.clear();
   if (!input || !pseed || input_size < 76)
     throw std::string("Bad pearlhash input length (need 76-byte header)");
   if (!is_test && !target)
@@ -170,8 +175,6 @@ int pearlhash(const unsigned job_ref, const uint32_t, const uint8_t* const input
     throw std::string("Invalid pearlhash M/N/K/rank profile");
   (void)pearlhash_attempt_hashes(intensity, requested_n, requested_k, requested_rank);
 
-  g_pf.valid = false;
-  g_pf.claim_ready = false;
   PearlHashState& st = pearlhash_state(dev_str);
   std::lock_guard<std::mutex> lock(st.mutex);
   const bool native_requested = backend == "auto" || backend == "native";
@@ -208,7 +211,7 @@ int pearlhash(const unsigned job_ref, const uint32_t, const uint8_t* const input
     }
     (void)job_ref;
     if (is_test)
-      std::memset(tgtLE, 0xff, 32); // test: the first tile wins
+      std::memset(tgtLE, 0xff, 32); // test: all tiles are admissible; scheduling selects the winner
     else
       for (int i = 0; i < 32; i++)
         tgtLE[i] = target[31 - i]; // core gives BE; kernel wants LE
@@ -295,16 +298,46 @@ int pearlhash(const unsigned job_ref, const uint32_t, const uint8_t* const input
   // Explicit "sycl" already uses this reference; tuned searches must compare against it.
   // Keep this outside vendor guards so Intel ESIMD receives the same correctness check.
   if (is_test && q.get_device().is_gpu() && backend != "sycl") {
-    const uint32_t accelerated_checksum = b.result->chk;
+    const Result accelerated = *b.result;
+    if (!accelerated.found || accelerated.seed != attempt_seed ||
+        accelerated.row % 16 || accelerated.col % 16 ||
+        accelerated.row > static_cast<unsigned>(m - 16) ||
+        accelerated.col > static_cast<unsigned>(n - 16))
+      throw std::string("PearlHash accelerated winner is missing or out of bounds");
     b.result->found = 0;
     b.result->chk = 0;
     compute_ab(q, b, attempt_seed, m, n, k, rank, /*portable=*/true);
+    // The all-winning test target makes the selected tile schedule-dependent. Check that
+    // exact tile on the host before the portable search overwrites the accelerated result;
+    // transcript checksums alone cannot detect a broken jackpot hash or byte ordering.
+    std::vector<int8_t> winner_a(static_cast<size_t>(16) * k), winner_b(winner_a.size());
+    std::array<uint8_t, 32> winner_key{};
+    try {
+      q.memcpy(winner_a.data(), b.Ap + static_cast<size_t>(accelerated.row) * k, winner_a.size());
+      q.memcpy(winner_b.data(), b.Bp + static_cast<size_t>(accelerated.col) * k, winner_b.size());
+      q.memcpy(winner_key.data(), b.cA, winner_key.size());
+      q.wait_and_throw();
+    } catch (...) {
+      sycl_cleanup_noexcept("pearlhash test winner readback", [&] { q.wait_and_throw(); });
+      throw;
+    }
+    Result expected{};
+    Buffers winner{};
+    winner.Ap = winner_a.data();
+    winner.Bp = winner_b.data();
+    winner.cA = winner_key.data();
+    winner.target = tgtLE;
+    winner.result = &expected;
+    search_cpu(q, winner, attempt_seed, 16, 16, k, rank, false);
+    if (!expected.found || std::memcmp(expected.jackpot, accelerated.jackpot, 32) != 0)
+      throw std::string("PearlHash accelerated/host jackpot mismatch");
+    std::fprintf(stderr, "PEARLHASH_TEST jackpot_match=true\n");
     search(q, b, attempt_seed, m, n, k, rank, /*dbg=*/true);
     q.wait_and_throw();
-    if (b.result->chk != accelerated_checksum) {
+    if (b.result->chk != accelerated.chk) {
       std::ostringstream message;
       message << "PearlHash accelerated/SYCL checksum mismatch (accelerated=0x" << std::hex
-              << accelerated_checksum << ", SYCL=0x" << b.result->chk << ')';
+              << accelerated.chk << ", SYCL=0x" << b.result->chk << ')';
       throw message.str();
     }
     std::fprintf(stderr, "PEARLHASH_TEST search_checksum_match=true\n");
@@ -321,9 +354,10 @@ int pearlhash(const unsigned job_ref, const uint32_t, const uint8_t* const input
                  (uint32_t)*pseed, b.result->chk);
   if (!b.result->found)
     return 0;
-  *pseed = b.result->seed;
-  if (is_test)
+  if (is_test) {
+    *pseed = b.result->seed;
     return 1; // test: core only needs "ok", no proof
+  }
   // Capture the winning tile; rebuild its expensive PlainProof only when the core requests a claim.
   // Distinct winning seeds under one job are separate shares; retries reuse the captured claim.
   g_pf.seed = b.result->seed;
@@ -335,6 +369,21 @@ int pearlhash(const unsigned job_ref, const uint32_t, const uint8_t* const input
   g_pf.rank = rank;
   std::memcpy(g_pf.key, st.key, 32);
   std::memcpy(g_pf.jackpot, b.result->jackpot, 32);
+  if (q.get_device().is_gpu()) {
+    // Snapshot this winning seed before the next attempt can replace its device CVs. Reusing
+    // those leaves avoids regenerating and hashing both full matrices on the host per share.
+    g_pf.leaves_a.resize(checked_chunk_count(checked_elements(m, k, "proof A"), "proof A"));
+    g_pf.leaves_b.resize(checked_chunk_count(checked_elements(n, k, "proof B"), "proof B"));
+    try {
+      q.memcpy(g_pf.leaves_a.data(), b.CVA, g_pf.leaves_a.size() * sizeof(CV));
+      q.memcpy(g_pf.leaves_b.data(), b.CVB, g_pf.leaves_b.size() * sizeof(CV));
+      q.wait_and_throw();
+    } catch (...) {
+      sycl_cleanup_noexcept("pearlhash proof leaf readback", [&] { q.wait_and_throw(); });
+      throw;
+    }
+  }
+  *pseed = b.result->seed;
   g_pf.claim_ready = false;
   g_pf.valid = true;
   return 1;
@@ -345,11 +394,20 @@ const char* pearlhash_claim(uint8_t jackpot[32], uint32_t* adjustment_factor) {
   if (!g_pf.valid || !jackpot || !adjustment_factor)
     return nullptr;
   if (!g_pf.claim_ready) {
+    const auto proof_start = std::chrono::steady_clock::now();
     g_pearlhash_proof = build_plain_proof(g_pf.seed, g_pf.m, g_pf.n, g_pf.k, g_pf.rank, g_pf.key,
-                                          g_pf.row, g_pf.col, &g_pf.adjustment_factor);
+                                          g_pf.row, g_pf.col, &g_pf.adjustment_factor,
+                                          g_pf.leaves_a.empty() ? nullptr : &g_pf.leaves_a,
+                                          g_pf.leaves_b.empty() ? nullptr : &g_pf.leaves_b);
     if (g_pearlhash_proof.empty())
       return nullptr;
+    g_pf.leaves_a.clear();
+    g_pf.leaves_b.clear();
     g_pf.claim_ready = true;
+    if (std::getenv("MOM_PEARLHASH_STATS"))
+      std::fprintf(stderr, "PEARLHASH_SYCL_STATS proof=%.3fms\n",
+                   std::chrono::duration<double, std::milli>(
+                       std::chrono::steady_clock::now() - proof_start).count());
   }
   std::memcpy(jackpot, g_pf.jackpot, 32);
   *adjustment_factor = g_pf.adjustment_factor;

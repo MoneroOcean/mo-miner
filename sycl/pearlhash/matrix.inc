@@ -416,6 +416,29 @@ template <bool Dpasw = false>
   int8_t* const bp = B.Bp;
   int32_t* const eblq1 = B.EBLq1;
   int32_t* const eblq2 = B.EBLq2;
+  if constexpr (Dpasw) {
+    // Generate one complete VNNI word per item: consecutive items write contiguous four-byte
+    // words instead of scattering one byte across distant column banks. K is a multiple of 64.
+    if (!portable) {
+      return q.parallel_for(sycl::range<1>(b_elements / 4),
+          [ebr, bp, eblq1, eblq2, seed, tot, k, n](sycl::id<1> id)
+              MOM_SYCL_KERNEL_ARGS_RESTRICT {
+        const size_t word = id[0];
+        const size_t j = (word / (static_cast<size_t>(k) * 2)) * 8 + word % 8;
+        const size_t r0 = ((word / 8) % (static_cast<size_t>(k) / 4)) * 4;
+        sycl::vec<int8_t, 4> packed;
+        MU<4>([&](auto part) {
+          const size_t r = r0 + part;
+          const int acc = static_cast<int>(ebr[static_cast<size_t>(eblq1[r]) * n + j]) -
+                          static_cast<int>(ebr[static_cast<size_t>(eblq2[r]) * n + j]);
+          packed[part] = static_cast<int8_t>(
+              gv(seed, tot + static_cast<uint32_t>(r * n + j)) + acc);
+        });
+        packed.store(word,
+            sycl::multi_ptr<int8_t, sycl::access::address_space::global_space>(bp));
+      });
+    }
+  }
   if (portable) {
     // B' is generated row-major (adjacent j values read adjacent EBR bytes) but the portable/WMMA
     // search consumes it column-major (adjacent r values). A direct bp[j*k+r] store makes adjacent
@@ -473,10 +496,6 @@ template <bool Dpasw = false>
     (void)n;
     if (portable) {
       bp[j * static_cast<size_t>(k) + r] = v;   // col-major B'[r,j] for the dp4a search()
-    } else if constexpr (Dpasw) {
-      // DG2 paired search consumes one contiguous 32x8 VNNI fragment per column bank.
-      bp[(j / 8) * static_cast<size_t>(k) * 8 + (r / 4) * 32 + (j % 8) * 4 +
-          (r % 4)] = v;
     } else {
       bp[(j / 16) * static_cast<size_t>(k) * 16 + (r / 4) * 64 + (j % 16) * 4 +
           (r % 4)] = v;
@@ -596,14 +615,7 @@ constexpr int pearlhash_portable_ec = 4;
 // esimd::atomic_update). Scalar-only, so it compiles in both the SYCL and ESIMD kernel contexts.
 static inline bool tile_wins(const uint32_t tr[16], const uint8_t* key, const uint8_t* target,
                              uint8_t jackpot[32]) {
-  uint8_t tb[64];
-  for (int w = 0; w < 16; w++) {
-    tb[w * 4] = tr[w] & 0xff;
-    tb[w * 4 + 1] = (tr[w] >> 8) & 0xff;
-    tb[w * 4 + 2] = (tr[w] >> 16) & 0xff;
-    tb[w * 4 + 3] = (tr[w] >> 24) & 0xff;
-  }
-  b3(tb, 64, key, jackpot);
+  pearlhash_b3::b3_keyed_64_words(tr, key, jackpot);
   for (int i = 31; i >= 0; i--) {
     if (jackpot[i] < target[i])
       return true;

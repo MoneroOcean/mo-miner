@@ -191,6 +191,7 @@ thread_local struct PearlHashFound {
   uint8_t key[32];
   uint8_t jackpot[32];
   uint32_t adjustment_factor;
+  std::vector<CV> leaves_a, leaves_b;
   bool claim_ready;
   bool valid;
 } g_pf{};

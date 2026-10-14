@@ -67,10 +67,13 @@ struct PearlHashHipSearch {
     const uint64_t waves = m > 0 && n > 0
         ? static_cast<uint64_t>(m / rows_per_wave) * static_cast<uint64_t>(n / columns_per_wave)
         : 0;
+    const uint64_t tiles = m > 0 && n > 0
+        ? static_cast<uint64_t>(m / 16) * static_cast<uint64_t>(n / 16) : 0;
+    // Both kernels address 16-word transcripts with uint32_t offsets, including the final word.
     return m > 0 && n > 0 && k > 0 && rank > 0 && m % rows_per_wave == 0 &&
         n % columns_per_wave == 0 && k % 16 == 0 &&
         rank % 16 == 0 && k % rank == 0 && k / rank == 16 &&
-        waves % waves_per_launch == 0;
+        waves % waves_per_launch == 0 && tiles <= (uint64_t{1} << 28);
   }
   // Best-effort release on the owning HIP device; reset handles so partial setup remains retryable.
   void release() noexcept {
