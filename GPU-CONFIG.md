@@ -113,6 +113,7 @@
 | beamhash3     | Windows | AMD    | —         | sycl-native |
 
 Legend: `—` means inherit the default in the matching Defaults row.
+Pearl profiles are fallbacks; native discovery supplies device-specific tuning.
 
 Intel selects discrete GPUs (`MOM_GPU_BACKEND=intel`); Intel_iGPU selects integrated GPUs
 (`MOM_GPU_BACKEND=intel_igpu`).

@@ -105,6 +105,14 @@ across these selectors; use the `gpuN` reported by the matching `algorithms` com
 The integrated policy uses Level Zero with the standards-only image because older Intel iGPUs
 cannot link the discrete worker's ESIMD/DPAS image. No additional release runtime is needed.
 
+PearlHash discovery keeps the conservative K2048/rank128 Intel profile unless a discrete
+Level Zero device reports native SIMD width 16 and at least 8 GiB of memory; that capability
+selects K4096/rank128. Width 8 retains K2048/rank128. On Linux, its row count scales in
+power-of-two steps with execution units, up to 524288, while columns stay at 131072;
+Windows retains the smaller dispatch. Both required allocations and runtime headroom must fit.
+Unavailable metadata retains the conservative profile. Explicit saved profiles remain pinned;
+fresh discovery supplies the per-device shape before target adjustment.
+
 Normal runs reuse the installed compiler image and rebuild miner objects only. Missing packaging
 tools are added without rebuilding compilers. Set `MOM_REBUILD_DEV_IMAGE=1` after compiler/runtime
 Docker changes or when a cached toolchain fails packaging validation.
