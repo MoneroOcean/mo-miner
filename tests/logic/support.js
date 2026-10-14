@@ -65,6 +65,7 @@ const repoRoot = path.join(__dirname, "..", "..");
  *   algoParams?: Record<string, string>, algoParamsError?: boolean, argv?: string[],
  *   env?: NodeJS.ProcessEnv, platform?: NodeJS.Platform, stdin?: import("node:stream").Readable,
  *   waitForMessageType?: string, deferCoreResponses?: boolean,
+ *   waitForPendingShares?: () => Promise<void>,
  *   closeWorkerTargets?: Array<{type: "subprocess" | "cluster", worker: import("node:events").EventEmitter & {
  *     exitCode?: number | null, signalCode?: string | null, killed?: boolean,
  *     isDead?: () => boolean
@@ -199,6 +200,7 @@ async function loadMinerWithStubs(options = {}) {
     log_err: /** @param {string} message */ (message) => loggedErrors.push(message),
   };
   const poolStub = {
+    waitForPendingShares: options.waitForPendingShares || (() => Promise.resolve()),
     connect_pool_throttle: /** @param {number} pool_id @param {(job: TestJob) => LiveNativeJob} setJob */
       (pool_id, setJob) => {
         poolConnects.push(pool_id);

@@ -383,6 +383,31 @@ describe("CLI lifecycle and runtime boundaries", () => {
     assert.deepEqual(miner.exitCodes, [1]);
   });
 
+  test("controlled mine drains the final share acknowledgements after native close", async () => {
+    const stdin = new PassThrough();
+    let drains = 0;
+    /** @type {() => void} */
+    let acknowledge = () => { throw new Error("share drain was not initialized"); };
+    /** @type {Promise<void>} */
+    const pending = new Promise((resolve) => { acknowledge = resolve; });
+    const miner = await loadMinerWithStubs({
+      argv: ["node", "mom.js", "mine", "pool.example:1", "user", "--bench_algo_params", "0"],
+      env: {MOM_BENCHMARK_CONTROL_STDIN: "1", MOM_SKIP_MSR: "1"},
+      stdin, algoParams: {},
+      waitForPendingShares: () => { ++drains; return pending; },
+    });
+    stdin.end("close\n");
+    await flushLifecycleCallbacks(2);
+    assert.equal(drains, 0);
+    miner.coreEvents.emit("close");
+    await flushLifecycleCallbacks(2);
+    assert.equal(drains, 1);
+    assert.deepEqual(miner.exitCodes, []);
+    acknowledge();
+    await flushLifecycleCallbacks(2);
+    assert.deepEqual(miner.exitCodes, [0]);
+  });
+
   test("controlled mine handles already-closed core and workers", async () => {
     const stdin = new PassThrough();
     /** @type {EventEmitter & {exitCode: number | null, signalCode: string | null, killed: boolean}} */

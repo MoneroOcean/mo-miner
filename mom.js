@@ -130,8 +130,9 @@ if (!h.cluster_process()) {
     if (controlledMine) {
       // Mine mode's controller still owns pool sockets and timers, so terminate it only after native
       // core and workers complete their natural cleanup; controller teardown releases its resources.
-      Promise.all([coreClose, ...workerTargets.map(waitForWorkerClose)]).then(() =>
-        reallyExit(/** @type {number} */ (process.exitCode ?? code)));
+      Promise.all([coreClose, ...workerTargets.map(waitForWorkerClose)])
+        .then(() => p.waitForPendingShares())
+        .then(() => reallyExit(/** @type {number} */ (process.exitCode ?? code)));
       return false;
     }
     if (force && !harnessOwnsDeadline) {

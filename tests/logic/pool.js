@@ -1858,6 +1858,56 @@ describe("Input limits and notification metadata", () => {
 });
 
 describe("Share response accounting and error routing", () => {
+  test("share drain waits for a pending response without changing accounting", async () => {
+    await withMockPool({}, async ({socket, poolConfig}) => {
+      pool.connect_pool_throttle(0, unexpectedPoolJob);
+      poolConfig["last_job"] = {job_id: "ready"};
+      poolConfig["pending_submit_count"] = 1;
+      let finished = false;
+      const drain = pool.waitForPendingShares(250).then(() => { finished = true; });
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(finished, false);
+      socket.emit("data", Buffer.from('{"id":3,"result":true}\n'));
+      await drain;
+      assert.equal(poolConfig.good_shares, 1);
+      assert.equal(poolConfig["pending_submit_count"], 0);
+    });
+  });
+
+  test("share drain is bounded when a pool never acknowledges", async () => {
+    await withMockPool({}, async ({poolConfig}) => {
+      pool.connect_pool_throttle(0, unexpectedPoolJob);
+      poolConfig["last_job"] = {job_id: "ready"};
+      poolConfig["pending_submit_count"] = 1;
+      await pool.waitForPendingShares(25);
+      assert.equal(poolConfig["pending_submit_count"], 1);
+      assert.equal(poolConfig.good_shares, 0);
+    });
+  });
+
+  test("share drain includes Cortex IDs and ignores disconnected pools", async () => {
+    await withMockPool({}, async ({poolConfig}) => {
+      pool.connect_pool_throttle(0, unexpectedPoolJob);
+      poolConfig["last_job"] = {job_id: "ready"};
+      poolConfig.pending_cortex_submit_ids = new Set([73]);
+      let finished = false;
+      const drain = pool.waitForPendingShares(250).then(() => { finished = true; });
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(finished, false);
+      poolConfig.pending_cortex_submit_ids.clear();
+      await drain;
+      poolConfig["pending_submit_count"] = 1;
+      poolConfig.socket = null;
+      await pool.waitForPendingShares(0);
+    });
+  });
+
+  test("share drain rejects invalid timeout budgets", () => {
+    for (const timeout of [-1, Number.NaN, Infinity, 5001]) {
+      assert.throws(() => pool.waitForPendingShares(timeout), RangeError);
+    }
+  });
+
   test("pool share response false is counted as rejected", async () => {
     await withMockPool({}, async ({socket, poolConfig}) => {
       pool.connect_pool_throttle(0, unexpectedPoolJob);

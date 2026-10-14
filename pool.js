@@ -345,6 +345,24 @@ module.exports.pool_write = function(pool_id, json) {
   }, global.opt.pool_time.keepalive * 1000);
 };
 
+// Native cleanup may emit a final share. Let its response arrive before controlled shutdown,
+// but never let an unresponsive pool keep the process alive indefinitely.
+/** @param {number} [timeoutMs] @returns {Promise<void>} */
+module.exports.waitForPendingShares = function(timeoutMs = 5000) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 0 || timeoutMs > 5000) {
+    throw new RangeError("Share drain timeout must be between 0 and 5000 ms");
+  }
+  const deadline = performance.now() + timeoutMs;
+  return new Promise((resolve) => {
+    const poll = () => {
+      const pending = global.opt.pools.some((pool) => pool.socket &&
+        (pool.pending_submit_count > 0 || pool.pending_cortex_submit_ids?.size));
+      if (!pending || performance.now() >= deadline) {resolve();} else {setTimeout(poll, 25);}
+    };
+    poll();
+  });
+};
+
 // soft kill pool connection
 /** @param {number} pool_id @returns {void} */
 function pool_close_wait(pool_id) {
