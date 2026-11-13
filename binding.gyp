@@ -12,97 +12,139 @@
     # Ampere/Ada/Hopper (verified on an L4/sm_89 at full perf). sm_80 is also the floor for pearlhash's
     # int8 mma.m16n8k32. Override e.g. -Dmom_cuda_arch=nvidia_gpu_sm_90 to pin a single newer arch.
     # (Blackwell sm_120 needs a CUDA 12.8+ toolkit.)
-    "mom_cuda_arch%": "nvidia_gpu_sm_80"
+    "mom_cuda_arch%": "nvidia_gpu_sm_80",
+    # The Windows-only Core archive is opt-in so the Engineering addon graph remains unchanged.
+    "mom_native_core%": 0,
+    "mom_native_intel%": 0,
+    # Native Core needs libuv declarations, not the Node addon header search path.
+    "mom_native_uv_include%": "",
+    "mom_core_sources": [
+      "native/core.cpp",
+      "native/xmrig-compat.cpp",
+      "native/job.cpp",
+
+      "xmrig/crypto/common/VirtualMemory.cpp",
+      "xmrig/crypto/common/HugePagesInfo.cpp",
+      "xmrig/base/crypto/keccak.cpp",
+      "xmrig/base/crypto/sha3.cpp",
+      "xmrig/backend/cpu/Cpu.cpp",
+      "xmrig/3rdparty/libethash/ethash_internal.c",
+
+      "xmrig/crypto/cn/CnCtx.cpp",
+      "xmrig/crypto/cn/CnHash.cpp",
+      "xmrig/crypto/cn/c_blake256.c",
+      "xmrig/crypto/cn/c_groestl.c",
+      "xmrig/crypto/cn/c_jh.c",
+      "xmrig/crypto/cn/c_skein.c",
+
+      "xmrig/crypto/randomx/aes_hash.cpp",
+      "xmrig/crypto/randomx/bytecode_machine.cpp",
+      "xmrig/crypto/randomx/dataset.cpp",
+      "xmrig/crypto/randomx/soft_aes.cpp",
+      "xmrig/crypto/randomx/virtual_memory.cpp",
+      "xmrig/crypto/randomx/vm_interpreted.cpp",
+      "xmrig/crypto/randomx/allocator.cpp",
+      "xmrig/crypto/randomx/randomx.cpp",
+      "xmrig/crypto/randomx/superscalar.cpp",
+      "xmrig/crypto/randomx/vm_compiled.cpp",
+      "xmrig/crypto/randomx/vm_interpreted_light.cpp",
+      "xmrig/crypto/randomx/blake2_generator.cpp",
+      "xmrig/crypto/randomx/instructions_portable.cpp",
+      "xmrig/crypto/randomx/reciprocal.c",
+      "xmrig/crypto/randomx/virtual_machine.cpp",
+      "xmrig/crypto/randomx/vm_compiled_light.cpp",
+      "xmrig/crypto/randomx/blake2/blake2b.c",
+      "xmrig/crypto/randomx/panthera/KangarooTwelve.c",
+      "xmrig/crypto/randomx/panthera/KeccakP-1600-reference.c",
+      "xmrig/crypto/randomx/panthera/KeccakSpongeWidth1600.c",
+      "xmrig/crypto/randomx/panthera/sha256.c",
+      "xmrig/crypto/randomx/panthera/yespower-opt.c",
+
+      "xmrig/crypto/ghostrider/sph_blake.c",
+      "xmrig/crypto/ghostrider/sph_bmw.c",
+      "xmrig/crypto/ghostrider/sph_cubehash.c",
+      "xmrig/crypto/ghostrider/sph_echo.c",
+      "xmrig/crypto/ghostrider/sph_fugue.c",
+      "xmrig/crypto/ghostrider/sph_groestl.c",
+      "xmrig/crypto/ghostrider/sph_hamsi.c",
+      "xmrig/crypto/ghostrider/sph_hamsi_helper.c",
+      "xmrig/crypto/ghostrider/sph_jh.c",
+      "xmrig/crypto/ghostrider/sph_keccak.c",
+      "xmrig/crypto/ghostrider/sph_luffa.c",
+      "xmrig/crypto/ghostrider/sph_sha2.c",
+      "xmrig/crypto/ghostrider/sph_shabal.c",
+      "xmrig/crypto/ghostrider/sph_shavite.c",
+      "xmrig/crypto/ghostrider/sph_simd.c",
+      "xmrig/crypto/ghostrider/sph_skein.c",
+      "xmrig/crypto/ghostrider/sph_whirlpool.c",
+      "xmrig/crypto/ghostrider/ghostrider.cpp",
+
+      "xmrig/3rdparty/argon2/lib/argon2.c",
+      "xmrig/3rdparty/argon2/lib/core.c",
+      "xmrig/3rdparty/argon2/lib/encoding.c",
+      "xmrig/3rdparty/argon2/lib/genkat.c",
+      "xmrig/3rdparty/argon2/lib/impl-select.c",
+      "xmrig/3rdparty/argon2/lib/blake2/blake2.c",
+
+      "xmrig/3rdparty/fmt/format.cc"
+    ],
+    "mom_core_windows_sources": [
+      "xmrig/crypto/common/VirtualMemory_win.cpp",
+      "xmrig/backend/cpu/platform/BasicCpuInfo.cpp",
+      "xmrig/hw/msr/Msr.cpp",
+      "xmrig/hw/msr/Msr_win.cpp",
+      "xmrig/crypto/rx/RxFix_win.cpp",
+      "xmrig/crypto/randomx/jit_compiler_x86.cpp",
+      "xmrig/crypto/randomx/jit_compiler_x86_static.asm",
+      "xmrig/crypto/cn/r/CryptonightR_gen.cpp",
+      "xmrig/crypto/cn/asm/win64/cn_main_loop.asm",
+      "xmrig/crypto/cn/asm/win64/CryptonightR_template.asm",
+      "xmrig/3rdparty/argon2/arch/generic/lib/argon2-arch.c"
+    ],
+    "mom_core_include_dirs": [
+      ".",
+      "xmrig",
+      "xmrig/3rdparty/argon2/include",
+      "xmrig/3rdparty/argon2/lib"
+    ],
+    "mom_core_defines": [
+      "NDEBUG",
+      "HAVE_ROTR",
+      "XMRIG_ALGO_CN_LITE",
+      "XMRIG_ALGO_CN_HEAVY",
+      "XMRIG_ALGO_CN_PICO",
+      "XMRIG_ALGO_CN_FEMTO",
+      "XMRIG_ALGO_ARGON2",
+      "XMRIG_ALGO_GHOSTRIDER"
+    ],
+    "mom_core_windows_defines": [
+      "NOMINMAX",
+      "WIN32_LEAN_AND_MEAN",
+      "_CRT_SECURE_NO_WARNINGS",
+      "XMRIG_FEATURE_ASM"
+    ],
+    # Share the same Intel/MSVC compatibility path in Engineering and native builds.
+    "mom_windows_intel_compat_options": [
+      # Intel's MSVC mode omits __GNUC__; the legacy hash sources need their GNU-clang
+      # branches (not the untested __x86_64__ + _MSC_VER branch with undefined Smask2).
+      "-fgnuc-version=4.2.1",
+      # Preserve Engineering's targeted legacy-C tolerances, not a blanket -Wno-error.
+      "-Wno-error=incompatible-pointer-types",
+      "-Wno-error=incompatible-function-pointer-types",
+      "-Wno-error=int-conversion",
+      "-Wno-error=implicit-int",
+      "-Wno-error=implicit-function-declaration",
+      # CryptoNight needs explicit AES under Clang; match the existing portable Linux
+      # baseline, not the build host's wider ISA. MoM already requires AES-NI hardware.
+      "-maes"
+    ]
   },
   "targets": [
     {
       "target_name": "mom",
-      "sources": [
-        "native/core.cpp",
-        "native/xmrig-compat.cpp",
-        "native/job.cpp",
-
-        "xmrig/crypto/common/VirtualMemory.cpp",
-        "xmrig/crypto/common/HugePagesInfo.cpp",
-        "xmrig/base/crypto/keccak.cpp",
-        "xmrig/base/crypto/sha3.cpp",
-        "xmrig/backend/cpu/Cpu.cpp",
-        "xmrig/3rdparty/libethash/ethash_internal.c",
-
-        "xmrig/crypto/cn/CnCtx.cpp",
-        "xmrig/crypto/cn/CnHash.cpp",
-        "xmrig/crypto/cn/c_blake256.c",
-        "xmrig/crypto/cn/c_groestl.c",
-        "xmrig/crypto/cn/c_jh.c",
-        "xmrig/crypto/cn/c_skein.c",
-
-        "xmrig/crypto/randomx/aes_hash.cpp",
-        "xmrig/crypto/randomx/bytecode_machine.cpp",
-        "xmrig/crypto/randomx/dataset.cpp",
-        "xmrig/crypto/randomx/soft_aes.cpp",
-        "xmrig/crypto/randomx/virtual_memory.cpp",
-        "xmrig/crypto/randomx/vm_interpreted.cpp",
-        "xmrig/crypto/randomx/allocator.cpp",
-        "xmrig/crypto/randomx/randomx.cpp",
-        "xmrig/crypto/randomx/superscalar.cpp",
-        "xmrig/crypto/randomx/vm_compiled.cpp",
-        "xmrig/crypto/randomx/vm_interpreted_light.cpp",
-        "xmrig/crypto/randomx/blake2_generator.cpp",
-        "xmrig/crypto/randomx/instructions_portable.cpp",
-        "xmrig/crypto/randomx/reciprocal.c",
-        "xmrig/crypto/randomx/virtual_machine.cpp",
-        "xmrig/crypto/randomx/vm_compiled_light.cpp",
-        "xmrig/crypto/randomx/blake2/blake2b.c",
-        "xmrig/crypto/randomx/panthera/KangarooTwelve.c",
-        "xmrig/crypto/randomx/panthera/KeccakP-1600-reference.c",
-        "xmrig/crypto/randomx/panthera/KeccakSpongeWidth1600.c",
-        "xmrig/crypto/randomx/panthera/sha256.c",
-        "xmrig/crypto/randomx/panthera/yespower-opt.c",
-
-        "xmrig/crypto/ghostrider/sph_blake.c",
-        "xmrig/crypto/ghostrider/sph_bmw.c",
-        "xmrig/crypto/ghostrider/sph_cubehash.c",
-        "xmrig/crypto/ghostrider/sph_echo.c",
-        "xmrig/crypto/ghostrider/sph_fugue.c",
-        "xmrig/crypto/ghostrider/sph_groestl.c",
-        "xmrig/crypto/ghostrider/sph_hamsi.c",
-        "xmrig/crypto/ghostrider/sph_hamsi_helper.c",
-        "xmrig/crypto/ghostrider/sph_jh.c",
-        "xmrig/crypto/ghostrider/sph_keccak.c",
-        "xmrig/crypto/ghostrider/sph_luffa.c",
-        "xmrig/crypto/ghostrider/sph_sha2.c",
-        "xmrig/crypto/ghostrider/sph_shabal.c",
-        "xmrig/crypto/ghostrider/sph_shavite.c",
-        "xmrig/crypto/ghostrider/sph_simd.c",
-        "xmrig/crypto/ghostrider/sph_skein.c",
-        "xmrig/crypto/ghostrider/sph_whirlpool.c",
-        "xmrig/crypto/ghostrider/ghostrider.cpp",
-
-        "xmrig/3rdparty/argon2/lib/argon2.c",
-        "xmrig/3rdparty/argon2/lib/core.c",
-        "xmrig/3rdparty/argon2/lib/encoding.c",
-        "xmrig/3rdparty/argon2/lib/genkat.c",
-        "xmrig/3rdparty/argon2/lib/impl-select.c",
-        "xmrig/3rdparty/argon2/lib/blake2/blake2.c",
-
-        "xmrig/3rdparty/fmt/format.cc"
-      ],
-      "include_dirs": [
-        ".",
-        "xmrig",
-        "xmrig/3rdparty/argon2/include",
-        "xmrig/3rdparty/argon2/lib"
-      ],
-      "defines": [
-        "NDEBUG",
-        "HAVE_ROTR",
-        "XMRIG_ALGO_CN_LITE",
-        "XMRIG_ALGO_CN_HEAVY",
-        "XMRIG_ALGO_CN_PICO",
-        "XMRIG_ALGO_CN_FEMTO",
-        "XMRIG_ALGO_ARGON2",
-        "XMRIG_ALGO_GHOSTRIDER"
-      ],
+      "sources": [ "<@(mom_core_sources)" ],
+      "include_dirs": [ "<@(mom_core_include_dirs)" ],
+      "defines": [ "<@(mom_core_defines)" ],
       "cflags!": [ "-O3" ],
       "cflags_cc!": [ "-std=gnu++1y", "-std=gnu++17", "-fno-exceptions" ],
       # The SYCL static/shared lib is always required; per-arch argon2/blake2b
@@ -110,25 +152,8 @@
       "dependencies": [ "sycl" ],
       "conditions": [
         [ "OS=='win'", {
-          "sources": [
-            "xmrig/crypto/common/VirtualMemory_win.cpp",
-            "xmrig/backend/cpu/platform/BasicCpuInfo.cpp",
-            "xmrig/hw/msr/Msr.cpp",
-            "xmrig/hw/msr/Msr_win.cpp",
-            "xmrig/crypto/rx/RxFix_win.cpp",
-            "xmrig/crypto/randomx/jit_compiler_x86.cpp",
-            "xmrig/crypto/randomx/jit_compiler_x86_static.asm",
-            "xmrig/crypto/cn/r/CryptonightR_gen.cpp",
-            "xmrig/crypto/cn/asm/win64/cn_main_loop.asm",
-            "xmrig/crypto/cn/asm/win64/CryptonightR_template.asm",
-            "xmrig/3rdparty/argon2/arch/generic/lib/argon2-arch.c"
-          ],
-          "defines": [
-            "NOMINMAX",
-            "WIN32_LEAN_AND_MEAN",
-            "_CRT_SECURE_NO_WARNINGS",
-            "XMRIG_FEATURE_ASM"
-          ],
+          "sources": [ "<@(mom_core_windows_sources)" ],
+          "defines": [ "<@(mom_core_windows_defines)" ],
           # Build mom.node with the non-SYCL "Intel C++ Compiler" toolset (icx, no -fsycl), NOT the DPC++
           # one: mom.node has no SYCL code, and the DPC++/SYCL MSBuild task both miscompiles the xmrig .c
           # sources as C++ and mangles node-gyp's HOST_BINARY string define. (icx vs MSVC is rx/0
@@ -164,24 +189,7 @@
               "ExceptionHandling": 1,
               "LanguageStandard": "stdcpp20",
               "AdditionalOptions": [
-                # icx-cl (clang in MSVC-compat mode) defines __x86_64__ + _MSC_VER but NOT __GNUC__ -- an
-                # untested combo that drops the xmrig crypto code (e.g. yespower-opt.c) into broken
-                # preprocessor branches (undefined Smask2). -fgnuc-version makes icx-cl report __GNUC__ like
-                # GNU-clang, taking the well-tested GCC paths (matching the Linux build).
-                "-fgnuc-version=4.2.1",
-                # Newer clang (icx 2026 ~= clang 22) makes several legacy-C diagnostics DEFAULT errors
-                # (their own default severity is Error, not -Werror-promoted -- so a plain -Wno-error does
-                # NOT downgrade them; only -Wno-error=<group> does). MSVC and the Linux icx accept the
-                # xmrig C sources as warnings; downgrade the same groups so the 3rd-party C compiles.
-                "-Wno-error=incompatible-pointer-types",
-                "-Wno-error=incompatible-function-pointer-types",
-                "-Wno-error=int-conversion",
-                "-Wno-error=implicit-int",
-                "-Wno-error=implicit-function-declaration",
-                # CryptoNight's AES-NI intrinsics (_mm_aesenc_si128, ...) need the 'aes' target feature
-                # under clang/icx (MSVC allowed them unconditionally). Match the Linux baseline
-                # (-march=x86-64 -maes); the miner requires AES-NI hardware regardless.
-                "-maes",
+                "<@(mom_windows_intel_compat_options)",
                 # Max-perf C++ codegen, mirroring the Linux build (scripts/cpu-optflags.sh:
                 # -O3 -ffast-math -fmerge-all-constants), plus /Qipo (Intel whole-program IPO = LTO).
                 # The FP-exact hot paths (RandomX JIT + cn_main_loop.asm, both under XMRIG_FEATURE_ASM)
@@ -296,6 +304,74 @@
       ]
     },
     {
+      "target_name": "mom_native_core",
+      # node-gyp's addon defaults are useful for mom.node, but a Core archive must not inherit
+      # its Node ABI defines, headers, or Windows delay-load hook.
+      "type": "none",
+      "win_delay_load_hook": "false",
+      "defines!": [
+        "NODE_GYP_MODULE_NAME=>(_target_name)",
+        "USING_UV_SHARED=1",
+        "USING_V8_SHARED=1",
+        "V8_DEPRECATION_WARNINGS=1",
+        "BUILDING_NODE_EXTENSION",
+        "_HAS_EXCEPTIONS=0"
+      ],
+      "include_dirs!": [
+        "<(node_root_dir)/include/node",
+        "<(node_root_dir)/src",
+        "<(node_root_dir)/deps/openssl/config",
+        "<(node_root_dir)/deps/openssl/openssl/include",
+        "<(node_root_dir)/deps/uv/include",
+        "<(node_root_dir)/deps/zlib",
+        "<(node_root_dir)/<(node_engine_include_dir)"
+      ],
+      "libraries!": [ "-l\"<(node_lib_file)\"" ],
+      "conditions": [
+        [ "OS=='win' and mom_native_core==1", {
+          "type": "static_library",
+          "sources": [ "<@(mom_core_sources)", "<@(mom_core_windows_sources)" ],
+          "include_dirs": [ "<@(mom_core_include_dirs)", "<(mom_native_uv_include)" ],
+          "defines": [ "<@(mom_core_defines)", "<@(mom_core_windows_defines)", "MOM_NATIVE_RUNTIME" ],
+          "conditions": [
+            [ "mom_native_intel==1", {
+              "msvs_settings": { "VCCLCompilerTool": {
+                # Avoid Intel /MP's crashing diagnostic path; MSBuild owns parallelism.
+                "AdditionalOptions": [ "<@(mom_windows_intel_compat_options)" ],
+                "MultiProcessorCompilation": "false"
+              } }
+            } ]
+          ],
+          "cflags!": [ "-O3" ],
+          "cflags_cc!": [ "-std=gnu++1y", "-std=gnu++17", "-fno-exceptions" ],
+          "configurations": {
+            "Release": {
+              "msbuild_toolset": "v143",
+              "msvs_settings": { "VCCLCompilerTool": { "RuntimeLibrary": 0, "WholeProgramOptimization": "false" } }
+            },
+            "Debug": {
+              "msbuild_toolset": "v143",
+              "msvs_settings": { "VCCLCompilerTool": { "RuntimeLibrary": 0, "WholeProgramOptimization": "false" } }
+            }
+          },
+          "msvs_settings": {
+            # Final native linking uses LLD. MSVC's /GL objects are opaque LTCG input,
+            # not COFF code, and Node's no-exceptions policy must not reach this archive.
+            "VCLibrarianTool": { "AdditionalOptions!": [ "/LTCG:INCREMENTAL" ] },
+            "VCLinkerTool": { "AdditionalOptions!": [ "/LTCG:INCREMENTAL" ] },
+            "VCCLCompilerTool": {
+              "ExceptionHandling": 1,
+              "LanguageStandard": "stdcpp20",
+              # Node's raw C++ option otherwise reaches .c files too; the typed setting above
+              # applies only to C++ and preserves C compilation with the Intel frontend.
+              "AdditionalOptions!": [ "-std:c++20", "/std:c++20" ],
+              "AdditionalOptions": [ "/O2", "/fp:strict" ]
+            }
+          }
+        } ]
+      ]
+    },
+    {
       "target_name": "hoohash_host",
       "type": "static_library",
       "sources": [ "sycl/hoohash/host_math.c" ],
@@ -380,8 +456,10 @@
               "AdditionalOptions": [
                 "/O2",
                 "/fsycl",
+                "/clang:-fno-sycl-id-queries-fit-in-int",
                 "/clang:-fsycl-device-code-split=per_kernel",
                 "/DNDEBUG",
+                "/DMOM_SYCL_INTEL_LAYOUT",
                 "/DPEARLHASH_ESIMD",
                 "/DWALAHASH_ESIMD",
                 "/DOCTOPUS_ESIMD",
@@ -455,8 +533,10 @@
               ]
             } ],
             [ "mom_sycl_impl=='dpcpp'", {
+              # Pearl's B matrix can have INT_MAX+1 elements. Keep size_t IDs in
+              # device code and its metadata; the alias also supports oneAPI 2026.
               "cflags+": [
-                "-std=c++20 -O3 -fsycl -fsycl-device-code-split=per_kernel -DNDEBUG -DPEARLHASH_ESIMD -DWALAHASH_ESIMD -DOCTOPUS_ESIMD -DMOM_OCTOPUS_HAS_SYCL_NATIVE -DMOM_NEXAPOW_PORTABLE_FIELD32 -DMOM_C29_INTEL -DMOM_BEAMHASH3_INTEL_PAIR32 -DMOM_ZHASH_INTEL_LATE_BUCKETS"
+                "-std=c++20 -O3 -fsycl -fno-sycl-id-queries-fit-in-int -fsycl-device-code-split=per_kernel -DNDEBUG -DMOM_SYCL_INTEL_LAYOUT -DPEARLHASH_ESIMD -DWALAHASH_ESIMD -DOCTOPUS_ESIMD -DMOM_OCTOPUS_HAS_SYCL_NATIVE -DMOM_NEXAPOW_PORTABLE_FIELD32 -DMOM_C29_INTEL -DMOM_BEAMHASH3_INTEL_PAIR32 -DMOM_ZHASH_INTEL_LATE_BUCKETS"
               ],
               "ldflags+": [ "-fsycl-device-code-split=per_kernel" ]
             } ]

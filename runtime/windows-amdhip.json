@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "target": "windows-amdhip64",
+  "source": {
+    "origin": "https://github.com/ROCm/clr.git",
+    "revision": "5b591b2ff64aac4c1c08be879b0d5f89fd713d50",
+    "definition": {
+      "path": "hipamd/src/amdhip.def",
+      "blob": "89db8a4ef5d39b0a13bd5b6a9d8f35e36e741123",
+      "bytes": 11763,
+      "sha256": "4bf5d8045f1eda1c01319f477c57ea7512c7d6b740d693811b176c5e58a25453",
+      "derivedBytes": 11786,
+      "derivedSha256": "d600175e5c5dd2eb93496603cbe21c7d80c0de016d6b13177110595751a01e4c"
+    },
+    "license": {
+      "path": "LICENSE.md",
+      "blob": "4d43ac8700191c7a688e99ca2a25685963a61bb2",
+      "bytes": 1080,
+      "sha256": "b185aaa652b0bf066c37a0d6314ce4bf4521e4a3c9bf46edd2f6a777ac522223"
+    }
+  },
+  "library": {
+    "fileName": "amdhip64.lib",
+    "dllName": "amdhip64_7.dll",
+    "bytes": 123660,
+    "sha256": "8fd24af341f974baa671802ce978b8b606244b49a9f321b02dd41290d4fccca1"
+  },
+  "toolchain": {
+    "llvmRole": "linux-llvm21-source-sdk",
+    "llvmLibAlias": "bin/llvm-lib",
+    "llvmLibTarget": "llvm-ar"
+  }
+}

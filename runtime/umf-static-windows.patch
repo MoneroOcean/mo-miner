@@ -1,0 +1,70 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -377,6 +377,17 @@ if(WINDOWS)
+ endif()
+ 
+ if(hwloc_targ_SOURCE_DIR)
++  if(MOM_STATIC_WINDOWS)
++    # Preparation applies upstream's own security fix before freezing source hashes.
++    # Configuration verifies it without mutating the admitted source cohort.
++    execute_process(
++        COMMAND git apply --reverse --check ${PROJECT_SOURCE_DIR}/cmake/fix_coverity_issues.patch
++        WORKING_DIRECTORY ${hwloc_targ_SOURCE_DIR}
++        RESULT_VARIABLE UMF_HWLOC_VERIFY_RESULT)
++    if(NOT UMF_HWLOC_VERIFY_RESULT EQUAL 0)
++        message(FATAL_ERROR "Native Windows hwloc needs the pre-applied UMF security fix")
++    endif()
++  else()
+     # Apply security patch for HWLOC
+     execute_process(
+         COMMAND git apply ${PROJECT_SOURCE_DIR}/cmake/fix_coverity_issues.patch
+@@ -390,6 +401,7 @@ if(hwloc_targ_SOURCE_DIR)
+     if(UMF_HWLOC_PATCH_ERROR)
+         message(WARNING "HWLOC patch command output:\n${UMF_HWLOC_PATCH_ERROR}")
+     endif()
++  endif()
+ endif()
+ 
+ if(UMF_BUILD_LEVEL_ZERO_PROVIDER)
+diff --git a/cmake/helpers.cmake b/cmake/helpers.cmake
+--- a/cmake/helpers.cmake
++++ b/cmake/helpers.cmake
+@@ -284,9 +284,15 @@ function(add_umf_target_compile_options name)
+             target_include_directories(${name} PRIVATE ${VALGRIND_INCLUDE_DIRS})
+         endif()
+     elseif(MSVC)
++        # The embedded native application shares one static CRT with every provider.
++        if(MOM_STATIC_WINDOWS)
++            set(UMF_CRT_FLAG /MT$<$<CONFIG:Debug>:d>)
++        else()
++            set(UMF_CRT_FLAG /MD$<$<CONFIG:Debug>:d>)
++        endif()
+         target_compile_options(
+             ${name}
+-            PRIVATE /MD$<$<CONFIG:Debug>:d>
++            PRIVATE ${UMF_CRT_FLAG}
+                     $<$<CONFIG:Release>:/sdl>
+                     $<$<CXX_COMPILER_ID:MSVC>:/analyze>
+                     /DYNAMICBASE
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -111,10 +111,13 @@ if(LINUX)
+ elseif(WINDOWS)
+     set(UMF_SOURCES ${UMF_SOURCES} ${UMF_SOURCES_WINDOWS})
+ 
+-    # Add resource file needed for Windows to fill metadata in binary files
+-    configure_file("${CMAKE_CURRENT_SOURCE_DIR}/libumf.rc.in"
+-                   "${CMAKE_CURRENT_BINARY_DIR}/libumf.rc" IMMEDIATE @ONLY)
+-    set(UMF_SOURCES ${UMF_SOURCES} ${CMAKE_CURRENT_BINARY_DIR}/libumf.rc)
++    # mom.exe owns file metadata; an embedded archive is not another Windows DLL.
++    # Keep upstream resources for ordinary shared/development builds.
++    if(NOT MOM_STATIC_WINDOWS)
++        configure_file("${CMAKE_CURRENT_SOURCE_DIR}/libumf.rc.in"
++                       "${CMAKE_CURRENT_BINARY_DIR}/libumf.rc" IMMEDIATE @ONLY)
++        set(UMF_SOURCES ${UMF_SOURCES} ${CMAKE_CURRENT_BINARY_DIR}/libumf.rc)
++    endif()
+ elseif(MACOSX)
+     set(UMF_SOURCES ${UMF_SOURCES} ${UMF_SOURCES_MACOSX})
+ endif()

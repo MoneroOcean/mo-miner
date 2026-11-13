@@ -1,0 +1,25 @@
+diff --git a/lld/ELF/Driver.cpp b/lld/ELF/Driver.cpp
+--- a/lld/ELF/Driver.cpp
++++ b/lld/ELF/Driver.cpp
+@@ -347,10 +347,21 @@
+ // Technically this can be delayed until we read bitcode files, but
+ // we don't bother to do lazily because the initialization is fast.
+ static void initLLVM() {
++#ifdef MOM_NATIVE_LLD_AMDGPU_ONLY
++  // MoM uses this private linker only for generated AMDGPU code objects. Registering every
++  // distro target retains unrelated CPU backends in the single executable. Other compiler
++  // consumers keep their own target initialization; ELF linking and AMDGPU LTO are unchanged.
++  LLVMInitializeAMDGPUTargetInfo();
++  LLVMInitializeAMDGPUTarget();
++  LLVMInitializeAMDGPUTargetMC();
++  LLVMInitializeAMDGPUAsmPrinter();
++  LLVMInitializeAMDGPUAsmParser();
++#else
+   InitializeAllTargets();
+   InitializeAllTargetMCs();
+   InitializeAllAsmPrinters();
+   InitializeAllAsmParsers();
++#endif
+ }
+ 
+ // Some command line options or some combinations of them are not allowed.

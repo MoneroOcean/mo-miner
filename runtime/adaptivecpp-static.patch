@@ -1,0 +1,630 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 1975096..c1e0855 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -101,6 +101,13 @@ set(HIPSYCL_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
+ set(ACPP_SOURCE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
+ set(ACPP_BINARY_ROOT "${CMAKE_CURRENT_BINARY_DIR}")
+ 
++option(ACPP_STATIC_RUNTIME "Link runtime backends directly instead of loading plugins" OFF)
++set(ACPP_RUNTIME_LIBRARY_TYPE SHARED)
++if(ACPP_STATIC_RUNTIME)
++  set(ACPP_RUNTIME_LIBRARY_TYPE STATIC)
++  set(ACPP_BACKEND_EXPORT EXPORT install_exports)
++endif()
++
+ if(NOT CMAKE_BUILD_TYPE AND NOT ACPP_LLVM_COMPONENT)
+   set(CMAKE_BUILD_TYPE Release)
+ endif()
+@@ -142,13 +149,16 @@ set_property(CACHE ACPP_COMPILER_FEATURE_PROFILE PROPERTY STRINGS full minimal n
+ 
+ if (DEFINED WITH_SSCP_COMPILER OR DEFINED WITH_STDPAR_COMPILER OR DEFINED WITH_ACCELERATED_CPU OR DEFINED WITH_CUDA_NVCXX_ONLY)
+   message(DEPRECATION "WITH_SSCP_COMPILER, WITH_STDPAR_COMPILER, WITH_ACCELERATED_CPU and WITH_CUDA_NVCXX_ONLY are deprecated and will be removed in a future version; please use ACPP_COMPILER_FEATURE_PROFILE instead.")
+-  set(ACPP_COMPILER_FEATURE_PROFILE "custom-deprecated")
++  set(ACPP_COMPILER_FEATURE_PROFILE "custom-deprecated" CACHE STRING "Compiler feature profile" FORCE)
+ endif()
+ 
+ 
+-set(ACPP_CUSTOM_PROFILE_WITH_SSCP_COMPILER ${DEFAULT_COMPILER_FEATURES_ENABLED} CACHE INTERNAL "(deprecated) custom profile")
+-set(ACPP_CUSTOM_PROFILE_WITH_STDPAR_COMPILER ${DEFAULT_COMPILER_FEATURES_ENABLED} CACHE INTERNAL "(deprecated) custom profile")
+-set(ACPP_CUSTOM_PROFILE_WITH_ACCELERATED_CPU ${DEFAULT_COMPILER_FEATURES_ENABLED} CACHE INTERNAL "(deprecated) custom profile")
++# Automatic CMake regeneration must preserve the explicit custom profile and its inputs.
++foreach(feature SSCP_COMPILER STDPAR_COMPILER ACCELERATED_CPU)
++  if(NOT DEFINED ACPP_CUSTOM_PROFILE_WITH_${feature})
++    set(ACPP_CUSTOM_PROFILE_WITH_${feature} ${DEFAULT_COMPILER_FEATURES_ENABLED} CACHE INTERNAL "(deprecated) custom profile")
++  endif()
++endforeach()
+ 
+ if(ACPP_COMPILER_FEATURE_PROFILE STREQUAL "full")
+   set(WITH_SSCP_COMPILER true)
+@@ -517,6 +527,12 @@ else()
+   set(DEFAULT_OMP_FLAG "-fopenmp")
+ endif()
+ 
++if(ACPP_STATIC_RUNTIME AND WIN32)
++  # The Windows /MT static host profile uses the guarded sequential backend;
++  # never inject an OpenMP compiler flag into its application recipe.
++  set(DEFAULT_OMP_FLAG "")
++endif()
++
+ 
+ set(ROCM_LIBS "-L${ROCM_PATH}/lib -L${ROCM_PATH}/hip/lib -lamdhip64" CACHE STRING "Necessary libraries for ROCm")
+ set(ACPP_FILESYSTEM_SEARCH_OPTIONS "Final;Experimental;Boost" CACHE STRING "Which filesystem libraries should be searched for")
+@@ -615,6 +631,14 @@ if(NOT SEQUENTIAL_CXX_FLAGS)
+   set(SEQUENTIAL_CXX_FLAGS "-D_ENABLE_EXTENDED_ALIGNED_STORAGE" CACHE STRING "Arguments passed to compiler to compile SYCL applications on host")
+ endif()
+ 
++if(ACPP_STATIC_RUNTIME AND WIN32)
++  # These values are serialized into acpp-core.json. Force the profile-safe
++  # values so stale cache entries cannot reintroduce OpenMP in /MT builds.
++  set(OMP_LINK_LINE "" CACHE STRING "Arguments passed to compiler to link OpenMP libraries to SYCL applications" FORCE)
++  set(SEQUENTIAL_LINK_LINE "" CACHE STRING "Arguments passed to compiler to link host libraries to SYCL applications" FORCE)
++  set(OMP_CXX_FLAGS "-D_ENABLE_EXTENDED_ALIGNED_STORAGE" CACHE STRING "Arguments passed to compiler to compile SYCL applications with OpenMP" FORCE)
++endif()
++
+ if(BUILD_CLANG_PLUGIN)
+   set(PLUGIN_LLVM_VERSION_MAJOR ${LLVM_VERSION_MAJOR})
+ else()
+diff --git a/include/hipSYCL/common/debug.hpp b/include/hipSYCL/common/debug.hpp
+index 43d02d2..54901a7 100644
+--- a/include/hipSYCL/common/debug.hpp
++++ b/include/hipSYCL/common/debug.hpp
+@@ -49,8 +49,9 @@ private:
+   output_stream()
+   : _debug_level {HIPSYCL_DEBUG_LEVEL}, _output_stream{std::cerr} {
+ #if !defined(HIPSYCL_COMPILER_COMPONENT) && !defined(HIPSYCL_TOOL_COMPONENT)
+-    _debug_level =
+-        rt::application::get_settings().get<rt::setting::debug_level>();
++    // HCF registration can log before main; do not freeze unrelated runtime settings.
++    settings::try_retrieve_settings_variable(
++        rt::setting_trait<rt::setting::debug_level>::str, _debug_level);
+ #else
+     
+     auto process_env = [this](const char* e) {
+diff --git a/include/hipSYCL/glue/persistent_runtime.hpp b/include/hipSYCL/glue/persistent_runtime.hpp
+index cbd6a0e..e922559 100644
+--- a/include/hipSYCL/glue/persistent_runtime.hpp
++++ b/include/hipSYCL/glue/persistent_runtime.hpp
+@@ -20,7 +20,11 @@ namespace glue {
+ class persistent_runtime {
+ public:
+   persistent_runtime() : _rt{nullptr} {
+-    if(rt::application::get_settings().get<rt::setting::persistent_runtime>()) {
++    // This static object precedes worker selection; a disabled option must not freeze it.
++    bool persistent = false;
++    common::settings::try_retrieve_settings_variable(
++        rt::setting_trait<rt::setting::persistent_runtime>::str, persistent);
++    if(persistent) {
+       _rt = rt::application::get_runtime_pointer();
+     }
+   }
+diff --git a/include/hipSYCL/runtime/backend_loader.hpp b/include/hipSYCL/runtime/backend_loader.hpp
+index 4897a40..0221917 100644
+--- a/include/hipSYCL/runtime/backend_loader.hpp
++++ b/include/hipSYCL/runtime/backend_loader.hpp
+@@ -50,7 +50,11 @@ public:
+   backend *create(const std::string &name) const;
+ 
+ private:
++#ifdef ACPP_STATIC_RUNTIME
++  using handle_t = backend *(*)();
++#else
+   using handle_t = void*;
++#endif
+   std::vector<std::pair<std::string, handle_t>> _handles;
+ };
+ 
+diff --git a/src/runtime/hip/hip_allocator.cpp b/src/runtime/hip/hip_allocator.cpp
+index 7d7390d..e661ce2 100644
+--- a/src/runtime/hip/hip_allocator.cpp
++++ b/src/runtime/hip/hip_allocator.cpp
+@@ -24,19 +24,62 @@ hip_allocator::hip_allocator(backend_descriptor desc, int hip_device)
+ void *hip_allocator::raw_allocate(size_t min_alignment, size_t size_bytes,
+                                   const allocation_hints &hints)
+ {
+-  void *ptr;
++  void *ptr = nullptr;
+   hip_device_manager::get().activate_device(_dev);
+-  hipError_t err = hipMalloc(&ptr, size_bytes);
+-
+-  if (err != hipSuccess) {
++  auto report = [&](hipError_t err, const char *operation) {
+     register_error(__acpp_here(),
+-                   error_info{"hip_allocator: hipMalloc() failed",
+-                              error_code{"HIP", err},
++                   error_info{operation, error_code{"HIP", err},
+                               error_type::memory_allocation_error});
+-    return nullptr;
++    // Return any still-owned allocation so normal lifetime tracking can free it.
++    // Never hide a failed query/free or clear HIP's sticky error state.
++    return ptr;
++  };
++
++#ifdef _WIN32
++  const size_t gib = size_t{1} << 30;
++  const bool check_placement = size_bytes >= gib &&
++                               hipPeekAtLastError() == hipSuccess;
++  size_t before = 0, total = 0;
++  if (check_placement) {
++    auto err = hipMemGetInfo(&before, &total);
++    if (err != hipSuccess)
++      return report(err, "hip_allocator: initial hipMemGetInfo() failed");
+   }
++#endif
+ 
+-  return ptr;
++  for (unsigned attempt = 0; ; ++attempt) {
++    auto err = hipMalloc(&ptr, size_bytes);
++    if (err != hipSuccess)
++      return report(err, "hip_allocator: hipMalloc() failed");
++#ifdef _WIN32
++    if (check_placement) {
++      size_t after = 0, after_total = 0;
++      err = hipMemGetInfo(&after, &after_total);
++      if (err != hipSuccess)
++        return report(err, "hip_allocator: allocation hipMemGetInfo() failed");
++      // Windows HIP can silently back a large device allocation with GART.
++      // An unchanged VRAM counter despite ample headroom is a retry heuristic,
++      // not a residency guarantee: other processes can change these counters.
++      if (attempt < 2 && before == after && total == after_total &&
++          before >= size_bytes && before - size_bytes >= gib) {
++        // The pointer is unpublished and uninitialized. Free it first rather
++        // than doubling peak usage (two GART allocations can exceed its budget).
++        err = hipFree(ptr);
++        if (err != hipSuccess)
++          return report(err, "hip_allocator: placement hipFree() failed");
++        ptr = nullptr;
++        err = hipDeviceSynchronize();
++        if (err != hipSuccess)
++          return report(err, "hip_allocator: placement synchronization failed");
++        err = hipMemGetInfo(&before, &total);
++        if (err != hipSuccess)
++          return report(err, "hip_allocator: retry hipMemGetInfo() failed");
++        continue;
++      }
++    }
++#endif
++    return ptr;
++  }
+ }
+ 
+ void *hip_allocator::raw_allocate_optimized_host(size_t min_alignment,
+diff --git a/src/common/CMakeLists.txt b/src/common/CMakeLists.txt
+index 54a02ce..389681a 100644
+--- a/src/common/CMakeLists.txt
++++ b/src/common/CMakeLists.txt
+@@ -1,5 +1,5 @@
+ 
+-add_library(acpp-common SHARED
++add_library(acpp-common ${ACPP_RUNTIME_LIBRARY_TYPE}
+     filesystem.cpp
+     appdb.cpp
+     dylib_loader.cpp
+diff --git a/src/common/filesystem.cpp b/src/common/filesystem.cpp
+index de09592..6593dab 100644
+--- a/src/common/filesystem.cpp
++++ b/src/common/filesystem.cpp
+@@ -20,6 +20,10 @@
+ #include <memory>
+ #include <random>
+ #include <cassert>
++#include <array>
++#include <algorithm>
++#include <mutex>
++#include <system_error>
+ 
+ #ifndef _WIN32
+ #include <dlfcn.h>
+@@ -35,6 +39,34 @@
+ namespace fs = HIPSYCL_CXX_FILESYSTEM_NAMESPACE;
+ 
+ 
++namespace {
++struct MomAppdbTag {
++  std::mutex mutex;
++  std::array<unsigned char, 32> bytes{};
++  bool set = false;
++  bool started = false;
++};
++MomAppdbTag &mom_appdb_tag() {
++  static MomAppdbTag state;
++  return state;
++}
++}
++
++// MoM's final-link admission tag covers the actual embedded compiler/runtime closure.
++// No tag preserves upstream behavior; changing an initialized cache's identity is forbidden.
++extern "C" bool mom_acpp_set_appdb_cache_tag(const unsigned char *tag) noexcept {
++  if (!tag) return false;
++  try {
++    auto &state = mom_appdb_tag();
++    std::lock_guard<std::mutex> lock(state.mutex);
++    if (state.started) return false;
++    if (state.set) return std::equal(state.bytes.begin(), state.bytes.end(), tag);
++    std::copy_n(tag, state.bytes.size(), state.bytes.begin());
++    state.set = true;
++    return true;
++  } catch (...) { return false; }
++}
++
+ namespace hipsycl {
+ namespace common {
+ namespace filesystem {
+@@ -187,8 +219,20 @@ bool atomic_write(const std::string &filename, const std::string &data) {
+   
+   ostr.write(data.data(), data.size());
+   ostr.close();
++  if (!ostr) {
++    std::error_code cleanup_error;
++    fs::remove(tmp_path, cleanup_error);
++    return false;
++  }
+ 
+-  fs::rename(tmp_path, p);
++  // Optional persistence must not throw through a kernel submission's noexcept graph guard.
++  std::error_code rename_error;
++  fs::rename(tmp_path, p, rename_error);
++  if (rename_error) {
++    std::error_code cleanup_error;
++    fs::remove(tmp_path, cleanup_error);
++    return false;
++  }
+ 
+   return true;
+ }
+@@ -206,6 +250,11 @@ persistent_storage &persistent_storage::get() {
+ }
+ 
+ persistent_storage::persistent_storage() {
++  {
++    auto &state = mom_appdb_tag();
++    std::lock_guard<std::mutex> lock(state.mutex);
++    state.started = true;
++  }
+ 
+   auto get_home = [](std::string &home_out, std::string &subdirectory) -> bool {
+ #ifndef _WIN32
+@@ -268,7 +317,19 @@ std::string persistent_storage::generate_app_dir(const std::string& app_path) co
+     app_subdirectory = app_filename + "-" + std::to_string(h.get_current_hash());
+   }
+ 
+-  return (fs::path{_base_dir} / "apps" / app_subdirectory).string();
++  auto directory = fs::path{_base_dir} / "apps" / app_subdirectory;
++  auto &state = mom_appdb_tag();
++  std::lock_guard<std::mutex> lock(state.mutex);
++  if (state.set && !app_path.empty()) {
++    static constexpr char hex[] = "0123456789abcdef";
++    std::string suffix = "jit-";
++    for (unsigned char byte : state.bytes) {
++      suffix += hex[byte >> 4];
++      suffix += hex[byte & 15];
++    }
++    directory /= suffix;
++  }
++  return directory.string();
+ }
+ 
+ std::string persistent_storage::generate_app_db_filename() const {
+diff --git a/src/runtime/CMakeLists.txt b/src/runtime/CMakeLists.txt
+index 7e672e8..3140650 100644
+--- a/src/runtime/CMakeLists.txt
++++ b/src/runtime/CMakeLists.txt
+@@ -22,7 +22,7 @@ set(HIPSYCL_RT_EXTRA_LINKER_FLAGS ${HIPSYCL_RT_EXTRA_LINKER_FLAGS} ${HIPSYCL_STD
+ 
+ set(CMAKE_INSTALL_RPATH ${base} ${base}/hipSYCL)
+ 
+-add_library(acpp-rt SHARED
++add_library(acpp-rt ${ACPP_RUNTIME_LIBRARY_TYPE}
+   allocator.cpp
+   allocation_tracker.cpp
+   application.cpp
+@@ -115,7 +115,7 @@ install(TARGETS acpp-rt
+ set(CMAKE_INSTALL_RPATH ${base}/../ ${base}/llvm-to-backend)
+ 
+ if(WITH_CUDA_BACKEND)
+-  add_library(rt-backend-cuda SHARED
++  add_library(rt-backend-cuda ${ACPP_RUNTIME_LIBRARY_TYPE}
+     cuda/cuda_event.cpp
+     cuda/cuda_event_pool.cpp
+     cuda/cuda_queue.cpp
+@@ -148,6 +148,7 @@ if(WITH_CUDA_BACKEND)
+   endif()
+ 
+   install(TARGETS rt-backend-cuda
++        ${ACPP_BACKEND_EXPORT}
+         RUNTIME DESTINATION bin/hipSYCL
+         LIBRARY DESTINATION lib/hipSYCL
+         ARCHIVE DESTINATION lib/hipSYCL)
+@@ -156,7 +157,7 @@ endif()
+ if(WITH_ROCM_BACKEND)
+   set(ENABLE_ROCM_UNIFIED_MEMORY_API ON CACHE BOOL "Utilize unified memory API in ROCm. Older ROCm versions may not support this.")
+ 
+-  add_library(rt-backend-hip SHARED
++  add_library(rt-backend-hip ${ACPP_RUNTIME_LIBRARY_TYPE}
+     hip/hip_event.cpp
+     hip/hip_event_pool.cpp
+     hip/hip_queue.cpp
+@@ -198,13 +199,14 @@ if(WITH_ROCM_BACKEND)
+   endif()
+ 
+   install(TARGETS rt-backend-hip
++        ${ACPP_BACKEND_EXPORT}
+         RUNTIME DESTINATION bin/hipSYCL
+         LIBRARY DESTINATION lib/hipSYCL
+         ARCHIVE DESTINATION lib/hipSYCL)
+ endif()
+ 
+ if(WITH_LEVEL_ZERO_BACKEND)
+-  add_library(rt-backend-ze SHARED
++  add_library(rt-backend-ze ${ACPP_RUNTIME_LIBRARY_TYPE}
+     ze/ze_backend.cpp
+     ze/ze_hardware_manager.cpp
+     ze/ze_allocator.cpp
+@@ -232,6 +234,7 @@ if(WITH_LEVEL_ZERO_BACKEND)
+   endif()
+ 
+   install(TARGETS rt-backend-ze
++        ${ACPP_BACKEND_EXPORT}
+         RUNTIME DESTINATION bin/hipSYCL
+         LIBRARY DESTINATION lib/hipSYCL
+         ARCHIVE DESTINATION lib/hipSYCL)
+@@ -242,7 +245,7 @@ if(WITH_VULKAN_BACKEND)
+     message(WARNING "Vulkan backend is only supported with LLVM version 19 and later.")
+   endif()
+ 
+-  add_library(rt-backend-vk SHARED
++  add_library(rt-backend-vk ${ACPP_RUNTIME_LIBRARY_TYPE}
+      vk/vk_allocator.cpp
+      vk/vk_backend.cpp
+      vk/vk_queue.cpp
+@@ -270,6 +273,7 @@ if(WITH_VULKAN_BACKEND)
+   endif()
+ 
+   install(TARGETS rt-backend-vk
++        ${ACPP_BACKEND_EXPORT}
+         RUNTIME DESTINATION bin/hipSYCL
+         LIBRARY DESTINATION lib/hipSYCL
+         ARCHIVE DESTINATION lib/hipSYCL)
+@@ -297,7 +301,7 @@ if(WITH_OPENCL_BACKEND)
+   add_library(ocl-cxx-headers INTERFACE)
+   target_include_directories(ocl-cxx-headers INTERFACE ${ocl-cxx-headers_SOURCE_DIR}/include)
+ 
+-  add_library(rt-backend-ocl SHARED
++  add_library(rt-backend-ocl ${ACPP_RUNTIME_LIBRARY_TYPE}
+     ocl/ocl_backend.cpp
+     ocl/ocl_code_object.cpp
+     ocl/ocl_hardware_manager.cpp
+@@ -327,13 +331,14 @@ if(WITH_OPENCL_BACKEND)
+   endif()
+ 
+   install(TARGETS rt-backend-ocl
++        ${ACPP_BACKEND_EXPORT}
+         RUNTIME DESTINATION bin/hipSYCL
+         LIBRARY DESTINATION lib/hipSYCL
+         ARCHIVE DESTINATION lib/hipSYCL)
+ endif()
+ 
+ if(WITH_CPU_BACKEND)
+-  add_library(rt-backend-omp SHARED
++  add_library(rt-backend-omp ${ACPP_RUNTIME_LIBRARY_TYPE}
+     omp/omp_allocator.cpp
+     omp/omp_backend.cpp
+     omp/omp_event.cpp
+@@ -341,7 +346,14 @@ if(WITH_CPU_BACKEND)
+     omp/omp_queue.cpp
+     omp/omp_phys_mem.cpp)
+ 
+-  if(TARGET omp AND ACPP_LLVM_COMPONENT) # ACPP_LLVM_COMPONENT with openmp active
++  if(ACPP_STATIC_RUNTIME AND WIN32)
++    # The source has guarded sequential implementations for CPU kernels,
++    # host-host copies, memset, and SSCP work-group execution. Do not discover
++    # or link an OpenMP target in the Windows static profile.
++    set(OMP_COMPILE_FLAGS)
++    set(OMP_INCLUDE_DIR)
++    set(OMP_TARGET)
++  elseif(TARGET omp AND ACPP_LLVM_COMPONENT) # ACPP_LLVM_COMPONENT with openmp active
+     set(OpenMP_CXX_INCLUDE_DIRS ${CMAKE_INSTALL_FULL_INCLUDEDIR})
+     get_target_property(hipSYCL_OpenMP_CXX_LIBRARIES omp LINK_LIBRARIES)
+     string(JOIN " " hipSYCL_OpenMP_CXX_LIBRARIES ${hipSYCL_OpenMP_CXX_LIBRARIES})
+@@ -417,7 +429,10 @@ if(WITH_CPU_BACKEND)
+     target_compile_definitions(rt-backend-omp PRIVATE -DHIPSYCL_WITH_SSCP_COMPILER)
+     target_link_libraries(rt-backend-omp PRIVATE llvm-to-host)
+   endif()
+-  target_link_libraries(rt-backend-omp PRIVATE acpp-rt ${OMP_TARGET})
++  target_link_libraries(rt-backend-omp PRIVATE acpp-rt)
++  if(OMP_TARGET)
++    target_link_libraries(rt-backend-omp PRIVATE ${OMP_TARGET})
++  endif()
+ 
+   target_compile_options(rt-backend-omp PRIVATE ${HIPSYCL_RT_EXTRA_CXX_FLAGS} ${OMP_COMPILE_FLAGS})
+   target_link_libraries(rt-backend-omp PRIVATE ${HIPSYCL_RT_EXTRA_LINKER_FLAGS})
+@@ -431,6 +446,7 @@ if(WITH_CPU_BACKEND)
+   endif()
+ 
+   install(TARGETS rt-backend-omp
++        ${ACPP_BACKEND_EXPORT}
+       RUNTIME DESTINATION bin/hipSYCL
+       LIBRARY DESTINATION lib/hipSYCL
+       ARCHIVE DESTINATION lib/hipSYCL)
+@@ -451,7 +467,7 @@ if (WITH_METAL_BACKEND)
+     message(FATAL_ERROR "Could not find Metal/Metal.hpp. Please specify METAL_INCLUDE_DIR.")
+   endif()
+ 
+-  add_library(rt-backend-metal SHARED
++  add_library(rt-backend-metal ${ACPP_RUNTIME_LIBRARY_TYPE}
+     metal/metal_backend.cpp
+     metal/metal_hardware_manager.cpp
+     metal/metal_queue.cpp
+@@ -472,7 +488,29 @@ if (WITH_METAL_BACKEND)
+   target_link_libraries(rt-backend-metal PRIVATE "-framework Metal" "-framework Foundation" "-framework CoreFoundation" "-framework IOKit" )
+ 
+   install(TARGETS rt-backend-metal
++        ${ACPP_BACKEND_EXPORT}
+       RUNTIME DESTINATION bin/hipSYCL
+       LIBRARY DESTINATION lib/hipSYCL
+       ARCHIVE DESTINATION lib/hipSYCL)
+ endif ()
++
++if(ACPP_STATIC_RUNTIME)
++  target_compile_definitions(acpp-rt PUBLIC ACPP_STATIC_RUNTIME)
++  set(static_declarations "struct static_backend { const char *name; backend *(*create)(); };\n")
++  set(static_entries "static const static_backend static_backends[] = {\n")
++  foreach(backend omp cuda hip ze ocl metal vk)
++    if(TARGET rt-backend-${backend})
++      # The normal plugins share C symbol names. Give each archive a unique factory without
++      # maintaining different backend implementations or relying on static constructor order.
++      target_compile_definitions(rt-backend-${backend} PRIVATE
++        hipsycl_backend_plugin_create=acpp_static_create_${backend}
++        hipsycl_backend_plugin_get_name=acpp_static_name_${backend})
++      string(APPEND static_declarations "extern \"C\" backend *acpp_static_create_${backend}();\n")
++      string(APPEND static_entries "  {\"${backend}\", acpp_static_create_${backend}},\n")
++      target_link_libraries(acpp-rt PUBLIC rt-backend-${backend})
++    endif()
++  endforeach()
++  file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/static_backends.inc"
++    "${static_declarations}${static_entries}};\n")
++  target_include_directories(acpp-rt PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
++endif()
+diff --git a/src/runtime/backend_loader.cpp b/src/runtime/backend_loader.cpp
+index 7246a39..d587692 100644
+--- a/src/runtime/backend_loader.cpp
++++ b/src/runtime/backend_loader.cpp
+@@ -30,6 +30,7 @@ namespace fs = HIPSYCL_CXX_FILESYSTEM_NAMESPACE;
+ namespace {
+ 
+ using namespace hipsycl::common;
++#ifndef ACPP_STATIC_RUNTIME
+ bool load_plugin(const std::string &filename, void *&handle_out,
+                  std::string &backend_name_out) {
+   std::string message = "";
+@@ -120,6 +121,7 @@ std::vector<fs::path> get_plugin_search_paths()
+     paths.emplace_back(std::move(install_prefixed_path));
+   return paths;
+ }
++#endif
+ 
+ bool is_plugin_active(const std::string& name)
+ {
+@@ -151,7 +153,18 @@ bool is_plugin_active(const std::string& name)
+ namespace hipsycl {
+ namespace rt {
+ 
++#ifdef ACPP_STATIC_RUNTIME
++#include "static_backends.inc"
++#endif
++
+ void backend_loader::query_backends() {
++#ifdef ACPP_STATIC_RUNTIME
++  // Retain visibility filtering and deduplication, but never scan or load application libraries.
++  for (const auto &backend : static_backends) {
++    if (!has_backend(backend.name) && is_plugin_active(backend.name))
++      _handles.emplace_back(backend.name, backend.create);
++  }
++#else
+   std::vector<fs::path> backend_lib_paths = get_plugin_search_paths();
+   
+ #ifdef __APPLE__
+@@ -198,9 +211,11 @@ void backend_loader::query_backends() {
+       }
+     }
+   }
++#endif
+ }
+ 
+ backend_loader::~backend_loader() {
++#ifndef ACPP_STATIC_RUNTIME
+   for (auto &handle : _handles) {
+     assert(handle.second);
+ 
+@@ -210,6 +225,7 @@ backend_loader::~backend_loader() {
+       HIPSYCL_DEBUG_ERROR << "[backend_loader] " << message << std::endl;
+     }
+   }
++#endif
+ }
+ 
+ std::size_t backend_loader::get_num_backends() const { return _handles.size(); }
+@@ -231,7 +247,11 @@ bool backend_loader::has_backend(const std::string &name) const {
+ backend *backend_loader::create(std::size_t index) const {
+   assert(index < _handles.size());
+   
++#ifdef ACPP_STATIC_RUNTIME
++  return _handles[index].second();
++#else
+   return create_backend(_handles[index].second);
++#endif
+ }
+ 
+ backend *backend_loader::create(const std::string &name) const {
+diff --git a/src/runtime/kernel_cache.cpp b/src/runtime/kernel_cache.cpp
+index f8b29ae..a1e971e 100644
+--- a/src/runtime/kernel_cache.cpp
++++ b/src/runtime/kernel_cache.cpp
+@@ -347,8 +347,10 @@ hcf_object_id hcf_cache::register_hcf_object(const common::hcf_container &obj) {
+     }
+   }
+ 
+-  std::string hcf_dump_dir =
+-      application::get_settings().get<setting::hcf_dump_directory>();
++  // Global HCF registration precedes the application selecting its worker backend.
++  std::string hcf_dump_dir;
++  common::settings::try_retrieve_settings_variable(
++      setting_trait<setting::hcf_dump_directory>::str, hcf_dump_dir);
+   if(!hcf_dump_dir.empty()) {
+     std::string out_filename = hcf_dump_dir;
+ 
+@@ -526,6 +528,7 @@ void kernel_cache::persistent_cache_store(code_object_id id_of_binary,
+     HIPSYCL_DEBUG_ERROR
+         << "Could not store JIT result in persistent kernel cache in file "
+         << filename << std::endl;
++    return;
+   }
+ 
+   common::filesystem::persistent_storage::get()
+diff --git a/src/runtime/omp/omp_hardware_manager.cpp b/src/runtime/omp/omp_hardware_manager.cpp
+index 790081e..5756ff2 100644
+--- a/src/runtime/omp/omp_hardware_manager.cpp
++++ b/src/runtime/omp/omp_hardware_manager.cpp
+@@ -8,8 +8,11 @@
+  * See file LICENSE in the project root for full license details.
+  */
+ // SPDX-License-Identifier: BSD-2-Clause
+-#include <omp.h>
+ #include <limits>
++#include <thread>
++#ifdef _OPENMP
++#include <omp.h>
++#endif
+ 
+ #include "hipSYCL/runtime/omp/omp_hardware_manager.hpp"
+ #include "hipSYCL/runtime/error.hpp"
+@@ -143,8 +146,14 @@ omp_hardware_context::get_property(device_uint_property prop) const {
+   case device_uint_property::max_compute_units:
+     // Do not change this; heuristics in algorithms library
+     // use this.
++  {
++#ifdef _OPENMP
+     return omp_get_num_procs();
+-    break;
++#else
++    const unsigned n = std::thread::hardware_concurrency();
++    return n ? n : 1;
++#endif
++  }
+     case device_uint_property::max_work_group_range0:
+     return std::numeric_limits<std::size_t>::max();
+     break;
+diff --git a/src/runtime/omp/omp_queue.cpp b/src/runtime/omp/omp_queue.cpp
+index 37fc162..5052d1c 100644
+--- a/src/runtime/omp/omp_queue.cpp
++++ b/src/runtime/omp/omp_queue.cpp
+@@ -47,7 +47,9 @@
+ #endif
+ #endif
+ 
++#ifdef _OPENMP
+ #include <omp.h>
++#endif
+ 
+ #include <memory>
+ #include <optional>

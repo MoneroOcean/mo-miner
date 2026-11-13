@@ -1,0 +1,44 @@
+{
+  "version": "5.2.1",
+  "platform": "linux",
+  "architecture": "x64",
+  "archive": {
+    "url": "https://github.com/upx/upx/releases/download/v5.2.1/upx-5.2.1-amd64_linux.tar.xz",
+    "bytes": 664048,
+    "sha256": "402162aad30af47e60dbd767fb2e64ca394ace9727ba1f40283641f1d1b91657"
+  },
+  "executable": {
+    "member": "upx-5.2.1-amd64_linux/upx",
+    "bytes": 639228,
+    "sha256": "287b3dffe9dcafd8e366e162ac4ab41e5cf45a3c6768970256af0869288d84a1"
+  },
+  "notices": [
+    {
+      "member": "upx-5.2.1-amd64_linux/LICENSE",
+      "sha256": "905d4a66d5324e154d976bbf88829d4d9263815a2b97cc40954f06d4a23c28eb"
+    },
+    {
+      "member": "upx-5.2.1-amd64_linux/COPYING",
+      "sha256": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643"
+    }
+  ],
+  "source": {
+    "url": "https://github.com/upx/upx/releases/download/v5.2.1/upx-5.2.1-src.tar.xz",
+    "bytes": 1778024,
+    "sha256": "a7d457be4ef942e46844ee8f301206b111394cbcbde3599747a6904c54ff116b",
+    "notices": [
+      {
+        "member": "upx-5.2.1-src/LICENSE",
+        "sha256": "905d4a66d5324e154d976bbf88829d4d9263815a2b97cc40954f06d4a23c28eb"
+      },
+      {
+        "member": "upx-5.2.1-src/COPYING",
+        "sha256": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643"
+      },
+      {
+        "member": "upx-5.2.1-src/vendor/lzma-sdk/LICENSE.txt",
+        "sha256": "546d61821ef504fdec684a341f22b52a29664c34f74a6eef773425da99ab2992"
+      }
+    ]
+  }
+}

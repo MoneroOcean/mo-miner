@@ -1,0 +1,252 @@
+diff --git a/unified-runtime/cmake/helpers.cmake b/unified-runtime/cmake/helpers.cmake
+--- a/unified-runtime/cmake/helpers.cmake
++++ b/unified-runtime/cmake/helpers.cmake
+@@ -302,14 +302,14 @@
+ function(ur_adapter_is_static adapter out_var)
+   set(static_var "UR_STATIC_ADAPTER_${adapter}")
+   string(TOUPPER "${static_var}" static_var)
+   string(TOUPPER "${adapter}" adapter)
+-  # Special case: LEVEL_ZERO uses UR_STATIC_ADAPTER_L0
++  # Both original Level Zero versions share the static-L0 policy.
+-  if(adapter STREQUAL "LEVEL_ZERO")
++  if(adapter STREQUAL "LEVEL_ZERO" OR adapter STREQUAL "LEVEL_ZERO_V2")
+     set(static_var "UR_STATIC_ADAPTER_L0")
+   endif()
+   if(DEFINED ${static_var} AND ${static_var})
+     set(${out_var} TRUE PARENT_SCOPE)
+   else()
+     set(${out_var} FALSE PARENT_SCOPE)
+   endif()
+ endfunction()
+diff --git a/sycl/source/detail/windows_ur.cpp b/sycl/source/detail/windows_ur.cpp
+index 6233d78..0a59691 100644
+--- a/sycl/source/detail/windows_ur.cpp
++++ b/sycl/source/detail/windows_ur.cpp
+@@ -14,7 +14,9 @@
+ #include <winreg.h>
+ 
+ #include "detail/windows_os_utils.hpp"
++#ifndef SYCL_UR_STATIC_LOADER
+ #include "ur_win_proxy_loader.hpp"
++#endif
+ 
+ namespace sycl {
+ inline namespace _V1 {
+@@ -56,7 +58,14 @@ void *getOsLibraryFuncAddress(void *Library, const std::string &FunctionName) {
+       GetProcAddress((HMODULE)Library, FunctionName.c_str()));
+ }
+ 
+-void *getURLoaderLibrary() { return getPreloadedURLib(); }
++void *getURLoaderLibrary() {
++#ifdef SYCL_UR_STATIC_LOADER
++  // Static UrFuncInfo resolves linked entries directly, without a proxy DLL.
++  return nullptr;
++#else
++  return getPreloadedURLib();
++#endif
++}
+ 
+ } // namespace ur
+ } // namespace detail
+diff --git a/unified-runtime/source/adapters/CMakeLists.txt b/unified-runtime/source/adapters/CMakeLists.txt
+index e79bfac..77ea143 100644
+--- a/unified-runtime/source/adapters/CMakeLists.txt
++++ b/unified-runtime/source/adapters/CMakeLists.txt
+@@ -65,7 +65,10 @@ function(add_ur_adapter name)
+     add_dependencies(ur_loader ${name})
+ endfunction()
+ 
+-add_subdirectory(mock)
++option(UR_BUILD_ADAPTER_MOCK "Build the non-production mock adapter" ON)
++if(UR_BUILD_ADAPTER_MOCK)
++    add_subdirectory(mock)
++endif()
+ 
+ function(add_ur_adapter_subdirectory name)
+     string(TOUPPER ${name} NAME)
+@@ -83,7 +86,9 @@ function(add_ur_adapter_subdirectory name)
+     endif()
+ endfunction()
+ 
+-list(APPEND TEMP_LIST "mock")
++if(UR_BUILD_ADAPTER_MOCK)
++    list(APPEND TEMP_LIST "mock")
++endif()
+ 
+ if(UR_BUILD_ADAPTER_L0 OR UR_BUILD_ADAPTER_L0_V2 OR UR_BUILD_ADAPTER_ALL)
+     add_ur_adapter_subdirectory(level_zero)
+diff --git a/unified-runtime/source/loader/ur_adapter_registry.hpp b/unified-runtime/source/loader/ur_adapter_registry.hpp
+index f107a17..c366b5c 100644
+--- a/unified-runtime/source/loader/ur_adapter_registry.hpp
++++ b/unified-runtime/source/loader/ur_adapter_registry.hpp
+@@ -98,6 +98,31 @@ struct FilterTerm {
+ class AdapterRegistry {
+ public:
+   AdapterRegistry() {
++#if defined(MOM_NATIVE_STATIC_ADAPTERS)
++    // Native release mode has no adapter DLL boundary. Preserve selector
++    // semantics for linked factories, but never turn environment paths into
++    // dynamic-load candidates. A force-load request is rejected by context_t.
++    std::optional<std::vector<std::string>> forceLoadedAdaptersOpt;
++    try {
++      forceLoadedAdaptersOpt = getenv_to_vec("UR_ADAPTERS_FORCE_LOAD");
++    } catch (const std::invalid_argument &e) {
++      UR_LOG(ERR, e.what());
++      forceLoaded = true;
++      return;
++    }
++    if (forceLoadedAdaptersOpt.has_value()) {
++      forceLoaded = true;
++      return;
++    }
++
++    std::set<std::string> staticAdapterNames;
++    (void)getFilteredAdapterNames(staticAdapterNames);
++    for (const auto &staticAdapterName : staticAdapterNames) {
++      adaptersLoadPaths.emplace_back(
++          std::vector<fs::path>{fs::path(staticAdapterName)});
++    }
++    return;
++#else
+     std::optional<std::vector<std::string>> forceLoadedAdaptersOpt;
+     try {
+       forceLoadedAdaptersOpt = getenv_to_vec("UR_ADAPTERS_FORCE_LOAD");
+@@ -136,6 +161,7 @@ public:
+     } else {
+       discoverKnownAdapters();
+     }
++#endif
+   }
+ 
+   struct Iterator {
+diff --git a/unified-runtime/source/loader/ur_loader.cpp b/unified-runtime/source/loader/ur_loader.cpp
+index 9da609c..1d54443 100644
+--- a/unified-runtime/source/loader/ur_loader.cpp
++++ b/unified-runtime/source/loader/ur_loader.cpp
+@@ -40,47 +40,90 @@ ur_result_t context_t::init() {
+   // https://github.com/intel/llvm/blob/sycl/sycl/ur_win_proxy_loader/ur_win_proxy_loader.cpp
+   // (preloadLibraries())
+   UINT SavedMode = SetErrorMode(SEM_FAILCRITICALERRORS);
++  const auto restoreErrorMode = [&SavedMode]() noexcept {
++    (void)SetErrorMode(SavedMode);
++  };
++#else
++  const auto restoreErrorMode = []() noexcept {};
+ #endif
+ 
+-#if defined(UR_STATIC_ADAPTER_LEVEL_ZERO) || defined(UR_STATIC_ADAPTER_OPENCL) || defined(UR_STATIC_ADAPTER_CUDA)
++#if defined(MOM_NATIVE_STATIC_ADAPTERS)
++  bool staticAdapterRegistered = false;
++#endif
++#if defined(UR_STATIC_ADAPTER_LEVEL_ZERO) || defined(UR_STATIC_ADAPTER_LEVEL_ZERO_V2) || defined(UR_STATIC_ADAPTER_OPENCL) || defined(UR_STATIC_ADAPTER_CUDA)
+   // If the adapters were force loaded, it means the user wants to use
+   // a specific adapter library. Don't load any static adapters.
+   if (!adapter_registry.adaptersForceLoaded()) {
+ #ifdef UR_STATIC_ADAPTER_LEVEL_ZERO
+     if (adapter_registry.isAdapterEnabled(MAKE_LIBRARY_NAME("ur_adapter_level_zero", "0"))) {
+       auto &level_zero = platforms.emplace_back(nullptr);
+-      ur::level_zero::urAdapterGetDdiTables(&level_zero.dditable);
++      auto result =
++          ur::level_zero::urAdapterGetDdiTables(&level_zero.dditable);
++      if (result != UR_RESULT_SUCCESS) {
++        restoreErrorMode();
++        return result;
++      }
+       adapter_registry.markAdapterAsStaticallyLoaded("ur_adapter_level_zero");
++#if defined(MOM_NATIVE_STATIC_ADAPTERS)
++      staticAdapterRegistered = true;
++#endif
+     }
+ #endif
+ #ifdef UR_STATIC_ADAPTER_LEVEL_ZERO_V2
+     if (adapter_registry.isAdapterEnabled(MAKE_LIBRARY_NAME("ur_adapter_level_zero_v2", "0"))) {
+       auto &level_zero_v2 = platforms.emplace_back(nullptr);
+       auto result = mom_ur_level_zero_v2_factory(&level_zero_v2.dditable);
+-      if (result != UR_RESULT_SUCCESS)
++      if (result != UR_RESULT_SUCCESS) {
++        restoreErrorMode();
+         return result;
++      }
+       adapter_registry.markAdapterAsStaticallyLoaded("ur_adapter_level_zero_v2");
++#if defined(MOM_NATIVE_STATIC_ADAPTERS)
++      staticAdapterRegistered = true;
++#endif
+     }
+ #endif
+ #ifdef UR_STATIC_ADAPTER_OPENCL
+     if (adapter_registry.isAdapterEnabled(MAKE_LIBRARY_NAME("ur_adapter_opencl", "0"))) {
+       auto &opencl = platforms.emplace_back(nullptr);
+-      ur::opencl::urAdapterGetDdiTables(&opencl.dditable);
++      auto result = ur::opencl::urAdapterGetDdiTables(&opencl.dditable);
++      if (result != UR_RESULT_SUCCESS) {
++        restoreErrorMode();
++        return result;
++      }
+       adapter_registry.markAdapterAsStaticallyLoaded("ur_adapter_opencl");
++#if defined(MOM_NATIVE_STATIC_ADAPTERS)
++      staticAdapterRegistered = true;
++#endif
+     }
+ #endif
+ #ifdef UR_STATIC_ADAPTER_CUDA
+     if (adapter_registry.isAdapterEnabled(MAKE_LIBRARY_NAME("ur_adapter_cuda", "0"))) {
+       auto &cuda = platforms.emplace_back(nullptr);
+       auto result = mom_ur_cuda_factory(&cuda.dditable);
+-      if (result != UR_RESULT_SUCCESS)
++      if (result != UR_RESULT_SUCCESS) {
++        restoreErrorMode();
+         return result;
++      }
+       adapter_registry.markAdapterAsStaticallyLoaded("ur_adapter_cuda");
++#if defined(MOM_NATIVE_STATIC_ADAPTERS)
++      staticAdapterRegistered = true;
++#endif
+     }
+ #endif
+   }
+ #endif
++#if defined(MOM_NATIVE_STATIC_ADAPTERS)
++  // Native owns the linked factories. Reject caller-supplied app-DLL force
++  // loads and an empty static closure; never fall through to UR's dynamic
++  // adapter loop.
++  if (adapter_registry.adaptersForceLoaded() || !staticAdapterRegistered) {
++    restoreErrorMode();
++    return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
++  }
++#endif
+ 
++#if !defined(MOM_NATIVE_STATIC_ADAPTERS)
+   for (const auto &adapterPaths : adapter_registry) {
+     // Skip dynamic adapters that have already been statically registered
+     // to avoid double-registration of the same backend.
+@@ -96,9 +139,8 @@ ur_result_t context_t::init() {
+       }
+     }
+   }
+-#ifdef _WIN32
+-  // Restore system error handling.
+-  (void)SetErrorMode(SavedMode);
+ #endif
++  // Restore system error handling before any successful return or rejection.
++  restoreErrorMode();
+ 
+   forceIntercept = getenv_tobool("UR_ENABLE_LOADER_INTERCEPT");
+diff --git a/sycl/source/detail/global_handler.cpp b/sycl/source/detail/global_handler.cpp
+index 9e2b307..966d8ca 100644
+--- a/sycl/source/detail/global_handler.cpp
++++ b/sycl/source/detail/global_handler.cpp
+@@ -261,6 +261,14 @@ void GlobalHandler::registerStaticVarShutdownHandler() {
+   static StaticVarShutdownHandler handler{};
+ }
+ 
++#ifdef _WIN32
++// Deferred native images remember their callback during executable startup. Register the
++// original runtime shutdown first, without discovering adapters or constructing a queue.
++extern "C" void mom_native_sycl_prepare_shutdown() {
++  GlobalHandler::registerStaticVarShutdownHandler();
++}
++#endif
++
+ bool GlobalHandler::isOkToDefer() const { return OkToDefer; }
+ 
+ void GlobalHandler::endDeferredRelease() { OkToDefer = false; }

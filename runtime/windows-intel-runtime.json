@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "compiler": {
+    "version": "2026.2",
+    "sha256": "5475f2609642a667c4f599a68baafb90c9f34acf27cecc9b5a3a84658e75af03"
+  },
+  "libraries": [
+    {
+      "name": "libircmt.lib",
+      "source": "lib/libircmt.lib",
+      "path": "intel-runtime/lib/libircmt.lib",
+      "bytes": 805696,
+      "sha256": "64f81bfd960504b780524f71104022675a0293af6fa52519ac89e2720b5f56b4"
+    },
+    {
+      "name": "libirc.lib",
+      "source": "lib/libirc.lib",
+      "path": "intel-runtime/lib/libirc.lib",
+      "bytes": 805696,
+      "sha256": "64f81bfd960504b780524f71104022675a0293af6fa52519ac89e2720b5f56b4"
+    },
+    {
+      "name": "libmmt.lib",
+      "source": "lib/libmmt.lib",
+      "path": "intel-runtime/lib/libmmt.lib",
+      "bytes": 9673648,
+      "sha256": "76737828d63ff4e11af8cc8d11519e000255b885becc0b8abe64aeafbd73affd"
+    },
+    {
+      "name": "svml_dispmt.lib",
+      "source": "lib/svml_dispmt.lib",
+      "path": "intel-runtime/lib/svml_dispmt.lib",
+      "bytes": 61176054,
+      "sha256": "ccd2e31a5b85a424028a695df45879096ce46d33d8ce90e8550f51d61da3c771"
+    },
+    {
+      "name": "libdecimal.lib",
+      "source": "lib/libdecimal.lib",
+      "path": "intel-runtime/lib/libdecimal.lib",
+      "bytes": 4441912,
+      "sha256": "73c7a00a09831ca3e628893898bec72ab267c30cfa2be23782b0eac265006adc"
+    }
+  ],
+  "licenses": [
+    {
+      "source": "share/doc/compiler/licensing/c/LICENSE.rtf",
+      "path": "intel-runtime/licenses/share/doc/compiler/licensing/c/LICENSE.rtf",
+      "bytes": 262117,
+      "sha256": "4e96f3006c9d51b38561f9802da896480dc48e7703a76c206292bf6d6d11a781"
+    },
+    {
+      "source": "share/doc/compiler/licensing/c/third-party-programs.txt",
+      "path": "intel-runtime/licenses/share/doc/compiler/licensing/c/third-party-programs.txt",
+      "bytes": 36937,
+      "sha256": "a81491a0243fa1d072aa636c890a6dd082ca403aca4681672cf6f69d3d516f79"
+    },
+    {
+      "source": "share/doc/compiler/licensing/openmp/third-party-programs.txt",
+      "path": "intel-runtime/licenses/share/doc/compiler/licensing/openmp/third-party-programs.txt",
+      "bytes": 31578,
+      "sha256": "f8ce918fe7311ce279e68380a2e233f8a42b1cd3dda8f4c48d6de97a0255c1d7"
+    }
+  ]
+}

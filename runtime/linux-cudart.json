@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "target": "linux-cudart",
+  "vendor": "NVIDIA",
+  "releaseLabel": "12.6.3",
+  "vendorVersion": "12.6.77",
+  "manifest": {
+    "releaseDate": "2024-11-20",
+    "url": "https://developer.download.nvidia.com/compute/cuda/redist/redistrib_12.6.3.json",
+    "sha256": "9c598598457a6463eb92889080c16b2b9dc04150e501b8bfc1536d403ba70aaf",
+    "entry": "cuda_cudart.linux-x86_64"
+  },
+  "archive": {
+    "fileName": "cuda_cudart-linux-x86_64-12.6.77-archive.tar.xz",
+    "url": "https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/linux-x86_64/cuda_cudart-linux-x86_64-12.6.77-archive.tar.xz",
+    "origin": "https://developer.download.nvidia.com",
+    "bytes": 1126072,
+    "sha256": "f74689258a60fd9c5bdfa7679458527a55e22442691ba678dcfaeffbf4391ef9"
+  },
+  "libraries": {
+    "cudartStatic": {
+      "member": "cuda_cudart-linux-x86_64-12.6.77-archive/lib/libcudart_static.a",
+      "bytes": 1436906,
+      "sha256": "5a90415e481a710fa00676f9fe1bbae703f33450c4fd3f35146a3f2980567b06"
+    },
+    "culibos": {
+      "member": "cuda_cudart-linux-x86_64-12.6.77-archive/lib/libculibos.a",
+      "bytes": 30922,
+      "sha256": "5349773e44c22fd17aefd46f9f595e07eb033bd04017423f41298bf5f935900a"
+    }
+  },
+  "license": {
+    "name": "CUDA Toolkit",
+    "manifestPath": "cuda_cudart/LICENSE.txt",
+    "member": "cuda_cudart-linux-x86_64-12.6.77-archive/LICENSE",
+    "noticeComponent": "CUDA 12.6 host license + Linux image package copyright",
+    "bytes": 63021,
+    "sha256": "e2c71babfd18a8e69542dd7e9ca018f9caa438094001a58e6bc4d8c999bf0d07"
+  }
+}

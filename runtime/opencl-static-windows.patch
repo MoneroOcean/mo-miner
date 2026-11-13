@@ -1,0 +1,69 @@
+diff --git a/loader/icd.c b/loader/icd.c
+--- a/loader/icd.c
++++ b/loader/icd.c
+@@ -410,6 +410,10 @@ static char *loader_get_next_path(char *path)
+ 
+ void khrIcdVendorsEnumerateEnv(void)
+ {
++#if defined(MOM_NATIVE_STATIC_OPENCL_WINDOWS)
++    /* Native releases admit only OS-registered driver identities, never application paths. */
++    return;
++#else
+     char* icdFilenames = khrIcd_secure_getenv("OCL_ICD_FILENAMES");
+     char* cur_file = NULL;
+     char* next_file = NULL;
+@@ -427,6 +431,7 @@ void khrIcdVendorsEnumerateEnv(void)
+ 
+         khrIcd_free_getenv(icdFilenames);
+     }
++#endif
+ }
+ 
+ #if defined(CL_ENABLE_LAYERS)
+diff --git a/loader/windows/icd_windows.c b/loader/windows/icd_windows.c
+--- a/loader/windows/icd_windows.c
++++ b/loader/windows/icd_windows.c
+@@ -277,7 +277,7 @@ BOOL CALLBACK khrIcdOsVendorsEnumerate(PINIT_ONCE InitOnce, PVOID Parameter, PVOID *lpContext)
+     }
+ 
+     // Add adapters according to DXGI's preference order
+-    HMODULE hDXGI = LoadLibraryA("dxgi.dll");
++    HMODULE hDXGI = LoadLibraryExA("dxgi.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+     if (hDXGI)
+     {
+         IDXGIFactory* pFactory = NULL;
+@@ -417,8 +417,15 @@ void khrIcdOsVendorsEnumerateOnce()
+  */
+ 
++#if defined(MOM_NATIVE_STATIC_OPENCL_WINDOWS)
++#include "windows-opencl-driver.h"
++#endif
++
+ // dynamically load a library.  returns NULL on failure
+ void *khrIcdOsLibraryLoad(const char *libraryName)
+ {
++#if defined(MOM_NATIVE_STATIC_OPENCL_WINDOWS)
++    return mom_native_opencl_load_driver(libraryName);
++#else
+     HMODULE hTemp = LoadLibraryExA(libraryName, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+     if (!hTemp && GetLastError() == ERROR_INVALID_PARAMETER)
+     {
+@@ -430,6 +437,7 @@ void *khrIcdOsLibraryLoad(const char *libraryName)
+         KHR_ICD_TRACE("Failed to load driver. Windows error code is %"PRIuDW".\n", GetLastError());
+     }
+     return (void*)hTemp;
++#endif
+ }
+ 
+ // get a function pointer from a loaded library.  returns NULL on failure.
+diff --git a/loader/windows/icd_windows_dxgk.c b/loader/windows/icd_windows_dxgk.c
+--- a/loader/windows/icd_windows_dxgk.c
++++ b/loader/windows/icd_windows_dxgk.c
+@@ -35,6 +35,6 @@ bool khrIcdOsVendorsEnumerateDXGK(void)
+     int result = 0;
+ 
+     // Get handle to GDI Runtime
+-    HMODULE h = LoadLibraryA("gdi32.dll");
++    HMODULE h = LoadLibraryExA("gdi32.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+     if (h == NULL)
+         return ret;

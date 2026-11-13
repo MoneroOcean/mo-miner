@@ -110,6 +110,7 @@ source_fingerprint() {
     xmrig
     scripts/multicompiler-entrypoint.sh
     scripts/linux-build-state.js
+    scripts/build-source-inputs.js
     scripts/build-helpers.sh
     scripts/build-environment.js
     scripts/cxx-oneapi.sh

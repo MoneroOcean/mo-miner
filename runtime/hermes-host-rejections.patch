@@ -1,0 +1,32 @@
+diff --git a/lib/InternalJavaScript/01-Promise.js b/lib/InternalJavaScript/01-Promise.js
+index fa92a50..d986ec2 100644
+--- a/lib/InternalJavaScript/01-Promise.js
++++ b/lib/InternalJavaScript/01-Promise.js
+@@ -931,7 +931,11 @@
+     var id = 0;
+     var displayId = 0;
+     var rejections = {};
++    // Embedders provide their own host checkpoint/policy, not this diagnostic timer.
++    // Keep Promise's private slots inside the engine; never expose their renamed keys.
++    var hostTracker = options.hostRejectionTracker;
+     core._B = function (promise) {
++      if (hostTracker) { hostTracker(promise, undefined, true); return; }
+       if (
+         promise._y === 2 && // IS REJECTED
+         rejections[promise._E]
+@@ -946,6 +950,7 @@
+     };
+     core._C = function (promise, err) {
+       if (promise._x === 0) { // not yet handled
++        if (hostTracker) { hostTracker(promise, err, false); return; }
+         promise._E = id++;
+         rejections[promise._E] = {
+           displayId: null,
+@@ -965,6 +970,7 @@
+         };
+       }
+     };
++    if (hostTracker) return true;
+     function onUnhandled(id) {
+       if (
+         options.allRejections ||

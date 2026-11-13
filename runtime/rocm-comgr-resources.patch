@@ -1,0 +1,278 @@
+diff --git a/amd/comgr/CMakeLists.txt b/amd/comgr/CMakeLists.txt
+index 2eeb8c2..d534049 100644
+--- a/amd/comgr/CMakeLists.txt
++++ b/amd/comgr/CMakeLists.txt
+@@ -68,6 +68,7 @@ endif()
+ 
+ option(COMGR_BUILD_SHARED_LIBS "Build the shared library"
+        ${build_shared_libs_default})
++option(COMGR_EMBEDDED_RESOURCES "Use memory-backed source inputs and embedded device libraries" OFF)
+ 
+ set(SOURCES
+   src/comgr-cache.cpp
+@@ -271,7 +272,8 @@ endif()
+ target_compile_options(amd_comgr
+   PRIVATE "${AMD_COMGR_PRIVATE_COMPILE_OPTIONS}")
+ target_compile_definitions(amd_comgr
+-  PRIVATE "${AMD_COMGR_PRIVATE_COMPILE_DEFINITIONS}")
++  PRIVATE "${AMD_COMGR_PRIVATE_COMPILE_DEFINITIONS}"
++  $<$<BOOL:${COMGR_EMBEDDED_RESOURCES}>:COMGR_EMBEDDED_RESOURCES>)
+ target_include_directories(amd_comgr
+   PUBLIC
+     $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>
+diff --git a/amd/comgr/cmake/opencl_pch.cmake b/amd/comgr/cmake/opencl_pch.cmake
+--- a/amd/comgr/cmake/opencl_pch.cmake
++++ b/amd/comgr/cmake/opencl_pch.cmake
+@@ -1,4 +1,12 @@
+-if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
++if(COMGR_EMBEDDED_RESOURCES)
++  # Native SDK builds bind one reviewed Clang resource header, never the first match
++  # from a recursive search of coinstalled compiler versions/build directories.
++  if(NOT IS_ABSOLUTE "${COMGR_OPENCL_C_HEADER}" OR
++     NOT EXISTS "${COMGR_OPENCL_C_HEADER}" OR IS_DIRECTORY "${COMGR_OPENCL_C_HEADER}")
++    message(FATAL_ERROR "Native COMGR requires an explicit COMGR_OPENCL_C_HEADER")
++  endif()
++  set(OPENCL_C_H "${COMGR_OPENCL_C_HEADER}")
++elseif(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+   find_package(Clang REQUIRED CONFIG)
+ 
+   # FIXME: CLANG_CMAKE_DIR seems like the most stable way to find this, but
+diff --git a/amd/comgr/src/comgr-env.cpp b/amd/comgr/src/comgr-env.cpp
+index 842cc17..8692c28 100644
+--- a/amd/comgr/src/comgr-env.cpp
++++ b/amd/comgr/src/comgr-env.cpp
+@@ -43,16 +43,27 @@ namespace COMGR {
+ namespace env {
+ 
+ bool shouldSaveTemps() {
++#ifdef COMGR_EMBEDDED_RESOURCES
++  return false; // Native releases never extract embedded source/header inputs for debugging.
++#else
+   static char *SaveTemps = getenv("AMD_COMGR_SAVE_TEMPS");
+   return SaveTemps && StringRef(SaveTemps) != "0";
++#endif
+ }
+ 
+ bool shouldSaveLLVMTemps() {
++#ifdef COMGR_EMBEDDED_RESOURCES
++  return false;
++#else
+   static char *SaveTemps = getenv("AMD_COMGR_SAVE_LLVM_TEMPS");
+   return SaveTemps && StringRef(SaveTemps) != "0";
++#endif
+ }
+ 
+ std::optional<bool> shouldUseVFS() {
++#ifdef COMGR_EMBEDDED_RESOURCES
++  return true; // Build policy, not an environment-dependent optional optimization.
++#else
+   if (shouldSaveTemps())
+     return false;
+ 
+@@ -65,6 +76,7 @@ std::optional<bool> shouldUseVFS() {
+   }
+ 
+   return std::nullopt;
++#endif
+ }
+ 
+ std::optional<StringRef> getRedirectLogs() {
+diff --git a/amd/comgr/src/comgr.cpp b/amd/comgr/src/comgr.cpp
+index 053c030..3b4dcc5 100644
+--- a/amd/comgr/src/comgr.cpp
++++ b/amd/comgr/src/comgr.cpp
+@@ -55,6 +55,12 @@
+ #include <fstream>
+ #include <mutex>
+ #include <string>
++#ifdef COMGR_EMBEDDED_RESOURCES
++#include "llvm/ADT/ScopeExit.h"
++// The static application shares LLVM/LLD with other SDKs, not just other COMGR calls.
++extern "C" void mom_native_compiler_lock();
++extern "C" void mom_native_compiler_unlock();
++#endif
+ 
+ #include "time-stat/ts-interface.h"
+ 
+@@ -370,6 +376,10 @@ amd_comgr_status_t COMGR::parseTargetIdentifier(StringRef IdentStr,
+ }
+ 
+ void COMGR::ensureLLVMInitialized() {
++#ifdef COMGR_EMBEDDED_RESOURCES
++  mom_native_compiler_lock();
++  auto CompilerGuard = llvm::make_scope_exit(mom_native_compiler_unlock);
++#endif
+ 
+   // LLVMInitializeAMDGPUTargetInfo calls TargetRegistry.cpp:RegisterTarget()
+   // This function is not thread safe. There may be thread safety issues
+@@ -1318,6 +1328,10 @@ amd_comgr_status_t AMD_COMGR_API
+   }
+ 
+   amd_comgr_status_t ActionStatus;
++#ifdef COMGR_EMBEDDED_RESOURCES
++  mom_native_compiler_lock();
++  auto CompilerGuard = llvm::make_scope_exit(mom_native_compiler_unlock);
++#endif
+ 
+   // Enclose core Comgr actions in a mutally excusive region to avoid
+   // multithreading issues stemming from concurrently maintaing multiple
+diff --git a/amd/comgr/src/comgr-compiler.cpp b/amd/comgr/src/comgr-compiler.cpp
+--- a/amd/comgr/src/comgr-compiler.cpp
++++ b/amd/comgr/src/comgr-compiler.cpp
+@@ -542,6 +542,14 @@
+ }
+ 
+ SmallString<128> getFilePath(DataObject *Object, StringRef Dir) {
++#ifdef COMGR_EMBEDDED_RESOURCES
++  // Supplied virtual names must not create real parent directories outside our private root.
++  StringRef Name(Object->Name);
++  if (path::is_absolute(Name) || Name.contains('\\') ||
++      llvm::any_of(llvm::make_range(path::begin(Name), path::end(Name)),
++                   [](StringRef Part) { return Part == ".."; }))
++    return SmallString<128>();
++#endif
+   SmallString<128> Path(Dir);
+   path::append(Path, Object->Name);
+ 
+@@ -588,6 +596,7 @@
+   OS << Data;
+   OS.close();
+   if (OS.has_error()) {
++    OS.clear_error(); // Report the action failure, not a second fatal stream-destructor error.
+     return AMD_COMGR_STATUS_ERROR;
+   }
+   return AMD_COMGR_STATUS_SUCCESS;
+@@ -597,6 +606,18 @@
+   return outputToFile(StringRef(Object->Data, Object->Size), Path);
+ }
+ 
++// The existing compiler VFS already owns device libraries. Keep supplied source/headers there
++// too; only generated GPU objects/images need real files for the original linker pipeline.
++static amd_comgr_status_t stageInput(DataObject *Object, StringRef Path,
++                                    vfs::InMemoryFileSystem *FS) {
++  if (Path.empty()) return AMD_COMGR_STATUS_ERROR_INVALID_ARGUMENT;
++  if (!FS)
++    return outputToFile(Object, Path);
++  return FS->addFile(Path, 0, MemoryBuffer::getMemBufferCopy(
++                                StringRef(Object->Data, Object->Size), Path))
++             ? AMD_COMGR_STATUS_SUCCESS : AMD_COMGR_STATUS_ERROR;
++}
++
+ void initializeCommandLineArgs(SmallVectorImpl<const char *> &Args) {
+   // Workaround for flawed Driver::BuildCompilation(...) implementation,
+   // which eliminates 1st argument, cause it actually awaits argv[0].
+@@ -807,9 +828,23 @@
+ 
+ amd_comgr_status_t AMDGPUCompiler::createTmpDirs() {
+   ProfilePoint Point("CreateDir");
++#ifdef COMGR_EMBEDDED_RESOURCES
++  std::error_code EC;
++  for (unsigned Attempt = 0; Attempt != 16; ++Attempt) {
++    fs::createUniquePath("comgr-%%%%%%%%", TmpDir, true);
++    // Create atomically owner-only, including with umask 0. Do not chmod a shared directory.
++    EC = fs::create_directory(TmpDir, false, fs::owner_all);
++    if (EC != std::errc::file_exists) break;
++  }
++  if (EC) {
++    TmpDir.clear(); // The destructor must never clean a directory we failed to create/own.
++    return AMD_COMGR_STATUS_ERROR;
++  }
++#else
+   if (fs::createUniqueDirectory("comgr", TmpDir)) {
+     return AMD_COMGR_STATUS_ERROR;
+   }
++#endif
+ 
+   InputDir = TmpDir;
+   path::append(InputDir, "input");
+@@ -899,6 +934,23 @@
+     }
+   }
+ 
++#ifdef COMGR_EMBEDDED_RESOURCES
++  // Bind supplied forced includes directly to their VFS entries. A relative -include would
++  // otherwise probe the process working directory before finding our embedded HIPRTC header.
++  for (size_t I = 0; I + 1 < Argv.size(); ++I) {
++    if (StringRef(Argv[I]) != "-include") continue;
++    for (auto *Header : InSet->DataObjects) {
++      if (Header->DataKind == AMD_COMGR_DATA_KIND_INCLUDE &&
++          StringRef(Argv[I + 1]) == Header->Name) {
++        auto FullPath = getFilePath(Header, IncludeDir);
++        if (FullPath.empty()) return AMD_COMGR_STATUS_ERROR_INVALID_ARGUMENT;
++        Argv[I + 1] = Saver.save(StringRef(FullPath)).data();
++        break;
++      }
++    }
++  }
++#endif
++
+   // The ROCm device library should be provided via --rocm-path. Otherwise
+   // we can pass -nogpulib to build without the ROCm device library
+   if (NoGpuLib) {
+@@ -937,7 +989,7 @@
+       continue;
+     }
+     auto IncludeFilePath = getFilePath(Input, IncludeDir);
+-    if (auto Status = outputToFile(Input, IncludeFilePath)) {
++    if (auto Status = stageInput(Input, IncludeFilePath, UseVFS ? InMemoryFS.get() : nullptr)) {
+       return Status;
+     }
+   }
+@@ -951,7 +1003,7 @@
+     }
+ 
+     auto InputFilePath = getFilePath(Input, InputDir);
+-    if (auto Status = outputToFile(Input, InputFilePath)) {
++    if (auto Status = stageInput(Input, InputFilePath, UseVFS ? InMemoryFS.get() : nullptr)) {
+       return Status;
+     }
+ 
+@@ -1000,7 +1052,9 @@
+     }
+     PrecompiledHeaders.push_back(getFilePath(Input, IncludeDir));
+     auto &PrecompiledHeaderPath = PrecompiledHeaders.back();
+-    if (auto Status = outputToFile(Input, PrecompiledHeaderPath)) {
++    // PCH bytes are compiler inputs too, not generated GPU objects for the linker.
++    if (auto Status = stageInput(Input, PrecompiledHeaderPath,
++                                 UseVFS ? InMemoryFS.get() : nullptr)) {
+       return Status;
+     }
+     Args.push_back("-include-pch");
+@@ -1096,7 +1150,12 @@
+   SmallString<256> DeviceCodeDir(DeviceLibPath);
+   sys::path::append(DeviceCodeDir, "amdgcn", "bitcode");
+ 
+-  if (llvm::sys::fs::exists(DeviceCodeDir)) {
++#ifdef COMGR_EMBEDDED_RESOURCES
++  const bool UseInstalledLibraries = false;
++#else
++  const bool UseInstalledLibraries = llvm::sys::fs::exists(DeviceCodeDir);
++#endif
++  if (UseInstalledLibraries) {
+     Args.push_back(Saver.save(Twine("--rocm-path=") + DeviceLibPath).data());
+   } else {
+     llvm::SmallString<128> FakeRocmDir = TmpDir;
+@@ -1228,7 +1285,11 @@
+     }
+   }
+ 
++#ifdef COMGR_EMBEDDED_RESOURCES
++  return processFiles(AMD_COMGR_DATA_KIND_EXECUTABLE, ".hsaco");
++#else
+   return processFiles(AMD_COMGR_DATA_KIND_EXECUTABLE, ".so");
++#endif
+ }
+ 
+ amd_comgr_status_t AMDGPUCompiler::compileToRelocatable() {
+@@ -1886,7 +1947,11 @@
+   ScopedDataObjectReleaser SDOR(OutputT);
+ 
+   DataObject *Output = DataObject::convert(OutputT);
++#ifdef COMGR_EMBEDDED_RESOURCES
++  Output->setName("a.hsaco"); // AMDGPU data, never a host shared library to load/extract.
++#else
+   Output->setName("a.so");
++#endif
+   auto OutputFilePath = getFilePath(Output, OutputDir);
+   Args.push_back("-o");
+   Args.push_back(OutputFilePath.c_str());

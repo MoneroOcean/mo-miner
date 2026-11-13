@@ -1,0 +1,345 @@
+diff --git a/clang/lib/Driver/Driver.cpp b/clang/lib/Driver/Driver.cpp
+index 93f594599..5b8e2f8ff 100644
+--- a/clang/lib/Driver/Driver.cpp
++++ b/clang/lib/Driver/Driver.cpp
+@@ -3886,7 +3886,11 @@ getLinkerArgs(Compilation &C, DerivedArgList &Args, bool IncludeObj = false) {
+     std::string FileName = A->getAsString(Args);
+     static bool IsLinkStateStatic(Args.hasArg(options::OPT_static));
+     auto addLibArg = [&](StringRef LibName) -> bool {
+-      if (isStaticArchiveFile(LibName) ||
++      // Honor the driver's VFS: source-JIT inputs need not exist on the host filesystem.
++      auto Buffer = C.getDriver().getVFS().getBufferForFile(LibName);
++      const bool IsArchive = Buffer &&
++          llvm::identify_magic((*Buffer)->getBuffer()) == llvm::file_magic::archive;
++      if (IsArchive ||
+           (IncludeObj && isObjectFile(LibName.str()))) {
+         LibArgs.push_back(Args.MakeArgString(LibName));
+         return true;
+diff --git a/sycl-jit/CMakeLists.txt b/sycl-jit/CMakeLists.txt
+--- a/sycl-jit/CMakeLists.txt
++++ b/sycl-jit/CMakeLists.txt
+@@ -4,6 +4,12 @@ cmake_minimum_required(VERSION 3.20.0 FATAL_ERROR)
+ # for use in includes etc.
+ set(SYCL_JIT_BASE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
+ 
++if(WIN32 AND SYCL_JIT_STATIC)
++  # clang-cl -nostdinc suppresses -imsvc, including explicitly admitted LLVM roots.
++  # Keep hermetic discovery; spell only this project's explicit includes as -I.
++  set(CMAKE_INCLUDE_SYSTEM_FLAG_CXX "-I")
++endif()
++
+ # For some reason, the LLVMSPIRVLib does not define any public includes.
+ # To link against the library, define the following link to its include
+ # directories, similar to how clang/CMakeLists.txt does it.
+@@ -28,5 +34,5 @@ add_subdirectory(passes)
+ # Loadable plugins for opt aren't supported on Windows,
+ # so we can't execute the tests.
+-if (NOT WIN32 AND NOT CYGWIN)
++if(NOT WIN32 AND NOT CYGWIN AND LLVM_INCLUDE_TESTS)
+   add_subdirectory(test)
+ endif()
+diff --git a/sycl-jit/passes/CMakeLists.txt b/sycl-jit/passes/CMakeLists.txt
+--- a/sycl-jit/passes/CMakeLists.txt
++++ b/sycl-jit/passes/CMakeLists.txt
+@@ -1,6 +1,8 @@
+ # See llvm/examples/Bye/CmakeLists.txt as to why this kind of loadable plugin libraries
+ # isn't supported on Windows.
+-if (NOT WIN32 AND NOT CYGWIN)
++# LLVM disables MODULE libraries when plugins are off; only the opt development
++# plugin is optional. The embedded JIT's static passes below remain enabled.
++if(NOT WIN32 AND NOT CYGWIN AND LLVM_ENABLE_PLUGINS)
+   # Module library for usage as library/pass-plugin with LLVM opt.
+   add_llvm_library(SYCLJITPassesPlugin MODULE
+     SYCLJITPasses.cpp
+diff --git a/sycl-jit/jit-compiler/CMakeLists.txt b/sycl-jit/jit-compiler/CMakeLists.txt
+index c32fe7e4b..a7d2e78de 100644
+--- a/sycl-jit/jit-compiler/CMakeLists.txt
++++ b/sycl-jit/jit-compiler/CMakeLists.txt
+@@ -1,5 +1,11 @@
+ 
+ 
++option(SYCL_JIT_STATIC "Build the source JIT as an application archive" OFF)
++if(SYCL_JIT_STATIC)
++  set(SYCL_JIT_LIBRARY_KIND STATIC)
++else()
++  set(SYCL_JIT_LIBRARY_KIND SHARED)
++endif()
+ set(SYCL_JIT_RESOURCE_CPP "${CMAKE_CURRENT_BINARY_DIR}/resource.cpp")
+ set(SYCL_JIT_RESOURCE_OBJ "${CMAKE_CURRENT_BINARY_DIR}/resource.cpp.o")
+ 
+@@ -35,6 +41,17 @@ if (libclc_enabled)
+ endif()
+ 
+ set(SYCL_JIT_RESOURCE_INSTALL_DIR ${CMAKE_CURRENT_BINARY_DIR}/rtc-resources-install)
++set(SYCL_JIT_RESOURCE_OVERLAY "" CACHE PATH "Build-only native JIT resource overlay")
++# A cross build cannot execute its target clang-cl.exe on Linux. Keep the
++# native Windows build default and allow a matching host clang-cl.
++set(SYCL_JIT_RESOURCE_CLANG "" CACHE FILEPATH "Host clang-cl used to compile embedded JIT resources")
++if(SYCL_JIT_STATIC)
++  if(NOT IS_ABSOLUTE "${SYCL_JIT_RESOURCE_OVERLAY}" OR
++     NOT EXISTS "${SYCL_JIT_RESOURCE_OVERLAY}/include/mom-cxx/algorithm" OR
++     NOT EXISTS "${SYCL_JIT_RESOURCE_OVERLAY}/include/CL/cl.h")
++    message(FATAL_ERROR "Static source JIT requires its explicit complete resource overlay")
++  endif()
++endif()
+ 
+ set(SYCL_JIT_PREPARE_RESOURCE_COMMANDS)
+ 
+@@ -67,6 +81,16 @@ list(FILTER SYCL_JIT_RESOURCE_DEPS EXCLUDE REGEX "^OpenCL-Headers$")
+ #
+ # Inspired by the way `sycl-headers` target is created.
+ file(GLOB_RECURSE SYCL_JIT_RESOURCE_FILES CONFIGURE_DEPENDS "${SYCL_JIT_RESOURCE_INSTALL_DIR}/*" )
++set(SYCL_JIT_RESOURCE_BYPRODUCTS ${SYCL_JIT_RESOURCE_FILES})
++if(SYCL_JIT_STATIC)
++  # The admitted complete overlay is immutable input, not another SDK installation.
++  set(SYCL_JIT_RESOURCE_INSTALL_DIR "${SYCL_JIT_RESOURCE_OVERLAY}")
++  file(GLOB_RECURSE SYCL_JIT_OVERLAY_FILES CONFIGURE_DEPENDS "${SYCL_JIT_RESOURCE_OVERLAY}/*")
++  set(SYCL_JIT_RESOURCE_FILES ${SYCL_JIT_OVERLAY_FILES})
++  set(SYCL_JIT_RESOURCE_DEPS)
++  set(SYCL_JIT_PREPARE_RESOURCE_COMMANDS)
++  set(SYCL_JIT_RESOURCE_BYPRODUCTS)
++endif()
+ 
+ add_custom_target(rtc-prepare-resources
+   DEPENDS ${SYCL_JIT_RESOURCE_DEPS}
+@@ -77,7 +101,7 @@ add_custom_target(rtc-prepare-resources
+   ${SYCL_JIT_PREPARE_RESOURCE_COMMANDS}
+   BYPRODUCTS
+-  ${SYCL_JIT_RESOURCE_FILES}
++  ${SYCL_JIT_RESOURCE_BYPRODUCTS}
+ )
+ 
+ add_custom_command(
+   OUTPUT ${SYCL_JIT_RESOURCE_CPP}
+@@ -91,6 +114,10 @@
+ if (WIN32)
+-  set(clang_exe ${CMAKE_BINARY_DIR}/bin/clang-cl.exe)
++  if(SYCL_JIT_RESOURCE_CLANG)
++    set(clang_exe "${SYCL_JIT_RESOURCE_CLANG}")
++  else()
++    set(clang_exe ${CMAKE_BINARY_DIR}/bin/clang-cl.exe)
++  endif()
+   set(SYCL_JIT_RESOURCE_CXX_FLAGS /O2 /std:c++17 /W0)
+ 
+   # Determine if we should use static (/MT) or dynamic (/MD) runtime
+   set(USE_STATIC_RUNTIME 0)
+@@ -141,7 +161,7 @@ add_llvm_library(sycl-jit
+ 
+    ${SYCL_JIT_RESOURCE_OBJ}
+ 
+-   SHARED
++   ${SYCL_JIT_LIBRARY_KIND}
+ 
+    DEPENDS
+    intrinsics_gen
+@@ -186,8 +206,11 @@
+ if(WIN32)
+-  target_link_libraries(sycl-jit PRIVATE Shlwapi)
++  target_link_libraries(sycl-jit PRIVATE shlwapi)
+ endif()
+ 
+ sycl_jit_apply_target_warning_flags(sycl-jit)
++if(SYCL_JIT_STATIC)
++  target_compile_definitions(sycl-jit PRIVATE MOM_DPCPP_STATIC_JIT)
++endif()
+ 
+ # Mark LLVM and SPIR-V headers as system headers to ignore warnigns in them.
+ # This classification remains intact even if the same paths are added as normal
+@@ -225,7 +248,7 @@ if("AMDGPU" IN_LIST LLVM_TARGETS_TO_BUILD)
+   target_compile_definitions(sycl-jit PRIVATE JIT_SUPPORT_AMDGCN)
+ endif()
+ 
+-if(NOT MSVC AND NOT APPLE)
++if(NOT MSVC AND NOT APPLE AND NOT SYCL_JIT_STATIC)
+   # Manage symbol visibility through the linker to make sure no LLVM symbols
+   # are exported and confuse the drivers.
+   set(linker_script "${CMAKE_CURRENT_SOURCE_DIR}/ld-version-script.txt")
+diff --git a/sycl-jit/jit-compiler/lib/rtc/DeviceCompilation.cpp b/sycl-jit/jit-compiler/lib/rtc/DeviceCompilation.cpp
+index 5c4406841..7350f5089 100644
+--- a/sycl-jit/jit-compiler/lib/rtc/DeviceCompilation.cpp
++++ b/sycl-jit/jit-compiler/lib/rtc/DeviceCompilation.cpp
+@@ -172,8 +172,9 @@ namespace {
+ std::string getLibPathSuffix() {
+-#ifdef _WIN32
++// Static overlays share one virtual layout; only installed Windows SDKs use /lib/.
++#if defined(_WIN32) && !defined(MOM_DPCPP_STATIC_JIT)
+   return llvm::formatv("/{0}/", CLANG_INSTALL_LIBDIR_BASENAME);
+ #else
+   return llvm::formatv("/{0}/dpcpp-{1}/sycl/", CLANG_INSTALL_LIBDIR_BASENAME,
+                        DPCPP_VERSION_MAJOR);
+ #endif
+ }
+@@ -205,6 +205,15 @@ class SYCLToolchain {
+     return ToolchainFS;
+   }
+ 
++  static IntrusiveRefCntPtr<FileSystem> getBaseFS() {
++#ifdef MOM_DPCPP_STATIC_JIT
++    // Static native mode owns all compiler inputs in memory; no SDK/host include fallback.
++    return getToolchainFS();
++#else
++    return llvm::vfs::getRealFileSystem();
++#endif
++  }
++
+   SYCLToolchain() = default;
+ 
+   struct PrecompiledPreambles {
+@@ -260,10 +269,41 @@ class SYCLToolchain {
+     // can't claim them here to tell the driver they're used later. Hence,
+     // suppress the unused argument warning.
+     DAL.AddFlagArg(nullptr, OptTable.getOption(OPT_Qunused_arguments));
++#ifdef MOM_DPCPP_STATIC_JIT
++  #ifdef _WIN32
++    // Native Windows embeds redistributable GNU device headers, not an MSVC SDK.
++    // This changes only the device frontend's auxiliary ABI; host/compiler objects
++    // keep their original MSVC ABI and generated mining kernels use C/POD arguments.
++    DAL.AddJoinedArg(nullptr, OptTable.getOption(OPT_target),
++                     "x86_64-w64-windows-gnu");
++    // OpenCL's optional host-vector aliases must not import x86 intrinsics into
++    // a SPIR-V/PTX compile. Preserve the target's actual CRT and Windows macros.
++    for (StringRef Macro : {"__SSE__", "__SSE2__", "__MMX__", "__AVX__"})
++      DAL.AddJoinedArg(nullptr, OptTable.getOption(OPT_U), Macro);
++  #endif
++    DAL.AddFlagArg(nullptr, OptTable.getOption(OPT_nostdinc));
++    for (StringRef Root : {"/include/mom-cxx", "/include/mom-cxx-target", "/include/mom-cxx/backward"})
++      DAL.AddSeparateArg(nullptr, OptTable.getOption(OPT_isystem), (Prefix + Root).str());
++    DAL.AddSeparateArg(nullptr, OptTable.getOption(OPT_isystem), GetResourcesPath(ClangXXExe) + "/include");
++    for (StringRef Root : {"/include/mom-system-target", "/include/mom-system", "/include"})
++      DAL.AddSeparateArg(nullptr, OptTable.getOption(OPT_isystem), (Prefix + Root).str());
++#endif
+ 
+     if (Format == BinaryFormat::PTX || Format == BinaryFormat::AMDGCN) {
+       auto [CPU, Features] =
+           Translator::getTargetCPUAndFeatureAttrs(nullptr, "", Format);
+-      (void)Features;
++#ifdef MOM_DPCPP_STATIC_JIT
++      if (Format == BinaryFormat::PTX) {
++        // Link the embedded library below; do not infer PTX from a host CUDA SDK.
++        DAL.AddFlagArg(nullptr, OptTable.getOption(OPT_no_offloadlib));
++        SmallVector<StringRef, 4> TargetFeatures;
++        StringRef(Features).split(TargetFeatures, ',');
++        for (StringRef Feature : TargetFeatures)
++          if (Feature.starts_with("+ptx"))
++            DAL.AddJoinedArg(nullptr, OptTable.getOption(OPT_cuda_feature_EQ), Feature);
++      }
++#else
++      (void)Features;
++#endif
+       StringRef OT = Format == BinaryFormat::PTX ? "nvptx64-nvidia-cuda"
+                                                  : "amdgcn-amd-amdhsa";
+@@ -553,8 +572,7 @@ public:
+     std::vector<std::string> CommandLine =
+         createCommandLine(UserArgList, Format, SourceFilePath);
+ 
+-    auto FS = llvm::makeIntrusiveRefCnt<llvm::vfs::OverlayFileSystem>(
+-        llvm::vfs::getRealFileSystem());
++    auto FS = llvm::makeIntrusiveRefCnt<llvm::vfs::OverlayFileSystem>(getBaseFS());
+     FS->pushOverlay(getToolchainFS());
+     if (FSOverlay)
+       FS->pushOverlay(std::move(FSOverlay));
+@@ -601,8 +619,7 @@ public:
+ 
+   Expected<ModuleUPtr> loadBitcodeLibrary(StringRef LibPath,
+                                           LLVMContext &Context) {
+-    auto FS = llvm::makeIntrusiveRefCnt<llvm::vfs::OverlayFileSystem>(
+-        llvm::vfs::getRealFileSystem());
++    auto FS = llvm::makeIntrusiveRefCnt<llvm::vfs::OverlayFileSystem>(getBaseFS());
+     FS->pushOverlay(getToolchainFS());
+ 
+     auto MemBuf = FS->getBufferForFile(LibPath, /*FileSize*/ -1,
+@@ -625,6 +642,9 @@ public:
+ 
+   std::string_view getPrefix() const { return Prefix; }
+   std::string_view getClangXXExe() const { return ClangXXExe; }
++#ifdef MOM_DPCPP_STATIC_JIT
++  auto getEmbeddedFileSystem() { return getToolchainFS(); }
++#endif
+   std::string_view getLibclcDir() const { return LibclcDir; }
+ 
+ private:
+@@ -870,7 +890,11 @@ Error jit_compiler::linkDeviceLibraries(llvm::Module &Module,
+   // For GPU targets we need to link against vendor provided libdevice.
+   if (IsCudaHIP) {
+     Triple T{Module.getTargetTriple()};
++#ifdef MOM_DPCPP_STATIC_JIT
++    Driver D{TC.getClangXXExe(), T.getTriple(), Diags, "clang LLVM compiler", TC.getEmbeddedFileSystem()};
++#else
+     Driver D{TC.getClangXXExe(), T.getTriple(), Diags};
++#endif
+     auto [CPU, Features] =
+         Translator::getTargetCPUAndFeatureAttrs(&Module, "", Format);
+     (void)Features;
+@@ -890,6 +914,11 @@ Error jit_compiler::linkDeviceLibraries(llvm::Module &Module,
+     };
+     SmallVector<std::string, 12> LibDeviceFiles;
+     if (Format == BinaryFormat::PTX) {
++#ifdef MOM_DPCPP_STATIC_JIT
++      // The selected build supplies exactly this immutable device library; runtime SDK
++      // discovery would consult host state and cannot improve specialization of its IR.
++      LibDeviceFiles.push_back((TC.getPrefix() + "/cuda/nvvm/libdevice/libdevice.10.bc").str());
++#else
+       // For NVPTX we can get away with CudaInstallationDetector.
+       LazyDetector<CudaInstallationDetector> CudaInstallation{D, T,
+                                                               UserArgList};
+@@ -898,6 +927,7 @@ Error jit_compiler::linkDeviceLibraries(llvm::Module &Module,
+         return createStringError("Unable to find Cuda libdevice");
+       }
+       LibDeviceFiles.push_back(LibDevice);
++#endif
+     } else {
+       LazyDetector<RocmInstallationDetector> RocmInstallation{D, T,
+                                                               UserArgList};
+@@ -1174,7 +1204,7 @@ jit_compiler::parseUserArgs(View<const char *> UserArgs) {
+   unsigned MissingArgIndex, MissingArgCount;
+   auto UserArgsRef = UserArgs.to<ArrayRef>();
+   auto AL = getDriverOptTable().ParseArgs(UserArgsRef, MissingArgIndex,
+-                                          MissingArgCount);
++                                          MissingArgCount, llvm::opt::Visibility(ClangOption));
+   if (MissingArgCount) {
+     return createStringError(
+         "User option '%s' at index %d is missing an argument",
+diff --git a/sycl/source/CMakeLists.txt b/sycl/source/CMakeLists.txt
+index b7c119e17..c80684b80 100644
+--- a/sycl/source/CMakeLists.txt
++++ b/sycl/source/CMakeLists.txt
+@@ -252,6 +252,10 @@ function(add_sycl_rt_library LIB_NAME LIB_OBJ_NAME)
+        sycl-jit)
+     target_compile_definitions(${LIB_NAME} PRIVATE SYCL_EXT_JIT_ENABLE)
+     target_compile_definitions(${LIB_OBJ_NAME} PRIVATE SYCL_EXT_JIT_ENABLE)
++    if(SYCL_JIT_STATIC)
++      target_compile_definitions(${LIB_OBJ_NAME} PRIVATE MOM_DPCPP_STATIC_JIT)
++      target_link_libraries(${LIB_NAME} PRIVATE sycl-jit)
++    endif()
+   endif(SYCL_ENABLE_EXTENSION_JIT)
+ 
+   add_common_options(${LIB_NAME} ${LIB_OBJ_NAME})
+diff --git a/sycl/source/detail/jit_compiler.cpp b/sycl/source/detail/jit_compiler.cpp
+index 2b972ec81..b7594abd7 100644
+--- a/sycl/source/detail/jit_compiler.cpp
++++ b/sycl/source/detail/jit_compiler.cpp
+@@ -31,6 +31,16 @@ static inline void printPerformanceWarning(const std::string &Message) {
+ 
+ jit_compiler::jit_compiler()
+     : LibraryHandle(nullptr, CustomDeleterForLibHandle) {
++#ifdef MOM_DPCPP_STATIC_JIT
++  // Same implementation and ABI, but no application DLL lookup or loader-owned lifetime.
++  AddToConfigHandle = &::jit_compiler::addToJITConfiguration;
++  ResetConfigHandle = &::jit_compiler::resetJITConfiguration;
++  MaterializeSpecConstHandle = &::jit_compiler::materializeSpecConstants;
++  CalculateHashHandle = &::jit_compiler::calculateHash;
++  CompileSYCLHandle = &::jit_compiler::compileSYCL;
++  DestroyBinaryHandle = &::jit_compiler::destroyBinary;
++  Available = true;
++#else
+   auto checkJITLibrary = [this]() -> bool {
+ #ifdef _WIN32
+     static const std::string dir = sycl::detail::OSUtil::getCurrentDSODir();
+@@ -105,6 +115,7 @@ jit_compiler::jit_compiler()
+     return true;
+   };
+   Available = checkJITLibrary();
++#endif
+ }
+ 
+ #ifndef _WIN32

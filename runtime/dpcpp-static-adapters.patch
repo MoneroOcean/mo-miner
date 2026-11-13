@@ -1,0 +1,196 @@
+diff --git a/unified-runtime/source/adapters/cuda/CMakeLists.txt b/unified-runtime/source/adapters/cuda/CMakeLists.txt
+index 2971dc5be..bf4fe2ff0 100644
+--- a/unified-runtime/source/adapters/cuda/CMakeLists.txt
++++ b/unified-runtime/source/adapters/cuda/CMakeLists.txt
+@@ -4,8 +4,12 @@
+ 
+ set(TARGET_NAME ur_adapter_cuda)
+ 
++set(ADAPTER_LIB_TYPE SHARED)
++if(UR_STATIC_ADAPTER_CUDA)
++  set(ADAPTER_LIB_TYPE STATIC)
++endif()
+ add_ur_adapter(${TARGET_NAME}
+-    SHARED
++    ${ADAPTER_LIB_TYPE}
+     ${CMAKE_CURRENT_SOURCE_DIR}/ur_interface_loader.cpp
+     ${CMAKE_CURRENT_SOURCE_DIR}/adapter.hpp
+     ${CMAKE_CURRENT_SOURCE_DIR}/adapter.cpp
+@@ -58,6 +62,7 @@ find_package(Threads REQUIRED)
+ find_package(CUDAToolkit 10.1 REQUIRED)
+ 
+ # Make imported library global to use it within the project.
++if(NOT UR_STATIC_ADAPTER_CUDA)
+ add_library(cudadrv SHARED IMPORTED GLOBAL)
+ 
+ if (WIN32)
+@@ -73,6 +78,7 @@ else()
+       INTERFACE_INCLUDE_DIRECTORIES "${CUDAToolkit_INCLUDE_DIRS}"
+   )
+ endif()
++endif()
+ 
+ # Only enable xpti tracing on Linux as tracing tools aren't available on
+ # Windows yet.
+@@ -115,9 +121,14 @@ target_link_libraries(${TARGET_NAME} PRIVATE
+     ${PROJECT_NAME}::common
+     ${PROJECT_NAME}::umf
+     Threads::Threads
+-    cudadrv
+-    CUDA::nvml
+ )
++if(UR_STATIC_ADAPTER_CUDA)
++  # The native link supplies SDK-typed optional system-driver forwarding functions.
++  # Do not make every executable require CUDA/NVML on an Intel/AMD-only machine.
++  target_include_directories(${TARGET_NAME} SYSTEM PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
++else()
++  target_link_libraries(${TARGET_NAME} PRIVATE cudadrv CUDA::nvml)
++endif()
+ 
+ target_include_directories(${TARGET_NAME} PRIVATE
+     "${CMAKE_CURRENT_SOURCE_DIR}/../../"
+diff --git a/unified-runtime/source/adapters/level_zero/CMakeLists.txt b/unified-runtime/source/adapters/level_zero/CMakeLists.txt
+index 908bb021f..4173b0ee1 100644
+--- a/unified-runtime/source/adapters/level_zero/CMakeLists.txt
++++ b/unified-runtime/source/adapters/level_zero/CMakeLists.txt
+@@ -123,8 +123,12 @@ if(UR_BUILD_ADAPTER_L0)
+ endif()
+ 
+ if(UR_BUILD_ADAPTER_L0_V2)
++    set(ADAPTER_V2_LIB_TYPE SHARED)
++    if(UR_STATIC_ADAPTER_L0)
++        set(ADAPTER_V2_LIB_TYPE STATIC)
++    endif()
+     add_ur_adapter(ur_adapter_level_zero_v2
+-        SHARED
++        ${ADAPTER_V2_LIB_TYPE}
+         # sources shared with legacy adapter
+         ${CMAKE_CURRENT_SOURCE_DIR}/adapter.hpp
+         ${CMAKE_CURRENT_SOURCE_DIR}/command_buffer_command.hpp
+@@ -207,6 +211,9 @@ if(UR_BUILD_ADAPTER_L0_V2)
+ 
+     target_compile_definitions(ur_adapter_level_zero_v2 PUBLIC UR_STATIC_LEVEL_ZERO)
+     target_compile_definitions(ur_adapter_level_zero_v2 PUBLIC UR_ADAPTER_LEVEL_ZERO_V2)
++    if(UR_STATIC_ADAPTER_L0)
++        target_compile_definitions(ur_adapter_level_zero_v2 PRIVATE UR_STATIC_ADAPTER_LEVEL_ZERO)
++    endif()
+ 
+     # TODO: fix level_zero adapter conversion warnings
+     target_compile_options(ur_adapter_level_zero_v2 PRIVATE
+diff --git a/unified-runtime/source/loader/CMakeLists.txt b/unified-runtime/source/loader/CMakeLists.txt
+index 5eea34acc..7bf8a6d33 100644
+--- a/unified-runtime/source/loader/CMakeLists.txt
++++ b/unified-runtime/source/loader/CMakeLists.txt
+@@ -86,11 +86,21 @@ if(UR_STATIC_ADAPTER_L0)
+     target_compile_definitions(ur_loader PRIVATE UR_STATIC_ADAPTER_LEVEL_ZERO)
+ endif()
+ 
++if(UR_STATIC_ADAPTER_L0 AND UR_BUILD_ADAPTER_L0_V2)
++    target_link_libraries(ur_loader PRIVATE mom-ur-level-zero-v2-static)
++    target_compile_definitions(ur_loader PRIVATE UR_STATIC_ADAPTER_LEVEL_ZERO_V2)
++endif()
++
+ if(UR_STATIC_ADAPTER_OPENCL AND (UR_BUILD_ADAPTER_OPENCL OR UR_BUILD_ADAPTER_ALL))
+     target_link_libraries(ur_loader PRIVATE ur_adapter_opencl)
+     target_compile_definitions(ur_loader PRIVATE UR_STATIC_ADAPTER_OPENCL)
+ endif()
+ 
++if(UR_STATIC_ADAPTER_CUDA AND (UR_BUILD_ADAPTER_CUDA OR UR_BUILD_ADAPTER_ALL))
++    target_link_libraries(ur_loader PRIVATE mom-ur-cuda-static)
++    target_compile_definitions(ur_loader PRIVATE UR_STATIC_ADAPTER_CUDA)
++endif()
++
+ if(UR_ENABLE_TRACING)
+     target_link_libraries(ur_loader PRIVATE ${TARGET_XPTI})
+     target_include_directories(ur_loader PRIVATE ${xpti_SOURCE_DIR}/include)
+diff --git a/unified-runtime/source/loader/ur_adapter_registry.hpp b/unified-runtime/source/loader/ur_adapter_registry.hpp
+index ca382c617..f107a17b4 100644
+--- a/unified-runtime/source/loader/ur_adapter_registry.hpp
++++ b/unified-runtime/source/loader/ur_adapter_registry.hpp
+@@ -175,6 +175,18 @@ public:
+ 
+   bool adaptersForceLoaded() { return forceLoaded; }
+ 
++  // Static factories must honor the same parsed selector as dynamic discovery. Keep the
++  // manifest identities, not filesystem availability: a static adapter needs no DLL/SO.
++  bool isAdapterEnabled(const std::string &name) const {
++    return std::any_of(adaptersLoadPaths.begin(), adaptersLoadPaths.end(),
++                       [&name](const auto &paths) {
++                         return std::any_of(paths.begin(), paths.end(),
++                                            [&name](const auto &p) {
++                                              return p.filename() == name;
++                                            });
++                       });
++  }
++
+   std::vector<std::vector<fs::path>>::const_iterator begin() const noexcept {
+     return adaptersLoadPaths.begin();
+   }
+diff --git a/unified-runtime/source/loader/ur_loader.cpp b/unified-runtime/source/loader/ur_loader.cpp
+index f216fdb43..9da609cf4 100644
+--- a/unified-runtime/source/loader/ur_loader.cpp
++++ b/unified-runtime/source/loader/ur_loader.cpp
+@@ -14,6 +14,14 @@
+ #ifdef UR_STATIC_ADAPTER_OPENCL
+ #include "adapters/opencl/ur_interface_loader.hpp"
+ #endif
++#ifdef UR_STATIC_ADAPTER_CUDA
++// CUDA's implementation and opaque handles have private symbols; only this table factory
++// crosses the static boundary. Reuse the original adapter's complete dispatch population.
++extern "C" ur_result_t mom_ur_cuda_factory(ur_dditable_t *);
++#endif
++#ifdef UR_STATIC_ADAPTER_LEVEL_ZERO_V2
++extern "C" ur_result_t mom_ur_level_zero_v2_factory(ur_dditable_t *);
++#endif
+ 
+ namespace ur_loader {
+ ///////////////////////////////////////////////////////////////////////////////
+@@ -34,19 +42,41 @@ ur_result_t context_t::init() {
+   UINT SavedMode = SetErrorMode(SEM_FAILCRITICALERRORS);
+ #endif
+ 
+-#if defined(UR_STATIC_ADAPTER_LEVEL_ZERO) || defined(UR_STATIC_ADAPTER_OPENCL)
++#if defined(UR_STATIC_ADAPTER_LEVEL_ZERO) || defined(UR_STATIC_ADAPTER_OPENCL) || defined(UR_STATIC_ADAPTER_CUDA)
+   // If the adapters were force loaded, it means the user wants to use
+   // a specific adapter library. Don't load any static adapters.
+   if (!adapter_registry.adaptersForceLoaded()) {
+ #ifdef UR_STATIC_ADAPTER_LEVEL_ZERO
+-    auto &level_zero = platforms.emplace_back(nullptr);
+-    ur::level_zero::urAdapterGetDdiTables(&level_zero.dditable);
+-    adapter_registry.markAdapterAsStaticallyLoaded("ur_adapter_level_zero");
++    if (adapter_registry.isAdapterEnabled(MAKE_LIBRARY_NAME("ur_adapter_level_zero", "0"))) {
++      auto &level_zero = platforms.emplace_back(nullptr);
++      ur::level_zero::urAdapterGetDdiTables(&level_zero.dditable);
++      adapter_registry.markAdapterAsStaticallyLoaded("ur_adapter_level_zero");
++    }
++#endif
++#ifdef UR_STATIC_ADAPTER_LEVEL_ZERO_V2
++    if (adapter_registry.isAdapterEnabled(MAKE_LIBRARY_NAME("ur_adapter_level_zero_v2", "0"))) {
++      auto &level_zero_v2 = platforms.emplace_back(nullptr);
++      auto result = mom_ur_level_zero_v2_factory(&level_zero_v2.dditable);
++      if (result != UR_RESULT_SUCCESS)
++        return result;
++      adapter_registry.markAdapterAsStaticallyLoaded("ur_adapter_level_zero_v2");
++    }
+ #endif
+ #ifdef UR_STATIC_ADAPTER_OPENCL
+-    auto &opencl = platforms.emplace_back(nullptr);
+-    ur::opencl::urAdapterGetDdiTables(&opencl.dditable);
+-    adapter_registry.markAdapterAsStaticallyLoaded("ur_adapter_opencl");
++    if (adapter_registry.isAdapterEnabled(MAKE_LIBRARY_NAME("ur_adapter_opencl", "0"))) {
++      auto &opencl = platforms.emplace_back(nullptr);
++      ur::opencl::urAdapterGetDdiTables(&opencl.dditable);
++      adapter_registry.markAdapterAsStaticallyLoaded("ur_adapter_opencl");
++    }
++#endif
++#ifdef UR_STATIC_ADAPTER_CUDA
++    if (adapter_registry.isAdapterEnabled(MAKE_LIBRARY_NAME("ur_adapter_cuda", "0"))) {
++      auto &cuda = platforms.emplace_back(nullptr);
++      auto result = mom_ur_cuda_factory(&cuda.dditable);
++      if (result != UR_RESULT_SUCCESS)
++        return result;
++      adapter_registry.markAdapterAsStaticallyLoaded("ur_adapter_cuda");
++    }
+ #endif
+   }
+ #endif

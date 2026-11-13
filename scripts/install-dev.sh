@@ -139,10 +139,9 @@ selected() {
   return 1
 }
 
-if [[ $(id -u) -ne 0 ]]; then
+if [[ $(id -u) -ne 0 && $VALIDATE_ONLY -eq 0 ]]; then
   sudo_args=(--component "$(IFS=,; echo "${COMPONENTS[*]}")" --jobs "$JOBS" --workspace "$WORKSPACE")
   ((KEEP_WORKSPACE)) && sudo_args+=(--keep-workspace)
-  ((VALIDATE_ONLY)) && sudo_args+=(--validate-only)
   exec sudo --preserve-env=MOM_NODE_VERSION,MOM_DPCPP_RELEASE,MOM_DPCPP_ASSET,\
 MOM_NODE_SHA256,MOM_DPCPP_SHA256,MOM_ADAPTIVECPP_COMMIT,MOM_CUDA_VERSION,\
 MOM_ROCM_VERSION,MOM_LLVM_VERSION,MOM_BUILD_JOBS,MOM_DEV_WORKSPACE "$0" "${sudo_args[@]}"
@@ -183,13 +182,13 @@ install_base() {
   # only by the AdaptiveCpp components that need it.
   apt_install build-essential ca-certificates cmake curl git gnupg iputils-ping libboost-context-dev \
     binutils patchelf \
-    libboost-fiber-dev libhwloc-dev libzstd-dev ninja-build pkg-config python3 python3-psutil \
-    python3-yaml lsb-release sudo xz-utils
+    libboost-fiber-dev libhwloc-dev libssl-dev libzstd-dev ninja-build pkg-config python3 python3-psutil \
+    python3-yaml lsb-release sudo xz-utils zlib1g-dev
   BASE_INSTALLED=1
 }
 
 node_ready() {
-  local node_bin header_version file
+  local node_bin header_version gyp_version file
   node_bin=$(command -v node) || return 1
   [[ -x $node_bin && $("$node_bin" -p process.version) == "v$NODE_VERSION" ]] || return 1
   LC_ALL=C grep -aqF 'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2' "$node_bin" || return 1
@@ -203,7 +202,10 @@ node_ready() {
     $1 == "#define" && $2 == "NODE_PATCH_VERSION" { patch=$3; count++ }
     END { if (count == 3) print major "." minor "." patch }
   ' /usr/local/include/node/node_version.h)
-  [[ $header_version == "$NODE_VERSION" ]] && command -v node-gyp >/dev/null
+  # Matching Node headers do not make a stale or broken node-gyp reusable.
+  [[ $header_version == "$NODE_VERSION" ]] || return 1
+  gyp_version=$(node-gyp --version 2>/dev/null) || return 1
+  [[ $gyp_version == v12.2.0 ]]
 }
 
 install_node() {
@@ -214,14 +216,24 @@ install_node() {
   tar -C /usr/local --strip-components=1 -xf "$archive"
   export PATH="/usr/local/bin:$PATH"
   hash -r
-  npm install -g node-gyp@12.2.0
+  # The SHA-pinned Node/npm archive includes this complete node-gyp dependency tree.
+  # Reuse it instead of resolving another global tree from the registry.
+  ln -sfnT ../lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js /usr/local/bin/node-gyp
+  node_ready || { echo "Pinned Node archive lacks the required node-gyp v12.2.0" >&2; return 1; }
+}
+
+oneapi_compilers_ready() {
+  local compiler_dir=${1:-/opt/intel/oneapi/compiler/latest/bin} name compiler version
+  for name in icx icpx; do
+    compiler="$compiler_dir/$name"
+    [[ -x $compiler ]] || return 1
+    version=$("$compiler" --version 2>/dev/null) || return 1
+    grep -Eq 'Intel\(R\) oneAPI DPC\+\+/C\+\+ Compiler 2026\.2(\.|[[:space:]]|$)' <<<"$version" || return 1
+  done
 }
 
 install_oneapi() {
-  if [[ -x /opt/intel/oneapi/compiler/latest/bin/icpx ]] &&
-     /opt/intel/oneapi/compiler/latest/bin/icpx --version 2>/dev/null | grep -q '2026\.0\.0'; then
-    return
-  fi
+  oneapi_compilers_ready && return
   local key=/usr/share/keyrings/oneapi-archive-keyring.gpg
   local key_source="$WORKSPACE/oneapi-repository-key.pub"
   mkdir -p "$(dirname "$key")"
@@ -236,8 +248,8 @@ install_oneapi() {
   # The compiler package contains icx/icpx, the SYCL runtime, and the Level Zero/OpenCL adapters
   # used by mom. The oneAPI toolkit umbrella additionally installs MKL, MPI, VTune, Fortran, IPP,
   # and other multi-gigabyte products that neither the build nor release package consumes.
-  apt_install intel-oneapi-compiler-dpcpp-cpp-2026.0
-  ln -sfn 2026.0 /opt/intel/oneapi/compiler/latest
+  apt_install intel-oneapi-compiler-dpcpp-cpp-2026.2
+  ln -sfn 2026.2 /opt/intel/oneapi/compiler/latest
 }
 
 install_cuda() {
@@ -261,8 +273,9 @@ install_cuda() {
     APT_UPDATED=0
     # Keep the compiler SDK narrow. cuda-toolkit also pulls profilers, GUI tools, BLAS/FFT/solver
     # libraries, and OpenCL components; mom needs only NVCC/PTXAS/libdevice, CUDA/CCCL headers,
-    # cudart development stubs, and NVRTC for architecture-aware source JIT.
-    apt_install "cuda-minimal-build-${CUDA_VERSION}"
+    # cudart development stubs, NVML headers and NVRTC for architecture-aware source JIT.
+    # Minimal-build omits NVML, which the static runtime's driver bindings also compile against.
+    apt_install "cuda-minimal-build-${CUDA_VERSION}" "cuda-nvml-dev-${CUDA_VERSION}"
   fi
   if [[ ! -e $cuda_dir/include/nvrtc.h && ! -L $cuda_dir/include/nvrtc.h ]]; then
     ln -s /opt/mom/nvrtc-13.3.33/include/nvrtc.h "$cuda_dir/include/nvrtc.h"
@@ -282,7 +295,7 @@ install_cuda() {
 cuda_payload_ready() {
   local cuda_dir=$1
   [[ -x $cuda_dir/bin/nvcc && -x $cuda_dir/bin/ptxas && -r $cuda_dir/nvvm/libdevice/libdevice.10.bc &&
-    -r $cuda_dir/include/nvrtc.h &&
+    -r $cuda_dir/include/nvrtc.h && -r $cuda_dir/include/cuda.h && -r $cuda_dir/include/nvml.h &&
     ( -r $cuda_dir/include/cuda/std/cstdint ||
       -r $cuda_dir/include/cccl/cuda/std/cstdint ) ]]
 }
@@ -398,7 +411,13 @@ install_dpcpp() {
 }
 
 ensure_llvm() {
-  [[ -x /usr/bin/clang-${LLVM_VERSION} && -d /usr/lib/llvm-${LLVM_VERSION}/lib/cmake/llvm ]] && return
+  # The compiler and CMake registry can survive removal of the development packages. Require
+  # their actual headers/static libraries too, or a partial SDK fails only after a long build.
+  local sdk="/usr/lib/llvm-${LLVM_VERSION}"
+  [[ -x /usr/bin/clang-${LLVM_VERSION} && -x /usr/bin/clang++-${LLVM_VERSION} &&
+    -s $sdk/include/llvm/Support/Casting.h && -s $sdk/include/clang/AST/ASTContext.h &&
+    -s $sdk/lib/libLLVMCore.a && -s $sdk/lib/libclangBasic.a &&
+    -s $sdk/lib/cmake/llvm/LLVMConfig.cmake && -s $sdk/lib/cmake/clang/ClangConfig.cmake ]] && return
   apt_install software-properties-common
   curl -fsSL --retry 5 "$LLVM_INSTALLER_URL" -o "$WORKSPACE/llvm.sh"
   verify_sha256 "$WORKSPACE/llvm.sh" "$LLVM_INSTALLER_SHA256"
@@ -498,8 +517,7 @@ validate_component() {
         command -v patchelf >/dev/null && command -v readelf >/dev/null
       ;;
     node) node_ready ;;
-    oneapi) [[ -x /opt/intel/oneapi/compiler/latest/bin/icpx ]] &&
-      /opt/intel/oneapi/compiler/latest/bin/icpx --version 2>/dev/null | grep -q '2026\.0\.0' ;;
+    oneapi) oneapi_compilers_ready ;;
     cuda)
       local cuda_dir="/usr/local/cuda-${CUDA_VERSION/-/.}"
       # shellcheck disable=SC1091

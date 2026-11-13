@@ -67,7 +67,49 @@ function normalizeBuildEnvironment(env, platform = process.platform) {
   return result;
 }
 
-module.exports = {normalizeBuildEnvironment};
+/** One release policy for archive and static-native builds. SDK activation may select tools,
+ * but must not silently reuse host-only objects or omit policy-selected workers.
+ * @param {NodeJS.ProcessEnv} env @returns {NodeJS.ProcessEnv} */
+function releaseBuildEnvironment(env) {
+  if (env["MOM_FORCE_REBUILD"] && !["0", "1"].includes(env["MOM_FORCE_REBUILD"])) {
+    throw new Error("MOM_FORCE_REBUILD must be 0 or 1");
+  }
+  if (env["MOM_CPU_MARCH"]) {
+    throw new Error("Unset MOM_CPU_MARCH before building a portable release");
+  }
+  if (env["MOM_LINUX_BUILD_PLAN_ONLY"] === "1") {
+    throw new Error("Unset MOM_LINUX_BUILD_PLAN_ONLY before building a release");
+  }
+  for (const name of ["MOM_DPCPP_IMPL", "MOM_COMBINED_TARGETS"]) {
+    if (env[name]) {
+      throw new Error(`Unset ${name} before building the policy-selected release workers`);
+    }
+  }
+  return {...normalizeBuildEnvironment(env), MOM_GPU_BACKEND: "all", MOM_LINUX_BUILD_COMPILER: "all",
+    MOM_PORTABLE_BUILD: "1", MOM_REUSE_BUILT_WORKER: "0"};
+}
+
+/** Pinned SDK source tools must not inherit Git replacement/attribute hooks or Tar options.
+ * Child-only sanitization leaves the developer's checkouts and account settings intact.
+ * @param {NodeJS.ProcessEnv} environment */
+function sdkSourceEnvironment(environment) {
+  const env = releaseBuildEnvironment(environment);
+  for (const key of Object.keys(env)) {if (key.startsWith("GIT_") || key === "TAR_OPTIONS") {delete env[key];}}
+  return Object.assign(env, {GIT_NO_LAZY_FETCH: "1", GIT_NO_REPLACE_OBJECTS: "1", GIT_OPTIONAL_LOCKS: "0", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_ATTR_NOSYSTEM: "1", LC_ALL: "C"});
+}
+
+/** Native SDK builds must not inherit compiler/setup hooks. Windows INCLUDE/LIB remain
+ * scoped to the selected SDK, while all commands still use explicit compiler paths.
+ * @param {NodeJS.ProcessEnv} environment */
+function nativeSdkEnvironment(environment) {
+  const env = sdkSourceEnvironment(environment);
+  for (const key of Object.keys(env)) {
+    if (/^(?:CMAKE_.*|CC|CXX|CFLAGS|CXXFLAGS|CPPFLAGS|LDFLAGS|CL|_CL_|LINK|_LINK_|PYTHONPATH|PYTHONHOME|BASH_ENV|ENV|LD_PRELOAD|DYLD_INSERT_LIBRARIES)$/i.test(key)) {delete env[key];}
+  }
+  return env;
+}
+
+module.exports = {normalizeBuildEnvironment, releaseBuildEnvironment, sdkSourceEnvironment, nativeSdkEnvironment};
 
 if (require.main === module) {
   const mode = process.argv[2];

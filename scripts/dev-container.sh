@@ -146,6 +146,8 @@ if [ -z "$container_network" ]; then
 fi
 
 docker_flags=(
+  # Node is not a PID-1 subreaper. Reap orphaned descendants so group-based cleanup can finish.
+  --init
   --cap-drop ALL
   --cap-add CHOWN
   --cap-add DAC_OVERRIDE

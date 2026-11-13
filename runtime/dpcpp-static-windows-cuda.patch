@@ -1,0 +1,30 @@
+diff --git a/unified-runtime/source/adapters/cuda/CMakeLists.txt b/unified-runtime/source/adapters/cuda/CMakeLists.txt
+--- a/unified-runtime/source/adapters/cuda/CMakeLists.txt
++++ b/unified-runtime/source/adapters/cuda/CMakeLists.txt
+@@ -61,7 +61,11 @@ set_target_properties(${TARGET_NAME} PROPERTIES
+ )
+ 
+ find_package(Threads REQUIRED)
+-find_package(CUDAToolkit 10.1 REQUIRED)
++# The native Windows fixture admits official headers; this C++ adapter never runs nvcc.
++# Keep normal toolkit discovery for every other upstream build.
++if(NOT (WIN32 AND UR_STATIC_ADAPTER_CUDA AND MOM_STATIC_WINDOWS))
++  find_package(CUDAToolkit 10.1 REQUIRED)
++endif()
+ 
+ # Make imported library global to use it within the project.
+ if(NOT UR_STATIC_ADAPTER_CUDA)
+diff --git a/unified-runtime/source/common/CMakeLists.txt b/unified-runtime/source/common/CMakeLists.txt
+--- a/unified-runtime/source/common/CMakeLists.txt
++++ b/unified-runtime/source/common/CMakeLists.txt
+@@ -11,7 +11,9 @@ else()
+ endif()
+ 
+ if (UR_BUILD_ADAPTER_CUDA)
+-    find_package(CUDAToolkit 10.1 REQUIRED)
++    if(NOT (WIN32 AND UR_STATIC_ADAPTER_CUDA AND MOM_STATIC_WINDOWS))
++        find_package(CUDAToolkit 10.1 REQUIRED)
++    endif()
+     set(UMF_BUILD_CUDA_PROVIDER ON CACHE INTERNAL "Build UMF CUDA provider")
+     set(UMF_CUDA_INCLUDE_DIR "${CUDAToolkit_INCLUDE_DIRS}" CACHE INTERNAL "CUDA headers")
+ else()

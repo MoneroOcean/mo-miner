@@ -1,0 +1,83 @@
+diff --git a/unified-runtime/source/adapters/opencl/CMakeLists.txt b/unified-runtime/source/adapters/opencl/CMakeLists.txt
+index 05882e196..907271591 100644
+--- a/unified-runtime/source/adapters/opencl/CMakeLists.txt
++++ b/unified-runtime/source/adapters/opencl/CMakeLists.txt
+@@ -10,6 +10,11 @@ find_package(Threads REQUIRED)
+ 
+ set(TARGET_NAME ur_adapter_opencl)
+ 
++option(UR_STATIC_OPENCL_ICD "Bind a static OpenCL adapter to the linked original ICD loader" OFF)
++if(UR_STATIC_OPENCL_ICD AND NOT UR_STATIC_ADAPTER_OPENCL)
++    message(FATAL_ERROR "A linked OpenCL ICD requires the static adapter")
++endif()
++
+ # Determine adapter library type (SHARED or STATIC)
+ set(ADAPTER_LIB_TYPE SHARED)
+ if(UR_STATIC_ADAPTER_OPENCL)
+@@ -94,6 +99,10 @@ if(UR_STATIC_ADAPTER_OPENCL)
+     # build tree, which CMake rejects in install(EXPORT ...).
+     target_include_directories(${TARGET_NAME} PRIVATE
+         $<TARGET_PROPERTY:OpenCL-Headers,INTERFACE_INCLUDE_DIRECTORIES>)
++    if(UR_STATIC_OPENCL_ICD)
++        target_compile_definitions(${TARGET_NAME} PRIVATE UR_STATIC_OPENCL_ICD)
++        target_link_libraries(${TARGET_NAME} PRIVATE OpenCL)
++    endif()
+     # Add dl library for dynamic loading on Unix systems
+     if(UNIX)
+         target_link_libraries(${TARGET_NAME} PRIVATE ${CMAKE_DL_LIBS})
+diff --git a/unified-runtime/source/adapters/opencl/ocl_dynamic_lib.cpp b/unified-runtime/source/adapters/opencl/ocl_dynamic_lib.cpp
+index 3720c8e3c..580407cdf 100644
+--- a/unified-runtime/source/adapters/opencl/ocl_dynamic_lib.cpp
++++ b/unified-runtime/source/adapters/opencl/ocl_dynamic_lib.cpp
+@@ -25,12 +25,23 @@
+ namespace ocl {
+ 
+ // Define storage for all function pointers using X-macros
++#ifdef UR_STATIC_OPENCL_ICD
++// Reuse the original complete API registry and SDK types, without dynamic application loads.
++#define OCL_FUNC(name) decltype(::name) *name##_ptr = &::name;
++#else
+ #define OCL_FUNC(name) decltype(::name) *name##_ptr = nullptr;
++#endif
+ #define OCL_OPTIONAL_FUNC(name) OCL_FUNC(name)
+ #include "ocl_functions.def"
+ #undef OCL_OPTIONAL_FUNC
+ #undef OCL_FUNC
+ 
++#ifdef UR_STATIC_OPENCL_ICD
++bool loadOCLLibrary() { return true; }
++// Linked entrypoints remain valid through process teardown and repeated adapter lifetimes.
++// The original ICD loader owns driver state; there is no application module to unload.
++void unloadOCLLibrary() {}
++#else
+ static void *OCLLibHandle = nullptr;
+ static std::mutex OCLLoadMutex;
+ static bool OCLLoaded = false;
+@@ -141,5 +152,6 @@ void unloadOCLLibrary() {
+   }
+   OCLLoaded = false;
+ }
++#endif // UR_STATIC_OPENCL_ICD
+ 
+ } // namespace ocl
+diff --git a/unified-runtime/source/adapters/opencl/usm.cpp b/unified-runtime/source/adapters/opencl/usm.cpp
+index d874e12ad..c21502e41 100644
+--- a/unified-runtime/source/adapters/opencl/usm.cpp
++++ b/unified-runtime/source/adapters/opencl/usm.cpp
+@@ -24,12 +24,16 @@ void AllocDeleterCallback(cl_event event, cl_int, void *pUserData) {
+   delete Info;
+ }
+ 
++#ifndef UR_STATIC_OPENCL_ICD
++// OpenCL does not use UMF providers yet. Its unused stub must not replace another
++// adapter's real error translator when both original adapters are statically linked.
+ namespace umf {
+ ur_result_t getProviderNativeError(const char *, int32_t) {
+   // TODO: implement when UMF supports OpenCL
+   return UR_RESULT_ERROR_UNKNOWN;
+ }
+ } // namespace umf
++#endif
+ 
+ inline cl_mem_alloc_flags_intel
+ hostDescToClFlags(const ur_usm_host_desc_t &desc) {

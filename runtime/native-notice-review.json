@@ -1,0 +1,1456 @@
+{
+  "version": 1,
+  "notice": {
+    "bytes": 1216099,
+    "sha256": "f956d5020b270f4e77e36259747f259fbe9438ab6851436b5283970db72e1764"
+  },
+  "redistributionEvidence": {
+    "windowsHostSdk": {
+      "sdkVersion": "10.0.26100.0",
+      "sdkLicense": {
+        "asset": "runtime/license-evidence/sdk_license.rtf",
+        "installPath": "Program Files (x86)/Windows Kits/10/Licenses/10.0.26100.0/sdk_license.rtf",
+        "bytes": 248573,
+        "sha256": "0f4a26ac9dc50066f8a1bfeaaf3f092d1b9e4791df5487b9f3c31e7c3dc4d7f5"
+      },
+      "sdkThirdPartyNotices": {
+        "asset": "runtime/license-evidence/sdk_third_party_notices.rtf",
+        "installPath": "Program Files (x86)/Windows Kits/10/Licenses/10.0.26100.0/sdk_third_party_notices.rtf",
+        "bytes": 22279,
+        "sha256": "ebb6640a8246b39b70322c5cec9aad7a71e86ea7b86c9c604d3a7f3ff1b30e89"
+      },
+      "redist": {
+        "licenseReference": "http://go.microsoft.com/fwlink/?LinkId=524842",
+        "url": "https://learn.microsoft.com/en-us/legal/windows-sdk/redist"
+      },
+      "ucrtLibrary": {
+        "catalog": "runtime/windows-host-sdk.json",
+        "package": "ucrt-headers-libraries-sources",
+        "sourceMember": "Program Files/Windows Kits/10/Lib/10.0.26100.0/ucrt/x64/libucrt.lib",
+        "outputMember": "sdk/lib/ucrt/libucrt.lib",
+        "sha256": "2b247d6a27c22c520c34134b8acf2da3366175a4690886927a51929f37725fdd"
+      },
+      "acquisitionBasis": {
+        "product": "Microsoft Visual Studio Community 2022",
+        "eulaUrl": "https://visualstudio.microsoft.com/wp-content/uploads/2021/11/Visual-Studio-2022-Community-License-EN.docx",
+        "eulaBytes": 62859,
+        "eulaSha256": "41a207b10c8ab91d0d2f10a854715f73dca54509581692d2fe179aa3ffcb8540"
+      }
+    }
+  },
+  "dependencies": {
+    "archives": {
+      "hermes": {
+        "promiseSha256": "071f4322f9dba4fa06992065bc5f1eb9b11e49c9b1b6336d31f377b3e9801184",
+        "revision": "26fbb82fad39d9d06901adb1d6d630dacc84c877"
+      },
+      "io": {
+        "libuv": {
+          "directory": "libuv-v1.51.0",
+          "sha256": "5f0557b90b1106de71951a3c3931de5e0430d78da1d9a10287ebc7a3f78ef8eb"
+        },
+        "zlib": {
+          "directory": "zlib-1.3.1",
+          "sha256": "9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23"
+        }
+      },
+      "llvm": {
+        "archiveName": "llvm-project-21.1.8.src.tar.xz",
+        "archiveSha256": "4633a23617fa31a3ea51242586ea7fb1da7140e426bd62fc164261fe036aa142",
+        "licenseMembers": [
+          {
+            "component": "LLVM Clang subproject license (llvm-project-21.1.8.src/clang/LICENSE.TXT)",
+            "member": "llvm-project-21.1.8.src/clang/LICENSE.TXT",
+            "sha256": "ebcd9bbf783a73d05c53ba4d586b8d5813dcdf3bbec50265860ccc885e606f47"
+          },
+          {
+            "component": "LLVM LLD subproject license (llvm-project-21.1.8.src/lld/LICENSE.TXT)",
+            "member": "llvm-project-21.1.8.src/lld/LICENSE.TXT",
+            "sha256": "f7891568956e34643eb6a0db1462db30820d40d7266e2a78063f2fe233ece5a0"
+          }
+        ]
+      },
+      "openssl": {
+        "sha256": "603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a",
+        "sourceDateEpoch": 1790640000,
+        "version": "3.5.9"
+      },
+      "zstd": {
+        "sha256": "eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3",
+        "version": "1.5.7"
+      }
+    },
+    "buildNode": {
+      "pathSourceSha256": "dd326ecdc2d6ad2025c4991f4b480d76a9f1d52b7f6d0988a5dc0a1d02de5209",
+      "version": "v24.15.0"
+    },
+    "bundledModules": {
+      "base64-js": {
+        "integrity": "sha512-AKpaYlHn8t4SVbOHCy+b5+KKgvR4vrsD8vbvrbiQJps7fKDTkjkDry6ji0rUJjC0kzbNePLwzxq8iypo41qeWA==",
+        "license": "MIT",
+        "version": "1.5.1"
+      },
+      "buffer": {
+        "integrity": "sha512-FTiCpNxtwiZZHEZbcbTIcZjERVICn9yq/pDFkTl95/AxzD1naBctN7YO68riM/gLSDY7sdrMby8hofADYuuqOA==",
+        "license": "MIT",
+        "version": "6.0.3"
+      },
+      "core-js-pure": {
+        "integrity": "sha512-NE4SFDJ+qzQeqHG2vVSNwopzS6zZNPYJ5kinIqs+OofTqGzOmICgT89E/yvS9XY7rwb3eU1utWXTJ9nVFqv74A==",
+        "license": "MIT",
+        "version": "3.51.0"
+      },
+      "events": {
+        "integrity": "sha512-mQw+2fkQbALzQ7V0MY0IqdnXNOeTtP4r0lN9z7AAawCXgqea7bDii20AYrIBrFd/Hx0M2Ocz6S111CaFkUcb0Q==",
+        "license": "MIT",
+        "version": "3.3.0"
+      },
+      "ieee754": {
+        "integrity": "sha512-dcyqhDvX1C46lXZcVqCpK+FtMRQVdIMN6/Df5js2zouUsqG7I6sFxitIC+7KYK29KdXOLHdu9zL4sFnoVQnqaA==",
+        "license": "BSD-3-Clause",
+        "version": "1.2.1"
+      },
+      "safe-buffer": {
+        "integrity": "sha512-rp3So07KcdmmKbGvgaNxQSJr7bGVSVk5S9Eq1F+ppbRo70+YeaDxkw5Dd8NPN+GD6bjnYm2VuPuCXmpuYvmCXQ==",
+        "license": "MIT",
+        "version": "5.2.1"
+      },
+      "string_decoder": {
+        "integrity": "sha512-hkRX8U1WjJFd8LsDJ2yQ/wWWxaopEsABU1XfkM8A+j0+85JAGppt16cr1Whg6KIbb4okU6Mql6BOj+uup/wKeA==",
+        "license": "MIT",
+        "version": "1.3.0"
+      }
+    },
+    "cutlass": {
+      "archiveSha256": "455d9ba37d57cb214d67b5d1a6070441244b378bcacb2e916c3b86f2a9b02e1c",
+      "licenseSha256": "ad1513ca983da737a6843364ad19e8424a56d860736c2da773b8c5be527e1475",
+      "version": "v4.6.1"
+    },
+    "git": {
+      "acpp": {
+        "acpp": {
+          "patches": [
+            "adaptivecpp-static.patch",
+            "adaptivecpp-jit.patch"
+          ],
+          "revision": "da2463e45aa90aa36306c45abcfc05b87de51bc6"
+        }
+      },
+      "compiler": {
+        "computeHeaders": {
+          "leaves": [
+            "LICENSE.md"
+          ],
+          "patches": [],
+          "paths": [
+            "level_zero/include"
+          ],
+          "revision": "82aab87fc932edc0558a0302d545a5bcc22edf41"
+        },
+        "dpcpp": {
+          "leaves": [
+            "LICENSE.TXT",
+            "llvm/CMakeLists.txt",
+            "llvm/LICENSE.TXT",
+            "clang/CMakeLists.txt",
+            "clang/LICENSE.TXT",
+            "sycl/CMakeLists.txt",
+            "sycl/LICENSE.TXT"
+          ],
+          "patches": [
+            "dpcpp-static-jit.patch"
+          ],
+          "paths": [
+            "llvm/cmake",
+            "llvm/include",
+            "llvm/lib",
+            "llvm/tools",
+            "llvm/utils/TableGen",
+            "llvm/utils/PerfectShuffle",
+            "llvm/projects",
+            "llvm/runtimes",
+            "llvm/resources",
+            "clang/cmake",
+            "clang/include",
+            "clang/lib",
+            "clang/tools",
+            "clang/utils",
+            "clang/runtime",
+            "clang/examples",
+            "cmake",
+            "sycl/cmake",
+            "sycl/include",
+            "sycl/source",
+            "sycl-jit",
+            "llvm-spirv",
+            "libdevice",
+            "third-party",
+            "unified-runtime/include",
+            "libc"
+          ],
+          "revision": "190878e023dd0979199786b19604b377229a4996"
+        },
+        "emhash": {
+          "leaves": [],
+          "patches": [],
+          "paths": [],
+          "revision": "5e131ba09a5290823fe71099d9c35eb5df5345b6"
+        },
+        "hwloc": {
+          "leaves": [],
+          "patches": [],
+          "paths": [],
+          "revision": "32b399232a27ee04f317d743db44e7ba3e154d05"
+        },
+        "levelZero": {
+          "leaves": [],
+          "patches": [],
+          "paths": [],
+          "revision": "b77ced661af97104f5cda03d49596274392f6aa4"
+        },
+        "openclHeaders": {
+          "leaves": [],
+          "patches": [],
+          "paths": [],
+          "revision": "8a97ebc88daa3495d6f57ec10bb515224400186f"
+        },
+        "openclLoader": {
+          "leaves": [],
+          "patches": [],
+          "paths": [],
+          "revision": "ad770a1b64c6b8d5f2ed4e153f22e4f45939f27f"
+        },
+        "spirvHeaders": {
+          "leaves": [
+            "LICENSE",
+            "REUSE.toml"
+          ],
+          "patches": [],
+          "paths": [
+            "include",
+            "LICENSES"
+          ],
+          "revision": "5c50cbd25a40f8b60e44a2ccc2f1ba3c9e0d0299"
+        },
+        "umf": {
+          "leaves": [],
+          "patches": [],
+          "paths": [],
+          "revision": "5a986843a2469d3e04771c1f27314ba6cc3c62f6"
+        },
+        "vcIntrinsics": {
+          "leaves": [],
+          "patches": [],
+          "paths": [],
+          "revision": "4fc83e12979096db72c129bd432238d5ca397e4d"
+        }
+      },
+      "hermes": {
+        "hermes": {
+          "patches": [
+            "hermes-host-rejections.patch",
+            "hermes-clang-cl.patch"
+          ],
+          "revision": "26fbb82fad39d9d06901adb1d6d630dacc84c877"
+        }
+      },
+      "linux": {
+        "computeHeaders": {
+          "leaves": [
+            "LICENSE.md"
+          ],
+          "patches": [],
+          "paths": [
+            "level_zero/include"
+          ],
+          "revision": "82aab87fc932edc0558a0302d545a5bcc22edf41"
+        },
+        "dpcpp": {
+          "leaves": [
+            "LICENSE.TXT"
+          ],
+          "patches": [
+            "dpcpp-static-adapters.patch",
+            "dpcpp-static-opencl.patch",
+            "dpcpp-static-jit.patch"
+          ],
+          "paths": [
+            "sycl",
+            "unified-runtime",
+            "sycl-jit/jit-compiler/include"
+          ],
+          "revision": "190878e023dd0979199786b19604b377229a4996"
+        },
+        "emhash": {
+          "leaves": [],
+          "patches": [],
+          "paths": [],
+          "revision": "5e131ba09a5290823fe71099d9c35eb5df5345b6"
+        },
+        "hwloc": {
+          "leaves": [],
+          "patches": [],
+          "paths": [],
+          "revision": "32b399232a27ee04f317d743db44e7ba3e154d05"
+        },
+        "levelZero": {
+          "leaves": [],
+          "patches": [
+            "level-zero-static-complete.patch"
+          ],
+          "paths": [],
+          "revision": "b77ced661af97104f5cda03d49596274392f6aa4"
+        },
+        "openclHeaders": {
+          "leaves": [],
+          "patches": [],
+          "paths": [],
+          "revision": "8a97ebc88daa3495d6f57ec10bb515224400186f"
+        },
+        "openclLoader": {
+          "leaves": [],
+          "patches": [],
+          "paths": [],
+          "revision": "ad770a1b64c6b8d5f2ed4e153f22e4f45939f27f"
+        },
+        "umf": {
+          "leaves": [],
+          "patches": [
+            "umf-static-level-zero.patch"
+          ],
+          "paths": [],
+          "revision": "5a986843a2469d3e04771c1f27314ba6cc3c62f6"
+        }
+      },
+      "rocm": {
+        "clr": {
+          "patches": [],
+          "revision": "5b591b2ff64aac4c1c08be879b0d5f89fd713d50"
+        },
+        "hip": {
+          "patches": [],
+          "revision": "993b610351d78993091c0057fcf67636169b7467"
+        },
+        "rocmLlvm": {
+          "patches": [
+            "rocm-comgr-llvm21.patch",
+            "rocm-comgr-resources.patch"
+          ],
+          "revision": "27682a16360e33e37c4f3cc6adf9a620733f8fe1"
+        },
+        "rocr": {
+          "patches": [],
+          "revision": "4e4d7abeb786e903ac2a46815ae2565de331cbd4"
+        }
+      },
+      "windows": {
+        "computeHeaders": {
+          "leaves": [
+            "LICENSE.md"
+          ],
+          "patches": [],
+          "paths": [
+            "level_zero/include"
+          ],
+          "revision": "82aab87fc932edc0558a0302d545a5bcc22edf41"
+        },
+        "dpcpp": {
+          "leaves": [
+            "LICENSE.TXT"
+          ],
+          "patches": [
+            "dpcpp-static-adapters.patch",
+            "dpcpp-static-windows.patch",
+            "dpcpp-static-opencl.patch",
+            "dpcpp-static-windows-cuda.patch",
+            "dpcpp-static-jit.patch"
+          ],
+          "paths": [
+            "sycl",
+            "unified-runtime",
+            "sycl-jit/jit-compiler/include"
+          ],
+          "revision": "190878e023dd0979199786b19604b377229a4996"
+        },
+        "emhash": {
+          "leaves": [],
+          "patches": [],
+          "paths": [],
+          "revision": "5e131ba09a5290823fe71099d9c35eb5df5345b6"
+        },
+        "hwloc": {
+          "leaves": [],
+          "patches": [],
+          "paths": [],
+          "revision": "32b399232a27ee04f317d743db44e7ba3e154d05"
+        },
+        "levelZero": {
+          "leaves": [],
+          "patches": [
+            "level-zero-static-complete.patch",
+            "level-zero-static-windows.patch"
+          ],
+          "paths": [],
+          "revision": "b77ced661af97104f5cda03d49596274392f6aa4"
+        },
+        "openclHeaders": {
+          "leaves": [],
+          "patches": [],
+          "paths": [],
+          "revision": "8a97ebc88daa3495d6f57ec10bb515224400186f"
+        },
+        "openclLoader": {
+          "leaves": [],
+          "patches": [
+            "opencl-static-windows.patch"
+          ],
+          "paths": [],
+          "revision": "ad770a1b64c6b8d5f2ed4e153f22e4f45939f27f"
+        },
+        "umf": {
+          "leaves": [],
+          "patches": [
+            "umf-static-level-zero.patch",
+            "umf-static-windows.patch"
+          ],
+          "paths": [],
+          "revision": "5a986843a2469d3e04771c1f27314ba6cc3c62f6"
+        }
+      }
+    },
+    "nvrtc": {
+      "linux12_6": {
+        "archives": {
+          "nvrtc": {
+            "fileName": "cuda_nvrtc-linux-x86_64-12.6.85-archive.tar.xz",
+            "sha256": "a4289ba86f0deeccf4e1d94c58559eae4c8184fcb6eaade8fcab45584e6cf402"
+          }
+        },
+        "cohort": "linux-12.6",
+        "manifest": "https://developer.download.nvidia.com/compute/cuda/redist/redistrib_12.6.3.json",
+        "platform": "linux",
+        "version": "12.6.85"
+      },
+      "linux13_3": {
+        "archives": {
+          "nvptxcompiler": {
+            "fileName": "libnvptxcompiler-linux-x86_64-13.3.33-archive.tar.xz",
+            "sha256": "6c362578a8de750d28ae52efe5b3d2927983584293a9be24d40893e0f6ed73dd"
+          },
+          "nvrtc": {
+            "fileName": "cuda_nvrtc-linux-x86_64-13.3.33-archive.tar.xz",
+            "sha256": "9e8f78278215babd1236b137252424ca7912c185bd093201f5d97f7dd763b74a"
+          }
+        },
+        "cohort": "linux",
+        "manifest": "https://developer.download.nvidia.com/compute/cuda/redist/redistrib_13.3.0.json",
+        "platform": "linux",
+        "version": "13.3.33"
+      }
+    },
+    "packingTool": {
+      "architecture": "x64",
+      "archive": {
+        "bytes": 664048,
+        "sha256": "402162aad30af47e60dbd767fb2e64ca394ace9727ba1f40283641f1d1b91657",
+        "url": "https://github.com/upx/upx/releases/download/v5.2.1/upx-5.2.1-amd64_linux.tar.xz"
+      },
+      "executable": {
+        "bytes": 639228,
+        "member": "upx-5.2.1-amd64_linux/upx",
+        "sha256": "287b3dffe9dcafd8e366e162ac4ab41e5cf45a3c6768970256af0869288d84a1"
+      },
+      "notices": [
+        {
+          "member": "upx-5.2.1-amd64_linux/LICENSE",
+          "sha256": "905d4a66d5324e154d976bbf88829d4d9263815a2b97cc40954f06d4a23c28eb"
+        },
+        {
+          "member": "upx-5.2.1-amd64_linux/COPYING",
+          "sha256": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643"
+        }
+      ],
+      "platform": "linux",
+      "source": {
+        "bytes": 1778024,
+        "notices": [
+          {
+            "member": "upx-5.2.1-src/LICENSE",
+            "sha256": "905d4a66d5324e154d976bbf88829d4d9263815a2b97cc40954f06d4a23c28eb"
+          },
+          {
+            "member": "upx-5.2.1-src/COPYING",
+            "sha256": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643"
+          },
+          {
+            "member": "upx-5.2.1-src/vendor/lzma-sdk/LICENSE.txt",
+            "sha256": "546d61821ef504fdec684a341f22b52a29664c34f74a6eef773425da99ab2992"
+          }
+        ],
+        "sha256": "a7d457be4ef942e46844ee8f301206b111394cbcbde3599747a6904c54ff116b",
+        "url": "https://github.com/upx/upx/releases/download/v5.2.1/upx-5.2.1-src.tar.xz"
+      },
+      "version": "5.2.1"
+    },
+    "runtime": {
+      "linuxCudart": {
+        "archive": {
+          "bytes": 1126072,
+          "fileName": "cuda_cudart-linux-x86_64-12.6.77-archive.tar.xz",
+          "origin": "https://developer.download.nvidia.com",
+          "sha256": "f74689258a60fd9c5bdfa7679458527a55e22442691ba678dcfaeffbf4391ef9",
+          "url": "https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/linux-x86_64/cuda_cudart-linux-x86_64-12.6.77-archive.tar.xz"
+        },
+        "libraries": {
+          "cudartStatic": {
+            "bytes": 1436906,
+            "member": "cuda_cudart-linux-x86_64-12.6.77-archive/lib/libcudart_static.a",
+            "sha256": "5a90415e481a710fa00676f9fe1bbae703f33450c4fd3f35146a3f2980567b06"
+          },
+          "culibos": {
+            "bytes": 30922,
+            "member": "cuda_cudart-linux-x86_64-12.6.77-archive/lib/libculibos.a",
+            "sha256": "5349773e44c22fd17aefd46f9f595e07eb033bd04017423f41298bf5f935900a"
+          }
+        },
+        "license": {
+          "bytes": 63021,
+          "manifestPath": "cuda_cudart/LICENSE.txt",
+          "member": "cuda_cudart-linux-x86_64-12.6.77-archive/LICENSE",
+          "name": "CUDA Toolkit",
+          "noticeComponent": "CUDA 12.6 host license + Linux image package copyright",
+          "sha256": "e2c71babfd18a8e69542dd7e9ca018f9caa438094001a58e6bc4d8c999bf0d07"
+        },
+        "manifest": {
+          "entry": "cuda_cudart.linux-x86_64",
+          "releaseDate": "2024-11-20",
+          "sha256": "9c598598457a6463eb92889080c16b2b9dc04150e501b8bfc1536d403ba70aaf",
+          "url": "https://developer.download.nvidia.com/compute/cuda/redist/redistrib_12.6.3.json"
+        },
+        "releaseLabel": "12.6.3",
+        "target": "linux-cudart",
+        "vendor": "NVIDIA",
+        "vendorVersion": "12.6.77",
+        "version": 1
+      },
+      "windowsAmdhip": {
+        "library": {
+          "bytes": 123660,
+          "dllName": "amdhip64_7.dll",
+          "fileName": "amdhip64.lib",
+          "sha256": "8fd24af341f974baa671802ce978b8b606244b49a9f321b02dd41290d4fccca1"
+        },
+        "source": {
+          "definition": {
+            "blob": "89db8a4ef5d39b0a13bd5b6a9d8f35e36e741123",
+            "bytes": 11763,
+            "derivedBytes": 11786,
+            "derivedSha256": "d600175e5c5dd2eb93496603cbe21c7d80c0de016d6b13177110595751a01e4c",
+            "path": "hipamd/src/amdhip.def",
+            "sha256": "4bf5d8045f1eda1c01319f477c57ea7512c7d6b740d693811b176c5e58a25453"
+          },
+          "license": {
+            "blob": "4d43ac8700191c7a688e99ca2a25685963a61bb2",
+            "bytes": 1080,
+            "path": "LICENSE.md",
+            "sha256": "b185aaa652b0bf066c37a0d6314ce4bf4521e4a3c9bf46edd2f6a777ac522223"
+          },
+          "origin": "https://github.com/ROCm/clr.git",
+          "revision": "5b591b2ff64aac4c1c08be879b0d5f89fd713d50"
+        },
+        "target": "windows-amdhip64",
+        "toolchain": {
+          "llvmLibAlias": "bin/llvm-lib",
+          "llvmLibTarget": "llvm-ar",
+          "llvmRole": "linux-llvm21-source-sdk"
+        },
+        "version": 2
+      },
+      "windowsCudart": {
+        "archive": {
+          "bytes": 2512085,
+          "fileName": "cuda_cudart-windows-x86_64-12.6.37-archive.zip",
+          "origin": "https://developer.download.nvidia.com",
+          "sha256": "c66badb16921c4acb7abc38f211d530c2f290bd52c2cbdb5fb12095dc6eab0a9",
+          "url": "https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-12.6.37-archive.zip"
+        },
+        "cudartStatic": {
+          "bytes": 2753442,
+          "member": "cuda_cudart-windows-x86_64-12.6.37-archive/lib/x64/cudart_static.lib",
+          "output": "runtime/cudart_static.lib",
+          "sha256": "7cbf0142b20001882ba94a6766d365f6d734f807ab0c8a07a0102a7020054e4e"
+        },
+        "license": {
+          "bytes": 63021,
+          "manifestPath": "cuda_cudart/LICENSE.txt",
+          "member": "cuda_cudart-windows-x86_64-12.6.37-archive/LICENSE",
+          "name": "CUDA Toolkit",
+          "output": "licenses/cuda-cudart/LICENSE",
+          "sha256": "e2c71babfd18a8e69542dd7e9ca018f9caa438094001a58e6bc4d8c999bf0d07"
+        },
+        "manifestUrl": "https://developer.download.nvidia.com/compute/cuda/redist/redistrib_12.6.0.json",
+        "releaseLabel": "12.6.0",
+        "target": "windows-cudart",
+        "vendor": "NVIDIA",
+        "vendorVersion": "12.6.37",
+        "version": 1
+      },
+      "windowsHostSdk": {
+        "cabinets": {
+          "cab-05047a45609f311645eebcac2739fc4c": {
+            "declaredBytes": 230296,
+            "diskId": "2",
+            "fileName": "cab-05047a45609f311645eebcac2739fc4c.cab",
+            "format": "cab",
+            "id": "Win11SDK_10.0.26100",
+            "maxBytes": 67108864,
+            "msiKey": "windows-sdk-store-libs-x86",
+            "sha256": "902003e4976c7bc4bcda9f31f1d835b8072235532412770f66b0bc9f0882cb7e",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/6452c1f1-dc1e-413c-8b19-991b61870a8b/67a9b258981565b78c46484efbed6945/05047a45609f311645eebcac2739fc4c.cab",
+            "vendorFileName": "Installers\\05047a45609f311645eebcac2739fc4c.cab",
+            "version": "10.0.26100.15"
+          },
+          "cab-07a57cdb41ba28cced14005f087267be": {
+            "declaredBytes": 103680,
+            "diskId": "2",
+            "fileName": "cab-07a57cdb41ba28cced14005f087267be.cab",
+            "format": "cab",
+            "id": "Win11SDK_10.0.26100",
+            "maxBytes": 67108864,
+            "msiKey": "windows-sdk-desktop-headers-x86",
+            "sha256": "1f350449f6f598a4d9b316e69ad9b845db8e8d919b8b34f5c07b32598f6de319",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/6452c1f1-dc1e-413c-8b19-991b61870a8b/2487cb3527b23ee3c6f081e01c2a1bc0/07a57cdb41ba28cced14005f087267be.cab",
+            "vendorFileName": "Installers\\07a57cdb41ba28cced14005f087267be.cab",
+            "version": "10.0.26100.15"
+          },
+          "cab-13d68b8a7b6678a368e2d13ff4027521": {
+            "declaredBytes": 390500,
+            "diskId": "3",
+            "fileName": "cab-13d68b8a7b6678a368e2d13ff4027521.cab",
+            "format": "cab",
+            "id": "Win11SDK_10.0.26100",
+            "maxBytes": 67108864,
+            "msiKey": "windows-sdk-store-libs-x86",
+            "sha256": "0b26ede2d22ea531d921269dfffcd14cc71d6932cac0f2720fcec37079286643",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/6452c1f1-dc1e-413c-8b19-991b61870a8b/2160d8b73fe2e4fea3e2097084a081cd/13d68b8a7b6678a368e2d13ff4027521.cab",
+            "vendorFileName": "Installers\\13d68b8a7b6678a368e2d13ff4027521.cab",
+            "version": "10.0.26100.15"
+          },
+          "cab-16ab2ea2187acffa6435e334796c8c89": {
+            "declaredBytes": 666803,
+            "diskId": "2",
+            "fileName": "cab-16ab2ea2187acffa6435e334796c8c89.cab",
+            "format": "cab",
+            "id": "Win11SDK_10.0.26100",
+            "maxBytes": 67108864,
+            "msiKey": "ucrt-headers-libraries-sources",
+            "sha256": "d29e10bb5ce2e28957b5635b6eeb6a491fdb311c925b398443451f953f399bc2",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/6452c1f1-dc1e-413c-8b19-991b61870a8b/d56a87b40b1de33c2c39a1a3d009e148/16ab2ea2187acffa6435e334796c8c89.cab",
+            "vendorFileName": "Installers\\16ab2ea2187acffa6435e334796c8c89.cab",
+            "version": "10.0.26100.15"
+          },
+          "cab-2e876dd22fa5e6785f137e3422dd50ec": {
+            "declaredBytes": 9216010,
+            "diskId": "3",
+            "fileName": "cab-2e876dd22fa5e6785f137e3422dd50ec.cab",
+            "format": "cab",
+            "id": "Win11SDK_10.0.26100",
+            "maxBytes": 67108864,
+            "msiKey": "windows-sdk-desktop-headers-x86",
+            "sha256": "bd490c2da3b5837261d43791a02ea3bb6aef1de787f52bec5e7dd638bfb77f51",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/6452c1f1-dc1e-413c-8b19-991b61870a8b/2f5955d08b28c63142f927aa3696c15a/2e876dd22fa5e6785f137e3422dd50ec.cab",
+            "vendorFileName": "Installers\\2e876dd22fa5e6785f137e3422dd50ec.cab",
+            "version": "10.0.26100.15"
+          },
+          "cab-463ad1b0783ebda908fd6c16a4abfe93": {
+            "declaredBytes": 218021,
+            "diskId": "4",
+            "fileName": "cab-463ad1b0783ebda908fd6c16a4abfe93.cab",
+            "format": "cab",
+            "id": "Win11SDK_10.0.26100",
+            "maxBytes": 67108864,
+            "msiKey": "windows-sdk-store-libs-x86",
+            "sha256": "43c40559098a2c1efbef6af16f97a44fd80b3bb9fe8ae117c4e6f9f3f852b8e8",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/6452c1f1-dc1e-413c-8b19-991b61870a8b/637a623c788980d4a7edf6d84e34ed70/463ad1b0783ebda908fd6c16a4abfe93.cab",
+            "vendorFileName": "Installers\\463ad1b0783ebda908fd6c16a4abfe93.cab",
+            "version": "10.0.26100.15"
+          },
+          "cab-4fe4c8b88812f5339018c0eef95acdb9": {
+            "declaredBytes": 26653,
+            "diskId": "4",
+            "fileName": "cab-4fe4c8b88812f5339018c0eef95acdb9.cab",
+            "format": "cab",
+            "id": "Win11SDK_10.0.26100",
+            "maxBytes": 67108864,
+            "msiKey": "windows-sdk-desktop-headers-x86",
+            "sha256": "cadd61caab00b5ad3ef449efb54f8a7b1a43a7cfb85f321b544ca578b14e179b",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/6452c1f1-dc1e-413c-8b19-991b61870a8b/9992f4e9621a59b8bd9a57cd62e0d567/4fe4c8b88812f5339018c0eef95acdb9.cab",
+            "vendorFileName": "Installers\\4fe4c8b88812f5339018c0eef95acdb9.cab",
+            "version": "10.0.26100.15"
+          },
+          "cab-58314d0646d7e1a25e97c902166c3155": {
+            "declaredBytes": 16603242,
+            "diskId": "2",
+            "fileName": "cab-58314d0646d7e1a25e97c902166c3155.cab",
+            "format": "cab",
+            "id": "Win11SDK_10.0.26100",
+            "maxBytes": 67108864,
+            "msiKey": "windows-sdk-desktop-libs-x64",
+            "sha256": "ec209a224c9b2d31f3409208d30f5a6335c55217ad384d6212c833ac83360eba",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/6452c1f1-dc1e-413c-8b19-991b61870a8b/cb954f8bc3015e25cfd985a5fff3452a/58314d0646d7e1a25e97c902166c3155.cab",
+            "vendorFileName": "Installers\\58314d0646d7e1a25e97c902166c3155.cab",
+            "version": "10.0.26100.15"
+          },
+          "cab-5a22e5cde814b041749fb271547f4dd5": {
+            "declaredBytes": 15542250,
+            "diskId": "5",
+            "fileName": "cab-5a22e5cde814b041749fb271547f4dd5.cab",
+            "format": "cab",
+            "id": "Win11SDK_10.0.26100",
+            "maxBytes": 67108864,
+            "msiKey": "windows-sdk-store-libs-x86",
+            "sha256": "57e7e309413d05b781ae76d1b5c54dc7aff350b6a460920f1f358e8003aabdfb",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/6452c1f1-dc1e-413c-8b19-991b61870a8b/03cfd7ea3b3116d5d32d11df101dea24/5a22e5cde814b041749fb271547f4dd5.cab",
+            "vendorFileName": "Installers\\5a22e5cde814b041749fb271547f4dd5.cab",
+            "version": "10.0.26100.15"
+          },
+          "cab-6ee7bbee8435130a869cf971694fd9e2": {
+            "declaredBytes": 26146004,
+            "diskId": "3",
+            "fileName": "cab-6ee7bbee8435130a869cf971694fd9e2.cab",
+            "format": "cab",
+            "id": "Win11SDK_10.0.26100",
+            "maxBytes": 67108864,
+            "msiKey": "ucrt-headers-libraries-sources",
+            "sha256": "04728e326214d8960a188614995b65a3e9e33f93eaf13dd3ca16fe513cdff0de",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/6452c1f1-dc1e-413c-8b19-991b61870a8b/9a7bacb65de148f099902218ada3394b/6ee7bbee8435130a869cf971694fd9e2.cab",
+            "vendorFileName": "Installers\\6ee7bbee8435130a869cf971694fd9e2.cab",
+            "version": "10.0.26100.15"
+          },
+          "cab-766c0ffd568bbb31bf7fb6793383e24a": {
+            "declaredBytes": 8176880,
+            "diskId": "2",
+            "fileName": "cab-766c0ffd568bbb31bf7fb6793383e24a.cab",
+            "format": "cab",
+            "id": "Win11SDK_10.0.26100",
+            "maxBytes": 67108864,
+            "msiKey": "windows-sdk-store-apps-headers",
+            "sha256": "c590f816f3bb15a79a0bf815ca942aeec4a36c08fd66fa35a243c86b4f8bac7d",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/6452c1f1-dc1e-413c-8b19-991b61870a8b/b4a6e43a0c35ad8d4e8957eb581443ec/766c0ffd568bbb31bf7fb6793383e24a.cab",
+            "vendorFileName": "Installers\\766c0ffd568bbb31bf7fb6793383e24a.cab",
+            "version": "10.0.26100.15"
+          },
+          "cab-78fa3c824c2c48bd4a49ab5969adaaf7": {
+            "declaredBytes": 54881173,
+            "diskId": "4",
+            "fileName": "cab-78fa3c824c2c48bd4a49ab5969adaaf7.cab",
+            "format": "cab",
+            "id": "Win11SDK_10.0.26100",
+            "maxBytes": 67108864,
+            "msiKey": "ucrt-headers-libraries-sources",
+            "sha256": "6f9096bc7c182383c22a947d1b2c994d78d1742ca25163fad8fd8c2c848419c5",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/6452c1f1-dc1e-413c-8b19-991b61870a8b/721e7f21ddaab126788f6f8b5c3725b4/78fa3c824c2c48bd4a49ab5969adaaf7.cab",
+            "vendorFileName": "Installers\\78fa3c824c2c48bd4a49ab5969adaaf7.cab",
+            "version": "10.0.26100.15"
+          },
+          "cab-7afc7b670accd8e3cc94cfffd516f5cb": {
+            "declaredBytes": 1053493,
+            "diskId": "5",
+            "fileName": "cab-7afc7b670accd8e3cc94cfffd516f5cb.cab",
+            "format": "cab",
+            "id": "Win11SDK_10.0.26100",
+            "maxBytes": 67108864,
+            "msiKey": "ucrt-headers-libraries-sources",
+            "sha256": "1d99dc10063c05e8b34b82af18db61c080809456d471674d0272f071526df0ab",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/6452c1f1-dc1e-413c-8b19-991b61870a8b/fdde52f2c4a6db47e015e514a79c3454/7afc7b670accd8e3cc94cfffd516f5cb.cab",
+            "vendorFileName": "Installers\\7afc7b670accd8e3cc94cfffd516f5cb.cab",
+            "version": "10.0.26100.15"
+          },
+          "cab-8125ee239710f33ea485965f76fae646": {
+            "declaredBytes": 5779649,
+            "diskId": "3",
+            "fileName": "cab-8125ee239710f33ea485965f76fae646.cab",
+            "format": "cab",
+            "id": "Win11SDK_10.0.26100",
+            "maxBytes": 67108864,
+            "msiKey": "windows-sdk-store-apps-headers",
+            "sha256": "afca62a1e32f28fad347f7610c6ef663506a798db78ac4e4cf545aeaa4c5d1d3",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/6452c1f1-dc1e-413c-8b19-991b61870a8b/e97c5af6189039047f84fbb140167fc6/8125ee239710f33ea485965f76fae646.cab",
+            "vendorFileName": "Installers\\8125ee239710f33ea485965f76fae646.cab",
+            "version": "10.0.26100.15"
+          },
+          "cab-96076045170fe5db6d5dcf14b6f6688e": {
+            "declaredBytes": 678655,
+            "diskId": "6",
+            "fileName": "cab-96076045170fe5db6d5dcf14b6f6688e.cab",
+            "format": "cab",
+            "id": "Win11SDK_10.0.26100",
+            "maxBytes": 67108864,
+            "msiKey": "ucrt-headers-libraries-sources",
+            "sha256": "82d970f5b628250ef72467d0826260c6a9f32252f42daa3c31fed2a23170170e",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/6452c1f1-dc1e-413c-8b19-991b61870a8b/510c03213f78beff83c9149c96da2ab6/96076045170fe5db6d5dcf14b6f6688e.cab",
+            "vendorFileName": "Installers\\96076045170fe5db6d5dcf14b6f6688e.cab",
+            "version": "10.0.26100.15"
+          },
+          "cab-a1e2a83aa8a71c48c742eeaff6e71928": {
+            "declaredBytes": 27764279,
+            "diskId": "7",
+            "fileName": "cab-a1e2a83aa8a71c48c742eeaff6e71928.cab",
+            "format": "cab",
+            "id": "Win11SDK_10.0.26100",
+            "maxBytes": 67108864,
+            "msiKey": "ucrt-headers-libraries-sources",
+            "sha256": "29f8ed0537b49087321dfb7cce60aad7252900ecfbd81d6336fdb67056778a5d",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/6452c1f1-dc1e-413c-8b19-991b61870a8b/87fede232add653343acc94dbdac4118/a1e2a83aa8a71c48c742eeaff6e71928.cab",
+            "vendorFileName": "Installers\\a1e2a83aa8a71c48c742eeaff6e71928.cab",
+            "version": "10.0.26100.15"
+          },
+          "cab-b0656253ef2f688d2982eafa2e73f621": {
+            "declaredBytes": 32762,
+            "diskId": "2",
+            "fileName": "cab-b0656253ef2f688d2982eafa2e73f621.cab",
+            "format": "cab",
+            "id": "Win11SDK_10.0.26100",
+            "maxBytes": 67108864,
+            "msiKey": "windows-sdk-onecore-headers-x64",
+            "sha256": "de70f656de01fd2f2e17539b4a50ddd66e2b0ac4486dfbf870cf4dc499db24c7",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/6452c1f1-dc1e-413c-8b19-991b61870a8b/07311fb08fb7f55dc89e36c4a69b32e5/b0656253ef2f688d2982eafa2e73f621.cab",
+            "vendorFileName": "Installers\\b0656253ef2f688d2982eafa2e73f621.cab",
+            "version": "10.0.26100.15"
+          },
+          "cab-b2f03f34ff83ec013b9e45c7cd8e8a73": {
+            "declaredBytes": 156894,
+            "diskId": "8",
+            "fileName": "cab-b2f03f34ff83ec013b9e45c7cd8e8a73.cab",
+            "format": "cab",
+            "id": "Win11SDK_10.0.26100",
+            "maxBytes": 67108864,
+            "msiKey": "ucrt-headers-libraries-sources",
+            "sha256": "a17b9674b79ac4c8d9c4516c41d6f32fcde041bdb07ec7f0758c16ee8a62ecac",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/6452c1f1-dc1e-413c-8b19-991b61870a8b/be7bcaf329bbeef873a874aee49456b7/b2f03f34ff83ec013b9e45c7cd8e8a73.cab",
+            "vendorFileName": "Installers\\b2f03f34ff83ec013b9e45c7cd8e8a73.cab",
+            "version": "10.0.26100.15"
+          },
+          "cab-beb5360d2daaa3167dea7ad16c28f996": {
+            "declaredBytes": 609253,
+            "diskId": "9",
+            "fileName": "cab-beb5360d2daaa3167dea7ad16c28f996.cab",
+            "format": "cab",
+            "id": "Win11SDK_10.0.26100",
+            "maxBytes": 67108864,
+            "msiKey": "ucrt-headers-libraries-sources",
+            "sha256": "6feaabf4b1b09b4e3210adddb12c8c8d6702d731da033784ef0330488f5bef51",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/6452c1f1-dc1e-413c-8b19-991b61870a8b/b0082c046bf17896e9730ca9f40200ac/beb5360d2daaa3167dea7ad16c28f996.cab",
+            "vendorFileName": "Installers\\beb5360d2daaa3167dea7ad16c28f996.cab",
+            "version": "10.0.26100.15"
+          },
+          "cab-c0aa6d435b0851bf34365aadabd0c20f": {
+            "declaredBytes": 4951894,
+            "diskId": "4",
+            "fileName": "cab-c0aa6d435b0851bf34365aadabd0c20f.cab",
+            "format": "cab",
+            "id": "Win11SDK_10.0.26100",
+            "maxBytes": 67108864,
+            "msiKey": "windows-sdk-store-apps-headers",
+            "sha256": "b9e05d77c4e719d4f394b5a66328cfb2df2a80914785545eeb049a69fcb11d3c",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/6452c1f1-dc1e-413c-8b19-991b61870a8b/6699951ca96b8696e87c51e6b45d524a/c0aa6d435b0851bf34365aadabd0c20f.cab",
+            "vendorFileName": "Installers\\c0aa6d435b0851bf34365aadabd0c20f.cab",
+            "version": "10.0.26100.15"
+          },
+          "cab-d1de88680a8e53fe75e01e94dc0ed767": {
+            "declaredBytes": 46971,
+            "diskId": "2",
+            "fileName": "cab-d1de88680a8e53fe75e01e94dc0ed767.cab",
+            "format": "cab",
+            "id": "Win11SDK_10.0.26100",
+            "maxBytes": 67108864,
+            "msiKey": "windows-sdk-desktop-headers-x64",
+            "sha256": "9d88fa269dc02fd3fde50a056c04d6dfcc5b8a15739ae0f3e7ac51cc1c88f5b8",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/6452c1f1-dc1e-413c-8b19-991b61870a8b/f5ae8b50cc21a7ed5bcace1a38fe8fa3/d1de88680a8e53fe75e01e94dc0ed767.cab",
+            "vendorFileName": "Installers\\d1de88680a8e53fe75e01e94dc0ed767.cab",
+            "version": "10.0.26100.15"
+          },
+          "cab-d95da93904819b1f7e68adb98b49a9c7": {
+            "declaredBytes": 42017,
+            "diskId": "10",
+            "fileName": "cab-d95da93904819b1f7e68adb98b49a9c7.cab",
+            "format": "cab",
+            "id": "Win11SDK_10.0.26100",
+            "maxBytes": 67108864,
+            "msiKey": "ucrt-headers-libraries-sources",
+            "sha256": "bc3beabebc0a9f161bbbe69dbce0075019ca6e40f5df5a8b2342a8a2ab25b22a",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/6452c1f1-dc1e-413c-8b19-991b61870a8b/8528492e1ce2a653db74d3988d9ee96b/d95da93904819b1f7e68adb98b49a9c7.cab",
+            "vendorFileName": "Installers\\d95da93904819b1f7e68adb98b49a9c7.cab",
+            "version": "10.0.26100.15"
+          },
+          "cab-e10768bb6e9d0ea730280336b697da66": {
+            "declaredBytes": 7328808,
+            "diskId": "6",
+            "fileName": "cab-e10768bb6e9d0ea730280336b697da66.cab",
+            "format": "cab",
+            "id": "Win11SDK_10.0.26100",
+            "maxBytes": 67108864,
+            "msiKey": "windows-sdk-store-libs-x86",
+            "sha256": "46e21578a4cfce3bd6e4eacc10b92121a825ce443cc2f6cce84b07e37b9d21bc",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/6452c1f1-dc1e-413c-8b19-991b61870a8b/b2915dcb648d1087f4a5ef20f17c9825/e10768bb6e9d0ea730280336b697da66.cab",
+            "vendorFileName": "Installers\\e10768bb6e9d0ea730280336b697da66.cab",
+            "version": "10.0.26100.15"
+          },
+          "cab-e89e3dcbb016928c7e426238337d69eb": {
+            "declaredBytes": 920606,
+            "diskId": "2",
+            "fileName": "cab-e89e3dcbb016928c7e426238337d69eb.cab",
+            "format": "cab",
+            "id": "Win11SDK_10.0.26100",
+            "maxBytes": 67108864,
+            "msiKey": "windows-sdk-store-onecore-headers-x86",
+            "sha256": "4e5f0346d59faae3742c79d48df74f221b202da347f5751cc3e53156941368f1",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/6452c1f1-dc1e-413c-8b19-991b61870a8b/e37c4e19cf7a02f7b6f243de3316c9ea/e89e3dcbb016928c7e426238337d69eb.cab",
+            "vendorFileName": "Installers\\e89e3dcbb016928c7e426238337d69eb.cab",
+            "version": "10.0.26100.15"
+          },
+          "cab-eca0aa33de85194cd50ed6e0aae0156f": {
+            "declaredBytes": 42174,
+            "diskId": "11",
+            "fileName": "cab-eca0aa33de85194cd50ed6e0aae0156f.cab",
+            "format": "cab",
+            "id": "Win11SDK_10.0.26100",
+            "maxBytes": 67108864,
+            "msiKey": "ucrt-headers-libraries-sources",
+            "sha256": "c0c6cc329d2be2ddba902649c46efb9064186c2185445451602c90d9c7eb3dd8",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/6452c1f1-dc1e-413c-8b19-991b61870a8b/827f1b56c1f9090dca62cf5bef23d094/eca0aa33de85194cd50ed6e0aae0156f.cab",
+            "vendorFileName": "Installers\\eca0aa33de85194cd50ed6e0aae0156f.cab",
+            "version": "10.0.26100.15"
+          },
+          "cab-f2e05dfd38ed343d3de77209cf3ecdae": {
+            "declaredBytes": 1240695,
+            "diskId": "2",
+            "fileName": "cab-f2e05dfd38ed343d3de77209cf3ecdae.cab",
+            "format": "cab",
+            "id": "Win11SDK_10.0.26100",
+            "maxBytes": 67108864,
+            "msiKey": "windows-sdk-onecore-headers-x86",
+            "sha256": "c536e6742d56a05c47310c23e09a9e5a5552d914f5752ff9050eee88e009bcf9",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/6452c1f1-dc1e-413c-8b19-991b61870a8b/107cd9d9170325d1ded9e4cc47a9c4cc/f2e05dfd38ed343d3de77209cf3ecdae.cab",
+            "vendorFileName": "Installers\\f2e05dfd38ed343d3de77209cf3ecdae.cab",
+            "version": "10.0.26100.15"
+          },
+          "cab-f9b24c8280986c0683fbceca5326d806": {
+            "declaredBytes": 7245228,
+            "diskId": "7",
+            "fileName": "cab-f9b24c8280986c0683fbceca5326d806.cab",
+            "format": "cab",
+            "id": "Win11SDK_10.0.26100",
+            "maxBytes": 67108864,
+            "msiKey": "windows-sdk-store-libs-x86",
+            "sha256": "154f4a24ec22ea0c932709f0e1a2c443946b42c14291a49a280ab4ea0eaa504d",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/6452c1f1-dc1e-413c-8b19-991b61870a8b/66f36d1686d2dde0cfa99a5160a9571d/f9b24c8280986c0683fbceca5326d806.cab",
+            "vendorFileName": "Installers\\f9b24c8280986c0683fbceca5326d806.cab",
+            "version": "10.0.26100.15"
+          },
+          "cab-f9ff50431335056fb4fbac05b8268204": {
+            "declaredBytes": 19158,
+            "diskId": "12",
+            "fileName": "cab-f9ff50431335056fb4fbac05b8268204.cab",
+            "format": "cab",
+            "id": "Win11SDK_10.0.26100",
+            "maxBytes": 67108864,
+            "msiKey": "ucrt-headers-libraries-sources",
+            "sha256": "355cc1e65b9e5f02a0b3a4f32d02f9241b97030d3527166eff6a372d5d0e1bac",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/6452c1f1-dc1e-413c-8b19-991b61870a8b/8383be7caac218b9afd6a3564dbb0984/f9ff50431335056fb4fbac05b8268204.cab",
+            "vendorFileName": "Installers\\f9ff50431335056fb4fbac05b8268204.cab",
+            "version": "10.0.26100.15"
+          }
+        },
+        "msiCabinets": {
+          "ucrt-headers-libraries-sources": [
+            {
+              "cabinet": "cab-16ab2ea2187acffa6435e334796c8c89",
+              "diskId": "2"
+            },
+            {
+              "cabinet": "cab-6ee7bbee8435130a869cf971694fd9e2",
+              "diskId": "3"
+            },
+            {
+              "cabinet": "cab-78fa3c824c2c48bd4a49ab5969adaaf7",
+              "diskId": "4"
+            },
+            {
+              "cabinet": "cab-7afc7b670accd8e3cc94cfffd516f5cb",
+              "diskId": "5"
+            },
+            {
+              "cabinet": "cab-96076045170fe5db6d5dcf14b6f6688e",
+              "diskId": "6"
+            },
+            {
+              "cabinet": "cab-a1e2a83aa8a71c48c742eeaff6e71928",
+              "diskId": "7"
+            },
+            {
+              "cabinet": "cab-b2f03f34ff83ec013b9e45c7cd8e8a73",
+              "diskId": "8"
+            },
+            {
+              "cabinet": "cab-beb5360d2daaa3167dea7ad16c28f996",
+              "diskId": "9"
+            },
+            {
+              "cabinet": "cab-d95da93904819b1f7e68adb98b49a9c7",
+              "diskId": "10"
+            },
+            {
+              "cabinet": "cab-eca0aa33de85194cd50ed6e0aae0156f",
+              "diskId": "11"
+            },
+            {
+              "cabinet": "cab-f9ff50431335056fb4fbac05b8268204",
+              "diskId": "12"
+            }
+          ],
+          "windows-sdk-desktop-headers-x64": [
+            {
+              "cabinet": "cab-d1de88680a8e53fe75e01e94dc0ed767",
+              "diskId": "2"
+            }
+          ],
+          "windows-sdk-desktop-headers-x86": [
+            {
+              "cabinet": "cab-07a57cdb41ba28cced14005f087267be",
+              "diskId": "2"
+            },
+            {
+              "cabinet": "cab-2e876dd22fa5e6785f137e3422dd50ec",
+              "diskId": "3"
+            },
+            {
+              "cabinet": "cab-4fe4c8b88812f5339018c0eef95acdb9",
+              "diskId": "4"
+            }
+          ],
+          "windows-sdk-desktop-libs-x64": [
+            {
+              "cabinet": "cab-58314d0646d7e1a25e97c902166c3155",
+              "diskId": "2"
+            }
+          ],
+          "windows-sdk-onecore-headers-x64": [
+            {
+              "cabinet": "cab-b0656253ef2f688d2982eafa2e73f621",
+              "diskId": "2"
+            }
+          ],
+          "windows-sdk-onecore-headers-x86": [
+            {
+              "cabinet": "cab-f2e05dfd38ed343d3de77209cf3ecdae",
+              "diskId": "2"
+            }
+          ],
+          "windows-sdk-store-apps-headers": [
+            {
+              "cabinet": "cab-766c0ffd568bbb31bf7fb6793383e24a",
+              "diskId": "2"
+            },
+            {
+              "cabinet": "cab-8125ee239710f33ea485965f76fae646",
+              "diskId": "3"
+            },
+            {
+              "cabinet": "cab-c0aa6d435b0851bf34365aadabd0c20f",
+              "diskId": "4"
+            }
+          ],
+          "windows-sdk-store-libs-x86": [
+            {
+              "cabinet": "cab-05047a45609f311645eebcac2739fc4c",
+              "diskId": "2"
+            },
+            {
+              "cabinet": "cab-13d68b8a7b6678a368e2d13ff4027521",
+              "diskId": "3"
+            },
+            {
+              "cabinet": "cab-463ad1b0783ebda908fd6c16a4abfe93",
+              "diskId": "4"
+            },
+            {
+              "cabinet": "cab-5a22e5cde814b041749fb271547f4dd5",
+              "diskId": "5"
+            },
+            {
+              "cabinet": "cab-e10768bb6e9d0ea730280336b697da66",
+              "diskId": "6"
+            },
+            {
+              "cabinet": "cab-f9b24c8280986c0683fbceca5326d806",
+              "diskId": "7"
+            }
+          ],
+          "windows-sdk-store-onecore-headers-x86": [
+            {
+              "cabinet": "cab-e89e3dcbb016928c7e426238337d69eb",
+              "diskId": "2"
+            }
+          ]
+        },
+        "packages": {
+          "ucrt-headers-libraries-sources": {
+            "declaredBytes": 589824,
+            "fileName": "package-ucrt-headers-libraries-sources.msi",
+            "format": "msi",
+            "id": "Win11SDK_10.0.26100",
+            "maxBytes": 67108864,
+            "sha256": "f611ce8a9e576e3383917b04b6fbe5ee6bed8363c1a2a8e9d6f8335cbb422675",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/6452c1f1-dc1e-413c-8b19-991b61870a8b/d10da41a6ad6809f823ef4a92d4f6c56/universal%20crt%20headers%20libraries%20and%20sources-x86_en-us.msi",
+            "vendorFileName": "Installers\\Universal CRT Headers Libraries and Sources-x86_en-us.msi",
+            "version": "10.0.26100.15"
+          },
+          "vc-crt-header-resources-enu": {
+            "declaredBytes": 366489,
+            "fileName": "package-vc-crt-header-resources-enu.vsix",
+            "format": "vsix",
+            "id": "Microsoft.VC.14.44.17.14.CRT.Headers.Resources.base",
+            "maxBytes": 67108864,
+            "sha256": "7b6ead51c6d5cf775acaf50df36e89486eeea6c805c37785db6a337da20ee340",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/c610cd8c-801b-44b8-a80a-82cc382aeb43/7b6ead51c6d5cf775acaf50df36e89486eeea6c805c37785db6a337da20ee340/Microsoft.VC.14.44.17.14.CRT.Headers.Resources.base.enu.vsix",
+            "vendorFileName": "Microsoft.VC.14.44.17.14.CRT.Headers.Resources.base.enu.vsix",
+            "version": "14.44.35220"
+          },
+          "vc-crt-headers": {
+            "declaredBytes": 2128977,
+            "fileName": "package-vc-crt-headers.vsix",
+            "format": "vsix",
+            "id": "Microsoft.VC.14.44.17.14.CRT.Headers.base",
+            "maxBytes": 67108864,
+            "sha256": "852382a9aa73502b7849c1bcadfb603ba7175c4e8b60e6aba03c7de711d4ece5",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/c610cd8c-801b-44b8-a80a-82cc382aeb43/852382a9aa73502b7849c1bcadfb603ba7175c4e8b60e6aba03c7de711d4ece5/Microsoft.VC.14.44.17.14.CRT.Headers.base.vsix",
+            "vendorFileName": "Microsoft.VC.14.44.17.14.CRT.Headers.base.vsix",
+            "version": "14.44.35220"
+          },
+          "vc-crt-x64-desktop": {
+            "declaredBytes": 51521199,
+            "fileName": "package-vc-crt-x64-desktop.vsix",
+            "format": "vsix",
+            "id": "Microsoft.VC.14.44.17.14.CRT.x64.Desktop.base",
+            "maxBytes": 67108864,
+            "sha256": "f01f701a7bcd9587a340898c851424f6a52bb913a70c185ff0d5bf0288c5831a",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/67cf767c-5e71-47c2-a54a-cd5631e28942/f01f701a7bcd9587a340898c851424f6a52bb913a70c185ff0d5bf0288c5831a/Microsoft.VC.14.44.17.14.CRT.x64.Desktop.base.vsix",
+            "vendorFileName": "Microsoft.VC.14.44.17.14.CRT.x64.Desktop.base.vsix",
+            "version": "14.44.35226"
+          },
+          "vc-crt-x64-onecore-desktop": {
+            "declaredBytes": 55385904,
+            "fileName": "package-vc-crt-x64-onecore-desktop.vsix",
+            "format": "vsix",
+            "id": "Microsoft.VC.14.44.17.14.CRT.x64.OneCore.Desktop.base",
+            "maxBytes": 67108864,
+            "sha256": "50d68caa9bba363d6209bf5fc8a572f013c9f370f6e203f36f04e3d84f5083ca",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/67cf767c-5e71-47c2-a54a-cd5631e28942/50d68caa9bba363d6209bf5fc8a572f013c9f370f6e203f36f04e3d84f5083ca/Microsoft.VC.14.44.17.14.CRT.x64.OneCore.Desktop.base.vsix",
+            "vendorFileName": "Microsoft.VC.14.44.17.14.CRT.x64.OneCore.Desktop.base.vsix",
+            "version": "14.44.35226"
+          },
+          "vc-crt-x64-store": {
+            "declaredBytes": 28032384,
+            "fileName": "package-vc-crt-x64-store.vsix",
+            "format": "vsix",
+            "id": "Microsoft.VC.14.44.17.14.CRT.x64.Store.base",
+            "maxBytes": 67108864,
+            "sha256": "9135b03c0df53c7a0aa9bef7230a1c2ff4263a0ee7baa7e419d034f484f6bb56",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/67cf767c-5e71-47c2-a54a-cd5631e28942/9135b03c0df53c7a0aa9bef7230a1c2ff4263a0ee7baa7e419d034f484f6bb56/Microsoft.VC.14.44.17.14.CRT.x64.Store.base.vsix",
+            "vendorFileName": "Microsoft.VC.14.44.17.14.CRT.x64.Store.base.vsix",
+            "version": "14.44.35226"
+          },
+          "windows-sdk-desktop-headers-x64": {
+            "declaredBytes": 450560,
+            "fileName": "package-windows-sdk-desktop-headers-x64.msi",
+            "format": "msi",
+            "id": "Win11SDK_10.0.26100",
+            "maxBytes": 67108864,
+            "sha256": "d189ca50e5632b546795922e2262794c068d6ff301860feb4522b8b93cbb3ba8",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/6452c1f1-dc1e-413c-8b19-991b61870a8b/ed222baa6d1d1dc09fb45a1827e7892a/windows%20sdk%20desktop%20headers%20x64-x86_en-us.msi",
+            "vendorFileName": "Installers\\Windows SDK Desktop Headers x64-x86_en-us.msi",
+            "version": "10.0.26100.15"
+          },
+          "windows-sdk-desktop-headers-x86": {
+            "declaredBytes": 790528,
+            "fileName": "package-windows-sdk-desktop-headers-x86.msi",
+            "format": "msi",
+            "id": "Win11SDK_10.0.26100",
+            "maxBytes": 67108864,
+            "sha256": "f1e5159feb948ce90a81dcc6a427dde844610230cb6ed787e35d422de527a5f8",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/6452c1f1-dc1e-413c-8b19-991b61870a8b/7fad2c686fb58ea9e6dc0308a2df142f/windows%20sdk%20desktop%20headers%20x86-x86_en-us.msi",
+            "vendorFileName": "Installers\\Windows SDK Desktop Headers x86-x86_en-us.msi",
+            "version": "10.0.26100.15"
+          },
+          "windows-sdk-desktop-libs-x64": {
+            "declaredBytes": 528384,
+            "fileName": "package-windows-sdk-desktop-libs-x64.msi",
+            "format": "msi",
+            "id": "Win11SDK_10.0.26100",
+            "maxBytes": 67108864,
+            "sha256": "2e956ca1cf17800b0f9811a6249b945f045addf18ee85ffe7aea99ec6c27243a",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/6452c1f1-dc1e-413c-8b19-991b61870a8b/a7dce16da158fe456395566e2dafd23d/windows%20sdk%20desktop%20libs%20x64-x86_en-us.msi",
+            "vendorFileName": "Installers\\Windows SDK Desktop Libs x64-x86_en-us.msi",
+            "version": "10.0.26100.15"
+          },
+          "windows-sdk-onecore-headers-x64": {
+            "declaredBytes": 450560,
+            "fileName": "package-windows-sdk-onecore-headers-x64.msi",
+            "format": "msi",
+            "id": "Win11SDK_10.0.26100",
+            "maxBytes": 67108864,
+            "sha256": "14667a930569186a25e75eb35614ce43549b7406705e098db71ffe9b31c60faa",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/6452c1f1-dc1e-413c-8b19-991b61870a8b/e97ca2e01a3fd50e3270b20acf1971ad/windows%20sdk%20onecoreuap%20headers%20x64-x86_en-us.msi",
+            "vendorFileName": "Installers\\Windows SDK OnecoreUap Headers x64-x86_en-us.msi",
+            "version": "10.0.26100.15"
+          },
+          "windows-sdk-onecore-headers-x86": {
+            "declaredBytes": 495616,
+            "fileName": "package-windows-sdk-onecore-headers-x86.msi",
+            "format": "msi",
+            "id": "Win11SDK_10.0.26100",
+            "maxBytes": 67108864,
+            "sha256": "09725127b70e645fd0c86f004a1b0204ae72d685d70b2e3856efc00533aaeec3",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/6452c1f1-dc1e-413c-8b19-991b61870a8b/bf4c8a484028b6e592a6a9d818c21777/windows%20sdk%20onecoreuap%20headers%20x86-x86_en-us.msi",
+            "vendorFileName": "Installers\\Windows SDK OnecoreUap Headers x86-x86_en-us.msi",
+            "version": "10.0.26100.15"
+          },
+          "windows-sdk-store-apps-headers": {
+            "declaredBytes": 1060864,
+            "fileName": "package-windows-sdk-store-apps-headers.msi",
+            "format": "msi",
+            "id": "Win11SDK_10.0.26100",
+            "maxBytes": 67108864,
+            "sha256": "c9f78ae3e730ea1789a37001e204a970099d2acc555cc537fb45ea0bb23b347c",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/6452c1f1-dc1e-413c-8b19-991b61870a8b/06062c286c5533d4d2c47e613ae44793/windows%20sdk%20for%20windows%20store%20apps%20headers-x86_en-us.msi",
+            "vendorFileName": "Installers\\Windows SDK for Windows Store Apps Headers-x86_en-us.msi",
+            "version": "10.0.26100.15"
+          },
+          "windows-sdk-store-libs-x86": {
+            "declaredBytes": 528384,
+            "fileName": "package-windows-sdk-store-libs-x86.msi",
+            "format": "msi",
+            "id": "Win11SDK_10.0.26100",
+            "maxBytes": 67108864,
+            "sha256": "1381535d2f6b1894a092da67f8a8fb048a4dfe8060ce75b3275affa81b02586e",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/6452c1f1-dc1e-413c-8b19-991b61870a8b/079ca63878193e064d8aa000670f0db3/windows%20sdk%20for%20windows%20store%20apps%20libs-x86_en-us.msi",
+            "vendorFileName": "Installers\\Windows SDK for Windows Store Apps Libs-x86_en-us.msi",
+            "version": "10.0.26100.15"
+          },
+          "windows-sdk-store-onecore-headers-x86": {
+            "declaredBytes": 471040,
+            "fileName": "package-windows-sdk-store-onecore-headers-x86.msi",
+            "format": "msi",
+            "id": "Win11SDK_10.0.26100",
+            "maxBytes": 67108864,
+            "sha256": "be5ee13ccc98b87211b4f3686972b00fa16f20f266fe9dc5572d62f001e0547c",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/6452c1f1-dc1e-413c-8b19-991b61870a8b/95de969f19c09fe411b779c2e2f06f0d/windows%20sdk%20for%20windows%20store%20apps%20headers%20onecoreuap-x86_en-us.msi",
+            "vendorFileName": "Installers\\Windows SDK for Windows Store Apps Headers OnecoreUap-x86_en-us.msi",
+            "version": "10.0.26100.15"
+          }
+        },
+        "roots": [
+          "sdk/include/ucrt",
+          "sdk/include/shared",
+          "sdk/include/um",
+          "sdk/include/winrt",
+          "sdk/lib/ucrt",
+          "sdk/lib/um",
+          "msvc/include",
+          "msvc/lib"
+        ],
+        "selections": [
+          {
+            "destinationPrefix": "msvc/include",
+            "kind": "tree",
+            "package": "vc-crt-headers",
+            "sourcePrefix": "Contents/VC/Tools/MSVC/14.44.35207/include"
+          },
+          {
+            "destinationPrefix": "msvc/include/en-US",
+            "kind": "tree",
+            "package": "vc-crt-header-resources-enu",
+            "sourcePrefix": "Contents/VC/Tools/MSVC/14.44.35207/include/en-US"
+          },
+          {
+            "destinationPrefix": "msvc/lib",
+            "kind": "tree",
+            "package": "vc-crt-x64-desktop",
+            "sourcePrefix": "Contents/VC/Tools/MSVC/14.44.35207/lib/x64"
+          },
+          {
+            "destinationPrefix": "msvc/lib/oldnames.lib",
+            "kind": "file",
+            "package": "vc-crt-x64-onecore-desktop",
+            "sourcePrefix": "Contents/VC/Tools/MSVC/14.44.35207/lib/onecore/x64/oldnames.lib"
+          },
+          {
+            "destinationPrefix": "msvc/lib/comsuppw.lib",
+            "kind": "file",
+            "package": "vc-crt-x64-store",
+            "sourcePrefix": "Contents/VC/Tools/MSVC/14.44.35207/lib/x64/comsuppw.lib"
+          },
+          {
+            "destinationPrefix": "msvc/lib/delayimp.lib",
+            "kind": "file",
+            "package": "vc-crt-x64-store",
+            "sourcePrefix": "Contents/VC/Tools/MSVC/14.44.35207/lib/x64/delayimp.lib"
+          },
+          {
+            "destinationPrefix": "sdk/include/ucrt",
+            "kind": "tree",
+            "package": "ucrt-headers-libraries-sources",
+            "sourcePrefix": "Program Files/Windows Kits/10/Include/10.0.26100.0/ucrt"
+          },
+          {
+            "destinationPrefix": "sdk/lib/ucrt",
+            "kind": "tree",
+            "package": "ucrt-headers-libraries-sources",
+            "sourcePrefix": "Program Files/Windows Kits/10/Lib/10.0.26100.0/ucrt/x64"
+          },
+          {
+            "destinationPrefix": "sdk/include/shared",
+            "kind": "tree",
+            "package": "windows-sdk-desktop-headers-x86",
+            "sourcePrefix": "Program Files/Windows Kits/10/Include/10.0.26100.0/shared"
+          },
+          {
+            "destinationPrefix": "sdk/include/um",
+            "kind": "tree",
+            "package": "windows-sdk-desktop-headers-x86",
+            "sourcePrefix": "Program Files/Windows Kits/10/Include/10.0.26100.0/um"
+          },
+          {
+            "destinationPrefix": "sdk/include/winrt",
+            "kind": "tree",
+            "package": "windows-sdk-desktop-headers-x86",
+            "sourcePrefix": "Program Files/Windows Kits/10/Include/10.0.26100.0/winrt"
+          },
+          {
+            "destinationPrefix": "sdk/include/um",
+            "kind": "tree",
+            "package": "windows-sdk-desktop-headers-x64",
+            "sourcePrefix": "Program Files/Windows Kits/10/Include/10.0.26100.0/um"
+          },
+          {
+            "destinationPrefix": "sdk/include/um",
+            "kind": "tree",
+            "package": "windows-sdk-store-apps-headers",
+            "sourcePrefix": "Program Files/Windows Kits/10/Include/10.0.26100.0/um"
+          },
+          {
+            "destinationPrefix": "sdk/include/winrt",
+            "kind": "tree",
+            "package": "windows-sdk-store-apps-headers",
+            "sourcePrefix": "Program Files/Windows Kits/10/Include/10.0.26100.0/winrt"
+          },
+          {
+            "destinationPrefix": "sdk/lib/um",
+            "kind": "tree",
+            "package": "windows-sdk-desktop-libs-x64",
+            "sourcePrefix": "Program Files/Windows Kits/10/Lib/10.0.26100.0/um/x64"
+          },
+          {
+            "destinationPrefix": "sdk/include/shared",
+            "kind": "tree",
+            "package": "windows-sdk-onecore-headers-x64",
+            "sourcePrefix": "Program Files/Windows Kits/10/Include/10.0.26100.0/shared"
+          },
+          {
+            "destinationPrefix": "sdk/include/shared",
+            "kind": "tree",
+            "package": "windows-sdk-store-onecore-headers-x86",
+            "sourcePrefix": "Program Files/Windows Kits/10/Include/10.0.26100.0/shared"
+          },
+          {
+            "destinationPrefix": "sdk/lib/um",
+            "kind": "tree",
+            "package": "windows-sdk-store-libs-x86",
+            "sourcePrefix": "Program Files/Windows Kits/10/Lib/10.0.26100.0/um/x64"
+          },
+          {
+            "destinationPrefix": "sdk/include/shared",
+            "kind": "tree",
+            "package": "windows-sdk-onecore-headers-x86",
+            "sourcePrefix": "Program Files/Windows Kits/10/Include/10.0.26100.0/shared"
+          }
+        ],
+        "sourceCatalog": {
+          "bytes": 17954732,
+          "channelCatalogBindingVerified": false,
+          "productBuild": "17.14.37710.0",
+          "productDisplayVersion": "17.14.41 (September 2026)",
+          "publisherAuthenticated": false,
+          "sha256": "f0a50ea157222c29abd5ea6ff01bfc3c33b04e011c5e45ee2ca38ef0778e5643"
+        },
+        "target": "windows-host",
+        "version": 1
+      },
+      "windowsIntelRuntime": {
+        "compiler": {
+          "sha256": "5475f2609642a667c4f599a68baafb90c9f34acf27cecc9b5a3a84658e75af03",
+          "version": "2026.2"
+        },
+        "libraries": [
+          {
+            "bytes": 805696,
+            "name": "libircmt.lib",
+            "path": "intel-runtime/lib/libircmt.lib",
+            "sha256": "64f81bfd960504b780524f71104022675a0293af6fa52519ac89e2720b5f56b4",
+            "source": "lib/libircmt.lib"
+          },
+          {
+            "bytes": 805696,
+            "name": "libirc.lib",
+            "path": "intel-runtime/lib/libirc.lib",
+            "sha256": "64f81bfd960504b780524f71104022675a0293af6fa52519ac89e2720b5f56b4",
+            "source": "lib/libirc.lib"
+          },
+          {
+            "bytes": 9673648,
+            "name": "libmmt.lib",
+            "path": "intel-runtime/lib/libmmt.lib",
+            "sha256": "76737828d63ff4e11af8cc8d11519e000255b885becc0b8abe64aeafbd73affd",
+            "source": "lib/libmmt.lib"
+          },
+          {
+            "bytes": 61176054,
+            "name": "svml_dispmt.lib",
+            "path": "intel-runtime/lib/svml_dispmt.lib",
+            "sha256": "ccd2e31a5b85a424028a695df45879096ce46d33d8ce90e8550f51d61da3c771",
+            "source": "lib/svml_dispmt.lib"
+          },
+          {
+            "bytes": 4441912,
+            "name": "libdecimal.lib",
+            "path": "intel-runtime/lib/libdecimal.lib",
+            "sha256": "73c7a00a09831ca3e628893898bec72ab267c30cfa2be23782b0eac265006adc",
+            "source": "lib/libdecimal.lib"
+          }
+        ],
+        "licenses": [
+          {
+            "bytes": 262117,
+            "path": "intel-runtime/licenses/share/doc/compiler/licensing/c/LICENSE.rtf",
+            "sha256": "4e96f3006c9d51b38561f9802da896480dc48e7703a76c206292bf6d6d11a781",
+            "source": "share/doc/compiler/licensing/c/LICENSE.rtf"
+          },
+          {
+            "bytes": 36937,
+            "path": "intel-runtime/licenses/share/doc/compiler/licensing/c/third-party-programs.txt",
+            "sha256": "a81491a0243fa1d072aa636c890a6dd082ca403aca4681672cf6f69d3d516f79",
+            "source": "share/doc/compiler/licensing/c/third-party-programs.txt"
+          },
+          {
+            "bytes": 31578,
+            "path": "intel-runtime/licenses/share/doc/compiler/licensing/openmp/third-party-programs.txt",
+            "sha256": "f8ce918fe7311ce279e68380a2e233f8a42b1cd3dda8f4c48d6de97a0255c1d7",
+            "source": "share/doc/compiler/licensing/openmp/third-party-programs.txt"
+          }
+        ],
+        "version": 1
+      }
+    }
+  }
+}

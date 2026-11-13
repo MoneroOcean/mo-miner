@@ -1,0 +1,42 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -146,7 +146,9 @@ if(MSVC)
+         endif()
+     ENDIF()
+ 
+-    if(NOT CMAKE_CXX_COMPILER_ID STREQUAL IntelLLVM)
++    # Like IntelLLVM, the embedded Clang cross-build diagnoses system SDK headers.
++    # Keep warnings visible without promoting vendor-header warnings to errors.
++    if(NOT CMAKE_CXX_COMPILER_ID STREQUAL IntelLLVM AND NOT (MOM_EMBEDDED_LEVEL_ZERO AND CMAKE_CXX_COMPILER_ID STREQUAL Clang))
+         # treat warnings as errors
+         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /WX /W3")
+     endif()
+diff --git a/source/CMakeLists.txt b/source/CMakeLists.txt
+--- a/source/CMakeLists.txt
++++ b/source/CMakeLists.txt
+@@ -17,7 +17,10 @@ if (BUILD_STATIC)
+     add_library(${TARGET_LOADER_NAME}
+         STATIC
+         ""
+-        ${CMAKE_CURRENT_BINARY_DIR}/ZeLoaderVersion.rc
+     )
++    # DLL version resources cannot be whole-archived into the native executable.
++    if (NOT MOM_EMBEDDED_LEVEL_ZERO)
++        target_sources(${TARGET_LOADER_NAME} PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/ZeLoaderVersion.rc)
++    endif()
+     # Upstream's static dispatch stub still opens the shared loader. A standalone
+     # application instead archives the same full implementation as the shared build.
+diff --git a/source/lib/windows/lib_init.cpp b/source/lib/windows/lib_init.cpp
+--- a/source/lib/windows/lib_init.cpp
++++ b/source/lib/windows/lib_init.cpp
+@@ -13,7 +13,8 @@
+ 
+ namespace ze_lib
+ {
+-#ifndef L0_STATIC_LOADER_BUILD
++// EmbeddedContexts already owns both lifetimes; an executable has no DLL entrypoint.
++#if !defined(L0_STATIC_LOADER_BUILD) && !defined(MOM_EMBEDDED_LEVEL_ZERO)
+     /*
+     * DllMain is called by the OS when the DLL is loaded or unloaded.
+     * When modifying the code here, be aware of the restrictions on what can be done

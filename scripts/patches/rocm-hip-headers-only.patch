@@ -1,0 +1,12 @@
+--- a/hipamd/CMakeLists.txt
++++ b/hipamd/CMakeLists.txt
+@@ -466,7 +466,8 @@
+     )
+ # Packaging invokes UNIX commands, which are not available on Windows.
+ 
+-if(NOT WIN32)
++# Keep headers-only configure out of runtime package install rules.
++if(NOT WIN32 AND NOT HIP_RUNTIME STREQUAL "none")
+     add_subdirectory(packaging)
+ endif()
+ 

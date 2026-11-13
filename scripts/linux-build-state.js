@@ -8,6 +8,7 @@ const path = require("node:path");
 const os = require("node:os");
 const crypto = require("node:crypto");
 const {execFileSync} = require("node:child_process");
+const {fileHash, walk, sourceInputs, buildDependencies} = require("./build-source-inputs");
 /** @typedef {Record<string, string>} Hashes */
 /** @typedef {{name: string, deps: string[] | null, depfile?: string}} ObjectDependencies */
 /** @typedef {{content: string, dependencies: string | null}} ObjectHashes */
@@ -16,6 +17,7 @@ const {execFileSync} = require("node:child_process");
  * @property {number} schema
  * @property {number} startedAt
  * @property {string} configuration
+ * @property {{portable: boolean, cpuMarch: string}} [portability]
  * @property {Hashes} files
  * @property {Hashes} graph
  * @property {Record<string, string | null>} [external]
@@ -59,15 +61,6 @@ const receipt = path.join(build, ".mom-content-state.json");
 const pending = path.join(build, ".mom-content-pending.json");
 /** @param {import("node:crypto").BinaryLike} value */
 const hash = value => crypto.createHash("sha256").update(value).digest("hex");
-/** @param {string} name */
-const fileHash = name => hash(fs.readFileSync(name));
-/** @param {string} dir @param {(name: string) => void} visit */
-function walk(dir, visit) {
-  for (const entry of fs.readdirSync(dir, {withFileTypes: true}).sort((a, b) => a.name.localeCompare(b.name))) {
-    const name = path.join(dir, entry.name);
-    if (entry.isDirectory()) {walk(name, visit);} else {visit(name);}
-  }
-}
 function assertOutputTree() {
   for (const leaf of ["Release", ".deps"]) {
     const dir = path.join(build, leaf);
@@ -80,17 +73,7 @@ function assertOutputTree() {
 }
 assertOutputTree();
 function inputs() {
-  /** @type {Hashes} */
-  const files = {};
-  for (const dir of ["native", "sycl", "xmrig"]) {walk(dir, name => { files[name] = fileHash(name); });}
-  /** @type {Hashes} */
-  const graph = {};
-  for (const name of ["binding.gyp", "scripts/linux-build-state.js", "scripts/build-helpers.sh", "scripts/build-environment.js", "scripts/cpu-cflags.sh",
-    "scripts/cpu-optflags.sh", "scripts/cpu-feature.sh", "scripts/cxx-combined.sh",
-    "scripts/cxx-adaptivecpp.sh", "scripts/cxx-oneapi.sh", "scripts/combined-build.sh", "scripts/adaptivecpp-entrypoint.sh",
-    "scripts/multicompiler-entrypoint.sh"]) {graph[name] = fileHash(name);}
-  for (const [name, value] of Object.entries(files)) {if (/\.gypi?$/.test(name)) {graph[name] = value;}}
-  return {files, graph};
+  return sourceInputs(root);
 }
 /** @param {string} name @param {boolean} [filesOnly] @returns {string[] | null} */
 function optionalSdkMetadata(name, filesOnly = false) {
@@ -229,13 +212,7 @@ function dependencies() {
       path.join(build, ".deps", relative + ".d"), name + ".d"];
     const depfile = candidates.find(candidate => fs.existsSync(candidate));
     if (!depfile) { objects.push({name, deps: null}); return; }
-    const text = fs.readFileSync(depfile, "utf8").replace(/\\\r?\n/g, " ");
-    const match = text.match(/^deps_[^\n]*?\s*:=([^\n]*)/m) || text.match(/^[^:\n]+:(?!=)([^\n]*)/m);
-    const dependencyText = match?.[1];
-    if (!dependencyText || /[$]/.test(dependencyText)) { objects.push({name, deps: null}); return; }
-    // Gyp escapes spaces in dependency names; preserve them when tokenizing.
-    const tokens = dependencyText.match(/(?:\\.|[^\s])+/g) || [];
-    const deps = tokens.map(token => path.resolve(build, token.replace(/\\(.)/g, "$1")));
+    const deps = buildDependencies(fs.readFileSync(depfile, "utf8"), build);
     objects.push({name, deps, depfile});
   });
   return objects;
@@ -342,7 +319,8 @@ function write(name, state) {
 }
 if (operation === "prepare") {
   /** @type {BuildState} */
-  const current = {schema: 1, startedAt: Date.now(), ...inputs(), configuration: configuration()};
+  const current = {schema: 1, startedAt: Date.now(), ...inputs(), configuration: configuration(),
+    portability: {portable: process.env["MOM_PORTABLE_BUILD"] === "1", cpuMarch: process.env["MOM_CPU_MARCH"] || ""}};
   const unfinished = read(pending);
   // A failed build retains its invalidation checkpoint and previously verified objects. New
   // objects have no completion proof: a killed compiler can leave a partial .o beside an old .d.
@@ -352,6 +330,7 @@ if (operation === "prepare") {
     // these uncommon builds conservatively instead of inventing a second recursive Gyp parser.
     Boolean(process.env["GYP_CONFIG_DIR"]) || customNodeHeaders || customGypInputs.some(name => fs.existsSync(name)) ||
     prior.configuration !== current.configuration ||
+    JSON.stringify(prior.portability) !== JSON.stringify(current.portability) ||
     JSON.stringify(prior.graph) !== JSON.stringify(current.graph) ||
     Boolean(prior.generated && JSON.stringify(prior.generated) !== JSON.stringify(generatedGraph())) ||
     !fs.existsSync(path.join(build, "Makefile"));

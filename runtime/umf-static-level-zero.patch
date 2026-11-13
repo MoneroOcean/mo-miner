@@ -1,0 +1,85 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index a4e3163..d24d957 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -65,6 +65,10 @@ endmacro()
+ # configuration command
+ umf_option(UMF_BUILD_SHARED_LIBRARY "Build UMF as shared library" OFF)
+ umf_option(UMF_BUILD_LEVEL_ZERO_PROVIDER "Build Level Zero memory provider" ON)
++umf_option(UMF_STATIC_LEVEL_ZERO "Bind the Level Zero provider to archive entrypoints" OFF)
++if(UMF_STATIC_LEVEL_ZERO AND (UMF_BUILD_SHARED_LIBRARY OR NOT UMF_BUILD_LEVEL_ZERO_PROVIDER))
++    message(FATAL_ERROR "UMF_STATIC_LEVEL_ZERO requires a static library and the Level Zero provider")
++endif()
+ umf_option(UMF_BUILD_CUDA_PROVIDER "Build CUDA memory provider" ON)
+ umf_option(UMF_BUILD_LIBUMF_POOL_JEMALLOC
+            "Build the libumf_pool_jemalloc static library" OFF)
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 45046fd..3e83298 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -149,6 +149,9 @@ endif()
+ target_include_directories(umf PRIVATE ${UMF_PRIVATE_INCLUDE_DIRS})
+ target_link_directories(umf PRIVATE ${UMF_PRIVATE_LIBRARY_DIRS})
+ target_compile_definitions(umf PRIVATE ${UMF_COMMON_COMPILE_DEFINITIONS})
++if(UMF_STATIC_LEVEL_ZERO)
++    target_compile_definitions(umf PRIVATE UMF_STATIC_LEVEL_ZERO=1)
++endif()
+ 
+ add_dependencies(umf umf_ba umf_coarse umf_utils)
+ 
+diff --git a/src/provider/provider_level_zero.c b/src/provider/provider_level_zero.c
+index aec65fc..a83c3a5 100644
+--- a/src/provider/provider_level_zero.c
++++ b/src/provider/provider_level_zero.c
+@@ -112,7 +112,7 @@ typedef struct ze_ops_t {
+     ze_result_t (*zeMemOpenIpcHandle)(ze_context_handle_t, ze_device_handle_t,
+                                       ze_ipc_mem_handle_t,
+                                       ze_ipc_memory_flags_t, void **);
+-    ze_result_t (*zeMemCloseIpcHandle)(ze_context_handle_t, void *);
++    ze_result_t (*zeMemCloseIpcHandle)(ze_context_handle_t, const void *);
+     ze_result_t (*zeContextMakeMemoryResident)(ze_context_handle_t,
+                                                ze_device_handle_t, void *,
+                                                size_t);
+@@ -121,7 +121,7 @@ typedef struct ze_ops_t {
+     ze_result_t (*zeDeviceGetProperties)(ze_device_handle_t,
+                                          ze_device_properties_t *);
+     ze_result_t (*zeMemFreeExt)(ze_context_handle_t,
+-                                ze_memory_free_ext_desc_t *, void *);
++                                const ze_memory_free_ext_desc_t *, void *);
+     ze_result_t (*zeMemGetAllocProperties)(ze_context_handle_t, const void *,
+                                            ze_memory_allocation_properties_t *,
+                                            ze_device_handle_t *);
+@@ -237,7 +237,23 @@ static ze_memory_type_t umf2ze_memory_type(umf_usm_memory_type_t memory_type) {
+ }
+ 
+ static void init_ze_global_state(void) {
+-
++#ifdef UMF_STATIC_LEVEL_ZERO
++    // The application owns the static loader. Never consult a loader-name override or perform
++    // dlsym/NOLOAD on an application shared library; its driver discovery remains unchanged.
++    g_ze_ops.zeMemAllocHost = zeMemAllocHost;
++    g_ze_ops.zeMemAllocDevice = zeMemAllocDevice;
++    g_ze_ops.zeMemAllocShared = zeMemAllocShared;
++    g_ze_ops.zeMemFree = zeMemFree;
++    g_ze_ops.zeMemGetIpcHandle = zeMemGetIpcHandle;
++    g_ze_ops.zeMemPutIpcHandle = zeMemPutIpcHandle;
++    g_ze_ops.zeMemOpenIpcHandle = zeMemOpenIpcHandle;
++    g_ze_ops.zeMemCloseIpcHandle = zeMemCloseIpcHandle;
++    g_ze_ops.zeContextMakeMemoryResident = zeContextMakeMemoryResident;
++    g_ze_ops.zeContextEvictMemory = zeContextEvictMemory;
++    g_ze_ops.zeDeviceGetProperties = zeDeviceGetProperties;
++    g_ze_ops.zeMemFreeExt = zeMemFreeExt;
++    g_ze_ops.zeMemGetAllocProperties = zeMemGetAllocProperties;
++#else
+     const char *lib_name = getenv("UMF_ZE_LOADER_LIB_NAME");
+     if (lib_name != NULL && lib_name[0] != '\0') {
+         LOG_INFO("Using custom ze_loader library name: %s", lib_name);
+@@ -302,6 +318,7 @@ static void init_ze_global_state(void) {
+         return;
+     }
+     ze_lib_handle = lib_handle;
++#endif
+ }
+ 
+ umf_result_t umfLevelZeroMemoryProviderParamsCreate(
+

@@ -1,0 +1,63 @@
+diff --git a/API/jsi/jsi/CMakeLists.txt b/API/jsi/jsi/CMakeLists.txt
+--- a/API/jsi/jsi/CMakeLists.txt
++++ b/API/jsi/jsi/CMakeLists.txt
+@@ -19,6 +19,7 @@ if ("${CMAKE_CXX_COMPILER_ID}" MATCHES "Clang" OR
+     "${CMAKE_CXX_COMPILER_ID}" MATCHES "GNU")
+   list(APPEND jsi_compile_flags "-Wno-non-virtual-dtor")
+-elseif ("${CMAKE_CXX_COMPILER_ID}" MATCHES "MSVC")
++endif()
++if (MSVC)
+   # Turn on Error Handling in MSVC, otherwise objects are not destructed
+   # when they go out of scope due to exceptions.
+   list(APPEND jsi_compile_flags "/EHsc")
+diff --git a/cmake/modules/Hermes.cmake b/cmake/modules/Hermes.cmake
+--- a/cmake/modules/Hermes.cmake
++++ b/cmake/modules/Hermes.cmake
+@@ -69,13 +69,13 @@ function(hermes_update_cxx_flags name)
+   set(flags "")
+ 
+   if (HERMES_ENABLE_EH)
+-    if (GCC_COMPATIBLE)
++    if (GCC_COMPATIBLE AND NOT CLANG_CL)
+       list(APPEND flags -fexceptions)
+     elseif (MSVC)
+       list(APPEND flags /EHsc)
+     endif ()
+   else ()
+-    if (GCC_COMPATIBLE)
++    if (GCC_COMPATIBLE AND NOT CLANG_CL)
+       list(APPEND flags -fno-exceptions)
+     elseif (MSVC)
+       list(APPEND flags /EHs-c-)
+@@ -83,13 +83,13 @@ function(hermes_update_cxx_flags name)
+   endif ()
+ 
+   if (HERMES_ENABLE_RTTI)
+-    if (GCC_COMPATIBLE)
++    if (GCC_COMPATIBLE AND NOT CLANG_CL)
+       list(APPEND flags -frtti)
+     elseif (MSVC)
+       list(APPEND flags /GR)
+     endif ()
+   else ()
+-    if (GCC_COMPATIBLE)
++    if (GCC_COMPATIBLE AND NOT CLANG_CL)
+       list(APPEND flags -fno-rtti)
+     elseif (MSVC)
+       list(APPEND flags /GR-)
+diff --git a/lib/VM/CMakeLists.txt b/lib/VM/CMakeLists.txt
+--- a/lib/VM/CMakeLists.txt
++++ b/lib/VM/CMakeLists.txt
+@@ -3,6 +3,12 @@
+ # This source code is licensed under the MIT license found in the
+ # LICENSE file in the root directory of this source tree.
+ 
++if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM")
++  # Keep DateUtil's math on the standard CRT instead of compiler-private vector helpers.
++  # Other Hermes sources and all non-Intel/non-Windows builds retain their optimization.
++  set_property(SOURCE JSLib/DateUtil.cpp APPEND PROPERTY COMPILE_OPTIONS -fno-builtin)
++endif()
++
+ set(source_files
+   ArrayStorage.cpp
+   BasicBlockExecutionInfo.cpp

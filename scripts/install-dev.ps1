@@ -65,7 +65,13 @@ function Initialize-Workspace {
 # only deliberate external prerequisite; CUDA/HIP below are compiler SDK payloads, not display drivers.
 $nodeVersion = '24.15.0'
 $nodeSha256 = 'feffb8e5cb5ac47f793666636d496ef3e975be82c84c4da5d20e6aa8fa4eb806'
+# Official Strawberry release-asset hash pin; this is a ZIP, not an Authenticode-signed MSI.
+$perlVersion = '5.42.3.1'
+$perlCoreVersion = 'v5.42.3'
+$perlUrl = 'https://github.com/StrawberryPerl/Perl-Dist-Strawberry/releases/download/SP_54231_64bit/strawberry-perl-5.42.3.1-64bit-portable.zip'
+$perlSha256 = '6a081a811781c30aca51dbc036afd93092af91e3297901f02c17043795a10690'
 $momToolsRoot = 'C:\Tools\mom'
+$perlRoot = Join-Path $momToolsRoot "perl-$perlVersion"
 $pythonVersion = '3.12.10'
 $pythonSha256 = '4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3'
 $pythonRoot = Join-Path $momToolsRoot "python-$pythonVersion"
@@ -79,7 +85,7 @@ $hipSdkSha256 = 'f9e1fd7ae6004ce448ef39dcac2c3b45fed741f2d83210259bfda61b86f78f8
 $cudaUrl = 'https://developer.download.nvidia.com/compute/cuda/12.6.0/network_installers/cuda_12.6.0_windows_network.exe'
 $cudaNvrtcUrl = 'https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvrtc/windows-x86_64/cuda_nvrtc-windows-x86_64-13.1.115-archive.zip'
 $cudaNvrtcSha256 = '4ddd5a1e34fd62bb41e78c0725edfbf5609f4ecedd7fe118eddf2148b097fc91'
-$oneApiUrl = 'https://registrationcenter-download.intel.com/akdlm/IRC_NAS/bae85ab1-cfcd-4251-8d42-a0c27949ea33/intel-oneapi-toolkit-2026.0.0.193.exe'
+$oneApiUrl = 'https://registrationcenter-download.intel.com/akdlm/IRC_NAS/728c4418-1b40-47a9-ad51-31530fb27c94/intel-oneapi-toolkit-2026.2.0.661.exe'
 $oneApiPackage = 'intel-oneapi-toolkit'
 $oneApiComponents = 'intel.oneapi.win.cpp-dpcpp-common'
 $openClCpuUrl = 'https://registrationcenter-download.intel.com/akdlm/IRC_NAS/ad824c04-01c8-4ae5-b5e8-164a04f67609/w_opencl_runtime_p_2025.3.1.762.exe'
@@ -91,8 +97,8 @@ foreach ($entry in $Component) {
   }
 }
 if (-not $requested.Count) { $requested.Add('all') }
-$valid = @('base','node','oneapi','opencl-cpu','cuda','hip','dpcpp','acpp-cuda','acpp-hip')
-$defaultComponents = @('base','node','oneapi','opencl-cpu','cuda','hip','dpcpp','acpp-cuda','acpp-hip')
+$valid = @('base','node','oneapi','opencl-cpu','cuda','hip','dpcpp','acpp-cuda','acpp-hip','perl')
+$defaultComponents = @('base','node','oneapi','opencl-cpu','cuda','hip','dpcpp','acpp-cuda','acpp-hip','perl')
 $components = [System.Collections.Generic.List[string]]::new()
 foreach ($name in $requested) {
   if ($name -eq 'all') { foreach ($item in $defaultComponents) { if (-not $components.Contains($item)) { $components.Add($item) } } }
@@ -106,6 +112,9 @@ if (($components -contains 'cuda') -or ($components -contains 'acpp-cuda') -or
 }
 if ($components -contains 'dpcpp') {
   Assert-NoReparseAncestor $DpcppDir 'DPC++ destination'
+}
+if ($components -contains 'perl') {
+  Assert-NoReparseAncestor $perlRoot 'Perl runtime destination'
 }
 if (($components -contains 'hip') -or ($components -contains 'acpp-hip')) {
   Assert-NoReparseAncestor $HipDir 'HIP SDK destination'
@@ -203,8 +212,10 @@ function Test-VsBuildTools {
 function Test-Python {
   $python = Join-Path $pythonRoot 'python.exe'
   if (-not (Test-Path $python)) { return $false }
-  $reported = (& $python --version 2>&1 | Select-Object -First 1).ToString().Trim()
-  ($LASTEXITCODE -eq 0) -and ($reported -eq "Python $pythonVersion")
+  $output = @(& $python --version 2>&1)
+  $exitCode = $LASTEXITCODE
+  $reported = if ($output.Count) { $output[0].ToString().Trim() } else { '' }
+  ($exitCode -eq 0) -and ($reported -eq "Python $pythonVersion")
 }
 function Test-Git {
   $git = Join-Path $gitRoot 'cmd\git.exe'
@@ -298,9 +309,121 @@ function Test-Node {
   ((& $node --version) -eq "v$nodeVersion") -and
     (Test-Path (Join-Path $npmPrefix 'node_modules\node-gyp\bin\node-gyp.js'))
 }
+function Test-Perl([string]$Root = $perlRoot) {
+  if ([string]::Equals($Root, $perlRoot, [StringComparison]::OrdinalIgnoreCase) -and
+      -not (Test-MomMarker (Join-Path $Root '.mom-perl-sha256') $perlSha256)) {
+    return $false
+  }
+  $perl = Join-Path $Root 'perl\bin\perl.exe'
+  if (-not (Test-Path -LiteralPath $perl -PathType Leaf)) { return $false }
+  $previousPath = $env:Path
+  try {
+    $env:Path = "$(Join-Path $Root 'c\bin');$(Join-Path $Root 'perl\bin');$previousPath"
+    $reported = @(& $perl -e 'print $^O,chr(10),$^V,chr(10)' 2>$null)
+    $exitCode = $LASTEXITCODE
+    return ($exitCode -eq 0) -and ($reported.Count -eq 2) -and
+      ($reported[0].Trim() -ceq 'MSWin32') -and
+      ($reported[1].Trim() -ceq $perlCoreVersion)
+  } catch {
+    return $false
+  } finally {
+    $env:Path = $previousPath
+  }
+}
+function Install-Perl {
+  if (Test-Perl) {
+    Export-DevelopmentEnvironment MOM_NATIVE_PERL_ROOT $perlRoot
+    Add-MachinePath (Join-Path $perlRoot 'perl\bin')
+    Add-MachinePath (Join-Path $perlRoot 'c\bin')
+    return
+  }
+  Require-Administrator
+  Install-7Zip
+  $archive = Join-Path $Workspace "strawberry-perl-$perlVersion-64bit-portable.zip"
+  Download $perlUrl $archive
+  Assert-Sha256 $archive $perlSha256
+
+  $extractDir = Join-Path $Workspace 'strawberry-perl-extracted'
+  Assert-NoReparseAncestor $extractDir 'Perl extraction workspace'
+  Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+  New-Item -ItemType Directory -Force $extractDir | Out-Null
+  $sevenZip = (Get-Command 7z.exe -ErrorAction Stop | Select-Object -First 1).Source
+  Invoke-Checked $sevenZip @(
+    'x','-y','-bso0','-bd','-r',"-o$extractDir",$archive,'perl\*','c\bin\*.dll'
+  )
+
+  $perlPayload = Join-Path $extractDir 'perl'
+  $dllPayload = Join-Path $extractDir 'c\bin'
+  if (-not (Test-Path -LiteralPath (Join-Path $perlPayload 'bin\perl.exe') -PathType Leaf) -or
+      -not (Test-Path -LiteralPath $dllPayload -PathType Container)) {
+    throw 'Pinned Strawberry Perl archive is missing its Perl runtime payload.'
+  }
+  $entries = @(Get-ChildItem -LiteralPath $extractDir -Force -Recurse)
+  if ($entries | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint }) {
+    throw 'Pinned Strawberry Perl archive contains a reparse point.'
+  }
+  $files = @($entries | Where-Object { -not $_.PSIsContainer })
+  $dllPrefix = $dllPayload.TrimEnd('\') + '\'
+  foreach ($file in $files) {
+    if ($file.FullName.StartsWith($dllPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+      if ($file.Extension -ine '.dll') { throw 'Perl c\bin payload may contain DLLs only.' }
+      continue
+    }
+    if (-not $file.FullName.StartsWith($perlPayload.TrimEnd('\') + '\',
+        [StringComparison]::OrdinalIgnoreCase)) {
+      throw 'Perl archive extraction produced a file outside the approved runtime subtrees.'
+    }
+  }
+  if (-not ($files | Where-Object {
+        $_.FullName.StartsWith($dllPrefix, [StringComparison]::OrdinalIgnoreCase)
+      })) {
+    throw 'Pinned Strawberry Perl archive contains no runtime DLLs.'
+  }
+  if (-not (Test-Perl $extractDir)) {
+    throw 'Pinned Strawberry Perl payload failed MSWin32/version validation.'
+  }
+
+  Assert-NoReparseAncestor $perlRoot 'Perl runtime destination'
+  $existing = Get-Item -LiteralPath $perlRoot -Force -ErrorAction SilentlyContinue
+  if ($existing) {
+    if (-not $existing.PSIsContainer -or
+        ($existing.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+      throw 'Perl runtime destination is not an owned directory.'
+    }
+    if (-not (Test-MomMarker (Join-Path $perlRoot '.mom-perl-sha256') $perlSha256)) {
+      throw 'Perl runtime destination exists without its pinned ownership marker.'
+    }
+    Remove-Item -LiteralPath $perlRoot -Recurse -Force -ErrorAction Stop
+  }
+  New-Item -ItemType Directory -Force $perlRoot | Out-Null
+  $targetPerl = Join-Path $perlRoot 'perl'
+  New-Item -ItemType Directory -Force $targetPerl | Out-Null
+  Get-ChildItem -LiteralPath $perlPayload -Force | ForEach-Object {
+    Copy-Item -LiteralPath $_.FullName -Destination $targetPerl -Recurse -Force
+  }
+  $targetDlls = Join-Path $perlRoot 'c\bin'
+  New-Item -ItemType Directory -Force $targetDlls | Out-Null
+  Get-ChildItem -LiteralPath $dllPayload -Filter '*.dll' -File | ForEach-Object {
+    Copy-Item -LiteralPath $_.FullName -Destination $targetDlls -Force
+  }
+  Set-Content -LiteralPath (Join-Path $perlRoot '.mom-perl-sha256') `
+    -Value $perlSha256 -NoNewline -Encoding ASCII
+  if (-not (Test-Perl)) { throw 'Pinned Strawberry Perl runtime failed MSWin32/version validation.' }
+  Export-DevelopmentEnvironment MOM_NATIVE_PERL_ROOT $perlRoot
+  Add-MachinePath (Join-Path $perlRoot 'perl\bin')
+  Add-MachinePath (Join-Path $perlRoot 'c\bin')
+}
 function Test-OneApi {
-  $compiler = 'C:\Program Files (x86)\Intel\oneAPI\compiler\latest\bin\icx.exe'
-  (Test-Path $compiler) -and ((Get-Item $compiler).VersionInfo.ProductVersion -like '2026.0*')
+  $compilerDir = 'C:\Program Files (x86)\Intel\oneAPI\compiler\latest\bin'
+  foreach ($name in @('icx.exe','icx-cl.exe','icpx.exe')) {
+    $compiler = Join-Path $compilerDir $name
+    if (-not (Test-Path -LiteralPath $compiler -PathType Leaf)) { return $false }
+    $item = Get-Item -LiteralPath $compiler -ErrorAction SilentlyContinue
+    if (-not $item -or $item.VersionInfo.ProductVersion -notmatch '^2026\.2(\.|\s|$)') {
+      return $false
+    }
+  }
+  return $true
 }
 function Get-OpenClCpuRuntime {
   $sharedRoot = 'C:\Program Files (x86)\Common Files\Intel\Shared Libraries'
@@ -505,13 +628,24 @@ function Test-Acpp([string]$Path, [string]$Backend) {
     (Test-AcppLlvmTargets $Path)
 }
 
+function Get-BaseMissingComponents {
+  $missing = [System.Collections.Generic.List[string]]::new()
+  if (-not (Test-VsBuildTools)) { $missing.Add('visual-studio-build-tools') }
+  if (-not (Test-Python)) { $missing.Add('python') }
+  if (-not (Test-Git)) { $missing.Add('git') }
+  foreach ($tool in @('cmake.exe', 'ninja.exe', '7z.exe')) {
+    if (-not (Get-Command -Name $tool -ErrorAction SilentlyContinue)) {
+      $missing.Add($tool)
+    }
+  }
+  return $missing.ToArray()
+}
+
 function Test-Component([string]$Name) {
   switch ($Name) {
-    base { return (Test-VsBuildTools) -and (Test-Python) -and (Test-Git) -and
-      [bool](Get-Command cmake.exe -ErrorAction SilentlyContinue) -and
-      [bool](Get-Command ninja.exe -ErrorAction SilentlyContinue) -and
-      [bool](Get-Command 7z.exe -ErrorAction SilentlyContinue) }
+    base { return (@(Get-BaseMissingComponents).Count -eq 0) }
     node { return Test-Node }
+    perl { return Test-Perl }
     oneapi { return (Test-OneApi) -and [bool](Get-OpenClCpuRuntime) }
     'opencl-cpu' { return [bool](Get-OpenClCpuRuntime) }
     cuda {
@@ -528,9 +662,21 @@ function Test-Component([string]$Name) {
 }
 
 if ($ValidateOnly) {
-  $missing = @($components | Where-Object { -not (Test-Component $_) })
-  foreach ($name in $components) { Write-Host "dev component $name`: $(if (Test-Component $name) {'ok'} else {'missing'})" }
-  if ($missing.Count) { throw "Missing development components: $($missing -join ', ')" }
+  $missing = [System.Collections.Generic.List[string]]::new()
+  foreach ($name in $components) {
+    if ($name -eq 'base') {
+      $baseMissing = @(Get-BaseMissingComponents)
+      $ready = $baseMissing.Count -eq 0
+      if ($baseMissing.Count) {
+        Write-Host "dev component base missing checks: $($baseMissing -join ', ')"
+      }
+    } else {
+      $ready = Test-Component $name
+    }
+    Write-Host "dev component $name`: $(if ($ready) {'ok'} else {'missing'})"
+    if (-not $ready) { $missing.Add($name) }
+  }
+  if ($missing.Count) { throw "Missing development components: $($missing.ToArray() -join ', ')" }
   exit 0
 }
 
@@ -543,6 +689,9 @@ if ($components -contains 'base') {
 if ($components -contains 'node') {
   Install-Base
   Install-Node
+}
+if ($components -contains 'perl') {
+  Install-Perl
 }
 if ($components -contains 'oneapi') {
   Install-Base
@@ -575,7 +724,14 @@ if ($components -contains 'acpp-hip') {
 }
 
 foreach ($name in $components) {
-  if (-not (Test-Component $name)) { throw "Installed component failed validation: $name" }
+  if ($name -eq 'base') {
+    $baseMissing = @(Get-BaseMissingComponents)
+    if ($baseMissing.Count) {
+      throw "Installed component failed validation: base (missing checks: $($baseMissing -join ', '))"
+    }
+  } elseif (-not (Test-Component $name)) {
+    throw "Installed component failed validation: $name"
+  }
   Write-Host "dev component ready: $name"
 }
 [IO.Directory]::CreateDirectory('C:\Tools') | Out-Null

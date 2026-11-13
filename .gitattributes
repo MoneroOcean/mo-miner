@@ -1,5 +1,10 @@
 # Keep authenticated helper hashes and source/build contracts identical on every OS.
 * text=auto eol=lf
 
+# Reviewed license hashes bind upstream bytes, including their original newlines.
+THIRD-PARTY-NOTICES.txt -text -whitespace
+runtime/license-evidence/*.rtf -text -whitespace
+
 # Patch context must preserve upstream whitespace for exact application.
 scripts/patches/*.patch whitespace=-blank-at-eol
+runtime/*.patch whitespace=-blank-at-eol

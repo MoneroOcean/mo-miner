@@ -1,0 +1,59 @@
+diff --git a/amd/comgr/cmake/bc2h.cmake b/amd/comgr/cmake/bc2h.cmake
+--- a/amd/comgr/cmake/bc2h.cmake
++++ b/amd/comgr/cmake/bc2h.cmake
+@@ -25,7 +25,17 @@
+ }
+ ")
+ 
+-add_executable(bc2h ${CMAKE_CURRENT_BINARY_DIR}/bc2h.c)
+-if (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+-  target_compile_definitions(bc2h PRIVATE -D_CRT_SECURE_NO_WARNINGS)
++if(CMAKE_CROSSCOMPILING)
++  if(NOT IS_ABSOLUTE "${COMGR_BC2H_EXECUTABLE}" OR
++     NOT EXISTS "${COMGR_BC2H_EXECUTABLE}" OR
++     IS_DIRECTORY "${COMGR_BC2H_EXECUTABLE}")
++    message(FATAL_ERROR "Cross-compiling COMGR requires an explicit native COMGR_BC2H_EXECUTABLE")
++  endif()
++  add_executable(bc2h IMPORTED GLOBAL)
++  set_target_properties(bc2h PROPERTIES IMPORTED_LOCATION "${COMGR_BC2H_EXECUTABLE}")
++else()
++  add_executable(bc2h ${CMAKE_CURRENT_BINARY_DIR}/bc2h.c)
++  if (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
++    target_compile_definitions(bc2h PRIVATE -D_CRT_SECURE_NO_WARNINGS)
++  endif()
+ endif()
+diff --git a/amd/comgr/cmake/opencl_pch.cmake b/amd/comgr/cmake/opencl_pch.cmake
+--- a/amd/comgr/cmake/opencl_pch.cmake
++++ b/amd/comgr/cmake/opencl_pch.cmake
+@@ -47,7 +47,29 @@ function(generate_pch version)
++  if(CMAKE_CROSSCOMPILING)
++    if(NOT IS_ABSOLUTE "${COMGR_NATIVE_CLANG_EXECUTABLE}" OR
++       NOT EXISTS "${COMGR_NATIVE_CLANG_EXECUTABLE}" OR
++       IS_DIRECTORY "${COMGR_NATIVE_CLANG_EXECUTABLE}" OR
++       NOT IS_ABSOLUTE "${COMGR_NATIVE_CLANG_RESOURCE_DIR}" OR
++       NOT IS_DIRECTORY "${COMGR_NATIVE_CLANG_RESOURCE_DIR}" OR
++       NOT EXISTS "${COMGR_NATIVE_CLANG_RESOURCE_DIR}/include/opencl-c.h" OR
++       NOT EXISTS "${COMGR_NATIVE_CLANG_RESOURCE_DIR}/include/opencl-c-base.h")
++      message(FATAL_ERROR "Cross-compiling COMGR requires explicit native LLVM 21 Clang resources")
++    endif()
++    if(NOT "${COMGR_OPENCL_C_HEADER}" STREQUAL "${COMGR_NATIVE_CLANG_RESOURCE_DIR}/include/opencl-c.h")
++      message(FATAL_ERROR "Cross-compiling COMGR must use the native LLVM 21 OpenCL-C header")
++    endif()
++    set(clang_pch_compiler "${COMGR_NATIVE_CLANG_EXECUTABLE}")
++    set(clang_pch_dependency "${COMGR_NATIVE_CLANG_EXECUTABLE}")
++    set(clang_pch_resource_dir -resource-dir "${COMGR_NATIVE_CLANG_RESOURCE_DIR}")
++  else()
++    set(clang_pch_compiler "$<TARGET_FILE:clang>")
++    set(clang_pch_dependency clang)
++    set(clang_pch_resource_dir)
++  endif()
++
+   add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/opencl${version}-c.pch
+-    COMMAND $<TARGET_FILE:clang> -cc1 -x cl-header -triple amdgcn-amd-amdhsa
++    COMMAND ${clang_pch_compiler} -cc1 ${clang_pch_resource_dir} -x cl-header -triple amdgcn-amd-amdhsa
+     -Werror -O3 -Dcl_khr_fp64 -Dcl_khr_fp16 -DNDEBUG -cl-std=CL${version}
+       -emit-pch -o ${CMAKE_CURRENT_BINARY_DIR}/opencl${version}-c.pch
+       < ${OPENCL_C_H}
+-    DEPENDS clang ${OPENCL_C_H} ${clang_resource_headers_gen}
++    DEPENDS ${clang_pch_dependency} ${OPENCL_C_H} ${clang_resource_headers_gen}
+     COMMENT "Generating opencl${version}-c.pch")
