@@ -109,7 +109,7 @@ the GPUs on adjacent rows; the last column names the comparison source.
 | `octopus` / CFX         | B580    | 31.27 MH/s (61%*)   | 31.24 MH/s (61%*)   | best peer*                     |
 |                         | A770    | 16.60 MH/s (32%*)   | -                   | best peer*                     |
 |                         | 5060 Ti | 45.62 MH/s (88%)    | 45.44 MH/s (89%)    | lolMiner                       |
-|                         | 9060 XT | 32.80 MH/s (86%)    | 26.49 MH/s (82%)    | lolMiner                       |
+|                         | 9060 XT | 32.80 MH/s (86%)    | 24.89 MH/s (77%)    | lolMiner                       |
 | `xelishashv3` / XEL     | B580    | 2.15 KH/s (31%*)    | 2.16 KH/s (31%*)    | best peer*                     |
 |                         | A770    | 1.91 KH/s (32%)     | -                   | SRBMiner                       |
 |                         | 5060 Ti | 5.88 KH/s (85%)     | 5.90 KH/s (85%)     | Rigel                          |
@@ -178,74 +178,80 @@ Use `./mom algorithms` to list supported algorithms and their automatic CPU/GPU 
 
 Optional controls are listed under [GPU tuning](#gpu-tuning).
 
-# Install
+# Install and launch
 
-The commands below assume the release archive has been extracted and the current directory is its
-top-level folder. Examples use `./mom` on Linux; use `mom.cmd` on Windows.
+The standalone native archive format contains the `mom` executable on Linux or `mom.exe` on Windows,
+plus `THIRD-PARTY-NOTICES.txt`. Extract the archive and run the executable directly. It does not
+bundle Node.js, `.node` addons, an application `libs/` runtime tree, or host build tools. Ordinary
+operating-system libraries and the GPU vendor's display driver remain host prerequisites. A
+build-only candidate or package is not publication approval; see [DEVELOPMENT.md](DEVELOPMENT.md)
+for the current status.
+
+Standalone builds target Linux and Windows x86-64. Linux runtime checks cover Ubuntu 24.04 LTS
+(glibc 2.39); older distributions have not yet been qualified. Current packed executables are
+77.6 MiB (Linux) and 70.9 MiB (Windows), excluding archive metadata and notices.
 
 ## Linux
 
-The release archive includes the application libraries. On Ubuntu 24.04 or 26.04, run the bundled
-installer once to detect supported GPU vendors and install missing host runtime prerequisites:
+From the extracted archive directory:
 
-```
-sudo ./install.sh
-```
-
-Or download the v0.9.1 installer from this repository, inspect it, and then run it:
-
-```
-curl --fail --location --proto '=https' --tlsv1.2 \
-  --output mom-install.sh \
-  https://raw.githubusercontent.com/MoneroOcean/mo-miner/v0.9.1/scripts/install.sh
-sudo bash mom-install.sh
+```sh
+./mom algorithms
 ```
 
-The installer preserves suitable existing drivers, adds the invoking user to existing `render` and
-`video` groups when needed, and makes no GPU changes on CPU-only systems. Reboot or sign out and
-back in if requested, then run `./mom algorithms`; supported GPUs for the selected backend appear
-as `gpuN` devices. When running mom inside Docker on NVIDIA, add
-`--gpus all` and install the NVIDIA container toolkit on the host.
-For Intel Arc, [Intel recommends](https://www.intel.com/content/www/us/en/support/articles/000090831/graphics.html)
+For GPU mining, install the current display driver for the selected device first. On NVIDIA in
+Docker, pass `--gpus all` and install the NVIDIA Container Toolkit on the host. For Intel Arc,
+[Intel recommends](https://www.intel.com/content/www/us/en/support/articles/000090831/graphics.html)
 enabling **Above 4G Decoding** and **Resizable BAR** in UEFI.
 
 ## Windows
 
-Install the current display driver for each GPU, then run the bundled installer from an
-Administrator Command Prompt:
+Install the current display driver for each GPU, then run the executable from the extracted archive
+directory in PowerShell or Command Prompt:
 
+```powershell
+.\mom.exe algorithms
 ```
+
+The standalone package does not need Node.js/npm or a compiler installation. The current vendor
+display driver supplies the GPU interface; generic OpenCL additionally requires a driver that
+accepts SPIR-V programs.
+
+## Engineering Mode and legacy archive
+
+Engineering Mode runs the original JavaScript from a source checkout. After the setup in
+[DEVELOPMENT.md](DEVELOPMENT.md), use `npm run dev -- algorithms` or
+`npm run dev -- mine config.json`. JavaScript-only edits require no native rebuild or relink.
+
+The separate Engineering archive runs the JavaScript controller and includes its Node runtime,
+backend `.node` workers, and isolated application runtime files. Its launcher is `./mom` on Linux
+and `mom.cmd` on Windows; this is different from the standalone `mom`/`mom.exe` package above.
+These bundled installers and their NVIDIA source-JIT prerequisites apply to Engineering archives,
+not to the standalone executable:
+
+```sh
+sudo ./install.sh
+```
+
+```bat
 install.bat
 ```
 
-Or download the v0.9.1 installer from this repository, inspect it, and then run it:
+For Engineering Mode, development prerequisites, and the current native-build/release status, see
+[DEVELOPMENT.md](DEVELOPMENT.md).
 
-```bat
-curl --fail --location ^
-  --output "%TEMP%\mom-install.ps1" ^
-  https://raw.githubusercontent.com/MoneroOcean/mo-miner/v0.9.1/scripts/install.ps1
-powershell -NoProfile -ExecutionPolicy Bypass -File "%TEMP%\mom-install.ps1"
-```
-
-The release includes its application GPU runtimes. Current vendor display drivers remain a
-prerequisite for Intel, AMD, and NVIDIA devices. The generic OpenCL path additionally requires a
-driver that accepts SPIR-V programs.
-On NVIDIA systems, the installer also adds missing CUDA/C++ components used by runtime-compiled
-kernels; pass `-SkipCudaToolkit` only when those components are managed separately.
-Run `mom.cmd algorithms` afterward; supported GPUs for the selected backend appear as `gpuN`
-devices.
-
-Some GPU algorithms have a slow first launch while the driver compiles device code. Let that launch
-finish and keep the miner's cache directory; later launches normally reuse the compiled code.
+Some GPU algorithms have a slow first launch while the GPU runtime compiles device code. The
+runtime/driver controls its compiled-code cache. Packed executables also decompress in memory on
+each process launch; this is separate from kernel compilation and does not extract application libraries.
 
 # GPU selection
 
-The release launcher auto-detects the backend on a single-vendor system. On a mixed-vendor system,
-select which GPU runtime mom should use for that process:
+The standalone launcher auto-detects the backend on a single-vendor system. On a mixed-vendor
+system, select which GPU runtime mom should use for that process:
 
 ```
-MOM_GPU_BACKEND=intel ./mom algorithms       # Linux
-set "MOM_GPU_BACKEND=intel" && mom.cmd algorithms  # Windows Command Prompt
+MOM_GPU_BACKEND=intel ./mom algorithms         # Linux standalone
+set "MOM_GPU_BACKEND=intel" && .\mom.exe algorithms  # Windows Command Prompt standalone
 ```
 
 Valid values are `intel` (Intel discrete GPUs only), `intel_igpu` (Intel integrated GPUs only),
@@ -256,7 +262,7 @@ concurrently. To select one GPU, add the zero-based `MOM_GPU_INDEX`:
 
 ```
 MOM_GPU_BACKEND=intel MOM_GPU_INDEX=0 ./mom algorithms
-set "MOM_GPU_BACKEND=intel" && set "MOM_GPU_INDEX=0" && mom.cmd algorithms
+set "MOM_GPU_BACKEND=intel" && set "MOM_GPU_INDEX=0" && .\mom.exe algorithms
 ```
 
 First run `algorithms` without the index to see each numbered GPU and its full hardware name.
@@ -367,6 +373,12 @@ Next time you can reuse saved config.json file to avoid running benchmarks again
 MOM_GPU_BACKEND=intel ./mom mine ./config.json
 ```
 
+TLS accepts self-signed pool certificates by default. To authenticate the primary pool, add
+`--tls-fingerprint SHA256`, using its certificate fingerprint obtained through a trusted channel
+(64 hex digits, with optional colons). A wrong pin blocks login. Saved/backup pools use the
+`tls_fingerprint` field; `tls_verify: true` additionally requires normal CA and hostname verification.
+Without a pin or CA verification, TLS encrypts the connection but does not authenticate the pool.
+
 The saved config retains the selected mining devices and benchmark results. Keep the same backend
 and any device-selection environment controls when reusing it; environment controls are not saved.
 
@@ -427,7 +439,8 @@ You can benchmark an algorithm directly:
 
 RandomX performs best with MSR tuning and large pages. Run mom as root or configure the required
 permissions and [huge pages](https://xmrig.com/docs/miner/hugepages). These settings affect CPU
-mining only.
+mining only. On Linux, prepare the MSR interface with `sudo modprobe msr allow_writes=on` when
+needed; the standalone executable uses an available interface but does not load kernel modules.
 
 # License
 

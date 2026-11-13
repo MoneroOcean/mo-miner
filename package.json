@@ -35,12 +35,12 @@
   },
   "scriptDescriptions": {
     "dev": "Incrementally build source workers and run MoM arguments, node/npm commands, or --exec commands: Docker on Linux (MOM_DEV_HOST=1 for native), native on Windows.",
-    "build:release": "Incrementally build portable Linux or Windows archives natively; -- --clean rebuilds all objects. No tests or publication.",
+    "build:release": "Build a standalone executable from an explicit native SDK (-- --native or MOM_NATIVE_SDK/MOM_NATIVE_OUTPUT); legacy development archives require -- --engineering-archive. No tests or publication.",
     "check": "Run lint and strict JavaScript/JSDoc type checks.",
     "lint": "Check JavaScript code quality and formatting with ESLint.",
     "test": "Run check, then correctness tests; select -- host (Linux), -- logic, -- cpu or -- gpu-discrete. No pool mining.",
     "test:perf": "Measure available CPU/GPU performance; optionally select an algorithm. Does not enforce README rates.",
-    "test:deploy": "Build and check release archives: Linux containers/optional Windows VM on Linux, native Windows on Windows. Includes GPU correctness and README performance/CPU-load limits.",
+    "test:deploy": "Build and check Engineering archives, not standalone native releases: Linux containers/optional Windows VM on Linux, native Windows on Windows. Includes GPU correctness and README performance/CPU-load limits.",
     "typecheck": "Check strict JavaScript/JSDoc types without generating files."
   },
   "keywords": [
