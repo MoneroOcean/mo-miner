@@ -1,0 +1,314 @@
+"use strict";
+const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), os = require("node:os"), path = require("node:path"),
+  {spawnSync} = require("node:child_process");
+const {windowsJitCiJobPlan, validateWindowsJitConfig, composeWindowsJitConfig, writeWindowsJitConfig,
+  validateWindowsJitDescriptorInputs} = require("../scripts/run-native-windows-jit-ci");
+const {validateWindowsJitDescriptor, windowsJitToolchainPlan} = require("../scripts/prepare-native-jit-toolchain");
+
+const hash = "a".repeat(64), now = Date.now();
+const workflowPath = path.join(__dirname, "..", ".github", "workflows", "build-windows-jit-job.yml");
+
+/** Read one literal bash block without adding a YAML parser dependency. @param {string} name */
+function workflowRunBlock(name) {
+  const workflow = fs.readFileSync(workflowPath, "utf8"), marker = `      - name: ${name}\n`, begin = workflow.indexOf(marker);
+  assert.notEqual(begin, -1, `missing workflow step: ${name}`);
+  const nextStep = workflow.indexOf("\n      - name:", begin + marker.length), block = workflow.slice(begin, nextStep < 0 ? undefined : nextStep),
+    runMarker = "        run: |\n", runStart = block.indexOf(runMarker);
+  assert.notEqual(runStart, -1, `step has no literal run block: ${name}`);
+  const lines = block.slice(runStart + runMarker.length).split("\n");
+  while (lines.length && !(lines.at(-1) || "").trim()) {lines.pop();}
+  assert.ok(lines.every(line => !line.trim() || line.startsWith("          ")), `unexpected indentation in ${name}`);
+  return lines.map(line => line.startsWith("          ") ? line.slice(10) : "").join("\n");
+}
+
+/** Execute only the workflow's phase/artifact guard, not any download or build step.
+ * @param {string} root @param {string} phase @param {string} previous @param {string} config @param {string} state */
+function runArtifactNamesGuard(root, phase, previous, config, state) {
+  const output = path.join(root, `workflow-${phase}-${previous || "none"}-${config || "none"}-${state || "none"}.out`),
+    result = spawnSync("bash", ["-c", workflowRunBlock("Validate phase and derive exact artifact names")], {
+      encoding: "utf8", env: {...process.env, GITHUB_RUN_ID: "9000000000000008", GITHUB_RUN_ATTEMPT: "88", GITHUB_OUTPUT: output,
+        PHASE: phase, PREVIOUS_PHASE: previous, CONFIG_SHA256: config, STATE_SHA256: state},
+    });
+  return {result, outputs: fs.existsSync(output) ? Object.fromEntries(fs.readFileSync(output, "utf8").trim().split("\n").map(line => line.split("="))) : {}};
+}
+
+/** @param {string} root @param {string} stage */
+function environment(root, stage = "configure") {
+  const suffix = "9000000000000008-88", runnerTemp = path.join(root, "runner"), future = Math.floor(now / 1000),
+    env = /** @type {NodeJS.ProcessEnv} */ ({
+      GITHUB_RUN_ID: "9000000000000008", GITHUB_RUN_ATTEMPT: "88", GITHUB_JOB: "windows-jit",
+      RUNNER_TEMP: runnerTemp, MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: "2",
+      GITHUB_OUTPUT: path.join(root, "outputs"), GITHUB_STEP_SUMMARY: path.join(root, "summary"),
+      MOM_NATIVE_LINUX_SOURCES_DIR: path.join("/tmp", "mom-native-linux-source-prerequisites-" + suffix),
+      MOM_NATIVE_DPCPP_CUDA_INPUTS_DIR: path.join("/tmp", "mom-native-dpcpp-cuda-inputs-" + suffix),
+      MOM_NATIVE_WINDOWS_JIT_DIR: path.join("/tmp", "mom-native-windows-jit-" + suffix),
+      MOM_NATIVE_WINDOWS_JIT_RESOURCES_DIR: path.join("/tmp", "mom-native-windows-jit-resources-" + suffix),
+      MOM_NATIVE_WINDOWS_JIT_DESCRIPTOR_FILE: path.join(runnerTemp, "mom-native-windows-llvm21-descriptor-" + suffix, "descriptor.json"),
+      MOM_NATIVE_WINDOWS_JIT_WINDOWS_SDK_ROOT: path.join(runnerTemp, "mom-native-windows-host-sdk-" + suffix, "native-windows-host-sdk-" + suffix),
+      MOM_NATIVE_WINDOWS_JIT_DEADLINE_EPOCH: String(future + 50 * 60),
+      MOM_NATIVE_WINDOWS_JIT_RUN_DEADLINE_EPOCH: String(future + 7 * 60 * 60),
+      MOM_NATIVE_WINDOWS_JIT_SOURCE_BUNDLE_SHA256: hash, MOM_NATIVE_WINDOWS_JIT_DPCPP_BUNDLE_SHA256: hash,
+      MOM_NATIVE_WINDOWS_JIT_DPCPP_MANIFEST_SHA256: hash,
+      MOM_NATIVE_LINUX_LLVM_TOOLS_BUNDLE_SHA256: hash, MOM_NATIVE_LINUX_LLVM_TOOLS_HANDOFF_SHA256: hash,
+      MOM_NATIVE_WINDOWS_CONTROLLER_HERMES_BUNDLE_SHA256: hash, MOM_NATIVE_WINDOWS_CONTROLLER_HERMES_HANDOFF_SHA256: hash,
+      MOM_NATIVE_WINDOWS_JIT_RESOURCES_BUNDLE_SHA256: hash, MOM_NATIVE_WINDOWS_JIT_DESCRIPTOR_SHA256: hash,
+      MOM_NATIVE_WINDOWS_JIT_WINDOWS_SDK_RESULT_SHA256: hash, MOM_NATIVE_WINDOWS_JIT_WINDOWS_SDK_DESCRIPTOR_SHA256: hash,
+      MOM_NATIVE_WINDOWS_JIT_WINDOWS_SDK_FILES_SHA256: hash, MOM_NATIVE_WINDOWS_JIT_WINDOWS_SDK_OVERLAY_SHA256: hash,
+    });
+  if (stage !== "configure") {
+    const previous = stage === "support" ? "configured" : ({targets: "support", frontend: "targets", link: "frontend"})[stage];
+    env["MOM_NATIVE_WINDOWS_JIT_STATE_PREVIOUS_PHASE"] = previous;
+    env["MOM_NATIVE_WINDOWS_JIT_STATE_BUNDLE_SHA256"] = hash;
+  }
+  fs.mkdirSync(runnerTemp, {recursive: true});
+  return env;
+}
+
+/** @param {string} root @param {string} receiptFile */
+function nativeTablegenInputs(root, receiptFile) {
+  const toolRoot = path.join(root, "resources", "native-tools");
+  return {toolRoot, manifestFile: path.join(toolRoot, "manifest.json"), manifestSha256: hash,
+    files: {clangTableGen: path.join(toolRoot, "bin", "clang-tblgen"), llvmTableGen: path.join(toolRoot, "bin", "llvm-tblgen")},
+    hashes: {clangTableGenSha256: hash, llvmTableGenSha256: hash},
+    source: {receiptFile, receiptSha256: hash, commit: "b".repeat(40)}};
+}
+
+test.describe("Windows original source-JIT CI phases", {skip: process.platform !== "linux" || process.arch !== "x64"}, () => {
+  /** @type {string} */ let root;
+  test.beforeEach(() => {root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-windows-jit-ci-"));});
+  test.afterEach(() => {fs.rmSync(root, {recursive: true, force: true});});
+
+  test("uses the original four phase sequence and same-run state names", () => {
+    const env = environment(root), config = path.join(env["RUNNER_TEMP"] || "", "incoming/config/native-windows-jit-sdk-9000000000000008-88.json"),
+      plan = windowsJitCiJobPlan("configure", config, undefined, env, "linux", "x64", now);
+    assert.equal(plan.jobId, "windows-jit_configure");
+    assert.equal(plan.root, "/tmp/mom-native-windows-jit-9000000000000008-88");
+    assert.equal(plan.descriptor, path.join(env["RUNNER_TEMP"] || "", "mom-native-windows-llvm21-descriptor-9000000000000008-88", "descriptor.json"));
+    assert.equal(plan.resourcesArtifactRoot, "/tmp/mom-native-windows-jit-resources-9000000000000008-88");
+    assert.equal(plan.resourcesRoot, path.join(plan.resourcesArtifactRoot, "resources"));
+    assert.equal(plan.dpcppName, "mom-native-dpcpp-cuda-inputs-9000000000000008-88");
+    assert.equal(path.basename(plan.dpcppArchive), "native-linux-dpcpp-cuda-inputs-9000000000000008-88.tar");
+    assert.equal(plan.archive, path.join(env["RUNNER_TEMP"] || "", "native-windows-jit-sdk-9000000000000008-88-configured.tar"));
+    assert.equal(plan.previousPhase, null);
+    for (const stage of ["support", "targets", "frontend", "link"]) {
+      const stagedEnv = environment(root, stage), stagedConfig = path.join(stagedEnv["RUNNER_TEMP"] || "",
+          "incoming/config/native-windows-jit-sdk-9000000000000008-88.json"), staged = windowsJitCiJobPlan(stage, stagedConfig, hash, stagedEnv, "linux", "x64", now);
+      assert.equal(staged.previousPhase, ({support: "configured", targets: "support", frontend: "targets", link: "frontend"})[stage]);
+      assert.equal(staged.jobId, "windows-jit_" + stage);
+    }
+  });
+
+  test("mints one bounded run deadline only for configure", () => {
+    const env = environment(root); delete env["MOM_NATIVE_WINDOWS_JIT_RUN_DEADLINE_EPOCH"];
+    const config = path.join(env["RUNNER_TEMP"] || "", "incoming/config/native-windows-jit-sdk-9000000000000008-88.json"),
+      plan = windowsJitCiJobPlan("configure", config, undefined, env, "linux", "x64", now);
+    assert.equal(Number(plan.runDeadlineEpoch), Math.floor(now / 1000) + 8 * 60 * 60);
+    assert.throws(() => windowsJitCiJobPlan("support", config, hash, {...env, GITHUB_JOB: "windows-jit"}, "linux", "x64", now), /deadline/);
+  });
+
+  test("rejects unknown phases, malformed identities and non-Linux or non-build-only jobs", () => {
+    const env = environment(root), config = path.join(env["RUNNER_TEMP"] || "", "incoming/config/native-windows-jit-sdk-9000000000000008-88.json");
+    for (const stage of ["all", "configure;link", "constructor"]) {assert.throws(() => windowsJitCiJobPlan(stage, config, hash, env, "linux", "x64", now));}
+    for (const changed of [{...env, GITHUB_RUN_ID: "../x"}, {...env, GITHUB_RUN_ATTEMPT: "0"}, {...env, MOM_BUILD_JOBS: "4"}]) {
+      assert.throws(() => windowsJitCiJobPlan("configure", config, undefined, changed, "linux", "x64", now));
+    }
+    assert.throws(() => windowsJitCiJobPlan("configure", config, undefined, env, "win32", "x64", now));
+  });
+
+  test("rejects stale config paths, state predecessors and absent external pins", () => {
+    const env = environment(root), config = path.join(env["RUNNER_TEMP"] || "", "incoming/config/native-windows-jit-sdk-9000000000000008-88.json");
+    assert.throws(() => windowsJitCiJobPlan("configure", "/tmp/stale.json", undefined, env, "linux", "x64", now), /paths/);
+    assert.throws(() => windowsJitCiJobPlan("targets", config, hash, {...env, MOM_NATIVE_WINDOWS_JIT_STATE_PREVIOUS_PHASE: "configured"}, "linux", "x64", now), /paths/);
+    assert.throws(() => windowsJitCiJobPlan("configure", config, undefined, {...env, MOM_NATIVE_WINDOWS_JIT_RESOURCES_BUNDLE_SHA256: ""}, "linux", "x64", now), /external/);
+    assert.throws(() => windowsJitCiJobPlan("configure", config, undefined, {...env, MOM_NATIVE_WINDOWS_JIT_DPCPP_MANIFEST_SHA256: ""}, "linux", "x64", now), /external/);
+  });
+
+  test("limits each phase to 55 minutes and never extends the original eight-hour run", () => {
+    const env = environment(root), config = path.join(env["RUNNER_TEMP"] || "", "incoming/config/native-windows-jit-sdk-9000000000000008-88.json");
+    assert.throws(() => windowsJitCiJobPlan("configure", config, undefined,
+      {...env, MOM_NATIVE_WINDOWS_JIT_DEADLINE_EPOCH: String(Math.floor(now / 1000) + 56 * 60)}, "linux", "x64", now), /55-minute/);
+    assert.throws(() => windowsJitCiJobPlan("configure", config, undefined,
+      {...env, MOM_NATIVE_WINDOWS_JIT_RUN_DEADLINE_EPOCH: String(Math.floor(now / 1000) + 9 * 60 * 60)}, "linux", "x64", now), /8-hour/);
+  });
+
+  test("composes the original config from admitted same-run inputs and writes it once", () => {
+    const env = environment(root), configPath = path.join(env["RUNNER_TEMP"] || "", "incoming/config/native-windows-jit-sdk-9000000000000008-88.json"),
+      plan = windowsJitCiJobPlan("configure", configPath, undefined, env, "linux", "x64", now),
+      compilerReceipt = path.join(root, "linux", "compiler.json"), nativeJitTools = nativeTablegenInputs(root, compilerReceipt),
+      admitted = {linux: {compilerPreparedReceipt: compilerReceipt},
+        dpcpp: {dpcppRoot: path.join(root, "dpcpp")}, compiler: path.join(root, "intel", "icx-cl"),
+        nativeJitTools,
+        toolchainResult: {toolchain: path.join(plan.toolchain, "toolchain.cmake"),
+          inputs: {[path.join(root, "host-sdk", "vfs-overlay.json")]: hash, [path.join(plan.toolchain, "toolchain.cmake")]: hash,
+            [nativeJitTools.files.clangTableGen]: hash, [nativeJitTools.files.llvmTableGen]: hash}}},
+      config = composeWindowsJitConfig(plan, admitted);
+    assert.equal(config.target, "windows"); assert.equal(config.jobs, 2);
+    assert.equal(config.sources, admitted.linux.compilerPreparedReceipt); assert.equal(config.sdk, admitted.dpcpp.dpcppRoot);
+    assert.equal(config.resources, plan.resourcesRoot); assert.equal(config.tools.cc, admitted.compiler); assert.equal(config.tools.cxx, admitted.compiler);
+    assert.equal(config.tools.toolchain, admitted.toolchainResult.toolchain);
+    assert.deepEqual(config.inputs, [...new Set([...Object.keys(admitted.toolchainResult.inputs), nativeJitTools.manifestFile,
+      compilerReceipt, nativeJitTools.files.clangTableGen, nativeJitTools.files.llvmTableGen, plan.descriptor, admitted.compiler,
+      fs.realpathSync("/usr/bin/cmake"), fs.realpathSync("/usr/bin/ninja")])].sort());
+    assert.ok(config.inputs.includes(nativeJitTools.manifestFile));
+    assert.ok(config.inputs.includes(nativeJitTools.files.clangTableGen));
+    assert.ok(config.inputs.includes(nativeJitTools.files.llvmTableGen));
+    const written = writeWindowsJitConfig(plan, config);
+    assert.equal(written.sha256, require("../scripts/build-source-inputs").fileHash(configPath));
+    assert.deepEqual(written.value, config);
+    assert.throws(() => writeWindowsJitConfig(plan, config), /fresh/);
+    const supportPlan = windowsJitCiJobPlan("support", configPath, hash, environment(root, "support"), "linux", "x64", now);
+    assert.deepEqual(composeWindowsJitConfig(supportPlan, admitted), config);
+    assert.throws(() => composeWindowsJitConfig(plan, {...admitted, nativeJitTools: undefined}), /TableGen admission/);
+    assert.throws(() => composeWindowsJitConfig(plan, {...admitted,
+      nativeJitTools: {...nativeJitTools, source: {...nativeJitTools.source, receiptFile: path.join(root, "other-sources.json")}}}), /same-run inputs/);
+    assert.throws(() => composeWindowsJitConfig(plan, {...admitted,
+      toolchainResult: {...admitted.toolchainResult, inputs: {...admitted.toolchainResult.inputs,
+        [nativeJitTools.files.clangTableGen]: "f".repeat(64)}}}), /same-run inputs/);
+    assert.throws(() => composeWindowsJitConfig(plan, {...admitted,
+      nativeJitTools: {...nativeJitTools, files: {...nativeJitTools.files, llvmTableGen: path.join(root, "outside-tblgen")}}}), /TableGen admission/);
+  });
+
+  test("requires a configure-generated config to be fresh and prevents report aliasing", () => {
+    const env = environment(root), configPath = path.join(env["RUNNER_TEMP"] || "", "incoming/config/native-windows-jit-sdk-9000000000000008-88.json");
+    assert.throws(() => windowsJitCiJobPlan("configure", configPath, hash, env, "linux", "x64", now));
+    assert.throws(() => windowsJitCiJobPlan("configure", configPath, undefined, {...env, GITHUB_OUTPUT: configPath}, "linux", "x64", now), /report files/);
+  });
+
+  test("admits only the original Windows builder schema and explicit current roots", () => {
+    const runRoot = "/tmp/mom-jit-run", config = {version: 1, target: "windows", sources: runRoot + "/sources.json", sdk: runRoot + "/dpcpp",
+        resources: runRoot + "/resources", tools: {cc: runRoot + "/icx-real", cxx: runRoot + "/icx-real",
+          cmake: fs.realpathSync("/usr/bin/cmake"), ninja: fs.realpathSync("/usr/bin/ninja"), toolchain: runRoot + "/toolchain/toolchain.cmake"},
+        jobs: 2, inputs: [runRoot + "/toolchain/toolchain.cmake", runRoot + "/descriptor.json", runRoot + "/icx-real"]},
+      expected = {sources: config.sources, sdk: config.sdk, resources: config.resources, toolchain: config.tools.toolchain,
+        compiler: config.tools.cc, requiredInputs: [config.tools.toolchain, runRoot + "/descriptor.json", runRoot + "/icx-real"], allowedRoots: [runRoot]};
+    assert.deepEqual(validateWindowsJitConfig(config, expected), config);
+    for (const changed of [
+      {...config, target: "linux"}, {...config, jobs: 4}, {...config, tools: {...config.tools, cc: "/usr/bin/clang"}},
+      {...config, resources: "/tmp/old-resources"}, {...config, inputs: [config.tools.toolchain]},
+      {...config, inputs: [...config.inputs, runRoot + "/../private/libfoo.lib"]},
+      {...config, inputs: [...config.inputs, runRoot + "/descriptor.json"]}, {...config, unsupported: true},
+    ]) {assert.throws(() => validateWindowsJitConfig(changed, expected));}
+  });
+
+  test("runner consumes the partial LLVM descriptor without requiring controller Hermes fields", () => {
+    const descriptor = {version: 1,
+        tools: {clangCl: "/opt/intel/icx-cl", lldLink: "/sdk/bin/lld-link", llvmNm: "/sdk/bin/llvm-nm", clangResourceInclude: "/opt/intel/include"},
+        windowsSdk: {overlay: "/sdk/vfs.json", sourceRoot: "/sdk", includeRoots: ["/sdk/include"], libraryRoots: ["/sdk/lib"],
+          msvcLibraries: ["/sdk/lib/libcmt.lib"], ucrtLibraries: ["/sdk/lib/ucrt/libucrt.lib"], importLibraries: ["/sdk/lib/um/kernel32.lib"]}},
+      plan = windowsJitToolchainPlan(descriptor, "/dpcpp", "/resources/native-tools/bin", "/new-toolchain"),
+      runner = fs.readFileSync(path.join(__dirname, "../scripts/run-native-windows-jit-ci.js"), "utf8");
+    assert.equal(plan.config.windowsSdk.overlay, descriptor.windowsSdk.overlay);
+    assert.equal(plan.compilerTools.LLVM_TABLEGEN, "/resources/native-tools/bin/llvm-tblgen");
+    assert.equal(plan.compilerTools.CLANG_TABLEGEN, "/resources/native-tools/bin/clang-tblgen");
+    assert.deepEqual(validateWindowsJitDescriptor(descriptor), descriptor);
+    assert.match(runner, /validateWindowsJitDescriptor\(readBuildJson\(plan\.descriptor\)\)/);
+    assert.doesNotMatch(runner, /descriptor\.hermes\.(?:source|build)/);
+    assert.throws(() => windowsJitToolchainPlan({...descriptor, tools: {...descriptor.tools, llvmNm: undefined}},
+      "/dpcpp", "/resources/native-tools/bin", "/new-toolchain"));
+    assert.throws(() => windowsJitToolchainPlan({...descriptor, windowsSdk: {...descriptor.windowsSdk, importLibraries: []}},
+      "/dpcpp", "/resources/native-tools/bin", "/new-toolchain"));
+  });
+
+  test("admit the current same-source native TableGen handoff while retaining thin LLVM21 utilities", () => {
+    const runner = fs.readFileSync(path.join(__dirname, "../scripts/run-native-windows-jit-ci.js"), "utf8");
+    assert.match(runner, /admitWindowsJitNativeTools\(resourcesArtifactRoot,\s*plan\.suffix\)/);
+    assert.match(runner, /prepareWindowsJitToolchain\(plan\.descriptor,\s*dpcpp\.dpcppRoot,\s*path\.join\(nativeJitTools\.toolRoot,\s*"bin"\)/);
+    assert.match(runner, /toolchainResult\.inputs\[nativeJitTools\.files\.clangTableGen\] !== nativeJitTools\.hashes\.clangTableGenSha256/);
+    assert.match(runner, /toolchainResult\.inputs\[nativeJitTools\.files\.llvmTableGen\] !== nativeJitTools\.hashes\.llvmTableGenSha256/);
+    assert.match(runner, /linuxLlvmToolHandoffInputs\(toolsRoot/);
+    assert.match(runner, /validateWindowsJitDescriptorInputs\(descriptor, \{sdkRoot: host\.sdkRoot, sdk: host\.sdk, tools, intelRuntime\}\)/);
+  });
+
+  test("admits the partial LLVM descriptor with exact SDK roots plus the Hermes Intel runtime root", () => {
+    const sdk = {sourceRoot: "/sdk", overlay: "/sdk/vfs-overlay.json", includeRoots: ["/sdk/include/shared", "/sdk/include/ucrt"],
+        libraryRoots: ["/sdk/sdk/lib/ucrt", "/sdk/sdk/lib/um", "/sdk/msvc/lib"],
+        msvcLibraries: ["/sdk/msvc/lib/libcmt.lib", "/handoff/intel-runtime/lib/libircmt.lib", "/handoff/intel-runtime/lib/libmmt.lib"],
+        ucrtLibraries: ["/sdk/sdk/lib/ucrt/libucrt.lib"], importLibraries: ["/sdk/sdk/lib/um/kernel32.lib"]},
+      intelRuntime = {libRoot: "/handoff/intel-runtime/lib", libraries: {
+        libircmt: "/handoff/intel-runtime/lib/libircmt.lib", libmmt: "/handoff/intel-runtime/lib/libmmt.lib",
+      }}, tools = {lldLink: "/llvm/bin/lld-link", llvmNm: "/llvm/bin/llvm-nm"},
+      host = {sdkRoot: sdk.sourceRoot, sdk}, descriptor = {version: 1,
+        tools: {clangCl: "/intel/bin/icx-cl", lldLink: tools.lldLink, llvmNm: tools.llvmNm, clangResourceInclude: "/intel/include"},
+        windowsSdk: {...sdk, libraryRoots: [...sdk.libraryRoots, intelRuntime.libRoot]}},
+      expected = {sdkRoot: "/sdk", sdk, tools, intelRuntime};
+
+    assert.equal(validateWindowsJitDescriptorInputs(descriptor, {...host, tools, intelRuntime}), true);
+    for (const libraryRoots of [
+      sdk.libraryRoots,
+      ["/sdk/sdk/lib/um", "/sdk/sdk/lib/ucrt", "/sdk/msvc/lib", intelRuntime.libRoot],
+      [...sdk.libraryRoots, "/sdk/extra/lib", intelRuntime.libRoot],
+    ]) {
+      assert.throws(() => validateWindowsJitDescriptorInputs({...descriptor, windowsSdk: {...descriptor.windowsSdk, libraryRoots}}, expected), /descriptor differs/);
+    }
+    assert.throws(() => validateWindowsJitDescriptorInputs(descriptor, {...expected,
+      intelRuntime: {...intelRuntime, libRoot: "/handoff/wrong/lib"}}), /descriptor differs/);
+    assert.throws(() => validateWindowsJitDescriptorInputs(descriptor, {...expected,
+      intelRuntime: {...intelRuntime, libraries: {...intelRuntime.libraries, libircmt: "/outside/libircmt.lib"}}}), /descriptor differs/);
+    assert.throws(() => validateWindowsJitDescriptorInputs(descriptor, {...expected, sdkRoot: "/wrong/sdk"}), /descriptor differs/);
+    assert.throws(() => validateWindowsJitDescriptorInputs(descriptor, {...expected,
+      sdk: {...sdk, overlay: "/wrong/vfs-overlay.json"}}), /descriptor differs/);
+    assert.throws(() => validateWindowsJitDescriptorInputs(descriptor, {...expected,
+      tools: {...tools, lldLink: "/wrong/lld-link"}}), /descriptor differs/);
+    assert.throws(() => validateWindowsJitDescriptorInputs(descriptor, {...expected,
+      tools: {...tools, llvmNm: "/wrong/llvm-nm"}}), /descriptor differs/);
+  });
+
+  test("requires the canonical compiler path after symlink resolution", () => {
+    const runRoot = path.join(root, "intel"), compiler = path.join(runRoot, "icx-real"), alias = path.join(runRoot, "icx-cl");
+    fs.mkdirSync(runRoot); fs.writeFileSync(compiler, "test compiler"); fs.symlinkSync(compiler, alias);
+    const canonical = fs.realpathSync(alias), config = {version: 1, target: "windows", sources: runRoot + "/sources.json", sdk: runRoot + "/dpcpp",
+        resources: runRoot + "/resources", tools: {cc: canonical, cxx: canonical,
+          cmake: fs.realpathSync("/usr/bin/cmake"), ninja: fs.realpathSync("/usr/bin/ninja"), toolchain: runRoot + "/toolchain.cmake"},
+        jobs: 2, inputs: [runRoot + "/toolchain.cmake", runRoot + "/descriptor.json", canonical]},
+      expected = {sources: config.sources, sdk: config.sdk, resources: config.resources, toolchain: config.tools.toolchain,
+        compiler: canonical, requiredInputs: config.inputs, allowedRoots: [runRoot]};
+    assert.deepEqual(validateWindowsJitConfig(config, expected), config);
+    assert.throws(() => validateWindowsJitConfig({...config, tools: {...config.tools, cc: alias, cxx: alias}}, expected), /admitted same-run/);
+  });
+
+  test("workflow phase guard derives only the immediate predecessor and exact artifact names", () => {
+    const suffix = "9000000000000008-88", phases = [
+      {phase: "configure", previous: "", output: "configured"},
+      {phase: "support", previous: "configured", output: "support"},
+      {phase: "targets", previous: "support", output: "targets"},
+      {phase: "frontend", previous: "targets", output: "frontend"},
+      {phase: "link", previous: "frontend", output: "link"},
+    ];
+    for (const row of phases) {
+      const config = row.phase === "configure" ? "" : hash, state = row.phase === "configure" ? "" : hash,
+        {result, outputs} = runArtifactNamesGuard(root, row.phase, row.previous, config, state);
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(outputs.config_artifact_name, `native-windows-jit-sdk-${suffix}.json`);
+      assert.equal(outputs.state_artifact_name, `native-windows-jit-sdk-${suffix}-${row.output}.tar`);
+      if (row.previous) {assert.equal(outputs.state_input_artifact_name, `native-windows-jit-sdk-${suffix}-${row.previous}.tar`);} else {assert.equal(Object.hasOwn(outputs, "state_input_artifact_name"), false);}
+    }
+  });
+
+  test("workflow phase guard rejects stale predecessors and missing or malformed external pins", () => {
+    for (const input of [
+      {phase: "targets", previous: "configured", config: hash, state: hash},
+      {phase: "support", previous: "configured", config: "", state: hash},
+      {phase: "support", previous: "configured", config: "x".repeat(64), state: hash},
+      {phase: "support", previous: "configured", config: hash, state: "0".repeat(63)},
+      {phase: "configure", previous: "", config: hash, state: ""},
+    ]) {
+      const {result} = runArtifactNamesGuard(root, input.phase, input.previous, input.config, input.state);
+      assert.notEqual(result.status, 0, `${input.phase} accepted an invalid predecessor/config/state tuple`);
+    }
+  });
+
+  test("reusable workflow uploads config separately, bounds jobs, and avoids caches or runtime tests", () => {
+    const workflow = fs.readFileSync(workflowPath, "utf8"), jobStart = workflow.indexOf("  windows-jit:\n"), stepsStart = workflow.indexOf("    steps:\n", jobStart),
+      jobHeader = workflow.slice(jobStart, stepsStart);
+    assert.ok(jobStart >= 0 && stepsStart > jobStart);
+    assert.match(jobHeader, /runs-on: ubuntu-24\.04/); assert.match(jobHeader, /timeout-minutes: 60/);
+    assert.doesNotMatch(jobHeader, /runner\.temp/, "runner.temp is step-scoped, not valid at job env scope");
+    assert.match(workflow, /MOM_DEV_WORKSPACE=\/var\/tmp\/mom-dev-native-windows-jit-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/);
+    assert.match(workflow, /now \+ 3300/); assert.match(workflow, /timeout-minutes: 45/);
+    assert.match(workflow, /MOM_AOT_BUILD_ONLY: "1"/); assert.match(workflow, /MOM_BUILD_JOBS: "2"/);
+    assert.match(workflow, /name: \$\{\{ steps\.artifact-names\.outputs\.config_artifact_name \}\}[\s\S]*?archive: false[\s\S]*?retention-days: 1/);
+    assert.match(workflow, /name: \$\{\{ steps\.artifact-names\.outputs\.state_artifact_name \}\}[\s\S]*?archive: false[\s\S]*?retention-days: 1/);
+    assert.doesNotMatch(workflow, /actions\/cache|qemu|stratum\+tcp|moneroocean/i);
+    assert.match(workflow, /MOM_NATIVE_WINDOWS_LLVM_DESCRIPTOR_DIR=\$RUNNER_TEMP\/mom-native-windows-llvm21-descriptor-/);
+  });
+});

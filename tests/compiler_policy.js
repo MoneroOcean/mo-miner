@@ -150,14 +150,15 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
   }
 
   test.describe("Offline tooling, command output, and release launcher safety", {concurrency: false}, () => {
-    test("npm tooling stays lockfile-free", () => {
+    test("npm tooling freezes exact dependencies in a maintained lockfile", () => {
       const root = path.join(__dirname, "..");
       const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
       const npmrc = fs.readFileSync(path.join(root, ".npmrc"), "utf8");
-      assert.equal(fs.existsSync(path.join(root, "package-lock.json")), false);
-      assert.match(npmrc, /^package-lock=false$/m);
+      const lock = JSON.parse(fs.readFileSync(path.join(root, "package-lock.json"), "utf8"));
+      assert.equal(lock.lockfileVersion, 3); assert.deepEqual(lock.packages[""].devDependencies, packageJson.devDependencies);
+      assert.match(npmrc, /^package-lock=true$/m);
       assert.match(npmrc, /^save-exact=true$/m);
-      assert.match(fs.readFileSync(path.join(root, ".gitignore"), "utf8"), /^package-lock\.json$/m);
+      assert.doesNotMatch(fs.readFileSync(path.join(root, ".gitignore"), "utf8"), /^package-lock\.json$/m);
       for (const version of Object.values(packageJson.devDependencies)) {
         assert.match(version, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
       }
@@ -176,11 +177,11 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
           files.push(file);
         }
       }
-      const forbidden = /\bnpm(?:\.cmd)?\s+(?:ci|update)\b/;
+      const forbidden = /\bnpm(?:\.cmd)?\s+update\b/;
       for (const file of files) {
         const contents = fs.readFileSync(file);
         if (contents.includes(0)) {continue;}
-        assert.doesNotMatch(contents.toString("utf8"), forbidden, file);
+        assert.equal(forbidden.test(contents.toString("utf8")), false, "Do not upgrade locked dependencies implicitly: " + file);
       }
     });
 
@@ -612,7 +613,7 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       assert.ok(start >= 0 && end > start);
       const temp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-llvm-mode-"));
       try {
-      // Redirect both readiness probes: this fixture never inspects a real host SDK.
+      // Redirect SDK readiness probes: this fixture never inspects a real host SDK.
         const body = installer.slice(start, end + 2)
           .replaceAll("/usr/bin/", `${temp}/bin/`).replaceAll("/usr/lib/", `${temp}/lib/`);
         const invoke = 'bash "$WORKSPACE/llvm.sh" "$LLVM_VERSION"';
@@ -660,14 +661,49 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
           fs.mkdirSync(path.join(temp, "bin"), {recursive: true});
           fs.mkdirSync(path.join(temp, `lib/llvm-${version}/lib/cmake/llvm`), {recursive: true});
           fs.writeFileSync(path.join(temp, `bin/clang-${version}`), "fixture\n", {mode: 0o755});
+          assert.deepEqual(run(body, version).calls, expected,
+            "A compiler and CMake directory without development files must be repaired");
+          const required = [`bin/clang++-${version}`, ...[
+            "include/llvm/Support/Casting.h", "include/clang/AST/ASTContext.h",
+            "lib/libLLVMCore.a", "lib/libclangBasic.a", "lib/cmake/llvm/LLVMConfig.cmake",
+            "lib/cmake/clang/ClangConfig.cmake",
+          ].map(file => `lib/llvm-${version}/${file}`)];
+          for (const file of required) {
+            fs.mkdirSync(path.dirname(path.join(temp, file)), {recursive: true});
+            fs.writeFileSync(path.join(temp, file), "fixture\n", {mode: 0o755});
+          }
           const ready = run(body, version);
           assert.equal(ready.status, 0);
           assert.deepEqual(ready.calls, [], "An already-ready fake SDK must not invoke network or apt");
+          for (const file of required) {
+            const absolute = path.join(temp, file);
+            fs.unlinkSync(absolute);
+            const partial = run(body, version);
+            assert.equal(partial.status, 0);
+            assert.deepEqual(partial.calls, expected, `A missing ${file} must request repair`);
+            fs.writeFileSync(absolute, "fixture\n", {mode: 0o755});
+          }
         }
       } finally { fs.rmSync(temp, {recursive: true, force: true}); }
     });
 
-    test("Native Node installer rejects a same-version binary without SEA or matching build headers", {
+    test("Native base installer includes native compression and TLS development packages once", {
+      skip: process.platform === "win32",
+    }, () => {
+      const installer = fs.readFileSync(path.join(__dirname, "../scripts/install-dev.sh"), "utf8");
+      const start = installer.indexOf("install_base() {"), end = installer.indexOf("\n}\n", start);
+      assert.ok(start >= 0 && end > start);
+      const result = spawnSync("bash", ["-c", ["set -euo pipefail", "BASE_INSTALLED=0",
+        'apt_install() { printf "%s\\n" "$@"; }', installer.slice(start, end + 2),
+        "install_base", "install_base"].join("\n")], {encoding: "utf8", timeout: 5000});
+      assert.equal(result.status, 0, result.stderr);
+      for (const name of ["zlib1g-dev", "libssl-dev"]) {
+        assert.equal(result.stdout.trim().split("\n").filter(value => value === name).length, 1,
+          `Native builds and source-level diagnostics need ${name}`);
+      }
+    });
+
+    test("Native Node installer rejects mismatched SEA, build headers or node-gyp", {
       skip: process.platform === "win32",
     }, () => {
       const installer = fs.readFileSync(path.join(__dirname, "../scripts/install-dev.sh"), "utf8");
@@ -680,9 +716,10 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
         const bin = path.join(temp, "bin");
         const headers = path.join(temp, "include/node");
         fs.mkdirSync(bin); fs.mkdirSync(headers, {recursive: true});
-        fs.writeFileSync(path.join(bin, "node-gyp"), "#!/bin/sh\nexit 0\n", {mode: 0o755});
-        const cases = ["ready", "missing-fuse", "missing-header", "wrong-headers"];
+        const cases = ["ready", "missing-fuse", "missing-header", "wrong-headers", "wrong-gyp", "broken-gyp"];
         for (const name of cases) {
+          fs.writeFileSync(path.join(bin, "node-gyp"), name === "broken-gyp" ? "#!/bin/sh\nexit 7\n" :
+            `#!/bin/sh\nprintf 'v${name === "wrong-gyp" ? "12.4.0" : "12.2.0"}\\n'\n`, {mode: 0o755});
           fs.writeFileSync(path.join(bin, "node"), "#!/bin/sh\nprintf 'v24.15.0\\n'\n" +
           (name === "missing-fuse" ? "" : "# NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2\n"), {mode: 0o755});
           for (const file of ["node.h", "common.gypi", "config.gypi"]) {
@@ -703,6 +740,46 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
           name === "ready" ? 0 : 1, `Validate-only must reject ${name}`);
         }
       } finally { fs.rmSync(temp, {recursive: true, force: true}); }
+    });
+
+    test("Native Node installer exposes bundled node-gyp without registry access", {
+      skip: process.platform === "win32",
+    }, () => {
+      const installer = fs.readFileSync(path.join(__dirname, "../scripts/install-dev.sh"), "utf8");
+      const extract = (/** @type {string} */ name) => {
+        const start = installer.indexOf(`${name}() {`);
+        return installer.slice(start, installer.indexOf("\n}\n", start) + 2);
+      };
+      const temp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-bundled-node-gyp-"));
+      try {
+        for (const variant of ["ready", "wrong-version", "missing-cli"]) {
+          const root = path.join(temp, variant), prefix = path.join(root, "installed"), payload = path.join(root, "payload");
+          const headers = path.join(payload, "include/node"), bin = path.join(payload, "bin"),
+            bundled = path.join(payload, "lib/node_modules/npm/node_modules/node-gyp/bin");
+          fs.mkdirSync(headers, {recursive: true}); fs.mkdirSync(bin); fs.mkdirSync(bundled, {recursive: true});
+          fs.writeFileSync(path.join(bin, "node"), "#!/bin/sh\nprintf 'v24.15.0\\n'\n" +
+            "# NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2\n", {mode: 0o755});
+          for (const file of ["node.h", "common.gypi", "config.gypi"]) {fs.writeFileSync(path.join(headers, file), "fixture\n");}
+          fs.writeFileSync(path.join(headers, "node_version.h"),
+            "#define NODE_MAJOR_VERSION 24\n#define NODE_MINOR_VERSION 15\n#define NODE_PATCH_VERSION 0\n");
+          if (variant !== "missing-cli") {
+            fs.writeFileSync(path.join(bundled, "node-gyp.js"),
+              `#!/bin/sh\nprintf 'v${variant === "wrong-version" ? "12.4.0" : "12.2.0"}\\n'\n`, {mode: 0o755});
+          }
+          const program = ["set -euo pipefail", extract("node_ready"), extract("install_node"),
+            "curl() { :; }", "verify_sha256() { :; }",
+            'tar() { mkdir -p "$MOM_FIXTURE_PREFIX"; cp -a "$MOM_FIXTURE_PAYLOAD/." "$MOM_FIXTURE_PREFIX/"; }',
+            "npm() { echo 'unexpected registry install' >&2; return 43; }", "install_node",
+            // The second call must reuse the validated installation without downloading again.
+            "curl() { return 29; }", "install_node"].join("\n").replaceAll("/usr/local", prefix);
+          const result = spawnSync("bash", ["-c", program], {encoding: "utf8", env: {...process.env,
+            PATH: `${path.join(prefix, "bin")}:${process.env["PATH"]}`, NODE_VERSION: "24.15.0", NODE_SHA256: "fixture",
+            WORKSPACE: root, MOM_FIXTURE_PREFIX: prefix, MOM_FIXTURE_PAYLOAD: payload}});
+          assert.equal(result.status, variant === "ready" ? 0 : 1, `${variant}: ${result.stderr}`);
+          assert.equal(fs.readlinkSync(path.join(prefix, "bin/node-gyp")),
+            "../lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js");
+        }
+      } finally {fs.rmSync(temp, {recursive: true, force: true});}
     });
 
     test("Native base validation requires both Linux packaging tools", {
@@ -971,8 +1048,10 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       const profileCases = [
         ...workers.map((worker) => ({
           name: `${worker} portable=0`, target: worker, kind: "portable-zero",
-          expected: /is not a portable release worker/,
+          expected: /is not a portable Engineering worker[\s\S]*npm run build:release -- --engineering-archive --clean/,
         })),
+        {name: "missing worker", target: "oneapi", kind: "missing-worker",
+          expected: /mom\.node is missing; run 'npm run build:release -- --engineering-archive --clean'/},
         {name: "missing sidecar", target: "oneapi", kind: "missing-sidecar",
           expected: /\.build-profile is missing/},
         {name: "missing field", target: "oneapi", kind: "missing-field",
@@ -986,13 +1065,13 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
         {name: "mismatched hash", target: "oneapi", kind: "mismatched-hash",
           expected: /does not identify .*mom\.node exactly/},
         {name: "cpu=native", target: "oneapi", kind: "cpu-native",
-          expected: /is not a portable release worker/},
+          expected: /is not a portable Engineering worker[\s\S]*npm run build:release -- --engineering-archive --clean/},
         {name: "cpu=x86-64-v4", target: "oneapi", kind: "cpu-v4",
-          expected: /is not a portable release worker/},
+          expected: /is not a portable Engineering worker[\s\S]*npm run build:release -- --engineering-archive --clean/},
         {name: "missing patchelf", target: "oneapi", kind: "missing-patchelf",
-          expected: /Linux release packaging requires patchelf/},
+          expected: /Engineering Linux archive packaging requires patchelf/},
         {name: "missing readelf", target: "oneapi", kind: "missing-readelf",
-          expected: /Linux release packaging requires readelf/},
+          expected: /Engineering Linux archive packaging requires readelf/},
       ];
 
       for (const profileCase of profileCases) {
@@ -1021,6 +1100,9 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
           }
           fs.writeFileSync(path.join(temp, "published.tgz"), "keep archive");
           for (const worker of workers) {
+            if (profileCase.kind === "missing-worker" && worker === profileCase.target) {
+              continue;
+            }
             const addon = path.join(temp, "build/lin/Release", worker, "mom.node");
             fs.mkdirSync(path.dirname(addon), {recursive: true});
             fs.writeFileSync(addon, contents);
@@ -1669,20 +1751,45 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       }
     });
 
-    test("Verthash bounded CPU fixture checks its route and independent scalar gold", {
+    test("Verthash bounded CPU/iGPU fixture checks its route and independent scalar gold", {
       skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
     }, () => {
       const root = path.join(__dirname, "..");
       const source = fs.readFileSync(path.join(root, "sycl/verthash/verthash.cpp"), "utf8");
+      const internal = fs.readFileSync(path.join(root, "sycl/lib-internal.h"), "utf8");
       const begin = source.indexOf("static State& get_state(");
       const end = source.indexOf("\nvoid verthash_cleanup_states()", begin);
       assert.ok(begin >= 0 && end > begin);
-      assert.match(source, /get_state\(dev_str, is_test && !is_benchmark\)/);
+      assert.match(source, /get_state\(dev_str, is_test, is_benchmark\)/);
+      assert.match(source,
+        /compact_test_data\(use_compact_test_data &&\s*\(device\.is_cpu\(\) \|\| is_integrated_gpu\(device\)\)\)/);
+      /** @param {string} text @param {string} signature @returns {string} */
+      const extractFunction = (text, signature) => {
+        const start = text.indexOf(signature);
+        assert.ok(start >= 0, `missing ${signature}`);
+        const brace = text.indexOf("{", start);
+        assert.ok(brace >= 0, `missing function body for ${signature}`);
+        let depth = 0;
+        for (let index = brace; index < text.length; index++) {
+          if (text[index] === "{") {depth++;}
+          if (text[index] === "}") {
+            depth--;
+            if (depth === 0) {return text.slice(start, index + 1);}
+          }
+        }
+        assert.fail(`unterminated ${signature}`);
+      };
+      const compactHelpers = [
+        extractFunction(internal, "inline bool mom_parse_env_ulong"),
+        extractFunction(internal, "inline bool is_integrated_gpu"),
+        extractFunction(internal, "inline bool mom_compact_correctness_test"),
+      ].join("\n\n");
       const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-verthash-small-"));
       try {
         fs.copyFileSync(path.join(__dirname, "native/verthash_test_route.cpp"),
           path.join(directory, "route.cpp"));
-        fs.writeFileSync(path.join(directory, "verthash_get_state.inc"), source.slice(begin, end));
+        fs.writeFileSync(path.join(directory, "verthash_get_state.inc"),
+          `${compactHelpers}\n\n${source.slice(begin, end)}`);
         /** @type {[string, string][]} */
         const cases = [
           [path.join(directory, "route.cpp"), "verthash-test-route:passed"],
@@ -1962,7 +2069,7 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       }
     });
 
-    test("required integrated coverage requires a device and skips unsupported algorithms", async (t) => {
+    test("integrated coverage fails unavailable devices and algorithms only when required", async (t) => {
       const previous = process.env["MOM_REQUIRE_INTEGRATED_GPU_TESTS"];
       process.env["MOM_REQUIRE_INTEGRATED_GPU_TESTS"] = "1";
       t.after(() => {
@@ -1976,7 +2083,6 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       const results = [
         {
           result: {skipped: /** @type {false} */ (false), devices: [], params: {}},
-          required: true,
           reason: /no devices/,
         },
         {
@@ -1985,22 +2091,24 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
             devices: [{dev: "gpu1", description: "Intel integrated test device", integrated: true}],
             params: {},
           },
-          required: false,
           reason: /not available/,
         },
       ];
-      for (const {result, required, reason} of results) {
-      /** @type {Parameters<typeof addIntegratedCases>[0]} */
-        const plan = new Map();
-        await addIntegratedCases(plan, "octopus", {
-          openclGpu: async () => {throw new Error("unexpected OpenCL discovery");},
-          openclCpu: async () => {throw new Error("unexpected CPU discovery");},
-          intelIntegrated: async () => result,
-        });
-        const cases = [...plan.values()].flatMap((lane) => lane.serial);
-        assert.equal(cases.length, 1);
-        assert.equal(cases[0]?.required, required);
-        assert.match(cases[0]?.reason || "", reason);
+      for (const required of [true, false]) {
+        process.env["MOM_REQUIRE_INTEGRATED_GPU_TESTS"] = required ? "1" : "0";
+        for (const {result, reason} of results) {
+          /** @type {Parameters<typeof addIntegratedCases>[0]} */
+          const plan = new Map();
+          await addIntegratedCases(plan, "octopus", {
+            openclGpu: async () => {throw new Error("unexpected OpenCL discovery");},
+            openclCpu: async () => {throw new Error("unexpected CPU discovery");},
+            intelIntegrated: async () => result,
+          });
+          const cases = [...plan.values()].flatMap((lane) => lane.serial);
+          assert.equal(cases.length, 1);
+          assert.equal(cases[0]?.required, required);
+          assert.match(cases[0]?.reason || "", reason);
+        }
       }
     });
 
@@ -2188,7 +2296,10 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       assert.ok(prepare >= 0 && compile > prepare && finish > compile,
         "content receipts must decide reuse before Make and admit the completed link afterward");
       const state = fs.readFileSync(path.join(__dirname, "../scripts/linux-build-state.js"), "utf8");
-      assert.match(state, /"scripts\/cxx-combined\.sh"/);
+      assert.match(state, /sourceInputs\(root\)/);
+      const {sourceInputs, fileHash} = require("../scripts/build-source-inputs");
+      assert.equal(sourceInputs(path.resolve(__dirname, "..")).graph["scripts/cxx-combined.sh"],
+        fileHash(path.join(__dirname, "../scripts/cxx-combined.sh")));
       assert.doesNotMatch(build, /link_target|\$WRAP -nt/);
       assert.doesNotMatch(build, /octopus_archive/);
       assert.doesNotMatch(build, /\nrm -f build\/Release\/mom\.node build\/Release\/obj\.target\/mom\.node/);
@@ -2498,6 +2609,68 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       assert.doesNotMatch(source.slice(start, end), /\.wait\(\)/);
     });
 
+    test("BeamHash3 profiles its single test solve without changing steady mining profiling", {
+      skip: process.platform === "win32" && "requires a host C++ compiler",
+    }, t => {
+      const source = fs.readFileSync(path.join(__dirname, "../sycl/beamhash3/beamhash3.cpp"), "utf8"),
+        expression = source.match(/const bool compact_profile = ([^;\n]+);/)?.[1];
+      assert.ok(expression, "exercise the actual compact profile selector");
+      const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-beam-profile-selector-")),
+        file = path.join(fixture, "profile.cpp"), executable = path.join(fixture, "profile");
+      t.after(() => fs.rmSync(fixture, {recursive: true, force: true}));
+      fs.writeFileSync(file, `bool profile(bool prof, bool is_test, unsigned& compact_profile_call) { return ${expression}; }
+int main() {
+  unsigned test_calls = 0, mining_calls = 0, disabled_calls = 0;
+  if (!profile(true, true, test_calls) || profile(true, true, test_calls) || profile(true, true, test_calls)) return 1;
+  if (profile(true, false, mining_calls) || !profile(true, false, mining_calls) || profile(true, false, mining_calls)) return 2;
+  if (profile(false, true, disabled_calls) || profile(false, false, disabled_calls) || disabled_calls != 0) return 3;
+  return 0;
+}\n`);
+      const compiled = spawnSync("c++", ["-std=c++17", "-O0", file, "-o", executable], {encoding: "utf8", timeout: 30000});
+      assert.equal(compiled.status, 0, compiled.stderr || compiled.error?.message);
+      const result = spawnSync(executable, [], {encoding: "utf8", timeout: 5000});
+      assert.equal(result.status, 0, "first test solve, second mining solve, and opt-out must retain their distinct profiling semantics");
+    });
+
+    test("BeamHash3 kernel-limit queries stay profiling-only and select the actual round-one specialization", {
+      skip: process.platform === "win32" && "requires a host C++ compiler",
+    }, t => {
+      const source = fs.readFileSync(path.join(__dirname, "../sycl/beamhash3/beamhash3.cpp"), "utf8"),
+        guard = "    if (compact_profile && sycl_is_level_zero_gpu(state.device))",
+        block = extractCppBlock(source, guard), fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-beam-kernel-limit-")),
+        file = path.join(fixture, "query.cpp"), executable = path.join(fixture, "query");
+      t.after(() => fs.rmSync(fixture, {recursive: true, force: true}));
+      assert.ok(source.indexOf(guard) > source.indexOf('compact_stage_done("seed", compact_event);'));
+      assert.match(source, /get_kernel_bundle<KernelName, sycl::bundle_state::executable>/);
+      assert.match(source, /kernel_device_specific::work_group_size>\(device\)/);
+      fs.writeFileSync(file, `unsigned calls, contexts, observed_wg, observed_round; bool observed_pair, observed_type;
+template <unsigned R, bool Pair> struct BeamCompactRoundKernel { static constexpr unsigned round = R; static constexpr bool paired = Pair; };
+struct Queue { int get_context() { ++contexts; return 0; } };
+struct State { Queue queue; bool device; };
+bool sycl_is_level_zero_gpu(bool device) { return device; }
+template <class K> void beamhash3_log_kernel_limit(int, bool, bool paired, unsigned wg) {
+  ++calls; observed_pair = paired; observed_type = K::paired; observed_round = K::round; observed_wg = wg;
+}
+void candidate(bool compact_profile, bool level_zero, bool compact_pair_partitions) {
+  State state{{}, level_zero}; unsigned compact_pair_round1_wg = 640, compact_round_wg = 768;
+  ${block}
+}
+int main() {
+  for (unsigned prof = 0; prof < 2; ++prof) for (unsigned l0 = 0; l0 < 2; ++l0)
+    for (unsigned paired = 0; paired < 2; ++paired) {
+      calls = contexts = 0; candidate(prof, l0, paired);
+      if (calls != (prof && l0) || contexts != calls) return 1;
+      if (calls && (observed_round != 1 || observed_pair != bool(paired) || observed_type != bool(paired) ||
+          observed_wg != (paired ? 640u : 768u))) return 2;
+    }
+  return 0;
+}\n`);
+      const compiled = spawnSync("c++", ["-std=c++17", "-O0", file, "-o", executable], {encoding: "utf8", timeout: 30000});
+      assert.equal(compiled.status, 0, compiled.stderr || compiled.error?.message);
+      const result = spawnSync(executable, [], {encoding: "utf8", timeout: 5000});
+      assert.equal(result.status, 0, "ordinary/non-Level-Zero jobs must not build or query a diagnostic bundle");
+    });
+
     test("ZelHash discovery leaves allocation-sensitive slots to the workload process", () => {
       const source = fs.readFileSync(path.join(__dirname, "../sycl/algo_params.inc"), "utf8");
       assert.match(source,
@@ -2578,13 +2751,37 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
         /#if defined\(MOM_SYCL_ADAPTIVECPP\) \|\| defined\(MOM_SYCL_PORTABLE_OPENCL\)[\s\S]*?return mul_hi64_portable\(a, b\);[\s\S]*?#else\s+return sycl::mul_hi\(a, b\);/);
     });
 
+    test("Xelis ESIMD and portable wide products retain exact limb carries", {
+      skip: process.platform === "win32" ? "requires a POSIX host C++ compiler" : false,
+    }, async (t) => {
+      const shared = fs.readFileSync(path.join(__dirname, "../sycl/lib-internal.h"), "utf8");
+      const xelis = fs.readFileSync(path.join(__dirname, "../sycl/xelishashv3/device.inc"), "utf8");
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-wide-multiply-"));
+      t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
+      fs.writeFileSync(path.join(directory, "wide-multiply.inc"),
+        extractCppBlock(shared, "inline uint64_t mo_mul_wide_u32(") +
+        "inline uint64_t mul_wide32(uint32_t a, uint32_t b) { return mo_mul_wide_u32(a,b); }\n" +
+        extractCppBlock(xelis, "inline uint64_t mul_hi64_portable("));
+      for (const define of ["", "MOM_SYCL_PORTABLE_OPENCL", "MOM_XELISHASHV3_ESIMD"]) {
+        await t.test(define || "ordinary", () => {
+          const executable = path.join(directory, define || "ordinary");
+          const built = spawnSync("c++", ["-std=c++17", "-O3", "-Wall", "-Wextra", "-Werror", "-UNDEBUG",
+            ...(define ? ["-D" + define] : []), "-I", directory, path.join(__dirname, "native/wide_multiply.cpp"), "-o", executable],
+          {encoding: "utf8", timeout: 30000});
+          assert.equal(built.status, 0, built.error?.message || built.stderr);
+          const result = spawnSync(executable, [], {encoding: "utf8", timeout: 10000});
+          assert.equal(result.status, 0, result.error?.message || result.stderr);
+        });
+      }
+    });
+
     test("HooHash portable OpenCL avoids unsupported 64-bit mul_hi", () => {
       const source = fs.readFileSync(
         path.join(__dirname, "../sycl/hoohash/hoohash.cpp"), "utf8");
       const shared = fs.readFileSync(path.join(__dirname, "../sycl/lib-internal.h"), "utf8");
       assert.match(source, /return mo_mul_hi_u64\(a, b\);/);
       assert.match(shared,
-        /#if defined\(MOM_SYCL_PORTABLE_OPENCL\)\s+const uint32_t a0 = static_cast<uint16_t>\(a\), a1 = a >> 16,[\s\S]*?return p0 \+ \(\(p1 \+ p2\) << 16\) \+ \(p3 << 32\);/);
+        /#if defined\(MOM_SYCL_PORTABLE_OPENCL\) \|\| defined\(MOM_XELISHASHV3_ESIMD\)\s+const uint32_t a0 = static_cast<uint16_t>\(a\), a1 = a >> 16,[\s\S]*?return p0 \+ \(\(p1 \+ p2\) << 16\) \+ \(p3 << 32\);/);
       assert.match(shared,
         /#if defined\(MOM_SYCL_ADAPTIVECPP\) \|\| defined\(MOM_SYCL_PORTABLE_OPENCL\)[\s\S]*?mo_mul_wide_u32\(a1, b1\)/);
     });
@@ -4101,6 +4298,7 @@ struct Context {
   bool copy_done = false;
   bool consumed = false;
   bool kernels_ready_at_copy = true;
+  bool submission_pending = true;
   unsigned final_waits = 0;
   unsigned copy_submits = 0;
   unsigned copy_waits = 0;
@@ -4130,7 +4328,12 @@ ${finalBody}
 struct Event { Context* context; Kind kind; };
 struct Queue {
   Context* context;
+  bool khr_empty() {
+    context->submission_pending = false;
+    return false;
+  }
   Event memcpy(uint8_t* destination, const uint8_t* source, const size_t bytes) {
+    context->submission_pending = true;
     ++context->copy_submits;
     context->kernels_ready_at_copy &= context->kernels_done;
     if (context->failure == Failure::copy_submit)
@@ -4163,6 +4366,10 @@ struct State {
 
 inline void sycl_wait_and_throw(const Event event, const int) {
   auto& context = *event.context;
+#if defined(MOM_CN_REQUIRE_SUBMISSION)
+  if (context.submission_pending)
+    throw std::runtime_error("unsubmitted-command");
+#endif
   if (event.kind == Kind::final) {
     ++context.final_waits;
     context.finish_kernels();
@@ -4305,16 +4512,26 @@ int main() {
 }
 
 `);
-        const compiled = spawnSync("c++", ["-std=c++20", "-O2", "-Wall", "-Wextra", "-Werror",
-          "-pedantic", "-I", cn, source, "-o", executable], {encoding: "utf8"});
-        assert.equal(compiled.error, undefined);
-        assert.equal(compiled.signal, null);
-        assert.equal(compiled.status, 0, compiled.stderr);
-        const result = spawnSync(executable, [], {encoding: "utf8"});
-        assert.equal(result.error, undefined);
-        assert.equal(result.signal, null);
-        assert.equal(result.status, 0, result.stderr);
-        assert.equal(result.stdout, "CN/GPU source-derived readback host fixture: 802 checks, 0 failures\n");
+        const before = path.join(fixture, "without-submission.cpp");
+        // Remove only the progress kick from the same source-derived readback scope.
+        fs.writeFileSync(before, fs.readFileSync(source, "utf8").replaceAll("(void)q.khr_empty();", ""));
+        for (const mode of ["ordinary", "windows-hip", "without-submission"]) {
+          const flags = mode === "ordinary" ? [] : ["-D_WIN32", "-DMOM_SYCL_ADAPTIVECPP", "-DMOM_SYCL_HAS_HIP", "-DMOM_CN_REQUIRE_SUBMISSION"];
+          const compiled = spawnSync("c++", ["-std=c++20", "-O2", "-Wall", "-Wextra", "-Werror",
+            "-pedantic", ...flags, "-I", cn, mode === "without-submission" ? before : source, "-o", executable], {encoding: "utf8"});
+          assert.equal(compiled.error, undefined);
+          assert.equal(compiled.signal, null);
+          assert.equal(compiled.status, 0, compiled.stderr);
+          const result = spawnSync(executable, [], {encoding: "utf8"});
+          assert.equal(result.error, undefined);
+          assert.equal(result.signal, null);
+          if (mode === "without-submission") {
+            assert.notEqual(result.status, 0, "unsubmitted work must fail the same readback assertions");
+          } else {
+            assert.equal(result.status, 0, result.stderr);
+            assert.equal(result.stdout, "CN/GPU source-derived readback host fixture: 802 checks, 0 failures\n");
+          }
+        }
       } finally {
         fs.rmSync(fixture, {recursive: true, force: true});
       }
@@ -4322,10 +4539,58 @@ int main() {
   });
 
   test.describe("Source-JIT fallback boundaries, parameter probes, and GPU/Pearl tuning", {concurrency: false}, () => {
+    test("NVRTC compiler API header compiles without CUDA driver headers", {
+      skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
+    }, () => {
+      const headerPath = path.resolve(__dirname, "../sycl/nvrtc-api.h");
+      const header = fs.readFileSync(headerPath, "utf8");
+      assert.doesNotMatch(header, /^\s*#\s*include\s*[<"]cuda\.h[>"]/m);
+      const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-nvrtc-header-"));
+      try {
+        fs.writeFileSync(path.join(fixture, "nvrtc.h"), `
+#pragma once
+#include <stddef.h>
+using nvrtcProgram = void*;
+using nvrtcResult = int;
+inline constexpr nvrtcResult NVRTC_SUCCESS = 0;
+nvrtcResult nvrtcVersion(int*, int*);
+nvrtcResult nvrtcCreateProgram(nvrtcProgram*, const char*, const char*, int,
+                               const char* const*, const char* const*);
+nvrtcResult nvrtcCompileProgram(nvrtcProgram, int, const char* const*);
+nvrtcResult nvrtcGetProgramLogSize(nvrtcProgram, size_t*);
+nvrtcResult nvrtcGetProgramLog(nvrtcProgram, char*);
+nvrtcResult nvrtcGetPTXSize(nvrtcProgram, size_t*);
+nvrtcResult nvrtcGetPTX(nvrtcProgram, char*);
+nvrtcResult nvrtcGetCUBINSize(nvrtcProgram, size_t*);
+nvrtcResult nvrtcGetCUBIN(nvrtcProgram, char*);
+nvrtcResult nvrtcGetNumSupportedArchs(int*);
+nvrtcResult nvrtcGetSupportedArchs(int*);
+nvrtcResult nvrtcDestroyProgram(nvrtcProgram*);
+const char* nvrtcGetErrorString(nvrtcResult);
+`);
+        const source = path.join(fixture, "nvrtc_api_header.cpp");
+        fs.writeFileSync(source, `#include "${headerPath}"
+static_assert(sizeof(mom::NvrtcApi) > 0);
+static_assert(sizeof(mom::NvrtcProgram) > 0);
+`);
+        assert.equal(fs.existsSync(path.join(fixture, "cuda.h")), false);
+        for (const mode of ["dynamic", "static"]) {
+          const compiled = spawnSync("c++", ["-std=c++17", "-Wall", "-Wextra", "-Werror", "-pedantic",
+            "-fsyntax-only", ...(mode === "static" ? ["-DMOM_STATIC_NVRTC"] : []), "-I", fixture, source],
+          {encoding: "utf8", timeout: 30000});
+          assert.equal(compiled.error, undefined, mode);
+          assert.equal(compiled.signal, null, mode);
+          assert.equal(compiled.status, 0, `${mode}: ${compiled.stderr}`);
+        }
+      } finally {
+        fs.rmSync(fixture, {recursive: true, force: true});
+      }
+    });
+
     test("All native algorithms share the managed NVRTC compiler with legacy fallbacks", {
       skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
     }, async (t) => {
-      const header = fs.readFileSync(path.join(__dirname, "../sycl/cuda-api.h"), "utf8");
+      const header = fs.readFileSync(path.join(__dirname, "../sycl/nvrtc-api.h"), "utf8");
       const start = header.indexOf("class NvrtcApi {");
       const end = header.indexOf("// Own only the temporary compiler program", start);
       assert.ok(start >= 0 && end > start);
@@ -4345,6 +4610,15 @@ int main() {
             assert.equal(run.stdout, "SHARED_NVRTC_LOADER_PASS mode=" + mode + " GPU_calls=0\n");
           });
         }
+        await t.test("static archive binding performs no dynamic loader calls", () => {
+          const native = path.join(fixture, "static-loader");
+          const build = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
+            "-pedantic", "-DMOM_STATIC_NVRTC", "-I" + fixture, source, "-o", native], {encoding: "utf8", timeout: 30000});
+          assert.equal(build.status, 0, build.error?.message || build.stderr);
+          const run = spawnSync(native, ["static"], {encoding: "utf8", timeout: 10000});
+          assert.equal(run.status, 0, run.error?.message || run.stderr);
+          assert.equal(run.stdout, "SHARED_NVRTC_LOADER_PASS mode=static GPU_calls=0\n");
+        });
       } finally {
         fs.rmSync(fixture, {recursive: true, force: true});
       }
@@ -4354,19 +4628,24 @@ int main() {
       skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
     }, async (t) => {
       const root = path.join(__dirname, "../sycl");
-      const header = fs.readFileSync(path.join(root, "cuda-api.h"), "utf8");
-      const helpers = header.indexOf("inline void cuda_check(");
-      const namespaceEnd = header.lastIndexOf("} // namespace mom");
-      assert.ok(helpers >= 0 && namespaceEnd > helpers);
-      const ownerStart = header.indexOf("class NvrtcProgram {");
-      const owner = ownerStart < 0 ? "" : header.slice(ownerStart, helpers);
+      const cudaHeader = fs.readFileSync(path.join(root, "cuda-api.h"), "utf8");
+      const nvrtcHeader = fs.readFileSync(path.join(root, "nvrtc-api.h"), "utf8");
+      const helpers = cudaHeader.indexOf("inline void cuda_check(");
+      const cudaNamespaceEnd = cudaHeader.lastIndexOf("} // namespace mom");
+      const ownerStart = nvrtcHeader.indexOf("class NvrtcProgram {");
+      const ownerEnd = nvrtcHeader.indexOf("// Attach the compiler's build log", ownerStart);
+      const rtcErrorStart = nvrtcHeader.indexOf("inline std::string rtc_error(", ownerEnd);
+      const nvrtcNamespaceEnd = nvrtcHeader.lastIndexOf("} // namespace mom");
+      assert.ok(helpers >= 0 && cudaNamespaceEnd > helpers);
+      assert.ok(ownerStart >= 0 && ownerEnd > ownerStart && rtcErrorStart > ownerEnd && nvrtcNamespaceEnd > rtcErrorStart);
+      const owner = nvrtcHeader.slice(ownerStart, ownerEnd);
       const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-nvrtc-program-"));
       const source = path.join(fixture, "nvrtc_program.cpp");
       const executable = path.join(fixture, "nvrtc_program");
       try {
         fs.copyFileSync(path.join(__dirname, "native/nvrtc_program.cpp"), source);
         fs.writeFileSync(path.join(fixture, "api.inc"), "namespace mom {\n" + owner +
-        header.slice(helpers, namespaceEnd) + "\n}\n");
+        cudaHeader.slice(helpers, cudaNamespaceEnd) + nvrtcHeader.slice(rtcErrorStart, nvrtcNamespaceEnd) + "\n}\n");
         const cn = fs.readFileSync(path.join(root, "cn_gpu/cuda_jit.inc"), "utf8");
         const cnEnd = cn.indexOf("  void launch(");
         const cnDestructor = cn.indexOf("  ~CnGpuCudaExpand()");
@@ -4514,11 +4793,12 @@ int main() {
       skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
     }, async (t) => {
       const directory = path.join(__dirname, "../sycl/cn_gpu");
-      const header = fs.readFileSync(path.join(directory, "../cuda-api.h"), "utf8");
-      const ownerStart = header.indexOf("class NvrtcProgram {");
-      const helpers = header.indexOf("inline void cuda_check(");
-      assert.ok(helpers >= 0);
-      const owner = ownerStart < 0 ? "" : header.slice(ownerStart, helpers);
+      const cudaHeader = fs.readFileSync(path.join(directory, "../cuda-api.h"), "utf8");
+      const nvrtcHeader = fs.readFileSync(path.join(directory, "../nvrtc-api.h"), "utf8");
+      const ownerStart = nvrtcHeader.indexOf("class NvrtcProgram {");
+      const ownerEnd = nvrtcHeader.indexOf("// Attach the compiler's build log", ownerStart);
+      assert.ok(ownerStart >= 0 && ownerEnd > ownerStart);
+      const owner = nvrtcHeader.slice(ownerStart, ownerEnd);
       const entry = fs.readFileSync(path.join(directory, "cn_gpu.cpp"), "utf8");
       const start = entry.indexOf("  bool native_expansion = false;");
       const end = entry.indexOf("  if (!native_expansion) {", start);
@@ -4681,7 +4961,7 @@ ${owner}
 void cuda_check(const CudaDriverApi&, int status, const char* message) {
   if (status != CUDA_SUCCESS) throw std::string(message);
 }
-${extractCppBlock(header, "inline void cuda_check_submitted(")}
+${extractCppBlock(cudaHeader, "inline void cuda_check_submitted(")}
 std::string rtc_error(const NvrtcApi&, int, void*, const char* message) { return message; }
 namespace jit_cache {
 uint64_t hash(const std::string&) { return 1; }
@@ -5368,7 +5648,7 @@ int main(int argc, char** argv) {
       assert.equal(policy.selection("cn/gpu", "nvidia", "win32").key, "dpcpp");
       assert.equal(policy.selection("cn/gpu", "nvidia", "win32").backend, "native");
       assert.equal(policy.selection("fishhash", "nvidia", "win32").key, "acpp-cuda");
-      assert.equal(policy.selection("karlsenhashv2", "nvidia", "win32").key, "acpp-cuda");
+      assert.equal(policy.selection("karlsenhashv2", "nvidia", "win32").key, "dpcpp");
       assert.equal(policy.selection("etchash", "nvidia", "win32").key, "dpcpp");
       assert.equal(policy.selection("pearlhash", "nvidia", "win32").backend, "native");
       assert.equal(policy.selection("octopus", "nvidia", "win32").backend, "sycl-native");
@@ -5405,6 +5685,21 @@ int main(int argc, char** argv) {
       assert.equal(policy.selection("etchash", "opencl", "linux").backend, "sycl-opencl");
       assert.equal(policy.selection("etchash", "opencl", "linux").key, "dpcpp-opencl");
       assert.equal(policy.selection("etchash", "opencl", "win32").key, "dpcpp-opencl");
+    });
+
+    test("Windows Karlsen compiler policy selects DPC++ only for modern NVIDIA", () => {
+      for (const sm of [80, 120]) {
+        const selected = policy.selection("karlsenhashv2", "nvidia", "win32", sm);
+        assert.equal(selected.key, "dpcpp", `SM${sm} compiler`);
+        assert.equal(selected.backend, "sycl-native", `SM${sm} backend`);
+      }
+      for (const sm of [0, 61, 70, 75]) {
+        assert.equal(policy.selection("karlsenhashv2", "nvidia", "win32", sm).key,
+          "acpp-cuda", `unknown/legacy SM${sm} compiler`);
+      }
+      assert.equal(policy.selection("karlsenhashv2", "nvidia", "linux", 120).key, "acpp-cuda");
+      assert.equal(policy.selection("fishhash", "nvidia", "win32", 120).key, "acpp-cuda");
+      assert.equal(policy.selection("karlsenhashv2", "amd", "win32").key, "acpp-hip");
     });
 
     test("NVIDIA capability override selects compatibility paths", () => {
@@ -7889,6 +8184,127 @@ int main(int argc, char** argv) {
       }
     });
 
+    test("C29 loop telemetry distinguishes graph starts from empty-input polls", {
+      skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
+    }, () => {
+      const execution = fs.readFileSync(path.join(__dirname, "../native/core/execution.inc"), "utf8"),
+        loopStats = extractCppBlock(execution, "struct LoopStats {");
+      const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-c29-loop-stats-")),
+        source = path.join(fixture, "loop_stats.cpp"), executable = path.join(fixture, "loop_stats");
+      try {
+        fs.writeFileSync(source, `#include <cstdint>\nusing std::uint64_t;\n${loopStats};
+int main() {
+  LoopStats stats;
+  stats.record_c29(64, 0);
+  stats.record_c29(0, 0);
+  stats.record_c29(64, 1);
+  stats.record_c29(0, -1);
+  stats.record_c29(0, 2);
+  if (stats.c29_input_graphs != 1 || stats.c29_empty_polls != 1 || stats.c29_proofs != 1 ||
+      stats.c29_drained != 1 || stats.c29_other != 1 || !stats.has_c29_activity()) return 1;
+  LoopStats reset{};
+  if (reset.has_c29_activity() || reset.c29_input_graphs || reset.c29_empty_polls ||
+      reset.c29_proofs || reset.c29_drained || reset.c29_other) return 2;
+  return 0;
+}\n`);
+        const compiled = spawnSync("c++", ["-std=c++17", "-O0", "-Wall", "-Wextra", "-Werror",
+          "-pedantic", source, "-o", executable], {encoding: "utf8", timeout: 30000});
+        assert.equal(compiled.error, undefined);
+        assert.equal(compiled.signal, null);
+        assert.equal(compiled.status, 0, compiled.stderr);
+        const result = spawnSync(executable, [], {encoding: "utf8", timeout: 5000});
+        assert.equal(result.error, undefined);
+        assert.equal(result.signal, null);
+        assert.equal(result.status, 0, result.stderr);
+      } finally {fs.rmSync(fixture, {recursive: true, force: true});}
+
+      const c29Start = execution.indexOf("          case DEV::C29_GPU:"),
+        c30Start = execution.indexOf("          case DEV::C30_GPU:", c29Start);
+      assert.ok(c29Start >= 0 && c30Start > c29Start);
+      const c29Dispatch = execution.slice(c29Start, c30Start),
+        gpuCall = c29Dispatch.indexOf("dev_sols = m_fn.gpu_c29("),
+        recordCall = c29Dispatch.indexOf("ls.record_c29(m_input_len, dev_sols);");
+      assert.ok(gpuCall >= 0 && recordCall > gpuCall, "record C29 result only after dispatch returns");
+      assert.match(c29Dispatch,
+        /if \(loop_stats\)\s*\{\s*ls\.record_c29\(m_input_len,\s*dev_sols\);\s*\}/,
+        "C29 diagnostic counters must remain opt-in at the existing loop-stats gate");
+      const reportStart = execution.indexOf("static void loop_stats_report("),
+        reportEnd = execution.indexOf("\n}\n", reportStart);
+      assert.ok(reportStart >= 0 && reportEnd > reportStart);
+      const report = execution.slice(reportStart, reportEnd);
+      assert.match(report, /if \(ls\.has_c29_activity\(\)\)/);
+      assert.match(report, /C29DISPATCH/);
+      assert.match(report, /LOOPSTAT t=%llu wall=%.1fs cpu=%.1f%% dispatch=%.1f%% msg=%.3fs post=%.3fs/);
+    });
+
+    test("C29 profile mode keeps host timing separate from device queue profiling", {
+      skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
+    }, () => {
+      const root = path.join(__dirname, ".."), state = fs.readFileSync(path.join(root, "sycl/c29/state.inc"), "utf8"),
+        modeEnum = extractCppBlock(state, "enum class C29ProfileMode {"),
+        modeFunction = extractCppBlock(state, "static C29ProfileMode c29_profile_mode()"),
+        profile = extractCppBlock(state, "struct C29Profile {");
+      assert.match(modeFunction, /static const C29ProfileMode v = \[\]\(\)/,
+        "profile mode must sample the environment once per process");
+      assert.match(profile, /enabled = c29_profile_mode\(\) != C29ProfileMode::disabled/,
+        "host and device modes both enable bounded host timing marks");
+      assert.match(profile,
+        /void add_event\(const char\* name, const sycl::event& event\)\s*\{\s*if \(enabled && c29_profile_mode\(\) == C29ProfileMode::device\)\s*events\.push_back/,
+        "only device mode may retain SYCL profiling events");
+      assert.match(profile,
+        /void print_events\(\)\s*\{\s*if \(!enabled \|\| c29_profile_mode\(\) != C29ProfileMode::device\)/,
+        "only device mode may query device event timestamps");
+
+      const ctorStart = state.indexOf("  explicit C29State("), ctorEnd = state.indexOf("  ~C29State()", ctorStart);
+      assert.ok(ctorStart >= 0 && ctorEnd > ctorStart, "C29State queue constructor must be present");
+      const constructor = state.slice(ctorStart, ctorEnd), queueStart = constructor.indexOf("queue(c29_profile_mode() == C29ProfileMode::device");
+      const ordinaryQueue = constructor.indexOf(": sycl::queue", queueStart);
+      assert.ok(queueStart >= 0 && ordinaryQueue > queueStart, "queue selection must use device profile mode");
+      assert.ok(constructor.indexOf("enable_profiling") >= 0 && constructor.indexOf("enable_profiling") < ordinaryQueue,
+        "queue event profiling belongs only to the device-mode branch");
+      assert.equal((constructor.match(/enable_profiling/g) || []).length, 1,
+        "host and disabled modes must not enable queue event profiling");
+
+      const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-c29-profile-mode-")),
+        source = path.join(fixture, "profile_mode.cpp"), executable = path.join(fixture, "profile_mode");
+      try {
+        fs.writeFileSync(source, `#include <cstdio>\n#include <cstdlib>\n#include <cstring>\n${modeEnum};\n${modeFunction}
+int main() {
+  const C29ProfileMode mode = c29_profile_mode();
+  std::puts(mode == C29ProfileMode::disabled ? "disabled" :
+            mode == C29ProfileMode::host ? "host" : "device");
+  return 0;
+}
+`);
+        const compiled = spawnSync("c++", ["-std=c++17", "-O0", "-Wall", "-Wextra", "-Werror",
+          "-pedantic", source, "-o", executable], {encoding: "utf8", timeout: 30000});
+        assert.equal(compiled.error, undefined);
+        assert.equal(compiled.signal, null);
+        assert.equal(compiled.status, 0, compiled.stderr);
+
+        const cases = [
+          {name: "unset", value: undefined, expected: "disabled"},
+          {name: "empty", value: "", expected: "disabled"},
+          {name: "zero", value: "0", expected: "disabled"},
+          {name: "leading zero", value: "0legacy", expected: "disabled"},
+          {name: "host", value: "host", expected: "host"},
+          {name: "device numeric", value: "1", expected: "device"},
+          {name: "legacy normal", value: "normal", expected: "device"},
+          {name: "legacy flag", value: "legacy", expected: "device"},
+          {name: "other nonzero", value: "other", expected: "device"},
+        ];
+        for (const fixtureCase of cases) {
+          const env = {...process.env};
+          if (fixtureCase.value === undefined) {delete env["MOM_C29_PROFILE"];} else {env["MOM_C29_PROFILE"] = fixtureCase.value;}
+          const result = spawnSync(executable, [], {encoding: "utf8", env, timeout: 5000});
+          assert.equal(result.error, undefined, `${fixtureCase.name}: ${result.error?.message}`);
+          assert.equal(result.signal, null, `${fixtureCase.name}: ${result.stderr}`);
+          assert.equal(result.status, 0, `${fixtureCase.name}: ${result.stderr}`);
+          assert.equal(result.stdout, fixtureCase.expected + "\n", `${fixtureCase.name}: mode selection`);
+        }
+      } finally {fs.rmSync(fixture, {recursive: true, force: true});}
+    });
+
     test("C29 submitted graph faults propagate before cycle search or accounting", {
       skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
     }, async (t) => {
@@ -7936,8 +8352,10 @@ int main(int argc, char** argv) {
         "profile.finish(trimmed_edge_count);\n");
         fs.writeFileSync(path.join(fixture, "active-guard.inc"),
           extract(execution, "    if (!m_has_fn) {", "\n    { // A compute function is active"));
-        fs.writeFileSync(path.join(fixture, "dispatch.inc"),
-          extract(execution, "          case DEV::C29_GPU:", "          case DEV::C30_GPU:"));
+        // Keep this fault-only fixture independent of the separately compiled telemetry hook.
+        const dispatch = extract(execution, "          case DEV::C29_GPU:", "          case DEV::C30_GPU:")
+          .replace(/\n\s*if \(loop_stats\) \{\s*ls\.record_c29\(m_input_len, dev_sols\);\s*\}/, "");
+        fs.writeFileSync(path.join(fixture, "dispatch.inc"), dispatch);
         fs.writeFileSync(path.join(fixture, "compute-catch.inc"), execution.slice(catchStart, catchEnd));
         fs.writeFileSync(path.join(fixture, "accounting.inc"),
           extract(execution, "      uint64_t completed = m_batch;",
@@ -8436,13 +8854,14 @@ int main(int argc, char** argv) {
         assert.ok(first >= 0 && last > first, start);
         return source.slice(first, last);
       };
+      const fastReadback = extract(session, "      FastReadback fallback_fast_readback{};",
+        "      if (options_.collect_stage_times)\n        for (");
+      const tailReadback = extract(session, "        std::vector<std::uint32_t> leaves(",
+        "        recover_roots(report, leaves.data(), valid.data());");
       const routes = [
-        {name: "fast", copies: 4, failCopy: 3, body: extract(session,
-          "      std::array<std::uint32_t, fast_candidate_roots * Spec::proof_indices> fast_leaves{};",
-          "      std::copy_n(result_counts.begin()")},
-        {name: "tail", copies: 2, failCopy: 2, body: extract(session,
-          "        std::vector<std::uint32_t> leaves(",
-          "        recover_roots(report, leaves.data(), valid.data());")},
+        {name: "fast", tail: false, guard: "fast_readback_guard", copies: 2, failCopy: 2, body: fastReadback},
+        {name: "tail", tail: true, guard: "tail_readback", copies: 4, failCopy: 4,
+          body: fastReadback + tailReadback},
       ];
       const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-nested-readback-fault-"));
       const source = path.join(fixture, "host_transfer_fault.cpp");
@@ -8450,6 +8869,8 @@ int main(int argc, char** argv) {
         fs.copyFileSync(path.join(__dirname, "native/host_transfer_fault.cpp"), source);
         fs.writeFileSync(path.join(fixture, "cleanup.inc"),
           extract(library, "inline void sycl_log_cleanup_exception(", "sycl::device get_dev("));
+        fs.writeFileSync(path.join(fixture, "nested-fast-readback.inc"),
+          extractCppBlock(session, "  struct FastReadback {") + ";\n");
         fs.writeFileSync(path.join(fixture, "converted-catch.inc"),
           extract(session, "    } catch (const sycl::exception& error) {", "\nprivate:"));
         fs.writeFileSync(path.join(fixture, "error-report.inc"),
@@ -8458,13 +8879,14 @@ int main(int argc, char** argv) {
           await t.test(route.name, async (readbackTest) => {
             for (const fixed of [0, 1]) {
               fs.writeFileSync(path.join(fixture, "nested.inc"), fixed ? route.body :
-                route.body.replace(/^\s*MomSyclHostTransferGuard[^\n]+\n/m, ""));
+                route.body.replace(new RegExp(`^\\s*MomSyclHostTransferGuard ${route.guard}[^\\n]+\\n`, "m"), ""));
               const executable = path.join(fixture, "nested_fault_" + fixed);
               const compiled = spawnSync("c++", ["-std=c++17", "-O1", "-Wall", "-Wextra", "-Werror",
                 "-pedantic", "-fsanitize=address", "-fsanitize-address-use-after-scope",
                 "-fno-omit-frame-pointer", ...(process.platform === "linux" ? ["-fno-pie", "-no-pie"] : []),
                 "-DMOM_NESTED_FIXTURE=1", "-DMOM_NESTED_FAIL_COPY=" + route.failCopy,
-                "-DMOM_NESTED_COPIES=" + route.copies, source, "-o", executable], {encoding: "utf8"});
+                "-DMOM_NESTED_COPIES=" + route.copies, "-DMOM_NESTED_TAIL=" + Number(route.tail),
+                source, "-o", executable], {encoding: "utf8"});
               assert.equal(compiled.error, undefined);
               assert.equal(compiled.signal, null);
               assert.equal(compiled.status, 0, compiled.stderr);
@@ -8483,11 +8905,15 @@ int main(int argc, char** argv) {
                     const result = spawnSync(executable, [String(stage), String(kind), String(secondary)],
                       {encoding: "utf8", timeout: 2000});
                     assert.equal(result.error, undefined);
-                    assert.equal(result.signal, null);
                     if (!fixed && stage) {
-                      assert.equal(result.status, 1, result.stdout + result.stderr);
-                      assert.equal(result.stderr, "FAIL nested readback left its try-local destination pending\n");
+                      if (result.signal || /AddressSanitizer/.test(result.stderr)) {
+                        assert.match(result.stderr, /AddressSanitizer: heap-use-after-free/);
+                      } else {
+                        assert.equal(result.status, 1, result.stdout + result.stderr);
+                        assert.equal(result.stderr, "FAIL nested readback left its try-local destination pending\n");
+                      }
                     } else {
+                      assert.equal(result.signal, null);
                       assert.equal(result.status, 0, result.stderr);
                       assert.equal(result.stdout, "PASS actual-source nested readback and converted status\n");
                     }
@@ -8496,6 +8922,112 @@ int main(int argc, char** argv) {
             }
           });
         }
+      } finally {
+        fs.rmSync(fixture, {recursive: true, force: true});
+      }
+    });
+
+    test("ZHash host-USM session buffers zero, fall back independently, and retire exactly once", {
+      skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
+    }, () => {
+      const root = path.join(__dirname, "../sycl"),
+        session = fs.readFileSync(path.join(root, "zhash/zhash_session.hpp"), "utf8"),
+        library = fs.readFileSync(path.join(root, "lib-internal.h"), "utf8"),
+        fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-zhash-host-usm-")),
+        source = path.join(fixture, "host_transfer_fault.cpp");
+      /** @param {string} text @param {string} start @param {string} end */
+      const extract = (text, start, end) => {
+        const first = text.indexOf(start), last = text.indexOf(end, first);
+        assert.ok(first >= 0 && last > first, start);
+        return text.slice(first, last);
+      };
+      try {
+        fs.copyFileSync(path.join(__dirname, "native/host_transfer_fault.cpp"), source);
+        fs.writeFileSync(path.join(fixture, "cleanup.inc"),
+          extract(library, "inline void sycl_log_cleanup_exception(", "sycl::device get_dev("));
+        fs.writeFileSync(path.join(fixture, "zhash-fast-readback.inc"),
+          extractCppBlock(session, "  struct FastReadback {") + ";\n");
+        const fieldsStart = session.indexOf("  FastReadback* fast_readback_ = nullptr;"),
+          fieldsEnd = session.indexOf("\n#ifdef MOM_SYCL_ADAPTIVECPP_CUDA", fieldsStart);
+        assert.ok(fieldsStart >= 0 && fieldsEnd > fieldsStart, "per-session host-USM members");
+        fs.writeFileSync(path.join(fixture, "zhash-host-fields.inc"), session.slice(fieldsStart, fieldsEnd));
+        const allocateStart = session.indexOf("      if (device.has(sycl::aspect::usm_host_allocations)) {"),
+          allocateEnd = session.indexOf("      input_storage_ = allocate_objects", allocateStart);
+        assert.ok(allocateStart >= 0 && allocateEnd > allocateStart, "host-USM allocation block");
+        fs.writeFileSync(path.join(fixture, "zhash-host-alloc.inc"), session.slice(allocateStart, allocateEnd));
+        fs.writeFileSync(path.join(fixture, "zhash-alloc-failure.inc"),
+          extract(session, "      free_all();\n      throw;", "    }\n  }"));
+        fs.writeFileSync(path.join(fixture, "zhash-free-ptr.inc"),
+          extractCppBlock(session, "  void free_ptr("));
+        fs.writeFileSync(path.join(fixture, "zhash-free-all.inc"),
+          extractCppBlock(session, "  void free_all() noexcept {"));
+        fs.writeFileSync(path.join(fixture, "zhash-destructor.inc"),
+          extractCppBlock(session, "  ~Session() {").replace("~Session()", "~ZHashUsmSession()"));
+        const inputStart = session.indexOf("      std::uint64_t midstate[8];"),
+          inputEnd = session.indexOf("      std::array<sycl::event, 6> stages;", inputStart);
+        assert.ok(inputStart >= 0 && inputEnd > inputStart, "host input staging block");
+        const fallback = "      alignas(std::uint64_t) std::uint8_t fallback_input[input_storage_bytes];";
+        const input = session.slice(inputStart, inputEnd + "      std::array<sycl::event, 6> stages;".length)
+          .replace(fallback, `${fallback}\n      std::memset(fallback_input, 0xa5, sizeof(fallback_input));`);
+        assert.notEqual(input, session.slice(inputStart, inputEnd + "      std::array<sycl::event, 6> stages;".length),
+          "seed stack fallback with nonzero bytes before the actual production clear");
+        const fallbackReadback = "      FastReadback fallback_fast_readback{};",
+          readbackSource = extract(session, fallbackReadback,
+            "      if (options_.collect_stage_times)\n        for ("),
+          readback = readbackSource.replace(fallbackReadback,
+            `${fallbackReadback}\n      std::memset(&fallback_fast_readback, 0xa5, sizeof(fallback_fast_readback));`);
+        assert.notEqual(readback, readbackSource, "poison stack readback before the actual full-packet copy");
+        fs.writeFileSync(path.join(fixture, "zhash-input.inc"), input);
+        fs.writeFileSync(path.join(fixture, "zhash-readback.inc"), readback);
+        fs.writeFileSync(path.join(fixture, "zhash-catch.inc"),
+          extract(session, "    } catch (const sycl::exception& error) {", "\nprivate:"));
+        fs.writeFileSync(path.join(fixture, "zhash-error-report.inc"),
+          extractCppBlock(session, "  RunReport& device_error_report("));
+
+        /** @param {string} name */
+        const compile = (name) => {
+          const executable = path.join(fixture, name);
+          const compiled = spawnSync("c++", ["-std=c++17", "-O1", "-Wall", "-Wextra", "-Werror", "-pedantic",
+            "-fsanitize=address", "-fsanitize-address-use-after-scope", "-fno-omit-frame-pointer",
+            ...(process.platform === "linux" ? ["-fno-pie", "-no-pie"] : []),
+            "-DMOM_ZHASH_USM_FIXTURE=1", source, "-o", executable], {encoding: "utf8", timeout: 30000});
+          assert.equal(compiled.error, undefined);
+          assert.equal(compiled.signal, null);
+          assert.equal(compiled.status, 0, compiled.stderr);
+          return executable;
+        };
+        /** @param {string} executable @param {string} mode */
+        const run = (executable, mode) => {
+          const result = spawnSync(executable, [mode], {encoding: "utf8", timeout: 5000});
+          assert.equal(result.error, undefined);
+          return result;
+        };
+        const fixed = compile("zhash_host_usm_fixed");
+        for (const mode of ["buffers", "fallback-readback", "fallback-input", "fallback-both",
+          "partial-free", "input-fault", "readback-fault"]) {
+          const result = run(fixed, mode);
+          assert.equal(result.signal, null, `${mode}: ${result.stderr}`);
+          assert.equal(result.status, 0, `${mode}: ${result.stdout}${result.stderr}`);
+          assert.equal(result.stdout, "PASS actual-source ZHash host-USM lifetime, fallback and retirement\n");
+        }
+
+        const inputGuard = "      MomSyclHostTransferGuard input_transfer(queue_, \"zhash input upload\");";
+        assert.ok(input.includes(inputGuard), "input fault case must exercise the actual input guard");
+        fs.writeFileSync(path.join(fixture, "zhash-input.inc"), input.replace(inputGuard + "\n", ""));
+        const noInputGuard = compile("zhash_host_usm_no_input_guard"), inputFailure = run(noInputGuard, "input-fault");
+        assert.notEqual(inputFailure.status, 0, "the removed input guard must fail");
+        assert.match(inputFailure.stderr, /AddressSanitizer: stack-use-after-return/);
+
+        const readbackGuard = "      MomSyclHostTransferGuard fast_readback_guard(queue_, \"zhash fast readback\");";
+        assert.ok(readback.includes(readbackGuard), "readback fault case must exercise the actual readback guard");
+        fs.writeFileSync(path.join(fixture, "zhash-input.inc"), input);
+        fs.writeFileSync(path.join(fixture, "zhash-readback.inc"), readback.replace(readbackGuard + "\n", ""));
+        const noReadbackGuard = compile("zhash_host_usm_no_readback_guard"),
+          readbackFailure = run(noReadbackGuard, "readback-fault");
+        assert.equal(readbackFailure.signal, null);
+        assert.equal(readbackFailure.status, 1, readbackFailure.stdout + readbackFailure.stderr);
+        assert.equal(readbackFailure.stderr,
+          "FAIL readback guard did not retire the fallback packet before unwinding\n");
       } finally {
         fs.rmSync(fixture, {recursive: true, force: true});
       }

@@ -38,7 +38,7 @@ const repoRoot = path.join(__dirname, "..", "..");
  * }} TestResult
 /** @typedef {{type: string, job?: TestJob, value?: TestResult, [key: string]: unknown}} TestMessage */
 /** @typedef {{
- *   url: string, port: number, is_tls: boolean, tls_verify?: boolean, is_nicehash?: boolean,
+ *   url: string, port: number, is_tls: boolean, tls_verify?: boolean, tls_fingerprint?: string, is_nicehash?: boolean,
  *   is_keepalive: boolean, use_subscribe?: boolean, protocol?: string, inferred_protocol?: string,
  *   socket: SocketLike | null, keepalive: ReturnType<typeof setTimeout> | null,
  *   last_job: TestJob | null, pending_job?: PoolMessage, last_connect_time: number,

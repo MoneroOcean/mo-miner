@@ -214,19 +214,44 @@ describe("Shared NVIDIA compiler provisioning", {skip: process.platform !== "lin
     assert.doesNotMatch(source, /apt_install[^\n]*cuda-nvrtc-dev/u);
     assert.match(source, /ln -s \/opt\/mom\/nvrtc-13\.3\.33\/include\/nvrtc\.h/u);
   });
+  test("CUDA SDK readiness rejects missing NVML headers before a native runtime build", () => {
+    const source = fs.readFileSync(path.join(__dirname, "../scripts/install-dev.sh"), "utf8");
+    const start = source.indexOf("cuda_payload_ready() {"), end = source.indexOf("\n}\n", start);
+    assert.ok(start >= 0 && end > start);
+    const root = fs.mkdtempSync(path.join(work, "cuda-payload-"));
+    const files = ["bin/nvcc", "bin/ptxas", "nvvm/libdevice/libdevice.10.bc", "include/nvrtc.h", "include/cuda/std/cstdint", "include/cuda.h", "include/nvml.h"];
+    for (const name of files) {const file = path.join(root, name); fs.mkdirSync(path.dirname(file), {recursive: true}); fs.writeFileSync(file, "fixture", {mode: 0o755});}
+    const check = () => spawnSync("bash", ["-c", source.slice(start, end + 2) + '\ncuda_payload_ready "$1"', "test", root], {encoding: "utf8"});
+    assert.equal(check().status, 0);
+    for (const name of ["nvml.h", "cuda.h"]) {
+      const file = path.join(root, "include", name); fs.unlinkSync(file);
+      assert.equal(check().status, 1, "Incomplete CUDA SDK must reject missing " + name);
+      fs.writeFileSync(file, "fixture");
+    }
+    assert.match(source, /apt_install[^\n]*"cuda-nvml-dev-\$\{CUDA_VERSION\}"/u);
+  });
   test("runtime setup separates shared provisioning from standalone legacy fallback", () => {
     const source = fs.readFileSync(path.join(__dirname, "../scripts/install.sh"), "utf8");
     assert.match(source, /if ! declare -F install_nvrtc_current >\/dev\/null; then\n\s+packages\+=\(libnvrtc12\)/u);
     assert.match(source, /install_nvrtc_current\n\s+else/u);
     assert.match(source, /ca-certificates curl g\+\+ xz-utils/u);
   });
-  test("containers, release packaging, CI caches and ordinary suites include the shared helper", () => {
+  test("Engineering consumers use the shared helper and native release CI admits pinned SDKs", () => {
     for (const relative of ["scripts/build-combined.dockerfile", "scripts/build-multicompiler.dockerfile",
-      "scripts/build-nvidia-adaptivecpp.dockerfile", ".github/workflows/scripts/package-linux-combined.sh",
-      ".github/workflows/build-release-artifacts.yml"]) {
+      "scripts/build-nvidia-adaptivecpp.dockerfile", ".github/workflows/scripts/package-linux-combined.sh"]) {
       assert.match(fs.readFileSync(path.join(__dirname, "..", relative), "utf8"), /install-nvrtc-current\.sh/u);
     }
     assert.match(fs.readFileSync(path.join(__dirname, "run_hash.js"), "utf8"), /"tests\/nvrtc_installer\.js"/u);
+
+    const releaseWorkflow = fs.readFileSync(path.join(__dirname, "../.github/workflows/build-release-artifacts.yml"), "utf8");
+    assert.match(releaseWorkflow, /uses: \.\/\.github\/workflows\/build-native-prerequisites\.yml/u);
+    assert.doesNotMatch(releaseWorkflow, /install-nvrtc-current\.sh/u);
+    const nativeWorkflow = fs.readFileSync(path.join(__dirname, "../.github/workflows/build-native-prerequisites.yml"), "utf8");
+    assert.match(nativeWorkflow, /^ {2}verify-linux-nvrtc:/mu);
+    assert.match(nativeWorkflow, /^ {2}verify-windows-nvrtc:/mu);
+    assert.match(nativeWorkflow, /node scripts\/prepare-native-ci\.js stage nvrtc-linux/u);
+    assert.match(nativeWorkflow, /node scripts\/prepare-native-ci\.js stage nvrtc-windows/u);
+    assert.match(nativeWorkflow, /tests\/native_nvrtc_sdk\.js/u);
   });
 });
 after(() => {if (work) {fs.rmSync(work, {recursive: true, force: true});}});

@@ -56,6 +56,8 @@ const samples = {
   below: [80, 94.99, 94.99, 94.99],
   stochastic: [80, 90, 90, 90, 90, 90, 110, 110, 110, 110],
   "cn-gpu-ramp": [10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 100, 100, 100],
+  "pearl-clock-ramp": [89, 88, 88, 88, 88, 90, 100, 100, 100],
+  "pearl-clock-slow": [89, 88, 88, 88, 88, 90, 94, 94, 94],
 }[mode] || [80, 100, 100, 100];
 /** @type {Record<string, number[] | null>} */
 const cpuSamplesByMode = {

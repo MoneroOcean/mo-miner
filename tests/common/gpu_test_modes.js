@@ -1,6 +1,7 @@
 "use strict";
 
 const compilerPolicy = require("../../compiler-policy");
+const gpuTuning = require("../../gpu-tuning");
 const {hashTests} = require("../vectors");
 
 const TEST_TIMEOUT_MS = 15 * 60 * 1000;
@@ -13,9 +14,15 @@ const INTEGRATED_DAG_TIMEOUT_MS = 3 * 60 * 60 * 1000;
 const supportedVendors = ["intel", "nvidia", "amd"];
 const progpowAlgos = new Set(["kawpow", "firopow", "evrprogpow", "meowpow"]);
 const integratedDagAlgos = new Set([...progpowAlgos, "etchash"]);
+/** @type {Map<string, Partial<GpuTuning>>} */
+const integratedPortableTuning = new Map([
+  ["c29", {seed_workgroup: 128, seed_blocks: 16}],
+  // 4160 is Intel's legal aligned minimum; bounded M1 validates it but keeps solver arenas lazy.
+  ["zelhash", {slots: 4160}],
+]);
 
-// CPU CI exercises shared kernels with bounded work, not GPU-sized datasets/solvers. Synthetic
-// dataset gold is applied only to CPU clones; GPU and iGPU vectors keep their consensus gold.
+// CPU CI and explicitly bounded iGPU checks reuse compact work, not GPU-sized datasets/solvers.
+// Default physical-GPU tests retain consensus gold; bounded fixtures are labelled separately.
 const gpuVectors = hashTests.filter((definition) => definition.gpu && !definition.portableOnly);
 const fastVectors = hashTests.filter((definition) => definition.syclCpu);
 const gpuAlgos = [...new Set(gpuVectors.map((definition) => definition.job.algo))];
@@ -101,6 +108,8 @@ function cloneForDiscreteGpu(definition, vendor, dev, backend) {
   copy.env = {
     ...copy.env,
     MOM_GPU_BACKEND: vendor,
+    MOM_INTEGRATED_PORTABLE_TEST: undefined,
+    MOM_SYCL_PORTABLE_TEST: undefined,
     // The release test parent has one launcher-selected control addon. Each vendor case is a new
     // process and must derive its own control runtime before it derives device-specific tuning.
     MOM_NATIVE_PATH: undefined,
@@ -121,9 +130,19 @@ function openclSyclEnv(deviceType) {
     MOM_GPU_BACKEND: "opencl",
     MOM_OPENCL_DEVICE_TYPE: deviceType,
     MOM_COMPILER_POLICY_STRICT: "1",
+    MOM_INTEGRATED_PORTABLE_TEST: undefined,
     // OpenCL compatibility checks must select the portable runtime, not an inherited addon.
     MOM_NATIVE_PATH: undefined,
   };
+  if (process.env["MOM_TEST_EXECUTABLE"]) {
+    // The explicit release candidate owns its statically linked workers. The Node test harness
+    // still needs the policy selector, but must not resolve an Engineering .node addon.
+    const selected = compilerPolicy.selection("__control__", "opencl", process.platform);
+    if (selected?.key !== "dpcpp-opencl" || selected.backend !== "sycl-opencl") {
+      throw new Error("Standalone OpenCL tests require the maintained dpcpp-opencl policy");
+    }
+    return {...base, MOM_SYCL_COMPILER: selected.key, ONEAPI_DEVICE_SELECTOR: `opencl:${deviceType}`};
+  }
   return {...base, ...compilerPolicy.workerEnv("__control__", {...process.env, ...base})};
 }
 
@@ -150,20 +169,43 @@ function cloneForOpenclSycl(definition, dev, deviceType) {
 /** @param {HashVectorDefinition} definition @param {string} dev @param {string} backend @returns {HashVectorDefinition} */
 function cloneForIntelIntegrated(definition, dev, backend) {
   const copy = copyDefinition(definition);
+  const portable = process.env["MOM_INTEGRATED_PORTABLE_TEST"] === "1";
   replaceDevice(copy, dev);
+  if (portable) {
+    const tuning = integratedPortableTuning.get(copy.job.algo);
+    if (tuning) {
+      if (typeof copy.job.dev !== "string") {throw new Error(`Vector ${copy.name} has no device`);}
+      const entries = gpuTuning.parseDeviceList(copy.job.dev, copy.job.algo);
+      if (entries.length !== 1 || !entries[0]) {
+        throw new Error(`Integrated portable vector ${copy.name} must select one GPU`);
+      }
+      entries[0].tuning = {...entries[0].tuning, ...tuning};
+      copy.job.dev = gpuTuning.formatDeviceList(entries);
+    }
+  }
   copy.job["backend"] = backend;
   labelBackend(copy, backend);
+  if (portable) {
+    copy.expected = definition.syclCpuExpected ?? copy.expected;
+    copy.name = `${copy.name} (bounded portable correctness)`;
+  }
   copy.env = {
     ...copy.env,
     MOM_COMPILER_POLICY_STRICT: "1",
+    MOM_INTEGRATED_PORTABLE_TEST: undefined,
     MOM_GPU_BACKEND: "intel_igpu",
     MOM_NATIVE_PATH: undefined,
     MOM_NATIVE_PATH_LAUNCHER_DEFAULT: undefined,
+    MOM_SYCL_PORTABLE_TEST: portable ? "1" : undefined,
   };
-  const minimumTimeout = integratedDagAlgos.has(copy.job.algo)
-    ? INTEGRATED_DAG_TIMEOUT_MS
-    : TEST_TIMEOUT_MS;
-  copy.timeoutMs = Math.max(copy.timeoutMs || 0, minimumTimeout);
+  if (portable) {
+    copy.timeoutMs = TEST_TIMEOUT_MS;
+  } else {
+    const minimumTimeout = integratedDagAlgos.has(copy.job.algo)
+      ? INTEGRATED_DAG_TIMEOUT_MS
+      : TEST_TIMEOUT_MS;
+    copy.timeoutMs = Math.max(copy.timeoutMs || 0, minimumTimeout);
+  }
   return copy;
 }
 

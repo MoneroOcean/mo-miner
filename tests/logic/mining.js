@@ -1113,7 +1113,7 @@ describe("Native donation tuning and protocol configuration", () => {
       pools: [
         {
           url: "nicehash.example", port: 3333, login: "nicehash-wallet", pass: "x",
-          is_nicehash: true, is_tls: true, tls_verify: true, use_subscribe: false,
+          is_nicehash: true, is_tls: true, tls_verify: true, tls_fingerprint: "ab".repeat(32), use_subscribe: false,
         },
         {url: "pool.example", port: 1, login: "wallet", pass: "x"},
       ],
@@ -1138,6 +1138,7 @@ describe("Native donation tuning and protocol configuration", () => {
       assert.equal(donation.port, 20001);
       assert.equal(donation.is_nicehash, false);
       assert.equal(donation.tls_verify, false);
+      assert.equal(donation.tls_fingerprint, "");
     } finally {
       fs.rmSync(directory, {recursive: true, force: true});
     }

@@ -6,15 +6,37 @@ const {repoRoot, resolveNodeRunner, spawnAndExit} = require("./common/miner_comm
 
 // Release packages contain hash vectors but omit source-only policy and build tests.
 const hasLogicSuite = fs.existsSync(path.join(repoRoot, "opts.js"));
-const addonSuite = ["tests/native_addon.js"];
+// A standalone candidate has no N-API addon. Its CPU vectors exercise the real Core through
+// the application; development-addon lifecycle checks remain part of Engineering Mode.
+const addonSuite = process.env["MOM_TEST_EXECUTABLE"] ? [] : ["tests/native_addon.js"];
 const logicSuite = [
-  "tests/logic.js", "tests/compiler_policy.js", "tests/portable_dag_modes.js",
-  "tests/nvidia_compatibility.js", "tests/intel_device_selection.js", "tests/gpu_test_matrix_order.js",
+  "tests/native_notices.js", "tests/native_msr.js", "tests/native_rocm_hip_headers.js",
+  "tests/logic.js", "tests/native_runtime.js", "tests/native_application.js", "tests/native_object_cache.js", "tests/native_controller_incremental.js", "tests/native_gpu_incremental.js", "tests/native_cpu_incremental.js", "tests/native_windows_core_incremental.js", "tests/native_build_inputs.js", "tests/native_hermes_flags.js", "tests/native_tls.js", "tests/native_environment.js", "tests/native_gpu_symbols.js", "tests/native_pe_pages.js",
+  "tests/native_pe_audit.js", "tests/native_release_packing.js", "tests/native_release_repro.js", "tests/native_release_entry.js", "tests/native_release_archive.js", "tests/native_release_validation.js", "tests/native_archive_contract.js", "tests/native_hermes_sdk.js", "tests/native_io_sdk.js", "tests/native_openssl_sdk.js", "tests/native_nvrtc_sdk.js", "tests/native_zstd_sdk.js", "tests/native_openmp_sdk.js", "tests/native_windows_source_release.js",
+  "tests/native_worker.js", "tests/native_core.js", "tests/native_nvidia_metadata.js", "tests/native_process.js", "tests/native_path.js", "tests/native_bundle.js",
+  "tests/native_services.js", "tests/native_process_io.js", "tests/native_worker_directory.js", "tests/native_output.js", "tests/native_rejections.js", "tests/native_opencl.js", "tests/native_static_adapters.js", "tests/native_level_zero_adapter.js",
+  "tests/native_mining_probe.js", "tests/native_progpow.js", "tests/native_audit.js", "tests/native_driver_deps.js", "tests/native_driver_trace.js", "tests/native_resources.js", "tests/native_jit_headers.js", "tests/native_cuda_images.js", "tests/native_cuda_images_build.js", "tests/native_cuda_image_runtime.js", "tests/native_jit_link.js", "tests/native_configuration.js", "tests/native_cuda_adapter.js", "tests/native_dpcpp_graph.js", "tests/native_gpu_table.js", "tests/native_coff_isolation.js", "tests/native_gpu_dispatch.js",
+  "tests/native_coff_archive.js", "tests/native_windows_application.js", "tests/native_windows_map.js", "tests/native_windows_opencl.js", "tests/native_windows_sdk_sources.js", "tests/native_windows_sdk_build.js", "tests/native_windows_sdk.js", "tests/native_windows_ci_tools.js", "tests/native_windows_adapters.js", "tests/native_windows_dpcpp_component.js", "tests/native_dpcpp_range.js", "tests/native_windows_jit.js", "tests/native_jit_resources.js", "tests/native_jit_sdk.js", "tests/native_jit_runtime.js", "tests/native_jit_stages.js", "tests/compiler_policy.js", "tests/portable_dag_modes.js",
+  "tests/native_windows_application_config.js",
+  "tests/native_windows_dpcpp_ci_job.js",
+  "tests/native_windows_host_ci_job.js",
+  "tests/native_windows_application_ci_job.js",
+  "tests/native_packing_ci.js",
+  "tests/native_package_ci.js",
+  "tests/native_notice_review.js",
+  "tests/native_jit_device_paths.js",
+  "tests/native_jit_cache_identity.js",
+  "tests/native_linux_application_metadata.js",
+  "tests/native_linux_llvm_sdk_handoff.js",
+  "tests/native_windows_gpu_handoff.js",
+  "tests/nvidia_compatibility.js", "tests/intel_device_selection.js", "tests/c29_seed_unroll.js", "tests/gpu_test_matrix_order.js", "tests/integrated_gpu_modes.js",
   "tests/nvrtc_installer.js",
   "tests/pearlhash_f16_lowering.js",
   "tests/readme_performance.js", "tests/benchmark_scripts.js", "tests/windows_command.js",
   "tests/pool_transport.js", "tests/helper_workers.js", "tests/release_archive.js",
-  "tests/build_release.js", "tests/build_environment.js", "tests/incremental_linux_build.js",
+  "tests/build_release.js", "tests/native_build_release.js", "tests/native_sdk_fetch.js", "tests/native_ci.js", "tests/native_windows_llvm_state.js", "tests/native_windows_llvm_ci_job.js", "tests/native_windows_host_sdk_inputs.js", "tests/native_windows_gpu_config.js", "tests/native_windows_gpu_ci_job.js", "tests/native_linux_llvm_tools.js", "tests/native_gnu_headers.js", "tests/native_jit_base.js", "tests/native_sycl_sdk.js", "tests/native_dpcpp_sdk.js", "tests/native_dpcpp_component.js", "tests/native_comgr_sdk.js", "tests/native_rocm_host_runtime.js", "tests/native_rocm_resources.js", "tests/native_comgr_link.js", "tests/native_windows_sycl.js",
+  "tests/native_release_sdk_inputs.js", "tests/native_acpp_sources.js", "tests/native_acpp_cache.js", "tests/native_acpp_allocation.js", "tests/native_windows_llvm21_sdk.js", "tests/native_windows_comgr_sdk.js", "tests/native_windows_acpp_sdk.js", "tests/native_windows_host_component.js", "tests/native_windows_hiprtc_sdk.js", "tests/native_windows_amdhip.js", "tests/native_windows_jit_ci_job.js", "tests/native_windows_jit_resources.js", "tests/native_llvm21_sdk.js", "tests/bounded_native_ci.js",
+  "tests/native_windows_driver.js", "tests/native_windows_controller.js", "tests/native_windows_controller_handoff.js", "tests/native_windows_core_handoff.js", "tests/native_windows_core.js", "tests/native_windows_core_build.js", "tests/native_windows_gpu_build.js", "tests/native_windows_wrapper.js", "tests/build_environment.js", "tests/incremental_linux_build.js",
   "tests/windows_incremental_build.js", "tests/windows_incremental_orchestration.js",
   "tests/windows_worker_discovery.js", "tests/dev.js", "tests/native_deploy.js",
 ];

@@ -6,10 +6,70 @@ const {spawnSync} = require("node:child_process");
 const path = require("node:path");
 const os = require("node:os");
 const test = require("node:test");
-const {buildRelease, releaseBuildCommands, releaseBuildEnvironment} = require("../scripts/build-release");
+const {buildEngineeringArchive: buildRelease, buildNativeArtifact, engineeringArchiveCommands: releaseBuildCommands, releaseBuildEnvironment, noticeInput} = require("../scripts/build-release");
 const {normalizeBuildEnvironment} = require("../scripts/build-environment");
+const {assembleNativeNotices} = require("../scripts/prepare-native-notices");
+const {fileHash} = require("../scripts/build-source-inputs");
 
-test.describe("Native release build", {concurrency: false}, () => {
+/** @param {import('node:test').TestContext} t */
+function nativeNoticeFixture(t) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-build-release-notice-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const source = path.join(root, "LICENSE.txt"); fs.writeFileSync(source, "Fixture license text.\n");
+  const assembled = assembleNativeNotices([{component: "fixture", path: source, sha256: fileHash(source)}], path.join(root, "assembled"));
+  const receiptPath = path.join(path.dirname(assembled.notice.path), "native-notices.json");
+  return {root, source, assembled, receiptPath, receiptSha256: fileHash(receiptPath)};
+}
+
+test.describe("Native release notice assembly admission", () => {
+  test("optional notice receipts bind the assembled body while body-only inputs remain compatible", t => {
+    const f = nativeNoticeFixture(t), input = {path: f.assembled.notice.path, sha256: f.assembled.notice.sha256,
+        receipt: {path: f.receiptPath, sha256: f.receiptSha256}}, admitted = noticeInput(input);
+    assert.deepEqual(admitted?.assembly, {receiptPath: f.receiptPath, receiptSha256: f.receiptSha256,
+      fingerprint: f.assembled.fingerprint, notice: f.assembled.notice});
+    assert.deepEqual(noticeInput({path: f.assembled.notice.path, sha256: f.assembled.notice.sha256})?.data,
+      fs.readFileSync(f.assembled.notice.path));
+    assert.equal(noticeInput({path: f.assembled.notice.path, sha256: f.assembled.notice.sha256})?.assembly, undefined);
+    assert.throws(() => noticeInput({...input, receipt: {...input.receipt, sha256: "0".repeat(64)}}), /external SHA-256/);
+    assert.throws(() => noticeInput({...input, path: path.join(f.root, "unrelated.txt")}), /selected notice body/);
+  });
+
+  test("build records the admitted assembly reference and rechecks it after compilation", t => {
+    const f = nativeNoticeFixture(t), config = path.join(f.root, "sdk.json"), output = path.join(f.root, "candidate"),
+      descriptor = {version: 1, notices: {path: f.assembled.notice.path, sha256: f.assembled.notice.sha256,
+        receipt: {path: f.receiptPath, sha256: f.receiptSha256}}};
+    fs.writeFileSync(config, JSON.stringify(descriptor));
+    const producer = require("../scripts/build-native-release");
+    t.mock.method(producer, "buildNativeRelease", (/** @type {string} */ configFile, /** @type {string} */ directory) => {
+      fs.mkdirSync(directory); const binary = path.join(directory, "mom"); fs.writeFileSync(binary, "fixture native image");
+      fs.writeFileSync(path.join(directory, "result.json"), JSON.stringify({binary, sha256: fileHash(binary), bytes: fs.statSync(binary).size,
+        configHash: fileHash(configFile), buildOnly: true, publicationQualified: false}));
+      return {binary};
+    });
+    buildNativeArtifact(config, output);
+    const entry = JSON.parse(fs.readFileSync(path.join(output, "entrypoint.json"), "utf8"));
+    assert.deepEqual(entry.noticeAssembly, {receiptPath: f.receiptPath, receiptSha256: f.receiptSha256,
+      fingerprint: f.assembled.fingerprint, notice: f.assembled.notice});
+    assert.deepEqual(entry.notices, {path: path.join(output, "THIRD-PARTY-NOTICES.txt"),
+      sha256: f.assembled.notice.sha256, bytes: f.assembled.notice.bytes});
+  });
+
+  test("a source-license change during compilation prevents entrypoint admission", t => {
+    const f = nativeNoticeFixture(t), config = path.join(f.root, "sdk.json"), output = path.join(f.root, "candidate");
+    fs.writeFileSync(config, JSON.stringify({version: 1, notices: {path: f.assembled.notice.path, sha256: f.assembled.notice.sha256,
+      receipt: {path: f.receiptPath, sha256: f.receiptSha256}}}));
+    const producer = require("../scripts/build-native-release");
+    t.mock.method(producer, "buildNativeRelease", (/** @type {string} */ configFile, /** @type {string} */ directory) => {
+      fs.mkdirSync(directory); const binary = path.join(directory, "mom"); fs.writeFileSync(binary, "fixture native image");
+      fs.writeFileSync(path.join(directory, "result.json"), JSON.stringify({binary, sha256: fileHash(binary), bytes: fs.statSync(binary).size,
+        configHash: fileHash(configFile), buildOnly: true, publicationQualified: false}));
+      fs.appendFileSync(f.source, "changed during compile\n"); return {binary};
+    });
+    assert.throws(() => buildNativeArtifact(config, output), /hash differs|changed during admission/);
+    assert.equal(fs.existsSync(path.join(output, "entrypoint.json")), false);
+  });
+});
+
+test.describe("Explicit Engineering archive build", {concurrency: false}, () => {
   test("npm development and deployment entrypoints use native platform dispatchers", () => {
     assert.equal(require("../package.json").scripts.dev, "node scripts/dev.js");
     assert.equal(require("../package.json").scripts["test:deploy"], "node scripts/test-deploy.js");
@@ -43,11 +103,12 @@ test.describe("Native release build", {concurrency: false}, () => {
         scripts: {"build:release": metadata.scripts["build:release"], nested: "node scripts/nested.cjs"}}));
       fs.copyFileSync(path.join(__dirname, "../scripts/build-release.js"), path.join(temp, "scripts/build-release.js"));
       fs.copyFileSync(path.join(__dirname, "../scripts/build-environment.js"), path.join(temp, "scripts/build-environment.js"));
+      fs.copyFileSync(path.join(__dirname, "../scripts/build-source-inputs.js"), path.join(temp, "scripts/build-source-inputs.js"));
       fs.writeFileSync(path.join(temp, "scripts/nested.cjs"), [
         '"use strict";',
         'const {spawn} = require("node:child_process");',
         'const {normalizeBuildEnvironment} = require("./build-environment");',
-        'const child = spawn(process.execPath, [process.env.npm_execpath, "run", "build:release"],',
+        'const child = spawn(process.execPath, [process.env.npm_execpath, "run", "build:release", "--", "--engineering-archive"],',
         '  {env: normalizeBuildEnvironment(process.env), stdio: "inherit"});',
         'child.on("error", () => {process.exitCode = 1;});',
         'child.on("exit", code => {process.exitCode = code ?? 1;});',
@@ -67,7 +128,7 @@ test.describe("Native release build", {concurrency: false}, () => {
       ].join("\n"));
       const npmCli = process.env["npm_execpath"];
       const command = npmCli ? process.execPath : "npm";
-      const npmArgs = [...(npmCli ? [npmCli] : []), "run", "build:release"];
+      const npmArgs = [...(npmCli ? [npmCli] : []), "run", "build:release", "--", "--engineering-archive"];
       const baseEnv = normalizeBuildEnvironment(process.env);
       if (process.platform === "win32") {
         const pathKeys = Object.keys(baseEnv).filter(key => /^path$/i.test(key));
@@ -80,9 +141,9 @@ test.describe("Native release build", {concurrency: false}, () => {
         MOM_FORCE_REBUILD: "0", MOM_CPU_MARCH: "", MOM_LINUX_BUILD_PLAN_ONLY: "0",
         MOM_DPCPP_IMPL: "", MOM_COMBINED_TARGETS: "", FIXTURE_RELEASE_STATUS: "0",
         npm_config_update_notifier: "false", npm_config_audit: "false", npm_config_fund: "false"};
-      const direct = spawnSync(process.execPath, ["scripts/build-release.js"], {
+      const direct = spawnSync(process.execPath, ["scripts/build-release.js", "--engineering-archive"], {
         cwd: temp, encoding: "utf8", timeout: 20000, env: childEnv});
-      assert.equal(direct.status, 0);
+      assert.equal(direct.status, 0, direct.stderr);
       const directPaths = direct.stdout.split(/\r?\n/).filter(line => line.startsWith("FIXTURE_RELEASE="))
         .map(line => JSON.parse(line.slice("FIXTURE_RELEASE=".length)).path);
       /** @type {{command: string, args: string[], cwd: string, path: string, force: string,
@@ -163,12 +224,48 @@ test.describe("Native release build", {concurrency: false}, () => {
     }
   });
 
-  test("release CLI rejects contradictory clean and package-only modes before building", () => {
+  test("Engineering archive CLI rejects contradictory clean and package-only modes before building", () => {
     const result = spawnSync(process.execPath, [path.join(__dirname, "../scripts/build-release.js"),
-      "--clean", "--package-only"], {encoding: "utf8", timeout: 10000});
+      "--engineering-archive", "--clean", "--package-only"], {encoding: "utf8", timeout: 10000});
     assert.equal(result.status, 1);
     assert.match(result.stderr, /Usage:.*--clean/);
     assert.equal(result.stdout, "");
+  });
+
+  test("release workflow packages exact native candidate handoffs", () => {
+    const workflow = fs.readFileSync(path.join(__dirname, "../.github/workflows/build-release-artifacts.yml"), "utf8");
+    assert.match(workflow, /uses: \.\/\.github\/workflows\/build-native-prerequisites\.yml/);
+    assert.doesNotMatch(workflow, /npm run build:release|--engineering-archive|--package-only/);
+
+    const linuxStart = workflow.indexOf("  package-linux:");
+    const windowsStart = workflow.indexOf("  package-windows:");
+    assert.ok(linuxStart >= 0 && windowsStart > linuxStart);
+    const linuxPackage = workflow.slice(linuxStart, windowsStart);
+    const windowsPackage = workflow.slice(windowsStart);
+    /** @param {string} job @param {string} platform */
+    const assertNativePackage = (job, platform) => {
+      assert.match(job, /needs: build-native-prerequisites/);
+      assert.match(job, /uses: \.\/\.github\/workflows\/package-native-application\.yml/);
+      assert.match(job, new RegExp(`platform: ${platform}\\b`));
+    };
+    assertNativePackage(linuxPackage, "linux");
+    assertNativePackage(windowsPackage, "win32");
+    assert.match(linuxPackage, /packed_build_bundle_sha256: \$\{\{ needs\.build-native-prerequisites\.outputs\.linux_packing_bundle_sha256 \}\}/);
+    assert.match(linuxPackage, /original_handoff_sha256: \$\{\{ needs\.build-native-prerequisites\.outputs\.linux_application_handoff_sha256 \}\}/);
+    assert.match(windowsPackage, /packed_build_bundle_sha256: \$\{\{ needs\.build-native-prerequisites\.outputs\.windows_packing_bundle_sha256 \}\}/);
+    assert.match(windowsPackage, /original_handoff_sha256: \$\{\{ needs\.build-native-prerequisites\.outputs\.windows_application_handoff_sha256 \}\}/);
+
+    const bareEnvironment = {...process.env};
+    for (const key of Object.keys(bareEnvironment)) {
+      if (["MOM_NATIVE_SDK", "MOM_NATIVE_OUTPUT", "MOM_NATIVE_UPX", "MOM_NATIVE_UPX_SHA256"].includes(key.toUpperCase())) {
+        delete bareEnvironment[key];
+      }
+    }
+    const bare = spawnSync(process.execPath, [path.join(__dirname, "../scripts/build-release.js"), "--package-only"],
+      {encoding: "utf8", timeout: 10000, env: bareEnvironment});
+    assert.equal(bare.status, 1);
+    assert.match(bare.stderr, /legacy Node archives require explicit --engineering-archive/);
+    assert.equal(bare.stdout, "");
   });
 
   test("native release lifecycle never packages a failed build", () => {

@@ -349,7 +349,7 @@ build_linux_release() {
   # The container entrypoint builds once before executing npm; package in that same toolchain.
   MOM_PORTABLE_BUILD=1 MOM_GPU_BACKEND=all MOM_LINUX_BUILD_COMPILER=all MOM_DOCKER_GPUS=0 \
     MOM_REUSE_BUILT_WORKER=0 MOM_RELEASE_VERSION="$RELEASE_VERSION" \
-    ./scripts/dev-container.sh npm run build:release -- --package-only
+    ./scripts/dev-container.sh npm run build:release -- --engineering-archive --package-only
 }
 
 linux_gpu_available() {
@@ -575,7 +575,7 @@ package_windows_release() {
     --release --download build/win --download "$WINDOWS_ARCHIVE" -- \
     env MOM_RELEASE_VERSION="$RELEASE_VERSION" MOM_FORCE_REBUILD="${MOM_FORCE_REBUILD:-0}" \
     powershell -NoProfile -ExecutionPolicy Bypass -Command \
-    'npm install --ignore-scripts; if ($LASTEXITCODE) { exit $LASTEXITCODE }; npm run build:release; if ($LASTEXITCODE) { exit $LASTEXITCODE }' || return
+    'npm install --ignore-scripts; if ($LASTEXITCODE) { exit $LASTEXITCODE }; npm run build:release -- --engineering-archive; if ($LASTEXITCODE) { exit $LASTEXITCODE }' || return
 }
 
 test_windows_release() {

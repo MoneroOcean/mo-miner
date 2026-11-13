@@ -115,6 +115,14 @@ build_run zhash-session-intel -D__INTEL_LLVM_COMPILER -DMOM_ZHASH_INTEL_LATE_BUC
 build_run equihash192-core "$root/tests/native/equihash192_core.cpp"
 build_run equihash192-core-intel -D__INTEL_LLVM_COMPILER \
   "$root/tests/native/equihash192_core.cpp"
+build_run equihash192-core-intel-unbranded -DMOM_SYCL_INTEL_LAYOUT \
+  "$root/tests/native/equihash192_core.cpp"
+build_run zhash-session-intel-unbranded -DMOM_SYCL_INTEL_LAYOUT -DMOM_ZHASH_INTEL_LATE_BUCKETS \
+  "$root/tests/native/zhash_session.cpp"
+build_run equihash192-core-spir -D__SYCL_DEVICE_ONLY__ -D__SPIR__ \
+  "$root/tests/native/equihash192_core.cpp"
+build_run zhash-core-spir -D__SYCL_DEVICE_ONLY__ -D__SPIR__ \
+  "$root/tests/native/zhash_core.cpp"
 build_run c30-host -I "$root/xmrig" -I "$root/sycl/c30" \
   "$root/sycl/c30/c30_host.cpp" \
   "$root/tests/native/c30_host.cpp" \

@@ -109,15 +109,6 @@ test.describe("Release archive contracts", {concurrency: false}, () => {
     return lines.slice(start, end).join("\n");
   }
 
-  /** @param {string} source @param {string} jobId @param {(job: string) => string} mutate
- * @returns {string} */
-  function mutateWorkflowJob(source, jobId, mutate) {
-    const original = workflowJob(source, jobId);
-    const mutated = mutate(original);
-    assert.notEqual(mutated, original, "Fixture did not mutate workflow job " + jobId);
-    return source.replace(original, mutated);
-  }
-
   /** @param {string} archive @param {string} workDirectory @param {NodeJS.ProcessEnv} [extraEnv] */
   function validateLinuxArchive(archive, workDirectory, extraEnv = {}) {
     return run("bash", [LINUX_RELEASE_TEST_SCRIPT, archive], {
@@ -401,7 +392,7 @@ ConvertTo-Json -InputObject $results -Compress
 
   test("release publication binds the package tag and exact canonical archive names", () => {
     const source = fs.readFileSync(PUBLISH_WORKFLOW, "utf8");
-    assert.match(source, /actions\/checkout@v7/);
+    assert.match(source, /actions\/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7/);
     assert.match(source, /require\("\.\/package\.json"\)\.version/);
     assert.match(source, /expected_tag="v\$version"/);
     assert.match(source, /GITHUB_REF_NAME.*expected_tag/);
@@ -471,11 +462,12 @@ ConvertTo-Json -InputObject $results -Compress
   });
 
   test("release workflow discovers exactly the package-versioned archives", () => {
-    const source = fs.readFileSync(RELEASE_WORKFLOW, "utf8");
-    assert.match(source, /archives=\(mom-v"\$version"-lin\.tgz\)/);
-    assert.match(source, /\[\s*"\$\{#archives\[@\]\}"\s+-ne 1\s*\]/);
-    assert.match(source, /\$expectedArchive = "mom-v\$version-win\.zip"/);
-    assert.match(source, /\$archives\.Count -ne 1/);
+    const source = fs.readFileSync(PUBLISH_WORKFLOW, "utf8");
+    assert.match(source, /linux_name="mom-\$\{expected_tag\}-lin\.tgz"/);
+    assert.match(source, /windows_name="mom-\$\{expected_tag\}-win\.zip"/);
+    assert.match(source, /\$\{#archives\[@\]\} != 2/);
+    assert.match(source, /\$\{#linux_files\[@\]\} != 1/);
+    assert.match(source, /\$\{#windows_files\[@\]\} != 1/);
     assert.doesNotMatch(source, /find\s+\.\s+-maxdepth 1\s+-name ['"]mom-\*-/);
     assert.doesNotMatch(source, /Select-Object\s+-First\s+1/);
   });
@@ -508,72 +500,52 @@ ConvertTo-Json -InputObject $results -Compress
     }
   });
 
-  /** @param {string} source */
-  function assertPortableCpuWorkflowContract(source) {
-    const sourceQuality = workflowJob(source, "source-quality");
-    const packageLinux = workflowJob(source, "package-linux-x64");
-    assert.match(sourceQuality, /^\s+run: npm test -- host\s*$/m,
-      "source quality must run the direct offline host gate");
-    assert.doesNotMatch(source, /test-linux-portable-cpu:|MOM_GPU_TEST_ALGO|MOM_RELEASE_EMULATE_INTEL_CPU|QEMU_CPU|qemu-user/,
-      "normal CI must run the complete native suite, without shards, filtering or emulation");
-
-    assert.match(packageLinux, /timeout-minutes:\s*30/);
-    assert.match(packageLinux, /MOM_TEST_NO_POOL_NETWORK=1[^\n]*test-release-linux\.sh\s+"\$archive"\s+cpu\s*$/m);
-    assert.match(packageLinux,
-      /MOM_TEST_NO_POOL_NETWORK=1[^\n]*test-release-linux\.sh\s+"\$archive"\s+gpu-portable-cpu/);
-    assert.equal((packageLinux.match(/gpu-portable-cpu/g) || []).length, 1,
-      "the complete portable CPU suite must run exactly once");
-    const testStart = packageLinux.indexOf("      - name: Test extracted release archive");
-    const uploadStart = packageLinux.indexOf("      - name: Upload Linux release artifact");
-    assert.ok(testStart >= 0 && uploadStart > testStart, "archive test/upload steps are missing or reordered");
-    assert.doesNotMatch(packageLinux.slice(0, packageLinux.indexOf("\n    steps:")), /^\s+if:/m,
-      "the package job must remain required");
-    const testStep = packageLinux.slice(testStart, uploadStart);
-    assert.doesNotMatch(testStep, /^\s+if:/m, "archive tests must not be optional");
-    assert.match(packageLinux, /uses:\s*actions\/upload-artifact@v7/);
-    assert.match(packageLinux, /name:\s*mom-lin/);
-    assert.match(packageLinux, /- name: Upload Linux release artifact\s+if:\s*inputs\.upload_artifacts/,
-      "only Release should upload the Linux archive");
-  }
-
-  test("Linux release workflow tests all portable CPU algorithms in the package job", () => {
-    assertPortableCpuWorkflowContract(fs.readFileSync(RELEASE_WORKFLOW, "utf8"));
-  });
-
-  test("Linux portable CPU workflow rejects incomplete or emulated suite controls", () => {
-    const source = fs.readFileSync(RELEASE_WORKFLOW, "utf8");
-    /** @type {Array<[string, string]>} */
-    const fixtures = [
-      ["missing host source gate", mutateWorkflowJob(source, "source-quality", job =>
-        job.replace(/^.*run: npm test -- host\n/m, "")
-      )],
-      ["hardware source gate", mutateWorkflowJob(source, "source-quality", job =>
-        job.replace("npm test -- host", "npm test -- gpu")
-      )],
-      ["missing CPU suite", mutateWorkflowJob(source, "package-linux-x64", job =>
-        job.replace(/^.*test-release-linux\.sh.*"\$archive" cpu\n/m, "")
-      )],
-      ["missing suite", mutateWorkflowJob(source, "package-linux-x64", job =>
-        job.replace(/^.*test-release-linux\.sh.*gpu-portable-cpu.*\n/m, "")
-      )],
-      ["algorithm filter", mutateWorkflowJob(source, "package-linux-x64", job =>
-        job.replace("MOM_TEST_NO_POOL_NETWORK=1", "MOM_GPU_TEST_ALGO=kawpow MOM_TEST_NO_POOL_NETWORK=1")
-      )],
-      ["optional tests", mutateWorkflowJob(source, "package-linux-x64", job =>
-        job.replace("- name: Test extracted release archive", "- name: Test extracted release archive\n        if: inputs.upload_artifacts")
-      )],
-      ["Stability artifact", mutateWorkflowJob(source, "package-linux-x64", job =>
-        job.replace(/\s+if: inputs\.upload_artifacts/, "")
-      )],
-      ["forced emulation", mutateWorkflowJob(source, "package-linux-x64", job =>
-        job.replace("MOM_TEST_NO_POOL_NETWORK=1", "MOM_RELEASE_EMULATE_INTEL_CPU=1 MOM_TEST_NO_POOL_NETWORK=1")
-      )],
-    ];
-    for (const [label, fixture] of fixtures) {
-      assert.notEqual(fixture, source, label + " fixture did not mutate the workflow");
-      assert.throws(() => assertPortableCpuWorkflowContract(fixture),
-        {name: "AssertionError"}, label + " regression was accepted");
+  test("shared release orchestration preserves both source gates and waits for the complete native workflow", () => {
+    const source = fs.readFileSync(RELEASE_WORKFLOW, "utf8"), publish = fs.readFileSync(PUBLISH_WORKFLOW, "utf8"),
+      stability = fs.readFileSync(path.join(repo, ".github", "workflows", "stability.yml"), "utf8"),
+      sourceQuality = workflowJob(source, "source-quality"), windowsQuality = workflowJob(source, "windows-script-quality"),
+      native = workflowJob(source, "build-native-prerequisites"), linux = workflowJob(source, "package-linux"),
+      windows = workflowJob(source, "package-windows");
+    assert.match(sourceQuality, /run: npm test -- host/);
+    assert.match(windowsQuality, /test-powershell-syntax\.ps1/);
+    assert.match(windowsQuality, /node tests\/run_hash\.js logic/);
+    assert.match(windowsQuality, /node --test tests\/windows_script_safety\.js/);
+    assert.doesNotMatch(windowsQuality, /npm (?:test|run (?:check|lint|typecheck))/);
+    for (const workflow of [source, publish, stability]) {
+      assert.match(workflow, /^permissions:\n {2}actions: read\n {2}contents: read/m,
+        "each caller must pass only same-run artifact-read and source-read rights to nested workflows");
     }
+    const publishJob = workflowJob(publish, "publish");
+    assert.match(publishJob, /permissions:\n {6}contents: write/);
+    assert.doesNotMatch(publishJob, /actions: write/);
+    assert.match(native, /needs:\s*\n\s*- source-quality\s*\n\s*- windows-script-quality/);
+    assert.match(native, /uses: \.\/\.github\/workflows\/build-native-prerequisites\.yml/);
+    assert.equal((source.match(/uses: \.\/\.github\/workflows\/build-native-prerequisites\.yml/g) || []).length, 1,
+      "both platforms must share one complete native reusable-workflow call");
+    const packageMappings = /** @type {Array<[string, "linux" | "windows", string[]]>} */ ([
+      [linux, "linux", ["packing_bundle_sha256", "raw_executable_sha256", "application_build_bundle_sha256", "application_handoff_sha256"]],
+      [windows, "windows", ["packing_bundle_sha256", "raw_executable_sha256", "application_build_bundle_sha256", "application_handoff_sha256"]],
+    ]);
+    for (const [job, platform, pins] of packageMappings) {
+      assert.match(job, /needs: build-native-prerequisites/);
+      assert.match(job, /uses: \.\/\.github\/workflows\/package-native-application\.yml/);
+      assert.match(job, new RegExp(`platform: ${platform === "linux" ? "linux" : "win32"}`));
+      for (const pin of pins) {
+        assert.ok(job.includes(`needs.build-native-prerequisites.outputs.${platform}_${pin}`),
+          `${platform} package must consume the native ${pin} output`);
+      }
+      assert.doesNotMatch(job, /continue-on-error|if:/);
+    }
+    for (const output of ["linux_archive_artifact_name", "linux_archive_sha256", "windows_archive_artifact_name", "windows_archive_sha256"]) {
+      assert.match(source, new RegExp(`${output}:\\n\\s+description: [^\\n]+\\n\\s+value: \\$\\{\\{ jobs\\.package-${output.startsWith("linux") ? "linux" : "windows"}\\.outputs\\.${output.endsWith("sha256") ? "archive_sha256" : "archive_artifact_name"} \\}\\}`));
+    }
+    assert.equal((source.match(/uses: \.\/\.github\/workflows\/package-native-application\.yml/g) || []).length, 2);
+    assert.doesNotMatch(source, /upload_artifacts|actions\/cache|dev-container\.sh|npm run build:release|warm-linux-toolchains|package-linux-x64|warm-windows-acpp|package-windows-x64|mom\.node|node-addon-api/i);
+    assert.doesNotMatch(publish, /upload_artifacts|name: mom-(?:lin|win)\b/);
+    assert.match(stability, /^on:\n {2}pull_request:\n {2}push:\n {4}branches:\n {6}- master\n {2}workflow_dispatch:/m);
+    assert.match(stability, /group: stability-\$\{\{ github\.ref \}\}\n {2}cancel-in-progress: false/);
+    assert.doesNotMatch(stability, /upload_artifacts|warm-linux-toolchains|AdaptiveCpp seed.*cache/i);
+    assert.doesNotMatch(source, /^ {2}(?:warm-linux-toolchains|package-linux-x64|warm-windows-acpp-cuda|warm-windows-acpp-hip|package-windows-x64):/m);
   });
 
   /** @param {string} archive */

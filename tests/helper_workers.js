@@ -14,9 +14,11 @@ test.describe("Development test runner routing", () => {
   const repo = path.resolve(__dirname, "..");
 
   /** @param {{platform?: string, env?: NodeJS.ProcessEnv, container?: boolean,
-   * release?: boolean, devContainer?: boolean}} [options] */
+   * release?: boolean, devContainer?: boolean, selected?: "file" | "directory" | "missing", vanishes?: boolean,
+   * policy?: typeof import("../compiler-policy")}} [options] */
   function runner({platform = "linux", env = {}, container = false,
-    release = false, devContainer = true} = {}) {
+    release = false, devContainer = true, selected = "file", vanishes = false,
+    policy = require("../compiler-policy")} = {}) {
     const exported = {exports: {}};
     runInNewContext(runnerSource, {
       module: exported, __dirname: path.join(__dirname, "common"),
@@ -24,12 +26,18 @@ test.describe("Development test runner routing", () => {
       /** @param {string} name */
       require(name) {
         if (name === "node:fs") {
-          return {existsSync: (/** @type {string} */ file) => file === "/.dockerenv" ? container :
-            file === path.join(repo, "scripts", "dev-container.sh") ? devContainer :
-              ["mom", "mom.exe", "mom.cmd"].some(leaf => file === path.join(repo, leaf)) && release};
+          return {statSync: () => ({isFile: () => {
+            const regular = selected === "file";
+            if (vanishes) {selected = "missing";}
+            return regular;
+          }}),
+          existsSync: (/** @type {string} */ file) => file === env["MOM_TEST_EXECUTABLE"] ? selected !== "missing" :
+            file === "/.dockerenv" ? container :
+              file === path.join(repo, "scripts", "dev-container.sh") ? devContainer :
+                ["mom", "mom.exe", "mom.cmd"].some(leaf => file === path.join(repo, leaf)) && release};
         }
         if (name === "./miner_execution") {return () => ({});}
-        if (name === "../../compiler-policy") {return require("../compiler-policy");}
+        if (name === "../../compiler-policy") {return policy;}
         if (name === "../../scripts/windows-command") {return require("../scripts/windows-command");}
         return require(name);
       },
@@ -74,10 +82,107 @@ test.describe("Development test runner routing", () => {
     assert.equal(runner({devContainer: false, env: {MOM_DEV_HOST: "1"}})
       .resolveNodeRunner(["fixture-test.js"]).command, "fixture-node");
   });
+  test("an explicit native candidate reuses ordinary vector arguments without Node or a shell", () => {
+    const executable = path.join(repo, "candidate dir", "mom;literal");
+    const command = runner({env: {MOM_TEST_EXECUTABLE: executable}, release: true});
+    const args = ["mom.js", "test", "cn/r", "--job", '{"height":1806260}'];
+    const resolved = command.resolveMinerCommand(args);
+    assert.equal(resolved.command, executable); assert.deepEqual(Array.from(resolved.args), args.slice(1));
+    assert.equal(resolved.windowsVerbatimArguments, undefined); assert.equal(args[0], "mom.js");
+  });
+  test("standalone GPU discovery does not require a development compiler addon", () => {
+    const candidate = path.join(repo, "candidate");
+    const command = runner({
+      env: {MOM_TEST_EXECUTABLE: candidate, MOM_GPU_BACKEND: "nvidia"}, release: true,
+      policy: {
+        ...require("../compiler-policy"),
+        workerEnv() {throw new Error("standalone candidate must not resolve a compiler addon");},
+        vendorDeviceEnv: () => ({MOM_GPU_INDEX: "0"}),
+      },
+    });
+    const [encodedEnv] = JSON.parse(command.gpuDeviceDiscoveryKey("nvidia", {algo: "pearlhash"}));
+    const discoveryEnv = Object.fromEntries(JSON.parse(encodedEnv));
+    assert.equal(discoveryEnv["MOM_GPU_BACKEND"], "nvidia");
+    assert.equal(discoveryEnv["MOM_GPU_INDEX"], "0");
+    assert.equal(discoveryEnv["MOM_NATIVE_PATH"], undefined);
+  });
+  test("candidate tests keep the Node harness direct without rebuilding development workers", () => {
+    const env = {MOM_TEST_EXECUTABLE: path.join(repo, "candidate")};
+    assert.equal(runner({env}).resolveNodeRunner(["tests/cpu.js"]).command, "fixture-node");
+    assert.equal(runner({env}).resolveMinerCommand(["fixture.js"]).command, "fixture-node");
+  });
+  test("a candidate disappearing after admission cannot silently switch back to Node", () => {
+    const selected = path.join(repo, "candidate");
+    const command = runner({env: {MOM_TEST_EXECUTABLE: selected}, vanishes: true});
+    assert.equal(command.resolveMinerCommand(["mom.js", "test"]).command, selected);
+  });
+  for (const selected of ["missing", "directory"]) {
+    test(`an explicit ${selected} candidate cannot fall back to an existing release`, () => {
+      assert.throws(() => runner({env: {MOM_TEST_EXECUTABLE: path.join(repo, "candidate")},
+        selected: /** @type {"missing" | "directory"} */ (selected), release: true}), /MOM_TEST_EXECUTABLE.*absolute regular/);
+    });
+  }
+  test("relative candidate paths fail before any fallback or command lookup", () => {
+    for (const executable of ["mom", "./mom", "--candidate", "../mom"]) {
+      assert.throws(() => runner({env: {MOM_TEST_EXECUTABLE: executable}, release: true}), /MOM_TEST_EXECUTABLE/);
+    }
+  });
+  test("empty and absent candidate overrides preserve normal source and release routing", () => {
+    for (const selected of [undefined, ""]) {
+      const env = {MOM_TEST_EXECUTABLE: selected};
+      assert.equal(runner({env}).resolveMinerCommand(["mom.js", "help"]).command, "fixture-node");
+      assert.equal(runner({env, release: true}).resolveMinerCommand(["mom.js", "help"]).command,
+        path.join(repo, "mom"));
+    }
+  });
 });
 
 test.describe("Helper worker lifecycle", {concurrency: false}, () => {
   const quietHelper = {...helper, log3: () => undefined};
+  const helperSource = fs.readFileSync(path.join(__dirname, "../helper.js"), "utf8");
+
+  /** Run the exact environment helpers in an isolated JavaScript context with requested platform globals.
+   * @param {"linux" | "win32"} platform @param {NodeJS.ProcessEnv} processEnv
+   * @param {NodeJS.ProcessEnv} extra @param {unknown} nativeCore @param {string} cwd
+   * @returns {NodeJS.ProcessEnv} */
+  function extractedChildEnv(platform, processEnv, extra, nativeCore, cwd) {
+    const start = helperSource.indexOf("function childEnv(extra) {");
+    const end = helperSource.indexOf("/** @param {(string | undefined)[]} paths", start);
+    assert.ok(start >= 0 && end > start, "childEnv and its Windows path helpers must remain extractable");
+    const exported = {exports: {}};
+    const context = {
+      module: exported,
+      path: platform === "win32" ? path.win32 : path.posix,
+      process: {platform, env: processEnv, execPath: platform === "win32" ? "C:\\app\\mom.exe" : "/app/mom",
+        cwd: () => cwd},
+      __dirname: platform === "win32" ? "C:\\repo" : "/repo",
+      development_build_platform: platform === "win32" ? "win" : "lin",
+      ...(nativeCore === undefined ? {} : {__momNativeCore: nativeCore}),
+    };
+    runInNewContext(helperSource.slice(start, end) + "\nmodule.exports = {childEnv};", context);
+    return /** @type {{childEnv: (extra: NodeJS.ProcessEnv) => NodeJS.ProcessEnv}} */ (exported.exports).childEnv(extra);
+  }
+
+  test("native Windows subprocess workers preserve PATH while Engineering keeps its search paths", () => {
+    const nativeProcessEnv = {Path: "C:\\system", MOM_NATIVE_PATH: "C:\\app\\mom.node"};
+    const nativeExtra = {thread_id: "0"};
+    const nativeResult = Object.fromEntries(Object.entries(extractedChildEnv("win32", nativeProcessEnv, nativeExtra, {}, "C:\\work")));
+    assert.deepEqual(nativeResult, {...nativeProcessEnv, ...nativeExtra});
+    assert.deepEqual(nativeProcessEnv, {Path: "C:\\system", MOM_NATIVE_PATH: "C:\\app\\mom.node"},
+      "native worker setup must not mutate the supplied PATH");
+
+    const engineeringProcessEnv = {Path: "C:\\base", MOM_NATIVE_PATH: "C:\\native\\mom.node"};
+    const engineeringResult = Object.fromEntries(Object.entries(extractedChildEnv("win32", engineeringProcessEnv,
+      nativeExtra, undefined, "C:\\repo")));
+    assert.equal(engineeringResult["Path"], ["C:\\native", "C:\\app", "C:\\app\\mom", "C:\\repo",
+      "C:\\repo\\mom", "C:\\repo\\build\\win\\Release", "C:\\base"].join(";"));
+    assert.equal(engineeringResult["PATH"], undefined);
+
+    const linuxProcessEnv = {PATH: "/usr/bin", MOM_NATIVE_PATH: "/app/mom.node"};
+    const linuxResult = Object.fromEntries(Object.entries(extractedChildEnv("linux", linuxProcessEnv,
+      nativeExtra, undefined, "/work")));
+    assert.deepEqual(linuxResult, {...linuxProcessEnv, ...nativeExtra});
+  });
 
   const fixture = path.join(__dirname, "fixtures", "helper_malformed_worker.js");
   const stdinFixture = path.join(__dirname, "fixtures", "helper_stdin_worker.js");
@@ -101,6 +206,34 @@ test.describe("Helper worker lifecycle", {concurrency: false}, () => {
   }
 
   test.describe("Compute addon selection and discovery", {concurrency: false}, () => {
+    test("native runtime core bypasses addon discovery without changing controller message handling", () => {
+      const saved = globalThis.__momNativeCore;
+      const originalExists = fs.existsSync;
+      const originalLog = helper.log3;
+      /** @type {Array<[string, Record<string, string>]>} */
+      const messages = [];
+      globalThis.__momNativeCore = {AsyncWorker: class {
+        sendToCpp(/** @type {string} */ name, /** @type {Record<string, string>} */ values) {messages.push([name, values]);}
+      }};
+      fs.existsSync = () => {throw new Error("Unexpected native addon lookup");};
+      helper.log3 = () => undefined;
+      try {
+        const core = helper.create_core.call(quietHelper);
+        core.emit_to("job", {height: 42, absent: null});
+        assert.deepEqual(messages, [["job", {height: "42", absent: ""}]]);
+      } finally {globalThis.__momNativeCore = saved; fs.existsSync = originalExists; helper.log3 = originalLog;}
+    });
+
+    test("malformed built-in core fails without silently loading an addon", () => {
+      const saved = globalThis.__momNativeCore;
+      try {
+        for (const value of [null, false, 0, {AsyncWorker: 7}]) {
+          globalThis.__momNativeCore = /** @type {NativeCoreModule} */ (/** @type {unknown} */ (value));
+          assert.throws(() => helper.create_core.call(quietHelper), /Invalid native compute-core module/);
+        }
+      } finally {globalThis.__momNativeCore = saved;}
+    });
+
     test("missing explicit compute addon never searches for another worker", () => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-helper-addon-"));
       const selected = path.join(root, "missing.node");

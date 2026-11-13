@@ -2,8 +2,11 @@
 
 const assert = require("node:assert/strict");
 const {describe, test} = require("node:test");
+const fs = require("node:fs");
+const path = require("node:path");
+const {runInNewContext} = require("node:vm");
 const policy = require("../compiler-policy");
-const {addDiscreteCases, addGenericCases, orderedLanes} = require("./common/gpu_test_matrix");
+const {addDiscreteCases, addGenericCases, addIntegratedCases, orderedLanes} = require("./common/gpu_test_matrix");
 
 /** @typedef {Parameters<typeof addDiscreteCases>[0]} MatrixPlan */
 /** @param {MatrixPlan} plan */
@@ -23,7 +26,56 @@ function selectedDefinition(entry) {
   return entry.select(first);
 }
 
+/** @returns {typeof import("./common/gpu_test_matrix")} */
+function standaloneMatrix() {
+  const source = fs.readFileSync(path.join(__dirname, "common", "gpu_test_matrix.js"), "utf8");
+  const loaded = {exports: {}};
+  runInNewContext(source, {
+    module: loaded,
+    __dirname: path.join(__dirname, "common"),
+    require: (/** @type {string} */ name) => {
+      if (name === "../../compiler-policy") {return policy;}
+      if (name === "./miner_command") {
+        return {...require("./common/miner_command"), hasReleaseExecutable: true};
+      }
+      if (name === "./gpu_test_modes") {return require("./common/gpu_test_modes");}
+      if (name === "../../scripts/validate-portable-opencl") {
+        return require("../scripts/validate-portable-opencl");
+      }
+      return require(name);
+    },
+  });
+  return /** @type {typeof import("./common/gpu_test_matrix")} */ (loaded.exports);
+}
+
 describe("GPU matrix vendor-major execution", {concurrency: false}, () => {
+  test("required integrated coverage cannot silently skip an unsupported algorithm", async (t) => {
+    t.mock.method(policy, "selection", () => ({backend: "sycl"}));
+    const previous = process.env["MOM_REQUIRE_INTEGRATED_GPU_TESTS"];
+    try {
+      for (const required of [false, true]) {
+        process.env["MOM_REQUIRE_INTEGRATED_GPU_TESTS"] = required ? "1" : "0";
+        /** @type {MatrixPlan} */
+        const plan = new Map();
+        await addIntegratedCases(plan, "zhash", {
+          openclCpu: async () => ({skipped: true, reason: "unused"}),
+          openclGpu: async () => ({skipped: true, reason: "unused"}),
+          intelIntegrated: async () => ({skipped: false,
+            devices: [{dev: "gpu2", description: "Intel integrated GPU", integrated: true}], params: {}}),
+        });
+        const cases = executionCases(plan);
+        assert.equal(cases.length, 1);
+        assert.equal(cases[0]?.required, required);
+        assert.match(cases[0]?.reason || "", /zhash is not available on Intel integrated GPU/);
+        assert.equal(cases[0]?.definitions.length, 0);
+      }
+    } finally {
+      if (previous === undefined) {delete process.env["MOM_REQUIRE_INTEGRATED_GPU_TESTS"];} else {
+        process.env["MOM_REQUIRE_INTEGRATED_GPU_TESTS"] = previous;
+      }
+    }
+  });
+
   test("PearlHash cross-backend cases keep Intel and NVIDIA before AMD native", async (t) => {
     t.mock.method(policy, "nvidiaComputeCapability", () => 120);
     t.mock.method(policy, "selection", pearlBackend);
@@ -59,6 +111,33 @@ describe("GPU matrix vendor-major execution", {concurrency: false}, () => {
     assert.deepEqual(orderedLanes(new Map()), []);
   });
 
+  test("standalone NVIDIA backend annotations drive lanes without a host SM query", async (t) => {
+    t.mock.method(policy, "nvidiaComputeCapability", () => {
+      throw new Error("standalone backend selection must not query test-host hardware");
+    });
+    /** @type {MatrixPlan} */
+    const plan = new Map();
+    const candidateMatrix = standaloneMatrix();
+    await candidateMatrix.addDiscreteCases(plan, "pearlhash", ["nvidia"], async (algo) => ({
+      skipped: false,
+      devices: [{dev: "gpu4", description: "NVIDIA GPU", integrated: false}],
+      params: {[algo]: "gpu4:auto[native]"},
+    }));
+    const cases = executionCases(plan);
+    assert.deepEqual(cases.map(({name}) => name), [
+      "nvidia gpu4: NVIDIA GPU", "nvidia gpu4: NVIDIA GPU (sycl fallback)",
+      "nvidia gpu4: NVIDIA GPU (sycl-native fallback)",
+    ]);
+    assert.deepEqual(cases.map((entry) => selectedDefinition(entry).job.backend),
+      ["native", "sycl", "sycl-native"]);
+    await assert.rejects(candidateMatrix.addDiscreteCases(new Map(), "pearlhash", ["nvidia"],
+      async (algo) => ({
+        skipped: false,
+        devices: [{dev: "gpu4", description: "NVIDIA GPU", integrated: false}],
+        params: {[algo]: "gpu4"},
+      })), /Standalone candidate did not report a resolved backend/);
+  });
+
   test("generic OpenCL cases follow vendor order across backend groups; CPU is last", async (t) => {
     t.mock.method(policy, "nvidiaComputeCapability", () => 120);
     t.mock.method(policy, "selection", pearlBackend);
@@ -72,7 +151,7 @@ describe("GPU matrix vendor-major execution", {concurrency: false}, () => {
         {dev: "gpu8", description: "AMD Radeon", integrated: false},
         {dev: "gpu7", description: "NVIDIA GPU", integrated: false},
         {dev: "gpu6", description: "Intel GPU", integrated: false},
-      ], params: {pearlhash: "gpu8,gpu7,gpu6"}}),
+      ], params: {pearlhash: "gpu8,gpu7,gpu6:auto[sycl-opencl]"}}),
       openclCpu: async () => ({skipped: true, reason: "fixture CPU unavailable"}),
       intelIntegrated: async () => ({skipped: true, reason: "fixture integrated unavailable"}),
     });

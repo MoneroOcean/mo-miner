@@ -26,10 +26,18 @@ const releaseExecutableNames = process.platform === "win32"
   ? ["mom.exe", "mom.cmd"]
   : ["mom"];
 const defaultReleaseExecutable = process.platform === "win32" ? "mom.exe" : "mom";
-const releaseExecutable = releaseExecutableNames
+// Source and release parity use identical vectors. An explicit candidate must never silently
+// fall back to Node or an older repository executable when it is missing or malformed.
+const selectedExecutable = process.env["MOM_TEST_EXECUTABLE"];
+if (selectedExecutable && (!path.isAbsolute(selectedExecutable) || !fs.existsSync(selectedExecutable) ||
+    !fs.statSync(selectedExecutable).isFile())) {
+  throw new Error("MOM_TEST_EXECUTABLE must name an existing absolute regular executable file");
+}
+const releaseExecutable = selectedExecutable || releaseExecutableNames
   .map((name) => path.join(repoRoot, name))
   .find((filePath) => fs.existsSync(filePath)) || path.join(repoRoot, defaultReleaseExecutable);
-const hasReleaseExecutable = fs.existsSync(releaseExecutable);
+// Once selected, disappearance is an execution error, never permission to switch back to Node.
+const hasReleaseExecutable = Boolean(selectedExecutable) || fs.existsSync(releaseExecutable);
 const ALGO_PARAMS_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_CAPTURED_OUTPUT_BYTES = 1024 * 1024;
 const outputBuffers = Symbol("outputBuffers");
@@ -548,12 +556,13 @@ function gpuDeviceDiscoveryEnv(vendor, options = {}) {
     MOM_GPU_BACKEND: vendor,
     ...(options.env || {}),
   };
-  const selectedEnv = compilerPolicy.workerEnv(
-    options.algo || "etchash",
-    {...process.env, ...baseEnv},
-    process.platform,
-    options.backend || "auto"
-  );
+  const discoveryEnv = {...process.env, ...baseEnv};
+  // A standalone candidate contains its own Core and workers. Resolving a development addon
+  // here can reject a valid release before its own `mom algorithms` discovery runs.
+  const selectedEnv = hasReleaseExecutable
+    ? compilerPolicy.vendorDeviceEnv(discoveryEnv)
+    : compilerPolicy.workerEnv(options.algo || "etchash", discoveryEnv, process.platform,
+      options.backend || "auto");
   return {...baseEnv, ...selectedEnv};
 }
 
@@ -661,6 +670,7 @@ module.exports = {
   formatHashrate,
   getGpuDevices,
   gpuDeviceDiscoveryKey,
+  hasReleaseExecutable,
   getFirstSyclCpuDevice,
   isMissingGpuOutput,
   maxCapturedOutputBytes: MAX_CAPTURED_OUTPUT_BYTES,
@@ -668,6 +678,7 @@ module.exports = {
   parseDiscreteGpuDevices,
   parseGpuDevices,
   repoRoot,
+  resolveMinerCommand,
   resolveNodeRunner,
   runNode,
   spawnAndExit,

@@ -27,6 +27,46 @@ test.describe("Native addon contracts", {concurrency: false}, () => {
     });
   }
 
+  test.describe("Asynchronous callback exceptions", () => {
+    for (const kind of ["progress", "complete"]) {
+      for (const [name, expression] of [["Error", 'new Error("EXPECTED_CALLBACK_FAILURE")'],
+        ["string", '"EXPECTED_CALLBACK_FAILURE"'], ["number", "42"], ["null", "null"], ["undefined", "undefined"]]) {
+        test(`${kind} callback propagates uncaught ${name} rather than swallowing it`, () => {
+          const script = `const core = require(${JSON.stringify(addonPath)});
+            const fail = () => { throw ${expression}; };
+            const worker = new core.AsyncWorker(${kind === "progress" ? "fail" : "() => undefined"},
+              ${kind === "complete" ? "fail" : "() => undefined"}, fail);
+            worker.sendToCpp(${JSON.stringify(kind === "progress" ? "unknown-command" : "close")});`;
+          const result = childProcess.spawnSync(process.execPath, ["-e", script], {encoding: "utf8", timeout: 5000});
+          assert.equal(result.error, undefined, result.stderr);
+          assert.equal(result.signal, null, result.stderr);
+          assert.equal(result.status, 1, result.stderr);
+          assert.doesNotMatch(result.stderr, /DEP0168|Uncaught Node-API callback exception detected/);
+        });
+      }
+      test(`${kind} callback honors a JS uncaughtException handler and permits clean close`, () => {
+        const script = `const core = require(${JSON.stringify(addonPath)});
+          const expected = new Error("EXPECTED_CALLBACK_FAILURE");
+          const fail = () => {throw expected;};
+          let worker;
+          process.once("uncaughtException", (error) => {
+            if (error !== expected) throw new Error("Wrong exception identity");
+            console.log("handled");
+            ${kind === "progress" ? 'worker.sendToCpp("close");' : ""}
+          });
+          worker = new core.AsyncWorker(${kind === "progress" ? "fail" : "() => undefined"},
+            ${kind === "complete" ? "fail" : '() => console.log("complete")'}, fail);
+          worker.sendToCpp(${JSON.stringify(kind === "progress" ? "unknown-command" : "close")});`;
+        const result = childProcess.spawnSync(process.execPath, ["-e", script], {encoding: "utf8", timeout: 5000});
+        assert.equal(result.error, undefined, result.stderr);
+        assert.equal(result.signal, null, result.stderr);
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(result.stdout.trim(), kind === "progress" ? "handled\ncomplete" : "handled");
+        assert.doesNotMatch(result.stderr, /DEP0168|Uncaught Node-API callback exception detected/);
+      });
+    }
+  });
+
   test("native addon validates callback arguments", () => {
     assert.throws(
       () => new core.AsyncWorker(noop, noop),
@@ -318,82 +358,91 @@ test.describe("Native addon contracts", {concurrency: false}, () => {
     assert.deepEqual(errors, ["Nonce overflow"]);
   });
 
-  test("native benchmark keeps hashrate window across changed input", {timeout: 20000}, async () => {
-    const job = {
-      algo: "cn/0",
-      blob_hex: "00".repeat(43),
-      dev: "cpu*2",
-      nonce: "0",
-      noncebytes: 4,
-      nonceoffset: 39,
-    };
-    const replacement = {...job, blob_hex: "01".repeat(43)};
-    /** @type {number | undefined} */
-    let hashrate;
-    await new Promise((resolve, reject) => {
-      let closed = false;
-      let failed = false;
-      const close = () => {
-        if (closed) {return;}
-        closed = true;
-        clearTimeout(replacementTimer);
-        clearTimeout(deadline);
-        worker.sendToCpp("close");
-      };
-      /** @param {Error} error */
-      const fail = (error) => {
-        if (failed) {return;}
-        failed = true;
-        close();
-        reject(error);
-      };
-      const worker = new core.AsyncWorker(
-        (/** @type {string} */ name, /** @type {NativeValues} */ values) => {
-          try {
-            if (name === "hashrate") {
-              const rate = Number(values["hashrate"]);
-              if (Number.isFinite(rate) && rate > 0) {
-                hashrate = rate;
-                close();
-              }
-            } else if (name === "error") {
-              const message = typeof values.message === "string"
-                ? values.message : "Native error omitted its message";
-              fail(new Error(message));
-            }
-          } catch (error) {
-            fail(error instanceof Error ? error : new Error(String(error)));
-          }
-        },
-        () => {
-          clearTimeout(replacementTimer);
-          clearTimeout(deadline);
-          if (failed) {
-            return;
-          }
-          if (hashrate === undefined) {
+  for (const {algo, replacementIntervalMs, deadlineMs, timeoutMs} of [
+    {algo: "cn/0", replacementIntervalMs: 5000, deadlineMs: 14000, timeoutMs: 20000},
+    {algo: "rx/arq", replacementIntervalMs: 2000, deadlineMs: 30000, timeoutMs: 40000},
+  ]) {
+    test(`native benchmark keeps hashrate window across changed input ${algo}`,
+      {timeout: timeoutMs}, async () => {
+        const job = {
+          algo,
+          blob_hex: "00".repeat(43),
+          dev: "cpu*2",
+          nonce: "0",
+          noncebytes: 4,
+          nonceoffset: 39,
+          ...(algo === "rx/arq" ? {seed_hex: "00".repeat(32)} : {}),
+        };
+        /** @type {number | undefined} */
+        let hashrate;
+        await new Promise((resolve, reject) => {
+          let closed = false;
+          let failed = false;
+          let replacementNumber = 0;
+          const close = () => {
+            if (closed) {return;}
+            closed = true;
+            clearInterval(replacementTimer);
+            clearTimeout(deadline);
+            worker.sendToCpp("close");
+          };
+          /** @param {Error} error */
+          const fail = (error) => {
+            if (failed) {return;}
             failed = true;
-            reject(new Error("Native benchmark closed before reporting hashrate"));
-          } else {
-            resolve(undefined);
-          }
-        },
-        (/** @type {Error} */ error) => fail(error)
-      );
-      const replacementTimer = setTimeout(() => {
-        if (!closed) {
-          worker.sendToCpp("bench", replacement);
-        }
-      }, 5000);
-      const deadline = setTimeout(() => {
-        fail(new Error("Native benchmark hashrate timed out"));
-      }, 14000);
-      worker.sendToCpp("bench", job);
-    });
-    if (hashrate === undefined) {throw new Error("Native benchmark omitted its hashrate");}
-    assert.ok(Number.isFinite(hashrate));
-    assert.ok(hashrate > 0);
-  });
+            close();
+            reject(error);
+          };
+          const worker = new core.AsyncWorker(
+            (/** @type {string} */ name, /** @type {NativeValues} */ values) => {
+              try {
+                if (name === "hashrate") {
+                  const rate = Number(values["hashrate"]);
+                  if (Number.isFinite(rate) && rate > 0) {
+                    hashrate = rate;
+                    close();
+                  }
+                } else if (name === "error") {
+                  const message = typeof values.message === "string"
+                    ? values.message : "Native error omitted its message";
+                  fail(new Error(message));
+                }
+              } catch (error) {
+                fail(error instanceof Error ? error : new Error(String(error)));
+              }
+            },
+            () => {
+              clearInterval(replacementTimer);
+              clearTimeout(deadline);
+              if (failed) {
+                return;
+              }
+              if (hashrate === undefined) {
+                failed = true;
+                reject(new Error("Native benchmark closed before reporting hashrate"));
+              } else {
+                resolve(undefined);
+              }
+            },
+            (/** @type {Error} */ error) => fail(error)
+          );
+          const replacementTimer = setInterval(() => {
+            if (closed) {return;}
+            if (algo !== "rx/arq") {clearInterval(replacementTimer);}
+            replacementNumber = replacementNumber % 255 + 1;
+            const byte = replacementNumber.toString(16).padStart(2, "0");
+            worker.sendToCpp("bench", {...job, blob_hex: byte.repeat(43)});
+          }, replacementIntervalMs);
+          const deadline = setTimeout(() => {
+            fail(new Error("Native benchmark hashrate timed out"));
+          }, deadlineMs);
+          worker.sendToCpp("bench", job);
+        });
+        if (hashrate === undefined) {throw new Error("Native benchmark omitted its hashrate");}
+        assert.ok(Number.isFinite(hashrate));
+        assert.ok(hashrate > 0);
+      });
+  }
 
   test("native allocation failures leave CPU jobs retryable", {timeout: 15000}, async () => {
     for (const retry of [false, true]) {

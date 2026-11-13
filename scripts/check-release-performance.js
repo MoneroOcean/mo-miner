@@ -19,10 +19,29 @@ const INTEL_WINDOWS_NEXAPOW_TIMEOUT_MS = 30 * 60 * 1000;
 const C30_TIMEOUT_MS = 15 * 60 * 1000;
 const STEADY_SAMPLE_COUNT = 3;
 const STOCHASTIC_SAMPLE_COUNT = 9;
+// Cover the longest accepted device diagnostic when the output stream splits it across chunks.
+const DIAGNOSTIC_OVERLAP_LENGTH = 160;
 // Match the existing GPU benchmark lifecycle gate: some runtime faults still exit cleanly.
-const runtimeFaultPattern = /\[AdaptiveCpp Error\]|cudaErrorCudartUnloading|error code\s*=\s*CUDA:4/i;
+const runtimeFaultPattern = /\[AdaptiveCpp Error\]|cudaErrorCudartUnloading\b|error code\s*=\s*CUDA:4\b/i;
+// These diagnostics identify a lost/unusable device or compute context, not just an ordinary
+// kernel/runtime failure. Keep the matcher narrow so generic AdaptiveCpp errors still collect.
+const fatalDeviceFailurePattern = new RegExp([
+  String.raw`\b(?:ZE_RESULT_ERROR_DEVICE_LOST|CL_DEVICE_NOT_AVAILABLE|CUDA_ERROR_(?:DEVICE_LOST|DEVICE_UNAVAILABLE|LAUNCH_TIMEOUT|ILLEGAL_ADDRESS|CONTEXT_(?:IS|ALREADY)_DESTROYED)|cudaError(?:CudartUnloading|DevicesUnavailable|LaunchTimeout|IllegalAddress|ContextIsDestroyed))\b`,
+  String.raw`\b(?:UR_RESULT_ERROR_DEVICE_LOST|hipError(?:ContextIsDestroyed|IllegalAddress|LaunchTimeOut))\b`,
+  String.raw`\bCUDA:(?:4|46|700|702)\b`,
+  String.raw`\bETIMEDOUT\b`,
+  String.raw`\b(?:device|GPU)(?:\s+(?:device|context))?\s+(?:(?:has been|was|is)\s+)?(?:lost|removed|unavailable|not available|hang(?:ing)?|hung|reset)\b`,
+  String.raw`\bdriver (?:stopped responding|(?:was )?reset)\b`,
+  String.raw`\b(?:GPU|CUDA|OpenCL|compute)?\s*context\s+(?:(?:has been|was|is)\s+)?(?:lost|destroyed|unavailable)\b`,
+  String.raw`\b(?:GPU|device|CUDA|kernel|compute|OpenCL)[^\r\n.]{0,48}\b(?:timed out|timeout)\b`,
+].join("|"), "iu");
 const stochasticSolutionAlgos = new Set(["beamhash3", "zelhash", "zhash"]);
 const cpuAssistedAlgos = new Set(["c29", "c30"]);
+
+/** @param {string} text @returns {string | null} */
+function matchFatalDeviceFailure(text) {
+  return fatalDeviceFailurePattern.exec(text)?.[0].slice(0, 160) || null;
+}
 
 function deploymentDebugEnabled() {
   return process.env["MOM_DEPLOY_DEBUG"] === "1";
@@ -35,7 +54,8 @@ function deploymentDebugEnabled() {
 /** @typedef {{platform: string, miner: string, readme: string, margin: number, timeoutMs: number,
  * algoFilter: string | undefined, devOverride: string | undefined}} ReleaseOptions */
 /** @typedef {{code: number | null, signal: NodeJS.Signals | null, stdout: string, stderr: string,
- * gracefulClose: boolean, loopStats: LoopStatsSample[], loopStatsInvalid: boolean}} RunResult */
+ * gracefulClose: boolean, fatalDeviceFailure: string | null, loopStats: LoopStatsSample[],
+ * loopStatsInvalid: boolean}} RunResult */
 /** @typedef {{selectedRate: Rate | null, minimumRate: number, performanceOk: boolean,
  * cpuFailure: string | null, processOk: boolean, passed: boolean,
  * failure: string | null}} BenchmarkVerdict */
@@ -211,8 +231,8 @@ function createRunner(miner, defaultTimeoutMs) {
   function releaseCommand(args) {
     if (/\.js$/i.test(miner)) {return [process.execPath, [miner, ...args]];}
     if (process.platform !== "win32" || !/\.cmd$/i.test(miner)) {return [miner, args];}
-    // Exercise the packaged launcher itself. Besides selecting mom-node.exe, it supplies the CUDA
-    // toolkit and Visual C++ environment required by runtime-compiled ProgPoW kernels.
+    // Legacy Engineering archives only: their .cmd supplies Node and compiler environment.
+    // Native releases use the direct .exe branch above, with their JIT linked in-process.
     return [process.env["ComSpec"] || "cmd.exe", windowsCmdArgs([miner, ...args])];
   }
 
@@ -274,6 +294,8 @@ function createRunner(miner, defaultTimeoutMs) {
       let stdout = "";
       let stderr = "";
       let stderrPending = "";
+      /** @type {string | null} */
+      let fatalDeviceFailure = null;
       /** @type {LoopStatsSample[]} */
       const loopStats = [];
       let loopStatsInvalid = false;
@@ -306,7 +328,8 @@ function createRunner(miner, defaultTimeoutMs) {
         }
         /** @type {RunResult} */
         const result = {code, signal, stdout, stderr, loopStats, loopStatsInvalid,
-          gracefulClose: gracefulCloseRequested && !forced && code === 0 && signal === null};
+          gracefulClose: gracefulCloseRequested && !forced && code === 0 && signal === null,
+          fatalDeviceFailure};
         if (terminationError) {
           // Preserve setup/runtime diagnostics and a structured result for the private receipt.
           return reject(new RunFailure(
@@ -333,7 +356,10 @@ function createRunner(miner, defaultTimeoutMs) {
             requestClose();
           }
         }
-        const incoming = (field === "stdout" ? stdout : stderr).slice(-32) + chunk.toString();
+        const incoming = (field === "stdout" ? stdout : stderr).slice(-DIAGNOSTIC_OVERLAP_LENGTH) +
+          chunk.toString();
+        const fatalMatch = matchFatalDeviceFailure(incoming);
+        if (!fatalDeviceFailure && fatalMatch) {fatalDeviceFailure = fatalMatch;}
         if (field === "stdout") {
           stdout = appendOutputTail(stdout, chunk);
         } else {
@@ -359,10 +385,10 @@ function createRunner(miner, defaultTimeoutMs) {
         const combined = `${stdout}\n${stderr}`;
         // Keep observing faults during cooperative close; the callback freezes its sample window.
         // Inspect faults before tail trimming can discard an oversized chunk's leading diagnostic.
-        const observed = /\bCompute core error:/u.test(incoming) || runtimeFaultPattern.test(incoming)
-          ? incoming : combined;
+        const observed = fatalMatch || /\bCompute core error:/u.test(incoming) ||
+          runtimeFaultPattern.test(incoming) ? incoming : combined;
         const shouldStop = stopWhen && stopWhen(observed);
-        if (!gracefulCloseRequested && shouldStop) {
+        if (!gracefulCloseRequested && ((benchmark && fatalDeviceFailure) || shouldStop)) {
           requestClose();
         }
       };
@@ -558,6 +584,7 @@ function saveBenchmarkEvidence(root, options, algo, result, combined, startedAt,
     exitCode: result.code,
     signal: result.signal,
     gracefulClose: result.gracefulClose,
+    fatalDeviceFailure: result.fatalDeviceFailure,
     stdoutBytes: Buffer.byteLength(result.stdout),
     stderrBytes: Buffer.byteLength(result.stderr),
     // Keep bounded raw output in the private evidence file for runtime-path diagnosis.
@@ -577,6 +604,10 @@ async function main(options, onSummary = null) {
   const run = createRunner(miner, timeoutMs);
   const discovery = await run(["algorithms"]);
   const discoveryOutput = output(discovery);
+  if (discovery.fatalDeviceFailure) {
+    throw new Error(`Release device discovery reported a fatal GPU diagnostic: ${discovery.fatalDeviceFailure}\n` +
+      discoveryOutput.trim());
+  }
   if (discovery.code !== 0) {
     throw new Error(`Release device discovery failed:\n${discoveryOutput.trim()}`);
   }
@@ -614,9 +645,12 @@ async function main(options, onSummary = null) {
     }
     const selected = compilerPolicy.parseReportedAlgoParam(reported);
     const minimum = reference.value * (1 - margin);
-    // cn/gpu needs ten Windows, two Intel/AMD Linux, and one other warm-up window.
+    // Cold NVIDIA Pearl can hold lower boost clocks for roughly a minute even after JIT
+    // completes. Measure steady work after six ten-second windows, not that startup ramp.
     let warmupCount = 1;
-    if (algo === "cn/gpu") {
+    if (algo === "pearlhash" && platform.startsWith("nvidia-")) {
+      warmupCount = 6;
+    } else if (algo === "cn/gpu") {
       if (platform.endsWith("-windows")) {
         warmupCount = 10;
       } else if (platform === "intel-linux" || platform === "amd-linux") {
@@ -648,6 +682,7 @@ async function main(options, onSummary = null) {
         commandTimeoutMs,
         /** @param {string} text */
         stopWhen(text) {
+          if (matchFatalDeviceFailure(text)) {return true;}
           if (/\bCompute core error:/u.test(text)) {
             computeFailure = "Compute core error was reported";
             return true;
@@ -710,9 +745,9 @@ async function main(options, onSummary = null) {
     const sampleWindowComplete = rate !== null;
     if (!rate) {rate = lastReportedRate(output(result), algo);}
     const processOk = result.code === 0 && !result.signal && result.gracefulClose;
-    const performanceOk = sampleWindowComplete && !computeFailure &&
+    const performanceOk = sampleWindowComplete && !computeFailure && !result.fatalDeviceFailure &&
       Boolean(rate && rate.value >= minimum);
-    const passed = processOk && performanceOk && !cpuFailure;
+    const passed = processOk && performanceOk && !cpuFailure && !result.fatalDeviceFailure;
     saveBenchmarkEvidence(evidenceRoot, options, algo, result, benchmarkOutput,
       benchmarkStartedAt, benchmarkEndedAt, warmupCount, sampleCount, requiredRates, {
         selectedRate: rate,
@@ -721,8 +756,16 @@ async function main(options, onSummary = null) {
         cpuFailure,
         processOk,
         passed,
-        failure: computeFailure || (sampleWindowComplete ? null : "Insufficient hashrate samples"),
+        failure: result.fatalDeviceFailure ?
+          `Fatal GPU device diagnostic: ${result.fatalDeviceFailure}` :
+          computeFailure || (sampleWindowComplete ? null : "Insufficient hashrate samples"),
       });
+    if (result.fatalDeviceFailure) {
+      failures.push(`${algo}: fatal GPU device diagnostic: ${result.fatalDeviceFailure}\n` +
+        benchmarkOutput.trim());
+      console.log(`  ✖ ${algo}: fatal GPU device diagnostic; stopping the matrix`);
+      break;
+    }
     if (!processOk) {
       failures.push(`${algo}: benchmark exited with ${result.signal || `code ${result.code}`}\n` +
         output(result).trim() + (cpuFailure ? `\n${algo}: ${cpuFailure}` : ""));
@@ -786,4 +829,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = {benchmarkTimeout, lastReportedRate, main, parseOptions, reportedRates};
+module.exports = {benchmarkTimeout, lastReportedRate, main, matchFatalDeviceFailure, parseOptions, reportedRates};

@@ -10,14 +10,29 @@
 
 namespace sycl {
 
+namespace info::device {
+struct host_unified_memory {};
+} // namespace info::device
+
+inline unsigned host_unified_memory_queries = 0;
+
 class device {
 public:
-  explicit device(const bool cpu) : cpu_(cpu) {}
+  explicit device(const bool cpu, const bool integrated = false)
+      : cpu_(cpu), integrated_(integrated) {}
 
   bool is_cpu() const { return cpu_; }
+  bool is_gpu() const { return !cpu_; }
+  template <typename Info>
+  bool get_info() const {
+    (void)sizeof(Info);
+    ++host_unified_memory_queries;
+    return integrated_;
+  }
 
 private:
   bool cpu_;
+  bool integrated_;
 };
 
 } // namespace sycl
@@ -136,10 +151,21 @@ int main() {
 
     set_portable_flag(nullptr);
     check_admission("unset", true, false, cpu, false);
+    const sycl::device integrated_gpu(false, true);
+    const unsigned no_flag_queries = sycl::host_unified_memory_queries;
+    check_admission("integrated gpu without flag", true, false, integrated_gpu, false);
+    require(sycl::host_unified_memory_queries == no_flag_queries,
+            "unset fixture flag queried integrated-device properties");
     set_portable_flag("0");
     check_admission("zero", true, false, cpu, false);
+    check_admission("integrated gpu zero flag", true, false, integrated_gpu, false);
+    require(sycl::host_unified_memory_queries == no_flag_queries,
+            "zero fixture flag queried integrated-device properties");
     set_portable_flag("invalid");
     check_admission("invalid", true, false, cpu, false);
+    check_admission("integrated gpu invalid flag", true, false, integrated_gpu, false);
+    require(sycl::host_unified_memory_queries == no_flag_queries,
+            "invalid fixture flag queried integrated-device properties");
     set_portable_flag("1");
     check_admission("cpu test", true, false, cpu, true);
     check_admission("mining", false, false, cpu, false);
@@ -147,6 +173,15 @@ int main() {
     check_admission("gpu test", true, false, gpu, false);
     check_admission("gpu mining", false, false, gpu, false);
     check_admission("gpu benchmark", true, true, gpu, false);
+    const unsigned enabled_queries = sycl::host_unified_memory_queries;
+    check_admission("integrated gpu test", true, false, integrated_gpu, true);
+    require(sycl::host_unified_memory_queries == enabled_queries + 2,
+            "opted-in fixture did not query integrated-device eligibility");
+    const unsigned after_integrated_test = sycl::host_unified_memory_queries;
+    check_admission("integrated gpu mining", false, false, integrated_gpu, false);
+    check_admission("integrated gpu benchmark", true, true, integrated_gpu, false);
+    require(sycl::host_unified_memory_queries == after_integrated_test,
+            "mining or benchmark queried integrated-device fixture eligibility");
 
     check_geometry();
     check_cache_key();

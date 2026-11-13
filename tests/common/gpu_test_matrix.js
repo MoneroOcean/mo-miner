@@ -12,6 +12,7 @@ const {
   gpuDeviceDiscoveryKey,
   getFirstSyclCpuDevice,
   getGpuDevices,
+  hasReleaseExecutable,
   runMinerTest,
   runNode,
 } = require("./miner_command");
@@ -45,6 +46,7 @@ const {
 const BACKEND_TIMEOUT_MS = 3 * 60 * 60 * 1000;
 const ALGO_TIMEOUT_MS = 4 * 60 * 60 * 1000;
 const MATRIX_TIMEOUT_MS = 8 * 60 * 60 * 1000;
+const boundedIntegratedPortableAlgos = new Set(["c29", "zelhash", "equihash192_7", "zhash"]);
 
 /** @param {MatrixPlan} plan @param {string} backend @param {"discrete" | "serial"} kind @param {MatrixCase} testCase @param {string} [vendor] */
 function addCase(plan, backend, kind, testCase, vendor = "other") {
@@ -134,8 +136,29 @@ async function runBackend(t, backend, lane) {
   });
 }
 
-/** @param {string} algo @param {string} vendor */
-function selectedBackend(algo, vendor) {
+/** @param {Record<string, string> | undefined} params @param {string} algo @returns {string | null} */
+function reportedBackend(params, algo) {
+  const value = params?.[algo];
+  if (typeof value !== "string") {return null;}
+  const parsed = compilerPolicy.parseReportedAlgoParam(value);
+  if (parsed.dev === value || !parsed.backend) {return null;}
+  if (parsed.backend !== "auto") {return parsed.backend;}
+  const resolved = value.match(/:auto\[([^\]]+)\]$/)?.[1];
+  return resolved && compilerPolicy.validBackends.has(resolved) ? resolved : null;
+}
+
+/** @param {string} algo @param {string} vendor @param {Record<string, string>} [params] */
+function selectedBackend(algo, vendor, params) {
+  const reported = reportedBackend(params, algo);
+  if (reported) {return reported;}
+  if (hasReleaseExecutable) {
+    if (params && Object.hasOwn(params, algo) && /\bgpu\d+/i.test(params[algo] || "")) {
+      throw new Error(`Standalone candidate did not report a resolved backend for ${algo}`);
+    }
+    // A skipped discovery has no candidate backend annotation to consult. Keep it in the
+    // portable lane without querying test-host hardware that the standalone release owns.
+    return "sycl";
+  }
   const sm = vendor === "nvidia" ? compilerPolicy.nvidiaComputeCapability(process.env) : null;
   const selected = compilerPolicy.selection(algo, vendor, process.platform,
     vendor === "nvidia" ? sm ?? 0 : null);
@@ -204,7 +227,7 @@ async function addDiscreteCases(plan, algo, vendors, discover) {
   })));
 
   for (const {vendor, result} of discoveries) {
-    const backend = selectedBackend(algo, vendor);
+    const backend = selectedBackend(algo, vendor, result.skipped ? undefined : result.params);
     if (result.skipped) {
       const required = process.env["MOM_REQUIRE_GPU_TESTS"] === "1";
       addCase(plan, backendGroup(backend), "discrete",
@@ -255,7 +278,7 @@ async function addGenericCases(plan, algo, discover) {
       const name = `OpenCL ${vendor} ${device.dev}: ${device.description}`;
       // cn/gpu on Intel already selects this exact OpenCL artifact and transport. Other direct
       // lanes use a native transport or tuned artifact, so one fast OpenCL vector remains useful.
-      if (["intel", "nvidia", "amd"].includes(vendor) &&
+      if (!hasReleaseExecutable && ["intel", "nvidia", "amd"].includes(vendor) &&
           selectedBackend(algo, vendor) === "sycl-opencl") {continue;}
       if (!configuredDeviceSupports(openclResult.params, algo, device.dev)) {
         addCase(plan, "sycl", "serial",
@@ -286,9 +309,13 @@ async function addGenericCases(plan, algo, discover) {
 async function addIntegratedCases(plan, algo, discover) {
   const definition = fastVectorFor(algo);
   if (!definition) {throw new Error(`No fast vector for ${algo}`);}
-  const backend = selectedBackend(algo, "intel_igpu");
+  const boundedPortable = process.env["MOM_INTEGRATED_PORTABLE_TEST"] === "1" &&
+    boundedIntegratedPortableAlgos.has(algo);
+  const requestedBackend = selectedBackend(algo, "intel_igpu");
   const requireDevice = process.env["MOM_REQUIRE_INTEGRATED_GPU_TESTS"] === "1";
-  const integratedResult = await discover.intelIntegrated(algo, backend);
+  const integratedResult = await discover.intelIntegrated(algo, requestedBackend);
+  const backend = selectedBackend(algo, "intel_igpu",
+    integratedResult.skipped ? undefined : integratedResult.params);
   if (integratedResult.skipped) {
     addCase(plan, backendGroup(backend), "serial",
       unavailableCase("Intel integrated GPU (unavailable)", integratedResult.reason, requireDevice), "intel");
@@ -302,12 +329,17 @@ async function addIntegratedCases(plan, algo, discover) {
   }
   for (const device of integratedResult.devices) {
     const name = `intel ${device.dev}: ${device.description}`;
-    if (!configuredDeviceSupports(integratedResult.params, algo, device.dev)) {
+    const fullMiningSupported = configuredDeviceSupports(integratedResult.params, algo, device.dev);
+    const boundedPortableOnly = boundedPortable && !fullMiningSupported;
+    if (!fullMiningSupported && !boundedPortable) {
       addCase(plan, backendGroup(backend), "serial",
-        unavailableCase(name, `${algo} is not available on ${device.description}`), "intel");
+        unavailableCase(name, `${algo} is not available on ${device.description}`, requireDevice), "intel");
       continue;
     }
-    addCase(plan, backendGroup(backend), "serial", deviceCase(name, [definition],
+    const caseName = boundedPortableOnly
+      ? `${name} (bounded portable vector; full-mining support not implied)`
+      : name;
+    addCase(plan, backendGroup(backend), "serial", deviceCase(caseName, [definition],
       (entry) => cloneForIntelIntegrated(entry, device.dev, backend)), "intel");
   }
 }

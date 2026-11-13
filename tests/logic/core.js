@@ -132,6 +132,73 @@ describe("Algorithm names and pool defaults", () => {
   });
 });
 
+describe("TLS certificate pin configuration", () => {
+  const pin = "ab".repeat(32), colonPin = Array(32).fill("AB").join(":");
+  /** @param {string[]} args */
+  function parse(args) {
+    const opt = opts.create_default_opts(), parseArgs = require("../../miner/cli")({
+      o: {...opts, print_help: (message) => {throw new Error(message);}}, opt, normalizeAlgoName,
+    });
+    parseArgs(["node", "mom.js", "mine", ...args], {result: "", result_hash_hex: null, thread_tested: 0});
+    return opt;
+  }
+  /** @param {UnknownRecord} config @param {RegExp} error */
+  function rejectsConfig(config, error) {
+    const previous = opts.print_help;
+    opts.print_help = (message) => {throw new Error(message);};
+    try {assert.throws(() => opts.apply_config(opts.create_default_opts(), config), error);} finally {opts.print_help = previous;}
+  }
+  test("pool TLS accepts self-signed certificates by default without a pin", () => {
+    const pool = opts.pool_create("pool.example", 443, true, "wallet", "x");
+    assert.equal(pool.tls_verify, false); assert.equal(pool.tls_fingerprint, "");
+  });
+  test("missing and empty optional pins remain disabled", () => {
+    assert.equal(opts.normalize_tls_fingerprint(undefined), ""); assert.equal(opts.normalize_tls_fingerprint(""), "");
+  });
+  test("plain SHA-256 pins are case insensitive", () => {
+    assert.equal(opts.normalize_tls_fingerprint(pin.toUpperCase()), pin);
+  });
+  test("conventional colon-separated fingerprints normalize to 64 hex digits", () => {
+    assert.equal(opts.normalize_tls_fingerprint(colonPin), pin);
+  });
+  test("non-string explicit pins are rejected", () => {
+    for (const value of [null, true, 42, {}, []]) {assert.throws(() => opts.normalize_tls_fingerprint(value), /SHA-256/);}
+  });
+  test("malformed, truncated, extended, or ambiguously separated pins are rejected", () => {
+    for (const value of [pin.slice(2), pin + "00", " " + pin, pin + "\n", "g".repeat(64), ":" + colonPin,
+      colonPin.replace(":", ""), pin.slice(0, 32) + ":" + pin.slice(32)]) {
+      assert.throws(() => opts.normalize_tls_fingerprint(value), /SHA-256/);
+    }
+  });
+  test("config pinning requires TLS instead of silently using plaintext", () => {
+    rejectsConfig({pools: [{url: "pool.example", port: 80, login: "wallet", tls_fingerprint: pin}]}, /requires is_tls/);
+  });
+  test("invalid config pins fail before a connection can be created", () => {
+    rejectsConfig({pools: [{url: "pool.example", port: 443, is_tls: true, login: "wallet", tls_fingerprint: "xyz"}]}, /SHA-256/);
+  });
+  test("saved configs preserve per-pool pins and explicit CA verification", () => {
+    const opt = opts.create_default_opts();
+    opts.apply_config(opt, {pools: [{url: "pool.example", port: 443, is_tls: true, login: "wallet",
+      tls_fingerprint: colonPin, tls_verify: true}], pool_ids: {primary: 0, donate: null}});
+    const restored = opts.create_default_opts(); opts.apply_config(restored, opts.saved_config(opt));
+    assert.equal(restored.pools[0]?.tls_fingerprint, pin); assert.equal(restored.pools[0]?.tls_verify, true);
+  });
+  test("CLI fingerprint applies only to the primary pool, not donation or backup pools", () => {
+    const opt = parse(["pool.example:443tls", "wallet", "--tls-fingerprint", colonPin,
+      "--add.pool", JSON.stringify({url: "backup.example", port: 443, is_tls: true, login: "wallet"})]);
+    assert.notEqual(opt.pool_ids.primary, null);
+    assert.equal(opt.pools[opt.pool_ids.primary ?? 0]?.tls_fingerprint, pin);
+    assert.equal(opt.pools[0]?.tls_fingerprint, ""); assert.equal(opt.pools.at(-1)?.tls_fingerprint, "");
+  });
+  test("CLI cannot pin a plaintext primary", () => {
+    assert.throws(() => parse(["pool.example:80", "wallet", "--tls-fingerprint", pin]), /TLS primary/);
+  });
+  test("CLI requires a valid fingerprint argument", () => {
+    assert.throws(() => parse(["pool.example:443tls", "wallet", "--tls-fingerprint"]), /Unparsed option/);
+    assert.throws(() => parse(["pool.example:443tls", "wallet", "--tls-fingerprint", "not-a-pin"]), /SHA-256/);
+  });
+});
+
 describe("Automatic mining device selection and primary handshake", () => {
   /** @param {string[]} args @param {UnknownRecord | null} [config] */
   function parseMiningArgs(args, config = null) {
@@ -318,6 +385,18 @@ describe("Automatic mining device selection and primary handshake", () => {
 });
 
 describe("CLI lifecycle and runtime boundaries", () => {
+  test("shared help identifies MoM and retains its application copyright", () => {
+    const result = spawnSync(process.execPath, ["-e", "require('./opts').print_help()"], {
+      cwd: repoRoot, env: {...process.env, MOM_COMMAND: "./mom"}, encoding: "utf8", timeout: 5000,
+    });
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 0, result.stderr);
+    const banner = result.stdout.split("\n").slice(0, 4).join("\n");
+    assert.match(banner, /^# MoM CPU\/GPU miner v/m);
+    assert.match(banner, /Copyright \(c\) 2023-2026 MoneroOcean\. GNU GPLv3\./);
+    assert.doesNotMatch(banner, /Node\.js\/SYCL based/);
+  });
+
   test("mine mode closes through the opt-in control pipe", async () => {
     const stdin = new PassThrough();
     const miner = await loadMinerWithStubs({
@@ -502,6 +581,15 @@ describe("CLI lifecycle and runtime boundaries", () => {
       ...environmentDeps, process: mockProcess("linux", {}),
     });
     assert.equal(normal.use_msr_tuning(), true);
+  });
+
+  test("Windows always leaves MSR tuning disabled", () => {
+    for (const env of [{}, {MOM_SKIP_MSR: "0"}, {MOM_SKIP_MSR: "1"}]) {
+      const environment = makeEnvironment({
+        ...environmentDeps, process: mockProcess("win32", env),
+      });
+      assert.equal(environment.use_msr_tuning(), false, `MOM_SKIP_MSR=${env.MOM_SKIP_MSR ?? "unset"}`);
+    }
   });
 
   test("CPU discovery falls back when proc or sysfs is inaccessible", () => {
@@ -780,7 +868,7 @@ describe("Configuration persistence and credential redaction", () => {
     assert.equal(loaded.job.dev, "cpu");
     assert.equal(loaded.job.dev_request, "cpu");
     assert.deepEqual(loaded.pools[0], {
-      url: "pool.example", port: 443, is_tls: true, protocol: "conflux", tls_verify: false,
+      url: "pool.example", port: 443, is_tls: true, protocol: "conflux", tls_verify: false, tls_fingerprint: "",
       is_nicehash: false, is_keepalive: true, use_subscribe: false, worker: "",
       login: "wallet", pass: "worker", pearlhash_target_format: "base",
     });

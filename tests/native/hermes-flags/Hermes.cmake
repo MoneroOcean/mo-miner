@@ -1,0 +1,36 @@
+# Extracted from Static Hermes 26fbb82 (MIT); exercise its actual patched flag selection.
+function(hermes_update_cxx_flags name)
+  set(flags "")
+
+  if (HERMES_ENABLE_EH)
+    if (GCC_COMPATIBLE)
+      list(APPEND flags -fexceptions)
+    elseif (MSVC)
+      list(APPEND flags /EHsc)
+    endif ()
+  else ()
+    if (GCC_COMPATIBLE)
+      list(APPEND flags -fno-exceptions)
+    elseif (MSVC)
+      list(APPEND flags /EHs-c-)
+    endif ()
+  endif ()
+
+  if (HERMES_ENABLE_RTTI)
+    if (GCC_COMPATIBLE)
+      list(APPEND flags -frtti)
+    elseif (MSVC)
+      list(APPEND flags /GR)
+    endif ()
+  else ()
+    if (GCC_COMPATIBLE)
+      list(APPEND flags -fno-rtti)
+    elseif (MSVC)
+      list(APPEND flags /GR-)
+    endif ()
+  endif ()
+
+  # Use generator expression to apply flags only to C++ files.
+  target_compile_options(${name} PRIVATE
+      "$<$<COMPILE_LANGUAGE:CXX>:${flags}>")
+endfunction()

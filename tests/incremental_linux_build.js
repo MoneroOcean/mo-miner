@@ -20,6 +20,7 @@ function fixture(t) {
   };
   for (const dir of ["native", "sycl", "xmrig", "scripts"]) {fs.mkdirSync(path.join(root, dir));}
   put("scripts/linux-build-state.js", fs.readFileSync(helper));
+  put("scripts/build-source-inputs.js", fs.readFileSync(path.resolve(__dirname, "../scripts/build-source-inputs.js")));
   put("scripts/build-helpers.sh", fs.readFileSync(path.resolve(__dirname, "../scripts/build-helpers.sh")));
   put("scripts/build-environment.js", fs.readFileSync(path.resolve(__dirname, "../scripts/build-environment.js")));
   for (const name of ["cpu-cflags.sh", "cpu-optflags.sh", "cpu-feature.sh", "cxx-combined.sh",
@@ -76,7 +77,69 @@ Release/obj.target/mom/native/%.o: ../native/%.c
   return {root, put, env, state, build, events};
 }
 
+test.describe("Linux completed CPU portability profiles", {skip: process.platform !== "linux"}, () => {
+  /** @param {ReturnType<typeof fixture>} f */
+  const receipt = f => JSON.parse(fs.readFileSync(path.join(f.root, "build/.mom-content-state.json"), "utf8"));
+  for (const [portable, march, expected] of [["1", "", true], ["0", "", false], ["0", "native", false],
+    ["1", "native", true], [undefined, "", false]]) {
+    test("completed profile records both controls: " + JSON.stringify([portable, march]), t => {
+      const f = fixture(t); f.env["MOM_PORTABLE_BUILD"] = /** @type {string | undefined} */ (portable);
+      f.env["MOM_CPU_MARCH"] = /** @type {string} */ (march); f.build();
+      assert.deepEqual(receipt(f).portability, {portable: expected, cpuMarch: march});
+    });
+  }
+  for (const name of ["MOM_PORTABLE_BUILD", "MOM_CPU_MARCH"]) {
+    test("changing " + name + " during compilation cannot produce a completed profile", t => {
+      const f = fixture(t); f.env["MOM_PORTABLE_BUILD"] = "1"; f.env["MOM_CPU_MARCH"] = "";
+      assert.throws(() => f.build(() => {f.env[name] = name === "MOM_CPU_MARCH" ? "native" : "0";}), /toolchain changed/);
+      assert.equal(fs.existsSync(path.join(f.root, "build/.mom-content-state.json")), false);
+    });
+  }
+  for (const altered of [undefined, {portable: false, cpuMarch: "native"}]) {
+    test("missing or contradictory old profiles require rebuilding, not restamping: " + JSON.stringify(altered), t => {
+      const f = fixture(t); f.env["MOM_PORTABLE_BUILD"] = "1"; f.env["MOM_CPU_MARCH"] = ""; f.build();
+      const previous = receipt(f); previous.portability = altered;
+      f.put("build/.mom-content-state.json", JSON.stringify(previous));
+      assert.equal(f.build(), "clean"); assert.deepEqual(f.events(), ["a", "b", "link", "a", "b", "link"]);
+      assert.deepEqual(receipt(f).portability, {portable: true, cpuMarch: ""});
+    });
+  }
+  test("an unchanged portable generation preserves Engineering incremental reuse", t => {
+    const f = fixture(t); f.env["MOM_PORTABLE_BUILD"] = "1"; f.env["MOM_CPU_MARCH"] = ""; f.build();
+    const events = f.events(); f.put("controller.js", "changed JS only");
+    assert.equal(f.build(), "incremental"); assert.deepEqual(f.events(), events);
+    assert.deepEqual(receipt(f).portability, {portable: true, cpuMarch: ""});
+  });
+});
+
 test.describe("Linux content-based incremental build", {skip: process.platform !== "linux"}, () => {
+  test("Engineering JavaScript edits execute directly without recompiling or relinking native objects", t => {
+    const f = fixture(t);
+    const source = fs.readFileSync(path.resolve(__dirname, "../miner/algorithms.js"), "utf8");
+    f.put("controller.js", source);
+    const run = (argument = '"cuckaroo"') => spawnSync(process.execPath,
+      ["-e", `console.log(require('./controller').normalizeAlgoName(${argument}))`],
+      {cwd: f.root, encoding: "utf8", timeout: 10000});
+    f.build();
+    const events = f.events();
+    const binary = path.join(f.root, "build/Release/mom.node");
+    const digest = crypto.createHash("sha256").update(fs.readFileSync(binary)).digest("hex");
+    const modified = fs.statSync(binary).mtimeMs;
+    assert.equal(run().stdout.trim(), "c29");
+    const changed = source.replace('"cuckaroo", "c29"', '"cuckaroo", "fixture"');
+    assert.notEqual(changed, source);
+    f.put("controller.js", changed);
+    assert.equal(f.build(), "incremental");
+    assert.deepEqual(f.events(), events, "JavaScript must not enter the native compile/link graph");
+    assert.equal(fs.statSync(binary).mtimeMs, modified);
+    assert.equal(crypto.createHash("sha256").update(fs.readFileSync(binary)).digest("hex"), digest);
+    assert.equal(run().stdout.trim(), "fixture", "Node must observe the edited original source");
+    const failure = run("123");
+    assert.equal(failure.status, 1);
+    assert.match(failure.stderr, /TypeError: Algorithm name must be a string/);
+    assert.ok(failure.stderr.includes(path.join(f.root, "controller.js")), "Keep direct-source stack traces");
+  });
+
   test("Linux compiler boundary consumes npm scaffolding once and preserves caller tool paths", t => {
     const f = fixture(t);
     f.put("package.json", JSON.stringify({scripts: {probe: "bash scripts/probe.sh"}}));

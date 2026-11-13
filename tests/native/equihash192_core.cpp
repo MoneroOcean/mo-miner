@@ -59,6 +59,14 @@ bool test_bucket_collision_round_trip() {
 int main() {
   using Spec = mom_equihash::Equihash192_7;
   static_assert(Spec::row_count == (1u << 25) && Spec::hash_count == (1u << 24));
+#ifdef MOM_SYCL_INTEL_LAYOUT
+  // Open-source DPC++ need not define Intel's compiler-brand macro. The selected profile
+  // must still use exactly the optimized record ABI in both host allocation and device code.
+  static_assert(sizeof(mom_equihash::PackedBucketLevel0Record<Spec, 10>) == 28);
+  static_assert(sizeof(mom_equihash::PackedBucketCollisionRecord<Spec, 7, 12, 12, 9232>) == 28);
+  static_assert(sizeof(mom_equihash::PackedBucketCollisionRecord<Spec, 6, 10, 14, 2308>) == 24);
+  static_assert(sizeof(mom_equihash::PackedBucketCollisionRecord<Spec, 2, 10, 12, 9232>) == 12);
+#endif
   // The capacities have padded tails; exercise the last two valid slots so their rounded
   // parent-slot fields are checked rather than only power-of-two-looking offsets.
   if (!test_bucket_collision_round_trip<5, 12, 12, 9216>() ||

@@ -37,7 +37,7 @@ test.describe("Native Intel device selection", {skip: process.platform === "win3
 
 namespace sycl {
 namespace info {
-namespace device { struct name {}; struct vendor {}; struct host_unified_memory {}; }
+namespace device { struct name {}; struct vendor {}; struct vendor_id {}; struct host_unified_memory {}; }
 namespace platform { struct name {}; }
 }
 struct platform;
@@ -51,6 +51,9 @@ struct device {
     if constexpr (std::is_same_v<T, info::device::host_unified_memory>) {
       if (fault) throw std::runtime_error("metadata fault");
       return integrated;
+    } else if constexpr (std::is_same_v<T, info::device::vendor_id>) {
+      if (fault) throw std::runtime_error("metadata fault");
+      return vendor == "AMD" ? 1022u : vendor == "Advanced Micro Devices" ? 0x1002u : vendor == "NVIDIA Corporation" ? 0x10deu : 0x8086u;
     } else if constexpr (std::is_same_v<T, info::device::vendor>) {
       return vendor;
     } else {
@@ -90,6 +93,18 @@ int main(int argc, char** argv) {
   sycl::platform::fixtures = {{"OpenCL", {integrated, discrete, amd, cpu}}, {"CUDA", {nvidia}}};
   if (mode == "igpu-only") sycl::platform::fixtures = {{"OpenCL", {integrated, cpu}}};
   if (mode == "dgpu-only") sycl::platform::fixtures = {{"OpenCL", {discrete, cpu}}};
+  if (mode == "amd-worker") {
+    auto hip = amd;
+    hip.api = "HIP";
+    hip.vendor = "AMD"; // AdaptiveCpp HIP exposes the non-PCI numeric vendor ID 1022.
+    sycl::platform::fixtures = {{"HIP", {hip, cpu}}};
+  }
+  if (mode == "nvidia-worker") sycl::platform::fixtures = {{"CUDA", {nvidia, cpu}}};
+  if (mode == "two-amd") {
+    auto second = amd;
+    second.name = "Y AMD";
+    sycl::platform::fixtures = {{"OpenCL", {second, integrated, amd, cpu}}, {"CUDA", {nvidia}}};
+  }
   if (mode == "duplicates") {
     auto preferred = discrete;
     preferred.api = "Level-Zero";
@@ -166,13 +181,60 @@ int main(int argc, char** argv) {
     });
   }
 
-  for (const backend of ["", "all", "opencl", "amd", "nvidia", "cpu"]) {
+  for (const backend of ["", "all", "opencl", "cpu"]) {
     test(`${backend || "unset"} leaves generic native discovery unchanged`, () => {
       const result = run(backend);
       assert.equal(result.status, 0, result.stderr);
       assert.equal(result.stdout, all);
     });
   }
+
+  /** @type {Array<[string, string]>} */
+  const vendorCases = [["amd", "A AMD:OpenCL"], ["AMD", "A AMD:OpenCL"],
+    ["nvidia", "N NVIDIA:CUDA"], ["NVIDIA", "N NVIDIA:CUDA"]];
+  for (const [backend, expected] of vendorCases) {
+    test(`${backend} discovers only its vendor and numbers devices in the worker's namespace`, () => {
+      const result = run(backend);
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.stdout, cpu + `gpu1:${expected}\n`);
+    });
+  }
+
+  test("vendor metadata failures cannot admit an unverified AMD or NVIDIA device", () => {
+    for (const backend of ["amd", "nvidia"]) {
+      const result = run(backend, "fault");
+      assert.equal(result.status, 3, result.stderr);
+      assert.equal(result.stdout, "");
+      assert.equal(result.stderr, "metadata fault\n");
+    }
+  });
+
+  test("multiple selected-vendor GPUs keep deterministic local numbering", () => {
+    const result = run("amd", "two-amd");
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, cpu + "gpu1:A AMD:OpenCL\ngpu2:Y AMD:OpenCL\n");
+  });
+
+  test("mixed control discovery and vendor-only workers agree on device names", () => {
+    for (const [backend, mode] of /** @type {Array<[string, string]>} */ ([["amd", "amd-worker"], ["nvidia", "nvidia-worker"]])) {
+      const names = (/** @type {string} */ output) => output.trim().split("\n").filter(row => row.startsWith("gpu")).map(row => row.split(":")[0]);
+      const control = run(backend), worker = run(backend, mode);
+      assert.equal(control.status, 0, control.stderr); assert.equal(worker.status, 0, worker.stderr);
+      assert.deepEqual(names(control.stdout), names(worker.stdout));
+    }
+  });
+
+  test("a missing requested vendor does not silently select another GPU", () => {
+    for (const backend of ["amd", "nvidia"]) {
+      const result = run(backend, "igpu-only");
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.stdout, cpu);
+    }
+    // An out-of-range HIP visibility mask can leave only CUDA visible in a combined runtime.
+    const missingAmd = run("amd", "nvidia-worker");
+    assert.equal(missingAmd.status, 0, missingAmd.stderr);
+    assert.equal(missingAmd.stdout, cpu);
+  });
 
   test("Intel index selects the original stable name, not a filtered ordinal", () => {
     const result = run("intel", "mixed", "1");

@@ -3,7 +3,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {spawnSync} = require("node:child_process");
-const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -16,12 +15,19 @@ const performance = require("../scripts/readme-performance");
 test.describe("Correctness test dispatcher", {concurrency: false}, () => {
   const source = fs.readFileSync(path.join(__dirname, "run_hash.js"), "utf8");
   const logicFiles = [
+    // Native source-level suites belong to logic; only the real N-API addon is hardware-bound.
+    // The Windows cudart producer is an opt-in component suite, not part of canonical logic.
+    // Check the directory independently so adding a source suite cannot silently omit it.
+    ...fs.readdirSync(__dirname).filter(name => /^native_.*\.js$/.test(name) &&
+      !["native_addon.js", "native_deploy.js", "native_windows_cudart.js"].includes(name)).map(name => "tests/" + name),
     "tests/logic.js", "tests/compiler_policy.js", "tests/portable_dag_modes.js",
-    "tests/nvidia_compatibility.js", "tests/intel_device_selection.js", "tests/gpu_test_matrix_order.js",
+    "tests/nvidia_compatibility.js", "tests/intel_device_selection.js", "tests/c29_seed_unroll.js",
+    "tests/gpu_test_matrix_order.js", "tests/integrated_gpu_modes.js",
     "tests/nvrtc_installer.js",
     "tests/pearlhash_f16_lowering.js", "tests/readme_performance.js",
     "tests/benchmark_scripts.js", "tests/windows_command.js", "tests/pool_transport.js",
     "tests/helper_workers.js", "tests/release_archive.js", "tests/build_release.js", "tests/build_environment.js",
+    "tests/bounded_native_ci.js",
     "tests/incremental_linux_build.js", "tests/windows_incremental_build.js",
     "tests/windows_incremental_orchestration.js",
     "tests/windows_worker_discovery.js", "tests/dev.js", "tests/native_deploy.js",
@@ -138,6 +144,9 @@ test.describe("Correctness test dispatcher", {concurrency: false}, () => {
   });
 
   test("logic runs every former host logic file once through local Node", () => {
+    for (const file of ["tests/native_notices.js", "tests/native_notice_review.js", "tests/native_path.js"]) {
+      assert.ok(logicFiles.includes(file), `${file} must remain in canonical logic coverage`);
+    }
     for (const platform of ["linux", "win32", "darwin"]) {
       const result = dispatch("logic", {platform});
       const files = dispatchedFiles(result);
@@ -185,6 +194,14 @@ test.describe("Correctness test dispatcher", {concurrency: false}, () => {
       assert.equal(result.calls[0]?.command, "fixture-hardware-runner");
     });
   }
+
+  test("native candidate vectors do not accidentally test or require a development addon", () => {
+    const env = {MOM_TEST_EXECUTABLE: "/candidate/mom"};
+    assert.deepEqual(dispatchedFiles(dispatch("cpu", {env})), ["tests/cpu.js"]);
+    const all = dispatchedFiles(dispatch("all", {env}));
+    assert.ok(all.includes("tests/all.js")); assert.ok(!all.includes("tests/native_addon.js"));
+    assert.equal(new Set(all).size, all.length);
+  });
 
   for (const suite of ["logic", "host"]) {
     test(`${suite} rejects a release-only checkout before dispatch`, () => {
@@ -682,6 +699,17 @@ test.describe("Benchmark and installer scripts", {concurrency: false}, () => {
   });
   test.afterEach(() => {console.error = previousFixtureError;});
 
+  test("fatal device diagnostics are reusable without classifying ordinary failures as hangs", () => {
+    for (const message of ["ZE_RESULT_ERROR_DEVICE_LOST", "UR_RESULT_ERROR_DEVICE_LOST",
+      "CUDA_ERROR_ILLEGAL_ADDRESS", "GPU context is lost", "Kernel timed out"]) {
+      assert.notEqual(release.matchFatalDeviceFailure(message), null, message);
+    }
+    for (const message of ["hash mismatch", "unsupported algorithm on device",
+      "[AdaptiveCpp Error] unsupported local workgroup", "worker exited with status 1"]) {
+      assert.equal(release.matchFatalDeviceFailure(message), null, message);
+    }
+  });
+
   /** @param {string} mode @param {string} [algo] @param {string} [platform]
  * @param {number} [timeoutMs] @param {string} [evidenceRoot] @param {string} [additionalAlgo]
  * @param {string} [minerFixture] @param {boolean} [debug] */
@@ -753,11 +781,6 @@ test.describe("Benchmark and installer scripts", {concurrency: false}, () => {
       }
       fs.rmSync(temp, {recursive: true, force: true});
     }
-  }
-
-  /** @param {string} file */
-  function sha256(file) {
-    return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
   }
 
   test.describe("Benchmark options and process lifecycle", () => {
@@ -1218,7 +1241,8 @@ test.describe("Benchmark and installer scripts", {concurrency: false}, () => {
   test.describe("Installer security and deployment", () => {
     test("standalone installers authenticate downloaded helper scripts", () => {
       const scripts = path.join(__dirname, "..", "scripts");
-      const shellHash = sha256(path.join(scripts, "install-cutlass.sh"));
+      // The fallback fetches an immutable release, not the possibly newer worktree helper.
+      const shellHash = "8c6e84ffe5f89e1c8a42b2117e833be6bae444b4865a93ac0760391938765940";
       const shellInstaller = fs.readFileSync(path.join(scripts, "install.sh"), "utf8");
       assert.match(shellInstaller, new RegExp(`MOM_CUTLASS_HELPER_SHA256=${shellHash}`));
       assert.match(shellInstaller, /sha256sum -c -/);
@@ -1226,7 +1250,7 @@ test.describe("Benchmark and installer scripts", {concurrency: false}, () => {
       assert.match(shellInstaller, /mo-miner\/v0\.9\.0\/scripts\/install-cutlass\.sh/);
       assert.doesNotMatch(shellInstaller, /mo-miner\/master\/scripts\/install-cutlass\.sh/);
 
-      const powershellHash = sha256(path.join(scripts, "install-cutlass.ps1"));
+      const powershellHash = "319405c20146e2ad20324d2ae895e222c5e5b58fdad0cccb93d360995aada893";
       const powershellInstaller = fs.readFileSync(path.join(scripts, "install.ps1"), "utf8");
       assert.match(powershellInstaller,
         new RegExp(`cutlassHelperSha256 = "${powershellHash}"`, "i"));
@@ -1277,6 +1301,113 @@ test.describe("Benchmark and installer scripts", {concurrency: false}, () => {
         /'--retry','5','--retry-all-errors','--retry-delay','5',[\s\S]*?'--continue-at','-','-o',\$OutFile,\$Url/);
       assert.match(installer,
         /if \(-not \$KeepWorkspace\) \{\s+#[^\n]+\n\s+#[^\n]+\n\s+Set-Location -LiteralPath \$repo\s+Assert-NoReparseAncestor \$Workspace/);
+    });
+
+    test("Linux oneAPI installer admits only the complete 2026.2 compiler set", {
+      skip: process.platform === "win32",
+    }, () => {
+      const scripts = path.join(__dirname, "..", "scripts");
+      const linux = fs.readFileSync(path.join(scripts, "install-dev.sh"), "utf8");
+      const ready = linux.match(/^oneapi_compilers_ready\(\) \{\n[\s\S]*?^\}/m)?.[0] ?? "";
+      assert.ok(ready, "Linux compiler readiness helper is missing");
+      assert.match(linux, /apt_install intel-oneapi-compiler-dpcpp-cpp-2026\.2/);
+      assert.match(linux, /ln -sfn 2026\.2 \/opt\/intel\/oneapi\/compiler\/latest/);
+      assert.match(linux, /oneapi\) oneapi_compilers_ready/);
+
+      const temp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-oneapi-ready-test-"));
+      try {
+        const compilerDir = path.join(temp, "bin");
+        fs.mkdirSync(compilerDir);
+        for (const name of ["icx", "icpx"]) {
+          const compiler = path.join(compilerDir, name);
+          fs.writeFileSync(compiler, "#!/bin/sh\nprintf '%s\\n' \"$MOM_TEST_COMPILER_VERSION\"\n");
+          fs.chmodSync(compiler, 0o755);
+        }
+        /** @param {string} version @returns {number | null} */
+        const status = version => {
+          const result = spawnSync("bash", ["-c", `${ready}\noneapi_compilers_ready "$1"`, "test", compilerDir], {
+            encoding: "utf8", env: {...process.env, MOM_TEST_COMPILER_VERSION: version},
+          });
+          assert.equal(result.error, undefined, result.error?.message);
+          return result.status;
+        };
+        const accepted = "Intel(R) oneAPI DPC++/C++ Compiler 2026.2.0 (2026.2.0.20261001)";
+        assert.equal(status(accepted), 0);
+        assert.notEqual(status("Intel(R) oneAPI DPC++/C++ Compiler 2026.0.0"), 0);
+        assert.notEqual(status("Intel(R) oneAPI DPC++/C++ Compiler 2026.20.0"), 0);
+        fs.rmSync(path.join(compilerDir, "icpx"));
+        assert.notEqual(status(accepted), 0, "icx alone must not mark oneAPI ready");
+      } finally {
+        fs.rmSync(temp, {recursive: true, force: true});
+      }
+
+    });
+
+    test("Windows oneAPI installer selects and validates the 2026.2 compiler set", () => {
+      const windows = fs.readFileSync(path.join(__dirname, "..", "scripts", "install-dev.ps1"), "utf8");
+      assert.match(windows,
+        /\$oneApiUrl = 'https:\/\/registrationcenter-download\.intel\.com\/akdlm\/IRC_NAS\/728c4418-1b40-47a9-ad51-31530fb27c94\/intel-oneapi-toolkit-2026\.2\.0\.661\.exe'/);
+      assert.match(windows, /\$oneApiComponents = 'intel\.oneapi\.win\.cpp-dpcpp-common'/);
+      const testOneApi = windows.match(/function Test-OneApi \{[\s\S]*?\n\}/)?.[0] ?? "";
+      assert.ok(testOneApi, "Windows oneAPI readiness check is missing");
+      for (const name of ["icx.exe", "icx-cl.exe", "icpx.exe"]) {
+        assert.ok(testOneApi.includes(name), `Windows readiness omits ${name}`);
+      }
+      const versionPolicy = testOneApi.match(/ProductVersion -notmatch '([^']+)'/)?.[1];
+      assert.ok(versionPolicy, "Windows readiness must use an explicit ProductVersion policy");
+      const matches2026_2 = new RegExp(versionPolicy);
+      assert.equal(matches2026_2.test("2026.2.0.661"), true);
+      assert.equal(matches2026_2.test("2026.2"), true);
+      assert.equal(matches2026_2.test("2026.0.0.661"), false);
+      assert.equal(matches2026_2.test("2026.20.0.661"), false);
+      assert.equal(matches2026_2.test("2026.2preview"), false);
+      assert.match(windows, /oneapi \{ return \(Test-OneApi\)/);
+    });
+
+    test("Windows Strawberry Perl is an optional, pinned runtime component", () => {
+      const windows = fs.readFileSync(path.join(__dirname, "..", "scripts", "install-dev.ps1"), "utf8");
+      assert.match(windows,
+        /\$perlUrl = 'https:\/\/github\.com\/StrawberryPerl\/Perl-Dist-Strawberry\/releases\/download\/SP_54231_64bit\/strawberry-perl-5\.42\.3\.1-64bit-portable\.zip'/);
+      assert.match(windows,
+        /\$perlSha256 = '6a081a811781c30aca51dbc036afd93092af91e3297901f02c17043795a10690'/);
+      assert.match(windows, /\$valid = @\([^\n]*'perl'\)/);
+      assert.match(windows, /\$defaultComponents = @\([^\n]*'perl'\)/);
+
+      const testPerl = windows.match(/function Test-Perl\([^\n]*\) \{[\s\S]*?\n\}/)?.[0] ?? "";
+      assert.ok(testPerl, "Windows Perl readiness check is missing");
+      assert.match(testPerl, /\.mom-perl-sha256/);
+      assert.match(testPerl, /\$perl -e 'print \$\^O,chr\(10\),\$\^V,chr\(10\)'/);
+      assert.match(testPerl, /-ceq 'MSWin32'/);
+      assert.match(testPerl, /-ceq \$perlCoreVersion/);
+      assert.match(windows, /perl \{ return Test-Perl \}/);
+
+      for (const name of ["base", "node", "oneapi"]) {
+        const branch = windows.match(new RegExp(
+          `if \\(\\$components -contains '${name}'\\) \\{[\\s\\S]*?\\n\\}`))?.[0] ?? "";
+        assert.ok(branch, `Windows ${name} install branch is missing`);
+        assert.doesNotMatch(branch, /Install-Perl/,
+          `Perl must remain optional for the ${name} fast setup`);
+      }
+    });
+
+    test("Windows Perl installation extracts runtime files only", () => {
+      const windows = fs.readFileSync(path.join(__dirname, "..", "scripts", "install-dev.ps1"), "utf8");
+      const installPerl = windows.match(/function Install-Perl \{[\s\S]*?\n\}/)?.[0] ?? "";
+      assert.ok(installPerl, "Windows Perl installer is missing");
+      assert.match(installPerl, /Install-7Zip/);
+      assert.match(installPerl, /Download \$perlUrl \$archive[\s\S]*?Assert-Sha256 \$archive \$perlSha256/);
+      assert.match(installPerl,
+        /'x','-y','-bso0','-bd','-r',"-o\$extractDir",\$archive,'perl\\\*','c\\bin\\\*\.dll'/);
+      assert.match(installPerl, /\.mom-perl-sha256/);
+      assert.match(installPerl, /Assert-NoReparseAncestor \$perlRoot/);
+      assert.match(installPerl, /Test-Perl \$extractDir[\s\S]*?Remove-Item -LiteralPath \$perlRoot/);
+      assert.match(installPerl, /Export-DevelopmentEnvironment MOM_NATIVE_PERL_ROOT \$perlRoot/);
+      const perlPaths = [...installPerl.matchAll(/Add-MachinePath \(Join-Path \$perlRoot '([^']+)'\)/g)]
+        .map(match => match[1]);
+      assert.deepEqual([...new Set(perlPaths)].sort(), ["c\\bin", "perl\\bin"].sort());
+      assert.doesNotMatch(installPerl, /Install-Msi|gcc\.exe|g\+\+\.exe|mingw32-make\.exe/);
+      assert.match(windows,
+        /if \(\$components -contains 'perl'\) \{\s+Install-Perl\s+\}/);
     });
 
     test("host installer preserves an explicit GPU vendor selection across sudo", {
@@ -1712,7 +1843,7 @@ test.describe("Benchmark and installer scripts", {concurrency: false}, () => {
       assert.doesNotMatch(dockerfile, /MOM_(?:NODE_VERSION|DPCPP_RELEASE|DPCPP_ASSET)\s*=/);
     });
 
-    test("Windows multicompiler release contracts stay synchronized", () => {
+    test("Windows multicompiler Engineering setup and native release CI stay synchronized", () => {
       const root = path.join(__dirname, "..");
       /** @param {...string} parts */
       const read = (...parts) => fs.readFileSync(path.join(root, ...parts), "utf8");
@@ -1730,14 +1861,13 @@ test.describe("Benchmark and installer scripts", {concurrency: false}, () => {
         /'opencl' \{\n {4}if \(\$Compiler -in @\('all','portable'\)\) \{\n {6}Invoke-PortableSuite 'OpenCL'\n {6}\$portableLanes = 1\n {4}\}\n {2}\}/);
 
       const workflow = read(".github", "workflows", "build-release-artifacts.yml");
-      const baseHash = "hashFiles('scripts/build-windows-adaptivecpp-base.ps1', "
-    + "'scripts/windows-install-helpers.ps1', 'scripts/import-vcvars.ps1')";
-      const overlayHash = "hashFiles('scripts/install-dev.ps1', "
-    + "'scripts/build-windows-adaptivecpp-base.ps1', "
-    + "'scripts/build-windows-adaptivecpp-amd.ps1', "
-    + "'scripts/windows-install-helpers.ps1', 'scripts/import-vcvars.ps1')";
-      assert.equal(workflow.split(baseHash).length - 1, 3);
-      assert.equal(workflow.split(overlayHash).length - 1, 2);
+      assert.match(workflow, /uses: \.\/\.github\/workflows\/build-native-prerequisites\.yml/);
+      assert.doesNotMatch(workflow, /build-windows-adaptivecpp-(?:base|amd)\.ps1/);
+      const prerequisites = read(".github", "workflows", "build-native-prerequisites.yml");
+      assert.match(prerequisites, /^ {2}build-windows-acpp-cuda-gpu:/m);
+      assert.match(prerequisites, /^ {2}build-windows-acpp-hip-gpu:/m);
+      assert.match(prerequisites, /^ {2}assemble-windows-native-application:/m);
+      assert.doesNotMatch(prerequisites, /build-windows-adaptivecpp-(?:base|amd)\.ps1/);
 
       const packageWindows = read(".github", "workflows", "scripts", "package-windows.ps1");
       assert.doesNotMatch(packageWindows, /ONEAPI_DEVICE_SELECTOR=level_zero:%MOM_GPU_INDEX%/);
@@ -1870,6 +2000,41 @@ test.describe("Benchmark and installer scripts", {concurrency: false}, () => {
           assert.match(result.stderr, new RegExp(name));
           assert.equal(fs.existsSync(activity), false, `${name} triggered activity`);
         }
+      } finally {
+        fs.rmSync(temp, {recursive: true, force: true});
+      }
+    });
+
+    test("Linux validate-only runs unprivileged while installation still escalates", {
+      skip: process.platform === "win32",
+    }, () => {
+      const linux = path.join(__dirname, "..", "scripts", "install-dev.sh");
+      const temp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-dev-validate-privilege-test-"));
+      const bin = path.join(temp, "bin"), activity = path.join(temp, "activity");
+      fs.mkdirSync(bin);
+      fs.writeFileSync(path.join(bin, "id"), "#!/bin/sh\nprintf '%s\\n' 1000\n");
+      fs.writeFileSync(path.join(bin, "sudo"), [
+        "#!/bin/sh",
+        "printf '%s\\n' sudo >> \"$MOM_INSTALLER_ACTIVITY\"",
+        "exit 99",
+      ].join("\n"));
+      fs.chmodSync(path.join(bin, "id"), 0o755);
+      fs.chmodSync(path.join(bin, "sudo"), 0o755);
+      const env = {...process.env, MOM_INSTALLER_ACTIVITY: activity,
+        PATH: `${bin}${path.delimiter}${process.env["PATH"] ?? ""}`};
+      const workspace = path.join(temp, "mom-dev-validate-only");
+      try {
+        const validation = spawnSync("bash", [linux, "--component", "base", "--validate-only",
+          "--workspace", workspace], {encoding: "utf8", env});
+        assert.equal(validation.error, undefined, validation.error?.message);
+        assert.equal(validation.status, 0, validation.stderr);
+        assert.equal(fs.existsSync(activity), false, "read-only validation must not invoke sudo");
+        assert.equal(fs.existsSync(workspace), false, "read-only validation must not create its workspace");
+
+        const installation = spawnSync("bash", [linux, "--component", "base", "--workspace",
+          path.join(temp, "mom-dev-install")], {encoding: "utf8", env});
+        assert.equal(installation.status, 99, installation.stderr);
+        assert.equal(fs.readFileSync(activity, "utf8"), "sudo\n", "installation should retain privilege escalation");
       } finally {
         fs.rmSync(temp, {recursive: true, force: true});
       }
@@ -2080,10 +2245,9 @@ test.describe("Benchmark and installer scripts", {concurrency: false}, () => {
         path.join(scriptRoot, "test-deploy.sh"));
       fs.writeFileSync(path.join(temp, "package.json"), JSON.stringify({version: "1.0.0",
         scripts: {"build:release": "node scripts/build-release.js"}}));
-      fs.copyFileSync(path.join(sourceRoot, "scripts/build-release.js"),
-        path.join(scriptRoot, "build-release.js"));
-      fs.copyFileSync(path.join(sourceRoot, "scripts/build-environment.js"),
-        path.join(scriptRoot, "build-environment.js"));
+      for (const name of ["build-release.js", "build-environment.js", "build-source-inputs.js"]) {
+        fs.copyFileSync(path.join(sourceRoot, "scripts", name), path.join(scriptRoot, name));
+      }
       // Model the real entrypoint: build once, then execute its supplied command.
       fs.writeFileSync(path.join(temp, "scripts/dev-container.sh"), [
         "#!/bin/sh",
@@ -2131,7 +2295,7 @@ test.describe("Benchmark and installer scripts", {concurrency: false}, () => {
         });
         assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
         assert.deepEqual(fs.readFileSync(path.join(temp, "build-args"), "utf8").trim().split(/\r?\n/), [
-          "1", "all", "all", "0", "0", "9.8.7", "npm", "run", "build:release", "--", "--package-only",
+          "1", "all", "all", "0", "0", "9.8.7", "npm", "run", "build:release", "--", "--engineering-archive", "--package-only",
         ]);
         assert.deepEqual(fs.readFileSync(argsPath, "utf8").trim().split(/\r?\n/), [
           "9.8.7",
@@ -2251,6 +2415,7 @@ test.describe("Benchmark and installer scripts", {concurrency: false}, () => {
           assert.equal(result.status, 0, testCase.name + ": " + result.stderr);
           const args = fs.readFileSync(capture, "utf8").trimEnd().split(/\r?\n/);
           assert.deepEqual(args.slice(-forwarded.length), forwarded);
+          assert.ok(args.includes("--init"), "container init must reap orphaned helper descendants");
           assert.ok(args.some((value) => value.includes(`source=${temp},`)));
 
           const persistent = args.filter((value) => value.startsWith("SYCL_CACHE_PERSISTENT="));
@@ -2519,10 +2684,14 @@ if (process.argv[2] === "algorithms") {
             await assert.rejects(runReleaseFixture(mode, "fake", "intel-linux", 30000,
               evidence, undefined, worker));
             const metadata = JSON.parse(fs.readFileSync(path.join(evidence, "fake.metadata.json"), "utf8"));
+            const expectedFatal = mode === "cuda-unloading" ? "cudaErrorCudartUnloading" :
+              mode === "cuda-code" ? "CUDA:4" : null;
             assert.equal(metadata.exitCode, 0, "fixture must finish through cooperative close");
             assert.equal(metadata.signal, null);
             assert.equal(metadata.gracefulClose, true);
-            assert.equal(metadata.verdict.failure, "AdaptiveCpp runtime error was reported");
+            assert.equal(metadata.fatalDeviceFailure, expectedFatal);
+            assert.equal(metadata.verdict.failure, expectedFatal ?
+              `Fatal GPU device diagnostic: ${expectedFatal}` : "AdaptiveCpp runtime error was reported");
             assert.equal(metadata.verdict.performanceOk, false);
             assert.equal(metadata.verdict.passed, false);
             if (mode === "oversized") {
@@ -2603,6 +2772,200 @@ if (process.argv[2] === "algorithms") {
         assert.equal(metadata.verdict.passed, false);
       } finally {
         fs.rmSync(temp, {recursive: true, force: true});
+      }
+    });
+
+    test("release benchmark stops on split, oversized, late, UR, and HIP fatal GPU diagnostics", async () => {
+      /** @type {Record<string, string>} */
+      const expectedFatalByMode = {
+        "split-long": "CUDA_ERROR_CONTEXT_ALREADY_DESTROYED",
+        "late-split": "CUDA_ERROR_CONTEXT_ALREADY_DESTROYED",
+        "ur-device-lost": "UR_RESULT_ERROR_DEVICE_LOST",
+        "hip-context-destroyed": "hipErrorContextIsDestroyed",
+        "hip-illegal-address": "hipErrorIllegalAddress",
+        "hip-launch-timeout": "hipErrorLaunchTimeOut",
+      };
+      for (const mode of ["split", "split-long", "oversized", "late", "late-split",
+        "ur-device-lost", "hip-context-destroyed", "hip-illegal-address", "hip-launch-timeout"]) {
+        const temp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-release-fatal-device-test-"));
+        const worker = path.join(temp, "worker.js");
+        const evidence = path.join(temp, "evidence");
+        fs.writeFileSync(worker, String.raw`
+const mode = process.env.MOM_RELEASE_FIXTURE_MODE;
+const kind = mode.replace(/^fatal-device-/, "");
+const args = process.argv.slice(2);
+const fatal = ({
+  "split-long": "CUDA_ERROR_CONTEXT_ALREADY_DESTROYED",
+  "late-split": "CUDA_ERROR_CONTEXT_ALREADY_DESTROYED",
+  "ur-device-lost": "UR_RESULT_ERROR_DEVICE_LOST",
+  "hip-context-destroyed": "hipErrorContextIsDestroyed",
+  "hip-illegal-address": "hipErrorIllegalAddress",
+  "hip-launch-timeout": "hipErrorLaunchTimeOut",
+}[kind]) || "CUDA_ERROR_DEVICE_UNAVAILABLE";
+if (args[0] === "algorithms") {
+  process.stdout.write('gpu0:fixture\nMOM_ALGORITHMS {"fake":"gpu0","good":"gpu0"}\n');
+  process.exit(0);
+}
+const algo = args[1];
+if (args[0] !== "bench" || !["fake", "good"].includes(algo) ||
+    process.env.MOM_BENCHMARK_CONTROL_STDIN !== "1" || process.env.MOM_LOOP_STATS !== "1") {
+  process.stderr.write("unexpected fixture invocation\n");
+  process.exit(2);
+}
+const stats = "LOOPSTAT t=1 wall=10.0s cpu=4.5% dispatch=99.0% " +
+  "msg=0.001s post=0.002s iters=3 jobs=1 max_msg=0.2ms max_post=0.3ms\n";
+if (algo === "good" || ["late", "late-split"].includes(kind)) {
+  process.stderr.write(stats.repeat(3));
+  process.stdout.write([80, 100, 100, 100].map(rate =>
+    "Algo " + algo + " (gpu0) hashrate: " + rate + " H/s\n").join(""));
+}
+let closeRequested = false;
+let fatalWritePending = false;
+function exitAfterWrites() {
+  if (closeRequested && !fatalWritePending) process.exit(0);
+}
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", data => {
+  if (data !== "close\n") return;
+  closeRequested = true;
+  if (["late", "late-split"].includes(kind) && algo === "fake") {
+    fatalWritePending = true;
+    if (kind === "late-split") {
+      process.stderr.write(fatal.slice(0, -1), () => setTimeout(() => {
+        process.stderr.write(fatal.slice(-1) + "\n", () => {
+          fatalWritePending = false;
+          exitAfterWrites();
+        });
+      }, 10));
+    } else {
+      process.stderr.write(fatal + "\n", () => { fatalWritePending = false; exitAfterWrites(); });
+    }
+  } else {
+    process.stdout.write("fixture cooperative close accepted\n", exitAfterWrites);
+  }
+});
+if (algo === "fake" && ["split", "split-long"].includes(kind)) {
+  const split = kind === "split-long" ? fatal.length - 1 : fatal.indexOf("UNAVAILABLE");
+  process.stderr.write(fatal.slice(0, split));
+  setTimeout(() => process.stderr.write(fatal.slice(split) + "\n"), 10);
+}
+if (algo === "fake" && ["ur-device-lost", "hip-context-destroyed", "hip-illegal-address",
+  "hip-launch-timeout"].includes(kind)) {
+  process.stderr.write(fatal + "\n");
+}
+if (algo === "fake" && kind === "oversized") {
+  fatalWritePending = true;
+  process.stderr.write(fatal + "\n" + "x".repeat(${performance.maxCapturedOutput + 4096}), () => {
+    fatalWritePending = false;
+    exitAfterWrites();
+  });
+}
+setTimeout(() => process.exit(0), 2000).unref();
+`);
+        try {
+          const failure = await runReleaseFixture(`fatal-device-${mode}`, "fake", "intel-linux",
+            30000, evidence, "good", worker).then(() => null, error => error);
+          assert.ok(failure instanceof Error, `${mode}: fatal GPU diagnostics must fail the matrix`);
+          assert.equal(fs.existsSync(path.join(evidence, "good.metadata.json")), false,
+            `${mode}: the following algorithm must not launch or produce evidence`);
+          assert.match(failure.message, /fatal GPU device diagnostic/i);
+          const metadata = JSON.parse(fs.readFileSync(path.join(evidence, "fake.metadata.json"), "utf8"));
+          const expectedFatal = expectedFatalByMode[mode] || "CUDA_ERROR_DEVICE_UNAVAILABLE";
+          assert.equal(metadata.fatalDeviceFailure, expectedFatal);
+          assert.equal(metadata.exitCode, 0, `${mode}: native cleanup should finish cooperatively`);
+          assert.equal(metadata.signal, null);
+          assert.equal(metadata.gracefulClose, true);
+          assert.equal(metadata.verdict.passed, false);
+          if (mode === "oversized") {
+            assert.equal(fs.statSync(path.join(evidence, "fake.stderr.log")).size,
+              performance.maxCapturedOutput);
+            assert.match(fs.readFileSync(path.join(evidence, "fake.stderr.log"), "utf8"),
+              /CUDA_ERROR_DEVICE_UNAVAILABLE/);
+            assert.doesNotMatch(metadata.stderr, /CUDA_ERROR_DEVICE_UNAVAILABLE/);
+          } else {
+            assert.ok(metadata.stderr.includes(expectedFatal));
+          }
+        } finally {
+          fs.rmSync(temp, {recursive: true, force: true});
+        }
+      }
+    });
+
+    test("release discovery rejects a fatal GPU diagnostic before starting the matrix", async () => {
+      const temp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-release-fatal-discovery-test-"));
+      const worker = path.join(temp, "worker.js");
+      const evidence = path.join(temp, "evidence");
+      fs.writeFileSync(worker, String.raw`
+const args = process.argv.slice(2);
+if (args[0] === "algorithms") {
+  process.stdout.write('gpu0:fixture\nMOM_ALGORITHMS {"fake":"gpu0"}\n');
+  process.stderr.write("ZE_RESULT_ERROR_DEVICE_LOST\\n");
+  process.exit(0);
+}
+process.stderr.write("unexpected benchmark launch\\n");
+process.exit(2);
+`);
+      try {
+        const failure = await runReleaseFixture("discovery-fatal", "fake", "intel-linux", 30000,
+          evidence, undefined, worker).then(() => null, error => error);
+        assert.ok(failure instanceof Error);
+        assert.match(failure.message, /fatal GPU diagnostic: ZE_RESULT_ERROR_DEVICE_LOST/i);
+        assert.match(failure.message, /MOM_ALGORITHMS/);
+        assert.equal(fs.existsSync(path.join(evidence, "fake.stdout.log")), false);
+        assert.equal(fs.existsSync(path.join(evidence, "fake.metadata.json")), false);
+      } finally {
+        fs.rmSync(temp, {recursive: true, force: true});
+      }
+    });
+
+    test("release benchmark respects the numeric boundary after CUDA error code 4", async () => {
+      for (const mode of ["cuda-40", "cuda-400"]) {
+        const temp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-release-cuda-code-boundary-test-"));
+        const worker = path.join(temp, "worker.js");
+        const evidence = path.join(temp, "evidence");
+        fs.writeFileSync(worker, String.raw`
+const mode = process.env.MOM_RELEASE_FIXTURE_MODE;
+const kind = mode.replace(/^fatal-device-/, "");
+const args = process.argv.slice(2);
+const stats = "LOOPSTAT t=1 wall=10.0s cpu=4.5% dispatch=99.0% " +
+  "msg=0.001s post=0.002s iters=3 jobs=1 max_msg=0.2ms max_post=0.3ms\n";
+if (args[0] === "algorithms") {
+  process.stdout.write('gpu0:fixture\nMOM_ALGORITHMS {"fake":"gpu0","good":"gpu0"}\n');
+  process.exit(0);
+}
+const algo = args[1];
+if (args[0] !== "bench" || !["fake", "good"].includes(algo) ||
+    process.env.MOM_BENCHMARK_CONTROL_STDIN !== "1" || process.env.MOM_LOOP_STATS !== "1") {
+  process.exit(2);
+}
+const report = () => {
+  process.stderr.write(stats.repeat(3));
+  process.stdout.write([80, 100, 100, 100].map(rate =>
+    "Algo " + algo + " (gpu0) hashrate: " + rate + " H/s\n").join(""));
+};
+if (algo === "fake" && ["cuda-40", "cuda-400"].includes(kind)) {
+  process.stderr.write("error code = CUDA:" + kind.slice(5) + "\n");
+  setTimeout(report, 20);
+} else {
+  report();
+}
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", data => {
+  if (data === "close\n") process.exit(0);
+});
+setTimeout(() => process.exit(0), 2000).unref();
+`);
+        try {
+          assert.deepEqual(await runReleaseFixture(mode, "fake", "intel-linux", 30000,
+            evidence, "good", worker), {tests: 2, passed: 2, skipped: 0});
+          const fake = JSON.parse(fs.readFileSync(path.join(evidence, "fake.metadata.json"), "utf8"));
+          const good = JSON.parse(fs.readFileSync(path.join(evidence, "good.metadata.json"), "utf8"));
+          assert.equal(fake.fatalDeviceFailure, null);
+          assert.equal(fake.verdict.passed, true);
+          assert.equal(good.verdict.passed, true);
+        } finally {
+          fs.rmSync(temp, {recursive: true, force: true});
+        }
       }
     });
 
@@ -2692,7 +3055,7 @@ if (process.argv[2] === "algorithms") {
 
   test.describe("Algorithm coverage, telemetry, and performance thresholds", () => {
     test("release benchmark passes PearlHash certificate as a dotted option", async () => {
-      const summary = await runReleaseFixture("clean", "pearlhash", "nvidia-windows");
+      const summary = await runReleaseFixture("pearl-clock-ramp", "pearlhash", "nvidia-windows");
       assert.deepEqual(summary, {tests: 1, passed: 1, skipped: 0});
     });
 
@@ -2796,6 +3159,19 @@ if (process.argv[2] === "algorithms") {
     test("release benchmark discards ten cn/gpu warmup windows on Windows", async () => {
       assert.deepEqual(await runReleaseFixture("cn-gpu-ramp", "cn/gpu", "nvidia-windows"),
         {tests: 1, passed: 1, skipped: 0});
+    });
+
+    test("release benchmark samples NVIDIA Pearl after its cold clock ramp without hiding a steady regression", async () => {
+      for (const platform of ["nvidia-linux", "nvidia-windows"]) {
+        assert.deepEqual(await runReleaseFixture("pearl-clock-ramp", "pearlhash", platform),
+          {tests: 1, passed: 1, skipped: 0});
+        await assert.rejects(runReleaseFixture("pearl-clock-slow", "pearlhash", platform),
+          /94 H\/s is below 95 H\/s/);
+      }
+      for (const platform of ["intel-linux", "amd-linux"]) {
+        await assert.rejects(runReleaseFixture("pearl-clock-ramp", "pearlhash", platform),
+          /88 H\/s is below 95 H\/s/);
+      }
     });
 
     test("performance output capture keeps only a bounded diagnostic tail", () => {

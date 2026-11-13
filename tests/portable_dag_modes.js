@@ -3,6 +3,7 @@
 const assert = require("node:assert/strict");
 const {spawnSync} = require("node:child_process");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
@@ -91,6 +92,9 @@ test.describe("Portable DAG modes", {concurrency: false}, () => {
     const kawpowDagLoads = extractLine(
       program, /^constexpr uint32_t KAWPOW_DAG_LOADS = .*;\r?$/m, "KAWPOW_DAG_LOADS");
     const parser = extractFunction(internal, "inline bool mom_parse_env_ulong");
+    const integratedGpu = extractFunction(internal, "inline bool is_integrated_gpu");
+    const compactCorrectnessTest = extractFunction(internal,
+      "inline bool mom_compact_correctness_test");
     const fastModStart = internal.indexOf("struct FastModData");
     const fastModEnd = internal.indexOf("#if defined(_WIN32)", fastModStart);
     if (fastModStart < 0 || fastModEnd < 0) {fail("missing production fast modulus block");}
@@ -113,6 +117,8 @@ test.describe("Portable DAG modes", {concurrency: false}, () => {
       extractLine(etchash, /^constexpr uint64_t ETCHASH_PORTABLE_TEST_DAG_BYTES = .*;\r?$/m,
         "Etchash DAG geometry"),
       parser,
+      integratedGpu,
+      compactCorrectnessTest,
       fastMod,
       extractFunction(kawpow, "static bool kawpow_portable_test"),
       extractFunction(etchash, "static bool etchash_portable_test"),
@@ -180,11 +186,11 @@ test.describe("Portable DAG modes", {concurrency: false}, () => {
     assert.equal(result.stdout.trim(), "portable DAG fixture PASS", `${label} output`);
   }
 
-  test("portable DAG modes preserve bounded CPU fixture guards", {
+  test("portable DAG modes preserve bounded CPU and integrated GPU fixture guards", {
     skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
   }, () => {
     const compiler = process.env["CXX"] || "c++";
-    const root = fs.mkdtempSync(path.join(repoRoot, ".portable-dag-"));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-portable-dag-"));
     try {
       runVariant(readSources(false), compiler, root, "lf");
       runVariant(readSources(true), compiler, root, "crlf");

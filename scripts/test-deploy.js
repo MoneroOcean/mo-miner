@@ -107,7 +107,7 @@ function deploy(platform, arch, env, spawn = spawnSync, exists = fs.existsSync, 
     return result.error ? 1 : result.status ?? 1;
   };
   if (!(env["MOM_DEPLOY_REUSE_ARCHIVE"] === "1" && exists(options.archive))) {
-    const status = run(process.execPath, [path.join(repo, "scripts", "build-release.js")], baseEnv);
+    const status = run(process.execPath, [path.join(repo, "scripts", "build-release.js"), "--engineering-archive"], baseEnv);
     if (status !== 0) {report("FAIL windows release build; GPU lanes not run"); return status;}
   } else {
     report(`Reusing ${path.basename(options.archive)}`);

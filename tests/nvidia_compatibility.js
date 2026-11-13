@@ -21,6 +21,16 @@ const {extractCppBlock} = require("./common/cpp_source");
 /** @typedef {{policy: CompilerPolicy, calls: QueryCall[]}} PolicyContext */
 
 test.describe("NVIDIA compatibility", {concurrency: false}, () => {
+  test("CUDA driver lookup shares the System32-only Windows loader", () => {
+    const root = path.join(__dirname, ".."), api = fs.readFileSync(path.join(root, "sycl/cuda-api.h"), "utf8"),
+      driver = fs.readFileSync(path.join(root, "runtime/system-driver.h"), "utf8"),
+      constructor = extractCppBlock(api, "  CudaDriverApi()");
+    assert.match(api, /#include "\.\.\/runtime\/system-driver\.h"/);
+    assert.match(constructor, /runtime::systemDriverLibrary<runtime::SystemDriver::cuda>\(\)/);
+    assert.doesNotMatch(constructor, /LoadLibrary(?:A|W)?\(/, "never search a writable current directory for the CUDA driver");
+    assert.match(driver, /LoadLibraryExA\([\s\S]*?LOAD_LIBRARY_SEARCH_SYSTEM32\)/);
+  });
+
   test("Nexa field specialization keeps unknown and non-PTX targets on the existing representation", () => {
     const root = path.join(__dirname, "../sycl/nexapow");
     const pipeline = fs.readFileSync(path.join(root, "sycl_pipeline.inc"), "utf8");
@@ -245,9 +255,11 @@ void* mock_dlsym(void*,const char*);
   const pearlNvidiaBoundaries = [
     [0, "acpp-cuda", "sycl"],
     [50, "acpp-cuda", "sycl"],
+    [52, "acpp-cuda", "sycl"],
     [60, "acpp-cuda", "sycl"],
     [61, "acpp-cuda", "sycl-native"],
     [70, "acpp-cuda", "sycl-native"],
+    [75, "acpp-cuda", "sycl-native"],
     [79, "acpp-cuda", "sycl-native"],
     [80, "dpcpp", "native"],
     [120, "dpcpp", "native"],
@@ -646,7 +658,7 @@ void* mock_dlsym(void*,const char*);
       }
       /** @type {NodeJS.Platform[]} */
       const platforms = ["linux", "win32"];
-      const oldSms = [50, 52, 60, 61, 70, 75];
+      const oldSms = [0, 50, 52, 60, 61, 70, 75, 79]; // Zero is unknown capability, not a modern default.
       const modernSms = [80, 89, 120];
       try {
         for (const platform of platforms) {
@@ -657,7 +669,7 @@ void* mock_dlsym(void*,const char*);
               const selected = policy.selection(algo, "nvidia", platform, sm);
               const env = {
                 MOM_GPU_BACKEND: "nvidia",
-                MOM_NVIDIA_COMPUTE_CAPABILITY: String(sm),
+                ...(sm ? {MOM_NVIDIA_COMPUTE_CAPABILITY: String(sm)} : {}),
                 MOM_NATIVE_DIR: root,
               };
               const worker = policy.workerEnv(algo, env, platform);
@@ -688,7 +700,7 @@ void* mock_dlsym(void*,const char*);
         fs.rmSync(root, {recursive: true, force: true});
       }
       assert.equal(algorithms.length > 0, true);
-      assert.equal(calls.length, 0);
+      assert.equal(calls.length, 1, "one cached, mocked unknown-capability query covers every algorithm");
     });
   });
 
