@@ -1,0 +1,655 @@
+name: Build Windows static host component
+
+on:
+  workflow_call:
+    inputs:
+      windows_llvm_run_deadline_epoch:
+        description: Original immutable Windows LLVM run deadline
+        required: true
+        type: string
+      windows_llvm_state_bundle_sha256:
+        description: External SHA-256 of the audited Windows LLVM state tar
+        required: true
+        type: string
+      windows_llvm_state_manifest_sha256:
+        description: External SHA-256 of the audited Windows LLVM state manifest
+        required: true
+        type: string
+      windows_llvm_admission_sha256:
+        description: External SHA-256 of admitted.json in the audited Windows LLVM state
+        required: true
+        type: string
+      windows_hermes_bundle_sha256:
+        required: true
+        type: string
+      windows_hermes_handoff_sha256:
+        required: true
+        type: string
+      linux_tools_bundle_sha256:
+        required: true
+        type: string
+      linux_tools_handoff_sha256:
+        required: true
+        type: string
+      linux_sdk_bundle_sha256:
+        description: Full same-run audited Linux LLVM SDK and source tar, not thin tools
+        required: true
+        type: string
+      linux_sources_bundle_sha256:
+        description: Same-run prepared Linux source tar referenced by the DPC++/CUDA manifest
+        required: true
+        type: string
+      dpcpp_cuda_bundle_sha256:
+        required: true
+        type: string
+      dpcpp_cuda_manifest_sha256:
+        required: true
+        type: string
+      rocm_sources_bundle_sha256:
+        required: true
+        type: string
+      acpp_sources_bundle_sha256:
+        required: true
+        type: string
+      hip_headers_bundle_sha256:
+        required: true
+        type: string
+      hip_headers_handoff_sha256:
+        required: true
+        type: string
+    outputs:
+      component_bundle_sha256:
+        description: SHA-256 of the relocatable final Windows host-component tar
+        value: ${{ jobs.windows-host-component.outputs.bundle_sha256 }}
+      component_manifest_sha256:
+        description: SHA-256 of the component.json manifest inside the final tar
+        value: ${{ jobs.windows-host-component.outputs.manifest_sha256 }}
+      component_artifact_name:
+        description: Exact same-run Actions artifact containing only the final component
+        value: ${{ jobs.windows-host-component.outputs.artifact_name }}
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  windows-host-component:
+    name: Build Windows host component
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      MOM_AOT_BUILD_ONLY: "1"
+      MOM_BUILD_JOBS: "2"
+      MOM_NATIVE_SOURCE_DIR: /tmp/mom-native-prerequisites-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_LINUX_SDK_DIR: /tmp/mom-native-llvm21-sdk-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_IO_SOURCE_DIR: /tmp/mom-native-io-prerequisites-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_IO_SDK_DIR: /tmp/mom-native-io-openssl-sdk-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_LINUX_SOURCES_DIR: /tmp/mom-native-linux-source-prerequisites-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_ACPP_SOURCE_DIR: /tmp/mom-native-acpp-prerequisites-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_DPCPP_CUDA_INPUTS_DIR: /tmp/mom-native-dpcpp-cuda-inputs-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_GNU_HEADERS_DIR: /tmp/mom-native-gnu-headers-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_WINDOWS_GNU_HEADERS_DIR: /tmp/mom-native-windows-gnu-headers-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_LINUX_JIT_RESOURCES_DIR: /tmp/mom-native-linux-jit-resources-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_ROCM_SOURCE_DIR: /tmp/mom-native-rocm-prerequisites-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_ROCM_COMGR_SDK_DIR: /tmp/mom-native-rocm-comgr-sdk-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_ROCM_RESOURCES_DIR: /tmp/mom-native-rocm-resources-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_ROCM_HIP_HEADERS_DIR: /tmp/mom-native-rocm-hip-headers-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_ROCM_HOST_SDK_DIR: /tmp/mom-native-rocm-host-sdk-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_ZSTD_SOURCE_DIR: /tmp/mom-native-zstd-prerequisites-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_ZSTD_SDK_DIR: /tmp/mom-native-zstd-sdk-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_LINUX_SDK_DESCRIPTOR_DIR: /tmp/mom-native-linux-sdk-descriptor-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_WINDOWS_LLVM_DIR: /tmp/mom-native-windows-llvm21-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_WINDOWS_LLVM_STATE_BUNDLE_SHA256: ${{ inputs.windows_llvm_state_bundle_sha256 }}
+      MOM_NATIVE_WINDOWS_LLVM_STATE_MANIFEST_SHA256: ${{ inputs.windows_llvm_state_manifest_sha256 }}
+      MOM_NATIVE_WINDOWS_LLVM_ADMISSION_SHA256: ${{ inputs.windows_llvm_admission_sha256 }}
+      MOM_NATIVE_WINDOWS_LLVM_HERMES_BUNDLE_SHA256: ${{ inputs.windows_hermes_bundle_sha256 }}
+      MOM_NATIVE_WINDOWS_LLVM_HERMES_HANDOFF_SHA256: ${{ inputs.windows_hermes_handoff_sha256 }}
+      MOM_NATIVE_LINUX_LLVM_TOOLS_BUNDLE_SHA256: ${{ inputs.linux_tools_bundle_sha256 }}
+      MOM_NATIVE_LINUX_LLVM_TOOLS_HANDOFF_SHA256: ${{ inputs.linux_tools_handoff_sha256 }}
+      MOM_NATIVE_LINUX_SDK_BUNDLE_SHA256: ${{ inputs.linux_sdk_bundle_sha256 }}
+      MOM_NATIVE_LINUX_SOURCE_BUNDLE_SHA256: ${{ inputs.linux_sources_bundle_sha256 }}
+      MOM_NATIVE_LINUX_DPCPP_CUDA_BUNDLE_SHA256: ${{ inputs.dpcpp_cuda_bundle_sha256 }}
+      MOM_NATIVE_LINUX_DPCPP_CUDA_MANIFEST_SHA256: ${{ inputs.dpcpp_cuda_manifest_sha256 }}
+      MOM_NATIVE_ROCM_SOURCE_BUNDLE_SHA256: ${{ inputs.rocm_sources_bundle_sha256 }}
+      MOM_NATIVE_ACPP_SOURCE_BUNDLE_SHA256: ${{ inputs.acpp_sources_bundle_sha256 }}
+      MOM_NATIVE_ROCM_HIP_HEADERS_BUNDLE_SHA256: ${{ inputs.hip_headers_bundle_sha256 }}
+      MOM_NATIVE_ROCM_HIP_HEADERS_HANDOFF_SHA256: ${{ inputs.hip_headers_handoff_sha256 }}
+    outputs:
+      bundle_sha256: ${{ steps.build.outputs.bundle_sha256 }}
+      manifest_sha256: ${{ steps.build.outputs.manifest_sha256 }}
+      artifact_name: ${{ steps.build.outputs.artifact_name }}
+    steps:
+      - name: Set the immutable run and 55-minute job deadlines
+        id: deadline
+        shell: bash
+        env:
+          REQUESTED_RUN_DEADLINE: ${{ inputs.windows_llvm_run_deadline_epoch }}
+        run: |
+          set -euo pipefail
+          now=$(date -u +%s)
+          [[ "$REQUESTED_RUN_DEADLINE" =~ ^[0-9]{10}$ ]] || { echo 'Invalid original Windows LLVM run deadline' >&2; exit 1; }
+          run_epoch=$((10#$REQUESTED_RUN_DEADLINE))
+          if (( run_epoch <= now || run_epoch - now > 28800 )); then
+            echo 'Original Windows LLVM run deadline is expired or exceeds eight hours' >&2
+            exit 1
+          fi
+          job_epoch=$((now + 3300))
+          if (( job_epoch > run_epoch )); then job_epoch=$run_epoch; fi
+          if (( job_epoch - now < 300 )); then
+            echo 'Insufficient original run budget remains for a bounded host-component job' >&2
+            exit 1
+          fi
+          {
+            echo "job_deadline_epoch=$job_epoch"
+            echo "MOM_NATIVE_WINDOWS_LLVM_RUN_DEADLINE_EPOCH=$run_epoch"
+            echo "MOM_NATIVE_WINDOWS_LLVM_DEADLINE_EPOCH=$job_epoch"
+            echo "MOM_NATIVE_WINDOWS_HOST_SDK_DEADLINE_EPOCH=$job_epoch"
+            echo "MOM_NATIVE_WINDOWS_HOST_SDK_WORK_ROOT=$RUNNER_TEMP/mom-native-windows-host-sdk-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+            echo "MOM_NATIVE_WINDOWS_HOST_SDK_ARCHIVE_DIR=$RUNNER_TEMP/mom-native-windows-host-sdk-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/archives"
+            echo "MOM_NATIVE_WINDOWS_HOST_SDK_OUTPUT_DIR=$RUNNER_TEMP/mom-native-windows-host-sdk-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/native-windows-host-sdk-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+            echo "MOM_NATIVE_WINDOWS_HOST_SDK_METADATA_TAR=$RUNNER_TEMP/native-windows-host-sdk-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-metadata.tar"
+            echo "MOM_NATIVE_WINDOWS_LLVM_DESCRIPTOR_DIR=$RUNNER_TEMP/mom-native-windows-llvm21-descriptor-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+            echo "MOM_NATIVE_WINDOWS_HOST_COMPONENT_ROOT=/tmp/native-windows-host-component-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          } >> "$GITHUB_ENV"
+          echo "run_deadline_epoch=$run_epoch" >> "$GITHUB_OUTPUT"
+
+      - name: Validate external pins and derive exact same-run artifact names
+        id: pins
+        shell: bash
+        env:
+          WINDOWS_STATE_BUNDLE: ${{ inputs.windows_llvm_state_bundle_sha256 }}
+          WINDOWS_STATE_MANIFEST: ${{ inputs.windows_llvm_state_manifest_sha256 }}
+          WINDOWS_ADMISSION: ${{ inputs.windows_llvm_admission_sha256 }}
+          HERMES_BUNDLE: ${{ inputs.windows_hermes_bundle_sha256 }}
+          HERMES_HANDOFF: ${{ inputs.windows_hermes_handoff_sha256 }}
+          LINUX_TOOLS_BUNDLE: ${{ inputs.linux_tools_bundle_sha256 }}
+          LINUX_TOOLS_HANDOFF: ${{ inputs.linux_tools_handoff_sha256 }}
+          LINUX_SDK_BUNDLE: ${{ inputs.linux_sdk_bundle_sha256 }}
+          LINUX_SOURCES_BUNDLE: ${{ inputs.linux_sources_bundle_sha256 }}
+          DPCPP_CUDA_BUNDLE: ${{ inputs.dpcpp_cuda_bundle_sha256 }}
+          DPCPP_CUDA_MANIFEST: ${{ inputs.dpcpp_cuda_manifest_sha256 }}
+          ROCM_SOURCES_BUNDLE: ${{ inputs.rocm_sources_bundle_sha256 }}
+          ACPP_SOURCES_BUNDLE: ${{ inputs.acpp_sources_bundle_sha256 }}
+          HIP_HEADERS_BUNDLE: ${{ inputs.hip_headers_bundle_sha256 }}
+          HIP_HEADERS_HANDOFF: ${{ inputs.hip_headers_handoff_sha256 }}
+        run: |
+          set -euo pipefail
+          for pin in "$WINDOWS_STATE_BUNDLE" "$WINDOWS_STATE_MANIFEST" "$WINDOWS_ADMISSION" \
+            "$HERMES_BUNDLE" "$HERMES_HANDOFF" "$LINUX_TOOLS_BUNDLE" "$LINUX_TOOLS_HANDOFF" \
+            "$LINUX_SDK_BUNDLE" "$LINUX_SOURCES_BUNDLE" "$DPCPP_CUDA_BUNDLE" "$DPCPP_CUDA_MANIFEST" \
+            "$ROCM_SOURCES_BUNDLE" "$ACPP_SOURCES_BUNDLE" "$HIP_HEADERS_BUNDLE" "$HIP_HEADERS_HANDOFF"; do
+            [[ "$pin" =~ ^[0-9a-f]{64}$ ]] || { echo 'Missing or malformed external artifact pin' >&2; exit 1; }
+          done
+          suffix="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          {
+            echo "windows_state_archive=native-windows-llvm-state-$suffix-audited.tar"
+            echo "windows_state_manifest=native-windows-llvm-state-$suffix-audited.json"
+            echo "hermes_archive=native-windows-controller-hermes-$suffix.tar"
+            echo "linux_tools_archive=native-linux-llvm-tools-$suffix.tar"
+            echo "linux_sdk_archive=native-linux-llvm21-sdk-$suffix.tar"
+            echo "linux_sources_archive=native-linux-sdk-state-$suffix-sources.tar"
+            echo "dpcpp_cuda_archive=native-linux-dpcpp-cuda-inputs-$suffix.tar"
+            echo "rocm_sources_archive=native-rocm-state-$suffix-sources.tar"
+            echo "acpp_sources_archive=native-acpp-state-$suffix-sources.tar"
+            echo "hip_headers_archive=native-rocm-hip-headers-$suffix.tar"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24.15.0
+
+      - name: Install locked Node dependencies
+        timeout-minutes: 8
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Install SDK extraction and test tools
+        timeout-minutes: 8
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends 7zip msitools unzip
+          test -x /usr/bin/7z
+          test -x /usr/bin/msiinfo
+          test -x /usr/bin/msiextract
+          test -x /usr/bin/unzip
+
+      - name: Test host-component producer and same-run input contracts
+        timeout-minutes: 8
+        run: node --require ./tests/common/no_pool_network.js --test tests/native_ci.js tests/native_windows_host_component.js tests/native_windows_llvm_state.js tests/native_windows_llvm21_sdk.js tests/native_windows_sdk.js tests/native_windows_host_sdk_inputs.js tests/native_windows_acpp_sdk.js tests/native_windows_comgr_sdk.js tests/native_windows_hiprtc_sdk.js tests/native_windows_cudart.js tests/native_windows_amdhip.js tests/native_linux_llvm_tools.js tests/native_rocm_hip_headers.js tests/native_rocm_resources.js tests/native_windows_host_ci_job.js
+
+      - name: Provision pinned Intel 2026.2 compiler
+        timeout-minutes: 20
+        run: sudo env MOM_DEV_WORKSPACE=/var/tmp/mom-native-windows-host-${{ github.run_id }}-${{ github.run_attempt }} scripts/install-dev.sh --component oneapi --jobs 2
+
+      - name: Download audited Windows LLVM state and manifest
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: ${{ steps.pins.outputs.windows_state_archive }}
+          path: ${{ runner.temp }}/incoming/windows-llvm
+
+      - name: Download Windows LLVM admission manifest
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: ${{ steps.pins.outputs.windows_state_manifest }}
+          path: ${{ runner.temp }}/incoming/windows-llvm
+
+      - name: Download same-run Windows Hermes handoff
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: ${{ steps.pins.outputs.hermes_archive }}
+          path: ${{ runner.temp }}/incoming
+
+      - name: Download same-run thin Linux LLVM tools
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: ${{ steps.pins.outputs.linux_tools_archive }}
+          path: ${{ runner.temp }}/incoming
+
+      - name: Download full audited Linux LLVM SDK and source state
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: ${{ steps.pins.outputs.linux_sdk_archive }}
+          path: ${{ runner.temp }}/incoming
+
+      - name: Download prepared Linux source cohort
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: ${{ steps.pins.outputs.linux_sources_archive }}
+          path: ${{ runner.temp }}/incoming
+
+      - name: Download DPC++ and CUDA input handoff
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: ${{ steps.pins.outputs.dpcpp_cuda_archive }}
+          path: ${{ runner.temp }}/incoming
+
+      - name: Download original ROCm source cohort
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: ${{ steps.pins.outputs.rocm_sources_archive }}
+          path: ${{ runner.temp }}/incoming
+
+      - name: Download prepared ACPP source cohort
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: ${{ steps.pins.outputs.acpp_sources_archive }}
+          path: ${{ runner.temp }}/incoming
+
+      - name: Download the selected HIP header handoff
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: ${{ steps.pins.outputs.hip_headers_archive }}
+          path: ${{ runner.temp }}/incoming
+
+      - name: Build and export the static Windows host component
+        timeout-minutes: 45
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          "use strict";
+          const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process"),
+            {createHash} = require("node:crypto"),
+            {isDeepStrictEqual} = require("node:util"), ci = require("./scripts/prepare-native-ci"),
+            {fileHash, readBuildJson} = require("./scripts/build-source-inputs"), suffix = process.env.GITHUB_RUN_ID + "-" + process.env.GITHUB_RUN_ATTEMPT,
+            repo = process.cwd(), runDeadline = process.env.MOM_NATIVE_WINDOWS_LLVM_RUN_DEADLINE_EPOCH || "",
+            jobDeadline = process.env.MOM_NATIVE_WINDOWS_LLVM_DEADLINE_EPOCH || "", digest = /^[a-f0-9]{64}$/;
+          const inputPins = {
+            WINDOWS_STATE_BUNDLE: "MOM_NATIVE_WINDOWS_LLVM_STATE_BUNDLE_SHA256",
+            WINDOWS_STATE_MANIFEST: "MOM_NATIVE_WINDOWS_LLVM_STATE_MANIFEST_SHA256",
+            WINDOWS_ADMISSION: "MOM_NATIVE_WINDOWS_LLVM_ADMISSION_SHA256",
+            HERMES_BUNDLE: "MOM_NATIVE_WINDOWS_LLVM_HERMES_BUNDLE_SHA256",
+            HERMES_HANDOFF: "MOM_NATIVE_WINDOWS_LLVM_HERMES_HANDOFF_SHA256",
+            LINUX_TOOLS_BUNDLE: "MOM_NATIVE_LINUX_LLVM_TOOLS_BUNDLE_SHA256",
+            LINUX_TOOLS_HANDOFF: "MOM_NATIVE_LINUX_LLVM_TOOLS_HANDOFF_SHA256",
+            LINUX_SDK_BUNDLE: "MOM_NATIVE_LINUX_SDK_BUNDLE_SHA256",
+            LINUX_SOURCES_BUNDLE: "MOM_NATIVE_LINUX_SOURCE_BUNDLE_SHA256",
+            DPCPP_CUDA_BUNDLE: "MOM_NATIVE_LINUX_DPCPP_CUDA_BUNDLE_SHA256",
+            DPCPP_CUDA_MANIFEST: "MOM_NATIVE_LINUX_DPCPP_CUDA_MANIFEST_SHA256",
+            ROCM_SOURCES_BUNDLE: "MOM_NATIVE_ROCM_SOURCE_BUNDLE_SHA256",
+            ACPP_SOURCES_BUNDLE: "MOM_NATIVE_ACPP_SOURCE_BUNDLE_SHA256",
+            HIP_HEADERS_BUNDLE: "MOM_NATIVE_ROCM_HIP_HEADERS_BUNDLE_SHA256",
+            HIP_HEADERS_HANDOFF: "MOM_NATIVE_ROCM_HIP_HEADERS_HANDOFF_SHA256",
+          };
+          for (const [label, name] of Object.entries(inputPins)) {
+            if (!digest.test(process.env[name] || "")) {throw new Error("Missing or malformed " + label + " pin");}
+          }
+          if (!/^\d{10}$/.test(runDeadline) || !/^\d{10}$/.test(jobDeadline) || Number(jobDeadline) > Number(runDeadline)) {
+            throw new Error("Windows host-component deadlines do not retain the original immutable run limit");
+          }
+          const paths = ci.ciPaths();
+          function remaining(reserveMs = 60_000) {
+            const ms = Math.min(Number(runDeadline), Number(jobDeadline)) * 1000 - Date.now();
+            if (!Number.isSafeInteger(ms) || ms <= reserveMs) {throw new Error("Windows host-component job deadline exhausted");}
+            return ms - reserveMs;
+          }
+          function boundedTimeout(capMs, reserveMs = 60_000) {
+            const ms = Math.min(capMs, remaining(reserveMs));
+            if (!Number.isSafeInteger(ms) || ms < 2_000) {throw new Error("Insufficient deadline for the next bounded host-component phase");}
+            return ms;
+          }
+          function run(script, args, capMs) {
+            const timeoutMs = boundedTimeout(capMs), seconds = Math.floor(timeoutMs / 1000),
+              memoryScope = path.join(repo, "scripts/run-bounded-native-ci.sh"),
+              result = spawnSync(memoryScope, ["/usr/bin/timeout", "--signal=TERM", "--kill-after=5s", seconds + "s", process.execPath,
+                path.join(repo, script), ...args], {cwd: repo, env: process.env, stdio: "inherit", timeout: timeoutMs + 7_000});
+            if (result.error || result.signal || result.status !== 0) {
+              throw new Error("Bounded native host-component phase failed: " + script + (result.signal ? " (" + result.signal + ")" : ""), {cause: result.error});
+            }
+          }
+          function pinnedFile(file, expectedSha256) {
+            const before = fs.lstatSync(file, {bigint: true});
+            if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n || before.size < 1n || fs.realpathSync(file) !== file ||
+                fileHash(file) !== expectedSha256) {
+              throw new Error("Same-run input differs from its external SHA-256 pin: " + path.basename(file));
+            }
+            const after = fs.lstatSync(file, {bigint: true});
+            if (before.dev !== after.dev || before.ino !== after.ino || before.nlink !== after.nlink || before.size !== after.size ||
+                before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs || fileHash(file) !== expectedSha256) {
+              throw new Error("Same-run input changed while being admitted: " + path.basename(file));
+            }
+            return Number(after.size);
+          }
+          function availableBytes(directory) {
+            const stat = fs.statfsSync(directory, {bigint: true});
+            if (stat.bsize <= 0n) {throw new Error("Cannot determine host-component input filesystem capacity");}
+            const bytes = stat.bavail * stat.bsize;
+            return bytes > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(bytes);
+          }
+          function pinnedArchive(file, pinName) {
+            return pinnedFile(file, process.env[inputPins[pinName]]);
+          }
+          function pinnedManifest(file, expectedSha256, maxBytes = 1 << 20) {
+            if (!digest.test(expectedSha256 || "") || !Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 1 << 20) {
+              throw new Error("Windows LLVM state manifest pin or byte bound is invalid");
+            }
+            const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+            try {
+              const before = fs.fstatSync(fd, {bigint: true});
+              if (!before.isFile() || before.nlink !== 1n || before.size < 1n || before.size > BigInt(maxBytes) || fs.realpathSync(file) !== file) {
+                throw new Error("Windows LLVM state manifest is not a bounded canonical regular file");
+              }
+              const bytes = Buffer.alloc(Number(before.size));
+              let offset = 0;
+              while (offset < bytes.length) {
+                const count = fs.readSync(fd, bytes, offset, bytes.length - offset, null);
+                if (!count) {break;}
+                offset += count;
+              }
+              const after = fs.fstatSync(fd, {bigint: true}), current = fs.lstatSync(file, {bigint: true}),
+                sha256 = createHash("sha256").update(bytes).digest("hex");
+              if (offset !== bytes.length || before.dev !== after.dev || before.ino !== after.ino || before.nlink !== after.nlink ||
+                  before.size !== after.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs ||
+                  current.dev !== after.dev || current.ino !== after.ino || !current.isFile() || current.isSymbolicLink() ||
+                  current.nlink !== 1n || fs.realpathSync(file) !== file || sha256 !== expectedSha256) {
+                throw new Error("Windows LLVM state manifest changed or differs from its external SHA-256 pin");
+              }
+              return {bytes, sha256};
+            } finally {fs.closeSync(fd);}
+          }
+          function restore(file, pinName, roots, base, maxExpandedBytes, timeoutCapMs = 25 * 60 * 1000) {
+            pinnedArchive(file, pinName);
+            const members = ci.listState(file, roots, boundedTimeout(5 * 60 * 1000)),
+              expandedBytes = ci.tarExpandedBytes(file, members.length, boundedTimeout(15 * 60 * 1000));
+            if (expandedBytes > maxExpandedBytes) {throw new Error("Same-run input archive exceeds its expanded-size bound: " + path.basename(file));}
+            if (roots.includes(paths.sdkName)) {
+              ci.linuxNativeSdkDiskPreflight(expandedBytes, availableBytes(base), availableBytes(paths.runnerTemp));
+            }
+            pinnedArchive(file, pinName);
+            ci.extractState(file, base, roots, roots, boundedTimeout(timeoutCapMs, 90_000));
+            pinnedArchive(file, pinName);
+            return {members, expandedBytes};
+          }
+          function incoming(name, group = "") {
+            return path.join(process.env.RUNNER_TEMP, "incoming", group, name);
+          }
+          async function main() {
+            const toolName = "native-linux-llvm-tools-" + suffix,
+              hermesName = "native-windows-controller-hermes-" + suffix,
+              windowsName = "native-windows-llvm-state-" + suffix + "-audited",
+              windowsArchive = incoming(windowsName + ".tar", "windows-llvm"), windowsManifestFile = incoming(windowsName + ".json", "windows-llvm"),
+              hermesArchive = incoming(hermesName + ".tar"), toolsArchive = incoming(toolName + ".tar"),
+              linuxSdkArchive = incoming("native-linux-llvm21-sdk-" + suffix + ".tar"),
+              linuxSourcesArchive = incoming("native-linux-sdk-state-" + suffix + "-sources.tar"),
+              dpcppArchive = incoming("native-linux-dpcpp-cuda-inputs-" + suffix + ".tar"),
+              rocmArchive = incoming("native-rocm-state-" + suffix + "-sources.tar"),
+              acppArchive = incoming("native-acpp-state-" + suffix + "-sources.tar"),
+              hipArchive = incoming("native-rocm-hip-headers-" + suffix + ".tar"),
+              toolsBundle = path.join(paths.runnerTemp, toolName), hermesRoot = path.join(paths.runnerTemp, hermesName);
+
+            restore(hermesArchive, "HERMES_BUNDLE", [hermesName], paths.runnerTemp, 8 * 1024 ** 3);
+            restore(toolsArchive, "LINUX_TOOLS_BUNDLE", [toolName], paths.runnerTemp, 1024 ** 3);
+            restore(linuxSdkArchive, "LINUX_SDK_BUNDLE", [paths.sourceName, paths.sdkName], "/tmp", 64 * 1024 ** 3, 30 * 60 * 1000);
+            restore(linuxSourcesArchive, "LINUX_SOURCES_BUNDLE", ["mom-native-linux-source-prerequisites-" + suffix], "/tmp", 8 * 1024 ** 3);
+            restore(dpcppArchive, "DPCPP_CUDA_BUNDLE", ["mom-native-dpcpp-cuda-inputs-" + suffix], "/tmp", 32 * 1024 ** 3);
+            restore(rocmArchive, "ROCM_SOURCES_BUNDLE", ["mom-native-rocm-prerequisites-" + suffix], "/tmp", 16 * 1024 ** 3);
+            restore(acppArchive, "ACPP_SOURCES_BUNDLE", ["mom-native-acpp-prerequisites-" + suffix], "/tmp", 8 * 1024 ** 3);
+            restore(hipArchive, "HIP_HEADERS_BUNDLE", ["mom-native-rocm-hip-headers-" + suffix], "/tmp", 128 * 1024 ** 2);
+
+            const linuxSdk = require("./scripts/build-native-llvm21-sdk").verifyLinuxLlvmAdmission(paths.output),
+              linuxSources = ci.linuxSourceStatePaths(paths), dpcpp = ci.dpcppCudaInputsStatePaths(paths),
+              rocm = ci.rocmSourceStatePaths(paths), acpp = ci.acppStatePaths(paths),
+              toolInputs = require("./scripts/native-linux-llvm-tools").linuxLlvmToolHandoffInputs(toolsBundle,
+                {runAttempt: suffix, handoffSha256: process.env[inputPins.LINUX_TOOLS_HANDOFF]}),
+              hermes = require("./scripts/native-windows-controller-handoff").windowsControllerHandoffInputs(hermesRoot,
+                {kind: "hermes", runAttempt: suffix, handoffSha256: process.env[inputPins.HERMES_HANDOFF]}),
+              hipHeaders = require("./scripts/native-rocm-hip-headers").rocmHipHeaderInputs(paths.rocmHipHeadersRoot,
+                {runAttempt: suffix, handoffSha256: process.env[inputPins.HIP_HEADERS_HANDOFF]}),
+              sourceGit = "/usr/bin/git";
+            if (!linuxSdk.sdk || !linuxSdk.sdk.path || hermes.kind !== "hermes" || !hermes.intelRuntime ||
+                toolInputs.toolRoot !== path.join(toolsBundle, "bin")) {
+              throw new Error("Restored same-run SDK, Hermes runtime or thin Linux LLVM tool handoff is incomplete");
+            }
+            ci.verifyLinuxSources(paths, linuxSources, sourceGit);
+            const dpcppManifest = readBuildJson(dpcpp.manifest);
+            if (ci.dpcppSourceArchivePin(dpcpp.incomingSourceTar, process.env[inputPins.LINUX_SOURCES_BUNDLE]) !==
+                dpcppManifest.source?.tarSha256) {
+              throw new Error("DPC++/CUDA manifest source cohort is not the externally pinned Linux source archive");
+            }
+            ci.auditDpcppCudaInputs(dpcpp, dpcppManifest, process.env[inputPins.DPCPP_CUDA_MANIFEST]);
+            ci.verifyRocmSources(paths, rocm, sourceGit);
+            ci.verifyAcppSource(paths, acpp, sourceGit);
+            const winStateTransport = require("./scripts/native-windows-llvm-state");
+            const winStateManifestPin = pinnedManifest(windowsManifestFile, process.env[inputPins.WINDOWS_STATE_MANIFEST]),
+              winStateManifestBytes = winStateManifestPin.bytes, winStateManifestSha = winStateManifestPin.sha256,
+              winStateManifest = JSON.parse(winStateManifestBytes.toString("utf8"));
+
+            const hostSdkMetadata = ci.buildWindowsHostSdkSourcesCi(),
+              winSdkRoot = path.join(paths.runnerTemp, "mom-native-windows-host-sdk-" + suffix, "native-windows-host-sdk-" + suffix),
+              winSdkPins = {resultSha256: fileHash(path.join(winSdkRoot, "result.json")), descriptorSha256: fileHash(path.join(winSdkRoot, "sdk.json")),
+                filesSha256: fileHash(path.join(winSdkRoot, "files.json")), overlaySha256: fileHash(path.join(winSdkRoot, "vfs-overlay.json"))};
+            if (!hostSdkMetadata || !digest.test(winSdkPins.resultSha256) || !digest.test(winSdkPins.descriptorSha256) ||
+                !digest.test(winSdkPins.filesSha256) || !digest.test(winSdkPins.overlaySha256)) {
+              throw new Error("Locally reacquired Windows host SDK is missing its hash-pinned composition receipts");
+            }
+            const winTools = {clangCl: {path: "/opt/intel/oneapi/compiler/2026.2/bin/icx-cl",
+                sha256: fileHash("/opt/intel/oneapi/compiler/2026.2/bin/icx-cl")},
+              lldLink: {path: toolInputs.lldLink, sha256: fileHash(toolInputs.lldLink), linkTarget: "lld"},
+              llvmNm: {path: toolInputs.llvmNm, sha256: fileHash(toolInputs.llvmNm)},
+              clangResourceInclude: "/opt/intel/oneapi/compiler/2026.2/lib/clang/23/include"},
+              descriptorInput = {windowsSdkRoot: winSdkRoot, windowsSdkPins: winSdkPins, hermesRoot,
+                hermesExpectation: {kind: "hermes", runAttempt: suffix, handoffSha256: process.env[inputPins.HERMES_HANDOFF]}, tools: winTools},
+              descriptorInputFile = path.join(paths.runnerTemp, "windows-llvm21-descriptor-input-" + suffix + ".json"),
+              descriptorInputBytes = Buffer.from(JSON.stringify(descriptorInput) + "\n");
+            if (fs.existsSync(descriptorInputFile) || descriptorInputBytes.length > 8 * 1024 * 1024) {
+              throw new Error("Windows LLVM descriptor recomposition input is not fresh and bounded");
+            }
+            fs.writeFileSync(descriptorInputFile, descriptorInputBytes, {flag: "wx", mode: 0o600});
+
+            const windowsState = winStateTransport.restoreWindowsNativeLlvmState(windowsArchive,
+                process.env[inputPins.WINDOWS_STATE_BUNDLE], winStateManifest, winStateManifestSha, process.env).state,
+              windowsLlvm = require("./scripts/build-native-windows-llvm21-sdk").verifyWindowsLlvmAdmission(windowsState.output, process.env),
+              admissionFile = path.join(windowsState.output, "admitted.json"), admissionSha = fileHash(admissionFile);
+            if (admissionSha !== process.env[inputPins.WINDOWS_ADMISSION]) {
+              throw new Error("Restored Windows LLVM admission receipt differs from the external pin");
+            }
+            const composed = ci.composeWindowsLlvmSdkDescriptor(descriptorInput),
+              originalDescriptorInput = fs.readFileSync(path.join(windowsState.root, "descriptor-input.json")),
+              originalProvenance = readBuildJson(path.join(windowsState.root, "descriptor-provenance.json")),
+              expectedDescriptor = Buffer.from(JSON.stringify(composed.descriptor, null, 2) + "\n");
+            if (!descriptorInputBytes.equals(originalDescriptorInput) || originalProvenance.status !== "PASS" ||
+                originalProvenance.input?.sha256 !== fileHash(descriptorInputFile) ||
+                !isDeepStrictEqual(originalProvenance.composition, composed.provenance) ||
+                !expectedDescriptor.equals(fs.readFileSync(windowsState.descriptor))) {
+              throw new Error("Restored Windows LLVM descriptor no longer recomposes from this job's SDK, tools and Hermes handoff");
+            }
+            if (!windowsLlvm.admission || fileHash(windowsLlvm.admissionFile) !== admissionSha) {
+              throw new Error("Windows LLVM state did not pass the public full admission verifier");
+            }
+
+            const resourcesRoot = path.join(paths.runnerTemp, "native-windows-rocm-resources-" + suffix),
+              resourcesConfigFile = path.join(paths.runnerTemp, "native-windows-rocm-resources-config-" + suffix + ".json"),
+              resourceConfig = {version: 1, target: "win32", source: path.join(rocm.source, "roots/rocmLlvm"),
+                clr: path.join(rocm.source, "roots/clr"), llvm: linuxSdk.sdk.path, cmake: "/usr/bin/cmake",
+                hipHeaders: hipHeaders.include, hostCompilers: {cc: "/opt/intel/oneapi/compiler/2026.2/bin/icx",
+                  cxx: "/opt/intel/oneapi/compiler/2026.2/bin/icpx"}};
+            fs.writeFileSync(resourcesConfigFile, JSON.stringify(resourceConfig, null, 2) + "\n", {flag: "wx", mode: 0o600});
+            run("scripts/build-native-rocm-resources.js", [resourcesConfigFile, resourcesRoot], 12 * 60 * 1000);
+            const resourceResult = path.join(resourcesRoot, "result.json"), comgrRoot = path.join(paths.runnerTemp, "native-windows-comgr-" + suffix);
+            run("scripts/build-native-windows-comgr-sdk.js", ["configure", rocm.source + "/roots/rocmLlvm", windowsState.descriptor,
+              windowsState.output, linuxSdk.sdk.path, "/opt/intel/oneapi/compiler/2026.2/bin/icx", resourceResult, comgrRoot, "2"], 12 * 60 * 1000);
+            run("scripts/build-native-windows-comgr-sdk.js", ["build", comgrRoot], 12 * 60 * 1000);
+
+            const hiprtcBuilder = require("./scripts/build-native-windows-hiprtc-sdk"),
+              hiprtcSource = path.join(rocm.source, "roots/clr"),
+              hiprtcCheckout = path.join(paths.runnerTemp, "native-windows-hiprtc-source-" + suffix),
+              hiprtcRoot = path.join(paths.runnerTemp, "native-windows-hiprtc-" + suffix),
+              hiprtcConfigFile = path.join(paths.runnerTemp, "native-windows-hiprtc-config-" + suffix + ".json");
+            function runSourceGit(args, capMs = 2 * 60 * 1000) {
+              const timeoutMs = boundedTimeout(capMs), seconds = Math.floor(timeoutMs / 1000),
+                sourceEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
+              Object.assign(sourceEnv, {GIT_ALLOW_PROTOCOL: "file", GIT_ATTR_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null",
+                GIT_CONFIG_NOSYSTEM: "1", GIT_NO_LAZY_FETCH: "1", GIT_NO_REPLACE_OBJECTS: "1", GIT_OPTIONAL_LOCKS: "0",
+                GIT_TERMINAL_PROMPT: "0"});
+              const result = spawnSync("/usr/bin/timeout", ["--signal=TERM", "--kill-after=5s", seconds + "s", sourceGit, ...args],
+                {cwd: repo, env: sourceEnv, encoding: "utf8", maxBuffer: 4 << 20, timeout: timeoutMs + 7_000});
+              if (result.error || result.signal || result.status !== 0) {
+                throw new Error("Bounded pinned HIPRTC source preparation failed", {cause: result.error});
+              }
+              return result.stdout || "";
+            }
+            if ([hiprtcCheckout, hiprtcRoot, hiprtcConfigFile].some(file => fs.existsSync(file))) {
+              throw new Error("Windows HIPRTC source and output paths must be fresh for this run");
+            }
+            const hiprtcSourceRevision = runSourceGit(["-C", hiprtcSource, "rev-parse", "--verify", hiprtcBuilder.clrRevision + "^{commit}"]).trim();
+            if (hiprtcSourceRevision !== hiprtcBuilder.clrRevision) {
+              throw new Error("The selected ROCm CLR bare source does not contain the pinned HIPRTC revision");
+            }
+            // The source transport is bare; HIPRTC admission requires files in a clean ordinary checkout.
+            runSourceGit(["clone", "--shared", "--no-checkout", "--", hiprtcSource, hiprtcCheckout]);
+            runSourceGit(["-C", hiprtcCheckout, "checkout", "--detach", hiprtcBuilder.clrRevision]);
+            if (runSourceGit(["-C", hiprtcCheckout, "rev-parse", "HEAD"]).trim() !== hiprtcBuilder.clrRevision) {
+              throw new Error("Windows HIPRTC checkout differs from its pinned ROCm CLR source revision");
+            }
+            const hiprtcConfig = {source: hiprtcCheckout, descriptorFile: windowsState.descriptor, hipInclude: hipHeaders.include,
+              comgrResult: path.join(comgrRoot, "result.json"), deviceReceipt: resourceResult,
+              deviceInstall: path.join(resourcesRoot, "install"), llvmAr: path.join(toolInputs.toolRoot, "llvm-ar"), output: hiprtcRoot};
+            fs.writeFileSync(hiprtcConfigFile, JSON.stringify(hiprtcConfig, null, 2) + "\n", {flag: "wx", mode: 0o600});
+            run("scripts/build-native-windows-hiprtc-sdk.js", [hiprtcConfigFile], 5 * 60 * 1000);
+            const hiprtcResult = path.join(hiprtcRoot, "result.json"), hiprtcReceipt = readBuildJson(hiprtcResult);
+            if (hiprtcReceipt.role !== "windows-hiprtc-static-host" || hiprtcReceipt.sourceRevision !== hiprtcBuilder.clrRevision ||
+                hiprtcReceipt.buildOnly !== true || hiprtcReceipt.compiled !== true || hiprtcReceipt.executed !== false ||
+                hiprtcReceipt.publicationQualified !== false) {
+              throw new Error("Windows HIPRTC source builder did not return its expected build-only receipt");
+            }
+
+            const cudart = require("./scripts/prepare-native-cudart-windows"), cudartCatalog = cudart.windowsCudartCatalog(),
+              cudartArchive = path.join(paths.runnerTemp, cudartCatalog.archive.fileName), cudartRoot = path.join(paths.runnerTemp, "native-windows-cudart-" + suffix),
+              curlTimeout = boundedTimeout(5 * 60 * 1000), curl = spawnSync("/usr/bin/curl", ["--fail", "--show-error", "--location", "--proto", "=https",
+                "--proto-redir", "=https", "--max-redirs", "5", "--retry", "3", "--connect-timeout", "15", "--max-time",
+                String(Math.max(1, Math.floor(curlTimeout / 1000))), "--max-filesize", String(cudartCatalog.archive.bytes), "--output", cudartArchive,
+                cudartCatalog.archive.url], {cwd: paths.runnerTemp, env: process.env, stdio: "inherit", timeout: curlTimeout + 5_000});
+            if (curl.error || curl.signal || curl.status !== 0 || fs.statSync(cudartArchive).size !== cudartCatalog.archive.bytes ||
+                fileHash(cudartArchive) !== cudartCatalog.archive.sha256) {
+              throw new Error("Pinned Windows CUDA Runtime archive download failed size/SHA-256 admission", {cause: curl.error});
+            }
+            cudart.prepareWindowsCudart(cudartArchive, cudartRoot);
+            const cudartInputs = cudart.windowsCudartInputs(cudartRoot), amdRoot = path.join(paths.runnerTemp, "native-windows-amdhip-" + suffix);
+            run("scripts/prepare-native-amdhip-windows.js", [rocm.source, toolsBundle, process.env[inputPins.LINUX_TOOLS_HANDOFF], amdRoot],
+              16 * 60 * 1000);
+            const amdhip = require("./scripts/prepare-native-amdhip-windows").windowsAmdhipInputs(amdRoot),
+              acppRoot = path.join(paths.runnerTemp, "native-windows-acpp-" + suffix),
+              rocmRoot = paths.rocmHipHeadersRoot,
+              deviceLibraries = path.join(resourcesRoot, "install/amdgcn/bitcode");
+            run("scripts/build-native-windows-acpp-sdk.js", [acpp.preparedCheckout, windowsState.descriptor, windowsState.output,
+              path.join(linuxSdk.sdk.path, "bin"), dpcpp.cudaRoot, cudartInputs.cudartStatic,
+              path.join(dpcpp.cudaRoot, "nvvm/libdevice"), rocmRoot, amdhip.amdhip64, deviceLibraries, resourceResult, acppRoot],
+            24 * 60 * 1000);
+
+            const componentRoot = path.join("/tmp", "native-windows-host-component-" + suffix);
+            if (process.env.MOM_NATIVE_WINDOWS_HOST_COMPONENT_ROOT !== componentRoot) {
+              throw new Error("Windows host-component output must match this run's reserved final root");
+            }
+            require("./scripts/native-windows-host-component").exportWindowsHostComponent({
+                llvmOutput: windowsState.output, comgrResult: path.join(comgrRoot, "result.json"),
+                acppResult: path.join(acppRoot, "result.json"), hiprtcResult, output: componentRoot});
+          }
+          main().catch(error => {console.error(error instanceof Error ? error.stack || error.message : "Windows host component failed"); process.exitCode = 1;});
+          NODE
+
+      - name: Seal the archive-only component artifact
+        id: build
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          "use strict";
+          const fs = require("node:fs"), path = require("node:path"), {isDeepStrictEqual} = require("node:util"),
+            ci = require("./scripts/prepare-native-ci"), {fileHash, readBuildJson} = require("./scripts/build-source-inputs"),
+            {windowsHostComponentInputs} = require("./scripts/native-windows-host-component"), env = process.env,
+            suffix = env.GITHUB_RUN_ID + "-" + env.GITHUB_RUN_ATTEMPT,
+            root = path.join("/tmp", "native-windows-host-component-" + suffix), componentName = path.basename(root),
+            runnerTemp = fs.realpathSync(env.RUNNER_TEMP || ""), archive = path.join(runnerTemp, componentName + ".tar"),
+            receipt = path.join(root, "component.json"), jobDeadlineMs = Number(env.MOM_NATIVE_WINDOWS_LLVM_DEADLINE_EPOCH) * 1000,
+            deadlineMs = Math.min(Date.now() + 5 * 60 * 1000, jobDeadlineMs - 30_000), digest = /^[a-f0-9]{64}$/;
+          if (env.MOM_NATIVE_WINDOWS_HOST_COMPONENT_ROOT !== root || !/^[0-9]{1,20}-[1-9][0-9]{0,5}$/.test(suffix) ||
+              !Number.isSafeInteger(jobDeadlineMs) || !Number.isSafeInteger(deadlineMs) || deadlineMs - Date.now() < 2_000 ||
+              archive.startsWith("/tmp/")) {
+            throw new Error("Windows host-component seal paths or inherited job deadline are invalid");
+          }
+          function operationTimeout() {
+            const ms = Math.floor(deadlineMs - Date.now());
+            if (!Number.isSafeInteger(ms) || ms < 2_000) {throw new Error("Windows host-component sealing deadline exhausted");}
+            return ms;
+          }
+          const before = windowsHostComponentInputs(root), metadata = readBuildJson(receipt), manifestSha256 = fileHash(receipt);
+          if (fs.existsSync(archive) || before.files[receipt] !== manifestSha256 || metadata.buildOnly !== true || metadata.publicationQualified !== false) {
+            throw new Error("Windows host component differs from its fresh build-only manifest before sealing");
+          }
+          const expected = new Set([componentName]);
+          for (const file of Object.keys(before.files)) {
+            const relative = path.relative(root, file).split(path.sep).join("/");
+            expected.add(componentName + "/" + relative);
+            let parent = path.posix.dirname(relative);
+            while (parent !== ".") {expected.add(componentName + "/" + parent); parent = path.posix.dirname(parent);}
+          }
+          const packed = ci.packState(archive, path.dirname(root), [componentName], operationTimeout()),
+            listed = ci.listState(archive, [componentName], operationTimeout()),
+            actual = listed.map(name => name.endsWith("/") ? name.slice(0, -1) : name).sort(),
+            after = windowsHostComponentInputs(root), expandedBytes = ci.tarExpandedBytes(archive, listed.length, operationTimeout()),
+            bundleSha256 = fileHash(archive), output = env.GITHUB_OUTPUT || "", summary = env.GITHUB_STEP_SUMMARY || "";
+          if (!packed.bytes || actual.join("\0") !== [...expected].sort().join("\0") || expandedBytes < 1 || expandedBytes > 1024 ** 3 ||
+              !isDeepStrictEqual(after.files, before.files) || !digest.test(bundleSha256) || fileHash(receipt) !== manifestSha256 ||
+              !path.isAbsolute(output) || !path.isAbsolute(summary)) {
+            throw new Error("Final Windows host-component tar is incomplete, changed, or outside its archive-only closure");
+          }
+          operationTimeout();
+          fs.appendFileSync(output, `bundle_sha256=${bundleSha256}\nmanifest_sha256=${manifestSha256}\nartifact_name=${componentName}.tar\n`);
+          fs.appendFileSync(summary, "### Windows static host component\n- Raw artifact: " + componentName + ".tar (SHA-256 " + bundleSha256 + ").\n" +
+            "- Component manifest SHA-256: " + manifestSha256 + ".\n- Build-only: true; executed: false; publication-qualified: false.\n" +
+            "- No runtime execution, GPU validation or redistribution qualification was performed.\n");
+          NODE
+
+      - name: Upload only the static Windows host component
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: ${{ steps.build.outputs.artifact_name }}
+          path: ${{ runner.temp }}/native-windows-host-component-${{ github.run_id }}-${{ github.run_attempt }}.tar
+          if-no-files-found: error
+          archive: false
+          compression-level: 0
+          retention-days: 1

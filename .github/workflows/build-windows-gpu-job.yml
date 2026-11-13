@@ -1,0 +1,193 @@
+name: Build one Windows GPU factory
+
+on:
+  workflow_call:
+    inputs:
+      profile:
+        required: true
+        type: string
+      source_bundle_sha256:
+        required: true
+        type: string
+      dpcpp_bundle_sha256:
+        required: false
+        default: ""
+        type: string
+      dpcpp_manifest_sha256:
+        required: false
+        default: ""
+        type: string
+      acpp_source_bundle_sha256:
+        required: false
+        default: ""
+        type: string
+      acpp_sdk_bundle_sha256:
+        required: false
+        default: ""
+        type: string
+      frontend_bundle_sha256:
+        required: false
+        default: ""
+        type: string
+      frontend_handoff_sha256:
+        required: false
+        default: ""
+        type: string
+      tools_bundle_sha256:
+        required: true
+        type: string
+      tools_handoff_sha256:
+        required: true
+        type: string
+      images_bundle_sha256:
+        required: false
+        default: ""
+        type: string
+      hip_headers_bundle_sha256:
+        required: false
+        default: ""
+        type: string
+      hip_headers_handoff_sha256:
+        required: false
+        default: ""
+        type: string
+    outputs:
+      bundle_sha256:
+        value: ${{ jobs.factory.outputs.bundle_sha256 }}
+      result_sha256:
+        value: ${{ jobs.factory.outputs.result_sha256 }}
+      config_sha256:
+        value: ${{ jobs.factory.outputs.config_sha256 }}
+      handoff_sha256:
+        value: ${{ jobs.factory.outputs.handoff_sha256 }}
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  factory:
+    name: Windows GPU ${{ inputs.profile }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      MOM_AOT_BUILD_ONLY: "1"
+      MOM_BUILD_JOBS: "2"
+      MOM_NATIVE_SOURCE_DIR: /tmp/mom-native-prerequisites-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_LINUX_SDK_DIR: /tmp/mom-native-llvm21-sdk-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_IO_SOURCE_DIR: /tmp/mom-native-io-prerequisites-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_IO_SDK_DIR: /tmp/mom-native-io-openssl-sdk-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_LINUX_SOURCES_DIR: /tmp/mom-native-linux-source-prerequisites-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_ZSTD_SOURCE_DIR: /tmp/mom-native-zstd-prerequisites-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_ZSTD_SDK_DIR: /tmp/mom-native-zstd-sdk-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_LINUX_JIT_RESOURCES_DIR: /tmp/mom-native-linux-jit-resources-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_ROCM_COMGR_SDK_DIR: /tmp/mom-native-rocm-comgr-sdk-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_ROCM_RESOURCES_DIR: /tmp/mom-native-rocm-resources-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_ROCM_HIP_HEADERS_DIR: /tmp/mom-native-rocm-hip-headers-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_ROCM_HOST_SDK_DIR: /tmp/mom-native-rocm-host-sdk-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_LINUX_SDK_DESCRIPTOR_DIR: /tmp/mom-native-linux-sdk-descriptor-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_DPCPP_CUDA_INPUTS_DIR: /tmp/mom-native-dpcpp-cuda-inputs-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_ACPP_SOURCE_DIR: /tmp/mom-native-acpp-prerequisites-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_WINDOWS_GPU_DIR: /tmp/mom-native-windows-gpu-${{ inputs.profile }}-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_WINDOWS_GPU_PROFILE: ${{ inputs.profile }}
+      MOM_NATIVE_WINDOWS_GPU_SOURCE_BUNDLE_SHA256: ${{ inputs.source_bundle_sha256 }}
+      MOM_NATIVE_WINDOWS_GPU_DPCPP_BUNDLE_SHA256: ${{ inputs.dpcpp_bundle_sha256 }}
+      MOM_NATIVE_WINDOWS_GPU_DPCPP_MANIFEST_SHA256: ${{ inputs.dpcpp_manifest_sha256 }}
+      MOM_NATIVE_WINDOWS_GPU_ACPP_SOURCE_BUNDLE_SHA256: ${{ inputs.acpp_source_bundle_sha256 }}
+      MOM_NATIVE_WINDOWS_GPU_ACPP_SDK_BUNDLE_SHA256: ${{ inputs.acpp_sdk_bundle_sha256 }}
+      MOM_NATIVE_WINDOWS_GPU_FRONTEND_BUNDLE_SHA256: ${{ inputs.frontend_bundle_sha256 }}
+      MOM_NATIVE_WINDOWS_GPU_FRONTEND_HANDOFF_SHA256: ${{ inputs.frontend_handoff_sha256 }}
+      MOM_NATIVE_WINDOWS_GPU_TOOLS_BUNDLE_SHA256: ${{ inputs.tools_bundle_sha256 }}
+      MOM_NATIVE_WINDOWS_GPU_TOOLS_HANDOFF_SHA256: ${{ inputs.tools_handoff_sha256 }}
+      MOM_NATIVE_WINDOWS_GPU_IMAGES_BUNDLE_SHA256: ${{ inputs.images_bundle_sha256 }}
+      MOM_NATIVE_WINDOWS_GPU_HIP_HEADERS_BUNDLE_SHA256: ${{ inputs.hip_headers_bundle_sha256 }}
+      MOM_NATIVE_WINDOWS_GPU_HIP_HEADERS_HANDOFF_SHA256: ${{ inputs.hip_headers_handoff_sha256 }}
+    outputs:
+      bundle_sha256: ${{ steps.factory.outputs.windows_gpu_bundle_sha256 }}
+      result_sha256: ${{ steps.factory.outputs.windows_gpu_result_sha256 }}
+      config_sha256: ${{ steps.factory.outputs.windows_gpu_config_sha256 }}
+      handoff_sha256: ${{ steps.factory.outputs.windows_gpu_handoff_sha256 }}
+    steps:
+      - name: Validate profile and start aggregate job deadline
+        run: |
+          case "$MOM_NATIVE_WINDOWS_GPU_PROFILE" in oneapi|dpcpp|dpcpp-opencl|acpp-cuda|acpp-hip) ;; *) exit 2;; esac
+          echo "MOM_NATIVE_WINDOWS_GPU_DEADLINE_EPOCH=$(( $(date -u +%s) + 3300 ))" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24.15.0
+      - name: Install locked build-time JavaScript dependencies without lifecycle builds
+        timeout-minutes: 5
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Test factory inputs and job safety before mutation
+        run: node --test tests/native_windows_gpu_config.js tests/native_windows_gpu_ci_job.js tests/native_windows_host_sdk_inputs.js
+      - name: Install SDK extraction tools and the selected compiler
+        timeout-minutes: 15
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cmake ninja-build python3 binutils 7zip msitools
+          if [[ "$MOM_NATIVE_WINDOWS_GPU_PROFILE" == oneapi ]]; then
+            node <<'NODE'
+          const ci = require('./scripts/prepare-native-ci');
+          ci.provisionOneApi(ci.ciPaths(), undefined, 12 * 60 * 1000);
+          NODE
+          fi
+      - name: Download original same-run source cohort
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: native-linux-sdk-state-${{ github.run_id }}-${{ github.run_attempt }}-sources.tar
+          path: ${{ runner.temp }}/incoming
+      - name: Download pinned DPC++ header and CUDA inputs
+        if: inputs.profile != 'acpp-hip'
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: native-linux-dpcpp-cuda-inputs-${{ github.run_id }}-${{ github.run_attempt }}.tar
+          path: ${{ runner.temp }}/incoming
+      - name: Download source-built inspection and isolation tools
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: native-linux-llvm-tools-${{ github.run_id }}-${{ github.run_attempt }}.tar
+          path: ${{ runner.temp }}/incoming
+      - name: Download original CUDA images only for the CUDA factory
+        if: inputs.profile == 'dpcpp' || inputs.profile == 'acpp-cuda'
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: native-linux-cuda-images-${{ github.run_id }}-${{ github.run_attempt }}.tar
+          path: ${{ runner.temp }}/incoming
+      - name: Download same-run ACPP source for ACPP factories
+        if: startsWith(inputs.profile, 'acpp-')
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: native-acpp-state-${{ github.run_id }}-${{ github.run_attempt }}-sources.tar
+          path: ${{ runner.temp }}/incoming
+      - name: Download same-run ACPP SDK for ACPP factories
+        if: startsWith(inputs.profile, 'acpp-')
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: native-linux-acpp-cuda-hip-sdk-${{ github.run_id }}-${{ github.run_attempt }}.tar
+          path: ${{ runner.temp }}/incoming
+      - name: Download source-admitted LLVM ACPP frontend
+        if: startsWith(inputs.profile, 'acpp-')
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: native-linux-llvm-acpp-frontend-${{ github.run_id }}-${{ github.run_attempt }}.tar
+          path: ${{ runner.temp }}/incoming
+      - name: Download verified HIP headers only for the HIP factory
+        if: inputs.profile == 'acpp-hip'
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: native-rocm-hip-headers-${{ github.run_id }}-${{ github.run_attempt }}.tar
+          path: ${{ runner.temp }}/incoming
+      - name: Admit original inputs, compose SDK and build one isolated factory
+        id: factory
+        timeout-minutes: 55
+        run: scripts/run-bounded-native-ci.sh node scripts/run-native-windows-gpu-ci.js "$MOM_NATIVE_WINDOWS_GPU_PROFILE"
+      - name: Retain build-only factory handoff, not a release executable
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: native-windows-gpu-${{ inputs.profile }}-${{ github.run_id }}-${{ github.run_attempt }}.tar
+          path: ${{ runner.temp }}/native-windows-gpu-${{ inputs.profile }}-${{ github.run_id }}-${{ github.run_attempt }}.tar
+          if-no-files-found: error
+          archive: false
+          compression-level: 0
+          retention-days: 1

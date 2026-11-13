@@ -8,11 +8,11 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
-  # A cold LLVM/AdaptiveCpp seed is hours of reusable work. Queue a newer push behind it so the
-  # cache is saved instead of cancelling near completion and rebuilding the same compiler.
+  # Keep qualification runs serialized per ref without interrupting an in-flight native run.
   group: stability-${{ github.ref }}
   cancel-in-progress: false
 

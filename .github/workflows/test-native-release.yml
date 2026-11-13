@@ -1,0 +1,231 @@
+name: Test native release executable (runtime-only, not publication qualification)
+
+# The caller supplies the same-run executable hash from its build audit. This workflow exercises
+# the binary only; it does not re-admit build provenance or qualify a release for publication.
+
+on:
+  workflow_call:
+    inputs:
+      artifact_name:
+        description: Exact same-run raw or packed native executable artifact for this run attempt
+        required: true
+        type: string
+      expected_sha256:
+        description: SHA-256 of the selected executable from the build audit, not its pre-packing source
+        required: true
+        type: string
+      platform:
+        description: Target platform for the binary; must be linux or win32 and match this runner
+        required: true
+        type: string
+      variant:
+        description: Select raw or packed output without replacing the other artifact
+        required: false
+        default: raw
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  native-runtime:
+    name: Runtime-only ${{ inputs.variant }} / ${{ matrix.lane }} checks (not publication qualification)
+    runs-on: ${{ inputs.platform == 'win32' && 'windows-2022' || 'ubuntu-24.04' }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [cpu-cli, portable-cpu]
+    env:
+      MOM_TEST_NO_POOL_NETWORK: "1"
+
+    steps:
+      - name: Checkout test controller
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24.15.0
+
+      - name: Validate explicit candidate inputs before artifact access
+        shell: bash
+        env:
+          NATIVE_RUNTIME_ARTIFACT: ${{ inputs.artifact_name }}
+          NATIVE_EXPECTED_SHA256: ${{ inputs.expected_sha256 }}
+          NATIVE_PLATFORM: ${{ inputs.platform }}
+          NATIVE_VARIANT: ${{ inputs.variant }}
+        run: |
+          node <<'NODE'
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const artifactName = process.env.NATIVE_RUNTIME_ARTIFACT || "";
+          const sha256 = process.env.NATIVE_EXPECTED_SHA256 || "";
+          const platform = process.env.NATIVE_PLATFORM || "";
+          const variant = process.env.NATIVE_VARIANT || "raw";
+          const run = process.env.GITHUB_RUN_ID || "";
+          const attempt = process.env.GITHUB_RUN_ATTEMPT || "";
+          if (!/^[0-9]+$/.test(run) || !/^[0-9]+$/.test(attempt)) {throw new Error("missing workflow run identity");}
+          if (!["linux", "win32"].includes(platform)) {throw new Error("platform must be linux or win32");}
+          if (!["raw", "packed"].includes(variant)) {throw new Error("variant must be raw or packed");}
+          const artifactPlatform = platform === "win32" ? "windows" : platform;
+          const packingPrefix = variant === "packed" ? "packed-" : "";
+          const expectedArtifactName = `native-${artifactPlatform}-${packingPrefix}executable-${run}-${attempt}`;
+          if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(artifactName) || artifactName.length > 128) {
+            throw new Error("artifact_name must be a 1-128 character artifact name without path syntax");
+          }
+          if (artifactName !== expectedArtifactName) {throw new Error("artifact_name must identify this run attempt's exact native executable artifact");}
+          if (!/^[0-9a-f]{64}$/.test(sha256)) {throw new Error("expected_sha256 must be 64 lowercase hexadecimal digits");}
+          const current = process.platform === "win32" ? "win32" : process.platform === "linux" ? "linux" : "unsupported";
+          if (process.arch !== "x64" || current !== platform) {throw new Error("platform must match this Linux/Windows x64 runner");}
+          const directory = path.join(process.env.RUNNER_TEMP || "", `mom-native-runtime-${run}-${attempt}`);
+          if (!path.isAbsolute(directory) || fs.existsSync(directory)) {throw new Error("runtime artifact destination must be a new absolute runner-temp path");}
+          console.log("Accepted runtime-only candidate input for " + platform + " on this x64 runner.");
+          NODE
+
+      - name: Download executable-file artifact from this workflow run
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: ${{ runner.temp }}/mom-native-runtime-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Validate downloaded raw binary and restore Linux execute mode
+        shell: bash
+        env:
+          NATIVE_RUNTIME_DIRECTORY: ${{ runner.temp }}/mom-native-runtime-${{ github.run_id }}-${{ github.run_attempt }}
+          NATIVE_RUNTIME_BINARY: ${{ runner.temp }}/mom-native-runtime-${{ github.run_id }}-${{ github.run_attempt }}/${{ inputs.platform == 'win32' && 'mom.exe' || 'mom' }}
+          NATIVE_EXPECTED_SHA256: ${{ inputs.expected_sha256 }}
+          NATIVE_PLATFORM: ${{ inputs.platform }}
+        run: |
+          node <<'NODE'
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const {fileHash} = require("./scripts/build-source-inputs.js");
+          const directory = process.env.NATIVE_RUNTIME_DIRECTORY || "";
+          const binary = process.env.NATIVE_RUNTIME_BINARY || "";
+          const platform = process.env.NATIVE_PLATFORM || "";
+          const expected = process.env.NATIVE_EXPECTED_SHA256 || "";
+          const name = platform === "win32" ? "mom.exe" : "mom";
+          const pathApi = platform === "win32" ? path.win32 : path.posix;
+          const sameDirectory = platform === "win32" ?
+            pathApi.resolve(pathApi.dirname(binary)).toLowerCase() === pathApi.resolve(directory).toLowerCase() :
+            pathApi.resolve(pathApi.dirname(binary)) === pathApi.resolve(directory);
+          const root = fs.lstatSync(directory);
+          if (!root.isDirectory() || root.isSymbolicLink() || !sameDirectory || pathApi.basename(binary) !== name) {
+            throw new Error("runtime artifact must be extracted to its exact run-scoped directory");
+          }
+          const entries = fs.readdirSync(directory);
+          if (entries.length !== 1 || entries[0] !== name) {throw new Error("runtime artifact must contain only the expected executable file");}
+          const stat = fs.lstatSync(binary);
+          if (!stat.isFile() || stat.isSymbolicLink() || stat.size === 0 || stat.size >= (1 << 30)) {
+            throw new Error("runtime artifact must be a nonempty regular executable smaller than 1 GiB");
+          }
+          const actual = fileHash(binary);
+          if (!/^[0-9a-f]{64}$/.test(expected) || actual !== expected) {throw new Error("runtime artifact SHA-256 differs from the explicit build-audit hash");}
+          if (platform === "linux" && !(stat.mode & 0o111)) {fs.chmodSync(binary, stat.mode | 0o111);}
+          console.log("Selected executable SHA-256 verified: " + actual);
+          NODE
+
+      - name: Install pinned Intel OpenCL CPU runtime (Linux)
+        if: inputs.platform == 'linux' && matrix.lane == 'portable-cpu'
+        shell: bash
+        run: |
+          set -euo pipefail
+          key_source="$(mktemp)"
+          keyring="$(mktemp)"
+          source_list="/etc/apt/sources.list.d/mom-oneapi-opencl-cpu-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.list"
+          trap 'status=$?; rm -f -- "$key_source" "$keyring" || true; sudo rm -f -- "$source_list" || true; exit "$status"' EXIT
+          curl --fail --location --proto '=https' --tlsv1.2 --max-time 60 \
+            https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB -o "$key_source"
+          printf '%s  %s\n' db932ba032a71f732dc415eef5f4f185fc7ae768487d7a357bc2772746b6c48c "$key_source" | sha256sum --check
+          gpg --batch --yes --dearmor --output "$keyring" "$key_source"
+          chmod 0644 "$keyring"
+          printf 'deb [signed-by=%s] https://apt.repos.intel.com/oneapi all main\n' "$keyring" |
+            sudo tee "$source_list" >/dev/null
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            intel-oneapi-runtime-opencl=2026.2.0-863 intel-oneapi-runtime-dpcpp-sycl-opencl-cpu=2026.2.0-863
+          test "$(dpkg-query -W -f='${Version}' intel-oneapi-runtime-opencl)" = '2026.2.0-863'
+          test "$(dpkg-query -W -f='${Version}' intel-oneapi-runtime-dpcpp-sycl-opencl-cpu)" = '2026.2.0-863'
+          icd='/etc/OpenCL/vendors/intel64.icd'
+          driver='/opt/intel/oneapi/redist/lib/libintelocl.so'
+          test -r "$icd" && test -L "$driver" && test -f "$driver"
+          test "$(tr -d '\r\n' <"$icd")" = "$driver"
+          resolved="$(readlink -e -- "$driver")"
+          case "$resolved" in /opt/intel/oneapi/redist/lib/libintelocl.so.*) ;; *) echo "Unexpected Intel CPU ICD target: $resolved" >&2; exit 1 ;; esac
+
+      - name: Install pinned Intel OpenCL CPU runtime (Windows)
+        if: inputs.platform == 'win32' && matrix.lane == 'portable-cpu'
+        shell: pwsh
+        run: |
+          $workspace = Join-Path $env:RUNNER_TEMP ("mom-dev-opencl-cpu-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT")
+          & .\scripts\install-dev.ps1 -Component opencl-cpu -Workspace $workspace
+          $root = 'C:\Program Files (x86)\Common Files\Intel\Shared Libraries\'
+          $key = 'HKLM:\SOFTWARE\Khronos\OpenCL\Vendors'
+          $registry = Get-ItemProperty -LiteralPath $key
+          $paths = @($registry.PSObject.Properties | Where-Object {
+            $_.Name.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) -and
+              [IO.Path]::GetFileName($_.Name) -ieq 'intelocl64.dll' -and (Test-Path -LiteralPath $_.Name -PathType Leaf)
+          } | ForEach-Object { $_.Name })
+          if (-not $paths.Count) { throw 'The standalone Intel CPU OpenCL ICD did not register below its pinned shared-runtime root.' }
+
+      - name: Install JavaScript dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Install strace for Linux syscall qualification
+        if: inputs.platform == 'linux' && matrix.lane == 'cpu-cli'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends strace
+
+      - name: Run runtime-only CPU and CLI gates
+        if: matrix.lane == 'cpu-cli'
+        shell: bash
+        env:
+          NATIVE_RUNTIME_BINARY: ${{ runner.temp }}/mom-native-runtime-${{ github.run_id }}-${{ github.run_attempt }}/${{ inputs.platform == 'win32' && 'mom.exe' || 'mom' }}
+          NATIVE_EXPECTED_SHA256: ${{ inputs.expected_sha256 }}
+        run: |
+          set +e
+          node scripts/check-native-release.js "$NATIVE_RUNTIME_BINARY" cpu --sha256 "$NATIVE_EXPECTED_SHA256"
+          cpu_status=$?
+          node scripts/check-native-release.js "$NATIVE_RUNTIME_BINARY" cli --sha256 "$NATIVE_EXPECTED_SHA256"
+          cli_status=$?
+          set -e
+          printf 'Runtime-only gate results: CPU=%s CLI=%s\n' "$cpu_status" "$cli_status"
+          if [[ $cpu_status -ne 0 || $cli_status -ne 0 ]]; then
+            exit 1
+          fi
+
+      - name: Run runtime-only Linux syscall trace gate
+        if: inputs.platform == 'linux' && matrix.lane == 'cpu-cli'
+        shell: bash
+        env:
+          NATIVE_RUNTIME_BINARY: ${{ runner.temp }}/mom-native-runtime-${{ github.run_id }}-${{ github.run_attempt }}/${{ inputs.platform == 'win32' && 'mom.exe' || 'mom' }}
+          NATIVE_EXPECTED_SHA256: ${{ inputs.expected_sha256 }}
+        run: node scripts/check-native-release.js "$NATIVE_RUNTIME_BINARY" trace --sha256 "$NATIVE_EXPECTED_SHA256"
+
+      - name: Upload Linux native syscall traces
+        if: always() && inputs.platform == 'linux' && matrix.lane == 'cpu-cli'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: native-syscall-traces-${{ inputs.expected_sha256 }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/mom-native-trace-${{ github.run_id }}-${{ github.run_attempt }}-*/*.strace
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Run runtime-only portable OpenCL CPU gate
+        if: matrix.lane == 'portable-cpu'
+        shell: bash
+        env:
+          NATIVE_RUNTIME_BINARY: ${{ runner.temp }}/mom-native-runtime-${{ github.run_id }}-${{ github.run_attempt }}/${{ inputs.platform == 'win32' && 'mom.exe' || 'mom' }}
+          NATIVE_EXPECTED_SHA256: ${{ inputs.expected_sha256 }}
+        run: |
+          set +e
+          node scripts/check-native-release.js "$NATIVE_RUNTIME_BINARY" gpu-portable-cpu --sha256 "$NATIVE_EXPECTED_SHA256"
+          status=$?
+          set -e
+          printf 'Runtime-only portable OpenCL CPU gate result: %s\n' "$status"
+          if [[ $status -ne 0 ]]; then
+            exit 1
+          fi

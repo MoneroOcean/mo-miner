@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Package every policy-selected Linux worker from the prepared host toolchain. Each worker and its
-# runtime live in an isolated directory so incompatible oneAPI/nightly/AdaptiveCpp libraries never
-# share a process. compiler-policy.js chooses the directory before spawning each worker.
+# Engineering Mode archive: package every policy-selected Linux worker from the prepared host
+# toolchain. Each worker and runtime live in an isolated directory so incompatible oneAPI/nightly/
+# AdaptiveCpp libraries never share a process. compiler-policy.js chooses the directory per worker.
 set -euo pipefail
 
 version="${1:-}"
@@ -68,7 +68,7 @@ for key in "${compilers[@]}"; do
   worker="$compiler_build_dir/$key/mom.node"
   profile="$worker.build-profile"
   [ -s "$worker" ] || {
-    echo "$worker is missing; run npm run build:release with the native SDKs installed." >&2
+    echo "$worker is missing; run 'npm run build:release -- --engineering-archive --clean' to rebuild Engineering workers, then retry packaging." >&2
     exit 1
   }
   [ -s "$profile" ] || {
@@ -86,8 +86,8 @@ for key in "${compilers[@]}"; do
     exit 1
   fi
   if [ "$portable" != 1 ] || [ "$cpu" != unset ]; then
-    echo "$worker is not a portable release worker (portable=$portable, cpu=$cpu)." >&2
-    echo "Run npm run build:release with the native SDKs installed before packaging." >&2
+    echo "$worker is not a portable Engineering worker (portable=$portable, cpu=$cpu)." >&2
+    echo "Run 'npm run build:release -- --engineering-archive --clean' to rebuild portable Engineering workers before packaging." >&2
     exit 1
   fi
 done
@@ -95,18 +95,18 @@ done
 # fallback binary from Docker; CI supplies the same official SEA-capable toolchain through scripts/dev-container.sh.
 if [ -z "$node_bin" ]; then node_bin="$(command -v node || true)"; fi
 if [ -z "$node_bin" ] || [ ! -x "$node_bin" ]; then
-  echo "Native Linux packaging requires an executable official Node binary with SEA support" >&2
+  echo "Engineering Linux archive packaging requires an executable official Node binary with SEA support" >&2
   exit 1
 fi
 if ! LC_ALL=C grep -aq 'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2' "$node_bin"; then
-  echo "Native Linux packaging requires an official Node binary with the SEA fuse; install the pinned Node toolchain" >&2
+  echo "Engineering Linux archive packaging requires an official Node binary with the SEA fuse; install the pinned Node toolchain" >&2
   exit 1
 fi
 
 # Reject invalid inputs first, but require the packaging tools before changing any output.
 for tool in patchelf readelf; do
   command -v "$tool" >/dev/null 2>&1 || {
-    echo "Linux release packaging requires $tool (install patchelf and binutils)." >&2
+    echo "Engineering Linux archive packaging requires $tool (install patchelf and binutils)." >&2
     exit 1
   }
 done
@@ -386,7 +386,7 @@ cp sycl/kawpow/device.inc "$libs_dir/dpcpp/kawpow_device.inc"
 cp sycl/kawpow/keccak.inc "$libs_dir/dpcpp/kawpow_keccak.inc"
 for key in "${compilers[@]}"; do
   [ -s "$compiler_build_dir/$key/mom.node" ] || {
-    echo "Native Linux packaging cannot read $compiler_build_dir/$key/mom.node" >&2
+    echo "Engineering Linux archive packaging cannot read $compiler_build_dir/$key/mom.node" >&2
     exit 1
   }
 done

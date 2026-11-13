@@ -2,14 +2,22 @@ name: Build and test release archives
 
 on:
   workflow_call:
-    inputs:
-      upload_artifacts:
-        description: Upload the validated archives for a release publishing job
-        required: false
-        default: false
-        type: boolean
+    outputs:
+      linux_archive_artifact_name:
+        description: Exact package artifact produced after the complete Linux native runtime gate
+        value: ${{ jobs.package-linux.outputs.archive_artifact_name }}
+      linux_archive_sha256:
+        description: SHA-256 of the exact Linux archive admitted by package-native-application
+        value: ${{ jobs.package-linux.outputs.archive_sha256 }}
+      windows_archive_artifact_name:
+        description: Exact package artifact produced after the complete Windows native runtime gate
+        value: ${{ jobs.package-windows.outputs.archive_artifact_name }}
+      windows_archive_sha256:
+        description: SHA-256 of the exact Windows archive admitted by package-native-application
+        value: ${{ jobs.package-windows.outputs.archive_sha256 }}
 
 permissions:
+  actions: read
   contents: read
 
 env:
@@ -19,9 +27,8 @@ env:
   MOM_BUILD_JOBS: "2"
   ONEAPI_ROOT: C:/Program Files (x86)/Intel/oneAPI
 
-# GitHub-hosted runners expose no supported discrete GPU. The archive gates below therefore run the
-# native CPU suite plus one mandatory portable SYCL/OpenCL CPU vector for every GPU algorithm. They
-# do not instantiate hardware lanes that would merely be reported as skipped.
+# The native reusable workflow owns target builds and the complete raw + packed CPU runtime gate.
+# These source checks remain independent required gates; package jobs wait for the successful whole call.
 jobs:
   source-quality:
     name: Source / lint and logic
@@ -29,10 +36,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24.15.0
 
@@ -63,8 +70,19 @@ jobs:
       - name: Install JavaScript tooling
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends patchelf libboost-dev
-          npm install --ignore-scripts
+          sudo apt-get install -y --no-install-recommends patchelf libboost-dev libuv1-dev libssl-dev strace unzip
+          npm ci --ignore-scripts
+
+      - name: Run real CMake archive reproducibility regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake_path="$(command -v cmake || true)"
+          if [[ -z "$cmake_path" ]]; then
+            echo "CMake is required for the real archive reproducibility regression." >&2
+            exit 1
+          fi
+          MOM_TEST_CMAKE="$cmake_path" node --test tests/native_release_archive.js
 
       - name: Test offline source gate
         run: npm test -- host
@@ -76,412 +94,54 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24.15.0
 
       - name: Install JavaScript tooling
         shell: powershell
         run: |
-          npm install --ignore-scripts
+          npm ci --ignore-scripts
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Test native Windows source gate
         shell: powershell
         run: |
           .github\workflows\scripts\test-powershell-syntax.ps1
-          npm test -- logic
+          # source-quality owns lint/typecheck; keep the platform-specific logic run here.
+          node tests/run_hash.js logic
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node --test tests/windows_script_safety.js
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-  warm-linux-toolchains:
-    name: Linux toolchain / ${{ matrix.scope }}
-    needs: source-quality
-    runs-on: ubuntu-24.04
-    timeout-minutes: 120
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - scope: acpp-cuda
-            input1: scripts/build-nvidia-adaptivecpp.dockerfile
-            input2: scripts/patches/adaptivecpp-cuda-unloading.patch
-            input3: scripts/install-dev.sh
-            input4: scripts/install-cutlass.sh
-            input5: scripts/install-nvrtc-current.sh
-          - scope: acpp-hip
-            input1: scripts/build-amd-adaptivecpp.dockerfile
-            input2: scripts/install-dev.sh
-            input3: scripts/install-dev.sh
-            input4: scripts/build-amd-adaptivecpp.dockerfile
-            input5: scripts/build-amd-adaptivecpp.dockerfile
-    env:
-      # `runner` is unavailable while GitHub evaluates a job-level env block. Ubuntu runners are
-      # ephemeral, so a fixed /tmp root has the same isolation and remains usable by actions/cache.
-      MOM_BUILDX_CACHE_DIR: /tmp/mom-buildx-cache
-      MOM_BUILDX_CACHE_SCOPES: ${{ matrix.scope }}
-      MOM_BUILD_ONLY_SCOPE: ${{ matrix.scope }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Restore compiler image cache
-        id: compiler-cache
-        uses: actions/cache@v6
-        with:
-          path: /tmp/mom-buildx-cache/${{ matrix.scope }}
-          key: linux-x64-sycl-${{ matrix.scope }}-v3-${{ hashFiles(matrix.input1, matrix.input2, matrix.input3, matrix.input4, matrix.input5) }}
-          restore-keys: linux-x64-sycl-${{ matrix.scope }}-v3-
-
-      - name: Free disk space
-        if: steps.compiler-cache.outputs.cache-hit != 'true'
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /usr/local/.ghcup \
-            /opt/ghc /opt/hostedtoolcache/CodeQL /opt/hostedtoolcache/go \
-            /opt/hostedtoolcache/Python /opt/hostedtoolcache/Ruby \
-            /opt/hostedtoolcache/Java_Temurin-Hotspot_jdk
-          docker system prune --all --force || true
-
-      - name: Setup Docker Buildx
-        if: steps.compiler-cache.outputs.cache-hit != 'true'
-        uses: docker/setup-buildx-action@v4
-
-      - name: Build uncached compiler image
-        if: steps.compiler-cache.outputs.cache-hit != 'true'
-        run: ./scripts/dev-container.sh
-
-  package-linux-x64:
-    name: Ubuntu / package
-    needs:
-      - source-quality
-      - warm-linux-toolchains
-    runs-on: ubuntu-24.04
-    # Source toolchains warm in parallel prerequisite jobs. A three-hour guard still permits one
-    # cache reconstruction, but stops a stalled assembly well before GitHub's six-hour ceiling.
-    timeout-minutes: 180
-    env:
-      MOM_BUILDX_CACHE_DIR: /tmp/mom-buildx-cache
-      MOM_BUILDX_CACHE_READ_ONLY: "1"
-      MOM_BUILDX_CACHE_DELETE_AFTER_LOAD: "1"
-      MOM_BUILDX_CACHE_SCOPES: acpp-cuda,acpp-hip
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version: 24.15.0
-
-      - name: Install pinned packaging tools
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends patchelf
-          npm install --ignore-scripts
-
-      - name: Free disk space
-        run: |
-          sudo rm -rf \
-            /usr/share/dotnet \
-            /usr/local/lib/android \
-            /usr/local/share/boost \
-            /usr/local/.ghcup \
-            /opt/ghc \
-            /opt/hostedtoolcache/CodeQL \
-            /opt/hostedtoolcache/go \
-            /opt/hostedtoolcache/Python \
-            /opt/hostedtoolcache/Ruby \
-            /opt/hostedtoolcache/Java_Temurin-Hotspot_jdk
-          docker system prune --all --force || true
-          df -h
-
-      # Exercise the bundled Linux setup script without mutating GPU drivers. The later SYCL-CPU
-      # gate uses the packaged standards-only DPC++ worker through a CPU OpenCL implementation.
-      - name: Verify Linux install scripts
-        run: |
-          set -euo pipefail
-          bash -n scripts/install.sh
-          sudo env MOM_INSTALL_GPU_VENDORS=none bash scripts/install.sh
-
-      - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Restore AdaptiveCpp CUDA image cache
-        uses: actions/cache/restore@v6
-        with:
-          path: /tmp/mom-buildx-cache/acpp-cuda
-          key: linux-x64-sycl-acpp-cuda-v3-${{ hashFiles('scripts/build-nvidia-adaptivecpp.dockerfile', 'scripts/patches/adaptivecpp-cuda-unloading.patch', 'scripts/install-dev.sh', 'scripts/install-cutlass.sh', 'scripts/install-nvrtc-current.sh') }}
-          restore-keys: linux-x64-sycl-acpp-cuda-v3-
-
-      - name: Restore AdaptiveCpp HIP image cache
-        uses: actions/cache/restore@v6
-        with:
-          path: /tmp/mom-buildx-cache/acpp-hip
-          key: linux-x64-sycl-acpp-hip-v3-${{ hashFiles('scripts/build-amd-adaptivecpp.dockerfile', 'scripts/install-dev.sh') }}
-          restore-keys: linux-x64-sycl-acpp-hip-v3-
-
-      - name: Build all policy-selected native addons
-        run: MOM_GPU_BACKEND=all MOM_DOCKER_GPUS=0 ./scripts/dev-container.sh node -e "console.log('mom multi-compiler build ready')"
-
-      - name: Package release archive
-        run: MOM_GPU_BACKEND=all MOM_DOCKER_GPUS=0 MOM_REUSE_BUILT_WORKER=1 ./scripts/dev-container.sh npm run build:release -- --package-only
-
-      # Native CPU execution fits the complete bounded GPU-kernel suite in this job, like Windows.
-      # Test the archive itself; Stability need not transfer it to separate algorithm runners.
-      - name: Test extracted release archive
-        timeout-minutes: 30
-        run: |
-          set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends libnuma1 ocl-icd-libopencl1
-          version="$(node -p "require('./package.json').version")"
-          case "$version" in
-            ''|*[!0-9A-Za-z.-]*) echo "Invalid package version: $version" >&2; exit 1 ;;
-          esac
-          shopt -s nullglob
-          archives=(mom-v"$version"-lin.tgz)
-          if [ "${#archives[@]}" -ne 1 ] || [ ! -f "${archives[0]}" ] || [ -L "${archives[0]}" ]; then
-            echo "Expected exactly one regular mom-v${version}-lin.tgz archive." >&2
-            exit 1
-          fi
-          archive="${archives[0]}"
-          lscpu | sed -n -e '/^Architecture:/p' -e '/^Vendor ID:/p' -e '/^Model name:/p'
-          echo 'CPU runtime mode: native Intel OpenCL'
-          MOM_TEST_NO_POOL_NETWORK=1 .github/workflows/scripts/test-release-linux.sh "$archive" cpu
-          MOM_TEST_NO_POOL_NETWORK=1 .github/workflows/scripts/test-release-linux.sh "$archive" gpu-portable-cpu
-
-      - name: Upload Linux release artifact
-        if: inputs.upload_artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: mom-lin
-          path: mom-*-lin.tgz
-          if-no-files-found: error
-          overwrite: true
-          compression-level: 0
-          retention-days: 1
-
-  warm-windows-acpp-cuda:
-    name: Windows toolchain / acpp-cuda
+  build-native-prerequisites:
+    name: Build, pack, and runtime-check Linux and Windows candidates
     needs:
       - source-quality
       - windows-script-quality
-    runs-on: windows-2022
-    # A cold run builds the pinned LLVM 20 + AdaptiveCpp toolchain from source. Isolating and
-    # caching that build keeps the package job predictable and avoids expiring upstream artifacts.
-    # A cache hit finishes in minutes. Give the first two-core source build enough room to seed the
-    # durable cache even under hosted-runner contention. Five hours leaves cache-save margin on the
-    # two-core Windows runner while still terminating before GitHub's six-hour hard limit.
-    timeout-minutes: 300
+    uses: ./.github/workflows/build-native-prerequisites.yml
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
+  package-linux:
+    name: Package admitted Linux candidate
+    needs: build-native-prerequisites
+    uses: ./.github/workflows/package-native-application.yml
+    with:
+      platform: linux
+      packed_build_bundle_sha256: ${{ needs.build-native-prerequisites.outputs.linux_packing_bundle_sha256 }}
+      raw_executable_sha256: ${{ needs.build-native-prerequisites.outputs.linux_raw_executable_sha256 }}
+      original_build_bundle_sha256: ${{ needs.build-native-prerequisites.outputs.linux_application_build_bundle_sha256 }}
+      original_handoff_sha256: ${{ needs.build-native-prerequisites.outputs.linux_application_handoff_sha256 }}
 
-      - name: Free Windows disk space
-        shell: powershell
-        run: .github\workflows\scripts\free-windows-disk.ps1
-
-      - name: Cache AdaptiveCpp CUDA/base toolchain
-        id: acpp-cuda-cache
-        uses: actions/cache@v6
-        with:
-          path: C:/Tools/acpp-cuda
-          # The source builder pins every input that affects this output. Do not invalidate a
-          # multi-hour LLVM cache for unrelated installer orchestration edits.
-          key: windows-acpp-cuda-source-v1-${{ hashFiles('scripts/build-windows-adaptivecpp-base.ps1', 'scripts/windows-install-helpers.ps1', 'scripts/import-vcvars.ps1') }}
-
-      - name: Build uncached AdaptiveCpp CUDA/base toolchain
-        if: steps.acpp-cuda-cache.outputs.cache-hit != 'true'
-        shell: cmd
-        run: scripts\install-dev.bat -Component acpp-cuda -Jobs 2
-
-      - name: Validate AdaptiveCpp CUDA/base cache payload
-        shell: cmd
-        run: scripts\install-dev.bat -Component acpp-cuda -Jobs 2 -ValidateOnly
-
-  warm-windows-acpp-hip:
-    name: Windows toolchain / acpp-hip
-    needs:
-      - warm-windows-acpp-cuda
-    runs-on: windows-2022
-    # Two-core cold runs take about 45 minutes. The expensive source build is isolated and cached;
-    # a two-hour guard leaves download variance while detecting a stuck build promptly.
-    # Cache hits finish quickly. A first-ever two-core build is allowed to run long enough to seed
-    # the reusable binary cache instead of timing out and repeating the same LLVM work forever.
-    timeout-minutes: 120
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Free Windows disk space
-        shell: powershell
-        run: .github\workflows\scripts\free-windows-disk.ps1
-
-      - name: Restore staged AdaptiveCpp CUDA/base toolchain
-        uses: actions/cache/restore@v6
-        with:
-          path: C:/Tools/acpp-cuda
-          key: windows-acpp-cuda-source-v1-${{ hashFiles('scripts/build-windows-adaptivecpp-base.ps1', 'scripts/windows-install-helpers.ps1', 'scripts/import-vcvars.ps1') }}
-          fail-on-cache-miss: true
-
-      - name: Cache AdaptiveCpp HIP toolchain
-        id: acpp-hip-cache
-        uses: actions/cache@v6
-        with:
-          # The HIP toolchain is the CUDA/base tree plus these two generated payloads. Cache only
-          # the 17 MiB delta instead of a second 3.2 GiB copy of LLVM; the next step rehydrates the
-          # complete tree from the required base cache. The pinned HIP SDK remains a reproducible
-          # download and is independently installed/validated by the package job.
-          path: |
-            C:/Tools/acpp-amd/bin/hipSYCL/rt-backend-hip.dll
-            C:/Tools/acpp-amd/lib/hipSYCL/bitcode/libkernel-sscp-amdgpu-amdhsa-full.bc
-          key: windows-acpp-hip-overlay-v1-${{ hashFiles('scripts/install-dev.ps1', 'scripts/build-windows-adaptivecpp-base.ps1', 'scripts/build-windows-adaptivecpp-amd.ps1', 'scripts/windows-install-helpers.ps1', 'scripts/import-vcvars.ps1') }}
-
-      - name: Rehydrate cached AdaptiveCpp HIP toolchain
-        if: steps.acpp-hip-cache.outputs.cache-hit == 'true'
-        shell: powershell
-        run: |
-          Copy-Item C:\Tools\acpp-amd\bin\hipSYCL\rt-backend-hip.dll C:\Tools\acpp-cuda\bin\hipSYCL -Force
-          Copy-Item C:\Tools\acpp-amd\lib\hipSYCL\bitcode\libkernel-sscp-amdgpu-amdhsa-full.bc C:\Tools\acpp-cuda\lib\hipSYCL\bitcode -Force
-
-      - name: Build uncached AdaptiveCpp HIP toolchain
-        if: steps.acpp-hip-cache.outputs.cache-hit != 'true'
-        shell: cmd
-        run: scripts\install-dev.bat -Component acpp-hip -Jobs 2
-
-      - name: Validate AdaptiveCpp HIP cache payload
-        shell: cmd
-        # The cached compiler is self-contained. The package job installs and separately validates
-        # the pinned HIP SDK; avoiding that 1.6 GiB SDK download here keeps a cache-hit warm job fast.
-        run: >-
-          scripts\install-dev.bat -Component acpp-hip -Jobs 2 -ValidateOnly
-          -AcppHipDir ${{ steps.acpp-hip-cache.outputs.cache-hit == 'true' && 'C:\Tools\acpp-cuda' || 'C:\Tools\acpp-amd' }}
-
-  package-windows-x64:
-    name: Windows / package
-    needs:
-      - source-quality
-      - windows-script-quality
-      - warm-windows-acpp-cuda
-      - warm-windows-acpp-hip
-    runs-on: windows-2022
-    # oneAPI, CUDA, and DPC++ are pinned prebuilt downloads. They are intentionally not stored in
-    # actions/cache: caching those large reproducible SDKs evicts the source-built Linux and Windows
-    # toolchains that actually save hours. Cold downloads plus the addon builds fit well inside this.
-    timeout-minutes: 180
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Free Windows disk space
-        shell: powershell
-        run: .github\workflows\scripts\free-windows-disk.ps1
-
-      - name: Validate/install common development prerequisites
-        shell: cmd
-        run: scripts\install-dev.bat -Component base,node -Jobs 2
-
-      - name: Install pinned packaging tools
-        shell: cmd
-        run: npm install --ignore-scripts
-
-      - name: Install Intel oneAPI
-        shell: cmd
-        run: scripts\install-dev.bat -Component oneapi -Jobs 2
-
-      - name: Install pinned CUDA compiler SDK
-        shell: cmd
-        run: scripts\install-dev.bat -Component cuda -Jobs 2
-
-      - name: Install pinned HIP compiler SDK
-        shell: cmd
-        run: scripts\install-dev.bat -Component hip -Jobs 2
-
-      - name: Restore SHA256-verified DPC++ CUDA toolchain release
-        shell: cmd
-        run: scripts\install-dev.bat -Component dpcpp -Jobs 2
-
-      - name: Restore staged AdaptiveCpp CUDA/base toolchain
-        uses: actions/cache/restore@v6
-        with:
-          path: C:/Tools/acpp-cuda
-          key: windows-acpp-cuda-source-v1-${{ hashFiles('scripts/build-windows-adaptivecpp-base.ps1', 'scripts/windows-install-helpers.ps1', 'scripts/import-vcvars.ps1') }}
-          fail-on-cache-miss: true
-
-      - name: Restore staged AdaptiveCpp HIP toolchain
-        uses: actions/cache/restore@v6
-        with:
-          path: |
-            C:/Tools/acpp-amd/bin/hipSYCL/rt-backend-hip.dll
-            C:/Tools/acpp-amd/lib/hipSYCL/bitcode/libkernel-sscp-amdgpu-amdhsa-full.bc
-          key: windows-acpp-hip-overlay-v1-${{ hashFiles('scripts/install-dev.ps1', 'scripts/build-windows-adaptivecpp-base.ps1', 'scripts/build-windows-adaptivecpp-amd.ps1', 'scripts/windows-install-helpers.ps1', 'scripts/import-vcvars.ps1') }}
-          fail-on-cache-miss: true
-
-      - name: Rehydrate staged AdaptiveCpp HIP toolchain
-        shell: powershell
-        run: |
-          Copy-Item C:\Tools\acpp-amd\bin\hipSYCL\rt-backend-hip.dll C:\Tools\acpp-cuda\bin\hipSYCL -Force
-          Copy-Item C:\Tools\acpp-amd\lib\hipSYCL\bitcode\libkernel-sscp-amdgpu-amdhsa-full.bc C:\Tools\acpp-cuda\lib\hipSYCL\bitcode -Force
-
-      - name: Validate restored AdaptiveCpp and HIP toolchains
-        shell: cmd
-        run: scripts\install-dev.bat -Component acpp-cuda,hip,acpp-hip -Jobs 2 -AcppHipDir C:\Tools\acpp-cuda -ValidateOnly
-
-      - name: Build all policy-selected Windows workers
-        shell: powershell
-        run: >-
-          powershell -NoProfile -ExecutionPolicy Bypass
-          -File .github\workflows\scripts\build-windows-multicompiler.ps1
-          -AcppHipDir C:\Tools\acpp-cuda
-
-      - name: Package release archive
-        shell: powershell
-        run: npm run build:release -- --package-only
-
-      # oneAPI setup above installs the CPU OpenCL ICD needed by the portable SYCL gate. Run both
-      # suites against the zip in-place so stability does not transfer the 490+ MiB archive twice.
-      - name: Test extracted release archive
-        timeout-minutes: 30
-        shell: powershell
-        run: |
-          $version = (Get-Content -LiteralPath package.json -Raw | ConvertFrom-Json).version
-          if ([string]::IsNullOrWhiteSpace([string]$version) -or
-              [string]$version -notmatch '^[0-9][0-9A-Za-z.-]*$') {
-            throw "Invalid package version: $version"
-          }
-          $expectedArchive = "mom-v$version-win.zip"
-          $archives = @(Get-ChildItem -LiteralPath $expectedArchive -File -Force -ErrorAction SilentlyContinue)
-          if ($archives.Count -ne 1 -or
-              ($archives[0].Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-            throw "Expected exactly one regular $expectedArchive archive."
-          }
-          $archive = $archives[0]
-          $env:MOM_TEST_NO_POOL_NETWORK = "1"
-          powershell -NoProfile -ExecutionPolicy Bypass -File .github\workflows\scripts\test-release-windows.ps1 -Archive $archive.FullName -Suite cpu
-          if ($LASTEXITCODE -ne 0) {
-            throw "CPU release suite failed with exit code $LASTEXITCODE"
-          }
-          powershell -NoProfile -ExecutionPolicy Bypass -File .github\workflows\scripts\test-release-windows.ps1 -Archive $archive.FullName -Suite gpu-portable-cpu
-          if ($LASTEXITCODE -ne 0) {
-            throw "GPU portable CPU release suite failed with exit code $LASTEXITCODE"
-          }
-
-      - name: Upload Windows release artifact
-        if: inputs.upload_artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: mom-win
-          path: mom-*-win.zip
-          if-no-files-found: error
-          overwrite: true
-          compression-level: 0
-          retention-days: 1
+  package-windows:
+    name: Package admitted Windows candidate
+    needs: build-native-prerequisites
+    uses: ./.github/workflows/package-native-application.yml
+    with:
+      platform: win32
+      packed_build_bundle_sha256: ${{ needs.build-native-prerequisites.outputs.windows_packing_bundle_sha256 }}
+      raw_executable_sha256: ${{ needs.build-native-prerequisites.outputs.windows_raw_executable_sha256 }}
+      original_build_bundle_sha256: ${{ needs.build-native-prerequisites.outputs.windows_application_build_bundle_sha256 }}
+      original_handoff_sha256: ${{ needs.build-native-prerequisites.outputs.windows_application_handoff_sha256 }}

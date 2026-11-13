@@ -7,10 +7,11 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
-  # Serialize attempts for the same ref and never discard a package build that may seed a cache.
+  # Serialize attempts for the same ref without interrupting an in-flight qualification.
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
@@ -18,8 +19,6 @@ jobs:
   build-and-test:
     name: Build and test release archives
     uses: ./.github/workflows/build-release-artifacts.yml
-    with:
-      upload_artifacts: true
 
   publish:
     if: startsWith(github.ref, 'refs/tags/')
@@ -31,18 +30,35 @@ jobs:
 
     steps:
       - name: Checkout release metadata
-        uses: actions/checkout@v7
-
-      - name: Download release artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          persist-credentials: false
+
+      - name: Download the exact admitted Linux archive
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: ${{ needs.build-and-test.outputs.linux_archive_artifact_name }}
+          path: artifacts
+
+      - name: Download the exact admitted Windows archive
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: ${{ needs.build-and-test.outputs.windows_archive_artifact_name }}
           path: artifacts
 
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          EXPECTED_LINUX_ARCHIVE_SHA256: ${{ needs.build-and-test.outputs.linux_archive_sha256 }}
+          EXPECTED_WINDOWS_ARCHIVE_SHA256: ${{ needs.build-and-test.outputs.windows_archive_sha256 }}
         run: |
           set -euo pipefail
+          for expected in "$EXPECTED_LINUX_ARCHIVE_SHA256" "$EXPECTED_WINDOWS_ARCHIVE_SHA256"; do
+            if [[ ! "$expected" =~ ^[a-f0-9]{64}$ ]]; then
+              printf 'Missing or malformed package archive SHA-256 output.\n' >&2
+              exit 1
+            fi
+          done
           version="$(node -p 'require("./package.json").version')"
           case "$version" in
             ''|*[!0-9A-Za-z.-]*)
@@ -63,6 +79,13 @@ jobs:
           if (( ${#archives[@]} != 2 || ${#linux_files[@]} != 1 || ${#windows_files[@]} != 1 )); then
             printf 'Expected exactly one unified Linux tgz and one unified Windows zip; found:\n' >&2
             printf '  %s\n' "${archives[@]}" >&2
+            exit 1
+          fi
+          linux_sha256="$(sha256sum -- "${linux_files[0]}" | awk '{print $1}')"
+          windows_sha256="$(sha256sum -- "${windows_files[0]}" | awk '{print $1}')"
+          if [[ "$linux_sha256" != "$EXPECTED_LINUX_ARCHIVE_SHA256" ||
+                "$windows_sha256" != "$EXPECTED_WINDOWS_ARCHIVE_SHA256" ]]; then
+            printf 'Downloaded release archive bytes differ from the package workflow outputs.\n' >&2
             exit 1
           fi
           for archive in "${archives[@]}"; do

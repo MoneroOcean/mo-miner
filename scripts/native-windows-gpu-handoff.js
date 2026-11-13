@@ -1,0 +1,167 @@
+"use strict";
+
+// Admit one compact, same-run Windows GPU profile bundle. The producer's original SDK
+// files are intentionally not transported; their exact receipt map is pinned here.
+const fs = require("node:fs"), path = require("node:path"), {isDeepStrictEqual} = require("node:util"), {createHash} = require("node:crypto");
+const {fileHash} = require("./build-source-inputs");
+
+const hashPattern = /^[a-f0-9]{64}$/;
+const maxFiles = 512, maxBytes = 512 << 20, maxHandoffBytes = 8 << 20, maxGraphBytes = 16 << 20;
+
+/** @param {unknown} value @param {string[]} keys */
+function hasExactKeys(value, keys) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value) &&
+    isDeepStrictEqual(Object.keys(value).sort(), [...keys].sort()));
+}
+
+/** Read a bounded regular JSON file and make sure it did not change while admitted.
+ * @param {string} file @param {number} maximum @param {string} label */
+function readPinnedJson(file, maximum, label) {
+  const stat = fs.lstatSync(file);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size < 1 || stat.size > maximum ||
+      !Number.isSafeInteger(maximum) || maximum < 1 || maximum > maxGraphBytes ||
+      fs.realpathSync(file) !== file || path.resolve(file) !== file) {
+    throw new Error("Windows GPU handoff " + label + " is not a bounded canonical file");
+  }
+  const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+  let text, sha256;
+  try {
+    const before = fs.fstatSync(fd);
+    if (!before.isFile() || before.dev !== stat.dev || before.ino !== stat.ino || before.size !== stat.size) {
+      throw new Error("Windows GPU handoff " + label + " changed before admission");
+    }
+    const data = Buffer.alloc(before.size), digest = createHash("sha256"); let offset = 0;
+    while (offset < data.length) {
+      const size = fs.readSync(fd, data, offset, data.length - offset, null);
+      if (!size) {break;}
+      offset += size;
+    }
+    const after = fs.fstatSync(fd), pathStat = fs.lstatSync(file);
+    if (offset !== before.size || after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs ||
+        !pathStat.isFile() || pathStat.isSymbolicLink() || pathStat.nlink !== 1 || pathStat.dev !== before.dev || pathStat.ino !== before.ino ||
+        fs.realpathSync(file) !== file) {
+      throw new Error("Windows GPU handoff " + label + " changed during admission");
+    }
+    digest.update(data); sha256 = digest.digest("hex");
+    if (fileHash(file) !== sha256) {throw new Error("Windows GPU handoff " + label + " changed during admission");}
+    text = data.toString("utf8");
+  } finally {fs.closeSync(fd);}
+  if (!text || !sha256) {
+    throw new Error("Windows GPU handoff " + label + " is empty");
+  }
+  let value;
+  try {value = JSON.parse(text);} catch (error) {throw new Error("Windows GPU handoff " + label + " is invalid JSON", {cause: error});}
+  return {value, sha256};
+}
+
+/** @param {string} directory @param {string} label */
+function requireDirectory(directory, label) {
+  const stat = fs.lstatSync(directory);
+  if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync(directory) !== directory || path.resolve(directory) !== directory) {
+    throw new Error("Windows GPU handoff " + label + " is not a canonical directory");
+  }
+}
+
+/** @param {string} file @param {string} root @param {string} relative */
+function requireRegularMember(file, root, relative) {
+  const stat = fs.lstatSync(file), resolved = path.resolve(root, ...relative.split("/"));
+  if (resolved !== file || !file.startsWith(root + path.sep) || !stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 ||
+      fs.realpathSync(file) !== file || path.relative(root, file).split(path.sep).join("/") !== relative) {
+    throw new Error("Windows GPU handoff member is redirected or not a regular file: " + relative);
+  }
+  return stat;
+}
+
+/** Validate one extracted profile bundle against same-run external pins and its unchanged
+ * factory receipt. SDK input paths remain producer provenance; the handoff pins their exact
+ * map, while the current source, isolation and object files are independently re-admitted.
+ * @param {string} receiptFile @param {{profile:string,runAttempt:string,receiptSha256:string,configSha256:string,handoffSha256:string}} expected */
+function windowsGpuHandoffInputs(receiptFile, expected) {
+  if (typeof receiptFile !== "string" || !path.isAbsolute(receiptFile) || path.resolve(receiptFile) !== receiptFile ||
+      !expected || !hasExactKeys(expected, ["profile", "runAttempt", "receiptSha256", "configSha256", "handoffSha256"]) ||
+      typeof expected.profile !== "string" || !/^(?:acpp-cuda|acpp-hip|dpcpp|dpcpp-opencl|oneapi)$/.test(expected.profile) ||
+      typeof expected.runAttempt !== "string" || !/^[0-9]{1,20}-[1-9][0-9]{0,5}$/.test(expected.runAttempt) ||
+      !hashPattern.test(expected.receiptSha256 || "") || !hashPattern.test(expected.configSha256 || "") ||
+      !hashPattern.test(expected.handoffSha256 || "")) {
+    throw new Error("Windows GPU handoff needs exact profile, run-attempt and external SHA-256 pins");
+  }
+  const output = path.dirname(receiptFile), root = path.dirname(output);
+  requireDirectory(root, "root"); requireDirectory(output, "output");
+  if (path.basename(receiptFile) !== "result.json" || path.basename(output) !== "output" ||
+      path.relative(root, receiptFile).split(path.sep).join("/") !== "output/result.json") {
+    throw new Error("Windows GPU handoff receipt is outside its exact output/result.json location");
+  }
+  const isolatedRoot = path.join(output, "isolated"), configFile = path.join(root, "config.json"),
+    isolationFile = path.join(isolatedRoot, "result.json"), handoffFile = path.join(root, "handoff.json");
+  requireDirectory(isolatedRoot, "isolated output");
+  const graphRecord = readPinnedJson(receiptFile, maxGraphBytes, "factory receipt"), graph = graphRecord.value;
+  if (graphRecord.sha256 !== expected.receiptSha256 || graph.profile !== expected.profile ||
+      graph.factory !== "mom_native_gpu_" + expected.profile.replaceAll("-", "_") ||
+      graph.configFile !== configFile || graph.configSha256 !== expected.configSha256 ||
+      graph.isolation !== isolationFile || !Array.isArray(graph.objects) || graph.objects.length < 1 || graph.objects.length > 128 ||
+      !graph.sdkInputs || typeof graph.sdkInputs !== "object" || Array.isArray(graph.sdkInputs) || Object.keys(graph.sdkInputs).length < 1 ||
+      Object.keys(graph.sdkInputs).length > 16384 ||
+      Object.entries(graph.sdkInputs).some(([file, sha]) => !path.isAbsolute(file) || /[\0\r\n]/.test(file) || !hashPattern.test(sha || ""))) {
+    throw new Error("Windows GPU handoff pins differ from its factory receipt");
+  }
+  const configRecord = readPinnedJson(configFile, 4 << 20, "profile configuration");
+  if (configRecord.sha256 !== expected.configSha256 || configRecord.value.profile !== expected.profile) {
+    throw new Error("Windows GPU configuration differs from its external pin");
+  }
+  const handoffRecord = readPinnedJson(handoffFile, maxHandoffBytes, "handoff receipt"), handoff = handoffRecord.value;
+  if (handoffRecord.sha256 !== expected.handoffSha256 ||
+      !hasExactKeys(handoff, ["format", "runAttempt", "profile", "files", "sdkInputs", "buildOnly", "executed", "publicationQualified"]) ||
+      handoff.format !== "mom-windows-gpu-handoff-v1" || handoff.runAttempt !== expected.runAttempt || handoff.profile !== expected.profile ||
+      handoff.buildOnly !== true || handoff.executed !== false || handoff.publicationQualified !== false ||
+      !handoff.sdkInputs || typeof handoff.sdkInputs !== "object" || Array.isArray(handoff.sdkInputs) ||
+      !isDeepStrictEqual(Object.keys(handoff.sdkInputs), Object.keys(handoff.sdkInputs).sort()) ||
+      !isDeepStrictEqual(handoff.sdkInputs, graph.sdkInputs)) {
+    throw new Error("Windows GPU handoff receipt differs from its external pin or factory SDK map");
+  }
+  const expectedMembers = [
+    {path: "config.json", file: configFile},
+    {path: "output/result.json", file: receiptFile},
+    {path: "output/isolated/result.json", file: isolationFile},
+  ];
+  const objectNames = new Set();
+  for (const row of graph.objects) {
+    if (!row || typeof row.path !== "string" || path.dirname(row.path) !== isolatedRoot ||
+        !/^object-[0-9]{4}\.obj$/i.test(path.basename(row.path)) || !Number.isSafeInteger(row.bytes) || row.bytes < 1 ||
+        !hashPattern.test(row.sha256 || "") || objectNames.has(path.basename(row.path).toLowerCase())) {
+      throw new Error("Windows GPU handoff factory object is outside its exact isolated output directory");
+    }
+    objectNames.add(path.basename(row.path).toLowerCase());
+    expectedMembers.push({path: "output/isolated/" + path.basename(row.path), file: row.path});
+  }
+  expectedMembers.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+  if (!Array.isArray(handoff.files) || handoff.files.length !== expectedMembers.length || handoff.files.length > maxFiles) {
+    throw new Error("Windows GPU handoff file inventory is incomplete or excessive");
+  }
+  const files = /** @type {Record<string, string>} */ ({}); let totalBytes = 0;
+  for (let index = 0; index < expectedMembers.length; index++) {
+    const expectedFile = expectedMembers[index], row = handoff.files[index];
+    if (!expectedFile || !hasExactKeys(row, ["path", "bytes", "sha256"]) || row.path !== expectedFile.path ||
+        !Number.isSafeInteger(row.bytes) || row.bytes < 1 || !hashPattern.test(row.sha256 || "")) {
+      throw new Error("Windows GPU handoff file inventory differs from the exact factory cohort");
+    }
+    const stat = requireRegularMember(expectedFile.file, root, expectedFile.path);
+    if (stat.size !== row.bytes || fileHash(expectedFile.file) !== row.sha256) {
+      throw new Error("Windows GPU handoff payload differs from its pinned inventory: " + row.path);
+    }
+    totalBytes += stat.size;
+    if (!Number.isSafeInteger(totalBytes) || totalBytes > maxBytes) {throw new Error("Windows GPU handoff exceeds its bounded payload size");}
+    files[expectedFile.file] = row.sha256;
+  }
+  const expectedIsolated = ["result.json"];
+  for (const row of graph.objects) {expectedIsolated.push(path.basename(row.path));}
+  expectedIsolated.sort();
+  if (!isDeepStrictEqual(fs.readdirSync(root).sort(), ["config.json", "handoff.json", "output"]) ||
+      !isDeepStrictEqual(fs.readdirSync(output).sort(), ["isolated", "result.json"]) ||
+      !isDeepStrictEqual(fs.readdirSync(isolatedRoot).sort(), expectedIsolated)) {
+    throw new Error("Windows GPU handoff bundle has extra, missing or substituted members");
+  }
+  files[handoffFile] = handoffRecord.sha256;
+  return {profile: expected.profile, runAttempt: expected.runAttempt, graph, files, handoffFile, handoffSha256: handoffRecord.sha256};
+}
+
+module.exports = {windowsGpuHandoffInputs};

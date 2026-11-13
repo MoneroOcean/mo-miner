@@ -1,0 +1,348 @@
+name: Build one Windows source-JIT SDK phase
+
+on:
+  workflow_call:
+    inputs:
+      phase:
+        description: configure, support, targets, frontend, or link
+        required: true
+        type: string
+      run_deadline_epoch:
+        required: false
+        default: ""
+        type: string
+      previous_phase:
+        required: false
+        default: ""
+        type: string
+      config_sha256:
+        required: false
+        default: ""
+        type: string
+      state_bundle_sha256:
+        required: false
+        default: ""
+        type: string
+      source_bundle_sha256:
+        required: true
+        type: string
+      dpcpp_bundle_sha256:
+        required: true
+        type: string
+      dpcpp_manifest_sha256:
+        required: true
+        type: string
+      hermes_bundle_sha256:
+        required: true
+        type: string
+      hermes_handoff_sha256:
+        required: true
+        type: string
+      linux_tools_bundle_sha256:
+        required: true
+        type: string
+      linux_tools_handoff_sha256:
+        required: true
+        type: string
+      windows_resources_bundle_sha256:
+        required: true
+        type: string
+    outputs:
+      run_deadline_epoch:
+        value: ${{ jobs.windows-jit.outputs.run_deadline_epoch }}
+      config_sha256:
+        value: ${{ jobs.windows-jit.outputs.config_sha256 }}
+      config_artifact_name:
+        value: ${{ jobs.windows-jit.outputs.config_artifact_name }}
+      phase:
+        value: ${{ jobs.windows-jit.outputs.phase }}
+      state_bundle_sha256:
+        value: ${{ jobs.windows-jit.outputs.state_bundle_sha256 }}
+      state_artifact_name:
+        value: ${{ jobs.windows-jit.outputs.state_artifact_name }}
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  windows-jit:
+    name: Windows source-JIT ${{ inputs.phase }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      MOM_AOT_BUILD_ONLY: "1"
+      MOM_BUILD_JOBS: "2"
+      MOM_NATIVE_WINDOWS_JIT_DIR: /tmp/mom-native-windows-jit-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_WINDOWS_JIT_RESOURCES_DIR: /tmp/mom-native-windows-jit-resources-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_WINDOWS_JIT_STATE_PREVIOUS_PHASE: ${{ inputs.previous_phase }}
+      MOM_NATIVE_WINDOWS_JIT_STATE_BUNDLE_SHA256: ${{ inputs.state_bundle_sha256 }}
+      MOM_NATIVE_LINUX_SOURCES_DIR: /tmp/mom-native-linux-source-prerequisites-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_DPCPP_CUDA_INPUTS_DIR: /tmp/mom-native-dpcpp-cuda-inputs-${{ github.run_id }}-${{ github.run_attempt }}
+      # Shared with the established Windows LLVM host-SDK/descriptor producers.
+      MOM_NATIVE_WINDOWS_LLVM_DIR: /tmp/mom-native-windows-llvm21-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_WINDOWS_JIT_SOURCE_BUNDLE_SHA256: ${{ inputs.source_bundle_sha256 }}
+      MOM_NATIVE_WINDOWS_JIT_DPCPP_BUNDLE_SHA256: ${{ inputs.dpcpp_bundle_sha256 }}
+      MOM_NATIVE_WINDOWS_JIT_DPCPP_MANIFEST_SHA256: ${{ inputs.dpcpp_manifest_sha256 }}
+      MOM_NATIVE_WINDOWS_CONTROLLER_HERMES_BUNDLE_SHA256: ${{ inputs.hermes_bundle_sha256 }}
+      MOM_NATIVE_WINDOWS_CONTROLLER_HERMES_HANDOFF_SHA256: ${{ inputs.hermes_handoff_sha256 }}
+      MOM_NATIVE_LINUX_LLVM_TOOLS_BUNDLE_SHA256: ${{ inputs.linux_tools_bundle_sha256 }}
+      MOM_NATIVE_LINUX_LLVM_TOOLS_HANDOFF_SHA256: ${{ inputs.linux_tools_handoff_sha256 }}
+      MOM_NATIVE_WINDOWS_JIT_RESOURCES_BUNDLE_SHA256: ${{ inputs.windows_resources_bundle_sha256 }}
+      MOM_WINDOWS_JIT_PHASE: ${{ inputs.phase }}
+    outputs:
+      run_deadline_epoch: ${{ steps.deadline.outputs.run_deadline_epoch }}
+      config_sha256: ${{ steps.run-phase.outputs.windows_jit_config_sha256 }}
+      config_artifact_name: ${{ steps.artifact-names.outputs.config_artifact_name }}
+      phase: ${{ steps.run-phase.outputs.windows_jit_phase }}
+      state_bundle_sha256: ${{ steps.run-phase.outputs.windows_jit_state_bundle_sha256 }}
+      state_artifact_name: ${{ steps.artifact-names.outputs.state_artifact_name }}
+    steps:
+      - name: Start immutable run and bounded phase deadlines
+        id: deadline
+        shell: bash
+        env:
+          REQUESTED_RUN_DEADLINE: ${{ inputs.run_deadline_epoch }}
+          REQUESTED_PHASE: ${{ inputs.phase }}
+        run: |
+          set -euo pipefail
+          now=$(date -u +%s)
+          if [[ -n "$REQUESTED_RUN_DEADLINE" ]]; then
+            [[ "$REQUESTED_RUN_DEADLINE" =~ ^[0-9]{10}$ ]] || { echo 'Invalid original run deadline' >&2; exit 1; }
+            run_epoch=$((10#$REQUESTED_RUN_DEADLINE))
+          else
+            [[ "$REQUESTED_PHASE" == configure ]] || { echo 'Only configure may create the original run deadline' >&2; exit 1; }
+            run_epoch=$((now + 28800))
+          fi
+          if (( run_epoch <= now || run_epoch - now > 28800 )); then echo 'Run deadline expired or exceeds eight hours' >&2; exit 1; fi
+          job_epoch=$((now + 3300)); if (( run_epoch < job_epoch )); then job_epoch=$run_epoch; fi
+          if (( job_epoch - now < 120 )); then echo 'Insufficient remaining run budget' >&2; exit 1; fi
+          {
+            echo "run_deadline_epoch=$run_epoch"
+            echo "job_deadline_epoch=$job_epoch"
+            echo "MOM_NATIVE_WINDOWS_JIT_RUN_DEADLINE_EPOCH=$run_epoch"
+            echo "MOM_NATIVE_WINDOWS_JIT_DEADLINE_EPOCH=$job_epoch"
+            echo "MOM_NATIVE_WINDOWS_LLVM_RUN_DEADLINE_EPOCH=$run_epoch"
+            echo "MOM_NATIVE_WINDOWS_LLVM_DEADLINE_EPOCH=$job_epoch"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "MOM_NATIVE_WINDOWS_JIT_RUN_DEADLINE_EPOCH=$run_epoch"
+            echo "MOM_NATIVE_WINDOWS_JIT_DEADLINE_EPOCH=$job_epoch"
+            echo "MOM_NATIVE_WINDOWS_LLVM_RUN_DEADLINE_EPOCH=$run_epoch"
+            echo "MOM_NATIVE_WINDOWS_LLVM_DEADLINE_EPOCH=$job_epoch"
+            echo "MOM_NATIVE_WINDOWS_LLVM_DESCRIPTOR_DIR=$RUNNER_TEMP/mom-native-windows-llvm21-descriptor-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            echo "MOM_NATIVE_WINDOWS_HOST_SDK_WORK_ROOT=$RUNNER_TEMP/mom-native-windows-host-sdk-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            echo "MOM_NATIVE_WINDOWS_HOST_SDK_ARCHIVE_DIR=$RUNNER_TEMP/mom-native-windows-host-sdk-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/archives"
+            echo "MOM_NATIVE_WINDOWS_HOST_SDK_OUTPUT_DIR=$RUNNER_TEMP/mom-native-windows-host-sdk-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/native-windows-host-sdk-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            echo "MOM_NATIVE_WINDOWS_HOST_SDK_METADATA_TAR=$RUNNER_TEMP/native-windows-host-sdk-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-metadata.tar"
+          } >> "$GITHUB_ENV"
+
+      - name: Validate phase and derive exact artifact names
+        id: artifact-names
+        shell: bash
+        env:
+          PHASE: ${{ inputs.phase }}
+          PREVIOUS_PHASE: ${{ inputs.previous_phase }}
+          CONFIG_SHA256: ${{ inputs.config_sha256 }}
+          STATE_SHA256: ${{ inputs.state_bundle_sha256 }}
+        run: |
+          set -euo pipefail
+          case "$PHASE" in
+            configure) expected=""; suffix_phase="configured" ;;
+            support) expected="configured"; suffix_phase="support" ;;
+            targets) expected="support"; suffix_phase="targets" ;;
+            frontend) expected="targets"; suffix_phase="frontend" ;;
+            link) expected="frontend"; suffix_phase="link" ;;
+            *) echo 'Unknown Windows JIT phase' >&2; exit 1 ;;
+          esac
+          [[ "$PREVIOUS_PHASE" == "$expected" ]] || { echo 'JIT state must name the immediate predecessor' >&2; exit 1; }
+          suffix="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          if [[ "$PHASE" == configure ]]; then
+            [[ -z "$CONFIG_SHA256" && -z "$STATE_SHA256" ]] || { echo 'Configure cannot consume old config/state' >&2; exit 1; }
+          else
+            [[ "$CONFIG_SHA256" =~ ^[0-9a-f]{64}$ && "$STATE_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo 'Resume needs external config/state pins' >&2; exit 1; }
+          fi
+          {
+            echo "config_artifact_name=native-windows-jit-sdk-${suffix}.json"
+            echo "state_artifact_name=native-windows-jit-sdk-${suffix}-${suffix_phase}.tar"
+            [[ -z "$expected" ]] || echo "state_input_artifact_name=native-windows-jit-sdk-${suffix}-${expected}.tar"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24.15.0
+
+      - name: Install locked Node dependencies
+        timeout-minutes: 8
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Provision pinned Intel 2026.2 compiler
+        timeout-minutes: 20
+        run: sudo env MOM_DEV_WORKSPACE=/var/tmp/mom-dev-native-windows-jit-${{ github.run_id }}-${{ github.run_attempt }} scripts/install-dev.sh --component oneapi --jobs 2
+
+      - name: Download same-run Linux SDK source archive
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: native-linux-sdk-state-${{ github.run_id }}-${{ github.run_attempt }}-sources.tar
+          path: ${{ runner.temp }}/incoming
+      - name: Download same-run DPC++ and CUDA input archive
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: native-linux-dpcpp-cuda-inputs-${{ github.run_id }}-${{ github.run_attempt }}.tar
+          path: ${{ runner.temp }}/incoming
+      - name: Download same-run Hermes and thin LLVM tools
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: native-windows-controller-hermes-${{ github.run_id }}-${{ github.run_attempt }}.tar
+          path: ${{ runner.temp }}/incoming/hermes
+      - name: Download same-run thin Linux LLVM tools
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: native-linux-llvm-tools-${{ github.run_id }}-${{ github.run_attempt }}.tar
+          path: ${{ runner.temp }}/incoming/tools
+      - name: Download same-run Windows-target JIT resources
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: mom-native-windows-jit-resources-${{ github.run_id }}-${{ github.run_attempt }}.tar
+          path: ${{ runner.temp }}/incoming/resources
+      - name: Download immediate JIT predecessor state
+        if: ${{ inputs.phase != 'configure' }}
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: ${{ steps.artifact-names.outputs.state_input_artifact_name }}
+          path: ${{ runner.temp }}/incoming/state
+      - name: Download exact configure-generated builder config
+        if: ${{ inputs.phase != 'configure' }}
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: ${{ steps.artifact-names.outputs.config_artifact_name }}
+          path: ${{ runner.temp }}/incoming/config
+
+      - name: Install archive and MSI tools
+        timeout-minutes: 8
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends 7zip msitools
+          test -x /usr/bin/7z && test -x /usr/bin/msiinfo && test -x /usr/bin/msiextract
+
+      - name: Test original JIT and Windows SDK handoff contracts
+        timeout-minutes: 5
+        run: node --require ./tests/common/no_pool_network.js --test tests/native_windows_jit_ci_job.js tests/native_ci.js tests/native_windows_llvm21_sdk.js tests/native_windows_llvm_state.js tests/native_linux_llvm_tools.js tests/native_windows_controller_handoff.js
+
+      - name: Compose the same-run Windows SDK and original controller descriptor
+        id: compose-inputs
+        timeout-minutes: 30
+        shell: bash
+        env:
+          HOST_JOB_DEADLINE: ${{ steps.deadline.outputs.job_deadline_epoch }}
+          RUN_DEADLINE: ${{ steps.deadline.outputs.run_deadline_epoch }}
+        run: |
+          set -euo pipefail
+          now=$(date -u +%s)
+          host_epoch=$((now + 1500))
+          job_reserve=$((HOST_JOB_DEADLINE - 600))
+          run_reserve=$((RUN_DEADLINE - 600))
+          (( host_epoch > job_reserve )) && host_epoch=$job_reserve
+          (( host_epoch > run_reserve )) && host_epoch=$run_reserve
+          (( host_epoch - now >= 1020 )) || { echo 'Insufficient bounded time for host-SDK composition and JIT phase' >&2; exit 1; }
+          export MOM_NATIVE_WINDOWS_HOST_SDK_DEADLINE_EPOCH="$host_epoch"
+          node <<'NODE'
+          "use strict";
+          const fs = require("node:fs"), path = require("node:path"), ci = require("./scripts/prepare-native-ci");
+          const {fileHash} = require("./scripts/build-source-inputs");
+          const {linuxLlvmToolHandoffInputs} = require("./scripts/native-linux-llvm-tools");
+          const {windowsControllerHandoffInputs} = require("./scripts/native-windows-controller-handoff");
+          const env = process.env, suffix = `${env.GITHUB_RUN_ID}-${env.GITHUB_RUN_ATTEMPT}`, temp = fs.realpathSync(env.RUNNER_TEMP);
+          const sdkRoot = path.join(temp, `mom-native-windows-host-sdk-${suffix}`, `native-windows-host-sdk-${suffix}`);
+          const toolName = `native-linux-llvm-tools-${suffix}`, hermesName = `native-windows-controller-hermes-${suffix}`;
+          const toolArchive = path.join(temp, "incoming/tools", `${toolName}.tar`), hermesArchive = path.join(temp, "incoming/hermes", `${hermesName}.tar`);
+          const toolBundlePin = env.MOM_NATIVE_LINUX_LLVM_TOOLS_BUNDLE_SHA256, toolHandoffPin = env.MOM_NATIVE_LINUX_LLVM_TOOLS_HANDOFF_SHA256;
+          const hermesBundlePin = env.MOM_NATIVE_WINDOWS_CONTROLLER_HERMES_BUNDLE_SHA256, hermesHandoffPin = env.MOM_NATIVE_WINDOWS_CONTROLLER_HERMES_HANDOFF_SHA256;
+          if (fileHash(toolArchive) !== toolBundlePin || fileHash(hermesArchive) !== hermesBundlePin) throw new Error("Same-run Windows descriptor tool/source archive pin mismatch");
+          ci.buildWindowsHostSdkSourcesCi();
+          const toolExtract = path.join(temp, toolName), hermesRoot = path.join(temp, hermesName);
+          if (fs.existsSync(toolExtract) || fs.existsSync(hermesRoot)) throw new Error("Descriptor handoff restore roots are not fresh");
+          const toolMembers = ci.listState(toolArchive, [toolName], 5 * 60 * 1000);
+          if (!toolMembers.length || toolMembers.length > 100000 || ci.tarExpandedBytes(toolArchive, toolMembers.length, 5 * 60 * 1000) > 512 * 1024 ** 2) throw new Error("Thin LLVM tool handoff exceeds its bounds");
+          ci.extractState(toolArchive, temp, [toolName], [toolName], 8 * 60 * 1000);
+          const tools = linuxLlvmToolHandoffInputs(toolExtract, {runAttempt: suffix, handoffSha256: toolHandoffPin});
+          const hermesMembers = ci.listState(hermesArchive, [hermesName], 5 * 60 * 1000);
+          if (!hermesMembers.length || hermesMembers.length > 100000 || ci.tarExpandedBytes(hermesArchive, hermesMembers.length, 5 * 60 * 1000) > 4 * 1024 ** 3) throw new Error("Hermes handoff exceeds its bounds");
+          ci.extractState(hermesArchive, temp, [hermesName], [hermesName], 8 * 60 * 1000);
+          const hermes = windowsControllerHandoffInputs(hermesRoot, {kind: "hermes", runAttempt: suffix, handoffSha256: hermesHandoffPin});
+          if (hermes.kind !== "hermes" || !hermes.intelRuntime) throw new Error("Hermes handoff omits the admitted Intel runtime");
+          const descriptorState = ci.windowsNativeLlvmDescriptorCiStatePaths(env);
+          const inputFile = path.join(temp, `windows-llvm21-descriptor-input-${suffix}.json`);
+          const input = {windowsSdkRoot: sdkRoot, windowsSdkPins: {
+            resultSha256: fileHash(path.join(sdkRoot, "result.json")), descriptorSha256: fileHash(path.join(sdkRoot, "sdk.json")),
+            filesSha256: fileHash(path.join(sdkRoot, "files.json")), overlaySha256: fileHash(path.join(sdkRoot, "vfs-overlay.json"))},
+            hermesRoot, hermesExpectation: {kind: "hermes", runAttempt: suffix, handoffSha256: hermesHandoffPin},
+            tools: {clangCl: {path: "/opt/intel/oneapi/compiler/2026.2/bin/icx-cl", sha256: fileHash("/opt/intel/oneapi/compiler/2026.2/bin/icx-cl")},
+              lldLink: {path: tools.lldLink, sha256: fileHash(tools.lldLink), linkTarget: "lld"},
+              llvmNm: {path: tools.llvmNm, sha256: fileHash(tools.llvmNm)}, clangResourceInclude: "/opt/intel/oneapi/compiler/2026.2/lib/clang/23/include"}};
+          if (fs.existsSync(inputFile)) throw new Error("Descriptor composer input is not fresh");
+          fs.writeFileSync(inputFile, JSON.stringify(input) + "\n", {flag: "wx", mode: 0o600});
+          const produced = ci.buildWindowsNativeLlvmDescriptorCi([inputFile, fileHash(inputFile)], env);
+          if (produced.windows_llvm_descriptor_path !== descriptorState.descriptorOutput ||
+              produced.windows_llvm_descriptor_provenance_path !== descriptorState.provenanceOutput) throw new Error("Descriptor producer output path differs from the existing same-run contract");
+          const exports = {
+            MOM_NATIVE_WINDOWS_JIT_DESCRIPTOR_FILE: descriptorState.descriptorOutput,
+            MOM_NATIVE_WINDOWS_JIT_DESCRIPTOR_SHA256: produced.windows_llvm_descriptor_sha256,
+            MOM_NATIVE_WINDOWS_JIT_WINDOWS_SDK_ROOT: sdkRoot,
+            MOM_NATIVE_WINDOWS_JIT_WINDOWS_SDK_RESULT_SHA256: input.windowsSdkPins.resultSha256,
+            MOM_NATIVE_WINDOWS_JIT_WINDOWS_SDK_DESCRIPTOR_SHA256: input.windowsSdkPins.descriptorSha256,
+            MOM_NATIVE_WINDOWS_JIT_WINDOWS_SDK_FILES_SHA256: input.windowsSdkPins.filesSha256,
+            MOM_NATIVE_WINDOWS_JIT_WINDOWS_SDK_OVERLAY_SHA256: input.windowsSdkPins.overlaySha256};
+          fs.appendFileSync(env.GITHUB_ENV, Object.entries(exports).map(([key, value]) => `${key}=${value}`).join("\n") + "\n");
+          // The JIT runner restores and re-admits these exact archives itself after descriptor composition.
+          fs.rmSync(toolExtract, {recursive: true}); fs.rmSync(hermesRoot, {recursive: true});
+          if (fileHash(toolArchive) !== toolBundlePin || fileHash(hermesArchive) !== hermesBundlePin) throw new Error("A descriptor input archive changed during composition");
+          NODE
+
+      - name: Run one original Windows source-JIT phase
+        id: run-phase
+        timeout-minutes: 45
+        env:
+          CONFIG_PATH: ${{ runner.temp }}/incoming/config/native-windows-jit-sdk-${{ github.run_id }}-${{ github.run_attempt }}.json
+          CONFIG_SHA256: ${{ inputs.config_sha256 }}
+          PHASE: ${{ inputs.phase }}
+        run: |
+          set -euo pipefail
+          if [[ "$PHASE" == configure ]]; then
+            exec scripts/run-bounded-native-ci.sh node scripts/run-native-windows-jit-ci.js configure "$CONFIG_PATH"
+          fi
+          exec scripts/run-bounded-native-ci.sh node scripts/run-native-windows-jit-ci.js "$PHASE" "$CONFIG_PATH" "$CONFIG_SHA256"
+
+      - name: Retain separately pinned generated builder config
+        if: ${{ inputs.phase == 'configure' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: ${{ steps.artifact-names.outputs.config_artifact_name }}
+          path: ${{ runner.temp }}/incoming/config/native-windows-jit-sdk-${{ github.run_id }}-${{ github.run_attempt }}.json
+          if-no-files-found: error
+          archive: false
+          compression-level: 0
+          retention-days: 1
+
+      - name: Retain same-run JIT phase build state
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: ${{ steps.artifact-names.outputs.state_artifact_name }}
+          path: ${{ runner.temp }}/${{ steps.artifact-names.outputs.state_artifact_name }}
+          if-no-files-found: error
+          archive: false
+          compression-level: 0
+          retention-days: 1
+
+      - name: Report source-JIT build-only boundary
+        run: |
+          {
+            echo '### Windows source-JIT phase'
+            echo '- Reuses the original Windows host-SDK composer and original LLVM descriptor producer; the vendor SDK remains runner-local.'
+            echo '- The generated builder config is a separate pinned same-run artifact; the phase tar contains only the mutable source-JIT build state.'
+            echo '- Build-only; not executed, runtime-qualified, or publication-qualified.'
+          } >> "$GITHUB_STEP_SUMMARY"
