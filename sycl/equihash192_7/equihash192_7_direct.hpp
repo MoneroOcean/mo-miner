@@ -81,23 +81,23 @@ struct StagedArenaLayout {
        sizeof(Round6Record));
 
   static_assert(Layout::slot_count < (1ull << Spec::parent_ref_bits));
-#if defined(__INTEL_LLVM_COMPILER)
+#if defined(__INTEL_LLVM_COMPILER) || defined(MOM_SYCL_INTEL_LAYOUT)
   static constexpr std::size_t level0_record_bytes = 28;
 #else
   static constexpr std::size_t level0_record_bytes = 32;
 #endif
-#if defined(__INTEL_LLVM_COMPILER)
+#if defined(__INTEL_LLVM_COMPILER) || defined(MOM_SYCL_INTEL_LAYOUT)
   static constexpr std::size_t round1_record_bytes =
       Round1Record::word_count * sizeof(std::uint32_t);
 #else
   static constexpr std::size_t round1_record_bytes = 32;
 #endif
-#if defined(MOM_SYCL_HAS_HIP) || defined(__INTEL_LLVM_COMPILER)
+#if defined(MOM_SYCL_HAS_HIP) || defined(__INTEL_LLVM_COMPILER) || defined(MOM_SYCL_INTEL_LAYOUT)
   static constexpr std::size_t round2_record_bytes = 24;
 #else
   static constexpr std::size_t round2_record_bytes = 32;
 #endif
-#if defined(MOM_SYCL_HAS_HIP) || defined(__INTEL_LLVM_COMPILER)
+#if defined(MOM_SYCL_HAS_HIP) || defined(__INTEL_LLVM_COMPILER) || defined(MOM_SYCL_INTEL_LAYOUT)
   static constexpr std::size_t round6_record_bytes = 12;
 #else
   static constexpr std::size_t round6_record_bytes = 16;
@@ -116,7 +116,7 @@ using ArenaLayout = StagedArenaLayout<
     BucketLayout<BucketBits, SlotsPerBucket>, BucketLayout<BucketBits, SlotsPerBucket>,
     BucketLayout<BucketBits, SlotsPerBucket>>;
 
-#if defined(MOM_SYCL_HAS_HIP) || defined(__INTEL_LLVM_COMPILER)
+#if defined(MOM_SYCL_HAS_HIP) || defined(__INTEL_LLVM_COMPILER) || defined(MOM_SYCL_INTEL_LAYOUT)
 constexpr unsigned ProductionSlotsPerBucket = 9232;
 #else
 constexpr unsigned ProductionSlotsPerBucket = 9216;

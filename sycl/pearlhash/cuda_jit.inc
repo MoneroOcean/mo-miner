@@ -1,9 +1,13 @@
 #if defined(MOM_SYCL_HAS_CUDA) && !defined(__SYCL_DEVICE_ONLY__) && !defined(MOM_PEARLHASH_ESIMD_TU)
 using PearlHashCudaDriverApi = mom::CudaDriverApi;
+#if !defined(MOM_EMBEDDED_CUDA_IMAGES)
 using PearlHashNvrtcApi = mom::NvrtcApi;
-using mom::cuda_check;
 using mom::rtc_error;
+#endif
+using mom::cuda_check;
 
+#if !defined(MOM_EMBEDDED_CUDA_IMAGES)
+#if !defined(MOM_EMBEDDED_NVRTC_HEADERS)
 static std::filesystem::path
 pearlhash_cuda_header_root(const char* configured,
                            const std::vector<std::filesystem::path>& candidates,
@@ -18,6 +22,8 @@ pearlhash_cuda_header_root(const char* configured,
       return path;
   return {};
 }
+#endif
+#endif
 #include "cuda_search.inc"
 #else
 struct PearlHashCudaSearch {

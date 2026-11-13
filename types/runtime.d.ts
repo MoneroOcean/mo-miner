@@ -47,6 +47,7 @@ declare global {
     destroyed?: boolean;
     destroy(): unknown;
     write(data: string): unknown;
+    getPeerCertificate?(): {fingerprint256?: string};
   }
 
   interface PoolMessage {
@@ -174,6 +175,7 @@ declare global {
     socket: PoolSocket | null;
     stratum_target?: string;
     tls_verify: boolean;
+    tls_fingerprint: string;
     url: string;
     use_subscribe: boolean;
     verthash_difficulty?: number;
@@ -243,6 +245,7 @@ declare global {
       error: (error: Error) => void,
     ) => object;
     exitNow?(code: number): void;
+    nvidiaComputeCapabilities?(): number[];
   }
 
   type NativeJob = MiningJob & {blob_hex: string};

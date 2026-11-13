@@ -6,13 +6,17 @@
     !defined(__SYCL_DEVICE_ONLY__)
 
 #include <cuda.h>
-#include <nvrtc.h>
+#if defined(MOM_EMBEDDED_CUDA_IMAGES)
+#include "cuda-images.h"
+#else
+#include "nvrtc-api.h"
+#endif
 
 #if defined(_WIN32)
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
-#include <windows.h>
+#include "../runtime/system-driver.h"
 #else
 #include <dlfcn.h>
 #endif
@@ -45,7 +49,8 @@ class CudaDriverApi {
   // Load required calls first, then optional extended calls without losing basic driver support.
   CudaDriverApi() {
 #if defined(_WIN32)
-    library_ = LoadLibraryA("nvcuda.dll");
+    // Reuse the native loader: a system driver must never come from CWD or PATH.
+    library_ = runtime::systemDriverLibrary<runtime::SystemDriver::cuda>();
 #else
     library_ = dlopen("libcuda.so.1", RTLD_NOW | RTLD_LOCAL);
 #endif
@@ -115,149 +120,6 @@ public:
   }
 };
 
-// Load NVRTC lazily so missing compiler libraries do not prevent portable SYCL mining.
-class NvrtcApi {
-#if defined(_WIN32)
-  HMODULE library_ = nullptr;
-#else
-  void* library_ = nullptr;
-  void* builtins_library_ = nullptr;
-#endif
-
-  template <typename T>
-  bool load_symbol(T& output, const char* const name) {
-#if defined(_WIN32)
-    output = reinterpret_cast<T>(GetProcAddress(library_, name));
-#else
-    output = reinterpret_cast<T>(dlsym(library_, name));
-#endif
-    if (output)
-      return true;
-    error = std::string("missing NVRTC symbol ") + name;
-    return false;
-  }
-
-  // All native algorithms share this compiler. Prefer the checksum-pinned, MoM-owned
-  // runtime without relinking an application's SDK; older installs remain optional fallbacks.
-  NvrtcApi() {
-#if defined(_WIN32)
-    const char* const names[] = {
-      "nvrtc64_130_0.dll", "nvrtc64_120_0.dll", "nvrtc64_121_0.dll", "nvrtc64_122_0.dll"
-    };
-    for (const char* const name : names) {
-      if ((library_ = LoadLibraryA(name)))
-        break;
-    }
-#else
-    const char* const names[] = {
-      "/opt/mom/nvrtc-13.3.33/lib/libnvrtc.so.13.3.33",
-      "libnvrtc.so", "libnvrtc.so.13", "libnvrtc.so.12"
-    };
-    for (const char* const name : names) {
-      if ((library_ = dlopen(name, RTLD_NOW | RTLD_LOCAL))) {
-        // NVRTC opens its builtins by SONAME, not relative to this absolute
-        // compiler path. Keep the matching dependency loaded without changing
-        // the application's SDK, global linker configuration, or environment.
-        if (name[0] == '/' && !(builtins_library_ = dlopen(
-              "/opt/mom/nvrtc-13.3.33/lib/libnvrtc-builtins.so.13.3", RTLD_NOW | RTLD_LOCAL))) {
-          error = "the managed NVRTC builtins library is not installed";
-          return;
-        }
-        break;
-      }
-    }
-#endif
-    if (!library_) {
-      error = "NVRTC is not installed";
-      return;
-    }
-#if defined(_WIN32)
-    version = reinterpret_cast<decltype(version)>(GetProcAddress(library_, "nvrtcVersion"));
-#else
-    version = reinterpret_cast<decltype(version)>(dlsym(library_, "nvrtcVersion"));
-#endif
-    const bool ptx =
-      load_symbol(create_program, "nvrtcCreateProgram") &&
-      load_symbol(compile_program, "nvrtcCompileProgram") &&
-      load_symbol(get_log_size, "nvrtcGetProgramLogSize") &&
-      load_symbol(get_log, "nvrtcGetProgramLog") &&
-      load_symbol(get_ptx_size, "nvrtcGetPTXSize") &&
-      load_symbol(get_ptx, "nvrtcGetPTX") &&
-      load_symbol(destroy_program, "nvrtcDestroyProgram") &&
-      load_symbol(error_string, "nvrtcGetErrorString");
-    if (ptx) {
-      (void)(load_symbol(get_cubin_size, "nvrtcGetCUBINSize") &&
-             load_symbol(get_cubin, "nvrtcGetCUBIN") &&
-             load_symbol(get_num_supported_archs, "nvrtcGetNumSupportedArchs") &&
-             load_symbol(get_supported_archs, "nvrtcGetSupportedArchs"));
-    }
-  }
-
-public:
-  NvrtcApi(const NvrtcApi&) = delete;
-  NvrtcApi& operator=(const NvrtcApi&) = delete;
-
-  decltype(&nvrtcCreateProgram) create_program = nullptr;
-  // Optional: individual kernels may require a compiler version without disabling legacy JIT.
-  decltype(&nvrtcVersion) version = nullptr;
-  decltype(&nvrtcCompileProgram) compile_program = nullptr;
-  decltype(&nvrtcGetProgramLogSize) get_log_size = nullptr;
-  decltype(&nvrtcGetProgramLog) get_log = nullptr;
-  decltype(&nvrtcGetPTXSize) get_ptx_size = nullptr;
-  decltype(&nvrtcGetPTX) get_ptx = nullptr;
-  decltype(&nvrtcGetCUBINSize) get_cubin_size = nullptr;
-  decltype(&nvrtcGetCUBIN) get_cubin = nullptr;
-  decltype(&nvrtcGetNumSupportedArchs) get_num_supported_archs = nullptr;
-  decltype(&nvrtcGetSupportedArchs) get_supported_archs = nullptr;
-  decltype(&nvrtcDestroyProgram) destroy_program = nullptr;
-  decltype(&nvrtcGetErrorString) error_string = nullptr;
-  std::string error;
-
-  bool ptx_available() const {
-    return library_ && create_program && compile_program && get_log_size && get_log &&
-           get_ptx_size && get_ptx && destroy_program && error_string;
-  }
-
-  bool cubin_available() const {
-    return ptx_available() && get_cubin_size && get_cubin && get_num_supported_archs &&
-           get_supported_archs;
-  }
-
-  static NvrtcApi& instance() {
-    // NVRTC stays loaded for the same process lifetime as cached native modules.
-    static NvrtcApi api;
-    return api;
-  }
-};
-
-// Own only the temporary compiler program; release it before loading the resulting module.
-class NvrtcProgram {
-  NvrtcApi& api_;
-  nvrtcProgram program_ = nullptr;
-
-public:
-  // Construct after ptx_available()/cubin_available() validates the compiler entry points.
-  explicit NvrtcProgram(NvrtcApi& api) noexcept : api_(api) {}
-  NvrtcProgram(const NvrtcProgram&) = delete;
-  NvrtcProgram& operator=(const NvrtcProgram&) = delete;
-
-  nvrtcProgram* address() noexcept { return &program_; }
-  nvrtcProgram get() const noexcept { return program_; }
-
-  // Clear ownership before destruction so cleanup faults cannot cause a repeated destroy.
-  void reset() noexcept {
-    if (!program_)
-      return;
-    nvrtcProgram program = program_;
-    program_ = nullptr;
-    (void)api_.destroy_program(&program);
-  }
-
-  ~NvrtcProgram() {
-    reset();
-  }
-};
-
 // Preserve the failing native operation in a recoverable host exception.
 inline void cuda_check(CudaDriverApi& api, const CUresult status,
                        const char* const operation) {
@@ -269,6 +131,38 @@ inline void cuda_check(CudaDriverApi& api, const CUresult status,
   throw std::string(operation) + ": " + (detail ? detail : "CUDA driver error");
 }
 
+#if defined(MOM_EMBEDDED_CUDA_IMAGES)
+// Retry only image/target compatibility failures. Resource, context, argument, and driver-JIT
+// failures are operational errors and must not be hidden by trying a different PTX image.
+inline bool cuda_image_retryable(const CUresult status) {
+  return status == CUDA_ERROR_INVALID_IMAGE || status == CUDA_ERROR_NO_BINARY_FOR_GPU ||
+         status == CUDA_ERROR_INVALID_PTX || status == CUDA_ERROR_UNSUPPORTED_PTX_VERSION;
+}
+
+template <typename Loader>
+CUresult cuda_load_image_candidates(const cuda_images::Candidates& candidates, CUmodule* module,
+                                    Loader&& loader) {
+  if (!module)
+    return CUDA_ERROR_INVALID_VALUE;
+  *module = nullptr;
+  const cuda_images::Blob* const images[] = {&candidates.primary, &candidates.compatibility};
+  CUresult last_status = CUDA_ERROR_INVALID_IMAGE;
+  bool attempted = false;
+  for (const cuda_images::Blob* const image : images) {
+    if (!image->data || !image->size)
+      continue;
+    attempted = true;
+    last_status = loader(module, image->data);
+    if (last_status == CUDA_SUCCESS)
+      return last_status;
+    *module = nullptr;
+    if (!cuda_image_retryable(last_status))
+      return last_status;
+  }
+  return attempted ? last_status : CUDA_ERROR_INVALID_IMAGE;
+}
+#endif
+
 // Manually launched work is invisible to SYCL queue drains. Retire it on an error before callers
 // can reuse/free its buffers; the cleanup status must not replace the original driver failure.
 // Native callers require synchronize before submitting work. Successful calls never synchronize.
@@ -277,19 +171,6 @@ inline void cuda_check_submitted(CudaDriverApi& api, const CUresult status,
   if (status != CUDA_SUCCESS)
     (void)api.synchronize();
   cuda_check(api, status, operation);
-}
-
-// Attach the compiler's build log while the temporary program still owns it.
-inline std::string rtc_error(NvrtcApi& api, const nvrtcResult status, nvrtcProgram program,
-                             const char* const operation) {
-  size_t size = 0;
-  std::string log;
-  if (program && api.get_log_size(program, &size) == NVRTC_SUCCESS && size) {
-    log.resize(size);
-    (void)api.get_log(program, log.data());
-  }
-  return std::string(operation) + ": " + api.error_string(status) +
-         (log.empty() ? "" : "\n" + log);
 }
 
 } // namespace mom

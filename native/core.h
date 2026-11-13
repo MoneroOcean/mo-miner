@@ -247,8 +247,8 @@ class Core: public AsyncWorker {
   }
   public:
 
-  Core(napi_env env, napi_value data, napi_value complete, napi_value error_callback)
-    : AsyncWorker(env, data, complete, error_callback),
+  explicit Core(std::unique_ptr<WorkerEvents> events)
+    : AsyncWorker(std::move(events)),
       m_dev(CPU), m_lpads(nullptr), m_rx_cache_mem(nullptr), m_rx_dataset_mem(nullptr),
       m_spads(nullptr), m_ctx(nullptr), m_input(nullptr), m_output(nullptr),
       m_job_ref(s_job_ref_source.fetch_add(1, std::memory_order_relaxed)),

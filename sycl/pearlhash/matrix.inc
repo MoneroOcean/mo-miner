@@ -458,9 +458,15 @@ template <bool Dpasw = false, bool PackedCuda = false>
                     static_cast<int>(eal[i * static_cast<size_t>(rank) + earp2[c]]);
     const int8_t v = static_cast<int8_t>(
         gv(seed, static_cast<uint32_t>(idx), positive_inputs) + acc);
+    // The source-JIT consumer requires the same packet on direct NVPTX and generic SSCP.
+    // Layout is a consumer contract, not a preprocessor property of the producer's compiler.
+    if constexpr (PackedCuda) {
+      ap[nvidia_vector128_offset<true>(i, c, k)] = v;
+      return;
+    }
 #if defined(__NVPTX__) && (!defined(MOM_SYCL_ADAPTIVECPP) || defined(__CUDA_ARCH__))
     (void)portable;
-    ap[PackedCuda ? nvidia_vector128_offset<true>(i, c, k) : idx] = v;
+    ap[idx] = v;
 #else
     // The spir64 image carries BOTH searches; the host sets `portable` to match the one it will launch:
     //  - portable (the dp4a int8 GEMM search(), used by every OpenCL device -- AMD, the CPU device, and

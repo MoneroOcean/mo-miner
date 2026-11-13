@@ -14,10 +14,13 @@
 #include <thread>
 #include <vector>
 #if defined(MOM_SYCL_HAS_CUDA) && !defined(__SYCL_DEVICE_ONLY__)
+#include "../cuda-api.h"
+#endif
+#if defined(MOM_SYCL_HAS_CUDA) && !defined(__SYCL_DEVICE_ONLY__) && \
+    !defined(MOM_EMBEDDED_CUDA_IMAGES)
 #include <filesystem>
 #include <iomanip>
 #include <sstream>
-#include "../cuda-api.h"
 #include "../jit-cache.h"
 #endif
 
@@ -406,12 +409,21 @@ void cn_gpu(const uint8_t* const inputs, const unsigned input_size, uint8_t* con
       });
 
   // Finish kernels before a pageable readback can block inside the runtime copy submission.
+#if defined(_WIN32) && defined(MOM_SYCL_ADAPTIVECPP) && defined(MOM_SYCL_HAS_HIP)
+  // AdaptiveCpp may defer submission; event status alone does not flush its DAG.
+  // This public, nonblocking queue query submits pending work before low-CPU polling.
+  (void)q.khr_empty();
+#endif
   sycl_wait_and_throw(final_event, state.device);
   if constexpr (mom_sycl_portable_opencl) {
     state.buffered_outputs.read(output, output_bytes);
   } else if (state.shared_io) {
     std::memcpy(output, d_outputs, output_bytes);
   } else {
-    sycl_wait_and_throw(q.memcpy(output, d_outputs, output_bytes), state.device);
+    const auto readback_event = q.memcpy(output, d_outputs, output_bytes);
+#if defined(_WIN32) && defined(MOM_SYCL_ADAPTIVECPP) && defined(MOM_SYCL_HAS_HIP)
+    (void)q.khr_empty();
+#endif
+    sycl_wait_and_throw(readback_event, state.device);
   }
 }

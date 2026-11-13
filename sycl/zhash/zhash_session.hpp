@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -123,11 +124,13 @@ public:
       clear_device_state();
       std::uint64_t midstate[8];
       mom_equihash::hash_header_midstate<Spec>(header, midstate);
-      alignas(std::uint64_t) std::uint8_t input[input_storage_bytes]{};
+      alignas(std::uint64_t) std::uint8_t fallback_input[input_storage_bytes];
+      std::uint8_t* const input = host_input_ != nullptr ? host_input_ : fallback_input;
+      std::memset(input, 0, input_storage_bytes);
       std::memcpy(input, header, Spec::header_length);
       std::memcpy(input + midstate_offset, midstate, sizeof(midstate));
       MomSyclHostTransferGuard input_transfer(queue_, "zhash input upload");
-      queue_.memcpy(input_storage_, input, sizeof(input));
+      queue_.memcpy(input_storage_, input, input_storage_bytes);
 
       std::array<sycl::event, 6> stages;
       stages[0] = mom_equihash::submit_generation_bucketed<Spec, InitialLayout>(
@@ -161,22 +164,21 @@ public:
       const sycl::event verified = mom_equihash::submit_verify_recovered_leaves<Spec>(
           queue_, device_header_, device_midstate_, zero_root_count_, recovered_leaves_,
           verified_fields_, recovered_valid_, 0, fast_candidate_roots);
-      // A D2H submission behind live kernels can itself busy-spin. Complete verification first so
-      // the low-CPU result-copy wait starts after submission has become nonblocking.
-      sycl_wait_and_throw(verified, queue_.get_device());
-
-      std::array<std::uint32_t, fast_candidate_roots * Spec::proof_indices> fast_leaves{};
-      std::array<std::uint8_t, fast_candidate_roots> fast_valid{};
-      std::array<std::uint32_t, 6> result_counts{};
-      MomSyclHostTransferGuard fast_readback(queue_, "zhash fast readback");
+      FastReadback fallback_fast_readback{};
+      FastReadback* const fast_readback =
+          fast_readback_ != nullptr ? fast_readback_ : &fallback_fast_readback;
+      MomSyclHostTransferGuard fast_readback_guard(queue_, "zhash fast readback");
+      // Host USM lets the ordered queue copy results without a separate host wakeup. Stack
+      // destinations can busy-spin during submission, so retain their verification pre-wait.
+      if (fast_readback_ == nullptr || options_.collect_round_counts)
+        sycl_wait_and_throw(verified, queue_.get_device());
       if (options_.collect_round_counts)
         queue_.memcpy(report.flat_counts.data(), flat_counts_, sizeof(report.flat_counts));
-      queue_.memcpy(result_counts.data(), result_counts_storage_, sizeof(result_counts));
-      queue_.memcpy(fast_leaves.data(), recovered_leaves_, sizeof(fast_leaves));
-      sycl_wait_and_throw(queue_.memcpy(fast_valid.data(), recovered_valid_, sizeof(fast_valid)),
-                          queue_.get_device());
-      std::copy_n(result_counts.begin(), 5, report.overflow_counts.begin());
-      report.zero_root_count = result_counts[5];
+      const sycl::event readback_ready =
+          queue_.memcpy(fast_readback, result_counts_storage_, sizeof(*fast_readback));
+      sycl_wait_and_throw(readback_ready, queue_.get_device());
+      std::copy_n(fast_readback->counts.begin(), 5, report.overflow_counts.begin());
+      report.zero_root_count = fast_readback->counts[5];
       if (options_.collect_stage_times)
         for (unsigned i = 0; i < stages.size(); ++i) {
           const auto start = stages[i].get_profiling_info<
@@ -203,7 +205,7 @@ public:
         return capacity_report(report, "zero-root candidate capacity exceeded");
 
       if (report.zero_root_count <= fast_candidate_roots) {
-        recover_roots(report, fast_leaves.data(), fast_valid.data());
+        recover_roots(report, fast_readback->leaves.data(), fast_readback->valid.data());
       } else {
         mom_equihash::submit_recover_root_leaves<Spec, InitialLayout::local_bits, Round1Record,
                                                  Round2Record>(
@@ -220,8 +222,8 @@ public:
         std::vector<std::uint32_t> leaves(
             static_cast<std::size_t>(report.zero_root_count) * Spec::proof_indices);
         std::vector<std::uint8_t> valid(report.zero_root_count);
-        std::copy(fast_leaves.begin(), fast_leaves.end(), leaves.begin());
-        std::copy(fast_valid.begin(), fast_valid.end(), valid.begin());
+        std::copy(fast_readback->leaves.begin(), fast_readback->leaves.end(), leaves.begin());
+        std::copy_n(fast_readback->valid.begin(), fast_candidate_roots, valid.begin());
         const std::size_t tail = report.zero_root_count - fast_candidate_roots;
         MomSyclHostTransferGuard tail_readback(queue_, "zhash tail readback");
         queue_.memcpy(leaves.data() + fast_candidate_roots * Spec::proof_indices,
@@ -244,6 +246,20 @@ public:
   }
 
 private:
+  // This prefix matches the contiguous device result packet; the rare tail stays device-resident.
+  struct FastReadback {
+    std::array<std::uint32_t, 6> counts;
+    std::array<std::uint8_t, Layout::max_candidate_roots> valid;
+    std::array<std::uint32_t, fast_candidate_roots * Spec::proof_indices> leaves;
+  };
+  static_assert(Layout::recovered_valid_bytes == Layout::max_candidate_roots);
+  static_assert(offsetof(FastReadback, valid) == 6u * sizeof(std::uint32_t));
+  static_assert(offsetof(FastReadback, leaves) ==
+                6u * sizeof(std::uint32_t) + Layout::recovered_valid_bytes);
+  static_assert(sizeof(FastReadback) == 6u * sizeof(std::uint32_t) +
+                Layout::recovered_valid_bytes +
+                fast_candidate_roots * Spec::proof_indices * sizeof(std::uint32_t));
+
   // Preserve the source device/context while enforcing ordered dependencies and optional profiling.
   static sycl::queue make_queue(const sycl::queue& source, const bool profile) {
     if (profile)
@@ -258,6 +274,8 @@ private:
   SessionOptions options_;
   ZHashSessionLifecycle lifecycle_;
   std::string last_error_;
+  FastReadback* fast_readback_ = nullptr;
+  std::uint8_t* host_input_ = nullptr;
 #ifdef MOM_SYCL_ADAPTIVECPP_CUDA
   bool cuda_partition_ = false;
 #endif
@@ -288,6 +306,10 @@ private:
   static constexpr std::size_t input_storage_bytes = midstate_offset + 8u * sizeof(std::uint64_t);
   static constexpr std::size_t bucket_count_size =
       2u * InitialLayout::bucket_count + 3u * LaterLayout::bucket_count;
+  static_assert(Layout::recovered_valid_bytes % sizeof(std::uint32_t) == 0);
+  static_assert(Layout::recovered_leaf_bytes % sizeof(std::uint32_t) == 0);
+  static constexpr std::size_t counts_storage_words = bucket_count_size + 6u +
+      (Layout::recovered_valid_bytes + Layout::recovered_leaf_bytes) / sizeof(std::uint32_t);
 #ifdef MOM_SYCL_HAS_HIP
   static constexpr std::size_t required_cache_local_bytes = std::max({
       mom_equihash::partitioned_split_collision_local_bytes<InitialLayout, 8, true>,
@@ -325,7 +347,8 @@ private:
       throw std::runtime_error("ZHash session layout does not hold the complete logical row space");
     if (Layout::level0_bytes > max_alloc || Layout::round1_bytes > max_alloc ||
         Layout::round2_bytes > max_alloc || Layout::round3_bytes > max_alloc ||
-        Layout::round4_bytes > max_alloc || Layout::candidate_root_bytes > max_alloc)
+        Layout::round4_bytes > max_alloc || Layout::candidate_root_bytes > max_alloc ||
+        counts_storage_words * sizeof(std::uint32_t) > max_alloc)
       throw std::runtime_error("ZHash arena plan exceeds the device allocation limit");
     if (Layout::collision_work_group >
             device.get_info<sycl::info::device::max_work_group_size>() ||
@@ -336,6 +359,12 @@ private:
       throw std::runtime_error("ZHash arena slot count does not fit kernel counters");
 
     try {
+      // Keep transfers session-owned when supported; each null allocation independently falls
+      // back to guarded stack storage. Backend errors still propagate through normal cleanup.
+      if (device.has(sycl::aspect::usm_host_allocations)) {
+        fast_readback_ = sycl::malloc_host<FastReadback>(1, queue_);
+        host_input_ = sycl::malloc_host<std::uint8_t>(input_storage_bytes, queue_);
+      }
       input_storage_ = allocate_objects<std::uint8_t>(input_storage_bytes);
       device_header_ = input_storage_;
       device_midstate_ = reinterpret_cast<std::uint64_t*>(input_storage_ + midstate_offset);
@@ -346,7 +375,7 @@ private:
       round2_ = allocate_objects<Round2Record>(LaterLayout::slot_count);
       round3_ = allocate_objects<Round3Record>(LaterLayout::slot_count);
       round4_ = allocate_objects<Round4Record>(LaterLayout::slot_count);
-      counts_storage_ = allocate_objects<std::uint32_t>(bucket_count_size + 6u);
+      counts_storage_ = allocate_objects<std::uint32_t>(counts_storage_words);
       bucket_counts_storage_ = counts_storage_;
       bucket_counts_[0] = bucket_counts_storage_;
       bucket_counts_[1] = bucket_counts_[0] + InitialLayout::bucket_count;
@@ -358,9 +387,9 @@ private:
       overflow_counts_ = result_counts_storage_;
       zero_root_count_ = result_counts_storage_ + 5;
       candidate_roots_ = allocate_objects<RootRecord>(Layout::max_candidate_roots);
-      recovered_leaves_ = allocate_objects<std::uint32_t>(
-          Layout::max_candidate_roots * Spec::proof_indices);
-      recovered_valid_ = allocate_objects<std::uint8_t>(Layout::max_candidate_roots);
+      recovered_valid_ = reinterpret_cast<std::uint8_t*>(result_counts_storage_ + 6u);
+      recovered_leaves_ = reinterpret_cast<std::uint32_t*>(
+          recovered_valid_ + Layout::recovered_valid_bytes);
       verified_fields_ = allocate_objects<std::uint32_t>(
           Layout::max_candidate_roots * Spec::proof_indices * Spec::rounds);
     } catch (...) {
@@ -383,6 +412,8 @@ private:
 
   // Release owned buffers and invalidate all aliases into their shared counter/header storage.
   void free_all() noexcept {
+    free_ptr(fast_readback_);
+    free_ptr(host_input_);
     free_ptr(input_storage_);
     device_header_ = nullptr;
     device_midstate_ = nullptr;
@@ -395,12 +426,13 @@ private:
     free_ptr(round4_);
     free_ptr(counts_storage_);
     bucket_counts_storage_ = result_counts_storage_ = nullptr;
+    // These two pointers alias counts_storage_; never free them a second time.
+    recovered_valid_ = nullptr;
+    recovered_leaves_ = nullptr;
     bucket_counts_.fill(nullptr);
     free_ptr(flat_counts_);
     overflow_counts_ = zero_root_count_ = nullptr;
     free_ptr(candidate_roots_);
-    free_ptr(recovered_leaves_);
-    free_ptr(recovered_valid_);
     free_ptr(verified_fields_);
   }
 

@@ -1,7 +1,26 @@
 struct LoopStats {
   uint64_t window_start = 0, dispatch = 0, msg = 0, post = 0, iters = 0, jobs = 0,
            max_msg = 0, max_post = 0, dispatch_end = 0;
+  uint64_t c29_input_graphs = 0, c29_empty_polls = 0, c29_proofs = 0,
+           c29_drained = 0, c29_other = 0;
   double cpu_start = -1.0;
+
+  // C29 result zero means either a nonempty graph start or an empty-input active-search poll.
+  void record_c29(const unsigned input_len, const int result) noexcept {
+    if (result == 0) {
+      ++(input_len ? c29_input_graphs : c29_empty_polls);
+    } else if (result == 1) {
+      ++c29_proofs;
+    } else if (result == -1) {
+      ++c29_drained;
+    } else {
+      ++c29_other;
+    }
+  }
+
+  bool has_c29_activity() const noexcept {
+    return c29_input_graphs || c29_empty_polls || c29_proofs || c29_drained || c29_other;
+  }
 };
 
 static uint64_t loop_now_us() {
@@ -53,6 +72,16 @@ static void loop_stats_report(LoopStats& ls, const uint64_t now) {
     wall / 1e6, cpu_percent, 100.0 * ls.dispatch / wall, ls.msg / 1e6, ls.post / 1e6,
     static_cast<unsigned long long>(ls.iters), static_cast<unsigned long long>(ls.jobs),
     ls.max_msg / 1e3, ls.max_post / 1e3);
+  if (ls.has_c29_activity()) {
+    fprintf(stderr,
+      "C29DISPATCH t=%llu graphs=%llu empty_polls=%llu proofs=%llu drained=%llu other=%llu\n",
+      static_cast<unsigned long long>(time(nullptr)),
+      static_cast<unsigned long long>(ls.c29_input_graphs),
+      static_cast<unsigned long long>(ls.c29_empty_polls),
+      static_cast<unsigned long long>(ls.c29_proofs),
+      static_cast<unsigned long long>(ls.c29_drained),
+      static_cast<unsigned long long>(ls.c29_other));
+  }
   fflush(stderr);
   ls = LoopStats{};
   ls.window_start = now;
@@ -200,6 +229,9 @@ void Core::Execute() try {
               dispatch_job_ref, m_c29_proof_size, m_input, m_input_len, m_output,
               static_cast<uint32_t*>(m_spads), &dev_nonce, m_dev_str
             );
+            if (loop_stats) {
+              ls.record_c29(m_input_len, dev_sols);
+            }
             break;
           case DEV::C30_GPU:
             dev_nonce = m_nonce64;
@@ -636,8 +668,6 @@ void Core::Execute() try {
   throw;
 }
 
-std::unique_ptr<AsyncWorker> create_worker(
-  napi_env env, napi_value data, napi_value complete, napi_value error_callback
-) {
-  return std::make_unique<Core>(env, data, complete, error_callback);
+std::unique_ptr<AsyncWorker> create_worker(std::unique_ptr<WorkerEvents> events) {
+  return std::make_unique<Core>(std::move(events));
 }

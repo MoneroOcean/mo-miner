@@ -2,6 +2,7 @@
 
 const {StringDecoder} = require("node:string_decoder");
 const {normalizeAlgoName} = require("../miner/algorithms");
+const {normalizeFingerprint} = require("./tls");
 
 /**
  * @param {{
@@ -383,6 +384,8 @@ module.exports = ({
 
     pool_log(pool_id, "Connecting to " + poolTypeStr(pool_id) + " " + pool_str(pool_id) + " pool");
     pool.last_connect_time = Date.now();
+    const fingerprint = normalizeFingerprint(pool.tls_fingerprint);
+    if (fingerprint && !pool.is_tls) {throw new Error("tls_fingerprint requires a TLS pool");}
     const socket = connectSocket(pool);
     pool.socket = socket;
     pool.last_job = null;
@@ -390,7 +393,20 @@ module.exports = ({
     const pool_err = poolErrorHandler(pool_id, socket, set_job);
     scheduleInitialJobTimeout(pool_id, socket, pool_err);
 
-    socket.on("connect", function () {
+    // TCP connect precedes certificate verification. Never queue login credentials until the
+    // TLS handshake and optional leaf pin have both passed (in Node and the native runtime).
+    socket.once(pool.is_tls ? "secureConnect" : "connect", function () {
+      if (!isCurrentPoolSocket(pool_id, socket)) {return;}
+      if (fingerprint) {
+        let actual = "";
+        try {actual = normalizeFingerprint(socket.getPeerCertificate?.().fingerprint256);} catch {
+          // Missing or malformed peer metadata is a failed pin, never permission to log in.
+        }
+        if (actual !== fingerprint) {
+          pool_err(pool_log_str(pool_id, "TLS certificate fingerprint mismatch"));
+          return;
+        }
+      }
       handlePoolConnect(pool_id, socket, pool);
     });
 

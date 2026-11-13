@@ -219,10 +219,27 @@ static void update_str2dev(const bool verbose = false) try {
       }
     }
   }
+  const std::string backend = selected_gpu_backend();
+  if (backend == "amd" || backend == "nvidia") {
+    // Static AdaptiveCpp may enumerate both vendors before its visibility mask is applied.
+    // Filter first so discovery and the vendor-only algorithm worker assign the same gpuN names.
+    std::erase_if(str2dev, [&backend](const auto& pair) {
+      if (!pair.second.is_gpu())
+        return false;
+      const auto id = pair.second.template get_info<sycl::info::device::vendor_id>();
+      const auto name = pair.second.template get_info<sycl::info::device::vendor>();
+      // AdaptiveCpp's HIP runtime reports vendor_id 1022 rather than AMD's PCI 0x1002.
+      // Accept its explicit vendor name as well as the standard PCI ID; unknowns fail closed.
+      return backend == "amd" ? id != 0x1002u && name != "AMD" &&
+                                    name != "Advanced Micro Devices" &&
+                                    name != "Advanced Micro Devices, Inc."
+                              : id != 0x10deu && name != "NVIDIA" &&
+                                    name != "NVIDIA Corporation";
+    });
+  }
   // Backend enumeration order can change with runtime/driver versions. Assign mom's public gpuN
   // names by the full hardware-name string so a mixed iGPU/dGPU system remains deterministic.
   sort_gpus_by_name();
-  const std::string backend = selected_gpu_backend();
   if (backend == "intel" || backend == "intel_igpu") {
     // Filter after naming: an excluded device must not shift another physical GPU's public index.
     // Metadata errors propagate; an unknown memory class must never be treated as discrete.

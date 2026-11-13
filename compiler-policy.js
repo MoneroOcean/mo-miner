@@ -286,17 +286,24 @@ function nvidiaComputeCapability(env = process.env) {
     return sm;
   }
   if (cachedNvidiaSms === undefined) {
-    const result = spawnSync("nvidia-smi",
-      ["--query-gpu=compute_cap", "--format=csv,noheader,nounits"],
-      {encoding: "utf8", timeout: 2000, windowsHide: true});
-    if (!result.error && result.status === 0 && typeof result.stdout === "string") {
-      const output = result.stdout.replace(/\r?\n$/, "");
-      cachedNvidiaSms = output === "" ? [] : output.split(/\r?\n/).map(parseNvidiaSm);
+    if (globalThis.__momNativeCore) {
+      // Standalone builds query the system driver, never an external utility. Missing native
+      // metadata stays unknown rather than falling through to an unavailable process API.
+      const values = globalThis.__momNativeCore.nvidiaComputeCapabilities?.();
+      cachedNvidiaSms = Array.isArray(values) ? values.map(parseNvidiaSm) : [];
     } else {
-      cachedNvidiaSms = [];
+      const result = spawnSync("nvidia-smi",
+        ["--query-gpu=compute_cap", "--format=csv,noheader,nounits"],
+        {encoding: "utf8", timeout: 2000, windowsHide: true});
+      if (!result.error && result.status === 0 && typeof result.stdout === "string") {
+        const output = result.stdout.replace(/\r?\n$/, "");
+        cachedNvidiaSms = output === "" ? [] : output.split(/\r?\n/).map(parseNvidiaSm);
+      } else {
+        cachedNvidiaSms = [];
+      }
     }
   }
-  // nvidia-smi rows are physical devices, not CUDA-visible ordinals. Their conservative minimum
+  // NVML/nvidia-smi rows are physical devices, not CUDA-visible ordinals. Their conservative minimum
   // remains safe under inherited visibility masks and CUDA's independent enumeration order.
   return cachedNvidiaSms.length && cachedNvidiaSms.every((sm) => sm !== null)
     ? Math.min(...cachedNvidiaSms) : null;
@@ -461,7 +468,7 @@ function linuxVendorRuntimeDirectory(gpu, env) {
 function workerEnv(algo, env = process.env, platform = process.platform, requestedBackend = "auto") {
   // An explicit addon path is an intentional compiler override (used by focused validation and
   // advanced deployments). Do not silently replace it with the table default for this algorithm.
-  if (env["MOM_NATIVE_PATH"] &&
+  if (globalThis.__momNativeCore === undefined && env["MOM_NATIVE_PATH"] &&
       env["MOM_NATIVE_PATH"] !== env["MOM_NATIVE_PATH_LAUNCHER_DEFAULT"]) {
     return vendorDeviceEnv(env);
   }
@@ -500,6 +507,10 @@ function workerEnv(algo, env = process.env, platform = process.platform, request
       addon: artifact[platform === "win32" ? "win32" : "linux"],
     };
   }
+  // Native workers use the same policy, but never search for an addon or set application-DLL paths.
+  if (globalThis.__momNativeCore !== undefined) {
+    return {MOM_SYCL_COMPILER: selected.key, ...kernelWorkerEnv(algo, gpu, selected.key, backend, env)};
+  }
   const platformBuild = platform === "win32" ? "win" : "lin";
   const roots = [path.join(__dirname, "libs"),
     path.join(__dirname, "build", platformBuild, "Release")];
@@ -530,12 +541,8 @@ function workerEnv(algo, env = process.env, platform = process.platform, request
     MOM_NATIVE_PATH: addon,
     MOM_RUNTIME_DIR: libDir,
     MOM_SYCL_COMPILER: selected.key,
-    ...deviceEnv,
+    ...kernelWorkerEnv(algo, gpu, selected.key, backend, env),
   };
-  const syclNativeVariable = syclNativeVariables[algo];
-  if (syclNativeVariable) {
-    result[syclNativeVariable] = backend === "sycl-native" ? "1" : "0";
-  }
   const localBuild = path.join(__dirname, "build", platformBuild);
   if (fs.existsSync(localBuild)) {
     result["MOM_JIT_CACHE_DIR"] = path.join(localBuild, ".jit-cache");
@@ -558,43 +565,6 @@ function workerEnv(algo, env = process.env, platform = process.platform, request
       result["SYCL_CACHE_DIR"] = path.join(localBuild, ".sycl-cache");
     }
   }
-  const index = gpuIndex({...env, ...result});
-  // The addon chooses the compiler runtime, while these selectors choose that runtime's matching
-  // device backend. Without the AdaptiveCpp mask an acpp-cuda worker can see the host Intel OpenCL
-  // ICD first and try to translate its CUDA-oriented SSCP image through llvm-spirv.
-  const acppTarget = adaptiveCppTargets[selected.key];
-  if (acppTarget) {
-    if (!adaptiveCppBackends.has(backend)) {
-      throw new Error(`${backend} is incompatible with the AdaptiveCpp ${acppTarget.name} worker`);
-    }
-    result["ACPP_VISIBILITY_MASK"] = acppTarget.mask;
-  }
-  if (selected.key === "dpcpp" && gpu === "nvidia") {
-    if (backend === "sycl-opencl" || backend === "sycl-l0") {
-      throw new Error(`${backend} is incompatible with the DPC++ CUDA worker`);
-    }
-    result["ONEAPI_DEVICE_SELECTOR"] = index === null ? "cuda:gpu" : `cuda:${index}`;
-  }
-  if ((selected.key === "dpcpp" || selected.key === "oneapi") && gpu === "intel") {
-    result["ONEAPI_DEVICE_SELECTOR"] = backend === "sycl-opencl" ? "opencl:gpu" : "level_zero:gpu";
-  }
-  if (gpu === "intel" && dpcppCompilerKeys.has(selected.key)) {
-    // Level Zero reports a conservative per-allocation ceiling on some full-ReBAR Arc systems.
-    // The runtime's relaxed-allocation descriptor removes that artificial limit while allocation
-    // failure still safely rejects workloads that do not fit physical VRAM.
-    result["UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS"] =
-      env["UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS"] || "1";
-  }
-  if (selected.key === "dpcpp-opencl") {
-    // GPU is the mining default. CPU is an explicit correctness/portability mode used to prove
-    // that the same standards-only SPIR-V artifact also runs through an OpenCL CPU implementation.
-    // Intel integrated GPUs use Level Zero because it is their native low-overhead interface;
-    // generic/unknown vendors use the portable OpenCL contract.
-    const genericDefaultL0 = backend === "sycl" && intelGpu;
-    result["ONEAPI_DEVICE_SELECTOR"] = backend === "sycl-l0" || genericDefaultL0
-      ? "level_zero:gpu"
-      : `opencl:${openclDeviceType(env)}`;
-  }
   // Each compiler ships beside its own SYCL runtime. Workers are separate processes, so putting
   // only the selected directory first avoids same-SONAME collisions (notably DPC++ libsycl) while
   // still allowing the policy to switch compilers when an algorithm changes.
@@ -616,6 +586,47 @@ function workerEnv(algo, env = process.env, platform = process.platform, request
     result[pathKey] = [libDir, path.join(libDir, "hipSYCL"), sharedRuntime,
       env[pathKey]]
       .filter(Boolean).join(path.delimiter);
+  }
+  return result;
+}
+
+/** Kernel/device selection is shared by static workers and Engineering addons; it must not
+ * depend on finding an application library on disk.
+ * @param {string} algo @param {string} gpu @param {string} key @param {string} backend @param {NodeJS.ProcessEnv} env */
+function kernelWorkerEnv(algo, gpu, key, backend, env) {
+  /** @type {NodeJS.ProcessEnv} */
+  const result = vendorDeviceEnv(env);
+  const syclNativeVariable = syclNativeVariables[algo];
+  if (syclNativeVariable) {
+    result[syclNativeVariable] = backend === "sycl-native" ? "1" : "0";
+  }
+  const index = gpuIndex({...env, ...result});
+  // Select only the matching backend; an ACPP CUDA image must not be sent through llvm-spirv.
+  const acppTarget = adaptiveCppTargets[key];
+  if (acppTarget) {
+    if (!adaptiveCppBackends.has(backend)) {
+      throw new Error(`${backend} is incompatible with the AdaptiveCpp ${acppTarget.name} worker`);
+    }
+    result["ACPP_VISIBILITY_MASK"] = acppTarget.mask;
+  }
+  if (key === "dpcpp" && gpu === "nvidia") {
+    if (backend === "sycl-opencl" || backend === "sycl-l0") {
+      throw new Error(`${backend} is incompatible with the DPC++ CUDA worker`);
+    }
+    result["ONEAPI_DEVICE_SELECTOR"] = index === null ? "cuda:gpu" : `cuda:${index}`;
+  }
+  if ((key === "dpcpp" || key === "oneapi") && gpu === "intel") {
+    result["ONEAPI_DEVICE_SELECTOR"] = backend === "sycl-opencl" ? "opencl:gpu" : "level_zero:gpu";
+  }
+  if (gpu === "intel" && dpcppCompilerKeys.has(key)) {
+    // Full-ReBAR allocations still fail safely if they exceed physical VRAM.
+    result["UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS"] = env["UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS"] || "1";
+  }
+  if (key === "dpcpp-opencl") {
+    const intelGpu = gpu === "intel" || gpu === "intel_igpu";
+    const genericDefaultL0 = backend === "sycl" && intelGpu;
+    result["ONEAPI_DEVICE_SELECTOR"] = backend === "sycl-l0" || genericDefaultL0
+      ? "level_zero:gpu" : `opencl:${openclDeviceType(env)}`;
   }
   return result;
 }

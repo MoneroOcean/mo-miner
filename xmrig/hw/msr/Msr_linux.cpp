@@ -30,6 +30,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <fstream>
+#include <string>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -56,17 +57,53 @@ public:
 private:
     inline bool msr_allow_writes()
     {
-        std::ofstream file("/sys/module/msr/parameters/allow_writes", std::ios::out | std::ios::binary | std::ios::trunc);
-        if (file.is_open()) {
-            file << "on";
+        static constexpr const char *parameter = "/sys/module/msr/parameters/allow_writes";
+        {
+            std::ofstream file(parameter, std::ios::out | std::ios::binary | std::ios::trunc);
+            if (file.is_open()) {
+                file << "on";
+                file.flush();
+                if (file.good()) {
+                    return true;
+                }
+            }
         }
 
-        return file.good();
+        // A preconfigured module can be usable even when this process cannot write sysfs.
+        std::ifstream current(parameter, std::ios::in | std::ios::binary);
+        if (!current.is_open()) {
+            return msr_device_available();
+        }
+
+        std::string state;
+        std::string extra;
+        if (!(current >> state) || (current >> extra) || current.bad()) {
+            return false;
+        }
+
+        return state == "on" || state == "default";
+    }
+
+    inline bool msr_device_available() const
+    {
+        const int fd = msr_open(-1, O_RDWR);
+        if (fd < 0) {
+            return false;
+        }
+
+        close(fd);
+        return true;
     }
 
     inline bool msr_modprobe()
     {
+#ifdef MOM_NATIVE_RUNTIME
+        // A standalone native release may use an already-prepared MSR device, but must not
+        // shell out to install a kernel module. Engineering builds retain the legacy behavior.
+        return false;
+#else
         return system("/sbin/modprobe msr allow_writes=on > /dev/null 2>&1") == 0;
+#endif
     }
 
     const bool m_available;

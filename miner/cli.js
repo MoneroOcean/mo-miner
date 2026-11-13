@@ -11,6 +11,7 @@ const net = require("node:net");
  *     parse_opt(opt: object, help: UnknownRecord, arg: string, value: string, base: string): boolean,
  *     pool_create(url: string, port: number, tls: boolean, login: string, pass: string): PoolConfig,
  *     print_help(message?: string): never,
+ *     normalize_tls_fingerprint(value: unknown): string,
  *   },
  *   opt: MinerOptions,
  *   normalizeAlgoName(algo: string | null | undefined): string | null | undefined,
@@ -97,6 +98,15 @@ module.exports = ({o, opt, normalizeAlgoName}) => {
     while (args.length) {
       const arg = args.shift();
       const value = args[0];
+      if (arg === "--tls-fingerprint" && value !== undefined) {
+        const primary = opt.pool_ids.primary === null ? undefined : opt.pools[opt.pool_ids.primary];
+        if (!primary?.is_tls) {return o.print_help("--tls-fingerprint requires a TLS primary pool");}
+        try {primary.tls_fingerprint = o.normalize_tls_fingerprint(value);} catch (error) {
+          return o.print_help(error instanceof Error ? error.message : "Invalid TLS fingerprint");
+        }
+        args.shift();
+        continue;
+      }
       if (arg !== undefined && value !== undefined && o.parse_opt(opt, o.opt_help, arg, value, "")) {
         args.shift();
       } else {

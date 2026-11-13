@@ -7,6 +7,10 @@
 // (MOM_SYCL_HAS_CUDA: the dpcpp-cuda and dpcpp-combined modes); the source-JIT path is taken at
 // runtime only on a CUDA device.
 #if defined(MOM_SYCL_HAS_CUDA)
+#if defined(MOM_EMBEDDED_SYCL_JIT)
+// Generated from the maintained device fragments at build time; no release source extraction.
+#include "kawpow-jit-resources.inc"
+#else
 #ifdef _WIN32
 // Minimal Win32 declarations instead of <windows.h>: the latter's _Interlocked* intrinsics clash with
 // MSVC's <atomic> under clang -fsycl ("ambiguous"). These locate the loaded module (GetModuleHandleEx +
@@ -18,6 +22,7 @@ extern "C" __declspec(dllimport) unsigned long __stdcall GetModuleFileNameA(void
 #else
 #include <dlfcn.h> // dladdr: locate the loaded module so packaged device source can ship beside it
 #endif
+#endif // MOM_EMBEDDED_SYCL_JIT
 
 // Prelude: everything sycl/kawpow/device.inc relies on (it assumes constants/structs/FastModData are
 // already defined). Kept byte-compatible with the host KawpowProgram/FastModData so the emitted
@@ -138,6 +143,7 @@ void KAWPOW_JIT_KERNEL_NAME(const uint8_t* d_input, const DagLoad* __restrict__ 
 }
 )KJW";
 
+#if !defined(MOM_EMBEDDED_SYCL_JIT)
 // Read an optional JIT source candidate; empty/unreadable files allow the next candidate.
 static std::string kawpow_read_file(const std::string& path) {
   if (path.empty())
@@ -178,13 +184,19 @@ static std::string kawpow_module_dir() {
   return {};
 #endif
 }
+#endif // MOM_EMBEDDED_SYCL_JIT
 
-// device.inc holds the device code the CUDA JIT compiles at runtime. It ships as a separate
-// file: look beside the loaded module (release: libs/kawpow_device.inc next to mom.node), then in
-// the source tree (dev: sycl/kawpow/device.inc), with $MOM_KAWPOW_DEVICE_INC as an override. Read
-// once and cached.
+// Use immutable linked fragments in native mode. Engineering/legacy releases retain module-
+// adjacent files, source-tree fallback and MOM_KAWPOW_DEVICE_INC. Either path assembles once
+// and caches the same device/Keccak bytes; native mode never probes a source file on disk.
 static const std::string& kawpow_device_src() {
   static const std::string src = [] {
+#if defined(MOM_EMBEDDED_SYCL_JIT)
+    std::string device_source(embedded_resource("kawpow-device.inc"));
+    std::string keccak_source(embedded_resource("kawpow-keccak.inc"));
+    if (device_source.empty() || keccak_source.empty())
+      throw std::string("kawpow JIT: missing embedded device/keccak source");
+#else
     const char* const env = std::getenv("MOM_KAWPOW_DEVICE_INC");
     const std::string dir = kawpow_module_dir();
     const std::string candidates[] = {
@@ -228,6 +240,7 @@ static const std::string& kawpow_device_src() {
     }
     if (keccak_source.empty())
       throw std::string("kawpow JIT: cannot find kawpow_keccak.inc beside the device source");
+#endif
 
     const std::string marker = "#include \"keccak.inc\"";
     const size_t marker_pos = device_source.find(marker);

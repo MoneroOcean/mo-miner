@@ -116,9 +116,11 @@ template <typename Spec, unsigned Round>
 using CollisionRoundRecord = PackedCollisionRecord<Spec, Spec::rounds - Round>;
 
 // Select collision-record alignment without changing its bit layout or parent-reference width.
+// The Intel profile is explicit: upstream DPC++ does not necessarily define the branded
+// compiler macro. Host and device must select the same layout, never a per-device-pass ABI.
 constexpr unsigned packed_bucket_collision_alignment(const unsigned n,
                                                        const unsigned field_count) {
-#if defined(MOM_SYCL_HAS_HIP) || defined(__INTEL_LLVM_COMPILER)
+#if defined(MOM_SYCL_HAS_HIP) || defined(__INTEL_LLVM_COMPILER) || defined(MOM_SYCL_INTEL_LAYOUT)
   constexpr unsigned wide_fields = 7;
 #else
   constexpr unsigned wide_fields = 6;
@@ -127,12 +129,12 @@ constexpr unsigned packed_bucket_collision_alignment(const unsigned n,
   if (n == 144 && (field_count == 2 || field_count == 3)) return 4;
 #endif
   if (n == 192) {
-#if defined(__INTEL_LLVM_COMPILER)
+#if defined(__INTEL_LLVM_COMPILER) || defined(MOM_SYCL_INTEL_LAYOUT)
     if (field_count == 7) return 4;
 #endif
     if (field_count >= wide_fields) return 32;
     if (field_count >= 5) return 8;
-#if defined(MOM_SYCL_HAS_HIP) || defined(__INTEL_LLVM_COMPILER)
+#if defined(MOM_SYCL_HAS_HIP) || defined(__INTEL_LLVM_COMPILER) || defined(MOM_SYCL_INTEL_LAYOUT)
     if (field_count == 2) return 4;
 #endif
   }
@@ -152,7 +154,7 @@ constexpr unsigned bits_for_capacity(std::uint32_t capacity) {
 constexpr unsigned packed_bucket_level0_alignment([[maybe_unused]] const unsigned n,
                                                    [[maybe_unused]] const unsigned k,
                                                    const unsigned word_count) {
-#if defined(__INTEL_LLVM_COMPILER)
+#if defined(__INTEL_LLVM_COMPILER) || defined(MOM_SYCL_INTEL_LAYOUT)
   if (n == 192 && k == 7) return 4;
 #endif
   return word_count == 7 ? 32 : 4;
@@ -1236,11 +1238,13 @@ inline void hash_words_from_tail_pair(const std::uint64_t midstate[8],
 }
 
 template <typename Spec>
-// Finalize the header tail and index, selecting paired arithmetic only for the supported device compiler.
+// Finalize the header tail and index. The SPIR-V paired path depends on the device target,
+// not Intel's compiler-brand macro; upstream DPC++ must retain the same optimization.
 inline void hash_words_from_tail(const std::uint64_t midstate[8], const std::uint64_t first,
                                  const std::uint32_t second_low, const std::uint32_t index,
                                  std::uint64_t digest[8]) {
-#if defined(__SYCL_DEVICE_ONLY__) && defined(__INTEL_LLVM_COMPILER) && !defined(__NVPTX__)
+#if defined(__SYCL_DEVICE_ONLY__) && !defined(__NVPTX__) && \
+    (defined(__INTEL_LLVM_COMPILER) || (defined(__SPIR__) && !defined(MOM_SYCL_PORTABLE_OPENCL)))
   hash_words_from_tail_pair(midstate, first, second_low, index, digest);
 #else
   const std::uint64_t second = second_low | (static_cast<std::uint64_t>(index) << 32);

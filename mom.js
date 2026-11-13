@@ -384,6 +384,8 @@ if (!h.cluster_process()) {
       is_tls: true,
       is_nicehash: false,
       tls_verify: false,
+      // Pins belong to an endpoint; a user's original certificate cannot identify the donation proxy.
+      tls_fingerprint: "",
       protocol: null,
       use_subscribe: false,
       pass: "mom",
@@ -473,9 +475,10 @@ if (!h.cluster_process()) {
     if (compute_core) {return compute_core;}
     // The control core performs device discovery/MSR work before an algorithm worker exists. A
     // package launcher already selected an addon and matching runtime; preserve that atomic choice.
-    // A direct source launch has no such environment, so synthesize the policy default here. A real
-    // algorithm name is deliberately not used: overrides belong only to hashing workers.
-    if (!process.env["MOM_NATIVE_PATH"]) {
+    // A source or standalone-native launch needs that policy choice here; native mode selects a
+    // linked compiler key, never an addon. A real algorithm name is deliberately not used:
+    // overrides belong only to hashing workers.
+    if (globalThis.__momNativeCore !== undefined || !process.env["MOM_NATIVE_PATH"]) {
       const controlEnv = compilerPolicy.workerEnv("__control__", process.env, process.platform);
       if (controlEnv["MOM_NATIVE_PATH"]) {
         controlEnv["MOM_NATIVE_PATH_LAUNCHER_DEFAULT"] = controlEnv["MOM_NATIVE_PATH"];

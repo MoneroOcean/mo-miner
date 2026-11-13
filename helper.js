@@ -199,7 +199,8 @@ function reallyExit(code) {
 /** @param {NodeJS.ProcessEnv} extra */
 function childEnv(extra) {
   const env = {...process.env, ...extra};
-  return process.platform === "win32" ? withWindowsWorkerPath(env) : env;
+  // Native application workers are self-contained; preserve their supplied loader environment.
+  return process.platform === "win32" && globalThis.__momNativeCore === undefined ? withWindowsWorkerPath(env) : env;
 }
 
 /** @param {NodeJS.ProcessEnv} env */
@@ -331,10 +332,13 @@ module.exports.prepare_native_core_path = function(env = process.env, platform =
 /** @returns {ComputeCore} */
 module.exports.create_core = function() {
   this.log3("Starting compute core in " + thread_id + " thread");
-  const core_path = module.exports.prepare_native_core_path();
-  debugStartup("requiring " + core_path);
   /** @type {unknown} */
-  const loaded_module = require(core_path);
+  let loaded_module = globalThis.__momNativeCore;
+  if (loaded_module === undefined) {
+    const core_path = module.exports.prepare_native_core_path();
+    debugStartup("requiring " + core_path);
+    loaded_module = require(core_path);
+  }
   if (!isNativeCoreModule(loaded_module)) {throw new Error("Invalid native compute-core module");}
   const core_module = loaded_module;
   debugStartup("required native module");
@@ -678,7 +682,7 @@ function isSubprocessClosed(worker) {
 
 /** @param {SubprocessWorker} worker @param {NodeJS.Signals} [signal] */
 function killProcessTree(worker, signal = "SIGKILL") {
-  if (!is_windows_process || !worker.pid) {
+  if (!is_windows_process || !worker.pid || globalThis.__momNativeCore !== undefined) {
     worker.kill(signal);
     return false;
   }

@@ -39,12 +39,10 @@ using namespace mom_etchash;
 constexpr uint64_t ETCHASH_PORTABLE_TEST_CACHE_BYTES = 16u * 1024u;
 constexpr uint64_t ETCHASH_PORTABLE_TEST_DAG_BYTES = 80u * 1024u;
 
-// Admit bounded dimensions only for explicitly opted-in CPU tests, never benchmarks.
+// Admit bounded dimensions only for explicitly opted-in CPU or integrated-GPU correctness tests.
 static bool etchash_portable_test(const bool is_test, const bool is_benchmark,
                                   const sycl::device& device) {
-  unsigned long enabled = 0;
-  return is_test && !is_benchmark && device.is_cpu() &&
-         mom_parse_env_ulong("MOM_SYCL_PORTABLE_TEST", enabled) && enabled != 0;
+  return mom_compact_correctness_test(is_test, is_benchmark, device);
 }
 
 // Resolve epochs and search the matching DAG with the verified Keccak path.

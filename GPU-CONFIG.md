@@ -83,7 +83,7 @@
 | octopus       | Windows | NVIDIA | —         | sycl-native |
 | autolykos2    | Windows | NVIDIA | acpp-cuda | sycl-native |
 | fishhash      | Windows | NVIDIA | acpp-cuda | sycl-native |
-| karlsenhashv2 | Windows | NVIDIA | acpp-cuda | sycl-native |
+| karlsenhashv2 | Windows | NVIDIA | —         | sycl-native |
 | walahash      | Windows | NVIDIA | —         | sycl-native |
 | xelishashv3   | Windows | NVIDIA | —         | sycl-native |
 | zelhash       | Windows | NVIDIA | —         | sycl-native |

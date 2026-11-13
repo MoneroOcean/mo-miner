@@ -62,6 +62,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <memory>
 #include <mutex>
 #include <type_traits>
@@ -83,6 +84,44 @@ namespace mom_beamhash3 {
 } // namespace mom_beamhash3
 
 using namespace mom_beamhash3;
+
+#if !defined(MOM_SYCL_ADAPTIVECPP) && !defined(MOM_SYCL_PORTABLE_OPENCL)
+// Profiling distinguishes device-wide capacity from this compiled collision kernel's limit.
+// Never query/build a kernel bundle on the ordinary mining path.
+template <class KernelName>
+static void beamhash3_log_kernel_limit(const sycl::context& context,
+                                       const sycl::device& device,
+                                       const bool paired,
+                                       const unsigned selected_workgroup) {
+  try {
+    const auto platform_name = device.get_platform().get_info<sycl::info::platform::name>();
+    const size_t device_max = device.get_info<sycl::info::device::max_work_group_size>();
+    const size_t local_mem = device.get_info<sycl::info::device::local_mem_size>();
+    const size_t dim0_max = device.get_info<sycl::info::device::max_work_item_sizes<1>>()[0];
+    std::fprintf(stderr,
+                 "beamhash3 compact round1 kernel-limit platform=%.120s paired=%u "
+                 "selected_wg=%u device_max=%zu dim0_max=%zu local_mem=%zu",
+                 platform_name.c_str(), paired ? 1u : 0u, selected_workgroup,
+                 device_max, dim0_max, local_mem);
+    try {
+      auto bundle = sycl::get_kernel_bundle<KernelName, sycl::bundle_state::executable>(
+          context, std::vector<sycl::device>{device});
+      auto kernel = bundle.template get_kernel<KernelName>();
+      const size_t kernel_max = kernel.template get_info<
+          sycl::info::kernel_device_specific::work_group_size>(device);
+      std::fprintf(stderr, " kernel_max=%zu\n", kernel_max);
+    } catch (const std::exception& error) {
+      std::fprintf(stderr, " kernel_max=unavailable reason=%.160s\n", error.what());
+    } catch (...) {
+      std::fprintf(stderr, " kernel_max=unavailable\n");
+    }
+  } catch (...) {
+    // The query is profiling-only; report failure without changing solver behavior.
+    std::fprintf(stderr, "beamhash3 compact round1 kernel-limit query=unavailable\n");
+  }
+  std::fflush(stderr);
+}
+#endif
 
 // BeamHash III entrypoint. ABI matches zelhash (c29-like out-of-band solution count).
 //   input  : prework(32) || nonce(8) || extranonce(4) = 44-byte blob.
@@ -185,9 +224,9 @@ int beamhash3(const unsigned, const uint32_t, const uint8_t* const input, const 
             ? 640
             : compact_round_wg;
     static unsigned compact_profile_call = 0;
-    // AdaptiveCpp JITs each template specialization during the first solve. Profile the following
-    // steady solve so compilation is never mistaken for GPU execution time.
-    const bool compact_profile = prof && compact_profile_call++ == 1;
+    // Mining profiles the second solve to exclude first-dispatch JIT. A full-solve test runs only
+    // once: its requested stage diagnostics must include that first solve, including JIT time.
+    const bool compact_profile = prof && compact_profile_call++ == (is_test ? 0u : 1u);
     uint64_t compact_stage_start = compact_profile ? BeamState::now_ms() : 0;
     auto compact_stage_done = [&](const char* name, sycl::event event) {
       if (!compact_profile)
@@ -218,6 +257,16 @@ int beamhash3(const unsigned, const uint32_t, const uint8_t* const input, const 
                                              state.compact_ns[0], compact_wg);
 #endif
     compact_stage_done("seed", compact_event);
+#if !defined(MOM_SYCL_ADAPTIVECPP) && !defined(MOM_SYCL_PORTABLE_OPENCL)
+    if (compact_profile && sycl_is_level_zero_gpu(state.device)) {
+      if (compact_pair_partitions)
+        beamhash3_log_kernel_limit<BeamCompactRoundKernel<1, true>>(
+            state.queue.get_context(), state.device, true, compact_pair_round1_wg);
+      else
+        beamhash3_log_kernel_limit<BeamCompactRoundKernel<1, false>>(
+            state.queue.get_context(), state.device, false, compact_round_wg);
+    }
+#endif
     q.memset(state.compact_ns[1], 0, (size_t)compact_nbuckets(1) * sizeof(uint32_t));
     if (compact_pair_partitions)
       compact_event = submit_compact_round<1, true>(

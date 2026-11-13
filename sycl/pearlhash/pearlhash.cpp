@@ -25,6 +25,10 @@
 #include "esimd_route.h"
 #if defined(MOM_SYCL_HAS_CUDA) && !defined(__SYCL_DEVICE_ONLY__) && !defined(MOM_PEARLHASH_ESIMD_TU)
 #include "../cuda-api.h"
+#if defined(MOM_EMBEDDED_NVRTC_HEADERS) && !defined(MOM_EMBEDDED_CUDA_IMAGES)
+#include "../../native/jit-headers.h"
+#include "nvrtc-headers.inc"
+#endif
 #endif
 #if defined(MOM_SYCL_HAS_HIP)
 #ifndef __HIP_PLATFORM_AMD__
@@ -48,7 +52,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#if !defined(MOM_EMBEDDED_CUDA_IMAGES) || defined(MOM_SYCL_HAS_HIP)
 #include <filesystem>
+#endif
 #include <iomanip>
 #include <limits>
 #include <memory>
@@ -67,7 +73,8 @@
 #include <dlfcn.h>
 #endif
 #endif
-#if !defined(__SYCL_DEVICE_ONLY__)
+#if !defined(__SYCL_DEVICE_ONLY__) && \
+    (!defined(MOM_EMBEDDED_CUDA_IMAGES) || defined(MOM_SYCL_HAS_HIP))
 #include "../jit-cache.h"
 #endif
 
@@ -111,7 +118,8 @@ namespace mom_pearlhash {
 // Optional dependency/property failures must not hide an otherwise usable GPU.
 bool compact_available(const sycl::device& device) noexcept {
 #if defined(MOM_SYCL_HAS_CUDA) && !defined(__SYCL_DEVICE_ONLY__) && !defined(_WIN32) && \
-    !defined(MOM_SYCL_ADAPTIVECPP)
+    (!defined(MOM_SYCL_ADAPTIVECPP) || defined(MOM_EMBEDDED_NVRTC_HEADERS) || \
+     defined(MOM_EMBEDDED_CUDA_IMAGES))
   try {
     return PearlHashCudaSearch::compact_available(device);
   } catch (...) {

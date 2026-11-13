@@ -88,6 +88,7 @@ const sycl::event round1_event = compute_queue.submit([&](sycl::handler& handler
 });
 
 profile.add_event("round1", round1_event);
+profile.mark("round1 submitted");
 
 // FluffyRoundNO1: First subsequent trimming round
 const sycl::event round_no1_event = compute_queue.submit([&](sycl::handler& handler) {
@@ -154,6 +155,7 @@ const sycl::event round_no1_event = compute_queue.submit([&](sycl::handler& hand
 });
 
 profile.add_event("round_no1", round_no1_event);
+profile.mark("round_no1 submitted");
 
 // FluffyRoundNON: Subsequent trimming rounds
 auto trim_round = [&](sycl::queue& queue, sycl::buffer<sycl::uint2, 1>& source_buffer,
@@ -228,6 +230,7 @@ auto trim_round = [&](sycl::queue& queue, sycl::buffer<sycl::uint2, 1>& source_b
 // Main trimming loop: iteratively reduce edge count by removing low-degree edges
 profile.add_event("trim_a_to_b_initial", trim_round(compute_queue, buffer_a1_u2, buffer_b_u2,
                                                     buffer_i2, buffer_i1, trim_threads));
+profile.mark("initial trim submitted");
 
 const uint32_t trim_rounds = c29_trim_rounds(device);
 // MOM_C29_INTEL may also be defined in a combined CUDA build: gate this tuning on the device.
@@ -242,6 +245,8 @@ for (uint32_t round_index = 0; round_index < trim_rounds; round_index++) {
   profile.add_event("trim_a_to_b", trim_round(compute_queue, buffer_a1_u2, buffer_b_u2, buffer_i2,
                                               buffer_i1, round_threads));
 }
+
+profile.mark("trim loop submitted");
 
 // FluffyTailO: Collect final edges into contiguous output buffer
 uint32_t trimmed_edge_count = 0;

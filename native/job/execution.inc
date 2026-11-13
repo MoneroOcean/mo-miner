@@ -423,8 +423,9 @@ void Core::set_job(
   const bool same_compute_input = same_job_shape &&
     (new_dev == DEV::RX_CPU || m_has_fn) && new_input_hex == m_input_hex &&
     m_nonce_prefix == new_nonce_prefix;
-  const bool same_hashrate_domain =
-    same_job_shape && mode != JobMode::test && m_has_fn;
+  // RX_CPU runs from its per-job thread pool, so it intentionally has no m_fn.
+  const bool same_hashrate_domain = same_job_shape && mode != JobMode::test &&
+    (m_has_fn || (m_dev == DEV::RX_CPU && new_dev == DEV::RX_CPU));
   if (m_dev == DEV::RX_CPU) {
     stop_rx_threads();
   }

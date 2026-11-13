@@ -37,8 +37,8 @@ constexpr size_t DATA_BYTES = data_file::expected_bytes;
 static_assert(sizeof(Uint2) == 8 && DATA_BYTES % sizeof(Uint2) == 0);
 constexpr uint32_t MDIV = 80216063;
 // The bounded fixture is deliberately separate from the official dataset. It is selected only for
-// an explicit CPU test call, while production, benchmark, and GPU test calls keep MDIV and the
-// verified 1.20-GiB file below.
+// an explicit CPU or integrated-GPU correctness test; production and benchmark calls keep MDIV and
+// the verified 1.20-GiB file below.
 constexpr uint32_t TEST_MDIV = 4093;
 constexpr size_t TEST_DATA_BYTES = (static_cast<size_t>(TEST_MDIV) * 2 + 2) * sizeof(Uint2);
 constexpr size_t TEST_DATA_ELEMENTS = TEST_DATA_BYTES / sizeof(Uint2);
@@ -134,11 +134,12 @@ public:
   unsigned hash_capacity = 0;
   std::mutex mutex;
 
-  // Bind official or explicitly gated CPU-fixture data to one persistent device state.
+  // Bind official or explicitly gated compact-fixture data to one persistent device state.
   explicit State(const std::string& dev_str, const bool use_compact_test_data)
       : device(get_dev(dev_str)),
         queue(device, sycl::property_list{sycl::property::queue::in_order{}}),
-        compact_test_data(use_compact_test_data && device.is_cpu()) {
+        compact_test_data(use_compact_test_data &&
+                          (device.is_cpu() || is_integrated_gpu(device))) {
     if (!mom_has_usm_device(device) || !mom_has_usm_shared(device))
       throw std::string("verthash requires SYCL device and shared USM");
     try {
@@ -196,7 +197,7 @@ public:
   }
 
 private:
-  // Validate official dataset bytes before upload; only gated CPU tests use synthetic data.
+  // Validate official dataset bytes before upload; only gated compact tests use synthetic data.
   void load_data() {
     std::vector<Uint2> host;
     if (compact_test_data) {
@@ -262,13 +263,15 @@ static DeviceStateRegistry<State>& registry() {
   return *value;
 }
 
-// Keep compact CPU fixtures separate from the official dataset registry key.
-static State& get_state(const std::string& dev_str, const bool is_test) {
+// Keep compact correctness fixtures separate from the official dataset registry key.
+static State& get_state(const std::string& dev_str, const bool is_test,
+                        const bool is_benchmark) {
   const char* const configured = std::getenv("MOM_SYCL_PORTABLE_TEST");
-  const bool requested = is_test && configured && std::strcmp(configured, "1") == 0;
-  // Resolve the device before choosing the registry key. A GPU test with an inherited switch
-  // must share the normal official state rather than allocating a second full dataset.
-  const bool compact = requested && get_dev(dev_str).is_cpu();
+  const bool requested = is_test && !is_benchmark && configured &&
+                         std::strcmp(configured, "1") == 0;
+  // Resolve the device only for an explicitly requested correctness fixture.
+  const bool compact = requested &&
+                       mom_compact_correctness_test(is_test, is_benchmark, get_dev(dev_str));
   const std::string key = dev_str + (compact ? "\x1f" "compact-test" : "\x1f" "full");
   return registry().get(key, [&] { return std::make_unique<State>(dev_str, compact); });
 }
@@ -416,7 +419,7 @@ static sycl::event submit_search(State& s, uint32_t start_nonce, unsigned count,
 } // namespace mom_verthash
 
 using namespace mom_verthash;
-// Validate the header and dispatch against official data or the gated compact CPU fixture.
+// Validate the header and dispatch against official data or the gated compact correctness fixture.
 int verthash(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint8_t* output,
              uint8_t*, uint64_t* pnonce, const uint8_t* target, const uint8_t*, unsigned intensity,
              bool is_test, bool is_benchmark, const std::string& dev_str) {
@@ -427,7 +430,7 @@ int verthash(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint
   if (intensity == 0 || intensity % 16)
     throw std::string("verthash intensity must be positive and divisible by 16");
   // Bounded data is a correctness fixture only; benchmarks and all mining use the official state.
-  State& state = get_state(dev_str, is_test && !is_benchmark);
+  State& state = get_state(dev_str, is_test, is_benchmark);
   std::lock_guard<std::mutex> lock(state.mutex);
   state.ensure_hashes(intensity);
   uint32_t header[20];

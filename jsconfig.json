@@ -32,6 +32,8 @@
     "helper/**/*.js",
     "miner/**/*.js",
     "pool/**/*.js",
+    "runtime/**/*.js",
+    "runtime/**/*.mjs",
     "scripts/**/*.js",
     "tests/**/*.js",
     "types/**/*.d.ts"

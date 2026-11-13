@@ -67,9 +67,11 @@ inline bool hip_gfx12_int8_wmma_supported(sycl::queue& queue,
   return false;
 }
 
-// HIPRTC is optional at runtime. Keeping its entry points behind one dynamic loader lets each
-// source-JIT algorithm retain its portable SYCL fallback when the compiler library is unavailable.
+// HIPRTC is optional in Engineering Mode; one compiler contract preserves each algorithm's
+// portable fallback. Native builds bind the same entry points statically in every host TU.
 class HiprtcApi {
+  bool loaded_ = false;
+#if !defined(MOM_STATIC_HIPRTC)
 #if defined(_WIN32)
   HMODULE library_ = nullptr;
 #else
@@ -88,9 +90,23 @@ class HiprtcApi {
     error = std::string("missing HIPRTC symbol ") + name;
     return false;
   }
+#endif
 
-  // Probe supported library names once; incomplete installations stay unavailable to all callers.
+  // Bind once per process; incomplete Engineering installations stay unavailable to all callers.
   HiprtcApi() {
+#if defined(MOM_STATIC_HIPRTC)
+    // Native releases bind the same compiler contract to archives, including HIPRTC's built-in
+    // header and static COMGR. Never search for or extract an application library in this mode.
+    create_program = &hiprtcCreateProgram;
+    compile_program = &hiprtcCompileProgram;
+    get_log_size = &hiprtcGetProgramLogSize;
+    get_log = &hiprtcGetProgramLog;
+    get_code_size = &hiprtcGetCodeSize;
+    get_code = &hiprtcGetCode;
+    destroy_program = &hiprtcDestroyProgram;
+    error_string = &hiprtcGetErrorString;
+    loaded_ = true;
+#else
 #if defined(_WIN32)
     const char* const names[] = {"hiprtc.dll",     "hiprtc0701.dll", "hiprtc0700.dll",
                                  "hiprtc0604.dll", "hiprtc0603.dll", "hiprtc0507.dll"};
@@ -107,6 +123,7 @@ class HiprtcApi {
       error = "HIPRTC library is not installed";
       return;
     }
+    loaded_ = true;
     (void)(load_symbol(create_program, "hiprtcCreateProgram") &&
            load_symbol(compile_program, "hiprtcCompileProgram") &&
            load_symbol(get_log_size, "hiprtcGetProgramLogSize") &&
@@ -115,6 +132,7 @@ class HiprtcApi {
            load_symbol(get_code, "hiprtcGetCode") &&
            load_symbol(destroy_program, "hiprtcDestroyProgram") &&
            load_symbol(error_string, "hiprtcGetErrorString"));
+#endif
   }
 
 public:
@@ -132,7 +150,7 @@ public:
   std::string error;
 
   bool available() const {
-    return library_ && create_program && compile_program && get_log_size && get_log &&
+    return loaded_ && create_program && compile_program && get_log_size && get_log &&
            get_code_size && get_code && destroy_program && error_string;
   }
 

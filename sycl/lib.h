@@ -7,8 +7,10 @@
 #include <set>
 #include <string>
 
-// Windows needs explicit DLL visibility; everything else exports by default.
-#if defined(_WIN32) && defined(MOM_SYCL_BUILD)
+// Engineering addons use the DLL ABI; the native executable binds the same functions directly.
+#if defined(_WIN32) && defined(MOM_NATIVE_RUNTIME)
+#define MOM_SYCL_API
+#elif defined(_WIN32) && defined(MOM_SYCL_BUILD)
 #define MOM_SYCL_API __declspec(dllexport)
 #elif defined(_WIN32)
 #define MOM_SYCL_API __declspec(dllimport)

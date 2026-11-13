@@ -1,8 +1,10 @@
 #if defined(MOM_SYCL_HAS_CUDA) && !defined(__SYCL_DEVICE_ONLY__)
 using CnGpuCudaDriverApi = mom::CudaDriverApi;
+#if !defined(MOM_EMBEDDED_CUDA_IMAGES)
 using CnGpuNvrtcApi = mom::NvrtcApi;
-using mom::cuda_check;
 using mom::rtc_error;
+#endif
+using mom::cuda_check;
 
 struct CnGpuCudaExpand {
   CUmodule module = nullptr;
@@ -14,26 +16,28 @@ struct CnGpuCudaExpand {
   bool checked = false;
   bool enabled = false;
 
-  // Get the native driver ordinal; the AdaptiveCpp branch currently uses ordinal zero.
+  // Use the selected SYCL device's native ordinal, never ordinal zero in a multi-GPU worker.
   static CUdevice native_device(const sycl::device& device) {
 #if defined(MOM_SYCL_ADAPTIVECPP)
-    (void)device;
-    return 0;
+    return sycl::get_native<sycl::backend::cuda>(device);
 #else
     return sycl::get_native<sycl::backend::ext_oneapi_cuda>(device);
 #endif
   }
   // Release owned driver resources after selecting their retained context.
   void release() noexcept {
-    CnGpuCudaDriverApi& api = CnGpuCudaDriverApi::instance();
-    if (api.basic_available() && context)
-      (void)api.set_current(context);
-    if (done && api.event_destroy)
-      (void)api.event_destroy(done);
-    if (module && api.module_unload)
-      (void)api.module_unload(module);
-    if (retained_primary && api.release_primary)
-      (void)api.release_primary(device);
+    // Empty fallback state must not instantiate a CUDA driver loader on another vendor.
+    if (context || done || module || retained_primary) {
+      CnGpuCudaDriverApi& api = CnGpuCudaDriverApi::instance();
+      if (api.basic_available() && context)
+        (void)api.set_current(context);
+      if (done && api.event_destroy)
+        (void)api.event_destroy(done);
+      if (module && api.module_unload)
+        (void)api.module_unload(module);
+      if (retained_primary && api.release_primary)
+        (void)api.release_primary(device);
+    }
     done = nullptr;
     module = nullptr;
     kernel = nullptr;
@@ -42,7 +46,7 @@ struct CnGpuCudaExpand {
     enabled = false;
   }
 
-  // Try native expansion once; unavailable CUDA JIT retains the SYCL fallback.
+  // Try native expansion once; unavailable CUDA acceleration retains the SYCL fallback.
   bool ensure(sycl::queue& queue, std::string* const reason = nullptr) {
     const auto unavailable = [&](const std::string& message) {
       if (reason)
@@ -56,13 +60,17 @@ struct CnGpuCudaExpand {
     checked = true;
     try {
       CnGpuCudaDriverApi& driver = CnGpuCudaDriverApi::instance();
+#if !defined(MOM_EMBEDDED_CUDA_IMAGES)
       CnGpuNvrtcApi& rtc = CnGpuNvrtcApi::instance();
+#endif
       if (!driver.basic_available())
         throw driver.error;
       if (!driver.synchronize)
         throw std::string("missing CUDA driver symbol cuCtxSynchronize");
+#if !defined(MOM_EMBEDDED_CUDA_IMAGES)
       if (!rtc.ptx_available())
         throw rtc.error;
+#endif
       cuda_check(driver, driver.init(0), "cuInit(cn/gpu)");
       device = native_device(queue.get_device());
       int major = 0, minor = 0;
@@ -78,6 +86,23 @@ struct CnGpuCudaExpand {
       retained_primary = true;
       cuda_check(driver, driver.set_current(context), "cuCtxSetCurrent(cn/gpu)");
 
+#if defined(MOM_EMBEDDED_CUDA_IMAGES)
+      // Native images keep the tested SM80 floor and reject unknown capability encodings.
+      if (major < 8)
+        throw std::string("the native cn/gpu expansion requires compute capability 8.0+");
+      if (major > 99 || minor < 0 || minor > 9)
+        throw std::string("invalid cn/gpu CUDA device capability");
+      const int device_arch = major * 10 + minor;
+      const auto candidates = mom::cuda_images::select_embedded("cn-expand", device_arch);
+      if (!candidates.primary.data)
+        throw std::string("no compatible embedded cn/gpu expansion image");
+      cuda_check(driver,
+                 mom::cuda_load_image_candidates(
+                     candidates, &module, [&](CUmodule* loaded, const void* image) {
+                       return driver.module_load(loaded, image);
+                     }),
+                 "cuModuleLoadData(cn/gpu)");
+#else
       const std::string source(
 #include "cuda_expand_kernel.inc"
       );
@@ -148,6 +173,7 @@ struct CnGpuCudaExpand {
         cuda_check(driver, driver.module_load(&module, code.data()), "cuModuleLoadData(cn/gpu)");
         mom::jit_cache::write(path, code);
       }
+#endif
       cuda_check(driver, driver.module_function(&kernel, module, "cn_gpu_expand_cuda"),
                  "cuModuleGetFunction(cn/gpu)");
       cuda_check(driver, driver.event_create(&done, CU_EVENT_DEFAULT), "cuEventCreate(cn/gpu)");

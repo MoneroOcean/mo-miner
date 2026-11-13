@@ -40,7 +40,7 @@
 		#include <intrin.h>
 	#endif
 
-	#define kp_prefetch(x) _mm_prefetch((x), _MM_HINT_T0);
+	#define kp_prefetch(x) _mm_prefetch((const char *)(x), _MM_HINT_T0);
 #else
 	#define kp_prefetch(x)
 #endif

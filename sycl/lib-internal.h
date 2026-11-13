@@ -255,6 +255,16 @@ inline bool is_integrated_gpu(const sycl::device& device) {
   return integrated;
 }
 
+// Admit synthetic compact datasets only for explicit correctness tests on CPUs or integrated GPUs.
+// The mining and benchmark paths keep their consensus-sized datasets even if the flag is inherited.
+inline bool mom_compact_correctness_test(const bool is_test, const bool is_benchmark,
+                                         const sycl::device& device) {
+  unsigned long enabled = 0;
+  return is_test && !is_benchmark &&
+         mom_parse_env_ulong("MOM_SYCL_PORTABLE_TEST", enabled) && enabled != 0 &&
+         (device.is_cpu() || is_integrated_gpu(device));
+}
+
 // Intel exposes versions such as 1.6.32224 (Level Zero) or 24.52.032224 (OpenCL). Return the
 // largest numeric component, which is their common NEO build number; this also stays harmless for
 // other vendors whose display-version fields are much smaller.
@@ -345,9 +355,10 @@ inline bool mom_is_opencl(const sycl::device& device) {
 #endif
 }
 
-// Form an exact 32x32 product using 16-bit partials on the portable OpenCL translation path.
+// Keep exact 32x32 products in driver-supported widths. In ESIMD, LLVM's high-product
+// recognition can otherwise recombine 32-bit limbs into unsupported i128 SPIR-V.
 inline uint64_t mo_mul_wide_u32(const uint32_t a, const uint32_t b) {
-#if defined(MOM_SYCL_PORTABLE_OPENCL)
+#if defined(MOM_SYCL_PORTABLE_OPENCL) || defined(MOM_XELISHASHV3_ESIMD)
   const uint32_t a0 = static_cast<uint16_t>(a), a1 = a >> 16,
                  b0 = static_cast<uint16_t>(b), b1 = b >> 16;
   const uint64_t p0 = a0 * b0, p1 = a0 * b1, p2 = a1 * b0, p3 = a1 * b1;

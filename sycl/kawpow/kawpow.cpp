@@ -39,17 +39,14 @@ namespace mom_kawpow {
 #include "program.inc"
 #include "state.inc"
 
-// The portable CPU fixture still builds and searches a real ProgPoW cache/DAG, but keeps the
-// allocation bounded. It is intentionally opt-in: a test flag alone must not change a benchmark,
-// mining call, or physical GPU geometry.
+// The portable correctness fixture still builds and searches a real ProgPoW cache/DAG, but keeps
+// the allocation bounded on CPUs and integrated GPUs. It is intentionally opt-in and test-only.
 constexpr uint64_t KAWPOW_PORTABLE_TEST_CACHE_BYTES = KAWPOW_CACHE_WORDS * sizeof(uint32_t);
 constexpr uint64_t KAWPOW_PORTABLE_TEST_DAG_BYTES = 80u * 1024u;
 
 static bool kawpow_portable_test(const bool is_test, const bool is_benchmark,
                                  const sycl::device& device) {
-  unsigned long enabled = 0;
-  return is_test && !is_benchmark && device.is_cpu() &&
-         mom_parse_env_ulong("MOM_SYCL_PORTABLE_TEST", enabled) && enabled != 0;
+  return mom_compact_correctness_test(is_test, is_benchmark, device);
 }
 
 // The environment cleanup hook calls kawpow_cleanup_states() at the correct runtime-lifetime boundary.

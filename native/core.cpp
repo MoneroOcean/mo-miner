@@ -32,6 +32,8 @@
 
 #include "core/commands.inc"
 #include "core/execution.inc"
+#ifndef MOM_NATIVE_RUNTIME
+#include "node-worker.h"
 static void cleanup_sycl_runtime(void*) { sycl_cleanup(); }
 
 static napi_value init_module(napi_env env, napi_value exports) {
@@ -41,12 +43,13 @@ static napi_value init_module(napi_env env, napi_value exports) {
     // runtime. DPC++ source-JIT images have module destructors of their own, while AdaptiveCpp CUDA
     // otherwise reaches cudaErrorCudartUnloading (error 4) from late queue/allocator destruction.
     // Ordered algorithm cleanup here avoids depending on cross-DLL C++ static order.
-    AsyncWorker::check(env, napi_add_env_cleanup_hook(env, cleanup_sycl_runtime, nullptr));
+    NodeWorkerEvents::check(env, napi_add_env_cleanup_hook(env, cleanup_sycl_runtime, nullptr));
     return result;
   } catch (...) {
-    AsyncWorker::report_current_exception(env);
+    NodeWorkerEvents::report_current_exception(env);
     return nullptr;
   }
 }
 
 NAPI_MODULE(NODE_GYP_MODULE_NAME, init_module)
+#endif

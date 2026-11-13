@@ -24,8 +24,7 @@ struct PearlHashCudaSearch {
   }
   static CUdevice native_device(const sycl::device& device) {
 #if defined(MOM_SYCL_ADAPTIVECPP)
-    (void)device;
-    return 0;
+    return sycl::get_native<sycl::backend::cuda>(device);
 #else
     return sycl::get_native<sycl::backend::ext_oneapi_cuda>(device);
 #endif
@@ -60,7 +59,18 @@ struct PearlHashCudaSearch {
            ((k == 4096 && rank == 256) || (k == 8192 && rank == 128));
   }
 
+#if !defined(MOM_EMBEDDED_CUDA_IMAGES)
   // Discovery and dispatch share dependency and resource admission.
+#if defined(MOM_EMBEDDED_NVRTC_HEADERS)
+  static const mom::JitHeaders& compiler_headers() {
+    // Decode once, keep all NVRTC header pointers alive, and never consult an installed SDK.
+    static const mom::JitHeaders headers(embedded_resource("jit-headers.gz"), kJitHeadersSize);
+    for (const auto* name : {"cuda_runtime.h", "cute/tensor.hpp", "cuda/std/cstdint"})
+      if (headers.find(name).empty())
+        throw std::string("Missing embedded CUDA JIT header: ") + name;
+    return headers;
+  }
+#else
   static std::array<std::filesystem::path, 3> compiler_headers() {
     std::vector<std::filesystem::path> cuda_candidates;
     if (const char* path = std::getenv("CUDA_PATH"); path && *path)
@@ -112,19 +122,10 @@ struct PearlHashCudaSearch {
 
     return {cuda_include, cutlass_include, cccl_include};
   }
+#endif
+#endif
 
-  static void require_compact(PearlHashCudaDriverApi& driver, PearlHashNvrtcApi& rtc,
-                              CUdevice device, int capability_major, int capability_minor,
-                              int& compiler_major, int& compiler_minor) {
-    // The .b8 LDSM source is qualified for the sm120a feature target, not a
-    // particular card name/SM count. Keep other architectures on their old
-    // profile. A JIT decline happens before the caller derives any compact
-    // key/pattern, so the shared path can retain its ordinary configuration.
-    if (capability_major != 12 || capability_minor != 0 || !rtc.version ||
-        rtc.version(&compiler_major, &compiler_minor) != NVRTC_SUCCESS ||
-        compiler_major < 13 || compiler_minor < 0 ||
-        (compiler_major == 13 && compiler_minor < 3))
-      throw std::string("Compact PearlHash requires sm120a and NVRTC 13.3+");
+  static void require_compact_resources(PearlHashCudaDriverApi& driver, CUdevice device) {
     const auto limit = [&](const CUdevice_attribute attribute, const int required) {
       int value = 0;
       cuda_check(driver, driver.device_attribute(&value, attribute, device),
@@ -138,6 +139,30 @@ struct PearlHashCudaSearch {
         !limit(CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN, 100352) ||
         !limit(CU_DEVICE_ATTRIBUTE_MAX_REGISTERS_PER_BLOCK, 255 * 256))
       throw std::string("Insufficient PearlHash compact block resources");
+  }
+
+#if defined(MOM_EMBEDDED_CUDA_IMAGES)
+  static void require_compact(PearlHashCudaDriverApi& driver, CUdevice device,
+                              int capability_major, int capability_minor) {
+    // Build-time producer qualification guarantees the embedded sm120a image came from NVRTC 13.3+.
+    if (capability_major != 12 || capability_minor != 0)
+      throw std::string("Compact PearlHash requires sm120a");
+    require_compact_resources(driver, device);
+  }
+#else
+  static void require_compact(PearlHashCudaDriverApi& driver, PearlHashNvrtcApi& rtc,
+                              CUdevice device, int capability_major, int capability_minor,
+                              int& compiler_major, int& compiler_minor) {
+    // The .b8 LDSM source is qualified for the sm120a feature target, not a
+    // particular card name/SM count. Keep other architectures on their old
+    // profile. A JIT decline happens before the caller derives any compact
+    // key/pattern, so the shared path can retain its ordinary configuration.
+    if (capability_major != 12 || capability_minor != 0 || !rtc.version ||
+        rtc.version(&compiler_major, &compiler_minor) != NVRTC_SUCCESS ||
+        compiler_major < 13 || compiler_minor < 0 ||
+        (compiler_major == 13 && compiler_minor < 3))
+      throw std::string("Compact PearlHash requires sm120a and NVRTC 13.3+");
+    require_compact_resources(driver, device);
   }
 
   static int compiler_arch(PearlHashNvrtcApi& rtc, const int device_arch) {
@@ -155,6 +180,7 @@ struct PearlHashCudaSearch {
         target_arch = arch;
     return target_arch;
   }
+#endif
 
   // Discovery checks the same dependencies as dispatch, without a context,
   // matrix allocations, module loading, or kernel execution. Dispatch rechecks
@@ -173,6 +199,12 @@ struct PearlHashCudaSearch {
         &minor, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR, device), "PearlHash discovery minor");
     if (major != 12 || minor != 0)
       return false;
+#if defined(MOM_EMBEDDED_CUDA_IMAGES)
+    const auto image = mom::cuda_images::select_embedded("pearl-compact", 120);
+    if (!image.primary.data)
+      return false;
+    require_compact(driver, device, major, minor);
+#else
     auto& rtc = PearlHashNvrtcApi::instance();
     if (!rtc.cubin_available())
       return false;
@@ -181,24 +213,28 @@ struct PearlHashCudaSearch {
     if (compiler_arch(rtc, 120) != 120)
       return false;
     (void)compiler_headers();
+#endif
     return true;
   }
 
   // Release the CUDA event/module and clear cached compilation state on the owning context.
   void release() noexcept {
-    PearlHashCudaDriverApi& api = PearlHashCudaDriverApi::instance();
-    if (api.extended_available() && context)
-      (void)api.set_current(context);
-    if (done && api.event_destroy)
-      (void)api.event_destroy(done);
-    if (started && api.event_destroy)
-      (void)api.event_destroy(started);
-    if (module && api.module_unload)
-      (void)api.module_unload(module);
+    // Empty fallback state must not instantiate a CUDA driver loader on another vendor.
+    if (context || done || started || module || retained_primary) {
+      PearlHashCudaDriverApi& api = PearlHashCudaDriverApi::instance();
+      if (api.extended_available() && context)
+        (void)api.set_current(context);
+      if (done && api.event_destroy)
+        (void)api.event_destroy(done);
+      if (started && api.event_destroy)
+        (void)api.event_destroy(started);
+      if (module && api.module_unload)
+        (void)api.module_unload(module);
+      if (retained_primary && api.release_primary)
+        (void)api.release_primary(device);
+    }
     selector_kernel = nullptr;
     compact = false;
-    if (retained_primary && api.release_primary)
-      (void)api.release_primary(device);
     done = nullptr;
     started = nullptr;
     module = nullptr;
@@ -211,7 +247,7 @@ struct PearlHashCudaSearch {
     packed = false;
   }
 
-  // Compile/cache the optional NVRTC kernels for this device and shape; unsupported setups retain SYCL fallback.
+  // Admit and load the optional native CUDA kernels; unsupported setups retain the SYCL fallback.
   bool ensure(sycl::queue& q, const Buffers& b, int m, int n, int k, int rank) {
     if (!supports(q) || !supports_shape(m, n, k, rank)) {
       packed = false;
@@ -240,9 +276,11 @@ struct PearlHashCudaSearch {
     checked = true;
     try {
       PearlHashCudaDriverApi& driver = PearlHashCudaDriverApi::instance();
+#if !defined(MOM_EMBEDDED_CUDA_IMAGES)
       PearlHashNvrtcApi& rtc = PearlHashNvrtcApi::instance();
       if (!rtc.cubin_available())
         throw rtc.error;
+#endif
 
       device = native_device(q.get_device());
       cuda_check(driver, driver.retain_primary(&context, device),
@@ -250,10 +288,43 @@ struct PearlHashCudaSearch {
       retained_primary = true;
       cuda_check(driver, driver.set_current(context), "cuCtxSetCurrent(PearlHash)");
 
+#if defined(MOM_EMBEDDED_CUDA_IMAGES)
+      int capability_major = 0, capability_minor = 0;
+      cuda_check(driver,
+                 driver.device_attribute(&capability_major,
+                                         CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR, device),
+                 "cuDeviceGetAttribute(PearlHash compute capability major)");
+      cuda_check(driver,
+                 driver.device_attribute(&capability_minor,
+                                         CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR, device),
+                 "cuDeviceGetAttribute(PearlHash compute capability minor)");
+      if (capability_major < 8 || capability_major > 99 || capability_minor < 0 ||
+          capability_minor > 9)
+        throw std::string("invalid or unsupported PearlHash CUDA capability");
+      const int device_arch = capability_major * 10 + capability_minor;
+      if (want_compact)
+        require_compact(driver, device, capability_major, capability_minor);
+      const char* const profile = want_compact ? "pearl-compact"
+                                      : rank == 128 ? "pearl-rank128" : "pearl-rank256";
+      const auto candidates = mom::cuda_images::select_embedded(profile, device_arch);
+      if (!candidates.primary.data)
+        throw std::string("no compatible embedded PearlHash image for ") + profile;
+      cuda_check(driver,
+                 mom::cuda_load_image_candidates(
+                     candidates, &module, [&](CUmodule* loaded, const void* image) {
+                       return driver.module_load(loaded, image);
+                     }),
+                 "cuModuleLoadData(PearlHash)");
+#else
+
+#if defined(MOM_EMBEDDED_NVRTC_HEADERS)
+      const auto& includes = compiler_headers();
+#else
       const auto includes = compiler_headers();
       const auto& cuda_include = includes[0];
       const auto& cutlass_include = includes[1];
       const auto& cccl_include = includes[2];
+#endif
 
       int capability_major = 0, capability_minor = 0;
       cuda_check(driver,
@@ -289,9 +360,11 @@ struct PearlHashCudaSearch {
           "-DPEARLHASH_RANK=" + std::to_string(rank),
           "--gpu-architecture=" + std::string(emit_cubin ? "sm_" : "compute_") +
               std::to_string(target_arch) + (want_compact ? "a" : ""),
+#if !defined(MOM_EMBEDDED_NVRTC_HEADERS)
           "--include-path=" + cutlass_include.generic_string(),
           "--include-path=" + cuda_include.generic_string(),
           "--include-path=" + cccl_include.generic_string(),
+#endif
           "--device-as-default-execution-space",
           "--use_fast_math"};
       if (want_compact)
@@ -306,9 +379,14 @@ struct PearlHashCudaSearch {
       for (const auto& option : option_storage)
         key_stream << '\0' << option;
       key_stream << '\0' << "pearlhash-cuda-cache-v2-unified-vector128";
+#if defined(MOM_EMBEDDED_NVRTC_HEADERS)
+      // Every embedded include participates, not only the three SDK version headers below.
+      key_stream << '\0' << "embedded-headers" << '\0' << kJitHeadersSha256;
+#endif
       if (want_compact) {
         key_stream << '\0' << "compact-v1-one-module" << '\0' << compiler_major
                    << '.' << compiler_minor;
+#if !defined(MOM_EMBEDDED_NVRTC_HEADERS)
         // Include versioned toolchain identities as well as source/options.
         // These are small, bounded local inputs, not unbounded SDK tree scans.
         for (const auto& header : {cutlass_include / "cutlass/version.h",
@@ -320,6 +398,7 @@ struct PearlHashCudaSearch {
           key_stream << '\0' << mom::jit_cache::hash(
               std::string_view(bytes.data(), bytes.size()));
         }
+#endif
       }
       std::ostringstream filename;
       filename << "pearlhash-cuda-" << (emit_cubin ? "sm" : "compute") << target_arch << "-"
@@ -338,7 +417,12 @@ struct PearlHashCudaSearch {
       if (code.empty()) {
         mom::NvrtcProgram program(rtc);
         nvrtcResult status = rtc.create_program(
-          program.address(), source.c_str(), "pearlhash-cute.cu", 0, nullptr, nullptr);
+          program.address(), source.c_str(), "pearlhash-cute.cu",
+#if defined(MOM_EMBEDDED_NVRTC_HEADERS)
+          includes.count(), includes.sources(), includes.names());
+#else
+          0, nullptr, nullptr);
+#endif
         if (status != NVRTC_SUCCESS)
           throw rtc_error(rtc, status, program.get(), "nvrtcCreateProgram(PearlHash)");
         status = rtc.compile_program(program.get(), static_cast<int>(options.size()), options.data());
@@ -363,6 +447,7 @@ struct PearlHashCudaSearch {
                    "cuModuleLoadData(PearlHash)");
         mom::jit_cache::write(cache_path, code);
       }
+#endif
       if (want_compact) {
         cuda_check(driver, driver.module_function(&gemm_kernel, module, "compact_gemm"),
                    "cuModuleGetFunction(PearlHash compact solver)");
@@ -372,8 +457,14 @@ struct PearlHashCudaSearch {
         cuda_check(driver, driver.event_create(&done, CU_EVENT_DEFAULT), "compact done event");
         compact = true;
         enabled = true;
+#if defined(MOM_EMBEDDED_CUDA_IMAGES)
+        std::fprintf(stderr,
+                     "PEARLHASH_COMPACT admitted=1 m=%d n=%d k=%d rank=%d proof=24x8 native_image=1\n",
+                     m, n, k, rank);
+#else
         std::fprintf(stderr,"PEARLHASH_COMPACT admitted=1 m=%d n=%d k=%d rank=%d proof=24x8 source_jit=1 nvrtc=%d.%d\n",
                      m,n,k,rank,compiler_major,compiler_minor);
+#endif
         return true;
       }
       cuda_check(driver, driver.module_function(&gemm_kernel, module, "pearlhash_cuda_gemm"),
@@ -398,15 +489,27 @@ struct PearlHashCudaSearch {
     } catch (const std::string& error) {
       release();
       checked = true;
+#if defined(MOM_EMBEDDED_CUDA_IMAGES)
+      std::fprintf(stderr,
+                   "PearlHash CUDA embedded image unavailable, using the best SYCL kernel: %s\n",
+                   error.c_str());
+#else
       std::fprintf(stderr,
                    "PearlHash CUDA source-JIT unavailable, using the best SYCL kernel: %s\n",
                    error.c_str());
+#endif
     } catch (const std::exception& error) {
       release();
       checked = true;
+#if defined(MOM_EMBEDDED_CUDA_IMAGES)
+      std::fprintf(stderr,
+                   "PearlHash CUDA embedded image unavailable, using the best SYCL kernel: %s\n",
+                   error.what());
+#else
       std::fprintf(stderr,
                    "PearlHash CUDA source-JIT unavailable, using the best SYCL kernel: %s\n",
                    error.what());
+#endif
     }
     return enabled;
   }

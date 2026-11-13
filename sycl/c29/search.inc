@@ -95,6 +95,7 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
     C29Profile profile(job_ref, nonce, c29_proof_size, device);
 
 #include "seed.inc"
+    profile.mark("seed submitted");
 #include "trim.inc"
     // Move the retired graph to its owned async cycle search, freeing the GPU for the next graph
     // without copying the potentially multi-megabyte host handoff.
@@ -139,6 +140,7 @@ static void start_new_c29_solution_search(const uint64_t seed_k0, const uint64_t
         }
       });
       search_futures.push_back(std::move(search));
+      profile.mark("cycle search launched");
     } catch (const std::exception& e) {
       printf("Error starting solution search worker: %s\n", e.what());
     } catch (...) {

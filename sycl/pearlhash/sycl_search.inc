@@ -190,11 +190,11 @@ static inline void pearlhash_wmma_m16n16k16_f16(
 struct PearlF16Scratch { uint32_t words[520]; };
 static_assert(alignof(PearlF16Scratch) == alignof(uint32_t) && sizeof(PearlF16Scratch) == 2080,
               "WMMA scratch needs 32-byte headroom before its 512-word reduction");
+#endif
+// Keep one argument order when HIP and CUDA share a translation unit: proof geometry must not
+// occupy the optional instruction flags. Unsupported instruction bodies remain compiler-gated.
 template <int ER, int EC, bool Native = false, bool FP16Matrix = false,
           int Rows = 16, int Cols = 16, bool Pair = false>
-#else
-template <int ER, int EC, int Rows = 16, int Cols = 16, bool Pair = false>
-#endif
 // Submit the selected portable/native SYCL tile specialization without changing proof semantics.
 static void search_t(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k,
                      int rank, bool dbg) {
@@ -472,13 +472,8 @@ static void search(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int 
 #endif
     if (!is_cuda)
       throw std::string("PearlHash pair-dist8 reference dispatch requires CUDA");
-#if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
     return search_t<pearlhash_portable_er, pearlhash_portable_ec, false, false, 16, 16, true>(
         q, bb, seed, m, n, k, rank, dbg);
-#else
-    return search_t<pearlhash_portable_er, pearlhash_portable_ec, 16, 16, true>(
-        q, bb, seed, m, n, k, rank, dbg);
-#endif
   }
 #else
   if (pair_dist8)
@@ -491,9 +486,9 @@ static void search(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int 
   if (is_hip) {
     // Source-JIT fallback and native correctness checks must retain the job's proof geometry.
     if (bb.proof_rows == 4 && bb.proof_cols == 64)
-      return search_t<2, 2, 4, 64>(q, bb, seed, m, n, k, rank, dbg);
+      return search_t<2, 2, false, false, 4, 64>(q, bb, seed, m, n, k, rank, dbg);
     if (bb.proof_rows == 8 && bb.proof_cols == 32)
-      return search_t<2, 2, 8, 32>(q, bb, seed, m, n, k, rank, dbg);
+      return search_t<2, 2, false, false, 8, 32>(q, bb, seed, m, n, k, rank, dbg);
     // Keep several fully typed dp4a micro-tiles in the architecture-neutral image. This is a host
     // dispatch, so each hot kernel contains no runtime tile branch. MOM_PEARLHASH_AMD_DP4A_TILE is a
     // tuning/validation override; 2x2 remains the measured default until the final AMD SSCP sweep.

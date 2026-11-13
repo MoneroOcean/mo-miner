@@ -86,6 +86,10 @@ if (direct_seed) {
             siphash_fill_block(sip_v0, sip_v1, sip_v2, sip_v3, base_nonce, hash_block);
             const uint64_t hash_last = hash_block[EDGE_BLOCK_MASK];
 
+#if defined(_WIN32) && defined(MOM_SYCL_ADAPTIVECPP) && defined(MOM_SYCL_HAS_HIP)
+            // Keep Windows HIP's 64-edge scatter compact instead of fully unrolling it.
+#pragma clang loop unroll_count(2)
+#endif
             for (uint32_t hash_index = 0; hash_index < EDGE_BLOCK_SIZE; hash_index++) {
               const uint64_t hash_lookup =
                   hash_index == EDGE_BLOCK_MASK ? hash_last : hash_block[hash_index] ^ hash_last;

@@ -35,11 +35,16 @@ static uint32_t c29_env_u32(const char* name, const uint32_t default_value) {
   return static_cast<uint32_t>(parsed);
 }
 
-// Sample the diagnostic opt-in once so queue profiling properties remain stable for this process.
-static bool c29_profile_enabled() {
-  static const bool v = []() {
+enum class C29ProfileMode { disabled, host, device };
+
+// Sample once: "host" measures submission/readback without changing queue properties or retaining
+// device events. Other nonzero values preserve the existing GPU-timestamp diagnostic mode.
+static C29ProfileMode c29_profile_mode() {
+  static const C29ProfileMode v = []() {
     const char* e = std::getenv("MOM_C29_PROFILE");
-    return e && e[0] && e[0] != '0';
+    if (!e || !e[0] || e[0] == '0')
+      return C29ProfileMode::disabled;
+    return std::strcmp(e, "host") == 0 ? C29ProfileMode::host : C29ProfileMode::device;
   }();
   return v;
 }
@@ -114,7 +119,7 @@ struct C29Profile {
              const sycl::device& device)
       : enabled(false), start_us(c29_now_us()), last_us(start_us) {
     static std::atomic<uint32_t> profiled_graphs{0};
-    enabled = c29_profile_enabled() &&
+    enabled = c29_profile_mode() != C29ProfileMode::disabled &&
               profiled_graphs.fetch_add(1, std::memory_order_relaxed) < c29_profile_limit();
     if (!enabled)
       return;
@@ -141,13 +146,13 @@ struct C29Profile {
   }
 
   void add_event(const char* name, const sycl::event& event) {
-    if (enabled)
+    if (enabled && c29_profile_mode() == C29ProfileMode::device)
       events.push_back({name, event});
   }
 
   // Read completed profiling events; unsupported runtime timestamps remain diagnostic failures only.
   void print_events() {
-    if (!enabled)
+    if (!enabled || c29_profile_mode() != C29ProfileMode::device)
       return;
 
     double total_ms = 0.0;
@@ -239,7 +244,7 @@ struct C29State {
   // Bind buffers and results to one ordered device queue, enabling timestamps only on diagnostic runs.
   explicit C29State(const std::string& dev_str)
       : device(get_dev(dev_str)),
-        queue(c29_profile_enabled()
+        queue(c29_profile_mode() == C29ProfileMode::device
                   ? sycl::queue{device, c29_exception_handler(),
                                 sycl::property_list{sycl::property::queue::in_order{},
                                                     sycl::property::queue::enable_profiling{}}}

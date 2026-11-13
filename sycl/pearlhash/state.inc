@@ -133,7 +133,10 @@ namespace {
 struct PearlHashState {
   sycl::queue queue;
   sycl::queue prep_queue;
-#ifdef MOM_SYCL_HAS_CUDA
+// SSCP's generic image does not compile search_cuda_direct's inline-PTX MMA body. Enabling
+// the separate NVRTC JIT must not also admit that uncompiled fallback; direct images keep it.
+#if defined(MOM_SYCL_HAS_CUDA) && !(defined(MOM_SYCL_ADAPTIVECPP) && \
+    (defined(__ACPP_ENABLE_LLVM_SSCP_TARGET__) || defined(__HIPSYCL_ENABLE_LLVM_SSCP_TARGET__)))
   const bool cuda_tensor = mom::nvidia::has_int8_async_matrix(
       mom::nvidia::compute_capability(queue.get_device()));
 #else

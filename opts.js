@@ -8,6 +8,7 @@ const h = require("./helper.js");
 const compilerPolicy = require("./compiler-policy.js");
 const gpuTuning = require("./gpu-tuning.js");
 const {normalizeAlgoName} = require("./miner/algorithms");
+const {normalizeFingerprint: normalizeTlsFingerprint} = require("./pool/tls");
 
 const version_str = require("./package.json").version;
 const momMultiAlgoProxyHost = "mom.moneroocean.stream";
@@ -32,6 +33,8 @@ function isMomMultiAlgoProxyUrl(url) {
 module.exports.agent_str = "mom v" + version_str;
 const releaseCommandNames = new Set(["mom", "mom.exe"]);
 
+module.exports.normalize_tls_fingerprint = normalizeTlsFingerprint;
+
 /**
  * @param {string} url
  * @param {number} port
@@ -45,6 +48,7 @@ module.exports.pool_create = function(url, port, is_tls, login, pass) {
     url, port, is_tls, login, pass,
     protocol:          null,
     tls_verify:        false,
+    tls_fingerprint:   "",
     is_nicehash:       url.includes("nicehash"),
     is_keepalive:      true,
     // JSON login permits the multi-algo MoM proxy; subscribe needs a preset algorithm.
@@ -101,6 +105,7 @@ module.exports.opt_help = {
       is_tls:             [ false, "is pool port is encrypted using TLS/SSL" ],
       protocol:           [ null, "pool protocol override (normally inferred from the algorithm)" ],
       tls_verify:         [ false, "verify pool TLS/SSL certificate" ],
+      tls_fingerprint:    [ "", "pin TLS leaf certificate SHA-256 (64 hex digits, optional colons)" ],
       is_nicehash:        [ false, "nicehash nonce mining mode support" ],
       is_keepalive:       [ true, "sends keepalive messages to the pool to avoid disconnect" ],
       use_subscribe:      [ true, "use the algorithm's normal pool handshake; false forces XMR login with pushed jobs" ],
@@ -280,6 +285,10 @@ function validatePool(pool) {
       return key + " must be a string";
     }
   }
+  try {pool["tls_fingerprint"] = normalizeTlsFingerprint(pool["tls_fingerprint"]);} catch (error) {
+    return error instanceof Error ? error.message : "invalid tls_fingerprint";
+  }
+  if (pool["tls_fingerprint"] && !pool["is_tls"]) {return "tls_fingerprint requires is_tls";}
   if (pool["pearlhash_target_format"] !== "base" && pool["pearlhash_target_format"] !== "jackpot") {
     return "pearlhash_target_format must be base or jackpot";
   }
@@ -686,6 +695,7 @@ function isDefaultPool(value) {
     typeof value["login"] === "string" && typeof value["pass"] === "string" &&
     typeof value["is_keepalive"] === "boolean" && typeof value["is_nicehash"] === "boolean" &&
     typeof value["use_subscribe"] === "boolean" && typeof value["tls_verify"] === "boolean" &&
+    typeof value["tls_fingerprint"] === "string" &&
     (value["pearlhash_target_format"] === "base" || value["pearlhash_target_format"] === "jackpot") &&
     typeof value["worker"] === "string" && value["socket"] === null && value["keepalive"] === null &&
     value["last_job"] === null && typeof value["last_connect_time"] === "number" &&
@@ -1015,7 +1025,8 @@ function finishHelp(err_str) {
 /** @param {string} [err_str] @returns {never} */
 module.exports.print_help = function(err_str) {
   const str = `
-# Node.js/SYCL based CPU/GPU miner v${version_str}
+# MoM CPU/GPU miner v${version_str}
+Copyright (c) 2023-2026 MoneroOcean. GNU GPLv3.
 $ ${helpCommand()} <directive> <parameter>+ [<option>+]
 
 Directives:
@@ -1023,6 +1034,10 @@ Directives:
   test  <algo> <result_hash_hex_str>
   bench <algo>
   algorithms  List supported algorithms and automatic device settings
+
+Mining TLS option:
+  --tls-fingerprint <SHA256>  Pin the primary pool certificate (requires a TLS port).
+  Self-signed certificates are accepted by default; tls_verify enables CA/hostname checks.
 
 Options:`;
   console.log(str);
