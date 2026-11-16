@@ -8,9 +8,10 @@ const path = require("node:path");
 const {spawnSync} = require("node:child_process");
 const {
   windowsCoreCacheRoot, acquireWindowsCoreCacheLock, windowsCoreIncludeMembership, windowsCoreIncludeRoots,
-  windowsCoreEnvironmentSha256, windowsCoreCacheDecision, clearWindowsCoreRelease, sanitizeBuildEnvironment, windowsCoreTrackerRowsScript,
+  windowsCoreEnvironmentSha256, windowsCoreCacheDecision, windowsCoreCurrentCacheAdmission, clearWindowsCoreRelease, sanitizeBuildEnvironment, windowsCoreTrackerRowsScript,
   windowsCoreTrackerEnvironment, verifyWindowsCoreTrackerInputs,
 } = require("../scripts/build-native-windows-core");
+const {fileHash} = require("../scripts/build-source-inputs");
 
 test.describe("Windows Core stable MSBuild work graph cache", () => {
   test("uses one guarded cache root and refuses a concurrent owner", t => {
@@ -95,6 +96,16 @@ test.describe("Windows Core stable MSBuild work graph cache", () => {
     assert.deepEqual(trackerFirst, {PATH: first.PATH, LIB: ""});
   });
 
+  test("uses the OS Windows PowerShell module path instead of inherited PowerShell 7 paths", () => {
+    const systemRoot = path.resolve(os.tmpdir(), "mom-windows-system-root"), environment = {PATH: "tool-path", lib: "sdk-lib", SystemRoot: systemRoot,
+        pSmOdUlEpAtH: "C:\\PowerShell\\Modules", PSMODULEPATH: "C:\\WindowsPowerShell\\Modules"}, tracker = windowsCoreTrackerEnvironment(environment);
+    assert.equal(tracker["PSModulePath"], path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "Modules"));
+    assert.deepEqual(Object.keys(tracker).filter(key => key.toUpperCase() === "PSMODULEPATH"), ["PSModulePath"]);
+    assert.equal(tracker["LIB"], ""); assert.equal(environment.lib, "sdk-lib", "tracker setup must not mutate caller variables");
+    assert.equal(windowsCoreTrackerEnvironment({WINDIR: systemRoot})["PSModulePath"], tracker["PSModulePath"]);
+    assert.equal(Object.hasOwn(windowsCoreTrackerEnvironment({...environment, SystemRoot: "relative"}), "PSModulePath"), false);
+  });
+
   test("tracker row projection sorts hashtable values explicitly", () => {
     const script = windowsCoreTrackerRowsScript();
     assert.equal((script.match(/Sort-Object -Property \{ \[string\] \$_\['Path'\] \}/g) || []).length, 3);
@@ -108,6 +119,7 @@ test.describe("Windows Core stable MSBuild work graph cache", () => {
     const powershell = path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
     const script = ["$ErrorActionPreference = 'Stop'", "$ProgressPreference = 'SilentlyContinue'",
       "$OutputEncoding = New-Object System.Text.UTF8Encoding($false)", "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)",
+      "$hash = Get-FileHash -LiteralPath (Join-Path $PSHOME 'powershell.exe') -Algorithm SHA256; if ($hash.Hash.Length -ne 64) { throw 'Get-FileHash is unavailable.' }",
       "$prefix = 'C:\\repo\\'",
       "$outputs = @(@{ Path = 'C:\\build\\a.obj'; Hash = 'out-a'; Inputs = @(@{ Path = 'C:\\repo\\a.cpp'; Hash = 'src-a' }, @{ Path = 'C:\\sdk\\shared.h'; Hash = 'hdr' }, @{ Path = 'C:\\sdk\\core.lib'; Hash = 'lib' }) }, @{ Path = 'C:\\build\\b.obj'; Hash = 'out-b'; Inputs = @(@{ Path = 'C:\\repo\\b.cpp'; Hash = 'src-b' }, @{ Path = 'C:\\sdk\\shared.h'; Hash = 'hdr' }) })",
       "$script:MomBuildSnapshot = @(@{ Path = 'C:\\tools\\cl.exe'; Hash = 'tool-a' }, @{ Path = 'C:\\tools\\lib.exe'; Hash = 'tool-b' }, @{ Path = 'C:\\repo\\native\\core.cpp'; Hash = 'repo-src' })",
@@ -115,7 +127,7 @@ test.describe("Windows Core stable MSBuild work graph cache", () => {
       "$snapshot = @{ Inputs = $inputs; Artifacts = $artifacts; Toolchain = $toolchain }",
       "[Console]::Out.WriteLine((ConvertTo-Json -InputObject $snapshot -Compress -Depth 8))"].join("\n");
     const result = spawnSync(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
-      {encoding: "utf8", timeout: 10000, windowsHide: true});
+      {encoding: "utf8", timeout: 10000, windowsHide: true, env: windowsCoreTrackerEnvironment(process.env)});
     assert.equal(result.status, 0, String(result.stderr || result.error?.message || "PowerShell fixture failed"));
     const snapshot = /** @type {{Inputs: Array<{Path: string}>, Artifacts: Array<{Path: string}>, Toolchain: Array<{Path: string}>}} */ (JSON.parse(result.stdout || "{}"));
     assert.equal(snapshot.Inputs.length, 4);
@@ -203,5 +215,72 @@ test.describe("Windows Core stable MSBuild work graph cache", () => {
     fs.symlinkSync(outside, path.join(release, "escape"), "dir");
     assert.throws(() => clearWindowsCoreRelease(build), /unsafe path/);
     assert.equal(fs.readFileSync(sentinel, "utf8"), "keep");
+  });
+
+  test("read-only current-cache admission requires an unchanged tracked Build state", t => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-win-core-admission-")), tools = path.join(root, "tools"),
+      dumpbinDirectory = path.join(tools, "MSVC", "14.44", "bin", "HostX64", "x64"), include = path.join(tools, "MSVC", "14.44", "include"),
+      libuvInclude = path.join(root, "libuv"), cacheRoot = path.join(root, "cache", "native-windows-core", "v1"), prospective = path.join(root, "prospective"),
+      descriptor = path.join(root, "descriptor.json"), currentEnv = {PATH: process.env["PATH"] || ""};
+    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    fs.mkdirSync(dumpbinDirectory, {recursive: true}); fs.mkdirSync(include, {recursive: true});
+    fs.mkdirSync(path.join(libuvInclude, "uv"), {recursive: true}); fs.mkdirSync(path.join(cacheRoot, "source", "build", "Release"), {recursive: true});
+    for (const file of ["dumpbin.exe", "cl.exe", "lib.exe", "ml64.exe"]) {fs.writeFileSync(path.join(dumpbinDirectory, file), file);}
+    for (const file of [path.join(root, "node-gyp.js"), path.join(tools, "msbuild.exe"), path.join(tools, "python.exe")]) {fs.writeFileSync(file, "tool");}
+    fs.writeFileSync(path.join(libuvInclude, "uv.h"), "uv\n"); fs.writeFileSync(path.join(libuvInclude, "uv", "win.h"), "win\n");
+    const config = {version: 1, nodeGyp: path.join(root, "node-gyp.js"), msbuild: path.join(tools, "msbuild.exe"),
+      dumpbin: path.join(dumpbinDirectory, "dumpbin.exe"), python: path.join(tools, "python.exe"), libuvInclude};
+    fs.writeFileSync(descriptor, JSON.stringify(config));
+    const archive = path.join(cacheRoot, "source", "build", "Release", "mom_native_core.lib"), project = path.join(cacheRoot, "source", "build", "mom_native_core.vcxproj");
+    fs.writeFileSync(archive, "!<arch>\n1"); fs.writeFileSync(project, "project\n");
+    const sdkHeader = path.join(include, "windows.h"); fs.writeFileSync(sdkHeader, "Windows SDK header\n");
+    const tracker = {complete: true, membership: "membership", inputs: {[sdkHeader.toLowerCase()]: fileHash(sdkHeader)}, artifacts: {}, toolchain: {}, powershellSha256: "a".repeat(64)},
+      includeState = {complete: true, roots: [include, libuvInclude], sha256: "b".repeat(64)},
+      current = {repo: path.resolve(__dirname, ".."), staticIdentity: {fixture: "identity"}, projectSha256: "project-hash",
+        archiveSha256: fileHash(archive), sourceState: {files: {}, graph: {}}, sourceMtimes: {}, tracker, incrementalSafe: true},
+      statePath = path.join(cacheRoot, "core-state.json"), state = {...structuredClone(current), version: 1, lastSuccessMs: Date.now()};
+    let includeCalls = 0, trackerCalls = 0, viewCalls = 0;
+    const hooks = {root: path.resolve(__dirname, ".."), cacheRoot, includeRoots() {includeCalls++; return includeState;},
+      trackerSnapshot() {trackerCalls++; return tracker;}, cacheView() {viewCalls++; return current;}};
+    assert.equal(windowsCoreCurrentCacheAdmission(descriptor, prospective, currentEnv, hooks).reusable, false,
+      "an existing cache directory without admitted state remains on the producer's fresh path");
+    assert.equal(viewCalls, 0, "missing state does not inspect or mutate the cache view");
+    fs.writeFileSync(statePath, JSON.stringify(state));
+    const stateBytes = fs.readFileSync(statePath);
+    const admitted = windowsCoreCurrentCacheAdmission(descriptor, prospective, currentEnv, hooks);
+    assert.deepEqual(admitted, {reusable: true, reason: "inputs unchanged", descriptorSha256: fileHash(descriptor),
+      stateSha256: fileHash(statePath), archiveSha256: fileHash(archive)});
+    assert.equal(fs.existsSync(prospective), false, "admission must not create an output directory");
+    assert.deepEqual(fs.readFileSync(statePath), stateBytes, "admission must not rewrite the producer's cache state");
+    assert.deepEqual([includeCalls, trackerCalls, viewCalls], [1, 1, 1], "admission delegates to the selected include, tracker, and cache-view readers");
+
+    const markerPath = path.join(cacheRoot, "build-in-progress.json"); fs.writeFileSync(markerPath, "{}\n");
+    assert.equal(windowsCoreCurrentCacheAdmission(descriptor, prospective, currentEnv, hooks).reusable, false,
+      "a producer in-progress marker prevents reuse");
+    fs.unlinkSync(markerPath);
+    const lockPath = path.join(cacheRoot, "build.lock"); fs.writeFileSync(lockPath, "{}\n");
+    assert.equal(windowsCoreCurrentCacheAdmission(descriptor, prospective, currentEnv, hooks).reusable, false,
+      "a cache lock prevents reuse");
+    fs.unlinkSync(lockPath);
+
+    tracker.complete = false;
+    const incomplete = windowsCoreCurrentCacheAdmission(descriptor, prospective, currentEnv, hooks);
+    assert.equal(incomplete.reusable, false, "an incomplete external-header tracker cannot authorize reuse");
+    tracker.complete = true;
+    fs.writeFileSync(sdkHeader, "Changed Windows SDK header\n"); tracker.inputs[sdkHeader.toLowerCase()] = fileHash(sdkHeader);
+    assert.equal(windowsCoreCurrentCacheAdmission(descriptor, prospective, currentEnv, hooks).reusable, false,
+      "an external Windows SDK header hash change cannot authorize reuse");
+    fs.writeFileSync(sdkHeader, "Windows SDK header\n"); tracker.inputs[sdkHeader.toLowerCase()] = fileHash(sdkHeader);
+    const originalHash = current.archiveSha256; current.archiveSha256 = "c".repeat(64);
+    assert.equal(windowsCoreCurrentCacheAdmission(descriptor, prospective, currentEnv, hooks).reusable, false,
+      "a cache archive that no longer matches admitted state cannot authorize reuse");
+    current.archiveSha256 = originalHash;
+    const changed = windowsCoreCurrentCacheAdmission(descriptor, prospective, {...currentEnv, MOM_FORCE_REBUILD: "1"}, hooks);
+    assert.equal(changed.reusable, false, "explicit cold-build controls bypass warm admission");
+
+    fs.writeFileSync(statePath, stateBytes);
+    hooks.cacheView = () => {fs.appendFileSync(statePath, " "); return current;};
+    assert.equal(windowsCoreCurrentCacheAdmission(descriptor, prospective, currentEnv, hooks).reusable, false,
+      "a cache-state replacement during admission cannot authorize reuse");
   });
 });

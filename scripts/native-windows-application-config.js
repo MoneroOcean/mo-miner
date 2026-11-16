@@ -19,22 +19,34 @@ function admittedHandoff(value, kind, runAttempt) {
   }
 }
 
-/** Compose admitted reader results. The Windows Hermes support reader omits shermaot, so bind it
- * separately to the source-built Linux Hermes reader result rather than treating it as a handoff member.
+/** CI adds transport identity to the shared descriptor composer, never substitutes it
+ * for producer admission. Local builds use the same descriptor logic without a fake run ID.
  * @param {unknown} input */
 function composeWindowsApplicationConfig(input) {
   if (!object(input)) {throw new Error("Invalid Windows application config composition input");}
-  const row = input, runAttempt = row["runAttempt"];
-  if (typeof runAttempt !== "string" || !/^[0-9]{1,20}-[1-9][0-9]{0,5}$/.test(runAttempt) ||
-      !object(row["tools"]) || !object(row["io"]) || !object(row["hermes"]) || !object(row["hermesAot"]) ||
+  const {runAttempt, ...row} = input;
+  if (!Object.hasOwn(input, "runAttempt") || typeof runAttempt !== "string" || !/^[0-9]{1,20}-[1-9][0-9]{0,5}$/.test(runAttempt)) {
+    throw new Error("Windows application config input is incomplete");
+  }
+  admittedHandoff(row["io"], "io", runAttempt); admittedHandoff(row["hermes"], "hermes", runAttempt);
+  return composeWindowsApplicationDescriptor(row);
+}
+
+/** Pure composition of already-admitted local or CI reader results; this does not admit files.
+ * The Windows Hermes reader omits shermaot, so bind it separately to the admitted Linux
+ * Hermes compiler rather than treating the executable as a Windows support-library member.
+ * @param {unknown} input */
+function composeWindowsApplicationDescriptor(input) {
+  if (!object(input)) {throw new Error("Invalid Windows application config composition input");}
+  const row = input;
+  if (!object(row["tools"]) || !object(row["io"]) || !object(row["hermes"]) || !object(row["hermesAot"]) ||
       !object(row["llvmDescriptor"]) || !Array.isArray(row["allowedImports"])) {
     throw new Error("Windows application config input is incomplete");
   }
-  const expectedInputKeys = ["allowedImports", "hermes", "hermesAot", "io", "llvmDescriptor", "runAttempt", "tools"],
+  const expectedInputKeys = ["allowedImports", "hermes", "hermesAot", "io", "llvmDescriptor", "tools"],
     hasApplication = Object.hasOwn(row, "application");
   if (!isDeepStrictEqual(Object.keys(row).sort(), [...expectedInputKeys, ...(hasApplication ? ["application"] : [])].sort()) ||
       hasApplication && !object(row["application"])) {throw new Error("Windows application config input has an unexpected shape");}
-  admittedHandoff(row["io"], "io", runAttempt); admittedHandoff(row["hermes"], "hermes", runAttempt);
   const llvm = validateWindowsLlvmSdkConfig(row["llvmDescriptor"]), io = /** @type {{libraries?: unknown}} */ (row["io"]),
     hermes = /** @type {{hermes?: unknown,intelRuntime?: unknown}} */ (row["hermes"]),
     hermesAot = /** @type {{artifacts?: unknown,files?: unknown}} */ (row["hermesAot"]);
@@ -69,4 +81,4 @@ function composeWindowsApplicationConfig(input) {
   return validateWindowsControllerConfig(config);
 }
 
-module.exports = {composeWindowsApplicationConfig};
+module.exports = {composeWindowsApplicationConfig, composeWindowsApplicationDescriptor};

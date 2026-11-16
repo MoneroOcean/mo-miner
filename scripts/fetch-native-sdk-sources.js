@@ -9,7 +9,7 @@ const {sdkComponents, sdkSourceEnvironment} = require("./prepare-native-sdk-sour
 const {fileHash, sourceInputs, readBuildText} = require("./build-source-inputs");
 const {ioPins} = require("./build-native-io");
 const {archiveName: llvmArchiveName, archiveSha256: llvmArchiveSha256} = require("./native-llvm-sdk");
-const {opensslPin} = require("./build-native-openssl");
+const {opensslPin, opensslBuildRecipe} = require("./build-native-openssl");
 const {hermesPins} = require("./build-native-hermes");
 const {zstdPin, zstdBuildRecipe} = require("./build-native-zstd");
 
@@ -25,9 +25,11 @@ const repo = path.resolve(__dirname, ".."), origins = Object.freeze({
 });
 const ioArchiveUrls = Object.freeze({
   libuv: "https://dist.libuv.org/dist/v1.51.0/libuv-v1.51.0.tar.gz",
-  zlib: "https://zlib.net/fossils/zlib-1.3.1.tar.gz",
+  // Use upstream's byte-identical release asset as the stable CI download endpoint.
+  zlib: "https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz",
 });
-const ioArchiveOrigins = Object.freeze({libuv: "https://dist.libuv.org", zlib: "https://zlib.net"});
+const ioArchiveOrigins = Object.freeze({libuv: ["https://dist.libuv.org"],
+  zlib: ["https://github.com", "https://release-assets.githubusercontent.com"]});
 const maxIoArchiveBytes = 128 << 20, ioArchiveTimeoutMs = 10 * 60 * 1000, maxArchiveRedirects = 3;
 const buildArchiveUrls = Object.freeze({
   llvm: "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.8/llvm-project-21.1.8.src.tar.xz",
@@ -35,6 +37,7 @@ const buildArchiveUrls = Object.freeze({
 });
 const buildArchiveOrigins = Object.freeze(["https://github.com", "https://release-assets.githubusercontent.com"]);
 const maxBuildArchiveBytes = 192 << 20, buildArchiveTimeoutMs = 10 * 60 * 1000;
+const maxWindowsOpenSslArchiveBytes = 128 << 20;
 const zstdArchiveUrl = "https://github.com/facebook/zstd/releases/download/v" + zstdPin.version + "/zstd-" + zstdPin.version + ".tar.gz";
 const maxZstdArchiveBytes = 16 << 20;
 const nvrtcArchiveOrigin = "https://developer.download.nvidia.com", maxNvrtcArchiveBytes = 320 << 20;
@@ -316,7 +319,10 @@ async function fetchArchiveCohort(output, environment, allowNetwork, cohort) {
           }});
           await pipeline(Readable.fromWeb(response.body), limiter, fs.createWriteStream(temporary, {flags: "wx", mode: 0o600}), {signal: controller.signal});
           const sha256 = hash.digest("hex");
-          if (sha256 !== pin.sha256) {throw new Error(archiveLabel + " SHA256 differs from its pinned original: " + name);}
+          if (sha256 !== pin.sha256) {
+            throw new Error(archiveLabel + " SHA256 differs from its pinned original: " + name +
+              " (expected SHA256 " + pin.sha256 + ", actual SHA256 " + sha256 + ", downloaded " + bytes + " bytes)");
+          }
           fs.chmodSync(temporary, 0o444);
           fs.linkSync(temporary, finalPath); // Atomic no-clobber promotion within the new output directory.
           const stat = fs.lstatSync(finalPath);
@@ -373,7 +379,7 @@ async function fetchIoArchives(output, environment = process.env, allowNetwork =
   }
   const hashes = /** @type {ArchiveHashes} */ (Object.fromEntries(names.map(name => [name, {sha256: pins[name].sha256}])));
   const catalog = ioArchiveCatalog(hashes), specs = /** @type {ArchiveSpecs} */ (Object.fromEntries(names.map(name =>
-    [name, {...catalog[name], origins: [ioArchiveOrigins[name]]}])));
+    [name, {...catalog[name], origins: ioArchiveOrigins[name]}])));
   return fetchArchiveCohort(output, environment, allowNetwork, {target: "io", sourceLabel: "I/O source", archiveLabel: "I/O archive",
     specs, pins: hashes, maxBytes, timeoutMs, recipeFor: dependencies.recipe || ioSourceRecipe,
     pinSnapshot: () => JSON.stringify(pins), fetchImpl: dependencies.fetch || globalThis.fetch});
@@ -396,6 +402,21 @@ async function fetchBuildArchives(output, environment = process.env, allowNetwor
   return fetchArchiveCohort(output, environment, allowNetwork, {target: "build", sourceLabel: "Native SDK source", archiveLabel: "Native SDK source archive",
     specs, pins: hashes, maxBytes, timeoutMs, recipeFor: dependencies.recipe || buildSourceRecipe,
     pinSnapshot: () => JSON.stringify(hashes), fetchImpl: dependencies.fetch || globalThis.fetch});
+}
+
+/** Fetch the original Windows OpenSSL archive through the shared bounded cohort path.
+ * @param {string} output @param {NodeJS.ProcessEnv} [environment] @param {boolean} [allowNetwork]
+ * @param {{fetch?: IoArchiveFetch, hashes?: ArchiveHashes, timeoutMs?: number}} [dependencies] */
+async function fetchWindowsOpenSslArchives(output, environment = process.env, allowNetwork = false, dependencies = {}) {
+  const catalog = windowsOpenSslArchiveCatalog(dependencies.hashes), hashes = {openssl: {sha256: catalog.openssl.sha256}},
+    timeoutMs = dependencies.timeoutMs ?? buildArchiveTimeoutMs;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > buildArchiveTimeoutMs) {
+    throw new Error("Windows OpenSSL source fetch timeout may only be narrowed from its production bound");
+  }
+  const specs = {openssl: {...catalog.openssl, origins: buildArchiveOrigins}};
+  return fetchArchiveCohort(output, environment, allowNetwork, {target: "windows-openssl", sourceLabel: "Windows OpenSSL source",
+    archiveLabel: "OpenSSL source archive", specs, pins: hashes, maxBytes: maxWindowsOpenSslArchiveBytes, timeoutMs,
+    recipeFor: opensslBuildRecipe, pinSnapshot: () => JSON.stringify(hashes), fetchImpl: dependencies.fetch || globalThis.fetch});
 }
 
 /** Acquire the producer-pinned zstd source archive; extraction/build remain separate.
@@ -465,6 +486,16 @@ function buildArchiveCatalog(hashes) {
   }
   const result = Object.fromEntries(names.map(name => [name, {...canonical[name], sha256: hashes[name]?.sha256 || ""}]));
   return /** @type {Record<BuildArchiveName, {fileName: string, sha256: string, url: string}>} */ (result);
+}
+
+/** Preserve the original Windows OpenSSL cohort while allowing fixture-only digest substitution.
+ * @param {ArchiveHashes} [hashes] */
+function windowsOpenSslArchiveCatalog(hashes) {
+  if (hashes && (Object.keys(hashes).join(",") !== "openssl" || !/^[0-9a-f]{64}$/.test(hashes["openssl"]?.sha256 || ""))) {
+    throw new Error("Windows OpenSSL source fetch needs its exact pinned archive cohort");
+  }
+  return {openssl: {fileName: "openssl-" + opensslPin.version + ".tar.gz", sha256: hashes?.["openssl"]?.sha256 || opensslPin.sha256,
+    url: buildArchiveUrls.openssl}};
 }
 
 /** Share the canonical I/O names and origins between acquisition and offline admission.
@@ -560,6 +591,13 @@ function verifyArchiveCohort(output, target, catalog, recipeFor, maximum) {
  * @param {string} output @param {{hashes?: ArchiveHashes, recipe?: typeof buildSourceRecipe}} [dependencies] */
 function verifyBuildArchives(output, dependencies = {}) {
   return verifyArchiveCohort(output, "build", buildArchiveCatalog(dependencies.hashes), dependencies.recipe || buildSourceRecipe, maxBuildArchiveBytes);
+}
+
+/** Verify the original Windows OpenSSL acquisition without network or mutation.
+ * @param {string} output @param {{hashes?: ArchiveHashes}} [dependencies] */
+function verifyWindowsOpenSslArchives(output, dependencies = {}) {
+  return verifyArchiveCohort(output, "windows-openssl", windowsOpenSslArchiveCatalog(dependencies.hashes),
+    opensslBuildRecipe, maxWindowsOpenSslArchiveBytes);
 }
 
 /** Check original libuv/zlib inputs through the same offline admission as LLVM/OpenSSL.
@@ -857,7 +895,7 @@ if (require.main === module) {
   })();
 }
 
-module.exports = {fetchSdkSources, fetchArchiveCohort, fetchIoArchives, fetchBuildArchives, fetchNvrtcArchives, fetchWindowsHostSdkArchives,
-  verifyBuildArchives, verifyIoArchives, verifyNvrtcArchives, verifyWindowsHostSdkArchives,
+module.exports = {fetchSdkSources, fetchArchiveCohort, fetchIoArchives, fetchBuildArchives, fetchWindowsOpenSslArchives, fetchNvrtcArchives, fetchWindowsHostSdkArchives,
+  verifyBuildArchives, verifyWindowsOpenSslArchives, verifyIoArchives, verifyNvrtcArchives, verifyWindowsHostSdkArchives,
   ioArchiveUrls, buildArchiveUrls, nvrtcArchiveCatalog, zstdArchiveCatalog, origins, runGit, gitSourceComponents, sourceRecipe, ioSourceRecipe, buildSourceRecipe,
   nvrtcSourceRecipe, zstdSourceRecipe, fetchZstdArchive, verifyZstdArchive, windowsHostSdkCatalog, windowsHostSdkArchiveCatalog, windowsHostSdkSourceRecipe};

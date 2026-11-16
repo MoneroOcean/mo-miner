@@ -271,8 +271,11 @@ function windowsCoreTrackerRowsScript() {
 /** @param {NodeJS.ProcessEnv} environment @returns {NodeJS.ProcessEnv} */
 function windowsCoreTrackerEnvironment(environment) {
   const copy = {...environment};
-  for (const key of Object.keys(copy)) {if (key.toUpperCase() === "LIB") {delete copy[key];}}
+  for (const key of Object.keys(copy)) {if (["LIB", "PSMODULEPATH"].includes(key.toUpperCase())) {delete copy[key];}}
   copy["LIB"] = "";
+  const systemRoot = environment["SystemRoot"] || environment["WINDIR"];
+  // PS5 must not autoload the parent pwsh7 modules.
+  if (systemRoot && path.isAbsolute(systemRoot)) {copy["PSModulePath"] = path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "Modules");}
   return copy;
 }
 
@@ -466,6 +469,78 @@ function windowsCoreMarkerPresent(file) {
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 4096) {throw new Error("Windows Core in-progress marker is unsafe");}
     return true;
   } catch (error) {if (error instanceof Error && "code" in error && error.code === "ENOENT") {return false;} throw error;}
+}
+
+/** Read-only cache root validation for callers considering reuse. Unlike windowsCoreCacheRoot,
+ * this never creates any directories. @param {string} root @returns {string | null} */
+function existingWindowsCoreCacheRoot(root) {
+  if (!sameNativePath(fs.realpathSync(root), path.resolve(root))) {throw new Error("Windows Core repository root is not canonical");}
+  let current = path.resolve(root);
+  for (const part of ["build", "cache", "native-windows-core", "v1"]) {
+    current = path.join(current, part);
+    const stat = fs.lstatSync(current, {throwIfNoEntry: false});
+    if (!stat) {return null;}
+    if (!stat.isDirectory() || stat.isSymbolicLink() || !sameNativePath(fs.realpathSync(current), current)) {
+      throw new Error("Windows Core cache path contains a symlink or non-directory: " + current);
+    }
+  }
+  return current;
+}
+
+/** Re-admit the current stable Core cache without changing it. Reuse is allowed only for an
+ * unchanged, fully tracked Build state; all other cases remain on the producer's normal path.
+ * Hooks are narrow CPU-fixture seams for the Windows-only tracker and cache view.
+ * @param {string} configFile @param {string} prospectiveOutput @param {NodeJS.ProcessEnv} [environment]
+ * @param {{root?:string,cacheRoot?:string,includeRoots?:(config:WindowsCoreConfig,msvc:ReturnType<typeof msvcToolchain>,env:NodeJS.ProcessEnv)=>ReturnType<typeof windowsCoreIncludeRoots>,
+ * trackerSnapshot?:(buildRoot:string,cacheRoot:string,plan:ReturnType<typeof windowsCorePlan>,env:NodeJS.ProcessEnv,requireComplete:boolean)=>ReturnType<typeof windowsCoreTrackerSnapshot>,
+ * cacheView?:(plan:ReturnType<typeof windowsCorePlan>,descriptorSha256:string,environmentSha256:string,include:ReturnType<typeof windowsCoreIncludeRoots>,
+ * tracker:ReturnType<typeof windowsCoreTrackerSnapshot>,workPaths:ReturnType<typeof corePaths>)=>any}} [hooks]
+ * @returns {{reusable:boolean,reason:string,descriptorSha256:string,stateSha256?:string,archiveSha256?:string}} */
+function windowsCoreCurrentCacheAdmission(configFile, prospectiveOutput, environment = process.env, hooks = {}) {
+  const root = hooks.root || repo;
+  requireFile(configFile, "Windows Core descriptor");
+  const descriptorSha256 = fileHash(configFile), config = validateWindowsCoreDescriptor(readBuildJson(configFile));
+  if (fileHash(configFile) !== descriptorSha256) {throw new Error("Windows Core descriptor changed during cache admission");}
+  const plan = windowsCorePlan(config, prospectiveOutput, root), cacheRoot = hooks.cacheRoot || existingWindowsCoreCacheRoot(root);
+  if (!cacheRoot) {return {reusable: false, reason: "Core cache is absent", descriptorSha256};}
+  const canonicalCacheRoot = path.resolve(cacheRoot), cacheStat = fs.lstatSync(canonicalCacheRoot, {throwIfNoEntry: false});
+  if (!cacheStat?.isDirectory() || cacheStat.isSymbolicLink() || !sameNativePath(fs.realpathSync(canonicalCacheRoot), canonicalCacheRoot)) {
+    throw new Error("Windows Core cache path is redirected or not a directory");
+  }
+  const statePath = path.join(canonicalCacheRoot, "core-state.json"), markerPath = path.join(canonicalCacheRoot, "build-in-progress.json"),
+    lockPath = path.join(canonicalCacheRoot, "build.lock");
+  if (windowsCoreMarkerPresent(markerPath) || fs.lstatSync(lockPath, {throwIfNoEntry: false})) {
+    return {reusable: false, reason: "Core cache is in progress or locked", descriptorSha256};
+  }
+  const stateStat = fs.lstatSync(statePath, {throwIfNoEntry: false});
+  if (!stateStat) {return {reusable: false, reason: "Core cache state is absent or incomplete", descriptorSha256};}
+  if (!stateStat.isFile() || stateStat.isSymbolicLink() || stateStat.nlink !== 1 || stateStat.size < 1 || stateStat.size > maxCoreCacheBytes) {
+    throw new Error("Windows Core cache state is unsafe or excessive");
+  }
+  const stateShaBefore = fileHash(statePath), state = readWindowsCoreCacheState(statePath);
+  if (!state) {return {reusable: false, reason: "Core cache state is absent or incomplete", descriptorSha256};}
+  if (fileHash(statePath) !== stateShaBefore) {return {reusable: false, reason: "Core cache changed during admission", descriptorSha256};}
+  const environmentCopy = sanitizeBuildEnvironment(environment, config.python, Boolean(config.compiler)),
+    environmentSha256 = windowsCoreEnvironmentSha256(environmentCopy), workPaths = corePaths(canonicalCacheRoot),
+    include = (hooks.includeRoots || windowsCoreIncludeRoots)(config, plan.msvc, environmentCopy),
+    trackerSnapshot = hooks.trackerSnapshot || ((buildRoot, cache, selected, env, requireComplete) => windowsCoreTrackerSnapshot(buildRoot, cache, selected, env, requireComplete)),
+    tracker = trackerSnapshot(workPaths.build, canonicalCacheRoot, plan, environmentCopy, false),
+    current = (hooks.cacheView || windowsCoreCacheView)(plan, descriptorSha256, environmentSha256, include, tracker, workPaths);
+  let archiveValid = false;
+  if (current.archiveSha256 && state.archiveSha256 === current.archiveSha256) {
+    try {inspectStaticArchive(workPaths.archive); archiveValid = true;} catch {archiveValid = false;}
+  }
+  const decision = windowsCoreCacheDecision({state, current, marker: false, projectExists: Boolean(current.projectSha256), archiveValid,
+    forceRebuild: environment["MOM_FORCE_REBUILD"] === "1" || environment["MOM_NATIVE_CACHE"] === "0"});
+  const stateShaAfter = fileHash(statePath), markerAfter = windowsCoreMarkerPresent(markerPath), lockAfter = fs.lstatSync(lockPath, {throwIfNoEntry: false});
+  if (fileHash(configFile) !== descriptorSha256) {throw new Error("Windows Core descriptor changed during cache admission");}
+  if (stateShaBefore !== stateShaAfter || markerAfter || lockAfter) {
+    return {reusable: false, reason: "Core cache changed during admission", descriptorSha256};
+  }
+  const reusable = decision.configure === false && decision.target === "Build" && decision.reason === "inputs unchanged" &&
+    current.incrementalSafe === true && current.tracker.complete === true && archiveValid;
+  return {reusable, reason: decision.reason, descriptorSha256,
+    ...(reusable ? {stateSha256: stateShaAfter, archiveSha256: current.archiveSha256} : {})};
 }
 
 /** @param {string} file */
@@ -1038,6 +1113,7 @@ if (require.main === module) {
 }
 
 module.exports = {absolutePath, validateWindowsCoreDescriptor, intelCoreCompilerVersion, validateOutput, validatePortableEnvironment, sanitizeBuildEnvironment, windowsCorePlan,
-  windowsCoreCacheRoot, acquireWindowsCoreCacheLock, windowsCoreIncludeMembership, windowsCoreIncludeRoots, windowsCoreEnvironmentSha256, windowsCoreCacheDecision, clearWindowsCoreRelease,
+  windowsCoreCacheRoot, acquireWindowsCoreCacheLock, windowsCoreIncludeMembership, windowsCoreIncludeRoots, windowsCoreEnvironmentSha256, windowsCoreCacheDecision,
+  windowsCoreCurrentCacheAdmission, clearWindowsCoreRelease,
   windowsCoreTrackerRowsScript, windowsCoreTrackerEnvironment, verifyWindowsCoreTrackerInputs,
   runTool, runToolText, parseDumpbinSymbols, parseDumpbinArchive, inspectCoreProject, inspectCoreArchive, stageSourceTree, cleanupCoreSourceJunctions, buildNativeWindowsCore};

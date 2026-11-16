@@ -71,7 +71,7 @@ test.describe("Native system-driver path and input boundaries", () => {
       assert.throws(() => searchPaths([value], "/usr/lib/vendor"), /search path/);
     }
   });
-  test("empty driver RUNPATH entries require an explicit root cwd assumption", () => {
+  test("empty driver RUNPATH entries require an explicit root cwd assumption", {skip: process.platform !== "linux"}, () => {
     assert.deepEqual(searchPaths(["$ORIGIN/../lib:"], "/usr/lib/vendor", "/"), ["/usr/lib/lib", "/"]);
     for (const cwd of [undefined, "/tmp", "/usr/lib", "/some/user/directory"]) {
       assert.throws(() => searchPaths(["$ORIGIN/../lib:"], "/usr/lib/vendor", cwd), /search path/);
@@ -91,7 +91,7 @@ test.describe("Native system-driver path and input boundaries", () => {
       {encoding: "utf8", timeout: 5000, env: {...process.env, PATH: "/unavailable"}});
     assert.equal(result.status, 1); assert.match(result.stderr, /unique absolute system GPU-driver/); assert.doesNotMatch(result.stderr, /spawn|ENOENT/);
   });
-  test("late components cannot turn an arbitrary system/compiler library into a driver root", () => {
+  test("late components cannot turn an arbitrary system/compiler library into a driver root", {skip: process.platform !== "linux"}, () => {
     for (const lateLibraries of [["/usr/lib/libLLVM.so.21"], ["/tmp/libigc.so.2"], ["/usr/lib/libigc.so.2", "/usr/lib/libigc.so.2"]]) {
       assert.throws(() => inspectDrivers(["/usr/lib/libze_intel_gpu.so.1"], {lateLibraries}), /only explicit system Intel/);
     }

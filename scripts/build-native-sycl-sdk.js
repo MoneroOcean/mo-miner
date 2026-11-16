@@ -171,10 +171,25 @@ function staticSyclSdkPlan(source, llvm, cuda, output, jobs, environment = {}, s
 /** Stream noisy build output to its own fd; retain all failures, never retry unknown jobs.
  * @param {string[]} command @param {string} log @param {NodeJS.ProcessEnv} env */
 function sdkStage(command, log, env) {
-  const fd = fs.openSync(log, "wx");
+  const fd = fs.openSync(log, "wx+");
   try {
     const result = spawnSync(command[0] || "", command.slice(1), {env, stdio: ["ignore", fd, fd]});
-    if (result.error || result.signal || result.status !== 0) {throw new Error("Static SDK stage failed; inspect " + log + " before retrying", {cause: result.error});}
+    if (result.error || result.signal || result.status !== 0) {
+      const size = fs.fstatSync(fd).size, length = Math.min(size, 16 * 1024), tail = Buffer.alloc(length);
+      let read = 0;
+      while (read < length) {
+        const count = fs.readSync(fd, tail, read, length - read, size - length + read);
+        if (count === 0) {break;}
+        read += count;
+      }
+      process.stderr.write(`[native-sdk] Failed stage; showing last ${read} of ${size} log bytes from ${log}:\n`);
+      if (read > 0) {
+        const output = tail.subarray(0, read);
+        process.stderr.write(output);
+        if (output[read - 1] !== 0x0a) {process.stderr.write("\n");}
+      }
+      throw new Error("Static SDK stage failed; inspect " + log + " before retrying", {cause: result.error});
+    }
   } finally {fs.closeSync(fd);}
 }
 

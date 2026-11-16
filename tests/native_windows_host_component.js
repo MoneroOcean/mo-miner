@@ -5,7 +5,8 @@ const {fileHash} = require("../scripts/build-source-inputs");
 const {archiveSha256} = require("../scripts/build-native-windows-llvm21-sdk");
 const {revision: comgrRevision, hostSources} = require("../scripts/build-native-windows-comgr-sdk");
 const {clrRevision: hiprtcSourceRevision, sourceFiles: hiprtcSourceFiles} = require("../scripts/build-native-windows-hiprtc-sdk");
-const {exportWindowsHostComponent, windowsHostComponentInputs, windowsHostComponentLlvmLayout, copyRuntimeInput} = require("../scripts/native-windows-host-component");
+const {exportWindowsHostComponent, windowsHostComponentInputs, windowsHostComponentLlvmLayout, copyRuntimeInput,
+  matchWindowsHostComponent} = require("../scripts/native-windows-host-component");
 
 const acppRevision = "da2463e45aa90aa36306c45abcfc05b87de51bc6";
 const hiprtcArchiveName = "hiprtc-host-intel.lib";
@@ -60,10 +61,40 @@ function fixture(t) {
   const manifestFile = path.join(root, "component.json"); fs.writeFileSync(manifestFile, JSON.stringify(manifest, null, 2) + "\n");
   /** @param {(value: any) => void} change */
   const edit = change => {const current = JSON.parse(fs.readFileSync(manifestFile, "utf8")); change(current); fs.writeFileSync(manifestFile, JSON.stringify(current, null, 2) + "\n");};
-  return {root, manifest, manifestFile, edit};
+  const sources = Object.fromEntries(groups.map(group => [group, (link[group] || []).map(relative => {
+    const file = path.join(sourceRoot, path.basename(relative).replace(/^\d{3}-/, ""));
+    fs.copyFileSync(path.join(root, relative), file);
+    return {file, sha256: fileHash(file), bytes: fs.statSync(file).size};
+  })]));
+  const originalRuntime = Object.fromEntries(Object.keys(runtimeInputs).map(name => {
+    const file = path.join(sourceRoot, path.basename(runtimeInputs[name]?.path || ""));
+    return [name, {file, sha256: fileHash(file), bytes: fs.statSync(file).size}];
+  }));
+  const original = /** @type {ReturnType<typeof import("../scripts/native-windows-host-component").verifyWindowsHostComponentProducers>} */
+    (/** @type {unknown} */ ({sources, provenance: manifest.provenance, acpp: {runtimeInputs: originalRuntime},
+      files: Object.fromEntries([...Object.values(sources).flat(), ...Object.values(originalRuntime)].map(row => [row.file, row.sha256]))}));
+  return {root, manifest, manifestFile, edit, original};
 }
 
 test.describe("Relocatable Windows host SDK component", () => {
+  test("warm matching joins original producer order and hashes without rewriting receipts", t => {
+    const f = fixture(t), before = fs.readFileSync(f.manifestFile);
+    assert.equal(matchWindowsHostComponent(f.root, f.original).link.libraries.length, 176);
+    assert.deepEqual(fs.readFileSync(f.manifestFile), before);
+    f.edit(value => {value.link.acpp.reverse();});
+    assert.throws(() => matchWindowsHostComponent(f.root, f.original), /archive order/);
+  });
+  test("warm matching rejects original producer mutation", t => {
+    const f = fixture(t), source = f.original.sources.acpp[0];
+    assert.ok(source); fs.appendFileSync(source.file, "changed");
+    assert.throws(() => matchWindowsHostComponent(f.root, f.original), /original producer.*changed/);
+  });
+  test("self-consistent component payload edits cannot replace original producer hashes", t => {
+    const f = fixture(t), relative = f.manifest.link["acpp"]?.[0]; assert.ok(relative);
+    const file = path.join(f.root, relative); fs.appendFileSync(file, "changed");
+    f.edit(value => {value.files[relative] = {sha256: fileHash(file), bytes: fs.statSync(file).size};});
+    assert.throws(() => matchWindowsHostComponent(f.root, f.original), /payload differs/);
+  });
   test("admits the reviewed archives and CUDART after ACPP, HIPRTC, COMGR and LLVM", t => {
     const f = fixture(t), selected = windowsHostComponentInputs(f.root);
     assert.equal(selected.link.libraries.length, 176);

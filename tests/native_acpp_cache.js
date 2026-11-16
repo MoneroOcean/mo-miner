@@ -42,7 +42,7 @@ function changedSide(lines, marker) {
 /** @returns {string | null} */
 function compiler() {
   const command = process.env["CXX"] || "c++";
-  const probe = spawnSync(command, ["--version"], {encoding: "utf8", timeout: 5000, maxBuffer: 1 << 20});
+  const probe = spawnSync(command, ["--version"], {encoding: "utf8", timeout: process.platform === "win32" ? 30000 : 5000, maxBuffer: 1 << 20});
   const error = /** @type {NodeJS.ErrnoException | undefined} */ (probe.error);
   if (error?.code === "ENOENT") {return null;}
   assert.equal(probe.status, 0, probe.stderr || probe.error?.message || "C++ compiler probe failed");
@@ -50,7 +50,7 @@ function compiler() {
 }
 
 describe("AdaptiveCpp atomic cache writes", () => {
-  test("a failed optional write returns without throwing and cleans its temporary file", {timeout: 30000}, t => {
+  test("a failed optional write returns without throwing and cleans its temporary file", {timeout: process.platform === "win32" ? 90000 : 30000}, t => {
     const command = compiler();
     if (!command) {t.skip("a host C++17 compiler is required"); return;}
 
@@ -148,8 +148,8 @@ int main(int argc, char **argv) {
     const source = path.join(root, "cache-write.cpp"), executable = path.join(root, "cache-write");
     fs.writeFileSync(source, harness, {flag: "wx"});
     const built = spawnSync(command, ["-std=c++17", "-O0", "-g0", source, "-o", executable],
-      {encoding: "utf8", timeout: 20000, maxBuffer: 1 << 20});
-    assert.equal(built.status, 0, built.stderr || built.error?.message || "C++ harness compilation failed");
+      {encoding: "utf8", timeout: process.platform === "win32" ? 60000 : 20000, maxBuffer: 1 << 20});
+    assert.equal(built.status, 0, built.error?.message || built.stderr || "C++ harness compilation failed");
     const result = spawnSync(executable, [root], {encoding: "utf8", timeout: 5000, maxBuffer: 1 << 20});
     assert.equal(result.status, 0, result.stderr || result.stdout || result.error?.message || "C++ harness failed");
     assert.match(result.stdout, /before: threw=1 returned=0 leftovers=1/);

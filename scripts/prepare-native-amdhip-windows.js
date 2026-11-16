@@ -5,6 +5,8 @@ const fs = require("node:fs"), path = require("node:path"), childProcess = requi
 const {createHash, randomUUID} = require("node:crypto"), {isDeepStrictEqual} = require("node:util");
 const sourceIO = require("./build-source-inputs");
 const {readBuildJson, sourceInputs} = sourceIO;
+const localSdk = require("./build-local-native-sdk"), localRocm = require("./build-local-native-rocm-sdk"),
+  {verifyLinuxLlvmAdmission} = require("./build-native-llvm21-sdk"), nativeCi = require("./prepare-native-ci");
 const repo = path.resolve(__dirname, ".."), catalogFile = path.join(repo, "runtime/windows-amdhip.json");
 const catalog = /** @type {AmdhipCatalog} */ (require("../runtime/windows-amdhip.json"));
 /** @param {object} value */
@@ -14,6 +16,7 @@ const recipeFiles = ["scripts/prepare-native-amdhip-windows.js", "runtime/window
   "scripts/prepare-native-ci.js", "scripts/fetch-native-sdk-sources.js", "scripts/native-linux-llvm-tools.js",
   "scripts/native-llvm-sdk.js"];
 const deadlineMs = 15 * 60 * 1000, maxCommandOutput = 8 << 20, maxDefinitionBytes = 64 << 10, maxLibraryBytes = 4 << 20;
+const localBuildIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /** @typedef {{version:number,target:string,source:{origin:string,revision:string,definition:{path:string,blob:string,bytes:number,sha256:string,derivedBytes:number,derivedSha256:string},license:{path:string,blob:string,bytes:number,sha256:string}},
  * library:{fileName:string,dllName:string,bytes:number,sha256:string},toolchain:{llvmRole:string,llvmLibAlias:string,llvmLibTarget:string}}} AmdhipCatalog */
@@ -22,14 +25,14 @@ const deadlineMs = 15 * 60 * 1000, maxCommandOutput = 8 << 20, maxDefinitionByte
 /** @typedef {{origin:string,revision:string,sourceRoot:string,fetchReceiptSha256:string,rootsReceiptSha256:string,
  * git:{path:string,bytes:number,sha256:string},definition:AmdhipBlobProof,license:AmdhipLicenseProof}} AmdhipSourceProof */
 /** @typedef {{relative:string,aliasTarget:string,bytes:number,sha256:string}} AmdhipToolAlias */
-/** @typedef {{role:string,handoffRoot:string,handoffSha256:string,llvmLib:AmdhipToolAlias,command:string[]}} AmdhipToolchainProof */
+/** @typedef {{role:string,llvmLib:AmdhipToolAlias,command:string[],handoffRoot?:string,handoffSha256?:string,sdkOutput?:string,sdkResultSha256?:string}} AmdhipToolchainProof */
 /** @typedef {{path:string,sourceBlob:string,sourceSha256:string,bytes:number,derivedBytes:number,derivedSha256:string,
  * transformation:string}} AmdhipDefinitionProof */
 /** @typedef {{fileName:string,dllName:string,bytes:number,sha256:string}} AmdhipLibraryProof */
 /** @typedef {{kind:string,bytes:number,sha256:string,source:{kind:string,path:string,blob:string,sha256?:string}}} AmdhipFileProof */
 /** @typedef {{version:2,target:"windows-amdhip64",status:"PASS",networked:false,buildOnly:true,compiled:false,executed:false,
  * vendorPrebuilt:false,sourceGenerated:true,publicationQualified:false,redistributionQualified:false,producerSha256:string,
- * runAttempt:string,recipe:{sha256:string,files:Record<string,string>},source:AmdhipSourceProof,
+ * runAttempt?:string,localBuildId?:string,recipe:{sha256:string,files:Record<string,string>},source:AmdhipSourceProof,
  * toolchain:AmdhipToolchainProof,definition:AmdhipDefinitionProof,library:AmdhipLibraryProof,
  * output:string,files:Record<string,AmdhipFileProof>,note:string}} AmdhipReceipt */
 /** @param {unknown} value @returns {value is string} */
@@ -167,47 +170,39 @@ function runTool(file, args, cwd, deadline) {
   return stdout;
 }
 
-/** @param {string} sourceRoot @param {string} toolBundleRoot @param {string} toolHandoffSha256 @param {string} output @param {NodeJS.ProcessEnv} [environment] */
-async function prepareWindowsAmdhip(sourceRoot, toolBundleRoot, toolHandoffSha256, output, environment = process.env) {
-  const selected = windowsAmdhipCatalog();
-  if (process.platform !== "linux" || environment["MOM_AOT_BUILD_ONLY"] !== "1") {throw new Error("Windows AMD import-library generation requires Linux and MOM_AOT_BUILD_ONLY=1");}
-  const paths = runPaths(environment), destination = newDestination(output, paths.runnerTemp, paths.output);
-  if (sourceRoot !== paths.source || !absolute(sourceRoot) || !absolute(toolBundleRoot) || !/^[a-f0-9]{64}$/.test(toolHandoffSha256 || "")) {
-    throw new Error("Windows AMD inputs must be the original ROCm source and externally pinned Linux LLVM tool handoff");
-  }
-  const deadline = Date.now() + deadlineMs, recipe = amdhipRecipe(), recipeSha256 = createHash("sha256").update(JSON.stringify(recipe)).digest("hex"),
-    producerSha256 = sourceIO.fileHash(__filename), ci = require("./prepare-native-ci"),
-    ciRunPaths = ci.ciPaths(), sourceState = ci.rocmSourceStatePaths(ciRunPaths, environment),
-    git = "/usr/bin/git";
-  if (ciRunPaths.suffix !== paths.suffix || ciRunPaths.runnerTemp !== paths.runnerTemp || sourceState.source !== sourceRoot) {
-    throw new Error("ROCm source admission path differs from the run-scoped root");
-  }
-  const gitStat = regularSnapshot(git, "Git", 64 << 20);
-  if ((gitStat.mode & 0o111n) === 0n) {throw new Error("Pinned source Git verifier is not executable");}
-  ci.verifyRocmSources(ciRunPaths, sourceState, git);
-  const rootsBefore = sourceIO.fileHash(sourceState.rootsFile), sourceReceiptSha256 = sourceIO.fileHash(sourceState.fetchReceipt),
-    tools = verifyLinuxToolHandoff(toolBundleRoot, paths.suffix, toolHandoffSha256);
-  const sourceGit = {path: git, bytes: Number(gitStat.size), sha256: sourceIO.fileHash(git)};
+/** Read one CLR blob by its locked revision, tree object ID, size and digest.
+ * @param {string} sourceRoot @param {string} git @param {string} revision @param {string} relative @param {string} blob @param {number} size @param {string} hash */
+function readPinnedClrBlob(sourceRoot, git, revision, relative, blob, size, hash) {
   const gitEnv = {PATH: "/usr/bin:/bin", LC_ALL: "C", LANG: "C", TZ: "UTC", GIT_ALLOW_PROTOCOL: "file", GIT_CONFIG_GLOBAL: "/dev/null",
-    GIT_CONFIG_NOSYSTEM: "1", GIT_NO_REPLACE_OBJECTS: "1", GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0"};
-  /** @param {string} relative @param {string} blob @param {number} size @param {string} hash */
-  const readBlob = (relative, blob, size, hash) => {
-    const result = childProcess.spawnSync(git, ["--git-dir=" + path.join(sourceRoot, "roots/clr"), "show", selected.source.revision + ":" + relative],
-      {env: gitEnv, encoding: "buffer", timeout: 30_000, maxBuffer: size + 1});
-    const bytes = result.stdout;
-    if (result.error || result.signal || result.status !== 0 || !Buffer.isBuffer(bytes) || bytes.length !== size ||
-        bytes.includes(0) && relative.endsWith(".def") || createHash("sha256").update(bytes).digest("hex") !== hash) {
-      throw new Error("Pinned CLR " + relative + " Git blob differs from its upstream object");
-    }
-    const check = childProcess.spawnSync(git, ["--git-dir=" + path.join(sourceRoot, "roots/clr"), "rev-parse", "--verify", selected.source.revision + ":" + relative],
-      {env: gitEnv, encoding: "utf8", timeout: 30_000, maxBuffer: 4096});
-    if (check.error || check.signal || check.status !== 0 || check.stdout.trim() !== blob) {throw new Error("Pinned CLR Git blob object identity changed: " + relative);}
-    return bytes;
-  };
-  const definition = readBlob(selected.source.definition.path, selected.source.definition.blob, selected.source.definition.bytes, selected.source.definition.sha256),
-    license = readBlob(selected.source.license.path, selected.source.license.blob, selected.source.license.bytes, selected.source.license.sha256);
+      GIT_CONFIG_NOSYSTEM: "1", GIT_NO_REPLACE_OBJECTS: "1", GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0"},
+    gitDirectory = path.join(sourceRoot, "roots/clr");
+  const result = childProcess.spawnSync(git, ["--git-dir=" + gitDirectory, "show", revision + ":" + relative],
+      {env: gitEnv, encoding: "buffer", timeout: 30_000, maxBuffer: size + 1}), bytes = result.stdout;
+  if (result.error || result.signal || result.status !== 0 || !Buffer.isBuffer(bytes) || bytes.length !== size ||
+      bytes.includes(0) && relative.endsWith(".def") || createHash("sha256").update(bytes).digest("hex") !== hash) {
+    throw new Error("Pinned CLR " + relative + " Git blob differs from its upstream object");
+  }
+  const check = childProcess.spawnSync(git, ["--git-dir=" + gitDirectory, "rev-parse", "--verify", revision + ":" + relative],
+    {env: gitEnv, encoding: "utf8", timeout: 30_000, maxBuffer: 4096});
+  if (check.error || check.signal || check.status !== 0 || check.stdout.trim() !== blob) {throw new Error("Pinned CLR Git blob object identity changed: " + relative);}
+  return bytes;
+}
+
+/** Produce the shared sealed payload from the same pinned blobs and LLVM tool for CI and local callers.
+ * @param {{selected:AmdhipCatalog,sourceRoot:string,destination:string,stagingParent:string,stagingPrefix:string,
+ * identity:{runAttempt?:string,localBuildId?:string},toolchain:Omit<AmdhipToolchainProof,"command">,toolPath:string,fetchReceiptSha256:string,rootsReceiptSha256:string,
+ * recipe:ReturnType<typeof amdhipRecipe>,recipeSha256:string,producerSha256:string,verifyInputs:()=>unknown}} input */
+async function generateWindowsAmdhipPayload(input) {
+  const {selected, sourceRoot, destination, stagingParent, stagingPrefix} = input, deadline = Date.now() + deadlineMs,
+    git = "/usr/bin/git", gitStat = regularSnapshot(git, "Git", 64 << 20);
+  if ((gitStat.mode & 0o111n) === 0n) {throw new Error("Pinned source Git verifier is not executable");}
+  const sourceGit = {path: git, bytes: Number(gitStat.size), sha256: sourceIO.fileHash(git)},
+    definition = readPinnedClrBlob(sourceRoot, git, selected.source.revision, selected.source.definition.path, selected.source.definition.blob,
+      selected.source.definition.bytes, selected.source.definition.sha256),
+    license = readPinnedClrBlob(sourceRoot, git, selected.source.revision, selected.source.license.path, selected.source.license.blob,
+      selected.source.license.bytes, selected.source.license.sha256);
   if (Date.now() >= deadline) {throw new Error("Windows AMD import-library generation deadline exceeded");}
-  const staging = path.join(paths.runnerTemp, ".native-windows-amdhip-" + paths.suffix + "-" + randomUUID());
+  const staging = path.join(stagingParent, stagingPrefix + "-" + randomUUID());
   fs.mkdirSync(staging, {mode: 0o700});
   let published = false;
   try {
@@ -219,8 +214,7 @@ async function prepareWindowsAmdhip(sourceRoot, toolBundleRoot, toolHandoffSha25
     }
     fs.writeFileSync(definitionPath, derivedDefinition, {flag: "wx", mode: 0o600});
     fs.writeFileSync(licensePath, license, {flag: "wx", mode: 0o600});
-    runTool(tools.llvmLib, ["/def:" + definitionPath, "/machine:x64", "/out:" + libraryPath], staging, deadline);
-    // The .def is only a linker input; the sealed consumer tree contains the library and license only.
+    runTool(input.toolPath, ["/def:" + definitionPath, "/machine:x64", "/out:" + libraryPath], staging, deadline);
     fs.unlinkSync(definitionPath);
     const archiveStat = regularSnapshot(libraryPath, "generated import library", maxLibraryBytes), librarySha256 = sourceIO.fileHash(libraryPath);
     if (Number(archiveStat.size) !== selected.library.bytes || librarySha256 !== selected.library.sha256) {
@@ -234,34 +228,25 @@ async function prepareWindowsAmdhip(sourceRoot, toolBundleRoot, toolHandoffSha25
         [licenseName]: {kind: "file", bytes: selected.source.license.bytes, sha256: licenseSha256,
           source: {kind: "original-source-license-blob", path: selected.source.license.path, blob: selected.source.license.blob}}
       }, sourceProof = {origin: selected.source.origin, revision: selected.source.revision, sourceRoot,
-        fetchReceiptSha256: sourceReceiptSha256, rootsReceiptSha256: rootsBefore, git: sourceGit,
+        fetchReceiptSha256: input.fetchReceiptSha256, rootsReceiptSha256: input.rootsReceiptSha256, git: sourceGit,
         definition: {path: selected.source.definition.path, blob: selected.source.definition.blob, bytes: definition.length,
           sha256: selected.source.definition.sha256, actualSha256: definitionSha256},
         license: {...selected.source.license, actualSha256: licenseSha256,
           note: "Original upstream license text is preserved as evidence; no legal conclusion is asserted."}},
-      toolchain = {role: selected.toolchain.llvmRole, handoffRoot: tools.root, handoffSha256: toolHandoffSha256,
-        llvmLib: tools.llvmLibIdentity, command: ["/def:<staging>/amdhip.def", "/machine:x64", "/out:<staging>/" + selected.library.fileName]},
-      receipt = /** @type {AmdhipReceipt} */ ({version: 2, target: "windows-amdhip64", status: "PASS", networked: false,
+      toolchain = {...input.toolchain, command: ["/def:<staging>/amdhip.def", "/machine:x64", "/out:<staging>/" + selected.library.fileName]},
+      receipt = {version: 2, target: "windows-amdhip64", status: "PASS", networked: false,
         buildOnly: true, compiled: false, executed: false, vendorPrebuilt: false, sourceGenerated: true,
-        publicationQualified: false, redistributionQualified: false, producerSha256,
-        runAttempt: paths.suffix, recipe: {sha256: recipeSha256, files: recipe.graph}, source: sourceProof, toolchain,
+        publicationQualified: false, redistributionQualified: false, producerSha256: input.producerSha256, ...input.identity,
+        recipe: {sha256: input.recipeSha256, files: input.recipe.graph}, source: sourceProof, toolchain,
         definition: {path: selected.source.definition.path, sourceBlob: selected.source.definition.blob, sourceSha256: definitionSha256,
           bytes: definition.length, derivedBytes: derivedDefinition.length, derivedSha256: derivedDefinitionSha256,
           transformation: "Only a LIBRARY directive is prepended to the unchanged upstream .def bytes."},
-        library: {fileName: selected.library.fileName, dllName: selected.library.dllName, bytes: Number(archiveStat.size),
-          sha256: librarySha256},
+        library: {fileName: selected.library.fileName, dllName: selected.library.dllName, bytes: Number(archiveStat.size), sha256: librarySha256},
         output: destination, files: finalFiles,
-        note: "Source-generated Windows AMD import library only; build-only and not publication or redistribution qualified."});
+        note: "Source-generated Windows AMD import library only; build-only and not publication or redistribution qualified."};
     fs.writeFileSync(path.join(staging, "sdk.json"), JSON.stringify(receipt, null, 2) + "\n", {flag: "wx", mode: 0o444});
     fs.chmodSync(staging, 0o555);
-    // Recheck source, tool and recipe evidence before the sealed output becomes visible.
-    ci.verifyRocmSources(ciRunPaths, sourceState, git);
-    const toolsAfter = verifyLinuxToolHandoff(toolBundleRoot, paths.suffix, toolHandoffSha256);
-    if (sourceIO.fileHash(sourceState.rootsFile) !== rootsBefore || sourceIO.fileHash(sourceState.fetchReceipt) !== sourceReceiptSha256 ||
-        !isDeepStrictEqual(toolsAfter.llvmLibIdentity, tools.llvmLibIdentity) || sourceIO.fileHash(__filename) !== producerSha256 ||
-        !isDeepStrictEqual(amdhipRecipe(), recipe) || !isDeepStrictEqual(windowsAmdhipCatalog(), selected)) {
-      throw new Error("Windows AMD source, tool, catalog or producer recipe changed during generation");
-    }
+    input.verifyInputs();
     fs.renameSync(staging, destination); published = true;
     admitWindowsAmdhip(destination);
     return receipt;
@@ -273,6 +258,139 @@ async function prepareWindowsAmdhip(sourceRoot, toolBundleRoot, toolHandoffSha25
     } catch { /* Keep the original generation failure if owned output cleanup is unavailable. */ }
     throw error;
   }
+}
+
+/** @param {string} sourceRoot @param {string} toolBundleRoot @param {string} toolHandoffSha256 @param {string} output @param {NodeJS.ProcessEnv} [environment] */
+async function prepareWindowsAmdhip(sourceRoot, toolBundleRoot, toolHandoffSha256, output, environment = process.env) {
+  const selected = windowsAmdhipCatalog();
+  if (process.platform !== "linux" || environment["MOM_AOT_BUILD_ONLY"] !== "1") {throw new Error("Windows AMD import-library generation requires Linux and MOM_AOT_BUILD_ONLY=1");}
+  const paths = runPaths(environment), destination = newDestination(output, paths.runnerTemp, paths.output);
+  if (sourceRoot !== paths.source || !absolute(sourceRoot) || !absolute(toolBundleRoot) || !/^[a-f0-9]{64}$/.test(toolHandoffSha256 || "")) {
+    throw new Error("Windows AMD inputs must be the original ROCm source and externally pinned Linux LLVM tool handoff");
+  }
+  const recipe = amdhipRecipe(), recipeSha256 = createHash("sha256").update(JSON.stringify(recipe)).digest("hex"),
+    producerSha256 = sourceIO.fileHash(__filename), ci = require("./prepare-native-ci"),
+    ciRunPaths = ci.ciPaths(), sourceState = ci.rocmSourceStatePaths(ciRunPaths, environment),
+    git = "/usr/bin/git";
+  if (ciRunPaths.suffix !== paths.suffix || ciRunPaths.runnerTemp !== paths.runnerTemp || sourceState.source !== sourceRoot) {
+    throw new Error("ROCm source admission path differs from the run-scoped root");
+  }
+  ci.verifyRocmSources(ciRunPaths, sourceState, git);
+  const rootsBefore = sourceIO.fileHash(sourceState.rootsFile), sourceReceiptSha256 = sourceIO.fileHash(sourceState.fetchReceipt),
+    tools = verifyLinuxToolHandoff(toolBundleRoot, paths.suffix, toolHandoffSha256),
+    toolchain = {role: selected.toolchain.llvmRole, handoffRoot: tools.root, handoffSha256: toolHandoffSha256, llvmLib: tools.llvmLibIdentity},
+    verifyInputs = () => {
+      ci.verifyRocmSources(ciRunPaths, sourceState, git);
+      const toolsAfter = verifyLinuxToolHandoff(toolBundleRoot, paths.suffix, toolHandoffSha256);
+      if (sourceIO.fileHash(sourceState.rootsFile) !== rootsBefore || sourceIO.fileHash(sourceState.fetchReceipt) !== sourceReceiptSha256 ||
+          !isDeepStrictEqual(toolsAfter.llvmLibIdentity, tools.llvmLibIdentity) || sourceIO.fileHash(__filename) !== producerSha256 ||
+          !isDeepStrictEqual(amdhipRecipe(), recipe) || !isDeepStrictEqual(windowsAmdhipCatalog(), selected)) {
+        throw new Error("Windows AMD source, tool, catalog or producer recipe changed during generation");
+      }
+    };
+  return generateWindowsAmdhipPayload({selected, sourceRoot, destination, stagingParent: paths.runnerTemp,
+    stagingPrefix: ".native-windows-amdhip-" + paths.suffix, identity: {runAttempt: paths.suffix}, toolchain,
+    toolPath: tools.llvmLib, fetchReceiptSha256: sourceReceiptSha256, rootsReceiptSha256: rootsBefore,
+    recipe, recipeSha256, producerSha256, verifyInputs});
+}
+
+/** Admit the caller's Linux LLVM SDK and exact llvm-lib alias without relying on CI transport.
+ * @param {{llvmOutput:string,llvmLib:string}} input @param {typeof verifyLinuxLlvmAdmission} verify */
+function verifyLocalAmdhipTool(input, verify = verifyLinuxLlvmAdmission) {
+  const admitted = verify(input.llvmOutput), prefix = admitted.plan?.prefix, resultFile = path.join(input.llvmOutput, "result.json"),
+    alias = path.join(prefix || "", catalog.toolchain.llvmLibAlias), target = path.join(prefix || "", "bin", catalog.toolchain.llvmLibTarget),
+    snapshot = admitted.sdk?.snapshot?.files, aliasRow = snapshot?.[catalog.toolchain.llvmLibAlias], targetRow = snapshot?.["bin/" + catalog.toolchain.llvmLibTarget];
+  if (!absolute(prefix) || admitted.plan.output !== input.llvmOutput || admitted.sdk?.path !== prefix || input.llvmLib !== alias ||
+      !snapshot || aliasRow?.type !== "symlink" || aliasRow.target !== catalog.toolchain.llvmLibTarget || targetRow?.type !== "file") {
+    throw new Error("Local AMD import-library tool differs from the fully admitted Linux LLVM SDK");
+  }
+  const aliasStat = fs.lstatSync(alias), targetStat = regularSnapshot(target, "admitted llvm-ar", 256 << 20), targetHash = sourceIO.fileHash(target);
+  if (!aliasStat.isSymbolicLink() || fs.readlinkSync(alias) !== catalog.toolchain.llvmLibTarget || fs.realpathSync(alias) !== target ||
+      (targetStat.mode & 0o111n) === 0n || Number(targetStat.size) !== targetRow.bytes || targetHash !== targetRow.sha256) {
+    throw new Error("Local AMD llvm-lib alias or admitted llvm-ar bytes changed");
+  }
+  fs.accessSync(target, fs.constants.X_OK);
+  regularSnapshot(resultFile, "Linux LLVM SDK receipt", 8 << 20);
+  return {path: alias, output: input.llvmOutput, resultSha256: sourceIO.fileHash(resultFile),
+    identity: {relative: catalog.toolchain.llvmLibAlias, aliasTarget: catalog.toolchain.llvmLibTarget,
+      bytes: Number(targetStat.size), sha256: targetHash}};
+}
+
+/** Apply the existing offline ROCm source verifier to the stable local workspace cohort.
+ * @param {ReturnType<typeof localRocm.localRocmSdkPaths>} paths @param {NodeJS.ProcessEnv} env @param {string} git */
+function verifyLocalAmdhipSources(paths, env, git) {
+  for (const directory of [paths.source, path.join(paths.source, "roots/clr"), paths.pythonSourceRoot]) {
+    const stat = fs.lstatSync(directory, {throwIfNoEntry: false});
+    if (!stat?.isDirectory() || stat.isSymbolicLink() || fs.realpathSync(directory) !== directory) {
+      throw new Error("Local AMD pinned source directory is missing or non-canonical: " + directory);
+    }
+  }
+  for (const file of [paths.fetchReceipt, paths.rootsFile, paths.pythonArchive, paths.pythonSourceReceipt]) {
+    regularSnapshot(file, "local ROCm source receipt/archive", 64 << 20);
+  }
+  return nativeCi.verifyRocmSources({env}, paths, git);
+}
+
+/** Build this tiny source-generated input from already-admitted local source and Linux LLVM SDKs.
+ * No CI identity, fetch, build or output repair is performed.
+ * @param {{sourceRoot:string,llvmOutput:string,llvmLib:string,output:string,localBuildId:string}} input
+ * @param {NodeJS.ProcessEnv} [environment] @param {{verifySources?:typeof verifyLocalAmdhipSources,
+ * verifyLlvm?:typeof verifyLinuxLlvmAdmission}} [dependencies] */
+async function prepareLocalAmdhipWindows(input, environment = process.env, dependencies = {}) {
+  if (process.platform !== "linux" || process.arch !== "x64") {throw new Error("Local Windows AMD import-library generation requires Linux x64 (WSL2)");}
+  if (!environment || environment["MOM_AOT_BUILD_ONLY"] !== "1") {throw new Error("Local Windows AMD generation requires MOM_AOT_BUILD_ONLY=1");}
+  if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).sort().join(",") !== "llvmLib,llvmOutput,localBuildId,output,sourceRoot") {
+    throw new Error("Local Windows AMD input has unknown or missing fields: " + (input && typeof input === "object" ? Object.keys(input).sort().join(",") : "not an object"));
+  }
+  if (![input.sourceRoot, input.llvmOutput, input.llvmLib, input.output].every(absolute)) {
+    throw new Error("Local Windows AMD input paths must be canonical and absolute");
+  }
+  if (typeof input.localBuildId !== "string" || !localBuildIdPattern.test(input.localBuildId)) {
+    throw new Error("Local Windows AMD input needs UUID localBuildId");
+  }
+  const selected = windowsAmdhipCatalog(), workspace = path.dirname(input.sourceRoot), sourcePaths = localRocm.localRocmSdkPaths(workspace),
+    recipe = amdhipRecipe(), recipeSha256 = createHash("sha256").update(JSON.stringify(recipe)).digest("hex"), producerSha256 = sourceIO.fileHash(__filename),
+    git = "/usr/bin/git", outputStat = fs.lstatSync(input.output, {throwIfNoEntry: false});
+  /** @param {string} root */
+  const disjoint = root => {
+    const rel = path.relative(root, input.output), reverse = path.relative(input.output, root);
+    return rel !== "" && reverse !== "" && (path.isAbsolute(rel) || rel === ".." || rel.startsWith(".." + path.sep)) &&
+      (path.isAbsolute(reverse) || reverse === ".." || reverse.startsWith(".." + path.sep));
+  };
+  if (sourcePaths.source !== input.sourceRoot || outputStat || input.output.startsWith(repo + path.sep) ||
+      path.dirname(input.output) !== fs.realpathSync(path.dirname(input.output)) || ![input.sourceRoot, input.llvmOutput].every(disjoint)) {
+    throw new Error("Local AMD output must be new, canonical, outside the checkout, and disjoint from source and LLVM inputs");
+  }
+  for (const directory of [workspace, path.join(workspace, "sources"), input.sourceRoot, path.join(input.sourceRoot, "roots/clr"), input.llvmOutput]) {
+    const stat = fs.lstatSync(directory, {throwIfNoEntry: false});
+    if (!stat?.isDirectory() || stat.isSymbolicLink() || fs.realpathSync(directory) !== directory) {
+      throw new Error("Local AMD source or LLVM input directory is missing or non-canonical: " + directory);
+    }
+  }
+  const marker = path.join(workspace, ".mom-native-sdk-workspace.json"), markerStat = fs.lstatSync(marker, {throwIfNoEntry: false});
+  if (!markerStat?.isFile() || markerStat.isSymbolicLink() || fs.realpathSync(marker) !== marker) {throw new Error("Local AMD source workspace is not marked for this checkout");}
+  localSdk.admitWorkspace(workspace, repo);
+  const verifySources = dependencies.verifySources || verifyLocalAmdhipSources, verifyLlvm = dependencies.verifyLlvm || verifyLinuxLlvmAdmission,
+    env = {...environment, MOM_AOT_BUILD_ONLY: "1"};
+  const gitStat = regularSnapshot(git, "Git", 64 << 20);
+  if ((gitStat.mode & 0o111n) === 0n) {throw new Error("Pinned source Git verifier is not executable");}
+  verifySources(sourcePaths, env, git);
+  const rootsBefore = sourceIO.fileHash(sourcePaths.rootsFile), sourceReceiptSha256 = sourceIO.fileHash(sourcePaths.fetchReceipt),
+    tool = verifyLocalAmdhipTool(input, verifyLlvm), toolchain = {role: selected.toolchain.llvmRole,
+      sdkOutput: tool.output, sdkResultSha256: tool.resultSha256, llvmLib: tool.identity},
+    verifyInputs = () => {
+      verifySources(sourcePaths, env, git);
+      const currentTool = verifyLocalAmdhipTool(input, verifyLlvm);
+      if (sourceIO.fileHash(sourcePaths.rootsFile) !== rootsBefore || sourceIO.fileHash(sourcePaths.fetchReceipt) !== sourceReceiptSha256 ||
+          !isDeepStrictEqual(currentTool, tool) || sourceIO.fileHash(__filename) !== producerSha256 ||
+          !isDeepStrictEqual(amdhipRecipe(), recipe) || !isDeepStrictEqual(windowsAmdhipCatalog(), selected)) {
+        throw new Error("Local AMD source, tool, catalog or producer recipe changed during generation");
+      }
+    };
+  return generateWindowsAmdhipPayload({selected, sourceRoot: input.sourceRoot, destination: input.output,
+    stagingParent: path.dirname(input.output), stagingPrefix: ".native-windows-amdhip-local-" + input.localBuildId,
+    identity: {localBuildId: input.localBuildId}, toolchain, toolPath: tool.path, fetchReceiptSha256: sourceReceiptSha256,
+    rootsReceiptSha256: rootsBefore, recipe, recipeSha256, producerSha256, verifyInputs});
 }
 
 /** POSIX write bits are an admission invariant; Windows has no equivalent read-only directory semantics. @param {import("node:fs").BigIntStats} stat */
@@ -288,20 +406,30 @@ function admitWindowsAmdhip(directory) {
     throw new Error("Windows AMD input tree has an invalid or writable top-level layout");
   }
   const receiptFile = path.join(directory, "sdk.json"), receiptStat = regularSnapshot(receiptFile, "receipt", 1 << 20),
-    receipt = /** @type {AmdhipReceipt} */ (readBuildJson(receiptFile)), recipe = amdhipRecipe(), source = receipt.source,
-    toolchain = receipt.toolchain, def = receipt.definition, library = receipt.library, licenseProof = receipt.files?.[licenseName],
-    libraryProof = receipt.files?.[selected.library.fileName];
+    receipt = /** @type {AmdhipReceipt} */ (readBuildJson(receiptFile)), recipe = amdhipRecipe(), source = receipt?.source,
+    toolchain = receipt?.toolchain, def = receipt?.definition, library = receipt?.library, licenseProof = receipt?.files?.[licenseName],
+    libraryProof = receipt?.files?.[selected.library.fileName];
   if (!libraryProof || !licenseProof) {throw new Error("Windows AMD receipt is stale, malformed or incomplete");}
-  if (writableMode(receiptStat) || !exactKeys(receipt, ["version", "target", "status", "networked", "buildOnly", "compiled", "executed", "vendorPrebuilt",
-    "sourceGenerated", "publicationQualified", "redistributionQualified", "producerSha256", "runAttempt", "recipe", "source", "toolchain", "definition",
-    "library", "output", "files", "note"]) || receipt.version !== 2 || receipt.target !== "windows-amdhip64" || receipt.status !== "PASS" ||
+  const localReceipt = Boolean(receipt && typeof receipt === "object" && Object.hasOwn(receipt, "localBuildId")),
+    receiptKeys = ["version", "target", "status", "networked", "buildOnly", "compiled", "executed", "vendorPrebuilt",
+      "sourceGenerated", "publicationQualified", "redistributionQualified", "producerSha256", "recipe", "source", "toolchain", "definition",
+      "library", "output", "files", "note", localReceipt ? "localBuildId" : "runAttempt"],
+    identityValid = localReceipt ? typeof receipt.localBuildId === "string" && localBuildIdPattern.test(receipt.localBuildId) :
+      /^[0-9]{1,20}-[1-9][0-9]{0,5}$/.test(receipt.runAttempt || ""),
+    sourceRootValid = localReceipt ? absolute(source?.sourceRoot) && path.basename(source.sourceRoot) === "rocm-sources" :
+      source?.sourceRoot === "/tmp/mom-native-rocm-prerequisites-" + receipt.runAttempt,
+    toolchainIdentityValid = localReceipt ? exactKeys(toolchain, ["role", "sdkOutput", "sdkResultSha256", "llvmLib", "command"]) &&
+      absolute(toolchain.sdkOutput) && /^[a-f0-9]{64}$/.test(toolchain.sdkResultSha256 || "") :
+      exactKeys(toolchain, ["role", "handoffRoot", "handoffSha256", "llvmLib", "command"]) && provenancePath(toolchain.handoffRoot) &&
+      /^[a-f0-9]{64}$/.test(toolchain.handoffSha256 || "");
+  if (writableMode(receiptStat) || !exactKeys(receipt, receiptKeys) || receipt.version !== 2 || receipt.target !== "windows-amdhip64" || receipt.status !== "PASS" ||
       receipt.networked !== false || receipt.buildOnly !== true || receipt.compiled !== false || receipt.executed !== false || receipt.vendorPrebuilt !== false ||
       receipt.sourceGenerated !== true || receipt.publicationQualified !== false || receipt.redistributionQualified !== false ||
-      !/^[0-9]{1,20}-[1-9][0-9]{0,5}$/.test(receipt.runAttempt || "") || !/^[a-f0-9]{64}$/.test(receipt.producerSha256 || "") ||
+      !identityValid || !/^[a-f0-9]{64}$/.test(receipt.producerSha256 || "") ||
       !exactKeys(receipt.recipe, ["sha256", "files"]) || receipt.recipe.sha256 !== createHash("sha256").update(JSON.stringify(recipe)).digest("hex") ||
       !isDeepStrictEqual(receipt.recipe.files, recipe.graph) || !exactKeys(source, ["origin", "revision", "sourceRoot", "fetchReceiptSha256", "rootsReceiptSha256", "git", "definition", "license"]) ||
       source.origin !== selected.source.origin || source.revision !== selected.source.revision ||
-      source.sourceRoot !== "/tmp/mom-native-rocm-prerequisites-" + receipt.runAttempt ||
+      !sourceRootValid ||
       !/^[a-f0-9]{64}$/.test(source.fetchReceiptSha256 || "") || !/^[a-f0-9]{64}$/.test(source.rootsReceiptSha256 || "") ||
       !exactKeys(source.git, ["path", "bytes", "sha256"]) || source.git.path !== "/usr/bin/git" || !Number.isSafeInteger(source.git.bytes) ||
       source.git.bytes < 1 || !/^[a-f0-9]{64}$/.test(source.git.sha256 || "") ||
@@ -312,8 +440,7 @@ function admitWindowsAmdhip(directory) {
       source.license.path !== selected.source.license.path || source.license.blob !== selected.source.license.blob ||
       source.license.bytes !== selected.source.license.bytes || source.license.sha256 !== selected.source.license.sha256 || source.license.actualSha256 !== selected.source.license.sha256 ||
       typeof source.license.note !== "string" || source.license.note.length > 256 ||
-      !exactKeys(toolchain, ["role", "handoffRoot", "handoffSha256", "llvmLib", "command"]) ||
-      toolchain.role !== selected.toolchain.llvmRole || !provenancePath(toolchain.handoffRoot) || !/^[a-f0-9]{64}$/.test(toolchain.handoffSha256 || "") ||
+      !toolchainIdentityValid || toolchain.role !== selected.toolchain.llvmRole ||
       !exactKeys(toolchain.llvmLib, ["relative", "aliasTarget", "bytes", "sha256"]) || toolchain.llvmLib.relative !== selected.toolchain.llvmLibAlias ||
       toolchain.llvmLib.aliasTarget !== selected.toolchain.llvmLibTarget || !Number.isSafeInteger(toolchain.llvmLib.bytes) || toolchain.llvmLib.bytes < 1 ||
       !/^[a-f0-9]{64}$/.test(toolchain.llvmLib.sha256 || "") ||
@@ -374,4 +501,4 @@ if (require.main === module) {
 }
 
 module.exports = {windowsAmdhipCatalog, prepareWindowsAmdhip, admitWindowsAmdhip, windowsAmdhipInputs, amdhipRecipe,
-  deriveDefinition, verifyLinuxToolHandoff};
+  deriveDefinition, verifyLinuxToolHandoff, prepareLocalAmdhipWindows};

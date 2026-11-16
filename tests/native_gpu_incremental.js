@@ -89,18 +89,26 @@ test.describe("Native GPU compile planning", () => {
 
   test("DPC++ cache plan preserves mixed compiler selection and only declares consumed generated inputs", () => {
     const output = path.join(os.tmpdir(), "dpcpp-candidate"), cuda = "/sdk/cuda";
-    const files = ["sycl/c29/c29.cpp", "sycl/kawpow/kawpow.cpp", "sycl/pearlhash/pearlhash.cpp", "sycl/hoohash/host_math.c"];
+    const files = ["sycl/c29/c29.cpp", "sycl/kawpow/kawpow.cpp", "sycl/pearlhash/pearlhash.cpp", "sycl/nexapow/validation.cpp",
+      "sycl/hoohash/host_math.c"];
     const commands = dpcppCompileCommands({sources: files, repo, output, sdk: "/sdk", compiler: "/sdk/bin/clang++",
       flags: ["-fsycl", "-DMOM_EMBEDDED_SYCL_JIT"], wrapper: "", profile: "oneapi", cuda, oneapiCompiler: "/oneapi/bin/icpx"});
     assert.equal(commands.length, files.length);
     assert.deepEqual(commands.map(command => path.relative(repo, command.source).split(path.sep).join("/")), files);
     assert.equal(commands[0]?.command, "/oneapi/bin/icpx");
-    assert.equal(commands[1]?.command, "/sdk/bin/clang++");
+    assert.equal(commands[1]?.command, "/oneapi/bin/icpx");
+    assert.equal(commands[2]?.command, "/oneapi/bin/icpx");
+    assert.equal(commands[3]?.command, "/oneapi/bin/icpx", "NexaPoW SHA-49 validation must use the qualified Intel frontend");
     assert.deepEqual(commands[1]?.generatedInputs, [path.join(output, "kawpow-jit-resources.inc")]);
     assert.deepEqual(commands[2]?.generatedInputs, [path.join(output, "nvrtc-headers.inc")]);
-    assert.equal(commands[3]?.command, path.join("/sdk", "bin/clang"));
-    assert.deepEqual(commands[3]?.args.slice(0, 5), ["-x", "c", "-O3", "-ffp-contract=off", "-fPIC"]);
-    assert.deepEqual(commands.map(command => path.basename(command.object)), ["0.o", "1.o", "2.o", "3.o"]);
+    assert.equal(commands[4]?.command, path.join("/sdk", "bin/clang"));
+    assert.deepEqual(commands[4]?.args.slice(0, 5), ["-x", "c", "-O3", "-ffp-contract=off", "-fPIC"]);
+    assert.deepEqual(commands.map(command => path.basename(command.object)), ["0.o", "1.o", "2.o", "3.o", "4.o"]);
+    for (const profile of ["dpcpp", "dpcpp-opencl"]) {
+      const command = dpcppCompileCommands({sources: ["sycl/nexapow/validation.cpp"], repo, output, sdk: "/sdk", compiler: "/sdk/bin/clang++",
+        flags: ["-fsycl"], wrapper: "", profile})[0];
+      assert.equal(command?.command, "/sdk/bin/clang++", `${profile} must retain its selected DPC++ frontend`);
+    }
   });
 
   test("oneAPI mixed frontend keys its bounded driver helper and configuration closure", t => {

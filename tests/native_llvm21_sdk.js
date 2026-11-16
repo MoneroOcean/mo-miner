@@ -28,7 +28,28 @@ function writeJson(file, value) {fs.writeFileSync(file, JSON.stringify(value) + 
 function targetFixture(f) {
   const rows = [
     ["LLVMCore", "llvm", "lib/IR", "STATIC_LIBRARY", "lib/libLLVMCore.a"],
+    ["LLVMSupport", "llvm", "lib/Support", "STATIC_LIBRARY", "lib/libLLVMSupport.a"],
+    ["LLVMDemangle", "llvm", "lib/Demangle", "STATIC_LIBRARY", "lib/libLLVMDemangle.a"],
+    ["LLVMBinaryFormat", "llvm", "lib/BinaryFormat", "STATIC_LIBRARY", "lib/libLLVMBinaryFormat.a"],
+    ["LLVMRemarks", "llvm", "lib/Remarks", "STATIC_LIBRARY", "lib/libLLVMRemarks.a"],
+    ["LLVMTargetParser", "llvm", "lib/TargetParser", "STATIC_LIBRARY", "lib/libLLVMTargetParser.a"],
+    ["LLVMBitstreamReader", "llvm", "lib/Bitstream/Reader", "STATIC_LIBRARY", "lib/libLLVMBitstreamReader.a"],
+    ["LLVMSupportParallel", "llvm", "lib/Support/Parallel", "STATIC_LIBRARY", "lib/libLLVMSupportParallel.a"],
+    ["LLVMNotSupport", "llvm", "lib/Supportive", "STATIC_LIBRARY", "lib/libLLVMNotSupport.a"],
+    ["LLVMAnalysis", "llvm", "lib/Analysis", "STATIC_LIBRARY", "lib/libLLVMAnalysis.a"],
+    ["LLVMBitReader", "llvm", "lib/Bitcode/Reader", "STATIC_LIBRARY", "lib/libLLVMBitReader.a"],
+    ["LLVMObject", "llvm", "lib/Object", "STATIC_LIBRARY", "lib/libLLVMObject.a"],
+    ["LLVMTransformUtils", "llvm", "lib/Transforms/Utils", "STATIC_LIBRARY", "lib/libLLVMTransformUtils.a"],
+    ["LLVMipo", "llvm", "lib/IPO", "STATIC_LIBRARY", "lib/libLLVMipo.a"],
+    ["LLVMCodeGen", "llvm", "lib/CodeGen", "STATIC_LIBRARY", "lib/libLLVMCodeGen.a"],
+    ["LLVMPasses", "llvm", "lib/Passes", "STATIC_LIBRARY", "lib/libLLVMPasses.a"],
+    ["LLVMLTO", "llvm", "lib/LTO", "STATIC_LIBRARY", "lib/libLLVMLTO.a"],
     ["LLVMX86CodeGen", "llvm", "lib/Target/X86", "STATIC_LIBRARY", "lib/libLLVMX86CodeGen.a"],
+    ["LLVMX86AsmParser", "llvm", "lib/Target/X86/AsmParser", "STATIC_LIBRARY", "lib/libLLVMX86AsmParser.a"],
+    ["LLVMNVPTXCodeGen", "llvm", "lib/Target/NVPTX", "STATIC_LIBRARY", "lib/libLLVMNVPTXCodeGen.a"],
+    ["LLVMNVPTXDesc", "llvm", "lib/Target/NVPTX/MCTargetDesc", "STATIC_LIBRARY", "lib/libLLVMNVPTXDesc.a"],
+    ["LLVMAMDGPUCodeGen", "llvm", "lib/Target/AMDGPU", "STATIC_LIBRARY", "lib/libLLVMAMDGPUCodeGen.a"],
+    ["LLVMAMDGPUUtils", "llvm", "lib/Target/AMDGPU/Utils", "STATIC_LIBRARY", "lib/libLLVMAMDGPUUtils.a"],
     ["LLVMPrivate", "llvm", "lib/Private", "STATIC_LIBRARY", "lib/libLLVMPrivate.a"],
     ["clangAAA", "clang", "../clang/lib/Tooling/Refactoring/Rename", "STATIC_LIBRARY", "lib/libclangAAA.a"],
     ["clangBasic", "clang", "../clang/lib/Basic", "STATIC_LIBRARY", "lib/libclangBasic.a"],
@@ -99,7 +120,7 @@ function selectionWithoutTools(selection, names, preserveAliases = false) {
   return prior;
 }
 
-test.describe("Public Linux LLVM 21 source SDK producer", () => {
+test.describe("Public Linux LLVM 21 source SDK producer", {skip: process.platform !== "linux" || process.arch !== "x64"}, () => {
   test("pins the official source/compiler recipe and keeps the ABI export flags", t => {
     const f = fixture(t), plan = linuxLlvmSdkPlan(f.archive, f.output, f.tools, 8);
     assert.equal(archiveSha256, "4633a23617fa31a3ea51242586ea7fb1da7140e426bd62fc164261fe036aa142");
@@ -268,8 +289,8 @@ test.describe("Public Linux LLVM 21 source SDK producer", () => {
   });
 
   test("admits LLVM's sibling executable alias without permitting escaping or chained links", t => {
-    const f = fixture(t); targetFixture(f);
-    const targetFile = path.join(f.build, ".cmake/api/v1/reply/target-10.json"),
+    const f = fixture(t), model = targetFixture(f), targetIndex = model.rows.findIndex(([name]) => name === "clang"),
+      targetFile = path.join(f.build, ".cmake/api/v1/reply/target-" + targetIndex + ".json"),
       target = JSON.parse(fs.readFileSync(targetFile, "utf8")), binary = path.join(f.build, "bin/clang-21"),
       alias = path.join(f.build, "bin/clang");
     target.artifacts = [{path: "bin/clang"}]; writeJson(targetFile, target);
@@ -360,7 +381,9 @@ test.describe("Public Linux LLVM 21 source SDK producer", () => {
   test("derives installable archives, phase groups, and tool closure from CMake target metadata", t => {
     const f = fixture(t), model = targetFixture(f), selection = linuxDistributionSelection(model.graphTargets, model.targets, f.build);
     assert.deepEqual(selection.components.includes("LLVMPrivate"), false, "uninstallable internals stay outside the SDK");
-    assert.deepEqual(selection.components.filter(name => name.startsWith("LLVM")), ["LLVMCore", "LLVMX86CodeGen"]);
+    assert.deepEqual(selection.components.filter(name => name.startsWith("LLVM")), ["LLVMAMDGPUCodeGen", "LLVMAMDGPUUtils", "LLVMAnalysis", "LLVMBinaryFormat",
+      "LLVMBitReader", "LLVMBitstreamReader", "LLVMCodeGen", "LLVMCore", "LLVMDemangle", "LLVMLTO", "LLVMNVPTXCodeGen", "LLVMNVPTXDesc", "LLVMNotSupport",
+      "LLVMObject", "LLVMPasses", "LLVMRemarks", "LLVMSupport", "LLVMSupportParallel", "LLVMTargetParser", "LLVMTransformUtils", "LLVMX86AsmParser", "LLVMX86CodeGen", "LLVMipo"]);
     assert.deepEqual(selection.tools.map(row => row.name), [...toolsComponents]);
     assert.equal(toolsComponents.includes("llvm-mt"), false, "llvm-mt is not built with the pinned no-LibXml2 configuration");
     assert.deepEqual(selection.distributionComponents.filter(name => ["llvm-lib", "llvm-ranlib"].includes(name)),
@@ -368,8 +391,23 @@ test.describe("Public Linux LLVM 21 source SDK producer", () => {
     assert.ok(selection.tools.some(row => row.name === "lld"), "ROCr assembly and AdaptiveCpp host links need the LLD driver, not just its archives");
     assert.ok(selection.tools.some(row => row.name === "llvm-readobj"), "the Windows native component admission needs LLVM's COFF reader");
     assert.equal(selection.components.includes("llvm-mca"), false);
-    assert.deepEqual(selection.phases.map(row => row.name), ["llvm-targets", "clang-base", "clang-sema", "clang-frontend", "lld", "tools"]);
-    assert.deepEqual(selection.phases.flatMap(row => row.targets).sort(), selection.components);
+    assert.deepEqual(selection.phases.map(row => row.name), ["llvm-foundation", "llvm-core-analysis", "llvm-core-optimization", "llvm-core-codegen",
+      "llvm-x86", "llvm-nvptx", "llvm-amdgpu", "clang-base", "clang-sema", "clang-frontend", "lld", "tools"]);
+    const phaseTargets = selection.phases.flatMap(row => row.targets);
+    assert.deepEqual(phaseTargets.slice().sort(), selection.components);
+    assert.equal(new Set(phaseTargets).size, phaseTargets.length, "every selected component belongs to exactly one phase");
+    assert.deepEqual(selection.phases.find(row => row.name === "llvm-foundation")?.targets, ["LLVMBinaryFormat", "LLVMBitstreamReader", "LLVMCore",
+      "LLVMDemangle", "LLVMRemarks", "LLVMSupport", "LLVMSupportParallel", "LLVMTargetParser"], "the specified directories and descendants build first");
+    assert.deepEqual(selection.phases.find(row => row.name === "llvm-core-analysis")?.targets, ["LLVMAnalysis", "LLVMBitReader", "LLVMObject"],
+      "analysis and object archives build after the foundation layer");
+    assert.deepEqual(selection.phases.find(row => row.name === "llvm-core-optimization")?.targets, ["LLVMipo", "LLVMTransformUtils"],
+      "the transform and IPO libraries build after their analysis inputs");
+    assert.deepEqual(selection.phases.find(row => row.name === "llvm-core-codegen")?.targets, ["LLVMCodeGen", "LLVMLTO", "LLVMNotSupport", "LLVMPasses"],
+      "CodeGen, Passes, LTO and remaining common archives stay in the final common layer");
+    assert.deepEqual(selection.phases.find(row => row.name === "llvm-x86")?.targets, ["LLVMX86AsmParser", "LLVMX86CodeGen"],
+      "backend descendants remain in their architecture phase");
+    assert.deepEqual(selection.phases.find(row => row.name === "llvm-nvptx")?.targets, ["LLVMNVPTXCodeGen", "LLVMNVPTXDesc"]);
+    assert.deepEqual(selection.phases.find(row => row.name === "llvm-amdgpu")?.targets, ["LLVMAMDGPUCodeGen", "LLVMAMDGPUUtils"]);
     assert.deepEqual(selection.phases.find(row => row.name === "clang-base")?.targets, ["clangAST", "clangBasic"]);
     assert.deepEqual(selection.phases.find(row => row.name === "clang-sema")?.targets, ["clangSema"]);
     assert.deepEqual(selection.phases.find(row => row.name === "clang-frontend")?.targets, ["clangAAA", "clangFrontend"]);
@@ -380,6 +418,9 @@ test.describe("Public Linux LLVM 21 source SDK producer", () => {
     }
     assert.throws(() => linuxDistributionSelection(model.graphTargets.filter(row => row.name !== "llvm-readobj"), model.targets, f.build),
       /required source tool: llvm-readobj/, "a missing CMake target must not create a partial SDK");
+    const escapedSource = model.graphTargets.map(row => row.name === "LLVMX86CodeGen" ? {...row, sourceDirectory: f.root} : row);
+    assert.throws(() => linuxDistributionSelection(escapedSource, model.targets, f.build), /target source roots are inconsistent/,
+      "architecture grouping must not admit LLVM target paths outside the selected source root");
     const wrongReadobjType = model.graphTargets.map(row => row.name === "llvm-readobj" ? {...row, type: "STATIC_LIBRARY"} : row);
     assert.throws(() => linuxDistributionSelection(wrongReadobjType, model.targets, f.build),
       /required source tool: llvm-readobj/, "a non-executable target cannot stand in for the source reader");

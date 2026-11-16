@@ -7,6 +7,7 @@ const {fileHash, readBuildJson} = require("./build-source-inputs");
 const {validName} = require("./native-jit-headers");
 const maxFiles = 16384;
 const linuxTarget = "x86_64-unknown-linux-gnu", windowsTarget = "x86_64-w64-windows-gnu";
+/** @typedef {"x86_64-unknown-linux-gnu" | "x86_64-w64-windows-gnu"} GnuTarget */
 /** @type {Readonly<Record<string,Readonly<{resolvedSourcePath:string,ownershipPath:string}>>>} */
 const copyrightAliases = Object.freeze({
   "libstdc++-13-dev": Object.freeze({resolvedSourcePath: "/usr/share/doc/gcc-13-base/copyright", ownershipPath: "/usr/share/doc/libstdc++-13-dev"}),
@@ -391,18 +392,58 @@ function auditGnuHeaders(state, target = state.target || linuxTarget) {
   return {headers, notices};
 }
 
+/** Run the maintained inventory, copyright and read-only admission recipe as one producer.
+ * @param {{root:string,target?:GnuTarget}} state
+ * @param {GnuTarget} target
+ * @param {{includeRoot?:string,sysroot?:string,packageRecords?:Package[],
+ * captureCopyright?:(state:{root:string},name:string,version:string)=>ReturnType<typeof capturePackageCopyright>}} [options]
+ * @returns {ReturnType<typeof auditGnuHeaders>} */
+function buildGnuHeaderHandoff(state, target, options = {}) {
+  profileFor(target);
+  let packageRecords = options.packageRecords;
+  if (!packageRecords) {
+    try {
+      packageRecords = installedPackages(target);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.startsWith("GNU package is not installed:")) {
+        const names = profileFor(target).packages.map(row => row.name).join(" ");
+        throw new Error(`${message}; install prerequisites explicitly with: sudo apt-get install -y --no-install-recommends ${names}`, {cause: error});
+      }
+      throw error;
+    }
+  }
+  const prepareOptions = target === linuxTarget ? {includeRoot: options.includeRoot || "/usr/include"} : {sysroot: options.sysroot || "/"};
+  prepareGnuHeaders(target, state.root, packageRecords, prepareOptions);
+  const headers = verifyGnuHeaders(state.root, target), captureCopyright = options.captureCopyright || capturePackageCopyright,
+    notices = headers.packages.map(item => captureCopyright(state, item.name, item.version));
+  fs.writeFileSync(path.join(state.root, "copyrights.json"), JSON.stringify(notices, null, 2) + "\n", {flag: "wx", mode: 0o600});
+  return auditGnuHeaders(state, target);
+}
+
 module.exports = {prepareLinuxGnuHeaders, verifyLinuxGnuHeaders, prepareWindowsGnuHeaders, verifyWindowsGnuHeaders,
-  prepareGnuHeaders, verifyGnuHeaders, virtualHeader, installedPackages, packageCopyrightAlias, capturePackageCopyright, auditGnuHeaders};
+  prepareGnuHeaders, verifyGnuHeaders, virtualHeader, installedPackages, packageCopyrightAlias, capturePackageCopyright, auditGnuHeaders,
+  buildGnuHeaderHandoff};
 if (require.main === module) {
   try {
     const [mode, output, target, extra] = process.argv.slice(2);
-    const selectedTarget = target || linuxTarget;
+    const selectedTarget = /** @type {GnuTarget} */ (target || linuxTarget);
     if (process.platform !== "linux" || process.arch !== "x64" || process.env["MOM_AOT_BUILD_ONLY"] !== "1" || !output ||
-        extra || !["prepare", "verify"].includes(mode || "") || (target && !Object.hasOwn(profiles, target))) {
-      throw new Error("Usage (Linux x64, MOM_AOT_BUILD_ONLY=1): prepare-native-gnu-headers.js prepare|verify /absolute/output [x86_64-unknown-linux-gnu|x86_64-w64-windows-gnu]");
+        extra || !["prepare", "verify", "build", "audit"].includes(mode || "") || (target && !Object.hasOwn(profiles, target))) {
+      throw new Error("Usage (Linux x64, MOM_AOT_BUILD_ONLY=1): prepare-native-gnu-headers.js prepare|verify|build|audit /absolute/output [x86_64-unknown-linux-gnu|x86_64-w64-windows-gnu]");
     }
-    const result = mode === "prepare" ? prepareGnuHeaders(selectedTarget, output, installedPackages(selectedTarget),
-      selectedTarget === linuxTarget ? {includeRoot: "/usr/include"} : {sysroot: "/"}) : verifyGnuHeaders(output, selectedTarget);
-    console.log(JSON.stringify({target: selectedTarget, files: result.files.length, bytes: result.bytes, buildOnly: true, publicationQualified: false}));
+    const state = {root: output, target: selectedTarget};
+    /** @type {GnuHeadersResult} */ let headers;
+    if (mode === "build") {
+      headers = buildGnuHeaderHandoff(state, selectedTarget).headers;
+    } else if (mode === "audit") {
+      headers = auditGnuHeaders(state, selectedTarget).headers;
+    } else if (mode === "prepare") {
+      headers = prepareGnuHeaders(selectedTarget, output, installedPackages(selectedTarget),
+        selectedTarget === linuxTarget ? {includeRoot: "/usr/include"} : {sysroot: "/"});
+    } else {
+      headers = verifyGnuHeaders(output, selectedTarget);
+    }
+    console.log(JSON.stringify({target: selectedTarget, files: headers.files.length, bytes: headers.bytes, buildOnly: true, publicationQualified: false}));
   } catch (error) {console.error(error); process.exitCode = 1;}
 }

@@ -16,6 +16,8 @@ const portableCpuVectors = hashTests.filter(definition => definition.syclCpu);
 const portableCpuAlgos = new Set(portableCpuVectors.map(definition => definition.job.algo));
 const portableCpuTestCount = portableCpuVectors.length + portableCpuAlgos.size * 2 + 1;
 const successfulCpuSummary = `ℹ tests ${cpuVectorCount}\nℹ suites 1\nℹ pass ${cpuVectorCount}\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\n`;
+const hostTarget = process.platform === "win32" ? "win32" : "linux";
+const syntheticTargets = /** @type {("linux" | "win32")[]} */ (process.platform === "win32" ? ["win32"] : ["linux", "win32"]);
 
 /** @typedef {{path: string, sha256: string}} FixtureBinding */
 /** @typedef {{path: string, bytes: number, sha256: string}} FixtureArtifact */
@@ -35,7 +37,7 @@ const successfulCpuSummary = `ℹ tests ${cpuVectorCount}\nℹ suites 1\nℹ pas
 
 /** A structural fixture only. No candidate or hash vector is ever executed here.
  * @param {import('node:test').TestContext} t @param {"linux" | "win32"} [target] @param {boolean} [packed] */
-function fixture(t, target = "linux", packed = false) {
+function fixture(t, target = hostTarget, packed = false) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-qualification-")), name = target === "win32" ? "mom.exe" : "mom",
     executable = path.join(root, name), sourceDirectory = root + ".unpacked", source = packed ? path.join(sourceDirectory, name) : executable,
     entrypoint = path.join(root, "entrypoint.json");
@@ -261,13 +263,13 @@ assert.equal(typeof require(${JSON.stringify(path.resolve(__dirname, "../scripts
   });
 
   test("packed candidates require a separate packing receipt", t => {
-    const f = fixture(t, "linux", true); f.record.packingReceipt = undefined; f.write();
+    const f = fixture(t, hostTarget, true); f.record.packingReceipt = undefined; f.write();
     assert.throws(() => checkNativeRelease(f.entrypoint, "cpu", {audit: raw => assert.ok(path.isAbsolute(raw)), spawn: f.spawn}), /packing receipt/i);
     assert.equal(f.calls.length, 0);
   });
 
   test("rehashed packing evidence cannot name different source or artifact bytes", t => {
-    const f = fixture(t, "linux", true); f.packing.source.sha256 = "0".repeat(64);
+    const f = fixture(t, hostTarget, true); f.packing.source.sha256 = "0".repeat(64);
     fs.writeFileSync(f.packingFile, JSON.stringify(f.packing));
     assert.ok(f.record.packingReceipt); f.record.packingReceipt.sha256 = fileHash(f.packingFile); f.write();
     assert.throws(() => checkNativeRelease(f.entrypoint, "cpu", {audit: raw => assert.ok(path.isAbsolute(raw)), spawn: f.spawn}), /packing receipt/i);
@@ -275,7 +277,7 @@ assert.equal(typeof require(${JSON.stringify(path.resolve(__dirname, "../scripts
   });
 
   test("packing stage logs must exist and retain their bound bytes", t => {
-    const f = fixture(t, "linux", true); assert.ok(f.packing.logs["restore"]);
+    const f = fixture(t, hostTarget, true); assert.ok(f.packing.logs["restore"]);
     fs.appendFileSync(f.packing.logs["restore"].path, "changed");
     assert.throws(() => checkNativeRelease(f.entrypoint, "cpu", {audit: raw => assert.ok(path.isAbsolute(raw)), spawn: f.spawn}), /provenance|packing/i);
     assert.equal(f.calls.length, 0);
@@ -321,24 +323,29 @@ assert.equal(typeof require(${JSON.stringify(path.resolve(__dirname, "../scripts
     assert.equal(checkNativeRelease(f.entrypoint, "cpu", {audit: raw => assert.ok(path.isAbsolute(raw)), spawn: f.spawn}).suitePassed, true);
     fs.appendFileSync(file, "changed");
     assert.throws(() => checkNativeRelease(f.entrypoint, "cpu", {audit: raw => assert.ok(path.isAbsolute(raw)), spawn: f.spawn}), /provenance|notice/i);
-    assert.equal(f.calls.length, 1);
+    assert.equal(f.calls.length, hostTarget === "win32" ? 2 : 1);
   });
 
   test("clean-host candidate admission checks notice proof metadata without opening original sources", t => {
-    const f = fixture(t), file = path.join(f.root, "THIRD-PARTY-NOTICES.txt"); fs.writeFileSync(file, "fixture notices\n");
-    const hash = fileHash(file), bytes = fs.statSync(file).size;
-    f.record.notices = {path: file, sha256: hash, bytes};
-    f.record.noticeAssembly = {receiptPath: path.join(f.root, "unavailable", "native-notices.json"), receiptSha256: "a".repeat(64),
-      fingerprint: "b".repeat(64), notice: {path: path.join(f.root, "unavailable", "THIRD-PARTY-NOTICES.txt"), sha256: hash, bytes}};
-    f.write();
-    assert.equal(checkNativeRelease(f.entrypoint, "cpu", {audit: raw => assert.ok(path.isAbsolute(raw)), spawn: f.spawn}).suitePassed, true);
-    assert.equal(f.calls.length, 1);
-    f.record.noticeAssembly.notice.path = path.join(f.root, "other-source", "THIRD-PARTY-NOTICES.txt"); f.write();
-    assert.throws(() => checkNativeRelease(f.entrypoint, "cpu", {audit: raw => assert.ok(path.isAbsolute(raw)), spawn: f.spawn}), /sibling/);
-    f.record.noticeAssembly.notice.path = path.join(f.root, "unavailable", "THIRD-PARTY-NOTICES.txt");
-    f.record.noticeAssembly.notice.sha256 = "0".repeat(64); f.write();
-    assert.throws(() => checkNativeRelease(f.entrypoint, "cpu", {audit: raw => assert.ok(path.isAbsolute(raw)), spawn: f.spawn}), /does not bind the candidate notice bytes/);
-    assert.equal(f.calls.length, 1, "malformed receipt metadata must fail before runtime execution");
+    for (const target of syntheticTargets) {
+      const f = fixture(t, target), file = path.join(f.root, "THIRD-PARTY-NOTICES.txt"); fs.writeFileSync(file, "fixture notices\n");
+      const hash = fileHash(file), bytes = fs.statSync(file).size;
+      f.record.notices = {path: file, sha256: hash, bytes};
+      f.record.noticeAssembly = {receiptPath: path.join(f.root, "unavailable", "native-notices.json"), receiptSha256: "a".repeat(64),
+        fingerprint: "b".repeat(64), notice: {path: path.join(f.root, "unavailable", "THIRD-PARTY-NOTICES.txt"), sha256: hash, bytes}};
+      f.write();
+      const check = () => checkNativeRelease(f.entrypoint, "cpu", {platform: target, arch: "x64",
+        audit: raw => assert.ok(path.isAbsolute(raw)), spawn: f.spawn});
+      assert.equal(check().suitePassed, true);
+      const expectedCalls = target === "win32" ? 2 : 1;
+      assert.equal(f.calls.length, expectedCalls);
+      f.record.noticeAssembly.notice.path = path.join(f.root, "other-source", "THIRD-PARTY-NOTICES.txt"); f.write();
+      assert.throws(check, /sibling/);
+      f.record.noticeAssembly.notice.path = path.join(f.root, "unavailable", "THIRD-PARTY-NOTICES.txt");
+      f.record.noticeAssembly.notice.sha256 = "0".repeat(64); f.write();
+      assert.throws(check, /does not bind the candidate notice bytes/);
+      assert.equal(f.calls.length, expectedCalls, "malformed receipt metadata must fail before runtime execution");
+    }
   });
 });
 
@@ -437,7 +444,7 @@ test.describe("Native CPU release qualification entrypoint", () => {
         const moved = file + ".old", before = fs.statSync(file); fs.renameSync(file, moved); fs.copyFileSync(moved, file);
         fs.chmodSync(file, before.mode & 0o777); fs.utimesSync(file, before.atime, before.mtime);
       }],
-    ]);
+    ]).filter(([name]) => process.platform !== "win32" || name !== "mode");
     for (const [name, mutate] of cases) {
       const f = fixture(t, "win32"); setStableMtime(f.executable); let formalCalls = 0;
       const spawn = /** @type {typeof f.spawn} */ (/** @type {unknown} */ ((/** @type {string} */ command, /** @type {string[]} */ args,
@@ -484,7 +491,7 @@ test.describe("Native CPU release qualification entrypoint", () => {
     assert.equal(formalCalls, 1); assert.equal(f.calls.length, 1);
   });
 
-  test("uses maintained CPU vectors, explicit candidate hook and guarded environment", t => {
+  test("uses maintained CPU vectors, explicit candidate hook and guarded environment", {skip: process.platform === "win32" && "This Linux packed-candidate check requires POSIX executable metadata"}, t => {
     const f = fixture(t, "linux", true), auditPaths = /** @type {string[]} */ ([]);
     const spawn = /** @type {typeof f.spawn} */ ((command, args, options) => {
       auditPaths.push("launch"); return f.spawn(command, args, options);
@@ -511,7 +518,7 @@ test.describe("Native CPU release qualification entrypoint", () => {
     }
   });
 
-  test("audits the raw linked executable while launching the packed artifact", t => {
+  test("audits the raw linked executable while launching the packed artifact", {skip: process.platform === "win32" && "This Linux packed-candidate check requires POSIX executable metadata"}, t => {
     const f = fixture(t, "linux", true), audited = /** @type {string[]} */ ([]);
     const result = checkNativeRelease(f.entrypoint, "cpu", {platform: "linux", arch: "x64", audit: raw => audited.push(raw), spawn: f.spawn});
     assert.deepEqual(audited, [f.source]); assert.equal(result.executable, f.executable);
@@ -586,12 +593,14 @@ test.describe("Native CPU release qualification entrypoint", () => {
   });
 
   test("format and target mismatches fail before audit or launch", t => {
-    const wrongFormat = fixture(t), invalidImage = Buffer.alloc(128); invalidImage.write("not an ELF");
+    const wrongFormat = fixture(t), windows = wrongFormat.record.target === "win32", invalidImage = Buffer.alloc(windows ? 4096 : 128);
+    invalidImage.write(windows ? "not a PE image" : "not an ELF");
     fs.writeFileSync(wrongFormat.executable, invalidImage, {mode: 0o755});
     wrongFormat.record.artifact.bytes = fs.statSync(wrongFormat.executable).size;
     wrongFormat.record.artifact.sha256 = fileHash(wrongFormat.executable); wrongFormat.record.source.sha256 = wrongFormat.record.artifact.sha256;
     wrongFormat.write();
-    assert.throws(() => checkNativeRelease(wrongFormat.entrypoint, "cpu", {audit: raw => assert.ok(path.isAbsolute(raw)), spawn: wrongFormat.spawn}), /ELF executable/);
+    assert.throws(() => checkNativeRelease(wrongFormat.entrypoint, "cpu", {audit: raw => assert.ok(path.isAbsolute(raw)), spawn: wrongFormat.spawn}),
+      windows ? /Windows x86-64 PE executable/ : /Linux x86-64 ELF executable/);
     assert.equal(wrongFormat.calls.length, 0);
 
     const wrongTarget = fixture(t, "win32");
@@ -599,8 +608,8 @@ test.describe("Native CPU release qualification entrypoint", () => {
     assert.equal(wrongTarget.calls.length, 0);
   });
 
-  test("matching provenance cannot qualify a fixed-address Linux executable", t => {
-    const f = fixture(t), data = fs.readFileSync(f.executable); data.writeUInt16LE(2, 16); fs.writeFileSync(f.executable, data);
+  test("matching provenance cannot qualify a fixed-address Linux executable", {skip: process.platform === "win32" && "Linux ELF type is not representable by the Windows fixture host"}, t => {
+    const f = fixture(t, "linux"), data = fs.readFileSync(f.executable); data.writeUInt16LE(2, 16); fs.writeFileSync(f.executable, data);
     const imageHash = fileHash(f.executable);
     assert.ok("sha256" in f.producer);
     f.record.artifact.sha256 = imageHash; f.record.source.sha256 = imageHash; f.producer.sha256 = imageHash;
@@ -619,48 +628,70 @@ test.describe("Native CPU release qualification entrypoint", () => {
   });
 
   test("nonzero or indeterminate test-runner status never reports a pass", t => {
-    const failed = fixture(t), failSpawn = /** @type {typeof failed.spawn} */ (/** @type {unknown} */ ((/** @type {string} */ command,
-      /** @type {string[]} */ args, /** @type {{cwd?: string, env?: NodeJS.ProcessEnv, timeout?: number}} */ options) => {
-      failed.calls.push({command, args, options}); return {status: 7, signal: null, error: undefined, stdout: "FAIL algo-a\nFAIL algo-b\n", stderr: ""};
-    }));
-    assert.throws(() => checkNativeRelease(failed.entrypoint, "cpu", {audit: raw => assert.ok(path.isAbsolute(raw)), spawn: failSpawn}), error => {
-      assert.ok(error instanceof Error);
-      const details = /** @type {Error & {stdout: string}} */ (error);
-      assert.match(details.message, /failed \(exit 7\)/); assert.match(details.stdout, /algo-a/); assert.match(details.stdout, /algo-b/); return true;
-    });
+    for (const target of syntheticTargets) {
+      const failed = fixture(t, target), failSpawn = /** @type {typeof failed.spawn} */ (/** @type {unknown} */ ((/** @type {string} */ command,
+        /** @type {string[]} */ args, /** @type {{cwd?: string, env?: NodeJS.ProcessEnv, timeout?: number}} */ options) => {
+        failed.calls.push({command, args, options});
+        if (target === "win32" && command === failed.executable && args.length === 1 && args[0] === "invalid-directive") {
+          return {status: 1, signal: null, error: undefined, stdout: "Options:\n--save_config: file\n", stderr: "ERROR: Unknown directive invalid-directive\n"};
+        }
+        return {status: 7, signal: null, error: undefined, stdout: "FAIL algo-a\nFAIL algo-b\n", stderr: ""};
+      }));
+      assert.throws(() => checkNativeRelease(failed.entrypoint, "cpu", {platform: target, audit: raw => assert.ok(path.isAbsolute(raw)), spawn: failSpawn}), error => {
+        assert.ok(error instanceof Error);
+        const details = /** @type {Error & {stdout: string}} */ (error);
+        assert.match(details.message, /failed \(exit 7\)/); assert.match(details.stdout, /algo-a/); assert.match(details.stdout, /algo-b/); return true;
+      });
 
-    const unknown = fixture(t), unknownSpawn = /** @type {typeof unknown.spawn} */ (/** @type {unknown} */ ((/** @type {string} */ command,
-      /** @type {string[]} */ args, /** @type {{cwd?: string, env?: NodeJS.ProcessEnv, timeout?: number}} */ options) => {
-      unknown.calls.push({command, args, options}); return {status: null, signal: null, error: undefined, stdout: "PASSED\n", stderr: ""};
-    }));
-    assert.throws(() => checkNativeRelease(unknown.entrypoint, "cpu", {audit: raw => assert.ok(path.isAbsolute(raw)), spawn: unknownSpawn}), /exit null/);
+      const unknown = fixture(t, target), unknownSpawn = /** @type {typeof unknown.spawn} */ (/** @type {unknown} */ ((/** @type {string} */ command,
+        /** @type {string[]} */ args, /** @type {{cwd?: string, env?: NodeJS.ProcessEnv, timeout?: number}} */ options) => {
+        unknown.calls.push({command, args, options});
+        if (target === "win32" && command === unknown.executable && args.length === 1 && args[0] === "invalid-directive") {
+          return {status: 1, signal: null, error: undefined, stdout: "Options:\n--save_config: file\n", stderr: "ERROR: Unknown directive invalid-directive\n"};
+        }
+        return {status: null, signal: null, error: undefined, stdout: "PASSED\n", stderr: ""};
+      }));
+      assert.throws(() => checkNativeRelease(unknown.entrypoint, "cpu", {platform: target, audit: raw => assert.ok(path.isAbsolute(raw)), spawn: unknownSpawn}), /exit null/);
+    }
   });
 
   test("a zero exit or PASSED token without the vector reporter summary is not a pass", t => {
-    const f = fixture(t), incomplete = /** @type {typeof f.spawn} */ (/** @type {unknown} */ ((/** @type {string} */ command,
-      /** @type {string[]} */ args, /** @type {{cwd?: string, env?: NodeJS.ProcessEnv, timeout?: number}} */ options) => {
-      f.calls.push({command, args, options}); return {status: 0, signal: null, error: undefined, stdout: "PASSED\n", stderr: ""};
-    }));
-    assert.throws(() => checkNativeRelease(f.entrypoint, "cpu", {audit: raw => assert.ok(path.isAbsolute(raw)), spawn: incomplete}), error => {
-      assert.ok(error instanceof Error); assert.match(error.message, /every maintained vector passing without skips/); return true;
-    });
-    assert.equal(f.record.publicationQualified, false);
+    for (const target of syntheticTargets) {
+      const f = fixture(t, target), incomplete = /** @type {typeof f.spawn} */ (/** @type {unknown} */ ((/** @type {string} */ command,
+        /** @type {string[]} */ args, /** @type {{cwd?: string, env?: NodeJS.ProcessEnv, timeout?: number}} */ options) => {
+        f.calls.push({command, args, options});
+        if (target === "win32" && command === f.executable && args.length === 1 && args[0] === "invalid-directive") {
+          return {status: 1, signal: null, error: undefined, stdout: "Options:\n--save_config: file\n", stderr: "ERROR: Unknown directive invalid-directive\n"};
+        }
+        return {status: 0, signal: null, error: undefined, stdout: "PASSED\n", stderr: ""};
+      }));
+      assert.throws(() => checkNativeRelease(f.entrypoint, "cpu", {platform: target, audit: raw => assert.ok(path.isAbsolute(raw)), spawn: incomplete}), error => {
+        assert.ok(error instanceof Error); assert.match(error.message, /every maintained vector passing without skips/); return true;
+      });
+      assert.equal(f.record.publicationQualified, false);
+    }
   });
 
   test("zero exit summaries must count every CPU vector and contain no skips or failures", t => {
-    const f = fixture(t), summary = (/** @type {number} */ tests, /** @type {number} */ passed,
+    for (const target of syntheticTargets) {
+      const f = fixture(t, target), summary = (/** @type {number} */ tests, /** @type {number} */ passed,
       /** @type {number} */ failed, /** @type {number} */ skipped) =>
-      `ℹ tests ${tests}\nℹ suites 1\nℹ pass ${passed}\nℹ fail ${failed}\nℹ cancelled 0\nℹ skipped ${skipped}\n`;
-    const invalid = [summary(0, 0, 0, 0), summary(cpuVectorCount - 1, cpuVectorCount - 1, 0, 0),
-      summary(cpuVectorCount, cpuVectorCount - 1, 1, 0), summary(cpuVectorCount, cpuVectorCount - 1, 0, 1)];
-    for (const stdout of invalid) {
-      const spawn = /** @type {typeof f.spawn} */ (/** @type {unknown} */ ((/** @type {string} */ command,
+        `ℹ tests ${tests}\nℹ suites 1\nℹ pass ${passed}\nℹ fail ${failed}\nℹ cancelled 0\nℹ skipped ${skipped}\n`;
+      const invalid = [summary(0, 0, 0, 0), summary(cpuVectorCount - 1, cpuVectorCount - 1, 0, 0),
+        summary(cpuVectorCount, cpuVectorCount - 1, 1, 0), summary(cpuVectorCount, cpuVectorCount - 1, 0, 1)];
+      for (const stdout of invalid) {
+        const spawn = /** @type {typeof f.spawn} */ (/** @type {unknown} */ ((/** @type {string} */ command,
         /** @type {string[]} */ args, /** @type {{cwd?: string, env?: NodeJS.ProcessEnv, timeout?: number}} */ options) => {
-        f.calls.push({command, args, options}); return {status: 0, signal: null, error: undefined, stdout, stderr: ""};
-      }));
-      assert.throws(() => checkNativeRelease(f.entrypoint, "cpu", {audit: raw => assert.ok(path.isAbsolute(raw)), spawn}), /every maintained vector passing/);
+          f.calls.push({command, args, options});
+          if (target === "win32" && command === f.executable && args.length === 1 && args[0] === "invalid-directive") {
+            return {status: 1, signal: null, error: undefined, stdout: "Options:\n--save_config: file\n", stderr: "ERROR: Unknown directive invalid-directive\n"};
+          }
+          return {status: 0, signal: null, error: undefined, stdout, stderr: ""};
+        }));
+        assert.throws(() => checkNativeRelease(f.entrypoint, "cpu", {platform: target, audit: raw => assert.ok(path.isAbsolute(raw)), spawn}), /every maintained vector passing/);
+      }
+      assert.equal(f.calls.length, invalid.length * (target === "win32" ? 2 : 1));
     }
-    assert.equal(f.calls.length, invalid.length);
   });
 
   test("artifact mutation during audit or the vector run invalidates the result", t => {
@@ -672,13 +703,17 @@ test.describe("Native CPU release qualification entrypoint", () => {
 
     const duringRun = fixture(t), mutateRunner = /** @type {typeof duringRun.spawn} */ (/** @type {unknown} */ ((/** @type {string} */ command,
       /** @type {string[]} */ args, /** @type {{cwd?: string, env?: NodeJS.ProcessEnv, timeout?: number}} */ options) => {
-      duringRun.calls.push({command, args, options}); fs.appendFileSync(duringRun.executable, "changed during run");
+      duringRun.calls.push({command, args, options});
+      if (duringRun.record.target === "win32" && command === duringRun.executable && args.length === 1 && args[0] === "invalid-directive") {
+        return {status: 1, signal: null, error: undefined, stdout: "Options:\n--save_config: file\n", stderr: "ERROR: Unknown directive invalid-directive\n"};
+      }
+      fs.appendFileSync(duringRun.executable, "changed during run");
       return {status: 0, signal: null, error: undefined, stdout: successfulCpuSummary, stderr: ""};
     }));
     assert.throws(() => checkNativeRelease(duringRun.entrypoint, "cpu", {
       audit: raw => assert.ok(path.isAbsolute(raw)), spawn: mutateRunner,
     }), /artifact changed during qualification/);
-    assert.equal(duringRun.calls.length, 1);
+    assert.equal(duringRun.calls.length, duringRun.record.target === "win32" ? 2 : 1);
   });
 });
 
@@ -692,7 +727,11 @@ test.describe("Native release single-algorithm GPU qualification", () => {
   const runner = (f, output) => /** @type {typeof f.spawn} */ (/** @type {unknown} */ (
     (/** @type {string} */ command, /** @type {string[]} */ args,
       /** @type {{cwd?: string, env?: NodeJS.ProcessEnv, timeout?: number}} */ options) => {
-      f.calls.push({command, args, options}); return {status: 0, signal: null, stdout: output, stderr: ""};
+      f.calls.push({command, args, options});
+      if (f.record.target === "win32" && command === f.executable && args?.length === 1 && args[0] === "invalid-directive") {
+        return {status: 1, signal: null, stdout: "Options:\n--save_config: file\n", stderr: "ERROR: Unknown directive invalid-directive\n"};
+      }
+      return {status: 0, signal: null, stdout: output, stderr: ""};
     }));
   test("reuses the discrete vector runner with one explicit vendor and algorithm", t => {
     const f = fixture(t), result = checkNativeRelease(f.entrypoint, "gpu", {
@@ -701,8 +740,8 @@ test.describe("Native release single-algorithm GPU qualification", () => {
         MOM_SKIP_SYCL_ALGO_PARAMS: "1", MOM_NATIVE_PATH: "/old/addon", NODE_OPTIONS: "--require=untrusted.js"},
     });
     assert.equal(result.suitePassed, true); assert.deepEqual(result.gpu, gpu); assert.notEqual(result.gpu, gpu);
-    assert.equal(f.calls.length, 1);
-    const call = f.calls[0]; assert.ok(call);
+    assert.equal(f.calls.length, f.record.target === "win32" ? 2 : 1);
+    const call = f.calls.at(-1); assert.ok(call);
     assert.deepEqual(call.args, [path.resolve(__dirname, "run_hash.js"), "gpu-discrete"]);
     const env = call.options.env || {};
     assert.equal(env["MOM_TEST_EXECUTABLE"], f.executable);
@@ -734,7 +773,11 @@ test.describe("Native release single-algorithm GPU qualification", () => {
   test("a candidate changed during GPU vectors cannot receive a passing result", t => {
     const f = fixture(t), base = runner(f, summary());
     const spawn = /** @type {typeof f.spawn} */ ((command, args, options) => {
-      fs.appendFileSync(f.executable, "changed"); return base(command, args, options);
+      const argv = args || [];
+      if (f.record.target === "win32" && command === f.executable && argv.length === 1 && argv[0] === "invalid-directive") {
+        return base(command, argv, options);
+      }
+      fs.appendFileSync(f.executable, "changed"); return base(command, argv, options);
     });
     assert.throws(() => checkNativeRelease(f.entrypoint, "gpu", {gpu, audit: () => undefined, spawn}), /artifact changed/);
   });
@@ -856,7 +899,7 @@ test.describe("Native release portable SYCL/OpenCL CPU qualification", () => {
     `ℹ tests ${tests}\nℹ suites 1\nℹ pass ${pass}\nℹ fail ${failed}\nℹ cancelled 0\nℹ skipped ${skipped}\n`;
 
   test("standalone candidate uses its native OpenCL runtime without a development addon", t => {
-    const f = fixture(t, "linux"), keys = ["MOM_TEST_EXECUTABLE", "MOM_NATIVE_DIR", "MOM_NATIVE_PATH",
+    const f = fixture(t, hostTarget), keys = ["MOM_TEST_EXECUTABLE", "MOM_NATIVE_DIR", "MOM_NATIVE_PATH",
         "MOM_NATIVE_PATH_LAUNCHER_DEFAULT", "MOM_GPU_BACKEND", "MOM_OPENCL_DEVICE_TYPE", "ONEAPI_DEVICE_SELECTOR"],
       saved = new Map(keys.map(key => [key, process.env[key]])), missingRoot = path.join(f.root, "absent-native-sdk");
     try {
@@ -938,14 +981,22 @@ test.describe("Native release portable SYCL/OpenCL CPU qualification", () => {
     }
     const failSpawn = /** @type {typeof f.spawn} */ (/** @type {unknown} */ ((/** @type {string} */ command,
       /** @type {string[]} */ args, /** @type {{cwd?: string, env?: NodeJS.ProcessEnv, timeout?: number}} */ options) => {
-      f.calls.push({command, args, options}); return {status: 7, signal: null, error: undefined, stdout: summary(), stderr: ""};
+      f.calls.push({command, args, options});
+      if (target === "win32" && command === f.executable && args.length === 1 && args[0] === "invalid-directive") {
+        return {status: 1, signal: null, error: undefined, stdout: "Options:\n--save_config: file\n", stderr: "ERROR: Unknown directive invalid-directive\n"};
+      }
+      return {status: 7, signal: null, error: undefined, stdout: summary(), stderr: ""};
     }));
     assert.throws(() => checkNativeRelease(f.entrypoint, "gpu-portable-cpu", {
       platform: target, arch: "x64", audit: () => undefined, spawn: failSpawn,
     }), /failed \(exit 7\)/);
     const signalSpawn = /** @type {typeof f.spawn} */ (/** @type {unknown} */ ((/** @type {string} */ command,
       /** @type {string[]} */ args, /** @type {{cwd?: string, env?: NodeJS.ProcessEnv, timeout?: number}} */ options) => {
-      f.calls.push({command, args, options}); return {status: 0, signal: "SIGTERM", error: undefined, stdout: summary(), stderr: ""};
+      f.calls.push({command, args, options});
+      if (target === "win32" && command === f.executable && args.length === 1 && args[0] === "invalid-directive") {
+        return {status: 1, signal: null, error: undefined, stdout: "Options:\n--save_config: file\n", stderr: "ERROR: Unknown directive invalid-directive\n"};
+      }
+      return {status: 0, signal: "SIGTERM", error: undefined, stdout: summary(), stderr: ""};
     }));
     assert.throws(() => checkNativeRelease(f.entrypoint, "gpu-portable-cpu", {
       platform: target, arch: "x64", audit: () => undefined, spawn: signalSpawn,
@@ -1084,7 +1135,9 @@ test.describe("Native release CLI transcript qualification", () => {
     }));
   }
   for (const target of /** @type {("linux" | "win32")[]} */ (["linux", "win32"])) {
-    test("compares complete original Node/controller transcripts without invoking hashing on " + target, t => {
+    test("compares complete original Node/controller transcripts without invoking hashing on " + target, {
+      skip: target === "linux" && process.platform === "win32" && "Linux ELF fixtures require POSIX executable metadata",
+    }, t => {
       const f = fixture(t, target), result = checkNativeRelease(f.entrypoint, "cli", {platform: target, arch: "x64", audit: () => undefined, spawn: cliRunner(f)});
       assert.equal(result.suitePassed, true); assert.equal(f.calls.length, target === "win32" ? 5 : 4);
       assert.deepEqual(f.calls.filter(c => c.command === f.executable).map(c => c.args), target === "win32" ?
@@ -1099,7 +1152,9 @@ test.describe("Native release CLI transcript qualification", () => {
     });
   }
   for (const target of /** @type {("linux" | "win32")[]} */ (["linux", "win32"])) {
-    test("rejects a truncated formal invalid-directive transcript after any Windows preflight on " + target, t => {
+    test("rejects a truncated formal invalid-directive transcript after any Windows preflight on " + target, {
+      skip: target === "linux" && process.platform === "win32" && "Linux ELF fixtures require POSIX executable metadata",
+    }, t => {
       const f = fixture(t, target);
       assert.throws(() => checkNativeRelease(f.entrypoint, "cli", {platform: target, arch: "x64", audit: () => undefined,
         spawn: cliRunner(f, (role, index) => role === "native" && index === 1 ? {stdout: "Options:\n"} : {})}), /CLI/);
@@ -1132,14 +1187,19 @@ test.describe("Native release CLI transcript qualification", () => {
     const f = fixture(t), runner = cliRunner(f);
     const mutate = /** @type {typeof f.spawn} */ (/** @type {unknown} */ ((/** @type {string} */ command, /** @type {string[]} */ args = [],
       /** @type {{cwd?: string, env?: NodeJS.ProcessEnv, timeout?: number}} */ options) => {
+      if (f.record.target === "win32" && command === f.executable && args.length === 1 && args[0] === "invalid-directive") {
+        return runner(command, args, options);
+      }
       fs.appendFileSync(f.executable, "changed"); return runner(command, args, options);
     }));
     assert.throws(() => checkNativeRelease(f.entrypoint, "cli", {audit: () => undefined, spawn: mutate}), /changed during qualification/);
-    assert.equal(f.calls.length, 1);
+    assert.equal(f.calls.length, f.record.target === "win32" ? 2 : 1);
   });
 });
 
-test.describe("Transported packed provenance", () => {
+test.describe("Transported packed provenance", {
+  skip: process.platform !== "linux" && "UPX transport fixtures require a POSIX executable-mode host; Linux CI covers both targets",
+}, () => {
   for (const target of /** @type {const} */ (["linux", "win32"])) {
     test.describe(target, () => {
       const check = (/** @type {ReturnType<typeof transportedFixture>} */ f,
@@ -1486,7 +1546,7 @@ test.describe("Native build-only audit and exact-hash runtime split", () => {
     assert.match(traceWithoutHash.stderr, /trace is runtime-only.*SHA256/i);
     const malformedTraceHash = runReleaseCli([f.executable, "trace", "--sha256", "g".repeat(64)]);
     assert.equal(malformedTraceHash.status, 1);
-    assert.match(malformedTraceHash.stderr, /explicit expected SHA256/i);
+    assert.match(malformedTraceHash.stderr, process.platform === "win32" ? /supports Linux only/i : /explicit expected SHA256/i);
     assert.doesNotMatch(malformedTraceHash.stdout + malformedTraceHash.stderr, /suite passed/i);
 
     const malformed = [

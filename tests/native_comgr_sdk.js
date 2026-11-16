@@ -21,7 +21,7 @@ function fixture(t) {
   return {root, config, data, names, registry};
 }
 
-test.describe("Native COMGR pinned snapshot and literal recipe", () => {
+test.describe("Native COMGR pinned snapshot and literal recipe", {skip: process.platform !== "linux" || process.arch !== "x64"}, () => {
   const host = {cc: "/opt/intel/icx", cxx: "/opt/intel/icpx"};
   /** @param {string} [output] @param {number} [jobs] @param {{cc: string, cxx: string}} [compilers] */
   const plan = (output = "/output", jobs = 2, compilers) => comgrSdkPlan("/source", "/llvm", "/lld", "/device", output, jobs, compilers);

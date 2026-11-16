@@ -34,7 +34,13 @@
 #include "core/execution.inc"
 #ifndef MOM_NATIVE_RUNTIME
 #include "node-worker.h"
-static void cleanup_sycl_runtime(void*) { sycl_cleanup(); }
+static void cleanup_sycl_runtime(void*) {
+#if defined(_WIN32)
+  // CPU-only addons must not delay-load the optional GPU DLL merely to clean unused state.
+  if (!GetModuleHandleW(L"sycl.dll")) { return; }
+#endif
+  sycl_cleanup();
+}
 
 static napi_value init_module(napi_env env, napi_value exports) {
   try {

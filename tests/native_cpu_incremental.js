@@ -1,6 +1,7 @@
 "use strict";
 const test = require("node:test"), assert = require("node:assert/strict");
 const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
+const vm = require("node:vm");
 const {compileNativeObjects} = require("../scripts/native-object-cache");
 const {cpuCompileCommands, cpuIncludeRoots, selectCpuArchiver, verifyCpuArchiver} = require("../scripts/build-native-cpu-probe");
 const {fileHash} = require("../scripts/build-source-inputs");
@@ -66,6 +67,80 @@ function compileFixtureBatch(repo, output, commands, gpu, environment, compilerS
     liveObjects: commands.map(command => command.object)});
 }
 
+/** Run the real probe frontdoor with only compiler/cache work mocked. */
+/** @param {import("node:test").TestContext} t @param {boolean} gpu */
+function runProbeFrontdoor(t, gpu) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom cpu probe frontdoor-")), cache = path.join(root, "cache"), output = path.join(root, "output"),
+    toolRoot = path.join(root, "toolchain", "bin"), compiler = path.join(toolRoot, "icpx"), archiver = path.join(toolRoot, "llvm-ar"),
+    runtime = path.join(root, "libirc.a"), syclRuntime = path.join(root, "libsvml.a"), events = /** @type {Array<{command:string,args:string[]}>} */ ([]),
+    compileCommands = /** @type {Array<{command:string,args:string[]}>} */ ([]), messages = /** @type {string[]} */ ([]), digest = "a".repeat(64);
+  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  fs.mkdirSync(cache, {recursive: true}); fs.mkdirSync(toolRoot, {recursive: true});
+  fs.writeFileSync(compiler, "#!/bin/sh\n", {mode: 0o755}); fs.writeFileSync(archiver, "#!/bin/sh\n", {mode: 0o755});
+  fs.writeFileSync(runtime, "runtime\n"); fs.writeFileSync(syclRuntime, "runtime\n");
+  for (const name of ["generated.txt", "links.txt", "Release/obj/mom/base.o"]) {
+    const file = path.join(cache, name); fs.mkdirSync(path.dirname(file), {recursive: true});
+    fs.writeFileSync(file, name.endsWith("base.o") && gpu ? Buffer.from("4243c0de", "hex") : "fixture\n");
+  }
+  const receipt = path.join(cache, ".mom-content-state.json"); fs.writeFileSync(receipt, "{}\n");
+  fs.writeFileSync(path.join(cache, "mom.target.mk"), [
+    "OBJS := Release/obj/mom/base.o", "DEFS_Release := -DPROBE_FIXTURE=1", "CFLAGS_Release := -O2",
+    "CFLAGS_CC_Release := -fPIC", "INCS_Release := -I .", "",
+  ].join("\n"));
+  const state = {schema: 1, portability: {portable: true, cpuMarch: ""}, files: {}, graph: {},
+    generated: {"generated.txt": digest}, links: {"links.txt": digest}, objects: {"Release/obj/mom/base.o": {content: digest}},
+    external: {[runtime]: digest}};
+  /** @param {string} command @param {string[]} args */
+  const fakeSpawn = (command, args) => {
+    const tokens = /** @type {string[]} */ (args);
+    events.push({command, args: tokens.slice()});
+    if (command !== compiler && command !== archiver) {
+      const error = Object.assign(new Error("spawn " + command + " ENOENT"), {code: "ENOENT"});
+      return {error, status: null, signal: null, stdout: "", stderr: ""};
+    }
+    if (command === compiler && tokens[0] === "-print-prog-name=llvm-ar") {
+      return {status: 0, signal: null, stdout: archiver + "\n", stderr: ""};
+    }
+    if (command === compiler && tokens[0]?.startsWith("-print-file-name=")) {
+      const name = tokens[0].slice("-print-file-name=".length);
+      return {status: 0, signal: null, stdout: (name === "libsvml.a" ? syclRuntime : runtime) + "\n", stderr: ""};
+    }
+    const outputIndex = tokens.indexOf("-o");
+    if (command === compiler && outputIndex >= 0) {fs.writeFileSync(tokens[outputIndex + 1] || "", "mock Intel output\n");}
+    if (command === archiver) {fs.writeFileSync(tokens[1] || "", "mock archive\n");}
+    return {status: 0, signal: null, stdout: "", stderr: ""};
+  };
+  const childProcess = {spawnSync: fakeSpawn}, objectCache = {
+    /** @param {Parameters<typeof compileNativeObjects>[0]} options */
+    compileNativeObjects(options) {
+      compileCommands.push(...options.commands.map(command => ({command: command.command, args: command.args.slice()})));
+      const objects = options.commands.map(command => {
+        fs.writeFileSync(command.object, "mock compiled object\n");
+        return {object: command.object, status: 0, signal: null, stdout: "", stderr: "", cacheHit: false};
+      });
+      return {objects, cacheHits: 0, cacheMisses: objects.length, cacheRoot: path.join(root, "object-cache"), ninja: null};
+    }};
+  const source = fs.readFileSync(path.join(repoRoot, "scripts/build-native-cpu-probe.js"), "utf8"), module = {exports: {}};
+  const modules = new Map(/** @type {Array<[string, unknown]>} */ ([
+    ["node:fs", fs], ["node:path", path], ["node:child_process", childProcess],
+    ["./build-source-inputs", {fileHash: () => digest, sourceInputs: () => ({}), nativeSourceInputs: () => ({}),
+      verifySourceInputs() { /* Cache provenance is outside this compiler-selection fixture. */ }, readBuildJson: () => state}],
+    ["./native-object-cache", objectCache],
+  ]));
+  /** @param {string} name */
+  const localRequire = name => {
+    const found = modules.get(name); if (!found) {throw new Error("Unexpected probe fixture module: " + name);}
+    return found;
+  };
+  localRequire.main = module;
+  const fakeProcess = {platform: "linux", argv: [process.execPath, "build-native-cpu-probe.js", cache, output, ...(gpu ? ["--gpu"] : [])],
+    env: {MOM_PORTABLE_BUILD: "1", CXX: compiler}, exitCode: undefined};
+  vm.runInNewContext(source, {require: localRequire, module, process: fakeProcess, __dirname: path.join(repoRoot, "scripts"),
+    console: {log() { /* Ignore the output archive path. */ }, error(/** @type {unknown} */ error) {messages.push(String(error));}}, Buffer},
+  {filename: path.join(repoRoot, "scripts/build-native-cpu-probe.js"), timeout: 5000});
+  return {compiler, events, compileCommands, exitCode: fakeProcess.exitCode, messages};
+}
+
 test.describe("Incremental Linux native CPU Core objects", () => {
   test("CPU cache plan preserves Core argv/order and marks its generated proof stub", t => {
     const f = fixture(t), output = path.join(f.root, "candidate-plan"), flags = ["-std=c++17", "-O3", "-DCORE_FIXTURE=1", "-I", f.sdkInclude,
@@ -125,7 +200,7 @@ test.describe("Incremental Linux native CPU Core objects", () => {
   test("fresh archive uses Engineering objects first and appends the ordered bridge batch before materialization", () => {
     const source = fs.readFileSync(path.join(repoRoot, "scripts/build-native-cpu-probe.js"), "utf8");
     const engineeringObjects = source.indexOf('const objects = variable("OBJS")');
-    const archiverSelection = source.indexOf('selectCpuArchiver("icpx"');
+    const archiverSelection = source.indexOf("selectCpuArchiver(compiler");
     const batch = source.indexOf("const compiled = compileCpuBatch");
     const append = source.indexOf("objects.push(...compiled.objects.map", batch);
     const materialize = source.indexOf("const materialized = []", append);
@@ -165,5 +240,22 @@ test.describe("Incremental Linux native CPU Core objects", () => {
     assert.throws(() => selectCpuArchiver(compiler, path.join(f.root, "symlink-query.log")), /canonical regular executable/);
     writeCompiler("llvm-ar");
     assert.throws(() => selectCpuArchiver(compiler, path.join(f.root, "relative-query.log")), /absolute canonical/);
+  });
+
+  test("real probe uses descriptor CXX for compile, Intel runtime lookup, archive selection, and link", {skip: process.platform !== "linux"}, t => {
+    for (const gpu of [true, false]) {
+      const result = runProbeFrontdoor(t, gpu), compilerCalls = result.events.filter(event => event.command === result.compiler);
+      assert.equal(result.exitCode, undefined, result.messages.join("\n"));
+      assert.ok(compilerCalls.some(event => event.args[0] === "-print-file-name=libirc.a"), "runtime lookup uses descriptor CXX");
+      assert.ok(result.compileCommands.length === (gpu ? 4 : 5) && result.compileCommands.every(event => event.command === result.compiler),
+        "all Core compile commands use descriptor CXX");
+      if (gpu) {
+        assert.ok(compilerCalls.some(event => event.args[0] === "-print-prog-name=llvm-ar"), "archiver selection uses descriptor CXX");
+        assert.ok(compilerCalls.some(event => event.args.includes("-x") && event.args.includes("ir")), "bitcode materialization uses descriptor CXX");
+        assert.ok(result.events.some(event => path.basename(event.command) === "llvm-ar"), "archive creation uses the selected llvm-ar");
+      } else {
+        assert.ok(compilerCalls.some(event => event.args[0] === "-r"), "CPU merge uses descriptor CXX");
+      }
+    }
   });
 });

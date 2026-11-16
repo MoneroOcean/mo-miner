@@ -36,7 +36,10 @@ describe("Pinned AdaptiveCpp offline source preparation", () => {
   });
   test("does not overwrite an existing output or source checkout", t => {
     const f = fixture(t); fs.mkdirSync(f.output); fs.writeFileSync(path.join(f.output, "keep"), "preserve");
-    assert.throws(() => prepareSdkSources("acpp", f.roots, f.output, {MOM_AOT_BUILD_ONLY: "1"}), /new absolute output/);
+    // The producer executes on Linux; root-overlap admission below is portable.
+    if (process.platform === "linux") {
+      assert.throws(() => prepareSdkSources("acpp", f.roots, f.output, {MOM_AOT_BUILD_ONLY: "1"}), /new absolute output/);
+    }
     assert.equal(fs.readFileSync(path.join(f.output, "keep"), "utf8"), "preserve");
     assert.throws(() => validateSourceRoots(f.roots, path.join(f.source, "child"), {acpp: true}), /overlaps/);
   });

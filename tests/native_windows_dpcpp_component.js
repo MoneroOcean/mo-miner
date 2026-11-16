@@ -1,6 +1,8 @@
 "use strict";
 const fs = require("node:fs"), path = require("node:path"), test = require("node:test"), assert = require("node:assert/strict");
-const {windowsDpcppLinks, windowsDpcppComponentInputs, windowsDpcppSdkInputs, stageWindowsDpcppComponent, exportWindowsDpcppComponent} = require("../scripts/native-windows-dpcpp-component");
+const {windowsDpcppLinks, windowsDpcppComponentInputs, windowsDpcppSdkInputs, stageWindowsDpcppComponent,
+  matchWindowsDpcppComponent, exportWindowsDpcppComponent} = require("../scripts/native-windows-dpcpp-component");
+const {fileHash} = require("../scripts/build-source-inputs");
 const hostComponentReader = require("../scripts/native-windows-host-component");
 const {linkCommand, explicitInputFiles} = require("../scripts/build-native-windows-controller");
 const {verifyWindowsApplicationFiles} = require("../scripts/native-windows-application");
@@ -55,6 +57,34 @@ test.describe("Windows original runtime/JIT component boundary", () => {
   });
   test("export requires explicit build-only admission before opening receipts", () => {
     assert.throws(() => exportWindowsDpcppComponent("/absent", "/cuda", "/output", {}), /MOM_AOT_BUILD_ONLY/);
+  });
+  test("warm matching preserves the original producer, payload order and receipt bytes", t => {
+    const f = fixture(t); f.produce();
+    const manifest = path.join(f.output, "component.json"), before = fs.readFileSync(manifest),
+      original = {links: f.links, producer: {path: "/original/receipt.json", sha256: "1".repeat(64)},
+        files: Object.fromEntries(Object.values(f.links).flat().map(file => [file, fileHash(file)]))};
+    assert.deepEqual(matchWindowsDpcppComponent(f.output, original), windowsDpcppComponentInputs(f.output));
+    assert.deepEqual(fs.readFileSync(manifest), before);
+    assert.throws(() => matchWindowsDpcppComponent(f.output, {...original, producer: {...original.producer, sha256: "2".repeat(64)}}), /another original producer/);
+    assert.throws(() => matchWindowsDpcppComponent(f.output, {...original,
+      links: {...f.links, libraries: [...f.links.libraries].reverse()}}), /ordered payloads/);
+  });
+  test("self-consistent installed hashes cannot replace the admitted original payload", t => {
+    const f = fixture(t); f.produce();
+    const original = {links: f.links, producer: {path: "/original/receipt.json", sha256: "1".repeat(64)},
+        files: Object.fromEntries(Object.values(f.links).flat().map(file => [file, fileHash(file)]))},
+      changed = path.join(f.output, "lib/LLVM0.lib");
+    fs.appendFileSync(changed, "changed");
+    f.edit(value => {value.files["lib/LLVM0.lib"] = fileHash(changed);});
+    assert.ok(windowsDpcppComponentInputs(f.output));
+    assert.throws(() => matchWindowsDpcppComponent(f.output, original), /ordered payloads/);
+  });
+  test("an original payload changed after producer admission invalidates warm reuse", t => {
+    const f = fixture(t); f.produce();
+    const original = {links: f.links, producer: {path: "/original/receipt.json", sha256: "1".repeat(64)},
+      files: Object.fromEntries(Object.values(f.links).flat().map(file => [file, fileHash(file)]))};
+    fs.appendFileSync(f.links.libraries[0] || "", "changed");
+    assert.throws(() => matchWindowsDpcppComponent(f.output, original), /provenance changed/);
   });
 });
 
@@ -121,7 +151,7 @@ test.describe("Windows component source-build integration", () => {
     assert.throws(() => windowsDpcppSdkInputs({...f.links, cudaImages: path.join(f.root, "images.inc"), nvrtcSdk: path.join(f.root, "nvrtc")}),
       /mutually exclusive/);
   });
-  test("vendor NVRTC receipt binds all three explicit libraries and original provenance without changing link order", t => {
+  test("vendor NVRTC receipt binds all three explicit libraries and original provenance without changing link order", {skip: process.platform !== "linux"}, t => {
     const f = fixture(t), vendor = vendorNvrtcFixture(f.root), before = path.join(f.root, "bcrypt.lib"), after = path.join(f.root, "cudart.lib");
     t.mock.method(nvrtcProducer, "nvrtcSdkInputs", (/** @type {"linux" | "windows"} */ platform, /** @type {string} */ root) => {
       assert.equal(platform, "windows"); assert.equal(root, vendor.root);
@@ -132,7 +162,7 @@ test.describe("Windows component source-build integration", () => {
     assert.deepEqual(selected.link.wholeArchives, []); assert.deepEqual(selected.link.objects, []);
     for (const [file, hash] of Object.entries(vendor.files)) {assert.equal(selected.files[file], hash);}
   });
-  test("vendor NVRTC root requires each exact admitted static library once", t => {
+  test("vendor NVRTC root requires each exact admitted static library once", {skip: process.platform !== "linux"}, t => {
     const f = fixture(t), vendor = vendorNvrtcFixture(f.root);
     t.mock.method(nvrtcProducer, "nvrtcSdkInputs", () => ({
       receipt: vendor.receipt, receiptFile: vendor.receiptFile, receiptSha256: vendor.receiptSha256, files: vendor.files

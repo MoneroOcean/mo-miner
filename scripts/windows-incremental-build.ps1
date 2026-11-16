@@ -4,6 +4,10 @@
 $script:MomBuildSnapshot = @()
 
 function Initialize-MomBuildEnvironment([string]$RepoRoot) {
+  if ($PSVersionTable.PSVersion.Major -eq 5) {
+    # Windows PowerShell builders may inherit PowerShell 7's incompatible module paths.
+    $env:PSModulePath = Join-Path $PSHOME 'Modules'
+  }
   if (-not $env:npm_package_json) { return }
   # Normalize npm's proven launcher scaffold before resolving compiler tools,
   # not by filtering PATH out of their fingerprints. JSON is ASCII-safe on PS5.

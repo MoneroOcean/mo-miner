@@ -64,9 +64,9 @@ test.describe("Bounded original compiler CI partitions", {skip: process.platform
 test.describe("Original compiler phase receipt admission", () => {
   const expected = () => ({stage: "support", beforeSha256: "b".repeat(64), configuredSha256: "c".repeat(64), commandsSha256: "d".repeat(64),
     inputs: {"/sdk/compiler": "e".repeat(64)}, outputs: {"lib/a.a": "sha256:" + "a".repeat(64)}});
-  const receipt = () => ({version: 1, buildOnly: true, ...expected(), libraries: ["/output/build/lib/a.a"]});
+  const receipt = () => ({version: 1, buildOnly: true, ...expected(), libraries: [path.resolve("/output/build/lib/a.a")]});
   test("admits only the exact previous phase with its bound objects and tools", () => {
-    assert.deepEqual(jitBuildHandoff(receipt(), expected(), "/output/build"), ["/output/build/lib/a.a"]);
+    assert.deepEqual(jitBuildHandoff(receipt(), expected(), path.resolve("/output/build")), [path.resolve("/output/build/lib/a.a")]);
   });
   test("a missing phase receipt cannot skip compilation", () => {
     for (const value of [null, undefined, {}, []]) {assert.throws(() => jitBuildHandoff(value, expected(), "/output/build"), /handoff/);}

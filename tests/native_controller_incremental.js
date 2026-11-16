@@ -19,7 +19,7 @@ test.describe("Native controller object reuse", () => {
     fs.writeFileSync(source, "int main() { return 0; }\n"); fs.writeFileSync(count, "0");
     /** @type {(output: string) => string} */ const object = output => path.join(output, "main.o");
     /** @type {(output: string) => string} */ const depfile = output => path.join(output, "main.d");
-    const script = `const fs=require("node:fs"),a=process.argv.slice(1),value=k=>a[a.indexOf(k)+1],source=value("-c"),depfile=value("-MF"),object=value("-o");if(!source||!depfile||!object)process.exit(41);const count=${JSON.stringify(count)};fs.writeFileSync(count,String(Number(fs.readFileSync(count,"utf8"))+1));fs.writeFileSync(object,fs.readFileSync(source));fs.writeFileSync(depfile,object+": "+source+"\\n");`;
+    const script = `const fs=require("node:fs"),a=process.argv.slice(1),value=k=>a[a.indexOf(k)+1],source=value("-c"),depfile=value("-MF"),object=value("-o");if(!source||!depfile||!object)process.exit(41);const count=${JSON.stringify(count)},dep=p=>p.split(String.fromCharCode(92)).join("/").replace(/ /g,String.fromCharCode(92)+" ");fs.writeFileSync(count,String(Number(fs.readFileSync(count,"utf8"))+1));fs.writeFileSync(object,fs.readFileSync(source));fs.writeFileSync(depfile,dep(object)+": "+dep(source)+"\\n");`;
     /** @type {(output: string) => {command: string, args: string[], source: string, object: string, depfile: string}} */
     const command = output => ({command: process.execPath, args: ["-e", script, "--", "-MF", depfile(output), "-c", source, "-o", object(output)],
       source, object: object(output), depfile: depfile(output)});

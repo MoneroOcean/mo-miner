@@ -355,10 +355,12 @@ inline bool mom_is_opencl(const sycl::device& device) {
 #endif
 }
 
-// Keep exact 32x32 products in driver-supported widths. In ESIMD, LLVM's high-product
-// recognition can otherwise recombine 32-bit limbs into unsupported i128 SPIR-V.
+// Keep portable/nightly ESIMD products in supported widths: LLVM's high-product
+// recognition can otherwise form unsupported i128 SPIR-V. Intel's frontend must
+// retain its original wide product; the narrowed ESIMD form miscomputes on DG2.
 inline uint64_t mo_mul_wide_u32(const uint32_t a, const uint32_t b) {
-#if defined(MOM_SYCL_PORTABLE_OPENCL) || defined(MOM_XELISHASHV3_ESIMD)
+#if defined(MOM_SYCL_PORTABLE_OPENCL) || \
+    (defined(MOM_XELISHASHV3_ESIMD) && !defined(__INTEL_LLVM_COMPILER))
   const uint32_t a0 = static_cast<uint16_t>(a), a1 = a >> 16,
                  b0 = static_cast<uint16_t>(b), b1 = b >> 16;
   const uint64_t p0 = a0 * b0, p1 = a0 * b1, p2 = a1 * b0, p3 = a1 * b1;

@@ -215,7 +215,7 @@ test.describe("Complete Windows native application admission", () => {
     fs.writeFileSync(library, "!<arch>\n"); fs.appendFileSync(manifest, "changed");
     assert.throws(() => verifyWindowsApplicationFiles(result.files), /input changed/);
   });
-  test("vendor NVRTC receipt, headers, licenses, archives and tool enter the application input snapshot", t => {
+  test("vendor NVRTC receipt, headers, licenses, archives and tool enter the application input snapshot", {skip: process.platform !== "linux"}, t => {
     const f = fixture(t), vendor = vendorNvrtcFixture(f.root);
     t.mock.method(nvrtcProducer, "nvrtcSdkInputs", (/** @type {"linux" | "windows"} */ platform, /** @type {string} */ root) => {
       assert.equal(platform, "windows"); assert.equal(root, vendor.root);

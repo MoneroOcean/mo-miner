@@ -3,6 +3,7 @@ const fs = require("node:fs"), os = require("node:os"), path = require("node:pat
 const {spawnSync} = require("node:child_process");
 const {runInNewContext} = require("node:vm");
 const {absolutePath, nativeSdkConfig, nativeSdkLinkInputs, nativeSdkSourceInputs, nativeReleaseComponents, nativeStage, compactNativeRelease, buildNativeRelease} = require("../scripts/build-native-release");
+const {run: runNativeControllerCommand, flushLinuxObjectBatch} = require("../scripts/probe-native-controller");
 const {buildNativeArtifact, nativeReleaseArguments, packNativeEntrypoint} = require("../scripts/build-release");
 const {packageNativeRelease} = require("../scripts/package-native-release");
 const {ioPins} = require("../scripts/build-native-io");
@@ -51,6 +52,7 @@ function packingFixture(t) {
       if (stage === "pack") {
         const destination = args[args.indexOf("-o") + 1], source = args.at(-1);
         if (!destination || !source) {throw new Error("Fixture pack paths are missing");}
+        if (process.platform === "linux") {assert.equal(fs.statSync(source).mode & 0o111, 0o111);}
         fs.writeFileSync(destination, Buffer.concat([fs.readFileSync(source).subarray(0, 4), Buffer.from("packed fixture\n")]), {mode: 0o600});
       } else if (stage === "restore") {
         const destination = args[args.indexOf("-o") + 1];
@@ -70,6 +72,27 @@ function packingFixture(t) {
 }
 
 test.describe("Post-assembly native entrypoint packing", () => {
+  test("transported Linux executable permissions are restored without changing pinned bytes", {skip: process.platform !== "linux"}, t => {
+    const f = packingFixture(t); fs.chmodSync(f.sourcePath, 0o644);
+    const before = fileHash(f.sourcePath);
+    packNativeEntrypoint(f.options(), f.packSpawn);
+    assert.equal(fs.statSync(f.sourcePath).mode & 0o777, 0o755);
+    assert.equal(fileHash(f.sourcePath), before);
+  });
+  test("rejected transported inputs retain their original permissions", {skip: process.platform !== "linux"}, t => {
+    const f = packingFixture(t); fs.chmodSync(f.sourcePath, 0o644);
+    fs.appendFileSync(f.producerReceiptPath, "tampered\n");
+    assert.throws(() => packNativeEntrypoint(f.options(), f.packSpawn), /producer receipt differs/);
+    assert.equal(fs.statSync(f.sourcePath).mode & 0o777, 0o644);
+    assert.equal(f.calls.length, 0);
+  });
+  test("a rejected packer never changes transported executable permissions", {skip: process.platform !== "linux"}, t => {
+    const f = packingFixture(t); fs.chmodSync(f.sourcePath, 0o644);
+    const options = f.options(); fs.appendFileSync(f.upx, "tampered\n");
+    assert.throws(() => packNativeEntrypoint(options, f.packSpawn), /packing tool differs/);
+    assert.equal(fs.statSync(f.sourcePath).mode & 0o777, 0o644);
+    assert.equal(f.calls.length, 0);
+  });
   test("external entrypoint and raw executable pins fail before creating output", t => {
     const f = packingFixture(t), options = f.options(); options.entrypointSha256 = "0".repeat(64);
     assert.throws(() => packNativeEntrypoint(options, f.packSpawn), /entrypoint.*external SHA-256/);
@@ -91,7 +114,7 @@ test.describe("Post-assembly native entrypoint packing", () => {
     assert.throws(() => packNativeEntrypoint(options, f.packSpawn), /build-only candidate/);
     assert.equal(fs.existsSync(f.output), false); assert.equal(f.calls.length, 0);
   });
-  test("relocated source packs once, chains the raw handoff and remains packageable", t => {
+  test("relocated source packs once, chains the raw handoff and remains packageable", {skip: process.platform !== "linux"}, t => {
     const f = packingFixture(t), beforeEntry = fileHash(f.entrypointPath), beforeSource = fileHash(f.sourcePath), options = f.options(),
       packed = packNativeEntrypoint(options, f.packSpawn), entry = JSON.parse(fs.readFileSync(packed.entrypoint, "utf8")),
       packReceiptPath = path.join(f.output, "result.json"), packReceipt = JSON.parse(fs.readFileSync(packReceiptPath, "utf8"));
@@ -647,10 +670,14 @@ test.describe("Native release and SDK stages share the portable release policy",
 
 test.describe("Native build stages retain literal commands and bounded logging", () => {
   /** @param {import("node:test").TestContext} t @param {{runner?: string[], env?: NodeJS.ProcessEnv}} runner @param {{status: number | null, signal?: string, error?: Error}} result */
-  function stage(t, runner, result = {status: 0}) {
+  function stage(t, runner, result = {status: 0}, logOutput = "") {
     const output = temporary(t); fs.mkdirSync(path.join(output, "logs"));
     const calls = /** @type {{command: string, args: string[], options: import("node:child_process").SpawnSyncOptions}[]} */ ([]);
-    const fake = /** @type {typeof spawnSync} */ ((command, args, options) => {calls.push({command, args: [...(args || [])], options: options || {}}); return result;});
+    const fake = /** @type {typeof spawnSync} */ ((command, args, options) => {
+      calls.push({command, args: [...(args || [])], options: options || {}});
+      const fd = options?.stdio?.[1]; if (typeof fd === "number") {fs.writeSync(fd, logOutput);}
+      return result;
+    });
     const invoke = () => {
       const log = console.log; console.log = () => undefined;
       try {nativeStage(runner, "/sdk/node", ["literal;$(false)", "space name"], {MOM_AOT_BUILD_ONLY: "0"}, repo, output, "fixture", fake);} finally {console.log = log;}
@@ -667,9 +694,88 @@ test.describe("Native build stages retain literal commands and bounded logging",
   test("output and stage identity are explicit to containment wrappers", t => {const f = stage(t, {}); f.invoke(); assert.equal(f.calls[0]?.options.env?.["MOM_NATIVE_BUILD_OUTPUT"], f.output); assert.equal(f.calls[0]?.options.env?.["MOM_NATIVE_BUILD_STAGE"], "fixture");});
   test("compiler output uses a file descriptor, not a parent stdout buffer", t => {const f = stage(t, {}); f.invoke(); const stdio = /** @type {unknown[]} */ (f.calls[0]?.options.stdio || []); assert.equal(typeof stdio[1], "number"); assert.equal(f.calls[0]?.options.encoding, undefined);});
   test("a nonzero compiler result stops the lifecycle", t => {const f = stage(t, {}, {status: 1}); assert.throws(f.invoke, /inspect.*before retrying/); assert.equal(f.calls.length, 1);});
-  test("a compiler signal is unresolved even with status zero", t => {const f = stage(t, {}, {status: 0, signal: "SIGTERM"}); assert.throws(f.invoke, /Native build failed/);});
-  test("a missing compiler returns a clear stage failure", t => {const f = stage(t, {}, {status: null, error: new Error("ENOENT")}); assert.throws(f.invoke, /Native build failed/);});
+  test("a failed compiler stage emits only a bounded tail while retaining its log and failure", t => {
+    const output = "early compiler context\n" + "x".repeat(20000) + "\nlate compiler reason\n", f = stage(t, {}, {status: 2}, output),
+      errors = /** @type {string[]} */ ([]), oldError = console.error;
+    console.error = message => {errors.push(String(message));};
+    try {assert.throws(f.invoke, /Native build failed: fixture; inspect .*fixture\.log before retrying/);} finally {console.error = oldError;}
+    const diagnostic = errors.join("\n");
+    assert.match(diagnostic, /exit 2, signal none/); assert.match(diagnostic, /late compiler reason/); assert.doesNotMatch(diagnostic, /early compiler context/);
+    assert.ok(Buffer.byteLength(diagnostic) <= 17000); assert.equal(fs.readFileSync(path.join(f.output, "logs/fixture.log"), "utf8"), output);
+    assert.equal(f.calls.length, 1);
+  });
+  test("a compiler signal is unresolved even with status zero", t => {
+    const f = stage(t, {}, {status: 0, signal: "SIGTERM"}), errors = /** @type {string[]} */ ([]), oldError = console.error;
+    console.error = message => {errors.push(String(message));};
+    try {assert.throws(f.invoke, /Native build failed/);} finally {console.error = oldError;}
+    assert.match(errors.join("\n"), /exit 0, signal SIGTERM/);
+  });
+  test("a missing compiler returns a clear stage failure", t => {
+    const f = stage(t, {}, {status: null, error: new Error("ENOENT")}), errors = /** @type {string[]} */ ([]), oldError = console.error;
+    console.error = message => {errors.push(String(message));};
+    try {assert.throws(f.invoke, /Native build failed/);} finally {console.error = oldError;}
+    assert.match(errors.join("\n"), /exit null, signal none, error ENOENT/);
+  });
   test("a stage cannot overwrite earlier diagnostic evidence", t => {const f = stage(t, {}); f.invoke(); assert.throws(f.invoke, /EEXIST/); assert.equal(f.calls.length, 1);});
+  test("a failed controller command preserves its status and bounded compiler output", t => {
+    const root = temporary(t), log = path.join(root, "controller.log"), output = "early controller context\n" + "x".repeat(40000) + "\nactual compiler error\n";
+    const cause = new Error("fixture spawn error"), result = {status: 2, stdout: output.slice(0, output.length - 24), stderr: "actual compiler error\n", error: cause};
+    let calls = 0;
+    const fake = /** @type {typeof spawnSync} */ (/** @type {unknown} */ (() => {calls++; return result;}));
+    let failure;
+    try {runNativeControllerCommand("fixture-compiler", ["-c"], log, 0, {}, root, fake);} catch (error) {failure = error;}
+    assert.ok(failure instanceof Error); assert.match(failure.message, /exit 2/); assert.match(failure.message, /actual compiler error/);
+    assert.doesNotMatch(failure.message, /early controller context/); assert.ok(Buffer.byteLength(failure.message) < 18000);
+    assert.equal(fs.readFileSync(log, "utf8"), result.stdout + result.stderr); assert.equal(failure.cause, cause); assert.equal(calls, 1);
+  });
+  test("a failed controller object compile keeps its full log and emits a bounded tail once", t => {
+    const root = temporary(t), output = path.join(root, "application"), object = path.join(output, "gpu-dispatch.o"),
+      depfile = object + ".d", log = path.join(output, "gpu-dispatch.log"), fullOutput = "early object compiler context\n" +
+        "x".repeat(40000) + "\nactual object compiler error\n", cause = "fixture compiler launch failure";
+    fs.mkdirSync(output);
+    const command = {command: "/sdk/cxx", args: ["-c", path.join(repo, "runtime/gpu-dispatch.cpp"), "-o", object],
+      source: path.join(repo, "runtime/gpu-dispatch.cpp"), object, depfile, timeout: 120000, generatedInputs: [], log};
+    const result = {objects: [{object, depfile, cacheHit: false, status: 2, stdout: fullOutput, stderr: "", error: cause,
+      signal: null, objectSha256: null, depfileSha256: null}], cacheRoot: path.join(root, "cache"), cacheHits: 0, cacheMisses: 1, ninja: "/usr/bin/ninja"};
+    const calls = /** @type {Array<Parameters<typeof import("../scripts/native-object-cache").compileNativeObjects>[0]>} */ ([]),
+      fake = (/** @type {Parameters<typeof import("../scripts/native-object-cache").compileNativeObjects>[0]} */ options) => {calls.push(options); return result;},
+      batch = {repo, output, namespace: "linux/controller/test", commands: [command], includeRoots: new Set(["/sdk/include"])};
+    let failure;
+    try {flushLinuxObjectBatch(batch, fake);} catch (error) {failure = error;}
+    assert.ok(failure instanceof Error); assert.match(failure.message, /Native Linux object compile failed \(exit 2, signal none\)/);
+    assert.match(failure.message, /actual object compiler error/); assert.doesNotMatch(failure.message, /early object compiler context/);
+    assert.ok(Buffer.byteLength(failure.message) < 18000); assert.equal(failure.cause, cause);
+    assert.equal(fs.readFileSync(log, "utf8"), fullOutput);
+    assert.equal(calls.length, 1); assert.deepEqual(calls[0]?.commands, [command]); assert.equal(calls[0]?.jobs, 1);
+    assert.equal(calls[0]?.finalize, true); assert.deepEqual(calls[0]?.liveObjects, [object]);
+    assert.deepEqual(calls[0]?.includeRoots, ["/sdk/include"]);
+  });
+  test("a failed Ninja batch retains every object log and exposes a later edge error", t => {
+    const root = temporary(t), output = path.join(root, "application"), firstObject = path.join(output, "gpu-dispatch.o"),
+      secondObject = path.join(output, "driver-library.o"), firstLog = path.join(output, "gpu-dispatch.log"),
+      secondLog = path.join(output, "driver-library.log"), firstDepfile = firstObject + ".d", secondDepfile = secondObject + ".d",
+      secondOutput = "early edge context\n" + "x".repeat(40000) + "\nactual later compiler error\n", cause = "Ninja failed with status 1";
+    fs.mkdirSync(output);
+    const commands = [
+      {command: "/sdk/cxx", args: [], source: path.join(repo, "runtime/gpu-dispatch.cpp"), object: firstObject, depfile: firstDepfile, timeout: 120000, generatedInputs: [], log: firstLog},
+      {command: "/sdk/cxx", args: [], source: path.join(repo, "runtime/driver-library.cpp"), object: secondObject, depfile: secondDepfile, timeout: 120000, generatedInputs: [], log: secondLog},
+    ];
+    const result = {objects: [
+      {object: firstObject, depfile: firstDepfile, cacheHit: false, status: null, stdout: "", stderr: "", error: cause,
+        signal: null, objectSha256: null, depfileSha256: null},
+      {object: secondObject, depfile: secondDepfile, cacheHit: false, status: null, stdout: secondOutput, stderr: "", error: cause,
+        signal: null, objectSha256: null, depfileSha256: null},
+    ], cacheRoot: path.join(root, "cache"), cacheHits: 0, cacheMisses: 2, ninja: "/usr/bin/ninja"};
+    const calls = /** @type {Array<Parameters<typeof import("../scripts/native-object-cache").compileNativeObjects>[0]>} */ ([]),
+      fake = (/** @type {Parameters<typeof import("../scripts/native-object-cache").compileNativeObjects>[0]} */ options) => {calls.push(options); return result;},
+      batch = {repo, output, namespace: "linux/controller/test", commands, includeRoots: new Set(["/sdk/include"])};
+    let failure;
+    try {flushLinuxObjectBatch(batch, fake);} catch (error) {failure = error;}
+    assert.ok(failure instanceof Error); assert.match(failure.message, /actual later compiler error/);
+    assert.ok(Buffer.byteLength(failure.message) < 18000); assert.equal(failure.cause, cause);
+    assert.equal(fs.readFileSync(firstLog, "utf8"), ""); assert.equal(fs.readFileSync(secondLog, "utf8"), secondOutput);
+    assert.equal(calls.length, 1); assert.deepEqual(calls[0]?.commands, commands); assert.equal(calls[0]?.jobs, 1);
+  });
 });
 
 test.describe("Native ELF strip payload boundaries", () => {

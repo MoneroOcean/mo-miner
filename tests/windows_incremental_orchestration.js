@@ -14,6 +14,19 @@ const oneapi = fs.readFileSync(path.join(scripts, "build-windows.ps1"), "utf8");
 
 test.describe("Windows incremental build orchestration", {concurrency: false}, () => {
 
+  test("scoped Windows producers keep the default full build and isolate CPU/portable outputs", () => {
+    assert.match(source, /\[ValidateSet\('all','cpu','portable'\)\]\[string\]\$Scope = 'all'/);
+    assert.match(source, /if \(\$Scope -eq 'all' -and \$Backend -in @\('all','nvidia'\)[\s\S]*?Assert-MomCudaCompilerSdk/);
+    assert.match(source, /if \(\$Scope -ne 'cpu' -and \$Backend -eq 'all'[\s\S]*?Test-MomDpcppToolchain/);
+    assert.match(source, /if \(\$Scope -ne 'portable'\) \{\s+& "\$PSScriptRoot\\build-windows\.ps1"/);
+    assert.match(source, /if \(\$Scope -eq 'all' -and \$Backend -in @\('all','intel'\)\)/);
+    assert.match(source, /if \(\$Scope -eq 'portable' -or \(\$Scope -eq 'all'[\s\S]*?-PortableOpencl/);
+    assert.match(source, /Save-Compiler dpcpp-opencl -SyclDll '[^']+' -RuntimeOnly/);
+    assert.match(source, /Save-DpcppRuntime -Name dpcpp-opencl/);
+    assert.match(source, /portable-only scope must not publish a mom\.node/);
+    assert.match(source, /CPU-only scope did not produce build\\Release\\mom\.node/);
+  });
+
   test("Windows packaging reclaims interrupted default ZIP staging and preserves atomic publication", {
     skip: process.platform !== "win32",
   }, () => {
@@ -499,16 +512,19 @@ Write-Output 'STAGING_BOUNDARY_FIXTURE_OK'
       fs.writeFileSync(path.join(dir, "windows-dll-deps.ps1"), [
         "function Copy-MominerOptionalRuntimeFiles {",
         "  param([string]$PackageDir, [string[]]$SourceRoots)",
-        "  if ($PackageDir -ne (Join-Path $out 'oneapi') -or $SourceRoots.Count -ne 1 -or $SourceRoots[0] -ne (Join-Path $repo 'fixture-oneapi-bin')) { throw 'Unexpected fixture runtime export' }",
+        "  if ($PackageDir -eq (Join-Path $out 'oneapi')) { if ($SourceRoots.Count -ne 1 -or $SourceRoots[0] -ne (Join-Path $repo 'fixture-oneapi-bin')) { throw 'Unexpected fixture oneAPI runtime export' }; return }",
+        "  if ($PackageDir -eq (Join-Path $out 'dpcpp-opencl')) { Set-Content (Join-Path $PackageDir 'portable-runtime.dll') 'fixture-runtime'; return }",
+        "  throw 'Unexpected fixture runtime export'",
         "}",
         "function Copy-MominerDllClosure {",
         "  param([string]$PackageDir, [string[]]$EntryPaths)",
-        "  if ($PackageDir -ne (Join-Path $out 'oneapi') -or $EntryPaths.Count -ne 2) { throw 'Unexpected fixture DLL closure' }",
+        "  if ($PackageDir -notin @((Join-Path $out 'oneapi'), (Join-Path $out 'dpcpp-opencl')) -or $EntryPaths.Count -ne 2) { throw 'Unexpected fixture DLL closure' }",
         "  foreach ($entry in $EntryPaths) { if (-not (Test-Path -LiteralPath $entry -PathType Leaf)) { throw 'Missing fixture runtime entry' } }",
         "}",
       ].join("\n"));
       fs.writeFileSync(path.join(fixture, "scripts/windows-install-helpers.ps1"),
-        "function Get-MominerOneApiBinDirs { Join-Path $repo 'fixture-oneapi-bin' }\n");
+        "function Get-MominerOneApiBinDirs { Join-Path $repo 'fixture-oneapi-bin' }\n" +
+        "function Test-MomDpcppToolchain([string]$Root) { return $true }\n");
       for (const name of ["windows-msbuild-cache.ps1", "windows-incremental-build.ps1", "build-environment.js"]) {
         fs.copyFileSync(path.join(repo, "scripts", name), path.join(fixture, "scripts", name));
       }
@@ -522,11 +538,19 @@ Write-Output 'STAGING_BOUNDARY_FIXTURE_OK'
       fs.writeFileSync(path.join(dir, "build-windows-multicompiler.ps1"), fixtureSource);
       fs.writeFileSync(path.join(dir, "build-windows.ps1"), [
         "$ErrorActionPreference = 'Stop'",
+        "if ($env:MOM_FIXTURE_SCOPE -eq 'portable') { throw 'Portable scope invoked the CPU node-gyp builder' }",
         "if (-not (Test-Path 'build\\obj\\input.obj')) { throw 'Object tree was not restored' }",
         "if (Test-Path 'build\\win') { throw 'Nested source-relative build tree' }",
         "Set-Content build\\Release\\mom.node 'current-host'",
         "Set-Content build\\Release\\sycl.dll 'current-oneapi'",
         ...(failure === "compile" ? ["throw 'Fixture compilation failure'"] : []),
+      ].join("\n"));
+      fs.writeFileSync(path.join(dir, "build-sycl-cuda-win.ps1"), [
+        "param([string]$ToolchainDir, [string]$CudaPath, [switch]$PortableOpencl, [string]$OutDir)",
+        "if (-not $PortableOpencl -or $OutDir -ne 'build\\.incremental\\sycl-dpcpp-portable') { throw 'Unexpected fixture portable build request' }",
+        "New-Item -ItemType Directory -Force (Split-Path -Parent $OutDir) | Out-Null",
+        "New-Item -ItemType Directory -Force $OutDir | Out-Null",
+        "Set-Content (Join-Path $OutDir 'sycl.dll') 'current-portable'",
       ].join("\n"));
       try {
         const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
@@ -545,6 +569,22 @@ Write-Output 'STAGING_BOUNDARY_FIXTURE_OK'
         assert(!fs.existsSync(path.join(fixture, "build-windows-completed")));
         if (failure === "none") {
           assert.equal(fs.readFileSync(path.join(fixture, "build/win/compilers/oneapi/sycl.dll"), "utf8").trim(), "current-oneapi");
+          const cpu = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+            "-File", path.join(dir, "build-windows-multicompiler.ps1"), "-Scope", "cpu"],
+          {encoding: "utf8", timeout: 30000, windowsHide: true});
+          assert.equal(cpu.error, undefined);
+          assert.equal(cpu.status, 0, cpu.stdout + cpu.stderr);
+          assert.equal(fs.readFileSync(path.join(fixture, "build/win/Release/mom.node"), "utf8").trim(), "current-host");
+          assert.equal(fs.readFileSync(path.join(fixture, "build/win/compilers/oneapi/sycl.dll"), "utf8").trim(), "current-oneapi");
+          const portable = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+            "-File", path.join(dir, "build-windows-multicompiler.ps1"), "-Scope", "portable"],
+          {encoding: "utf8", timeout: 30000, windowsHide: true, env: {...process.env, MOM_FIXTURE_SCOPE: "portable"}});
+          assert.equal(portable.error, undefined);
+          assert.equal(portable.status, 0, portable.stdout + portable.stderr);
+          assert.equal(fs.readFileSync(path.join(fixture, "build/win/compilers/oneapi/sycl.dll"), "utf8").trim(), "current-oneapi");
+          assert.equal(fs.readFileSync(path.join(fixture, "build/win/compilers/dpcpp-opencl/sycl.dll"), "utf8").trim(), "current-portable");
+          assert.equal(fs.readFileSync(path.join(fixture, "build/win/compilers/dpcpp-opencl/portable-runtime.dll"), "utf8").trim(), "fixture-runtime");
+          assert(!fs.existsSync(path.join(fixture, "build/win/compilers/dpcpp-opencl/mom.node")));
         }
       } finally {
         fs.rmSync(fixture, {recursive: true, force: true});

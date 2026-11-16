@@ -36,6 +36,28 @@ test.describe("Native compiler graph dispatch and generated forwards", {skip: pr
     test(`${key} selects its linked graph exactly once across concurrent entry`, () => {assert.match(run(key), /first-entry concurrency/);});
   }
   test("unused cleanup cannot initialize a compiler, even with an invalid key", () => {assert.equal(run("bad", "unused"), "");});
+  test("Windows addon cleanup does not load an unused GPU DLL and still cleans a loaded one", () => {
+    const source = fs.readFileSync(path.join(__dirname, "../native/core.cpp"), "utf8"),
+      cleanup = source.slice(source.indexOf("static void cleanup_sycl_runtime"), source.indexOf("static napi_value init_module")),
+      output = path.join(root, "addon-cleanup");
+    assert(cleanup.startsWith("static void cleanup_sycl_runtime"));
+    const fixture = `#include <cwchar>
+      bool loaded = false; int calls = 0;
+      void* GetModuleHandleW(const wchar_t* name) {
+        return loaded && std::wcscmp(name, L"sycl.dll") == 0 ? reinterpret_cast<void*>(1) : nullptr;
+      }
+      void sycl_cleanup() noexcept { ++calls; }
+      ${cleanup}
+      int main() {
+        cleanup_sycl_runtime(nullptr); if (calls != 0) return 1;
+        loaded = true; cleanup_sycl_runtime(nullptr); return calls == 1 ? 0 : 2;
+      }`;
+    const compiled = spawnSync(process.env["CXX"] || "c++", ["-std=c++20", "-O2", "-Wall", "-Wextra", "-Werror",
+      "-D_WIN32", "-x", "c++", "-", "-o", output], {input: fixture, encoding: "utf8", timeout: 30000});
+    assert.equal(compiled.status, 0, compiled.error?.message || compiled.stderr);
+    const result = spawnSync(output, [], {encoding: "utf8", timeout: 10000});
+    assert.equal(result.status, 0, result.error?.message || result.stderr);
+  });
   test("HIP rejects unusable scratch before initializing its factory or cleanup", () => {
     for (const temporary of [path.join(root, "missing"), path.join(root, "both"), "", "a".repeat(4097)]) {
       assert.equal(run("acpp-hip", "scratch-error", "both", {TMPDIR: temporary}), "");

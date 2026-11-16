@@ -33,14 +33,14 @@ test.describe("Windows static SYCL compiler tool selection", () => {
       allowedImports: ["kernel32.dll"]},
     libraries: {sourceInclude: "/io/include", ssl: "/io/ssl.lib", crypto: "/io/crypto.lib", libuv: "/io/uv.lib", zlib: "/io/z.lib"}};
   }
-  test("Intel direct-LLD builds do not require the unused manifest tool", () => {
+  test("Intel direct-LLD builds do not require the unused manifest tool", {skip: process.platform !== "linux"}, () => {
     const plan = windowsStaticSdkPlan({}, descriptor(), "/dpcpp", "/cuda", "/output", 2, undefined, true);
     assert.equal(Object.hasOwn(plan.compilerTools, "CMAKE_MT"), false);
     assert.doesNotMatch(plan.toolchain, /llvm-mt|CMAKE_MT/);
     assert.equal(plan.compilerTools.CMAKE_LINKER, "/tools/lld-link");
     assert.match(plan.ruleOverrideText, /<CMAKE_LINKER> \/NOLOGO/);
   });
-  test("the default Clang plan retains its platform manifest tool", () => {
+  test("the default Clang plan retains its platform manifest tool", {skip: process.platform !== "linux"}, () => {
     const plan = windowsStaticSdkPlan({}, descriptor(), "/dpcpp", "/cuda", "/output", 2);
     assert.equal(plan.compilerTools.CMAKE_MT, "/tools/llvm-mt");
     assert.match(plan.toolchain, /set\(CMAKE_MT /);

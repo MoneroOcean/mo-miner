@@ -52,7 +52,17 @@ function packNativeRelease(options, spawn = spawnSync) {
     const log = fs.openSync(path.join(output, stage + ".log"), "wx"); commands.push({command: upx, args});
     try {
       const result = spawn(upx, args, {stdio: ["ignore", log, log], timeout, windowsHide: true});
-      if (result.status !== 0 || result.signal || result.error) {throw new Error("Native packing stage failed: " + stage + "; inspect its saved log", {cause: result.error});}
+      if (result.status !== 0 || result.signal || result.error) {
+        // Preserve the full file, but expose only a bounded tail in ordinary CI logs.
+        const reader = fs.openSync(path.join(output, stage + ".log"), "r");
+        let tail;
+        try {
+          const size = fs.fstatSync(reader).size, buffer = Buffer.alloc(Math.min(size, 16384));
+          const bytes = fs.readSync(reader, buffer, 0, buffer.length, Math.max(0, size - buffer.length));
+          tail = buffer.subarray(0, bytes).toString("utf8");
+        } finally {fs.closeSync(reader);}
+        throw new Error(`Native packing stage failed: ${stage} (exit ${result.status}, signal ${result.signal || "none"}); inspect its saved log\n${tail}`, {cause: result.error});
+      }
     } finally {fs.closeSync(log);}
   };
   console.log("[native] Packing in memory; raw executable is preserved");

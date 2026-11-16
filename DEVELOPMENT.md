@@ -139,6 +139,16 @@ CPU correctness tests can be run independently:
 npm test -- cpu
 ~~~
 
+For the same early hashing gate used by CI (CPU vectors, addon contracts, and all portable SYCL
+CPU algorithms), install the CPU OpenCL runtime, then run the ordinary development entrypoint:
+
+~~~sh
+MOM_DEV_HOST=1 MOM_GPU_BACKEND=opencl MOM_LINUX_BUILD_COMPILER=dpcpp-opencl MOM_OPENCL_DEVICE_TYPE=cpu ONEAPI_DEVICE_SELECTOR=opencl:cpu MOM_REQUIRE_PORTABLE_CPU_TESTS=1 npm run dev -- node tests/run_hash.js engineering
+~~~
+
+On a Linux host, `bash scripts/install-opencl-cpu.sh` installs the pinned CPU runtime; Windows
+development's `oneapi` component already installs it. No standalone executable is built by this gate.
+
 Hardware test selectors are explicit:
 
 ~~~sh
@@ -239,7 +249,47 @@ the complete application.
 
 ### Building a standalone native candidate
 
-Build from a reviewed descriptor into a new absolute output directory:
+On Linux x64, the no-argument entrypoint prepares pinned source-built SDKs, reuses admitted
+incremental outputs, then builds, packs, audits and packages the executable:
+
+~~~sh
+npm run build:release
+~~~
+
+It uses `~/cache/mom/native-sdk`, an exclusive build lock, and an enforced aggregate
+4-GiB memory limit with swap disabled. The final archive and SHA256 sidecar are copied to the
+checkout only after successful audits. This is a build command, not a runtime test or publication
+approval. Successful private application outputs are removed. Failed outputs occupy one
+`release-work` slot; inspect that diagnostic directory before clearing it and retrying.
+This path does not install system packages: pinned Node, Intel 2026.2, CUDA, and OS development
+prerequisites must already be installed. Missing prerequisites fail before SDK acquisition.
+
+On Windows x64, the same no-argument command uses native Windows support producers together with
+an already-installed WSL2 distribution for Linux source preparation and the remaining SDK and
+application stages. Select the distribution explicitly when more than one is installed:
+
+~~~powershell
+$env:MOM_WSL_DISTRO = "<installed WSL2 distribution>"
+npm run build:release
+~~~
+
+The Windows side needs Node.js 24.15.0, Intel oneAPI 2026.2, Visual Studio C++ Build Tools,
+Python, and the pinned native Perl prerequisite. The selected WSL2 distribution needs systemd
+user scopes and the pinned Linux Node.js 24.15.0, Intel toolchain, and build tools. The command
+does not install prerequisites or change Windows/WSL configuration. It keeps Linux dependencies
+separate from Windows `node_modules`.
+
+The WSL ext4 cache at `~/cache/mom/native-sdk` holds large Linux SDKs and incremental build data;
+native Windows support and export caches are under
+`%LOCALAPPDATA%\MoM\native-wsl-windows\<checkout-hash>\{support,exports,bridge}`. One lock spans
+the WSL build graph. Its 4-GiB memory limit and disabled swap apply to the Linux process tree,
+not native Windows interop processes; native Windows stages run sequentially with two build jobs.
+The archive and checksum sidecar are copied into the checkout only after the shared audits pass.
+Failed application output occupies one `windows-release-work` slot, and failed bridge state is
+preserved and blocks retry; inspect and resolve diagnostics before retrying. The Windows/WSL
+route has not yet received end-to-end runtime qualification on a Windows host.
+
+For advanced builds, use a reviewed descriptor and a new absolute output directory:
 
 ~~~sh
 npm run build:release -- --native /absolute/sdk.json /new/absolute/output
@@ -467,7 +517,12 @@ same complete cohort, while retaining all input and executable/archive byte comp
 
 Release and Stability use the native release-artifact orchestrator described below. Legacy
 Engineering archives remain available through `--engineering-archive --package-only` and
-`npm run test:deploy`; they are not the standalone release pipeline. The native prerequisite
+`npm run test:deploy`; they are not the standalone release pipeline. An independent Engineering
+hashing gate builds development addons with the ordinary development scripts, then runs CPU
+vectors, addon contracts and all 22 portable SYCL CPU algorithm checks under Node.js on Linux
+and Windows. It starts alongside source checks, without waiting for AOT or static SDK builds;
+packaging requires both Engineering and standalone qualification. Hosted CPU checks do not
+replace physical-GPU correctness or performance qualification. The native prerequisite
 workflow hands each platform's same-run raw executable and exact hash to the runtime-only
 workflow. Independent packing jobs consume only that raw
 binary and compact original build receipts through the existing release packing API; they do
@@ -590,16 +645,23 @@ These newly wired stages still need a complete fresh-run qualification and downs
 
 The reusable Windows LLVM workflow runs on Ubuntu 24.04 and cross-builds the Windows-target LLVM
 host libraries; it does not build or run the MoM Windows application. Its ordered stages are
-configure, six build phases (`llvm-amdgpu`, `llvm-nvptx`, `llvm-x86`, `llvm-core`, `clang`, and
-`lld`), then audit. `scripts/run-native-windows-llvm-ci.js` re-admits the same-run Hermes and thin
+configure, `llvm-amdgpu`, `llvm-mid` (NVPTX, X86 and core), `clang`, `lld`, then audit.
+The grouped job retains all three original builder receipts but transfers only its final state.
+`scripts/run-native-windows-llvm-ci.js` re-admits the same-run Hermes and thin
 Linux LLVM-tool inputs and resumes the public builder from the immediately preceding state.
 Each transition uses a same-run archive plus a separately SHA-pinned manifest; external Windows
 SDK/tool inputs are reconstructed at their recorded paths instead of being bundled into that state.
 Configure establishes an eight-hour run deadline that later jobs must carry forward, and each
-phase has its own non-extendable deadline and 60-minute job cap. The reusable workflow declares
+job has its own non-extendable deadline: 25 minutes inside a 30-minute job for `llvm-mid`,
+55 minutes inside a 60-minute job otherwise. The reusable workflow declares
 only `actions: read` and `contents: read` token permissions. This connected source workflow still
-needs a fresh GitHub-run qualification and downstream Windows application/runtime integration; it
-is not a complete Windows SDK or release by itself.
+needs fresh GitHub-run qualification; its build-only state feeds the Windows application/runtime
+jobs and is not a release by itself.
+
+Linux LLVM groups common libraries, backends/Clang analysis, and the tools/install/audit tail
+into 30-minute cold-build jobs; long code-generation and frontend phases remain separate.
+Independent source checks run alongside SDK production and remain mandatory packaging gates.
+Job budgets include setup and artifact transfers; persistent build caches are not required.
 
 The Windows static host-component job consumes that audited LLVM state and the separately
 hash-pinned full Linux LLVM SDK, thin tools, Hermes, DPC++/CUDA, ROCm, ACPP and HIP-header
@@ -677,7 +739,8 @@ a cold hosted run has passed them.
 | Lint and strict type check        | npm run check                                                              |
 | Logic/CPU/GPU tests               | npm test -- logic, cpu, or an explicit gpu-* selector                      |
 | Engineering archive build/test    | npm run test:deploy                                                        |
-| Build standalone native candidate | npm run build:release -- --native <sdk.json> <new-output>                  |
+| Build standalone Linux release    | npm run build:release                                                      |
+| Advanced native candidate         | npm run build:release -- --native <sdk.json> <new-output>                  |
 | Package native candidate          | node scripts/package-native-release.js <entrypoint.json> <cmake> <version> |
 | GPU compiler/backend matrix       | [GPU-CONFIG.md](GPU-CONFIG.md)                                             |
 

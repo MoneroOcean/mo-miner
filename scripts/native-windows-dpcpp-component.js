@@ -161,11 +161,11 @@ function stageWindowsDpcppComponent(selected, producer, output) {
   return windowsDpcppComponentInputs(output);
 }
 
-/** Verify the complete original SDK, JIT, adapter isolation and lazy driver bindings before
- * transport. No tool, VM, GPU or executable is started. Preserve the original receipts.
- * @param {string} producer @param {string} cuda @param {string} output @param {NodeJS.ProcessEnv} [environment] */
-function exportWindowsDpcppComponent(producer, cuda, output, environment = process.env) {
-  if (process.platform !== "linux" || environment["MOM_AOT_BUILD_ONLY"] !== "1" || ![producer, cuda, output].every(absolute)) {throw new Error("Windows component export requires Linux, explicit roots and MOM_AOT_BUILD_ONLY=1");}
+/** Verify the original SDK, JIT, adapter isolation and lazy bindings without copying them.
+ * Fresh exports and local warm builds share this admission; no producer receipt is restamped.
+ * @param {string} producer @param {string} cuda @param {NodeJS.ProcessEnv} [environment] */
+function windowsDpcppProducerInputs(producer, cuda, environment = process.env) {
+  if (process.platform !== "linux" || environment["MOM_AOT_BUILD_ONLY"] !== "1" || ![producer, cuda].every(absolute)) {throw new Error("Windows component export requires Linux, explicit roots and MOM_AOT_BUILD_ONLY=1");}
   const producerSha = fileHash(producer), r = readBuildJson(producer);
   if (r.version !== 1 || r.buildOnly !== true || r.executed !== false || r.publicationQualified !== false || !r.recipe || !r.inputs || !r.headers) {throw new Error("Invalid Windows adapter producer receipt");}
   const {adapterSdkInputs, windowsRuntimeLinks} = require("./prepare-native-windows-adapters");
@@ -189,13 +189,39 @@ function exportWindowsDpcppComponent(producer, cuda, output, environment = proce
   for (const row of before.sdk.artifacts) {bound[row.path] = row.sha256;}
   const jit = require("./build-native-windows-sdk").windowsSourceJitInputs(before.sdk.sourceJit.receiptFile);
   if (!jit) {throw new Error("Missing Windows source-JIT payload hashes");} Object.assign(bound, jit.files);
+  for (const file of [...links.libraries, ...links.wholeArchives, ...links.objects]) {bound[file] = fileHash(file);}
   for (const [file, hash] of Object.entries(bound)) {if (!absolute(file) || fileHash(file) !== hash) {throw new Error("Windows component provenance changed");}}
-  const result = stageWindowsDpcppComponent(links, {path: producer, sha256: producerSha}, output);
-  for (const [file, hash] of Object.entries(bound)) {if (fileHash(file) !== hash) {throw new Error("Windows component provenance changed during export");}}
+  return {links, producer: {path: producer, sha256: producerSha}, files: bound};
+}
+
+/** Join the installed closure to its admitted original producer, not just its self-authored hashes.
+ * This also preserves archive order and rejects an otherwise-valid component from another build.
+ * @param {string} output @param {ReturnType<typeof windowsDpcppProducerInputs>} original */
+function matchWindowsDpcppComponent(output, original) {
+  const result = windowsDpcppComponentInputs(output), manifest = readBuildJson(path.join(output, "component.json"));
+  if (!isDeepStrictEqual(manifest.producer, original.producer)) {throw new Error("Windows component belongs to another original producer");}
+  for (const kind of /** @type {const} */ (["libraries", "wholeArchives", "objects"])) {
+    const selected = original.links[kind], installed = result.link[kind];
+    if (selected.length !== installed.length || selected.some((file, index) => {
+      const target = installed[index];
+      return !target || path.basename(file) !== path.basename(target) || original.files[file] !== result.files[target];
+    })) {throw new Error("Windows component differs from its original ordered payloads");}
+  }
+  for (const [file, hash] of Object.entries(original.files)) {if (fileHash(file) !== hash) {throw new Error("Windows component provenance changed during admission");}}
   return result;
 }
 
-module.exports = {windowsDpcppLinks, windowsDpcppComponentInputs, windowsDpcppSdkInputs, stageWindowsDpcppComponent, exportWindowsDpcppComponent};
+/** Export a fresh component only after full source admission; warm users call the same matcher.
+ * @param {string} producer @param {string} cuda @param {string} output @param {NodeJS.ProcessEnv} [environment] */
+function exportWindowsDpcppComponent(producer, cuda, output, environment = process.env) {
+  if (!absolute(output)) {throw new Error("Windows component output must be absolute");}
+  const original = windowsDpcppProducerInputs(producer, cuda, environment);
+  stageWindowsDpcppComponent(original.links, original.producer, output);
+  return matchWindowsDpcppComponent(output, original);
+}
+
+module.exports = {windowsDpcppLinks, windowsDpcppComponentInputs, windowsDpcppSdkInputs, stageWindowsDpcppComponent,
+  windowsDpcppProducerInputs, matchWindowsDpcppComponent, exportWindowsDpcppComponent};
 if (require.main === module) {
   try {
     const [producer, cuda, output, extra] = process.argv.slice(2);

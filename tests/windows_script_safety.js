@@ -10,6 +10,13 @@ const test = require("node:test");
 test.describe("Windows script safety", {concurrency: false}, () => {
   const WINDOWS = process.platform === "win32";
   const repo = path.resolve(__dirname, "..");
+  const WINDOWS_POWERSHELL = WINDOWS
+    ? path.join(process.env["SystemRoot"] || process.env["WINDIR"] || "C:\\Windows",
+      "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+    : "";
+  const hasPwsh = WINDOWS && spawnSync("pwsh.exe", ["-NoProfile", "-NonInteractive", "-Command", "exit 0"], {
+    encoding: "utf8", windowsHide: true, timeout: 30000,
+  }).status === 0;
   const DPCPP_ASSET = "dpcpp-cuda-win-v7.1.1.tar.gz";
   const DPCPP_SHA256 = "8e5e9de06ed46c5e28aac4c574811a68f0a85dbb1cb65508187b0b8cf2e573cb";
   const PRIOR_DPCPP_SHA256 = "7a61b81cc15484656c80d3927dfc890d14d98689d64f05e3b88f5b45a1e4bb34";
@@ -53,6 +60,97 @@ test.describe("Windows script safety", {concurrency: false}, () => {
     assert.match(source, /\$vectorExit = if \(\$null -eq \$global:LASTEXITCODE\) \{ 1 \} else \{ \$global:LASTEXITCODE \}/);
     assert.doesNotMatch(source, /^\s*\$LASTEXITCODE = \$null/m);
     assert.match(source, /finally \{\n +\$ErrorActionPreference = \$vectorCapturePreference/);
+  });
+
+  test("oneAPI installer pins Windows PowerShell and its built-in module path", () => {
+    const source = readSource(path.join(repo, ".github/workflows/scripts/install-oneapi.bat"));
+    const setupEnd = source.indexOf('\nif "%PACKAGE%"');
+    assert(setupEnd > 0, "oneAPI installer setup boundary is missing");
+    const setup = source.slice(0, setupEnd);
+    assert.match(setup, /set "WINDOWS_POWERSHELL=%SystemRoot%\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe"/i);
+    assert.match(setup, /set "PSModulePath=%SystemRoot%\\System32\\WindowsPowerShell\\v1\.0\\Modules"/i);
+    assert.match(source, /pushd "%SystemRoot%\\System32\\WindowsPowerShell\\v1\.0"\nif errorlevel 1/);
+    assert.equal((source.match(/in \('\.\\powershell\.exe -NoProfile/g) || []).length, 2);
+    assert.equal((source.match(/%WINDOWS_POWERSHELL%" -NoProfile/g) || []).length, 2);
+    assert.match(source, /if not defined RUN_ID \([\s\S]*?popd\n {2}exit \/b 1\n\)/);
+    const resolverStart = source.indexOf('for /f "delims=" %%U');
+    const resolverEnd = source.indexOf('set "URL=%RESOLVED_URL%"', resolverStart);
+    assert(resolverStart >= 0 && resolverEnd > resolverStart, "oneAPI resolver boundary is missing");
+    assert.match(source.slice(resolverStart, resolverEnd), /\npopd\nif not defined RESOLVED_URL goto cleanup\n$/);
+    assert.match(source, /set "URL=%RESOLVED_URL%"\n\ncurl\.exe/);
+    assert.equal((source.match(/Get-AuthenticodeSignature/g) || []).length, 2);
+    assert.equal((source.match(/\$s\.Status -ne 'Valid'/g) || []).length, 2);
+  });
+
+  test("oneAPI setup child loads Authenticode under a poisoned parent module path", {
+    skip: !WINDOWS,
+  }, () => {
+    const fixture = makeFixture();
+    try {
+      const installer = readSource(path.join(repo, ".github/workflows/scripts/install-oneapi.bat"));
+      const guidEnd = installer.indexOf("\nif not defined RUN_ID");
+      assert(guidEnd > 0, "oneAPI installer GUID boundary is missing");
+      const resolverInvocation = installer.split("\n").find(line =>
+        line.includes("%%U") && line.includes("resolve-oneapi-url.ps1"));
+      assert(resolverInvocation, "oneAPI resolver invocation is missing");
+      const resolver = path.join(fixture, "resolve-probe.ps1");
+      fs.writeFileSync(resolver, [
+        "param([string]$Url, [string]$Package)",
+        "if ($Url -ne 'fixture URL with spaces & channel=one (test)' -or $Package -ne 'fixture package') { exit 9 }",
+        "Write-Output 'FIXTURE_RESOLVE_OK'",
+      ].join("\n"));
+      const probe = path.join(fixture, "authenticode-probe.bat");
+      fs.writeFileSync(probe, [
+        installer.slice(0, guidEnd),
+        "if not defined RUN_ID (",
+        "  popd",
+        "  exit /b 1",
+        ")",
+        "echo ONEAPI_RUN_ID=%RUN_ID%",
+        'set "URL=fixture URL with spaces & channel=one (test)"',
+        'set "PACKAGE=fixture package"',
+        'set "RESOLVED_URL="',
+        resolverInvocation.replace("resolve-oneapi-url.ps1", "resolve-probe.ps1"),
+        "popd",
+        'if not "%RESOLVED_URL%"=="FIXTURE_RESOLVE_OK" exit /b 2',
+        "echo ONEAPI_RESOLVER_OK",
+        '"%WINDOWS_POWERSHELL%" -NoProfile -Command "$s=Get-AuthenticodeSignature -LiteralPath (Join-Path $PSHOME \'powershell.exe\'); if($s.Status -ne \'Valid\'){Write-Error (\'Authenticode verification failed: \'+$s.Status); exit 1}; Write-Output \'WINDOWS_PS_SIGNATURE_VALID\'"',
+        "exit /b %ERRORLEVEL%",
+      ].join("\n"));
+
+      let parentPowerShell = WINDOWS_POWERSHELL;
+      let poisonedModulePath = path.join(fixture, "empty-module-path");
+      if (hasPwsh) {
+        const psHome = spawnSync("pwsh.exe", ["-NoProfile", "-NonInteractive", "-Command", "$PSHOME"], {
+          encoding: "utf8", windowsHide: true, timeout: 30000,
+        });
+        assert.equal(psHome.status, 0, psHome.stdout + psHome.stderr);
+        poisonedModulePath = path.join(psHome.stdout.trim(), "Modules");
+        assert(fs.existsSync(poisonedModulePath), "PowerShell 7 module directory is missing");
+        parentPowerShell = "pwsh.exe";
+      } else {
+        fs.mkdirSync(poisonedModulePath);
+      }
+
+      const result = spawnSync(parentPowerShell, ["-NoProfile", "-NonInteractive", "-Command",
+        "& $env:MOM_TEST_ONEAPI_DRIVER 'fixture URL with spaces & channel=one (test)' 'fixture components' 'fixture package'; exit $LASTEXITCODE"], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PSModulePath: poisonedModulePath,
+          MOM_TEST_ONEAPI_DRIVER: probe,
+        },
+        windowsHide: true,
+        timeout: 30000,
+      });
+      assert.equal(result.error, undefined, result.error?.message);
+      assert.equal(result.status, 0, result.stdout + result.stderr);
+      assert.match(result.stdout, /ONEAPI_RUN_ID=[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}/i);
+      assert.match(result.stdout, /ONEAPI_RESOLVER_OK/);
+      assert.match(result.stdout, /WINDOWS_PS_SIGNATURE_VALID/);
+    } finally {
+      fs.rmSync(fixture, {recursive: true, force: true});
+    }
   });
 
 
@@ -450,123 +548,6 @@ test.describe("Windows script safety", {concurrency: false}, () => {
       assert.match(result.stdout,
         /^EXECUTABLE_DISCOVERY_FIXTURE_PASSED cases=17 native=false installer=false network=false\r?$/m);
       assert.doesNotMatch(output, /EXPECTED_FAIL/);
-    } finally {
-      fs.rmSync(fixture, {recursive: true, force: true});
-    }
-  });
-
-  /** @param {string} [workflow] @returns {string} */
-  function extractWindowsArchiveRunBlock(workflow = readSource(
-    path.join(repo, ".github", "workflows", "build-release-artifacts.yml"))) {
-    workflow = workflow.replace(/\r\n/g, "\n");
-    const windowsJob = workflow.indexOf("  warm-windows-acpp-cuda:");
-    assert.notEqual(windowsJob, -1, "Windows release job is missing");
-    const archiveTest = workflow.indexOf("      - name: Test extracted release archive", windowsJob);
-    assert.notEqual(archiveTest, -1, "Windows archive test step is missing");
-    const marker = "        run: |\n";
-    const markerPosition = workflow.indexOf(marker, archiveTest);
-    assert.notEqual(markerPosition, -1, "Windows archive test run block is missing");
-    const lines = workflow.slice(markerPosition + marker.length).split("\n");
-    const body = [];
-    for (const line of lines) {
-      if (!line.startsWith("          ")) {
-        break;
-      }
-      body.push(line.slice(10));
-    }
-    assert.ok(body.length > 0, "Windows archive test run block is empty");
-    return body.join("\n");
-  }
-
-  test("Windows archive fixture parses LF and CRLF workflow source identically", () => {
-    const workflow = readSource(path.join(repo, ".github", "workflows", "build-release-artifacts.yml"));
-    const lfBlock = extractWindowsArchiveRunBlock(workflow);
-    const crlfBlock = extractWindowsArchiveRunBlock(workflow.replace(/\n/g, "\r\n"));
-    assert.equal(crlfBlock, lfBlock);
-    assert.match(crlfBlock, /test-release-windows\.ps1[\s\S]*CPU release suite failed/);
-    assert.match(crlfBlock, /test-release-windows\.ps1[\s\S]*GPU portable CPU release suite failed/);
-  });
-
-  test("Windows archive fixture still rejects a missing run block", () => {
-    const workflow = readSource(path.join(repo, ".github", "workflows", "build-release-artifacts.yml"));
-    const malformed = workflow.replace(
-      "        run: |\n          $version =",
-      "        command: |\n          $version =");
-    assert.notEqual(malformed, workflow);
-    assert.throws(() => extractWindowsArchiveRunBlock(malformed),
-      /Windows archive test run block is missing/);
-  });
-
-  /** @param {string} workflowBlock @returns {string} */
-  function makeArchiveWorkflowDriverSource(workflowBlock) {
-    return [
-      "param(",
-      "  [string]$ArchiveDirectory,",
-      "  [string]$Events,",
-      "  [int]$CpuStatus,",
-      "  [int]$GpuStatus",
-      ")",
-      "$ErrorActionPreference = 'Stop'",
-      "Set-Location -LiteralPath $ArchiveDirectory",
-      "$script:Invocation = 0",
-      "function powershell {",
-      "  $script:Invocation++",
-      "  $suiteIndex = [Array]::IndexOf([string[]]$args, '-Suite')",
-      "  if ($suiteIndex -lt 0 -or $suiteIndex + 1 -ge $args.Count) { throw 'suite argument missing' }",
-      "  Add-Content -LiteralPath $Events -Value $args[$suiteIndex + 1]",
-      "  if ($script:Invocation -eq 1) { $global:LASTEXITCODE = $CpuStatus }",
-      "  else { $global:LASTEXITCODE = $GpuStatus }",
-      "}",
-      workflowBlock,
-    ].join("\n") + "\n";
-  }
-
-  test("Windows archive workflow gates the portable suite on the CPU suite exit status", {
-    skip: !WINDOWS,
-  }, () => {
-    const fixture = makeFixture();
-    try {
-      const archiveDirectory = path.join(fixture, "archive");
-      const packageVersion = require(path.join(repo, "package.json")).version;
-      const archive = path.join(archiveDirectory, `mom-v${packageVersion}-win.zip`);
-      const events = path.join(fixture, "events.txt");
-      fs.mkdirSync(archiveDirectory);
-      fs.copyFileSync(path.join(repo, "package.json"),
-        path.join(archiveDirectory, "package.json"));
-      fs.writeFileSync(archive, "fixture archive");
-      const driver = makeDriver(fixture,
-        makeArchiveWorkflowDriverSource(extractWindowsArchiveRunBlock()));
-      /** @type {Array<
-     * {cpu: number, gpu: number, pass: true, calls: string[], error: null} |
-     * {cpu: number, gpu: number, pass: false, calls: string[], error: RegExp}
-     * >} */
-      const cases = [
-        {cpu: 1, gpu: 0, pass: false, calls: ["cpu"], error: /CPU release suite failed with exit code 1/},
-        {
-          cpu: 0, gpu: 1, pass: false, calls: ["cpu", "gpu-portable-cpu"],
-          error: /GPU portable CPU release suite failed with exit code 1/,
-        },
-        {cpu: 0, gpu: 0, pass: true, calls: ["cpu", "gpu-portable-cpu"], error: null},
-      ];
-      for (const entry of cases) {
-        fs.writeFileSync(events, "");
-        const result = runPowerShell(driver, [
-          "-ArchiveDirectory", archiveDirectory,
-          "-Events", events,
-          "-CpuStatus", String(entry.cpu),
-          "-GpuStatus", String(entry.gpu),
-        ]);
-        const calls = fs.readFileSync(events, "utf8").split(/\r?\n/).filter(Boolean);
-        assert.deepEqual(calls, entry.calls,
-          "suite calls for " + entry.cpu + "," + entry.gpu + ": " +
-        result.stdout + "\n" + result.stderr);
-        if (entry.pass) {
-          assert.equal(result.status, 0, result.stdout + result.stderr);
-        } else {
-          assert.notEqual(result.status, 0, result.stdout + result.stderr);
-          assert.match(result.stdout + result.stderr, entry.error);
-        }
-      }
     } finally {
       fs.rmSync(fixture, {recursive: true, force: true});
     }

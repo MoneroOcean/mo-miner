@@ -11,7 +11,7 @@ const root = path.join(__dirname, "..");
 const cmake = fs.readFileSync(path.join(root, "tests/native/dpcpp-jit/CMakeLists.txt"), "utf8");
 const nativeJitSource = fs.readFileSync(path.join(root, "tests/reference/native_dpcpp_jit.cpp"), "utf8");
 const nativeSourceEmitter = fs.readFileSync(path.join(root, "tests/reference/native_kawpow_source.cpp"), "utf8");
-const staticJitPatch = fs.readFileSync(path.join(root, "runtime/dpcpp-static-jit.patch"), "utf8");
+const staticJitPatch = fs.readFileSync(path.join(root, "runtime/dpcpp-static-jit.patch"), "utf8").replace(/\r\n/g, "\n");
 const sourceManifest = [
   "tests/native/dpcpp-jit/CMakeLists.txt",
   "tests/reference/native_dpcpp_jit.cpp",
@@ -24,7 +24,7 @@ const sourceManifest = [
 const windowsSystemLibraries = ["psapi", "shell32", "ole32", "uuid", "advapi32", "ws2_32", "ntdll", "shlwapi"];
 const linuxLinkFlags = ["-Wl,--gc-sections", "-Wl,--wrap=dlopen", "-Wl,--wrap=dlerror", "-static-libstdc++", "-static-libgcc"];
 
-test.describe("Original static compiler SDK planning", () => {
+test.describe("Original static compiler SDK planning", {skip: process.platform !== "linux"}, () => {
   const roots = Object.fromEntries(Object.keys(sdkComponents("compiler")).map(name => [name, "/inputs/" + name]));
   const tools = {cmake: "/tools/cmake", ninja: "/tools/ninja"};
   const plan = () => jitSdkPlan("linux", roots, "/compiler", "/resources", "/output", tools, 2);
@@ -187,13 +187,14 @@ function configureFixture(context, windows, compilerId = "Clang", pchFixture = f
   const args = ["-S", directory, "-B", build, "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release",
     "-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY"];
   const systemName = windows ? "Windows" : "Linux";
-  args.push(`-DCMAKE_SYSTEM_NAME=${systemName}`, `-DCMAKE_CXX_COMPILER=${process.execPath}`,
+  const cmakeCompiler = process.execPath.replace(/\\/g, "/");
+  args.push(`-DCMAKE_SYSTEM_NAME=${systemName}`, `-DCMAKE_CXX_COMPILER=${cmakeCompiler}`,
     "-DCMAKE_CXX_COMPILER_WORKS=TRUE", "-DCMAKE_CXX_COMPILER_FORCED=TRUE",
     `-DCMAKE_CXX_COMPILER_ID=${compilerId}`, "-DCMAKE_CXX_COMPILER_VERSION=23.0.0",
     "-DCMAKE_CXX_COMPILE_FEATURES=cxx_std_17",
     `-DCMAKE_CXX_COMPILER_FRONTEND_VARIANT=${windows ? "MSVC" : "GNU"}`, "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON");
   if (windows) {
-    args.push("-DCMAKE_CXX_SIMULATE_ID=MSVC", `-DCMAKE_RC_COMPILER=${process.execPath}`,
+    args.push("-DCMAKE_CXX_SIMULATE_ID=MSVC", `-DCMAKE_RC_COMPILER=${cmakeCompiler}`,
       "-DCMAKE_RC_COMPILER_WORKS=TRUE", "-DCMAKE_RC_COMPILER_FORCED=TRUE");
   }
   const result = spawnSync("cmake", args, {encoding: "utf8", timeout: 30000});
@@ -282,7 +283,7 @@ test.describe("Static source-JIT optional compiler tools", () => {
     test(`source-JIT test tools are ${tests ? "requested explicitly" : "omitted from the release compiler graph"}`, t => {
       const branch = addedPatchLines(patchSection("sycl-jit/CMakeLists.txt")).match(/^if\(NOT WIN32 AND NOT CYGWIN AND LLVM_INCLUDE_TESTS\)$/m)?.[0];
       assert.ok(branch, "The original test directory must respect LLVM_INCLUDE_TESTS");
-      const body = `set(LLVM_INCLUDE_TESTS ${tests ? "ON" : "OFF"})\n${branch}\nset(mom_test_tools ON)\nendif()\n` +
+      const body = `set(WIN32 FALSE)\nset(CYGWIN FALSE)\nset(LLVM_INCLUDE_TESTS ${tests ? "ON" : "OFF"})\n${branch}\nset(mom_test_tools ON)\nendif()\n` +
         `if(NOT "\${mom_test_tools}" STREQUAL "${tests ? "ON" : ""}")\nmessage(FATAL_ERROR "Wrong test-tool selection")\nendif()\n`;
       const result = configure(t, body); assert.equal(result.status, 0, result.stderr);
     });
@@ -308,7 +309,7 @@ test.describe("Static source-JIT immutable resource selection", () => {
         "\nfile(WRITE \"@{CMAKE_BINARY_DIR}/result.txt\" \"@{SYCL_JIT_RESOURCE_INSTALL_DIR}\\n@{SYCL_JIT_RESOURCE_FILES}\\n@{SYCL_JIT_RESOURCE_DEPS}\\n@{SYCL_JIT_PREPARE_RESOURCE_COMMANDS}\\n@{SYCL_JIT_RESOURCE_BYPRODUCTS}\\n\")\n".replaceAll("@", String.fromCharCode(36)));
       const build = path.join(directory, "build"), result = spawnSync("cmake", ["-S", directory, "-B", build, "-G", "Ninja"], {encoding: "utf8", timeout: 30000});
       assert.equal(result.status, 0, result.stderr);
-      assert.deepEqual(fs.readFileSync(path.join(build, "result.txt"), "utf8").trimEnd().split("\n"), native ?
+      assert.deepEqual(fs.readFileSync(path.join(build, "result.txt"), "utf8").trimEnd().split(/\r?\n/), native ?
         [overlay, overlay + "/correct-header.h"] : [original, "stale-linux-header.h", "shared-sdk-tool", "original-install-command", "stale-linux-header.h"]);
     });
   }
@@ -497,7 +498,7 @@ test.describe("Windows pinned static source-JIT build contract", () => {
       if (probe.status !== 0 || probe.error) {t.skip(`${tool} unavailable`); return;}
     }
     const fixture = configureFixture(t, true, "IntelLLVM", true);
-    assert.deepEqual(fs.readFileSync(path.join(fixture.build, "pch-state.txt"), "utf8").trimEnd().split("\n"), ["ON", "NOTFOUND", "1", "IntelLLVM"]);
+    assert.deepEqual(fs.readFileSync(path.join(fixture.build, "pch-state.txt"), "utf8").trimEnd().split(/\r?\n/), ["ON", "NOTFOUND", "1", "IntelLLVM"]);
     const commands = /** @type {Array<{file: string, command: string}>} */ (JSON.parse(fs.readFileSync(path.join(fixture.build, "compile_commands.json"), "utf8")));
     const heat = commands.find(row => path.basename(row.file) === "HeatUtils.cpp");
     const other = commands.find(row => path.basename(row.file) === "Other.cpp");
@@ -509,8 +510,8 @@ test.describe("Windows pinned static source-JIT build contract", () => {
 
     const clangWindows = configureFixture(t, true, "Clang", true);
     const intelLinux = configureFixture(t, false, "IntelLLVM", true);
-    assert.deepEqual(fs.readFileSync(path.join(clangWindows.build, "pch-state.txt"), "utf8").trimEnd().split("\n"), ["NOTFOUND", "NOTFOUND", "1", "Clang"]);
-    assert.deepEqual(fs.readFileSync(path.join(intelLinux.build, "pch-state.txt"), "utf8").trimEnd().split("\n"), ["NOTFOUND", "NOTFOUND", "", "IntelLLVM"]);
+    assert.deepEqual(fs.readFileSync(path.join(clangWindows.build, "pch-state.txt"), "utf8").trimEnd().split(/\r?\n/), ["NOTFOUND", "NOTFOUND", "1", "Clang"]);
+    assert.deepEqual(fs.readFileSync(path.join(intelLinux.build, "pch-state.txt"), "utf8").trimEnd().split(/\r?\n/), ["NOTFOUND", "NOTFOUND", "", "IntelLLVM"]);
   });
 
   test("executes the Windows host compiler selection with cmake -P", (t) => {

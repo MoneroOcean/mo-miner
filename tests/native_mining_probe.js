@@ -199,7 +199,7 @@ test.describe("Native mining parity share verifier", {concurrency: false}, () =>
     assert.equal(launch.commandArgs[2], "mom-native-cgroup-guard");
     assert.deepEqual(launch.commandArgs.slice(3), straceArgs);
   });
-  test("generated cgroup guard reads its limits with shell builtins when PATH is unavailable", (t) => {
+  test("generated cgroup guard reads its limits with shell builtins when PATH is unavailable", {skip: process.platform !== "linux"}, (t) => {
     const fs = require("node:fs"), os = require("node:os");
     const cgroup = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-cgroup-guard-"));
     t.after(() => fs.rmSync(cgroup, {recursive: true, force: true}));
@@ -264,7 +264,7 @@ test.describe("Native Pearl execution profiles", () => {
     assert.deepEqual(nativePearlStraceArgs(true), ["-tt", "-f", "-s", "1024", "-e", syscalls + ",read,write", ...suffix]);
   });
   test("saved verifier inventory includes its entry module and packaged native add-on", () => {
-    const root = path.join("/pool", "node_modules", "node-powhash"), entry = path.join(root, "index.js"),
+    const root = path.resolve("/pool", "node_modules", "node-powhash"), entry = path.join(root, "index.js"),
       addon = path.join(root, "build", "Release", "node-powhash.node");
     assert.deepEqual(nativeVerifierModuleFiles([entry, addon, path.join(root, "helper.js"),
       path.join("/pool", "node_modules", "blake2", "build", "Release", "blake2.node")], entry), [entry, addon]);

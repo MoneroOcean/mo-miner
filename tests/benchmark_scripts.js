@@ -11,6 +11,7 @@ const benchmark = require("../scripts/benchmark-gpu-algos");
 const release = require("../scripts/check-release-performance");
 const comparison = require("../scripts/compare-gpu-benchmarks");
 const performance = require("../scripts/readme-performance");
+const {windowsCmdArgs} = require("../scripts/windows-command");
 
 test.describe("Correctness test dispatcher", {concurrency: false}, () => {
   const source = fs.readFileSync(path.join(__dirname, "run_hash.js"), "utf8");
@@ -18,7 +19,7 @@ test.describe("Correctness test dispatcher", {concurrency: false}, () => {
     // Native source-level suites belong to logic; only the real N-API addon is hardware-bound.
     // The Windows cudart producer is an opt-in component suite, not part of canonical logic.
     // Check the directory independently so adding a source suite cannot silently omit it.
-    ...fs.readdirSync(__dirname).filter(name => /^native_.*\.js$/.test(name) &&
+    ...fs.readdirSync(__dirname).filter(name => /^(?:native_|local_(?:native_|windows_|wsl_)).*\.js$/.test(name) &&
       !["native_addon.js", "native_deploy.js", "native_windows_cudart.js"].includes(name)).map(name => "tests/" + name),
     "tests/logic.js", "tests/compiler_policy.js", "tests/portable_dag_modes.js",
     "tests/nvidia_compatibility.js", "tests/intel_device_selection.js", "tests/c29_seed_unroll.js",
@@ -119,12 +120,14 @@ test.describe("Correctness test dispatcher", {concurrency: false}, () => {
       fs.writeFileSync(path.join(temp, "tests", "run_hash.js"),
         'console.log("FIXTURE_HASH="+JSON.stringify(process.argv.slice(2)));\n');
       const npmCli = process.env["npm_execpath"];
-      const command = npmCli ? process.execPath : "npm";
-      const args = [...(npmCli ? [npmCli] : []), "test", "--", "gpu-integrated"];
+      const cmd = !npmCli && process.platform === "win32";
+      const command = npmCli ? process.execPath : cmd ? "cmd.exe" : "npm";
+      const args = cmd ? windowsCmdArgs(["npm.cmd", "test", "--", "gpu-integrated"])
+        : [...(npmCli ? [npmCli] : []), "test", "--", "gpu-integrated"];
       for (const fail of [false, true]) {
         const result = spawnSync(command, args, {
           cwd: temp, encoding: "utf8", timeout: 20000,
-          shell: !npmCli && process.platform === "win32",
+          windowsVerbatimArguments: cmd,
           env: {...process.env, FIXTURE_CHECK_FAIL: fail ? "1" : "0",
             npm_config_update_notifier: "false", npm_config_audit: "false", npm_config_fund: "false"},
         });
@@ -1271,7 +1274,7 @@ test.describe("Benchmark and installer scripts", {concurrency: false}, () => {
 
       const oneApiInstaller = fs.readFileSync(path.join(__dirname, "..", ".github", "workflows",
         "scripts", "install-oneapi.bat"), "utf8");
-      assert.match(oneApiInstaller, /\[Guid\]::NewGuid\(\)\.ToString\(\)/);
+      assert.match(oneApiInstaller, /\$id=New-Guid; \$id\.Guid/);
       assert.match(oneApiInstaller, /%TEMP%\\mom-oneapi-%RUN_ID%/);
       assert.doesNotMatch(oneApiInstaller, /oneapi_webimage_extracted/);
     });

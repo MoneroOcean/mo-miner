@@ -14,7 +14,7 @@ function jit(t) {
   const save = () => fs.writeFileSync(path.join(root, "result.json"), JSON.stringify(receipt)); save(); return {root, object, receipt, save};
 }
 
-test.describe("Original Linux static SYCL SDK production", () => {
+test.describe("Original Linux static SYCL SDK production", {skip: process.platform !== "linux" || process.arch !== "x64"}, () => {
   test("source-JIT isolation keeps the binding fixture's complete bridge cohort", () => {
     const source = fs.readFileSync(path.resolve(__dirname, "native/dpcpp_jit_binding.cpp"), "utf8");
     /** @param {string} text */

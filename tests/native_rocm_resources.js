@@ -5,7 +5,7 @@ const {validateConfig, hiprtcHeaders, resourcePlan, buildResources} = require(".
 const config = (target = "win32") => ({version: 1, target, source: "/source", clr: "/clr", llvm: "/llvm", cmake: "/cmake", hipHeaders: "/headers"});
 const list = (rows = Array.from({length: 16}, (_, i) => "${HIP_COMMON_INCLUDE_DIR}/hip/file" + i + ".h")) => "set(HIPRTC_HEADERS\n" + rows.join("\n") + "\n)\n"; // eslint-disable-line no-template-curly-in-string -- Literal pinned CMake syntax.
 
-test.describe("Native ROCm target ABI recipe", () => {
+test.describe("Native ROCm target ABI recipe", {skip: process.platform !== "linux"}, () => {
   test("Windows device libraries use upstream's short-wchar setting", () => {assert.ok(resourcePlan(config(), "/new", 2).configure.includes("-DCLANG_OPTIONS_APPEND=-fshort-wchar"));});
   test("Linux retains its existing wchar ABI", () => {assert.ok(resourcePlan(config("linux"), "/new", 2).configure.includes("-DCLANG_OPTIONS_APPEND="));});
   test("device-only HIPRTC preprocessing explicitly selects the Windows auxiliary target", () => {assert.ok(resourcePlan(config(), "/new", 2).preprocess.includes("--target=x86_64-pc-windows-msvc"));});
@@ -24,7 +24,7 @@ test.describe("Native ROCm target ABI recipe", () => {
   test("CLI without arguments starts no source or compiler work", () => {const r = spawnSync(process.execPath, [path.resolve(__dirname, "../scripts/build-native-rocm-resources.js")], {encoding: "utf8", timeout: 5000}); assert.equal(r.status, 1); assert.match(r.stderr, /Usage:/); assert.equal(r.stdout, "");});
 });
 
-test.describe("Native ROCm resource host compiler selection", () => {
+test.describe("Native ROCm resource host compiler selection", {skip: process.platform !== "linux"}, () => {
   const hostCompilers = {cc: "/opt/intel/oneapi/compiler/2026.2/bin/icx", cxx: "/opt/intel/oneapi/compiler/2026.2/bin/icpx"};
   test("the build-time host helper uses the selected compiler without changing device commands", () => {
     for (const target of ["linux", "win32"]) {
@@ -50,8 +50,8 @@ test.describe("Native ROCm resource host compiler selection", () => {
 });
 
 test.describe("Native HIPRTC original header membership", () => {
-  test("common header references resolve inside the selected package", () => {assert.equal(hiprtcHeaders(list(), "/headers")[0], "/headers/hip/file0.h");});
-  test("CLR include references use the same complete selected header cohort", () => {assert.equal(hiprtcHeaders(list(Array(16).fill("${PROJECT_SOURCE_DIR}/include/hip/a.h")), "/headers")[0], "/headers/hip/a.h");}); // eslint-disable-line no-template-curly-in-string -- Pinned CMake syntax.
+  test("common header references resolve inside the selected package", () => {assert.equal(hiprtcHeaders(list(), "/headers")[0], path.join("/headers", "hip/file0.h"));});
+  test("CLR include references use the same complete selected header cohort", () => {assert.equal(hiprtcHeaders(list(Array(16).fill("${PROJECT_SOURCE_DIR}/include/hip/a.h")), "/headers")[0], path.join("/headers", "hip/a.h"));}); // eslint-disable-line no-template-curly-in-string -- Pinned CMake syntax.
   test("repeated upstream members retain their order rather than being curated", () => {const rows = hiprtcHeaders(list(Array(16).fill("${HIP_COMMON_INCLUDE_DIR}/hip/a.h")), "/headers"); assert.equal(rows.length, 16); assert.equal(new Set(rows).size, 1);}); // eslint-disable-line no-template-curly-in-string -- Pinned CMake syntax.
   test("missing or truncated upstream declarations fail", () => {for (const text of ["", "set(HIPRTC_HEADERS\n", list([]), list(Array(129).fill("x"))]) {assert.throws(() => hiprtcHeaders(text, "/headers"), /header/);}});
   for (const member of ["/outside.h", "${OTHER}/hip/a.h", "${HIP_COMMON_INCLUDE_DIR/hip/a.h", "${HIP_COMMON_INCLUDE_DIR}/hip/../a.h", "${HIP_COMMON_INCLUDE_DIR}/hip/a.h;extra", "${HIP_COMMON_INCLUDE_DIR}/hip/a.h)"]) { // eslint-disable-line no-template-curly-in-string -- Negative literal CMake syntax.
@@ -62,6 +62,34 @@ test.describe("Native HIPRTC original header membership", () => {
 
 test.describe("Native HIPRTC actual cross-preprocessor ABI regression", () => {
   const clang = "/usr/lib/llvm-21/bin/clang";
+  for (const target of ["linux", "win32"]) {
+    test(target + " HIPRTC preprocessing keeps supplied headers without an installed HIP runtime", {skip: process.platform !== "linux" || !fs.existsSync(clang)}, t => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-hiprtc-no-runtime-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+      const headers = path.join(root, "headers"), supplied = path.join(headers, "hip", "supplied.h");
+      fs.mkdirSync(path.dirname(supplied), {recursive: true});
+      const targetGuard = target === "win32" ? "#if !defined(_WIN32)\n#error expected the Windows target ABI\n#endif\n" :
+        "#if defined(_WIN32)\n#error expected the Linux target ABI\n#endif\n";
+      fs.writeFileSync(supplied, targetGuard + "typedef __SIZE_TYPE__ hiprtc_size_t;\n" +
+        "namespace __hip_internal {\n  typedef unsigned long size_t;\n}\nsize_t amd_dbgapi_get_build_id();\n");
+      fs.writeFileSync(path.join(root, "hipRTC_header.h"), "#include <hip/supplied.h>\n");
+      const c = {...config(target), llvm: path.dirname(path.dirname(clang)), hipHeaders: headers}, plan = resourcePlan(c, root, 1);
+      const args = plan.preprocess.slice(1); args.splice(args.indexOf("-nogpulib") + 1, 0, "--hip-path=/nonexistent/mom-hip-probe");
+      const r = spawnSync(clang, args, {encoding: "utf8", timeout: 10000, maxBuffer: 1 << 20});
+      assert.equal(r.status, 0, r.error?.message || r.stderr);
+      const generated = fs.readFileSync(path.join(root, "hipRTC"), "utf8");
+      const dependencies = fs.readFileSync(path.join(root, "hipRTC.d"), "utf8");
+      assert.match(dependencies, /hip\/supplied\.h/);
+      assert.ok(dependencies.includes(plan.hipRuntimeWrapper), "the compiler-owned wrapper remains in the dependency receipt");
+      const wrapperSize = generated.search(/^typedef [^\n;]*\bsize_t;$/m), firstSizeUse = generated.indexOf("size_t amd_dbgapi_get_build_id");
+      assert.ok(wrapperSize >= 0 && wrapperSize < firstSizeUse,
+        "the generated HIPRTC header must retain the compiler wrapper's global size_t before upstream declarations");
+      const check = spawnSync(clang, ["--target=" + plan.target, "--offload-arch=gfx900", "--cuda-device-only", "-nogpulib", "-nogpuinc",
+        "-D__HIPCC_RTC__", "-D__HIP_PLATFORM_AMD__", "-x", "hip", "-std=c++17", "-fsyntax-only", "-include", path.join(root, "hipRTC"), "-"],
+      {input: 'static_assert(__is_same(size_t, __SIZE_TYPE__), "HIPRTC size_t ABI");\n' +
+        'static_assert(__is_same(hiprtc_size_t, __SIZE_TYPE__), "HIPRTC supplied-header ABI");\n', encoding: "utf8", timeout: 10000, maxBuffer: 1 << 20});
+      assert.equal(check.status, 0, check.error?.message || check.stderr);
+    });
+  }
   test("Windows generation passes the real type check while the former Linux-host generation fails", {skip: process.platform !== "linux" || !fs.existsSync(clang)}, t => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-hiprtc-abi-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
     fs.writeFileSync(path.join(root, "hipRTC_header.h"), "typedef __SIZE_TYPE__ size_t;\n");

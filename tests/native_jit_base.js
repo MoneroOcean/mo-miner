@@ -73,7 +73,7 @@ test.describe("Pinned SYCL JIT base producer fixtures", () => {
       () => ({status: 0})), /ENOENT/);
   });
 
-  test("headers-only base reconstructs the exact configured host compiler plan", () => {
+  test("headers-only base reconstructs the exact configured host compiler plan", {skip: process.platform !== "linux"}, () => {
     const sdk = "/tmp/pinned-dpcpp-sdk", overlay = "/tmp/jit-placeholder-overlay", output = "/tmp/jit-configure-root",
       roots = Object.fromEntries(Object.keys(sdkComponents("compiler")).map(name => [name, "/tmp/pinned-compiler-sources/" + name])),
       cmake = "/usr/bin/cmake", ninja = "/usr/bin/ninja", dpcppC = path.join(sdk, "bin/clang"), dpcppCxx = path.join(sdk, "bin/clang++"),

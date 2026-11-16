@@ -10,6 +10,7 @@ const {spawnSync} = require("node:child_process");
 const {
   validateWindowsControllerConfig, windowsControllerPlan, explicitInputFiles, hashFiles, assertStableInputHashes,
   buildNativeWindowsController, runTool, validatePeHeaders, verifyCanonicalBundle, windowsToolEnvironment, dependencyHashes, windowsLongPathManifest, windowsLongPathResource,
+  windowsSystemImports,
 } = require("../scripts/build-native-windows-controller");
 const nativeBundle = require("../scripts/native-bundle");
 const hostComponentReader = require("../scripts/native-windows-host-component");
@@ -200,6 +201,39 @@ test.describe("Windows COFF reproducibility", () => {
 });
 
 test.describe("Windows maintained controller build recipe", () => {
+  test("data-only producer and planner imports defer esbuild until bundle work", () => {
+    const ciPath = path.resolve(__dirname, "../scripts/prepare-native-ci.js"),
+      controllerPath = path.resolve(__dirname, "../scripts/build-native-windows-controller.js"),
+      planOutput = path.join(os.tmpdir(), "mom-esbuild-free-plan");
+    const script = `
+const Module = require("node:module"), originalLoad = Module._load;
+Module._load = function(request, ...args) {
+  if (request === "esbuild") {throw new Error("test blocked esbuild");}
+  return originalLoad.call(this, request, ...args);
+};
+const ci = require(${JSON.stringify(ciPath)});
+if (typeof ci.packState !== "function") {throw new Error("Native CI producer API is missing");}
+const controller = require(${JSON.stringify(controllerPath)});
+if (typeof controller.buildNativeWindowsController !== "function" || typeof controller.windowsControllerPlan !== "function") {
+  throw new Error("Windows controller producer/planner API is missing");
+}
+const plan = controller.windowsControllerPlan(${JSON.stringify(config())}, ${JSON.stringify(planOutput)}, ${JSON.stringify(repo)});
+if (!plan || !plan.link) {throw new Error("Windows controller planner did not return a link plan");}
+try {
+  controller.verifyCanonicalBundle("/tmp/entry.js", "/tmp/controller.js", Buffer.alloc(0));
+  throw new Error("Bundle verification did not load esbuild");
+} catch (error) {
+  if (!(error instanceof Error) || error.message !== "test blocked esbuild") {throw error;}
+}
+console.log("planner import stayed esbuild-free; bundle verification requested esbuild");
+`;
+    const result = spawnSync(process.execPath, ["-e", script], {cwd: repo, encoding: "utf8", timeout: 10000, maxBuffer: 64 << 10});
+    assert.equal(result.error, undefined);
+    assert.equal(result.signal, null);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /planner import stayed esbuild-free; bundle verification requested esbuild/);
+  });
+
   test("C and C++ source paths follow explicit language operands without intervening options", () => {
     const plan = windowsControllerPlan(config(), "/tmp/mom-language-operands", "/workspace");
     for (const [index, command] of plan.compile.entries()) {
@@ -264,7 +298,7 @@ test.describe("Windows maintained controller build recipe", () => {
       defaultCompiler: "oneapi", tools: {llvmObjcopy: sdk("llvm-objcopy"), llvmAr: sdk("llvm-ar")},
       sdk: {libraries: [sdk("static-runtime.lib")], wholeArchives: [sdk("static-images.lib")], objects: [sdk("resources.obj")],
         includeRoots: [sdk("include")], nvmlHeader: sdk("nvml.h"), hipDriverLibrary: sdk("amdhip64.lib"), cudaImages: sdk("cuda-images.inc")}};
-    const output = "/tmp/mom-full-windows-images", plan = windowsControllerPlan(selected, output, repo),
+    const output = path.join(os.tmpdir(), "mom-full-windows-images"), plan = windowsControllerPlan(selected, output, repo),
       source = path.join(repo, "sycl/cuda-images.cpp"), registryObjects = plan.sources.filter(name => name === "cuda-images");
     assert.equal(registryObjects.length, 1);
     assert.equal(plan.sources.at(-1), "cuda-images");
@@ -290,6 +324,8 @@ test.describe("Windows maintained controller build recipe", () => {
       "the transitional non-image application route keeps its existing static-NVRTC behavior");
   });
   test("ordinary OLE and device configuration remain OS libraries, not application-DLL exceptions", () => {
+    const policy = windowsSystemImports(); policy.push("node.dll");
+    assert.equal(windowsSystemImports().includes("node.dll"), false, "callers cannot mutate the closed OS import policy");
     const selected = config(); selected.windowsSdk.allowedImports.push("OLEAUT32.dll", "CFGMGR32.dll");
     assert.doesNotThrow(() => validateWindowsControllerConfig(selected));
     selected.windowsSdk.allowedImports.push("sycl.dll"); assert.throws(() => validateWindowsControllerConfig(selected), /ordinary system DLLs/);
@@ -298,9 +334,10 @@ test.describe("Windows maintained controller build recipe", () => {
     const keys = ["CL", "_cl_", "LINK", "INCLUDE", "LIBPATH", "CXXFLAGS", "MOM_NATIVE_RUNTIME"], before = Object.fromEntries(keys.map(key => [key, process.env[key]]));
     t.after(() => {for (const key of keys) {if (before[key] === undefined) {delete process.env[key];} else {process.env[key] = before[key];}}});
     for (const key of keys) {process.env[key] = "unreviewed SDK override";}
-    const selected = windowsToolEnvironment();
+    const selected = windowsToolEnvironment(), pathValue = (/** @type {NodeJS.ProcessEnv} */ environment) =>
+      Object.entries(environment).find(([name]) => name.toLowerCase() === "path")?.[1];
     for (const key of keys) {assert.equal(Object.hasOwn(selected, key), false);}
-    assert.equal(selected["PATH"], process.env["PATH"]);
+    assert.equal(pathValue(selected), pathValue(process.env));
   });
   test("embedded policy identity uses target path semantics during cross compilation", () => {
     for (const root of [repo, "/source root/é-💎/mo-miner"]) {
@@ -313,7 +350,7 @@ test.describe("Windows maintained controller build recipe", () => {
   });
 
   test("the plan consumes explicit SDK paths and preserves resource-header ordering", () => {
-    const selected = config(), plan = windowsControllerPlan(selected, "/tmp/mom-windows-controller", repo);
+    const selected = config(), plan = windowsControllerPlan(selected, path.join(os.tmpdir(), "mom-windows-controller"), repo);
     assert.equal(plan.config.windowsSdk.overlay, selected.windowsSdk.overlay);
     assert.equal(plan.aot.cwd, plan.output);
     assert.deepEqual(plan.aot.args.slice(-3), ["-o", "./controller.c", "./controller.js"]);
@@ -332,7 +369,7 @@ test.describe("Windows maintained controller build recipe", () => {
   });
 
   test("generated C preserves Windows setjmp lowering while C++ flags remain cache-bound", t => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-win-controller-no-builtin-cache-"));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom win-controller-no-builtin-cache-"));
     t.after(() => fs.rmSync(root, {recursive: true, force: true}));
     const planned = windowsControllerPlan(config(), path.join(root, "planned"), repo);
     const controller = planned.compile[0];
@@ -353,11 +390,12 @@ const objectArg=args.find(arg=>arg.startsWith("-Fo")), dependencyIndex=args.inde
 const object=objectArg&&objectArg.slice(3), depfile=dependencyIndex>=0&&args[dependencyIndex+2], source=process.env.NATIVE_CACHE_SOURCE;
 if(!object||!depfile||!source)process.exit(41);
 fs.mkdirSync(path.dirname(object),{recursive:true});fs.mkdirSync(path.dirname(depfile),{recursive:true});
-fs.writeFileSync(object,JSON.stringify(args));fs.writeFileSync(depfile,'"'+object+'": "'+source+'"\\n');
+fs.writeFileSync(object,JSON.stringify(args));fs.writeFileSync(depfile,object+': "'+source+'"\\n');
 `);
     fs.chmodSync(compiler, 0o755);
-    const environment = /** @type {NodeJS.ProcessEnv} */ ({...windowsToolEnvironment(), PATH: emptyPath,
-      NATIVE_CACHE_SOURCE: source, MOM_NATIVE_NINJA: ""});
+    const environment = /** @type {NodeJS.ProcessEnv} */ ({...Object.fromEntries(Object.entries(windowsToolEnvironment())
+      .filter(([key]) => key.toLowerCase() !== "path")), PATH: emptyPath,
+    NATIVE_CACHE_SOURCE: source, MOM_NATIVE_NINJA: ""});
     /** @param {string} name @param {boolean} keepNoBuiltin */
     const run = (name, keepNoBuiltin) => {
       const output = path.join(root, name); fs.mkdirSync(output);

@@ -70,26 +70,43 @@ function linuxCompileEnvironment() {
   return environment;
 }
 
+/** Keep compiler diagnostics bounded in thrown errors while the complete command log remains on disk.
+ * @param {string | null | undefined} stdout @param {string | null | undefined} stderr */
+function boundedOutputExcerpt(stdout, stderr) {
+  const limit = 16 * 1024, bytes = Buffer.byteLength(stdout || "") + Buffer.byteLength(stderr || ""),
+    captured = Buffer.from((stdout || "").slice(-limit) + (stderr || "").slice(-limit)), start = Math.max(0, captured.length - limit);
+  return captured.length ?
+    `\n${bytes > limit ? "Last " + limit + " bytes (earlier output omitted)" : "Output"}:\n${captured.subarray(start).toString("utf8")}` : "";
+}
+
 /** Compile queued application objects from a fresh output through the shared content cache. */
-function flushLinuxObjectBatch() {
-  const batch = activeObjectBatch;
+function flushLinuxObjectBatch(batch = activeObjectBatch, compile = compileNativeObjects) {
   if (!batch) {return null;}
-  activeObjectBatch = null;
+  if (batch === activeObjectBatch) {activeObjectBatch = null;}
   const {commands, output, repo, namespace, includeRoots} = batch;
-  const result = compileNativeObjects({repo, output, namespace, commands,
+  const result = compile({repo, output, namespace, commands,
     environment: linuxCompileEnvironment(), jobs: 1, includeRoots: [...includeRoots], finalize: true,
     liveObjects: commands.map(command => command.object)});
   if (!Array.isArray(result.objects) || result.objects.length !== commands.length) {throw new Error("Native object cache returned an incomplete Linux batch");}
+  // Ninja may invalidate earlier successful edges too; retain every log before reporting a later failure.
+  const failures = /** @type {Array<{object: (typeof result.objects)[number], command: (typeof commands)[number]}>} */ ([]);
   const objects = result.objects.map((object, index) => {
     const command = commands[index];
     if (!command || path.resolve(object.object) !== path.resolve(command.object) || path.resolve(object.depfile) !== path.resolve(command.depfile)) {
       throw new Error("Native object cache returned an unexpected Linux output path");
     }
     fs.writeFileSync(command.log, String(object.stdout || "") + String(object.stderr || ""), {flag: "wx"});
-    if (object.status !== 0) {throw new Error("Native Linux object compile failed: " + command.log, {cause: object.error});}
+    if (object.status !== 0) {failures.push({object, command});}
     return {source: command.source, log: command.log, command: command.command, args: command.args, object: object.object, depfile: object.depfile,
       status: object.status, cacheHit: object.cacheHit, objectSha256: object.objectSha256, depfileSha256: object.depfileSha256};
   });
+  if (failures.length) {
+    const diagnostics = failures.map(({object, command}) => `${command.log} (exit ${object.status}, signal ${object.signal || "none"}` +
+      `${object.error ? ", error " + object.error : ""})${boundedOutputExcerpt(object.stdout, object.stderr)}\nFull log: ${command.log}`).join("\n");
+    const first = failures[0];
+    throw new Error(`Native Linux object compile failed (exit ${first?.object.status}, signal ${first?.object.signal || "none"}): ${first?.command.log}` +
+      boundedOutputExcerpt(diagnostics, ""), {cause: first?.object.error});
+  }
   const summary = {namespace, cacheRoot: result.cacheRoot, ninja: result.ninja, cacheHits: result.cacheHits,
     cacheMisses: result.cacheMisses, objects};
   fs.writeFileSync(path.join(output, "object-cache.json"), JSON.stringify(summary, null, 2) + "\n", {flag: "wx"});
@@ -110,8 +127,8 @@ function nvmlMetadataInput(file) {
 }
 
 /** @param {string} command @param {string[]} args @param {string} output @param {number} [expectedStatus]
- * @param {NodeJS.ProcessEnv} [extraEnv] @param {string} [cwd] */
-function run(command, args, output, expectedStatus = 0, extraEnv = {}, cwd = process.cwd()) {
+ * @param {NodeJS.ProcessEnv} [extraEnv] @param {string} [cwd] @param {typeof spawnSync} [spawn] */
+function run(command, args, output, expectedStatus = 0, extraEnv = {}, cwd = process.cwd(), spawn = spawnSync) {
   if (activeObjectBatch && args.includes("-c")) {
     const sourceIndex = args.indexOf("-c"), outputIndex = args.indexOf("-o");
     const source = args[sourceIndex + 1], object = args[outputIndex + 1];
@@ -124,7 +141,7 @@ function run(command, args, output, expectedStatus = 0, extraEnv = {}, cwd = pro
       generatedInputs: linuxGeneratedCompileInputs(source, activeObjectBatch.output), log: output});
     return "";
   }
-  const result = spawnSync(command, args, {cwd, encoding: "utf8", timeout: 120000, maxBuffer: 8 << 20,
+  const result = spawn(command, args, {cwd, encoding: "utf8", timeout: 120000, maxBuffer: 8 << 20,
     env: {...process.env, MOM_AOT_PROCESS_EXIT: undefined, MOM_AOT_RUN_CONTROLLER: undefined,
       MOM_AOT_CHILD_TASK: undefined, MOM_AOT_BULK: undefined, MOM_AOT_REJECTION: undefined,
       MOM_AOT_PROGPOW: undefined,
@@ -132,7 +149,8 @@ function run(command, args, output, expectedStatus = 0, extraEnv = {}, cwd = pro
       MOM_TEST_NO_POOL_NETWORK: "1", NODE_TLS_REJECT_UNAUTHORIZED: "1"}});
   fs.writeFileSync(output, (result.stdout || "") + (result.stderr || ""));
   if (result.error || result.signal || result.status !== expectedStatus) {
-    throw new Error(`${command} failed (exit ${result.status}, signal ${result.signal}, expected ${expectedStatus}); see ${output}`, {cause: result.error});
+    const excerpt = boundedOutputExcerpt(result.stdout, result.stderr);
+    throw new Error(`${command} failed (exit ${result.status}, signal ${result.signal}, expected ${expectedStatus}); see ${output}${excerpt}`, {cause: result.error});
   }
   return result.stdout;
 }
@@ -891,8 +909,8 @@ async function main() {
   console.log(`Native module/TCP/TLS${cpuCore ? "/CPU-core" : ""} parity passed; full controller, process workers, SYCL and Windows remain unqualified.`);
 }
 
-module.exports = {nvmlMetadataInput, controllerEntry, nativeApplicationGpu, nativeGpuLinkArgs, nativeApplicationLinkPlan, nativeApplicationInputs, nativeApplicationLinkCacheInputs, nativeApplicationBuildInputs, nativeComgrLinkInputs,
-  nativeApplicationCudaImages, verifyCudaImageReceiptInputs,
+module.exports = {nvmlMetadataInput, controllerEntry, run, nativeApplicationGpu, nativeGpuLinkArgs, nativeApplicationLinkPlan, nativeApplicationInputs, nativeApplicationLinkCacheInputs, nativeApplicationBuildInputs, nativeComgrLinkInputs,
+  nativeApplicationCudaImages, verifyCudaImageReceiptInputs, flushLinuxObjectBatch,
   linuxCompileEnvironment};
 if (require.main === module) {
   main().catch((error) => {console.error(error); process.exitCode = 1;});

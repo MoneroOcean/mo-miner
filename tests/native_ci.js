@@ -13,14 +13,16 @@ const {extractState, packState, listState, safeRelative, outputStageName, ciPath
   assertAcppPreparedSource, linuxSourceStatePaths, assertSdkFetchProvenance, assertPreparedSdkPaths,
   linuxSourceFetchArgs, linuxSourcePreparationPlan, rocmParserSource, assertRocmParserReceipt, verifyRocmParserSource,
   rocmSourceStatePaths, rocmSourceFetchArgs,
-  rocmComgrStatePaths, rocmHostStatePaths, rocmHostBuildConfig, rocmResourcesConfig, rocmComgrBuildCommands, rocmClrHipamdTreeish,
+  rocmComgrStatePaths, rocmHostStatePaths, rocmHostBuildConfig, rocmResourcesConfig, rocmComgrBuildCommands, buildRocmComgrFromInputs, rocmClrHipamdTreeish,
   assembleRocmHipHeaders, hipHeaderConfigureCommand, provisionRocmHostPackages, admitRocmParserInstallation,
-  dpcppCudaInputsStatePaths, dpcppSourceArchivePin, dpcppCudaInputPins, copyDpcppBuildInputs, copyCudaBuildInputs, cudaToolkitProbeCMakeLists, cudaToolkitProbeRoot, probeCudaToolkit, dpcppCudaInputsManifest, auditDpcppCudaInputs, gnuHeadersStatePaths, buildWindowsGnuHeaders, auditGnuHeaders, capturePackageCopyright,
-  linuxJitResourcesStatePaths, linuxJitResourceBuildPlan, linuxJitResourceProfile,
+  dpcppCudaInputsStatePaths, dpcppSourceArchivePin, dpcppCudaInputPins, copyDpcppBuildInputs, copyCudaBuildInputs, cudaToolkitProbeCMakeLists, cudaToolkitProbeRoot, probeCudaToolkit,
+  preparedDpcppCudaSourceOrigin, dpcppCudaInputsManifest, auditDpcppCudaInputs, gnuHeadersStatePaths, buildWindowsGnuHeaders, auditGnuHeaders, capturePackageCopyright,
+  linuxJitResourcesStatePaths, linuxJitResourceBuildPlan, linuxJitResourceProfile, buildLinuxJitResourceTree, assertLinuxJitResourceManifest,
+  auditLinuxJitResourceTree,
   linuxJitBootstrapOverlayPlan, seedLinuxJitBootstrapOverlay, auditLinuxJitBootstrapOverlay,
   linuxJitSdkStatePaths, linuxJitSdkArtifactPhase, linuxJitSdkInputManifest, linuxJitSdkBuildPlan, restoreLinuxJitSdkInputs,
   auditLinuxJitSdkConfigureArtifacts, linuxJitRuntimeProofPaths, packLinuxJitRuntimeProofFiles, extractLinuxJitRuntimeProof,
-  linuxNativeSdkDescriptorStatePaths, linuxNativeSdkDescriptorConfig, linuxNativeSdkGnuNoticeSources, linuxNativeSdkRocmNoticeSources,
+  linuxNativeSdkDescriptorStatePaths, linuxNativeSdkLldPath, linuxNativeSdkDescriptorConfig, linuxNativeSdkGnuNoticeSources, linuxNativeSdkRocmNoticeSources,
   rocmHostNoticeRows, auditRocmHostNoticeSources, auditLinuxNativeSdkDescriptorInputArchive,
   tarExpandedBytes, linuxNativeSdkDiskPreflight, auditLinuxNativeSdkDescriptorLineage,
   linuxNativeGpuProfiles, linuxNativeComponentProfiles, linuxNativeComponentStatePaths, linuxNativeComponentChildTimeout,
@@ -34,18 +36,20 @@ const {extractState, packState, listState, safeRelative, outputStageName, ciPath
   auditCudaNoticeFiles, auditCudaNoticeSources, packNvrtcVerification,
   windowsNativeCoreStatePaths, windowsNativeCoreDescriptor, windowsNativeCoreDeadlineBudget, auditWindowsNativeCoreOutput, packWindowsNativeCoreHandoff,
   windowsHostSdkStatePaths, windowsHostSdkDeadlineBudget, windowsHostSdkPackageMembers,
-  validateWindowsLlvmLibraryPolicy, auditWindowsLlvmToolFile, mapWindowsLlvmSdkLibraries, composeWindowsLlvmSdkDescriptor,
+  validateWindowsLlvmLibraryPolicy, auditWindowsLlvmToolFile, mapWindowsLlvmSdkLibraries, composeWindowsLlvmSdkDescriptor, composeLocalWindowsLlvmSdkDescriptor,
   windowsNativeLlvmDescriptorCiStatePaths, windowsNativeLlvmDescriptorCiPreflight, buildWindowsNativeLlvmDescriptorCi,
   windowsGpuHandoffStatePaths, windowsGpuProfileHandoffPlan, windowsGpuDeadlineBudget, windowsGpuProfileCiPreflight,
   packWindowsGpuHandoff, buildWindowsGpuProfileCi, runStage,
   windowsNativeLlvmCiStatePaths, windowsNativeLlvmCiRunDeadlineBudget, windowsNativeLlvmCiDeadlineBudget,
   windowsNativeLlvmCiDeadlineRecord, windowsNativeLlvmCiPreflight, buildWindowsNativeLlvmCi,
+  buildLinuxLlvmGroupCi, linuxLlvmCiStagePlan,
   windowsControllerStatePaths, windowsControllerDeadlineBudget, windowsControllerTools, windowsControllerIoBuildCommands,
   windowsControllerHermesBuildCommand, windowsControllerPackageInventory, windowsControllerIntelRuntimeEntries,
   verifyWindowsHermesSourceHandoff, packWindowsControllerHandoff} = require("../scripts/prepare-native-ci");
 const {ioArchiveUrls, gitSourceComponents, sourceRecipe, origins, zstdArchiveCatalog, zstdSourceRecipe, windowsHostSdkCatalog} = require("../scripts/fetch-native-sdk-sources");
 const {sdkComponents} = require("../scripts/prepare-native-sdk-sources");
 const gnuHeaderProducer = require("../scripts/prepare-native-gnu-headers");
+const jitBaseProducer = require("../scripts/prepare-native-jit-base");
 const {ioPins} = require("../scripts/build-native-io");
 const {opensslPin} = require("../scripts/build-native-openssl");
 const {zstdPin} = require("../scripts/build-native-zstd");
@@ -71,6 +75,7 @@ const root = path.resolve(__dirname, "..");
 const linuxFixedTmpSkip = process.platform === "linux" ? false : "public CI state roots are fixed under Linux /tmp";
 const workflow = fs.readFileSync(path.join(root, ".github/workflows/build-native-prerequisites.yml"), "utf8");
 const nativeLinuxComponentWorkflow = fs.readFileSync(path.join(root, ".github/workflows/build-linux-native-component.yml"), "utf8");
+const linuxLlvmWorkflow = fs.readFileSync(path.join(root, ".github/workflows/build-linux-llvm-job.yml"), "utf8");
 const windowsLlvmWorkflow = fs.readFileSync(path.join(root, ".github/workflows/build-windows-llvm-job.yml"), "utf8");
 const windowsJitWorkflow = fs.readFileSync(path.join(root, ".github/workflows/build-windows-jit-job.yml"), "utf8");
 const releaseWorkflow = fs.readFileSync(path.join(root, ".github/workflows/release.yml"), "utf8");
@@ -81,9 +86,12 @@ const nativeJitRuntimeTest = fs.readFileSync(path.join(root, "tests/native_jit_r
 const releaseArtifactsWorkflow = fs.readFileSync(path.join(root, ".github/workflows/build-release-artifacts.yml"), "utf8");
 const nativeReleaseChecker = fs.readFileSync(path.join(root, "scripts/check-native-release.js"), "utf8");
 const helper = fs.readFileSync(path.join(root, "scripts/prepare-native-ci.js"), "utf8");
+const dpcppCudaInputModule = require("../scripts/native-dpcpp-cuda-inputs");
+const nativeCiExports = require("../scripts/prepare-native-ci");
+const dpcppCudaInputHelper = fs.readFileSync(path.join(root, "scripts/native-dpcpp-cuda-inputs.js"), "utf8");
 const rocmHostProducer = fs.readFileSync(path.join(root, "scripts/build-native-rocm-host-runtime.js"), "utf8");
 const fetchHelper = fs.readFileSync(path.join(root, "scripts/fetch-native-sdk-sources.js"), "utf8");
-const phases = ["llvm-targets", "clang-base", "clang-sema", "clang-frontend", "lld", "tools"];
+const phases = ["llvm-common", "llvm-core-codegen", "llvm-backends-clang", "clang-frontend"];
 // These producer fixtures exercise Linux absolute roots, /usr/bin/tar, or POSIX execute bits.
 const linuxOnlySkip = process.platform !== "linux" && "Linux-specific path/archive fixture";
 
@@ -94,17 +102,18 @@ test.describe("Pinned external GitHub Actions", () => {
       ["actions/setup-node@v7", "949feb2413d6458794dcd2491c4babbbce0c15c1"],
       ["actions/cache@v6", "55cc8345863c7cc4c66a329aec7e433d2d1c52a9"],
       ["actions/cache/restore@v6", "55cc8345863c7cc4c66a329aec7e433d2d1c52a9"],
-      ["actions/download-artifact@v7", "37930b1c2abaa49bbe596cd826c3c89aef350131"],
       ["actions/download-artifact@v8", "9000827ccba6bdab643e8b6fd33ac0654aef8333"],
       ["actions/upload-artifact@v7", "cf430e030ddbb5b0abf93d22962f4752f3646cd9"],
       ["docker/setup-buildx-action@v4", "f87e5991a6d7451dcb8d9637bfbc97413f497069"],
     ]);
     const workflows = /** @type {[string, string][]} */ ([
       ["build-native-prerequisites.yml", workflow],
+      ["build-linux-llvm-job.yml", linuxLlvmWorkflow],
       ["build-linux-native-component.yml", nativeLinuxComponentWorkflow],
       ["build-windows-llvm-job.yml", windowsLlvmWorkflow],
       ["build-release-artifacts.yml", releaseArtifactsWorkflow],
       ["test-native-release.yml", nativeRuntimeWorkflow],
+      ["test-engineering.yml", fs.readFileSync(path.join(root, ".github/workflows/test-engineering.yml"), "utf8")],
       ["pack-native-application.yml", fs.readFileSync(path.join(root, ".github/workflows/pack-native-application.yml"), "utf8")],
       ["release.yml", releaseWorkflow],
       ["stability.yml", stabilityWorkflow],
@@ -125,6 +134,43 @@ test.describe("Pinned external GitHub Actions", () => {
       }
     }
     assert.ok(externalCount > 0, "the grouped policy covers external action uses in every native workflow");
+  });
+
+  test("artifact downloads use v8 raw-file detection without changing ZIP extraction", () => {
+    const workflowDirectory = path.join(root, ".github/workflows"), downloads = [];
+    for (const file of fs.readdirSync(workflowDirectory).filter(name => name.endsWith(".yml"))) {
+      const source = fs.readFileSync(path.join(workflowDirectory, file), "utf8").replace(/\r\n/g, "\n"), lines = source.split("\n");
+      for (let index = 0; index < lines.length; index += 1) {
+        const action = /^([ \t]*)uses: actions\/download-artifact@/.exec(lines[index] ?? "");
+        if (!action) {continue;}
+        const itemIndent = (action[1] ?? "").length - 2;
+        let end = index + 1;
+        while (end < lines.length && !new RegExp("^ {" + itemIndent + "}- ").test(lines[end] ?? "")) {end += 1;}
+        const block = lines.slice(index, end).join("\n");
+        assert.match(block, /uses: actions\/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8$/m,
+          file + " must use the pinned raw-aware v8 downloader");
+        const rawEngineering = file === "test-engineering.yml" &&
+          /artifact-ids: \$\{\{ needs\.windows-(?:cpu|portable-runtime)\.outputs\.artifact_id \}\}/.test(block);
+        if (rawEngineering) {
+          // These archive:false payloads must retain their exact bytes for the producer SHA check.
+          assert.match(block, /^\s*skip-decompress: true$/m);
+        } else {
+          assert.doesNotMatch(block, /^\s*skip-decompress:/m,
+            file + " must preserve the downloader's default extraction for archived ZIP artifacts");
+        }
+        downloads.push({file, block});
+      }
+    }
+    assert.ok(downloads.length > 0, "workflow inventory includes artifact consumers");
+    const rawZstdUpload = workflow.slice(workflow.indexOf("name: native-zstd-state-"), workflow.indexOf("\n      - name:", workflow.indexOf("name: native-zstd-state-"))),
+      rawZstdDownload = downloads.find(({file, block}) => file === "build-native-prerequisites.yml" &&
+        block.includes("native-zstd-state-") && block.includes("-sources.tar"));
+    assert.match(rawZstdUpload, /archive: false/, "the zstd source producer uploads a raw single-file tar");
+    assert.ok(rawZstdDownload, "a raw archive:false source tar continues through the v8 download path");
+    assert.match(workflow, /name: native-linux-executable-[^\n]*\n[^\n]*path:[^\n]*\n[^\n]*if-no-files-found: error\n[^\n]*archive: true/,
+      "the executable producer remains ZIP-archived for default extraction");
+    assert.ok(downloads.some(({file, block}) => file === "test-native-release.yml" && block.includes("inputs.artifact_name")),
+      "archived executable artifacts retain the default ZIP extraction behavior");
   });
 
   test("publication downloads the two forwarded package artifacts and verifies their pinned bytes", () => {
@@ -166,9 +212,16 @@ test.describe("Native release runtime workflow", () => {
     assert.doesNotMatch(nativeRuntimeWorkflow.slice(runtimeJobEnvStart, runtimeJobEnvEnd), /runner\.temp/,
       "runner context is unavailable to jobs.<job_id>.env; paths belong on steps that can access it");
     assert.match(nativeRuntimeWorkflow, /name: Validate downloaded raw binary[\s\S]*?NATIVE_RUNTIME_DIRECTORY: \$\{\{ runner\.temp \}\}[\s\S]*?NATIVE_RUNTIME_BINARY: \$\{\{ runner\.temp \}\}/);
-    assert.match(nativeRuntimeWorkflow, /name: Install pinned Intel OpenCL CPU runtime \(Linux\)[\s\S]*?intel-oneapi-runtime-opencl=2026\.2\.0-863 intel-oneapi-runtime-dpcpp-sycl-opencl-cpu=2026\.2\.0-863/);
-    assert.match(nativeRuntimeWorkflow, /db932ba032a71f732dc415eef5f4f185fc7ae768487d7a357bc2772746b6c48c/);
-    assert.match(nativeRuntimeWorkflow, /\/etc\/OpenCL\/vendors\/intel64\.icd/);
+    assert.match(nativeRuntimeWorkflow, /name: Install pinned Intel OpenCL CPU runtime \(Linux\)[\s\S]*?run: bash scripts\/install-opencl-cpu\.sh/);
+    const cpuInstaller = fs.readFileSync(path.join(root, "scripts/install-opencl-cpu.sh"), "utf8");
+    assert.match(cpuInstaller, /intel-oneapi-runtime-opencl=2026\.2\.0-863 intel-oneapi-runtime-dpcpp-sycl-opencl-cpu=2026\.2\.0-863/);
+    assert.match(cpuInstaller, /db932ba032a71f732dc415eef5f4f185fc7ae768487d7a357bc2772746b6c48c/);
+    assert.match(cpuInstaller, /\/etc\/OpenCL\/vendors\/intel64\.icd/);
+    const developmentInstaller = fs.readFileSync(path.join(root, "scripts/install-dev.sh"), "utf8"),
+      repositoryKeyring = "/usr/share/keyrings/oneapi-archive-keyring.gpg";
+    assert.ok(cpuInstaller.includes("keyring=" + repositoryKeyring));
+    assert.ok(developmentInstaller.includes("key=" + repositoryKeyring), "both installers share one APT Signed-By identity");
+    assert.match(cpuInstaller, /cmp -- "\$temporary\/keyring" "\$keyring"/, "an existing keyring must match the verified trust root");
     assert.match(nativeRuntimeWorkflow, /name: Install pinned Intel OpenCL CPU runtime \(Windows\)[\s\S]*?install-dev\.ps1 -Component opencl-cpu/);
     assert.match(nativeRuntimeWorkflow, /HKLM:\\SOFTWARE\\Khronos\\OpenCL\\Vendors/);
     assert.match(nativeRuntimeWorkflow, /name: Run runtime-only CPU and CLI gates\n {8}if: matrix\.lane == 'cpu-cli'[\s\S]*?check-native-release\.js "\$NATIVE_RUNTIME_BINARY" cli --sha256/);
@@ -443,10 +496,11 @@ test.describe("Native prerequisite acquisition workflow", () => {
     assert.match(helper, /nativeOpenSslInputs\(paths\.opensslSdk, "linux"\)/);
     for (const phase of phases) {
       assert.match(helper, new RegExp('"' + phase + '"'));
-      assert.match(workflow, new RegExp("stage " + phase));
-      assert.equal(outputStageName(phase), phase);
+      assert.ok(workflow.includes("stage: " + phase) || workflow.includes("stage " + phase), phase + " remains a caller stage");
+      if (!["llvm-common", "llvm-backends-clang"].includes(phase)) {assert.equal(outputStageName(phase), phase);}
     }
     assert.equal(outputStageName("configure"), "configured");
+    assert.match(linuxLlvmWorkflow, /scripts\/run-bounded-native-ci\.sh node scripts\/prepare-native-ci\.js stage/);
     assert.match(helper, /packCurrent\(paths, outputStageName\(stage\)\)/);
     assert.match(helper, /\["install", paths\.output\]/);
     assert.match(helper, /\["audit", paths\.output\]/);
@@ -465,6 +519,101 @@ test.describe("Native prerequisite acquisition workflow", () => {
       "the configure phase invokes the same command whose arguments are covered above");
     paths.env.MOM_BUILD_JOBS = "4";
     assert.equal(linuxLlvmConfigureCommand(paths).args.at(-1), "4", "the validated alternate CI envelope remains configurable");
+  });
+
+  test("merged LLVM common libraries restore/provision once and retain original public phase order", () => {
+    const paths = /** @type {any} */ ({output: "/tmp/fixture/linux-llvm21-sdk", env: {MOM_BUILD_JOBS: "2"}}),
+      calls = /** @type {Array<[string, ...unknown[]]>} */ ([]);
+    buildLinuxLlvmGroupCi(paths, "llvm-common", {
+      restore: (selected, stage) => calls.push(["restore", selected === paths, stage]),
+      provision: selected => calls.push(["provision", selected === paths]),
+      execute: (file, args, environment) => calls.push(["build", file, args, environment === paths.env]),
+      pack: (selected, stage) => calls.push(["pack", selected === paths, stage]),
+    });
+    assert.deepEqual(calls, [
+      ["restore", true, "configured"],
+      ["provision", true],
+      ["build", "scripts/build-native-llvm21-sdk.js", ["build", paths.output, "llvm-foundation"], true],
+      ["build", "scripts/build-native-llvm21-sdk.js", ["build", paths.output, "llvm-core-analysis"], true],
+      ["build", "scripts/build-native-llvm21-sdk.js", ["build", paths.output, "llvm-core-optimization"], true],
+      ["pack", true, "llvm-core-optimization"],
+    ]);
+  });
+
+  test("a failed LLVM core phase prevents the final state handoff", () => {
+    const phases = ["llvm-foundation", "llvm-core-analysis", "llvm-core-optimization"];
+    for (const failedPhase of phases) {
+      const paths = /** @type {any} */ ({output: "/tmp/fixture/linux-llvm21-sdk", env: {MOM_BUILD_JOBS: "2"}}),
+        calls = /** @type {Array<[string, ...unknown[]]>} */ ([]);
+      assert.throws(() => buildLinuxLlvmGroupCi(paths, "llvm-common", {
+        restore: (_selected, stage) => calls.push(["restore", stage]),
+        provision: () => calls.push(["provision"]),
+        execute: (_file, args) => {
+          calls.push(["build", args[2]]);
+          if (args[2] === failedPhase) {throw new Error("fixture build failure");}
+        },
+        pack: () => calls.push(["pack"]),
+      }), /fixture build failure/);
+      assert.equal(calls.filter(([operation]) => operation === "pack").length, 0, failedPhase + " cannot publish partial state");
+      assert.equal(calls.filter(([operation]) => operation === "build").length,
+        phases.indexOf(failedPhase) + 1, failedPhase + " stops subsequent builder calls");
+    }
+  });
+
+  test("LLVM backend/Clang group preserves every receipt and cannot pack a failed partial build", () => {
+    const phases = ["llvm-x86", "llvm-nvptx", "llvm-amdgpu", "clang-base", "clang-sema"],
+      paths = /** @type {any} */ ({output: "/tmp/fixture/linux-llvm21-sdk", env: {MOM_BUILD_JOBS: "2"}});
+    for (const failed of [null, ...phases]) {
+      const calls = /** @type {string[]} */ ([]), run = () => buildLinuxLlvmGroupCi(paths, "llvm-backends-clang", {
+        restore: (_paths, stage) => calls.push("restore:" + stage),
+        provision: () => calls.push("provision"),
+        execute: (_file, args, env) => {
+          assert.equal(env, paths.env);
+          assert.deepEqual(args.slice(0, 2), ["build", paths.output]);
+          calls.push(args[2] || "");
+          if (args[2] === failed) {throw new Error("fixture target failure");}
+        },
+        pack: (_paths, stage) => calls.push("pack:" + stage),
+      });
+      if (failed) {assert.throws(run, /fixture target failure/);} else {run();}
+      assert.deepEqual(calls, ["restore:llvm-core-codegen", "provision",
+        ...phases.slice(0, failed ? phases.indexOf(failed) + 1 : phases.length),
+        ...(failed ? [] : ["pack:clang-sema"])]);
+    }
+    assert.throws(() => buildLinuxLlvmGroupCi(paths, "__proto__"), /maintained phase group/);
+    assert.throws(() => buildLinuxLlvmGroupCi(paths, "llvm-x86"), /maintained phase group/);
+  });
+
+  test("Linux LLVM reusable stages derive only pinned same-run predecessor and output artifacts", t => {
+    const environment = {GITHUB_RUN_ID: "123456789", GITHUB_RUN_ATTEMPT: "2"}, prefix = "native-llvm21-state-123456789-2-";
+    assert.deepEqual(linuxLlvmCiStagePlan("llvm-common", environment), {
+      previousStage: "configured", artifactStage: "llvm-core-optimization",
+      inputArtifactName: prefix + "configured.tar", outputArtifactName: prefix + "llvm-core-optimization.tar",
+    });
+    assert.deepEqual(linuxLlvmCiStagePlan("llvm-core-codegen", environment), {
+      previousStage: "llvm-core-optimization", artifactStage: "llvm-core-codegen",
+      inputArtifactName: prefix + "llvm-core-optimization.tar", outputArtifactName: prefix + "llvm-core-codegen.tar",
+    });
+    assert.deepEqual(linuxLlvmCiStagePlan("llvm-backends-clang", environment), {
+      previousStage: "llvm-core-codegen", artifactStage: "clang-sema",
+      inputArtifactName: prefix + "llvm-core-codegen.tar", outputArtifactName: prefix + "clang-sema.tar",
+    });
+    assert.throws(() => linuxLlvmCiStagePlan("llvm-core-analysis", environment), /maintained stage/);
+    assert.throws(() => linuxLlvmCiStagePlan("llvm-foundation", {...environment, GITHUB_RUN_ATTEMPT: "0"}), /run-attempt identity/);
+
+    const output = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "mom-linux-llvm-stage-plan-")), "github-output");
+    fs.writeFileSync(output, "", {flag: "wx"});
+    t.after(() => fs.rmSync(path.dirname(output), {recursive: true, force: true}));
+    const step = "      - name: Validate stage and derive exact same-run artifact names", marker = linuxLlvmWorkflow.indexOf(step),
+      heredoc = "          node <<'NODE'\n", start = linuxLlvmWorkflow.indexOf(heredoc, marker) + heredoc.length,
+      end = linuxLlvmWorkflow.indexOf("\n          NODE", start);
+    assert.ok(marker >= 0 && start >= heredoc.length && end > start, "the production stage-plan heredoc exists");
+    const body = linuxLlvmWorkflow.slice(start, end).split("\n").map(line => line.slice(10)).join("\n"),
+      result = spawnSync(process.execPath, ["-e", body], {cwd: root,
+        env: {...process.env, ...environment, LINUX_LLVM_STAGE: "llvm-common", GITHUB_OUTPUT: output}, encoding: "utf8", timeout: 10000});
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal(fs.readFileSync(output, "utf8"),
+      "input_artifact_name=" + prefix + "configured.tar\noutput_artifact_name=" + prefix + "llvm-core-optimization.tar\n");
   });
 
   test("restored LLVM consumers use bounded read-only admission and preserve the existing result", {skip: linuxOnlySkip}, t => {
@@ -497,10 +646,13 @@ test.describe("Native prerequisite acquisition workflow", () => {
     }), /changed its existing result receipt/, "same-byte replacement is not accepted as an unchanged receipt");
     fs.writeFileSync(resultFile, original);
 
-    const source = helper.slice(helper.indexOf("function buildRocmComgrSdk"), helper.indexOf("/** Canonical paths accepted by the public ROCm host-runtime producer."));
-    assert.equal((source.match(/verifyLinuxLlvmAdmissionCi\(paths\)/g) || []).length, 2,
-      "both COMGR consumer checkpoints re-admit without invoking the write-once audit");
-    assert.doesNotMatch(source, /build-native-llvm21-sdk\.js", \["audit"/);
+    const wrapperStart = helper.indexOf("function buildRocmComgrSdk"), wrapperEnd = helper.indexOf("/** Canonical paths accepted by the public ROCm host-runtime producer.", wrapperStart),
+      wrapper = helper.slice(wrapperStart, wrapperEnd), coreStart = helper.indexOf("function buildRocmComgrFromInputs"),
+      core = helper.slice(coreStart, wrapperStart);
+    assert.match(wrapper, /buildRocmComgrFromInputs\(state, tools, paths\.env, \(\) => verifyLinuxLlvmAdmissionCi\(paths\)\)/);
+    assert.equal((core.match(/verifyLlvmAdmission\(\)/g) || []).length, 2,
+      "both COMGR consumer checkpoints re-admit through the shared read-only callback");
+    assert.doesNotMatch(wrapper + core, /build-native-llvm21-sdk\.js", \["audit"/);
     for (const functionName of ["buildAcppCudaHipSdk", "buildRocmHostSdk", "verifyNvrtcTarget"]) {
       const start = helper.indexOf("function " + functionName), end = helper.indexOf("\n/**", start + 1), body = helper.slice(start, end < 0 ? undefined : end);
       assert.match(body, /verifyLinuxLlvmAdmissionCi\(paths\)/, functionName + " uses read-only admission");
@@ -510,7 +662,7 @@ test.describe("Native prerequisite acquisition workflow", () => {
       "the child stage dispatches to the installed handoff or legacy full-state verifier");
     assert.match(helper, /linuxLlvmSdkHandoffInputs\(paths\.output,[\s\S]{0,100}handoffSha256/,
       "the installed-SDK path uses the external manifest pin");
-    for (const [functionName, expectedAdmissions] of [["buildAcppCudaHipSdk", 1], ["buildRocmComgrSdk", 2], ["buildRocmHostSdk", 1]]) {
+    for (const [functionName, expectedAdmissions] of [["buildAcppCudaHipSdk", 1], ["buildRocmHostSdk", 1]]) {
       const start = helper.indexOf("function " + functionName), end = helper.indexOf("\nfunction ", start + 1),
         body = helper.slice(start, end < 0 ? undefined : end), provision = body.indexOf("provisionOneApi(paths"), admission = body.indexOf("verifyLinuxLlvmAdmissionCi(paths)");
       assert.ok(provision >= 0 && admission > provision,
@@ -522,6 +674,20 @@ test.describe("Native prerequisite acquisition workflow", () => {
         }
       }
     }
+    const rocmWrapperStart = helper.indexOf("function buildRocmComgrSdk("),
+      rocmWrapperEnd = helper.indexOf("/** Canonical paths accepted by the public ROCm host-runtime producer.", rocmWrapperStart),
+      rocmWrapper = helper.slice(rocmWrapperStart, rocmWrapperEnd), rocmCoreStart = helper.indexOf("function buildRocmComgrFromInputs("),
+      rocmCore = helper.slice(rocmCoreStart, rocmWrapperStart), rocmProvision = rocmWrapper.indexOf("provisionOneApi(paths"),
+      rocmSharedAdmission = rocmWrapper.indexOf("buildRocmComgrFromInputs(state, tools, paths.env,");
+    assert.ok(rocmProvision >= 0 && rocmSharedAdmission > rocmProvision,
+      "the CI wrapper provisions Intel tools before entering the shared LLVM-admitted core");
+    const rocmPreCleanupAdmission = rocmWrapper.indexOf("verifyLinuxLlvmAdmissionCi(paths)"),
+      rocmCleanup = rocmWrapper.indexOf("for (const file of [state.incomingSourceTar");
+    assert.ok(rocmProvision < rocmPreCleanupAdmission && rocmPreCleanupAdmission < rocmCleanup && rocmCleanup < rocmSharedAdmission,
+      "the CI wrapper retains its pre-cleanup gate before the shared core re-admits its own inputs");
+    assert.equal((rocmWrapper.match(/verifyLinuxLlvmAdmissionCi\(paths\)/g) || []).length, 2);
+    assert.equal((rocmCore.match(/verifyLlvmAdmission\(\)/g) || []).length, 2,
+      "the shared COMGR core checks its callback before mutation and between producers");
     const nvrtcStart = helper.indexOf("function verifyNvrtcTarget"), nvrtcEnd = helper.indexOf("\nfunction ", nvrtcStart + 1),
       nvrtcBody = helper.slice(nvrtcStart, nvrtcEnd < 0 ? undefined : nvrtcEnd);
     assert.ok(nvrtcBody.indexOf("provisionOneApi(paths") < nvrtcBody.indexOf("verifyLinuxLlvmAdmissionCi(paths)"),
@@ -544,33 +710,73 @@ test.describe("Native prerequisite acquisition workflow", () => {
 
   test("oneAPI provisioning reuses a validated 2026.2 install and falls back when it is missing", {skip: linuxOnlySkip}, t => {
     const childProcess = require("node:child_process"), modulePath = require.resolve("../scripts/prepare-native-ci"), previous = require.cache[modulePath],
-      calls = /** @type {Array<{command:string,args:string[],options:{env:NodeJS.ProcessEnv,timeout:number}}>} */ ([]);
-    let validationStatus = 0;
+      calls = /** @type {Array<{command:string,args:string[],options:{env?:NodeJS.ProcessEnv,timeout?:number}}>} */ ([]),
+      compilerRoot = "/opt/intel/oneapi/compiler/2026.2", compilerCxx = compilerRoot + "/bin/icpx",
+      compilerLinker = compilerRoot + "/bin/compiler/ld.lld", fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-ci-oneapi-linker-")),
+      fixtureCompilerRoot = path.join(fixtureRoot, "compiler", "2026.2"), fixtureLinkerTarget = path.join(fixtureCompilerRoot, "bin/compiler/lld");
+    fs.mkdirSync(path.dirname(fixtureLinkerTarget), {recursive: true}); fs.writeFileSync(fixtureLinkerTarget, "fixture linker\n", {mode: 0o755});
+    t.after(() => fs.rmSync(fixtureRoot, {recursive: true, force: true}));
+    const toolPaths = new Set(["/usr/bin/cmake", "/usr/bin/ninja", "/usr/bin/python3", "/usr/bin/ld"]),
+      realStatSync = fs.statSync.bind(fs), realAccessSync = fs.accessSync.bind(fs), realRealpathSync = fs.realpathSync.bind(fs);
+    let validationStatus = 0, missingTool = "";
     t.mock.method(childProcess, "spawnSync", (/** @type {string} */ command, /** @type {string[]} */ args,
-      /** @type {{env:NodeJS.ProcessEnv,timeout:number}} */ options) => {
+      /** @type {{env?:NodeJS.ProcessEnv,timeout?:number}} */ options) => {
       calls.push({command, args, options});
+      if (command === compilerCxx) {
+        assert.deepEqual(args, ["-print-prog-name=ld.lld"]);
+        return /** @type {any} */ ({error: null, signal: null, status: 0, stdout: compilerLinker + "\n", stderr: ""});
+      }
       return /** @type {any} */ ({error: null, signal: null, status: command === "sudo" ? 0 : validationStatus});
+    });
+    // Keep the helper's real path checks while making this fixture independent of runner packages.
+    t.mock.method(fs, "statSync", /** @param {import("node:fs").PathLike} file @param {import("node:fs").StatSyncOptions} [options] */ (file, options) => {
+      if (toolPaths.has(String(file))) {
+        if (String(file) === missingTool) {throw Object.assign(new Error("fixture prerequisite is absent"), {code: "ENOENT"});}
+        return realStatSync(process.execPath, options);
+      }
+      return realStatSync(file, options);
+    });
+    t.mock.method(fs, "accessSync", /** @param {import("node:fs").PathLike} file @param {number} [mode] */ (file, mode) => {
+      if (String(file) === compilerLinker) {return realAccessSync(fixtureLinkerTarget, mode);}
+      if (toolPaths.has(String(file))) {
+        if (String(file) === missingTool) {throw Object.assign(new Error("fixture prerequisite is absent"), {code: "ENOENT"});}
+        return realAccessSync(process.execPath, mode);
+      }
+      return realAccessSync(file, mode);
+    });
+    t.mock.method(fs, "realpathSync", /** @param {import("node:fs").PathLike} file @param {any} [options] */ (file, options) => {
+      if (String(file) === compilerRoot) {return fixtureCompilerRoot;}
+      if (String(file) === compilerLinker) {return fixtureLinkerTarget;}
+      return realRealpathSync(file, options);
     });
     delete require.cache[modulePath];
     const fresh = require("../scripts/prepare-native-ci");
     t.after(() => {delete require.cache[modulePath]; if (previous) {require.cache[modulePath] = previous;}});
     fresh.provisionOneApi(/** @type {any} */ ({env: process.env}), "/var/tmp/mom-dev-native-test-oneapi", 60 * 1000);
-    assert.equal(calls.length, 1, "a successful non-root version validation avoids sudo and reinstall");
+    assert.equal(calls.length, 2, "a successful non-root validation queries the pinned linker without sudo or reinstall");
     assert.equal(calls[0]?.command, path.join(root, "scripts/install-dev.sh"));
     assert.deepEqual(calls[0]?.args, ["--component", "oneapi", "--jobs", "4", "--validate-only"]);
     assert.ok((calls[0]?.options.timeout || 0) <= 2 * 60 * 1000);
+    assert.equal(calls[1]?.command, compilerCxx); assert.deepEqual(calls[1]?.args, ["-print-prog-name=ld.lld"]);
 
     calls.length = 0; validationStatus = 1;
     fresh.provisionOneApi(/** @type {any} */ ({env: process.env}), "/var/tmp/mom-dev-native-test-oneapi", 60 * 1000);
-    assert.equal(calls.length, 3, "a missing compiler triggers signed install followed by privileged validation");
+    assert.equal(calls.length, 4, "a missing compiler triggers signed install, privileged validation and the pinned linker query");
     assert.equal(calls[0]?.command, path.join(root, "scripts/install-dev.sh"));
     assert.deepEqual(calls[0]?.args, ["--component", "oneapi", "--jobs", "4", "--validate-only"]);
     assert.deepEqual(calls[1]?.args, ["env", "MOM_BUILD_JOBS=4", "MOM_DEV_WORKSPACE=/var/tmp/mom-dev-native-test-oneapi",
       path.join(root, "scripts/install-dev.sh"), "--component", "oneapi", "--jobs", "4"]);
     assert.deepEqual(calls[2]?.args, [...(calls[1]?.args || []), "--validate-only"]);
+    assert.equal(calls[3]?.command, compilerCxx); assert.deepEqual(calls[3]?.args, ["-print-prog-name=ld.lld"]);
+
+    calls.length = 0; validationStatus = 0; missingTool = "/usr/bin/cmake";
+    assert.throws(() => fresh.provisionOneApi(/** @type {any} */ ({env: process.env}), "/var/tmp/mom-dev-native-test-oneapi", 60 * 1000),
+      /Missing Linux LLVM build prerequisite: \/usr\/bin\/cmake/);
+    assert.equal(calls.length, 1, "missing canonical tools fail after validation without triggering a reinstall");
   });
 
   test("uses ordered, bounded same-run jobs and exact-path tar state handoffs", () => {
+    assert.doesNotMatch(workflow, /build-llvm-targets:|stage llvm-targets\b/, "the timed-out monolithic LLVM phase is replaced, not retained");
     const jobs = ["fetch-linux-sources", "configure-linux-sdk", ...phases.map(name => "build-" + name), "install-audit-linux-sdk"];
     let prior = "";
     for (const job of jobs) {
@@ -578,22 +784,68 @@ test.describe("Native prerequisite acquisition workflow", () => {
       const remainder = position < 0 ? "" : workflow.slice(position + marker.length), next = remainder.search(/\n {2}[a-z0-9-]+:/);
       const block = next < 0 ? remainder : remainder.slice(0, next);
       assert.ok(block, "missing job " + job);
-      assert.match(block, /timeout-minutes: (?:30|45|60)/, job + " needs a bounded job deadline");
       if (prior) {assert.match(block, new RegExp("needs: " + prior + "(?:\\s|$)"), job + " must wait for exact prior state");}
-      if (job !== "fetch-linux-sources") {
-        assert.match(block, /prepare-native-ci\.js stage/);
-        assert.match(block, /actions\/download-artifact@[a-f0-9]{40}/);
-      }
-      if (job !== "install-audit-linux-sdk") {
-        assert.match(block, /prepare-native-ci\.js stage/);
-        assert.match(block, /actions\/upload-artifact@[a-f0-9]{40}/);
-        assert.match(block, /archive: false/);
-        assert.match(block, /compression-level: 0/);
-        assert.match(block, /retention-days: 1/);
+      const stage = job.startsWith("build-") ? job.slice("build-".length) : "";
+      if (phases.includes(stage)) {
+        assert.match(block, /uses: \.\/\.github\/workflows\/build-linux-llvm-job\.yml/);
+        assert.match(block, new RegExp("stage: " + stage));
+      } else {
+        assert.match(block, /timeout-minutes: (?:30|45|60)/, job + " needs a bounded job deadline");
+        if (job !== "fetch-linux-sources") {
+          assert.match(block, /prepare-native-ci\.js stage/);
+          assert.match(block, /actions\/download-artifact@[a-f0-9]{40}/);
+        }
+        if (job !== "install-audit-linux-sdk") {
+          assert.match(block, /prepare-native-ci\.js stage/);
+          assert.match(block, /actions\/upload-artifact@[a-f0-9]{40}/);
+          assert.match(block, /archive: false/);
+          assert.match(block, /compression-level: 0/);
+          assert.match(block, /retention-days: 1/);
+        }
       }
       prior = job;
     }
     const dollar = String.fromCharCode(36), run = dollar + "{{ github.run_id }}", attempt = dollar + "{{ github.run_attempt }}";
+    for (const [index, phase] of phases.entries()) {
+      const jobName = "build-" + phase, marker = "\n  " + jobName + ":", start = workflow.indexOf(marker), remaining = workflow.slice(start + marker.length),
+        next = /\n\x20{2}[a-z0-9-]+:\n/.exec(remaining), block = start < 0 ? "" : workflow.slice(start,
+          next ? start + marker.length + next.index : undefined), previousJob = index ? "build-" + (phases[index - 1] || "") : "configure-linux-sdk";
+      assert.match(block, /uses: \.\/\.github\/workflows\/build-linux-llvm-job\.yml/);
+      assert.match(block, new RegExp("needs: " + previousJob));
+      assert.match(block, new RegExp("stage: " + phase));
+    }
+    assert.ok(linuxLlvmWorkflow.includes("timeout-minutes: " + dollar + "{{ inputs.stage == 'llvm-common' && 30 || inputs.stage == 'llvm-backends-clang' && 30 || 60 }}"));
+    assert.match(linuxLlvmWorkflow, /name: \$\{\{ steps\.state\.outputs\.input_artifact_name \}\}/);
+    assert.match(linuxLlvmWorkflow, /name: \$\{\{ steps\.state\.outputs\.output_artifact_name \}\}/);
+    assert.match(linuxLlvmWorkflow, /archive: false[\s\S]*?compression-level: 0[\s\S]*?retention-days: 1/);
+    assert.doesNotMatch(linuxLlvmWorkflow, /actions\/cache|actions: write|contents: write/);
+    const reusableEnv = linuxLlvmWorkflow.slice(linuxLlvmWorkflow.indexOf("    env:"), linuxLlvmWorkflow.indexOf("    steps:"));
+    assert.match(reusableEnv, /MOM_AOT_BUILD_ONLY: "1"/);
+    assert.match(reusableEnv, /MOM_BUILD_JOBS: "2"/);
+    for (const name of ["MOM_NATIVE_SOURCE_DIR", "MOM_NATIVE_LINUX_SDK_DIR", "MOM_NATIVE_IO_SOURCE_DIR", "MOM_NATIVE_IO_SDK_DIR",
+      "MOM_NATIVE_LINUX_SOURCES_DIR", "MOM_NATIVE_ZSTD_SOURCE_DIR", "MOM_NATIVE_ZSTD_SDK_DIR", "MOM_NATIVE_LINUX_JIT_RESOURCES_DIR",
+      "MOM_NATIVE_ROCM_COMGR_SDK_DIR", "MOM_NATIVE_ROCM_RESOURCES_DIR", "MOM_NATIVE_ROCM_HIP_HEADERS_DIR",
+      "MOM_NATIVE_ROCM_HOST_SDK_DIR", "MOM_NATIVE_LINUX_SDK_DESCRIPTOR_DIR"]) {
+      assert.match(reusableEnv, new RegExp("^      " + name + ": /tmp/[^\\n]*\\$\\{\\{ github\\.run_id \\}\\}-\\$\\{\\{ github\\.run_attempt \\}\\}$", "m"),
+        name + " keeps ciPaths() bound to this exact run attempt");
+    }
+    assert.doesNotMatch(workflow, /build-llvm-core-analysis:|build-llvm-core-optimization:|stage llvm-core-analysis|stage llvm-core-optimization/);
+    const windowsGpuJobs = ["build-windows-oneapi-gpu", "build-windows-dpcpp-gpu", "build-windows-opencl-gpu",
+        "build-windows-acpp-cuda-gpu", "build-windows-acpp-hip-gpu"],
+      windowsApplicationMarker = "\n  assemble-windows-native-application:", windowsApplicationStart = workflow.indexOf(windowsApplicationMarker),
+      windowsApplicationRest = workflow.slice(windowsApplicationStart + windowsApplicationMarker.length),
+      windowsApplicationNext = /\n\x20{2}[a-z0-9-]+:\n/.exec(windowsApplicationRest),
+      windowsApplicationBlock = windowsApplicationStart < 0 ? "" : workflow.slice(windowsApplicationStart,
+        windowsApplicationNext ? windowsApplicationStart + windowsApplicationMarker.length + windowsApplicationNext.index : undefined);
+    for (const jobName of windowsGpuJobs) {
+      const marker = "\n  " + jobName + ":", start = workflow.indexOf(marker), rest = workflow.slice(start + marker.length),
+        next = /\n\x20{2}[a-z0-9-]+:\n/.exec(rest), block = start < 0 ? "" : workflow.slice(start,
+          next ? start + marker.length + next.index : undefined), needs = block.match(/needs: \[([^\]]+)\]/)?.[1] || "";
+      assert.match(block, /uses: \.\/\.github\/workflows\/build-windows-gpu-job\.yml/);
+      assert.doesNotMatch(needs, /build-windows-(?:oneapi|dpcpp|opencl|acpp-(?:cuda|hip))-gpu/,
+        jobName + " stays independent of peer GPU factories");
+      assert.ok(windowsApplicationBlock.includes(jobName), jobName + " remains a required application input");
+    }
     assert.ok(workflow.includes("MOM_NATIVE_SOURCE_DIR: /tmp/mom-native-prerequisites-" + run + "-" + attempt));
     assert.ok(workflow.includes("MOM_NATIVE_LINUX_SDK_DIR: /tmp/mom-native-llvm21-sdk-" + run + "-" + attempt));
     assert.doesNotMatch(workflow, /actions\/cache(?:\/|@)|^\s*cache:/m);
@@ -608,8 +860,11 @@ test.describe("Native prerequisite acquisition workflow", () => {
     const downloads = [...workflow.matchAll(/uses: actions\/download-artifact@[a-f0-9]{40}(?:[ \t]+#[^\n]*)?\n\s+with:\n\s+name: ([^\n]+)\n\s+path:/g)];
     // Includes source-JIT proof, the Windows JIT resource handoff, Windows host-SDK metadata,
     // executable input, compact Linux application metadata, and bounded diagnostics.
-    assert.equal(uploads.length, jobs.length + 38, "parent SDK branches retain scoped tars, HIP headers, metadata and executable input; component transport is in its reusable workflow");
-    assert.equal(downloads.length, jobs.length + 66, "parent SDK consumers restore exact same-run dependency state, including Windows JIT inputs and CUDA source receipts; Windows LLVM/GPU restores are in reusable workflows");
+    assert.equal(uploads.length, 42, "parent SDK branches retain scoped tars, HIP headers, metadata, linker diagnostics and executable input; reusable LLVM stages add no parent uploads");
+    assert.equal(downloads.length, 69, "parent SDK consumers restore exact same-run dependency state, including Windows JIT inputs and CUDA source receipts; reusable LLVM stages add no parent downloads");
+    const prefix = "native-llvm21-state-" + run + "-" + attempt + "-",
+      artifactStage = (/** @type {string} */ stage) => stage === "llvm-common" ? "llvm-core-optimization" : stage === "llvm-backends-clang" ? "clang-sema" : stage,
+      phaseArtifactStages = phases.map(artifactStage);
     const uploadedNames = new Set();
     for (const [, name, artifactPath] of uploads) {
       if (!name || !artifactPath) {throw new Error("upload action is missing its direct file name or path");}
@@ -638,17 +893,16 @@ test.describe("Native prerequisite acquisition workflow", () => {
           name !== "native-windows-llvm-state-" + run + "-" + attempt + "-configured.json" &&
           !name.includes("-diagnostics-")) {assert.match(name, /\.tar$/);}
     }
+    for (const stage of phaseArtifactStages) {uploadedNames.add(prefix + stage + ".tar");}
     for (const [, name] of downloads) {
       if (!name || !uploadedNames.has(name)) {throw new Error("download must name a tar uploaded by this workflow run");}
     }
-    const prefix = "native-llvm21-state-" + run + "-" + attempt + "-";
     assert.deepEqual(uploads.map(([, name]) => name || "").filter(name => name.startsWith(prefix)), [
-      prefix + "sources.tar", prefix + "configured.tar", ...phases.map(phase => prefix + phase + ".tar"),
+      prefix + "sources.tar", prefix + "configured.tar",
     ]);
     assert.ok(uploadedNames.has(finalTarName));
     assert.deepEqual(downloads.map(([, name]) => name || "").filter(name => name.startsWith(prefix)), [
-      prefix + "sources.tar", prefix + "sources.tar", prefix + "sources.tar", prefix + "sources.tar", prefix + "configured.tar", ...phases.slice(0, -1).map(phase => prefix + phase + ".tar"),
-      prefix + phases[phases.length - 1] + ".tar",
+      prefix + "sources.tar", prefix + "sources.tar", prefix + "sources.tar", prefix + "sources.tar", prefix + "clang-frontend.tar",
     ]);
     assert.match(workflow, /archive: false/, "tar must be uploaded as the raw single-file artifact, not ZIP-wrapped");
   });
@@ -689,7 +943,7 @@ test.describe("Native prerequisite acquisition workflow", () => {
     assert.match(helper, /packState\(ioFinalTar\(paths\), temp, \[paths\.sourceName, paths\.ioSourceName, paths\.ioSdkName\],/);
     assert.deepEqual(ioArchiveUrls, {
       libuv: "https://dist.libuv.org/dist/v1.51.0/libuv-v1.51.0.tar.gz",
-      zlib: "https://zlib.net/fossils/zlib-1.3.1.tar.gz",
+      zlib: "https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz",
     });
     assert.equal(ioPins.libuv.sha256, "5f0557b90b1106de71951a3c3931de5e0430d78da1d9a10287ebc7a3f78ef8eb");
     assert.equal(ioPins.zlib.sha256, "9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23");
@@ -714,7 +968,7 @@ test.describe("Native prerequisite acquisition workflow", () => {
     assert.match(stage, /packState\(ioFinalTar\(paths\), temp, \[paths\.sourceName, paths\.ioSourceName, paths\.ioSdkName\],\s*ioOpenSslChildTimeout\(deadlineEpoch, 5 \* 60 \* 1000\)\)/);
   });
 
-  test("SDK producer timeout terminates its grandchild process group", {skip: process.platform !== "linux"}, t => {
+  test("SDK producer timeout terminates its grandchild process group", {skip: process.platform !== "linux"}, async t => {
     const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-ci-process-group-"));
     t.after(() => fs.rmSync(temporary, {recursive: true, force: true}));
     const source = helper.match(/function runNodeProcessGroup\(script, args, environment, timeoutMs\) \{[\s\S]*?\n\}/)?.[0];
@@ -735,14 +989,20 @@ setInterval(() => {}, 1000);
 `);
     fs.writeFileSync(childScript, "setInterval(() => {}, 1000);\n");
     /** @param {number} pid */
-    const processState = pid => {
+    const processInfo = pid => {
       try {
-        const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
-        return stat.slice(stat.lastIndexOf(")") + 2).split(" ", 1)[0] || "";
+        const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8"), fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+        return {state: fields[0] || "", ppid: fields[1] || "", pgrp: fields[2] || "", session: fields[3] || ""};
       } catch (error) {if (Reflect.get(Object(error), "code") === "ENOENT") {return null;} throw error;}
     };
     /** @param {number} pid */
-    const isRunning = pid => {const state = processState(pid); return state !== null && state !== "Z";};
+    const isRunning = pid => {const info = processInfo(pid); return info !== null && info.state !== "Z";};
+    /** @param {number} pid */
+    const waitForExit = async pid => {
+      const deadline = Date.now() + 2000;
+      while (isRunning(pid) && Date.now() < deadline) {await new Promise(resolve => setTimeout(resolve, 25));}
+      return processInfo(pid);
+    };
     /** @param {number | undefined} pid */
     const stopFixtureProcess = pid => {
       if (pid && isRunning(pid)) {
@@ -763,7 +1023,8 @@ setInterval(() => {}, 1000);
         /Bounded SDK producer failed: parent\.js \(deadline\)/);
       groupedPid = Number(fs.readFileSync(groupedFile, "utf8"));
       assert.ok(Number.isSafeInteger(groupedPid) && groupedPid > 1);
-      assert.ok(!isRunning(groupedPid), "after: GNU timeout has terminated the producer grandchild (a zombie is not running)");
+      const remaining = await waitForExit(groupedPid);
+      assert.ok(!remaining || remaining.state === "Z", `after: GNU timeout must terminate the producer grandchild; pid=${groupedPid}, proc=${JSON.stringify(remaining)}`);
     } finally {
       stopFixtureProcess(groupedPid);
       stopFixtureProcess(baselinePid);
@@ -1016,7 +1277,8 @@ setInterval(() => {}, 1000);
     assert.match(job, /target-headers\.json/); assert.match(job, /retention-days: 1/);
     assert.match(job, /native-\$\{\{ matrix\.target \}\}-gnu-headers-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}\.tar/);
     assert.doesNotMatch(job, /actions\/cache|build-native-release|build-native-jit-sdk/);
-    assert.match(helper, /for \(const mode of \["prepare", "verify"\]\)/);
+    assert.match(helper, /runNode\("scripts\/prepare-native-gnu-headers\.js", \["build", state\.root, target\], paths\.env, 5 \* 60 \* 1000\)/);
+    assert.match(gnuSource, /const headers = verifyGnuHeaders\(state\.root, target\)/);
     assert.match(helper, /packState\(state\.sdkTar, temp, \[state\.name\]\)/);
 
     const run = String(Date.now()) + String(process.pid), suffix = run + "-1", sealRunnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-gnu-seal-")),
@@ -1221,6 +1483,82 @@ setInterval(() => {}, 1000);
     assert.deepEqual(Object.keys(profile.required).sort(), ["libdevice", "spirv32", "spirv64"]);
   });
 
+  test("Linux JIT resource manifest binds required bitcode and complete base provenance", t => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-jit-resource-manifest-")), baseRoot = path.join(directory, "base");
+    t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
+    for (const row of Object.values(jitBaseProducer.REQUIRED)) {
+      const file = path.join(baseRoot, ...row.virtual.split("/"));
+      fs.mkdirSync(path.dirname(file), {recursive: true}); fs.writeFileSync(file, "fixture bitcode\n");
+    }
+    const inventory = jitBaseProducer.baseManifest(baseRoot),
+      /** @type {Array<{root:"base",source:string,virtual:string,sha256:string,bytes:number}>} */
+      expectedBaseRows = inventory.files.map(row => ({...row, root: /** @type {"base"} */ ("base"),
+        bytes: fs.statSync(path.join(baseRoot, row.source)).size})),
+      required = Object.fromEntries(Object.entries(jitBaseProducer.REQUIRED).map(([name, row]) => {
+        const baseRow = inventory.files.find(file => file.virtual === row.virtual);
+        assert.ok(baseRow, "each pinned device library must be in the actual base inventory");
+        return [name, {virtual: row.virtual, sha256: baseRow.sha256}];
+      })),
+      manifest = {required, files: [...expectedBaseRows,
+        {root: "gnu", source: "include/mom-cxx/c++config.h", virtual: "include/mom-cxx/c++config.h", sha256: "b".repeat(64), bytes: 16}]};
+    assert.doesNotThrow(() => assertLinuxJitResourceManifest(manifest, required, expectedBaseRows));
+
+    /** @param {(candidate:{required:Record<string,{virtual:string,sha256:string}>,files:Array<{root:string,source:string,virtual:string,sha256:string,bytes:number}>})=>void} mutate */
+    const rejectsMutation = mutate => {
+      const candidate = /** @type {{required:Record<string,{virtual:string,sha256:string}>,files:Array<{root:string,source:string,virtual:string,sha256:string,bytes:number}>}} */ (
+        JSON.parse(JSON.stringify(manifest)));
+      mutate(candidate);
+      assert.throws(() => assertLinuxJitResourceManifest(candidate, required, expectedBaseRows), /Linux JIT resource manifest/);
+    };
+    rejectsMutation(candidate => {
+      const row = candidate.files.find(item => item.root === "base"); assert.ok(row); row.source = "substituted/source.hpp";
+    });
+    rejectsMutation(candidate => {candidate.files.splice(candidate.files.findIndex(row => row.root === "base"), 1);});
+    rejectsMutation(candidate => {
+      const row = candidate.required["libdevice"]; assert.ok(row); row.sha256 = "f".repeat(64);
+    });
+    rejectsMutation(candidate => {
+      const row = candidate.files.find(item => item.root === "gnu"); assert.ok(row); row.root = "unrecognized";
+    });
+    const substitutedRequired = JSON.parse(JSON.stringify(required)), substitutedManifest = JSON.parse(JSON.stringify(manifest));
+    substitutedRequired.libdevice.sha256 = "f".repeat(64); substitutedManifest.required = substitutedRequired;
+    assert.throws(() => assertLinuxJitResourceManifest(substitutedManifest, substitutedRequired, expectedBaseRows), /required device libraries/);
+  });
+
+  test("local and CI JIT resource trees share the producer without archive or installer work", {skip: linuxOnlySkip}, t => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-shared-jit-tree-"));
+    t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
+    assert.throws(() => buildLinuxJitResourceTree(
+      /** @type {Parameters<typeof buildLinuxJitResourceTree>[0]} */ (/** @type {unknown} */ ({root: directory})),
+      {cmake: "/unused/cmake", ninja: "/unused/ninja", cc: "/unused/icx", cxx: "/unused/icpx"}, {}), /refuses an existing output/);
+    const start = helper.indexOf("function buildLinuxJitResourceTree("), end = helper.indexOf("function buildLinuxJitResources(", start),
+      recipe = helper.slice(start, end);
+    assert.ok(start > 0 && end > start);
+    assert.doesNotMatch(recipe, /provisionOneApi|extractState|packState|GITHUB_|RUNNER_TEMP/);
+    assert.match(recipe, /verifyLinuxSources\(paths, state\.linux, git\)/);
+    assert.match(recipe, /auditDpcppCudaInputs\(state\.dpcpp, readBuildJson\(state\.dpcpp\.manifest\), expectedDpcppManifestSha256\)/);
+    assert.match(helper.slice(end), /buildLinuxJitResourceTree\(state, tools, paths\.env, externalDpcppPins\?\.manifestSha256\)/);
+    const state = /** @type {Parameters<typeof linuxJitBootstrapOverlayPlan>[0]} */ (/** @type {unknown} */ ({bootstrapOverlay: path.join(directory, "overlay")})),
+      rows = linuxJitBootstrapOverlayPlan(state, {headers: {root: path.join(directory, "gnu")}},
+        {root: path.join(directory, "opencl"), revision: "a".repeat(40)});
+    assert.equal(rows.length, 5);
+    assert.equal(rows[4]?.source, path.join(directory, "opencl/CL"));
+    assert.throws(() => linuxJitBootstrapOverlayPlan(state, {headers: {root: "relative"}},
+      {root: path.join(directory, "opencl"), revision: "a".repeat(40)}), /admitted GNU/);
+    const auditState = /** @type {Parameters<typeof auditLinuxJitResourceTree>[0]} */ (/** @type {unknown} */
+        ({base: path.join(directory, "base"), emitter: path.join(directory, "emitter")})),
+      tools = {cmake: "/unused/cmake", ninja: "/unused/ninja", cc: "/unused/icx", cxx: "/unused/icpx"};
+    fs.mkdirSync(auditState.base); fs.mkdirSync(auditState.emitter);
+    fs.mkdirSync(path.join(directory, "redirected-base"));
+    fs.symlinkSync(path.join(directory, "redirected-base"), path.join(auditState.base, "base"));
+    fs.writeFileSync(path.join(auditState.emitter, "native-kawpow-source"), "fixture");
+    assert.throws(() => auditLinuxJitResourceTree(auditState, tools, {}), /canonical real/);
+    fs.unlinkSync(path.join(auditState.base, "base")); fs.mkdirSync(path.join(auditState.base, "base"));
+    fs.renameSync(path.join(auditState.emitter, "native-kawpow-source"), path.join(directory, "redirected-fixture"));
+    fs.symlinkSync(path.join(directory, "redirected-fixture"), path.join(auditState.emitter, "native-kawpow-source"));
+    assert.throws(() => auditLinuxJitResourceTree(auditState, tools, {}), /canonical real/);
+  });
+
   test("Linux JIT resource artifact rejects stale or substituted same-run input roots", {skip: linuxOnlySkip}, t => {
     const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-ci-jit-input-tars-"));
     t.after(() => fs.rmSync(runnerTemp, {recursive: true, force: true}));
@@ -1401,9 +1739,11 @@ setInterval(() => {}, 1000);
     assert.doesNotMatch(releaseWorkflow, /native-linux-dpcpp-cuda-inputs/);
     assert.ok(/"--component", "dpcpp,cuda", "--jobs", "4"/.test(helper), "reuse the named DPC++/CUDA installer components with bounded jobs");
     assert.match(helper, /verifyLinuxSources\(paths, state\.linux, git\)/);
-    assert.match(helper, /copyCudaBuildInputs\("\/usr\/local\/cuda-12\.6", state\.cudaRoot\)/);
-    assert.match(helper, /CMake toolkit probe/);
-    assert.match(helper, /static CUDA archives are carried for the source-built ACPP runtime, which is built separately/);
+    assert.match(helper, /stageDpcppCudaInputs\(state, \{dpcpp: "\/opt\/dpcpp", cuda: "\/usr\/local\/cuda-12\.6"\}/);
+    assert.match(dpcppCudaInputHelper, /function stageDpcppCudaInputs\([\s\S]*?copyCudaBuildInputs\(installedRoots\.cuda, state\.cudaRoot\)/);
+    assert.match(dpcppCudaInputHelper, /CMake toolkit probe/);
+    assert.match(dpcppCudaInputHelper, /static CUDA archives are carried for the source-built ACPP runtime, which is built separately/);
+    assert.doesNotMatch(helper, /function stageDpcppCudaInputs\(/, "CI imports the shared producer instead of retaining a duplicate implementation");
   });
 
   test("ROCm/COMGR source-only branch fetches and re-admits the exact pinned roots", () => {
@@ -1490,6 +1830,53 @@ setInterval(() => {}, 1000);
     assert.match(helper, /build-native-comgr-sdk\.js/);
     assert.match(helper, /auditRocmComgrSdk\(state, tools\)/);
     assert.match(helper, /comgrSdkInputs\(path\.join\(state\.sdkRoot, "result\.json"\)\)/);
+    const coreStart = helper.indexOf("function buildRocmComgrFromInputs("), wrapperStart = helper.indexOf("function buildRocmComgrSdk(", coreStart),
+      wrapperEnd = helper.indexOf("/** Canonical paths accepted by the public ROCm host-runtime producer.", wrapperStart),
+      core = helper.slice(coreStart, wrapperStart), wrapper = helper.slice(wrapperStart, wrapperEnd);
+    assert.ok(coreStart >= 0 && wrapperStart > coreStart && wrapperEnd > wrapperStart);
+    assert.match(core, /exportRocmSourceTree\(git, hipGitRoot/);
+    assert.match(core, /applyRocmHipHeadersPatch\(git,/);
+    assert.match(core, /assembleRocmHipHeaders\(state\.hipCommonRoot/);
+    assert.match(core, /rocmComgrBuildCommands\(state, tools\)/);
+    assert.match(core, /return auditRocmComgrSdk\(state, tools\)/);
+    assert.doesNotMatch(core, /extractState\(|provisionOneApi\(|packState\(/, "the shared core has no CI transport or provisioning work");
+    const resourceBuild = core.indexOf("runNode(resourceCommand.script"), resourceAdmission = core.indexOf("verifyLlvmAdmission();", resourceBuild),
+      comgrBuild = core.indexOf("runNode(comgrCommand.script", resourceAdmission);
+    assert.ok(core.indexOf("verifyLlvmAdmission();") < core.indexOf("fs.mkdirSync(state.hipHeadersRoot"),
+      "the shared output roots are not created before LLVM admission");
+    assert.ok(resourceBuild >= 0 && resourceAdmission > resourceBuild && comgrBuild > resourceAdmission,
+      "LLVM is readmitted between the public resource and COMGR producers");
+    assert.match(wrapper, /extractState\(state\.incomingSourceTar, temp, \[state\.sourceName\]\)/);
+    assert.match(wrapper, /provisionOneApi\(paths, "\/var\/tmp\/mom-dev-native-rocm-comgr-"/);
+    assert.match(wrapper, /buildRocmComgrFromInputs\(state, tools, paths\.env, \(\) => verifyLinuxLlvmAdmissionCi\(paths\)\)/);
+    assert.match(wrapper, /packState\(state\.sdkTar, temp, \[state\.sourceName, state\.llvmSourceName/);
+    assert.doesNotMatch(wrapper, /exportRocmSourceTree\(|assembleRocmHipHeaders\(/, "CI does not duplicate the shared HIP recipe");
+  });
+
+  test("shared ROCm/COMGR core checks fresh outputs and LLVM admission before mutation", {skip: linuxOnlySkip}, t => {
+    const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-rocm-comgr-core-"));
+    t.after(() => fs.rmSync(runnerTemp, {recursive: true, force: true}));
+    const suffix = process.pid + "-fixture", paths = {suffix, runnerTemp: fs.realpathSync(runnerTemp),
+        source: "/tmp/mom-native-prerequisites-" + suffix, sourceName: "mom-native-prerequisites-" + suffix,
+        ioSourceName: "mom-native-io-prerequisites-" + suffix,
+        sdkRoot: "/tmp/mom-native-llvm21-sdk-" + suffix, sdkName: "mom-native-llvm21-sdk-" + suffix,
+        output: "/tmp/mom-native-llvm21-sdk-" + suffix + "/linux-llvm21-sdk"},
+      environment = {MOM_NATIVE_ROCM_SOURCE_DIR: "/tmp/mom-native-rocm-prerequisites-" + suffix,
+        MOM_NATIVE_ROCM_COMGR_SDK_DIR: "/tmp/mom-native-rocm-comgr-sdk-" + suffix,
+        MOM_NATIVE_ROCM_RESOURCES_DIR: "/tmp/mom-native-rocm-resources-" + suffix,
+        MOM_NATIVE_ROCM_HIP_HEADERS_DIR: "/tmp/mom-native-rocm-hip-headers-" + suffix},
+      state = rocmComgrStatePaths(paths, environment), tools = {cc: "/tools/icx", cxx: "/tools/icpx", cmake: "/tools/cmake"};
+    let checks = 0;
+    assert.throws(() => buildRocmComgrFromInputs(state, tools, {}, () => {checks++; throw new Error("fixture LLVM admission failed");}),
+      /fixture LLVM admission failed/);
+    assert.equal(checks, 1);
+    for (const output of [state.resourcesRoot, state.hipHeadersRoot, state.sdkRoot]) {
+      assert.equal(fs.existsSync(output), false, "preflight failure leaves output untouched: " + path.basename(output));
+    }
+    fs.writeFileSync(state.resourcesConfig, "preserve fixture\n");
+    assert.throws(() => buildRocmComgrFromInputs(state, tools, {}, () => {checks++;}), /fresh canonical output\/config paths/);
+    assert.equal(checks, 1, "an occupied config path is rejected before the LLVM callback");
+    assert.equal(fs.readFileSync(state.resourcesConfig, "utf8"), "preserve fixture\n");
   });
 
   test("ROCm host runtime stage consumes and retains the exact same-run LLVM/COMGR cohort", () => {
@@ -2029,6 +2416,12 @@ test.describe("Native prerequisite provenance and transport", () => {
     assert.equal(path.basename(state.incomingSourceTar), "native-linux-sdk-state-" + suffix + "-sources.tar");
     assert.equal(path.basename(state.sdkTar), "native-linux-dpcpp-cuda-inputs-" + suffix + ".tar");
     assert.throws(() => dpcppCudaInputsStatePaths(paths, {...environment, MOM_NATIVE_DPCPP_CUDA_INPUTS_DIR: "/tmp/stale-inputs"}), /exactly match/);
+    const dpcppApiNames = /** @type {const} */ (["cudaPackageNames", "auditCudaPackageCopyrights", "copyDpcppBuildInputs", "copyCudaBuildInputs", "cudaToolkitProbeCMakeLists",
+      "probeCudaToolkit", "inputFileRecord", "preparedDpcppCudaSourceOrigin", "dpcppCudaInputsManifest", "auditDpcppCudaInputs",
+      "cudaToolkitProbeRoot", "stageDpcppCudaInputs"]);
+    for (const name of dpcppApiNames) {
+      assert.equal(nativeCiExports[name], dpcppCudaInputModule[name], "CI must re-export the shared DPC++/CUDA API unchanged: " + name);
+    }
 
     /** @param {string} base @param {string} relative @param {string|Buffer} content @param {number} [mode] */
     const put = (base, relative, content, mode = 0o644) => {
@@ -2075,7 +2468,51 @@ test.describe("Native prerequisite provenance and transport", () => {
     assert.doesNotMatch(cmakeLists, /add_executable|add_library|try_compile/i);
     const record = dpcppCudaInputsManifest(state, "a".repeat(64), packageVersions,
       {version: nvccVersion, top: state.cudaRoot, dpcppVersion: version}, cudaCopyrights, []);
+    assert.equal(record.producer.helperSha256, fileHash(require.resolve("../scripts/native-dpcpp-cuda-inputs")),
+      "new records bind the narrow shared producer, not unrelated CI transport edits");
     assert.equal(auditDpcppCudaInputs(state, record), record);
+    assert.deepEqual(Object.keys(record.source).sort(), ["compilerPreparationSha256", "fetchReceiptSha256", "linuxPreparationSha256", "name", "tar", "tarSha256"],
+      "the existing CI tar-origin schema stays unchanged");
+    assert.equal(record.source.tarSha256, "a".repeat(64));
+    assert.equal(Object.hasOwn(record.source, "origin"), false);
+
+    const localWorkspace = path.join(runnerTemp, "marked-workspace"); fs.mkdirSync(localWorkspace);
+    fs.writeFileSync(path.join(localWorkspace, ".mom-native-sdk-workspace.json"), JSON.stringify({version: 1, checkout: root}) + "\n");
+    const localLinux = {...state.linux,
+        fetchReceipt: put(localWorkspace, "compiler-fetch/fetch.json", "pinned fetch receipt fixture\n"),
+        preparedReceipt: put(localWorkspace, "linux-sources/sources.json", "prepared Linux receipt fixture\n"),
+        compilerPreparedReceipt: put(localWorkspace, "compiler-sources/sources.json", "prepared compiler receipt fixture\n")},
+      localState = {...state, workspaceRoot: localWorkspace, linux: localLinux},
+      localOrigin = preparedDpcppCudaSourceOrigin(localLinux, localWorkspace),
+      localRecord = dpcppCudaInputsManifest(localState, localOrigin, packageVersions,
+        {version: nvccVersion, top: state.cudaRoot, dpcppVersion: version}, cudaCopyrights, []);
+    assert.equal(localRecord.producer.helperSha256, fileHash(require.resolve("../scripts/native-dpcpp-cuda-inputs")));
+    assert.equal(localRecord.source.origin, "workspace-prepared-receipts");
+    assert.deepEqual(Object.keys(localRecord.source).sort(), ["compilerPreparation", "fetchReceipt", "linuxPreparation", "origin", "workspaceRoot"]);
+    assert.equal(Object.hasOwn(localRecord.source, "tarSha256"), false, "local prepared sources never claim an archive hash");
+    assert.equal(auditDpcppCudaInputs(localState, localRecord), localRecord);
+    const staleSource = fs.readFileSync(localLinux.preparedReceipt);
+    fs.writeFileSync(localLinux.preparedReceipt, "stale receipt\n");
+    assert.throws(() => auditDpcppCudaInputs(localState, localRecord), /provenance is malformed or stale/);
+    fs.writeFileSync(localLinux.preparedReceipt, staleSource);
+    for (const source of [
+      {...localRecord.source, fetchReceipt: {...localRecord.source.fetchReceipt, path: path.join(runnerTemp, "outside-fetch.json")}},
+      {...localRecord.source, tarSha256: "a".repeat(64)},
+      {...localRecord.source, origin: "unknown-origin"},
+    ]) {
+      assert.throws(() => auditDpcppCudaInputs(localState, {...localRecord, source}), /provenance is malformed or stale/);
+    }
+    const fetchBackup = localLinux.fetchReceipt + ".saved", outsideFetch = path.join(runnerTemp, "outside-fetch.json");
+    fs.writeFileSync(outsideFetch, fs.readFileSync(localLinux.fetchReceipt)); fs.renameSync(localLinux.fetchReceipt, fetchBackup);
+    try {
+      fs.symlinkSync(outsideFetch, localLinux.fetchReceipt);
+      assert.throws(() => auditDpcppCudaInputs(localState, localRecord), /provenance is malformed or stale/);
+    } finally {fs.unlinkSync(localLinux.fetchReceipt); fs.renameSync(fetchBackup, localLinux.fetchReceipt);}
+    const outsideState = {...localState, linux: {...localLinux, fetchReceipt: path.join(os.tmpdir(), "outside-fetch-receipt.json")}};
+    assert.throws(() => auditDpcppCudaInputs(outsideState, localRecord), /provenance is malformed or stale/);
+    const unmarked = path.join(runnerTemp, "unmarked-workspace"); fs.mkdirSync(unmarked);
+    assert.throws(() => preparedDpcppCudaSourceOrigin(localLinux, unmarked), /canonical marked workspace root/);
+
     const bundleSha256 = "a".repeat(64), manifestSha256 = "b".repeat(64);
     assert.equal(dpcppCudaInputPins({}), undefined);
     assert.throws(() => dpcppCudaInputPins({MOM_NATIVE_LINUX_DPCPP_CUDA_BUNDLE_SHA256: bundleSha256}), /both have external SHA-256 pins/);
@@ -2586,6 +3023,8 @@ test.describe("Native prerequisite provenance and transport", () => {
     assert.deepEqual(config, {version: 1, target: "linux", source: environment.MOM_NATIVE_ROCM_SOURCE_DIR + "/roots/rocmLlvm",
       clr: environment.MOM_NATIVE_ROCM_SOURCE_DIR + "/roots/clr", llvm: state.llvmSdk, cmake: tools.cmake,
       hipHeaders: state.hipIncludeRoot, hostCompilers: {cc: tools.cc, cxx: tools.cxx}});
+    assert.deepEqual(rocmResourcesConfig(state, tools, "win32"), {...config, target: "win32"});
+    assert.throws(() => rocmResourcesConfig(state, tools, /** @type {any} */ ("windows")), /Unsupported ROCm resources target/);
     assert.deepEqual(rocmComgrBuildCommands(state, tools), [
       {script: "scripts/build-native-rocm-resources.js", args: [state.resourcesConfig, state.resourcesRoot], config},
       {script: "scripts/build-native-comgr-sdk.js", args: [environment.MOM_NATIVE_ROCM_SOURCE_DIR + "/roots/rocmLlvm",
@@ -3361,7 +3800,7 @@ test.describe("Native prerequisite provenance and transport", () => {
       next = rest.search(/\n {2}[a-z0-9-]+:/), job = next < 0 ? rest : rest.slice(0, next),
       reportAt = job.indexOf("\n      - name: Report build-only scope and license limitation"),
       executableSteps = reportAt < 0 ? job : job.slice(0, reportAt),
-      producer = helper.slice(helper.indexOf("function buildLinuxCudaImages"), helper.indexOf("/** Hermes uses a separate")),
+      producer = helper.slice(helper.indexOf("function buildLinuxCudaImageTree"), helper.indexOf("/** Hermes uses a separate")),
       workerRecipe = helper.slice(helper.indexOf("function cudaImageWorkerRecipe"), helper.indexOf("function buildLinuxCudaImages"));
     assert.ok(position > 0);
     assert.match(job, /needs: \[linux-sources, provision-linux-dpcpp-cuda-inputs\]/);
@@ -3398,6 +3837,13 @@ test.describe("Native prerequisite provenance and transport", () => {
     assert.match(producer, /noticeSources\.files\.map\(/);
     assert.match(producer, /notice-sources\/manifest\.json/, "the upload binds the license-source manifest");
     assert.match(workerRecipe, /same-run CUDA 12\.6 and pinned CUTLASS roots, not NVRTC-only headers/);
+    const shared = producer.slice(0, producer.indexOf("function buildLinuxCudaImages")),
+      transport = producer.slice(producer.indexOf("function buildLinuxCudaImages"));
+    assert.doesNotMatch(shared, /provisionOneApi\(|extractState\(|packState\(|ciPaths\(|GITHUB_/,
+      "local and CI callers share production without CI transport or package installation");
+    assert.match(transport, /buildLinuxCudaImageTree\(state, compiler, env, externalDpcppPins\?\.manifestSha256\)/);
+    assert.ok(transport.indexOf("auditDpcppCudaInputs(") < transport.indexOf("buildLinuxCudaImageTree("),
+      "the CI frontdoor still admits restored inputs before provisioning and production");
   });
 
   test("rejects traversal-like tar paths before extraction", () => {
@@ -3574,12 +4020,25 @@ test.describe("Linux source-JIT prerequisite handoffs", () => {
     assert.equal(path.basename(plan.artifact.file), "native-linux-jit-sdk-987654-2-static-dpcpp.tar");
   });
 
-  test("fresh JIT jobs provision Intel before resolving its not-yet-installed tools", () => {
-    for (const [start, end] of /** @type {[string,string][]} */ ([["function buildLinuxJitSdkPhase", "/** Isolate the completed"],
+  test("fresh JIT jobs validate archives before provisioning and audit prior compiler inputs afterward", () => {
+    const restore = helper.slice(helper.indexOf("function restoreLinuxJitSdkInputs"), helper.indexOf("/** Re-admit current source-JIT phase records"));
+    assert.doesNotMatch(restore, /auditLinuxJitSdkState\(/,
+      "archive restoration validates inputs and returns the prior phase without reading compiler fingerprints");
+    assert.match(restore, /listState\(priorTar[\s\S]*?extractState\(priorTar[\s\S]*?readBuildJson\(state\.ciInputs\)/,
+      "the previous handoff archive and its same-run dependency manifest are checked during restore");
+    assert.match(restore, /return \{manifest, hashes, previous\}/);
+
+    for (const [start, end] of /** @type {[string,string][]} */ ([["function buildLinuxJitSdkPhase", "/** Run-scoped, proof-only"],
       ["function buildLinuxJitStaticSdk", "/** Reuse the public header producer"]])) {
-      const body = helper.slice(helper.indexOf(start), helper.indexOf(end));
-      assert.ok(body.indexOf("provisionOneApi(") > 0);
-      assert.ok(body.indexOf("provisionOneApi(") < body.indexOf("canonicalExecutable("));
+      const body = helper.slice(helper.indexOf(start), helper.indexOf(end)), restoreAt = body.indexOf("restoreLinuxJitSdkInputs("),
+        provision = body.indexOf("provisionOneApi("), audit = body.indexOf("auditLinuxJitSdkState("), tool = body.indexOf("canonicalExecutable(");
+      assert.ok(restoreAt >= 0 && restoreAt < provision, "the full archive-validation path runs before provisioning");
+      assert.ok(provision >= 0 && provision < audit && audit < tool,
+        "Intel is installed before prior-state tool hashes are checked and tools resolved");
+      if (start.includes("buildLinuxJitStaticSdk")) {
+        assert.ok(audit < body.indexOf('readBuildJson(path.join(state.output, "result.json"))'),
+          "the static continuation reads the linked receipt only after admission");
+      }
     }
   });
 
@@ -3770,7 +4229,8 @@ test.describe("Linux source-JIT prerequisite handoffs", () => {
         MOM_NATIVE_LINUX_SDK_DESCRIPTOR_DIR: paths.linuxSdkDescriptorRoot,
       }, state = linuxNativeSdkDescriptorStatePaths(paths, environment), tools = {
         cc: "/opt/intel/oneapi/compiler/2026.2/bin/icx", cxx: "/opt/intel/oneapi/compiler/2026.2/bin/icpx",
-      }, config = linuxNativeSdkDescriptorConfig(state, tools);
+      }, linker = path.join(runnerTemp, "intel-linker-fixture", "ld.lld"), config = linuxNativeSdkDescriptorConfig(state, tools, linker);
+    assert.equal(config.cpu.env.CXX, tools.cxx, "Core uses the same explicitly selected Intel compiler as the SDK");
     assert.deepEqual(state.inputRows.map(row => row.artifact), [
       "native-linux-sdk-state-123456-2-sources.tar", "native-linux-dpcpp-cuda-inputs-123456-2.tar",
       "native-linux-gnu-headers-123456-2.tar", "native-linux-cuda-images-123456-2.tar", "native-linux-jit-sdk-123456-2-static-dpcpp.tar",
@@ -3796,10 +4256,36 @@ test.describe("Linux source-JIT prerequisite handoffs", () => {
       MOM_AOT_COMGR_RECEIPT: path.join(state.rocm.sdkRoot, "result.json"), MOM_AOT_LLD_ROOT: state.llvmSdk};
     assert.deepEqual(config.gpu["acpp-cuda"].env, {...acppEnv, MOM_AOT_CUDA_IMAGES: config.sdkSources.cudaImages});
     assert.deepEqual(config.gpu["acpp-hip"].env, acppEnv);
-    assert.deepEqual(config.sdk.links, ["--ld-path=" + state.llvmSdk + "/bin/ld.lld", "-Wl,--threads=2", "-Wl,--thinlto-jobs=2",
+    assert.deepEqual(config.sdk.links, ["--ld-path=" + linker, "-Wl,--threads=2", "-Wl,--thinlto-jobs=2",
       "-Wl,-T," + path.join(root, "runtime/static-constructors.ld"), path.join(state.dpcpp.dpcppRoot, "lib/libsycl-devicelib-host.a")]);
     assert.throws(() => linuxNativeSdkDescriptorStatePaths(paths, {...environment,
       MOM_NATIVE_LINUX_SDK_DESCRIPTOR_DIR: "/tmp/stale-linux-descriptor"}), /exactly match/);
+  });
+
+  test("selects only the pinned compiler's in-root ld.lld query result", {skip: linuxOnlySkip}, t => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-ci-oneapi-linker-")),
+      compilerRoot = path.join(base, "compiler", "2026.2"), cxx = path.join(compilerRoot, "bin", "icpx"),
+      compilerBin = path.dirname(cxx), linkerDir = path.join(compilerBin, "compiler"), linker = path.join(linkerDir, "ld.lld"),
+      target = path.join(linkerDir, "lld");
+    t.after(() => fs.rmSync(base, {recursive: true, force: true}));
+    fs.mkdirSync(linkerDir, {recursive: true}); fs.writeFileSync(target, "linker\n", {mode: 0o755}); fs.symlinkSync("lld", linker);
+    const query = (/** @type {string} */ stdout, status = 0, stderr = "") =>
+      (/** @type {string} */ compiler, /** @type {string[]} */ args) => {
+        assert.equal(compiler, cxx); assert.deepEqual(args, ["-print-prog-name=ld.lld"]);
+        return {status, signal: null, stdout, stderr};
+      };
+    assert.equal(linuxNativeSdkLldPath(cxx, query(linker + "\n")), linker, "retain the driver's ld.lld alias instead of realpathing it");
+    assert.throws(() => linuxNativeSdkLldPath(cxx, query(linker + "\n", 1)), /query failed/);
+    assert.throws(() => linuxNativeSdkLldPath(cxx, query(linker + "\n", 0, "warning\n")), /query failed/);
+    assert.throws(() => linuxNativeSdkLldPath(cxx, query("")), /single absolute.*path/);
+    assert.throws(() => linuxNativeSdkLldPath(cxx, query("ld.lld\n")), /single absolute.*path/);
+    assert.throws(() => linuxNativeSdkLldPath(cxx, query(linker + "\nextra\n")), /single absolute.*path/);
+    fs.chmodSync(target, 0o644);
+    assert.throws(() => linuxNativeSdkLldPath(cxx, query(linker + "\n")), /not executable/);
+    fs.chmodSync(target, 0o755);
+    const outside = path.join(base, "outside-lld"); fs.writeFileSync(outside, "outside\n", {mode: 0o755});
+    fs.unlinkSync(linker); fs.symlinkSync(outside, linker);
+    assert.throws(() => linuxNativeSdkLldPath(cxx, query(linker + "\n")), /within the pinned compiler SDK/);
   });
 
   test("Linux descriptor input archive rejects missing, redirected, or substituted roots", {skip: linuxOnlySkip}, t => {
@@ -3944,13 +4430,14 @@ test.describe("Linux native component handoffs", () => {
         rocm: {sdkRoot: "/tmp/rocm-comgr-sdk", runtimeOutput: "/tmp/rocm-host/runtime"},
         openmp: {sdkRoot: "/tmp/openmp-sdk"}, zstd: {sdkRoot: "/tmp/zstd-sdk"},
         opensslSdk: "/tmp/openssl-sdk", ioSdk: "/tmp/io-sdk", llvmSdk: "/tmp/llvm-sdk"},
+      linker = "/fixtures/intel-compiler-sdk/ld.lld",
       original = linuxNativeSdkDescriptorConfig(state, {cc: "/opt/intel/oneapi/compiler/2026.2/bin/icx",
-        cxx: "/opt/intel/oneapi/compiler/2026.2/bin/icpx"}),
+        cxx: "/opt/intel/oneapi/compiler/2026.2/bin/icpx"}, linker),
       gpu = Object.fromEntries(linuxNativeGpuProfiles.map(profile => [profile, "/tmp/components/" + profile + "/result.json"])),
       components = linuxNativeAssemblyComponents("/tmp/components/core/cpu-core.a", gpu), derived = linuxNativeAssemblyConfig(original, components);
     assert.deepEqual(derived, {...original, components});
     assert.deepEqual(original, linuxNativeSdkDescriptorConfig(state, {cc: "/opt/intel/oneapi/compiler/2026.2/bin/icx",
-      cxx: "/opt/intel/oneapi/compiler/2026.2/bin/icpx"}), "the admitted descriptor is not mutated");
+      cxx: "/opt/intel/oneapi/compiler/2026.2/bin/icpx"}, linker), "the admitted descriptor is not mutated");
     assert.doesNotThrow(() => nativeSdkConfig(derived, root));
     const missing = {...gpu}; delete missing["oneapi"];
     assert.throws(() => linuxNativeAssemblyComponents("/tmp/core.a", missing), /exact Core and five/);
@@ -4081,7 +4568,7 @@ test.describe("Linux native component handoffs", () => {
     for (const row of state.inputRows) {fs.writeFileSync(path.join(state.downloads, row.artifact), "not a tar\n");}
     const partitioned = partitionLinuxNativeDownloads(paths);
     assert.ok(fs.lstatSync(partitioned.descriptor.archive).isFile(), "partition retains the raw descriptor tar for restore");
-    assert.throws(() => restoreLinuxNativeDescriptorHandoff(partitioned.descriptor, []), /Native CI tar list failed/);
+    assert.throws(() => restoreLinuxNativeDescriptorHandoff(partitioned.descriptor, paths, []), /Native CI tar list failed/);
     assert.ok(fs.lstatSync(path.join(restoredRoot, "sdk.json")).isFile(), "restore extracted the descriptor before rejecting a bad SDK input tar");
   });
 });
@@ -4183,7 +4670,10 @@ test.describe("Linux native application producer handoff", () => {
       openmp: {sdkRoot: "/tmp/mom-native-openmp-sdk-" + suffix},
       zstd: {sdkRoot: "/tmp/mom-native-zstd-sdk-" + suffix},
       opensslSdk: "/tmp/mom-native-openssl-sdk-" + suffix, ioSdk: "/tmp/mom-native-io-sdk-" + suffix};
-    const tools = {cc: "/tools/icx", cxx: "/tools/icpx"}, config = linuxNativeSdkDescriptorConfig(state, tools);
+    const tools = {cc: "/tools/icx", cxx: "/tools/icpx"}, linker = path.join(base, "intel-compiler-fixture", "ld.lld");
+    fs.mkdirSync(path.dirname(linker), {recursive: true});
+    fs.writeFileSync(linker, "#!/bin/sh\nexit 0\n", {mode: 0o755}); fs.chmodSync(linker, 0o755);
+    const config = linuxNativeSdkDescriptorConfig(state, tools, linker);
     fs.writeFileSync(state.sdkFile, JSON.stringify(config, null, 2) + "\n");
     const inputArchives = inputRows.map(row => ({artifact: row.artifact, bytes: fs.statSync(row.file).size,
         expandedBytes: fs.statSync(row.file).size, sha256: createHash("sha256").update(fs.readFileSync(row.file)).digest("hex"),
@@ -4191,16 +4681,17 @@ test.describe("Linux native application producer handoff", () => {
         ...(row.recordMembers ? {members: listState(row.file, row.roots).map(name => name.endsWith("/") ? name.slice(0, -1) : name).sort()} : {})})),
       expandedInputBytes = inputArchives.reduce((sum, row) => sum + row.expandedBytes, 0), reserve = 4 * 1024 * 1024 * 1024;
     const gnuNoticeSources = linuxNativeSdkGnuNoticeSources(state, inputArchives),
-      rocmNoticeSources = linuxNativeSdkRocmNoticeSources(state, inputArchives),
+      rocmNoticeSources = linuxNativeSdkRocmNoticeSources(state, inputArchives), selectedLinkFiles = {[linker]: fileHash(linker)},
       admission = {format: "mom-native-linux-sdk-descriptor-v1", runAttempt: suffix,
         descriptor: {path: state.sdkFile, sha256: createHash("sha256").update(fs.readFileSync(state.sdkFile)).digest("hex")},
         inputArchives, profiles: ["acpp-cuda", "acpp-hip", "dpcpp", "dpcpp-opencl", "oneapi"],
         diskPreflight: {expandedInputBytes, buildReserveBytes: reserve, requiredTempBytes: expandedInputBytes + reserve,
           availableTempBytes: expandedInputBytes + reserve, availableRunnerTempBytes: reserve},
         gnuNoticeSources, rocmNoticeSources,
+        selectedLinkInputs: {files: selectedLinkFiles, sha256: createHash("sha256").update(JSON.stringify(selectedLinkFiles)).digest("hex")},
         buildOnly: true, compiled: false, executed: false, publicationQualified: false};
     fs.writeFileSync(state.admissionFile, JSON.stringify(admission, null, 2) + "\n");
-    return {state, tools};
+    return {state, tools, linker};
   }
 
   /** @param {import("node:test").TestContext} t */
@@ -4247,8 +4738,8 @@ test.describe("Linux native application producer handoff", () => {
   });
 
   test("binds the exact descriptor, input tar hashes and preserved logical roots", {skip: linuxOnlySkip}, t => {
-    const {state, tools} = lineageFixture(t);
-    const admitted = auditLinuxNativeSdkDescriptorLineage(state, tools);
+    const {state, tools, linker} = lineageFixture(t);
+    const admitted = auditLinuxNativeSdkDescriptorLineage(state, tools, linker);
     assert.equal(admitted.config.sdkSources.cudaImages, "/tmp/mom-native-images-123456-2/cuda-images.inc");
     assert.equal(admitted.inputArchives.length, 4);
     assert.equal(admitted.gnuNoticeSources.completeNativeNotices, false);
@@ -4267,11 +4758,31 @@ test.describe("Linux native application producer handoff", () => {
     assert.ok(rocmArchive?.members.includes(state.rocm.hostSdkName + "/licenses/libnuma-dev/copyright"));
     const gnuBody = path.join(state.gnu.root, admitted.gnuNoticeSources.files[0]?.file || "");
     fs.appendFileSync(gnuBody, "tampered\n");
-    assert.throws(() => auditLinuxNativeSdkDescriptorLineage(state, tools), /GNU copyright content, package or path changed/);
+    assert.throws(() => auditLinuxNativeSdkDescriptorLineage(state, tools, linker), /GNU copyright content, package or path changed/);
     const firstInput = state.inputRows[0];
     assert.ok(firstInput);
     fs.appendFileSync(firstInput.file, "substitute\n");
-    assert.throws(() => auditLinuxNativeSdkDescriptorLineage(state, tools), /input differs/);
+    assert.throws(() => auditLinuxNativeSdkDescriptorLineage(state, tools, linker), /input differs/);
+  });
+
+  test("rejects selected linker replacement or malformed descriptor link-input admission", {skip: linuxOnlySkip}, t => {
+    const replaced = lineageFixture(t);
+    fs.writeFileSync(replaced.linker, "#!/bin/sh\nexit 1\n");
+    assert.throws(() => auditLinuxNativeSdkDescriptorLineage(replaced.state, replaced.tools, replaced.linker),
+      /selected linker differs from descriptor admission/);
+
+    const malformed = lineageFixture(t), malformedAdmission = JSON.parse(fs.readFileSync(malformed.state.admissionFile, "utf8"));
+    malformedAdmission.selectedLinkInputs.sha256 = "z".repeat(64);
+    fs.writeFileSync(malformed.state.admissionFile, JSON.stringify(malformedAdmission) + "\n");
+    assert.throws(() => auditLinuxNativeSdkDescriptorLineage(malformed.state, malformed.tools, malformed.linker),
+      /selected linker differs from descriptor admission/);
+
+    const missing = lineageFixture(t), missingAdmission = JSON.parse(fs.readFileSync(missing.state.admissionFile, "utf8"));
+    delete missingAdmission.selectedLinkInputs.files[missing.linker];
+    missingAdmission.selectedLinkInputs.sha256 = createHash("sha256").update(JSON.stringify(missingAdmission.selectedLinkInputs.files)).digest("hex");
+    fs.writeFileSync(missing.state.admissionFile, JSON.stringify(missingAdmission) + "\n");
+    assert.throws(() => auditLinuxNativeSdkDescriptorLineage(missing.state, missing.tools, missing.linker),
+      /selected linker differs from descriptor admission/);
   });
 
   test("rejects missing or modified ROCm package and source license bodies", {skip: linuxOnlySkip}, t => {
@@ -4280,7 +4791,7 @@ test.describe("Linux native application producer handoff", () => {
     assert.throws(() => auditRocmHostNoticeSources(missing.state.rocm), /ROCm package copyright body/);
     const changed = lineageFixture(t), drm = path.join(changed.state.rocm.hostSdkRoot, "licenses/libdrm-dev/copyright");
     fs.appendFileSync(drm, "tampered\n");
-    assert.throws(() => auditLinuxNativeSdkDescriptorLineage(changed.state, changed.tools), /ROCm package copyright body/);
+    assert.throws(() => auditLinuxNativeSdkDescriptorLineage(changed.state, changed.tools, changed.linker), /ROCm package copyright body/);
     const source = lineageFixture(t), license = path.join(source.state.rocm.runtimeOutput, "source/rocr/libhsakmt/LICENSE.md");
     fs.appendFileSync(license, "tampered\n");
     assert.throws(() => auditRocmHostNoticeSources(source.state.rocm), /ROCm hsakmt license body/);
@@ -4296,28 +4807,28 @@ test.describe("Linux native application producer handoff", () => {
   test("refuses a missing GNU tar or altered descriptor copyright lineage", {skip: linuxOnlySkip}, t => {
     const missing = lineageFixture(t), gnuRow = missing.state.inputRows.find(row => row.recordMembers);
     assert.ok(gnuRow); fs.unlinkSync(gnuRow.file);
-    assert.throws(() => auditLinuxNativeSdkDescriptorLineage(missing.state, missing.tools), /missing, stale or substituted/);
+    assert.throws(() => auditLinuxNativeSdkDescriptorLineage(missing.state, missing.tools, missing.linker), /missing, stale or substituted/);
     const substituted = lineageFixture(t), substitutedGnu = substituted.state.inputRows.find(row => row.recordMembers);
     assert.ok(substitutedGnu); fs.appendFileSync(substitutedGnu.file, "changed tar bytes\n");
-    assert.throws(() => auditLinuxNativeSdkDescriptorLineage(substituted.state, substituted.tools), /input differs/);
+    assert.throws(() => auditLinuxNativeSdkDescriptorLineage(substituted.state, substituted.tools, substituted.linker), /input differs/);
     const altered = lineageFixture(t), admission = JSON.parse(fs.readFileSync(altered.state.admissionFile, "utf8"));
     admission.gnuNoticeSources.files[0].sha256 = "0".repeat(64);
     fs.writeFileSync(altered.state.admissionFile, JSON.stringify(admission) + "\n");
-    assert.throws(() => auditLinuxNativeSdkDescriptorLineage(altered.state, altered.tools), /Same-run package copyright\/source-license lineage/);
+    assert.throws(() => auditLinuxNativeSdkDescriptorLineage(altered.state, altered.tools, altered.linker), /Same-run package copyright\/source-license lineage/);
   });
 
   test("refuses missing, extra or stale descriptor inputs", {skip: linuxOnlySkip}, t => {
-    const {state, tools} = lineageFixture(t);
+    const {state, tools, linker} = lineageFixture(t);
     const firstInput = state.inputRows[0];
     assert.ok(firstInput);
     fs.unlinkSync(firstInput.file);
-    assert.throws(() => auditLinuxNativeSdkDescriptorLineage(state, tools));
+    assert.throws(() => auditLinuxNativeSdkDescriptorLineage(state, tools, linker));
     const next = lineageFixture(t);
     fs.writeFileSync(path.join(next.state.incoming, "unexpected.tar"), "extra\n");
-    assert.throws(() => auditLinuxNativeSdkDescriptorLineage(next.state, next.tools), /missing, stale or substituted/);
+    assert.throws(() => auditLinuxNativeSdkDescriptorLineage(next.state, next.tools, next.linker), /missing, stale or substituted/);
     const changed = lineageFixture(t);
     fs.appendFileSync(changed.state.sdkFile, " ");
-    assert.throws(() => auditLinuxNativeSdkDescriptorLineage(changed.state, changed.tools), /descriptor/);
+    assert.throws(() => auditLinuxNativeSdkDescriptorLineage(changed.state, changed.tools, changed.linker), /descriptor/);
   });
 
   test("uses one exact public build-only frontdoor and a fresh nonoverlapping output", {skip: linuxOnlySkip}, t => {
@@ -4338,6 +4849,22 @@ test.describe("Linux native application producer handoff", () => {
     assert.ok(preflight >= 0 && preflight < provision && provision < descriptorRestore && descriptorRestore < publicAdmission,
       "the app runner provisions Intel 2026.2 after disk/deadline preflight and before public source admission/linking");
     assert.match(helper.slice(provision, descriptorRestore), /Date\.now\(\) \+ 20 \* 60 \* 1000/);
+  });
+
+  test("retains linker error prefixes separately from truncated outer-stage diagnostics", () => {
+    const step = workflow.slice(workflow.indexOf("      - name: Assemble only the maintained application"),
+      workflow.indexOf("      - name: Bind the raw executable"));
+    assert.match(step, /status=\$\{PIPESTATUS\[0\]\}/);
+    assert.match(step, /if \(\( status != 0 \)\); then/);
+    assert.match(step, /application\/link\.log/);
+    assert.match(step, /\[\[ -f "\$link_log" && ! -L "\$link_log" \]\]/);
+    assert.match(step, /head -c 16777216 -- "\$link_log"/);
+    assert.match(step, /exit "\$status"/);
+    const upload = workflow.slice(workflow.indexOf("      - name: Retain the full bounded Linux linker diagnostics on failure"),
+      workflow.indexOf("      - name: Retain the build-only Linux application assembly"));
+    assert.match(upload, /if: failure\(\)/);
+    assert.match(upload, /native-linux-application-link-diagnostics-/);
+    assert.match(upload, /retention-days: 1/);
   });
 
   test("caps public build timeout at the remaining aggregate job deadline", {skip: linuxOnlySkip}, t => {
@@ -4490,7 +5017,9 @@ test.describe("Windows native Core CI handoff", () => {
     assert.match(workflow, /prepare-native-windows-ci\.ps1 -Role core/);
     const marker = "\n  build-windows-native-core:", start = workflow.indexOf(marker), rest = workflow.slice(start + marker.length),
       next = rest.search(/\n {2}[a-z0-9-]+:/), job = next < 0 ? rest : rest.slice(0, next);
-    assert.ok(start > 0); assert.match(job, /runs-on: windows-2022/); assert.match(job, /timeout-minutes: 45/);
+    assert.ok(start > 0); assert.match(job, /runs-on: windows-2022/); assert.match(job, /timeout-minutes: 60/);
+    assert.match(job, /ToUnixTimeSeconds\(\) \+ 3300/);
+    assert.match(job, /Install pinned base tools, Node\.js, and Intel oneAPI only\n {8}timeout-minutes: 35/);
     assert.match(job, /node --require \.\/tests\/common\/no_pool_network\.js --test/);
     assert.match(job, /tests\/native_windows_core_handoff\.js/);
     assert.match(fs.readFileSync(path.join(root, "tests/run_hash.js"), "utf8"), /"tests\/native_windows_core_handoff\.js"/);
@@ -4501,8 +5030,12 @@ test.describe("Windows native Core CI handoff", () => {
     assert.match(job, /archive: false[\s\S]*?compression-level: 0/);
     assert.match(job, /MOM_NATIVE_WINDOWS_CORE_DEADLINE_EPOCH: \$\{\{ steps\.core-deadline\.outputs\.epoch \}\}/);
     const windowsHelper = fs.readFileSync(path.join(root, ".github/workflows/scripts/prepare-native-windows-ci.ps1"), "utf8"),
-      vcvars = windowsHelper.indexOf("Import-MomVcVars64"), compiler = windowsHelper.indexOf("function Get-OneApiCompiler");
-    assert.ok(vcvars >= 0 && vcvars < compiler, "the shared Windows setup imports the x64 Visual C++ environment before tool resolution");
+      toolHelper = fs.readFileSync(path.join(root, "scripts/native-windows-tools.ps1"), "utf8"),
+      getter = toolHelper.slice(toolHelper.indexOf("function Get-MomNativeWindowsBuildTools")),
+      vcvars = getter.indexOf("Import-MomVcVars64"), selection = getter.indexOf("switch ($Role)");
+    assert.match(windowsHelper, /Get-MomNativeWindowsBuildTools -Role \$Role/);
+    assert.match(toolHelper, /Join-Path \$PSScriptRoot 'import-vcvars\.ps1'/);
+    assert.ok(vcvars >= 0 && vcvars < selection, "shared local/CI tool selection imports the x64 Visual C++ environment first");
     assert.match(job, /prepare-native-windows-ci\.ps1 -Role core/);
     assert.ok(job.indexOf("Start the aggregate Windows Core deadline") < job.indexOf("Install pinned base tools"), "deadline must begin before installation");
     assert.doesNotMatch(job, /actions\/cache|gpu-runner|self-hosted/i);
@@ -4512,10 +5045,13 @@ test.describe("Windows native Core CI handoff", () => {
     const nowMs = Date.UTC(2026, 10, 7, 12);
     /** @param {number} minutes @param {number} [seconds] */
     const deadline = (minutes, seconds = 0) => String((nowMs + minutes * 60 * 1000 + seconds * 1000) / 1000);
-    const fetch = windowsNativeCoreDeadlineBudget(deadline(40), "fetch", nowMs),
+    const fetch = windowsNativeCoreDeadlineBudget(deadline(55), "fetch", nowMs),
+      after30mInstallAnd5mTests = windowsNativeCoreDeadlineBudget(deadline(20), "fetch", nowMs),
       build = windowsNativeCoreDeadlineBudget(deadline(18), "build", nowMs),
       pack = windowsNativeCoreDeadlineBudget(deadline(7), "package", nowMs);
-    assert.equal(fetch.timeoutMs, 20 * 60 * 1000); assert.equal(fetch.remainingMs, 40 * 60 * 1000);
+    assert.equal(fetch.timeoutMs, 20 * 60 * 1000); assert.equal(fetch.remainingMs, 55 * 60 * 1000);
+    assert.equal(after30mInstallAnd5mTests.timeoutMs, 4 * 60 * 1000);
+    assert.equal(after30mInstallAnd5mTests.remainingMs, 20 * 60 * 1000);
     assert.equal(build.timeoutMs, 11 * 60 * 1000); assert.equal(build.remainingMs, 18 * 60 * 1000);
     assert.equal(pack.timeoutMs, 7 * 60 * 1000); assert.equal(pack.createTimeoutMs, 5 * 60 * 1000);
     assert.equal(pack.listingTimeoutMs, 2 * 60 * 1000); assert.equal(pack.remainingMs, 7 * 60 * 1000);
@@ -4619,7 +5155,6 @@ test.describe("Windows host-SDK source/composition CI", () => {
     assert.match(caller, /needs:[^\n]*build-windows-controller-sdk[^\n]*install-audit-linux-sdk/);
     assert.match(caller, /uses: \.\/.github\/workflows\/build-windows-llvm-job\.yml/);
     assert.match(caller, /phase: configure/);
-    assert.match(job, /timeout-minutes: 60/);
     assert.match(job, /hermes_bundle_sha256/);
     assert.match(job, /hermes_handoff_sha256/);
     assert.match(runner, /linuxLlvmToolHandoffInputs/);
@@ -4708,13 +5243,14 @@ test.describe("Windows host-SDK source/composition CI", () => {
     assert.match(dpcpp, /id: inputs/);
     assert.match(sourceProducer, /bundle_sha256: fileHash\(state\.sourceTar\)/);
     assert.match(dpcppProducer, /bundle_sha256: fileHash\(state\.sdkTar\), manifest_sha256: fileHash\(state\.manifest\)/);
+    assert.match(dpcppProducer, /stageDpcppCudaInputs\(state, \{dpcpp: "\/opt\/dpcpp", cuda: "\/usr\/local\/cuda-12\.6"\}/,
+      "CI and local input staging share the same post-provision producer recipe");
     for (const producer of [sourceProducer, dpcppProducer]) {assert.match(producer, /appendWorkflowOutputs\(paths\.env, outputs\)/);}
   });
 
   test("serializes every Windows LLVM phase with direct dependency pins and the original deadline", () => {
-    const phases = ["configure", "llvm-amdgpu", "llvm-nvptx", "llvm-x86", "llvm-core", "clang", "lld", "audit"],
-      ids = ["windows-llvm-configure", "windows-llvm-amdgpu", "windows-llvm-nvptx", "windows-llvm-x86",
-        "windows-llvm-core", "windows-llvm-clang", "windows-llvm-lld", "windows-llvm-audit"];
+    const phases = ["configure", "llvm-amdgpu", "llvm-mid", "clang", "lld", "audit"],
+      ids = ["windows-llvm-configure", "windows-llvm-amdgpu", "windows-llvm-mid", "windows-llvm-clang", "windows-llvm-lld", "windows-llvm-audit"];
     for (const [index, id] of ids.entries()) {
       const job = jobBlock(id), needs = job.match(/needs: \[([^\]]+)\]/)?.[1]?.split(",").map(value => value.trim()) || [];
       assert.match(job, /uses: \.\/.github\/workflows\/build-windows-llvm-job\.yml/);
@@ -4723,7 +5259,7 @@ test.describe("Windows host-SDK source/composition CI", () => {
         assert.ok(needs.includes(match[1] || ""), `${id} references an output without directly depending on ${match[1]}`);
       }
       if (!index) {continue;}
-      const previous = ids[index - 1], previousStage = index === 1 ? "configured" : phases[index - 1];
+      const previous = ids[index - 1], previousStage = index === 1 ? "configured" : index === 3 ? "llvm-core" : phases[index - 1];
       assert.ok(needs.includes(previous || ""));
       assert.ok(job.includes("previous_stage: " + previousStage));
       for (const output of ["bundle_sha256", "manifest_sha256"]) {
@@ -4732,7 +5268,7 @@ test.describe("Windows host-SDK source/composition CI", () => {
       assert.match(job, /run_deadline_epoch: \$\{\{ needs\.windows-llvm-configure\.outputs\.run_deadline_epoch \}\}/);
     }
     assert.doesNotMatch(windowsLlvmWorkflow, /actions\/cache|actions: write|contents: write/);
-    assert.match(windowsLlvmWorkflow, /timeout-minutes: 60/);
+    assert.ok(windowsLlvmWorkflow.includes("timeout-minutes: " + String.fromCharCode(36) + "{{ inputs.phase == 'llvm-mid' && 30 || 60 }}"));
     const jobEnv = windowsLlvmWorkflow.slice(windowsLlvmWorkflow.indexOf("    env:"), windowsLlvmWorkflow.indexOf("    outputs:", windowsLlvmWorkflow.indexOf("    env:")));
     assert.doesNotMatch(jobEnv, /\$\{\{ runner\./, "runner context is unavailable in job-level env");
     assert.match(windowsLlvmWorkflow, /MOM_NATIVE_WINDOWS_LLVM_DESCRIPTOR_DIR=\$RUNNER_TEMP\/mom-native-windows-llvm21-descriptor-\$\{GITHUB_RUN_ID\}-\$\{GITHUB_RUN_ATTEMPT\}/);
@@ -4764,7 +5300,7 @@ test.describe("Windows host-SDK source/composition CI", () => {
     assert.match(source, /vendorPayloadIncluded: false/);
     assert.doesNotMatch(source, /build-release\.js|check-native-release\.js/);
     assert.ok(job);
-    assert.match(job, /runs-on: ubuntu-24\.04/); assert.match(job, /timeout-minutes: 60/);
+    assert.match(job, /runs-on: ubuntu-24\.04/);
     assert.match(job, /node-version: 24\.15\.0/); assert.match(job, /7zip msitools/);
     assert.match(job, /node --require \.\/tests\/common\/no_pool_network\.js --test tests\/native_ci\.js tests\/native_sdk_fetch\.js tests\/native_windows_sdk\.js/);
     assert.match(runner, /sdkComposeWindowMs = 25 \* 60 \* 1000/);
@@ -4773,7 +5309,7 @@ test.describe("Windows host-SDK source/composition CI", () => {
     assert.match(job, /run_epoch=\$\(\(now \+ 28800\)\)/);
     const deadlineIndex = job.indexOf("Start immutable run and bounded job deadlines"), checkoutIndex = job.indexOf("name: Checkout"),
       setupIndex = job.indexOf("name: Set up Node.js"), testIndex = job.indexOf("Test bounded Windows LLVM stage contracts"),
-      toolsIndex = job.indexOf("Install archive and MSI extraction tools"), composeIndex = job.indexOf("name: Run one maintained Windows LLVM phase");
+      toolsIndex = job.indexOf("Install archive and MSI extraction tools"), composeIndex = job.indexOf("name: Run maintained Windows LLVM phase or group");
     assert.ok(deadlineIndex >= 0 && deadlineIndex < checkoutIndex && checkoutIndex < setupIndex && setupIndex < toolsIndex && toolsIndex < testIndex && testIndex < composeIndex,
       "the absolute stage deadline starts before checkout and all later work is accounted for");
     assert.match(runner, /native-windows-host-sdk-\$\{suffix\}-metadata\.tar/);
@@ -4801,6 +5337,19 @@ test.describe("Windows LLVM descriptor composition", () => {
     libraryPolicy: {...policy, msvcLibraries: ["bad?.lib"]}};
     assert.throws(() => composeWindowsLlvmSdkDescriptor(invalid), /Unsafe|unsafe/,
       "library policy is rejected before opening caller-supplied input roots");
+    assert.throws(() => composeLocalWindowsLlvmSdkDescriptor({...invalid, hermesExpectation: {kind: "hermes",
+      localBuildId: "12345678-1234-4234-9234-123456789abc", handoffSha256: "e".repeat(64)}}), /Unsafe|unsafe/);
+  });
+
+  test("local and CI descriptor entrypoints cannot substitute transport identities", () => {
+    const input = {windowsSdkRoot: "/not-opened", windowsSdkPins: {resultSha256: "a".repeat(64), descriptorSha256: "b".repeat(64),
+        filesSha256: "c".repeat(64), overlaySha256: "d".repeat(64)}, hermesRoot: "/not-opened",
+      tools: {clangCl: {path: "/not-opened/icx", sha256: "a".repeat(64)}, lldLink: {path: "/not-opened/lld-link", sha256: "b".repeat(64)},
+        llvmNm: {path: "/not-opened/llvm-nm", sha256: "c".repeat(64)}, clangResourceInclude: "/not-opened/resource"}},
+      ci = {kind: "hermes", runAttempt: "123-1", handoffSha256: "e".repeat(64)},
+      local = {kind: "hermes", localBuildId: "12345678-1234-4234-9234-123456789abc", handoffSha256: "e".repeat(64)};
+    assert.throws(() => composeWindowsLlvmSdkDescriptor(/** @type {any} */ ({...input, hermesExpectation: local})), /explicit source pins/);
+    assert.throws(() => composeLocalWindowsLlvmSdkDescriptor(/** @type {any} */ ({...input, hermesExpectation: ci})), /explicit source pins/);
   });
 
   test("hashes the explicit LLVM tool files and only accepts a declared sibling alias", t => {
@@ -5136,6 +5685,23 @@ test.describe("Windows LLVM 21 CI phase frontdoor", () => {
 });
 
 test.describe("Windows GPU profile state handoff", () => {
+  for (const profile of ["acpp-cuda", "acpp-hip"]) {
+    test("factory contract fixtures isolate inherited " + profile + " pins", {skip: process.platform !== "linux"}, () => {
+      const env = /** @type {NodeJS.ProcessEnv} */ ({...process.env, MOM_NATIVE_WINDOWS_GPU_PROFILE: profile});
+      delete env["NODE_TEST_CONTEXT"]; // Start an independent runner, not a nested test-child protocol.
+      for (const name of ["ACPP_SOURCE_BUNDLE", "ACPP_SDK_BUNDLE", "FRONTEND_BUNDLE", "FRONTEND_HANDOFF"]) {
+        env["MOM_NATIVE_WINDOWS_GPU_" + name + "_SHA256"] = "f".repeat(64);
+      }
+      // CI runs all profile contracts inside each factory's real, externally pinned environment.
+      const result = spawnSync(process.execPath, ["--test", "--test-reporter=tap", "tests/native_windows_gpu_ci_job.js"], {
+        cwd: root, env, encoding: "utf8", timeout: 30000, maxBuffer: 2 * 1024 ** 2,
+      });
+      assert.equal(result.status, 0, result.error?.message || result.stderr + result.stdout);
+      assert.match(result.stdout, /^# tests [1-9]\d*$/m);
+      assert.match(result.stdout, /^# skipped 0$/m);
+    });
+  }
+
   /** @param {import('node:test').TestContext} t */
   const fixture = t => {
     const runnerTemp = fs.mkdtempSync(path.join(fs.realpathSync("/var/tmp"), "mom-native-win-gpu-handoff-")),

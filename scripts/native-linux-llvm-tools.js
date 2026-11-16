@@ -514,4 +514,4 @@ function exportLinuxLlvmRole(admittedSdkRoot, outputRoot, identity, reader, test
   return {handoffPath, handoffSha256, fileCount: files.length};
 }
 
-module.exports = {exportLinuxLlvmTools, linuxLlvmToolHandoffInputs, exportLinuxLlvmAcppFrontend, linuxLlvmAcppFrontendInputs};
+module.exports = {exportLinuxLlvmTools, linuxLlvmToolHandoffInputs, exportLinuxLlvmAcppFrontend, linuxLlvmAcppFrontendInputs, acppFrontendRows};

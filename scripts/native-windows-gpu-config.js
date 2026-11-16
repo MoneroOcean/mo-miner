@@ -414,11 +414,7 @@ function windowsNativeGpuConfig(profile, input) {
       sources.prepared?.dpcpp?.root !== path.join(state.linux.prepared, "windows", "dpcpp")) {
     throw new Error("Windows SYCL source receipt changed or has a different run-scoped root");
   }
-  const sourceRoot = canonicalDirectory(sources.prepared.dpcpp.root, "Prepared Windows DPC++ source root"),
-    syclInclude = canonicalDirectory(path.join(sourceRoot, "sycl/include"), "Prepared SYCL headers"),
-    urInclude = canonicalDirectory(path.join(sourceRoot, "unified-runtime/include"), "Prepared Unified Runtime headers"),
-    dpcppInclude = canonicalDirectory(path.join(state.dpcppRoot, "include"), "Pinned DPC++ SDK headers"),
-    dpcppSyclInclude = canonicalDirectory(path.join(dpcppInclude, "sycl"), "Pinned DPC++ SYCL headers");
+  const sourceRoot = canonicalDirectory(sources.prepared.dpcpp.root, "Prepared Windows DPC++ source root");
 
   const manifestPin = stableRegular(state.manifest, "DPC++/CUDA input manifest", 8 << 20);
   if (manifestPin.sha256 !== input.dpcppManifestSha256) {throw new Error("DPC++/CUDA input manifest differs from its external pin");}
@@ -436,16 +432,6 @@ function windowsNativeGpuConfig(profile, input) {
       throw new Error("Linux LLVM handoff is missing a selected Windows GPU tool: " + name);
     }
   }
-  const compiler = canonicalDirectory(input.compilerRoot, profile === "oneapi" ? "Intel oneAPI compiler root" : "DPC++ compiler root");
-  if ((profile === "dpcpp" || profile === "dpcpp-opencl") && compiler !== state.dpcppRoot) {
-    throw new Error("DPC++ OpenCL compiler root must be the same-run admitted DPC++ SDK");
-  }
-  const compilerTools = profile === "oneapi" ?
-    {clang: path.join(compiler, "bin/icpx"), clangC: path.join(compiler, "bin/icx"), llvmNm: tools.llvmNm,
-      llvmReadobj: path.join(tools.toolRoot, "llvm-readobj"), llvmObjcopy: path.join(tools.toolRoot, "llvm-objcopy")} :
-    {clang: path.join(compiler, "bin/clang++"), clangC: path.join(compiler, "bin/clang"), llvmNm: tools.llvmNm,
-      llvmReadobj: path.join(tools.toolRoot, "llvm-readobj"), llvmObjcopy: path.join(tools.toolRoot, "llvm-objcopy")};
-
   // Reject a foreign-run metadata archive before any compiler subprocess is invoked.
   const expectedWindowsSdkBase = "mom-native-windows-host-sdk-" + suffix,
     expectedWindowsSdkLeaf = "native-windows-host-sdk-" + suffix;
@@ -453,13 +439,59 @@ function windowsNativeGpuConfig(profile, input) {
       path.basename(input.windowsSdkRoot) !== expectedWindowsSdkLeaf) {
     throw new Error("Windows SDK root does not match the selected run attempt");
   }
-  const host = windowsHostSdkInputs(input.windowsSdkRoot, input.windowsSdkPins),
-    hostIncludeRoots = validateWindowsSdkVfsRoots(host);
+  const host = windowsHostSdkInputs(input.windowsSdkRoot, input.windowsSdkPins);
   /** @type {ReturnType<typeof windowsNativeGpuCudaImages> | null} */ let cudaImages = null;
   if (profile === "dpcpp") {
     if (!input.cudaImages) {throw new Error("DPC++ requires its same-run CUDA image handoff");}
     cudaImages = windowsNativeGpuCudaImages(input.cudaImages, suffix);
   }
+  const built = composeWindowsDpcppGpuConfig(profile, {compilerRoot: input.compilerRoot, sourceRoot,
+    dpcppRoot: state.dpcppRoot, cudaRoot: state.cudaRoot, dpcppManifest, host, tools, cudaImages});
+  const admittedInputHashes = {
+    windowsSdk: {...host.pins},
+    windowsSources: {receipt: sourceReceiptPin.sha256, dpcppPreparedInventorySha256:
+      createHash("sha256").update(JSON.stringify(sources.prepared.dpcpp.files)).digest("hex")},
+    dpcppCuda: {manifestSha256: manifestPin.sha256, sourceTarSha256: dpcppManifest.source.tarSha256,
+      sdkArchiveSha256: dpcppManifest.dpcpp.archiveSha256, selectedHeaders: built.selectedHeaders},
+    linuxLlvmTools: {runAttempt: input.toolsExpectation.runAttempt, handoffSha256: input.toolsExpectation.handoffSha256,
+      files: Object.fromEntries(toolFiles.map(name => [path.join(tools.toolRoot, path.basename(name)), tools.files[name].sha256]))},
+    ...(cudaImages ? {cudaImages: cudaImages.hashes} : {}),
+    compiler: built.compiler,
+  };
+  return {config: built.config, configBytes: built.configBytes, configSha256: built.configSha256, admittedInputHashes};
+}
+
+/** Shared local/CI construction AFTER the caller admits source, SDK and tool receipts.
+ * No transport identity is invented here. Keep header-ABI and compiler checks shared;
+ * CI's wrapper additionally binds its exact run-scoped paths and external handoff pins.
+ * @param {string} profile
+ * @param {{compilerRoot:string,sourceRoot:string,dpcppRoot:string,cudaRoot?:string,dpcppManifest:any,
+ * host:ReturnType<typeof windowsHostSdkInputs>,tools:{llvmNm:string,toolRoot:string},
+ * cudaImages:Pick<ReturnType<typeof windowsNativeGpuCudaImages>,"include">|null}} input */
+function composeWindowsDpcppGpuConfig(profile, input) {
+  if (!["oneapi", "dpcpp", "dpcpp-opencl"].includes(profile) || process.platform !== "linux" || process.arch !== "x64") {
+    throw new Error("Windows DPC++ GPU descriptors require a maintained profile on Linux x64");
+  }
+  const {host, tools, dpcppManifest, cudaImages} = input,
+    sourceRoot = canonicalDirectory(input.sourceRoot, "Prepared Windows DPC++ source root"),
+    dpcppRoot = canonicalDirectory(input.dpcppRoot, "Pinned DPC++ SDK root"),
+    compiler = canonicalDirectory(input.compilerRoot, profile === "oneapi" ? "Intel oneAPI compiler root" : "DPC++ compiler root"),
+    hostIncludeRoots = validateWindowsSdkVfsRoots(host),
+    syclInclude = canonicalDirectory(path.join(sourceRoot, "sycl/include"), "Prepared SYCL headers"),
+    urInclude = canonicalDirectory(path.join(sourceRoot, "unified-runtime/include"), "Prepared Unified Runtime headers"),
+    dpcppInclude = canonicalDirectory(path.join(dpcppRoot, "include"), "Pinned DPC++ SDK headers"),
+    dpcppSyclInclude = canonicalDirectory(path.join(dpcppInclude, "sycl"), "Pinned DPC++ SYCL headers");
+  if (profile !== "oneapi" && compiler !== dpcppRoot) {
+    throw new Error("DPC++ OpenCL compiler root must be the same-run admitted DPC++ SDK");
+  }
+  if ((profile === "dpcpp") !== Boolean(cudaImages) || cudaImages && !input.cudaRoot) {
+    throw new Error("Only the DPC++ profile requires admitted CUDA images and SDK inputs");
+  }
+  const compilerTools = profile === "oneapi" ?
+    {clang: path.join(compiler, "bin/icpx"), clangC: path.join(compiler, "bin/icx"), llvmNm: tools.llvmNm,
+      llvmReadobj: path.join(tools.toolRoot, "llvm-readobj"), llvmObjcopy: path.join(tools.toolRoot, "llvm-objcopy")} :
+    {clang: path.join(compiler, "bin/clang++"), clangC: path.join(compiler, "bin/clang"), llvmNm: tools.llvmNm,
+      llvmReadobj: path.join(tools.toolRoot, "llvm-readobj"), llvmObjcopy: path.join(tools.toolRoot, "llvm-objcopy")};
   const cleanCompilerEnvironment = () => {
     const environment = releaseBuildEnvironment(process.env);
     for (const key of Object.keys(environment)) {
@@ -488,12 +520,12 @@ function windowsNativeGpuConfig(profile, input) {
   const includeRoots = includePlan.includeRoots;
   const draft = {version: /** @type {1} */ (1), profile, tools: compilerTools, includeRoots,
     overlay: host.sdk.overlay, ...(profile === "oneapi" ? {compilerRoot: compiler} : {}),
-    ...(cudaImages ? {cuda: {sdk: state.cudaRoot, images: cudaImages.include}} : {})};
+    ...(cudaImages ? {cuda: {sdk: input.cudaRoot, images: cudaImages.include}} : {})};
   const headerHashes = /** @type {Record<string, string>} */ ({});
   for (let index = 0; index < dpcppSdkHeaders.length; index++) {
     const relative = dpcppSdkHeaders[index], selected = includePlan.dpcppHeaders[index];
     if (!relative || !selected) {throw new Error("DPC++ SDK selected header plan is incomplete");}
-    const file = containedFile(state.dpcppRoot, selected, "DPC++ SDK header " + relative);
+    const file = containedFile(dpcppRoot, selected, "DPC++ SDK header " + relative);
     headerHashes[file] = stableRegular(file, "DPC++ SDK header " + relative, 16 << 20).sha256;
   }
   for (let index = 0; index < urHeaders.length; index++) {
@@ -509,18 +541,8 @@ function windowsNativeGpuConfig(profile, input) {
   }
   const config = validateWindowsGpuConfig(draft), configBytes = Buffer.from(JSON.stringify(config, null, 2) + "\n", "utf8"),
     configSha256 = createHash("sha256").update(configBytes).digest("hex");
-  const admittedInputHashes = {
-    windowsSdk: {...host.pins},
-    windowsSources: {receipt: sourceReceiptPin.sha256, dpcppPreparedInventorySha256:
-      createHash("sha256").update(JSON.stringify(sources.prepared.dpcpp.files)).digest("hex")},
-    dpcppCuda: {manifestSha256: manifestPin.sha256, sourceTarSha256: dpcppManifest.source.tarSha256,
-      sdkArchiveSha256: dpcppManifest.dpcpp.archiveSha256, selectedHeaders: headerHashes},
-    linuxLlvmTools: {runAttempt: input.toolsExpectation.runAttempt, handoffSha256: input.toolsExpectation.handoffSha256,
-      files: Object.fromEntries(toolFiles.map(name => [path.join(tools.toolRoot, path.basename(name)), tools.files[name].sha256]))},
-    ...(cudaImages ? {cudaImages: cudaImages.hashes} : {}),
-    compiler: {root: compiler, resourceInclude: expectedResourceInclude, files: resolvedCompilerInputs},
-  };
-  return {config, configBytes, configSha256, admittedInputHashes};
+  return {config, configBytes, configSha256, selectedHeaders: headerHashes,
+    compiler: {root: compiler, resourceInclude: expectedResourceInclude, files: resolvedCompilerInputs}};
 }
 
 /** Compose an ACPP device profile from independently admitted same-run inputs.
@@ -548,7 +570,7 @@ function windowsNativeAcppGpuConfig(profile, input) {
   if (path.basename(path.dirname(input.windowsSdkRoot)) !== expectedSdkBase || path.basename(input.windowsSdkRoot) !== expectedSdkLeaf) {
     throw new Error("Windows SDK root does not match the selected run attempt");
   }
-  const host = windowsHostSdkReader.windowsHostSdkInputs(input.windowsSdkRoot, input.windowsSdkPins), hostIncludeRoots = validateWindowsSdkVfsRoots(host),
+  const host = windowsHostSdkReader.windowsHostSdkInputs(input.windowsSdkRoot, input.windowsSdkPins),
     tools = linuxLlvmToolReader.linuxLlvmToolHandoffInputs(input.toolsRoot, input.toolsExpectation),
     frontend = linuxLlvmToolReader.linuxLlvmAcppFrontendInputs(input.frontendRoot, input.frontendExpectation),
     acpp = windowsNativeAcppInputs(input.acpp, suffix), resolvedFrontend = resolveAcppFrontend(input.frontendRoot, frontend),
@@ -561,27 +583,14 @@ function windowsNativeAcppGpuConfig(profile, input) {
   // must not inherit this separate platform's include tree or dependency chain.
   const hipHeaders = profile === "acpp-hip" ? hipHeaderReader.rocmHipHeaderInputs(input.hipHeaders?.root,
     {runAttempt: suffix, handoffSha256: input.hipHeaders?.handoffSha256}) : null;
-  const includeRoots = [resolvedFrontend.resourceInclude, ...(hipHeaders ? [hipHeaders.include] : []),
-    path.join(acpp.source, "include"), acpp.generatedInclude, ...hostIncludeRoots];
-  for (const [directory, label] of /** @type {Array<[string,string]>} */ ([[resolvedFrontend.resourceInclude, "LLVM 21 resource headers"],
-    [path.join(acpp.source, "include"), "Prepared ACPP source headers"], [acpp.generatedInclude, "Generated ACPP headers"]])) {
-    canonicalDirectory(directory, label);
-  }
-  if (new Set(includeRoots).size !== includeRoots.length) {throw new Error("Windows ACPP config has duplicate include roots");}
-
   /** @type {ReturnType<typeof windowsNativeGpuCudaImages>|null} */ let cudaImages = null, dpcpp = null;
   if (profile === "acpp-cuda") {
     dpcpp = admitAcppCudaInputs(input.dpcppState, input.dpcppManifestSha256, suffix);
     cudaImages = windowsNativeGpuCudaImages(input.cudaImages, suffix);
   }
-  const draft = {version: /** @type {1} */ (1), profile,
-    tools: {clang: resolvedFrontend.clangxx, clangC: resolvedFrontend.clang, llvmNm: tools.llvmNm,
-      llvmReadobj: path.join(tools.toolRoot, "llvm-readobj"), llvmObjcopy: path.join(tools.toolRoot, "llvm-objcopy")},
-    includeRoots, overlay: host.sdk.overlay,
-    acpp: {source: acpp.source, generatedInclude: acpp.generatedInclude, plugin: acpp.plugin},
-    ...(dpcpp && cudaImages ? {cuda: {sdk: dpcpp.state.cudaRoot, images: cudaImages.include}} : {})};
-  const config = validateWindowsGpuConfig(draft), configBytes = Buffer.from(JSON.stringify(config, null, 2) + "\n", "utf8"),
-    configSha256 = createHash("sha256").update(configBytes).digest("hex");
+  const built = composeWindowsAcppGpuConfig(profile, {host, tools, acpp, frontend: resolvedFrontend,
+    ...(hipHeaders ? {hipInclude: hipHeaders.include} : {}),
+    cuda: dpcpp && cudaImages ? {sdk: dpcpp.state.cudaRoot, images: cudaImages.include} : null});
   const acppFiles = Object.fromEntries(acpp.generatedFiles.map(file => [path.join(acpp.generatedInclude, ...file.path.split("/")), file.sha256]));
   const admittedInputHashes = {
     windowsSdk: {...host.pins},
@@ -599,7 +608,40 @@ function windowsNativeAcppGpuConfig(profile, input) {
     ...(dpcpp && cudaImages ? {dpcppCuda: {manifestSha256: dpcpp.manifestPin.sha256,
       sourceTarSha256: dpcpp.manifest.source.tarSha256, sdkArchiveSha256: dpcpp.manifest.dpcpp.archiveSha256}, cudaImages: cudaImages.hashes} : {}),
   };
-  return {config, configBytes, configSha256, admittedInputHashes};
+  return {config: built.config, configBytes: built.configBytes, configSha256: built.configSha256, admittedInputHashes};
+}
+
+/** Shared descriptor construction from admitted local/CI ACPP, compiler and SDK inputs.
+ * Source/transport admission belongs to the caller; backend separation and header
+ * selection stay here so a local build cannot silently select a different recipe.
+ * @param {string} profile
+ * @param {{host:ReturnType<typeof windowsHostSdkInputs>,tools:{llvmNm:string,toolRoot:string},
+ * acpp:{source:string,generatedInclude:string,plugin:string},frontend:{clang:string,clangxx:string,resourceInclude:string},
+ * hipInclude?:string,cuda:{sdk:string,images:string}|null}} input */
+function composeWindowsAcppGpuConfig(profile, input) {
+  if (!["acpp-cuda", "acpp-hip"].includes(profile) || process.platform !== "linux" || process.arch !== "x64") {
+    throw new Error("Windows ACPP GPU descriptors require a maintained profile on Linux x64");
+  }
+  const {host, tools, acpp, frontend, hipInclude, cuda} = input;
+  if (profile === "acpp-cuda" ? !cuda || Boolean(hipInclude) : Boolean(cuda) || !hipInclude) {
+    throw new Error("Windows ACPP descriptor requires only its selected CUDA or HIP inputs");
+  }
+  const includeRoots = [frontend.resourceInclude, ...(hipInclude ? [hipInclude] : []),
+    path.join(acpp.source, "include"), acpp.generatedInclude, ...validateWindowsSdkVfsRoots(host)];
+  for (const [directory, label] of /** @type {Array<[string,string]>} */ ([[frontend.resourceInclude, "LLVM 21 resource headers"],
+    [path.join(acpp.source, "include"), "Prepared ACPP source headers"], [acpp.generatedInclude, "Generated ACPP headers"],
+    ...(hipInclude ? [[hipInclude, "Pinned HIP headers"]] : [])])) {
+    canonicalDirectory(directory, label);
+  }
+  if (new Set(includeRoots).size !== includeRoots.length) {throw new Error("Windows ACPP config has duplicate include roots");}
+  const config = validateWindowsGpuConfig({version: 1, profile,
+      tools: {clang: frontend.clangxx, clangC: frontend.clang, llvmNm: tools.llvmNm,
+        llvmReadobj: path.join(tools.toolRoot, "llvm-readobj"), llvmObjcopy: path.join(tools.toolRoot, "llvm-objcopy")},
+      includeRoots, overlay: host.sdk.overlay,
+      acpp: {source: acpp.source, generatedInclude: acpp.generatedInclude, plugin: acpp.plugin}, ...(cuda ? {cuda} : {})}),
+    configBytes = Buffer.from(JSON.stringify(config, null, 2) + "\n", "utf8"),
+    configSha256 = createHash("sha256").update(configBytes).digest("hex");
+  return {config, configBytes, configSha256};
 }
 
 /** Verify the pinned DPC++/CUDA input handoff; ACPP never uses that DPC++ compiler.
@@ -626,7 +668,7 @@ function admitAcppCudaInputs(state, expectedManifestSha256, suffix) {
 }
 
 /** Query the admitted LLVM 21 frontend without allowing ambient include/toolchain variables.
- * @param {string} root @param {ReturnType<typeof linuxLlvmToolReader.linuxLlvmAcppFrontendInputs>} frontend
+ * @param {string} root @param {Pick<ReturnType<typeof linuxLlvmToolReader.linuxLlvmAcppFrontendInputs>,"clang"|"clangxx"|"resourceInclude"|"files">} frontend
  * @param {(command:string,args:string[],options:import("node:child_process").SpawnSyncOptionsWithStringEncoding)=>import("node:child_process").SpawnSyncReturns<string>} [spawn] */
 function resolveAcppFrontend(root, frontend, spawn = childProcess.spawnSync) {
   canonicalDirectory(root, "LLVM 21 ACPP frontend root");
@@ -755,5 +797,6 @@ function windowsNativeGpuCudaImages(input, suffix) {
 /** @param {Parameters<typeof windowsNativeGpuConfig>[1]} input */
 function windowsNativeOneapiGpuConfig(input) {return windowsNativeGpuConfig("oneapi", input);}
 
-module.exports = {windowsNativeGpuConfig, windowsNativeAcppInputs, windowsNativeAcppGpuConfig, windowsNativeOneapiGpuConfig, windowsNativeGpuIncludePlan,
+module.exports = {windowsNativeGpuConfig, composeWindowsDpcppGpuConfig, composeWindowsAcppGpuConfig, windowsNativeAcppInputs, windowsNativeAcppGpuConfig, windowsNativeOneapiGpuConfig, windowsNativeGpuIncludePlan,
+  generatedIncludeInventory,
   windowsNativeOneapiIncludePlan, resolveDpcppCompiler, resolveAcppFrontend, windowsNativeGpuCudaImages};

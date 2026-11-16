@@ -307,6 +307,9 @@ function packNativeEntrypoint(options, spawn = spawnSync) {
   const toolStat = regularFile(upx, "pinned UPX tool", 256 << 20);
   if (!(toolStat.mode & 0o111n) || fileHash(upx) !== upxSha256) {throw new Error("Native packing tool differs from its external SHA-256 pin or is not executable");}
 
+  // Artifact transport normalizes files to 0644; UPX requires an executable ELF.
+  // Restore permissions only after admitting every input; the pinned bytes stay unchanged.
+  if (target === "linux") {fs.chmodSync(sourcePath, 0o755);}
   const packing = {upx, upxSha256}, packed = require("./pack-native-release").packNativeRelease({source: sourcePath, output, ...packing}, spawn),
     packingReceipt = bindPackingReceipt(output, sourcePath, sourceHash, packing, packed);
   if (fileHash(entrypointPath) !== entryHash || fileHash(sourcePath) !== sourceHash || fileHash(producerReceiptPath) !== producerHash ||
@@ -469,10 +472,16 @@ function nativeReleaseArguments(args, env) {
   return ["--native", sdk, output, ...(upx && sha ? ["--pack", upx, sha] : [])];
 }
 
+// The default command calls shared helpers which import this module's build APIs.
+// Publish them before dispatch, including when this file is the process entrypoint.
+module.exports = {buildEngineeringArchive, buildNativeArtifact, packNativeEntrypoint, nativeReleaseArguments, engineeringArchiveCommands, releaseBuildEnvironment, releaseVersion, noticeInput};
+
 if (require.main === module) {
   try {
     const args = nativeReleaseArguments(process.argv.slice(2), process.env);
-    if (args[0] === "--native") {
+    if (args.length === 0) {
+      process.exitCode = require("./build-local-native-command").launchLocalNativeRelease();
+    } else if (args[0] === "--native") {
       if (![3, 6].includes(args.length) || !args[1] || !args[2] || (args.length === 6 && (args[3] !== "--pack" || !args[4] || !args[5]))) {
         throw new Error("Usage: npm run build:release -- --native /absolute/sdk.json /new/absolute/output [--pack /pinned/upx <sha256>]");
       }
@@ -490,11 +499,9 @@ if (require.main === module) {
       if (process.exitCode === 0) {
         console.log(`Built mom-v${releaseVersion(process.env)}-${process.platform === "win32" ? "win.zip" : "lin.tgz"}`);
       }
-    } else {throw new Error("Standalone releases require a native SDK: set MOM_NATIVE_SDK and MOM_NATIVE_OUTPUT, or use --native /absolute/sdk.json /new/output. Engineering Mode remains npm run dev; legacy Node archives require explicit --engineering-archive.");}
+    } else {throw new Error("Usage: npm run build:release [-- --native /absolute/sdk.json /new/output]. Engineering Mode remains npm run dev; legacy Node archives require explicit --engineering-archive.");}
   } catch (error) {
     console.error(error instanceof Error ? error.message : "Native release build failed");
     process.exitCode = 1;
   }
 }
-
-module.exports = {buildEngineeringArchive, buildNativeArtifact, packNativeEntrypoint, nativeReleaseArguments, engineeringArchiveCommands, releaseBuildEnvironment, noticeInput};

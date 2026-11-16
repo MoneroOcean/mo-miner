@@ -157,7 +157,7 @@ test.describe("AdaptiveCpp HCF object reproducibility", () => {
   });
 });
 
-test.describe("Pinned static SYCL source admission", () => {
+test.describe("Pinned static SYCL source admission", {skip: process.platform !== "linux"}, () => {
   const revision = "da2463e45aa90aa36306c45abcfc05b87de51bc6";
   const patch = (/** @type {boolean} */ gpu) => ["adaptivecpp-static.patch", ...(gpu ? ["adaptivecpp-jit.patch"] : [])]
     .map(name => fs.readFileSync(path.resolve(__dirname, "../runtime", name), "utf8")).join("");
@@ -340,7 +340,7 @@ test.describe("Static CUDA SDK header/runtime ABI admission", () => {
   test("a duplicate archive cannot substitute for the runtime/support pair", t => {const f = fixture(t); assert.throws(() => admitCudaLibraries([f.libraries[0] || "", f.libraries[0] || ""]), /reviewed12.6.77/);});
 });
 
-test.describe("Static SYCL SDK literal recipe and bounded lifecycle", () => {
+test.describe("Static SYCL SDK literal recipe and bounded lifecycle", {skip: process.platform !== "linux" || process.arch !== "x64"}, () => {
   const plan = () => staticSyclSdkPlan("/src", "/llvm", "/cuda", "/output", 2);
   const host = {cc: "/opt/intel/oneapi/compiler/2026.2/bin/icx", cxx: "/opt/intel/oneapi/compiler/2026.2/bin/icpx"};
   test("the SDK recipe hashes the shared HCF probe reader", () => {
@@ -357,6 +357,38 @@ test.describe("Static SYCL SDK literal recipe and bounded lifecycle", () => {
         assert.ok(configure.includes("-DCMAKE_POSITION_INDEPENDENT_CODE=ON"), backend);
         assert.equal(configure.some(flag => /-no-pie|-fno-pic/i.test(flag)), false);
       }
+    }
+  });
+  test("only the static Linux Intel OpenMP queue opts out of invalid IPO TLS IR", t => {
+    const patch = fs.readFileSync(path.resolve(__dirname, "../runtime/adaptivecpp-static.patch"), "utf8"),
+      block = patch.match(/^\+ {2}if\(ACPP_STATIC_RUNTIME AND NOT WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM"\)\n(?:\+.*\n)+?\+ {2}endif\(\)/m)?.[0];
+    assert.ok(block, "the pinned source patch must carry the narrow Intel/OpenMP IPO workaround");
+    assert.match(block, /set_property\(SOURCE omp\/omp_queue\.cpp APPEND PROPERTY COMPILE_OPTIONS -fno-lto\)/);
+    const cmake = "/usr/bin/cmake", available = spawnSync(cmake, ["--version"], {encoding: "utf8", timeout: 10000, maxBuffer: 32768});
+    if (available.error && "code" in available.error && available.error.code === "ENOENT") {t.skip("CMake is not installed"); return;}
+    assert.equal(available.status, 0, available.stderr);
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-omp-ipo-policy-"));
+    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    for (const [name, staticRuntime, windows, compiler, expected] of [
+      ["intel-linux-static", "ON", "OFF", "IntelLLVM", "-ipo;-fno-lto"],
+      ["intel-windows-static", "ON", "ON", "IntelLLVM", "-ipo"],
+      ["intel-linux-shared", "OFF", "OFF", "IntelLLVM", "-ipo"],
+      ["clang-linux-static", "ON", "OFF", "Clang", "-ipo"],
+    ]) {
+      const source = path.join(root, name || ""), build = path.join(source, "build");
+      fs.mkdirSync(source);
+      fs.writeFileSync(path.join(source, "CMakeLists.txt"), [
+        "cmake_minimum_required(VERSION 3.16)", "project(MomOmpIpoPolicy NONE)",
+        `set(ACPP_STATIC_RUNTIME ${staticRuntime})`, `set(WIN32 ${windows})`, `set(CMAKE_CXX_COMPILER_ID ${compiler})`,
+        "set_property(SOURCE omp/omp_queue.cpp omp/omp_event.cpp PROPERTY COMPILE_OPTIONS -ipo)",
+        block.split("\n").map(line => line.slice(1)).join("\n"),
+        "get_source_file_property(queue omp/omp_queue.cpp COMPILE_OPTIONS)",
+        "get_source_file_property(other omp/omp_event.cpp COMPILE_OPTIONS)",
+        `if(NOT queue STREQUAL "${expected}" OR NOT other STREQUAL "-ipo")`,
+        '  message(FATAL_ERROR "IPO workaround escaped its single-source/platform/compiler scope")', "endif()", "",
+      ].join("\n"));
+      const result = spawnSync(cmake, ["-S", source, "-B", build], {encoding: "utf8", timeout: 15000, maxBuffer: 1 << 20});
+      assert.equal(result.status, 0, name + ": " + result.stdout + result.stderr);
     }
   });
   test("the explicit host pair changes CMake compilation but not the LLVM SDK identity", () => {
@@ -477,6 +509,24 @@ test.describe("Static SYCL SDK literal recipe and bounded lifecycle", () => {
     assert.throws(() => sdkStage([process.execPath, "-e", 'process.stderr.write("fixture failure"); process.exit(7)'], log, process.env), /inspect.*before retrying/);
     assert.equal(fs.readFileSync(log, "utf8"), "fixture failure");
   });
+  test("failed subprocesses print only a bounded log tail while success remains quiet", t => {
+    const f = fixture(t), script = path.resolve(__dirname, "../scripts/build-native-sycl-sdk.js"), limit = 16 * 1024;
+    const log = path.join(f.root, "failed-stage.log"), fullLog = Buffer.concat([Buffer.alloc(80 * 1024, 0x78), Buffer.from("HIP_PREPROCESS_FAILURE\n")]);
+    const producer = 'process.stderr.write(Buffer.alloc(80 * 1024, 0x78)); process.stderr.write("HIP_PREPROCESS_FAILURE\\n"); process.exit(7);';
+    const failureChild = `const {sdkStage}=require(${JSON.stringify(script)}); try { sdkStage([process.execPath, "-e", ${JSON.stringify(producer)}], ${JSON.stringify(log)}, process.env); process.exitCode=2; } catch (error) { if (!/inspect.*before retrying/.test(error.message)) process.exitCode=3; }`;
+    const failure = spawnSync(process.execPath, ["-e", failureChild], {encoding: "utf8", timeout: 10000, maxBuffer: 1 << 17});
+    assert.equal(failure.status, 0, failure.stderr); assert.equal(failure.stdout, "");
+    assert.deepEqual(fs.readFileSync(log), fullLog);
+    const tail = fullLog.subarray(-limit), header = `[native-sdk] Failed stage; showing last ${limit} of ${fullLog.length} log bytes from ${log}:\n`;
+    assert.deepEqual(Buffer.from(failure.stderr), Buffer.concat([Buffer.from(header), tail]));
+
+    const successLog = path.join(f.root, "successful-stage.log"), successOutput = "successful stdout and stderr";
+    const successProducer = 'process.stdout.write("successful stdout "); process.stderr.write("and stderr");';
+    const successChild = `require(${JSON.stringify(script)}).sdkStage([process.execPath, "-e", ${JSON.stringify(successProducer)}], ${JSON.stringify(successLog)}, process.env);`;
+    const success = spawnSync(process.execPath, ["-e", successChild], {encoding: "utf8", timeout: 10000, maxBuffer: 1 << 17});
+    assert.equal(success.status, 0, success.stderr); assert.equal(success.stdout, ""); assert.equal(success.stderr, "");
+    assert.equal(fs.readFileSync(successLog, "utf8"), successOutput);
+  });
   test("earlier evidence cannot be overwritten by a repeated stage", t => {const f = fixture(t), log = path.join(f.root, "stage.log"); fs.writeFileSync(log, "preserve"); assert.throws(() => sdkStage([process.execPath, "-e", ""], log, process.env), /EEXIST/);});
   test("CLI arity rejects missing roots before source/toolchain access", () => {
     const r = spawnSync(process.execPath, [path.resolve(__dirname, "../scripts/build-native-sycl-sdk.js")], {encoding: "utf8", timeout: 5000});
@@ -489,7 +539,7 @@ test.describe("Static SYCL SDK literal recipe and bounded lifecycle", () => {
   });
 });
 
-test.describe("Combined static CUDA/HIP SDK preserves both backends", () => {
+test.describe("Combined static CUDA/HIP SDK preserves both backends", {skip: process.platform !== "linux" || process.arch !== "x64"}, () => {
   const env = {MOM_AOT_SYCL_BACKEND: "cuda-hip", MOM_AOT_ROCM_STATIC_ROOT: "/rocm", MOM_AOT_LLD_ROOT: "/lld", ROCM_DEVICE_LIBS_PATH: "/bitcode",
     MOM_AOT_COMGR_RECEIPT: "/comgr/result.json"};
   const plan = (environment = env, output = "/output") => staticSyclSdkPlan("/src", "/llvm", "/cuda", output, 2, environment);
@@ -532,7 +582,7 @@ test.describe("Combined static CUDA/HIP SDK preserves both backends", () => {
   });
 });
 
-test.describe("Separate static HIP SDK", () => {
+test.describe("Separate static HIP SDK", {skip: process.platform !== "linux" || process.arch !== "x64"}, () => {
   const env = {MOM_AOT_SYCL_BACKEND: "hip", MOM_AOT_ROCM_STATIC_ROOT: "/rocm", MOM_AOT_LLD_ROOT: "/lld",
     ROCM_DEVICE_LIBS_PATH: "/bitcode", MOM_AOT_COMGR_RECEIPT: "/comgr/result.json"};
   const plan = (environment = env) => staticSyclSdkPlan("/src", "/llvm", "/cuda", "/output", 2, environment);

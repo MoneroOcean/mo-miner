@@ -2762,11 +2762,14 @@ int main() {
         extractCppBlock(shared, "inline uint64_t mo_mul_wide_u32(") +
         "inline uint64_t mul_wide32(uint32_t a, uint32_t b) { return mo_mul_wide_u32(a,b); }\n" +
         extractCppBlock(xelis, "inline uint64_t mul_hi64_portable("));
-      for (const define of ["", "MOM_SYCL_PORTABLE_OPENCL", "MOM_XELISHASHV3_ESIMD"]) {
-        await t.test(define || "ordinary", () => {
-          const executable = path.join(directory, define || "ordinary");
+      const variants = [[], ["MOM_SYCL_PORTABLE_OPENCL"], ["MOM_XELISHASHV3_ESIMD"],
+        ["MOM_XELISHASHV3_ESIMD", "__INTEL_LLVM_COMPILER=20260000"]];
+      for (const defines of variants) {
+        const name = defines.join("+") || "ordinary";
+        await t.test(name, () => {
+          const executable = path.join(directory, name);
           const built = spawnSync("c++", ["-std=c++17", "-O3", "-Wall", "-Wextra", "-Werror", "-UNDEBUG",
-            ...(define ? ["-D" + define] : []), "-I", directory, path.join(__dirname, "native/wide_multiply.cpp"), "-o", executable],
+            ...defines.map(define => "-D" + define), "-I", directory, path.join(__dirname, "native/wide_multiply.cpp"), "-o", executable],
           {encoding: "utf8", timeout: 30000});
           assert.equal(built.status, 0, built.error?.message || built.stderr);
           const result = spawnSync(executable, [], {encoding: "utf8", timeout: 10000});
@@ -2781,7 +2784,7 @@ int main() {
       const shared = fs.readFileSync(path.join(__dirname, "../sycl/lib-internal.h"), "utf8");
       assert.match(source, /return mo_mul_hi_u64\(a, b\);/);
       assert.match(shared,
-        /#if defined\(MOM_SYCL_PORTABLE_OPENCL\) \|\| defined\(MOM_XELISHASHV3_ESIMD\)\s+const uint32_t a0 = static_cast<uint16_t>\(a\), a1 = a >> 16,[\s\S]*?return p0 \+ \(\(p1 \+ p2\) << 16\) \+ \(p3 << 32\);/);
+        /#if defined\(MOM_SYCL_PORTABLE_OPENCL\) \|\| \\\s+\(defined\(MOM_XELISHASHV3_ESIMD\) && !defined\(__INTEL_LLVM_COMPILER\)\)\s+const uint32_t a0 = static_cast<uint16_t>\(a\), a1 = a >> 16,[\s\S]*?return p0 \+ \(\(p1 \+ p2\) << 16\) \+ \(p3 << 32\);/);
       assert.match(shared,
         /#if defined\(MOM_SYCL_ADAPTIVECPP\) \|\| defined\(MOM_SYCL_PORTABLE_OPENCL\)[\s\S]*?mo_mul_wide_u32\(a1, b1\)/);
     });

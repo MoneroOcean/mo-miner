@@ -1,13 +1,13 @@
 "use strict";
 
 const {test, describe} = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), os = require("node:os"), path = require("node:path"), {spawnSync} = require("node:child_process"), {createHash} = require("node:crypto");
-const {fetchSdkSources, fetchArchiveCohort, fetchIoArchives, fetchBuildArchives, fetchNvrtcArchives, fetchWindowsHostSdkArchives,
-    verifyBuildArchives, verifyIoArchives, verifyNvrtcArchives, verifyWindowsHostSdkArchives,
+const {fetchSdkSources, fetchArchiveCohort, fetchIoArchives, fetchBuildArchives, fetchWindowsOpenSslArchives, fetchNvrtcArchives, fetchWindowsHostSdkArchives,
+    verifyBuildArchives, verifyWindowsOpenSslArchives, verifyIoArchives, verifyNvrtcArchives, verifyWindowsHostSdkArchives,
     nvrtcArchiveCatalog, nvrtcSourceRecipe, fetchZstdArchive, verifyZstdArchive, zstdArchiveCatalog, zstdSourceRecipe,
     ioArchiveUrls, buildArchiveUrls, origins, runGit, gitSourceComponents, sourceRecipe, buildSourceRecipe,
     windowsHostSdkCatalog, windowsHostSdkArchiveCatalog} = require("../scripts/fetch-native-sdk-sources"),
   {sdkComponents, validateSourceRoots} = require("../scripts/prepare-native-sdk-sources"), {ioPins} = require("../scripts/build-native-io"),
-  {archiveName, archiveSha256} = require("../scripts/native-llvm-sdk"), {opensslPin} = require("../scripts/build-native-openssl"),
+  {archiveName, archiveSha256} = require("../scripts/native-llvm-sdk"), {opensslPin, opensslBuildRecipe} = require("../scripts/build-native-openssl"),
   {hermesPins} = require("../scripts/build-native-hermes"), {zstdPin, zstdBuildRecipe} = require("../scripts/build-native-zstd");
 /** @typedef {Pick<Response, "status" | "url" | "body"> & {headers: Pick<Headers, "get">}} TestArchiveResponse */
 /** @typedef {(url: string, options: {redirect: "manual", signal: AbortSignal}) => Promise<TestArchiveResponse>} TestArchiveFetch */
@@ -96,7 +96,7 @@ function mockArchiveFetch(payloads, state = {}) {
   const calls = state.calls || (state.calls = []);
   return async (/** @type {string} */ url, /** @type {{redirect: "manual", signal: AbortSignal}} */ options) => {
     calls.push({url, redirect: options.redirect});
-    const name = url.includes("dist.libuv.org") ? "libuv" : url.includes("zlib.net") ? "zlib" : undefined;
+    const name = url.includes("dist.libuv.org") ? "libuv" : url === ioArchiveUrls.zlib ? "zlib" : undefined;
     if (!name) {throw new Error("Unexpected fake archive URL: " + url);}
     const body = payloads[name];
     if (!body) {throw new Error("Missing fake archive payload: " + name);}
@@ -769,6 +769,21 @@ describe("native I/O archive acquisition", () => {
     assert.ok(calls.every(call => call.redirect === "manual"));
   });
 
+  test("zlib uses the unchanged upstream release pin and only GitHub's asset redirect", {skip: process.platform !== "linux"}, async t => {
+    const f = fixture(t), data = payloads(), calls = /** @type {string[]} */ ([]),
+      asset = "https://release-assets.githubusercontent.com/example/zlib-1.3.1.tar.gz";
+    assert.equal(ioArchiveUrls.zlib, "https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz");
+    assert.equal(ioPins.zlib.sha256, "9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23");
+    /** @type {TestArchiveFetch} */ const fetch = async url => {
+      calls.push(url);
+      if (url === ioArchiveUrls.libuv) {return archiveResponse(url, 200, data.libuv);}
+      if (url === ioArchiveUrls.zlib) {return archiveResponse(url, 302, "", {location: asset});}
+      assert.equal(url, asset); return archiveResponse(url, 200, data.zlib);
+    };
+    await fetchIoArchives(f.output, env(), true, {fetch, pins: testIoPins(data)});
+    assert.deepEqual(calls, [ioArchiveUrls.libuv, ioArchiveUrls.zlib, asset]);
+  });
+
   test("rejects a cross-origin redirect before requesting its target", {skip: process.platform !== "linux"}, async t => {
     const f = fixture(t), data = payloads(), calls = /** @type {string[]} */ ([]);
     /** @type {TestArchiveFetch} */ const fetch = async (url, _options) => {
@@ -826,7 +841,7 @@ describe("native I/O archive acquisition", () => {
 
   test("removes the first archive if the second archive fails verification", {skip: process.platform !== "linux"}, async t => {
     const f = fixture(t), data = payloads(), pins = testIoPins(data);
-    /** @type {TestArchiveFetch} */ const fetch = async url => archiveResponse(url, 200, url.includes("zlib.net") ? "wrong zlib" : data.libuv);
+    /** @type {TestArchiveFetch} */ const fetch = async url => archiveResponse(url, 200, url === ioArchiveUrls.zlib ? "wrong zlib" : data.libuv);
     await assert.rejects(fetchIoArchives(f.output, env(), true, {fetch, pins}), /SHA256 differs from its pinned original/);
     assert.equal(fs.existsSync(f.output), false);
   });
@@ -908,6 +923,47 @@ describe("native SDK build-source archive acquisition", () => {
     assert.equal(archiveSha256, "4633a23617fa31a3ea51242586ea7fb1da7140e426bd62fc164261fe036aa142");
     assert.equal(opensslPin.sha256, "603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a");
     assert.equal(verifyBuildArchives(f.output, {hashes})["status"], "PASS");
+  });
+
+  test("acquires and warmly admits the original Windows OpenSSL receipt", {skip: process.platform !== "linux"}, async t => {
+    const f = fixture(t), bytes = Buffer.from("fixture Windows OpenSSL 3.5.9 archive"), digest = createHash("sha256").update(bytes).digest("hex"),
+      hashes = {openssl: {sha256: digest}}, calls = /** @type {Array<{url: string, redirect: string}>} */ ([]);
+    /** @type {TestArchiveFetch} */ const fetch = async (url, options) => {
+      calls.push({url, redirect: options.redirect});
+      assert.equal(url, buildArchiveUrls.openssl);
+      return archiveResponse(url, 200, bytes, {"content-length": String(bytes.length)});
+    };
+    const fetched = await fetchWindowsOpenSslArchives(f.output, env(), true, {fetch, hashes, timeoutMs: 5000}),
+      receiptPath = path.join(f.output, "fetch.json"), before = fs.readFileSync(receiptPath), receipt = JSON.parse(before.toString("utf8")),
+      archive = fetched.archives["openssl"];
+    assert.ok(archive);
+    assert.equal(fetched.target, "windows-openssl"); assert.equal(fetched.status, "PASS"); assert.equal(fetched.compiled, false);
+    assert.deepEqual(calls, [{url: buildArchiveUrls.openssl, redirect: "manual"}]);
+    assert.deepEqual(Object.keys(receipt).sort(), ["archives", "buildOnly", "compiled", "fetcherSha256", "networked", "publicationQualified", "recipe", "status", "target", "version"]);
+    assert.equal(receipt.target, "windows-openssl"); assert.equal(receipt.networked, true); assert.equal(receipt.buildOnly, true);
+    assert.equal(receipt.publicationQualified, false); assert.deepEqual(receipt.recipe.files, opensslBuildRecipe().graph);
+    assert.equal(receipt.recipe.sha256, createHash("sha256").update(JSON.stringify(opensslBuildRecipe())).digest("hex"));
+    assert.equal(path.basename(archive.path), "openssl-" + opensslPin.version + ".tar.gz");
+    assert.equal(archive.url, buildArchiveUrls.openssl); assert.equal(archive.sha256, digest); assert.equal(archive.bytes, bytes.length);
+    assert.deepEqual(fs.readFileSync(archive.path), bytes); assert.equal(fs.statSync(archive.path).mode & 0o222, 0);
+    assert.equal(fs.statSync(receiptPath).mode & 0o222, 0);
+    const admitted = verifyWindowsOpenSslArchives(f.output, {hashes});
+    assert.deepEqual(admitted, fetched); assert.deepEqual(fs.readFileSync(receiptPath), before);
+    assert.equal(calls.length, 1, "warm verification must stay offline");
+  });
+
+  test("Windows OpenSSL acquisition requires opt-in and offline admission rejects tampering", {skip: process.platform !== "linux"}, async t => {
+    const f = fixture(t), bytes = Buffer.from("fixture Windows OpenSSL archive"), digest = createHash("sha256").update(bytes).digest("hex"),
+      hashes = {openssl: {sha256: digest}}; let calls = 0;
+    /** @type {TestArchiveFetch} */ const fetch = async url => {calls++; return archiveResponse(url, 200, bytes);};
+    const denied = path.join(f.root, "network-denied");
+    await assert.rejects(fetchWindowsOpenSslArchives(denied, env(), false, {fetch, hashes}), /explicit --allow-network/);
+    assert.equal(calls, 0); assert.equal(fs.existsSync(denied), false);
+    await fetchWindowsOpenSslArchives(f.output, env(), true, {fetch, hashes});
+    const archive = JSON.parse(fs.readFileSync(path.join(f.output, "fetch.json"), "utf8")).archives["openssl"].path;
+    fs.chmodSync(archive, 0o644); fs.writeFileSync(archive, Buffer.alloc(bytes.length, 0x58)); fs.chmodSync(archive, 0o444);
+    assert.throws(() => verifyWindowsOpenSslArchives(f.output, {hashes}), /digest differs from its pin/);
+    assert.equal(calls, 1);
   });
 
   test("offline verification rejects an archive changed after acquisition", {skip: process.platform !== "linux"}, async t => {
@@ -1128,11 +1184,14 @@ describe("trusted pinned archive-cohort API", {skip: !["linux", "win32"].include
   });
 
   test("rejects a changed pin, a response outside the pinned origin, and streamed size excess", async t => {
-    const bytes = Buffer.from("pinned bytes"), cases = /** @type {Array<{fetch: TestArchiveFetch, maxBytes: number, match: RegExp}>} */ ([
-      {fetch: async (url, _options) => archiveResponse(url, 200, "different bytes"), maxBytes: 1024, match: /SHA256 differs from its pinned original/},
-      {fetch: async _url => archiveResponse("https://attacker.example/fixture.vsix", 200, bytes), maxBytes: 1024, match: /response left its approved HTTPS origin/},
-      {fetch: async url => archiveResponse(url, 200, bytes), maxBytes: 3, match: /configured archive bound/},
-    ]);
+    const bytes = Buffer.from("pinned bytes"), changed = Buffer.from("different bytes"),
+      expectedSha256 = createHash("sha256").update(bytes).digest("hex"), actualSha256 = createHash("sha256").update(changed).digest("hex"),
+      mismatch = new RegExp(`SHA256 differs from its pinned original: payload \\(expected SHA256 ${expectedSha256}, actual SHA256 ${actualSha256}, downloaded ${changed.length} bytes\\)`),
+      cases = /** @type {Array<{fetch: TestArchiveFetch, maxBytes: number, match: RegExp}>} */ ([
+        {fetch: async (url, _options) => archiveResponse(url, 200, changed), maxBytes: 1024, match: mismatch},
+        {fetch: async _url => archiveResponse("https://attacker.example/fixture.vsix", 200, bytes), maxBytes: 1024, match: /response left its approved HTTPS origin/},
+        {fetch: async url => archiveResponse(url, 200, bytes), maxBytes: 3, match: /configured archive bound/},
+      ]);
     for (const row of cases) {
       const f = fixture(t);
       /** @type {TestArchiveFetch} */ const fetch = row.fetch;

@@ -208,6 +208,25 @@ function validateFreshOutput(selected, toolsFile, output) {
   for (const input of [...selected.protectedPaths, toolsFile]) {if (overlaps(input, output) || overlaps(output, input)) {throw new Error("Windows JIT isolation output overlaps a producer or tool input");}}
 }
 
+/** One handoff format for fresh CI isolation and read-only local cache admission.
+ * The caller must first inspect the original producer and verify the isolation result.
+ * @param {ReturnType<typeof inspectWindowsJitSdk>} prior
+ * @param {ReturnType<typeof isolateCoffCompilerArchives>} isolation
+ * @param {string} toolsFile @param {string} output */
+function windowsJitIsolationHandoff(prior, isolation, toolsFile, output) {
+  if (fileHash(__filename) !== priorAdapterSha256) {throw new Error("Windows JIT isolation adapter changed during execution");}
+  const isolationResultPath = path.join(output, "result.json");
+  return {version: 1, kind: "windows-jit-archive-isolation-handoff",
+    target: "windows", buildOnly: true, executed: false, publicationQualified: false,
+    producer: {result: {path: prior.resultPath, sha256: prior.resultSha256}, stages: Object.fromEntries(Object.entries(prior.evidence).map(([name, row]) => [name, row.sha256])),
+      commands: {path: prior.evidence["commands.log"]?.path, sha256: prior.evidence["commands.log"]?.sha256}, linkCommand: {sha256: prior.linkLineSha256, text: prior.linkLine},
+      proof: prior.result.proof, libraries: prior.result.libraries, inputHashes: prior.inputHashes, sourceRecipe: prior.result.recipe, recipeSha256: prior.recipeSha256},
+    tools: {manifest: {path: toolsFile, sha256: prior.toolsManifestSha256}, files: Object.fromEntries(Object.entries(prior.tools).map(([name, file]) => [name, {path: file, sha256: prior.toolHashes[name]}]))},
+    adapter: {path: __filename, sha256: priorAdapterSha256}, isolation: {result: {path: isolationResultPath, sha256: fileHash(isolationResultPath)}, sourceHashes: isolation.sourceHashes,
+      mapSha256: isolation.mapSha256, archives: isolation.transformed.map(row => ({input: row.input, inputSha256: row.inputSha256, output: row.output, outputSha256: row.sha256}))},
+    checks: {producerResultSha256Pinned: true, producerSourceRecipePreserved: true, exactOrderedArchiveGraph: true, archiveAndProofHashesRechecked: true, compilerInputHashesPreservedAsProducerEvidence: true}};
+}
+
 /** @param {string[]} args */
 function main(args) {
   if (args.length !== 4 || args.some(value => !value)) {throw new Error("Usage: isolate-native-windows-jit.js <completed-sdk-root> <producer-result-sha256> <llvm-tools.json> <new-output>");}
@@ -224,20 +243,12 @@ function main(args) {
   const isolationResultPath = path.join(output, "result.json"); canonicalPath(isolationResultPath, "file", "COFF isolation result", 8 << 20);
   if (isolation.version !== 1 || Object.hasOwn(isolation, "kind") || isolation.buildOnly !== true || isolation.executed !== false ||
       isolation.publicationQualified !== false || !isDeepStrictEqual(isolation.transformed.map(row => row.input), prior.archives)) {throw new Error("COFF isolation did not preserve the complete producer archive closure");}
-  const isolationResultSha256 = fileHash(isolationResultPath), handoff = {version: 1, kind: "windows-jit-archive-isolation-handoff",
-    target: "windows", buildOnly: true, executed: false, publicationQualified: false,
-    producer: {result: {path: prior.resultPath, sha256: prior.resultSha256}, stages: Object.fromEntries(Object.entries(prior.evidence).map(([name, row]) => [name, row.sha256])),
-      commands: {path: prior.evidence["commands.log"]?.path, sha256: prior.evidence["commands.log"]?.sha256}, linkCommand: {sha256: prior.linkLineSha256, text: prior.linkLine},
-      proof: prior.result.proof, libraries: prior.result.libraries, inputHashes: prior.inputHashes, sourceRecipe: prior.result.recipe, recipeSha256: prior.recipeSha256},
-    tools: {manifest: {path: toolsFile, sha256: prior.toolsManifestSha256}, files: Object.fromEntries(Object.entries(prior.tools).map(([name, file]) => [name, {path: file, sha256: prior.toolHashes[name]}]))},
-    adapter: {path: __filename, sha256: priorAdapterSha256}, isolation: {result: {path: isolationResultPath, sha256: isolationResultSha256}, sourceHashes: isolation.sourceHashes,
-      mapSha256: isolation.mapSha256, archives: isolation.transformed.map(row => ({input: row.input, inputSha256: row.inputSha256, output: row.output, outputSha256: row.sha256}))},
-    checks: {producerResultSha256Pinned: true, producerSourceRecipePreserved: true, exactOrderedArchiveGraph: true, archiveAndProofHashesRechecked: true, compilerInputHashesPreservedAsProducerEvidence: true}};
+  const handoff = windowsJitIsolationHandoff(prior, isolation, toolsFile, output);
   fs.writeFileSync(path.join(output, "handoff.json"), JSON.stringify(handoff, null, 2) + "\n", {flag: "wx"});
   process.stdout.write("Windows JIT compiler archives isolated; producer receipt preserved; build-only, not executed or publication-qualified.\n");
 }
 
 const priorAdapterSha256 = fileHash(__filename);
-module.exports = {inspectWindowsJitSdk, validateFreshOutput, validateProducerReceipt, validateArchiveGraph, validateStageAncestry,
+module.exports = {inspectWindowsJitSdk, windowsJitIsolationHandoff, validateFreshOutput, validateProducerReceipt, validateArchiveGraph, validateStageAncestry,
   verifyRecordedArtifacts, validateToolsManifest, validateRecipeRecord, readPinnedProducerResult, hashTools};
 if (require.main === module) {try {main(process.argv.slice(2));} catch (error) {console.error(error instanceof Error ? error.message : "Windows JIT archive isolation failed"); process.exitCode = 1;}}

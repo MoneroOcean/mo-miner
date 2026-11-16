@@ -284,7 +284,9 @@ test.describe("Native build reproducibility opt-in admission", () => {
       assert.throws(() => settingsFromEnvironment(env), /lowercase SHA-256/);
     }
   });
-  test("late notice body and review manifest hashes are checked against maintained review", t => {
+  // The reviewed Node builtin-source pin belongs to the Linux AOT/packing producer,
+  // including when it emits Windows artifacts. Other hosts still test schema/hash guards.
+  test("late notice body and review manifest hashes are checked against maintained review", {skip: process.platform !== "linux"}, t => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "native-repro-notice-review-"));
     t.after(() => fs.rmSync(root, {recursive: true, force: true}));
     const env = validReviewedLateNoticeEnvironment(), late = settingsFromEnvironment(env)?.lateNotice; assert.ok(late);

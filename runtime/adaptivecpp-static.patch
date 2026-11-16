@@ -306,7 +306,7 @@ index de09592..6593dab 100644
  
  std::string persistent_storage::generate_app_db_filename() const {
 diff --git a/src/runtime/CMakeLists.txt b/src/runtime/CMakeLists.txt
-index 7e672e8..3140650 100644
+index 7e672e8..647fa30 100644
 --- a/src/runtime/CMakeLists.txt
 +++ b/src/runtime/CMakeLists.txt
 @@ -22,7 +22,7 @@ set(HIPSYCL_RT_EXTRA_LINKER_FLAGS ${HIPSYCL_RT_EXTRA_LINKER_FLAGS} ${HIPSYCL_STD
@@ -426,7 +426,7 @@ index 7e672e8..3140650 100644
      set(OpenMP_CXX_INCLUDE_DIRS ${CMAKE_INSTALL_FULL_INCLUDEDIR})
      get_target_property(hipSYCL_OpenMP_CXX_LIBRARIES omp LINK_LIBRARIES)
      string(JOIN " " hipSYCL_OpenMP_CXX_LIBRARIES ${hipSYCL_OpenMP_CXX_LIBRARIES})
-@@ -417,7 +429,10 @@ if(WITH_CPU_BACKEND)
+@@ -417,9 +429,18 @@ if(WITH_CPU_BACKEND)
      target_compile_definitions(rt-backend-omp PRIVATE -DHIPSYCL_WITH_SSCP_COMPILER)
      target_link_libraries(rt-backend-omp PRIVATE llvm-to-host)
    endif()
@@ -437,8 +437,16 @@ index 7e672e8..3140650 100644
 +  endif()
  
    target_compile_options(rt-backend-omp PRIVATE ${HIPSYCL_RT_EXTRA_CXX_FLAGS} ${OMP_COMPILE_FLAGS})
++  # Intel 2026.2 IPO emits invalid thread-local IR for this OpenMP queue.
++  # Keep native optimization here and IPO on every other runtime source.
++  if(ACPP_STATIC_RUNTIME AND NOT WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM")
++    set_property(SOURCE omp/omp_queue.cpp APPEND PROPERTY COMPILE_OPTIONS -fno-lto)
++  endif()
++
    target_link_libraries(rt-backend-omp PRIVATE ${HIPSYCL_RT_EXTRA_LINKER_FLAGS})
-@@ -431,6 +446,7 @@ if(WITH_CPU_BACKEND)
+ 
+   if(is_ipo_supported)
+@@ -431,6 +452,7 @@ if(WITH_CPU_BACKEND)
    endif()
  
    install(TARGETS rt-backend-omp
@@ -446,7 +454,7 @@ index 7e672e8..3140650 100644
        RUNTIME DESTINATION bin/hipSYCL
        LIBRARY DESTINATION lib/hipSYCL
        ARCHIVE DESTINATION lib/hipSYCL)
-@@ -451,7 +467,7 @@ if (WITH_METAL_BACKEND)
+@@ -451,7 +473,7 @@ if (WITH_METAL_BACKEND)
      message(FATAL_ERROR "Could not find Metal/Metal.hpp. Please specify METAL_INCLUDE_DIR.")
    endif()
  
@@ -455,7 +463,7 @@ index 7e672e8..3140650 100644
      metal/metal_backend.cpp
      metal/metal_hardware_manager.cpp
      metal/metal_queue.cpp
-@@ -472,7 +488,29 @@ if (WITH_METAL_BACKEND)
+@@ -472,7 +494,29 @@ if (WITH_METAL_BACKEND)
    target_link_libraries(rt-backend-metal PRIVATE "-framework Metal" "-framework Foundation" "-framework CoreFoundation" "-framework IOKit" )
  
    install(TARGETS rt-backend-metal

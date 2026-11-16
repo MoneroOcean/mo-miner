@@ -16,6 +16,7 @@ const {
 } = require("../scripts/build-native-windows-gpu");
 
 const repo = path.resolve(__dirname, "..");
+const compilerExecutableSuffix = process.platform === "win32" ? ".exe" : "";
 const gyp = fs.readFileSync(path.join(repo, "binding.gyp"), "utf8");
 const combinedWrapper = fs.readFileSync(path.join(repo, "scripts/cxx-combined.sh"), "utf8");
 
@@ -180,11 +181,12 @@ test.describe("Windows native GPU producer admission", () => {
       assert.equal(path.relative(f.root, file).startsWith(".."), true, file);
     }
     assert.ok(f.calls.some(call => call.command === f.config.tools.clang && call.args[0] === "--print-resource-dir"));
-    assert.ok(f.calls.some(call => call.command === f.config.tools.clang && call.args[0] === "-print-prog-name=clang-offload-bundler"));
-    assert.ok(!f.calls.some(call => /^-print-prog-name=llvm-(?:nm|readobj|objcopy)$/.test(call.args[0] || "")));
+    assert.ok(f.calls.some(call => call.command === f.config.tools.clang && call.args[0] === "-print-prog-name=clang-offload-bundler" + compilerExecutableSuffix));
+    assert.ok(!f.calls.some(call => ["llvm-nm", "llvm-readobj", "llvm-objcopy"].some(name =>
+      call.args[0] === "-print-prog-name=" + name + compilerExecutableSuffix)));
     assert.ok(f.calls.some(call => call.command === f.config.tools.clangC && call.args[0] === "--version"));
     assert.ok(f.calls.some(call => call.command === f.config.tools.clangC && call.args[0] === "--print-resource-dir"));
-    assert.ok(f.calls.some(call => call.command === f.config.tools.clangC && call.args[0] === "-print-prog-name=clang-offload-bundler"));
+    assert.ok(f.calls.some(call => call.command === f.config.tools.clangC && call.args[0] === "-print-prog-name=clang-offload-bundler" + compilerExecutableSuffix));
     const identityHelper = path.join(repo, "scripts", "build-native-windows-hiprtc-sdk.js");
     assert.equal(typeof selected.inputs[identityHelper], "string");
   });
@@ -209,18 +211,18 @@ test.describe("Windows native GPU producer admission", () => {
     assert.throws(() => resolveOneapiCompiler(wrongVersion.config, {}, wrongVersion.spawn), /Intel 2026\.2/);
 
     const unresolved = intelFixture(t), unresolvedSpawn = unresolved.spawn;
-    unresolved.spawn = (command, args, options) => args[0] === "-print-prog-name=llc"
+    unresolved.spawn = (command, args, options) => args[0] === "-print-prog-name=llc" + compilerExecutableSuffix
       ? {status: 0, signal: null, stdout: "llc\n"} : unresolvedSpawn(command, args, options);
     assert.throws(() => resolveOneapiCompiler(unresolved.config, {}, unresolved.spawn), /absolute path/);
 
     const outside = intelFixture(t), outsideSpawn = outside.spawn, external = path.join(path.dirname(outside.root), "mom-outside-llc");
     fs.writeFileSync(external, "external helper\n"); fs.chmodSync(external, 0o755); t.after(() => fs.rmSync(external, {force: true}));
-    outside.spawn = (command, args, options) => args[0] === "-print-prog-name=llc"
+    outside.spawn = (command, args, options) => args[0] === "-print-prog-name=llc" + compilerExecutableSuffix
       ? {status: 0, signal: null, stdout: external + "\n"} : outsideSpawn(command, args, options);
     assert.throws(() => resolveOneapiCompiler(outside.config, {}, outside.spawn), /under compilerRoot/);
 
     const mismatched = intelFixture(t), matchingSpawn = mismatched.spawn;
-    mismatched.spawn = (command, args, options) => command === mismatched.config.tools.clangC && args[0] === "-print-prog-name=llc"
+    mismatched.spawn = (command, args, options) => command === mismatched.config.tools.clangC && args[0] === "-print-prog-name=llc" + compilerExecutableSuffix
       ? {status: 0, signal: null, stdout: (mismatched.helpers["clang"] || "") + "\n"} : matchingSpawn(command, args, options);
     assert.throws(() => resolveOneapiCompiler(mismatched.config, {}, mismatched.spawn), /resolve different helper paths/);
 
@@ -526,7 +528,7 @@ test.describe("Windows native GPU source and host policy", () => {
     assert.ok(!cryptoSupport.args.includes("-Xarch_host") && !cryptoSupport.args.includes("-fno-builtin"),
       "algorithm support TUs keep their existing host-only flags");
     assert.ok(cryptoSupport.args.includes("-i_no-use-libirc"), "plain Intel C++ support uses CRT memory calls, not proprietary helpers");
-    const cSupport = commands.find(command => command.source.endsWith("/blake2/blake2b.c"));
+    const cSupport = commands.find(command => command.source.endsWith(path.join("blake2", "blake2b.c")));
     assert.ok(cSupport?.args.includes("-i_no-use-libirc"), "the same policy covers plain Intel C support");
     const hostMath = commands.find(command => command.source === path.join(repo, "sycl/hoohash/host_math.c"));
     assert.ok(hostMath?.args.includes("-fno-builtin"), "the existing strict HooHash host C policy remains intact");

@@ -8,12 +8,13 @@ const {hashTests} = require("./vectors");
 const {spawnSync} = require("node:child_process");
 
 const noticeName = "THIRD-PARTY-NOTICES.txt", executableName = "mom";
+const hostPlatform = process.platform === "win32" ? "win32" : "linux";
 const cpuVectorCount = hashTests.filter(definition => !definition.gpu).length;
 const successfulCpuSummary = `ℹ tests ${cpuVectorCount}\nℹ suites 1\nℹ pass ${cpuVectorCount}\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\n`;
 
 /** Structural candidate/archive fixture; all process execution is stubbed.
  * @param {import('node:test').TestContext} t */
-function fixture(t, platform = "linux") {
+function fixture(t, platform = hostPlatform) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-archive-contract-"));
   t.after(() => fs.rmSync(root, {recursive: true, force: true}));
   const windows = platform === "win32", archiveExecutableName = windows ? "mom.exe" : executableName;
@@ -122,12 +123,12 @@ function transientRewriteRestore(file) {
 
 test.describe("Flat native archive qualification", () => {
   test("CPU vectors run against the extracted member with pool networking disabled", t => {
-    const f = fixture(t), result = checkNativeRelease(f.entrypoint, "cpu", {platform: "linux", arch: "x64", audit: () => undefined,
+    const f = fixture(t), platform = f.candidate.target, result = checkNativeRelease(f.entrypoint, "cpu", {platform, arch: "x64", audit: () => undefined,
       archive: {path: f.archive, tool: f.tool}, spawn: f.spawn,
       env: {MOM_TEST_EXECUTABLE: "/old/mom", MOM_TEST_NO_POOL_NETWORK: "0", NODE_OPTIONS: "--require=untrusted.js", LD_LIBRARY_PATH: "/sdk/lib"}});
     assert.equal(result.suitePassed, true); assert.equal(result.archive, f.archive); assert.equal(result.executable, f.executable);
-    assert.equal(f.calls.length, 4); assert.deepEqual(f.calls.slice(0, 3).map(call => call.args[2]), ["tf", "tvf", "xf"]);
-    const run = f.calls[3]; assert.equal(run?.command, process.execPath); assert.deepEqual(run?.args, [path.join(path.dirname(require.resolve("./vectors")), "run_hash.js"), "cpu"]);
+    assert.equal(f.calls.length, platform === "win32" ? 5 : 4); assert.deepEqual(f.calls.slice(0, 3).map(call => call.args[2]), ["tf", "tvf", "xf"]);
+    const run = f.calls.at(-1); assert.equal(run?.command, process.execPath); assert.deepEqual(run?.args, [path.join(path.dirname(require.resolve("./vectors")), "run_hash.js"), "cpu"]);
     assert.equal(run?.options.env?.["MOM_TEST_NO_POOL_NETWORK"], "1");
     for (const key of ["NODE_OPTIONS", "LD_LIBRARY_PATH"]) {assert.equal(Object.hasOwn(run?.options.env || {}, key), false);}
     assert.equal(fs.existsSync(path.dirname(run?.options.env?.["MOM_TEST_EXECUTABLE"] || "")), false, "private extraction is removed after qualification");
@@ -150,43 +151,47 @@ test.describe("Flat native archive qualification", () => {
   });
 
   test("complete CLI parity also launches the extracted flat member", t => {
-    const f = fixture(t), result = checkNativeRelease(f.entrypoint, "cli", {platform: "linux", arch: "x64", audit: () => undefined,
+    const f = fixture(t), platform = f.candidate.target, result = checkNativeRelease(f.entrypoint, "cli", {platform, arch: "x64", audit: () => undefined,
       archive: {path: f.archive, tool: f.tool}, spawn: f.spawn});
     assert.equal(result.suitePassed, true); assert.equal(result.archive, f.archive);
-    const nativeRuns = f.calls.filter(call => path.basename(call.command) === executableName);
-    assert.equal(nativeRuns.length, 2); assert.ok(nativeRuns.every(call => call.options.env?.["MOM_TEST_EXECUTABLE"]?.startsWith(os.tmpdir())));
+    const nativeRuns = f.calls.filter(call => path.basename(call.command) === f.archiveExecutableName &&
+      call.options.env?.["MOM_TEST_EXECUTABLE"]?.startsWith(os.tmpdir()));
+    assert.equal(nativeRuns.length, platform === "win32" ? 3 : 2); assert.ok(nativeRuns.every(call => call.options.env?.["MOM_TEST_EXECUTABLE"]?.startsWith(os.tmpdir())));
     assert.ok(nativeRuns.every(call => call.options.env?.["MOM_TEST_NO_POOL_NETWORK"] === "1"));
   });
 
   test("traversal, duplicate and foreign members fail before extraction", t => {
-    for (const listing of [[executableName, "../outside"], [executableName, executableName], [executableName, "README.md"]]) {
-      const f = fixture(t); f.state.listing = listing;
-      assert.throws(() => checkNativeRelease(f.entrypoint, "cpu", {platform: "linux", arch: "x64", audit: () => undefined,
+    const f = fixture(t), platform = f.candidate.target, name = f.archiveExecutableName;
+    for (const listing of [[name, "../outside"], [name, name], [name, "README.md"]]) {
+      f.state.listing = listing;
+      assert.throws(() => checkNativeRelease(f.entrypoint, "cpu", {platform, arch: "x64", audit: () => undefined,
         archive: {path: f.archive, tool: f.tool}, spawn: f.spawn}), /two members|foreign|flat/);
       assert.deepEqual(f.calls.map(call => call.args[2]), ["tf"]);
+      f.calls.length = 0;
     }
   });
 
   for (const [kind, prefix] of [["symlink", "l"], ["hard link", "h"]]) {
     test(`${kind} members are rejected from verbose listing before extraction`, t => {
-      const f = fixture(t); f.state.types[1] = prefix + "rw-r--r-- 0 fixture fixture 0 Jun 1 00:00 " + noticeName + (prefix === "h" ? " link to mom" : " -> mom");
-      assert.throws(() => checkNativeRelease(f.entrypoint, "cpu", {platform: "linux", arch: "x64", audit: () => undefined,
+      const f = fixture(t), platform = f.candidate.target; f.state.types[1] = prefix + "rw-r--r-- 0 fixture fixture 0 Jun 1 00:00 " + noticeName + (prefix === "h" ? " link to " + f.archiveExecutableName : " -> " + f.archiveExecutableName);
+      assert.throws(() => checkNativeRelease(f.entrypoint, "cpu", {platform, arch: "x64", audit: () => undefined,
         archive: {path: f.archive, tool: f.tool}, spawn: f.spawn}), /regular files/);
       assert.deepEqual(f.calls.map(call => call.args[2]), ["tf", "tvf"]);
     });
   }
 
   test("oversized declared members fail before extraction", t => {
-    const f = fixture(t); f.state.types[0] = f.state.types[0]?.replace(" 128 ", " 1048576 ") || "";
-    assert.throws(() => checkNativeRelease(f.entrypoint, "cpu", {platform: "linux", arch: "x64", audit: () => undefined,
+    const f = fixture(t), platform = f.candidate.target, size = String(fs.statSync(f.executable).size);
+    f.state.types[0] = f.state.types[0]?.replace(` ${size} `, " 1048576 ") || "";
+    assert.throws(() => checkNativeRelease(f.entrypoint, "cpu", {platform, arch: "x64", audit: () => undefined,
       archive: {path: f.archive, tool: f.tool}, spawn: f.spawn}), /declared member size/);
     assert.deepEqual(f.calls.map(call => call.args[2]), ["tf", "tvf"]);
   });
 
   test("hard-linked or symlinked extracted files are rejected", t => {
     for (const kind of ["link", "symlink"]) {
-      const f = fixture(t); f.state.corrupt = kind;
-      assert.throws(() => checkNativeRelease(f.entrypoint, "cpu", {platform: "linux", arch: "x64", audit: () => undefined,
+      const f = fixture(t), platform = f.candidate.target; f.state.corrupt = kind;
+      assert.throws(() => checkNativeRelease(f.entrypoint, "cpu", {platform, arch: "x64", audit: () => undefined,
         archive: {path: f.archive, tool: f.tool}, spawn: f.spawn}), /hard-linked|regular file/);
       assert.equal(f.calls.some(call => call.command === process.execPath), false);
     }
@@ -208,7 +213,7 @@ test.describe("Flat native archive qualification", () => {
     fs.unlinkSync(f.archive); fs.unlinkSync(f.packageFile); fs.symlinkSync(f.tool, selectedTool); f.state.toolCommands.add(selectedTool);
     const packaged = packageNativeRelease(f.entrypoint, selectedTool, "0.9.4", f.spawn);
     assert.equal(packaged.tool.path, selectedTool); assert.equal(packaged.tool.sha256, fileHash(f.tool));
-    const result = checkNativeRelease(f.entrypoint, "cpu", {platform: "linux", arch: "x64", audit: () => undefined,
+    const result = checkNativeRelease(f.entrypoint, "cpu", {platform: f.candidate.target, arch: "x64", audit: () => undefined,
       archive: {path: f.archive, tool: selectedTool}, spawn: f.spawn});
     assert.equal(result.suitePassed, true); assert.equal(result.archive, f.archive);
     assert.ok(f.calls.some(call => call.command === selectedTool));
@@ -221,7 +226,7 @@ test.describe("Flat native archive qualification", () => {
     // Producer paths are historical data and need not exist on the clean test host.
     f.packageReceipt.tool.path = "C:\\build-only\\cmake.exe"; f.writePackage();
     const original = fs.readFileSync(f.packageFile);
-    const result = checkNativeRelease(f.entrypoint, "cpu", {platform: "linux", arch: "x64", audit: () => undefined,
+    const result = checkNativeRelease(f.entrypoint, "cpu", {platform: f.candidate.target, arch: "x64", audit: () => undefined,
       archive: {path: f.archive, tool: selected}, spawn: f.spawn});
     assert.equal(result.suitePassed, true);
     assert.ok(f.calls.slice(0, 3).every(call => call.command === selected));
@@ -246,7 +251,7 @@ test.describe("Flat native archive qualification", () => {
   test("malformed packaging-tool provenance fails before any tool or candidate launch", t => {
     for (const change of [{path: "relative-cmake"}, {path: "/tool\n"}, {sha256: "not-a-hash"}]) {
       const f = fixture(t); Object.assign(f.packageReceipt.tool, change); f.writePackage();
-      assert.throws(() => checkNativeRelease(f.entrypoint, "cpu", {platform: "linux", arch: "x64", audit: () => undefined,
+      assert.throws(() => checkNativeRelease(f.entrypoint, "cpu", {platform: f.candidate.target, arch: "x64", audit: () => undefined,
         archive: {path: f.archive, tool: f.tool}, spawn: f.spawn}), /does not bind|provenance/);
       assert.equal(f.calls.length, 0);
     }
@@ -256,7 +261,7 @@ test.describe("Flat native archive qualification", () => {
     const f = fixture(t), selected = path.join(f.root, "qualification-cmake");
     fs.writeFileSync(selected, "independently selected qualification tool"); f.state.toolCommands.add(selected);
     f.state.mutationAfterTf = "tool";
-    assert.throws(() => checkNativeRelease(f.entrypoint, "cpu", {platform: "linux", arch: "x64", audit: () => undefined,
+    assert.throws(() => checkNativeRelease(f.entrypoint, "cpu", {platform: f.candidate.target, arch: "x64", audit: () => undefined,
       archive: {path: f.archive, tool: selected}, spawn: f.spawn}), /tool changed during qualification/);
     assert.deepEqual(f.calls.map(call => call.command), [selected]);
   });
@@ -264,7 +269,7 @@ test.describe("Flat native archive qualification", () => {
   test("archive, receipt or tool mutation after listing fails before extraction", t => {
     for (const item of ["archive", "receipt", "tool"]) {
       const f = fixture(t); f.state.mutationAfterTf = item;
-      assert.throws(() => checkNativeRelease(f.entrypoint, "cpu", {platform: "linux", arch: "x64", audit: () => undefined,
+      assert.throws(() => checkNativeRelease(f.entrypoint, "cpu", {platform: f.candidate.target, arch: "x64", audit: () => undefined,
         archive: {path: f.archive, tool: f.tool}, spawn: f.spawn}), /changed during qualification/);
       assert.deepEqual(f.calls.map(call => call.args[2]), ["tf"]);
     }
@@ -272,7 +277,7 @@ test.describe("Flat native archive qualification", () => {
 
   test("archive mutation during the suite invalidates an otherwise passing vector summary", t => {
     const f = fixture(t); f.state.mutateArchive = true;
-    assert.throws(() => checkNativeRelease(f.entrypoint, "cpu", {platform: "linux", arch: "x64", audit: () => undefined,
+    assert.throws(() => checkNativeRelease(f.entrypoint, "cpu", {platform: f.candidate.target, arch: "x64", audit: () => undefined,
       archive: {path: f.archive, tool: f.tool}, spawn: f.spawn}), /file changed during qualification/);
     assert.equal(f.calls.some(call => call.command === process.execPath), true);
   });

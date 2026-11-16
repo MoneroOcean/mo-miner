@@ -5,7 +5,8 @@ const test = require("node:test"), assert = require("node:assert/strict");
 const {fileHash} = require("../scripts/build-source-inputs");
 const {isolateCoffCompilerArchives, verifyCoffArchive, auditCoffArchiveInputs} = require("../scripts/native-coff-archive");
 const {validateProducerReceipt, validateArchiveGraph, validateFreshOutput, validateStageAncestry, verifyRecordedArtifacts,
-  validateToolsManifest, validateRecipeRecord, readPinnedProducerResult, hashTools, inspectWindowsJitSdk} = require("../scripts/isolate-native-windows-jit");
+  validateToolsManifest, validateRecipeRecord, readPinnedProducerResult, hashTools, inspectWindowsJitSdk,
+  windowsJitIsolationHandoff} = require("../scripts/isolate-native-windows-jit");
 
 /** @param {Array<{name: string, data: Buffer}>} rows */
 function makeArchive(rows) {
@@ -341,7 +342,7 @@ test.describe("Windows source-JIT archive handoff", () => {
   test("accepts only the original completed Windows build-only producer receipt shape", _t => {
     const build = path.resolve(os.tmpdir(), "jit-build"), valid = {version: 1, kind: "original-source-jit-sdk", target: "windows", compiled: true,
       buildOnly: true, executed: false, publicationQualified: false, plan: {target: "windows", build, compile: []}, libraries: [], supportLibraries: [],
-      inputs: {[path.join(build, "sources.json")]: "a".repeat(64), "/absent/compiler-header.h": "b".repeat(64)},
+      inputs: {[path.join(build, "sources.json")]: "a".repeat(64), [path.join(os.tmpdir(), "absent", "compiler-header.h")]: "b".repeat(64)},
       recipe: {files: {}, graph: {"prior-checkout/recipe.js": "c".repeat(64)}}, proof: {}, sourcesFile: path.join(build, "sources.json"), resources: path.join(build, "resources")};
     assert.doesNotThrow(() => validateProducerReceipt(valid, build));
     for (const changed of [{target: "linux"}, {buildOnly: false}, {compiled: false}, {executed: true}, {publicationQualified: true}, {plan: {target: "linux", build, compile: []}}]) {
@@ -450,6 +451,26 @@ test.describe("Windows source-JIT archive handoff", () => {
     assert.equal(selected.inputHashes[fixture.missingHeader], "2".repeat(64));
     assert.doesNotThrow(() => validateFreshOutput(selected, fixture.toolsFile, path.join(fixture.root, "isolated")));
     assert.throws(() => validateFreshOutput(selected, fixture.toolsFile, path.join(fixture.sdkRoot, "isolated")), /overlaps/);
+  });
+
+  test("shared handoff preserves the inspected producer, tools and transformed archive identities", t => {
+    const f = completedSdkFixture(t), prior = inspectWindowsJitSdk(f.sdkRoot, f.resultSha256, f.toolsFile),
+      output = path.join(f.root, "isolated"); fs.mkdirSync(output);
+    const resultFile = path.join(output, "result.json"); fs.writeFileSync(resultFile, "fixture isolation\n");
+    const isolation = /** @type {ReturnType<typeof isolateCoffCompilerArchives>} */ (/** @type {unknown} */ ({
+        sourceHashes: {"source.js": "a".repeat(64)}, mapSha256: "b".repeat(64),
+        transformed: [{input: prior.archives[0], inputSha256: "c".repeat(64), output: path.join(output, "archive.lib"), sha256: "d".repeat(64)}],
+      })), handoff = windowsJitIsolationHandoff(prior, isolation, f.toolsFile, output);
+    assert.equal(handoff.kind, "windows-jit-archive-isolation-handoff");
+    assert.deepEqual(handoff.producer.result, {path: f.resultPath, sha256: f.resultSha256});
+    assert.deepEqual(handoff.producer.inputHashes, prior.inputHashes);
+    assert.deepEqual(handoff.producer.sourceRecipe, prior.result.recipe);
+    assert.deepEqual(handoff.tools.manifest, {path: f.toolsFile, sha256: fileHash(f.toolsFile)});
+    assert.equal(handoff.isolation.result.sha256, fileHash(resultFile));
+    assert.deepEqual(handoff.isolation.archives, [{input: prior.archives[0], inputSha256: "c".repeat(64),
+      output: path.join(output, "archive.lib"), outputSha256: "d".repeat(64)}]);
+    assert.equal(handoff.adapter.sha256, fileHash(require.resolve("../scripts/isolate-native-windows-jit")));
+    assert.equal(handoff.publicationQualified, false);
   });
 
   test("rejects receipt, source-recipe, archive, proof, and phase tampering", t => {

@@ -140,9 +140,11 @@ function main() {
   const cache = path.resolve(cacheArg);
   const output = path.resolve(outputArg);
   const portable = process.env["MOM_PORTABLE_BUILD"] === "1";
+  // The release descriptor selects Intel explicitly; do not rely on a parent's shell PATH.
+  const compiler = process.env["CXX"] || "icpx";
   const sourceState = nativeSourceInputs(repo, "cpu"), cacheReceiptSha256 = admitCpuCache(repo, cache, portable);
   fs.mkdirSync(output); // Refuse to overwrite evidence or an existing build directory.
-  const archiver = gpu ? selectCpuArchiver("icpx", path.join(output, "archiver.log")) : undefined;
+  const archiver = gpu ? selectCpuArchiver(compiler, path.join(output, "archiver.log")) : undefined;
   const makefile = fs.readFileSync(path.join(cache, "mom.target.mk"), "utf8").replace(/\\\r?\n/g, " ");
   /** @param {string} name */
   function variable(name) {
@@ -171,7 +173,7 @@ function main() {
   }
   // XMRig's unused application-level VirtualMemory::init references an omitted MemoryPool source.
   // Keep it in its own section so the final application can discard it, not invent a stub allocator.
-  const commands = cpuCompileCommands(repo, output, flags, gpu);
+  const commands = cpuCompileCommands(repo, output, flags, gpu, compiler);
   const compiled = compileCpuBatch(repo, output, commands, gpu);
   const compileFailures = [];
   for (const [index, command] of commands.entries()) {
@@ -189,7 +191,7 @@ function main() {
     "argon2_x86_avx512f", "randomx_blake2b_sse41", "randomx_blake2b_avx2"]
     .map((name) => path.join(cache, "Release", `${name}.a`));
   for (const name of ["libirc.a", ...(gpu ? ["libsvml.a"] : [])]) {
-    const runtime = run("icpx", [`-print-file-name=${name}`], path.join(output, `${name}.log`)).trim();
+    const runtime = run(compiler, [`-print-file-name=${name}`], path.join(output, `${name}.log`)).trim();
     if (!path.isAbsolute(runtime) || !fs.existsSync(runtime)) {throw new Error(`Static Intel CPU runtime is missing: ${name}`);}
     archives.push(runtime);
   }
@@ -206,7 +208,7 @@ function main() {
       // with its original compiler, preserving target attributes and COMDAT groups. Do not feed
       // vendor bitcode to an incompatible LLVM linker or flatten it into one relocatable object.
       const object = path.join(output, `cpu-${index}.o`);
-      run("icpx", ["-c", "-x", "ir", "-O3", "-fPIC", "-fno-lto", "-ffunction-sections", "-fdata-sections",
+      run(compiler, ["-c", "-x", "ir", "-O3", "-fPIC", "-fno-lto", "-ffunction-sections", "-fdata-sections",
         input, "-o", object], path.join(output, `cpu-${index}.log`));
       objects[index] = object;
       materialized.push({input, object});
@@ -225,7 +227,7 @@ function main() {
       verifyCpuArchiver(archiver);
     }
   } else {
-    run("icpx", ["-r", "-nostdlib", "-flto", "-fPIC", ...objects, ...archives, "-o", combined], path.join(output, "combine.log"));
+    run(compiler, ["-r", "-nostdlib", "-flto", "-fPIC", ...objects, ...archives, "-o", combined], path.join(output, "combine.log"));
   }
   verifySourceInputs(sourceState, nativeSourceInputs(repo, "cpu"), "Native Core");
   if (cacheReceiptSha256 !== admitCpuCache(repo, cache, portable)) {throw new Error("Engineering cache generation changed during native compilation");}

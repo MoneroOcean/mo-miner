@@ -10,6 +10,8 @@ const binding = fs.readFileSync(path.join(root, "binding.gyp"), "utf8");
 const coreSource = fs.readFileSync(path.join(root, "native/core.cpp"), "utf8");
 const gpuHeader = fs.readFileSync(path.join(root, "sycl/lib.h"), "utf8");
 const ethashSource = fs.readFileSync(path.join(root, "xmrig/3rdparty/libethash/ethash_internal.c"), "utf8");
+// Make graph fixtures are never compiled; keep the add-on hook synthetic because node-gyp may be under Program Files.
+const fixtureNodeGypDir = "node-gyp";
 const windowsSources = [
   "xmrig/crypto/common/VirtualMemory_win.cpp",
   "xmrig/backend/cpu/platform/BasicCpuInfo.cpp",
@@ -67,7 +69,7 @@ function generate(context, nativeCore, osName = "win") {
   const packageRoot = gypRoot(gyp);
   const args = [gyp, path.join(root, "binding.gyp"), "-f", "make", "--generator-output", output,
     "-Goutput_dir=.", `-DOS=${osName}`, "-Dtarget_arch=x64", `-Dmom_native_core=${nativeCore}`, "-Dmom_native_uv_include=/sdk/libuv/include", "-Dlibrary=shared_library",
-    "-Dvisibility=default", "-Dnode_root_dir=/tmp/node", `-Dnode_gyp_dir=${packageRoot}`,
+    "-Dvisibility=default", "-Dnode_root_dir=/tmp/node", `-Dnode_gyp_dir=${fixtureNodeGypDir}`,
     `-Dmodule_root_dir=${root}`, "-Dnode_engine=v8", "-Dnode_lib_file=/tmp/node/node.lib",
     "-Dstandalone_static_library=1", "-I", path.join(packageRoot, "addon.gypi"), `--depth=${root}`];
   const result = spawnSync(python, args, {cwd: root, encoding: "utf8", timeout: 30000, maxBuffer: 16 << 20});
@@ -140,9 +142,9 @@ function generateFakeMsvsProject(context, nodeDefaults = false, intel = false) {
 
 /** @param {string} makefile @returns {Set<string>} */
 function objectGraph(makefile) {
-  const body = makefile.match(/\nOBJS := \\\n([\s\S]*?)\n\n# Add/)?.[1];
+  const body = makefile.match(/\r?\nOBJS := \\\r?\n([\s\S]*?)\r?\n\r?\n# Add/)?.[1];
   assert.ok(body, "generated target must contain an object graph");
-  return new Set(body.split("\n").map((line) => line.trim().replace(/\\$/, "").trim())
+  return new Set(body.split(/\r?\n/).map((line) => line.trim().replace(/\\$/, "").trim())
     .filter((line) => line.startsWith("$(obj).target/$(TARGET)/") && !line.includes("win_delay_load_hook.o")));
 }
 
@@ -190,6 +192,14 @@ test.describe("Windows opt-in native Core GYP graph", () => {
     const baseline = generate(t, 0), native = generate(t, 1);
     if (!baseline || !native) {return;}
     assert.equal(semanticMakefile(native.mom), semanticMakefile(baseline.mom));
+  });
+
+  test("keeps the add-on delay-load hook on a relative fixture path", (t) => {
+    const baseline = generate(t, 0);
+    if (!baseline) {return;}
+    const makefile = baseline.mom.replace(/\\/g, "/");
+    assert.match(makefile, new RegExp(`${fixtureNodeGypDir}/src/win_delay_load_hook\\.o`));
+    assert.doesNotMatch(makefile, /node_modules\/node-gyp\/src\/win_delay_load_hook\.o/);
   });
 
   test("fails closed by leaving the default Core target without an archive", (t) => {
@@ -303,7 +313,7 @@ test.describe("Windows opt-in native Core GYP graph", () => {
     const fixture = "void _mm_prefetch(const char *, int);\n#define _MM_HINT_T0 0\n" + macro +
       "\nunion node { unsigned words[16]; };\nvoid check(const union node *p) { kp_prefetch(p); }\n";
     const result = spawnSync(compiler, ["-std=c11", "-Wall", "-Wextra", "-Werror", "-x", "c", "-fsyntax-only", "-"],
-      {input: fixture, encoding: "utf8", timeout: 10000, maxBuffer: 1 << 20});
+      {input: fixture, encoding: "utf8", timeout: process.platform === "win32" ? 30000 : 10000, maxBuffer: 1 << 20});
     assert.equal(result.status, 0, result.error?.message || result.stderr);
   });
 
@@ -321,15 +331,15 @@ test.describe("Windows opt-in native Core GYP graph", () => {
     ];
     for (const [defines, expected] of cases) {
       /** @type {import("node:child_process").SpawnSyncReturns<string>} */
-      const result = spawnSync(compiler, ["-E", "-dM", "-x", "c++", ...defines.map(name => "-D" + name), "-"], {
-        input: visibility, encoding: "utf8", timeout: 10000, maxBuffer: 1 << 20,
+      const result = spawnSync(compiler, ["-E", "-dM", "-x", "c++", "-U_WIN32", ...defines.map(name => "-D" + name), "-"], {
+        input: visibility, encoding: "utf8", timeout: process.platform === "win32" ? 30000 : 10000, maxBuffer: 1 << 20,
       });
-      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.status, 0, result.error?.message || result.stderr);
       assert.equal(result.stdout.match(/^#define MOM_SYCL_API([^\n]*)/m)?.[1]?.trim(), expected);
     }
   });
 
-  test("keeps Linux defaults on the Unix CPU condition", (t) => {
+  test("keeps Linux defaults on the Unix CPU condition", {skip: process.platform !== "linux"}, (t) => {
     const linux = generate(t, 0, "linux");
     if (!linux) {return;}
     const objects = objectGraph(linux.mom);

@@ -2,15 +2,17 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const os = require("node:os");
 const path = require("node:path");
-const {composeWindowsApplicationConfig} = require("../scripts/native-windows-application-config");
+const {composeWindowsApplicationConfig, composeWindowsApplicationDescriptor} = require("../scripts/native-windows-application-config");
 
-const runAttempt = "42-1", sha = "a".repeat(64), at = (/** @type {string} */ root, /** @type {string} */ file) => path.join(root, file);
+const runAttempt = "42-1", sha = "a".repeat(64), fixtureRoot = path.join(os.tmpdir(), "native-windows-controller-" + runAttempt),
+  at = (/** @type {string} */ root, /** @type {string} */ file) => path.join(root, file);
 
 /** Reader-result fixtures; malformed cases intentionally mutate this shape. @returns {any} */
 function inputs() {
-  const ioRoot = "/tmp/native-windows-controller-io-" + runAttempt, hermesRoot = "/tmp/native-windows-controller-hermes-" + runAttempt,
-    sdkRoot = "/tmp/windows-host-sdk-" + runAttempt, intelRoot = at(hermesRoot, "intel-runtime/lib"),
+  const ioRoot = at(fixtureRoot, "io"), hermesRoot = at(fixtureRoot, "hermes"),
+    sdkRoot = at(fixtureRoot, "windows-host-sdk"), intelRoot = at(hermesRoot, "intel-runtime/lib"),
     intelLibraries = Object.fromEntries(["libircmt.lib", "libirc.lib", "libmmt.lib", "svml_dispmt.lib", "libdecimal.lib"]
       .map(name => [name, at(intelRoot, name)])), hermesBuild = at(hermesRoot, "hermes/build");
   return {
@@ -44,6 +46,39 @@ function application() {
 }
 
 test.describe("Windows full-controller descriptor composer", () => {
+  test("local reader results compose the same descriptor without fabricated CI identity", () => {
+    const ci = inputs(), local = structuredClone(ci);
+    delete local.runAttempt;
+    local.io = {libraries: local.io.libraries};
+    local.hermes = {hermes: local.hermes.hermes, intelRuntime: local.hermes.intelRuntime};
+    assert.deepEqual(composeWindowsApplicationDescriptor(local), composeWindowsApplicationConfig(ci));
+    assert.throws(() => composeWindowsApplicationConfig(local), /input is incomplete/);
+    assert.throws(() => composeWindowsApplicationDescriptor(ci), /unexpected shape/);
+  });
+
+  test("CI transport identity remains explicit and cannot be inherited or omitted", () => {
+    const selected = inputs();
+    delete selected.runAttempt;
+    Object.setPrototypeOf(selected, {runAttempt});
+    assert.throws(() => composeWindowsApplicationConfig(selected), /input is incomplete/);
+    selected.runAttempt = runAttempt;
+    delete selected.io.handoffSha256;
+    assert.throws(() => composeWindowsApplicationConfig(selected), /same-run admitted io handoff/);
+  });
+
+  test("local composition retains tool, Intel runtime, import and application guards", () => {
+    for (const mutate of [
+      (/** @type {any} */ row) => {delete row.allowedImports;},
+      (/** @type {any} */ row) => {row.allowedImports = ["unreviewed-runtime.dll"];},
+      (/** @type {any} */ row) => {row.llvmDescriptor.windowsSdk.libraryRoots.pop();},
+      (/** @type {any} */ row) => {row.hermesAot.files = {};},
+      (/** @type {any} */ row) => {row.application = {core: "/app/core.lib"};},
+    ]) {
+      const selected = inputs(); delete selected.runAttempt; mutate(selected);
+      assert.throws(() => composeWindowsApplicationDescriptor(selected));
+    }
+  });
+
   test("preserves the admitted LLVM arrays and composes same-run IO/Hermes values", () => {
     const selected = inputs(), original = structuredClone(selected.llvmDescriptor), config = composeWindowsApplicationConfig(selected);
     assert.deepEqual(config.tools, {...original.tools, ...selected.tools});

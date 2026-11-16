@@ -96,6 +96,58 @@ test.describe("Release archive contracts", {concurrency: false}, () => {
     return fs.readdirSync(directory).filter(name => name.startsWith(".mom-archive."));
   }
 
+  test("Engineering Mode splits Windows compile lanes and revalidates same-run artifact hashes", () => {
+    const workflow = fs.readFileSync(path.join(repo, ".github/workflows/test-engineering.yml"), "utf8");
+    const linux = workflowJob(workflow, "hashing-linux");
+    const cpu = workflowJob(workflow, "windows-cpu");
+    const portable = workflowJob(workflow, "windows-portable-runtime");
+    const consumer = workflowJob(workflow, "windows-engineering");
+    for (const env of [
+      'MOM_BUILD_JOBS: "2"', 'MOM_PORTABLE_BUILD: "1"', 'MOM_DEV_HOST: "1"',
+      "MOM_GPU_BACKEND: opencl", "MOM_OPENCL_DEVICE_TYPE: cpu", "ONEAPI_DEVICE_SELECTOR: opencl:cpu",
+      'MOM_REQUIRE_PORTABLE_CPU_TESTS: "1"', 'MOM_TEST_NO_POOL_NETWORK: "1"', 'MOM_SKIP_MSR: "1"',
+    ]) {assert.ok(workflow.includes(env), `Engineering environment lost ${env}`);}
+    assert.match(linux, /npm run dev -- node tests\/run_hash\.js engineering/);
+    assert.match(cpu, /timeout-minutes: 60/);
+    assert.match(cpu, /install-dev\.ps1 -Component base,node,oneapi -Jobs 2/);
+    assert.match(cpu, /build-windows-multicompiler\.ps1 -Scope cpu/);
+    assert.match(cpu, /artifact_id: \$\{\{ steps\.upload\.outputs\.artifact-id \}\}/);
+    assert.match(cpu, /id: upload\n\s+uses: actions\/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7/);
+    assert.match(cpu, /name: mom\.node\n\s+path: build\/win\/Release\/mom\.node/);
+    assert.match(cpu, /node_sha256: \$\{\{ steps\.seal\.outputs\.node_sha256 \}\}/);
+    assert.doesNotMatch(cpu, /artifact_name|steps\.seal\.outputs\.artifact_name/);
+    assert.match(portable, /timeout-minutes: 60/);
+    assert.match(portable, /install-dev\.ps1 -Component base,node,dpcpp -Jobs 2/);
+    assert.match(portable, /build-windows-multicompiler\.ps1 -Scope portable/);
+    assert.match(portable, /mom\.node/);
+    assert.match(portable, /Compress-Archive -Path/);
+    assert.match(portable, /artifact_id: \$\{\{ steps\.upload\.outputs\.artifact-id \}\}/);
+    assert.match(portable, /id: upload\n\s+uses: actions\/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7/);
+    assert.match(portable, /name: engineering-dpcpp-opencl\.zip\n\s+path: \$\{\{ runner\.temp \}\}\/engineering-dpcpp-opencl\.zip/);
+    assert.match(portable, /runtime_sha256: \$\{\{ steps\.seal\.outputs\.runtime_sha256 \}\}/);
+    assert.doesNotMatch(portable, /artifact_name|steps\.seal\.outputs\.artifact_name/);
+    assert.match(consumer, /needs: \[windows-cpu, windows-portable-runtime\]/);
+    assert.match(consumer, /MOM_NATIVE_DIR: \$\{\{ github\.workspace \}\}\/build\/win\/compilers/);
+    assert.match(consumer, /actions\/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8/);
+    assert.match(workflow, /actions\/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7/);
+    assert.match(consumer, /artifact-ids: \$\{\{ needs\.windows-cpu\.outputs\.artifact_id \}\}/);
+    assert.match(consumer, /artifact-ids: \$\{\{ needs\.windows-portable-runtime\.outputs\.artifact_id \}\}/);
+    assert.equal((consumer.match(/skip-decompress: true/g) || []).length, 2,
+      "raw artifacts must remain intact for producer hash verification");
+    assert.doesNotMatch(consumer, /name: \$\{\{ needs\.windows-(?:cpu|portable-runtime)\.outputs\.artifact_name \}\}/);
+    assert.match(consumer, /engineering-windows\/cpu\/mom\.node/);
+    assert.match(consumer, /engineering-windows\/portable\/engineering-dpcpp-opencl\.zip/);
+    assert.match(consumer, /CPU_NODE_SHA256: \$\{\{ needs\.windows-cpu\.outputs\.node_sha256 \}\}/);
+    assert.match(consumer, /PORTABLE_RUNTIME_SHA256: \$\{\{ needs\.windows-portable-runtime\.outputs\.runtime_sha256 \}\}/);
+    assert.match(consumer, /Downloaded CPU addon SHA-256 mismatch/);
+    assert.match(consumer, /Downloaded portable runtime SHA-256 mismatch/);
+    assert.match(consumer, /Copy-Item -LiteralPath \$cpuNode -Destination \(Join-Path \$portableDir 'mom\.node'\)/);
+    assert.match(consumer, /node tests\/run_hash\.js engineering/);
+    assert.doesNotMatch(consumer, /npm run dev/);
+    assert.doesNotMatch(workflow, /actions\/cache(?:\/restore)?@/);
+    assert.doesNotMatch(workflow, /QEMU|runs-on: [^\n]*pool/);
+  });
+
   /** @param {string} source @param {string} jobId @returns {string} */
   function workflowJob(source, jobId) {
     const lines = source.split(/\r?\n/);
@@ -506,6 +558,29 @@ ConvertTo-Json -InputObject $results -Compress
       sourceQuality = workflowJob(source, "source-quality"), windowsQuality = workflowJob(source, "windows-script-quality"),
       native = workflowJob(source, "build-native-prerequisites"), linux = workflowJob(source, "package-linux"),
       windows = workflowJob(source, "package-windows");
+    const engineering = workflowJob(source, "engineering-hash");
+    assert.match(engineering, /uses: \.\/\.github\/workflows\/test-engineering\.yml/);
+    assert.doesNotMatch(engineering, /needs:/, "Engineering hashing starts without waiting for the standalone SDK chain");
+    assert.doesNotMatch(native, /engineering-hash/, "Engineering qualification must not delay native compilation");
+    const engineeringWorkflow = fs.readFileSync(path.join(repo, ".github/workflows/test-engineering.yml"), "utf8");
+    assert.match(engineeringWorkflow, /runs-on: ubuntu-24\.04/);
+    assert.match(engineeringWorkflow, /runs-on: windows-2022/);
+    assert.match(engineeringWorkflow, /timeout-minutes: 60/);
+    assert.match(engineeringWorkflow, /MOM_REQUIRE_PORTABLE_CPU_TESTS: "1"/);
+    assert.match(engineeringWorkflow, /MOM_TEST_NO_POOL_NETWORK: "1"/);
+    assert.match(engineeringWorkflow, /install-dev\.sh --component base,node,oneapi,dpcpp --jobs 2/);
+    assert.match(engineeringWorkflow, /install-dev\.ps1 -Component base,node,oneapi -Jobs 2/);
+    assert.match(engineeringWorkflow, /install-dev\.ps1 -Component base,node,dpcpp -Jobs 2/);
+    assert.match(engineeringWorkflow, /install-dev\.ps1 -Component base,node,opencl-cpu -Jobs 2/);
+    assert.match(engineeringWorkflow, /bash scripts\/install-opencl-cpu\.sh/);
+    assert.match(engineeringWorkflow, /run-bounded-native-ci\.sh npm run dev -- node tests\/run_hash\.js engineering/);
+    assert.equal((engineeringWorkflow.match(/npm run dev -- node tests\/run_hash\.js engineering/g) || []).length, 1);
+    assert.match(engineeringWorkflow, /build-windows-multicompiler\.ps1 -Scope cpu/);
+    assert.match(engineeringWorkflow, /build-windows-multicompiler\.ps1 -Scope portable/);
+    assert.match(engineeringWorkflow, /node tests\/run_hash\.js engineering/);
+    assert.doesNotMatch(engineeringWorkflow, /actions\/cache|build:release|build-native-prerequisites|MOM_TEST_EXECUTABLE|qemu/i);
+    const hashRunner = fs.readFileSync(path.join(repo, "tests/run_hash.js"), "utf8");
+    assert.match(hashRunner, /engineering: \["tests\/cpu\.js", \.\.\.addonSuite, "tests\/portable_gpu_cpu\.js"\]/);
     assert.match(sourceQuality, /run: npm test -- host/);
     assert.match(windowsQuality, /test-powershell-syntax\.ps1/);
     assert.match(windowsQuality, /node tests\/run_hash\.js logic/);
@@ -518,7 +593,7 @@ ConvertTo-Json -InputObject $results -Compress
     const publishJob = workflowJob(publish, "publish");
     assert.match(publishJob, /permissions:\n {6}contents: write/);
     assert.doesNotMatch(publishJob, /actions: write/);
-    assert.match(native, /needs:\s*\n\s*- source-quality\s*\n\s*- windows-script-quality/);
+    assert.doesNotMatch(native, /needs:/, "cold native compilation overlaps independent source checks");
     assert.match(native, /uses: \.\/\.github\/workflows\/build-native-prerequisites\.yml/);
     assert.equal((source.match(/uses: \.\/\.github\/workflows\/build-native-prerequisites\.yml/g) || []).length, 1,
       "both platforms must share one complete native reusable-workflow call");
@@ -527,7 +602,7 @@ ConvertTo-Json -InputObject $results -Compress
       [windows, "windows", ["packing_bundle_sha256", "raw_executable_sha256", "application_build_bundle_sha256", "application_handoff_sha256"]],
     ]);
     for (const [job, platform, pins] of packageMappings) {
-      assert.match(job, /needs: build-native-prerequisites/);
+      assert.match(job, /needs: \[build-native-prerequisites, engineering-hash, source-quality, windows-script-quality\]/);
       assert.match(job, /uses: \.\/\.github\/workflows\/package-native-application\.yml/);
       assert.match(job, new RegExp(`platform: ${platform === "linux" ? "linux" : "win32"}`));
       for (const pin of pins) {
@@ -543,7 +618,10 @@ ConvertTo-Json -InputObject $results -Compress
     assert.doesNotMatch(source, /upload_artifacts|actions\/cache|dev-container\.sh|npm run build:release|warm-linux-toolchains|package-linux-x64|warm-windows-acpp|package-windows-x64|mom\.node|node-addon-api/i);
     assert.doesNotMatch(publish, /upload_artifacts|name: mom-(?:lin|win)\b/);
     assert.match(stability, /^on:\n {2}pull_request:\n {2}push:\n {4}branches:\n {6}- master\n {2}workflow_dispatch:/m);
-    assert.match(stability, /group: stability-\$\{\{ github\.ref \}\}\n {2}cancel-in-progress: false/);
+    assert.match(stability, /group: stability-\$\{\{ github\.ref \}\}-\$\{\{ github\.sha \}\}\n {2}cancel-in-progress: false/,
+      "different commits can qualify concurrently while same-commit retries stay serialized");
+    assert.match(publish, /group: release-\$\{\{ github\.ref \}\}\n {2}cancel-in-progress: false/,
+      "publishing the same release ref remains serialized");
     assert.doesNotMatch(stability, /upload_artifacts|warm-linux-toolchains|AdaptiveCpp seed.*cache/i);
     assert.doesNotMatch(source, /^ {2}(?:warm-linux-toolchains|package-linux-x64|warm-windows-acpp-cuda|warm-windows-acpp-hip|package-windows-x64):/m);
   });

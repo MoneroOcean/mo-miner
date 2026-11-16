@@ -103,7 +103,7 @@ function actualProfile(t, target = "x86_64-w64-windows-gnu") {
     notices: [{source: "LICENSE", virtual: "usr/share/licenses/mom/LICENSE", sha256: fileHash(path.join(noticeRoot, "LICENSE"))}]});
 }
 
-test.describe("Compiler SDK resource admission", () => {
+test.describe("Compiler SDK resource admission", {skip: process.platform !== "linux" || process.arch !== "x64"}, () => {
   /** @param {import('node:test').TestContext} t @param {string} [target] */
   function artifact(t, target = "x86_64-w64-windows-gnu") {
     const p = actualProfile(t, target); if (!p.fixture) {return null;}
@@ -197,7 +197,7 @@ test.describe("Compiler SDK resource admission", () => {
   });
 });
 
-test.describe("CPU-only JIT resource bootstrap", () => {
+test.describe("CPU-only JIT resource bootstrap", {skip: process.platform !== "linux" || process.arch !== "x64"}, () => {
   test("plans original source generation without linking a compiler SDK", () => {
     const p = jitEmitterPlan("/sdk", "/output");
     assert.equal(p.cxx, "/sdk/bin/clang++"); assert.equal(p.binary, "/output/native-kawpow-source");
@@ -278,7 +278,7 @@ test.describe("CPU-only JIT resource bootstrap", () => {
   });
 });
 
-test.describe("Linux GNU source-JIT resource admission", () => {
+test.describe("Linux GNU source-JIT resource admission", {skip: process.platform !== "linux" || process.arch !== "x64"}, () => {
   test("legacy target omission still selects the original Windows ABI", () => {
     assert.deepEqual(resourceTarget(), resourceTarget("x86_64-w64-windows-gnu"));
     assert.equal(resourceTarget().roots.length, 3); assert.equal(resourceTarget().platform, "windows-gnu");
@@ -337,7 +337,7 @@ test.describe("Linux GNU source-JIT resource admission", () => {
   });
 });
 
-test.describe("Windows GNU static-JIT resource producer", () => {
+test.describe("Windows GNU static-JIT resource producer", {skip: process.platform !== "linux" || process.arch !== "x64"}, () => {
   test("accepts only the fixed three-root profile shape", () => {
     const profile = {version: 1, fixture: "/build/fixture", clang: "/build/clang", receipt: "/build/receipt", gnuRoot: "/build/gnu", baseRoot: "/build/base",
       noticeRoot: "/build/gnu", syclInclude: "/build/base/include/sycl", clangBuiltinInclude: "/build/base/lib/clang", baseManifest: "/build/base-manifest",

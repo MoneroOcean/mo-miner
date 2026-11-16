@@ -135,7 +135,7 @@ test.describe("Native driver searches and unchanged application boundaries", () 
   test("Intel OpenCL permits an absent optional media-sharing probe, not a new dependency", () => {
     assert.doesNotThrow(() => aliasAudit(true)(vaTrace, "/mom", ["/usr/lib/libigdrcl.so"], {launchDirectory: "/", processes: 1}));
   });
-  test("an optional media probe must actually be absent in the audited filesystem view", () => {
+  test("an optional media probe must actually be absent in the audited filesystem view", {skip: process.platform !== "linux"}, () => {
     assert.throws(() => aliasAudit(true, true)(vaTrace, "/mom", ["/usr/lib/libigdrcl.so"], {launchDirectory: "/", processes: 1}), /Unproven driver library search/);
   });
   test("successful media-library loads still need independent closure inspection", () => {

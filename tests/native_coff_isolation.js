@@ -263,7 +263,8 @@ test.describe("Maintained Windows COFF graph isolation", {skip: toolchainSkip}, 
     const unknown = path.join(selected.directory, "unknown.obj"); fs.writeFileSync(unknown, "not a COFF object\n", {flag: "wx"});
     assert.throws(() => isolateCoffObjects({...base, output: invalidOutput, objects: [unknown, second]}), /COFF input 0 readobj failed|unknown COFF|Unresolved COFF/);
     assert.equal(fs.existsSync(invalidOutput), false);
-    assert.throws(() => isolateCoffObjects({...base, output: invalidOutput, tools: {...base.tools, llvmObjcopy: "/bin/sh"}}), /not an LLVM tool|version failed/);
+    const nonLlvmTool = process.platform === "win32" ? process.execPath : "/bin/sh";
+    assert.throws(() => isolateCoffObjects({...base, output: invalidOutput, tools: {...base.tools, llvmObjcopy: nonLlvmTool}}), /not an LLVM tool|version failed/);
     assert.equal(fs.existsSync(invalidOutput), false);
   });
 

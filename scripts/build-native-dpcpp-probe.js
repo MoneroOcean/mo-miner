@@ -12,14 +12,21 @@ const {isolateGpuObjects} = require("./native-gpu-table");
 const {compileNativeObjects} = require("./native-object-cache");
 
 const oneapiMixedFrontendSources = Object.freeze([
-  "sycl/c29/c29.cpp", "sycl/c30/c30.cpp", "sycl/nexapow/nexapow.cpp",
+  "sycl/beamhash3/beamhash3.cpp", "sycl/c29/c29.cpp", "sycl/c30/c30.cpp", "sycl/etchash/etchash.cpp",
+  "sycl/kawpow/kawpow.cpp", "sycl/nexapow/nexapow.cpp", "sycl/nexapow/validation.cpp", "sycl/octopus/octopus.cpp", "sycl/pearlhash/pearlhash.cpp",
+  "sycl/xelishashv3/xelishashv3.cpp", "sycl/zelhash/zelhash.cpp",
 ]);
 const oneapiCompileHelpers = Object.freeze(["clang", "clang-offload-bundler", "sycl-post-link", "llvm-spirv", "clang-offload-wrapper",
   "clang-linker-wrapper", "llvm-link", "llvm-foreach", "llc"]);
 const oneapiCompilerEnv = "MOM_AOT_ONEAPI_CXX";
 
-/** This supported mixed frontend uses Intel's bundled SYCL headers for three qualified TUs;
+/** This supported mixed frontend uses Intel's bundled SYCL headers for qualified TUs;
  * other TUs, device linking, and the later static runtime remain on the selected DPC++ SDK.
+ * On DG2, matched vectors/generation checks fail with the nightly frontend but pass with
+ * Intel, including against the old shared runtime. Nexa's separate SHA-49 validation TU
+ * needs the same selection as its main TU. Xelis ESIMD also needs Intel's original
+ * wide-product lowering. Keep compiler workarounds here, not in consensus
+ * arithmetic or GPU-name-specific kernel branches.
  * @param {NodeJS.ProcessEnv} env @param {string} profile */
 function oneapiCompilerPath(env, profile) {
   const value = env[oneapiCompilerEnv];

@@ -13,6 +13,12 @@ const {nativeSdkEnvironment} = require("./build-environment");
 const {isStaticArchive} = require("./native-audit");
 const {isDeepStrictEqual} = require("node:util");
 const repo = path.resolve(__dirname, "..");
+const recipeFiles = [...new Set([...jitSourceInputs, "scripts/build-native-jit-sdk.js", "scripts/native-jit-sdk.js", "scripts/native-jit-stages.js", "scripts/prepare-native-sdk-sources.js",
+  "scripts/prepare-native-sycl-jit-resources.js", "scripts/build-source-inputs.js", "scripts/build-environment.js", "scripts/native-compiler-isolation.js", "scripts/native-audit.js",
+  "scripts/prepare-native-jit-toolchain.js", "runtime/driver-library.cpp"])];
+
+/** The producer and read-only cache admission must use the same maintained source footprint. */
+function jitSdkRecipe() {return sourceInputs(repo, [], recipeFiles);}
 /** @typedef {{version: number, target: 'linux'|'windows', sources: string, sdk: string, resources: string,
  * tools: import('./native-jit-sdk').Tools, jobs: number, inputs?: string[]}} Config */
 /** @param {unknown} p @returns {p is string} */
@@ -212,10 +218,7 @@ async function buildJitSdk(value, output, environment = process.env, stage = "al
   const env = nativeSdkEnvironment(environment);
   for (const key of ["CPATH", "CPLUS_INCLUDE_PATH", "C_INCLUDE_PATH", "INCLUDE", "LIB", "LIBRARY_PATH"]) {delete env[key];}
   const cc = plan.compilerIdentity.host.cc, cxx = plan.compilerIdentity.host.cxx, embeddedJit23 = plan.compilerIdentity.embeddedJit23;
-  const leaves = [...new Set([...jitSourceInputs, "scripts/build-native-jit-sdk.js", "scripts/native-jit-sdk.js", "scripts/native-jit-stages.js", "scripts/prepare-native-sdk-sources.js",
-    "scripts/prepare-native-sycl-jit-resources.js", "scripts/build-source-inputs.js", "scripts/build-environment.js", "scripts/native-compiler-isolation.js", "scripts/native-audit.js",
-    "scripts/prepare-native-jit-toolchain.js", "runtime/driver-library.cpp"])];
-  const recipe = sourceInputs(repo, [], leaves);
+  const recipe = jitSdkRecipe();
   const initial = buildFileInputs([sourcesFile, cc, cxx, embeddedJit23, c.tools.cmake, c.tools.ninja, process.execPath, ...Object.keys(resources.inputs),
     ...(c.inputs || []), ...(c.tools.toolchain ? [c.tools.toolchain] : [])]);
   const supportLibraries = jitSupportLibraries(c, initial);
@@ -264,7 +267,7 @@ async function buildJitSdk(value, output, environment = process.env, stage = "al
       commandsSha256: fileHash(path.join(selectedOutput, "commands.log")), libraries, supportLibraries, inputs: {...initial, ...configuredTools}, outputs: jitBuildOutputs(plan.build), buildOnly: true};
     if (!isDeepStrictEqual(result.inputs, buildFileInputs(Object.keys(result.inputs)))) {throw new Error("Compiler SDK configure inputs changed");}
     verifyPreparedSdkSources(sourcesFile, "compiler"); verifyJitResources(resources.directory, resources.target);
-    verifySourceInputs(recipe, sourceInputs(repo, [], leaves), "Compiler SDK producer");
+    verifySourceInputs(recipe, jitSdkRecipe(), "Compiler SDK producer");
     write(stageFile, result); return result;
   }
   const previous = jitBuildStages.indexOf(stage) - 1, previousStage = previous < 0 ? "configure" : jitBuildStages[previous];
@@ -295,7 +298,7 @@ async function buildJitSdk(value, output, environment = process.env, stage = "al
   for (const [file, hash] of Object.entries(prior.inputs)) {if (inputs[file] !== hash) {throw new Error("Compiler SDK input changed during compilation: " + file);}}
   for (const file of external) {if (!Object.hasOwn(prior.inputs, file) && fs.statSync(file).ctimeMs > startedAt) {throw new Error("Discovered compiler dependency changed during compilation: " + file);}}
   verifyPreparedSdkSources(sourcesFile, "compiler"); verifyJitResources(resources.directory, resources.target);
-  verifySourceInputs(recipe, sourceInputs(repo, [], leaves), "Compiler SDK producer");
+  verifySourceInputs(recipe, jitSdkRecipe(), "Compiler SDK producer");
   const handoff = {version: 1, stage, beforeSha256, previousSha256: fileHash(previousFile), configuredSha256: prior.configuredSha256,
     commandsSha256: prior.commandsSha256, libraries, supportLibraries, inputs, outputs: jitBuildOutputs(plan.build), buildOnly: true};
   write(stageFile, handoff);
@@ -311,7 +314,7 @@ async function buildJitSdk(value, output, environment = process.env, stage = "al
   return result;
 }
 
-module.exports = {jitSdkConfig, jitDependencyFiles, jitConfiguredTools, jitConfiguredCompilerFiles, jitConfiguredCompilers, jitCompilerIdentities,
+module.exports = {jitSdkRecipe, jitSdkConfig, jitDependencyFiles, jitConfiguredTools, jitConfiguredCompilerFiles, jitConfiguredCompilers, jitCompilerIdentities,
   jitSupportLibraries, buildJitSdk};
 if (require.main === module) {
   const [config, output, stage, extra] = process.argv.slice(2);

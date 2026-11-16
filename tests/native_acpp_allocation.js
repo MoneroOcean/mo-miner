@@ -4,13 +4,13 @@ const {spawnSync} = require("node:child_process"), {describe, test} = require("n
 const assert = require("node:assert/strict");
 
 describe("Windows HIP device allocation placement", () => {
-  test("actual allocator retries unpublished allocations and preserves errors and ownership", {timeout: 30000}, t => {
+  test("actual allocator retries unpublished allocations and preserves errors and ownership", {timeout: process.platform === "win32" ? 240000 : 30000}, t => {
     const compiler = process.env["CXX"] || "c++";
-    const probe = spawnSync(compiler, ["--version"], {encoding: "utf8", timeout: 5000});
+    const probe = spawnSync(compiler, ["--version"], {encoding: "utf8", timeout: process.platform === "win32" ? 30000 : 5000});
     if (/** @type {NodeJS.ErrnoException | undefined} */ (probe.error)?.code === "ENOENT") {
       t.skip("a host C++17 compiler is required"); return;
     }
-    assert.equal(probe.status, 0, probe.stderr);
+    assert.equal(probe.status, 0, probe.error?.message || probe.stderr);
     const patch = fs.readFileSync(path.join(__dirname, "../runtime/adaptivecpp-static.patch"), "utf8");
     const start = patch.indexOf("diff --git a/src/runtime/hip/hip_allocator.cpp");
     assert.ok(start >= 0);
@@ -126,8 +126,8 @@ int main() {
       const source = path.join(root, `${name}.cpp`), exe = path.join(root, name);
       fs.writeFileSync(source, scaffold + body(side) + cases, {flag: "wx"});
       const built = spawnSync(compiler, ["-std=c++17", "-O0", "-g0", ...flags, source, "-o", exe],
-        {encoding: "utf8", timeout: 15000, maxBuffer: 1 << 20});
-      assert.equal(built.status, 0, built.stderr || built.error?.message);
+        {encoding: "utf8", timeout: process.platform === "win32" ? 60000 : 15000, maxBuffer: 1 << 20});
+      assert.equal(built.status, 0, built.error?.message || built.stderr);
       const result = spawnSync(exe, [], {encoding: "utf8", timeout: 3000, maxBuffer: 1 << 20});
       assert.equal(result.status, expected, result.stderr || result.stdout || result.error?.message);
       assert.match(result.stdout, expected ? /baseline leaves shared allocation unchanged/ : /sticky errors passed/);

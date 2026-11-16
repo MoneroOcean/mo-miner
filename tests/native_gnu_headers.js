@@ -6,7 +6,9 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const {spawnSync} = require("node:child_process");
-const {prepareLinuxGnuHeaders, verifyLinuxGnuHeaders, prepareWindowsGnuHeaders, verifyWindowsGnuHeaders, prepareGnuHeaders, virtualHeader} = require("../scripts/prepare-native-gnu-headers");
+const {createHash} = require("node:crypto");
+const {prepareLinuxGnuHeaders, verifyLinuxGnuHeaders, prepareWindowsGnuHeaders, verifyWindowsGnuHeaders, prepareGnuHeaders, virtualHeader,
+  buildGnuHeaderHandoff} = require("../scripts/prepare-native-gnu-headers");
 
 const packageNames = ["libstdc++-13-dev", "libc6-dev", "linux-libc-dev"];
 const windowsPackageNames = ["mingw-w64-common", "mingw-w64-x86-64-dev", "g++-mingw-w64-x86-64-posix"];
@@ -98,7 +100,7 @@ function useMalformedVersion(records) {if (records[2]) {records[2].version = "..
 /** @param {FixturePackage[]} records */
 function removePackage(records) {records.pop();}
 
-test.describe("Pinned GNU header producer fixtures", {concurrency: false}, () => {
+test.describe("Pinned GNU header producer fixtures", {concurrency: false, skip: process.platform !== "linux" || process.arch !== "x64"}, () => {
   test("ignores dpkg's root-directory marker without normalizing other package paths", context => {
     const selected = fixture(context);
     addRequiredRoots(selected);
@@ -128,6 +130,26 @@ test.describe("Pinned GNU header producer fixtures", {concurrency: false}, () =>
     assert.deepEqual(verifyLinuxGnuHeaders(selected.output), result);
     assert.equal(fs.readFileSync(path.join(selected.output, "include/mom-system/linux/if.h"), "utf8"),
       "linux/if.h");
+  });
+
+  test("builds the shared header-plus-copyright handoff and preserves its public receipt shapes", context => {
+    const selected = fixture(context); addRequiredRoots(selected);
+    /** @param {{root:string}} state @param {string} name @param {string} version */
+    const captureCopyright = (state, name, version) => {
+      const sourcePath = "/usr/share/doc/" + name + "/copyright", file = path.join(state.root, "licenses", name, "copyright");
+      fs.mkdirSync(path.dirname(file), {recursive: true}); fs.writeFileSync(file, name + " copyright fixture\n", {flag: "wx"});
+      const bytes = fs.readFileSync(file);
+      return {package: name, version, sourcePath, path: file, sha256: createHash("sha256").update(bytes).digest("hex")};
+    };
+    const result = buildGnuHeaderHandoff({root: selected.output, target: "x86_64-unknown-linux-gnu"}, "x86_64-unknown-linux-gnu",
+      {includeRoot: selected.include, packageRecords: selected.records, captureCopyright});
+    assert.deepEqual(result.headers, verifyLinuxGnuHeaders(selected.output));
+    assert.equal(result.headers.files.length, 5);
+    assert.deepEqual(result.notices.map(row => row.package), packageNames);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(selected.output, "result.json"), "utf8")).target, "x86_64-unknown-linux-gnu");
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(selected.output, "copyrights.json"), "utf8")), result.notices);
+    assert.throws(() => buildGnuHeaderHandoff({root: selected.output}, "x86_64-unknown-linux-gnu",
+      {includeRoot: selected.include, packageRecords: selected.records, captureCopyright}), /canonical, separate and newly staged/);
   });
 
   test("ignores package-list paths outside the selected include root", context => {
@@ -347,7 +369,7 @@ test.describe("Pinned Windows MinGW GNU header fixtures", {concurrency: false}, 
 
 test.describe("GNU header target and CLI guards", {concurrency: false}, () => {
   test("fails closed for inherited profile keys", () => {
-    assert.throws(() => prepareGnuHeaders("constructor", "/unused", []), /Unsupported GNU header target/);
+    assert.throws(() => prepareGnuHeaders("constructor", "/unused", [], {sysroot: path.parse(process.cwd()).root}), /Unsupported GNU header target/);
   });
 
   test("CLI rejects extra positional arguments", {skip: process.platform !== "linux"}, () => {

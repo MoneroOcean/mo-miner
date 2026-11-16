@@ -104,7 +104,7 @@ function sdkSourceEnvironment(environment) {
 function nativeSdkEnvironment(environment) {
   const env = sdkSourceEnvironment(environment);
   for (const key of Object.keys(env)) {
-    if (/^(?:CMAKE_.*|CC|CXX|CFLAGS|CXXFLAGS|CPPFLAGS|LDFLAGS|CL|_CL_|LINK|_LINK_|PYTHONPATH|PYTHONHOME|BASH_ENV|ENV|LD_PRELOAD|DYLD_INSERT_LIBRARIES)$/i.test(key)) {delete env[key];}
+    if (/^(?:CMAKE_.*|CC|CXX|CFLAGS|CXXFLAGS|CPPFLAGS|LDFLAGS|CL|_CL_|LINK|_LINK_|PYTHONPATH|PYTHONHOME|BASH_ENV|BASH_FUNC_.*|ENV|LD_PRELOAD|DYLD_INSERT_LIBRARIES)$/i.test(key)) {delete env[key];}
   }
   return env;
 }

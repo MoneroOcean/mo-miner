@@ -825,6 +825,7 @@ test.describe("Native GPU source profiles", () => {
     for (const backend of ["", "auto", "hip-cuda", "cuda-hip-hip", "cuda,hip", "cuda-hip ", "cuda-hip-opencl"]) {
       assert.throws(() => gpuProfile(backend), /explicit cuda, hip or cuda-hip/);
     }
+    if (process.platform !== "linux") {return;} // The executable producer is Linux-only.
     const result = spawnSync(process.execPath, [path.join(__dirname, "../scripts/build-native-gpu-probe.js"),
       "/unavailable/source", "/unavailable/build", "/unavailable/output"], {encoding: "utf8", timeout: 5000,
       env: {...process.env, MOM_AOT_SYCL_BACKEND: "auto", PATH: "/unavailable"}});
@@ -864,18 +865,18 @@ test.describe("Native GPU Core build boundary", () => {
   test("full Core mode excludes generated CPU-proof GPU stubs", () => {
     const build = read("scripts/build-native-cpu-probe.js");
     assert.match(build, /if \(!gpu\) \{[\s\S]*gpu-unavailable\.cpp[\s\S]*commands\.push\(/);
-    assert.match(build, /const commands = cpuCompileCommands\(repo, output, flags, gpu\)/);
+    assert.match(build, /const commands = cpuCompileCommands\(repo, output, flags, gpu, compiler\)/);
   });
   test("vendor CPU bitcode is materialized with its original compiler before GPU linking", () => {
     const build = read("scripts/build-native-cpu-probe.js");
     assert.match(build, /magic !== "4243c0de" && magic !== "dec0170b"/);
-    assert.match(build, /run\("icpx", \["-c", "-x", "ir"/);
+    assert.match(build, /run\(compiler, \["-c", "-x", "ir"/);
   });
   test("the GPU linker receives flattened archive members, not a merged relocatable Core", () => {
     const build = read("scripts/build-native-cpu-probe.js");
     assert.match(build, /gpu \? "cpu-core\.a" : "cpu-core\.o"/);
     assert.match(build, /if \(gpu\) \{\s*if \(!archiver\)[\s\S]*?run\(archiver\.path, \["qcLs"/);
-    assert.match(build, /selectCpuArchiver\("icpx"/);
+    assert.match(build, /selectCpuArchiver\(compiler/);
     assert.match(build, /verifyCpuArchiver\(archiver\)[\s\S]*?finally \{\s*verifyCpuArchiver\(archiver\);\s*\}/);
   });
   test("controller integration requires explicit build-only admission and stub-free provenance", () => {

@@ -378,13 +378,14 @@ function copyRuntimeInput(producer, relative, output, files) {
   return proof;
 }
 
-/** Verify and stage the actual producer archives into a relocatable component.
- * @param {{llvmOutput: string, comgrResult: string, acppResult: string, hiprtcResult: string, output: string}} input
+/** Re-admit every original producer without copying, executing, or restamping it.
+ * Local warm builds and fresh CI exports share this exact source/object verification.
+ * @param {{llvmOutput: string, comgrResult: string, acppResult: string, hiprtcResult: string}} input
  * @param {NodeJS.ProcessEnv} [environment] */
-function exportWindowsHostComponent(input, environment = process.env) {
+function verifyWindowsHostComponentProducers(input, environment = process.env) {
   if (process.platform !== "linux" || process.arch !== "x64" || environment["MOM_AOT_BUILD_ONLY"] !== "1" || !input ||
-      Object.keys(input).sort().join(",") !== "acppResult,comgrResult,hiprtcResult,llvmOutput,output" ||
-      ![input.llvmOutput, input.comgrResult, input.acppResult, input.hiprtcResult, input.output].every(absolute)) {
+      Object.keys(input).sort().join(",") !== "acppResult,comgrResult,hiprtcResult,llvmOutput" ||
+      !Object.values(input).every(absolute)) {
     throw new Error("Windows host component export requires Linuxx64, MOM_AOT_BUILD_ONLY=1 and explicit roots");
   }
   const llvmOutput = input.llvmOutput, llvm = verifyWindowsLlvmAdmission(llvmOutput, environment);
@@ -395,9 +396,6 @@ function exportWindowsHostComponent(input, environment = process.env) {
   if (llvm.admission.archives.length !== llvmArchiveCount || acpp.archives.length !== acppArchiveCount || !hiprtc.archive) {
     throw new Error("Windows host component archive counts differ from the reviewed closures");
   }
-  requireDisjointOutput(input.output, [llvmOutput, path.dirname(input.comgrResult), acpp.output, path.dirname(input.hiprtcResult),
-    ...Object.values(acpp.runtimeInputs).map(row => row.file)]);
-
   const llvmArchives = llvm.admission.archives.map(row => archiveRecord(row.artifact, row.sha256, row.bytes, "LLVM"));
   const sources = /** @type {{acpp: Array<{file: string, sha256: string, bytes: number}>,
     hiprtc: Array<{file: string, sha256: string, bytes: number}>, comgr: Array<{file: string, sha256: string, bytes: number}>,
@@ -407,6 +405,64 @@ function exportWindowsHostComponent(input, environment = process.env) {
       sources.comgr.length !== comgrArchiveCount || sources.llvm.length !== llvmArchiveCount) {
     throw new Error("Windows host component has an incomplete archive group");
   }
+  const provenance = windowsHostProducerProvenance(llvm, comgr, acpp, hiprtc),
+    files = Object.fromEntries([llvm.receiptFile, llvm.admissionFile, llvm.objectsFile, comgr.receiptFile, acpp.receiptFile, hiprtc.receiptFile,
+      ...Object.values(sources).flat().map(row => row.file), ...Object.values(acpp.runtimeInputs).map(row => row.file)]
+      .map(file => [file, fileHash(file)]));
+  return {llvm, comgr, acpp, hiprtc, sources, provenance, files};
+}
+
+/** Keep the producer identity shared by fresh exports and warm component matching.
+ * @param {ReturnType<typeof verifyWindowsLlvmAdmission>} llvm @param {ReturnType<typeof verifyComgrResult>} comgr
+ * @param {ReturnType<typeof verifyAcppResult>} acpp @param {ReturnType<typeof verifyHiprtcResult>} hiprtc */
+function windowsHostProducerProvenance(llvm, comgr, acpp, hiprtc) {
+  return {llvm: {generationId: llvm.admission.generationId, receiptSha256: fileHash(llvm.receiptFile),
+    admissionSha256: fileHash(llvm.admissionFile), objectProofSha256: fileHash(llvm.objectsFile)},
+  comgr: {receiptSha256: comgr.receiptSha256, archiveSha256: comgr.archive.sha256, llvmGenerationId: llvm.admission.generationId},
+  acpp: {receiptSha256: acpp.receiptSha256, sourceRevision: acppRevision, llvmGenerationId: llvm.admission.generationId,
+    rocmResourceReceiptSha256: acpp.receipt.rocmResourceReceiptSha256},
+  hiprtc: {receiptSha256: hiprtc.receiptSha256, archiveSha256: hiprtc.archive.sha256, sourceRevision: hiprtcSourceRevision,
+    comgrRevision, comgrReceiptSha256: hiprtc.receipt.comgr.receiptSha256, comgrArchiveSha256: comgr.archive.sha256,
+    resourceReceiptSha256: hiprtc.receipt.builtins.receiptSha256, archiveMembers: hiprtcArchiveMembers}};
+}
+
+/** Join a warm transport component to freshly admitted original producers, without restamping it.
+ * @param {string} root @param {ReturnType<typeof verifyWindowsHostComponentProducers>} original */
+function matchWindowsHostComponent(root, original) {
+  const selected = windowsHostComponentInputs(root), manifest = readBuildJson(path.join(root, "component.json"));
+  if (!isDeepStrictEqual(selected.provenance, original.provenance)) {
+    throw new Error("Windows host component differs from its original producer provenance");
+  }
+  for (const group of /** @type {Array<keyof typeof original.sources>} */ (groups)) {
+    const rows = original.sources[group], expected = rows.map((row, index) =>
+      "lib/" + group + "/" + String(index).padStart(3, "0") + "-" + path.basename(row.file));
+    if (!isDeepStrictEqual(manifest.link[group], expected) || rows.some((row, index) => {
+      const relative = expected[index];
+      return !relative || selected.files[path.join(root, relative)] !== row.sha256 || manifest.files[relative]?.bytes !== row.bytes;
+    })) {throw new Error("Windows host component archive order or payload differs from its original producer: " + group);}
+  }
+  for (const [name, relative] of Object.entries(runtimeInputPaths)) {
+    const row = original.acpp.runtimeInputs[name], installed = path.join(root, relative);
+    if (!row || selected.runtimeInputs[name] !== installed || selected.files[installed] !== row.sha256 ||
+        manifest.files[relative]?.bytes !== row.bytes) {
+      throw new Error("Windows host component runtime differs from its original producer: " + name);
+    }
+  }
+  verifyHashMap(original.files, "original producer");
+  return selected;
+}
+
+/** Verify and stage the actual producer archives into a relocatable component.
+ * @param {{llvmOutput: string, comgrResult: string, acppResult: string, hiprtcResult: string, output: string}} input
+ * @param {NodeJS.ProcessEnv} [environment] */
+function exportWindowsHostComponent(input, environment = process.env) {
+  if (!input || Object.keys(input).sort().join(",") !== "acppResult,comgrResult,hiprtcResult,llvmOutput,output" || !absolute(input.output)) {
+    throw new Error("Windows host component export requires Linuxx64, MOM_AOT_BUILD_ONLY=1 and explicit roots");
+  }
+  const {output, ...producerInput} = input, original = verifyWindowsHostComponentProducers(producerInput, environment),
+    {llvm, comgr, acpp, hiprtc, sources, provenance} = original;
+  requireDisjointOutput(output, [input.llvmOutput, path.dirname(input.comgrResult), acpp.output, path.dirname(input.hiprtcResult),
+    ...Object.values(acpp.runtimeInputs).map(row => row.file)]);
   fs.mkdirSync(input.output, {mode: 0o700}); fs.mkdirSync(path.join(input.output, "lib")); fs.mkdirSync(path.join(input.output, "runtime"));
   for (const group of groups) {fs.mkdirSync(path.join(input.output, "lib", group));}
   const files = /** @type {Record<string, {sha256: string, bytes: number}>} */ ({}),
@@ -420,14 +476,6 @@ function exportWindowsHostComponent(input, environment = process.env) {
     if (!producer) {throw new Error("Windows AdaptiveCpp producer runtime input is missing: " + name);}
     return [name, copyRuntimeInput(producer, relative, input.output, files)];
   }));
-  const provenance = {llvm: {generationId: llvm.admission.generationId, receiptSha256: fileHash(llvm.receiptFile),
-    admissionSha256: fileHash(llvm.admissionFile), objectProofSha256: fileHash(llvm.objectsFile)},
-  comgr: {receiptSha256: comgr.receiptSha256, archiveSha256: comgr.archive.sha256, llvmGenerationId: llvm.admission.generationId},
-  acpp: {receiptSha256: acpp.receiptSha256, sourceRevision: acppRevision, llvmGenerationId: llvm.admission.generationId,
-    rocmResourceReceiptSha256: acpp.receipt.rocmResourceReceiptSha256},
-  hiprtc: {receiptSha256: hiprtc.receiptSha256, archiveSha256: hiprtc.archive.sha256, sourceRevision: hiprtcSourceRevision,
-    comgrRevision, comgrReceiptSha256: hiprtc.receipt.comgr.receiptSha256, comgrArchiveSha256: comgr.archive.sha256,
-    resourceReceiptSha256: hiprtc.receipt.builtins.receiptSha256, archiveMembers: hiprtcArchiveMembers}};
   const manifest = {version: 3, kind: "windows-native-host-sdk", pins: componentPins, link, runtimeInputs, files, provenance,
     buildOnly: true, publicationQualified: false};
   fs.writeFileSync(path.join(input.output, "component.json"), JSON.stringify(manifest, null, 2) + "\n", {flag: "wx", mode: 0o600});
@@ -438,7 +486,7 @@ function exportWindowsHostComponent(input, environment = process.env) {
       fileHash(llvm.objectsFile) !== provenance.llvm.objectProofSha256) {
     throw new Error("Windows host producer receipt changed during export");
   }
-  return windowsHostComponentInputs(input.output);
+  return matchWindowsHostComponent(input.output, original);
 }
 
 /** @param {unknown} value @param {string} label */
@@ -553,7 +601,8 @@ function windowsHostComponentInputs(root) {
   return {link: {libraries}, runtimeInputs, files, provenance};
 }
 
-module.exports = {exportWindowsHostComponent, windowsHostComponentInputs, windowsHostComponentLlvmLayout, copyRuntimeInput};
+module.exports = {exportWindowsHostComponent, verifyWindowsHostComponentProducers, matchWindowsHostComponent,
+  windowsHostComponentInputs, windowsHostComponentLlvmLayout, copyRuntimeInput};
 
 if (require.main === module) {
   try {

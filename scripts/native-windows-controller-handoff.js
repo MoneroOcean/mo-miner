@@ -390,6 +390,8 @@ function hermesInputs(root, handoff) {
 /** @typedef {{kind:"io",runAttempt:string,handoffSha256:string} | {kind:"hermes",runAttempt:string,handoffSha256:string}} HandoffExpectation
  * @typedef {{kind:"io",runAttempt:string,handoff:string,handoffSha256:string,files:Record<string,string>,libraries:ReturnType<typeof ioInputs>["libraries"]} |
  * {kind:"hermes",runAttempt:string,handoff:string,handoffSha256:string,files:Record<string,string>,hermes:ReturnType<typeof hermesInputs>["hermes"],intelRuntime?:IntelRuntimeInputs}} HandoffInputs
+ * @typedef {Omit<Extract<HandoffInputs,{kind:"io"}>,"runAttempt"> | Omit<Extract<HandoffInputs,{kind:"hermes"}>,"runAttempt">} SupportInputs
+ * @typedef {{kind:"io"|"hermes",localBuildId:string,handoffSha256:string}} LocalHandoffExpectation
  * Admit a regular, exact, externally hash-pinned Windows controller-support handoff.
  * @param {string} root @param {HandoffExpectation} expected @returns {HandoffInputs} */
 function windowsControllerHandoffInputs(root, expected) {
@@ -397,14 +399,37 @@ function windowsControllerHandoffInputs(root, expected) {
       !/^[0-9]{1,20}-[1-9][0-9]{0,5}$/.test(expected.runAttempt) || !hash(expected.handoffSha256) || typeof root !== "string" || !path.isAbsolute(root)) {
     throw new Error("Windows controller handoff needs its exact role, run-attempt and producer hash");
   }
+  return {...admitWindowsControllerHandoff(root,
+    {kind: expected.kind, identity: expected.runAttempt, handoffSha256: expected.handoffSha256}, "runAttempt"), runAttempt: expected.runAttempt};
+}
+
+/** Local transport has an explicit identity, never a fabricated GitHub run-attempt.
+ * Original Windows receipts and all content/source/tool checks are shared unchanged.
+ * @param {string} root @param {LocalHandoffExpectation} expected
+ * @returns {SupportInputs & {localBuildId:string}} */
+function windowsLocalControllerHandoffInputs(root, expected) {
+  if (!object(expected) || !hasKeys(expected, ["kind", "localBuildId", "handoffSha256"]) || !["io", "hermes"].includes(expected.kind) ||
+      !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(expected.localBuildId) ||
+      !hash(expected.handoffSha256) || typeof root !== "string" || !path.isAbsolute(root)) {
+    throw new Error("Local Windows controller handoff needs its exact role, local build identity and producer hash");
+  }
+  return {...admitWindowsControllerHandoff(root,
+    {kind: expected.kind, identity: expected.localBuildId, handoffSha256: expected.handoffSha256}, "localBuildId"), localBuildId: expected.localBuildId};
+}
+
+/** Both transport entrypoints admit the same selected closure; identity changes no source policy.
+ * Windows producer paths remain evidence only and are never rewritten for WSL.
+ * @param {string} root @param {{kind:"io"|"hermes",identity:string,handoffSha256:string}} expected
+ * @param {"runAttempt"|"localBuildId"} identityKey @returns {SupportInputs} */
+function admitWindowsControllerHandoff(root, expected, identityKey) {
   root = path.resolve(root);
   const handoffFile = path.join(root, "handoff.json"), stat = fs.lstatSync(handoffFile);
   if (!stat.isFile() || stat.isSymbolicLink() || fileHash(handoffFile) !== expected.handoffSha256) {throw new Error("Windows controller handoff producer hash differs");}
-  const handoff = readBuildJson(handoffFile), commonKeys = ["version", "format", "runAttempt", "target", "architecture", "kind", "buildOnly",
+  const handoff = readBuildJson(handoffFile), commonKeys = ["version", "format", identityKey, "target", "architecture", "kind", "buildOnly",
       "executed", "publicationQualified", "scope", "producers", "sourceReceipts", "omitted", "files"],
     handoffKeys = expected.kind === "hermes" && object(handoff) && Object.hasOwn(handoff, "intelRuntime") ? [...commonKeys, "intelRuntime"] : commonKeys;
   if (!hasKeys(handoff, handoffKeys) || handoff.version !== 1 || handoff.format !== "mom-windows-controller-support-handoff-v1" ||
-      handoff.runAttempt !== expected.runAttempt || handoff.kind !== expected.kind || handoff.target !== "win32" || handoff.architecture !== "x64" ||
+      handoff[identityKey] !== expected.identity || handoff.kind !== expected.kind || handoff.target !== "win32" || handoff.architecture !== "x64" ||
       handoff.buildOnly !== true || handoff.executed !== false || handoff.publicationQualified !== false || typeof handoff.scope !== "string" ||
       !handoff.scope || handoff.scope.length > 2048 || !Array.isArray(handoff.producers) || !Array.isArray(handoff.sourceReceipts) || !Array.isArray(handoff.omitted)) {
     throw new Error("Windows controller handoff role or build-only boundary differs");
@@ -441,12 +466,12 @@ function windowsControllerHandoffInputs(root, expected) {
     throw new Error("Windows controller handoff changed during admission");
   }
   if (expected.kind === "io") {
-    return {kind: "io", runAttempt: handoff.runAttempt, handoff: handoffFile, handoffSha256: expected.handoffSha256, files,
+    return {kind: "io", handoff: handoffFile, handoffSha256: expected.handoffSha256, files,
       libraries: /** @type {ReturnType<typeof ioInputs>["libraries"]} */ (role.libraries)};
   }
-  return {kind: "hermes", runAttempt: handoff.runAttempt, handoff: handoffFile, handoffSha256: expected.handoffSha256, files,
+  return {kind: "hermes", handoff: handoffFile, handoffSha256: expected.handoffSha256, files,
     hermes: /** @type {ReturnType<typeof hermesInputs>["hermes"]} */ (role.hermes),
     ...(role.intelRuntime ? {intelRuntime: /** @type {IntelRuntimeInputs} */ (role.intelRuntime)} : {})};
 }
 
-module.exports = {windowsControllerHandoffInputs, validateIntelRuntimeMetadata};
+module.exports = {windowsControllerHandoffInputs, windowsLocalControllerHandoffInputs, validateIntelRuntimeMetadata};

@@ -50,6 +50,18 @@ function fixture(t, {checkpoint = true} = {}) {
 }
 
 test.describe("Windows LLVM build-state transport", {skip: process.platform !== "linux"}, () => {
+  test("restored state admission requires the external SDK overlay to be reconstructed first", t => {
+    const f = fixture(t), overlay = f.descriptor.windowsSdk.overlay, bytes = fs.readFileSync(overlay),
+      packed = packWindowsNativeLlvmState(f.archive, f.environment, f.now),
+      receiver = {...f.environment, GITHUB_JOB: "llvm_build_amdgpu", MOM_NATIVE_WINDOWS_LLVM_DEADLINE_EPOCH: f.epoch(50)};
+    fs.rmSync(f.state.root, {recursive: true}); fs.unlinkSync(overlay);
+    assert.throws(() => restoreWindowsNativeLlvmState(f.archive, packed.manifest.archive.sha256,
+      packed.manifest, packed.manifestSha256, receiver, f.now), /ENOENT.*overlay\.json/);
+    fs.rmSync(f.state.root, {recursive: true}); fs.writeFileSync(overlay, bytes, {flag: "wx"});
+    assert.doesNotThrow(() => restoreWindowsNativeLlvmState(f.archive, packed.manifest.archive.sha256,
+      packed.manifest, packed.manifestSha256, receiver, f.now));
+  });
+
   /** @param {ReturnType<typeof fixture>} f @param {string[]} [extraFiles] */
   const roundTrip = (f, extraFiles = []) => {
     const runDeadlineRecord = f.state.runDeadlineRecord;
@@ -107,7 +119,7 @@ test.describe("Windows LLVM build-state transport", {skip: process.platform !== 
     const receiver = {...f.environment, GITHUB_JOB: "llvm_build_lld", MOM_NATIVE_WINDOWS_LLVM_DEADLINE_EPOCH: f.epoch(50)};
     assert.throws(() => restoreWindowsNativeLlvmState(f.archive, "0".repeat(64), packed.manifest, packed.manifestSha256, receiver, f.now), /external same-run/);
     assert.throws(() => restoreWindowsNativeLlvmState(f.archive, sha, packed.manifest, "0".repeat(64), receiver, f.now), /external SHA-256 pin/);
-    const wrongRun = /** @type {NodeJS.ProcessEnv} */ ({...receiver, GITHUB_RUN_ID: String(Number(f.state.suffix.split("-")[0]) + 1)});
+    const wrongRun = /** @type {NodeJS.ProcessEnv} */ ({...receiver, GITHUB_RUN_ID: String(BigInt(f.state.suffix.split("-")[0] || "0") + 1n)});
     wrongRun["MOM_NATIVE_WINDOWS_LLVM_DIR"] = path.join("/tmp", "mom-native-windows-llvm21-" + (wrongRun["GITHUB_RUN_ID"] || "") + "-1");
     assert.throws(() => restoreWindowsNativeLlvmState(f.archive, sha, packed.manifest, packed.manifestSha256, wrongRun, f.now), /same-run archive/);
     const extendedRun = {...receiver, MOM_NATIVE_WINDOWS_LLVM_RUN_DEADLINE_EPOCH: f.epoch(7 * 60 + 1)};

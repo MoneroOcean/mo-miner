@@ -1,8 +1,11 @@
 "use strict";
-const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), os = require("node:os"), path = require("node:path");
+const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), os = require("node:os"), path = require("node:path"),
+  vm = require("node:vm");
 const {pins, archiveNames, hsakmtInstallArchiveName, xxdPin, validateConfig, rocmHostPlan, hostEnvironment, withPrivateBuildDirectories,
-  parsePackageOrigin, compileDepfiles, readCompileDatabase, useStableHipPchStdin, patchExportedHipPchScript, buildRocmHostRuntime} =
+  parsePackageOrigin, compileDepfiles, readCompileDatabase, useStableHipPchStdin, patchExportedHipPchScript,
+  useExplicitRocrDeviceLibPath, patchExportedRocrDeviceLibPath, buildRocmHostRuntime} =
   require("../scripts/build-native-rocm-host-runtime");
+const {prepareRocmHostAdmission} = require("../scripts/prepare-native-ci");
 
 const host = {cc: "/intel/2026.2/bin/icx", cxx: "/intel/2026.2/bin/icpx"};
 const config = () => ({version: 1,
@@ -13,7 +16,8 @@ const config = () => ({version: 1,
   hostCompilers: host, pkgConfigDir: "/usr/lib/x86_64-linux-gnu/pkgconfig",
   dependencies: {drm: "/usr/lib/x86_64-linux-gnu/libdrm.a", drmAmdgpu: "/usr/lib/x86_64-linux-gnu/libdrm_amdgpu.a",
     elf: "/usr/lib/x86_64-linux-gnu/libelf.a", numa: "/usr/lib/x86_64-linux-gnu/libnuma.a"}, comgrReceipt: "/comgr/result.json"});
-const llvm = "/llvm-21", comgrPackage = "/comgr/build/lib/cmake/amd_comgr";
+const llvm = "/llvm-21", comgrPackage = "/comgr/build/lib/cmake/amd_comgr", device = "/amd device libs",
+  sdkRoots = {llvm, comgrPackage, device};
 
 test.describe("Native original ROCm host-runtime recipe",
   {skip: process.platform !== "linux" ? "requires Linux ROCr and POSIX path semantics" : false}, () => {
@@ -25,19 +29,67 @@ test.describe("Native original ROCm host-runtime recipe",
       assert.deepEqual(xxdPin, {path: "/usr/bin/xxd", package: "xxd", packageVersion: "2:9.1.0016-1ubuntu7.20",
         version: "xxd 2023-10-25 by Juergen Weigert et al."});
     });
+    test("Linux SDK consumers restore original ROCm admission inputs before strict receipt readers", () => {
+      const paths = {env: {}, runnerTemp: "/fixture/runner-temp"}, state = {pythonArchive: "/fixture/parser.tar"}, parser = {installed: true}, calls = /** @type {string[]} */ ([]),
+        prepare = vm.runInNewContext("(" + prepareRocmHostAdmission.toString() + ")", {
+          provisionRocmHostPackages: /** @type {(actualPaths: typeof paths) => void} */ (actualPaths => {assert.equal(actualPaths, paths); calls.push("packages");}),
+          installRocmParserSource: /** @type {(actualPaths: typeof paths, actualState: typeof state) => typeof parser} */ ((actualPaths, actualState) => {
+            assert.equal(actualPaths, paths); assert.equal(actualState, state); calls.push("parser"); return parser;
+          }),
+        });
+      assert.equal(prepare(paths, state), parser);
+      assert.deepEqual(calls, ["packages", "parser"], "the existing pinned package and parser helpers run in producer order");
+
+      const source = fs.readFileSync(path.join(__dirname, "../scripts/prepare-native-ci.js"), "utf8"),
+        body = (/** @type {string} */ name) => {
+          const start = source.indexOf("function " + name), end = source.indexOf("\n/**", start + 1);
+          if (start < 0 || end <= start) {throw new Error(name + " remains a declared CI frontdoor");}
+          return source.slice(start, end);
+        };
+      const consumers = /** @type {Array<[string, string, string]>} */ ([
+        ["buildLinuxNativeSdkDescriptor", "restoreLinuxNativeSdkDescriptorInputs(state)", "nativeSdkConfig(config, repo)"],
+        ["restoreLinuxNativeDescriptorHandoff", "restoreLinuxNativeSdkDescriptorInputs(state)", "nativeSdkConfig(config, repo)"],
+        ["buildLinuxNativeApplication", "restoreLinuxNativeSdkDescriptorInputs(descriptor)", "auditLinuxNativeSdkDescriptorLineage(descriptor)"],
+      ]);
+      for (const [name, restore, admission] of consumers) {
+        const section = body(name), restored = section.indexOf(restore), prepared = section.indexOf("prepareRocmHostAdmission(paths, "), admitted = section.indexOf(admission);
+        assert.ok(restored >= 0 && prepared > restored && admitted > prepared,
+          name + " prepares original host packages and pinned parser source after restore and before strict reader admission");
+      }
+      assert.match(body("buildRocmHostSdk"), /const parser = prepareRocmHostAdmission\(paths, state\)/,
+        "the original producer and strict consumers share the same package/parser preparation path");
+      const descriptor = body("buildLinuxNativeSdkDescriptor");
+      assert.ok(descriptor.indexOf("provisionOneApi(paths") < descriptor.indexOf("verifyLinuxLlvmAdmissionCi(paths)") &&
+        descriptor.indexOf("verifyLinuxLlvmAdmissionCi(paths)") < descriptor.indexOf("prepareRocmHostAdmission(paths, state.rocm)"),
+      "the descriptor preserves the producer's signed-tool admission before host package preparation");
+    });
     test("ROCr xxd generator is pinned, included in PATH and provenance inputs", () => {
-      const c = config(), p = rocmHostPlan(c, "/output", 2, {llvm, comgrPackage});
+      const c = config(), p = rocmHostPlan(c, "/output", 2, sdkRoots);
       assert.equal(validateConfig(c).tools.xxd, xxdPin.path);
       assert.ok(Object.values(p.tools).includes(xxdPin.path));
       assert.ok(hostEnvironment({}, c, p, "/output", llvm)["PATH"]?.split(path.delimiter).includes("/usr/bin"));
       assert.throws(() => validateConfig({...c, tools: {...c.tools, xxd: "/usr/local/bin/xxd"}}), /exact pinned roots/);
+    });
+    test("ROCr image kernels use the admitted source-built COMGR device libraries", () => {
+      const p = rocmHostPlan(config(), "/output", 2, sdkRoots), dollar = "$",
+        source = `add_custom_command(OUTPUT ${dollar}{OUTPUT_FILE} COMMAND clang ${dollar}{CLANG_ARG_LIST} DEPENDS ${dollar}{INPUT_FILE})`,
+        marker = `COMMAND clang ${dollar}{CLANG_ARG_LIST}`,
+        replacement = `COMMAND clang "--rocm-device-lib-path=${dollar}{MOM_ROCM_DEVICE_LIBS_PATH}" ${dollar}{CLANG_ARG_LIST}`;
+      assert.equal(p.deviceLibPath, path.join(device, "amdgcn/bitcode"));
+      assert.ok(p.commands.rocrConfigure.includes("-DMOM_ROCM_DEVICE_LIBS_PATH=" + p.deviceLibPath));
+      const patched = useExplicitRocrDeviceLibPath(source);
+      assert.equal(patched, source.replace(marker, replacement));
+      assert.ok(patched.includes(replacement));
+      assert.ok(!patched.includes("-nogpulib"));
+      assert.throws(() => useExplicitRocrDeviceLibPath(source.replace("COMMAND clang", "COMMAND other")), /command has changed/);
+      assert.throws(() => rocmHostPlan(config(), "/output", 2, {llvm, comgrPackage}), /device-library roots/);
     });
     test("preflight compiler temporary directories exist before the first probe", t => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-rocm-host-tmp-"));
       t.after(() => fs.rmSync(root, {recursive: true, force: true}));
       const temporary = {home: path.join(root, "home"), tmp: path.join(root, "tmp")};
       fs.mkdirSync(temporary.home); fs.mkdirSync(temporary.tmp);
-      const output = path.join(root, "output"), p = rocmHostPlan(config(), output, 2, {llvm, comgrPackage});
+      const output = path.join(root, "output"), p = rocmHostPlan(config(), output, 2, sdkRoots);
       const env = hostEnvironment({}, config(), p, output, llvm, temporary);
       assert.equal(env["HOME"], temporary.home);
       assert.equal(env["TMPDIR"], temporary.tmp);
@@ -57,13 +109,13 @@ test.describe("Native original ROCm host-runtime recipe",
       assert.deepEqual(fs.readdirSync(root), before);
     });
     test("ROCr installs its package exports before CLR/HIP configuration", () => {
-      const p = rocmHostPlan(config(), "/output", 2, {llvm, comgrPackage});
+      const p = rocmHostPlan(config(), "/output", 2, sdkRoots);
       assert.deepEqual(Object.keys(p.commands), ["rocrConfigure", "rocrBuild", "rocrInstallBinary", "rocrInstallDev", "clrConfigure", "clrBuild", "clrInstallBinary", "clrInstallDev"]);
       assert.ok(p.commands.rocrInstallDev.includes("dev"));
       assert.ok(p.commands.clrConfigure.includes("-Dhsa-runtime64_DIR=/output/rocr-install/lib/cmake/hsa-runtime64"));
     });
     test("all runtime C and C++ sources use Intel while original LLVM remains the ROCm assembler", () => {
-      const p = rocmHostPlan(config(), "/output", 2, {llvm, comgrPackage});
+      const p = rocmHostPlan(config(), "/output", 2, sdkRoots);
       for (const command of [p.commands.rocrConfigure, p.commands.clrConfigure]) {
         assert.ok(command.includes("-DCMAKE_C_COMPILER=" + host.cc));
         assert.ok(command.includes("-DCMAKE_CXX_COMPILER=" + host.cxx));
@@ -82,7 +134,7 @@ test.describe("Native original ROCm host-runtime recipe",
       assert.ok(p.commands.clrConfigure.includes("-Damd_comgr_DIR=" + comgrPackage));
     });
     test("HIP PCH helpers use the image LLVM tool root selected by llvm-objcopy", () => {
-      const p = rocmHostPlan(config(), "/output", 2, {llvm, comgrPackage});
+      const p = rocmHostPlan(config(), "/output", 2, sdkRoots);
       assert.equal(p.imageLlvmRoot, "/opt/llvm21-ubuntu24");
       assert.ok(p.commands.clrConfigure.includes("-DHIP_LLVM_ROOT=" + p.imageLlvmRoot));
     });
@@ -105,15 +157,23 @@ test.describe("Native original ROCm host-runtime recipe",
       assert.throws(() => patchExportedHipPchScript(root), /Pinned exported HIP PCH helper changed/);
       assert.equal(fs.readFileSync(script, "utf8"), "unrecognized upstream source\n");
     });
+    test("ROCr image-kernel source patch rejects unrecognized exported CMake without modifying it", t => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-rocm-host-rocr-patch-"));
+      t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+      const cmake = path.join(root, "runtime/hsa-runtime/image/blit_src/CMakeLists.txt");
+      fs.mkdirSync(path.dirname(cmake), {recursive: true}); fs.writeFileSync(cmake, "unrecognized upstream source\n");
+      assert.throws(() => patchExportedRocrDeviceLibPath(root), /Pinned exported ROCr image-kernel CMake source changed/);
+      assert.equal(fs.readFileSync(cmake, "utf8"), "unrecognized upstream source\n");
+    });
     test("COMGR 3.0 fallback searches the selected build prefix before coinstalled ROCm", () => {
-      const p = rocmHostPlan(config(), "/output", 2, {llvm, comgrPackage});
+      const p = rocmHostPlan(config(), "/output", 2, sdkRoots);
       assert.equal(p.comgrPrefix, "/comgr/build");
       assert.equal(p.cmakePrefixPath, "/output/rocr-install;/comgr/build");
       assert.ok(p.commands.clrConfigure.includes("-DCMAKE_PREFIX_PATH=" + p.cmakePrefixPath));
       assert.ok(p.commands.clrConfigure.includes("-Damd_comgr_DIR=" + comgrPackage));
     });
     test("CLR uses a receipt-bound private header overlay and upstream runtime/dev install components", () => {
-      const p = rocmHostPlan(config(), "/output", 2, {llvm, comgrPackage});
+      const p = rocmHostPlan(config(), "/output", 2, sdkRoots);
       assert.equal(p.comgrHeaderInclude, "/output/comgr-install-include");
       assert.equal(p.comgrHeader, "/output/comgr-install-include/amd_comgr/amd_comgr.h");
       assert.equal(p.clrCxxFlags, '-I"/output/comgr-install-include"');
@@ -124,14 +184,14 @@ test.describe("Native original ROCm host-runtime recipe",
       assert.ok(![...p.commands.clrInstallBinary, ...p.commands.clrInstallDev].some(arg => /hipcc|hipconfig/.test(arg)));
     });
     test("only original static ROCr and CLR targets are requested", () => {
-      const p = rocmHostPlan(config(), "/output", 2, {llvm, comgrPackage});
+      const p = rocmHostPlan(config(), "/output", 2, sdkRoots);
       assert.deepEqual(p.commands.rocrBuild.slice(-7), ["--target", "hsa-runtime64_static", "hsakmt", "hsakmt-staticdrm", "--", "-d", "keepdepfile"]);
       assert.ok(p.commands.clrBuild.includes("amdhip64")); assert.ok(p.commands.clrBuild.includes("hiprtc"));
       assert.equal(Object.values(p.commands).flat().some(arg => /rocminfo|nvidia-smi|--device|qemu|--install.*\/opt\/rocm/.test(arg)), false);
       assert.deepEqual(Object.keys(config().dependencies).sort(), ["drm", "drmAmdgpu", "elf", "numa"]);
     });
     test("explicit host dependencies and tools survive as literal argv", () => {
-      const c = config(), p = rocmHostPlan(c, "/output with spaces", 2, {llvm, comgrPackage});
+      const c = config(), p = rocmHostPlan(c, "/output with spaces", 2, sdkRoots);
       assert.ok(p.commands.rocrConfigure.includes("-DLIBELF_LIBRARIES=" + c.dependencies.elf));
       assert.ok(p.commands.rocrConfigure.includes("-DNUMA=" + c.dependencies.numa));
       assert.ok(p.commands.clrConfigure.includes("-DNUMA_LIBRARIES=" + c.dependencies.numa));
@@ -151,12 +211,12 @@ test.describe("Native original ROCm host-runtime recipe",
     }
     test("output cannot overlap or contain any source or selected input", () => {
       for (const root of ["/sources/clr", "/sources/hip", "/sources/rocr", "/comgr/result.json", "/comgr/build",
-        comgrPackage, "/opt/llvm21-ubuntu24/lib/cmake/llvm", "/usr/bin", "/"]) {
-        assert.throws(() => rocmHostPlan(config(), root, 2, {llvm, comgrPackage}), /must not overlap/);
+        comgrPackage, device, path.join(device, "amdgcn/bitcode"), "/opt/llvm21-ubuntu24/lib/cmake/llvm", "/usr/bin", "/"]) {
+        assert.throws(() => rocmHostPlan(config(), root, 2, sdkRoots), /must not overlap/);
       }
     });
     test("hostile inherited Git and compiler hooks are removed before commands", () => {
-      const p = rocmHostPlan(config(), "/output", 2, {llvm, comgrPackage});
+      const p = rocmHostPlan(config(), "/output", 2, sdkRoots);
       const env = hostEnvironment({PATH: "/attacker/bin", GIT_DIR: "/attacker/repo", GIT_CONFIG_GLOBAL: "/attacker/config",
         GIT_CONFIG_NOSYSTEM: "0", GIT_ALTERNATE_OBJECT_DIRECTORIES: "/attacker/objects", CMAKE_TOOLCHAIN_FILE: "/attacker/toolchain",
         CC: "/attacker/cc", CFLAGS: "-DATTACKER", PKG_CONFIG_LIBDIR: "/attacker/pkgconfig"},
@@ -172,7 +232,7 @@ test.describe("Native original ROCm host-runtime recipe",
       assert.ok(env["PATH"]?.startsWith("/intel/2026.2/bin"));
     });
     test("preserves the selected SDK shared-library runtime path", () => {
-      const p = rocmHostPlan(config(), "/output", 2, {llvm, comgrPackage});
+      const p = rocmHostPlan(config(), "/output", 2, sdkRoots);
       const loaderPath = "/opt/ubuntu24-libs";
       const env = hostEnvironment({LD_LIBRARY_PATH: loaderPath}, config(), p, "/output", llvm);
       assert.equal(env["LD_LIBRARY_PATH"], loaderPath);

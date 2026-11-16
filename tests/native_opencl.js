@@ -7,7 +7,9 @@ const read = (/** @type {string} */ name) => fs.readFileSync(path.join(__dirname
 const patch = read("runtime/dpcpp-static-opencl.patch");
 
 test.describe("Static OpenCL original-source admission", () => {
-  const env = {MOM_AOT_DPCPP_OPENCL_SOURCE: path.resolve("/loader"), MOM_AOT_DPCPP_OPENCL_HEADERS: path.resolve("/headers")};
+  // These are CMake inputs: forward slashes are required on either build host.
+  const env = {MOM_AOT_DPCPP_OPENCL_SOURCE: path.resolve("/loader").replace(/\\/g, "/"),
+    MOM_AOT_DPCPP_OPENCL_HEADERS: path.resolve("/headers").replace(/\\/g, "/")};
   test("OpenCL is not enabled implicitly", () => {assert.equal(openclInputs({}), null);});
   test("both pinned source roots are explicit", () => {
     assert.deepEqual(openclInputs(env), {openclLoader: env.MOM_AOT_DPCPP_OPENCL_SOURCE, openclHeaders: env.MOM_AOT_DPCPP_OPENCL_HEADERS});

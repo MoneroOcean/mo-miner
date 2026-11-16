@@ -52,7 +52,7 @@ function crossFixture(t) {
   return {...f, header, library, descriptor, sdk: path.join(f.root, "sdk"), native: path.join(f.root, "native"), output: path.join(f.root, "new")};
 }
 
-test.describe("Original compiler SDK configuration", () => {
+test.describe("Original compiler SDK configuration", {skip: process.platform !== "linux" || process.arch !== "x64"}, () => {
   test("Linux and Windows select the same bounded producer contract", () => {
     assert.deepEqual(jitSdkConfig(config()), config());
     const c = {...config(), target: "windows", tools: {...config().tools, toolchain: "/toolchain.cmake"}};
@@ -218,10 +218,12 @@ test.describe("Hashed Windows compiler archive support paths", () => {
   const msvcSupport = "/admitted SDK/msvc/lib/libcmt.lib", intelSupport = "/admitted runtime/lib/libircmt.lib", support = [msvcSupport, intelSupport];
   const link = ": && lld-link /out:bin/native-dpcpp-jit.exe /implib:lib/native-dpcpp-jit.lib " + archives.join(" ") +
     " \"/admitted SDK/msvc/lib/libcmt.lib\" \"/admitted runtime/lib/libircmt.lib\" && :";
-  test("excludes only exact quoted support paths while preserving ordered compiler archives", () => {
+  // The Windows-target JIT SDK is produced on Linux; support paths and build roots in this
+  // positive fixture are host paths from that cross-build, not Windows runner paths.
+  test("excludes only exact quoted support paths while preserving ordered compiler archives", {skip: process.platform !== "linux"}, () => {
     assert.deepEqual(compilerArchives(link, "/original", true, support), archives.map(file => path.join("/original", file)));
   });
-  test("derives support paths only from hashed explicit config inputs", () => {
+  test("derives support paths only from hashed explicit config inputs", {skip: process.platform !== "linux"}, () => {
     const hashes = /** @type {Record<string,string>} */ (Object.fromEntries(support.map((file, index) => [file, String(index + 1).repeat(64)])));
     const selected = jitSdkConfig({...config(), target: "windows", tools: {...config().tools, toolchain: "/toolchain"}, inputs: support});
     assert.deepEqual(jitSupportLibraries(selected, hashes), support);

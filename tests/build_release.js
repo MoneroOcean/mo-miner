@@ -244,7 +244,7 @@ test.describe("Explicit Engineering archive build", {concurrency: false}, () => 
     const windowsPackage = workflow.slice(windowsStart);
     /** @param {string} job @param {string} platform */
     const assertNativePackage = (job, platform) => {
-      assert.match(job, /needs: build-native-prerequisites/);
+      assert.match(job, /needs: \[build-native-prerequisites, engineering-hash, source-quality, windows-script-quality\]/);
       assert.match(job, /uses: \.\/\.github\/workflows\/package-native-application\.yml/);
       assert.match(job, new RegExp(`platform: ${platform}\\b`));
     };

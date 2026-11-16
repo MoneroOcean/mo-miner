@@ -393,7 +393,7 @@ function main(argv) {
     embeddedBytes: result.manifest.resourceBytes}) + "\n");
 }
 
-module.exports = {buildCudaImages, validateConfig};
+module.exports = {buildCudaImages, validateConfig, verifyHeaderRoots};
 if (require.main === module) {
   try {main(process.argv.slice(2));} catch (error) {
     console.error(error instanceof Error ? error.message : error); process.exitCode = 1;

@@ -258,12 +258,22 @@ test.describe("Native SDK dependency receipts capture actual used headers", () =
   /** @param {import("node:test").TestContext} t */
   function inputs(t) {
     const f = fixture(t), source = f.put("project/source.cpp", "source"), compiler = f.put("sdk/compiler", "tool"), header = f.put("sdk/header.h", "header");
-    const generated = f.put("out/generated.inc", "generated from maintained sources"), depfile = f.put("out/0.d", "out.o: " + [source, header, generated].join(" ") + "\n");
-    const repo = path.join(f.root, "project"), output = path.join(f.root, "out"), startedAt = Date.now() + 10, before = buildFileInputs([compiler]);
+    // GNU depfiles use forward slashes and escape spaces, even on a Windows host.
+    const generated = f.put("out/generated.inc", "generated from maintained sources"), depfile = f.put("out/0.d", "out.o: " +
+      [source, header, generated].map(file => file.replace(/\\/g, "/").replace(/ /g, "\\ ")).join(" ") + "\n");
+    // All fixture inputs exist before compilation; compare against their observed clock,
+    // not a small guessed margin over the host's differently rounded wall clock.
+    const repo = path.join(f.root, "project"), output = path.join(f.root, "out"),
+      startedAt = Math.max(Date.now(), ...[source, compiler, header, generated, depfile].map(file => fs.statSync(file).ctimeMs)),
+      before = buildFileInputs([compiler]);
     const finish = (initial = before, started = startedAt) => completeBuildInputs([depfile], repo, output, started, initial);
     return {...f, source, compiler, header, generated, depfile, repo, output, before, startedAt, finish};
   }
-  test("only external SDK inputs supplement already tracked source/generated files", t => {const f = inputs(t); assert.deepEqual(f.finish(), buildFileInputs([f.compiler, f.header]));});
+  test("only external SDK inputs supplement already tracked source/generated files", t => {
+    // Model a wall clock behind filesystem metadata, as can happen with Windows timer rounding.
+    t.mock.method(Date, "now", () => 0);
+    const f = inputs(t); assert.deepEqual(f.finish(), buildFileInputs([f.compiler, f.header]));
+  });
   test("compiler changes cannot pass as source-only parity", t => {const f = inputs(t); fs.writeFileSync(f.compiler, "different tool"); assert.throws(() => f.finish(), /SDK input changed/);});
   test("backdated SDK header edits invalidate a completed input receipt", t => {
     const f = inputs(t), receipt = f.finish(); fs.writeFileSync(f.header, "different header"); fs.utimesSync(f.header, 1, 1);

@@ -11,7 +11,6 @@ const tls = require("node:tls");
 const crypto = require("node:crypto");
 const {spawnSync} = require("node:child_process");
 const {isDeepStrictEqual} = require("node:util");
-const esbuild = require("esbuild");
 const {absolutePath} = require("./build-native-release");
 const {controllerBundleOptions, controllerAotCommand, verifyBundle, nativeApplicationRoot} = require("./native-bundle");
 const {controllerEntry, nativeApplicationBuildInputs} = require("./probe-native-controller");
@@ -72,6 +71,9 @@ const ordinaryWindowsImports = new Set([
   "secur32.dll", "setupapi.dll", "shell32.dll", "shlwapi.dll", "user32.dll", "userenv.dll", "uuid.dll",
   "version.dll", "winhttp.dll", "winmm.dll", "wsock32.dll", "ws2_32.dll",
 ]);
+
+/** Share the maintained OS-only policy without exposing the mutable admission set. */
+function windowsSystemImports() {return [...ordinaryWindowsImports];}
 
 /** @typedef {{clangCl: string, lldLink: string, shermaot: string, llvmNm: string,
  * llvmReadobj: string, llvmObjdump?: string, clangResourceInclude: string}} WindowsTools
@@ -527,8 +529,8 @@ function validatePeHeaders(text) {
 /** Re-run the canonical bundle recipe read-only and compare bytes with the bundle that fed AOT.
  * The injected build function is only for bounded unit testing; production uses esbuild directly. */
 /** @param {string} entry @param {string} bundle @param {Uint8Array} expected
- * @param {typeof esbuild.buildSync} [build] */
-function verifyCanonicalBundle(entry, bundle, expected, build = esbuild.buildSync) {
+ * @param {typeof import("esbuild").buildSync} [build] */
+function verifyCanonicalBundle(entry, bundle, expected, build = require("esbuild").buildSync) {
   const rebuilt = build(controllerBundleOptions(entry, bundle, true, "win32"));
   if (!rebuilt.metafile) {throw new Error("Read-only Windows controller bundle did not produce a source graph");}
   if (!Array.isArray(rebuilt.outputFiles) || rebuilt.outputFiles.length !== 1) {
@@ -671,7 +673,7 @@ function buildNativeWindowsController(configFile, output, environment = process.
   writeJson(path.join(output, "source-hashes.before.json"), before);
   writeJson(path.join(output, "config.json"), {version: 1, configHash});
   fs.writeFileSync(plan.generated.entry, controllerEntry(repo, true), {flag: "wx"});
-  const bundled = esbuild.buildSync(controllerBundleOptions(plan.generated.entry, plan.generated.bundle, false, "win32"));
+  const bundled = require("esbuild").buildSync(controllerBundleOptions(plan.generated.entry, plan.generated.bundle, false, "win32"));
   const bundleBytes = fs.readFileSync(plan.generated.bundle);
   if (!bundled.metafile) {throw new Error("Native controller bundle did not produce a source graph");}
   writeJson(path.join(output, "source-graph.json"), /** @type {Record<string, unknown>} */ (/** @type {unknown} */ (bundled.metafile)));
@@ -857,6 +859,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  windowsSystemImports,
   absolutePath, validateWindowsControllerConfig, validateWindowsSdkInputs, validateWindowsLlvmSdkConfig,
   explicitInputFiles, hashFiles, assertStableInputHashes, sourceSnapshot, dependencyHashes,
   compileCommand, linkCommand, parseImports, validatePeHeaders, verifyCanonicalBundle, runTool, windowsToolEnvironment, windowsControllerPlan, vfsFiles,

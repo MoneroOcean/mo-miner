@@ -113,16 +113,6 @@ function nativeToolsFixture(selected) {
 }
 
 test.describe("Windows GNU source-JIT profile composition", {concurrency: false}, () => {
-  test("keeps emitter/profile evidence beside the prepared resource child in one run root", () => {
-    const paths = windowsJitResourcePaths("9000000000000008-88");
-    assert.equal(paths.root, "/tmp/mom-native-windows-jit-resources-9000000000000008-88");
-    assert.equal(paths.emitter, path.join(paths.root, "emitter"));
-    assert.equal(paths.profile, path.join(paths.root, "resource-profile.json"));
-    assert.equal(paths.resources, path.join(paths.root, "resources"));
-    assert.equal(paths.nativeTools, path.join(paths.root, "native-tools"));
-    assert.throws(() => windowsJitResourcePaths("9000000000000008-0"), /run\/attempt/);
-  });
-
   test("admits materialized bitcode destinations, not their original SDK source paths", () => {
     const manifest = {version: 1, files: Object.values(REQUIRED).map(row => ({source: row.virtual, virtual: row.virtual, sha256: row.sha256}))};
     verifyRequiredBaseManifest(manifest);
@@ -133,6 +123,19 @@ test.describe("Windows GNU source-JIT profile composition", {concurrency: false}
     libdevice.source = REQUIRED.libdevice.virtual; libdevice.sha256 = "0".repeat(64);
     assert.throws(() => verifyRequiredBaseManifest(manifest), /pinned libdevice/);
   });
+});
+
+test.describe("Linux-hosted Windows resource filesystem admission", {concurrency: false, skip: process.platform !== "linux"}, () => {
+  test("keeps emitter/profile evidence beside the prepared resource child in one run root", () => {
+    const paths = windowsJitResourcePaths("9000000000000008-88");
+    assert.equal(paths.root, "/tmp/mom-native-windows-jit-resources-9000000000000008-88");
+    assert.equal(paths.emitter, path.join(paths.root, "emitter"));
+    assert.equal(paths.profile, path.join(paths.root, "resource-profile.json"));
+    assert.equal(paths.resources, path.join(paths.root, "resources"));
+    assert.equal(paths.nativeTools, path.join(paths.root, "native-tools"));
+    assert.throws(() => windowsJitResourcePaths("9000000000000008-0"), /run\/attempt/);
+  });
+
   test("maps admitted Windows roots, existing base headers, required bitcode pins and notices into the established profile", () => {
     const baseRoot = "/tmp/mom-native-linux-jit-resources-9000000000000008-88/base/base",
       gnuRoot = "/tmp/mom-native-windows-gnu-headers-9000000000000008-88",

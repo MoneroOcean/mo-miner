@@ -1,7 +1,7 @@
 "use strict";
 const fs = require("node:fs"), path = require("node:path"), os = require("node:os"), {createHash} = require("node:crypto");
 const test = require("node:test"), assert = require("node:assert/strict");
-const {windowsControllerHandoffInputs, validateIntelRuntimeMetadata} = require("../scripts/native-windows-controller-handoff");
+const {windowsControllerHandoffInputs, windowsLocalControllerHandoffInputs, validateIntelRuntimeMetadata} = require("../scripts/native-windows-controller-handoff");
 const {fileHash, sourceInputs} = require("../scripts/build-source-inputs");
 const {ioPins} = require("../scripts/build-native-io"), {opensslPin, opensslBuildRecipe} = require("../scripts/build-native-openssl");
 const {hermesPins} = require("../scripts/build-native-hermes");
@@ -211,6 +211,43 @@ function hermesIntelRuntimeFixture(t) {
 }
 
 test.describe("Windows controller support handoff admission", () => {
+  test.describe("local Windows-to-WSL transport identity", () => {
+    const localBuildId = "12345678-1234-4234-9234-123456789abc";
+    for (const [kind, fixture] of /** @type {const} */ ([["io", ioFixture], ["hermes", hermesFixture]])) {
+      test(kind + " uses the same source/content admission without rewriting native receipts", t => {
+        const f = fixture(t), ci = windowsControllerHandoffInputs(f.root, f.expected),
+          receipts = f.handoff.producers.map((/** @type {{receipt:string}} */ row) =>
+            [row.receipt, fileHash(path.join(f.root, row.receipt))]);
+        delete f.handoff.runAttempt; f.handoff.localBuildId = localBuildId;
+        const handoffSha256 = seal(f.root, f.handoff),
+          local = windowsLocalControllerHandoffInputs(f.root, {kind, localBuildId, handoffSha256});
+        assert.equal(local.localBuildId, localBuildId); assert.equal(local.kind, ci.kind);
+        assert.equal(Object.hasOwn(local, "runAttempt"), false);
+        assert.deepEqual(local.files, {...ci.files, [ci.handoff]: handoffSha256}, "only the explicit transport identity manifest changes");
+        for (const [file, hash] of receipts) {assert.equal(fileHash(path.join(f.root, file)), hash);}
+        assert.throws(() => windowsControllerHandoffInputs(f.root, {...f.expected, handoffSha256}), /role or build-only boundary/);
+      });
+    }
+    test("rejects mixed, malformed or foreign local identities", t => {
+      const f = ioFixture(t);
+      delete f.handoff.runAttempt; f.handoff.localBuildId = localBuildId;
+      let handoffSha256 = seal(f.root, f.handoff);
+      assert.throws(() => windowsLocalControllerHandoffInputs(f.root,
+        {kind: "io", localBuildId: "not-a-local-build", handoffSha256}), /local build identity/);
+      assert.throws(() => windowsLocalControllerHandoffInputs(f.root,
+        {kind: "io", localBuildId: "12345678-1234-4234-9234-123456789abd", handoffSha256}), /role or build-only boundary/);
+      f.handoff.runAttempt = attempt; handoffSha256 = seal(f.root, f.handoff);
+      assert.throws(() => windowsLocalControllerHandoffInputs(f.root, {kind: "io", localBuildId, handoffSha256}), /role or build-only boundary/);
+    });
+    test("local identity does not bypass selected-file hash checks", t => {
+      const f = ioFixture(t);
+      delete f.handoff.runAttempt; f.handoff.localBuildId = localBuildId;
+      const handoffSha256 = seal(f.root, f.handoff);
+      fs.appendFileSync(path.join(f.root, "io-sdk/lib/uv_a.lib"), "corrupted");
+      assert.throws(() => windowsLocalControllerHandoffInputs(f.root, {kind: "io", localBuildId, handoffSha256}));
+    });
+  });
+
   test.describe("optional Intel runtime manifest", () => {
     test("admits exact catalog pins bound to the shared Hermes C/C++ driver fingerprint", (/** @type {{after:(fn:()=>void)=>void}} */ t) => {
       const f = hermesIntelRuntimeFixture(t), admitted = validateIntelRuntimeMetadata({intelRuntime: f.metadata, files: intelRuntimeRows(f.metadata)}, f.cc, f.result.fingerprints);

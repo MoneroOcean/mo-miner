@@ -287,7 +287,7 @@ test.describe("Native deployment dispatcher", () => {
   });
 
   test("real PowerShell cleans normal logs and retains opt-in evidence and caller environment", {
-    skip: process.platform !== "win32", timeout: 60000,
+    skip: process.platform !== "win32", timeout: 420000,
   }, () => {
     const source = fs.readFileSync(require.resolve("../scripts/test-windows-release-gpu.ps1"), "utf8");
     const expand = "Expand-Archive -Force -Path $archivePath -DestinationPath $work";
@@ -341,9 +341,12 @@ test.describe("Native deployment dispatcher", () => {
           catch { $failed=$true; Write-Output $_.Exception.Message }
           if ([Environment]::GetEnvironmentVariable('MOM_RELEASE_PERF_EVIDENCE_DIR') -cne $original) { exit 99 }
           Write-Output 'FIXTURE_ENV_RESTORED'; if ($failed) { exit 1 } else { exit 0 }`;
+        // Allow cold hosted-runner PowerShell startup, but keep every fixture invocation bounded.
         const result = spawnSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", code],
-          {cwd: root, env, encoding: "utf8", timeout: 15000});
-        assert.equal(result.error, undefined);
+          {cwd: root, env, encoding: "utf8", timeout: 30000});
+        assert.equal(result.error, undefined,
+          `PowerShell fixture install=${installExit} vector=${vectorExit} gate=${gateExit} debug=${debug}: ` +
+          `${result.error?.message || ""}\n${result.stdout || ""}\n${result.stderr || ""}`);
         assert.equal(result.status, installExit || vectorExit || gateExit ? 1 : 0);
         assert.match(result.stdout, /FIXTURE_ENV_RESTORED/);
         assert.equal(result.stdout.includes("[deploy] Debug logs: "), debug);

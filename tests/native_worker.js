@@ -14,7 +14,8 @@ test.describe("Shared Node/native worker lifecycle", {concurrency: false}, () =>
   test.before(() => {
     const source = path.join(__dirname, "native", "worker_lifecycle.cpp");
     const result = spawnSync(process.env["CXX"] || (windows ? "cl.exe" : "c++"), windows
-      ? ["/nologo", "/std:c++17", "/utf-8", "/EHsc", "/W4", "/WX", source, `/Fe:${executable}`, `/Fo:${path.join(temporary, "worker.obj")}`]
+      ? ["/nologo", "/std:c++17", "/utf-8", "/EHsc", "/W4", "/WX", "/D_CRT_SECURE_NO_WARNINGS", source,
+        `/Fe:${executable}`, `/Fo:${path.join(temporary, "worker.obj")}`]
       : ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror", "-pthread", source, "-o", executable],
     {encoding: "utf8", timeout: 60000});
     assert.equal(result.status, 0, result.error?.message || result.stdout + result.stderr);

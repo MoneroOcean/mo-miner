@@ -23,12 +23,15 @@ function fixture(t, windows = false) {
   fs.writeFileSync(upx, "synthetic build tool, never executed");
   const options = {source, output, upx, upxSha256: fileHash(upx)};
   const calls = /** @type {{command: string, args: string[], timeout: number | undefined}[]} */ ([]);
-  const state = {failure: "", signal: false, error: false, corrupt: false, changeSource: false, changeTool: false, removeLog: ""};
+  const state = {failure: "", signal: false, error: false, corrupt: false, changeSource: false, changeTool: false, removeLog: "", failureLog: ""};
   /** @param {string} command @param {string[]} args @param {import("node:child_process").SpawnSyncOptions} settings */
   function spawn(command, args, settings) {
     calls.push({command, args, timeout: settings.timeout});
     const stage = args.includes("--best") ? "pack" : args.includes("-t") ? "integrity" : "restore";
-    if (state.failure === stage) {return {status: state.signal || state.error ? null : 1, signal: state.signal ? "SIGTERM" : null, error: state.error ? new Error("fixture timeout") : undefined};}
+    if (state.failure === stage) {
+      const log = settings.stdio?.[1]; if (typeof log === "number") {fs.writeSync(log, state.failureLog);}
+      return {status: state.signal || state.error ? null : 1, signal: state.signal ? "SIGTERM" : null, error: state.error ? new Error("fixture timeout") : undefined};
+    }
     const log = settings.stdio?.[1]; if (typeof log === "number") {fs.writeSync(log, stage + " fixture output\n");}
     const destination = args[args.indexOf("-o") + 1], input = args.at(-1);
     if (stage !== "integrity") {
@@ -136,7 +139,17 @@ test.describe("Native release packing command and payload boundaries", () => {
       assert.ok(!fs.existsSync(path.join(f.options.output, "result.json"))); assert.ok(fs.existsSync(path.join(f.options.output, stage + ".log")));
     });
   }
-  test("signals are not mistaken for successful pack completion", t => {const f = fixture(t); f.state.failure = "pack"; f.state.signal = true; assert.throws(f.run, /stage failed/); assert.equal(f.calls.length, 1);});
+  test("failure messages contain a bounded diagnostic tail while preserving the full log", t => {
+    const f = fixture(t); f.state.failure = "pack"; f.state.failureLog = "discarded-prefix" + "x".repeat(20000) + "CantPackException: file not executable\n";
+    assert.throws(f.run, error => {
+      assert.ok(error instanceof Error); assert.match(error.message, /exit 1, signal none/);
+      assert.match(error.message, /CantPackException: file not executable/);
+      assert.ok(!error.message.includes("discarded-prefix")); assert.ok(error.message.length < 17000); return true;
+    });
+    assert.equal(fs.readFileSync(path.join(f.options.output, "pack.log"), "utf8"), f.state.failureLog);
+    assert.ok(!fs.existsSync(path.join(f.options.output, "result.json")));
+  });
+  test("signals are not mistaken for successful pack completion", t => {const f = fixture(t); f.state.failure = "pack"; f.state.signal = true; assert.throws(f.run, /signal SIGTERM/); assert.equal(f.calls.length, 1);});
   test("timed-out tools fail without running the miner or a second packing attempt", t => {const f = fixture(t); f.state.failure = "pack"; f.state.error = true; assert.throws(f.run, /stage failed/); assert.equal(f.calls.length, 1);});
   test("nonidentical Linux restoration fails even after tool integrity succeeds", t => {const f = fixture(t); f.state.corrupt = true; assert.throws(f.run, /exact original bytes/); assert.ok(!fs.existsSync(path.join(f.options.output, "result.json")));});
   test("changed Windows code bytes cannot pass semantic restoration checks", t => {const f = fixture(t, true); f.state.corrupt = true; assert.throws(f.run, /payload/); assert.ok(!fs.existsSync(path.join(f.options.output, "result.json")));});

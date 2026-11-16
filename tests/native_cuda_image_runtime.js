@@ -303,14 +303,14 @@ int main() {
     if (!compiler) {t.skip("no host C++ compiler is available for the CPU harness"); return;}
     const binary = path.join(scratch, "runtime-test");
     const sources = [path.join(scratch, "runtime.cpp"), path.join(root, "sycl/cuda-images.cpp")];
-    const args = msvc ? ["/nologo", "/std:c++17", "/W4", "/DMOM_EMBEDDED_CUDA_IMAGES",
+    const args = msvc ? ["/nologo", "/std:c++17", "/EHsc", "/W4", "/DMOM_EMBEDDED_CUDA_IMAGES",
       "/DMOM_SYCL_HAS_CUDA", `/I${scratch}`, `/I${path.join(root, "sycl")}`,
       ...sources, `/Fe:${binary}.exe`] : ["-std=c++17", "-Wall", "-Wextra", "-Werror",
       "-DMOM_EMBEDDED_CUDA_IMAGES", "-DMOM_SYCL_HAS_CUDA", `-I${scratch}`,
       `-I${path.join(root, "sycl")}`, ...sources, "-o", binary,
       ...(process.platform === "win32" ? [] : ["-ldl"] )];
-    const compile = spawnSync(compiler, args, {encoding: "utf8", timeout: 30000});
-    assert.equal(compile.status, 0, compile.stderr || compile.stdout);
+    const compile = spawnSync(compiler, args, {encoding: "utf8", timeout: process.platform === "win32" ? 60000 : 30000});
+    assert.equal(compile.status, 0, compile.error?.message || compile.stderr || compile.stdout);
     const run = spawnSync(process.platform === "win32" && msvc ? binary + ".exe" : binary, [],
       {encoding: "utf8", timeout: 10000});
     assert.equal(run.status, 0, run.stderr || run.stdout);

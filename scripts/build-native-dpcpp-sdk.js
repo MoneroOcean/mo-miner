@@ -12,6 +12,17 @@ const {isStaticArchive} = require("./native-audit");
 const {isDeepStrictEqual} = require("node:util"), {dpcppEntries} = require("./native-compiler-isolation");
 const {exportDpcppComponent} = require("./native-dpcpp-component");
 const repo = path.resolve(__dirname, "..");
+
+/** Share the producer's exact source graph with warm SDK admission instead of copying its file list. */
+function linuxStaticSdkRecipe() {
+  return sourceInputs(repo, ["tests/native/dpcpp-static"], ["scripts/build-native-dpcpp-sdk.js", "scripts/prepare-native-sdk-sources.js",
+    "scripts/build-source-inputs.js", "scripts/build-environment.js", "scripts/build-native-sycl-sdk.js", "scripts/build-native-release.js",
+    "scripts/probe-static-sycl.js", "scripts/native-hcf.js", "scripts/probe-native-jit.js", "scripts/native-comgr-inputs.js", "scripts/probe-static-dpcpp.js",
+    "scripts/native-audit.js", "scripts/native-dpcpp-component.js",
+    "scripts/native-cuda-adapter.js", "scripts/native-level-zero-adapter.js", "scripts/native-compiler-isolation.js", "runtime/system-driver.h",
+    "runtime/driver-library.cpp", "tests/reference/native_dpcpp_static.cpp", "tests/reference/native_static_adapter_selection.cpp",
+    "tests/reference/native_umf_static.cpp", "tests/reference/native_level_zero_static.cpp", "tests/reference/native_opencl_binding.cpp", "tests/native/driver_library.cpp"]);
+}
 /** CMake tokens must be absolute literals, not list/interpolation fragments.
  * @param {unknown} value @returns {value is string} */
 const literal = value => typeof value === "string" && value.length <= 4096 && path.isAbsolute(value) && !/[;"$\\]/.test(value) &&
@@ -105,13 +116,7 @@ function buildLinuxStaticSdk(sourcesFile, sdk, cuda, jit, output, tools, jobs, e
   const plan = linuxStaticSdkPlan(roots, sdk, cuda, jit, output, tools, jobs), buildEnv = sdkHostEnvironment(env, plan.hostCompilers);
   verifyCompilerEnvironment(plan.hostCompilers, buildEnv);
   if ([output, output + ".component"].some(file => fs.lstatSync(file, {throwIfNoEntry: false}))) {throw new Error("Linux SDK output and installed component must be new");}
-  const recipe = sourceInputs(repo, ["tests/native/dpcpp-static"], ["scripts/build-native-dpcpp-sdk.js", "scripts/prepare-native-sdk-sources.js",
-    "scripts/build-source-inputs.js", "scripts/build-environment.js", "scripts/build-native-sycl-sdk.js", "scripts/build-native-release.js",
-    "scripts/probe-static-sycl.js", "scripts/native-hcf.js", "scripts/probe-native-jit.js", "scripts/native-comgr-inputs.js", "scripts/probe-static-dpcpp.js",
-    "scripts/native-audit.js", "scripts/native-dpcpp-component.js",
-    "scripts/native-cuda-adapter.js", "scripts/native-level-zero-adapter.js", "scripts/native-compiler-isolation.js", "runtime/system-driver.h",
-    "runtime/driver-library.cpp", "tests/reference/native_dpcpp_static.cpp", "tests/reference/native_static_adapter_selection.cpp",
-    "tests/reference/native_umf_static.cpp", "tests/reference/native_level_zero_static.cpp", "tests/reference/native_opencl_binding.cpp", "tests/native/driver_library.cpp"]);
+  const recipe = linuxStaticSdkRecipe();
   const inputs = {...linuxSdkJitInput(jit), [sourcesFile]: sourceHash,
     ...Object.fromEntries([...Object.values(tools), path.join(sdk, "bin/clang"), path.join(sdk, "bin/clang++"), path.join(sdk, ".mom-toolchain-sha256")].map(file => [file, fileHash(file)]))};
   const headers = linuxSdkHeaders(sdk, cuda);
@@ -143,7 +148,7 @@ function buildLinuxStaticSdk(sourcesFile, sdk, cuda, jit, output, tools, jobs, e
   run(plan.configure, "configure"); run(plan.compile, "build", false, buildEnv);
   const dependencies = buildFileInputs(linuxSdkDependencies(run([tools.ninja, "-C", plan.build, "-t", "deps"], "dependencies", true, buildEnv), plan.build));
   verifyPreparedSdkSources(sourcesFile, "linux");
-  verifySourceInputs(recipe, sourceInputs(repo, ["tests/native/dpcpp-static"], Object.keys(recipe.graph)), "Linux SDK producer");
+  verifySourceInputs(recipe, linuxStaticSdkRecipe(), "Linux SDK producer");
   for (const [file, hash] of Object.entries(inputs)) {if (fileHash(file) !== hash) {throw new Error("Linux SDK input changed during compilation: " + file);}}
   for (const header of headers) {verifySourceInputs({files: header.files, graph: {}}, {files: sdkSourceFiles(header.root), graph: {}}, "Linux SDK headers");}
   const archive = path.join(plan.build, "libmom-sycl-static.a");
@@ -158,7 +163,7 @@ function buildLinuxStaticSdk(sourcesFile, sdk, cuda, jit, output, tools, jobs, e
   return result;
 }
 
-module.exports = {linuxStaticSdkPlan, linuxSdkJitInput, linuxSdkHeaders, linuxSdkDependencies, buildLinuxStaticSdk};
+module.exports = {linuxStaticSdkRecipe, linuxStaticSdkPlan, linuxSdkJitInput, linuxSdkHeaders, linuxSdkDependencies, buildLinuxStaticSdk};
 if (require.main === module) {
   try {
     const [sources, sdk, cuda, jit, output, cmake, ninja, jobs = "2", cc, cxx, extra] = process.argv.slice(2);

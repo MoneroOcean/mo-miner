@@ -123,7 +123,7 @@ get_target_property(local_links LLVMSupport LINK_LIBRARIES)
 get_target_property(interface_links LLVMSupport INTERFACE_LINK_LIBRARIES)
 file(WRITE "\${CMAKE_BINARY_DIR}/link-properties.txt" "\${local_links}\\n\${interface_links}\\n")
 `);
-    const cmakeBin = process.env["CMAKE"] || "cmake", configured = spawnSync(cmakeBin, ["-S", fixture, "-B", path.join(fixture, "build")],
+    const cmakeBin = process.env["CMAKE"] || "cmake", configured = spawnSync(cmakeBin, ["-G", "Ninja", "-S", fixture, "-B", path.join(fixture, "build")],
       {encoding: "utf8", timeout: 30000});
     assert.equal(configured.status, 0, configured.error?.message || configured.stdout + configured.stderr);
     const properties = fs.readFileSync(path.join(fixture, "build/link-properties.txt"), "utf8");

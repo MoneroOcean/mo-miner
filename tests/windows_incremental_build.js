@@ -11,6 +11,42 @@ const repo = path.resolve(__dirname, "..");
 const helper = path.join(repo, "scripts/windows-incremental-build.ps1");
 
 test.describe("Windows incremental builds", {concurrency: false}, () => {
+  test("PowerShell 5 build setup replaces inherited module paths before npm handling", () => {
+    const source = fs.readFileSync(helper, "utf8");
+    const setup = source.slice(source.indexOf("function Initialize-MomBuildEnvironment"));
+    const modulePath = setup.indexOf("$env:PSModulePath = Join-Path $PSHOME 'Modules'");
+    const npmGuard = setup.indexOf("if (-not $env:npm_package_json)");
+    assert.ok(modulePath >= 0 && modulePath < npmGuard);
+    assert.match(setup.slice(0, modulePath), /\$PSVersionTable\.PSVersion\.Major -eq 5/u);
+  });
+
+  test("PowerShell 5 module imports work with a poisoned inherited module path", {skip: process.platform !== "win32"}, () => {
+    /** @param {string} value */
+    const quote = value => "'" + value.replaceAll("'", "''") + "'";
+    const environment = {...process.env};
+    delete environment["npm_package_json"];
+    for (const key of Object.keys(environment)) {
+      if (key.toUpperCase() === "PSMODULEPATH") {delete environment[key];}
+    }
+    environment["PSModulePath"] = "C:\\PowerShell 7\\Modules";
+    const command = [
+      "$ErrorActionPreference = 'Stop'",
+      `. ${quote(helper)}`,
+      `Initialize-MomBuildEnvironment ${quote(repo)}`,
+      "if ($PSVersionTable.PSVersion.Major -ne 5) { throw 'Expected Windows PowerShell 5.' }",
+      "$expectedModulePath = Join-Path $PSHOME 'Modules'",
+      "if (-not [String]::Equals($env:PSModulePath, $expectedModulePath, [StringComparison]::OrdinalIgnoreCase)) { throw 'Windows PowerShell module path was not isolated.' }",
+      "$hash = Get-FileHash -LiteralPath (Join-Path $PSHOME 'powershell.exe') -Algorithm SHA256",
+      "if ($hash.Hash -notmatch '^[0-9A-F]{64}$') { throw 'Get-FileHash did not return a SHA-256 digest.' }",
+      "Write-Output 'WINDOWS_POWERSHELL_MODULE_PATH_ISOLATED'",
+    ].join("; ");
+    const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command],
+      {encoding: "utf8", windowsHide: true, timeout: 15000, env: environment});
+    assert.equal(result.error, undefined, result.stdout + result.stderr);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /WINDOWS_POWERSHELL_MODULE_PATH_ISOLATED/u);
+  });
+
   test("MSBuild signs outputs only after complete tracker admission", () => {
     const source = fs.readFileSync(path.join(repo, ".github/workflows/scripts/build-windows.ps1"), "utf8");
     const coverage = source.indexOf("Assert-MomTrackedOutputCoverage $trackedOutputs");
@@ -199,6 +235,32 @@ Write-Output 'LINK_STATUS_FIXTURE_OK'
     }
   });
 
+  test("DPC++ workers isolate headers from inherited oneAPI compiler overrides", () => {
+    const source = fs.readFileSync(path.join(repo, ".github/workflows/scripts/build-sycl-cuda-win.ps1"), "utf8");
+    assert.match(source, /Remove-Item Env:CPATH, Env:CPLUS_INCLUDE_PATH, Env:C_INCLUDE_PATH/);
+    assert(source.indexOf("Remove-Item Env:CPATH") < source.indexOf("Initialize-MomIncrementalBuild $obj"));
+    assert.match(source, /\$syclIncludes = .*Join-Path \$ToolchainDir 'include\\sycl'.*Join-Path \$ToolchainDir 'include'/);
+    assert.match(source, /"-fno-strict-aliasing",\$inc\) \+ \$syclIncludes/);
+  });
+
+  test("DPC++ header isolation removes poisoned search paths in Windows PowerShell", {skip: process.platform !== "win32"}, () => {
+    const source = fs.readFileSync(path.join(repo, ".github/workflows/scripts/build-sycl-cuda-win.ps1"), "utf8"),
+      cleanup = source.match(/^Remove-Item Env:CPATH[^\r\n]+/m)?.[0],
+      includes = source.match(/^\$syclIncludes = [^\r\n]+/m)?.[0];
+    assert(cleanup && includes);
+    const command = `$ErrorActionPreference='Stop'; $ToolchainDir='C:\\selected-dpcpp';
+      $env:CPATH='C:\\wrong-oneapi'; $env:CPLUS_INCLUDE_PATH=$env:CPATH; $env:C_INCLUDE_PATH=$env:CPATH;
+      ${cleanup}
+      ${includes}
+      if ($env:CPATH -or $env:CPLUS_INCLUDE_PATH -or $env:C_INCLUDE_PATH) { throw 'Inherited header path survived' }
+      if ($syclIncludes.Count -ne 2 -or $syclIncludes[0] -ne '-IC:\\selected-dpcpp\\include\\sycl' -or
+          $syclIncludes[1] -ne '-IC:\\selected-dpcpp\\include') { throw 'Wrong selected header paths' }`;
+    const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command],
+      {encoding: "utf8", windowsHide: true, timeout: 30000});
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+  });
+
   test("Windows publication guards precede output mutations", () => {
     for (const name of ["build-sycl-cuda-win.ps1", "build-sycl-adaptivecpp-win.ps1"]) {
       const source = fs.readFileSync(path.join(repo, ".github/workflows/scripts", name), "utf8");
@@ -290,7 +352,7 @@ foreach ($kind in @('ordinary','ancestor-junction','destination-junction','neste
       }
     }
   }
-  $rejected = $false; $Compiler = 'all'; $Backend = 'all'
+  $rejected = $false; $Compiler = 'all'; $Backend = 'all'; $Scope = 'all'
   try {
     if ($kind -like 'root-*') { & ([scriptblock]::Create(__RESET__)) }
     else { Save-Compiler oneapi }

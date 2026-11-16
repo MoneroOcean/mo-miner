@@ -7,10 +7,10 @@ const {isDeepStrictEqual} = require("node:util");
 const {fileHash, readBuildJson, readBuildText, sourceInputs, nativeSourceInputs, verifySourceInputs, buildFileInputs} = require("./build-source-inputs");
 const {ioPins, nativeIoInputs, validateIoArchive} = require("./build-native-io");
 const {nativeOpenSslInputs, opensslPin, opensslBuildRecipe} = require("./build-native-openssl");
-const {verifyIoArchives, fetchIoArchives, fetchArchiveCohort, buildArchiveUrls, verifyNvrtcArchives, gitSourceComponents, sourceRecipe, origins, verifyZstdArchive,
+const {verifyIoArchives, fetchIoArchives, fetchWindowsOpenSslArchives, verifyNvrtcArchives, gitSourceComponents, sourceRecipe, origins, verifyZstdArchive,
   verifyWindowsHostSdkArchives, windowsHostSdkCatalog} = require("./fetch-native-sdk-sources");
 const {hermesPins, hermesSdkPlan} = require("./build-native-hermes");
-const {windowsControllerHandoffInputs} = require("./native-windows-controller-handoff");
+const {windowsControllerHandoffInputs, windowsLocalControllerHandoffInputs} = require("./native-windows-controller-handoff");
 const {windowsNativeCoreHandoffInputs} = require("./native-windows-core-handoff");
 const {capturePackageCopyright, auditGnuHeaders} = require("./prepare-native-gnu-headers");
 const {safeRelative: safeWindowsSdkRelative, defaultWindowsNativeLibraryPolicy} = require("./prepare-native-windows-sdk");
@@ -22,8 +22,10 @@ const {nvrtcSdkInputs} = require("./prepare-native-nvrtc-sdk");
 const {nvrtcCohortInfo} = require("./probe-static-nvrtc");
 const {cudaHeaderInputs} = require("./native-jit-headers");
 const {cudaImageInputs} = require("./native-cuda-images");
-const {pins: dpcppPins, sdkIdentity: dpcppSdkIdentity} = require("./probe-static-dpcpp");
 const {sdkComponents, prepareSdkSources, verifyPreparedSdkSources, sdkSourceFiles, verifySdkExport} = require("./prepare-native-sdk-sources");
+const dpcppCudaInputs = require("./native-dpcpp-cuda-inputs");
+const {cudaPackageNames, auditCudaPackageCopyrights, copyDpcppBuildInputs, copyCudaBuildInputs, cudaToolkitProbeCMakeLists, probeCudaToolkit,
+  inputFileRecord, preparedDpcppCudaSourceOrigin, dpcppCudaInputsManifest, auditDpcppCudaInputs, cudaToolkitProbeRoot, stageDpcppCudaInputs} = dpcppCudaInputs;
 const {archiveName: llvmArchiveName, archiveSha256: llvmArchiveSha256} = require("./native-llvm-sdk");
 const {nativeOpenmpInputs} = require("./build-native-openmp-sdk");
 const {comgrDeviceInputs} = require("./build-native-comgr-sdk");
@@ -35,6 +37,7 @@ const {jitBuildStages, jitBuildOutputs} = require("./native-jit-stages");
 const {dpcppEntries, compilerArchives: jitCompilerArchives} = require("./native-compiler-isolation");
 const {dpcppComponentInputs} = require("./native-dpcpp-component");
 const {isStaticArchive} = require("./native-audit");
+const {linuxNativeSdkLldPath, linuxNativeSdkDescriptorConfig} = require("./native-linux-sdk-config");
 const {REQUIRED: jitBaseRequired, pinnedCommitDate} = require("./prepare-native-jit-base");
 const {resourceTarget, verifyJitResources} = require("./prepare-native-sycl-jit-resources");
 const tar = "/usr/bin/tar", temp = "/tmp";
@@ -47,7 +50,6 @@ const cutlassVersion = "v4.6.1", cutlassArchiveSha256 = "455d9ba37d57cb214d67b5d
   cutlassLicenseSha256 = "ad1513ca983da737a6843364ad19e8424a56d860736c2da773b8c5be527e1475";
 // Record terms from the runtime, static-development and NVML-header payloads.
 // cuda-minimal-build is only a dependency metapackage and ships no copyright file.
-const cudaPackageNames = ["cuda-cudart-12-6", "cuda-cudart-dev-12-6", "cuda-nvml-dev-12-6"];
 /** @param {string} name */
 const cudaCopyrightName = name => name.replace(/-12-6$/, "-12.6-copyright.txt");
 const rocmResourcesRecipe = ["scripts/build-native-rocm-resources.js", "scripts/native-comgr-inputs.js", "scripts/build-native-comgr-sdk.js",
@@ -798,19 +800,20 @@ function auditCudaNoticeSources(state, dpcpp, imageManifest, expected) {
     files: filesAudit.files, completeNativeNotices: false};
 }
 
-/** @param {ReturnType<typeof ciPaths>} paths */
-function buildLinuxCudaImages(paths) {
-  const state = cudaImagesStatePaths(paths, paths.env), env = paths.env;
-  const externalDpcppPins = dpcppCudaInputPins(env);
+/** @typedef {Pick<ReturnType<typeof cudaImagesStatePaths>, "root" | "source126" | "sdk126" | "handoffRoot" |
+ * "headerRoot" | "header126" | "header133" | "cutlassRoot" | "cutlassInclude" | "cutlassMarker" |
+ * "cutlassLicense" | "output" | "config" | "result" | "noticeRoot" | "noticeManifest"> &
+ * {linux:{source:string,sdkRoot:string},dpcpp:import("./native-dpcpp-cuda-inputs").DpcppCudaInputState}} LinuxCudaImageTreeState */
+
+/** Build the maintained CUDA image and license-source cohort from admitted directories.
+ * Transport, tool installation and memory containment belong to the calling frontdoor.
+ * @param {LinuxCudaImageTreeState} state @param {string} compiler
+ * @param {NodeJS.ProcessEnv} env @param {string} [manifestSha256] */
+function buildLinuxCudaImageTree(state, compiler, env, manifestSha256) {
   const outputs = [state.root, state.source126, state.sdk126, state.linux.source, state.linux.sdkRoot,
-    state.handoffRoot, state.tar];
+    state.handoffRoot];
   if (outputs.some(file => fs.existsSync(file))) {throw new Error("CUDA image producer requires fresh same-run outputs");}
-  const incoming = fs.lstatSync(state.incomingDpcppTar, {throwIfNoEntry: false});
-  if (!incoming?.isFile() || incoming.isSymbolicLink()) {throw new Error("CUDA image producer needs the same-run DPC++/CUDA 12.6 tar");}
-  if (externalDpcppPins) {dpcppSourceArchivePin(state.incomingDpcppTar, externalDpcppPins.bundleSha256);}
-  extractState(state.incomingDpcppTar, temp, [state.dpcpp.name]);
-  const dpcppInputs = auditDpcppCudaInputs(state.dpcpp, readBuildJson(state.dpcpp.manifest), externalDpcppPins?.manifestSha256);
-  fs.unlinkSync(state.incomingDpcppTar);
+  const dpcppInputs = auditDpcppCudaInputs(state.dpcpp, readBuildJson(state.dpcpp.manifest), manifestSha256);
   fs.mkdirSync(state.root, {mode: 0o700});
   runNode("scripts/fetch-native-sdk-sources.js", ["nvrtc-linux", state.linux.source, "--allow-network"], env, 15 * 60 * 1000);
   runNode("scripts/fetch-native-sdk-sources.js", ["nvrtc-linux-12.6", state.source126, "--allow-network"], env, 15 * 60 * 1000);
@@ -821,8 +824,7 @@ function buildLinuxCudaImages(paths) {
     runNode("scripts/prepare-native-nvrtc-sdk.js", [cohort, source, sdk], env, 15 * 60 * 1000);
   }
   const modern = nvrtcSdkInputs("linux", state.linux.sdkRoot, {cohort: "linux"}), baseline = nvrtcSdkInputs("linux", state.sdk126, {cohort: "linux-12.6"});
-  provisionOneApi(paths, "/var/tmp/mom-dev-native-cuda-images-" + paths.suffix, 25 * 60 * 1000);
-  const compiler = canonicalExecutable("/opt/intel/oneapi/compiler/2026.2/bin/icpx"), version = spawnSync(compiler, ["--version"],
+  const version = spawnSync(compiler, ["--version"],
     {encoding: "utf8", env, timeout: 30000, maxBuffer: 1 << 20});
   const identity = (version.stdout || "") + (version.stderr || "");
   if (version.error || version.signal || version.status !== 0 || !/2026\.2/.test(identity)) {
@@ -882,6 +884,25 @@ function buildLinuxCudaImages(paths) {
   for (const [source, name] of outputFiles) {
     fs.copyFileSync(source, path.join(state.handoffRoot, name), fs.constants.COPYFILE_EXCL);
   }
+  return {noticeSources, images: admitted};
+}
+
+/** Restore the pinned CI inputs, invoke the shared producer, then transport its exact outputs.
+ * @param {ReturnType<typeof ciPaths>} paths */
+function buildLinuxCudaImages(paths) {
+  const state = cudaImagesStatePaths(paths, paths.env), env = paths.env;
+  const externalDpcppPins = dpcppCudaInputPins(env);
+  if ([state.root, state.source126, state.sdk126, state.linux.source, state.linux.sdkRoot, state.handoffRoot, state.tar]
+    .some(file => fs.existsSync(file))) {throw new Error("CUDA image producer requires fresh same-run outputs");}
+  const incoming = fs.lstatSync(state.incomingDpcppTar, {throwIfNoEntry: false});
+  if (!incoming?.isFile() || incoming.isSymbolicLink()) {throw new Error("CUDA image producer needs the same-run DPC++/CUDA 12.6 tar");}
+  if (externalDpcppPins) {dpcppSourceArchivePin(state.incomingDpcppTar, externalDpcppPins.bundleSha256);}
+  extractState(state.incomingDpcppTar, temp, [state.dpcpp.name]);
+  auditDpcppCudaInputs(state.dpcpp, readBuildJson(state.dpcpp.manifest), externalDpcppPins?.manifestSha256);
+  fs.unlinkSync(state.incomingDpcppTar);
+  provisionOneApi(paths, "/var/tmp/mom-dev-native-cuda-images-" + paths.suffix, 25 * 60 * 1000);
+  const compiler = canonicalExecutable("/opt/intel/oneapi/compiler/2026.2/bin/icpx"),
+    {noticeSources} = buildLinuxCudaImageTree(state, compiler, env, externalDpcppPins?.manifestSha256);
   const packed = packState(state.tar, temp, [state.handoffName]), members = listState(state.tar, [state.handoffName]).map(name => name.replace(/\/$/, "")).sort(),
     expected = [state.handoffName, `${state.handoffName}/notice-sources`,
       ...["cuda-images.inc", "cuda-images.inc.json", "result.json"].map(name => `${state.handoffName}/${name}`),
@@ -984,8 +1005,12 @@ function linuxJitResourcesStatePaths(paths, environment = process.env) {
     incomingGnuTar: path.join(paths.runnerTemp, "incoming", path.basename(gnu.sdkTar))};
 }
 
+/** @typedef {Pick<ReturnType<typeof linuxJitResourcesStatePaths>, "root" | "emitter" | "bootstrap" | "bootstrapBuild" |
+ * "bootstrapOverlay" | "bootstrapOverlayEvidence" | "base" | "profile" | "resources" | "configureEvidence"> &
+ * {linux:LinuxPreparedSources,dpcpp:import("./native-dpcpp-cuda-inputs").DpcppCudaInputState,gnu:{root:string}}} LinuxJitResourceTreeState */
+
 /** Pure invocation plan for the existing emitter, headers-only configure and resource producers.
- * @param {ReturnType<typeof linuxJitResourcesStatePaths>} state @param {Record<string,string>} roots
+ * @param {LinuxJitResourceTreeState} state @param {Record<string,string>} roots
  * @param {{cmake:string,ninja:string,cc:string,cxx:string}} tools @param {string} sourceDate */
 function linuxJitResourceBuildPlan(state, roots, tools, sourceDate) {
   if (!/^[0-9]{8}$/.test(sourceDate)) {throw new Error("JIT bootstrap needs the pinned DPC++ compiler date");}
@@ -1000,7 +1025,7 @@ function linuxJitResourceBuildPlan(state, roots, tools, sourceDate) {
 
 /** Build the CMake probe overlay from real admitted target headers, never placeholder bytes.
  * Directory links keep the bootstrap small; the source/GNU receipts are independently rechecked.
- * @param {ReturnType<typeof linuxJitResourcesStatePaths>} state @param {{headers:{root:string,files?:unknown[]},notices?:unknown[]}} gnu
+ * @param {LinuxJitResourceTreeState} state @param {{headers:{root:string,files?:unknown[]},notices?:unknown[]}} gnu
  * @param {{root:string,revision:string}} opencl */
 function linuxJitBootstrapOverlayPlan(state, gnu, opencl) {
   const rows = [
@@ -1010,14 +1035,14 @@ function linuxJitBootstrapOverlayPlan(state, gnu, opencl) {
     {virtual: "include/mom-system", source: path.join(gnu.headers.root, "include/mom-system"), kind: "gnu"},
     {virtual: "include/CL", source: path.join(opencl.root, "CL"), kind: "opencl"},
   ];
-  if (!/^[a-f0-9]{40}$/.test(opencl.revision) || rows.some(row => !path.isAbsolute(row.source) || !row.source.startsWith("/tmp/"))) {
+  if (!/^[a-f0-9]{40}$/.test(opencl.revision) || rows.some(row => !path.isAbsolute(row.source) || path.resolve(row.source) !== row.source)) {
     throw new Error("JIT bootstrap overlay needs admitted GNU target roots and pinned OpenCL-Headers");
   }
   return rows.map(row => ({...row, link: path.join(state.bootstrapOverlay, ...row.virtual.split("/"))}));
 }
 
 /** Materialize only directory links to admitted GNU/OpenCL header trees and bind their sources.
- * @param {ReturnType<typeof linuxJitResourcesStatePaths>} state @param {{headers:{root:string,files?:unknown[]},notices?:unknown[]}} gnu
+ * @param {LinuxJitResourceTreeState} state @param {{headers:{root:string,files?:unknown[]},notices?:unknown[]}} gnu
  * @param {{root:string,revision:string}} opencl */
 function seedLinuxJitBootstrapOverlay(state, gnu, opencl) {
   if (fs.lstatSync(state.bootstrapOverlay, {throwIfNoEntry: false}) || fs.lstatSync(state.bootstrapOverlayEvidence, {throwIfNoEntry: false})) {
@@ -1045,7 +1070,7 @@ function seedLinuxJitBootstrapOverlay(state, gnu, opencl) {
   return record;
 }
 
-/** @param {ReturnType<typeof linuxJitResourcesStatePaths>} state @param {unknown} expected */
+/** @param {LinuxJitResourceTreeState} state @param {unknown} expected */
 function auditLinuxJitBootstrapOverlay(state, expected) {
   const record = readBuildJson(state.bootstrapOverlayEvidence);
   if (!isDeepStrictEqual(record, expected) || record.root !== state.bootstrapOverlay || !Array.isArray(record.roots) ||
@@ -1063,7 +1088,7 @@ function auditLinuxJitBootstrapOverlay(state, expected) {
 }
 
 /** Bind the public resource profile only to admitted emitter, GNU package and JIT-base records.
- * @param {ReturnType<typeof linuxJitResourcesStatePaths>} state
+ * @param {LinuxJitResourceTreeState} state
  * @param {{fixture:string,compiler:string,targetHeaders:string[]}} emitter
  * @param {{headers:{root:string},notices:Array<{package:string,path:string,sha256:string}>}} gnu */
 function linuxJitResourceProfile(state, emitter, gnu) {
@@ -1078,27 +1103,16 @@ function linuxJitResourceProfile(state, emitter, gnu) {
       virtual: "usr/share/licenses/" + notice.package + "/copyright", sha256: notice.sha256}))};
 }
 
-/** Restore and re-admit the exact same-run inputs, then produce only the CPU JIT resource pack.
- * @param {ReturnType<typeof ciPaths>} paths */
-function buildLinuxJitResources(paths) {
-  const state = linuxJitResourcesStatePaths(paths, paths.env), git = canonicalExecutable("/usr/bin/git");
-  if ([state.root, state.sdkTar].some(file => fs.lstatSync(file, {throwIfNoEntry: false}))) {
-    throw new Error("Linux JIT resource stage refuses an existing output");
-  }
-  const externalDpcppPins = dpcppCudaInputPins(paths.env);
-  if (externalDpcppPins) {dpcppSourceArchivePin(state.incomingDpcppTar, externalDpcppPins.bundleSha256);}
-  const inputArchives = [
-    {file: state.incomingSourceTar, root: state.linux.sourceName, role: "linux-sources"},
-    {file: state.incomingDpcppTar, root: state.dpcpp.name, role: "dpcpp-cuda-inputs"},
-    {file: state.incomingGnuTar, root: state.gnu.name, role: "gnu-headers"},
-  ].map(input => {
-    const stat = fs.lstatSync(input.file);
-    if (!stat.isFile() || stat.isSymbolicLink()) {throw new Error("Linux JIT resource stage requires all three same-run input tars");}
-    return {...input, sha256: fileHash(input.file)};
-  });
-  for (const input of inputArchives) {extractState(input.file, temp, [input.root]);}
+/** Produce the JIT resource tree from admitted directories, independently of CI transport.
+ * Callers provide installed tools and containment; this recipe never installs packages.
+ * @param {LinuxJitResourceTreeState} state
+ * @param {{cmake:string,ninja:string,cc:string,cxx:string}} tools
+ * @param {NodeJS.ProcessEnv} environment @param {string} [expectedDpcppManifestSha256] */
+function buildLinuxJitResourceTree(state, tools, environment, expectedDpcppManifestSha256) {
+  if (fs.lstatSync(state.root, {throwIfNoEntry: false})) {throw new Error("Linux JIT resource stage refuses an existing output");}
+  const git = canonicalExecutable("/usr/bin/git"), paths = {env: environment};
   verifyLinuxSources(paths, state.linux, git);
-  auditDpcppCudaInputs(state.dpcpp, readBuildJson(state.dpcpp.manifest), externalDpcppPins?.manifestSha256);
+  auditDpcppCudaInputs(state.dpcpp, readBuildJson(state.dpcpp.manifest), expectedDpcppManifestSha256);
   const gnu = auditGnuHeaders(state.gnu),
     compiler = verifyPreparedSdkSources(state.linux.compilerPreparedReceipt, "compiler"),
     compilerRoots = Object.fromEntries(Object.entries(compiler.prepared).map(([name, component]) => [name, component.root]));
@@ -1106,18 +1120,9 @@ function buildLinuxJitResources(paths) {
   const bootstrapOverlay = seedLinuxJitBootstrapOverlay(state, gnu, compiler.prepared.openclHeaders),
     sourceDate = pinnedCommitDate(path.join(state.linux.source, "roots/dpcpp"), paths.env);
   if (!sourceDate) {throw new Error("Pinned DPC++ compiler date is missing");}
-  provisionOneApi(paths, "/var/tmp/mom-dev-native-linux-jit-" + paths.suffix, 25 * 60 * 1000);
-  const tools = {cmake: canonicalExecutable("/usr/bin/cmake"), ninja: canonicalExecutable("/usr/bin/ninja"),
-      cc: canonicalExecutable("/opt/intel/oneapi/compiler/2026.2/bin/icx"), cxx: canonicalExecutable("/opt/intel/oneapi/compiler/2026.2/bin/icpx")},
-    plan = linuxJitResourceBuildPlan(state, compilerRoots, tools, sourceDate);
+  const plan = linuxJitResourceBuildPlan(state, compilerRoots, tools, sourceDate);
   runNode(plan.emitter.script, plan.emitter.args, paths.env, 5 * 60 * 1000);
-  const emitterReceipt = readBuildJson(path.join(state.emitter, "result.json")), targetHeaders = readBuildJson(path.join(state.gnu.root, "target-headers.json"));
-  if (emitterReceipt.version !== 1 || emitterReceipt.fixture !== path.join(state.emitter, "native-kawpow-source") ||
-      emitterReceipt.compiler !== path.join(state.dpcpp.dpcppRoot, "bin/clang++") || !Array.isArray(targetHeaders) ||
-      !isDeepStrictEqual(emitterReceipt.targetHeaders, targetHeaders) || emitterReceipt.buildOnly !== true ||
-      emitterReceipt.executed !== false || emitterReceipt.publicationQualified !== false) {
-    throw new Error("Public Linux JIT emitter did not retain the admitted target-header set");
-  }
+  const emitterReceipt = readBuildJson(path.join(state.emitter, "result.json"));
   const configureLog = path.join(state.root, "bootstrap-configure.log"), descriptor = fs.openSync(configureLog, "wx", 0o600);
   let configured;
   try {
@@ -1134,24 +1139,145 @@ function buildLinuxJitResources(paths) {
     if (!fs.lstatSync(file).isFile() || fs.realpathSync(file) !== file) {throw new Error("Headers-only JIT configure omitted a regular build record");}
   }
   runNode(plan.base.script, plan.base.args, paths.env, 10 * 60 * 1000);
-  const baseReceipt = readBuildJson(path.join(state.base, "result.json")), baseManifest = path.join(state.base, "base-manifest.json");
-  if (baseReceipt.version !== 1 || baseReceipt.baseRoot !== path.join(state.base, "base") || baseReceipt.baseManifest !== baseManifest ||
-      baseReceipt.baseManifestSha256 !== fileHash(baseManifest) || !isDeepStrictEqual(baseReceipt.required, jitBaseRequired) ||
-      baseReceipt.sourceReceipt?.path !== state.linux.compilerPreparedReceipt || baseReceipt.dpcpp?.sdkRoot !== state.dpcpp.dpcppRoot ||
-      baseReceipt.dpcpp?.commitDate !== sourceDate ||
-      baseReceipt.cuda?.root !== state.dpcpp.cudaRoot || baseReceipt.build?.root !== state.bootstrapBuild ||
-      baseReceipt.buildOnly !== true || baseReceipt.compiled !== false || baseReceipt.executed !== false || baseReceipt.publicationQualified !== false) {
-    throw new Error("Public JIT base receipt does not bind the current same-run inputs");
-  }
   const profile = linuxJitResourceProfile(state, emitterReceipt, gnu);
   fs.writeFileSync(state.profile, JSON.stringify(profile, null, 2) + "\n", {flag: "wx", mode: 0o600});
   runNode(plan.resources.script, plan.resources.args, paths.env, 8 * 60 * 1000);
-  const resources = verifyJitResources(state.resources, "x86_64-unknown-linux-gnu");
-  auditLinuxJitBootstrapOverlay(state, bootstrapOverlay);
-  verifyLinuxSources(paths, state.linux, git);
-  auditDpcppCudaInputs(state.dpcpp, readBuildJson(state.dpcpp.manifest), externalDpcppPins?.manifestSha256); auditGnuHeaders(state.gnu);
+  return auditLinuxJitResourceTree(state, tools, environment, expectedDpcppManifestSha256);
+}
+
+/** Bind resource-manifest base rows and required libraries to admitted producer records.
+ * @param {unknown} manifest @param {unknown} required
+ * @param {Array<{root:"base",source:string,virtual:string,sha256:string,bytes:number}>} expectedBaseRows */
+function assertLinuxJitResourceManifest(manifest, required, expectedBaseRows) {
+  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest) || !Array.isArray(expectedBaseRows)) {
+    throw new Error("Linux JIT resource manifest metadata is malformed");
+  }
+  const requiredObject = required && typeof required === "object" && !Array.isArray(required) ? required : null,
+    requiredRows = /** @type {Array<{virtual?:unknown,sha256?:unknown}>} */ (requiredObject ? Object.values(requiredObject) : []);
+  if (!requiredObject || Object.keys(requiredObject).sort().join(",") !== "libdevice,spirv32,spirv64" ||
+      requiredRows.some(row => !row || typeof row !== "object" || Array.isArray(row) ||
+        !expectedBaseRows.some(base => base.virtual === row.virtual && base.sha256 === row.sha256))) {
+    throw new Error("Linux JIT required device libraries are not present in the admitted base payload");
+  }
+  const files = /** @type {{files?:unknown}} */ (manifest).files;
+  if (!Array.isArray(files) || files.some(row => !row || typeof row !== "object" || Array.isArray(row) ||
+      row.root !== "base" && row.root !== "gnu")) {
+    throw new Error("Linux JIT resource manifest has malformed or unknown file roots");
+  }
+  const actualBase = /** @type {Array<{root:"base",source:string,virtual:string,sha256:string,bytes:number}>} */ (
+      files.filter(row => row.root === "base")),
+    byVirtual = (/** @type {Array<{virtual:string}>} */ rows) => [...rows].sort((left, right) =>
+      left.virtual < right.virtual ? -1 : left.virtual > right.virtual ? 1 : 0);
+  if (!isDeepStrictEqual(/** @type {{required?:unknown}} */ (manifest).required, required) ||
+      !isDeepStrictEqual(byVirtual(actualBase), byVirtual(expectedBaseRows))) {
+    throw new Error("Linux JIT resource manifest differs from the admitted base payload and required device libraries");
+  }
+}
+
+/** Re-admit a completed resource tree without running an emitter/compiler or restamping receipts.
+ * Returned fingerprints let a local cache bind input/tool and output identities across invocations.
+ * @param {LinuxJitResourceTreeState} state
+ * @param {{cmake:string,ninja:string,cc:string,cxx:string}} tools
+ * @param {NodeJS.ProcessEnv} environment @param {string} [expectedDpcppManifestSha256] */
+function auditLinuxJitResourceTree(state, tools, environment, expectedDpcppManifestSha256) {
+  const baseRoot = path.join(state.base, "base"), fixture = path.join(state.emitter, "native-kawpow-source"),
+    baseStat = fs.lstatSync(baseRoot, {throwIfNoEntry: false}), fixtureStat = fs.lstatSync(fixture, {throwIfNoEntry: false});
+  if (!baseStat?.isDirectory() || baseStat.isSymbolicLink() || fs.realpathSync(baseRoot) !== baseRoot ||
+      !fixtureStat?.isFile() || fixtureStat.isSymbolicLink() || fs.realpathSync(fixture) !== fixture) {
+    throw new Error("JIT resource base and emitter must be canonical real directory/file outputs");
+  }
+  verifyLinuxSources({env: environment}, state.linux, canonicalExecutable("/usr/bin/git"));
+  auditDpcppCudaInputs(state.dpcpp, readBuildJson(state.dpcpp.manifest), expectedDpcppManifestSha256);
+  const gnu = auditGnuHeaders(state.gnu), compiler = verifyPreparedSdkSources(state.linux.compilerPreparedReceipt, "compiler"),
+    sourceDate = pinnedCommitDate(path.join(state.linux.source, "roots/dpcpp"), environment),
+    emitterFile = path.join(state.emitter, "result.json"), emitter = readBuildJson(emitterFile),
+    baseFile = path.join(state.base, "result.json"), base = readBuildJson(baseFile), baseManifest = path.join(state.base, "base-manifest.json"),
+    targetHeaders = readBuildJson(path.join(state.gnu.root, "target-headers.json")),
+    resources = verifyJitResources(state.resources, "x86_64-unknown-linux-gnu"), manifest = readBuildJson(path.join(state.resources, "manifest.json"));
+  if (!sourceDate || emitter.version !== 1 || emitter.fixture !== path.join(state.emitter, "native-kawpow-source") ||
+      emitter.compiler !== path.join(state.dpcpp.dpcppRoot, "bin/clang++") || !Array.isArray(targetHeaders) ||
+      !isDeepStrictEqual(emitter.targetHeaders, targetHeaders) || emitter.buildOnly !== true || emitter.executed !== false ||
+      emitter.publicationQualified !== false || emitter.fixtureSha256 !== fileHash(emitter.fixture) ||
+      emitter.compilerSha256 !== fileHash(emitter.compiler) || manifest.receiptSha256 !== fileHash(emitterFile) ||
+      manifest.fixtureSha256 !== emitter.fixtureSha256 || manifest.compilerSha256 !== emitter.compilerSha256) {
+    throw new Error("Public Linux JIT emitter did not retain the admitted target-header set or current inputs");
+  }
+  const baseInventory = require("./prepare-native-jit-base").baseManifest(baseRoot);
+  if (base.version !== 1 || base.baseRoot !== path.join(state.base, "base") || base.baseManifest !== baseManifest ||
+      base.baseManifestSha256 !== fileHash(baseManifest) || manifest.baseManifestSha256 !== base.baseManifestSha256 ||
+      !isDeepStrictEqual(base.required, jitBaseRequired) || base.sourceReceipt?.path !== state.linux.compilerPreparedReceipt ||
+      base.dpcpp?.sdkRoot !== state.dpcpp.dpcppRoot || base.dpcpp?.commitDate !== sourceDate ||
+      base.cuda?.root !== state.dpcpp.cudaRoot || base.build?.root !== state.bootstrapBuild || base.buildOnly !== true ||
+      base.compiled !== false || base.executed !== false || base.publicationQualified !== false ||
+      !isDeepStrictEqual(readBuildJson(baseManifest), baseInventory)) {
+    throw new Error("Public JIT base receipt does not bind the current inputs and payload");
+  }
+  const overlay = {version: 1, root: state.bootstrapOverlay,
+      roots: linuxJitBootstrapOverlayPlan(state, gnu, compiler.prepared.openclHeaders),
+      gnuReceipt: {path: path.join(state.gnu.root, "result.json"), sha256: fileHash(path.join(state.gnu.root, "result.json"))},
+      compilerReceipt: {path: state.linux.compilerPreparedReceipt, sha256: fileHash(state.linux.compilerPreparedReceipt)},
+      openclRevision: compiler.prepared.openclHeaders.revision},
+    roots = Object.fromEntries(Object.entries(compiler.prepared).map(([name, component]) => [name, component.root])),
+    plan = linuxJitResourceBuildPlan(state, roots, tools, sourceDate), log = path.join(state.root, "bootstrap-configure.log"),
+    configure = {version: 1, command: plan.configure, sourceDate,
+      bootstrapOverlay: {path: state.bootstrapOverlayEvidence, sha256: fileHash(state.bootstrapOverlayEvidence)},
+      tools: Object.fromEntries(Object.entries(tools).map(([name, file]) => [name, {path: file, sha256: fileHash(file)}])),
+      status: 0, signal: null, error: null, log: {path: log, sha256: fileHash(log)}};
+  auditLinuxJitBootstrapOverlay(state, overlay);
+  const expectedProfile = linuxJitResourceProfile(state, emitter, gnu),
+    /** @type {Array<{root:"base",source:string,virtual:string,sha256:string,bytes:number}>} */
+    expectedBase = baseInventory.files.map(row => ({...row, root: /** @type {"base"} */ ("base"),
+      bytes: fs.statSync(path.join(baseRoot, row.source)).size}));
+  assertLinuxJitResourceManifest(manifest, expectedProfile.required, expectedBase);
+  if (!isDeepStrictEqual(readBuildJson(state.configureEvidence), configure) ||
+      !isDeepStrictEqual(readBuildJson(state.profile), expectedProfile)) {
+    throw new Error("Linux JIT resource configure/profile differs from admitted inputs and tools");
+  }
+  const files = [emitterFile, fixture, baseFile, baseManifest, state.profile, state.configureEvidence, state.bootstrapOverlayEvidence,
+      path.join(state.bootstrapBuild, "CMakeCache.txt"), path.join(state.bootstrapBuild, "build.ninja"),
+      state.linux.fetchReceipt, state.linux.preparedReceipt, state.linux.compilerPreparedReceipt, state.dpcpp.manifest,
+      path.join(state.gnu.root, "result.json"), path.join(state.gnu.root, "copyrights.json"), log, __filename],
+    fingerprints = {...resources.inputs, ...emitter.inputs, [emitter.fixture]: emitter.fixtureSha256,
+      ...Object.fromEntries(Object.values(tools).map(file => [file, fileHash(file)]))};
+  for (const file of files) {
+    if (!fs.lstatSync(file).isFile() || fs.realpathSync(file) !== file) {throw new Error("JIT resource admission requires regular canonical records: " + file);}
+    fingerprints[file] = fileHash(file);
+  }
+  for (const [file, hash] of Object.entries(fingerprints)) {
+    if (!path.isAbsolute(file) || !/^[a-f0-9]{64}$/.test(hash) || fileHash(file) !== hash) {throw new Error("JIT resource input or output changed: " + file);}
+  }
+  return {resources, sourceDate, fingerprints};
+}
+
+/** Restore and re-admit the exact same-run inputs, then produce only the CPU JIT resource pack.
+ * @param {ReturnType<typeof ciPaths>} paths */
+function buildLinuxJitResources(paths) {
+  const state = linuxJitResourcesStatePaths(paths, paths.env);
+  if ([state.root, state.sdkTar].some(file => fs.lstatSync(file, {throwIfNoEntry: false}))) {
+    throw new Error("Linux JIT resource stage refuses an existing output");
+  }
+  const externalDpcppPins = dpcppCudaInputPins(paths.env);
+  if (externalDpcppPins) {dpcppSourceArchivePin(state.incomingDpcppTar, externalDpcppPins.bundleSha256);}
+  const inputArchives = [
+    {file: state.incomingSourceTar, root: state.linux.sourceName, role: "linux-sources"},
+    {file: state.incomingDpcppTar, root: state.dpcpp.name, role: "dpcpp-cuda-inputs"},
+    {file: state.incomingGnuTar, root: state.gnu.name, role: "gnu-headers"},
+  ].map(input => {
+    const stat = fs.lstatSync(input.file);
+    if (!stat.isFile() || stat.isSymbolicLink()) {throw new Error("Linux JIT resource stage requires all three same-run input tars");}
+    return {...input, sha256: fileHash(input.file)};
+  });
+  for (const input of inputArchives) {extractState(input.file, temp, [input.root]);}
+  verifyLinuxSources(paths, state.linux, canonicalExecutable("/usr/bin/git"));
+  auditDpcppCudaInputs(state.dpcpp, readBuildJson(state.dpcpp.manifest), externalDpcppPins?.manifestSha256);
+  auditGnuHeaders(state.gnu);
+  provisionOneApi(paths, "/var/tmp/mom-dev-native-linux-jit-" + paths.suffix, 25 * 60 * 1000);
+  const tools = {cmake: canonicalExecutable("/usr/bin/cmake"), ninja: canonicalExecutable("/usr/bin/ninja"),
+      cc: canonicalExecutable("/opt/intel/oneapi/compiler/2026.2/bin/icx"), cxx: canonicalExecutable("/opt/intel/oneapi/compiler/2026.2/bin/icpx")},
+    {resources, sourceDate} = buildLinuxJitResourceTree(state, tools, paths.env, externalDpcppPins?.manifestSha256);
   if (inputArchives.some(input => fileHash(input.file) !== input.sha256)) {throw new Error("Same-run JIT input tar changed during production");}
-  const baseReceiptFile = path.join(state.base, "result.json"), emitterReceiptFile = path.join(state.emitter, "result.json"),
+  const baseManifest = path.join(state.base, "base-manifest.json"),
+    baseReceiptFile = path.join(state.base, "result.json"), emitterReceiptFile = path.join(state.emitter, "result.json"),
     resourceManifest = path.join(state.resources, "manifest.json");
   const result = {version: 1, target: resources.target, buildOnly: true, executed: false, publicationQualified: false,
     scope: "CPU-only source-JIT resource preparation. It does not build the JIT SDK/compiler object/static runtime or qualify a device/runtime/publication.",
@@ -1306,17 +1432,15 @@ function availableDiskBytes(directory) {
 }
 
 /** @typedef {{artifact: string, file: string, roots: string[], expectedMembers?: string[], recordMembers?: boolean}} LinuxNativeSdkDescriptorInput */
-/** @typedef {{llvmSdk: string, images: {handoffRoot: string}, acppSdk: {sdkRoot: string}, acpp: {preparedCheckout: string},
- * dpcpp: {dpcppRoot: string, cudaRoot: string}, gnu: {root: string, name: string, sdkTar: string}, jit: {staticComponent: string}, hermes: {source: string, sdkRoot: string},
- * rocm: {sdkRoot: string, runtimeOutput: string}, openmp: {sdkRoot: string}, zstd: {sdkRoot: string}, opensslSdk: string, ioSdk: string}} LinuxNativeSdkConfigState */
+/** @typedef {import("./native-linux-sdk-config").LinuxNativeSdkConfigState} LinuxNativeSdkConfigState */
 /** @typedef {Omit<LinuxNativeSdkConfigState, "rocm"> & {rocm:Pick<ReturnType<typeof rocmHostStatePaths>,
  * "sdkRoot" | "hostSdkName" | "hostSdkRoot" | "hostSdkTar" | "runtimeOutput">, suffix: string, root: string, sdkFile: string, admissionFile: string,
- * incoming: string, downloads: string, inputRows: LinuxNativeSdkDescriptorInput[]}} LinuxNativeSdkDescriptorState */
+ * gnu:{root:string,name:string,sdkTar:string}, incoming: string, downloads: string, inputRows: LinuxNativeSdkDescriptorInput[]}} LinuxNativeSdkDescriptorState */
 
 /** Ensure the already restored descriptor remains bound to every current-run tar before compilation.
  * @param {LinuxNativeSdkDescriptorState} state
- * @param {{cc: string, cxx: string}} [tools] */
-function auditLinuxNativeSdkDescriptorLineage(state, tools = hermesBuildTools()) {
+ * @param {{cc: string, cxx: string}} [tools] @param {string} [linker] */
+function auditLinuxNativeSdkDescriptorLineage(state, tools = hermesBuildTools(), linker = linuxNativeSdkLldPath(tools.cxx)) {
   const rootStat = fs.lstatSync(state.root), admissionStat = fs.lstatSync(state.admissionFile), descriptorStat = fs.lstatSync(state.sdkFile),
     incomingStat = fs.lstatSync(state.incoming), admission = readBuildJson(state.admissionFile), config = readBuildJson(state.sdkFile);
   if (!rootStat.isDirectory() || rootStat.isSymbolicLink() || fs.realpathSync(state.root) !== state.root ||
@@ -1353,7 +1477,18 @@ function auditLinuxNativeSdkDescriptorLineage(state, tools = hermesBuildTools())
       !isDeepStrictEqual(admission.rocmNoticeSources, rocmNoticeSources)) {
     throw new Error("Same-run package copyright/source-license lineage differs from descriptor admission");
   }
-  const expectedConfig = linuxNativeSdkDescriptorConfig(state, tools);
+  const expectedConfig = linuxNativeSdkDescriptorConfig(state, tools, linker);
+  const selectedLinkInputs = admission.selectedLinkInputs, selectedFiles = selectedLinkInputs?.files,
+    selectedPaths = selectedFiles && typeof selectedFiles === "object" && !Array.isArray(selectedFiles) ? Object.keys(selectedFiles) : [];
+  if (!hasExactKeys(selectedLinkInputs, ["files", "sha256"]) || !selectedFiles || typeof selectedFiles !== "object" ||
+      Array.isArray(selectedFiles) || Object.getPrototypeOf(selectedFiles) !== Object.prototype || selectedPaths.length === 0 ||
+      selectedPaths.some(file => file.length > 4096 || !path.isAbsolute(file) || path.resolve(file) !== file) ||
+      Object.values(selectedFiles).some(hash => typeof hash !== "string" || !/^[a-f0-9]{64}$/.test(hash)) ||
+      typeof selectedLinkInputs.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(selectedLinkInputs.sha256) ||
+      selectedLinkInputs.sha256 !== jsonHash(JSON.stringify(selectedFiles)) || !Object.hasOwn(selectedFiles, linker) ||
+      fileHash(linker) !== selectedFiles[linker]) {
+    throw new Error("Native application selected linker differs from descriptor admission");
+  }
   if (!isDeepStrictEqual(config, expectedConfig) || !hasExactKeys(admission.diskPreflight,
     ["expandedInputBytes", "buildReserveBytes", "requiredTempBytes", "availableTempBytes", "availableRunnerTempBytes"]) ||
       admission.diskPreflight.expandedInputBytes !== admission.inputArchives.reduce((/** @type {number} */ sum,
@@ -1571,8 +1706,9 @@ function partitionLinuxNativeDownloads(paths, profiles = []) {
 /** Re-admit descriptor and original input-tar hashes from the preceding same-run producer job.
  * The descriptor job already ran all producer audits; here public builders revalidate their selected inputs.
  * @param {ReturnType<typeof linuxNativeSdkDescriptorStatePaths>} state
+ * @param {Pick<ReturnType<typeof ciPaths>, "env" | "runnerTemp">} paths
  * @param {ReturnType<typeof auditLinuxNativeSdkDescriptorInputArchives>} [auditedArchives] */
-function restoreLinuxNativeDescriptorHandoff(state, auditedArchives) {
+function restoreLinuxNativeDescriptorHandoff(state, paths, auditedArchives = undefined) {
   const archiveStat = fs.lstatSync(state.archive, {throwIfNoEntry: false});
   if (fs.lstatSync(state.root, {throwIfNoEntry: false}) || !archiveStat?.isFile() || archiveStat.isSymbolicLink() ||
       fs.realpathSync(state.archive) !== state.archive) {throw new Error("Native component stage needs a fresh descriptor root and the exact partitioned descriptor tar");}
@@ -1596,6 +1732,7 @@ function restoreLinuxNativeDescriptorHandoff(state, auditedArchives) {
       !isDeepStrictEqual(admission.profiles, linuxNativeGpuProfiles.slice().sort()) || Object.hasOwn(config, "components")) {
     throw new Error("Native component stage requires the exact admitted same-run SDK descriptor and original archives");
   }
+  prepareRocmHostAdmission(paths, state.rocm);
   // Public config admission checks the complete six-profile graph and all shared link inputs;
   // keep the original descriptor intact rather than inventing a weaker per-profile subset.
   const {nativeSdkConfig, nativeSdkLinkInputs} = require("./build-native-release"), selected = nativeSdkConfig(config, repo), linked = nativeSdkLinkInputs(selected.sdk),
@@ -1634,7 +1771,7 @@ function buildLinuxNativeComponent(paths, profile) {
   }
   provisionOneApi(paths, "/var/tmp/mom-dev-native-component-" + paths.suffix,
     linuxNativeComponentChildTimeout(Number(epoch) * 1000, 15 * 60 * 1000, Date.now() + 10 * 60 * 1000));
-  const handoff = restoreLinuxNativeDescriptorHandoff(descriptorState, preflightArchives);
+  const handoff = restoreLinuxNativeDescriptorHandoff(descriptorState, paths, preflightArchives);
   fs.mkdirSync(component.root, {mode: 0o700}); fs.mkdirSync(path.join(component.root, "logs"));
   const {nativeStage} = require("./build-native-release"), environment = {...paths.env, MOM_BUILD_JOBS: "2"},
     buildTimeout = Math.min(35 * 60 * 1000, Number(epoch) * 1000 - Date.now() - 5 * 60 * 1000);
@@ -1883,6 +2020,7 @@ function buildLinuxNativeApplication(paths) {
     linuxNativeComponentChildTimeout(Number(deadlineEpoch) * 1000, 15 * 60 * 1000, Date.now() + 20 * 60 * 1000));
   extractState(descriptor.archive, temp, [descriptor.name]);
   restoreLinuxNativeSdkDescriptorInputs(descriptor);
+  prepareRocmHostAdmission(paths, descriptor.rocm);
   const lineage = auditLinuxNativeSdkDescriptorLineage(descriptor), descriptorHandoff = {state: descriptor, admission: readBuildJson(descriptor.admissionFile),
     descriptorHash: lineage.descriptorHash, admissionHash: lineage.admissionHash, archives: inputArchives};
   if (!isDeepStrictEqual(inputArchives.map(row => ({artifact: row.artifact, sha256: row.sha256})), lineage.inputArchives)) {
@@ -1931,34 +2069,6 @@ function buildLinuxNativeApplication(paths) {
     throw new Error("Native application output changed during same-run archive staging");
   }
   console.log(`[native-ci] Assembled the same-run Core and five GPU factories through the public build-only frontdoor; only the controller/application was linked, no executable ran or release was published (${members.length} members, ${disk.buildReserveBytes} byte build reserve).`);
-}
-
-/** The release frontdoor's exact source-composed Linux shape; no Core/factory receipts are fabricated.
- * @param {LinuxNativeSdkConfigState} state @param {{cc: string, cxx: string}} tools */
-function linuxNativeSdkDescriptorConfig(state, tools) {
-  const image = path.join(state.images.handoffRoot, "cuda-images.inc"), acppBuild = path.join(state.acppSdk.sdkRoot, "build"),
-    acppEnv = {CXX: tools.cxx, LLVM_CONFIG: path.join(state.llvmSdk, "bin/llvm-config"),
-      MOM_AOT_OPENMP_LIBRARY: path.join(state.openmp.sdkRoot, "sdk/libomp.a"),
-      MOM_AOT_ROCM_STATIC_ROOT: path.join(state.rocm.runtimeOutput, "sdk"),
-      MOM_AOT_COMGR_RECEIPT: path.join(state.rocm.sdkRoot, "result.json"), MOM_AOT_LLD_ROOT: state.llvmSdk};
-  return {version: 1,
-    cpu: {cache: path.join(repo, "build/cache/oneapi"), prepareCache: true},
-    gpu: {
-      oneapi: {args: [state.dpcpp.dpcppRoot], env: {MOM_AOT_ONEAPI_CXX: tools.cxx}},
-      dpcpp: {args: [state.dpcpp.dpcppRoot, state.dpcpp.cudaRoot], env: {MOM_AOT_CUDA_IMAGES: image}},
-      "dpcpp-opencl": {args: [state.dpcpp.dpcppRoot]},
-      "acpp-cuda": {args: [state.acpp.preparedCheckout, acppBuild], env: {...acppEnv, MOM_AOT_CUDA_IMAGES: image}},
-      "acpp-hip": {args: [state.acpp.preparedCheckout, acppBuild], env: acppEnv},
-    },
-    sdkSources: {acpp: path.join(state.acppSdk.sdkRoot, "result.json"), hermes: path.join(state.hermes.sdkRoot, "result.json"),
-      rocm: path.join(state.rocm.runtimeOutput, "result.json"), cudaImages: image, openmpSdk: state.openmp.sdkRoot, zstd: state.zstd.sdkRoot},
-    controller: {source: path.join(state.hermes.sdkRoot, "source"), build: path.join(state.hermes.sdkRoot, "build"), openssl: state.opensslSdk,
-      io: state.ioSdk, cc: tools.cc, nvml: path.join(state.dpcpp.cudaRoot, "include/nvml.h")},
-    sdk: {defaultCompiler: "oneapi", cxx: tools.cxx, flags: [], libraries: [],
-      links: ["--ld-path=" + path.join(state.llvmSdk, "bin/ld.lld"), "-Wl,--threads=2", "-Wl,--thinlto-jobs=2",
-        "-Wl,-T," + path.join(repo, "runtime/static-constructors.ld"), path.join(state.dpcpp.dpcppRoot, "lib/libsycl-devicelib-host.a")],
-      sdkObjects: [], dpcppComponent: state.jit.staticComponent},
-  };
 }
 
 /** Check every same-run raw tar before restoring any source or SDK root.
@@ -2054,6 +2164,7 @@ function buildLinuxNativeSdkDescriptor(paths) {
   // Existing signed Intel installation is needed to re-admit producer tool fingerprints.
   provisionOneApi(paths, "/var/tmp/mom-dev-native-linux-sdk-descriptor-" + paths.suffix, 30 * 60 * 1000);
   verifyLinuxLlvmAdmissionCi(paths);
+  prepareRocmHostAdmission(paths, state.rocm);
   const hermesTools = hermesBuildTools(), openmpTools = openmpBuildTools(), acppTools = {cc: hermesTools.cc, cxx: hermesTools.cxx};
   auditHermesSdk(state.hermes, hermesTools);
   auditOpenmpSdk(state.openmp, openmpTools);
@@ -2134,6 +2245,7 @@ function linuxJitSdkBuildPlan(state, phase, tools) {
   const previous = index ? phases[index - 1] || "" : "", inputTars = state.inputTars.map(row => ({
     name: path.basename(row.file), root: row.root, role: row.role}));
   if (["configure", ...jitBuildStages].includes(phase)) {
+    /** @type {import("./build-native-jit-sdk").Config} */
     const config = {version: 1, target: "linux", sources: state.linux.compilerPreparedReceipt, sdk: state.dpcpp.dpcppRoot,
       resources: path.join(state.resources.root, "resources"), tools, jobs: 4};
     return {phase, previous, previousArtifact: previous ? linuxJitSdkArtifactPhase(previous) : "",
@@ -2166,8 +2278,7 @@ function auditLinuxJitSdkConfigureArtifacts(output, value) {
   }
 }
 
-/** Restore unchanged dependency archives at receipt-bound absolute roots and re-admit the
- * resource, source, DPC++/CUDA, GNU, and prior mutable-build state before each phase.
+/** Restore and validate unchanged dependency and prior-phase archives before tool provisioning.
  * @param {ReturnType<typeof ciPaths>} paths
  * @param {ReturnType<typeof linuxJitSdkStatePaths>} state @param {string} phase */
 function restoreLinuxJitSdkInputs(paths, state, phase) {
@@ -2198,33 +2309,45 @@ function restoreLinuxJitSdkInputs(paths, state, phase) {
   verifyLinuxSources(paths, state.linux, canonicalExecutable("/usr/bin/git"));
   auditDpcppCudaInputs(state.dpcpp, readBuildJson(state.dpcpp.manifest), externalDpcppPins?.manifestSha256); auditGnuHeaders(state.gnu);
   verifyJitResources(state.resources.resources, "x86_64-unknown-linux-gnu");
+  let previous = null;
   if (phaseIndex) {
-    const previous = phases[phaseIndex - 1] || "", priorTar = state.phaseIncomingTar(previous);
+    previous = phases[phaseIndex - 1] || "";
+    const priorTar = state.phaseIncomingTar(previous);
     if (!previous) {throw new Error("Linux source-JIT CI phase ancestry is incomplete");}
     listState(priorTar, [state.name]); extractState(priorTar, temp, [state.name]);
     if (!isDeepStrictEqual(readBuildJson(state.ciInputs), manifest)) {
       throw new Error("Linux source-JIT same-run input archive hashes changed between phases");
     }
-    auditLinuxJitSdkState(state, previous);
   } else {
     fs.mkdirSync(state.root, {mode: 0o700});
     fs.writeFileSync(state.ciInputs, JSON.stringify(manifest, null, 2) + "\n", {flag: "wx", mode: 0o600});
   }
-  return {manifest, hashes};
+  // Prior-phase receipts hash compiler files; callers provision before deep admission.
+  return {manifest, hashes, previous};
 }
 
 /** Re-admit current source-JIT phase records and the exact original archive closure.
  * @param {ReturnType<typeof linuxJitSdkStatePaths>} state @param {string} phase */
 function auditLinuxJitSdkState(state, phase) {
-  const output = state.output, build = path.join(output, "build"), beforeFile = path.join(output, "before.json"),
-    before = readBuildJson(beforeFile), configure = readBuildJson(path.join(output, "stage-configure.json")),
-    current = phase === "configure" ? configure : readBuildJson(path.join(output, "stage-" + phase + ".json")),
-    libraries = jitCompilerArchives(readBuildText(path.join(output, "commands.log")), build), outputs = jitBuildOutputs(build);
-  auditLinuxJitSdkConfigureArtifacts(output, configure);
   const expectedConfig = linuxJitSdkBuildPlan(state, "configure", {cmake: "/usr/bin/cmake", ninja: "/usr/bin/ninja",
     cc: "/opt/intel/oneapi/compiler/2026.2/bin/icx", cxx: "/opt/intel/oneapi/compiler/2026.2/bin/icpx"}).config;
   if (!expectedConfig) {throw new Error("Linux source-JIT configure plan has no configuration");}
-  const compilerRoots = Object.fromEntries(Object.entries(readBuildJson(state.linux.compilerPreparedReceipt).prepared)
+  return auditLinuxJitCompilerState(state.output, expectedConfig, phase);
+}
+
+/** Read-only phase admission shared by local builds and CI; transport identities stay with callers.
+ * @param {string} output @param {import("./build-native-jit-sdk").Config} expectedConfig @param {string} phase */
+function auditLinuxJitCompilerState(output, expectedConfig, phase) {
+  if (expectedConfig.target !== "linux" || !["configure", ...jitBuildStages].includes(phase) || !path.isAbsolute(output)) {
+    throw new Error("Linux JIT compiler admission requires an absolute output and a supported Linux phase");
+  }
+  const build = path.join(output, "build"), beforeFile = path.join(output, "before.json"),
+    before = readBuildJson(beforeFile), configure = readBuildJson(path.join(output, "stage-configure.json")),
+    current = phase === "configure" ? configure : readBuildJson(path.join(output, "stage-" + phase + ".json")),
+    libraries = jitCompilerArchives(readBuildText(path.join(output, "commands.log")), build), outputs = jitBuildOutputs(build);
+  verifySourceInputs(before.recipe, require("./build-native-jit-sdk").jitSdkRecipe(), "Linux JIT compiler SDK admission");
+  auditLinuxJitSdkConfigureArtifacts(output, configure);
+  const compilerRoots = Object.fromEntries(Object.entries(readBuildJson(expectedConfig.sources).prepared)
       .map(([name, source]) => [name, source.root])), resources = verifyJitResources(expectedConfig.resources, "x86_64-unknown-linux-gnu"),
     expectedPlan = jitSdkPlan("linux", compilerRoots, expectedConfig.sdk,
       resources.overlay, output, expectedConfig.tools, expectedConfig.jobs);
@@ -2265,8 +2388,9 @@ function auditLinuxJitSdkState(state, phase) {
 /** Build one existing public source-JIT phase and transfer only its mutable build tree.
  * @param {ReturnType<typeof ciPaths>} paths @param {string} phase */
 function buildLinuxJitSdkPhase(paths, phase) {
-  const state = linuxJitSdkStatePaths(paths, paths.env), {hashes} = restoreLinuxJitSdkInputs(paths, state, phase);
+  const state = linuxJitSdkStatePaths(paths, paths.env), {hashes, previous} = restoreLinuxJitSdkInputs(paths, state, phase);
   provisionOneApi(paths, "/var/tmp/mom-dev-native-linux-jit-sdk-" + paths.suffix, 25 * 60 * 1000);
+  if (previous) {auditLinuxJitSdkState(state, previous);}
   const tools = {cmake: canonicalExecutable("/usr/bin/cmake"), ninja: canonicalExecutable("/usr/bin/ninja"),
       cc: canonicalExecutable("/opt/intel/oneapi/compiler/2026.2/bin/icx"), cxx: canonicalExecutable("/opt/intel/oneapi/compiler/2026.2/bin/icpx")},
     plan = linuxJitSdkBuildPlan(state, phase, tools);
@@ -2416,9 +2540,10 @@ function admitLinuxJitRuntimeProof(paths) {
  * DPC++ producer. Neither step executes a GPU or qualifies runtime/publication.
  * @param {ReturnType<typeof ciPaths>} paths */
 function buildLinuxJitStaticSdk(paths) {
-  const state = linuxJitSdkStatePaths(paths, paths.env), {manifest, hashes} = restoreLinuxJitSdkInputs(paths, state, "static-dpcpp"),
-    linked = readBuildJson(path.join(state.output, "result.json"));
+  const state = linuxJitSdkStatePaths(paths, paths.env), {manifest, hashes, previous} = restoreLinuxJitSdkInputs(paths, state, "static-dpcpp");
   provisionOneApi(paths, "/var/tmp/mom-dev-native-linux-jit-sdk-" + paths.suffix, 25 * 60 * 1000);
+  if (previous) {auditLinuxJitSdkState(state, previous);}
+  const linked = readBuildJson(path.join(state.output, "result.json"));
   const tools = {cmake: canonicalExecutable("/usr/bin/cmake"), ninja: canonicalExecutable("/usr/bin/ninja"),
       cc: canonicalExecutable("/opt/intel/oneapi/compiler/2026.2/bin/icx"), cxx: canonicalExecutable("/opt/intel/oneapi/compiler/2026.2/bin/icpx")},
     plan = linuxJitSdkBuildPlan(state, "static-dpcpp", tools);
@@ -2459,14 +2584,7 @@ function buildGnuHeaders(paths, target) {
   if (fs.lstatSync(state.root, {throwIfNoEntry: false}) || fs.lstatSync(state.sdkTar, {throwIfNoEntry: false})) {
     throw new Error("GNU header stage refuses an existing output");
   }
-  for (const mode of ["prepare", "verify"]) {
-    const args = [mode, state.root];
-    if (target !== "x86_64-unknown-linux-gnu") {args.push(target);}
-    runNode("scripts/prepare-native-gnu-headers.js", args, paths.env, 5 * 60 * 1000);
-  }
-  const headers = readBuildJson(path.join(state.root, "result.json")), notices = headers.packages.map(
-    (/** @type {{name:string,version:string}} */ item) => capturePackageCopyright(state, item.name, item.version));
-  fs.writeFileSync(path.join(state.root, "copyrights.json"), JSON.stringify(notices, null, 2) + "\n", {flag: "wx", mode: 0o600});
+  runNode("scripts/prepare-native-gnu-headers.js", ["build", state.root, target], paths.env, 5 * 60 * 1000);
   auditGnuHeaders(state, target);
   packState(state.sdkTar, temp, [state.name]);
   listState(state.sdkTar, [state.name]);
@@ -2495,7 +2613,8 @@ function rocmSourceStatePaths(paths, environment = process.env) {
 }
 
 /** Fetch one pinned pure-Python build tool alongside the ROCm source roots; it is installed offline later.
- * @param {ReturnType<typeof rocmSourceStatePaths>} state @param {NodeJS.ProcessEnv} env */
+ * @param {Pick<ReturnType<typeof rocmSourceStatePaths>, "pythonSourceRoot" | "pythonArchive" | "pythonSourceReceipt">} state
+ * @param {NodeJS.ProcessEnv} env */
 function fetchRocmParserSource(state, env) {
   if (fs.existsSync(state.pythonSourceRoot)) {throw new Error("ROCm parser source handoff refuses an existing output");}
   fs.mkdirSync(state.pythonSourceRoot, {mode: 0o700});
@@ -2531,7 +2650,7 @@ function assertRocmParserReceipt(receipt, pythonArchive, producerSha256) {
 }
 
 /** Re-admit the exact same-run parser sdist without changing the public ROCm Git fetch receipt.
- * @param {ReturnType<typeof rocmSourceStatePaths>} state */
+ * @param {Pick<ReturnType<typeof rocmSourceStatePaths>, "pythonArchive" | "pythonSourceReceipt">} state */
 function verifyRocmParserSource(state) {
   const receipt = readBuildJson(state.pythonSourceReceipt), producer = path.join(repo, "scripts/build-native-rocm-host-runtime.js");
   assertRocmParserReceipt(receipt, state.pythonArchive, fileHash(producer));
@@ -2577,6 +2696,12 @@ function rocmComgrStatePaths(paths, environment = process.env) {
     sdkTar, llvmSource: paths.source, llvmSourceName: paths.sourceName, llvmSdkRoot: paths.sdkRoot,
     llvmSdkName: paths.sdkName, llvmSdk: path.join(paths.output, "sdk"), output: paths.output};
 }
+
+/** Only the already-admitted source/LLVM inputs and paths consumed by the public ROCm recipe.
+ * @typedef {Pick<ReturnType<typeof rocmComgrStatePaths>, "source" | "llvmSdk" | "hipHeadersRoot" | "hipSourceRoot" | "hipCommonRoot" |
+ * "clrHipamdRoot" | "hipBuildRoot" | "hipArchiveRoot" | "hipInstallPrefix" | "hipIncludeRoot" | "hipPatchRoot" | "hipPatchFile" |
+ * "hipPatchCheckLog" | "hipPatchApplyLog" | "hipConfigureLog" | "hipConfigurePlan" | "hipCommonTar" | "clrHipamdTar" |
+ * "resourcesRoot" | "resourcesConfig" | "sdkRoot">} RocmComgrBuildState */
 
 /** Restore the admitted COMGR cohort and retain a fresh, separately rooted ROCm host runtime SDK.
  * @param {Pick<ReturnType<typeof ciPaths>, "suffix" | "runnerTemp" | "source" | "sourceName" | "ioSourceName" | "sdkRoot" | "sdkName" | "output">} paths
@@ -2707,7 +2832,7 @@ function verifyBareSdkSourceRoot(root, origin, revision, git, env, label) {
 }
 
 /** Verify a fetched cohort's immutable receipt and bare root without fetching or changing it.
- * @param {ReturnType<typeof ciPaths>} paths @param {string} source @param {string} git @param {"hermes" | "acpp"} target */
+ * @param {Pick<ReturnType<typeof ciPaths>, "env">} paths @param {string} source @param {string} git @param {"hermes" | "acpp"} target */
 function verifyGitSource(paths, source, git, target) {
   const root = path.join(source, "roots", target), receipt = readBuildJson(path.join(source, "fetch.json")),
     roots = readBuildJson(path.join(source, "roots.json")), revision = target === "hermes" ? hermesPins.revision : syclRevision,
@@ -2727,7 +2852,7 @@ function verifyHermesSource(paths, state, git) {
 
 /** Check the one ACPP checkout path that the source-only handoff promises to preserve.
  * Full HEAD/diff/file/patch admission remains in verifyPreparedSdkSources().
- * @param {any} receipt @param {ReturnType<typeof acppStatePaths>} state */
+ * @param {any} receipt @param {Pick<ReturnType<typeof acppStatePaths>, "preparedCheckout">} state */
 function assertAcppPreparedSource(receipt, state) {
   if (receipt?.target !== "acpp" || receipt?.prepared?.acpp?.root !== state.preparedCheckout ||
       receipt.prepared.acpp.revision !== syclRevision) {
@@ -2736,7 +2861,8 @@ function assertAcppPreparedSource(receipt, state) {
 }
 
 /** Verify fetch and original offline-preparation receipts before retaining source-only state.
- * @param {ReturnType<typeof ciPaths>} paths @param {ReturnType<typeof acppStatePaths>} state @param {string} git */
+ * @param {Pick<ReturnType<typeof ciPaths>, "env">} paths
+ * @param {Pick<ReturnType<typeof acppStatePaths>, "source" | "preparedReceipt" | "preparedCheckout">} state @param {string} git */
 function verifyAcppSource(paths, state, git) {
   const fetchReceipt = verifyGitSource(paths, state.source, git, "acpp"),
     preparedReceipt = verifyPreparedSdkSources(state.preparedReceipt, "acpp");
@@ -2744,8 +2870,12 @@ function verifyAcppSource(paths, state, git) {
   return {fetchReceipt, preparedReceipt};
 }
 
+/** @typedef {Pick<ReturnType<typeof linuxSourceStatePaths>, "source" | "fetchReceipt" | "rootsFile" |
+ * "preparedReceipt" | "compilerPreparedReceipt" | "linuxPrepared" | "compilerPrepared">} LinuxPreparedSources */
+
 /** Re-admit the original multi-repository fetch and prepared source receipts without network access.
- * @param {Pick<ReturnType<typeof ciPaths>, "env">} paths @param {ReturnType<typeof linuxSourceStatePaths>} state @param {string} git */
+ * Only producer inputs belong here; callers need no fabricated CI archive/run fields.
+ * @param {Pick<ReturnType<typeof ciPaths>, "env">} paths @param {LinuxPreparedSources} state @param {string} git */
 function verifyLinuxSources(paths, state, git) {
   const receipt = readBuildJson(state.fetchReceipt), roots = readBuildJson(state.rootsFile);
   assertSdkFetchProvenance(receipt, roots, "compiler", state.source);
@@ -2802,11 +2932,13 @@ function fetchLinuxSources(paths) {
   return outputs;
 }
 
-/** @param {ReturnType<typeof rocmSourceStatePaths>} state @param {string} git */
+/** @param {Pick<ReturnType<typeof rocmSourceStatePaths>, "source">} state @param {string} git */
 function rocmSourceFetchArgs(state, git) {return ["rocm", git, state.source, "--allow-network"];}
 
 /** Re-admit the immutable same-run ROCm acquisition receipt and each pinned bare Git root.
- * @param {ReturnType<typeof ciPaths>} paths @param {ReturnType<typeof rocmSourceStatePaths>} state @param {string} git */
+ * @param {Pick<ReturnType<typeof ciPaths>, "env">} paths
+ * @param {Pick<ReturnType<typeof rocmSourceStatePaths>, "source" | "rootsFile" | "fetchReceipt" | "pythonArchive" | "pythonSourceReceipt">} state
+ * @param {string} git */
 function verifyRocmSources(paths, state, git) {
   const receipt = readBuildJson(state.fetchReceipt), roots = readBuildJson(state.rootsFile);
   assertSdkFetchProvenance(receipt, roots, "rocm", state.source);
@@ -2832,9 +2964,11 @@ function fetchRocmSources(paths) {
   listState(state.sourceTar, [state.sourceName]);
 }
 
-/** @param {ReturnType<typeof rocmComgrStatePaths>} state @param {{cc: string, cxx: string, cmake: string}} tools */
-function rocmResourcesConfig(state, tools) {
-  return {version: 1, target: "linux", source: path.join(state.source, "roots/rocmLlvm"),
+/** @param {Pick<RocmComgrBuildState, "source" | "llvmSdk" | "hipIncludeRoot">} state
+ * @param {{cc: string, cxx: string, cmake: string}} tools @param {"linux" | "win32"} [target] */
+function rocmResourcesConfig(state, tools, target = "linux") {
+  if (target !== "linux" && target !== "win32") {throw new Error("Unsupported ROCm resources target");}
+  return {version: 1, target, source: path.join(state.source, "roots/rocmLlvm"),
     clr: path.join(state.source, "roots/clr"), llvm: state.llvmSdk, cmake: tools.cmake, hipHeaders: state.hipIncludeRoot,
     hostCompilers: {cc: tools.cc, cxx: tools.cxx}};
 }
@@ -2868,7 +3002,7 @@ function rocmClrHipamdTreeish(revision) {
 
 /** Apply only the reviewed headers-only packaging guard to the verified CLR HIP subtree.
  * Preserve the exact patch copy, check/apply logs, and before/after target hashes in the tarred state.
- * @param {string} git @param {string} patchFile @param {ReturnType<typeof rocmComgrStatePaths>} state @param {NodeJS.ProcessEnv} env */
+ * @param {string} git @param {string} patchFile @param {RocmComgrBuildState} state @param {NodeJS.ProcessEnv} env */
 function applyRocmHipHeadersPatch(git, patchFile, state, env) {
   const target = path.join(state.clrHipamdRoot, "CMakeLists.txt");
   if (fileHash(patchFile) !== rocmHipHeaderPatchSha256 || fileHash(target) !== rocmHipCmakeOriginalSha256 ||
@@ -2927,7 +3061,7 @@ function assembleRocmHipHeaders(hipCommonRoot, clrHipamdRoot, generatedHeader, o
 
 /** The upstream configure is intentionally configure-only: the generated HIP version header is
  * required, but HIP runtime libraries are not built or installed in this prerequisite stage.
- * @param {ReturnType<typeof rocmComgrStatePaths>} state @param {{cc: string, cxx: string, cmake: string}} tools */
+ * @param {RocmComgrBuildState} state @param {{cc: string, cxx: string, cmake: string}} tools */
 function hipHeaderConfigureCommand(state, tools) {
   return [tools.cmake, "-S", state.clrHipamdRoot, "-B", state.hipBuildRoot, "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release",
     "-DCMAKE_INSTALL_PREFIX=" + state.hipInstallPrefix, "-DCMAKE_C_COMPILER=" + tools.cc, "-DCMAKE_CXX_COMPILER=" + tools.cxx,
@@ -2936,7 +3070,7 @@ function hipHeaderConfigureCommand(state, tools) {
 }
 
 /** Preserve the upstream producer's native path layout and pass only literal selected roots.
- * @param {ReturnType<typeof rocmComgrStatePaths>} state @param {{cc: string, cxx: string, cmake: string}} tools */
+ * @param {RocmComgrBuildState} state @param {{cc: string, cxx: string, cmake: string}} tools */
 function rocmComgrBuildCommands(state, tools) {
   const resources = rocmResourcesConfig(state, tools), device = path.join(state.resourcesRoot, "install");
   return [
@@ -2947,7 +3081,7 @@ function rocmComgrBuildCommands(state, tools) {
 }
 
 /** Re-admit the CPU-only HIP/device resource receipt and public COMGR SDK receipt together.
- * @param {ReturnType<typeof rocmComgrStatePaths>} state @param {{cc: string, cxx: string, cmake: string}} tools */
+ * @param {RocmComgrBuildState} state @param {{cc: string, cxx: string, cmake: string}} tools */
 function auditRocmComgrSdk(state, tools) {
   const resources = readBuildJson(path.join(state.resourcesRoot, "result.json")), device = path.join(state.resourcesRoot, "install"),
     git = gitSourceComponents("rocm"), actualDevice = comgrDeviceInputs(device), sdk = comgrSdkInputs(path.join(state.sdkRoot, "result.json")),
@@ -2978,26 +3112,23 @@ function auditRocmComgrSdk(state, tools) {
   return {resources, sdk};
 }
 
-/** Materialize only pinned HIP include files, then build and admit matching Linux resources and COMGR.
- * The job is a CPU-only build prerequisite, not GPU execution or runtime qualification.
- * @param {ReturnType<typeof ciPaths>} paths */
-function buildRocmComgrSdk(paths) {
-  const state = rocmComgrStatePaths(paths), git = canonicalExecutable("/usr/bin/git");
-  for (const output of [state.resourcesRoot, state.hipHeadersRoot, state.sdkRoot, state.resourcesConfig, state.sdkTar]) {
-    if (fs.existsSync(output)) {throw new Error("Native ROCm/COMGR stage refuses an existing output: " + path.basename(output));}
+/** Build the existing CPU-only HIP headers, ROCm resources and COMGR SDK from admitted roots.
+ * Source/tar admission and host provisioning remain the caller's responsibility. The LLVM callback
+ * is checked before output creation and again between the resource and COMGR producers.
+ * @param {RocmComgrBuildState} state @param {{cc:string,cxx:string,cmake:string}} tools
+ * @param {NodeJS.ProcessEnv} environment @param {()=>unknown} verifyLlvmAdmission */
+function buildRocmComgrFromInputs(state, tools, environment, verifyLlvmAdmission) {
+  const freshOutputs = [state.resourcesRoot, state.hipHeadersRoot, state.sdkRoot, state.resourcesConfig];
+  for (const output of freshOutputs) {
+    if (typeof output !== "string" || !path.isAbsolute(output) || path.resolve(output) !== output ||
+        fs.lstatSync(output, {throwIfNoEntry: false}) || fs.realpathSync(path.dirname(output)) !== path.dirname(output)) {
+      throw new Error("ROCm/COMGR producer requires fresh canonical output/config paths: " + String(output));
+    }
   }
-  extractState(state.incomingSourceTar, temp, [state.sourceName]);
-  const gitEnvironment = {...sdkSourceEnvironment(paths.env), GIT_ALLOW_PROTOCOL: "file", GIT_NO_LAZY_FETCH: "1",
+  if (typeof verifyLlvmAdmission !== "function") {throw new Error("ROCm/COMGR producer requires a read-only LLVM admission callback");}
+  verifyLlvmAdmission();
+  const git = canonicalExecutable("/usr/bin/git"), gitEnvironment = {...sdkSourceEnvironment(environment), GIT_ALLOW_PROTOCOL: "file", GIT_NO_LAZY_FETCH: "1",
     GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0"};
-  verifyRocmSources(paths, state, git);
-  extractState(state.incomingLlvmSourceTar, temp, state.llvmSourceArchiveRoots, [state.llvmSourceName]);
-  extractState(state.incomingLlvmSdkTar, temp, [state.llvmSdkName]);
-  runNode("scripts/fetch-native-sdk-sources.js", ["verify-build", state.llvmSource], paths.env, 2 * 60 * 1000);
-  provisionOneApi(paths, "/var/tmp/mom-dev-native-rocm-comgr-" + paths.suffix, 15 * 60 * 1000);
-  verifyLinuxLlvmAdmissionCi(paths);
-  for (const file of [state.incomingSourceTar, state.incomingLlvmSourceTar, state.incomingLlvmSdkTar]) {fs.unlinkSync(file);}
-  const tools = {cc: canonicalExecutable("/opt/intel/oneapi/compiler/2026.2/bin/icx"),
-    cxx: canonicalExecutable("/opt/intel/oneapi/compiler/2026.2/bin/icpx"), cmake: canonicalExecutable("/usr/bin/cmake")};
   fs.mkdirSync(state.hipHeadersRoot, {mode: 0o700});
   fs.mkdirSync(state.hipArchiveRoot, {mode: 0o700});
   fs.mkdirSync(state.hipSourceRoot, {mode: 0o700});
@@ -3041,27 +3172,48 @@ function buildRocmComgrSdk(paths) {
     generatedHeader: {path: relative(generatedHeader), sha256: fileHash(generatedHeader)},
     files: headerPackage.files, requiredHiprtcHeaders: headerPackage.required.map(file => path.relative(state.hipIncludeRoot, file).split(path.sep).join("/")),
     buildOnly: true, publicationQualified: false}, null, 2) + "\n", {flag: "wx", mode: 0o600});
-  const commands = rocmComgrBuildCommands(state, tools), buildEnv = {...paths.env, MOM_BUILD_JOBS: "2",
+  const commands = rocmComgrBuildCommands(state, tools), buildEnv = {...environment, MOM_BUILD_JOBS: "2",
     GIT_ALLOW_PROTOCOL: "file", GIT_NO_LAZY_FETCH: "1", GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0"};
   fs.writeFileSync(state.resourcesConfig, JSON.stringify(rocmResourcesConfig(state, tools), null, 2) + "\n", {flag: "wx", mode: 0o600});
   try {
     const resourceCommand = commands[0], comgrCommand = commands[1];
     if (!resourceCommand || !comgrCommand) {throw new Error("Native ROCm/COMGR command plan is incomplete");}
     runNode(resourceCommand.script, resourceCommand.args, buildEnv, 15 * 60 * 1000);
-    verifyLinuxLlvmAdmissionCi(paths);
+    verifyLlvmAdmission();
     runNode(comgrCommand.script, comgrCommand.args, buildEnv, 20 * 60 * 1000);
-    auditRocmComgrSdk(state, tools);
-    packState(state.sdkTar, temp, [state.sourceName, state.llvmSourceName, state.llvmSdkName, state.hipHeadersName,
-      state.resourcesName, state.sdkName]);
-    listState(state.sdkTar, [state.sourceName, state.llvmSourceName, state.llvmSdkName, state.hipHeadersName,
-      state.resourcesName, state.sdkName]);
+    return auditRocmComgrSdk(state, tools);
   } finally {
     if (fs.existsSync(state.resourcesConfig)) {fs.unlinkSync(state.resourcesConfig);}
   }
 }
 
+/** Restore/admit the same-run inputs, provision tools, and package the shared CPU-only ROCm producer.
+ * @param {ReturnType<typeof ciPaths>} paths */
+function buildRocmComgrSdk(paths) {
+  const state = rocmComgrStatePaths(paths), git = canonicalExecutable("/usr/bin/git");
+  for (const output of [state.resourcesRoot, state.hipHeadersRoot, state.sdkRoot, state.resourcesConfig, state.sdkTar]) {
+    if (fs.existsSync(output)) {throw new Error("Native ROCm/COMGR stage refuses an existing output: " + path.basename(output));}
+  }
+  extractState(state.incomingSourceTar, temp, [state.sourceName]);
+  verifyRocmSources(paths, state, git);
+  extractState(state.incomingLlvmSourceTar, temp, state.llvmSourceArchiveRoots, [state.llvmSourceName]);
+  extractState(state.incomingLlvmSdkTar, temp, [state.llvmSdkName]);
+  runNode("scripts/fetch-native-sdk-sources.js", ["verify-build", state.llvmSource], paths.env, 2 * 60 * 1000);
+  provisionOneApi(paths, "/var/tmp/mom-dev-native-rocm-comgr-" + paths.suffix, 15 * 60 * 1000);
+  // Retain the original pre-cleanup gate; the reusable producer also checks its own entry boundary.
+  verifyLinuxLlvmAdmissionCi(paths);
+  for (const file of [state.incomingSourceTar, state.incomingLlvmSourceTar, state.incomingLlvmSdkTar]) {fs.unlinkSync(file);}
+  const tools = {cc: canonicalExecutable("/opt/intel/oneapi/compiler/2026.2/bin/icx"),
+    cxx: canonicalExecutable("/opt/intel/oneapi/compiler/2026.2/bin/icpx"), cmake: canonicalExecutable("/usr/bin/cmake")};
+  buildRocmComgrFromInputs(state, tools, paths.env, () => verifyLinuxLlvmAdmissionCi(paths));
+  packState(state.sdkTar, temp, [state.sourceName, state.llvmSourceName, state.llvmSdkName, state.hipHeadersName,
+    state.resourcesName, state.sdkName]);
+  listState(state.sdkTar, [state.sourceName, state.llvmSourceName, state.llvmSdkName, state.hipHeadersName,
+    state.resourcesName, state.sdkName]);
+}
+
 /** Canonical paths accepted by the public ROCm host-runtime producer.
- * @param {ReturnType<typeof rocmHostStatePaths>} state */
+ * @param {Pick<ReturnType<typeof rocmHostStatePaths>, "llvmSdk">} state */
 function rocmHostBuildTools(state) {
   return {ar: canonicalExecutable("/usr/bin/ar"), cmake: canonicalExecutable("/usr/bin/cmake"),
     dpkgQuery: canonicalExecutable("/usr/bin/dpkg-query"), git: canonicalExecutable("/usr/bin/git"),
@@ -3074,7 +3226,8 @@ function rocmHostBuildTools(state) {
 }
 
 /** Query the installed libdrm metadata and keep static OS archive paths tied to its selected libdir.
- * @param {ReturnType<typeof rocmHostStatePaths>} state @param {ReturnType<typeof rocmHostBuildTools>} tools */
+ * @param {Pick<ReturnType<typeof rocmHostStatePaths>, "source" | "llvmSdk" | "sdkRoot" | "resourcesRoot">} state
+ * @param {ReturnType<typeof rocmHostBuildTools>} tools */
 function rocmHostBuildConfig(state, tools) {
   const environment = {...process.env};
   for (const name of Object.keys(environment)) {
@@ -3197,8 +3350,16 @@ function installRocmParserSource(paths, state) {
   } finally {fs.rmSync(extraction, {recursive: true, force: true});}
 }
 
+/** Restore the original host package and pinned parser inputs required by strict ROCm admission.
+ * @param {Pick<ReturnType<typeof ciPaths>, "env" | "runnerTemp">} paths @param {ReturnType<typeof rocmHostStatePaths>} state */
+function prepareRocmHostAdmission(paths, state) {
+  provisionRocmHostPackages(paths);
+  return installRocmParserSource(paths, state);
+}
+
 /** Admit the public static ROCm host-runtime SDK against this run's fresh COMGR/LLVM cohort.
- * @param {ReturnType<typeof rocmHostStatePaths>} state @param {ReturnType<typeof rocmHostBuildConfig>} config */
+ * @param {Pick<ReturnType<typeof rocmHostStatePaths>, "llvmSdk" | "sdkRoot" | "resourcesRoot" | "runtimeOutput">} state
+ * @param {ReturnType<typeof rocmHostBuildConfig>} config */
 function auditRocmHostSdk(state, config) {
   const receiptFile = path.join(state.runtimeOutput, "result.json"), sdk = nativeRocmHostInputs(receiptFile),
     record = readBuildJson(receiptFile);
@@ -3358,8 +3519,7 @@ function buildRocmHostSdk(paths) {
   provisionOneApi(paths, "/var/tmp/mom-dev-native-rocm-host-" + paths.suffix, 15 * 60 * 1000);
   verifyLinuxLlvmAdmissionCi(paths);
   fs.unlinkSync(state.incomingComgrTar);
-  provisionRocmHostPackages(paths);
-  const parser = installRocmParserSource(paths, state), tools = rocmHostBuildTools(state), config = rocmHostBuildConfig(state, tools);
+  const parser = prepareRocmHostAdmission(paths, state), tools = rocmHostBuildTools(state), config = rocmHostBuildConfig(state, tools);
   auditRocmComgrSdk(state, {cc: tools.cc, cxx: tools.cxx, cmake: tools.cmake});
   fs.mkdirSync(state.hostSdkRoot, {mode: 0o700});
   fs.writeFileSync(state.configFile, JSON.stringify(config, null, 2) + "\n", {flag: "wx", mode: 0o600});
@@ -3472,6 +3632,7 @@ function provisionOneApi(paths, workspace = "/var/tmp/mom-dev-native-llvm21-" + 
       throw new Error("Missing Linux LLVM build prerequisite: " + file);
     }
   }
+  linuxNativeSdkLldPath("/opt/intel/oneapi/compiler/2026.2/bin/icpx");
 }
 
 /** Provision only the existing pinned DPC++ and minimal CUDA developer components.
@@ -3494,340 +3655,6 @@ function provisionDpcppCudaInputs(paths, workspace, budgetMs = 40 * 60 * 1000) {
     }
   };
   sudo([]); sudo(["--validate-only"]);
-}
-
-/** Stage the SDK without changing its compiler alias chain. Selected-input admission
- * still rejects aliases that escape the staged root.
- * @param {string} sourceRoot @param {string} outputRoot */
-function copyDpcppBuildInputs(sourceRoot, outputRoot) {
-  if (!path.isAbsolute(sourceRoot) || !path.isAbsolute(outputRoot) || fs.realpathSync(sourceRoot) !== sourceRoot ||
-      !fs.statSync(sourceRoot).isDirectory() || path.resolve(outputRoot) !== outputRoot ||
-      fs.realpathSync(path.dirname(outputRoot)) !== path.dirname(outputRoot) || fs.lstatSync(outputRoot, {throwIfNoEntry: false}) ||
-      sourceRoot === outputRoot || outputRoot.startsWith(sourceRoot + path.sep) || sourceRoot.startsWith(outputRoot + path.sep)) {
-    throw new Error("DPC++ SDK copy needs canonical disjoint roots and a fresh output");
-  }
-  fs.cpSync(sourceRoot, outputRoot, {recursive: true, errorOnExist: true, force: false, verbatimSymlinks: true});
-}
-
-/** Resolve the bounded CUDA input closure used by DPC++ and the source-built ACPP CUDA backend.
- * Follow package symlinks only inside the pinned SDK root; omit install-dev's external NVRTC header link.
- * @param {string} sourceRoot @param {string} outputRoot */
-function copyCudaBuildInputs(sourceRoot, outputRoot) {
-  const root = fs.realpathSync(sourceRoot);
-  /** @type {Array<{path:string,target:string}>} */ const excluded = [];
-  if (root !== sourceRoot || !fs.lstatSync(sourceRoot).isDirectory() || fs.lstatSync(outputRoot, {throwIfNoEntry: false})) {
-    throw new Error("CUDA input copy requires the exact original SDK root and a new output");
-  }
-  /** @param {string} relative @param {Set<string>} ancestors */
-  function copy(relative, ancestors = new Set()) {
-    if (!safeRelative(relative)) {throw new Error("Unsafe CUDA input path");}
-    const source = path.join(sourceRoot, ...relative.split("/")), destination = path.join(outputRoot, ...relative.split("/")), link = fs.lstatSync(source);
-    if (link.isSymbolicLink()) {
-      const target = fs.realpathSync(source), rel = path.relative(root, target);
-      // install-dev adds only this NVRTC header as a link to its separate runtime package.
-      if (relative === "include/nvrtc.h" && target === "/opt/mom/nvrtc-13.3.33/include/nvrtc.h") {
-        excluded.push({path: relative, target}); return;
-      }
-      if (path.isAbsolute(rel) || rel === ".." || rel.startsWith(".." + path.sep)) {throw new Error("CUDA input symlink escapes the pinned SDK: " + relative);}
-    }
-    const real = fs.realpathSync(source), stat = fs.statSync(real), rel = path.relative(root, real);
-    if (path.isAbsolute(rel) || rel === ".." || rel.startsWith(".." + path.sep)) {throw new Error("CUDA input escaped its SDK root: " + relative);}
-    if (stat.isDirectory()) {
-      if (ancestors.has(real)) {throw new Error("CUDA input directory symlink cycle: " + relative);}
-      fs.mkdirSync(destination, {recursive: true, mode: 0o755});
-      const next = new Set(ancestors); next.add(real);
-      for (const name of fs.readdirSync(real).sort()) {copy(relative + "/" + name, next);}
-    } else if (stat.isFile()) {
-      fs.mkdirSync(path.dirname(destination), {recursive: true, mode: 0o755});
-      fs.copyFileSync(real, destination, fs.constants.COPYFILE_EXCL);
-      fs.chmodSync(destination, stat.mode & 0o755);
-    } else {throw new Error("CUDA input is not a regular file or directory: " + relative);}
-  }
-  fs.mkdirSync(outputRoot, {mode: 0o755});
-  for (const relative of ["bin/nvcc", "bin/nvcc.profile", "bin/ptxas", "bin/fatbinary", "include", "nvvm/libdevice/libdevice.10.bc", "lib64/libcudart.so",
-    "lib64/libcudart_static.a", "lib64/libculibos.a"]) {copy(relative);}
-  return excluded;
-}
-
-/** Check every selected CUDA package's transported terms, not just CUDART's similar text.
- * Package-owned doc-directory aliases are captured at origin and retained as data only.
- * @param {{root:string}} state @param {Record<string,string>} packages @param {any} notices */
-function auditCudaPackageCopyrights(state, packages, notices) {
-  if (!Array.isArray(notices) || notices.length !== cudaPackageNames.length) {throw new Error("CUDA package copyrights are incomplete");}
-  for (const [index, row] of notices.entries()) {
-    const name = cudaPackageNames[index];
-    if (!name) {throw new Error("Unexpected CUDA package copyright");}
-    const sourcePath = "/usr/share/doc/" + name + "/copyright",
-      destination = path.join(state.root, "licenses", name, "copyright"), alias = row?.resolvedSourcePath !== undefined,
-      stat = fs.lstatSync(destination, {throwIfNoEntry: false});
-    if (!hasExactKeys(row, ["package", "version", "sourcePath", "path", "sha256", ...(alias ? ["resolvedSourcePath", "ownershipPath"] : [])]) ||
-        row.package !== name || row.version !== packages[name] || row.sourcePath !== sourcePath || row.path !== destination ||
-        !/^[a-f0-9]{64}$/.test(row.sha256 || "") || !stat?.isFile() || stat.isSymbolicLink() ||
-        fs.realpathSync(destination) !== destination || stat.size < 1 || stat.size > (2 << 20) || fileHash(destination) !== row.sha256 ||
-        alias && (typeof row.resolvedSourcePath !== "string" || !row.resolvedSourcePath.startsWith("/usr/share/doc/") ||
-          path.normalize(row.resolvedSourcePath) !== row.resolvedSourcePath || row.ownershipPath !== path.dirname(sourcePath))) {
-      throw new Error("CUDA package copyright path, identity or body is missing or changed: " + name);
-    }
-  }
-}
-
-/** A configure-only probe proves the pruned root satisfies the actual CMake CUDA package contract. */
-function cudaToolkitProbeCMakeLists() {
-  return `cmake_minimum_required(VERSION 3.20)
-project(mom_dpcpp_cuda_input_probe NONE)
-find_package(CUDAToolkit 10.1 REQUIRED)
-if(NOT TARGET CUDA::cudart)
-  message(FATAL_ERROR "FindCUDAToolkit did not create CUDA::cudart")
-endif()
-get_target_property(_mom_cudart CUDA::cudart IMPORTED_LOCATION)
-if(NOT _mom_cudart)
-  get_target_property(_mom_cudart CUDA::cudart IMPORTED_IMPLIB)
-endif()
-if(NOT _mom_cudart OR NOT EXISTS "\${_mom_cudart}")
-  message(FATAL_ERROR "CUDA::cudart has no usable selected link input")
-endif()
-file(REAL_PATH "\${CUDA_CUDART}" _mom_cudart_found)
-file(REAL_PATH "\${_mom_cudart}" _mom_cudart_imported)
-file(REAL_PATH "\${CUDAToolkit_ROOT}/lib64/libcudart.so" _mom_cudart_selected)
-if(NOT _mom_cudart_found STREQUAL _mom_cudart_selected OR NOT _mom_cudart_imported STREQUAL _mom_cudart_selected)
-  message(FATAL_ERROR "CMake selected a CUDART outside the run-scoped SDK")
-endif()
-if(NOT EXISTS "\${CUDAToolkit_ROOT}/include/cuda.h" OR NOT EXISTS "\${CUDAToolkit_ROOT}/include/nvml.h" OR NOT EXISTS "\${CUDAToolkit_ROOT}/include/cuda_runtime.h")
-  message(FATAL_ERROR "CMake CUDA root is missing required CUDA/NVML headers")
-endif()
-file(WRITE "\${CMAKE_BINARY_DIR}/mom-cuda-toolkit-result.txt" "\${CUDAToolkit_VERSION}\\n\${CUDA_CUDART}\\n\${_mom_cudart}\\n\${CUDAToolkit_INCLUDE_DIRS}\\n")
-message(STATUS "DPCPP_CUDA_TOOLKIT_PROBE=PASS\\n\${CUDAToolkit_VERSION}\\n\${CUDA_CUDART}\\n\${_mom_cudart}\\n\${CUDAToolkit_INCLUDE_DIRS}")
-`;
-}
-
-/** Run CMake's real FindCUDAToolkit in configure-only mode and retain bounded command/result evidence.
- * @param {ReturnType<typeof dpcppCudaInputsStatePaths>} state @param {Pick<ReturnType<typeof ciPaths>, "env">} paths */
-function probeCudaToolkit(state, paths) {
-  const cmake = canonicalExecutable("/usr/bin/cmake"), command = [cmake, "-S", state.cudaCmakeSource, "-B", state.cudaCmakeBuild,
-      "-DCUDAToolkit_ROOT=" + state.cudaRoot], script = cudaToolkitProbeCMakeLists();
-  if (fs.lstatSync(state.cudaCmakeBuild, {throwIfNoEntry: false}) || fs.existsSync(state.cudaCmakeLists) ||
-      !path.isAbsolute(state.cudaCmakeSource)) {throw new Error("CUDA toolkit smoke output already exists or is not canonical");}
-  fs.mkdirSync(state.cudaCmakeSource, {mode: 0o700});
-  fs.writeFileSync(state.cudaCmakeLists, script, {flag: "wx", mode: 0o600});
-  try {
-    const result = spawnSync(cmake, command.slice(1), {cwd: repo, env: paths.env, encoding: "utf8", timeout: 60_000, maxBuffer: 8 << 20}),
-      output = (result.stdout || "") + (result.stderr || ""), resultFile = path.join(state.cudaCmakeBuild, "mom-cuda-toolkit-result.txt");
-    if (result.error || result.signal || result.status !== 0) {
-      fs.writeFileSync(state.cudaCmakeEvidence, JSON.stringify({version: 1, command, status: result.status, signal: result.signal,
-        error: result.error?.message || null, stdout: result.stdout || "", stderr: result.stderr || ""}, null, 2) + "\n", {flag: "wx", mode: 0o600});
-      console.error(output.slice(-8192));
-      throw new Error("Pruned CUDA inputs failed the actual CMake FindCUDAToolkit smoke", {cause: result.error});
-    }
-    const fields = fs.readFileSync(resultFile, "utf8").replace(/\r/g, "").trimEnd().split("\n");
-    if (fields.length !== 4 || !/^12\.6\./.test(fields[0] || "") || fields[1] !== path.join(state.cudaRoot, "lib64/libcudart.so") ||
-        fields[2] !== fields[1] || !(fields[3] || "").split(";").includes(path.join(state.cudaRoot, "include")) ||
-        !output.includes("DPCPP_CUDA_TOOLKIT_PROBE=PASS")) {throw new Error("CMake CUDA toolkit probe selected incomplete or ambient inputs");}
-    const evidence = {version: 1, command, status: 0, tool: {path: cmake, sha256: fileHash(cmake)},
-      script: {path: state.cudaCmakeLists, sha256: fileHash(state.cudaCmakeLists)},
-      result: {toolkitVersion: fields[0], cudart: fields[1], importedCudart: fields[2], includeDirectories: fields[3]},
-      stdout: result.stdout || "", stderr: result.stderr || ""};
-    fs.writeFileSync(state.cudaCmakeEvidence, JSON.stringify(evidence, null, 2) + "\n", {flag: "wx", mode: 0o600});
-    return evidence;
-  } finally {fs.rmSync(state.cudaCmakeBuild, {recursive: true, force: true});}
-}
-
-/** @param {string} root @param {string} relative @param {boolean} [executable] */
-function inputFileRecord(root, relative, executable = false) {
-  if (!safeRelative(relative)) {throw new Error("Invalid selected SDK input path");}
-  if (!fs.lstatSync(root).isDirectory() || fs.realpathSync(root) !== root) {throw new Error("Selected SDK root must be a real canonical directory: " + root);}
-  const file = path.join(root, ...relative.split("/")), real = fs.realpathSync(file), rel = path.relative(fs.realpathSync(root), real), stat = fs.statSync(file);
-  if (path.isAbsolute(rel) || rel === ".." || rel.startsWith(".." + path.sep) || !stat.isFile() ||
-      (executable && (stat.mode & 0o111) === 0)) {throw new Error("Selected SDK input is missing, unsafe, or not executable: " + relative);}
-  return {path: file, sha256: fileHash(file)};
-}
-
-/** Capture exact source, installer, compiler, CUDA header, and minimal CMake/device-resource provenance.
- * @param {ReturnType<typeof dpcppCudaInputsStatePaths>} state @param {string} sourceTarSha256
- * @param {Record<string,string>} packageVersions @param {{version:string, top:string, dpcppVersion:string}} cudaProbe
- * @param {ReturnType<typeof capturePackageCopyright>[]} cudaCopyrights
- * @param {Array<{path:string,target:string}>} excluded */
-function dpcppCudaInputsManifest(state, sourceTarSha256, packageVersions, cudaProbe, cudaCopyrights, excluded) {
-  const installer = path.join(repo, "scripts/install-dev.sh"), text = fs.readFileSync(installer, "utf8"),
-    release = text.match(/^DPCPP_RELEASE=\$\{MOM_DPCPP_RELEASE-([^}]+)\}$/m)?.[1], dpcppSha = text.match(/^DPCPP_SHA256=\$\{MOM_DPCPP_SHA256-([0-9a-f]{64})\}$/m)?.[1],
-    cudaKey = text.match(/^CUDA_KEYRING_SHA256=([0-9a-f]{64})$/m)?.[1], cudaSeries = text.match(/^CUDA_VERSION=\$\{MOM_CUDA_VERSION-([0-9]+-[0-9]+)\}$/m)?.[1],
-    cmakeEvidence = readBuildJson(state.cudaCmakeEvidence);
-  if (!release || dpcppSha !== dpcppPins.sdk || !cudaKey || cudaSeries !== "12-6" || !/^[0-9a-f]{64}$/.test(sourceTarSha256)) {
-    throw new Error("Pinned DPC++/CUDA installer provenance is incomplete or drifted");
-  }
-  const marker = path.join(state.dpcppRoot, ".mom-toolchain-sha256");
-  dpcppSdkIdentity(cudaProbe.dpcppVersion, fs.readFileSync(marker, "utf8"));
-  const nvccVersion = cudaProbe.version;
-  if (!/\brelease 12\.6,/.test(nvccVersion) || cudaProbe.top !== state.cudaRoot ||
-      !hasExactKeys(packageVersions, cudaPackageNames) ||
-      Object.values(packageVersions).some(value => typeof value !== "string" || !/^(?:[0-9]+:)?12\.6\.[A-Za-z0-9.+~:-]{1,120}$/.test(value)) ||
-      cmakeEvidence.status !== 0 || !hasExactKeys(cmakeEvidence.result, ["toolkitVersion", "cudart", "importedCudart", "includeDirectories"]) ||
-      typeof cmakeEvidence.result.toolkitVersion !== "string" ||
-      cmakeEvidence.result.toolkitVersion !== "12.6" && !cmakeEvidence.result.toolkitVersion.startsWith("12.6.") ||
-      cmakeEvidence.result.cudart !== path.join(state.cudaRoot, "lib64/libcudart.so") ||
-      cmakeEvidence.result.importedCudart !== cmakeEvidence.result.cudart ||
-      typeof cmakeEvidence.result.includeDirectories !== "string" ||
-      !cmakeEvidence.result.includeDirectories.split(";").includes(path.join(state.cudaRoot, "include"))) {
-    throw new Error("CUDA compiler query does not identify the run-scoped CUDA 12.6 root");
-  }
-  const headers = sdkSourceFiles(path.join(state.cudaRoot, "include")), packages = {...packageVersions};
-  auditCudaPackageCopyrights(state, packages, cudaCopyrights);
-  return {version: 1, target: "linux-dpcpp23-cuda12.6-inputs", buildOnly: true, compiled: false, executed: false, publicationQualified: false,
-    scope: "Pinned DPC++ compiler plus CUDA 12.6 headers, nvcc configure probe and ptxas/fatbinary inputs, CUDART and libdevice; exact static CUDA archives are carried for the source-built ACPP runtime, which is built separately.",
-    source: {name: state.linux.sourceName, tar: path.basename(state.linux.sourceTar), tarSha256: sourceTarSha256,
-      fetchReceiptSha256: fileHash(state.linux.fetchReceipt), linuxPreparationSha256: fileHash(state.linux.preparedReceipt),
-      compilerPreparationSha256: fileHash(state.linux.compilerPreparedReceipt)},
-    producer: {installer: {path: installer, sha256: fileHash(installer), dpcppRelease: release, dpcppArchiveSha256: dpcppSha,
-      cudaSeries: cudaSeries.replace("-", "."), cudaKeyringSha256: cudaKey}, helperSha256: fileHash(__filename),
-    consumerSha256: fileHash(path.join(repo, "scripts/build-native-dpcpp-sdk.js"))},
-    dpcpp: {root: state.dpcppRoot, archiveSha256: dpcppPins.sdk, marker: inputFileRecord(state.dpcppRoot, ".mom-toolchain-sha256"),
-      clang: inputFileRecord(state.dpcppRoot, "bin/clang", true), clangxx: inputFileRecord(state.dpcppRoot, "bin/clang++", true),
-      sycl: inputFileRecord(state.dpcppRoot, "lib/libsycl.so.9"), jit: inputFileRecord(state.dpcppRoot, "lib/libsycl-jit.so"), clangVersion: cudaProbe.dpcppVersion.trim()},
-    cuda: {root: state.cudaRoot, series: "12.6", packages, nvcc: inputFileRecord(state.cudaRoot, "bin/nvcc", true),
-      profile: inputFileRecord(state.cudaRoot, "bin/nvcc.profile"),
-      ptxas: inputFileRecord(state.cudaRoot, "bin/ptxas", true), fatbinary: inputFileRecord(state.cudaRoot, "bin/fatbinary", true),
-      nvccVersion, cmakeRoot: cudaProbe.top,
-      versionEvidence: {path: state.cudaVersionEvidence, sha256: fileHash(state.cudaVersionEvidence)},
-      cmakeProbeEvidence: {path: state.cudaProbeEvidence, sha256: fileHash(state.cudaProbeEvidence)},
-      cmakeLists: {path: state.cudaCmakeLists, sha256: fileHash(state.cudaCmakeLists)},
-      cmakeEvidence: {path: state.cudaCmakeEvidence, sha256: fileHash(state.cudaCmakeEvidence)},
-      headers: {files: headers, sha256: jsonHash(JSON.stringify(headers))}, licenses: cudaCopyrights,
-      libdevice: inputFileRecord(state.cudaRoot, "nvvm/libdevice/libdevice.10.bc"), cudart: inputFileRecord(state.cudaRoot, "lib64/libcudart.so"),
-      staticRuntime: {cudart: inputFileRecord(state.cudaRoot, "lib64/libcudart_static.a"),
-        culibos: inputFileRecord(state.cudaRoot, "lib64/libculibos.a")}, excluded}};
-}
-
-/** Re-admit the small handoff without treating it as a completed DPC++ runtime SDK.
- * Historical installer/helper digests require an external same-run artifact and manifest pin.
- * @param {ReturnType<typeof dpcppCudaInputsStatePaths>} state @param {any} record @param {string} [expectedManifestSha256] */
-function auditDpcppCudaInputs(state, record, expectedManifestSha256) {
-  // A transported tree must not redefine its trusted root through a directory symlink.
-  for (const directory of [state.root, state.dpcppRoot, state.cudaRoot, path.join(state.cudaRoot, "include")]) {
-    if (!fs.lstatSync(directory).isDirectory() || fs.realpathSync(directory) !== directory) {
-      throw new Error("DPC++/CUDA handoff roots must be real canonical directories: " + directory);
-    }
-  }
-  // These are transported vendor build inputs, not a source-built SDK. An external
-  // manifest pin preserves their original acquisition identity across unrelated installer
-  // or CI edits; it never bypasses the current consumer, version or payload checks below.
-  const externallyPinned = expectedManifestSha256 !== undefined;
-  if (externallyPinned) {
-    const manifestStat = fs.lstatSync(state.manifest, {throwIfNoEntry: false});
-    if (!/^[a-f0-9]{64}$/.test(expectedManifestSha256) || !manifestStat?.isFile() || manifestStat.isSymbolicLink() ||
-        fs.realpathSync(state.manifest) !== state.manifest || fileHash(state.manifest) !== expectedManifestSha256) {
-      throw new Error("DPC++/CUDA manifest differs from its external same-run pin");
-    }
-    const sealedRecord = readBuildJson(state.manifest);
-    if (!isDeepStrictEqual(record, sealedRecord) || fileHash(state.manifest) !== expectedManifestSha256) {
-      throw new Error("DPC++/CUDA record does not match its externally pinned manifest");
-    }
-  }
-  const producerFile = path.join(repo, "scripts/build-native-dpcpp-sdk.js"), expectedSources = {name: state.linux.sourceName,
-      tar: path.basename(state.linux.sourceTar)}, installer = path.join(repo, "scripts/install-dev.sh"), installerText = fs.readFileSync(installer, "utf8"),
-    release = installerText.match(/^DPCPP_RELEASE=\$\{MOM_DPCPP_RELEASE-([^}]+)\}$/m)?.[1],
-    keyring = installerText.match(/^CUDA_KEYRING_SHA256=([0-9a-f]{64})$/m)?.[1];
-  if (!hasExactKeys(record, ["version", "target", "buildOnly", "compiled", "executed", "publicationQualified", "scope", "source", "producer", "dpcpp", "cuda"]) ||
-      record.version !== 1 || record.target !== "linux-dpcpp23-cuda12.6-inputs" || record.buildOnly !== true || record.compiled !== false ||
-      record.executed !== false || record.publicationQualified !== false ||
-      record.scope !== "Pinned DPC++ compiler plus CUDA 12.6 headers, nvcc configure probe and ptxas/fatbinary inputs, CUDART and libdevice; exact static CUDA archives are carried for the source-built ACPP runtime, which is built separately." ||
-      !hasExactKeys(record.source, ["name", "tar", "tarSha256", "fetchReceiptSha256", "linuxPreparationSha256", "compilerPreparationSha256"]) ||
-      record.source.name !== expectedSources.name || record.source.tar !== expectedSources.tar ||
-      ![record.source.tarSha256, record.source.fetchReceiptSha256, record.source.linuxPreparationSha256, record.source.compilerPreparationSha256].every(value => /^[0-9a-f]{64}$/.test(value || "")) ||
-      record.source.fetchReceiptSha256 !== fileHash(state.linux.fetchReceipt) || record.source.linuxPreparationSha256 !== fileHash(state.linux.preparedReceipt) ||
-      record.source.compilerPreparationSha256 !== fileHash(state.linux.compilerPreparedReceipt) ||
-      !hasExactKeys(record.producer, ["installer", "helperSha256", "consumerSha256"]) ||
-      !/^[a-f0-9]{64}$/.test(record.producer.helperSha256 || "") ||
-      !externallyPinned && record.producer.helperSha256 !== fileHash(__filename) ||
-      !/^[a-f0-9]{64}$/.test(record.producer.consumerSha256 || "") || record.producer.consumerSha256 !== fileHash(producerFile) ||
-      !hasExactKeys(record.producer.installer, ["path", "sha256", "dpcppRelease", "dpcppArchiveSha256", "cudaSeries", "cudaKeyringSha256"]) ||
-      record.producer.installer.path !== path.join(repo, "scripts/install-dev.sh") || !/^[a-f0-9]{64}$/.test(record.producer.installer.sha256 || "") ||
-      !externallyPinned && record.producer.installer.sha256 !== fileHash(record.producer.installer.path) ||
-      record.producer.installer.dpcppRelease !== release || record.producer.installer.dpcppArchiveSha256 !== dpcppPins.sdk ||
-      record.producer.installer.cudaSeries !== "12.6" || record.producer.installer.cudaKeyringSha256 !== keyring ||
-      !hasExactKeys(record.dpcpp, ["root", "archiveSha256", "marker", "clang", "clangxx", "sycl", "jit", "clangVersion"]) ||
-      record.dpcpp.root !== state.dpcppRoot || record.dpcpp.archiveSha256 !== dpcppPins.sdk ||
-      !hasExactKeys(record.cuda, ["root", "series", "packages", "nvcc", "profile", "ptxas", "fatbinary", "nvccVersion", "cmakeRoot", "versionEvidence", "cmakeProbeEvidence",
-        "cmakeLists", "cmakeEvidence", "headers", "licenses", "libdevice", "cudart", "staticRuntime", "excluded"]) ||
-      record.cuda.root !== state.cudaRoot || record.cuda.series !== "12.6" || record.cuda.cmakeRoot !== state.cudaRoot ||
-      !hasExactKeys(record.cuda.staticRuntime, ["cudart", "culibos"]) ||
-      !/\brelease 12\.6,/.test(record.cuda.nvccVersion || "") ||
-      !hasExactKeys(record.cuda.versionEvidence, ["path", "sha256"]) || record.cuda.versionEvidence.path !== state.cudaVersionEvidence ||
-      record.cuda.versionEvidence.sha256 !== fileHash(state.cudaVersionEvidence) || fs.readFileSync(state.cudaVersionEvidence, "utf8") !== record.cuda.nvccVersion ||
-      !hasExactKeys(record.cuda.cmakeProbeEvidence, ["path", "sha256"]) || record.cuda.cmakeProbeEvidence.path !== state.cudaProbeEvidence ||
-      record.cuda.cmakeProbeEvidence.sha256 !== fileHash(state.cudaProbeEvidence) ||
-      !hasExactKeys(record.cuda.cmakeLists, ["path", "sha256"]) || record.cuda.cmakeLists.path !== state.cudaCmakeLists ||
-      record.cuda.cmakeLists.sha256 !== fileHash(state.cudaCmakeLists) ||
-      !hasExactKeys(record.cuda.cmakeEvidence, ["path", "sha256"]) || record.cuda.cmakeEvidence.path !== state.cudaCmakeEvidence ||
-      record.cuda.cmakeEvidence.sha256 !== fileHash(state.cudaCmakeEvidence) ||
-      !hasExactKeys(record.cuda.packages, cudaPackageNames) ||
-      Object.values(record.cuda.packages).some(value => typeof value !== "string" || !/^(?:[0-9]+:)?12\.6\.[A-Za-z0-9.+~:-]{1,120}$/.test(value)) ||
-      !Array.isArray(record.cuda.excluded) || record.cuda.excluded.some((/** @type {{path?:unknown,target?:unknown}} */ item) => !hasExactKeys(item, ["path", "target"]) ||
-        item.path !== "include/nvrtc.h" || item.target !== "/opt/mom/nvrtc-13.3.33/include/nvrtc.h")) {
-    throw new Error("DPC++/CUDA input handoff provenance is malformed or stale");
-  }
-  auditCudaPackageCopyrights(state, record.cuda.packages, record.cuda.licenses);
-  const marker = fs.readFileSync(path.join(state.dpcppRoot, ".mom-toolchain-sha256"), "utf8");
-  dpcppSdkIdentity(record.dpcpp.clangVersion, marker);
-  // Probe scratch may move with RUNNER_TEMP; unlike the SDK root, a pinned producer path
-  // need only stay canonical, bounded and tied to this run. Unpinned admission stays local.
-  const cmakeEvidence = readBuildJson(state.cudaCmakeEvidence), cmake = cmakeEvidence?.tool?.path,
-    cmakeBuild = externallyPinned ? cmakeEvidence?.command?.[4] : state.cudaCmakeBuild,
-    validCmakeBuild = typeof cmakeBuild === "string" && path.isAbsolute(cmakeBuild) && Buffer.byteLength(cmakeBuild) <= 4096 &&
-      !/[\r\n\0]/.test(cmakeBuild) && path.normalize(cmakeBuild) === cmakeBuild &&
-      path.basename(cmakeBuild) === path.basename(state.cudaCmakeBuild),
-    expectedCmakeCommand = [cmake, "-S", state.cudaCmakeSource, "-B", cmakeBuild, "-DCUDAToolkit_ROOT=" + state.cudaRoot];
-  if (!hasExactKeys(cmakeEvidence, ["version", "command", "status", "tool", "script", "result", "stdout", "stderr"]) || cmakeEvidence.version !== 1 ||
-      cmakeEvidence.status !== 0 || !validCmakeBuild || !isDeepStrictEqual(cmakeEvidence.command, expectedCmakeCommand) ||
-      !hasExactKeys(cmakeEvidence.tool, ["path", "sha256"]) || typeof cmake !== "string" || !path.isAbsolute(cmake) ||
-      /[\r\n\0]/.test(cmake) || typeof cmakeEvidence.tool.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(cmakeEvidence.tool.sha256) ||
-      !hasExactKeys(cmakeEvidence.script, ["path", "sha256"]) || cmakeEvidence.script.path !== state.cudaCmakeLists ||
-      cmakeEvidence.script.sha256 !== fileHash(state.cudaCmakeLists) ||
-      !hasExactKeys(cmakeEvidence.result, ["toolkitVersion", "cudart", "importedCudart", "includeDirectories"]) ||
-      !/^12\.6\./.test(cmakeEvidence.result.toolkitVersion) || cmakeEvidence.result.cudart !== path.join(state.cudaRoot, "lib64/libcudart.so") ||
-      cmakeEvidence.result.importedCudart !== cmakeEvidence.result.cudart ||
-      typeof cmakeEvidence.result.includeDirectories !== "string" ||
-      !cmakeEvidence.result.includeDirectories.split(";").includes(path.join(state.cudaRoot, "include")) ||
-      typeof cmakeEvidence.stdout !== "string" || !cmakeEvidence.stdout.includes("DPCPP_CUDA_TOOLKIT_PROBE=PASS") || typeof cmakeEvidence.stderr !== "string") {
-    throw new Error("CUDA handoff is missing the successful same-root CMake toolkit smoke");
-  }
-  for (const [root, row, relative, executable] of [[state.dpcppRoot, record.dpcpp.marker, ".mom-toolchain-sha256", false],
-    [state.dpcppRoot, record.dpcpp.clang, "bin/clang", true], [state.dpcppRoot, record.dpcpp.clangxx, "bin/clang++", true],
-    [state.dpcppRoot, record.dpcpp.sycl, "lib/libsycl.so.9", false], [state.dpcppRoot, record.dpcpp.jit, "lib/libsycl-jit.so", false],
-    [state.cudaRoot, record.cuda.nvcc, "bin/nvcc", true], [state.cudaRoot, record.cuda.profile, "bin/nvcc.profile", false],
-    [state.cudaRoot, record.cuda.ptxas, "bin/ptxas", true],
-    [state.cudaRoot, record.cuda.fatbinary, "bin/fatbinary", true],
-    [state.cudaRoot, record.cuda.libdevice, "nvvm/libdevice/libdevice.10.bc", false], [state.cudaRoot, record.cuda.cudart, "lib64/libcudart.so", false],
-    [state.cudaRoot, record.cuda.staticRuntime?.cudart, "lib64/libcudart_static.a", false],
-    [state.cudaRoot, record.cuda.staticRuntime?.culibos, "lib64/libculibos.a", false]]) {
-    if (!hasExactKeys(row, ["path", "sha256"]) || row.path !== path.join(root, relative) || !/^[0-9a-f]{64}$/.test(row.sha256 || "") ||
-        inputFileRecord(root, relative, executable).sha256 !== row.sha256) {throw new Error("Selected DPC++/CUDA input changed: " + relative);}
-  }
-  if (!isStaticArchive(record.cuda.staticRuntime.cudart.path) || !isStaticArchive(record.cuda.staticRuntime.culibos.path)) {
-    throw new Error("CUDA static-runtime inputs are not regular static archives");
-  }
-  const headers = sdkSourceFiles(path.join(state.cudaRoot, "include"));
-  const probeText = fs.readFileSync(state.cudaProbeEvidence, "utf8"), probeTop = probeText.match(/^#\$ TOP=(.+)$/m)?.[1]?.trim();
-  if (!hasExactKeys(record.cuda.headers, ["files", "sha256"]) || !isDeepStrictEqual(headers, record.cuda.headers.files) ||
-      record.cuda.headers.sha256 !== jsonHash(JSON.stringify(headers)) ||
-      !["cuda.h", "nvml.h", "cuda_runtime.h"].every(name => Object.hasOwn(headers, name)) || !probeTop || path.resolve(probeTop) !== state.cudaRoot ||
-      record.cuda.excluded.length > 1) {
-    throw new Error("CUDA headers are incomplete or changed after handoff");
-  }
-  return record;
-}
-
-/** NVCC deliberately rejects CMake's sentinel argument after printing toolkit metadata.
- * Accept that exact diagnostic, not arbitrary failed queries or an ambient toolkit root.
- * @param {Pick<import("node:child_process").SpawnSyncReturns<string>,"status"|"signal"|"error"|"stdout"|"stderr">} version
- * @param {Pick<import("node:child_process").SpawnSyncReturns<string>,"status"|"signal"|"error"|"stdout"|"stderr">} probe
- * @param {string} root */
-function cudaToolkitProbeRoot(version, probe, root) {
-  const text = (probe.stdout || "") + (probe.stderr || ""), top = text.match(/^#\$ TOP=(.+)$/m)?.[1]?.trim(),
-    sentinel = probe.status === 1 && /^nvcc fatal\s*: Don't know what to do with '__cmake_determine_cuda'\s*$/m.test(probe.stderr || "");
-  if (version.error || version.signal || version.status !== 0 || probe.error || probe.signal ||
-      probe.status !== 0 && !sentinel || !top || path.resolve(top) !== root) {
-    throw new Error("Captured CUDA root does not satisfy the public CMake toolkit probe", {cause: probe.error || version.error});
-  }
-  return root;
 }
 
 /** Reject an unpinned or redirected source tar before any extraction or provisioning.
@@ -3868,33 +3695,8 @@ function buildDpcppCudaInputs(paths) {
   const workspace = "/var/tmp/mom-dev-native-dpcpp-cuda-" + paths.suffix;
   if (fs.lstatSync(workspace, {throwIfNoEntry: false})) {throw new Error("DPC++/CUDA installer workspace already exists");}
   provisionDpcppCudaInputs(paths, workspace);
-  fs.mkdirSync(state.root, {mode: 0o700});
-  copyDpcppBuildInputs("/opt/dpcpp", state.dpcppRoot);
-  const excluded = copyCudaBuildInputs("/usr/local/cuda-12.6", state.cudaRoot), packages = spawnSync("/usr/bin/dpkg-query",
-    // These are dpkg's fields, not JavaScript template expressions.
-    // eslint-disable-next-line no-template-curly-in-string
-    ["-W", "-f=${Package}\t${Version}\n", ...cudaPackageNames],
-    {encoding: "utf8", env: paths.env, timeout: 30000, maxBuffer: 1 << 20});
-  if (packages.error || packages.signal || packages.status !== 0) {throw new Error("CUDA package provenance query failed", {cause: packages.error});}
-  const packageVersions = Object.fromEntries(packages.stdout.trim().split(/\r?\n/).map(line => line.split("\t")));
-  const cudaCopyrights = cudaPackageNames.map(name => capturePackageCopyright(state, name, packageVersions[name]));
-  const clangVersion = spawnSync(path.join(state.dpcppRoot, "bin/clang++"), ["--version"], {encoding: "utf8", env: paths.env,
-    timeout: 30000, maxBuffer: 1 << 20});
-  if (clangVersion.error || clangVersion.signal || clangVersion.status !== 0 || !clangVersion.stdout) {
-    throw new Error("Pinned DPC++ compiler identity query failed", {cause: clangVersion.error});
-  }
-  const nvcc = path.join(state.cudaRoot, "bin/nvcc"), version = spawnSync(nvcc, ["--version"], {encoding: "utf8", env: paths.env, timeout: 30000, maxBuffer: 1 << 20}),
-    probe = spawnSync(nvcc, ["-v", "__cmake_determine_cuda"], {encoding: "utf8", env: paths.env, timeout: 30000, maxBuffer: 8 << 20});
-  const probeText = (probe.stdout || "") + (probe.stderr || "");
-  // Retain raw diagnostics even when admission fails, so a cold installer need not be repeated to diagnose it.
-  fs.writeFileSync(state.cudaVersionEvidence, version.stdout || "", {flag: "wx", mode: 0o600});
-  fs.writeFileSync(state.cudaProbeEvidence, probeText, {flag: "wx", mode: 0o600});
-  const top = cudaToolkitProbeRoot(version, probe, state.cudaRoot);
-  probeCudaToolkit(state, paths);
-  const record = dpcppCudaInputsManifest(state, sourceTarSha256, packageVersions,
-    {version: version.stdout, top, dpcppVersion: clangVersion.stdout}, cudaCopyrights, excluded);
-  fs.writeFileSync(state.manifest, JSON.stringify(record, null, 2) + "\n", {flag: "wx", mode: 0o600});
-  auditDpcppCudaInputs(state, readBuildJson(state.manifest));
+  stageDpcppCudaInputs(state, {dpcpp: "/opt/dpcpp", cuda: "/usr/local/cuda-12.6"},
+    {kind: "source-tar", sha256: sourceTarSha256}, paths.env);
   packState(state.sdkTar, temp, [state.name]); listState(state.sdkTar, [state.name]);
   const outputs = {bundle_sha256: fileHash(state.sdkTar), manifest_sha256: fileHash(state.manifest)};
   appendWorkflowOutputs(paths.env, outputs);
@@ -4086,6 +3888,31 @@ function auditZstdSdk(state, tools, toolsFile, readers = {}) {
 
 /** @param {{suffix: string}} paths @param {string} stage */
 function stateTarName(paths, stage) {return "native-llvm21-state-" + paths.suffix + "-" + stage + ".tar";}
+
+/** The reusable Linux LLVM jobs can consume only these explicit same-run predecessor states. */
+const linuxLlvmCiStageDefinitions = /** @type {Readonly<Record<string, {previousStage: string, artifactStage: string, phases?: readonly string[]}>>} */ (Object.freeze({
+  "llvm-common": {previousStage: "configured", artifactStage: "llvm-core-optimization",
+    phases: ["llvm-foundation", "llvm-core-analysis", "llvm-core-optimization"]},
+  "llvm-core-codegen": {previousStage: "llvm-core-optimization", artifactStage: "llvm-core-codegen"},
+  "llvm-backends-clang": {previousStage: "llvm-core-codegen", artifactStage: "clang-sema",
+    phases: ["llvm-x86", "llvm-nvptx", "llvm-amdgpu", "clang-base", "clang-sema"]},
+  "clang-frontend": {previousStage: "clang-sema", artifactStage: "clang-frontend"},
+}));
+
+/** Derive exact incoming/output names for one allowlisted reusable LLVM phase.
+ * @param {string} stage @param {NodeJS.ProcessEnv} [environment] */
+function linuxLlvmCiStagePlan(stage, environment = process.env) {
+  const definition = Object.hasOwn(linuxLlvmCiStageDefinitions, stage) ? linuxLlvmCiStageDefinitions[stage] : undefined,
+    run = environment["GITHUB_RUN_ID"] || "", attempt = environment["GITHUB_RUN_ATTEMPT"] || "";
+  if (!definition || !/^[0-9]{1,20}$/.test(run) || !/^[1-9][0-9]{0,5}$/.test(attempt)) {
+    throw new Error("Linux LLVM CI needs one maintained stage and exact run-attempt identity");
+  }
+  const suffix = run + "-" + attempt;
+  return {previousStage: definition.previousStage, artifactStage: definition.artifactStage,
+    inputArtifactName: stateTarName({suffix}, definition.previousStage),
+    outputArtifactName: stateTarName({suffix}, definition.artifactStage)};
+}
+
 /** Configure emits the configured-state handoff consumed by the first LLVM build.
  * @param {string} stage @returns {string} */
 function outputStageName(stage) {return stage === "configure" ? "configured" : stage;}
@@ -4111,6 +3938,24 @@ function restorePrior(paths, stage, includeSdk = true, deadlineEpoch) {
 
 /** @param {ReturnType<typeof ciPaths>} paths @param {string} stage */
 function packCurrent(paths, stage) {packState(outputTar(paths, stage), temp, [paths.sourceName, paths.sdkName]);}
+
+/** Restore/provision once for a short, measured group of existing public build phases.
+ * Internal receipts retain their original order; only the last state is transported.
+ * @param {ReturnType<typeof ciPaths>} paths @param {string} stage
+ * @param {{restore?: (paths: ReturnType<typeof ciPaths>, stage: string) => void,
+ *   provision?: (paths: ReturnType<typeof ciPaths>) => void, execute?: typeof runNode,
+ *   pack?: (paths: ReturnType<typeof ciPaths>, stage: string) => void}} [operations] */
+function buildLinuxLlvmGroupCi(paths, stage, operations = {}) {
+  const group = Object.hasOwn(linuxLlvmCiStageDefinitions, stage) ? linuxLlvmCiStageDefinitions[stage] : undefined;
+  if (!group?.phases?.length) {throw new Error("Linux LLVM CI needs a maintained phase group");}
+  const restore = operations.restore || restorePrior, provision = operations.provision || provisionOneApi,
+    execute = operations.execute || runNode, pack = operations.pack || packCurrent,
+    builder = "scripts/build-native-llvm21-sdk.js";
+  restore(paths, group.previousStage);
+  provision(paths);
+  for (const phase of group.phases) {execute(builder, ["build", paths.output, phase], paths.env);}
+  pack(paths, group.artifactStage);
+}
 
 /** Verify both SDK receipts and exact original inputs before any same-run SDK state is retained.
  * @param {ReturnType<typeof ciPaths>} paths @param {number} [verifyTimeoutMs] */
@@ -4837,16 +4682,32 @@ function readWindowsLlvmPinnedJson(file, expectedSha256, label) {
  * libraryPolicy?:{msvcLibraries:string[],ucrtLibraries:string[],importLibraries:string[]}}} input
  * @returns {{descriptor:Record<string,unknown>,provenance:Record<string,unknown>}} */
 function composeWindowsLlvmSdkDescriptor(input) {
+  return composeWindowsLlvmDescriptor(input, "runAttempt");
+}
+
+/** Local builds retain the same SDK/tool/runtime admission without inventing CI provenance.
+ * @param {Omit<Parameters<typeof composeWindowsLlvmSdkDescriptor>[0],"hermesExpectation"> &
+ * {hermesExpectation:{kind:"hermes",localBuildId:string,handoffSha256:string}}} input */
+function composeLocalWindowsLlvmSdkDescriptor(input) {
+  return composeWindowsLlvmDescriptor(input, "localBuildId");
+}
+
+/** Only the transport entrypoint differs; the descriptor and source policy stay shared.
+ * @param {Parameters<typeof composeWindowsLlvmSdkDescriptor>[0] | Parameters<typeof composeLocalWindowsLlvmSdkDescriptor>[0]} input
+ * @param {"runAttempt"|"localBuildId"} identityKey */
+function composeWindowsLlvmDescriptor(input, identityKey) {
   const pinKeys = ["resultSha256", "descriptorSha256", "filesSha256", "overlaySha256"], toolKeys = ["clangCl", "lldLink", "llvmNm", "clangResourceInclude"],
     policy = validateWindowsLlvmLibraryPolicy(input?.libraryPolicy === undefined ? defaultWindowsNativeLibraryPolicy() : input.libraryPolicy);
   if (!input || !path.isAbsolute(input.windowsSdkRoot) || /[\r\n\0]/.test(input.windowsSdkRoot) ||
       !hasExactKeys(input.windowsSdkPins, pinKeys) || Object.values(input.windowsSdkPins).some(hash => !/^[a-f0-9]{64}$/.test(hash)) ||
-      !hasExactKeys(input.hermesExpectation, ["kind", "runAttempt", "handoffSha256"]) || input.hermesExpectation.kind !== "hermes" ||
+      !hasExactKeys(input.hermesExpectation, ["kind", identityKey, "handoffSha256"]) || input.hermesExpectation.kind !== "hermes" ||
       !hasExactKeys(input.tools, toolKeys) || typeof input.tools.clangResourceInclude !== "string" ||
       !path.isAbsolute(input.tools.clangResourceInclude) || /[\r\n\0]/.test(input.tools.clangResourceInclude)) {
     throw new Error("Windows LLVM descriptor composition requires explicit source pins and tool paths");
   }
-  const handoff = windowsControllerHandoffInputs(input.hermesRoot, input.hermesExpectation);
+  const handoff = "runAttempt" in input.hermesExpectation ?
+    windowsControllerHandoffInputs(input.hermesRoot, input.hermesExpectation) :
+    windowsLocalControllerHandoffInputs(input.hermesRoot, input.hermesExpectation);
   if (handoff.kind !== "hermes") {throw new Error("Windows LLVM descriptor requires a Hermes handoff");}
   const hermes = handoff, intelRuntime = hermes.intelRuntime;
   if (!intelRuntime) {throw new Error("Windows LLVM descriptor requires Intel runtime inputs in the Hermes handoff");}
@@ -4915,7 +4776,8 @@ function composeWindowsLlvmSdkDescriptor(input) {
     windowsSdk: {root, resultSha256: input.windowsSdkPins.resultSha256, descriptorSha256: input.windowsSdkPins.descriptorSha256,
       filesSha256: input.windowsSdkPins.filesSha256, overlaySha256: input.windowsSdkPins.overlaySha256,
       selectedFileCount: actualTree.files.length, selectedBytes: actualTree.bytes},
-    hermes: {root: path.resolve(input.hermesRoot), runAttempt: hermes.runAttempt, handoffSha256: hermes.handoffSha256,
+    hermes: {root: path.resolve(input.hermesRoot),
+      ...("runAttempt" in hermes ? {runAttempt: hermes.runAttempt} : {localBuildId: hermes.localBuildId}), handoffSha256: hermes.handoffSha256,
       intelRuntime: {libraries: windowsIntelRuntimeCatalog.libraries.map(row => ({name: row.name, path: intelRuntime.libraries[row.name],
         manifestPath: row.path, bytes: row.bytes, sha256: row.sha256})),
       licenses: windowsIntelRuntimeCatalog.licenses.map(row => ({path: intelRuntime.licenses[row.path], manifestPath: row.path,
@@ -5779,15 +5641,6 @@ function windowsControllerHermesBuildCommand(state, tools) {
     tools.git, tools.cmake, tools.cc, tools.cxx, tools.ninja, "2"]};
 }
 
-/** @param {string} output @param {NodeJS.ProcessEnv} environment @param {number} timeoutMs */
-async function fetchWindowsControllerOpenSsl(output, environment, timeoutMs) {
-  const pins = {openssl: {sha256: opensslPin.sha256}}, specs = {openssl: {fileName: "openssl-" + opensslPin.version + ".tar.gz",
-    url: buildArchiveUrls.openssl, origins: ["https://github.com", "https://release-assets.githubusercontent.com"]}};
-  return fetchArchiveCohort(output, environment, true, {target: "windows-openssl", sourceLabel: "Windows OpenSSL source",
-    archiveLabel: "OpenSSL source archive", specs, pins, maxBytes: 128 << 20, timeoutMs,
-    recipeFor: opensslBuildRecipe, pinSnapshot: () => JSON.stringify(pins), fetchImpl: globalThis.fetch});
-}
-
 /** @param {string} file @param {string} label */
 function windowsControllerRegularFile(file, label) {
   const stat = fs.lstatSync(file, {throwIfNoEntry: false});
@@ -5866,10 +5719,83 @@ function windowsControllerReadJson(file, maximum, label) {
   return readBuildJson(file);
 }
 
-/** The archive comes from this run's pinned Linux Hermes source job; do not fetch Git on Windows.
- * @param {ReturnType<typeof windowsControllerStatePaths>} state @param {string} tarTool @param {number} timeoutMs */
-function extractWindowsHermesSource(state, tarTool, timeoutMs) {
-  if (state.kind !== "hermes" || fs.existsSync(state.hermesExtractRoot)) {throw new Error("Windows Hermes source extraction needs a new input root");}
+/** @param {unknown} name @returns {name is string} */
+function windowsHermesSourceName(name) {
+  return typeof name === "string" && name.length <= 160 && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name) && !/[. ]$/.test(name) &&
+    !/^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(name);
+}
+
+/** @param {string} value */
+function windowsHermesHasControl(value) {
+  return Array.from(value).some(char => char.charCodeAt(0) < 0x20 || char.charCodeAt(0) === 0x7f);
+}
+
+/** @param {unknown} value @returns {value is string} */
+function canonicalHermesOriginalRoot(value) {
+  return typeof value === "string" && value.length <= 4096 && path.posix.isAbsolute(value) && path.posix.normalize(value) === value &&
+    path.posix.resolve(value) === value && !windowsHermesHasControl(value) && !value.includes("\\") && value !== "/" &&
+    path.posix.basename(value) === "hermes" && path.posix.basename(path.posix.dirname(value)) === "roots";
+}
+
+/** The original WSL fetch receipts bind source paths but are never rewritten for transport.
+ * @param {{hermesExtractRoot:string,hermesSourceName:string}} input @param {string} [originalRoot] */
+function readWindowsHermesSource(input, originalRoot) {
+  if (!input || Object.keys(input).sort().join(",") !== "hermesExtractRoot,hermesSourceName" || !windowsHermesSourceName(input.hermesSourceName) ||
+      typeof input.hermesExtractRoot !== "string" || !path.isAbsolute(input.hermesExtractRoot) || path.resolve(input.hermesExtractRoot) !== input.hermesExtractRoot ||
+      windowsHermesHasControl(input.hermesExtractRoot)) {
+    throw new Error("Windows Hermes source reader needs its exact canonical extracted root and safe archive root name");
+  }
+  const expectedOriginalRoot = originalRoot === undefined ? "/tmp/" + input.hermesSourceName + "/roots/hermes" : originalRoot;
+  if (!canonicalHermesOriginalRoot(expectedOriginalRoot)) {throw new Error("Hermes source original root must be a canonical POSIX roots/hermes path");}
+  const extractStat = fs.lstatSync(input.hermesExtractRoot, {throwIfNoEntry: false}), parent = path.dirname(input.hermesExtractRoot),
+    parentStat = fs.lstatSync(parent, {throwIfNoEntry: false});
+  if (!parentStat?.isDirectory() || parentStat.isSymbolicLink() || fs.realpathSync(parent).toLowerCase() !== parent.toLowerCase() ||
+      !extractStat?.isDirectory() || extractStat.isSymbolicLink() || fs.realpathSync(input.hermesExtractRoot).toLowerCase() !== input.hermesExtractRoot.toLowerCase()) {
+    throw new Error("Windows Hermes extracted source root or its parent is missing or redirected");
+  }
+  const source = path.join(input.hermesExtractRoot, input.hermesSourceName), sourceStat = fs.lstatSync(source, {throwIfNoEntry: false});
+  if (!sourceStat?.isDirectory() || sourceStat.isSymbolicLink() || fs.realpathSync(source).toLowerCase() !== source.toLowerCase()) {
+    throw new Error("Windows Hermes archive root is missing or redirected");
+  }
+  const rootsFile = path.join(source, "roots.json"), fetchFile = path.join(source, "fetch.json"),
+    roots = windowsControllerReadJson(rootsFile, 1 << 20, "Hermes source roots receipt"),
+    fetch = windowsControllerReadJson(fetchFile, 4 << 20, "Hermes source fetch receipt"),
+    recipe = sourceRecipe("hermes"), expectedRecipeSha = jsonHash(JSON.stringify(recipe));
+  windowsControllerRegularFile(path.join(source, "roots/hermes/config"), "Extracted Hermes bare-source configuration");
+  if (!hasExactKeys(roots, ["hermes"]) || roots.hermes !== expectedOriginalRoot || fetch.version !== 1 || fetch.target !== "hermes" ||
+      fetch.status !== "PASS" || fetch.networked !== true || fetch.buildOnly !== true || fetch.compiled !== false || fetch.publicationQualified !== false ||
+      !hasExactKeys(fetch.git, ["path", "sha256"]) || !path.posix.isAbsolute(fetch.git.path) || !/^[a-f0-9]{64}$/.test(fetch.git.sha256 || "") ||
+      fetch.fetcherSha256 !== fileHash(path.join(repo, "scripts/fetch-native-sdk-sources.js")) ||
+      !hasExactKeys(fetch.recipe, ["sha256", "files"]) || fetch.recipe.sha256 !== expectedRecipeSha || !isDeepStrictEqual(fetch.recipe.files, recipe.graph) ||
+      !hasExactKeys(fetch.components, ["hermes"]) || fetch.components.hermes?.origin !== origins.hermes ||
+      fetch.components.hermes?.revision !== hermesPins.revision || fetch.components.hermes?.root !== expectedOriginalRoot ||
+      fetch.components.hermes?.gitDirectory !== "bare" || fetch.components.hermes?.shallow !== true || fetch.components.hermes?.partialClone !== false) {
+    throw new Error("Hermes source receipts do not bind the original pinned bare Git root and current source recipe");
+  }
+  return {source: path.join(source, "roots/hermes"), rootsFile, fetchFile, fetch, fetchSha256: fileHash(fetchFile), rootsSha256: fileHash(rootsFile)};
+}
+
+/** The archive comes from the original Linux Hermes source cohort; do not fetch Git on Windows.
+ * @param {Pick<ReturnType<typeof windowsControllerStatePaths>, "kind" | "hermesExtractRoot" | "hermesSourceTar" | "hermesSourceName">} state
+ * @param {string} tarTool @param {number} timeoutMs @param {string} [originalRoot] */
+function extractWindowsHermesSource(state, tarTool, timeoutMs, originalRoot) {
+  if (!state || state.kind !== "hermes" || !windowsHermesSourceName(state.hermesSourceName) ||
+      typeof state.hermesExtractRoot !== "string" || !path.isAbsolute(state.hermesExtractRoot) ||
+      path.resolve(state.hermesExtractRoot) !== state.hermesExtractRoot || windowsHermesHasControl(state.hermesExtractRoot) ||
+      typeof state.hermesSourceTar !== "string" || !path.isAbsolute(state.hermesSourceTar) ||
+      typeof tarTool !== "string" || !path.isAbsolute(tarTool)) {
+    throw new Error("Windows Hermes source extraction needs its exact role, safe root names and absolute paths");
+  }
+  if (originalRoot !== undefined && !canonicalHermesOriginalRoot(originalRoot)) {
+    throw new Error("Hermes source original root must be a canonical POSIX roots/hermes path");
+  }
+  const outputParent = path.dirname(state.hermesExtractRoot), outputParentStat = fs.lstatSync(outputParent, {throwIfNoEntry: false}),
+    outputStat = fs.lstatSync(state.hermesExtractRoot, {throwIfNoEntry: false});
+  if (!outputParentStat?.isDirectory() || outputParentStat.isSymbolicLink() || fs.realpathSync(outputParent).toLowerCase() !== outputParent.toLowerCase() ||
+      outputStat || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 30 * 60 * 1000) {
+    throw new Error("Windows Hermes source extraction needs a safe root, canonical new output and bounded tar timeout");
+  }
+  windowsControllerRegularFile(tarTool, "Hermes source tar tool");
   const archiveStat = windowsControllerRegularFile(state.hermesSourceTar, "Same-run Hermes source tar");
   if (archiveStat.size < 1024 || archiveStat.size > (2 * 1024 ** 3)) {throw new Error("Same-run Hermes source tar is outside its 2 GiB bound");}
   /** @param {string[]} args @param {number} maxBuffer */
@@ -5890,21 +5816,8 @@ function extractWindowsHermesSource(state, tarTool, timeoutMs) {
       !names.includes(state.hermesSourceName + "/roots.json")) {throw new Error("Same-run Hermes source tar omits its bare source or original fetch receipts");}
   fs.mkdirSync(state.hermesExtractRoot, {mode: 0o700});
   runTar(["-xf", state.hermesSourceTar, "-C", state.hermesExtractRoot, "--", state.hermesSourceName], 4 << 20);
-  const source = path.join(state.hermesExtractRoot, state.hermesSourceName), rootsFile = path.join(source, "roots.json"), fetchFile = path.join(source, "fetch.json"),
-    roots = windowsControllerReadJson(rootsFile, 1 << 20, "Hermes source roots receipt"), fetch = windowsControllerReadJson(fetchFile, 4 << 20, "Hermes source fetch receipt"),
-    originalRoot = "/tmp/" + state.hermesSourceName + "/roots/hermes", recipe = sourceRecipe("hermes"),
-    expectedRecipeSha = jsonHash(JSON.stringify(recipe));
-  if (!hasExactKeys(roots, ["hermes"]) || roots.hermes !== originalRoot || fetch.version !== 1 || fetch.target !== "hermes" || fetch.status !== "PASS" ||
-      fetch.networked !== true || fetch.buildOnly !== true || fetch.compiled !== false || fetch.publicationQualified !== false ||
-      !hasExactKeys(fetch.git, ["path", "sha256"]) || !path.posix.isAbsolute(fetch.git.path) || !/^[a-f0-9]{64}$/.test(fetch.git.sha256 || "") ||
-      fetch.fetcherSha256 !== fileHash(path.join(repo, "scripts/fetch-native-sdk-sources.js")) ||
-      !hasExactKeys(fetch.recipe, ["sha256", "files"]) || fetch.recipe.sha256 !== expectedRecipeSha || !isDeepStrictEqual(fetch.recipe.files, recipe.graph) ||
-      !hasExactKeys(fetch.components, ["hermes"]) || fetch.components.hermes?.origin !== origins.hermes ||
-      fetch.components.hermes?.revision !== hermesPins.revision || fetch.components.hermes?.root !== originalRoot ||
-      fetch.components.hermes?.gitDirectory !== "bare" || fetch.components.hermes?.shallow !== true || fetch.components.hermes?.partialClone !== false) {
-    throw new Error("Same-run Hermes source receipt does not bind the pinned bare Git root and current source recipe");
-  }
-  return {source: path.join(source, "roots/hermes"), rootsFile, fetchFile, fetch, fetchSha256: fileHash(fetchFile), rootsSha256: fileHash(rootsFile), tarSha256: fileHash(state.hermesSourceTar)};
+  return {...readWindowsHermesSource({hermesExtractRoot: state.hermesExtractRoot, hermesSourceName: state.hermesSourceName}, originalRoot),
+    tarSha256: fileHash(state.hermesSourceTar)};
 }
 
 /** @typedef {{files:Array<{path:string,bytes:number,sha256:string}>,bytes:number}} WindowsControllerFileLedger */
@@ -5974,7 +5887,8 @@ function verifyWindowsHermesSourceHandoff(files, sources) {
 }
 
 /** Pack only a selected build-only closure and its unchanged producer receipts.
- * @param {ReturnType<typeof windowsControllerStatePaths>} state @param {string} tarTool @param {Record<string,unknown>} handoff */
+ * @param {Pick<ReturnType<typeof windowsControllerStatePaths>,"archive"|"runnerTemp"|"outputName"|"outputRoot">} state
+ * @param {string} tarTool @param {Record<string,unknown>} handoff */
 function packWindowsControllerHandoff(state, tarTool, handoff, timeoutMs = 5 * 60 * 1000) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 5 * 60 * 1000) {throw new Error("Windows controller handoff timeout is invalid");}
   if (fs.existsSync(state.archive)) {throw new Error("Windows controller handoff tar already exists");}
@@ -6041,7 +5955,8 @@ async function buildWindowsControllerIoCi() {
   const ioFetch = await fetchIoArchives(state.ioSource, environment, true, {timeoutMs: Math.min(ioBudget.timeoutMs, 10 * 60 * 1000)}),
     ioFetched = verifyIoArchives(state.ioSource), ioFetchFile = path.join(state.ioSource, "fetch.json"), ioFetchSha = fileHash(ioFetchFile),
     opensslBudget = windowsControllerDeadlineBudget(state.deadlineEpoch, "fetch"),
-    opensslFetch = await fetchWindowsControllerOpenSsl(state.opensslSource, environment, Math.min(opensslBudget.timeoutMs, 10 * 60 * 1000)),
+    opensslFetch = await fetchWindowsOpenSslArchives(state.opensslSource, environment, true,
+      {timeoutMs: Math.min(opensslBudget.timeoutMs, 10 * 60 * 1000)}),
     opensslFetchFile = path.join(state.opensslSource, "fetch.json"), opensslArchive = path.join(state.opensslSource, "openssl-" + opensslPin.version + ".tar.gz"),
     opensslFetchSha = fileHash(opensslFetchFile);
   if (ioFetch.status !== "PASS" || ioFetch.target !== "io" || ioFetched.status !== "PASS" || ioFetched.target !== "io" ||
@@ -6284,8 +6199,12 @@ async function runStage(args) {
   if (stage === "linux-sdk-descriptor") {buildLinuxNativeSdkDescriptor(paths); return;}
   if (stage === "linux-native-application") {buildLinuxNativeApplication(paths); return;}
   if (stage === "io-openssl") {buildIoOpenSsl(paths); return;}
-  const previousByStage = /** @type {Record<string, string>} */ ({configure: "sources", "llvm-targets": "configured", "clang-base": "llvm-targets", "clang-sema": "clang-base",
-    "clang-frontend": "clang-sema", lld: "clang-frontend", tools: "lld", "install-audit": "tools"});
+  if (Object.hasOwn(linuxLlvmCiStageDefinitions, stage) && linuxLlvmCiStageDefinitions[stage]?.phases) {
+    buildLinuxLlvmGroupCi(paths, stage); return;
+  }
+  const previousByStage = /** @type {Record<string, string>} */ ({configure: "sources",
+    ...Object.fromEntries(Object.entries(linuxLlvmCiStageDefinitions).map(([name, definition]) => [name, definition.previousStage])),
+    "install-audit": "clang-frontend"});
   const previous = previousByStage[stage];
   if (!previous) {throw new Error("Unknown native Linux SDK stage: " + stage);}
   restorePrior(paths, previous, stage !== "configure");
@@ -6295,13 +6214,16 @@ async function runStage(args) {
     fs.mkdirSync(paths.sdkRoot, {mode: 0o700});
     const command = linuxLlvmConfigureCommand(paths);
     runNode(command.script, command.args, paths.env);
-  } else if (["llvm-targets", "clang-base", "clang-sema", "clang-frontend", "lld", "tools"].includes(stage)) {
+  } else if (["llvm-core-codegen", "clang-frontend"].includes(stage)) {
     provisionOneApi(paths);
     runNode(builder, ["build", paths.output, stage], paths.env);
     packCurrent(paths, stage);
     return;
   } else if (stage === "install-audit") {
     provisionOneApi(paths);
+    // The short linker/tool tail shares this restore; original public receipts
+    // still gate installation, audit and every downstream tool handoff.
+    for (const phase of ["lld", "tools"]) {runNode(builder, ["build", paths.output, phase], paths.env);}
     runNode(builder, ["install", paths.output], paths.env);
     runNode(builder, ["audit", paths.output], paths.env, 15 * 60 * 1000);
     packState(path.join(paths.runnerTemp, "native-linux-llvm21-sdk-" + paths.suffix + ".tar"), temp, [paths.sourceName, paths.sdkName]);
@@ -6310,7 +6232,8 @@ async function runStage(args) {
   packCurrent(paths, outputStageName(stage));
 }
 
-module.exports = {safeRelative, listState, packState, extractState, ciPaths, provisionOneApi, verifyIoSource, verifyLinuxLlvmAdmissionCi,
+module.exports = {safeRelative, listState, packState, extractState, ciPaths, provisionOneApi, verifyIoSource, verifyLinuxLlvmAdmissionCi, buildLinuxLlvmGroupCi,
+  linuxLlvmCiStagePlan,
   admitLinuxLlvmOutput, linuxOpenSslTools, buildLinuxLlvmToolsCi, buildLinuxLlvmSdkHandoff,
   windowsNativeCoreStatePaths, windowsNativeCoreDescriptor, windowsNativeCoreDeadlineBudget, auditWindowsNativeCoreOutput, packWindowsNativeCoreHandoff, buildWindowsNativeCoreCi,
   windowsHostSdkStatePaths, windowsHostSdkDeadlineBudget, windowsHostSdkPackageMembers, buildWindowsHostSdkSourcesCi,
@@ -6319,33 +6242,38 @@ module.exports = {safeRelative, listState, packState, extractState, ciPaths, pro
   windowsNativeLlvmCiStatePaths, windowsNativeLlvmCiRunDeadlineBudget, windowsNativeLlvmCiDeadlineBudget,
   windowsNativeLlvmCiDeadlineRecord, windowsNativeLlvmCiPreflight, buildWindowsNativeLlvmCi,
   windowsNativeLlvmDescriptorCiStatePaths, windowsNativeLlvmDescriptorCiPreflight, buildWindowsNativeLlvmDescriptorCi,
-  validateWindowsLlvmLibraryPolicy, auditWindowsLlvmToolFile, mapWindowsLlvmSdkLibraries, composeWindowsLlvmSdkDescriptor,
+  validateWindowsLlvmLibraryPolicy, auditWindowsLlvmToolFile, mapWindowsLlvmSdkLibraries, composeWindowsLlvmSdkDescriptor, composeLocalWindowsLlvmSdkDescriptor,
   windowsControllerStatePaths, windowsControllerDeadlineBudget, windowsControllerTools, windowsControllerIoBuildCommands,
-  windowsControllerHermesBuildCommand, extractWindowsHermesSource, windowsControllerPackageInventory, windowsControllerIntelRuntimeEntries,
-  copyWindowsControllerIntelRuntime,
+  windowsControllerHermesBuildCommand, windowsHermesSourceName, canonicalHermesOriginalRoot, readWindowsHermesSource, extractWindowsHermesSource,
+  windowsControllerPackageInventory, windowsControllerIntelRuntimeEntries,
+  copyWindowsControllerIntelRuntime, copyWindowsControllerPath,
   verifyWindowsHermesSourceHandoff, packWindowsControllerHandoff, buildWindowsControllerIoCi, buildWindowsControllerHermesCi,
   auditIoOpenSsl, ioOpenSslBuildCommands, ioOpenSslChildTimeout, linuxLlvmConfigureCommand, ioFinalTar, hermesStatePaths, assertHermesFetchProvenance, verifyHermesSource,
   acppStatePaths, assertAcppFetchProvenance, assertAcppPreparedSource, verifyAcppSource, fetchAcppSource,
   linuxSourceStatePaths, assertSdkFetchProvenance, assertPreparedSdkPaths, linuxSourceFetchArgs, linuxSourcePreparationPlan, verifyLinuxSources, fetchLinuxSources,
-  dpcppCudaInputsStatePaths, dpcppSourceArchivePin, dpcppCudaInputPins, copyDpcppBuildInputs, copyCudaBuildInputs, cudaToolkitProbeCMakeLists, cudaToolkitProbeRoot, probeCudaToolkit, dpcppCudaInputsManifest, auditDpcppCudaInputs, buildDpcppCudaInputs,
+  dpcppCudaInputsStatePaths, dpcppSourceArchivePin, dpcppCudaInputPins, cudaPackageNames, auditCudaPackageCopyrights,
+  copyDpcppBuildInputs, copyCudaBuildInputs, cudaToolkitProbeCMakeLists, cudaToolkitProbeRoot, probeCudaToolkit, inputFileRecord,
+  preparedDpcppCudaSourceOrigin, dpcppCudaInputsManifest, auditDpcppCudaInputs, stageDpcppCudaInputs, buildDpcppCudaInputs,
   gnuHeadersStatePaths, buildLinuxGnuHeaders, buildWindowsGnuHeaders, auditGnuHeaders, capturePackageCopyright,
-  linuxJitResourcesStatePaths, linuxJitResourceBuildPlan, linuxJitResourceProfile, buildLinuxJitResources,
+  linuxJitResourcesStatePaths, linuxJitResourceBuildPlan, linuxJitResourceProfile, buildLinuxJitResourceTree, assertLinuxJitResourceManifest,
+  auditLinuxJitResourceTree, buildLinuxJitResources,
   linuxJitBootstrapOverlayPlan, seedLinuxJitBootstrapOverlay, auditLinuxJitBootstrapOverlay,
   linuxJitSdkStatePaths, linuxJitSdkArtifactPhase, linuxJitSdkInputManifest, linuxJitSdkBuildPlan, restoreLinuxJitSdkInputs,
-  auditLinuxJitSdkConfigureArtifacts, auditLinuxJitSdkState, buildLinuxJitSdkPhase,
+  auditLinuxJitSdkConfigureArtifacts, auditLinuxJitCompilerState, auditLinuxJitSdkState, buildLinuxJitSdkPhase,
   linuxJitRuntimeProofPaths, packLinuxJitRuntimeProofFiles, extractLinuxJitRuntimeProof, buildLinuxJitStaticSdk,
   rocmParserSource, assertRocmParserReceipt, rocmSourceStatePaths, rocmSourceFetchArgs, verifyRocmParserSource, fetchRocmParserSource, verifyRocmSources, fetchRocmSources, rocmComgrStatePaths,
-  rocmHostStatePaths, rocmHostBuildTools, rocmHostBuildConfig, provisionRocmHostPackages, admitRocmParserInstallation, installRocmParserSource, auditRocmHostSdk, buildRocmHostSdk,
+  rocmHostStatePaths, rocmHostBuildTools, rocmHostBuildConfig, provisionRocmHostPackages, admitRocmParserInstallation, installRocmParserSource,
+  prepareRocmHostAdmission, auditRocmHostSdk, buildRocmHostSdk,
   rocmResourcesConfig, exportRocmSourceTree, rocmClrHipamdTreeish, applyRocmHipHeadersPatch, assembleRocmHipHeaders, hipHeaderConfigureCommand,
-  rocmComgrBuildCommands, auditRocmComgrSdk, buildRocmComgrSdk,
+  rocmComgrBuildCommands, auditRocmComgrSdk, buildRocmComgrFromInputs, buildRocmComgrSdk,
   rocmHostNoticeRows, captureRocmHostNoticeSources, auditRocmHostNoticeSources,
   hermesBuildTools, hermesBuildCommand, assertHermesSdkFingerprints, auditHermesSdk, fetchHermesSource, buildHermesSdk,
   zstdStatePaths, linuxZstdTools, zstdBuildCommand, auditZstdSdk, fetchZstdSource, buildZstdSdk,
   openmpStatePaths, openmpBuildTools, openmpBuildCommand, auditOpenmpSdk, buildOpenmpSdk,
   acppCudaHipSdkStatePaths, acppCudaHipSdkBuildCommand, assertAcppCudaHipSdk, auditAcppCudaHipSdk, buildAcppCudaHipSdk,
   nvrtcStatePaths, cudaImagesStatePaths, cudaImageWorkerRecipe, cudaNoticeSourcePlan, retainCudaNoticeSources,
-  auditCudaNoticeFiles, auditCudaNoticeSources, buildLinuxCudaImages,
-  linuxNativeSdkDescriptorStatePaths, linuxNativeSdkDescriptorConfig, linuxNativeSdkGnuNoticeSources, linuxNativeSdkRocmNoticeSources, auditLinuxNativeSdkDescriptorInputArchive,
+  auditCudaNoticeFiles, auditCudaNoticeSources, buildLinuxCudaImageTree, buildLinuxCudaImages,
+  linuxNativeSdkDescriptorStatePaths, linuxNativeSdkLldPath, linuxNativeSdkDescriptorConfig, linuxNativeSdkGnuNoticeSources, linuxNativeSdkRocmNoticeSources, auditLinuxNativeSdkDescriptorInputArchive,
   auditLinuxNativeSdkDescriptorInputArchives, auditLinuxNativeSdkDescriptorCudaImages, buildLinuxNativeSdkDescriptor,
   tarExpandedBytes, linuxNativeSdkDiskPreflight, auditLinuxNativeSdkDescriptorLineage,
   linuxNativeGpuProfiles, linuxNativeComponentProfiles, linuxNativeComponentArchivePins, auditLinuxNativeComponentArchive,
@@ -6368,7 +6296,7 @@ if (require.main === module) {
         process.exitCode = 1;
       });
     } else {
-      throw new Error("Usage: prepare-native-ci.js stage sources|acpp-sources|linux-sources|linux-llvm-admission|linux-llvm-installed-sdk|windows-native-core|windows-host-sdk-sources|windows-controller-io|windows-controller-hermes|windows-native-gpu <profile> <config.json> <config-sha256>|windows-native-llvm21-descriptor <input.json> <sha256>|windows-native-llvm21 configure <descriptor> <sha256> <archive> <sha256> <cmake> <sha256> <ninja> <sha256>|windows-native-llvm21 build <phase>|windows-native-llvm21 audit|dpcpp-cuda-inputs|gnu-headers|windows-gnu-headers|linux-jit-resources|linux-jit-configure|linux-jit-support|linux-jit-targets|linux-jit-frontend|linux-jit-link|linux-jit-runtime-proof|linux-jit-runtime-admit|linux-jit-static-dpcpp|rocm-sources|rocm-comgr-sdk|rocm-host-sdk|hermes-sources|hermes-sdk|zstd-sources|zstd-sdk|openmp-sdk|acpp-cuda-hip-sdk|nvrtc-linux|nvrtc-windows|cuda-images-linux|linux-sdk-descriptor|linux-native-application|configure|llvm-targets|clang-base|clang-sema|clang-frontend|lld|tools|install-audit|io-openssl | pack /new/state.tar /base relative-path... | extract /state.tar /base expected-root...");
+      throw new Error("Usage: prepare-native-ci.js stage sources|acpp-sources|linux-sources|linux-llvm-admission|linux-llvm-installed-sdk|windows-native-core|windows-host-sdk-sources|windows-controller-io|windows-controller-hermes|windows-native-gpu <profile> <config.json> <config-sha256>|windows-native-llvm21-descriptor <input.json> <sha256>|windows-native-llvm21 configure <descriptor> <sha256> <archive> <sha256> <cmake> <sha256> <ninja> <sha256>|windows-native-llvm21 build <phase>|windows-native-llvm21 audit|dpcpp-cuda-inputs|gnu-headers|windows-gnu-headers|linux-jit-resources|linux-jit-configure|linux-jit-support|linux-jit-targets|linux-jit-frontend|linux-jit-link|linux-jit-runtime-proof|linux-jit-runtime-admit|linux-jit-static-dpcpp|rocm-sources|rocm-comgr-sdk|rocm-host-sdk|hermes-sources|hermes-sdk|zstd-sources|zstd-sdk|openmp-sdk|acpp-cuda-hip-sdk|nvrtc-linux|nvrtc-windows|cuda-images-linux|linux-sdk-descriptor|linux-native-application|configure|llvm-foundation|llvm-core|llvm-core-codegen|llvm-x86|llvm-nvptx|llvm-amdgpu|clang-base|clang-sema|clang-frontend|lld|tools|install-audit|io-openssl | pack /new/state.tar /base relative-path... | extract /state.tar /base expected-root...");
     }
   } catch (error) {
     console.error("[native-ci] " + (error instanceof Error ? error.message : String(error)));

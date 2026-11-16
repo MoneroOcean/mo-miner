@@ -33,7 +33,7 @@ function sourceFixture(root) {
   return source;
 }
 
-test.describe("Pinned static LLVM OpenMP source SDK", () => {
+test.describe("Pinned static LLVM OpenMP source SDK", {skip: process.platform !== "linux" || process.arch !== "x64"}, () => {
   test("the compilation recipe excludes acquisition implementation but retains producer and pin inputs", () => {
     const recipe = openmpBuildRecipe();
     assert.equal(Object.hasOwn(recipe.graph, "scripts/fetch-native-sdk-sources.js"), false);

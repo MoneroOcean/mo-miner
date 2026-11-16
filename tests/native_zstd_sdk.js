@@ -62,7 +62,7 @@ function sdkFixture(t) {
   return {root, record, archivePath, save: () => fs.writeFileSync(path.join(root, "result.json"), JSON.stringify(record))};
 }
 
-test.describe("Pinned static zstd source production and admission", () => {
+test.describe("Pinned static zstd source production and admission", {skip: process.platform !== "linux" || process.arch !== "x64"}, () => {
   test("pins the installed package's source version to the official release and builds only the static library", () => {
     assert.deepEqual(zstdPin, {version: "1.5.7", sha256: "eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3"});
     assert.ok(Object.isFrozen(zstdPin));

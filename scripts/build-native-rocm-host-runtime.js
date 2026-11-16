@@ -1,7 +1,7 @@
 "use strict";
 
 // Build the original pinned ROCr and CLR/HIP static runtime with an explicitly selected host
-// compiler. This producer builds no device code or application and never initializes a GPU.
+// compiler. ROCr also builds its embedded OpenCL image kernels; this producer never initializes a GPU.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
 const {fileHash, sourceInputs, verifySourceInputs, buildFileInputs, completeBuildInputs, readBuildJson, readBuildText} = require("./build-source-inputs");
 const {sdkStage, selectHostCompilers, sdkHostEnvironment, verifyCompilerEnvironment, pathsOverlap, hostCompilerEvidence} = require("./build-native-sycl-sdk");
@@ -30,6 +30,8 @@ const xxdPin = Object.freeze({path: "/usr/bin/xxd", package: "xxd", packageVersi
   version: "xxd 2023-10-25 by Juergen Weigert et al."});
 const hipPchScript = "hipamd/src/hip_embed_pch.sh";
 const hipPchScriptSha256 = "da0c5b74d9ad2eae4a8ca1fd4e454c69bee2dab6691940d798cb45d2deba52fa";
+const rocrBlitCmake = "runtime/hsa-runtime/image/blit_src/CMakeLists.txt";
+const rocrBlitCmakeSha256 = "711e3834f5a1d3644dfa419c376b83cc9da207d138825c64492e5f683752c9d4";
 const pythonPin = Object.freeze({executable: "/usr/bin/python3.12", version: "3.12.3",
   parserVersion: "2.7.4",
   packagePath: "/usr/local/lib/python3.12/dist-packages/CppHeaderParser/__init__.py",
@@ -77,6 +79,28 @@ function patchExportedHipPchScript(sourceRoot) {
   return {path: "source/clr/" + hipPchScript, sourceSha256: hipPchScriptSha256, patchedSha256: fileHash(file), preprocessorInput: "stdin"};
 }
 
+/** @param {string} source */
+function useExplicitRocrDeviceLibPath(source) {
+  const dollar = "$", original = `COMMAND clang ${dollar}{CLANG_ARG_LIST}`,
+    replacement = `COMMAND clang "--rocm-device-lib-path=${dollar}{MOM_ROCM_DEVICE_LIBS_PATH}" ${dollar}{CLANG_ARG_LIST}`;
+  if (source.split(original).length !== 2) {throw new Error("Pinned ROCr image-kernel command has changed");}
+  return source.replace(original, replacement);
+}
+
+/** Patch only the exact exported upstream image-kernel command; the path comes from the admitted
+ * source-built COMGR device-library receipt, never a host ROCm search. @param {string} sourceRoot */
+function patchExportedRocrDeviceLibPath(sourceRoot) {
+  const file = path.join(sourceRoot, rocrBlitCmake);
+  const stat = fs.lstatSync(file, {throwIfNoEntry: false});
+  if (!stat?.isFile() || stat.isSymbolicLink() || fileHash(file) !== rocrBlitCmakeSha256) {
+    throw new Error("Pinned exported ROCr image-kernel CMake source changed; refusing source patch");
+  }
+  const source = fs.readFileSync(file, "utf8"), patched = useExplicitRocrDeviceLibPath(source);
+  fs.writeFileSync(file, patched);
+  return {path: "source/rocr/" + rocrBlitCmake, sourceSha256: rocrBlitCmakeSha256, patchedSha256: fileHash(file),
+    option: "--rocm-device-lib-path", cacheVariable: "MOM_ROCM_DEVICE_LIBS_PATH"};
+}
+
 /** @param {unknown} input */
 function validateConfig(input) {
   const c = /** @type {RocmHostConfig | null} */ (input);
@@ -98,7 +122,7 @@ function validateConfig(input) {
 /** @typedef {{drm: string, drmAmdgpu: string, elf: string, numa: string}} RocmDependencyPaths */
 /** @typedef {{version: number, sources: RocmSourcePaths, tools: RocmTools, hostCompilers: {cc: string, cxx: string},
  * dependencies: RocmDependencyPaths, pkgConfigDir: string, comgrReceipt: string}} RocmHostConfig */
-/** @typedef {{llvm?: string, comgrPackage?: string}} RocmSdkRoots */
+/** @typedef {{llvm?: string, comgrPackage?: string, device?: string}} RocmSdkRoots */
 /** @typedef {{name: "rocr" | "clr", cache: string, database: string, depfiles: string[], commandCount: number}} ConfiguredBuild */
 /** @typedef {{path: string, bytes: number, sha256: string}} ArchiveEvidence */
 /** @typedef {{home: string, tmp: string, cleanup: () => void}} PrivateBuildDirectories */
@@ -110,10 +134,12 @@ function rocmHostPlan(input, output, jobs, sdkRoots = /** @type {RocmSdkRoots} *
   if (!literalPath(output) || !Number.isInteger(jobs) || jobs < 1 || jobs > 16) {
     throw new Error("Native ROCm host runtime needs a literal output and jobs in1..16");
   }
-  const llvm = sdkRoots.llvm || "<COMGR-LLVM>", comgrPackage = sdkRoots.comgrPackage || "<COMGR-PACKAGE>";
+  const llvm = sdkRoots.llvm || "<COMGR-LLVM>", comgrPackage = sdkRoots.comgrPackage || "<COMGR-PACKAGE>",
+    device = sdkRoots.device || "<COMGR-DEVICE-LIBS>", deviceLibPath = path.join(device, "amdgcn/bitcode");
   if ((!literalPath(llvm) && llvm !== "<COMGR-LLVM>") || (!literalPath(comgrPackage) && comgrPackage !== "<COMGR-PACKAGE>") ||
-      Boolean(sdkRoots.llvm) !== Boolean(sdkRoots.comgrPackage)) {
-    throw new Error("ROCm host runtime needs literal selected COMGR LLVM and package roots");
+      (!literalPath(device) && device !== "<COMGR-DEVICE-LIBS>") ||
+      Boolean(sdkRoots.llvm) !== Boolean(sdkRoots.comgrPackage) || Boolean(sdkRoots.llvm) !== Boolean(sdkRoots.device)) {
+    throw new Error("ROCm host runtime needs literal selected COMGR LLVM, package and device-library roots");
   }
   const hostCompilers = selectHostCompilers("", c.hostCompilers), sources = c.sources, tools = c.tools;
   const imageLlvmRoot = path.dirname(path.dirname(tools.llvmObjcopy));
@@ -131,7 +157,7 @@ function rocmHostPlan(input, output, jobs, sdkRoots = /** @type {RocmSdkRoots} *
   const cmakePrefixPath = rocrInstall + ";" + comgrPrefix;
   const inputPaths = [...Object.values(sources), ...Object.values(tools), ...Object.values(c.dependencies), c.comgrReceipt,
     c.pkgConfigDir, ...Object.values(hostCompilers), imageLlvmRoot, imageLlvmPackage,
-    ...(sdkRoots.llvm ? [sdkRoots.llvm, comgrPackage, comgrPrefix, clangPackage] : []), repo];
+    ...(sdkRoots.llvm ? [sdkRoots.llvm, comgrPackage, device, comgrPrefix, clangPackage, deviceLibPath] : []), repo];
   if (inputPaths.some(inputPath => pathsOverlap(inputPath, output))) {throw new Error("ROCm output must not overlap a source, tool, SDK, receipt or repository input");}
   const common = ["-G", "Ninja", "-DCMAKE_MAKE_PROGRAM=" + tools.ninja, "-DCMAKE_BUILD_TYPE=Release",
     "-DCMAKE_C_COMPILER=" + hostCompilers.cc, "-DCMAKE_CXX_COMPILER=" + hostCompilers.cxx,
@@ -149,6 +175,7 @@ function rocmHostPlan(input, output, jobs, sdkRoots = /** @type {RocmSdkRoots} *
     "-DCMAKE_INSTALL_PREFIX=" + rocrInstall, "-DBUILD_ROCR=ON", "-DBUILD_THUNK_VIRTIO=OFF", "-DROCM_CCACHE_BUILD=OFF",
     "-DEXPORT_TO_USER_PACKAGE_REGISTRY=OFF", "-DENABLE_LDCONFIG=OFF",
     "-DLLVM_DIR=" + imageLlvmPackage, "-DClang_DIR=" + clangPackage,
+    "-DMOM_ROCM_DEVICE_LIBS_PATH=" + deviceLibPath,
     "-DHSA_ASSEMBLER=" + path.join(llvm, "bin/clang-21"), "-DHSA_OBJCOPY=" + tools.llvmObjcopy,
     "-DPKG_CONFIG_EXECUTABLE=" + tools.pkgConfig, "-DLIBELF_INCLUDE_DIRS=/usr/include",
     "-DLIBELF_LIBRARIES=" + c.dependencies.elf, "-DNUMA=" + c.dependencies.numa,
@@ -172,7 +199,7 @@ function rocmHostPlan(input, output, jobs, sdkRoots = /** @type {RocmSdkRoots} *
   const clrInstallBinary = [tools.cmake, "--install", build.clr, "--prefix", sdk, "--component", "binary"];
   const clrInstallDev = [tools.cmake, "--install", build.clr, "--prefix", sdk, "--component", "dev"];
   return {sources, tools, hostCompilers, source, build, rocrInstall, sdk, comgrHeaderInclude, comgrHeader, clrCxxFlags,
-    llvm, comgrPackage, comgrPrefix, cmakePrefixPath,
+    llvm, comgrPackage, comgrPrefix, cmakePrefixPath, device, deviceLibPath,
     imageLlvmRoot, imageLlvmPackage, clangPackage, jobs,
     dependencies: c.dependencies, pkgConfigDir: c.pkgConfigDir,
     commands: {rocrConfigure, rocrBuild, rocrInstallBinary, rocrInstallDev, clrConfigure, clrBuild, clrInstallBinary, clrInstallDev}};
@@ -415,7 +442,8 @@ function buildRocmHostRuntime(input, output, environment = process.env, configFi
   regularPath(c.comgrReceipt, "COMGR receipt");
   const comgr = comgrSdkInputs(c.comgrReceipt), llvm = comgr.roots.llvm;
   const comgrPackage = path.join(path.dirname(comgr.archive), "lib/cmake/amd_comgr");
-  const plan = rocmHostPlan(c, destination, Number(environment["MOM_BUILD_JOBS"] || "2"), {llvm, comgrPackage});
+  const plan = rocmHostPlan(c, destination, Number(environment["MOM_BUILD_JOBS"] || "2"),
+    {llvm, comgrPackage, device: comgr.roots.device});
   const protectedRoots = [...Object.values(c.sources), ...Object.values(c.tools).map(file => path.dirname(file)),
     ...Object.values(c.dependencies).map(file => path.dirname(file)), c.pkgConfigDir,
     path.dirname(c.hostCompilers.cc), path.dirname(c.hostCompilers.cxx), path.dirname(comgr.receipt),
@@ -424,6 +452,7 @@ function buildRocmHostRuntime(input, output, environment = process.env, configFi
       Object.values(c.sources).some((root, index, rows) => rows.slice(index + 1).some(other => pathsOverlap(root, other)))) {
     throw new Error("ROCm output or source roots overlap a canonical input");
   }
+  realDirectory(plan.deviceLibPath, "admitted COMGR device-library bitcode directory");
   for (const file of Object.values(c.dependencies)) {if (!isStaticArchive(file)) {throw new Error("ROCm OS input is not a regular static archive: " + file);}}
   return withPrivateBuildDirectories(path.dirname(destination), temporary =>
     buildRocmHostRuntimeWithTemporaryDirectories(c, destination, environment, configFile, comgr, llvm, plan, temporary));
@@ -525,15 +554,6 @@ function buildRocmHostRuntimeWithTemporaryDirectories(c, destination, environmen
     ...Object.values(c.dependencies)]);
   const sdkInputs = {...buildFileInputs([...inputFiles]), ...compiler.inputs,
     ...Object.fromEntries(packageTrees.flatMap(tree => Object.entries(tree.files).map(([name, hash]) => [path.join(tree.root, name), hash])))};
-  const before = {pins, sourceRoots: c.sources, sourceTrees: Object.fromEntries(Object.entries(pins).map(([name, revision]) => [name, revision])),
-    comgrReceipt: c.comgrReceipt, comgr: {archive: comgr.archive, llvmVersion, roots: comgr.roots},
-    comgrHeaderOverlay,
-    hipPchTools,
-    rocmTools: {clang: {alias: rocmClangAlias, target: fs.readlinkSync(rocmClangAlias), path: rocmClang, sha256: fileHash(rocmClang)},
-      objcopy: {path: rocmObjcopy, sha256: fileHash(rocmObjcopy)}}, hostCompilers: plan.hostCompilers,
-    hostCompilerInputs: compiler.inputs, compilerVersions: compiler.versions, toolVersions, toolOrigins: {xxd: xxdOrigin}, python, osOrigins,
-    pkgConfigDir: c.pkgConfigDir, pkgFiles, packageTrees, sdkInputs, recipe, commands: plan.commands};
-
   if (fs.lstatSync(destination, {throwIfNoEntry: false})) {
     throw new Error("Select a new ROCm host runtime output; existing evidence is never overwritten");
   }
@@ -552,6 +572,8 @@ function buildRocmHostRuntimeWithTemporaryDirectories(c, destination, environmen
   function stage(command, name) {console.log("[rocm-host] " + name); sdkStage(command, path.join(destination, name + ".log"), env);}
   /** @type {{path: string, sourceSha256: string, patchedSha256: string, preprocessorInput: string} | undefined} */
   let hipPchSourcePatch;
+  /** @type {{path: string, sourceSha256: string, patchedSha256: string, option: string, cacheVariable: string} | undefined} */
+  let rocrDeviceLibPatch;
   for (const name of sourceNames) {
     const revision = pins[name], sourceArchive = path.join(destination, "source-" + name + ".tar"), root = c.sources[name];
     stage([c.tools.git, "-c", "core.attributesFile=/dev/null", "--no-optional-locks", "-C", root, "archive", "--format=tar",
@@ -561,8 +583,18 @@ function buildRocmHostRuntimeWithTemporaryDirectories(c, destination, environmen
     const files = sdkSourceFiles(path.join(destination, "source", name));
     verifySdkExport(path.join(destination, "source", name), files, sourceTrees[name] || "");
     if (name === "clr") {hipPchSourcePatch = patchExportedHipPchScript(path.join(destination, "source", name));}
+    if (name === "rocr") {rocrDeviceLibPatch = patchExportedRocrDeviceLibPath(path.join(destination, "source", name));}
   }
   if (!hipPchSourcePatch) {throw new Error("Pinned CLR export did not apply the HIP PCH path mapping");}
+  if (!rocrDeviceLibPatch) {throw new Error("Pinned ROCr export did not bind image kernels to admitted device libraries");}
+  const before = {pins, sourceRoots: c.sources, sourceTrees: Object.fromEntries(Object.entries(pins).map(([name, revision]) => [name, revision])),
+    comgrReceipt: c.comgrReceipt, comgr: {archive: comgr.archive, llvmVersion, roots: comgr.roots}, rocrDeviceLibPath: plan.deviceLibPath,
+    rocrDeviceLibPatch, comgrHeaderOverlay,
+    hipPchTools,
+    rocmTools: {clang: {alias: rocmClangAlias, target: fs.readlinkSync(rocmClangAlias), path: rocmClang, sha256: fileHash(rocmClang)},
+      objcopy: {path: rocmObjcopy, sha256: fileHash(rocmObjcopy)}}, hostCompilers: plan.hostCompilers,
+    hostCompilerInputs: compiler.inputs, compilerVersions: compiler.versions, toolVersions, toolOrigins: {xxd: xxdOrigin}, python, osOrigins,
+    pkgConfigDir: c.pkgConfigDir, pkgFiles, packageTrees, sdkInputs, recipe, commands: plan.commands};
   /** @type {Record<keyof RocmSourcePaths, ArchiveEvidence>} */ const sourceArchives = {clr: {path: "", bytes: 0, sha256: ""},
     hip: {path: "", bytes: 0, sha256: ""}, rocr: {path: "", bytes: 0, sha256: ""}};
   for (const name of sourceNames) {
@@ -603,6 +635,7 @@ function buildRocmHostRuntimeWithTemporaryDirectories(c, destination, environmen
     if (name === "rocr") {
       requireCache(cacheFile, "HSA_ASSEMBLER", rocmClang); requireCache(cacheFile, "HSA_OBJCOPY", rocmObjcopy);
       requireCache(cacheFile, "LLVM_DIR", plan.imageLlvmPackage); requireCache(cacheFile, "Clang_DIR", plan.clangPackage);
+      requireCache(cacheFile, "MOM_ROCM_DEVICE_LIBS_PATH", plan.deviceLibPath);
       requireCache(cacheFile, "LIBELF_LIBRARIES", c.dependencies.elf); requireCache(cacheFile, "NUMA", c.dependencies.numa);
     } else {
       requireCache(cacheFile, "HIP_COMMON_DIR", path.join(destination, "source/hip"));
@@ -706,7 +739,7 @@ function buildRocmHostRuntimeWithTemporaryDirectories(c, destination, environmen
   }
   const result = {version: 1, pins, sources: sourceState, sourceArchives, hostCompilers: plan.hostCompilers,
     hostCompilerInputs: compiler.inputs, compilerVersions: compiler.versions, toolVersions, toolOrigins: {xxd: xxdOrigin}, osOrigins,
-    python, hipPchTools, hipPchSourcePatch, comgrHeaderOverlay,
+    python, hipPchTools, hipPchSourcePatch, rocrDeviceLibPath: plan.deviceLibPath, rocrDeviceLibPatch, comgrHeaderOverlay,
     comgr: {receipt: c.comgrReceipt, archive: comgr.archive, llvmVersion, roots: comgr.roots},
     sdkInputs, dependencies, configured, archivesBefore: archiveBuildBefore, archivesAfter: produced,
     installerOnlyArchives: {hsakmt: hsakmtInstallArchiveBefore}, stagedDependencies, consumerAdmission,
@@ -727,5 +760,5 @@ if (require.main === module) {
 }
 
 module.exports = {pins, archiveNames, hsakmtInstallArchiveName, xxdPin, validateConfig, rocmHostPlan, hostEnvironment, withPrivateBuildDirectories, packageOrigin, parsePackageOrigin, compileDepfiles, readCompileDatabase,
-  useStableHipPchStdin, patchExportedHipPchScript,
+  useStableHipPchStdin, patchExportedHipPchScript, useExplicitRocrDeviceLibPath, patchExportedRocrDeviceLibPath,
   buildRocmHostRuntime};

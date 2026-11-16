@@ -253,7 +253,44 @@ function linuxDistributionSelection(targets, ninjaTargets, build) {
     const selected = rows.filter(row => components.includes(row.name)).sort((a, b) => a.name.localeCompare(b.name));
     if (selected.length) {phases.push({name, targets: selected.map(row => row.name), artifacts: selected.map(row => row.artifact)});}
   };
-  add("llvm-targets", archives.filter(row => row.project === "llvm"));
+  const llvm = archives.filter(row => row.project === "llvm"), llvmRoot = llvm[0]?.projectRoot;
+  if (!llvmRoot || llvm.some(row => row.projectRoot !== llvmRoot || !contained(llvmRoot, row.sourceDirectory))) {
+    throw new Error("LLVM 21 target source roots are inconsistent");
+  }
+  /** @param {LlvmTarget} row */ const llvmSource = row => path.relative(llvmRoot, row.sourceDirectory).split(path.sep).join("/");
+  /** @param {LlvmTarget} row @param {string} target */ const belongsToTarget = (row, target) => {
+    const prefix = "lib/Target/" + target, relative = llvmSource(row);
+    return relative === prefix || relative.startsWith(prefix + "/");
+  };
+  // Split common libraries to keep each hosted cold build within its deadline, using public source directories rather than target names.
+  const llvmFoundationDirectories = ["lib/Support", "lib/Demangle", "lib/IR", "lib/BinaryFormat", "lib/Remarks",
+    "lib/TargetParser", "lib/Bitstream/Reader"];
+  /** @param {LlvmTarget} row */ const belongsToFoundation = row => llvmFoundationDirectories.some(directory => {
+    const relative = llvmSource(row);
+    return relative === directory || relative.startsWith(directory + "/");
+  });
+  const llvmCoreAnalysisDirectories = ["lib/Analysis", "lib/Bitcode", "lib/DebugInfo", "lib/IRReader", "lib/Linker",
+    "lib/Object", "lib/ObjectYAML", "lib/ProfileData"];
+  const llvmCoreOptimizationDirectories = ["lib/IPO", "lib/Transforms"];
+  /** @param {LlvmTarget} row @param {string[]} directories */ const belongsToDirectories = (row, directories) => directories.some(directory => {
+    const relative = llvmSource(row);
+    return relative === directory || relative.startsWith(directory + "/");
+  });
+  const commonCore = llvm.filter(row => !["X86", "NVPTX", "AMDGPU"].some(target => belongsToTarget(row, target)) && !belongsToFoundation(row)),
+    coreAnalysis = commonCore.filter(row => belongsToDirectories(row, llvmCoreAnalysisDirectories)),
+    coreOptimization = commonCore.filter(row => belongsToDirectories(row, llvmCoreOptimizationDirectories));
+  const llvmPhases = /** @type {[string, LlvmTarget[]][]} */ ([
+    ["llvm-foundation", llvm.filter(belongsToFoundation)],
+    ["llvm-core-analysis", coreAnalysis],
+    ["llvm-core-optimization", coreOptimization],
+    // Passes and LTO link CodeGen, so keep them and all remaining common libraries after the optimization layer.
+    ["llvm-core-codegen", commonCore.filter(row => !coreAnalysis.includes(row) && !coreOptimization.includes(row))],
+    ["llvm-x86", llvm.filter(row => belongsToTarget(row, "X86"))],
+    ["llvm-nvptx", llvm.filter(row => belongsToTarget(row, "NVPTX"))],
+    ["llvm-amdgpu", llvm.filter(row => belongsToTarget(row, "AMDGPU"))]
+  ]);
+  if (llvmPhases.some(([, rows]) => !rows.length)) {throw new Error("LLVM 21 target phase group is empty");}
+  for (const [name, rows] of llvmPhases) {add(name, rows);}
   const clang = archives.filter(row => row.project === "clang"), clangRoot = clang[0]?.projectRoot;
   if (!clangRoot || clang.some(row => row.projectRoot !== clangRoot || !contained(clangRoot, row.sourceDirectory))) {
     throw new Error("LLVM 21 clang source roots are inconsistent");
@@ -754,7 +791,16 @@ function buildLinuxLlvmSdkPhase(output, phaseName, environment = process.env) {
   if (!phase) {throw new Error("LLVM 21 build phase order is invalid");}
   const env = cleanBuildEnvironment(plan.tools, environment);
   const graphFiles = Object.keys(receipt.configure.files), before = buildFileInputs(graphFiles), args = phaseBuildArgs(plan.build, plan.jobs, phase);
-  const run = runLogged(path.join(output, "build-" + phase.name + ".log"), plan.tools.cmake, args, repo, env, phaseTimeout);
+  const phaseStartedAt = Date.now();
+  console.log(`[LLVM 21] ${phase.name}: starting ${phase.targets.length} targets`);
+  let run;
+  try {
+    run = runLogged(path.join(output, "build-" + phase.name + ".log"), plan.tools.cmake, args, repo, env, phaseTimeout);
+  } catch (error) {
+    console.log(`[LLVM 21] ${phase.name}: failed after ${Date.now() - phaseStartedAt} ms`);
+    throw error;
+  }
+  console.log(`[LLVM 21] ${phase.name}: completed in ${Date.now() - phaseStartedAt} ms`);
   const targets = llvmStaticTargets(plan.build, plan.source), byName = new Map(targets.map(row => [row.name, row]));
   const outputs = phase.targets.map(name => {
     const target = byName.get(name);

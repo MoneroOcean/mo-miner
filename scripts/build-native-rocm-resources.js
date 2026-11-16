@@ -59,17 +59,20 @@ function resourcePlan(c, output, jobs) {
   const clang = path.join(c.llvm, "bin/clang"), target = c.target === "win32" ? "x86_64-pc-windows-msvc" : "x86_64-unknown-linux-gnu";
   // prepare-builtins is a host executable linked to the selected LLVM archives. Its
   // driver must supply that SDK's host runtime; device commands still use imported clang.
-  const hostCompilers = selectHostCompilers(c.llvm, c.hostCompilers);
-  return {source, build, install, clang, target, hostCompilers,
+  const hostCompilers = selectHostCompilers(c.llvm, c.hostCompilers),
+    hipRuntimeWrapper = path.join(c.llvm, "lib/clang/21/include/__clang_hip_runtime_wrapper.h");
+  return {source, build, install, clang, target, hostCompilers, hipRuntimeWrapper,
     configure: [c.cmake, "-S", path.join(source, "device"), "-B", build, "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release",
       "-DCMAKE_C_COMPILER=" + hostCompilers.cc, "-DCMAKE_CXX_COMPILER=" + hostCompilers.cxx,
       "-DLLVM_DIR=" + path.join(c.llvm, "lib/cmake/llvm"), "-DClang_DIR=" + path.join(c.llvm, "lib/cmake/clang"),
       "-DCMAKE_INSTALL_PREFIX=" + install, "-DCMAKE_DISABLE_FIND_PACKAGE_ROCM=ON",
       "-DCLANG_OPTIONS_APPEND=" + (c.target === "win32" ? "-fshort-wchar" : "")],
     compile: [c.cmake, "--build", build, "--parallel", String(jobs), "--target", "rocm-device-libs"],
-    preprocess: [clang, "--target=" + target, "-O3", "-std=c++17", "-nogpulib", "--hip-version=7.1", "-isystem", c.hipHeaders,
+    // Use only the explicitly selected header package; do not discover a host HIP runtime.
+    preprocess: [clang, "--target=" + target, "-O3", "-std=c++17", "-nogpulib", "-nogpuinc", "--hip-version=7.1", "-isystem", c.hipHeaders,
       "--cuda-device-only", "-D__HIPCC_RTC__", "-D__HIP_PLATFORM_AMD__", "-DHIP_VERSION_MAJOR=7", "-DHIP_VERSION_MINOR=1",
-      "-x", "hip", path.join(output, "hipRTC_header.h"), "-E", "-P", "-Xclang", "-dependency-file", "-Xclang", path.join(output, "hipRTC.d"),
+      // -nogpuinc suppresses the automatic HIP prelude; restore only this compiler-owned RTC wrapper.
+      "-include", hipRuntimeWrapper, "-x", "hip", path.join(output, "hipRTC_header.h"), "-E", "-P", "-Xclang", "-dependency-file", "-Xclang", path.join(output, "hipRTC.d"),
       "-Xclang", "-MT", "-Xclang", "hipRTC", "-Xclang", "-sys-header-deps", "-o", path.join(output, "hipRTC")],
   };
 }
@@ -99,6 +102,11 @@ function buildResources(input, output, environment = process.env) {
     return r.stdout;
   }
   if (!/\bclang version 21\.1\.8\b/.test(query(plan.clang, ["--version"]))) {throw new Error("Select the matching LLVM21.1.8 compiler");}
+  const wrapper = fs.lstatSync(plan.hipRuntimeWrapper);
+  if (!wrapper.isFile() || wrapper.isSymbolicLink() || wrapper.nlink !== 1 || fs.realpathSync(plan.hipRuntimeWrapper) !== plan.hipRuntimeWrapper) {
+    throw new Error("Selected LLVM HIP runtime wrapper must be a canonical singly-linked regular file");
+  }
+  inputs[plan.hipRuntimeWrapper] = fileHash(plan.hipRuntimeWrapper);
   const {inputs: hostCompilerInputs, versions: compilerVersions} = hostCompilerEvidence(plan.hostCompilers, query);
   Object.assign(inputs, hostCompilerInputs);
   for (const file of [c.cmake, ...["clang", "clang++", "llvm-mc", "llvm-dis", "llvm-link", "opt"].map(name => path.join(c.llvm, "bin", name))]) {inputs[file] = fileHash(file);}

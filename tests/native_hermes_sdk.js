@@ -95,9 +95,10 @@ endif()
     const variants = [["windows-intel", "ON", "IntelLLVM", "ON"],
       ["windows-clang", "ON", "Clang", "OFF"], ["linux-intel", "OFF", "IntelLLVM", "OFF"]];
     for (const [name, windows, compiler, expected] of variants) {
-      const result = spawnSync("cmake", ["-S", root, "-B", path.join(root, name), "-DMOM_TEST_WINDOWS=" + windows,
-        "-DCMAKE_CXX_COMPILER_ID=" + compiler, "-DMOM_TEST_EXPECT_FLAG=" + expected], {encoding: "utf8", timeout: 10000});
-      assert.equal(result.status, 0, result.stderr);
+      // This checks source properties, not a VS installation or compiler build.
+      const result = spawnSync("cmake", ["-G", "Ninja", "-S", root, "-B", path.join(root, name), "-DMOM_TEST_WINDOWS=" + windows,
+        "-DCMAKE_CXX_COMPILER_ID=" + compiler, "-DMOM_TEST_EXPECT_FLAG=" + expected], {encoding: "utf8", timeout: 30000});
+      assert.equal(result.status, 0, result.error?.message || result.stderr);
     }
   });
   test("resume admission rejects incomplete, changed or path-drifted caches before mutation", /** @param {import("node:test").TestContext} t */ t => {

@@ -377,6 +377,25 @@ function nativeSdkLinkInputs(sdk, readers) {
   ...(sources.cudaImageInputs ? {cudaImageInputs: sources.cudaImageInputs} : {})};
 }
 
+/** Read only the final stage-log bytes for actionable failure output; diagnostics must not
+ * replace the primary compiler failure if the log itself is unreadable.
+ * @param {number} fd @returns {string} */
+function nativeStageLogTail(fd) {
+  const limit = 8 * 1024;
+  try {
+    const size = fs.fstatSync(fd).size;
+    if (!Number.isSafeInteger(size) || size < 0) {return "(stage log tail unavailable)";}
+    const length = Math.min(size, limit), buffer = Buffer.alloc(length);
+    let offset = 0;
+    while (offset < length) {
+      const count = fs.readSync(fd, buffer, offset, length - offset, size - length + offset);
+      if (!count) {break;}
+      offset += count;
+    }
+    return (size > limit ? "[earlier stage output omitted]\n" : "") + (offset ? buffer.subarray(0, offset).toString("utf8") : "(stage log is empty)");
+  } catch {return "(unable to read stage log tail)";}
+}
+
 /** A stage invokes only the maintained producer. Output is streamed to disk, not accumulated
  * in a parent Node buffer. Never retry a failed/uncertain compiler lifecycle automatically.
  * @param {Runner} runner @param {string} command @param {string[]} args @param {NodeJS.ProcessEnv} env
@@ -387,12 +406,16 @@ function nativeStage(runner, command, args, env, repo, output, stage, spawn = sp
   // All graphs are explicit in the orchestration plan. A cache-preparation stage may select
   // only one compiler without relaxing portability, cache admission or worker-reuse policy.
   for (const key of ["MOM_GPU_BACKEND", "MOM_LINUX_BUILD_COMPILER"]) {if (selected[key]) {buildEnv[key] = selected[key];}}
-  const log = path.join(output, "logs", stage + ".log"), fd = fs.openSync(log, "wx");
+  const log = path.join(output, "logs", stage + ".log"), fd = fs.openSync(log, "wx+");
   console.log("[native] " + stage);
   try {
     const result = spawn(executable, tokens, {cwd: repo, stdio: ["ignore", fd, fd],
       env: {...buildEnv, MOM_AOT_BUILD_ONLY: "1", MOM_NATIVE_BUILD_OUTPUT: output, MOM_NATIVE_BUILD_STAGE: stage, GIT_OPTIONAL_LOCKS: "0"}});
-    if (result.error || result.signal || result.status !== 0) {throw new Error("Native build failed: " + stage + "; inspect " + log + " before retrying", {cause: result.error});}
+    if (result.error || result.signal || result.status !== 0) {
+      const error = result.error?.message ? result.error.message.slice(0, 1024) + (result.error.message.length > 1024 ? "…" : "") : "none";
+      console.error(`[native] Failed stage ${stage} (exit ${result.status}, signal ${result.signal || "none"}, error ${error}); output from ${log}:\n${nativeStageLogTail(fd)}`);
+      throw new Error("Native build failed: " + stage + "; inspect " + log + " before retrying", {cause: result.error});
+    }
   } finally {fs.closeSync(fd);}
 }
 

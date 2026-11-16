@@ -247,13 +247,19 @@ test.describe("Native release entrypoint shared source builders", () => {
 });
 
 test.describe("Native release command-line dispatch", () => {
-  test("unconfigured production builds cannot silently publish the old Node archive", t => {
+  test("default native preparation rejects invalid versions without a legacy archive fallback", t => {
     const f = fixture(t), preload = path.join(f.root, "no-compiler.cjs"), cli = path.join(__dirname, "../scripts/build-release.js");
-    fs.writeFileSync(preload, 'require("node:child_process").spawnSync=()=>{console.log("LEGACY_ARCHIVE");return {status:0};};');
-    const env = {...process.env};
+    fs.writeFileSync(preload, 'require("node:child_process").spawnSync=()=>{console.log("LEGACY_ARCHIVE");return {status:0};};' +
+      'if(process.env.FIXTURE_RELEASE_PLATFORM)Object.defineProperty(process,"platform",{value:process.env.FIXTURE_RELEASE_PLATFORM});');
+    /** @type {NodeJS.ProcessEnv} */
+    const env = {...process.env, MOM_RELEASE_VERSION: "../bad"};
     for (const key of ["MOM_NATIVE_SDK", "MOM_NATIVE_OUTPUT", "MOM_NATIVE_UPX", "MOM_NATIVE_UPX_SHA256"]) {delete env[key];}
-    const result = spawnSync(process.execPath, ["--require", preload, cli], {encoding: "utf8", timeout: 10000, env});
-    assert.notEqual(result.status, 0); assert.match(result.stderr, /native SDK/i); assert.doesNotMatch(result.stdout, /LEGACY_ARCHIVE|Built mom-v/);
+    for (const platform of ["", "win32"]) {
+      const result = spawnSync(process.execPath, ["--require", preload, cli], {
+        encoding: "utf8", timeout: 10000, env: {...env, FIXTURE_RELEASE_PLATFORM: platform}});
+      assert.notEqual(result.status, 0); assert.match(result.stderr, /Invalid release version/i);
+      assert.doesNotMatch(result.stdout, /LEGACY_ARCHIVE|Built mom-v/);
+    }
   });
   for (const mode of ["explicit", "environment", "environment-unpacked"]) {
     test(`the actual CLI uses ${mode} native inputs without an archive-builder fallback`, t => {

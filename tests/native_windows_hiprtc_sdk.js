@@ -9,6 +9,7 @@ const {sourceFiles, recipeFiles, windowsHiprtcPlan, verifyComgrHeader, verifyInt
 const resourceRevision = comgrRevision;
 const clrRevision = "5b591b2ff64aac4c1c08be879b0d5f89fd713d50";
 const requiredBitcode = ["asanrtl.bc", "hip.bc", "ockl.bc", "ocml.bc", "opencl.bc"];
+const linuxPlanSkip = process.platform !== "linux" ? "requires Linux-hosted POSIX cross-build paths" : false;
 
 /** @param {import("node:test").TestContext} t */
 function fixture(t) {
@@ -79,7 +80,13 @@ function editJson(file, change) {
 }
 
 test.describe("Windows HIPRTC source SDK admission", () => {
-  test("accepts the thin Windows LLVM descriptor and plans ten host TUs plus the generated builtins object", t => {
+  test("fingerprints the producer recipe for receipt provenance", () => {
+    const root = path.resolve(__dirname, ".."), recipe = sourceInputs(root, [], [...recipeFiles]);
+    assert.deepEqual(Object.keys(recipe.graph).sort(), [...recipeFiles].sort());
+    assert.equal(recipe.graph["scripts/build-native-windows-hiprtc-sdk.js"], fileHash(path.join(root, "scripts/build-native-windows-hiprtc-sdk.js")));
+  });
+
+  test("accepts the thin Windows LLVM descriptor and plans ten host TUs plus the generated builtins object", {skip: linuxPlanSkip}, t => {
     const f = fixture(t), plan = windowsHiprtcPlan(f.input);
     assert.deepEqual(Object.keys(f.config).sort(), ["tools", "version", "windowsSdk"]);
     assert.deepEqual(Object.keys(f.config.tools).sort(), ["clangCl", "clangResourceInclude", "lldLink", "llvmNm"]);
@@ -93,14 +100,14 @@ test.describe("Windows HIPRTC source SDK admission", () => {
     assert.ok(plan.includeRoots.indexOf(path.join(f.input.output, "include")) < plan.includeRoots.indexOf(f.hipInclude));
   });
 
-  test("rejects missing inputs from the thin Windows LLVM descriptor", t => {
+  test("rejects missing inputs from the thin Windows LLVM descriptor", {skip: linuxPlanSkip}, t => {
     const f = fixture(t), descriptor = JSON.parse(fs.readFileSync(f.descriptorFile, "utf8"));
     delete descriptor.windowsSdk.importLibraries;
     fs.writeFileSync(f.descriptorFile, JSON.stringify(descriptor));
     assert.throws(() => windowsHiprtcPlan(f.input), /import libraries/);
   });
 
-  test("uses static CRT, the selected target, and a direct COMGR declaration override", t => {
+  test("uses static CRT, the selected target, and a direct COMGR declaration override", {skip: linuxPlanSkip}, t => {
     const plan = windowsHiprtcPlan(fixture(t).input);
     for (const flag of ["--target=x86_64-pc-windows-msvc", "/MT", "/EHsc", "/GR", "/DAMD_COMGR_IMPORT_DECORATOR="]) {
       assert.ok(plan.flags.includes(flag), flag);
@@ -108,17 +115,11 @@ test.describe("Windows HIPRTC source SDK admission", () => {
     assert.equal(plan.flags.some(flag => /^\/(?:MD|MDd)$/.test(flag)), false);
   });
 
-  test("writes system-header dependencies in the existing NMake format", t => {
+  test("writes system-header dependencies in the existing NMake format", {skip: linuxPlanSkip}, t => {
     assert.deepEqual(windowsHiprtcPlan(fixture(t).input).nmakeDependencyArgs, ["-Xclang", "-MV"]);
   });
 
-  test("fingerprints the producer recipe for receipt provenance", () => {
-    const root = path.resolve(__dirname, ".."), recipe = sourceInputs(root, [], [...recipeFiles]);
-    assert.deepEqual(Object.keys(recipe.graph).sort(), [...recipeFiles].sort());
-    assert.equal(recipe.graph["scripts/build-native-windows-hiprtc-sdk.js"], fileHash(path.join(root, "scripts/build-native-windows-hiprtc-sdk.js")));
-  });
-
-  test("resolves Intel compiler VFS dependency names through the selected Windows SDK overlay", t => {
+  test("resolves Intel compiler VFS dependency names through the selected Windows SDK overlay", {skip: linuxPlanSkip}, t => {
     const f = fixture(t), output = path.join(f.root, "out"), depfile = path.join(f.root, "hiprtc.d");
     fs.mkdirSync(output);
     const virtual = "/mom-sdk/msvc/include/vector";
@@ -128,31 +129,31 @@ test.describe("Windows HIPRTC source SDK admission", () => {
     assert.equal(Object.hasOwn(dependencies, virtual), false, "receipts use the resolved SDK header path, not the compiler's virtual name");
   });
 
-  test("requires every root explicitly and rejects noncanonical path spellings", t => {
+  test("requires every root explicitly and rejects noncanonical path spellings", {skip: linuxPlanSkip}, t => {
     const f = fixture(t), incomplete = /** @type {Record<string, string | undefined>} */ ({...f.input}); delete incomplete["deviceReceipt"];
     assert.throws(() => windowsHiprtcPlan(/** @type {any} */ (incomplete)), /explicit canonical absolute source/);
     assert.throws(() => windowsHiprtcPlan({...f.input, source: f.source + "/../clr"}), /explicit canonical absolute/);
   });
 
-  test("rejects an existing output instead of overwriting producer evidence", t => {
+  test("rejects an existing output instead of overwriting producer evidence", {skip: linuxPlanSkip}, t => {
     const f = fixture(t); fs.mkdirSync(f.input.output);
     assert.throws(() => windowsHiprtcPlan(f.input), /new canonical/);
   });
 
-  test("rejects outputs inside source or selected SDK roots", t => {
+  test("rejects outputs inside source or selected SDK roots", {skip: linuxPlanSkip}, t => {
     const f = fixture(t);
     assert.throws(() => windowsHiprtcPlan({...f.input, output: path.join(f.source, "out")}), /overlaps/);
     assert.throws(() => windowsHiprtcPlan({...f.input, output: path.join(f.hipInclude, "out")}), /overlaps/);
   });
 
-  test("rejects symlinked source and HIP include roots", t => {
+  test("rejects symlinked source and HIP include roots", {skip: linuxPlanSkip}, t => {
     const f = fixture(t), alias = path.join(f.root, "clr-alias"); fs.symlinkSync(f.source, alias);
     assert.throws(() => windowsHiprtcPlan({...f.input, source: alias}), /canonical directory/);
     const hipAlias = path.join(f.root, "hip-alias"); fs.symlinkSync(f.hipInclude, hipAlias);
     assert.throws(() => windowsHiprtcPlan({...f.input, hipInclude: hipAlias}), /canonical directory/);
   });
 
-  test("resolves selected compiler, librarian, and symbol-auditor aliases once", t => {
+  test("resolves selected compiler, librarian, and symbol-auditor aliases once", {skip: linuxPlanSkip}, t => {
     const f = fixture(t), compilerAlias = path.join(f.root, "icx-cl"), nmAlias = path.join(f.root, "llvm-nm"), arAlias = path.join(f.root, "llvm-ar");
     fs.symlinkSync(f.config.tools.clangCl, compilerAlias); fs.symlinkSync(f.config.tools.llvmNm, nmAlias); fs.symlinkSync(f.input.llvmAr, arAlias);
     const config = JSON.parse(fs.readFileSync(f.descriptorFile, "utf8")); config.tools.clangCl = compilerAlias; config.tools.llvmNm = nmAlias;
@@ -198,19 +199,19 @@ test.describe("Windows HIPRTC source SDK admission", () => {
     assert.throws(() => verifyComgrHeader(g.comgrResult, g.descriptorFile), /canonical regular file/);
   });
 
-  test("requires the HIPRTC builtins receipt to use the same official HIP header root", t => {
+  test("requires the HIPRTC builtins receipt to use the same official HIP header root", {skip: linuxPlanSkip}, t => {
     const f = fixture(t), other = path.join(f.root, "other-hip"); f.write(path.join(other, "hip/hip_common.h"));
     assert.throws(() => windowsHiprtcPlan({...f.input, hipInclude: other}), /selected official HIP headers/);
   });
 
-  test("rechecks the original builtins header and object hashes on admission", t => {
+  test("rechecks the original builtins header and object hashes on admission", {skip: linuxPlanSkip}, t => {
     const f = fixture(t); fs.appendFileSync(f.builtinObject, "changed\n");
     assert.throws(() => windowsHiprtcPlan(f.input), /resource output differs/);
     const g = fixture(t); fs.appendFileSync(g.hipHeader, "changed\n");
     assert.throws(() => windowsHiprtcPlan(g.input), /resource output differs/);
   });
 
-  test("rejects an invalid device install root", t => {
+  test("rejects an invalid device install root", {skip: linuxPlanSkip}, t => {
     const f = fixture(t), wrong = path.join(f.root, "not-install"); fs.mkdirSync(wrong);
     assert.throws(() => windowsHiprtcPlan({...f.input, deviceInstall: wrong}), /Windows HIP resource receipt and install directory/);
   });

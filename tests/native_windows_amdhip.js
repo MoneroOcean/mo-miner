@@ -6,8 +6,9 @@ const {createHash} = require("node:crypto");
 const sourceIO = require("../scripts/build-source-inputs"), llvmTools = require("../scripts/native-linux-llvm-tools");
 const sourcePins = require("../scripts/fetch-native-sdk-sources"), llvmSdk = require("../scripts/native-llvm-sdk");
 const ci = require("../scripts/prepare-native-ci");
+const localSdk = require("../scripts/build-local-native-sdk"), localRocm = require("../scripts/build-local-native-rocm-sdk");
 const {windowsAmdhipCatalog, prepareWindowsAmdhip, admitWindowsAmdhip, windowsAmdhipInputs, amdhipRecipe,
-  deriveDefinition, verifyLinuxToolHandoff} = require("../scripts/prepare-native-amdhip-windows");
+  deriveDefinition, verifyLinuxToolHandoff, prepareLocalAmdhipWindows} = require("../scripts/prepare-native-amdhip-windows");
 
 /** @param {Buffer|string} value */
 function sha256(value) {return createHash("sha256").update(value).digest("hex");}
@@ -75,6 +76,68 @@ function mockFixtureHashes(t, fixture) {
     return real(file);
   };
   t.mock.method(sourceIO, "fileHash", fixtureHash);
+}
+
+/** @param {import("node:test").TestContext} t */
+function localWorkspaceFixture(t) {
+  const root = fixtureRoot(t), workspace = path.join(root, "workspace"); localSdk.admitWorkspace(workspace, fs.realpathSync(path.resolve(__dirname, "..")));
+  const sourcePaths = localRocm.localRocmSdkPaths(workspace), sourceRoot = sourcePaths.source,
+    llvmOutput = path.join(workspace, "llvm21"), sdk = path.join(llvmOutput, "sdk"), bin = path.join(sdk, "bin"),
+    llvmAr = path.join(bin, "llvm-ar"), llvmLib = path.join(bin, "llvm-lib"), output = path.join(workspace, "windows-amdhip"),
+    localBuildId = "12345678-1234-4234-9234-123456789abc", input = {sourceRoot, llvmOutput, llvmLib, output, localBuildId};
+  fs.mkdirSync(path.join(sourceRoot, "roots/clr"), {recursive: true}); fs.mkdirSync(sourcePaths.pythonSourceRoot, {recursive: true});
+  fs.mkdirSync(bin, {recursive: true});
+  for (const file of [sourcePaths.fetchReceipt, sourcePaths.rootsFile, sourcePaths.pythonArchive, sourcePaths.pythonSourceReceipt, path.join(llvmOutput, "result.json")]) {
+    writePrivate(file, path.basename(file) + " fixture\n");
+  }
+  writePrivate(llvmAr, "admitted llvm-ar fixture\n"); fs.chmodSync(llvmAr, 0o755); fs.symlinkSync("llvm-ar", llvmLib);
+  return {root, workspace, sourcePaths, sourceRoot, llvmOutput, sdk, llvmAr, llvmLib, output, localBuildId, input};
+}
+
+/** @param {import("node:test").TestContext} t @param {ReturnType<typeof localWorkspaceFixture>} f @param {{mutateTool?:boolean}} [options] */
+function mockLocalAmdhipBuild(t, f, options = {}) {
+  const c = windowsAmdhipCatalog(), definition = fs.readFileSync(path.join(__dirname, "fixtures/native_windows_amdhip/amdhip.def")),
+    license = fs.readFileSync(path.join(__dirname, "fixtures/native_windows_amdhip/LICENSE.md")), fakeLibrary = Buffer.alloc(c.library.bytes, 0x41);
+  let sourceVerifications = 0, llvmAdmissions = 0;
+  const verifyLlvm = /** @param {string} output */ output => {
+      llvmAdmissions++; assert.equal(output, f.llvmOutput);
+      const stat = fs.statSync(f.llvmAr);
+      return {plan: {output, prefix: f.sdk}, sdk: {path: f.sdk, snapshot: {files: {
+        [c.toolchain.llvmLibAlias]: {type: "symlink", target: c.toolchain.llvmLibTarget},
+        ["bin/" + c.toolchain.llvmLibTarget]: {type: "file", bytes: stat.size, sha256: sourceIO.fileHash(f.llvmAr)}}}}};
+    }, originalFileHash = sourceIO.fileHash;
+  assert.equal(sha256(definition), c.source.definition.sha256); assert.equal(sha256(license), c.source.license.sha256);
+  t.mock.method(ci, "verifyRocmSources", /** @param {{env:NodeJS.ProcessEnv}} wrapper
+   * @param {ReturnType<typeof localRocm.localRocmSdkPaths>} paths @param {string} git */ (wrapper, paths, git) => {
+      sourceVerifications++; assert.equal(paths.source, f.sourceRoot); assert.equal(wrapper.env["MOM_AOT_BUILD_ONLY"], "1"); assert.equal(git, "/usr/bin/git");
+      return {version: 1, target: "rocm"};
+    });
+  t.mock.method(sourceIO, "fileHash", /** @param {string} file */ file => {
+    if (path.basename(file) === c.library.fileName) {
+      const bytes = fs.readFileSync(file); return bytes.equals(fakeLibrary) ? c.library.sha256 : sha256(bytes);
+    }
+    return originalFileHash(file);
+  });
+  t.mock.method(childProcess, "spawnSync", /** @param {string} file @param {string[]} args */ (file, args) => {
+    if (file === "/usr/bin/git" && args[1] === "show") {
+      const spec = args[2] || "", relative = spec.slice(spec.indexOf(":") + 1), bytes = relative === c.source.definition.path ? definition : license;
+      return {error: null, signal: null, status: 0, stdout: bytes, stderr: Buffer.alloc(0)};
+    }
+    if (file === "/usr/bin/git" && args[1] === "rev-parse") {
+      const spec = args[args.length - 1] || "", relative = spec.slice(spec.indexOf(":") + 1), blob = relative === c.source.definition.path ? c.source.definition.blob : c.source.license.blob;
+      return {error: null, signal: null, status: 0, stdout: blob + "\n", stderr: ""};
+    }
+    if (file === f.llvmLib) {
+      const defArg = args.find(argument => argument.startsWith("/def:")), outArg = args.find(argument => argument.startsWith("/out:"));
+      assert.ok(defArg); assert.ok(outArg);
+      assert.ok(fs.readFileSync(defArg.slice(5)).equals(Buffer.concat([Buffer.from("LIBRARY " + c.library.dllName + "\n"), definition])));
+      fs.writeFileSync(outArg.slice(5), fakeLibrary, {flag: "wx", mode: 0o600});
+      if (options.mutateTool) {fs.writeFileSync(f.llvmAr, "drifted llvm-ar fixture\n"); fs.chmodSync(f.llvmAr, 0o755);}
+      return {error: null, signal: null, status: 0, stdout: "", stderr: ""};
+    }
+    throw new Error("Unexpected command in local AMD fixture: " + file);
+  });
+  return {c, fakeLibrary, verifyLlvm, get sourceVerifications() {return sourceVerifications;}, get llvmAdmissions() {return llvmAdmissions;}};
 }
 
 describe("Source-generated Windows AMD import-library input", {skip: process.platform !== "linux", concurrency: false}, () => {
@@ -172,6 +235,34 @@ describe("Source-generated Windows AMD import-library input", {skip: process.pla
     assert.equal(fs.existsSync(path.join(output, "amdhip.def")), false);
     assert.equal(receipt.library.sha256, c.library.sha256);
     assert.equal(admitWindowsAmdhip(output).status, "PASS");
+  });
+
+  test("generates a local receipt from the admitted source and LLVM tool without CI identity", async t => {
+    const f = localWorkspaceFixture(t), fixture = mockLocalAmdhipBuild(t, f),
+      receipt = await prepareLocalAmdhipWindows(f.input, {MOM_AOT_BUILD_ONLY: "1"}, {verifyLlvm: fixture.verifyLlvm}), admitted = windowsAmdhipInputs(f.output);
+    assert.equal(receipt.localBuildId, f.localBuildId); assert.equal(Object.hasOwn(receipt, "runAttempt"), false);
+    assert.equal(receipt.source.sourceRoot, f.sourceRoot); assert.equal(receipt.toolchain.sdkOutput, f.llvmOutput);
+    assert.equal(fixture.sourceVerifications, 2); assert.equal(fixture.llvmAdmissions, 2);
+    assert.equal(admitted.amdhip64, path.join(f.output, fixture.c.library.fileName));
+    assert.deepEqual(fs.readdirSync(f.output).sort(), [path.basename(fixture.c.source.license.path), fixture.c.library.fileName, "sdk.json"].sort());
+  });
+
+  test("rejects a malformed local identity and preserves existing unknown output", async t => {
+    const f = localWorkspaceFixture(t), env = {MOM_AOT_BUILD_ONLY: "1"};
+    await assert.rejects(prepareLocalAmdhipWindows({...f.input, localBuildId: "42-1"}, env), /UUID localBuildId/);
+    assert.equal(fs.existsSync(f.output), false);
+    fs.mkdirSync(f.output); writePrivate(path.join(f.output, "keep.bin"), "preserve\n");
+    await assert.rejects(prepareLocalAmdhipWindows(f.input, env), /must be new/);
+    assert.equal(fs.readFileSync(path.join(f.output, "keep.bin"), "utf8"), "preserve\n");
+    assert.deepEqual(fs.readdirSync(f.output), ["keep.bin"]);
+  });
+
+  test("rejects Linux LLVM tool drift before publishing local output", async t => {
+    const f = localWorkspaceFixture(t), fixture = mockLocalAmdhipBuild(t, f, {mutateTool: true});
+    await assert.rejects(prepareLocalAmdhipWindows(f.input, {MOM_AOT_BUILD_ONLY: "1"}, {verifyLlvm: fixture.verifyLlvm}), /changed during generation/);
+    assert.equal(fixture.sourceVerifications, 2); assert.equal(fixture.llvmAdmissions, 2);
+    assert.equal(fs.existsSync(f.output), false);
+    assert.equal(fs.readdirSync(f.workspace).some(name => name.startsWith(".native-windows-amdhip-local-")), false);
   });
 
   test("admits only an externally pinned same-run thin LLVM tool handoff", t => {

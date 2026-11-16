@@ -321,6 +321,33 @@ function dpcppFixture() {
     clangxx: {path: clangxx, sha256: sha256(clangxx)}, clangVersion: version}};
 }
 
+/** Reader-result fixtures for local construction: no CI path or run identity is supplied.
+ * The tiny compiler only answers identity/resource queries; it never compiles or uses a GPU.
+ * @param {import("node:test").TestContext} t */
+function localDpcppConfigFixture(t) {
+  const sdk = dpcppFixture(), root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-local-windows-gpu-config-")),
+    sourceRoot = path.join(root, "source"), host = windowsSdkFixture("local", root).admitted,
+    resourceInclude = path.join(sdk.root, "lib/clang/23/include");
+  t.after(() => {fs.rmSync(sdk.root, {recursive: true, force: true}); fs.rmSync(root, {recursive: true, force: true});});
+  const replies = {"--version": sdk.version, "--print-resource-dir": path.dirname(resourceInclude)};
+  fs.writeFileSync(path.join(sdk.root, "bin/clang-23"), "#!" + process.execPath + "\nconst replies=" + JSON.stringify(replies) +
+    ";\nif (!Object.hasOwn(replies,process.argv[2])) process.exit(1);\nconsole.log(replies[process.argv[2]]);\n");
+  sdk.record.clang.sha256 = sha256(sdk.record.clang.path);
+  sdk.record.clangxx.sha256 = sha256(sdk.record.clangxx.path);
+  const plan = windowsNativeGpuIncludePlan({resourceInclude, syclInclude: path.join(sourceRoot, "sycl/include"),
+    urInclude: path.join(sourceRoot, "unified-runtime/include"), dpcppInclude: path.join(sdk.root, "include"),
+    dpcppSyclInclude: path.join(sdk.root, "include/sycl"), windowsSdkIncludeRoots: sdkRoots});
+  for (const file of [...plan.dpcppHeaders, ...plan.urHeaders]) {
+    fs.mkdirSync(path.dirname(file), {recursive: true}); fs.writeFileSync(file, "#pragma once\n");
+  }
+  fs.mkdirSync(path.join(sourceRoot, "sycl/include"), {recursive: true});
+  fs.mkdirSync(path.join(sdk.root, "include/sycl"), {recursive: true});
+  for (const name of ["llvm-nm", "llvm-readobj", "llvm-objcopy"]) {fs.writeFileSync(path.join(sdk.root, "bin", name), "fixture\n");}
+  return {plan, input: {compilerRoot: sdk.root, sourceRoot, dpcppRoot: sdk.root, dpcppManifest: {dpcpp: sdk.record},
+    host: /** @type {any} */ (host), tools: {llvmNm: path.join(sdk.root, "bin/llvm-nm"), toolRoot: path.join(sdk.root, "bin")},
+    cudaImages: null}};
+}
+
 let windowsGpuConfigFixtureCounter = 0;
 /** @param {import("node:test").TestContext} t */
 function dpcppWindowsGpuConfigFixture(t) {
@@ -631,6 +658,22 @@ test.describe("Windows oneAPI GPU config path derivation", {skip: process.platfo
   });
 
   test.describe("Windows SYCL GPU config manifest admission", {skip: process.platform !== "linux" || process.arch !== "x64"}, () => {
+    test("local descriptor construction shares compiler/header checks without a CI transport identity", t => {
+      const fixture = localDpcppConfigFixture(t), result = gpuConfig.composeWindowsDpcppGpuConfig("dpcpp-opencl", fixture.input);
+      assert.equal(result.config.profile, "dpcpp-opencl");
+      assert.deepEqual(result.config.includeRoots, fixture.plan.includeRoots);
+      assert.equal(result.compiler.root, fixture.input.compilerRoot);
+      assert.equal(Object.keys(result.selectedHeaders).length, 11);
+      assert.equal(Object.hasOwn(result.config, "runAttempt"), false);
+      assert.equal(result.configSha256, createHash("sha256").update(result.configBytes).digest("hex"));
+    });
+    test("local construction still rejects mismatched Unified Runtime headers and cross-profile CUDA", t => {
+      const fixture = localDpcppConfigFixture(t), header = fixture.plan.urHeaders[0];
+      if (!header) {throw new Error("Missing UR fixture header");}
+      fs.appendFileSync(header, "// changed\n");
+      assert.throws(() => gpuConfig.composeWindowsDpcppGpuConfig("dpcpp-opencl", fixture.input), /Unified Runtime headers differ/);
+      assert.throws(() => gpuConfig.composeWindowsDpcppGpuConfig("dpcpp", fixture.input), /requires admitted CUDA images/);
+    });
     test("forwards the externally verified DPC++ manifest pin to the maintained audit", t => {
       const fixture = dpcppWindowsGpuConfigFixture(t), auditReached = new Error("DPC++ audit reached"),
         sources = JSON.parse(fs.readFileSync(fixture.sourcesFile, "utf8"));
@@ -657,6 +700,14 @@ test.describe("Windows oneAPI GPU config path derivation", {skip: process.platfo
       const fixture = acppGpuFixture(t), queries = mockAcppGpuReaders(t, fixture);
       t.mock.method(ci, "auditDpcppCudaInputs", () => {throw new Error("HIP must not admit or query DPC++/CUDA inputs");});
       const result = windowsNativeAcppGpuConfig("acpp-hip", fixture.hipInput), config = result.config;
+      const localInput = {host: /** @type {any} */ (fixture.windowsSdk.admitted),
+          tools: {llvmNm: path.join(fixture.toolsRoot, "bin/llvm-nm"), toolRoot: path.join(fixture.toolsRoot, "bin")},
+          acpp: {source: fixture.acpp.sourceRoot, generatedInclude: fixture.acpp.generatedInclude, plugin: fixture.acpp.plugin},
+          frontend: {clang: fixture.clang, clangxx: fixture.clangxx, resourceInclude: fixture.resourceInclude},
+          hipInclude: fixture.hipInclude, cuda: null}, local = gpuConfig.composeWindowsAcppGpuConfig("acpp-hip", localInput);
+      assert.deepEqual(local.configBytes, result.configBytes, "local and CI construction produce identical descriptor bytes");
+      assert.equal(local.configSha256, result.configSha256);
+      assert.throws(() => gpuConfig.composeWindowsAcppGpuConfig("acpp-cuda", localInput), /only its selected CUDA or HIP/);
       assert.equal(config.profile, "acpp-hip");
       assert.deepEqual(Object.keys(config).sort(), ["acpp", "includeRoots", "overlay", "profile", "tools", "version"]);
       assert.deepEqual(config.acpp, {source: fixture.acpp.sourceRoot, generatedInclude: fixture.acpp.generatedInclude, plugin: fixture.acpp.plugin});
