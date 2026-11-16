@@ -209,8 +209,10 @@ jobs:
       - name: Install SDK extraction and test tools
         timeout-minutes: 8
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends 7zip msitools unzip
+          # A dead first-choice mirror must not consume the whole prerequisite deadline.
+          apt_options=(-o Acquire::Retries=2 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
+          sudo apt-get "${apt_options[@]}" update
+          sudo apt-get "${apt_options[@]}" install --yes --no-install-recommends 7zip msitools unzip
           test -x /usr/bin/7z
           test -x /usr/bin/msiinfo
           test -x /usr/bin/msiextract
@@ -222,64 +224,64 @@ jobs:
 
       - name: Provision pinned Intel 2026.2 compiler
         timeout-minutes: 20
-        run: sudo env MOM_DEV_WORKSPACE=/var/tmp/mom-native-windows-host-${{ github.run_id }}-${{ github.run_attempt }} scripts/install-dev.sh --component oneapi --jobs 2
+        run: sudo env MOM_DEV_WORKSPACE=/var/tmp/mom-dev-native-windows-host-${{ github.run_id }}-${{ github.run_attempt }} scripts/install-dev.sh --component oneapi --jobs 2
 
       - name: Download audited Windows LLVM state and manifest
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: ${{ steps.pins.outputs.windows_state_archive }}
           path: ${{ runner.temp }}/incoming/windows-llvm
 
       - name: Download Windows LLVM admission manifest
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: ${{ steps.pins.outputs.windows_state_manifest }}
           path: ${{ runner.temp }}/incoming/windows-llvm
 
       - name: Download same-run Windows Hermes handoff
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: ${{ steps.pins.outputs.hermes_archive }}
           path: ${{ runner.temp }}/incoming
 
       - name: Download same-run thin Linux LLVM tools
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: ${{ steps.pins.outputs.linux_tools_archive }}
           path: ${{ runner.temp }}/incoming
 
       - name: Download full audited Linux LLVM SDK and source state
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: ${{ steps.pins.outputs.linux_sdk_archive }}
           path: ${{ runner.temp }}/incoming
 
       - name: Download prepared Linux source cohort
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: ${{ steps.pins.outputs.linux_sources_archive }}
           path: ${{ runner.temp }}/incoming
 
       - name: Download DPC++ and CUDA input handoff
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: ${{ steps.pins.outputs.dpcpp_cuda_archive }}
           path: ${{ runner.temp }}/incoming
 
       - name: Download original ROCm source cohort
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: ${{ steps.pins.outputs.rocm_sources_archive }}
           path: ${{ runner.temp }}/incoming
 
       - name: Download prepared ACPP source cohort
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: ${{ steps.pins.outputs.acpp_sources_archive }}
           path: ${{ runner.temp }}/incoming
 
       - name: Download the selected HIP header handoff
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: ${{ steps.pins.outputs.hip_headers_archive }}
           path: ${{ runner.temp }}/incoming
@@ -390,7 +392,7 @@ jobs:
               return {bytes, sha256};
             } finally {fs.closeSync(fd);}
           }
-          function restore(file, pinName, roots, base, maxExpandedBytes, timeoutCapMs = 25 * 60 * 1000) {
+          function restore(file, pinName, roots, base, maxExpandedBytes, timeoutCapMs = 25 * 60 * 1000, createBase = false) {
             pinnedArchive(file, pinName);
             const members = ci.listState(file, roots, boundedTimeout(5 * 60 * 1000)),
               expandedBytes = ci.tarExpandedBytes(file, members.length, boundedTimeout(15 * 60 * 1000));
@@ -399,6 +401,14 @@ jobs:
               ci.linuxNativeSdkDiskPreflight(expandedBytes, availableBytes(base), availableBytes(paths.runnerTemp));
             }
             pinnedArchive(file, pinName);
+            if (createBase) {
+              const expectedBase = path.join(paths.runnerTemp, `linux-llvm-tools-extracted-${suffix}`);
+              if (base !== expectedBase || roots.length !== 1 || roots[0] !== `native-linux-llvm-tools-${suffix}` ||
+                  fs.lstatSync(base, {throwIfNoEntry: false})) {
+                throw new Error("Linux LLVM tool restore requires its fresh exact same-run extraction root");
+              }
+              fs.mkdirSync(base, {mode: 0o700});
+            }
             ci.extractState(file, base, roots, roots, boundedTimeout(timeoutCapMs, 90_000));
             pinnedArchive(file, pinName);
             return {members, expandedBytes};
@@ -408,7 +418,7 @@ jobs:
           }
           async function main() {
             const toolName = "native-linux-llvm-tools-" + suffix,
-              hermesName = "native-windows-controller-hermes-" + suffix,
+              hermesName = "native-windows-controller-hermes-" + suffix, hipName = "native-rocm-hip-headers-" + suffix,
               windowsName = "native-windows-llvm-state-" + suffix + "-audited",
               windowsArchive = incoming(windowsName + ".tar", "windows-llvm"), windowsManifestFile = incoming(windowsName + ".json", "windows-llvm"),
               hermesArchive = incoming(hermesName + ".tar"), toolsArchive = incoming(toolName + ".tar"),
@@ -417,17 +427,18 @@ jobs:
               dpcppArchive = incoming("native-linux-dpcpp-cuda-inputs-" + suffix + ".tar"),
               rocmArchive = incoming("native-rocm-state-" + suffix + "-sources.tar"),
               acppArchive = incoming("native-acpp-state-" + suffix + "-sources.tar"),
-              hipArchive = incoming("native-rocm-hip-headers-" + suffix + ".tar"),
-              toolsBundle = path.join(paths.runnerTemp, toolName), hermesRoot = path.join(paths.runnerTemp, hermesName);
+              hipArchive = incoming(hipName + ".tar"),
+              toolsRoot = path.join(paths.runnerTemp, `linux-llvm-tools-extracted-${suffix}`),
+              toolsBundle = path.join(toolsRoot, toolName), hermesRoot = path.join(paths.runnerTemp, hermesName);
 
             restore(hermesArchive, "HERMES_BUNDLE", [hermesName], paths.runnerTemp, 8 * 1024 ** 3);
-            restore(toolsArchive, "LINUX_TOOLS_BUNDLE", [toolName], paths.runnerTemp, 1024 ** 3);
+            restore(toolsArchive, "LINUX_TOOLS_BUNDLE", [toolName], toolsRoot, 1024 ** 3, 25 * 60 * 1000, true);
             restore(linuxSdkArchive, "LINUX_SDK_BUNDLE", [paths.sourceName, paths.sdkName], "/tmp", 64 * 1024 ** 3, 30 * 60 * 1000);
             restore(linuxSourcesArchive, "LINUX_SOURCES_BUNDLE", ["mom-native-linux-source-prerequisites-" + suffix], "/tmp", 8 * 1024 ** 3);
             restore(dpcppArchive, "DPCPP_CUDA_BUNDLE", ["mom-native-dpcpp-cuda-inputs-" + suffix], "/tmp", 32 * 1024 ** 3);
             restore(rocmArchive, "ROCM_SOURCES_BUNDLE", ["mom-native-rocm-prerequisites-" + suffix], "/tmp", 16 * 1024 ** 3);
             restore(acppArchive, "ACPP_SOURCES_BUNDLE", ["mom-native-acpp-prerequisites-" + suffix], "/tmp", 8 * 1024 ** 3);
-            restore(hipArchive, "HIP_HEADERS_BUNDLE", ["mom-native-rocm-hip-headers-" + suffix], "/tmp", 128 * 1024 ** 2);
+            restore(hipArchive, "HIP_HEADERS_BUNDLE", [hipName], "/tmp", 128 * 1024 ** 2);
 
             const linuxSdk = require("./scripts/build-native-llvm21-sdk").verifyLinuxLlvmAdmission(paths.output),
               linuxSources = ci.linuxSourceStatePaths(paths), dpcpp = ci.dpcppCudaInputsStatePaths(paths),
@@ -436,7 +447,7 @@ jobs:
                 {runAttempt: suffix, handoffSha256: process.env[inputPins.LINUX_TOOLS_HANDOFF]}),
               hermes = require("./scripts/native-windows-controller-handoff").windowsControllerHandoffInputs(hermesRoot,
                 {kind: "hermes", runAttempt: suffix, handoffSha256: process.env[inputPins.HERMES_HANDOFF]}),
-              hipHeaders = require("./scripts/native-rocm-hip-headers").rocmHipHeaderInputs(paths.rocmHipHeadersRoot,
+              hipHeaders = require("./scripts/native-rocm-hip-headers").rocmHipHeaderInputs(path.join("/tmp", hipName),
                 {runAttempt: suffix, handoffSha256: process.env[inputPins.HIP_HEADERS_HANDOFF]}),
               sourceGit = "/usr/bin/git";
             if (!linuxSdk.sdk || !linuxSdk.sdk.path || hermes.kind !== "hermes" || !hermes.intelRuntime ||
@@ -502,10 +513,9 @@ jobs:
 
             const resourcesRoot = path.join(paths.runnerTemp, "native-windows-rocm-resources-" + suffix),
               resourcesConfigFile = path.join(paths.runnerTemp, "native-windows-rocm-resources-config-" + suffix + ".json"),
-              resourceConfig = {version: 1, target: "win32", source: path.join(rocm.source, "roots/rocmLlvm"),
-                clr: path.join(rocm.source, "roots/clr"), llvm: linuxSdk.sdk.path, cmake: "/usr/bin/cmake",
-                hipHeaders: hipHeaders.include, hostCompilers: {cc: "/opt/intel/oneapi/compiler/2026.2/bin/icx",
-                  cxx: "/opt/intel/oneapi/compiler/2026.2/bin/icpx"}};
+              resourceConfig = ci.rocmResourcesConfig({source: rocm.source, llvmSdk: linuxSdk.sdk.path, hipIncludeRoot: hipHeaders.include},
+                {cmake: "/usr/bin/cmake", cc: "/opt/intel/oneapi/compiler/2026.2/bin/icx",
+                  cxx: "/opt/intel/oneapi/compiler/2026.2/bin/icpx"}, "win32");
             fs.writeFileSync(resourcesConfigFile, JSON.stringify(resourceConfig, null, 2) + "\n", {flag: "wx", mode: 0o600});
             run("scripts/build-native-rocm-resources.js", [resourcesConfigFile, resourcesRoot], 12 * 60 * 1000);
             const resourceResult = path.join(resourcesRoot, "result.json"), comgrRoot = path.join(paths.runnerTemp, "native-windows-comgr-" + suffix);
@@ -572,7 +582,7 @@ jobs:
               16 * 60 * 1000);
             const amdhip = require("./scripts/prepare-native-amdhip-windows").windowsAmdhipInputs(amdRoot),
               acppRoot = path.join(paths.runnerTemp, "native-windows-acpp-" + suffix),
-              rocmRoot = paths.rocmHipHeadersRoot,
+              rocmRoot = hipHeaders.root,
               deviceLibraries = path.join(resourcesRoot, "install/amdgcn/bitcode");
             run("scripts/build-native-windows-acpp-sdk.js", [acpp.preparedCheckout, windowsState.descriptor, windowsState.output,
               path.join(linuxSdk.sdk.path, "bin"), dpcpp.cudaRoot, cudartInputs.cudartStatic,

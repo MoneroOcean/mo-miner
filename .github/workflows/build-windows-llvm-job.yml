@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       phase:
-        description: configure, one ordered LLVM build phase, or audit
+        description: configure, llvm-amdgpu, bounded llvm-mid group, clang, lld, or audit
         required: true
         type: string
       run_deadline_epoch:
@@ -116,6 +116,8 @@ jobs:
             echo 'Original Windows LLVM run deadline is expired or exceeds eight hours' >&2
             exit 1
           fi
+          # Include cold provisioning/transfers in every phase's existing bound;
+          # reserve five minutes for upload. A fast phase still exits immediately.
           job_epoch=$((now + 3300))
           if (( run_epoch < job_epoch )); then job_epoch=$run_epoch; fi
           if (( job_epoch - now < 120 )); then echo 'Insufficient time remains in the original Windows LLVM run' >&2; exit 1; fi
@@ -147,9 +149,7 @@ jobs:
           case "$PHASE" in
             configure) expected_previous=""; output_phase=configured ;;
             llvm-amdgpu) expected_previous=configured; output_phase=$PHASE ;;
-            llvm-nvptx) expected_previous=llvm-amdgpu; output_phase=$PHASE ;;
-            llvm-x86) expected_previous=llvm-nvptx; output_phase=$PHASE ;;
-            llvm-core) expected_previous=llvm-x86; output_phase=$PHASE ;;
+            llvm-mid) expected_previous=llvm-amdgpu; output_phase=llvm-core ;;
             clang) expected_previous=llvm-core; output_phase=$PHASE ;;
             lld) expected_previous=clang; output_phase=$PHASE ;;
             audit) expected_previous=lld; output_phase=audited ;;
@@ -168,7 +168,7 @@ jobs:
           fi
           suffix="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           case "$PREVIOUS_STAGE" in
-            configured|llvm-amdgpu|llvm-nvptx|llvm-x86|llvm-core|clang|lld) input_phase=$PREVIOUS_STAGE ;;
+            configured|llvm-amdgpu|llvm-core|clang|lld) input_phase=$PREVIOUS_STAGE ;;
             "") input_phase="" ;;
             *) echo 'Invalid previous state phase' >&2; exit 1 ;;
           esac
@@ -196,30 +196,30 @@ jobs:
 
       - name: Provision pinned Intel 2026.2 compiler
         timeout-minutes: 20
-        run: sudo env MOM_DEV_WORKSPACE=/var/tmp/mom-native-windows-llvm-${{ github.run_id }}-${{ github.run_attempt }} scripts/install-dev.sh --component oneapi --jobs 2
+        run: sudo env MOM_DEV_WORKSPACE=/var/tmp/mom-dev-native-windows-llvm-${{ github.run_id }}-${{ github.run_attempt }} scripts/install-dev.sh --component oneapi --jobs 2
 
       - name: Download exact same-run Hermes controller state
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-windows-controller-hermes-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming/hermes
 
       - name: Download exact same-run thin Linux LLVM tools and source
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-llvm-tools-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming/tools
 
       - name: Download immediately preceding Windows LLVM state archive
         if: ${{ inputs.phase != 'configure' }}
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: ${{ steps.artifact-names.outputs.state_input_artifact_name }}
           path: ${{ runner.temp }}/incoming/state
 
       - name: Download immediately preceding Windows LLVM state manifest
         if: ${{ inputs.phase != 'configure' }}
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: ${{ steps.artifact-names.outputs.manifest_input_artifact_name }}
           path: ${{ runner.temp }}/incoming/state
@@ -227,8 +227,10 @@ jobs:
       - name: Install archive and MSI extraction tools
         timeout-minutes: 8
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends 7zip msitools
+          # A dead first-choice mirror must not consume the whole prerequisite deadline.
+          apt_options=(-o Acquire::Retries=2 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
+          sudo apt-get "${apt_options[@]}" update
+          sudo apt-get "${apt_options[@]}" install --yes --no-install-recommends 7zip msitools
           test -x /usr/bin/7z
           test -x /usr/bin/msiinfo
           test -x /usr/bin/msiextract
@@ -237,7 +239,7 @@ jobs:
         timeout-minutes: 5
         run: node --require ./tests/common/no_pool_network.js --test tests/native_ci.js tests/native_sdk_fetch.js tests/native_windows_sdk.js tests/native_windows_llvm21_sdk.js tests/native_windows_llvm_state.js tests/native_windows_llvm_ci_job.js tests/native_windows_host_sdk_inputs.js tests/native_linux_llvm_tools.js
 
-      - name: Run one maintained Windows LLVM phase and pack its state
+      - name: Run maintained Windows LLVM phase or group and pack its state
         id: run-phase
         timeout-minutes: 45
         env:
@@ -265,11 +267,16 @@ jobs:
           retention-days: 1
 
       - name: Report build-only phase boundary
+        env:
+          MOM_WINDOWS_LLVM_PHASE: ${{ inputs.phase }}
         run: |
           {
-            echo "### Windows LLVM ${{ inputs.phase }} phase"
+            echo "### Windows LLVM ${{ inputs.phase }} phase/group"
             echo '- Every call provisions a fresh bounded runner, reacquires and locally composes the pinned Windows host-SDK inputs, and re-admits the same-run Hermes and thin Linux LLVM handoffs.'
             echo '- The previous Windows LLVM checkpoint is accepted only with its external archive and manifest pins. Phase tar/manifest artifacts preserve the original canonical paths and receipts for the next explicit caller job.'
+            if [[ "$MOM_WINDOWS_LLVM_PHASE" == llvm-mid ]]; then
+              echo '- This group runs the original NVPTX, X86, and core builder phases in order, then packs only the final core checkpoint.'
+            fi
             echo '- Vendor Windows SDK archives and composed SDK files remain local to this runner; no SDK payload or persistent Actions cache is uploaded.'
             echo '- This job is build-only and is not a GPU, pool, runtime, publication, or release qualification.'
           } >> "$GITHUB_STEP_SUMMARY"

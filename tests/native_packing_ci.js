@@ -55,11 +55,21 @@ function fixture(t, target = "linux") {
   let members = [metadataName, ...["application-config.json", "entrypoint.json", "handoff.json", "result.json"].map(name => metadataName + "/" + name)];
   const ci = {listState: () => members, extractState: () => calls.push({stage: "restore"}),
     packState: (/** @type {string} */ file) => {fs.writeFileSync(file, "fixture packed transport"); calls.push({stage: "seal"});}};
-  const execute = (/** @type {number} */ index) => runInNewContext(bodies[index] || "", {process: {env}, console: {log() { /* Captured fixture output is intentionally quiet. */ }}, require: (/** @type {string} */ name) => {
+  /** @type {typeof import('../scripts/prepare-native-packing-tool') | undefined} */ let packingHelper;
+  const execute = (/** @type {number} */ index) => runInNewContext(bodies[index] || "", {process: {env}, console: {log() { /* Captured fixture output is intentionally quiet. */ }}, require: function sandboxRequire(/** @type {string} */ name) {
     if (name === "node:fs") {return virtualFs;}
     if (name === "./scripts/prepare-native-ci") {return ci;}
     if (name === "./scripts/build-source-inputs") {return {fileHash: hash, readBuildJson: (/** @type {string} */ file) => JSON.parse(fs.readFileSync(mapped(file), "utf8"))};}
     if (name === "./scripts/native-packing-tool.json") {return tool;}
+    if (name === "./scripts/prepare-native-packing-tool") {
+      const module = {exports: {}};
+      runInNewContext(fs.readFileSync(path.join(__dirname, "../scripts/prepare-native-packing-tool.js"), "utf8"), {
+        module, process: {platform: "linux", arch: "x64", env},
+        require: (/** @type {string} */ dependency) => sandboxRequire(dependency.startsWith("./") ? "./scripts/" + dependency.slice(2) : dependency),
+      });
+      packingHelper = /** @type {typeof import('../scripts/prepare-native-packing-tool')} */ (module.exports);
+      return packingHelper;
+    }
     if (name === "node:child_process") {
       return {spawnSync: (/** @type {string} */ command, /** @type {string[]} */ args, /** @type {any} */ options) => {
         calls.push({stage: command, args});
@@ -78,7 +88,11 @@ function fixture(t, target = "linux") {
     return require(name);
   }}, {timeout: 10000});
   t.after(() => fs.rmSync(temp, {recursive: true, force: true}));
-  return {env, calls, execute, handoff, save, raw, archive, temp, members: (/** @type {string[]} */ value) => {members = value;},
+  return {env, calls, execute, handoff, save, raw, archive, temp,
+    preparePacking: () => {
+      assert.ok(packingHelper);
+      return packingHelper.prepareNativePackingTool(path.join(temp, "native-packing-tool"), env);
+    }, members: (/** @type {string[]} */ value) => {members = value;},
     reseal: () => {save("handoff.json", handoff); env.NATIVE_HANDOFF_SHA256 = fileHash(path.join(temp, "metadata/handoff.json"));}};
 }
 
@@ -89,6 +103,20 @@ test.describe("SDK-free native packing CI handoff", {skip: process.platform !== 
     assert.doesNotMatch(workflow, /actions\/cache@|npm run build|npm ci|self-hosted/);
     for (const match of workflow.matchAll(/uses: (actions\/[^\s@]+)@([^\s#]+)/g)) {assert.match(match[2] || "", /^[a-f0-9]{40}$/);}
     assert.match(workflow, /archive: true/); assert.match(workflow, /compression-level: 0/);
+  });
+  test("packing failures upload only this attempt's exact UPX stage logs", () => {
+    const block = workflow.split("      - name: Upload UPX stage logs after a packing failure\n")[1]?.split("\n      - name:")[0] || "",
+      expression = String.fromCharCode(36, 123, 123), platform = expression + " inputs.platform == 'win32' && 'windows' || 'linux' }}",
+      suffix = expression + " github.run_id }}-" + expression + " github.run_attempt }}",
+      directory = `/tmp/native-${platform}-packed-build-${suffix}`,
+      paths = block.split("          path: |\n")[1]?.split("\n          if-no-files-found:")[0]?.split("\n").map(line => line.trim()) || [];
+    assert.match(block, /if: failure\(\) && steps\.pack\.outcome == 'failure'/);
+    assert.match(block, /uses: actions\/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9/);
+    assert.ok(block.includes(`name: native-${platform}-packing-diagnostics-${suffix}`));
+    assert.deepEqual(paths, ["pack.log", "integrity.log", "restore.log"].map(name => `${directory}/${name}`));
+    assert.match(block, /if-no-files-found: ignore/); assert.match(block, /retention-days: 1/);
+    assert.doesNotMatch(block, /\*|mom\.exe|\/mom(?:\s|$)|result\.json|entrypoint\.json/);
+    assert.equal(bodies.length, 2, "failure diagnostics do not add another executable workflow body");
   });
   test("official packer and its source notice cohort remain independently pinned", () => {
     const pin = require("../scripts/native-packing-tool.json");
@@ -147,8 +175,13 @@ test.describe("SDK-free native packing CI handoff", {skip: process.platform !== 
       for (const match of jobs.matchAll(/^ {2}([a-z0-9-]+):\n([\s\S]*?)(?=^ {2}[a-z0-9-]+:|$(?![\s\S]))/gm)) {
         const body = match[2] || "", callee = body.match(/^ {4}uses: \.\/\.github\/workflows\/([a-z0-9-]+\.yml)$/m)?.[1];
         if (callee) {visit(callee); continue;}
-        const minutes = Number(body.match(/^ {4}timeout-minutes: ([0-9]+)$/m)?.[1]);
-        assert.ok(Number.isInteger(minutes) && minutes >= 1 && minutes <= 60, `${name}/${match[1]} has a bounded job timeout`);
+        const timeout = body.match(/^ {4}timeout-minutes: (.+)$/m)?.[1] || "",
+          branches = /^\$\{\{ ((?:inputs\.(?:stage|phase) == '[a-z0-9-]+' && [0-9]+ \|\| )+[0-9]+) \}\}$/.exec(timeout)?.[1],
+          minutes = branches ? [...branches.matchAll(/&& ([0-9]+) \|\| /g)].map(row => Number(row[1]))
+            .concat(Number(branches.match(/ ([0-9]+)$/)?.[1])) : [Number(timeout)];
+        // Accept only literal stage comparisons and enforce the ceiling on every outcome.
+        assert.ok(minutes.every(value => Number.isInteger(value) && value >= 1 && value <= 60),
+          `${name}/${match[1]} has a bounded job timeout`);
         executableJobs++;
       }
     };
@@ -164,6 +197,27 @@ test.describe("SDK-free native packing CI handoff", {skip: process.platform !== 
       assert.deepEqual(f.calls.map(row => row.stage), ["restore", "curl", "tar", "pack", "seal"]);
     });
   }
+  test("the shared packer reuses admitted bytes without another download or extraction", t => {
+    const f = fixture(t); f.execute(0); f.execute(1);
+    const count = f.calls.length, first = f.preparePacking();
+    assert.equal(f.calls.length, count);
+    assert.equal(first.upx, path.join(f.temp, "native-packing-tool/upx"));
+  });
+  test("changed cached packer bytes are rejected without replacement", t => {
+    const f = fixture(t); f.execute(0); f.execute(1);
+    const upx = path.join(f.temp, "native-packing-tool/upx"), count = f.calls.length;
+    fs.appendFileSync(upx, "changed");
+    assert.throws(() => f.preparePacking(), /Pinned packing tool bytes differ/);
+    assert.equal(f.calls.length, count); assert.match(fs.readFileSync(upx, "utf8"), /changed$/);
+  });
+  test("partial packer caches are preserved and cannot be promoted by a retry", t => {
+    const f = fixture(t); f.execute(0); f.execute(1);
+    fs.unlinkSync(path.join(f.temp, "native-packing-tool/upx"));
+    const count = f.calls.length;
+    assert.throws(() => f.preparePacking(), /unknown or incomplete/);
+    assert.equal(f.calls.length, count);
+    assert.equal(fs.existsSync(path.join(f.temp, "native-packing-tool/upx.tar.xz")), true);
+  });
   test("rejects a windows alias before downloading artifacts selected by canonical win32", t => {
     const f = fixture(t, "win32"); Reflect.set(f.env, "NATIVE_PLATFORM", "windows");
     assert.throws(() => f.execute(0), /exact raw executable/);

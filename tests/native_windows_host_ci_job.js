@@ -9,8 +9,8 @@ const repo = path.resolve(__dirname, ".."), workflowPath = path.join(repo, ".git
 const {clrRevision, sourceFiles: hiprtcSourceFiles} = require("../scripts/build-native-windows-hiprtc-sdk");
 
 /** @param {string} name */
-function step(name) {
-  const lines = workflow.split(/\r?\n/), start = lines.findIndex(line => line === "      - name: " + name);
+function step(name, source = workflow) {
+  const lines = source.split(/\r?\n/), start = lines.findIndex(line => line === "      - name: " + name);
   assert.notEqual(start, -1, "missing workflow step: " + name);
   let end = start + 1;
   while (end < lines.length && !/^ {6}- name: /.test(lines[end] || "")) {end++;}
@@ -113,6 +113,8 @@ test.describe("Windows static host-component CI", {skip: process.platform !== "l
     assert.match(workflow, /pinnedManifest\(windowsManifestFile, process\.env\[inputPins\.WINDOWS_STATE_MANIFEST\]\)[\s\S]*?winStateManifest = JSON\.parse\(winStateManifestBytes/);
     assert.match(workflow, /native-windows-host-sdk-inputs|composeWindowsLlvmSdkDescriptor/);
     assert.match(workflow, /build-native-rocm-resources\.js/);
+    assert.match(workflow, /resourceConfig = ci\.rocmResourcesConfig\(\{source: rocm\.source, llvmSdk: linuxSdk\.sdk\.path, hipIncludeRoot: hipHeaders\.include\}/);
+    assert.match(workflow, /cxx: "\/opt\/intel\/oneapi\/compiler\/2026\.2\/bin\/icpx"\}, "win32"\)/);
     assert.match(workflow, /build-native-windows-comgr-sdk\.js/);
     assert.match(workflow, /build-native-windows-hiprtc-sdk\.js/);
     assert.match(workflow, /build-native-windows-acpp-sdk\.js/);
@@ -208,6 +210,30 @@ test.describe("Windows static host-component CI", {skip: process.platform !== "l
     for (const name of testNames) {assert.ok(fs.statSync(path.join(repo, name)).isFile(), "missing named test: " + name);}
   });
 
+  test("Windows cross-build tool installation bounds mirror stalls and preserves APT failures", t => {
+    const directory = tempDir(t), log = path.join(directory, "apt.log"),
+      llvmWorkflow = fs.readFileSync(path.join(repo, ".github/workflows/build-windows-llvm-job.yml"), "utf8");
+    for (const block of [step("Install SDK extraction and test tools"),
+      step("Install archive and MSI extraction tools", llvmWorkflow)]) {
+      const source = 'sudo() { printf "%s\\n" "$*" >> "$MOM_APT_LOG"; return "$MOM_APT_EXIT"; }\n' +
+        "test() { :; }\n" + runBody(block);
+      assert.match(block, /timeout-minutes: 8/);
+      for (const exit of [0, 42]) {
+        fs.writeFileSync(log, "");
+        const result = runBash(source, {PATH: "/usr/bin:/bin", MOM_APT_LOG: log, MOM_APT_EXIT: String(exit)}),
+          calls = fs.readFileSync(log, "utf8").trim().split("\n");
+        assert.equal(result.status, exit, result.stderr);
+        assert.equal(calls.length, exit ? 1 : 2, "a failed index refresh must stop before installation");
+        for (const command of calls) {
+          for (const option of ["Acquire::Retries=2", "Acquire::http::Timeout=20", "Acquire::https::Timeout=20"]) {
+            assert.ok(command.includes("-o " + option), command);
+          }
+          assert.doesNotMatch(command, /allow-unauthenticated|AllowInsecureRepositories/);
+        }
+      }
+    }
+  });
+
   test("the actual deadline shell block caps the job at 55 minutes and rejects a short run budget", t => {
     const directory = tempDir(t), block = runBody(step("Set the immutable run and 55-minute job deadlines")),
       output = path.join(directory, "output"), environment = {PATH: process.env["PATH"] || "/usr/bin:/bin", RUNNER_TEMP: directory,
@@ -273,6 +299,21 @@ test.describe("Windows static host-component CI", {skip: process.platform !== "l
     assert.match(script, /build-native-windows-acpp-sdk\.js/);
     assert.match(script, /exportWindowsHostComponent\(/);
   });
+  test("HIP headers retain their exported transport root through host admission and ACPP", () => {
+    const script = runBody(step("Build and export the static Windows host component"));
+    assert.match(script, /hipName = "native-rocm-hip-headers-" \+ suffix/);
+    assert.match(script, /restore\(hipArchive, "HIP_HEADERS_BUNDLE", \[hipName\], "\/tmp"/);
+    assert.match(script, /rocmHipHeaderInputs\(path\.join\("\/tmp", hipName\)/);
+    assert.match(script, /rocmRoot = hipHeaders\.root/);
+  });
+  test("Linux LLVM tools restore beneath the original configure-time absolute root", () => {
+    const script = runBody(step("Build and export the static Windows host component"));
+    assert.match(script, /toolsRoot = path\.join\(paths\.runnerTemp, `linux-llvm-tools-extracted-\$\{suffix\}`\)/);
+    assert.match(script, /toolsBundle = path\.join\(toolsRoot, toolName\)/);
+    assert.match(script, /restore\(toolsArchive, "LINUX_TOOLS_BUNDLE", \[toolName\], toolsRoot, 1024 \*\* 3, 25 \* 60 \* 1000, true\)/);
+    assert.match(script, /linuxLlvmToolHandoffInputs\(toolsBundle,/);
+    assert.match(script, /verifyWindowsLlvmAdmission\(windowsState\.output/);
+  });
   test("the actual restore helper unpacks a raw archive only after external pin admission", t => {
     const runId = String(Date.now()) + String(process.pid).padStart(6, "0"), attempt = "2", suffix = runId + "-" + attempt,
       runnerTemp = fs.mkdtempSync(path.join("/var/tmp", "mom-host-restore-test-")), output = path.join(runnerTemp, "output"),
@@ -280,7 +321,12 @@ test.describe("Windows static host-component CI", {skip: process.platform !== "l
       script = block.match(/(?:^|\n)node <<'NODE'\n([\s\S]*?)\nNODE(?:\n|$)/m)?.[1],
       terminal = 'main().catch(error => {console.error(error instanceof Error ? error.stack || error.message : "Windows host component failed"); process.exitCode = 1;});';
     assert.ok(script, "expected the inline same-run input restore helper");
+    const hipRestore = script.match(/^\s*restore\(hipArchive,.*$/m)?.[0].trim(),
+      toolRestore = script.match(/^\s*restore\(toolsArchive,.*$/m)?.[0].trim();
+    assert.ok(hipRestore, "exercise the actual HIP archive restore call, not a synthetic root selection");
+    assert.ok(toolRestore, "exercise the same-run Linux LLVM tool restore call");
     t.after(() => fs.rmSync(runnerTemp, {recursive: true, force: true}));
+    t.after(() => fs.rmSync(path.join("/tmp", "native-rocm-hip-headers-" + suffix), {recursive: true, force: true}));
     const rootVars = {
         MOM_NATIVE_SOURCE_DIR: "/tmp/mom-native-prerequisites-" + suffix,
         MOM_NATIVE_LINUX_SDK_DIR: "/tmp/mom-native-llvm21-sdk-" + suffix,
@@ -322,14 +368,42 @@ test.describe("Windows static host-component CI", {skip: process.platform !== "l
       "  if (!rejected) {throw new Error('actual manifest helper accepted a bad pin or byte bound');}",
       "}",
       "const rootName = 'native-linux-llvm-tools-' + suffix, sourceBase = path.join(paths.runnerTemp, 'fixture-input'),",
-      "  sourceRoot = path.join(sourceBase, rootName), archive = path.join(paths.runnerTemp, rootName + '.tar');",
-      "fs.mkdirSync(sourceRoot, {recursive: true}); fs.writeFileSync(path.join(sourceRoot, 'marker'), 'pinned\\n');",
+      "  sourceRoot = path.join(sourceBase, rootName), archive = path.join(paths.runnerTemp, rootName + '.tar'),",
+      "  toolsRoot = path.join(paths.runnerTemp, 'linux-llvm-tools-extracted-' + suffix), clangTool = path.join(sourceRoot, 'bin', 'clang-tblgen');",
+      "fs.mkdirSync(path.dirname(clangTool), {recursive: true}); fs.writeFileSync(clangTool, 'fixture clang-tblgen\\n');",
       "ci.packState(archive, sourceBase, [rootName]);",
+      "process.env[inputPins.LINUX_TOOLS_BUNDLE] = 'f'.repeat(64);",
+      "let rejectedWrongToolsPin = false; try {restore(archive, 'LINUX_TOOLS_BUNDLE', [rootName], toolsRoot, 1024, 25 * 60 * 1000, true);} catch {rejectedWrongToolsPin = true;}",
+      "if (!rejectedWrongToolsPin || fs.existsSync(toolsRoot)) {throw new Error('wrong Linux tools archive pin created its extraction root');}",
       "process.env[inputPins.LINUX_TOOLS_BUNDLE] = fileHash(archive);",
-      "const restored = restore(archive, 'LINUX_TOOLS_BUNDLE', [rootName], paths.runnerTemp, 1024);",
-      "if (restored.expandedBytes !== 7 || fs.readFileSync(path.join(paths.runnerTemp, rootName, 'marker'), 'utf8') !== 'pinned\\n') {",
-      "  throw new Error('actual restore helper did not admit and restore the pinned fixture');",
+      "const wrongToolsBase = path.join(paths.runnerTemp, 'alternate-linux-llvm-tools-root');",
+      "let rejectedWrongToolsBase = false; try {restore(archive, 'LINUX_TOOLS_BUNDLE', [rootName], wrongToolsBase, 1024, 25 * 60 * 1000, true);} catch {rejectedWrongToolsBase = true;}",
+      "if (!rejectedWrongToolsBase || fs.existsSync(wrongToolsBase)) {throw new Error('wrong Linux tools extraction parent was created');}",
+      "const wrongRootName = 'alternate-linux-llvm-tools-' + suffix, wrongRootSource = path.join(sourceBase, wrongRootName),",
+      "  wrongRootArchive = path.join(paths.runnerTemp, wrongRootName + '.tar');",
+      "fs.mkdirSync(path.join(wrongRootSource, 'bin'), {recursive: true}); fs.writeFileSync(path.join(wrongRootSource, 'bin', 'clang-tblgen'), 'wrong root\\n');",
+      "ci.packState(wrongRootArchive, sourceBase, [wrongRootName]);",
+      "process.env[inputPins.LINUX_TOOLS_BUNDLE] = fileHash(wrongRootArchive);",
+      "let rejectedWrongToolsRoot = false; try {restore(wrongRootArchive, 'LINUX_TOOLS_BUNDLE', [wrongRootName], toolsRoot, 1024, 25 * 60 * 1000, true);} catch {rejectedWrongToolsRoot = true;}",
+      "if (!rejectedWrongToolsRoot || fs.existsSync(toolsRoot)) {throw new Error('wrong Linux tools archive root created the extraction directory');}",
+      "process.env[inputPins.LINUX_TOOLS_BUNDLE] = fileHash(archive);",
+      "fs.mkdirSync(toolsRoot, {mode: 0o700}); const existingRootSentinel = path.join(toolsRoot, 'sentinel'); fs.writeFileSync(existingRootSentinel, 'preserve\\n');",
+      "let rejectedExistingToolsRoot = false; try {restore(archive, 'LINUX_TOOLS_BUNDLE', [rootName], toolsRoot, 1024, 25 * 60 * 1000, true);} catch {rejectedExistingToolsRoot = true;}",
+      "if (!rejectedExistingToolsRoot || fs.readFileSync(existingRootSentinel, 'utf8') !== 'preserve\\n' || fs.existsSync(path.join(toolsRoot, rootName))) {",
+      "  throw new Error('pre-existing Linux tools extraction root was overwritten');",
       "}",
+      "fs.rmSync(toolsRoot, {recursive: true, force: true});",
+      "const restored = restore(archive, 'LINUX_TOOLS_BUNDLE', [rootName], toolsRoot, 1024, 25 * 60 * 1000, true),",
+      "  restoredClangTool = path.join(toolsRoot, rootName, 'bin', 'clang-tblgen');",
+      "if (restored.expandedBytes !== Buffer.byteLength('fixture clang-tblgen\\n') ||",
+      "    fs.readFileSync(restoredClangTool, 'utf8') !== 'fixture clang-tblgen\\n') {",
+      "  throw new Error('same-run Linux LLVM tools were not restored at the configure-time clang-tblgen path');",
+      "}",
+      "const hipName = 'native-rocm-hip-headers-' + suffix, hipArchive = path.join(paths.runnerTemp, hipName + '.tar');",
+      "fs.mkdirSync(path.join(sourceBase, hipName)); fs.writeFileSync(path.join(sourceBase, hipName, 'marker'), 'headers');",
+      "ci.packState(hipArchive, sourceBase, [hipName]); process.env[inputPins.HIP_HEADERS_BUNDLE] = fileHash(hipArchive);",
+      hipRestore,
+      "if (fs.readFileSync(path.join('/tmp', hipName, 'marker'), 'utf8') !== 'headers') {throw new Error('HIP transport root was not restored');}",
     ].join("\n");
     assert.ok(script.includes(terminal), "inline builder must have its normal main terminal");
     const program = script.replace(terminal, testTail), result = spawnSync(process.execPath, ["-e", program],

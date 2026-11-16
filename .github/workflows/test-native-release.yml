@@ -130,30 +130,7 @@ jobs:
       - name: Install pinned Intel OpenCL CPU runtime (Linux)
         if: inputs.platform == 'linux' && matrix.lane == 'portable-cpu'
         shell: bash
-        run: |
-          set -euo pipefail
-          key_source="$(mktemp)"
-          keyring="$(mktemp)"
-          source_list="/etc/apt/sources.list.d/mom-oneapi-opencl-cpu-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.list"
-          trap 'status=$?; rm -f -- "$key_source" "$keyring" || true; sudo rm -f -- "$source_list" || true; exit "$status"' EXIT
-          curl --fail --location --proto '=https' --tlsv1.2 --max-time 60 \
-            https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB -o "$key_source"
-          printf '%s  %s\n' db932ba032a71f732dc415eef5f4f185fc7ae768487d7a357bc2772746b6c48c "$key_source" | sha256sum --check
-          gpg --batch --yes --dearmor --output "$keyring" "$key_source"
-          chmod 0644 "$keyring"
-          printf 'deb [signed-by=%s] https://apt.repos.intel.com/oneapi all main\n' "$keyring" |
-            sudo tee "$source_list" >/dev/null
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends \
-            intel-oneapi-runtime-opencl=2026.2.0-863 intel-oneapi-runtime-dpcpp-sycl-opencl-cpu=2026.2.0-863
-          test "$(dpkg-query -W -f='${Version}' intel-oneapi-runtime-opencl)" = '2026.2.0-863'
-          test "$(dpkg-query -W -f='${Version}' intel-oneapi-runtime-dpcpp-sycl-opencl-cpu)" = '2026.2.0-863'
-          icd='/etc/OpenCL/vendors/intel64.icd'
-          driver='/opt/intel/oneapi/redist/lib/libintelocl.so'
-          test -r "$icd" && test -L "$driver" && test -f "$driver"
-          test "$(tr -d '\r\n' <"$icd")" = "$driver"
-          resolved="$(readlink -e -- "$driver")"
-          case "$resolved" in /opt/intel/oneapi/redist/lib/libintelocl.so.*) ;; *) echo "Unexpected Intel CPU ICD target: $resolved" >&2; exit 1 ;; esac
+        run: bash scripts/install-opencl-cpu.sh
 
       - name: Install pinned Intel OpenCL CPU runtime (Windows)
         if: inputs.platform == 'win32' && matrix.lane == 'portable-cpu'

@@ -213,7 +213,7 @@ jobs:
         with:
           node-version: 24.15.0
       - name: Download same-run zstd source tar
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-zstd-state-${{ github.run_id }}-${{ github.run_attempt }}-sources.tar
           path: ${{ runner.temp }}/incoming
@@ -364,7 +364,7 @@ jobs:
       - name: Test same-run DPC++/CUDA input handoff
         run: node --test tests/native_ci.js tests/native_dpcpp_sdk.js
       - name: Download same-run prepared Linux source cohort
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-sdk-state-${{ github.run_id }}-${{ github.run_attempt }}-sources.tar
           path: ${{ runner.temp }}/incoming
@@ -411,7 +411,7 @@ jobs:
         timeout-minutes: 10
         run: node --test tests/native_ci.js tests/native_sdk_fetch.js tests/native_nvrtc_sdk.js tests/native_cuda_images.js tests/native_cuda_images_build.js
       - name: Download original source receipts for CUDA input admission
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-sdk-state-${{ github.run_id }}-${{ github.run_attempt }}-sources.tar
           path: ${{ runner.temp }}/incoming
@@ -428,7 +428,7 @@ jobs:
           fs.unlinkSync(state.incomingTar);
           NODE
       - name: Download same-run DPC++/CUDA 12.6 header inputs
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-dpcpp-cuda-inputs-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
@@ -485,17 +485,17 @@ jobs:
         timeout-minutes: 10
         run: node --test tests/native_ci.js tests/native_jit_base.js tests/native_jit_resources.js
       - name: Download exact same-run prepared Linux source cohort
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-sdk-state-${{ github.run_id }}-${{ github.run_attempt }}-sources.tar
           path: ${{ runner.temp }}/incoming
       - name: Download exact same-run DPC++ and CUDA inputs
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-dpcpp-cuda-inputs-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
       - name: Download exact same-run GNU target headers and notices
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-gnu-headers-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
@@ -581,22 +581,22 @@ jobs:
         timeout-minutes: 5
         run: node --test tests/native_ci.js tests/native_windows_jit_resources.js tests/native_windows_jit_ci_job.js
       - name: Download exact same-run Linux source cohort
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-sdk-state-${{ github.run_id }}-${{ github.run_attempt }}-sources.tar
           path: ${{ runner.temp }}/incoming/linux-sources
       - name: Download exact same-run DPC++ and CUDA inputs
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-dpcpp-cuda-inputs-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming/dpcpp-cuda
       - name: Download pinned same-run Linux JIT resource state
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-jit-resources-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming/linux-jit-resources
       - name: Download exact same-run Windows GNU headers and notices
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-windows-gnu-headers-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming/windows-gnu-headers
@@ -857,22 +857,22 @@ jobs:
         timeout-minutes: 10
         run: node --test tests/native_ci.js tests/native_jit_sdk.js tests/native_dpcpp_sdk.js
       - name: Download same-run Linux source cohort
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-sdk-state-${{ github.run_id }}-${{ github.run_attempt }}-sources.tar
           path: ${{ runner.temp }}/incoming
       - name: Download same-run DPC++ and CUDA inputs
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-dpcpp-cuda-inputs-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
       - name: Download same-run GNU target headers
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-gnu-headers-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
       - name: Download same-run source-JIT resources
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-jit-resources-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
@@ -913,27 +913,27 @@ jobs:
         timeout-minutes: 10
         run: node --test tests/native_ci.js tests/native_jit_sdk.js tests/native_dpcpp_sdk.js
       - name: Download same-run Linux source cohort
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-sdk-state-${{ github.run_id }}-${{ github.run_attempt }}-sources.tar
           path: ${{ runner.temp }}/incoming
       - name: Download same-run DPC++ and CUDA inputs
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-dpcpp-cuda-inputs-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
       - name: Download same-run GNU target headers
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-gnu-headers-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
       - name: Download same-run source-JIT resources
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-jit-resources-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
       - name: Download configured mutable source-JIT state
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-jit-sdk-${{ github.run_id }}-${{ github.run_attempt }}-configured.tar
           path: ${{ runner.temp }}/incoming
@@ -967,27 +967,27 @@ jobs:
         timeout-minutes: 10
         run: node --test tests/native_ci.js tests/native_jit_sdk.js tests/native_dpcpp_sdk.js
       - name: Download same-run Linux source cohort
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-sdk-state-${{ github.run_id }}-${{ github.run_attempt }}-sources.tar
           path: ${{ runner.temp }}/incoming
       - name: Download same-run DPC++ and CUDA inputs
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-dpcpp-cuda-inputs-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
       - name: Download same-run GNU target headers
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-gnu-headers-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
       - name: Download same-run source-JIT resources
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-jit-resources-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
       - name: Download support phase mutable source-JIT state
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-jit-sdk-${{ github.run_id }}-${{ github.run_attempt }}-support.tar
           path: ${{ runner.temp }}/incoming
@@ -1021,27 +1021,27 @@ jobs:
         timeout-minutes: 10
         run: node --test tests/native_ci.js tests/native_jit_sdk.js tests/native_dpcpp_sdk.js
       - name: Download same-run Linux source cohort
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-sdk-state-${{ github.run_id }}-${{ github.run_attempt }}-sources.tar
           path: ${{ runner.temp }}/incoming
       - name: Download same-run DPC++ and CUDA inputs
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-dpcpp-cuda-inputs-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
       - name: Download same-run GNU target headers
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-gnu-headers-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
       - name: Download same-run source-JIT resources
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-jit-resources-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
       - name: Download target phase mutable source-JIT state
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-jit-sdk-${{ github.run_id }}-${{ github.run_attempt }}-targets.tar
           path: ${{ runner.temp }}/incoming
@@ -1080,27 +1080,27 @@ jobs:
         timeout-minutes: 10
         run: node --test tests/native_ci.js tests/native_jit_sdk.js tests/native_dpcpp_sdk.js
       - name: Download same-run Linux source cohort
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-sdk-state-${{ github.run_id }}-${{ github.run_attempt }}-sources.tar
           path: ${{ runner.temp }}/incoming
       - name: Download same-run DPC++ and CUDA inputs
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-dpcpp-cuda-inputs-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
       - name: Download same-run GNU target headers
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-gnu-headers-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
       - name: Download same-run source-JIT resources
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-jit-resources-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
       - name: Download frontend phase mutable source-JIT state
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-jit-sdk-${{ github.run_id }}-${{ github.run_attempt }}-frontend.tar
           path: ${{ runner.temp }}/incoming
@@ -1151,7 +1151,7 @@ jobs:
         with:
           node-version: 24.15.0
       - name: Download the same-run proof-only runtime fixture
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-jit-runtime-proof-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
@@ -1357,27 +1357,27 @@ jobs:
         timeout-minutes: 10
         run: node --test tests/native_ci.js tests/native_dpcpp_sdk.js tests/native_dpcpp_component.js
       - name: Download same-run Linux source cohort
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-sdk-state-${{ github.run_id }}-${{ github.run_attempt }}-sources.tar
           path: ${{ runner.temp }}/incoming
       - name: Download same-run DPC++ and CUDA inputs
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-dpcpp-cuda-inputs-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
       - name: Download same-run GNU target headers
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-gnu-headers-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
       - name: Download same-run source-JIT resources
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-jit-resources-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
       - name: Download linked mutable source-JIT state
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-jit-sdk-${{ github.run_id }}-${{ github.run_attempt }}-link.tar
           path: ${{ runner.temp }}/incoming
@@ -1470,17 +1470,17 @@ jobs:
       - name: Test ROCm resource, COMGR, and CI handoff contracts
         run: node --test tests/native_ci.js tests/native_rocm_resources.js tests/native_rocm_hip_headers.js tests/native_comgr_sdk.js
       - name: Download same-run ROCm source state
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-rocm-state-${{ github.run_id }}-${{ github.run_attempt }}-sources.tar
           path: ${{ runner.temp }}/incoming
       - name: Download same-run LLVM 21 source state
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-llvm21-state-${{ github.run_id }}-${{ github.run_attempt }}-sources.tar
           path: ${{ runner.temp }}/incoming
       - name: Download same-run installed LLVM 21 SDK handoff
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-llvm21-installed-sdk-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
@@ -1546,7 +1546,7 @@ jobs:
       - name: Test ROCm host producer and same-run handoff
         run: node --test tests/native_ci.js tests/native_rocm_host_runtime.js tests/native_release_sdk_inputs.js
       - name: Download the same-run audited LLVM/ROCm/COMGR state
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-rocm-comgr-sdk-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
@@ -1589,7 +1589,7 @@ jobs:
         with:
           node-version: 24.15.0
       - name: Download same-run Hermes source tar
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-hermes-state-${{ github.run_id }}-${{ github.run_attempt }}-sources.tar
           path: ${{ runner.temp }}/incoming
@@ -1666,7 +1666,7 @@ jobs:
       - name: Test static OpenMP producer and CI handoff
         run: node --test tests/native_openmp_sdk.js tests/native_ci.js
       - name: Download same-run pinned LLVM source tar
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-llvm21-state-${{ github.run_id }}-${{ github.run_attempt }}-sources.tar
           path: ${{ runner.temp }}/incoming
@@ -1710,27 +1710,27 @@ jobs:
       - name: Test ACPP CUDA/HIP producer and same-run admission
         run: node --test tests/native_ci.js tests/native_sycl_sdk.js tests/native_release_sdk_inputs.js
       - name: Download same-run ACPP source, OpenMP and ROCm host SDK state
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-acpp-state-${{ github.run_id }}-${{ github.run_attempt }}-sources.tar
           path: ${{ runner.temp }}/incoming
       - name: Download same-run static OpenMP SDK
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-openmp-sdk-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
       - name: Download same-run pinned Linux source cohort
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-sdk-state-${{ github.run_id }}-${{ github.run_attempt }}-sources.tar
           path: ${{ runner.temp }}/incoming
       - name: Download same-run DPC++/CUDA headers and runtime inputs
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-dpcpp-cuda-inputs-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
       - name: Download same-run ROCm host, COMGR and LLVM SDK state
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-rocm-host-sdk-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
@@ -1785,7 +1785,7 @@ jobs:
         with:
           node-version: 24.15.0
       - name: Download same-run source tar
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-llvm21-state-${{ github.run_id }}-${{ github.run_attempt }}-sources.tar
           path: ${{ runner.temp }}/incoming
@@ -1824,7 +1824,7 @@ jobs:
         with:
           node-version: 24.15.0
       - name: Download same-run source tar
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-llvm21-state-${{ github.run_id }}-${{ github.run_attempt }}-sources.tar
           path: ${{ runner.temp }}/incoming
@@ -1840,185 +1840,39 @@ jobs:
           compression-level: 0
           retention-days: 1
 
-  build-llvm-targets:
-    name: Build LLVM X86/NVPTX/AMDGPU libraries
+  build-llvm-common:
+    name: Build LLVM common foundation, analysis and optimization
     needs: configure-linux-sdk
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Setup Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version: 24.15.0
-      - name: Download configured state
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
-        with:
-          name: native-llvm21-state-${{ github.run_id }}-${{ github.run_attempt }}-configured.tar
-          path: ${{ runner.temp }}/incoming
-      - name: Restore, provision Intel 2026.2, and build LLVM targets
-        run: scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage llvm-targets
-      - name: Upload same-run build state
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: native-llvm21-state-${{ github.run_id }}-${{ github.run_attempt }}-llvm-targets.tar
-          path: ${{ runner.temp }}/native-llvm21-state-${{ github.run_id }}-${{ github.run_attempt }}-llvm-targets.tar
-          if-no-files-found: error
-          archive: false
-          compression-level: 0
-          retention-days: 1
+    uses: ./.github/workflows/build-linux-llvm-job.yml
+    with:
+      stage: llvm-common
 
-  build-clang-base:
-    name: Build Clang base libraries
-    needs: build-llvm-targets
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Setup Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version: 24.15.0
-      - name: Download LLVM target state
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
-        with:
-          name: native-llvm21-state-${{ github.run_id }}-${{ github.run_attempt }}-llvm-targets.tar
-          path: ${{ runner.temp }}/incoming
-      - name: Restore, provision Intel 2026.2, and build Clang base libraries
-        run: scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage clang-base
-      - name: Upload same-run build state
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: native-llvm21-state-${{ github.run_id }}-${{ github.run_attempt }}-clang-base.tar
-          path: ${{ runner.temp }}/native-llvm21-state-${{ github.run_id }}-${{ github.run_attempt }}-clang-base.tar
-          if-no-files-found: error
-          archive: false
-          compression-level: 0
-          retention-days: 1
+  build-llvm-core-codegen:
+    name: Build LLVM common code generation libraries
+    needs: build-llvm-common
+    uses: ./.github/workflows/build-linux-llvm-job.yml
+    with:
+      stage: llvm-core-codegen
 
-  build-clang-sema:
-    name: Build Clang analysis, parser, and semantic libraries
-    needs: build-clang-base
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Setup Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version: 24.15.0
-      - name: Download Clang base state
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
-        with:
-          name: native-llvm21-state-${{ github.run_id }}-${{ github.run_attempt }}-clang-base.tar
-          path: ${{ runner.temp }}/incoming
-      - name: Restore, provision Intel 2026.2, and build Clang semantic libraries
-        run: scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage clang-sema
-      - name: Upload same-run build state
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: native-llvm21-state-${{ github.run_id }}-${{ github.run_attempt }}-clang-sema.tar
-          path: ${{ runner.temp }}/native-llvm21-state-${{ github.run_id }}-${{ github.run_attempt }}-clang-sema.tar
-          if-no-files-found: error
-          archive: false
-          compression-level: 0
-          retention-days: 1
+  build-llvm-backends-clang:
+    name: Build LLVM backends and Clang analysis
+    needs: build-llvm-core-codegen
+    uses: ./.github/workflows/build-linux-llvm-job.yml
+    with:
+      stage: llvm-backends-clang
 
   build-clang-frontend:
     name: Build remaining Clang frontend libraries
-    needs: build-clang-sema
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Setup Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version: 24.15.0
-      - name: Download Clang semantic state
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
-        with:
-          name: native-llvm21-state-${{ github.run_id }}-${{ github.run_attempt }}-clang-sema.tar
-          path: ${{ runner.temp }}/incoming
-      - name: Restore, provision Intel 2026.2, and build Clang frontend libraries
-        run: scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage clang-frontend
-      - name: Upload same-run build state
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: native-llvm21-state-${{ github.run_id }}-${{ github.run_attempt }}-clang-frontend.tar
-          path: ${{ runner.temp }}/native-llvm21-state-${{ github.run_id }}-${{ github.run_attempt }}-clang-frontend.tar
-          if-no-files-found: error
-          archive: false
-          compression-level: 0
-          retention-days: 1
-
-  build-lld:
-    name: Build LLD libraries
-    needs: build-clang-frontend
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Setup Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version: 24.15.0
-      - name: Download Clang frontend state
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
-        with:
-          name: native-llvm21-state-${{ github.run_id }}-${{ github.run_attempt }}-clang-frontend.tar
-          path: ${{ runner.temp }}/incoming
-      - name: Restore, provision Intel 2026.2, and build LLD libraries
-        run: scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage lld
-      - name: Upload same-run build state
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: native-llvm21-state-${{ github.run_id }}-${{ github.run_attempt }}-lld.tar
-          path: ${{ runner.temp }}/native-llvm21-state-${{ github.run_id }}-${{ github.run_attempt }}-lld.tar
-          if-no-files-found: error
-          archive: false
-          compression-level: 0
-          retention-days: 1
-
-  build-tools:
-    name: Build selected source-consumer tools
-    needs: build-lld
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Setup Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version: 24.15.0
-      - name: Download LLD state
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
-        with:
-          name: native-llvm21-state-${{ github.run_id }}-${{ github.run_attempt }}-lld.tar
-          path: ${{ runner.temp }}/incoming
-      - name: Restore, provision Intel 2026.2, and build selected tools
-        run: scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage tools
-      - name: Upload same-run build state
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: native-llvm21-state-${{ github.run_id }}-${{ github.run_attempt }}-tools.tar
-          path: ${{ runner.temp }}/native-llvm21-state-${{ github.run_id }}-${{ github.run_attempt }}-tools.tar
-          if-no-files-found: error
-          archive: false
-          compression-level: 0
-          retention-days: 1
+    needs: build-llvm-backends-clang
+    uses: ./.github/workflows/build-linux-llvm-job.yml
+    with:
+      stage: clang-frontend
 
   install-audit-linux-sdk:
-    name: Install, audit, and retain the same-run SDK state
-    needs: build-tools
+    name: Build tools, install and audit Linux LLVM SDK
+    needs: build-clang-frontend
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 30
     outputs:
       bundle_sha256: ${{ steps.sdk-bundle.outputs.sha256 }}
       llvm_sdk_handoff_sha256: ${{ steps.installed-sdk.outputs.llvm_sdk_handoff_sha256 }}
@@ -2034,12 +1888,12 @@ jobs:
         with:
           node-version: 24.15.0
       - name: Download completed compiler state
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          name: native-llvm21-state-${{ github.run_id }}-${{ github.run_attempt }}-tools.tar
+          name: native-llvm21-state-${{ github.run_id }}-${{ github.run_attempt }}-clang-frontend.tar
           path: ${{ runner.temp }}/incoming
-      - name: Restore, provision Intel 2026.2, install, and audit
-        run: node scripts/prepare-native-ci.js stage install-audit
+      - name: Restore, build tools, install and audit with Intel 2026.2
+        run: scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage install-audit
       - name: Pin the same-run Linux LLVM SDK state bundle
         id: sdk-bundle
         shell: bash
@@ -2135,7 +1989,7 @@ jobs:
         with:
           node-version: 24.15.0
       - name: Download same-run installed LLVM 21 SDK handoff
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-llvm21-installed-sdk-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
@@ -2235,62 +2089,62 @@ jobs:
         timeout-minutes: 5
         run: node --test tests/native_ci.js tests/native_release_sdk_inputs.js tests/native_dpcpp_component.js tests/native_notices.js
       - name: Download same-run Linux sources
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-sdk-state-${{ github.run_id }}-${{ github.run_attempt }}-sources.tar
           path: ${{ runner.temp }}/incoming
       - name: Download same-run DPC++ and CUDA inputs
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-dpcpp-cuda-inputs-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
       - name: Download same-run GNU headers and package copyrights
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-gnu-headers-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
       - name: Download same-run CUDA image handoff
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-cuda-images-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
       - name: Download same-run static DPC++ component
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-jit-sdk-${{ github.run_id }}-${{ github.run_attempt }}-static-dpcpp.tar
           path: ${{ runner.temp }}/incoming
       - name: Download same-run ACPP source
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-acpp-state-${{ github.run_id }}-${{ github.run_attempt }}-sources.tar
           path: ${{ runner.temp }}/incoming
       - name: Download same-run ACPP CUDA/HIP SDK
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-acpp-cuda-hip-sdk-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
       - name: Download same-run Hermes SDK
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-hermes-sdk-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
       - name: Download same-run ROCm host SDK and inputs
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-rocm-host-sdk-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
       - name: Download same-run OpenMP SDK
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-openmp-sdk-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
       - name: Download same-run zstd SDK
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-zstd-sdk-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
       - name: Download same-run I/O and OpenSSL SDKs
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-io-openssl-sdk-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
@@ -2389,13 +2243,13 @@ jobs:
           npm ci --ignore-scripts --no-audit --no-fund
           node -e 'for (const name of ["buffer/", "events/", "string_decoder/", "core-js-pure"]) require.resolve(name); require("esbuild").transformSync("const ready = 1");'
       - name: Download the exact same-run descriptor and original SDK tars
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: native-{linux-sdk-state-${{ github.run_id }}-${{ github.run_attempt }}-sources,linux-dpcpp-cuda-inputs-${{ github.run_id }}-${{ github.run_attempt }},linux-gnu-headers-${{ github.run_id }}-${{ github.run_attempt }},linux-cuda-images-${{ github.run_id }}-${{ github.run_attempt }},linux-jit-sdk-${{ github.run_id }}-${{ github.run_attempt }}-static-dpcpp,acpp-state-${{ github.run_id }}-${{ github.run_attempt }}-sources,linux-acpp-cuda-hip-sdk-${{ github.run_id }}-${{ github.run_attempt }},linux-hermes-sdk-${{ github.run_id }}-${{ github.run_attempt }},linux-rocm-host-sdk-${{ github.run_id }}-${{ github.run_attempt }},linux-openmp-sdk-${{ github.run_id }}-${{ github.run_attempt }},linux-zstd-sdk-${{ github.run_id }}-${{ github.run_attempt }},linux-io-openssl-sdk-${{ github.run_id }}-${{ github.run_attempt }},linux-sdk-descriptor-${{ github.run_id }}-${{ github.run_attempt }}}.tar
           merge-multiple: true
           path: ${{ runner.temp }}/downloads
       - name: Download exactly the same-run Core and five GPU component tars
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: native-linux-component-{core,acpp-cuda,acpp-hip,dpcpp,dpcpp-opencl,oneapi}-${{ github.run_id }}-${{ github.run_attempt }}.tar
           merge-multiple: true
@@ -2415,6 +2269,12 @@ jobs:
           scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage linux-native-application 2>&1 | tail -c 1048576 | tee "$RUNNER_TEMP/native-linux-application-diagnostics-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
           status=${PIPESTATUS[0]}
           set -e
+          if (( status != 0 )); then
+            link_log="/tmp/mom-native-linux-application-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/application/link.log"
+            if [[ -f "$link_log" && ! -L "$link_log" ]]; then
+              head -c 16777216 -- "$link_log" > "$RUNNER_TEMP/native-linux-application-link-diagnostics-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
+            fi
+          fi
           exit "$status"
       - name: Bind the raw executable to its same-run build receipt
         id: native-runtime-input
@@ -2527,6 +2387,17 @@ jobs:
           archive: false
           compression-level: 0
           retention-days: 1
+      - name: Retain the full bounded Linux linker diagnostics on failure
+        if: failure()
+        timeout-minutes: 2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: native-linux-application-link-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}.log
+          path: ${{ runner.temp }}/native-linux-application-link-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}.log
+          if-no-files-found: warn
+          archive: false
+          compression-level: 0
+          retention-days: 1
       - name: Retain the build-only Linux application assembly
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
@@ -2598,7 +2469,7 @@ jobs:
   build-windows-native-core:
     name: Build Windows CPU Core archive
     runs-on: windows-2022
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       MOM_BUILD_JOBS: "2"
     outputs:
@@ -2611,7 +2482,7 @@ jobs:
         id: core-deadline
         shell: pwsh
         run: |
-          $epoch = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 2400
+          $epoch = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 3300
           "epoch=$epoch" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       - name: Checkout
@@ -2697,7 +2568,7 @@ jobs:
           tests/native_io_sdk.js tests/native_openssl_sdk.js tests/native_hermes_sdk.js tests/native_windows_controller_handoff.js
       - name: Download same-run pinned Hermes source
         if: matrix.role == 'hermes'
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-hermes-state-${{ github.run_id }}-${{ github.run_attempt }}-sources.tar
           path: ${{ runner.temp }}/incoming
@@ -2884,12 +2755,12 @@ jobs:
       linux_tools_bundle_sha256: ${{ needs.install-audit-linux-sdk.outputs.tools_bundle_sha256 }}
       linux_tools_handoff_sha256: ${{ needs.install-audit-linux-sdk.outputs.tools_handoff_sha256 }}
 
-  windows-llvm-nvptx:
-    name: Build Windows LLVM NVPTX libraries
+  windows-llvm-mid:
+    name: Build Windows LLVM NVPTX, X86 and core libraries
     needs: [windows-llvm-configure, windows-llvm-amdgpu, build-windows-controller-sdk, install-audit-linux-sdk]
     uses: ./.github/workflows/build-windows-llvm-job.yml
     with:
-      phase: llvm-nvptx
+      phase: llvm-mid
       run_deadline_epoch: ${{ needs.windows-llvm-configure.outputs.run_deadline_epoch }}
       previous_stage: llvm-amdgpu
       state_bundle_sha256: ${{ needs.windows-llvm-amdgpu.outputs.bundle_sha256 }}
@@ -2899,46 +2770,16 @@ jobs:
       linux_tools_bundle_sha256: ${{ needs.install-audit-linux-sdk.outputs.tools_bundle_sha256 }}
       linux_tools_handoff_sha256: ${{ needs.install-audit-linux-sdk.outputs.tools_handoff_sha256 }}
 
-  windows-llvm-x86:
-    name: Build Windows LLVM X86 libraries
-    needs: [windows-llvm-configure, windows-llvm-nvptx, build-windows-controller-sdk, install-audit-linux-sdk]
-    uses: ./.github/workflows/build-windows-llvm-job.yml
-    with:
-      phase: llvm-x86
-      run_deadline_epoch: ${{ needs.windows-llvm-configure.outputs.run_deadline_epoch }}
-      previous_stage: llvm-nvptx
-      state_bundle_sha256: ${{ needs.windows-llvm-nvptx.outputs.bundle_sha256 }}
-      state_manifest_sha256: ${{ needs.windows-llvm-nvptx.outputs.manifest_sha256 }}
-      hermes_bundle_sha256: ${{ needs.build-windows-controller-sdk.outputs.hermes_bundle_sha256 }}
-      hermes_handoff_sha256: ${{ needs.build-windows-controller-sdk.outputs.hermes_handoff_sha256 }}
-      linux_tools_bundle_sha256: ${{ needs.install-audit-linux-sdk.outputs.tools_bundle_sha256 }}
-      linux_tools_handoff_sha256: ${{ needs.install-audit-linux-sdk.outputs.tools_handoff_sha256 }}
-
-  windows-llvm-core:
-    name: Build Windows LLVM core libraries
-    needs: [windows-llvm-configure, windows-llvm-x86, build-windows-controller-sdk, install-audit-linux-sdk]
-    uses: ./.github/workflows/build-windows-llvm-job.yml
-    with:
-      phase: llvm-core
-      run_deadline_epoch: ${{ needs.windows-llvm-configure.outputs.run_deadline_epoch }}
-      previous_stage: llvm-x86
-      state_bundle_sha256: ${{ needs.windows-llvm-x86.outputs.bundle_sha256 }}
-      state_manifest_sha256: ${{ needs.windows-llvm-x86.outputs.manifest_sha256 }}
-      hermes_bundle_sha256: ${{ needs.build-windows-controller-sdk.outputs.hermes_bundle_sha256 }}
-      hermes_handoff_sha256: ${{ needs.build-windows-controller-sdk.outputs.hermes_handoff_sha256 }}
-      linux_tools_bundle_sha256: ${{ needs.install-audit-linux-sdk.outputs.tools_bundle_sha256 }}
-      linux_tools_handoff_sha256: ${{ needs.install-audit-linux-sdk.outputs.tools_handoff_sha256 }}
-
   windows-llvm-clang:
     name: Build Windows Clang libraries
-    needs: [windows-llvm-configure, windows-llvm-core, build-windows-controller-sdk, install-audit-linux-sdk]
+    needs: [windows-llvm-configure, windows-llvm-mid, build-windows-controller-sdk, install-audit-linux-sdk]
     uses: ./.github/workflows/build-windows-llvm-job.yml
     with:
       phase: clang
       run_deadline_epoch: ${{ needs.windows-llvm-configure.outputs.run_deadline_epoch }}
       previous_stage: llvm-core
-      state_bundle_sha256: ${{ needs.windows-llvm-core.outputs.bundle_sha256 }}
-      state_manifest_sha256: ${{ needs.windows-llvm-core.outputs.manifest_sha256 }}
+      state_bundle_sha256: ${{ needs.windows-llvm-mid.outputs.bundle_sha256 }}
+      state_manifest_sha256: ${{ needs.windows-llvm-mid.outputs.manifest_sha256 }}
       hermes_bundle_sha256: ${{ needs.build-windows-controller-sdk.outputs.hermes_bundle_sha256 }}
       hermes_handoff_sha256: ${{ needs.build-windows-controller-sdk.outputs.hermes_handoff_sha256 }}
       linux_tools_bundle_sha256: ${{ needs.install-audit-linux-sdk.outputs.tools_bundle_sha256 }}

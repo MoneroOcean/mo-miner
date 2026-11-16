@@ -72,6 +72,9 @@ if ($RequireCuda -and -not $withCuda) {
 
 # The clang driver links sycl.dll with lld-link + the MSVC CRT/Windows SDK.
 Import-MomVcVars64
+# oneAPI setvars can leave Clang include overrides behind even after vcvars resets INCLUDE/LIB.
+# The selected DPC++ headers must match its import library, not a coinstalled oneAPI runtime.
+Remove-Item Env:CPATH, Env:CPLUS_INCLUDE_PATH, Env:C_INCLUDE_PATH -ErrorAction SilentlyContinue
 if ($withCuda) {
   $env:CUDA_PATH = (Resolve-Path $CudaPath).Path
   $env:PATH = "$env:CUDA_PATH\bin;$env:PATH"
@@ -95,9 +98,10 @@ $buildContext = Initialize-MomIncrementalBuild $obj @($clang, $clangc, $lld, $PS
   (Join-Path $RepoRoot 'scripts\windows-incremental-build.ps1')) @($ToolchainDir, $CudaPath, $env:VCToolsInstallDir, $env:WindowsSdkDir)
 
 $inc = "-I" + (Join-Path $RepoRoot "xmrig")
+$syclIncludes = @(('-I' + (Join-Path $ToolchainDir 'include\sycl')), ('-I' + (Join-Path $ToolchainDir 'include')))
 # SYCL device TU flags (match the Linux dpcpp-combined build) and the host-helper flags.
 $F = @("-std=c++20","-O3","-ffp-contract=off","-DNDEBUG","-D_CRT_SECURE_NO_WARNINGS","-DMOM_SYCL_BUILD",
-       "-DNOMINMAX","-DWIN32_LEAN_AND_MEAN","-fno-strict-aliasing",$inc)
+       "-DNOMINMAX","-DWIN32_LEAN_AND_MEAN","-fno-strict-aliasing",$inc) + $syclIncludes
 $portableSpirvArgs = @()
 if ($PortableOpencl) {
   # Device IR is translated and embedded during this standards-only link.

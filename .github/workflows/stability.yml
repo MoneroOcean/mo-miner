@@ -12,8 +12,8 @@ permissions:
   contents: read
 
 concurrency:
-  # Keep qualification runs serialized per ref without interrupting an in-flight native run.
-  group: stability-${{ github.ref }}
+  # Keep same-commit retries serialized; fixes need not wait for an older commit's remaining evidence.
+  group: stability-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:

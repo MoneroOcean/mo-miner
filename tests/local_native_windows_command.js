@@ -160,6 +160,7 @@ describe("Local Windows release coordinator", () => {
   });
 
   test("support bridge writes bounded JSON input and calls the existing PowerShell adapter without shell evaluation", t => {
+    if (process.platform === "win32") {t.skip("WSL bridge fixtures require a Linux POSIX filesystem"); return;}
     const base = fs.mkdtempSync(path.join(os.tmpdir(), "mom-windows-bridge-test-")), inputPosix = path.join(base, "input.json"),
       outputPosix = path.join(base, "output.json"), inputWindows = "C:\\fixture\\input.json", outputWindows = "C:\\fixture\\output.json",
       value = {workspace: "C:\\fixture\\support"};
@@ -190,6 +191,7 @@ describe("Local Windows release coordinator", () => {
   });
 
   test("full WSL coordinator composes the original source/Core/handoff graph and publishes with stable stage cleanup", async t => {
+    if (process.platform === "win32") {t.skip("WSL coordinator fixture requires a Linux POSIX filesystem"); return;}
     const {f, dependencies} = workerFixture(t), result = await command.runLocalWindowsWslRelease({checkout: repo, checkoutWindows: f.checkoutWindows,
         powershellWindows: f.powershellWindows, supportWorkspace: f.supportWorkspace, exportWorkspace: f.exportWorkspace,
         bridgeRunWindows: f.bridgeRunWindows}, dependencies), names = f.calls.map(row => row.name);
@@ -205,6 +207,7 @@ describe("Local Windows release coordinator", () => {
   });
 
   test("failed release preserves one stable diagnostic stage and refuses to overwrite it", async t => {
+    if (process.platform === "win32") {t.skip("WSL coordinator fixture requires a Linux POSIX filesystem"); return;}
     const {f, dependencies} = workerFixture(t, {failSdk: true}), input = {checkout: repo, checkoutWindows: f.checkoutWindows,
         powershellWindows: f.powershellWindows, supportWorkspace: f.supportWorkspace, exportWorkspace: f.exportWorkspace,
         bridgeRunWindows: f.bridgeRunWindows}, stage = path.join(f.workspace, "windows-release-work");

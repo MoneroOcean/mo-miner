@@ -147,37 +147,37 @@ jobs:
           echo '/opt/intel/oneapi/compiler/2026.2/bin' >> "$GITHUB_PATH"
 
       - name: Download same-run Linux source cohort
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-sdk-state-${{ github.run_id }}-${{ github.run_attempt }}-sources.tar
           path: ${{ runner.temp }}/incoming/source
       - name: Download pinned DPC++ and CUDA inputs
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-dpcpp-cuda-inputs-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming/dpcpp
       - name: Download completed Windows source-JIT link state
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-windows-jit-sdk-${{ github.run_id }}-${{ github.run_attempt }}-link.tar
           path: ${{ runner.temp }}/incoming/windows-jit
       - name: Download same-run Linux LLVM host tools
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-llvm-tools-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming/tools
       - name: Download admitted Windows I/O support handoff
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-windows-controller-io-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming/windows-io
       - name: Download admitted Windows Hermes support handoff
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-windows-controller-hermes-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming/windows-hermes
       - name: Download source-built Linux Hermes AOT receipt and compiler
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-hermes-sdk-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming/linux-hermes

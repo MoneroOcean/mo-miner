@@ -87,7 +87,7 @@ jobs:
           }
           NODE
       - name: Download the exact same-run SDK descriptor and producer tars
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: native-{linux-sdk-state-${{ github.run_id }}-${{ github.run_attempt }}-sources,linux-dpcpp-cuda-inputs-${{ github.run_id }}-${{ github.run_attempt }},linux-gnu-headers-${{ github.run_id }}-${{ github.run_attempt }},linux-cuda-images-${{ github.run_id }}-${{ github.run_attempt }},linux-jit-sdk-${{ github.run_id }}-${{ github.run_attempt }}-static-dpcpp,acpp-state-${{ github.run_id }}-${{ github.run_attempt }}-sources,linux-acpp-cuda-hip-sdk-${{ github.run_id }}-${{ github.run_attempt }},linux-hermes-sdk-${{ github.run_id }}-${{ github.run_attempt }},linux-rocm-host-sdk-${{ github.run_id }}-${{ github.run_attempt }},linux-openmp-sdk-${{ github.run_id }}-${{ github.run_attempt }},linux-zstd-sdk-${{ github.run_id }}-${{ github.run_attempt }},linux-io-openssl-sdk-${{ github.run_id }}-${{ github.run_attempt }},linux-sdk-descriptor-${{ github.run_id }}-${{ github.run_attempt }}}.tar
           merge-multiple: true

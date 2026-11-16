@@ -133,48 +133,48 @@ jobs:
           NODE
           fi
       - name: Download original same-run source cohort
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-sdk-state-${{ github.run_id }}-${{ github.run_attempt }}-sources.tar
           path: ${{ runner.temp }}/incoming
       - name: Download pinned DPC++ header and CUDA inputs
         if: inputs.profile != 'acpp-hip'
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-dpcpp-cuda-inputs-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
       - name: Download source-built inspection and isolation tools
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-llvm-tools-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
       - name: Download original CUDA images only for the CUDA factory
         if: inputs.profile == 'dpcpp' || inputs.profile == 'acpp-cuda'
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-cuda-images-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
       - name: Download same-run ACPP source for ACPP factories
         if: startsWith(inputs.profile, 'acpp-')
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-acpp-state-${{ github.run_id }}-${{ github.run_attempt }}-sources.tar
           path: ${{ runner.temp }}/incoming
       - name: Download same-run ACPP SDK for ACPP factories
         if: startsWith(inputs.profile, 'acpp-')
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-acpp-cuda-hip-sdk-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
       - name: Download source-admitted LLVM ACPP frontend
         if: startsWith(inputs.profile, 'acpp-')
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-llvm-acpp-frontend-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
       - name: Download verified HIP headers only for the HIP factory
         if: inputs.profile == 'acpp-hip'
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-rocm-hip-headers-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming

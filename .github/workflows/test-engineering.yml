@@ -1,0 +1,206 @@
+name: Engineering Mode hashing
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  MOM_BUILD_JOBS: "2"
+  MOM_PORTABLE_BUILD: "1"
+  MOM_DEV_HOST: "1"
+  MOM_GPU_BACKEND: opencl
+  MOM_OPENCL_DEVICE_TYPE: cpu
+  ONEAPI_DEVICE_SELECTOR: opencl:cpu
+  MOM_LINUX_BUILD_COMPILER: dpcpp-opencl
+  MOM_REQUIRE_PORTABLE_CPU_TESTS: "1"
+  MOM_TEST_NO_POOL_NETWORK: "1"
+  MOM_SKIP_MSR: "1"
+
+jobs:
+  hashing-linux:
+    name: Node / CPU and portable SYCL (Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24.15.0
+      - name: Install locked JavaScript dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Install Linux development prerequisites
+        run: |
+          sudo scripts/install-dev.sh --component base,node,oneapi,dpcpp --jobs 2
+          bash scripts/install-opencl-cpu.sh
+      - name: Build and test Linux Engineering Mode
+        shell: bash
+        run: scripts/run-bounded-native-ci.sh npm run dev -- node tests/run_hash.js engineering
+
+  windows-cpu:
+    name: Build Windows CPU addon
+    runs-on: windows-2022
+    timeout-minutes: 60
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      node_sha256: ${{ steps.seal.outputs.node_sha256 }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24.15.0
+      - name: Install Windows CPU build prerequisites
+        shell: pwsh
+        run: |
+          & scripts/install-dev.ps1 -Component base,node,oneapi -Jobs 2
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Build Windows CPU addon only
+        shell: pwsh
+        run: |
+          & .github/workflows/scripts/build-windows-multicompiler.ps1 -Scope cpu
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Hash the CPU addon
+        id: seal
+        shell: pwsh
+        run: |
+          $node = 'build/win/Release/mom.node'
+          if (-not (Test-Path -LiteralPath $node -PathType Leaf)) { throw "Missing CPU addon: $node" }
+          $sha256 = (Get-FileHash -LiteralPath $node -Algorithm SHA256).Hash.ToLowerInvariant()
+          "node_sha256=$sha256" >> $env:GITHUB_OUTPUT
+      - name: Upload raw Windows CPU addon
+        id: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: mom.node
+          path: build/win/Release/mom.node
+          if-no-files-found: error
+          archive: false
+          compression-level: 0
+          retention-days: 1
+
+  windows-portable-runtime:
+    name: Build Windows portable SYCL runtime
+    runs-on: windows-2022
+    timeout-minutes: 60
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      runtime_sha256: ${{ steps.seal.outputs.runtime_sha256 }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24.15.0
+      - name: Install Windows portable runtime build prerequisites
+        shell: pwsh
+        run: |
+          & scripts/install-dev.ps1 -Component base,node,dpcpp -Jobs 2
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Build portable runtime only
+        shell: pwsh
+        run: |
+          & .github/workflows/scripts/build-windows-multicompiler.ps1 -Scope portable
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Hash the runtime ZIP
+        id: seal
+        shell: pwsh
+        run: |
+          $worker = 'build/win/compilers/dpcpp-opencl'
+          $files = @(Get-ChildItem -LiteralPath $worker -File -Recurse)
+          if (-not ($files | Where-Object Name -CEQ 'sycl.dll')) { throw 'Portable runtime omitted sycl.dll.' }
+          if ($files | Where-Object Name -CEQ 'mom.node') { throw 'Portable runtime must not contain mom.node.' }
+          $archive = Join-Path $env:RUNNER_TEMP 'engineering-dpcpp-opencl.zip'
+          Compress-Archive -Path (Join-Path $worker '*') -DestinationPath $archive -CompressionLevel NoCompression
+          $sha256 = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          "runtime_sha256=$sha256" >> $env:GITHUB_OUTPUT
+      - name: Upload raw portable runtime ZIP
+        id: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: engineering-dpcpp-opencl.zip
+          path: ${{ runner.temp }}/engineering-dpcpp-opencl.zip
+          if-no-files-found: error
+          archive: false
+          compression-level: 0
+          retention-days: 1
+
+  windows-engineering:
+    name: Test Windows Engineering Mode
+    needs: [windows-cpu, windows-portable-runtime]
+    runs-on: windows-2022
+    timeout-minutes: 45
+    env:
+      MOM_NATIVE_DIR: ${{ github.workspace }}/build/win/compilers
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24.15.0
+      - name: Install locked JavaScript dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Install Windows portable OpenCL CPU test prerequisites
+        shell: pwsh
+        run: |
+          & scripts/install-dev.ps1 -Component base,node,opencl-cpu -Jobs 2
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Download same-run CPU addon
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          artifact-ids: ${{ needs.windows-cpu.outputs.artifact_id }}
+          skip-decompress: true
+          path: ${{ runner.temp }}/engineering-windows/cpu
+      - name: Download same-run portable runtime
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          artifact-ids: ${{ needs.windows-portable-runtime.outputs.artifact_id }}
+          skip-decompress: true
+          path: ${{ runner.temp }}/engineering-windows/portable
+      - name: Verify producer hashes and stage runtime without rebuilding
+        env:
+          CPU_NODE_SHA256: ${{ needs.windows-cpu.outputs.node_sha256 }}
+          PORTABLE_RUNTIME_SHA256: ${{ needs.windows-portable-runtime.outputs.runtime_sha256 }}
+        shell: pwsh
+        run: |
+          $cpuNode = Join-Path $env:RUNNER_TEMP 'engineering-windows/cpu/mom.node'
+          $runtimeZip = Join-Path $env:RUNNER_TEMP 'engineering-windows/portable/engineering-dpcpp-opencl.zip'
+          foreach ($value in @($env:CPU_NODE_SHA256, $env:PORTABLE_RUNTIME_SHA256)) {
+            if ($value -notmatch '^[0-9a-f]{64}$') { throw 'Producer SHA-256 output is malformed.' }
+          }
+          $cpuHash = (Get-FileHash -LiteralPath $cpuNode -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($cpuHash -ne $env:CPU_NODE_SHA256) { throw 'Downloaded CPU addon SHA-256 mismatch.' }
+          $runtimeHash = (Get-FileHash -LiteralPath $runtimeZip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($runtimeHash -ne $env:PORTABLE_RUNTIME_SHA256) { throw 'Downloaded portable runtime SHA-256 mismatch.' }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [IO.Compression.ZipFile]::OpenRead($runtimeZip)
+          try {
+            $names = @($zip.Entries | ForEach-Object FullName)
+            if ($names -notcontains 'sycl.dll' -or $names -contains 'mom.node' -or
+                @($names | Where-Object { $_ -notmatch '^[A-Za-z0-9_.+-]+$' -or $_ -in @('.','..') }).Count -gt 0 -or
+                @($names | Select-Object -Unique).Count -ne $names.Count) {
+              throw 'Portable runtime archive has an unexpected member set.'
+            }
+          } finally { $zip.Dispose() }
+          $portableDir = 'build/win/compilers/dpcpp-opencl'
+          New-Item -ItemType Directory -Force $portableDir, 'build/win/Release' | Out-Null
+          Expand-Archive -LiteralPath $runtimeZip -DestinationPath $portableDir -Force
+          $actualRuntimeFiles = @(Get-ChildItem -LiteralPath $portableDir -File -Recurse)
+          if (@($actualRuntimeFiles | Where-Object Name -CEQ 'mom.node').Count -ne 0 -or
+              @($actualRuntimeFiles | Where-Object Name -CEQ 'sycl.dll').Count -ne 1) {
+            throw 'Staged portable runtime is incomplete or contains a node addon.'
+          }
+          Copy-Item -LiteralPath $cpuNode -Destination 'build/win/Release/mom.node' -Force
+          Copy-Item -LiteralPath $cpuNode -Destination (Join-Path $portableDir 'mom.node') -Force
+      - name: Test Windows Engineering Mode
+        shell: pwsh
+        run: |
+          node tests/run_hash.js engineering
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }

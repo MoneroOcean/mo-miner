@@ -73,6 +73,23 @@ function nativeTablegenInputs(root, receiptFile) {
     source: {receiptFile, receiptSha256: hash, commit: "b".repeat(40)}};
 }
 
+/** Map the production's pinned tool paths to real executable fixture files on any Linux host.
+ * @param {import("node:test").TestContext} t @param {string} root */
+function mockCanonicalTools(t, root) {
+  const directory = path.join(root, "canonical-tools"); fs.mkdirSync(directory, {recursive: true});
+  const tools = {cmake: path.join(directory, "cmake"), ninja: path.join(directory, "ninja")};
+  for (const file of Object.values(tools)) {
+    fs.writeFileSync(file, "#!/bin/sh\n"); fs.chmodSync(file, 0o755); fs.accessSync(file, fs.constants.X_OK);
+  }
+  const canonical = {cmake: fs.realpathSync(tools.cmake), ninja: fs.realpathSync(tools.ninja)}, realpathSync = fs.realpathSync.bind(fs);
+  t.mock.method(fs, "realpathSync", /** @type {typeof fs.realpathSync} */ ((file) => {
+    if (String(file) === "/usr/bin/cmake") {return canonical.cmake;}
+    if (String(file) === "/usr/bin/ninja") {return canonical.ninja;}
+    return realpathSync(file);
+  }));
+  return canonical;
+}
+
 test.describe("Windows original source-JIT CI phases", {skip: process.platform !== "linux" || process.arch !== "x64"}, () => {
   /** @type {string} */ let root;
   test.beforeEach(() => {root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-windows-jit-ci-"));});
@@ -131,7 +148,8 @@ test.describe("Windows original source-JIT CI phases", {skip: process.platform !
       {...env, MOM_NATIVE_WINDOWS_JIT_RUN_DEADLINE_EPOCH: String(Math.floor(now / 1000) + 9 * 60 * 60)}, "linux", "x64", now), /8-hour/);
   });
 
-  test("composes the original config from admitted same-run inputs and writes it once", () => {
+  test("composes the original config from admitted same-run inputs and writes it once", t => {
+    mockCanonicalTools(t, root);
     const env = environment(root), configPath = path.join(env["RUNNER_TEMP"] || "", "incoming/config/native-windows-jit-sdk-9000000000000008-88.json"),
       plan = windowsJitCiJobPlan("configure", configPath, undefined, env, "linux", "x64", now),
       compilerReceipt = path.join(root, "linux", "compiler.json"), nativeJitTools = nativeTablegenInputs(root, compilerReceipt),
@@ -174,10 +192,11 @@ test.describe("Windows original source-JIT CI phases", {skip: process.platform !
     assert.throws(() => windowsJitCiJobPlan("configure", configPath, undefined, {...env, GITHUB_OUTPUT: configPath}, "linux", "x64", now), /report files/);
   });
 
-  test("admits only the original Windows builder schema and explicit current roots", () => {
+  test("admits only the original Windows builder schema and explicit current roots", t => {
+    const tools = mockCanonicalTools(t, root);
     const runRoot = "/tmp/mom-jit-run", config = {version: 1, target: "windows", sources: runRoot + "/sources.json", sdk: runRoot + "/dpcpp",
         resources: runRoot + "/resources", tools: {cc: runRoot + "/icx-real", cxx: runRoot + "/icx-real",
-          cmake: fs.realpathSync("/usr/bin/cmake"), ninja: fs.realpathSync("/usr/bin/ninja"), toolchain: runRoot + "/toolchain/toolchain.cmake"},
+          cmake: tools.cmake, ninja: tools.ninja, toolchain: runRoot + "/toolchain/toolchain.cmake"},
         jobs: 2, inputs: [runRoot + "/toolchain/toolchain.cmake", runRoot + "/descriptor.json", runRoot + "/icx-real"]},
       expected = {sources: config.sources, sdk: config.sdk, resources: config.resources, toolchain: config.tools.toolchain,
         compiler: config.tools.cc, requiredInputs: [config.tools.toolchain, runRoot + "/descriptor.json", runRoot + "/icx-real"], allowedRoots: [runRoot]};
@@ -186,7 +205,8 @@ test.describe("Windows original source-JIT CI phases", {skip: process.platform !
       {...config, target: "linux"}, {...config, jobs: 4}, {...config, tools: {...config.tools, cc: "/usr/bin/clang"}},
       {...config, resources: "/tmp/old-resources"}, {...config, inputs: [config.tools.toolchain]},
       {...config, inputs: [...config.inputs, runRoot + "/../private/libfoo.lib"]},
-      {...config, inputs: [...config.inputs, runRoot + "/descriptor.json"]}, {...config, unsupported: true},
+      {...config, inputs: [...config.inputs, runRoot + "/descriptor.json"]}, {...config, tools: {...config.tools, cmake: path.join(runRoot, "missing-cmake")}},
+      {...config, tools: {...config.tools, ninja: path.join(runRoot, "missing-ninja")}}, {...config, unsupported: true},
     ]) {assert.throws(() => validateWindowsJitConfig(changed, expected));}
   });
 
@@ -253,7 +273,8 @@ test.describe("Windows original source-JIT CI phases", {skip: process.platform !
       tools: {...tools, llvmNm: "/wrong/llvm-nm"}}), /descriptor differs/);
   });
 
-  test("requires the canonical compiler path after symlink resolution", () => {
+  test("requires the canonical compiler path after symlink resolution", t => {
+    mockCanonicalTools(t, root);
     const runRoot = path.join(root, "intel"), compiler = path.join(runRoot, "icx-real"), alias = path.join(runRoot, "icx-cl");
     fs.mkdirSync(runRoot); fs.writeFileSync(compiler, "test compiler"); fs.symlinkSync(compiler, alias);
     const canonical = fs.realpathSync(alias), config = {version: 1, target: "windows", sources: runRoot + "/sources.json", sdk: runRoot + "/dpcpp",

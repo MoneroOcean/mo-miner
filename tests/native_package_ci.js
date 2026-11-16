@@ -1,17 +1,22 @@
 "use strict";
 const fs = require("node:fs"), path = require("node:path"), os = require("node:os"), assert = require("node:assert/strict"),
   test = require("node:test"), {runInNewContext, Script} = require("node:vm"),
+  {spawnSync} = require("node:child_process"),
   {isDeepStrictEqual} = require("node:util"), {fileHash} = require("../scripts/build-source-inputs"),
   {packState, listState} = require("../scripts/prepare-native-ci");
 const workflow = fs.readFileSync(path.join(__dirname, "../.github/workflows/package-native-application.yml"), "utf8"),
   bodies = [...workflow.matchAll(/node <<'NODE'\n([\s\S]*?)\n {10}NODE/g)].map(match =>
-    (match[1] || "").split("\n").map(line => line.slice(10)).join("\n"));
+    (match[1] || "").split("\n").map(line => line.slice(10)).join("\n")),
+  cmakeStep = workflow.split("      - name: Resolve CMake before artifact downloads\n")[1]?.split("\n      - name: ")[0] || "",
+  cmakeRun = cmakeStep.match(/\x20{8}run: \|\n((?:\x20{10}.*(?:\n|$))+)/),
+  cmakeBody = (cmakeRun?.[1] || "").split("\n").map(line => line.slice(10)).join("\n");
 
 /** Exercise the late packaging job with same-run artifact-shaped inputs and no candidate execution.
  * The two fixed /tmp roots are virtualized into this fixture's private temp directory.
  * @param {import('node:test').TestContext} t @param {'linux'|'win32'} [target] */
 function fixture(t, target = "linux") {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-package-ci-")), suffix = "123456789-1",
+    cmakeDirectory = path.join(temp, "cmake-bin"), cmakePath = path.join(cmakeDirectory, "cmake"),
     platform = target === "win32" ? "windows" : "linux", binary = target === "win32" ? "mom.exe" : "mom",
     roots = {packed: `native-${platform}-packed-build-${suffix}`, original: `native-${platform}-application-build-${suffix}`},
     restored = {packed: path.join(temp, "restored-packed"), original: path.join(temp, "restored-original")},
@@ -25,6 +30,8 @@ function fixture(t, target = "linux") {
   let tarOverride = /** @type {{kind:string, members:string[]}|undefined} */ (undefined),
     expandedOverride = /** @type {number|undefined} */ (undefined), apiOverride = /** @type {string|undefined} */ (undefined);
   for (const directory of [...Object.values(inputDirs), ...Object.values(source)]) {fs.mkdirSync(directory, {recursive: true});}
+  fs.mkdirSync(cmakeDirectory);
+  fs.writeFileSync(cmakePath, "#!/bin/sh\nprintf 'cmake version 3.99.0\\n'\n", {mode: 0o755});
   fs.mkdirSync(path.dirname(noticeManifest), {recursive: true});
   const noticeBytes = Buffer.from("Fixture reviewed notices\n"), noticeDependencies = {fixture: {revision: "a".repeat(40)}},
     noticeSnapshot = {version: 1, notice: {bytes: noticeBytes.length, sha256: require("node:crypto").createHash("sha256").update(noticeBytes).digest("hex")},
@@ -141,6 +148,7 @@ function fixture(t, target = "linux") {
     PACKED_BUILD_BUNDLE_SHA256: fileHash(packedTar), RAW_EXECUTABLE_SHA256: fileHash(rawPath),
     ORIGINAL_BUILD_BUNDLE_SHA256: fileHash(originalTar), ORIGINAL_HANDOFF_SHA256: fileHash(path.join(originalTree, "handoff.json")),
     GITHUB_WORKSPACE: repoRoot,
+    MOM_CMAKE_PATH: cmakePath,
     GITHUB_OUTPUT: path.join(temp, "outputs"), GITHUB_STEP_SUMMARY: path.join(temp, "summary")};
   const hash = (/** @type {string} */ file) => fileHash(mapFixed(file));
   const execute = (/** @type {number} */ index) => runInNewContext(bodies[index] || "", {
@@ -208,6 +216,7 @@ function fixture(t, target = "linux") {
   }, {timeout: 10000});
   t.after(() => fs.rmSync(temp, {recursive: true, force: true}));
   return {env, calls, execute, temp, roots, inputDirs, rawPath, packedTar, originalTar, originalTree, source, noticeBody, noticeManifest,
+    cmakeDirectory, cmakePath,
     setTar: (/** @type {string[]} */ value, /** @type {'packed'|'original'} */ kind) => {tarOverride = {kind, members: value};},
     setExpanded: (/** @type {number} */ value) => {expandedOverride = value;},
     setApi: (/** @type {string} */ value) => {apiOverride = value;}};
@@ -215,10 +224,19 @@ function fixture(t, target = "linux") {
 
 test.describe("SDK-free late native package workflow", {skip: process.platform !== "linux" && "Linux workflow harness"}, () => {
   test("job is bounded, pinned, and packages without rebuilding or running the candidate", () => {
-    assert.equal(bodies.length, 2); bodies.forEach(body => new Script(body));
+    assert.equal(bodies.length, 2); bodies.forEach(body => new Script(body)); assert.ok(cmakeBody);
     assert.match(workflow, /timeout-minutes: 30/); assert.match(workflow, /timeout-minutes: 25/);
     assert.match(workflow, /node-version: 24\.15\.0/); assert.match(workflow, /packageNativeRelease\(entrypoint, cmake/);
     assert.match(workflow, /auditNativeRelease\(entrypoint, \{archive:/);
+    assert.match(cmakeBody, /command -v cmake/); assert.match(cmakeBody, /realpath -e/);
+    assert.match(workflow, /MOM_CMAKE_PATH: \$\{\{ steps\.cmake\.outputs\.path \}\}/);
+    const resolveCmake = workflow.indexOf("- name: Resolve CMake before artifact downloads"),
+      firstDownload = workflow.indexOf("- name: Download the original raw executable"),
+      packageBody = bodies[1] || "", cmakeGuard = packageBody.indexOf("if (!canonicalExecutable(cmake))"),
+      firstArtifactAccess = packageBody.indexOf("for (const directory of Object.values(inputDirs))");
+    assert.ok(resolveCmake >= 0 && resolveCmake < firstDownload);
+    assert.ok(cmakeGuard >= 0 && cmakeGuard < firstArtifactAccess);
+    assert.doesNotMatch(workflow, /cmake\s*=\s*["']\/usr\/bin\/cmake/);
     assert.doesNotMatch(workflow, /actions\/cache@|npm run build|npm ci|self-hosted|checkNativeExecutable|packNativeEntrypoint/);
     for (const match of workflow.matchAll(/uses: (actions\/[\w-]+)@([^\s#]+)/g)) {assert.match(match[2] || "", /^[a-f0-9]{40}$/);}
     assert.match(workflow, /archive: true/); assert.match(workflow, /retention-days: 1/);
@@ -235,6 +253,48 @@ test.describe("SDK-free late native package workflow", {skip: process.platform !
     }
   });
 
+  test("resolves canonical PATH CMake before downloads and reuses it for package and archive audit", t => {
+    const f = fixture(t), realTool = path.join(f.cmakeDirectory, "cmake-real");
+    fs.renameSync(f.cmakePath, realTool); fs.symlinkSync(realTool, f.cmakePath);
+    const result = spawnSync("/bin/bash", ["-c", cmakeBody], {encoding: "utf8",
+      env: {...process.env, PATH: [f.cmakeDirectory, process.env["PATH"] || "/usr/bin:/bin"].join(path.delimiter), GITHUB_OUTPUT: f.env.GITHUB_OUTPUT}});
+    assert.equal(result.status, 0, result.error?.message || result.stderr);
+    const output = fs.readFileSync(f.env.GITHUB_OUTPUT, "utf8"), resolved = output.match(/^path=(.*)$/m)?.[1];
+    assert.equal(resolved, fs.realpathSync(realTool)); assert.notEqual(resolved, "/usr/bin/cmake");
+    f.env.MOM_CMAKE_PATH = resolved;
+    f.execute(0); f.execute(1);
+    const packaged = f.calls.find(row => row.stage === "package"), audit = f.calls.find(row => row.stage === "archive-audit");
+    assert.equal(packaged?.["tool"], resolved); assert.equal(audit?.["options"]?.archive?.tool, resolved);
+  });
+
+  test("missing or invalid PATH CMake fails before artifact downloads and package APIs", t => {
+    const missing = fixture(t), emptyBin = path.join(missing.temp, "empty-bin"); fs.mkdirSync(emptyBin);
+    fs.writeFileSync(missing.env.GITHUB_OUTPUT, "");
+    const missingResult = spawnSync("/bin/bash", ["-c", cmakeBody], {encoding: "utf8",
+      env: {...process.env, PATH: emptyBin, GITHUB_OUTPUT: missing.env.GITHUB_OUTPUT}});
+    assert.notEqual(missingResult.status, 0); assert.match(missingResult.stderr || "", /CMake is required/);
+    assert.equal(fs.readFileSync(missing.env.GITHUB_OUTPUT, "utf8"), ""); assert.equal(missing.calls.length, 0);
+
+    const invalid = fixture(t), invalidBin = path.join(invalid.temp, "invalid-bin"), invalidTool = path.join(invalidBin, "cmake");
+    fs.mkdirSync(invalidBin); fs.writeFileSync(invalidTool, "#!/bin/sh\nprintf 'cmake version 3.bad\\n'\n", {mode: 0o755});
+    fs.writeFileSync(invalid.env.GITHUB_OUTPUT, "");
+    const invalidResult = spawnSync("/bin/bash", ["-c", cmakeBody], {encoding: "utf8",
+      env: {...process.env, PATH: [invalidBin, process.env["PATH"] || "/usr/bin:/bin"].join(path.delimiter), GITHUB_OUTPUT: invalid.env.GITHUB_OUTPUT}});
+    assert.notEqual(invalidResult.status, 0); assert.match(invalidResult.stderr || "", /invalid version banner/);
+    assert.equal(fs.readFileSync(invalid.env.GITHUB_OUTPUT, "utf8"), ""); assert.equal(invalid.calls.length, 0);
+  });
+
+  test("package-body CMake guard has no missing-path or symlink bypass", t => {
+    const missing = fixture(t); missing.execute(0); Reflect.deleteProperty(missing.env, "MOM_CMAKE_PATH");
+    assert.throws(() => missing.execute(1), /Resolved CMake path is missing/);
+    assert.equal(missing.calls.some(row => ["extract", "package", "archive-audit"].includes(row.stage)), false);
+
+    const linked = fixture(t), linkPath = path.join(linked.cmakeDirectory, "cmake-link"); linked.execute(0);
+    fs.symlinkSync(linked.cmakePath, linkPath); linked.env.MOM_CMAKE_PATH = linkPath;
+    assert.throws(() => linked.execute(1), /Resolved CMake path is missing/);
+    assert.equal(linked.calls.some(row => ["extract", "package", "archive-audit"].includes(row.stage)), false);
+  });
+
   for (const target of ["linux", "win32"]) {
     test(`${target} restores the exact pinned provenance and uses only the existing package/audit APIs`, t => {
       const f = fixture(t, /** @type {'linux'|'win32'} */ (target)); f.execute(0); f.execute(1);
@@ -243,7 +303,8 @@ test.describe("SDK-free late native package workflow", {skip: process.platform !
       assert.deepEqual(stages.filter(stage => stage.endsWith("audit")), ["build-audit", "archive-audit"]);
       const packaged = f.calls.find(row => row.stage === "package"); assert.ok(packaged);
       assert.equal(packaged["entrypoint"], path.join("/tmp", f.roots.packed, "entrypoint.json"));
-      assert.equal(packaged["tool"], "/usr/bin/cmake"); assert.equal(packaged["spawn"], undefined);
+      assert.equal(packaged["tool"], f.cmakePath); assert.equal(packaged["spawn"], undefined);
+      assert.equal(f.calls.find(row => row.stage === "archive-audit")?.["options"]?.archive?.tool, f.cmakePath);
       assert.deepEqual(Object.keys(packaged["lateNotice"]).sort(), ["notices", "output"]);
       assert.equal(packaged["lateNotice"].notices, f.noticeBody);
       const reviews = f.calls.filter(row => row.stage === "notice-review");

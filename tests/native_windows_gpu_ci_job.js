@@ -51,12 +51,12 @@ function fixture(t) {
     MOM_NATIVE_DPCPP_CUDA_INPUTS_DIR: path.join(tempRoot, dpcppName),
     MOM_NATIVE_WINDOWS_GPU_DIR: suffixPath("mom-native-windows-gpu-oneapi"),
     MOM_NATIVE_WINDOWS_GPU_DEADLINE_EPOCH: String(Math.ceil((Date.now() + 40 * 60 * 1000) / 1000)),
-    MOM_NATIVE_WINDOWS_GPU_IMAGES_BUNDLE_SHA256: "",
-    MOM_NATIVE_WINDOWS_GPU_HIP_HEADERS_BUNDLE_SHA256: "", MOM_NATIVE_WINDOWS_GPU_HIP_HEADERS_HANDOFF_SHA256: "",
   });
   for (const name of ["SOURCE_BUNDLE", "DPCPP_BUNDLE", "DPCPP_MANIFEST", "TOOLS_BUNDLE", "TOOLS_HANDOFF"]) {
     environment["MOM_NATIVE_WINDOWS_GPU_" + name + "_SHA256"] = "0".repeat(64);
   }
+  // Each fixture selects its own profile; inherited pins for other profiles must not leak in.
+  for (const key of managedKeys) {delete process.env[key];}
   for (const [key, value] of Object.entries(environment)) {process.env[key] = value;}
   for (const [index, file] of files.entries()) {fs.writeFileSync(file, Buffer.from("metadata preflight fixture " + index), {flag: "wx"});}
   process.env["MOM_NATIVE_WINDOWS_GPU_SOURCE_BUNDLE_SHA256"] = fileHash(files[0] || "");

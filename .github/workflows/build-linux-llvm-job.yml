@@ -1,0 +1,74 @@
+name: Build one Linux LLVM 21 stage
+
+on:
+  workflow_call:
+    inputs:
+      stage:
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  linux-llvm:
+    name: Linux LLVM ${{ inputs.stage }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ inputs.stage == 'llvm-common' && 30 || inputs.stage == 'llvm-backends-clang' && 30 || 60 }}
+    env:
+      MOM_AOT_BUILD_ONLY: "1"
+      MOM_BUILD_JOBS: "2"
+      MOM_NATIVE_SOURCE_DIR: /tmp/mom-native-prerequisites-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_LINUX_SDK_DIR: /tmp/mom-native-llvm21-sdk-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_IO_SOURCE_DIR: /tmp/mom-native-io-prerequisites-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_IO_SDK_DIR: /tmp/mom-native-io-openssl-sdk-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_LINUX_SOURCES_DIR: /tmp/mom-native-linux-source-prerequisites-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_ZSTD_SOURCE_DIR: /tmp/mom-native-zstd-prerequisites-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_ZSTD_SDK_DIR: /tmp/mom-native-zstd-sdk-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_LINUX_JIT_RESOURCES_DIR: /tmp/mom-native-linux-jit-resources-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_ROCM_COMGR_SDK_DIR: /tmp/mom-native-rocm-comgr-sdk-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_ROCM_RESOURCES_DIR: /tmp/mom-native-rocm-resources-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_ROCM_HIP_HEADERS_DIR: /tmp/mom-native-rocm-hip-headers-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_ROCM_HOST_SDK_DIR: /tmp/mom-native-rocm-host-sdk-${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_LINUX_SDK_DESCRIPTOR_DIR: /tmp/mom-native-linux-sdk-descriptor-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24.15.0
+
+      - name: Validate stage and derive exact same-run artifact names
+        id: state
+        env:
+          LINUX_LLVM_STAGE: ${{ inputs.stage }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs'), ci = require('./scripts/prepare-native-ci');
+          const plan = ci.linuxLlvmCiStagePlan(process.env.LINUX_LLVM_STAGE || '', process.env);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `input_artifact_name=${plan.inputArtifactName}\noutput_artifact_name=${plan.outputArtifactName}\n`);
+          NODE
+
+      - name: Download exact predecessor state
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: ${{ steps.state.outputs.input_artifact_name }}
+          path: ${{ runner.temp }}/incoming
+
+      - name: Restore and run the bounded LLVM stage
+        env:
+          LINUX_LLVM_STAGE: ${{ inputs.stage }}
+        run: scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage "$LINUX_LLVM_STAGE"
+
+      - name: Upload exact same-run state
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: ${{ steps.state.outputs.output_artifact_name }}
+          path: ${{ runner.temp }}/${{ steps.state.outputs.output_artifact_name }}
+          if-no-files-found: error
+          archive: false
+          compression-level: 0
+          retention-days: 1

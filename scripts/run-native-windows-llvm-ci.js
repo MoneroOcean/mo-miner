@@ -2,7 +2,7 @@
 
 // One bounded same-run job at a time for the public Windows LLVM 21 builder.
 // The builder's original receipts remain authoritative; this file only restores
-// their exact state, re-admits current external inputs, invokes one phase, and repacks.
+// their exact state, re-admits current external inputs, invokes one phase or maintained group, and repacks.
 const fs = require("node:fs"), path = require("node:path"), {isDeepStrictEqual} = require("node:util"),
   {createHash} = require("node:crypto");
 const ci = require("./prepare-native-ci"), {fileHash} = require("./build-source-inputs");
@@ -12,7 +12,11 @@ const {linuxLlvmToolHandoffInputs} = require("./native-linux-llvm-tools");
 const {windowsControllerHandoffInputs} = require("./native-windows-controller-handoff");
 const {buildPhases} = require("./build-native-windows-llvm21-sdk");
 
-const stages = Object.freeze(["configure", ...buildPhases.map(row => row.name), "audit"]);
+/** @type {Readonly<Record<string, {previousStage:string,outputPhase:string,phases:readonly string[]}>>} */
+const groupedStages = Object.freeze({"llvm-mid": Object.freeze({previousStage: "llvm-amdgpu", outputPhase: "llvm-core",
+  phases: Object.freeze(["llvm-nvptx", "llvm-x86", "llvm-core"])})});
+const stages = Object.freeze(["configure", "llvm-amdgpu", ...Object.keys(groupedStages), "clang", "lld", "audit"]),
+  buildPhaseOutputValues = new Set(buildPhases.map(row => "build-" + row.name));
 const maxHermesArchiveBytes = 2 * 1024 ** 3, maxToolsArchiveBytes = 1 * 1024 ** 3,
   maxManifestBytes = 1 << 20, sdkComposeWindowMs = 25 * 60 * 1000;
 
@@ -26,8 +30,10 @@ function windowsLlvmCiJobPlan(stage, environment = process.env, platform = proce
       !/^[A-Za-z0-9_-]{1,64}$/.test(baseJob) || !/^[A-Za-z0-9_-]{1,64}$/.test(jobId)) {
     throw new Error("Windows LLVM CI needs a bounded run, attempt, and stage-specific workflow job identity");
   }
-  const suffix = run + "-" + attempt, statePhase = stage === "configure" ? "configured" : stage === "audit" ? "audited" : stage,
-    previousStage = stage === "configure" ? null : stage === "audit" ? "lld" : buildPhases[buildPhases.findIndex(row => row.name === stage) - 1]?.name || "configured",
+  const group = groupedStages[stage], suffix = run + "-" + attempt,
+    statePhase = stage === "configure" ? "configured" : stage === "audit" ? "audited" : group?.outputPhase || stage,
+    previousStage = stage === "configure" ? null : stage === "audit" ? "lld" : group?.previousStage || buildPhases[buildPhases.findIndex(row => row.name === stage) - 1]?.name || "configured",
+    previousProducerStage = stage === "clang" ? "llvm-mid" : previousStage,
     runDeadlineEpoch = environment["MOM_NATIVE_WINDOWS_LLVM_RUN_DEADLINE_EPOCH"] ||
       (stage === "configure" ? String(Math.floor(nowMs / 1000) + 8 * 60 * 60) : ""),
     jobDeadlineEpoch = environment["MOM_NATIVE_WINDOWS_LLVM_DEADLINE_EPOCH"] || "";
@@ -59,7 +65,8 @@ function windowsLlvmCiJobPlan(stage, environment = process.env, platform = proce
   if (hashPins.some(value => !/^[a-f0-9]{64}$/.test(value))) {throw new Error("Windows LLVM CI is missing an external artifact SHA-256 pin");}
   const budget = ci.windowsNativeLlvmCiDeadlineBudget(jobDeadlineEpoch, stage === "configure" ? "configure" : stage === "audit" ? "audit" : "build",
     nowMs, runDeadlineEpoch);
-  return {stage, builderPhase: buildPhases.some(row => row.name === stage) ? stage : null, statePhase, previousStage, suffix,
+  return {stage, builderPhases: group?.phases || (buildPhases.some(row => row.name === stage) ? [stage] : []),
+    statePhase, previousStage, previousProducerStage, suffix,
     workflowJob: baseJob, jobId, runnerTemp, stateRoot: state.root, stateOutput: state.output, descriptorState,
     incomingToolsArchive, incomingHermesArchive, incomingStateArchive, incomingStateManifest, archive, manifest,
     toolsBundleSha256, toolsHandoffSha256, hermesBundleSha256, hermesHandoffSha256, stateBundleSha256, stateManifestSha256,
@@ -102,7 +109,7 @@ function windowsLlvmCiJobPreflight(stage, environment = process.env, platform = 
     stateArchive = stableRegular(plan.incomingStateArchive || "", 16 * 1024 ** 3, "Prior Windows LLVM state archive", plan.stateBundleSha256);
     const manifestFile = stableRegular(plan.incomingStateManifest || "", maxManifestBytes, "Prior Windows LLVM state manifest", plan.stateManifestSha256);
     manifestValue = JSON.parse(fs.readFileSync(plan.incomingStateManifest || "", "utf8"));
-    const priorJobStage = plan.previousStage === "configured" ? "configure" : plan.previousStage;
+    const priorJobStage = plan.previousProducerStage === "configured" ? "configure" : plan.previousProducerStage;
     if (manifestFile.bytes > maxManifestBytes || manifestValue.runAttempt !== plan.suffix ||
         manifestValue.archive?.sha256 !== plan.stateBundleSha256 || manifestValue.producerJob !== `${plan.workflowJob}_${priorJobStage}`) {
       throw new Error("Prior Windows LLVM manifest does not bind the expected immediately preceding stage");
@@ -157,9 +164,9 @@ function availableDiskBytes(directory) {
 }
 
 /** Derive the inner Windows host-SDK deadline without extending this job or run deadline.
- * @param {ReturnType<typeof windowsLlvmCiJobPlan>} plan @param {number} [reserveMs] */
-function hostSdkDeadline(plan, reserveMs = 6 * 60 * 1000) {
-  const now = Date.now(), jobEnd = Number(plan.jobDeadlineEpoch) * 1000, runEnd = Number(plan.runDeadlineEpoch) * 1000,
+ * @param {ReturnType<typeof windowsLlvmCiJobPlan>} plan @param {number} [reserveMs] @param {number} [nowMs] */
+function hostSdkDeadline(plan, reserveMs = 6 * 60 * 1000, nowMs = Date.now()) {
+  const now = nowMs, jobEnd = Number(plan.jobDeadlineEpoch) * 1000, runEnd = Number(plan.runDeadlineEpoch) * 1000,
     deadlineMs = Math.min(now + sdkComposeWindowMs, jobEnd - reserveMs, runEnd - reserveMs), epoch = Math.floor(deadlineMs / 1000);
   if (!Number.isSafeInteger(epoch) || epoch * 1000 - now < 17 * 60 * 1000) {
     throw new Error("Insufficient remaining stage budget to safely compose the Windows host SDK and keep phase reserve");
@@ -204,13 +211,6 @@ function runWindowsLlvmCiJob(stage, environment = process.env) {
     const record = `MOM_NATIVE_WINDOWS_LLVM_RUN_DEADLINE_EPOCH=${plan.runDeadlineEpoch}\n`;
     fs.appendFileSync(environment["GITHUB_ENV"], record, "utf8");
   }
-  // Configure creates the original run record; every later phase restores its hash-pinned predecessor first.
-  if (plan.previousStage) {
-    const manifestBytes = copyPinned(plan.incomingStateManifest || "", plan.stateManifestSha256, "Windows LLVM state manifest");
-    const manifest = JSON.parse(manifestBytes.toString("utf8"));
-    stateTransport.restoreWindowsNativeLlvmState(plan.incomingStateArchive || "", plan.stateBundleSha256, manifest,
-      plan.stateManifestSha256, env);
-  }
   const toolsRoot = path.join(plan.runnerTemp, `linux-llvm-tools-extracted-${suffix}`), toolsName = `native-linux-llvm-tools-${suffix}`,
     hermesName = `native-windows-controller-hermes-${suffix}`;
   if (fs.existsSync(toolsRoot) || fs.existsSync(path.join(plan.runnerTemp, hermesName))) {
@@ -247,6 +247,13 @@ function runWindowsLlvmCiJob(stage, environment = process.env) {
     MOM_NATIVE_WINDOWS_HOST_SDK_DEADLINE_EPOCH: sdkDeadline,
   });
   ci.buildWindowsHostSdkSourcesCi();
+  // State admission reads the descriptor's external SDK overlay and tools, so reconstruct them first.
+  if (plan.previousStage) {
+    const manifestBytes = copyPinned(plan.incomingStateManifest || "", plan.stateManifestSha256, "Windows LLVM state manifest");
+    const manifest = JSON.parse(manifestBytes.toString("utf8"));
+    stateTransport.restoreWindowsNativeLlvmState(plan.incomingStateArchive || "", plan.stateBundleSha256, manifest,
+      plan.stateManifestSha256, env);
+  }
   const inputFile = path.join(plan.runnerTemp, `windows-llvm21-descriptor-input-${suffix}.json`),
     input = /** @type {Parameters<typeof ci.composeWindowsLlvmSdkDescriptor>[0]} */ ({windowsSdkRoot: sdkRoot, windowsSdkPins: {
       resultSha256: fileHash(path.join(sdkRoot, "result.json")), descriptorSha256: fileHash(path.join(sdkRoot, "sdk.json")),
@@ -262,7 +269,8 @@ function runWindowsLlvmCiJob(stage, environment = process.env) {
   const inputSha256 = fileHash(inputFile);
   if (stage === "configure") {
     const generated = ci.buildWindowsNativeLlvmDescriptorCi([inputFile, inputSha256], env),
-      descriptorPath = path.join(plan.stateRoot, "descriptor.json"), provenancePath = plan.descriptorState.provenanceOutput,
+      // The producer owns a separate fresh root; configure retains the pinned descriptor in stateRoot.
+      descriptorPath = plan.descriptorState.descriptorOutput, provenancePath = plan.descriptorState.provenanceOutput,
       {descriptorSha, provenanceSha} = windowsLlvmDescriptorProducerPins(generated, descriptorPath, provenancePath);
     const values = ci.buildWindowsNativeLlvmCi(["configure", descriptorPath, descriptorSha, tools.sourceArchive, archiveSha256,
       "/usr/bin/cmake", fileHash("/usr/bin/cmake"), "/usr/bin/ninja", fileHash("/usr/bin/ninja")], env);
@@ -281,8 +289,22 @@ function runWindowsLlvmCiJob(stage, environment = process.env) {
         fileHash(path.join(plan.stateRoot, "descriptor.json")), "Original Windows LLVM descriptor"))) {
     throw new Error("Recomposed Windows LLVM descriptor differs from the immutable configured inputs");
   }
-  const phaseArgs = plan.builderPhase ? ["build", plan.builderPhase] : ["audit"], values = ci.buildWindowsNativeLlvmCi(phaseArgs, env);
-  return finishStage(plan, values, env);
+  if (plan.builderPhases.length) {
+    return runBuilderPhases(plan.builderPhases, phase => ci.buildWindowsNativeLlvmCi(["build", phase], env),
+      values => finishStage(plan, values, env));
+  }
+  return finishStage(plan, ci.buildWindowsNativeLlvmCi(["audit"], env), env);
+}
+
+/** Publish only after every original builder phase has completed successfully.
+ * @param {readonly string[]} phases @param {(phase:string) => Record<string,string>} build
+ * @param {(values:Record<string,string>) => Record<string,string>} publish */
+function runBuilderPhases(phases, build, publish) {
+  if (!phases.length) {throw new Error("Windows LLVM grouped stage must contain at least one builder phase");}
+  let values;
+  for (const phase of phases) {values = build(phase);}
+  if (!values) {throw new Error("Windows LLVM grouped stage produced no final builder result");}
+  return publish(values);
 }
 
 /** @param {string} source @param {string} target @param {string} sha256 @param {number} maximum */
@@ -295,6 +317,14 @@ function copyToState(source, target, sha256, maximum) {
 
 /** @param {ReturnType<typeof windowsLlvmCiJobPlan>} plan @param {Record<string,string>} values @param {NodeJS.ProcessEnv} environment */
 function finishStage(plan, values, environment) {
+  const reportedPhase = values["windows_llvm_phase"];
+  if (typeof reportedPhase !== "string" || !/^(?:configure|audit)$/.test(reportedPhase) && !buildPhaseOutputValues.has(reportedPhase)) {
+    throw new Error("Windows LLVM workflow output is malformed: windows_llvm_phase");
+  }
+  const expectedPhase = plan.stage === "configure" || plan.stage === "audit" ? plan.stage : "build-" + plan.statePhase;
+  if (reportedPhase !== expectedPhase) {
+    throw new Error("Windows LLVM builder result does not match its maintained phase or grouped output");
+  }
   const {manifest, manifestSha256} = stateTransport.packWindowsNativeLlvmState(plan.archive, plan.environment),
     bytes = Buffer.from(JSON.stringify(manifest) + "\n");
   if (manifestSha256 !== createHash("sha256").update(bytes).digest("hex") || fs.existsSync(plan.manifest)) {
@@ -314,7 +344,10 @@ function finishStage(plan, values, environment) {
     run_deadline_epoch: plan.runDeadlineEpoch});
   if (plan.stage === "audit") {result["admission_sha256"] = values["windows_llvm_admission_sha256"] || "";}
   const lines = Object.entries(result).map(([key, value]) => {
-    if (!/^[a-z][a-z0-9_]*$/.test(key) || !/^(?:[a-f0-9]{64}|[0-9]{10}|true|false|build|configure|audit|build-[a-z-]+|\/tmp\/mom-native-windows-llvm21-[0-9-]+\/output)$/.test(String(value))) {
+    const text = String(value);
+    if (!/^[a-z][a-z0-9_]*$/.test(key) ||
+        (!/^(?:[a-f0-9]{64}|[0-9]{10}|true|false|build|configure|audit|\/tmp\/mom-native-windows-llvm21-[0-9-]+\/output)$/.test(text) &&
+          !buildPhaseOutputValues.has(text))) {
       throw new Error("Windows LLVM workflow output is malformed: " + key);
     }
     return key + "=" + value;
@@ -326,14 +359,15 @@ function finishStage(plan, values, environment) {
   return result;
 }
 
-module.exports = {windowsLlvmCiJobPlan, windowsLlvmCiJobPreflight, windowsLlvmDescriptorProducerPins};
+module.exports = {windowsLlvmCiJobPlan, windowsLlvmCiJobPreflight, windowsLlvmDescriptorProducerPins, hostSdkDeadline};
 
 if (require.main === module) {
   try {
     const [stage, ...extra] = process.argv.slice(2);
-    if (extra.length || !stage || !stages.includes(stage)) {throw new Error("Usage: run-native-windows-llvm-ci.js configure|llvm-amdgpu|llvm-nvptx|llvm-x86|llvm-core|clang|lld|audit");}
+    if (extra.length || !stage || !stages.includes(stage)) {throw new Error("Usage: run-native-windows-llvm-ci.js configure|llvm-amdgpu|llvm-mid|clang|lld|audit");}
     const result = runWindowsLlvmCiJob(stage);
-    process.stdout.write(JSON.stringify({status: "PASS", stage, output: stage === "configure" ? "configured" : stage === "audit" ? "audited" : stage,
+    const plan = windowsLlvmCiJobPlan(stage);
+    process.stdout.write(JSON.stringify({status: "PASS", stage, output: plan.statePhase,
       bundleSha256: result["bundle_sha256"], manifestSha256: result["manifest_sha256"], buildOnly: true,
       executed: false, publicationQualified: false}) + "\n");
   } catch (error) {

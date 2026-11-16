@@ -30,6 +30,10 @@ env:
 # The native reusable workflow owns target builds and the complete raw + packed CPU runtime gate.
 # These source checks remain independent required gates; package jobs wait for the successful whole call.
 jobs:
+  engineering-hash:
+    name: Engineering / CPU and portable SYCL hashing
+    uses: ./.github/workflows/test-engineering.yml
+
   source-quality:
     name: Source / lint and logic
     runs-on: ubuntu-24.04
@@ -70,7 +74,7 @@ jobs:
       - name: Install JavaScript tooling
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends patchelf libboost-dev libuv1-dev libssl-dev strace unzip
+          sudo apt-get install -y --no-install-recommends cmake ninja-build patchelf libboost-dev libuv1-dev libssl-dev strace unzip
           npm ci --ignore-scripts
 
       - name: Run real CMake archive reproducibility regression
@@ -90,7 +94,7 @@ jobs:
   windows-script-quality:
     name: Source / Windows scripts
     runs-on: windows-2022
-    timeout-minutes: 10
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -111,22 +115,25 @@ jobs:
         shell: powershell
         run: |
           .github\workflows\scripts\test-powershell-syntax.ps1
+          . scripts\import-vcvars.ps1
+          Import-MomVcVars64
           # source-quality owns lint/typecheck; keep the platform-specific logic run here.
           node tests/run_hash.js logic
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $logicExit = $LASTEXITCODE
           node --test tests/windows_script_safety.js
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $safetyExit = $LASTEXITCODE
+          Write-Host "Source gate results: logic=$logicExit safety=$safetyExit"
+          if ($logicExit -ne 0 -or $safetyExit -ne 0) { exit 1 }
 
   build-native-prerequisites:
     name: Build, pack, and runtime-check Linux and Windows candidates
-    needs:
-      - source-quality
-      - windows-script-quality
+    # Source checks consume no SDK output; overlap them with the cold build, but
+    # require both before either archive can be packaged.
     uses: ./.github/workflows/build-native-prerequisites.yml
 
   package-linux:
     name: Package admitted Linux candidate
-    needs: build-native-prerequisites
+    needs: [build-native-prerequisites, engineering-hash, source-quality, windows-script-quality]
     uses: ./.github/workflows/package-native-application.yml
     with:
       platform: linux
@@ -137,7 +144,7 @@ jobs:
 
   package-windows:
     name: Package admitted Windows candidate
-    needs: build-native-prerequisites
+    needs: [build-native-prerequisites, engineering-hash, source-quality, windows-script-quality]
     uses: ./.github/workflows/package-native-application.yml
     with:
       platform: win32

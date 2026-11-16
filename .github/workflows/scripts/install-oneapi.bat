@@ -4,6 +4,9 @@ rem   %1 URL        download page (or direct .exe) to resolve the installer from
 rem   %2 COMPONENTS comma-separated component list passed to the bootstrapper
 rem   %3 PACKAGE    package name used to match the installer URL (required)
 setlocal
+rem Keep Windows PowerShell 5.1 isolated from PowerShell 7 modules in its parent.
+set "WINDOWS_POWERSHELL=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
+set "PSModulePath=%SystemRoot%\System32\WindowsPowerShell\v1.0\Modules"
 set "URL=%~1"
 set "COMPONENTS=%~2"
 set "PACKAGE=%~3"
@@ -14,10 +17,18 @@ if "%PACKAGE%"=="" (
   exit /b 1
 )
 
+rem Run FOR /F from the OS PowerShell directory to avoid PATH or caller-directory executable spoofing.
+pushd "%SystemRoot%\System32\WindowsPowerShell\v1.0"
+if errorlevel 1 (
+  echo Unable to enter the Windows PowerShell directory.
+  exit /b 1
+)
+
 set "RUN_ID="
-for /f "delims=" %%G in ('powershell -NoProfile -Command "[Guid]::NewGuid().ToString()"') do set "RUN_ID=%%G"
+for /f "delims=" %%G in ('.\powershell.exe -NoProfile -Command "$id=New-Guid; $id.Guid"') do set "RUN_ID=%%G"
 if not defined RUN_ID (
   echo Unable to create a unique oneAPI installer workspace.
+  popd
   exit /b 1
 )
 set "INSTALLER=%TEMP%\mom-oneapi-%RUN_ID%.exe"
@@ -26,7 +37,8 @@ set "EXTRACT_LOG=%TEMP%\mom-oneapi-%RUN_ID%-extract.log"
 set "EXIT_CODE=1"
 
 set "RESOLVED_URL="
-for /f "delims=" %%U in ('powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%resolve-oneapi-url.ps1" "%URL%" "%PACKAGE%"') do set "RESOLVED_URL=%%U"
+for /f "delims=" %%U in ('.\powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%resolve-oneapi-url.ps1" "%URL%" "%PACKAGE%"') do set "RESOLVED_URL=%%U"
+popd
 if not defined RESOLVED_URL goto cleanup
 set "URL=%RESOLVED_URL%"
 
@@ -35,7 +47,7 @@ if not errorlevel 1 goto download_ok
 set "EXIT_CODE=%ERRORLEVEL%"
 goto cleanup
 :download_ok
-powershell -NoProfile -Command "$s=Get-AuthenticodeSignature -LiteralPath $env:INSTALLER; if($s.Status -ne 'Valid'){Write-Error ('Authenticode verification failed: '+$s.Status); exit 1}"
+"%WINDOWS_POWERSHELL%" -NoProfile -Command "$s=Get-AuthenticodeSignature -LiteralPath $env:INSTALLER; if($s.Status -ne 'Valid'){Write-Error ('Authenticode verification failed: '+$s.Status); exit 1}"
 if not errorlevel 1 goto installer_signature_ok
 set "EXIT_CODE=%ERRORLEVEL%"
 goto cleanup
@@ -50,7 +62,7 @@ goto cleanup
 
 set "BOOTSTRAPPER=%EXTRACT_DIR%\bootstrapper.exe"
 if not exist "%BOOTSTRAPPER%" goto cleanup
-powershell -NoProfile -Command "$s=Get-AuthenticodeSignature -LiteralPath $env:BOOTSTRAPPER; if($s.Status -ne 'Valid'){Write-Error ('Authenticode verification failed: '+$s.Status); exit 1}"
+"%WINDOWS_POWERSHELL%" -NoProfile -Command "$s=Get-AuthenticodeSignature -LiteralPath $env:BOOTSTRAPPER; if($s.Status -ne 'Valid'){Write-Error ('Authenticode verification failed: '+$s.Status); exit 1}"
 if not errorlevel 1 goto bootstrapper_signature_ok
 set "EXIT_CODE=%ERRORLEVEL%"
 goto cleanup

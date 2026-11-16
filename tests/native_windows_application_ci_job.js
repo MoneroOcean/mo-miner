@@ -80,6 +80,21 @@ function pinEnvironment(suffix) {
 }
 
 test.describe("Windows full-application reusable job", {skip: process.platform !== "linux" && "Linux workflow-job harness"}, () => {
+  test("compiler version admission works on a minimal runner without ripgrep", t => {
+    const root = runnerTemp(t), bin = path.join(root, "bin"), compiler = path.join(root, "icx-cl");
+    fs.mkdirSync(bin); fs.symlinkSync("/usr/bin/grep", path.join(bin, "grep"));
+    const line = workflow.split("\n").find(value => value.includes("icx-cl --version |"));
+    assert.ok(line);
+    const command = line.trim().replace("/opt/intel/oneapi/compiler/2026.2/bin/icx-cl", compiler);
+    for (const [version, expected] of [["2026.2.0", 0], ["2026.0.0", 1]]) {
+      fs.writeFileSync(compiler, `#!/bin/sh\nprintf '%s\\n' 'Intel Compiler ${version}'\n`, {mode: 0o700});
+      const result = spawnSync("/bin/bash", ["-e", "-o", "pipefail", "-c", command], {
+        env: {PATH: bin}, encoding: "utf8", timeout: 10000,
+      });
+      assert.equal(result.status, expected, result.stderr || result.stdout);
+    }
+  });
+
   test("keeps the public workflow build-only, bounded, exact-artifact and cache-free", () => {
     assert.match(workflow, /^ {2}workflow_call:$/m);
     assert.doesNotMatch(workflow, /^\s+(?:push|pull_request|workflow_dispatch):/m);
@@ -130,10 +145,10 @@ test.describe("Windows full-application reusable job", {skip: process.platform !
   });
 
   test("full application admits the maintained ordinary Windows DLL set but no application DLLs", () => {
-    const build = nodeBody("Restore handoffs, compose the current SDK descriptor, and build"),
-      match = build.match(/allowedImports = \[([\s\S]*?)\],\s*config =/);
-    assert.ok(match, "the production build declares an explicit Windows import policy");
-    const selected = [...(match?.[1] || "").matchAll(/"([^"\n]+\.dll)"/g)].map(row => row[1]);
+    const build = nodeBody("Restore handoffs, compose the current SDK descriptor, and build");
+    assert.match(build, /\{windowsSystemImports\} = require\("\.\/scripts\/build-native-windows-controller"\)/);
+    assert.match(build, /allowedImports = windowsSystemImports\(\),\s*config =/);
+    const selected = require("../scripts/build-native-windows-controller").windowsSystemImports();
     assert.deepEqual(selected, ordinaryWindowsImports);
     for (const name of ["bcrypt.dll", "crypt32.dll", "dnsapi.dll", "iphlpapi.dll", "userenv.dll", "ws2_32.dll"]) {
       assert.ok(selected.includes(name), `the full app includes ${name} for ordinary OS services`);
@@ -344,9 +359,11 @@ test.describe("Windows full-application reusable job", {skip: process.platform !
       entrypointFile = path.join(buildRoot, "entrypoint.json"), evidenceRoot = path.join("/tmp", `native-windows-application-build-${suffix}`),
       archive = path.join(temp, `native-windows-application-build-${suffix}.tar`),
       base = {...process.env, RUNNER_TEMP: temp, GITHUB_RUN_ID: runId, GITHUB_RUN_ATTEMPT: attempt,
+        MOM_NATIVE_WINDOWS_APPLICATION_DEADLINE_EPOCH: String(Math.floor(Date.now() / 1000) + 300),
         BUILD_OUTPUT: buildRoot, CONFIG_FILE: configFile, EXECUTABLE: executable, RESULT_FILE: resultFile, ENTRYPOINT_FILE: entrypointFile};
     assert.equal(fs.existsSync(evidenceRoot), false); assert.equal(fs.existsSync(archive), false);
-    const missing = execNode(body, base);
+    // CI supplies a valid aggregate deadline, so explicitly remove it for the missing-deadline case.
+    const missing = execNode(body, {...base, MOM_NATIVE_WINDOWS_APPLICATION_DEADLINE_EPOCH: undefined});
     assert.notEqual(missing.status, 0);
     assert.match(missing.stderr, /aggregate deadline is invalid or expired/);
     const expired = execNode(body, {...base, MOM_NATIVE_WINDOWS_APPLICATION_DEADLINE_EPOCH: "1"});

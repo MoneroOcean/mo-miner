@@ -239,100 +239,100 @@ jobs:
           workspace="/var/tmp/mom-dev-native-windows-application-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           sudo env MOM_DEV_WORKSPACE="$workspace" MOM_BUILD_JOBS=2 scripts/install-dev.sh --component oneapi --jobs 2
           test -x /opt/intel/oneapi/compiler/2026.2/bin/icx-cl
-          /opt/intel/oneapi/compiler/2026.2/bin/icx-cl --version | rg --fixed-strings '2026.2'
+          /opt/intel/oneapi/compiler/2026.2/bin/icx-cl --version | grep --fixed-strings '2026.2'
 
       - name: Download pinned Windows Core handoff
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-windows-core-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming/core
 
       - name: Download pinned Windows DPC++ component
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-windows-dpcpp-static-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming/dpcpp-component
 
       - name: Download pinned Windows host component
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-windows-host-component-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming/host-component
 
       - name: Download pinned Windows I/O handoff
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-windows-controller-io-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming/io
 
       - name: Download pinned Windows Hermes handoff
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-windows-controller-hermes-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming/windows-hermes
 
       - name: Download pinned Linux Hermes build state
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-hermes-sdk-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming/linux-hermes
 
       - name: Download pinned thin Linux LLVM tools
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-llvm-tools-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming/linux-tools
 
       - name: Download pinned DPC++ and CUDA compiler inputs
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-dpcpp-cuda-inputs-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming/dpcpp-inputs
 
       - name: Download pinned Linux source cohort
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-sdk-state-${{ github.run_id }}-${{ github.run_attempt }}-sources.tar
           path: ${{ runner.temp }}/incoming/linux-sources
 
       - name: Download pinned HIP header handoff
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-rocm-hip-headers-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming/hip-headers
 
       - name: Download pinned CUDA-image input handoff
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-cuda-images-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming/cuda-images
 
       - name: Download pinned Windows ACPP CUDA factory handoff
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-windows-gpu-acpp-cuda-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming/gpu
 
       - name: Download pinned Windows ACPP HIP factory handoff
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-windows-gpu-acpp-hip-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming/gpu
 
       - name: Download pinned Windows DPC++ factory handoff
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-windows-gpu-dpcpp-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming/gpu
 
       - name: Download pinned Windows DPC++ OpenCL factory handoff
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-windows-gpu-dpcpp-opencl-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming/gpu
 
       - name: Download pinned Windows oneAPI factory handoff
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-windows-gpu-oneapi-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming/gpu
@@ -355,6 +355,7 @@ jobs:
             {rocmHipHeaderInputs} = require("./scripts/native-rocm-hip-headers"),
             {nativeHermesInputs} = require("./scripts/native-release-sdk-inputs"),
             {composeWindowsApplicationConfig} = require("./scripts/native-windows-application-config"),
+            {windowsSystemImports} = require("./scripts/build-native-windows-controller"),
             {windowsGpuHostSdkPins, windowsGpuDpcppManifest} = require("./scripts/run-native-windows-gpu-ci");
           const env = process.env, paths = ci.ciPaths(), suffix = paths.suffix, temp = paths.runnerTemp,
             deadline = Number(env.MOM_NATIVE_WINDOWS_APPLICATION_DEADLINE_EPOCH), repo = process.cwd(),
@@ -537,12 +538,7 @@ jobs:
               tools: {llvmAr: path.join(toolRoot, "llvm-ar"), llvmObjcopy: path.join(toolRoot, "llvm-objcopy")},
               sdk: {libraries: [], wholeArchives: [], objects: [], includeRoots: [cudaInclude, hipInclude], nvmlHeader,
                 hipDriverLibrary, dpcppComponent: dpcppComponentRoot, hostComponent: hostComponentRoot, cudaImages: imagePath}},
-            // Keep the full-app import envelope aligned with build-native-windows-controller's closed
-            // ordinaryWindowsImports policy; the final PE import audit still rejects every other DLL.
-            allowedImports = ["advapi32.dll", "bcrypt.dll", "cfgmgr32.dll", "crypt32.dll", "dbghelp.dll", "dnsapi.dll",
-              "gdi32.dll", "iphlpapi.dll", "kernel32.dll", "ncrypt.dll", "ntdll.dll", "ole32.dll", "oleaut32.dll",
-              "powrprof.dll", "psapi.dll", "rpcrt4.dll", "secur32.dll", "setupapi.dll", "shell32.dll", "shlwapi.dll",
-              "user32.dll", "userenv.dll", "uuid.dll", "version.dll", "winhttp.dll", "winmm.dll", "wsock32.dll", "ws2_32.dll"],
+            allowedImports = windowsSystemImports(),
             config = composeWindowsApplicationConfig({runAttempt: suffix, llvmDescriptor: llvmDescriptor.descriptor, io,
               hermes: windowsHermes, hermesAot: hermesInputs, tools: {shermaot: hermesInputs.artifacts.compiler,
                 llvmReadobj: path.join(toolRoot, "llvm-readobj")}, allowedImports, application});

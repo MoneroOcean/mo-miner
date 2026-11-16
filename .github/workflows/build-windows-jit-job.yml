@@ -185,39 +185,39 @@ jobs:
         run: sudo env MOM_DEV_WORKSPACE=/var/tmp/mom-dev-native-windows-jit-${{ github.run_id }}-${{ github.run_attempt }} scripts/install-dev.sh --component oneapi --jobs 2
 
       - name: Download same-run Linux SDK source archive
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-sdk-state-${{ github.run_id }}-${{ github.run_attempt }}-sources.tar
           path: ${{ runner.temp }}/incoming
       - name: Download same-run DPC++ and CUDA input archive
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-dpcpp-cuda-inputs-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming
       - name: Download same-run Hermes and thin LLVM tools
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-windows-controller-hermes-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming/hermes
       - name: Download same-run thin Linux LLVM tools
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-linux-llvm-tools-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming/tools
       - name: Download same-run Windows-target JIT resources
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: mom-native-windows-jit-resources-${{ github.run_id }}-${{ github.run_attempt }}.tar
           path: ${{ runner.temp }}/incoming/resources
       - name: Download immediate JIT predecessor state
         if: ${{ inputs.phase != 'configure' }}
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: ${{ steps.artifact-names.outputs.state_input_artifact_name }}
           path: ${{ runner.temp }}/incoming/state
       - name: Download exact configure-generated builder config
         if: ${{ inputs.phase != 'configure' }}
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: ${{ steps.artifact-names.outputs.config_artifact_name }}
           path: ${{ runner.temp }}/incoming/config

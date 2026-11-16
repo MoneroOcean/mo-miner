@@ -6,41 +6,108 @@ const fs = require("node:fs"), path = require("node:path");
 const os = require("node:os");
 
 const root = path.resolve(__dirname, "..");
-const helper = fs.readFileSync(path.join(root, ".github/workflows/scripts/prepare-native-windows-ci.ps1"), "utf8");
+const wrapper = fs.readFileSync(path.join(root, ".github/workflows/scripts/prepare-native-windows-ci.ps1"), "utf8");
+const helper = fs.readFileSync(path.join(root, "scripts/native-windows-tools.ps1"), "utf8");
 const installer = fs.readFileSync(path.join(root, "scripts/install-dev.ps1"), "utf8");
+const shellInstaller = fs.readFileSync(path.join(root, "scripts/install-dev.sh"), "utf8");
 
 describe("Windows native CI tool preparation", () => {
-  test("imports the selected x64 VC environment before resolving any stage tools", () => {
-    assert.match(helper, /ValidateSet\('core', 'io', 'hermes'\)/);
-    const importFile = helper.indexOf("scripts\\import-vcvars.ps1");
-    const importCall = helper.indexOf("Import-MomVcVars64");
-    const firstToolLookup = helper.indexOf("Get-Command -Name");
-    assert.ok(importFile >= 0 && importFile < importCall);
-    assert.ok(importCall >= 0 && importCall < firstToolLookup);
-    assert.match(helper, /vswhere and vcvars64 selected different Visual Studio installations/);
+  test("local preflight and support bridge share the exact native Node admission", () => {
+    const node = helper.slice(helper.indexOf("function Get-MomNativeBuildNode"), helper.indexOf("function Resolve-Application"));
+    assert.match(node, /Resolve-RequiredFile 'C:\\Program Files\\nodejs\\node\.exe' 'pinned Node\.js'/);
+    assert.match(node, /@\(& \$nodePath --version 2>\$null\)/);
+    assert.match(node, /\$nodeExitCode -ne 0/);
+    assert.match(node, /-cne 'v24\.15\.0'/);
+    const version = /-cne '(v[0-9.]+)'/.exec(node)?.[1];
+    const installNode = /^NODE_VERSION=\$\{MOM_NODE_VERSION-([^}]+)\}$/m.exec(shellInstaller)?.[1];
+    assert.equal(version, "v" + installNode);
+    assert.match(node, /return \$nodePath/);
+  });
+  test("literal workflow workspaces satisfy install-dev.sh's dedicated basename contract", () => {
+    const workspaceGuard = /\[\[ ! \$\{WORKSPACE##\*\/\} =~ (.*?) \]\]/.exec(shellInstaller);
+    assert.ok(workspaceGuard, "install-dev.sh workspace basename guard was not found");
+    assert.ok(workspaceGuard[1]);
+    const allowedBasename = new RegExp(workspaceGuard[1]);
+    const workflowsDir = path.join(root, ".github/workflows");
+    const workspaceAssignment = /\bMOM_DEV_WORKSPACE\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'\\]+))/g;
+    const githubRunExpression = /\$\{\{\s*github\.run_(?:id|attempt)\s*\}\}/g;
+    const invalid = [];
+    let literalAssignments = 0;
+
+    for (const file of fs.readdirSync(workflowsDir).filter(name => /\.ya?ml$/i.test(name))) {
+      const workflowPath = path.join(workflowsDir, file);
+      const workflow = fs.readFileSync(workflowPath, "utf8").replace(githubRunExpression, "1");
+      for (const match of workflow.matchAll(workspaceAssignment)) {
+        const value = match[1] ?? match[2] ?? match[3];
+        assert.ok(value);
+        if (value.includes("$")) {continue;} // Ignore shell or workflow variables rather than literal paths.
+        literalAssignments++;
+        const basename = path.posix.basename(value.replaceAll("\\", "/"));
+        if (!allowedBasename.test(basename)) {invalid.push(`${file}: ${value} (basename ${basename})`);}
+      }
+    }
+
+    assert.ok(literalAssignments > 0, "workflow files must contain a literal MOM_DEV_WORKSPACE assignment");
+    assert.deepEqual(invalid, [], `invalid literal MOM_DEV_WORKSPACE values:\n${invalid.join("\n")}`);
   });
 
-  test("Core dispatch preserves its established explicit tool environment without unrelated tools", () => {
-    const core = helper.slice(helper.indexOf("  'core' {"), helper.indexOf("  'io' {"));
+  test("Windows source harnesses inherit the selected C++ compiler environment", () => {
+    const workflow = fs.readFileSync(path.join(root, ".github/workflows/build-release-artifacts.yml"), "utf8");
+    const step = workflow.slice(workflow.indexOf("- name: Test native Windows source gate"), workflow.indexOf("  build-native-prerequisites:"));
+    assert.match(step, /\. scripts\\import-vcvars\.ps1\s+Import-MomVcVars64/);
+    assert.ok(step.indexOf("Import-MomVcVars64") < step.indexOf("node tests/run_hash.js logic"));
+  });
+  test("Windows source gate collects both suites before rejecting either failure", () => {
+    const workflow = fs.readFileSync(path.join(root, ".github/workflows/build-release-artifacts.yml"), "utf8");
+    const step = workflow.slice(workflow.indexOf("- name: Test native Windows source gate"), workflow.indexOf("  build-native-prerequisites:"));
+    assert.match(step, /node tests\/run_hash\.js logic\s+\$logicExit = \$LASTEXITCODE\s+node --test tests\/windows_script_safety\.js\s+\$safetyExit = \$LASTEXITCODE/);
+    assert.match(step, /if \(\$logicExit -ne 0 -or \$safetyExit -ne 0\) \{ exit 1 \}/);
+  });
+  test("CI imports the shared selector, which loads x64 VC setup before role resolution", () => {
+    assert.match(wrapper, /scripts\\native-windows-tools\.ps1/);
+    assert.match(wrapper, /Get-MomNativeWindowsBuildTools -Role \$Role/);
+    assert.doesNotMatch(wrapper, /function\s+(?:Resolve-RequiredFile|Get-OneApiCompiler|Get-NativePerl|Get-VisualStudioRoot)/);
+    assert.match(helper, /ValidateSet\('core', 'io', 'hermes'\)/);
+    const importFile = helper.indexOf("'import-vcvars.ps1'"),
+      getter = helper.indexOf("function Get-MomNativeWindowsBuildTools"), importCall = helper.indexOf("Import-MomVcVars64", getter),
+      roleSwitch = helper.indexOf("switch ($Role)", getter);
+    assert.ok(importFile >= 0 && importFile < getter);
+    assert.ok(getter >= 0 && importCall > getter && importCall < roleSwitch);
+    assert.match(helper, /vswhere and vcvars64 selected different Visual Studio installations/);
+    assert.doesNotMatch(helper, /\.github[\\/]/);
+  });
+
+  test("Core selection and CI dispatch preserve the explicit tool environment", () => {
+    const core = helper.slice(helper.indexOf("    'core' {"), helper.indexOf("    'io' {")),
+      dispatch = wrapper.slice(wrapper.indexOf("  'core' {"), wrapper.indexOf("  'io' {"));
+    for (const key of ["nodeGyp", "msbuild", "dumpbin", "python", "compiler"]) {assert.match(core, new RegExp(`\\b${key}\\s*=`));}
+    assert.match(core, /Resolve-Application 'npm\.cmd'/);
+    assert.match(core, /'node_modules\\node-gyp\\bin\\node-gyp\.js'/);
+    assert.match(core, /'C:\\Tools\\mom\\python-3\.12\.10\\python\.exe'/);
+    assert.match(helper, /Microsoft\.VisualStudio\.Component\.Windows11SDK\.26100/);
+    assert.match(helper, /Microsoft\.VisualStudio\.Component\.VC\.CMake\.Project/);
     for (const name of ["NODE_GYP", "MSBUILD", "DUMPBIN", "PYTHON", "COMPILER"]) {
-      assert.match(core, new RegExp(`MOM_NATIVE_WINDOWS_CORE_${name}`));
+      assert.match(dispatch, new RegExp(`MOM_NATIVE_WINDOWS_CORE_${name} = \\$tools\\.`));
     }
-    assert.match(core, /Invoke-NativeStage 'windows-native-core'/);
+    assert.match(dispatch, /Invoke-NativeStage 'windows-native-core'/);
     assert.doesNotMatch(core, /perl|ninja|cmake/i);
   });
 
-  test("I/O and Hermes publish only their producer-specific explicit Windows tool maps", () => {
-    const io = helper.slice(helper.indexOf("  'io' {"), helper.indexOf("  'hermes' {"));
-    const hermes = helper.slice(helper.indexOf("  'hermes' {"));
+  test("I/O and Hermes return only their producer-specific explicit Windows tool maps", () => {
+    const io = helper.slice(helper.indexOf("    'io' {"), helper.indexOf("    'hermes' {"));
+    const hermes = helper.slice(helper.indexOf("    'hermes' {"));
+    const ioDispatch = wrapper.slice(wrapper.indexOf("  'io' {"), wrapper.indexOf("  'hermes' {")), hermesDispatch = wrapper.slice(wrapper.indexOf("  'hermes' {"));
     assert.match(io, /openssl = \[ordered\]@\{/);
     for (const key of ["cmake", "cc", "ninja", "ar", "link", "make", "perl", "rc", "tar"]) {
       assert.match(io, new RegExp(`\\b${key}\\s*=`));
     }
-    assert.match(io, /Invoke-NativeStage 'windows-controller-io'/);
+    assert.match(ioDispatch, /ConvertTo-Json -Compress -Depth 4/);
+    assert.match(ioDispatch, /Invoke-NativeStage 'windows-controller-io'/);
     for (const key of ["git", "cmake", "cc", "cxx", "ninja"]) {
       assert.match(hermes, new RegExp(`\\b${key}\\s*=`));
     }
-    assert.match(hermes, /Invoke-NativeStage 'windows-controller-hermes'/);
+    assert.match(hermesDispatch, /ConvertTo-Json -Compress -Depth 3/);
+    assert.match(hermesDispatch, /Invoke-NativeStage 'windows-controller-hermes'/);
     assert.match(hermes, /cxx = \$compiler/);
   });
 
@@ -66,7 +133,7 @@ describe("Windows native CI tool preparation", () => {
   test("explicit tool paths are canonicalized before producer admission and version checks", () => {
     const resolver = helper.slice(helper.indexOf("function Resolve-RequiredFile"), helper.indexOf("function Resolve-Application"));
     assert.match(resolver, /\$nodePath = 'C:\\Program Files\\nodejs\\node\.exe'/);
-    assert.match(resolver, /realpathSync\(process\.argv\[2\]\)/);
+    assert.match(resolver, /realpathSync\.native\(process\.argv\[2\]\)/);
     assert.match(resolver, /'node:fs' \$fullPath/);
     assert.match(resolver, /\$nodeExit -ne 0 -or \$resolvedRows\.Count -ne 1/);
     assert.match(resolver, /\$canonicalPath\.Length -gt 4096/);
@@ -220,14 +287,14 @@ if (@(Get-BaseMissingComponents).Count -ne 0) { throw 'Ready base checks reporte
       fs.symlinkSync(path.dirname(targetDir), aliasDir, "junction");
       const aliasFile = path.join(aliasDir, "bin", "icx-cl.exe");
       const missingFile = path.join(aliasDir, "bin", "missing.exe");
-      const expected = fs.realpathSync(targetFile);
-      const expectedLibraryDir = path.dirname(fs.realpathSync(runtimeLibraryFile));
+      const expected = fs.realpathSync.native(targetFile);
+      const expectedLibraryDir = path.dirname(fs.realpathSync.native(runtimeLibraryFile));
       /** @param {string} value */
       const psQuote = value => `'${value.replace(/'/g, "''")}'`;
       const script = `
 $ErrorActionPreference = 'Stop'
 $tokens = $null; $parseErrors = $null
-$ast = [System.Management.Automation.Language.Parser]::ParseFile(${psQuote(path.join(root, ".github/workflows/scripts/prepare-native-windows-ci.ps1"))}, [ref]$tokens, [ref]$parseErrors)
+$ast = [System.Management.Automation.Language.Parser]::ParseFile(${psQuote(path.join(root, "scripts/native-windows-tools.ps1"))}, [ref]$tokens, [ref]$parseErrors)
 if ($parseErrors.Count) { throw ('Windows CI helper parse failed: ' + (($parseErrors | ForEach-Object { $_.Message }) -join '; ')) }
 $resolver = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Resolve-RequiredFile' }, $true)
 $compilerFunction = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-OneApiCompiler' }, $true)
@@ -291,7 +358,7 @@ if (-not $redirectRejected -or $env:LIB -cne $beforeRedirect) {
 }
 `;
       const result = spawnSync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], {
-        encoding: "utf8", timeout: 15000, windowsHide: true
+        encoding: "utf8", timeout: 30000, windowsHide: true
       });
       assert.equal(result.error, undefined, result.error?.message);
       assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);

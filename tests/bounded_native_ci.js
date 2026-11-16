@@ -21,7 +21,7 @@ describe("Native CI memory containment", () => {
     const workflow = fs.readFileSync(path.join(repo, ".github/workflows/build-release-artifacts.yml"), "utf8"),
       sourceJob = workflow.split("  source-quality:\n")[1]?.split("  windows-script-quality:\n")[0] || "",
       packages = sourceJob.match(/sudo apt-get install[^\n]+/)?.[0].split(/\s+/) || [];
-    for (const dependency of ["patchelf", "libboost-dev", "libuv1-dev", "libssl-dev", "strace", "unzip"]) {
+    for (const dependency of ["cmake", "ninja-build", "patchelf", "libboost-dev", "libuv1-dev", "libssl-dev", "strace", "unzip"]) {
       assert.ok(packages.includes(dependency), `${dependency} is required by the offline native fixtures`);
     }
     assert.ok(sourceJob.indexOf("sudo apt-get install") < sourceJob.indexOf("npm test -- host"));
@@ -81,6 +81,7 @@ describe("Native CI memory containment", () => {
 
     const prerequisites = fs.readFileSync(path.join(repo, ".github/workflows/build-native-prerequisites.yml"), "utf8"),
       linuxComponent = fs.readFileSync(path.join(repo, ".github/workflows/build-linux-native-component.yml"), "utf8"),
+      linuxLlvm = fs.readFileSync(path.join(repo, ".github/workflows/build-linux-llvm-job.yml"), "utf8"),
       windowsGpu = fs.readFileSync(path.join(repo, ".github/workflows/build-windows-gpu-job.yml"), "utf8"),
       windowsLlvm = fs.readFileSync(path.join(repo, ".github/workflows/build-windows-llvm-job.yml"), "utf8"),
       windowsJit = fs.readFileSync(path.join(repo, ".github/workflows/build-windows-jit-job.yml"), "utf8"),
@@ -95,19 +96,30 @@ describe("Native CI memory containment", () => {
     const stageJobs = [["build-linux-cuda-images", "cuda-images-linux"], ["support-linux-source-jit", "linux-jit-support"],
       ["targets-linux-source-jit", "linux-jit-targets"], ["frontend-linux-source-jit", "linux-jit-frontend"],
       ["link-linux-source-jit", "linux-jit-link"], ["build-linux-static-dpcpp-sdk", "linux-jit-static-dpcpp"],
-      ["build-llvm-targets", "llvm-targets"], ["build-clang-base", "clang-base"], ["build-clang-sema", "clang-sema"],
-      ["build-clang-frontend", "clang-frontend"], ["build-lld", "lld"], ["build-tools", "tools"],
+      ["build-llvm-common", "llvm-common"], ["build-llvm-core-codegen", "llvm-core-codegen"],
+      ["build-llvm-backends-clang", "llvm-backends-clang"],
+      ["build-clang-frontend", "clang-frontend"],
       ["build-linux-rocm-host-sdk", "rocm-host-sdk"], ["build-linux-hermes-sdk", "hermes-sdk"],
       ["build-linux-openmp-sdk", "openmp-sdk"], ["build-linux-io-openssl-sdk", "io-openssl"],
       ["build-linux-zstd-sdk", "zstd-sdk"], ["prepare-linux-jit-resources", "linux-jit-resources"],
       ["configure-linux-sdk", "configure"], ["verify-linux-nvrtc", "nvrtc-linux"]];
-    for (const [jobId, stage] of stageJobs) {
+    for (const [jobId = "", stage = ""] of stageJobs) {
       const marker = `\n  ${jobId}:`, start = prerequisites.indexOf(marker), remaining = prerequisites.slice(start + marker.length),
         next = /\n\x20{2}[a-z0-9-]+:\n/.exec(remaining), job = start >= 0 ? prerequisites.slice(start,
           next ? start + marker.length + next.index : undefined) : "";
-      assert.match(job, /timeout-minutes: 60/, jobId + " retains its one-hour job limit");
-      assert.ok(job.includes(`scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage ${stage}`), stage);
+      if (jobId.startsWith("build-llvm-") || jobId.startsWith("build-clang-") || jobId === "build-lld" || jobId === "build-tools") {
+        assert.match(job, /uses: \.\/\.github\/workflows\/build-linux-llvm-job\.yml/);
+        assert.ok(job.includes(`stage: ${stage}`), stage);
+      } else {
+        assert.match(job, /timeout-minutes: 60/, jobId + " retains its one-hour job limit");
+        assert.ok(job.includes(`scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage ${stage}`), stage);
+      }
     }
+    assert.ok(linuxLlvm.includes("timeout-minutes: " + String.fromCharCode(36) +
+      "{{ inputs.stage == 'llvm-common' && 30 || inputs.stage == 'llvm-backends-clang' && 30 || 60 }}"),
+    "merged common and backend/Clang groups have 30-minute limits; other chunks stay within one hour");
+    assert.match(linuxLlvm, /scripts\/run-bounded-native-ci\.sh node scripts\/prepare-native-ci\.js stage/);
+    assert.match(prerequisites, /run: scripts\/run-bounded-native-ci\.sh node scripts\/prepare-native-ci\.js stage install-audit/);
     assert.match(linuxComponent, /timeout-minutes: 50\n\s+env:[\s\S]*?run: scripts\/run-bounded-native-ci\.sh node scripts\/prepare-native-ci\.js stage linux-native-component/);
     assert.match(windowsLlvm, /timeout-minutes: 45\n\s+env:[\s\S]*?run: scripts\/run-bounded-native-ci\.sh node scripts\/run-native-windows-llvm-ci\.js/);
     assert.match(windowsJit, /timeout-minutes: 45[\s\S]*?exec scripts\/run-bounded-native-ci\.sh node scripts\/run-native-windows-jit-ci\.js/);

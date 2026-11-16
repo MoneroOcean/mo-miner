@@ -190,6 +190,7 @@ describe("Native Windows support command CLI", () => {
   });
 
   test("the real CLI fails closed on unsupported hosts without output", t => {
+    if (process.platform === "win32" && process.arch === "x64") {t.skip("Windows x64 is a supported host"); return;}
     const f = fixture(t), files = cliFiles(f), cli = path.resolve(__dirname, "../scripts/build-local-native-windows-support-command.js"),
       result = spawnSync(process.execPath, [cli, "--run", files.inputFile, files.outputFile], {input: JSON.stringify(files.tools), encoding: "utf8"});
     assert.equal(result.status, 1); assert.match(result.stderr, /requires Windows x64/); assert.equal(fs.existsSync(files.outputFile), false);

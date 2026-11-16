@@ -1,6 +1,7 @@
 param(
   [ValidateSet('all','intel','intel_igpu','nvidia','amd','opencl')][string]$Backend = 'all',
   [ValidateSet('all','oneapi','dpcpp','portable','adaptivecpp')][string]$Compiler = 'all',
+  [ValidateSet('all','cpu','portable')][string]$Scope = 'all',
   [string]$DpcppDir = $(if ($env:MOM_DPCPP_DIR) { $env:MOM_DPCPP_DIR } else { 'C:\Tools\dpcpp' }),
   [string]$AcppCudaDir = 'C:\Tools\acpp-cuda',
   [string]$AcppHipDir = 'C:\Tools\acpp-amd',
@@ -25,6 +26,9 @@ $supportedCompilers = switch ($Backend) {
 if ($Compiler -notin $supportedCompilers) {
   throw "Compiler '$Compiler' is not available for backend '$Backend'."
 }
+if ($Scope -ne 'all' -and ($Backend -ne 'all' -or $Compiler -ne 'all')) {
+  throw "Scope '$Scope' cannot be combined with a targeted Backend or Compiler."
+}
 $platformRoot = Join-Path $repo 'build'
 $platformsHold = Join-Path $repo 'build-platforms-hold'
 $completedBuild = Join-Path $repo 'build-windows-completed'
@@ -47,10 +51,10 @@ $CudaPath = Resolve-RepoPath $CudaPath
 
 # Check the required CUDA SDK before staging or compiling unrelated workers. Intel and portable-only
 # builds deliberately do not depend on CUDA, even when an inherited CUDA_PATH is stale.
-if ($Backend -in @('all','nvidia') -and $Compiler -in @('all','dpcpp','adaptivecpp')) {
+if ($Scope -eq 'all' -and $Backend -in @('all','nvidia') -and $Compiler -in @('all','dpcpp','adaptivecpp')) {
   Assert-MomCudaCompilerSdk $CudaPath
 }
-if ($Backend -eq 'all' -and -not (Test-MomDpcppToolchain $DpcppDir)) {
+if ($Scope -ne 'cpu' -and $Backend -eq 'all' -and -not (Test-MomDpcppToolchain $DpcppDir)) {
   throw "DPC++ release toolchain is incomplete at '$DpcppDir'. Run scripts\install-dev.bat -Component dpcpp to restore the matched runtime and adapters."
 }
 
@@ -74,16 +78,23 @@ function Save-Compiler(
   [string]$ToolchainDir = '',
   [string]$RuntimeToolsDir = '',
   [string]$DeviceLibDir = '',
-  [string]$SyclDll = 'build\Release\sycl.dll'
+  [string]$SyclDll = 'build\Release\sycl.dll',
+  [switch]$RuntimeOnly
 ) {
   $dest = Join-Path $out $Name
-  Assert-MomBuildArtifactPath (Join-Path $repo 'build\Release\mom.node') $platformRoot
   Assert-MomBuildArtifactPath (Resolve-RepoPath $SyclDll) $platformRoot
+  if (-not $RuntimeOnly) {
+    Assert-MomBuildArtifactPath (Join-Path $repo 'build\Release\mom.node') $platformRoot
+  }
   Assert-MomBuildOutputTree $dest $platformRoot
   if (Test-Path -LiteralPath $dest) {
     Remove-Item -LiteralPath $dest -Recurse -Force
   }
   New-Item -ItemType Directory -Force $dest | Out-Null
+  if ($RuntimeOnly) {
+    Copy-Item $SyclDll $dest -Force
+    return
+  }
   Copy-Item build\Release\mom.node, $SyclDll $dest -Force
   if ($ToolchainDir) {
     # Snapshot the production accelerator and required host backend, not the entire installation.
@@ -218,14 +229,17 @@ try {
   # Backend=all, Compiler=all and start from an empty compiler tree, so stale workers cannot enter
   # artifacts. run.sh normally requests one passed-through vendor and must preserve the other cached
   # workers instead of turning build/win into a single-vendor tree.
-  if ($Compiler -eq 'all' -and $Backend -eq 'all' -and (Test-Path -LiteralPath $out)) {
+  if ($Scope -eq 'all' -and $Compiler -eq 'all' -and $Backend -eq 'all' -and
+      (Test-Path -LiteralPath $out)) {
     Remove-Item -LiteralPath $out -Recurse -Force
   }
   # node-gyp requires this temporary top-level build directory. The finally block publishes the
   # complete PE tree as build/win and restores build/lin untouched, even when compilation fails.
 
-  & "$PSScriptRoot\build-windows.ps1"
-  if ($Backend -in @('all','intel')) {
+  if ($Scope -ne 'portable') {
+    & "$PSScriptRoot\build-windows.ps1"
+  }
+  if ($Scope -eq 'all' -and $Backend -in @('all','intel')) {
     if ($Compiler -in @('all','oneapi')) {
       Save-Compiler oneapi
       $oneApiDest = Join-Path $out 'oneapi'
@@ -261,15 +275,24 @@ try {
   # The same standards-only SPIR-V image serves generic OpenCL on every vendor and Level Zero on
   # Intel integrated GPUs. Keep it in targeted vendor builds so any config can select a portable
   # backend without first rebuilding under MOM_GPU_BACKEND=opencl.
-  if ($Backend -in @('all','intel','intel_igpu','nvidia','amd','opencl') -and $Compiler -in @('all','portable')) {
+  # `portable` is the bounded portable-runtime producer, not an all-GPU build.
+  if ($Scope -eq 'portable' -or ($Scope -eq 'all' -and
+      $Backend -in @('all','intel','intel_igpu','nvidia','amd','opencl') -and $Compiler -in @('all','portable'))) {
     & "$PSScriptRoot\build-sycl-cuda-win.ps1" -ToolchainDir $DpcppDir -CudaPath '' -PortableOpencl -OutDir 'build\.incremental\sycl-dpcpp-portable'
-    Save-Compiler dpcpp-opencl -SyclDll 'build\.incremental\sycl-dpcpp-portable\sycl.dll'
+    if ($Scope -eq 'portable') {
+      Save-Compiler dpcpp-opencl -SyclDll 'build\.incremental\sycl-dpcpp-portable\sycl.dll' -RuntimeOnly
+    } else {
+      Save-Compiler dpcpp-opencl -SyclDll 'build\.incremental\sycl-dpcpp-portable\sycl.dll'
+    }
     # Keep this compiler-matched source runtime local; a targeted portable rebuild must not
     # overwrite a preserved CUDA worker's cohort. Packaging replaces it with the release cohort.
     Save-DpcppRuntime -Name dpcpp-opencl
+    if ($Scope -eq 'portable' -and (Test-Path (Join-Path $out 'dpcpp-opencl\mom.node'))) {
+      throw 'The portable-only scope must not publish a mom.node.'
+    }
   }
 
-  if ($Backend -in @('all','nvidia') -and $Compiler -in @('all','dpcpp')) {
+  if ($Scope -eq 'all' -and $Backend -in @('all','nvidia') -and $Compiler -in @('all','dpcpp')) {
     . (Join-Path $repo 'scripts\install-cutlass.ps1')
     Install-MomCutlass $cutlassRoot
     & "$PSScriptRoot\build-sycl-cuda-win.ps1" -ToolchainDir $DpcppDir -CudaPath $CudaPath -RequireCuda -OutDir 'build\.incremental\sycl-dpcpp-cuda'
@@ -282,24 +305,29 @@ try {
     Save-DpcppRuntime
 
   }
-  if ($Backend -in @('all','nvidia') -and $Compiler -in @('all','adaptivecpp')) {
+  if ($Scope -eq 'all' -and $Backend -in @('all','nvidia') -and $Compiler -in @('all','adaptivecpp')) {
     & "$PSScriptRoot\build-sycl-adaptivecpp-win.ps1" -ToolchainDir $AcppCudaDir -Backend cuda -CudaPath $CudaPath -OutDir 'build\.incremental\sycl-acpp-cuda'
     Save-Compiler acpp-cuda $AcppCudaDir -SyclDll 'build\.incremental\sycl-acpp-cuda\sycl.dll'
   }
 
-  if ($Backend -in @('all','amd') -and $Compiler -in @('all','adaptivecpp')) {
+  if ($Scope -eq 'all' -and $Backend -in @('all','amd') -and $Compiler -in @('all','adaptivecpp')) {
     $amdDeviceLib = Get-MomHipDeviceLib $HipPath
     if (-not $amdDeviceLib) { throw "ROCm device libraries not found under $HipPath" }
     & "$PSScriptRoot\build-sycl-adaptivecpp-win.ps1" -ToolchainDir $AcppHipDir -Backend hip -HipPath $HipPath -OutDir 'build\.incremental\sycl-acpp-hip'
     Save-Compiler acpp-hip $AcppHipDir (Join-Path $HipPath 'bin') (Split-Path -Parent $amdDeviceLib) -SyclDll 'build\.incremental\sycl-acpp-hip\sycl.dll'
   }
 
-  Write-Host 'Built Windows compiler workers:'
-  Get-ChildItem $out -Directory | ForEach-Object {
-    $compilerDir = $_
-    $bytes = (Get-ChildItem -LiteralPath $compilerDir.FullName -File -Recurse |
-      Measure-Object -Property Length -Sum).Sum
-    Write-Host ("  {0}: {1:N1} MB" -f $compilerDir.Name, ($bytes / 1MB))
+  if ($Scope -eq 'cpu' -and -not (Test-Path -LiteralPath (Join-Path $repo 'build\Release\mom.node') -PathType Leaf)) {
+    throw 'The CPU-only scope did not produce build\Release\mom.node.'
+  }
+  if ($Scope -ne 'cpu') {
+    Write-Host 'Built Windows compiler workers:'
+    Get-ChildItem $out -Directory | ForEach-Object {
+      $compilerDir = $_
+      $bytes = (Get-ChildItem -LiteralPath $compilerDir.FullName -File -Recurse |
+        Measure-Object -Property Length -Sum).Sum
+      Write-Host ("  {0}: {1:N1} MB" -f $compilerDir.Name, ($bytes / 1MB))
+    }
   }
 } finally {
   if (Test-Path $platformRoot) { Move-Item $platformRoot $completedBuild }

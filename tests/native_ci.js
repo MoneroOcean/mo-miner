@@ -5268,7 +5268,7 @@ test.describe("Windows host-SDK source/composition CI", () => {
       assert.match(job, /run_deadline_epoch: \$\{\{ needs\.windows-llvm-configure\.outputs\.run_deadline_epoch \}\}/);
     }
     assert.doesNotMatch(windowsLlvmWorkflow, /actions\/cache|actions: write|contents: write/);
-    assert.ok(windowsLlvmWorkflow.includes("timeout-minutes: " + String.fromCharCode(36) + "{{ inputs.phase == 'llvm-mid' && 30 || 60 }}"));
+    assert.ok(windowsLlvmWorkflow.includes("timeout-minutes: 60"));
     const jobEnv = windowsLlvmWorkflow.slice(windowsLlvmWorkflow.indexOf("    env:"), windowsLlvmWorkflow.indexOf("    outputs:", windowsLlvmWorkflow.indexOf("    env:")));
     assert.doesNotMatch(jobEnv, /\$\{\{ runner\./, "runner context is unavailable in job-level env");
     assert.match(windowsLlvmWorkflow, /MOM_NATIVE_WINDOWS_LLVM_DESCRIPTOR_DIR=\$RUNNER_TEMP\/mom-native-windows-llvm21-descriptor-\$\{GITHUB_RUN_ID\}-\$\{GITHUB_RUN_ATTEMPT\}/);
