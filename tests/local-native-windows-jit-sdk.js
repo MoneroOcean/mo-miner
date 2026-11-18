@@ -50,6 +50,8 @@ function fixture(t, options = {}) {
     toolManifest: {version: 1, tools: manifestTools}, tools};
   let admissionCount = 0;
   const dependencies = {
+    // Fixtures assert the local default; a CI job's own MOM_BUILD_JOBS must not leak in.
+    environment: {MOM_BUILD_JOBS: "2"},
     verifyScope() {calls.push({name: "scope", args: []});},
     resolveTools() {calls.push({name: "tools", args: []}); return tools;},
     admitInputs() {
@@ -151,6 +153,15 @@ describe("Local Windows JIT SDK coordinator", {skip: process.platform !== "linux
     assert.equal(fs.existsSync(path.join(f.paths.output, "result.json")), true);
     assert.equal(Object.hasOwn(second, "runAttempt"), false);
     assert.deepEqual(fs.readdirSync(f.paths.root).sort(), ["config.json", "descriptor.json", "compiler-sdk", "isolation", "llvm-tools.json", "provenance.json", "toolchain"].sort());
+  });
+
+  test("warm admission keeps the job count recorded by an earlier MOM_BUILD_JOBS selection", async t => {
+    const f = fixture(t);
+    await buildLocal(f.input, {...f.dependencies, environment: {MOM_BUILD_JOBS: "3"}});
+    const before = f.calls.length, second = await buildLocal(f.input, {...f.dependencies, environment: {MOM_BUILD_JOBS: "5"}});
+    assert.equal(readBuildJson(f.paths.config).jobs, 3, "the recorded config is not rewritten");
+    assert.equal(second.reused, true); assert.equal(second.jobs, 5);
+    assert.deepEqual(f.calls.slice(before).filter(call => ["phase", "prepare", "isolate"].includes(call.name)), []);
   });
 
   test("preserves unknown, partial, changed-input, and stale-result state", async t => {

@@ -54,10 +54,10 @@ function workerFixture(t, options = {}) {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "mom-local-windows-command-")), f = fixture(base), previousEsbuild = process.env["ESBUILD_BINARY_PATH"];
   t.after(() => {fs.rmSync(base, {recursive: true, force: true}); if (previousEsbuild === undefined) {delete process.env["ESBUILD_BINARY_PATH"];} else {process.env["ESBUILD_BINARY_PATH"] = previousEsbuild;}});
   const env = {MOM_NATIVE_BUILD_LOCK: "1", MOM_RELEASE_VERSION: "1.2.3", ONEAPI_ROOT: oneApiRoot,
-      MOM_NATIVE_PERL_ROOT: nativePerlRoot}, node = {root: "/fixture/wsl-node", binary: "/fixture/esbuild",
+      MOM_NATIVE_PERL_ROOT: nativePerlRoot, MOM_BUILD_JOBS: "3"}, node = {root: "/fixture/wsl-node", binary: "/fixture/esbuild",
       sha256: "3".repeat(64), version: "0.28.1", reused: false}, linuxSdk = {workspace: f.workspace,
       compilerFetch: f.paths.compilerFetch, compilerSources: f.paths.compilerSources, buildInputs: f.paths.buildInputs,
-      llvmSdk: f.paths.llvmSdk, jobs: 2}, prerequisites = {workspace: f.workspace, paths: {hermesSource: f.sourceRoot}, source: linuxSdk, tools: f.tools};
+      llvmSdk: f.paths.llvmSdk, jobs: 3}, prerequisites = {workspace: f.workspace, paths: {hermesSource: f.sourceRoot}, source: linuxSdk, tools: f.tools};
   const dependencies = /** @type {any} */ ({
     platform: "linux", arch: "x64", observedNodeVersion: "v24.15.0", environment: env,
     verifyScope() {f.calls.push({name: "scope", args: []});}, verifyExt4() {f.calls.push({name: "ext4", args: []});},
@@ -66,7 +66,7 @@ function workerFixture(t, options = {}) {
     preflight(/** @type {any} */ input) {f.calls.push({name: "preflight", args: [input.tools.cc, input.environment["ESBUILD_BINARY_PATH"] || ""]}); return {tools: f.tools};},
     prepareNode(/** @type {string} */ root) {f.calls.push({name: "node", args: [root]}); return node;},
     buildPrerequisites(/** @type {any} */ input, /** @type {any} */ optionsArg) {
-      f.calls.push({name: "prerequisites", args: [input.workspace, input.jobs, optionsArg.environment["ESBUILD_BINARY_PATH"]]}); return prerequisites;
+      f.calls.push({name: "prerequisites", args: [input.workspace, optionsArg.environment["MOM_BUILD_JOBS"], optionsArg.environment["ESBUILD_BINARY_PATH"]]}); return prerequisites;
     },
     fileHash,
     packState(/** @type {string} */ archive) {fs.writeFileSync(archive, "tar fixture\n", {flag: "wx"}); f.calls.push({name: "pack", args: [archive]});},
@@ -136,12 +136,13 @@ describe("Local Windows release coordinator", () => {
     assert.equal(directories.has(roots.support), false); assert.equal(directories.has(roots.exports), false);
   });
 
-  test("frontdoor orders host preflight before the WSL launch and passes argv-only locked jobs=2 settings", () => {
-    const calls = /** @type {string[]} */ ([]), env = {SystemRoot: "C:\\Windows", MOM_RELEASE_VERSION: "1.2.3", MOM_FORCE_REBUILD: "yes"},
+  test("frontdoor orders host preflight before the WSL launch and passes argv-only locked MOM_BUILD_JOBS settings", () => {
+    const calls = /** @type {string[]} */ ([]), env = {SystemRoot: "C:\\Windows", MOM_RELEASE_VERSION: "1.2.3", MOM_FORCE_REBUILD: "yes",
+        MOM_BUILD_JOBS: "6"},
       checkout = "C:\\Users\\Fixture\\source\\mo-miner", run = {root: bridgeRunWindows, dev: 1, ino: 2}, result = command.launchLocalNativeWindowsRelease(env,
         (/** @type {string} */ executable, /** @type {string[]} */ args, /** @type {any} */ options) => {
           calls.push("spawn"); assert.equal(executable, "C:\\Windows\\System32\\wsl.exe");
-          assert.ok(args.includes("MOM_BUILD_JOBS=2")); assert.ok(args.includes("MOM_FORCE_REBUILD=yes"));
+          assert.ok(args.includes("MOM_BUILD_JOBS=6")); assert.ok(args.includes("OMP_NUM_THREADS=6")); assert.ok(args.includes("MOM_FORCE_REBUILD=yes"));
           assert.ok(args.includes("ONEAPI_ROOT=" + oneApiRoot));
           assert.ok(args.includes("MOM_NATIVE_PERL_ROOT=" + nativePerlRoot));
           assert.ok(args.includes("WSLENV=" + relayEnvironment));
@@ -199,7 +200,8 @@ describe("Local Windows release coordinator", () => {
     assert.ok(names.indexOf("scope") < names.indexOf("preflight")); assert.ok(names.indexOf("node") < names.indexOf("prerequisites"));
     assert.ok(names.indexOf("bridge") < names.indexOf("windows-sdk")); assert.ok(names.indexOf("windows-sdk") < names.indexOf("distribution"));
     assert.ok(names.indexOf("distribution") < names.indexOf("publish"));
-    assert.deepEqual(f.calls.find(row => row.name === "prerequisites")?.args, [f.workspace, 2, "/fixture/esbuild"]);
+    assert.deepEqual(f.calls.find(row => row.name === "prerequisites")?.args, [f.workspace, "3", "/fixture/esbuild"]);
+    assert.equal(f.calls.find(row => row.name === "distribution")?.args[2], "3");
     const sdk = f.calls.find(row => row.name === "windows-sdk");
     assert.deepEqual(sdk?.args, [f.workspace, f.tools.cc, id, path.join(path.dirname(f.coreArchive), path.basename(f.coreArchive))]);
     assert.equal(fs.existsSync(path.join(f.workspace, "windows-release-work")), false);

@@ -35,7 +35,7 @@ function graphBuilders(workspace) {
       assert.equal(options?.workspace, workspace);
       return {workspace, compilerFetch: paths.compilerFetch, compilerSources: paths.compilerSources,
         buildInputs: paths.buildInputs, llvmSdk: paths.llvmSdk, sourcesReused: false, llvmReused: false,
-        llvmResumed: false, jobs: 2, memoryMax: "4G"};
+        llvmResumed: false, jobs: 2, memoryMax: 4 * 1024 ** 3};
     },
     compilerInputs(source) {
       order.push("compiler-inputs"); assert.equal(source.workspace, workspace);
@@ -251,7 +251,7 @@ test.describe("Local Linux SDK frontdoor", {skip: process.platform !== "linux" |
     const run = (command, args, settings) => {
       const split = args.indexOf("--"), child = split < 0 ? args : args.slice(split + 1);
       calls.push(settings.label);
-      assert.equal(command, tools.systemdRun); assert.ok(args.includes("--property=MemoryMax=4G"));
+      assert.equal(command, tools.systemdRun); assert.ok(args.includes("--property=MemoryMax=" + local.localMemoryMax(settings.env)));
       assert.ok(args.includes("--property=MemorySwapMax=0")); assert.equal(child[0], process.execPath);
       if (settings.label === "Linux JIT resource tree producer") {
         assert.deepEqual(child.slice(1), [path.join(repo, "scripts/build-local-native-sdk.js"), "--local-jit-resources", "build", f.workspace,

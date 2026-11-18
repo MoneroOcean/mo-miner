@@ -14,7 +14,7 @@ const local = require("./build-local-native-sdk"), localRocm = require("./build-
   windowsAcpp = require("./build-native-windows-acpp-sdk"), windowsCudart = require("./prepare-native-cudart-windows"),
   windowsAmdhip = require("./prepare-native-amdhip-windows"), hostComponent = require("./native-windows-host-component");
 const {fileHash, readBuildJson} = require("./build-source-inputs");
-const repo = fs.realpathSync(path.resolve(__dirname, "..")), jobs = 2,
+const repo = fs.realpathSync(path.resolve(__dirname, "..")),
   localId = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i,
   digest = /^[a-f0-9]{64}$/;
 
@@ -212,8 +212,9 @@ function admitWorkspaceInputs(workspace, tools, env, dependencies) {
   return {support, linux, rocmContext, rocmState, hipHeaders, rocmAdmission, dpcppState, dpcppManifest, dpcpp, rocmResult, acppPaths, acppSource};
 }
 
-/** @param {any} result @param {ReturnType<typeof localWindowsLlvm.localWindowsLlvmSdkPaths>} paths @param {string} workspace */
-function validateWindowsLlvmResult(result, paths, workspace) {
+/** @param {any} result @param {ReturnType<typeof localWindowsLlvm.localWindowsLlvmSdkPaths>} paths @param {string} workspace
+ * @param {number} jobs */
+function validateWindowsLlvmResult(result, paths, workspace, jobs) {
   if (!result || result.workspace !== workspace || result.root !== paths.root || result.output !== paths.output || result.descriptor !== paths.descriptor ||
       result.provenance !== paths.provenance || result.jobs !== jobs || result.buildOnly !== true || result.compiled !== true ||
       result.executed !== false || result.publicationQualified !== false || !localId.test(result.admission?.admission?.generationId || "")) {
@@ -276,6 +277,7 @@ async function buildLocalNativeWindowsHostComponent(input, dependencies = {}) {
   }
 
   const workspace = (dependencies.admitWorkspace || local.admitWorkspace)(input.workspace, repo),
+    jobs = local.localBuildJobs({...process.env, ...(dependencies.environment || {})}),
     environment = {...process.env, ...(dependencies.environment || {}), MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: String(jobs)},
     selectedTools = (dependencies.resolveTools || local.localTools)(environment);
   if (workspace !== input.workspace || !isDeepStrictEqual(tools, selectedTools)) {
@@ -294,7 +296,7 @@ async function buildLocalNativeWindowsHostComponent(input, dependencies = {}) {
   const before = admitWorkspaceInputs(workspace, tools, environment, dependencies), windowsLlvmPaths = localWindowsLlvm.localWindowsLlvmSdkPaths(workspace),
     buildWindowsLlvm = dependencies.buildWindowsLlvm || localWindowsLlvm.buildLocalNativeWindowsLlvmSdk,
     makeLlvmInput = () => ({workspace, windowsHostSdk: hostSdk, hermes, tools}),
-    llvmResult = validateWindowsLlvmResult(buildWindowsLlvm(makeLlvmInput(), {environment}), windowsLlvmPaths, workspace),
+    llvmResult = validateWindowsLlvmResult(buildWindowsLlvm(makeLlvmInput(), {environment}), windowsLlvmPaths, workspace, jobs),
     composeResourcesConfig = dependencies.composeResourcesConfig || ciRocm.rocmResourcesConfig,
     resourcesConfig = composeResourcesConfig({source: before.rocmContext.paths.source, llvmSdk: before.linux.sdk.path,
       hipIncludeRoot: before.rocmState.hipIncludeRoot}, {cc: tools.cc, cxx: tools.cxx, cmake: tools.cmake}, "win32");
@@ -385,7 +387,7 @@ async function buildLocalNativeWindowsHostComponent(input, dependencies = {}) {
   }
 
   const after = admitWorkspaceInputs(workspace, tools, environment, dependencies),
-    finalLlvm = validateWindowsLlvmResult(buildWindowsLlvm(makeLlvmInput(), {environment}), windowsLlvmPaths, workspace);
+    finalLlvm = validateWindowsLlvmResult(buildWindowsLlvm(makeLlvmInput(), {environment}), windowsLlvmPaths, workspace, jobs);
   if (!isDeepStrictEqual(before.linux, after.linux) || !isDeepStrictEqual(before.hipHeaders, after.hipHeaders) ||
       !isDeepStrictEqual(before.rocmAdmission.comgr, after.rocmAdmission.comgr) ||
       !isDeepStrictEqual(before.rocmAdmission.receipt, after.rocmAdmission.receipt) ||
@@ -410,4 +412,4 @@ async function buildLocalNativeWindowsHostComponent(input, dependencies = {}) {
 }
 
 module.exports = {localWindowsHostComponentPaths, checkManagedRoot, prepareLocalHiprtcSource, verifyLocalHiprtcSource,
-  downloadWindowsCudart, admitWorkspaceInputs, buildLocalNativeWindowsHostComponent, jobs};
+  downloadWindowsCudart, admitWorkspaceInputs, buildLocalNativeWindowsHostComponent};

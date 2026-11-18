@@ -35,6 +35,8 @@ function fixture(t) {
   fs.mkdirSync(path.dirname(targetLlvm.root), {recursive: true});
   let amdhipBuildId = /** @type {string | undefined} */ (undefined);
   const dependencies = /** @type {Parameters<typeof buildLocalNativeWindowsHostComponent>[1]} */ ({
+    // Fixtures assert the local default; a CI job's own MOM_BUILD_JOBS must not leak in.
+    environment: {MOM_BUILD_JOBS: "2"},
     verifyScope() {calls.push("scope");},
     resolveTools() {calls.push("tools"); return tools;},
     readWindowsHostSdk(root, selectedPins) {calls.push("host-sdk"); assert.equal(root, sdkRoot); assert.deepEqual(selectedPins, pins); return /** @type {any} */ ({root, pins});},

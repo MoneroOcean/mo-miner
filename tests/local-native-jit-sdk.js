@@ -55,7 +55,7 @@ test.describe("Local Linux JIT SDK build and admission", {skip: process.platform
     assert.equal(paths.configFile, path.join(f.workspace, "compiler-sdk.json"));
     assert.equal(paths.staticComponent, paths.staticOutput + ".component");
 
-    const tools = fakeTools(f.root), config = localJitSdkConfig(selected, tools);
+    const tools = fakeTools(f.root), config = localJitSdkConfig(selected, tools, 2);
     assert.deepEqual(config, {version: 1, target: "linux", sources: path.join(f.workspace, "compiler-sources/sources.json"),
       sdk: path.join(f.workspace, "dpcpp-cuda-inputs/dpcpp"), resources: path.join(f.workspace, "linux-jit-resources/resources"),
       tools: {cmake: tools.cmake, ninja: tools.ninja, cc: tools.cc, cxx: tools.cxx}, jobs: 2});
@@ -113,7 +113,7 @@ test.describe("Local Linux JIT SDK build and admission", {skip: process.platform
       calls.push({command, args, options});
       assert.equal(command, tools.systemdRun);
       assert.ok(args.includes("--scope")); assert.ok(args.includes("--quiet"));
-      assert.ok(args.includes("--property=MemoryMax=" + local.memoryMax));
+      assert.ok(args.includes("--property=MemoryMax=" + local.localMemoryMax(options.env)));
       assert.ok(args.includes("--property=MemorySwapMax=0"));
       assert.equal(options.env["MOM_AOT_BUILD_ONLY"], "1");
       const child = args.slice(args.indexOf("--") + 1);
@@ -155,6 +155,21 @@ test.describe("Local Linux JIT SDK build and admission", {skip: process.platform
     buildLocalLinuxJitSdk(f.context, {tools, run, environment});
     assert.equal(proofs, 2);
     assert.deepEqual(calls.map(row => row.options.label), ["systemd memory-limit preflight", "Local Linux JIT SDK build-only slice"]);
+  });
+
+  test("a warm compiler config keeps its recorded job count while other config edits are rejected", t => {
+    const f = fixture(t), tools = fakeTools(f.root), paths = localJitSdkPaths(f.workspace),
+      recorded = localJitSdkConfig(localJitSdkContext(f.context), tools, 3);
+    fs.writeFileSync(paths.configFile, JSON.stringify(recorded, null, 2) + "\n", {mode: 0o600});
+    /** @type {string[]} */ const labels = [];
+    const dependencies = {verifyScope() {return undefined;}, auditInputs() {return undefined;},
+      /** @type {typeof local.runCommand} */ run(_command, _args, options) {labels.push(options.label); throw new Error("stop after admission");}};
+    assert.throws(() => runLocalJitSdkChild(f.context, tools, dependencies), /stop after admission/);
+    assert.deepEqual(labels, ["Local JIT SDK configure"]);
+    assert.deepEqual(JSON.parse(fs.readFileSync(paths.configFile, "utf8")), recorded, "recorded parallelism is not rewritten");
+    fs.writeFileSync(paths.configFile, JSON.stringify({...recorded, tools: {...recorded.tools, cc: tools.cxx}}, null, 2) + "\n");
+    assert.throws(() => runLocalJitSdkChild(f.context, tools, dependencies), /Local JIT SDK config changed/);
+    assert.deepEqual(labels, ["Local JIT SDK configure"]);
   });
 
   test("the heavy internal entry rejects a missing scope before auditing or writing", t => {

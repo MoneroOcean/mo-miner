@@ -84,8 +84,8 @@ function writeOrVerifyDescriptor(file, config) {
 /** Build the common local source/tool prerequisites for Linux or Windows assembly.
  * Only Linux assembly needs its own static runtime/source-JIT SDK; Windows builds
  * use the same Linux generators but produce the Windows-target runtime separately.
- * Whole-command entrypoints provide the verified aggregate 4 GiB/no-swap scope; standalone producers enforce their own.
- * @param {{workspace?:string,jobs?:number,linuxJit?:boolean}} [options]
+ * Whole-command entrypoints provide the verified aggregate MOM_BUILD_JOBS-sized no-swap scope; standalone producers enforce their own.
+ * @param {{workspace?:string,linuxJit?:boolean}} [options]
  * @param {{environment?:NodeJS.ProcessEnv,tools?:ReturnType<typeof local.localTools>,resolveTools?:typeof local.localTools,
  * supportTools?:ReturnType<typeof local.localSupportTools>,resolveSupportTools?:typeof local.localSupportTools,
  * installedRoots?:{dpcpp:string,cuda:string},nodeVersion?:string,run?:typeof local.runCommand,preflight?:typeof preflightLocalLinuxSdk,
@@ -110,8 +110,7 @@ function buildLocalNativePrerequisites(options = {}, dependencies = {}) {
     environment = (dependencies.ensureSysroot || local.ensureLocalLinuxSysroot)(root, ready.environment),
     common = {tools: ready.tools, environment, installedRoots: ready.installedRoots,
       ...(run ? {run} : {}), ...(dependencies.resolveTools ? {resolveTools: dependencies.resolveTools} : {})},
-    source = (builders.source || local.buildLocalNativeSdk)({workspace: root, ...(options.jobs === undefined ? {} : {jobs: options.jobs}),
-    }, common);
+    source = (builders.source || local.buildLocalNativeSdk)({workspace: root}, common);
   if (source.compilerFetch !== paths.compilerFetch || source.compilerSources !== paths.compilerSources ||
       source.buildInputs !== paths.buildInputs || source.llvmSdk !== paths.llvmSdk) {
     throw new Error("Source LLVM stage returned paths outside the admitted workspace");
@@ -171,7 +170,7 @@ function buildLocalNativePrerequisites(options = {}, dependencies = {}) {
 }
 
 /** Compose the complete Linux release SDK using the shared local prerequisite sequence.
- * @param {{workspace?:string,jobs?:number}} [options]
+ * @param {{workspace?:string}} [options]
  * @param {Parameters<typeof buildLocalNativePrerequisites>[1]} [dependencies] */
 function buildLocalLinuxSdk(options = {}, dependencies = {}) {
   const {workspace: root, paths, ready, source, compilerInputs, gnuHeaders, support, jitSdk, rocmSdk, cudaImages, acppSdk} =
@@ -207,22 +206,21 @@ function buildLocalLinuxSdk(options = {}, dependencies = {}) {
 
 /** @param {string[]} argv */
 function main(argv) {
-  let workspace, jobs;
+  let workspace;
   for (let index = 0; index < argv.length; index++) {
     if (argv[index] === "--workspace" && argv[index + 1]) {
       workspace = argv[++index];
-    } else if (argv[index] === "--jobs" && argv[index + 1]) {
-      jobs = Number(argv[++index]);
     } else if (argv[index] === "--help" || argv[index] === "-h") {
-      console.log("Usage: node scripts/build-local-native-linux-sdk.js [--workspace /absolute/path] [--jobs N]\n" +
+      console.log("Usage: node scripts/build-local-native-linux-sdk.js [--workspace /absolute/path]\n" +
         "Builds or re-admits the actual Linux source SDK graph and writes native-linux-sdk.json.\n" +
+        "MOM_BUILD_JOBS (1..16, default 2) selects build parallelism and sizes the memory scope.\n" +
         "Does not build Core/GPU factories or create a release archive.");
       return;
     } else {
       throw new Error("Unknown or incomplete local Linux SDK option: " + argv[index]);
     }
   }
-  const result = buildLocalLinuxSdk({...(workspace ? {workspace} : {}), ...(jobs === undefined ? {} : {jobs})});
+  const result = buildLocalLinuxSdk(workspace ? {workspace} : {});
   console.log(`[native-sdk] Linux SDK descriptor admitted at ${result.configFile}; Core, GPU factories and release packaging were not run.`);
 }
 

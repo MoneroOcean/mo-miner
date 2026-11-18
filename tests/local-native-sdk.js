@@ -1,17 +1,18 @@
 "use strict";
 
-const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), path = require("node:path"),
+const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), path = require("node:path"), os = require("node:os"),
   {spawnSync} = require("node:child_process");
 const {buildLocalNativeSdk, buildLocalNativeSupportSdk, buildLocalCompilerInputs, buildLocalGnuHeaders, stageLocalCompilerInputs,
   prepareOrAdmitLinuxSources, prepareOrAdmitWindowsSources, main,
   buildLocalLinuxJitResources, localLinuxJitResourceState, runLocalJitResourceChild, localJitToolsReceipt,
-  workspaceOption, localDpcppCudaRoots, admitWorkspace, readConfigureState, cgroupMemoryPaths, verifyMemoryLimits, trustedSystemdRun, supportPaths, memoryMax, scopedInvoker} =
+  workspaceOption, localDpcppCudaRoots, admitWorkspace, readConfigureState, cgroupMemoryPaths, verifyMemoryLimits, trustedSystemdRun, supportPaths, scopedInvoker,
+  localBuildJobs, ciRecipeJobs, localMemoryMax, recordedParallelJobs} =
   require("../scripts/build-local-native-sdk");
 const {archiveName} = require("../scripts/native-llvm-sdk");
 const {sdkComponents} = require("../scripts/prepare-native-sdk-sources");
 const ciSupport = require("../scripts/native-ci-linux-support");
 
-const repo = fs.realpathSync(path.resolve(__dirname, "..")), node = process.execPath;
+const repo = fs.realpathSync(path.resolve(__dirname, "..")), node = process.execPath, gib = 1024 ** 3;
 
 /** @param {import("node:test").TestContext} t */
 function fixture(t) {
@@ -48,7 +49,7 @@ function mockRun(tools, options = {}) {
     const label = settings.label, child = args.includes("--") ? args.slice(args.indexOf("--") + 1) : args;
     calls.push({command, args, label});
     assert.equal(command, tools.systemdRun);
-    assert.ok(args.includes("--scope")); assert.ok(args.includes("--quiet")); assert.ok(args.includes("--property=MemoryMax=" + memoryMax));
+    assert.ok(args.includes("--scope")); assert.ok(args.includes("--quiet")); assert.ok(args.includes("--property=MemoryMax=" + localMemoryMax(settings.env)));
     assert.ok(args.includes("--property=MemorySwapMax=0")); assert.ok(!args.includes("--wait")); assert.equal(child[0], node);
     if (label === "systemd memory-limit preflight") {
       assert.equal(child[1], path.join(repo, "scripts/build-local-native-sdk.js"));
@@ -100,7 +101,7 @@ function mockSupportRun(tools, options = {}) {
     const split = args.indexOf("--"), child = split < 0 ? args : args.slice(split + 1);
     calls.push({label: settings.label, child});
     assert.equal(command, tools.systemdRun); assert.ok(args.includes("--scope")); assert.ok(args.includes("--quiet"));
-    assert.ok(args.includes("--property=MemoryMax=" + memoryMax)); assert.ok(args.includes("--property=MemorySwapMax=0"));
+    assert.ok(args.includes("--property=MemoryMax=" + localMemoryMax(settings.env))); assert.ok(args.includes("--property=MemorySwapMax=0"));
     assert.ok(!args.includes("--wait")); assert.equal(child[0], node); assert.equal(settings.env["MOM_AOT_BUILD_ONLY"], "1");
     if (settings.label === options.failLabel) {throw new Error(settings.label + " fixture failure");}
     const mkdir = (/** @type {string | undefined} */ output) => {if (output) {fs.mkdirSync(output, {recursive: true});}};
@@ -125,7 +126,7 @@ function mockJitRun(tools, options = {}) {
     const split = args.indexOf("--"), child = split < 0 ? args : args.slice(split + 1);
     calls.push({label: settings.label, child});
     assert.equal(command, tools.systemdRun); assert.ok(args.includes("--scope")); assert.ok(args.includes("--quiet"));
-    assert.ok(args.includes("--property=MemoryMax=" + memoryMax)); assert.ok(args.includes("--property=MemorySwapMax=0"));
+    assert.ok(args.includes("--property=MemoryMax=" + localMemoryMax(settings.env))); assert.ok(args.includes("--property=MemorySwapMax=0"));
     assert.ok(!args.includes("--wait")); assert.equal(child[0], node); assert.equal(settings.env["MOM_AOT_BUILD_ONLY"], "1");
     if (settings.label === options.failLabel) {throw new Error(settings.label + " fixture failure");}
     if (settings.label === "Linux JIT resource tree producer") {
@@ -158,10 +159,29 @@ test("checks cgroup-v2 limits and maps the current process into its mounted scop
     "31 22 0:30 /user.slice /sys/fs/cgroup rw - cgroup2 cgroup2 rw\n"), /outside the mounted/);
   assert.throws(() => cgroupMemoryPaths("0::/user.slice/../../system.slice\n",
     "31 22 0:30 / /sys/fs/cgroup rw - cgroup2 cgroup2 rw\n"), /not canonical/);
-  assert.doesNotThrow(() => verifyMemoryLimits(String(4 * 1024 ** 3), "0"));
-  assert.throws(() => verifyMemoryLimits("max", "0"), /memory.max <= 4 GiB/);
-  assert.throws(() => verifyMemoryLimits(String(4 * 1024 ** 3 + 1), "0"), /memory.max <= 4 GiB/);
-  assert.throws(() => verifyMemoryLimits("2147483648", "1"), /memory.max <= 4 GiB/);
+  assert.doesNotThrow(() => verifyMemoryLimits(String(4 * gib), "0", 4 * gib));
+  assert.throws(() => verifyMemoryLimits("max", "0", 4 * gib), /memory.max <= 4 GiB/);
+  assert.throws(() => verifyMemoryLimits(String(4 * gib + 1), "0", 4 * gib), /memory.max <= 4 GiB/);
+  assert.throws(() => verifyMemoryLimits("2147483648", "1", 4 * gib), /memory.max <= 4 GiB/);
+  assert.doesNotThrow(() => verifyMemoryLimits(String(46 * gib), "0", 46 * gib));
+});
+
+test("MOM_BUILD_JOBS selects local parallelism and sizes the aggregate memory scope", () => {
+  assert.equal(localBuildJobs({}), 2); assert.equal(localBuildJobs({MOM_BUILD_JOBS: ""}), 2);
+  assert.equal(localBuildJobs({MOM_BUILD_JOBS: "1"}), 1); assert.equal(localBuildJobs({MOM_BUILD_JOBS: "16"}), 16);
+  for (const value of ["0", "17", "08", "2.5", " 4", "four"]) {
+    assert.throws(() => localBuildJobs({MOM_BUILD_JOBS: value}), /MOM_BUILD_JOBS as an integer in 1\.\.16/);
+  }
+  assert.deepEqual([1, 2, 3, 4, 16].map(ciRecipeJobs), [2, 2, 2, 4, 4]);
+  assert.equal(localMemoryMax({}, 64 * gib), 4 * gib);
+  assert.equal(localMemoryMax({MOM_BUILD_JOBS: "1"}, 64 * gib), 4 * gib);
+  assert.equal(localMemoryMax({MOM_BUILD_JOBS: "3"}, 64 * gib), 7 * gib);
+  assert.equal(localMemoryMax({MOM_BUILD_JOBS: "16"}, 64 * gib), 46 * gib);
+  assert.throws(() => localMemoryMax({MOM_BUILD_JOBS: "16"}, 32 * gib), /MOM_BUILD_JOBS=16 needs a 46 GiB memory scope, but this host has 32\.0 GiB/);
+  assert.equal(recordedParallelJobs(["/usr/bin/cmake", "--build", "/b", "--parallel", "12", "--target", "x"]), 12);
+  for (const command of [undefined, ["/usr/bin/cmake", "--build", "/b"], ["--parallel"], ["--parallel", "0"]]) {
+    assert.throws(() => recordedParallelJobs(command), /does not record its build parallelism/);
+  }
 });
 
 test("shares stable --workspace parsing across explicit follow-up commands", () => {
@@ -265,11 +285,12 @@ test.describe("local Linux source/LLVM bootstrap slice", {skip: process.platform
 
   test("runs a fresh slice with the icpx alias intact and admits its completed output", t => {
     const f = fixture(t), tools = fakeTools(f.root), mocked = mockRun(tools);
-    const result = buildLocalNativeSdk({workspace: f.workspace, jobs: 1}, {tools, run: mocked.run, environment: {PATH: "/usr/bin"}});
+    const result = buildLocalNativeSdk({workspace: f.workspace}, {tools, run: mocked.run, environment: {PATH: "/usr/bin", MOM_BUILD_JOBS: "1"}});
     const configure = mocked.calls.find(row => row.label === "LLVM 21 configure");
     assert.ok(configure);
     const child = configure.args.slice(configure.args.indexOf("--") + 1);
     assert.equal(child[8], tools.cxx); assert.equal(path.basename(child[8] || ""), "icpx");
+    assert.equal(child[9], "1"); assert.equal(result.jobs, 1); assert.equal(result.memoryMax, 4 * gib);
     assert.equal(result.llvmResumed, false); assert.equal(result.llvmReused, false);
     assert.deepEqual(mocked.calls.filter(row => row.label.startsWith("LLVM 21 build phase ")).map(row => row.label),
       ["LLVM 21 build phase llvm-foundation", "LLVM 21 build phase tools"]);
@@ -353,9 +374,9 @@ test.describe("local Linux static support SDK bootstrap slice", {skip: process.p
   }
 
   /** @param {ReturnType<typeof fakeTools>} runner @param {ReturnType<typeof fakeSupportTools>} support
-   * @param {ReturnType<typeof mockSupportRun>} mocked @param {string[]} audits */
-  function dependencies(runner, support, mocked, audits) {
-    return {tools: runner, supportTools: support, run: mocked.run, environment: {PATH: "/usr/bin"},
+   * @param {ReturnType<typeof mockSupportRun>} mocked @param {string[]} audits @param {NodeJS.ProcessEnv} [environment] */
+  function dependencies(runner, support, mocked, audits, environment = {PATH: "/usr/bin"}) {
+    return {tools: runner, supportTools: support, run: mocked.run, environment,
       /** @param {unknown} _paths @param {unknown} _tools */ verifyIo(_paths, _tools) {audits.push("io-sdk");},
       /** @param {unknown} _paths @param {unknown} _tools */ verifyOpenSsl(_paths, _tools) {audits.push("openssl-sdk");},
       /** @param {string} kind */ auditSupport(kind) {audits.push(kind);}};
@@ -482,6 +503,26 @@ test.describe("local Linux static support SDK bootstrap slice", {skip: process.p
     assert.deepEqual(second.calls.filter(row => row.label.endsWith("SDK producer")), []);
     assert.equal(second.calls.some(row => row.label.includes("source fetch")), false);
     assert.deepEqual(second.calls.filter(row => row.label === "LLVM 21 source SDK re-admission").length, 1);
+  });
+
+  test("builds with the selected MOM_BUILD_JOBS and reuses caches recorded with another job count", t => {
+    if (os.totalmem() < 10 * gib) {t.skip("a four-job scope needs 10 GiB of host memory"); return;}
+    const f = fixture(t), ctx = context(f), runner = fakeTools(f.root), support = fakeSupportTools(f.root, runner), first = mockSupportRun(runner),
+      paths = supportPaths(f.workspace);
+    /** @type {string[]} */ const audits = [];
+    buildLocalNativeSupportSdk(ctx, dependencies(runner, support, first, audits, {PATH: "/usr/bin", MOM_BUILD_JOBS: "4"}));
+    const hermes = first.calls.find(row => row.label === "static Hermes SDK producer")?.child;
+    assert.equal(hermes?.at(-1), "4");
+    assert.equal(JSON.parse(fs.readFileSync(paths.opensslTools, "utf8")).jobs, 4);
+    assert.equal(JSON.parse(fs.readFileSync(paths.openmpTools, "utf8")).jobs, 4);
+    const second = mockSupportRun(runner), result = buildLocalNativeSupportSdk(ctx, dependencies(runner, support, second, audits));
+    assert.deepEqual(result.reused, {hermes: true, io: true, openssl: true, zstd: true, openmp: true});
+    assert.deepEqual(second.calls.filter(row => row.label.endsWith("SDK producer")), []);
+    assert.equal(JSON.parse(fs.readFileSync(paths.opensslTools, "utf8")).jobs, 4, "recorded parallelism is kept, not rewritten");
+    const openmp = JSON.parse(fs.readFileSync(paths.openmpTools, "utf8"));
+    fs.chmodSync(paths.openmpTools, 0o600); writeJson(paths.openmpTools, {...openmp, tools: {...openmp.tools, cc: "/other/icx"}});
+    assert.throws(() => buildLocalNativeSupportSdk(ctx, dependencies(runner, support, mockSupportRun(runner), audits)),
+      /tool descriptor changed/);
   });
 
   test("memory preflight and first fetch failures stop the support slice before later inputs", t => {

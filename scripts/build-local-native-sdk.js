@@ -20,8 +20,39 @@ const ciJit = require("./native-ci-linux-jit"),
   dpcppInputs = require("./native-dpcpp-cuda-inputs");
 
 const repo = fs.realpathSync(path.resolve(__dirname, "..")), markerName = ".mom-native-sdk-workspace.json",
-  memoryMax = "4G", jobsDefault = 2, oneapiCompilerRoot = "/opt/intel/oneapi/compiler";
+  gib = 1024 ** 3, oneapiCompilerRoot = "/opt/intel/oneapi/compiler";
 /** @param {string} name */ const producer = name => path.join(repo, "scripts", name);
+
+/** The one local release parallelism setting: MOM_BUILD_JOBS, an integer in 1..16 (the bound every native producer
+ * plan enforces), defaulting to the established two. Recorded job counts are parallelism provenance, not release-byte
+ * inputs, so outputs built with another count stay reusable. @param {NodeJS.ProcessEnv} [environment] */
+function localBuildJobs(environment = process.env) {
+  const value = environment["MOM_BUILD_JOBS"] || "2";
+  if (!/^(?:[1-9]|1[0-6])$/.test(value)) {throw new Error("Local native builds need MOM_BUILD_JOBS as an integer in 1..16");}
+  return Number(value);
+}
+
+/** Producers that run CI's own support/ROCm recipes, whose admissions accept only CI's 2 or 4 jobs. @param {number} jobs */
+function ciRecipeJobs(jobs) {return jobs >= 4 ? 4 : 2;}
+
+/** Aggregate no-swap scope cap in bytes: the proven 4 GiB for two jobs plus 3 GiB for each further job. Release
+ * LLVM/DPC++ compiles peak near 1.5 GiB, while their static tool and SYCL links take 2-3 GiB and are not pooled
+ * separately, so every added Ninja slot may hold a link. A cap above physical memory could not protect the host.
+ * @param {NodeJS.ProcessEnv} [environment] @param {number} [totalMemory] */
+function localMemoryMax(environment = process.env, totalMemory = os.totalmem()) {
+  const jobs = localBuildJobs(environment), bytes = (4 + 3 * Math.max(0, jobs - 2)) * gib;
+  if (bytes > totalMemory) {
+    throw new Error(`MOM_BUILD_JOBS=${jobs} needs a ${bytes / gib} GiB memory scope, but this host has ${(totalMemory / gib).toFixed(1)} GiB`);
+  }
+  return bytes;
+}
+
+/** Read the job count a producer recorded only as `--parallel N` in its compile command. @param {unknown} command */
+function recordedParallelJobs(command) {
+  const args = Array.isArray(command) ? command : [], index = args.indexOf("--parallel"), value = index < 0 ? undefined : args[index + 1];
+  if (typeof value !== "string" || !/^[1-9]\d?$/.test(value)) {throw new Error("Native SDK receipt does not record its build parallelism");}
+  return Number(value);
+}
 
 function defaultWorkspace() {
   let parent;
@@ -360,16 +391,21 @@ function stageLocalCompilerInputs(workspace, dependencies = {}) {
 }
 
 /** Write a stable build descriptor once; never rewrite a cache input or repair a missing receipt.
- * @param {string} file @param {unknown} value @param {boolean} outputExists */
+ * A recorded job count is parallelism provenance, so it may differ from this run's; the producer's audit bounds it.
+ * @param {string} file @param {{version: number, jobs?: number}} value @param {boolean} outputExists */
 function admitToolDescriptor(file, value, outputExists) {
   const stat = fs.lstatSync(file, {throwIfNoEntry: false});
   if (stat) {
     regularFile(file, "Native SDK tool descriptor");
-    if (!isDeepStrictEqual(readBuildJson(file), value)) {throw new Error("Native SDK tool descriptor changed: " + file);}
-  } else {
-    if (outputExists) {throw new Error("Native SDK output exists without its original tool descriptor; preserve it and investigate: " + file);}
-    fs.writeFileSync(file, JSON.stringify(value, null, 2) + "\n", {flag: "wx", mode: 0o600});
+    const recorded = readBuildJson(file);
+    if (!isDeepStrictEqual(recorded, value.jobs === undefined ? value : {...value, jobs: recorded?.jobs})) {
+      throw new Error("Native SDK tool descriptor changed: " + file);
+    }
+    return recorded;
   }
+  if (outputExists) {throw new Error("Native SDK output exists without its original tool descriptor; preserve it and investigate: " + file);}
+  fs.writeFileSync(file, JSON.stringify(value, null, 2) + "\n", {flag: "wx", mode: 0o600});
+  return value;
 }
 
 /** Re-admit one already-produced I/O SDK before proceeding to OpenSSL.
@@ -392,7 +428,7 @@ function verifyOpenSslSdk(paths, tools) {
   const sdk = nativeOpenSslInputs(paths.opensslSdk, "linux"), receipt = readBuildJson(sdk.receipt),
     descriptor = readBuildJson(paths.opensslTools), expectedTools = Object.fromEntries(Object.entries(tools).map(([name, file]) =>
       [name, {path: file, sha256: fileHash(file)}]));
-  if (!isDeepStrictEqual(descriptor, {version: 1, jobs: 2, tools}) || receipt.archive?.path !== path.join(paths.buildInputs, "openssl-" + opensslPin.version + ".tar.gz") ||
+  if (![2, 4].includes(descriptor?.jobs) || !isDeepStrictEqual(descriptor, {version: 1, jobs: descriptor.jobs, tools}) || receipt.archive?.path !== path.join(paths.buildInputs, "openssl-" + opensslPin.version + ".tar.gz") ||
       receipt.archive?.sha256 !== opensslPin.sha256 || receipt.config?.sha256 !== fileHash(paths.opensslTools) ||
       !isDeepStrictEqual(receipt.tools, expectedTools) || fileHash(receipt.archive.path) !== opensslPin.sha256) {
     throw new Error("Static OpenSSL SDK does not bind this run's pinned archive, descriptor and tools");
@@ -432,7 +468,8 @@ function buildLocalNativeSupportSdk(context, dependencies = {}) {
     admitIo = dependencies.verifyIo || verifyIoSdk, admitOpenSsl = dependencies.verifyOpenSsl || verifyOpenSslSdk,
     archive = path.join(paths.buildInputs, archiveName), fetcher = producer("fetch-native-sdk-sources.js"),
     hermes = {source: paths.hermesSource, sdkRoot: paths.hermesSdk},
-    hermesReused = existingDirectory(paths.hermesSdk, "Hermes SDK");
+    hermesReused = existingDirectory(paths.hermesSdk, "Hermes SDK"),
+    jobs = localBuildJobs(env), supportJobs = ciRecipeJobs(jobs);
 
   if (path.basename(support.hermes.cxx) !== "icpx" || path.basename(support.openmp.cxx) !== "icpx") {
     throw new Error("Native support SDK tools must preserve Intel's icpx invocation alias");
@@ -450,7 +487,7 @@ function buildLocalNativeSupportSdk(context, dependencies = {}) {
   }
   admitSupport("hermes-source", paths, invoke, dependencies);
   if (hermesReused) {admitSupport("hermes-sdk", paths, invoke, dependencies);} else {
-    const command = ciSupport.hermesBuildCommand(/** @type {Parameters<typeof ciSupport.hermesBuildCommand>[0]} */ (hermes), support.hermes, "2", linuxSysrootToolchain(env));
+    const command = ciSupport.hermesBuildCommand(/** @type {Parameters<typeof ciSupport.hermesBuildCommand>[0]} */ (hermes), support.hermes, String(jobs), linuxSysrootToolchain(env));
     invoke("static Hermes SDK producer", process.execPath, [producer(command.script), ...command.args]);
     admitSupport("hermes-sdk", paths, invoke, dependencies);
   }
@@ -461,9 +498,9 @@ function buildLocalNativeSupportSdk(context, dependencies = {}) {
   invoke("offline I/O source archive verification", process.execPath, [fetcher, "verify-io", paths.ioSource]);
   const ioPaths = {env, source: paths.buildInputs, buildInputs: paths.buildInputs, ioSource: paths.ioSource, ioSdk: paths.ioSdk,
       opensslSdk: paths.opensslSdk, opensslTools: paths.opensslTools},
-    opensslConfig = {version: 1, jobs: 2, tools: support.openssl},
+    opensslConfig = {version: 1, jobs: supportJobs, tools: support.openssl},
     ioCommands = ciSupport.ioOpenSslBuildCommands(/** @type {Parameters<typeof ciSupport.ioOpenSslBuildCommands>[0]} */ (/** @type {unknown} */ (ioPaths)),
-      support.cmake, support.ninja, support.openssl, "2");
+      support.cmake, support.ninja, support.openssl, String(supportJobs));
   const ioReused = existingDirectory(paths.ioSdk, "Native I/O SDK");
   if (ioReused) {admitIo(ioPaths, {cmake: support.cmake, ninja: support.ninja, openssl: support.openssl});} else {
     const command = ioCommands[0];
@@ -495,7 +532,7 @@ function buildLocalNativeSupportSdk(context, dependencies = {}) {
     admitSupport("zstd-sdk", paths, invoke, dependencies);
   }
 
-  const openmpConfig = {version: 1, jobs: 2, tools: support.openmp}, openmpReused = existingDirectory(paths.openmpSdk, "static OpenMP SDK");
+  const openmpConfig = {version: 1, jobs: supportJobs, tools: support.openmp}, openmpReused = existingDirectory(paths.openmpSdk, "static OpenMP SDK");
   admitToolDescriptor(paths.openmpTools, openmpConfig, openmpReused);
   const openmpState = /** @type {Parameters<typeof ciSupport.openmpBuildCommand>[0]} */ ({source: paths.buildInputs, archive,
     sdkRoot: paths.openmpSdk, toolsFile: paths.openmpTools});
@@ -704,7 +741,8 @@ function auditSupportInProcess(kind, workspace) {
     case "compiler-sources": verifyCompilerSources(path.join(paths.compilerSources, "sources.json"), paths.compilerSources, verifyPreparedSdkSources); break;
     case "llvm-sdk": verifyLinuxLlvmAdmission(paths.llvmSdk); break;
     case "hermes-source": ciSources.verifyHermesSource(/** @type {Parameters<typeof ciSources.verifyHermesSource>[0]} */ (/** @type {unknown} */ ({env})), hermes, tools.hermes.git); break;
-    case "hermes-sdk": ciSources.verifyHermesSource(/** @type {Parameters<typeof ciSources.verifyHermesSource>[0]} */ (/** @type {unknown} */ ({env})), hermes, tools.hermes.git); ciSupport.auditHermesSdk(hermes, tools.hermes, "2", linuxSysrootToolchain(env)); break;
+    case "hermes-sdk": ciSources.verifyHermesSource(/** @type {Parameters<typeof ciSources.verifyHermesSource>[0]} */ (/** @type {unknown} */ ({env})), hermes, tools.hermes.git); ciSupport.auditHermesSdk(hermes, tools.hermes,
+      String(recordedParallelJobs(readBuildJson(path.join(paths.hermesSdk, "before.json")).compile)), linuxSysrootToolchain(env)); break;
     case "io-sdk":
       verifyIoArchives(paths.ioSource);
       verifyIoSdk({ioSource: paths.ioSource, ioSdk: paths.ioSdk}, {cmake: tools.cmake, ninja: tools.ninja, openssl: tools.openssl});
@@ -789,11 +827,10 @@ function cgroupMemoryPaths(cgroup, mounts) {
   return {memory: path.posix.join(scope, "memory.max"), swap: path.posix.join(scope, "memory.swap.max")};
 }
 
-/** @param {string} memory @param {string} swap */
-function verifyMemoryLimits(memory, swap) {
-  const maximum = BigInt(4 * 1024 ** 3);
-  if (!/^\d+$/.test(memory) || BigInt(memory) < 1n || BigInt(memory) > maximum || swap !== "0") {
-    throw new Error("The active systemd scope did not enforce memory.max <= 4 GiB and memory.swap.max = 0");
+/** @param {string} memory @param {string} swap @param {number} maximum the selected scope cap in bytes */
+function verifyMemoryLimits(memory, swap, maximum) {
+  if (!/^\d+$/.test(memory) || BigInt(memory) < 1n || BigInt(memory) > BigInt(maximum) || swap !== "0") {
+    throw new Error(`The active systemd scope did not enforce memory.max <= ${maximum / gib} GiB and memory.swap.max = 0`);
   }
 }
 
@@ -802,7 +839,7 @@ function verifyCurrentMemoryScope() {
   const cgroup = fs.readFileSync("/proc/self/cgroup", "utf8"), mounts = fs.readFileSync("/proc/self/mountinfo", "utf8"),
     files = cgroupMemoryPaths(cgroup, mounts), memory = fs.readFileSync(files.memory, "utf8").trim(),
     swap = fs.readFileSync(files.swap, "utf8").trim();
-  verifyMemoryLimits(memory, swap);
+  verifyMemoryLimits(memory, swap, localMemoryMax());
   console.log("[native-sdk] cgroup-v2 memory.max=" + memory + " memory.swap.max=" + swap);
 }
 
@@ -821,27 +858,25 @@ function runCommand(command, args, options) {
 function scopedInvoker(tools, env, run, verifyScope = verifyCurrentMemoryScope) {
   return (/** @type {string} */ label, /** @type {string} */ command, /** @type {string[]} */ args) => {
     // User-manager scopes can be siblings: keep the full command's children inside its
-    // already enforced aggregate cap instead of giving each another independent 4 GiB.
+    // already enforced aggregate cap instead of giving each another independent one.
     if (env["MOM_LOCAL_NATIVE_SCOPE"] === "1") {
       verifyScope();
       return run(command, args, {label, env, cwd: repo});
     }
-    const launch = ["--user", "--scope", "--quiet", "--property=MemoryMax=" + memoryMax,
+    const launch = ["--user", "--scope", "--quiet", "--property=MemoryMax=" + localMemoryMax(env),
       "--property=MemorySwapMax=0", "--", command, ...args];
     return run(tools.systemdRun, launch, {label, env, cwd: repo});
   };
 }
 
 /** Run the pinned source and LLVM producers for the first Linux bootstrap slice only.
- * @param {{workspace?: string, jobs?: number}} [options]
+ * @param {{workspace?: string}} [options]
  * @param {{run?: typeof runCommand, tools?: ReturnType<typeof localTools>, resolveTools?: typeof localTools,
  *   versionOf?: typeof executableVersion, environment?: NodeJS.ProcessEnv}} [dependencies] */
 function buildLocalNativeSdk(options = {}, dependencies = {}) {
   if (process.platform !== "linux" || process.arch !== "x64") {throw new Error("Local LLVM source bootstrap currently requires Linux x64");}
-  const jobs = options.jobs ?? jobsDefault;
-  if (!Number.isInteger(jobs) || jobs < 1 || jobs > 32) {throw new Error("LLVM jobs must be an integer in 1..32");}
-  const workspace = options.workspace || defaultWorkspace(),
-    env = {...(dependencies.environment || process.env), MOM_AOT_BUILD_ONLY: "1"}, root = admitWorkspace(workspace, repo),
+  const env = {...(dependencies.environment || process.env), MOM_AOT_BUILD_ONLY: "1"}, jobs = localBuildJobs(env),
+    workspace = options.workspace || defaultWorkspace(), root = admitWorkspace(workspace, repo),
     tools = dependencies.tools || (dependencies.resolveTools || localTools)(env, dependencies.versionOf || executableVersion),
     invoke = scopedInvoker(tools, env, dependencies.run || runCommand);
 
@@ -922,7 +957,7 @@ function buildLocalNativeSdk(options = {}, dependencies = {}) {
     invoke("LLVM 21 audit", process.execPath, [producer("build-native-llvm-sdk.js"), "audit", llvmOutput]);
     invoke("LLVM 21 source SDK re-admission", process.execPath, [__filename, "--audit-support", "llvm-sdk", root]);
   }
-  return {workspace: root, compilerFetch, compilerSources, buildInputs, llvmSdk: llvmOutput, sourcesReused, llvmReused, llvmResumed, jobs, memoryMax};
+  return {workspace: root, compilerFetch, compilerSources, buildInputs, llvmSdk: llvmOutput, sourcesReused, llvmReused, llvmResumed, jobs, memoryMax: localMemoryMax(env)};
 }
 
 /** @param {string[]} argv @param {()=>unknown} [verifyScope] */
@@ -951,7 +986,7 @@ function main(argv, verifyScope = verifyCurrentMemoryScope) {
     auditSupportInProcess(args[0], args[1]); return;
   }
   if (command === "--help" || command === "-h") {
-    console.log("Usage: node scripts/build-local-native-sdk.js source-llvm [--jobs N] [--workspace /absolute/path]\n" +
+    console.log("Usage: node scripts/build-local-native-sdk.js source-llvm [--workspace /absolute/path]\n" +
       "       node scripts/build-local-native-sdk.js support [--workspace /absolute/path]\n" +
       "       node scripts/build-local-native-sdk.js compiler-inputs [--workspace /absolute/path]\n" +
       "       node scripts/build-local-native-sdk.js gnu-headers [--workspace /absolute/path]\n" +
@@ -960,7 +995,8 @@ function main(argv, verifyScope = verifyCurrentMemoryScope) {
       "compiler-inputs stages the installed DPC++/CUDA 12.6 roots after source-LLVM and source preparation.\n" +
       "gnu-headers stages installed Linux GNU target headers and package notices without installing packages.\n" +
       "jit-resources builds or re-admits the CPU-only source-JIT resource pack from those inputs.\n" +
-      "No command builds all release SDKs or packages a release; follow-up slices require an admitted source-LLVM workspace.");
+      "No command builds all release SDKs or packages a release; follow-up slices require an admitted source-LLVM workspace.\n" +
+      "MOM_BUILD_JOBS (1..16, default 2) selects build parallelism and sizes the memory scope.");
     return;
   }
   if (command === "support") {
@@ -992,17 +1028,7 @@ function main(argv, verifyScope = verifyCurrentMemoryScope) {
     return;
   }
   if (command !== "source-llvm") {throw new Error("Select the source-LLVM bootstrap slice; `npm run build:release` runs the full local release");}
-  /** @type {{workspace?: string, jobs?: number}} */ const options = {jobs: jobsDefault};
-  for (let index = 0; index < args.length; index++) {
-    if (args[index] === "--jobs") {
-      const value = args[index + 1]; if (!value) {throw new Error("Unknown or incomplete source-llvm option: --jobs");}
-      options.jobs = Number(value); index++;
-    } else if (args[index] === "--workspace") {
-      const value = args[index + 1]; if (!value) {throw new Error("Unknown or incomplete source-llvm option: --workspace");}
-      options.workspace = value; index++;
-    } else {throw new Error("Unknown or incomplete source-llvm option: " + args[index]);}
-  }
-  const result = buildLocalNativeSdk(options);
+  const workspace = workspaceOption(args, command), result = buildLocalNativeSdk(workspace ? {workspace} : {});
   console.log(`[native-sdk] Linux compiler sources and LLVM 21 SDK admitted at ${result.workspace}; remaining release SDKs and packaging were not run.`);
 }
 
@@ -1014,4 +1040,5 @@ module.exports = {ensureLocalLinuxSysroot, buildLocalNativeSdk, buildLocalNative
   stageLocalCompilerInputs, prepareOrAdmitLinuxSources, prepareOrAdmitWindowsSources, localLinuxJitResourceState, runLocalJitResourceChild, localJitToolsReceipt,
   workspaceOption, main, localTools, localSupportTools, localDpcppCudaRoots, localDpcppCudaState, scopedInvoker, runCommand,
   admitWorkspace, readConfigureState, cgroupMemoryPaths,
-  verifyMemoryLimits, verifyCurrentMemoryScope, trustedSystemdRun, defaultWorkspace, supportPaths, memoryMax, jobsDefault};
+  verifyMemoryLimits, verifyCurrentMemoryScope, trustedSystemdRun, defaultWorkspace, supportPaths,
+  localBuildJobs, ciRecipeJobs, localMemoryMax, recordedParallelJobs};

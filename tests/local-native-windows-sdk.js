@@ -48,6 +48,8 @@ function fixture(t, options = {}) {
     }));
   if (options.occupied) {fs.mkdirSync(output); fs.writeFileSync(path.join(output, "operator-data"), "keep me\n");}
   const dependencies = /** @type {any} */ ({
+    // Fixtures assert the local default; a CI job's own MOM_BUILD_JOBS must not leak in.
+    environment: {MOM_BUILD_JOBS: "2"},
     verifyScope() {calls.push({name: "scope", args: []});},
     resolveTools(/** @type {NodeJS.ProcessEnv} */ environment) {calls.push({name: "tools", args: [environment["MOM_BUILD_JOBS"]]}); return tools;},
     prepareWindowsSources(/** @type {string} */ root) {

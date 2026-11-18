@@ -39,7 +39,7 @@ function buildLocalNativeDistribution(sdk, output, environment = process.env, de
       !config.notices || config.notices.path !== notices || config.notices.sha256 !== review.notice.sha256) {
     throw new Error("Local SDK descriptor must bind the current reviewed distribution notices");
   }
-  const env = {...environment, MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: "2"},
+  const env = {...environment, MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: String(local.localBuildJobs(environment))},
     packing = (dependencies.preparePacking || prepareNativePackingTool)(path.join(sdk.workspace, "packing-tool"), env),
     artifact = (dependencies.build || require("./build-release").buildNativeArtifact)(sdk.configFile, output, packing, env),
     entrypoint = path.join(output, "entrypoint.json"),

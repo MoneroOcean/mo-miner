@@ -98,7 +98,8 @@ describe("Local static ACPP SDK slice", {skip: process.platform !== "linux" || p
     assert.equal(calls.length, 2);
     assert.ok(calls.every(call => call.command === tools.systemdRun));
     assert.ok(calls.every(call => call.args.includes("--scope")));
-    assert.ok(calls.every(call => call.args.includes("--property=MemoryMax=4G") && call.args.includes("--property=MemorySwapMax=0")));
+    assert.ok(calls.every(call => call.args.includes("--property=MemoryMax=" + local.localMemoryMax(
+      /** @type {{env:NodeJS.ProcessEnv}} */ (call.options).env)) && call.args.includes("--property=MemorySwapMax=0")));
     assert.ok(calls[1]?.args.includes("--local-acpp-sdk"));
     assert.ok(calls[1]?.args.includes(f.workspace));
     assert.deepEqual(result.reused, {sources: false, prepared: false, sdk: false});

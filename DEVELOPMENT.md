@@ -220,8 +220,10 @@ incremental outputs, then builds, packs, audits and packages the executable:
 npm run build:release
 ~~~
 
-It uses `~/cache/mom/native-sdk`, an exclusive build lock, and an enforced aggregate 4-GiB memory
-limit with no swap. The archive and its SHA256 sidecar are copied into the checkout only after the
+It uses `~/cache/mom/native-sdk`, an exclusive build lock, and an enforced aggregate memory limit
+with no swap. `MOM_BUILD_JOBS` (1..16, default 2) sets the local build parallelism and sizes that
+limit at 4 GiB plus 3 GiB per job beyond two, refusing a limit above host memory; SDKs cached with
+another job count are reused. The archive and its SHA256 sidecar are copied into the checkout only after the
 audits pass; successful private outputs are removed, and a failed one occupies one `release-work`
 slot to inspect before retrying. The build installs no system packages: pinned Node, Intel
 2026.2, CUDA and OS development prerequisites (plus `dpkg-deb` and `meson`) must already be
@@ -243,7 +245,7 @@ Linux Node.js 24.15.0, the Intel toolchain and build tools. Nothing is installed
 for you, and Linux dependencies stay separate from Windows `node_modules`. The WSL ext4 cache is
 `~/cache/mom/native-sdk`; Windows support and export caches live under
 `%LOCALAPPDATA%\MoM\native-wsl-windows\<checkout-hash>\{support,exports,bridge}`. One lock spans
-the WSL build graph; its 4-GiB limit and disabled swap cover the Linux process tree only, and
+the WSL build graph; its memory limit and disabled swap cover the Linux process tree only, and
 native Windows stages run sequentially with two build jobs. Failed application output occupies one
 `windows-release-work` slot, and failed bridge state blocks retry until inspected.
 

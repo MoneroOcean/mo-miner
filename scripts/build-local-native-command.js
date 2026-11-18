@@ -131,7 +131,8 @@ function launchLocalNativeRelease(environment = process.env, spawn = spawnSync, 
   if (platform !== "linux" || arch !== "x64") {
     throw new Error("Automatic local release preparation requires Linux x64 or Windows x64 with WSL2");
   }
-  // Fail before creating caches or acquiring sources when installed prerequisites are missing.
+  // Fail before creating caches or acquiring sources when the job setting or installed prerequisites are invalid.
+  const jobs = String(local.localBuildJobs(env)), memoryMax = local.localMemoryMax(env);
   require("./build-local-native-linux-sdk").preflightLocalLinuxSdk({environment: env});
   const tools = local.localTools(env), workspace = local.defaultWorkspace(),
     lifecycle = [
@@ -145,8 +146,8 @@ function launchLocalNativeRelease(environment = process.env, spawn = spawnSync, 
       "  flock 9", "  export MOM_NATIVE_BUILD_LOCK=1", "fi", 'exec "$@"',
     ].join("\n"),
     result = spawn("bash", ["-eu", "-c", lifecycle, "--", tools.systemdRun, "--user", "--scope", "--quiet",
-      "--property=MemoryMax=" + local.memoryMax, "--property=MemorySwapMax=0", "--", process.execPath, __filename, "--build", workspace],
-    {cwd: repo, env: {...env, MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: "2"}, stdio: "inherit"});
+      "--property=MemoryMax=" + memoryMax, "--property=MemorySwapMax=0", "--", process.execPath, __filename, "--build", workspace],
+    {cwd: repo, env: {...env, MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: jobs}, stdio: "inherit"});
   if (result.error) {throw result.error;}
   return result.status ?? 1;
 }

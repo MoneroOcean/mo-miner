@@ -15,7 +15,7 @@ const {archiveName} = require("./native-llvm-sdk");
 const {fileHash, readBuildJson} = require("./build-source-inputs");
 const {generatedIncludeInventory} = require("./native-windows-gpu-config");
 
-const repo = fs.realpathSync(path.resolve(__dirname, "..")), jobs = 2;
+const repo = fs.realpathSync(path.resolve(__dirname, ".."));
 /** @param {string} name */ const producer = name => path.join(repo, "scripts", name);
 
 /** ACPP source and SDK paths are stable workspace outputs; interrupted outputs are never removed.
@@ -122,7 +122,7 @@ function auditLocalAcppSdkInputs(context, tools, dependencies = {}) {
 function localAcppSdkBuildEnvironment(context, tools, environment = process.env) {
   const selected = localAcppSdkContext(context), support = selected.support,
     rocmPaths = selected.rocm, toolDirectories = [...new Set([tools.cmake, tools.ninja, tools.git].map(file => path.dirname(file)))];
-  return {...environment, MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: String(jobs), MOM_AOT_SYCL_BACKEND: "cuda-hip",
+  return {...environment, MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: String(local.localBuildJobs(environment)), MOM_AOT_SYCL_BACKEND: "cuda-hip",
     MOM_AOT_ROCM_STATIC_ROOT: rocmPaths.rocmSdk, MOM_AOT_LLD_ROOT: path.join(selected.source.llvmSdk, "sdk"),
     ROCM_DEVICE_LIBS_PATH: path.join(rocmPaths.resources, "install/amdgcn/bitcode"),
     MOM_AOT_COMGR_RECEIPT: rocmPaths.comgrReceipt, MOM_AOT_OPENMP_LIBRARY: path.join(support.openmpSdk, "sdk/libomp.a"),
@@ -136,7 +136,7 @@ function localAcppSdkBuildCommand(context, tools, environment = process.env) {
   const selected = localAcppSdkContext(context), llvmSdk = path.join(selected.source.llvmSdk, "sdk"),
     env = localAcppSdkBuildEnvironment(context, tools, environment),
     plan = staticSyclSdkPlan(selected.paths.preparedCheckout, llvmSdk, selected.inputs.cudaRoot,
-      selected.paths.sdk, jobs, env, {cc: tools.cc, cxx: tools.cxx});
+      selected.paths.sdk, local.localBuildJobs(env), env, {cc: tools.cc, cxx: tools.cxx});
   return {script: "scripts/build-native-sycl-sdk.js", args: [selected.paths.preparedCheckout, llvmSdk,
     selected.inputs.cudaRoot, selected.paths.sdk, tools.cc, tools.cxx], env, plan};
 }
@@ -295,7 +295,7 @@ function runLocalAcppSdkChild(context, tools, dependencies = {}) {
     reused: {...sources, sdk: outputExisted}, buildOnly: true, executed: false, publicationQualified: false};
 }
 
-/** Build or re-admit the static CUDA+HIP ACPP SDK under the established 4 GiB/no-swap scope.
+/** Build or re-admit the static CUDA+HIP ACPP SDK under the MOM_BUILD_JOBS-sized no-swap scope.
  * @param {unknown} context @param {{run?:typeof local.runCommand,tools?:ReturnType<typeof local.localTools>,
  * resolveTools?:typeof local.localTools,versionOf?:(file:string)=>string,environment?:NodeJS.ProcessEnv}} [dependencies] */
 function buildLocalLinuxAcppSdk(context, dependencies = {}) {
@@ -339,4 +339,4 @@ if (require.main === module) {
 
 module.exports = {localAcppSdkPaths, localAcppSdkContextFromWorkspace, localAcppSdkContext, localAcppSdkBuildEnvironment,
   localAcppSdkBuildCommand, auditLocalAcppSdkInputs, assertLocalAcppSdkBindings, auditLocalAcppSdk,
-  localAcppSdkTools, prepareLocalAcppSources, admitLocalAcppGpuArtifacts, runLocalAcppSdkChild, buildLocalLinuxAcppSdk, main, jobs};
+  localAcppSdkTools, prepareLocalAcppSources, admitLocalAcppGpuArtifacts, runLocalAcppSdkChild, buildLocalLinuxAcppSdk, main};

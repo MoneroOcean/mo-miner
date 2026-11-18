@@ -44,6 +44,8 @@ function fixture(t) {
   const readJson = file => file === llvmPaths.descriptor ? {fixture: "llvm-descriptor"} : JSON.parse(fs.readFileSync(file, "utf8")),
     componentResult = /** @type {any} */ ({link: {libraries: [path.join(paths.component, "lib/sample.lib")], wholeArchives: [], objects: []}, files: {}});
   const dependencies = {
+    // Fixtures assert the local default; a CI job's own MOM_BUILD_JOBS must not leak in.
+    environment: {MOM_BUILD_JOBS: "2"},
     verifyScope() {calls.push({name: "scope", args: []});},
     resolveTools() {calls.push({name: "tools", args: []}); return /** @type {ReturnType<typeof local.localTools>} */ (tools);},
     /** @param {string} root @param {{kind:"io"|"hermes",localBuildId:string,handoffSha256:string}} expected */
@@ -133,7 +135,7 @@ describe("Local Windows DPC++ SDK coordinator", {skip: process.platform !== "lin
 
   test("runs the original SDK, adapter and component producers in order", async t => {
     const f = fixture(t);
-    Object.assign(f.dependencies, {environment: {PATH: "/unrelated/bin", LD_LIBRARY_PATH: "/unrelated/lib"}});
+    Object.assign(f.dependencies, {environment: {PATH: "/unrelated/bin", LD_LIBRARY_PATH: "/unrelated/lib", MOM_BUILD_JOBS: "2"}});
     const result = await build(f),
       stages = f.calls.filter(row => ["sdk", "adapters", "export"].includes(row.name)).map(row => row.name);
     assert.deepEqual(stages, ["sdk", "adapters", "export"]);

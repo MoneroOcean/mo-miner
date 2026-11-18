@@ -68,6 +68,7 @@ function fixture(t) {
       verify(output, environment) {calls.push({name: "verify", args: [output, environment]}); return {role: "verified"};},
       /** @param {string} output @param {any} result */
       verifyOutputInventory(output, result) {assert.equal(result.plan.output, output);},
+      /** @type {NodeJS.ProcessEnv} */ environment: {MOM_BUILD_JOBS: "2"},
     };
   t.after(() => fs.rmSync(root, {recursive: true, force: true}));
   return {root, workspace, hermesRoot, windowsSdkRoot, support, bin, compiler, resource, tools, selected, input, receipt, admission, calls, dependencies};
@@ -115,7 +116,7 @@ describe("Local Windows LLVM SDK coordinator", {skip: process.platform !== "linu
     assert.equal(fs.readFileSync(path.join(root, "unknown"), "utf8"), "preserve");
   });
 
-  test("configures once, runs every public phase in order, and admits with jobs=2", t => {
+  test("configures once, runs every public phase in order, and admits with the default two jobs", t => {
     const f = fixture(t), result = buildLocal(f.input, f.dependencies), paths = localWindowsLlvmSdkPaths(f.workspace),
       configure = f.calls.find(call => call.name === "configure");
     assert.ok(configure);
@@ -137,6 +138,16 @@ describe("Local Windows LLVM SDK coordinator", {skip: process.platform !== "linu
     assert.equal(first.descriptorSha256, second.descriptorSha256);
     assert.equal(second.reused, true);
     assert.deepEqual(later.filter(name => ["configure", "build", "audit", "verify"].includes(name)), ["verify"]);
+  });
+
+  test("reuses a warm SDK recorded with another MOM_BUILD_JOBS and reports this run's selection", t => {
+    const f = fixture(t), paths = localWindowsLlvmSdkPaths(f.workspace);
+    buildLocal(f.input, {...f.dependencies, environment: {MOM_BUILD_JOBS: "3"}});
+    assert.equal(readBuildJson(path.join(paths.output, "result.json")).plan.jobs, 3);
+    const second = buildLocal(f.input, {...f.dependencies, environment: {MOM_BUILD_JOBS: "5"}});
+    assert.equal(second.reused, true); assert.equal(second.jobs, 5);
+    assert.equal(f.calls.filter(call => call.name === "configure").length, 1);
+    assert.equal(readBuildJson(path.join(paths.output, "result.json")).plan.jobs, 3, "the recorded plan is not rewritten");
   });
 
   test("rejects a changed Linux icx-cl hash on warm admission", t => {

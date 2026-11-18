@@ -57,7 +57,7 @@ test.describe("Local release command containment", {skip: process.platform !== "
       "BASH_FUNC_flock%%": "() { return 0; }"}, (command, args, options) => {
       assert.equal(command, "bash");
       assert.match(args[2] || "", /flock 9[\s\S]*exec "\$@"/);
-      assert.ok(args.includes("--property=MemoryMax=4G"));
+      assert.ok(args.includes("--property=MemoryMax=" + 4 * 1024 ** 3));
       assert.ok(args.includes("--property=MemorySwapMax=0"));
       assert.deepEqual(args.slice(-2), ["--build", "/fixture/sdk"]);
       assert.equal(options.env?.["BASH_ENV"], undefined);
@@ -68,6 +68,20 @@ test.describe("Local release command containment", {skip: process.platform !== "
       return {status: 0};
     });
     assert.equal(code, 0);
+  });
+  test("MOM_BUILD_JOBS selects the child job count and scope size, and is validated before any preflight", t => {
+    tools(t);
+    let launched = 0;
+    assert.equal(launchLocalNativeRelease({PATH: "/usr/bin", MOM_BUILD_JOBS: "3"}, (_command, args, options) => {
+      launched++;
+      assert.ok(args.includes("--property=MemoryMax=" + 7 * 1024 ** 3)); assert.ok(args.includes("--property=MemorySwapMax=0"));
+      assert.equal(options.env?.["MOM_BUILD_JOBS"], "3");
+      return {status: 0};
+    }), 0);
+    assert.equal(launched, 1);
+    t.mock.method(require("../scripts/build-local-native-linux-sdk"), "preflightLocalLinuxSdk", () => {assert.fail("SDK preflight reached");});
+    assert.throws(() => launchLocalNativeRelease({PATH: "/usr/bin", MOM_BUILD_JOBS: "32"}, () => {assert.fail("build launched");}),
+      /MOM_BUILD_JOBS as an integer in 1\.\.16/);
   });
   test("prerequisite failure never launches a build or creates its workspace", t => {
     tools(t);

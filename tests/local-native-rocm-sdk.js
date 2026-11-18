@@ -127,7 +127,7 @@ test.describe("Local Linux ROCm SDK slice", {skip: linuxX64 ? false : "Linux x64
     function run(command, args, options) {
       calls.push({command, args, options}); assert.equal(command, tools.systemdRun);
       assert.ok(args.includes("--user")); assert.ok(args.includes("--scope")); assert.ok(args.includes("--quiet"));
-      assert.ok(args.includes("--property=MemoryMax=" + local.memoryMax)); assert.ok(args.includes("--property=MemorySwapMax=0"));
+      assert.ok(args.includes("--property=MemoryMax=" + local.localMemoryMax(options.env))); assert.ok(args.includes("--property=MemorySwapMax=0"));
       assert.equal(options.env["MOM_AOT_BUILD_ONLY"], "1");
       return successfulRun();
     }
@@ -218,8 +218,11 @@ test.describe("Local Linux ROCm SDK slice", {skip: linuxX64 ? false : "Linux x64
   });
 
   test("reuses the exact fetched-source state and hands the public COMGR core its LLVM callback", t => {
-    const f = fixture(t), tools = fakeTools(f.root), host = hostInputs(f.workspace, tools, f.root);
+    const f = fixture(t), tools = fakeTools(f.root), host = hostInputs(f.workspace, tools, f.root), selectedJobs = process.env["MOM_BUILD_JOBS"];
     sourceFixture(f.paths);
+    // The shared CI COMGR recipe admits only 2 or 4 jobs; a larger local selection maps to 4.
+    process.env["MOM_BUILD_JOBS"] = "16";
+    t.after(() => {if (selectedJobs === undefined) {delete process.env["MOM_BUILD_JOBS"];} else {process.env["MOM_BUILD_JOBS"] = selectedJobs;}});
     let inputChecks = 0, coreCalls = 0, sourceChecks = 0;
     assert.throws(() => runLocalRocmSdkChild(f.context, {cc: tools.cc, cxx: tools.cxx, cmake: tools.cmake}, {
       verifyScope() {return undefined;}, validateTools: () => ({cc: tools.cc, cxx: tools.cxx, cmake: tools.cmake}), verifyInputs() {inputChecks++; return undefined;},
@@ -236,7 +239,7 @@ test.describe("Local Linux ROCm SDK slice", {skip: linuxX64 ? false : "Linux x64
           assert.equal(Object.hasOwn(state, forbidden), false, "no fake CI transport field " + forbidden);
         }
         assert.deepEqual(buildTools, {cc: tools.cc, cxx: tools.cxx, cmake: tools.cmake});
-        assert.equal(env["MOM_AOT_BUILD_ONLY"], "1");
+        assert.equal(env["MOM_AOT_BUILD_ONLY"], "1"); assert.equal(env["MOM_BUILD_JOBS"], "4");
         verifyLlvm();
         throw new Error("fixture stop before public producers");
       },

@@ -13,7 +13,7 @@ const local = require("./build-local-native-sdk"), hostSdkBuilder = require("./b
   {checkNativeNoticeReview} = require("./check-native-notices");
 const {fileHash, readBuildJson} = require("./build-source-inputs");
 
-const repo = path.resolve(__dirname, ".."), jobs = 2,
+const repo = path.resolve(__dirname, ".."),
   profiles = ["oneapi", "dpcpp", "dpcpp-opencl", "acpp-cuda", "acpp-hip"],
   localId = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 
@@ -95,7 +95,8 @@ async function buildLocalNativeWindowsSdk(input, dependencies = {}) {
   if (typeof args["workspace"] !== "string") {throw new Error("Local Windows SDK workspace must be marked and canonical");}
   const workspace = local.admitWorkspace(args["workspace"], repo);
   if (workspace !== args["workspace"]) {throw new Error("Local Windows SDK workspace must be canonical and marked");}
-  const paths = localWindowsSdkStagePaths(workspace, args["output"]), environment = {...process.env, ...(dependencies.environment || {}),
+  const jobs = local.localBuildJobs({...process.env, ...(dependencies.environment || {})}),
+    paths = localWindowsSdkStagePaths(workspace, args["output"]), environment = {...process.env, ...(dependencies.environment || {}),
       MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: String(jobs), OMP_NUM_THREADS: String(jobs)},
     suppliedTools = exactObject(args["tools"], ["cc", "cmake", "cxx", "git", "ninja", "systemdRun"], "Selected local tools"),
     selectedTools = (dependencies.resolveTools || local.localTools)(environment),
@@ -106,7 +107,7 @@ async function buildLocalNativeWindowsSdk(input, dependencies = {}) {
   if (!record(linuxSdk)) {throw new Error("Admitted local Linux SDK result is required");}
   if (linuxSdk["workspace"] !== workspace || linuxSdk["compilerFetch"] !== support.compilerFetch || linuxSdk["compilerSources"] !== support.compilerSources ||
       linuxSdk["buildInputs"] !== support.buildInputs || linuxSdk["llvmSdk"] !== support.llvmSdk || linuxSdk["jobs"] !== jobs) {
-    throw new Error("Local Windows SDK needs the current buildLocalNativeSdk result for this workspace and jobs=2");
+    throw new Error("Local Windows SDK needs the current buildLocalNativeSdk result for this workspace and MOM_BUILD_JOBS");
   }
   const coreArchive = args["coreArchive"];
   regularFile(coreArchive, "Original WSL-copied Windows Core archive", 256 << 20);
@@ -160,20 +161,20 @@ async function buildLocalNativeWindowsSdk(input, dependencies = {}) {
     windowsJitSdk = await buildJitSdk({workspace, windowsHostSdk: hostSdk, hermes, tools, windowsLlvm, windowsJitResources},
       {verifyScope, resolveTools: () => tools, environment});
   assertWorkspaceResult(windowsJitSdk, workspace, "Windows JIT SDK");
-  if (windowsJitSdk.jobs !== jobs) {throw new Error("Local Windows JIT SDK was not built with jobs=2");}
+  if (windowsJitSdk.jobs !== jobs) {throw new Error("Local Windows JIT SDK result differs from this run's MOM_BUILD_JOBS");}
 
   const buildDpcppSdk = dependencies.buildDpcppSdk || dpcppBuilder.buildLocalNativeWindowsDpcppSdk,
     windowsDpcppSdk = await buildDpcppSdk({workspace, tools, windowsHostSdk: hostSdk, windowsLlvm, windowsJitResources,
       windowsJitSdk, controllerSupport: args["controllerSupport"]}, {verifyScope, resolveTools: () => tools, environment});
   assertWorkspaceResult(windowsDpcppSdk, workspace, "Windows DPC++ SDK");
-  if (windowsDpcppSdk.jobs !== jobs) {throw new Error("Local Windows DPC++ SDK was not built with jobs=2");}
+  if (windowsDpcppSdk.jobs !== jobs) {throw new Error("Local Windows DPC++ SDK result differs from this run's MOM_BUILD_JOBS");}
   const buildHostComponent = dependencies.buildHostComponent || hostComponentBuilder.buildLocalNativeWindowsHostComponent,
     windowsHostComponent = await buildHostComponent({workspace, tools, windowsHostSdk: hostSdk, hermes},
       {verifyScope, resolveTools: () => tools, environment});
   assertWorkspaceResult(windowsHostComponent, workspace, "Windows host component");
   if (windowsHostComponent.jobs !== jobs || windowsHostComponent.componentRoot !== path.join(workspace, "windows-host-component", "component") ||
       !/\.lib$/i.test(windowsHostComponent.amdhip64?.amdhip64 || "")) {
-    throw new Error("Local Windows host component lacks its jobs=2 producer receipt or AMDHIP driver import");
+    throw new Error("Local Windows host component lacks this run's MOM_BUILD_JOBS producer result or AMDHIP driver import");
   }
 
   const gpuInput = {workspace, windowsSdkRoot: hostSdk.root, windowsSdkPins: hostSdk.pins,
@@ -276,4 +277,4 @@ async function buildLocalNativeWindowsSdk(input, dependencies = {}) {
 /** @param {Buffer} value */
 function fileHashOf(value) {return require("node:crypto").createHash("sha256").update(value).digest("hex");}
 
-module.exports = {localWindowsSdkStagePaths, buildLocalNativeWindowsSdk, jobs, profiles};
+module.exports = {localWindowsSdkStagePaths, buildLocalNativeWindowsSdk, profiles};

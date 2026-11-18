@@ -9,7 +9,7 @@ const local = require("./build-local-native-sdk"), gpu = require("./build-local-
   appConfig = require("./native-windows-application-config"), sdkProducer = require("./build-native-windows-sdk"),
   adapterProducer = require("./prepare-native-windows-adapters"), component = require("./native-windows-dpcpp-component");
 const {fileHash, readBuildJson} = require("./build-source-inputs");
-const repo = fs.realpathSync(path.resolve(__dirname, "..")), jobs = 2,
+const repo = fs.realpathSync(path.resolve(__dirname, "..")),
   localBuildIdPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/,
   allowedImports = ["advapi32.dll", "cfgmgr32.dll", "dbghelp.dll", "kernel32.dll", "ntdll.dll", "ole32.dll", "oleaut32.dll",
     "setupapi.dll", "shell32.dll", "shlwapi.dll", "version.dll"];
@@ -133,6 +133,7 @@ async function buildLocalNativeWindowsDpcppSdk(input, dependencies = {}) {
   }
   const args = /** @type {{controllerSupport:any,tools:any,windowsHostSdk:any,windowsJitResources:any,windowsJitSdk:any,windowsLlvm:any,workspace:string}} */ (input),
     workspace = local.admitWorkspace(args.workspace, repo), paths = localWindowsDpcppSdkPaths(workspace), supportPaths = local.supportPaths(workspace),
+    jobs = local.localBuildJobs({...process.env, ...(dependencies.environment || {})}),
     env = {...process.env, ...(dependencies.environment || {}), MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: String(jobs), OMP_NUM_THREADS: String(jobs)},
     tools = /** @type {ReturnType<typeof local.localTools>} */ (exactObject(args.tools, ["cc", "cmake", "cxx", "git", "ninja", "systemdRun"], "Selected local tools")),
     resolveTools = dependencies.resolveTools || local.localTools, selectedTools = resolveTools(env);

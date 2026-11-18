@@ -109,7 +109,7 @@ test.describe("Local CUDA image production and warm admission", {skip: process.p
     function run(command, args, options) {
       calls.push({command, args, options});
       assert.equal(command, tools.systemdRun);
-      assert.ok(args.includes("--property=MemoryMax=" + local.memoryMax));
+      assert.ok(args.includes("--property=MemoryMax=" + local.localMemoryMax(options.env)));
       assert.ok(args.includes("--property=MemorySwapMax=0"));
       assert.equal(options.env["MOM_AOT_BUILD_ONLY"], "1");
       return {pid: 1, output: [], status: 0, signal: null, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0)};

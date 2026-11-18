@@ -17,7 +17,7 @@ const {pins} = require("./native-dpcpp-pins");
 const {fileHash, readBuildJson, verifySourceInputs, buildFileInputs} = require("./build-source-inputs");
 const {isStaticArchive} = require("./native-audit");
 
-const repo = fs.realpathSync(path.resolve(__dirname, "..")), jobs = 2;
+const repo = fs.realpathSync(path.resolve(__dirname, ".."));
 const phases = Object.freeze(["configure", ...jitBuildStages]);
 /** @param {string} name */
 const producer = name => path.join(repo, "scripts", name);
@@ -71,8 +71,9 @@ function localJitSdkContext(value) {
   return {source: expected.source, inputs: expected.inputs, resources: expected.resources, paths: localJitSdkPaths(root), support: paths};
 }
 
-/** @param {ReturnType<typeof localJitSdkContext>} context @param {{cmake:string,ninja:string,cc:string,cxx:string}} tools */
-function localJitSdkConfig(context, tools) {
+/** @param {ReturnType<typeof localJitSdkContext>} context @param {{cmake:string,ninja:string,cc:string,cxx:string}} tools
+ * @param {number} jobs */
+function localJitSdkConfig(context, tools, jobs) {
   return jitSdkConfig({version: 1, target: "linux", sources: path.join(context.support.compilerSources, "sources.json"),
     sdk: context.inputs.dpcppRoot, resources: path.join(context.support.linuxJitResources, "resources"),
     tools: {cmake: tools.cmake, ninja: tools.ninja, cc: tools.cc, cxx: tools.cxx}, jobs});
@@ -212,7 +213,7 @@ function auditLocalStaticDpcpp(context, config, tools, libraries) {
     before = readBuildJson(path.join(output, "before.json")),
     linuxSources = verifyPreparedRoots(path.join(context.support.linuxSources, "sources.json"), context.support.linuxSources, "linux"),
     plan = linuxStaticSdkPlan(Object.fromEntries(Object.entries(linuxSources.prepared).map(([name, row]) => [name, row.root])),
-      context.inputs.dpcppRoot, context.inputs.cudaRoot, context.paths.isolatedObject, output, tools, jobs),
+      context.inputs.dpcppRoot, context.inputs.cudaRoot, context.paths.isolatedObject, output, tools, local.recordedParallelJobs(before.compile)),
     expectedInputs = {...linuxSdkJitInput(context.paths.isolatedObject),
       [path.join(context.support.linuxSources, "sources.json")]: fileHash(path.join(context.support.linuxSources, "sources.json")),
       ...Object.fromEntries([...Object.values(tools), path.join(context.inputs.dpcppRoot, "bin/clang"),
@@ -229,7 +230,7 @@ function auditLocalStaticDpcpp(context, config, tools, libraries) {
       !isDeepStrictEqual(before.recipe, result.recipe) ||
       !isStaticArchive(archive) || fileHash(archive) !== result.sha256 || !isDeepStrictEqual(result.inputs, expectedInputs) ||
       config.sdk !== context.inputs.dpcppRoot || config.sources !== path.join(context.support.compilerSources, "sources.json") ||
-      config.resources !== path.join(context.support.linuxJitResources, "resources") || config.jobs !== jobs ||
+      config.resources !== path.join(context.support.linuxJitResources, "resources") ||
       !isDeepStrictEqual(config.tools, tools) ||
       !isDeepStrictEqual(result.headers, headers) || !isDeepStrictEqual(before.headers, headers) ||
       !isDeepStrictEqual(result.dependencies, dependencies) || !isDeepStrictEqual(before.inputs, expectedInputs) ||
@@ -266,8 +267,8 @@ function auditLocalStaticDpcpp(context, config, tools, libraries) {
  *   auditCompiler?:(output:string,config:ReturnType<typeof localJitSdkConfig>,phase:string)=>unknown}} [dependencies] */
 function runLocalJitSdkChild(context, tools, dependencies = {}) {
   (dependencies.verifyScope || local.verifyCurrentMemoryScope)();
-  const selected = localJitSdkContext(context), paths = selected.paths, config = localJitSdkConfig(selected, tools),
-    env = {...process.env, MOM_AOT_BUILD_ONLY: "1"}, run = dependencies.run || local.runCommand,
+  const selected = localJitSdkContext(context), paths = selected.paths,
+    env = {...process.env, MOM_AOT_BUILD_ONLY: "1"}, jobs = local.localBuildJobs(env), run = dependencies.run || local.runCommand,
     auditInputs = dependencies.auditInputs || auditLocalJitSdkInputs,
     auditCompiler = dependencies.auditCompiler || nativeCi.auditLinuxJitCompilerState;
   auditInputs(selected, tools);
@@ -280,9 +281,12 @@ function runLocalJitSdkChild(context, tools, dependencies = {}) {
   if (Boolean(staticStat) !== Boolean(componentStat) || (staticStat && !isolationStat)) {
     throw new Error("Local static DPC++ output is incomplete or out of order; preserve the workspace");
   }
+  // A warm compiler keeps the job count its config recorded; that count is provenance, not an output input.
+  if (configStat) {regularFile(paths.configFile, "Local JIT SDK config");}
+  const recorded = configStat ? readBuildJson(paths.configFile) : undefined,
+    config = localJitSdkConfig(selected, tools, configStat ? recorded?.jobs : jobs);
   if (configStat) {
-    regularFile(paths.configFile, "Local JIT SDK config");
-    if (!isDeepStrictEqual(readBuildJson(paths.configFile), config)) {throw new Error("Local JIT SDK config changed; preserve the workspace");}
+    if (!isDeepStrictEqual(recorded, config)) {throw new Error("Local JIT SDK config changed; preserve the workspace");}
   } else {
     if (outputStat) {throw new Error("Local JIT compiler output exists without its original config; preserve the workspace");}
     fs.writeFileSync(paths.configFile, JSON.stringify(config, null, 2) + "\n", {flag: "wx", mode: 0o600});
@@ -379,4 +383,4 @@ if (require.main === module) {
 module.exports = {localJitSdkPaths, localJitSdkContextFromWorkspace, localJitSdkContext, localJitSdkConfig, verifyPreparedRoots,
   auditLocalJitSdkInputs, localJitSdkPhasePrefix, auditLocalCompilerIsolation, verifyLocalStaticSdkRecipe, verifyLocalStaticDependencies,
   auditLocalStaticDpcpp, runLocalJitSdkChild,
-  buildLocalLinuxJitSdk, main, jobs, phases};
+  buildLocalLinuxJitSdk, main, phases};

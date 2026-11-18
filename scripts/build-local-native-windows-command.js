@@ -1,11 +1,11 @@
 "use strict";
 
-// One locked WSL coordinator owns the release graph; Linux work is memory-capped, while
-// native Windows interop stages remain outside the Linux cgroup and retain their jobs=2 policy.
+// One locked WSL coordinator owns the release graph; Linux work follows MOM_BUILD_JOBS under its derived memory cap,
+// while native Windows interop stages remain outside the Linux cgroup and retain their jobs=2 policy.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process"),
   {createHash, randomUUID} = require("node:crypto");
 const {prepareWindowsWslRelease, wslText} = require("./build-local-native-wsl");
-const repo = path.resolve(__dirname, ".."), nodeVersion = "v24.15.0", jobs = 2, relayEnvironment = "ONEAPI_ROOT/w:MOM_NATIVE_PERL_ROOT/w",
+const repo = path.resolve(__dirname, ".."), nodeVersion = "v24.15.0", relayEnvironment = "ONEAPI_ROOT/w:MOM_NATIVE_PERL_ROOT/w",
   uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 /** @typedef {(command:string,args:string[],options:import("node:child_process").SpawnSyncOptions)=>{status:number|null,error?:Error,signal?:NodeJS.Signals|null,stdout?:Buffer|string}} LocalSpawn */
 
@@ -187,6 +187,7 @@ function launchLocalNativeWindowsRelease(environment = process.env, spawn = spaw
   verifyNodeVersionPin();
   const checkout = dependencies.checkout || repo, releaseVersion = dependencies.releaseVersion || require("./build-release").releaseVersion;
   releaseVersion(environment);
+  const jobs = require("./build-local-native-sdk").localBuildJobs(environment);
   const overrides = [];
   for (const name of ["MOM_RELEASE_VERSION", "MOM_FORCE_REBUILD", "MOM_NATIVE_CACHE"]) {
     const value = environment[name];
@@ -201,7 +202,7 @@ function launchLocalNativeWindowsRelease(environment = process.env, spawn = spaw
   if (!validRelay) {throw new Error("Windows preflight did not admit native oneAPI and Perl roots for WSL interop");}
   const roots = (dependencies.ensureRoots || ensureNativeWindowsReleaseRoots)(localWindowsReleaseRoots(preflight.appData, checkout)),
     id = (dependencies.createId || randomUUID)(), run = (dependencies.createRun || createBridgeRun)(roots.bridge, id),
-    envArgs = ["MOM_AOT_BUILD_ONLY=1", "MOM_BUILD_JOBS=2", "OMP_NUM_THREADS=2", "WSLENV=" + relayEnvironment,
+    envArgs = ["MOM_AOT_BUILD_ONLY=1", "MOM_BUILD_JOBS=" + jobs, "OMP_NUM_THREADS=" + jobs, "WSLENV=" + relayEnvironment,
       "ONEAPI_ROOT=" + preflight.oneApiRoot, "MOM_NATIVE_PERL_ROOT=" + preflight.nativePerlRoot, ...overrides];
   const script = path.posix.join(wsl.checkout, "scripts/build-local-native-windows-command.js"),
     args = [...wsl.prefix, "/usr/bin/env", ...envArgs, "node", script, "--wsl-launch", wsl.checkout,
@@ -387,7 +388,8 @@ async function runLocalWindowsWslRelease(input, dependencies = {}) {
   if (mappedCheckout.toLowerCase() !== args["checkoutWindows"].toLowerCase()) {
     throw new Error("WSL checkout does not map back to the Windows-preflighted checkout");
   }
-  const local = dependencies.local || require("./build-local-native-sdk"), environment = /** @type {NodeJS.ProcessEnv} */ ({
+  const local = dependencies.local || require("./build-local-native-sdk"),
+    jobs = local.localBuildJobs({...process.env, ...(dependencies.environment || {})}), environment = /** @type {NodeJS.ProcessEnv} */ ({
       ...process.env, ...(dependencies.environment || {}), MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: String(jobs), OMP_NUM_THREADS: String(jobs),
       MOM_NATIVE_BUILD_LOCK: "1", MOM_LOCAL_NATIVE_SCOPE: "1", WSLENV: relayEnvironment}),
     validateReleaseVersion = dependencies.releaseVersion || require("./build-release").releaseVersion;
@@ -414,7 +416,7 @@ async function runLocalWindowsWslRelease(input, dependencies = {}) {
   if (initialPreflight.tools && JSON.stringify(initialPreflight.tools) !== JSON.stringify(ready.tools)) {
     throw new Error("Linux tool selection changed during WSL node bootstrap");
   }
-  const prerequisites = (dependencies.buildPrerequisites || linuxApi.buildLocalNativePrerequisites)({workspace, jobs}, {environment, tools});
+  const prerequisites = (dependencies.buildPrerequisites || linuxApi.buildLocalNativePrerequisites)({workspace}, {environment, tools});
   if (!prerequisites || prerequisites.workspace !== workspace || prerequisites.source?.workspace !== workspace || prerequisites.source?.jobs !== jobs ||
       prerequisites.tools && JSON.stringify(prerequisites.tools) !== JSON.stringify(tools) ||
       prerequisites.paths?.hermesSource !== local.supportPaths(workspace).hermesSource) {
@@ -495,7 +497,8 @@ function launchWslWindowsWorker(input, dependencies = {}) {
       (dependencies.observedNodeVersion || process.version) !== nodeVersion) {
     throw new Error("The local Windows release bootstrap requires Linux x64 and pinned build Node.js " + nodeVersion);
   }
-  const local = dependencies.local || require("./build-local-native-sdk"), environment = /** @type {NodeJS.ProcessEnv} */ ({
+  const local = dependencies.local || require("./build-local-native-sdk"),
+    jobs = local.localBuildJobs({...process.env, ...(dependencies.environment || {})}), environment = /** @type {NodeJS.ProcessEnv} */ ({
       ...process.env, ...(dependencies.environment || {}), MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: String(jobs), OMP_NUM_THREADS: String(jobs),
       MOM_LOCAL_NATIVE_SCOPE: "1"}),
     tools = (dependencies.localTools || local.localTools)(environment),
@@ -508,7 +511,7 @@ function launchWslWindowsWorker(input, dependencies = {}) {
       // eslint-disable-next-line no-template-curly-in-string -- Established Engineering UID-scoped build lock.
       '  exec 9>"$lock_dir/mom-r-sh-${UID}.build.lock"', "  flock 9", "fi", "export MOM_NATIVE_BUILD_LOCK=1", 'exec "$@"',
     ].join("\n"),
-    command = [tools.systemdRun, "--user", "--scope", "--quiet", "--property=MemoryMax=" + local.memoryMax,
+    command = [tools.systemdRun, "--user", "--scope", "--quiet", "--property=MemoryMax=" + local.localMemoryMax(environment),
       "--property=MemorySwapMax=0", "--", process.execPath, __filename, "--wsl-build", ...inputValues(input)],
     result = (dependencies.spawn || spawnSync)("/usr/bin/bash", ["-eu", "-c", script, "--", ...command],
       {cwd: repo, env: environment, stdio: "inherit", shell: false});
@@ -534,7 +537,8 @@ function launchWslBootstrap(input, dependencies = {}) {
   verifyNodeVersionPin();
   const values = exactObject(input, ["bridgeRunWindows", "checkout", "checkoutWindows", "exportWorkspace", "powershellWindows", "supportWorkspace"], "WSL Windows bootstrap input");
   if (values["checkout"] !== fs.realpathSync(repo)) {throw new Error("WSL checkout does not match the Windows-preflighted mapped repository");}
-  const env = {...environment, MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: String(jobs), OMP_NUM_THREADS: String(jobs), MOM_RELEASE_VERSION: version};
+  const jobs = String(local.localBuildJobs(environment)),
+    env = {...environment, MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: jobs, OMP_NUM_THREADS: jobs, MOM_RELEASE_VERSION: version};
   // This read-only tool admission fails before opening the WSL dependency cache or building source.
   const tools = (dependencies.localTools || local.localTools)(env), preflight = (dependencies.preflight || require("./build-local-native-linux-sdk").preflightLocalLinuxSdk)({environment: env, tools});
   return (dependencies.launchWorker || launchWslWindowsWorker)(values, {environment: env, local, localTools: () => tools,
@@ -569,4 +573,4 @@ if (require.main === module) {
 module.exports = {localWindowsReleaseRoots, ensureNativeWindowsReleaseRoots, windowsToolPreflight, launchLocalNativeWindowsRelease,
   windowsPreflightSource,
   mapWslPath, windowsPathToWsl, wslPathToWindows, readBoundedJson, runWindowsSupportBridge, admitWindowsBridgeResult,
-  runLocalWindowsWslRelease, launchWslWindowsWorker, launchWslBootstrap, main, nodeVersion, jobs};
+  runLocalWindowsWslRelease, launchWslWindowsWorker, launchWslBootstrap, main, nodeVersion};

@@ -376,7 +376,8 @@ function localHostAdmission(context, tools, audit) {
 function runLocalRocmSdkChild(context, tools, dependencies = {}) {
   (dependencies.verifyScope || local.verifyCurrentMemoryScope)();
   const selected = localRocmSdkContext(context), comgrTools = (dependencies.validateTools || localRocmTools)(tools), paths = selected.paths,
-    env = {...process.env, MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: "2"}, git = "/usr/bin/git",
+    // The ROCm/COMGR recipe is CI's own and accepts only CI's job counts.
+    env = {...process.env, MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: String(local.ciRecipeJobs(local.localBuildJobs()))}, git = "/usr/bin/git",
     verifyInputs = dependencies.verifyInputs || verifyRocmBuildInputs, verifySources = dependencies.verifySources || ciSources.verifyRocmSources,
     assertFetch = dependencies.assertFetch || ciSources.assertSdkFetchProvenance, fetchParser = dependencies.fetchParser || ciSources.fetchRocmParserSource,
     run = dependencies.run || local.runCommand;
@@ -475,7 +476,7 @@ function localDirectory(directory, label) {
  * @param {unknown} context @param {LocalRocmWrapperDependencies} [dependencies] */
 function buildLocalLinuxRocmSdk(context, dependencies = {}) {
   if (process.platform !== "linux" || process.arch !== "x64") {throw new Error("Local Linux ROCm SDK currently requires Linux x64");}
-  const selected = localRocmSdkContext(context), env = {...(dependencies.environment || process.env), MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: "2"},
+  const selected = localRocmSdkContext(context), env = {...(dependencies.environment || process.env), MOM_AOT_BUILD_ONLY: "1"},
     resolved = dependencies.tools || (dependencies.resolveTools || local.localTools)(env, dependencies.versionOf),
     tools = {cc: resolved.cc, cxx: resolved.cxx, cmake: resolved.cmake}, validateTools = dependencies.validateTools || localRocmTools,
     selectedTools = validateTools(tools), invoke = local.scopedInvoker(resolved, env, dependencies.run || local.runCommand), p = selected.paths,

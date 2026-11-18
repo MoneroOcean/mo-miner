@@ -6,7 +6,7 @@ const local = require("./build-local-native-sdk"), nativeCi = require("./native-
   linuxLlvm = require("./build-native-llvm-sdk"), windowsLlvm = require("./build-native-windows-llvm-sdk"),
   sourceArchives = require("./fetch-native-sdk-sources");
 const {fileHash, readBuildJson, readBuildText} = require("./build-source-inputs"), {archiveName, archiveSha256} = require("./native-llvm-sdk");
-const repo = path.resolve(__dirname, ".."), jobs = 2, localBuildIdPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
+const repo = path.resolve(__dirname, ".."), localBuildIdPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 
 /** @param {unknown} value @param {string[]} keys @param {string} label */
 function exactObject(value, keys, label) {
@@ -180,6 +180,7 @@ function buildLocalNativeWindowsLlvmSdk(input, dependencies = {}) {
   validateWindowsHostSdk(sdk.root, sdk.pins, workspace); validateHermes(hermes);
   const tools = /** @type {ReturnType<typeof local.localTools>} */ (exactObject(input.tools,
       ["git", "cmake", "ninja", "systemdRun", "cc", "cxx"], "Selected local tools")),
+    jobs = local.localBuildJobs({...process.env, ...(dependencies.environment || {})}),
     environment = {...process.env, ...(dependencies.environment || {}), MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: String(jobs)},
     resolveTools = dependencies.resolveTools || local.localTools, selectedTools = resolveTools(environment);
   if (!isDeepStrictEqual(tools, selectedTools)) {throw new Error("Local Windows LLVM tools differ from the current pinned selection");}
@@ -191,7 +192,8 @@ function buildLocalNativeWindowsLlvmSdk(input, dependencies = {}) {
     audit = dependencies.audit || windowsLlvm.auditWindowsLlvmAdmission,
     verify = dependencies.verify || windowsLlvm.verifyWindowsLlvmAdmission,
     verifyOutputInventory = dependencies.verifyOutputInventory || ((output, result) => verifyLocalWindowsLlvmOutput(output,
-      windowsLlvm.windowsLlvmSdkPlan(readBuildJson(paths.descriptor), paths.archive, output, {cmake: tools.cmake, ninja: tools.ninja}, jobs), result.runId));
+      windowsLlvm.windowsLlvmSdkPlan(readBuildJson(paths.descriptor), paths.archive, output, {cmake: tools.cmake, ninja: tools.ninja}, result.plan.jobs),
+      result.runId));
 
   /** Re-admit original archives, Linux LLVM, compiler tools and the same local descriptor inputs. */
   const admitInputs = () => {
@@ -217,9 +219,10 @@ function buildLocalNativeWindowsLlvmSdk(input, dependencies = {}) {
       resultFile = path.join(paths.output, "result.json");
     regularFile(resultFile, "Local Windows LLVM build receipt");
     const result = readBuildJson(resultFile);
+    // The recorded job count is parallelism provenance; the output inventory re-derives its plan with that count.
     if (result?.plan?.output !== paths.output || result.plan.descriptorFile !== paths.descriptor || result.plan.archive !== paths.archive ||
-        result.plan.jobs !== jobs || !isDeepStrictEqual(result.plan.tools, {cmake: tools.cmake, ninja: tools.ninja})) {
-      throw new Error("Local Windows LLVM warm output belongs to another descriptor, archive, tools or jobs; preserve it");
+        !isDeepStrictEqual(result.plan.tools, {cmake: tools.cmake, ninja: tools.ninja})) {
+      throw new Error("Local Windows LLVM warm output belongs to another descriptor, archive or tools; preserve it");
     }
     const admission = verify(paths.output, environment);
     verifyOutputInventory(paths.output, result);

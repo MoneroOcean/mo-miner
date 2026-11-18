@@ -126,7 +126,8 @@ function buildLocalWindowsJitResources(localSdk, tools, dependencies = {}) {
   const verifyScope = dependencies.verifyScope || local.verifyCurrentMemoryScope;
   verifyScope();
   const context = admittedLocalSdkContext(localSdk), paths = localWindowsJitResourcePaths(context.workspace),
-    env = {...(dependencies.environment || process.env), MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: "2", OMP_NUM_THREADS: "2"},
+    jobs = String(local.localBuildJobs(dependencies.environment || process.env)),
+    env = {...(dependencies.environment || process.env), MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: jobs, OMP_NUM_THREADS: jobs},
     auditDpcpp = dependencies.auditDpcpp || dpcppInputs.auditDpcppCudaInputs,
     auditLinux = dependencies.auditLinux || nativeCi.auditLinuxJitResourceTree,
     buildGnu = dependencies.buildGnu || gnuHeaders.buildGnuHeaderHandoff,

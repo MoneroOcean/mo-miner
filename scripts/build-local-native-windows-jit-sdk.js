@@ -12,7 +12,7 @@ const local = require("./build-local-native-sdk"), localJit = require("./build-l
   {vfsFiles} = require("./build-native-windows-controller");
 const {fileHash, readBuildJson, buildFileInputs, verifySourceInputs} = require("./build-source-inputs");
 
-const repo = fs.realpathSync(path.resolve(__dirname, "..")), jobs = 2, hashPattern = /^[a-f0-9]{64}$/;
+const repo = fs.realpathSync(path.resolve(__dirname, "..")), hashPattern = /^[a-f0-9]{64}$/;
 
 /** @param {unknown} value @param {string[]} keys @param {string} label */
 function exactObject(value, keys, label) {
@@ -82,7 +82,7 @@ function checkManagedRoot(paths, allowMissing) {
 /** @param {ReturnType<typeof local.supportPaths>} support @param {ReturnType<typeof jitSdk.jitSdkConfig>} config */
 function localWindowsJitCompilerConfig(support, config) {
   const value = jitSdk.jitSdkConfig(config);
-  if (value.target !== "windows" || value.jobs !== jobs || value.sources !== path.join(support.compilerSources, "sources.json") ||
+  if (value.target !== "windows" || value.sources !== path.join(support.compilerSources, "sources.json") ||
       value.sdk !== path.join(support.dpcppCudaRoot, "dpcpp") || value.resources !== path.join(support.workspace, "windows-jit-resources", "resources") ||
       value.tools.toolchain !== path.join(support.workspace, "windows-jit-sdk", "toolchain", "toolchain.cmake") ||
       !Array.isArray(value.inputs) || !value.inputs.includes(value.tools.toolchain)) {
@@ -332,7 +332,8 @@ async function buildLocalNativeWindowsJitSdk(input, dependencies = {}) {
       typeof input["workspace"] !== "string") {
     throw new Error("Local Windows JIT needs the marked workspace, admitted Windows LLVM/resources, Hermes/host-SDK pins and selected tools");
   }
-  const environment = {...process.env, ...(dependencies.environment || {}), MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: String(jobs)},
+  const jobs = local.localBuildJobs({...process.env, ...(dependencies.environment || {})}),
+    environment = {...process.env, ...(dependencies.environment || {}), MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: String(jobs)},
     resolveTools = dependencies.resolveTools || local.localTools, tools = input["tools"], selectedTools = resolveTools(environment);
   exactObject(tools, ["cc", "cmake", "cxx", "git", "ninja", "systemdRun"], "Selected local tools");
   if (!isDeepStrictEqual(tools, selectedTools)) {throw new Error("Local Windows JIT tools differ from the current pinned selection");}
@@ -352,10 +353,11 @@ async function buildLocalNativeWindowsJitSdk(input, dependencies = {}) {
     prepareToolchain(before.descriptorFile, before.sdk, before.nativeTools, paths.toolchain, environment, before.hostCompilers);
   }
   if (existing) {verifyStableJson(paths.tools, before.toolManifest, "Local Windows JIT LLVM tools manifest");}
+  // A warm compiler keeps the job count its config recorded; that count is provenance, not an output input.
   const toolchainResult = verifyToolchain(before.descriptorFile, before.sdk, before.nativeTools, paths.toolchain, before.hostCompilers),
     config = localWindowsJitCompilerConfig(before.support, {version: 1, target: "windows", sources: before.sources, sdk: before.sdk,
       resources: before.resources, tools: {cmake: tools.cmake, ninja: tools.ninja, toolchain: toolchainResult["toolchain"]},
-      inputs: Object.keys(toolchainResult["inputs"]), jobs});
+      inputs: Object.keys(toolchainResult["inputs"]), jobs: existing ? readBuildJson(paths.config)?.jobs : jobs});
   if (!existing) {
     fs.writeFileSync(paths.config, jsonBytes(config), {flag: "wx", mode: 0o444});
     fs.writeFileSync(paths.descriptor, jsonBytes(localWindowsJitDescriptor(paths, before)), {flag: "wx", mode: 0o444});
@@ -368,7 +370,7 @@ async function buildLocalNativeWindowsJitSdk(input, dependencies = {}) {
     }
   }
 
-  const buildEnv = {...environment, MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: String(jobs)};
+  const buildEnv = {...environment, MOM_AOT_BUILD_ONLY: "1"};
   if (!existing) {
     await buildPhase(config, paths.output, buildEnv, "configure");
     for (const phase of jitBuildStages) {await buildPhase(config, paths.output, buildEnv, phase);}
