@@ -6,7 +6,7 @@ const args = process.argv.slice(2);
 const algo = mode === "compute-error-matrix" && args[0] === "bench"
   ? args[1] || "fake" : process.env["MOM_RELEASE_FIXTURE_ALGO"] || "fake";
 
-if (args[0] === "algorithms") {
+if (args[0] === "algos") {
   process.stdout.write(`gpu0:fixture\nMOM_ALGORITHMS ${JSON.stringify({[algo]: "gpu0",
     ...(mode === "compute-error-matrix" ? {good: "gpu0"} : {})})}\n`);
   process.exit(0);

@@ -125,7 +125,7 @@ module.exports = ({o, opt, normalizeAlgoName}) => {
       mine: parseMineArgs,
       test: (remaining) => { test.result_hash_hex = parseTestArgs(remaining); },
       bench: parseBenchArgs,
-      algorithms: () => undefined,
+      algos: () => undefined,
     };
     const parser = Object.hasOwn(parsers, directive) ? parsers[directive] : null;
     if (!parser) {return o.print_help("Unknown directive " + directive);}

@@ -361,7 +361,7 @@ async function addPortableCpuCase(plan, algo, discover) {
 async function openclImageGuard() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-opencl-spv-"));
   try {
-    const result = await runNode(["mom.js", "algorithms"], {
+    const result = await runNode(["mom.js", "algos"], {
       cwd: directory,
       timeoutMs: TEST_TIMEOUT_MS,
       env: {

@@ -713,7 +713,7 @@ async function main() {
     {name: "unknown", args: ["invalid-directive"], status: 1, marker: "Unknown directive"},
     {name: "config", args: ["mine", config, "--invalid", "x"], status: 1, marker: "Unparsed option"},
     {name: "invalid-config", args: ["mine", invalidConfig], status: 1, marker: "must be a scalar"},
-    ...(cpuCore ? [{name: "algorithms", args: ["algorithms"], status: 0, marker: "MOM_ALGORITHMS "}] : []),
+    ...(cpuCore ? [{name: "algos", args: ["algos"], status: 0, marker: "MOM_ALGORITHMS "}] : []),
   ];
   if (cpuCore) {
     const vector = require("../tests/vectors/cpu").find((item) => item.name === "cn/r height 1806260");
@@ -742,7 +742,7 @@ async function main() {
   }
   if (cpuCore) {
     for (const [name, command, args] of /** @type {Array<[string, string, string[]]>} */ ([
-      ["node", process.execPath, [path.join(repo, "mom.js"), "algorithms"]], ["native", executable, ["algorithms"]],
+      ["node", process.execPath, [path.join(repo, "mom.js"), "algos"]], ["native", executable, ["algos"]],
     ])) {
       const result = await new Promise((resolve) => {
         let stderr = "";

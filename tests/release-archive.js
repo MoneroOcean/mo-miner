@@ -664,7 +664,7 @@ ConvertTo-Json -InputObject $results -Compress
             "#!/usr/bin/env sh",
             "printf '%s|%s\\n' \"$MOM_GPU_BACKEND\" \"$MOM_NATIVE_PATH\"",
           ].join("\n"));
-          const result = run(launcher, ["algorithms"], {
+          const result = run(launcher, ["algos"], {
             env: {
               PATH: process.env["PATH"] ?? "",
               // A fixture capability avoids querying any real host GPU.
@@ -696,7 +696,7 @@ ConvertTo-Json -InputObject $results -Compress
         fs.chmodSync(launcher, 0o755);
         fs.chmodSync(executable, 0o755);
 
-        const cpu = run(launcher, ["algorithms"], {
+        const cpu = run(launcher, ["algos"], {
           env: {
             PATH: process.env["PATH"] ?? "",
             MOM_GPU_BACKEND: "opencl",
@@ -708,7 +708,7 @@ ConvertTo-Json -InputObject $results -Compress
           "opencl:cpu", path.join(fixture, "libs", "dpcpp-opencl", "mom.node"), "./mom",
         ]);
 
-        const gpu = run(launcher, ["algorithms"], {
+        const gpu = run(launcher, ["algos"], {
           env: {
             PATH: process.env["PATH"] ?? "",
             MOM_COMMAND: "custom-mom",
@@ -750,7 +750,7 @@ ConvertTo-Json -InputObject $results -Compress
           "printf '%s\\n' \"$MOM_NATIVE_PATH\" \"$MOM_RUNTIME_DIR\" \"$LD_LIBRARY_PATH\"",
         ].join("\n"));
 
-        const dpcpp = run(launcher, ["algorithms"], {
+        const dpcpp = run(launcher, ["algos"], {
           env: {
             PATH: process.env["PATH"] ?? "",
             MOM_GPU_BACKEND: "intel",
@@ -766,7 +766,7 @@ ConvertTo-Json -InputObject $results -Compress
         ]);
         assert.doesNotMatch(dpcpp.stdout, /oneapi/);
 
-        const opencl = run(launcher, ["algorithms"], {
+        const opencl = run(launcher, ["algos"], {
           env: {
             PATH: process.env["PATH"] ?? "",
             MOM_GPU_BACKEND: "opencl",
@@ -785,7 +785,7 @@ ConvertTo-Json -InputObject $results -Compress
         ]);
         assert.doesNotMatch(opencl.stdout, /oneapi/);
 
-        const explicitOneapi = run(launcher, ["algorithms"], {
+        const explicitOneapi = run(launcher, ["algos"], {
           env: {
             PATH: process.env["PATH"] ?? "",
             MOM_GPU_BACKEND: "opencl",

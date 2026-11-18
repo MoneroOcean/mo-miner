@@ -602,7 +602,7 @@ async function main(options, onSummary = null) {
   if (!isFile(miner)) {throw new Error(`Release miner is missing or not a file: ${miner}`);}
   if (!isFile(readme)) {throw new Error(`README is missing or not a file: ${readme}`);}
   const run = createRunner(miner, timeoutMs);
-  const discovery = await run(["algorithms"]);
+  const discovery = await run(["algos"]);
   const discoveryOutput = output(discovery);
   if (discovery.fatalDeviceFailure) {
     throw new Error(`Release device discovery reported a fatal GPU diagnostic: ${discovery.fatalDeviceFailure}\n` +

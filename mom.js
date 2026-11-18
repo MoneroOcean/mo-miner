@@ -664,7 +664,7 @@ if (!h.cluster_process()) {
       startWithDirectJobTuning(startDirectBenchmark);
       break;
 
-    case "algorithms":
+    case "algos":
       createComputeCore();
       onceCoreResponse("algo_params", function(v) {
         if (!isStringRecord(v)) {return errorExit("Malformed algorithm parameters response");}

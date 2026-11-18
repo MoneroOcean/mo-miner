@@ -843,7 +843,7 @@ test.describe("Benchmark and installer scripts", {concurrency: false}, () => {
       };
       fs.writeFileSync(path.join(temp, "mom.js"), `
     "use strict";
-    if (process.argv[2] === "algorithms") {
+    if (process.argv[2] === "algos") {
       setTimeout(() => process.stdout.write("MOM_ALGORITHMS { }\\n"), 300);
     } else {
       process.exitCode = 2;
@@ -876,7 +876,7 @@ test.describe("Benchmark and installer scripts", {concurrency: false}, () => {
       const outputPath = path.join(temp, "missing", "report.json");
       fs.writeFileSync(path.join(temp, "mom.js"), `
     "use strict";
-    if (process.argv[2] === "algorithms") {
+    if (process.argv[2] === "algos") {
       process.stdout.write('MOM_ALGORITHMS {"fake":"gpu1"}\\n');
     } else if (process.argv[2] === "bench") {
       process.stdin.setEncoding("utf8");
@@ -926,7 +926,7 @@ test.describe("Benchmark and installer scripts", {concurrency: false}, () => {
       const outputPath = path.join(temp, "report.json");
       fs.writeFileSync(path.join(temp, "mom.js"), `
     "use strict";
-    if (process.argv[2] === "algorithms") {
+    if (process.argv[2] === "algos") {
       process.stdout.write('MOM_ALGORITHMS {"fake":"gpu1"}\\n');
     } else if (process.argv[2] === "bench") {
       process.stdin.setEncoding("utf8");
@@ -1073,7 +1073,7 @@ test.describe("Benchmark and installer scripts", {concurrency: false}, () => {
         const notices = [];
         fs.writeFileSync(worker, `
           const fs=require('node:fs'),path=require('node:path');
-          if(process.argv[2]==='algorithms') {
+          if(process.argv[2]==='algos') {
             console.log('gpu0:fixture\\nMOM_ALGORITHMS {"fake":"gpu0"}');process.exit(0);
           }
           for(const signal of ['SIGINT','SIGTERM']) process.on(signal,()=>process.exit(97));
@@ -2649,7 +2649,7 @@ test.describe("Benchmark and installer scripts", {concurrency: false}, () => {
           const evidence = path.join(temp, "evidence");
           fs.writeFileSync(worker, String.raw`
 const mode = process.env.MOM_RELEASE_FIXTURE_MODE;
-if (process.argv[2] === "algorithms") {
+if (process.argv[2] === "algos") {
   console.log('gpu1:fixture\nMOM_ALGORITHMS {"fake":"gpu1"}');
 } else {
   const fault = mode === "cuda-unloading" ? "cudaErrorCudartUnloading" :
@@ -2722,7 +2722,7 @@ if (process.argv[2] === "algorithms") {
             child.emit("close", 0, null);
           }));
           setImmediate(() => {
-            if (args.includes("algorithms")) {
+            if (args.includes("algos")) {
               child.stdout.emit("data", Buffer.from('gpu1:fixture\nMOM_ALGORITHMS {"fishhash":"gpu1"}\n'));
               child.exitCode = 0;
               child.emit("close", 0, null);
@@ -2798,7 +2798,7 @@ const fatal = ({
   "hip-illegal-address": "hipErrorIllegalAddress",
   "hip-launch-timeout": "hipErrorLaunchTimeOut",
 }[kind]) || "CUDA_ERROR_DEVICE_UNAVAILABLE";
-if (args[0] === "algorithms") {
+if (args[0] === "algos") {
   process.stdout.write('gpu0:fixture\nMOM_ALGORITHMS {"fake":"gpu0","good":"gpu0"}\n');
   process.exit(0);
 }
@@ -2893,7 +2893,7 @@ setTimeout(() => process.exit(0), 2000).unref();
       const evidence = path.join(temp, "evidence");
       fs.writeFileSync(worker, String.raw`
 const args = process.argv.slice(2);
-if (args[0] === "algorithms") {
+if (args[0] === "algos") {
   process.stdout.write('gpu0:fixture\nMOM_ALGORITHMS {"fake":"gpu0"}\n');
   process.stderr.write("ZE_RESULT_ERROR_DEVICE_LOST\\n");
   process.exit(0);
@@ -2925,7 +2925,7 @@ const kind = mode.replace(/^fatal-device-/, "");
 const args = process.argv.slice(2);
 const stats = "LOOPSTAT t=1 wall=10.0s cpu=4.5% dispatch=99.0% " +
   "msg=0.001s post=0.002s iters=3 jobs=1 max_msg=0.2ms max_post=0.3ms\n";
-if (args[0] === "algorithms") {
+if (args[0] === "algos") {
   process.stdout.write('gpu0:fixture\nMOM_ALGORITHMS {"fake":"gpu0","good":"gpu0"}\n');
   process.exit(0);
 }

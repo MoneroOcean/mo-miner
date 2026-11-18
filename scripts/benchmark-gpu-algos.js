@@ -72,7 +72,7 @@ function minerArgs(args) {
 /** @param {number} timeoutMs @returns {Record<string, string>} */
 function discoverGpuJobs(timeoutMs) {
   // Discovery initializes GPU runtimes; graceful-only mode must let it exit naturally.
-  const report = spawnSync(process.execPath, minerArgs(["algorithms"]), {
+  const report = spawnSync(process.execPath, minerArgs(["algos"]), {
     encoding: "utf8", env: process.env,
     ...(process.env["MOM_BENCHMARK_GRACEFUL_ONLY"] === "1" ? {} : {timeout: timeoutMs}),
   });

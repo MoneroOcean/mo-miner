@@ -409,7 +409,7 @@ try {
     $previous = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     try {
-      $output = & .\mom.cmd algorithms 2>&1
+      $output = & .\mom.cmd algos 2>&1
       return [pscustomobject]@{ Output = $output; Exit = $LASTEXITCODE }
     } finally {
       $ErrorActionPreference = $previous

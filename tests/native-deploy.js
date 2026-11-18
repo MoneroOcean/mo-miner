@@ -449,7 +449,7 @@ test.describe("Native deployment dispatcher", () => {
     const start = source.indexOf("  if ($SkipAbsentGpu) {");
     const end = source.indexOf("  if ($env:MOM_DEPLOY_SKIP_VECTORS", start);
     assert.ok(start > 0 && end > start);
-    const invoke = '& (Join-Path $release "mom.cmd") algorithms 2>&1';
+    const invoke = '& (Join-Path $release "mom.cmd") algos 2>&1';
     const block = source.slice(start, end);
     assert.ok(block.includes(invoke));
     /** @param {string[]} lines @param {number} nativeStatus @param {number} expected @param {boolean} [optIn] */

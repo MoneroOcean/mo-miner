@@ -489,7 +489,7 @@ function detectAlgoParams(env) {
   // Invoke the miner directly. The old extra Node wrapper applied the selected compiler
   // environment twice around release launchers, allowing an inherited libsycl with the same SONAME
   // to pre-empt the runtime beside the selected addon.
-  const args = ["mom.js", "algorithms"];
+  const args = ["mom.js", "algos"];
   return runNode(args, {timeoutMs: ALGO_PARAMS_TIMEOUT_MS, env}).then((result) => {
     if (result.error || result.code !== 0) {
       throw new Error(formatFailure("Unable to detect algorithms", args, result));
@@ -558,7 +558,7 @@ function gpuDeviceDiscoveryEnv(vendor, options = {}) {
   };
   const discoveryEnv = {...process.env, ...baseEnv};
   // A standalone candidate contains its own Core and workers. Resolving a development addon
-  // here can reject a valid release before its own `mom algorithms` discovery runs.
+  // here can reject a valid release before its own `mom algos` discovery runs.
   const selectedEnv = hasReleaseExecutable
     ? compilerPolicy.vendorDeviceEnv(discoveryEnv)
     : compilerPolicy.workerEnv(options.algo || "etchash", discoveryEnv, process.platform,

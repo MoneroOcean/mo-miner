@@ -349,7 +349,7 @@ fi
 if [ "$suite" = gpu-integrated ]; then
   export MOM_GPU_BACKEND=intel_igpu
 fi
-run_mom() { (cd "$package_dir" && env -u LD_LIBRARY_PATH "$@" ./mom algorithms); }
+run_mom() { (cd "$package_dir" && env -u LD_LIBRARY_PATH "$@" ./mom algos); }
 
 capture run_mom
 smoke_output="$CAPTURE_OUT"

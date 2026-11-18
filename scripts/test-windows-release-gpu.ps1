@@ -84,7 +84,7 @@ try {
       # Native stderr is diagnostic; only the exit status and canonical report decide admission.
       $ErrorActionPreference = "Continue"
       $global:LASTEXITCODE = $null
-      $discoveryOutput = & (Join-Path $release "mom.cmd") algorithms 2>&1
+      $discoveryOutput = & (Join-Path $release "mom.cmd") algos 2>&1
       $discoveryExit = if ($null -eq $global:LASTEXITCODE) { 1 } else { $global:LASTEXITCODE }
     } finally {
       $ErrorActionPreference = $discoveryPreference

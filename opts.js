@@ -1045,7 +1045,7 @@ Directives:
   mine  (<pool_address:port[tls]> <login> [<pass>]|<config.json>)
   test  <algo> <result_hash_hex_str>
   bench <algo>
-  algorithms  List supported algorithms and automatic device settings
+  algos       List supported algorithms and automatic device settings
 
 Mining TLS option:
   --tls-fingerprint <SHA256>  Pin the primary pool certificate (requires a TLS port).

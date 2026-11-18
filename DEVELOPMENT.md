@@ -59,7 +59,7 @@ workers/addons. JavaScript-only edits need no native rebuild; native C++/SYCL ed
 affected inputs incrementally.
 
 ~~~sh
-npm run dev -- algorithms
+npm run dev -- algos
 npm run dev -- mine config.json
 ~~~
 
@@ -68,7 +68,7 @@ which keeps the toolchain consistent and persists outputs through the repository
 directories. To use SDKs installed on the host (Linux x86-64 only):
 
 ~~~sh
-MOM_DEV_HOST=1 npm run dev -- algorithms
+MOM_DEV_HOST=1 npm run dev -- algos
 ~~~
 
 On Windows x64, the command first runs the native multicompiler builder, then runs MoM (or the
@@ -88,7 +88,7 @@ npm run dev -- --exec where.exe node
 and build tooling; the standalone `mom` and Engineering archive launchers accept the first five.
 
 ~~~sh
-MOM_GPU_BACKEND=nvidia npm run dev -- algorithms
+MOM_GPU_BACKEND=nvidia npm run dev -- algos
 ~~~
 
 Backend names select the compiler/factory configuration; they do not prove the hardware is
@@ -298,7 +298,7 @@ The final link does not use `-z pack-relative-relocs` (DT_RELR adds a `GLIBC_ABI
 glibc older than 2.36 refuses to load) and links `librt` for `shm_open` (before glibc 2.34). The
 release audit rejects any `GLIBC_` version above 2.31 and any symbol-version need outside the
 allowed glibc libraries (for example a dynamic `libstdc++`). The release test workflow's
-`glibc-floor` lane runs `mom algorithms` without network in pinned ubuntu:20.04, debian:11 and
+`glibc-floor` lane runs `mom algos` without network in pinned ubuntu:20.04, debian:11 and
 rockylinux:9 images (`scripts/check-native-glibc-floor.sh`). GPU drivers remain external: an old
 distribution can use a GPU only where its vendor still ships a runtime for it.
 

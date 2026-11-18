@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run a standalone Linux mom's `algorithms` command, without network or GPUs, in the oldest supported
+# Run a standalone Linux mom's `algos` command, without network or GPUs, in the oldest supported
 # glibc distributions. Images are pinned by digest; the binary is mounted read-only.
 # Usage: scripts/check-native-glibc-floor.sh /absolute/mom
 set -euo pipefail
@@ -20,7 +20,7 @@ install -m 0755 "$binary" "$work/mom"
 status=0
 for image in "${images[@]}"; do
   if output=$(docker run --rm --network none --read-only --tmpfs /tmp -e HOME=/tmp -w /tmp \
-      -v "$work/mom:/opt/mom/mom:ro" "$image" /opt/mom/mom algorithms 2>&1) &&
+      -v "$work/mom:/opt/mom/mom:ro" "$image" /opt/mom/mom algos 2>&1) &&
       grep -q '^MOM_ALGORITHMS {' <<<"$output"; then
     echo "[glibc-floor] PASS ${image%%@*}"
   else

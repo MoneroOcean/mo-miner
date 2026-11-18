@@ -17,7 +17,7 @@ command-line configuration.
 
 ## Supported algorithms
 
-- CPU: the algorithms reported by `mom algorithms`, using the bundled XMRig engine.
+- CPU: the algorithms reported by `mom algos`, using the bundled XMRig engine.
 - GPU: the algorithms in the table below when supported by the selected device.
 
 NVIDIA compatibility targets Maxwell (GeForce GTX 750 Ti) and newer, subject to the memory
@@ -174,7 +174,7 @@ lack double-precision (FP64) support. On UHD 750, `c29`, `zelhash`, `equihash192
 and `zhash` are also unavailable: their solvers require 1,024 threads per GPU group,
 while this integrated GPU supports 512.
 
-Use `./mom algorithms` to list supported algorithms and their automatic CPU/GPU settings.
+Use `./mom algos` to list supported algorithms and their automatic CPU/GPU settings.
 
 Optional controls are listed under [GPU tuning](#gpu-tuning).
 
@@ -195,7 +195,7 @@ additionally need a vendor driver that supports the distribution.
 From the extracted archive directory:
 
 ```sh
-./mom algorithms
+./mom algos
 ```
 
 For GPU mining, install the current display driver for the selected device first. On NVIDIA in
@@ -209,7 +209,7 @@ Install the current display driver for each GPU, then run the executable from th
 directory in PowerShell or Command Prompt:
 
 ```powershell
-.\mom.exe algorithms
+.\mom.exe algos
 ```
 
 The standalone package does not need Node.js/npm or a compiler installation. The current vendor
@@ -219,7 +219,7 @@ accepts SPIR-V programs.
 ## Engineering Mode and Engineering archive
 
 Engineering Mode runs the original JavaScript from a source checkout. After the setup in
-[DEVELOPMENT.md](DEVELOPMENT.md), use `npm run dev -- algorithms` or
+[DEVELOPMENT.md](DEVELOPMENT.md), use `npm run dev -- algos` or
 `npm run dev -- mine config.json`. JavaScript-only edits require no native rebuild or relink.
 
 The separate Engineering archive (a legacy Node.js package) runs the JavaScript controller and includes its Node runtime,
@@ -248,8 +248,8 @@ The standalone launcher auto-detects the backend on a single-vendor system. On a
 system, select which GPU runtime MoM should use for that process:
 
 ```
-MOM_GPU_BACKEND=intel ./mom algorithms         # Linux standalone
-set "MOM_GPU_BACKEND=intel" && .\mom.exe algorithms  # Windows Command Prompt standalone
+MOM_GPU_BACKEND=intel ./mom algos         # Linux standalone
+set "MOM_GPU_BACKEND=intel" && .\mom.exe algos  # Windows Command Prompt standalone
 ```
 
 Valid values are `intel` (Intel discrete GPUs only), `intel_igpu` (Intel integrated GPUs only),
@@ -259,13 +259,13 @@ with `opencl` for the portable CPU path. Run separate MoM processes to use diffe
 concurrently. To select one GPU, add the zero-based `MOM_GPU_INDEX` (0-1023):
 
 ```
-MOM_GPU_BACKEND=intel MOM_GPU_INDEX=0 ./mom algorithms
-set "MOM_GPU_BACKEND=intel" && set "MOM_GPU_INDEX=0" && .\mom.exe algorithms
+MOM_GPU_BACKEND=intel MOM_GPU_INDEX=0 ./mom algos
+set "MOM_GPU_BACKEND=intel" && set "MOM_GPU_INDEX=0" && .\mom.exe algos
 ```
 
 `all` is accepted only by `npm run dev` (see [DEVELOPMENT.md](DEVELOPMENT.md)), not at runtime.
 
-First run `algorithms` without the index to see each numbered GPU and its full hardware name.
+First run `algos` without the index to see each numbered GPU and its full hardware name.
 For Intel and OpenCL, displayed `gpuN` uses index `N-1`. Intel device numbers stay unchanged when
 switching between `intel` and `intel_igpu`, so the list can have gaps. NVIDIA and AMD indices use
 their vendor runtime's logical ordering, which need not match displayed `gpuN` names or
@@ -359,7 +359,7 @@ and `pearlhash`, then starts mining. Use `--bench_algo_params 2` to benchmark ev
 algorithm instead. The example selects Intel; see [GPU selection](#gpu-selection) for other GPUs.
 
 Use `--job.dev gpu1` to switch algorithms on that GPU only, including benchmarks and donations.
-Choose a device reported by `mom algorithms`; `cpu` selects the CPU and `gpu1,gpu2` selects two GPUs.
+Choose a device reported by `mom algos`; `cpu` selects the CPU and `gpu1,gpu2` selects two GPUs.
 No per-algorithm configuration is needed.
 
 The example uses MoneroOcean's donation address. Replace it with your own wallet address to receive

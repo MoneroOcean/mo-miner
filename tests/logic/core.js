@@ -1651,7 +1651,7 @@ describe("Algorithm parameters and GPU tuning", () => {
   test("PearlHash tuning rejects removed top-level shape fields", () => {
     const result = spawnSync(process.execPath, [
       "mom.js",
-      "algorithms",
+      "algos",
       "--new.algo_param.pearlhash",
       JSON.stringify({dev: "gpu1*8192", m: 8192}),
     ], {
@@ -1664,9 +1664,9 @@ describe("Algorithm parameters and GPU tuning", () => {
     assert.match(result.stderr, /unsupported field: m/);
   });
 
-  test("algorithms CLI reports mocked parameters and exits successfully", async () => {
+  test("algos CLI reports mocked parameters and exits successfully", async () => {
     const miner = await loadMinerWithStubs({
-      argv: ["node", "mom.js", "algorithms"],
+      argv: ["node", "mom.js", "algos"],
       algoParams: {"rx/0": "cpu"},
     });
     await flushLifecycleCallbacks();

@@ -1214,7 +1214,7 @@ exit "\${FAKE_SMI_STATUS:-0}"
           fs.rmSync(path.join(packageRoot, "fixture-launched.txt"), {force: true});
           fs.rmSync(path.join(packageRoot, "fixture-jit.txt"), {force: true});
           return childProcess.spawnSync(process.env["ComSpec"] || "cmd.exe",
-            windowsCmdArgs([launcher, "algorithms", "two words", "paren(value)"]), {
+            windowsCmdArgs([launcher, "algos", "two words", "paren(value)"]), {
               cwd: root, encoding: "utf8", timeout: 30000, windowsHide: true,
               windowsVerbatimArguments: true, env: {...env, ...overrides},
             });
@@ -1227,7 +1227,7 @@ exit "\${FAKE_SMI_STATUS:-0}"
         assert.equal(JSON.parse(cpu.stdout).selector, "opencl:cpu");
         assert.equal(JSON.parse(cpu.stdout).urAdapters,
           '"' + path.join(packageRoot, "libs", "dpcpp-opencl", "ur_adapter_opencl.dll") + '"');
-        assert.deepEqual(JSON.parse(cpu.stdout).args, ["algorithms", "two words", "paren(value)"]);
+        assert.deepEqual(JSON.parse(cpu.stdout).args, ["algos", "two words", "paren(value)"]);
         assert.equal(fs.readFileSync(path.join(packageRoot, "fixture-jit.txt"), "utf8"),
           path.join(packageRoot, "libs", "oneapi", "sycl-jit.dll"));
         /** @type {Array<[string, string, string, string]>} */
@@ -1243,7 +1243,7 @@ exit "\${FAKE_SMI_STATUS:-0}"
           assert.equal(fields.gpuIndex, "0");
           assert.equal(fields.urAdapters, compiler === "dpcpp"
             ? '"' + path.join(packageRoot, "libs", "dpcpp", "ur_adapter_cuda.dll") + '"' : "");
-          assert.deepEqual(fields.args, ["algorithms", "two words", "paren(value)"]);
+          assert.deepEqual(fields.args, ["algos", "two words", "paren(value)"]);
           assert.equal(fs.readFileSync(path.join(packageRoot, "fixture-jit.txt"), "utf8"),
             path.join(packageRoot, "libs", "dpcpp", "sycl-jit.dll"),
             "vendor launcher PATH must remain unchanged");
@@ -1252,7 +1252,7 @@ exit "\${FAKE_SMI_STATUS:-0}"
         assert.equal(intel.error, undefined);
         assert.equal(intel.status, 0, intel.stderr);
         assert.deepEqual(JSON.parse(intel.stdout), {
-          args: ["algorithms", "two words", "paren(value)"],
+          args: ["algos", "two words", "paren(value)"],
           nativePath: path.join(packageRoot, "libs", "oneapi", "mom.node"),
           runtimeDir: path.join(packageRoot, "libs", "oneapi"), selector: "level_zero:gpu",
           gpuBackend: "intel",
@@ -1311,7 +1311,7 @@ exit "\${FAKE_SMI_STATUS:-0}"
           assert.equal(result.error, undefined);
           assert.equal(result.status, 0, result.stderr);
           assert.deepEqual(JSON.parse(result.stdout), {
-            args: ["algorithms", "two words", "paren(value)"],
+            args: ["algos", "two words", "paren(value)"],
             nativePath: path.join(packageRoot, "libs", compiler, "mom.node"),
             runtimeDir: path.join(packageRoot, "libs", compiler),
             gpuBackend: "nvidia",
