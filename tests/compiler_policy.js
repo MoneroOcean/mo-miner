@@ -5471,6 +5471,15 @@ int main(int argc, char** argv) {
       assert.equal(formats("kawpow", "cpu1*8").length, 1);
     });
 
+    test("PearlHash tuning candidates never scale m below its minimum", () => {
+      /** @param {string} dev */
+      const formats = (dev) => gpuTuning.autotuneCandidates(
+        "pearlhash", gpuTuning.parseDeviceEntry(dev, "pearlhash")
+      ).map(gpuTuning.formatDeviceEntry);
+      assert.deepEqual(formats("gpu0*384"), ["gpu0*[m=384]", "gpu0*[m=192]"]);
+      assert.deepEqual(formats("gpu0*128"), ["gpu0*[m=128]"]);
+    });
+
     test("empirical tuner selects the fastest candidate after requiring a material baseline gain", async () => {
       const rates = new Map([
         ["gpu1*[intensity=1536]", 100],

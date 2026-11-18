@@ -517,7 +517,7 @@ function applyPoolControl(pool_id, json) {
 const poolJobs = require("./pool/jobs")({
   h, normalizeAlgoName, poolAt, poolProtocol,
   pearlhashDiffFromJobId, beamPackedTarget, pool_close_wait,
-  pool_log, pool_str, algoFromPass,
+  pool_log, pool_log_err, poolErrorText, pool_str, algoFromPass,
   connectPoolThrottle: (...args) => module.exports.connect_pool_throttle(...args),
 });
 const {

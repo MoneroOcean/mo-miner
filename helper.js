@@ -552,16 +552,6 @@ function parseThreadDev(dev_part) {
   };
 }
 
-/** @param {unknown} dev @param {string} [algo] */
-module.exports.is_valid_dev = function(dev, algo = "") {
-  try {
-    gpuTuning.parseDeviceList(dev, algo);
-    return true;
-  } catch {
-    return false;
-  }
-};
-
 /** @param {number} thread_id @param {string} devs */
 module.exports.get_thread_dev = function(thread_id, devs) {
   let thread_count = 0;

@@ -12,6 +12,8 @@ const crypto = require("node:crypto");
  *   beamPackedTarget(difficulty: unknown): string,
  *   pool_close_wait(poolId: number): unknown,
  *   pool_log(poolId: number, message: string): void,
+ *   pool_log_err(poolId: number, message: string): void,
+ *   poolErrorText(poolId: number, error: unknown): string,
  *   pool_str(poolId: number): string,
  *   algoFromPass(pool: PoolConfig): string,
  *   connectPoolThrottle(poolId: number, setJob: (job: PoolJob) => MiningJob): unknown,
@@ -20,7 +22,7 @@ const crypto = require("node:crypto");
 module.exports = ({
   h, normalizeAlgoName, poolAt, poolProtocol,
   pearlhashDiffFromJobId, beamPackedTarget, pool_close_wait,
-  pool_log, pool_str, algoFromPass, connectPoolThrottle,
+  pool_log, pool_log_err, poolErrorText, pool_str, algoFromPass, connectPoolThrottle,
 }) => {
 
   // Accommodates a 64-KiB field encoded as hexadecimal while bounding every generic job string.
@@ -745,13 +747,24 @@ module.exports = ({
     return poolAt(pool_id).last_job || null;
   }
 
+  // Inactive pools store parsed jobs that set_job validates only on reactivation. A rejected job is
+  // dropped and that pool skipped, since failover runs from socket and timer callbacks that must
+  // not throw.
   /** @param {number} pool_id @param {(job: PoolJob) => MiningJob} set_job @param {string} label */
   function activateAlivePool(pool_id, set_job, label) {
     const job = alivePoolJob(pool_id);
     if (!job) {return null;}
     pool_log(pool_id, "Making " + label + " pool " + pool_str(pool_id) + " active again");
+    const previous_pool = global.opt.pool_ids.active;
     global.opt.pool_ids.active = pool_id;
-    return set_job(job);
+    try {
+      return set_job(job);
+    } catch (error) {
+      global.opt.pool_ids.active = previous_pool;
+      poolAt(pool_id).last_job = null;
+      pool_log_err(pool_id, "Can't use the stored pool job" + poolErrorText(pool_id, error));
+      return null;
+    }
   }
 
   /** @param {(job: PoolJob) => MiningJob} set_job */
@@ -769,7 +782,8 @@ module.exports = ({
       if (shouldSkipBackupPool(pool_id, active_pool)) {
         continue;
       }
-      return activateAlivePool(pool_id, set_job, "backup");
+      const job = activateAlivePool(pool_id, set_job, "backup");
+      if (job) {return job;}
     }
     return null;
   }

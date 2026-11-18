@@ -583,10 +583,11 @@ function autotuneCandidates(algo, entry) {
   } else if (algo === "hoohash") {
     add("workgroup", [64, 128, 256]);
   } else if (algo === "pearlhash" && base.m) {
+    // Smaller user shapes would scale below PearlHash's m >= 128 minimum; skip those variants.
     add("m", [
       alignedScale(base.m, 1, 4, 64),
       alignedScale(base.m, 1, 2, 64),
-    ]);
+    ].filter((m) => m >= 128));
   } else if (algo === "beamhash3" && base.workgroup) {
     const maximum = base.workgroup;
     add("workgroup", [384, 512, 640, 768, 1024].filter((value) => value <= maximum));

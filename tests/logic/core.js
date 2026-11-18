@@ -315,7 +315,7 @@ describe("Automatic mining device selection and primary handshake", () => {
         "gpu1*[constructor=1]"]) {
         assert.throws(() => parseMiningArgs([
           "switching.example:3333", "wallet", "--job.dev", dev,
-        ]), /invalid device list/);
+        ]), /invalid dev value/);
       }
     });
   });
@@ -333,6 +333,33 @@ describe("Automatic mining device selection and primary handshake", () => {
         ]), /unsupported field/);
       }
       assert.equal(Object.hasOwn(Object.prototype, "dev_request"), false);
+    });
+  });
+
+  test("dotted and JSON job options share the same field validation", () => {
+    /** @type {Array<[string, string, RegExp]>} */
+    const cases = [
+      ["backend", "bogus", /Option --job\.backend Invalid GPU backend: bogus/],
+      ["height", "1.5", /Option --job\.height param must be a safe integer: 1\.5/],
+    ];
+    withOptionErrors(() => {
+      for (const [field, value, message] of cases) {
+        for (const args of [["--job." + field, value], ["--job", JSON.stringify({[field]: value})]]) {
+          assert.throws(() => parseMiningArgs(["switching.example:3333", "wallet", ...args]), message);
+        }
+      }
+    });
+  });
+
+  test("JSON job dev tuning is checked against the normalized algorithm", () => {
+    /** @param {string} algo */
+    const parseKawPowTuning = (algo) => parseMiningArgs(["switching.example:3333", "wallet", "--job",
+      JSON.stringify({algo, dev: "gpu0*[workgroup=128]"})]);
+    withOptionErrors(() => {
+      for (const algo of ["KawPow", "kawpow1"]) {
+        assert.equal(parseKawPowTuning(algo).job.dev_request, "gpu0*[workgroup=128]");
+      }
+      assert.throws(() => parseKawPowTuning("rx/0"), /not supported for rx\/0/);
     });
   });
 
@@ -395,6 +422,17 @@ describe("CLI lifecycle and runtime boundaries", () => {
     assert.match(banner, /^# MoM CPU\/GPU miner v/m);
     assert.match(banner, /Copyright \(c\) 2023-2026 MoneroOcean\. GNU GPLv3\./);
     assert.doesNotMatch(banner, /Node\.js\/SYCL based/);
+  });
+
+  test("help lists public options that have no default value", () => {
+    const result = spawnSync(process.execPath, ["-e", "require('./opts').print_help()"], {
+      cwd: repoRoot, encoding: "utf8", timeout: 5000,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /^ {2}--job\.algo: +algo name of the job \(only used with "mine" directive\)$/m);
+    assert.match(result.stdout, /^ {2}protocol: +pool protocol override/m);
+    assert.match(result.stdout, /^ {2}perf: +local algo hashrate/m);
+    assert.doesNotMatch(result.stdout, /_socket|null by default/);
   });
 
   test("mine mode closes through the opt-in control pipe", async () => {
@@ -528,6 +566,16 @@ describe("CLI lifecycle and runtime boundaries", () => {
     await flushLifecycleCallbacks(2);
     assert.deepEqual(miner.exitCodes, [1]);
     stdin.end();
+  });
+
+  test("mine logs late compute-core errors instead of crashing", async () => {
+    const miner = await loadMinerWithStubs({
+      argv: ["node", "mom.js", "mine", "pool.example:1", "user", "--bench_algo_params", "0"],
+      env: {MOM_SKIP_MSR: "1"}, algoParams: {},
+    });
+    assert.deepEqual(miner.poolConnects, [0]);
+    miner.coreEvents.emit("error", {message: "Can't write MSR register"});
+    assert.deepEqual(miner.loggedErrors, ["Compute core error: Can't write MSR register"]);
   });
 
   test("ordinary mine runtime errors retain the forced worker deadline", async () => {
@@ -2128,7 +2176,7 @@ describe("Shutdown callbacks and listener cleanup", () => {
       assert.deepEqual(miner.sentMessages, []);
       assert.deepEqual(miner.poolConnects, []);
       assert.equal(miner.coreEvents.listenerCount("algo_params"), 0);
-      assert.equal(miner.coreEvents.listenerCount("error"), 0);
+      assert.equal(miner.coreEvents.listenerCount("error"), 1);
       assert.deepEqual(miner.loggedErrors, []);
     });
   }
@@ -2143,7 +2191,7 @@ describe("Shutdown callbacks and listener cleanup", () => {
       });
       miner.coreEvents.emit("algo_params", {});
       assert.equal(miner.coreEvents.listenerCount("read_msr"), 1);
-      assert.equal(miner.coreEvents.listenerCount("error"), 1);
+      assert.equal(miner.coreEvents.listenerCount("error"), 2);
 
       miner.process.emit("SIGTERM");
       miner.coreEvents.emit(response.event, response.value);
@@ -2154,7 +2202,7 @@ describe("Shutdown callbacks and listener cleanup", () => {
       assert.deepEqual(miner.sentMessages, []);
       assert.deepEqual(miner.poolConnects, []);
       assert.equal(miner.coreEvents.listenerCount("read_msr"), 0);
-      assert.equal(miner.coreEvents.listenerCount("error"), 0);
+      assert.equal(miner.coreEvents.listenerCount("error"), 1);
       assert.deepEqual(miner.loggedErrors, []);
     });
   }
@@ -2234,14 +2282,14 @@ describe("Shutdown callbacks and listener cleanup", () => {
   test("control-core one-shot responses remove their paired listeners", async () => {
     const mining = await loadMinerWithStubs();
     assert.equal(mining.coreEvents.listenerCount("read_msr"), 0);
-    assert.equal(mining.coreEvents.listenerCount("error"), 0);
+    assert.equal(mining.coreEvents.listenerCount("error"), 1);
 
     const failedTuning = await loadMinerWithStubs({
       algoParamsError: true,
       argv: ["node", "mom.js", "test", "kawpow", "expected", "--job.dev", "gpu1"],
     });
     assert.equal(failedTuning.coreEvents.listenerCount("algo_params"), 0);
-    assert.equal(failedTuning.coreEvents.listenerCount("error"), 0);
+    assert.equal(failedTuning.coreEvents.listenerCount("error"), 1);
   });
 
   test("repeat schedules delayed callbacks", async () => {

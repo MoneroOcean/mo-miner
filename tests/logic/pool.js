@@ -186,6 +186,35 @@ describe("Failover and donation eligibility", () => {
     }
   });
 
+  test("failover skips a stored backup job that set_job rejects", () => {
+    const previousOpt = testGlobal.opt;
+    const previousLogError = helper.log_err;
+    /** @type {string[]} */
+    const logs = [];
+    helper.log_err = (message) => logs.push(message);
+    testGlobal.opt = mockPoolOptions();
+    testGlobal.opt.pools.push(
+      mockPoolConfig({last_job: {algo: "rx/0", job_id: "bad"}}),
+      mockPoolConfig({last_job: {algo: "cn/0", job_id: "good"}}),
+    );
+    /** @type {unknown[]} */
+    const tried = [];
+    try {
+      pool.switch_pool(0, /** @param {PoolJob} job */ (job) => {
+        tried.push(job.job_id);
+        if (job.job_id === "bad") {throw new Error("Invalid rx/0 job blob");}
+        return keepMiningJob(job);
+      });
+      assert.deepEqual(tried, ["bad", "good"]);
+      assert.equal(testGlobal.opt.pool_ids.active, 2);
+      assert.equal(testGlobal.opt.pools[1]?.last_job, null);
+      assert.match(logs.join("\n"), /Can't use the stored pool job: "Invalid rx\/0 job blob"/);
+    } finally {
+      helper.log_err = previousLogError;
+      testGlobal.opt = previousOpt;
+    }
+  });
+
   test("pool failover skips a donation pool at any index", () => {
     const previousOpt = testGlobal.opt;
     testGlobal.opt = mockPoolOptions({

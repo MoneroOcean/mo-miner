@@ -487,6 +487,11 @@ if (!h.cluster_process()) {
     }
     const core = h.create_core();
     compute_core = core;
+    // Native command failures after startup (for example write_msr under kernel lockdown) have no
+    // onceCoreResponse listener; log them instead of letting EventEmitter throw on "error".
+    core.from.on("error", (error) => {
+      if (core.from.listenerCount("error") === 1) {h.log_err("Compute core error: " + errorMessage(error));}
+    });
     compute_core_close = new Promise((resolve) => core.from.once("close", () => {
       if (process.exitCode == null) {process.exitCode = 0;}
       resolve();

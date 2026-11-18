@@ -319,7 +319,9 @@ function formatDefaultValue(def_val) {
 
 /** @param {unknown} def_val */
 function defaultSuffix(def_val) {
-  return typeof def_val !== "undefined" ? " (" + formatDefaultValue(def_val) + " by default)" : "";
+  // null marks a public option with no default value (internal options are "_"-prefixed).
+  return def_val !== undefined && def_val !== null ?
+    " (" + formatDefaultValue(def_val) + " by default)" : "";
 }
 
 /** @param {string} arg @param {string} val @returns {UnknownRecord} */
@@ -342,9 +344,6 @@ function parseJsonObject(arg, val) {
     if (Object.hasOwn(parsed, field) && typeof parsed[field] !== "string") {
       return module.exports.print_help("Option " + arg + " has invalid " + field + " value");
     }
-  }
-  if (Object.hasOwn(parsed, "dev") && !h.is_valid_dev(parsed["dev"], algo || "")) {
-    return module.exports.print_help("Option " + arg + " has invalid dev value: " + parsed["dev"]);
   }
   return parsed;
 }
@@ -395,19 +394,43 @@ function parsePearlHashCertVersion(arg, val) {
   return version;
 }
 
-/** @param {string} arg @param {unknown} value @returns {string} */
-function parseDeviceRequest(arg, value) {
-  if (typeof value !== "string") {
-    return module.exports.print_help("Option " + arg + " device list must be a string");
-  }
+/** @param {string} arg @param {unknown} value @param {string} algo */
+function parseDeviceRequest(arg, value, algo) {
   try {
-    // Validate the shared grammar independently of option order; resolution checks each algorithm.
-    gpuTuning.parseDeviceList(value);
+    gpuTuning.parseDeviceList(value, algo);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return module.exports.print_help("Option " + arg + " has invalid device list: " + message);
+    return module.exports.print_help(
+      "Option " + arg + " has invalid dev value: " + value + " (" + message + ")"
+    );
   }
   return value;
+}
+
+/** @param {string} arg @param {unknown} value */
+function parseBackend(arg, value) {
+  try {
+    return compilerPolicy.validateBackend(value);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return module.exports.print_help("Option " + arg + " " + message);
+  }
+}
+
+/**
+ * Validates one job field; `--job '{...}'` and dotted `--job.<field>` both come through here so
+ * neither form can skip a check. Dev tuning fields are checked against the normalized algorithm
+ * from the same option; a dev given alone gets only the shared grammar check, because the
+ * algorithm may come from a later option and resolution checks it per algorithm.
+ * @param {string} arg @param {string} field @param {unknown} value @param {unknown} algo
+ */
+function parseJobField(arg, field, value, algo) {
+  if (field === "dev") {
+    return parseDeviceRequest(arg, value, normalizeAlgoName(typeof algo === "string" ? algo : null) || "");
+  }
+  if (field === "backend") {return parseBackend(arg, value);}
+  if (field === "pearlhash_cert_version") {return parsePearlHashCertVersion(arg, value);}
+  return jobIntegerFields.has(field) ? parseNonNegativeInteger(arg, value) : value;
 }
 
 /** @param {string} arg @param {unknown} val @param {number} max */
@@ -631,27 +654,16 @@ function applyJsonOption(opt, key, key_help, arg, parsed) {
     if (!supported) {
       return module.exports.print_help(`Option ${arg} has unsupported field: ${key2}`);
     }
-    const help = key_help[key2];
     let value = parsed[key2];
-    if (key === "job" && key2 === "pearlhash_cert_version") {
-      value = parsePearlHashCertVersion(arg + "." + key2, value);
-    } else if (jobIntegerFields.has(key2)) {
-      value = parseNonNegativeInteger(arg + "." + key2, value);
-    } else if (isNumberOption(help)) {
+    if (key === "job") {
+      value = parseJobField(arg + "." + key2, key2, value, parsed["algo"]);
+    } else if (isNumberOption(key_help[key2])) {
       value = parseOptionNumber(arg + "." + key2, value, key + "." + key2);
     }
     target[key2] = value;
   }
   if (key === "job" && Object.hasOwn(parsed, "dev")) {
     target["dev_request"] = parsed["dev"];
-  }
-  if (key === "job" && Object.hasOwn(parsed, "backend")) {
-    try {
-      target["backend"] = compilerPolicy.validateBackend(target["backend"]);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return module.exports.print_help("Option " + arg + " " + message);
-    }
   }
   return true;
 }
@@ -970,12 +982,8 @@ function printTemplateFields(template, depth_str) {
     if (!Array.isArray(definition) || typeof definition[1] !== "string") {
       throw new Error(`Invalid option help template field: ${key}`);
     }
-    const def_val = definition[0];
-    if (def_val === null) {
-      continue;
-    } // do not show internal params
     console.log(paddedHelp(depth_str + "  " + key + ": ",
-      definition[1] + defaultSuffix(def_val)));
+      definition[1] + defaultSuffix(definition[0])));
   }
 }
 
@@ -999,11 +1007,7 @@ function printSimpleOptHelp(key_help, depth_str, key_path_str) {
   if (!Array.isArray(key_help) || typeof key_help[1] !== "string") {
     throw new Error(`Invalid option help field: ${key_path_str}`);
   }
-  const def_val = key_help[0];
-  if (def_val === null) {
-    return;
-  } // do not show internal params
-  console.log(paddedHelp(depth_str + "--" + key_path_str + ": ", key_help[1] + defaultSuffix(def_val)));
+  console.log(paddedHelp(depth_str + "--" + key_path_str + ": ", key_help[1] + defaultSuffix(key_help[0])));
 }
 
 function helpCommand() {
@@ -1084,6 +1088,13 @@ function parseObjectOption(opt, key, key_help, key_path_str, arg, val) {
   }
   const target = opt[key];
   if (!isObject(target)) {return false;}
+  // Dotted job fields take the JSON form's path so both forms share one set of job checks.
+  const field_prefix = "--" + key_path_str + ".";
+  const field = arg.slice(field_prefix.length);
+  if (key_path_str === "job" && arg.startsWith(field_prefix) && isPublicKey(field) &&
+      Object.hasOwn(key_help, field)) {
+    return applyJsonOption(opt, key, key_help, "--job", {[field]: val});
+  }
   return module.exports.parse_opt(target, key_help, arg, val, key_path_str);
 }
 
@@ -1099,17 +1110,10 @@ function parseSimpleOption(opt, key, key_help, key_path_str, arg, val) {
   if (arg !== "--" + key_path_str) {
     return false;
   }
-  if (key_path_str === "job.dev") {
-    opt[key] = parseDeviceRequest(arg, val);
-  } else if (key_path_str === "job.pearlhash_cert_version") {
-    opt[key] = parsePearlHashCertVersion(arg, val);
-  } else {
-    const max = boundedIntegerOptions.get(key_path_str);
-    opt[key] = max === undefined ?
-      (isNumberOption(key_help) ? parseOptionNumber(arg, val, key_path_str) : val) :
-      parseBoundedInteger(arg, val, max);
-  }
-  if (key_path_str === "job.dev") {opt["dev_request"] = val;}
+  const max = boundedIntegerOptions.get(key_path_str);
+  opt[key] = max === undefined ?
+    (isNumberOption(key_help) ? parseOptionNumber(arg, val, key_path_str) : val) :
+    parseBoundedInteger(arg, val, max);
   return true;
 }
 
