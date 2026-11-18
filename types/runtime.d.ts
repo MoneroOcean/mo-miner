@@ -193,7 +193,6 @@ declare global {
   interface JobOptions {
     algo: string | null;
     backend: string;
-    backend_request?: string;
     blob_hex: string;
     dev: string;
     dev_request?: string;

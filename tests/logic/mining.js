@@ -980,12 +980,12 @@ describe("Automatic mining device geometry, rates, and donation", () => {
       requestedJobBackend: () => "auto", jobBackend: () => "auto", configuredTuning: () => ({}),
       resolvedDeviceList: (_algo, configured, heuristic) => configured || heuristic,
     });
-    environment.add_algo_params({kawpow: "gpu1*[intensity=1]"});
-    assert.equal(environment.prepare_algo_params(), true);
+    environment.addAlgoParams({kawpow: "gpu1*[intensity=1]"});
+    assert.equal(environment.prepareAlgoParams(), true);
     assert.equal(environment.donationAlgoSupported("kawpow", "gpu1"), true);
-    environment.add_algo_params({kawpow: "gpu2*[intensity=1]"});
+    environment.addAlgoParams({kawpow: "gpu2*[intensity=1]"});
     assert.equal(environment.donationAlgoSupported("kawpow", "gpu1"), false);
-    assert.equal(environment.prepare_algo_params(), false);
+    assert.equal(environment.prepareAlgoParams(), false);
     assert.deepEqual(Object.keys(opt.algo_params), []);
   });
 });

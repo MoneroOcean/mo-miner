@@ -15,18 +15,18 @@ const gpuTuning = require("./gpu-tuning");
 /** @typedef {import("node:cluster").Worker} ClusterWorker */
 /** @typedef {{type: "subprocess", id: number, worker: SubprocessWorker} | {type: "cluster", id: number, worker: ClusterWorker}} WorkerTarget */
 
-const is_windows_process = process.platform === "win32";
-const development_build_platform = is_windows_process ? "win" : "lin";
-const is_explicit_worker = process.env["MOM_CLUSTER_WORKER"] === "1";
-const is_worker_process = is_explicit_worker ||
-  (!is_windows_process && !cluster.isPrimary);
-const use_subprocess_workers = is_windows_process ||
+const isWindowsProcess = process.platform === "win32";
+const developmentBuildPlatform = isWindowsProcess ? "win" : "lin";
+const isExplicitWorker = process.env["MOM_CLUSTER_WORKER"] === "1";
+const isWorkerProcess = isExplicitWorker ||
+  (!isWindowsProcess && !cluster.isPrimary);
+const useSubprocessWorkers = isWindowsProcess ||
   process.env["MOM_USE_SUBPROCESS_WORKERS"] === "1" ||
   (process.env["MOM_GPU_BACKEND"] || "").toLowerCase() === "amd";
 
 /** @returns {number | "master"} */
 function processThreadId() {
-  if (!is_worker_process) {return "master";}
+  if (!isWorkerProcess) {return "master";}
   const value = process.env["thread_id"] || "";
   const id = Number(value);
   if (!/^\d+$/.test(value) || !Number.isSafeInteger(id)) {
@@ -35,25 +35,25 @@ function processThreadId() {
   return id;
 }
 
-const thread_id = processThreadId();
+const threadId = processThreadId();
 /** @type {number[]} */
-let worker_ids = []; // active worker ids (cluster.workers can contain not yet closed workers)
+let workerIds = []; // active worker ids (cluster.workers can contain not yet closed workers)
 /** @type {Record<number, SubprocessWorker>} */
-let worker_procs = {};
-let worker_generation = 0;
+let workerProcs = {};
+let workerGeneration = 0;
 /** @type {WeakMap<SubprocessWorker | ClusterWorker, "requested" | "forced" | "reported">} */
 const expectedWorkerCloses = new WeakMap();
 /** @type {NativeCoreModule | null} */
-let core_module_for_exit = null;
-let worker_log_level = 0;
-const worker_message_prefix = "MOM_WORKER_MESSAGE ";
-const max_worker_message_line = 1024 * 1024;
-const {MAX_PEARL_PROOF_BASE64, MAX_PROOF_EVENT_OVERHEAD} = require("./helper/worker-protocol");
-const max_worker_proof_line = MAX_PEARL_PROOF_BASE64 + MAX_PROOF_EVENT_OVERHEAD;
-const diagnostics = require("./helper/diagnostics");
-const {filterWorkerStderr, filterWorkerStdoutLine} = diagnostics;
-module.exports.filterWorkerStderr = filterWorkerStderr;
-module.exports.filterWorkerStdoutLine = filterWorkerStdoutLine;
+let coreModuleForExit = null;
+let workerLogLevel = 0;
+const WORKER_MESSAGE_PREFIX = "MOM_WORKER_MESSAGE ";
+const MAX_WORKER_MESSAGE_LINE = 1024 * 1024;
+const {
+  MAX_PEARL_PROOF_BASE64, MAX_PROOF_EVENT_OVERHEAD, isIdentifier, isJobNonce, isNonceHex,
+} = require("./helper/worker-protocol");
+const MAX_WORKER_PROOF_LINE = MAX_PEARL_PROOF_BASE64 + MAX_PROOF_EVENT_OVERHEAD;
+const {filterWorkerStderr, filterWorkerStdoutLine} = require("./helper/diagnostics");
+const {isObject, errorMessage} = require("./helper/validate");
 
 const miningJobStringFields = [
   "backend", "backend_request", "blob", "extra_nonce", "extranonce2", "header_hash",
@@ -68,11 +68,6 @@ const miningJobPositiveFields = [
   "pearlhash_rank", "proofsize", "thread_num",
 ];
 
-/** @param {unknown} value @returns {value is UnknownRecord} */
-function isObject(value) {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
 /** @param {unknown} value @returns {value is NativeCoreModule} */
 function isNativeCoreModule(value) {
   return isObject(value) && typeof value["AsyncWorker"] === "function" &&
@@ -84,6 +79,8 @@ function isNativeCoreWorker(value) {
   return isObject(value) && typeof value["sendToCpp"] === "function";
 }
 
+// Admit only a complete, well-typed job before it crosses into a worker or the native core. Pearl
+// shapes are validated as a whole because the native kernel trusts their derived dimensions.
 /** @param {unknown} value @returns {value is NativeJob} */
 function isNativeJob(value) {
   if (!isObject(value) || typeof value["algo"] !== "string" ||
@@ -140,31 +137,10 @@ function isNativeJob(value) {
       }
     }
   }
-  const nonce = value["nonce"];
-  if (nonce !== undefined &&
-      !(typeof nonce === "string" && /^[0-9a-f]{1,16}$/i.test(nonce)) &&
-      !(typeof nonce === "number" && Number.isSafeInteger(nonce) && nonce >= 0)) {
-    return false;
-  }
-  const mask = value["nicehash_mask"];
-  if (mask !== undefined && (typeof mask !== "string" || !/^[0-9a-f]{1,16}$/i.test(mask))) {
-    return false;
-  }
-  for (const field of ["job_id", "pool_id", "worker_id"]) {
-    const fieldValue = value[field];
-    if (fieldValue !== undefined && typeof fieldValue !== "string" &&
-        (typeof fieldValue !== "number" || !Number.isSafeInteger(fieldValue))) {
-      return false;
-    }
-  }
-  return true;
-}
-
-/** @param {object} job @param {string} key */
-function hasJobIdentifier(job, key) {
-  const value = Reflect.get(job, key);
-  return typeof value === "string" ||
-    typeof value === "number" && Number.isSafeInteger(value);
+  if (value["nonce"] !== undefined && !isJobNonce(value["nonce"])) {return false;}
+  if (value["nicehash_mask"] !== undefined && !isNonceHex(value["nicehash_mask"])) {return false;}
+  return ["job_id", "pool_id", "worker_id"].every((field) =>
+    value[field] === undefined || isIdentifier(value[field]));
 }
 
 /** @param {unknown} value @returns {value is WorkerCommand} */
@@ -177,9 +153,8 @@ function isWorkerCommand(value) {
   }
   if (type !== "job") {return true;}
   const job = value["job"];
-  return typeof job.target === "string" && /^[0-9a-f]{1,64}$/i.test(job.target.replace(/^0x/i, "")) &&
-    hasJobIdentifier(job, "job_id") && hasJobIdentifier(job, "pool_id") &&
-    hasJobIdentifier(job, "worker_id") &&
+  return typeof job.target === "string" && /^(?:0x)?[0-9a-f]{1,64}$/i.test(job.target) &&
+    isIdentifier(job.job_id) && isIdentifier(job.pool_id) && isIdentifier(job.worker_id) &&
     typeof job.job_token === "string" && job.job_token.length > 0;
 }
 
@@ -191,6 +166,8 @@ function isWorkerEvent(value) {
 }
 module.exports.is_worker_event = isWorkerEvent;
 
+// Exit on a later turn so the current handler can finish logging. Unlike the controller's exit, a
+// worker does not wait for its output streams to drain.
 /** @param {number} code */
 function reallyExit(code) {
   setImmediate(() => module.exports.exit_now(code));
@@ -223,7 +200,7 @@ function withWindowsWorkerPath(env) {
     path.join(appDir, "mom"),
     process.cwd(),
     path.join(process.cwd(), "mom"),
-    path.join(__dirname, "build", development_build_platform, "Release"),
+    path.join(__dirname, "build", developmentBuildPlatform, "Release"),
   ]);
 }
 
@@ -260,33 +237,33 @@ function appendRecentText(current, chunk, limit = 8192) {
 const WORKER_REPLACE_CLOSE_GRACE_MS = 3000;
 
 /** @param {string} str */
-function log_str(str) {
+function timestamped(str) {
   return (new Date().toISOString().replace(/T/, " ").replace(/\..+/, "")) + " " + str;
 }
 
 function logLevel() {
-  return is_worker_process ? worker_log_level : global.opt.log_level;
+  return isWorkerProcess ? workerLogLevel : global.opt.log_level;
 }
 
 /** @param {string} str */
 module.exports.log = function(str) {
-  console.log(log_str(logLevel() >= 1 ? "[0] " + str : str));
+  console.log(timestamped(logLevel() >= 1 ? "[0] " + str : str));
 };
 
 /** @param {number} level */
 function makeLevelLogger(level) {
   return function(/** @type {string} */ str) {
-    if (logLevel() >= level) {console.log(log_str("[" + level + "] " + str));}
+    if (logLevel() >= level) {console.log(timestamped("[" + level + "] " + str));}
   };
 }
 
-const compute_message_redacted_keys = new Set(["plain_proof", "worker_id", "login", "pass", "wallet"]);
+const redactedComputeMessageKeys = new Set(["plain_proof", "worker_id", "login", "pass", "wallet"]);
 
 /** @param {unknown} value @returns {string} */
-function format_compute_message(value) {
+function formatComputeMessage(value) {
   try {
     const serialized = JSON.stringify(value, (key, nested) =>
-      compute_message_redacted_keys.has(key) ? "<redacted>" : nested);
+      redactedComputeMessageKeys.has(key) ? "<redacted>" : nested);
     return serialized === undefined ? "undefined" : serialized;
   } catch {
     return "<unprintable compute message>";
@@ -299,7 +276,7 @@ module.exports.log3 = makeLevelLogger(3);
 
 /** @param {string} str */
 module.exports.log_err = function(str) {
-  console.error(log_str("ERROR: " + str));
+  console.error(timestamped("ERROR: " + str));
 };
 
 /** Resolve the addon and prepare only its matching Windows loader directory.
@@ -311,7 +288,7 @@ module.exports.prepare_native_core_path = function(env = process.env, platform =
   const appDir = path.dirname(process.execPath);
   const platformBuild = platform === "win32" ? "win" : "lin";
   // The selected addon and runtime are one choice; a missing addon must not load a different worker.
-  const core_path = env["MOM_NATIVE_PATH"] || firstExistingPath([
+  const corePath = env["MOM_NATIVE_PATH"] || firstExistingPath([
     path.join(appDir, "libs", "mom.node"),
     path.join(appDir, "mom.node"),
     path.join(appDir, "mom", "mom.node"),
@@ -325,30 +302,32 @@ module.exports.prepare_native_core_path = function(env = process.env, platform =
     platform === "win32" ? path.join(__dirname, "build", "win", "compilers", "oneapi", "mom.node") : undefined,
     path.join(__dirname, "build", platformBuild, "Release", "mom.node"),
   ]);
-  if (platform === "win32") {withWindowsPathEntries(env, [path.dirname(core_path)]);}
-  return core_path;
+  if (platform === "win32") {withWindowsPathEntries(env, [path.dirname(corePath)]);}
+  return corePath;
 };
 
+// Load the native addon (or the native application's linked core) and wrap its AsyncWorker as an
+// emitter of core events plus emit_to(). Native commands take string-valued payloads only.
 /** @returns {ComputeCore} */
 module.exports.create_core = function() {
-  this.log3("Starting compute core in " + thread_id + " thread");
+  this.log3("Starting compute core in " + threadId + " thread");
   /** @type {unknown} */
-  let loaded_module = globalThis.__momNativeCore;
-  if (loaded_module === undefined) {
-    const core_path = module.exports.prepare_native_core_path();
-    debugStartup("requiring " + core_path);
-    loaded_module = require(core_path);
+  let loadedModule = globalThis.__momNativeCore;
+  if (loadedModule === undefined) {
+    const corePath = module.exports.prepare_native_core_path();
+    debugStartup("requiring " + corePath);
+    loadedModule = require(corePath);
   }
-  if (!isNativeCoreModule(loaded_module)) {throw new Error("Invalid native compute-core module");}
-  const core_module = loaded_module;
+  if (!isNativeCoreModule(loadedModule)) {throw new Error("Invalid native compute-core module");}
+  const coreModule = loadedModule;
   debugStartup("required native module");
-  core_module_for_exit = core_module;
+  coreModuleForExit = coreModule;
   const emitter = new EventEmitter();
   debugStartup("constructing AsyncWorker");
-  const worker = new core_module.AsyncWorker(
+  const worker = new coreModule.AsyncWorker(
     function(/** @type {string} */ name, /** @type {unknown} */ value) {
-      module.exports.log3("Getting from compute core " + thread_id + " " + name + " message: " +
-                          format_compute_message(value));
+      module.exports.log3("Getting from compute core " + threadId + " " + name + " message: " +
+                          formatComputeMessage(value));
       emitter.emit(name, value);
     },
     function() { emitter.emit("close"); },
@@ -359,8 +338,8 @@ module.exports.create_core = function() {
   return {
     from:    emitter,
     emit_to: function(/** @type {string} */ name, /** @type {object | undefined} */ data) {
-      module.exports.log3("Sending to compute core " + thread_id + " " + name + " message: " +
-                          format_compute_message(data));
+      module.exports.log3("Sending to compute core " + threadId + " " + name + " message: " +
+                          formatComputeMessage(data));
       /** @type {Record<string, string>} */
       const payload = {};
       // native core expects string values; map null/undefined to empty string
@@ -376,38 +355,37 @@ module.exports.create_core = function() {
 
 /** @param {number} code */
 module.exports.exit_now = function(code) {
-  if (core_module_for_exit && core_module_for_exit.exitNow) {
-    core_module_for_exit.exitNow(code);
+  if (coreModuleForExit && coreModuleForExit.exitNow) {
+    coreModuleForExit.exitNow(code);
   }
   process.exit(code);
 };
 
 /** @param {string} type @param {unknown} value */
 function sendWorkerMessage(type, value) {
-  const msg = {type, value, thread_id};
+  const msg = {type, value, thread_id: threadId};
   if (process.send) {return process.send(msg);}
-  return process.stdout.write(worker_message_prefix + JSON.stringify(msg) + "\n");
+  return process.stdout.write(WORKER_MESSAGE_PREFIX + JSON.stringify(msg) + "\n");
 }
 
-/** @param {ComputeCore} compute_core */
-function forwardCoreMessages(compute_core) {
+/** @param {ComputeCore} computeCore */
+function forwardCoreMessages(computeCore) {
   for (const name of ["test", "last_nonce", "result", "hashrate", "algo_params"]) {
-    compute_core.from.on(name, function(v) { sendWorkerMessage(name, v); });
+    computeCore.from.on(name, function(v) { sendWorkerMessage(name, v); });
   }
-  compute_core.from.on("error", function(error) {
-    const message = error instanceof Error ? error.message :
-      isObject(error) && typeof error["message"] === "string" ? error["message"] : String(error);
-    sendWorkerMessage("error", {message});
+  computeCore.from.on("error", function(error) {
+    sendWorkerMessage("error", {message: errorMessage(error)});
   });
 }
 
-/** @param {() => void} close_worker_process */
-function installWorkerExitHandlers(close_worker_process) {
+// The first signal asks the core to close cleanly; a second one exits immediately.
+/** @param {() => void} closeWorkerProcess */
+function installWorkerExitHandlers(closeWorkerProcess) {
   let receivedSignal = false;
   const receiveSignal = function() {
     if (receivedSignal) {return reallyExit(0);}
     receivedSignal = true;
-    close_worker_process();
+    closeWorkerProcess();
   };
   process.on("SIGINT", receiveSignal);
   process.on("SIGTERM", receiveSignal);
@@ -418,8 +396,8 @@ function installWorkerExitHandlers(close_worker_process) {
   }
 }
 
-/** @param {ComputeCore} compute_core @param {WorkerJobCommand} msg @param {number} workerThreadId */
-function startWorkerJob(compute_core, msg, workerThreadId) {
+/** @param {ComputeCore} computeCore @param {WorkerJobCommand} msg @param {number} workerThreadId */
+function startWorkerJob(computeCore, msg, workerThreadId) {
   // Worker topology is owned at dispatch; capture the count before per-worker device selection/tuning.
   const workerThreadCount = module.exports.get_dev_threads(msg.job.dev);
   // find dev for this specific thread from msg.job.dev list
@@ -428,19 +406,21 @@ function startWorkerJob(compute_core, msg, workerThreadId) {
   gpuTuning.applyNativeJobTuning(msg.job, selected, msg.job.algo);
   msg.job.thread_id = workerThreadId;
   msg.job.thread_num = workerThreadCount;
-  compute_core.emit_to(msg.type, msg.job);
+  computeCore.emit_to(msg.type, msg.job);
 }
 
-/** @param {ComputeCore} compute_core @param {WorkerCommand} msg @param {number} workerThreadId */
-function handleWorkerMessage(compute_core, msg, workerThreadId) {
+/** @param {ComputeCore} computeCore @param {WorkerCommand} msg @param {number} workerThreadId */
+function handleWorkerMessage(computeCore, msg, workerThreadId) {
   if (msg.type === "job" || msg.type === "bench" || msg.type === "test") {
-    return startWorkerJob(compute_core, msg, workerThreadId);
+    return startWorkerJob(computeCore, msg, workerThreadId);
   }
-  return compute_core.emit_to(msg.type);
+  return computeCore.emit_to(msg.type);
 }
 
-/** @param {(message: unknown) => boolean} handle_msg @param {() => void} on_end */
-function readStdinMessages(handle_msg, on_end) {
+// Subprocess workers receive newline-delimited JSON commands on stdin. Any oversized, malformed,
+// or rejected line is fatal for the worker; a clean EOF closes it like a close command.
+/** @param {(message: unknown) => boolean} handleMessage @param {() => void} onEnd */
+function readStdinMessages(handleMessage, onEnd) {
   let input = "";
   let failed = false;
   const fail = function(/** @type {string} */ message) {
@@ -459,7 +439,7 @@ function readStdinMessages(handle_msg, on_end) {
     while ((eol = input.indexOf("\n")) !== -1) {
       const line = input.slice(0, eol);
       input = input.slice(eol + 1);
-      if (line.length > max_worker_message_line) {
+      if (line.length > MAX_WORKER_MESSAGE_LINE) {
         return fail("Worker IPC input exceeded the message line limit");
       }
       if (!line) {continue;}
@@ -469,41 +449,43 @@ function readStdinMessages(handle_msg, on_end) {
       } catch {
         return fail("Worker IPC input was malformed");
       }
-      if (!handle_msg(message)) {
+      if (!handleMessage(message)) {
         return fail("Worker IPC input was malformed");
       }
     }
-    if (input.length > max_worker_message_line) {
+    if (input.length > MAX_WORKER_MESSAGE_LINE) {
       return fail("Worker IPC input exceeded the message line limit");
     }
   });
   process.stdin.once("end", function() {
     if (failed) {return;}
     if (input.trim()) {return fail("Worker IPC input was malformed");}
-    on_end();
+    onEnd();
   });
 }
 
+// In a worker process, own one compute core, forward its events to the controller, and execute
+// controller commands until close. Returns false in the controller process.
 module.exports.cluster_process = function() {
-  if (!is_worker_process) {return false;}
-  if (typeof thread_id !== "number") {throw new Error("Worker process has no numeric thread id");}
-  const workerThreadId = thread_id;
+  if (!isWorkerProcess) {return false;}
+  if (typeof threadId !== "number") {throw new Error("Worker process has no numeric thread id");}
+  const workerThreadId = threadId;
 
   // process worker thread env vars
-  worker_log_level = Number.parseInt(process.env["log_level"] || "0", 10);
+  workerLogLevel = Number.parseInt(process.env["log_level"] || "0", 10);
 
-  const compute_core = this.create_core();
-  let is_exiting = false;
-  const close_worker_process = function() {
-    if (is_exiting) {return;}
-    is_exiting = true;
-    compute_core.emit_to("close");
+  const computeCore = this.create_core();
+  let exiting = false;
+  const closeWorkerProcess = function() {
+    if (exiting) {return;}
+    exiting = true;
+    computeCore.emit_to("close");
   };
 
   // send message from worker thread to master thread
-  forwardCoreMessages(compute_core);
-  compute_core.from.on("close",       function()  {
-    is_exiting = true;
+  forwardCoreMessages(computeCore);
+  computeCore.from.on("close",       function()  {
+    exiting = true;
     process.exitCode = 0;
     // A cluster disconnect marks shutdown intentional; raw process.disconnect invokes Node's forced exit.
     // Let the event loop drain so the native SYCL cleanup hook runs.
@@ -516,60 +498,60 @@ module.exports.cluster_process = function() {
     }
   });
 
-  installWorkerExitHandlers(close_worker_process);
-  const handle_msg = function(/** @type {unknown} */ msg) {
+  installWorkerExitHandlers(closeWorkerProcess);
+  const handleMessage = function(/** @type {unknown} */ msg) {
     if (!isWorkerCommand(msg)) {return false;}
     if (msg.type === "close") {
-      close_worker_process();
+      closeWorkerProcess();
       return true;
     }
-    if (is_exiting) {return true;}
-    handleWorkerMessage(compute_core, msg, workerThreadId);
+    if (exiting) {return true;}
+    handleWorkerMessage(computeCore, msg, workerThreadId);
     return true;
   };
 
   // process messages from the master thread
   process.on("message", function(msg) {
-    if (handle_msg(msg)) {return;}
+    if (handleMessage(msg)) {return;}
     module.exports.log_err("Worker IPC input was malformed");
     reallyExit(1);
   });
-  if (!process.send) {readStdinMessages(handle_msg, close_worker_process);}
+  if (!process.send) {readStdinMessages(handleMessage, closeWorkerProcess);}
 
   return true;
 };
 
 // get thread dev stripping ^thread specification from it
-/** @param {string} dev_part */
-function parseThreadDev(dev_part) {
-  const parsed = gpuTuning.parseDeviceEntry(dev_part);
+/** @param {string} devPart */
+function parseThreadDev(devPart) {
+  const parsed = gpuTuning.parseDeviceEntry(devPart);
   const processSuffix = parsed.processes > 1 ? `^${parsed.processes}` : "";
   return {
     // Keep *B intact here: its primary-field meaning is algorithm-specific and
     // is resolved in the worker, where the job's algorithm is available.
-    dev: dev_part.slice(0, dev_part.length - processSuffix.length),
+    dev: devPart.slice(0, devPart.length - processSuffix.length),
     threads: parsed.processes,
   };
 }
 
-/** @param {number} thread_id @param {string} devs */
-module.exports.get_thread_dev = function(thread_id, devs) {
-  let thread_count = 0;
-  for (const dev_part of devs.split(",")) {
-    const parsed = parseThreadDev(dev_part);
-    thread_count += parsed.threads;
-    if (thread_id < thread_count) {return parsed.dev;}
+/** @param {number} threadId @param {string} devs */
+module.exports.get_thread_dev = function(threadId, devs) {
+  let threadCount = 0;
+  for (const devPart of devs.split(",")) {
+    const parsed = parseThreadDev(devPart);
+    threadCount += parsed.threads;
+    if (threadId < threadCount) {return parsed.dev;}
   }
-  this.log_err("Can't find " + thread_id + " thread device in " + devs + " specification");
+  this.log_err("Can't find " + threadId + " thread device in " + devs + " specification");
   return null;
 };
 
 // return number of ^threads in dev specification
 /** @param {string} dev */
 module.exports.get_dev_threads = function(dev) {
-  let thread_count = 0;
-  for (const dev_part of dev.split(",")) {thread_count += parseThreadDev(dev_part).threads;}
-  return thread_count;
+  let threadCount = 0;
+  for (const devPart of dev.split(",")) {threadCount += parseThreadDev(devPart).threads;}
+  return threadCount;
 };
 
 // return dev *batch value
@@ -596,57 +578,57 @@ function isUnexpectedSendError(worker, msg) {
 }
 
 /**
- * @param {number} worker_id
+ * @param {number} workerId
  * @param {SubprocessWorker | undefined} worker
  * @param {WorkerCommand} msg
  * @returns {WorkerTarget | null}
  */
-function sendSubprocessWorker(worker_id, worker, msg) {
+function sendSubprocessWorker(workerId, worker, msg) {
   if (!worker) {return null;}
   markExpectedClose(worker, msg);
   /** @type {WorkerTarget} */
-  const target = {type: "subprocess", id: worker_id, worker};
+  const target = {type: "subprocess", id: workerId, worker};
   if (!worker.stdin || !worker.stdin.writable) {return msg.type === "close" ? target : null;}
   worker.stdin.write(JSON.stringify(msg) + "\n");
   return target;
 }
 
-/** @param {ClusterWorker} cluster_worker @param {WorkerCommand} msg @param {Error} error */
-function emitClusterSendError(cluster_worker, msg, error) {
-  if (isUnexpectedSendError(cluster_worker, msg)) {cluster_worker.emit("error", error);}
+/** @param {ClusterWorker} clusterWorker @param {WorkerCommand} msg @param {Error} error */
+function emitClusterSendError(clusterWorker, msg, error) {
+  if (isUnexpectedSendError(clusterWorker, msg)) {clusterWorker.emit("error", error);}
 }
 
-/** @param {ClusterWorker} cluster_worker */
-function canSendClusterWorker(cluster_worker) {
-  return !cluster_worker.isConnected || cluster_worker.isConnected();
+/** @param {ClusterWorker} clusterWorker */
+function canSendClusterWorker(clusterWorker) {
+  return !clusterWorker.isConnected || clusterWorker.isConnected();
 }
 
-/** @param {ClusterWorker} cluster_worker @param {WorkerCommand} msg */
-function sendClusterMessage(cluster_worker, msg) {
+/** @param {ClusterWorker} clusterWorker @param {WorkerCommand} msg */
+function sendClusterMessage(clusterWorker, msg) {
   try {
-    cluster_worker.send(msg, function(error) {
-      if (error) {emitClusterSendError(cluster_worker, msg, error);}
+    clusterWorker.send(msg, function(error) {
+      if (error) {emitClusterSendError(clusterWorker, msg, error);}
     });
   } catch (error) {
-    emitClusterSendError(cluster_worker, msg,
-      error instanceof Error ? error : new Error(String(error)));
+    emitClusterSendError(clusterWorker, msg,
+      error instanceof Error ? error : new Error(errorMessage(error)));
     return false;
   }
   return true;
 }
 
 /**
- * @param {number} worker_id
- * @param {ClusterWorker | undefined} cluster_worker
+ * @param {number} workerId
+ * @param {ClusterWorker | undefined} clusterWorker
  * @param {WorkerCommand} msg
  * @returns {WorkerTarget | null}
  */
-function sendClusterWorker(worker_id, cluster_worker, msg) {
-  if (!cluster_worker) {return null;}
-  markExpectedClose(cluster_worker, msg);
+function sendClusterWorker(workerId, clusterWorker, msg) {
+  if (!clusterWorker) {return null;}
+  markExpectedClose(clusterWorker, msg);
   /** @type {WorkerTarget} */
-  const target = {type: "cluster", id: worker_id, worker: cluster_worker};
-  if (!canSendClusterWorker(cluster_worker) || !sendClusterMessage(cluster_worker, msg)) {
+  const target = {type: "cluster", id: workerId, worker: clusterWorker};
+  if (!canSendClusterWorker(clusterWorker) || !sendClusterMessage(clusterWorker, msg)) {
     return msg.type === "close" ? target : null;
   }
   return target;
@@ -657,9 +639,9 @@ module.exports.messageWorkers = function(msg) {
   if (!isWorkerCommand(msg)) {throw new Error("Invalid worker command");}
   /** @type {WorkerTarget[]} */
   const targets = [];
-  for (const worker_id of worker_ids) {
-    const target = sendSubprocessWorker(worker_id, worker_procs[worker_id], msg) ||
-                   sendClusterWorker(worker_id, cluster.workers?.[worker_id], msg);
+  for (const workerId of workerIds) {
+    const target = sendSubprocessWorker(workerId, workerProcs[workerId], msg) ||
+                   sendClusterWorker(workerId, cluster.workers?.[workerId], msg);
     if (target) {targets.push(target);}
   }
   return targets;
@@ -672,7 +654,7 @@ function isSubprocessClosed(worker) {
 
 /** @param {SubprocessWorker} worker @param {NodeJS.Signals} [signal] */
 function killProcessTree(worker, signal = "SIGKILL") {
-  if (!is_windows_process || !worker.pid || globalThis.__momNativeCore !== undefined) {
+  if (!isWindowsProcess || !worker.pid || globalThis.__momNativeCore !== undefined) {
     worker.kill(signal);
     return false;
   }
@@ -710,40 +692,40 @@ module.exports.closeWorkers = function(forceAfterMs) {
   return targets;
 };
 
-/** @param {WorkerMessageHandler} messageHandler @param {number} thread_id @param {string} message */
-function workerError(messageHandler, thread_id, message) {
+/** @param {WorkerMessageHandler} messageHandler @param {number} threadId @param {string} message */
+function workerError(messageHandler, threadId, message) {
   messageHandler({
     type: "error",
     value: {message, fatal: true},
-    thread_id
+    thread_id: threadId,
   });
 }
 
 /**
- * @param {number} thread_id
+ * @param {number} threadId
  * @param {number | null} code
  * @param {string | null} signal
  * @param {string[]} [detail]
  */
-function workerExitMessage(thread_id, code, signal, detail = []) {
-  return "Worker " + thread_id + " exited unexpectedly" +
+function workerExitMessage(threadId, code, signal, detail = []) {
+  return "Worker " + threadId + " exited unexpectedly" +
     (signal ? " with signal " + signal : " with code " + code) +
     (detail.length ? ". " + detail.join(" | ") : "");
 }
 
 /**
  * @param {SubprocessWorker | ClusterWorker} worker
- * @param {number} worker_id
+ * @param {number} workerId
  * @param {number | null} code
  * @param {string | null} signal
  * @param {string[]} [detail]
  * @returns {boolean}
  */
-function handleExpectedWorkerExit(worker, worker_id, code, signal, detail = []) {
+function handleExpectedWorkerExit(worker, workerId, code, signal, detail = []) {
   const reason = expectedWorkerCloses.get(worker);
   if (reason === "requested") {
     if (code !== 0 || signal !== null) {
-      module.exports.log_err(workerExitMessage(worker_id, code, signal, detail));
+      module.exports.log_err(workerExitMessage(workerId, code, signal, detail));
       process.exitCode = 1;
       expectedWorkerCloses.set(worker, "reported");
     }
@@ -755,12 +737,16 @@ function handleExpectedWorkerExit(worker, worker_id, code, signal, detail = []) 
 /** @param {WorkerMessageHandler} messageHandler @param {number} generation */
 function forWorkerGeneration(messageHandler, generation) {
   return function(/** @type {WorkerEvent} */ message) {
-    if (generation === worker_generation) {
+    if (generation === workerGeneration) {
       messageHandler(message);
     }
   };
 }
 
+// Spawn worker i as a child process (Windows, AMD, or MOM_USE_SUBPROCESS_WORKERS). Its stdout
+// interleaves prefixed JSON events with ordinary output: events are size-limited and validated, and
+// any protocol violation kills the worker and reports one fatal error. Recent plain output is kept
+// only to explain an unexpected exit; IPC payloads never enter that diagnostic.
 /** @param {number} i @param {NodeJS.ProcessEnv} env @param {WorkerMessageHandler} messageHandler */
 function createSubprocessThread(i, env, messageHandler) {
   const thread = childProcess.spawn(
@@ -787,12 +773,12 @@ function createSubprocessThread(i, env, messageHandler) {
     while ((eol = output.indexOf("\n")) !== -1) {
       const line = output.slice(0, eol);
       output = output.slice(eol + 1);
-      if (line.startsWith(worker_message_prefix)) {
+      if (line.startsWith(WORKER_MESSAGE_PREFIX)) {
         if (failureReported) {continue;}
         let message;
         try {
-          if (line.length > max_worker_proof_line) {throw new Error("oversized worker output");}
-          message = JSON.parse(line.slice(worker_message_prefix.length));
+          if (line.length > MAX_WORKER_PROOF_LINE) {throw new Error("oversized worker output");}
+          message = JSON.parse(line.slice(WORKER_MESSAGE_PREFIX.length));
         } catch {
           failWorker("Worker " + i + " emitted malformed worker output");
           output = "";
@@ -802,7 +788,7 @@ function createSubprocessThread(i, env, messageHandler) {
           failWorker("Worker " + i + " emitted invalid worker output");
           continue;
         }
-        if (line.length > max_worker_message_line) {
+        if (line.length > MAX_WORKER_MESSAGE_LINE) {
           const proof = message.value["plain_proof"];
           // Only proof-bearing results get the larger budget; all other envelope fields stay small.
           if (message.type !== "result" || typeof proof !== "string" ||
@@ -821,8 +807,8 @@ function createSubprocessThread(i, env, messageHandler) {
         }
       }
     }
-    const pendingLimit = output.startsWith(worker_message_prefix) ?
-      max_worker_proof_line : max_worker_message_line;
+    const pendingLimit = output.startsWith(WORKER_MESSAGE_PREFIX) ?
+      MAX_WORKER_PROOF_LINE : MAX_WORKER_MESSAGE_LINE;
     if (output.length > pendingLimit) {
       failWorker("Worker " + i + " exceeded the worker output line limit");
       output = "";
@@ -830,8 +816,8 @@ function createSubprocessThread(i, env, messageHandler) {
   });
   thread.stdout.on("end", function() {
     // Never retain even a truncated IPC payload in unexpected-exit diagnostics.
-    if (output && !output.startsWith(worker_message_prefix) &&
-        !worker_message_prefix.startsWith(output)) {
+    if (output && !output.startsWith(WORKER_MESSAGE_PREFIX) &&
+        !WORKER_MESSAGE_PREFIX.startsWith(output)) {
       const visible = filterWorkerStdoutLine(output);
       if (visible) {recentStdout = appendRecentText(recentStdout, visible);}
     }
@@ -858,10 +844,10 @@ function createSubprocessThread(i, env, messageHandler) {
     failWorker("Worker " + i + " failed to start: " + error.message);
   });
   thread.on("exit", function(code, signal) {
-    const current = worker_procs[i] === thread;
+    const current = workerProcs[i] === thread;
     if (current) {
-      delete worker_procs[i];
-      worker_ids = worker_ids.filter((worker_id) => worker_id !== i);
+      delete workerProcs[i];
+      workerIds = workerIds.filter((workerId) => workerId !== i);
     }
     if (handleExpectedWorkerExit(thread, i, code, signal,
       workerExitDetail(recentStdout, recentStderr))) {return;}
@@ -870,8 +856,8 @@ function createSubprocessThread(i, env, messageHandler) {
       workerExitDetail(recentStdout, recentStderr)
     ));
   });
-  worker_ids.push(i);
-  worker_procs[i] = thread;
+  workerIds.push(i);
+  workerProcs[i] = thread;
 }
 
 /** @param {string} recentStdout @param {string} recentStderr */
@@ -883,6 +869,8 @@ function workerExitDetail(recentStdout, recentStderr) {
   return detail;
 }
 
+// Fork worker i through cluster IPC. The first invalid event retires the worker and reports one
+// fatal error; later events from it are ignored.
 /** @param {number} i @param {NodeJS.ProcessEnv} env @param {WorkerMessageHandler} messageHandler */
 function createClusterThread(i, env, messageHandler) {
   const thread = cluster.fork(env);
@@ -901,11 +889,11 @@ function createClusterThread(i, env, messageHandler) {
     workerError(messageHandler, i, "Worker " + i + " IPC error: " + error.message);
   });
   thread.on("exit", function(code, signal) {
-    worker_ids = worker_ids.filter((worker_id) => worker_id !== thread.id);
+    workerIds = workerIds.filter((workerId) => workerId !== thread.id);
     if (handleExpectedWorkerExit(thread, i, code, signal)) {return;}
     workerError(messageHandler, i, workerExitMessage(i, code, signal));
   });
-  worker_ids.push(thread.id);
+  workerIds.push(thread.id);
 }
 
 // Map 0..N-1 thread IDs into worker.id (which might not be sequential). Algorithm changes start at
@@ -919,21 +907,21 @@ module.exports.recreate_threads = function(dev, messageHandler, extraEnv = {}) {
   // Reject invalid replacement configuration before retiring the active worker generation.
   /** @type {NodeJS.ProcessEnv[]} */
   const environments = [];
-  const curr_thread_count = this.get_dev_threads(dev);
-  for (let i = 0; i < curr_thread_count; ++i) {
+  const threadCount = this.get_dev_threads(dev);
+  for (let i = 0; i < threadCount; ++i) {
     const selectedDev = this.get_thread_dev(i, dev);
     if (!selectedDev) {throw new Error(`No device configured for worker ${i}`);}
     const selectedEnv = typeof extraEnv === "function" ? extraEnv(selectedDev, i) : extraEnv;
     const env = childEnv({thread_id: String(i), log_level: String(logLevel()), ...selectedEnv});
     environments.push(env);
   }
-  const generation = ++worker_generation;
+  const generation = ++workerGeneration;
   module.exports.closeWorkers(WORKER_REPLACE_CLOSE_GRACE_MS);
-  worker_ids = [];
-  worker_procs = {};
+  workerIds = [];
+  workerProcs = {};
   const currentMessageHandler = forWorkerGeneration(messageHandler, generation);
   for (const [i, env] of environments.entries()) {
-    if (use_subprocess_workers) {
+    if (useSubprocessWorkers) {
       createSubprocessThread(i, env, currentMessageHandler);
     } else {
       createClusterThread(i, env, currentMessageHandler);
@@ -941,19 +929,13 @@ module.exports.recreate_threads = function(dev, messageHandler, extraEnv = {}) {
   }
 };
 
-// Re-run cb_next each time it invokes its callback, waiting `delay` ms between
-// runs (or immediately/recursively when delay is falsy).
-/** @param {(next: () => void) => unknown} cb_next @param {number} [delay] */
-module.exports.repeat = function(cb_next, delay) {
-  cb_next(function() {
-    if (delay) {
-      setTimeout(module.exports.repeat, delay, cb_next, delay);
-    } else {
-      module.exports.repeat(cb_next, delay);
-    }
-  });
+// Run step again each time it calls next; callers recurse through asynchronous callbacks.
+/** @param {(next: () => void) => unknown} step */
+module.exports.repeat = function(step) {
+  step(() => module.exports.repeat(step));
 };
 
+// The hash and target arithmetic is part of helper's API for pool, miner, and test callers.
 const hash = require("./helper/hash");
 module.exports.decimalTargetToHex = hash.decimalTargetToHex;
 module.exports.diff2target = hash.diff2target;

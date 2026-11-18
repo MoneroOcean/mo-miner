@@ -3,7 +3,10 @@
 const zlib = require("node:zlib");
 const gpuTuning = require("../gpu-tuning");
 
-const {MAX_PEARL_PROOF_BYTES, MAX_PEARL_PROOF_BASE64} = require("../helper/worker-protocol");
+const {
+  MAX_PEARL_PROOF_BYTES, MAX_PEARL_PROOF_BASE64, isJobId, isNonceHex,
+} = require("../helper/worker-protocol");
+const {isObject} = require("../helper/validate");
 const MAX_JOB_TOKEN_CHARS = 256;
 const MAX_WORKER_ID_CHARS = 4096;
 const MAX_HEADER_HASH_HEX_CHARS = 256 * 2;
@@ -32,29 +35,25 @@ module.exports = ({
 }) => {
 
   /** @type {Record<number, number>} */
-  let thread_hashrates = Object.create(null);
+  let threadHashrates = Object.create(null);
   /** @type {string | null} */
-  let hashrate_job_identity = null;
-  const cortex_pending_limit = 4096;
-  let cortex_submit_id = 72;
+  let hashrateJobIdentity = null;
+  const MAX_PENDING_CORTEX_SUBMITS = 4096;
+  let cortexSubmitId = 72;
 
   function nextCortexSubmitId() {
-    if (cortex_submit_id === Number.MAX_SAFE_INTEGER) {
+    if (cortexSubmitId === Number.MAX_SAFE_INTEGER) {
       throw new Error("Cortex submit request id space exhausted");
     }
-    cortex_submit_id++;
+    cortexSubmitId++;
     // ID 100 belongs to the concurrent ctxc_getWork request and must never identify a share.
-    if (cortex_submit_id === 100) {cortex_submit_id++;}
-    return cortex_submit_id;
+    if (cortexSubmitId === 100) {cortexSubmitId++;}
+    return cortexSubmitId;
   }
 
-  /** @param {unknown} value @returns {value is UnknownRecord} */
-  function isObject(value) {
-    return value !== null && typeof value === "object" && !Array.isArray(value);
-  }
-
+  // Workers report the pool index as a decimal string; unlike pool.js, an unknown index is null.
   /** @param {unknown} pool_id @returns {PoolConfig | null} */
-  function poolAt(pool_id) {
+  function workerPool(pool_id) {
     const index = typeof pool_id === "number" ? pool_id :
       typeof pool_id === "string" && /^\d+$/.test(pool_id) ? Number(pool_id) : -1;
     return Number.isSafeInteger(index) && Object.hasOwn(opt.pools, index)
@@ -73,6 +72,7 @@ module.exports = ({
       raw.toString("base64") === proof ? raw : null;
   }
 
+  // Admit a native share result only with bounded, well-formed fields for every submit dialect.
   /** @param {unknown} value @returns {value is WorkerResult} */
   function isWorkerResult(value) {
     if (!isObject(value)) {return false;}
@@ -81,7 +81,7 @@ module.exports = ({
         typeof value["job_token"] !== "string" || value["job_token"].length === 0 ||
         value["job_token"].length > MAX_JOB_TOKEN_CHARS ||
         typeof value["worker_id"] !== "string" || value["worker_id"].length > MAX_WORKER_ID_CHARS ||
-        !isNonce(value["nonce"])) {
+        !isNonceHex(value["nonce"])) {
       return false;
     }
     for (const field of ["commitment", "hash", "mix_hash"]) {
@@ -93,7 +93,7 @@ module.exports = ({
     const headerHash = value["header_hash"];
     if (headerHash !== undefined) {
       if (typeof headerHash !== "string") {return false;}
-      const rawHeaderHash = headerHash.replace(/^0x/i, "");
+      const rawHeaderHash = submission.hexWithoutPrefix(headerHash);
       if (rawHeaderHash.length > MAX_HEADER_HASH_HEX_CHARS || !/^[0-9a-f]{64,}$/i.test(rawHeaderHash)) {
         return false;
       }
@@ -134,12 +134,14 @@ module.exports = ({
       String(job.job_id) === String(value.job_id) ? job : null;
   }
 
+  // Submit a worker's share in the dialect of the pool job that produced it. Results whose job token
+  // no longer matches the pool's current job are stale and dropped; malformed results are logged.
   /** @param {WorkerEvent} msg */
   function handleResult(msg) {
     if (!isWorkerResult(msg.value)) {return invalidWorkerMessage();}
     const v = msg.value;
     const pool_id = Number(v.pool_id);
-    const pool = poolAt(pool_id);
+    const pool = workerPool(pool_id);
     if (!pool) {
       return invalidWorkerMessage();
     }
@@ -149,7 +151,7 @@ module.exports = ({
     if (typeof jobId !== "string" && typeof jobId !== "number") {
       return invalidWorkerMessage();
     }
-    const submit_mode = job.submit_mode;
+    const submitMode = job.submit_mode;
     const nativeResult = job.submit_result === true && typeof v.hash === "string"
       ? v.hash.toLowerCase() : null;
     const send = (/** @type {UnknownRecord} */ body) =>
@@ -161,7 +163,7 @@ module.exports = ({
 
     // PearlHash: relay each captured proof; distinct winning seeds can share a job/header.
     // Token matching above excludes stale work without suppressing subsequent proofs.
-    if (submit_mode === "pearlhash") {
+    if (submitMode === "pearlhash") {
       if (typeof v.plain_proof !== "string" || typeof v.jackpot !== "string" ||
           typeof v.adjustment_factor !== "string") {return invalidWorkerMessage();}
       const rawProof = decodePearlProof(v.plain_proof);
@@ -183,23 +185,23 @@ module.exports = ({
         adjustment_factor: Number(v.adjustment_factor),
       }});
     }
-    if (submit_mode === "erg") {
+    if (submitMode === "erg") {
       return submit(submission.ergSubmitParams(pool, job, v));
     }
-    if (submit_mode === "verthash") {
+    if (submitMode === "verthash") {
       return submit(submission.verthashSubmitParams(pool, job, v));
     }
-    if (submit_mode === "echelon") {
+    if (submitMode === "echelon") {
       return submit(submission.nexaSubmitParams(pool, job, v));
     }
     // ZIP-301 Equihash: mining.submit [worker, job_id, time, nonce2, compactSize-prefixed solution].
     // Rebuild nonce2 from the native search counter and the job's fixed nonce prefix/tail.
-    if (submit_mode === "zelhash") {
+    if (submitMode === "zelhash") {
       if (typeof v.solution !== "string") {return invalidWorkerMessage();}
       return submit(submission.zelhashSubmitParams(pool, job, v, v.solution));
     }
     // Iron Fish custom OBJECT Stratum v3: submit {miningRequestId, randomness (8-byte BE nonce)}.
-    if (submit_mode === "ironfish") {
+    if (submitMode === "ironfish") {
       // Preserve the pool's request-ID type; the worker job_id is only used for matching.
       const message = {id: 2, method: "mining.submit",
         body: {miningRequestId: jobId, randomness: v.nonce},
@@ -209,25 +211,25 @@ module.exports = ({
     // Kaspa-family submit: mining.submit [wallet.worker, job_id, nonce_hex].
     // The native returns the winning 8-byte nonce as 16-hex big-endian (nonce_to_hex %016PRIx64); the
     // pool parses it big-endian with the extranonce as the leading bytes, which is exactly this layout.
-    if (submit_mode === "kaspa") {
+    if (submitMode === "kaspa") {
       return send({method: "mining.submit", params: [pool.login, jobId, "0x" + v.nonce]});
     }
-    if (submit_mode === "hoosat") {
+    if (submitMode === "hoosat") {
       if (typeof v.hash !== "string") {return invalidWorkerMessage();}
       return send({method: "mining.submit", params: [pool.login, jobId, "0x" + v.nonce, v.hash]});
     }
-    if (submit_mode === "xelis") {
+    if (submitMode === "xelis") {
       // Preserve an opaque numeric pool ID; the worker string is used only to match the current job.
       return send({method: "mining.submit", params: [submission.xelisWorkerName(pool), jobId, v.nonce]});
     }
-    if (submit_mode === "conflux") {
+    if (submitMode === "conflux") {
       const headerHash = resultHeaderHash(v, job);
       if (!headerHash) {return invalidWorkerMessage();}
       return send({method: "mining.submit", params: [pool.login, jobId,
         "0x" + v.nonce,
         "0x" + headerHash]});
     }
-    if (submit_mode === "cortex") {
+    if (submitMode === "cortex") {
       const headerHash = resultHeaderHash(v, job);
       if (!headerHash || typeof v.edges !== "string" || v.edges.length !== 42 * 8) {
         return invalidWorkerMessage();
@@ -239,7 +241,7 @@ module.exports = ({
         pending = new Set();
         pool.pending_cortex_submit_ids = pending;
       }
-      if (pending.size >= cortex_pending_limit) {
+      if (pending.size >= MAX_PENDING_CORTEX_SUBMITS) {
         return h.log_err("Too many pending Cortex submissions");
       }
       const requestId = nextCortexSubmitId();
@@ -248,7 +250,7 @@ module.exports = ({
         params: ["0x" + v.nonce, "0x" + headerHash, "0x" + v.edges],
         worker: pool.worker || "mom"});
     }
-    if (submit_mode === "beam") {
+    if (submitMode === "beam") {
       // Beam JSON-RPC `solution`: TOP-LEVEL {id, nonce(16hex), output(208hex=104B)}. The native emits the
       // nonce as the big-endian hex of the LE-stored 8-byte blob nonce, so reverse it back to the raw
       // blob byte order the pool (and the nonceprefix) expect. The 104-byte solution is already raw.
@@ -267,7 +269,7 @@ module.exports = ({
     const params = {job_id: jobId, nonce: v.nonce};
     params.id = v.worker_id;
     if (v.hash !== undefined) {params.result = v.hash;}
-    if (submit_mode === "raven" || submit_mode === "eth") {
+    if (submitMode === "raven" || submitMode === "eth") {
       if (typeof v.mix_hash !== "string") {return invalidWorkerMessage();}
       const headerHash = resultHeaderHash(v, job);
       if (!headerHash) {return invalidWorkerMessage();}
@@ -316,11 +318,11 @@ module.exports = ({
     if (pool_id === "") {
       return;
     }
-    const pool = poolAt(pool_id);
+    const pool = workerPool(pool_id);
     const nonce = msg.value["nonce"];
     const job_id = msg.value["job_id"];
     const job_token = msg.value["job_token"];
-    if (!pool || !isNonce(nonce) || !isJobId(job_id) ||
+    if (!pool || !isNonceHex(nonce) || !isJobId(job_id) ||
         typeof job_token !== "string" || job_token.length === 0 ||
         job_token.length > MAX_JOB_TOKEN_CHARS) {
       return invalidWorkerMessage();
@@ -339,23 +341,12 @@ module.exports = ({
     }
   }
 
-  /** @param {unknown} value @returns {value is string} */
-  function isNonce(value) {
-    return typeof value === "string" && /^[0-9a-f]{1,16}$/i.test(value);
-  }
-
-  /** @param {unknown} value @returns {value is string | number} */
-  function isJobId(value) {
-    return (typeof value === "string" && value.length > 0 && value.length <= 256) ||
-      (typeof value === "number" && Number.isSafeInteger(value));
-  }
-
-  /** @param {unknown} prev_nonce @param {string} new_nonce */
-  function isNewerNonce(prev_nonce, new_nonce) {
-    if (typeof prev_nonce === "number" && Number.isSafeInteger(prev_nonce) && prev_nonce >= 0) {
-      return BigInt(prev_nonce) < BigInt("0x" + new_nonce);
+  /** @param {unknown} previousNonce @param {string} nextNonce */
+  function isNewerNonce(previousNonce, nextNonce) {
+    if (typeof previousNonce === "number" && Number.isSafeInteger(previousNonce) && previousNonce >= 0) {
+      return BigInt(previousNonce) < BigInt("0x" + nextNonce);
     }
-    return !isNonce(prev_nonce) || BigInt("0x" + prev_nonce) < BigInt("0x" + new_nonce);
+    return !isNonceHex(previousNonce) || BigInt("0x" + previousNonce) < BigInt("0x" + nextNonce);
   }
 
   /** @param {string | null} algo */
@@ -378,6 +369,7 @@ module.exports = ({
       ? test.result_hash_hex.trim().split(/\s+/).length : threads;
   }
 
+  // Collect one worker's test output; once every expected result arrived, compare and exit.
   /** @param {WorkerEvent} msg */
   function handleTestResult(msg) {
     const result = msg.value["result"];
@@ -385,9 +377,9 @@ module.exports = ({
         !validThreadId(msg.thread_id, opt.job.dev)) {
       return invalidWorkerMessage();
     }
-    const test_threads = expectedTestThreads(msg);
+    const testThreads = expectedTestThreads(msg);
     test.result = (test.result ? test.result + " " : "") + result;
-    if (++test.thread_tested < test_threads) {
+    if (++test.thread_tested < testThreads) {
       return;
     }
 
@@ -395,7 +387,7 @@ module.exports = ({
     if (!expectedResults.some(
       (expected) => matchesTestResult(opt.job.algo, test.result, expected)
     )) {
-      fs.writeSync(2, "FAILED: " + test.result + " != " + test.result_hash_hex + " " + test_threads + "\n");
+      fs.writeSync(2, "FAILED: " + test.result + " != " + test.result_hash_hex + " " + testThreads + "\n");
       return exit(1, false);
     }
     fs.writeSync(1, "PASSED\n");
@@ -403,47 +395,49 @@ module.exports = ({
   }
 
   function collectedHashrate() {
-    const rates = Object.values(thread_hashrates);
-    const total_hashrate = rates.reduce((total, rate) => total + rate, 0);
-    const thread_hashrate_str = rates.map(h.formatHashrate).join(", ");
-    return {total_hashrate, thread_hashrate_str};
+    const rates = Object.values(threadHashrates);
+    const totalHashrate = rates.reduce((total, rate) => total + rate, 0);
+    const threadRates = rates.map(h.formatHashrate).join(", ");
+    return {totalHashrate, threadRates};
   }
 
+  // Log the total once every worker of the current job reported, and feed a running benchmark.
+  // Rates from a previous job configuration are discarded.
   /** @param {WorkerEvent} msg */
   function handleHashrate(msg) {
-    const last_job = getLastJob();
+    const lastJob = getLastJob();
     const rawRate = msg.value["hashrate"];
     const rate = typeof rawRate === "string" && rawRate.trim() ? Number(rawRate) : Number.NaN;
-    if (!last_job || typeof last_job.dev !== "string" ||
-        !validThreadId(msg.thread_id, last_job.dev) || !Number.isFinite(rate) || rate < 0) {
+    if (!lastJob || typeof lastJob.dev !== "string" ||
+        !validThreadId(msg.thread_id, lastJob.dev) || !Number.isFinite(rate) || rate < 0) {
       return invalidWorkerMessage();
     }
-    const job_identity = [last_job.algo, last_job.dev, last_job.backend, last_job.backend_request,
-      last_job.job_token]
+    const jobIdentity = [lastJob.algo, lastJob.dev, lastJob.backend, lastJob.backend_request,
+      lastJob.job_token]
       .map((value) => typeof value === "string" ? value : "")
       .join("\u0000");
-    if (hashrate_job_identity !== job_identity) {
-      thread_hashrates = Object.create(null);
-      hashrate_job_identity = job_identity;
+    if (hashrateJobIdentity !== jobIdentity) {
+      threadHashrates = Object.create(null);
+      hashrateJobIdentity = jobIdentity;
     }
-    thread_hashrates[msg.thread_id] = rate;
-    if (Object.keys(thread_hashrates).length < h.get_dev_threads(last_job.dev)) {
+    threadHashrates[msg.thread_id] = rate;
+    if (Object.keys(threadHashrates).length < h.get_dev_threads(lastJob.dev)) {
       return;
     }
 
     const hashrate = collectedHashrate();
-    const backend = last_job.backend_request === "auto"
-      ? `auto[${last_job.backend}]` : last_job.backend;
+    const backend = lastJob.backend_request === "auto"
+      ? `auto[${lastJob.backend}]` : lastJob.backend;
     // Bare cpu uses XMRig; numbered cpu devices use SYCL and still need the backend label.
-    const nativeCpuOnly = gpuTuning.parseDeviceList(last_job.dev, last_job.algo)
+    const nativeCpuOnly = gpuTuning.parseDeviceList(lastJob.dev, lastJob.algo)
       .every((entry) => entry.device === "cpu");
-    const device = nativeCpuOnly ? last_job.dev : `${last_job.dev}:${backend}`;
-    h.log("Algo " + last_job.algo + " (" + device + ") hashrate: " +
-        h.formatHashrate(hashrate.total_hashrate) + " (" + hashrate.thread_hashrate_str + ")");
-    thread_hashrates = Object.create(null);
+    const device = nativeCpuOnly ? lastJob.dev : `${lastJob.dev}:${backend}`;
+    h.log("Algo " + lastJob.algo + " (" + device + ") hashrate: " +
+        h.formatHashrate(hashrate.totalHashrate) + " (" + hashrate.threadRates + ")");
+    threadHashrates = Object.create(null);
     const callback = getAlgoParamsBenchCallback();
     if (callback) {
-      return callback(hashrate.total_hashrate);
+      return callback(hashrate.totalHashrate);
     }
     return undefined;
   }
@@ -454,6 +448,8 @@ module.exports = ({
       thread_id >= 0 && thread_id < h.get_dev_threads(dev);
   }
 
+  // A worker error fails a test run, ends a running benchmark with rate 0, and exits on a fatal
+  // worker loss; other errors are only logged.
   /** @param {WorkerEvent} msg */
   function handleWorkerError(msg) {
     if (msg.value["message"] === "Ignore duplicate job") {
@@ -500,8 +496,8 @@ module.exports = ({
     expectedTestThreads,
     messageHandler,
     resetHashrates: () => {
-      thread_hashrates = Object.create(null);
-      hashrate_job_identity = null;
+      threadHashrates = Object.create(null);
+      hashrateJobIdentity = null;
     },
   };
 };

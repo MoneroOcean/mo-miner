@@ -95,8 +95,7 @@ const repoRoot = path.join(__dirname, "..", "..");
 /** @typedef {import("node:events").EventEmitter & SocketLike} MockSocket */
 /** @type {{opt?: TestOptions}} */
 const testGlobal = /** @type {{opt?: TestOptions}} */ (/** @type {unknown} */ (globalThis));
-/** @type {typeof import("../../helper.js") & typeof import("../../helper/diagnostics.js") &
- *   typeof import("../../helper/hash.js")} */
+/** @type {typeof import("../../helper.js")} */
 const helper = require("../../helper.js");
 /** @type {typeof import("../../pool.js")} */
 const pool = require("../../pool.js");
@@ -276,7 +275,7 @@ async function loadMinerWithStubs(options = {}) {
         return create(dependencies);
       };
     }
-    if (id.startsWith("./miner/")) {return require(path.join(repoRoot, id));}
+    if (id.startsWith("./miner/") || id.startsWith("./helper/")) {return require(path.join(repoRoot, id));}
     return require(id);
   };
 

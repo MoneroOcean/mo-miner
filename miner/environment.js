@@ -1,5 +1,7 @@
 "use strict";
 
+const {errorMessage} = require("../helper/validate");
+
 /** @typedef {{cpu_sockets: number, cpu_threads: number, cpu_l3cache: number}} CpuInfo */
 /** @typedef {{
  *   existsSync(path: string): boolean,
@@ -45,14 +47,14 @@ module.exports = ({
 
   /** @param {string} cpuinfo */
   function cpuSocketCount(cpuinfo) {
-    const physical_ids = new Set();
-    for (const match of cpuinfo.matchAll(/^physical id\s*:\s*(.+)$/gm)) {physical_ids.add(match[1]);}
-    return physical_ids.size || 1;
+    const physicalIds = new Set();
+    for (const match of cpuinfo.matchAll(/^physical id\s*:\s*(.+)$/gm)) {physicalIds.add(match[1]);}
+    return physicalIds.size || 1;
   }
 
-  /** @param {string} size_text */
-  function cacheSizeBytes(size_text) {
-    const size = size_text.match(/^(\d+)([KMG])$/i);
+  /** @param {string} sizeText */
+  function cacheSizeBytes(sizeText) {
+    const size = sizeText.match(/^(\d+)([KMG])$/i);
     if (!size) {return 0;}
     const unit = size[2] && size[2].toUpperCase();
     const multiplier = unit === "K" ? 1024 : unit === "M" ? 1024 * 1024 :
@@ -61,16 +63,16 @@ module.exports = ({
     return Number.isSafeInteger(bytes) ? bytes : 0;
   }
 
-  /** @param {string} base @param {Set<string>} l3_ids */
-  function l3CacheEntryBytes(base, l3_ids) {
+  /** @param {string} base @param {Set<string>} l3Ids */
+  function l3CacheEntryBytes(base, l3Ids) {
     try {
       if (fs.readFileSync(`${base}/type`, "utf8").trim() !== "Unified" ||
           fs.readFileSync(`${base}/level`, "utf8").trim() !== "3") {return 0;}
-      const shared_cpu_list = `${base}/shared_cpu_list`;
-      const id = fs.existsSync(shared_cpu_list)
-        ? fs.readFileSync(shared_cpu_list, "utf8").trim() : base;
-      if (l3_ids.has(id)) {return 0;}
-      l3_ids.add(id);
+      const sharedCpuList = `${base}/shared_cpu_list`;
+      const id = fs.existsSync(sharedCpuList)
+        ? fs.readFileSync(sharedCpuList, "utf8").trim() : base;
+      if (l3Ids.has(id)) {return 0;}
+      l3Ids.add(id);
       return cacheSizeBytes(fs.readFileSync(`${base}/size`, "utf8").trim());
     } catch {
       return 0;
@@ -79,25 +81,27 @@ module.exports = ({
 
   function l3CacheBytes() {
     let l3cache = 0;
-    const l3_ids = new Set();
-    const cpu_dirs = fs.readdirSync("/sys/devices/system/cpu").filter((name) => /^cpu\d+$/.test(name));
-    for (const index of cpu_dirs) {
-      const cache_dir = `/sys/devices/system/cpu/${index}/cache`;
-      if (!fs.existsSync(cache_dir)) {continue;}
-      for (const entry of fs.readdirSync(cache_dir)) {l3cache += l3CacheEntryBytes(`${cache_dir}/${entry}`, l3_ids);}
+    const l3Ids = new Set();
+    const cpuDirs = fs.readdirSync("/sys/devices/system/cpu").filter((name) => /^cpu\d+$/.test(name));
+    for (const index of cpuDirs) {
+      const cacheDir = `/sys/devices/system/cpu/${index}/cache`;
+      if (!fs.existsSync(cacheDir)) {continue;}
+      for (const entry of fs.readdirSync(cacheDir)) {l3cache += l3CacheEntryBytes(`${cacheDir}/${entry}`, l3Ids);}
     }
     return l3cache;
   }
 
-  function detect_cpu() {
+  // CPU sockets, logical threads, and total distinct L3 bytes from Linux procfs/sysfs; elsewhere, or
+  // on any read failure, fall back to os.cpus() with an unknown L3 size.
+  function detectCpu() {
     const fallback = fallbackCpuInfo();
     try {
       if (!hasProcCpuInfo()) {return fallback;}
       const cpuinfo = fs.readFileSync("/proc/cpuinfo", "utf8");
-      const processor_count = (cpuinfo.match(/^processor\s*:/gm) || []).length;
+      const processorCount = (cpuinfo.match(/^processor\s*:/gm) || []).length;
       return {
         cpu_sockets: cpuSocketCount(cpuinfo),
-        cpu_threads: processor_count || fallback.cpu_threads,
+        cpu_threads: processorCount || fallback.cpu_threads,
         cpu_l3cache: l3CacheBytes(),
       };
     } catch {
@@ -109,10 +113,11 @@ module.exports = ({
     return process.platform !== "win32" && fs.existsSync("/proc/cpuinfo");
   }
 
-  function use_msr_tuning() {
+  function useMsrTuning() {
     return process.platform !== "win32" && process.env["MOM_SKIP_MSR"] !== "1";
   }
 
+  // Validate the core's algo_params map: algorithm (or @backend:<algo>) keys to non-empty strings.
   /** @param {Record<string, string>} params @returns {Array<[string, string]>} */
   function validatedAlgoParamEntries(params) {
     if (params === null || typeof params !== "object" || Array.isArray(params)) {
@@ -133,8 +138,10 @@ module.exports = ({
     return entries;
   }
 
+  // Merge the core's device discovery into opt.algo_params: apply backend hints to auto entries, add
+  // newly discovered algorithms, and complete configured device lists with discovered tuning.
   /** @param {Record<string, string>} params */
-  function add_algo_params(params) {
+  function addAlgoParams(params) {
     const entries = validatedAlgoParamEntries(params);
     discoveredDevices.clear();
     for (const [key, value] of entries) {
@@ -174,6 +181,8 @@ module.exports = ({
       discovered.some((candidate) => candidate.device === entry.device));
   }
 
+  // Report each discovered algorithm's resolved device list, annotated with its GPU backend, for the
+  // algorithms directive.
   /** @param {Record<string, string>} params @returns {Record<string, string>} */
   function publicAlgoParams(params) {
     const entries = validatedAlgoParamEntries(params);
@@ -202,19 +211,23 @@ module.exports = ({
     return result;
   }
 
-  function prepare_algo_params() {
+  // Narrow opt.algo_params to what this run may mine. A fixed algorithm keeps only its own entry
+  // (with --job.dev applied); automatic mode keeps discovered algorithms restricted to the requested
+  // devices and per-device process budget. Measured perf is reset when the effective device geometry
+  // changed. Returns false when nothing remains. Requires addAlgoParams to have run first.
+  function prepareAlgoParams() {
     const algo = normalizeAlgoName(opt.job.algo);
     const requestedDev = opt.job.dev_request;
     if (!algo && requestedDev === undefined) {return true;}
     const detected = algo && Object.hasOwn(opt.algo_params, algo) ? opt.algo_params[algo] : undefined;
-    let algo_param = detected || {dev: opt.job.dev, perf: null, backend: "auto", tuning: {}};
+    let algoParam = detected || {dev: opt.job.dev, perf: null, backend: "auto", tuning: {}};
     // An explicit device, including "cpu", overrides discovery while inheriting omitted GPU tuning.
     if (algo && requestedDev !== undefined) {
-      algo_param = {
-        ...algo_param,
+      algoParam = {
+        ...algoParam,
         dev: resolvedDeviceList(
           algo, requestedDev, detected ? detected.dev : requestedDev,
-          algo_param.tuning || {}),
+          algoParam.tuning || {}),
       };
     }
     if (algo) {opt.job.algo = algo;}
@@ -222,7 +235,7 @@ module.exports = ({
     // per-algorithm capability and VRAM decisions within the selected per-device process budget.
     const selectedProcesses = new Map();
     const selectedEntries = gpuTuning.parseDeviceList(
-      algo ? algo_param.dev : /** @type {string} */ (requestedDev), algo || "");
+      algo ? algoParam.dev : /** @type {string} */ (requestedDev), algo || "");
     const boundedDevices = new Set();
     const requestedParts = requestedDev?.split(",") || [];
     for (const [index, entry] of selectedEntries.entries()) {
@@ -236,9 +249,11 @@ module.exports = ({
       );
     }
 
+    // Map each requested device part onto this algorithm's discovered entries, keeping saved tuning
+    // and either discovery's process count or the explicit budget.
     /** @param {string} candidateAlgo @param {AlgoParam} candidate
      * @param {ReturnType<typeof gpuTuning.parseDeviceList>} discovery */
-    function select_auto_entries(candidateAlgo, candidate, discovery) {
+    function selectAutoEntries(candidateAlgo, candidate, discovery) {
       const configured = gpuTuning.parseDeviceList(candidate.dev, candidateAlgo);
       const configuredDevices = new Set(configured.map((entry) => entry.device));
       // Retain saved per-device tuning, but recover actual discovery geometry for new devices.
@@ -254,8 +269,8 @@ module.exports = ({
           // Keep *B in its original form until the algorithm determines its primary tuning field.
           requested = gpuTuning.parseDeviceEntry(part, candidateAlgo);
         } catch (error) {
-          const reason = error instanceof Error ? error.message : String(error);
-          throw new Error(`Selected device tuning is not supported for ${candidateAlgo}: ${reason}`, {cause: error});
+          throw new Error(`Selected device tuning is not supported for ${candidateAlgo}: ` +
+            errorMessage(error), {cause: error});
         }
         const matches = heuristic.filter((entry) => entry.device === device);
         const bounded = boundedDevices.has(device);
@@ -290,7 +305,7 @@ module.exports = ({
       if (!discovery) {continue;}
       const discovered = new Set(discovery.map((entry) => entry.device));
       const resolvedEntries = algo ? gpuTuning.parseDeviceList(candidate.dev, candidateAlgo)
-        : select_auto_entries(candidateAlgo, candidate, discovery);
+        : selectAutoEntries(candidateAlgo, candidate, discovery);
       const remainingProcesses = new Map(selectedProcesses);
       if (!algo) {
         for (const device of discovered) {
@@ -323,13 +338,13 @@ module.exports = ({
         };
       }
     }
-    if (algo) {compatible[algo] = algo_param;}
+    if (algo) {compatible[algo] = algoParam;}
     opt.algo_params = compatible;
     return Object.keys(compatible).length > 0;
   }
 
   return {
-    detect_cpu, use_msr_tuning, add_algo_params, publicAlgoParams,
-    prepare_algo_params, donationAlgoSupported,
+    detectCpu, useMsrTuning, addAlgoParams, publicAlgoParams,
+    prepareAlgoParams, donationAlgoSupported,
   };
 };

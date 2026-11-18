@@ -69,6 +69,7 @@ function isSeparator(row) {
   return row.every((v) => /^:?-{3,}:?$/.test(v));
 }
 
+// Split markdown into its pipe tables, each a list of cell rows.
 /** @param {string} markdown @returns {string[][][]} */
 function tables(markdown) {
   /** @type {string[][][]} */
@@ -110,6 +111,8 @@ function optionalPolicyValue(value) {
   return !value || value === "—" || value === "-" ? undefined : value;
 }
 
+// Parse GPU-CONFIG.md's artifact, default-policy, and per-algorithm override tables, rejecting
+// unknown compiler keys, invalid backends, and duplicate rows.
 /** @param {string} [markdown] @returns {CompilerConfig} */
 function parse(markdown = fs.readFileSync(policyFile, "utf8")) {
   const parsed = tables(markdown).map((table) => ({
@@ -214,6 +217,8 @@ function parseReportedAlgoParam(value) {
   return {dev: text};
 }
 
+// Choose the compiler artifact and backend for an algorithm on a GPU vendor and OS. NVIDIA GPUs
+// below SM80 use the AdaptiveCpp CUDA worker, with portable kernels where native ones need SM80.
 /**
  * @param {unknown} algo
  * @param {unknown} gpu
@@ -256,6 +261,7 @@ function selection(algo, gpu, platform = process.platform, nvidiaSm = null) {
     backend, pearlhashProfile: row.pearlhashProfile};
 }
 
+// Parse a compute capability ("8.6", "86", or a number) into its SM number, or null.
 /** @param {unknown} value @returns {number | null} */
 function parseNvidiaSm(value) {
   if (typeof value !== "number" && typeof value !== "string") {
@@ -275,6 +281,8 @@ function parseNvidiaSm(value) {
   return Number.isSafeInteger(sm) && sm > 0 ? sm : null;
 }
 
+// The lowest compute capability among NVIDIA GPUs (an override env var, the native core's driver
+// query, or nvidia-smi), cached per process; null when unknown.
 /** @param {NodeJS.ProcessEnv} [env] @returns {number | null} */
 function nvidiaComputeCapability(env = process.env) {
   gpuIndex(env);
@@ -350,6 +358,8 @@ function gpuIndex(env) {
   return index;
 }
 
+// Translate MOM_GPU_INDEX into a CUDA/HIP visibility mask so the worker sees one device as ordinal
+// 0. Refuses to narrow an inherited mask it cannot interpret safely.
 /** @param {NodeJS.ProcessEnv} env @returns {NodeJS.ProcessEnv} */
 function vendorDeviceEnv(env) {
   const gpu = gpuFromEnv(env);
@@ -404,6 +414,7 @@ function executableFromPath(name, env) {
   return null;
 }
 
+// The lib or lib64 directory under root that contains every named library, if any.
 /** @param {string} root @param {string[]} libraries @returns {string | null} */
 function runtimeLibraryDirectory(root, libraries) {
   for (const name of ["lib", "lib64"]) {
@@ -458,6 +469,10 @@ function linuxVendorRuntimeDirectory(gpu, env) {
   return null;
 }
 
+// Environment for a hashing worker of this algorithm: the selected addon and its runtime directory
+// first on the loader path, the compiler key, kernel device selection, and SYCL cache settings.
+// An explicit MOM_NATIVE_PATH is honoured and only gets the device mask; a missing addon falls back
+// to the default worker unless that is unsafe (strict mode, integrated Intel, NVIDIA below SM80).
 /**
  * @param {string} algo
  * @param {NodeJS.ProcessEnv} [env]

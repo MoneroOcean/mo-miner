@@ -3,6 +3,7 @@
 const {StringDecoder} = require("node:string_decoder");
 const {normalizeAlgoName} = require("../miner/algorithms");
 const {normalizeFingerprint} = require("./tls");
+const {isObject, isPositiveNumber} = require("../helper/validate");
 
 /**
  * @param {{
@@ -41,19 +42,6 @@ module.exports = ({
   poolWrite, switchPool,
 }) => {
 
-  /** @param {unknown} value @returns {value is UnknownRecord} */
-  function isObject(value) {
-    return value !== null && typeof value === "object" && !Array.isArray(value);
-  }
-
-  /** @param {number} pool_id @returns {string} */
-  function poolTypeStr(pool_id) {
-    switch (pool_id) {
-      case global.opt.pool_ids.primary: return "primary";
-      case global.opt.pool_ids.donate:  return "donate";
-      default:                          return "backup";
-    }
-  }
 
   // Correctness tests must fail loudly, never retry, if they would reach a real mining pool.
   /** @param {PoolConfig} pool */
@@ -75,6 +63,8 @@ module.exports = ({
     return net.connect(options);
   }
 
+  // Build login params for an XMR-style login. With measured (or fixed-algo) capabilities, advertise
+  // them so a mo-native proxy can choose the algorithm, and request the matching extensions.
   /** @param {PoolConfig} pool @returns {UnknownRecord} */
   function poolLoginParams(pool) {
     const algos = [];
@@ -84,7 +74,7 @@ module.exports = ({
     const fixedAlgo = normalizeAlgoName(global.opt.job.algo);
     for (const [algo, params] of Object.entries(algoParams)) {
       const perf = params?.perf;
-      const measured = typeof perf === "number" && Number.isFinite(perf) && perf > 0;
+      const measured = isPositiveNumber(perf);
       // A fixed unbenchmarked job still advertises its capability so a proxy cannot assign a
       // default algorithm; omitting its unknown rate is safer than inventing one.
       if (!measured && algo !== fixedAlgo) {continue;}
@@ -181,43 +171,45 @@ module.exports = ({
   /**
    * @param {number} pool_id
    * @param {PoolMessage} json
-   * @param {(job: PoolJob) => MiningJob} set_job
-   * @param {(message: string) => unknown} pool_err
+   * @param {(job: PoolJob) => MiningJob} setJob
+   * @param {(message: string) => unknown} failPool
    * @returns {boolean}
    */
-  function processPoolJson(pool_id, json, set_job, pool_err) {
+  function processPoolJson(pool_id, json, setJob, failPool) {
     pool_log_json(pool_id, 2, "Got from the pool: ", json);
     try {
-      pool_message(pool_id, json, set_job);
+      pool_message(pool_id, json, setJob);
     } catch (error) {
-      pool_err(pool_log_str(pool_id, "Can't process message from the pool") +
+      failPool(pool_log_str(pool_id, "Can't process message from the pool") +
         poolErrorText(pool_id, error));
       return true;
     }
     return false;
   }
 
+  // Process complete lines in order; returns true when the socket was failed or replaced, so the
+  // caller drops any buffered remainder.
   /**
    * @param {number} pool_id
    * @param {PoolSocket} socket
    * @param {string[]} messages
-   * @param {(job: PoolJob) => MiningJob} set_job
-   * @param {(message: string) => unknown} pool_err
+   * @param {(job: PoolJob) => MiningJob} setJob
+   * @param {(message: string) => unknown} failPool
    * @returns {boolean}
    */
-  function handlePoolLines(pool_id, socket, messages, set_job, pool_err) {
+  function handlePoolLines(pool_id, socket, messages, setJob, failPool) {
     for (const message of messages) {
       // Processing a line can close or replace this socket; never consume its remaining work.
       if (!isCurrentPoolSocket(pool_id, socket)) {return true;}
       if (message.trim() === "") {continue;}
       const json = parsePoolLine(message);
       if (json === undefined) {
-        pool_err(pool_log_str(pool_id,
+        failPool(pool_log_str(pool_id,
           `Can't parse ${Buffer.byteLength(message)}-byte message from the pool`
         ));
         return true;
       }
-      if (processPoolJson(pool_id, json, set_job, pool_err)) {return true;}
+      if (processPoolJson(pool_id, json, setJob, failPool)) {return true;}
     }
     return !isCurrentPoolSocket(pool_id, socket);
   }
@@ -225,14 +217,14 @@ module.exports = ({
   /**
    * @param {number} pool_id
    * @param {PoolSocket} socket
-   * @param {(job: PoolJob) => MiningJob} set_job
+   * @param {(job: PoolJob) => MiningJob} setJob
    * @returns {(message: unknown) => unknown}
    */
-  function poolErrorHandler(pool_id, socket, set_job) {
+  function poolErrorHandler(pool_id, socket, setJob) {
     return function(message) {
       if (!clear_pool_connection(pool_id, socket)) {return;}
       h.log_err(String(message));
-      return switchPool(pool_id, set_job);
+      return switchPool(pool_id, setJob);
     };
   }
 
@@ -242,17 +234,18 @@ module.exports = ({
    * @param {number} pool_id
    * @param {PoolConfig} pool
    * @param {PoolSocket} socket
-   * @param {(message: string) => unknown} pool_err
+   * @param {(message: string) => unknown} failPool
    */
-  function scheduleInitialJobTimeout(pool_id, pool, socket, pool_err) {
+  function scheduleInitialJobTimeout(pool_id, pool, socket, failPool) {
     pool.first_job_timer = setTimeout(function() {
       if (!isCurrentPoolSocket(pool_id, socket) || pool.last_job) {return;}
-      return pool_err(pool_log_str(pool_id,
+      return failPool(pool_log_str(pool_id,
         "No usable initial job from " + pool_str(pool_id) + " pool"
       ));
     }, global.opt.pool_time.first_job_wait * 1000);
   }
 
+  // Send the dialect's opening handshake once the transport (and TLS pin) is ready.
   /** @param {number} pool_id @param {PoolSocket} socket @param {PoolConfig} pool */
   function handlePoolConnect(pool_id, socket, pool) {
     if (!isCurrentPoolSocket(pool_id, socket)) {return;}
@@ -316,53 +309,54 @@ module.exports = ({
     return poolWrite(pool_id, request);
   }
 
-  /** @param {string} pool_data_buff @returns {{messages: string[], incomplete_line: string}} */
-  function splitPoolMessages(pool_data_buff) {
-    const messages = pool_data_buff.split("\n");
-    const incomplete_line = pool_data_buff.endsWith("\n") ? "" : messages.pop() ?? "";
-    return {messages, incomplete_line};
+  /** @param {string} buffered @returns {{messages: string[], incompleteLine: string}} */
+  function splitPoolMessages(buffered) {
+    const messages = buffered.split("\n");
+    const incompleteLine = buffered.endsWith("\n") ? "" : messages.pop() ?? "";
+    return {messages, incompleteLine};
   }
 
   /**
    * @param {number} pool_id
    * @param {PoolSocket} socket
-   * @param {string} pool_data_buff
+   * @param {string} buffered
    * @param {string} data
-   * @param {(message: string) => unknown} pool_err
+   * @param {(message: string) => unknown} failPool
    * @returns {string | null}
    */
-  function readPoolData(pool_id, socket, pool_data_buff, data, pool_err) {
+  function readPoolData(pool_id, socket, buffered, data, failPool) {
     if (!isCurrentPoolSocket(pool_id, socket)) {return null;}
-    const next_buff = pool_data_buff + data;
-    if (Buffer.byteLength(next_buff) <= max_pool_data_buffer) {return next_buff;}
-    pool_err(pool_log_str(pool_id, "Pool message buffer limit exceeded"));
+    const nextBuffer = buffered + data;
+    if (Buffer.byteLength(nextBuffer) <= max_pool_data_buffer) {return nextBuffer;}
+    failPool(pool_log_str(pool_id, "Pool message buffer limit exceeded"));
     return null;
   }
 
+  // Accumulate socket data into lines, bounded by max_pool_data_buffer.
   /**
    * @param {number} pool_id
    * @param {PoolSocket} socket
-   * @param {(job: PoolJob) => MiningJob} set_job
-   * @param {(message: string) => unknown} pool_err
+   * @param {(job: PoolJob) => MiningJob} setJob
+   * @param {(message: string) => unknown} failPool
    * @returns {(data: string | Buffer) => void}
    */
-  function poolDataHandler(pool_id, socket, set_job, pool_err) {
-    let pool_data_buff = "";
+  function poolDataHandler(pool_id, socket, setJob, failPool) {
+    let buffered = "";
     const decoder = new StringDecoder("utf8");
     return function(data) {
       const decoded = typeof data === "string" ? data : decoder.write(data);
-      const next_buff = readPoolData(
-        pool_id, socket, pool_data_buff, decoded, pool_err
+      const nextBuffer = readPoolData(
+        pool_id, socket, buffered, decoded, failPool
       );
-      if (next_buff === null) {return;}
-      pool_data_buff = next_buff;
-      if (!pool_data_buff.includes("\n")) {return;}
-      const {messages, incomplete_line} = splitPoolMessages(pool_data_buff);
-      if (handlePoolLines(pool_id, socket, messages, set_job, pool_err)) {
-        pool_data_buff = "";
+      if (nextBuffer === null) {return;}
+      buffered = nextBuffer;
+      if (!buffered.includes("\n")) {return;}
+      const {messages, incompleteLine} = splitPoolMessages(buffered);
+      if (handlePoolLines(pool_id, socket, messages, setJob, failPool)) {
+        buffered = "";
         return;
       }
-      pool_data_buff = incomplete_line;
+      buffered = incompleteLine;
     };
   }
 
@@ -375,8 +369,8 @@ module.exports = ({
 
   // Open the pool's connection unless it already has one or its donation window has closed.
   // Every listener is bound to this socket, so a replaced socket's late events change nothing.
-  /** @param {number} pool_id @param {(job: PoolJob) => MiningJob} set_job */
-  function connect_pool(pool_id, set_job) {
+  /** @param {number} pool_id @param {(job: PoolJob) => MiningJob} setJob */
+  function connect_pool(pool_id, setJob) {
     if (!donationConnectionAllowed(pool_id)) {return;}
     const pool = global.opt.pools[pool_id];
     if (!pool) {return;}
@@ -384,7 +378,9 @@ module.exports = ({
     // do not connect to already connected pools
     if (pool.socket) {return;}
 
-    pool_log(pool_id, "Connecting to " + poolTypeStr(pool_id) + " " + pool_str(pool_id) + " pool");
+    const poolType = pool_id === global.opt.pool_ids.primary ? "primary" :
+      pool_id === global.opt.pool_ids.donate ? "donate" : "backup";
+    pool_log(pool_id, "Connecting to " + poolType + " " + pool_str(pool_id) + " pool");
     pool.last_connect_time = Date.now();
     const fingerprint = normalizeFingerprint(pool.tls_fingerprint);
     if (fingerprint && !pool.is_tls) {throw new Error("tls_fingerprint requires a TLS pool");}
@@ -397,14 +393,14 @@ module.exports = ({
       // asynchronously). Fail over like a socket error, but on a later turn so a pool that always
       // throws cannot recurse; last_connect_time already throttles the retries.
       h.log_err(pool_log_str(pool_id, "Can't connect to the pool") + poolErrorText(pool_id, error));
-      setImmediate(switchPool, pool_id, set_job);
+      setImmediate(switchPool, pool_id, setJob);
       return;
     }
     pool.socket = socket;
     pool.last_job = null;
 
-    const pool_err = poolErrorHandler(pool_id, socket, set_job);
-    scheduleInitialJobTimeout(pool_id, pool, socket, pool_err);
+    const failPool = poolErrorHandler(pool_id, socket, setJob);
+    scheduleInitialJobTimeout(pool_id, pool, socket, failPool);
 
     // TCP connect precedes certificate verification. Never queue login credentials until the
     // TLS handshake and optional leaf pin have both passed (in Node and the native runtime).
@@ -416,48 +412,48 @@ module.exports = ({
           // Missing or malformed peer metadata is a failed pin, never permission to log in.
         }
         if (actual !== fingerprint) {
-          pool_err(pool_log_str(pool_id, "TLS certificate fingerprint mismatch"));
+          failPool(pool_log_str(pool_id, "TLS certificate fingerprint mismatch"));
           return;
         }
       }
       handlePoolConnect(pool_id, socket, pool);
     });
 
-    socket.on("data", poolDataHandler(pool_id, socket, set_job, pool_err));
+    socket.on("data", poolDataHandler(pool_id, socket, setJob, failPool));
 
     socket.on("end", function() {
-      return pool_err(pool_log_str(pool_id, "Socket closed from the pool"));
+      return failPool(pool_log_str(pool_id, "Socket closed from the pool"));
     });
 
     socket.on("error", function(error) {
       const code = error && typeof error.code === "string" && /^[A-Z0-9_]+$/.test(error.code)
         ? ` (${error.code})` : "";
-      return pool_err(pool_log_str(pool_id, "Socket error from the pool" + code));
+      return failPool(pool_log_str(pool_id, "Socket error from the pool" + code));
     });
 
     // pool.js liveness deadlines report an unresponsive pool with the reason as the argument.
     socket.on("timeout", function(reason) {
-      return pool_err(pool_log_str(pool_id, String(reason)));
+      return failPool(pool_log_str(pool_id, String(reason)));
     });
   }
 
   // Connect now, or once pool_time.connect_throttle has passed since the pool's last attempt.
-  /** @param {number} pool_id @param {(job: PoolJob) => MiningJob} set_job @returns {void | NodeJS.Timeout} */
-  function connectPoolThrottle(pool_id, set_job) {
+  /** @param {number} pool_id @param {(job: PoolJob) => MiningJob} setJob @returns {void | NodeJS.Timeout} */
+  function connectPoolThrottle(pool_id, setJob) {
     if (!donationConnectionAllowed(pool_id)) {return;}
     const pool = global.opt.pools[pool_id];
     if (!pool) {return;}
-    const wait_time = global.opt.pool_time.connect_throttle * 1000 -
+    const waitTime = global.opt.pool_time.connect_throttle * 1000 -
                     (Date.now() - pool.last_connect_time);
-    if (wait_time <= 0) {return connect_pool(pool_id, set_job);}
-    pool_log(pool_id, "Waiting " + Math.floor(wait_time / 1000) + "s to connect to the pool");
+    if (waitTime <= 0) {return connect_pool(pool_id, setJob);}
+    pool_log(pool_id, "Waiting " + Math.floor(waitTime / 1000) + "s to connect to the pool");
     return setTimeout(function() {
       // A failover connect can be overtaken while it waits (the primary returned first). Opening
       // a pool that is no longer active, primary or donating would leave an unused connection.
       const ids = global.opt.pool_ids;
       if (pool_id !== ids.active && pool_id !== ids.primary && pool_id !== ids.donate) {return;}
-      return connect_pool(pool_id, set_job);
-    }, wait_time);
+      return connect_pool(pool_id, setJob);
+    }, waitTime);
   }
 
   return {connectPoolThrottle};

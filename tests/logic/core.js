@@ -17,6 +17,8 @@ const {normalizeAlgoName} = require("../../miner/algorithms");
 const testGlobal = /** @type {{opt: ReturnType<typeof mockPoolOptions>}} */
   (/** @type {unknown} */ (globalThis));
 const makeEnvironment = require("../../miner/environment");
+const diagnostics = require("../../helper/diagnostics");
+const {normalizeFingerprint} = require("../../pool/tls");
 /** @param {NodeJS.Platform} platform @param {NodeJS.ProcessEnv} env */
 function mockProcess(platform, env) {
   return {platform, env};
@@ -153,21 +155,21 @@ describe("TLS certificate pin configuration", () => {
     assert.equal(pool.tls_verify, false); assert.equal(pool.tls_fingerprint, "");
   });
   test("missing and empty optional pins remain disabled", () => {
-    assert.equal(opts.normalize_tls_fingerprint(undefined), ""); assert.equal(opts.normalize_tls_fingerprint(""), "");
+    assert.equal(normalizeFingerprint(undefined), ""); assert.equal(normalizeFingerprint(""), "");
   });
   test("plain SHA-256 pins are case insensitive", () => {
-    assert.equal(opts.normalize_tls_fingerprint(pin.toUpperCase()), pin);
+    assert.equal(normalizeFingerprint(pin.toUpperCase()), pin);
   });
   test("conventional colon-separated fingerprints normalize to 64 hex digits", () => {
-    assert.equal(opts.normalize_tls_fingerprint(colonPin), pin);
+    assert.equal(normalizeFingerprint(colonPin), pin);
   });
   test("non-string explicit pins are rejected", () => {
-    for (const value of [null, true, 42, {}, []]) {assert.throws(() => opts.normalize_tls_fingerprint(value), /SHA-256/);}
+    for (const value of [null, true, 42, {}, []]) {assert.throws(() => normalizeFingerprint(value), /SHA-256/);}
   });
   test("malformed, truncated, extended, or ambiguously separated pins are rejected", () => {
     for (const value of [pin.slice(2), pin + "00", " " + pin, pin + "\n", "g".repeat(64), ":" + colonPin,
       colonPin.replace(":", ""), pin.slice(0, 32) + ":" + pin.slice(32)]) {
-      assert.throws(() => opts.normalize_tls_fingerprint(value), /SHA-256/);
+      assert.throws(() => normalizeFingerprint(value), /SHA-256/);
     }
   });
   test("config pinning requires TLS instead of silently using plaintext", () => {
@@ -623,12 +625,12 @@ describe("CLI lifecycle and runtime boundaries", () => {
     const environment = makeEnvironment({
       ...environmentDeps, process: mockProcess("linux", {MOM_SKIP_MSR: "1"}),
     });
-    assert.equal(environment.use_msr_tuning(), false);
+    assert.equal(environment.useMsrTuning(), false);
 
     const normal = makeEnvironment({
       ...environmentDeps, process: mockProcess("linux", {}),
     });
-    assert.equal(normal.use_msr_tuning(), true);
+    assert.equal(normal.useMsrTuning(), true);
   });
 
   test("Windows always leaves MSR tuning disabled", () => {
@@ -636,7 +638,7 @@ describe("CLI lifecycle and runtime boundaries", () => {
       const environment = makeEnvironment({
         ...environmentDeps, process: mockProcess("win32", env),
       });
-      assert.equal(environment.use_msr_tuning(), false, `MOM_SKIP_MSR=${env.MOM_SKIP_MSR ?? "unset"}`);
+      assert.equal(environment.useMsrTuning(), false, `MOM_SKIP_MSR=${env.MOM_SKIP_MSR ?? "unset"}`);
     }
   });
 
@@ -657,7 +659,7 @@ describe("CLI lifecycle and runtime boundaries", () => {
       ]),
       process: mockProcess("linux", {}),
     });
-    assert.deepEqual(environment.detect_cpu(), {
+    assert.deepEqual(environment.detectCpu(), {
       cpu_sockets: 1, cpu_threads: 3, cpu_l3cache: 0,
     });
   });
@@ -683,18 +685,18 @@ describe("CLI lifecycle and runtime boundaries", () => {
   });
 
   test("ROCr signal-pool shutdown warning is hidden without losing worker stderr", () => {
-    let filtered = helper.filterWorkerStderr("", "Warning: Resource leak detected by SharedSignalPool, 51");
+    let filtered = diagnostics.filterWorkerStderr("", "Warning: Resource leak detected by SharedSignalPool, 51");
     assert.equal(filtered.visible, "");
-    filtered = helper.filterWorkerStderr(filtered.pending, "9 Signals leaked.\nreal warning\n");
+    filtered = diagnostics.filterWorkerStderr(filtered.pending, "9 Signals leaked.\nreal warning\n");
     assert.equal(filtered.pending, "");
     assert.equal(filtered.visible, "real warning\n");
 
-    filtered = helper.filterWorkerStderr("", "partial diagnostic", true);
+    filtered = diagnostics.filterWorkerStderr("", "partial diagnostic", true);
     assert.equal(filtered.pending, "");
     assert.equal(filtered.visible, "partial diagnostic");
 
     const longLine = "x".repeat(128 * 1024);
-    filtered = helper.filterWorkerStderr("", longLine);
+    filtered = diagnostics.filterWorkerStderr("", longLine);
     assert.ok(filtered.pending.length < longLine.length);
     assert.equal(filtered.visible + filtered.pending, longLine);
   });
@@ -712,16 +714,16 @@ describe("CLI lifecycle and runtime boundaries", () => {
     const unfamiliarWarning = "[AdaptiveCpp Warning] kernel_cache: cache directory is read-only.\n";
     const ptxFallback = "'+ptx88' is not a recognized feature for this target (ignoring feature)\n";
     const otherTargetWarning = "'+ptx90' is not a recognized feature for this target (ignoring feature)\n";
-    const filtered = helper.filterWorkerStderr("", bufferWarning + jitWarning + ptxFallback +
+    const filtered = diagnostics.filterWorkerStderr("", bufferWarning + jitWarning + ptxFallback +
     unfamiliarWarning + otherTargetWarning + "real error\n");
     assert.equal(filtered.pending, "");
     assert.equal(filtered.visible, unfamiliarWarning + otherTargetWarning + "real error\n");
   });
 
   test("Windows HIP loader path chatter is hidden without hiding normal stdout", () => {
-    assert.equal(helper.filterWorkerStdoutLine("HIP Library Path: C:\\WINDOWS\\SYSTEM32\\amdhip64_7.dll"), "");
-    assert.equal(helper.filterWorkerStdoutLine("HIP Library Path failed"), "HIP Library Path failed");
-    assert.equal(helper.filterWorkerStdoutLine("normal output"), "normal output");
+    assert.equal(diagnostics.filterWorkerStdoutLine("HIP Library Path: C:\\WINDOWS\\SYSTEM32\\amdhip64_7.dll"), "");
+    assert.equal(diagnostics.filterWorkerStdoutLine("HIP Library Path failed"), "HIP Library Path failed");
+    assert.equal(diagnostics.filterWorkerStdoutLine("normal output"), "normal output");
   });
 
   test("control-core shutdown preserves a failing process status", async () => {
@@ -1715,7 +1717,7 @@ describe("Algorithm parameters and GPU tuning", () => {
       ...environmentDeps,
       opt: opts.create_default_opts(),
     });
-    assert.throws(() => environment.add_algo_params({
+    assert.throws(() => environment.addAlgoParams({
       "cn/gpu": "gpu1*[intensity=1536]",
       "@backend:cn/gpu": "invalid-backend",
     }), /Invalid GPU backend/);
@@ -2304,22 +2306,6 @@ describe("Shutdown callbacks and listener cleanup", () => {
     });
     assert.equal(failedTuning.coreEvents.listenerCount("algo_params"), 0);
     assert.equal(failedTuning.coreEvents.listenerCount("error"), 1);
-  });
-
-  test("repeat schedules delayed callbacks", async () => {
-    let calls = 0;
-
-    /** @type {Promise<void>} */
-    const repeated = new Promise((resolve) => {
-      helper.repeat((next) => {
-        calls += 1;
-        if (calls === 2) {return resolve();}
-        next();
-      }, 1);
-    });
-    await repeated;
-
-    assert.equal(calls, 2);
   });
 });
 

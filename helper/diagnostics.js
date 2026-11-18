@@ -1,33 +1,33 @@
 "use strict";
 
-const rocr_signal_pool_warning =
+const rocrSignalPoolWarning =
   /^Warning: Resource leak detected by SharedSignalPool, \d+ Signals leaked\.\r?$/;
-const ansi_sgr_prefix = String.fromCharCode(27) + "[";
-const acpp_buffer_advisory =
+const ANSI_SGR_PREFIX = String.fromCharCode(27) + "[";
+const acppBufferAdvisory =
   /^\[AdaptiveCpp Warning\] This application uses SYCL buffers; the SYCL buffer-accessor model is well-known to introduce unnecessary overheads\. Please consider migrating to the SYCL2020 USM model, in particular device USM \(sycl::malloc_device\) combined with in-order queues for more performance\. See the AdaptiveCpp performance guide for more information: ?\r?$/;
-const acpp_buffer_advisory_url =
+const acppBufferAdvisoryUrl =
   /^https:\/\/github\.com\/AdaptiveCpp\/AdaptiveCpp\/blob\/develop\/doc\/performance\.md\r?$/;
-const acpp_jit_advisory =
+const acppJitAdvisory =
   /^\[AdaptiveCpp Warning\] kernel_cache: This application run has resulted in new binaries being JIT-compiled\. This indicates that the runtime optimization process has not yet reached peak performance\. You may want to run the application again until this warning no longer appears to achieve optimal performance\.\r?$/;
-const llvm_ptx88_fallback_advisory =
+const llvmPtx88FallbackAdvisory =
   /^'\+ptx88' is not a recognized feature for this target \(ignoring feature\)\r?$/;
-const windows_hip_library_path =
+const windowsHipLibraryPath =
   /^HIP Library Path: [A-Za-z]:\\.*\\amdhip64(?:_\d+)?\.dll\r?$/i;
-const max_pending_stderr = 64 * 1024;
+const MAX_PENDING_STDERR = 64 * 1024;
 
 /** @param {string} line */
 function hideWorkerStderrLine(line) {
-  const plainLine = line.split(ansi_sgr_prefix).map(function(part, index) {
+  const plainLine = line.split(ANSI_SGR_PREFIX).map(function(part, index) {
     if (index === 0) {return part;}
     const end = part.indexOf("m");
     if (end >= 0 && /^[0-9;]*$/.test(part.slice(0, end))) {return part.slice(end + 1);}
-    return ansi_sgr_prefix + part;
+    return ANSI_SGR_PREFIX + part;
   }).join("");
-  return rocr_signal_pool_warning.test(plainLine) ||
-         acpp_buffer_advisory.test(plainLine) ||
-         acpp_buffer_advisory_url.test(plainLine) ||
-         acpp_jit_advisory.test(plainLine) ||
-         llvm_ptx88_fallback_advisory.test(plainLine);
+  return rocrSignalPoolWarning.test(plainLine) ||
+         acppBufferAdvisory.test(plainLine) ||
+         acppBufferAdvisoryUrl.test(plainLine) ||
+         acppJitAdvisory.test(plainLine) ||
+         llvmPtx88FallbackAdvisory.test(plainLine);
 }
 
 // Ubuntu ships ROCr with its debug-only SharedSignalPool accounting enabled. hsa_shut_down() prints
@@ -54,9 +54,9 @@ function filterWorkerStderr(pending, chunk, flush = false) {
   if (flush) {
     if (input && !hideWorkerStderrLine(input)) {visible += input;}
     input = "";
-  } else if (input.length > max_pending_stderr) {
-    visible += input.slice(0, input.length - max_pending_stderr);
-    input = input.slice(-max_pending_stderr);
+  } else if (input.length > MAX_PENDING_STDERR) {
+    visible += input.slice(0, input.length - MAX_PENDING_STDERR);
+    input = input.slice(-MAX_PENDING_STDERR);
   }
   return {pending: input, visible};
 }
@@ -64,5 +64,5 @@ function filterWorkerStderr(pending, chunk, flush = false) {
 module.exports.filterWorkerStderr = filterWorkerStderr;
 /** @param {string} line */
 module.exports.filterWorkerStdoutLine = function(line) {
-  return windows_hip_library_path.test(line) ? "" : line;
+  return windowsHipLibraryPath.test(line) ? "" : line;
 };

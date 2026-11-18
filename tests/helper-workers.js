@@ -156,7 +156,7 @@ test.describe("Helper worker lifecycle", {concurrency: false}, () => {
       process: {platform, env: processEnv, execPath: platform === "win32" ? "C:\\app\\mom.exe" : "/app/mom",
         cwd: () => cwd},
       __dirname: platform === "win32" ? "C:\\repo" : "/repo",
-      development_build_platform: platform === "win32" ? "win" : "lin",
+      developmentBuildPlatform: platform === "win32" ? "win" : "lin",
       ...(nativeCore === undefined ? {} : {__momNativeCore: nativeCore}),
     };
     runInNewContext(helperSource.slice(start, end) + "\nmodule.exports = {childEnv};", context);

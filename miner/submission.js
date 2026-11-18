@@ -1,10 +1,10 @@
 "use strict";
 
+// Pool and job hex fields may carry a 0x prefix. A missing or non-string value yields "", which
+// every caller then rejects through its own length or digit check.
 /** @param {unknown} value */
 function hexWithoutPrefix(value) {
-  if (value === undefined || value === null) {return "";}
-  if (typeof value !== "string") {throw new Error("Invalid hexadecimal value");}
-  return value.replace(/^0x/i, "");
+  return typeof value === "string" ? value.replace(/^0x/i, "") : "";
 }
 
 /** @param {unknown} value */
@@ -45,6 +45,7 @@ function ergSubmitParams(pool, job, value) {
   return [pool.login, job.job_id, extraNonce2, hexWithoutPrefix(job.ntime), nonce];
 }
 
+// Nexa submit params for the job's dialect (see nexaNotifyJob in pool/jobs.js).
 /** @param {Pick<PoolConfig, "login">} pool @param {PoolJob} job @param {ShareResult} value */
 function nexaSubmitParams(pool, job, value) {
   const extraNonce = hexWithoutPrefix(job.extra_nonce);

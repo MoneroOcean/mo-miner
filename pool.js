@@ -6,8 +6,9 @@ const net = require("node:net");
 const tls = require("node:tls");
 const h = require("./helper.js");
 const o = require("./opts.js");
-const {normalizeAlgoName} = require("./miner/algorithms");
-const {xelisWorkerName} = require("./miner/submission");
+const {normalizeAlgoName, PROGPOW_ALGOS} = require("./miner/algorithms");
+const {hexWithoutPrefix, xelisWorkerName} = require("./miner/submission");
+const {isObject} = require("./helper/validate");
 
 // Correctness tests may use normal network services, but must never contact a mining pool. Capture
 // the actual socket functions before logic tests substitute their in-memory sockets, so the guard
@@ -15,7 +16,7 @@ const {xelisWorkerName} = require("./miner/submission");
 const systemNetConnect = net.connect;
 const systemTlsConnect = tls.connect;
 
-const max_pool_data_buffer = 1024 * 1024;
+const MAX_POOL_DATA_BUFFER = 1024 * 1024;
 // Liveness deadlines. A hung pool process or a silently dropped path (NAT/conntrack expiry,
 // sleep/resume, address change) leaves TCP open: the kernel notices only after ~15 min of
 // retransmitting our own writes, and never for dialects that write only when a share is found.
@@ -25,17 +26,16 @@ const max_pool_data_buffer = 1024 * 1024;
 // - Pools push work at least once per block (most also rebroadcast every 30-60 s), and login pools
 //   answer keepalived every pool_time.keepalive (5 min). Twenty silent minutes is four mean block
 //   intervals of the slowest supported chain (Firo, 5 min), so only a dead connection reaches it.
-const pool_response_timeout = 60 * 1000;
-const pool_idle_timeout = 20 * 60 * 1000;
-const progpowAlgos = new Set(["kawpow", "firopow", "evrprogpow", "meowpow"]);
+const POOL_RESPONSE_TIMEOUT_MS = 60 * 1000;
+const POOL_IDLE_TIMEOUT_MS = 20 * 60 * 1000;
 const fullTargetAlgos = new Set([
   "etchash", "octopus", "autolykos2", "fishhash", "c30", "equihash192_7", "zelhash", "zhash",
   "karlsenhashv2", "walahash", "hoohash", "verthash", "xelishashv3", "nexapow",
 ]);
 
 /** @typedef {(job: PoolJob) => MiningJob} SetJobCallback */
-/** @typedef {(pool_id: number, is_err: boolean, is_ok: boolean, err_msg: string,
- * json: PoolMessage, set_job: SetJobCallback) => void} PoolResponseHandler */
+/** @typedef {(pool_id: number, isError: boolean, isOk: boolean, errorText: string,
+ * json: PoolMessage, setJob: SetJobCallback) => void} PoolResponseHandler */
 /** @typedef {PoolMessage & {code: number, description?: unknown, nonceprefix?: unknown}} BeamResultMessage */
 
 /**
@@ -46,47 +46,34 @@ const fullTargetAlgos = new Set([
  * @returns {PoolConfig}
  */
 function poolAt(pool_id) {
-  if (!Number.isInteger(pool_id) || pool_id < 0 || pool_id >= global.opt.pools.length) {
-    throw new Error("Invalid pool id");
-  }
   const pool = global.opt.pools[pool_id];
-  if (!pool) {
-    throw new Error("Invalid pool id");
-  }
+  if (!pool) {throw new Error("Invalid pool id");}
   return pool;
 }
 
 /** @param {number} pool_id @returns {string} */
-function pool_str(pool_id) {
+function poolName(pool_id) {
   const pool = poolAt(pool_id);
   return pool.url + ":" + pool.port + (pool.is_tls ? "tls" : "");
 }
 
 /** @param {number} pool_id @param {string} str @returns {string} */
-function pool_log_str(pool_id, str) {
-  return global.opt.log_level >= 1 ? "[" + pool_str(pool_id) + "] " + str : str;
+function poolLogText(pool_id, str) {
+  return global.opt.log_level >= 1 ? "[" + poolName(pool_id) + "] " + str : str;
 }
 
 /** @param {number} pool_id @param {string} str @returns {void} */
-function pool_log(pool_id, str) {
-  h.log(pool_log_str(pool_id, str));
+function poolLog(pool_id, str) {
+  h.log(poolLogText(pool_id, str));
 }
 
 /** @param {number} pool_id @param {string} str @returns {void} */
-function pool_log1(pool_id, str) {
-  h.log1(pool_log_str(pool_id, str));
+function poolLogErr(pool_id, str) {
+  h.log_err(poolLogText(pool_id, str));
 }
 
-/** @param {number} pool_id @param {string} str @returns {void} */
-function pool_log2(pool_id, str) {
-  h.log2(pool_log_str(pool_id, str));
-}
-
-/** @param {number} pool_id @param {string} str @returns {void} */
-function pool_log_err(pool_id, str) {
-  h.log_err(pool_log_str(pool_id, str));
-}
-
+// Remove the pool's login, wallet, worker, and password (including their JSON-escaped forms) from
+// text that is about to be logged. Short credentials are replaced only as whole tokens.
 /** @param {number} pool_id @param {unknown} value @returns {string} */
 function redactPoolText(pool_id, value) {
   const pool = poolAt(pool_id);
@@ -121,7 +108,7 @@ function redactPoolText(pool_id, value) {
 }
 
 /** @param {number} pool_id @param {number} level @param {string} prefix @param {PoolMessage | PoolJob | MiningJob} json @returns {void} */
-function pool_log_json(pool_id, level, prefix, json) {
+function poolLogJson(pool_id, level, prefix, json) {
   if (global.opt.log_level < level) {
     return;
   }
@@ -132,9 +119,10 @@ function pool_log_json(pool_id, level, prefix, json) {
   } catch {
     message = '"<unprintable pool JSON>"';
   }
-  (level === 1 ? pool_log1 : pool_log2)(pool_id, prefix + message);
+  (level === 1 ? h.log1 : h.log2)(poolLogText(pool_id, prefix + message));
 }
 
+// Forget the per-connection difficulty, target, and extranonce state that job builders read.
 /** @param {PoolConfig} pool */
 function clearPoolJobState(pool) {
   delete pool.beam_difficulty;
@@ -162,8 +150,10 @@ function clearPoolJobState(pool) {
   delete pool.pending_job;
 }
 
+// Tear down the pool's connection and all session state. A stale socket (one that was already
+// replaced) is ignored, so its late events cannot clear the current connection.
 /** @param {number} pool_id @param {PoolSocket | null} socket @returns {boolean} */
-function clear_pool_connection(pool_id, socket) {
+function clearPoolConnection(pool_id, socket) {
   const pool = poolAt(pool_id);
   if (socket && !isCurrentPoolSocket(pool_id, socket)) {
     return false;
@@ -210,7 +200,7 @@ function clearPoolKeepalive(pool) {
 
 /**
  * Arm a liveness deadline for the socket. On expiry the socket emits "timeout" with the reason,
- * which connect_pool handles like a socket error; clear_pool_connection cancels pending deadlines.
+ * which connect_pool handles like a socket error; clearPoolConnection cancels pending deadlines.
  * @param {PoolSocket} socket @param {number} delay @param {string} reason
  * @returns {NodeJS.Timeout}
  */
@@ -221,18 +211,18 @@ function poolDeadline(socket, delay, reason) {
 /**
  * Handle one line from the pool's current socket: it proves the pool is alive, so it satisfies a
  * pending response deadline and restarts the idle deadline before the message is processed.
- * @param {number} pool_id @param {PoolMessage} json @param {SetJobCallback} set_job
+ * @param {number} pool_id @param {PoolMessage} json @param {SetJobCallback} setJob
  */
-function receivePoolMessage(pool_id, json, set_job) {
+function receivePoolMessage(pool_id, json, setJob) {
   const pool = poolAt(pool_id);
   clearTimeout(pool.response_timer);
   delete pool.response_timer;
   clearTimeout(pool.idle_timer);
   if (pool.socket) {
-    pool.idle_timer = poolDeadline(pool.socket, pool_idle_timeout,
-      `No data from the pool for ${pool_idle_timeout / 60000} minutes`);
+    pool.idle_timer = poolDeadline(pool.socket, POOL_IDLE_TIMEOUT_MS,
+      `No data from the pool for ${POOL_IDLE_TIMEOUT_MS / 60000} minutes`);
   }
-  return pool_message(pool_id, json, set_job);
+  return routePoolMessage(pool_id, json, setJob);
 }
 
 /** @param {number} pool_id @param {PoolSocket} socket @returns {boolean} */
@@ -240,48 +230,19 @@ function isCurrentPoolSocket(pool_id, socket) {
   return poolAt(pool_id).socket === socket;
 }
 
-// Maps a mining algo to its stratum protocol dialect, or null if it uses the default `login` dialect.
+// Stratum dialect of each algorithm whose pools do not use the default `login` dialect.
+const protocolByAlgo = new Map([
+  ["kawpow", "raven"], ["firopow", "raven"], ["evrprogpow", "raven"], ["meowpow", "raven"],
+  ["equihash192_7", "zelhash"], ["zelhash", "zelhash"], ["zhash", "zelhash"],
+  ["karlsenhashv2", "kaspa"], ["walahash", "kaspa"], ["hoohash", "hoosat"],
+  ["etchash", "eth"], ["octopus", "conflux"], ["nexapow", "echelon"], ["c30", "cortex"],
+  ["autolykos2", "erg"], ["pearlhash", "pearlhash"], ["fishhash", "ironfish"],
+  ["beamhash3", "beam"], ["verthash", "verthash"], ["xelishashv3", "xelis"],
+]);
+
 /** @param {string | null | undefined} algo @returns {string | null} */
 function protocolForAlgo(algo) {
-  switch (normalizeAlgoName(algo)) {
-    case "kawpow":
-    case "firopow":
-    case "evrprogpow":
-    case "meowpow":
-      return "raven";
-    case "etchash":
-      return "eth";
-    case "octopus":
-      return "conflux";
-    case "nexapow":
-      return "echelon";
-    case "c30":
-      return "cortex";
-    case "autolykos2":
-      return "erg";
-    case "pearlhash":
-      return "pearlhash";
-    case "fishhash":
-      return "ironfish";
-    case "equihash192_7":
-    case "zelhash":
-    case "zhash":
-      return "zelhash";
-    case "beamhash3":
-      return "beam";
-    case "karlsenhashv2":
-      return "kaspa";
-    case "walahash":
-      return "kaspa";
-    case "hoohash":
-      return "hoosat";
-    case "verthash":
-      return "verthash";
-    case "xelishashv3":
-      return "xelis";
-    default:
-      return null;
-  }
+  return protocolByAlgo.get(normalizeAlgoName(algo) || "") ?? null;
 }
 
 // Beam packs the network difficulty into a 32-bit int (top 8 bits = order, low 24 = mantissa). The
@@ -362,15 +323,17 @@ function pearlhashDiffFromJobId(job_id) {
   return Number.isSafeInteger(difficulty) && difficulty > 0 ? difficulty : undefined;
 }
 
+// Send one JSON-RPC line, arm the response deadline, and (for login dialects with keepalive)
+// reschedule the next keepalived. Write failures surface asynchronously as socket errors.
 /** @param {number} pool_id @param {UnknownRecord} json @returns {void} */
 module.exports.pool_write = function(pool_id, json) {
   const message = JSON.stringify(json);
   const pool = poolAt(pool_id);
   if (!pool.socket) {
-    return pool_log_json(pool_id, 2, "Sent to the closed pool socket: ", json);
+    return poolLogJson(pool_id, 2, "Sent to the closed pool socket: ", json);
   }
 
-  pool_log_json(pool_id, 2, "Sent to the pool: ", json);
+  poolLogJson(pool_id, 2, "Sent to the pool: ", json);
   if (json["id"] === 3 && (json["method"] === "mining.submit" || json["method"] === "submit")) {
     ++pool.pending_submit_count;
   }
@@ -387,8 +350,8 @@ module.exports.pool_write = function(pool_id, json) {
   const expectsResponse = json["method"] !== "mining.pong" &&
     !(usesIronfish(pool) && json["method"] === "mining.submit");
   if (expectsResponse && !pool.response_timer) {
-    pool.response_timer = poolDeadline(socket, pool_response_timeout,
-      `No response from the pool for ${pool_response_timeout / 1000} s`);
+    pool.response_timer = poolDeadline(socket, POOL_RESPONSE_TIMEOUT_MS,
+      `No response from the pool for ${POOL_RESPONSE_TIMEOUT_MS / 1000} s`);
   }
   // sends keepalive if no submit/keepalive to pool for more than global.opt.pool_time.keepalive
   if (!(pool.is_keepalive || pool.negotiated_keepalive) || usesMiningSubscribe(pool) ||
@@ -425,20 +388,20 @@ module.exports.waitForPendingShares = function(timeoutMs = 5000) {
 
 // soft kill pool connection
 /** @param {number} pool_id @returns {void} */
-function pool_close_wait(pool_id) {
+function softClosePool(pool_id) {
   const socket = poolAt(pool_id).socket;
   if (!socket) {
     return;
   }
-  pool_log1(pool_id, "Soft closing the pool connection");
+  h.log1(poolLogText(pool_id, "Soft closing the pool connection"));
   setTimeout(function() {
     // do not do soft close if this pool became active again
     if (pool_id === global.opt.pool_ids.active ||
         !isCurrentPoolSocket(pool_id, socket)) {
       return;
     }
-    pool_log1(pool_id, "Soft closed the pool connection");
-    clear_pool_connection(pool_id, socket);
+    h.log1(poolLogText(pool_id, "Soft closed the pool connection"));
+    clearPoolConnection(pool_id, socket);
   }, global.opt.pool_time.close_wait * 1000);
 }
 
@@ -485,6 +448,8 @@ function xelisAuthorizeParams(pool) {
   return [wallet, xelisWorkerName(pool), pool.pass];
 }
 
+// Infer the dialect of a pool without an explicit protocol from the algorithm named by a login
+// result or push, a single offered algorithm, or the password's algo marker.
 /** @param {number} pool_id @param {unknown} result @returns {void} */
 function rememberPoolProtocol(pool_id, result) {
   const pool = poolAt(pool_id);
@@ -538,11 +503,8 @@ function preparePoolFamily(pool_id, algo) {
 /** @param {PoolConfig} pool @param {unknown} value */
 function rememberExtraNonceSize(pool, value) {
   if (value === undefined) {return;}
-  const size = typeof value === "number" ? value :
-    typeof value === "string" && /^\d+$/.test(value) ? Number(value) : Number.NaN;
-  if (!Number.isInteger(size) || size < 0 || size > 8) {
-    throw new Error("Invalid extra_nonce2_size");
-  }
+  const size = parseExtraNonce2Size(value);
+  if (size === null) {throw new Error("Invalid extra_nonce2_size");}
   pool.extra_nonce2_size = size;
 }
 
@@ -553,6 +515,7 @@ function controlKind(json) {
   return isSetExtranonceNotification(json) ? "extranonce" : "";
 }
 
+// Apply a set_target, set_difficulty, or set_extranonce push to the pool's current job state.
 /** @param {number} pool_id @param {PoolMessage} json */
 function applyPoolControl(pool_id, json) {
   const pool = poolAt(pool_id);
@@ -576,18 +539,19 @@ function applyPoolControl(pool_id, json) {
 
 const poolJobs = require("./pool/jobs")({
   h, normalizeAlgoName, poolAt, poolProtocol,
-  pearlhashDiffFromJobId, beamPackedTarget, pool_close_wait,
-  pool_log, pool_log_err, poolErrorText, pool_str, algoFromPass,
+  pearlhashDiffFromJobId, beamPackedTarget, softClosePool,
+  poolLog, poolLogErr, poolErrorText, poolName, algoFromPass,
   connectPoolThrottle: (...args) => module.exports.connect_pool_throttle(...args),
 });
 const {
-  isObject, isIronfishSetTargetNotification, isSetTargetNotification,
-  isSetDifficultyNotification, isSetExtranonceNotification, hexWithoutPrefix,
+  isIronfishSetTargetNotification, isSetTargetNotification,
+  isSetDifficultyNotification, isSetExtranonceNotification, parseExtraNonce2Size,
   validExtraNonce, rememberPoolExtraNonceHex, rememberSubscribeExtraNonce,
   switchPool, handleSetTarget, rememberXelisExtranonce, handleSetDifficulty,
   jobFromPoolMessage,
 } = poolJobs;
 module.exports.switch_pool = switchPool;
+// Expected work per share, in the unit each algorithm reports its hashrate in; null if unknown.
 /** @param {PoolJob} job @returns {bigint | number | null} */
 function jobTargetWork(job) {
   const target = job.target;
@@ -602,7 +566,7 @@ function jobTargetWork(job) {
   if (!target) {
     return null;
   }
-  if (progpowAlgos.has(job.algo)) {
+  if (PROGPOW_ALGOS.has(job.algo)) {
     return h.kawpowTarget2diff(target);
   }
   // PearlHash reports rank-128-equivalent GEMM MACs. V3 normalizes the target to rank 128, so
@@ -626,29 +590,31 @@ function jobTargetDescription(job) {
   return work !== null ? h.formatHashCount(work) + "/share target" : job.difficulty + " diff";
 }
 
-/** @param {number} pool_id @param {number} active_pool @returns {void} */
-function activatePoolForJob(pool_id, active_pool) {
+/** @param {number} pool_id @param {number} activePool @returns {void} */
+function activatePoolForJob(pool_id, activePool) {
   // only switch active pool once for its first job here
-  if (pool_id === active_pool || poolAt(pool_id).last_job) {
+  if (pool_id === activePool || poolAt(pool_id).last_job) {
     return;
   }
   if (pool_id === global.opt.pool_ids.primary) {
-    pool_log(pool_id, "Switching active pool to primary " + pool_str(pool_id) + " pool");
-    pool_close_wait(active_pool);
+    poolLog(pool_id, "Switching active pool to primary " + poolName(pool_id) + " pool");
+    softClosePool(activePool);
     global.opt.pool_ids.active = pool_id;
   } else if (pool_id === global.opt.pool_ids.donate) {
-    pool_log(pool_id, "Switching active pool to donate " + pool_str(pool_id) + " pool");
+    poolLog(pool_id, "Switching active pool to donate " + poolName(pool_id) + " pool");
     global.opt.pool_ids.active = pool_id;
   }
 }
 
+// Accept a decoded pool job: validate its target, switch the active pool on a primary or donation
+// pool's first job, and dispatch it to the workers when the pool is active (otherwise keep it).
 /**
  * @param {number} pool_id
  * @param {PoolJob} job
- * @param {SetJobCallback} set_job
+ * @param {SetJobCallback} setJob
  * @returns {void}
  */
-function handlePoolJob(pool_id, job, set_job) {
+function handlePoolJob(pool_id, job, setJob) {
   const pool = poolAt(pool_id);
   const algo = normalizeAlgoName(job.algo || pool.job_algo || global.opt.job.algo);
   if (!algo) {throw new Error("Pool job has no algorithm");}
@@ -668,9 +634,9 @@ function handlePoolJob(pool_id, job, set_job) {
     }
   }
   job.algo = algo;
-  if (!donationJobSupported(pool_id, job, set_job)) {return;}
+  if (!donationJobSupported(pool_id, job, setJob)) {return;}
   if (job.target) {
-    // Pearl's K/rank are selected by set_job; validate the final threshold before that selection.
+    // Pearl's K/rank are selected by setJob; validate the final threshold before that selection.
     if (algo === "pearlhash") {h.target256ToWork(job.target);} else {jobTargetWork(job);}
   } // throws early on a malformed target before we store the job
   activatePoolForJob(pool_id, global.opt.pool_ids.active);
@@ -680,23 +646,25 @@ function handlePoolJob(pool_id, job, set_job) {
   job.submit_result = pool.extensions?.includes("submit-result") === true;
   pool.last_job = job;
   if (pool_id === global.opt.pool_ids.active) {
-    const last_job = set_job(job);
-    pool_log(pool_id, "Got new " + last_job.algo + " algo job with " +
-                     jobTargetDescription(last_job) +
-                     (last_job.height ? " and " + last_job.height + " height" : "")
+    const miningJob = setJob(job);
+    poolLog(pool_id, "Got new " + miningJob.algo + " algo job with " +
+                     jobTargetDescription(miningJob) +
+                     (miningJob.height ? " and " + miningJob.height + " height" : "")
     );
   } else {
-    pool_log_json(pool_id, 2, "Storing not active pool job ", job);
+    poolLogJson(pool_id, 2, "Storing not active pool job ", job);
   }
 }
 
+// Donation work is accepted only inside the donation window and for an algorithm in the donation
+// capability map; anything else ends the donation connection.
 /**
  * @param {number} pool_id
  * @param {PoolJob} job
- * @param {SetJobCallback} set_job
+ * @param {SetJobCallback} setJob
  * @returns {boolean}
  */
-function donationJobSupported(pool_id, job, set_job) {
+function donationJobSupported(pool_id, job, setJob) {
   if (pool_id !== global.opt.pool_ids.donate) {return true;}
   const pool = poolAt(pool_id);
   const algo = normalizeAlgoName(job.algo) || "";
@@ -708,12 +676,12 @@ function donationJobSupported(pool_id, job, set_job) {
   // proxy/pool assignment outside it before switching pools or allocating algorithm workers.
   // A queued job can arrive as the window expires; normal expiry is not a pool error.
   if (inWindow) {
-    pool_log_err(pool_id, "Donation pool returned unsupported " + String(job.algo) + " work");
+    poolLogErr(pool_id, "Donation pool returned unsupported " + String(job.algo) + " work");
   }
   if (pool_id === global.opt.pool_ids.active) {
-    switchPool(pool_id, set_job);
+    switchPool(pool_id, setJob);
   } else {
-    clear_pool_connection(pool_id, pool.socket);
+    clearPoolConnection(pool_id, pool.socket);
   }
   return false;
 }
@@ -721,56 +689,54 @@ function donationJobSupported(pool_id, job, set_job) {
 /** @param {number} pool_id @returns {void} */
 function loginSucceeded(pool_id) {
   poolAt(pool_id).logged_in = true;
-  return pool_log(pool_id, "Login to the pool succeeded");
+  return poolLog(pool_id, "Login to the pool succeeded");
 }
 
 /** @param {number} pool_id @param {string} reason @returns {void} */
 function loginFailed(pool_id, reason) {
   poolAt(pool_id).logged_in = false;
-  return pool_log_err(pool_id, "Login to the pool failed" + reason);
+  return poolLogErr(pool_id, "Login to the pool failed" + reason);
 }
 
 /**
  * @param {number} pool_id
- * @param {boolean} is_err
- * @param {boolean} is_ok
- * @param {string} err_msg
+ * @param {boolean} isError
+ * @param {boolean} isOk
+ * @param {string} errorText
  * @param {PoolMessage} _json
  * @returns {void}
  */
-function handleLoginResponse(pool_id, is_err, is_ok, err_msg, _json) {
+function handleLoginResponse(pool_id, isError, isOk, errorText, _json) {
   const pool = poolAt(pool_id);
   if (usesCortex(pool)) {pool.pending_cortex_login = false;}
-  if (is_err || !is_ok) {
+  if (isError || !isOk) {
     delete pool.pending_job;
-    return loginFailed(pool_id, err_msg || ": Login rejected");
+    return loginFailed(pool_id, errorText || ": Login rejected");
   }
-  if (is_ok) {
-    loginSucceeded(pool_id);
-    if (usesCortex(pool)) {
-      pool.pending_cortex_work = true;
-      return module.exports.pool_write(pool_id, {
-        id: 100, jsonrpc: "2.0", method: "ctxc_getWork", params: [""],
-      });
-    }
+  loginSucceeded(pool_id);
+  if (usesCortex(pool)) {
+    pool.pending_cortex_work = true;
+    return module.exports.pool_write(pool_id, {
+      id: 100, jsonrpc: "2.0", method: "ctxc_getWork", params: [""],
+    });
   }
 }
 
 /**
  * @param {number} pool_id
- * @param {boolean} is_err
- * @param {boolean} is_ok
- * @param {string} err_msg
+ * @param {boolean} isError
+ * @param {boolean} isOk
+ * @param {string} errorText
  * @param {PoolMessage} json
  * @returns {void}
  */
-function handleSubscribeResponse(pool_id, is_err, is_ok, err_msg, json) {
+function handleSubscribeResponse(pool_id, isError, isOk, errorText, json) {
   poolAt(pool_id).pending_subscribe = false;
-  if (is_err) {
+  if (isError) {
     delete poolAt(pool_id).pending_job;
-    return pool_log_err(pool_id, "Subscribe to the pool failed" + err_msg);
+    return poolLogErr(pool_id, "Subscribe to the pool failed" + errorText);
   }
-  if (!is_ok) {
+  if (!isOk) {
     delete poolAt(pool_id).pending_job;
     return;
   }
@@ -786,82 +752,84 @@ function handleSubscribeResponse(pool_id, is_err, is_ok, err_msg, json) {
 
 /**
  * @param {number} pool_id
- * @param {boolean} is_err
- * @param {boolean} _is_ok
- * @param {string} err_msg
+ * @param {boolean} isError
+ * @param {boolean} _isOk
+ * @param {string} errorText
  * @param {PoolMessage} json
- * @param {SetJobCallback} set_job
+ * @param {SetJobCallback} setJob
  * @returns {void}
  */
-function handleAuthorizeResponse(pool_id, is_err, _is_ok, err_msg, json, set_job) {
+function handleAuthorizeResponse(pool_id, isError, _isOk, errorText, json, setJob) {
   const pool = poolAt(pool_id);
   pool.pending_authorize = false;
-  if (!is_err && json.result === true) {
+  if (!isError && json.result === true) {
     loginSucceeded(pool_id);
     const pendingJob = pool.pending_job;
     delete pool.pending_job;
     if (pendingJob) {
-      return pool_message(pool_id, pendingJob, set_job);
+      return routePoolMessage(pool_id, pendingJob, setJob);
     }
     return;
   }
   delete pool.pending_job;
-  return loginFailed(pool_id, err_msg || ": Authorization rejected");
+  return loginFailed(pool_id, errorText || ": Authorization rejected");
 }
 
 /**
  * @param {number} pool_id
- * @param {boolean} is_err
- * @param {boolean} is_ok
- * @param {string} err_msg
+ * @param {boolean} isError
+ * @param {boolean} isOk
+ * @param {string} errorText
  * @returns {void}
  */
-function handleShareResponse(pool_id, is_err, is_ok, err_msg) {
+function handleShareResponse(pool_id, isError, isOk, errorText) {
   const pool = poolAt(pool_id);
-  if (is_err || is_ok === false) {
+  if (isError || isOk === false) {
     ++pool.bad_shares;
-    return pool_log_err(pool_id, "Share rejected by the pool " + poolShareStats(pool_id) + err_msg);
+    return poolLogErr(pool_id, "Share rejected by the pool " + poolShareStats(pool_id) + errorText);
   }
-  if (is_ok) {
+  if (isOk) {
     ++pool.good_shares;
-    return pool_log(pool_id, "Share accepted by the pool " + poolShareStats(pool_id));
+    return poolLog(pool_id, "Share accepted by the pool " + poolShareStats(pool_id));
   }
 }
 
 /**
  * @param {number} pool_id
- * @param {boolean} is_err
- * @param {boolean} _is_ok
- * @param {string} err_msg
+ * @param {boolean} isError
+ * @param {boolean} _isOk
+ * @param {string} errorText
  * @returns {void}
  */
-function handleCortexWorkResponse(pool_id, is_err, _is_ok, err_msg) {
+function handleCortexWorkResponse(pool_id, isError, _isOk, errorText) {
   poolAt(pool_id).pending_cortex_work = false;
-  return pool_log_err(pool_id, "Cortex getWork failed" +
-    (is_err && err_msg ? err_msg : ": Invalid work response"));
+  return poolLogErr(pool_id, "Cortex getWork failed" +
+    (isError && errorText ? errorText : ": Invalid work response"));
 }
 
-/** @param {number} pool_id @param {PoolMessage} json @param {SetJobCallback} set_job @returns {void} */
-function handlePoolResponse(pool_id, json, set_job) {
-  const is_err  = "error" in json && json.error !== null;
-  let err_msg = is_err ? poolErrorText(pool_id, json.error) : "";
-  let is_ok   = "result" in json && json.result !== null && json.result !== false;
+// Route an {id, result|error} reply to the handler for the request it answers.
+/** @param {number} pool_id @param {PoolMessage} json @param {SetJobCallback} setJob @returns {void} */
+function handlePoolResponse(pool_id, json, setJob) {
+  const isError  = "error" in json && json.error !== null;
+  let errorText = isError ? poolErrorText(pool_id, json.error) : "";
+  let isOk   = "result" in json && json.result !== null && json.result !== false;
   const handler = poolResponseHandler(pool_id, json.id);
   // Conflux submit replies may use [accepted, reason]; array truthiness is not acceptance.
   if (handler === handleShareResponse && poolProtocol(poolAt(pool_id)) === "conflux" &&
       Array.isArray(json.result)) {
-    is_ok = json.result[0] === true;
-    if (!is_err && !is_ok) {
-      err_msg = poolErrorText(pool_id, json.result[1]);
+    isOk = json.result[0] === true;
+    if (!isError && !isOk) {
+      errorText = poolErrorText(pool_id, json.result[1]);
     }
   }
-  const result = handler(pool_id, is_err, is_ok, err_msg, json, set_job);
-  if (handler !== ignorePoolResponse && !is_err && is_ok && json.id === 1) {
+  const result = handler(pool_id, isError, isOk, errorText, json, setJob);
+  if (handler !== ignorePoolResponse && !isError && isOk && json.id === 1) {
     rememberPoolResponseMetadata(pool_id, json.result);
   }
   return result;
 }
 
+// Store worker id, negotiated extensions, extranonce, and dialect from a successful login result.
 /** @param {number} pool_id @param {unknown} result @returns {void} */
 function rememberPoolResponseMetadata(pool_id, result) {
   if (!isObject(result)) {
@@ -869,10 +837,10 @@ function rememberPoolResponseMetadata(pool_id, result) {
   }
 
   const pool = poolAt(pool_id);
-  const worker_id = result["id"];
-  if (typeof worker_id === "string" ||
-      (typeof worker_id === "number" && Number.isSafeInteger(worker_id))) {
-    pool.worker_id = worker_id;
+  const workerId = result["id"];
+  if (typeof workerId === "string" ||
+      (typeof workerId === "number" && Number.isSafeInteger(workerId))) {
+    pool.worker_id = workerId;
   }
   applyLoginExtensions(pool_id, result["extensions"]);
   const algo = messageAlgorithm(result);
@@ -896,6 +864,8 @@ function normalizedResponseId(id) {
   return Number.isSafeInteger(numeric) ? numeric : id;
 }
 
+// Pick the response handler from the reply id and the dialect's request numbering. Replies that do
+// not match an outstanding request are ignored.
 /** @param {number} pool_id @param {unknown} id @returns {PoolResponseHandler} */
 function poolResponseHandler(pool_id, id) {
   const pool = poolAt(pool_id);
@@ -982,13 +952,14 @@ function handleIronfishSubmitted(pool_id, json) {
   return handleShareResponse(pool_id, !ok, ok, ok ? "" : ": rejected");
 }
 
+// Handle Iron Fish handshake/submit pushes and errors; returns true when the message was consumed.
 /**
  * @param {number} pool_id
  * @param {PoolMessage} json
- * @param {SetJobCallback} set_job
+ * @param {SetJobCallback} setJob
  * @returns {boolean}
  */
-function handleIronfishMessage(pool_id, json, set_job) {
+function handleIronfishMessage(pool_id, json, setJob) {
   if (poolProtocol(poolAt(pool_id)) !== "ironfish") {
     return false;
   }
@@ -1019,7 +990,7 @@ function handleIronfishMessage(pool_id, json, set_job) {
       delete pool.pending_job;
       handleLoginResponse(pool_id, true, false, errMsg, json);
     } else {
-      pool_log_err(pool_id, "Iron Fish error" + errMsg);
+      poolLogErr(pool_id, "Iron Fish error" + errMsg);
     }
     return true;
   }
@@ -1028,7 +999,7 @@ function handleIronfishMessage(pool_id, json, set_job) {
     const pool = poolAt(pool_id);
     const pendingJob = pool.pending_job;
     delete pool.pending_job;
-    if (pendingJob) {pool_message(pool_id, pendingJob, set_job);}
+    if (pendingJob) {routePoolMessage(pool_id, pendingJob, setJob);}
     return true;
   }
   if (json.method === "mining.submitted") {
@@ -1071,13 +1042,17 @@ function handleBeamResult(pool_id, json) {
   return handleShareResponse(pool_id, false, json.code === 1, desc);
 }
 
+// Dispatch one parsed pool message: normalize response ids, queue or apply controls (mo-native
+// pools defer controls until the job for their algorithm arrives), hold jobs that arrive before
+// authorization, then decode jobs or route responses. Throws on malformed protocol data; the
+// connection layer turns that into a pool error.
 /**
  * @param {number} pool_id
  * @param {PoolMessage} json
- * @param {SetJobCallback} set_job
+ * @param {SetJobCallback} setJob
  * @returns {void}
  */
-function pool_message(pool_id, json, set_job) {
+function routePoolMessage(pool_id, json, setJob) {
   const responseEnvelope = typeof json.method !== "string" && Object.hasOwn(json, "id") &&
     (Object.hasOwn(json, "result") || Object.hasOwn(json, "error"));
   if (responseEnvelope) {
@@ -1119,7 +1094,7 @@ function pool_message(pool_id, json, set_job) {
   if (poolProtocol(pool) === "beam" && isBeamResult(json)) {
     return handleBeamResult(pool_id, json);
   }
-  if (handleIronfishMessage(pool_id, json, set_job)) {
+  if (handleIronfishMessage(pool_id, json, setJob)) {
     return;
   }
   if (poolProtocol(pool) === "xelis" && json.method === "mining.ping") {
@@ -1131,7 +1106,7 @@ function pool_message(pool_id, json, set_job) {
   }
   if (usesCortex(pool) && json.id === 100 && pool.pending_cortex_work &&
       "error" in json && json.error !== null) {
-    return handlePoolResponse(pool_id, json, set_job);
+    return handlePoolResponse(pool_id, json, setJob);
   }
   // Miningcore answers the initial getWork as id 100, then pushes new protocol-v1 work as id 0.
   if (usesCortex(pool) && json.id === 100 && !pool.pending_cortex_work) {return;}
@@ -1141,25 +1116,25 @@ function pool_message(pool_id, json, set_job) {
     if (json.id === 1 && isObject(json.result) && Object.hasOwn(json.result, "job")) {
       rememberPoolResponseMetadata(pool_id, json.result);
     }
-    return handlePoolJob(pool_id, job, set_job);
+    return handlePoolJob(pool_id, job, setJob);
   }
   if (nativeSwitching && jobAnnouncement) {
     throw new Error("Invalid native pool job");
   }
   if (responseEnvelope) {
-    return handlePoolResponse(pool_id, json, set_job);
+    return handlePoolResponse(pool_id, json, setJob);
   }
 
-  pool_log_json(pool_id, 1, "Unknown message from the pool: ", json);
+  poolLogJson(pool_id, 1, "Unknown message from the pool: ", json);
 }
 
 const {connectPoolThrottle} = require("./pool/connection")({
-  h, o, net, tls, systemNetConnect, systemTlsConnect, max_pool_data_buffer,
-  clear_pool_connection, isCurrentPoolSocket, pearlhashUsesSubscribe,
-  poolProtocol, pool_log, pool_log1, pool_log_str,
-  poolErrorText,
-  pool_log_json,
-  pool_message: receivePoolMessage, pool_str, usesCortex, usesIronfish, usesMiningSubscribe,
+  h, o, net, tls, systemNetConnect, systemTlsConnect, max_pool_data_buffer: MAX_POOL_DATA_BUFFER,
+  clear_pool_connection: clearPoolConnection, isCurrentPoolSocket, pearlhashUsesSubscribe,
+  poolProtocol, pool_log: poolLog, pool_log_str: poolLogText,
+  pool_log1: (pool_id, str) => h.log1(poolLogText(pool_id, str)),
+  poolErrorText, pool_log_json: poolLogJson, pool_message: receivePoolMessage, pool_str: poolName,
+  usesCortex, usesIronfish, usesMiningSubscribe,
   poolWrite: (...args) => module.exports.pool_write(...args),
   switchPool: (...args) => module.exports.switch_pool(...args),
 });

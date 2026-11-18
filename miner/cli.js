@@ -1,6 +1,8 @@
 "use strict";
 
 const net = require("node:net");
+const {normalizeFingerprint} = require("../pool/tls");
+const {errorMessage} = require("../helper/validate");
 
 /**
  * @param {{
@@ -11,7 +13,6 @@ const net = require("node:net");
  *     parse_opt(opt: object, help: UnknownRecord, arg: string, value: string, base: string): boolean,
  *     pool_create(url: string, port: number, tls: boolean, login: string, pass: string): PoolConfig,
  *     print_help(message?: string): never,
- *     normalize_tls_fingerprint(value: unknown): string,
  *   },
  *   opt: MinerOptions,
  *   normalizeAlgoName(algo: string | null | undefined): string | null | undefined,
@@ -27,6 +28,7 @@ module.exports = ({o, opt, normalizeAlgoName}) => {
     return {port, is_tls: match[2] === "tls"};
   }
 
+  // Parse `host:port[tls]` or `[ipv6]:port[tls]`.
   /** @param {string} uri */
   function parsePoolUri(uri) {
     if (uri.startsWith("[")) {
@@ -39,11 +41,8 @@ module.exports = ({o, opt, normalizeAlgoName}) => {
       const parsed = parsePoolPort(portText);
       return {url: host, port: parsed.port, is_tls: parsed.is_tls};
     }
-    const parts = uri.split(":");
-    if (parts.length !== 2) {return o.print_help("Wrong pool URI: " + uri);}
-    const url = parts[0];
-    const port = parts[1];
-    if (!url || port === undefined) {return o.print_help("Wrong pool URI: " + uri);}
+    const [url, port, ...extra] = uri.split(":");
+    if (!url || port === undefined || extra.length) {return o.print_help("Wrong pool URI: " + uri);}
     const parsed = parsePoolPort(port);
     return {url, port: parsed.port, is_tls: parsed.is_tls};
   }
@@ -93,6 +92,7 @@ module.exports = ({o, opt, normalizeAlgoName}) => {
     opt.job.algo = normalizeAlgoName(algo) || null;
   }
 
+  // Apply the remaining `--option value` pairs; --tls-fingerprint pins the positional primary pool.
   /** @param {string[]} args */
   function parseRemainingOptions(args) {
     while (args.length) {
@@ -101,8 +101,8 @@ module.exports = ({o, opt, normalizeAlgoName}) => {
       if (arg === "--tls-fingerprint" && value !== undefined) {
         const primary = opt.pool_ids.primary === null ? undefined : opt.pools[opt.pool_ids.primary];
         if (!primary?.is_tls) {return o.print_help("--tls-fingerprint requires a TLS primary pool");}
-        try {primary.tls_fingerprint = o.normalize_tls_fingerprint(value);} catch (error) {
-          return o.print_help(error instanceof Error ? error.message : "Invalid TLS fingerprint");
+        try {primary.tls_fingerprint = normalizeFingerprint(value);} catch (error) {
+          return o.print_help(errorMessage(error));
         }
         args.shift();
         continue;

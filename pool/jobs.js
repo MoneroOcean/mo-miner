@@ -1,6 +1,9 @@
 "use strict";
 
 const crypto = require("node:crypto");
+const {isObject} = require("../helper/validate");
+const {isJobId, isJobNonce} = require("../helper/worker-protocol");
+const {hexWithoutPrefix} = require("../miner/submission");
 
 /**
  * @param {{
@@ -10,28 +13,23 @@ const crypto = require("node:crypto");
  *   poolProtocol(pool: PoolConfig): string,
  *   pearlhashDiffFromJobId(jobId: unknown): number | undefined,
  *   beamPackedTarget(difficulty: unknown): string,
- *   pool_close_wait(poolId: number): unknown,
- *   pool_log(poolId: number, message: string): void,
- *   pool_log_err(poolId: number, message: string): void,
+ *   softClosePool(poolId: number): unknown,
+ *   poolLog(poolId: number, message: string): void,
+ *   poolLogErr(poolId: number, message: string): void,
  *   poolErrorText(poolId: number, error: unknown): string,
- *   pool_str(poolId: number): string,
+ *   poolName(poolId: number): string,
  *   algoFromPass(pool: PoolConfig): string,
  *   connectPoolThrottle(poolId: number, setJob: (job: PoolJob) => MiningJob): unknown,
  * }} dependencies
  */
 module.exports = ({
   h, normalizeAlgoName, poolAt, poolProtocol,
-  pearlhashDiffFromJobId, beamPackedTarget, pool_close_wait,
-  pool_log, pool_log_err, poolErrorText, pool_str, algoFromPass, connectPoolThrottle,
+  pearlhashDiffFromJobId, beamPackedTarget, softClosePool,
+  poolLog, poolLogErr, poolErrorText, poolName, algoFromPass, connectPoolThrottle,
 }) => {
 
   // Accommodates a 64-KiB field encoded as hexadecimal while bounding every generic job string.
   const MAX_POOL_JOB_STRING_CHARS = 128 * 1024;
-
-  /** @param {unknown} value @returns {value is UnknownRecord} */
-  function isObject(value) {
-    return value !== null && typeof value === "object" && !Array.isArray(value);
-  }
 
   const poolJobStringFields = [
     "backend", "backend_request", "blob", "blob_hex", "dev", "extra_nonce", "extranonce2",
@@ -54,10 +52,11 @@ module.exports = ({
 
   /** @param {unknown} value @returns {string | number | null} */
   function poolJobId(value) {
-    if (typeof value === "string") {return value.length > 0 && value.length <= 256 ? value : null;}
-    return typeof value === "number" && Number.isSafeInteger(value) ? value : null;
+    return isJobId(value) ? value : null;
   }
 
+  // Admit a pushed or login job object only when every known field has its documented type, so
+  // setJob never sees a wrong-typed field. Algorithm-specific checks happen when the job is built.
   /** @param {unknown} value @returns {value is PoolJob} */
   function isPoolJob(value) {
     if (!isObject(value) || (value["algo"] != null &&
@@ -95,12 +94,7 @@ module.exports = ({
       if (field !== undefined &&
           (typeof field !== "number" || !Number.isSafeInteger(field) || field < 0)) {return false;}
     }
-    const nonce = value["nonce"];
-    if (nonce !== undefined &&
-        !(typeof nonce === "string" && /^[0-9a-f]{1,16}$/i.test(nonce)) &&
-        !(typeof nonce === "number" && Number.isSafeInteger(nonce) && nonce >= 0)) {
-      return false;
-    }
+    if (value["nonce"] !== undefined && !isJobNonce(value["nonce"])) {return false;}
     for (const key of poolJobPositiveIntegerFields) {
       const field = value[key];
       if (field !== undefined &&
@@ -118,42 +112,12 @@ module.exports = ({
     return json.method === "job" && isObject(json.params);
   }
 
+  // Array-param mining.notify with at least the dialect's required fields: Raven 6, Eth and Conflux
+  // 4, Erg 7, ZelHash 8, Verthash 9.
   /** @param {PoolMessage} json @param {number} minimumParams @returns {json is ArrayPoolMessage} */
   function isMiningNotification(json, minimumParams) {
     return json.method === "mining.notify" && Array.isArray(json.params) &&
            json.params.length >= minimumParams;
-  }
-
-  /** @param {PoolMessage} json @returns {json is ArrayPoolMessage} */
-  function isRavenJobNotification(json) {
-    return isMiningNotification(json, 6);
-  }
-
-  /** @param {PoolMessage} json @returns {json is ArrayPoolMessage} */
-  function isEthJobNotification(json) {
-    return isMiningNotification(json, 4);
-  }
-
-  /** @param {PoolMessage} json @returns {json is ArrayPoolMessage} */
-  function isConfluxJobNotification(json) {
-    return isMiningNotification(json, 4);
-  }
-
-  /** @param {PoolMessage} json @returns {json is ArrayPoolMessage} */
-  function isErgJobNotification(json) {
-    return isMiningNotification(json, 7);
-  }
-
-  /** @param {PoolMessage} json @returns {json is ArrayPoolMessage} */
-  function isVerthashJobNotification(json) {
-    return isMiningNotification(json, 9);
-  }
-
-  // ZelHash's ZIP-301 stratum mining.notify carries 8 array fields:
-  // [job_id, version(LE 8hex), prevhash(64), merkleroot(64), reserved(64), time(8), bits(8), clean].
-  /** @param {PoolMessage} json @returns {json is ArrayPoolMessage} */
-  function isZelHashJobNotification(json) {
-    return isMiningNotification(json, 8);
   }
 
   // Beam JSON-RPC `job`: TOP-LEVEL {input(64hex), difficulty(int32), id, method:"job"} (no params array).
@@ -236,11 +200,6 @@ module.exports = ({
          Array.isArray(json.params) && json.params.length >= 1;
   }
 
-  /** @param {unknown} value */
-  function hexWithoutPrefix(value) {
-    return typeof value === "string" ? value.replace(/^0x/i, "") : "";
-  }
-
   /** @param {unknown} value @returns {string} */
   function validExtraNonce(value) {
     const hex = hexWithoutPrefix(value);
@@ -283,22 +242,27 @@ module.exports = ({
     return Array.isArray(result[0]) || result[0] == null ? [result[1]] : result;
   }
 
+  // extra_nonce2_size is a byte count (0..8) sent as a number or a decimal string.
+  /** @param {unknown} value @returns {number | null} */
+  function parseExtraNonce2Size(value) {
+    const size = typeof value === "number" ? value :
+      typeof value === "string" && /^\d+$/.test(value) ? Number(value) : Number.NaN;
+    return Number.isInteger(size) && size >= 0 && size <= 8 ? size : null;
+  }
+
   /** @param {unknown} result */
   function subscribeExtraNonce2Size(result) {
     if (!Array.isArray(result) || !(Array.isArray(result[0]) || result[0] == null)) {
       return null;
     }
-    const rawSize = result[2];
-    const size = typeof rawSize === "number" ? rawSize :
-      typeof rawSize === "string" && /^\d+$/.test(rawSize) ? Number(rawSize) : Number.NaN;
-    return Number.isInteger(size) && size >= 0 && size <= 8 ? size : null;
+    return parseExtraNonce2Size(result[2]);
   }
 
   /** @param {number} pool_id @param {unknown} value */
   function rememberPoolExtraNonceHex(pool_id, value) {
-    const extra_nonce = validExtraNonce(value);
+    const extraNonce = validExtraNonce(value);
     const pool = poolAt(pool_id);
-    if (extra_nonce || value === "") {pool.extra_nonce = extra_nonce;}
+    if (extraNonce || value === "") {pool.extra_nonce = extraNonce;}
   }
 
   /** @param {number} pool_id @param {unknown} result */
@@ -308,22 +272,22 @@ module.exports = ({
       return rememberXelisSubscribeExtraNonce(pool_id, result);
     }
     rememberPoolExtraNonceHex(pool_id, subscribeExtraNonceCandidates(result).find(validExtraNonce));
-    const extra_nonce2_size = subscribeExtraNonce2Size(result);
-    if (extra_nonce2_size !== null) {
-      pool.extra_nonce2_size = extra_nonce2_size;
+    const extraNonce2Size = subscribeExtraNonce2Size(result);
+    if (extraNonce2Size !== null) {
+      pool.extra_nonce2_size = extraNonce2Size;
     }
   }
 
   /** @param {number} pool_id @param {unknown[]} params */
   function rememberXelisExtranonce(pool_id, params) {
     const pool = poolAt(pool_id);
-    const extra_nonce = validHexBytes(params[0], 32);
+    const extraNonce = validHexBytes(params[0], 32);
     if (params.length >= 3) {
-      const public_key = validHexBytes(params[2], 32);
-      pool.xelis_extra_nonce = extra_nonce && public_key ? extra_nonce : "";
-      pool.xelis_public_key = extra_nonce && public_key ? public_key : "";
-    } else if (extra_nonce) {
-      pool.xelis_extra_nonce = extra_nonce;
+      const publicKey = validHexBytes(params[2], 32);
+      pool.xelis_extra_nonce = extraNonce && publicKey ? extraNonce : "";
+      pool.xelis_public_key = extraNonce && publicKey ? publicKey : "";
+    } else if (extraNonce) {
+      pool.xelis_extra_nonce = extraNonce;
     }
   }
 
@@ -382,19 +346,21 @@ module.exports = ({
     return height;
   }
 
+  // Build a NexaPoW job from the four-field WildRig dialect (fixed 4-byte extranonce prefix) or the
+  // official five-field form (8-byte extranonce plus ntime). Returns null for malformed fields.
   /** @param {PoolConfig} pool @param {ArrayPoolMessage} json @returns {PoolJob | null} */
   function nexaNotifyJob(pool, json) {
     const p = json.params;
     const shortNonce = p.length === 4;
     const jobId = poolJobId(p[0]);
     const header = validHexBytes(p[1], 32);
-    const extra_nonce = validHexBytes(pool.extra_nonce, shortNonce ? 4 : 8);
-    if (jobId === null || !header || !extra_nonce ||
+    const extraNonce = validHexBytes(pool.extra_nonce, shortNonce ? 4 : 8);
+    if (jobId === null || !header || !extraNonce ||
         pool.extra_nonce2_size !== (shortNonce ? 4 : 8)) {
       return null;
     }
     const common = {
-      algo: "nexapow", job_id: jobId, extra_nonce, noncebytes: 8,
+      algo: "nexapow", job_id: jobId, extra_nonce: extraNonce, noncebytes: 8,
       target: pool.nexa_target || h.ethDiff2Target(pool.nexa_difficulty || 1),
       difficulty: pool.nexa_difficulty || 1,
     };
@@ -406,7 +372,7 @@ module.exports = ({
       return {
         ...common,
         blob: Buffer.from(header, "hex").reverse().toString("hex") +
-          extra_nonce + "00".repeat(8),
+          extraNonce + "00".repeat(8),
         height: poolHeight(p[2], "Nexa"), nbits, extra_nonce2_size: 4, nonceoffset: 36,
         nonce: "0000000000000000", nicehash_mask: "0000000000000000",
       };
@@ -415,7 +381,7 @@ module.exports = ({
     const ntime = validHexBytes(p[3], 8);
     if (!nbits || !ntime || typeof p[4] !== "boolean") {return null;}
     return {
-      ...common, blob: header + extra_nonce + "00".repeat(8), nbits, ntime, nonceoffset: 40,
+      ...common, blob: header + extraNonce + "00".repeat(8), nbits, ntime, nonceoffset: 40,
     };
   }
 
@@ -424,7 +390,8 @@ module.exports = ({
   // order -- concat directly, NO reversal); the 32-byte nonce at offset 108 starts as nonce1 (the
   // subscribe extranonce prefix) followed by a zero nonce2 region the solver fills. The solver's 8-byte
   // search counter is written at nonceoffset = 108 + nonce1_len so it lands inside nonce2, never
-  // clobbering the pool's fixed nonce1 prefix.
+  // clobbering the pool's fixed nonce1 prefix. Notify params: [job_id, version(LE 8hex),
+  // prevhash(64), merkleroot(64), reserved(64), time(8), bits(8), clean].
   /** @param {PoolConfig} pool @param {ArrayPoolMessage} json @returns {PoolJob | null} */
   function zelhashNotifyJob(pool, json) {
     const p = json.params;
@@ -528,6 +495,7 @@ module.exports = ({
     return out;
   }
 
+  // Parse a non-negative integer given as a safe number or a canonical decimal string, up to maximum.
   /** @param {unknown} value @param {bigint} maximum @param {string} label */
   function unsignedDecimal(value, maximum, label) {
     let text;
@@ -594,14 +562,16 @@ module.exports = ({
     return difficulty;
   }
 
+  // Build a XELIS v3 job: header work hash, big-endian timestamp, zero nonce, then the extranonce and
+  // miner public key from subscribe. Returns null until subscribe supplied both.
   /** @param {PoolConfig} pool @param {ArrayPoolMessage} json @returns {PoolJob | null} */
   function xelisNotifyJob(pool, json) {
     const p = json.params;
     // The pool's job ID is an opaque token, not part of the hashed header.
     const job_id = poolJobId(p[0]);
-    const header_work_hash = validHexBytes(p[2], 32);
-    const timestamp_hex = xelisHex(p[1]);
-    if (job_id === null || !header_work_hash || !/^[0-9a-f]{1,16}$/i.test(timestamp_hex) ||
+    const headerWorkHash = validHexBytes(p[2], 32);
+    const timestampHex = xelisHex(p[1]);
+    if (job_id === null || !headerWorkHash || !/^[0-9a-f]{1,16}$/i.test(timestampHex) ||
         !pool.xelis_extra_nonce || !pool.xelis_public_key) {
       return null;
     }
@@ -611,9 +581,9 @@ module.exports = ({
     /** @type {PoolJob} */
     const job = {
       algo: "xelishashv3",
-      blob: header_work_hash + timestamp_hex.padStart(16, "0") + "00".repeat(8) +
+      blob: headerWorkHash + timestampHex.padStart(16, "0") + "00".repeat(8) +
             pool.xelis_extra_nonce + pool.xelis_public_key,
-      header_hash: header_work_hash,
+      header_hash: headerWorkHash,
       job_id,
       target,
       noncebytes: 8,
@@ -669,6 +639,8 @@ module.exports = ({
     return isPoolJob(job) ? job : null;
   }
 
+  // Build a PearlHash job from object params. The target is either a base target scaled later by the
+  // final matrix shape or, for opted-in subscribe pools, the final jackpot threshold.
   /**
    * @param {PoolConfig} pool
    * @param {UnknownRecord} params
@@ -742,55 +714,41 @@ module.exports = ({
     return job;
   }
 
-  /** @param {number} pool_id @returns {PoolJob | null} */
-  function alivePoolJob(pool_id) {
-    return poolAt(pool_id).last_job || null;
-  }
-
-  // Inactive pools store parsed jobs that set_job validates only on reactivation. A rejected job is
+  // Inactive pools store parsed jobs that setJob validates only on reactivation. A rejected job is
   // dropped and that pool skipped, since failover runs from socket and timer callbacks that must
   // not throw.
-  /** @param {number} pool_id @param {(job: PoolJob) => MiningJob} set_job @param {string} label */
-  function activateAlivePool(pool_id, set_job, label) {
-    const job = alivePoolJob(pool_id);
+  /** @param {number} pool_id @param {(job: PoolJob) => MiningJob} setJob @param {string} label */
+  function activateAlivePool(pool_id, setJob, label) {
+    const job = poolAt(pool_id).last_job;
     if (!job) {return null;}
-    pool_log(pool_id, "Making " + label + " pool " + pool_str(pool_id) + " active again");
-    const previous_pool = global.opt.pool_ids.active;
+    poolLog(pool_id, "Making " + label + " pool " + poolName(pool_id) + " active again");
+    const previousPool = global.opt.pool_ids.active;
     global.opt.pool_ids.active = pool_id;
     try {
-      return set_job(job);
+      return setJob(job);
     } catch (error) {
-      global.opt.pool_ids.active = previous_pool;
+      global.opt.pool_ids.active = previousPool;
       poolAt(pool_id).last_job = null;
-      pool_log_err(pool_id, "Can't use the stored pool job" + poolErrorText(pool_id, error));
+      poolLogErr(pool_id, "Can't use the stored pool job" + poolErrorText(pool_id, error));
       return null;
     }
   }
 
-  /** @param {(job: PoolJob) => MiningJob} set_job */
-  function reactivatePrimaryPool(set_job) {
-    const primary_pool = global.opt.pool_ids.primary;
-    if (primary_pool === null || !alivePoolJob(primary_pool)) {
-      return null;
-    }
-    return activateAlivePool(primary_pool, set_job, "the primary");
+  /** @param {(job: PoolJob) => MiningJob} setJob */
+  function reactivatePrimaryPool(setJob) {
+    const primaryPool = global.opt.pool_ids.primary;
+    if (primaryPool === null) {return null;}
+    return activateAlivePool(primaryPool, setJob, "the primary");
   }
 
-  /** @param {number} active_pool @param {(job: PoolJob) => MiningJob} set_job */
-  function reactivateBackupPool(active_pool, set_job) {
+  /** @param {number} activePool @param {(job: PoolJob) => MiningJob} setJob */
+  function reactivateBackupPool(activePool, setJob) {
     for (let pool_id = 0; pool_id < global.opt.pools.length; ++pool_id) {
-      if (shouldSkipBackupPool(pool_id, active_pool)) {
-        continue;
-      }
-      const job = activateAlivePool(pool_id, set_job, "backup");
+      if (pool_id === global.opt.pool_ids.donate || pool_id === activePool) {continue;}
+      const job = activateAlivePool(pool_id, setJob, "backup");
       if (job) {return job;}
     }
     return null;
-  }
-
-  /** @param {number} pool_id @param {number} active_pool */
-  function shouldSkipBackupPool(pool_id, active_pool) {
-    return pool_id === global.opt.pool_ids.donate || pool_id === active_pool || !alivePoolJob(pool_id);
   }
 
   /** @param {number} pool_id */
@@ -805,21 +763,21 @@ module.exports = ({
 
   // switch active pool to the next available pool (except donate pool)
   // preferring pool with already alive socket if any
-  /** @param {number} pool_id @param {(job: PoolJob) => MiningJob} set_job */
-  function switchPool(pool_id, set_job) {
-    pool_close_wait(pool_id);
+  /** @param {number} pool_id @param {(job: PoolJob) => MiningJob} setJob */
+  function switchPool(pool_id, setJob) {
+    softClosePool(pool_id);
 
-    const active_pool  = global.opt.pool_ids.active;
+    const activePool  = global.opt.pool_ids.active;
 
     // do not care about not active pool
-    if (pool_id !== active_pool) {
+    if (pool_id !== activePool) {
       return;
     }
 
     // select already alive pool if possible, except donate pool (starting from primary pool)
-    const alive_job = reactivateAlivePoolIfAny(active_pool, set_job);
-    if (alive_job) {
-      return alive_job;
+    const aliveJob = reactivatePrimaryPool(setJob) || reactivateBackupPool(activePool, setJob);
+    if (aliveJob) {
+      return aliveJob;
     }
 
     // The lost pool's job can no longer be submitted (its results are dropped), so stop hashing
@@ -830,12 +788,7 @@ module.exports = ({
     const nextPool = nextNonDonatePool(pool_id);
     if (nextPool === null) {return;}
     global.opt.pool_ids.active = nextPool;
-    return connectPoolThrottle(nextPool, set_job);
-  }
-
-  /** @param {number} active_pool @param {(job: PoolJob) => MiningJob} set_job */
-  function reactivateAlivePoolIfAny(active_pool, set_job) {
-    return reactivatePrimaryPool(set_job) || reactivateBackupPool(active_pool, set_job);
+    return connectPoolThrottle(nextPool, setJob);
   }
 
   // mining.set_target is shared by several dialects, but Raven right-pads its compact target while
@@ -867,6 +820,7 @@ module.exports = ({
     }
   }
 
+  // Store a set_difficulty push in the field the pool's dialect reads when it builds the next job.
   /** @param {number} pool_id @param {ArrayPoolMessage} json */
   function handleSetDifficulty(pool_id, json) {
     const pool = poolAt(pool_id);
@@ -913,6 +867,8 @@ module.exports = ({
     };
   }
 
+  // Build a Verthash job from Bitcoin-style stratum: compute the Merkle root from the coinbase parts
+  // and an all-zero extranonce2, then lay out the 80-byte header the reference miner hashes.
   /** @param {PoolConfig} pool @param {ArrayPoolMessage} json @returns {PoolJob | null} */
   function verthashNotifyJob(pool, json) {
     const p = json.params;
@@ -986,6 +942,10 @@ module.exports = ({
     };
   }
 
+  // Decode a pool message into a PoolJob for the pool's dialect, or return null if it is not a job.
+  // A login result with an embedded job also marks the pool logged in. Each job records its submit
+  // mode so results are submitted in the dialect that produced the job. Malformed fields of a
+  // recognized job either return null or throw, which the caller reports as a pool error.
   /** @param {number} pool_id @param {PoolMessage} json @returns {PoolJob | null} */
   function jobFromPoolMessage(pool_id, json) {
     const pool = poolAt(pool_id);
@@ -1025,7 +985,7 @@ module.exports = ({
       }
       return commitSubmitMode(null, json.params);
     }
-    if (protocol === "raven" && isRavenJobNotification(json)) {
+    if (protocol === "raven" && isMiningNotification(json, 6)) {
       const jobId = poolJobId(json.params[0]);
       const headerHash = validHexBytes(json.params[1], 32);
       const seedHash = validHexBytes(json.params[2], 32);
@@ -1043,10 +1003,10 @@ module.exports = ({
       });
       return commitSubmitMode("raven", job);
     }
-    if (protocol === "verthash" && isVerthashJobNotification(json)) {
+    if (protocol === "verthash" && isMiningNotification(json, 9)) {
       return commitSubmitMode("verthash", verthashNotifyJob(pool, json));
     }
-    if (protocol === "eth" && isEthJobNotification(json)) {
+    if (protocol === "eth" && isMiningNotification(json, 4)) {
       const jobId = poolJobId(json.params[0]);
       const seedHash = validHexBytes(json.params[1], 32);
       const headerHash = validHexBytes(json.params[2], 32);
@@ -1060,7 +1020,7 @@ module.exports = ({
       });
       return commitSubmitMode("eth", job);
     }
-    if (protocol === "conflux" && isConfluxJobNotification(json)) {
+    if (protocol === "conflux" && isMiningNotification(json, 4)) {
       const jobId = poolJobId(json.params[0]);
       const headerHash = validHexBytes(json.params[2], 32);
       if (jobId === null || !headerHash) {return null;}
@@ -1088,7 +1048,7 @@ module.exports = ({
     if (protocol === "echelon" && isNexaJobNotification(json)) {
       return commitSubmitMode("echelon", nexaNotifyJob(pool, json));
     }
-    if (protocol === "erg" && isErgJobNotification(json)) {
+    if (protocol === "erg" && isMiningNotification(json, 7)) {
       const jobId = poolJobId(json.params[0]);
       const headerHash = validHexBytes(json.params[2], 32);
       const rawNtime = json.params[7];
@@ -1112,7 +1072,7 @@ module.exports = ({
       });
       return commitSubmitMode("erg", job);
     }
-    if (protocol === "zelhash" && isZelHashJobNotification(json)) {
+    if (protocol === "zelhash" && isMiningNotification(json, 8)) {
       return commitSubmitMode("zelhash", zelhashNotifyJob(pool, json));
     }
     if (protocol === "ironfish" && isIronfishJobNotification(json)) {
@@ -1161,8 +1121,8 @@ module.exports = ({
   }
 
   return {
-    isObject, isIronfishSetTargetNotification, isSetTargetNotification,
-    isSetDifficultyNotification, isSetExtranonceNotification, hexWithoutPrefix,
+    isIronfishSetTargetNotification, isSetTargetNotification,
+    isSetDifficultyNotification, isSetExtranonceNotification, parseExtraNonce2Size,
     validExtraNonce, rememberPoolExtraNonceHex, rememberSubscribeExtraNonce,
     switchPool, handleSetTarget, rememberXelisExtranonce, handleSetDifficulty,
     jobFromPoolMessage,

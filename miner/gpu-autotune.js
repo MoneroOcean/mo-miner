@@ -1,5 +1,7 @@
 "use strict";
 
+const {errorMessage} = require("../helper/validate");
+
 // Optional first-run empirical tuner. The C++ side supplies safe device-derived defaults; this
 // layer only compares a small neighborhood and persists a materially faster device string.
 /**
@@ -18,6 +20,8 @@
 module.exports = function({h, opt, gpuTuning, benchAlgo}) {
   const MIN_SWITCH_GAIN = 1.02; // do not save benchmark noise as hardware-specific configuration
 
+  // Benchmark the entry's candidates in order and report the fastest one, keeping the baseline unless
+  // the gain reaches MIN_SWITCH_GAIN.
   /** @param {string} algo @param {DeviceEntry} entry @param {(entry: DeviceEntry) => void} done */
   function tuneEntry(algo, entry, done) {
     const candidates = gpuTuning.autotuneCandidates(algo, entry);
@@ -54,6 +58,7 @@ module.exports = function({h, opt, gpuTuning, benchAlgo}) {
     });
   }
 
+  // Tune each GPU entry of the algorithm's device list in turn and store the resulting list.
   /** @param {string} algo @param {() => void} done */
   function tuneAlgo(algo, done) {
     const algoParam = opt.algo_params[algo];
@@ -65,7 +70,7 @@ module.exports = function({h, opt, gpuTuning, benchAlgo}) {
     try {
       entries = gpuTuning.parseDeviceList(algoParam.dev, algo);
     } catch (error) {
-      h.log_err(`Skipping ${algo} GPU tuning: ${error instanceof Error ? error.message : String(error)}`);
+      h.log_err(`Skipping ${algo} GPU tuning: ${errorMessage(error)}`);
       return done();
     }
     const gpuEntries = entries.map((entry, index) => ({entry, index}))

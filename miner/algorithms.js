@@ -15,4 +15,11 @@ function normalizeAlgoName(algo) {
   return aliases.get(name) || name;
 }
 
-module.exports = {normalizeAlgoName};
+// Algorithm families that share a pool dialect, header layout, or GPU tuning surface.
+const PROGPOW_ALGOS = new Set(["kawpow", "firopow", "evrprogpow", "meowpow"]);
+// 140-byte Zcash-family headers with a 32-byte nonce at offset 108.
+const ZELHASH_ALGOS = new Set(["equihash192_7", "zelhash", "zhash"]);
+// 80-byte Kaspa-style headers with an 8-byte little-endian nonce at offset 72.
+const KASPA_HEADER_ALGOS = new Set(["karlsenhashv2", "hoohash", "walahash"]);
+
+module.exports = {normalizeAlgoName, PROGPOW_ALGOS, ZELHASH_ALGOS, KASPA_HEADER_ALGOS};

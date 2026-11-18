@@ -1,6 +1,6 @@
 "use strict";
 
-const hashrate_units = [
+const hashrateUnits = [
   {value: 1000000000000000, suffix: "PH/s"},
   {value: 1000000000000, suffix: "TH/s"},
   {value: 1000000000, suffix: "GH/s"},
@@ -12,13 +12,13 @@ const hashrate_units = [
 module.exports.formatHashrate = function(hashrate) {
   const rate = Number.parseFloat(String(hashrate));
   if (!Number.isFinite(rate)) {return String(hashrate);}
-  for (const unit of hashrate_units) {
+  for (const unit of hashrateUnits) {
     if (Math.abs(rate) >= unit.value) {return (rate / unit.value).toFixed(2) + " " + unit.suffix;}
   }
   return rate.toFixed(2) + " H/s";
 };
 
-const hash_count_units = [
+const hashCountUnits = [
   {value: 1000000000000000000n, suffix: "EH"},
   {value: 1000000000000000n, suffix: "PH"},
   {value: 1000000000000n, suffix: "TH"},
@@ -39,28 +39,28 @@ function formatHashCountValue(count, unit) {
 module.exports.formatHashCount = function(hashes) {
   let count = typeof hashes === "bigint" ? hashes : BigInt(Math.round(Number(hashes) || 0));
   if (count < 0n) {count = 0n;} // counts are unsigned; clamp negatives to zero
-  for (const unit of hash_count_units) {
+  for (const unit of hashCountUnits) {
     if (count >= unit.value) {return formatHashCountValue(count, unit);}
   }
   return count.toString() + " H";
 };
 
 // pack opt.default_msrs so it can be more easily passed into the compute core
-/** @param {Record<string, MsrSetting>} default_msr @returns {Record<string, string>} */
-module.exports.pack_msr = function(default_msr) {
+/** @param {Record<string, MsrSetting>} msrs @returns {Record<string, string>} */
+module.exports.pack_msr = function(msrs) {
   /** @type {Record<string, string>} */
   const packed = {};
-  for (const [key, val] of Object.entries(default_msr)) {
+  for (const [key, val] of Object.entries(msrs)) {
     packed["msr:" + key] = val.value + "," + val.mask;
   }
   return packed;
 };
 
-/** @param {Record<string, string>} default_msr @returns {Record<string, MsrSetting>} */
-module.exports.unpack_msr = function(default_msr) {
+/** @param {Record<string, string>} msrs @returns {Record<string, MsrSetting>} */
+module.exports.unpack_msr = function(msrs) {
   /** @type {Record<string, MsrSetting>} */
   const unpacked = {};
-  for (const [key, val] of Object.entries(default_msr)) {
+  for (const [key, val] of Object.entries(msrs)) {
     if (!key.startsWith("msr:0x")) {continue;}
     const parts = val.split(",");
     const [value, mask] = parts;
@@ -103,6 +103,7 @@ module.exports.kawpowTarget2diff = function(target) {
 const ETH_STRATUM_DIFF1_TARGET = BigInt("0x00000000ffff0000000000000000000000000000000000000000000000000000");
 const UINT256_MAX = (1n << 256n) - 1n;
 
+// Parse a decimal number or string (with optional exponent) exactly as [numerator, denominator].
 /** @param {unknown} value @returns {[bigint, bigint]} */
 function decimalToRatio(value) {
   if (typeof value !== "string" && typeof value !== "number" && typeof value !== "bigint") {

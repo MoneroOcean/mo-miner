@@ -17,18 +17,19 @@ if (!h.cluster_process()) {
   const compilerPolicy = require("./compiler-policy.js");
   const gpuTuning = require("./gpu-tuning.js");
   const {normalizeAlgoName} = require("./miner/algorithms");
+  const {isObject, errorMessage, isPositiveNumber} = require("./helper/validate");
   const o = require("./opts.js");
   const p = require("./pool.js");
   global.opt = o.create_default_opts();
 
   /** @type {ComputeCore | null} */
-  let compute_core = null;
+  let computeCore = null;
   /** @type {Promise<void>} */
-  let compute_core_close = Promise.resolve();
+  let computeCoreClose = Promise.resolve();
   /** @type {((hashrate: number) => unknown) | null} */
-  let algo_params_bench_cb = null; // used to record algo_params bench data
+  let algoParamsBenchCallback = null; // used to record algo_params bench data
   /** @type {MiningJob | null} */
-  let last_job = null;
+  let lastJob = null;
   /** @type {string | null} */
   let directive = null;
   /** @type {MinerTestState} */
@@ -37,13 +38,14 @@ if (!h.cluster_process()) {
     thread_tested:   0,
     result:          ""
   };
-  let is_exiting = false;
+  let exiting = false;
 
   const WORKER_CLOSE_GRACE_MS = 3000;
   const PROCESS_EXIT_GRACE_MS = 5000;
 
+  // Exit through the native core's exit hook once buffered stdout and stderr have been written.
   /** @param {number} code */
-  function reallyExit(code) {
+  function exitAfterFlush(code) {
     const finish = () => {
       h.exit_now(code);
     };
@@ -83,12 +85,12 @@ if (!h.cluster_process()) {
   }
 
   function closeComputeCore() {
-    if (!compute_core) {return;}
+    if (!computeCore) {return;}
     if (Object.keys(global.opt.default_msrs).length) {
-      compute_core.emit_to("write_msr", h.pack_msr(global.opt.default_msrs));
+      computeCore.emit_to("write_msr", h.pack_msr(global.opt.default_msrs));
     }
-    compute_core.emit_to("close");
-    compute_core = null;
+    computeCore.emit_to("close");
+    computeCore = null;
   }
 
   /** @param {WorkerTarget} target */
@@ -105,25 +107,24 @@ if (!h.cluster_process()) {
     return new Promise((resolve) => worker.once("exit", () => resolve()));
   }
 
-  function harnessOwnsShutdownDeadline() {
-    return ((directive === "bench" || directive === "mine") &&
-      process.env["MOM_BENCHMARK_CONTROL_STDIN"] === "1") ||
-      (directive === "test" && process.env["MOM_GPU_TEST_GRACEFUL_ONLY"] === "1");
-  }
-
+  // Shut down once: restore MSRs, close the core and workers, then exit. With force, a deadline
+  // ends a hung cleanup unless a controlling test harness owns that deadline. A controlled mine
+  // waits for the core, the workers, and pending share replies before exiting.
   /** @param {number} code @param {boolean} [force] @returns {false} */
   function exit(code, force = true) {
-    const harnessOwnsDeadline = harnessOwnsShutdownDeadline();
+    const harnessOwnsDeadline = ((directive === "bench" || directive === "mine") &&
+      process.env["MOM_BENCHMARK_CONTROL_STDIN"] === "1") ||
+      (directive === "test" && process.env["MOM_GPU_TEST_GRACEFUL_ONLY"] === "1");
     const controlledMine = directive === "mine" &&
       process.env["MOM_BENCHMARK_CONTROL_STDIN"] === "1";
     // A second exit() (e.g. SIGINT during shutdown) must not re-run teardown; just honor force.
-    if (is_exiting) {
-      if (force && !harnessOwnsDeadline) {reallyExit(code);}
+    if (exiting) {
+      if (force && !harnessOwnsDeadline) {exitAfterFlush(code);}
       return false;
     }
-    is_exiting = true;
+    exiting = true;
     // Explicitly controlled tests/benchmarks own the outer deadline; avoid nested forced cleanup.
-    const coreClose = controlledMine ? compute_core_close : null;
+    const coreClose = controlledMine ? computeCoreClose : null;
     closeComputeCore();
     const workerTargets = h.closeWorkers(force && !harnessOwnsDeadline ? WORKER_CLOSE_GRACE_MS : null);
     process.exitCode = code;
@@ -132,17 +133,17 @@ if (!h.cluster_process()) {
       // core and workers complete their natural cleanup; controller teardown releases its resources.
       Promise.all([coreClose, ...workerTargets.map(waitForWorkerClose)])
         .then(() => p.waitForPendingShares())
-        .then(() => reallyExit(/** @type {number} */ (process.exitCode ?? code)));
+        .then(() => exitAfterFlush(/** @type {number} */ (process.exitCode ?? code)));
       return false;
     }
     if (force && !harnessOwnsDeadline) {
-      setTimeout(() => reallyExit(code), PROCESS_EXIT_GRACE_MS).unref();
+      setTimeout(() => exitAfterFlush(code), PROCESS_EXIT_GRACE_MS).unref();
     }
     return false;
   }
 
   /** @param {string} msg @returns {false} */
-  function err_exit(msg) {
+  function errorExit(msg) {
     h.log_err(msg);
     return exit(1);
   }
@@ -154,31 +155,34 @@ if (!h.cluster_process()) {
 
   const {expectedTestThreads, messageHandler, resetHashrates} = require("./miner/messages")({
     fs, h, p, opt: global.opt, submission, test, normalizeExpectedResults,
-    matchesTestResult, exit, getLastJob: () => last_job,
-    getAlgoParamsBenchCallback: () => algo_params_bench_cb,
+    matchesTestResult, exit, getLastJob: () => lastJob,
+    getAlgoParamsBenchCallback: () => algoParamsBenchCallback,
   });
 
   const jobApi = require("./miner/jobs")({
     h, opt: global.opt, process, compilerPolicy, gpuTuning,
-    hexWithoutPrefix, normalizeAlgoName, messageHandler, isExiting: () => is_exiting,
-    getComputeCore: () => compute_core,
-    getLastJob: () => last_job,
-    setLastJob: (job) => { last_job = job; },
+    hexWithoutPrefix, normalizeAlgoName, messageHandler, isExiting: () => exiting,
+    getComputeCore: () => computeCore,
+    getLastJob: () => lastJob,
+    setLastJob: (job) => { lastJob = job; },
   });
   const {
-    set_algo_msr, requestedJobBackend, jobBackend, resolvedDeviceList,
-    configuredTuning, workerRuntimeEnv, set_job,
+    setAlgoMsr, requestedJobBackend, jobBackend, resolvedDeviceList,
+    configuredTuning, workerRuntimeEnv, setJob,
     prepareTestJob, prepareBenchmarkJob, defaultBenchAlgos, moneroOceanAlgos,
   } = jobApi;
 
+  // Benchmark one algorithm on its configured (or the given) devices and call cb once with the mean
+  // of `samples` measured rates, or 0 on failure or timeout. Only one benchmark runs at a time: the
+  // active one owns algoParamsBenchCallback, and a stale callback is ignored.
   /**
    * @param {string} algo
    * @param {(hashrate: number) => unknown} cb
    * @param {string | null} [dev]
    * @param {number} [samples]
    */
-  function bench_algo(algo, cb, dev = null, samples = 1) {
-    if (is_exiting) {return;}
+  function benchAlgo(algo, cb, dev = null, samples = 1) {
+    if (exiting) {return;}
     const configured = global.opt.algo_params[algo];
     const benchmarkDev = dev || configured?.dev;
     if (!benchmarkDev) {throw new Error(`No device is configured for ${algo}`);}
@@ -201,8 +205,8 @@ if (!h.cluster_process()) {
     const rates = [];
     /** @param {number} hashrate */
     const finish = function(hashrate) {
-      if (algo_params_bench_cb !== record) {return;}
-      algo_params_bench_cb = null;
+      if (algoParamsBenchCallback !== record) {return;}
+      algoParamsBenchCallback = null;
       resetHashrates();
       clearTimeout(timeout);
       return cb(hashrate);
@@ -226,34 +230,34 @@ if (!h.cluster_process()) {
       return finish(0);
     }, setupTimeout + (firstSampleMinutes +
       Math.max(0, samples + warmupSamples - 1) * additionalSampleMinutes)*60*1000);
-    algo_params_bench_cb = record;
-    set_algo_msr(algo);
-    h.messageWorkers({type: "bench", job: last_job = job});
+    algoParamsBenchCallback = record;
+    setAlgoMsr(algo);
+    h.messageWorkers({type: "bench", job: lastJob = job});
   }
 
   const gpuAutotune = require("./miner/gpu-autotune")({
-    h, opt: global.opt, gpuTuning, benchAlgo: bench_algo,
+    h, opt: global.opt, gpuTuning, benchAlgo: benchAlgo,
   });
 
   // do global.opt.algo_params benchmarks if perf === null
   /** @param {() => unknown} cb */
-  function bench_algos(cb) {
+  function benchAlgos(cb) {
     const algos = benchmarkAlgos();
-    let is_before_first_benchmark = true;
-    h.repeat(function(cb_next) {
+    let beforeFirstBenchmark = true;
+    h.repeat(function(next) {
       const algo = nextAlgoToBenchmark(algos);
       if (!algo) {
         // This is an explicitly expensive first-run action, not a persistent mining mode.
         global.opt.gpu_tune = 0;
         return cb();
       }
-      if (is_before_first_benchmark) {h.log("Doing algo benchmarks...");}
-      is_before_first_benchmark = false;
-      const benchmark = () => bench_algo(algo, function(hashrate) {
+      if (beforeFirstBenchmark) {h.log("Doing algo benchmarks...");}
+      beforeFirstBenchmark = false;
+      const benchmark = () => benchAlgo(algo, function(hashrate) {
         const params = global.opt.algo_params[algo];
         if (!params) {throw new Error(`Missing benchmark parameters for ${algo}`);}
         params.perf = hashrate;
-        return cb_next();
+        return next();
       });
       if (global.opt.gpu_tune) {return gpuAutotune.tuneAlgo(algo, benchmark);}
       return benchmark();
@@ -278,26 +282,26 @@ if (!h.cluster_process()) {
   }
 
   function saveConfig() {
-    const save_config = global.opt.save_config;
-    if (!save_config) {return;}
-    h.log("Saving config file to " + save_config);
+    const saveFile = global.opt.save_config;
+    if (!saveFile) {return;}
+    h.log("Saving config file to " + saveFile);
     try {
-      fs.writeFileSync(save_config, JSON.stringify(o.saved_config(global.opt), null, 2), {mode: 0o600});
-      if (process.platform !== "win32") {fs.chmodSync(save_config, 0o600);}
+      fs.writeFileSync(saveFile, JSON.stringify(o.saved_config(global.opt), null, 2), {mode: 0o600});
+      if (process.platform !== "win32") {fs.chmodSync(saveFile, 0o600);}
     } catch {
-      h.log_err("Error saving " + save_config + " file");
+      h.log_err("Error saving " + saveFile + " file");
     }
   }
 
   // setup all pool share report
   function scheduleShareStats() {
     setInterval(function() {
-      let good_shares = 0, bad_shares = 0;
+      let goodShares = 0, badShares = 0;
       for (const pool of global.opt.pools) {
-        good_shares += pool.good_shares;
-        bad_shares += pool.bad_shares;
+        goodShares += pool.good_shares;
+        badShares += pool.bad_shares;
       }
-      h.log("Accepted (" + good_shares + ") / Rejected (" + bad_shares + ") shares");
+      h.log("Accepted (" + goodShares + ") / Rejected (" + badShares + ") shares");
     }, global.opt.pool_time.stats * 1000);
   }
 
@@ -311,11 +315,12 @@ if (!h.cluster_process()) {
           default: break;
         }
         const primaryPool = global.opt.pool_ids.primary;
-        if (primaryPool !== null) {p.connect_pool_throttle(primaryPool, set_job);}
+        if (primaryPool !== null) {p.connect_pool_throttle(primaryPool, setJob);}
       }, global.opt.pool_time.primary_reconnect * 1000);
     }
   }
 
+  // Open one donation window: allow and connect the donation pool, then switch away when it ends.
   function startDonationWindow() {
     const poolId = global.opt.pool_ids.donate;
     if (poolId === null) {return;}
@@ -324,11 +329,11 @@ if (!h.cluster_process()) {
     const duration = global.opt.pool_time.donate_length * 1000;
     const until = Date.now() + duration;
     pool.donation_until = until;
-    p.connect_pool_throttle(poolId, set_job);
+    p.connect_pool_throttle(poolId, setJob);
     setTimeout(function() {
       if (pool.donation_until !== until) {return;}
       pool.donation_until = 0;
-      p.switch_pool(poolId, set_job);
+      p.switch_pool(poolId, setJob);
     }, duration);
   }
 
@@ -342,9 +347,12 @@ if (!h.cluster_process()) {
     return Object.fromEntries(Object.entries(global.opt.algo_params)
       .filter(([algo, params]) => moneroOceanAlgos.has(algo) &&
       donationAlgoSupported(algo, params.dev) &&
-      typeof params.perf === "number" && Number.isFinite(params.perf) && params.perf > 0));
+      isPositiveNumber(params.perf)));
   }
 
+  // Point the donation pool at the MoM proxy with the algorithms it may assign: the current fixed
+  // algorithm when the proxy supports it, otherwise every measured MoneroOcean algorithm on the
+  // selected devices. Without any, drop the donation pool.
   function configureDonationMining() {
     const poolId = global.opt.pool_ids.donate;
     if (poolId === null) {return;}
@@ -360,8 +368,7 @@ if (!h.cluster_process()) {
       donationAlgoSupported(primaryAlgo, primaryParams.dev) ? {
         [primaryAlgo]: {
           ...primaryParams,
-          perf: typeof primaryParams.perf === "number" && Number.isFinite(primaryParams.perf) &&
-            primaryParams.perf > 0 ? primaryParams.perf : 1,
+          perf: isPositiveNumber(primaryParams.perf) ? primaryParams.perf : 1,
         },
       } : measured;
     const selectedAlgos = Object.keys(selected);
@@ -394,8 +401,9 @@ if (!h.cluster_process()) {
     });
   }
 
-  function start_mining() {
-    if (is_exiting) {return;}
+  // Save the config, finish option setup, and connect to the primary pool with periodic timers.
+  function startMining() {
+    if (exiting) {return;}
     saveConfig();
     h.log2("Options: " + JSON.stringify(o.redacted_options(global.opt)));
     o.set_internal_opts(global.opt, o.opt_help);
@@ -404,48 +412,48 @@ if (!h.cluster_process()) {
     const primaryPool = global.opt.pool_ids.primary;
     if (primaryPool === null) {throw new Error("Primary pool is not configured");}
     global.opt.pool_ids.active = primaryPool;
-    p.connect_pool_throttle(primaryPool, set_job);
+    p.connect_pool_throttle(primaryPool, setJob);
     scheduleShareStats();
     schedulePrimaryReconnect();
     scheduleDonationMining();
   }
 
-  function on_exit() {
+  function onExitSignal() {
     if (process.env["MOM_BENCHMARK_CONTROL_STDIN"] === "1") {
       process.stdin.destroy();
     }
     exit(0, true);
   }
 
-  function install_exit_handlers() {
-    process.on("SIGINT", on_exit);
-    process.on("SIGTERM", on_exit);
+  function installExitHandlers() {
+    process.on("SIGINT", onExitSignal);
+    process.on("SIGTERM", onExitSignal);
     if (process.platform === "win32") {
-      process.on("SIGBREAK", on_exit);
+      process.on("SIGBREAK", onExitSignal);
     } else {
-      process.on("SIGHUP", on_exit);
+      process.on("SIGHUP", onExitSignal);
     }
   }
 
   // Controlled tests may close mine or bench through this pipe. Windows emulates SIGTERM by
   // terminating only the parent, so an explicit close lets compute workers and N-API/SYCL cleanup
   // hooks run before the process exits.
-  function install_control_pipe() {
+  function installControlPipe() {
     if (process.env["MOM_BENCHMARK_CONTROL_STDIN"] !== "1") {return;}
     const maxControlLine = 64;
     let input = "";
     process.stdin.setEncoding("utf8");
     process.stdin.on("data", function(chunk) {
-      if (is_exiting) {return;}
+      if (exiting) {return;}
       input += chunk;
       let eol;
       while ((eol = input.indexOf("\n")) !== -1) {
-        if (eol > maxControlLine) {return on_exit();}
+        if (eol > maxControlLine) {return onExitSignal();}
         const command = input.slice(0, eol).trim();
         input = input.slice(eol + 1);
-        if (command === "close") {return on_exit();}
+        if (command === "close") {return onExitSignal();}
       }
-      if (input.length > maxControlLine) {return on_exit();}
+      if (input.length > maxControlLine) {return onExitSignal();}
     });
     process.stdin.resume();
   }
@@ -455,24 +463,26 @@ if (!h.cluster_process()) {
     requestedJobBackend, jobBackend, resolvedDeviceList, configuredTuning,
   });
   const {
-    detect_cpu, use_msr_tuning, add_algo_params, publicAlgoParams,
-    prepare_algo_params, donationAlgoSupported,
+    detectCpu, useMsrTuning, addAlgoParams, publicAlgoParams,
+    prepareAlgoParams, donationAlgoSupported,
   } = environment;
 
-  function start_after_algo_params() {
+  function startAfterAlgoParams() {
     try {
-      if (!prepare_algo_params()) {
-        return err_exit("No supported algorithms for the selected mining devices");
+      if (!prepareAlgoParams()) {
+        return errorExit("No supported algorithms for the selected mining devices");
       }
     } catch (error) {
-      return err_exit(errorMessage(error));
+      return errorExit(errorMessage(error));
     }
-    if (global.opt.bench_algo_params !== 0) {return bench_algos(start_mining);}
-    return start_mining();
+    if (global.opt.bench_algo_params !== 0) {return benchAlgos(startMining);}
+    return startMining();
   }
 
+  // Create the controller's control core once. Late core errors (for example a refused write_msr)
+  // are logged instead of crashing when no request is waiting for a response.
   function createComputeCore() {
-    if (compute_core) {return compute_core;}
+    if (computeCore) {return computeCore;}
     // The control core performs device discovery/MSR work before an algorithm worker exists. A
     // package launcher already selected an addon and matching runtime; preserve that atomic choice.
     // A source or standalone-native launch needs that policy choice here; native mode selects a
@@ -486,25 +496,26 @@ if (!h.cluster_process()) {
       Object.assign(process.env, controlEnv);
     }
     const core = h.create_core();
-    compute_core = core;
+    computeCore = core;
     // Native command failures after startup (for example write_msr under kernel lockdown) have no
     // onceCoreResponse listener; log them instead of letting EventEmitter throw on "error".
     core.from.on("error", (error) => {
       if (core.from.listenerCount("error") === 1) {h.log_err("Compute core error: " + errorMessage(error));}
     });
-    compute_core_close = new Promise((resolve) => core.from.once("close", () => {
+    computeCoreClose = new Promise((resolve) => core.from.once("close", () => {
       if (process.exitCode == null) {process.exitCode = 0;}
       resolve();
     }));
     return core;
   }
 
+  // Wait for one named core response or error; whichever arrives first removes both listeners.
   /**
    * @param {string} name
-   * @param {(value: unknown) => unknown} on_result
-   * @param {(error: unknown) => unknown} on_error
+   * @param {(value: unknown) => unknown} onResult
+   * @param {(error: unknown) => unknown} onError
    */
-  function onceCoreResponse(name, on_result, on_error) {
+  function onceCoreResponse(name, onResult, onError) {
     const emitter = createComputeCore().from;
     function cleanup() {
       emitter.removeListener(name, handleResult);
@@ -513,39 +524,32 @@ if (!h.cluster_process()) {
     /** @param {unknown} value */
     function handleResult(value) {
       cleanup();
-      if (is_exiting) {return;}
-      return on_result(value);
+      if (exiting) {return;}
+      return onResult(value);
     }
     /** @param {unknown} value */
     function handleError(value) {
       cleanup();
-      if (is_exiting) {return;}
-      return on_error(value);
+      if (exiting) {return;}
+      return onError(value);
     }
     emitter.once(name, handleResult);
     emitter.once("error", handleError);
   }
 
-  /** @param {(value: unknown) => unknown} on_read @param {(error?: unknown) => unknown} on_error */
-  function readMsrThen(on_read, on_error) {
-    if (!use_msr_tuning()) {return on_error();}
-    onceCoreResponse("read_msr", on_read, function(v) {
+  /** @param {(value: unknown) => unknown} onRead @param {(error?: unknown) => unknown} onError */
+  function readMsrThen(onRead, onError) {
+    if (!useMsrTuning()) {return onError();}
+    onceCoreResponse("read_msr", onRead, function(v) {
       if (v) {h.log("Can't access MSR: " + JSON.stringify(errorMessage(v)));}
-      return on_error(v);
+      return onError(v);
     });
     return createComputeCore().emit_to("read_msr", h.pack_msr(global.opt.default_msrs));
   }
 
-  /** @param {unknown} value @returns {string} */
-  function errorMessage(value) {
-    return value && typeof value === "object" && "message" in value
-      ? String(value["message"]) : String(value);
-  }
-
   /** @param {unknown} value @returns {value is Record<string, string>} */
   function isStringRecord(value) {
-    return value !== null && typeof value === "object" && !Array.isArray(value) &&
-      Object.values(value).every((entry) => typeof entry === "string");
+    return isObject(value) && Object.values(value).every((entry) => typeof entry === "string");
   }
 
   /** @returns {string} */
@@ -566,7 +570,7 @@ if (!h.cluster_process()) {
     const algo = directAlgo();
     const heuristicDev = params[algo];
     if (!heuristicDev) {
-      err_exit(`No automatic GPU tuning is available for ${algo} on the selected device`);
+      errorExit(`No automatic GPU tuning is available for ${algo} on the selected device`);
       return false;
     }
     global.opt.job.dev = resolvedDeviceList(
@@ -574,6 +578,8 @@ if (!h.cluster_process()) {
     return true;
   }
 
+  // For bench/test, fill missing GPU primary tuning and resolve an auto GPU backend from the core's
+  // device discovery before starting; otherwise start immediately.
   /** @param {() => unknown} start */
   function startWithDirectJobTuning(start) {
     const algo = directAlgo();
@@ -586,14 +592,14 @@ if (!h.cluster_process()) {
     createComputeCore();
     /** @param {unknown} value */
     const onError = function(value) {
-      err_exit("Can't derive automatic GPU tuning: " + JSON.stringify(errorMessage(value)));
+      errorExit("Can't derive automatic GPU tuning: " + JSON.stringify(errorMessage(value)));
     };
     onceCoreResponse("algo_params", function(params) {
       if (!isStringRecord(params)) {return onError("Malformed automatic GPU tuning response");}
-      if (autoGpuBackend) {add_algo_params(params);}
+      if (autoGpuBackend) {addAlgoParams(params);}
       if (!needsTuning || resolveDirectJobTuning(params)) {start();}
     }, onError);
-    return createComputeCore().emit_to("algo_params", detect_cpu());
+    return createComputeCore().emit_to("algo_params", detectCpu());
   }
 
   function startTestJob() {
@@ -604,15 +610,16 @@ if (!h.cluster_process()) {
     h.messageWorkers({type: "test", job});
   }
 
+  // Start the bench directive's workers, applying the algorithm's MSR preset when MSR access works.
   function startDirectBenchmark() {
     const job = prepareBenchmarkJob(directJob());
     const startBenchJob = () => {
-      last_job = job;
+      lastJob = job;
       h.messageWorkers({type: "bench", job});
     };
     h.recreate_threads(job.dev, messageHandler,
       (entry) => workerRuntimeEnv(job.algo, entry));
-    if (!use_msr_tuning()) {
+    if (!useMsrTuning()) {
       startBenchJob();
       return;
     }
@@ -620,31 +627,31 @@ if (!h.cluster_process()) {
     readMsrThen(function(v) {
       if (!isStringRecord(v)) {throw new Error("Malformed MSR response");}
       global.opt.default_msrs = h.unpack_msr(v); // to restore them on exit
-      set_algo_msr(job.algo);
+      setAlgoMsr(job.algo);
       startBenchJob();
     }, startBenchJob);
   }
 
   switch (directive) {
     case "mine":
-      install_exit_handlers();
-      install_control_pipe();
+      installExitHandlers();
+      installControlPipe();
       createComputeCore();
       onceCoreResponse("algo_params", function(v) {
-        if (!isStringRecord(v)) {return err_exit("Malformed algorithm parameters response");}
-        add_algo_params(v);
+        if (!isStringRecord(v)) {return errorExit("Malformed algorithm parameters response");}
+        addAlgoParams(v);
         return readMsrThen(function(v) {
-          if (!isStringRecord(v)) {return err_exit("Malformed MSR response");}
+          if (!isStringRecord(v)) {return errorExit("Malformed MSR response");}
           global.opt.default_msrs = h.unpack_msr(v);
-          return start_after_algo_params();
+          return startAfterAlgoParams();
         }, function() {
           global.opt.default_msrs = {};
-          return start_after_algo_params();
+          return startAfterAlgoParams();
         });
       }, function(v) {
-        err_exit("Can't detect algo params: " + JSON.stringify(errorMessage(v)));
+        errorExit("Can't detect algo params: " + JSON.stringify(errorMessage(v)));
       });
-      createComputeCore().emit_to("algo_params", detect_cpu());
+      createComputeCore().emit_to("algo_params", detectCpu());
       break;
 
     case "test":
@@ -652,21 +659,21 @@ if (!h.cluster_process()) {
       break;
 
     case "bench":
-      install_exit_handlers();
-      install_control_pipe();
+      installExitHandlers();
+      installControlPipe();
       startWithDirectJobTuning(startDirectBenchmark);
       break;
 
     case "algorithms":
       createComputeCore();
       onceCoreResponse("algo_params", function(v) {
-        if (!isStringRecord(v)) {return err_exit("Malformed algorithm parameters response");}
+        if (!isStringRecord(v)) {return errorExit("Malformed algorithm parameters response");}
         fs.writeSync(1, "MOM_ALGORITHMS " + JSON.stringify(publicAlgoParams(v)) + "\n");
         return exit(0);
       }, function(v) {
-        err_exit("Can't detect algorithms: " + JSON.stringify(errorMessage(v)));
+        errorExit("Can't detect algorithms: " + JSON.stringify(errorMessage(v)));
       });
-      createComputeCore().emit_to("algo_params", detect_cpu());
+      createComputeCore().emit_to("algo_params", detectCpu());
       break;
     default:
       break;

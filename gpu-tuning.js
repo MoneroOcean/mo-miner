@@ -1,8 +1,8 @@
 "use strict";
 
 const {pearlhashTarget} = require("./helper/hash");
+const {PROGPOW_ALGOS} = require("./miner/algorithms");
 
-const progpowAlgos = ["kawpow", "firopow", "evrprogpow", "meowpow"];
 const fishhashAlgos = ["fishhash", "karlsenhashv2"];
 const fixedIntensityAlgos = new Set(["c30", "equihash192_7", "zhash"]);
 /** @type {Set<keyof GpuTuning>} */
@@ -31,7 +31,7 @@ const algoEntries = [
   ["beamhash3", new Set(["workgroup", "compact_workgroup", "scatter_workgroup", "layout"])],
 ];
 const algoFields = new Map(algoEntries);
-for (const algo of progpowAlgos) {algoFields.set(algo, progpowFields);}
+for (const algo of PROGPOW_ALGOS) {algoFields.set(algo, progpowFields);}
 for (const algo of fishhashAlgos) {algoFields.set(algo, fishhashFields);}
 /** @type {Set<keyof GpuTuning>} */
 const allAlgoFields = new Set([...algoFields.values()].flatMap((fields) => [...fields]));
@@ -77,7 +77,7 @@ const workgroupsByAlgo = new Map([
   ["hoohash", [64, 128, 256]],
   ["pearlhash", [32, 64, 128, 256]],
 ]);
-for (const algo of progpowAlgos) {workgroupsByAlgo.set(algo, progpowWorkgroups);}
+for (const algo of PROGPOW_ALGOS) {workgroupsByAlgo.set(algo, progpowWorkgroups);}
 for (const algo of fishhashAlgos) {workgroupsByAlgo.set(algo, fishhashWorkgroups);}
 const tuningFieldOrder = [
   "intensity", "seed_workgroup", "m", "slots", "workgroup",
@@ -93,6 +93,7 @@ function allowedFields(algo) {
   return allAlgoFields;
 }
 
+// Parse one integer tuning value and apply its field-specific allowed values.
 /**
  * @param {keyof GpuTuning} field
  * @param {unknown} value
@@ -270,6 +271,7 @@ function validateTuning(algo, tuning, context = "tuning") {
   return result;
 }
 
+// Parse the `name=value;...` list of a `*[...]` device suffix into validated tuning.
 /**
  * @param {string} algo
  * @param {string | undefined} text
@@ -294,6 +296,8 @@ function parseExpandedTuning(algo, text, context) {
   return validateTuning(algo, raw, context);
 }
 
+// Parse one `<dev>[*MAIN|*[name=value;...]][^P]` entry. MAIN sets the algorithm's primary tuning
+// field (intensity for CPUs), so an entry without an algorithm only gets the shared checks.
 /**
  * @param {unknown} entry
  * @param {string} [algo]
@@ -359,6 +363,7 @@ function needsPrimaryTuning(dev, algo) {
   );
 }
 
+// Inverse of parseDeviceEntry with fields in a stable order; CPU intensity uses the `*N` form.
 /** @param {DeviceEntry} entry */
 function formatDeviceEntry(entry) {
   const tuningValues = entry.tuning || {};
@@ -399,6 +404,8 @@ function nativeJobIntensity(entry, algo = "") {
   return value;
 }
 
+// Apply one worker's device entry to its copy of the job. For PearlHash the worker's own matrix
+// shape is validated as a whole and the base target is rescaled to that shape.
 /**
  * @param {MiningJob} job
  * @param {DeviceEntry} entry
@@ -460,7 +467,7 @@ const envByAlgo = {
     seed_workgroup: "MOM_C29_SEED_LOCAL_SIZE",
     seed_blocks: "MOM_C29_SEED_BLOCKS",
   },
-  ...Object.fromEntries(progpowAlgos.map((algo) => [algo, progpowEnv])),
+  ...Object.fromEntries([...PROGPOW_ALGOS].map((algo) => [algo, progpowEnv])),
   "etchash": {
     dag_workgroup: "MOM_ETCHASH_DAG_WORKGROUP",
     dag_chunk: "MOM_ETCHASH_DAG_CHUNK_NODES",
@@ -489,6 +496,7 @@ const envByAlgo = {
   },
 };
 
+// Translate validated tuning into the MOM_* environment variables the algorithm's kernels read.
 /** @param {string} algo @param {unknown} tuning @returns {NodeJS.ProcessEnv} */
 function tuningEnvironment(algo, tuning) {
   const normalized = validateTuning(algo, tuning, `${algo} tuning`);
@@ -573,7 +581,7 @@ function autotuneCandidates(algo, entry) {
   if (algo === "c29") {
     add("seed_workgroup", [64, 128, 256]);
     add("seed_blocks", [8, 16, 32]);
-  } else if (progpowAlgos.includes(algo)) {
+  } else if (PROGPOW_ALGOS.has(algo)) {
     add("workgroup", [64, 128, 256]);
   } else if (algo === "autolykos2") {
     add("workgroup", [32, 64, 128, 256]);
