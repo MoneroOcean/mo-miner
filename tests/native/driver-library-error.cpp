@@ -18,5 +18,10 @@ int main() {
   if (!isolated || !dlerror() || dlerror()) return 88;
   void* self = dlopen(nullptr, RTLD_NOW);
   if (!self || dlerror()) return 89;
+  // A dl call that fails after a refusal reports its own, newer error exactly once.
+  if (dlopen("mom-forbidden-application.so", RTLD_NOW)) return 90;
+  if (dlsym(self, "mom_no_such_symbol")) return 91;
+  const char* newer = dlerror();
+  if (!newer || !std::strstr(newer, "mom_no_such_symbol") || dlerror()) return 92;
   return dlclose(self);
 }

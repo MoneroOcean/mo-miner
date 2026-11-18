@@ -606,7 +606,8 @@ int beamhash3(const unsigned, const uint32_t, const uint8_t* const input, const 
     std::fflush(stderr);
   }
 
+  // Bench and mining report distinct proofs (Sol/s); mining submits the solution_out[0] payload.
   if (is_test)
     return n_solutions > 0 ? 1 : 0;
-  return is_benchmark ? (int)distinct_count : n_solutions;
+  return (int)distinct_count;
 }

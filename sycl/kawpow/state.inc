@@ -78,6 +78,7 @@ public:
   std::unique_ptr<MomExecutableKernelBundle> period_bundle;
   uint64_t period_bundle_period = UINT64_MAX;
   uint32_t period_bundle_epoch = UINT32_MAX;
+  uint32_t period_bundle_dag_items = 0; // bundles bake the DAG modulus (compact test vs full DAG)
   SealMode period_bundle_seal = SealMode::KAWPOW;
   uint32_t period_bundle_magic[15] = {};
   uint32_t period_bundle_regs = KAWPOW_REGS;
@@ -86,6 +87,7 @@ public:
   std::unique_ptr<MomExecutableKernelBundle> next_bundle;
   uint64_t next_bundle_period = UINT64_MAX;
   uint32_t next_bundle_epoch = UINT32_MAX;
+  uint32_t next_bundle_dag_items = 0;
   SealMode next_bundle_seal = SealMode::KAWPOW;
   uint32_t next_bundle_magic[15] = {};
   uint32_t next_bundle_regs = KAWPOW_REGS;
@@ -508,7 +510,7 @@ public:
                             const FastModData dag_mod, const bool prefetch_next) {
     const bool current_matches =
         period_bundle && period_bundle_period == new_period &&
-        period_bundle_epoch == new_epoch &&
+        period_bundle_epoch == new_epoch && period_bundle_dag_items == dag_mod.divisor &&
         bundle_key_eq(period_bundle_seal, period_bundle_magic, period_bundle_regs,
                       period_bundle_cnt_cache, period_bundle_cnt_math, seal, magic, regs, cnt_cache,
                       cnt_math);
@@ -521,6 +523,7 @@ public:
       if (prefetch_thread.joinable())
         prefetch_thread.join();
       if (next_bundle && next_bundle_period == new_period && next_bundle_epoch == new_epoch &&
+          next_bundle_dag_items == dag_mod.divisor &&
           bundle_key_eq(next_bundle_seal, next_bundle_magic, next_bundle_regs,
                         next_bundle_cnt_cache, next_bundle_cnt_math, seal, magic, regs, cnt_cache,
                         cnt_math)) {
@@ -531,6 +534,7 @@ public:
       }
       period_bundle_period = new_period;
       period_bundle_epoch = new_epoch;
+      period_bundle_dag_items = dag_mod.divisor;
       period_bundle_seal = seal;
       for (unsigned i = 0; i < 15; ++i)
         period_bundle_magic[i] = magic[i];
@@ -546,6 +550,7 @@ public:
 
     next_bundle_period = new_period + 1;
     next_bundle_epoch = new_epoch;
+    next_bundle_dag_items = dag_mod.divisor;
     next_bundle_seal = seal;
     for (unsigned i = 0; i < 15; ++i)
       next_bundle_magic[i] = magic[i];

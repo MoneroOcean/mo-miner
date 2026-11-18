@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-constexpr uint32_t HASH_LEN = 32, MAX_ETCHASH_OUTPUTS = 15, ETHASH_MIX_WORDS = 32;
+constexpr uint32_t HASH_LEN = 32, MAX_ETCHASH_OUTPUTS = 15, ETHASH_MIX_WORDS = 32, GPU_MAX_HITS = 15;
 #include "result.inc"
 struct FastModData {};
 static FastModData make_fast_mod_data(uint32_t) { return {}; }

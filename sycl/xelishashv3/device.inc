@@ -2,10 +2,11 @@
 #include "../blake3-device.inc"
 
 constexpr size_t WORDS = 531 * 128, HALF = WORDS / 2, BYTES = WORDS * 8;
+constexpr unsigned MAX_RESULTS = 15;
 struct Result {
   uint32_t count;
-  uint64_t nonce;
-  uint8_t hash[32];
+  uint64_t nonce[MAX_RESULTS];
+  uint8_t hash[MAX_RESULTS][32];
 };
 template <bool> class Stage1Kernel;
 template <bool, bool> class Stage3Kernel;

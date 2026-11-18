@@ -297,8 +297,8 @@ static void check_allocation() {
           "qualified CUDA scratch cap changed");
   require(allocated_rows(256, 128, true, false) == 0,
           "small fused path retained an unnecessary global transcript");
-  require(allocated_rows(131072, 131072, false, false) == 131072,
-          "ordinary layout was chunked");
+  require(allocated_rows(131072, 131072, false, false) == 0,
+          "portable layout retained a global transcript only CUDA JIT reads");
   require(allocated_rows(128, 4194304, true, false) == 0,
           "inadmissible fused slice did not fall back");
 }

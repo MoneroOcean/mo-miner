@@ -73,7 +73,8 @@ static void free(void* pointer, const queue&) {
 
 #include "cleanup.inc"
 
-constexpr uint32_t HASH_LEN = 32, CACHE_NODE_WORDS = 16, EPOCH_LENGTH = 1U << 19, MAX_RESULTS = 15;
+constexpr uint32_t HASH_LEN = 32, CACHE_NODE_WORDS = 16, EPOCH_LENGTH = 1U << 19, MAX_RESULTS = 15,
+                   GPU_MAX_HITS = 15;
 #include "result.inc"
 struct FastModData {};
 static FastModData make_fast_mod_data(uint64_t) { return {}; }

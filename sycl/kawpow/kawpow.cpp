@@ -387,18 +387,20 @@ static int kawpow_core(const KawpowVariant& variant, const uint32_t block_height
                         state.device);
   }
 
+  static_assert(MAX_KAWPOW_OUTPUTS <= GPU_MAX_HITS);
   const uint32_t result_count = std::min(state.result->count, MAX_KAWPOW_OUTPUTS);
+  int hits = 0;
   for (uint32_t index = 0; index < result_count; ++index) {
     if (!is_test && !kawpow_meets_target_words(state.result->output[index], target))
       continue;
 
-    std::memcpy(output, state.result->output[index], HASH_LEN);
-    std::memcpy(mix_hash, state.result->mix_hash[index], HASH_LEN);
-    *pnonce = state.result->nonce[index];
-    return 1;
+    std::memcpy(output + hits * HASH_LEN, state.result->output[index], HASH_LEN);
+    std::memcpy(mix_hash + hits * HASH_LEN, state.result->mix_hash[index], HASH_LEN);
+    pnonce[hits++] = state.result->nonce[index];
+    if (is_test)
+      break; // a test checks only its first lane
   }
-
-  return 0;
+  return hits;
 }
 
 // ABI entrypoints (gpu_kawpow_hash_fun). The fn-pointer signature does not carry the algo name, so

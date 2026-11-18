@@ -20,6 +20,7 @@
 #include "../hiprtc-api.h"
 #endif
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -153,9 +154,9 @@ int walahash(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint
 #endif
 #ifdef MOM_SYCL_HAS_HIP
   if (!dispatched && amd_fast) {
-    // WMMA consumes complete 64-sample tiles. Small correctness jobs still finalize only their real
-    // item count, but prehash and mix a padded tile just as the original serial path did.
-    const unsigned matrix_count = state.capacity;
+    // WMMA consumes complete 64-sample tiles. Finalize only the real item count, but prehash and
+    // mix this batch's padded tiles; capacity can exceed it after a larger earlier batch.
+    const unsigned matrix_count = (intensity + 63u) & ~63u;
     prehash_amd(state, *pnonce, matrix_count);
     walahash_amd_mix(
         state.queue, state.amd_wmma, reinterpret_cast<int8_t*>(state.matrix), state.hashes,
@@ -175,9 +176,11 @@ int walahash(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint
   sycl_wait_and_throw(search_event, state.device);
   Result result;
   sycl_wait_and_throw(state.queue.memcpy(&result, state.result, sizeof(result)), state.device);
-  if (!result.count)
-    return 0;
-  *pnonce = result.nonce;
-  std::memcpy(output, result.hash, 32);
-  return 1;
+  static_assert(MAX_RESULTS <= GPU_MAX_HITS);
+  const uint32_t hits = std::min(result.count, MAX_RESULTS);
+  for (uint32_t index = 0; index < hits; ++index) {
+    pnonce[index] = result.nonce[index];
+    std::memcpy(output + index * HASH_LEN, result.hash[index], HASH_LEN);
+  }
+  return static_cast<int>(hits);
 }

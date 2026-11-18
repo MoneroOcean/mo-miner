@@ -90,16 +90,27 @@ void autolykos2_cleanup_states() noexcept {
   }
 }
 
-// Return the last winning share found by a mining kernel (0 = none). The kernels may stash up
-// to MAX_AUTOLYKOS_OUTPUTS hits but the API reports a single nonce/hash, so pick the last slot.
+// Free one-shot diagnostic USM after draining the in-order queue, whose kernels may still use it
+// when an exception unwinds the dispatch.
+struct QueueUsmFree {
+  sycl::queue* queue;
+  void operator()(void* const pointer) const noexcept {
+    sycl_cleanup_noexcept("autolykos2 diagnostic free", [&] {
+      queue->wait_and_throw();
+      sycl::free(pointer, *queue);
+    });
+  }
+};
+
+// Copy every hit a mining kernel recorded into the single-blob result ABI (sycl/lib.h).
 static int take_autolykos_result(const AutolykosResult* result, uint8_t* output, uint64_t* pnonce) {
-  const uint32_t count = result->count;
-  if (count == 0)
-    return 0;
-  const uint32_t index = std::min(count, MAX_AUTOLYKOS_OUTPUTS) - 1;
-  *pnonce = result->nonce[index];
-  std::memcpy(output, result->output[index], HASH_LEN);
-  return 1;
+  static_assert(MAX_AUTOLYKOS_OUTPUTS <= GPU_MAX_HITS);
+  const uint32_t hits = std::min(result->count, MAX_AUTOLYKOS_OUTPUTS);
+  for (uint32_t index = 0; index < hits; ++index) {
+    pnonce[index] = result->nonce[index];
+    std::memcpy(output + index * HASH_LEN, result->output[index], HASH_LEN);
+  }
+  return static_cast<int>(hits);
 }
 
 } // namespace mom_autolykos2
@@ -195,9 +206,11 @@ int autolykos2(const unsigned, const uint32_t height, const uint8_t* const input
                                           !state.subgroup_coop_verified
                                       ? std::min<uint32_t>(effective_intensity, 256U)
                                       : 0U;
-    uint32_t* const verify_sums =
+    const std::unique_ptr<uint32_t, QueueUsmFree> verify_storage(
         verify_count ? sycl::malloc_device<uint32_t>(static_cast<size_t>(verify_count) * 8U, q)
-                     : nullptr;
+                     : nullptr,
+        QueueUsmFree{&q});
+    uint32_t* const verify_sums = verify_storage.get();
     if (verify_count && !verify_sums)
       throw std::string("Can't allocate Autolykos2 subgroup verification buffer");
     sycl::event search_event;
@@ -334,11 +347,11 @@ int autolykos2(const unsigned, const uint32_t height, const uint8_t* const input
     }
     sycl_wait_and_throw(search_event, state.device);
     if (verify_count) {
-      uint32_t* const mismatches = sycl::malloc_shared<uint32_t>(1, q);
-      if (!mismatches) {
-        sycl::free(verify_sums, q);
+      const std::unique_ptr<uint32_t, QueueUsmFree> mismatch_storage(
+          sycl::malloc_shared<uint32_t>(1, q), QueueUsmFree{&q});
+      uint32_t* const mismatches = mismatch_storage.get();
+      if (!mismatches)
         throw std::string("Can't allocate Autolykos2 subgroup verification counter");
-      }
       *mismatches = 0;
       const size_t verify_global = round_up_size(verify_count, local_size);
       sycl_wait_and_throw(q.submit([&](sycl::handler& h) {
@@ -389,8 +402,6 @@ int autolykos2(const unsigned, const uint32_t height, const uint8_t* const input
       }),
                           state.device);
       const uint32_t mismatch_count = *mismatches;
-      sycl::free(mismatches, q);
-      sycl::free(verify_sums, q);
       if (mismatch_count)
         throw std::string("Autolykos2 subgroup verification failed: ") +
             std::to_string(mismatch_count) + " of " + std::to_string(verify_count) +
@@ -564,14 +575,16 @@ int autolykos2(const unsigned, const uint32_t height, const uint8_t* const input
 #if defined(MOM_SYCL_PORTABLE_OPENCL)
   std::vector<AutolykosPortableResult> portable_results(effective_intensity);
   state.portable_results.read(portable_results.data(), portable_results.size());
+  int hits = 0;
   for (const AutolykosPortableResult& candidate : portable_results) {
     if (!candidate.found)
       continue;
-    *pnonce = candidate.nonce;
-    std::memcpy(output, candidate.output, HASH_LEN);
-    return 1;
+    pnonce[hits] = candidate.nonce;
+    std::memcpy(output + hits * HASH_LEN, candidate.output, HASH_LEN);
+    if (++hits == static_cast<int>(GPU_MAX_HITS))
+      break;
   }
-  return 0;
+  return hits;
 #else
   const int found = take_autolykos_result(state.result, output, pnonce);
 #if defined(MOM_SYCL_ADAPTIVECPP_CUDA)

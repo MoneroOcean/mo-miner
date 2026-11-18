@@ -359,14 +359,14 @@ std::map<std::string, std::string> algo_params(
       add_gpu_dataset_algo_dev(result_dev, 1224 * MiB, 2 * GiB, verthash_intensity,
                                "intensity", GpuUsm::both, 64, 8 * KiB);
     else if (gpu_zelhash_algos.contains(algo)) {
+      // These solvers' admissions reuse the session layouts' local-memory requirement.
       if (algo == "equihash192_7")
         add_gpu_dataset_algo_dev(
-            result_dev, 1152 * MiB, 8 * GiB, [](const sycl::device&) { return 1u; },
-            "intensity", GpuUsm::device, 1024, 34 * KiB);
+            result_dev, 1152 * MiB, 8 * GiB, mom_equihash192_7::equihash192_7_intensity,
+            "intensity", GpuUsm::device, 1024);
       else if (algo == "zhash")
-        add_gpu_dataset_algo_dev(
-            result_dev, 906 * MiB, 4 * GiB, [](const sycl::device&) { return 1u; },
-            "intensity", GpuUsm::device, 1024, 34 * KiB);
+        add_gpu_dataset_algo_dev(result_dev, 906 * MiB, 4 * GiB, mom_zhash::zhash_intensity,
+                                 "intensity", GpuUsm::device, 1024);
       else {
         // Validate that the solver has usable capacity, but let each workload process derive its
         // own aligned slot count. A discovery process may see a different allocation limit.

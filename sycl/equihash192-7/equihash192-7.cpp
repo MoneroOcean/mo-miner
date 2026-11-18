@@ -81,6 +81,11 @@ namespace mom_equihash192_7 {
 
 using Solver = direct::Session<>;
 
+// Discovery admits exactly the local memory Session::allocate requires; 0 skips the device.
+unsigned equihash192_7_intensity(const sycl::device& device) {
+  return sycl_local_memory_fits(device, Solver::Layout::local_memory_bytes) ? 1u : 0u;
+}
+
 class GenerationTestKernel;
 
 // Return the first personalized device hash as a bounded generation guard, without solving.

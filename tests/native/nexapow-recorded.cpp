@@ -86,5 +86,31 @@ int main() {
       prefixed_nonce != 0x0102030405060708ULL || !serialized_ok ||
       !mom_nexapow::np_equal(prefixed_output, prefixed_expected_hash, sizeof(prefixed_output)))
     return 1;
+
+  // A mining batch with two target hits reports both, each with its own hash.
+  uint64_t batch_nonces[GPU_MAX_HITS] = {500};
+  uint8_t batch_output[GPU_MAX_HITS * 32]{};
+  uint8_t second_hash[32];
+  if (mom_nexapow::nexapow(0, 0, short_input, sizeof(short_input), batch_output, nullptr,
+                           batch_nonces, target, nullptr, 2, false, false, "") != 2 ||
+      batch_nonces[0] != 500 || batch_nonces[1] != 501 ||
+      !mom_nexapow::np_hash_one(short_input, short_input + 32, 501, second_hash, 0) ||
+      !mom_nexapow::np_equal(batch_output + 32, second_hash, sizeof(second_hash)))
+    return 2;
+
+  // Staged GPU candidates that fail host re-verification or leave the batch are dropped rather
+  // than stopping the job; verified ones are kept.
+  const uint64_t candidates[2] = {9999, 501};
+  uint8_t impossible_target[32]{};
+  uint64_t verified_nonces[GPU_MAX_HITS]{};
+  uint8_t verified_output[GPU_MAX_HITS * 32]{};
+  if (mom_nexapow::verify_candidates(short_input, 0, 500, 2, impossible_target, candidates, 2,
+                                     verified_output, verified_nonces) != 0)
+    return 3;
+  if (mom_nexapow::verify_candidates(short_input, 0, 500, 2, target, candidates, 2,
+                                     verified_output, verified_nonces) != 1 ||
+      verified_nonces[0] != 501 ||
+      !mom_nexapow::np_equal(verified_output, second_hash, sizeof(second_hash)))
+    return 4;
   return 0;
 }

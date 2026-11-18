@@ -6,6 +6,8 @@
 #include <limits>
 #include <set>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -28,6 +30,7 @@ using mom::job_boundary::valid_karlsenhashv2_layout;
 using mom::job_boundary::valid_nexapow_layout;
 using mom::job_boundary::valid_pearlhash_shape;
 using mom::job_boundary::c29_completed_graphs;
+using mom::job_boundary::for_each_gpu_hit;
 
 void test_parse_unsigned() {
   std::uint32_t value32 = 7;
@@ -325,6 +328,33 @@ void test_c29_completed_graphs() {
   assert(total == 2);
 }
 
+// A fake single-blob dispatch that finds two target hits in one batch must get both reported,
+// each once, in its slot order; impossible counts must not expose any slot.
+void test_gpu_hits() {
+  constexpr unsigned capacity = 15;
+  std::uint64_t nonces[capacity]{};
+  std::uint8_t hashes[capacity * 32]{};
+  const auto dispatch = [&](std::uint64_t start) {
+    nonces[0] = start + 3;
+    hashes[0] = 3;
+    nonces[1] = start + 7;
+    hashes[32] = 7;
+    return 2;
+  };
+  std::vector<std::pair<std::uint64_t, std::uint8_t>> reported;
+  const auto report = [&](unsigned slot) {
+    reported.emplace_back(nonces[slot], hashes[slot * 32]);
+  };
+  assert(for_each_gpu_hit(dispatch(100), capacity, report));
+  assert((reported == std::vector<std::pair<std::uint64_t, std::uint8_t>>{{103, 3}, {107, 7}}));
+
+  reported.clear();
+  assert(for_each_gpu_hit(0, capacity, report));
+  assert(!for_each_gpu_hit(-1, capacity, report));
+  assert(!for_each_gpu_hit(capacity + 1, capacity, report));
+  assert(reported.empty());
+}
+
 } // namespace
 
 int main() {
@@ -338,5 +368,6 @@ int main() {
   test_cn_input_lengths();
   test_pearlhash_shapes();
   test_c29_completed_graphs();
+  test_gpu_hits();
   return 0;
 }

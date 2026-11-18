@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <exception>
 #include <initializer_list>
 #include <limits>
@@ -186,7 +187,13 @@ inline void mo_vec_store(const VecT& v, const size_t offset, T* const p) {
     v.store(offset, p);
 }
 
+// Set a SYCL runtime option from the compute thread while other threads may call getenv. Skip
+// unchanged values; create_worker reserved environment capacity on the loop thread, so the first
+// new name fills that slot instead of reallocating the array under a reader.
 inline void set_sycl_env(const char* name, const char* value) {
+  const char* const current = std::getenv(name);
+  if (current && std::strcmp(current, value) == 0)
+    return;
 #ifdef _WIN32
   _putenv_s(name, value);
 #else

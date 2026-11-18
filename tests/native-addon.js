@@ -334,6 +334,49 @@ test.describe("Native addon contracts", {concurrency: false}, () => {
     assert.equal(result.stdout.trim(), "test,complete");
   });
 
+  // Worker creation also reserves environment capacity for later SYCL option updates; that must
+  // leave SYCL_PROGRAM_COMPILE_OPTIONS unset, since DPC++ treats an empty value as an override.
+  test("native worker leaves SYCL options unset and sizes panthera RandomX memory", {
+    skip: process.platform === "linux" ? false : "reads Linux /proc virtual memory",
+    timeout: 60000,
+  }, () => {
+    const load = `const core = require(${JSON.stringify(addonPath)});`;
+    const result = childProcess.spawnSync(
+      process.execPath,
+      ["-e", `${load}
+      const fs = require("node:fs");
+      const virtualKiB = () => Number(
+        /^VmSize:\\s+(\\d+) kB$/m.exec(fs.readFileSync("/proc/self/status", "utf8"))[1]);
+      const before = virtualKiB();
+      const worker = new core.AsyncWorker(
+        (name, values) => {
+          if (name === "error") throw new Error(values.message);
+          if (name !== "test") return;
+          console.log(virtualKiB() - before, "SYCL_PROGRAM_COMPILE_OPTIONS" in process.env);
+          worker.sendToCpp("close");
+        },
+        () => undefined,
+        (error) => { throw error; }
+      );
+      worker.sendToCpp("test", {
+        algo: "panthera",
+        blob_hex: "00".repeat(43),
+        dev: "cpu",
+        noncebytes: 4,
+        nonceoffset: 39,
+        seed_hex: "00".repeat(32),
+      });`],
+      {encoding: "utf8", timeout: 55000, env: {...process.env, SYCL_PROGRAM_COMPILE_OPTIONS: undefined}}
+    );
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 0, result.stderr);
+    const [grown, optionsSet] = result.stdout.trim().split(" ");
+    // Panthera needs a 128 MiB cache and 64 MiB dataset, not rx/0's 256 MiB + 2 GiB maxima.
+    const grownKiB = Number(grown);
+    assert.ok(grownKiB > 0 && grownKiB < 1024 * 1024, `VmSize grew by ${grown} KiB`);
+    assert.equal(optionsSet, "false");
+  });
+
   test("native worker rejects unavailable CPU batches and remains retryable", {timeout: 10000}, () => {
     const job = {
       algo: "argon2/chukwa",
@@ -899,6 +942,8 @@ test.describe("Native addon contracts", {concurrency: false}, () => {
     const results = [];
     /** @type {string[]} */
     const errors = [];
+    /** @type {string[]} */
+    const lastNonces = [];
     const job = {
       algo: "rx/0",
       blob_hex: "00".repeat(39) + "000000ab",
@@ -924,21 +969,22 @@ test.describe("Native addon contracts", {concurrency: false}, () => {
         clearTimeout(timeout);
         worker.sendToCpp("close");
       };
+      const finished = () => results.length === 4 && errors.length === 1 && lastNonces.length === 2;
       const worker = new core.AsyncWorker(
         (/** @type {string} */ name, /** @type {NativeValues} */ values) => {
           try {
-            if (name === "result") {
+            if (name === "result" || name === "last_nonce") {
               if (typeof values.nonce !== "string") {
-                throw new Error("Native result omitted its nonce");
+                throw new Error(`Native ${name} omitted its nonce`);
               }
-              results.push(values.nonce);
-              if (results.length === 4 && errors.length === 2) {close();}
+              (name === "result" ? results : lastNonces).push(values.nonce);
+              if (finished()) {close();}
             } else if (name === "error") {
               if (typeof values.message !== "string") {
                 throw new Error("Native error omitted its message");
               }
               errors.push(values.message);
-              if (results.length === 4 && errors.length === 2) {close();}
+              if (finished()) {close();}
             } else {
               throw new Error("Unexpected native event: " + name);
             }
@@ -957,7 +1003,9 @@ test.describe("Native addon contracts", {concurrency: false}, () => {
       worker.sendToCpp("job", job);
     });
     assert.deepEqual(results.sort(), ["fffff8ab", "fffff9ab", "fffffcab", "fffffdab"]);
-    assert.deepEqual(errors, ["Nonce overflow", "Nonce overflow"]);
+    // Each exhausted lane records its final hashed nonce; the worker reports exhaustion once.
+    assert.deepEqual(lastNonces.sort(), ["fffffcab", "fffffdab"]);
+    assert.deepEqual(errors, ["Nonce overflow"]);
   });
 
   test("native RandomX rejects scaled initial and step overflow", {timeout: 5000}, async () => {

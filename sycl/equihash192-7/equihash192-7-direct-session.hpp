@@ -466,9 +466,7 @@ private:
     if (!mom_has_usm_device(device) ||
         device.get_info<sycl::info::device::global_mem_size>() < required ||
         device.get_info<sycl::info::device::max_work_group_size>() < Root::collision_work_group ||
-        device.get_info<sycl::info::device::local_mem_size>() <
-            Layout::local_bins * sizeof(std::uint32_t) +
-            Layout::bucket_slot_capacity * sizeof(std::uint16_t))
+        device.get_info<sycl::info::device::local_mem_size>() < Layout::local_memory_bytes)
       throw std::runtime_error("Equihash(192,7) direct arena is unsupported on this device");
     try {
       input_ = allocate<std::uint64_t>(10);

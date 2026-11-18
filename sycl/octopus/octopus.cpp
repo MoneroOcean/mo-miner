@@ -83,7 +83,7 @@ using namespace mom_octopus;
 
 // Validate work, serialize per-device resources, and dispatch one batch; only a found share updates outputs.
 int octopus(unsigned, uint32_t height, const uint8_t* input, unsigned input_size, uint8_t* output,
-            uint8_t* mix_hash, uint64_t* nonce, const uint8_t* target, const uint8_t*,
+            uint8_t*, uint64_t* nonce, const uint8_t* target, const uint8_t*,
             unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev_str) {
   if (!input || !output || !nonce || input_size < HASH_LEN + sizeof(uint64_t) || !intensity)
     throw std::string("octopus requires a 32-byte problem hash, nonce, and nonzero intensity");
@@ -206,14 +206,13 @@ int octopus(unsigned, uint32_t height, const uint8_t* input, unsigned input_size
                             state.device);
       }
     }
-    if (!state.result->count)
-      return 0;
-    const uint32_t index = std::min(state.result->count, MAX_RESULTS) - 1;
-    *nonce = state.result->nonce[index];
-    std::memcpy(output, state.result->hash[index], HASH_LEN);
-    if (mix_hash)
-      std::memset(mix_hash, 0, HASH_LEN);
-    return 1;
+    static_assert(MAX_RESULTS <= GPU_MAX_HITS);
+    const uint32_t hits = std::min(state.result->count, MAX_RESULTS);
+    for (uint32_t index = 0; index < hits; ++index) {
+      nonce[index] = state.result->nonce[index];
+      std::memcpy(output + index * HASH_LEN, state.result->hash[index], HASH_LEN);
+    }
+    return static_cast<int>(hits);
   } catch (...) {
     // A failed upload must not make a same-header retry skip its header or target copy.
     state.points_ready = state.target_ready = false;

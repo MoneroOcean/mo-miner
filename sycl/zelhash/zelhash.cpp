@@ -421,10 +421,10 @@ int zelhash(const unsigned, const uint32_t, const uint8_t* const input, const un
   //  * is_test SOLVE path (the keystone / offline vector): the core's is_test handler dumps the whole
   //    out-of-band buffer when this returns 1, so report 1-on-any-solution (the payload count is in
   //    solution_out[0]).
-  //  * bench: report the raw solver throughput (distinct proofs found this solve, target-independent)
-  //    so the core's m_hash_count accounting yields Sol/s.
-  //  * mining: report the target-passing payload count so the core drives send_result.
+  //  * bench and mining: report the raw solver throughput (distinct proofs found this solve,
+  //    target-independent) so the core's m_hash_count accounting yields Sol/s. Mining submits the
+  //    target-passing payload counted in solution_out[0].
   if (is_test)
     return n_solutions > 0 ? 1 : 0;
-  return is_benchmark ? (int)distinct_count : n_solutions;
+  return (int)distinct_count;
 }

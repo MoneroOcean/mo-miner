@@ -222,6 +222,7 @@ class Core: public AsyncWorker {
     uint64_t nonce, unsigned noncebytes, const std::string& pool_id, const std::string& job_id,
     const std::string& job_token
   );
+  bool send_gpu_hits(int hits, const uint64_t* nonces, unsigned noncebytes, const uint8_t* mix_hash);
   void send_equihash_results(uint64_t nonce, unsigned solution_size, bool compact_size_prefix);
   void stop_rx_threads() noexcept;
   void destroy_rx_vms() noexcept;

@@ -208,8 +208,11 @@ void Core::Execute() try {
       // Only one device runs per dispatch, so a single solution-count + nonce/seed pair is shared
       // across all the GPU cases. dev_nonce doubles as the kernel's in/out found-nonce slot (and as
       // pearlhash's search seed); dev_sols is the per-call solution count (or C29's -1 EOL / 0 pending).
+      // Single-blob PoW entries instead take their start nonce in hit_nonces[0] and return one
+      // nonce per hit there, with dev_sols as the hit count (sycl/lib.h).
       int dev_sols = 0;
       uint64_t dev_nonce = 0;
+      uint64_t hit_nonces[GPU_MAX_HITS]{};
       const bool is_test = m_job_mode == JobMode::test;
       const bool is_benchmark = m_job_mode == JobMode::bench;
       const unsigned dispatch_job_ref = m_job_ref.load(std::memory_order_relaxed);
@@ -248,26 +251,26 @@ void Core::Execute() try {
             );
             break;
           case DEV::KAWPOW_GPU:
-            dev_nonce = mom::job_boundary::load_nonce<uint64_t>(nonce_address(), false);
+            hit_nonces[0] = mom::job_boundary::load_nonce<uint64_t>(nonce_address(), false);
             dev_sols = m_fn.gpu_kawpow(
               dispatch_job_ref, m_height, m_input, m_input_len, m_output,
-              static_cast<uint8_t*>(m_spads), &dev_nonce, m_target,
+              static_cast<uint8_t*>(m_spads), hit_nonces, m_target,
               m_batch, is_test, is_benchmark, m_dev_str
             );
             break;
           case DEV::ETCHASH_GPU:
-            dev_nonce = mom::job_boundary::load_nonce<uint64_t>(nonce_address(), false);
+            hit_nonces[0] = mom::job_boundary::load_nonce<uint64_t>(nonce_address(), false);
             dev_sols = m_fn.gpu_etchash(
               dispatch_job_ref, m_height, m_input, m_input_len, m_output,
-              static_cast<uint8_t*>(m_spads), &dev_nonce, m_target_bin, m_seed,
+              static_cast<uint8_t*>(m_spads), hit_nonces, m_target_bin, m_seed,
               m_batch, is_test, is_benchmark, m_dev_str
             );
             break;
           case DEV::AUTOLYKOS2_GPU:
-            dev_nonce = mom::job_boundary::load_nonce<uint64_t>(nonce_address(), false);
+            hit_nonces[0] = mom::job_boundary::load_nonce<uint64_t>(nonce_address(), false);
             dev_sols = m_fn.gpu_autolykos2(
               dispatch_job_ref, m_height, m_input, m_input_len, m_output,
-              &dev_nonce, m_target_bin,
+              hit_nonces, m_target_bin,
               m_batch, is_test, is_benchmark, m_dev_str
             );
             break;
@@ -282,36 +285,36 @@ void Core::Execute() try {
             );
             break;
           case DEV::FISHHASH_GPU:
-            dev_nonce = mom::job_boundary::load_nonce<uint64_t>(
+            hit_nonces[0] = mom::job_boundary::load_nonce<uint64_t>(
               nonce_address(), mom::job_boundary::nonce_big_endian(m_algo_str, m_input_len));
             dev_sols = m_fn.gpu_fishhash(
               dispatch_job_ref, m_height, m_input, m_input_len, m_output,
-              static_cast<uint8_t*>(m_spads), &dev_nonce, m_target_bin, m_seed,
+              static_cast<uint8_t*>(m_spads), hit_nonces, m_target_bin, m_seed,
               m_batch, is_test, is_benchmark, m_dev_str
             );
             break;
           case DEV::KARLSENHASHV2_GPU:
-            dev_nonce = mom::job_boundary::load_nonce<uint64_t>(nonce_address(), false);
+            hit_nonces[0] = mom::job_boundary::load_nonce<uint64_t>(nonce_address(), false);
             dev_sols = m_fn.gpu_karlsenhashv2(
               dispatch_job_ref, m_height, m_input, m_input_len, m_output,
-              static_cast<uint8_t*>(m_spads), &dev_nonce, m_target_bin, m_seed,
+              static_cast<uint8_t*>(m_spads), hit_nonces, m_target_bin, m_seed,
               m_batch, is_test, is_benchmark, m_dev_str
             );
             break;
           case DEV::MISC_GPU:
-            dev_nonce = mom::job_boundary::load_nonce<uint64_t>(
+            hit_nonces[0] = mom::job_boundary::load_nonce<uint64_t>(
               nonce_address(), mom::job_boundary::nonce_big_endian(m_algo_str, m_input_len));
             dev_sols = m_fn.gpu_misc(
               dispatch_job_ref, m_height, m_input, m_input_len, m_output,
-              nullptr, &dev_nonce, m_target_bin, m_seed,
+              nullptr, hit_nonces, m_target_bin, m_seed,
               m_batch, is_test, is_benchmark, m_dev_str
             );
             break;
           case DEV::VERTHASH_GPU: {
-            dev_nonce = mom::job_boundary::load_nonce<uint32_t>(nonce_address(), false);
+            hit_nonces[0] = mom::job_boundary::load_nonce<uint32_t>(nonce_address(), false);
             dev_sols = m_fn.gpu_verthash(
               dispatch_job_ref, m_height, m_input, m_input_len, m_output,
-              nullptr, &dev_nonce, m_target_bin, m_seed,
+              nullptr, hit_nonces, m_target_bin, m_seed,
               m_batch, is_test, is_benchmark, m_dev_str
             );
             break;
@@ -366,7 +369,7 @@ void Core::Execute() try {
       if (is_test) {
         m_input_len = 0; // do not produce any more test jobs for async GPU code like in c29
         if (m_dev == DEV::KAWPOW_GPU || m_dev == DEV::ETCHASH_GPU) {
-          if (dev_sols == 1) {
+          if (dev_sols > 0) {
             char hash[HASH_LEN*2+1];
             std::string result = hash_bin2hex(hash, 0);
             if (m_algo_str != "octopus") {
@@ -385,7 +388,7 @@ void Core::Execute() try {
         if (m_dev == DEV::AUTOLYKOS2_GPU || m_dev == DEV::FISHHASH_GPU ||
             m_dev == DEV::KARLSENHASHV2_GPU || m_dev == DEV::VERTHASH_GPU ||
             m_dev == DEV::MISC_GPU) {
-          if (dev_sols == 1) {
+          if (dev_sols > 0) {
             char hash[HASH_LEN*2+1];
             send_msg("test", "result", hash_bin2hex(hash, 0));
           } else {
@@ -448,8 +451,9 @@ void Core::Execute() try {
       }
 
       // C29 counts new graphs, not proof recovery. PearlHash counts rank-128-equivalent GEMM MACs.
-      // Equihash 192,7 counts input headers like miniZ; the other
-      // Equihash solvers count returned proofs. All remaining GPU paths count the requested batch.
+      // Equihash 192,7 counts input headers like miniZ; the other Equihash solvers return their
+      // distinct proofs (Sol/s) and count the target-passing ones in the m_spads payload. All
+      // remaining GPU paths count the requested batch.
       uint64_t completed = m_batch;
       if (m_dev == DEV::C29_GPU) {
         completed = mom::job_boundary::c29_completed_graphs(dev_sols);
@@ -463,14 +467,11 @@ void Core::Execute() try {
       }
       m_hash_count.fetch_add(completed, std::memory_order_relaxed);
       if (m_dev == DEV::KAWPOW_GPU || m_dev == DEV::ETCHASH_GPU) {
-        if (dev_sols == 1 && m_target) {
-          if (m_algo_str == "octopus") {
-            send_result(dev_nonce, 8, m_output);
-          } else {
-            send_result(
-              dev_nonce, 8, m_output, nullptr, 32, nullptr, static_cast<uint8_t*>(m_spads)
-            );
-          }
+        const uint8_t* const mix_hash =
+          m_algo_str == "octopus" ? nullptr : static_cast<const uint8_t*>(m_spads);
+        if (!send_gpu_hits(dev_sols, hit_nonces, 8, mix_hash)) {
+          clear_fn();
+          continue;
         }
 
         if (m_nonce_exhausted) {
@@ -487,8 +488,10 @@ void Core::Execute() try {
       // These single-blob algorithms share an 8-byte nonce, one 32-byte hash, and no mix hash.
       if (m_dev == DEV::AUTOLYKOS2_GPU || m_dev == DEV::FISHHASH_GPU ||
           m_dev == DEV::KARLSENHASHV2_GPU || m_dev == DEV::MISC_GPU) {
-        if (dev_sols == 1 && m_target)
-          send_result(dev_nonce, 8, m_output);
+        if (!send_gpu_hits(dev_sols, hit_nonces, 8, nullptr)) {
+          clear_fn();
+          continue;
+        }
 
         if (m_nonce_exhausted) {
           clear_fn();
@@ -504,8 +507,9 @@ void Core::Execute() try {
         continue;
       }
       if (m_dev == DEV::VERTHASH_GPU) {
-        if (dev_sols == 1 && m_target) {
-          send_result(dev_nonce, 4, m_output);
+        if (!send_gpu_hits(dev_sols, hit_nonces, 4, nullptr)) {
+          clear_fn();
+          continue;
         }
 
         if (m_nonce_exhausted) {
@@ -675,6 +679,17 @@ void Core::Execute() try {
   throw;
 }
 
+// Create the worker on the loop thread, before its compute thread exists.
 std::unique_ptr<AsyncWorker> create_worker(std::unique_ptr<WorkerEvents> events) {
+#ifndef _WIN32
+  // GPU states later set SYCL_PROGRAM_COMPILE_OPTIONS from the compute thread while JS and
+  // kawpow's compile thread read the environment. Adding a name grows environ, and glibc before
+  // 2.41 frees the old array under such readers. Adding and removing the name here leaves spare
+  // capacity that setenv reuses in place, while keeping it unset: DPC++ treats an empty value as
+  // an override of each image's own compile options.
+  constexpr const char* sycl_options = "SYCL_PROGRAM_COMPILE_OPTIONS";
+  if (!std::getenv(sycl_options) && setenv(sycl_options, "", 1) == 0)
+    unsetenv(sycl_options);
+#endif
   return std::make_unique<Core>(std::move(events));
 }

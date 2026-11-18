@@ -101,19 +101,17 @@ static Buffers alloc_buffers(sycl::queue& q, int m, int n, int k, int rank, bool
     if (!b.result)
       throw std::string("Can't allocate pearlhash result");
     b.result->found = 0;
-    // CUDA source-JIT reuses bounded row slices; the portable layout retains its complete
-    // transcript allocation. The fused HIP kernel keeps its transcript in LDS.
-    const uint64_t transcript_limit = (cuda_jit ? 1024ULL : 256ULL) << 20;
+    // Only the CUDA source-JIT search reads a global transcript, as bounded row slices. The
+    // portable and native routes and the fused HIP kernel keep theirs in registers or LDS.
+    constexpr uint64_t transcript_limit = 1024ULL << 20;
     const int transcript_rows = cuda_jit
         ? std::min(m, static_cast<int>((transcript_limit * 4 / static_cast<unsigned>(n)) /
                                       128) * 128)
-        : hip_jit ? 0 : m;
+        : 0;
     const uint64_t transcript_bytes =
         static_cast<uint64_t>(transcript_rows / 16) * (n / 16) * 16U * sizeof(uint32_t);
-    const bool transcript_fits = !cuda_jit ||
-        pearlhash_optional_allocation_fits(capacity, counts, transcript_bytes);
-    if ((cuda_jit || !hip_jit) && transcript_bytes > 0 && transcript_bytes <= transcript_limit &&
-        transcript_fits) {
+    if (transcript_bytes > 0 && transcript_bytes <= transcript_limit &&
+        pearlhash_optional_allocation_fits(capacity, counts, transcript_bytes)) {
       b.transcript = alloc_optional<uint32_t>(
           q, static_cast<size_t>(transcript_bytes / sizeof(uint32_t)));
       if (b.transcript)

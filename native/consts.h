@@ -3,6 +3,9 @@
 #pragma once
 
 constexpr unsigned HASH_LEN = 32; // length of a PoW hash / target in bytes
+// Target hits one single-blob GPU dispatch can report (xmrig's 15-slot convention). Kernels drop
+// hits beyond this; reaching it needs a pool target that expects >= 15 shares per batch.
+constexpr unsigned GPU_MAX_HITS = 15;
 
 // Out-of-band GPU proof/test buffers. The validation path returns 256 expanded Equihash rows.
 constexpr unsigned EQUIHASH_TEST_ROWS  = 256;

@@ -75,6 +75,13 @@ awk '
   END { if (copies != 2 || complete != 2 || copying) exit 1 }
 ' "$root/sycl/beamhash3/layout.inc" > "$out/beamhash3_workgroup.inc"
 build_run beamhash3-admission -UNDEBUG -I "$out" "$root/tests/native/beamhash3-admission.cpp"
+awk '
+  /^inline void set_sycl_env\(/ { copies++; copying = 1 }
+  copying { print }
+  copying && /^}$/ { copying = 0; complete++ }
+  END { if (copies != 1 || complete != 1 || copying) exit 1 }
+' "$root/sycl/lib-internal.h" > "$out/sycl_env.inc"
+build_run sycl-env -UNDEBUG -I "$out" "$root/tests/native/sycl-env.cpp" -Wl,--wrap=setenv
 
 awk '
   /^    if \(new_dag_words > / { copies++; copying = 1 }
@@ -128,6 +135,13 @@ awk '
   END { if (copies != 1 || complete != 1 || copying) exit 1 }
 ' "$root/sycl/kawpow/state.inc" > "$out/progpow_dag_limit.inc"
 build_run progpow-epoch -I "$out" "$root/tests/native/progpow-epoch.cpp"
+awk '
+  /^  static bool bundle_key_eq\(/ { copies++; copying = 1 }
+  copying { print }
+  copying && /^  }$/ && ++complete == 2 { copying = 0 }
+  END { if (copies != 1 || complete != 2 || copying) exit 1 }
+' "$root/sycl/kawpow/state.inc" > "$out/kawpow_bundle_key.inc"
+build_run kawpow-bundle-key -UNDEBUG -pthread -I "$out" "$root/tests/native/kawpow-bundle-key.cpp"
 
 build_run pearlhash-seed "$root/tests/reference/pearlhash-seed.cpp"
 build_run pearlhash-jackpot "$root/tests/native/pearlhash-jackpot.cpp"
@@ -142,6 +156,39 @@ build_run zhash-session "$root/tests/native/zhash-session.cpp"
 build_run zhash-session-hip -DMOM_SYCL_HAS_HIP "$root/tests/native/zhash-session.cpp"
 build_run zhash-session-intel -D__INTEL_LLVM_COMPILER -DMOM_ZHASH_INTEL_LATE_BUCKETS \
   "$root/tests/native/zhash-session.cpp"
+awk '
+  /^inline bool sycl_local_memory_fits\(/ { copies++; copying = 1 }
+  copying { print }
+  copying && /^}$/ { copying = 0; complete++ }
+  END { if (copies != 1 || complete != 1 || copying) exit 1 }
+' "$root/sycl/lib-internal.h" > "$out/local_memory_fits.inc"
+awk '
+  /^struct BucketLayout \{$/ { copies++; copying = 1; print previous }
+  /^constexpr unsigned ProductionSlotsPerBucket = / && !copying { slots++; copying = 1; print previous }
+  copying { print }
+  copying && /^(};|#endif)$/ { copying = 0; complete++ }
+  { previous = $0 }
+  END { if (copies != 1 || slots != 1 || complete != 2 || copying) exit 1 }
+' "$root/sycl/equihash192-7/equihash192-7-direct.hpp" > "$out/equihash192_layout.inc"
+awk '
+  /^unsigned equihash192_7_intensity\(/ { copies++; copying = 1 }
+  copying { print }
+  copying && /^}$/ { copying = 0; complete++ }
+  END { if (copies != 1 || complete != 1 || copying) exit 1 }
+' "$root/sycl/equihash192-7/equihash192-7.cpp" > "$out/equihash192_admission.inc"
+awk '
+  /^unsigned zhash_intensity\(/ { copies++; copying = 1 }
+  copying { print }
+  copying && /^}$/ { copying = 0; complete++ }
+  END { if (copies != 1 || complete != 1 || copying) exit 1 }
+' "$root/sycl/zhash/zhash.cpp" > "$out/zhash_admission.inc"
+build_run equihash-admission -UNDEBUG -I "$out" "$root/tests/native/equihash-admission.cpp"
+build_run equihash-admission-hip -UNDEBUG -DMOM_SYCL_HAS_HIP -I "$out" \
+  "$root/tests/native/equihash-admission.cpp"
+build_run equihash-admission-intel -UNDEBUG -D__INTEL_LLVM_COMPILER -DMOM_ZHASH_INTEL_LATE_BUCKETS \
+  -I "$out" "$root/tests/native/equihash-admission.cpp"
+build_run equihash-admission-intel-unbranded -UNDEBUG -DMOM_SYCL_INTEL_LAYOUT \
+  -DMOM_ZHASH_INTEL_LATE_BUCKETS -I "$out" "$root/tests/native/equihash-admission.cpp"
 build_run equihash192-core "$root/tests/native/equihash192-core.cpp"
 build_run equihash192-core-intel -D__INTEL_LLVM_COMPILER \
   "$root/tests/native/equihash192-core.cpp"

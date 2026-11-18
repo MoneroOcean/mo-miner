@@ -1,10 +1,11 @@
 // WalaHash consensus math and packed hash primitives; included inside mom_walahash.
 #include "../blake3-device.inc"
 
+constexpr unsigned MAX_RESULTS = 15;
 struct Result {
   uint32_t count;
-  uint64_t nonce;
-  uint8_t hash[32];
+  uint64_t nonce[MAX_RESULTS];
+  uint8_t hash[MAX_RESULTS][32];
 };
 template <bool, bool> class SearchKernel;
 #ifdef WALAHASH_ESIMD

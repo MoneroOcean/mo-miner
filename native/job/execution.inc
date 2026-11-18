@@ -465,11 +465,14 @@ void Core::set_job(
 
       if (new_dev == DEV::RX_CPU) {
         randomx_apply_config(*new_rx_config);
-        // setup rx cache and dataset
+        // Size the cache (1 KiB Argon2 blocks) and dataset from the applied config rather than the
+        // compile-time maxima: panthera needs 128 MiB + 64 MiB, not 256 MiB + 2 GiB, in each of its
+        // per-thread processes. Any algorithm change frees both, so a reused buffer always fits.
         if (m_rx_cache_mem == nullptr)
-          m_rx_cache_mem = alloc_huge_mem(RANDOMX_CACHE_MAX_SIZE);
+          m_rx_cache_mem = alloc_huge_mem(allocation_size(RandomX_CurrentConfig.ArgonMemory, 1024));
         if (m_rx_dataset_mem == nullptr)
-          m_rx_dataset_mem = alloc_huge_mem(RANDOMX_DATASET_MAX_SIZE);
+          m_rx_dataset_mem = alloc_huge_mem(allocation_size(
+            static_cast<unsigned>(randomx_dataset_item_count()), RANDOMX_DATASET_ITEM_SIZE));
         if (m_rx_cache == nullptr) {
           const bool try_jit_cache = new_algo_str != "panthera" && m_is_rx_jit;
           m_rx_cache = randomx_create_cache(
@@ -539,9 +542,11 @@ void Core::set_job(
         if (m_input == nullptr) {
           m_input = static_cast<uint8_t*>(alloc_mem(MAX_BLOB_LEN));
         }
+        // Single-blob PoW entries return up to GPU_MAX_HITS hashes, and mix hashes in m_spads.
         if (m_output == nullptr) {
-          m_output = static_cast<uint8_t*>(alloc_mem(HASH_LEN));
+          m_output = static_cast<uint8_t*>(alloc_mem(GPU_MAX_HITS * HASH_LEN));
         }
+        static_assert(EQUIHASH_SOL_BUFFER_LEN >= GPU_MAX_HITS * HASH_LEN);
         // Equihash adapters return compact proofs out-of-band; test paths dump validation rows here.
         if (m_spads == nullptr) {
           m_spads = alloc_mem(EQUIHASH_SOL_BUFFER_LEN);
@@ -622,6 +627,9 @@ void Core::set_job(
     const std::string job_token = m_job_token;
     const bool is_mining = mode == JobMode::mine;
     const bool is_test = mode == JobMode::test;
+    // The worker's range is exhausted once every thread's lane is; report that once, not per thread.
+    const auto exhausted_threads = std::make_shared<std::atomic<unsigned>>(0);
+    const unsigned thread_count = m_batch;
     try {
       for (unsigned batch_id = 0; batch_id != m_batch; ++batch_id) {
         randomx_vm* const vm = m_vms[batch_id].get();
@@ -630,7 +638,7 @@ void Core::set_job(
         m_rx_threads.emplace_back(
           [this, job_input, job_ref, is_rx_v2, rx_algo, input_len, nonce_offset,
            nicehash_mask, nonce_step, target, pool_id, job_id, job_token, is_mining, is_test, vm,
-           initial_nonce]() {
+           initial_nonce, exhausted_threads, thread_count]() {
             try {
               alignas(16) uint8_t input[MAX_BLOB_LEN];
               alignas(16) uint8_t output[HASH_LEN];
@@ -688,17 +696,20 @@ void Core::set_job(
                 if (target && result_word(output, 0) < target) {
                   send_result(nonce, 4, output, nullptr, 32, commitment);
                 }
-                if (nonce_exhausted) {
-                  send_error("Nonce overflow");
+                if (nonce_exhausted)
                   break;
-                }
                 nonce = next_nonce;
               }
               if (pending_hashes) {
                 m_hash_count.fetch_add(pending_hashes, std::memory_order_relaxed);
               }
-              if (is_mining && !nonce_exhausted) {
+              // An exhausted lane reports its final hashed nonce, so resuming this job continues
+              // past the shares it already found (and is then rejected as overflowed).
+              if (is_mining) {
                 send_last_nonce(nonce, 4, pool_id, job_id, job_token);
+              }
+              if (nonce_exhausted && exhausted_threads->fetch_add(1) + 1 == thread_count) {
+                send_error("Nonce overflow");
               }
             } catch (const std::string& err) {
               send_error(std::string("Compute function thread exception: ") + err);

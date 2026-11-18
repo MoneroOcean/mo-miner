@@ -38,13 +38,24 @@ namespace mom_fishhash {
 
 #include "state.inc"
 
+// Copy every recorded hit into the single-blob result ABI (sycl/lib.h).
+static int take_fish_hits(const FishResult& result, uint8_t* const output, uint64_t* const pnonce) {
+  static_assert(MAX_OUTPUTS <= GPU_MAX_HITS);
+  const uint32_t hits = std::min(result.count, MAX_OUTPUTS);
+  for (uint32_t index = 0; index < hits; ++index) {
+    pnonce[index] = result.nonce[index];
+    std::memcpy(output + index * HASH_LEN, result.output[index], HASH_LEN);
+  }
+  return static_cast<int>(hits);
+}
+
 } // namespace mom_fishhash
 
 using namespace mom_fishhash;
 
 // Validate header/nonce layout and search the fixed DAG; short tests may derive light rows.
 int fishhash(const unsigned, const uint32_t, const uint8_t* const input, const unsigned input_size,
-             uint8_t* const output, uint8_t* const mix_hash, uint64_t* const pnonce,
+             uint8_t* const output, uint8_t* const /*mix_hash*/, uint64_t* const pnonce,
              const uint8_t* const target, const uint8_t* const /*seed_hash*/,
              const unsigned intensity, const bool is_test, const bool is_benchmark,
              const std::string& dev_str) {
@@ -127,20 +138,12 @@ int fishhash(const unsigned, const uint32_t, const uint8_t* const input, const u
     }
   }
 
-  const uint32_t count = state.result->count;
-  if (count == 0)
-    return 0;
-  const uint32_t idx = std::min(count, MAX_OUTPUTS) - 1;
-  *pnonce = state.result->nonce[idx];
-  std::memcpy(output, state.result->output[idx], HASH_LEN);
-  if (mix_hash)
-    std::memset(mix_hash, 0, HASH_LEN);
-  return 1;
+  return take_fish_hits(*state.result, output, pnonce);
 }
 
 // Reuse the fixed FishHash dataset with Karlsen hashing and target byte order.
 int karlsenhashv2(const unsigned, const uint32_t, const uint8_t* const input,
-                  const unsigned input_size, uint8_t* const output, uint8_t* const mix_hash,
+                  const unsigned input_size, uint8_t* const output, uint8_t* const /*mix_hash*/,
                   uint64_t* const pnonce, const uint8_t* const target,
                   const uint8_t* const /*seed_hash*/, const unsigned intensity, const bool is_test,
                   const bool is_benchmark, const std::string& dev_str) {
@@ -214,13 +217,5 @@ int karlsenhashv2(const unsigned, const uint32_t, const uint8_t* const input,
     }
   }
 
-  const uint32_t count = state.result->count;
-  if (count == 0)
-    return 0;
-  const uint32_t idx = std::min(count, MAX_OUTPUTS) - 1;
-  *pnonce = state.result->nonce[idx];
-  std::memcpy(output, state.result->output[idx], HASH_LEN);
-  if (mix_hash)
-    std::memset(mix_hash, 0, HASH_LEN);
-  return 1;
+  return take_fish_hits(*state.result, output, pnonce);
 }

@@ -85,17 +85,18 @@ static void search(State& s, uint64_t first, unsigned count, bool test, bool use
           }
         if (test && id[0] == 0) {
           result->count = 1;
-          result->nonce = first;
+          result->nonce[0] = first;
           for (unsigned i = 0; i < 32; ++i)
-            result->hash[i] = hash[i];
+            result->hash[0][i] = hash[i];
         } else if (!test && hit) {
           using Atomic =
               sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
                                sycl::access::address_space::global_space>;
-          if (Atomic(result->count).fetch_add(1) == 0) {
-            result->nonce = first + id[0];
+          const uint32_t index = Atomic(result->count).fetch_add(1);
+          if (index < MAX_RESULTS) {
+            result->nonce[index] = first + id[0];
             for (unsigned i = 0; i < 32; ++i)
-              result->hash[i] = hash[i];
+              result->hash[index][i] = hash[i];
           }
         }
       });

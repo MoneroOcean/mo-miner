@@ -281,12 +281,12 @@ static void np_sha256d_49(const uint8_t input[49], uint8_t output[32]) {
 #include "probe.inc"
 
 #include "search-prefix.inc"
-  bool search(sycl::queue&, const uint8_t[32], const uint8_t[8], uint64_t first,
-              const uint8_t[32], uint32_t count, unsigned, uint64_t& found) {
+  uint32_t search(sycl::queue&, const uint8_t[32], const uint8_t[8], uint64_t first,
+                  const uint8_t[32], uint32_t count, unsigned, uint64_t found[]) {
     ++counts.searches;
     inject("search");
-    found = first + (invalid_candidate ? count : count == 1 ? 0 : 1);
-    return found_candidate;
+    found[0] = first + (invalid_candidate ? count : count == 1 ? 0 : 1);
+    return found_candidate ? 1 : 0;
   }
 };
 
@@ -356,8 +356,8 @@ static void reset() {
   state = std::make_unique<State>();
 }
 struct Attempt {
-  uint8_t input[48]{}, output[32], target[32];
-  uint64_t nonce = 19;
+  uint8_t input[48]{}, output[Result::kCapacity * 32], target[32];
+  uint64_t nonce[Result::kCapacity] = {19};
   unsigned input_size = 44, intensity = 2;
   bool is_test = false, is_benchmark = false;
   int result = -1;
@@ -368,14 +368,14 @@ struct Attempt {
   }
   void run() {
     try {
-      result = nexapow(0, 0, input, input_size, output, nullptr, &nonce, target, nullptr, intensity,
+      result = nexapow(0, 0, input, input_size, output, nullptr, nonce, target, nullptr, intensity,
                        is_test, is_benchmark, "same-device-epoch");
     } catch (...) {
       error = std::current_exception();
     }
   }
   void unchanged() const {
-    require(nonce == 19, "failed attempt committed nonce");
+    require(nonce[0] == 19, "failed attempt committed nonce");
     for (uint8_t v : output)
       require(v == 0xcc, "failed attempt committed output");
   }
@@ -534,13 +534,15 @@ int main(int argc, char** argv) {
         if (!hit)
           std::memset(a.target, 0, 32);
         a.run();
-        require(!a.error && a.result == int(hit), "CPU search result mismatch");
+        require(!a.error && a.result == (hit ? 3 : 0), "CPU search result mismatch");
         require(hash_calls == 3 && scanned_nonces == std::vector<uint64_t>{19, 20, 21},
                 "CPU did not scan entire accounted batch");
         require(!counts.query && !counts.setup && !counts.submits && !counts.monolithic &&
                     !counts.searches && !counts.copies, "CPU entered a SYCL search path");
         if (hit)
-          require(a.nonce == 19 && a.output[0] == 0x11, "CPU did not retain first winner");
+          require(a.nonce[0] == 19 && a.nonce[1] == 20 && a.nonce[2] == 21 &&
+                      a.output[0] == 0x11 && a.output[64] == 0x11,
+                  "CPU did not report every winner in batch order");
         else
           a.unchanged();
       });
@@ -552,15 +554,15 @@ int main(int argc, char** argv) {
     std::memset(a.target, 0x11, 32);
     a.intensity = 3;
     a.run();
-    require(!a.error && a.result == 1 && a.nonce == 20 && hash_calls == 3,
+    require(!a.error && a.result == 2 && a.nonce[0] == 20 && a.nonce[1] == 21 && hash_calls == 3,
             "CPU equal target or later winner mismatch");
   });
   test("CPU nonce wraps through uint64 boundary", [] {
     cpu_device = true;
     Attempt a;
-    a.nonce = UINT64_MAX;
+    a.nonce[0] = UINT64_MAX;
     a.run();
-    require(!a.error && a.result == 1 && a.nonce == UINT64_MAX &&
+    require(!a.error && a.result == 2 && a.nonce[0] == UINT64_MAX && a.nonce[1] == 0 &&
                 scanned_nonces == std::vector<uint64_t>{UINT64_MAX, 0},
             "CPU unsigned nonce progression changed");
   });
@@ -571,7 +573,7 @@ int main(int argc, char** argv) {
     a.is_test = true;
     std::memset(a.target, 0, 32);
     a.run();
-    require(!a.error && a.result == 1 && a.nonce == 19 && hash_calls == 1 && !counts.setup,
+    require(!a.error && a.result == 1 && a.nonce[0] == 19 && hash_calls == 1 && !counts.setup,
             "CPU count-one test semantics changed");
   });
   test("CPU count one production nohit leaves outputs unchanged", [] {
@@ -608,7 +610,7 @@ int main(int argc, char** argv) {
     a.input_size = 48;
     a.is_test = true;
     a.run();
-    require(!a.error && a.result == 1 && a.nonce == kRecordedMinerNonce && hash_calls == 1,
+    require(!a.error && a.result == 1 && a.nonce[0] == kRecordedMinerNonce && hash_calls == 1,
             "portable CPU test bypassed the recorded-nonce SYCL hash");
     require(counts.monolithic == 1 && counts.submits == 1 && !counts.query && !counts.setup &&
                 !counts.searches, "portable CPU test built the staged table or skipped SYCL");
@@ -620,7 +622,7 @@ int main(int argc, char** argv) {
       Attempt a;
       a.is_benchmark = benchmark;
       a.run();
-      require(!a.error && a.result == 1 && hash_calls == a.intensity && !counts.monolithic &&
+      require(!a.error && a.result == 2 && hash_calls == a.intensity && !counts.monolithic &&
                   !counts.setup && !counts.submits, "test switch changed production CPU routing");
     });
   }
@@ -774,11 +776,13 @@ int main(int argc, char** argv) {
     require(!a.error && a.result == 0 && counts.monolithic == 0, "no candidate triggered fallback");
     a.unchanged();
   });
-  test("invalid candidate aborts before nonce/output commit", [] {
+  // One bad device candidate (e.g. from an unstable GPU) must not stop the job until the next one.
+  test("invalid candidate is dropped without commit or fallback", [] {
     invalid_candidate = true;
     Attempt a;
     a.run();
-    require(a.error && counts.monolithic == 0, "invalid candidate was committed or retried");
+    require(!a.error && a.result == 0 && counts.monolithic == 0,
+            "invalid candidate was committed, thrown, or retried");
     a.unchanged();
   });
   state.reset();

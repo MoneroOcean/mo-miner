@@ -57,6 +57,10 @@ MOM_SYCL_API int c30(
   uint32_t* output_edges, uint64_t* pnonce, const std::string& dev_str
 );
 
+// Single-blob PoW entry points (kawpow through verthash below) return how many distinct target
+// hits they found, at most GPU_MAX_HITS (native/consts.h). Hit i is written to pnonce[i],
+// output + i * HASH_LEN and, where produced, mix_hash + i * HASH_LEN. Entries that take their
+// start nonce from pnonce read pnonce[0] before writing hits. Test mode reports one hit.
 MOM_SYCL_API int kawpow(
   unsigned job_id, uint32_t height, const uint8_t* input, unsigned input_size, uint8_t* output,
   uint8_t* mix_hash, uint64_t* pnonce, uint64_t target,

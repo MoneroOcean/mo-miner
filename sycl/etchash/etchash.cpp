@@ -172,12 +172,12 @@ int etchash(const unsigned, const uint32_t block_height, const uint8_t* const in
                         state.device);
   }
 
-  const uint32_t count = state.result->count;
-  if (count == 0)
-    return 0;
-  const uint32_t index = std::min(count, MAX_ETCHASH_OUTPUTS) - 1;
-  *pnonce = state.result->nonce[index];
-  std::memcpy(output, state.result->output[index], HASH_LEN);
-  std::memcpy(mix_hash, state.result->mix_hash[index], HASH_LEN);
-  return 1;
+  static_assert(MAX_ETCHASH_OUTPUTS <= GPU_MAX_HITS);
+  const uint32_t hits = std::min(state.result->count, MAX_ETCHASH_OUTPUTS);
+  for (uint32_t index = 0; index < hits; ++index) {
+    pnonce[index] = state.result->nonce[index];
+    std::memcpy(output + index * HASH_LEN, state.result->output[index], HASH_LEN);
+    std::memcpy(mix_hash + index * HASH_LEN, state.result->mix_hash[index], HASH_LEN);
+  }
+  return static_cast<int>(hits);
 }

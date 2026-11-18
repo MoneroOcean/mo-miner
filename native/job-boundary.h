@@ -172,6 +172,18 @@ inline bool pearl_seed_next(std::uint32_t current, std::uint64_t step,
   return true;
 }
 
+// Visit each target hit a single-blob GPU entry point reported; sycl/lib.h places hit i at
+// slot i of its nonce and hash arrays. A count outside [0, capacity] breaks that ABI, so it
+// visits nothing rather than reading unwritten or out-of-bounds slots.
+template <typename Visit>
+inline bool for_each_gpu_hit(int hits, unsigned capacity, Visit&& visit) {
+  if (hits < 0 || static_cast<unsigned>(hits) > capacity)
+    return false;
+  for (unsigned i = 0; i < static_cast<unsigned>(hits); ++i)
+    visit(i);
+  return true;
+}
+
 template <typename UInt>
 inline bool next_nonce_batch(UInt first, std::uint64_t count, std::uint64_t lane_stride,
                              std::uint64_t batch_stride, UInt protected_mask,

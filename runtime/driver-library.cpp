@@ -50,9 +50,13 @@ static const char* portableCpuOpenclDriver(const char* name) {
 
 extern "C" void* __real_dlopen(const char* name, int flags);
 extern "C" char* __real_dlerror();
+// Report a refused dlopen once. The refusal cleared the loader's own error, so any error the
+// loader holds now came from a later dl call (for example a failed dlsym) and is the newer one.
 extern "C" char* __wrap_dlerror() {
-  if (!deniedLibrary) return __real_dlerror();
+  char* const loaderError = __real_dlerror();
+  if (!deniedLibrary) return loaderError;
   deniedLibrary = false;
+  if (loaderError) return loaderError;
   static thread_local char message[] = "MoM: application library loading is disabled";
   return message;
 }

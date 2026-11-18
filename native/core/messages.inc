@@ -154,6 +154,23 @@ void Core::send_result(
   send_msg("result", values);
 }
 
+// Report every hit of a single-blob GPU dispatch (benchmarks report none). Each slot holds a
+// distinct nonce of the batch, so no nonce is sent twice. Returns false after reporting an
+// impossible hit count; the caller then stops the function instead of trusting its buffers.
+bool Core::send_gpu_hits(
+  const int hits, const uint64_t* const nonces, const unsigned noncebytes,
+  const uint8_t* const mix_hash
+) {
+  const bool valid = mom::job_boundary::for_each_gpu_hit(hits, GPU_MAX_HITS, [&](unsigned i) {
+    if (m_target)
+      send_result(nonces[i], noncebytes, m_output + i * HASH_LEN, nullptr, 32, nullptr,
+                  mix_hash ? mix_hash + i * HASH_LEN : nullptr);
+  });
+  if (!valid)
+    send_error("Invalid " + m_algo_str + " GPU hit count " + std::to_string(hits));
+  return valid;
+}
+
 void Core::send_equihash_results(
   const uint64_t nonce, const unsigned solution_size, const bool compact_size_prefix
 ) {

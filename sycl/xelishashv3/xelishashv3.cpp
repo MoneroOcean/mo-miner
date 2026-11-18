@@ -64,6 +64,7 @@ inline uint64_t mo_rotate(uint64_t x, uint64_t n) {
 #include <mutex>
 
 #include "../lib-internal.h"
+#include "../../native/consts.h"
 #endif
 
 namespace mom_xelishashv3 {
@@ -117,11 +118,13 @@ int xelishashv3(unsigned, uint32_t, const uint8_t* input, unsigned input_size, u
     search<false>(s, *nonce, intensity, is_test);
   Result found;
   sycl_wait_and_throw(s.queue.memcpy(&found, s.result, sizeof(found)), s.device);
-  if (!found.count)
-    return 0;
-  *nonce = found.nonce;
-  std::memcpy(output, found.hash, 32);
-  return 1;
+  static_assert(MAX_RESULTS <= GPU_MAX_HITS);
+  const uint32_t hits = std::min(found.count, MAX_RESULTS);
+  for (uint32_t index = 0; index < hits; ++index) {
+    nonce[index] = found.nonce[index];
+    std::memcpy(output + index * 32, found.hash[index], 32);
+  }
+  return static_cast<int>(hits);
 } catch (const sycl::exception& error) {
   std::fprintf(stderr, "XelisHashV3 SYCL error: %s\n", error.what());
   throw;

@@ -472,9 +472,13 @@ int hoohash(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint8
     return 1;
   }
 
+  // The filter reports the lowest candidate offset. Resume after each candidate so every verified
+  // hit is reported and the batch is hashed to its end, as native's hash count assumes; only the
+  // GPU_MAX_HITS cap or the rejected-candidate bound stops earlier.
   uint64_t first_nonce = *pnonce;
   unsigned remaining = intensity, rejected_candidates = 0;
-  while (remaining) {
+  int hits = 0;
+  while (remaining && hits < static_cast<int>(GPU_MAX_HITS)) {
     state.queue.memset(state.result, 0xff, sizeof(uint32_t));
     const sycl::event work_event = search(state, first_nonce, remaining);
     // Some runtimes busy-spin while submitting a host copy behind live kernels. Complete the GPU
@@ -484,24 +488,23 @@ int hoohash(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint8
     MomSyclHostTransferGuard result_transfer(state.queue, "hoohash result readback");
     sycl_wait_and_throw(state.queue.memcpy(&result.offset, state.result, sizeof(result.offset)), state.device);
     if (result.offset == UINT32_MAX)
-      return 0;
+      break;
 
     if (result.offset >= remaining)
       throw std::string("hoohash GPU returned a nonce outside its search range");
     const uint64_t candidate_nonce = first_nonce + result.offset;
-    mom_hoohash_canonical_hash(input, candidate_nonce, output);
-    if (meets_target(output, target)) {
-      *pnonce = candidate_nonce;
-      return 1;
+    uint8_t* const hash = output + hits * HASH_LEN;
+    mom_hoohash_canonical_hash(input, candidate_nonce, hash);
+    if (meets_target(hash, target)) {
+      pnonce[hits++] = candidate_nonce;
+    } else if (++rejected_candidates == MAX_FILTER_RETRIES) {
+      // Bound work controlled by an untrusted pool target while retaining later candidates in the
+      // ordinary rare-mismatch case.
+      break;
     }
-
-    // Bound work controlled by an untrusted pool target while retaining later candidates in the
-    // ordinary rare-mismatch case.
-    if (++rejected_candidates == MAX_FILTER_RETRIES)
-      return 0;
     const unsigned consumed = result.offset + 1;
     remaining -= consumed;
     first_nonce = candidate_nonce + 1;
   }
-  return 0;
+  return hits;
 }

@@ -59,6 +59,14 @@ namespace mom_zhash {
 class ZHashGenerationTestKernel;
 using FastSession = Session<FastZHashArenaLayout>;
 
+// Discovery admits exactly the local memory the fast session and its safe-layout retry
+// require; 0 skips the device.
+unsigned zhash_intensity(const sycl::device& device) {
+  return sycl_local_memory_fits(device, std::max(FastZHashArenaLayout::local_memory_bytes,
+                                                 DefaultZHashArenaLayout::local_memory_bytes))
+             ? 1u : 0u;
+}
+
 // Return a bounded device-generated reference row without allocating the full solver arenas.
 static int run_generation_test(const std::string& device_name, const std::uint8_t* input,
                                std::uint8_t* output) {
@@ -299,5 +307,6 @@ int zhash(unsigned, std::uint32_t, const std::uint8_t* input, const unsigned inp
     ++count;
   }
   solution_out[0] = static_cast<std::uint8_t>(count);
-  return static_cast<int>(count);
+  // Bench and mining report distinct proofs (Sol/s); mining submits the solution_out[0] payload.
+  return is_test ? static_cast<int>(count) : static_cast<int>(report.solutions.size());
 }

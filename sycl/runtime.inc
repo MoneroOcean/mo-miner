@@ -73,9 +73,11 @@ void verthash_cleanup_states() noexcept;
 }
 namespace mom_zhash {
 void zhash_cleanup_states() noexcept;
+unsigned zhash_intensity(const sycl::device&);
 }
 namespace mom_equihash192_7 {
 void cleanup_states() noexcept;
+unsigned equihash192_7_intensity(const sycl::device&);
 }
 void cn_gpu_cleanup_states() noexcept;
 void c29_cleanup_states() noexcept;

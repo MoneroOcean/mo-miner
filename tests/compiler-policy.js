@@ -2807,11 +2807,11 @@ int main() {
       assert.doesNotMatch(searchKernel, /canonical_hash\(/);
       assert.doesNotMatch(searchKernel, /\bis_test\b/);
       assert.match(source,
-        /mom_hoohash_canonical_hash\(input, candidate_nonce, output\);[\s\S]*?if \(meets_target\(output, target\)\)/);
+        /mom_hoohash_canonical_hash\(input, candidate_nonce, hash\);[\s\S]*?if \(meets_target\(hash, target\)\)/);
       assert.match(source,
         /fetch_min\(static_cast<uint32_t>\(id\)\)[\s\S]*?remaining -= consumed;[\s\S]*?first_nonce = candidate_nonce \+ 1;/);
       assert.match(source,
-        /\+\+rejected_candidates == MAX_FILTER_RETRIES[\s\S]*?return 0;/);
+        /\+\+rejected_candidates == MAX_FILTER_RETRIES[\s\S]*?break;/);
       assert.match(hostMath,
         /return mom_hoohash_exp\(mom_hoohash_sin\(y\) \+ mom_hoohash_cos\(y\)\);[\s\S]*?return 1 \/ mom_hoohash_sqrt\(mom_hoohash_fabs\(y\) \+ 1\);/);
       assert.match(hostMath,
@@ -4119,7 +4119,7 @@ int main() {
         assert.ok(a >= 0 && b > a, start);
         return source.slice(a, b);
       };
-      const nexaScope = cut(nexa, "  bool search(sycl::queue&", "    if (!found.count)");
+      const nexaScope = cut(nexa, "  uint32_t search(sycl::queue&", "    if (!found.count)");
       const nexaOwners = nexaScope.split("\n").filter(line => /SearchResult found|MomSyclHostTransferGuard host_transfers/.test(line)).join("\n") + "\n";
       const monolithicScope = cut(monolithic, "  state.init_portable();", "  if (!found.count)");
       const monolithicOwners = monolithicScope.split("\n").filter(line => /Result found|MomSyclHostTransferGuard host_transfers/.test(line)).join("\n") + "\n";
@@ -4759,7 +4759,8 @@ static_assert(sizeof(mom::NvrtcProgram) > 0);
         assert.ok(begin >= 0 && stop > begin, start);
         return source.slice(begin, stop);
       };
-      const entry = section(host, "  state.init_portable();", "  return 1;\n}") + "  return 1;\n";
+      const entry = section(host, "  state.init_portable();", "  return static_cast<int>(hits);\n}") +
+        "  return static_cast<int>(hits);\n";
       const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-nexapow-submission-"));
       try {
         const source = path.join(fixture, "submission.cpp"), executable = path.join(fixture, "probe");
@@ -7400,9 +7401,8 @@ int main(int argc, char** argv) {
       assert.match(source,
         /void\* fused_args\[\]\s*=\s*\{\s*&A,\s*&B,\s*&key,\s*&target,\s*&result,\s*&seed,\s*&rows,\s*&n,\s*&row_offset,\s*&debug_int\s*\}/u);
       assert.match(state,
-        /const int transcript_rows = cuda_jit[\s\S]*?: hip_jit \? 0 : m;/u,
+        /const int transcript_rows = cuda_jit[\s\S]*?: 0;/u,
         "HIP fused storage must remain entirely in LDS");
-      assert.match(state, /if \(\(cuda_jit \|\| !hip_jit\) && transcript_bytes > 0/u);
       assert.doesNotMatch(source, /b\.transcript|transcript_rows/u,
         "HIP JIT must not retain a global transcript gate");
       assert.match(kernel, /__shared__ uint32_t fused_transcript\[4 \* PEARLHASH_ER \* 4 \* 16\]/u);
@@ -7421,8 +7421,8 @@ int main(int argc, char** argv) {
         fs.writeFileSync(path.join(fixture, "hip-wave-groups.inc"), extractCppBlock(kernel, "DEV void wave_groups("));
         fs.writeFileSync(path.join(fixture, "matrix-offset.inc"),
           extractCppBlock(matrix, "static inline size_t amd_wmma_offset("));
-        const allocationStart = state.indexOf("    const uint64_t transcript_limit =");
-        const allocationEnd = state.indexOf("    const bool transcript_fits =", allocationStart);
+        const allocationStart = state.indexOf("    constexpr uint64_t transcript_limit =");
+        const allocationEnd = state.indexOf("    if (transcript_bytes > 0 &&", allocationStart);
         assert.ok(allocationStart >= 0 && allocationEnd > allocationStart);
         fs.writeFileSync(path.join(fixture, "transcript-allocation.inc"), state.slice(allocationStart, allocationEnd));
         const executable = path.join(fixture, "slices");
@@ -7930,7 +7930,7 @@ int main(int argc, char** argv) {
         fs.writeFileSync(path.join(fixture, "selection.inc"),
           extract(entry, "    sycl_wait_and_throw(\n        state.use_inline_pair()", "\n  } else {"));
         fs.writeFileSync(path.join(fixture, "commit.inc"),
-          extract(entry, "  const uint32_t count = state.result->count;", "\n}"));
+          extract(entry, "  static_assert(MAX_ETCHASH_OUTPUTS <= GPU_MAX_HITS);", "\n}"));
         const compiled = spawnSync("c++", ["-std=c++17", "-O1", "-Wall", "-Wextra", "-Werror",
           "-pedantic", "-fsanitize=address", "-fsanitize-address-use-after-scope",
           "-fno-omit-frame-pointer", ...(process.platform === "linux" ? ["-fno-pie", "-no-pie"] : []),
@@ -8042,7 +8042,7 @@ int main(int argc, char** argv) {
         assert.ok(stop > begin, end);
         return source.slice(begin, stop);
       };
-      const prefix = section(pipeline, "class NexaPowSyclSearch {", "  bool search(");
+      const prefix = section(pipeline, "class NexaPowSyclSearch {", "  uint32_t search(");
       const probe = fs.readFileSync(path.join(__dirname, "../sycl/nexapow/validation.cpp"), "utf8");
       const caller = extractCppBlock(host,
         "int nexapow(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint8_t* output,\n" +

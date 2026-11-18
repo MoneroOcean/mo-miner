@@ -22,6 +22,10 @@ struct BucketLayout {
   static constexpr unsigned bucket_slot_capacity = SlotsPerBucket;
   static constexpr std::size_t slot_count =
       static_cast<std::size_t>(bucket_count) * bucket_slot_capacity;
+  // A collision work-group stages one bucket's bin heads and slot links in local memory.
+  static constexpr std::size_t local_memory_bytes =
+      static_cast<std::size_t>(local_bins) * sizeof(std::uint32_t) +
+      static_cast<std::size_t>(bucket_slot_capacity) * sizeof(std::uint16_t);
 
   static constexpr unsigned bucket_for(const std::uint32_t field) {
     return field >> local_bits;

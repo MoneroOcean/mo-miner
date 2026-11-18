@@ -1,3 +1,15 @@
+// Reserve a bounded hit slot; kernel completion publishes its payload.
+inline void store_result(Result* const result, const uint64_t nonce, const uint8_t hash[32]) {
+  using A = sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
+                             sycl::access::address_space::global_space>;
+  const uint32_t index = A(result->count).fetch_add(1);
+  if (index >= MAX_RESULTS)
+    return;
+  result->nonce[index] = nonce;
+  for (unsigned i = 0; i < 32; ++i)
+    result->hash[index][i] = hash[i];
+}
+
 // Portable and accelerated search submissions; in-order queues connect the staged routes.
 template <bool Native, bool FixedHashes>
 static sycl::event search(State& s, uint64_t first, unsigned count, bool is_test,
@@ -80,16 +92,8 @@ static sycl::event search(State& s, uint64_t first, unsigned count, bool is_test
               hit = pow[i] < target[i];
               break;
             }
-          if ((is_test && gid == 0) || hit) {
-            using A =
-                sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
-                                 sycl::access::address_space::global_space>;
-            if (A(result->count).fetch_add(1) == 0) {
-              result->nonce = nonce;
-              for (unsigned i = 0; i < 32; ++i)
-                result->hash[i] = pow[i];
-            }
-          }
+          if ((is_test && gid == 0) || hit)
+            store_result(result, nonce, pow);
         });
   });
 }
@@ -183,14 +187,10 @@ static sycl::event finalize(State& s, uint64_t first, unsigned count, bool is_te
         }
       }
       if ((is_test && gid == 0) || hit) {
-        using A =
-            sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
-                             sycl::access::address_space::global_space>;
-        if (A(result->count).fetch_add(1) == 0) {
-          result->nonce = first + gid;
-          for (unsigned i = 0; i < 32; ++i)
-            result->hash[i] = pow[i >> 2] >> (8 * (i & 3));
-        }
+        uint8_t hash[32];
+        for (unsigned i = 0; i < 32; ++i)
+          hash[i] = pow[i >> 2] >> (8 * (i & 3));
+        store_result(result, first + gid, hash);
       }
     });
   });
@@ -239,16 +239,8 @@ static sycl::event finalize_amd(State& s, uint64_t first, unsigned count, bool i
           hit = pow[i] < target[i];
           break;
         }
-      if ((is_test && gid == 0) || hit) {
-        using A =
-            sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
-                             sycl::access::address_space::global_space>;
-        if (A(result->count).fetch_add(1) == 0) {
-          result->nonce = first + gid;
-          for (unsigned i = 0; i < 32; ++i)
-            result->hash[i] = pow[i];
-        }
-      }
+      if ((is_test && gid == 0) || hit)
+        store_result(result, first + gid, pow);
     });
   });
 }

@@ -89,8 +89,9 @@ struct PointPlanes {
   Field *x = nullptr, *y = nullptr, *z = nullptr;
 };
 struct SearchResult {
+  static constexpr uint32_t kCapacity = 15;
   uint32_t count, pad;
-  uint64_t nonce;
+  uint64_t nonce[kCapacity];
 };
 struct HeaderContext {
   uint32_t words[10], state[8], word10_prefix, extra_bytes;
@@ -98,7 +99,7 @@ struct HeaderContext {
 
 static_assert(sizeof(AffineTablePoint) == 64);
 static_assert(alignof(AffineTablePoint) == 16);
-static_assert(sizeof(SearchResult) == 16);
+static_assert(sizeof(SearchResult) == 8 + 8 * SearchResult::kCapacity);
 
 #ifdef MOM_NEXAPOW_USE_NATIVE_FIELD
 MOM_NEXAPOW_FIELD_INLINE Field field_from_u256(const U256& value) {
@@ -817,9 +818,9 @@ MOM_NEXAPOW_ALWAYS_INLINE void finish_signature(const uint32_t ordinal, const ui
     return;
   using Atomic = sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
                                   sycl::access::address_space::global_space>;
-  uint32_t expected = 0;
-  if (Atomic(result->count).compare_exchange_strong(expected, 1u))
-    result->nonce = first_nonce + ordinal;
+  const uint32_t index = Atomic(result->count).fetch_add(1u);
+  if (index < SearchResult::kCapacity)
+    result->nonce[index] = first_nonce + ordinal;
 }
 
 constexpr uint32_t table_bits(const TableLayout layout, const uint32_t row) {
@@ -1300,9 +1301,10 @@ public:
   }
 
   // Run the staged hash, ECC, batch-inversion, and signature pipeline for the requested nonce batch.
-  bool search(sycl::queue& queue, const uint8_t header[32], const uint8_t extranonce[8],
-              const uint64_t first_nonce, const uint8_t target[32], const uint32_t count,
-              const unsigned extra_bytes, uint64_t& found_nonce) {
+  // Returns how many candidate nonces (at most kCapacity) it wrote; the host re-verifies each.
+  uint32_t search(sycl::queue& queue, const uint8_t header[32], const uint8_t extranonce[8],
+                  const uint64_t first_nonce, const uint8_t target[32], const uint32_t count,
+                  const unsigned extra_bytes, uint64_t found_nonces[SearchResult::kCapacity]) {
     using namespace sycl_pipeline;
     const bool stats = std::getenv("MOM_NEXAPOW_STATS") && searches_++ == 1u;
     const char* split_hash_value = std::getenv("MOM_NEXAPOW_SPLIT_HASH");
@@ -1534,8 +1536,10 @@ public:
     mark("finish");
     sycl_wait_and_throw(queue.memcpy(&found, result_, sizeof(found)), queue.get_device());
     if (!found.count)
-      return false;
-    found_nonce = found.nonce;
-    return true;
+      return 0;
+    const uint32_t candidates = std::min(found.count, SearchResult::kCapacity);
+    for (uint32_t index = 0; index < candidates; ++index)
+      found_nonces[index] = found.nonce[index];
+    return candidates;
   }
 };

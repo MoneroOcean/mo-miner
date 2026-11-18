@@ -30,8 +30,9 @@ namespace mom_verthash {
 struct Uint2 {
   uint32_t x, y;
 };
+constexpr unsigned MAX_RESULTS = 15;
 struct Result {
-  uint32_t count, nonce, hash[8];
+  uint32_t count, nonce[MAX_RESULTS], hash[MAX_RESULTS][8];
 };
 constexpr size_t DATA_BYTES = data_file::expected_bytes;
 static_assert(sizeof(Uint2) == 8 && DATA_BYTES % sizeof(Uint2) == 0);
@@ -406,10 +407,11 @@ static sycl::event submit_search(State& s, uint32_t start_nonce, unsigned count,
             using Atomic =
                 sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
                                  sycl::access::address_space::global_space>;
-            if (Atomic(result->count).fetch_add(1) == 0) {
-              result->nonce = nonce;
+            const uint32_t index = Atomic(result->count).fetch_add(1);
+            if (index < MAX_RESULTS) {
+              result->nonce[index] = nonce;
               for (unsigned i = 0; i < 8; ++i)
-                result->hash[i] = words[i];
+                result->hash[index][i] = words[i];
             }
           }
         });
@@ -448,9 +450,11 @@ int verthash(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint
                                  ? submit_search<true>(state, start_nonce, intensity, is_test)
                                  : submit_search<false>(state, start_nonce, intensity, is_test);
   sycl_wait_and_throw(search, state.device);
-  if (!state.result->count)
-    return 0;
-  *pnonce = state.result->nonce;
-  std::memcpy(output, state.result->hash, HASH_LEN);
-  return 1;
+  static_assert(MAX_RESULTS <= GPU_MAX_HITS);
+  const uint32_t hits = std::min(state.result->count, MAX_RESULTS);
+  for (uint32_t index = 0; index < hits; ++index) {
+    pnonce[index] = state.result->nonce[index];
+    std::memcpy(output + index * HASH_LEN, state.result->hash[index], HASH_LEN);
+  }
+  return static_cast<int>(hits);
 }

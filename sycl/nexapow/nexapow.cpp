@@ -31,6 +31,7 @@
 #include <hipSYCL/sycl/jit.hpp>
 #endif
 
+#include <algorithm>
 #include <cstdint>
 #include <chrono>
 #include <cstdlib>
@@ -45,11 +46,13 @@
 #include "../lib-internal.h"
 #else
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <stdexcept>
 #include <string>
 #endif
 
+#include "../../native/consts.h"
 #include "../../native/job-boundary.h"
 
 namespace mom_nexapow {
@@ -63,9 +66,10 @@ namespace mom_nexapow {
 #undef MOM_NEXAPOW_SHA_ATTR
 
 struct Result {
+  static constexpr uint32_t kCapacity = 15;
   uint32_t count;
-  uint64_t miner_nonce;
-  uint8_t hash[32];
+  uint64_t miner_nonce[kCapacity];
+  uint8_t hash[kCapacity][32];
 };
 
 static constexpr uint8_t kRecordedHeader[32] = {
@@ -84,6 +88,8 @@ static constexpr uint8_t kRecordedMiningHash[32] = {
     0x71, 0xc1, 0xbb, 0x91, 0x22, 0x1c, 0x68, 0xff, 0x01, 0x80, 0x08, 0x9e, 0x54, 0xc3, 0x77, 0x70,
 };
 
+static_assert(Result::kCapacity == GPU_MAX_HITS);
+
 inline bool np_equal(const uint8_t* a, const uint8_t* b, const unsigned count) {
   uint8_t difference = 0;
   for (unsigned i = 0; i < count; ++i)
@@ -100,32 +106,54 @@ inline bool np_meets_target(const uint8_t hash[32], const uint8_t target[32]) {
   return true;
 }
 
-// Evaluate the complete requested nonce batch with consensus ECC; retain only its first qualifying hash.
+// Evaluate the complete requested nonce batch with consensus ECC and report its first
+// Result::kCapacity qualifying hashes. The caller accounts for the entire batch, so keep hashing it.
 static int scan_host(const uint8_t* input, unsigned extra_bytes, uint64_t first, unsigned count,
                      const uint8_t* target, bool is_test, uint8_t* output, uint64_t* pnonce) {
-  Result found{};
+  int hits = 0;
   for (unsigned i = 0; i < count; ++i) {
     uint8_t hash[32];
     const uint64_t nonce = first + i;
     if (np_hash_one(input, input + 32, nonce, hash, extra_bytes) &&
-        (is_test || np_meets_target(hash, target)) && !found.count) {
-      found.count = 1;
-      found.miner_nonce = nonce;
-      std::memcpy(found.hash, hash, 32);
+        (is_test || np_meets_target(hash, target)) && hits < static_cast<int>(Result::kCapacity)) {
+      pnonce[hits] = nonce;
+      std::memcpy(output + hits * 32, hash, 32);
+      ++hits;
     }
   }
-  // The caller accounts for the entire batch even when its first nonce wins.
-  if (!found.count)
-    return 0;
-  *pnonce = found.miner_nonce;
-  std::memcpy(output, found.hash, 32);
-  return 1;
+  return hits;
+}
+
+// Re-hash staged device candidates with consensus math and keep those inside the batch that meet
+// the target. A failing candidate (for example from an unstable GPU) is logged and dropped so the
+// rest of the job keeps mining instead of stopping until the pool's next job.
+static int verify_candidates(const uint8_t* input, unsigned extra_bytes, uint64_t first,
+                             unsigned count, const uint8_t* target, const uint64_t* candidates,
+                             unsigned candidate_count, uint8_t* output, uint64_t* pnonce) {
+  int hits = 0;
+  for (unsigned i = 0; i < candidate_count && hits < static_cast<int>(Result::kCapacity); ++i) {
+    const uint64_t candidate = candidates[i];
+    uint8_t hash[32];
+    if (candidate - first >= count ||
+        !np_hash_one(input, input + 32, candidate, hash, extra_bytes) ||
+        !np_meets_target(hash, target)) {
+      std::fprintf(stderr, "NexaPoW dropped GPU candidate %llu that failed host verification\n",
+                   static_cast<unsigned long long>(candidate));
+      continue;
+    }
+    std::memcpy(output + hits * 32, hash, sizeof(hash));
+    pnonce[hits++] = candidate;
+  }
+  return hits;
 }
 
 #ifndef MOM_NEXAPOW_HOST_TEST
 #include "sycl-pipeline.inc"
 
 #include "state.inc"
+
+// The staged search writes at most this many candidates for the host to re-verify.
+static_assert(sycl_pipeline::SearchResult::kCapacity == Result::kCapacity);
 
 void nexapow_cleanup_states() noexcept {
   try {
@@ -186,32 +214,29 @@ int nexapow(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint8
           count);
       state.staged_logged = true;
     }
-    uint64_t found = 0;
+    uint64_t candidates[Result::kCapacity];
     uint8_t test_target[32];
     if (is_test)
       std::memset(test_target, 0xff, sizeof(test_target));
     const uint8_t* portable_target = is_test ? test_target : target;
     // Once search can submit work, a failure must abort rather than reuse its queue for fallback.
-    const bool found_candidate = state.portable.search(
-        state.queue, input, input + 32, first, portable_target, count, extra_bytes, found);
-    if (!found_candidate) {
+    const uint32_t candidate_count = state.portable.search(
+        state.queue, input, input + 32, first, portable_target, count, extra_bytes, candidates);
+    if (!candidate_count) {
       if (recorded_test)
         throw std::string("NexaPoW staged SYCL recorded vector found no candidate");
       if (is_test)
         throw std::string("NexaPoW staged SYCL test found no candidate");
       return 0;
-    } else {
-      uint8_t hash[32];
-      if (found - first >= count || !np_hash_one(input, input + 32, found, hash, extra_bytes) ||
-          !np_meets_target(hash, portable_target))
-        throw std::string("NexaPoW staged SYCL candidate verification failed");
-      if (recorded_test &&
-          (found != kRecordedMinerNonce || !np_equal(hash, kRecordedHash, sizeof(hash))))
-        throw std::string("NexaPoW staged SYCL recorded vector mismatch");
-      *pnonce = found;
-      std::memcpy(output, hash, sizeof(hash));
-      return 1;
     }
+    const int hits = verify_candidates(input, extra_bytes, first, count, portable_target,
+                                       candidates, candidate_count, output, pnonce);
+    if (is_test && !hits)
+      throw std::string("NexaPoW staged SYCL candidate verification failed");
+    if (recorded_test &&
+        (pnonce[0] != kRecordedMinerNonce || !np_equal(output, kRecordedHash, 32)))
+      throw std::string("NexaPoW staged SYCL recorded vector mismatch");
+    return hits;
   }
 
   if (!portable_cpu_test && !state.staged_failure_logged) {
@@ -249,10 +274,11 @@ int nexapow(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint8
         using Atomic =
             sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
                              sycl::access::address_space::global_space>;
-        if (Atomic(result->count).fetch_add(1) == 0) {
-          result->miner_nonce = miner_nonce;
+        const uint32_t index = Atomic(result->count).fetch_add(1);
+        if (index < Result::kCapacity) {
+          result->miner_nonce[index] = miner_nonce;
           for (unsigned i = 0; i < 32; ++i)
-            result->hash[i] = hash[i];
+            result->hash[index][i] = hash[i];
         }
       }
     });
@@ -261,9 +287,12 @@ int nexapow(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint8
   sycl_wait_and_throw(state.queue.memcpy(&found, state.result, sizeof(found)), state.device);
   if (!found.count)
     return 0;
-  *pnonce = found.miner_nonce;
-  std::memcpy(output, found.hash, 32);
-  return 1;
+  const uint32_t hits = std::min(found.count, Result::kCapacity);
+  for (uint32_t index = 0; index < hits; ++index) {
+    pnonce[index] = found.miner_nonce[index];
+    std::memcpy(output + index * 32, found.hash[index], 32);
+  }
+  return static_cast<int>(hits);
 }
 #else
 // Validate the work-blob ABI and dispatch a serialized nonce batch without altering its fixed extranonce.
@@ -280,16 +309,10 @@ int nexapow(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint8
        !np_equal(input + 40, kRecordedMinerNonceBytes, 8)))
     throw std::runtime_error("nexapow test requires the recorded Echelon vector");
   const uint64_t first = recorded_test ? kRecordedMinerNonce : *pnonce;
-  Result result{};
-  result.miner_nonce = first;
   const int found = scan_host(input, extra_bytes, first, is_test ? 1u : intensity,
-                              target, is_test, result.hash, &result.miner_nonce);
-  if (found && recorded_test && !np_equal(result.hash, kRecordedHash, 32))
+                              target, is_test, output, pnonce);
+  if (found && recorded_test && !np_equal(output, kRecordedHash, 32))
     throw std::runtime_error("nexapow host vector mismatch");
-  if (found) {
-    *pnonce = result.miner_nonce;
-    std::memcpy(output, result.hash, 32);
-  }
   return found;
 }
 #endif
