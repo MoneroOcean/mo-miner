@@ -1,3 +1,35 @@
+// Replace the current job and report how far the replaced pool job got, so the controller can resume
+// it later. A job rejected by set_job()'s early validation leaves the previous job running untouched.
+// Once set_job() has stopped the previous job (m_job_ref advances right after clear_fn() and after RX
+// threads are stopped), a later rejection must still report the old progress and drop the
+// half-applied ids; otherwise the next switch would report a partially written nonce under them.
+void Core::replace_job(
+  JobMode mode, const bool is_no_same_input, const MessageValues& v, std::function<void(void)> fn_extra_setup
+) {
+  const uint64_t prev_last_nonce = last_nonce();
+  const unsigned prev_nonce_bytes = m_nonce_bytes;
+  const std::string prev_pool_id = m_pool_id;
+  const std::string prev_job_id = m_job_id;
+  const std::string prev_job_token = m_job_token;
+  const unsigned prev_job_ref = m_job_ref.load(std::memory_order_relaxed);
+  try {
+    set_job(mode, is_no_same_input, v, std::move(fn_extra_setup));
+  } catch (...) {
+    if (m_job_ref.load(std::memory_order_relaxed) == prev_job_ref)
+      throw;
+    if (prev_last_nonce)
+      send_last_nonce(prev_last_nonce, prev_nonce_bytes, prev_pool_id, prev_job_id, prev_job_token);
+    m_pool_id.clear();
+    m_job_id.clear();
+    m_job_token.clear();
+    throw;
+  }
+  if (prev_last_nonce)
+    send_last_nonce(prev_last_nonce, prev_nonce_bytes, prev_pool_id, prev_job_id, prev_job_token);
+}
+
+// Apply one controller command on the compute thread. Returns false only for "close"; command
+// failures throw and are reported as "error" messages by the compute loop.
 bool Core::process_message(const std::string& type, const MessageValues& v) {
   if (type == "job") {
     if (!v.contains("target"))    throw std::string("Missing target job key");
@@ -51,12 +83,7 @@ bool Core::process_message(const std::string& type, const MessageValues& v) {
         new_target_bin[HASH_LEN - 1 - i] = t;
       }
 
-    const uint64_t prev_last_nonce = last_nonce();
-    const unsigned prev_nonce_bytes = m_nonce_bytes;
-    const std::string prev_pool_id = m_pool_id;
-    const std::string prev_job_id = m_job_id;
-    const std::string prev_job_token = m_job_token;
-    set_job(JobMode::mine, true, v, [&]() {
+    replace_job(JobMode::mine, true, v, [&]() {
       m_target    = new_target;
       // This callback also runs on same-input retargets. Always replace/clear
       // both the flag and bytes so final-target jobs cannot reuse an old base.
@@ -71,22 +98,11 @@ bool Core::process_message(const std::string& type, const MessageValues& v) {
       m_job_token = v.at("job_token");
       m_header_hash = v.contains("header_hash") ? v.at("header_hash") : "";
     });
-    if (prev_last_nonce) {
-      send_last_nonce(prev_last_nonce, prev_nonce_bytes, prev_pool_id, prev_job_id, prev_job_token);
-    }
 
   } else if (type == "bench" || type == "test") {
     const bool is_bench = type == "bench";
     debug_async_worker(is_bench ? "process bench start" : "process test start");
-    const uint64_t prev_last_nonce = last_nonce();
-    const unsigned prev_nonce_bytes = m_nonce_bytes;
-    const std::string prev_pool_id = m_pool_id;
-    const std::string prev_job_id = m_job_id;
-    const std::string prev_job_token = m_job_token;
-    set_job(is_bench ? JobMode::bench : JobMode::test, is_bench, v);
-    if (prev_last_nonce) {
-      send_last_nonce(prev_last_nonce, prev_nonce_bytes, prev_pool_id, prev_job_id, prev_job_token);
-    }
+    replace_job(is_bench ? JobMode::bench : JobMode::test, is_bench, v);
     debug_async_worker(is_bench ? "process bench done" : "process test done");
 
   } else if (type == "pause") {
@@ -183,5 +199,3 @@ bool Core::process_message(const std::string& type, const MessageValues& v) {
   return true; // continue processing messages
 }
 
-// MOM_LOOP_STATS=1 prints, every ~10s on stderr, worker-process CPU use and how the compute-loop wall
-// time splits between GPU/CPU dispatch calls and the host work around them (plus one-off stall lines).

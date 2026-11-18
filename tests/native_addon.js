@@ -139,6 +139,89 @@ test.describe("Native addon contracts", {concurrency: false}, () => {
     assert.equal(message, "Message processing exception: Unknown native command: future_command");
   });
 
+  test("native worker survives a standard-library exception while processing a command", {timeout: 10000}, async () => {
+    /** @type {string[]} */
+    const events = [];
+    await new Promise((resolve, reject) => {
+      const worker = new core.AsyncWorker(
+        (/** @type {string} */ name, /** @type {NativeValues} */ values) => {
+          events.push(name === "error" ? "error:" + values.message : name);
+          // The worker must keep accepting commands after the failure.
+          if (name === "error") {worker.sendToCpp("test", {algo: "cn/0", blob_hex: "00".repeat(76), dev: "cpu"});}
+          if (name === "test") {worker.sendToCpp("close");}
+        },
+        resolve,
+        reject
+      );
+      // A missing required key makes std::map::at throw std::out_of_range, not a string.
+      worker.sendToCpp("test", {algo: "cn/0", blob_hex: "00".repeat(76)});
+    });
+    assert.equal(events.length, 2, events.join(", "));
+    assert.match(events[0] || "", /^error:Message processing exception: /);
+    assert.equal(events[1], "test");
+  });
+
+  test("native worker reports the replaced job's progress when the new job is rejected", {timeout: 10000}, async () => {
+    const job = {
+      algo: "cn/0", blob_hex: "00".repeat(76), dev: "cpu", noncebytes: 4, nonceoffset: 39,
+      pool_id: "pool", target: "01000000", worker_id: "worker",
+    };
+    /** @type {{name: string, values: NativeValues}[]} */
+    const events = [];
+    await new Promise((resolve, reject) => {
+      const worker = new core.AsyncWorker(
+        (/** @type {string} */ name, /** @type {NativeValues} */ values) => {
+          events.push({name, values});
+          if (name === "error") {worker.sendToCpp("close");}
+        },
+        resolve,
+        reject
+      );
+      worker.sendToCpp("job", {...job, job_id: "first", job_token: "first-token", nonce: "0", thread_num: 1});
+      // Let the first job hash a few batches, then replace it with a job whose initial nonce wraps.
+      setTimeout(() => worker.sendToCpp("job", {
+        ...job, job_id: "second", job_token: "second-token", nonce: "fffffffe", thread_id: 3, thread_num: 4,
+      }), 500);
+    });
+    const lastNonces = events.filter(event => event.name === "last_nonce").map(event => event.values);
+    assert.equal(lastNonces.length, 1, JSON.stringify(events));
+    assert.equal(lastNonces[0]?.job_id, "first");
+    assert.notEqual(Number.parseInt(lastNonces[0]?.nonce || "0", 16), 0);
+    assert.match(events.find(event => event.name === "error")?.values.message || "", /Initial worker nonce overflows/);
+  });
+
+  test("native worker keeps the current job when a new job fails early validation", {timeout: 10000}, async () => {
+    /** @type {{name: string, values: NativeValues}[]} */
+    const events = [];
+    await new Promise((resolve, reject) => {
+      const worker = new core.AsyncWorker(
+        (/** @type {string} */ name, /** @type {NativeValues} */ values) => {
+          events.push({name, values});
+          // Let the untouched first job hash a little longer before closing.
+          if (name === "error") {setTimeout(() => worker.sendToCpp("close"), 200);}
+        },
+        resolve,
+        reject
+      );
+      worker.sendToCpp("job", {
+        algo: "cn/0", blob_hex: "00".repeat(76), dev: "cpu", job_id: "first", job_token: "first-token",
+        nonce: "0", noncebytes: 4, nonceoffset: 39, pool_id: "pool", target: "01000000", thread_num: 1,
+        worker_id: "worker",
+      });
+      // The RandomX initial-range check rejects this job before set_job() stops the first one.
+      setTimeout(() => worker.sendToCpp("job", {
+        algo: "rx/0", blob_hex: "00".repeat(39) + "000000ab", dev: "cpu*2", job_id: "second",
+        job_token: "second-token", nicehash_mask: "000000ff", nonce: "ffffff00", noncebytes: 4, nonceoffset: 39,
+        pool_id: "pool", seed_hex: "00".repeat(32), target: "ffffffff", thread_num: 1, worker_id: "worker",
+      }), 300);
+    });
+    assert.match(events.find(event => event.name === "error")?.values.message || "", /Initial RandomX worker nonce overflows/);
+    const lastNonces = events.filter(event => event.name === "last_nonce").map(event => event.values);
+    assert.equal(lastNonces.length, 1, JSON.stringify(events));
+    assert.equal(lastNonces[0]?.job_id, "first");
+    assert.notEqual(Number.parseInt(lastNonces[0]?.nonce || "0", 16), 0);
+  });
+
   test("native worker delivers progress before completion and rejects posts after close", {
     timeout: 5000,
   }, async () => {

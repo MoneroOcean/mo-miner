@@ -90,6 +90,8 @@ static void loop_stats_report(LoopStats& ls, const uint64_t now) {
 
 void Core::Execute() try {
   debug_async_worker("Core::Execute entered");
+  // MOM_LOOP_STATS=1 prints, every ~10s on stderr, worker-process CPU use and how the compute-loop wall
+  // time splits between GPU/CPU dispatch calls and the host work around them (plus one-off stall lines).
   const bool loop_stats = std::getenv("MOM_LOOP_STATS") != nullptr;
   LoopStats ls;
   bool runtime_initialized = false;
@@ -157,6 +159,11 @@ void Core::Execute() try {
         if (!process_message(message.name, message.values)) return;
       } catch (const std::string& err) {
         send_error(std::string("Message processing exception: ") + err);
+      } catch (const std::exception& e) {
+        // sycl::exception, std::system_error and std::bad_alloc must not terminate the worker.
+        send_error(std::string("Message processing exception: ") + e.what());
+      } catch (...) {
+        send_error("Message processing exception");
       }
     }
     if (loop_stats && !messages.empty()) {

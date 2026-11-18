@@ -16,7 +16,7 @@
     "url": "https://github.com/MoneroOcean/mo-miner.git"
   },
   "engines": {
-    "node": ">=22.9.0",
+    "node": ">=24.15.0",
     "npm": ">=11.10.0"
   },
   "os": [

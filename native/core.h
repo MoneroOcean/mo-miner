@@ -237,6 +237,10 @@ class Core: public AsyncWorker {
     JobMode mode, const bool is_no_same_input, const MessageValues& v,
     std::function<void(void)> fn_extra_setup = [](){}
   );
+  void replace_job(
+    JobMode mode, const bool is_no_same_input, const MessageValues& v,
+    std::function<void(void)> fn_extra_setup = [](){}
+  );
   void get_algo_params(const MessageValues& v);
   bool process_message(const std::string& type, const MessageValues& v);
 

@@ -6,7 +6,7 @@ source-level project context and algorithm notes remain in the other repository 
 
 ## Requirements and setup
 
-Use the Node.js and npm versions declared by package.json (Node.js 22.9 or newer and npm 11.10
+Use the Node.js and npm versions declared by package.json (Node.js 24.15 or newer and npm 11.10
 or newer). Install the native development prerequisites for the components you intend to build:
 
 Linux:
