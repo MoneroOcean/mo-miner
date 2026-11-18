@@ -96,6 +96,14 @@ function zelhashSubmitParams(pool, job, value, solution) {
     zelhashNonce2(job, value.nonce), solution];
 }
 
+// XELIS worker name for both mining.authorize and mining.submit: the login's ".worker" suffix,
+// else the configured worker, else "mom" (a trailing dot leaves the suffix empty).
+/** @param {Pick<PoolConfig, "login" | "worker">} pool @returns {string} */
+function xelisWorkerName(pool) {
+  const separator = pool.login.indexOf(".");
+  return (separator < 0 ? "" : pool.login.slice(separator + 1)) || pool.worker || "mom";
+}
+
 module.exports = {
   ergSubmitParams,
   nexaSubmitParams,
@@ -103,5 +111,6 @@ module.exports = {
   isValidNonce,
   reverseHexBytes,
   verthashSubmitParams,
+  xelisWorkerName,
   zelhashSubmitParams,
 };

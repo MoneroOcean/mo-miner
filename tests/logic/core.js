@@ -937,6 +937,20 @@ describe("Configuration persistence and credential redaction", () => {
       fs.rmSync(directory, {recursive: true, force: true});
     }
   });
+
+  test("config pools without a donation choice keep every user pool", () => {
+    const opt = opts.create_default_opts();
+    opts.apply_config(opt, {
+      pools: [
+        {url: "a.example", port: 1, login: "wallet-a"},
+        {url: "b.example", port: 2, login: "wallet-b"},
+      ],
+      pool_ids: {primary: 1},
+    });
+    assert.deepEqual(opt.pools.map((pool) => pool.url),
+      ["a.example", "b.example", "mom.moneroocean.stream"]);
+    assert.deepEqual(opt.pool_ids, {active: 0, primary: 1, donate: 2});
+  });
 });
 
 /** @param {string} source */

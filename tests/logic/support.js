@@ -41,6 +41,8 @@ const repoRoot = path.join(__dirname, "..", "..");
  *   url: string, port: number, is_tls: boolean, tls_verify?: boolean, tls_fingerprint?: string, is_nicehash?: boolean,
  *   is_keepalive: boolean, use_subscribe?: boolean, protocol?: string, inferred_protocol?: string,
  *   socket: SocketLike | null, keepalive: ReturnType<typeof setTimeout> | null,
+ *   first_job_timer?: ReturnType<typeof setTimeout>, response_timer?: ReturnType<typeof setTimeout>,
+ *   idle_timer?: ReturnType<typeof setTimeout>,
  *   last_job: TestJob | null, pending_job?: PoolMessage, last_connect_time: number,
  *   pending_cortex_submit_ids?: Set<number>,
  *   good_shares: number, bad_shares: number,
@@ -365,6 +367,16 @@ function mockPoolOptions(options = {}) {
   };
 }
 
+// Cancel the per-connection timers that pool.js clear_pool_connection would, so none outlives a test.
+/** @param {TestPoolConfig} poolConfig */
+function clearPoolTimers(poolConfig) {
+  if (poolConfig.keepalive !== null) {clearTimeout(poolConfig.keepalive);}
+  poolConfig.keepalive = null;
+  clearTimeout(poolConfig.first_job_timer);
+  clearTimeout(poolConfig.response_timer);
+  clearTimeout(poolConfig.idle_timer);
+}
+
 /** @param {{pool?: Partial<TestPoolConfig>, pool_time?: Partial<TestOptions["pool_time"]>, opt?: Partial<TestOptions>,
  *   socket?: MockSocket,
  *   write?: (message: string) => void, destroy?: () => void}} options
@@ -393,8 +405,7 @@ async function withMockPool(options, callback) {
   } finally {
     if (testGlobal.opt) {
       for (const poolConfig of testGlobal.opt.pools) {
-        if (poolConfig.keepalive !== null) {clearTimeout(poolConfig.keepalive);}
-        poolConfig.keepalive = null;
+        clearPoolTimers(poolConfig);
         poolConfig.socket = null;
       }
     }
@@ -414,5 +425,5 @@ module.exports = {
   describe, test, assert, spawnSync, events, fs, path, tls,
   opts, helper, pool, compilerPolicy, formatHashrate, parseFormattedHashrate,
   specReporter, repoRoot, noOp, loadMinerWithStubs, mockPoolConfig,
-  mockPoolOptions, withMockPool, completeOneBenchmark, unexpectedPoolJob, completeMiningJob
+  mockPoolOptions, clearPoolTimers, withMockPool, completeOneBenchmark, unexpectedPoolJob, completeMiningJob
 };

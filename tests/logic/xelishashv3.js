@@ -250,6 +250,21 @@ test("XELIS rejects timestamps that JavaScript cannot represent exactly", async 
   });
 });
 
+test("XELIS authorize falls back to the configured worker after an empty login suffix", async () => {
+  await withMockPool({
+    pool: {login: "xel:wallet.", worker: "rig"},
+    opt: {job: {algo: "xelishashv3"}},
+  }, async ({socket, writes}) => {
+    pool.connect_pool_throttle(0, unexpectedPoolJob);
+    socket.emit("connect");
+    socket.emit("data", Buffer.from(JSON.stringify({
+      jsonrpc: "2.0", id: 1, result: ["session", "22".repeat(32), 32, "33".repeat(32)],
+    }) + "\n"));
+    // Submits use the same name (see the submit tests below), so authorize must not say "mom".
+    assert.deepEqual(writes[1]?.params, ["xel:wallet", "rig", "x"]);
+  });
+});
+
 test("XELIS submit uses the worker suffix without a 0x nonce prefix", async () => {
   const miner = await loadMinerWithStubs();
   miner.global.opt.pools[0].login = "xel:wallet.worker";

@@ -145,6 +145,8 @@ declare global {
     pending_cortex_login?: boolean;
     pending_cortex_submit_ids?: Set<number>;
     pending_cortex_work?: boolean;
+    first_job_timer?: NodeJS.Timeout;
+    idle_timer?: NodeJS.Timeout;
     inferred_protocol?: string;
     ironfish_target?: string;
     ironfish_xn?: string;
@@ -172,6 +174,7 @@ declare global {
     port: number;
     protocol: string | null;
     raven_target?: string;
+    response_timer?: NodeJS.Timeout;
     socket: PoolSocket | null;
     stratum_target?: string;
     tls_verify: boolean;

@@ -68,6 +68,15 @@ module.exports.pool_create = function(url, port, is_tls, login, pass) {
   };
 };
 
+/** @returns {PoolConfig} */
+function defaultDonationPool() {
+  // The MoM donation proxy speaks the XMR `login` dialect.
+  return {
+    ...module.exports.pool_create("mom.moneroocean.stream", 20001, true, "user", "pass"),
+    use_subscribe: false,
+  };
+}
+
 const dev_help = 'device config "[<dev>[*MAIN|*[name=value;...]][^P],]+", dev = ' +
                  "{cpu, gpu<N>, cpu<N>}, N = device number, MAIN = algorithm primary tuning value, " +
                  "P = number of parallel processes";
@@ -124,13 +133,7 @@ module.exports.opt_help = {
       _good_shares:       [ 0, "number of accepted shares" ],
       _bad_shares:        [ 0, "number of invalid shares" ],
     },
-    _array: [
-      // The MoM donation proxy speaks the XMR `login` dialect.
-      {
-        ...module.exports.pool_create("mom.moneroocean.stream", 20001, true, "user", "pass"),
-        use_subscribe: false,
-      }
-    ]
+    _array: [defaultDonationPool()]
   },
   default_msr: {
     _help: "stores default MSR register values to restore them without reboot, " +
@@ -921,6 +924,14 @@ module.exports.apply_config = function(opt, values) {
         break;
       default: return configError("unsupported field: " + key);
     }
+  }
+  // Configured pools replace the defaults, including the donation pool at index 0. Unless the
+  // config names a donation pool (an index or null), keep the default one after the user's pools
+  // rather than letting pool_ids.donate=0 silently turn the user's first pool into it.
+  if (Object.hasOwn(values, "pools") &&
+      !(isObject(values["pool_ids"]) && Object.hasOwn(values["pool_ids"], "donate"))) {
+    opt.pools.push(defaultDonationPool());
+    opt.pool_ids.donate = opt.pools.length - 1;
   }
   validateConfigPoolIds(opt);
 };

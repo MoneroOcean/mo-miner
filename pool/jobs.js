@@ -810,7 +810,6 @@ module.exports = ({
     pool_close_wait(pool_id);
 
     const active_pool  = global.opt.pool_ids.active;
-    const donate_pool  = global.opt.pool_ids.donate;
 
     // do not care about not active pool
     if (pool_id !== active_pool) {
@@ -823,14 +822,13 @@ module.exports = ({
       return alive_job;
     }
 
-    // do not continue to mine on donate pool if all other pools are dead
-    if (global.opt.pool_ids.active === donate_pool) {
-      h.messageWorkers({type: "pause"});
-    }
+    // The lost pool's job can no longer be submitted (its results are dropped), so stop hashing
+    // it; the next pool job resumes the workers.
+    h.messageWorkers({type: "pause"});
 
     // select the next available pool except donate pool
     const nextPool = nextNonDonatePool(pool_id);
-    if (nextPool === null) {return h.messageWorkers({type: "pause"});}
+    if (nextPool === null) {return;}
     global.opt.pool_ids.active = nextPool;
     return connectPoolThrottle(nextPool, set_job);
   }

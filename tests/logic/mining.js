@@ -1350,16 +1350,17 @@ describe("Donation discovery and runtime device isolation", () => {
     const donationId = miner.global.opt.pool_ids.donate;
     assert.ok(donationId !== null && donationId !== undefined);
     const donation = requirePool(miner, donationId);
-    miner.global.opt.pool_time.donate_length = 0.01;
+    miner.global.opt.pool_time.donate_length = 60;
+    const timerCount = miner.timers.length;
 
     miner.startDonationWindow();
     assert.equal(miner.poolConnects.at(-1), donationId);
     assert.ok(typeof donation.donation_until === "number");
     assert.equal(donation.donation_until > 0, true);
-    const deadline = Date.now() + 500;
-    while (donation.donation_until !== 0 && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
+    // Expire the window by running its timer rather than racing a short real one.
+    const expiry = miner.timers.slice(timerCount).find((timer) => timer.delay === 60 * 1000);
+    assert.ok(expiry);
+    expiry.callback();
     assert.equal(donation.donation_until, 0);
     assert.equal(miner.poolSwitches.at(-1), donationId);
   });

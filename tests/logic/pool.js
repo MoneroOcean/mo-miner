@@ -3,7 +3,7 @@
 const s = require("./support");
 const {
   describe, test, events, tls, opts, helper, pool, noOp, loadMinerWithStubs,
-  mockPoolConfig, mockPoolOptions, withMockPool, unexpectedPoolJob,
+  mockPoolConfig, mockPoolOptions, clearPoolTimers, withMockPool, unexpectedPoolJob,
 } = s;
 /** @type {typeof import("node:assert/strict")} */
 const assert = s.assert;
@@ -14,6 +14,18 @@ const testGlobal = /** @type {{opt: ReturnType<typeof mockPoolOptions>}} */
 /** @typedef {import("node:events").EventEmitter & {
  *   write?: (message: string) => void, destroy?: () => void, destroyed?: boolean
  * }} PoolMockSocket */
+
+// Pool deadlines are minutes long; drive them with node:test's fake setTimeout. Real timers return
+// before withMockPool's cleanup, and the reset discards any fake timer still pending.
+/** @param {import("node:test").TestContext} t @param {() => void} callback */
+function withFakeTimeouts(t, callback) {
+  t.mock.timers.enable({apis: ["setTimeout"]});
+  try {
+    callback();
+  } finally {
+    t.mock.timers.reset();
+  }
+}
 
 /** @param {PoolJob} job @returns {MiningJob} */
 function keepMiningJob(job) {
@@ -48,6 +60,7 @@ describe("Wire logging and credential redaction", () => {
       });
     } finally {
       helper.log2 = previousLog2;
+      clearPoolTimers(testGlobal.opt.pools[0]);
       testGlobal.opt = previousOpt;
     }
     assert.equal(writes[0],
@@ -79,6 +92,7 @@ describe("Wire logging and credential redaction", () => {
       });
     } finally {
       helper.log2 = previousLog2;
+      clearPoolTimers(testGlobal.opt.pools[0]);
       testGlobal.opt = previousOpt;
     }
     assert.equal(writes[0], '{"id":3,"method":"mining.submit","params":{"job_id":"job",' +
@@ -156,6 +170,7 @@ describe("Wire logging and credential redaction", () => {
       pool.pool_write(0, {id: 1, error: "rejected x", note: "extranonce"});
     } finally {
       helper.log2 = previousLog2;
+      clearPoolTimers(testGlobal.opt.pools[0]);
       testGlobal.opt = previousOpt;
     }
     assert.ok(logs[0]);
@@ -231,6 +246,28 @@ describe("Failover and donation eligibility", () => {
       });
       assert.equal(testGlobal.opt.pool_ids.active, 2);
     } finally {
+      testGlobal.opt = previousOpt;
+    }
+  });
+
+  test("losing the active pool with no alive replacement pauses the workers", () => {
+    const previousOpt = testGlobal.opt;
+    const previousMessageWorkers = helper.messageWorkers;
+    /** @type {unknown[]} */
+    const messages = [];
+    helper.messageWorkers = (message) => {
+      messages.push(message);
+      return [];
+    };
+    testGlobal.opt = mockPoolOptions();
+    // A backup that is already connecting but has no job yet.
+    testGlobal.opt.pools.push(mockPoolConfig({socket: {}}));
+    try {
+      pool.switch_pool(0, unexpectedPoolJob);
+      assert.equal(testGlobal.opt.pool_ids.active, 1);
+      assert.deepEqual(messages, [{type: "pause"}]);
+    } finally {
+      helper.messageWorkers = previousMessageWorkers;
       testGlobal.opt = previousOpt;
     }
   });
@@ -471,7 +508,7 @@ describe("Socket chunks and donation connection windows", () => {
     }
   });
 
-  test("a throttled donation connection rechecks the window before opening", async () => {
+  test("a throttled donation connection rechecks the window before opening", async (t) => {
     const now = Date.now();
     await withMockPool({
       pool: {
@@ -479,19 +516,30 @@ describe("Socket chunks and donation connection windows", () => {
         last_connect_time: now,
         algo_params: {"rx/0": {dev: "cpu", perf: 1}},
       },
-      pool_time: {connect_throttle: 0.03},
       opt: {
         pool_ids: {active: 1, primary: 1, donate: 0},
         job: {algo: null},
         algo_params: {"rx/0": {dev: "cpu", perf: 1}},
       },
-    }, async ({socket, poolConfig}) => {
+    }, async ({socket, poolConfig}) => withFakeTimeouts(t, () => {
       pool.connect_pool_throttle(0, unexpectedPoolJob);
       poolConfig.donation_until = 0;
-      await new Promise((resolve) => setTimeout(resolve, 40));
+      t.mock.timers.tick(60 * 1000);
       assert.equal(poolConfig.socket, null);
       assert.equal(socket.listenerCount("connect"), 0);
-    });
+    }));
+  });
+
+  test("a queued failover connect is dropped when the primary becomes active first", async (t) => {
+    await withMockPool({}, async () => withFakeTimeouts(t, () => {
+      const backup = mockPoolConfig({last_connect_time: Date.now()});
+      testGlobal.opt.pools.push(backup);
+      testGlobal.opt.pool_ids.active = 1;
+      pool.connect_pool_throttle(1, unexpectedPoolJob);
+      testGlobal.opt.pool_ids.active = 0;
+      t.mock.timers.tick(60 * 1000);
+      assert.equal(backup.socket, null);
+    }));
   });
 });
 
@@ -851,7 +899,6 @@ describe("Protocol inference and difficulty targets", () => {
       await withMockPool({
         pool: {use_subscribe: false},
         opt: {job: {}},
-        pool_time: {first_job_wait: 0.05},
       }, async ({socket, poolConfig}) => {
         pool.connect_pool_throttle(0, unexpectedPoolJob);
         socket.emit("data", Buffer.from(JSON.stringify({
@@ -1240,6 +1287,86 @@ describe("Keepalive and fixed protocol selection", () => {
 });
 
 describe("Connection deadlines and TLS policy", () => {
+  test("an unanswered pool request fails over after the response deadline", async (t) => {
+    const previousLogError = helper.log_err;
+    /** @type {string[]} */
+    const errors = [];
+    helper.log_err = (message) => errors.push(message);
+    try {
+      await withMockPool({pool_time: {first_job_wait: 3600}}, async ({socket, switched}) =>
+        withFakeTimeouts(t, () => {
+          pool.connect_pool_throttle(0, unexpectedPoolJob);
+          socket.emit("connect");
+          t.mock.timers.tick(60 * 1000 - 1);
+          assert.equal(switched(), false);
+          t.mock.timers.tick(1);
+          assert.equal(switched(), true);
+        }));
+    } finally {
+      helper.log_err = previousLogError;
+    }
+    assert.match(errors.join("\n"), /No response from the pool for 60 s/);
+  });
+
+  test("a pool that stops sending data fails over after the idle deadline", async (t) => {
+    const minute = 60 * 1000;
+    const previousLogError = helper.log_err;
+    /** @type {string[]} */
+    const errors = [];
+    helper.log_err = (message) => errors.push(message);
+    try {
+      await withMockPool({pool_time: {first_job_wait: 3600}}, async ({socket, switched}) =>
+        withFakeTimeouts(t, () => {
+          pool.connect_pool_throttle(0, unexpectedPoolJob);
+          socket.emit("connect");
+          socket.emit("data", Buffer.from('{"id":1,"error":null,"result":{"id":"w"}}\n'));
+          t.mock.timers.tick(19 * minute);
+          // Any line restarts the idle deadline.
+          socket.emit("data", Buffer.from('{"id":2,"error":null,"result":{"status":"KEEPALIVED"}}\n'));
+          t.mock.timers.tick(20 * minute - 1);
+          assert.equal(switched(), false);
+          t.mock.timers.tick(1);
+          assert.equal(switched(), true);
+        }));
+    } finally {
+      helper.log_err = previousLogError;
+    }
+    assert.match(errors.join("\n"), /No data from the pool for 20 minutes/);
+  });
+
+  test("a synchronous socket creation failure becomes a pool failover", async () => {
+    const net = require("node:net");
+    const previousLogError = helper.log_err;
+    /** @type {string[]} */
+    const errors = [];
+    helper.log_err = (message) => errors.push(message);
+    try {
+      await withMockPool({}, async ({poolConfig, switched}) => {
+        net.connect = () => {throw new Error("Native TCP connect failed");};
+        assert.doesNotThrow(() => pool.connect_pool_throttle(0, unexpectedPoolJob));
+        assert.equal(poolConfig.socket, null);
+        assert.equal(switched(), false);
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.equal(switched(), true);
+      });
+    } finally {
+      helper.log_err = previousLogError;
+    }
+    assert.match(errors.join("\n"), /Can't connect to the pool: "Native TCP connect failed"/);
+  });
+
+  test("a socket write that throws is handled as a pool connection error", async () => {
+    await withMockPool({
+      write: () => {throw new Error("Socket write queue exceeded 32 MiB");},
+    }, async ({socket, switched}) => {
+      pool.connect_pool_throttle(0, unexpectedPoolJob);
+      assert.doesNotThrow(() => socket.emit("connect"));
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(switched(), true);
+      assert.equal(socket.destroyed, true);
+    });
+  });
+
   test("stale pool timeout does not destroy a replacement socket", async () => {
   /** @type {PoolMockSocket} */
     const staleSocket = /** @type {PoolMockSocket} */ (new events.EventEmitter());

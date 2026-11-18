@@ -218,7 +218,7 @@ module.exports = ({
     }
     if (submit_mode === "xelis") {
       // Preserve an opaque numeric pool ID; the worker string is used only to match the current job.
-      return send({method: "mining.submit", params: [xelisWorkerName(pool), jobId, v.nonce]});
+      return send({method: "mining.submit", params: [submission.xelisWorkerName(pool), jobId, v.nonce]});
     }
     if (submit_mode === "conflux") {
       const headerHash = resultHeaderHash(v, job);
@@ -299,13 +299,6 @@ module.exports = ({
     }
     if (!v.hash && !v.mix_hash && !v.commitment && !v.edges) {return invalidWorkerMessage();}
     return send({method: "submit", params});
-  }
-
-  /** @param {PoolConfig} pool */
-  function xelisWorkerName(pool) {
-    const login = pool.login;
-    const separator = login.indexOf(".");
-    return separator < 0 ? (pool.worker || "mom") : login.slice(separator + 1) || pool.worker || "mom";
   }
 
   /** @param {WorkerResult} value @param {PoolJob} job */

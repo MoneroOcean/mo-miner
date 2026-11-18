@@ -7,6 +7,7 @@ const tls = require("node:tls");
 const h = require("./helper.js");
 const o = require("./opts.js");
 const {normalizeAlgoName} = require("./miner/algorithms");
+const {xelisWorkerName} = require("./miner/submission");
 
 // Correctness tests may use normal network services, but must never contact a mining pool. Capture
 // the actual socket functions before logic tests substitute their in-memory sockets, so the guard
@@ -15,6 +16,17 @@ const systemNetConnect = net.connect;
 const systemTlsConnect = tls.connect;
 
 const max_pool_data_buffer = 1024 * 1024;
+// Liveness deadlines. A hung pool process or a silently dropped path (NAT/conntrack expiry,
+// sleep/resume, address change) leaves TCP open: the kernel notices only after ~15 min of
+// retransmitting our own writes, and never for dialects that write only when a share is found.
+// Plain timers also work in the native runtime, whose sockets have no setTimeout/setKeepAlive.
+// - A healthy pool answers a request within seconds (xmrig allows 20 s); 60 s also covers an
+//   overloaded pool. Any received line satisfies it, because it proves the path is alive.
+// - Pools push work at least once per block (most also rebroadcast every 30-60 s), and login pools
+//   answer keepalived every pool_time.keepalive (5 min). Twenty silent minutes is four mean block
+//   intervals of the slowest supported chain (Firo, 5 min), so only a dead connection reaches it.
+const pool_response_timeout = 60 * 1000;
+const pool_idle_timeout = 20 * 60 * 1000;
 const progpowAlgos = new Set(["kawpow", "firopow", "evrprogpow", "meowpow"]);
 const fullTargetAlgos = new Set([
   "etchash", "octopus", "autolykos2", "fishhash", "c30", "equihash192_7", "zelhash", "zhash",
@@ -157,6 +169,12 @@ function clear_pool_connection(pool_id, socket) {
     return false;
   }
   clearPoolKeepalive(pool);
+  clearTimeout(pool.first_job_timer);
+  delete pool.first_job_timer;
+  clearTimeout(pool.response_timer);
+  delete pool.response_timer;
+  clearTimeout(pool.idle_timer);
+  delete pool.idle_timer;
   if (pool.socket) {
     pool.socket.destroy();
   }
@@ -188,6 +206,33 @@ function clearPoolKeepalive(pool) {
     clearTimeout(pool.keepalive);
   }
   pool.keepalive = null;
+}
+
+/**
+ * Arm a liveness deadline for the socket. On expiry the socket emits "timeout" with the reason,
+ * which connect_pool handles like a socket error; clear_pool_connection cancels pending deadlines.
+ * @param {PoolSocket} socket @param {number} delay @param {string} reason
+ * @returns {NodeJS.Timeout}
+ */
+function poolDeadline(socket, delay, reason) {
+  return setTimeout(() => socket.emit("timeout", reason), delay);
+}
+
+/**
+ * Handle one line from the pool's current socket: it proves the pool is alive, so it satisfies a
+ * pending response deadline and restarts the idle deadline before the message is processed.
+ * @param {number} pool_id @param {PoolMessage} json @param {SetJobCallback} set_job
+ */
+function receivePoolMessage(pool_id, json, set_job) {
+  const pool = poolAt(pool_id);
+  clearTimeout(pool.response_timer);
+  delete pool.response_timer;
+  clearTimeout(pool.idle_timer);
+  if (pool.socket) {
+    pool.idle_timer = poolDeadline(pool.socket, pool_idle_timeout,
+      `No data from the pool for ${pool_idle_timeout / 60000} minutes`);
+  }
+  return pool_message(pool_id, json, set_job);
 }
 
 /** @param {number} pool_id @param {PoolSocket} socket @returns {boolean} */
@@ -329,7 +374,22 @@ module.exports.pool_write = function(pool_id, json) {
   if (json["id"] === 3 && (json["method"] === "mining.submit" || json["method"] === "submit")) {
     ++pool.pending_submit_count;
   }
-  pool.socket.write(message + "\n");
+  const socket = pool.socket;
+  try {
+    socket.write(message + "\n");
+  } catch (error) {
+    // The native runtime refuses to queue more than 32 MiB on a stalled socket (Node never
+    // throws here). Report it like any stream error: asynchronously, through the socket.
+    process.nextTick(() => socket.emit("error", error));
+    return;
+  }
+  // A pong answers the pool, and Iron Fish submit results are an optional extension push.
+  const expectsResponse = json["method"] !== "mining.pong" &&
+    !(usesIronfish(pool) && json["method"] === "mining.submit");
+  if (expectsResponse && !pool.response_timer) {
+    pool.response_timer = poolDeadline(socket, pool_response_timeout,
+      `No response from the pool for ${pool_response_timeout / 1000} s`);
+  }
   // sends keepalive if no submit/keepalive to pool for more than global.opt.pool_time.keepalive
   if (!(pool.is_keepalive || pool.negotiated_keepalive) || usesMiningSubscribe(pool) ||
       pearlhashUsesSubscribe(pool) || usesIronfish(pool) || usesCortex(pool)) {
@@ -421,8 +481,8 @@ function xelisAuthorizeParams(pool) {
   const login = String(pool.login || "");
   const separator = login.indexOf(".");
   const wallet = separator < 0 ? login : login.slice(0, separator);
-  const worker = separator < 0 ? pool.worker : login.slice(separator + 1);
-  return [wallet, worker || "mom", pool.pass];
+  // Pools may bind submits to the authorized name, so both must use one rule.
+  return [wallet, xelisWorkerName(pool), pool.pass];
 }
 
 /** @param {number} pool_id @param {unknown} result @returns {void} */
@@ -1099,7 +1159,7 @@ const {connectPoolThrottle} = require("./pool/connection")({
   poolProtocol, pool_log, pool_log1, pool_log_str,
   poolErrorText,
   pool_log_json,
-  pool_message, pool_str, usesCortex, usesIronfish, usesMiningSubscribe,
+  pool_message: receivePoolMessage, pool_str, usesCortex, usesIronfish, usesMiningSubscribe,
   poolWrite: (...args) => module.exports.pool_write(...args),
   switchPool: (...args) => module.exports.switch_pool(...args),
 });

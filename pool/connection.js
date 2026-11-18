@@ -55,25 +55,24 @@ module.exports = ({
     }
   }
 
+  // Correctness tests must fail loudly, never retry, if they would reach a real mining pool.
+  /** @param {PoolConfig} pool */
+  function assertPoolNetworkAllowed(pool) {
+    const loopback = pool.url === "127.0.0.1" || pool.url === "::1";
+    const systemConnect = pool.is_tls ? tls.connect === systemTlsConnect : net.connect === systemNetConnect;
+    if (process.env["MOM_TEST_NO_POOL_NETWORK"] === "1" && systemConnect && !loopback) {
+      throw new Error("Pool network access is disabled during mom correctness tests");
+    }
+  }
+
   /** @param {PoolConfig} pool @returns {PoolSocket} */
   function connectSocket(pool) {
-    const loopback = pool.url === "127.0.0.1" || pool.url === "::1";
     // High-latency pool routes can exceed Node's 250ms per-address default.
     const options = {host: pool.url, port: pool.port, autoSelectFamilyAttemptTimeout: 1000};
     if (pool.is_tls) {
-      const connect = tls.connect;
-      if (process.env["MOM_TEST_NO_POOL_NETWORK"] === "1" &&
-          connect === systemTlsConnect && !loopback) {
-        throw new Error("Pool network access is disabled during mom correctness tests");
-      }
-      return connect({...options, rejectUnauthorized: pool.tls_verify === true});
+      return tls.connect({...options, rejectUnauthorized: pool.tls_verify === true});
     }
-    const connect = net.connect;
-    if (process.env["MOM_TEST_NO_POOL_NETWORK"] === "1" &&
-        connect === systemNetConnect && !loopback) {
-      throw new Error("Pool network access is disabled during mom correctness tests");
-    }
-    return connect(options);
+    return net.connect(options);
   }
 
   /** @param {PoolConfig} pool @returns {UnknownRecord} */
@@ -238,15 +237,16 @@ module.exports = ({
   }
 
   /**
+   * Fail the connection if it has produced no usable job within first_job_wait. The timer is kept
+   * on the pool so clear_pool_connection can cancel it with the connection.
    * @param {number} pool_id
+   * @param {PoolConfig} pool
    * @param {PoolSocket} socket
    * @param {(message: string) => unknown} pool_err
    */
-  function scheduleInitialJobTimeout(pool_id, socket, pool_err) {
-    setTimeout(function() {
-      if (!isCurrentPoolSocket(pool_id, socket)) {return;}
-      const pool = global.opt.pools[pool_id];
-      if (!pool || pool.last_job) {return;}
+  function scheduleInitialJobTimeout(pool_id, pool, socket, pool_err) {
+    pool.first_job_timer = setTimeout(function() {
+      if (!isCurrentPoolSocket(pool_id, socket) || pool.last_job) {return;}
       return pool_err(pool_log_str(pool_id,
         "No usable initial job from " + pool_str(pool_id) + " pool"
       ));
@@ -373,6 +373,8 @@ module.exports = ({
       pool.donation_until > Date.now());
   }
 
+  // Open the pool's connection unless it already has one or its donation window has closed.
+  // Every listener is bound to this socket, so a replaced socket's late events change nothing.
   /** @param {number} pool_id @param {(job: PoolJob) => MiningJob} set_job */
   function connect_pool(pool_id, set_job) {
     if (!donationConnectionAllowed(pool_id)) {return;}
@@ -386,12 +388,23 @@ module.exports = ({
     pool.last_connect_time = Date.now();
     const fingerprint = normalizeFingerprint(pool.tls_fingerprint);
     if (fingerprint && !pool.is_tls) {throw new Error("tls_fingerprint requires a TLS pool");}
-    const socket = connectSocket(pool);
+    assertPoolNetworkAllowed(pool);
+    let socket;
+    try {
+      socket = connectSocket(pool);
+    } catch (error) {
+      // The native runtime can reject a host or TLS setup synchronously (Node reports those
+      // asynchronously). Fail over like a socket error, but on a later turn so a pool that always
+      // throws cannot recurse; last_connect_time already throttles the retries.
+      h.log_err(pool_log_str(pool_id, "Can't connect to the pool") + poolErrorText(pool_id, error));
+      setImmediate(switchPool, pool_id, set_job);
+      return;
+    }
     pool.socket = socket;
     pool.last_job = null;
 
     const pool_err = poolErrorHandler(pool_id, socket, set_job);
-    scheduleInitialJobTimeout(pool_id, socket, pool_err);
+    scheduleInitialJobTimeout(pool_id, pool, socket, pool_err);
 
     // TCP connect precedes certificate verification. Never queue login credentials until the
     // TLS handshake and optional leaf pin have both passed (in Node and the native runtime).
@@ -421,8 +434,14 @@ module.exports = ({
         ? ` (${error.code})` : "";
       return pool_err(pool_log_str(pool_id, "Socket error from the pool" + code));
     });
+
+    // pool.js liveness deadlines report an unresponsive pool with the reason as the argument.
+    socket.on("timeout", function(reason) {
+      return pool_err(pool_log_str(pool_id, String(reason)));
+    });
   }
 
+  // Connect now, or once pool_time.connect_throttle has passed since the pool's last attempt.
   /** @param {number} pool_id @param {(job: PoolJob) => MiningJob} set_job @returns {void | NodeJS.Timeout} */
   function connectPoolThrottle(pool_id, set_job) {
     if (!donationConnectionAllowed(pool_id)) {return;}
@@ -432,7 +451,13 @@ module.exports = ({
                     (Date.now() - pool.last_connect_time);
     if (wait_time <= 0) {return connect_pool(pool_id, set_job);}
     pool_log(pool_id, "Waiting " + Math.floor(wait_time / 1000) + "s to connect to the pool");
-    return setTimeout(connect_pool, wait_time, pool_id, set_job);
+    return setTimeout(function() {
+      // A failover connect can be overtaken while it waits (the primary returned first). Opening
+      // a pool that is no longer active, primary or donating would leave an unused connection.
+      const ids = global.opt.pool_ids;
+      if (pool_id !== ids.active && pool_id !== ids.primary && pool_id !== ids.donate) {return;}
+      return connect_pool(pool_id, set_job);
+    }, wait_time);
   }
 
   return {connectPoolThrottle};
