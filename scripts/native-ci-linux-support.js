@@ -13,6 +13,7 @@ const {zstdPin, nativeZstdInputs} = require("./build-native-zstd");
 const {nativeHermesInputs} = require("./native-release-sdk-inputs");
 const {nativeOpenmpInputs} = require("./build-native-openmp-sdk");
 const {extractState, listState, packState, temp} = require("./native-ci-tar");
+const {linuxSysrootToolchain} = require("./native-linux-sysroot");
 const {hermesStatePaths, openmpStatePaths, provisionOneApi,
   restoreSources, verifyHermesSource, verifyIoSource, zstdStatePaths} = require("./native-ci-linux-sources");
 const repo = path.resolve(__dirname, "..");
@@ -25,10 +26,11 @@ function hermesBuildTools() {
 }
 
 /** Return the exact public producer command for the fetched bare Git root, not its cohort parent.
- * @param {ReturnType<typeof hermesStatePaths>} state @param {ReturnType<typeof hermesBuildTools>} tools @param {string} jobs */
-function hermesBuildCommand(state, tools, jobs) {
+ * @param {ReturnType<typeof hermesStatePaths>} state @param {ReturnType<typeof hermesBuildTools>} tools @param {string} jobs
+ * @param {string} [toolchain] the glibc sysroot's CMake toolchain file */
+function hermesBuildCommand(state, tools, jobs, toolchain) {
   const source = path.join(state.source, "roots/hermes");
-  hermesSdkPlan(source, state.sdkRoot, tools, Number(jobs), "linux");
+  hermesSdkPlan(source, state.sdkRoot, tools, Number(jobs), "linux", toolchain);
   return {script: "scripts/build-native-hermes.js", args: [source, state.sdkRoot, tools.git, tools.cmake, tools.cc, tools.cxx, tools.ninja, jobs]};
 }
 
@@ -71,11 +73,12 @@ function assertHermesSdkFingerprints(fingerprints, tools, patches) {
 }
 
 /** Use the shared strict SDK admission; add only run-specific tool and command-plan identity.
- * @param {ReturnType<typeof hermesStatePaths>} state @param {ReturnType<typeof hermesBuildTools>} tools @param {string} jobs */
-function auditHermesSdk(state, tools, jobs) {
-  const command = hermesBuildCommand(state, tools, jobs), receiptPath = path.join(state.sdkRoot, "result.json"),
+ * @param {ReturnType<typeof hermesStatePaths>} state @param {ReturnType<typeof hermesBuildTools>} tools @param {string} jobs
+ * @param {string} [toolchain] the glibc sysroot's CMake toolchain file */
+function auditHermesSdk(state, tools, jobs, toolchain) {
+  const command = hermesBuildCommand(state, tools, jobs, toolchain), receiptPath = path.join(state.sdkRoot, "result.json"),
     receipt = readBuildJson(receiptPath), before = readBuildJson(path.join(state.sdkRoot, "before.json")),
-    plan = hermesSdkPlan(command.args[0] || "", state.sdkRoot, tools, Number(jobs), "linux");
+    plan = hermesSdkPlan(command.args[0] || "", state.sdkRoot, tools, Number(jobs), "linux", toolchain);
   nativeHermesInputs(receiptPath);
   assertHermesSdkFingerprints(receipt.fingerprints, tools, plan.patches);
   if (!isDeepStrictEqual(before.configure, plan.configure) || !isDeepStrictEqual(before.compile, plan.compile)) {
@@ -207,9 +210,9 @@ function buildHermesSdk(paths) {
   fs.unlinkSync(state.incomingTar);
   provisionOneApi(paths, "/var/tmp/mom-dev-native-hermes-" + paths.suffix);
   const tools = hermesBuildTools();
-  const command = hermesBuildCommand(state, tools, ciBuildJobs(paths.env));
+  const toolchain = linuxSysrootToolchain(paths.env), command = hermesBuildCommand(state, tools, ciBuildJobs(paths.env), toolchain);
   runNode(command.script, command.args, paths.env, 55 * 60 * 1000);
-  auditHermesSdk(state, tools, ciBuildJobs(paths.env));
+  auditHermesSdk(state, tools, ciBuildJobs(paths.env), toolchain);
   packState(state.sdkTar, temp, [state.sourceName, state.sdkName]);
 }
 

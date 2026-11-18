@@ -9,6 +9,8 @@ const {packageNativeRelease} = require("../scripts/package-native-release");
 const {ioPins} = require("../scripts/build-native-io");
 const {fileHash, nativeSourceInputs} = require("../scripts/build-source-inputs");
 const {elfSections, elfRangeHash, nativeElf, verifyNativeStrip} = require("../scripts/native-elf");
+const {linuxSysrootRecord, linuxSysrootReceiptSha256} = require("../scripts/native-linux-sysroot");
+const sysroot = linuxSysrootRecord({receiptSha256: linuxSysrootReceiptSha256});
 const repo = path.resolve(__dirname, "..");
 /** @typedef {typeof import('../scripts/native-release-sdk-inputs') & {nativeZstdInputs: typeof import('../scripts/build-native-zstd').nativeZstdInputs,
  * nativeOpenSslInputs: typeof import('../scripts/build-native-openssl').nativeOpenSslInputs,
@@ -298,7 +300,7 @@ test.describe("Receipt-derived Linux SDK assembly", {skip: process.platform !== 
     const original = put("system/libnuma.a"), staged = put("rocm/libnuma.a"), hip = put("rocm/libamdhip64.a"), runtimeLib = put("runtime.a"), nvrtcLib = put("nvrtc.a"), llvm = put("libLLVMFixture.a");
     c.controller.io = path.join(root, "io");
     const ioFiles = [put("io/lib/libz.a"), put("io/lib/libuv.a"), put("io/include/uv.h", "uv"), put("io/include/zlib.h", "zlib"), put("io/include/zconf.h", "zconf")];
-    put("io/result.json", JSON.stringify({version: 1, target: "linux", pins: ioPins, buildOnly: true,
+    put("io/result.json", JSON.stringify({version: 1, target: "linux", pins: ioPins, buildOnly: true, sysroot,
       artifacts: Object.fromEntries(ioFiles.map(file => [path.relative(c.controller.io, file), fileHash(file)]))}));
     const zstdRoot = path.join(root, "zstd-sdk"), zstdArchive = put("zstd-sdk/lib/libzstd.a"), zstdBuild = put("zstd-sdk/build/static/libzstd.a"),
       zstdReceipt = put("zstd-sdk/result.json", "{}"), zstdOriginal = put("zstd-input/zstd-1.5.7.tar.gz", "original source archive"),
@@ -824,8 +826,12 @@ test.describe("Legacy constructor metadata normalization preserves runtime paylo
 test.describe("Native release compaction uses actual ELF tooling", {skip: process.platform !== "linux", concurrency: false}, () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-elf-")), original = path.join(root, "original");
   test.before(() => {
-    const source = path.join(root, "source.cpp"); fs.writeFileSync(source, "int main() { return 0; }\n");
-    const r = spawnSync("c++", ["-fPIC", "-pie", source, "-o", original], {encoding: "utf8", timeout: 30000}); assert.equal(r.status, 0, r.stderr);
+    // The release audit admits only glibc 2.31 symbol versions; a host C runtime start file would
+    // need __libc_start_main@GLIBC_2.34, so this never-executed fixture provides its own entry point.
+    const source = path.join(root, "source.cpp");
+    fs.writeFileSync(source, "#include <unistd.h>\nstatic int touched;\n__attribute__((constructor)) static void touch() {touched = 1;}\n" +
+      "extern \"C\" void _start() {_exit(touched ? 0 : 1);}\n");
+    const r = spawnSync("c++", ["-fPIC", "-pie", "-nostartfiles", source, "-o", original], {encoding: "utf8", timeout: 30000}); assert.equal(r.status, 0, r.stderr);
   });
   test.after(() => fs.rmSync(root, {recursive: true, force: true}));
   test("a real stripped executable retains every required section byte", () => {
@@ -852,7 +858,7 @@ test.describe("Native release compaction uses actual ELF tooling", {skip: proces
   for (const [name, flags] of /** @type {[string, string[]][]} */ ([["fixed-address executable", ["-fno-pie", "-no-pie"]], ["shared library", ["-fPIC", "-shared"]]])) {
     test(`release admission rejects a real ${name} before stripping`, () => {
       const input = path.join(root, name), output = path.join(root, name + "-output"); fs.mkdirSync(output);
-      const built = spawnSync("c++", [...flags, path.join(root, "source.cpp"), "-o", input], {encoding: "utf8", timeout: 30000});
+      const built = spawnSync("c++", [...flags, "-nostartfiles", path.join(root, "source.cpp"), "-o", input], {encoding: "utf8", timeout: 30000});
       assert.equal(built.status, 0, built.stderr);
       assert.throws(() => compactNativeRelease(input, output), /position-independent executable/);
       assert.deepEqual(fs.readdirSync(output), [], "rejected input must not create a release candidate");

@@ -10,6 +10,8 @@ const {isStaticArchive} = require("./native-audit");
 const {comgrSdkInputs} = require("./native-comgr-inputs");
 const {sdkSourceFiles, verifySdkExport} = require("./prepare-native-sdk-sources");
 const {rocmInputs} = require("./native-sycl-inputs");
+const {linuxSysrootPackages, requireLinuxSysroot, linuxSysrootRecord} = require("./native-linux-sysroot");
+const {libdrmPin, nativeLibdrmInputs} = require("./build-native-libdrm");
 
 const pins = Object.freeze({
   clr: "5b591b2ff64aac4c1c08be879b0d5f89fd713d50",
@@ -22,8 +24,9 @@ const hsakmtInstallArchiveName = "libhsakmt.a";
 const repo = path.resolve(__dirname, "..");
 const recipeFiles = ["scripts/build-native-rocm-host-runtime.js", "scripts/build-native-sycl-sdk.js", "scripts/build-native-comgr-sdk.js",
   "scripts/native-comgr-inputs.js", "scripts/prepare-native-sdk-sources.js", "scripts/build-native-release.js", "scripts/build-source-inputs.js",
-  "scripts/build-environment.js", "scripts/native-audit.js", "scripts/native-sycl-inputs.js", "scripts/native-hcf.js"];
-const configKeys = "comgrReceipt,dependencies,hostCompilers,pkgConfigDir,sources,tools,version";
+  "scripts/build-environment.js", "scripts/native-audit.js", "scripts/native-sycl-inputs.js", "scripts/native-hcf.js",
+  "scripts/native-linux-sysroot.js", "scripts/build-native-libdrm.js"];
+const configKeys = "comgrReceipt,dependencies,hostCompilers,libdrm,pkgConfigDir,sources,tools,version";
 const sourceKeys = "clr,hip,rocr", toolKeys = "ar,cmake,dpkgQuery,git,llvmObjcopy,ninja,perl,pkgConfig,python3,ranlib,tar,xxd";
 const dependencyKeys = "drm,drmAmdgpu,elf,numa";
 const xxdPin = Object.freeze({path: "/usr/bin/xxd", package: "xxd", packageVersion: "2:9.1.0016-1ubuntu7.20",
@@ -43,7 +46,11 @@ const pythonPin = Object.freeze({executable: "/usr/bin/python3.12", version: "3.
   plyVersion: "3.11", plyPackageVersion: "3.11-6", plyInitPath: "/usr/lib/python3/dist-packages/ply/__init__.py",
   plyLexPath: "/usr/lib/python3/dist-packages/ply/lex.py"});
 const packageNames = Object.freeze({elf: "libelf.a", drm: "libdrm.a", drmAmdgpu: "libdrm_amdgpu.a", numa: "libnuma.a"});
-const packageOwners = Object.freeze({elf: "libelf-dev", drm: "libdrm-dev", drmAmdgpu: "libdrm-dev", numa: "libnuma-dev"});
+// libelf/libnuma come from the glibc 2.31 sysroot packages; libdrm is built from its pinned source release.
+const packageOwners = Object.freeze({elf: "libelf-dev", drm: "libdrm", drmAmdgpu: "libdrm", numa: "libnuma-dev"});
+// Header-only GL/EGL/X11 declarations for CLR's always-compiled GL interop; staged privately so the build
+// never adds the host /usr/include (and its newer glibc headers) to a compile line.
+const glHeaderDirectories = Object.freeze(["EGL", "GL", "KHR", "X11"]);
 /** @type {Array<keyof RocmSourcePaths>} */ const sourceNames = ["clr", "hip", "rocr"];
 /** @type {Array<keyof RocmDependencyPaths>} */ const dependencyFileNames = ["drm", "drmAmdgpu", "elf", "numa"];
 /** @type {Array<keyof RocmTools>} */ const toolNames = ["ar", "cmake", "dpkgQuery", "git", "ninja", "perl", "pkgConfig", "python3", "ranlib", "tar", "xxd"];
@@ -110,7 +117,7 @@ function validateConfig(input) {
       !c.dependencies || Object.keys(c.dependencies).sort().join(",") !== dependencyKeys ||
       !c.hostCompilers || Object.keys(c.hostCompilers).sort().join(",") !== "cc,cxx" ||
       c.tools.python3 !== pythonPin.executable || c.tools.xxd !== xxdPin.path ||
-      ![c.comgrReceipt, c.pkgConfigDir, ...Object.values(c.sources), ...Object.values(c.tools),
+      ![c.comgrReceipt, c.libdrm, c.pkgConfigDir, ...Object.values(c.sources), ...Object.values(c.tools),
         ...Object.values(c.dependencies), ...Object.values(c.hostCompilers)].every(literalPath)) {
     throw new Error("ROCm host runtime needs exact pinned roots, tool paths, static OS archives and a COMGR receipt");
   }
@@ -121,15 +128,17 @@ function validateConfig(input) {
 /** @typedef {{ar: string, cmake: string, dpkgQuery: string, git: string, llvmObjcopy: string, ninja: string, perl: string, pkgConfig: string, python3: string, ranlib: string, tar: string, xxd: string}} RocmTools */
 /** @typedef {{drm: string, drmAmdgpu: string, elf: string, numa: string}} RocmDependencyPaths */
 /** @typedef {{version: number, sources: RocmSourcePaths, tools: RocmTools, hostCompilers: {cc: string, cxx: string},
- * dependencies: RocmDependencyPaths, pkgConfigDir: string, comgrReceipt: string}} RocmHostConfig */
+ * dependencies: RocmDependencyPaths, libdrm: string, pkgConfigDir: string, comgrReceipt: string}} RocmHostConfig */
 /** @typedef {{llvm?: string, comgrPackage?: string, device?: string}} RocmSdkRoots */
 /** @typedef {{name: "rocr" | "clr", cache: string, database: string, depfiles: string[], commandCount: number}} ConfiguredBuild */
 /** @typedef {{path: string, bytes: number, sha256: string}} ArchiveEvidence */
 /** @typedef {{home: string, tmp: string, cleanup: () => void}} PrivateBuildDirectories */
 
 /** One literal build plan; host compilers and original ROCm assembly tools remain distinct.
- * @param {unknown} input @param {string} output @param {number} jobs @param {RocmSdkRoots} [sdkRoots] */
-function rocmHostPlan(input, output, jobs, sdkRoots = /** @type {RocmSdkRoots} */ ({})) {
+ * The glibc sysroot supplies libc/NUMA/libelf headers; GL headers come from the private overlay.
+ * @param {unknown} input @param {string} output @param {number} jobs @param {RocmSdkRoots} [sdkRoots]
+ * @param {{root: string, toolchain: string}} [sysroot] */
+function rocmHostPlan(input, output, jobs, sdkRoots = /** @type {RocmSdkRoots} */ ({}), sysroot = {root: "<SYSROOT>", toolchain: "<SYSROOT-TOOLCHAIN>"}) {
   const c = validateConfig(input);
   if (!literalPath(output) || !Number.isInteger(jobs) || jobs < 1 || jobs > 16) {
     throw new Error("Native ROCm host runtime needs a literal output and jobs in1..16");
@@ -150,7 +159,8 @@ function rocmHostPlan(input, output, jobs, sdkRoots = /** @type {RocmSdkRoots} *
   const rocrInstall = path.join(output, "rocr-install"), sdk = path.join(output, "sdk");
   const comgrHeaderInclude = path.join(output, "comgr-install-include");
   const comgrHeader = path.join(comgrHeaderInclude, "amd_comgr", "amd_comgr.h");
-  const clrCxxFlags = '-I"' + comgrHeaderInclude + '"';
+  const glHeaderInclude = path.join(output, "gl-include"), systemInclude = path.join(sysroot.root, "usr/include");
+  const clrCxxFlags = '-I"' + comgrHeaderInclude + '" -isystem "' + glHeaderInclude + '"';
   const comgrPrefix = path.dirname(path.dirname(path.dirname(comgrPackage)));
   // ROCclr's quiet 2.9 probe rejects our genuine 3.0 package and clears amd_comgr_DIR;
   // keep its required 3.0 fallback ahead of coinstalled /opt/rocm in CMake's search path.
@@ -161,7 +171,7 @@ function rocmHostPlan(input, output, jobs, sdkRoots = /** @type {RocmSdkRoots} *
   if (inputPaths.some(inputPath => pathsOverlap(inputPath, output))) {throw new Error("ROCm output must not overlap a source, tool, SDK, receipt or repository input");}
   const common = ["-G", "Ninja", "-DCMAKE_MAKE_PROGRAM=" + tools.ninja, "-DCMAKE_BUILD_TYPE=Release",
     "-DCMAKE_C_COMPILER=" + hostCompilers.cc, "-DCMAKE_CXX_COMPILER=" + hostCompilers.cxx,
-    "-DPython3_EXECUTABLE=" + tools.python3,
+    "-DCMAKE_TOOLCHAIN_FILE=" + sysroot.toolchain, "-DPython3_EXECUTABLE=" + tools.python3,
     "-DGIT_EXECUTABLE=" + tools.git, "-DPERL_EXECUTABLE=" + tools.perl,
     "-DCMAKE_AR=" + tools.ar, "-DCMAKE_RANLIB=" + tools.ranlib, "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
     "-DCMAKE_LIBRARY_ARCHITECTURE=x86_64-linux-gnu",
@@ -177,7 +187,7 @@ function rocmHostPlan(input, output, jobs, sdkRoots = /** @type {RocmSdkRoots} *
     "-DLLVM_DIR=" + imageLlvmPackage, "-DClang_DIR=" + clangPackage,
     "-DMOM_ROCM_DEVICE_LIBS_PATH=" + deviceLibPath,
     "-DHSA_ASSEMBLER=" + path.join(llvm, "bin/clang-21"), "-DHSA_OBJCOPY=" + tools.llvmObjcopy,
-    "-DPKG_CONFIG_EXECUTABLE=" + tools.pkgConfig, "-DLIBELF_INCLUDE_DIRS=/usr/include",
+    "-DPKG_CONFIG_EXECUTABLE=" + tools.pkgConfig, "-DLIBELF_INCLUDE_DIRS=" + systemInclude,
     "-DLIBELF_LIBRARIES=" + c.dependencies.elf, "-DNUMA=" + c.dependencies.numa,
     "-DNUMA_LIBRARIES=" + c.dependencies.numa];
   const rocrBuild = [tools.cmake, "--build", build.rocr, "--parallel", String(jobs), "--target", "hsa-runtime64_static", "hsakmt", "hsakmt-staticdrm", "--", "-d", "keepdepfile"];
@@ -192,13 +202,16 @@ function rocmHostPlan(input, output, jobs, sdkRoots = /** @type {RocmSdkRoots} *
     "-DAMD_OPENCL_PATH=" + path.join(source.clr, "opencl"), "-DAMD_OPENCL_INCLUDE_DIR=" + path.join(source.clr, "opencl/khronos/headers/opencl2.2/CL"),
     "-DHIP_LLVM_ROOT=" + imageLlvmRoot,
     "-Damd_comgr_DIR=" + comgrPackage, "-Dhsa-runtime64_DIR=" + path.join(rocrInstall, "lib/cmake/hsa-runtime64"),
-    "-DNUMA_INCLUDE_DIR=/usr/include", "-DNUMA_LIBRARIES=" + c.dependencies.numa,
-    "-DLIBELF_INCLUDE_DIRS=/usr/include", "-DLIBELF_LIBRARIES=" + c.dependencies.elf,
+    "-DNUMA_INCLUDE_DIR=" + systemInclude, "-DNUMA_LIBRARIES=" + c.dependencies.numa,
+    "-DLIBELF_INCLUDE_DIRS=" + systemInclude, "-DLIBELF_LIBRARIES=" + c.dependencies.elf,
+    // FindOpenGL only gates configuration; the static archives never link these host dispatch libraries.
+    "-DOPENGL_INCLUDE_DIR=" + glHeaderInclude, "-DOPENGL_EGL_INCLUDE_DIR=" + glHeaderInclude, "-DOPENGL_GLX_INCLUDE_DIR=" + glHeaderInclude,
+    "-DOPENGL_opengl_LIBRARY=/usr/lib/x86_64-linux-gnu/libOpenGL.so", "-DOPENGL_glx_LIBRARY=/usr/lib/x86_64-linux-gnu/libGLX.so",
     "-DCMAKE_DISABLE_FIND_PACKAGE_ROCM=ON"];
   const clrBuild = [tools.cmake, "--build", build.clr, "--parallel", String(jobs), "--target", "amdhip64", "hiprtc", "--", "-d", "keepdepfile"];
   const clrInstallBinary = [tools.cmake, "--install", build.clr, "--prefix", sdk, "--component", "binary"];
   const clrInstallDev = [tools.cmake, "--install", build.clr, "--prefix", sdk, "--component", "dev"];
-  return {sources, tools, hostCompilers, source, build, rocrInstall, sdk, comgrHeaderInclude, comgrHeader, clrCxxFlags,
+  return {sources, tools, hostCompilers, source, build, rocrInstall, sdk, comgrHeaderInclude, comgrHeader, clrCxxFlags, glHeaderInclude,
     llvm, comgrPackage, comgrPrefix, cmakePrefixPath, device, deviceLibPath,
     imageLlvmRoot, imageLlvmPackage, clangPackage, jobs,
     dependencies: c.dependencies, pkgConfigDir: c.pkgConfigDir,
@@ -318,6 +331,31 @@ function packageOrigin(file, env, dpkgQuery, expectedPackage) {
   const status = query(dpkgQuery, ["-W", "-f=" + format, packageId], env,
     "static archive package status");
   return parsePackageOrigin(file, owners, status, fileHash(file), expectedPackage);
+}
+
+/** Static OS-library inputs are admitted by their producer, not by host package ownership: libelf/libnuma
+ * by the pinned sysroot tree, libdrm by its source-built SDK receipt.
+ * @param {keyof RocmDependencyPaths} name @param {string} file */
+function staticInputOrigin(name, file) {
+  const owner = packageOwners[name], sysrootPackage = linuxSysrootPackages.find(row => row.package === owner);
+  return {path: file, sha256: fileHash(file), package: owner, architecture: "amd64",
+    version: sysrootPackage ? sysrootPackage.version : libdrmPin.version, status: sysrootPackage ? "sysroot" : "source"};
+}
+
+/** Hash the host GL/EGL/KHR/X11 header trees (no links, bounded) for the private include overlay. */
+function glHeaderInputs() {
+  /** @type {Record<string, string>} */ const files = {};
+  const visit = (/** @type {string} */ directory) => {
+    for (const entry of fs.readdirSync(directory, {withFileTypes: true})) {
+      const file = path.join(directory, entry.name);
+      if (Object.keys(files).length > 4096) {throw new Error("Host GL header tree exceeds its bound");}
+      if (entry.isDirectory()) {visit(file);} else if (entry.isFile() && /\.h$/.test(entry.name)) {files[file] = fileHash(file);} else if (!entry.isFile()) {
+        throw new Error("Host GL header tree contains a link or special file: " + file);
+      }
+    }
+  };
+  for (const name of glHeaderDirectories) {visit(realDirectory(path.join("/usr/include", name), "host " + name + " header directory"));}
+  return files;
 }
 
 /** Record and pin only the Python inputs used to generate HIP profiling headers.
@@ -440,10 +478,16 @@ function buildRocmHostRuntime(input, output, environment = process.env, configFi
     regularPath(file, "tool or input", Object.values(c.tools).includes(file) || Object.values(c.hostCompilers).includes(file));
   }
   regularPath(c.comgrReceipt, "COMGR receipt");
+  const sysroot = requireLinuxSysroot(sdkHostEnvironment(environment, c.hostCompilers)), libdrm = nativeLibdrmInputs(c.libdrm);
+  if (c.dependencies.drm !== libdrm.drm || c.dependencies.drmAmdgpu !== libdrm.drmAmdgpu || c.pkgConfigDir !== libdrm.pkgConfigDir ||
+      c.dependencies.elf !== path.join(sysroot.root, "usr/lib/x86_64-linux-gnu", packageNames.elf) ||
+      c.dependencies.numa !== path.join(sysroot.root, "usr/lib/x86_64-linux-gnu", packageNames.numa)) {
+    throw new Error("ROCm static OS inputs must be the sysroot libelf/libnuma and the source-built libdrm SDK");
+  }
   const comgr = comgrSdkInputs(c.comgrReceipt), llvm = comgr.roots.llvm;
   const comgrPackage = path.join(path.dirname(comgr.archive), "lib/cmake/amd_comgr");
   const plan = rocmHostPlan(c, destination, Number(environment["MOM_BUILD_JOBS"] || "2"),
-    {llvm, comgrPackage, device: comgr.roots.device});
+    {llvm, comgrPackage, device: comgr.roots.device}, {root: sysroot.root, toolchain: sysroot.toolchain});
   const protectedRoots = [...Object.values(c.sources), ...Object.values(c.tools).map(file => path.dirname(file)),
     ...Object.values(c.dependencies).map(file => path.dirname(file)), c.pkgConfigDir,
     path.dirname(c.hostCompilers.cc), path.dirname(c.hostCompilers.cxx), path.dirname(comgr.receipt),
@@ -455,13 +499,15 @@ function buildRocmHostRuntime(input, output, environment = process.env, configFi
   realDirectory(plan.deviceLibPath, "admitted COMGR device-library bitcode directory");
   for (const file of Object.values(c.dependencies)) {if (!isStaticArchive(file)) {throw new Error("ROCm OS input is not a regular static archive: " + file);}}
   return withPrivateBuildDirectories(path.dirname(destination), temporary =>
-    buildRocmHostRuntimeWithTemporaryDirectories(c, destination, environment, configFile, comgr, llvm, plan, temporary));
+    buildRocmHostRuntimeWithTemporaryDirectories(c, destination, environment, configFile, comgr, llvm, plan, temporary,
+      {sysroot: linuxSysrootRecord(sysroot), libdrm: {receipt: libdrm.receipt, receiptSha256: libdrm.receiptSha256}}));
 }
 
 /** @param {RocmHostConfig} c @param {string} destination @param {NodeJS.ProcessEnv} environment @param {string | undefined} configFile
  * @param {ReturnType<typeof comgrSdkInputs>} comgr @param {string} llvm @param {ReturnType<typeof rocmHostPlan>} plan
- * @param {PrivateBuildDirectories} temporary */
-function buildRocmHostRuntimeWithTemporaryDirectories(c, destination, environment, configFile, comgr, llvm, plan, temporary) {
+ * @param {PrivateBuildDirectories} temporary
+ * @param {{sysroot: ReturnType<typeof linuxSysrootRecord>, libdrm: {receipt: string, receiptSha256: string}}} producers */
+function buildRocmHostRuntimeWithTemporaryDirectories(c, destination, environment, configFile, comgr, llvm, plan, temporary, producers) {
   const comgrPackage = path.join(path.dirname(comgr.archive), "lib/cmake/amd_comgr");
   const env = hostEnvironment(environment, c, plan, destination, llvm, temporary);
   verifyCompilerEnvironment(plan.hostCompilers, env);
@@ -509,8 +555,9 @@ function buildRocmHostRuntimeWithTemporaryDirectories(c, destination, environmen
     realDirectory(root, "CMake package input"); return {root, files: sdkSourceFiles(root)};
   });
   packageTrees.push({root: plan.imageLlvmPackage, files: sdkSourceFiles(plan.imageLlvmPackage)});
-  const osOrigins = /** @type {Record<keyof RocmDependencyPaths, ReturnType<typeof parsePackageOrigin>>} */ (
-    Object.fromEntries(dependencyFileNames.map(name => [name, packageOrigin(c.dependencies[name], env, c.tools.dpkgQuery, packageOwners[name])] )));
+  const osOrigins = /** @type {Record<keyof RocmDependencyPaths, ReturnType<typeof staticInputOrigin>>} */ (
+    Object.fromEntries(dependencyFileNames.map(name => [name, staticInputOrigin(name, c.dependencies[name])])));
+  const glHeaders = glHeaderInputs();
   const xxdOrigin = packageOrigin(c.tools.xxd, env, c.tools.dpkgQuery, xxdPin.package);
   if (xxdOrigin.version !== xxdPin.packageVersion) {throw new Error("ROCm xxd package version changed");}
   const pkgFiles = ["libdrm.pc", "libdrm_amdgpu.pc"].map(name => path.join(c.pkgConfigDir, name));
@@ -550,7 +597,7 @@ function buildRocmHostRuntimeWithTemporaryDirectories(c, destination, environmen
     ...(configFile ? [configFile] : []), ...Object.keys(comgr.files), ...comgrPackageFiles,
     ...pkgFiles, ...Object.values(c.tools), python.interpreter.path, python.parser.packagePath, python.parser.modulePath,
     python.ply.init.path, python.ply.lex.path, ...Object.values(plan.hostCompilers), rocmClangAlias, rocmClang, rocmObjcopy,
-    ...Object.values(hipPchTools).map(tool => tool.realpath),
+    ...Object.values(hipPchTools).map(tool => tool.realpath), ...Object.keys(glHeaders),
     ...Object.values(c.dependencies)]);
   const sdkInputs = {...buildFileInputs([...inputFiles]), ...compiler.inputs,
     ...Object.fromEntries(packageTrees.flatMap(tree => Object.entries(tree.files).map(([name, hash]) => [path.join(tree.root, name), hash])))};
@@ -568,6 +615,12 @@ function buildRocmHostRuntimeWithTemporaryDirectories(c, destination, environmen
   fs.copyFileSync(comgr.header, plan.comgrHeader, fs.constants.COPYFILE_EXCL);
   regularPath(plan.comgrHeader, "private COMGR install-layout header");
   if (fileHash(plan.comgrHeader) !== comgrHeaderOverlay.sha256) {throw new Error("Private COMGR header differs from its authenticated source");}
+  for (const [file, sha256] of Object.entries(glHeaders)) {
+    const copy = path.join(plan.glHeaderInclude, path.relative("/usr/include", file));
+    fs.mkdirSync(path.dirname(copy), {recursive: true});
+    fs.copyFileSync(file, copy, fs.constants.COPYFILE_EXCL);
+    if (fileHash(copy) !== sha256) {throw new Error("Private GL header overlay differs from its host source: " + file);}
+  }
   /** @param {string[]} command @param {string} name */
   function stage(command, name) {console.log("[rocm-host] " + name); sdkStage(command, path.join(destination, name + ".log"), env);}
   /** @type {{path: string, sourceSha256: string, patchedSha256: string, preprocessorInput: string} | undefined} */
@@ -589,7 +642,7 @@ function buildRocmHostRuntimeWithTemporaryDirectories(c, destination, environmen
   if (!rocrDeviceLibPatch) {throw new Error("Pinned ROCr export did not bind image kernels to admitted device libraries");}
   const before = {pins, sourceRoots: c.sources, sourceTrees: Object.fromEntries(Object.entries(pins).map(([name, revision]) => [name, revision])),
     comgrReceipt: c.comgrReceipt, comgr: {archive: comgr.archive, llvmVersion, roots: comgr.roots}, rocrDeviceLibPath: plan.deviceLibPath,
-    rocrDeviceLibPatch, comgrHeaderOverlay,
+    rocrDeviceLibPatch, comgrHeaderOverlay, glHeaderInclude: plan.glHeaderInclude, ...producers,
     hipPchTools,
     rocmTools: {clang: {alias: rocmClangAlias, target: fs.readlinkSync(rocmClangAlias), path: rocmClang, sha256: fileHash(rocmClang)},
       objcopy: {path: rocmObjcopy, sha256: fileHash(rocmObjcopy)}}, hostCompilers: plan.hostCompilers,
@@ -683,12 +736,12 @@ function buildRocmHostRuntimeWithTemporaryDirectories(c, destination, environmen
   fs.copyFileSync(aliasFile, path.join(sdkLib, "cmake/hsa-runtime64/hsacore.so.link"), fs.constants.COPYFILE_EXCL);
   const aliases = readBuildText(path.join(sdkLib, "cmake/hsa-runtime64/hsacore.so.link"), 1 << 20);
   if (!/^(?:hsa_[a-z0-9_]+ = hsa_[a-z0-9_]+;\r?\n)+$/.test(aliases)) {throw new Error("ROCm HSA alias script is malformed");}
-  /** @type {Record<keyof RocmDependencyPaths, ReturnType<typeof parsePackageOrigin> & {staged: string, stagedSha256: string}>} */
-  const stagedDependencies = /** @type {Record<keyof RocmDependencyPaths, ReturnType<typeof parsePackageOrigin> & {staged: string, stagedSha256: string}>} */ ({});
+  /** @type {Record<keyof RocmDependencyPaths, ReturnType<typeof staticInputOrigin> & {staged: string, stagedSha256: string}>} */
+  const stagedDependencies = /** @type {Record<keyof RocmDependencyPaths, ReturnType<typeof staticInputOrigin> & {staged: string, stagedSha256: string}>} */ ({});
   for (const name of dependencyFileNames) {
     const sourceFile = c.dependencies[name], staged = path.join(sdkLib, packageNames[name]); copy(sourceFile, staged);
     const sha256 = fileHash(staged);
-    if (sha256 !== osOrigins[name].sha256) {throw new Error("Staged OS archive differs from its package-owned input: " + name);}
+    if (sha256 !== osOrigins[name].sha256) {throw new Error("Staged OS archive differs from its admitted input: " + name);}
     stagedDependencies[name] = {...osOrigins[name], staged, stagedSha256: sha256};
   }
   const produced = /** @type {Record<keyof typeof archiveNames, ArchiveEvidence>} */ (Object.fromEntries(runtimeArchiveNames.map(name => {
@@ -743,7 +796,7 @@ function buildRocmHostRuntimeWithTemporaryDirectories(c, destination, environmen
     comgr: {receipt: c.comgrReceipt, archive: comgr.archive, llvmVersion, roots: comgr.roots},
     sdkInputs, dependencies, configured, archivesBefore: archiveBuildBefore, archivesAfter: produced,
     installerOnlyArchives: {hsakmt: hsakmtInstallArchiveBefore}, stagedDependencies, consumerAdmission,
-    prefix: plan.sdk, recipe, buildOnly: true, executed: false, publicationQualified: false,
+    prefix: plan.sdk, recipe, ...producers, glHeaderInclude: plan.glHeaderInclude, buildOnly: true, executed: false, publicationQualified: false,
     scope: "Original pinned ROCr and CLR/HIP static host runtime archives built with Intel oneAPI 2026.2. No GPU execution, runtime or release qualification."};
   fs.writeFileSync(path.join(destination, "result.json"), JSON.stringify(result, null, 2) + "\n", {flag: "wx"});
   console.log("[rocm-host] Built original ROCr and CLR/HIP static archives; NOT executed or publication-qualified.");
@@ -759,6 +812,6 @@ if (require.main === module) {
   } catch (error) {console.error(error instanceof Error ? error.message : "Native ROCm host runtime build failed"); process.exitCode = 1;}
 }
 
-module.exports = {pins, archiveNames, hsakmtInstallArchiveName, xxdPin, validateConfig, rocmHostPlan, hostEnvironment, withPrivateBuildDirectories, packageOrigin, parsePackageOrigin, compileDepfiles, readCompileDatabase,
+module.exports = {pins, archiveNames, hsakmtInstallArchiveName, xxdPin, packageOwners, staticInputOrigin, validateConfig, rocmHostPlan, hostEnvironment, withPrivateBuildDirectories, packageOrigin, parsePackageOrigin, compileDepfiles, readCompileDatabase,
   useStableHipPchStdin, patchExportedHipPchScript, useExplicitRocrDeviceLibPath, patchExportedRocrDeviceLibPath,
   buildRocmHostRuntime};

@@ -212,7 +212,7 @@ test.describe("Windows SYCL wrapper transform", () => {
         maximumCopies = Math.max(maximumCopies, fs.readdirSync(parent).filter(n => n.endsWith(".obj")).length);
       }
     };
-    fs.readFileSync = /** @type {typeof fs.readFileSync} */ ((file, options) => {
+    fs.readFileSync = /** @type {typeof fs.readFileSync} */ ((/** @type {fs.PathOrFileDescriptor} */ file, /** @type {any} */ options) => {
       assert.doesNotMatch(file.toString(), /mom-windows-wrapper-[A-Za-z0-9]+[/\\][^/\\]+\.bin$/, "section payloads must be hashed in bounded chunks");
       return read(file, options);
     });

@@ -3,6 +3,8 @@
 const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), os = require("node:os"), path = require("node:path");
 const {fileHash} = require("../scripts/build-source-inputs");
 const {opensslPin, configureOptions, toolNames, opensslSdkPlan, opensslSdkEnvironment, validateArchive, opensslBuildRecipe, nativeOpenSslInputs, buildNativeOpenSsl, stageWindowsHeaders} = require("../scripts/build-native-openssl");
+const {linuxSysrootRecord, linuxSysrootReceiptSha256} = require("../scripts/native-linux-sysroot");
+const sysroot = linuxSysrootRecord({receiptSha256: linuxSysrootReceiptSha256});
 
 const linuxTools = {ar: "/tools/ar", cc: "/tools/clang", make: "/tools/make", perl: "/tools/perl", ranlib: "/tools/ranlib", tar: "/tools/tar"};
 const windowsTools = {ar: "/tools/lib.exe", cc: "/tools/cl.exe", link: "/tools/link.exe", make: "/tools/nmake.exe", perl: "/tools/perl.exe", rc: "/tools/rc.exe", tar: "/tools/tar.exe"};
@@ -41,7 +43,7 @@ function sdkFixture(t, platform) {
     archive: {path: "/source/openssl-3.5.9.tar.gz", sha256: opensslPin.sha256, bytes: 1024, members: 3},
     source: {files: 1, bytes: fs.statSync(license).size, sha256: "b".repeat(64), notice: {path: "source/LICENSE.txt", sha256: fileHash(license)}},
     sourceDateEpoch: plan.sourceDateEpoch, configure: plan.configure, config: {sha256: "c".repeat(64)}, tools, recipe: opensslBuildRecipe(), artifacts,
-    buildOnly: true, executed: false, publicationQualified: false};
+    ...(platform === "linux" ? {sysroot} : {}), buildOnly: true, executed: false, publicationQualified: false};
   fs.writeFileSync(path.join(root, "result.json"), JSON.stringify(record));
   return {root, record, save: () => fs.writeFileSync(path.join(root, "result.json"), JSON.stringify(record))};
 }

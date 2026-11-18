@@ -5,6 +5,7 @@
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process"), {isDeepStrictEqual} = require("node:util");
 const {fileHash, readBuildJson} = require("./build-source-inputs");
 const {pins} = require("./native-dpcpp-pins");
+const {verifyLinuxSysrootRecord} = require("./native-linux-sysroot");
 const {isStaticArchive} = require("./native-audit");
 const {nativeSdkEnvironment} = require("./build-environment");
 const objectNames = ["cuda-adapter.o", "level-zero-v2-adapter.o", "source-jit.o"];
@@ -85,6 +86,7 @@ function exportDpcppComponent(producer, ninja, output, environment = process.env
   const sourceSha256 = fileHash(producer), r = readBuildJson(producer), root = path.dirname(fs.realpathSync(producer)), build = path.join(root, "build");
   if (r.version !== 1 || r.target !== "linux" || r.buildOnly !== true || r.executed !== false || !isDeepStrictEqual(r.pins, pins) ||
       r.archive !== path.join(build, "libmom-sycl-static.a") || fileHash(r.archive) !== r.sha256 || !r.inputs?.[ninja] || fileHash(ninja) !== r.inputs[ninja]) {throw new Error("DPC++ producer or matching Ninja identity differs");}
+  verifyLinuxSysrootRecord(r.sysroot, "DPC++ static SDK");
   const before = readBuildJson(path.join(root, "before.json")), commands = before.configure;
   const prefix = "-DMOM_DPCPP_JIT_OBJECT=", jit = Array.isArray(commands) ? commands.filter(n => typeof n === "string" && n.startsWith(prefix)) : [];
   const jitObject = jit.length === 1 ? jit[0].slice(prefix.length) : "";

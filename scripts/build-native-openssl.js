@@ -5,12 +5,14 @@ const fs = require("node:fs"), path = require("node:path"), {spawnSync} = requir
 const {fileHash, sourceInputs, verifySourceInputs, readBuildJson} = require("./build-source-inputs");
 const {nativeSdkEnvironment} = require("./build-environment");
 const {isStaticArchive} = require("./native-audit");
+const {requireLinuxSysroot, linuxSysrootRecord, verifyLinuxSysrootRecord} = require("./native-linux-sysroot");
 const repo = path.resolve(__dirname, "..");
 const opensslPin = Object.freeze({version: "3.5.9", sha256: "603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a",
   // Stable midnight UTC on the pinned source's VERSION.dat RELEASE_DATE (29 Sep 2026).
   sourceDateEpoch: 1790640000});
 const configureOptions = Object.freeze(["no-shared", "no-module", "no-dso", "no-engine", "no-tests", "no-comp", "no-zlib", "no-zstd", "no-brotli"]);
-const sourceLeaves = ["scripts/build-native-openssl.js", "scripts/build-source-inputs.js", "scripts/build-environment.js", "scripts/native-audit.js"];
+const sourceLeaves = ["scripts/build-native-openssl.js", "scripts/build-source-inputs.js", "scripts/build-environment.js", "scripts/native-audit.js",
+  "scripts/native-linux-sysroot.js"];
 const maxArchiveBytes = 128 << 20, maxInventoryBytes = 1 << 30, maxInventoryFiles = 100000;
 const isHash = (/** @type {unknown} */ value) => typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
 
@@ -224,7 +226,8 @@ function buildNativeOpenSsl(archive, output, config, environment = process.env, 
   if (archiveSha256 !== opensslPin.sha256) {throw new Error("OpenSSL source archive SHA256 differs from the pinned original 3.5.9 release");}
   const configHash = configSha256 || createHash("sha256").update(JSON.stringify(config)).digest("hex");
   if (!isHash(configHash)) {throw new Error("Invalid OpenSSL tool descriptor digest");}
-  const recipe = sourceInputs(repo, [], sourceLeaves), env = opensslSdkEnvironment(environment, plan);
+  const recipe = sourceInputs(repo, [], sourceLeaves), env = opensslSdkEnvironment(environment, plan),
+    sysroot = platform === "linux" ? requireLinuxSysroot(env) : null;
   const tar = tools["tar"] || "", listingResult = spawnSync(tar, ["-tzf", archive], {env, encoding: "utf8", timeout: 60000, maxBuffer: 16 << 20}),
     typesResult = spawnSync(tar, ["-tvzf", archive], {env, encoding: "utf8", timeout: 60000, maxBuffer: 16 << 20});
   for (const result of [listingResult, typesResult]) {
@@ -272,7 +275,7 @@ function buildNativeOpenSsl(archive, output, config, environment = process.env, 
     source: {files: sourceBefore.count, bytes: sourceBefore.bytes, sha256: sourceBefore.sha256,
       notice: {path: "source/LICENSE.txt", sha256: fileHash(license)}},
     config: {sha256: configHash}, tools: toolHashes, recipe, configure: plan.configure, sourceDateEpoch: plan.sourceDateEpoch, artifacts,
-    buildOnly: true, executed: false, publicationQualified: false,
+    ...(sysroot ? {sysroot: linuxSysrootRecord(sysroot)} : {}), buildOnly: true, executed: false, publicationQualified: false,
     scope: "Static OpenSSL 3.5.9 libraries, headers and build-only CLI; the CLI is not executed or published."};
   fs.writeFileSync(path.join(selectedOutput, "result.json"), JSON.stringify(result, null, 2) + "\n", {flag: "wx"});
   const inputs = nativeOpenSslInputs(selectedOutput, platform);
@@ -326,6 +329,7 @@ function nativeOpenSslInputs(root, platform = process.platform) {
       receipt.source.bytes < 1 || !isHash(receipt.source.sha256) || receipt.source.notice?.path !== "source/LICENSE.txt" || !isHash(receipt.source.notice.sha256)) {
     throw new Error("Invalid static OpenSSL SDK receipt");
   }
+  if (platform === "linux") {verifyLinuxSysrootRecord(receipt.sysroot, "Static OpenSSL SDK");}
   const selectedTools = toolNames(platform), recordedTools = receipt.tools;
   if (!recordedTools || typeof recordedTools !== "object" || Array.isArray(recordedTools) || Object.keys(recordedTools).sort().join(",") !== selectedTools.join(",") ||
       Object.values(recordedTools).some(row => !row || !absolute(row.path) || !isHash(row.sha256))) {throw new Error("Static OpenSSL SDK tool receipt is incomplete");}

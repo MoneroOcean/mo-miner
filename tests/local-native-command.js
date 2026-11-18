@@ -122,6 +122,7 @@ test.describe("Local release command containment", {skip: process.platform !== "
     const f = fixture(t), workspace = path.join(f.root, "sdk"), local = require("../scripts/build-local-native-sdk"),
       stage = path.join(workspace, "release-work");
     t.mock.method(local, "verifyCurrentMemoryScope", () => undefined);
+    t.mock.method(local, "ensureLocalLinuxSysroot", (/** @type {string} */ _workspace, /** @type {NodeJS.ProcessEnv} */ environment) => environment);
     const sdk = t.mock.method(require("../scripts/build-local-native-linux-sdk"), "buildLocalLinuxSdk", () => ({}));
     t.mock.method(require("../scripts/build-local-native-distribution"), "buildLocalNativeDistribution", () => {
       fs.writeFileSync(path.join(stage, "diagnostic.log"), "preserve"); throw new Error("fixture link failure");
@@ -135,6 +136,8 @@ test.describe("Local release command containment", {skip: process.platform !== "
   test("a prerequisite failure leaves no empty application work slot", t => {
     const f = fixture(t), workspace = path.join(f.root, "sdk");
     t.mock.method(require("../scripts/build-local-native-sdk"), "verifyCurrentMemoryScope", () => undefined);
+    t.mock.method(require("../scripts/build-local-native-sdk"), "ensureLocalLinuxSysroot",
+      (/** @type {string} */ _workspace, /** @type {NodeJS.ProcessEnv} */ environment) => environment);
     t.mock.method(require("../scripts/build-local-native-linux-sdk"), "buildLocalLinuxSdk", () => {throw new Error("fixture SDK failure");});
     assert.throws(() => runLocalNativeRelease(workspace), /fixture SDK failure/);
     assert.equal(fs.existsSync(path.join(workspace, "release-work")), false);

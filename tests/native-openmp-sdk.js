@@ -1,5 +1,6 @@
 "use strict";
 
+const {linuxSysrootRecord, linuxSysrootReceiptSha256} = require("../scripts/native-linux-sysroot");
 const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), os = require("node:os"), path = require("node:path");
 const {fileHash} = require("../scripts/build-source-inputs");
 const {archiveName, archiveSha256, toolNames, openmpBuildRecipe, openmpSdkPlan, validateOpenmpArchiveListing, sourceInventory, verifyCMakeCache,
@@ -248,8 +249,10 @@ test.describe("Pinned static LLVM OpenMP source SDK", {skip: process.platform !=
     const good = {version: 1, role: "linux-static-openmp-sdk", platform: "linux", output: "/tmp/openmp",
       archive: {sha256: archiveSha256}, fetchReceipt: {sha256: "a".repeat(64)}, config: {path: "tools.json", sha256: "b".repeat(64)},
       source: {}, plan: {}, tools: {}, toolVersions: {}, recipe: {files: {}, graph: {}}, buildOutput: {}, sdk: {},
-      smoke: {run: {status: 0, signal: null}}, logs: {}, buildOnly: true, compiled: true, executed: true, publicationQualified: false};
+      smoke: {run: {status: 0, signal: null}}, logs: {}, sysroot: linuxSysrootRecord({receiptSha256: linuxSysrootReceiptSha256}),
+      buildOnly: true, compiled: true, executed: true, publicationQualified: false};
     assert.equal(assertOpenmpReceiptShape(good), good);
+    assert.throws(() => assertOpenmpReceiptShape({...good, sysroot: {baseline: "2.31", receiptSha256: "0".repeat(64)}}), /not built against the pinned glibc 2\.31 sysroot/);
     for (const altered of [
       {...good, publicationQualified: true},
       {...good, archive: {sha256: "0".repeat(64)}},

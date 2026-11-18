@@ -5,6 +5,8 @@ const {comgrSdkPlan, comgrDeviceInputs, comgrDependencies, buildComgrSdk} = requ
 const {fileHash, sourceInputs} = require("../scripts/build-source-inputs");
 const {comgrSdkInputs, verifyComgrSdkSelection, revision, recipeFiles} = require("../scripts/native-comgr-inputs");
 const {rocmInputs, staticSyclInputs} = require("../scripts/native-sycl-inputs");
+const {linuxSysrootRecord, linuxSysrootReceiptSha256} = require("../scripts/native-linux-sysroot");
+const sysroot = linuxSysrootRecord({receiptSha256: linuxSysrootReceiptSha256});
 
 /** Exact tiny SDK registry, not enumeration of a real compiler installation.
  * @param {import('node:test').TestContext} t */
@@ -170,7 +172,7 @@ function component(t) {
   const record = {version: 1, revision, llvmVersion: "21.1.8", archive, header, sha256: fileHash(archive), headerSha256: fileHash(header),
     license, notices, sdkRoots, sdkInputs: {[f.config]: fileHash(f.config)}, dependencies: {[dependency]: fileHash(dependency)},
     sourceState: sourceInputs(snapshot, ["amd/comgr"], []), recipe: sourceInputs(path.resolve(__dirname, ".."), [], recipeFiles),
-    buildOnly: true, publicationQualified: false};
+    sysroot, buildOnly: true, publicationQualified: false};
   const write = () => fs.writeFileSync(receipt, JSON.stringify(record)); write();
   return {...f, receipt, record, write, dependency, archive, header};
 }

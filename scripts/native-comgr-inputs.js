@@ -5,10 +5,12 @@
 const fs = require("node:fs"), path = require("node:path");
 const {fileHash, sourceInputs, verifySourceInputs, readBuildJson} = require("./build-source-inputs");
 const {isStaticArchive} = require("./native-audit");
+const {verifyLinuxSysrootRecord} = require("./native-linux-sysroot");
 const revision = "27682a16360e33e37c4f3cc6adf9a620733f8fe1";
 const patches = ["runtime/rocm-comgr-llvm21.patch", "runtime/rocm-comgr-resources.patch"];
 const recipeFiles = ["scripts/build-native-comgr-sdk.js", "scripts/build-native-sycl-sdk.js", "scripts/build-source-inputs.js",
-  "scripts/build-environment.js", "scripts/native-jit-link.js", "scripts/native-audit.js", "scripts/native-comgr-inputs.js", ...patches];
+  "scripts/build-environment.js", "scripts/native-jit-link.js", "scripts/native-audit.js", "scripts/native-comgr-inputs.js",
+  "scripts/native-linux-sysroot.js", ...patches];
 
 /** Read and rehash the exact completed source producer, never copy an archive into a fake
  * SDK prefix or restamp stale provenance. Dependency paths are explicit local build inputs;
@@ -26,6 +28,7 @@ function comgrSdkInputs(receipt) {
       Object.values(record.sdkRoots).some(value => typeof value !== "string" || !path.isAbsolute(value) || fs.realpathSync(value) !== value)) {
     throw new Error("Invalid pinned source COMGR receipt");
   }
+  verifyLinuxSysrootRecord(record.sysroot, "COMGR SDK");
   if (fs.realpathSync(archive) !== archive || fs.realpathSync(header) !== header || !isStaticArchive(archive) ||
       fileHash(archive) !== record.sha256 || fileHash(header) !== record.headerSha256) {
     throw new Error("COMGR archive/header differs from its producer receipt");

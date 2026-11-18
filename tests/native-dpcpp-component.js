@@ -3,6 +3,8 @@ const fs = require("node:fs"), path = require("node:path"), os = require("node:o
 const {dpcppRuntimeGraph, dpcppComponentInputs, exportDpcppComponent} = require("../scripts/native-dpcpp-component");
 const {fileHash} = require("../scripts/build-source-inputs"), {pins} = require("../scripts/native-dpcpp-pins");
 const {nativeSdkLinkInputs} = require("../scripts/build-native-release");
+const {linuxSysrootRecord, linuxSysrootReceiptSha256} = require("../scripts/native-linux-sysroot");
+const sysroot = linuxSysrootRecord({receiptSha256: linuxSysrootReceiptSha256});
 const archives = ["libmom-sycl-static.a", "lib/libur_loader.a", "lib/libur_adapter_level_zero.a", "lib/libur_adapter_opencl.a", "lib/libze_loader.a", "deps/libhwloc.a"];
 const objects = ["cuda-adapter.o", "level-zero-v2-adapter.o", "source-jit.o"];
 /** An original link edge shape, not a source or library registry used by production.
@@ -25,7 +27,7 @@ function fixture(t) {
   put("sdk/build/cuda-native/adapter.o", elf); put("sdk/build/level-zero-v2-native/adapter.o", elf);
   const ninja = put("ninja", "#!" + process.execPath + "\nprocess.stdout.write(" + JSON.stringify(graph(jit)) + ");\n"); fs.chmodSync(ninja, 0o700);
   const archive = path.join(build, "libmom-sycl-static.a"), producer = path.join(sdk, "result.json");
-  const record = {version: 1, target: "linux", buildOnly: true, executed: false, pins, archive, sha256: fileHash(archive), inputs: {[ninja]: fileHash(ninja), [jit]: fileHash(jit)}};
+  const record = {version: 1, target: "linux", buildOnly: true, executed: false, pins, archive, sha256: fileHash(archive), inputs: {[ninja]: fileHash(ninja), [jit]: fileHash(jit)}, sysroot};
   fs.writeFileSync(producer, JSON.stringify(record)); fs.writeFileSync(path.join(sdk, "before.json"), JSON.stringify({configure: ["-DMOM_DPCPP_JIT_OBJECT=" + jit]}));
   const exportIt = () => {
     const old = process.env["MOM_AOT_BUILD_ONLY"]; process.env["MOM_AOT_BUILD_ONLY"] = "1";

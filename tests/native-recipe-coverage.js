@@ -22,6 +22,7 @@ const producers = {
   "build-native-io": {},
   "build-native-openssl": {},
   "build-native-zstd": {},
+  "build-native-libdrm": {},
   "native-linux-llvm-tools": {},
   "native-linux-llvm-sdk-handoff": {},
   "native-rocm-hip-headers": {},

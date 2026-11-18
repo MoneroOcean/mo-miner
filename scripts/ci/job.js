@@ -19,6 +19,7 @@ const roots = Object.freeze({
   NVRTC_LINUX_126_SDK: "nvrtc-linux-12.6-sdk", CUDA_IMAGES: "cuda-images", LINUX_SDK_DESCRIPTOR: "linux-sdk-descriptor",
   NVRTC_WINDOWS_SOURCE: "nvrtc-windows-prerequisites", NVRTC_WINDOWS_SDK: "nvrtc-windows-sdk",
   WINDOWS_LLVM: "windows-llvm21", WINDOWS_JIT: "windows-jit", WINDOWS_JIT_RESOURCES: "windows-jit-resources",
+  LINUX_SYSROOT: "linux-sysroot",
 });
 const maxUploads = 4;
 

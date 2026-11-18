@@ -32,6 +32,7 @@ function preflightLocalLinuxSdk(dependencies = {}) {
   // These small queries fail before any source archive, workspace, or SDK build is started.
   (dependencies.installedGnuPackages || gnu.installedPackages)();
   checkPinnedRocmPythonExecutable(dependencies.pythonFilesystem);
+  checkSysrootBuildTools(dependencies.pythonFilesystem);
   const linker = dependencies.linker || (dependencies.resolveLinker || linuxNativeSdkLldPath)(tools.cxx),
     noticeReview = (dependencies.checkNotices || checkNativeNoticeReview)();
   if (!noticeReview?.notice || !/^[a-f0-9]{64}$/.test(noticeReview.notice.sha256 || "")) {
@@ -52,6 +53,17 @@ function checkPinnedRocmPythonExecutable(fileSystem = fs) {
   if (!stat.isFile()) {throw new Error("Pinned ROCm host Python 3.12 is missing or not executable: " + file);}
   try {fileSystem.accessSync(file, fs.constants.X_OK);} catch (error) {
     throw new Error("Pinned ROCm host Python 3.12 is missing or not executable: " + file, {cause: error});
+  }
+}
+
+/** The glibc sysroot is extracted with dpkg-deb and libdrm is built with meson; fail before any acquisition.
+ * @param {Pick<typeof fs,"statSync"|"accessSync">} [fileSystem] */
+function checkSysrootBuildTools(fileSystem = fs) {
+  for (const file of ["/usr/bin/dpkg-deb", "/usr/bin/meson"]) {
+    try {
+      if (!fileSystem.statSync(file).isFile()) {throw new Error("not a file");}
+      fileSystem.accessSync(file, fs.constants.X_OK);
+    } catch (error) {throw new Error("Native Linux SDK prerequisite is missing or not executable: " + file, {cause: error});}
   }
 }
 
@@ -85,7 +97,8 @@ function writeOrVerifyDescriptor(file, config) {
  * acppSdk?:typeof acpp.buildLocalLinuxAcppSdk},resolveLinker?:typeof linuxNativeSdkLldPath,linker?:string,
  * checkNotices?:typeof checkNativeNoticeReview,admitConfig?:typeof nativeSdkConfig,admitLinkInputs?:typeof nativeSdkLinkInputs,
  * preflightRocmHost?:(context:ReturnType<typeof rocm.localRocmSdkContext>,tools:{cc:string,cxx:string,cmake:string},
- * environment:NodeJS.ProcessEnv)=>unknown,defaultWorkspace?:typeof local.defaultWorkspace}} [dependencies] */
+ * environment:NodeJS.ProcessEnv)=>unknown,defaultWorkspace?:typeof local.defaultWorkspace,
+ * ensureSysroot?:typeof local.ensureLocalLinuxSysroot}} [dependencies] */
 function buildLocalNativePrerequisites(options = {}, dependencies = {}) {
   if (options.linuxJit !== undefined && typeof options.linuxJit !== "boolean") {throw new Error("Local Linux JIT selection must be boolean");}
   if (process.platform !== "linux" || process.arch !== "x64") {throw new Error("Local native Linux SDK requires Linux x64");}
@@ -93,7 +106,9 @@ function buildLocalNativePrerequisites(options = {}, dependencies = {}) {
     workspace = options.workspace || (dependencies.defaultWorkspace || local.defaultWorkspace)(),
     root = local.admitWorkspace(workspace, repo), paths = local.supportPaths(root), builders = dependencies.builders || {},
     run = dependencies.run,
-    common = {tools: ready.tools, environment: ready.environment, installedRoots: ready.installedRoots,
+    // Every producer below compiles and links against the pinned glibc sysroot selected here.
+    environment = (dependencies.ensureSysroot || local.ensureLocalLinuxSysroot)(root, ready.environment),
+    common = {tools: ready.tools, environment, installedRoots: ready.installedRoots,
       ...(run ? {run} : {}), ...(dependencies.resolveTools ? {resolveTools: dependencies.resolveTools} : {})},
     source = (builders.source || local.buildLocalNativeSdk)({workspace: root, ...(options.jobs === undefined ? {} : {jobs: options.jobs}),
     }, common);
@@ -108,7 +123,7 @@ function buildLocalNativePrerequisites(options = {}, dependencies = {}) {
   // the whole-graph scope established by the outer entry rather than the light pre-workspace check.
   const preflightRocmHost = dependencies.preflightRocmHost ||
     ((context, tools, environment) => rocm.localRocmHostInputs(context, tools, environment));
-  preflightRocmHost(rocmContext, rocmTools, ready.environment);
+  preflightRocmHost(rocmContext, rocmTools, environment);
 
   const compilerInputs = (builders.compilerInputs || local.buildLocalCompilerInputs)(source, {...common}),
     gnuHeaders = (builders.gnuHeaders || local.buildLocalGnuHeaders)(source, {...common});

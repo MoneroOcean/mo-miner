@@ -15,9 +15,12 @@ const repo = path.resolve(__dirname, "../..");
 const caches = Object.freeze({
   /** @param {NodeJS.ProcessEnv} environment */
   "linux-llvm": environment => {
-    const llvm = require("../build-native-llvm-sdk"), {linuxLlvmTools} = require("../native-ci-linux-llvm");
+    const llvm = require("../build-native-llvm-sdk"), {linuxLlvmTools} = require("../native-ci-linux-llvm"),
+      {linuxSysrootReceiptSha256} = require("../native-linux-sysroot");
+    // The location-independent sysroot receipt hash keeps an LLVM SDK built against another glibc out of the key.
     return {root: "/tmp/mom-native-llvm21-sdk-" + ciSuffix(environment), inputs: {
       recipe: sourceInputs(repo, [], [...llvm.recipeFiles]).graph, archiveSha256: llvm.archiveSha256, jobs: ciBuildJobs(environment),
+      sysroot: linuxSysrootReceiptSha256,
       tools: Object.fromEntries(Object.entries(linuxLlvmTools).map(([name, file]) => [name, fileHash(fs.realpathSync(file))]))}};
   },
 });

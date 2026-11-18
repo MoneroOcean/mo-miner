@@ -131,6 +131,21 @@ function auditNativeGlibc(versions, maximum) {
   return [...new Set(required)];
 }
 
+/** The executable may need symbol versions only from the allowed glibc SONAMEs, and only GLIBC_*
+ * versions: a GLIBCXX_/CXXABI_/GCC_ need would mean libstdc++ or libgcc_s was linked dynamically.
+ * @param {string} versions readelf --version-info output */
+function auditNativeVersionNeeds(versions) {
+  if (!/No version information found|\bName: /.test(versions)) {throw new Error("Missing native ELF version evidence");}
+  const section = versions.match(/Version needs section '\.gnu\.version_r'[^\n]*\n([\s\S]*?)(?=\n\S|$)/)?.[1] || "";
+  const files = [...section.matchAll(/\bFile: (\S+)/g)].map(match => match[1] || "");
+  const names = [...section.matchAll(/\bName: (\S+)/g)].map(match => match[1] || "");
+  const unexpectedFile = files.find(file => !systemLibrary.test(file)), unexpectedName = names.find(name => !/^GLIBC_/.test(name));
+  if (unexpectedFile || unexpectedName) {
+    throw new Error("Native executable needs a symbol version outside the allowed glibc libraries: " + (unexpectedFile || unexpectedName));
+  }
+  return {files: [...new Set(files)], names: [...new Set(names)]};
+}
+
 /** Reject lazy loads too, even if an optional runtime happened to be absent on the test host.
  * Callers trace openat/execve with long strings; truncated/escaped executable paths fail closed.
  * @param {string} trace @param {string} executable @param {number} [processes] @param {DriverOptions} [options] */
@@ -170,4 +185,4 @@ function auditNativeHeaders(trace, includeRoots = [], cacheRoots = []) {
   }
 }
 
-module.exports = {nativeDependencies, auditNativeGlibc, auditNativeTrace, auditNativeHeaders, auditNativeSymbols, auditNativeSymbolFile, isStaticArchive, isGpuDriver, isLibraryPath};
+module.exports = {nativeDependencies, auditNativeGlibc, auditNativeVersionNeeds, auditNativeTrace, auditNativeHeaders, auditNativeSymbols, auditNativeSymbolFile, isStaticArchive, isGpuDriver, isLibraryPath};

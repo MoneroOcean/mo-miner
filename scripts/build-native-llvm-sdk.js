@@ -8,6 +8,7 @@ const {fileHash, buildFileInputs, readBuildJson} = require("./build-source-input
 const {isStaticArchive} = require("./native-audit");
 const {archiveName, archiveSha256, tarTool, sourceDirectories, llvmSourceSnapshot, verifyArchiveCatalog,
   llvmAmdgpulibCallsCompileOptionsShim, verifyCmakeVersion} = require("./native-llvm-sdk");
+const {applyLinuxSysrootEnvironment, requireLinuxSysroot, linuxSysrootRecord, verifyLinuxSysrootRecord} = require("./native-linux-sysroot");
 
 const repo = path.resolve(__dirname, "..");
 // Source consumers need drivers and utilities as well as archives. These SDK tools are not release files.
@@ -22,7 +23,8 @@ const metadataInstallTargets = Object.freeze(["install-mom-cmake-exports", "inst
   "install-cmake-exports", "install-clang-cmake-exports", "install-lld-cmake-exports", "install-llvm-headers", "install-clang-headers",
   "install-clang-resource-headers", "install-lld-headers"]);
 const installTargets = Object.freeze(["install-mom-distribution", ...metadataInstallTargets]);
-const recipeFiles = Object.freeze(["scripts/build-native-llvm-sdk.js", "scripts/build-source-inputs.js", "scripts/native-audit.js", "scripts/native-llvm-sdk.js"]);
+const recipeFiles = Object.freeze(["scripts/build-native-llvm-sdk.js", "scripts/build-source-inputs.js", "scripts/native-audit.js", "scripts/native-llvm-sdk.js",
+  "scripts/native-linux-sysroot.js"]);
 const configureTimeout = 1200000, extractTimeout = 600000, installTimeout = 1200000, phaseTimeout = 2700000;
 
 /** @typedef {{name: string, project: "llvm" | "clang" | "lld", projectRoot: string, sourceDirectory: string, artifact: string, type: string}} LlvmTarget */
@@ -30,7 +32,7 @@ const configureTimeout = 1200000, extractTimeout = 600000, installTimeout = 1200
 /** @typedef {{components: string[], distributionComponents: string[], archives: {name: string, artifact: string, relativeArtifact: string}[],
  * tools: {name: string, artifact: string, relativeArtifact: string}[], phases: BuildPhase[]}} DistributionSelection */
 /** @typedef {{archive: string, output: string, source: string, build: string, prefix: string, jobs: number,
- * tools: {cmake: string, ninja: string, cc: string, cxx: string}, sourceOptionsFile: string, configure: string[], selectedConfigure: string[],
+ * tools: {cmake: string, ninja: string, cc: string, cxx: string}, toolchain: string, sourceOptionsFile: string, configure: string[], selectedConfigure: string[],
  * selectedComponents: string[], phases: BuildPhase[]}} LlvmPlan */
 /** @typedef {Omit<LlvmPlan, "selectedComponents" | "phases">} LlvmBasePlan */
 
@@ -78,9 +80,11 @@ function verifyBuildPath(build, file, finalKind, optional = false) {
   return true;
 }
 
-/** @param {string} archive @param {string} output @param {{cmake: string, ninja: string, cc: string, cxx: string}} tools @param {number} jobs @returns {LlvmBasePlan} */
-function linuxLlvmSdkPlan(archive, output, tools, jobs) {
-  if (![archive, output, ...Object.values(tools || {})].every(literal) || !tools ||
+/** The sysroot toolchain file keeps CMake's header/library searches inside the glibc 2.31 sysroot.
+ * @param {string} archive @param {string} output @param {{cmake: string, ninja: string, cc: string, cxx: string}} tools @param {number} jobs
+ * @param {string} toolchain @returns {LlvmBasePlan} */
+function linuxLlvmSdkPlan(archive, output, tools, jobs, toolchain) {
+  if (![archive, output, toolchain, ...Object.values(tools || {})].every(literal) || !tools ||
       Object.keys(tools).sort().join(",") !== "cc,cmake,cxx,ninja" || path.basename(archive) !== archiveName ||
       path.normalize(output) !== output || path.basename(tools.cc) !== "icx" || path.basename(tools.cxx) !== "icpx" ||
       path.basename(tools.cmake) !== "cmake" || path.basename(tools.ninja) !== "ninja" ||
@@ -93,7 +97,7 @@ function linuxLlvmSdkPlan(archive, output, tools, jobs) {
   }
   const prefix = path.join(output, "sdk"), sourceOptionsFile = path.join(output, "llvm-host-source-options.cmake");
   const definitions = ["-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_INSTALL_PREFIX=" + prefix,
-    "-DCMAKE_C_COMPILER=" + tools.cc, "-DCMAKE_CXX_COMPILER=" + tools.cxx,
+    "-DCMAKE_C_COMPILER=" + tools.cc, "-DCMAKE_CXX_COMPILER=" + tools.cxx, "-DCMAKE_TOOLCHAIN_FILE=" + toolchain,
     "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON", "-DCMAKE_SUPPRESS_REGENERATION=ON",
     "-DCMAKE_PROJECT_TOP_LEVEL_INCLUDES=" + sourceOptionsFile,
     "-DCMAKE_EXE_LINKER_FLAGS=-Wl,--export-dynamic", "-DLLVM_ENABLE_PROJECTS=clang;lld",
@@ -110,7 +114,7 @@ function linuxLlvmSdkPlan(archive, output, tools, jobs) {
     "-DLLVM_ENABLE_LIBXML2=OFF", "-DLLVM_ENABLE_LIBEDIT=OFF", "-DLLVM_ENABLE_LIBPFM=OFF",
     "-DLLVM_USE_PERF=OFF"];
   const configure = [tools.cmake, "-G", "Ninja", "-S", path.join(source, "llvm"), "-B", build, ...definitions];
-  return {archive, output, source, build, prefix, jobs, tools: {...tools}, sourceOptionsFile, configure,
+  return {archive, output, source, build, prefix, jobs, tools: {...tools}, toolchain, sourceOptionsFile, configure,
     selectedConfigure: [...configure, "-DLLVM_MoM_DISTRIBUTION_COMPONENTS=<generated-components>"]};
 }
 
@@ -361,10 +365,10 @@ function cmakeCache(file) {
   return values;
 }
 
-/** @param {string} build @param {Pick<LlvmPlan, "tools" | "prefix" | "sourceOptionsFile">} plan @param {string[]} components */
+/** @param {string} build @param {Pick<LlvmPlan, "tools" | "prefix" | "sourceOptionsFile" | "toolchain">} plan @param {string[]} components */
 function verifyCMakeCache(build, plan, components) {
   const values = cmakeCache(path.join(build, "CMakeCache.txt")), expected = {
-    CMAKE_BUILD_TYPE: "Release", CMAKE_C_COMPILER: plan.tools.cc, CMAKE_CXX_COMPILER: plan.tools.cxx,
+    CMAKE_BUILD_TYPE: "Release", CMAKE_C_COMPILER: plan.tools.cc, CMAKE_CXX_COMPILER: plan.tools.cxx, CMAKE_TOOLCHAIN_FILE: plan.toolchain,
     CMAKE_INSTALL_PREFIX: plan.prefix, CMAKE_EXE_LINKER_FLAGS: "-Wl,--export-dynamic",
     LLVM_ENABLE_PROJECTS: "clang;lld", LLVM_TARGETS_TO_BUILD: "X86;NVPTX;AMDGPU", LLVM_DISTRIBUTIONS: "MoM",
     LLVM_MoM_DISTRIBUTION_COMPONENTS: components.join(";"), LLVM_ENABLE_PIC: "ON", LLVM_ENABLE_PLUGINS: "OFF",
@@ -460,11 +464,12 @@ function verifyAmdgpulibCallsCompileFlag(build, source) {
   return {path: target, flag: "-fno-builtin", compileCommands: rows.length};
 }
 
-/** @param {LlvmPlan["tools"]} tools @param {NodeJS.ProcessEnv} environment */
+/** The selected sysroot supplies ICXCFG/ICPXCFG and pkg-config paths; other compiler hooks are dropped.
+ * @param {LlvmPlan["tools"]} tools @param {NodeJS.ProcessEnv} environment */
 function cleanBuildEnvironment(tools, environment) {
-  const env = {...environment};
+  const env = applyLinuxSysrootEnvironment(environment);
   for (const name of Object.keys(env)) {
-    if (/^(?:CC|CXX|CPP|CFLAGS|CXXFLAGS|CPPFLAGS|LDFLAGS|CMAKE_|PKG_CONFIG_|GIT_|LD_PRELOAD$|LD_AUDIT$)/.test(name)) {delete env[name];}
+    if (/^(?:CC|CXX|CPP|CFLAGS|CXXFLAGS|CPPFLAGS|LDFLAGS|CMAKE_|GIT_|LD_PRELOAD$|LD_AUDIT$)/.test(name)) {delete env[name];}
   }
   env["PATH"] = [path.dirname(tools.cmake), path.dirname(tools.ninja), path.dirname(tools.cc), path.dirname(tools.cxx), env["PATH"] || "/usr/bin:/bin"].join(path.delimiter);
   env["LC_ALL"] = "C"; env["TZ"] = "UTC";
@@ -476,7 +481,9 @@ function configureLinuxLlvmSdk(output, archive, tools, jobs, environment = proce
   if (process.platform !== "linux" || process.arch !== "x64" || environment["MOM_AOT_BUILD_ONLY"] !== "1") {
     throw new Error("Linux LLVM 21 source build requires Linux x64 and MOM_AOT_BUILD_ONLY=1");
   }
-  const plan = linuxLlvmSdkPlan(archive, output, tools, jobs), outputParent = fs.realpathSync(path.dirname(output));
+  // The sysroot compiler configuration reaches icx/icpx through ICXCFG/ICPXCFG (cleanBuildEnvironment).
+  const sysroot = requireLinuxSysroot(environment), plan = linuxLlvmSdkPlan(archive, output, tools, jobs, sysroot.toolchain),
+    outputParent = fs.realpathSync(path.dirname(output));
   if (path.join(outputParent, path.basename(output)) !== output || fs.existsSync(output)) {throw new Error("Select a new canonical LLVM 21 output directory");}
   for (const input of [repo, archive, ...Object.values(tools)]) {
     if (overlaps(fs.realpathSync(input), path.join(outputParent, path.basename(output)))) {throw new Error("LLVM 21 output overlaps a frozen input");}
@@ -484,7 +491,7 @@ function configureLinuxLlvmSdk(output, archive, tools, jobs, environment = proce
   if (fileHash(archive) !== archiveSha256) {throw new Error("LLVM 21.1.8 source archive SHA256 mismatch");}
   const toolIdentity = verifyToolIdentity(tools), env = cleanBuildEnvironment(tools, environment);
   const inputFiles = buildFileInputs([archive, tarTool, ...Object.values(tools).map(file => fs.realpathSync(file)),
-    ...recipeFiles.map(name => path.join(repo, name))]);
+    ...recipeFiles.map(name => path.join(repo, name)), sysroot.toolchain, sysroot.compilerConfig, sysroot.receipt]);
   fs.mkdirSync(output, {mode: 0o700});
   const sourceOptionsShim = llvmAmdgpulibCallsCompileOptionsShim(plan.source);
   fs.writeFileSync(plan.sourceOptionsFile, sourceOptionsShim, {flag: "wx", mode: 0o600});
@@ -526,7 +533,7 @@ function configureLinuxLlvmSdk(output, archive, tools, jobs, environment = proce
     selectedConfigure: [...plan.configure, "-DLLVM_MoM_DISTRIBUTION_COMPONENTS=" + selection.distributionComponents.join(";")], installTargets: [...installTargets]};
   const savedPlan = path.join(output, "plan.json"); writeJsonExclusive(savedPlan, generated);
   const record = {version: 1, role: "linux-llvm21-source-sdk", runId: randomUUID(), stage: "configured", plan: generated,
-    planSha256: fileHash(savedPlan), archiveSha256, catalog, sourceState, inputFiles, toolIdentity,
+    planSha256: fileHash(savedPlan), archiveSha256, catalog, sourceState, inputFiles, toolIdentity, sysroot: linuxSysrootRecord(sysroot),
     producerSnapshot: evidenceFile(producerSnapshot, fs.statSync(producerSnapshot).size),
     configure: {discovery, selected, cache, distributionGraph, targetCount: targets.length, selection, hostSourceFlag,
       files: configuredFiles, compileCommands: evidenceFile(path.join(plan.build, "compile_commands.json"), fs.statSync(path.join(plan.build, "compile_commands.json")).size)},
@@ -542,6 +549,7 @@ function verifyConfigured(output) {
   const file = path.join(output, "configured.json"), receipt = readJson(file), plan = receipt.plan;
   const producerFile = path.join(repo, "scripts/build-native-llvm-sdk.js"), producerSnapshot = path.join(output, "producer-snapshot.js");
   if (!plan || !receipt.inputFiles || !receipt.configure?.files) {throw new Error("LLVM 21 configure receipt is incomplete");}
+  verifyLinuxSysrootRecord(receipt.sysroot, "LLVM 21 SDK");
   if (plan.sourceOptionsFile !== path.join(output, "llvm-host-source-options.cmake")) {throw new Error("LLVM source-options shim is outside its output");}
   const shimStat = fs.lstatSync(plan.sourceOptionsFile, {throwIfNoEntry: false});
   if (!shimStat?.isFile() || shimStat.isSymbolicLink() || fs.realpathSync(plan.sourceOptionsFile) !== plan.sourceOptionsFile ||

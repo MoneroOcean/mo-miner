@@ -13,6 +13,8 @@ const {archiveName: llvmArchiveName, archiveSha256: llvmArchiveSha256} = require
 const {opensslPin, opensslBuildRecipe} = require("./build-native-openssl");
 const {hermesPins} = require("./build-native-hermes");
 const {zstdPin, zstdBuildRecipe} = require("./build-native-zstd");
+const {linuxSysrootPackages, linuxSysrootRelease, linuxSysrootOrigins} = require("./native-linux-sysroot");
+const {libdrmPin, libdrmBuildRecipe} = require("./build-native-libdrm");
 
 const repo = path.resolve(__dirname, ".."), origins = Object.freeze({
   dpcpp: "https://github.com/intel/llvm.git", emhash: "https://github.com/ktprime/emhash.git",
@@ -41,6 +43,7 @@ const maxBuildArchiveBytes = 192 << 20, buildArchiveTimeoutMs = 10 * 60 * 1000;
 const maxWindowsOpenSslArchiveBytes = 128 << 20;
 const zstdArchiveUrl = "https://github.com/facebook/zstd/releases/download/v" + zstdPin.version + "/zstd-" + zstdPin.version + ".tar.gz";
 const maxZstdArchiveBytes = 16 << 20;
+const maxSysrootArchiveBytes = 8 << 20;
 const nvrtcArchiveOrigin = "https://developer.download.nvidia.com", maxNvrtcArchiveBytes = 320 << 20;
 const windowsHostOrigin = "https://download.visualstudio.microsoft.com", maxWindowsHostArchiveBytes = 64 << 20;
 // A transient network error, 429 or 5xx is retried after these delays; pinned hashes are never retried into success.
@@ -477,6 +480,29 @@ async function fetchZstdArchive(output, environment = process.env, allowNetwork 
     pinSnapshot: () => JSON.stringify(hashes), fetchImpl: dependencies.fetch || globalThis.fetch});
 }
 
+/** Acquire the pinned glibc sysroot packages from the project's mirror release only.
+ * @param {string} output @param {NodeJS.ProcessEnv} [environment] @param {boolean} [allowNetwork]
+ * @param {{fetch?: IoArchiveFetch, hashes?: ArchiveHashes}} [dependencies] */
+async function fetchSysrootPackages(output, environment = process.env, allowNetwork = false, dependencies = {}) {
+  const catalog = sysrootArchiveCatalog(dependencies.hashes), hashes = /** @type {ArchiveHashes} */ (Object.fromEntries(
+    Object.entries(catalog).map(([name, row]) => [name, {sha256: row.sha256}])));
+  const specs = /** @type {ArchiveSpecs} */ (Object.fromEntries(Object.entries(catalog).map(([name, row]) => [name, {...row, origins: linuxSysrootOrigins}])));
+  return fetchArchiveCohort(output, environment, allowNetwork, {target: "sysroot", sourceLabel: "Linux sysroot input",
+    archiveLabel: "Linux sysroot package", specs, pins: hashes, maxBytes: maxSysrootArchiveBytes, timeoutMs: buildArchiveTimeoutMs,
+    recipeFor: sysrootSourceRecipe, pinSnapshot: () => JSON.stringify(hashes), fetchImpl: dependencies.fetch || globalThis.fetch});
+}
+
+/** Acquire the pinned upstream libdrm release archive from the same mirror release.
+ * @param {string} output @param {NodeJS.ProcessEnv} [environment] @param {boolean} [allowNetwork]
+ * @param {{fetch?: IoArchiveFetch, hashes?: ArchiveHashes}} [dependencies] */
+async function fetchLibdrmArchive(output, environment = process.env, allowNetwork = false, dependencies = {}) {
+  const catalog = libdrmArchiveCatalog(dependencies.hashes), hashes = {libdrm: {sha256: catalog.libdrm.sha256}};
+  return fetchArchiveCohort(output, environment, allowNetwork, {target: "libdrm", sourceLabel: "libdrm source", archiveLabel: "libdrm source archive",
+    specs: {libdrm: {...catalog.libdrm, origins: linuxSysrootOrigins}}, pins: hashes, maxBytes: maxSysrootArchiveBytes,
+    timeoutMs: buildArchiveTimeoutMs, recipeFor: libdrmBuildRecipe, pinSnapshot: () => JSON.stringify(hashes),
+    fetchImpl: dependencies.fetch || globalThis.fetch});
+}
+
 /** Acquire only the selected vendor compiler archive cohort, using the existing bounded
  * downloader. This neither installs an SDK nor reruns/restamps existing compiler proofs.
  * @param {"linux" | "windows"} platform @param {string} output @param {NodeJS.ProcessEnv} [environment] @param {boolean} [allowNetwork]
@@ -650,6 +676,17 @@ function verifyIoArchives(output, dependencies = {}) {
  * @param {string} output @param {{hashes?: ArchiveHashes, recipe?: typeof zstdSourceRecipe}} [dependencies] */
 function verifyZstdArchive(output, dependencies = {}) {
   return verifyArchiveCohort(output, "zstd", zstdArchiveCatalog(dependencies.hashes), dependencies.recipe || zstdSourceRecipe, maxZstdArchiveBytes);
+}
+
+/** Check the sysroot packages offline; extraction and admission belong to native-linux-sysroot.js.
+ * @param {string} output @param {{hashes?: ArchiveHashes}} [dependencies] */
+function verifySysrootPackages(output, dependencies = {}) {
+  return verifyArchiveCohort(output, "sysroot", sysrootArchiveCatalog(dependencies.hashes), sysrootSourceRecipe, maxSysrootArchiveBytes);
+}
+
+/** Check the libdrm source archive offline. @param {string} output @param {{hashes?: ArchiveHashes}} [dependencies] */
+function verifyLibdrmArchive(output, dependencies = {}) {
+  return verifyArchiveCohort(output, "libdrm", libdrmArchiveCatalog(dependencies.hashes), libdrmBuildRecipe, maxSysrootArchiveBytes);
 }
 
 /** Read-only original-input admission, not SDK build or redistribution qualification.
@@ -873,6 +910,31 @@ function zstdSourceRecipe() {
   return zstdBuildRecipe();
 }
 
+/** Bind the sysroot pins, not the producers that later compile against the prepared tree. */
+function sysrootSourceRecipe() {
+  return sourceInputs(repo, [], ["scripts/native-linux-sysroot.js", "scripts/build-source-inputs.js"]);
+}
+
+/** Package files keep their mirrored asset names, keyed by the asset's package stem (libstdcxx-14-dev);
+ * fixture seams replace only digests. @param {ArchiveHashes} [hashes]
+ * @returns {Record<string, {fileName: string, sha256: string, url: string}>} */
+function sysrootArchiveCatalog(hashes) {
+  const rows = linuxSysrootPackages.map(row => ({...row, key: row.asset.split("_")[0] || ""})), names = rows.map(row => row.key).sort();
+  if (hashes && (Object.keys(hashes).sort().join(",") !== names.join(",") || names.some(name => !/^[0-9a-f]{64}$/.test(hashes[name]?.sha256 || "")))) {
+    throw new Error("Linux sysroot fetch needs the exact pinned package cohort");
+  }
+  return Object.fromEntries(rows.map(row => [row.key, {fileName: row.asset,
+    sha256: hashes?.[row.key]?.sha256 || row.sha256, url: linuxSysrootRelease + row.asset}]));
+}
+
+/** @param {ArchiveHashes} [hashes] */
+function libdrmArchiveCatalog(hashes) {
+  if (hashes && (Object.keys(hashes).join(",") !== "libdrm" || !/^[0-9a-f]{64}$/.test(hashes["libdrm"]?.sha256 || ""))) {
+    throw new Error("libdrm source fetch needs the exact pinned archive cohort");
+  }
+  return {libdrm: {fileName: libdrmPin.fileName, sha256: hashes?.["libdrm"]?.sha256 || libdrmPin.sha256, url: libdrmPin.url}};
+}
+
 /** Keep the one-source archive's public name and release URL fixed; fixture seams replace only its digest.
  * @param {ArchiveHashes} [hashes] */
 function zstdArchiveCatalog(hashes) {
@@ -902,6 +964,14 @@ if (require.main === module) {
         if (!first || second || permission || extra) {throw new Error("Usage: fetch-native-sdk-sources.js verify-build|verify-io /absolute/source-output");}
         (target === "verify-build" ? verifyBuildArchives : verifyIoArchives)(first);
         console.log("[native-sdk] Verified pinned " + (target === "verify-build" ? "LLVM/OpenSSL" : "libuv/zlib") + " archives and source receipt offline; no extraction or compilation.");
+      } else if (target === "verify-sysroot" || target === "verify-libdrm") {
+        if (!first || second || permission || extra) {throw new Error("Usage: fetch-native-sdk-sources.js verify-sysroot|verify-libdrm /absolute/source-output");}
+        (target === "verify-sysroot" ? verifySysrootPackages : verifyLibdrmArchive)(first);
+        console.log("[native-sdk] Verified pinned " + (target === "verify-sysroot" ? "glibc sysroot packages" : "libdrm source archive") + " offline; no extraction or compilation.");
+      } else if (target === "sysroot" || target === "libdrm") {
+        if (!first || second !== "--allow-network" || permission || extra) {throw new Error("Usage: fetch-native-sdk-sources.js sysroot|libdrm /new/absolute/output --allow-network");}
+        await (target === "sysroot" ? fetchSysrootPackages : fetchLibdrmArchive)(first, process.env, true);
+        console.log("[native-sdk] Fetched pinned " + (target === "sysroot" ? "glibc sysroot packages" : "libdrm source") + " from the mirror release; no extraction or compilation.");
       } else if (target === "verify-zstd") {
         if (!first || second || permission || extra) {throw new Error("Usage: fetch-native-sdk-sources.js verify-zstd /absolute/source-output");}
         verifyZstdArchive(first);
@@ -927,7 +997,7 @@ if (require.main === module) {
         await fetchZstdArchive(first, process.env, true);
         console.log("[native-sdk] Fetched the original pinned zstd source archive; no extraction or compilation.");
       } else {
-        if (!target || !["linux", "windows", "compiler", "hermes", "acpp", "rocm"].includes(target) || !first || !second || permission !== "--allow-network" || extra) {throw new Error("Usage: fetch-native-sdk-sources.js linux|windows|compiler|hermes|acpp|rocm /absolute/git /new/absolute/output --allow-network | build|io|zstd|windows-host-sdk /new/absolute/output --allow-network | verify-build|verify-io|verify-zstd|verify-windows-host-sdk /absolute/source-output");}
+        if (!target || !["linux", "windows", "compiler", "hermes", "acpp", "rocm"].includes(target) || !first || !second || permission !== "--allow-network" || extra) {throw new Error("Usage: fetch-native-sdk-sources.js linux|windows|compiler|hermes|acpp|rocm /absolute/git /new/absolute/output --allow-network | build|io|zstd|sysroot|libdrm|windows-host-sdk /new/absolute/output --allow-network | verify-build|verify-io|verify-zstd|verify-sysroot|verify-libdrm|verify-windows-host-sdk /absolute/source-output");}
         await fetchSdkSources(/** @type {GitSourceTarget} */ (target), first, second, process.env, true);
         console.log(`[native-sdk] Fetched original ${target} Git roots; no source extraction or compilation.`);
       }
@@ -938,4 +1008,5 @@ if (require.main === module) {
 module.exports = {fetchSdkSources, fetchArchiveCohort, fetchIoArchives, fetchBuildArchives, fetchWindowsOpenSslArchives, fetchNvrtcArchives, fetchWindowsHostSdkArchives,
   verifyBuildArchives, verifyWindowsOpenSslArchives, verifyIoArchives, verifyNvrtcArchives, verifyWindowsHostSdkArchives,
   ioArchiveUrls, buildArchiveUrls, nvrtcArchiveCatalog, zstdArchiveCatalog, origins, runGit, gitSourceComponents, sourceRecipe, ioSourceRecipe, buildSourceRecipe,
-  nvrtcSourceRecipe, zstdSourceRecipe, fetchZstdArchive, verifyZstdArchive, windowsHostSdkCatalog, windowsHostSdkArchiveCatalog, windowsHostSdkSourceRecipe};
+  nvrtcSourceRecipe, zstdSourceRecipe, fetchZstdArchive, verifyZstdArchive, windowsHostSdkCatalog, windowsHostSdkArchiveCatalog, windowsHostSdkSourceRecipe,
+  fetchSysrootPackages, verifySysrootPackages, sysrootArchiveCatalog, sysrootSourceRecipe, fetchLibdrmArchive, verifyLibdrmArchive, libdrmArchiveCatalog};

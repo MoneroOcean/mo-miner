@@ -88,13 +88,14 @@ function targetFixture(f) {
 
 test.describe("Public Linux LLVM 21 source SDK producer", {skip: process.platform !== "linux" || process.arch !== "x64"}, () => {
   test("pins the official source/compiler recipe and keeps the ABI export flags", t => {
-    const f = fixture(t), plan = linuxLlvmSdkPlan(f.archive, f.output, f.tools, 8);
+    const f = fixture(t), plan = linuxLlvmSdkPlan(f.archive, f.output, f.tools, 8, "/sysroot/toolchain.cmake");
     assert.equal(archiveSha256, "4633a23617fa31a3ea51242586ea7fb1da7140e426bd62fc164261fe036aa142");
     assert.equal(path.basename(plan.archive), archiveName);
     assert.equal(plan.jobs, 8);
     assert.equal(plan.sourceOptionsFile, path.join(f.output, "llvm-host-source-options.cmake"));
     assert.ok(plan.configure.includes("-DCMAKE_PROJECT_TOP_LEVEL_INCLUDES=" + plan.sourceOptionsFile));
     assert.ok(plan.configure.includes("-DLLVM_ENABLE_PROJECTS=clang;lld"));
+    assert.ok(plan.configure.includes("-DCMAKE_TOOLCHAIN_FILE=/sysroot/toolchain.cmake"), "the glibc sysroot selects headers and libraries");
     assert.ok(plan.configure.includes("-DLLVM_TARGETS_TO_BUILD=X86;NVPTX;AMDGPU"));
     assert.equal(plan.configure.some(value => value.startsWith("-DLLD_INCLUDE_TESTS=")), false);
     assert.ok(plan.configure.includes("-DCMAKE_EXE_LINKER_FLAGS=-Wl,--export-dynamic"));
@@ -103,8 +104,8 @@ test.describe("Public Linux LLVM 21 source SDK producer", {skip: process.platfor
     assert.ok(plan.configure.includes("-DLLVM_EXPORT_SYMBOLS_FOR_PLUGINS=OFF"));
     assert.ok(plan.configure.includes("-DLLVM_ENABLE_LTO=OFF"));
     assert.ok(plan.selectedConfigure.at(-1)?.includes("<generated-components>"));
-    assert.throws(() => linuxLlvmSdkPlan(f.archive, f.output, {...f.tools, cc: "/intel/clang"}, 2), /Intel tools/);
-    assert.throws(() => linuxLlvmSdkPlan(f.archive, f.output, f.tools, 33), /jobs in 1\.\.32/);
+    assert.throws(() => linuxLlvmSdkPlan(f.archive, f.output, {...f.tools, cc: "/intel/clang"}, 2, "/sysroot/toolchain.cmake"), /Intel tools/);
+    assert.throws(() => linuxLlvmSdkPlan(f.archive, f.output, f.tools, 33, "/sysroot/toolchain.cmake"), /jobs in 1\.\.32/);
   });
 
   test("generates a deferred source-scoped host shim with safe literal path quoting", t => {

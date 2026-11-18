@@ -186,8 +186,9 @@ bundle Node.js, `.node` addons, an application `libs/` runtime tree, or host bui
 operating-system libraries and the GPU vendor's display driver remain host prerequisites. A
 build or package alone is not a published release.
 
-Standalone builds target Linux and Windows x86-64. Linux runtime checks cover Ubuntu 24.04 LTS
-(glibc 2.39); older distributions have not yet been qualified.
+Standalone builds target Linux and Windows x86-64. The Linux executable is built against glibc 2.31
+and needs only the system C library, so it runs on Ubuntu 20.04, Debian 11, RHEL 9 and newer; GPUs
+additionally need a vendor driver that supports the distribution.
 
 ## Linux
 

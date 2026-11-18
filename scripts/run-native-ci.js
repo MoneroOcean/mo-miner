@@ -5,7 +5,7 @@ const path = require("node:path");
 const {runNode} = require("./native-ci-job");
 const {packState, temp} = require("./native-ci-tar");
 const {buildDpcppCudaInputs, buildLinuxGnuHeaders, buildWindowsGnuHeaders, ciPaths, fetchAcppSource, fetchHermesSource,
-  fetchLinuxSources, fetchRocmSources, fetchZstdSource, sourcesTarName, verifyIoSource} = require("./native-ci-linux-sources");
+  fetchLinuxSources, fetchRocmSources, fetchZstdSource, prepareLinuxSysrootCi, sourcesTarName, verifyIoSource} = require("./native-ci-linux-sources");
 const {buildLinuxLlvmCi, buildLinuxLlvmSdkHandoff, buildLinuxLlvmToolsCi} = require("./native-ci-linux-llvm");
 const {buildHermesSdk, buildIoOpenSsl, buildOpenmpSdk, buildZstdSdk} = require("./native-ci-linux-support");
 const {buildLinuxCudaImages, verifyNvrtcTarget} = require("./native-ci-linux-cuda");
@@ -20,7 +20,7 @@ const {buildWindowsGpuProfileCi} = require("./native-ci-windows-gpu");
 
 /** Stages that take no argument beyond their name; each runs on its own native-job.yml job. */
 const linuxStages = Object.freeze({
-  "linux-llvm": buildLinuxLlvmCi, "linux-llvm-installed-sdk": buildLinuxLlvmSdkHandoff,
+  "linux-sysroot": prepareLinuxSysrootCi, "linux-llvm": buildLinuxLlvmCi, "linux-llvm-installed-sdk": buildLinuxLlvmSdkHandoff,
   "linux-llvm-tools": buildLinuxLlvmToolsCi, "acpp-sources": fetchAcppSource, "linux-sources": fetchLinuxSources,
   "dpcpp-cuda-inputs": buildDpcppCudaInputs, "gnu-headers": buildLinuxGnuHeaders, "windows-gnu-headers": buildWindowsGnuHeaders,
   "linux-jit-resources": buildLinuxJitResources, "linux-jit-runtime-proof": packLinuxJitRuntimeProof,

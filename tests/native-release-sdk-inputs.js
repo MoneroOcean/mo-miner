@@ -14,16 +14,19 @@ after(() => fs.rmSync(scratch, {recursive: true, force: true}));
 /** @typedef {Record<string, unknown> & {inputs?: any, libraries?: any, revision?: any, fingerprints?: any,
  * sdkInputs?: any, dependencies?: any, archives?: any}} MutableReceipt */
 
+const {linuxSysrootRecord, linuxSysrootReceiptSha256} = require("../scripts/native-linux-sysroot");
+const sysroot = linuxSysrootRecord({receiptSha256: linuxSysrootReceiptSha256});
 const syclRecipe = ["scripts/build-native-sycl-sdk.js", "scripts/native-sycl-inputs.js", "scripts/native-hcf.js", "scripts/native-jit-link.js",
-  "tests/reference/native-sycl-hcf-repro.cpp",
+  "scripts/native-linux-sysroot.js", "tests/reference/native-sycl-hcf-repro.cpp",
   "tests/reference/native-jit-cache.cpp",
   "scripts/build-environment.js", "scripts/native-audit.js", "scripts/native-resources.js",
   "runtime/adaptivecpp-static.patch", "runtime/adaptivecpp-jit.patch"];
 const hermesRecipe = ["scripts/build-native-hermes.js", "scripts/build-source-inputs.js", "scripts/build-environment.js",
-  "scripts/native-audit.js", "runtime/hermes-host-rejections.patch"];
+  "scripts/native-audit.js", "scripts/native-linux-sysroot.js", "runtime/hermes-host-rejections.patch"];
 const rocmRecipe = ["scripts/build-native-rocm-host-runtime.js", "scripts/build-native-sycl-sdk.js", "scripts/build-native-comgr-sdk.js",
   "scripts/native-comgr-inputs.js", "scripts/prepare-native-sdk-sources.js", "scripts/build-native-release.js",
-  "scripts/build-source-inputs.js", "scripts/build-environment.js", "scripts/native-audit.js", "scripts/native-sycl-inputs.js", "scripts/native-hcf.js"];
+  "scripts/build-source-inputs.js", "scripts/build-environment.js", "scripts/native-audit.js", "scripts/native-sycl-inputs.js", "scripts/native-hcf.js",
+  "scripts/native-linux-sysroot.js", "scripts/build-native-libdrm.js"];
 const syclRevision = "da2463e45aa90aa36306c45abcfc05b87de51bc6";
 
 /** @param {string} file */
@@ -75,7 +78,7 @@ function staticFixture(parent, cuda = false) {
   const cacheFile = path.join(build, "CMakeCache.txt"); write(cacheFile, cache);
   const record = /** @type {MutableReceipt} */ ({version: 1, backend: cuda ? "cuda-hip" : "hip", ...(cuda ? {cudaVersion: 12060} : {}),
     revision: syclRevision, inputs, hostCompilers, hostCompilerInputs, compilerVersions,
-    fingerprints, libraries: hashes(inputs.libraries), recipe: producerRecipe, buildOnly: true, publicationQualified: false,
+    fingerprints, libraries: hashes(inputs.libraries), recipe: producerRecipe, sysroot, buildOnly: true, publicationQualified: false,
     scope: "Fixture of the current build-only AdaptiveCpp result schema."});
   json(path.join(root, "plan.json"), plan); json(receipt, record);
   const patchText = ["runtime/adaptivecpp-static.patch", "runtime/adaptivecpp-jit.patch"].map(name =>
@@ -117,7 +120,7 @@ function hermesFixture(parent, promiseSource) {
     artifactRecords[name] = {path: file, sha256: fileHash(file), bytes: fs.statSync(file).size};
   }
   const record = /** @type {MutableReceipt} */ ({version: 1, target: "linux", pins: hermesPins, source, build, artifacts: artifactRecords, fingerprints,
-    sources: {[promise]: fileHash(path.join(source, promise))}, recipe: recipe(hermesRecipe), buildOnly: true, publicationQualified: false});
+    sources: {[promise]: fileHash(path.join(source, promise))}, recipe: recipe(hermesRecipe), sysroot, buildOnly: true, publicationQualified: false});
   json(receipt, record);
   const gitRunner = /** @type {(command: string, args: string[]) => string} */ (function(_command, args) {
     if (args.includes("rev-parse")) {return hermesPins.revision + "\n";}
@@ -156,13 +159,13 @@ function rocmFixture(parent) {
   const installerOnlyArchives = {hsakmt: {path: installerOnly, bytes: fs.statSync(installerOnly).size, sha256: fileHash(installerOnly)}};
   for (const name of ["hip_runtime.h", "hip_runtime_api.h", "hiprtc.h", "hip_version.h"]) {write(path.join(include, name));}
   const dependencyNames = /** @type {Record<string, string>} */ ({drm: "libdrm.a", drmAmdgpu: "libdrm_amdgpu.a", elf: "libelf.a", numa: "libnuma.a"});
-  const packageOwners = /** @type {Record<string, string>} */ ({drm: "libdrm-dev", drmAmdgpu: "libdrm-dev", elf: "libelf-dev", numa: "libnuma-dev"}),
+  const packageOwners = /** @type {Record<string, string>} */ ({drm: "libdrm", drmAmdgpu: "libdrm", elf: "libelf-dev", numa: "libnuma-dev"}),
     stagedDependencies = /** @type {Record<string, any>} */ ({}), originalDependencies = /** @type {string[]} */ ([]);
   for (const [name, basename] of Object.entries(dependencyNames)) {
     const original = archive(path.join(parent, "os", basename)), staged = archive(path.join(lib, basename)), sha256 = fileHash(original);
     originalDependencies.push(original);
     stagedDependencies[name] = {path: original, sha256, package: packageOwners[name], architecture: "amd64", version: "1.2.3-1",
-      status: "ii", staged, stagedSha256: fileHash(staged)};
+      status: packageOwners[name] === "libdrm" ? "source" : "sysroot", staged, stagedSha256: fileHash(staged)};
   }
   const comgrArchive = archive(path.join(parent, "comgr/libamd_comgr.a")), comgrHeader = write(path.join(parent, "comgr/include/amd_comgr.h"));
   const comgrReceipt = json(path.join(parent, "comgr/result.json"), {version: 1});
@@ -197,7 +200,7 @@ function rocmFixture(parent) {
     toolVersions: {}, toolOrigins: {}, osOrigins, python: {}, hipPchTools: {}, comgrHeaderOverlay, comgr: {
       receipt: comgr.receipt, archive: comgr.archive, llvmVersion: comgr.llvmVersion, roots: comgr.roots}, sdkInputs,
     dependencies, configured, archivesBefore, archivesAfter, installerOnlyArchives, stagedDependencies, consumerAdmission,
-    prefix, recipe: recipe(rocmRecipe), buildOnly: true, executed: false, publicationQualified: false, scope: "ROCm host runtime fixture."});
+    prefix, recipe: recipe(rocmRecipe), sysroot, buildOnly: true, executed: false, publicationQualified: false, scope: "ROCm host runtime fixture."});
   json(receipt, record);
   return {receipt, record, comgr, consumerAdmission};
 }

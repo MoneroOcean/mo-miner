@@ -12,7 +12,8 @@ const {verifyLinuxLlvmAdmission} = require("./build-native-llvm-sdk");
 const {ioPins, nativeIoInputs} = require("./build-native-io");
 const {opensslPin, nativeOpenSslInputs} = require("./build-native-openssl");
 const {zstdPin} = require("./build-native-zstd");
-const {verifyBuildArchives, verifyIoArchives, verifyZstdArchive} = require("./fetch-native-sdk-sources");
+const {verifyBuildArchives, verifyIoArchives, verifyZstdArchive, verifySysrootPackages} = require("./fetch-native-sdk-sources");
+const {prepareLinuxSysroot, applyLinuxSysrootEnvironment, linuxSysrootToolchain} = require("./native-linux-sysroot");
 const ciJit = require("./native-ci-linux-jit"),
   ciSources = require("./native-ci-linux-sources"),
   ciSupport = require("./native-ci-linux-support"),
@@ -172,7 +173,23 @@ function supportPaths(workspace) {
     zstdSdk: path.join(workspace, "zstd-sdk"), zstdTools: path.join(workspace, "zstd-tools.json"),
     openmpSdk: path.join(workspace, "openmp-sdk"), openmpTools: path.join(workspace, "openmp-tools.json"),
     linuxJitResources: path.join(workspace, "linux-jit-resources"), linuxJitTools: path.join(workspace, "linux-jit-tools.json"),
+    sysrootFetch: path.join(workspace, "sysroot-fetch"), sysroot: path.join(workspace, "linux-sysroot"),
     linuxJitAdmission: path.join(workspace, "linux-jit-admission.json")};
+}
+
+/** Fetch the pinned glibc sysroot packages once (networked, from the mirror release), prepare or
+ * re-admit the sysroot inside the workspace, and return the environment that selects it for every
+ * Linux producer. The sysroot tree is deterministic, so an existing one is admitted, never rebuilt.
+ * @param {string} workspace @param {NodeJS.ProcessEnv} environment @param {typeof runCommand} [run] */
+function ensureLocalLinuxSysroot(workspace, environment, run = runCommand) {
+  const paths = supportPaths(workspace);
+  if (!existingDirectory(paths.sysrootFetch, "Linux sysroot package cohort")) {
+    run(process.execPath, [producer("fetch-native-sdk-sources.js"), "sysroot", paths.sysrootFetch, "--allow-network"],
+      {label: "pinned glibc sysroot package fetch", env: {...environment, MOM_AOT_BUILD_ONLY: "1"}, cwd: repo});
+  }
+  verifySysrootPackages(paths.sysrootFetch);
+  if (!existingDirectory(paths.sysroot, "Linux sysroot")) {prepareLinuxSysroot(paths.sysrootFetch, paths.sysroot);}
+  return applyLinuxSysrootEnvironment({...environment, MOM_LINUX_SYSROOT: paths.sysroot});
 }
 
 /** Workspace paths shaped for the shared DPC++/CUDA producer and auditor.
@@ -433,7 +450,7 @@ function buildLocalNativeSupportSdk(context, dependencies = {}) {
   }
   admitSupport("hermes-source", paths, invoke, dependencies);
   if (hermesReused) {admitSupport("hermes-sdk", paths, invoke, dependencies);} else {
-    const command = ciSupport.hermesBuildCommand(/** @type {Parameters<typeof ciSupport.hermesBuildCommand>[0]} */ (hermes), support.hermes, "2");
+    const command = ciSupport.hermesBuildCommand(/** @type {Parameters<typeof ciSupport.hermesBuildCommand>[0]} */ (hermes), support.hermes, "2", linuxSysrootToolchain(env));
     invoke("static Hermes SDK producer", process.execPath, [producer(command.script), ...command.args]);
     admitSupport("hermes-sdk", paths, invoke, dependencies);
   }
@@ -687,7 +704,7 @@ function auditSupportInProcess(kind, workspace) {
     case "compiler-sources": verifyCompilerSources(path.join(paths.compilerSources, "sources.json"), paths.compilerSources, verifyPreparedSdkSources); break;
     case "llvm-sdk": verifyLinuxLlvmAdmission(paths.llvmSdk); break;
     case "hermes-source": ciSources.verifyHermesSource(/** @type {Parameters<typeof ciSources.verifyHermesSource>[0]} */ (/** @type {unknown} */ ({env})), hermes, tools.hermes.git); break;
-    case "hermes-sdk": ciSources.verifyHermesSource(/** @type {Parameters<typeof ciSources.verifyHermesSource>[0]} */ (/** @type {unknown} */ ({env})), hermes, tools.hermes.git); ciSupport.auditHermesSdk(hermes, tools.hermes, "2"); break;
+    case "hermes-sdk": ciSources.verifyHermesSource(/** @type {Parameters<typeof ciSources.verifyHermesSource>[0]} */ (/** @type {unknown} */ ({env})), hermes, tools.hermes.git); ciSupport.auditHermesSdk(hermes, tools.hermes, "2", linuxSysrootToolchain(env)); break;
     case "io-sdk":
       verifyIoArchives(paths.ioSource);
       verifyIoSdk({ioSource: paths.ioSource, ioSdk: paths.ioSdk}, {cmake: tools.cmake, ninja: tools.ninja, openssl: tools.openssl});
@@ -993,7 +1010,7 @@ if (require.main === module) {
   try {main(process.argv.slice(2));} catch (error) {console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1;}
 }
 
-module.exports = {buildLocalNativeSdk, buildLocalNativeSupportSdk, buildLocalCompilerInputs, buildLocalGnuHeaders, buildLocalLinuxJitResources,
+module.exports = {ensureLocalLinuxSysroot, buildLocalNativeSdk, buildLocalNativeSupportSdk, buildLocalCompilerInputs, buildLocalGnuHeaders, buildLocalLinuxJitResources,
   stageLocalCompilerInputs, prepareOrAdmitLinuxSources, prepareOrAdmitWindowsSources, localLinuxJitResourceState, runLocalJitResourceChild, localJitToolsReceipt,
   workspaceOption, main, localTools, localSupportTools, localDpcppCudaRoots, localDpcppCudaState, scopedInvoker, runCommand,
   admitWorkspace, readConfigureState, cgroupMemoryPaths,

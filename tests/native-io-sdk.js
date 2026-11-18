@@ -3,6 +3,8 @@ const fs = require("node:fs"), path = require("node:path"), os = require("node:o
 const {ioPins, nativeIoPlan, validateIoArchive, buildNativeIo, nativeIoInputs} = require("../scripts/build-native-io");
 const {fileHash} = require("../scripts/build-source-inputs");
 const {spawnSync} = require("node:child_process");
+const {linuxSysrootRecord, linuxSysrootReceiptSha256} = require("../scripts/native-linux-sysroot");
+const sysroot = linuxSysrootRecord({receiptSha256: linuxSysrootReceiptSha256});
 const tools = {cmake: "/tools/cmake", cc: "/tools/cc", ninja: "/tools/ninja"};
 /** Synthetic static archives exercise SDK admission, never compilers or mining.
  * @param {import("node:test").TestContext} t */
@@ -12,7 +14,7 @@ function fixture(t) {
   for (const [name, data] of Object.entries({"lib/libuv.a": "!<arch>\n", "lib/libz.a": "!<arch>\n", "include/uv.h": "uv", "include/zlib.h": "zlib", "include/zconf.h": "zconf"})) {
     const file = path.join(root, name); fs.mkdirSync(path.dirname(file), {recursive: true}); fs.writeFileSync(file, data); artifacts[name] = fileHash(file);
   }
-  const receipt = {version: 1, target: "linux", pins: ioPins, buildOnly: true, artifacts};
+  const receipt = {version: 1, target: "linux", pins: ioPins, buildOnly: true, artifacts, sysroot};
   const save = () => fs.writeFileSync(path.join(root, "result.json"), JSON.stringify(receipt)); save();
   return {root, receipt, save};
 }

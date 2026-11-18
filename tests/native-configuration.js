@@ -668,7 +668,12 @@ test.describe("Native compiler ELF namespace isolation", {skip: process.platform
 });
 
 test.describe("Static DPC++ complete-artifact receipts", {skip: process.platform !== "linux"}, () => {
-  const {auditBuild} = require("../scripts/native-dpcpp-pins");
+  const pins = require("../scripts/native-dpcpp-pins");
+  // Fixtures come from the host toolchain, not the release sysroot, so audit them against the host's own glibc.
+  const hostGlibc = /** @type {{header: {glibcVersionRuntime: string}}} */ (/** @type {unknown} */ (process.report.getReport())).header.glibcVersionRuntime;
+  /** @param {string} output @param {boolean} levelZero @param {boolean} [sourceJit] @param {boolean} [cuda] @param {boolean} [opencl] */
+  const auditBuild = (output, levelZero, sourceJit = false, cuda = false, opencl = false) =>
+    pins.auditBuild(output, levelZero, sourceJit, cuda, opencl, hostGlibc);
   let root = "", serial = 0;
   test.before(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-dpcpp-receipts-"));

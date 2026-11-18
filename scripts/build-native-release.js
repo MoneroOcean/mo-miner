@@ -6,7 +6,8 @@ const fs = require("node:fs"), path = require("node:path"), {spawnSync} = requir
 const {fileHash, readBuildJson, sourceInputs, verifySourceInputs, buildFileInputs} = require("./build-source-inputs");
 const {nativeApplicationGpu, nativeApplicationInputs, verifyCudaImageReceiptInputs} = require("./build-native-application");
 const {releaseBuildEnvironment} = require("./build-environment");
-const {nativeDependencies, auditNativeGlibc, isStaticArchive} = require("./native-audit");
+const {nativeDependencies, auditNativeGlibc, auditNativeVersionNeeds, isStaticArchive} = require("./native-audit");
+const {linuxGlibcBaseline, applyLinuxSysrootEnvironment} = require("./native-linux-sysroot");
 const {nativeElf, verifyNativeStrip, elfReport, binutilsIdentity, readelfTool, stripTool} = require("./native-elf");
 const {nativeIoInputs} = require("./build-native-io");
 const {dpcppComponentInputs} = require("./native-dpcpp-component");
@@ -435,7 +436,9 @@ function compactNativeRelease(original, output) {
   if (stripped.error || stripped.signal || stripped.status !== 0) {throw new Error("Native executable stripping failed", {cause: stripped.error});}
   const after = nativeElf(pending); verifyNativeStrip(before, after);
   if (Object.values(tools).some(tool => fileHash(tool.path) !== tool.sha256)) {throw new Error("Native binutils changed during compaction");}
-  const needed = nativeDependencies(elfReport(pending, "--dynamic")), glibc = auditNativeGlibc(elfReport(pending, "--version-info"), "2.39");
+  const versions = elfReport(pending, "--version-info"), needed = nativeDependencies(elfReport(pending, "--dynamic")),
+    glibc = auditNativeGlibc(versions, linuxGlibcBaseline);
+  auditNativeVersionNeeds(versions);
   return {binary, pendingBinary: pending, sha256: after.sha256, bytes: after.bytes, needed, glibc,
     originalSha256: before.sha256, sections: after.sections, tools};
 }
@@ -447,7 +450,9 @@ function compactNativeRelease(original, output) {
 function buildNativeRelease(configFile, output, environment = process.env) {
   if (process.platform !== "linux" || process.arch !== "x64") {throw new Error("Native application orchestration currently supports Linux x86-64 only; Windows is not qualified");}
   if (!absolutePath(configFile) || !absolutePath(output) || fs.lstatSync(output, {throwIfNoEntry: false})) {throw new Error("Select an absolute SDK descriptor and a new absolute native output directory");}
-  const env = /** @type {NodeJS.ProcessEnv} */ ({...releaseBuildEnvironment(environment), MOM_AOT_BUILD_ONLY: "1"});
+  // A selected glibc sysroot reaches every Core/GPU/controller compile and the final link (ICXCFG/ICPXCFG and
+  // explicit flags); without one the final glibc-baseline audit rejects the host-glibc executable.
+  const env = applyLinuxSysrootEnvironment({...releaseBuildEnvironment(environment), MOM_AOT_BUILD_ONLY: "1"});
   const repo = path.resolve(__dirname, "..");
   assertNativeOutputOutsideSources(output, repo);
   const configHash = fileHash(configFile), {sdk, keys} = nativeSdkConfig(readBuildJson(configFile), repo);
@@ -455,7 +460,7 @@ function buildNativeRelease(configFile, output, environment = process.env) {
   // Image selection is profile-local and receipt-bound; ambient shell state must not turn an
   // unrelated profile into an image consumer or bypass the descriptor's source admission.
   delete env["MOM_AOT_CUDA_IMAGES"];
-  const recipe = sourceInputs(repo, [], ["scripts/build-native-release.js", "scripts/build-native-application.js", "scripts/native-elf.js", "scripts/build-release.js", "scripts/build-environment.js", "scripts/build-native-io.js", "scripts/native-dpcpp-component.js", "scripts/native-release-sdk-inputs.js", "scripts/native-cuda-images.js"]);
+  const recipe = sourceInputs(repo, [], ["scripts/build-native-release.js", "scripts/build-native-application.js", "scripts/native-elf.js", "scripts/build-release.js", "scripts/build-environment.js", "scripts/build-native-io.js", "scripts/native-dpcpp-component.js", "scripts/native-release-sdk-inputs.js", "scripts/native-cuda-images.js", "scripts/native-linux-sysroot.js"]);
   nativeIoInputs(sdk.controller.io); // Fail before costly Core/GPU compilation, not at the final controller link.
   const sdkInputs = nativeSdkLinkInputs(sdk); sdk.sdk.links = sdkInputs.links; sdk.sdk.libraries = sdkInputs.libraries; sdk.sdk.sdkObjects = sdkInputs.sdkObjects;
   const components = sdk.components ? nativeReleaseComponents(sdk.components, keys, sdk.sdk, repo, sdkInputs.cudaImageInputs) : null;

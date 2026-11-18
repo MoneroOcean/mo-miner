@@ -5,10 +5,12 @@ const fs = require("node:fs"), path = require("node:path"), {spawnSync} = requir
 const {fileHash, sourceInputs, verifySourceInputs, readBuildJson} = require("./build-source-inputs");
 const {nativeSdkEnvironment} = require("./build-environment");
 const {isStaticArchive} = require("./native-audit");
+const {requireLinuxSysroot, linuxSysrootRecord, verifyLinuxSysrootRecord} = require("./native-linux-sysroot");
 const repo = path.resolve(__dirname, "..");
 const zstdPin = Object.freeze({version: "1.5.7", sha256: "eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3"});
 const sourceBase = "zstd-" + zstdPin.version;
-const sourceLeaves = ["scripts/build-native-zstd.js", "scripts/build-source-inputs.js", "scripts/build-environment.js", "scripts/native-audit.js"];
+const sourceLeaves = ["scripts/build-native-zstd.js", "scripts/build-source-inputs.js", "scripts/build-environment.js", "scripts/native-audit.js",
+  "scripts/native-linux-sysroot.js"];
 const maxArchiveBytes = 16 << 20, maxExpandedBytes = 64 << 20, maxArchiveMembers = 2048,
   maxSourceBytes = 16 << 20, maxSourceFiles = 512, maxLibraryBytes = 16 << 20;
 const isHash = (/** @type {unknown} */ value) => typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
@@ -237,7 +239,7 @@ function buildNativeZstd(archive, output, config, environment = process.env, con
   if (archiveSha256 !== zstdPin.sha256) {throw new Error("Static zstd archive SHA256 differs from the pinned original 1.5.7 release");}
   const configHash = configSha256 || createHash("sha256").update(JSON.stringify(config)).digest("hex");
   if (!isHash(configHash)) {throw new Error("Invalid static zstd tool descriptor digest");}
-  const recipe = sourceInputs(repo, [], sourceLeaves), env = nativeSdkEnvironment(environment);
+  const recipe = sourceInputs(repo, [], sourceLeaves), env = nativeSdkEnvironment(environment), sysroot = requireLinuxSysroot(env);
   for (const key of ["MAKEFLAGS", "MFLAGS", "GNUMAKEFLAGS", "MAKEOVERRIDES", "MAKELEVEL", "NMAKEFLAGS", "NMAKE", "AS", "ASFLAGS", "ARFLAGS", "CFLAGS", "CPPFLAGS", "LDFLAGS", "SHELL"]) {delete env[key];}
   const tar = tools["tar"], listArgs = ["-tzf", archive], verboseArgs = ["-tvzf", archive];
   const listing = spawnSync(tar, listArgs, {env, encoding: "utf8", timeout: 60000, maxBuffer: 8 << 20});
@@ -280,7 +282,7 @@ function buildNativeZstd(archive, output, config, environment = process.env, con
     source: {files: sourceBefore.count, bytes: sourceBefore.bytes, sha256: sourceBefore.sha256,
       notices: {LICENSE: {path: "source/LICENSE", sha256: fileHash(path.join(plan.source, "LICENSE"))},
         COPYING: {path: "source/COPYING", sha256: fileHash(path.join(plan.source, "COPYING"))}}},
-    config: {sha256: configHash}, tools: toolHashes, compiler: {version: compilerVersion}, recipe,
+    config: {sha256: configHash}, tools: toolHashes, compiler: {version: compilerVersion}, recipe, sysroot: linuxSysrootRecord(sysroot),
     plan: {jobs: plan.jobs, buildCommand: plan.buildCommand, target: plan.buildArchive, staticMode: plan.staticMode},
     buildOutput, install: archiveOutput, artifacts, buildOnly: true, executed: false, publicationQualified: false,
     scope: "Build-only static multithreaded libzstd 1.5.7 archive; no CLI, tests, shared library or release qualification."};
@@ -294,7 +296,7 @@ function buildNativeZstd(archive, output, config, environment = process.env, con
 function nativeZstdInputs(root) {
   if (!absolute(root) || fs.realpathSync(root) !== root) {throw new Error("Select a canonical static zstd SDK root");}
   const receiptPath = path.join(root, "result.json"), receiptSha256 = fileHash(receiptPath), record = readBuildJson(receiptPath);
-  const expectedKeys = ["archive", "artifacts", "buildOnly", "buildOutput", "compiler", "config", "executed", "install", "plan", "platform", "publicationQualified", "recipe", "scope", "source", "target", "tools", "version", "zstdVersion"];
+  const expectedKeys = ["archive", "artifacts", "buildOnly", "buildOutput", "compiler", "config", "executed", "install", "plan", "platform", "publicationQualified", "recipe", "scope", "source", "sysroot", "target", "tools", "version", "zstdVersion"];
   if (!record || typeof record !== "object" || Array.isArray(record) || Object.keys(record).sort().join(",") !== expectedKeys.sort().join(",") ||
       record.version !== 1 || record.zstdVersion !== zstdPin.version || record.platform !== "linux" || record.target !== "x86_64-linux-gnu" ||
       record.archive?.sha256 !== zstdPin.sha256 || !absolute(record.archive?.path) || !Number.isSafeInteger(record.archive?.bytes) ||
@@ -311,7 +313,7 @@ function nativeZstdInputs(root) {
     throw new Error("Static zstd SDK tool receipt is incomplete");
   }
   const tools = verifyZstdTools(record.tools);
-  verifyZstdArchiveInput(record.archive); verifyZstdRecipe(record.recipe);
+  verifyZstdArchiveInput(record.archive); verifyZstdRecipe(record.recipe); verifyLinuxSysrootRecord(record.sysroot, "Static zstd SDK");
   const toolPaths = Object.fromEntries(Object.entries(tools).map(([name, row]) => [name, row.path]));
   const plan = zstdSdkPlan(root, record.archive.path, toolPaths, record.plan.jobs, "linux");
   if (record.plan.staticMode !== plan.staticMode || record.plan.target !== plan.buildArchive ||

@@ -264,6 +264,38 @@ approval. Successful private application outputs are removed. Failed outputs occ
 This path does not install system packages: pinned Node, Intel 2026.2, CUDA, and OS development
 prerequisites must already be installed. Missing prerequisites fail before SDK acquisition.
 
+### glibc 2.31 baseline
+
+The Linux executable targets glibc 2.31 (Ubuntu 20.04+, Debian 11+, RHEL 9+). Every Linux SDK
+producer, the Core/GPU factories and the final link compile against a pinned sysroot instead of
+the build host's headers and libraries: focal glibc 2.31, focal kernel headers, focal `libelf`
+and `libnuma` static archives, and the GCC 14 `libstdc++`/`libgcc` built for focal by the
+ubuntu-toolchain-r PPA. The packages are mirrored in the `sysroot-inputs-v1` GitHub pre-release
+(which also keeps their source packages and signed indexes) and pinned by SHA-256 in
+`scripts/native-linux-sysroot.js`; `fetch-native-sdk-sources.js sysroot|verify-sysroot` acquires
+and checks them, and `native-linux-sysroot.js prepare|audit` extracts and admits the
+deterministic tree. ROCm's `libdrm`/`libdrm_amdgpu` are built from the pinned upstream 2.4.125
+release (`build-native-libdrm.js`, fetched from the same release) because distro archives carry
+the build host's glibc symbol versions.
+
+`MOM_LINUX_SYSROOT` selects a prepared sysroot. `nativeSdkEnvironment` then sets `ICXCFG`/`ICPXCFG`
+(a config file with `--sysroot` and `--gcc-install-dir`), `CMAKE_TOOLCHAIN_FILE` (which keeps
+CMake's header and library searches inside the sysroot) and the pkg-config search paths; ambient
+values of those variables are rejected. LLVM and DPC++ `clang` receive the same flags explicitly.
+The local `npm run build:release` prepares the sysroot in its workspace, and every
+`native-job.yml` job prepares it at `/tmp/mom-native-linux-sysroot-ci` before its producer runs.
+Every SDK receipt records the sysroot receipt's SHA-256, and object-cache and Actions cache keys
+include it, so SDKs built against another glibc are rebuilt rather than reused. The local build
+additionally needs `dpkg-deb` and `meson`.
+
+The final link no longer uses `-z pack-relative-relocs`: DT_RELR adds a `GLIBC_ABI_DT_RELR`
+need that glibc older than 2.36 refuses to load. It also links `librt`, where `shm_open` lives
+before glibc 2.34. The release audit rejects any `GLIBC_` version above 2.31 and any symbol-version
+need outside the allowed glibc libraries (for example a dynamic `libstdc++`), and the release test
+workflow's `glibc-floor` lane runs `mom algorithms` without network in pinned ubuntu:20.04,
+debian:11 and rockylinux:9 images (`scripts/check-native-glibc-floor.sh`). GPU drivers remain
+external: an old distribution can use a GPU only where its vendor still ships a runtime for it.
+
 On Windows x64, the same no-argument command uses native Windows support producers together with
 an already-installed WSL2 distribution for Linux source preparation and the remaining SDK and
 application stages. Select the distribution explicitly when more than one is installed:

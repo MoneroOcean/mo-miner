@@ -99,14 +99,17 @@ function sdkSourceEnvironment(environment) {
 }
 
 /** Native SDK builds must not inherit compiler/setup hooks. Windows INCLUDE/LIB remain
- * scoped to the selected SDK, while all commands still use explicit compiler paths.
+ * scoped to the selected SDK, while all commands still use explicit compiler paths. Intel compiler
+ * configuration files and pkg-config search paths come only from MOM_LINUX_SYSROOT; ambient values
+ * are rejected rather than dropped so a developer's setting cannot be silently ignored.
  * @param {NodeJS.ProcessEnv} environment */
 function nativeSdkEnvironment(environment) {
   const env = sdkSourceEnvironment(environment);
   for (const key of Object.keys(env)) {
     if (/^(?:CMAKE_.*|CC|CXX|CFLAGS|CXXFLAGS|CPPFLAGS|LDFLAGS|CL|_CL_|LINK|_LINK_|PYTHONPATH|PYTHONHOME|BASH_ENV|BASH_FUNC_.*|ENV|LD_PRELOAD|DYLD_INSERT_LIBRARIES)$/i.test(key)) {delete env[key];}
   }
-  return env;
+  // Loaded here so the PATH normalizer and release policy stay a dependency-free helper.
+  return require("./native-linux-sysroot").applyLinuxSysrootEnvironment(env);
 }
 
 module.exports = {normalizeBuildEnvironment, releaseBuildEnvironment, sdkSourceEnvironment, nativeSdkEnvironment};

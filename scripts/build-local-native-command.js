@@ -101,8 +101,10 @@ function runLocalNativeRelease(workspace) {
   fs.mkdirSync(stage, {mode: 0o700});
   let published = false;
   try {
-    const sdk = require("./build-local-native-linux-sdk").buildLocalLinuxSdk({workspace}, {environment: env}),
-      result = require("./build-local-native-distribution").buildLocalNativeDistribution(sdk, path.join(stage, "candidate"), env),
+    // The SDK producers and the application link both use the pinned glibc sysroot.
+    const sysrootEnv = local.ensureLocalLinuxSysroot(workspace, env),
+      sdk = require("./build-local-native-linux-sdk").buildLocalLinuxSdk({workspace}, {environment: sysrootEnv}),
+      result = require("./build-local-native-distribution").buildLocalNativeDistribution(sdk, path.join(stage, "candidate"), sysrootEnv),
       output = publishLocalDistribution(result, repo);
     published = true;
     console.log(`[native] Built ${output.archive}\n[native] SHA256 ${output.sha256}; build audited, not runtime/publication qualified.`);

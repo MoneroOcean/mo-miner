@@ -11,6 +11,7 @@ const {compilerEnvironment: sdkCompilerEnvironment, sdkHostEnvironment, verifyCo
 const {isStaticArchive} = require("./native-audit");
 const {isDeepStrictEqual} = require("node:util"), {dpcppEntries} = require("./native-compiler-isolation");
 const {exportDpcppComponent} = require("./native-dpcpp-component");
+const {requireLinuxSysroot, linuxSysrootRecord} = require("./native-linux-sysroot");
 const repo = path.resolve(__dirname, "..");
 
 /** Share the producer's exact source graph with warm SDK admission instead of copying its file list. */
@@ -18,7 +19,7 @@ function linuxStaticSdkRecipe() {
   return sourceInputs(repo, ["tests/native/dpcpp-static"], ["scripts/build-native-dpcpp-sdk.js", "scripts/prepare-native-sdk-sources.js",
     "scripts/build-source-inputs.js", "scripts/build-environment.js", "scripts/build-native-sycl-sdk.js", "scripts/build-native-release.js",
     "scripts/native-sycl-inputs.js", "scripts/native-hcf.js", "scripts/native-jit-link.js", "scripts/native-comgr-inputs.js", "scripts/native-dpcpp-pins.js",
-    "scripts/native-audit.js", "scripts/native-dpcpp-component.js",
+    "scripts/native-audit.js", "scripts/native-dpcpp-component.js", "scripts/native-linux-sysroot.js",
     "scripts/native-cuda-adapter.js", "scripts/native-level-zero-adapter.js", "scripts/native-compiler-isolation.js", "runtime/system-driver.h",
     "runtime/driver-library.cpp", "tests/reference/native-dpcpp-static.cpp", "tests/reference/native-static-adapter-selection.cpp",
     "tests/reference/native-umf-static.cpp", "tests/reference/native-level-zero-static.cpp", "tests/reference/native-opencl-binding.cpp", "tests/native/driver-library.cpp"]);
@@ -105,7 +106,7 @@ function linuxSdkDependencies(text, base) {
  * @param {string} output @param {Tools} tools @param {number} jobs @param {NodeJS.ProcessEnv} [environment] */
 function buildLinuxStaticSdk(sourcesFile, sdk, cuda, jit, output, tools, jobs, environment = process.env) {
   if (process.platform !== "linux" || process.arch !== "x64" || environment["MOM_AOT_BUILD_ONLY"] !== "1") {throw new Error("Linux SDK production requires Linuxx64 and MOM_AOT_BUILD_ONLY=1");}
-  const env = nativeSdkEnvironment(environment);
+  const env = nativeSdkEnvironment(environment), sysroot = requireLinuxSysroot(env);
   const sourceHash = fileHash(sourcesFile), selected = verifyPreparedSdkSources(sourcesFile, "linux");
   const roots = validateSourceRoots(Object.fromEntries(Object.entries(selected.prepared).map(([name, row]) => [name, row.root])), output);
   const hwloc = roots["hwloc"]; if (!hwloc) {throw new Error("Missing admitted hwloc source root");}
@@ -155,7 +156,7 @@ function buildLinuxStaticSdk(sourcesFile, sdk, cuda, jit, output, tools, jobs, e
   if (!isStaticArchive(archive)) {throw new Error("Linux SDK host runtime is not a static archive");}
   const audit = auditBuild(plan.build, true, true, true, true);
   const result = {version: 1, target: "linux", pins, sourcesFile, inputs, headers, dependencies, recipe, hostCompilers: plan.hostCompilers, compilerVersions,
-    archive, sha256: fileHash(archive), audit, buildOnly: true, executed: false, publicationQualified: false,
+    archive, sha256: fileHash(archive), audit, sysroot: linuxSysrootRecord(sysroot), buildOnly: true, executed: false, publicationQualified: false,
     scope: "Original full Linux SYCL/UR/static loader sources with isolated source JIT; no GPU, runtime, mining or publication qualification"};
   fs.writeFileSync(path.join(output, "result.json"), JSON.stringify(result, null, 2) + "\n", {flag: "wx"});
   exportDpcppComponent(path.join(output, "result.json"), tools.ninja, output + ".component", environment);

@@ -21,6 +21,8 @@ const {acppStatePaths, dpcppCudaInputPins, dpcppCudaInputsStatePaths, dpcppSourc
   verifyRocmSources} = require("./native-ci-linux-sources");
 const {auditDpcppCudaInputs} = require("./native-dpcpp-cuda-inputs");
 const {admitLinuxLlvmOutput} = require("./native-ci-linux-llvm");
+const {requireLinuxSysroot} = require("./native-linux-sysroot");
+const {libdrmPin, nativeLibdrmInputs} = require("./build-native-libdrm");
 const repo = path.resolve(__dirname, "..");
 
 const rocmHipHeaderPatch = "scripts/patches/rocm-hip-headers-only.patch",
@@ -220,7 +222,9 @@ function rocmHostStatePaths(paths, environment = process.env) {
   if (environment["MOM_NATIVE_ROCM_HOST_SDK_DIR"] !== hostSdkRoot || path.dirname(runtimeOutput) !== hostSdkRoot) {
     throw new Error("Native ROCm host SDK output root must exactly match this workflow run");
   }
-  return {...comgr, hostSdkName, hostSdkRoot, runtimeOutput, configFile, incomingComgrTar, hostSdkTar};
+  // The source-built libdrm travels inside the host SDK root because ROCm admission rehashes its archives.
+  return {...comgr, hostSdkName, hostSdkRoot, runtimeOutput, configFile, incomingComgrTar, hostSdkTar,
+    libdrmSource: path.join(hostSdkRoot, "libdrm-source"), libdrmSdk: path.join(hostSdkRoot, "libdrm")};
 }
 
 /** @param {Pick<RocmComgrBuildState, "source" | "llvmSdk" | "hipIncludeRoot">} state
@@ -484,43 +488,41 @@ function rocmHostBuildTools(state) {
     cxx: canonicalExecutable("/opt/intel/oneapi/compiler/2026.2/bin/icpx")};
 }
 
-/** Query the installed libdrm metadata and keep static OS archive paths tied to its selected libdir.
- * @param {Pick<ReturnType<typeof rocmHostStatePaths>, "source" | "llvmSdk" | "sdkRoot" | "resourcesRoot">} state
- * @param {ReturnType<typeof rocmHostBuildTools>} tools */
-function rocmHostBuildConfig(state, tools) {
-  const environment = {...process.env};
-  for (const name of Object.keys(environment)) {
-    if (/^PKG_CONFIG_(?:PATH|LIBDIR|SYSROOT_DIR)$/i.test(name)) {delete environment[name];}
-  }
-  environment["LC_ALL"] = "C";
-  /** @param {string[]} args */
-  const query = args => {
-    const result = spawnSync(tools.pkgConfig, args, {encoding: "utf8", env: environment, timeout: 30000, maxBuffer: 1 << 20});
-    if (result.error || result.signal || result.status !== 0 || result.stderr || typeof result.stdout !== "string" || !result.stdout.trim()) {
-      throw new Error("Native ROCm host pkg-config query failed: " + args.join(" "), {cause: result.error});
-    }
-    return result.stdout.trim();
-  };
-  const pkgConfigDir = query(["--variable=pcfiledir", "libdrm"]), amdgpuPkgConfigDir = query(["--variable=pcfiledir", "libdrm_amdgpu"]),
-    libraryDir = query(["--variable=libdir", "libdrm"]), amdgpuLibraryDir = query(["--variable=libdir", "libdrm_amdgpu"]);
-  if (![pkgConfigDir, libraryDir].every(path.isAbsolute) || amdgpuPkgConfigDir !== pkgConfigDir || amdgpuLibraryDir !== libraryDir) {
-    throw new Error("Native ROCm host libdrm packages do not share one canonical pkg-config/lib directory");
-  }
+/** Static OS inputs: libelf/libnuma from the glibc sysroot and libdrm from its admitted source-built SDK.
+ * @param {Pick<ReturnType<typeof rocmHostStatePaths>, "source" | "llvmSdk" | "sdkRoot" | "resourcesRoot" | "libdrmSdk">} state
+ * @param {ReturnType<typeof rocmHostBuildTools>} tools @param {NodeJS.ProcessEnv} environment */
+function rocmHostBuildConfig(state, tools, environment) {
+  const sysroot = requireLinuxSysroot(environment), libdrm = nativeLibdrmInputs(state.libdrmSdk),
+    systemLibraries = path.join(sysroot.root, "usr/lib/x86_64-linux-gnu");
   return {version: 1, sources: {clr: path.join(state.source, "roots/clr"), hip: path.join(state.source, "roots/hip"),
     rocr: path.join(state.source, "roots/rocr")},
   tools: {ar: tools.ar, cmake: tools.cmake, dpkgQuery: tools.dpkgQuery, git: tools.git, llvmObjcopy: tools.llvmObjcopy,
     ninja: tools.ninja, perl: tools.perl, pkgConfig: tools.pkgConfig, python3: tools.python3, ranlib: tools.ranlib, tar: tools.tar, xxd: tools.xxd},
   hostCompilers: {cc: tools.cc, cxx: tools.cxx},
-  dependencies: {drm: path.join(libraryDir, "libdrm.a"), drmAmdgpu: path.join(libraryDir, "libdrm_amdgpu.a"),
-    elf: path.join(libraryDir, "libelf.a"), numa: path.join(libraryDir, "libnuma.a")},
-  pkgConfigDir, comgrReceipt: path.join(state.sdkRoot, "result.json")};
+  dependencies: {drm: libdrm.drm, drmAmdgpu: libdrm.drmAmdgpu, elf: path.join(systemLibraries, "libelf.a"), numa: path.join(systemLibraries, "libnuma.a")},
+  libdrm: libdrm.root, pkgConfigDir: libdrm.pkgConfigDir, comgrReceipt: path.join(state.sdkRoot, "result.json")};
+}
+
+/** Fetch (networked, from the pinned mirror release) and build the static libdrm SDK, or admit an existing one.
+ * @param {{libdrmSource: string, libdrmSdk: string}} state @param {NodeJS.ProcessEnv} env */
+function buildLibdrmSdk(state, env) {
+  if (!fs.existsSync(state.libdrmSource)) {
+    runNode("scripts/fetch-native-sdk-sources.js", ["libdrm", state.libdrmSource, "--allow-network"], env, 10 * 60 * 1000);
+  }
+  runNode("scripts/fetch-native-sdk-sources.js", ["verify-libdrm", state.libdrmSource], env, 2 * 60 * 1000);
+  if (!fs.existsSync(state.libdrmSdk)) {
+    runNode("scripts/build-native-libdrm.js", [path.join(state.libdrmSource, libdrmPin.fileName), state.libdrmSdk,
+      canonicalExecutable("/opt/intel/oneapi/compiler/2026.2/bin/icx"), canonicalExecutable("/usr/bin/meson"),
+      canonicalExecutable("/usr/bin/ninja"), canonicalExecutable("/usr/bin/tar")], env, 20 * 60 * 1000);
+  }
+  return nativeLibdrmInputs(state.libdrmSdk);
 }
 
 /** APT is only for host build prerequisites. The public producer runs afterward from local pinned inputs.
  * @param {Pick<ReturnType<typeof import("./native-ci-linux-sources").ciPaths>, "env">} paths @param {typeof spawnSync} [runner]
  * @returns {{mode:"already-installed",packages:Record<string,string>}|undefined} */
 function provisionRocmHostPackages(paths, runner = spawnSync) {
-  const packageNames = ["libdrm-dev", "libelf-dev", "libnuma-dev", ...Object.keys(rocmPinnedHostPackages)],
+  const packageNames = ["libdrm-dev", "meson", ...Object.keys(rocmPinnedHostPackages)],
     // eslint-disable-next-line no-template-curly-in-string -- dpkg-query, not JavaScript, expands these fields.
     format = "${Package}\t${Version}\t${db:Status-Abbrev}\n",
     installed = runner("/usr/bin/dpkg-query", ["-W", "-f=" + format, ...packageNames],
@@ -554,7 +556,8 @@ function provisionRocmHostPackages(paths, runner = spawnSync) {
       Object.entries(rocmPinnedHostPackages).some(([name, version]) => !available.has(name + "=" + version))) {
     throw new Error("Pinned ROCm host prerequisite package versions are not available from the Ubuntu runner repositories");
   }
-  apt(["install", "-y", "--no-install-recommends", "--allow-downgrades", "libdrm-dev", "libelf-dev", "libnuma-dev",
+  // libdrm-dev supplies only the Debian copyright text captured for notices; meson builds the pinned libdrm source.
+  apt(["install", "-y", "--no-install-recommends", "--allow-downgrades", "libdrm-dev", "meson",
     ...Object.entries(rocmPinnedHostPackages).map(([name, version]) => name + "=" + version)], 10 * 60 * 1000, "pinned OS packages");
   return undefined;
 }
@@ -641,11 +644,13 @@ function auditRocmHostSdk(state, config) {
 /** @typedef {{format:string,completeNativeNotices:boolean,runtimeReceipt:{file:string,sha256:string},packages:RocmNoticePackageFile[],
  * sourceLicense:{component:string,file:string,sha256:string,bytes:number,sourceArchive:{name:string,sha256:string},revision:string}}} RocmNoticeManifest */
 
-/** Bind package-owned static ROCm inputs to their exact Debian copyright bodies and the
- * already-admitted hsakmt source license. This is an incomplete notice-source subset. @param {RocmNoticeReceipt} record */
+/** Bind the static ROCm OS inputs to their exact Debian copyright bodies and the already-admitted hsakmt
+ * source license. libelf/libnuma texts come from the sysroot packages; the upstream libdrm release has no
+ * license file, so its text is the host libdrm-dev package's. This is an incomplete notice-source subset.
+ * @param {RocmNoticeReceipt} record */
 function rocmHostNoticeRows(record) {
   const packageInputs = /** @type {Array<[RocmNoticeKey,string]>} */ ([["drm", "libdrm-dev"], ["drmAmdgpu", "libdrm-dev"],
-    ["elf", "libelf-dev"], ["numa", "libnuma-dev"]]);
+      ["elf", "libelf-dev"], ["numa", "libnuma-dev"]]), producer = require("./build-native-rocm-host-runtime");
   if (!record || !record.osOrigins || !record.stagedDependencies || !record.sourceArchives || !record.sources?.files ||
       !hasExactKeys(record.osOrigins, packageInputs.map(([key]) => key)) ||
       !hasExactKeys(record.stagedDependencies, packageInputs.map(([key]) => key))) {
@@ -655,7 +660,8 @@ function rocmHostNoticeRows(record) {
   for (const [key, packageName] of packageInputs) {
     const origin = record.osOrigins[key], staged = record.stagedDependencies[key];
     if (!origin || !staged || !hasExactKeys(origin, ["path", "sha256", "package", "architecture", "version", "status"]) ||
-        origin.package !== packageName || origin.architecture !== "amd64" || origin.status !== "ii" ||
+        origin.package !== producer.packageOwners[key] || origin.architecture !== "amd64" ||
+        origin.status !== (origin.package === "libdrm" ? "source" : "sysroot") ||
         !path.isAbsolute(origin.path) || !/^[a-f0-9]{64}$/.test(origin.sha256 || "") || typeof origin.version !== "string" || !origin.version ||
         !hasExactKeys(staged, ["path", "sha256", "package", "architecture", "version", "status", "staged", "stagedSha256"])) {
       throw new Error("ROCm static archive origin is not bound to its installed package: " + key);
@@ -675,21 +681,27 @@ function rocmHostNoticeRows(record) {
   return [...grouped.values()].sort((a, b) => a.package.localeCompare(b.package));
 }
 
-/** Capture exact current package docs after the public ROCm producer has recorded archive origins.
+/** Capture the copyright bodies after the public ROCm producer has recorded the static archive origins.
  * @param {ReturnType<typeof rocmHostStatePaths>} state @param {ReturnType<typeof auditRocmHostSdk>} admitted
  * @param {NodeJS.ProcessEnv} env */
 function captureRocmHostNoticeSources(state, admitted, env = process.env) {
-  const packageRows = rocmHostNoticeRows(admitted.record), producer = require("./build-native-rocm-host-runtime"),
-    dpkgQuery = canonicalExecutable("/usr/bin/dpkg-query"), copied = [];
+  const packageRows = rocmHostNoticeRows(admitted.record), sysroot = requireLinuxSysroot(env), copied = [];
   for (const row of packageRows) {
-    const originsMatch = () => row.archives.every(item =>
-      isDeepStrictEqual(producer.packageOrigin(item.path, env, dpkgQuery, row.package), admitted.record.osOrigins[item.key]));
+    const originsMatch = () => row.archives.every(item => fileHash(item.path) === admitted.record.osOrigins[item.key].sha256);
     if (!row.archives.length || !originsMatch()) {
-      throw new Error("ROCm package changed between static archive admission and copyright capture: " + row.package);
+      throw new Error("ROCm static input changed between admission and copyright capture: " + row.package);
     }
-    const captured = capturePackageCopyright({root: state.hostSdkRoot}, row.package, row.version), file = path.relative(state.hostSdkRoot, captured.path).split(path.sep).join("/");
+    let captured;
+    if (row.package === "libdrm-dev") {captured = capturePackageCopyright({root: state.hostSdkRoot}, row.package, row.version);} else {
+      const source = path.join(sysroot.root, row.sourcePath), destination = path.join(state.hostSdkRoot, "licenses", row.package, "copyright");
+      fs.mkdirSync(path.dirname(destination), {recursive: true, mode: 0o755});
+      fs.copyFileSync(source, destination, fs.constants.COPYFILE_EXCL);
+      captured = {path: destination, sha256: fileHash(source)};
+      if (fileHash(destination) !== captured.sha256) {throw new Error("Copied sysroot copyright differs from its source: " + row.package);}
+    }
+    const file = path.relative(state.hostSdkRoot, captured.path).split(path.sep).join("/");
     if (!originsMatch()) {
-      throw new Error("ROCm package changed while its copyright body was captured: " + row.package);
+      throw new Error("ROCm static input changed while its copyright body was captured: " + row.package);
     }
     copied.push({...row, file, sha256: captured.sha256, bytes: fs.statSync(captured.path).size});
   }
@@ -778,9 +790,11 @@ function buildRocmHostSdk(paths) {
   provisionOneApi(paths, "/var/tmp/mom-dev-native-rocm-host-" + paths.suffix, 15 * 60 * 1000);
   admitLinuxLlvmOutput(paths);
   fs.unlinkSync(state.incomingComgrTar);
-  const parser = prepareRocmHostAdmission(paths, state), tools = rocmHostBuildTools(state), config = rocmHostBuildConfig(state, tools);
-  auditRocmComgrSdk(state, {cc: tools.cc, cxx: tools.cxx, cmake: tools.cmake});
+  const parser = prepareRocmHostAdmission(paths, state), tools = rocmHostBuildTools(state);
   fs.mkdirSync(state.hostSdkRoot, {mode: 0o700});
+  buildLibdrmSdk(state, paths.env);
+  const config = rocmHostBuildConfig(state, tools, paths.env);
+  auditRocmComgrSdk(state, {cc: tools.cc, cxx: tools.cxx, cmake: tools.cmake});
   fs.writeFileSync(state.configFile, JSON.stringify(config, null, 2) + "\n", {flag: "wx", mode: 0o600});
   fs.writeFileSync(path.join(state.hostSdkRoot, "python-parser-install.json"), JSON.stringify(parser, null, 2) + "\n", {flag: "wx", mode: 0o600});
   const buildEnv = {...env, MOM_BUILD_JOBS: ciBuildJobs(env), MOM_AOT_BUILD_ONLY: "1"};
@@ -797,4 +811,4 @@ module.exports = {acppCudaHipSdkBuildCommand, acppCudaHipSdkStatePaths, admitRoc
   auditRocmHostSdk, buildAcppCudaHipSdk, buildRocmComgrFromInputs, buildRocmComgrSdk, buildRocmHostSdk,
   captureRocmHostNoticeSources, exportRocmSourceTree, hipHeaderConfigureCommand, installRocmParserSource,
   prepareRocmHostAdmission, provisionRocmHostPackages, rocmClrHipamdTreeish, rocmComgrBuildCommands, rocmComgrStatePaths,
-  rocmHostBuildConfig, rocmHostBuildTools, rocmHostNoticeRows, rocmHostStatePaths, rocmResourcesConfig};
+  rocmHostBuildConfig, rocmHostBuildTools, rocmHostNoticeRows, rocmHostStatePaths, rocmResourcesConfig, buildLibdrmSdk};

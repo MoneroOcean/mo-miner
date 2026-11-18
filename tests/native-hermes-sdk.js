@@ -36,7 +36,8 @@ function resumeFixture(/** @type {import("node:test").TestContext} */ t, target 
   }
   const before = {pins: hermesPins, recipe: oldRecipe, fingerprints: oldFingerprints, sources, configure: plan.configure, compile: plan.compile};
   const result = {version: 1, target, pins: hermesPins, source: plan.source, build: plan.build, artifacts,
-    fingerprints: oldFingerprints, sources, recipe: oldRecipe, buildOnly: true, publicationQualified: false};
+    fingerprints: oldFingerprints, sources, recipe: oldRecipe, ...(target === "linux" ? {sysroot: {baseline: "2.31", receiptSha256: "d".repeat(64)}} : {}),
+    buildOnly: true, publicationQualified: false};
   fs.writeFileSync(path.join(build, "CMakeCache.txt"), ["CMAKE_HOME_DIRECTORY:INTERNAL=" + source,
     "CMAKE_CACHEFILE_DIR:INTERNAL=" + build, "CMAKE_GENERATOR:INTERNAL=Ninja", ...plan.configure.filter(arg => arg.startsWith("-D")).map(arg => {
       const match = arg.match(/^-D([^:=]+)(?::([^=]+))?=(.*)$/); if (!match) {throw new Error("invalid fixture plan");}

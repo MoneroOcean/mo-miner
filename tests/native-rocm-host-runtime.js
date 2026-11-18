@@ -13,9 +13,9 @@ const config = () => ({version: 1,
   tools: {ar: "/usr/bin/x86_64-linux-gnu-ar", cmake: "/usr/bin/cmake", dpkgQuery: "/usr/bin/dpkg-query", git: "/usr/bin/git", llvmObjcopy: "/opt/llvm21-ubuntu24/bin/llvm-objcopy",
     ninja: "/usr/bin/ninja", perl: "/usr/bin/perl", pkgConfig: "/usr/bin/pkgconf", python3: "/usr/bin/python3.12",
     ranlib: "/usr/bin/x86_64-linux-gnu-ranlib", tar: "/usr/bin/tar", xxd: "/usr/bin/xxd"},
-  hostCompilers: host, pkgConfigDir: "/usr/lib/x86_64-linux-gnu/pkgconfig",
-  dependencies: {drm: "/usr/lib/x86_64-linux-gnu/libdrm.a", drmAmdgpu: "/usr/lib/x86_64-linux-gnu/libdrm_amdgpu.a",
-    elf: "/usr/lib/x86_64-linux-gnu/libelf.a", numa: "/usr/lib/x86_64-linux-gnu/libnuma.a"}, comgrReceipt: "/comgr/result.json"});
+  hostCompilers: host, libdrm: "/libdrm", pkgConfigDir: "/libdrm/sdk/lib/pkgconfig",
+  dependencies: {drm: "/libdrm/sdk/lib/libdrm.a", drmAmdgpu: "/libdrm/sdk/lib/libdrm_amdgpu.a",
+    elf: "/sysroot/root/usr/lib/x86_64-linux-gnu/libelf.a", numa: "/sysroot/root/usr/lib/x86_64-linux-gnu/libnuma.a"}, comgrReceipt: "/comgr/result.json"});
 const llvm = "/llvm-21", comgrPackage = "/comgr/build/lib/cmake/amd_comgr", device = "/amd device libs",
   sdkRoots = {llvm, comgrPackage, device};
 
@@ -176,7 +176,8 @@ test.describe("Native original ROCm host-runtime recipe",
       const p = rocmHostPlan(config(), "/output", 2, sdkRoots);
       assert.equal(p.comgrHeaderInclude, "/output/comgr-install-include");
       assert.equal(p.comgrHeader, "/output/comgr-install-include/amd_comgr/amd_comgr.h");
-      assert.equal(p.clrCxxFlags, '-I"/output/comgr-install-include"');
+      assert.equal(p.clrCxxFlags, '-I"/output/comgr-install-include" -isystem "/output/gl-include"');
+      assert.ok(p.commands.clrConfigure.includes("-DOPENGL_INCLUDE_DIR=/output/gl-include"), "GL headers come from the private overlay, never /usr/include");
       assert.ok(p.commands.clrConfigure.includes("-DCMAKE_CXX_FLAGS=" + p.clrCxxFlags));
       assert.ok(!p.clrCxxFlags.includes("/comgr/"));
       assert.deepEqual(p.commands.clrInstallBinary.slice(-2), ["--component", "binary"]);
@@ -197,7 +198,8 @@ test.describe("Native original ROCm host-runtime recipe",
       assert.ok(p.commands.clrConfigure.includes("-DNUMA_LIBRARIES=" + c.dependencies.numa));
       assert.ok(p.commands.rocrConfigure.includes("-DCMAKE_AR=" + c.tools.ar));
       assert.ok(p.commands.rocrConfigure.includes("-DCMAKE_RANLIB=" + c.tools.ranlib));
-      assert.ok(p.commands.clrConfigure.includes('-DCMAKE_CXX_FLAGS=-I"/output with spaces/comgr-install-include"'));
+      assert.ok(p.commands.clrConfigure.includes('-DCMAKE_CXX_FLAGS=-I"/output with spaces/comgr-install-include" -isystem "/output with spaces/gl-include"'));
+      assert.ok(!JSON.stringify([...p.commands.rocrConfigure, ...p.commands.clrConfigure]).includes("=/usr/include"), "no host system header root");
     });
     test("malformed config, shell/list syntax, relative paths and unknown fields fail", () => {
       assert.throws(() => validateConfig({...config(), extra: true}), /exact pinned roots/);
@@ -219,8 +221,9 @@ test.describe("Native original ROCm host-runtime recipe",
       const p = rocmHostPlan(config(), "/output", 2, sdkRoots);
       const env = hostEnvironment({PATH: "/attacker/bin", GIT_DIR: "/attacker/repo", GIT_CONFIG_GLOBAL: "/attacker/config",
         GIT_CONFIG_NOSYSTEM: "0", GIT_ALTERNATE_OBJECT_DIRECTORIES: "/attacker/objects", CMAKE_TOOLCHAIN_FILE: "/attacker/toolchain",
-        CC: "/attacker/cc", CFLAGS: "-DATTACKER", PKG_CONFIG_LIBDIR: "/attacker/pkgconfig"},
+        CC: "/attacker/cc", CFLAGS: "-DATTACKER"},
       config(), p, "/output", llvm);
+      assert.throws(() => hostEnvironment({PATH: "/usr/bin", PKG_CONFIG_LIBDIR: "/attacker/pkgconfig"}, config(), p, "/output", llvm), /Unset PKG_CONFIG_LIBDIR/);
       assert.equal(env["GIT_DIR"], undefined);
       assert.equal(env["GIT_ALTERNATE_OBJECT_DIRECTORIES"], undefined);
       assert.equal(env["GIT_CONFIG_GLOBAL"], "/dev/null");

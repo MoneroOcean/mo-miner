@@ -5,6 +5,7 @@
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
 const {createHash} = require("node:crypto");
 const {nativeDependencies, auditNativeGlibc, auditNativeSymbols} = require("./native-audit");
+const {linuxGlibcBaseline} = require("./native-linux-sysroot");
 const pins = Object.freeze({source: "190878e023dd0979199786b19604b377229a4996",
   emhash: "5e131ba09a5290823fe71099d9c35eb5df5345b6", umf: "5a986843a2469d3e04771c1f27314ba6cc3c62f6",
   levelZero: "b77ced661af97104f5cda03d49596274392f6aa4", computeHeaders: "82aab87fc932edc0558a0302d545a5bcc22edf41",
@@ -78,9 +79,11 @@ function capture(command, args, maxBuffer = 1 << 20) {
 }
 
 /** Audit every proof executable, including the real UMF allocation path, without executing it.
- * A fresh receipt directory preserves earlier evidence across incremental rebuilds.
- * @param {string} output @param {boolean} levelZero @param {boolean} [sourceJit] @param {boolean} [cuda] @param {boolean} [opencl] */
-function auditBuild(output, levelZero, sourceJit = false, cuda = false, opencl = false) {
+ * A fresh receipt directory preserves earlier evidence across incremental rebuilds. Proofs built
+ * against the release sysroot are held to its glibc baseline; only host-built test fixtures pass another.
+ * @param {string} output @param {boolean} levelZero @param {boolean} [sourceJit] @param {boolean} [cuda] @param {boolean} [opencl]
+ * @param {string} [glibcBaseline] */
+function auditBuild(output, levelZero, sourceJit = false, cuda = false, opencl = false, glibcBaseline = linuxGlibcBaseline) {
   const audit = fs.mkdtempSync(path.join(output, "audit-"));
   const staticAdapters = levelZero || cuda || opencl;
   const artifacts = ["native-dpcpp-core", ...(staticAdapters ? ["native-static-adapter-selection"] : []), ...(levelZero ? ["native-umf-static", "native-level-zero-driver"] : []),
@@ -94,7 +97,7 @@ function auditBuild(output, levelZero, sourceJit = false, cuda = false, opencl =
     auditNativeSymbols(symbols);
     return {executable, bytes: fs.statSync(executable).size,
       sha256: createHash("sha256").update(fs.readFileSync(executable)).digest("hex"), needed: nativeDependencies(dependencies),
-      glibc: auditNativeGlibc(versions, "2.39")};
+      glibc: auditNativeGlibc(versions, glibcBaseline)};
   });
   const repo = path.resolve(__dirname, "..");
   const inputs = ["scripts/native-dpcpp-pins.js", "scripts/native-audit.js", "tests/native/dpcpp-static/CMakeLists.txt",

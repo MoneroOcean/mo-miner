@@ -7,6 +7,7 @@ const {isDeepStrictEqual} = require("node:util");
 const {fileHash, sourceInputs, verifySourceInputs, readBuildJson, readBuildText} = require("./build-source-inputs");
 const {nativeSdkEnvironment} = require("./build-environment");
 const {isStaticArchive} = require("./native-audit");
+const {requireLinuxSysroot, linuxSysrootRecord} = require("./native-linux-sysroot");
 const repo = path.resolve(__dirname, "..");
 const hermesPins = Object.freeze({revision: "26fbb82fad39d9d06901adb1d6d630dacc84c877",
   promiseSha256: "071f4322f9dba4fa06992065bc5f1eb9b11e49c9b1b6336d31f377b3e9801184"});
@@ -21,12 +22,14 @@ const literal = value => typeof value === "string" && value.length <= 4096 && pa
 /** @typedef {{git: string, cmake: string, cc: string, cxx: string, ninja: string}} HermesTools */
 
 /** One original-source recipe for native Linux and Windows build hosts; Windows uses the
- * static CRT and the already-reviewed clang-cl fix. No target-name/GPU-specific policy.
+ * static CRT and the already-reviewed clang-cl fix; Linux selects the glibc sysroot toolchain file.
+ * No target-name/GPU-specific policy.
  * @param {string} input @param {string} output @param {HermesTools} tools
- * @param {number} jobs @param {NodeJS.Platform} [platform] */
-function hermesSdkPlan(input, output, tools, jobs, platform = process.platform) {
+ * @param {number} jobs @param {NodeJS.Platform} [platform] @param {string} [toolchain] */
+function hermesSdkPlan(input, output, tools, jobs, platform = process.platform, toolchain) {
   if (!["linux", "win32"].includes(platform) || !tools || Object.keys(tools).sort().join(",") !== "cc,cmake,cxx,git,ninja" ||
-      ![input, output, ...Object.values(tools)].every(literal) || !Number.isInteger(jobs) || jobs < 1 || jobs > 16) {
+      ![input, output, ...Object.values(tools)].every(literal) || !Number.isInteger(jobs) || jobs < 1 || jobs > 16 ||
+      (toolchain !== undefined && (platform !== "linux" || !literal(toolchain)))) {
     throw new Error("Hermes SDK needs Linux/Windows, explicit absolute source/output/tools and jobs in 1..16");
   }
   for (const [parent, child] of [[input, output], [output, input], [repo, output]]) {
@@ -43,7 +46,8 @@ function hermesSdkPlan(input, output, tools, jobs, platform = process.platform) 
     "-DBUILD_SHARED_LIBS:BOOL=OFF", "-DHERMES_BUILD_SHARED_JSI:BOOL=OFF", "-DHERMES_ENABLE_DEBUGGER:BOOL=OFF",
     "-DHERMES_ENABLE_INTL:BOOL=OFF", "-DHERMES_ENABLE_NAPI:BOOL=OFF", "-DHERMES_ENABLE_TEST_SUITE:BOOL=OFF", "-DHERMES_ENABLE_WERROR:BOOL=OFF",
     "-DHERMES_ENABLE_TOOLS:BOOL=ON", "-DHERMESVM_INTERNAL_JAVASCRIPT_NATIVE:BOOL=ON", "-DHERMESVM_ALLOW_JIT:STRING=0",
-    ...(windows ? ["-DCMAKE_MSVC_RUNTIME_LIBRARY:STRING=MultiThreaded"] : [])];
+    ...(windows ? ["-DCMAKE_MSVC_RUNTIME_LIBRARY:STRING=MultiThreaded"] : []),
+    ...(toolchain ? ["-DCMAKE_TOOLCHAIN_FILE:FILEPATH=" + toolchain] : [])];
   const compile = [tools.cmake, "--build", build, "--parallel", String(jobs), "--target", "shermes", "hermesvmlean_a", "hermesPublic", "jsi", "boost_context"];
   const archive = (/** @type {string} */ name) => windows ? name + ".lib" : "lib" + name + ".a";
   return {source, build, configure, compile, patches: ["runtime/hermes-host-rejections.patch", ...(windows ? ["runtime/hermes-clang-cl.patch"] : [])],
@@ -110,7 +114,8 @@ function validateHermesCMakeCache(/** @type {ReturnType<typeof hermesSdkPlan>} *
 function validateHermesResumeMetadata(/** @type {any} */ result, /** @type {any} */ before,
   /** @type {ReturnType<typeof hermesSdkPlan>} */ plan, /** @type {{files: Record<string, string>, graph: Record<string, string>}} */ recipe,
   /** @type {Record<string, string>} */ fingerprints, /** @type {NodeJS.Platform} */ platform) {
-  exactKeys(result, ["version", "target", "pins", "source", "build", "artifacts", "fingerprints", "sources", "recipe", "buildOnly", "publicationQualified"], "result");
+  exactKeys(result, ["version", "target", "pins", "source", "build", "artifacts", "fingerprints", "sources", "recipe", "buildOnly", "publicationQualified",
+    ...(platform === "linux" ? ["sysroot"] : [])], "result");
   exactKeys(before, ["pins", "recipe", "fingerprints", "sources", "configure", "compile"], "before receipt");
   if (result.version !== 1 || result.target !== platform || !isDeepStrictEqual(result.pins, hermesPins) || result.buildOnly !== true || result.publicationQualified !== false ||
       !samePath(result.source, plan.source, platform) || !samePath(result.build, plan.build, platform) ||
@@ -199,13 +204,14 @@ function buildNativeHermes(input, output, tools, jobs, environment = process.env
   }
   const resume = options.resume === true;
   if (resume && !["linux", "win32"].includes(process.platform)) {throw new Error("Hermes cache resume supports only Linux unchanged sources or the validated Windows DateUtil change");}
-  const plan = hermesSdkPlan(input, output, tools, jobs), env = nativeSdkEnvironment(environment);
   if (!resume && fs.lstatSync(output, {throwIfNoEntry: false})) {throw new Error("Hermes SDK output must be new");}
   if (resume && !fs.lstatSync(output, {throwIfNoEntry: false})?.isDirectory()) {throw new Error("Hermes resume needs an existing writable cache directory");}
+  const env = nativeSdkEnvironment(environment), sysroot = process.platform === "linux" ? requireLinuxSysroot(env) : null,
+    plan = hermesSdkPlan(input, output, tools, jobs, process.platform, sysroot?.toolchain);
   const parent = fs.realpathSync(path.dirname(output)), source = fs.realpathSync(input);
-  hermesSdkPlan(source, path.join(parent, path.basename(output)), tools, jobs);
+  hermesSdkPlan(source, path.join(parent, path.basename(output)), tools, jobs, process.platform, sysroot?.toolchain);
   const recipe = sourceInputs(repo, [], ["scripts/build-native-hermes.js", "scripts/build-source-inputs.js", "scripts/build-environment.js",
-    "scripts/native-audit.js", ...plan.patches]);
+    "scripts/native-audit.js", "scripts/native-linux-sysroot.js", ...plan.patches]);
   const fingerprints = Object.fromEntries([...Object.values(tools), ...plan.patches.map(file => path.join(repo, file))].map(file => [file, fileHash(file)]));
   /** @param {string[]} args */
   const git = args => {
@@ -282,7 +288,8 @@ function buildNativeHermes(input, output, tools, jobs, environment = process.env
   verifySourceInputs({files: sources, graph: {}}, {files: hermesSourceFiles(plan.source, git(["-C", plan.source, "ls-files", "-z"])), graph: {}}, "Hermes SDK");
   verifySourceInputs(recipe, sourceInputs(repo, [], Object.keys(recipe.graph)), "Hermes SDK producer");
   const result = {version: 1, target: process.platform, pins: hermesPins, source: plan.source, build: plan.build,
-    artifacts, fingerprints, sources, recipe, buildOnly: true, publicationQualified: false, ...(resumeEvidence ? {resume: resumeEvidence} : {})};
+    artifacts, fingerprints, sources, recipe, ...(sysroot ? {sysroot: linuxSysrootRecord(sysroot)} : {}),
+    buildOnly: true, publicationQualified: false, ...(resumeEvidence ? {resume: resumeEvidence} : {})};
   fs.writeFileSync(path.join(output, "result.json"), JSON.stringify(result, null, 2) + "\n", {flag: "wx"});
   console.log("[native-sdk] Built original static Hermes SDK; no MoM/VM/GPU execution or publication qualification.");
   return result;

@@ -18,6 +18,7 @@ const {acppStatePaths, dpcppCudaInputPins, dpcppCudaInputsStatePaths, dpcppSourc
 const {auditDpcppCudaInputs, cudaPackageNames} = require("./native-dpcpp-cuda-inputs");
 const {admitLinuxLlvmOutput} = require("./native-ci-linux-llvm");
 const {auditHermesSdk, auditIoOpenSsl, auditOpenmpSdk, hermesBuildTools, ioFinalTar, openmpBuildTools} = require("./native-ci-linux-support");
+const {linuxSysrootToolchain} = require("./native-linux-sysroot");
 const {auditCudaNoticeSources, cudaCopyrightName, cudaImagesStatePaths} = require("./native-ci-linux-cuda");
 const {linuxJitSdkStatePaths} = require("./native-ci-linux-jit");
 const {acppCudaHipSdkStatePaths, auditAcppCudaHipSdk,
@@ -810,7 +811,7 @@ function buildLinuxNativeSdkDescriptor(paths) {
   admitLinuxLlvmOutput(paths);
   prepareRocmHostAdmission(paths, state.rocm);
   const hermesTools = hermesBuildTools(), openmpTools = openmpBuildTools(), acppTools = {cc: hermesTools.cc, cxx: hermesTools.cxx};
-  auditHermesSdk(state.hermes, hermesTools, ciBuildJobs(paths.env));
+  auditHermesSdk(state.hermes, hermesTools, ciBuildJobs(paths.env), linuxSysrootToolchain(paths.env));
   auditOpenmpSdk(state.openmp, openmpTools);
   auditAcppCudaHipSdk(state.acppSdk, acppTools, externalDpcppPins.manifestSha256);
   const ioOpenSsl = auditIoOpenSsl(paths), config = linuxNativeSdkDescriptorConfig(state, hermesTools),

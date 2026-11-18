@@ -7,6 +7,7 @@ const {fileHash, nativeSourceInputs, verifySourceInputs, buildFileInputs, comple
 const {syclSources, dpcppGpuFlags, dpcppUniquePrefixFlags, dpcppSourceFlags, dpcppDeviceLinkFlags, portableOpenclTranslatorFlags, nativeIncludeRoots} = require("./native-gpu-build");
 const {validateDirectory} = require("./check-portable-opencl");
 const {sdkIdentity} = require("./native-dpcpp-pins");
+const {linuxSysrootFlags, requireLinuxSysroot} = require("./native-linux-sysroot");
 const nativeResources = require("./native-resources");
 const {isolateGpuObjects} = require("./native-gpu-table");
 const {compileNativeObjects} = require("./native-object-cache");
@@ -116,13 +117,14 @@ function sourceCompiler(compiler, file, profile, override) {
 }
 
 /** Preserve the maintained mixed-frontend source selection and per-TU flags as literal argv.
+ * systemFlags (the glibc sysroot selection) precede both the C and C++ flags.
  * @param {{sources: string[], repo: string, output: string, sdk: string, compiler: string,
- * flags: string[], wrapper: string, profile: string, cuda?: string, images?: string, oneapiCompiler?: string}} plan */
+ * flags: string[], wrapper: string, profile: string, cuda?: string, images?: string, oneapiCompiler?: string, systemFlags?: string[]}} plan */
 function dpcppCompileCommands(plan) {
   return plan.sources.map((file, index) => {
     const object = path.join(plan.output, `${index}.o`), depfile = path.join(plan.output, `${index}.d`), c = file.endsWith(".c");
     const sourceFlags = c ? [] : [...dpcppSourceFlags(plan.wrapper, file, plan.profile), ...dpcppUniquePrefixFlags(file, plan.profile)];
-    const args = [...(c ? ["-x", "c", "-O3", "-ffp-contract=off", "-fPIC"] : [...plan.flags, ...sourceFlags]),
+    const args = [...(plan.systemFlags || []), ...(c ? ["-x", "c", "-O3", "-ffp-contract=off", "-fPIC"] : [...plan.flags, ...sourceFlags]),
       "-MD", "-MF", depfile, "-c", path.join(plan.repo, file), "-o", object];
     const compiler = c ? path.join(plan.sdk, "bin/clang") : sourceCompiler(plan.compiler, file, plan.profile, plan.oneapiCompiler);
     const generatedInputs = [];
@@ -331,7 +333,10 @@ function main() {
     if (result.error || result.signal || result.status === null) {throw new Error(`Compiler lifecycle unresolved: ${label}; inspect this build before retrying`, {cause: result.error});}
     return result;
   }
-  const commands = dpcppCompileCommands({sources, repo, output, sdk, compiler, flags, wrapper, profile,
+  // The DPC++ clang does not read the Intel configuration file; pass the glibc sysroot explicitly
+  // to every compile and to the device link, which emits host wrapper objects.
+  const systemFlags = linuxSysrootFlags(requireLinuxSysroot(process.env));
+  const commands = dpcppCompileCommands({sources, repo, output, sdk, compiler, flags, wrapper, profile, systemFlags,
     ...(images ? {images} : {}),
     ...(cuda ? {cuda} : {}), ...(oneapi ? {oneapiCompiler: oneapi.compiler} : {})});
   const compiled = compileNativeObjects({repo, output, namespace: `linux/gpu/dpcpp-${profile}`, commands,
@@ -360,7 +365,7 @@ function main() {
   const device = path.join(output, "device-linked.o");
   if (profile === "dpcpp-opencl") {fs.mkdirSync(path.join(output, "device-images"));}
   // Mixed oneAPI frontends are limited to source compilation; the selected DPC++ SDK owns device linking.
-  const linked = run(compiler, deviceLinkArgs(gyp, cuda, results.map((result) => result.object), device, profile, wrapper), "device-link", 900000,
+  const linked = run(compiler, [...systemFlags, ...deviceLinkArgs(gyp, cuda, results.map((result) => result.object), device, profile, wrapper)], "device-link", 900000,
     cudaLink?.environment);
   if (linked.status !== 0) {throw new Error("DPC++ device-image linking failed; see device-link.log");}
   if (profile === "dpcpp-opencl") {

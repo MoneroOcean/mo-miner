@@ -1,0 +1,286 @@
+"use strict";
+
+// Pinned glibc 2.31 sysroot for every compile and link that ends up in the Linux executable.
+// Ubuntu 20.04 (focal) glibc/kernel headers plus a focal-built GCC 14 libstdc++/libgcc keep the
+// release loadable on glibc 2.31 and newer (Ubuntu 20.04+, Debian 11+, RHEL 9+). The inputs are
+// mirrored as one GitHub pre-release because the toolchain PPA deletes superseded packages.
+const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
+const {createHash} = require("node:crypto");
+const {fileHash} = require("./build-source-inputs");
+
+const linuxGlibcBaseline = "2.31";
+const linuxSysrootRelease = "https://github.com/MoneroOcean/mo-miner/releases/download/sysroot-inputs-v1/";
+const linuxSysrootOrigins = Object.freeze(["https://github.com", "https://release-assets.githubusercontent.com"]);
+/** Binary packages only; the mirror's source packages and signed InRelease indexes are not build inputs. */
+const linuxSysrootPackages = Object.freeze([
+  {asset: "libc6_2.31-0ubuntu9.18_amd64.deb", package: "libc6", version: "2.31-0ubuntu9.18",
+    sha256: "1b2281aac4935dfea1f89dfc19e445fdbb45303202af60679ccb8bf035f081a0", bytes: 2720364},
+  {asset: "libc6-dev_2.31-0ubuntu9.18_amd64.deb", package: "libc6-dev", version: "2.31-0ubuntu9.18",
+    sha256: "11029900f2315b93ce487792ae1bf15f0927e5e50880c091e6a440b14d4e164a", bytes: 2519636},
+  {asset: "libcrypt-dev_4.4.10-10ubuntu4_amd64.deb", package: "libcrypt-dev", version: "1:4.4.10-10ubuntu4",
+    sha256: "f0a41d8e8cf379dbbdfc43169f34851ed452b3581e72c6654f2e290caf4e1b20", bytes: 104104},
+  {asset: "linux-libc-dev_5.4.0-216.236_amd64.deb", package: "linux-libc-dev", version: "5.4.0-216.236",
+    sha256: "70c9addd36aabd2d031d5ea0fc444f8b193027aef79ff3d8275d25800aed8ede", bytes: 1110608},
+  {asset: "libgcc-s1_10.5.0-1ubuntu1.20.04_amd64.deb", package: "libgcc-s1", version: "10.5.0-1ubuntu1~20.04",
+    sha256: "4aa7b9c9f3225df65a750ae0ff5c890fc6108c82a609b3c5abd45d211838bf3c", bytes: 41824},
+  {asset: "libgcc-14-dev_14.3.0-12ubuntu1.20.ppa1_amd64.deb", package: "libgcc-14-dev", version: "14.3.0-12ubuntu1~20~ppa1",
+    sha256: "9c786d15890bc573357ad78d4f990ae2f3594dc1254a58939d238d3db583d414", bytes: 2689824},
+  {asset: "libstdcxx-14-dev_14.3.0-12ubuntu1.20.ppa1_amd64.deb", package: "libstdc++-14-dev", version: "14.3.0-12ubuntu1~20~ppa1",
+    sha256: "a3b0e951480375f1ad23fb2d66450e861b1679c767b406fb2aa2dda041bf4018", bytes: 2405556},
+  {asset: "libelf-dev_0.176-1.1ubuntu0.1_amd64.deb", package: "libelf-dev", version: "0.176-1.1ubuntu0.1",
+    sha256: "a6d55687ae718f06ebf5e24ddfc05046e57ba01c3f4bdbac67039d5d7b7f4770", bytes: 57072},
+  {asset: "libnuma-dev_2.0.12-1_amd64.deb", package: "libnuma-dev", version: "2.0.12-1",
+    sha256: "3c3c3388d50a3ff0c8841ed3c6d893e59a371743faaa916a667e72def1c44f45", bytes: 32392},
+].map(row => Object.freeze(row)));
+// Digest over every retained (type, path, content hash or link target) after extraction and pruning.
+const linuxSysrootTreeSha256 = "4c64e8ef69f73a3f40cf1669d5b8be4f2a73bc9b2e1812233b9db42b28dec9d8";
+const gccInstallSuffix = "usr/lib/gcc/x86_64-linux-gnu/14", dpkgDeb = "/usr/bin/dpkg-deb", tar = "/usr/bin/tar";
+// Runtime-only payload, programs and package metadata; copyright texts stay for notice assembly.
+const prunedPaths = Object.freeze(["bin", "sbin", "etc", "var", "usr/bin", "usr/sbin", "usr/libexec",
+  "usr/lib/x86_64-linux-gnu/gconv", "usr/lib/x86_64-linux-gnu/audit"]);
+// Host system directories CMake must never search once the sysroot is selected; host programs stay usable.
+const hostSystemDirectories = Object.freeze(["/usr/include", "/usr/include/x86_64-linux-gnu", "/usr/local/include",
+  "/usr/lib", "/usr/lib/x86_64-linux-gnu", "/usr/lib64", "/usr/local/lib", "/lib", "/lib/x86_64-linux-gnu", "/lib64"]);
+const sysrootEnvironmentNames = Object.freeze(["ICXCFG", "ICPXCFG", "PKG_CONFIG_LIBDIR", "PKG_CONFIG_SYSROOT_DIR", "CMAKE_TOOLCHAIN_FILE"]);
+
+/** The location-independent receipt; its SHA-256 identifies the sysroot in SDK receipts and cache keys. */
+function linuxSysrootReceipt() {
+  return {version: 1, role: "linux-glibc-sysroot", baseline: linuxGlibcBaseline, target: "x86_64-linux-gnu", gcc: "14",
+    release: linuxSysrootRelease, packages: linuxSysrootPackages.map(row => ({...row})), treeSha256: linuxSysrootTreeSha256,
+    buildOnly: true, publicationQualified: false};
+}
+const receiptText = () => JSON.stringify(linuxSysrootReceipt(), null, 2) + "\n";
+const linuxSysrootReceiptSha256 = createHash("sha256").update(receiptText()).digest("hex");
+
+/** @param {string} root */
+function compilerConfigText(root) {return `--sysroot=${root}\n--gcc-install-dir=${path.join(root, gccInstallSuffix)}\n`;}
+
+/** CMake producers search only the sysroot for headers and libraries; host programs (Python, Perl,
+ * tblgen) are still found. CMAKE_SYSTEM_NAME stays unset: this is not a cross build.
+ * @param {string} root */
+function toolchainText(root) {
+  return ["# Generated by scripts/native-linux-sysroot.js: glibc " + linuxGlibcBaseline + " sysroot for MoM Linux SDK producers.",
+    `set(CMAKE_SYSROOT "${root}")`, `list(APPEND CMAKE_IGNORE_PATH ${hostSystemDirectories.join(" ")})`, ""].join("\n");
+}
+
+/** Sorted (type, path, hash/target) rows for every retained entry; modes and times are not identity.
+ * @param {string} root */
+function treeDigest(root) {
+  /** @type {string[]} */ const rows = [];
+  const visit = (/** @type {string} */ directory) => {
+    for (const entry of fs.readdirSync(directory, {withFileTypes: true}).sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0)) {
+      const file = path.join(directory, entry.name), relative = path.relative(root, file);
+      if (rows.length > 20000) {throw new Error("Linux sysroot tree exceeds its bounds");}
+      if (entry.isSymbolicLink()) {
+        const target = fs.readlinkSync(file);
+        if (path.isAbsolute(target)) {throw new Error("Linux sysroot keeps an absolute symlink: " + relative);}
+        rows.push("L " + relative + " " + target);
+      } else if (entry.isDirectory()) {rows.push("D " + relative); visit(file);} else if (entry.isFile()) {
+        rows.push("F " + relative + " " + fileHash(file));
+      } else {throw new Error("Linux sysroot member is not a file, directory or symlink: " + relative);}
+    }
+  };
+  visit(root);
+  return {sha256: createHash("sha256").update(rows.join("\n") + "\n").digest("hex"), entries: rows.length};
+}
+
+/** @param {string} file @param {string} label */
+function regularFile(file, label) {
+  const stat = fs.lstatSync(file, {throwIfNoEntry: false});
+  if (!stat?.isFile() || stat.isSymbolicLink() || fs.realpathSync(file) !== file) {throw new Error(label + " is missing or not a canonical regular file: " + file);}
+  return file;
+}
+
+/** @param {string} command @param {string[]} args @param {string} label */
+function run(command, args, label) {
+  const result = spawnSync(command, args, {encoding: "utf8", env: {PATH: "/usr/bin:/bin", LC_ALL: "C"}, timeout: 300000, maxBuffer: 4 << 20});
+  if (result.error || result.signal || result.status !== 0) {
+    throw new Error("Linux sysroot " + label + " failed: " + (result.stderr || "").slice(0, 2048), {cause: result.error});
+  }
+}
+
+/** Keep links inside the tree: /lib/x/libdl.so.2 becomes ../../../lib/x/libdl.so.2 relative to the link.
+ * @param {string} root */
+function relativizeLinks(root) {
+  const visit = (/** @type {string} */ directory) => {
+    for (const entry of fs.readdirSync(directory, {withFileTypes: true})) {
+      const file = path.join(directory, entry.name);
+      if (entry.isDirectory()) {visit(file); continue;}
+      if (!entry.isSymbolicLink()) {continue;}
+      const target = fs.readlinkSync(file);
+      if (!path.isAbsolute(target)) {continue;}
+      fs.unlinkSync(file);
+      fs.symlinkSync(path.relative(path.dirname(file), path.join(root, target)), file);
+    }
+  };
+  visit(root);
+}
+
+/** Drop documentation except per-package copyright texts, which the notice review consumes.
+ * @param {string} root */
+function pruneTree(root) {
+  for (const name of prunedPaths) {fs.rmSync(path.join(root, name), {recursive: true, force: true});}
+  const share = path.join(root, "usr/share");
+  for (const entry of fs.readdirSync(share, {withFileTypes: true})) {
+    if (entry.name !== "doc") {fs.rmSync(path.join(share, entry.name), {recursive: true, force: true});}
+  }
+  const docs = path.join(share, "doc");
+  for (const entry of fs.readdirSync(docs, {withFileTypes: true})) {
+    const directory = path.join(docs, entry.name);
+    if (!entry.isDirectory()) {fs.rmSync(directory, {force: true}); continue;}
+    for (const item of fs.readdirSync(directory, {withFileTypes: true})) {
+      if (item.name !== "copyright" || !item.isFile()) {fs.rmSync(path.join(directory, item.name), {recursive: true, force: true});}
+    }
+    if (!fs.readdirSync(directory).length) {fs.rmdirSync(directory);}
+  }
+}
+
+/** Extract the pinned packages (no maintainer scripts) into a new output, then admit it.
+ * Layout: root/ (the sysroot), compiler.cfg (ICXCFG/ICPXCFG), toolchain.cmake and result.json.
+ * @param {string} debDirectory @param {string} output */
+function prepareLinuxSysroot(debDirectory, output) {
+  if (process.platform !== "linux") {throw new Error("The glibc sysroot is prepared on Linux only");}
+  if (!path.isAbsolute(debDirectory) || !path.isAbsolute(output) || path.resolve(output) !== output || /[\r\n\0"$;\\]/.test(output) ||
+      fs.lstatSync(output, {throwIfNoEntry: false}) || fs.realpathSync(path.dirname(output)) !== path.dirname(output)) {
+    throw new Error("Linux sysroot output must be a new canonical absolute directory");
+  }
+  for (const tool of [dpkgDeb, tar]) {regularFile(fs.realpathSync(tool), "Linux sysroot extraction tool");}
+  const debs = linuxSysrootPackages.map(row => {
+    const file = regularFile(path.join(debDirectory, row.asset), "Pinned sysroot package");
+    if (fs.statSync(file).size !== row.bytes || fileHash(file) !== row.sha256) {throw new Error("Pinned sysroot package differs: " + row.asset);}
+    return file;
+  });
+  fs.mkdirSync(output, {mode: 0o700});
+  const root = path.join(output, "root"), payload = path.join(output, ".payload.tar");
+  fs.mkdirSync(root);
+  for (const file of debs) {
+    // dpkg-deb only decompresses the pinned data member; tar extracts it without running package scripts.
+    const extracted = spawnSync(dpkgDeb, ["--fsys-tarfile", file], {env: {PATH: "/usr/bin:/bin", LC_ALL: "C"}, timeout: 300000, maxBuffer: 256 << 20});
+    if (extracted.error || extracted.signal || extracted.status !== 0) {throw new Error("Cannot read sysroot package payload: " + path.basename(file));}
+    fs.writeFileSync(payload, extracted.stdout, {flag: "wx"});
+    run(tar, ["-x", "-f", payload, "-C", root, "--no-same-owner", "--no-same-permissions"], "extraction");
+    fs.unlinkSync(payload);
+  }
+  relativizeLinks(root);
+  pruneTree(root);
+  fs.writeFileSync(path.join(output, "compiler.cfg"), compilerConfigText(root), {flag: "wx", mode: 0o644});
+  fs.writeFileSync(path.join(output, "toolchain.cmake"), toolchainText(root), {flag: "wx", mode: 0o644});
+  const digest = treeDigest(root);
+  if (digest.sha256 !== linuxSysrootTreeSha256) {throw new Error("Prepared Linux sysroot tree differs from its pin: " + digest.sha256);}
+  fs.writeFileSync(path.join(output, "result.json"), receiptText(), {flag: "wx", mode: 0o644});
+  return linuxSysrootInputs(output);
+}
+
+/** @type {Map<string, ReturnType<typeof admitLinuxSysroot>>} */ const admitted = new Map();
+
+/** Full admission: receipt bytes, generated compiler/CMake files and the complete tree digest.
+ * @param {string} output */
+function admitLinuxSysroot(output) {
+  if (!path.isAbsolute(output) || fs.realpathSync(output) !== output || /[\r\n\0"$;\\]/.test(output)) {
+    throw new Error("Select the canonical absolute prepared Linux sysroot directory");
+  }
+  const root = path.join(output, "root"), receipt = regularFile(path.join(output, "result.json"), "Linux sysroot receipt"),
+    compilerConfig = regularFile(path.join(output, "compiler.cfg"), "Linux sysroot compiler configuration"),
+    toolchain = regularFile(path.join(output, "toolchain.cmake"), "Linux sysroot CMake toolchain");
+  if (fileHash(receipt) !== linuxSysrootReceiptSha256 || fs.readFileSync(compilerConfig, "utf8") !== compilerConfigText(root) ||
+      fs.readFileSync(toolchain, "utf8") !== toolchainText(root)) {
+    throw new Error("Linux sysroot receipt or generated configuration differs from the current pins; prepare a new sysroot");
+  }
+  if (treeDigest(root).sha256 !== linuxSysrootTreeSha256) {throw new Error("Linux sysroot tree changed after preparation: " + root);}
+  return {output, root, gccInstallDir: path.join(root, gccInstallSuffix), compilerConfig, toolchain,
+    compilerConfigSha256: fileHash(compilerConfig), toolchainSha256: fileHash(toolchain),
+    receipt, receiptSha256: linuxSysrootReceiptSha256, baseline: linuxGlibcBaseline};
+}
+
+/** Admit a prepared sysroot once per process; producers call this through the shared environment.
+ * @param {string} output */
+function linuxSysrootInputs(output) {
+  const cached = admitted.get(output);
+  if (cached) {return cached;}
+  const result = admitLinuxSysroot(output);
+  admitted.set(output, result);
+  return result;
+}
+
+/** Explicit flags for compilers that do not read the Intel configuration file (LLVM clang, DPC++ clang).
+ * @param {{root: string, gccInstallDir: string}} sysroot */
+function linuxSysrootFlags(sysroot) {return ["--sysroot=" + sysroot.root, "--gcc-install-dir=" + sysroot.gccInstallDir];}
+
+/** icx/icpx read ICXCFG/ICPXCFG; pkg-config resolves only the sysroot's .pc files; CMake (3.21+) uses the
+ * CMAKE_TOOLCHAIN_FILE environment variable for every fresh build tree that does not name its own.
+ * @param {string} output */
+function linuxSysrootEnvironment(output) {
+  const sysroot = linuxSysrootInputs(output);
+  return {MOM_LINUX_SYSROOT: sysroot.output, MOM_LINUX_SYSROOT_SHA256: sysroot.receiptSha256,
+    ICXCFG: sysroot.compilerConfig, ICPXCFG: sysroot.compilerConfig, CMAKE_TOOLCHAIN_FILE: sysroot.toolchain,
+    PKG_CONFIG_LIBDIR: [path.join(sysroot.root, "usr/lib/x86_64-linux-gnu/pkgconfig"), path.join(sysroot.root, "usr/share/pkgconfig")].join(":"),
+    PKG_CONFIG_SYSROOT_DIR: sysroot.root};
+}
+
+/** Derive the compiler/pkg-config hooks from MOM_LINUX_SYSROOT. Ambient Intel configuration or
+ * pkg-config variables would silently redirect headers/libraries, so they are rejected unless they
+ * are exactly this sysroot's values (an already-applied environment stays idempotent).
+ * @param {NodeJS.ProcessEnv} environment @returns {NodeJS.ProcessEnv} */
+function applyLinuxSysrootEnvironment(environment) {
+  const env = {...environment}, selected = env["MOM_LINUX_SYSROOT"];
+  const expected = selected ? linuxSysrootEnvironment(selected) : undefined;
+  for (const name of Object.keys(env)) {
+    if (!/^(?:ICXCFG|ICPXCFG|PKG_CONFIG_.*|CMAKE_TOOLCHAIN_FILE)$/.test(name)) {continue;}
+    if (!expected || env[name] !== Reflect.get(expected, name)) {
+      throw new Error("Unset " + name + " before a native build; the pinned glibc " + linuxGlibcBaseline + " sysroot selects compiler and pkg-config inputs");
+    }
+  }
+  if (env["MOM_LINUX_SYSROOT_SHA256"] !== undefined && env["MOM_LINUX_SYSROOT_SHA256"] !== expected?.MOM_LINUX_SYSROOT_SHA256) {
+    throw new Error("MOM_LINUX_SYSROOT_SHA256 does not identify the selected Linux sysroot");
+  }
+  return expected ? Object.assign(env, expected) : env;
+}
+
+/** Linux SDK producers require the sysroot; nothing they emit may be compiled against host glibc.
+ * Producers spawn their tools with an environment that went through applyLinuxSysrootEnvironment.
+ * @param {NodeJS.ProcessEnv} environment */
+function requireLinuxSysroot(environment) {
+  const selected = environment["MOM_LINUX_SYSROOT"];
+  if (!selected) {throw new Error("Linux native SDK producers require MOM_LINUX_SYSROOT (the pinned glibc " + linuxGlibcBaseline + " sysroot)");}
+  applyLinuxSysrootEnvironment(environment);
+  return linuxSysrootInputs(selected);
+}
+
+/** The CMake toolchain path a producer plan names for the selected sysroot (admission stays with the producer).
+ * @param {NodeJS.ProcessEnv} environment @returns {string | undefined} */
+function linuxSysrootToolchain(environment) {
+  const selected = environment["MOM_LINUX_SYSROOT"];
+  return selected ? path.join(selected, "toolchain.cmake") : undefined;
+}
+
+/** Receipt binding recorded by every Linux SDK producer. @param {{receiptSha256: string}} sysroot */
+function linuxSysrootRecord(sysroot) {return {baseline: linuxGlibcBaseline, receiptSha256: sysroot.receiptSha256};}
+
+/** A producer receipt is current only when it was built against the selected sysroot.
+ * @param {unknown} record @param {string} label */
+function verifyLinuxSysrootRecord(record, label) {
+  const value = /** @type {{baseline?: unknown, receiptSha256?: unknown} | null} */ (record);
+  if (!value || value.baseline !== linuxGlibcBaseline || value.receiptSha256 !== linuxSysrootReceiptSha256) {
+    throw new Error(label + " was not built against the pinned glibc " + linuxGlibcBaseline + " sysroot; rebuild it");
+  }
+}
+
+module.exports = {linuxGlibcBaseline, linuxSysrootRelease, linuxSysrootOrigins, linuxSysrootPackages, linuxSysrootTreeSha256,
+  linuxSysrootReceipt, linuxSysrootReceiptSha256, hostSystemDirectories, sysrootEnvironmentNames, treeDigest,
+  prepareLinuxSysroot, linuxSysrootInputs, linuxSysrootFlags, linuxSysrootEnvironment, applyLinuxSysrootEnvironment,
+  requireLinuxSysroot, linuxSysrootToolchain, linuxSysrootRecord, verifyLinuxSysrootRecord};
+
+if (require.main === module) {
+  try {
+    const [command, first, second, extra] = process.argv.slice(2);
+    if (command === "prepare" && first && second && !extra) {
+      const result = prepareLinuxSysroot(first, second);
+      console.log("[native-sdk] Prepared the glibc " + linuxGlibcBaseline + " sysroot " + result.root + " (receipt " + result.receiptSha256 + ").");
+    } else if (command === "audit" && first && !second) {
+      const result = linuxSysrootInputs(first);
+      console.log("[native-sdk] Admitted the glibc " + linuxGlibcBaseline + " sysroot " + result.root + ".");
+    } else {
+      throw new Error("Usage: native-linux-sysroot.js prepare /absolute/verified-debs /new/absolute/output | audit /absolute/output");
+    }
+  } catch (error) {console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1;}
+}

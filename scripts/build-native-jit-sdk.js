@@ -10,10 +10,11 @@ const {verifyJitResources} = require("./prepare-native-sycl-jit-resources");
 const {compilerArchives} = require("./native-compiler-isolation");
 const {fileHash, readBuildJson, readBuildText, sourceInputs, verifySourceInputs, buildFileInputs} = require("./build-source-inputs");
 const {nativeSdkEnvironment} = require("./build-environment");
+const {requireLinuxSysroot, linuxSysrootRecord} = require("./native-linux-sysroot");
 const {isStaticArchive} = require("./native-audit");
 const {isDeepStrictEqual} = require("node:util");
 const repo = path.resolve(__dirname, "..");
-const recipeFiles = [...new Set([...jitSourceInputs, "scripts/build-native-jit-sdk.js", "scripts/native-jit-sdk.js", "scripts/native-jit-stages.js", "scripts/prepare-native-sdk-sources.js",
+const recipeFiles = [...new Set([...jitSourceInputs, "scripts/build-native-jit-sdk.js", "scripts/native-linux-sysroot.js", "scripts/native-jit-sdk.js", "scripts/native-jit-stages.js", "scripts/prepare-native-sdk-sources.js",
   "scripts/prepare-native-sycl-jit-resources.js", "scripts/build-source-inputs.js", "scripts/build-environment.js", "scripts/native-compiler-isolation.js", "scripts/native-audit.js",
   "scripts/prepare-native-jit-toolchain.js", "runtime/driver-library.cpp"])];
 
@@ -307,7 +308,7 @@ async function buildJitSdk(value, output, environment = process.env, stage = "al
   const executable = path.join(plan.build, "bin/native-dpcpp-jit" + (c.target === "windows" ? ".exe" : ""));
   const result = {version: 1, kind: "original-source-jit-sdk", target: c.target, sourcesFile, resources: resources.directory, plan, supportLibraries,
     inputs, recipe, libraries: libraries.map(file => ({path: file, sha256: fileHash(file)})), proof: {path: executable, sha256: fileHash(executable)},
-    compiled: true, buildOnly: true, executed: false, publicationQualified: false,
+    ...(c.target === "linux" ? {sysroot: linuxSysrootRecord(requireLinuxSysroot(env))} : {}), compiled: true, buildOnly: true, executed: false, publicationQualified: false,
     scope: "Original pinned compiler source production; proof linked but not executed. Namespace isolation, runtime, portability, licenses and publication remain separate gates."};
   write("result.json", result);
   console.log("[native-sdk] Built original compiler SDK; not executed or publication-qualified.");

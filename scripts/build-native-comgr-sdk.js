@@ -9,6 +9,7 @@ const {absolutePath} = require("./build-native-release");
 const {lldInputs} = require("./native-jit-link");
 const {isStaticArchive} = require("./native-audit");
 const {revision, patches, recipeFiles} = require("./native-comgr-inputs");
+const {requireLinuxSysroot, linuxSysrootRecord} = require("./native-linux-sysroot");
 
 /** Literal commands only. The private source/build/install roots cannot overwrite source
  * or SDK inputs; no configure step may select a shared runtime or run a GPU workload.
@@ -87,7 +88,7 @@ function buildComgrSdk(source, llvm, lld, device, output, environment = process.
     Number(environment["MOM_BUILD_JOBS"] || "2"), selectedHostCompilers);
   const repo = path.resolve(__dirname, ".."), canonicalHostCompilers = Object.values(plan.hostCompilers).map(file => fs.realpathSync(file));
   if ([...roots, repo, ...canonicalHostCompilers].some(input => pathsOverlap(input, destination))) {throw new Error("COMGR output overlaps a canonical source, SDK or compiler input");}
-  const env = sdkHostEnvironment(environment, plan.hostCompilers);
+  const env = sdkHostEnvironment(environment, plan.hostCompilers), sysroot = requireLinuxSysroot(env);
   verifyCompilerEnvironment(plan.hostCompilers, env);
   // Git-object selection must not inherit an unrelated process's checkout/index override.
   for (const key of Object.keys(env).filter(name => /^GIT_(?:DIR|WORK_TREE|INDEX_FILE|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|CONFIG.*)$/.test(name))) {delete env[key];}
@@ -142,7 +143,7 @@ function buildComgrSdk(source, llvm, lld, device, output, environment = process.
     sdkRoots: {llvm: selectedLlvm, lld: selectedLld, device: selectedDevice}, hostCompilers: plan.hostCompilers, hostCompilerInputs, compilerVersions,
     sha256: fileHash(archive), bytes: fs.statSync(archive).size, header, headerSha256: fileHash(header), sourceState, sdkInputs, dependencies, recipe,
     license: path.join(plan.snapshot, "amd/comgr/LICENSE.txt"), notices: path.join(plan.snapshot, "amd/comgr/NOTICES.txt"),
-    buildOnly: true, publicationQualified: false,
+    sysroot: linuxSysrootRecord(sysroot), buildOnly: true, publicationQualified: false,
     scope: "Complete pinned COMGR source snapshot + maintained LLVM21/static-resource patches. Static component build only; full SDK provisioning/provenance, application integration, JIT/GPU/performance and Windows qualification remain separate gates."}, null, 2) + "\n", {flag: "wx"});
   console.log("[native-comgr] Built " + archive + "; NOT executed or publication-qualified.");
 }

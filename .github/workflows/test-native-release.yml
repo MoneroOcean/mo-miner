@@ -28,7 +28,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        lane: [cpu-cli, portable-cpu]
+        # glibc-floor runs the executable in the oldest supported glibc distributions (Linux only).
+        lane: ${{ fromJSON(inputs.platform == 'linux' && '["cpu-cli","portable-cpu","glibc-floor"]' || '["cpu-cli","portable-cpu"]') }}
     env:
       MOM_TEST_NO_POOL_NETWORK: "1"
       NATIVE_EXPECTED_SHA256: ${{ inputs.expected_sha256 }}
@@ -68,7 +69,13 @@ jobs:
               [IO.Path]::GetFileName($_.Name) -ieq 'intelocl64.dll' -and (Test-Path -LiteralPath $_.Name -PathType Leaf)
           })
           if (-not $paths.Count) { throw 'The standalone Intel CPU OpenCL ICD did not register below its pinned shared-runtime root.' }
-      - name: Runtime-only gates
+      - if: matrix.lane == 'glibc-floor'
+        name: glibc 2.31 floor
+        env:
+          NATIVE_RUNTIME_BINARY: ${{ steps.binary.outputs.binary }}
+        run: scripts/check-native-glibc-floor.sh "$NATIVE_RUNTIME_BINARY"
+      - if: matrix.lane != 'glibc-floor'
+        name: Runtime-only gates
         env:
           NATIVE_RUNTIME_BINARY: ${{ steps.binary.outputs.binary }}
           LANE: ${{ matrix.lane }}

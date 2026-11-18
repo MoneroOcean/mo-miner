@@ -1,5 +1,6 @@
 "use strict";
 
+const {linuxSysrootRecord, linuxSysrootReceiptSha256} = require("../scripts/native-linux-sysroot");
 const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), os = require("node:os"), path = require("node:path");
 const {fileHash} = require("../scripts/build-source-inputs");
 const {zstdPin, toolNames, zstdSdkPlan, validateArchive, sourceInventory, stagedFiles, zstdBuildRecipe,
@@ -56,7 +57,7 @@ function sdkFixture(t) {
     plan: {jobs: plan.jobs, buildCommand: plan.buildCommand, target: plan.buildArchive, staticMode: plan.staticMode},
     buildOutput: {path: "build/static/libzstd.a", sha256: fileHash(buildArchive), bytes: fs.statSync(buildArchive).size},
     install: {path: "lib/libzstd.a", sha256: fileHash(library), bytes: fs.statSync(library).size}, artifacts,
-    buildOnly: true, executed: false, publicationQualified: false,
+    sysroot: linuxSysrootRecord({receiptSha256: linuxSysrootReceiptSha256}), buildOnly: true, executed: false, publicationQualified: false,
     scope: "Build-only static multithreaded libzstd 1.5.7 archive; no CLI, tests, shared library or release qualification."};
   fs.writeFileSync(path.join(root, "result.json"), JSON.stringify(record));
   return {root, record, archivePath, save: () => fs.writeFileSync(path.join(root, "result.json"), JSON.stringify(record))};

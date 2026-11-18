@@ -4,7 +4,8 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
 const {spawnSync} = require("node:child_process");
-const {nativeDependencies, auditNativeGlibc, auditNativeTrace, auditNativeHeaders, auditNativeSymbols, auditNativeSymbolFile, isStaticArchive} = require("../scripts/native-audit");
+const {nativeDependencies, auditNativeGlibc, auditNativeVersionNeeds, auditNativeTrace, auditNativeHeaders, auditNativeSymbols, auditNativeSymbolFile, isStaticArchive} = require("../scripts/native-audit");
+const {linuxGlibcBaseline} = require("../scripts/native-linux-sysroot");
 
 /** @param {import('node:test').TestContext} t */
 function auditFixture(t) {
@@ -203,10 +204,35 @@ test.describe("Native Linux deployment ABI baseline", () => {
       assert.throws(() => auditNativeGlibc(value, "2.39"), /Missing native ELF|Invalid native glibc/);
     }
   });
-  test("uses the glibc-compatible linker option, not the loader-incomplete generic spelling", () => {
+  test("the glibc 2.31 baseline rejects the DT_RELR loader ABI that packed relocations would add", () => {
+    assert.throws(() => auditNativeGlibc("Name: GLIBC_2.30\nName: GLIBC_ABI_DT_RELR", linuxGlibcBaseline), /requires glibc >= 2\.36; selected baseline 2\.31/);
+    assert.throws(() => auditNativeGlibc("Name: GLIBC_2.32", linuxGlibcBaseline), /2\.32 exceeds selected baseline 2\.31/);
+    assert.deepEqual(auditNativeGlibc("Name: GLIBC_2.2.5\nName: GLIBC_2.30", linuxGlibcBaseline), ["2.2.5", "2.30"]);
+  });
+});
+
+test.describe("Native symbol-version needs", () => {
+  const needs = (/** @type {string} */ rows) => "Version needs section '.gnu.version_r' contains 3 entries:\n" +
+    " Addr: 0x0000000000000400  Offset: 0x000400  Link: 7 (.dynstr)\n" + rows;
+  test("accepts GLIBC versions from the allowed system libraries", () => {
+    assert.deepEqual(auditNativeVersionNeeds(needs("  000000: Version: 1  File: libpthread.so.0  Cnt: 1\n" +
+      "  0x0010:   Name: GLIBC_2.2.5  Flags: none  Version: 4\n  0x0020: Version: 1  File: librt.so.1  Cnt: 1\n" +
+      "  0x0030:   Name: GLIBC_2.2.5  Flags: none  Version: 5\n  0x0040: Version: 1  File: libc.so.6  Cnt: 1\n" +
+      "  0x0050:   Name: GLIBC_2.30  Flags: none  Version: 2\n")),
+    {files: ["libpthread.so.0", "librt.so.1", "libc.so.6"], names: ["GLIBC_2.2.5", "GLIBC_2.30"]});
+    assert.deepEqual(auditNativeVersionNeeds("No version information found in this file."), {files: [], names: []});
+  });
+  test("rejects dynamically linked libstdc++ or libgcc_s versions", () => {
+    assert.throws(() => auditNativeVersionNeeds(needs("  000000: Version: 1  File: libstdc++.so.6  Cnt: 1\n" +
+      "  0x0010:   Name: GLIBCXX_3.4  Flags: none  Version: 3\n")), /outside the allowed glibc libraries: libstdc\+\+\.so\.6/);
+    assert.throws(() => auditNativeVersionNeeds(needs("  000000: Version: 1  File: libc.so.6  Cnt: 1\n" +
+      "  0x0010:   Name: GCC_3.0  Flags: none  Version: 3\n")), /GCC_3\.0/);
+    assert.throws(() => auditNativeVersionNeeds(""), /Missing native ELF version evidence/);
+  });
+  test("the release link keeps relative relocations unpacked and links librt for shm_open", () => {
     const source = fs.readFileSync(path.join(__dirname, "../scripts/build-native-application.js"), "utf8");
-    assert.match(source, /"-Wl,-z,pack-relative-relocs"/);
-    assert.doesNotMatch(source, /--pack-dyn-relocs=relr/);
+    assert.doesNotMatch(source, /"-Wl,-z,pack-relative-relocs"|--pack-dyn-relocs=relr/);
+    assert.match(source, /"-lpthread", "-lrt"\]/);
   });
 });
 

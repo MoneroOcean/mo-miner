@@ -6,7 +6,8 @@ const {isDeepStrictEqual} = require("node:util");
 const {fileHash, readBuildJson} = require("./build-source-inputs");
 const {validCiSuffix} = require("./native-ci-job");
 const {nativeNoticeFile} = require("./package-native-release");
-const {nativeDependencies, auditNativeGlibc, auditNativeTrace} = require("./native-audit");
+const {nativeDependencies, auditNativeGlibc, auditNativeVersionNeeds, auditNativeTrace} = require("./native-audit");
+const {linuxGlibcBaseline} = require("./native-linux-sysroot");
 const {elfReport} = require("./native-elf");
 const {verifyNativePeMap} = require("./native-pe-audit");
 const gpuTuning = require("../gpu-tuning");
@@ -100,7 +101,8 @@ function checkExecutableFormat(file, platform) {
 function auditRawExecutable(raw, target) {
   if (target === "linux") {
     nativeDependencies(elfReport(raw, "--dynamic"));
-    auditNativeGlibc(elfReport(raw, "--version-info"), "2.39");
+    const versions = elfReport(raw, "--version-info");
+    auditNativeGlibc(versions, linuxGlibcBaseline); auditNativeVersionNeeds(versions);
   } else {
     // The Windows release producer seals this map after the final x64 application link.
     // A packed candidate still points here through the entrypoint's separately hashed source.

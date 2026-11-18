@@ -440,7 +440,7 @@ test.describe("Native oneAPI mixed frontend admission", () => {
     assert.deepEqual(link.slice(-objects.length - 2), [...objects, "-o", output]);
     assert.ok(!link.includes(vendor));
     const code = fs.readFileSync(path.join(__dirname, "../scripts/build-native-gpu.js"), "utf8");
-    assert.match(code, /run\(compiler, deviceLinkArgs\(/);
+    assert.match(code, /run\(compiler, \[\.\.\.systemFlags, \.\.\.deviceLinkArgs\(/);
   });
   test("other compiler profiles remain upstream and reject the oneAPI override", () => {
     for (const profile of ["dpcpp", "dpcpp-opencl"]) {

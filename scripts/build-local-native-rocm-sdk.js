@@ -14,7 +14,7 @@ const {isStaticArchive} = require("./native-audit");
 const {verifyPreparedRoots} = require("./build-local-native-jit-sdk");
 
 const repo = fs.realpathSync(path.resolve(__dirname, "..")), oneapiCompilerRoot = "/opt/intel/oneapi/compiler", sourceTarget = "rocm",
-  hostPrerequisiteMessage = "ROCm host SDK needs the pinned Python 3.12.3 / CppHeaderParser 2.7.4 / PLY 3.11 environment, libdrm-dev, libelf-dev and libnuma-dev static archives; install/validate these explicitly before retrying (this local command never invokes sudo or APT).";
+  hostPrerequisiteMessage = "ROCm host SDK needs the pinned Python 3.12.3 / CppHeaderParser 2.7.4 / PLY 3.11 environment, meson for the pinned libdrm source build, and the GL/EGL/X11 development headers; install/validate these explicitly before retrying (this local command never invokes sudo or APT).";
 
 /** Stable workspace-owned ROCm roots; no CI run IDs, /tmp transports, or generation directories.
  * @param {string} workspace */
@@ -38,6 +38,7 @@ function localRocmSdkPaths(workspace) {
     hipConfigureLog: path.join(hipHeadersRoot, "cmake-configure.log"), hipConfigurePlan: path.join(hipHeadersRoot, "configure-plan.json"),
     hipCommonTar: path.join(hipHeadersRoot, "archives/hip-common.tar"), clrHipamdTar: path.join(hipHeadersRoot, "archives/clr-hipamd.tar"),
     hostSdkRoot, runtimeOutput: path.join(hostSdkRoot, "runtime"), hostConfig: path.join(hostSdkRoot, "rocm-host.json"),
+    libdrmSource: path.join(workspace, "libdrm-fetch"), libdrmSdk: path.join(workspace, "libdrm-sdk"),
     comgrAdmission: path.join(workspace, "rocm-comgr-admission.json"), hostAdmission: path.join(workspace, "rocm-host-admission.json")};
 }
 
@@ -262,7 +263,8 @@ function auditLocalRocmComgrInputs(context, tools, dependencies = {}) {
  * @param {ReturnType<typeof localRocmSdkContext>} context */
 function localRocmHostState(context) {
   const state = localRocmBuildState(context), p = context.paths;
-  return {...state, runtimeOutput: p.runtimeOutput, hostSdkRoot: p.hostSdkRoot, configFile: p.hostConfig};
+  return {...state, runtimeOutput: p.runtimeOutput, hostSdkRoot: p.hostSdkRoot, configFile: p.hostConfig,
+    libdrmSource: p.libdrmSource, libdrmSdk: p.libdrmSdk};
 }
 
 /** This check is intentionally non-mutating; the public builder performs exact hash/version admission.
@@ -277,14 +279,16 @@ function checkRocmHostPrerequisites(tools, env) {
  * @param {ReturnType<typeof localRocmSdkContext>} context @param {{cc:string,cxx:string,cmake:string}} tools
  * @param {NodeJS.ProcessEnv} env
  * @param {{hostTools?:(state:ReturnType<typeof localRocmHostState>)=>ReturnType<typeof ciRocm.rocmHostBuildTools>,
- *   hostConfig?:(state:ReturnType<typeof localRocmHostState>,tools:ReturnType<typeof ciRocm.rocmHostBuildTools>)=>ReturnType<typeof ciRocm.rocmHostBuildConfig>,
+ *   hostConfig?:(state:ReturnType<typeof localRocmHostState>,tools:ReturnType<typeof ciRocm.rocmHostBuildTools>,env:NodeJS.ProcessEnv)=>ReturnType<typeof ciRocm.rocmHostBuildConfig>,
  *   verifyHostPrerequisites?:typeof checkRocmHostPrerequisites}} [dependencies] */
 function localRocmHostInputs(context, tools, env, dependencies = {}) {
   const state = localRocmHostState(context);
   let hostTools, config;
   try {
     hostTools = (dependencies.hostTools || ciRocm.rocmHostBuildTools)(state);
-    config = (dependencies.hostConfig || ciRocm.rocmHostBuildConfig)(state, hostTools);
+    // The static libdrm SDK is a small pinned source build; produce or admit it before the config names it.
+    if (!dependencies.hostConfig) {ciRocm.buildLibdrmSdk(state, env);}
+    config = (dependencies.hostConfig || ciRocm.rocmHostBuildConfig)(state, hostTools, env);
   } catch (error) {throw new Error(hostPrerequisiteMessage, {cause: error});}
   if (tools.cmake !== hostTools.cmake || fs.realpathSync(hostTools.cc) !== hostTools.cc || fs.realpathSync(hostTools.cxx) !== hostTools.cxx ||
       fs.realpathSync(tools.cc) !== hostTools.cc || fs.realpathSync(tools.cxx) !== hostTools.cxx) {
@@ -305,7 +309,7 @@ function localRocmHostInputs(context, tools, env, dependencies = {}) {
  *   auditComgr?:typeof ciRocm.auditRocmComgrSdk,auditHost?:typeof ciRocm.auditRocmHostSdk,
  *   verifyHostPrerequisites?:typeof checkRocmHostPrerequisites,
  *   hostTools?:(state:ReturnType<typeof localRocmHostState>)=>ReturnType<typeof ciRocm.rocmHostBuildTools>,
- *   hostConfig?:(state:ReturnType<typeof localRocmHostState>,tools:ReturnType<typeof ciRocm.rocmHostBuildTools>)=>ReturnType<typeof ciRocm.rocmHostBuildConfig>}} [dependencies] */
+ *   hostConfig?:(state:ReturnType<typeof localRocmHostState>,tools:ReturnType<typeof ciRocm.rocmHostBuildTools>,env:NodeJS.ProcessEnv)=>ReturnType<typeof ciRocm.rocmHostBuildConfig>}} [dependencies] */
 function auditLocalRocmSdkInputs(context, tools, dependencies = {}) {
   const selected = localRocmSdkContext(context), comgrTools = localRocmTools(tools), comgr = auditLocalRocmComgrInputs(selected, comgrTools, dependencies),
     host = localRocmHostInputs(selected, comgrTools, process.env, dependencies),
@@ -367,7 +371,7 @@ function localHostAdmission(context, tools, audit) {
  *   auditComgr?:typeof ciRocm.auditRocmComgrSdk,buildHost?:(config:unknown,output:string,env:NodeJS.ProcessEnv,configFile:string)=>unknown,
  *   auditHost?:typeof ciRocm.auditRocmHostSdk,verifyHostPrerequisites?:typeof checkRocmHostPrerequisites,
  *   hostTools?:(state:ReturnType<typeof localRocmHostState>)=>ReturnType<typeof ciRocm.rocmHostBuildTools>,
- *   hostConfig?:(state:ReturnType<typeof localRocmHostState>,tools:ReturnType<typeof ciRocm.rocmHostBuildTools>)=>ReturnType<typeof ciRocm.rocmHostBuildConfig>,
+ *   hostConfig?:(state:ReturnType<typeof localRocmHostState>,tools:ReturnType<typeof ciRocm.rocmHostBuildTools>,env:NodeJS.ProcessEnv)=>ReturnType<typeof ciRocm.rocmHostBuildConfig>,
  *   validateTools?:(tools:unknown)=>{cc:string,cxx:string,cmake:string}}} [dependencies] */
 function runLocalRocmSdkChild(context, tools, dependencies = {}) {
   (dependencies.verifyScope || local.verifyCurrentMemoryScope)();

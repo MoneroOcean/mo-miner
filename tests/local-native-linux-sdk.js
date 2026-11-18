@@ -113,16 +113,21 @@ function ready(tools = fakeTools()) {
     noticeReview: fixtureNoticeReview()};
 }
 
+/** Offline stand-in for the workspace sysroot preparation. @param {string} _root @param {NodeJS.ProcessEnv} environment */
+const keepEnvironment = (_root, environment) => environment;
+
 /** @param {string[]} calls @param {boolean} exists */
 function pythonFilesystem(calls, exists) {
   return /** @type {Pick<typeof fs,"statSync"|"accessSync">} */ ({
     statSync(file) {
-      calls.push("python-stat"); assert.equal(file, "/usr/bin/python3.12");
+      if (file !== "/usr/bin/python3.12") {calls.push("tool-stat " + file); return /** @type {fs.Stats} */ (/** @type {unknown} */ ({isFile: () => true}));}
+      calls.push("python-stat");
       if (!exists) {throw new Error("missing fixture Python");}
       return /** @type {fs.Stats} */ (/** @type {unknown} */ ({isFile: () => true}));
     },
     accessSync(file, mode) {
-      calls.push("python-access"); assert.equal(file, "/usr/bin/python3.12"); assert.equal(mode, fs.constants.X_OK);
+      if (file !== "/usr/bin/python3.12") {calls.push("tool-access " + file); return;}
+      calls.push("python-access"); assert.equal(mode, fs.constants.X_OK);
     },
   });
 }
@@ -138,7 +143,8 @@ test.describe("Local Linux SDK frontdoor", {skip: process.platform !== "linux" |
       linker: "/opt/intel/oneapi/compiler/2026.2/lib/ld.lld",
       checkNotices() {calls.push("notices"); return fixtureNoticeReview();},
     });
-    assert.deepEqual(calls, ["gnu", "python-stat", "python-access", "notices"]);
+    assert.deepEqual(calls, ["gnu", "python-stat", "python-access", "tool-stat /usr/bin/dpkg-deb", "tool-access /usr/bin/dpkg-deb",
+      "tool-stat /usr/bin/meson", "tool-access /usr/bin/meson", "notices"], "sysroot extraction and libdrm tools are checked before any acquisition");
     assert.deepEqual(selected.installedRoots, {dpcpp, cuda: cudaRoot});
     assert.equal(selected.tools, tools);
     assert.equal(fs.existsSync(f.workspace), false, "preflight does not create the SDK workspace");
@@ -179,7 +185,7 @@ test.describe("Local Linux SDK frontdoor", {skip: process.platform !== "linux" |
 
   test("Windows prerequisites reuse the same producers without building an unused Linux JIT SDK", t => {
     const f = fixture(t), graph = graphBuilders(f.workspace), tools = fakeTools(),
-      result = buildLocalNativePrerequisites({workspace: f.workspace}, {preflight: () => ready(tools),
+      result = buildLocalNativePrerequisites({workspace: f.workspace}, {ensureSysroot: keepEnvironment, preflight: () => ready(tools),
         preflightRocmHost() {return undefined;}, builders: graph.builders});
     assert.deepEqual(graph.order, ["source", "compiler-inputs", "gnu-headers", "support", "jit-resources", "rocm-sdk", "cuda-images", "acpp-sdk"]);
     assert.equal(result.source.llvmSdk, path.join(f.workspace, "llvm21"));
@@ -192,6 +198,7 @@ test.describe("Local Linux SDK frontdoor", {skip: process.platform !== "linux" |
     const f = fixture(t), graph = graphBuilders(f.workspace), tools = fakeTools(), order = graph.order;
     const result = buildLocalLinuxSdk({}, {
       preflight() {order.push("preflight"); return ready(tools);},
+      ensureSysroot(root, environment) {order.push("sysroot"); assert.equal(root, f.workspace); return environment;},
       defaultWorkspace() {order.push("workspace"); return f.workspace;},
       preflightRocmHost(context, selectedTools) {
         order.push("rocm-host-preflight");
@@ -205,7 +212,7 @@ test.describe("Local Linux SDK frontdoor", {skip: process.platform !== "linux" |
         return {links: [], libraries: [], sdkObjects: [], hashes: {}};
       },
     });
-    assert.deepEqual(order, ["preflight", "workspace", "source", "rocm-host-preflight", "compiler-inputs", "gnu-headers",
+    assert.deepEqual(order, ["preflight", "workspace", "sysroot", "source", "rocm-host-preflight", "compiler-inputs", "gnu-headers",
       "support", "jit-resources", "jit-sdk", "rocm-sdk", "cuda-images", "acpp-sdk", "config-admission", "link-input-admission"]);
     assert.equal(result.workspace, f.workspace); assert.equal(result.configFile, path.join(f.workspace, "native-linux-sdk.json"));
     assert.equal(result.sdkPaths.llvm, path.join(f.workspace, "llvm21/sdk"));
@@ -254,7 +261,7 @@ test.describe("Local Linux SDK frontdoor", {skip: process.platform !== "linux" |
       const empty = Buffer.alloc(0);
       return {pid: 1, output: [empty, empty, empty], stdout: empty, stderr: empty, status: 0, signal: null};
     };
-    const result = buildLocalLinuxSdk({}, {preflight: () => ready(tools), defaultWorkspace: () => f.workspace, run,
+    const result = buildLocalLinuxSdk({}, {ensureSysroot: keepEnvironment, preflight: () => ready(tools), defaultWorkspace: () => f.workspace, run,
       preflightRocmHost() {calls.push("rocm-host-preflight");}, builders: graph.builders, checkNotices: fixtureNoticeReview,
       admitConfig: nativeRelease.nativeSdkConfig,
       admitLinkInputs(sdk) {
@@ -271,7 +278,7 @@ test.describe("Local Linux SDK frontdoor", {skip: process.platform !== "linux" |
   test("a failed stage stops downstream builders and leaves no descriptor", t => {
     const f = fixture(t), graph = graphBuilders(f.workspace), calls = graph.order;
     graph.builders.jitResources = () => {calls.push("jit-resources"); throw new Error("fixture JIT failure");};
-    assert.throws(() => buildLocalLinuxSdk({}, {preflight: () => ready(), defaultWorkspace: () => f.workspace,
+    assert.throws(() => buildLocalLinuxSdk({}, {ensureSysroot: keepEnvironment, preflight: () => ready(), defaultWorkspace: () => f.workspace,
       preflightRocmHost() {calls.push("rocm-host-preflight");}, builders: graph.builders}), /fixture JIT failure/);
     assert.deepEqual(calls, ["source", "rocm-host-preflight", "compiler-inputs", "gnu-headers", "support", "jit-resources"]);
     assert.equal(fs.existsSync(path.join(f.workspace, "native-linux-sdk.json")), false);
@@ -279,7 +286,7 @@ test.describe("Local Linux SDK frontdoor", {skip: process.platform !== "linux" |
 
   test("public descriptor admission failure stops before link admission or writing", t => {
     const f = fixture(t), graph = graphBuilders(f.workspace); let linked = false;
-    assert.throws(() => buildLocalLinuxSdk({}, {preflight: () => ready(), defaultWorkspace: () => f.workspace,
+    assert.throws(() => buildLocalLinuxSdk({}, {ensureSysroot: keepEnvironment, preflight: () => ready(), defaultWorkspace: () => f.workspace,
       preflightRocmHost() {assert.ok(true);}, builders: graph.builders, checkNotices: fixtureNoticeReview,
       admitConfig() {throw new Error("invalid maintained release schema");},
       admitLinkInputs() {linked = true; return {links: [], libraries: [], sdkObjects: [], hashes: {}};}}),

@@ -31,6 +31,8 @@ const logicSuite = [
   "tests/native-linux-application-metadata.js",
   "tests/native-linux-llvm-sdk-handoff.js",
   "tests/native-linux-sdk-config.js",
+  "tests/native-linux-sysroot.js",
+  "tests/native-libdrm-sdk.js",
   "tests/local-native-sdk.js", "tests/local-native-jit-sdk.js", "tests/local-native-rocm-sdk.js",
   "tests/local-native-acpp-sdk.js", "tests/local-native-cuda-images.js", "tests/local-native-linux-sdk.js",
   "tests/local-native-distribution.js", "tests/local-native-command.js",

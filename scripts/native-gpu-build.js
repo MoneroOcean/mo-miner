@@ -10,6 +10,7 @@ const {staticSyclInputs} = require("./native-sycl-inputs");
 const {cudaHeaderResources, cudaHeaderInputs} = require("./native-jit-headers");
 const {isolateGpuObjects} = require("./native-gpu-table");
 const {compileNativeObjects} = require("./native-object-cache");
+const {linuxSysrootFlags, requireLinuxSysroot} = require("./native-linux-sysroot");
 
 /** Keep the original SDK umbrella (including its namespace alias) at its original path.
  * An explicit path avoids both relocated relative includes and Windows case-folding recursion.
@@ -42,15 +43,16 @@ function nativeIncludeRoots(args, repo, output) {
 }
 
 /** Preserve the maintained AdaptiveCpp per-source exceptions in one testable command plan.
+ * systemFlags (the glibc sysroot selection) precede both the C and C++ flags.
  * @param {string[]} sourceFiles @param {string} compiler @param {string} repo @param {string} output
  * @param {string[]} compileFlags @param {boolean} cuda @param {string} backend
- * @param {boolean} [images] */
-function adaptiveCppCompileCommands(sourceFiles, compiler, repo, output, compileFlags, cuda, backend, images = false) {
+ * @param {boolean} [images] @param {string[]} [systemFlags] */
+function adaptiveCppCompileCommands(sourceFiles, compiler, repo, output, compileFlags, cuda, backend, images = false, systemFlags = []) {
   if (backend !== "cuda" && backend !== "hip" && backend !== "cuda-hip") {throw new Error("Unknown AdaptiveCpp HCF identity profile");}
   return sourceFiles.map((file, index) => {
     const object = path.join(output, `${index}.o`), depfile = path.join(output, `${index}.d`);
-    const flags = file.endsWith(".c") ? ["-x", "c", "-O3", "-ffp-contract=off", "-fPIC"] :
-      [...compileFlags, ...(cuda && ["sycl/cn-gpu/cn-gpu.cpp", "sycl/pearlhash/pearlhash.cpp"].includes(file) ? ["-DMOM_SYCL_HAS_CUDA"] : []),
+    const flags = file.endsWith(".c") ? [...systemFlags, "-x", "c", "-O3", "-ffp-contract=off", "-fPIC"] :
+      [...systemFlags, ...compileFlags, ...(cuda && ["sycl/cn-gpu/cn-gpu.cpp", "sycl/pearlhash/pearlhash.cpp"].includes(file) ? ["-DMOM_SYCL_HAS_CUDA"] : []),
         ...(cuda && !images && file === "sycl/pearlhash/pearlhash.cpp" ? ["-DMOM_EMBEDDED_NVRTC_HEADERS"] : [])];
     const hcfNamespace = file.startsWith("sycl/") && file.endsWith(".cpp") ?
       ["-mllvm", "-acpp-sscp-hcf-object-id-namespace=acpp-" + backend] : [];
@@ -302,7 +304,9 @@ function main() {
     flags: compileFlags, files: sdkBefore}, null, 2) + "\n", {flag: "wx"});
   // The same strict-FP host helper is already a separate gyp dependency; it is not a GPU rewrite.
   const sourceFiles = [...sources, "sycl/hoohash/host-math.c", "runtime/driver-library.cpp", "runtime/compiler-gate.cpp"];
-  const commands = adaptiveCppCompileCommands(sourceFiles, inputs.cxx, repo, output, compileFlags, cuda, backend, Boolean(images));
+  // LLVM clang does not read the Intel configuration file; pass the glibc sysroot explicitly.
+  const commands = adaptiveCppCompileCommands(sourceFiles, inputs.cxx, repo, output, compileFlags, cuda, backend, Boolean(images),
+    linuxSysrootFlags(requireLinuxSysroot(process.env)));
   const compiled = compileNativeObjects({repo, output, namespace: `linux/gpu/acpp-${backend}`, commands,
     includeRoots: [output, ...nativeIncludeRoots(commands.flatMap(item => item.args), repo, output)], jobs: 1,
     keyFiles: compileKeyFiles,

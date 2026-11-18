@@ -16,7 +16,8 @@ const {fileHash, sourceInputs, nativeSourceInputs, verifySourceInputs, readBuild
 const nativeResources = require("./native-resources");
 const {admittedJitCacheTag, nativeJitCacheHeader} = require("./native-jit-cache-tag");
 const {assertUniqueHcfIds} = require("./native-hcf");
-const {nativeDependencies, auditNativeGlibc, auditNativeSymbolFile} = require("./native-audit");
+const {nativeDependencies, auditNativeGlibc, auditNativeVersionNeeds, auditNativeSymbolFile} = require("./native-audit");
+const {linuxGlibcBaseline} = require("./native-linux-sysroot");
 const {gpuTable, gpuForwards} = require("./native-gpu-table");
 const {comgrSdkInputs} = require("./native-comgr-inputs");
 const {nativeIoInputs} = require("./build-native-io");
@@ -396,7 +397,7 @@ function nativeApplicationBuildInputs(repo) {
   return sourceInputs(repo, ["runtime"], ["package.json", "package-lock.json", "scripts/build-native-application.js", "scripts/native-bundle.js",
     "scripts/native-resources.js", "scripts/native-gpu-table.js", "scripts/native-audit.js", "scripts/build-source-inputs.js",
     "scripts/build-native-io.js", "scripts/build-environment.js", "scripts/native-object-cache.js", "scripts/native-jit-cache-tag.js", "scripts/native-hcf.js",
-    "sycl/cuda-images.cpp", "sycl/cuda-images.h"]);
+    "scripts/native-linux-sysroot.js", "sycl/cuda-images.cpp", "sycl/cuda-images.h"]);
 }
 
 /** Inspect actual outputs outside either runtime; text parity cannot prove file modes.
@@ -588,7 +589,8 @@ async function main() {
   }
   const objectCache = application ? flushLinuxObjectBatch() : null;
   verifyCopiedCudaImages();
-  const linkArgs = ["-pie", "-Wl,--gc-sections", "-Wl,-z,pack-relative-relocs", "-static-libstdc++", "-static-libgcc", object, host, loop, crypto, ...processObjects, ...applicationObjects,
+  // No DT_RELR (-z pack-relative-relocs): it adds a GLIBC_ABI_DT_RELR need that glibc < 2.36 refuses to load.
+  const linkArgs = ["-pie", "-Wl,--gc-sections", "-static-libstdc++", "-static-libgcc", object, host, loop, crypto, ...processObjects, ...applicationObjects,
     ...(applicationGpu?.linkFlags || []),
     ...(cpuCore ? [cpuCore] : []),
     ...(gpuInputs ? nativeGpuLinkArgs(gpuInputs) : []),
@@ -596,7 +598,8 @@ async function main() {
     path.join(build, "public", "hermes", "Public", "libhermesPublic.a"),
     path.join(build, "external", "boost", "boost_1_86_0", "libs", "context", "libboost_context.a"),
     path.join(opensslRoot, "lib", "libssl.a"), path.join(opensslRoot, "lib", "libcrypto.a"),
-    ...(io ? io.libraries : ["-Wl,-Bstatic", "-luv", "-lz", "-Wl,-Bdynamic"]), "-lm", "-ldl", "-lpthread"];
+    // librt: shm_open lives there before glibc 2.34; newer glibc keeps it as a compatibility stub.
+    ...(io ? io.libraries : ["-Wl,-Bstatic", "-luv", "-lz", "-Wl,-Bdynamic"]), "-lm", "-ldl", "-lpthread", "-lrt"];
   const linkPlan = nativeApplicationLinkPlan(output, linkArgs, application);
   fs.writeFileSync(path.join(output, "link-inputs.json"), JSON.stringify({cxx, args: [...linkPlan.args, "-o", executable],
     ...(linkPlan.map ? {linkMap: linkPlan.map} : {})}, null, 2) + "\n");
@@ -622,7 +625,9 @@ async function main() {
     const needed = nativeDependencies(run("readelf", ["-d", executable], path.join(output, "dependencies.log")), {cudaDriver: true});
     auditSymbols(executable, path.join(output, "runtime-symbols.log"), applicationGpu ? [...applicationGpu.factories, "__wrap_dlopen",
       ...(sourceFreshness?.cudaImages ? ["mom_cuda_images_select_embedded"] : [])] : []);
-    const glibc = application ? auditNativeGlibc(run("readelf", ["--version-info", executable], path.join(output, "versions.log")), "2.39") : null;
+    const versions = application ? run("readelf", ["--version-info", executable], path.join(output, "versions.log")) : "",
+      glibc = application ? auditNativeGlibc(versions, linuxGlibcBaseline) : null;
+    if (application) {auditNativeVersionNeeds(versions);}
     fs.writeFileSync(path.join(output, "result.json"), JSON.stringify({revision, needed, bytes: fs.statSync(executable).size,
       gpuManifest, cpuCore, appResources, nvmlMetadataSha256: nvml?.sha256 || null,
       application, entrypoint: application ? "mom.js" : "probe", gpuFactories: applicationGpu?.factories || [], glibc, sourceFreshness,

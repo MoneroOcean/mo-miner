@@ -16,6 +16,7 @@ const {stageDpcppCudaInputs} = require("./native-dpcpp-cuda-inputs");
 const {archiveName: llvmArchiveName} = require("./native-llvm-sdk");
 const {linuxNativeSdkLldPath} = require("./native-linux-sdk-config");
 const {extractState, listState, packState, temp} = require("./native-ci-tar");
+const {applyLinuxSysrootEnvironment, prepareLinuxSysroot} = require("./native-linux-sysroot");
 const repo = path.resolve(__dirname, "..");
 
 const rocmParserSource = Object.freeze({url: "https://files.pythonhosted.org/packages/3c/ba/d8d168a4b54cae66eaf13d1d9197ca9349c94653815e061f79e7eed86c01/CppHeaderParser-2.7.4.tar.gz",
@@ -78,7 +79,25 @@ function ciPaths() {
     linuxJitResourcesRoot, linuxJitResourcesName,
     rocmComgrSdkRoot, rocmResourcesRoot, rocmHipHeadersRoot, rocmHostSdkRoot, linuxSdkDescriptorRoot, linuxSdkDescriptorName,
     runnerTemp: fs.realpathSync(runnerTemp),
-    env: {...process.env, MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: jobs, OMP_NUM_THREADS: jobs}};
+    // native-job.yml prepares the pinned glibc sysroot first and exports MOM_LINUX_SYSROOT.
+    env: applyLinuxSysrootEnvironment({...process.env, MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: jobs, OMP_NUM_THREADS: jobs})};
+}
+
+/** Fetch the pinned sysroot packages from the mirror release, prepare the glibc sysroot at this job's
+ * fixed work root and select it (MOM_LINUX_SYSROOT) for the job's later steps. The tree is deterministic,
+ * so every job's sysroot has the same receipt and the same paths for cross-job SDK admission.
+ * @param {ReturnType<typeof ciPaths>} paths */
+function prepareLinuxSysrootCi(paths) {
+  const root = path.join(temp, "mom-native-linux-sysroot-" + paths.suffix), packages = path.join(paths.runnerTemp, "mom-linux-sysroot-packages"),
+    envFile = process.env["GITHUB_ENV"] || "";
+  if (process.env["MOM_NATIVE_LINUX_SYSROOT_DIR"] !== root || !path.isAbsolute(envFile) || !fs.lstatSync(envFile, {throwIfNoEntry: false})?.isFile()) {
+    throw new Error("Native CI sysroot needs this run's work root and a GitHub environment file");
+  }
+  runNode("scripts/fetch-native-sdk-sources.js", ["sysroot", packages, "--allow-network"], paths.env, 10 * 60 * 1000);
+  runNode("scripts/fetch-native-sdk-sources.js", ["verify-sysroot", packages], paths.env, 2 * 60 * 1000);
+  const sysroot = prepareLinuxSysroot(packages, root);
+  fs.appendFileSync(envFile, "MOM_LINUX_SYSROOT=" + sysroot.output + "\n", "utf8");
+  console.log("[native-ci] Selected the glibc " + sysroot.baseline + " sysroot " + sysroot.root);
 }
 
 /** Isolated source and SDK roots for the same-run static zstd prerequisite branch.
@@ -671,6 +690,6 @@ module.exports = {sourcesTarName, acppStatePaths, assertAcppFetchProvenance, ass
   assertPreparedSdkPaths, assertRocmParserReceipt, assertSdkFetchProvenance, buildDpcppCudaInputs, buildLinuxGnuHeaders,
   buildWindowsGnuHeaders, ciPaths, dpcppCudaInputPins, dpcppCudaInputsStatePaths, dpcppSourceArchivePin, fetchAcppSource,
   fetchHermesSource, fetchLinuxSources, fetchRocmParserSource, fetchRocmSources, fetchZstdSource, gnuHeadersStatePaths,
-  hermesStatePaths, linuxSourceFetchArgs, linuxSourcePreparationPlan, linuxSourceStatePaths, openmpStatePaths, provisionOneApi,
+  hermesStatePaths, linuxSourceFetchArgs, prepareLinuxSysrootCi, linuxSourcePreparationPlan, linuxSourceStatePaths, openmpStatePaths, provisionOneApi,
   restoreSources, rocmParserSource, rocmPinnedHostPackages, rocmSourceFetchArgs, rocmSourceStatePaths, verifyAcppSource,
   verifyHermesSource, verifyIoSource, verifyLinuxSources, verifyRocmParserSource, verifyRocmSources, zstdStatePaths};

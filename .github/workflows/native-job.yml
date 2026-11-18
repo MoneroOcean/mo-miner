@@ -81,6 +81,10 @@ jobs:
           NATIVE_JOB_UPLOAD: ${{ inputs.upload }}
           NATIVE_JOB_DIAGNOSTICS: ${{ inputs.diagnostics }}
         run: node scripts/ci/job.js
+      # Every Linux producer compiles and links against the pinned glibc 2.31 sysroot (scripts/native-linux-sysroot.js);
+      # the deterministic tree lands at the same path in every job, so cross-job SDK admission sees identical inputs.
+      - name: Prepare the glibc sysroot
+        run: node scripts/run-native-ci.js stage linux-sysroot
       - if: steps.plan.outputs.pattern != ''
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:

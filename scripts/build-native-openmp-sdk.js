@@ -8,6 +8,7 @@ const {nativeSdkEnvironment} = require("./build-environment");
 const {isStaticArchive, nativeDependencies} = require("./native-audit");
 const {archiveName, archiveSha256, tarTool, verifyArchiveCatalog} = require("./native-llvm-sdk");
 const {verifyBuildArchives} = require("./fetch-native-sdk-sources");
+const {requireLinuxSysroot, linuxSysrootRecord, verifyLinuxSysrootRecord} = require("./native-linux-sysroot");
 
 const repo = path.resolve(__dirname, ".."), sourceRootName = "llvm-project-21.1.8.src";
 /** @typedef {"cc" | "cmake" | "cxx" | "ninja" | "readelf" | "tar"} ToolName */
@@ -26,13 +27,13 @@ const repo = path.resolve(__dirname, ".."), sourceRootName = "llvm-project-21.1.
  * plan: OpenmpPlan, buildOutput: FileArtifact, sdk: FileArtifact,
  * smoke: {source: {path: string, sha256: string}, header: {path: string, sha256: string}, object: FileArtifact, binary: FileArtifact,
  *   run: {args: string[], status: number, signal: string | null, env: Record<string, string>, logSha256: string}, dynamicDependencies: string[]},
- * logs: Record<string, StageLog>, buildOnly: boolean, compiled: boolean, executed: boolean, publicationQualified: boolean}} OpenmpReceipt */
+ * logs: Record<string, StageLog>, sysroot: {baseline: string, receiptSha256: string}, buildOnly: boolean, compiled: boolean, executed: boolean, publicationQualified: boolean}} OpenmpReceipt */
 /** @type {readonly ToolName[]} */
 const toolNames = Object.freeze(["cc", "cmake", "cxx", "ninja", "readelf", "tar"]);
 // Parallelism only: the CI and local build envelopes; libomp.a bytes do not depend on it.
 const buildJobs = Object.freeze([2, 4]);
 const sourceLeaves = Object.freeze(["scripts/build-native-openmp-sdk.js", "scripts/build-source-inputs.js", "scripts/build-environment.js",
-  "scripts/native-audit.js", "scripts/native-llvm-sdk.js"]);
+  "scripts/native-audit.js", "scripts/native-llvm-sdk.js", "scripts/native-linux-sysroot.js"]);
 // Acquisition is admitted separately by exact archive pins and immutable receipt identity.
 // Only compilation policy belongs in this recipe; unrelated downloader edits do not change libomp.
 function openmpBuildRecipe() {return sourceInputs(repo, [], [...sourceLeaves]);}
@@ -380,7 +381,7 @@ function isSourceInputRecord(value) {
 /** @param {unknown} record @returns {OpenmpReceipt} */
 function assertOpenmpReceiptShape(record) {
   const keys = ["archive", "buildOnly", "buildOutput", "compiled", "config", "executed", "fetchReceipt", "logs", "output", "plan",
-    "platform", "publicationQualified", "recipe", "role", "sdk", "smoke", "source", "toolVersions", "tools", "version"];
+    "platform", "publicationQualified", "recipe", "role", "sdk", "smoke", "source", "sysroot", "toolVersions", "tools", "version"];
   if (!record || typeof record !== "object" || Array.isArray(record)) {throw new Error("Invalid or stale static OpenMP SDK receipt");}
   const receipt = /** @type {OpenmpReceipt} */ (record);
   if (Object.keys(receipt).sort().join(",") !== keys.sort().join(",") ||
@@ -391,6 +392,7 @@ function assertOpenmpReceiptShape(record) {
       receipt.archive.sha256 !== archiveSha256 || receipt.smoke?.run?.status !== 0 || receipt.smoke.run.signal !== null) {
     throw new Error("Invalid or stale static OpenMP SDK receipt");
   }
+  verifyLinuxSysrootRecord(receipt.sysroot, "Static OpenMP SDK");
   return /** @type {OpenmpReceipt} */ (receipt);
 }
 
@@ -473,7 +475,7 @@ function buildNativeOpenmpSdk(archive, output, config, environment, configFile, 
     archive: {...sourceInput.archive, catalog, selectedCatalog}, fetchReceipt: sourceInput.fetchReceipt,
     source: {path: "source", files: sourceAfter.count, entries: sourceAfter.entries, bytes: sourceAfter.bytes, sha256: sourceAfter.sha256},
     config: {path: "tools.json", sha256: fileHash(path.join(selectedOutput, "tools.json"))}, tools: toolHashes, toolVersions: versions,
-    recipe, plan: {...plan, cache: checkedCache}, buildOutput, sdk: sdkOutput,
+    recipe, sysroot: linuxSysrootRecord(requireLinuxSysroot(env)), plan: {...plan, cache: checkedCache}, buildOutput, sdk: sdkOutput,
     smoke: {source: {path: "smoke/openmp-smoke.c", sha256: fileHash(plan.smokeC)},
       header: {path: path.relative(selectedOutput, plan.header), sha256: fileHash(plan.header)}, object: smokeObject, binary: smokeBinary,
       run: {args: plan.smokeRun, status: 0, signal: null,

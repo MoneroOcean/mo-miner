@@ -10,21 +10,24 @@ const {hermesPins, hermesSourceFiles} = require("./build-native-hermes");
 const {comgrSdkInputs} = require("./native-comgr-inputs");
 const {admitSyclSource, rocmInputs} = require("./native-sycl-inputs");
 const {elfReport} = require("./native-elf");
+const {verifyLinuxSysrootRecord} = require("./native-linux-sysroot");
 
 const repo = path.resolve(__dirname, "..");
 const syclRevision = "da2463e45aa90aa36306c45abcfc05b87de51bc6";
 const openmpContainerPath = "/openmp/libomp.a";
 const openmpProviderFile = /^lib(?:omp|iomp5|gomp)(?:\.a|\.so(?:\.[0-9]+)*)?$/i;
 const syclRecipe = ["scripts/build-native-sycl-sdk.js", "scripts/native-sycl-inputs.js", "scripts/native-hcf.js", "scripts/native-jit-link.js",
+  "scripts/native-linux-sysroot.js",
   "tests/reference/native-sycl-hcf-repro.cpp",
   "tests/reference/native-jit-cache.cpp",
   "scripts/build-environment.js", "scripts/native-audit.js", "scripts/native-resources.js",
   "runtime/adaptivecpp-static.patch", "runtime/adaptivecpp-jit.patch"];
 const hermesRecipe = ["scripts/build-native-hermes.js", "scripts/build-source-inputs.js", "scripts/build-environment.js",
-  "scripts/native-audit.js", "runtime/hermes-host-rejections.patch"];
+  "scripts/native-audit.js", "scripts/native-linux-sysroot.js", "runtime/hermes-host-rejections.patch"];
 const rocmRecipe = ["scripts/build-native-rocm-host-runtime.js", "scripts/build-native-sycl-sdk.js", "scripts/build-native-comgr-sdk.js",
   "scripts/native-comgr-inputs.js", "scripts/prepare-native-sdk-sources.js", "scripts/build-native-release.js",
-  "scripts/build-source-inputs.js", "scripts/build-environment.js", "scripts/native-audit.js", "scripts/native-sycl-inputs.js", "scripts/native-hcf.js"];
+  "scripts/build-source-inputs.js", "scripts/build-environment.js", "scripts/native-audit.js", "scripts/native-sycl-inputs.js", "scripts/native-hcf.js",
+  "scripts/native-linux-sysroot.js", "scripts/build-native-libdrm.js"];
 const supportLinks = new Set(["dl", "pthread", "m", "z", "zstd", "stdc++fs"]);
 const digest = /^[0-9a-f]{64}$/;
 /**
@@ -363,7 +366,7 @@ function nativeStaticRuntimeInputs(receiptFile, options = {}) {
   canonicalPath(inputs.source, "AdaptiveCpp source", "directory"); canonicalPath(inputs.build, "AdaptiveCpp build", "directory");
   const admitted = admitSyclSource(inputs.source, root, true, options.gitRunner || gitOutput);
   if (!isDeepStrictEqual(admitted, {source: inputs.source, revision: syclRevision})) {throw new Error("AdaptiveCpp source proof differs from its receipt");}
-  verifyRecipe(r.recipe, syclRecipe, "AdaptiveCpp SDK");
+  verifyRecipe(r.recipe, syclRecipe, "AdaptiveCpp SDK"); verifyLinuxSysrootRecord(r["sysroot"], "AdaptiveCpp SDK");
   const planPath = path.join(root, "plan.json"); canonicalPath(planPath, "AdaptiveCpp SDK plan");
   const planSha256 = fileHash(planPath);
   const plan = readBuildJson(planPath);
@@ -443,7 +446,7 @@ function nativeHermesInputs(receipt, options = {}) {
       r.publicationQualified !== false || r.executed === true || !absolutePath(r.source) || !absolutePath(r.build) ||
       r.source !== path.join(root, "source") || r.build !== path.join(root, "build")) {throw new Error("Invalid static Hermes SDK receipt");}
   canonicalPath(r.source, "Hermes source", "directory"); canonicalPath(r.build, "Hermes build", "directory");
-  verifyRecipe(r.recipe, hermesRecipe, "Hermes SDK");
+  verifyRecipe(r.recipe, hermesRecipe, "Hermes SDK"); verifyLinuxSysrootRecord(r["sysroot"], "Static Hermes SDK");
   const fingerprints = boundedRecord(r.fingerprints, "Hermes tool fingerprints", 16), sources = boundedRecord(r.sources, "Hermes source hashes", 100000);
   const patches = Object.keys(fingerprints).filter(file => path.basename(file) === "hermes-host-rejections.patch");
   // Retain the original path/hash evidence while requiring the exact maintained patch at any checkout prefix.
@@ -505,7 +508,7 @@ function nativeRocmHostInputs(receipt, options = {}) {
   if (r.version !== 1 || !isDeepStrictEqual(r.pins, rocmPins) || r.prefix !== prefix || r.buildOnly !== true ||
       r.executed !== false || r.publicationQualified !== false) {throw new Error("Invalid pinned ROCm host runtime receipt");}
   canonicalPath(root, "ROCm output", "directory"); canonicalPath(prefix, "ROCm SDK prefix", "directory");
-  verifyRecipe(r.recipe, rocmRecipe, "ROCm host runtime");
+  verifyRecipe(r.recipe, rocmRecipe, "ROCm host runtime"); verifyLinuxSysrootRecord(r["sysroot"], "ROCm host runtime");
   const sources = boundedRecord(r.sources, "ROCm source snapshot", 2);
   verifySourceInputs(sources, sourceInputs(root, ["source/clr", "source/hip", "source/rocr"], []), "ROCm source snapshots");
   const sourceArchives = boundedRecord(r.sourceArchives, "ROCm source archives", 4);
@@ -528,13 +531,15 @@ function nativeRocmHostInputs(receipt, options = {}) {
     if (fs.statSync(expected).size !== item.bytes || !isStaticArchive(expected) || fileHash(expected) !== item.sha256) {throw new Error("Staged ROCm archive differs: " + name);}
     files[expected] = item.sha256;
   }
-  const dependencies = boundedRecord(r.stagedDependencies, "ROCm staged dependencies", 8), owners = {drm: "libdrm-dev", drmAmdgpu: "libdrm-dev", elf: "libelf-dev", numa: "libnuma-dev"};
+  // libelf/libnuma come from the glibc sysroot packages and libdrm from its source-built SDK.
+  const dependencies = boundedRecord(r.stagedDependencies, "ROCm staged dependencies", 8), owners = {drm: "libdrm", drmAmdgpu: "libdrm", elf: "libelf-dev", numa: "libnuma-dev"};
   if (Object.keys(dependencies).sort().join(",") !== Object.keys(owners).sort().join(",")) {throw new Error("ROCm dependency membership differs");}
   for (const [name, owner] of Object.entries(owners)) {
     const item = exactRecord(dependencies[name], ["path", "sha256", "package", "architecture", "version", "status", "staged", "stagedSha256"], "ROCm staged dependency");
     const expectedName = name === "drmAmdgpu" ? "libdrm_amdgpu.a" : `lib${name}.a`;
     const staged = path.join(prefix, "lib", expectedName);
-    if (!absolutePath(item.path) || item.staged !== staged || item.package !== owner || item.architecture !== "amd64" || item.status !== "ii" ||
+    if (!absolutePath(item.path) || item.staged !== staged || item.package !== owner || item.architecture !== "amd64" ||
+        item.status !== (owner === "libdrm" ? "source" : "sysroot") ||
         typeof item.version !== "string" || !item.version || item.sha256 !== item.stagedSha256 || !digest.test(item.sha256)) {
       throw new Error("Invalid ROCm staged package dependency: " + name);
     }

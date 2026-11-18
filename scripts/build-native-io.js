@@ -7,6 +7,7 @@ const {isDeepStrictEqual} = require("node:util");
 const {fileHash, sourceInputs, verifySourceInputs, readBuildJson} = require("./build-source-inputs");
 const {nativeSdkEnvironment} = require("./build-environment");
 const {isStaticArchive} = require("./native-audit");
+const {requireLinuxSysroot, linuxSysrootRecord, verifyLinuxSysrootRecord} = require("./native-linux-sysroot");
 const repo = path.resolve(__dirname, "..");
 const ioPins = Object.freeze({
   libuv: Object.freeze({directory: "libuv-v1.51.0", sha256: "5f0557b90b1106de71951a3c3931de5e0430d78da1d9a10287ebc7a3f78ef8eb"}),
@@ -19,11 +20,12 @@ const literal = value => typeof value === "string" && value.length <= 4096 && pa
 /** @typedef {{cmake: string, cc: string, ninja: string}} IoTools */
 
 /** Build the same required static targets on Linux/Windows; do not build examples/tests
- * or rely on PATH to select a compiler/build runner. @param {string} output
- * @param {IoTools} tools @param {number} jobs @param {NodeJS.Platform} [platform] */
-function nativeIoPlan(output, tools, jobs, platform = process.platform) {
+ * or rely on PATH to select a compiler/build runner. Linux selects the glibc sysroot toolchain file.
+ * @param {string} output @param {IoTools} tools @param {number} jobs @param {NodeJS.Platform} [platform] @param {string} [toolchain] */
+function nativeIoPlan(output, tools, jobs, platform = process.platform, toolchain) {
   if (!["linux", "win32"].includes(platform) || !tools || Object.keys(tools).sort().join(",") !== "cc,cmake,ninja" ||
-      ![output, ...Object.values(tools)].every(literal) || !Number.isInteger(jobs) || jobs < 1 || jobs > 16) {
+      ![output, ...Object.values(tools)].every(literal) || !Number.isInteger(jobs) || jobs < 1 || jobs > 16 ||
+      (toolchain !== undefined && (platform !== "linux" || !literal(toolchain)))) {
     throw new Error("Native I/O SDK needs Linux/Windows, absolute tools/output and jobs in 1..16");
   }
   const windows = platform === "win32", cmakePath = (/** @type {string} */ p) => p.replaceAll("\\", "/");
@@ -39,6 +41,7 @@ function nativeIoPlan(output, tools, jobs, platform = process.platform) {
       "-DCMAKE_MAKE_PROGRAM:FILEPATH=" + cmakePath(tools.ninja), "-DCMAKE_POSITION_INDEPENDENT_CODE:BOOL=ON",
       "-DCMAKE_POLICY_DEFAULT_CMP0091:STRING=NEW", "-DCMAKE_POLICY_VERSION_MINIMUM:STRING=3.5",
       ...(windows ? ["-DCMAKE_MSVC_RUNTIME_LIBRARY:STRING=MultiThreaded"] : []),
+      ...(toolchain ? ["-DCMAKE_TOOLCHAIN_FILE:FILEPATH=" + toolchain] : []),
       ...(name === "libuv" ? ["-DLIBUV_BUILD_SHARED:BOOL=OFF", "-DLIBUV_BUILD_TESTS:BOOL=OFF", "-DLIBUV_BUILD_BENCH:BOOL=OFF"] : ["-DZLIB_BUILD_EXAMPLES:BOOL=OFF"])],
     compile: [tools.cmake, "--build", build, "--parallel", String(jobs), "--target", target]};
   });
@@ -99,7 +102,8 @@ function ioFiles(root) {
  * @param {number} jobs @param {NodeJS.ProcessEnv} [environment] */
 function buildNativeIo(archives, output, tools, jobs, environment = process.env) {
   if (environment["MOM_AOT_BUILD_ONLY"] !== "1") {throw new Error("I/O SDK production requires MOM_AOT_BUILD_ONLY=1");}
-  const plan = nativeIoPlan(output, tools, jobs), env = nativeSdkEnvironment(environment);
+  const env = nativeSdkEnvironment(environment), sysroot = process.platform === "linux" ? requireLinuxSysroot(env) : null,
+    plan = nativeIoPlan(output, tools, jobs, process.platform, sysroot?.toolchain);
   if (fs.lstatSync(output, {throwIfNoEntry: false})) {throw new Error("I/O SDK output must be new");}
   if (!archives || Object.keys(archives).sort().join(",") !== "libuv,zlib") {throw new Error("Select both pinned I/O archives");}
   const inputs = Object.fromEntries(Object.entries(archives).map(([name, file]) => {
@@ -108,7 +112,8 @@ function buildNativeIo(archives, output, tools, jobs, environment = process.env)
     return [file, pin.sha256];
   }));
   const fingerprints = Object.fromEntries(Object.values(tools).map(file => [file, fileHash(file)]));
-  const recipe = sourceInputs(repo, [], ["scripts/build-native-io.js", "scripts/build-environment.js", "scripts/build-source-inputs.js", "scripts/native-audit.js"]);
+  const recipe = sourceInputs(repo, [], ["scripts/build-native-io.js", "scripts/build-environment.js", "scripts/build-source-inputs.js", "scripts/native-audit.js",
+    "scripts/native-linux-sysroot.js"]);
   fs.mkdirSync(output, {mode: 0o700}); fs.mkdirSync(path.join(output, "logs"));
   const run = (/** @type {string[]} */ command, /** @type {string} */ label, capture = false) => {
     const program = command[0]; if (!program) {throw new Error("Missing I/O SDK command");}
@@ -136,7 +141,8 @@ function buildNativeIo(archives, output, tools, jobs, environment = process.env)
   for (const [file, hash] of Object.entries({...inputs, ...fingerprints})) {if (fileHash(file) !== hash) {throw new Error("Native I/O SDK inputs changed during build");}}
   verifySourceInputs(recipe, sourceInputs(repo, [], Object.keys(recipe.graph)), "Native I/O SDK producer");
   const artifacts = ioFiles(output);
-  const result = {version: 1, target: process.platform, pins: ioPins, inputs, fingerprints, recipe, artifacts, buildOnly: true, publicationQualified: false};
+  const result = {version: 1, target: process.platform, pins: ioPins, inputs, fingerprints, recipe, artifacts,
+    ...(sysroot ? {sysroot: linuxSysrootRecord(sysroot)} : {}), buildOnly: true, publicationQualified: false};
   fs.writeFileSync(path.join(output, "result.json"), JSON.stringify(result, null, 2) + "\n", {flag: "wx"});
   console.log("[native-sdk] Original static libuv/zlib SDK built; no application execution.");
   return result;
@@ -152,6 +158,7 @@ function nativeIoInputs(root, platform = process.platform) {
       !record.artifacts || typeof record.artifacts !== "object" || Array.isArray(record.artifacts) || Object.keys(record.artifacts).length > 256) {
     throw new Error("Invalid native I/O SDK receipt");
   }
+  if (platform === "linux") {verifyLinuxSysrootRecord(record.sysroot, "Native I/O SDK");}
   for (const [name, hash] of Object.entries(record.artifacts)) {
     if (!/^(?:include\/[A-Za-z0-9_./-]+\.h|lib\/[A-Za-z0-9_.-]+\.(?:a|lib))$/.test(name) || name.split("/").some(part => part === "." || part === "..")) {throw new Error("Invalid native I/O SDK member");}
     const file = path.join(root, name);

@@ -44,7 +44,7 @@ function hostInputs(workspace, tools, root) {
     rocr: path.join(paths.source, "roots/rocr")},
   tools: {ar: tools.ar, cmake: tools.cmake, dpkgQuery: tools.dpkgQuery, git: tools.git, llvmObjcopy: tools.llvmObjcopy,
     ninja: tools.ninja, perl: tools.perl, pkgConfig: tools.pkgConfig, python3: tools.python3, ranlib: tools.ranlib, tar: tools.tar, xxd: tools.xxd},
-  hostCompilers: {cc: tools.cc, cxx: tools.cxx}, dependencies, pkgConfigDir: path.join(root, "pkg-config"),
+  hostCompilers: {cc: tools.cc, cxx: tools.cxx}, dependencies, libdrm: path.join(root, "libdrm"), pkgConfigDir: path.join(root, "pkg-config"),
   comgrReceipt: path.join(paths.sdkRoot, "result.json")};
   return {hostTools, config, verifyHostPrerequisites() {return undefined;}};
 }

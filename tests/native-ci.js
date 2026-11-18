@@ -1468,55 +1468,32 @@ test.describe("Native prerequisite provenance and transport", () => {
 
   test.describe("ROCm preinstalled host prerequisites", () => {
     test.describe("ROCm pkg-config host metadata", () => {
-      test("scrubs inherited search overrides but keeps distro defaults for all libdrm queries", {skip: linuxOnlySkip}, () => {
-        const inherited = {PATH: "/usr/bin", PKG_CONFIG_PATH: "/poison/path", pkg_config_libdir: "/poison/libdir",
-          Pkg_Config_Sysroot_Dir: "/stale/sysroot", PKG_CONFIG_TOP_BUILD_DIR: "/preserve/unrelated"};
-        /** @type {Array<{file:string,args:string[],env:NodeJS.ProcessEnv}>} */ const calls = [];
-        /** @param {string} file @param {string[]} args @param {import("node:child_process").SpawnSyncOptionsWithStringEncoding} options */
-        const runner = /** @type {typeof spawnSync} */ (/** @type {unknown} */ ((/** @type {string} */ file,
-          /** @type {string[]} */ args, /** @type {import("node:child_process").SpawnSyncOptionsWithStringEncoding} */ options) => {
-          const stdout = args.join(" ").includes("pcfiledir") ? "/usr/lib/x86_64-linux-gnu/pkgconfig\n" : "/usr/lib/x86_64-linux-gnu\n";
-          calls.push({file, args: [...args], env: options.env || {}});
-          return {pid: 1, output: [null, stdout, ""], stdout, stderr: "", status: 0, signal: null};
-        }));
-        const invoke = vm.runInNewContext("(" + rocmHostBuildConfig.toString() + ")", {path, process: {env: inherited}, spawnSync: runner}),
-          state = {source: "/tmp/mom-rocm-source", sdkRoot: "/tmp/mom-rocm-comgr"},
+      test("selects the sysroot libelf/libnuma archives and the source-built libdrm SDK, never host /usr/lib", () => {
+        /** @type {string[]} */ const admitted = [];
+        const invoke = vm.runInNewContext("(" + rocmHostBuildConfig.toString() + ")", {path,
+            requireLinuxSysroot: () => ({root: "/sysroot/root"}),
+            nativeLibdrmInputs: (/** @type {string} */ root) => {
+              admitted.push(root); return {root, drm: root + "/sdk/lib/libdrm.a",
+                drmAmdgpu: root + "/sdk/lib/libdrm_amdgpu.a", pkgConfigDir: root + "/sdk/lib/pkgconfig"};
+            }}),
+          state = {source: "/tmp/mom-rocm-source", sdkRoot: "/tmp/mom-rocm-comgr", libdrmSdk: "/tmp/mom-rocm-host/libdrm"},
           tools = {ar: "/usr/bin/ar", cmake: "/usr/bin/cmake", dpkgQuery: "/usr/bin/dpkg-query", git: "/usr/bin/git",
             llvmObjcopy: "/tmp/mom-llvm/bin/llvm-objcopy", ninja: "/usr/bin/ninja", perl: "/usr/bin/perl",
             pkgConfig: "/usr/bin/pkg-config", python3: "/usr/bin/python3.12", ranlib: "/usr/bin/ranlib", tar: "/usr/bin/tar",
             xxd: "/usr/bin/xxd", cc: "/opt/intel/icx", cxx: "/opt/intel/icpx"};
-        const config = invoke(state, tools);
-        assert.deepEqual(calls.map(row => row.args.join(" ")), ["--variable=pcfiledir libdrm", "--variable=pcfiledir libdrm_amdgpu",
-          "--variable=libdir libdrm", "--variable=libdir libdrm_amdgpu"]);
-        for (const row of calls) {
-          assert.equal(row.file, tools.pkgConfig); assert.equal(row.env["LC_ALL"], "C");
-          assert.equal(row.env["PATH"], inherited["PATH"]);
-          assert.equal(row.env["PKG_CONFIG_TOP_BUILD_DIR"], inherited["PKG_CONFIG_TOP_BUILD_DIR"]);
-          assert.equal(Object.keys(row.env).some(key => /^PKG_CONFIG_(?:PATH|LIBDIR|SYSROOT_DIR)$/i.test(key)), false);
-        }
-        assert.equal(config.pkgConfigDir, "/usr/lib/x86_64-linux-gnu/pkgconfig");
-        assert.equal(config.dependencies.drm, "/usr/lib/x86_64-linux-gnu/libdrm.a");
-        assert.equal(config.dependencies.drmAmdgpu, "/usr/lib/x86_64-linux-gnu/libdrm_amdgpu.a");
-        assert.equal(config.dependencies.elf, "/usr/lib/x86_64-linux-gnu/libelf.a");
-        assert.equal(config.dependencies.numa, "/usr/lib/x86_64-linux-gnu/libnuma.a");
-      });
-
-      test("rejects a missing libdrm pkg-config query", {skip: linuxOnlySkip}, () => {
-        /** @type {Array<string[]>} */ const calls = [];
-        /** @param {string} file @param {string[]} args */
-        const runner = /** @type {typeof spawnSync} */ (/** @type {unknown} */ ((/** @type {string} */ file, /** @type {string[]} */ args) => {
-          calls.push([file, ...args]);
-          return {pid: 1, output: [null, "", "Package libdrm was not found"], stdout: "", stderr: "Package libdrm was not found", status: 1, signal: null};
-        }));
-        const invoke = vm.runInNewContext("(" + rocmHostBuildConfig.toString() + ")", {path, process: {env: {}}, spawnSync: runner});
-        assert.throws(() => invoke({source: "/tmp/src", sdkRoot: "/tmp/sdk"}, {pkgConfig: "/usr/bin/pkg-config"}),
-          /Native ROCm host pkg-config query failed: --variable=pcfiledir libdrm/);
-        assert.equal(calls.length, 1);
+        const config = invoke(state, tools, {});
+        assert.deepEqual(admitted, [state.libdrmSdk]);
+        assert.deepEqual({...config.dependencies}, {drm: "/tmp/mom-rocm-host/libdrm/sdk/lib/libdrm.a",
+          drmAmdgpu: "/tmp/mom-rocm-host/libdrm/sdk/lib/libdrm_amdgpu.a", elf: "/sysroot/root/usr/lib/x86_64-linux-gnu/libelf.a",
+          numa: "/sysroot/root/usr/lib/x86_64-linux-gnu/libnuma.a"});
+        assert.equal(config.libdrm, state.libdrmSdk);
+        assert.equal(config.pkgConfigDir, "/tmp/mom-rocm-host/libdrm/sdk/lib/pkgconfig");
+        assert.doesNotMatch(JSON.stringify(config.dependencies), /"\/usr\/lib/);
       });
     });
 
     test("skips APT only for all-installed packages and exact PLY/xxd/OpenGL development pins", () => {
-      const expected = {"libdrm-dev": "2.4.120-1", "libelf-dev": "0.190-1", "libnuma-dev": "2.0.18-1",
+      const expected = {"libdrm-dev": "2.4.120-1", meson: "1.3.2-1ubuntu1",
         "python3-ply": "3.11-6", xxd: "2:9.1.0016-1ubuntu7.20", "libegl-dev": "1.7.0-1build1",
         "libopengl-dev": "1.7.0-1build1"};
       const pinned = {"python3-ply": "3.11-6", xxd: "2:9.1.0016-1ubuntu7.20",
@@ -1565,13 +1542,13 @@ test.describe("Native prerequisite provenance and transport", () => {
       calls.length = 0;
       assert.equal(provisionRocmHostPackages({env: {}}, runner), undefined);
       assert.ok(calls.some(row => row.command === "sudo"), "malformed package rows fall back to APT");
-      selected = {...expected}; delete selected["libelf-dev"]; dpkgOutput = undefined; calls.length = 0;
+      selected = {...expected}; delete selected["meson"]; dpkgOutput = undefined; calls.length = 0;
       assert.equal(provisionRocmHostPackages({env: {}}, runner), undefined);
       assert.ok(calls.some(row => row.command === "sudo"), "an incomplete package inventory falls back to APT");
     });
 
     test("an older package inventory cannot skip required EGL/OpenGL development packages", () => {
-      const oldPackages = {"libdrm-dev": "2.4.120-1", "libelf-dev": "0.190-1", "libnuma-dev": "2.0.18-1",
+      const oldPackages = {"libdrm-dev": "2.4.120-1", meson: "1.3.2-1ubuntu1",
         "python3-ply": "3.11-6", xxd: "2:9.1.0016-1ubuntu7.20"};
       const pinned = {"python3-ply": "3.11-6", xxd: "2:9.1.0016-1ubuntu7.20",
         "libegl-dev": "1.7.0-1build1", "libopengl-dev": "1.7.0-1build1"};
@@ -1923,7 +1900,7 @@ test.describe("Native prerequisite provenance and transport", () => {
       assert.equal(catalog["zstd"]?.sha256, zstdPin.sha256);
       assert.equal(catalog["zstd"]?.fileName, "zstd-" + zstdPin.version + ".tar.gz");
       assert.deepEqual(Object.keys(zstdSourceRecipe().graph), ["scripts/build-native-zstd.js", "scripts/build-source-inputs.js",
-        "scripts/build-environment.js", "scripts/native-audit.js"]);
+        "scripts/build-environment.js", "scripts/native-audit.js", "scripts/native-linux-sysroot.js"]);
       const command = zstdBuildCommand(state, state.toolsFile);
       assert.deepEqual(command, {script: "scripts/build-native-zstd.js", args: [state.archive, state.sdkRoot, state.toolsFile]});
       assert.notEqual(command.args[1], path.join(state.sdkRoot, "lib/libzstd.a"), "the builder receives SDKROOT, not a raw archive path");
@@ -3042,10 +3019,10 @@ test.describe("Linux native application producer handoff", () => {
     fs.mkdirSync(path.dirname(rocmSourceLicense), {recursive: true});
     fs.writeFileSync(rocmSourceLicense, "fixture hsakmt license\n"); fs.writeFileSync(rocrArchive, "fixture rocr source archive\n");
     const rocmOrigins = {
-      drm: {path: "/usr/lib/x86_64-linux-gnu/libdrm.a", sha256: "a".repeat(64), package: "libdrm-dev", architecture: "amd64", version: "2.4.1-1", status: "ii"},
-      drmAmdgpu: {path: "/usr/lib/x86_64-linux-gnu/libdrm_amdgpu.a", sha256: "b".repeat(64), package: "libdrm-dev", architecture: "amd64", version: "2.4.1-1", status: "ii"},
-      elf: {path: "/usr/lib/x86_64-linux-gnu/libelf.a", sha256: "c".repeat(64), package: "libelf-dev", architecture: "amd64", version: "0.1-1", status: "ii"},
-      numa: {path: "/usr/lib/x86_64-linux-gnu/libnuma.a", sha256: "d".repeat(64), package: "libnuma-dev", architecture: "amd64", version: "2.0.1-1", status: "ii"},
+      drm: {path: "/libdrm/sdk/lib/libdrm.a", sha256: "a".repeat(64), package: "libdrm", architecture: "amd64", version: "2.4.1-1", status: "source"},
+      drmAmdgpu: {path: "/libdrm/sdk/lib/libdrm_amdgpu.a", sha256: "b".repeat(64), package: "libdrm", architecture: "amd64", version: "2.4.1-1", status: "source"},
+      elf: {path: "/sysroot/root/usr/lib/x86_64-linux-gnu/libelf.a", sha256: "c".repeat(64), package: "libelf-dev", architecture: "amd64", version: "0.1-1", status: "sysroot"},
+      numa: {path: "/sysroot/root/usr/lib/x86_64-linux-gnu/libnuma.a", sha256: "d".repeat(64), package: "libnuma-dev", architecture: "amd64", version: "2.0.1-1", status: "sysroot"},
     };
     const stagedBase = "/tmp/mom-native-rocm-sdk-" + suffix + "/sdk/lib/", rocmRecord = {osOrigins: rocmOrigins, stagedDependencies: {
       drm: {...rocmOrigins.drm, staged: stagedBase + "drm.a", stagedSha256: rocmOrigins.drm.sha256},

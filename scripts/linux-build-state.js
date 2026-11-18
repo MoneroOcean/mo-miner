@@ -156,7 +156,9 @@ function configuration() {
     "MOM_DPCPP_IMPL", "MOM_COMBINED_TARGETS", "MOM_INTEL_AOT_DEVICE", "ACPP_TARGETS",
     "MOM_ADAPTIVE_BACKEND", "MOM_ADAPTIVE_HOST_CC", "MOM_ADAPTIVE_HOST_CXX", "MOM_ROCM_ROOT", "ROCM_PATH",
     "CMPLR_ROOT", "CUDA_PATH", "CUDA_HOME", "GYP_DEFINES", "GYP_GENERATOR_FLAGS", "GYP_CONFIG_DIR",
-    "NODE_GYP_FORCE_PYTHON", "PYTHON", "PYTHONPATH"];
+    "NODE_GYP_FORCE_PYTHON", "PYTHON", "PYTHONPATH",
+    // A release build selects the glibc sysroot through these; its receipt hash identifies the tree.
+    "ICXCFG", "ICPXCFG", "MOM_LINUX_SYSROOT_SHA256", "PKG_CONFIG_LIBDIR", "PKG_CONFIG_SYSROOT_DIR", "CMAKE_TOOLCHAIN_FILE"];
   const env = Object.fromEntries(names.map(name => [name, process.env[name] || ""]));
   const npmConfig = Object.fromEntries(Object.keys(process.env).sort()
     .filter(name => /^(npm_config_|npm_package_config_node_gyp_)/i.test(name))

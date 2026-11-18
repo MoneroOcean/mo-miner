@@ -9,6 +9,7 @@ const {lldInputs} = require("./native-jit-link");
 const {buildFileInputs, fileHash, sourceInputs, verifySourceInputs} = require("./build-source-inputs");
 const {absolutePath} = require("./build-native-release");
 const {nativeSdkEnvironment} = require("./build-environment");
+const {requireLinuxSysroot, linuxSysrootRecord} = require("./native-linux-sysroot");
 const {isStaticArchive} = require("./native-audit");
 const {verifyComgrSdkSelection} = require("./native-comgr-inputs");
 
@@ -212,7 +213,8 @@ function buildStaticSyclSdk(source, llvm, cuda, output, environment = process.en
   if (canonicalInputs.some(file => pathsOverlap(file, canonicalOutput))) {throw new Error("Static SDK output overlaps a canonical source, SDK or compiler input");}
   Object.assign(env, sdkHostEnvironment(env, plan.hostCompilers), {LLVM_CONFIG: path.join(llvm, "bin/llvm-config")});
   verifyCompilerEnvironment(plan.hostCompilers, env);
-  const recipe = sourceInputs(repo, [], ["scripts/build-native-sycl-sdk.js", "scripts/native-sycl-inputs.js", "scripts/native-hcf.js",
+  const sysroot = requireLinuxSysroot(env);
+  const recipe = sourceInputs(repo, [], ["scripts/build-native-sycl-sdk.js", "scripts/native-sycl-inputs.js", "scripts/native-hcf.js", "scripts/native-linux-sysroot.js",
     "tests/reference/native-sycl-hcf-repro.cpp",
     "tests/reference/native-jit-cache.cpp",
     "scripts/native-jit-link.js", "scripts/build-environment.js", "scripts/native-audit.js", "scripts/native-resources.js",
@@ -275,7 +277,8 @@ function buildStaticSyclSdk(source, llvm, cuda, output, environment = process.en
   verifySourceInputs(recipe, sourceInputs(repo, [], Object.keys(recipe.graph)), "Static SDK recipe");
   const libraries = Object.fromEntries(inputs.libraries.map(file => [file, fileHash(file)]));
   fs.writeFileSync(path.join(output, "result.json"), JSON.stringify({version: 1, backend: plan.backend, ...(cudaInputs ? {cudaVersion: cudaInputs.version} : {}),
-    revision: admitted.revision, inputs, hostCompilers: plan.hostCompilers, hostCompilerInputs, compilerVersions, fingerprints, libraries, recipe, buildOnly: true, publicationQualified: false,
+    revision: admitted.revision, inputs, hostCompilers: plan.hostCompilers, hostCompilerInputs, compilerVersions, fingerprints, libraries, recipe,
+    sysroot: linuxSysrootRecord(sysroot), buildOnly: true, publicationQualified: false,
     scope: "Reviewed static CUDA12.6 and/or HIP AdaptiveCpp runtime/plugin/SSCP SDK source recipe. No installation, GPU execution, performance or full SDK provenance qualification."}, null, 2) + "\n", {flag: "wx"});
   console.log("[native-sdk] Built " + plan.build + "; NOT executed or publication-qualified.");
 }
