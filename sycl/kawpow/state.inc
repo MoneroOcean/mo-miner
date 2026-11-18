@@ -248,8 +248,7 @@ public:
 
     const uint64_t new_light_cache_words = new_cache_bytes / sizeof(uint32_t);
     const uint64_t new_dag_words = new_dag_bytes / sizeof(uint32_t);
-    // DAG generation indexes 32-bit words; the exact 2^32-word boundary still fits.
-    if (new_dag_words > uint64_t{UINT32_MAX} + 1)
+    if (!ethash_dag_words_addressable(new_dag_words))
       throw std::string("KawPow DAG exceeds 32-bit word addressing");
 
     std::vector<uint32_t> host_cache;

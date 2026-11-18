@@ -34,9 +34,23 @@ struct uint2 {};
 #include "result-state.inc"
 #include "guard.inc"
 
+// The production destructor drains the queue through the noexcept cleanup boundary first.
+template <typename Cleanup>
+static void sycl_cleanup_noexcept(const char*, Cleanup&& cleanup) noexcept {
+  try {
+    cleanup();
+  } catch (...) {
+  }
+}
+
+struct FixtureQueue {
+  void wait_and_throw() {}
+};
+
 struct C29State {
   std::shared_ptr<C29ResultState> result_state = std::make_shared<C29ResultState>();
   std::vector<std::future<void>> search_futures;
+  FixtureQueue queue;
 
   ~C29State() {
     {

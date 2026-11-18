@@ -2,8 +2,6 @@
 
 #include <cstdint>
 #include <cstdlib>
-#include <initializer_list>
-#include <string>
 
 namespace {
 
@@ -19,21 +17,8 @@ void check(const EpochCase test) {
 
 } // namespace
 
-static bool rejected_words(const uint64_t new_dag_words) {
-  try {
-#include "progpow_dag_limit.inc"
-  } catch (const std::string& error) {
-    return error == "KawPow DAG exceeds 32-bit word addressing";
-  }
-  return false;
-}
-
+// The DAG word-addressing guard is shared with Etchash and covered by ethash-dag-words.cpp.
 int main() {
-  // Exercise only the extracted addressing guard; other epoch admission remains separate.
-  const uint64_t limit = uint64_t{UINT32_MAX} + 1;
-  for (const auto words : {uint64_t{0}, limit - 1, limit, limit + 1, UINT64_MAX})
-    if (rejected_words(words) != (words > limit))
-      std::abort();
   check({0, 0});
   check({1299, 0});
   check({1300, 1});

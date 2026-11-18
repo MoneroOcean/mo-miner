@@ -128,9 +128,9 @@ static bool entry_rejects([[maybe_unused]] const uint8_t *input,
                           [[maybe_unused]] unsigned intensity, [[maybe_unused]] bool is_test,
                           [[maybe_unused]] bool is_benchmark) {
   try {
-    {
+    // Mining alone filters by target, as zelhash() defines it; the guard is production code.
+    const bool filter_target = !is_test && !is_benchmark;
 #include "zelhash_entry_guard.inc"
-    }
     return false;
   } catch (const std::string &) {
     return true;

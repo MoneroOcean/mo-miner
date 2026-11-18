@@ -1,8 +1,11 @@
 // Copyright GNU GPLv3 (c) 2026 MoneroOcean <support@moneroocean.stream>
 
+#include <array>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
+#include <new>
 #include <initializer_list>
 #include <stdexcept>
 #include <string>
@@ -10,9 +13,16 @@
 
 #include "zelhash_generator_guard.inc"
 
+// Production code copies device handles; count optional queries across those copies.
+static unsigned device_query_total = 0;
+
 namespace sycl {
 struct exception : std::runtime_error { using std::runtime_error::runtime_error; };
-namespace info::device { struct vendor {}; }
+namespace info::device {
+struct vendor {};
+struct global_mem_size {};
+struct max_mem_alloc_size {};
+}
 #if !defined(MOM_SYCL_ADAPTIVECPP) && !defined(MOM_SYCL_PORTABLE_OPENCL)
 enum class aspect { ext_intel_gpu_eu_simd_width };
 namespace ext::intel::info::device { struct gpu_eu_simd_width {}; }
@@ -22,19 +32,29 @@ struct device {
   std::string vendor_name = "Intel";
   unsigned width = 8, failure = 0, driver_build = 37020;
   bool subgroup_supported = true, level_zero = true;
+  std::uint64_t global_bytes = 250, max_alloc = 100;
   mutable unsigned queries = 0, backend_queries = 0, driver_queries = 0;
-  bool is_gpu() const {
+  void count() const {
     ++queries;
+    ++device_query_total;
+  }
+  bool is_gpu() const {
+    count();
     return gpu;
   }
   template <typename Info> auto get_info() const {
-    ++queries;
-    if constexpr (std::is_same_v<Info, info::device::vendor>) {
+    if constexpr (std::is_same_v<Info, info::device::global_mem_size>) {
+      return global_bytes;
+    } else if constexpr (std::is_same_v<Info, info::device::max_mem_alloc_size>) {
+      return max_alloc;
+    } else if constexpr (std::is_same_v<Info, info::device::vendor>) {
+      count();
       if (failure == 1) throw exception("vendor unavailable");
       return vendor_name;
 #if !defined(MOM_SYCL_ADAPTIVECPP) && !defined(MOM_SYCL_PORTABLE_OPENCL)
     } else {
       static_assert(std::is_same_v<Info, ext::intel::info::device::gpu_eu_simd_width>);
+      count();
       if (failure == 3) throw exception("width unavailable");
       if (failure == 4) throw std::logic_error("unrelated error");
       return width;
@@ -43,7 +63,7 @@ struct device {
   }
 #if !defined(MOM_SYCL_ADAPTIVECPP) && !defined(MOM_SYCL_PORTABLE_OPENCL)
   bool has(aspect) const {
-    ++queries;
+    count();
     if (failure == 2) throw exception("aspect unavailable");
     return advertised;
   }
@@ -56,6 +76,15 @@ struct queue {
   device d;
   const device &get_device() const { return d; }
 };
+struct uint2 {
+  std::uint32_t x, y;
+};
+template <typename T> T* malloc_device(std::size_t count, queue&) {
+  return static_cast<T*>(std::calloc(count, sizeof(T)));
+}
+template <typename T> void free(T* pointer, queue&) {
+  std::free(pointer);
+}
 } // namespace sycl
 
 // Generated from production, including its actual build guards; excluded profiles have no tags.
@@ -104,18 +133,37 @@ static sycl::event submit_gen_fill_impl(sycl::queue &, const uint64_t *h, const 
 }
 #include "zelhash_generator_dispatch.inc"
 
-// Small boundary parameters test the real selection/fit statements, not GPU allocation sizes.
+// Small boundary parameters test the real selection/fit policy, not GPU allocation sizes.
 constexpr std::uint64_t kMaxEdgeArrayBytes = 100, kRequiredDeviceBytes = 200, kSafetyReserve = 50;
 constexpr std::uint64_t kLowMemoryRequiredDeviceBytes = 100, kLowMemoryReserve = 25;
+constexpr std::uint64_t kSeedCapacity = 4, kTrimCapacity = 4, kLowMemoryTrimCapacity = 2;
+constexpr unsigned C30_BUCKET_COUNT = 4, kProofSize = 42;
+struct C30PackedEdge {
+  std::uint32_t words[3];
+};
+static bool mom_has_usm_device(const sycl::device&) {
+  return true;
+}
+// Production c30 DeviceMemory: layout selection, fit checks and partial-allocation cleanup.
+#include "c30_device_memory.inc"
 
-// Permit the pre-width8 policy to compile so the regression negative fails on behavior.
-bool packed([[maybe_unused]] const sycl::device& device, std::uint64_t global_bytes = 250,
+// Construct the production arena on a device reporting the given memory limits.
+bool packed(const sycl::device& device, std::uint64_t global_bytes = 250,
             std::uint64_t max_alloc = 100, const char* force = nullptr) {
   if (force ? setenv("MOM_C30_FORCE_LOW_MEMORY", force, 1) : unsetenv("MOM_C30_FORCE_LOW_MEMORY"))
     throw std::runtime_error("fixture ENV setup failed");
-  bool low_memory = false;
-#include "c30_layout_policy.inc"
-  return low_memory;
+  sycl::queue queue{device};
+  queue.d.global_bytes = global_bytes;
+  queue.d.max_alloc = max_alloc;
+  const unsigned before = device_query_total;
+  try {
+    const DeviceMemory memory(queue);
+    device.queries += device_query_total - before;
+    return memory.low_memory;
+  } catch (...) {
+    device.queries += device_query_total - before;
+    throw;
+  }
 }
 
 unsigned assertions = 0;

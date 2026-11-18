@@ -342,7 +342,6 @@ struct ZHashUsmSession {
     }
   }
 
-  template <typename T>
 #include "zhash-free-ptr.inc"
 
 #include "zhash-free-all.inc"

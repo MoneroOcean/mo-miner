@@ -4,6 +4,11 @@
 
 constexpr uint32_t ETHASH_DAG_NODE_WORDS = 16;
 
+// DAG node and page bases index uint32_t words; exactly 2^32 words still fit.
+inline bool ethash_dag_words_addressable(const uint64_t words) {
+  return words <= uint64_t{UINT32_MAX} + 1;
+}
+
 // Fill `cache` with the light cache derived from `seed_epoch`'s seed hash; `failure` names the
 // algorithm in the error raised when libethash rejects the size.
 inline void compute_light_cache(std::vector<uint32_t>& cache, const uint64_t cache_bytes,

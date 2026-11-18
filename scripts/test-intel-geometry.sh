@@ -6,50 +6,36 @@ out=$(mktemp -d "${TMPDIR:-/tmp}/mom-intel-geometry.XXXXXX")
 trap 'rm -rf -- "$out"' EXIT
 cxx=${CXX:-c++}
 
-# Test exact production statements without importing SYCL or duplicating the policy.
-awk '
-  /^inline unsigned mom_intel_eu_simd_width\(/ { copies++; copying = 1 }
-  copying { print }
-  copying && /^}/ { copying = 0; complete = 1 }
-  END { if (copies != 1 || !complete) exit 1 }
-' "$root/sycl/lib-internal.h" > "$out/intel_geometry_helper.inc"
-test -s "$out/intel_geometry_helper.inc"
+# Print whole production declarations through the shared token-anchored extractor; a missing or
+# ambiguous anchor fails the run.
+extract_cpp() {
+  local name=$1 file=$2
+  shift 2
+  node "$root/tests/common/cpp-source.js" "$root/$file" "$@" > "$out/$name"
+}
 
-# Keep the actual profile guard and complete wrapper; the fixture mocks only submission.
+extract_cpp intel_geometry_helper.inc sycl/lib-internal.h 'inline unsigned mom_intel_eu_simd_width('
+
+# Keep the actual large-GRF build guard and complete wrapper; the fixture mocks only submission.
 mkdir -p "$out/sycl/ext/intel/experimental"
 printf '%s\n' '// Test-only property-header presence; no SYCL API implementation.' > \
   "$out/sycl/ext/intel/experimental/grf_size_properties.hpp"
 awk '
-  /^#if !defined\(MOM_SYCL_HAS_CUDA\)/ { copies++; copying = 1 }
-  copying { print }
-  copying && /^#endif/ { copying = 0; complete = 1 }
-  END { if (copies != 1 || !complete) exit 1 }
+  /^#if/ { group = ""; grouping = 1 }
+  grouping { group = group $0 "\n" }
+  /^#endif/ && grouping {
+    grouping = 0
+    if (group ~ /#define MOM_ZELHASH_INTEL_LARGE_GRF/) { printf "%s", group; found++ }
+  }
+  END { if (found != 1) exit 1 }
 ' "$root/sycl/zelhash/zelhash.cpp" > "$out/zelhash_generator_guard.inc"
-awk '
-  /^template <bool GPU_COMPACT = false>/ { prefix = $0 }
-  /^static sycl::event submit_gen_fill\(/ { copies++; copying = 1; print prefix }
-  copying { print }
-  copying && /^}/ { copying = 0; complete = 1 }
-  END { if (copies != 1 || !complete) exit 1 }
-' "$root/sycl/zelhash/generation.inc" > "$out/zelhash_generator_dispatch.inc"
-test -s "$out/zelhash_generator_guard.inc"
-test -s "$out/zelhash_generator_dispatch.inc"
+extract_cpp zelhash_generator_dispatch.inc sycl/zelhash/generation.inc \
+  'static sycl::event submit_gen_fill('
 
-awk '
-  /const char\* const force_low_memory = std::getenv/ { copies++; copying = 1 }
-  copying { print }
-  copying && /throw std::runtime_error/ { copying = 0; complete = 1 }
-  END { if (copies != 1 || !complete) exit 1 }
-' "$root/sycl/c30/c30.cpp" > "$out/c30_layout_policy.inc"
-awk '
-  /^static bool kawpow_default_subgroup_exchange\(/ { copies++; copying = 1 }
-  copying { print }
-  copying && /^}/ { copying = 0; complete = 1 }
-  END { if (copies != 1 || !complete) exit 1 }
-' "$root/sycl/kawpow/state.inc" > "$out/kawpow_exchange_policy.inc"
-test -s "$out/intel_geometry_helper.inc"
-test -s "$out/c30_layout_policy.inc"
-test -s "$out/kawpow_exchange_policy.inc"
+extract_cpp c30_device_memory.inc sycl/c30/c30.cpp 'struct DeviceMemory {'
+printf ';\n' >> "$out/c30_device_memory.inc"
+extract_cpp kawpow_exchange_policy.inc sycl/kawpow/state.inc \
+  'static bool kawpow_default_subgroup_exchange('
 
 for profile in native acpp portable cuda hip acpp-cuda; do
   flags=()

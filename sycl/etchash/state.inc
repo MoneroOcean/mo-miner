@@ -229,8 +229,7 @@ public:
     const uint64_t new_light_cache_words = new_cache_bytes / sizeof(uint32_t);
     const uint64_t new_dag_words = new_dag_bytes / sizeof(uint32_t);
     const uint64_t new_dag_nodes = new_dag_bytes / (ETHASH_NODE_WORDS * sizeof(uint32_t));
-    // Node and page bases use uint32_t word indexes; exactly 2^32 words fit.
-    if (new_dag_words > uint64_t{UINT32_MAX} + 1)
+    if (!ethash_dag_words_addressable(new_dag_words))
       throw std::string("Etchash DAG exceeds 32-bit word addressing");
     if (epoch == new_epoch && seed_epoch == new_seed_epoch &&
         light_cache_words == new_light_cache_words && dag_words == new_dag_words && light_cache &&

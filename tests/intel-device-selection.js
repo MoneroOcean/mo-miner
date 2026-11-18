@@ -18,8 +18,13 @@ test.describe("Native Intel device selection", {skip: process.platform === "win3
     const runtime = fs.readFileSync(path.join(root, "sycl/runtime.inc"), "utf8");
     const internal = fs.readFileSync(path.join(root, "sycl/lib-internal.h"), "utf8");
     const params = fs.readFileSync(path.join(root, "sycl/algo-params.inc"), "utf8");
-    const discoveryStart = runtime.indexOf("static std::string gpu_identity_key(");
-    assert.ok(discoveryStart >= 0, "Missing native discovery functions");
+    // update_str2dev is a function-try-block: its handler follows the extracted try body.
+    const update = extractCppBlock(runtime, "static void update_str2dev(").trimEnd();
+    const handler = extractCppBlock(runtime.slice(runtime.indexOf(update) + update.length).trimStart(), "catch (...)");
+    const discovery = ["static std::string gpu_identity_key(", "static unsigned gpu_number(",
+      "static std::string selected_gpu_backend(", "static unsigned selected_stable_gpu_number(",
+      "static void sort_gpus_by_name("].map(anchor => extractCppBlock(runtime, anchor)).join("") +
+      update + " " + handler + extractCppBlock(runtime, "static std::string available_dev_str() {");
     temporary = fs.mkdtempSync(path.join(os.tmpdir(), "mom-intel-selection-"));
     executable = path.join(temporary, "selection");
     const source = String.raw`
@@ -80,7 +85,7 @@ static std::map<std::string, sycl::device> str2dev;
 static std::string available_dev_str();
 ` + extractCppBlock(internal, "inline bool mom_parse_env_ulong(") +
       extractCppBlock(internal, "inline bool is_integrated_gpu(") +
-      runtime.slice(discoveryStart) +
+      discovery +
       extractCppBlock(params, "sycl::device get_dev(") + String.raw`
 int main(int argc, char** argv) {
   const std::string mode = argc > 1 ? argv[1] : "mixed";

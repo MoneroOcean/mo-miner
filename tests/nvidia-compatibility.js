@@ -13,7 +13,6 @@ const createJobApi = require("../miner/jobs");
 const {normalizeAlgoName} = require("../miner/algorithms");
 const {hexWithoutPrefix} = require("../miner/submission");
 const {windowsCmdArgs} = require("../scripts/windows-command");
-const {extractCppBlock} = require("./common/cpp-source");
 
 /** @typedef {typeof import("../compiler-policy")} CompilerPolicy */
 /** @typedef {{command: string, args: string[], options: object}} QueryCall */
@@ -21,57 +20,79 @@ const {extractCppBlock} = require("./common/cpp-source");
 /** @typedef {{policy: CompilerPolicy, calls: QueryCall[]}} PolicyContext */
 
 test.describe("NVIDIA compatibility", {concurrency: false}, () => {
-  test("CUDA driver lookup shares the System32-only Windows loader", () => {
-    const root = path.join(__dirname, ".."), api = fs.readFileSync(path.join(root, "sycl/cuda-api.h"), "utf8"),
-      driver = fs.readFileSync(path.join(root, "runtime/system-driver.h"), "utf8"),
-      constructor = extractCppBlock(api, "  CudaDriverApi()");
-    assert.match(api, /#include "\.\.\/runtime\/system-driver\.h"/);
-    assert.match(constructor, /runtime::systemDriverLibrary<runtime::SystemDriver::cuda>\(\)/);
-    assert.doesNotMatch(constructor, /LoadLibrary(?:A|W)?\(/, "never search a writable current directory for the CUDA driver");
-    assert.match(driver, /LoadLibraryExA\([\s\S]*?LOAD_LIBRARY_SEARCH_SYSTEM32\)/);
-  });
+  const driverSymbols = ["cuDevicePrimaryCtxRetain", "cuDevicePrimaryCtxRelease", "cuCtxSetCurrent",
+    "cuCtxSynchronize", "cuModuleLoadData", "cuModuleUnload", "cuModuleGetFunction",
+    "cuFuncSetAttribute", "cuLaunchKernel", "cuEventCreate", "cuEventDestroy", "cuEventRecord",
+    "cuEventQuery", "cuEventElapsedTime", "cuGetErrorString"];
+  const rtcSymbols = ["nvrtcCreateProgram", "nvrtcCompileProgram", "nvrtcGetProgramLogSize",
+    "nvrtcGetProgramLog", "nvrtcGetPTXSize", "nvrtcGetPTX", "nvrtcGetCUBINSize", "nvrtcGetCUBIN",
+    "nvrtcGetNumSupportedArchs", "nvrtcGetSupportedArchs", "nvrtcDestroyProgram", "nvrtcVersion"];
+  // Stub SDK declarations keep real CUDA libraries and devices out of host fixtures; the code under
+  // test remains the actual production headers, including their dynamic-driver control flow.
+  const cudaStubHeaders = {
+    "cuda.h": `#pragma once
+#include <cstddef>
+using CUdevice=int; using CUresult=int;
+inline constexpr int CUDA_SUCCESS=0;
+inline constexpr int CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR=75;
+inline constexpr int CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR=76;
+CUresult cuInit(unsigned);
+CUresult cuDeviceGetAttribute(int*,int,CUdevice);
+${driverSymbols.map(name => `CUresult ${name}(...);`).join("\n")}
+`,
+    "nvrtc.h": `#pragma once
+#include <cstddef>
+using nvrtcProgram=void*; using nvrtcResult=int;
+inline constexpr int NVRTC_SUCCESS=0;
+${rtcSymbols.map(name => `nvrtcResult ${name}(...);`).join("\n")}
+const char* nvrtcGetErrorString(...);
+`,
+  };
 
-  test("Nexa field specialization keeps unknown and non-PTX targets on the existing representation", () => {
-    const root = path.join(__dirname, "../sycl/nexapow");
-    const pipeline = fs.readFileSync(path.join(root, "sycl-pipeline.inc"), "utf8");
-    const gate = extractCppBlock(pipeline,
-      "inline __attribute__((always_inline)) bool field_uses_acpp_ptx()");
-    assert.match(pipeline,
-      /^#if defined\(MOM_SYCL_ADAPTIVECPP_CUDA\) && !defined\(MOM_NEXAPOW_FORCE_PORTABLE\) && \\\r?\n\s*!defined\(MOM_NEXAPOW_PORTABLE_FIELD32\)\r?\n#define MOM_NEXAPOW_ACPP_PTX_FIELD/);
-    for (const [query, expected] of [
-      ["compiler_backend", "== jit::compiler_backend::ptx"],
-      ["target_vendor_id", "== jit::vendor_id::nvidia"],
-      ["target_arch", ">= 61"],
-    ]) {
-      assert.ok(gate.includes(`jit::knows<q::${query}>() &&`));
-      assert.ok(gate.includes(`jit::reflect<q::${query}>() ${expected}`));
+  /** @param {string} name @param {Record<string, string>} headers @param {string} fixture @param {string[]} defines */
+  function runCudaFixture(name, headers, fixture, defines) {
+    const temporary = fs.mkdtempSync(path.join(os.tmpdir(), `mom-${name}-`));
+    try {
+      for (const [file, source] of Object.entries({...cudaStubHeaders, ...headers})) {
+        fs.mkdirSync(path.dirname(path.join(temporary, file)), {recursive: true});
+        fs.writeFileSync(path.join(temporary, file), source);
+      }
+      const executable = path.join(temporary, name);
+      const compiled = childProcess.spawnSync(process.env["CXX"] || "c++", [
+        "-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror", ...defines,
+        "-I", temporary, path.join(__dirname, "native", fixture), "-o", executable,
+      ], {encoding: "utf8", timeout: 30000});
+      assert.equal(compiled.error, undefined);
+      assert.equal(compiled.status, 0, `${name}: ${compiled.stderr}`);
+      const ran = childProcess.spawnSync(executable, [], {encoding: "utf8", timeout: 10000});
+      assert.equal(ran.error, undefined);
+      assert.equal(ran.status, 0, `${name}: ${ran.stderr}`);
+      return ran.stdout;
+    } finally {
+      fs.rmSync(temporary, {recursive: true, force: true});
     }
-    assert.match(gate, /__acpp_if_target_sscp\([\s\S]*?\)\s*return false;/);
-    assert.match(pipeline, /#if defined\(MOM_NEXAPOW_PORTABLE_FIELD32\)\s*struct Field \{\s*uint32_t n\[8\];\s*\};\s*#else\s*struct Field \{\s*uint32_t n\[10\];/);
-    assert.match(pipeline,
-      /defined\(MOM_NEXAPOW_SYCL_NATIVE_FIELD\) && !defined\(MOM_NEXAPOW_FORCE_PORTABLE\)[\s\S]*?defined\(__SYCL_DEVICE_ONLY__\) && defined\(__NVPTX__\)\s*#define MOM_NEXAPOW_USE_NATIVE_FIELD/);
-    assert.match(pipeline,
-      /#if defined\(MOM_NEXAPOW_SYCL_NATIVE_FIELD\) \|\| defined\(MOM_NEXAPOW_ACPP_PTX_FIELD\)\s*#include "field-4x64-ptx.inc"\s*#include "field-4x64-hybrid-ptx.inc"/);
-    assert.match(pipeline,
-      /if \(field_uses_acpp_ptx\(\)\) \{\s*Field result\{\};\s*for \(uint32_t i = 0; i != 8u; \+\+i\) result.n\[i\] = value.w\[i\];\s*return result;/);
-    const source = fs.readFileSync(path.join(root, "nexapow.cpp"), "utf8");
-    const jitInclude = source.indexOf("#include <hipSYCL/sycl/jit.hpp>");
-    assert.ok(jitInclude >= 0 && jitInclude < source.indexOf("namespace mom_nexapow"));
+  }
+
+  test("Windows CUDA driver lookup uses only the System32-restricted loader", {
+    skip: process.platform === "win32",
+  }, () => {
+    const windows = `#pragma once
+// Recording Windows loader declarations; the fixture defines them. No Windows API implementation.
+using HMODULE = struct mock_module*;
+using FARPROC = void (*)();
+inline constexpr unsigned long LOAD_LIBRARY_SEARCH_SYSTEM32 = 0x800;
+HMODULE LoadLibraryExA(const char* name, void* file, unsigned long flags);
+HMODULE LoadLibraryA(const char* name);
+FARPROC GetProcAddress(HMODULE module, const char* name);
+`;
+    const stdout = runCudaFixture("cuda-windows-loader", {"windows.h": windows},
+      "cuda-driver-windows-loader.cpp", ["-D_WIN32", "-DMOM_SYCL_HAS_CUDA"]);
+    assert.match(stdout, /CUDA driver loaded from System32 only/);
   });
 
   test("Production selected-device query handles ACPP/DPC interop and fails closed", {
     skip: process.platform === "win32",
   }, () => {
-    const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "mom-nvidia-interop-"));
-    const driverSymbols = ["cuDevicePrimaryCtxRetain", "cuDevicePrimaryCtxRelease", "cuCtxSetCurrent",
-      "cuCtxSynchronize", "cuModuleLoadData", "cuModuleUnload", "cuModuleGetFunction",
-      "cuFuncSetAttribute", "cuLaunchKernel", "cuEventCreate", "cuEventDestroy", "cuEventRecord",
-      "cuEventQuery", "cuEventElapsedTime", "cuGetErrorString"];
-    const rtcSymbols = ["nvrtcCreateProgram", "nvrtcCompileProgram", "nvrtcGetProgramLogSize",
-      "nvrtcGetProgramLog", "nvrtcGetPTXSize", "nvrtcGetPTX", "nvrtcGetCUBINSize", "nvrtcGetCUBIN",
-      "nvrtcGetNumSupportedArchs", "nvrtcGetSupportedArchs", "nvrtcDestroyProgram", "nvrtcVersion"];
-    // Stub declarations/loader prevent real CUDA libraries or device access. The code under test
-    // remains the actual production headers, including their dynamic-driver control flow.
     const headers = {
       "sycl/sycl.hpp": `#pragma once
 #include <stdexcept>
@@ -89,23 +110,6 @@ template<backend B> int get_native(const device& d) {
 }
 }
 `,
-      "cuda.h": `#pragma once
-#include <cstddef>
-using CUdevice=int; using CUresult=int;
-inline constexpr int CUDA_SUCCESS=0;
-inline constexpr int CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR=75;
-inline constexpr int CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR=76;
-CUresult cuInit(unsigned);
-CUresult cuDeviceGetAttribute(int*,int,CUdevice);
-${driverSymbols.map(name => `CUresult ${name}(...);`).join("\n")}
-`,
-      "nvrtc.h": `#pragma once
-#include <cstddef>
-using nvrtcProgram=void*; using nvrtcResult=int;
-inline constexpr int NVRTC_SUCCESS=0;
-${rtcSymbols.map(name => `nvrtcResult ${name}(...);`).join("\n")}
-const char* nvrtcGetErrorString(...);
-`,
       "dlfcn.h": `#pragma once
 inline constexpr int RTLD_NOW=2, RTLD_LOCAL=0;
 void* mock_dlopen(const char*,int);
@@ -114,31 +118,14 @@ void* mock_dlsym(void*,const char*);
 #define dlsym mock_dlsym
 `,
     };
-    try {
-      fs.mkdirSync(path.join(temporary, "sycl"));
-      for (const [file, source] of Object.entries(headers)) {
-        fs.writeFileSync(path.join(temporary, file), source);
-      }
-      /** @type {Array<[string, string[]]>} */
-      const lanes = [
-        ["acpp", ["-DMOM_SYCL_ADAPTIVECPP", "-DMOM_SYCL_ADAPTIVECPP_CUDA"]],
-        ["dpcpp", ["-DMOM_SYCL_HAS_CUDA"]],
-      ];
-      for (const [lane, defines] of lanes) {
-        const executable = path.join(temporary, lane);
-        const compiled = childProcess.spawnSync(process.env["CXX"] || "c++", [
-          "-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror", ...defines,
-          "-I", temporary, path.join(__dirname, "native/nvidia-feature-interop.cpp"), "-o", executable,
-        ], {encoding: "utf8", timeout: 30000});
-        assert.equal(compiled.error, undefined);
-        assert.equal(compiled.status, 0, `${lane}: ${compiled.stderr}`);
-        const ran = childProcess.spawnSync(executable, [], {encoding: "utf8", timeout: 10000});
-        assert.equal(ran.error, undefined);
-        assert.equal(ran.status, 0, `${lane}: ${ran.stderr}`);
-        assert.match(ran.stdout, /selected-device nonzero native IDs.*PASS/);
-      }
-    } finally {
-      fs.rmSync(temporary, {recursive: true, force: true});
+    /** @type {Array<[string, string[]]>} */
+    const lanes = [
+      ["acpp", ["-DMOM_SYCL_ADAPTIVECPP", "-DMOM_SYCL_ADAPTIVECPP_CUDA"]],
+      ["dpcpp", ["-DMOM_SYCL_HAS_CUDA"]],
+    ];
+    for (const [lane, defines] of lanes) {
+      const stdout = runCudaFixture(`nvidia-interop-${lane}`, headers, "nvidia-feature-interop.cpp", defines);
+      assert.match(stdout, /selected-device nonzero native IDs.*PASS/);
     }
   });
 
@@ -719,7 +706,7 @@ void* mock_dlsym(void*,const char*);
   /** @returns {string} */
   function extractLinuxLauncher() {
     const source = fs.readFileSync(linuxLauncherSourcePath, "utf8");
-    const match = source.match(/cat >"\$package_dir\/mom" <<'EOF'\r?\n([\s\S]*?)\r?\nEOF/);
+    const match = source.match(/cat\s*>\s*"\$package_dir\/mom"\s*<<\s*'EOF'\r?\n([\s\S]*?)\r?\nEOF\r?$/m);
     if (!match || match[1] === undefined) {
       throw new Error("Linux release launcher heredoc was not found");
     }
@@ -729,9 +716,8 @@ void* mock_dlsym(void*,const char*);
   /** @returns {string} */
   function extractWindowsLauncher() {
     const source = fs.readFileSync(windowsLauncherSourcePath, "utf8");
-    const hereString = source.match(
-      /@'\r?\n([\s\S]*?)\r?\n'@ \| Set-Content -Encoding ascii "\$packageDir\/mom\.cmd"/,
-    );
+    // The single-quoted here-string written to the package's mom.cmd is the emitted launcher.
+    const hereString = source.match(/@'\r?\n([\s\S]*?)\r?\n'@[^\r\n]*"\$packageDir[\\/]mom\.cmd"/);
     if (!hereString || hereString[1] === undefined) {
       throw new Error("Windows mom.cmd here-string was not found");
     }

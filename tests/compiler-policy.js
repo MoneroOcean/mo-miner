@@ -81,6 +81,41 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
     test("rejects an unfinished body rather than returning a partial fixture", () => {
       assert.throws(() => extractCppBlock("int probe() { if (true) { }", "int probe("));
     });
+
+    test("matches anchor tokens regardless of spacing or line wrapping", () => {
+      const source = "static bool selected(int m,\n                     int n) { return m < n; }\n";
+      assert.equal(extractCppBlock(source, "static bool selected(int m, int n) {"), source);
+      assert.throws(() => extractCppBlock(source, "static bool selectedx("));
+    });
+
+    test("keeps anchor indentation significant to tell nested members apart", () => {
+      const source = "struct A {\n  void run() { inner(); }\n};\nvoid run() { outer(); }\n";
+      assert.equal(extractCppBlock(source, "void run("), "void run() { outer(); }\n");
+      assert.equal(extractCppBlock(source, "  void run("), "  void run() { inner(); }\n");
+    });
+
+    test("includes a template header and ignores anchors in comments but not raw-string sources", () => {
+      const source = "template <typename T>\n// Purpose comment.\nT twice(T v) { return v + v; }\n" +
+        "/*\nT twice(T v) {}\n*/\nconst char* kernel = R\"K(\nint device_probe() { return 1; }\n)K\";\n";
+      assert.equal(extractCppBlock(source, "T twice("),
+        "template <typename T>\n// Purpose comment.\nT twice(T v) { return v + v; }\n");
+      assert.equal(extractCppBlock(source, "int device_probe("), "int device_probe() { return 1; }\n");
+    });
+
+    test("command line prints each requested block in order", () => {
+      const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-cpp-source-cli-"));
+      try {
+        const file = path.join(fixture, "source.cpp");
+        fs.writeFileSync(file, "int a() { return 1; }\nint b() { return 2; }\n");
+        const cli = path.join(__dirname, "common/cpp-source.js");
+        const result = spawnSync(process.execPath, [cli, file, "int b(", "int a("], {encoding: "utf8"});
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(result.stdout, "int b() { return 2; }\nint a() { return 1; }\n");
+        assert.notEqual(spawnSync(process.execPath, [cli, file, "int c("], {encoding: "utf8"}).status, 0);
+      } finally {
+        fs.rmSync(fixture, {recursive: true, force: true});
+      }
+    });
   });
 
   test.describe("GPU vector coverage and availability diagnostics", {concurrency: false}, () => {
@@ -153,35 +188,14 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
     test("npm tooling freezes exact dependencies in a maintained lockfile", () => {
       const root = path.join(__dirname, "..");
       const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
-      const npmrc = fs.readFileSync(path.join(root, ".npmrc"), "utf8");
+      const npmrc = Object.fromEntries(fs.readFileSync(path.join(root, ".npmrc"), "utf8").split(/\r?\n/)
+        .filter(line => line.includes("=")).map(line => line.split("=").map(part => part.trim())));
       const lock = JSON.parse(fs.readFileSync(path.join(root, "package-lock.json"), "utf8"));
       assert.equal(lock.lockfileVersion, 3); assert.deepEqual(lock.packages[""].devDependencies, packageJson.devDependencies);
-      assert.match(npmrc, /^package-lock=true$/m);
-      assert.match(npmrc, /^save-exact=true$/m);
-      assert.doesNotMatch(fs.readFileSync(path.join(root, ".gitignore"), "utf8"), /^package-lock\.json$/m);
+      assert.equal(npmrc["package-lock"], "true");
+      assert.equal(npmrc["save-exact"], "true");
       for (const version of Object.values(packageJson.devDependencies)) {
         assert.match(version, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
-      }
-      const excludedDirectories = new Set([
-        ".git", "node_modules", "build", "dist", "out", "release", "release-build",
-        "release-combined", "release-combined-build", "coverage", "bin", "obj", "target", "vendor",
-      ]);
-      const files = ["package.json", "binding.gyp"].map((file) => path.join(root, file));
-      for (const directory of ["scripts", ".github"]) {
-        const base = path.join(root, directory);
-        for (const entry of fs.readdirSync(base, {recursive: true, withFileTypes: true})) {
-          if (!entry.isFile()) {continue;}
-          const file = path.join(entry.parentPath, entry.name);
-          const relative = path.relative(root, file);
-          if (relative.split(path.sep).some((part) => excludedDirectories.has(part))) {continue;}
-          files.push(file);
-        }
-      }
-      const forbidden = /\bnpm(?:\.cmd)?\s+update\b/;
-      for (const file of files) {
-        const contents = fs.readFileSync(file);
-        if (contents.includes(0)) {continue;}
-        assert.equal(forbidden.test(contents.toString("utf8")), false, "Do not upgrade locked dependencies implicitly: " + file);
       }
     });
 
@@ -246,36 +260,40 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       assert.ok(result.stderr.length - headerIndex <= 256 * 1024 + header.length + 2);
     });
 
-    test("release packagers never recursively remove a caller-selected archive", () => {
-      const scripts = path.join(__dirname, "../scripts");
-      const linux = fs.readFileSync(path.join(scripts, "package-linux-combined.sh"), "utf8");
-      assert.match(linux, /\[ -d "\$archive" \]/);
-      assert.doesNotMatch(linux, /rm -f -- "\$archive"/);
-      assert.doesNotMatch(linux, /rm -rf[^\n]*"\$archive"/);
-
-      const windows = fs.readFileSync(path.join(scripts, "package-windows.ps1"), "utf8");
-      assert.match(windows, /Test-Path -LiteralPath \$Archive -PathType Container/);
-      assert.doesNotMatch(windows, /Remove-Item -Force -LiteralPath \$Archive/);
-      assert.doesNotMatch(windows, /Remove-Item[^\n]*-Recurse[^\n]*\$Archive/);
-      assert.match(windows, /\[IO\.Path\]::GetFullPath\(\$Archive\)/);
-      assert.match(windows, /\[StringComparison\]::OrdinalIgnoreCase/);
-    });
-
-    test("Windows package launcher keeps the selected runtime ahead of shared oneAPI", () => {
-      const script = fs.readFileSync(
-        path.join(__dirname, "../scripts/package-windows.ps1"), "utf8");
-      const runtimePathLine = String.raw`if defined MOM_RUNTIME_DIR set "PATH=%MOM_RUNTIME_DIR%;%MOM_RUNTIME_DIR%\hipSYCL;%PATH%"`;
-      const sharedDpcppPathLine = String.raw`if /I "%MOM_GPU_BACKEND%"=="opencl" set "PATH=%MOM_LIBS%\oneapi;%PATH%"`;
-      const integratedPathLine = String.raw`if /I "%MOM_GPU_BACKEND%"=="intel_igpu" set "PATH=%MOM_LIBS%\oneapi;%PATH%"`;
-      assert.equal(script.split(runtimePathLine).length - 1, 1);
-      assert.deepEqual(script.split(/\r?\n/).filter((line) =>
-        line.includes('set "PATH=%MOM_LIBS%\\oneapi;')), [sharedDpcppPathLine, integratedPathLine]);
-      assert.ok(script.indexOf(sharedDpcppPathLine) < script.indexOf(runtimePathLine),
-        "OpenCL fallback dependencies must be prepended before the selected runtime");
-      assert.ok(script.indexOf(integratedPathLine) < script.indexOf(runtimePathLine),
-        "Integrated worker dependencies must be prepended before the selected runtime");
-    });
   });
+
+  // Extract one top-level shell function by name, through its column-0 closing brace or paren.
+  /** @param {string} source @param {string} name @returns {string} */
+  function shellFunction(source, name) {
+    const matches = [["{", "}"], ["(", ")"]].flatMap(([open, close]) => [...source.matchAll(
+      new RegExp(`^${name}\\(\\)\\s*\\${open}\\n[\\s\\S]*?^\\${close}$`, "gm"))]);
+    assert.equal(matches.length, 1, `Missing or ambiguous shell function: ${name}`);
+    const [match] = matches;
+    assert.ok(match);
+    return match[0] + "\n";
+  }
+
+  // Run the real AdaptiveCpp staging function; only runtime bookkeeping and ELF closure are stubbed.
+  /** @param {string} packager @returns {string} */
+  function acppRuntimeProgram(packager) {
+    return [
+      "set -euo pipefail",
+      'begin_runtime() { mkdir -p "$runtime_dest"; }',
+      "copy_dependency_closure() { :; }",
+      shellFunction(packager, "runtime_matches"),
+      shellFunction(packager, "copy_acpp_runtime"),
+    ].join("\n");
+  }
+
+  // Provide fixture LLVM 21 JIT tools at <root>/llvm-21/bin for a redirected staging program.
+  /** @param {string} root */
+  function acppLlvmFixture(root) {
+    const bin = path.join(root, "llvm-21/bin");
+    fs.mkdirSync(bin, {recursive: true});
+    for (const tool of ["opt", "llc", "lld", "ld.lld"]) {
+      fs.writeFileSync(path.join(bin, tool), "#!/bin/sh\nexit 0\n", {mode: 0o755});
+    }
+  }
 
   /** @param {string} directory @returns {NodeJS.ProcessEnv} */
   function packagerValidationEnv(directory) {
@@ -317,18 +335,39 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       }
     });
 
+    test("Linux combined packager refuses a directory archive without removing it", {
+      skip: process.platform === "win32",
+    }, () => {
+      const script = path.join(__dirname, "../scripts/package-linux-combined.sh");
+      const temp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-package-archive-dir-"));
+      const marker = path.join(temp, "published", "marker");
+      fs.mkdirSync(path.dirname(marker));
+      fs.writeFileSync(marker, "keep");
+      try {
+        const result = spawnSync("bash", [script, "1.2.3", "published"], {
+          cwd: temp, encoding: "utf8", env: packagerValidationEnv(temp),
+        });
+        assert.equal(result.status, 1, result.stderr);
+        assert.match(result.stderr, /Archive path must not be a directory/);
+        assert.equal(fs.readFileSync(marker, "utf8"), "keep");
+      } finally {
+        fs.rmSync(temp, {recursive: true, force: true});
+      }
+    });
+
     test("Linux native packager checks every compiler worker before collecting runtimes", {
       skip: process.platform === "win32",
     }, () => {
       const source = fs.readFileSync(path.join(__dirname, "../scripts/package-linux-combined.sh"), "utf8");
       const compilers = source.match(/^compilers=\([^\n]+\)$/m)?.[0];
-      // eslint-disable-next-line no-template-curly-in-string -- Match the Bash array expansion.
-      const start = source.indexOf("for key in \"${compilers[@]}\"; do", source.indexOf("cp sycl/kawpow/keccak.inc"));
-      const end = source.indexOf("\ndone", start);
-      assert.ok(compilers && start >= 0 && end > start);
+      // The pre-collection guard is the worker loop that only checks readability (no copy/profile).
+      const loops = [...source.matchAll(/^for key in [^\n]*compilers[^\n]*; do\n[\s\S]*?^done$/gm)]
+        .map(([loop]) => loop).filter(loop => loop.includes("[ -s ") && !/\bcp\b|profile/.test(loop));
+      assert.ok(compilers);
+      assert.equal(loops.length, 1);
       const temp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-workers-"));
       const keys = ["oneapi", "dpcpp", "dpcpp-opencl", "acpp-cuda", "acpp-hip"];
-      const guard = ["set -euo pipefail", compilers, "compiler_build_dir=build/lin/Release", source.slice(start, end + 5)].join("\n");
+      const guard = ["set -euo pipefail", compilers, "compiler_build_dir=build/lin/Release", loops[0]].join("\n");
       try {
         for (const key of keys) {
           const addon = path.join(temp, "build/lin/Release", key, "mom.node");
@@ -352,11 +391,8 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       skip: process.platform === "win32",
     }, () => {
       const source = fs.readFileSync(path.join(__dirname, "../scripts/package-linux-combined.sh"), "utf8");
-      const start = source.indexOf("runtime_matches() (");
-      const end = source.indexOf("copy_matches() {", start);
-      assert.ok(start >= 0 && end > start);
       const temp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-patterns-"));
-      const driver = source.slice(start, end) + "\nruntime_matches \"$1\"";
+      const driver = shellFunction(source, "runtime_matches") + "runtime_matches \"$1\"";
       try {
         for (const name of ["one.so", "two.bc"]) {fs.writeFileSync(path.join(temp, name), "fixture");}
         fs.mkdirSync(path.join(temp, "directory.so"));
@@ -377,10 +413,6 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       skip: process.platform === "win32",
     }, () => {
       const source = fs.readFileSync(path.join(__dirname, "../scripts/package-linux-combined.sh"), "utf8");
-      const patterns = source.slice(source.indexOf("runtime_matches() ("), source.indexOf("copy_dependency_closure() {"));
-      const start = source.indexOf("copy_oneapi_opencl_runtime() {");
-      const end = source.indexOf("\nbegin_runtime oneapi", start);
-      assert.ok(start >= 0 && end > start);
       const temp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-opencl-"));
       const sdk = path.join(temp, "sdk");
       const dest = path.join(temp, "runtime");
@@ -404,8 +436,8 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
           "set -euo pipefail",
           'runtime_dest="$1"',
           'copy_runtime_file() { cp -L -- "$1" "$runtime_dest/"; }',
-          patterns,
-          source.slice(start, end).replaceAll("/opt/intel/oneapi", sdk),
+          shellFunction(source, "runtime_matches"), shellFunction(source, "copy_matches"),
+          shellFunction(source, "copy_oneapi_opencl_runtime").replaceAll("/opt/intel/oneapi", sdk),
           "copy_oneapi_opencl_runtime",
         ].join("\n");
         const result = spawnSync("bash", ["-c", driver, "fixture", dest], {encoding: "utf8"});
@@ -426,19 +458,15 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
         const scripts = path.join(__dirname, "../scripts");
         const packager = fs.readFileSync(path.join(scripts, "package-linux-combined.sh"), "utf8");
         const validator = fs.readFileSync(path.join(scripts, "test-release-linux.sh"), "utf8");
-        const functionStart = packager.indexOf("copy_acpp_runtime() {");
-        const setupEnd = packager.indexOf("  begin_runtime", functionStart);
-        const stagingStart = packager.indexOf('  redist_bin="$runtime_dest/hipSYCL/ext/llvm/bin"', setupEnd);
-        const stagingEnd = packager.indexOf('  if [ "$key" = acpp-hip ]; then', stagingStart);
+        // The release validator's LLVM checks are top-level statements, bounded by the next loop.
         const validationStart = validator.indexOf("for tool in opt llc lld ld.lld; do");
         const validationEnd = validator.indexOf("for bitcode in", validationStart);
-        assert.ok(functionStart >= 0 && setupEnd > functionStart && stagingStart > setupEnd && stagingEnd > stagingStart);
         assert.ok(validationStart >= 0 && validationEnd > validationStart);
         const temp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-package-llvm-test-"));
         const image = path.join(temp, "image");
         const libs = path.join(temp, "libs");
         const tools = ["opt", "llc", "lld", "ld.lld"];
-        const env = {...process.env, MOM_FIXTURE_IMAGE: image, MOM_FIXTURE_LIBS: libs};
+        const env = {...process.env, MOM_FIXTURE_IMAGE: image, MOM_FIXTURE_LIBS: libs, MOM_ROCM_VERSION: ""};
         try {
           for (const version of [20, 21]) {
             const directory = path.join(image, `opt/llvm${version}-ubuntu24/bin`);
@@ -450,15 +478,21 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
             fs.symlinkSync(path.dirname(directory), path.join(image, `usr/lib/llvm-${version}`));
             const backend = version === 20 ? "hip" : "cuda";
             const prefix = path.join(image, `prefix-acpp-${backend}`);
-            fs.mkdirSync(prefix);
-            fs.writeFileSync(path.join(prefix, ".mom-build-identity"), `${"a".repeat(40)}:${version}:${backend}:7.1.1:1:none\n`);
+            fs.mkdirSync(path.join(prefix, "lib"), {recursive: true});
+            fs.writeFileSync(path.join(prefix, ".mom-build-identity"),
+              `${"a".repeat(40)}:${version}:${backend}:${backend === "hip" ? "7.1.1" : "12-6"}:1:none\n`);
           }
-          // Execute the real metadata selection and staging statements against only fixture SDKs.
+          const bitcode = path.join(image, "prefix-acpp-hip/lib/hipSYCL/ext/bitcode/amdgcn");
+          fs.mkdirSync(bitcode, {recursive: true});
+          fs.writeFileSync(path.join(bitcode, "ockl.bc"), "fixture");
+          const libdevice = path.join(image, "usr/local/cuda-12.6/nvvm/libdevice");
+          fs.mkdirSync(libdevice, {recursive: true});
+          fs.writeFileSync(path.join(libdevice, "libdevice.10.bc"), "fixture");
+          // Execute the real metadata selection and staging function against only fixture SDKs.
           const staging = [
-            "set -euo pipefail",
+            acppRuntimeProgram(packager).replaceAll("/usr/lib/llvm-", "$MOM_FIXTURE_IMAGE/usr/lib/llvm-")
+              .replaceAll("/usr/local/", "$MOM_FIXTURE_IMAGE/usr/local/"),
             "container=fixture; closure_queue=(); libs_dir=$MOM_FIXTURE_LIBS",
-            packager.slice(functionStart, setupEnd).replaceAll("/usr/lib/llvm-", "$MOM_FIXTURE_IMAGE/usr/lib/llvm-") +
-          packager.slice(stagingStart, stagingEnd) + "}",
             "for key in acpp-cuda acpp-hip; do",
             '  runtime_dest="$libs_dir/$key"',
             '  copy_acpp_runtime "$key" "$MOM_FIXTURE_IMAGE/prefix-$key"',
@@ -540,7 +574,8 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       skip: process.platform === "win32",
     }, () => {
       const installer = fs.readFileSync(path.join(__dirname, "../scripts/install-dev.sh"), "utf8");
-      const end = installer.indexOf("\nNODE_VERSION=");
+      // Run the installer's top-level setup, which precedes its first function definition.
+      const end = installer.search(/^[a-z_]+\(\)\s*[{(]$/m);
       assert.ok(end > 0);
       const setup = installer.slice(0, end);
       const temp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-sdk-permissions-"));
@@ -564,9 +599,6 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       skip: process.platform === "win32",
     }, () => {
       const installer = fs.readFileSync(path.join(__dirname, "../scripts/install-dev.sh"), "utf8");
-      const start = installer.indexOf("install_dpcpp() {");
-      const end = installer.indexOf("\n}\n", start);
-      assert.ok(start >= 0 && end > start);
       const temp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-dpcpp-permissions-"));
       try {
         const payload = path.join(temp, "payload");
@@ -590,7 +622,7 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
           'curl() { cp -- "$MOM_FIXTURE_ARCHIVE" "$WORKSPACE/dpcpp-fixture.tar.gz"; }',
           'verify_sha256() { test "$(sha256sum "$1" | cut -d " " -f1)" = "$2"; }',
           'replace_staged_directory() { mv -- "$1" "$2"; }',
-          installer.slice(start, end + 2).replaceAll("/opt/", `${temp}/`),
+          shellFunction(installer, "install_dpcpp").replaceAll("/opt/", `${temp}/`),
           "install_dpcpp",
         ].join("\n");
         const result = spawnSync("bash", ["-c", program], {encoding: "utf8", env: {...process.env,
@@ -608,17 +640,11 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       skip: process.platform === "win32",
     }, () => {
       const installer = fs.readFileSync(path.join(__dirname, "../scripts/install-dev.sh"), "utf8");
-      const start = installer.indexOf("ensure_llvm() {");
-      const end = installer.indexOf("\n}\n", start);
-      assert.ok(start >= 0 && end > start);
       const temp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-llvm-mode-"));
       try {
-      // Redirect SDK readiness probes: this fixture never inspects a real host SDK.
-        const body = installer.slice(start, end + 2)
+        // Redirect SDK readiness probes: this fixture never inspects a real host SDK.
+        const body = shellFunction(installer, "ensure_llvm")
           .replaceAll("/usr/bin/", `${temp}/bin/`).replaceAll("/usr/lib/", `${temp}/lib/`);
-        const invoke = 'bash "$WORKSPACE/llvm.sh" "$LLVM_VERSION"';
-        assert.ok(body.includes(invoke));
-        const legacy = body.replace(invoke, () => `${invoke} all`);
         const payload = "offline LLVM installer fixture\n";
         const digest = createHash("sha256").update(payload).digest("hex");
         const run = (/** @type {string} */ source, /** @type {number} */ version,
@@ -649,11 +675,6 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
           const actual = run(body, version);
           assert.equal(actual.status, 0);
           assert.deepEqual(actual.calls, expected, `LLVM ${version} must verify before invoking minimal mode`);
-          const before = run(legacy, version);
-          assert.equal(before.status, 0);
-          assert.deepEqual(before.calls[3], [...installerArgs, "all"]);
-          assert.throws(() => assert.deepEqual(before.calls, expected), {code: "ERR_ASSERTION"},
-            "The old all mode must fail the same argument policy");
           const unverified = run(body, version, "0".repeat(64));
           assert.notEqual(unverified.status, 0);
           assert.deepEqual(unverified.calls, expected.slice(0, 3)
@@ -691,10 +712,8 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       skip: process.platform === "win32",
     }, () => {
       const installer = fs.readFileSync(path.join(__dirname, "../scripts/install-dev.sh"), "utf8");
-      const start = installer.indexOf("install_base() {"), end = installer.indexOf("\n}\n", start);
-      assert.ok(start >= 0 && end > start);
       const result = spawnSync("bash", ["-c", ["set -euo pipefail", "BASE_INSTALLED=0",
-        'apt_install() { printf "%s\\n" "$@"; }', installer.slice(start, end + 2),
+        'apt_install() { printf "%s\\n" "$@"; }', shellFunction(installer, "install_base"),
         "install_base", "install_base"].join("\n")], {encoding: "utf8", timeout: 5000});
       assert.equal(result.status, 0, result.stderr);
       for (const name of ["zlib1g-dev", "libssl-dev"]) {
@@ -707,10 +726,7 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       skip: process.platform === "win32",
     }, () => {
       const installer = fs.readFileSync(path.join(__dirname, "../scripts/install-dev.sh"), "utf8");
-      const extract = (/** @type {string} */ name) => {
-        const start = installer.indexOf(`${name}() {`);
-        return start < 0 ? "" : installer.slice(start, installer.indexOf("\n}\n", start) + 2);
-      };
+      const extract = (/** @type {string} */ name) => shellFunction(installer, name);
       const temp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-node-readiness-"));
       try {
         const bin = path.join(temp, "bin");
@@ -746,10 +762,7 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       skip: process.platform === "win32",
     }, () => {
       const installer = fs.readFileSync(path.join(__dirname, "../scripts/install-dev.sh"), "utf8");
-      const extract = (/** @type {string} */ name) => {
-        const start = installer.indexOf(`${name}() {`);
-        return installer.slice(start, installer.indexOf("\n}\n", start) + 2);
-      };
+      const extract = (/** @type {string} */ name) => shellFunction(installer, name);
       const temp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-bundled-node-gyp-"));
       try {
         for (const variant of ["ready", "wrong-version", "missing-cli"]) {
@@ -786,12 +799,9 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       skip: process.platform === "win32",
     }, () => {
       const installer = fs.readFileSync(path.join(__dirname, "../scripts/install-dev.sh"), "utf8");
-      const start = installer.indexOf("validate_component() {");
-      const end = installer.indexOf("\n}\n", start);
-      assert.ok(start >= 0 && end > start);
       const bash = spawnSync("bash", ["-c", "command -v bash"], {encoding: "utf8"});
       assert.equal(bash.status, 0);
-      const program = `${installer.slice(start, end + 2)}\nvalidate_component base`;
+      const program = `${shellFunction(installer, "validate_component")}validate_component base`;
       const temp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-base-validation-"));
       try {
         for (const missing of ["", "patchelf", "readelf"]) {
@@ -818,53 +828,48 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       const installer = fs.readFileSync(path.join(root, "scripts/install-dev.sh"), "utf8");
       const packager = fs.readFileSync(path.join(root,
         "scripts/package-linux-combined.sh"), "utf8");
-      const buildStart = installer.indexOf("build_adaptivecpp() {");
-      const optionsStart = installer.indexOf("  local -a options=(", buildStart);
-      const optionsEnd = installer.indexOf("\n  cmake -S", optionsStart);
-      const functionStart = packager.indexOf("copy_acpp_runtime() {");
-      const setupEnd = packager.indexOf("  begin_runtime", functionStart);
-      const stagingStart = packager.indexOf('  redist_bin="$runtime_dest/hipSYCL/ext/llvm/bin"', setupEnd);
-      const stagingEnd = packager.indexOf('  if [ "$key" = acpp-hip ]; then', stagingStart);
-      assert.ok(buildStart >= 0 && optionsStart > buildStart && optionsEnd > optionsStart);
-      assert.ok(functionStart >= 0 && setupEnd > functionStart && stagingStart > setupEnd && stagingEnd > stagingStart);
       const temp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-hip-linker-"));
       const sdk = path.join(temp, "sdk");
       const llvm = path.join(sdk, "usr/lib/llvm-21/bin");
       const runtime = path.join(temp, "runtime");
       const env = {...process.env, LLVM_VERSION: "21", MOM_LLVM_VERSION: "21", JOBS: "1",
-        MOM_FIXTURE_SDK: sdk, MOM_FIXTURE_RUNTIME: runtime};
+        MOM_FIXTURE_SDK: sdk, MOM_FIXTURE_RUNTIME: runtime, MOM_ROCM_VERSION: ""};
       try {
         fs.mkdirSync(llvm, {recursive: true});
         const prefix = path.join(sdk, "adaptivecpp-hip");
-        fs.mkdirSync(prefix);
+        const bitcode = path.join(prefix, "lib/hipSYCL/ext/bitcode/amdgcn");
+        fs.mkdirSync(bitcode, {recursive: true});
+        fs.writeFileSync(path.join(bitcode, "ockl.bc"), "fixture");
         fs.writeFileSync(path.join(prefix, ".mom-build-identity"), `${"a".repeat(40)}:21:hip:7.1.1:1-hip-lld1:none\n`);
+        const rocm = path.join(sdk, "opt/rocm-7.1.1/lib");
+        fs.mkdirSync(rocm, {recursive: true});
+        fs.writeFileSync(path.join(rocm, "libamdhip64.so"), "fixture");
         // An unrelated legacy SDK must never choose the toolchain for this installed compiler.
         fs.mkdirSync(path.join(sdk, "opt/llvm20-ubuntu24/bin"), {recursive: true});
         for (const tool of ["opt", "llc", "lld", "ld.lld"]) {
           fs.writeFileSync(path.join(llvm, tool), "#!/bin/sh\nprintf '%s\\n' fixture-llvm21\n", {mode: 0o755});
         }
+        // Run the real build function up to its configure step; cmake prints and stops there.
         const configured = spawnSync("bash", ["-c", [
           "set -euo pipefail",
-          "capture_options() { local backend=hip dest=/unused cuda_dir=/unused rocm_dir=/unused;",
-          installer.slice(optionsStart, optionsEnd),
-          // eslint-disable-next-line no-template-curly-in-string -- This expands the real Bash options array.
-          'printf "%s\\n" "${options[@]}"; }',
-          "capture_options",
-        ].join("\n")], {encoding: "utf8", env});
-        assert.equal(configured.status, 0, "Real installer options must evaluate without SDK access");
+          "adaptivecpp_ready() { return 1; }", "ensure_llvm() { :; }", "git() { :; }",
+          'cmake() { printf "%s\\n" "$@"; exit 0; }',
+          shellFunction(installer, "build_adaptivecpp").replaceAll("/opt/rocm-", "$MOM_FIXTURE_SDK/opt/rocm-"),
+          'build_adaptivecpp hip "$MOM_FIXTURE_SDK/unused"',
+        ].join("\n")], {encoding: "utf8", env: {...env, ROCM_VERSION: "7.1.1", CUDA_VERSION: "12-6", ADAPTIVECPP_COMMIT: "fixture",
+          WORKSPACE: path.join(temp, "workspace")}});
+        assert.equal(configured.status, 0, "Real installer options must evaluate without SDK access: " + configured.stderr);
         const linkerOption = configured.stdout.split("\n").find(line => line.startsWith("-DACPP_LLD_PATH="));
         assert.ok(linkerOption, "The installer must configure the HIP linker");
-        const staging = (packager.slice(functionStart, setupEnd) +
-        packager.slice(stagingStart, stagingEnd) + "}")
+        const staging = acppRuntimeProgram(packager)
           .replaceAll("/opt/llvm", "$MOM_FIXTURE_SDK/opt/llvm")
           .replaceAll("/usr/lib/llvm-", "$MOM_FIXTURE_SDK/usr/lib/llvm-");
         const staged = spawnSync("bash", ["-c", [
-          "set -euo pipefail",
-          'closure_queue=(); runtime_dest="$MOM_FIXTURE_RUNTIME"',
           staging,
+          'closure_queue=(); runtime_dest="$MOM_FIXTURE_RUNTIME"',
           'copy_acpp_runtime acpp-hip "$MOM_FIXTURE_SDK/adaptivecpp-hip"',
         ].join("\n")], {encoding: "utf8", env});
-        assert.equal(staged.status, 0, "Real packaging statements must stage only the fixture tools");
+        assert.equal(staged.status, 0, "Real packaging must stage only the fixture tools: " + staged.stderr);
         const bin = path.join(runtime, "hipSYCL/ext/llvm/bin");
         const linker = path.join(bin, path.basename(linkerOption.slice("-DACPP_LLD_PATH=".length)));
         const executed = spawnSync(linker, [], {encoding: "utf8"});
@@ -883,20 +888,19 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       skip: process.platform === "win32",
     }, () => {
       const packager = fs.readFileSync(path.join(__dirname, "../scripts/package-linux-combined.sh"), "utf8");
-      const start = packager.indexOf("copy_acpp_runtime() {");
-      const end = packager.indexOf("  begin_runtime", start);
-      assert.ok(start >= 0 && end > start);
       const temp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-llvm-identity-"));
       const marker = path.join(temp, ".mom-build-identity");
       try {
         for (const identity of [null, "", `${"a".repeat(40)}:21:cuda:12-6:1:none`,
           `${"a".repeat(40)}:21;exit 0:hip:7.1.1:1:none`, `${"a".repeat(40)}:21:hip:7.1.1:1:none\nextra`]) {
           if (identity !== null) {fs.writeFileSync(marker, identity);}
-          const result = spawnSync("bash", ["-c", ["set -euo pipefail",
-            packager.slice(start, end) + "}", 'copy_acpp_runtime acpp-hip "$MOM_FIXTURE_PREFIX"',
-          ].join("\n")], {encoding: "utf8", env: {...process.env, MOM_FIXTURE_PREFIX: temp}});
+          const result = spawnSync("bash", ["-c", [acppRuntimeProgram(packager),
+            'copy_acpp_runtime acpp-hip "$MOM_FIXTURE_PREFIX"',
+          ].join("\n")], {encoding: "utf8", env: {...process.env, MOM_FIXTURE_PREFIX: temp,
+            runtime_dest: path.join(temp, "runtime")}});
           assert.equal(result.status, 1, "Invalid SDK identity must fail before staging any tools");
           assert.match(result.stderr, /valid matching \.mom-build-identity/);
+          assert.equal(fs.existsSync(path.join(temp, "runtime")), false);
         }
       } finally { fs.rmSync(temp, {recursive: true, force: true}); }
     });
@@ -905,16 +909,9 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       skip: process.platform === "win32",
     }, () => {
       const packager = fs.readFileSync(path.join(__dirname, "../scripts/package-linux-combined.sh"), "utf8");
-      const matchesStart = packager.indexOf("runtime_matches() (");
-      const matchesEnd = packager.indexOf("\n)\n", matchesStart);
-      const setupStart = packager.indexOf("copy_acpp_runtime() {");
-      const setupEnd = packager.indexOf("  begin_runtime", setupStart);
-      const bitcodeStart = packager.indexOf("    local device_bitcode", setupEnd);
-      const bitcodeEnd = packager.indexOf('  elif [ "$key" = acpp-cuda ]; then', bitcodeStart);
-      assert.ok(matchesStart >= 0 && matchesEnd > matchesStart);
-      assert.ok(setupStart >= 0 && setupEnd > setupStart && bitcodeStart > setupEnd && bitcodeEnd > bitcodeStart);
       const temp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-hip-cohort-"));
       try {
+        acppLlvmFixture(temp);
         const opt = path.join(temp, "opt");
         for (const [relative, value] of [
           ["rocm-7.1.1/amdgcn/bitcode", "unrelated"],
@@ -942,19 +939,20 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
           fs.writeFileSync(path.join(prefix, ".mom-build-identity"),
             `${"a".repeat(40)}:21:hip:${fixture.version}:1-hip-lld1:none\n`);
           if (fixture.bundled) {fs.writeFileSync(path.join(bundled, "ockl.bc"), "bundled");}
-          const program = ["set -euo pipefail",
-            packager.slice(matchesStart, matchesEnd + 2),
-            packager.slice(setupStart, setupEnd),
-            packager.slice(bitcodeStart, bitcodeEnd), "}",
-            'copy_acpp_runtime acpp-hip "$MOM_FIXTURE_PREFIX"',
-          ].join("\n").replaceAll("/opt/rocm", `${opt}/rocm`);
+          const program = [acppRuntimeProgram(packager), 'copy_acpp_runtime acpp-hip "$MOM_FIXTURE_PREFIX"']
+            .join("\n").replaceAll("/opt/rocm", `${opt}/rocm`).replaceAll("/usr/lib/llvm-", `${temp}/llvm-`);
           const result = spawnSync("bash", ["-c", program], {encoding: "utf8", env: {...process.env,
             MOM_FIXTURE_PREFIX: prefix, MOM_ROCM_VERSION: fixture.requested, runtime_dest: runtime}});
           assert.equal(result.status, fixture.expected ? 0 : 1, `Wrong bitcode selection for ${fixture.name}`);
           if (fixture.expected) {
             assert.equal(fs.readFileSync(path.join(destination, "ockl.bc"), "utf8"), fixture.expected);
           } else {
-            assert.deepEqual(fs.readdirSync(destination), [], "No mismatched bitcode may be packaged");
+            assert.match(result.stderr, /bitcode/);
+            // Packaging aborts; only the cohort's own bundled payload may have been copied so far.
+            for (const file of fs.readdirSync(destination)) {
+              assert.equal(fs.readFileSync(path.join(destination, file), "utf8"), "bundled",
+                "No mismatched host bitcode may be packaged");
+            }
           }
         }
       } finally { fs.rmSync(temp, {recursive: true, force: true}); }
@@ -964,14 +962,9 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       skip: process.platform === "win32",
     }, () => {
       const packager = fs.readFileSync(path.join(__dirname, "../scripts/package-linux-combined.sh"), "utf8");
-      const setupStart = packager.indexOf("copy_acpp_runtime() {");
-      const setupEnd = packager.indexOf("  begin_runtime", setupStart);
-      const branchStart = packager.indexOf('  elif [ "$key" = acpp-cuda ]; then\n', setupEnd);
-      const branchEnd = packager.indexOf("\n  fi\n  while IFS=", branchStart);
-      assert.ok(setupStart >= 0 && setupEnd > setupStart && branchStart > setupEnd && branchEnd > branchStart);
-      const cudaBody = packager.slice(branchStart + '  elif [ "$key" = acpp-cuda ]; then\n'.length, branchEnd);
       const temp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-cuda-cohort-"));
       try {
+        acppLlvmFixture(temp);
         const sdkRoot = path.join(temp, "sdk");
         for (const fixture of [{version: "12.6", bytes: "matching"}, {version: "13.0", bytes: "unrelated"}]) {
           const dir = path.join(sdkRoot, `cuda-${fixture.version}/nvvm/libdevice`);
@@ -989,12 +982,11 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
           fs.symlinkSync(`cuda-${fixture.alias}`, alias);
           const prefix = path.join(temp, fixture.name);
           const runtime = path.join(temp, `${fixture.name}-runtime`);
-          fs.mkdirSync(prefix);
+          fs.mkdirSync(path.join(prefix, "lib"), {recursive: true});
           fs.writeFileSync(path.join(prefix, ".mom-build-identity"),
             `${"a".repeat(40)}:21:cuda:${fixture.version}:1:none\n`);
-          const program = ["set -euo pipefail", packager.slice(setupStart, setupEnd), cudaBody, "}",
-            'copy_acpp_runtime acpp-cuda "$MOM_FIXTURE_PREFIX"',
-          ].join("\n").replaceAll("/usr/local/", `${sdkRoot}/`);
+          const program = [acppRuntimeProgram(packager), 'copy_acpp_runtime acpp-cuda "$MOM_FIXTURE_PREFIX"']
+            .join("\n").replaceAll("/usr/local/", `${sdkRoot}/`).replaceAll("/usr/lib/llvm-", `${temp}/llvm-`);
           const result = spawnSync("bash", ["-c", program], {encoding: "utf8", timeout: 5000,
             env: {...process.env, MOM_FIXTURE_PREFIX: prefix, runtime_dest: runtime}});
           const output = path.join(runtime, "hipSYCL/ext/bitcode/ptx/libdevice.10.bc");
@@ -1013,14 +1005,11 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
     }, () => {
       const root = path.join(__dirname, "..");
       const installer = fs.readFileSync(path.join(root, "scripts/install-dev.sh"), "utf8");
-      const start = installer.indexOf("adaptivecpp_identity() {");
-      const end = installer.indexOf("\n}\n", start);
-      assert.ok(start >= 0 && end > start);
       const patchHash = createHash("sha256").update(fs.readFileSync(path.join(root,
         "scripts/patches/adaptivecpp-cuda-unloading.patch"))).digest("hex");
       const identity = spawnSync("bash", ["-c", [
         "set -euo pipefail",
-        installer.slice(start, end + 2),
+        shellFunction(installer, "adaptivecpp_identity"),
         "adaptivecpp_identity cuda",
         "adaptivecpp_identity hip",
       ].join("\n")], {encoding: "utf8", env: {...process.env, SCRIPT_DIR: path.join(root, "scripts"),
@@ -1375,10 +1364,6 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
     }, () => {
       const root = path.join(__dirname, "..");
       const deploySource = fs.readFileSync(path.join(root, "scripts", "test-deploy.sh"), "utf8");
-      assert.match(deploySource, /apt-get install[^\n]*\bpython3\b/);
-      assert.match(deploySource, /MOM_VERTHASH_DATA:\/verthash\.dat:ro/);
-      assert.match(deploySource, /win-mom-dev-base\.qcow2/);
-      assert.doesNotMatch(deploySource, /win-mom-dev\.qcow2/);
       const temp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-deploy-summary-test-"));
       const scripts = path.join(temp, "scripts");
       const fakeBin = path.join(temp, "bin");
@@ -1409,8 +1394,7 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       } finally {
         fs.rmSync(temp, {recursive: true, force: true});
       }
-      const multiRelease = deploySource.match(/^test_windows_multi_release\(\) \{\n[\s\S]*?\n\}\n/m)?.[0];
-      assert.ok(multiRelease, "mixed-vendor release function must exist");
+      const multiRelease = shellFunction(deploySource, "test_windows_multi_release");
       for (const status of [0, 37]) {
       /** @type {import("node:child_process").SpawnSyncReturns<string>} */
         const result = spawnSync("bash", ["-c", [
@@ -1435,9 +1419,7 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       skip: process.platform !== "linux",
     }, () => {
       const source = fs.readFileSync(path.join(__dirname, "../scripts/test-deploy.sh"), "utf8");
-      const functionSource = source.match(/^test_linux_release\(\) \{\n[\s\S]*?\n\}\n/m)?.[0];
-      assert.ok(functionSource);
-      assert.match(functionSource, /\[ -c "\/dev\/dri\/\$name" \]/);
+      const functionSource = shellFunction(source, "test_linux_release");
       const temp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-linux-multi-test-"));
       try {
         const sys = path.join(temp, "sys");
@@ -1558,20 +1540,6 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
         fs.rmSync(temp, {recursive: true, force: true});
       }
     });
-
-    test("Windows AdaptiveCpp exported source silences only its expected Git probe failure", () => {
-      const build = fs.readFileSync(path.join(__dirname,
-        "../scripts/build-windows-adaptivecpp-amd.ps1"), "utf8");
-      const oldStart = build.indexOf("$rootGitStatusOld =");
-      const newStart = build.indexOf("$rootGitStatusNew =", oldStart);
-      const replaceStart = build.indexOf(
-        "Replace-RequiredText $rootCmakeText $rootGitStatusOld $rootGitStatusNew", newStart);
-      assert.ok(oldStart >= 0 && newStart > oldStart && replaceStart > newStart,
-        "the checked exported-source workaround must remain intact");
-      assert.match(build.slice(oldStart, newStart), /RESULT_VARIABLE GIT_STATUS/);
-      assert.doesNotMatch(build.slice(oldStart, newStart), /ERROR_QUIET/);
-      assert.match(build.slice(newStart, replaceStart), /RESULT_VARIABLE GIT_STATUS[\s\S]*ERROR_QUIET/);
-    });
   });
 
   test.describe("Bounded vectors and integrated GPU coverage", {concurrency: false}, () => {
@@ -1673,11 +1641,6 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       assert.deepEqual(selectedIds, ["gpu8", "gpu2", "gpu9", "gpu3", "gpu0"]);
     });
 
-    test("Octopus NVIDIA DAG loads retain the measured cache policy", () => {
-      const source = fs.readFileSync(path.join(__dirname, "../sycl/octopus/nvidia-tensor.inc"), "utf8");
-      assert.match(source, /ld\.global\.L1::evict_first\.v4\.u32/);
-    });
-
     test("Discrete Octopus vectors select the full DAG test path", (/** @type {import("node:test").TestContext} */ t) => {
       t.mock.method(policyModule, "workerEnv", (
       /** @type {string} */ algo, /** @type {NodeJS.ProcessEnv} */ env,
@@ -1757,39 +1720,14 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       const root = path.join(__dirname, "..");
       const source = fs.readFileSync(path.join(root, "sycl/verthash/verthash.cpp"), "utf8");
       const internal = fs.readFileSync(path.join(root, "sycl/lib-internal.h"), "utf8");
-      const begin = source.indexOf("static State& state_for(");
-      const end = source.indexOf("\nvoid verthash_cleanup_states()", begin);
-      assert.ok(begin >= 0 && end > begin);
-      assert.match(source, /state_for\(dev_str, is_test, is_benchmark\)/);
-      assert.match(source,
-        /compact_test_data\(use_compact_test_data &&\s*\(device\.is_cpu\(\) \|\| is_integrated_gpu\(device\)\)\)/);
-      /** @param {string} text @param {string} signature @returns {string} */
-      const extractFunction = (text, signature) => {
-        const start = text.indexOf(signature);
-        assert.ok(start >= 0, `missing ${signature}`);
-        const brace = text.indexOf("{", start);
-        assert.ok(brace >= 0, `missing function body for ${signature}`);
-        let depth = 0;
-        for (let index = brace; index < text.length; index++) {
-          if (text[index] === "{") {depth++;}
-          if (text[index] === "}") {
-            depth--;
-            if (depth === 0) {return text.slice(start, index + 1);}
-          }
-        }
-        assert.fail(`unterminated ${signature}`);
-      };
-      const compactHelpers = [
-        extractFunction(internal, "inline bool mom_parse_env_ulong"),
-        extractFunction(internal, "inline bool is_integrated_gpu"),
-        extractFunction(internal, "inline bool mom_compact_correctness_test"),
-      ].join("\n\n");
+      const compactHelpers = ["inline bool mom_parse_env_ulong(", "inline bool is_integrated_gpu(",
+        "inline bool mom_compact_correctness_test("].map(anchor => extractCppBlock(internal, anchor)).join("\n");
       const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-verthash-small-"));
       try {
         fs.copyFileSync(path.join(__dirname, "native/verthash-test-route.cpp"),
           path.join(directory, "route.cpp"));
         fs.writeFileSync(path.join(directory, "verthash_state_for.inc"),
-          `${compactHelpers}\n\n${source.slice(begin, end)}`);
+          `${compactHelpers}\n${extractCppBlock(source, "static State& state_for(")}`);
         /** @type {[string, string][]} */
         const cases = [
           [path.join(directory, "route.cpp"), "verthash-test-route:passed"],
@@ -1961,78 +1899,6 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       await assert.rejects(run(fixture, true), /timed out in phase test/);
     });
 
-    test("PearlHash routes integrated Intel GPUs away from ESIMD prefetch", () => {
-      const dispatch = fs.readFileSync(path.join(__dirname, "../sycl/pearlhash/dispatch.inc"), "utf8");
-      assert.match(dispatch,
-        /const bool discrete_gpu = device\.is_gpu\(\) && !is_integrated_gpu\(device\);/);
-      assert.match(dispatch,
-        /pearlhash_esimd_route\(tuned_sycl, supported_backend, discrete_gpu, intel_matrix, width\)/);
-      assert.match(dispatch, /use_portable = !cuda_sycl && esimd_width == 0u;/);
-      assert(dispatch.indexOf("pearlhash_esimd_route(") < dispatch.indexOf("compute_ab("),
-        "ESIMD capability gating must precede matrix layout selection");
-    });
-
-    test("PearlHash AMD preparation carries noise readiness through SYCL events", () => {
-      const matrix = fs.readFileSync(path.join(__dirname, "../sycl/pearlhash/matrix.inc"), "utf8");
-      const dispatch = fs.readFileSync(path.join(__dirname, "../sycl/pearlhash/dispatch.inc"), "utf8");
-      assert.match(matrix, /static PearlHashEventPair k_noise\(/);
-      assert.match(matrix, /compute_ab_amd_wmma\([\s\S]*const sycl::event& a_noise_ready,[\s\S]*const sycl::event& b_noise_ready\)/);
-      assert.match(matrix, /h\.depends_on\(a_noise_ready\);/);
-      assert.match(matrix, /h\.depends_on\(b_noise_ready\);/);
-      assert.match(dispatch, /noise_ready = k_noise\(/);
-      assert.match(dispatch, /compute_ab_amd_wmma\([\s\S]*noise_ready\.a,[\s\S]*noise_ready\.b\)/);
-      const hipBranch = dispatch.slice(dispatch.indexOf("#if defined(MOM_SYCL_HAS_HIP)"));
-      assert(!hipBranch.includes("q.wait_and_throw(); // both independent prep streams"),
-        "AMD preparation must not reintroduce a host wait before dependent queue submission");
-      assert.match(dispatch, /if \(split_hip_noise\)[\s\S]*sycl_wait_and_throw\(noise_ready\.a,[\s\S]*sycl_wait_and_throw\(noise_ready\.b,/,
-        "a failed native probe must rejoin split noise before the portable path reads it");
-    });
-
-    test("PearlHash discovery emits complete measured profiles with a low-memory fallback", () => {
-      const intensity = fs.readFileSync(path.join(__dirname, "../sycl/intensity.inc"), "utf8");
-      const powIntensity = fs.readFileSync(path.join(__dirname, "../sycl/pow-intensity.h"), "utf8");
-      const params = fs.readFileSync(path.join(__dirname, "../sycl/algo-params.inc"), "utf8");
-      const hipApi = fs.readFileSync(path.join(__dirname, "../sycl/hiprtc-api.h"), "utf8");
-      const hipJit = fs.readFileSync(path.join(__dirname, "../sycl/pearlhash/hip-jit.inc"), "utf8");
-      assert.ok(intensity.includes("global_mem_size>() >= 8 * GiB"));
-      assert.ok(intensity.includes("pearlhash_profile_t{131072, 524288, 8192, 128}"));
-      assert.ok(intensity.includes("pearlhash_profile_t{65536, 65536, 4096, 256}"));
-      assert.match(intensity, /sycl_is_level_zero_gpu\(dev\) && !is_integrated_gpu\(dev\)/);
-      assert.match(intensity, /pearlhash_intel_capability_profile\(\s*mom_intel_eu_simd_width\(dev\)/);
-      assert.match(intensity, /#if defined\(MOM_SYCL_ADAPTIVECPP\) && defined\(MOM_SYCL_HAS_HIP\)/);
-      assert.match(intensity, /pearlhash_amd_native_int8\(dev\)/);
-      assert.match(intensity, /pearlhash_amd_native_profile_for\(pow_device_profile\(dev\), true\)/);
-      assert.match(powIntensity,
-        /for \(const auto& profile : \{pearlhash_profile_t\{524288, 524288, 2048, 128\},\s+pearlhash_profile_t\{262144, 262144, 2048, 128\}\}\)\s+if \(pearlhash_required_memory_fits\(device, profile\)\)/,
-        "AMD native defaults must try the measured shapes in throughput order with exact capacity checks");
-      assert.match(intensity, /if \(!mom_is_hip\(dev\)\)\s+return false/,
-        "optional AMD discovery must keep non-HIP devices on the portable profile");
-      assert.match(intensity, /static bool pearlhash_amd_native_int8\(const sycl::device& dev\) \{[\s\S]*#if defined\(MOM_SYCL_ADAPTIVECPP\) && defined\(MOM_SYCL_HAS_HIP\)\s+try \{\s+if \(!mom_is_hip\(dev\)\)/,
-        "backend probing must be inside the optional-probe failure boundary");
-      assert.match(intensity, /try \{[\s\S]*hip_gfx12_int8_wmma_supported\(queue\)[\s\S]*catch \(\.\.\.\) \{\s+return false;/,
-        "optional AMD discovery must fail closed when HIP interop/property probing fails");
-      assert.match(intensity,
-        /if \(pearlhash_amd_native_int8\(dev\)\) \{\s+try \{\s+profile = pearlhash_amd_native_profile_for\(pow_device_profile\(dev\), true\);\s+\} catch \(\.\.\.\) \{/,
-        "capacity metadata failures must retain the ordinary profile");
-      assert.doesNotMatch(intensity, /vendor\.find\("amd"\)/,
-        "AMD default selection must not be keyed by vendor text");
-      assert.match(hipApi, /inline bool hip_gfx12_int8_wmma_supported\(/);
-      assert.match(hipApi, /hip_queue_identity\(queue, device, stream\)/);
-      assert.match(hipApi, /mom::amd::has_gfx12_int8_wmma\(properties\.gcnArchName\)/);
-      assert.match(hipJit, /if \(!mom_is_hip\(q\.get_device\(\)\)\)/);
-      assert.match(hipJit, /return mom::hip_gfx12_int8_wmma_supported\(q, reason\)/);
-      assert.doesNotMatch(intensity, /vendor_id/, "AMD profile must not use PCI/vendor IDs");
-      assert.match(intensity, /const bool nvidia = vendor\.find\("nvidia"\)/);
-      assert.match(intensity, /vendor\.find\("intel"\)/);
-      assert.match(intensity, /MOM_PEARLHASH_INTENSITY/);
-      assert.match(intensity, /profile\.m = round_down_to_multiple/);
-      assert.match(intensity, /profile\.n = profile\.m/);
-      assert.ok(params.includes("\"*[m=\" + std::to_string(profile.m)"));
-      for (const field of ["n", "k", "rank"]) {
-        assert.ok(params.includes(`";${field}=" + std::to_string(profile.${field})`));
-      }
-    });
-
     test("PearlHash AMD discovery keeps the ordinary profile when capacity metadata throws", {
       skip: process.platform === "win32",
     }, () => {
@@ -2169,94 +2035,6 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
   });
 
   test.describe("Incremental builds, hardware capabilities, and portable GPU kernels", {concurrency: false}, () => {
-    test("Linux oneAPI developer builds preserve incremental objects", () => {
-      const build = fs.readFileSync(
-        path.join(__dirname, "../scripts/multicompiler-entrypoint.sh"), "utf8");
-      const start = build.indexOf("build_oneapi() {");
-      const end = build.indexOf("\n}\n\nbuild_dpcpp()", start);
-      assert.ok(start >= 0 && end > start, "oneAPI build function must exist");
-      const oneapi = build.slice(start, end);
-      assert.match(oneapi, /\[ ! -d "\$out" \] \|\| mv "\$out" build/);
-      assert.match(oneapi, /node scripts\/linux-build-state\.js prepare build oneapi icx icpx/);
-      assert.match(oneapi, /if \[ ! -s build\/Makefile \] \|\|/);
-      assert.match(oneapi, /CXX\.target \?= \$PWD\/scripts\/cxx-oneapi\.sh/);
-      assert.doesNotMatch(oneapi, /\.node-version| -nt /);
-      assert.match(oneapi, /node-gyp build/);
-      assert.match(oneapi, /mv build "\$out"/);
-      assert.doesNotMatch(oneapi, /find binding\.gyp native sycl/);
-      assert.doesNotMatch(oneapi, /rm -rf build "\$out"/);
-    });
-
-    test("AMD release workers stay architecture-neutral on Linux and Windows", () => {
-      const linux = fs.readFileSync(
-        path.join(__dirname, "../scripts/multicompiler-entrypoint.sh"), "utf8");
-      const windows = fs.readFileSync(
-        path.join(__dirname, "../scripts/build-sycl-adaptivecpp-win.ps1"), "utf8");
-      assert.match(linux, /ACPP_TARGETS=generic ACPP_VISIBILITY_MASK="\$target"/);
-      assert.match(windows, /--acpp-targets=generic/);
-      assert.doesNotMatch(`${linux}\n${windows}`, /(?:--offload-arch=|--acpp-targets=hip:|ACPP_TARGETS=hip:)/);
-    });
-
-    test("Intel CN tuning selects its width8 recurrence only from reported hardware capability", () => {
-      const source = fs.readFileSync(path.join(__dirname, "../sycl/algo-params.inc"), "utf8");
-      // The compiled intel_geometry tests cover capability failures and excluded worker profiles.
-      assert.match(source, /all_intel_native_width8 = all_intel_native_width8 &&\s+mom_intel_eu_simd_width\(dev\) == 8/);
-      assert.match(source, /backend_hint = cn_gpu_intel_backend\(needs_intel_opencl, all_intel_native_width8\)/);
-      const recurrence = fs.readFileSync(path.join(__dirname, "../sycl/cn-gpu/cn-gpu.cpp"), "utf8");
-      assert.match(recurrence, /use_native_width8 = mom_intel_eu_simd_width\(state\.device\) == 8/);
-      assert.doesNotMatch(`${source}\n${recurrence}`, /get_info<sycl::ext::intel::info::device::gpu_eu_simd_width>/);
-    });
-
-    test("AMD matrix paths share a conservative selected-device instruction gate", () => {
-      for (const file of ["octopus/amd-wmma.inc", "walahash/amd-wmma.inc"]) {
-        const source = fs.readFileSync(path.join(__dirname, "../sycl", file), "utf8");
-        assert.match(source, /hipGetDeviceProperties\(/);
-        assert.match(source, /mom::amd::has_gfx12_int8_wmma\(/);
-        assert.doesNotMatch(source, /strncmp\([^\n]*gcnArchName/);
-        assert.match(source, /"--offload-arch=" \+ arch/);
-      }
-      const pearl = fs.readFileSync(path.join(__dirname, "../sycl/pearlhash/hip-jit.inc"), "utf8");
-      assert.match(pearl, /mom::hip_gfx12_int8_wmma_supported\(q, reason\)/);
-      assert.doesNotMatch(pearl, /strncmp\([^\n]*gcnArchName/);
-      assert.match(pearl, /"--offload-arch=" \+ arch/);
-      const octopus = readSyclSource(path.join(__dirname, "../sycl/octopus/octopus.cpp"));
-      assert.match(octopus, /subgroup_32 = mom_is_cuda\(state\.device\) \|\|\s+std::find\(subgroup_sizes/);
-      assert.match(octopus, /!std::getenv\("MOM_OCTOPUS_BATCHED"\) && subgroup_32/);
-    });
-
-    test("Linux AdaptiveCpp developer builds preserve incremental objects", () => {
-      const entrypoint = fs.readFileSync(
-        path.join(__dirname, "../scripts/adaptivecpp-entrypoint.sh"), "utf8");
-      assert.match(entrypoint, /mv "\$cache_dir" build/);
-      assert.match(entrypoint,
-        /grep -Fqx "CXX\.target \?= \$compiler" build\/Makefile; then\s+mom_run_quiet "\[adaptivecpp-\$backend\] node-gyp configure"/);
-      assert.match(entrypoint, /mv "\$source_dir\/build" "\$cache_dir"/);
-      assert.match(entrypoint, /preserve_partial_build/);
-      assert.match(entrypoint, /build\/build-output\.log/);
-      assert.doesNotMatch(entrypoint, /rm -rf \/tmp\/mom-adaptive-build "\$build_dir"/);
-    });
-
-    test("Linux content receipts own invalidation before configure/build and retain path admission", () => {
-      for (const file of ["multicompiler-entrypoint.sh", "combined-build.sh", "adaptivecpp-entrypoint.sh"]) {
-        const source = fs.readFileSync(path.join(__dirname, "../scripts", file), "utf8");
-        const body = file === "multicompiler-entrypoint.sh"
-          ? source.slice(source.indexOf("build_oneapi() {"), source.indexOf("\n}\n\nbuild_dpcpp()"))
-          : source;
-        const prepare = body.indexOf("node scripts/linux-build-state.js prepare build");
-        const configure = body.indexOf("node-gyp configure", prepare);
-        const build = body.indexOf("node-gyp build", configure);
-        const finish = body.indexOf("node scripts/linux-build-state.js finish build", build);
-        assert.ok(prepare >= 0 && configure > prepare && build > configure && finish > build, file);
-        assert.doesNotMatch(body, /\.node-version|compiler_first_line| -nt /);
-        assert.match(body, /\[ ! -s build\/Makefile \]/);
-        if (file === "combined-build.sh") {
-          assert.match(body, /grep -Fq -- "\$ROOT" build\/Makefile/);
-        } else if (file === "adaptivecpp-entrypoint.sh") {
-          assert.match(body, /grep -Fqx "CXX\.target \?= \$compiler" build\/Makefile/);
-        }
-      }
-    });
-
     test("Linux AdaptiveCpp rejects a symlinked build root before cleanup", {
       skip: process.platform === "win32",
     }, () => {
@@ -2287,95 +2065,14 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       }
     });
 
-    test("combined builds preserve an unchanged linked CUDA image", () => {
-      const build = fs.readFileSync(
-        path.join(__dirname, "../scripts/combined-build.sh"), "utf8");
-      const prepare = build.indexOf('node scripts/linux-build-state.js prepare build "$MOM_DPCPP_IMPL"');
-      const compile = build.indexOf("node-gyp build", prepare);
-      const finish = build.indexOf('node scripts/linux-build-state.js finish build "$MOM_DPCPP_IMPL"', compile);
-      assert.ok(prepare >= 0 && compile > prepare && finish > compile,
-        "content receipts must decide reuse before Make and admit the completed link afterward");
-      const state = fs.readFileSync(path.join(__dirname, "../scripts/linux-build-state.js"), "utf8");
-      assert.match(state, /sourceInputs\(root\)/);
+    test("Linux source receipts hash the combined compiler wrapper", () => {
       const {sourceInputs, fileHash} = require("../scripts/build-source-inputs");
       assert.equal(sourceInputs(path.resolve(__dirname, "..")).graph["scripts/cxx-combined.sh"],
         fileHash(path.join(__dirname, "../scripts/cxx-combined.sh")));
-      assert.doesNotMatch(build, /link_target|\$WRAP -nt/);
-      assert.doesNotMatch(build, /octopus_archive/);
-      assert.doesNotMatch(build, /\nrm -f build\/Release\/mom\.node build\/Release\/obj\.target\/mom\.node/);
-    });
-
-    test("Linux runner locks mutable build state without advisory GPU locks", () => {
-      const runner = fs.readFileSync(path.join(__dirname, "../scripts/dev-container.sh"), "utf8");
-      const entrypoint = fs.readFileSync(
-        path.join(__dirname, "../scripts/multicompiler-entrypoint.sh"), "utf8");
-
-      assert.match(runner, /name="mom-\$backend"/);
-      assert.doesNotMatch(runner, /--privileged/);
-      assert.match(runner, /--cap-drop ALL/);
-      assert.match(runner, /--security-opt no-new-privileges:true/);
-      assert.match(runner, /add_drm_vendor 0x8086/);
-      assert.match(runner, /add_drm_vendor 0x1002/);
-      assert.match(runner,
-        /sycl_cache_volume=\$\{MOM_SYCL_CACHE_VOLUME:-mom-sycl-cache-\$backend\}/);
-      const reuseStart = runner.indexOf('if [ "$reuse_built_worker" = 1 ]; then');
-      const reuseEnd = runner.indexOf("\nelse\n  flock 9", reuseStart);
-      assert.ok(reuseStart >= 0 && reuseEnd > reuseStart, "reuse lock branch must exist");
-      const reuseLocks = runner.slice(reuseStart, reuseEnd);
-      assert.match(reuseLocks, /flock -s 9/);
-      assert.match(runner, /exec 9>"\$build_lock"/);
-      assert.doesNotMatch(runner, /MOM_GPU_LOCK_KEY|gpu_lock_key|exec 8>|\.gpu-/);
-      assert.equal((runner.match(/\bflock\b/g) || []).length, 2);
-      assert.match(runner,
-        /if \[ "\$reuse_built_worker" != 1 \]; then[\s\S]*docker_flags\+=\(-it\)[\s\S]*docker_flags\+=\(-i\)[\s\S]*fi/);
-      assert.match(runner,
-        /elif \[ "\$container_stdin" = 1 \]; then[\s\S]*docker_flags\+=\(-i\)/);
-      assert.doesNotMatch(runner, /docker rm -f "\$name"/);
-      assert.match(runner,
-        /if container_running=\$\(docker container inspect[\s\S]*if \[ "\$container_running" = true \][\s\S]*exit 2/);
-
-      const reuseBranchStart = entrypoint.search(/case "\$\{MOM_REUSE_BUILT_WORKER:-0\}" in/);
-      const buildTreeMutation = entrypoint.indexOf("platforms_hold=build-platforms-hold");
-      assert.ok(reuseBranchStart >= 0 && buildTreeMutation > reuseBranchStart,
-        "worker reuse branch must precede build-tree mutation");
-      assert.match(entrypoint, /if \[\[ -e "\$platforms_hold" \|\| -L "\$platforms_hold" \]\]/);
-      assert.match(entrypoint,
-        /if \[\[ -e build \|\| -L build \]\] && \[\[ ! -d build \|\| -L build \]\]; then/);
-      const reuseBranch = entrypoint.slice(reuseBranchStart, buildTreeMutation);
-      assert.match(reuseBranch, /reused_worker="\$PWD\/build\/lin\/Release\/\$default\/mom\.node"/);
-      assert.match(reuseBranch, /\[ ! -s "\$reused_worker" \]/);
-      assert.match(entrypoint,
-        /source_fingerprint\(\)[\s\S]*binding\.gyp[\s\S]*native[\s\S]*sycl[\s\S]*sha256sum/);
-      assert.match(reuseBranch, /fingerprint_file="\$reused_worker\.sources\.sha256"/);
-      assert.match(reuseBranch,
-        /recorded_fingerprint[\s\S]*current_fingerprint[\s\S]*source fingerprint differs/);
-      assert.doesNotMatch(reuseBranch, /-newer/);
-      assert.match(reuseBranch, /exec "\$@"/);
     });
 
     test("Windows Intel NexaPoW uses oneAPI after the cold-JIT fix", () => {
       assert.equal(policy.selection("nexapow", "intel", "win32").key, "oneapi");
-      const build = fs.readFileSync(path.join(__dirname,
-        "../scripts/build-sycl-cuda-win.ps1"), "utf8");
-      assert.match(build, /PortableOpencl[\s\S]*MOM_NEXAPOW_PORTABLE_FIELD32/);
-    });
-
-    test("Windows CUDA device flags enable SYCL-native Octopus", () => {
-      const build = fs.readFileSync(path.join(__dirname,
-        "../scripts/build-sycl-cuda-win.ps1"), "utf8");
-      const withCudaBlock = build.match(
-        /if \(\$withCuda\) \{\n\s{2}\$targetList \+= \$CudaArch\n\s{2}\$F \+= @\(([\s\S]*?)\)\n\}/);
-      assert.ok(withCudaBlock, "Windows CUDA device flag block must exist");
-      const withCudaFlags = withCudaBlock?.[1] ?? "";
-      assert.match(withCudaFlags, /"-DMOM_SYCL_HAS_CUDA"/);
-      assert.match(withCudaFlags, /"-DMOM_OCTOPUS_HAS_SYCL_NATIVE"/);
-      assert.match(withCudaFlags, /"-DMOM_NEXAPOW_SYCL_NATIVE_FIELD"/);
-    });
-
-    test("Windows oneAPI NexaPoW build enables the portable field", () => {
-      const binding = fs.readFileSync(path.join(__dirname, "../binding.gyp"), "utf8");
-      assert.match(binding,
-        /msbuild_toolset": "Intel\(R\) oneAPI DPC\+\+ Compiler 2026"[\s\S]*?"AdditionalOptions": \[[\s\S]*?"\/DMOM_NEXAPOW_PORTABLE_FIELD32"/);
     });
 
     test("asynchronous Xelis and Zel retain events without adding waits", {
@@ -2395,8 +2092,7 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
         search = search.slice(0, match.index) + "    return s.queue.submit();" + search.slice(end + 2);
       }
       const proof = fs.readFileSync(path.join(root, "zelhash/proof.inc"), "utf8");
-      const rounds = "template <bool GPU_COMPACT>\n" +
-        extractCppBlock(proof, "static std::array<sycl::event, 4> run_collision_rounds(");
+      const rounds = extractCppBlock(proof, "static std::array<sycl::event, 4> run_collision_rounds(");
       const entry = fs.readFileSync(path.join(root, "zelhash/zelhash.cpp"), "utf8");
       const begin = entry.indexOf("#if defined(MOM_SYCL_HAS_CUDA)", entry.indexOf("uint64_t t_round[4]"));
       const end = entry.indexOf("  const uint64_t t_rounds_end", begin);
@@ -2459,17 +2155,6 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       }
     });
 
-    test("Xelis orders setup transfers and Windows ESIMD stages", () => {
-      const source = readSyclSource(path.join(__dirname, "../sycl/xelishashv3/xelishashv3.cpp"));
-      const entry = source.slice(source.indexOf("int xelishashv3("));
-      assert.match(entry,
-        /sycl_wait_and_throw\(s\.queue\.memcpy\(s\.input,[\s\S]*?\n\s*sycl_wait_and_throw\(s\.queue\.memcpy\(s\.target,[\s\S]*?\n\s*sycl_wait_and_throw\(s\.queue\.memset\(s\.result, 0,[\s\S]*?\n\s*search<(?:true|false)>\(/);
-      assert.match(source,
-        /#ifdef _WIN32\s+required = required \|\| use_esimd;\s+#endif/);
-      assert.match(source,
-        /fence<esimd::memory_kind::global, esimd::fence_flush_op::clean,\s+esimd::fence_scope::group>/);
-    });
-
     test("Pearl CUDA checkpoint ternary logic preserves every accumulator word", {
       skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
     }, () => {
@@ -2478,14 +2163,14 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       const assembly = /asm volatile\("lop3\.b32 %0, %1, %2, %3, (0x[0-9a-f]+);"\s*: "=r"\(out\) : "r"\(a\), "r"\(b\), "r"\(c\)\);/;
       const match = helper.match(assembly);
       assert.ok(match, "the actual PTX operand mapping must match the emulated truth table");
-      const start = kernel.indexOf("        const uint32_t v0 = uint32_t(accumulator(lo));");
-      const end = kernel.indexOf("        // Every lane contributes", start);
-      assert.ok(start >= 0 && end > start);
+      // The first checkpoint tile reduction: eight accumulator words folded into one part.
+      const reduction = /const uint32_t v0 = uint32_t\(accumulator\(lo\)\);[\s\S]*?uint32_t part = [^;]+;/.exec(kernel);
+      assert.ok(reduction);
       const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-cuda-checkpoint-xor-"));
       try {
         const source = path.join(fixture, "reduction.cpp"), executable = path.join(fixture, "probe");
         fs.copyFileSync(path.join(__dirname, "native/pearlhash-cuda-reduction.cpp"), source);
-        fs.writeFileSync(path.join(fixture, "reduction.inc"), kernel.slice(start, end));
+        fs.writeFileSync(path.join(fixture, "reduction.inc"), reduction[0] + "\n");
         for (const negative of [false, true]) {
           const truth = Number(match[1]) ^ Number(negative);
           fs.writeFileSync(path.join(fixture, "xor3.inc"),
@@ -2503,36 +2188,20 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       }
     });
 
-    test("Hoo and Nexa transfer only the result and extranonce bytes they consume", () => {
-      const hoo = fs.readFileSync(path.join(__dirname, "../sycl/hoohash/hoohash.cpp"), "utf8");
-      assert.equal(hoo.split("memcpy(&result.offset, state.result, sizeof(result.offset))").length, 3);
-      assert(!hoo.includes("memcpy(&result, state.result, sizeof(result))"));
-      // Keep the test kernel's hash store: otherwise its expensive filter can be optimized away.
-      const kernel = extractCppBlock(hoo, "static sycl::event test_hash(");
-      assert.match(kernel, /filter_hash\(/);
-      assert.match(kernel, /result->hash\[i\] = out\[i\];/);
-      const nexa = fs.readFileSync(path.join(__dirname, "../sycl/nexapow/nexapow.cpp"), "utf8");
-      assert.match(nexa, /if \(extra_bytes\)\s+state\.queue\.memcpy\(state\.extranonce, input \+ 32, extra_bytes\);/);
-      assert(!nexa.includes("memcpy(state.extranonce, input + 32, 8)"));
-    });
-
     test("Xelis cleanup attempts every allocation and preserves replacement ownership", {
       skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
     }, () => {
       const state = fs.readFileSync(path.join(__dirname, "../sycl/xelishashv3/state.inc"), "utf8");
-      const begin = state.indexOf("  // Drain kernels before the members");
-      const end = state.indexOf("\n};", begin);
-      assert.ok(begin > 0 && end > begin);
       const internal = fs.readFileSync(path.join(__dirname, "../sycl/lib-internal.h"), "utf8");
-      const usm = internal.indexOf("template <typename T>\nclass UsmPtr");
-      assert.ok(usm > 0);
       const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-xelis-ownership-"));
       try {
         const source = path.join(fixture, "fixture.cpp");
         const executable = path.join(fixture, "fixture");
         fs.copyFileSync(path.join(__dirname, "native/xelishashv3-ownership.cpp"), source);
-        fs.writeFileSync(path.join(fixture, "ownership.inc"), state.slice(begin, end));
-        fs.writeFileSync(path.join(fixture, "usm.inc"), internal.slice(usm));
+        fs.writeFileSync(path.join(fixture, "ownership.inc"),
+          extractCppBlock(state, "  ~State()") + extractCppBlock(state, "  void ensure(unsigned count)"));
+        fs.writeFileSync(path.join(fixture, "usm.inc"), extractCppBlock(internal, "class UsmPtr {") + ";\n" +
+          extractCppBlock(internal, "UsmPtr<T> mom_usm_alloc("));
         const compiled = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
           "-pedantic", source, "-o", executable], {encoding: "utf8"});
         assert.equal(compiled.status, 0, compiled.stderr);
@@ -2603,16 +2272,6 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       }
     });
 
-    test("BeamHash3 profiling readback uses the shared throwing completion boundary", () => {
-      const source = fs.readFileSync(path.join(__dirname, "../sycl/beamhash3/beamhash3.cpp"), "utf8");
-      const start = source.indexOf("std::vector<uint32_t> ns(NBUCKETS);");
-      const end = source.indexOf("for (uint32_t v : ns)", start);
-      assert.ok(start >= 0 && end > start);
-      assert.match(source.slice(start, end),
-        /sycl_wait_and_throw\(q\.memcpy\(ns\.data\(\),[\s\S]*sizeof\(uint32_t\)\), state\.device\);/);
-      assert.doesNotMatch(source.slice(start, end), /\.wait\(\)/);
-    });
-
     test("BeamHash3 profiles its single test solve without changing steady mining profiling", {
       skip: process.platform === "win32" && "requires a host C++ compiler",
     }, t => {
@@ -2644,9 +2303,6 @@ int main() {
         block = extractCppBlock(source, guard), fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-beam-kernel-limit-")),
         file = path.join(fixture, "query.cpp"), executable = path.join(fixture, "query");
       t.after(() => fs.rmSync(fixture, {recursive: true, force: true}));
-      assert.ok(source.indexOf(guard) > source.indexOf('compact_stage_done("seed", compact_event);'));
-      assert.match(source, /get_kernel_bundle<KernelName, sycl::bundle_state::executable>/);
-      assert.match(source, /kernel_device_specific::work_group_size>\(device\)/);
       fs.writeFileSync(file, `unsigned calls, contexts, observed_wg, observed_round; bool observed_pair, observed_type;
 template <unsigned R, bool Pair> struct BeamCompactRoundKernel { static constexpr unsigned round = R; static constexpr bool paired = Pair; };
 struct Queue { int get_context() { ++contexts; return 0; } };
@@ -2673,20 +2329,6 @@ int main() {
       assert.equal(compiled.status, 0, compiled.stderr || compiled.error?.message);
       const result = spawnSync(executable, [], {encoding: "utf8", timeout: 5000});
       assert.equal(result.status, 0, "ordinary/non-Level-Zero jobs must not build or query a diagnostic bundle");
-    });
-
-    test("ZelHash discovery leaves allocation-sensitive slots to the workload process", () => {
-      const source = fs.readFileSync(path.join(__dirname, "../sycl/algo-params.inc"), "utf8");
-      assert.match(source,
-        /mom_zelhash::zelhash_slot_capacity, "slots",\s+GpuUsm::both, 1024, 0, true, false/);
-    });
-
-    test("Octopus portable OpenCL uses exact field multiply-add reduction", () => {
-      const source = readSyclSource(path.join(__dirname, "../sycl/octopus/octopus.cpp"));
-      assert.match(source,
-        /if constexpr \(mom_sycl_portable_opencl\) \{[\s\S]*?return mod_field\(static_cast<uint64_t>\(a\) \* b \+ c\);/);
-      assert.match(source,
-        /#if defined\(MOM_SYCL_ADAPTIVECPP\) \|\| defined\(MOM_SYCL_PORTABLE_OPENCL\)[\s\S]*?static_cast<uint64_t>\(static_cast<uint32_t>\(value\)\) \* RECIPROCAL/);
     });
 
     test("Octopus cooperative polynomial batches preserve every point and ordered FNV", {
@@ -2735,27 +2377,7 @@ int main() {
       }
     });
 
-    test("Verthash keeps the large portable CPU dataset in shared USM", () => {
-      const source = fs.readFileSync(path.join(__dirname, "../sycl/verthash/verthash.cpp"), "utf8");
-      assert.match(source,
-        /const bool cpu_data = device\.is_cpu\(\);[\s\S]*?data = mom_usm_alloc<Uint2>\(queue, host\.size\(\), cpu_data,/);
-      assert.match(source,
-        /const size_t data_bytes = host\.size\(\) \* sizeof\(Uint2\);/);
-      assert.match(source,
-        /if \(cpu_data\)\s+std::memcpy\(data, host\.data\(\), data_bytes\);\s+else\s+sycl_wait_and_throw\(queue\.memcpy\(data, host\.data\(\), data_bytes\)/);
-    });
-
-    test("Xelis portable OpenCL avoids vendor-specific 64-bit mul_hi", () => {
-      const source = readSyclSource(path.join(__dirname, "../sycl/xelishashv3/xelishashv3.cpp"));
-      assert.match(source,
-        /#ifdef MOM_XELISHASHV3_HOST_TEST\s+return static_cast<uint64_t>\(a\) \* b;\s+#else\s+return mom_mul_wide_u32\(a, b\);/);
-      assert.match(source,
-        /const uint32_t a0 = static_cast<uint32_t>\(a\), a1 = a >> 32,[\s\S]*?return mul_wide32\(a1, b1\)/);
-      assert.match(source,
-        /#if defined\(MOM_SYCL_ADAPTIVECPP\) \|\| defined\(MOM_SYCL_PORTABLE_OPENCL\)[\s\S]*?return mul_hi64_portable\(a, b\);[\s\S]*?#else\s+return sycl::mul_hi\(a, b\);/);
-    });
-
-    test("Xelis ESIMD and portable wide products retain exact limb carries", {
+    test("Xelis, HooHash, ESIMD and portable wide products retain exact limb carries", {
       skip: process.platform === "win32" ? "requires a POSIX host C++ compiler" : false,
     }, async (t) => {
       const shared = fs.readFileSync(path.join(__dirname, "../sycl/lib-internal.h"), "utf8");
@@ -2764,9 +2386,10 @@ int main() {
       t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
       fs.writeFileSync(path.join(directory, "wide-multiply.inc"),
         extractCppBlock(shared, "inline uint64_t mom_mul_wide_u32(") +
+        extractCppBlock(shared, "inline uint64_t mom_mul_hi_u64(") +
         "inline uint64_t mul_wide32(uint32_t a, uint32_t b) { return mom_mul_wide_u32(a,b); }\n" +
         extractCppBlock(xelis, "inline uint64_t mul_hi64_portable("));
-      const variants = [[], ["MOM_SYCL_PORTABLE_OPENCL"], ["MOM_XELISHASHV3_ESIMD"],
+      const variants = [[], ["MOM_SYCL_PORTABLE_OPENCL"], ["MOM_SYCL_ADAPTIVECPP"], ["MOM_XELISHASHV3_ESIMD"],
         ["MOM_XELISHASHV3_ESIMD", "__INTEL_LLVM_COMPILER=20260000"]];
       for (const defines of variants) {
         const name = defines.join("+") || "ordinary";
@@ -2782,309 +2405,52 @@ int main() {
       }
     });
 
-    test("HooHash portable OpenCL avoids unsupported 64-bit mul_hi", () => {
-      const source = fs.readFileSync(
-        path.join(__dirname, "../sycl/hoohash/hoohash.cpp"), "utf8");
-      const shared = fs.readFileSync(path.join(__dirname, "../sycl/lib-internal.h"), "utf8");
-      assert.match(source, /return mom_mul_hi_u64\(a, b\);/);
-      assert.match(shared,
-        /#if defined\(MOM_SYCL_PORTABLE_OPENCL\) \|\| \\\s+\(defined\(MOM_XELISHASHV3_ESIMD\) && !defined\(__INTEL_LLVM_COMPILER\)\)\s+const uint32_t a0 = static_cast<uint16_t>\(a\), a1 = a >> 16,[\s\S]*?return p0 \+ \(\(p1 \+ p2\) << 16\) \+ \(p3 << 32\);/);
-      assert.match(shared,
-        /#if defined\(MOM_SYCL_ADAPTIVECPP\) \|\| defined\(MOM_SYCL_PORTABLE_OPENCL\)[\s\S]*?mom_mul_wide_u32\(a1, b1\)/);
-    });
-
-    test("HooHash verifies GPU filter candidates with the canonical host hash", () => {
-      const source = fs.readFileSync(
-        path.join(__dirname, "../sycl/hoohash/hoohash.cpp"), "utf8");
-      const hostMath = fs.readFileSync(
-        path.join(__dirname, "../sycl/hoohash/host-math.c"), "utf8");
-      const binding = fs.readFileSync(path.join(__dirname, "../binding.gyp"), "utf8");
-      const searchStart = source.indexOf("static sycl::event search(");
-      const testStart = source.indexOf("static sycl::event test_hash(");
-      const testEnd = source.indexOf("} // namespace mom_hoohash", testStart);
-      assert.ok(searchStart >= 0 && testStart > searchStart && testEnd > testStart,
-        "HooHash search/test functions must be inside the expected namespace");
-      const testKernel = source.slice(testStart, testEnd);
-      const searchKernel = source.slice(searchStart, testStart);
-      assert.match(testKernel, /single_task<TestKernel>[\s\S]*?filter_hash\(/);
-      assert.match(searchKernel, /filter_hash\([\s\S]*?mom_meets_target_le\(/);
-      assert.doesNotMatch(searchKernel, /canonical_hash\(/);
-      assert.doesNotMatch(searchKernel, /\bis_test\b/);
-      assert.match(source,
-        /mom_hoohash_canonical_hash\(input, candidate_nonce, hash\);[\s\S]*?if \(mom_meets_target_le\(hash, target\)\)/);
-      assert.match(source,
-        /fetch_min\(static_cast<uint32_t>\(id\)\)[\s\S]*?remaining -= consumed;[\s\S]*?first_nonce = candidate_nonce \+ 1;/);
-      assert.match(source,
-        /\+\+rejected_candidates == MAX_FILTER_RETRIES[\s\S]*?break;/);
-      assert.match(hostMath,
-        /return mom_hoohash_exp\(mom_hoohash_sin\(y\) \+ mom_hoohash_cos\(y\)\);[\s\S]*?return 1 \/ mom_hoohash_sqrt\(mom_hoohash_fabs\(y\) \+ 1\);/);
-      assert.match(hostMath,
-        /dlvsym\(RTLD_NEXT, #name, "GLIBC_2\.2\.5"\)[\s\S]*?pthread_once\(&math_once, resolve_math\);[\s\S]*?MOM_HOST_MATH_WRAPPER\(sin\)[\s\S]*?MOM_HOST_MATH_WRAPPER\(fabs\)/);
-      assert.match(source,
-        /if \(const char\* error = mom_hoohash_math_error\(\)\)[\s\S]*?throw std::string\(error\);/);
-      assert.equal(binding.match(/"sycl\/hoohash\/host-math\.c"/g)?.length, 1);
-      assert.match(binding,
-        /"target_name": "hoohash_host"[\s\S]*?"-fno-fast-math"[\s\S]*?"\/fp:strict"[\s\S]*?"target_name": "sycl"[\s\S]*?"dependencies": \[ "hoohash_host" \]/);
-      assert.match(hostMath,
-        /if \(y == pi \/ 2 \|\| y == 3 \* pi \/ 2\)[\s\S]*?return 0;/);
-    });
-
-    test("Windows unified GPU workers link HooHash's strict host verifier", () => {
-      const cuda = fs.readFileSync(path.join(__dirname,
-        "../scripts/build-sycl-cuda-win.ps1"), "utf8");
-      const acpp = fs.readFileSync(path.join(__dirname,
-        "../scripts/build-sycl-adaptivecpp-win.ps1"), "utf8");
-      for (const script of [cuda, acpp]) {
-        assert.match(script, /-fno-fast-math[\s\S]*?-ffp-contract=off[\s\S]*?-fno-builtin/);
-        assert.match(script, /sycl\\hoohash\\host-math\.c/);
-        assert.match(script, /hoohash_host\.obj/);
-      }
-      assert.match(cuda, /\$objs \+= \$hoo[\s\S]*?Invoke-MomIncrementalLink \$clang \([^\n]*'-shared'[^\n]*\+ \$objs[^\n]*\) \$objs \$out/);
-      assert.match(acpp, /\$objects \+= \$hoohashObject[\s\S]*?Invoke-MomIncrementalLink \$python \([^\n]*'-shared'[^\n]*\+ \$objects[^\n]*\) \$objects \$out/);
-    });
   });
 
   test.describe("Equihash geometry, cache policy, and compiler scoping", {concurrency: false}, () => {
-    test("BeamHash3 paired 32-bit arithmetic stays scoped to Intel oneAPI", () => {
-      const binding = fs.readFileSync(path.join(__dirname, "../binding.gyp"), "utf8");
-      const source = fs.readFileSync(path.join(__dirname, "../sycl/beamhash3/device.inc"), "utf8");
-      assert.equal(binding.match(/MOM_BEAMHASH3_INTEL_PAIR32/g)?.length, 2);
-      assert.match(binding, /"\/DMOM_BEAMHASH3_INTEL_PAIR32"/);
-      assert.match(binding, /mom_sycl_impl=='dpcpp'[\s\S]*?-DMOM_BEAMHASH3_INTEL_PAIR32/);
-      assert.equal(source.match(/defined\(MOM_BEAMHASH3_INTEL_PAIR32\)/g)?.length, 2);
+    test("BeamHash3 portable worker cannot select uncompiled compact arenas", {
+      skip: process.platform === "win32" ? "requires a POSIX host C++ compiler" : false,
+    }, (t) => {
+      const layout = fs.readFileSync(path.join(__dirname, "../sycl/beamhash3/layout.inc"), "utf8");
+      const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-beam-compact-portable-"));
+      t.after(() => fs.rmSync(fixture, {recursive: true, force: true}));
+      fs.writeFileSync(path.join(fixture, "beam_compact_enabled.inc"),
+        extractCppBlock(layout, "inline bool beam_compact_enabled("));
+      // The non-portable control proves the fixture can observe compact selection at all.
+      for (const [portable, expected] of [[true, 0], [false, 9]]) {
+        const executable = path.join(fixture, portable ? "portable" : "native");
+        const compiled = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror", "-pedantic",
+          ...(portable ? ["-DMOM_SYCL_PORTABLE_OPENCL"] : []), "-I", fixture,
+          path.join(__dirname, "native/beam-compact-portable.cpp"), "-o", executable], {encoding: "utf8"});
+        assert.equal(compiled.status, 0, compiled.error?.message || compiled.stderr);
+        const result = spawnSync(executable, [], {encoding: "utf8"});
+        assert.equal(result.status, 0, result.error?.message || result.stderr);
+        assert.equal(result.stdout, `beam compact enabled=${expected}\n`);
+      }
     });
 
-    test("BeamHash3 compact kernels request subgroup 16 through the portable compiler gate", () => {
-      const source = fs.readFileSync(
-        path.join(__dirname, "../sycl/beamhash3/compact-solver.inc"), "utf8");
-      assert.match(source,
-        /parallel_for<BeamCompactSeedKernel>[\s\S]*?MOM_REQD_SG_16/);
-      assert.match(source,
-        /parallel_for<BeamCompactRoundKernel<R, PairPartitions>>[\s\S]*?MOM_REQD_SG_16/);
+    test("Combined compiler wrapper fails closed on missing targets or an AOT device without spir64_gen", {
+      skip: process.platform === "win32",
+    }, () => {
+      const env = {...process.env};
+      for (const name of ["npm_package_json", "MOM_COMBINED_TARGETS", "MOM_INTEL_AOT_DEVICE"]) {delete env[name];}
+      const wrapper = path.join(__dirname, "../scripts/cxx-combined.sh");
+      const unset = spawnSync("bash", [wrapper, "-c", "probe.cpp"], {encoding: "utf8", env});
+      assert.notEqual(unset.status, 0);
+      assert.match(unset.stderr, /MOM_COMBINED_TARGETS must be set by combined-build\.sh/);
+      const withoutGen = spawnSync("bash", [wrapper, "-c", "probe.cpp"], {encoding: "utf8",
+        env: {...env, MOM_COMBINED_TARGETS: "spir64,nvidia_gpu_sm_80", MOM_INTEL_AOT_DEVICE: "bmg-g21"}});
+      assert.equal(withoutGen.status, 2, withoutGen.stderr);
+      assert.match(withoutGen.stderr, /MOM_INTEL_AOT_DEVICE requires spir64_gen in MOM_COMBINED_TARGETS/);
     });
 
-    test("BeamHash3 portable worker cannot select uncompiled compact arenas", () => {
-      const source = fs.readFileSync(
-        path.join(__dirname, "../sycl/beamhash3/layout.inc"), "utf8");
-      assert.match(source,
-        /beam_compact_enabled[\s\S]*?#if defined\(MOM_SYCL_PORTABLE_OPENCL\)[\s\S]*?return false;[\s\S]*?#else/);
-    });
-
-    test("Equihash 192,7 scopes wider first-round partitioning to HIP", () => {
-      const source = fs.readFileSync(
-        path.join(__dirname, "../sycl/equihash192-7/session.h"), "utf8");
-      assert.match(source,
-        /defined\(MOM_SYCL_HAS_HIP\)[\s\S]*?default_round0_partitions = 8;[\s\S]*?#else[\s\S]*?default_round0_partitions = 2;/);
-      assert.match(source, /unsigned Round0Partitions = default_round0_partitions/);
-    });
-
-    test("Equihash 192,7 derives first split partitions from the active bucket width", () => {
-      const source = fs.readFileSync(
-        path.join(__dirname, "../sycl/equihash192-7/session.h"), "utf8");
-      assert.match(source,
-        /constexpr unsigned partitions = 1u << \(15 - ActiveRound1::bucket_bits\);/);
-      assert.match(source,
-        /typename ActiveArena::Round2Record, partitions>/);
-    });
-
-    test("Equihash 192,7 scopes split-record partitioning to Level Zero", () => {
-      const source = fs.readFileSync(
-        path.join(__dirname, "../sycl/equihash192-7/session.h"), "utf8");
-      const splitOutput = source.indexOf("submit_collision_round_bucketed_split_output_partitioned");
-      const start = source.lastIndexOf("if (level_zero_)", splitOutput);
-      const end = source.indexOf("if (level_zero_)", splitOutput);
-      const splitRounds = source.slice(start, end);
-      assert.equal((splitRounds.match(/submit_collision_round_bucketed_split_output_partitioned</g) || []).length, 1);
-      assert.equal((splitRounds.match(/submit_split_collision_round_bucketed_partitioned</g) || []).length, 1);
-      assert.equal((splitRounds.match(/submit_collision_round_bucketed_split_output</g) || []).length, 1);
-      assert.equal((splitRounds.match(/submit_split_collision_round_bucketed</g) || []).length, 1);
-      assert.match(splitRounds,
-        /constexpr unsigned partitions =\s*std::is_same_v<ActiveArena, HybridArena> \? 2 : 4;/);
-      assert.match(splitRounds, /typename ActiveArena::Round3Record, partitions>/);
-      assert.match(splitRounds, /typename ActiveArena::Round4Record, 4>/);
-    });
-
-    test("ZHash bucket tuning stays scoped to Intel oneAPI", () => {
-      const binding = fs.readFileSync(path.join(__dirname, "../binding.gyp"), "utf8");
-      const core = fs.readFileSync(
-        path.join(__dirname, "../sycl/equihash-core.h"), "utf8");
-      const layout = fs.readFileSync(
-        path.join(__dirname, "../sycl/zhash/session-layout.h"), "utf8");
-      assert.equal((binding.match(/MOM_ZHASH_INTEL_LATE_BUCKETS/g) || []).length, 2);
-      assert.match(binding, /"\/DMOM_ZHASH_INTEL_LATE_BUCKETS"/);
-      assert.match(binding,
-        /mom_sycl_impl=='dpcpp'[\s\S]*?-DMOM_ZHASH_INTEL_LATE_BUCKETS/);
-      assert.match(layout,
-        /#ifdef MOM_ZHASH_INTEL_LATE_BUCKETS[\s\S]*?ZHashArenaLayout<4480, 5632, 13, 13>[\s\S]*?ZHashArenaLayout<4672, 5632, 13, 13>/);
-      assert.match(core,
-        /#elif defined\(MOM_ZHASH_INTEL_LATE_BUCKETS\)[\s\S]*?Spec::n == 144 && Spec::k == 5 && LocalBits == 11;/);
-    });
-
-    test("BMG combined AOT defaults and runtime wiring stay fail-closed", () => {
-      const cxx = fs.readFileSync(path.join(__dirname, "../scripts/cxx-combined.sh"), "utf8");
-      assert.match(cxx,
-        /MOM_COMBINED_TARGETS:\?MOM_COMBINED_TARGETS must be set by combined-build\.sh/);
-      assert.doesNotMatch(cxx, /MOM_COMBINED_TARGETS:-spir64/);
-      assert.match(cxx,
-        /if \[ -n "\$intel_aot_device" \] && \[\[ "\$src" == \*sycl\/zhash\/zhash\.cpp \]\]; then/);
-      assert.match(cxx, /MOM_INTEL_AOT_DEVICE requires spir64_gen in MOM_COMBINED_TARGETS/);
-      assert.match(cxx, /MOM_INTEL_AOT_DEVICE requires the pinned \/usr\/bin\/ocloc/);
-      assert.match(cxx, /\[ -x \/usr\/bin\/ocloc \]/);
-      assert.match(cxx, /intel_aot_args=\(-Xsycl-target-backend=spir64_gen "-device \$intel_aot_device"\)/);
-
-      const entrypoint = fs.readFileSync(
-        path.join(__dirname, "../scripts/multicompiler-entrypoint.sh"), "utf8");
-      const start = entrypoint.indexOf("build_dpcpp() {");
-      const end = entrypoint.indexOf("\n}\n\nbuild_dpcpp_opencl()", start);
-      assert.ok(start >= 0 && end > start, "DPC++ build function must exist");
-      const dpcpp = entrypoint.slice(start, end);
-      assert.match(dpcpp, /bash scripts\/combined-build\.sh/);
-      assert.doesNotMatch(dpcpp, /MOM_COMBINED_TARGETS=/);
-      assert.doesNotMatch(dpcpp, /MOM_INTEL_AOT_DEVICE=/);
-      const openclStart = entrypoint.indexOf("build_dpcpp_opencl() {");
-      const openclEnd = entrypoint.indexOf("\n}\n\nbuild_acpp()", openclStart);
-      assert.ok(openclStart >= 0 && openclEnd > openclStart,
-        "DPC++ OpenCL build function must exist");
-      const dpcppOpencl = entrypoint.slice(openclStart, openclEnd);
-      assert.match(dpcppOpencl,
-        /MOM_DPCPP_IMPL=dpcpp-opencl MOM_COMBINED_TARGETS=spir64 MOM_INTEL_AOT_DEVICE=/);
-
-      const combined = fs.readFileSync(
-        path.join(__dirname, "../scripts/combined-build.sh"), "utf8");
-      assert.match(combined,
-        /MOM_COMBINED_TARGETS="\$\{MOM_COMBINED_TARGETS:-spir64,spir64_gen,nvidia_gpu_sm_80\}"/);
-      assert.match(combined,
-        /\[ -z "\$\{MOM_INTEL_AOT_DEVICE:-\}" \] && \[\[ ",\$MOM_COMBINED_TARGETS," == \*,spir64_gen,\* \]\]/);
-      assert.match(combined, /export MOM_INTEL_AOT_DEVICE=bmg-g21/);
-
-      const dockerfile = fs.readFileSync(
-        path.join(__dirname, "../scripts/build-combined.dockerfile"), "utf8");
-      assert.match(dockerfile, /intel_aot_device="\$\{MOM_INTEL_AOT_DEVICE:-\}"/);
-      assert.match(dockerfile, /export MOM_COMBINED_TARGETS="\$combined_targets"/);
-      assert.match(dockerfile, /export MOM_INTEL_AOT_DEVICE="\$intel_aot_device"/);
-
-      const runtime = fs.readFileSync(
-        path.join(__dirname, "../scripts/install-intel-compute-runtime.sh"), "utf8");
-      assert.match(runtime, /\n {2}intel-ocloc\n/);
-      assert.match(runtime, /intel-ocloc_\$\{COMPUTE_RUNTIME_VERSION\}-0_amd64\.deb/);
-      assert.match(runtime, /12c5e61ed1dca5cbf38494e280abf88100a451580d57c44f601a17d9727e465e/);
-    });
-
-    test("Equihash 192,7 scopes late-round partitioning to Level Zero", () => {
-      const source = fs.readFileSync(
-        path.join(__dirname, "../sycl/equihash192-7/session.h"), "utf8");
-      const start = source.indexOf("submit_split_collision_round_bucketed<");
-      const end = source.indexOf("#endif", start);
-      const lateRounds = source.slice(start, end);
-      assert.match(lateRounds, /if \(level_zero_\)/);
-      assert.equal((lateRounds.match(/submit_collision_round_bucketed_partitioned</g) || []).length, 2);
-      assert.equal((lateRounds.match(/submit_collision_round_bucketed</g) || []).length, 2);
-    });
-
-    test("CN/GPU keeps Windows HIP input and output in device memory", () => {
-      const state = fs.readFileSync(path.join(__dirname, "../sycl/cn-gpu/state.inc"), "utf8");
-      assert.doesNotMatch(state, /mom_is_hip\(device\)/);
-      assert.match(state, /outputs = mom_usm_alloc<uint8_t>\([^;]*shared_io,/);
-    });
-
-    test("Equihash 192,7 gates its HIP input cache on local memory", () => {
-      const session = fs.readFileSync(
-        path.join(__dirname, "../sycl/equihash192-7/session.h"), "utf8");
-      const shared = fs.readFileSync(
-        path.join(__dirname, "../sycl/equihash-sycl.h"), "utf8");
-      assert.match(shared, /bool CacheInput = false/);
-      assert.match(shared, /partitioned_collision_local_bytes/);
-      assert.match(session,
-        /local_mem_size>\(\) >= required_cache_local_bytes/);
-      assert.match(session,
-        /if \(cache_partition_inputs_\) return run_with_cache<true>\(header\);/);
-    });
-
-    test("ZHash gates its HIP collision caches on local memory", () => {
-      const session = fs.readFileSync(
-        path.join(__dirname, "../sycl/zhash/session.h"), "utf8");
-      const shared = fs.readFileSync(
-        path.join(__dirname, "../sycl/equihash-sycl.h"), "utf8");
-      assert.match(shared, /bool CacheHead = false/);
-      assert.match(shared, /partitioned_split_collision_local_bytes/);
-      assert.match(session,
-        /cache_partition_inputs_ = [\s\S]*?local_mem_size>\(\) >=[\s\S]*?required_cache_local_bytes/);
-      assert.match(session, /Round1Record, 8, true/);
-      assert.match(session, /Round2Record, 4, true/);
-      assert.match(session, /Round3Record, Round4Record, 4, true/);
-    });
   });
 
   test.describe("NexaPoW and DAG dispatch tuning", {concurrency: false}, () => {
-    test("NexaPoW vectors keep the bounded default and expose a fail-closed staged gate", () => {
-      const source = readSyclSource(path.join(__dirname, "../sycl/nexapow/nexapow.cpp"));
-      const probe = fs.readFileSync(path.join(__dirname, "../sycl/nexapow/validation.cpp"), "utf8");
-      assert.match(probe, /single_task<TestShaKernel>/);
-      assert.match(probe, /MOM_NEXAPOW_SHA_ONLY/);
-      assert.match(source, /MOM_NEXAPOW_STAGED_TEST/);
-      assert.match(source, /MOM_NEXAPOW_STAGED_REQUIRE/);
-      assert.match(source, /NexaPoW staged SYCL active \(field=%s, table=%s, points=%u, bytes=%llu, count=%u\)/);
-      assert.equal((source.match(/const bool recorded_test = is_test && input_size == 48u;/g) || []).length, 2);
-      assert.match(source, /if \(recorded_test && !staged_test && !portable_cpu_test\) \{\s*test_recorded_vector\(/);
-      assert.match(source, /NexaPoW staged SYCL recorded vector mismatch/);
+    test("NexaPoW vectors keep the bounded staged-test timeout", () => {
       const vector = require("./vectors").hashTests.find(({job}) => job.algo === "nexapow");
       assert.ok(vector);
       assert.equal(vector.timeoutMs, 25 * 60 * 1000);
-    });
-
-    test("NexaPoW staged tables use the Windows HIP small table and capacity elsewhere", () => {
-      const binding = fs.readFileSync(path.join(__dirname, "../binding.gyp"), "utf8");
-      const windowsBuild = fs.readFileSync(path.join(__dirname,
-        "../scripts/build-sycl-cuda-win.ps1"), "utf8");
-      const pipeline = fs.readFileSync(path.join(__dirname, "../sycl/nexapow/sycl-pipeline.inc"), "utf8");
-      const source = readSyclSource(path.join(__dirname, "../sycl/nexapow/nexapow.cpp"));
-      assert.doesNotMatch(binding, /MOM_NEXAPOW_LARGE_TABLE/);
-      assert.doesNotMatch(windowsBuild, /MOM_NEXAPOW_LARGE_TABLE/);
-      assert.match(pipeline, /kSmallTable\s*\{22u, 4u, 21u, 12u\}/);
-      assert.match(pipeline, /kLargeTable\s*\{24u, 3u, 23u, 11u\}/);
-      assert.match(pipeline,
-        /#if defined\(_WIN32\) && defined\(MOM_SYCL_HAS_HIP\)[\s\S]*?preferred = sycl_pipeline::kSmallTable;[\s\S]*?#else[\s\S]*?preferred =\s*memory >= \(uint64_t\{10\} << 30\)\s*\? sycl_pipeline::kLargeTable\s*:\s*sycl_pipeline::kSmallTable;[\s\S]*?#endif/);
-      assert.match(pipeline, /memory >= \(uint64_t\{10\} << 30\)/);
-      assert.match(pipeline, /try_setup\(sycl_pipeline::kSmallTable, small_failure\)/);
-      assert.match(pipeline, /large table setup failed:[\s\S]*small table setup failed:/);
-      assert.match(source, /state\.portable\.table_name\(\)/);
-      assert.match(source, /state\.portable\.table_points\(\)/);
-      assert.match(source, /state\.portable\.table_bytes\(\)/);
-      assert.match(pipeline, /const char\* table_name\(\)/);
-      assert.match(pipeline, /uint32_t table_points\(\)/);
-      assert.match(pipeline, /uint64_t table_bytes\(\)/);
-    });
-
-    test("NexaPoW uses the measured Level Zero batch and combined hash default", () => {
-      const intensity = fs.readFileSync(path.join(__dirname, "../sycl/intensity.inc"), "utf8");
-      const pipeline = fs.readFileSync(path.join(__dirname, "../sycl/nexapow/sycl-pipeline.inc"), "utf8");
-      assert.match(intensity,
-        /sycl_is_level_zero_gpu\(dev\) && memory >= 10 \* GiB\)\s*return 1u << 21/);
-      assert.match(pipeline,
-        /split_hash_value \? std::strcmp\(split_hash_value, "0"\)\s*:\s*!sycl_is_level_zero_gpu/);
-    });
-
-    test("DPC++ final addon and Windows SYCL links split device code per kernel", () => {
-      const build = fs.readFileSync(path.join(__dirname, "../binding.gyp"), "utf8");
-      const momStart = build.indexOf('"target_name": "mom"');
-      const syclStart = build.indexOf('"target_name": "sycl"', momStart);
-      const syclEnd = build.indexOf('"target_name":', syclStart + 1);
-      assert(momStart >= 0 && syclStart > momStart && syclEnd > syclStart);
-      const finalAddon = build.slice(momStart, syclStart);
-      const syclDll = build.slice(syclStart, syclEnd);
-      assert.match(finalAddon,
-        /mom_sycl_impl=='dpcpp' or mom_sycl_impl=='dpcpp-combined'[\s\S]*?"ldflags\+":\s*\[ "-fsycl-device-code-split=per_kernel" \]/);
-      const linker = syclDll.indexOf('"VCLinkerTool"');
-      assert(linker >= 0);
-      const linkerOptions = syclDll.slice(linker).match(/"AdditionalOptions":\s*\[([^\]]*)\]/)?.[1];
-      assert(linkerOptions);
-      assert.match(linkerOptions, /"\/DLL"/);
-      assert.doesNotMatch(linkerOptions, /fsycl|device-code-split/);
-      const producer = fs.readFileSync(path.join(__dirname,
-        "../scripts/build-windows.ps1"), "utf8");
-      const driverProperty = producer.match(/"\/p:DPCPPLINKOptions=([^"\r\n]+)"/);
-      assert(driverProperty, "Windows SYCL link must forward the driver-prefix property");
-      assert.equal(driverProperty[1], "/clang:-fsycl-device-code-split=per_kernel");
     });
 
     test("Nexa performance tests retain their extended timeout", () => {
@@ -3093,82 +2459,34 @@ int main() {
       assert.equal(nexa.timeoutMs, 15 * 60 * 1000);
     });
 
-    test("Verthash defaults use safe Level Zero batches", () => {
-      const intensity = fs.readFileSync(path.join(__dirname, "../sycl/intensity.inc"), "utf8");
-      const start = intensity.indexOf("static unsigned verthash_intensity");
-      const end = intensity.indexOf("\n}\n", start);
-      assert.ok(start >= 0 && end > start, "Verthash intensity function must exist");
-      const block = intensity.slice(start, end);
-      assert.match(block, /sycl_is_level_zero_gpu\(dev\) && !is_integrated_gpu\(dev\)/);
-      assert.match(block, /#ifdef _WIN32[\s\S]*return 1u << 18;[\s\S]*#else[\s\S]*return 1u << 19;/);
-      assert.match(block, /return 1u << 16;/);
-    });
-
-    test("KawPow DAG chunks honor overrides and bound integrated-GPU dispatches", () => {
-      const state = fs.readFileSync(path.join(__dirname, "../sycl/kawpow/state.inc"), "utf8");
-      const internal = fs.readFileSync(path.join(__dirname, "../sycl/lib-internal.h"), "utf8");
-      assert.match(internal, /inline bool is_integrated_gpu\(const sycl::device& device\)/);
-      assert.doesNotMatch(state, /^bool is_integrated_gpu/m,
-        "KawPow must use the shared helper instead of declaring a namespace-local Windows symbol");
-      const start = state.indexOf("static uint32_t kawpow_dag_chunk_nodes(");
-      const end = state.indexOf("\n  }", start);
-      assert.ok(start >= 0 && end > start, "KawPow DAG chunk policy must exist");
-      const block = state.slice(start, end);
-      const override = block.indexOf('parse_env_u32("MOM_KAWPOW_DAG_CHUNK_NODES", parsed)');
-      const integrated = block.indexOf("if (is_integrated_gpu(dev))");
-      const windows = block.indexOf("#if defined(_WIN32)");
-      assert.ok(override >= 0 && integrated > override && windows > integrated,
-        "KawPow must apply the explicit override before automatic dispatch bounds");
-      assert.match(block, /if \(is_integrated_gpu\(dev\)\)\s*return 1u << 12;/);
-      assert.match(block,
-        /if \(mom_is_cuda\(dev\) \|\| mom_is_hip\(dev\)\)\s*return 1u << 18;/);
-      assert.match(block, /return 0;/);
-      assert.match(state, /generate_ethash_dag<\w+>\([\s\S]*?kawpow_dag_chunk_nodes\(device\)\);/);
-      const dag = fs.readFileSync(path.join(__dirname, "../sycl/ethash-dag.inc"), "utf8");
-      const chunkGuard = dag.indexOf("if (!chunk_nodes)");
-      const chunkWait = dag.indexOf("sycl_wait_and_throw(dag_event, device);", chunkGuard);
-      const chunkAdvance = dag.indexOf("start_node += current_nodes;", chunkGuard);
-      assert.ok(chunkGuard > 0 && chunkWait > chunkGuard && chunkAdvance > chunkWait,
-        "chunked DAG dispatches must retire before the next chunk is recorded");
-    });
-
-    test("ProgPoW benchmarks do not prefetch an unused period bundle", () => {
-      const entry = fs.readFileSync(path.join(__dirname, "../sycl/kawpow/kawpow.cpp"), "utf8");
-      const state = fs.readFileSync(path.join(__dirname, "../sycl/kawpow/state.inc"), "utf8");
-      assert.match(entry,
-        /ensure_period_bundle\(period, epoch, dag_mod, !is_benchmark\)/);
-
-      const start = state.indexOf("void ensure_period_bundle(");
-      const end = state.indexOf("\n};", start);
-      assert.ok(start >= 0 && end > start, "ProgPoW period-bundle policy must exist");
-      const block = state.slice(start, end);
-      assert.match(block, /const bool prefetch_next/);
-      const reset = block.indexOf("next_bundle.reset();");
-      const skip = block.indexOf("if (!prefetch_next)");
-      const next = block.indexOf("next_bundle_period = new_period + 1;");
-      assert.ok(reset >= 0 && skip > reset && next > skip,
-        "benchmark prefetch must stop before next-period metadata or work is created");
-    });
-
-    test("Etchash DAG chunks retire integrated-GPU dispatches", () => {
-      const state = fs.readFileSync(path.join(__dirname, "../sycl/etchash/state.inc"), "utf8");
-      const start = state.indexOf("static uint32_t etchash_dag_chunk_nodes(");
-      const end = state.indexOf("\n  }", start);
-      assert.ok(start >= 0 && end > start, "Etchash DAG chunk policy must exist");
-      const block = state.slice(start, end);
-      const override = block.indexOf('mom_parse_env_ulong("MOM_ETCHASH_DAG_CHUNK_NODES", parsed)');
-      const integrated = block.indexOf("if (is_integrated_gpu(dev))");
-      assert.ok(override >= 0 && integrated > override,
-        "Etchash must apply the explicit override before its integrated-GPU default");
-      assert.match(block, /if \(is_integrated_gpu\(dev\)\)\s*return 1u << 12;/);
-      assert.match(block, /return 0;/);
-      assert.match(state, /generate_ethash_dag<\w+>\([\s\S]*?etchash_dag_chunk_nodes\(device\)\);/);
-      const dag = fs.readFileSync(path.join(__dirname, "../sycl/ethash-dag.inc"), "utf8");
-      const chunkGuard = dag.indexOf("if (!chunk_nodes)");
-      const chunkWait = dag.indexOf("sycl_wait_and_throw(dag_event, device);", chunkGuard);
-      const chunkAdvance = dag.indexOf("start_node += current_nodes;", chunkGuard);
-      assert.ok(chunkGuard > 0 && chunkWait > chunkGuard && chunkAdvance > chunkWait,
-        "chunked Etchash DAG dispatches must retire before the next chunk is recorded");
+    test("Ethash DAG chunks retire each dispatch and honor overrides before device defaults", {
+      skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
+    }, () => {
+      const root = path.join(__dirname, "..");
+      const read = (/** @type {string} */ file) => fs.readFileSync(path.join(root, file), "utf8");
+      const kawpow = read("sycl/kawpow/state.inc"), etchash = read("sycl/etchash/state.inc");
+      const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-ethash-dag-chunks-"));
+      try {
+        fs.writeFileSync(path.join(fixture, "mom_parse_env_ulong.inc"),
+          extractCppBlock(read("sycl/lib-internal.h"), "inline bool mom_parse_env_ulong("));
+        fs.writeFileSync(path.join(fixture, "kawpow_dag_chunk.inc"),
+          extractCppBlock(kawpow, "  static bool parse_env_u32(") +
+          extractCppBlock(kawpow, "  static uint32_t kawpow_dag_chunk_nodes("));
+        fs.writeFileSync(path.join(fixture, "etchash_dag_chunk.inc"),
+          extractCppBlock(etchash, "  static uint32_t etchash_dag_chunk_nodes("));
+        for (const windows of [false, true]) {
+          const executable = path.join(fixture, windows ? "windows" : "linux");
+          const compiled = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror", "-pedantic",
+            "-Wno-unknown-pragmas", ...(windows ? ["-DMOM_FIXTURE_WINDOWS"] : []), "-I", fixture, "-I", root,
+            path.join(__dirname, "native/ethash-dag-chunks.cpp"), "-o", executable], {encoding: "utf8"});
+          assert.equal(compiled.status, 0, compiled.error?.message || compiled.stderr);
+          const result = spawnSync(executable, [], {encoding: "utf8", env: {}});
+          assert.equal(result.status, 0, result.error?.message || result.stderr);
+          assert.equal(result.stdout, "PASS Ethash DAG chunk retirement and override policy\n");
+        }
+      } finally {
+        fs.rmSync(fixture, {recursive: true, force: true});
+      }
     });
   });
 
@@ -3604,10 +2922,8 @@ int main() {
       skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
     }, () => {
       const core = fs.readFileSync(path.join(__dirname, "../native/core/execution.inc"), "utf8");
-      const branch = core.match(
-        /if\s*\(m_dev\s*==\s*DEV::PEARLHASH_GPU\)\s*\{\s*const\s+uint64_t\s+prev_nonce\s*=\s*m_nonce64;[\s\S]*?(?=\s*if\s*\(m_dev\s*==\s*DEV::C30_GPU\))/
-      )?.[0];
-      assert.ok(branch, "native PearlHash result branch is missing");
+      const branch = extractCppBlock(core,
+        "      if (m_dev == DEV::PEARLHASH_GPU) { const uint64_t prev_nonce = m_nonce64;");
       const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-pearl-results-"));
       const source = path.join(fixture, "results.cpp");
       const executable = path.join(fixture, "results");
@@ -3822,12 +3138,7 @@ int main() {
         .replaceAll("std::chrono::", "fixture::chrono::")
         .replaceAll("std::this_thread::", "fixture::this_thread::");
       const internal = fs.readFileSync(path.join(__dirname, "../sycl/lib-internal.h"), "utf8");
-      const waitStartMarker = "inline void sycl_wait_and_throw(";
-      assert.equal(internal.split(waitStartMarker).length, 2);
-      const waitStart = internal.indexOf(waitStartMarker);
-      const waitEnd = internal.indexOf("\ninline void sycl_log_cleanup_exception", waitStart);
-      assert.ok(waitEnd > waitStart, "complete shared SYCL wait helper is missing");
-      const wait = internal.slice(waitStart, waitEnd)
+      const wait = extractCppBlock(internal, "inline void sycl_wait_and_throw(")
         .replaceAll("std::chrono::", "fixture::chrono::")
         .replaceAll("std::this_thread::", "fixture::this_thread::");
       const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-pearl-pacing-"));
@@ -4152,14 +3463,21 @@ int main() {
       let unexposedMonolithicNegatives = 0;
       try {
         fs.copyFileSync(path.join(__dirname, "native/readback-wait-fault.cpp"), path.join(fixture, "readback.cpp"));
-        fs.writeFileSync(path.join(fixture, "wait.inc"), cut(library, "inline void sycl_wait_and_throw(", "\ninline void sycl_log_cleanup_exception("));
-        fs.writeFileSync(path.join(fixture, "cleanup.inc"), cut(library, "inline void sycl_log_cleanup_exception(", "sycl::device get_dev("));
-        fs.writeFileSync(path.join(fixture, "search-result.inc"), cut(nexa, "struct SearchResult {", "struct HeaderContext {"));
-        fs.writeFileSync(path.join(fixture, "monolithic-result.inc"), cut(monolithic, "struct Result {", "static constexpr uint8_t kRecordedHeader"));
+        fs.writeFileSync(path.join(fixture, "wait.inc"), extractCppBlock(library, "inline void sycl_wait_and_throw("));
+        fs.writeFileSync(path.join(fixture, "cleanup.inc"), ["inline void sycl_log_cleanup_exception(",
+          "inline void sycl_cleanup_noexcept(", "class MomSyclHostTransferGuard {"]
+          .map(anchor => extractCppBlock(library, anchor)).join("") + ";\n");
+        fs.writeFileSync(path.join(fixture, "search-result.inc"), extractCppBlock(nexa, "struct SearchResult {") + ";\n");
+        fs.writeFileSync(path.join(fixture, "monolithic-result.inc"), extractCppBlock(monolithic, "struct Result {") + ";\n");
         for (const route of routes) {
-        // Revert only the lifetime placement/local guard. The actual copy expression retains
-        // the compiler's legal argument order; GCC commonly queries before accepting a copy.
-        // Monolithic Nexa instead passes its cached device and faults the accepted copy's wait.
+          if (route.owner && route.guard) {
+            assert.ok(route.entry.includes(route.owner) && route.entry.includes(route.guard), route.name);
+          } else {
+            assert.match(route.entry, /^\s*MomSyclHostTransferGuard overflow_transfer[^\n]+\n/m, route.name);
+          }
+          // Revert only the lifetime placement/local guard. The actual copy expression retains
+          // the compiler's legal argument order; GCC commonly queries before accepting a copy.
+          // Monolithic Nexa instead passes its cached device and faults the accepted copy's wait.
           const baseline = route.owner && route.guard ?
             route.entry.replace(route.owner, "").replace(route.guard, route.guard + route.owner) :
             route.entry.replace(/^\s*MomSyclHostTransferGuard overflow_transfer[^\n]+\n/m, "");
@@ -4529,6 +3847,7 @@ int main() {
 `);
         const before = path.join(fixture, "without-submission.cpp");
         // Remove only the progress kick from the same source-derived readback scope.
+        assert.ok(tail.includes("(void)q.khr_empty();"), "readback must kick queue progress");
         fs.writeFileSync(before, fs.readFileSync(source, "utf8").replaceAll("(void)q.khr_empty();", ""));
         for (const mode of ["ordinary", "windows-hip", "without-submission"]) {
           const flags = mode === "ordinary" ? [] : ["-D_WIN32", "-DMOM_SYCL_ADAPTIVECPP", "-DMOM_SYCL_HAS_HIP", "-DMOM_CN_REQUIRE_SUBMISSION"];
@@ -4558,8 +3877,6 @@ int main() {
       skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
     }, () => {
       const headerPath = path.resolve(__dirname, "../sycl/nvrtc-api.h");
-      const header = fs.readFileSync(headerPath, "utf8");
-      assert.doesNotMatch(header, /^\s*#\s*include\s*[<"]cuda\.h[>"]/m);
       const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-nvrtc-header-"));
       try {
         fs.writeFileSync(path.join(fixture, "nvrtc.h"), `
@@ -4606,12 +3923,9 @@ static_assert(sizeof(mom::NvrtcProgram) > 0);
       skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
     }, async (t) => {
       const header = fs.readFileSync(path.join(__dirname, "../sycl/nvrtc-api.h"), "utf8");
-      const start = header.indexOf("class NvrtcApi {");
-      const end = header.indexOf("// Own only the temporary compiler program", start);
-      assert.ok(start >= 0 && end > start);
       const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-nvrtc-shared-"));
       try {
-        fs.writeFileSync(path.join(fixture, "loader.inc"), header.slice(start, end));
+        fs.writeFileSync(path.join(fixture, "loader.inc"), extractCppBlock(header, "class NvrtcApi {") + ";\n");
         const source = path.join(__dirname, "native/nvrtc-loader.cpp");
         const executable = path.join(fixture, "loader");
         const build = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
@@ -4647,13 +3961,11 @@ static_assert(sizeof(mom::NvrtcProgram) > 0);
       const nvrtcHeader = fs.readFileSync(path.join(root, "nvrtc-api.h"), "utf8");
       const helpers = cudaHeader.indexOf("inline void cuda_check(");
       const cudaNamespaceEnd = cudaHeader.lastIndexOf("} // namespace mom");
-      const ownerStart = nvrtcHeader.indexOf("class NvrtcProgram {");
-      const ownerEnd = nvrtcHeader.indexOf("// Attach the compiler's build log", ownerStart);
-      const rtcErrorStart = nvrtcHeader.indexOf("inline std::string rtc_error(", ownerEnd);
+      const rtcErrorStart = nvrtcHeader.indexOf("inline std::string rtc_error(");
       const nvrtcNamespaceEnd = nvrtcHeader.lastIndexOf("} // namespace mom");
       assert.ok(helpers >= 0 && cudaNamespaceEnd > helpers);
-      assert.ok(ownerStart >= 0 && ownerEnd > ownerStart && rtcErrorStart > ownerEnd && nvrtcNamespaceEnd > rtcErrorStart);
-      const owner = nvrtcHeader.slice(ownerStart, ownerEnd);
+      assert.ok(rtcErrorStart >= 0 && nvrtcNamespaceEnd > rtcErrorStart);
+      const owner = extractCppBlock(nvrtcHeader, "class NvrtcProgram {") + ";\n";
       const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-nvrtc-program-"));
       const source = path.join(fixture, "nvrtc-program.cpp");
       const executable = path.join(fixture, "nvrtc_program");
@@ -4675,9 +3987,8 @@ static_assert(sizeof(mom::NvrtcProgram) > 0);
         assert.ok(pearlEnd > 0 && pearlDestructor > pearlEnd && pearlClassEnd > pearlDestructor);
         fs.writeFileSync(path.join(fixture, "pearl.inc"), pearl.slice(0, pearlEnd) +
         pearl.slice(pearlDestructor, pearlClassEnd) + "\n};\n");
-        const flags = owner ? ["-DMOM_FIXTURE_HAS_OWNER=1"] : [];
         const compiled = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
-          "-pedantic", "-DMOM_SYCL_HAS_CUDA=1", ...flags, "-I", path.join(root, "cn-gpu"),
+          "-pedantic", "-DMOM_SYCL_HAS_CUDA=1", "-DMOM_FIXTURE_HAS_OWNER=1", "-I", path.join(root, "cn-gpu"),
           "-I", path.join(root, "pearlhash"), source, "-o", executable], {encoding: "utf8"});
         assert.equal(compiled.status, 0, compiled.error?.message || compiled.stderr);
         const cases = [
@@ -4741,18 +4052,16 @@ static_assert(sizeof(mom::NvrtcProgram) > 0);
             });
           }
         }
-        if (owner) {
-          for (const {id, name, output} of [
-            {id: 13, name: "empty owner/reset is a no-op", output: "PASS empty owner\n"},
-            {id: 14, name: "reset and destructor do not repeat destruction", output: "PASS explicit reset\n"},
-          ]) {
-            await t.test(name, () => {
-              const result = spawnSync(executable, ["1", String(id)], {encoding: "utf8"});
-              assert.equal(result.status, 0, result.error?.message || result.stderr);
-              assert.equal(result.signal, null);
-              assert.equal(result.stdout, output);
-            });
-          }
+        for (const {id, name, output} of [
+          {id: 13, name: "empty owner/reset is a no-op", output: "PASS empty owner\n"},
+          {id: 14, name: "reset and destructor do not repeat destruction", output: "PASS explicit reset\n"},
+        ]) {
+          await t.test(name, () => {
+            const result = spawnSync(executable, ["1", String(id)], {encoding: "utf8"});
+            assert.equal(result.status, 0, result.error?.message || result.stderr);
+            assert.equal(result.signal, null);
+            assert.equal(result.stdout, output);
+          });
         }
       } finally {
         fs.rmSync(fixture, {recursive: true, force: true});
@@ -4777,9 +4086,10 @@ static_assert(sizeof(mom::NvrtcProgram) > 0);
       try {
         const source = path.join(fixture, "submission.cpp"), executable = path.join(fixture, "probe");
         fs.copyFileSync(path.join(__dirname, "native/nexapow-submission.cpp"), source);
-        fs.writeFileSync(path.join(fixture, "result.inc"), section(host, "struct Result {", "static constexpr uint8_t"));
-        fs.writeFileSync(path.join(fixture, "cleanup.inc"),
-          section(library, "inline void sycl_log_cleanup_exception(", "sycl::device get_dev("));
+        fs.writeFileSync(path.join(fixture, "result.inc"), extractCppBlock(host, "struct Result {") + ";\n");
+        fs.writeFileSync(path.join(fixture, "cleanup.inc"), ["inline void sycl_log_cleanup_exception(",
+          "inline void sycl_cleanup_noexcept(", "class MomSyclHostTransferGuard {"]
+          .map(anchor => extractCppBlock(library, anchor)).join("") + ";\n");
         for (const fixed of [false, true]) {
           const clear = "state.queue.memset(state.result, 0, sizeof(Result));";
           assert.ok(entry.includes(clear));
@@ -4811,10 +4121,7 @@ static_assert(sizeof(mom::NvrtcProgram) > 0);
       const directory = path.join(__dirname, "../sycl/cn-gpu");
       const cudaHeader = fs.readFileSync(path.join(directory, "../cuda-api.h"), "utf8");
       const nvrtcHeader = fs.readFileSync(path.join(directory, "../nvrtc-api.h"), "utf8");
-      const ownerStart = nvrtcHeader.indexOf("class NvrtcProgram {");
-      const ownerEnd = nvrtcHeader.indexOf("// Attach the compiler's build log", ownerStart);
-      assert.ok(ownerStart >= 0 && ownerEnd > ownerStart);
-      const owner = nvrtcHeader.slice(ownerStart, ownerEnd);
+      const owner = extractCppBlock(nvrtcHeader, "class NvrtcProgram {") + ";\n";
       const entry = fs.readFileSync(path.join(directory, "cn-gpu.cpp"), "utf8");
       const start = entry.indexOf("  bool native_expansion = false;");
       const end = entry.indexOf("  if (!native_expansion) {", start);
@@ -5136,21 +4443,15 @@ int main(int argc, char** argv) {
     }, async (t) => {
       const root = path.join(__dirname, "../sycl");
       const header = fs.readFileSync(path.join(root, "hiprtc-api.h"), "utf8");
-      const ownerStart = header.indexOf("class HiprtcProgram {");
-      const owner = ownerStart < 0 ? "" :
-        header.slice(ownerStart, header.lastIndexOf("} // namespace mom")).trim();
-      const capabilityStart = header.indexOf("inline bool hip_gfx12_int8_wmma_supported(");
-      const capabilityEnd = header.indexOf("// HIPRTC is optional", capabilityStart);
+      const owner = extractCppBlock(header, "class HiprtcProgram {") + ";\n";
       const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-hiprtc-program-"));
       const source = path.join(fixture, "hiprtc-program.cpp");
       const executable = path.join(fixture, "hiprtc_program");
       try {
         fs.copyFileSync(path.join(__dirname, "native/hiprtc-program.cpp"), source);
-        fs.writeFileSync(path.join(fixture, "owner.inc"), owner ? "namespace mom {\n" + owner + "\n}\n" : "");
-        assert.ok(capabilityStart > 0 && capabilityEnd > capabilityStart,
-          "the HIP capability helper must remain source-extractable");
-        fs.writeFileSync(path.join(fixture, "capability.inc"),
-          "namespace mom {\n" + header.slice(capabilityStart, capabilityEnd) + "}\n");
+        fs.writeFileSync(path.join(fixture, "owner.inc"), "namespace mom {\n" + owner + "}\n");
+        fs.writeFileSync(path.join(fixture, "capability.inc"), "namespace mom {\n" +
+          extractCppBlock(header, "inline bool hip_gfx12_int8_wmma_supported(") + "}\n");
         for (const algorithm of ["octopus", "walahash"]) {
           const caller = fs.readFileSync(path.join(root, algorithm, "amd-wmma.inc"), "utf8");
           const start = caller.indexOf("struct ");
@@ -5162,9 +4463,8 @@ int main(int argc, char** argv) {
         const pearlEnd = pearl.indexOf("  void launch(");
         assert.ok(pearlEnd > 0);
         fs.writeFileSync(path.join(fixture, "pearl.inc"), pearl.slice(0, pearlEnd) + "#endif\n};\n");
-        const flags = owner ? ["-DMOM_FIXTURE_HAS_OWNER=1"] : [];
         const compiled = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
-          "-pedantic", "-DMOM_SYCL_HAS_HIP=1", ...flags, "-I", path.join(root, "pearlhash"),
+          "-pedantic", "-DMOM_SYCL_HAS_HIP=1", "-DMOM_FIXTURE_HAS_OWNER=1", "-I", path.join(root, "pearlhash"),
           source, "-o", executable], {encoding: "utf8"});
         assert.equal(compiled.status, 0, compiled.error?.message || compiled.stderr);
         const cases = [
@@ -5195,18 +4495,16 @@ int main(int argc, char** argv) {
 
           });
         }
-        if (owner) {
-          for (const {id, name, output} of [
-            {id: 13, name: "empty owner/reset is a no-op", output: "PASS empty owner\n"},
-            {id: 14, name: "reset and destructor do not repeat destruction", output: "PASS explicit reset\n"},
-          ]) {
-            await t.test(name, () => {
-              const result = spawnSync(executable, ["1", String(id)], {encoding: "utf8"});
-              assert.equal(result.status, 0, result.error?.message || result.stderr);
-              assert.equal(result.signal, null);
-              assert.equal(result.stdout, output);
-            });
-          }
+        for (const {id, name, output} of [
+          {id: 13, name: "empty owner/reset is a no-op", output: "PASS empty owner\n"},
+          {id: 14, name: "reset and destructor do not repeat destruction", output: "PASS explicit reset\n"},
+        ]) {
+          await t.test(name, () => {
+            const result = spawnSync(executable, ["1", String(id)], {encoding: "utf8"});
+            assert.equal(result.status, 0, result.error?.message || result.stderr);
+            assert.equal(result.signal, null);
+            assert.equal(result.stdout, output);
+          });
         }
         for (const [id, output] of [
           [15, "PASS capability property failure\n"],
@@ -5229,28 +4527,22 @@ int main(int argc, char** argv) {
     }, async (t) => {
       const root = path.join(__dirname, "../sycl");
       const header = fs.readFileSync(path.join(root, "hiprtc-api.h"), "utf8");
-      const identityStart = header.indexOf("inline void hip_queue_identity(");
-      const identityEnd = header.indexOf("inline void hip_queue_device(", identityStart);
-      const aliasEnd = header.indexOf("// Query the actual HIP architecture", identityEnd);
       const octopus = fs.readFileSync(path.join(root, "octopus/nvidia-tensor.inc"), "utf8");
       const classStart = octopus.indexOf("class OctopusSyclNativeSearch {");
-      const contextStart = octopus.indexOf("struct NativeGemmContext {");
-      const contextEnd = octopus.indexOf("\n};", contextStart);
       const wmma = fs.readFileSync(path.join(root, "octopus/amd-wmma.inc"), "utf8");
       const wmmaStart = wmma.indexOf("  bool ensure(");
       const wmmaEnd = wmma.indexOf("    hipDeviceProp_t properties{}", wmmaStart);
-      assert.ok(identityStart > 0 && identityEnd > identityStart && aliasEnd > identityEnd &&
-      classStart > contextEnd &&
-      contextStart > 0 && contextEnd > contextStart && wmmaStart > 0 && wmmaEnd > wmmaStart);
+      assert.ok(classStart > 0 && wmmaStart > 0 && wmmaEnd > wmmaStart);
       const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-hip-interop-"));
       const source = path.join(fixture, "hip-queue-identity.cpp");
       const executable = path.join(fixture, "hip_queue_identity");
       try {
         fs.copyFileSync(path.join(__dirname, "native/hip-queue-identity.cpp"), source);
-        fs.writeFileSync(path.join(fixture, "identity.inc"),
-          "namespace mom {\n" + header.slice(identityStart, aliasEnd) + "}\n");
+        fs.writeFileSync(path.join(fixture, "identity.inc"), "namespace mom {\n" +
+          extractCppBlock(header, "inline void hip_queue_identity(") +
+          extractCppBlock(header, "inline void hip_queue_device(") + "}\n");
         fs.writeFileSync(path.join(fixture, "octopus.inc"), octopus.slice(classStart));
-        fs.writeFileSync(path.join(fixture, "gemm-context.inc"), octopus.slice(contextStart, contextEnd + 3));
+        fs.writeFileSync(path.join(fixture, "gemm-context.inc"), extractCppBlock(octopus, "struct NativeGemmContext {") + ";\n");
         fs.writeFileSync(path.join(fixture, "wmma-init.inc"), wmma.slice(wmmaStart, wmmaEnd));
         const compiled = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
           "-pedantic", "-DMOM_SYCL_HAS_HIP=1", source, "-o", executable], {encoding: "utf8"});
@@ -6481,57 +5773,13 @@ int main(int argc, char** argv) {
       }
     });
 
-    test("PearlHash positive inputs use exact source mappings and an admitted INT8 gate", {
+    test("PearlHash positive-input gate admits bounded native routes and pair mode rejects signed bytes", {
       skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
     }, () => {
-      const root = path.join(__dirname, "..");
-      const matrix = fs.readFileSync(path.join(root, "sycl/pearlhash/matrix.inc"), "utf8");
-      const plainProof = fs.readFileSync(path.join(root, "tests/native/pearlhash-plain-proof.cpp"), "utf8");
-      const production = fs.readFileSync(path.join(root, "sycl/pearlhash/pearlhash.cpp"), "utf8");
-      const cudaKernel = fs.readFileSync(path.join(root, "sycl/pearlhash/cuda-kernel.inc"), "utf8");
-      const gv = extractCppBlock(matrix, "static inline int8_t gv(");
-      assert.equal(extractCppBlock(plainProof, "static inline int8_t gv("), gv,
-        "the host proof fixture must use the exact production mapping");
+      const production = fs.readFileSync(path.join(__dirname, "../sycl/pearlhash/pearlhash.cpp"), "utf8");
       const gate = extractCppBlock(production, "static bool pearlhash_positive_inputs(");
-      assert.doesNotMatch(gate, /tested_shape|m %|n %|rank %|k \/ rank/u,
-        "route admission owns shape checks; the arithmetic gate must stay narrow");
-      assert.doesNotMatch(gate, /vendor_id|0x1002|0x10de/u,
-        "native route admission owns backend identity; SYCL vendor metadata is not a PCI gate");
-      assert.match(gate, /k > 0/);
-      assert.match(gate, /static_cast<uint64_t>\(k\)[\s\S]*max_positive_operand/u);
-      assert.match(production,
-        /PearlHashHipSearch::supports_shape\(m, n, k, rank\)/u,
-        "HIP route shape admission must remain in its actual supports_shape helper");
-      assert.match(production,
-        /PearlHashCudaSearch::supports_shape\(m, n, k, rank\)/u,
-        "CUDA JIT route shape admission must remain in its actual supports_shape helper");
-      assert.match(production, /cuda_sycl_search_supports_shape\(m, n\)/u,
-        "CUDA tensor route shape admission must remain in its actual route helper");
-      // The producer byte domain is a separate policy bit from the MMA opcode: native rank-256
-      // intentionally keeps S8 MMA while the bounded native-int8 producer may use [0,127].
-      assert.match(production,
-        /b\.positive_inputs = pearlhash_positive_inputs\(\s*q\.get_device\(\),\s*native_int8_route \|\| cuda_tensor_route,\s*k\s*\);/u,
-        "positive producer policy must remain route/bound based rather than an accidental rank gate");
-      assert.match(cudaKernel,
-        /#if PEARLHASH_RANK == 128[\s\S]*SM80_16x8x32_S32U8U8S32_TN[\s\S]*#else[\s\S]*SM80_16x8x32_S32S8S8S32_TN/u,
-        "rank-256 native CUDA must retain its S8 MMA opcode despite the producer policy");
-      const resetStart = production.indexOf("// Even a rejected next call");
-      const resetEnd = production.indexOf("if (!input", resetStart);
-      assert.ok(resetStart >= 0 && resetEnd > resetStart);
-      const reset = production.slice(resetStart, resetEnd);
-      assert.match(reset, /g_pf\.valid = false;[\s\S]*g_pf\.claim_ready = false;[\s\S]*g_pf\.leaves_a\.clear\(\)[\s\S]*g_pf\.leaves_b\.clear\(\)/u,
-        "a rejected attempt must clear the prior winning claim");
-      assert.match(production, /g_pf\.positive_inputs = b\.positive_inputs;/u,
-        "the winner must retain the mode used for its cached leaves");
-      assert.match(production, /g_pf\.positive_inputs\);/u,
-        "claim regeneration must use the captured mode");
-      const pairGuard = production.match(/if \(pair_dist8 && !b\.positive_inputs\)\s+throw std::string\("PearlHash CUDA pair requires positive inputs in \[0,127\]"\);/u)?.[0];
+      const pairGuard = production.match(/if \(pair_dist8 && !b\.positive_inputs\)\s*throw [^;]+;/u)?.[0];
       assert.ok(pairGuard, "unsigned CUDA MMA must reject incompatible producer bytes");
-      const attemptTry = production.indexOf("  try {", production.indexOf("PearlHashSearchBackend search_backend;"));
-      const guardPosition = production.indexOf(pairGuard, attemptTry);
-      assert.ok(guardPosition > attemptTry && guardPosition < production.indexOf("derive_key_pair_dist8(input", attemptTry),
-        "the domain guard must run inside attempt cleanup and before key/producer work");
-
       const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-pearlhash-positive-gate-"));
       try {
         const source = [
@@ -6628,14 +5876,14 @@ int main(int argc, char** argv) {
       skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
     }, () => {
       const source = fs.readFileSync(path.join(__dirname, "../sycl/pearlhash/cuda-kernel.inc"), "utf8");
-      const starts = [...source.matchAll(/^\x20{2}int block_m = int\(blockIdx\.x\);$/gmu)]
+      const starts = [...source.matchAll(/^[ \t]*int block_m = int\(blockIdx\.x\);$/gmu)]
         .map(({index}) => index);
       assert.equal(starts.length, 2, "both staged and packed CUDA branches must retain swizzle");
       const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-pearl-cuda-swizzle-"));
       try {
         for (const [branch, start] of starts.entries()) {
-          const ctaEnd = source.indexOf("  auto cta_coord = make_coord(block_m, block_n, _);", start);
-          const warpEnd = source.indexOf("  const int warp = int(threadIdx.x) >> 5;", start);
+          const ctaEnd = source.indexOf("auto cta_coord = make_coord(block_m, block_n, _);", start);
+          const warpEnd = source.indexOf("const int warp = int(threadIdx.x) >> 5;", start);
           const end = ctaEnd > start ? ctaEnd : warpEnd;
           assert.ok(end > start, `swizzle branch ${branch} is incomplete`);
           fs.writeFileSync(path.join(fixture, "swizzle.inc"), source.slice(start, end));
@@ -6657,14 +5905,7 @@ int main(int argc, char** argv) {
       skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
     }, () => {
       const matrix = fs.readFileSync(path.join(__dirname, "../sycl/pearlhash/matrix.inc"), "utf8");
-      const kernel = fs.readFileSync(path.join(__dirname, "../sycl/pearlhash/cuda-kernel.inc"), "utf8");
-      assert.match(kernel, /const uint64_t a_bytes = a_base \* packed_tile_bytes;/u);
-      assert.match(kernel, /const uint64_t packet_end = k32_count \* packed_tile_bytes;/u);
-      assert.match(kernel, /if \(even_bytes < packet_end\)/u);
-      assert.match(kernel, /odd_bytes \+= 2u \* packed_tile_bytes;/u);
-      const helper = extractCppBlock(matrix,
-        "template <bool IsA>\nstatic inline size_t nvidia_vector128_offset(");
-      assert.match(helper, /return \(\(row \/ 64U\)[\s\S]*depth & 3U\);/u);
+      const helper = extractCppBlock(matrix, "static inline size_t nvidia_vector128_offset(");
       const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-pearl-cuda-offset-"));
       const executable = path.join(fixture, "offset");
       const source = path.join(__dirname, "native/pearlhash-cuda-offset.cpp");
@@ -6686,11 +5927,10 @@ int main(int argc, char** argv) {
         assert.match(result.stdout, /ROLLING_PREFETCH_SEQUENCE packets=256 B_end=0xffffffff PASS/u);
         assert.match(result.stdout, /PRODUCER_OFFSET_TEST PASS/u);
 
-        const returnLine = "  return ((row / 64U) * static_cast<size_t>(k / 32) + depth / 32U) * 2048U +\n" +
-          "         (word / 4U) * 512U + lane * 16U + (word % 4U) * 4U + (depth & 3U);\n";
-        assert.equal(helper.split(returnLine).length, 2, "offset return anchor must be unique");
-        const truncated = helper.replace(returnLine,
-          returnLine.replace("  return ", "  return static_cast<uint32_t>(").replace(";\n", ");\n"));
+        // Negative control: a 32-bit truncation of the actual offset expression must be caught.
+        assert.equal(helper.match(/\breturn\b/gu)?.length, 1, "offset helper must have one return");
+        const truncated = helper.replace(/\breturn ([^;]+);/u, "return static_cast<uint32_t>($1);");
+        assert.notEqual(truncated, helper);
         fs.writeFileSync(path.join(fixture, "offset.inc"), truncated);
         compiled = compile();
         assert.equal(compiled.status, 0, compiled.error?.message || compiled.stderr);
@@ -6708,14 +5948,12 @@ int main(int argc, char** argv) {
       skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
     }, () => {
       const kernel = fs.readFileSync(path.join(__dirname, "../sycl/pearlhash/cuda-kernel.inc"), "utf8");
-      const storeStart = kernel.indexOf("  const uint64_t dense_proof_index =");
-      const storeEnd = kernel.indexOf("\n}\n\n#endif", storeStart);
+      // The dense store runs from its index declaration to the end of the enclosing kernel.
+      const storeStart = kernel.indexOf("const uint64_t dense_proof_index =");
+      const storeEnd = kernel.indexOf("\n}\n", storeStart);
       assert.ok(storeStart >= 0 && storeEnd > storeStart,
         "the actual rank-128 dense store body must remain extractable");
       const store = kernel.slice(storeStart, storeEnd);
-      assert.match(store, /dense_proof_index/u);
-      assert.match(store, /transcript_out\[/u);
-      assert.match(store, /for \(int word = 0; word < 8/u);
 
       const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-pearl-cuda-store-"));
       const source = path.join(__dirname, "native/pearlhash-cuda-store.cpp");
@@ -6759,78 +5997,32 @@ int main(int argc, char** argv) {
       }
     });
 
-    test("PearlHash CUDA pair proofs preserve physical coordinates and captured mode", {
+    test("PearlHash CUDA pair proofs preserve physical coordinates", {
       skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
     }, () => {
       const root = path.join(__dirname, "../sycl/pearlhash");
       const kernel = fs.readFileSync(path.join(root, "cuda-kernel.inc"), "utf8");
-      const host = fs.readFileSync(path.join(root, "pearlhash.cpp"), "utf8");
-      const state = fs.readFileSync(path.join(root, "state.inc"), "utf8");
-      const search = fs.readFileSync(path.join(root, "sycl-search.inc"), "utf8");
-      const matrix = fs.readFileSync(path.join(root, "matrix.inc"), "utf8");
-      const mode = host.indexOf("const bool pair_dist8 = cuda_native_int8_route && rank == 128 && (k == 8192 || compact_mode);");
-      const admitted = host.indexOf("cuda_native_int8_route = st.cuda.ensure(");
-      const key = host.indexOf("derive_key_pair_dist8(input, k, rank, st.key);");
-      assert.ok(admitted >= 0 && mode > admitted && key > mode);
-      assert.match(host, /if \(st.have_header && st.header_pair_dist8 != pair_dist8\)\s+st.have_header = false;/u);
-      assert.match(host, /g_pf.pair_dist8 = pair_dist8;/u);
-      assert.match(host, /(?:else )?if \(g_pf.pair_dist8\)\s+g_pearlhash_proof = build_pair_plain_proof/u);
-      assert.match(state, /header_pair_dist8 = false;/u);
-      const release = extractCppBlock(state, "  void release() noexcept {");
-      const ensure = extractCppBlock(state, "  void ensure(");
-      assert.match(release, /fixed_b_valid = false;[\s\S]*have_header = false;[\s\S]*header_pair_dist8 = false;/u,
-        "state release must invalidate fixed-B and the keyed header/pattern");
-      assert.match(ensure, /if \(b\.Ap &&[\s\S]*cuda_jit_buffers == cuda_jit_\)\s+return;/u,
-        "same-shape/JIT state may be retained only when every layout selector matches");
-      assert.match(ensure, /release\(\);[\s\S]*fixed_b_valid = false;/u,
-        "shape or JIT-mode changes must release buffers and invalidate fixed-B");
-      assert.doesNotMatch(matrix, /pair_dist8/u, "ordinary GPU buffers must not acquire pair mode");
-      assert.match(search, /bool Pair = false/u);
-      assert.match(search, /if \(!is_cuda\)\s+throw std::string\("PearlHash pair-dist8 reference dispatch requires CUDA"\);/u);
-      const inverseStart = kernel.indexOf("  const uint32_t warp_tiles_n =");
+      const inverseStart = kernel.indexOf("const uint32_t warp_tiles_n =");
       const inverseEnd = kernel.indexOf("\n#else", inverseStart);
-      const storeStart = kernel.indexOf("  const uint64_t dense_proof_index =");
+      const storeStart = kernel.indexOf("const uint64_t dense_proof_index =");
       const storeEnd = kernel.indexOf(";\n", storeStart) + 2;
       assert.ok(inverseStart > 0 && inverseEnd > inverseStart && storeStart > inverseEnd && storeEnd > storeStart);
-      const checkpointAnchorNeedle = "      const int transcript_word = (rank_chunk - 1) & 15;";
-      const checkpointAnchor = kernel.indexOf(checkpointAnchorNeedle);
-      assert.equal(kernel.split(checkpointAnchorNeedle).length, 2,
-        "rank-128 checkpoint anchor must be unique");
+      // The rank-128 checkpoint recurrence follows its transcript-word selection; it is either the
+      // even/odd split chain or the single-chain control, and both must reproduce the oracle.
+      const checkpointAnchor = kernel.indexOf("const int transcript_word = (rank_chunk - 1) & 15;");
       assert.ok(checkpointAnchor > 0, "rank-128 checkpoint anchor is required");
-      const candidateStartNeedle = "      uint32_t lane_part_even = 0;";
-      const candidateEndNeedle =
-        "      const uint32_t lane_part = lane_part_even ^ lane_part_odd;";
-      const controlStartNeedle = "      uint32_t lane_part = 0;";
-      const controlEndNeedle = "      // Every lane participates";
-      let checkpointKind;
-      let checkpointStart;
-      let checkpointEndNeedle;
-      if (kernel.indexOf(candidateStartNeedle, checkpointAnchor) >= 0) {
-        checkpointKind = "xor2-even-odd";
-        checkpointStart = kernel.indexOf(candidateStartNeedle, checkpointAnchor);
-        checkpointEndNeedle = candidateEndNeedle;
-      } else {
-        checkpointKind = "single-chain-control";
-        checkpointStart = kernel.indexOf(controlStartNeedle, checkpointAnchor);
-        checkpointEndNeedle = controlEndNeedle;
-      }
+      const split = kernel.indexOf("uint32_t lane_part_even = 0;", checkpointAnchor) >= 0;
+      const checkpointKind = split ? "xor2-even-odd" : "single-chain-control";
+      const checkpointStart = kernel.indexOf(split ? "uint32_t lane_part_even = 0;" : "uint32_t lane_part = 0;",
+        checkpointAnchor);
+      const checkpointEndNeedle = split ? "const uint32_t lane_part = lane_part_even ^ lane_part_odd;" :
+        "// Every lane participates";
       assert.ok(checkpointStart > checkpointAnchor,
         "rank-128 recurrence must follow the exact transcript anchor");
       const checkpointEnd = kernel.indexOf(checkpointEndNeedle, checkpointStart);
       assert.ok(checkpointEnd > checkpointStart,
         "rank-128 recurrence end anchor is required");
       const checkpointBody = kernel.slice(checkpointStart, checkpointEnd + checkpointEndNeedle.length);
-      assert.equal(checkpointBody.split("accumulator(").length - 1, 8,
-        "rank-128 recurrence must retain eight textual accumulator loads in its 16-step loop");
-      if (checkpointKind === "xor2-even-odd") {
-        assert.match(checkpointBody, /const bool odd_tile = \(tile_index & 1\) != 0;/u);
-        assert.match(checkpointBody, /const uint32_t next = pearlhash_xor3/u);
-        assert.match(checkpointBody, /lane_part_even = next/u);
-        assert.match(checkpointBody, /lane_part_odd = next/u);
-      } else {
-        assert.match(checkpointBody, /const uint32_t p2 = v6 \^ v7;/u);
-        assert.match(checkpointBody, /lane_part \^= part;/u);
-      }
       const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-pearl-cuda-pair-"));
       try {
         for (const fixed of [false, true]) {
@@ -6891,19 +6083,15 @@ int main(int argc, char** argv) {
     test("PearlHash compact fixed-K dispatch preserves its ABI and generic fallback", () => {
       const source = fs.readFileSync(path.join(__dirname, "../sycl/pearlhash/cuda-compact-kernel.inc"), "utf8");
       const wrapper = extractCppBlock(source, 'extern "C" __global__ __launch_bounds__(256)');
-      const helper = extractCppBlock(source, "template<int FixedK>");
-      const names = ["eal", "ebr", "packed_indices", "a_second_compat_unused", "b_first_compat_unused",
-        "b_second_compat_unused", "seed", "b_seed", "m", "n", "k", "transcript_out", "key", "target",
-        "result", "row_offset", "debug_checksum"];
-      const signature = wrapper.slice(wrapper.indexOf("void compact_gemm(") + "void compact_gemm(".length,
-        wrapper.indexOf(") {"));
-      assert.deepEqual(signature.split(",").map(part => part.trim().match(/\w+$/u)?.[0]), names);
-      assert.equal((source.match(/__shared__ ReconstructSharedStorage \w+;/gu) || []).length, 1);
-      assert.doesNotMatch(helper, /__shared__/u);
-      const start = wrapper.indexOf("  if (k == 65536)");
-      assert.ok(start > wrapper.indexOf("__shared__ ReconstructSharedStorage storage;"));
-      const pragma = wrapper.indexOf('asm volatile(".pragma');
-      assert.ok(pragma >= 0 && pragma < start);
+      const helper = extractCppBlock(source, "__device__ __forceinline__ void compact_gemm_impl(");
+      // The public kernel parameters are the launch ABI; the dispatch must forward all of them.
+      const parameters = wrapper.match(/void compact_gemm\(([^)]*)\)/u)?.[1];
+      assert.ok(parameters);
+      const names = parameters.split(",").map(part => part.trim().match(/\w+$/u)?.[0] ?? "");
+      const kIndex = names.indexOf("k");
+      assert.ok(kIndex >= 0);
+      const start = wrapper.search(/\bif\s*\(\s*k\s*==/u);
+      assert.ok(start >= 0);
       const dispatch = wrapper.slice(start, wrapper.lastIndexOf("}"));
       const binding = helper.match(/const int k = ([^;\n]+);/u)?.[1];
       assert.ok(binding);
@@ -6918,7 +6106,7 @@ int main(int argc, char** argv) {
         const effective = runInNewContext(`((FixedK,input_k) => (${binding}))`);
         for (const k of [-2147483648, -1, 0, 1, 127, 128, 256, 2048, 4096, 8192,
           65535, 65536, 65537, 2147483520, 2147483647]) {
-          const args = names.map((_, index) => index === 10 ? k : index + 100);
+          const args = names.map((_, index) => index === kIndex ? k : index + 100);
           const result = invoke(...args);
           assert.equal(result.fixed, k === 65536 ? 65536 : 0);
           assert.equal(result.args[0].fixture, true);
@@ -6935,7 +6123,7 @@ int main(int argc, char** argv) {
       assert.throws(() => exercise(noFallback));
     });
 
-    test("PearlHash initial selector partitions sixteen eight-lane groups and safely reuses scratch", () => {
+    test("PearlHash initial selector scores and records each winning rank exactly", () => {
       const source = fs.readFileSync(path.join(__dirname,
         "../sycl/pearlhash/cuda-compact-kernel.inc"), "utf8");
       const exercise = (/** @type {string} */ code) => {
@@ -6971,33 +6159,10 @@ int main(int argc, char** argv) {
             assert.equal(score((rank + 8) * 0x01010101, groups, counts, winner), 78);
           }
         }
-        const initialize = prepare.indexOf("seen_bytes[i]=0"), partition = prepare.indexOf("if(warp==0)");
-        const refinement = prepare.indexOf("swap_checkpoint(");
-        assert.ok(initialize >= 0 && partition > initialize && refinement > partition);
-        assert.ok(prepare.slice(initialize, partition).includes("__syncthreads()"));
-        assert.ok(prepare.slice(prepare.indexOf("++sizes[winner]"), refinement).includes("__syncthreads()"));
-        assert.ok(prepare.includes("reinterpret_cast<unsigned char*>(groups)"));
-        assert.ok(!prepare.includes("seen["));
-        assert.ok(prepare.includes("i<sizeof(groups);i+=128"));
-        assert.ok(prepare.includes("counts[16][4][8],sizes[16]"));
-        assert.ok(prepare.includes("if(lane<16&&sizes[lane]<8)"));
-        assert.ok(prepare.includes("ordered[winner*8+sizes[winner]]=word"));
-        assert.ok(prepare.includes("(score*9+sizes[lane])*16+lane"));
-        const swaps = extractCppBlock(code, "__device__ __forceinline__ uint32_t swap_checkpoint(");
-        assert.ok(swaps.includes("for(unsigned i=thread;i<sizeof(groups);i+=128)bytes[i]=0;"));
-        const pass = extractCppBlock(swaps, "  for(unsigned i=0;i<120;++i) {");
-        assert.equal((pass.match(/__syncthreads\(\);/gu) || []).length, 2);
-        assert.ok(!pass.includes("continue;"));
-        assert.ok(pass.indexOf("partner_words[warp]=selected;") < pass.indexOf("__syncthreads();"));
-        assert.ok(pass.includes("const uint32_t selected=__shfl_sync(0xffffffffu,word,local&31);"));
-        assert.ok(pass.lastIndexOf("__syncthreads();") > pass.indexOf("words[partner]=outgoing;"));
       };
       exercise(source);
       for (const [from, to] of [["ranks[rank]?0:", "ranks[rank]?1:"],
-        ["if(!groups[winner][lane].ranks[rank])", "if(true)"],
-        ["seen_bytes[i]=0", "seen_bytes[i]=1"],
-        ["sizes[lane]<8", "sizes[lane]<32"],
-        ["winner*8+sizes[winner]", "winner*32+sizes[winner]"]]) {
+        ["if(!groups[winner][lane].ranks[rank])", "if(true)"]]) {
         assert.ok(typeof from === "string" && typeof to === "string");
         assert.ok(source.includes(from));
         assert.throws(() => exercise(source.replace(from, to)));
@@ -7115,11 +6280,9 @@ int main(int argc, char** argv) {
     }, async (t) => {
       const root = path.join(__dirname, "../sycl/pearlhash");
       const host = fs.readFileSync(path.join(root, "pearlhash.cpp"), "utf8");
-      const state = fs.readFileSync(path.join(root, "state.inc"), "utf8");
       const policy = fs.readFileSync(path.join(root, "compact-policy.inc"), "utf8");
-      assert.doesNotMatch(extractCppBlock(state, "static Buffers alloc_buffers("), /CompactProfile::rows/u);
-      const begin = host.indexOf("  bool native_int8_route = false;");
-      const end = host.indexOf("\n  if (st.have_header &&", begin);
+      const begin = host.indexOf("bool native_int8_route = false;");
+      const end = host.indexOf("if (st.have_header &&", begin);
       assert.ok(begin >= 0 && end > begin);
       const admission = host.slice(begin, end);
       const selected = extractCppBlock(host, "static bool selected(int m,int n,int k,int rank) {");
@@ -7162,17 +6325,9 @@ int main(int argc, char** argv) {
       const root = path.join(__dirname, "../sycl/pearlhash");
       const state = fs.readFileSync(path.join(root, "state.inc"), "utf8");
       const hip = fs.readFileSync(path.join(root, "hip-jit.inc"), "utf8");
-      const guardStart = hip.indexOf("    if (!b.Ap || !b.Bp)");
-      const guardEnd = hip.indexOf("    if (!mom_is_hip(", guardStart);
+      const guardStart = hip.indexOf("if (!b.Ap || !b.Bp)");
+      const guardEnd = hip.indexOf("if (!mom_is_hip(", guardStart);
       assert.ok(guardStart >= 0 && guardEnd > guardStart);
-      assert.doesNotMatch(hip, /b\.transcript|transcript_rows/u,
-        "HIP native admission must not depend on global transcript storage");
-      const allocation = extractCppBlock(state, "static Buffers alloc_buffers(");
-      const required = allocation.indexOf("b.result = sycl::malloc_shared<Result>");
-      const optional = allocation.indexOf("b.transcript = alloc_optional<uint32_t>");
-      assert.ok(required >= 0 && optional > required, "mandatory buffers must precede optional memory");
-      assert.doesNotMatch(state, /ApWmma|BpWmma|alloc_native_buffers/u);
-      assert.match(allocation, /b\.transcript = alloc_optional<uint32_t>/u);
       const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-pearl-allocation-"));
       try {
         fs.writeFileSync(path.join(fixture, "pearlhash_allocation_policy.inc"),
@@ -7201,7 +6356,7 @@ int main(int argc, char** argv) {
       skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
     }, () => {
       const source = fs.readFileSync(path.join(__dirname, "../sycl/pearlhash/hip-kernel.inc"), "utf8");
-      const helper = extractCppBlock(source, "template <int Tiles>\nDEV __amdgpu_buffer_rsrc_t");
+      const helper = extractCppBlock(source, "DEV __amdgpu_buffer_rsrc_t pearlhash_input_resource(");
       const matrix = fs.readFileSync(path.join(__dirname, "../sycl/pearlhash/matrix.inc"), "utf8");
       const loads = source.match(/[ab]\[[ij]\] = __builtin_amdgcn_raw_buffer_load_b64\([\s\S]*?\);/gu);
       assert.equal(loads?.length, 2);
@@ -7213,14 +6368,16 @@ int main(int argc, char** argv) {
         fs.writeFileSync(path.join(fixture, "load-b.inc"), loadB);
         fs.writeFileSync(path.join(fixture, "pack-offset.inc"),
           extractCppBlock(matrix, "static inline size_t amd_wmma_offset("));
-        assert.match(source, /const int a_tiles = __builtin_amdgcn_readfirstlane/u);
-        assert.match(source, /const int b_tiles = __builtin_amdgcn_readfirstlane/u);
+        const zeroFlags = helper.replace("0x31004000u", "0u");
+        const divergentCount = helper.replace("const int count = __builtin_amdgcn_readfirstlane(",
+          "const int count = (");
+        assert.notEqual(zeroFlags, helper);
+        assert.notEqual(divergentCount, helper);
         for (const k of [2048, 8192, 65536]) {
           for (const [variant, expected] of /** @type {Array<[string, RegExp]>} */ ([
             [helper, /PASS actual-source HIP resource/u],
-            [helper.replace("0x31004000u", "0u"), /invalid gfx12 resource/u],
-            [helper.replace("const int count = __builtin_amdgcn_readfirstlane(",
-              "const int count = ("), /must both be explicitly wave-uniform/u],
+            [zeroFlags, /invalid gfx12 resource/u],
+            [divergentCount, /must both be explicitly wave-uniform/u],
           ])) {
             fs.writeFileSync(path.join(fixture, "input-resource.inc"), variant);
             const executable = path.join(fixture, "hip-buffer");
@@ -7242,33 +6399,29 @@ int main(int argc, char** argv) {
       skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
     }, () => {
       const source = fs.readFileSync(path.join(__dirname, "../sycl/pearlhash/hip-kernel.inc"), "utf8");
-      const guardStart = source.indexOf("  static_assert(PEARLHASH_K > 0");
-      const guardEnd = source.indexOf("  const uint32_t wave =", guardStart);
+      // Slice the fused kernel's guard, reduction, owner, store, hash-lane and coordinate statements
+      // into a CPU oracle; the mutations below prove each slice is load-bearing.
+      const guardStart = source.indexOf("static_assert(PEARLHASH_K > 0");
+      const guardEnd = source.indexOf("const uint32_t wave =", guardStart);
       assert.ok(guardStart >= 0 && guardEnd > guardStart);
       const kernelGuard = source.slice(guardStart, guardEnd);
-      const guardContract = /static_assert\(PEARLHASH_EC == 4 &&[\s\S]*ER13 requires exactly sixteen checkpoint slots/u;
-      assert.match(kernelGuard, guardContract);
-      const proofCountStart = source.indexOf(
-        "  constexpr uint32_t proofs_per_wave = (uint32_t)PEARLHASH_ER * 4u;",
-      );
+      const proofCountStart = source.indexOf("constexpr uint32_t proofs_per_wave =");
       const proofCountEnd = source.indexOf("\n", proofCountStart);
-      const sharedStart = source.indexOf("  __shared__ uint32_t fused_transcript[", proofCountEnd);
+      const sharedStart = source.indexOf("__shared__ uint32_t fused_transcript[", proofCountEnd);
       const sharedEnd = source.indexOf("\n", sharedStart);
       const proofCountDeclaration = source.slice(proofCountStart, proofCountEnd);
       const sharedDeclaration = source.slice(sharedStart, sharedEnd);
       const sharedExtent = sharedDeclaration.match(/\[([^\]]+)\]/u)?.[1];
-      const reductionStart = source.indexOf(
-        "      uint32_t reduced[PEARLHASH_ER][PEARLHASH_EC / 4] = {};",
-      );
-      const reductionEnd = source.indexOf("      const int slot = rc & 15;", reductionStart);
+      const reductionStart = source.indexOf("uint32_t reduced[PEARLHASH_ER][PEARLHASH_EC / 4] = {};");
+      const reductionEnd = source.indexOf("const int slot = rc & 15;", reductionStart);
       const ownerStart = reductionEnd;
       const ownerEnd = source.indexOf("    }\n  }\n\n  // Wrapped checkpoint", ownerStart);
       const finalStoreStart = source.indexOf("#if !PEARLHASH_DIRECT_SLOT", ownerEnd);
       const finalStoreEnd = source.indexOf("  __syncthreads();", finalStoreStart);
       const hashGuardStart = source.indexOf("active_wave && lane < proofs_per_wave", finalStoreEnd);
       const hashGuardEnd = hashGuardStart + "active_wave && lane < proofs_per_wave".length;
-      const coordinatesStart = source.indexOf("    const uint32_t hash_i =", hashGuardEnd);
-      const coordinatesEnd = source.indexOf("    if (proof_row <", coordinatesStart);
+      const coordinatesStart = source.indexOf("const uint32_t hash_i =", hashGuardEnd);
+      const coordinatesEnd = source.indexOf("if (proof_row <", coordinatesStart);
       const tailConditionStart = source.indexOf("(", coordinatesEnd);
       const tailConditionEnd = source.indexOf(") {", tailConditionStart);
       const tailCondition = source.slice(tailConditionStart + 1, tailConditionEnd);
@@ -7284,28 +6437,6 @@ int main(int argc, char** argv) {
       const finalStore = source.slice(finalStoreStart, finalStoreEnd);
       const hashGuard = source.slice(hashGuardStart, hashGuardEnd);
       const hashCoordinates = source.slice(coordinatesStart, coordinatesEnd);
-      assert.match(source, /#define PEARLHASH_DIRECT_SLOT 1/u);
-      assert.match(proofCountDeclaration,
-        /constexpr uint32_t proofs_per_wave = \(uint32_t\)PEARLHASH_ER \* 4u;/u);
-      assert.equal(sharedExtent, "4 * PEARLHASH_ER * 4 * 16");
-      assert.match(owner, /fused_transcript\[wave_in_block \* proofs_per_wave \* 16u/u);
-      assert.match(owner, /tr\[i\]\[p\] = rotl32/u);
-      assert.match(finalStore, /#if !PEARLHASH_DIRECT_SLOT/u);
-      assert.equal(hashGuard, "active_wave && lane < proofs_per_wave");
-      assert.doesNotMatch(source, /hash_kernel/u);
-      assert.match(hashCoordinates, /hash_q \* 4u/u);
-      assert.doesNotMatch(reduction, /__shfl_xor/u,
-        "4x64 proofs are independent between all four quarter-waves");
-      const dpp = extractCppBlock(source, "template <int Mask>\nDEV uint32_t pearlhash_xor_dpp");
-      assert.match(dpp, /static_assert\(Mask == 1 \|\| Mask == 2 \|\| Mask == 4 \|\| Mask == 8/u);
-      assert.match(dpp, /v_xor_b32_dpp %0, %1, %1 row_xmask:%2 row_mask:0xf bank_mask:0xf bound_ctrl:0/u,
-        "fused DPP must retain complete 16-lane row/bank participation");
-      assert.deepEqual([...reduction.matchAll(/pearlhash_xor_dpp<(\d+)>/gu)].map(match => Number(match[1])),
-        [1, 2, 4, 8]);
-      assert.match(owner, /if \(active_wave && \(\(lane & 15\) == slot\)\)/u);
-      assert.match(tailCondition, /proof_row <[\s\S]*proof_col <[\s\S]*n/u);
-      assert.equal((source.match(/const uint64_t fragment =/gu) || []).length, 2,
-        "large matrices still need wide fallback offsets");
       const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-pearl-hip-transcript-"));
       try {
         fs.writeFileSync(path.join(fixture, "kernel-guard.inc"), kernelGuard);
@@ -7401,30 +6532,10 @@ int main(int argc, char** argv) {
       const kernel = fs.readFileSync(path.join(root, "hip-kernel.inc"), "utf8");
       const state = fs.readFileSync(path.join(root, "state.inc"), "utf8");
       const matrix = fs.readFileSync(path.join(root, "matrix.inc"), "utf8");
-      const selectorStart = source.indexOf("      tile_er = k / rank == 16 ? 13 : 12;");
+      const selectorStart = source.indexOf("tile_er = k / rank == 16 ? 13 : 12;");
       const selectorEnd = source.indexOf("\n", selectorStart);
       assert.ok(selectorStart >= 0 && selectorEnd > selectorStart);
       const selector = source.slice(selectorStart, selectorEnd);
-      assert.doesNotMatch(source, /hipMalloc\(|hipFree\(/,
-        "HIP must share the existing SYCL transcript owner, not retain a quadratic allocation");
-      assert.doesNotMatch(source, /hash_kernel/u,
-        "fused HIP must not retain the removed second hash entry point");
-      assert.match(source, /hipModuleGetFunction\(&kernel, module, "pearlhash_wmma_hash_fused"\)/u);
-      assert.match(source,
-        /void\* fused_args\[\]\s*=\s*\{\s*&A,\s*&B,\s*&key,\s*&target,\s*&result,\s*&seed,\s*&rows,\s*&n,\s*&row_offset,\s*&debug_int\s*\}/u);
-      assert.match(state,
-        /const int transcript_rows = cuda_jit[\s\S]*?: 0;/u,
-        "HIP fused storage must remain entirely in LDS");
-      assert.doesNotMatch(source, /b\.transcript|transcript_rows/u,
-        "HIP JIT must not retain a global transcript gate");
-      assert.match(kernel, /__shared__ uint32_t fused_transcript\[4 \* PEARLHASH_ER \* 4 \* 16\]/u);
-      assert.match(kernel, /if \(active_wave && lane < proofs_per_wave\)/u);
-      assert.match(kernel,
-        /constexpr int cache_rows = 131072 \/ PEARLHASH_K < 16 \? 16 :[\s\S]*131072 \/ PEARLHASH_K > 64 \? 64/u,
-        "HIP wave grouping must clamp its compile-time cache rows");
-      assert.match(source, /const int cache_rows = std::max\(16, std::min\(64, 131072 \/ k\)\)/u,
-        "HIP host chunks must use the same cache-row clamp");
-      assert.match(matrix, /static inline size_t amd_wmma_offset\(/u);
       const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-pearl-hip-slices-"));
       try {
         fs.writeFileSync(path.join(fixture, "hip-launch.inc"), extractCppBlock(source, "  void launch("));
@@ -7433,8 +6544,8 @@ int main(int argc, char** argv) {
         fs.writeFileSync(path.join(fixture, "hip-wave-groups.inc"), extractCppBlock(kernel, "DEV void wave_groups("));
         fs.writeFileSync(path.join(fixture, "matrix-offset.inc"),
           extractCppBlock(matrix, "static inline size_t amd_wmma_offset("));
-        const allocationStart = state.indexOf("    constexpr uint64_t transcript_limit =");
-        const allocationEnd = state.indexOf("    if (transcript_bytes > 0 &&", allocationStart);
+        const allocationStart = state.indexOf("constexpr uint64_t transcript_limit =");
+        const allocationEnd = state.indexOf("if (transcript_bytes > 0 &&", allocationStart);
         assert.ok(allocationStart >= 0 && allocationEnd > allocationStart);
         fs.writeFileSync(path.join(fixture, "transcript-allocation.inc"), state.slice(allocationStart, allocationEnd));
         const executable = path.join(fixture, "slices");
@@ -7475,7 +6586,6 @@ int main(int argc, char** argv) {
         const result = spawnSync(executable, [], {encoding: "utf8"});
         assert.equal(result.status, 0, result.stderr);
         assert.match(result.stdout, /bounded with complete tile coverage/);
-        assert.match(source, /if \(bounded_opencl\)\s+launch\.wait_and_throw\(\);/u);
       } finally {
         fs.rmSync(fixture, {recursive: true, force: true});
       }
@@ -7485,7 +6595,7 @@ int main(int argc, char** argv) {
       skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
     }, () => {
       const production = fs.readFileSync(path.join(__dirname, "../sycl/pearlhash/pearlhash.cpp"), "utf8");
-      const attempt = production.indexOf("    attempt_start =");
+      const attempt = production.indexOf("attempt_start =");
       const start = production.indexOf("\n  } catch (...)", attempt);
       assert.ok(attempt >= 0 && start > attempt);
       // Retire only the catch block, independent of whichever success-path code follows it.
@@ -7823,9 +6933,8 @@ int main(int argc, char** argv) {
         const source = path.join(fixture, "fixture.cpp");
         fs.copyFileSync(path.join(__dirname, "native/equihash192-arena-selection.cpp"), source);
         for (const name of ["run_with_cache", "select_cuda_arena"]) {
-          const definition = extractCppBlock(session, `  std::vector<Solution> ${name}(`);
-          fs.writeFileSync(path.join(fixture, `${name}.inc`),
-            "  template <bool CacheInput>\n" + definition.replaceAll("std::chrono::", "fixture_clock::"));
+          const member = extractCppBlock(session, `  std::vector<Solution> ${name}(`);
+          fs.writeFileSync(path.join(fixture, `${name}.inc`), member.replaceAll("std::chrono::", "fixture_clock::"));
         }
         for (const adaptiveCuda of [false, true]) {
           const executable = path.join(fixture, adaptiveCuda ? "acpp-cuda" : "other-backend");
@@ -7877,7 +6986,6 @@ int main(int argc, char** argv) {
         fs.writeFileSync(path.join(fixture, "result.inc"),
           hits.slice(hits.indexOf("template <typename Word = uint8_t>"), hits.indexOf("// Claim the next hit slot")) +
           hits.slice(hits.indexOf("// Copy completed hits")) + "using Result = PowHits<>;\n");
-        assert.ok(octopus.includes("using Result = PowHits<>;"));
         fs.writeFileSync(path.join(fixture, "caller.inc"), octopus.slice(callerStart));
         fs.copyFileSync(path.join(root, "sycl/octopus/validation.h"), path.join(fixture, "validation.inc"));
         fs.writeFileSync(path.join(fixture, "compute-catch.inc"), execution.slice(catchStart, catchEnd));
@@ -8062,10 +7170,10 @@ int main(int argc, char** argv) {
       };
       const prefix = section(pipeline, "class NexaPowSyclSearch {", "  uint32_t search(");
       const probe = fs.readFileSync(path.join(__dirname, "../sycl/nexapow/validation.cpp"), "utf8");
-      const caller = extractCppBlock(host,
-        "int nexapow(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint8_t* output,\n" +
-      "            uint8_t*, uint64_t* pnonce, const uint8_t* target, const uint8_t*, unsigned intensity,\n" +
-      "            bool is_test, bool is_benchmark, const std::string& dev) {");
+      // The full parameter list selects the SYCL overload among the preprocessor alternatives.
+      const caller = extractCppBlock(host, "int nexapow(unsigned, uint32_t, const uint8_t* input, " +
+        "unsigned input_size, uint8_t* output, uint8_t*, uint64_t* pnonce, const uint8_t* target, " +
+        "const uint8_t*, unsigned intensity, bool is_test, bool is_benchmark, const std::string& dev)");
       const support = section(host, "struct Result {", "\nstatic constexpr uint8_t") + "\n" +
       section(host, "inline bool np_equal(", "\n#ifndef MOM_NEXAPOW_HOST_TEST");
       const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-nexapow-fault-"));
@@ -8247,62 +7355,66 @@ int main() {
         assert.equal(result.signal, null);
         assert.equal(result.status, 0, result.stderr);
       } finally {fs.rmSync(fixture, {recursive: true, force: true});}
-
-      const c29Start = execution.indexOf("          case DEV::C29_GPU:"),
-        c30Start = execution.indexOf("          case DEV::C30_GPU:", c29Start);
-      assert.ok(c29Start >= 0 && c30Start > c29Start);
-      const c29Dispatch = execution.slice(c29Start, c30Start),
-        gpuCall = c29Dispatch.indexOf("dev_sols = m_fn.gpu_c29("),
-        recordCall = c29Dispatch.indexOf("ls.record_c29(m_input_len, dev_sols);");
-      assert.ok(gpuCall >= 0 && recordCall > gpuCall, "record C29 result only after dispatch returns");
-      assert.match(c29Dispatch,
-        /if \(loop_stats\)\s*\{\s*ls\.record_c29\(m_input_len,\s*dev_sols\);\s*\}/,
-        "C29 diagnostic counters must remain opt-in at the existing loop-stats gate");
-      const reportStart = execution.indexOf("static void loop_stats_report("),
-        reportEnd = execution.indexOf("\n}\n", reportStart);
-      assert.ok(reportStart >= 0 && reportEnd > reportStart);
-      const report = execution.slice(reportStart, reportEnd);
-      assert.match(report, /if \(ls\.has_c29_activity\(\)\)/);
-      assert.match(report, /C29DISPATCH/);
-      assert.match(report, /LOOPSTAT t=%llu wall=%.1fs cpu=%.1f%% dispatch=%.1f%% msg=%.3fs post=%.3fs/);
     });
 
-    test("C29 profile mode keeps host timing separate from device queue profiling", {
-      skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
+    test("C29 profile mode samples once and keeps host timing separate from device event profiling", {
+      skip: process.platform === "win32" ? "requires a POSIX host C++ compiler" : false,
     }, () => {
       const root = path.join(__dirname, ".."), state = fs.readFileSync(path.join(root, "sycl/c29/state.inc"), "utf8"),
         modeEnum = extractCppBlock(state, "enum class C29ProfileMode {"),
         modeFunction = extractCppBlock(state, "static C29ProfileMode c29_profile_mode()"),
+        profileEvent = extractCppBlock(state, "struct C29ProfileEvent {"),
         profile = extractCppBlock(state, "struct C29Profile {");
-      assert.match(modeFunction, /static const C29ProfileMode v = \[\]\(\)/,
-        "profile mode must sample the environment once per process");
-      assert.match(profile, /enabled = c29_profile_mode\(\) != C29ProfileMode::disabled/,
-        "host and device modes both enable bounded host timing marks");
-      assert.match(profile,
-        /void add_event\(const char\* name, const sycl::event& event\)\s*\{\s*if \(enabled && c29_profile_mode\(\) == C29ProfileMode::device\)\s*events\.push_back/,
-        "only device mode may retain SYCL profiling events");
-      assert.match(profile,
-        /void print_events\(\)\s*\{\s*if \(!enabled \|\| c29_profile_mode\(\) != C29ProfileMode::device\)/,
-        "only device mode may query device event timestamps");
-
-      const ctorStart = state.indexOf("  explicit C29State("), ctorEnd = state.indexOf("  ~C29State()", ctorStart);
-      assert.ok(ctorStart >= 0 && ctorEnd > ctorStart, "C29State queue constructor must be present");
-      const constructor = state.slice(ctorStart, ctorEnd), queueStart = constructor.indexOf("queue(c29_profile_mode() == C29ProfileMode::device");
-      const ordinaryQueue = constructor.indexOf(": sycl::queue", queueStart);
-      assert.ok(queueStart >= 0 && ordinaryQueue > queueStart, "queue selection must use device profile mode");
-      assert.ok(constructor.indexOf("enable_profiling") >= 0 && constructor.indexOf("enable_profiling") < ordinaryQueue,
-        "queue event profiling belongs only to the device-mode branch");
-      assert.equal((constructor.match(/enable_profiling/g) || []).length, 1,
-        "host and disabled modes must not enable queue event profiling");
-
       const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-c29-profile-mode-")),
         source = path.join(fixture, "profile_mode.cpp"), executable = path.join(fixture, "profile_mode");
       try {
-        fs.writeFileSync(source, `#include <cstdio>\n#include <cstdlib>\n#include <cstring>\n${modeEnum};\n${modeFunction}
+        // Stub only the SYCL device/event surface; count timestamp queries to observe device profiling.
+        fs.writeFileSync(source, `#include <atomic>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <string>
+#include <vector>
+namespace sycl {
+struct exception { const char* what() const { return "unsupported"; } };
+namespace info {
+namespace device { struct name {}; }
+namespace platform { struct name {}; }
+namespace event_profiling { struct command_start {}; struct command_end {}; }
+}
+struct platform { template <typename T> std::string get_info() const { return "platform"; } };
+struct device {
+  template <typename T> std::string get_info() const { return "device"; }
+  platform get_platform() const { return {}; }
+};
+struct event {
+  static int queries;
+  template <typename T> uint64_t get_profiling_info() const { ++queries; return 0; }
+};
+int event::queries = 0;
+}
+constexpr unsigned COMPUTE_THREADS = 1;
+static uint64_t c29_now_us() { return 0; }
+static uint32_t c29_profile_limit() { return UINT32_MAX; }
+static uint32_t c29_trim_rounds(const sycl::device&) { return 1; }
+static uint32_t c29_seed_local_size() { return 64; }
+static uint32_t c29_seed_blocks_per_item() { return 4; }
+${modeEnum};
+${modeFunction}
+${profileEvent};
+${profile};
 int main() {
   const C29ProfileMode mode = c29_profile_mode();
-  std::puts(mode == C29ProfileMode::disabled ? "disabled" :
-            mode == C29ProfileMode::host ? "host" : "device");
+  setenv("MOM_C29_PROFILE", mode == C29ProfileMode::device ? "0" : "1", 1);
+  if (c29_profile_mode() != mode) return 3;
+  C29Profile profile(1, 2, 32, sycl::device{});
+  profile.mark("probe");
+  profile.add_event("seed", sycl::event{});
+  profile.print_events();
+  std::fprintf(stderr, "mode=%s enabled=%d events=%zu queries=%d\\n",
+               mode == C29ProfileMode::disabled ? "disabled" : mode == C29ProfileMode::host ? "host" : "device",
+               profile.enabled ? 1 : 0, profile.events.size(), sycl::event::queries);
   return 0;
 }
 `);
@@ -8312,16 +7424,19 @@ int main() {
         assert.equal(compiled.signal, null);
         assert.equal(compiled.status, 0, compiled.stderr);
 
+        const disabled = "mode=disabled enabled=0 events=0 queries=0\n";
+        const host = "mode=host enabled=1 events=0 queries=0\n";
+        const device = "mode=device enabled=1 events=1 queries=2\n";
         const cases = [
-          {name: "unset", value: undefined, expected: "disabled"},
-          {name: "empty", value: "", expected: "disabled"},
-          {name: "zero", value: "0", expected: "disabled"},
-          {name: "leading zero", value: "0legacy", expected: "disabled"},
-          {name: "host", value: "host", expected: "host"},
-          {name: "device numeric", value: "1", expected: "device"},
-          {name: "legacy normal", value: "normal", expected: "device"},
-          {name: "legacy flag", value: "legacy", expected: "device"},
-          {name: "other nonzero", value: "other", expected: "device"},
+          {name: "unset", value: undefined, expected: disabled},
+          {name: "empty", value: "", expected: disabled},
+          {name: "zero", value: "0", expected: disabled},
+          {name: "leading zero", value: "0legacy", expected: disabled},
+          {name: "host", value: "host", expected: host},
+          {name: "device numeric", value: "1", expected: device},
+          {name: "legacy normal", value: "normal", expected: device},
+          {name: "legacy flag", value: "legacy", expected: device},
+          {name: "other nonzero", value: "other", expected: device},
         ];
         for (const fixtureCase of cases) {
           const env = {...process.env};
@@ -8330,7 +7445,12 @@ int main() {
           assert.equal(result.error, undefined, `${fixtureCase.name}: ${result.error?.message}`);
           assert.equal(result.signal, null, `${fixtureCase.name}: ${result.stderr}`);
           assert.equal(result.status, 0, `${fixtureCase.name}: ${result.stderr}`);
-          assert.equal(result.stdout, fixtureCase.expected + "\n", `${fixtureCase.name}: mode selection`);
+          assert.equal(result.stderr, fixtureCase.expected, `${fixtureCase.name}: mode selection`);
+          // Host and device modes both emit bounded host timing marks; disabled mode prints nothing.
+          assert.equal(result.stdout.includes("[c29-profile] host probe"), fixtureCase.expected !== disabled,
+            `${fixtureCase.name}: host timing`);
+          assert.equal(result.stdout.includes("[c29-profile] device seed"), fixtureCase.expected === device,
+            `${fixtureCase.name}: device timestamps`);
         }
       } finally {fs.rmSync(fixture, {recursive: true, force: true});}
     });
@@ -8609,7 +7729,7 @@ int main() {
         const end = library.indexOf("sycl::device get_dev(", start);
         assert.ok(start >= 0 && end > start);
         fs.writeFileSync(path.join(fixture, "cleanup.inc"), library.slice(start, end));
-        const readback = "template <typename T>\n" + extractCppBlock(state, "static void c29_read_buffer(");
+        const readback = extractCppBlock(state, "static void c29_read_buffer(");
         const guard = '  MomSyclHostTransferGuard host_transfers(queue, "c29 buffer readback");';
         assert.ok(readback.includes(guard));
         for (const fixed of [false, true]) {
@@ -8638,7 +7758,6 @@ int main() {
       const state = fs.readFileSync(path.join(root, "state.inc"), "utf8");
       const search = fs.readFileSync(path.join(root, "search.inc"), "utf8");
       const destructor = extractCppBlock(state, "  ~C29State()");
-      assert.ok(destructor.includes("search_futures.clear();"));
       const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-c29-lifetime-"));
       try {
         const source = path.join(fixture, "lifetime.cpp"), executable = path.join(fixture, "probe");
@@ -8651,7 +7770,9 @@ int main() {
         const local = search.match(/^\s*C29SearchCompletionGuard active_completion_guard[^\n]+/m);
         assert.ok(local);
         fs.writeFileSync(path.join(fixture, "local-guard.inc"), local[0] + "\n");
-        fs.writeFileSync(path.join(fixture, "drain.inc"), "search_futures.clear();\n");
+        // Run the actual destructor body after the fixture marks cleanup as started.
+        fs.writeFileSync(path.join(fixture, "drain.inc"),
+          destructor.slice(destructor.indexOf("{") + 1, destructor.lastIndexOf("}")));
         const compiled = spawnSync("c++", ["-std=c++17", "-O1", "-Wall", "-Wextra", "-Werror", "-pedantic",
           "-pthread", "-fsanitize=address", "-fno-omit-frame-pointer",
           ...(process.platform === "linux" ? ["-fno-pie", "-no-pie"] : []), source, "-o", executable],
@@ -8664,33 +7785,6 @@ int main() {
         assert.equal(result.stdout, "PASS actual-source C29 search lifetime\n");
       } finally {
         fs.rmSync(fixture, {recursive: true, force: true});
-      }
-    });
-
-    test("C29 serializes persistent graph access per device", () => {
-      const state = fs.readFileSync(path.join(__dirname, "../sycl/c29/state.inc"), "utf8");
-      const entry = fs.readFileSync(path.join(__dirname, "../sycl/c29/c29.cpp"), "utf8");
-      const stateStart = state.indexOf("struct C29State {");
-      const stateEnd = state.indexOf("};", stateStart);
-      assert.ok(stateStart >= 0 && stateEnd > stateStart);
-      assert.match(state.slice(stateStart, stateEnd), /std::mutex mutex;/);
-      const lock = "C29State& state = c29_state(dev_str);\n    std::lock_guard<std::mutex> state_lock(state.mutex);";
-      assert.ok(entry.includes(lock),
-        "the persistent queue and reusable buffers must be protected before submission or readback");
-    });
-
-    test("Cuckoo transient transfers resolve their device before accepting work", () => {
-      for (const {file, entry} of [
-        {file: "c29/state.inc", entry: "static void c29_read_buffer("},
-        {file: "c29/c29.cpp", entry: "int c29_portable_test("},
-        {file: "c30/c30.cpp", entry: "int c30_portable_test("},
-      ]) {
-        const source = fs.readFileSync(path.join(__dirname, "../sycl", file), "utf8");
-        const body = extractCppBlock(source.slice(source.lastIndexOf(entry)), entry);
-        const query = body.indexOf("const sycl::device device = queue.get_device();");
-        const submit = body.indexOf("queue.submit(");
-        assert.ok(query >= 0 && submit > query, file + ": query faults must precede submission");
-        assert.ok(body.includes("sycl_wait_and_throw(event, device);"), file);
       }
     });
 

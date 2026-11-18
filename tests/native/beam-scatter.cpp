@@ -21,12 +21,20 @@ struct alignas(16) BeamCompactRow { uint32_t value[16]; };
 constexpr uint32_t SENTINEL = 0xffffffffu, SLOT_BITS = 12, NSLOTS = 2368;
 constexpr unsigned ROW_U32 = sizeof(BeamCompactRow) / sizeof(uint32_t);
 
+// The subgroup coordinates mirror each kernel's setup; the flush loops are production code.
 static void compact_flush(Item it, unsigned lsz, uint32_t* stage,
                           uint32_t* destination, BeamCompactRow* d_out) {
+  auto sg = it.get_sub_group();
+  const unsigned sg_size = sg.get_local_range()[0], lane = sg.get_local_id()[0];
+  const unsigned subgroups = sg.get_group_range()[0], subgroup = sg.get_group_id()[0];
+  uint32_t* output = reinterpret_cast<uint32_t*>(d_out);
 #include "beam_compact_flush.inc"
 }
 static void generic_flush(Item it, unsigned lsz, unsigned OUT_ST, uint32_t* stage,
                           uint32_t* dst, uint32_t* d_bucket) {
+  auto sg = it.get_sub_group();
+  const unsigned sg_sz = sg.get_local_range()[0], lane = sg.get_local_id()[0];
+  const unsigned wg_warps = sg.get_group_range()[0], warp_id = sg.get_group_id()[0];
 #include "beam_generic_flush.inc"
 }
 

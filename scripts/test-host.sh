@@ -44,69 +44,34 @@ build_run() {
   "$cxx" "${flags[@]}" "$@" -o "$out/$name"
   "$out/$name"
 }
-# Compile the production flushes without importing SYCL or duplicating ownership.
-awk '
-  /^          auto sg = it.get_sub_group\(\);$/ { copies++; copying = 1 }
-  copying && /^        \}\);$/ { copying = 0; complete++ }
-  copying { print }
-  END { if (copies != 1 || complete != 1 || copying) exit 1 }
-' "$root/sycl/beamhash3/compact-solver.inc" > "$out/beam_compact_flush.inc"
-awk '
-  /^            auto sg = it.get_sub_group\(\);$/ { copies++; copying = 1 }
-  copying && /^          \}$/ { copying = 0; complete++ }
-  copying { print }
-  END { if (copies != 1 || complete != 1 || copying) exit 1 }
-' "$root/sycl/beamhash3/generic-solver.inc" > "$out/beam_generic_flush.inc"
-test -s "$out/beam_compact_flush.inc"
-test -s "$out/beam_generic_flush.inc"
+
+# Print whole production declarations through the shared token-anchored extractor; a missing or
+# ambiguous anchor fails the run. Indented anchors name nested members or statements exactly.
+extract_cpp() {
+  local name=$1 file=$2
+  shift 2
+  node "$root/tests/common/cpp-source.js" "$root/$file" "$@" > "$out/$name"
+}
+
+# Compile the production flush loops without importing SYCL or duplicating ownership.
+extract_cpp beam_compact_flush.inc sycl/beamhash3/compact-solver.inc \
+  '          for (unsigned r = subgroup; r < lsz; r += subgroups) {'
+extract_cpp beam_generic_flush.inc sycl/beamhash3/generic-solver.inc \
+  '            for (unsigned r = warp_id; r < lsz; r += wg_warps) {'
 build_run beam-scatter -UNDEBUG -I "$out" "$root/tests/native/beam-scatter.cpp"
-awk '
-  /^inline (bool (sycl_local_memory_fits|sycl_workgroup_fits|mom_parse_env_ulong)|unsigned sycl_default_workgroup)\(/ {
-    copies++; copying = 1
-  }
-  copying { print }
-  copying && /^}$/ { copying = 0; complete++ }
-  END { if (copies != 4 || complete != 4 || copying) exit 1 }
-' "$root/sycl/lib-internal.h" > "$out/beam_workgroup_helpers.inc"
-awk '
-  /^(inline bool beam_compact_enabled|unsigned beamhash3_workgroup)\(/ { copies++; copying = 1 }
-  copying { print }
-  copying && /^}$/ { copying = 0; complete++ }
-  END { if (copies != 2 || complete != 2 || copying) exit 1 }
-' "$root/sycl/beamhash3/layout.inc" > "$out/beamhash3_workgroup.inc"
+extract_cpp beam_workgroup_helpers.inc sycl/lib-internal.h 'inline bool mom_parse_env_ulong(' \
+  'inline bool sycl_local_memory_fits(' 'inline bool sycl_workgroup_fits(' \
+  'inline unsigned sycl_default_workgroup('
+extract_cpp beamhash3_workgroup.inc sycl/beamhash3/layout.inc 'inline bool beam_compact_enabled(' \
+  'unsigned beamhash3_workgroup('
 build_run beamhash3-admission -UNDEBUG -I "$out" "$root/tests/native/beamhash3-admission.cpp"
-awk '
-  /^inline void mom_set_compile_options_env\(/ { copies++; copying = 1 }
-  copying { print }
-  copying && /^}$/ { copying = 0; complete++ }
-  END { if (copies != 1 || complete != 1 || copying) exit 1 }
-' "$root/sycl/lib-internal.h" > "$out/sycl_env.inc"
+extract_cpp sycl_env.inc sycl/lib-internal.h 'inline void mom_set_compile_options_env('
 build_run sycl-env -UNDEBUG -pthread -I "$out" -I "$root/native" "$root/tests/native/sycl-env.cpp" \
   -Wl,--wrap=setenv
 
-awk '
-  /^    if \(new_dag_words > / { copies++; copying = 1 }
-  copying { print }
-  copying && /throw std::string\("Etchash DAG exceeds 32-bit word addressing"\);$/ {
-    copying = 0; complete++
-  }
-  END { if (copies != 1 || complete != 1 || copying) exit 1 }
-' "$root/sycl/etchash/state.inc" > "$out/etchash_dag_limit.inc"
-build_run etchash-word-limit -UNDEBUG -I "$out" "$root/tests/native/etchash-word-limit.cpp"
-
-awk '
-  /^constexpr uint32_t (ETCHASH_FORK_BLOCK|ETHASH_EPOCH|ETCHASH_EPOCH) = / { constants++; print }
-  /^(inline uint32_t etchash_(seed_)?epoch|bool is_zero_hash)\(/ { copies++; copying = 1 }
-  copying { print }
-  copying && /^}$/ { copying = 0; complete++ }
-  END { if (constants != 3 || copies != 3 || complete != 3 || copying) exit 1 }
-' "$root/sycl/etchash/device.inc" > "$out/etchash_epoch_helpers.inc"
-awk '
-  /^  void resolve_epochs\(/ { copies++; copying = 1 }
-  copying { print }
-  copying && /^  }$/ { copying = 0; complete++ }
-  END { if (copies != 1 || complete != 1 || copying) exit 1 }
-' "$root/sycl/etchash/state.inc" > "$out/etchash_resolve_epochs.inc"
+extract_cpp ethash_dag_words.inc sycl/ethash-dag.inc 'inline bool ethash_dag_words_addressable('
+build_run ethash-dag-words -UNDEBUG -I "$out" "$root/tests/native/ethash-dag-words.cpp"
+extract_cpp etchash_resolve_epochs.inc sycl/etchash/state.inc '  void resolve_epochs('
 build_run etchash-epoch -UNDEBUG -I "$out" "$root/tests/native/etchash-epoch.cpp"
 
 build_run cn-gpu-launch "$root/tests/native/cn-gpu-launch.cpp"
@@ -127,21 +92,9 @@ build_run walahash-fixed-acpp -std=c++20 -Wno-unknown-pragmas -Wno-unused-functi
 build_run walahash-fixed-dpcpp -std=c++20 -Wno-unknown-pragmas -Wno-unused-function \
   -DTEST_WALAHASH_DPCPP "$root/tests/native/walahash-fixed.cpp"
 
-awk '
-  /^    if \(new_dag_words > / { copies++; copying = 1 }
-  copying { print }
-  copying && /throw std::string\("KawPow DAG exceeds 32-bit word addressing"\);$/ {
-    copying = 0; complete++
-  }
-  END { if (copies != 1 || complete != 1 || copying) exit 1 }
-' "$root/sycl/kawpow/state.inc" > "$out/progpow_dag_limit.inc"
-build_run progpow-epoch -I "$out" "$root/tests/native/progpow-epoch.cpp"
-awk '
-  /^  static bool bundle_key_eq\(/ { copies++; copying = 1 }
-  copying { print }
-  copying && /^  }$/ && ++complete == 2 { copying = 0 }
-  END { if (copies != 1 || complete != 2 || copying) exit 1 }
-' "$root/sycl/kawpow/state.inc" > "$out/kawpow_bundle_key.inc"
+build_run progpow-epoch "$root/tests/native/progpow-epoch.cpp"
+extract_cpp kawpow_bundle_key.inc sycl/kawpow/state.inc '  static bool bundle_key_eq(' \
+  '  void ensure_period_bundle('
 build_run kawpow-bundle-key -UNDEBUG -pthread -I "$out" "$root/tests/native/kawpow-bundle-key.cpp"
 
 build_run pearlhash-seed "$root/tests/reference/pearlhash-seed.cpp"
@@ -157,32 +110,22 @@ build_run zhash-session "$root/tests/native/zhash-session.cpp"
 build_run zhash-session-hip -DMOM_SYCL_HAS_HIP "$root/tests/native/zhash-session.cpp"
 build_run zhash-session-intel -D__INTEL_LLVM_COMPILER -DMOM_ZHASH_INTEL_LATE_BUCKETS \
   "$root/tests/native/zhash-session.cpp"
+extract_cpp local_memory_fits.inc sycl/lib-internal.h 'inline bool sycl_local_memory_fits('
+extract_cpp equihash192_layout.inc sycl/equihash192-7/layout.h 'struct BucketLayout {'
+printf ';\n' >> "$out/equihash192_layout.inc"
+# The production slot count is a preprocessor-selected constant, so copy its whole conditional.
 awk '
-  /^inline bool sycl_local_memory_fits\(/ { copies++; copying = 1 }
-  copying { print }
-  copying && /^}$/ { copying = 0; complete++ }
-  END { if (copies != 1 || complete != 1 || copying) exit 1 }
-' "$root/sycl/lib-internal.h" > "$out/local_memory_fits.inc"
-awk '
-  /^struct BucketLayout \{$/ { copies++; copying = 1; print previous }
-  /^constexpr unsigned ProductionSlotsPerBucket = / && !copying { slots++; copying = 1; print previous }
-  copying { print }
-  copying && /^(};|#endif)$/ { copying = 0; complete++ }
-  { previous = $0 }
-  END { if (copies != 1 || slots != 1 || complete != 2 || copying) exit 1 }
-' "$root/sycl/equihash192-7/layout.h" > "$out/equihash192_layout.inc"
-awk '
-  /^unsigned equihash192_7_intensity\(/ { copies++; copying = 1 }
-  copying { print }
-  copying && /^}$/ { copying = 0; complete++ }
-  END { if (copies != 1 || complete != 1 || copying) exit 1 }
-' "$root/sycl/equihash192-7/equihash192-7.cpp" > "$out/equihash192_admission.inc"
-awk '
-  /^unsigned zhash_intensity\(/ { copies++; copying = 1 }
-  copying { print }
-  copying && /^}$/ { copying = 0; complete++ }
-  END { if (copies != 1 || complete != 1 || copying) exit 1 }
-' "$root/sycl/zhash/zhash.cpp" > "$out/zhash_admission.inc"
+  /^#if/ { group = ""; grouping = 1 }
+  grouping { group = group $0 "\n" }
+  /^#endif/ && grouping {
+    grouping = 0
+    if (group ~ /constexpr unsigned ProductionSlotsPerBucket =/) { printf "%s", group; found++ }
+  }
+  END { if (found != 1) exit 1 }
+' "$root/sycl/equihash192-7/layout.h" >> "$out/equihash192_layout.inc"
+extract_cpp equihash192_admission.inc sycl/equihash192-7/equihash192-7.cpp \
+  'unsigned equihash192_7_intensity('
+extract_cpp zhash_admission.inc sycl/zhash/zhash.cpp 'unsigned zhash_intensity('
 build_run equihash-admission -UNDEBUG -I "$out" "$root/tests/native/equihash-admission.cpp"
 build_run equihash-admission-hip -UNDEBUG -DMOM_SYCL_HAS_HIP -I "$out" \
   "$root/tests/native/equihash-admission.cpp"

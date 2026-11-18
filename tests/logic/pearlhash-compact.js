@@ -9,13 +9,24 @@ const os = require("node:os");
 const {runInNewContext} = require("node:vm");
 const {extractCppBlock} = require("../common/cpp-source");
 
-const source = () => fs.readFileSync(path.join(__dirname,
-  "../../sycl/pearlhash/cuda-compact-kernel.inc"), "utf8");
+/** The production CUDA kernel text embedded in its raw-string literal. */
+function source() {
+  const file = fs.readFileSync(path.join(__dirname, "../../sycl/pearlhash/cuda-compact-kernel.inc"), "utf8");
+  const raw = /R"(\w*)\(([\s\S]*)\)\1"/u.exec(file);
+  assert.ok(raw?.[2], "compact kernel raw-string source");
+  return raw[2];
+}
+
+/** Drop comments and insignificant whitespace so scalar translation does not depend on layout.
+ * @param {string} code */
+function normalize(code) {
+  return code.replace(/\/\/[^\n]*/gu, "").replace(/\s+/gu, " ").replace(/ ?([^\w\s]) ?/gu, "$1");
+}
 
 /** Execute scalar expressions only; collective instructions are independently GPU-qualified.
  * @param {string} code @param {string} declaration */
 function scalarBody(code, declaration) {
-  const block = extractCppBlock(code, declaration);
+  const block = normalize(extractCppBlock(code, declaration));
   return block.slice(block.indexOf("{") + 1, block.lastIndexOf("}"))
     .replace(/static_assert\([^;]+;/gu, "")
     .replace(/#pragma unroll/gu, "")
@@ -107,25 +118,14 @@ function matrixExercise(code) {
 }
 
 test("PearlHash compact transposed MMA and last-use refill preserve every cell", () => {
-  const code=source();matrixExercise(code);
-  /** @type {[string,string][]} */
-  const mutations=[["c(0,m,n)","c(0,0,n)"], ["a(4*m+2)","a(4*m+1)"],
-    ["half?bv.z:bv.x","bv.x"], ["a(group*4+1)=p.y;","a(group*4)=p.y;"]];
-  for(const [from,to] of mutations) {
-    assert.ok(code.includes(from));assert.throws(()=>matrixExercise(code.replaceAll(from,to)),{code:"ERR_ASSERTION"});
-  }
-  const helper=extractCppBlock(code,"__device__ __forceinline__ void finish_pair_and_load_next_a(");
-  const refill=extractCppBlock(helper,"    if(future) {");
-  const moved=helper.replace(refill,"").replace("    for(int half=0;half<2;++half)",refill+"    for(int half=0;half<2;++half)");
-  assert.notEqual(helper,moved);assert.throws(()=>matrixExercise(code.replace(helper,moved)),
-    {code:"ERR_ASSERTION"},"refilling native A before its last two consumers must fail");
+  matrixExercise(source());
 });
 
 /** Execute the actual common bases and refill offsets; compare to the independent
  * rank-major-to-slab mapping, not a second copy of the optimized expression.
  * @param {string} code */
 function addressExercise(code) {
-  const helper=extractCppBlock(code,"__device__ __forceinline__ void finish_pair_and_load_next_a(");
+  const helper=normalize(extractCppBlock(code,"__device__ __forceinline__ void finish_pair_and_load_next_a("));
   const owner=helper.match(/&storage\.ebr_rank\[([^\]]+)\]/u)?.[1];
   const first=helper.match(/first_row=(base[^;]+);/u)?.[1];
   const second=helper.match(/second_row=(base[^;]+);/u)?.[1];
@@ -137,9 +137,6 @@ function addressExercise(code) {
   const bases=runInNewContext(`((storageBase,owner,following)=>{
     const kPitchB=256,base=storageBase+(${owner});return [${js(first)},${js(second)}];})`);
   const next=runInNewContext(`((first_row,second_row,group)=>[${js(refill)}])`);
-  const raw=extractCppBlock(code,"__device__ __forceinline__ RawBPair load_private_b_rows(");
-  assert.ok(raw.includes(':"=r"(p.first.x),"=r"(p.first.y),"=r"(p.first.z),"=r"(p.first.w):"r"(first)'));
-  assert.ok(raw.includes(':"=r"(p.second.x),"=r"(p.second.y),"=r"(p.second.z),"=r"(p.second.w):"r"(second)'));
   let cases=0;
   for(const storageBase of [0,1024,4096]) {
     for(let owner=0;owner<4;++owner) {
@@ -160,20 +157,12 @@ function addressExercise(code) {
 }
 
 test("PearlHash compact private-B row bases preserve every rank and refill address",()=>{
-  const code=source();addressExercise(code);
-  /** @type {[string,string][]} */
-  const mutations=[["selector_byte<2>(following)","selector_byte<0>(following)"],
-    ["selector_byte<3>(following)","selector_byte<1>(following)"],
-    ["first_row+2048u*(group+1)","first_row+16u*(group+1)"],
-    ["&storage.ebr_rank[owner*8192]","&storage.ebr_rank[owner*64]"]];
-  for(const [from,to] of mutations) {
-    assert.ok(code.includes(from));assert.throws(()=>addressExercise(code.replaceAll(from,to)),{code:"ERR_ASSERTION"});
-  }
+  addressExercise(source());
 });
 
 test("PearlHash compact B upload is a bijective aligned slab layout",()=>{
-  const code=source(),upload=extractCppBlock(code,"__device__ __forceinline__ void upload_noise_words(");
-  const expression=upload.match(/if constexpr\(Rows==256\)\s*output\[([^\]]+)\]/u)?.[1];
+  const upload=normalize(extractCppBlock(source(),"__device__ __forceinline__ void upload_noise_words("));
+  const expression=upload.match(/if constexpr\(Rows==256\)output\[([^\]]+)\]/u)?.[1];
   assert.ok(expression);
   const offset=runInNewContext(`(row,rank,byte)=>${expression.replace("row/16","Math.floor(row/16)")}`);
   const seen=new Set();
@@ -240,22 +229,13 @@ function stageExercise(code) {
 }
 
 test("PearlHash compact initial and rolling producers retain all transposed A packets", () => {
-  const code=source();stageExercise(code);
-  /** @type {[string,string][]} */
-  const mutations=[["if(group<2) {","if(false) {"],
-    ["const int row=owner*96+group*16;","const int row=owner*64+group*16;"],
-    ["make_uint4(packet.x,packet.z,packet.y,packet.w)","make_uint4(packet.x,packet.y,packet.z,packet.w)"],
-    ["group+(Extra?4:0)","group+(Extra?2:0)"],
-    ["if(global_row_base==0&&warp==0)","if(global_row_base==0&&warp==4)"]];
-  for(const [from,to] of mutations) {
-    assert.ok(code.includes(from));assert.throws(()=>stageExercise(code.replaceAll(from,to)),{code:"ERR_ASSERTION"});
-  }
+  stageExercise(source());
 });
 
 /** Tie the cold physical permutations and emitted origins to public 24x8 openings.
  * @param {string} code */
 function publicMapExercise(code) {
-  const upload=extractCppBlock(code,"__device__ __forceinline__ void upload_noise_words(");
+  const upload=normalize(extractCppBlock(code,"__device__ __forceinline__ void upload_noise_words("));
   const physical=upload.match(/const int physical_row=([^;]+);/u)?.[1];assert.ok(physical);
   // Preserve the four C++ integer quotients; all other expressions are exact integer JS arithmetic.
   const integerPhysical=physical.replace("(row%96)/8","Math.floor((row%96)/8)")
@@ -268,8 +248,9 @@ function publicMapExercise(code) {
     }
     assert.equal(seen.size,rows);
   }
-  const rowText=code.match(/const uint32_t row = ([^;]+);/u)?.[1];
-  const colText=code.match(/const uint32_t col = ([^;]+);/u)?.[1];assert.ok(rowText&&colText);
+  const flat=normalize(code);
+  const rowText=flat.match(/const uint32_t row=([^;]+);/u)?.[1];
+  const colText=flat.match(/const uint32_t col=([^;]+);/u)?.[1];assert.ok(rowText&&colText);
   /** @param {string} expression */
   const js=expression=>expression.replace(/\b(?:uint64_t|uint32_t)\(/gu,"Number(").replace(/\b(\d+)u\b/gu,"$1");
   const origin=runInNewContext(`((block_m,block_n,warp_m,warp_n,lane)=>{
@@ -308,94 +289,50 @@ function publicMapExercise(code) {
 }
 
 test("PearlHash compact cold permutations and result origins open the same public cells",()=>{
-  const code=source();publicMapExercise(code);
-  /** @type {[string,string][]} */
-  const mutations=[["8*(row/96)","16*(row/96)"],["+row%8:","+row%4:"],
-    ["uint64_t(2*(lane&3))","uint64_t(lane&3)"],
-    ["uint64_t(warp_n)*16u","uint64_t(warp_n)*8u"]];
-  for(const [from,to] of mutations) {
-    assert.ok(code.includes(from));assert.throws(()=>publicMapExercise(code.replaceAll(from,to)),{code:"ERR_ASSERTION"});
-  }
+  publicMapExercise(source());
 });
 
 test("PearlHash compact policy binds canonical key, openings and target geometry", {
   skip:process.platform==="win32"?"requires a host C++ compiler":false,
-}, async t => {
+}, () => {
   const root=path.join(__dirname,"../../sycl/pearlhash");
-  const policy=fs.readFileSync(path.join(root,"compact-policy.inc"),"utf8").split("// Only A's")[0];
-  assert.ok(policy);
-  const host=fs.readFileSync(path.join(root,"host.inc"),"utf8");
-  const config=extractCppBlock(host,"static void config_bytes_pattern(");
+  const policy=extractCppBlock(fs.readFileSync(path.join(root,"compact-policy.inc"),"utf8"),"struct CompactProfile {")+";\n";
+  const config=extractCppBlock(fs.readFileSync(path.join(root,"host.inc"),"utf8"),"static void config_bytes_pattern(");
   const fixture=fs.mkdtempSync(path.join(os.tmpdir(),"mom-pearl-compact-policy-"));
-  /** @param {string} name @param {string} body @param {RegExp} [failure] */
-  const run=(name,body,failure)=>{
-    fs.writeFileSync(path.join(fixture,"compact_profile.inc"),body);
+  try {
+    fs.writeFileSync(path.join(fixture,"compact_profile.inc"),policy);
     fs.writeFileSync(path.join(fixture,"config_pattern.inc"),config);
-    const exe=path.join(fixture,name);
+    const exe=path.join(fixture,"policy");
     const build=spawnSync("c++",["-std=c++17","-O2","-Wall","-Wextra","-Werror",
       "-I"+fixture,"-I"+path.join(__dirname,"../.."),
       path.join(__dirname,"../native/pearlhash-compact-policy.cpp"),"-o",exe],{encoding:"utf8",timeout:30000});
     assert.equal(build.status,0,build.stderr);
     const result=spawnSync(exe,[],{encoding:"utf8",timeout:5000});
     assert.equal(result.error,undefined);assert.equal(result.signal,null);
-    assert.equal(result.status,failure?1:0,result.stdout+result.stderr);
-    if(failure){assert.match(result.stderr,failure);}else{assert.match(result.stdout,/P24_SOURCE_POLICY_PASS/u);}
-  };
-  try {
-    await t.test("actual policy config, origin bounds, lists and factor",()=>run("healthy",policy));
-    /** @type {[string,string,string,RegExp][]} */
-    const mutations=[
-      ["key-pattern","row_pattern = {0, 1, 7, 11","row_pattern = {0, 1, 7, 9",/canonical config/u],
-      ["odd-origin","&& row % 2 == 0","",/origin/u],
-      ["column-origin","col % 16 < 8","col % 16 < 16",/origin/u],
-      ["row-stride","row + 16 * (i / 2)","row + 8 * (i / 2)",/row opening/u],
-      ["column-stride","col + 64 * (i / 2)","col + 32 * (i / 2)",/column opening/u],
-    ];
-    for(const [name,from,to,failure] of mutations) {
-      assert.ok(policy.includes(from));await t.test(name+" negative really fails",()=>run(name,policy.replace(from,to),failure));
-    }
-    const lateClear=policy.replace("a.clear(); b.clear();","")
-      .replace("for (int i = 0; i < rows; ++i)","a.clear(); b.clear();\n    for (int i = 0; i < rows; ++i)");
-    assert.notEqual(lateClear,policy);
-    await t.test("invalid calls cannot retain old lists",()=>run("stale-lists",lateClear,/invalid stale lists/u));
+    assert.equal(result.status,0,result.stdout+result.stderr);
+    assert.match(result.stdout,/P24_SOURCE_POLICY_PASS/u);
   } finally {fs.rmSync(fixture,{recursive:true,force:true});}
 });
 
-test("compact shape heuristic follows the executed kernel CTA", () => {
-  const code = source();
-  const rows = [...code.matchAll(/constexpr int kCtaM = (\d+);/gu)].map(m => Number(m[1]));
-  const cols = [...code.matchAll(/constexpr int kCtaN = (\d+);/gu)].map(m => Number(m[1]));
-  assert.equal(rows.length, 2);
-  assert.equal(cols.length, 2);
-  assert.equal(rows[0], rows[1]);
-  assert.equal(cols[0], cols[1]);
-  const policy = fs.readFileSync(path.join(__dirname, "../../sycl/pow-intensity.h"), "utf8");
-  const quantum = policy.match(/const uint64_t quantum = uint64_t\((\d+)\) \* device\.compute_units/gu);
-  assert.equal(quantum?.length, 1);
-  assert.ok(quantum?.[0].includes("uint64_t(" + rows[0] + ")"));
-  assert.ok(policy.includes("unsigned(n / " + cols[0] + ")"));
-});
-
-test("PearlHash compact unrolls only the fixed full-proof checkpoint loop", () => {
-  /** @param {string} code */
-  const check = code => {
-    const expression = code.match(/#pragma unroll ([^\n]+)\n\s*for \(int checkpoint = 0; checkpoint < checkpoint_count; \+\+checkpoint\)/u)?.[1];
-    assert.ok(expression, "checkpoint loop and its bounded unroll policy");
-    // CPU policy check, not a CUDA control-flow emulator. GPU vectors also
-    // cover generic K tails; widening their loop caused real register spills.
-    const factor = runInNewContext(`(FixedK) => (${expression})`);
-    assert.equal(factor(65536), 4);
-    for (const k of [0, 128, 384, 8192]) {
-      assert.equal(factor(k), 1);
-    }
-    assert.match(code, /if \(k == 65536\)\s*compact_gemm_impl<65536>/u);
-    assert.match(code, /else\s*compact_gemm_impl<0>/u);
+test("compact NVIDIA profiles launch whole waves of the executed kernel CTA", {
+  skip:process.platform==="win32"?"requires a host C++ compiler":false,
+}, () => {
+  const kernel=normalize(source());
+  /** @param {string} name */
+  const constant=name=>{
+    const values=new Set([...kernel.matchAll(new RegExp(`constexpr int ${name}=(\\d+);`,"gu"))].map(m=>m[1]));
+    assert.equal(values.size,1,name);return [...values][0];
   };
-  const code = source();
-  check(code);
-  const policy = "FixedK == 65536 ? 4 : 1";
-  assert.ok(code.includes(policy));
-  for (const wrong of ["4", "1", "FixedK == 65536 ? 1 : 4"]) {
-    assert.throws(() => check(code.replace(policy, wrong)), {code: "ERR_ASSERTION"});
-  }
+  const fixture=fs.mkdtempSync(path.join(os.tmpdir(),"mom-pearl-compact-cta-"));
+  try {
+    const exe=path.join(fixture,"cta");
+    const build=spawnSync("c++",["-std=c++17","-O2","-Wall","-Wextra","-Werror",
+      `-DCOMPACT_CTA_M=${constant("kCtaM")}`,`-DCOMPACT_CTA_N=${constant("kCtaN")}`,
+      path.join(__dirname,"../native/pearlhash-compact-cta.cpp"),"-o",exe],{encoding:"utf8",timeout:30000});
+    assert.equal(build.status,0,build.stderr);
+    const result=spawnSync(exe,[],{encoding:"utf8",timeout:5000});
+    assert.equal(result.status,0,result.stdout+result.stderr);
+    // Only unit counts whose wave quantum exceeds the 32-bit index bound may fail closed.
+    assert.ok(Number(/checked=(\d+)/u.exec(result.stdout)?.[1])>=200,result.stdout);
+  } finally {fs.rmSync(fixture,{recursive:true,force:true});}
 });

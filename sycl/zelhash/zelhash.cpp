@@ -75,9 +75,10 @@ int zelhash(const unsigned, const uint32_t, const uint8_t* const input, const un
             const std::string& dev_str) {
   const bool filter_target = !is_test && !is_benchmark;
   if (!input || !solution_out || (filter_target && !target) ||
-      input_size != HEADER_LEN || intensity != 1)
+      input_size != HEADER_LEN || intensity != 1) {
     throw std::string(
       "zelhash requires input, output, a mining target, a 140-byte header, and intensity 1");
+  }
   State& state = state_for(dev_str);
   std::lock_guard<std::mutex> lock(state.mutex);
   state.ensure_io();
