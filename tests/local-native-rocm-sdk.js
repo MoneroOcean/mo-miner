@@ -63,6 +63,14 @@ function sourceFixture(paths) {
 }
 
 test.describe("Local Linux ROCm SDK slice", {skip: linuxX64 ? false : "Linux x64 build-only ROCm adapter"}, () => {
+  test("re-admits its own admitted context, as the auditors receive it, but not a redirected one", t => {
+    const f = fixture(t), context = localRocmSdkContext(f.context);
+    assert.deepEqual(localRocmSdkContext(context), context);
+    assert.throws(() => localRocmSdkContext({...context, source: {...context.source, llvmSdk: "/elsewhere"}}),
+      /do not match the exact admitted workspace paths/);
+    assert.throws(() => localRocmSdkContext({...context, extra: true}), /needs only an admitted source-LLVM stage result/);
+  });
+
   test("uses stable marked-workspace paths and admits only the exact source-LLVM context", t => {
     const f = fixture(t), context = localRocmSdkContext(f.context);
     assert.equal(context.workspace, f.workspace);

@@ -22,7 +22,7 @@ const sourceManifest = [
   "sycl/kawpow/keccak.inc",
 ];
 const windowsSystemLibraries = ["psapi", "shell32", "ole32", "uuid", "advapi32", "ws2_32", "ntdll", "shlwapi"];
-const linuxLinkFlags = ["-Wl,--gc-sections", "-Wl,--wrap=dlopen", "-Wl,--wrap=dlerror", "-static-libstdc++", "-static-libgcc"];
+const linuxLinkFlags = ["-Wl,--gc-sections", "-Wl,--wrap=dlopen", "-Wl,--wrap=dlerror", "-Wl,--wrap=dlsym,--wrap=dlvsym", "-static-libstdc++", "-static-libgcc"];
 
 test.describe("Original static compiler SDK planning", {skip: process.platform !== "linux"}, () => {
   const roots = Object.fromEntries(Object.keys(sdkComponents("compiler")).map(name => [name, "/inputs/" + name]));

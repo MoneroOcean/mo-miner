@@ -25,7 +25,7 @@ test.describe("Correctness test dispatcher", {concurrency: false}, () => {
     "tests/nvidia-compatibility.js", "tests/intel-device-selection.js", "tests/c29-seed-unroll.js",
     "tests/gpu-test-matrix-order.js", "tests/integrated-gpu-modes.js",
     "tests/nvrtc-installer.js",
-    "tests/pearlhash-f16-lowering.js", "tests/readme-performance.js",
+    "tests/pearlhash-f16-lowering.js", "tests/readme-performance.js", "tests/sorted-key-literals.js",
     "tests/benchmark-scripts.js", "tests/windows-command.js", "tests/pool-transport.js",
     "tests/helper-workers.js", "tests/release-archive.js", "tests/build-release.js", "tests/build-environment.js",
     "tests/bounded-native-ci.js", "tests/workflows.js",

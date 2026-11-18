@@ -7,6 +7,7 @@ const {localAcppSdkPaths, localAcppSdkContextFromWorkspace, localAcppSdkContext,
   assertLocalAcppSdkBindings, prepareLocalAcppSources, admitLocalAcppGpuArtifacts, buildLocalLinuxAcppSdk} = require("../scripts/build-local-native-acpp-sdk");
 const {staticSyclSdkPlan} = require("../scripts/build-native-sycl-sdk");
 const {fileHash} = require("../scripts/build-source-inputs");
+const {linuxGlibcBaseline, linuxSysrootReceiptSha256} = require("../scripts/native-linux-sysroot");
 
 const repo = fs.realpathSync(path.resolve(__dirname, ".."));
 
@@ -169,7 +170,8 @@ describe("Local static ACPP SDK slice", {skip: process.platform !== "linux" || p
           cxx: path.join(llvmSdk, "bin/clang++"), flags: [], links: ["-Wl,--whole-archive", hsaRuntime, "-Wl,--no-whole-archive"],
           libraries: [...hipLibraries, comgr.archive, ...staticLibraries, "/openmp/libomp.a"], comgr},
         hostCompilers: {cc: tools.cc, cxx: tools.cxx}, hostCompilerInputs: {}, compilerVersions: {}, fingerprints,
-        libraries: recordLibraries, recipe: {}, buildOnly: true, publicationQualified: false, scope: "test"},
+        libraries: recordLibraries, recipe: {}, buildOnly: true, publicationQualified: false, scope: "test",
+        sysroot: {baseline: linuxGlibcBaseline, receiptSha256: linuxSysrootReceiptSha256}},
       sdk = /** @type {any} */ ({
         receipt: selected.paths.sdkReceipt, receiptSha256: "a".repeat(64), backend: "cuda-hip", revision: record.revision,
         cudaVersion: 12060, source: selected.paths.preparedCheckout, build: path.join(selected.paths.sdk, "build"),
@@ -177,6 +179,8 @@ describe("Local static ACPP SDK slice", {skip: process.platform !== "linux" || p
         links: ["-Wl,--whole-archive", hsaRuntime, "-Wl,--no-whole-archive"], resolvedLinks: {},
         files: {...recordLibraries, [openmpArchive]: fileHash(openmpArchive), ...fingerprints}, pathBindings: {}, comgr, openmp});
     assert.equal(assertLocalAcppSdkBindings(f.context, sdk, record, tools, cuda, inputs), sdk);
+    assert.throws(() => assertLocalAcppSdkBindings(f.context, sdk, {...record, sysroot: {...record.sysroot, receiptSha256: "0".repeat(64)}},
+      tools, cuda, inputs), /not built against the pinned glibc/);
     assert.throws(() => assertLocalAcppSdkBindings(f.context, sdk, {...record, inputs: {...record.inputs,
       comgr: {...comgr, receipt: path.join(f.root, "foreign-comgr.json")}}}, tools, cuda, inputs), /does not bind/);
     assert.throws(() => assertLocalAcppSdkBindings(f.context, sdk, {...record, fingerprints: {

@@ -488,7 +488,7 @@ function buildLocalNativeSupportSdk(context, dependencies = {}) {
   admitSupport("hermes-source", paths, invoke, dependencies);
   if (hermesReused) {admitSupport("hermes-sdk", paths, invoke, dependencies);} else {
     const command = ciSupport.hermesBuildCommand(/** @type {Parameters<typeof ciSupport.hermesBuildCommand>[0]} */ (hermes), support.hermes, String(jobs), linuxSysrootToolchain(env));
-    invoke("static Hermes SDK producer", process.execPath, [producer(command.script), ...command.args]);
+    invoke("static Hermes SDK producer", process.execPath, [path.join(repo, command.script), ...command.args]);
     admitSupport("hermes-sdk", paths, invoke, dependencies);
   }
 
@@ -505,7 +505,7 @@ function buildLocalNativeSupportSdk(context, dependencies = {}) {
   if (ioReused) {admitIo(ioPaths, {cmake: support.cmake, ninja: support.ninja, openssl: support.openssl});} else {
     const command = ioCommands[0];
     if (!command) {throw new Error("CI I/O SDK producer command is missing");}
-    invoke("static I/O SDK producer", process.execPath, [producer(command.script), ...command.args]);
+    invoke("static I/O SDK producer", process.execPath, [path.join(repo, command.script), ...command.args]);
     admitIo(ioPaths, {cmake: support.cmake, ninja: support.ninja, openssl: support.openssl});
   }
   const opensslReused = existingDirectory(paths.opensslSdk, "Static OpenSSL SDK");
@@ -513,7 +513,7 @@ function buildLocalNativeSupportSdk(context, dependencies = {}) {
   if (opensslReused) {admitOpenSsl(ioPaths, support.openssl);} else {
     const command = ioCommands[1];
     if (!command) {throw new Error("CI OpenSSL SDK producer command is missing");}
-    invoke("static OpenSSL SDK producer", process.execPath, [producer(command.script), ...command.args]);
+    invoke("static OpenSSL SDK producer", process.execPath, [path.join(repo, command.script), ...command.args]);
     admitOpenSsl(ioPaths, support.openssl);
   }
   admitSupport("io-openssl", paths, invoke, dependencies);
@@ -528,7 +528,7 @@ function buildLocalNativeSupportSdk(context, dependencies = {}) {
     const state = /** @type {Parameters<typeof ciSupport.zstdBuildCommand>[0]} */ ({source: paths.zstdSource,
         archive: path.join(paths.zstdSource, "zstd-" + zstdPin.version + ".tar.gz"), sdkRoot: paths.zstdSdk}),
       command = ciSupport.zstdBuildCommand(state, paths.zstdTools);
-    invoke("static zstd SDK producer", process.execPath, [producer(command.script), ...command.args]);
+    invoke("static zstd SDK producer", process.execPath, [path.join(repo, command.script), ...command.args]);
     admitSupport("zstd-sdk", paths, invoke, dependencies);
   }
 
@@ -538,7 +538,7 @@ function buildLocalNativeSupportSdk(context, dependencies = {}) {
     sdkRoot: paths.openmpSdk, toolsFile: paths.openmpTools});
   if (openmpReused) {admitSupport("openmp-sdk", paths, invoke, dependencies);} else {
     const command = ciSupport.openmpBuildCommand(openmpState);
-    invoke("static OpenMP SDK producer", process.execPath, [producer(command.script), ...command.args]);
+    invoke("static OpenMP SDK producer", process.execPath, [path.join(repo, command.script), ...command.args]);
     admitSupport("openmp-sdk", paths, invoke, dependencies);
   }
   return {workspace: root, linuxSources: paths.linuxSources, hermesSdk: paths.hermesSdk, ioSdk: paths.ioSdk, opensslSdk: paths.opensslSdk,

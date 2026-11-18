@@ -8,7 +8,7 @@ const {nativeSdkEnvironment} = require("./build-environment");
 const {isStaticArchive, nativeDependencies} = require("./native-audit");
 const {archiveName, archiveSha256, tarTool, verifyArchiveCatalog} = require("./native-llvm-sdk");
 const {verifyBuildArchives} = require("./fetch-native-sdk-sources");
-const {requireLinuxSysroot, linuxSysrootRecord, verifyLinuxSysrootRecord} = require("./native-linux-sysroot");
+const {requireLinuxSysroot, linuxSysrootRecord, verifyLinuxSysrootRecord, compilerIdentityText} = require("./native-linux-sysroot");
 
 const repo = path.resolve(__dirname, ".."), sourceRootName = "llvm-project-21.1.8.src";
 /** @typedef {"cc" | "cmake" | "cxx" | "ninja" | "readelf" | "tar"} ToolName */
@@ -288,7 +288,7 @@ function capture(file, args, env, timeout) {
   if (result.error || result.signal || result.status !== 0 || typeof result.stdout !== "string" || typeof result.stderr !== "string") {
     throw new Error("OpenMP tool command failed: " + path.basename(file), {cause: result.error});
   }
-  const output = (result.stdout || "") + (result.stderr || "");
+  const output = compilerIdentityText((result.stdout || "") + (result.stderr || ""));
   if (!output.trim() || Buffer.byteLength(output) > (1 << 20)) {throw new Error("OpenMP tool version output is empty or excessive");}
   return {firstLine: output.trim().split(/\r?\n/, 1)[0] || "", outputSha256: createHash("sha256").update(output).digest("hex")};
 }

@@ -12,6 +12,7 @@ const {staticSyclSdkPlan} = require("./build-native-sycl-sdk");
 const {nativeStaticRuntimeInputs} = require("./native-release-sdk-inputs");
 const {nativeOpenmpInputs} = require("./build-native-openmp-sdk");
 const {archiveName} = require("./native-llvm-sdk");
+const {verifyLinuxSysrootRecord} = require("./native-linux-sysroot");
 const {fileHash, readBuildJson} = require("./build-source-inputs");
 const {generatedIncludeInventory} = require("./native-windows-gpu-config");
 
@@ -151,7 +152,7 @@ function assertLocalAcppSdkBindings(context, sdk, record, tools, cuda, inputs) {
     cudaStatic = cuda.cuda?.staticRuntime, fingerprints = record.fingerprints, libraryHashes = record.libraries,
     hipLibraries = ["libamdhip64.a", "libhiprtc.a", "libhsakmt-staticdrm.a", "libelf.a", "libdrm_amdgpu.a", "libdrm.a", "libnuma.a"]
       .map(name => path.join(rocmResult.rocmSdk, "lib", name)), hsaRuntime = path.join(rocmResult.rocmSdk, "lib/libhsa-runtime64.a");
-  const expectedTopLevel = "backend,buildOnly,compilerVersions,cudaVersion,fingerprints,hostCompilerInputs,hostCompilers,inputs,libraries,publicationQualified,recipe,revision,scope,version";
+  const expectedTopLevel = "backend,buildOnly,compilerVersions,cudaVersion,fingerprints,hostCompilerInputs,hostCompilers,inputs,libraries,publicationQualified,recipe,revision,scope,sysroot,version";
   if (Object.keys(record).sort().join(",") !== expectedTopLevel || record.version !== 1 || record.backend !== "cuda-hip" ||
       record.buildOnly !== true || record.publicationQualified !== false || record.cudaVersion !== 12060 ||
       record.revision !== "da2463e45aa90aa36306c45abcfc05b87de51bc6" || record.inputs?.source !== paths.preparedCheckout ||
@@ -181,6 +182,7 @@ function assertLocalAcppSdkBindings(context, sdk, record, tools, cuda, inputs) {
         fingerprints?.[row.path] !== row.sha256 || libraryHashes?.[row.path] !== row.sha256 || sdk.files[row.path] !== row.sha256)) {
     throw new Error("Local ACPP SDK does not bind the exact admitted CUDA/HIP, OpenMP and source roots");
   }
+  verifyLinuxSysrootRecord(record.sysroot, "Local ACPP SDK");
   return sdk;
 }
 
@@ -286,7 +288,7 @@ function runLocalAcppSdkChild(context, tools, dependencies = {}) {
   }
   if (outputExisted) {auditSdk(context, suppliedTools);} else {
     const command = localAcppSdkBuildCommand(context, suppliedTools, env);
-    run(process.execPath, [producer(command.script), ...command.args], {label: "Static combined CUDA/HIP ACPP SDK", env: command.env, cwd: repo});
+    run(process.execPath, [path.join(repo, command.script), ...command.args], {label: "Static combined CUDA/HIP ACPP SDK", env: command.env, cwd: repo});
     auditSdk(context, suppliedTools);
     fs.writeFileSync(capture, JSON.stringify(localAcppGpuArtifacts(selected), null, 2) + "\n", {flag: "wx", mode: 0o600});
   }

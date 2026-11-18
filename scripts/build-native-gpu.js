@@ -103,7 +103,11 @@ function oneapiCompilerInputs(admitted, spawn = spawnSync) {
   const files = oneapiCompileHelpers.map(queryHelper);
   const configs = [...admitted.version.matchAll(/^\s*Configuration file:\s*(.*?)\s*$/gm)].map(match => match[1] || "");
   if (configs.length > 1 || configs.some(file => !file)) {throw new Error("Selected oneAPI compiler has ambiguous configuration evidence");}
-  if (configs.length) {files.push(admittedFile(configs[0] || "", "configuration", false));} else {
+  // The glibc sysroot's compiler.cfg lives outside the compiler root; admit it only as the selected sysroot's own file.
+  const sysroot = process.env["MOM_LINUX_SYSROOT"] ? requireLinuxSysroot(process.env) : undefined;
+  if (configs.length && sysroot && path.resolve(configs[0] || "") === sysroot.compilerConfig) {files.push(sysroot.compilerConfig);} else if (configs.length) {
+    files.push(admittedFile(configs[0] || "", "configuration", false));
+  } else {
     const adjacent = path.join(path.dirname(realCompiler), "icpx.cfg");
     if (fs.existsSync(adjacent)) {files.push(admittedFile(adjacent, "configuration", false));}
   }

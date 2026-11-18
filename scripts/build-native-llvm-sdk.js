@@ -8,7 +8,7 @@ const {fileHash, buildFileInputs, readBuildJson} = require("./build-source-input
 const {isStaticArchive} = require("./native-audit");
 const {archiveName, archiveSha256, tarTool, sourceDirectories, llvmSourceSnapshot, verifyArchiveCatalog,
   llvmAmdgpulibCallsCompileOptionsShim, verifyCmakeVersion} = require("./native-llvm-sdk");
-const {applyLinuxSysrootEnvironment, requireLinuxSysroot, linuxSysrootRecord, verifyLinuxSysrootRecord} = require("./native-linux-sysroot");
+const {applyLinuxSysrootEnvironment, requireLinuxSysroot, linuxSysrootRecord, verifyLinuxSysrootRecord, compilerIdentityText} = require("./native-linux-sysroot");
 
 const repo = path.resolve(__dirname, "..");
 // Source consumers need drivers and utilities as well as archives. These SDK tools are not release files.
@@ -424,7 +424,7 @@ function verifyToolIdentity(tools) {
   for (const [name, file] of Object.entries(tools)) {
     const realpath = fs.realpathSync(file), stat = fs.statSync(realpath);
     if (!stat.isFile()) {throw new Error("LLVM build tool is not a regular file: " + file);}
-    const version = toolVersion(file);
+    const version = compilerIdentityText(toolVersion(file));
     if (name === "cmake") {verifyCmakeVersion(version);}
     if (["cc", "cxx"].includes(name) && !/2026\.2(?:\.|\b)/.test(version)) {throw new Error("LLVM 21 SDK requires Intel compiler 2026.2: " + file);}
     rows[name] = {path: file, realpath, linkTarget: fs.lstatSync(file).isSymbolicLink() ? fs.readlinkSync(file) : null,
@@ -567,7 +567,8 @@ function verifyConfigured(output) {
       receipt.inputFiles[producerFile] !== receipt.producerSnapshot.sha256 ||
       !isDeepStrictEqual(receipt.sourceState, llvmSourceSnapshot(plan.source)) ||
       !buildInputsCurrent(receipt.inputFiles) ||
-      !isDeepStrictEqual(receipt.toolIdentity, verifyToolIdentity(plan.tools)) ||
+      !isDeepStrictEqual(Object.fromEntries(Object.entries(receipt.toolIdentity || {}).map(([name, row]) =>
+        [name, {...row, version: compilerIdentityText(String(row?.version))}])), verifyToolIdentity(plan.tools)) ||
       !isDeepStrictEqual(receipt.configure.files, buildFileInputs(Object.keys(receipt.configure.files || {})))) {
     throw new Error("LLVM 21 configure receipt is stale or incomplete; use a new output directory");
   }

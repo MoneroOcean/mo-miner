@@ -50,7 +50,7 @@ const logicSuite = [
   "tests/nvidia-compatibility.js", "tests/intel-device-selection.js", "tests/c29-seed-unroll.js", "tests/gpu-test-matrix-order.js", "tests/integrated-gpu-modes.js",
   "tests/nvrtc-installer.js",
   "tests/pearlhash-f16-lowering.js",
-  "tests/readme-performance.js", "tests/benchmark-scripts.js", "tests/windows-command.js",
+  "tests/readme-performance.js", "tests/sorted-key-literals.js", "tests/benchmark-scripts.js", "tests/windows-command.js",
   "tests/pool-transport.js", "tests/helper-workers.js", "tests/release-archive.js",
   "tests/build-release.js", "tests/native-build-release.js", "tests/native-sdk-fetch.js", "tests/native-ci.js", "tests/native-ci-jobs.js", "tests/workflows.js", "tests/native-windows-llvm-state.js", "tests/native-windows-llvm-ci-job.js", "tests/native-windows-host-sdk-inputs.js", "tests/native-windows-gpu-config.js", "tests/native-windows-gpu-ci-job.js", "tests/native-linux-llvm-tools.js", "tests/native-gnu-headers.js", "tests/native-jit-base.js", "tests/native-sycl-sdk.js", "tests/native-dpcpp-sdk.js", "tests/native-dpcpp-component.js", "tests/native-comgr-sdk.js", "tests/native-rocm-host-runtime.js", "tests/native-rocm-resources.js", "tests/native-comgr-link.js", "tests/native-windows-sycl.js",
   "tests/native-release-sdk-inputs.js", "tests/native-acpp-sources.js", "tests/native-acpp-cache.js", "tests/native-acpp-allocation.js", "tests/native-windows-llvm-sdk.js", "tests/native-windows-comgr-sdk.js", "tests/native-windows-acpp-sdk.js", "tests/native-windows-host-component.js", "tests/native-windows-hiprtc-sdk.js", "tests/native-windows-amdhip.js", "tests/native-windows-jit-ci-job.js", "tests/native-windows-jit-resources.js", "tests/native-llvm-sdk.js", "tests/bounded-native-ci.js",

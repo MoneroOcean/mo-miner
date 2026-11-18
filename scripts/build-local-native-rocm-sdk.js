@@ -50,10 +50,12 @@ function localRocmSdkContextFromWorkspace(workspace) {
     buildInputs: paths.buildInputs, llvmSdk: paths.llvmSdk}};
 }
 
-/** Reject fabricated, redirected, or cross-workspace prior-stage results.
+/** Reject fabricated, redirected, or cross-workspace prior-stage results. Also accepts this
+ * function's own result (callers pass it on to the auditors), re-validating its source paths.
  * @param {unknown} value */
 function localRocmSdkContext(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).join(",") !== "source") {
+  const keys = value && typeof value === "object" && !Array.isArray(value) ? Object.keys(value).sort().join(",") : "";
+  if (keys !== "source" && keys !== "paths,source,workspace") {
     throw new Error("Local ROCm SDK needs only an admitted source-LLVM stage result");
   }
   const row = /** @type {{source?:{workspace?:unknown,compilerFetch?:unknown,compilerSources?:unknown,buildInputs?:unknown,llvmSdk?:unknown}}} */ (value),
@@ -126,7 +128,7 @@ function auditLocalHipHeaders(state, tools, git = "/usr/bin/git") {
   const packagePaths = Object.keys(include).map(name => path.join(state.hipIncludeRoot, ...name.split("/")));
   for (const file of packagePaths) {regularFile(file, "ROCm HIP header package member", true);}
   const patch = record.patch, patchSource = path.join(repo, "scripts/patches/rocm-hip-headers-only.patch");
-  if (!patch || Object.keys(patch).sort().join(",") !== "applyLog,checkLog,originalSha256,path,patchedSha256,sha256,stripComponents,target" ||
+  if (!patch || Object.keys(patch).sort().join(",") !== "applyLog,checkLog,originalSha256,patchedSha256,path,sha256,stripComponents,target" ||
       patch.path !== "patches/rocm-hip-headers-only.patch" || patch.sha256 !== fileHash(patchSource) || patch.stripComponents !== 2 ||
       patch.target !== "source/clr-hipamd/CMakeLists.txt" || !/^[a-f0-9]{64}$/.test(patch.originalSha256 || "") ||
       patch.patchedSha256 !== clr["CMakeLists.txt"] || patch.checkLog !== "patches/check.json" || patch.applyLog !== "patches/apply.json") {

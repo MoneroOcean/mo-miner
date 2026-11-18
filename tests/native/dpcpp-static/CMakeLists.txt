@@ -305,7 +305,7 @@ if(MOM_DPCPP_OPENCL_SOURCE)
       target_compile_definitions(${probe} PRIVATE UR_STATIC_OPENCL_ICD MOM_NATIVE_OPENCL_LINKED)
     endif()
     target_link_libraries(${probe} PRIVATE OpenCL unified-runtime::headers unified-runtime::common Threads::Threads dl)
-    target_link_options(${probe} PRIVATE -Wl,--wrap=dlopen -Wl,--wrap=dlerror -static-libstdc++ -static-libgcc)
+    target_link_options(${probe} PRIVATE -Wl,--wrap=dlopen -Wl,--wrap=dlerror -Wl,--wrap=dlsym,--wrap=dlvsym -static-libstdc++ -static-libgcc)
     add_dependencies(native-dpcpp-core ${probe})
   endforeach()
   # A loader spy exercises actual Khronos ICD forwarding without loading any GPU driver.
@@ -313,7 +313,7 @@ if(MOM_DPCPP_OPENCL_SOURCE)
       "${MOM_SOURCE_REPO}/runtime/driver-library.cpp")
   target_compile_definitions(native-opencl-driver PRIVATE MOM_TEST_KHRONOS_ICD)
   target_link_libraries(native-opencl-driver PRIVATE OpenCL Threads::Threads dl)
-  target_link_options(native-opencl-driver PRIVATE -Wl,--wrap=dlopen -Wl,--wrap=dlerror -static-libstdc++ -static-libgcc)
+  target_link_options(native-opencl-driver PRIVATE -Wl,--wrap=dlopen -Wl,--wrap=dlerror -Wl,--wrap=dlsym,--wrap=dlvsym -static-libstdc++ -static-libgcc)
   add_dependencies(native-dpcpp-core native-opencl-driver)
 endif()
 if(MOM_DPCPP_LEVEL_ZERO_SOURCE)
@@ -321,18 +321,18 @@ if(MOM_DPCPP_LEVEL_ZERO_SOURCE)
   add_executable(native-level-zero-driver "${MOM_SOURCE_REPO}/tests/reference/native-level-zero-static.cpp"
       "${MOM_SOURCE_REPO}/runtime/driver-library.cpp")
   target_link_libraries(native-level-zero-driver PRIVATE LevelZeroLoader dl pthread m)
-  target_link_options(native-level-zero-driver PRIVATE -Wl,--wrap=dlopen -Wl,--wrap=dlerror -static-libstdc++ -static-libgcc)
+  target_link_options(native-level-zero-driver PRIVATE -Wl,--wrap=dlopen -Wl,--wrap=dlerror -Wl,--wrap=dlsym,--wrap=dlvsym -static-libstdc++ -static-libgcc)
   add_executable(native-umf-static "${MOM_SOURCE_REPO}/tests/reference/native-umf-static.cpp"
       "${MOM_SOURCE_REPO}/runtime/driver-library.cpp")
   target_link_libraries(native-umf-static PRIVATE umf::umf LevelZeroLoader dl pthread m)
   target_include_directories(native-umf-static PRIVATE "${LEVEL_ZERO_INCLUDE_DIR}")
-  target_link_options(native-umf-static PRIVATE -Wl,--wrap=dlopen -Wl,--wrap=dlerror -Wl,--wrap=zeMemAllocHost
+  target_link_options(native-umf-static PRIVATE -Wl,--wrap=dlopen -Wl,--wrap=dlerror -Wl,--wrap=dlsym,--wrap=dlvsym -Wl,--wrap=zeMemAllocHost
       -Wl,--wrap=zeMemGetAllocProperties -Wl,--wrap=zeMemFree -static-libstdc++ -static-libgcc)
   add_dependencies(native-dpcpp-core native-umf-static native-level-zero-driver)
 endif()
 target_link_libraries(native-dpcpp-core PRIVATE -Wl,--whole-archive mom-sycl-static
     -Wl,--no-whole-archive UnifiedRuntimeLoader dl pthread m)
-target_link_options(native-dpcpp-core PRIVATE -Wl,--no-gc-sections -Wl,--wrap=dlopen -Wl,--wrap=dlerror -static-libstdc++ -static-libgcc)
+target_link_options(native-dpcpp-core PRIVATE -Wl,--no-gc-sections -Wl,--wrap=dlopen -Wl,--wrap=dlerror -Wl,--wrap=dlsym,--wrap=dlvsym -static-libstdc++ -static-libgcc)
 if(MOM_DPCPP_LEVEL_ZERO_SOURCE OR MOM_DPCPP_CUDA_SDK OR MOM_DPCPP_OPENCL_SOURCE)
   add_executable(native-static-adapter-selection
       "${MOM_SOURCE_REPO}/tests/reference/native-static-adapter-selection.cpp"
@@ -343,7 +343,7 @@ if(MOM_DPCPP_LEVEL_ZERO_SOURCE OR MOM_DPCPP_CUDA_SDK OR MOM_DPCPP_OPENCL_SOURCE)
   target_include_directories(native-static-adapter-selection PRIVATE
       "${MOM_DPCPP_SOURCE}/unified-runtime/source/loader"
       "${MOM_DPCPP_SOURCE}/unified-runtime/source/common")
-  target_link_options(native-static-adapter-selection PRIVATE -Wl,--wrap=dlopen -Wl,--wrap=dlerror -static-libstdc++ -static-libgcc)
+  target_link_options(native-static-adapter-selection PRIVATE -Wl,--wrap=dlopen -Wl,--wrap=dlerror -Wl,--wrap=dlsym,--wrap=dlvsym -static-libstdc++ -static-libgcc)
   add_dependencies(native-static-adapter-selection ur_loader)
   add_dependencies(native-dpcpp-core native-static-adapter-selection)
 endif()

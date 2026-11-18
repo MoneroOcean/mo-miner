@@ -391,24 +391,24 @@ test.describe("local Linux static support SDK bootstrap slice", {skip: process.p
     const hermes = ciSupport.hermesBuildCommand(/** @type {Parameters<typeof ciSupport.hermesBuildCommand>[0]} */ (/** @type {unknown} */
         ({source: paths.hermesSource, sdkRoot: paths.hermesSdk})), support.hermes, "2"),
       hermesCall = call("static Hermes SDK producer");
-    assert.equal(hermesCall?.[1], path.join(repo, "scripts", hermes.script)); assert.deepEqual(hermesCall?.slice(2), hermes.args);
+    assert.equal(hermesCall?.[1], path.join(repo, hermes.script)); assert.ok(fs.existsSync(hermesCall?.[1] || ""), "producer script exists"); assert.deepEqual(hermesCall?.slice(2), hermes.args);
     const ioPaths = /** @type {Parameters<typeof ciSupport.ioOpenSslBuildCommands>[0]} */ (/** @type {unknown} */
         ({env: {}, source: f.buildInputs, ioSource: paths.ioSource, ioSdk: paths.ioSdk,
           opensslSdk: paths.opensslSdk, opensslTools: paths.opensslTools})),
       ioCommands = ciSupport.ioOpenSslBuildCommands(ioPaths, support.cmake, support.ninja, support.openssl, "2"),
       ioCall = call("static I/O SDK producer"), opensslCall = call("static OpenSSL SDK producer");
-    assert.equal(ioCall?.[1], path.join(repo, "scripts", ioCommands[0]?.script || "")); assert.deepEqual(ioCall?.slice(2), ioCommands[0]?.args);
-    assert.equal(opensslCall?.[1], path.join(repo, "scripts", ioCommands[1]?.script || "")); assert.deepEqual(opensslCall?.slice(2), ioCommands[1]?.args);
+    assert.equal(ioCall?.[1], path.join(repo, ioCommands[0]?.script || "")); assert.ok(fs.existsSync(ioCall?.[1] || ""), "producer script exists"); assert.deepEqual(ioCall?.slice(2), ioCommands[0]?.args);
+    assert.equal(opensslCall?.[1], path.join(repo, ioCommands[1]?.script || "")); assert.ok(fs.existsSync(opensslCall?.[1] || ""), "producer script exists"); assert.deepEqual(opensslCall?.slice(2), ioCommands[1]?.args);
     assert.deepEqual(JSON.parse(fs.readFileSync(paths.opensslTools, "utf8")), {version: 1, jobs: 2, tools: support.openssl});
     const zstdState = /** @type {Parameters<typeof ciSupport.zstdBuildCommand>[0]} */ ({source: paths.zstdSource,
         archive: path.join(paths.zstdSource, "zstd-1.5.7.tar.gz"), sdkRoot: paths.zstdSdk, toolsFile: paths.zstdTools}),
       zstd = ciSupport.zstdBuildCommand(zstdState, paths.zstdTools), zstdCall = call("static zstd SDK producer");
-    assert.equal(zstdCall?.[1], path.join(repo, "scripts", zstd.script)); assert.deepEqual(zstdCall?.slice(2), zstd.args);
+    assert.equal(zstdCall?.[1], path.join(repo, zstd.script)); assert.ok(fs.existsSync(zstdCall?.[1] || ""), "producer script exists"); assert.deepEqual(zstdCall?.slice(2), zstd.args);
     assert.deepEqual(JSON.parse(fs.readFileSync(paths.zstdTools, "utf8")), {version: 1, jobs: 4, tools: support.zstd});
     const openmpState = /** @type {Parameters<typeof ciSupport.openmpBuildCommand>[0]} */ ({source: f.buildInputs,
         archive: path.join(f.buildInputs, archiveName), sdkRoot: paths.openmpSdk, toolsFile: paths.openmpTools}),
       openmp = ciSupport.openmpBuildCommand(openmpState), openmpCall = call("static OpenMP SDK producer");
-    assert.equal(openmpCall?.[1], path.join(repo, "scripts", openmp.script)); assert.deepEqual(openmpCall?.slice(2), openmp.args);
+    assert.equal(openmpCall?.[1], path.join(repo, openmp.script)); assert.ok(fs.existsSync(openmpCall?.[1] || ""), "producer script exists"); assert.deepEqual(openmpCall?.slice(2), openmp.args);
     assert.deepEqual(JSON.parse(fs.readFileSync(paths.openmpTools, "utf8")), {version: 1, jobs: 2, tools: support.openmp});
     assert.ok(mocked.calls.every(row => row.child[0] === node));
     assert.ok(mocked.calls.some(row => row.label === "LLVM 21 source SDK re-admission" && row.child[2] === "--audit-support" && row.child[3] === "llvm-sdk"));
