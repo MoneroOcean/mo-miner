@@ -9,7 +9,7 @@ const assert = require("node:assert/strict");
 const {fileHash} = require("../scripts/build-source-inputs");
 const {coffSectionPayloads} = /** @type {{coffSectionPayloads: (file: string) => Array<{number: number, bytes: number, virtualSize: number, characteristics: number, sha256: string}>}} */ (require("../scripts/native-compiler-isolation"));
 const {profileGateNames, windowsWrapperPlan, inspectWindowsWrapper, transformWindowsWrapper, extractSpecializationIds, verifyWindowsHostRetention, verifySpecializationIds, windowsDeviceLinkArgs} = require("../scripts/native-windows-wrapper");
-const {deviceLinkArgs} = require("../scripts/build-native-dpcpp-probe");
+const {deviceLinkArgs} = require("../scripts/build-native-gpu");
 const gyp = fs.readFileSync(path.join(__dirname, "../binding.gyp"), "utf8");
 
 /** @typedef {{llvmObjcopy: string, llvmReadobj: string, llvmNm: string}} WrapperTools */

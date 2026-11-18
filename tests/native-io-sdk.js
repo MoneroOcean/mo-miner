@@ -81,7 +81,7 @@ test.describe("Native I/O SDK admission", () => {
   });
   test("the actual controller CLI rejects incomplete I/O inputs without creating a compiler workspace", {skip: process.platform !== "linux"}, t => {
     const {root, receipt, save} = fixture(t), output = path.join(root, "output"); fs.mkdirSync(output); delete receipt.artifacts["include/uv.h"]; save();
-    const result = spawnSync(process.execPath, [path.resolve(__dirname, "../scripts/probe-native-controller.js"), "/missing/hermes", "/missing/build", output],
+    const result = spawnSync(process.execPath, [path.resolve(__dirname, "../scripts/build-native-application.js"), "/missing/hermes", "/missing/build", output],
       {encoding: "utf8", timeout: 15000, env: {...process.env, MOM_AOT_IO_SDK: root}});
     assert.equal(result.status, 1); assert.match(result.stderr, /Incomplete native I\/O SDK/); assert.deepEqual(fs.readdirSync(output), []);
   });

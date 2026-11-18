@@ -29,7 +29,7 @@ describe("Windows native CI tool preparation", () => {
     const action = fs.readFileSync(path.join(root, ".github/actions/setup/action.yml"), "utf8"),
       value = /\bMOM_DEV_WORKSPACE="([^"]+)"/.exec(action)?.[1];
     assert.ok(value, "the setup action passes an explicit install-dev.sh workspace");
-    const basename = path.posix.basename(value.replace(/\$GITHUB_RUN_(?:ID|ATTEMPT)/g, "1"));
+    const basename = path.posix.basename(value);
     assert.match(basename, new RegExp(workspaceGuard[1]));
   });
 

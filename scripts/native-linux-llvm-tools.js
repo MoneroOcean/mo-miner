@@ -5,7 +5,7 @@
 const fs = require("node:fs"), path = require("node:path"), {isDeepStrictEqual} = require("node:util");
 const {fileHash, sourceInputs, verifySourceInputs, readBuildJson} = require("./build-source-inputs");
 const {archiveName, archiveSha256} = require("./native-llvm-sdk");
-const {verifyLinuxLlvmAdmission} = require("./build-native-llvm21-sdk");
+const {verifyLinuxLlvmAdmission} = require("./build-native-llvm-sdk");
 
 const repo = path.resolve(__dirname, ".."), format = "mom-linux-llvm-tools-handoff-v1",
   acppFrontendFormat = "mom-linux-llvm-acpp-frontend-handoff-v1";
@@ -19,7 +19,7 @@ const toolRows = [
   {path: "bin/clang-tblgen", type: "file"}, {path: "bin/lld-link", type: "symlink", target: "lld"},
   {path: "bin/llvm-lib", type: "symlink", target: "llvm-ar"}, {path: "bin/llvm-ranlib", type: "symlink", target: "llvm-ar"}
 ];
-const recipeFiles = ["scripts/native-linux-llvm-tools.js", "scripts/build-native-llvm21-sdk.js", "scripts/native-llvm-sdk.js",
+const recipeFiles = ["scripts/native-linux-llvm-tools.js", "scripts/build-native-llvm-sdk.js", "scripts/native-llvm-sdk.js",
   "scripts/native-audit.js", "scripts/build-source-inputs.js"];
 const maxReceiptBytes = 8 << 20, maxArchiveBytes = 2 * 1024 ** 3, maxEntries = 32,
   maxHandoffBytes = 1 << 30, outputReserveBytes = 4 * 1024 ** 3,
@@ -214,11 +214,11 @@ function validateHandoff(handoff, expectedSha256, archivePolicy, role) {
     throw new Error("Linux LLVM tool handoff is malformed or lacks its external hash pin");
   }
   const row = /** @type {any} */ (handoff);
-  const expectedKeys = role === "tools" ? "archiveSha256,buildOnly,compiled,files,format,publicationQualified,receipts,recipe,runAttempt,runId,sourceArchive,version" :
-      "archiveSha256,buildOnly,compiled,files,format,frontend,publicationQualified,receipts,recipe,runAttempt,runId,sourceArchive,version",
+  const expectedKeys = role === "tools" ? "archiveSha256,buildOnly,compiled,files,format,publicationQualified,receipts,recipe,runId,sourceArchive,version" :
+      "archiveSha256,buildOnly,compiled,files,format,frontend,publicationQualified,receipts,recipe,runId,sourceArchive,version",
     expectedFormat = role === "tools" ? format : acppFrontendFormat;
   if (Object.keys(row).sort().join(",") !== expectedKeys ||
-      row.version !== 1 || row.format !== expectedFormat || typeof row.runAttempt !== "string" || !/^[0-9]{1,20}-[1-9][0-9]{0,5}$/.test(row.runAttempt) ||
+      row.version !== 1 || row.format !== expectedFormat ||
       typeof row.runId !== "string" || !/^[0-9a-f-]{36}$/.test(row.runId) || row.buildOnly !== true || row.compiled !== true ||
       row.publicationQualified !== false || !/^[a-f0-9]{64}$/.test(row.archiveSha256 || "") || !Array.isArray(row.files) ||
       row.files.length < (role === "tools" ? toolRows.length : 3) + receiptNames.length + 1 ||
@@ -249,7 +249,7 @@ function validateHandoff(handoff, expectedSha256, archivePolicy, role) {
   return row;
 }
 
-/** @param {string} bundleRoot @param {{runAttempt:string,handoffSha256:string}} expectation
+/** @param {string} bundleRoot @param {{handoffSha256:string}} expectation
  * @param {{testOnlySourceArchiveName:string,testOnlySourceArchiveSha256:string}} [testPolicy]
  * @returns {{toolRoot:string,lldLink:string,llvmNm:string,sourceArchive:string,files:Record<string, any>}} */
 function linuxLlvmToolHandoffInputs(bundleRoot, expectation, testPolicy) {
@@ -258,7 +258,7 @@ function linuxLlvmToolHandoffInputs(bundleRoot, expectation, testPolicy) {
 }
 
 /** Admit the separately selected LLVM 21 Clang frontend/resource-header role.
- * @param {string} bundleRoot @param {{runAttempt:string,handoffSha256:string}} expectation
+ * @param {string} bundleRoot @param {{handoffSha256:string}} expectation
  * @param {{testOnlySourceArchiveName:string,testOnlySourceArchiveSha256:string}} [testPolicy]
  * @returns {{clang:string,clangxx:string,resourceInclude:string,sourceArchive:string,files:Record<string, any>}} */
 function linuxLlvmAcppFrontendInputs(bundleRoot, expectation, testPolicy) {
@@ -266,20 +266,15 @@ function linuxLlvmAcppFrontendInputs(bundleRoot, expectation, testPolicy) {
     linuxLlvmHandoffInputs(bundleRoot, expectation, testPolicy, "acpp-frontend"));
 }
 
-/** @param {string} bundleRoot @param {{runAttempt:string,handoffSha256:string}} expectation
+/** @param {string} bundleRoot @param {{handoffSha256:string}} expectation
  * @param {{testOnlySourceArchiveName:string,testOnlySourceArchiveSha256:string}|undefined} testPolicy @param {"tools"|"acpp-frontend"} role */
 function linuxLlvmHandoffInputs(bundleRoot, expectation, testPolicy, role) {
   const root = canonicalDirectory(bundleRoot, "Linux LLVM tool handoff root");
   const archivePolicy = sourceArchivePolicy(testPolicy);
-  if (!expectation || typeof expectation !== "object" || !/^[0-9]{1,20}-[1-9][0-9]{0,5}$/.test(expectation.runAttempt || "")) {
-    throw new Error("Linux LLVM tool handoff needs the exact same-run attempt");
-  }
   const handoffPath = path.join(root, "handoff.json"), handoffFile = stableRegular(handoffPath,
     role === "tools" ? 1 << 20 : maxFrontendManifestBytes, "Linux LLVM tool handoff receipt");
   const handoff = readBuildJson(handoffPath), validated = validateHandoff(handoff, expectation.handoffSha256, archivePolicy, role);
-  if (validated.runAttempt !== expectation.runAttempt || handoffFile.sha256 !== expectation.handoffSha256) {
-    throw new Error("Linux LLVM tool handoff belongs to another run attempt");
-  }
+  if (handoffFile.sha256 !== expectation.handoffSha256) {throw new Error("Linux LLVM tool handoff differs from its external hash pin");}
   verifySourceInputs(validated.recipe, sourceInputs(repo, [], recipeFiles), "Linux LLVM tool handoff recipe");
   /** @type {Map<string, {path:string,type:string,target?:string}>} */
   const expectedFiles = new Map();
@@ -367,30 +362,27 @@ function linuxLlvmHandoffInputs(bundleRoot, expectation, testPolicy, role) {
 }
 
 /** Export only the locked tool closure after full public Linux SDK admission.
- * @param {string} admittedSdkRoot @param {string} outputRoot @param {{runAttempt:string}} identity
+ * @param {string} admittedSdkRoot @param {string} outputRoot
  * @param {(root:string)=>Record<string, any>} [reader] Internal fixture seam; public CLI uses the full verifier.
  * @param {{testOnlySourceArchiveName:string,testOnlySourceArchiveSha256:string}} [testPolicy] Tiny-fixture-only source archive pin. */
-function exportLinuxLlvmTools(admittedSdkRoot, outputRoot, identity, reader = verifyLinuxLlvmAdmission, testPolicy) {
-  return exportLinuxLlvmRole(admittedSdkRoot, outputRoot, identity, reader, testPolicy, "tools");
+function exportLinuxLlvmTools(admittedSdkRoot, outputRoot, reader = verifyLinuxLlvmAdmission, testPolicy) {
+  return exportLinuxLlvmRole(admittedSdkRoot, outputRoot, reader, testPolicy, "tools");
 }
 
 /** Export the LLVM 21 Clang frontend and only its resource headers for the ACPP plugin build.
- * @param {string} admittedSdkRoot @param {string} outputRoot @param {{runAttempt:string}} identity
+ * @param {string} admittedSdkRoot @param {string} outputRoot
  * @param {(root:string)=>Record<string, any>} [reader] Internal fixture seam; public callers use the full verifier.
  * @param {{testOnlySourceArchiveName:string,testOnlySourceArchiveSha256:string}} [testPolicy] */
-function exportLinuxLlvmAcppFrontend(admittedSdkRoot, outputRoot, identity, reader = verifyLinuxLlvmAdmission, testPolicy) {
-  return exportLinuxLlvmRole(admittedSdkRoot, outputRoot, identity, reader, testPolicy, "acpp-frontend");
+function exportLinuxLlvmAcppFrontend(admittedSdkRoot, outputRoot, reader = verifyLinuxLlvmAdmission, testPolicy) {
+  return exportLinuxLlvmRole(admittedSdkRoot, outputRoot, reader, testPolicy, "acpp-frontend");
 }
 
-/** @param {string} admittedSdkRoot @param {string} outputRoot @param {{runAttempt:string}} identity
+/** @param {string} admittedSdkRoot @param {string} outputRoot
  * @param {(root:string)=>Record<string, any>} reader @param {{testOnlySourceArchiveName:string,testOnlySourceArchiveSha256:string}|undefined} testPolicy
  * @param {"tools"|"acpp-frontend"} role */
-function exportLinuxLlvmRole(admittedSdkRoot, outputRoot, identity, reader, testPolicy, role) {
+function exportLinuxLlvmRole(admittedSdkRoot, outputRoot, reader, testPolicy, role) {
   const sdk = canonicalDirectory(admittedSdkRoot, "Admitted Linux LLVM SDK root");
   const archivePolicy = sourceArchivePolicy(testPolicy);
-  if (!identity || typeof identity.runAttempt !== "string" || !/^[0-9]{1,20}-[1-9][0-9]{0,5}$/.test(identity.runAttempt)) {
-    throw new Error("Linux LLVM tool export needs the exact same-run attempt");
-  }
   const admitted = reader(sdk), result = /** @type {any} */ (admitted);
   if (!result || result.role !== "linux-llvm21-source-sdk" || result.stage !== "audited" || result.buildOnly !== true ||
       result.compiled !== true || result.executed !== false || result.publicationQualified !== false || result.sdk?.path !== path.join(sdk, "sdk") ||
@@ -500,7 +492,7 @@ function exportLinuxLlvmRole(admittedSdkRoot, outputRoot, identity, reader, test
   sameInput(archivePath, archivePin.identity, "Admitted LLVM source archive");
   for (const [name, input] of Object.entries(inputReceipts)) {sameInput(input.file, input.identity, "Admitted LLVM receipt " + name);}
   verifySourceInputs(recipe, sourceInputs(repo, [], recipeFiles), "Linux LLVM tool handoff recipe");
-  const handoff = {version: 1, format: role === "tools" ? format : acppFrontendFormat, runAttempt: identity.runAttempt, runId: result.runId, buildOnly: true, compiled: true,
+  const handoff = {version: 1, format: role === "tools" ? format : acppFrontendFormat, runId: result.runId, buildOnly: true, compiled: true,
     publicationQualified: false, archiveSha256: archivePolicy.sha256,
     sourceArchive: {path: archivePolicy.name, bytes: archive.bytes, sha256: archive.sha256},
     receipts: Object.fromEntries(receiptNames.map(name => [name, {path: "receipts/" + name, sha256: before[name]}])),

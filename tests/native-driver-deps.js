@@ -2,7 +2,7 @@
 
 const test = require("node:test"), assert = require("node:assert/strict"), path = require("node:path");
 const {spawnSync} = require("node:child_process");
-const {dynamicInfo, systemPath, searchPaths, inspectDrivers} = require("../scripts/inspect-native-driver-deps");
+const {dynamicInfo, systemPath, searchPaths, inspectDrivers} = require("./tools/inspect-native-driver-deps");
 const {isGpuDriver, nativeDependencies} = require("../scripts/native-audit");
 
 test.describe("Native system-driver ELF metadata, not application exemptions", () => {
@@ -87,7 +87,7 @@ test.describe("Native system-driver path and input boundaries", () => {
     }
   });
   test("the CLI rejects untrusted roots with all external tools unavailable", () => {
-    const result = spawnSync(process.execPath, [path.join(__dirname, "../scripts/inspect-native-driver-deps.js"), "/tmp/libcuda.so.1"],
+    const result = spawnSync(process.execPath, [path.join(__dirname, "./tools/inspect-native-driver-deps.js"), "/tmp/libcuda.so.1"],
       {encoding: "utf8", timeout: 5000, env: {...process.env, PATH: "/unavailable"}});
     assert.equal(result.status, 1); assert.match(result.stderr, /unique absolute system GPU-driver/); assert.doesNotMatch(result.stderr, /spawn|ENOENT/);
   });

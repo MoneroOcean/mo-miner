@@ -3,7 +3,12 @@
 // Run one original source-JIT build phase per workflow job. The original builder receipts
 // remain authoritative; this runner only admits current inputs and transports its mutable tree.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process"), {isDeepStrictEqual} = require("node:util");
-const ci = require("./prepare-native-ci"), {fileHash, readBuildJson} = require("./build-source-inputs");
+const ciJob = require("./native-ci-job"),
+  ciSources = require("./native-ci-linux-sources"),
+  ciTar = require("./native-ci-tar"),
+  ciWindowsLlvm = require("./native-ci-windows-llvm"),
+  dpcppInputs = require("./native-dpcpp-cuda-inputs"), {fileHash, readBuildJson} = require("./build-source-inputs");
+const {ciSuffix} = require("./native-ci-job");
 const {jitSdkConfig} = require("./build-native-jit-sdk"), {jitBuildStages} = require("./native-jit-stages");
 const {verifyPreparedSdkSources} = require("./prepare-native-sdk-sources");
 const {verifyJitResources} = require("./prepare-native-sycl-jit-resources");
@@ -108,20 +113,20 @@ function windowsJitCiJobPlan(stage, configPath, configSha256, environment = proc
   architecture = process.arch, nowMs = Date.now()) {
   const validConfigPin = stage === "configure" ? configSha256 === undefined || configSha256 === "" : /^[a-f0-9]{64}$/.test(configSha256 || "");
   if (!phases.includes(stage) || platform !== "linux" || architecture !== "x64" || !validConfigPin ||
-      environment["MOM_AOT_BUILD_ONLY"] !== "1" || environment["MOM_BUILD_JOBS"] !== ci.ciBuildJobs(environment)) {
+      environment["MOM_AOT_BUILD_ONLY"] !== "1" || environment["MOM_BUILD_JOBS"] !== ciJob.ciBuildJobs(environment)) {
     throw new Error("Windows source-JIT CI needs a maintained phase, Linux x64, build-only mode, and a valid job count");
   }
-  const run = environment["GITHUB_RUN_ID"] || "", attempt = environment["GITHUB_RUN_ATTEMPT"] || "",
-    baseJob = environment["GITHUB_JOB"] || "", jobId = baseJob + "_" + stage;
-  if (!/^[0-9]{1,20}$/.test(run) || !/^[1-9][0-9]{0,5}$/.test(attempt) || !/^[A-Za-z0-9_-]{1,52}$/.test(baseJob) ||
-      !/^[A-Za-z0-9_-]{1,64}$/.test(jobId)) {throw new Error("Windows source-JIT CI requires safe run, attempt, and phase-job identities");}
-  const suffix = run + "-" + attempt, runnerTemp = environment["RUNNER_TEMP"] || "";
+  const baseJob = environment["GITHUB_JOB"] || "", jobId = baseJob + "_" + stage;
+  if (!/^[A-Za-z0-9_-]{1,52}$/.test(baseJob) || !/^[A-Za-z0-9_-]{1,64}$/.test(jobId)) {
+    throw new Error("Windows source-JIT CI requires safe phase-job identities");
+  }
+  const suffix = ciSuffix(environment), runnerTemp = environment["RUNNER_TEMP"] || "";
   canonicalDirectory(runnerTemp, "RUNNER_TEMP");
   const runDeadlineEpoch = environment["MOM_NATIVE_WINDOWS_JIT_RUN_DEADLINE_EPOCH"] ||
       (stage === "configure" ? String(Math.floor(nowMs / 1000) + 8 * 60 * 60) : ""),
     jobDeadlineEpoch = environment["MOM_NATIVE_WINDOWS_JIT_DEADLINE_EPOCH"] || "";
-  ci.windowsNativeLlvmCiRunDeadlineBudget(runDeadlineEpoch, nowMs);
-  const budget = ci.windowsNativeLlvmCiDeadlineBudget(jobDeadlineEpoch, stage === "configure" ? "configure" : "build", nowMs, runDeadlineEpoch);
+  ciWindowsLlvm.windowsNativeLlvmCiRunDeadlineBudget(runDeadlineEpoch, nowMs);
+  const budget = ciWindowsLlvm.windowsNativeLlvmCiDeadlineBudget(jobDeadlineEpoch, stage === "configure" ? "configure" : "build", nowMs, runDeadlineEpoch);
   if (Number(jobDeadlineEpoch) > Number(runDeadlineEpoch) || budget.remainingMs > jobLimitMs) {
     throw new Error("Windows JIT phase deadline must remain within this run and its 55-minute job limit");
   }
@@ -130,8 +135,8 @@ function windowsJitCiJobPlan(stage, configPath, configSha256, environment = proc
     toolsName = "native-linux-llvm-tools-" + suffix, hermesName = "native-windows-controller-hermes-" + suffix,
     resourcesPaths = windowsJitResourcePaths(suffix), resourcesName = path.basename(resourcesPaths.root), artifactName = "native-windows-jit-sdk-" + suffix,
     resourcesArtifactRoot = resourcesPaths.root, resourcesRoot = resourcesPaths.resources,
-    linux = ci.linuxSourceStatePaths({suffix, runnerTemp: fs.realpathSync(runnerTemp)}, environment),
-    dpcpp = ci.dpcppCudaInputsStatePaths({suffix, runnerTemp: fs.realpathSync(runnerTemp)}, environment),
+    linux = ciSources.linuxSourceStatePaths({suffix, runnerTemp: fs.realpathSync(runnerTemp)}, environment),
+    dpcpp = ciSources.dpcppCudaInputsStatePaths({suffix, runnerTemp: fs.realpathSync(runnerTemp)}, environment),
     sourceName = linux.sourceName,
     expectedConfig = path.join(fs.realpathSync(runnerTemp), "incoming/config", artifactName + ".json"),
     // Share the maintained Windows LLVM descriptor producer instead of inventing another one.
@@ -230,7 +235,7 @@ function composeWindowsJitConfig(plan, admitted) {
   }
   return jitSdkConfig({version: 1, target: "windows", sources: admitted.linux.compilerPreparedReceipt,
     sdk: admitted.dpcpp.dpcppRoot, resources: plan.resourcesRoot,
-    tools: {cc: compiler, cxx: compiler, cmake, ninja, toolchain}, jobs: Number(ci.ciBuildJobs(plan.environment)),
+    tools: {cc: compiler, cxx: compiler, cmake, ninja, toolchain}, jobs: Number(ciJob.ciBuildJobs(plan.environment)),
     inputs: [...new Set([...toolchainInputs, ...nativeInputs.map(row => row.file), plan.descriptor, compiler, cmake, ninja])].sort()});
 }
 
@@ -269,13 +274,13 @@ function writeWindowsJitConfig(plan, config) {
  * @param {number} timeoutMs @param {number} maxExpanded */
 function extractPinnedRoot(archive, rootName, sha256, base, timeoutMs, maxExpanded) {
   stableFile(archive, sha256, maxArchiveBytes, "Windows JIT input archive");
-  const members = ci.listState(archive, [rootName], Math.min(timeoutMs, 5 * 60 * 1000));
+  const members = ciTar.listState(archive, [rootName], Math.min(timeoutMs, 5 * 60 * 1000));
   if (!members.length || members.length > maxMembers) {throw new Error("Windows JIT input archive member count is outside bounds");}
-  const expanded = ci.tarExpandedBytes(archive, members.length, Math.min(timeoutMs, 15 * 60 * 1000));
+  const expanded = ciTar.tarExpandedBytes(archive, members.length, Math.min(timeoutMs, 15 * 60 * 1000));
   if (expanded > maxExpanded) {throw new Error("Windows JIT input archive exceeds its expanded-size bound");}
-  ci.linuxNativeSdkDiskPreflight(expanded, availableBytes(base), availableBytes(path.dirname(archive)));
+  ciTar.linuxNativeSdkDiskPreflight(expanded, availableBytes(base), availableBytes(path.dirname(archive)));
   if (fs.existsSync(path.join(base, rootName))) {throw new Error("Windows JIT input root already exists: " + rootName);}
-  ci.extractState(archive, base, [rootName], [rootName], Math.min(timeoutMs, 30 * 60 * 1000));
+  ciTar.extractState(archive, base, [rootName], [rootName], Math.min(timeoutMs, 30 * 60 * 1000));
   stableFile(archive, sha256, maxArchiveBytes, "Windows JIT input archive");
   return path.join(base, rootName);
 }
@@ -302,10 +307,10 @@ function admitInputs(plan, config) {
     toolsRoot = extractPinnedRoot(plan.toolsArchive, plan.toolsName, plan.pins.tools, plan.runnerTemp,
       remaining(plan, 8 * 60 * 1000), 512 * 1024 ** 2);
   if (!toolsRoot.startsWith(plan.runnerTemp + path.sep)) {throw new Error("Linux LLVM tools extracted outside RUNNER_TEMP");}
-  const tools = linuxLlvmToolHandoffInputs(toolsRoot, {runAttempt: plan.suffix, handoffSha256: plan.pins.toolsHandoff}),
+  const tools = linuxLlvmToolHandoffInputs(toolsRoot, {handoffSha256: plan.pins.toolsHandoff}),
     hermesRoot = extractPinnedRoot(plan.hermesArchive, plan.hermesName, plan.pins.hermes, plan.runnerTemp,
       remaining(plan, 10 * 60 * 1000), 4 * 1024 ** 3),
-    hermes = windowsControllerHandoffInputs(hermesRoot, {kind: "hermes", runAttempt: plan.suffix, handoffSha256: plan.pins.hermesHandoff}),
+    hermes = windowsControllerHandoffInputs(hermesRoot, {kind: "hermes", handoffSha256: plan.pins.hermesHandoff}),
     resourcesArtifactRoot = extractPinnedRoot(plan.resourcesArchive, plan.resourcesName, plan.pins.resources, "/tmp",
       remaining(plan, 8 * 60 * 1000), 512 * 1024 ** 2),
     resourcesRoot = path.join(resourcesArtifactRoot, "resources"),
@@ -313,13 +318,13 @@ function admitInputs(plan, config) {
     nativeJitTools = admitWindowsJitNativeTools(resourcesArtifactRoot, plan.suffix);
   const {linux, dpcpp} = plan, git = fs.realpathSync("/usr/bin/git");
   if (linux.source !== sourceRoot || dpcpp.root !== dpcppRoot) {throw new Error("Restored source/DPC++ roots are not canonical for this run");}
-  const sourceReceipts = ci.verifyLinuxSources({env}, linux, git); verifyPreparedSdkSources(linux.compilerPreparedReceipt, "compiler");
+  const sourceReceipts = ciSources.verifyLinuxSources({env}, linux, git); verifyPreparedSdkSources(linux.compilerPreparedReceipt, "compiler");
   if (nativeJitTools.source.receiptFile !== linux.compilerPreparedReceipt ||
       nativeJitTools.source.receiptSha256 !== fileHash(linux.compilerPreparedReceipt) ||
       sourceReceipts.compilerPreparedReceipt?.prepared?.dpcpp?.revision !== nativeJitTools.source.commit) {
     throw new Error("Windows JIT native TableGen tools differ from the admitted same-run DPC++ source receipt");
   }
-  ci.auditDpcppCudaInputs(dpcpp, readBuildJson(dpcpp.manifest), plan.pins.dpcppManifest);
+  dpcppInputs.auditDpcppCudaInputs(dpcpp, readBuildJson(dpcpp.manifest), plan.pins.dpcppManifest);
   const sdkPins = {resultSha256: plan.pins.windowsSdk[0] || "", descriptorSha256: plan.pins.windowsSdk[1] || "",
       filesSha256: plan.pins.windowsSdk[2] || "", overlaySha256: plan.pins.windowsSdk[3] || ""}, host = windowsHostSdkInputs(plan.windowsSdk, sdkPins),
     descriptorPin = stableFile(plan.descriptor, plan.pins.descriptor, 8 << 20, "Windows controller descriptor"),
@@ -354,7 +359,7 @@ function admitInputs(plan, config) {
     path.dirname(descriptor.tools.lldLink), "/opt/intel/oneapi/compiler/2026.2", "/usr/bin"];
   const expected = {sources: linux.compilerPreparedReceipt, sdk: dpcpp.dpcppRoot,
       resources: resourcesRoot, toolchain: path.join(plan.toolchain, "toolchain.cmake"), compiler,
-      jobs: Number(ci.ciBuildJobs(env)), requiredInputs: [plan.descriptor, ...toolchainInputs, ...nativeInputs.map(row => row.file)], allowedRoots}, generatedConfig = composeWindowsJitConfig(plan,
+      jobs: Number(ciJob.ciBuildJobs(env)), requiredInputs: [plan.descriptor, ...toolchainInputs, ...nativeInputs.map(row => row.file)], allowedRoots}, generatedConfig = composeWindowsJitConfig(plan,
       {linux, dpcpp, compiler, nativeJitTools, toolchainResult}),
     expectedConfig = config === undefined ? generatedConfig : validateWindowsJitConfig(config, expected);
   if (!isDeepStrictEqual(expectedConfig, generatedConfig)) {throw new Error("Windows JIT config is not the exact config derived from admitted inputs");}
@@ -430,14 +435,14 @@ function runWindowsJitCiJob(stage, configPath, configSha256, environment = proce
   }
   const runRecord = path.join(plan.root, "ci-run-deadline.json"), jobRecord = path.join(plan.root, `ci-job-deadline-${plan.jobId}.json`);
   if (stage === "configure") {
-    fs.writeFileSync(runRecord, JSON.stringify({version: 1, runAttempt: plan.suffix, runDeadlineEpoch: plan.runDeadlineEpoch}) + "\n", {flag: "wx", mode: 0o444});
+    fs.writeFileSync(runRecord, JSON.stringify({version: 1, runDeadlineEpoch: plan.runDeadlineEpoch}) + "\n", {flag: "wx", mode: 0o444});
   } else {
     const saved = readBuildJson(runRecord);
-    if (saved.version !== 1 || saved.runAttempt !== plan.suffix || saved.runDeadlineEpoch !== plan.runDeadlineEpoch) {
+    if (saved.version !== 1 || saved.runDeadlineEpoch !== plan.runDeadlineEpoch) {
       throw new Error("Windows JIT phase attempted to replace the original immutable run deadline");
     }
   }
-  fs.writeFileSync(jobRecord, JSON.stringify({version: 1, runAttempt: plan.suffix, job: plan.jobId,
+  fs.writeFileSync(jobRecord, JSON.stringify({version: 1, job: plan.jobId,
     deadlineEpoch: plan.jobDeadlineEpoch, runDeadlineEpoch: plan.runDeadlineEpoch}) + "\n", {flag: "wx", mode: 0o444});
   const admitted = admitInputs(plan, configValue);
   if (stage === "configure") {
@@ -445,13 +450,13 @@ function runWindowsJitCiJob(stage, configPath, configSha256, environment = proce
     configPin = stableFile(plan.config, generated.sha256, maxConfigBytes, "Generated Windows JIT configuration");
   }
   if (!configPin) {throw new Error("Windows JIT config was not pinned before running the original builder");}
-  ci.windowsNativeLlvmCiDeadlineBudget(plan.jobDeadlineEpoch, stage === "configure" ? "configure" : "build", Date.now(), plan.runDeadlineEpoch);
+  ciWindowsLlvm.windowsNativeLlvmCiDeadlineBudget(plan.jobDeadlineEpoch, stage === "configure" ? "configure" : "build", Date.now(), plan.runDeadlineEpoch);
   if (envFile) {fs.appendFileSync(envFile, `MOM_NATIVE_WINDOWS_JIT_RUN_DEADLINE_EPOCH=${plan.runDeadlineEpoch}\n`, "utf8");}
   invokeBuilder(plan, [stage]);
   const before = readBuildJson(path.join(plan.output, "before.json"));
   if (JSON.stringify(before.config) !== JSON.stringify(admitted.config)) {throw new Error("Original JIT builder changed the externally pinned config");}
   const receiptPath = path.join(plan.output, `stage-${stage}.json`), receipt = phaseReceipt(receiptPath, stage),
-    packed = ci.packState(plan.archive, "/tmp", [plan.rootName], remaining(plan, 10 * 60 * 1000)),
+    packed = ciTar.packState(plan.archive, "/tmp", [plan.rootName], remaining(plan, 10 * 60 * 1000)),
     archived = stableFile(plan.archive, "", maxArchiveBytes, "Packed Windows JIT build state");
   if (packed.bytes !== archived.bytes || archived.bytes > maxArchiveBytes || !Number.isSafeInteger(archived.bytes)) {
     throw new Error("Windows JIT phase handoff exceeds its archive size bound");
@@ -459,7 +464,7 @@ function runWindowsJitCiJob(stage, configPath, configSha256, environment = proce
   const values = {windows_jit_phase: stage === "configure" ? "configured" : stage,
     windows_jit_state_bundle_sha256: archived.sha256, windows_jit_config_sha256: configPin.sha256,
     windows_jit_build_only: "true", windows_jit_executed: "false", windows_jit_publication_qualified: "false"};
-  ci.windowsNativeLlvmCiDeadlineBudget(plan.jobDeadlineEpoch, "outputs", Date.now(), plan.runDeadlineEpoch);
+  ciWindowsLlvm.windowsNativeLlvmCiDeadlineBudget(plan.jobDeadlineEpoch, "outputs", Date.now(), plan.runDeadlineEpoch);
   const outputFile = environment["GITHUB_OUTPUT"] || "", summaryFile = environment["GITHUB_STEP_SUMMARY"] || "";
   fs.appendFileSync(outputFile, Object.entries(values).map(([key, value]) => `${key}=${value}`).join("\n") + "\n", "utf8");
   fs.appendFileSync(summaryFile, `### Windows source JIT ${stage}\n- Original builder phase receipt SHA-256: ${fileHash(receiptPath)}.\n- Build-only; not executed or publication-qualified.\n`, "utf8");

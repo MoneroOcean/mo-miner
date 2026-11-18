@@ -1,7 +1,7 @@
 "use strict";
 
 const test = require("node:test"), assert = require("node:assert/strict");
-const {librarySearches, driverSearches, directoryTracker, auditDriverTrace} = require("../scripts/audit-native-driver-trace");
+const {librarySearches, driverSearches, directoryTracker, auditDriverTrace} = require("./tools/audit-native-driver-trace");
 const {auditNativeTrace} = require("../scripts/native-audit");
 const fs = require("node:fs"), path = require("node:path"), vm = require("node:vm");
 const start = '100 execve("/mom", ["/mom"], ["HOME=/work"]) = 0';
@@ -15,7 +15,7 @@ function aliasAudit(opencl = false, vaPresent = false) {
     defaultSearch: ["/usr/lib", "/lib"], libraries: [driver, support].map(file => ({file, soname: path.basename(file), needed: [], search: []}))};
   /** @type {{exports: unknown}} */
   const loaded = {exports: {}};
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname, "../scripts/audit-native-driver-trace.js"), "utf8"), {
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, "./tools/audit-native-driver-trace.js"), "utf8"), {
     module: loaded,
     /** @param {string} name */
     require(name) {
@@ -31,10 +31,10 @@ function aliasAudit(opencl = false, vaPresent = false) {
           systemFile(file) {return file.startsWith("/lib/") ? "/usr" + file : file;},
         };
       }
-      return name === "./native-audit" ? require("../scripts/native-audit") : require(name);
+      return name === "../../scripts/native-audit" ? require("../scripts/native-audit") : require(name);
     },
   });
-  return /** @type {typeof import("../scripts/audit-native-driver-trace")} */ (loaded.exports).auditDriverTrace;
+  return /** @type {typeof import("./tools/audit-native-driver-trace")} */ (loaded.exports).auditDriverTrace;
 }
 
 test.describe("Native driver worker-directory proof", () => {

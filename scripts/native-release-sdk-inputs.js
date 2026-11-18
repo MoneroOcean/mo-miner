@@ -8,14 +8,14 @@ const {fileHash, readBuildJson, readBuildText, sourceInputs, verifySourceInputs}
 const {isStaticArchive} = require("./native-audit");
 const {hermesPins, hermesSourceFiles} = require("./build-native-hermes");
 const {comgrSdkInputs} = require("./native-comgr-inputs");
-const {admitSyclSource, rocmInputs} = require("./probe-static-sycl");
+const {admitSyclSource, rocmInputs} = require("./native-sycl-inputs");
 const {elfReport} = require("./native-elf");
 
 const repo = path.resolve(__dirname, "..");
 const syclRevision = "da2463e45aa90aa36306c45abcfc05b87de51bc6";
 const openmpContainerPath = "/openmp/libomp.a";
 const openmpProviderFile = /^lib(?:omp|iomp5|gomp)(?:\.a|\.so(?:\.[0-9]+)*)?$/i;
-const syclRecipe = ["scripts/build-native-sycl-sdk.js", "scripts/probe-static-sycl.js", "scripts/native-hcf.js", "scripts/probe-native-jit.js",
+const syclRecipe = ["scripts/build-native-sycl-sdk.js", "scripts/native-sycl-inputs.js", "scripts/native-hcf.js", "scripts/native-jit-link.js",
   "tests/reference/native-sycl-hcf-repro.cpp",
   "tests/reference/native-jit-cache.cpp",
   "scripts/build-environment.js", "scripts/native-audit.js", "scripts/native-resources.js",
@@ -24,7 +24,7 @@ const hermesRecipe = ["scripts/build-native-hermes.js", "scripts/build-source-in
   "scripts/native-audit.js", "runtime/hermes-host-rejections.patch"];
 const rocmRecipe = ["scripts/build-native-rocm-host-runtime.js", "scripts/build-native-sycl-sdk.js", "scripts/build-native-comgr-sdk.js",
   "scripts/native-comgr-inputs.js", "scripts/prepare-native-sdk-sources.js", "scripts/build-native-release.js",
-  "scripts/build-source-inputs.js", "scripts/build-environment.js", "scripts/native-audit.js", "scripts/probe-static-sycl.js", "scripts/native-hcf.js"];
+  "scripts/build-source-inputs.js", "scripts/build-environment.js", "scripts/native-audit.js", "scripts/native-sycl-inputs.js", "scripts/native-hcf.js"];
 const supportLinks = new Set(["dl", "pthread", "m", "z", "zstd", "stdc++fs"]);
 const digest = /^[0-9a-f]{64}$/;
 /**

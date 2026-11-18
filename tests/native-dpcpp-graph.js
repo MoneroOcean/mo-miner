@@ -1,13 +1,13 @@
 "use strict";
 
 const fs = require("node:fs"), path = require("node:path"), {createHash} = require("node:crypto"), test = require("node:test"), assert = require("node:assert/strict");
-const {dpcppGpuFlags, dpcppUniquePrefixFlags, dpcppSourceFlags, dpcppDeviceLinkFlags, syclSources, portableOpenclTranslatorFlags, combinedGpuTargets} = require("../scripts/build-native-gpu-probe");
+const {dpcppGpuFlags, dpcppUniquePrefixFlags, dpcppSourceFlags, dpcppDeviceLinkFlags, syclSources, portableOpenclTranslatorFlags, combinedGpuTargets} = require("../scripts/native-gpu-build");
 const {spawnSync} = require("node:child_process");
 const {runInNewContext} = require("node:vm");
 const {buildInputs, oneapiCompilerPath, admitOneapiCompiler, verifyOneapiCompiler, sourceCompiler, deviceLinkArgs, cudaDeviceLinkSetup,
-  dpcppCompileCommands, deviceRegistrationArgs, deviceRegistrationImports} = require("../scripts/build-native-dpcpp-probe");
+  dpcppCompileCommands, deviceRegistrationArgs, deviceRegistrationImports} = require("../scripts/build-native-gpu");
 const {fileHash, buildFileInputs} = require("../scripts/build-source-inputs");
-const {nativeGpuLinkArgs} = require("../scripts/probe-native-controller");
+const {nativeGpuLinkArgs} = require("../scripts/build-native-application");
 const os = require("node:os");
 const gyp = fs.readFileSync(path.join(__dirname, "../binding.gyp"), "utf8");
 const flags = dpcppGpuFlags(gyp), sources = syclSources(gyp);
@@ -344,7 +344,7 @@ test.describe("Static DPC++ image registration lifetime", {skip: process.platfor
     run(cxx, ["-pie", ...nativeGpuLinkArgs(inputs), "-o", linked]); run(linked, []);
   });
   test("the maintained builder normalizes registration before isolating the whole graph", () => {
-    const source = fs.readFileSync(path.join(__dirname, "../scripts/build-native-dpcpp-probe.js"), "utf8");
+    const source = fs.readFileSync(path.join(__dirname, "../scripts/build-native-gpu.js"), "utf8");
     assert.match(source, /deviceRegistrationArgs\(sections\.stdout, profile\)/);
     assert.match(source, /\.\.\.hostObjects, registeredDevice/);
     assert.doesNotMatch(source, /extraHostObjects|cudaImageCompileCommand|imageCommand/);
@@ -369,7 +369,7 @@ test.describe("Native DPC++ selected CUDA device tools", {skip: process.platform
     assert.equal(resolved.status, 0, resolved.stderr); assert.equal(resolved.stdout.trim(), ptxas);
     fs.unlinkSync(ptxas);
     assert.throws(() => cudaDeviceLinkSetup(cuda, {PATH: ambient}), /executable ptxas/);
-    const source = fs.readFileSync(path.join(__dirname, "../scripts/build-native-dpcpp-probe.js"), "utf8");
+    const source = fs.readFileSync(path.join(__dirname, "../scripts/build-native-gpu.js"), "utf8");
     assert.match(source, /\.\.\.\(cudaLink\?\.files \|\| \[\]\)/);
     assert.match(source, /"device-link", 900000,\s*cudaLink\?\.environment/);
   });
@@ -398,13 +398,13 @@ test.describe("Native DPC++ source build boundary", () => {
     for (const values of [args.slice(1), [...args, path.resolve("/extra")]]) {assert.throws(() => buildInputs(env, values), /absolute/);}
   });
   test("build-only admission precedes all SDK, compiler and output access", () => {
-    const result = spawnSync(process.execPath, [path.join(__dirname, "../scripts/build-native-dpcpp-probe.js")], {
+    const result = spawnSync(process.execPath, [path.join(__dirname, "../scripts/build-native-gpu.js")], {
       encoding: "utf8", timeout: 5000, env: {...process.env, MOM_AOT_BUILD_ONLY: "0", PATH: "/unavailable"},
     });
     assert.equal(result.status, 1); assert.match(result.stderr, /MOM_AOT_BUILD_ONLY=1/); assert.doesNotMatch(result.stderr, /ENOENT|spawn/);
   });
   test("the complete original kernel graph keeps uniform static compiler layout", () => {
-    const code = fs.readFileSync(path.join(__dirname, "../scripts/build-native-dpcpp-probe.js"), "utf8");
+    const code = fs.readFileSync(path.join(__dirname, "../scripts/build-native-gpu.js"), "utf8");
     assert.match(code, /engineeringFlags = dpcppGpuFlags\(gyp, profile\)/);
     assert.match(code, /"-DMOM_STATIC_NVRTC", "-DMOM_EMBEDDED_NVRTC_HEADERS"/);
     assert.match(code, /"-DMOM_EMBEDDED_SYCL_JIT"/);
@@ -412,11 +412,11 @@ test.describe("Native DPC++ source build boundary", () => {
   });
   test("build tools never become normal Engineering or release commands implicitly", () => {
     for (const file of ["scripts/dev.js", "scripts/build-release.js"]) {
-      assert.doesNotMatch(fs.readFileSync(path.join(__dirname, "..", file), "utf8"), /build-native-dpcpp-probe/);
+      assert.doesNotMatch(fs.readFileSync(path.join(__dirname, "..", file), "utf8"), /build-native-gpu/);
     }
   });
   test("ordinary compile failures retain all algorithm results; uncertain lifecycle stops", () => {
-    const code = fs.readFileSync(path.join(__dirname, "../scripts/build-native-dpcpp-probe.js"), "utf8");
+    const code = fs.readFileSync(path.join(__dirname, "../scripts/build-native-gpu.js"), "utf8");
     assert.match(code, /results\.some\(\(result\) => result\.status !== 0\)/);
     assert.match(code, /result\.error \|\| result\.signal \|\| result\.status === null/);
     assert.doesNotMatch(code, /nvidia-smi|\/dev\/nvidia|spawnSync\(.*controller-native/);
@@ -439,7 +439,7 @@ test.describe("Native oneAPI mixed frontend admission", () => {
     const link = deviceLinkArgs(gyp, undefined, objects, output, "oneapi");
     assert.deepEqual(link.slice(-objects.length - 2), [...objects, "-o", output]);
     assert.ok(!link.includes(vendor));
-    const code = fs.readFileSync(path.join(__dirname, "../scripts/build-native-dpcpp-probe.js"), "utf8");
+    const code = fs.readFileSync(path.join(__dirname, "../scripts/build-native-gpu.js"), "utf8");
     assert.match(code, /run\(compiler, deviceLinkArgs\(/);
   });
   test("other compiler profiles remain upstream and reject the oneAPI override", () => {
@@ -453,7 +453,7 @@ test.describe("Native oneAPI mixed frontend admission", () => {
   test("invalid vendor admission fails before tool launch or output creation", {skip: process.platform !== "linux"}, t => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-oneapi-admission-")), output = path.join(root, "output");
     t.after(() => fs.rmSync(root, {recursive: true, force: true}));
-    const result = spawnSync(process.execPath, [path.join(__dirname, "../scripts/build-native-dpcpp-probe.js"), path.join(root, "sdk"), output], {
+    const result = spawnSync(process.execPath, [path.join(__dirname, "../scripts/build-native-gpu.js"), path.join(root, "sdk"), output], {
       encoding: "utf8", timeout: 5000, env: {...process.env, MOM_AOT_BUILD_ONLY: "1", MOM_AOT_DPCPP_PROFILE: "oneapi",
         MOM_AOT_ONEAPI_CXX: path.join(root, "missing", "icpx"), PATH: "/unavailable"},
     });
@@ -620,13 +620,13 @@ test.describe("Native DPC++ device-image link policy", () => {
     assert.throws(() => deviceLinkArgs(gyp, path.resolve("/cuda"), ["-plugin=evil"], path.resolve("/out.o")), /unique absolute/);
   });
   test("importing the build tool cannot query any device or SDK", () => {
-    const result = spawnSync(process.execPath, ["-e", `require(${JSON.stringify(path.join(__dirname, "../scripts/build-native-dpcpp-probe.js"))})`], {
+    const result = spawnSync(process.execPath, ["-e", `require(${JSON.stringify(path.join(__dirname, "../scripts/build-native-gpu.js"))})`], {
       encoding: "utf8", timeout: 5000, env: {...process.env, MOM_AOT_BUILD_ONLY: "0", PATH: "/unavailable"},
     });
     assert.equal(result.status, 0, result.stderr); assert.equal(result.stdout, ""); assert.equal(result.stderr, "");
   });
   test("per-source progress evidence reuses the frozen SDK hashes instead of rehashing every input", () => {
-    const code = fs.readFileSync(path.join(__dirname, "../scripts/build-native-dpcpp-probe.js"), "utf8");
+    const code = fs.readFileSync(path.join(__dirname, "../scripts/build-native-gpu.js"), "utf8");
     const expression = code.match(/sdkFiles: (Object\.fromEntries\(explicitSdkFiles\.map\([^\n]+\)\)),\n/);
     assert.ok(expression?.[1]);
     const sdkBefore = {[path.resolve("/sdk/header.h")]: "a".repeat(64), [path.resolve("/sdk/ptxas")]: "b".repeat(64)};

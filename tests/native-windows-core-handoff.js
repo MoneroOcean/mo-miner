@@ -8,7 +8,6 @@ const {windowsNativeCoreHandoffInputs} = require("../scripts/native-windows-core
 
 const repo = path.resolve(__dirname, "..");
 const currentSources = nativeSourceInputs(repo, "cpu");
-const runAttempt = "654321-3";
 
 /** @param {import("node:test").TestContext} t */
 function fixture(t) {
@@ -26,7 +25,7 @@ function fixture(t) {
       "C:\\agent\\_temp\\libuv\\include\\uv\\win.h": "2".repeat(64)},
     buildOnly: true, executed: false, publicationQualified: false};
   fs.writeFileSync(receiptFile, JSON.stringify(receipt) + "\n", {flag: "wx"});
-  const handoff = {format: "mom-native-windows-core-handoff-v1", runAttempt: "654321-3", target: "win32", architecture: "x64",
+  const handoff = {format: "mom-native-windows-core-handoff-v1", target: "win32", architecture: "x64",
     archive: {file: "cpu-core.lib", bytes: archiveBytes, sha256: archiveSha256},
     producer: {script: "scripts/build-native-windows-core.js", receipt: "inputs.json", receiptSha256: fileHash(receiptFile)},
     libuv: {version: "1.51.0", archiveSha256: ioPins.libuv.sha256, fetchReceiptSha256: "3".repeat(64)},
@@ -48,7 +47,7 @@ function rewriteReceipt(f, update) {
 
 /** @param {ReturnType<typeof fixture>} f @param {string} [pin] */
 function admit(f, pin = fileHash(f.handoffFile)) {
-  return windowsNativeCoreHandoffInputs(f.bundle, {runAttempt, handoffSha256: pin});
+  return windowsNativeCoreHandoffInputs(f.bundle, {handoffSha256: pin});
 }
 
 /** @param {ReturnType<typeof fixture>} f @param {RegExp} pattern */
@@ -63,11 +62,10 @@ test.describe("Windows native Core handoff admission", () => {
     assert.deepEqual(Object.keys(admitted.files).sort(), [f.archive, f.handoffFile, f.receiptFile].sort());
   });
 
-  test("requires the exact run-attempt and externally pinned handoff hash", t => {
+  test("requires the externally pinned handoff hash", t => {
     const f = fixture(t);
-    assert.throws(() => windowsNativeCoreHandoffInputs(f.bundle, {runAttempt: "654321-4", handoffSha256: f.handoffSha256}), /producer contract/);
     assert.throws(() => admit(f, "0".repeat(64)), /producer contract/);
-    assert.throws(() => windowsNativeCoreHandoffInputs(f.bundle, {runAttempt, handoffSha256: "not-a-hash"}), /external handoff SHA/);
+    assert.throws(() => windowsNativeCoreHandoffInputs(f.bundle, {handoffSha256: "not-a-hash"}), /external handoff SHA/);
   });
 
   test("rejects an archive whose bytes differ from the producer pin", t => {
@@ -147,12 +145,12 @@ test.describe("Windows native Core handoff admission", () => {
 
   test("rejects noncanonical and symlinked bundle roots", t => {
     const f = fixture(t), noncanonical = path.dirname(f.bundle) + path.sep + "." + path.sep + path.basename(f.bundle);
-    assert.throws(() => windowsNativeCoreHandoffInputs(noncanonical, {runAttempt, handoffSha256: f.handoffSha256}), /canonical root/);
+    assert.throws(() => windowsNativeCoreHandoffInputs(noncanonical, {handoffSha256: f.handoffSha256}), /canonical root/);
     const link = path.join(path.dirname(f.bundle), "bundle-link");
     try {fs.symlinkSync(f.bundle, link, "junction");} catch (error) {
       if (process.platform === "win32") {t.skip("Windows does not permit test directory-link creation in this runner"); return;}
       throw error;
     }
-    assert.throws(() => windowsNativeCoreHandoffInputs(link, {runAttempt, handoffSha256: f.handoffSha256}), /redirected/);
+    assert.throws(() => windowsNativeCoreHandoffInputs(link, {handoffSha256: f.handoffSha256}), /redirected/);
   });
 });

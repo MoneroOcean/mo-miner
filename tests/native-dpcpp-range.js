@@ -3,8 +3,8 @@
 const fs = require("node:fs"), os = require("node:os"), path = require("node:path"), test = require("node:test"), assert = require("node:assert/strict");
 const {spawnSync} = require("node:child_process");
 const {fileHash} = require("../scripts/build-source-inputs");
-const {dpcppGpuFlags} = require("../scripts/build-native-gpu-probe");
-const {deviceLinkArgs} = require("../scripts/build-native-dpcpp-probe");
+const {dpcppGpuFlags} = require("../scripts/native-gpu-build");
+const {deviceLinkArgs} = require("../scripts/build-native-gpu");
 
 const repo = path.resolve(__dirname, "..");
 const gyp = fs.readFileSync(path.join(repo, "binding.gyp"), "utf8");

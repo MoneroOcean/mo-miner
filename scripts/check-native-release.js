@@ -4,6 +4,7 @@
 const fs = require("node:fs"), os = require("node:os"), path = require("node:path"), {spawnSync} = require("node:child_process");
 const {isDeepStrictEqual} = require("node:util");
 const {fileHash, readBuildJson} = require("./build-source-inputs");
+const {validCiSuffix} = require("./native-ci-job");
 const {nativeNoticeFile} = require("./package-native-release");
 const {nativeDependencies, auditNativeGlibc, auditNativeTrace} = require("./native-audit");
 const {elfReport} = require("./native-elf");
@@ -326,12 +327,11 @@ function testEnvironment(executable, source, platform) {
   return env;
 }
 
-/** Create a private location for fresh syscall logs. CI run IDs give artifact collection an exact prefix.
+/** Create a private location for fresh syscall logs. The CI suffix gives artifact collection an exact prefix.
  * @returns {string} */
 function createNativeTraceDirectory() {
-  const tempRoot = fs.realpathSync(process.env["RUNNER_TEMP"] || os.tmpdir()), runId = process.env["GITHUB_RUN_ID"] || "",
-    runAttempt = process.env["GITHUB_RUN_ATTEMPT"] || "", prefix = /^\d{1,20}$/.test(runId) && /^\d{1,4}$/.test(runAttempt) ?
-      `mom-native-trace-${runId}-${runAttempt}-` : "mom-native-trace-local-",
+  const tempRoot = fs.realpathSync(process.env["RUNNER_TEMP"] || os.tmpdir()), suffix = process.env["MOM_NATIVE_CI_SUFFIX"],
+    prefix = validCiSuffix(suffix) ? `mom-native-trace-${suffix}-` : "mom-native-trace-local-",
     directory = fs.mkdtempSync(path.join(tempRoot, prefix));
   try {
     const info = fs.lstatSync(directory), currentUid = typeof process.getuid === "function" ? process.getuid() : undefined;

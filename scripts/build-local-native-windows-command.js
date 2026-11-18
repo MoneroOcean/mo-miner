@@ -4,7 +4,7 @@
 // native Windows interop stages remain outside the Linux cgroup and retain their jobs=2 policy.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process"),
   {createHash, randomUUID} = require("node:crypto");
-const {prepareWindowsWslRelease, wslText} = require("./local-wsl-release");
+const {prepareWindowsWslRelease, wslText} = require("./build-local-native-wsl");
 const repo = path.resolve(__dirname, ".."), nodeVersion = "v24.15.0", jobs = 2, relayEnvironment = "ONEAPI_ROOT/w:MOM_NATIVE_PERL_ROOT/w",
   uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 /** @typedef {(command:string,args:string[],options:import("node:child_process").SpawnSyncOptions)=>{status:number|null,error?:Error,signal?:NodeJS.Signals|null,stdout?:Buffer|string}} LocalSpawn */
@@ -403,7 +403,7 @@ async function runLocalWindowsWslRelease(input, dependencies = {}) {
   if (fs.lstatSync(stage, {throwIfNoEntry: false})) {
     throw new Error("Inspect preserved local Windows release stage before retrying: " + stage);
   }
-  const node = (dependencies.prepareNode || require("./prepare-local-wsl-node").prepareLocalWslNode)(workspace, {verifyScope, environment});
+  const node = (dependencies.prepareNode || require("./build-local-native-wsl-node").prepareLocalWslNode)(workspace, {verifyScope, environment});
   if (!record(node) || typeof node["version"] !== "string" || !/^\d+\.\d+\.\d+$/.test(node["version"]) ||
       typeof node["binary"] !== "string" || !path.isAbsolute(node["binary"]) ||
       !/^[a-f0-9]{64}$/.test(node["sha256"] || "")) {throw new Error("WSL Node dependency admission did not return its pinned Linux esbuild binary");}
@@ -421,7 +421,7 @@ async function runLocalWindowsWslRelease(input, dependencies = {}) {
     throw new Error("Local Linux prerequisite graph returned another workspace, tool cohort or Hermes source root");
   }
 
-  const fsApi = dependencies.fs || fs, ci = dependencies.nativeCi || require("./prepare-native-ci"), sourceRoot = prerequisites.paths.hermesSource,
+  const fsApi = dependencies.fs || fs, ci = dependencies.nativeCi || {...require("./native-ci-tar"), ...require("./native-ci-windows-controller")}, sourceRoot = prerequisites.paths.hermesSource,
     hermesSourceName = path.basename(sourceRoot), fetchFile = path.join(sourceRoot, "fetch.json"), rootsFile = path.join(sourceRoot, "roots.json"),
     roots = (dependencies.readJson || require("./build-source-inputs").readBuildJson)(rootsFile),
     originalRoot = roots?.hermes, archiveWindows = path.win32.join(args["bridgeRunWindows"], "hermes-sources.tar"),

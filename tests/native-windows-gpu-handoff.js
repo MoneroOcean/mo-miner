@@ -11,7 +11,7 @@ function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-windows-gpu-handoff-")); t.after(() => fs.rmSync(root, {recursive: true, force: true}));
   const output = path.join(root, "output"), isolated = path.join(output, "isolated");
   fs.mkdirSync(isolated, {recursive: true});
-  const profile = "dpcpp", runAttempt = "123456789-1", configFile = path.join(root, "config.json"),
+  const profile = "dpcpp", configFile = path.join(root, "config.json"),
     receiptFile = path.join(output, "result.json"), isolationFile = path.join(isolated, "result.json"),
     objectFile = path.join(isolated, "object-0000.obj"), handoffFile = path.join(root, "handoff.json");
   json(configFile, {profile}); fs.writeFileSync(objectFile, Buffer.from([0x64, 0x86, 0, 0]));
@@ -24,18 +24,18 @@ function fixture(t) {
   const members = [configFile, receiptFile, isolationFile, objectFile].map(file => ({
     path: path.relative(root, file).split(path.sep).join("/"), bytes: fs.statSync(file).size, sha256: fileHash(file),
   })).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
-  json(handoffFile, {format: "mom-windows-gpu-handoff-v1", runAttempt, profile, files: members,
+  json(handoffFile, {format: "mom-windows-gpu-handoff-v1", profile, files: members,
     sdkInputs: Object.fromEntries(Object.keys(sdkInputs).sort().map(file => [file, sdkInputs[file]])),
     buildOnly: true, executed: false, publicationQualified: false});
-  const expected = {profile, runAttempt, receiptSha256: fileHash(receiptFile), configSha256: fileHash(configFile), handoffSha256: fileHash(handoffFile)};
-  return {root, output, isolated, profile, runAttempt, configFile, receiptFile, isolationFile, objectFile, handoffFile, expected,
+  const expected = {profile, receiptSha256: fileHash(receiptFile), configSha256: fileHash(configFile), handoffSha256: fileHash(handoffFile)};
+  return {root, output, isolated, profile, configFile, receiptFile, isolationFile, objectFile, handoffFile, expected,
     read: () => windowsGpuHandoffInputs(receiptFile, expected)};
 }
 
 test.describe("Windows GPU compact handoff admission", () => {
   test("a compact same-run handoff admits producer SDK provenance without opening those historical paths", t => {
     const f = fixture(t), result = f.read();
-    assert.equal(result.profile, f.profile); assert.equal(result.runAttempt, f.runAttempt);
+    assert.equal(result.profile, f.profile);
     assert.equal(result.graph.sdkInputs["/original/producer/zeta.exe"], "a".repeat(64));
     assert.equal(result.files[f.objectFile], fileHash(f.objectFile));
     assert.equal(result.files[f.handoffFile], f.expected.handoffSha256);
@@ -78,10 +78,9 @@ test.describe("Windows GPU compact handoff admission", () => {
     assert.throws(() => extra.read(), /extra, missing or substituted/);
   });
 
-  test("profile, run-attempt and descriptor shape cannot be substituted", t => {
+  test("profile and descriptor shape cannot be substituted", t => {
     const f = fixture(t);
     assert.throws(() => windowsGpuHandoffInputs(f.receiptFile, {...f.expected, profile: "acpp-cuda"}), /pin|receipt/);
-    assert.throws(() => windowsGpuHandoffInputs(f.receiptFile, {...f.expected, runAttempt: "123456789-2"}), /pin/);
     assert.throws(() => windowsGpuHandoffInputs(f.receiptFile, /** @type {any} */ ({...f.expected, extra: true})), /external SHA/);
   });
 });

@@ -88,7 +88,7 @@ function fixture(t) {
       assert.equal(arguments.length, 2, "local source provenance must not be treated as an external CI manifest pin");
       return admitted;
     },
-    /** @param {import("../scripts/prepare-native-ci").LinuxJitResourceTreeState} state
+    /** @param {import("../scripts/native-ci-linux-jit").LinuxJitResourceTreeState} state
      * @param {{cmake:string,ninja:string,cc:string,cxx:string}} selectedTools @param {NodeJS.ProcessEnv} env */
     auditLinux(state, selectedTools, env) {
       counts.linux++;

@@ -7,12 +7,13 @@
 const fs = require("node:fs"), path = require("node:path"), crypto = require("node:crypto");
 const {isDeepStrictEqual} = require("node:util");
 const {fileHash, readBuildJson} = require("../build-source-inputs");
+const {ciSuffix, ciBuildJobs} = require("../native-ci-job");
 
 const repo = path.resolve(__dirname, "../.."), intelRoot = "/opt/intel/oneapi/compiler/2026.2",
   profiles = ["acpp-cuda", "acpp-hip", "dpcpp", "dpcpp-opencl", "oneapi"],
   incomingGpuPinKeys = "bundleSha256,configSha256,handoffSha256,profile,receiptSha256",
-  sealedGpuPinKeys = "configSha256,handoffSha256,profile,receiptSha256,runAttempt",
-  runAttemptPattern = /^[0-9]{1,20}-[1-9][0-9]{0,5}$/, sha256Pattern = /^[a-f0-9]{64}$/,
+  sealedGpuPinKeys = "configSha256,handoffSha256,profile,receiptSha256",
+  sha256Pattern = /^[a-f0-9]{64}$/,
   restoreReserve = 4n * 1024n ** 3n, GiB = 1024 ** 3, MiB = 1024 ** 2;
 
 // Environment segment of each MOM_NATIVE_WINDOWS_APPLICATION_<NAME>_SHA256 pin.
@@ -36,7 +37,8 @@ const pinVariables = {
 /** Production readers and composers; tests substitute recorded fakes for the whole set. */
 function realBuildDependencies() {
   return {
-    ci: require("../prepare-native-ci"),
+    ci: {...require("../native-ci-tar"), ...require("../native-ci-linux-sources"), ...require("../native-dpcpp-cuda-inputs"),
+      ...require("../native-ci-linux-cuda"), ...require("../native-ci-linux-release"), ...require("../native-ci-windows-llvm")},
     sourceInputs: require("../build-source-inputs"),
     linuxLlvmToolHandoffInputs: require("../native-linux-llvm-tools").linuxLlvmToolHandoffInputs,
     windowsControllerHandoffInputs: require("../native-windows-controller-handoff").windowsControllerHandoffInputs,
@@ -84,11 +86,6 @@ function admitPins(environment) {
   return {pins, gpuPins: parsed};
 }
 
-/** @param {NodeJS.ProcessEnv} environment */
-function runAttempt(environment) {
-  return `${environment["GITHUB_RUN_ID"] || ""}-${environment["GITHUB_RUN_ATTEMPT"] || ""}`;
-}
-
 /** The workflow exports job start + timeout - 300 s as the one aggregate deadline (Unix seconds).
  * @param {NodeJS.ProcessEnv} environment @param {number} [nowMs] */
 function ciDeadline(environment, nowMs = Date.now()) {
@@ -113,7 +110,7 @@ function assertWorkflowFile(file) {
   if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) {throw new Error("Workflow output is not a canonical regular file");}
 }
 
-/** Host-SDK acquisition inside this job uses the aggregate deadline and fixed run-attempt roots.
+/** Host-SDK acquisition inside this job uses the aggregate deadline and fixed CI work-root roots.
  * @param {string} temp @param {string} suffix @param {number} deadline */
 function hostSdkEnvironment(temp, suffix, deadline) {
   const workRoot = path.join(temp, `mom-native-windows-host-sdk-${suffix}`);
@@ -129,12 +126,8 @@ function hostSdkEnvironment(temp, suffix, deadline) {
 /** `pins` command: fail fast on malformed external pins before provisioning starts.
  * @param {NodeJS.ProcessEnv} [environment] */
 function runPins(environment = process.env) {
-  const suffix = runAttempt(environment);
-  if (!runAttemptPattern.test(suffix)) {throw new Error("Missing exact GitHub run-attempt identity");}
+  ciSuffix(environment);
   admitPins(environment);
-  const output = environment["GITHUB_OUTPUT"] || "";
-  assertWorkflowFile(output);
-  fs.appendFileSync(output, `run_attempt=${suffix}\n`);
 }
 
 /** Every flat download in RUNNER_TEMP/incoming with its pin, restore roots and size bounds.
@@ -251,11 +244,11 @@ function admitGpuHandoffs(suffix, gpuPins, deps) {
   for (const profile of profiles) {
     const receipt = path.join("/tmp", `mom-native-windows-gpu-${profile}-${suffix}`, "output/result.json"), pin = byProfile.get(profile);
     if (!pin) {throw new Error("Missing Windows GPU profile bundle pin: " + profile);}
-    const expected = {profile, runAttempt: suffix, receiptSha256: pin.receiptSha256, configSha256: pin.configSha256,
+    const expected = {profile, receiptSha256: pin.receiptSha256, configSha256: pin.configSha256,
         handoffSha256: pin.handoffSha256}, admitted = deps.windowsGpuHandoffInputs(receipt, expected);
     gpuReceipts.push(receipt);
     gpuHandoffs.push(expected);
-    if (admitted.runAttempt !== suffix || admitted.profile !== profile) {throw new Error("GPU handoff reader returned another run/profile");}
+    if (admitted.profile !== profile) {throw new Error("GPU handoff reader returned another profile");}
   }
   return {gpuReceipts, gpuHandoffs};
 }
@@ -274,13 +267,13 @@ function composeApplication(plan, deps) {
     dpcppInputs = ci.auditDpcppCudaInputs(dpcpp, dpcppManifest, pins.dpcppInputsManifest),
     {gpuReceipts, gpuHandoffs} = admitGpuHandoffs(suffix, plan.gpuPins, deps);
   const coreRoot = path.join("/tmp", `native-windows-core-${suffix}`), hipRoot = path.join("/tmp", `native-rocm-hip-headers-${suffix}`),
-    hipExpectation = {runAttempt: suffix, handoffSha256: pins.hipHeadersHandoff},
+    hipExpectation = {handoffSha256: pins.hipHeadersHandoff},
     hipHeaders = deps.rocmHipHeaderInputs(hipRoot, hipExpectation),
-    core = deps.windowsNativeCoreHandoffInputs(coreRoot, {runAttempt: suffix, handoffSha256: pins.coreHandoff}),
+    core = deps.windowsNativeCoreHandoffInputs(coreRoot, {handoffSha256: pins.coreHandoff}),
     hermesRoot = path.join(temp, `native-windows-controller-hermes-${suffix}`),
-    hermesExpectation = /** @type {const} */ ({kind: "hermes", runAttempt: suffix, handoffSha256: pins.hermesHandoff}),
+    hermesExpectation = /** @type {const} */ ({kind: "hermes", handoffSha256: pins.hermesHandoff}),
     io = deps.windowsControllerHandoffInputs(path.join(temp, `native-windows-controller-io-${suffix}`),
-      {kind: "io", runAttempt: suffix, handoffSha256: pins.ioHandoff}),
+      {kind: "io", handoffSha256: pins.ioHandoff}),
     windowsHermes = deps.windowsControllerHandoffInputs(hermesRoot, hermesExpectation),
     dpcppComponentRoot = path.join("/tmp", `native-windows-dpcpp-static-${suffix}`),
     hostComponentRoot = path.join("/tmp", `native-windows-host-component-${suffix}`),
@@ -295,7 +288,7 @@ function composeApplication(plan, deps) {
   }
   const hermesInputs = deps.nativeHermesInputs(path.join(hermes.sdkRoot, "result.json")),
     toolsParent = path.join(temp, `native-linux-llvm-tools-${suffix}`),
-    tools = deps.linuxLlvmToolHandoffInputs(toolsParent, {runAttempt: suffix, handoffSha256: pins.linuxToolsHandoff}),
+    tools = deps.linuxLlvmToolHandoffInputs(toolsParent, {handoffSha256: pins.linuxToolsHandoff}),
     hermesCompiler = hermesInputs.artifacts["compiler"] || "";
   if (!hermesCompiler || hermesInputs.files[hermesCompiler] !== fileHash(hermesCompiler) ||
       tools.toolRoot !== path.join(toolsParent, "bin")) {throw new Error("Linux Hermes AOT or thin LLVM tools did not re-admit");}
@@ -322,7 +315,7 @@ function composeApplication(plan, deps) {
       tools: {llvmAr: path.join(toolRoot, "llvm-ar"), llvmObjcopy: path.join(toolRoot, "llvm-objcopy")},
       sdk: {libraries: [], wholeArchives: [], objects: [], includeRoots: [cudaInclude, hipInclude], nvmlHeader,
         hipDriverLibrary, dpcppComponent: dpcppComponentRoot, hostComponent: hostComponentRoot, cudaImages: imagePath}},
-    config = deps.composeWindowsApplicationConfig({runAttempt: suffix, llvmDescriptor: llvmDescriptor.descriptor, io,
+    config = deps.composeWindowsApplicationConfig({llvmDescriptor: llvmDescriptor.descriptor, io,
       hermes: windowsHermes, hermesAot: hermesInputs, tools: {shermaot: hermesCompiler,
         llvmReadobj: path.join(toolRoot, "llvm-readobj")}, allowedImports: deps.windowsSystemImports(), application}),
     configText = JSON.stringify(config, null, 2) + "\n";
@@ -391,7 +384,7 @@ function runBuild(environment = process.env, deps = realBuildDependencies()) {
   const {ci} = deps, paths = ci.ciPaths(), suffix = paths.suffix, temp = paths.runnerTemp, deadline = ciDeadline(environment),
     output = path.join(temp, `native-windows-application-output-${suffix}`),
     configFile = path.join(temp, `native-windows-application-config-${suffix}.json`);
-  if (!runAttemptPattern.test(suffix) || environment["MOM_AOT_BUILD_ONLY"] !== "1" || environment["MOM_BUILD_JOBS"] !== "4" ||
+  if (environment["MOM_AOT_BUILD_ONLY"] !== "1" || environment["MOM_BUILD_JOBS"] !== ciBuildJobs(environment) ||
       fs.realpathSync(temp) !== temp || fs.existsSync(output) || fs.existsSync(configFile)) {
     throw new Error("Windows application inputs or fresh output paths differ from the bounded run plan");
   }
@@ -424,21 +417,21 @@ function canonicalRegular(file, label, maximum) {
 }
 
 /** The composed config must carry exactly one same-run receipt pin per maintained GPU profile.
- * @param {unknown} gpuPins @param {string} suffix */
-function sealedGpuPinsValid(gpuPins, suffix) {
+ * @param {unknown} gpuPins */
+function sealedGpuPinsValid(gpuPins) {
   return Array.isArray(gpuPins) && gpuPins.length === profiles.length && gpuPins.every(pin =>
     pin && typeof pin === "object" && !Array.isArray(pin) && Object.keys(pin).sort().join(",") === sealedGpuPinKeys &&
-    profiles.includes(pin.profile) && pin.runAttempt === suffix &&
+    profiles.includes(pin.profile) &&
     [pin.configSha256, pin.handoffSha256, pin.receiptSha256].every(value => typeof value === "string" && sha256Pattern.test(value))) &&
     new Set(gpuPins.map(pin => pin.profile)).size === profiles.length;
 }
 
 /** Cross-check config, producer receipt, entrypoint receipt and executable before sealing.
- * @param {any} config @param {any} result @param {any} entrypoint @param {{executable:string,configFile:string,resultFile:string,suffix:string}} plan
+ * @param {any} config @param {any} result @param {any} entrypoint @param {{executable:string,configFile:string,resultFile:string}} plan
  * @param {{configSha256:string,resultSha256:string,artifact:{bytes:number,sha256:string}}} records */
 function sealedReceiptsValid(config, result, entrypoint, plan, records) {
-  const {executable, configFile, resultFile, suffix} = plan, {artifact} = records;
-  return Boolean(config.application) && sealedGpuPinsValid(config.application.gpuHandoffs, suffix) &&
+  const {executable, configFile, resultFile} = plan, {artifact} = records;
+  return Boolean(config.application) && sealedGpuPinsValid(config.application.gpuHandoffs) &&
     result.target === "x86_64-pc-windows-msvc" && result.nativeRuntime === true && result.buildOnly === true &&
     result.executed === false && result.publicationQualified === false && result.configHash === records.configSha256 &&
     result.artifact?.path === executable && result.artifact.bytes === artifact.bytes && result.artifact.sha256 === artifact.sha256 &&
@@ -457,23 +450,22 @@ function sealedReceiptsValid(config, result, entrypoint, plan, records) {
  * handoff.json, re-prove that nothing changed, and publish the artifact names and digests.
  * @param {NodeJS.ProcessEnv} [environment] */
 function runSeal(environment = process.env) {
-  const ci = require("../prepare-native-ci"), suffix = runAttempt(environment), temp = environment["RUNNER_TEMP"] || "",
+  const ci = require("../native-ci-tar"), suffix = ciSuffix(environment), temp = environment["RUNNER_TEMP"] || "",
     buildRoot = path.join(temp, `native-windows-application-output-${suffix}`),
     configFile = path.join(temp, `native-windows-application-config-${suffix}.json`),
     executable = path.join(buildRoot, "mom.exe"), resultFile = path.join(buildRoot, "result.json"),
     entrypointFile = path.join(buildRoot, "entrypoint.json"), evidenceName = `native-windows-application-build-${suffix}`,
     evidenceRoot = path.join("/tmp", evidenceName), archive = path.join(temp, evidenceName + ".tar"), output = environment["GITHUB_OUTPUT"] || "";
-  if (!runAttemptPattern.test(suffix)) {throw new Error("Windows application seal run attempt or aggregate deadline is invalid or expired");}
   const deadline = ciDeadline(environment);
   if (fs.realpathSync(temp) !== temp ||
       environment["BUILD_OUTPUT"] !== buildRoot || environment["CONFIG_FILE"] !== configFile || environment["EXECUTABLE"] !== executable ||
       environment["RESULT_FILE"] !== resultFile || environment["ENTRYPOINT_FILE"] !== entrypointFile ||
-      fs.existsSync(evidenceRoot) || fs.existsSync(archive)) {throw new Error("Windows application seal paths differ from the exact run-attempt plan");}
+      fs.existsSync(evidenceRoot) || fs.existsSync(archive)) {throw new Error("Windows application seal paths differ from the CI work-root plan");}
   const configRecord = canonicalRegular(configFile, "composed config", 8 << 20), config = readBuildJson(configFile),
     resultRecord = canonicalRegular(resultFile, "producer receipt", 128 << 20), result = readBuildJson(resultFile),
     entrypointRecord = canonicalRegular(entrypointFile, "release entrypoint receipt", 128 << 20), entrypoint = readBuildJson(entrypointFile),
     artifact = canonicalRegular(executable, "runtime executable", (1 << 30) - 1);
-  if (!sealedReceiptsValid(config, result, entrypoint, {executable, configFile, resultFile, suffix},
+  if (!sealedReceiptsValid(config, result, entrypoint, {executable, configFile, resultFile},
     {configSha256: configRecord.sha256, resultSha256: resultRecord.sha256, artifact}) || fs.existsSync(evidenceRoot)) {
     throw new Error("Windows application receipts, same-run GPU cohort or runtime executable failed sealing");
   }
@@ -486,7 +478,7 @@ function runSeal(environment = process.env) {
     fs.copyFileSync(source, destination, fs.constants.COPYFILE_EXCL);
     if (fileHash(destination) !== sha256 || fileHash(source) !== sha256) {throw new Error("Windows application build evidence copy changed: " + name);}
   }
-  const handoff = {version: 1, format: "mom-windows-application-build-handoff-v1", runAttempt: suffix,
+  const handoff = {version: 1, format: "mom-windows-application-build-handoff-v1",
       target: "x86_64-pc-windows-msvc", artifact: {file: "mom.exe", bytes: artifact.bytes, sha256: artifact.sha256},
       config: {file: "application-config.json", sha256: configRecord.sha256},
       producerReceipt: {file: "result.json", sha256: resultRecord.sha256},

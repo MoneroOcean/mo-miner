@@ -6,7 +6,7 @@ const fs = require("node:fs"), path = require("node:path"), {spawnSync} = requir
 const {validateWindowsControllerConfig, windowsToolEnvironment, vfsFiles, parseImports} = require("./build-native-windows-controller");
 const {verifyPreparedSdkSources, sdkSourceFiles, sdkSourceEnvironment} = require("./prepare-native-sdk-sources");
 const {fileHash, sourceInputs, verifySourceInputs, readBuildJson} = require("./build-source-inputs");
-const {pins} = require("./probe-static-dpcpp"), {isStaticArchive} = require("./native-audit");
+const {pins} = require("./native-dpcpp-pins"), {isStaticArchive} = require("./native-audit");
 const {dpcppEntries} = require("./native-compiler-isolation");
 const {windowsIntelRuleOverride} = require("./prepare-native-jit-toolchain");
 const repo = path.resolve(__dirname, "..");
@@ -117,7 +117,7 @@ function buildWindowsStaticSdk(sourcesFile, descriptorFile, sdk, cuda, output, e
     const real = fs.realpathSync(input), relative = path.relative(real, target);
     if (!relative || (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(".." + path.sep))) {throw new Error("Windows SDK output overlaps a selected source or SDK");}
   }
-  const recipeLeaves = ["scripts/build-native-windows-sdk.js", "scripts/prepare-native-jit-toolchain.js", "scripts/prepare-native-sdk-sources.js", "scripts/build-native-windows-controller.js", "scripts/build-environment.js", "scripts/build-source-inputs.js", "scripts/native-audit.js", "scripts/probe-static-dpcpp.js",
+  const recipeLeaves = ["scripts/build-native-windows-sdk.js", "scripts/prepare-native-jit-toolchain.js", "scripts/prepare-native-sdk-sources.js", "scripts/build-native-windows-controller.js", "scripts/build-environment.js", "scripts/build-source-inputs.js", "scripts/native-audit.js", "scripts/native-dpcpp-pins.js",
     "scripts/native-coff-archive.js", "scripts/native-compiler-isolation.js", "tests/native/dpcpp-static/CMakeLists.txt", "tests/native/dpcpp-static/static-windows.h", "tests/reference/native-opencl-binding.cpp", "runtime/windows-opencl-driver.h"];
   const recipe = sourceInputs(repo, [], recipeLeaves), virtual = vfsFiles(config.windowsSdk.overlay);
   const files = [sourcesFile, descriptorFile, ...Object.values(plan.compilerTools), config.tools.llvmReadobj, config.windowsSdk.overlay,

@@ -6,6 +6,7 @@ const {fileHash, sourceInputs, verifySourceInputs, readBuildJson, readBuildText}
 const {gitSourceComponents} = require("./fetch-native-sdk-sources");
 const {sdkSourceFiles} = require("./prepare-native-sdk-sources");
 const {hiprtcHeaders} = require("./build-native-rocm-resources");
+const {validCiSuffix} = require("./native-ci-job");
 
 const repo = path.resolve(__dirname, ".."), format = "mom-rocm-hip-headers-handoff-v1",
   patchName = "scripts/patches/rocm-hip-headers-only.patch",
@@ -107,7 +108,7 @@ function requireSourceSummary(value, label) {
 function validateHeaderPackage(input, sourceRoot, verifyOriginal) {
   const packageRow = /** @type {any} */ (input), pins = gitSourceComponents("rocm"), hip = pins["hip"]?.revision, clr = pins["clr"]?.revision;
   const suffix = typeof sourceRoot === "string" ? path.basename(sourceRoot).slice("mom-native-rocm-hip-headers-".length) : "";
-  if (!validRunAttempt(suffix) || sourceRoot !== path.join("/tmp", "mom-native-rocm-hip-headers-" + suffix)) {
+  if (!validCiSuffix(suffix) || sourceRoot !== path.join("/tmp", "mom-native-rocm-hip-headers-" + suffix)) {
     throw new Error("ROCm HIP header package source root is not the canonical run path");
   }
   const sourceCohortRoot = path.join("/tmp", "mom-native-rocm-prerequisites-" + suffix);
@@ -222,19 +223,15 @@ function validateHeaderPackage(input, sourceRoot, verifyOriginal) {
   return packageRow;
 }
 
-/** @param {unknown} value */
-function validRunAttempt(value) {return typeof value === "string" && /^[0-9]{1,20}-[1-9][0-9]{0,5}$/.test(value);}
-
 /** Export only the unchanged HIP header package and its original package receipt.
- * @param {string} sourceRoot @param {string} newOutputRoot @param {{runAttempt:string}} identity */
-function exportRocmHipHeaders(sourceRoot, newOutputRoot, identity) {
-  if (!identity || !validRunAttempt(identity.runAttempt)) {throw new Error("ROCm HIP header export needs the exact same-run attempt");}
+ * @param {string} sourceRoot @param {string} newOutputRoot @param {string} suffix CI work-root suffix of both roots */
+function exportRocmHipHeaders(sourceRoot, newOutputRoot, suffix) {
+  if (!validCiSuffix(suffix)) {throw new Error("ROCm HIP header export needs the CI work-root suffix");}
   canonicalDirectory(sourceRoot, "Original ROCm HIP header package root");
-  const suffix = identity.runAttempt, expectedSource = path.join("/tmp", "mom-native-rocm-hip-headers-" + suffix),
-    outputParent = path.dirname(newOutputRoot);
+  const expectedSource = path.join("/tmp", "mom-native-rocm-hip-headers-" + suffix), outputParent = path.dirname(newOutputRoot);
   if (sourceRoot !== expectedSource || !path.isAbsolute(newOutputRoot) || path.resolve(newOutputRoot) !== newOutputRoot ||
       path.basename(newOutputRoot) !== "native-rocm-hip-headers-" + suffix || fs.existsSync(newOutputRoot)) {
-    throw new Error("ROCm HIP header handoff paths differ from the exact run-attempt roots");
+    throw new Error("ROCm HIP header handoff paths differ from the CI work roots");
   }
   canonicalDirectory(outputParent, "ROCm HIP header handoff parent");
   const recipe = sourceInputs(repo, [], recipeFiles), packagePath = path.join(sourceRoot, "header-package.json"),
@@ -272,7 +269,7 @@ function exportRocmHipHeaders(sourceRoot, newOutputRoot, identity) {
     ["header-package.json", {bytes: packagePin.bytes, sha256: packagePin.sha256}],
     ...copied.map(row => ["include/" + row.path, {bytes: row.bytes, sha256: row.sha256}]),
   ]);
-  const handoff = {version: 1, format, runAttempt: suffix, sourceRoot, manifestSha256: packagePin.sha256, recipe, files: payload},
+  const handoff = {version: 1, format, sourceRoot, manifestSha256: packagePin.sha256, recipe, files: payload},
     handoffPath = path.join(newOutputRoot, "handoff.json");
   fs.writeFileSync(handoffPath, JSON.stringify(handoff, null, 2) + "\n", {flag: "wx", mode: 0o444});
   const handoffSha256 = stableRegular(handoffPath, maxManifestBytes, "ROCm HIP header handoff receipt").sha256;
@@ -283,13 +280,11 @@ function exportRocmHipHeaders(sourceRoot, newOutputRoot, identity) {
 
 /** Admit an externally hash-pinned, same-run HIP header transport after the existing tar layer restores it.
  * The archive pin is enforced by that layer; this reader binds restored files back to the transported manifest.
- * @param {string} root @param {{runAttempt:string,handoffSha256:string}} expected */
+ * @param {string} root @param {{handoffSha256:string}} expected */
 function rocmHipHeaderInputs(root, expected) {
-  if (!expected || !validRunAttempt(expected.runAttempt) || !digest(expected.handoffSha256)) {
-    throw new Error("ROCm HIP header reader needs the exact run attempt and external handoff pin");
-  }
-  const suffix = expected.runAttempt, expectedRoot = path.join("/tmp", "native-rocm-hip-headers-" + suffix);
-  if (root !== expectedRoot) {throw new Error("Restored ROCm HIP header root differs from the canonical run path");}
+  if (!expected || !digest(expected.handoffSha256)) {throw new Error("ROCm HIP header reader needs its external handoff pin");}
+  const suffix = typeof root === "string" ? path.basename(root).slice("native-rocm-hip-headers-".length) : "";
+  if (!validCiSuffix(suffix) || root !== path.join("/tmp", "native-rocm-hip-headers-" + suffix)) {throw new Error("Restored ROCm HIP header root differs from the canonical run path");}
   canonicalDirectory(root, "Restored ROCm HIP header root");
   if (!isDeepStrictEqual(fs.readdirSync(root).sort(), ["handoff.json", "header-package.json", "include"])) {
     throw new Error("Restored ROCm HIP header root has missing or extra top-level members");
@@ -297,8 +292,8 @@ function rocmHipHeaderInputs(root, expected) {
   const handoffPath = path.join(root, "handoff.json"), handoffPin = stableRegular(handoffPath, maxManifestBytes, "ROCm HIP header handoff receipt");
   if (handoffPin.sha256 !== expected.handoffSha256) {throw new Error("ROCm HIP header handoff differs from its external hash pin");}
   const handoff = readBuildJson(handoffPath);
-  if (!hasExactKeys(handoff, ["version", "format", "runAttempt", "sourceRoot", "manifestSha256", "recipe", "files"]) ||
-      handoff.version !== 1 || handoff.format !== format || handoff.runAttempt !== suffix ||
+  if (!hasExactKeys(handoff, ["version", "format", "sourceRoot", "manifestSha256", "recipe", "files"]) ||
+      handoff.version !== 1 || handoff.format !== format ||
       handoff.sourceRoot !== path.join("/tmp", "mom-native-rocm-hip-headers-" + suffix) || !digest(handoff.manifestSha256) ||
       !handoff.recipe || typeof handoff.recipe !== "object" || !handoff.files || typeof handoff.files !== "object" || Array.isArray(handoff.files)) {
     throw new Error("ROCm HIP header handoff identity or schema is invalid");

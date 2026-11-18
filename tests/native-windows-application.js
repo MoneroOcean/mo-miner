@@ -1,7 +1,7 @@
 "use strict";
 const fs = require("node:fs"), os = require("node:os"), path = require("node:path"), test = require("node:test"), assert = require("node:assert/strict");
 const {nativeSourceInputs, fileHash} = require("../scripts/build-source-inputs");
-const {nativeApplicationGpu} = require("../scripts/probe-native-controller");
+const {nativeApplicationGpu} = require("../scripts/build-native-application");
 const {validateWindowsApplication, windowsApplicationInputs, verifyWindowsApplicationFiles, windowsResponseFile} = require("../scripts/native-windows-application");
 const nativeCudaImages = require("../scripts/native-cuda-images");
 const hostComponentReader = require("../scripts/native-windows-host-component");
@@ -77,11 +77,11 @@ function compactGpuHandoffs(f) {
     const handoffFiles = [configFile, graphFile, isolationFile, ...objects.map((/** @type {{path:string}} */ row) => row.path)].map(file => ({
       path: path.relative(root, file).split(path.sep).join("/"), bytes: fs.statSync(file).size, sha256: fileHash(file),
     })).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
-    const handoff = {format: "mom-windows-gpu-handoff-v1", runAttempt: "123456789-1", profile, files: handoffFiles,
+    const handoff = {format: "mom-windows-gpu-handoff-v1", profile, files: handoffFiles,
       sdkInputs: Object.fromEntries(Object.keys(original.sdkInputs).sort().map(file => [file, original.sdkInputs[file]])),
       buildOnly: true, executed: false, publicationQualified: false};
     json(handoffFile, handoff); receipts.push(graphFile);
-    const pin = {profile, runAttempt: handoff.runAttempt, receiptSha256: fileHash(graphFile), configSha256: fileHash(configFile), handoffSha256: fileHash(handoffFile)};
+    const pin = {profile, receiptSha256: fileHash(graphFile), configSha256: fileHash(configFile), handoffSha256: fileHash(handoffFile)};
     pins.push(pin); states.set(profile, {root, graphFile, isolationFile, configFile, handoffFile, graph: original, handoff, pin, objects});
   }
   f.app.gpuReceipts = receipts; f.app.gpuHandoffs = pins;
@@ -277,9 +277,9 @@ test.describe("Complete Windows native application admission", () => {
     assert.equal(Object.keys(result.files).some(file => file.startsWith("/historical/sdk/")), false);
     verifyWindowsApplicationFiles(result.files);
   });
-  test("compact GPU handoffs reject a mixed same-run cohort", t => {
+  test("compact GPU handoffs reject a repeated profile", t => {
     const f = fixture(t); compactGpuHandoffs(f);
-    const pins = f.app.gpuHandoffs; assert.ok(pins); const other = pins[0]; assert.ok(other); other.runAttempt = "123456789-2";
+    const pins = f.app.gpuHandoffs; assert.ok(pins); const first = pins[0], other = pins[1]; assert.ok(first && other); other.profile = first.profile;
     assert.throws(() => validateWindowsApplication(f.app, repo), /every maintained profile/);
   });
   test("compact GPU handoffs continue to reject stale source, SDK-map, config and object mutations", t => {

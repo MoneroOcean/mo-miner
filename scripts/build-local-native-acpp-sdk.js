@@ -3,9 +3,10 @@
 // Continue admitted compiler, OpenMP and ROCm source SDKs through the public static ACPP builder.
 const fs = require("node:fs"), path = require("node:path"), {isDeepStrictEqual} = require("node:util");
 const local = require("./build-local-native-sdk"), jit = require("./build-local-native-jit-sdk"), rocm = require("./build-local-native-rocm-sdk"),
-  nativeCi = require("./prepare-native-ci");
+  ciSources = require("./native-ci-linux-sources"),
+  ciSupport = require("./native-ci-linux-support");
 const {verifyPreparedRoots} = jit;
-const {verifyLinuxLlvmAdmission} = require("./build-native-llvm21-sdk");
+const {verifyLinuxLlvmAdmission} = require("./build-native-llvm-sdk");
 const {auditDpcppCudaInputs} = require("./native-dpcpp-cuda-inputs");
 const {staticSyclSdkPlan} = require("./build-native-sycl-sdk");
 const {nativeStaticRuntimeInputs} = require("./native-release-sdk-inputs");
@@ -96,7 +97,7 @@ function auditLocalAcppSdkInputs(context, tools, dependencies = {}) {
     rocmAudit = (dependencies.auditRocm || rocm.auditLocalRocmSdkInputs)(selected.rocmContext,
       {cc: tools.cc, cxx: tools.cxx, cmake: tools.cmake}),
     openmp = (dependencies.auditOpenmp || nativeOpenmpInputs)(support.openmpSdk),
-    openmpRecord = readBuildJson(openmp.receipt), openmpTools = nativeCi.openmpBuildTools(),
+    openmpRecord = readBuildJson(openmp.receipt), openmpTools = ciSupport.openmpBuildTools(),
     expectedOpenmpTools = Object.fromEntries(Object.entries(openmpTools).map(([name, file]) => [name, {path: file, sha256: fileHash(file)}])),
     sourceState = {source: selected.paths.fetch, preparedReceipt: selected.paths.preparedReceipt,
       preparedCheckout: selected.paths.preparedCheckout};
@@ -110,7 +111,7 @@ function auditLocalAcppSdkInputs(context, tools, dependencies = {}) {
     throw new Error("Prepared ACPP sources exist without their original fetch cohort; preserve the workspace");
   }
   if (directoryExists(selected.paths.prepared, "Local ACPP prepared source output")) {
-    nativeCi.verifyAcppSource({env: process.env}, sourceState, tools.git);
+    ciSources.verifyAcppSource({env: process.env}, sourceState, tools.git);
   }
   return {cuda, rocm: rocmAudit, openmp, sourceState};
 }
@@ -261,7 +262,7 @@ function prepareLocalAcppSources(context, tools, env, run) {
     run(process.execPath, [producer("prepare-native-sdk-sources.js"), "acpp", paths.rootsFile, paths.prepared],
       {label: "Offline ACPP source preparation", env, cwd: repo});
   }
-  nativeCi.verifyAcppSource({env}, {source: paths.fetch, preparedReceipt: paths.preparedReceipt,
+  ciSources.verifyAcppSource({env}, {source: paths.fetch, preparedReceipt: paths.preparedReceipt,
     preparedCheckout: paths.preparedCheckout}, tools.git);
   return {sources: fetchExisted, prepared: preparedExisted};
 }

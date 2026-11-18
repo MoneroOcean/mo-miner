@@ -5,7 +5,7 @@
 const fs = require("node:fs"), path = require("node:path");
 const {absolutePath} = require("./build-native-release");
 const {fileHash, readBuildJson, nativeSourceInputs, verifySourceInputs} = require("./build-source-inputs");
-const {nativeApplicationGpu} = require("./probe-native-controller");
+const {nativeApplicationGpu} = require("./build-native-application");
 const {isStaticArchive, auditNativeSymbols} = require("./native-audit");
 const {coffSectionPayloads} = require("./native-compiler-isolation");
 const {windowsDpcppSdkInputs} = require("./native-windows-dpcpp-component");
@@ -16,7 +16,7 @@ const {assertUniqueHcfIds} = require("./native-hcf");
 const {StringDecoder} = require("node:string_decoder"), {createHash} = require("node:crypto");
 
 /** @typedef {{core: string, gpuReceipts: string[], defaultCompiler: string,
- * gpuHandoffs?: Array<{profile: string, runAttempt: string, receiptSha256: string, configSha256: string, handoffSha256: string}>,
+ * gpuHandoffs?: Array<{profile: string, receiptSha256: string, configSha256: string, handoffSha256: string}>,
  * tools: {llvmObjcopy: string, llvmAr: string},
  * sdk: {libraries: string[], wholeArchives: string[], objects: string[], includeRoots: string[], nvmlHeader: string, hipDriverLibrary: string, dpcppComponent?: string, hostComponent?: string, nvrtcSdk?: string, cudaImages?: string}}} WindowsApplication */
 
@@ -94,10 +94,10 @@ function validateWindowsApplication(value, root) {
   if (Object.hasOwn(app, "gpuHandoffs")) {
     const profiles = new Set(policy.factories.map(factory => factory.slice("mom_native_gpu_".length).replaceAll("_", "-")));
     if (!Array.isArray(app.gpuHandoffs) || app.gpuHandoffs.length !== profiles.size || app.gpuHandoffs.some(pin =>
-      !pin || typeof pin !== "object" || Array.isArray(pin) || Object.keys(pin).sort().join(",") !== "configSha256,handoffSha256,profile,receiptSha256,runAttempt" ||
-      typeof pin.profile !== "string" || !profiles.has(pin.profile) || typeof pin.runAttempt !== "string" || !/^[0-9]{1,20}-[1-9][0-9]{0,5}$/.test(pin.runAttempt) ||
+      !pin || typeof pin !== "object" || Array.isArray(pin) || Object.keys(pin).sort().join(",") !== "configSha256,handoffSha256,profile,receiptSha256" ||
+      typeof pin.profile !== "string" || !profiles.has(pin.profile) ||
       !/^[a-f0-9]{64}$/.test(pin.receiptSha256 || "") || !/^[a-f0-9]{64}$/.test(pin.configSha256 || "") || !/^[a-f0-9]{64}$/.test(pin.handoffSha256 || "")) ||
-      new Set(app.gpuHandoffs.map(pin => pin.profile)).size !== profiles.size || new Set(app.gpuHandoffs.map(pin => pin.runAttempt)).size !== 1) {
+      new Set(app.gpuHandoffs.map(pin => pin.profile)).size !== profiles.size) {
       throw new Error("Windows application GPU handoffs must pin every maintained profile exactly once");
     }
   }

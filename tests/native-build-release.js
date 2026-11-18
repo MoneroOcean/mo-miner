@@ -3,7 +3,7 @@ const fs = require("node:fs"), os = require("node:os"), path = require("node:pat
 const {spawnSync} = require("node:child_process");
 const {runInNewContext} = require("node:vm");
 const {absolutePath, nativeSdkConfig, nativeSdkLinkInputs, nativeSdkSourceInputs, nativeReleaseComponents, nativeStage, compactNativeRelease, buildNativeRelease} = require("../scripts/build-native-release");
-const {run: runNativeControllerCommand, flushLinuxObjectBatch} = require("../scripts/probe-native-controller");
+const {run: runNativeControllerCommand, flushLinuxObjectBatch} = require("../scripts/build-native-application");
 const {buildNativeArtifact, nativeReleaseArguments, packNativeEntrypoint} = require("../scripts/build-release");
 const {packageNativeRelease} = require("../scripts/package-native-release");
 const {ioPins} = require("../scripts/build-native-io");
@@ -832,6 +832,18 @@ test.describe("Native release compaction uses actual ELF tooling", {skip: proces
     const output = path.join(root, "out"); fs.mkdirSync(output); const r = compactNativeRelease(original, output);
     assert.equal(fs.existsSync(r.binary), false); assert.equal(fs.existsSync(r.pendingBinary), true);
     assert.ok(r.bytes < fs.statSync(original).size); assert.ok(r.needed.includes("libc.so.6"));
+  });
+  test("compaction ignores PATH binutils and records the exact strip and readelf identities", t => {
+    const shadow = path.join(root, "shadow-bin"), output = path.join(root, "pinned-tools"), savedPath = process.env["PATH"];
+    fs.mkdirSync(shadow); fs.mkdirSync(output);
+    for (const name of ["strip", "readelf"]) {fs.writeFileSync(path.join(shadow, name), "#!/bin/sh\nexit 7\n", {mode: 0o755});}
+    process.env["PATH"] = shadow + path.delimiter + savedPath;
+    t.after(() => {process.env["PATH"] = savedPath;});
+    const r = compactNativeRelease(original, output);
+    for (const tool of [r.tools.strip, r.tools.readelf]) {
+      assert.ok(path.isAbsolute(tool.path) && !tool.path.startsWith(shadow), tool.path);
+      assert.equal(tool.sha256, fileHash(tool.path)); assert.match(tool.version, /\S/);
+    }
   });
   test("compaction does not leave a redundant compressed intermediate", () => {
     const output = path.join(root, "single"); fs.mkdirSync(output); compactNativeRelease(original, output);

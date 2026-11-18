@@ -10,7 +10,7 @@ const hash = "a".repeat(64), now = Date.now();
 function environment(root, stage = "configure") {
   const suffix = "9000000000000008-88", runnerTemp = path.join(root, "runner"), future = Math.floor(now / 1000),
     env = /** @type {NodeJS.ProcessEnv} */ ({
-      GITHUB_RUN_ID: "9000000000000008", GITHUB_RUN_ATTEMPT: "88", GITHUB_JOB: "windows-jit",
+      MOM_NATIVE_CI_SUFFIX: "9000000000000008-88", GITHUB_JOB: "windows-jit",
       RUNNER_TEMP: runnerTemp, MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: "2",
       GITHUB_OUTPUT: path.join(root, "outputs"), GITHUB_STEP_SUMMARY: path.join(root, "summary"),
       MOM_NATIVE_LINUX_SOURCES_DIR: path.join("/tmp", "mom-native-linux-source-prerequisites-" + suffix),
@@ -100,7 +100,7 @@ test.describe("Windows original source-JIT CI phases", {skip: process.platform !
   test("rejects unknown phases, malformed identities and non-Linux or non-build-only jobs", () => {
     const env = environment(root), config = path.join(env["RUNNER_TEMP"] || "", "incoming/config/native-windows-jit-sdk-9000000000000008-88.json");
     for (const stage of ["all", "configure;link", "constructor"]) {assert.throws(() => windowsJitCiJobPlan(stage, config, hash, env, "linux", "x64", now));}
-    for (const changed of [{...env, GITHUB_RUN_ID: "../x"}, {...env, GITHUB_RUN_ATTEMPT: "0"}, {...env, MOM_BUILD_JOBS: "3"}]) {
+    for (const changed of [{...env, MOM_NATIVE_CI_SUFFIX: "../x"}, {...env, MOM_NATIVE_CI_SUFFIX: ""}, {...env, MOM_BUILD_JOBS: "3"}]) {
       assert.throws(() => windowsJitCiJobPlan("configure", config, undefined, changed, "linux", "x64", now));
     }
     assert.throws(() => windowsJitCiJobPlan("configure", config, undefined, env, "win32", "x64", now));

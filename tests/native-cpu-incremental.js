@@ -3,7 +3,7 @@ const test = require("node:test"), assert = require("node:assert/strict");
 const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
 const vm = require("node:vm");
 const {compileNativeObjects} = require("../scripts/native-object-cache");
-const {cpuCompileCommands, cpuIncludeRoots, selectCpuArchiver, verifyCpuArchiver} = require("../scripts/build-native-cpu-probe");
+const {cpuCompileCommands, cpuIncludeRoots, selectCpuArchiver, verifyCpuArchiver} = require("../scripts/build-native-core");
 const {fileHash} = require("../scripts/build-source-inputs");
 
 const repoRoot = path.resolve(__dirname, "..");
@@ -120,7 +120,7 @@ function runProbeFrontdoor(t, gpu) {
       });
       return {objects, cacheHits: 0, cacheMisses: objects.length, cacheRoot: path.join(root, "object-cache"), ninja: null};
     }};
-  const source = fs.readFileSync(path.join(repoRoot, "scripts/build-native-cpu-probe.js"), "utf8"), module = {exports: {}};
+  const source = fs.readFileSync(path.join(repoRoot, "scripts/build-native-core.js"), "utf8"), module = {exports: {}};
   const modules = new Map(/** @type {Array<[string, unknown]>} */ ([
     ["node:fs", fs], ["node:path", path], ["node:child_process", childProcess],
     ["./build-source-inputs", {fileHash: () => digest, sourceInputs: () => ({}), nativeSourceInputs: () => ({}),
@@ -133,11 +133,11 @@ function runProbeFrontdoor(t, gpu) {
     return found;
   };
   localRequire.main = module;
-  const fakeProcess = {platform: "linux", argv: [process.execPath, "build-native-cpu-probe.js", cache, output, ...(gpu ? ["--gpu"] : [])],
+  const fakeProcess = {platform: "linux", argv: [process.execPath, "build-native-core.js", cache, output, ...(gpu ? ["--gpu"] : [])],
     env: {MOM_PORTABLE_BUILD: "1", CXX: compiler}, exitCode: undefined};
   vm.runInNewContext(source, {require: localRequire, module, process: fakeProcess, __dirname: path.join(repoRoot, "scripts"),
     console: {log() { /* Ignore the output archive path. */ }, error(/** @type {unknown} */ error) {messages.push(String(error));}}, Buffer},
-  {filename: path.join(repoRoot, "scripts/build-native-cpu-probe.js"), timeout: 5000});
+  {filename: path.join(repoRoot, "scripts/build-native-core.js"), timeout: 5000});
   return {compiler, events, compileCommands, exitCode: fakeProcess.exitCode, messages};
 }
 
@@ -198,7 +198,7 @@ test.describe("Incremental Linux native CPU Core objects", () => {
   });
 
   test("fresh archive uses Engineering objects first and appends the ordered bridge batch before materialization", () => {
-    const source = fs.readFileSync(path.join(repoRoot, "scripts/build-native-cpu-probe.js"), "utf8");
+    const source = fs.readFileSync(path.join(repoRoot, "scripts/build-native-core.js"), "utf8");
     const engineeringObjects = source.indexOf('const objects = variable("OBJS")');
     const archiverSelection = source.indexOf("selectCpuArchiver(compiler");
     const batch = source.indexOf("const compiled = compileCpuBatch");

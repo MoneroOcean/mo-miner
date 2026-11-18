@@ -82,7 +82,7 @@ test.describe("Pinned static LLVM OpenMP source SDK", {skip: process.platform !=
     assert.throws(() => openmpSdkPlan("/input/other.tar.xz", "/tmp/openmp", tools), /pinned LLVM/);
     assert.throws(() => openmpSdkPlan("/input/" + archiveName, "relative", tools), /canonical Linux/);
     assert.throws(() => openmpSdkPlan("/input/" + archiveName, "/tmp/map=ambiguous", tools), /canonical Linux/);
-    assert.throws(() => openmpSdkPlan("/input/" + archiveName, "/tmp/openmp", tools, 4), /exactly two jobs/);
+    assert.throws(() => openmpSdkPlan("/input/" + archiveName, "/tmp/openmp", tools, 3), /two or four jobs/);
     assert.throws(() => openmpSdkPlan("/input/" + archiveName, "/tmp/openmp", tools, 2, "win32"), /canonical Linux/);
   });
 

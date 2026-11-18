@@ -7,7 +7,12 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const {spawnSync} = require("node:child_process");
-const ci = require("../prepare-native-ci");
+const ciJit = require("../native-ci-linux-jit"),
+  ciRocm = require("../native-ci-linux-rocm"),
+  ciSources = require("../native-ci-linux-sources"),
+  ciTar = require("../native-ci-tar"),
+  dpcppInputs = require("../native-dpcpp-cuda-inputs"),
+  {auditGnuHeaders} = require("../prepare-native-gnu-headers");
 const {fileHash, readBuildJson} = require("../build-source-inputs");
 const {canonicalFile, appendOutputs} = require("./seal");
 
@@ -16,15 +21,15 @@ const windowsTarget = "x86_64-w64-windows-gnu";
 const linuxTarget = "x86_64-unknown-linux-gnu";
 const windowsProducer = "scripts/native-windows-jit-resources.js";
 
-/** @typedef {ReturnType<typeof ci.ciPaths>} CiPaths */
+/** @typedef {ReturnType<typeof ciSources.ciPaths>} CiPaths */
 
 /** Restore the pinned original Linux source cohort for CUDA image admission, then drop its tar.
  * @param {CiPaths} paths @param {NodeJS.ProcessEnv} [environment] */
 function restoreCudaImageSources(paths, environment = process.env) {
-  const state = ci.linuxSourceStatePaths(paths);
-  ci.dpcppSourceArchivePin(state.incomingTar, environment["MOM_NATIVE_LINUX_SOURCE_BUNDLE_SHA256"] || "");
-  ci.extractState(state.incomingTar, "/tmp", [state.sourceName]);
-  ci.verifyLinuxSources(paths, state, "/usr/bin/git");
+  const state = ciSources.linuxSourceStatePaths(paths);
+  ciSources.dpcppSourceArchivePin(state.incomingTar, environment["MOM_NATIVE_LINUX_SOURCE_BUNDLE_SHA256"] || "");
+  ciTar.extractState(state.incomingTar, "/tmp", [state.sourceName]);
+  ciSources.verifyLinuxSources(paths, state, "/usr/bin/git");
   fs.unlinkSync(state.incomingTar);
 }
 
@@ -32,10 +37,10 @@ function restoreCudaImageSources(paths, environment = process.env) {
  * @param {CiPaths} paths @returns {{bundle_sha256: string, handoff_sha256: string}} */
 function exportRocmHipHeadersCi(paths) {
   const {exportRocmHipHeaders} = require("../native-rocm-hip-headers");
-  const state = ci.rocmComgrStatePaths(paths, paths.env), name = "native-rocm-hip-headers-" + paths.suffix,
+  const state = ciRocm.rocmComgrStatePaths(paths, paths.env), name = "native-rocm-hip-headers-" + paths.suffix,
     root = path.join("/tmp", name), archive = path.join(paths.runnerTemp, name + ".tar");
-  exportRocmHipHeaders(state.hipHeadersRoot, root, {runAttempt: paths.suffix});
-  ci.packState(archive, "/tmp", [name]);
+  exportRocmHipHeaders(state.hipHeadersRoot, root, paths.suffix);
+  ciTar.packState(archive, "/tmp", [name]);
   return {bundle_sha256: fileHash(archive), handoff_sha256: fileHash(path.join(root, "handoff.json"))};
 }
 
@@ -46,9 +51,9 @@ function exportAcppFrontendCi(paths) {
   const name = "native-linux-llvm-acpp-frontend-" + paths.suffix, parent = path.join(paths.runnerTemp, "acpp-frontend-export-" + paths.suffix);
   fs.mkdirSync(parent, {mode: 0o700});
   const bundle = path.join(parent, name), archive = path.join(paths.runnerTemp, name + ".tar");
-  const produced = exportLinuxLlvmAcppFrontend(paths.output, bundle, {runAttempt: paths.suffix});
-  linuxLlvmAcppFrontendInputs(bundle, {runAttempt: paths.suffix, handoffSha256: produced.handoffSha256});
-  ci.packState(archive, parent, [name]);
+  const produced = exportLinuxLlvmAcppFrontend(paths.output, bundle);
+  linuxLlvmAcppFrontendInputs(bundle, {handoffSha256: produced.handoffSha256});
+  ciTar.packState(archive, parent, [name]);
   return {frontend_bundle_sha256: fileHash(archive), frontend_handoff_sha256: produced.handoffSha256};
 }
 
@@ -76,7 +81,7 @@ function sealLinuxJitResources(paths) {
   canonicalFile(archive, "Linux JIT resource bundle");
   const manifestSha256 = fileHash(manifestFile);
   assertLinuxJitResourceResult(readBuildJson(resultFile), readBuildJson(manifestFile), manifestFile, manifestSha256);
-  ci.listState(archive, [path.basename(root)]);
+  ciTar.listState(archive, [path.basename(root)]);
   return {resources_bundle_sha256: fileHash(archive), resources_manifest_sha256: manifestSha256, resources_result_sha256: fileHash(resultFile)};
 }
 
@@ -98,14 +103,14 @@ function windowsJitInputPins(environment) {
  * @param {string} file @param {string} expected @param {string} label */
 function pinnedArchive(file, expected, label) {
   if (!/^[a-f0-9]{64}$/.test(expected)) {throw new Error(label + " SHA-256 pin is missing");}
-  return ci.dpcppSourceArchivePin(file, expected);
+  return ciSources.dpcppSourceArchivePin(file, expected);
 }
 
 /** Restore one same-run root at its original /tmp path, refusing to overwrite an existing one.
  * @param {string} file @param {string} root */
 function restoreRoot(file, root) {
   if (fs.existsSync(root)) {throw new Error("Refusing to overwrite same-run input root: " + root);}
-  ci.extractState(file, "/tmp", [path.basename(root)]);
+  ciTar.extractState(file, "/tmp", [path.basename(root)]);
 }
 
 /** Admit the four pinned same-run inputs, run the public Windows JIT resource producer, re-admit
@@ -114,8 +119,8 @@ function restoreRoot(file, root) {
  * @returns {{resources_bundle_sha256: string, resources_manifest_sha256: string, resources_result_sha256: string}} */
 function produceWindowsJitResourcesCi(paths, environment = process.env) {
   const {windowsJitResourcePaths, admitWindowsJitNativeTools} = require("../native-windows-jit-resources");
-  const suffix = paths.suffix, source = ci.linuxSourceStatePaths(paths, environment), dpcpp = ci.dpcppCudaInputsStatePaths(paths, environment),
-    gnu = ci.gnuHeadersStatePaths(paths, environment, windowsTarget), linuxResources = ci.linuxJitResourcesStatePaths(paths, environment),
+  const suffix = paths.suffix, source = ciSources.linuxSourceStatePaths(paths, environment), dpcpp = ciSources.dpcppCudaInputsStatePaths(paths, environment),
+    gnu = ciSources.gnuHeadersStatePaths(paths, environment, windowsTarget), linuxResources = ciJit.linuxJitResourcesStatePaths(paths, environment),
     output = windowsJitResourcePaths(suffix), incoming = path.join(paths.runnerTemp, "incoming");
   const sourceTar = path.join(incoming, path.basename(source.sourceTar)), dpcppTar = path.join(incoming, path.basename(dpcpp.sdkTar)),
     linuxResourcesTar = path.join(incoming, "native-linux-jit-resources-" + suffix + ".tar"),
@@ -132,10 +137,10 @@ function produceWindowsJitResourcesCi(paths, environment = process.env) {
   restoreRoot(linuxResourcesTar, linuxResources.root);
   restoreRoot(windowsGnuTar, gnu.root);
   const git = fs.realpathSync("/usr/bin/git");
-  ci.verifyLinuxSources(paths, source, git);
-  const dpcppPins = ci.dpcppCudaInputPins(environment);
-  if (!dpcppPins || dpcppPins.bundleSha256 !== archivePins.dpcpp) {throw new Error("DPC++/CUDA inputs lack matching external pins");}
-  ci.auditDpcppCudaInputs(dpcpp, readBuildJson(dpcpp.manifest), dpcppPins.manifestSha256);
+  ciSources.verifyLinuxSources(paths, source, git);
+  const dpcppPins = ciSources.dpcppCudaInputPins(environment);
+  if (dpcppPins.bundleSha256 !== archivePins.dpcpp) {throw new Error("DPC++/CUDA inputs lack matching external pins");}
+  dpcppInputs.auditDpcppCudaInputs(dpcpp, readBuildJson(dpcpp.manifest), dpcppPins.manifestSha256);
   const linuxResult = path.join(linuxResources.root, "ci-result.json"), linuxManifest = path.join(linuxResources.root, "resources", "manifest.json");
   const linuxResultSha = fileHash(linuxResult), linuxManifestSha = fileHash(linuxManifest);
   if (linuxResultSha !== pins.MOM_NATIVE_LINUX_JIT_RESOURCES_RESULT_SHA256 ||
@@ -147,14 +152,14 @@ function produceWindowsJitResourcesCi(paths, environment = process.env) {
   if (gnuResultSha !== pins.MOM_NATIVE_WINDOWS_GNU_RESULT_SHA256 || copyrightsSha !== pins.MOM_NATIVE_WINDOWS_GNU_COPYRIGHTS_SHA256) {
     throw new Error("Extracted Windows GNU result or copyrights differ from their upstream output pins");
   }
-  const gnuAudit = ci.auditGnuHeaders(gnu, windowsTarget);
+  const gnuAudit = auditGnuHeaders(gnu, windowsTarget);
   const args = [path.join(repo, windowsProducer), "produce", suffix, linuxResources.root, linuxResultSha,
     gnu.root, gnuResultSha, copyrightsSha, dpcpp.dpcppRoot, dpcppPins.bundleSha256, dpcppPins.manifestSha256, output.root];
   const started = spawnSync(process.execPath, args, {cwd: repo, env: environment, stdio: "inherit", timeout: 20 * 60 * 1000});
   if (started.error || started.signal || started.status !== 0) {throw new Error("Public Windows JIT resource producer failed", {cause: started.error});}
-  ci.verifyLinuxSources(paths, source, git);
-  ci.auditDpcppCudaInputs(dpcpp, readBuildJson(dpcpp.manifest), dpcppPins.manifestSha256);
-  ci.auditGnuHeaders(gnu, windowsTarget);
+  ciSources.verifyLinuxSources(paths, source, git);
+  dpcppInputs.auditDpcppCudaInputs(dpcpp, readBuildJson(dpcpp.manifest), dpcppPins.manifestSha256);
+  auditGnuHeaders(gnu, windowsTarget);
   for (const [file, sha256] of /** @type {Array<[string, string]>} */ ([[sourceTar, archivePins.source], [dpcppTar, archivePins.dpcpp],
     [linuxResourcesTar, archivePins.linuxResources], [windowsGnuTar, archivePins.windowsGnu]])) {
     if (fileHash(file) !== sha256) {throw new Error("An input tar changed during Windows JIT resource production: " + path.basename(file));}
@@ -167,7 +172,7 @@ function produceWindowsJitResourcesCi(paths, environment = process.env) {
   }
   const resultFile = path.join(output.root, "ci-result.json"), nativeTools = admitWindowsJitNativeTools(output.root, suffix);
   const resultRecord = {
-    version: 1, runAttempt: suffix, target: windowsTarget, buildOnly: true, executed: false, publicationQualified: false,
+    version: 1, target: windowsTarget, buildOnly: true, executed: false, publicationQualified: false,
     scope: "Windows source-JIT resources and source-matched build-only generators; no compiler SDK, device, runtime, or publication qualification.",
     producer: {script: windowsProducer, sha256: fileHash(path.join(repo, windowsProducer))},
     inputs: {
@@ -186,8 +191,8 @@ function produceWindowsJitResourcesCi(paths, environment = process.env) {
   };
   fs.writeFileSync(resultFile, JSON.stringify(resultRecord, null, 2) + "\n", {flag: "wx", mode: 0o600});
   const archive = path.join(paths.runnerTemp, "mom-native-windows-jit-resources-" + suffix + ".tar");
-  const packed = ci.packState(archive, "/tmp", [path.basename(output.root)], 5 * 60 * 1000);
-  ci.listState(archive, [path.basename(output.root)]);
+  const packed = ciTar.packState(archive, "/tmp", [path.basename(output.root)], 5 * 60 * 1000);
+  ciTar.listState(archive, [path.basename(output.root)]);
   if (canonicalFile(archive, "Windows JIT resource bundle").size !== packed.bytes) {
     throw new Error("Windows JIT resource bundle changed after packing");
   }
@@ -200,15 +205,15 @@ function main(args) {
   const [command, ...rest] = args;
   if (rest.length) {throw new Error("Linux SDK CI commands take no further arguments");}
   if (command === "cuda-images-sources") {
-    restoreCudaImageSources(ci.ciPaths());
+    restoreCudaImageSources(ciSources.ciPaths());
   } else if (command === "rocm-hip-headers") {
-    appendOutputs(exportRocmHipHeadersCi(ci.ciPaths()));
+    appendOutputs(exportRocmHipHeadersCi(ciSources.ciPaths()));
   } else if (command === "acpp-frontend") {
-    appendOutputs(exportAcppFrontendCi(ci.ciPaths()));
+    appendOutputs(exportAcppFrontendCi(ciSources.ciPaths()));
   } else if (command === "linux-jit-resources-seal") {
-    appendOutputs(sealLinuxJitResources(ci.ciPaths()));
+    appendOutputs(sealLinuxJitResources(ciSources.ciPaths()));
   } else if (command === "windows-jit-resources") {
-    appendOutputs(produceWindowsJitResourcesCi(ci.ciPaths()));
+    appendOutputs(produceWindowsJitResourcesCi(ciSources.ciPaths()));
   } else {
     throw new Error("Usage: linux-sdk.js cuda-images-sources|rocm-hip-headers|acpp-frontend|linux-jit-resources-seal|windows-jit-resources");
   }

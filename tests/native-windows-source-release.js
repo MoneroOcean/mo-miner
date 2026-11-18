@@ -2,7 +2,7 @@
 const fs = require("node:fs"), os = require("node:os"), path = require("node:path"), test = require("node:test"), assert = require("node:assert/strict");
 const {buildNativeArtifact} = require("../scripts/build-release"), {fileHash} = require("../scripts/build-source-inputs");
 const core = require("../scripts/build-native-windows-core"), gpu = require("../scripts/build-native-windows-gpu"), controller = require("../scripts/build-native-windows-controller");
-const packer = require("../scripts/pack-native-release");
+const packer = require("../scripts/pack-native-executable");
 
 /** Simulate only producer boundaries; these tests never compile or execute a candidate.
  * @param {import("node:test").TestContext} t */

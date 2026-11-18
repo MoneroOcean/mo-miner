@@ -1,11 +1,12 @@
 "use strict";
 
-// Prepares one native CI job (.github/workflows/native-job.yml): exports the run-scoped roots the native
+// Prepares one native CI job (.github/workflows/native-job.yml): exports the work roots the native
 // scripts derive and verify, the caller's producer pins, and the exact artifact transfer plan. Artifact
-// lists name files with "@" standing for "<run>-<attempt>", the suffix every producer embeds.
+// lists name files with "@" standing for MOM_NATIVE_CI_SUFFIX, the suffix every producer embeds.
 const fs = require("node:fs"), path = require("node:path");
+const {ciSuffix, ciScopedEntries} = require("../native-ci-job");
 
-/** Environment name suffix -> /tmp/mom-native-<stem>-<run>-<attempt>. */
+/** Environment name suffix -> /tmp/mom-native-<stem>-<suffix>. */
 const roots = Object.freeze({
   SOURCE: "prerequisites", LINUX_SDK: "llvm21-sdk", IO_SOURCE: "io-prerequisites", IO_SDK: "io-openssl-sdk",
   HERMES_SOURCE: "hermes-prerequisites", HERMES_SDK: "hermes-sdk", ACPP_SOURCE: "acpp-prerequisites",
@@ -21,17 +22,10 @@ const roots = Object.freeze({
 });
 const maxUploads = 4;
 
-/** @param {NodeJS.ProcessEnv} environment */
-function runSuffix(environment) {
-  const run = environment["GITHUB_RUN_ID"] || "", attempt = environment["GITHUB_RUN_ATTEMPT"] || "";
-  if (!/^[0-9]{1,20}$/.test(run) || !/^[1-9][0-9]{0,5}$/.test(attempt)) {throw new Error("Native CI job needs the GitHub run identity");}
-  return run + "-" + attempt;
-}
-
-/** Derive the run-scoped roots; a GPU factory job also gets its profile-specific root.
+/** Derive the work roots; a GPU factory job also gets its profile-specific root.
  * @param {NodeJS.ProcessEnv} environment @returns {Record<string, string>} */
 function nativeCiEnvironment(environment) {
-  const suffix = runSuffix(environment), profile = environment["MOM_NATIVE_WINDOWS_GPU_PROFILE"] || "";
+  const suffix = ciSuffix(environment), profile = environment["MOM_NATIVE_WINDOWS_GPU_PROFILE"] || "";
   if (!/^[a-z-]{0,32}$/.test(profile)) {throw new Error("Native CI GPU profile is malformed");}
   const values = Object.fromEntries(Object.entries(roots).map(([name, stem]) =>
     ["MOM_NATIVE_" + name + "_DIR", "/tmp/mom-native-" + stem + "-" + suffix]));
@@ -51,7 +45,7 @@ function parsePins(text) {
   return pins;
 }
 
-/** Split a whitespace-separated artifact list and substitute the run suffix.
+/** Split a whitespace-separated artifact list and substitute the CI suffix.
  * @param {string} text @param {string} suffix */
 function names(text, suffix) {
   return text.split(/\s+/).filter(Boolean).map(name => name.split("@").join(suffix));
@@ -76,11 +70,15 @@ function uploadPlan(rows, runnerTemp) {
   });
 }
 
-/** Write the job environment and transfer plan for the workflow. @param {NodeJS.ProcessEnv} environment */
-function prepareJob(environment) {
+/** Write the job environment and transfer plan for the workflow. A work root left by an earlier job
+ * on the same runner is rejected, so every producer starts from fresh roots.
+ * @param {NodeJS.ProcessEnv} environment @param {string} [temp] */
+function prepareJob(environment, temp = "/tmp") {
   const envFile = environment["GITHUB_ENV"] || "", outputFile = environment["GITHUB_OUTPUT"] || "",
-    runnerTemp = environment["RUNNER_TEMP"] || "", suffix = runSuffix(environment);
+    runnerTemp = environment["RUNNER_TEMP"] || "", suffix = ciSuffix(environment);
   if (![envFile, outputFile, runnerTemp].every(file => path.isAbsolute(file))) {throw new Error("Native CI job needs GITHUB_ENV, GITHUB_OUTPUT and RUNNER_TEMP");}
+  const stale = [...ciScopedEntries([temp], suffix)];
+  if (stale.length) {throw new Error("Native CI job found work roots from an earlier job: " + stale.join(", "));}
   const pins = parsePins(environment["NATIVE_JOB_PINS"] || ""), values = {...nativeCiEnvironment({...environment, ...pins}), ...pins},
     uploads = uploadPlan(names(environment["NATIVE_JOB_UPLOAD"] || "", suffix), runnerTemp),
     diagnostics = uploadPlan(names(environment["NATIVE_JOB_DIAGNOSTICS"] || "", suffix), runnerTemp);
@@ -97,7 +95,7 @@ function prepareJob(environment) {
   return {values, outputs};
 }
 
-module.exports = {roots, runSuffix, nativeCiEnvironment, parsePins, names, downloadPattern, uploadPlan, prepareJob};
+module.exports = {roots, nativeCiEnvironment, parsePins, names, downloadPattern, uploadPlan, prepareJob};
 
 if (require.main === module) {
   try {

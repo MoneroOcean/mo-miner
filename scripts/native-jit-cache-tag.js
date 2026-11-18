@@ -55,7 +55,7 @@ function admittedJitCacheTag(repo, target, groups, linkPlan = []) {
   }));
   // Bind fixed cross-group ordering and linker policy too, not only descriptor archive lists.
   const recipes = sourceInputs(repo, ["runtime"], ["scripts/native-jit-cache-tag.js",
-    ...(target === "windows-x64" ? ["scripts/build-native-windows-controller.js", "scripts/native-windows-application.js"] : ["scripts/probe-native-controller.js"])]);
+    ...(target === "windows-x64" ? ["scripts/build-native-windows-controller.js", "scripts/native-windows-application.js"] : ["scripts/build-native-application.js"])]);
   return nativeJitCacheTag(target, artifacts, {...recipes.files, ...recipes.graph}, linkPlan);
 }
 

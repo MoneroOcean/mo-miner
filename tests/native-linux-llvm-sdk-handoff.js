@@ -13,7 +13,7 @@ const digest = (value) => createHash("sha256").update(value).digest("hex");
 function fixture(t, options = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-linux-llvm-sdk-handoff-test-")), admitted = path.join(root, "admitted"),
     sdkRoot = path.join(admitted, "sdk"), bundleParent = path.join(root, "bundle-parent"), bundle = path.join(bundleParent, "linux-llvm-sdk"),
-    runAttempt = String(Date.now()) + "-1", runId = randomUUID(), planSha256 = "a".repeat(64),
+    runId = randomUUID(), planSha256 = "a".repeat(64),
     plan = {output: admitted, prefix: sdkRoot, source: path.join(root, "source"), build: path.join(root, "build"),
       archive: path.join(root, archiveName)}, configure = {generator: "fixture"}, sourceState = {fixture: true},
     sourceInputs = {[plan.archive]: archiveSha256}, toolIdentity = {fixture: true},
@@ -54,7 +54,7 @@ function fixture(t, options = {}) {
     buildOnly: true, compiled: true, executed: false, publicationQualified: false};
   writeReceipt("result.json", result);
   t.after(() => fs.rmSync(root, {recursive: true, force: true}));
-  return {root, admitted, sdkRoot, bundleParent, bundle, runAttempt, result,
+  return {root, admitted, sdkRoot, bundleParent, bundle, result,
     readAdmission: () => JSON.parse(fs.readFileSync(path.join(admitted, "result.json"), "utf8"))};
 }
 
@@ -70,7 +70,7 @@ function sha256(file) {return digest(fs.readFileSync(file));}
 test.describe("relocatable installed Linux LLVM SDK handoff", {skip: process.platform !== "linux"}, () => {
   test("full-admits once, preserves the original receipts, then reads after the source output is removed", t => {
     const f = fixture(t), before = Object.fromEntries(receiptNames.map(name => [name, sha256(path.join(f.admitted, name))])),
-      exported = exportLinuxLlvmSdk(f.admitted, f.bundle, {runAttempt: f.runAttempt}, f.readAdmission),
+      exported = exportLinuxLlvmSdk(f.admitted, f.bundle, f.readAdmission),
       moved = path.join(f.bundleParent, "relocated-sdk");
     assert.equal(exported.fileCount, 3);
     assert.equal(exported.bytes, f.result.sdk.bytes);
@@ -81,68 +81,66 @@ test.describe("relocatable installed Linux LLVM SDK handoff", {skip: process.pla
     assert.equal(fs.existsSync(path.join(f.bundle, "receipts")), false);
     fs.renameSync(f.bundle, moved);
     fs.rmSync(f.admitted, {recursive: true});
-    const admitted = linuxLlvmSdkHandoffInputs(moved, {runAttempt: f.runAttempt, handoffSha256: exported.handoffSha256});
+    const admitted = linuxLlvmSdkHandoffInputs(moved, {handoffSha256: exported.handoffSha256});
     assert.equal(admitted.sdkRoot, path.join(moved, "sdk"));
     assert.equal(admitted.files["bin/llvm-config"]?.sha256, f.result.sdk.snapshot.files["bin/llvm-config"].sha256);
     assert.equal(admitted.files["lib/libLLVM.so"]?.target, "libLLVM.so.21");
     assert.ok(fs.statSync(path.join(admitted.sdkRoot, "lib/empty-directory")).isDirectory(), "empty SDK directories survive relocation");
-    assert.equal(admitted.runAttempt, f.runAttempt);
   });
 
-  test("rejects a wrong attempt or handoff pin", t => {
-    const f = fixture(t), exported = exportLinuxLlvmSdk(f.admitted, f.bundle, {runAttempt: f.runAttempt}, f.readAdmission),
-      correct = {runAttempt: f.runAttempt, handoffSha256: exported.handoffSha256};
+  test("rejects a wrong handoff pin", t => {
+    const f = fixture(t), exported = exportLinuxLlvmSdk(f.admitted, f.bundle, f.readAdmission),
+      correct = {handoffSha256: exported.handoffSha256};
     assert.throws(() => linuxLlvmSdkHandoffInputs(f.bundle, {...correct, handoffSha256: "0".repeat(64)}), /external manifest pin|invalid or belongs/);
-    assert.throws(() => linuxLlvmSdkHandoffInputs(f.bundle, {...correct, runAttempt: f.runAttempt + "-other"}), /exact run attempt/);
   });
 
   test("rejects an SDK symlink changed to escape the bundle", t => {
-    const f = fixture(t), exported = exportLinuxLlvmSdk(f.admitted, f.bundle, {runAttempt: f.runAttempt}, f.readAdmission),
+    const f = fixture(t), exported = exportLinuxLlvmSdk(f.admitted, f.bundle, f.readAdmission),
       alias = path.join(f.bundle, "sdk/lib/libLLVM.so");
     fs.unlinkSync(alias); fs.symlinkSync("../../outside", alias);
-    assert.throws(() => linuxLlvmSdkHandoffInputs(f.bundle, {runAttempt: f.runAttempt, handoffSha256: exported.handoffSha256}),
+    assert.throws(() => linuxLlvmSdkHandoffInputs(f.bundle, {handoffSha256: exported.handoffSha256}),
       /inside the installed SDK|missing or extra members/);
   });
 
   test("rejects missing and extra installed members", t => {
-    const missing = fixture(t), missExport = exportLinuxLlvmSdk(missing.admitted, missing.bundle, {runAttempt: missing.runAttempt}, missing.readAdmission),
+    const missing = fixture(t), missExport = exportLinuxLlvmSdk(missing.admitted, missing.bundle, missing.readAdmission),
       missingFile = path.join(missing.bundle, "sdk/bin/llvm-config");
     fs.unlinkSync(missingFile);
-    assert.throws(() => linuxLlvmSdkHandoffInputs(missing.bundle, {runAttempt: missing.runAttempt, handoffSha256: missExport.handoffSha256}));
+    assert.throws(() => linuxLlvmSdkHandoffInputs(missing.bundle, {handoffSha256: missExport.handoffSha256}));
 
-    const extra = fixture(t), extraExport = exportLinuxLlvmSdk(extra.admitted, extra.bundle, {runAttempt: extra.runAttempt}, extra.readAdmission);
+    const extra = fixture(t), extraExport = exportLinuxLlvmSdk(extra.admitted, extra.bundle, extra.readAdmission);
     fs.writeFileSync(path.join(extra.bundle, "sdk/unadmitted.txt"), "extra\n", {flag: "wx", mode: 0o444});
-    assert.throws(() => linuxLlvmSdkHandoffInputs(extra.bundle, {runAttempt: extra.runAttempt, handoffSha256: extraExport.handoffSha256}),
+    assert.throws(() => linuxLlvmSdkHandoffInputs(extra.bundle, {handoffSha256: extraExport.handoffSha256}),
       /differs from its admitted receipt|missing or extra members/);
   });
 
   test("rejects an escaping source symlink before export", t => {
     const f = fixture(t, {unsafeSymlink: true});
-    assert.throws(() => exportLinuxLlvmSdk(f.admitted, f.bundle, {runAttempt: f.runAttempt}, f.readAdmission), /resolve to an existing path inside/);
+    assert.throws(() => exportLinuxLlvmSdk(f.admitted, f.bundle, f.readAdmission), /resolve to an existing path inside/);
   });
 
   test("rejects hard-linked, writable-by-others, and special-mode SDK files", t => {
     for (const mode of [0o666, 0o4555, 0o2555, 0o1555]) {
       const f = fixture(t), file = path.join(f.sdkRoot, "bin/llvm-config");
       fs.chmodSync(file, mode);
-      assert.throws(() => exportLinuxLlvmSdk(f.admitted, f.bundle, {runAttempt: f.runAttempt}, f.readAdmission),
+      assert.throws(() => exportLinuxLlvmSdk(f.admitted, f.bundle, f.readAdmission),
         /bounded canonical singly-linked regular file/, "rejects mode " + mode.toString(8));
     }
     const f = fixture(t), file = path.join(f.sdkRoot, "bin/llvm-config");
     fs.linkSync(file, path.join(f.root, "second-link"));
-    assert.throws(() => exportLinuxLlvmSdk(f.admitted, f.bundle, {runAttempt: f.runAttempt}, f.readAdmission),
+    assert.throws(() => exportLinuxLlvmSdk(f.admitted, f.bundle, f.readAdmission),
       /bounded canonical singly-linked regular file/);
   });
 
   test("checks receipt cross-links even when a new handoff pin is supplied", t => {
-    const f = fixture(t), exported = exportLinuxLlvmSdk(f.admitted, f.bundle, {runAttempt: f.runAttempt}, f.readAdmission),
+    const f = fixture(t), exported = exportLinuxLlvmSdk(f.admitted, f.bundle, f.readAdmission),
       resultPath = path.join(f.bundle, "result.json"), handoffPath = path.join(f.bundle, "handoff.json"),
       result = JSON.parse(fs.readFileSync(resultPath, "utf8")), handoff = JSON.parse(fs.readFileSync(handoffPath, "utf8"));
     result.install.sha256 = "f".repeat(64); replaceJson(resultPath, result);
     handoff.receipts["result.json"].sha256 = sha256(resultPath); handoff.original.resultSha256 = sha256(resultPath);
     replaceJson(handoffPath, handoff);
     assert.throws(() => linuxLlvmSdkHandoffInputs(f.bundle,
-      {runAttempt: f.runAttempt, handoffSha256: sha256(handoffPath)}), /inconsistent original receipt links/);
+      {handoffSha256: sha256(handoffPath)}), /inconsistent original receipt links/);
     assert.notEqual(exported.handoffSha256, sha256(handoffPath));
   });
 });

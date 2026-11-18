@@ -2,7 +2,7 @@
 
 const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), path = require("node:path"), os = require("node:os"),
   {createHash} = require("node:crypto");
-const {exportLocalWindowsSupport, exportOrAdmitLocalWindowsSupport} = require("../scripts/export-local-windows-support"), {fileHash, sourceInputs} = require("../scripts/build-source-inputs");
+const {exportLocalWindowsSupport, exportOrAdmitLocalWindowsSupport} = require("../scripts/build-local-native-windows-support-export"), {fileHash, sourceInputs} = require("../scripts/build-source-inputs");
 const {ioPins} = require("../scripts/build-native-io"), {opensslPin, opensslBuildRecipe} = require("../scripts/build-native-openssl"),
   {hermesPins} = require("../scripts/build-native-hermes"), {ioSourceRecipe, sourceRecipe, ioArchiveUrls, buildArchiveUrls} = require("../scripts/fetch-native-sdk-sources");
 const repo = path.resolve(__dirname, "..");

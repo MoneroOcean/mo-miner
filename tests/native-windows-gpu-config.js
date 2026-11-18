@@ -8,9 +8,10 @@ const gpuConfig = require("../scripts/native-windows-gpu-config"),
 const {validateWindowsGpuConfig} = require("../scripts/build-native-windows-gpu");
 const cudaImages = require("../scripts/native-cuda-images"), childProcess = require("node:child_process"),
   windowsHostSdkReader = require("../scripts/native-windows-host-sdk-inputs"), linuxLlvmToolReader = require("../scripts/native-linux-llvm-tools");
-const {pins} = require("../scripts/probe-static-dpcpp");
-const preparedSdkSources = require("../scripts/prepare-native-sdk-sources"), ci = require("../scripts/prepare-native-ci"),
-  {syclRevision} = require("../scripts/probe-static-sycl");
+const {pins} = require("../scripts/native-dpcpp-pins");
+const preparedSdkSources = require("../scripts/prepare-native-sdk-sources"), ciTar = require("../scripts/native-ci-tar"),
+  dpcppInputs = require("../scripts/native-dpcpp-cuda-inputs"),
+  {syclRevision} = require("../scripts/native-sycl-inputs");
 const {cudaHeaderResources} = require("../scripts/native-jit-headers"),
   {planCudaImages, generateCudaImageBundle} = cudaImages;
 
@@ -46,7 +47,7 @@ function cudaImagesFixture(t, options = {}) {
       include: producerInclude, sidecar: producerInclude + ".json", compilerVersions: ["12.6", "13.3"], plannedImages: 1,
       embeddedBytes: manifest.resourceBytes, sourceSha256}) + "\n");
   writeResult();
-  ci.packState(archive, "/tmp", [path.basename(root)]);
+  ciTar.packState(archive, "/tmp", [path.basename(root)]);
   if (ownsRunnerTemp) {process.env["RUNNER_TEMP"] = runnerTemp;}
   t.after(() => {
     if (ownsRunnerTemp) {
@@ -203,10 +204,10 @@ function acppGpuFixture(t) {
       if (originalTemp === undefined) {delete process.env["RUNNER_TEMP"];} else {process.env["RUNNER_TEMP"] = originalTemp;}
     }
   });
-  const expectations = {runAttempt: suffix, handoffSha256: "7".repeat(64)},
+  const expectations = {handoffSha256: "7".repeat(64)},
     input = {windowsSdkRoot: windowsSdk.root, windowsSdkPins: windowsSdk.pins,
       toolsRoot, toolsExpectation: expectations, frontendRoot, frontendExpectation: {...expectations, handoffSha256: "8".repeat(64)},
-      acpp: acpp.input()};
+      acpp: acpp.input(), suffix};
   return {suffix, acpp, toolsRoot, frontendRoot, windowsSdk, clang, clangxx, resourceDir: path.join(frontendRoot, "lib/clang/21"),
     resourceInclude, toolFiles, frontendFiles, dpcppState, dpcppManifest, input, hipRoot, hipInclude, hipHeader,
     hipInput: {...input, hipHeaders: {root: hipRoot, handoffSha256: "9".repeat(64)}}};
@@ -218,7 +219,7 @@ function mockAcppGpuReaders(t, fixture, queryOptions = {}) {
   t.mock.method(require("../scripts/native-rocm-hip-headers"), "rocmHipHeaderInputs",
     (/** @type {string} */ root, /** @type {any} */ expectation) => {
       assert.equal(root, fixture.hipRoot);
-      assert.deepEqual(expectation, {runAttempt: fixture.suffix, handoffSha256: "9".repeat(64)});
+      assert.deepEqual(expectation, {handoffSha256: "9".repeat(64)});
       return {include: fixture.hipInclude, files: {[fixture.hipHeader]: sha256(fixture.hipHeader)},
         manifestSha256: "a".repeat(64), handoffSha256: expectation.handoffSha256};
     });
@@ -227,11 +228,11 @@ function mockAcppGpuReaders(t, fixture, queryOptions = {}) {
     return fixture.windowsSdk.admitted;
   });
   t.mock.method(linuxLlvmToolReader, "linuxLlvmToolHandoffInputs", (/** @type {string} */ root, /** @type {any} */ expectation) => {
-    assert.equal(root, fixture.toolsRoot); assert.equal(expectation.runAttempt, fixture.suffix);
+    assert.equal(root, fixture.toolsRoot); assert.deepEqual(expectation, fixture.input.toolsExpectation);
     return {toolRoot: path.join(root, "bin"), llvmNm: path.join(root, "bin/llvm-nm"), files: fixture.toolFiles};
   });
   t.mock.method(linuxLlvmToolReader, "linuxLlvmAcppFrontendInputs", (/** @type {string} */ root, /** @type {any} */ expectation) => {
-    assert.equal(root, fixture.frontendRoot); assert.equal(expectation.runAttempt, fixture.suffix);
+    assert.equal(root, fixture.frontendRoot); assert.deepEqual(expectation, fixture.input.frontendExpectation);
     return {clang: fixture.clang, clangxx: fixture.clangxx, resourceInclude: fixture.resourceInclude,
       sourceArchive: path.join(root, "llvm-project-21.1.8.src.tar.xz"), files: fixture.frontendFiles};
   });
@@ -299,7 +300,7 @@ function acppFixture(t) {
   };
   const repack = () => {
     if (fs.existsSync(archive)) {fs.unlinkSync(archive);}
-    ci.packState(archive, "/tmp", [sdkName]);
+    ciTar.packState(archive, "/tmp", [sdkName]);
   };
   writeProducer(); repack(); process.env["RUNNER_TEMP"] = runnerTemp;
   return {suffix, runnerTemp, archive, root, build, sourceRoot, sourceReceiptFile, sourceHeader, sourceReceipt, result, plan, inputs,
@@ -365,9 +366,9 @@ function dpcppWindowsGpuConfigFixture(t) {
   fs.writeFileSync(manifest, JSON.stringify(manifestRecord) + "\n", {flag: "wx"});
   fs.writeFileSync(sourcesFile, JSON.stringify({target: "windows", prepared: {dpcpp: {root: sourceRoot}}}) + "\n", {flag: "wx"});
   const windowsSdk = windowsSdkFixture(suffix, runnerTemp), toolsRoot = path.join(taskRoot, "tools"),
-    manifestSha256 = sha256(manifest), toolsExpectation = {runAttempt: suffix, handoffSha256: "3".repeat(64)},
+    manifestSha256 = sha256(manifest), toolsExpectation = {handoffSha256: "3".repeat(64)},
     input = {windowsSdkRoot: windowsSdk.root, windowsSdkPins: windowsSdk.pins, windowsSourcesFile: sourcesFile,
-      dpcppState: state, dpcppManifestSha256: manifestSha256, toolsRoot, toolsExpectation, compilerRoot: state.dpcppRoot};
+      dpcppState: state, dpcppManifestSha256: manifestSha256, toolsRoot, toolsExpectation, compilerRoot: state.dpcppRoot, suffix};
   t.after(() => {
     for (const root of [runnerTemp, taskRoot, dpcppRoot, linuxSource]) {fs.rmSync(root, {recursive: true, force: true});}
   });
@@ -525,7 +526,7 @@ test.describe("Windows oneAPI GPU config path derivation", {skip: process.platfo
         sourceSha256: bundle.manifest["sourceSha256"]}) + "\n");
     };
     writeBundle(validCudaImageBundle(t));
-    fs.unlinkSync(fixture.archive); ci.packState(fixture.archive, "/tmp", [path.basename(fixture.root)]);
+    fs.unlinkSync(fixture.archive); ciTar.packState(fixture.archive, "/tmp", [path.basename(fixture.root)]);
     writeBundle(validCudaImageBundle(t, true));
     assert.doesNotThrow(() => cudaImages.cudaImageInputs(fixture.include, path.resolve(__dirname, "..")));
     assert.throws(() => windowsNativeGpuCudaImages(fixture.input(), fixture.suffix),
@@ -535,7 +536,7 @@ test.describe("Windows oneAPI GPU config path derivation", {skip: process.platfo
   test.describe("Windows ACPP full-tar input admission", {skip: process.platform !== "linux" || process.arch !== "x64"}, () => {
     test("rejects a stale SDK recipe even when the original plan and result agree", t => {
       const fixture = acppFixture(t);
-      fixture.result.recipe.graph["scripts/probe-static-sycl.js"] = "0".repeat(64);
+      fixture.result.recipe.graph["scripts/native-sycl-inputs.js"] = "0".repeat(64);
       fixture.plan.recipe = fixture.result.recipe;
       fixture.rewriteProducer(); fixture.repack();
       assert.throws(() => windowsNativeAcppInputs(fixture.input(), fixture.suffix), /Transported AdaptiveCpp SDK recipe source inputs are stale/);
@@ -622,14 +623,14 @@ test.describe("Windows oneAPI GPU config path derivation", {skip: process.platfo
     });
 
     test("shares one five-minute budget across tar listing and member reads", t => {
-      const fixture = acppFixture(t), originalList = ci.listState, originalSizeScan = ci.tarExpandedBytes;
+      const fixture = acppFixture(t), originalList = ciTar.listState, originalSizeScan = ciTar.tarExpandedBytes;
       let clock = 1000000000000;
       t.mock.method(Date, "now", () => clock);
-      t.mock.method(ci, "listState", (/** @type {string} */ archive, /** @type {string[]} */ roots, /** @type {number} */ timeout) => {
+      t.mock.method(ciTar, "listState", (/** @type {string} */ archive, /** @type {string[]} */ roots, /** @type {number} */ timeout) => {
         assert.equal(timeout, 5 * 60 * 1000);
         const result = originalList(archive, roots, timeout); clock += 3 * 60 * 1000; return result;
       });
-      t.mock.method(ci, "tarExpandedBytes", (/** @type {string} */ archive, /** @type {number} */ count, /** @type {number} */ timeout) => {
+      t.mock.method(ciTar, "tarExpandedBytes", (/** @type {string} */ archive, /** @type {number} */ count, /** @type {number} */ timeout) => {
         assert.equal(timeout, 2 * 60 * 1000);
         const result = originalSizeScan(archive, count, timeout); clock += 119500; return result;
       });
@@ -681,7 +682,7 @@ test.describe("Windows oneAPI GPU config path derivation", {skip: process.platfo
         assert.equal(file, fixture.sourcesFile); assert.equal(target, "windows"); return sources;
       });
       let audited = false;
-      t.mock.method(ci, "auditDpcppCudaInputs", (/** @type {any} */ state, /** @type {any} */ manifest,
+      t.mock.method(dpcppInputs, "auditDpcppCudaInputs", (/** @type {any} */ state, /** @type {any} */ manifest,
         /** @type {string | undefined} */ pin) => {
         assert.equal(state, fixture.state); assert.deepEqual(manifest, fixture.manifestRecord);
         assert.equal(pin, fixture.manifestSha256, "pass the validated same-run hash, not a newly inferred provenance value");
@@ -698,7 +699,7 @@ test.describe("Windows oneAPI GPU config path derivation", {skip: process.platfo
   test.describe("Windows ACPP GPU config composition", {skip: process.platform !== "linux" || process.arch !== "x64"}, () => {
     test("composes the complete HIP profile from same-run ACPP, LLVM 21 and Windows SDK inputs", t => {
       const fixture = acppGpuFixture(t), queries = mockAcppGpuReaders(t, fixture);
-      t.mock.method(ci, "auditDpcppCudaInputs", () => {throw new Error("HIP must not admit or query DPC++/CUDA inputs");});
+      t.mock.method(dpcppInputs, "auditDpcppCudaInputs", () => {throw new Error("HIP must not admit or query DPC++/CUDA inputs");});
       const result = windowsNativeAcppGpuConfig("acpp-hip", fixture.hipInput), config = result.config;
       const localInput = {host: /** @type {any} */ (fixture.windowsSdk.admitted),
           tools: {llvmNm: path.join(fixture.toolsRoot, "bin/llvm-nm"), toolRoot: path.join(fixture.toolsRoot, "bin")},
@@ -758,7 +759,7 @@ test.describe("Windows oneAPI GPU config path derivation", {skip: process.platfo
         images = cudaImagesFixture(t, {suffix: fixture.suffix, runnerTemp: fixture.acpp.runnerTemp});
       let auditCalls = 0;
       t.mock.method(require("../scripts/native-rocm-hip-headers"), "rocmHipHeaderInputs", () => {throw new Error("CUDA must not admit HIP headers");});
-      t.mock.method(ci, "auditDpcppCudaInputs", (/** @type {any} */ state, /** @type {any} */ manifest, /** @type {string | undefined} */ pin) => {
+      t.mock.method(dpcppInputs, "auditDpcppCudaInputs", (/** @type {any} */ state, /** @type {any} */ manifest, /** @type {string | undefined} */ pin) => {
         auditCalls++; assert.equal(state, fixture.dpcppState); assert.deepEqual(manifest, fixture.dpcppManifest);
         assert.equal(pin, sha256(fixture.dpcppState.manifest), "forward the verified external pin without restamping acquisition provenance");
         return manifest;
@@ -780,12 +781,11 @@ test.describe("Windows oneAPI GPU config path derivation", {skip: process.platfo
 
     test("rejects another run, altered pins and cross-profile CUDA fields before config output", t => {
       const fixture = acppGpuFixture(t); mockAcppGpuReaders(t, fixture);
-      t.mock.method(ci, "auditDpcppCudaInputs", () => fixture.dpcppManifest);
+      t.mock.method(dpcppInputs, "auditDpcppCudaInputs", () => fixture.dpcppManifest);
       const cudaInput = {...fixture.input, dpcppState: fixture.dpcppState, dpcppManifestSha256: sha256(fixture.dpcppState.manifest),
         cudaImages: {archive: "/tmp/not-the-run.tar", bundleSha256: "0".repeat(64), root: "/tmp/not-the-run"}};
       assert.throws(() => windowsNativeAcppGpuConfig("acpp-hip", {...fixture.input, dpcppState: fixture.dpcppState}), /same-run SDK, tool and frontend/);
-      assert.throws(() => windowsNativeAcppGpuConfig("acpp-cuda", {...cudaInput,
-        frontendExpectation: {...fixture.input.frontendExpectation, runAttempt: "891234567893-77"}}), /same-run SDK, tool and frontend/);
+      assert.throws(() => windowsNativeAcppGpuConfig("acpp-cuda", {...cudaInput, suffix: "../77"}), /same-run SDK, tool and frontend/);
       assert.throws(() => windowsNativeAcppGpuConfig("acpp-cuda", {...cudaInput,
         frontendExpectation: {...fixture.input.frontendExpectation, handoffSha256: "bad"}}), /same-run SDK, tool and frontend/);
       assert.throws(() => windowsNativeAcppGpuConfig("acpp-cuda", {...cudaInput, dpcppManifestSha256: "bad"}), /ACPP CUDA inputs/);

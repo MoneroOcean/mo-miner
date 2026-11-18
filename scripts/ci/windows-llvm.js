@@ -46,7 +46,7 @@ function runWindowsLlvmChain(environment = process.env) {
     }
     chain.handOff(context, stateFiles(context.suffix, output));
     if (previous) {chain.retire(context, stateFiles(context.suffix, previous.output));}
-    chain.resetRunScopedRoots(context);
+    chain.resetWorkRoots(context);
     previous = current;
   }
 }

@@ -39,26 +39,26 @@ function composeFixture(suffix, allowedImports = ordinaryWindowsImports) {
     sdkRoot = `/tmp/windows-host-sdk-${suffix}`, intelRoot = at(hermesRoot, "intel-runtime/lib"),
     intelLibraries = Object.fromEntries(["libircmt.lib", "libirc.lib", "libmmt.lib", "svml_dispmt.lib", "libdecimal.lib"]
       .map(name => [name, at(intelRoot, name)])), hermesCompiler = `/tmp/linux-hermes-${suffix}/build/bin/shermes`,
-    gpuHandoffs = profiles.map((profile, index) => ({profile, runAttempt: suffix, receiptSha256: String(index + 1).repeat(64),
+    gpuHandoffs = profiles.map((profile, index) => ({profile, receiptSha256: String(index + 1).repeat(64),
       configSha256: String(index + 2).repeat(64), handoffSha256: String(index + 3).repeat(64)})),
     application = {core: "/app/core.lib", gpuReceipts: profiles.map(profile => `/app/${profile}/output/result.json`), gpuHandoffs,
       defaultCompiler: "dpcpp", tools: {llvmAr: "/tools/llvm-ar.exe", llvmObjcopy: "/tools/llvm-objcopy.exe"},
       sdk: {libraries: [], wholeArchives: [], objects: [], includeRoots: ["/cuda/include", "/hip/include"],
         nvmlHeader: "/cuda/include/nvml.h", hipDriverLibrary: "/host/runtime/amdhip64.lib",
         dpcppComponent: "/components/dpcpp", hostComponent: "/components/host", cudaImages: "/images/cuda-images.inc"}},
-    input = {runAttempt: suffix,
+    input = {
       llvmDescriptor: {version: 1, tools: {clangCl: "/tools/icx-cl.exe", lldLink: "/tools/lld-link.exe", llvmNm: "/tools/llvm-nm.exe",
         clangResourceInclude: "/tools/resource/include"}, windowsSdk: {sourceRoot: sdkRoot, overlay: at(sdkRoot, "overlay.json"),
         includeRoots: [at(sdkRoot, "msvc/include"), at(sdkRoot, "sdk/include")],
         libraryRoots: [at(sdkRoot, "sdk/lib/ucrt"), at(sdkRoot, "sdk/lib/um"), at(sdkRoot, "msvc/lib"), intelRoot],
         msvcLibraries: [at(sdkRoot, "msvc/lib/libcmt.lib"), ...Object.values(intelLibraries)],
         ucrtLibraries: [at(sdkRoot, "sdk/lib/ucrt/libvcruntime.lib")], importLibraries: [at(sdkRoot, "sdk/lib/um/kernel32.lib")]}},
-      io: {kind: "io", runAttempt: suffix, handoff: at(ioRoot, "handoff.json"), handoffSha256: sha256, files: {},
+      io: {kind: "io", handoff: at(ioRoot, "handoff.json"), handoffSha256: sha256, files: {},
         libraries: {sourceInclude: at(ioRoot, "openssl-sdk/include"), ssl: at(ioRoot, "openssl-sdk/lib/libssl.lib"),
           crypto: at(ioRoot, "openssl-sdk/lib/libcrypto.lib"), libuv: at(ioRoot, "io-sdk/lib/uv_a.lib"),
           zlib: at(ioRoot, "io-sdk/lib/zlibstatic.lib"), libuvInclude: at(ioRoot, "io-sdk/include"),
           zlibInclude: at(ioRoot, "io-sdk/include"), zlibGeneratedInclude: at(ioRoot, "io-sdk/include")}},
-      hermes: {kind: "hermes", runAttempt: suffix, handoff: at(hermesRoot, "handoff.json"), handoffSha256: sha256, files: {},
+      hermes: {kind: "hermes", handoff: at(hermesRoot, "handoff.json"), handoffSha256: sha256, files: {},
         hermes: {source: at(hermesRoot, "hermes/source"), build: at(hermesRoot, "hermes/build")},
         intelRuntime: {libRoot: intelRoot, libraries: intelLibraries,
           licenses: {license: at(hermesRoot, "intel-runtime/licenses/LICENSE.rtf")}}},
@@ -73,7 +73,7 @@ function pinEnvironment(suffix) {
   const gpuPins = profiles.map((profile, index) => ({profile, bundleSha256: String(index + 1).repeat(64),
     receiptSha256: String(index + 2).repeat(64), configSha256: String(index + 3).repeat(64), handoffSha256: String(index + 4).repeat(64)}));
   return {...Object.fromEntries(pinNames.map(name => [`MOM_NATIVE_WINDOWS_APPLICATION_${name}_SHA256`, "a".repeat(64)])),
-    MOM_NATIVE_WINDOWS_APPLICATION_GPU_HANDOFFS_JSON: JSON.stringify(gpuPins), GITHUB_RUN_ID: suffix.split("-")[0], GITHUB_RUN_ATTEMPT: "1"};
+    MOM_NATIVE_WINDOWS_APPLICATION_GPU_HANDOFFS_JSON: JSON.stringify(gpuPins), MOM_NATIVE_CI_SUFFIX: suffix.split("-")[0] + "-1"};
 }
 
 /** Recorded fakes for every reader the build admits restored inputs with; extraction creates the
@@ -146,14 +146,14 @@ function fakeBuildDependencies(suffix, temp, manifests) {
   const deps = {ci, sourceInputs: {fileHash: hash, readBuildJson: (/** @type {string} */ file) => JSON.parse(fs.readFileSync(file, "utf8"))},
     linuxLlvmToolHandoffInputs: (/** @type {string} */ root) => ({toolRoot: path.join(root, "bin"), lldLink: path.join(root, "bin/lld-link"),
       llvmNm: path.join(root, "bin/llvm-nm")}),
-    windowsControllerHandoffInputs: (/** @type {string} */ root, /** @type {any} */ expected) => ({kind: expected.kind, runAttempt: expected.runAttempt,
+    windowsControllerHandoffInputs: (/** @type {string} */ root, /** @type {any} */ expected) => ({kind: expected.kind,
       handoff: path.join(root, "handoff.json"), handoffSha256: expected.handoffSha256, files: {},
       ...(expected.kind === "hermes" ? {intelRuntime: {}} : {libraries: {}})}),
     windowsNativeCoreHandoffInputs: (/** @type {string} */ root) => ({archive: path.join(root, "cpu-core.lib")}),
     windowsDpcppComponentInputs: (/** @type {string} */ root) => ({files: {[path.join(root, "component.json")]: hash(path.join(root, "component.json"))}}),
     windowsHostComponentInputs: (/** @type {string} */ root) => ({files: {[path.join(root, "component.json")]: hash(path.join(root, "component.json"))},
       runtimeInputs: {amdhip64: path.join(root, "runtime/amdhip64.lib")}}),
-    windowsGpuHandoffInputs: (/** @type {string} */ _file, /** @type {any} */ expected) => ({profile: expected.profile, runAttempt: expected.runAttempt}),
+    windowsGpuHandoffInputs: (/** @type {string} */ _file, /** @type {any} */ expected) => ({profile: expected.profile}),
     rocmHipHeaderInputs: (/** @type {string} */ root) => ({include: path.join(root, "include"), files: {}}),
     nativeHermesInputs: () => ({artifacts: {compiler: hermesCompiler}, files: {[hermesCompiler]: hash(hermesCompiler)}}),
     composeWindowsApplicationConfig: (/** @type {any} */ input) => {observed.compose = input; return {application: input.application};},
@@ -218,7 +218,7 @@ test.describe("Windows full-application CI job", {skip: process.platform !== "li
       cudaInclude = path.join("/tmp", dpcppInputsName, "cuda/include"), hipInclude = path.join("/tmp", hipHeadersName, "include");
     fs.writeFileSync(githubOutput, "", {flag: "wx"});
     /** @type {NodeJS.ProcessEnv} */
-    const environment = {PATH: process.env["PATH"], RUNNER_TEMP: temp, GITHUB_RUN_ID: runId, GITHUB_RUN_ATTEMPT: "1",
+    const environment = {PATH: process.env["PATH"], RUNNER_TEMP: temp, MOM_NATIVE_CI_SUFFIX: runId + "-1",
       GITHUB_OUTPUT: githubOutput, MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: "4", MOM_CI_DEADLINE_EPOCH: deadline, ...pins};
     const {deps, restoreCalls, observed} = fakeBuildDependencies(suffix, temp, manifests);
     job.runBuild(environment, deps);
@@ -233,7 +233,6 @@ test.describe("Windows full-application CI job", {skip: process.platform !== "li
     assert.ok(restoreCalls.filter(row => !tempRoots.includes(row.roots[0] || "")).every(row => row.destination === "/tmp"));
     const application = observed.compose.application;
     assert.deepEqual(application.gpuHandoffs.map((/** @type {{profile:string}} */ row) => row.profile).sort(), [...profiles].sort());
-    assert.deepEqual(application.gpuHandoffs.map((/** @type {{runAttempt:string}} */ row) => row.runAttempt), Array(5).fill(suffix));
     assert.equal(application.core, path.join("/tmp", coreName, "cpu-core.lib"));
     assert.deepEqual(application.sdk.includeRoots, [cudaInclude, hipInclude]);
     assert.equal(application.sdk.nvmlHeader, path.join(cudaInclude, "nvml.h"));
@@ -258,11 +257,11 @@ test.describe("Windows full-application CI job", {skip: process.platform !== "li
       result_file: path.join(output, "result.json"), entrypoint_file: path.join(output, "entrypoint.json")});
   });
 
-  test("build refuses the old two-job envelope before touching any download", t => {
+  test("build refuses an unsupported job envelope before touching any download", t => {
     const temp = runnerTemp(t), suffix = `${Date.now()}${process.pid}-1`,
       deps = /** @type {any} */ ({ci: {ciPaths: () => ({suffix, runnerTemp: temp})}}),
       environment = {...pinEnvironment(suffix), RUNNER_TEMP: temp, MOM_AOT_BUILD_ONLY: "1", MOM_CI_DEADLINE_EPOCH: deadlineIn(900)};
-    assert.throws(() => job.runBuild({...environment, MOM_BUILD_JOBS: "2"}, deps), /differ from the bounded run plan/);
+    assert.throws(() => job.runBuild({...environment, MOM_BUILD_JOBS: "3"}, deps), /MOM_BUILD_JOBS/);
     assert.throws(() => job.runBuild({...environment, MOM_BUILD_JOBS: "4", MOM_CI_DEADLINE_EPOCH: "1"}, deps),
       /aggregate deadline is invalid or expired/);
   });
@@ -283,9 +282,6 @@ test.describe("Windows full-application CI job", {skip: process.platform !== "li
     fs.writeFileSync(output, "", {flag: "wx"});
     const suffix = `${Date.now()}-1`, base = /** @type {NodeJS.ProcessEnv} */ ({...pinEnvironment(suffix), GITHUB_OUTPUT: output});
     job.runPins(base);
-    assert.equal(fs.readFileSync(output, "utf8"), `run_attempt=${suffix}\n`);
-
-    fs.writeFileSync(output, "", {flag: "w"});
     const duplicated = JSON.parse(String(base["MOM_NATIVE_WINDOWS_APPLICATION_GPU_HANDOFFS_JSON"]));
     duplicated[4].profile = duplicated[0].profile;
     assert.throws(() => job.runPins({...base, MOM_NATIVE_WINDOWS_APPLICATION_GPU_HANDOFFS_JSON: JSON.stringify(duplicated)}), /exact five/);
@@ -294,7 +290,7 @@ test.describe("Windows full-application CI job", {skip: process.platform !== "li
     assert.throws(() => job.runPins({...base, MOM_NATIVE_WINDOWS_APPLICATION_GPU_HANDOFFS_JSON: JSON.stringify(extraKey)}), /exact five/);
     assert.throws(() => job.runPins({...base, MOM_NATIVE_WINDOWS_APPLICATION_GPU_HANDOFFS_JSON: "["}), /invalid JSON/);
     assert.throws(() => job.runPins({...base, MOM_NATIVE_WINDOWS_APPLICATION_CORE_BUNDLE_SHA256: "bad"}), /malformed/);
-    assert.throws(() => job.runPins({...base, GITHUB_RUN_ATTEMPT: "0"}), /run-attempt identity/);
+    assert.throws(() => job.runPins({...base, MOM_NATIVE_CI_SUFFIX: "0/1"}), /MOM_NATIVE_CI_SUFFIX/);
     assert.equal(fs.readFileSync(output, "utf8"), "");
   });
 
@@ -303,7 +299,7 @@ test.describe("Windows full-application CI job", {skip: process.platform !== "li
       buildRoot = path.join(temp, `native-windows-application-output-${suffix}`),
       evidenceRoot = path.join("/tmp", `native-windows-application-build-${suffix}`),
       archive = path.join(temp, `native-windows-application-build-${suffix}.tar`),
-      base = {RUNNER_TEMP: temp, GITHUB_RUN_ID: runId, GITHUB_RUN_ATTEMPT: "1", MOM_CI_DEADLINE_EPOCH: deadlineIn(300),
+      base = {RUNNER_TEMP: temp, MOM_NATIVE_CI_SUFFIX: runId + "-1", MOM_CI_DEADLINE_EPOCH: deadlineIn(300),
         BUILD_OUTPUT: buildRoot, CONFIG_FILE: path.join(temp, `native-windows-application-config-${suffix}.json`),
         EXECUTABLE: path.join(buildRoot, "mom.exe"), RESULT_FILE: path.join(buildRoot, "result.json"),
         ENTRYPOINT_FILE: path.join(buildRoot, "entrypoint.json")};
@@ -318,7 +314,7 @@ test.describe("Windows full-application CI job", {skip: process.platform !== "li
   });
 
   test("the public config composer and seal produce only the raw executable plus compact evidence", t => {
-    const ci = require("../scripts/prepare-native-ci"), temp = runnerTemp(t),
+    const ci = require("../scripts/native-ci-tar"), temp = runnerTemp(t),
       suffix = `${Date.now()}${process.pid}-1`, config = composeFixture(suffix), buildRoot = path.join(temp, `native-windows-application-output-${suffix}`),
       configFile = path.join(temp, `native-windows-application-config-${suffix}.json`), executable = path.join(buildRoot, "mom.exe"),
       resultFile = path.join(buildRoot, "result.json"), entrypointFile = path.join(buildRoot, "entrypoint.json"),
@@ -339,7 +335,7 @@ test.describe("Windows full-application CI job", {skip: process.platform !== "li
       buildOnly: true, publicationQualified: false};
     fs.writeFileSync(entrypointFile, JSON.stringify(entrypoint, null, 2) + "\n", {flag: "wx", mode: 0o444});
     fs.writeFileSync(output, "", {flag: "wx"});
-    job.runSeal({RUNNER_TEMP: temp, GITHUB_RUN_ID: suffix.split("-")[0], GITHUB_RUN_ATTEMPT: "1", GITHUB_OUTPUT: output,
+    job.runSeal({RUNNER_TEMP: temp, MOM_NATIVE_CI_SUFFIX: suffix.split("-")[0] + "-1", GITHUB_OUTPUT: output,
       MOM_CI_DEADLINE_EPOCH: deadlineIn(300), BUILD_OUTPUT: buildRoot, CONFIG_FILE: configFile, EXECUTABLE: executable,
       RESULT_FILE: resultFile, ENTRYPOINT_FILE: entrypointFile});
     const values = Object.fromEntries(fs.readFileSync(output, "utf8").trim().split("\n").map(line => line.split("=")));
@@ -354,10 +350,9 @@ test.describe("Windows full-application CI job", {skip: process.platform !== "li
     const restored = path.join(temp, "restored-evidence"); fs.mkdirSync(restored, {mode: 0o700});
     ci.extractState(archive, restored, [evidenceName], [evidenceName], 30000);
     const handoffFile = path.join(restored, evidenceName, "handoff.json"),
-      handoff = /** @type {{runAttempt:string,artifact:{sha256:string},gpuHandoffs:Array<{profile:string}>}} */ (
+      handoff = /** @type {{artifact:{sha256:string},gpuHandoffs:Array<{profile:string}>}} */ (
         JSON.parse(fs.readFileSync(handoffFile, "utf8")));
     assert.equal(values.build_handoff_sha256, fileHash(handoffFile));
-    assert.equal(handoff.runAttempt, suffix);
     assert.equal(handoff.artifact.sha256, executableSha256);
     assert.deepEqual(handoff.gpuHandoffs.map(row => row.profile).sort(), [...profiles].sort());
   });

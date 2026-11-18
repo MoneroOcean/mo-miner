@@ -2,7 +2,7 @@
 
 const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs");
 const os = require("node:os"), path = require("node:path"), {spawnSync} = require("node:child_process");
-const {nvmlMetadataInput} = require("../scripts/probe-native-controller");
+const {nvmlMetadataInput} = require("../scripts/build-native-application");
 const repo = path.resolve(__dirname, "..");
 
 test.describe("Native NVIDIA SDK-typed metadata and owned driver lifecycle", {skip: process.platform !== "linux"}, () => {

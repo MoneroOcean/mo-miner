@@ -3,7 +3,7 @@ const fs = require("node:fs"), os = require("node:os"), path = require("node:pat
 const {spawnSync} = require("node:child_process");
 const {buildNativeArtifact, nativeReleaseArguments} = require("../scripts/build-release"), {fileHash} = require("../scripts/build-source-inputs");
 const {assembleNativeNotices} = require("../scripts/prepare-native-notices");
-const linux = require("../scripts/build-native-release"), windows = require("../scripts/build-native-windows-controller"), packer = require("../scripts/pack-native-release");
+const linux = require("../scripts/build-native-release"), windows = require("../scripts/build-native-windows-controller"), packer = require("../scripts/pack-native-executable");
 
 /** Stub only existing compiler/packer boundaries; the public orchestration is real.
  * No compiler, VM, GPU, network connection or resulting miner is executed.
@@ -269,7 +269,7 @@ test.describe("Native release command-line dispatch", () => {
         'const fs=require("node:fs"),path=require("node:path"),crypto=require("node:crypto");',
         `const native=require(${JSON.stringify(require.resolve("../scripts/build-native-release"))});`,
         'native.buildNativeRelease=(config,out)=>{fs.mkdirSync(out);const binary=path.join(out,"mom");fs.writeFileSync(binary,"fixture");const hash=file=>crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");const receipt={version:require(' + JSON.stringify(require.resolve("../package.json")) + ').version,configHash:hash(config),binary,sha256:hash(binary),bytes:fs.statSync(binary).size,buildOnly:true,publicationQualified:false};fs.writeFileSync(path.join(out,"result.json"),JSON.stringify(receipt));return {binary};};',
-        `const pack=require(${JSON.stringify(require.resolve("../scripts/pack-native-release"))});`,
+        `const pack=require(${JSON.stringify(require.resolve("../scripts/pack-native-executable"))});`,
         'pack.packNativeRelease=({source,output,upx,upxSha256})=>{fs.mkdirSync(output);const file=path.join(output,"mom");fs.copyFileSync(source,file);const hash=f=>crypto.createHash("sha256").update(fs.readFileSync(f)).digest("hex"),sourceHash=hash(source),logs={};for(const stage of ["pack","integrity","restore"]){const log=path.join(output,stage+".log");fs.writeFileSync(log,stage+" fixture\\n");logs[stage]={path:log,sha256:hash(log)};}const result={source:{path:source,bytes:fs.statSync(source).size,sha256:sourceHash},artifact:{path:file,bytes:fs.statSync(file).size,sha256:hash(file)},restoredSha256:sourceHash,tool:{path:upx,sha256:upxSha256},payloadAudit:{exactOriginalBytes:true},logs,recipe:{files:{},graph:{}},commands:[],buildOnly:true,publicationQualified:false};fs.writeFileSync(path.join(output,"result.json"),JSON.stringify(result));return result;};',
         'require("node:child_process").spawnSync=()=>{throw Error("Legacy archive producer must not run for a configured native build");};',
       ].join("\n");

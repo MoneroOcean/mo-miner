@@ -4,10 +4,10 @@
 // release qualification and Engineering's direct-Node execution remain separate.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process"), {isDeepStrictEqual} = require("node:util");
 const {fileHash, readBuildJson, sourceInputs, verifySourceInputs, buildFileInputs} = require("./build-source-inputs");
-const {nativeApplicationGpu, nativeApplicationInputs, verifyCudaImageReceiptInputs} = require("./probe-native-controller");
+const {nativeApplicationGpu, nativeApplicationInputs, verifyCudaImageReceiptInputs} = require("./build-native-application");
 const {releaseBuildEnvironment} = require("./build-environment");
 const {nativeDependencies, auditNativeGlibc, isStaticArchive} = require("./native-audit");
-const {nativeElf, verifyNativeStrip, elfReport} = require("./native-elf");
+const {nativeElf, verifyNativeStrip, elfReport, binutilsIdentity, readelfTool, stripTool} = require("./native-elf");
 const {nativeIoInputs} = require("./build-native-io");
 const {dpcppComponentInputs} = require("./native-dpcpp-component");
 const staticNvrtcArchiveNames = new Set(["libnvrtc_static.a", "libnvrtc-builtins_static.a", "libnvptxcompiler_static.a"]);
@@ -420,22 +420,24 @@ function nativeStage(runner, command, args, env, repo, output, stage, spawn = sp
 }
 
 /** Strip into an unpublished file and verify every runtime/image payload before promotion.
+ * The receipt records the exact strip/readelf programs because their version shapes the bytes.
  * @param {string} original @param {string} output */
 function compactNativeRelease(original, output) {
   const pending = path.join(output, "mom.pending"), binary = path.join(output, "mom");
   if ([pending, binary].some(file => fs.existsSync(file))) {throw new Error("Native compaction requires fresh output paths");}
-  const before = nativeElf(original);
+  const tools = {strip: binutilsIdentity(stripTool), readelf: binutilsIdentity(readelfTool)}, before = nativeElf(original);
   // Driver defaults differ: a successful Intel link must not silently drop executable ASLR.
   // DYN alone also describes shared libraries, so require the executable's OS interpreter.
   if (!/^Elf file type is DYN\b/m.test(before.programHeaders) || !/^\s*INTERP\s/m.test(before.programHeaders)) {
     throw new Error("Native release must be a position-independent executable");
   }
-  const stripped = spawnSync("strip", ["--strip-unneeded", "-o", pending, "--", original], {encoding: "utf8", timeout: 120000, maxBuffer: 1 << 20});
+  const stripped = spawnSync(stripTool, ["--strip-unneeded", "-o", pending, "--", original], {encoding: "utf8", timeout: 120000, maxBuffer: 1 << 20});
   if (stripped.error || stripped.signal || stripped.status !== 0) {throw new Error("Native executable stripping failed", {cause: stripped.error});}
   const after = nativeElf(pending); verifyNativeStrip(before, after);
+  if (Object.values(tools).some(tool => fileHash(tool.path) !== tool.sha256)) {throw new Error("Native binutils changed during compaction");}
   const needed = nativeDependencies(elfReport(pending, "--dynamic")), glibc = auditNativeGlibc(elfReport(pending, "--version-info"), "2.39");
   return {binary, pendingBinary: pending, sha256: after.sha256, bytes: after.bytes, needed, glibc,
-    originalSha256: before.sha256, sections: after.sections};
+    originalSha256: before.sha256, sections: after.sections, tools};
 }
 
 /** Compile one maintained source codebase using installed pinned SDKs. A new explicit output
@@ -453,7 +455,7 @@ function buildNativeRelease(configFile, output, environment = process.env) {
   // Image selection is profile-local and receipt-bound; ambient shell state must not turn an
   // unrelated profile into an image consumer or bypass the descriptor's source admission.
   delete env["MOM_AOT_CUDA_IMAGES"];
-  const recipe = sourceInputs(repo, [], ["scripts/build-native-release.js", "scripts/probe-native-controller.js", "scripts/native-elf.js", "scripts/build-release.js", "scripts/build-environment.js", "scripts/build-native-io.js", "scripts/native-dpcpp-component.js", "scripts/native-release-sdk-inputs.js", "scripts/native-cuda-images.js"]);
+  const recipe = sourceInputs(repo, [], ["scripts/build-native-release.js", "scripts/build-native-application.js", "scripts/native-elf.js", "scripts/build-release.js", "scripts/build-environment.js", "scripts/build-native-io.js", "scripts/native-dpcpp-component.js", "scripts/native-release-sdk-inputs.js", "scripts/native-cuda-images.js"]);
   nativeIoInputs(sdk.controller.io); // Fail before costly Core/GPU compilation, not at the final controller link.
   const sdkInputs = nativeSdkLinkInputs(sdk); sdk.sdk.links = sdkInputs.links; sdk.sdk.libraries = sdkInputs.libraries; sdk.sdk.sdkObjects = sdkInputs.sdkObjects;
   const components = sdk.components ? nativeReleaseComponents(sdk.components, keys, sdk.sdk, repo, sdkInputs.cudaImageInputs) : null;
@@ -467,13 +469,13 @@ function buildNativeRelease(configFile, output, environment = process.env) {
   }
   const node = (/** @type {Runner} */ runner, /** @type {string} */ script, /** @type {string[]} */ args,
     /** @type {string} */ stage) => nativeStage(runner, process.execPath, ["--max-old-space-size=256", path.join(repo, "scripts", script), ...args], env, repo, output, stage);
-  if (!components) {node(sdk.cpu, "build-native-cpu-probe.js", [sdk.cpu.cache, path.join(output, "core"), "--gpu"], "core");}
+  if (!components) {node(sdk.cpu, "build-native-core.js", [sdk.cpu.cache, path.join(output, "core"), "--gpu"], "core");}
   const core = components?.core || path.join(output, "core/cpu-core.a");
   const receipts = components?.receipts || [], objects = components?.objects || [];
   for (const key of (components ? [] : keys).sort((a, b) => Number(b === "oneapi") - Number(a === "oneapi") || Number(a.endsWith("hip")) - Number(b.endsWith("hip")))) {
     const profile = sdk.gpu[key], acpp = key.startsWith("acpp-"), directory = path.join(output, "gpu", key);
     node({...profile, env: {...profile?.env, ...(acpp ? {MOM_AOT_SYCL_BACKEND: key.slice(5)} : {MOM_AOT_DPCPP_PROFILE: key})}},
-      acpp ? "build-native-gpu-probe.js" : "build-native-dpcpp-probe.js", [...(profile?.args || []), directory], key);
+      acpp ? "native-gpu-build.js" : "build-native-gpu.js", [...(profile?.args || []), directory], key);
     const receipt = path.join(directory, "result.json"), record = readBuildJson(receipt);
     if (record.factory !== "mom_native_gpu_" + key.replaceAll("-", "_") || !absolutePath(record.object)) {throw new Error("Unexpected built native GPU factory: " + key);}
     if (sdkInputs.cudaImageInputs && (key === "dpcpp" || key === "acpp-cuda")) {
@@ -488,7 +490,7 @@ function buildNativeRelease(configFile, output, environment = process.env) {
     ...(sdkInputs.cudaImageInputs ? {cudaImageInputs: sdkInputs.cudaImageInputs} : {})}, null, 2) + "\n", {flag: "wx"});
   node({...sdk.controller, env: {...sdk.controller.env, CC: sdk.controller.cc, MOM_AOT_CPU_CORE: core,
     MOM_AOT_GPU_INPUTS: manifest, MOM_AOT_OPENSSL_ROOT: sdk.controller.openssl, MOM_AOT_IO_SDK: sdk.controller.io, MOM_AOT_NVML_HEADER: sdk.controller.nvml}},
-  "probe-native-controller.js", [sdk.controller.source, sdk.controller.build, path.join(output, "application"), "--app"], "application");
+  "build-native-application.js", [sdk.controller.source, sdk.controller.build, path.join(output, "application"), "--app"], "application");
   const builds = fs.readdirSync(path.join(output, "application")).filter(name => /^mom-aot-[A-Za-z0-9]{6}$/.test(name));
   if (builds.length !== 1) {throw new Error("Unrecognized native application build output");}
   const build = path.join(output, "application", builds[0] || ""), result = readBuildJson(path.join(build, "result.json"));

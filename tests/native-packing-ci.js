@@ -1,7 +1,7 @@
 "use strict";
 const fs = require("node:fs"), os = require("node:os"), path = require("node:path"), assert = require("node:assert/strict"),
   test = require("node:test"), {createHash} = require("node:crypto"), {spawnSync} = require("node:child_process");
-const {fileHash} = require("../scripts/build-source-inputs"), realCi = require("../scripts/prepare-native-ci");
+const {fileHash} = require("../scripts/build-source-inputs"), realCi = require("../scripts/native-ci-tar");
 const {prepareNativePackingTool} = require("../scripts/prepare-native-packing-tool");
 const {packingPlan, packNative} = require("../scripts/ci/pack-native");
 const toolCatalog = require("../scripts/native-packing-tool.json");
@@ -49,7 +49,7 @@ function fixture(t, target = "linux") {
     entrypointReceipt: {file: "entrypoint.json", sha256: hash("entrypoint.json")},
     buildOnly: true, executed: false, publicationQualified: false};
   /** @type {NodeJS.ProcessEnv} */
-  const env = {RUNNER_TEMP: temp, GITHUB_RUN_ID: "123456789", GITHUB_RUN_ATTEMPT: "1", NATIVE_PLATFORM: target,
+  const env = {RUNNER_TEMP: temp, MOM_NATIVE_CI_SUFFIX: "123456789-1", NATIVE_PLATFORM: target,
     NATIVE_RAW_SHA256: fileHash(raw), GITHUB_OUTPUT: path.join(temp, "outputs")};
   // Seal the staged metadata into a real same-run tar and pin it like the producer job outputs.
   const seal = () => {
@@ -132,7 +132,7 @@ test.describe("SDK-free native packing CI handoff", {skip: (process.platform !==
     assert.equal(fs.existsSync(path.join(f.temp, "native-packing-tool/upx.tar.xz")), true);
   });
   for (const [name, key, value] of [["the windows alias", "NATIVE_PLATFORM", "windows"], ["an invalid platform", "NATIVE_PLATFORM", "darwin"],
-    ["attempt zero", "GITHUB_RUN_ATTEMPT", "0"], ["a non-numeric run", "GITHUB_RUN_ID", "run"], ["a missing SHA", "NATIVE_RAW_SHA256", ""],
+    ["a path-like CI suffix", "MOM_NATIVE_CI_SUFFIX", "../x"], ["a missing CI suffix", "MOM_NATIVE_CI_SUFFIX", ""], ["a missing SHA", "NATIVE_RAW_SHA256", ""],
     ["an uppercase SHA", "NATIVE_HANDOFF_SHA256", "A".repeat(64)]]) {
     test(`rejects ${name} before artifact access`, t => {
       const f = fixture(t); f.env[key || ""] = value;
@@ -140,8 +140,8 @@ test.describe("SDK-free native packing CI handoff", {skip: (process.platform !==
       assert.equal(f.calls.length, 0);
     });
   }
-  test("another run attempt cannot admit this attempt's metadata bundle", t => {
-    const f = fixture(t); f.env["GITHUB_RUN_ATTEMPT"] = "2";
+  test("another CI suffix cannot admit this job's metadata bundle", t => {
+    const f = fixture(t); f.env["MOM_NATIVE_CI_SUFFIX"] = "other";
     assert.throws(() => f.pack(), /ENOENT/); assert.equal(f.calls.length, 0);
   });
   test("tampered raw executable fails before restore or tool acquisition", t => {

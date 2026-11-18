@@ -50,17 +50,16 @@ function verifyUnchangedFile(file, identity, sha256, label) {
 }
 
 /**
- * Validate a restored `native-windows-core-<run>-<attempt>` directory against the
+ * Validate a restored `native-windows-core-<suffix>` directory against the
  * externally pinned, unchanged handoff.json. Header hashes remain producer provenance:
  * their original Windows SDK files are intentionally not part of this small transport.
- * @param {string} root @param {{runAttempt:string,handoffSha256:string}} expected
+ * @param {string} root @param {{handoffSha256:string}} expected
  */
 function windowsNativeCoreHandoffInputs(root, expected) {
   if (typeof root !== "string" || !path.isAbsolute(root) || path.resolve(root) !== root ||
-      !expected || Object.keys(expected).sort().join(",") !== "handoffSha256,runAttempt" ||
-      typeof expected.runAttempt !== "string" || !/^[0-9]{1,20}-[1-9][0-9]{0,5}$/.test(expected.runAttempt) ||
+      !expected || Object.keys(expected).join(",") !== "handoffSha256" ||
       typeof expected.handoffSha256 !== "string" || !hashPattern.test(expected.handoffSha256)) {
-    throw new Error("Windows Core handoff needs a canonical root, exact run-attempt and external handoff SHA-256");
+    throw new Error("Windows Core handoff needs a canonical root and external handoff SHA-256");
   }
   const rootStat = fs.lstatSync(root);
   if (!rootStat.isDirectory() || rootStat.isSymbolicLink() || fs.realpathSync(root) !== root ||
@@ -71,8 +70,8 @@ function windowsNativeCoreHandoffInputs(root, expected) {
     handoffRecord = readPinnedJson(handoffFile, 1 << 20, "handoff receipt"), receiptRecord = readPinnedJson(receiptFile, maxReceiptBytes, "producer receipt"),
     handoff = handoffRecord.value, receipt = receiptRecord.value;
   if (handoffRecord.sha256 !== expected.handoffSha256 ||
-      !hasExactKeys(handoff, ["format", "runAttempt", "target", "architecture", "archive", "producer", "libuv", "buildOnly", "executed", "publicationQualified"]) ||
-      handoff.format !== "mom-native-windows-core-handoff-v1" || handoff.runAttempt !== expected.runAttempt || handoff.target !== "win32" ||
+      !hasExactKeys(handoff, ["format", "target", "architecture", "archive", "producer", "libuv", "buildOnly", "executed", "publicationQualified"]) ||
+      handoff.format !== "mom-native-windows-core-handoff-v1" || handoff.target !== "win32" ||
       handoff.architecture !== "x64" || handoff.buildOnly !== true || handoff.executed !== false || handoff.publicationQualified !== false ||
       !hasExactKeys(handoff.archive, ["file", "bytes", "sha256"]) || handoff.archive.file !== "cpu-core.lib" ||
       !Number.isSafeInteger(handoff.archive.bytes) || handoff.archive.bytes < 8 || handoff.archive.bytes > maxArchiveBytes ||
@@ -123,7 +122,7 @@ function windowsNativeCoreHandoffInputs(root, expected) {
       !isDeepStrictEqual(fs.readdirSync(root).sort(), coreFiles) || fs.realpathSync(root) !== root) {
     throw new Error("Windows Core handoff membership changed during admission");
   }
-  return {kind: "core", runAttempt: handoff.runAttempt, handoff: handoffFile, handoffSha256: handoffRecord.sha256,
+  return {kind: "core", handoff: handoffFile, handoffSha256: handoffRecord.sha256,
     receiptFile, receiptSha256: receiptRecord.sha256, archive, archiveSha256: handoff.archive.sha256, bytes: handoff.archive.bytes, files};
 }
 

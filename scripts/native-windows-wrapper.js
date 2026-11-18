@@ -12,7 +12,7 @@ const {fileHash} = require("./build-source-inputs");
 const {elfRangeHash: fileRangeHash} = require("./native-elf");
 /** @typedef {{number: number, bytes: number, virtualSize: number, characteristics: number, sha256: string}} CoffSectionPayload */
 const {coffSectionPayloads} = /** @type {{coffSectionPayloads: (file: string) => CoffSectionPayload[]}} */ (require("./native-compiler-isolation"));
-const {deviceLinkArgs} = require("./build-native-dpcpp-probe");
+const {deviceLinkArgs} = require("./build-native-gpu");
 const INPUT_CRT = ".CRT$XCA00001", OUTPUT_CRT = ".CRT$XCU99999", MAX_BYTES = 256 * 1024 * 1024;
 const MAX_STABLE_ID_LENGTH = 4096, MAX_STABLE_ID_COUNT = 65536, MAX_PROPERTY_FILE_COUNT = 4096, MAX_PROPERTY_TEXT_BYTES = 4 * 1024 * 1024;
 const IMAGE_SYMBOLS = [".sycl_offloading.0.data", ".sycl_offloading.0.info"];

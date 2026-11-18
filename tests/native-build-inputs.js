@@ -3,8 +3,8 @@ const test = require("node:test"), assert = require("node:assert/strict"), fs = 
 const {createHash} = require("node:crypto"), {spawnSync} = require("node:child_process");
 const {fileHash, sourceInputs, nativeSourceInputs, verifySourceInputs, readBuildJson, readBuildText,
   buildDependencies, buildFileInputs, completeBuildInputs} = require("../scripts/build-source-inputs");
-const {admitCpuCache} = require("../scripts/build-native-cpu-probe");
-const {nativeApplicationInputs, nativeApplicationBuildInputs, nativeApplicationCudaImages, verifyCudaImageReceiptInputs} = require("../scripts/probe-native-controller");
+const {admitCpuCache} = require("../scripts/build-native-core");
+const {nativeApplicationInputs, nativeApplicationBuildInputs, nativeApplicationCudaImages, verifyCudaImageReceiptInputs} = require("../scripts/build-native-application");
 const repo = path.resolve(__dirname, ".."), digest = (/** @type {string | Buffer} */ value) => createHash("sha256").update(value).digest("hex");
 const graphNames = [...new Set([sourceInputs(repo), nativeSourceInputs(repo, "cpu"), nativeSourceInputs(repo, "gpu"), nativeApplicationBuildInputs(repo)]
   .flatMap(state => Object.keys(state.graph)))];
@@ -91,7 +91,7 @@ test.describe("Shared build source content and membership", () => {
     }
   });
   test("native build recipe edits invalidate only their selected component", t => {
-    const f = fixture(t), before = nativeSourceInputs(f.root, "gpu"); f.put("scripts/build-native-gpu-probe.js", "changed recipe");
+    const f = fixture(t), before = nativeSourceInputs(f.root, "gpu"); f.put("scripts/native-gpu-build.js", "changed recipe");
     assert.throws(() => verifySourceInputs(before, nativeSourceInputs(f.root, "gpu"), "GPU"), /stale/);
   });
   test("Windows Core producer edits invalidate Core without rebuilding Engineering or GPU kernels", t => {
@@ -112,7 +112,7 @@ test.describe("Shared build source content and membership", () => {
   });
   test("Windows GPU source receipts cover every directly imported build helper", () => {
     const graph = nativeSourceInputs(repo, "gpu").graph;
-    for (const file of ["build-native-windows-gpu.js", "native-windows-wrapper.js", "probe-static-sycl.js"]) {
+    for (const file of ["build-native-windows-gpu.js", "native-windows-wrapper.js", "native-sycl-inputs.js"]) {
       const source = fs.readFileSync(path.join(repo, "scripts", file), "utf8");
       for (const match of source.matchAll(/require\("\.\/([^"\n]+)"\)/g)) {
         const dependency = "scripts/" + match[1] + ".js";
@@ -120,7 +120,7 @@ test.describe("Shared build source content and membership", () => {
       }
     }
   });
-  for (const file of ["scripts/native-elf.js", "scripts/probe-native-jit.js"]) {
+  for (const file of ["scripts/native-elf.js", "scripts/native-jit-link.js"]) {
     test(`backdated ${file} edits invalidate GPU audits without rebuilding Core or Engineering`, t => {
       const f = fixture(t), gpu = nativeSourceInputs(f.root, "gpu"), cpu = nativeSourceInputs(f.root, "cpu"), engineering = sourceInputs(f.root);
       const changed = f.put(file, "changed GPU audit helper"); fs.utimesSync(changed, 1, 1);
@@ -439,14 +439,14 @@ test.describe("Native application recipe and runtime freshness", () => {
   test("unchanged runtime sources and recipes produce identical receipts", t => {
     const f = fixture(t); assert.deepEqual(nativeApplicationBuildInputs(f.root), nativeApplicationBuildInputs(f.root));
   });
-  for (const file of ["runtime/host.cpp", "scripts/probe-native-controller.js", "scripts/native-bundle.js", "scripts/native-resources.js", "sycl/cuda-images.cpp", "sycl/cuda-images.h"]) {
+  for (const file of ["runtime/host.cpp", "scripts/build-native-application.js", "scripts/native-bundle.js", "scripts/native-resources.js", "sycl/cuda-images.cpp", "sycl/cuda-images.h"]) {
     test(`mid-build ${file} edits invalidate application publication`, t => {
       const f = fixture(t), before = nativeApplicationBuildInputs(f.root); f.put(file, "changed");
       assert.throws(() => verifySourceInputs(before, nativeApplicationBuildInputs(f.root), "Native controller build"), /stale.*rebuild/);
     });
   }
   test("backdating the controller recipe cannot keep an old receipt valid", t => {
-    const f = fixture(t), before = nativeApplicationBuildInputs(f.root), changed = f.put("scripts/probe-native-controller.js", "changed");
+    const f = fixture(t), before = nativeApplicationBuildInputs(f.root), changed = f.put("scripts/build-native-application.js", "changed");
     fs.utimesSync(changed, 1, 1);
     assert.throws(() => verifySourceInputs(before, nativeApplicationBuildInputs(f.root), "Application"), /stale/);
   });
@@ -456,11 +456,11 @@ test.describe("Native application recipe and runtime freshness", () => {
   });
   test("controller recipe changes do not invalidate native Core or GPU source receipts", t => {
     const f = fixture(t), cpu = nativeSourceInputs(f.root, "cpu"), gpu = nativeSourceInputs(f.root, "gpu");
-    f.put("scripts/probe-native-controller.js", "changed"); f.put("scripts/native-bundle.js", "changed");
+    f.put("scripts/build-native-application.js", "changed"); f.put("scripts/native-bundle.js", "changed");
     assert.deepEqual(nativeSourceInputs(f.root, "cpu"), cpu); assert.deepEqual(nativeSourceInputs(f.root, "gpu"), gpu);
   });
   test("controller recipe changes do not enter Engineering's incremental object graph", t => {
-    const f = fixture(t), before = sourceInputs(f.root); f.put("scripts/probe-native-controller.js", "changed");
+    const f = fixture(t), before = sourceInputs(f.root); f.put("scripts/build-native-application.js", "changed");
     assert.deepEqual(sourceInputs(f.root), before);
   });
   test("JS-only edits still flow through the separate exact application-bundle check", t => {

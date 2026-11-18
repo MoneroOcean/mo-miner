@@ -4,7 +4,7 @@ const assert = require("node:assert/strict"), fs = require("node:fs"), os = requ
   {spawnSync} = require("node:child_process"), {test} = require("node:test");
 
 const repo = path.resolve(__dirname, ".."), hostJob = require("../scripts/ci/windows-host"),
-  ci = require("../scripts/prepare-native-ci"), {fileHash} = require("../scripts/build-source-inputs");
+  ci = require("../scripts/native-ci-tar"), {fileHash} = require("../scripts/build-source-inputs");
 const {clrRevision, sourceFiles: hiprtcSourceFiles} = require("../scripts/build-native-windows-hiprtc-sdk");
 
 /** @param {string[]} args @param {NodeJS.ProcessEnv} [environment] */
@@ -35,7 +35,7 @@ function allPins(value) {return Object.fromEntries(Object.values(hostJob.inputPi
 
 /** @param {string} root */
 function hostComponentFixture(root) {
-  const {archiveSha256} = require("../scripts/build-native-windows-llvm21-sdk"),
+  const {archiveSha256} = require("../scripts/build-native-windows-llvm-sdk"),
     {revision: comgrRevision, hostSources} = require("../scripts/build-native-windows-comgr-sdk"),
     acppRevision = "da2463e45aa90aa36306c45abcfc05b87de51bc6",
     pins = {version: 3, targetTriple: "x86_64-pc-windows-msvc", linkOrder: ["acpp", "hiprtc", "comgr", "llvm"],
@@ -86,7 +86,7 @@ function hostComponentFixture(root) {
 test.describe("Windows static host-component CI", {skip: process.platform !== "linux" && "Linux-hosted Windows build job harness"}, () => {
   test("pins validates every external pin and the job budget before writing same-run artifact names", t => {
     const directory = tempDir(t), output = path.join(directory, "output"),
-      environment = {GITHUB_OUTPUT: output, GITHUB_RUN_ID: "123456", GITHUB_RUN_ATTEMPT: "2", MOM_CI_DEADLINE_EPOCH: epoch(3300),
+      environment = {GITHUB_OUTPUT: output, MOM_NATIVE_CI_SUFFIX: "123456-2", MOM_CI_DEADLINE_EPOCH: epoch(3300),
         ...allPins("a".repeat(64))};
     fs.writeFileSync(output, "");
     hostJob.validatePins(environment);
@@ -126,7 +126,7 @@ test.describe("Windows static host-component CI", {skip: process.platform !== "l
       manifestFile = path.join(incoming, "native-windows-llvm-state-123456-2-audited.json"), runDeadline = epoch(7200);
     fs.mkdirSync(incoming);
     fs.writeFileSync(manifestFile, JSON.stringify({version: 1, runDeadlineEpoch: runDeadline}) + "\n");
-    const environment = {RUNNER_TEMP: runnerTemp, GITHUB_RUN_ID: "123456", GITHUB_RUN_ATTEMPT: "2", MOM_CI_DEADLINE_EPOCH: epoch(3300),
+    const environment = {RUNNER_TEMP: runnerTemp, MOM_NATIVE_CI_SUFFIX: "123456-2", MOM_CI_DEADLINE_EPOCH: epoch(3300),
         ...allPins("a".repeat(64)), MOM_NATIVE_WINDOWS_LLVM_STATE_MANIFEST_SHA256: fileHash(manifestFile)},
       job = hostJob.admitHostJob(environment);
     assert.equal(job.deadlines.runEpoch, Number(runDeadline));
@@ -146,7 +146,7 @@ test.describe("Windows static host-component CI", {skip: process.platform !== "l
     fs.writeFileSync(output, "sentinel\n");
     fs.writeFileSync(summary, "summary\n");
     const environment = {...process.env, MOM_NATIVE_WINDOWS_LLVM_STATE_BUNDLE_SHA256: "not-a-digest", GITHUB_OUTPUT: output,
-        GITHUB_STEP_SUMMARY: summary, GITHUB_RUN_ID: "123456", GITHUB_RUN_ATTEMPT: "2", RUNNER_TEMP: directory},
+        GITHUB_STEP_SUMMARY: summary, MOM_NATIVE_CI_SUFFIX: "123456-2", RUNNER_TEMP: directory},
       result = spawnSync(process.execPath, [path.join(repo, "scripts/ci/windows-host.js"), "build"],
         {cwd: repo, env: environment, encoding: "utf8", timeout: 10_000});
     assert.equal(result.status, 1);

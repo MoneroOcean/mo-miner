@@ -7,15 +7,15 @@ const fs = require("node:fs");
 const path = require("node:path");
 const {fileHash} = require("../build-source-inputs");
 const {appendOutputs} = require("./seal");
+const {ciSuffix} = require("../native-ci-job");
 
-/** Derive this run attempt's executable artifact name and fresh download directory.
+/** Derive the executable artifact name and fresh download directory.
  * @param {NodeJS.ProcessEnv} environment @param {string} platform @param {string} variant */
 function runtimeLocation(environment, platform, variant) {
-  const run = environment["GITHUB_RUN_ID"] || "", attempt = environment["GITHUB_RUN_ATTEMPT"] || "";
-  if (!/^[0-9]+$/.test(run) || !/^[0-9]+$/.test(attempt)) {throw new Error("missing workflow run identity");}
+  const suffix = ciSuffix(environment);
   const artifactPlatform = platform === "win32" ? "windows" : platform, packingPrefix = variant === "packed" ? "packed-" : "";
-  const directory = path.join(environment["RUNNER_TEMP"] || "", "mom-native-runtime-" + run + "-" + attempt);
-  return {artifactName: "native-" + artifactPlatform + "-" + packingPrefix + "executable-" + run + "-" + attempt, directory,
+  const directory = path.join(environment["RUNNER_TEMP"] || "", "mom-native-runtime-" + suffix);
+  return {artifactName: "native-" + artifactPlatform + "-" + packingPrefix + "executable-" + suffix, directory,
     binary: path.join(directory, platform === "win32" ? "mom.exe" : "mom")};
 }
 

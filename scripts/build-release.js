@@ -96,7 +96,7 @@ function buildWindowsSources(descriptor, workspace, environment) {
   if (process.platform !== "win32") {throw new Error("Automatic Windows Core production requires a Windows build host");}
   const {absolutePath} = require("./build-native-release");
   const core = require("./build-native-windows-core"), gpu = require("./build-native-windows-gpu"), controller = require("./build-native-windows-controller");
-  const {nativeApplicationGpu} = require("./probe-native-controller");
+  const {nativeApplicationGpu} = require("./build-native-application");
   const sources = descriptor.nativeSources, app = descriptor.application;
   if (!sources || Object.keys(sources).sort().join(",") !== "core,gpu" || !absolutePath(sources.core) ||
       !sources.gpu || typeof sources.gpu !== "object" || Array.isArray(sources.gpu) || !app ||
@@ -310,7 +310,7 @@ function packNativeEntrypoint(options, spawn = spawnSync) {
   // Artifact transport normalizes files to 0644; UPX requires an executable ELF.
   // Restore permissions only after admitting every input; the pinned bytes stay unchanged.
   if (target === "linux") {fs.chmodSync(sourcePath, 0o755);}
-  const packing = {upx, upxSha256}, packed = require("./pack-native-release").packNativeRelease({source: sourcePath, output, ...packing}, spawn),
+  const packing = {upx, upxSha256}, packed = require("./pack-native-executable").packNativeRelease({source: sourcePath, output, ...packing}, spawn),
     packingReceipt = bindPackingReceipt(output, sourcePath, sourceHash, packing, packed);
   if (fileHash(entrypointPath) !== entryHash || fileHash(sourcePath) !== sourceHash || fileHash(producerReceiptPath) !== producerHash ||
       fileHash(upx) !== upxSha256 || fileHash(packingReceipt.path) !== packingReceipt.sha256) {
@@ -397,7 +397,7 @@ function buildNativeArtifact(configFile, output, packing, environment = process.
   if (!windows && descriptor.nativeSources !== undefined) {throw new Error("Windows source descriptors cannot select a Linux build");}
   if (windows && descriptor.nativeSources !== undefined) {
     recipe = sourceInputs(repo, [], ["scripts/build-release.js", "scripts/build-environment.js", "scripts/build-native-windows-core.js",
-      "scripts/build-native-windows-gpu.js", "scripts/build-native-windows-controller.js", "scripts/probe-native-controller.js"]);
+      "scripts/build-native-windows-gpu.js", "scripts/build-native-windows-controller.js", "scripts/build-native-application.js"]);
   }
   // Lazy loading avoids the Windows builder's shared absolutePath import forming a cycle.
   let binary, generatedDescriptor = /** @type {{path: string, sha256: string} | undefined} */ (undefined);
@@ -430,7 +430,7 @@ function buildNativeArtifact(configFile, output, packing, environment = process.
   const producerReceipt = {path: producerReceiptPath, sha256: producerReceiptHash};
   componentHashes[producerReceiptPath] = producerReceiptHash;
   if (fileHash(producerReceipt.path) !== producerReceipt.sha256) {throw new Error("Native producer receipt changed before packing");}
-  const result = packing ? require("./pack-native-release").packNativeRelease({source: binary, output, ...packing}) :
+  const result = packing ? require("./pack-native-executable").packNativeRelease({source: binary, output, ...packing}) :
     {artifact: {path: binary, bytes: fs.statSync(binary).size, sha256: sourceHash}, buildOnly: true, publicationQualified: false};
   if (fileHash(producerReceipt.path) !== producerReceipt.sha256) {throw new Error("Native producer receipt changed during packing");}
   if (fileHash(configFile) !== configHash) {throw new Error("Native release descriptor changed during packing");}

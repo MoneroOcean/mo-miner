@@ -3,7 +3,7 @@
 const test = require("node:test"), assert = require("node:assert/strict");
 const fs = require("node:fs"), os = require("node:os"), path = require("node:path"), {createHash} = require("node:crypto");
 const {fileHash} = require("../scripts/build-source-inputs");
-const {pins} = require("../scripts/probe-static-dpcpp");
+const {pins} = require("../scripts/native-dpcpp-pins");
 const {prepareNativeJitBase, parseCache, parseInstallComponent, baseManifest, verifyBitcode, pinnedBitcodeInput, pinnedCommitDate, sourceTreeFiles,
   jitPlanCompilerTools, buildLlvmTableGen, REQUIRED} = require("../scripts/prepare-native-jit-base");
 const {jitSdkPlan} = require("../scripts/native-jit-sdk");

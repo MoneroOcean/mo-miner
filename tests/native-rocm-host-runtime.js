@@ -5,7 +5,7 @@ const {pins, archiveNames, hsakmtInstallArchiveName, xxdPin, validateConfig, roc
   parsePackageOrigin, compileDepfiles, readCompileDatabase, useStableHipPchStdin, patchExportedHipPchScript,
   useExplicitRocrDeviceLibPath, patchExportedRocrDeviceLibPath, buildRocmHostRuntime} =
   require("../scripts/build-native-rocm-host-runtime");
-const {prepareRocmHostAdmission} = require("../scripts/prepare-native-ci");
+const {prepareRocmHostAdmission} = require("../scripts/native-ci-linux-rocm");
 
 const host = {cc: "/intel/2026.2/bin/icx", cxx: "/intel/2026.2/bin/icpx"};
 const config = () => ({version: 1,
@@ -40,7 +40,7 @@ test.describe("Native original ROCm host-runtime recipe",
       assert.equal(prepare(paths, state), parser);
       assert.deepEqual(calls, ["packages", "parser"], "the existing pinned package and parser helpers run in producer order");
 
-      const source = fs.readFileSync(path.join(__dirname, "../scripts/prepare-native-ci.js"), "utf8"),
+      const source = ["native-ci-linux-rocm.js", "native-ci-linux-release.js"].map(file => fs.readFileSync(path.join(__dirname, "../scripts", file), "utf8") + "\n/**").join("\n"),
         body = (/** @type {string} */ name) => {
           const start = source.indexOf("function " + name), end = source.indexOf("\n/**", start + 1);
           if (start < 0 || end <= start) {throw new Error(name + " remains a declared CI frontdoor");}
@@ -59,8 +59,8 @@ test.describe("Native original ROCm host-runtime recipe",
       assert.match(body("buildRocmHostSdk"), /const parser = prepareRocmHostAdmission\(paths, state\)/,
         "the original producer and strict consumers share the same package/parser preparation path");
       const descriptor = body("buildLinuxNativeSdkDescriptor");
-      assert.ok(descriptor.indexOf("provisionOneApi(paths") < descriptor.indexOf("verifyLinuxLlvmAdmissionCi(paths)") &&
-        descriptor.indexOf("verifyLinuxLlvmAdmissionCi(paths)") < descriptor.indexOf("prepareRocmHostAdmission(paths, state.rocm)"),
+      assert.ok(descriptor.indexOf("provisionOneApi(paths") < descriptor.indexOf("admitLinuxLlvmOutput(paths)") &&
+        descriptor.indexOf("admitLinuxLlvmOutput(paths)") < descriptor.indexOf("prepareRocmHostAdmission(paths, state.rocm)"),
       "the descriptor preserves the producer's signed-tool admission before host package preparation");
     });
     test("ROCr xxd generator is pinned, included in PATH and provenance inputs", () => {

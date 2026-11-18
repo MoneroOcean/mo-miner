@@ -11,7 +11,7 @@ const {pathsOverlap} = require("./build-native-sycl-sdk");
 const {jitBuildOutputs} = require("./native-jit-stages");
 const {isStaticArchive} = require("./native-audit");
 const {nativeRuntimeLibraries} = require("./native-sdk-runtime");
-const {verifyWindowsLlvmAdmission} = require("./build-native-windows-llvm21-sdk");
+const {verifyWindowsLlvmAdmission} = require("./build-native-windows-llvm-sdk");
 
 const repo = path.resolve(__dirname, "..");
 const revision = "27682a16360e33e37c4f3cc6adf9a620733f8fe1";
@@ -27,7 +27,7 @@ const hostSources = Object.freeze(["src/comgr-cache.cpp", "src/comgr-cache-comma
   "src/comgr-metadata.cpp", "src/comgr-objdump.cpp", "src/comgr-signal.cpp", "src/comgr-spirv-command.cpp",
   "src/comgr-symbol.cpp", "src/comgr-symbolizer.cpp", "src/time-stat/time-stat.cpp"]);
 const recipeFiles = Object.freeze(["scripts/build-native-windows-comgr-sdk.js", "scripts/build-native-windows-controller.js",
-  "scripts/build-native-windows-llvm21-sdk.js", "scripts/build-native-sycl-sdk.js",
+  "scripts/build-native-windows-llvm-sdk.js", "scripts/build-native-sycl-sdk.js",
   "scripts/build-native-release.js", "scripts/build-source-inputs.js", "scripts/prepare-native-jit-toolchain.js",
   "scripts/native-jit-stages.js", "scripts/native-audit.js", "scripts/native-comgr-inputs.js", "scripts/native-sdk-runtime.js", ...patches]);
 const requiredDeviceLibraries = Object.freeze(["asanrtl.bc", "hip.bc", "ockl.bc", "ocml.bc", "opencl.bc"]);
@@ -507,8 +507,8 @@ function configureWindowsComgrSdk(input, environment = process.env) {
   }
   const descriptor = validateWindowsLlvmSdkConfig(readBuildJson(input.descriptorFile));
   const llvm = verifyWindowsLlvmAdmission(input.targetLlvm), llvmTools = {cmake: llvm.receipt.plan.tools.cmake, ninja: llvm.receipt.plan.tools.ninja};
-  const llvmPlan = llvm.receipt.plan, admittedLlvmLayout = {source: llvmPlan.reuse?.source || llvmPlan.source,
-    build: llvmPlan.reuse?.build || path.join(llvmPlan.output, "build")};
+  const llvmPlan = llvm.receipt.plan, admittedLlvmLayout = {source: llvmPlan.source,
+    build: path.join(llvmPlan.output, "build")};
   const plan = windowsComgrSdkPlan({...input, descriptor, tools: llvmTools}, admittedLlvmLayout);
   const outputParent = fs.realpathSync(path.dirname(input.output)), destination = path.join(outputParent, path.basename(input.output));
   if (destination !== input.output || fs.existsSync(input.output)) {throw new Error("Select a new canonical Windows COMGR output directory");}
@@ -661,8 +661,8 @@ function verifySession(output) {
   }
   const descriptor = validateWindowsLlvmSdkConfig(readBuildJson(saved.descriptorFile));
   const llvm = verifyWindowsLlvmAdmission(saved.targetLlvm), llvmPlan = llvm.receipt.plan,
-    plan = windowsComgrSdkPlan({...saved, descriptor}, {source: llvmPlan.reuse?.source || llvmPlan.source,
-      build: llvmPlan.reuse?.build || path.join(llvmPlan.output, "build")});
+    plan = windowsComgrSdkPlan({...saved, descriptor}, {source: llvmPlan.source,
+      build: path.join(llvmPlan.output, "build")});
   const device = verifyWindowsDeviceResources(saved.deviceReceipt, saved.deviceInstall);
   if (device.sha256 !== receipt.device?.sha256 || llvm.receiptFile !== receipt.windowsLlvm?.receipt ||
       llvm.admission["generationId"] !== receipt.windowsLlvm?.generationId ||

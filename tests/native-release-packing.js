@@ -1,6 +1,6 @@
 "use strict";
 const fs = require("node:fs"), os = require("node:os"), path = require("node:path"), test = require("node:test"), assert = require("node:assert/strict");
-const {packNativeRelease} = require("../scripts/pack-native-release"), {fileHash} = require("../scripts/build-source-inputs");
+const {packNativeRelease} = require("../scripts/pack-native-executable"), {fileHash} = require("../scripts/build-source-inputs");
 const {sealNativePePages} = require("../scripts/native-pe-pages"), {nativePeFixture} = require("./common/native-pe-fixture");
 
 /** Synthetic command-boundary fixture only; no compiler, packer or miner is executed.

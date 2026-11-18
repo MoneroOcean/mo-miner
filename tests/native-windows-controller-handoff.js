@@ -8,7 +8,7 @@ const {hermesPins} = require("../scripts/build-native-hermes");
 const {ioSourceRecipe, sourceRecipe, ioArchiveUrls, buildArchiveUrls} = require("../scripts/fetch-native-sdk-sources");
 const intelRuntimeCatalog = require("../runtime/windows-intel-runtime.json");
 
-const repo = path.resolve(__dirname, ".."), attempt = "12345-1", sha = (/** @type {string} */ text) => createHash("sha256").update(text).digest("hex");
+const repo = path.resolve(__dirname, ".."), suffix = "12345-1", sha = (/** @type {string} */ text) => createHash("sha256").update(text).digest("hex");
 /** @param {string} root @param {string} relative @param {string} data @returns {string} */
 function put(root, relative, data) {
   const file = path.join(root, ...relative.split("/")); fs.mkdirSync(path.dirname(file), {recursive: true}); fs.writeFileSync(file, data); return file;
@@ -86,14 +86,14 @@ function ioFixture(t) {
       notice: {path: "source/LICENSE.txt", sha256: licenseSha256}}, config: {sha256: fileHash(path.join(root, "openssl-sdk/producer-tools.json"))},
     tools: sslTools, recipe: sourceInputs(repo, [], ["scripts/build-native-openssl.js", "scripts/build-source-inputs.js", "scripts/build-environment.js", "scripts/native-audit.js"]),
     artifacts: sslArtifacts, buildOnly: true, executed: false, publicationQualified: false});
-  const handoff = {version: 1, format: "mom-windows-controller-support-handoff-v1", runAttempt: attempt, target: "win32", architecture: "x64", kind: "io",
+  const handoff = {version: 1, format: "mom-windows-controller-support-handoff-v1", target: "win32", architecture: "x64", kind: "io",
     buildOnly: true, executed: false, publicationQualified: false, scope: "Selected build-only I/O/OpenSSL source closure.",
     producers: [{script: "scripts/build-native-io.js", receipt: "io-sdk/result.json", receiptSha256: fileHash(path.join(root, "io-sdk/result.json"))},
       {script: "scripts/build-native-openssl.js", receipt: "openssl-sdk/result.json", receiptSha256: fileHash(path.join(root, "openssl-sdk/result.json"))}],
     sourceReceipts: [{file: "provenance/io-fetch.json", sha256: fileHash(path.join(root, "provenance/io-fetch.json")), archives: {libuv: ioPins.libuv.sha256, zlib: ioPins.zlib.sha256}},
       {file: "provenance/openssl-fetch.json", sha256: fileHash(path.join(root, "provenance/openssl-fetch.json")), archives: {openssl: opensslPin.sha256}}],
     omitted: ["OpenSSL source/build trees", "openssl.exe", "compiler/build tools", "DLLs"]};
-  return {root, handoff, expected: {kind: "io", runAttempt: attempt, handoffSha256: seal(root, handoff)}, files};
+  return {root, handoff, expected: {kind: "io", handoffSha256: seal(root, handoff)}, files};
 }
 /** @param {{after:(fn:()=>void)=>void}} t @param {boolean} [shareCCompiler] @param {boolean} [includeRootLicense] @returns {any} */
 function hermesFixture(t, shareCCompiler = false, includeRootLicense = false) {
@@ -128,18 +128,18 @@ function hermesFixture(t, shareCCompiler = false, includeRootLicense = false) {
   save(root, beforePath, before);
   save(root, resultPath, {version: 1, target: "win32", pins: hermesPins, source, build, artifacts, fingerprints, sources, recipe,
     buildOnly: true, publicationQualified: false});
-  const gitRoot = "/tmp/mom-native-hermes-prerequisites-" + attempt + "/roots/hermes", fetchRecipe = sourceRecipe("hermes"),
+  const gitRoot = "/tmp/mom-native-hermes-prerequisites-" + suffix + "/roots/hermes", fetchRecipe = sourceRecipe("hermes"),
     fetch = fetchRecord("hermes", fetchRecipe, {}, fileHash(path.join(repo, "scripts/fetch-native-sdk-sources.js")));
   Object.assign(fetch, {git: {path: "/usr/bin/git", sha256: sha("bare git payload")}, components: {hermes: {origin: "https://github.com/facebook/hermes.git",
     revision: hermesPins.revision, root: gitRoot, gitDirectory: "bare", shallow: true, partialClone: false}}});
   save(root, fetchPath, fetch); save(root, rootsPath, {hermes: gitRoot});
-  const handoff = {version: 1, format: "mom-windows-controller-support-handoff-v1", runAttempt: attempt, target: "win32", architecture: "x64", kind: "hermes",
+  const handoff = {version: 1, format: "mom-windows-controller-support-handoff-v1", target: "win32", architecture: "x64", kind: "hermes",
     buildOnly: true, executed: false, publicationQualified: false, scope: "Selected build-only Hermes source/config/static closure; AOT compiler is separate.",
     producers: [{script: "scripts/build-native-hermes.js", receipt: resultPath, receiptSha256: fileHash(path.join(root, resultPath)), plan: beforePath,
       planSha256: fileHash(path.join(root, beforePath))}], sourceReceipts: [{file: fetchPath, sha256: fileHash(path.join(root, fetchPath)), rootsFile: rootsPath,
       rootsSha256: fileHash(path.join(root, rootsPath)), revision: hermesPins.revision}],
     omitted: ["Hermes Git/build trees", "shermes.exe", "hermesPublic.lib", "compiler/build tools", "DLLs"]};
-  return {root, handoff, expected: {kind: "hermes", runAttempt: attempt, handoffSha256: seal(root, handoff)}};
+  return {root, handoff, expected: {kind: "hermes", handoffSha256: seal(root, handoff)}};
 }
 /** @param {string} root @param {any} handoff @returns {string} */
 function reseal(root, handoff) {
@@ -218,11 +218,10 @@ test.describe("Windows controller support handoff admission", () => {
         const f = fixture(t), ci = windowsControllerHandoffInputs(f.root, f.expected),
           receipts = f.handoff.producers.map((/** @type {{receipt:string}} */ row) =>
             [row.receipt, fileHash(path.join(f.root, row.receipt))]);
-        delete f.handoff.runAttempt; f.handoff.localBuildId = localBuildId;
+        f.handoff.localBuildId = localBuildId;
         const handoffSha256 = seal(f.root, f.handoff),
           local = windowsLocalControllerHandoffInputs(f.root, {kind, localBuildId, handoffSha256});
         assert.equal(local.localBuildId, localBuildId); assert.equal(local.kind, ci.kind);
-        assert.equal(Object.hasOwn(local, "runAttempt"), false);
         assert.deepEqual(local.files, {...ci.files, [ci.handoff]: handoffSha256}, "only the explicit transport identity manifest changes");
         for (const [file, hash] of receipts) {assert.equal(fileHash(path.join(f.root, file)), hash);}
         assert.throws(() => windowsControllerHandoffInputs(f.root, {...f.expected, handoffSha256}), /role or build-only boundary/);
@@ -230,18 +229,18 @@ test.describe("Windows controller support handoff admission", () => {
     }
     test("rejects mixed, malformed or foreign local identities", t => {
       const f = ioFixture(t);
-      delete f.handoff.runAttempt; f.handoff.localBuildId = localBuildId;
+      f.handoff.localBuildId = localBuildId;
       let handoffSha256 = seal(f.root, f.handoff);
       assert.throws(() => windowsLocalControllerHandoffInputs(f.root,
         {kind: "io", localBuildId: "not-a-local-build", handoffSha256}), /local build identity/);
       assert.throws(() => windowsLocalControllerHandoffInputs(f.root,
         {kind: "io", localBuildId: "12345678-1234-4234-9234-123456789abd", handoffSha256}), /role or build-only boundary/);
-      f.handoff.runAttempt = attempt; handoffSha256 = seal(f.root, f.handoff);
+      delete f.handoff.localBuildId; handoffSha256 = seal(f.root, f.handoff);
       assert.throws(() => windowsLocalControllerHandoffInputs(f.root, {kind: "io", localBuildId, handoffSha256}), /role or build-only boundary/);
     });
     test("local identity does not bypass selected-file hash checks", t => {
       const f = ioFixture(t);
-      delete f.handoff.runAttempt; f.handoff.localBuildId = localBuildId;
+      f.handoff.localBuildId = localBuildId;
       const handoffSha256 = seal(f.root, f.handoff);
       fs.appendFileSync(path.join(f.root, "io-sdk/lib/uv_a.lib"), "corrupted");
       assert.throws(() => windowsLocalControllerHandoffInputs(f.root, {kind: "io", localBuildId, handoffSha256}));
@@ -484,9 +483,6 @@ test.describe("Windows controller support handoff admission", () => {
     const f = ioFixture(t); f.handoff.files[0].path = "../escape"; save(f.root, "handoff.json", f.handoff);
     f.expected.handoffSha256 = fileHash(path.join(f.root, "handoff.json"));
     assert.throws(() => windowsControllerHandoffInputs(f.root, f.expected), /Invalid .*inventory/);
-  });
-  test("rejects a different run-attempt before consuming the handoff", (/** @type {{after:(fn:()=>void)=>void}} */ t) => {
-    const f = ioFixture(t); assert.throws(() => windowsControllerHandoffInputs(f.root, {...f.expected, runAttempt: "12346-1"}), /producer hash differs|role or build-only/);
   });
   test("rejects a forged producer SDK pin even when a new handoff hash is supplied", (/** @type {{after:(fn:()=>void)=>void}} */ t) => {
     const f = ioFixture(t), receipt = JSON.parse(fs.readFileSync(path.join(f.root, "io-sdk/result.json"), "utf8"));

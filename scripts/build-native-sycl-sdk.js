@@ -4,8 +4,8 @@
 // CPU-only compilation, not GPU execution or SDK installation over an existing prefix.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
 const {isDeepStrictEqual} = require("node:util");
-const {admitSyclSource, cudaRuntimeInputs, rocmInputs, staticSyclInputs} = require("./probe-static-sycl");
-const {lldInputs} = require("./probe-native-jit");
+const {admitSyclSource, cudaRuntimeInputs, rocmInputs, staticSyclInputs} = require("./native-sycl-inputs");
+const {lldInputs} = require("./native-jit-link");
 const {buildFileInputs, fileHash, sourceInputs, verifySourceInputs} = require("./build-source-inputs");
 const {absolutePath} = require("./build-native-release");
 const {nativeSdkEnvironment} = require("./build-environment");
@@ -212,10 +212,10 @@ function buildStaticSyclSdk(source, llvm, cuda, output, environment = process.en
   if (canonicalInputs.some(file => pathsOverlap(file, canonicalOutput))) {throw new Error("Static SDK output overlaps a canonical source, SDK or compiler input");}
   Object.assign(env, sdkHostEnvironment(env, plan.hostCompilers), {LLVM_CONFIG: path.join(llvm, "bin/llvm-config")});
   verifyCompilerEnvironment(plan.hostCompilers, env);
-  const recipe = sourceInputs(repo, [], ["scripts/build-native-sycl-sdk.js", "scripts/probe-static-sycl.js", "scripts/native-hcf.js",
+  const recipe = sourceInputs(repo, [], ["scripts/build-native-sycl-sdk.js", "scripts/native-sycl-inputs.js", "scripts/native-hcf.js",
     "tests/reference/native-sycl-hcf-repro.cpp",
     "tests/reference/native-jit-cache.cpp",
-    "scripts/probe-native-jit.js", "scripts/build-environment.js", "scripts/native-audit.js", "scripts/native-resources.js",
+    "scripts/native-jit-link.js", "scripts/build-environment.js", "scripts/native-audit.js", "scripts/native-resources.js",
     "runtime/adaptivecpp-static.patch", "runtime/adaptivecpp-jit.patch"]);
   fs.mkdirSync(output); fs.mkdirSync(path.join(output, "pre")); fs.mkdirSync(path.join(output, "post"));
   /** Compiler probes have bounded stdout; CMake compilation uses streamed sdkStage instead.

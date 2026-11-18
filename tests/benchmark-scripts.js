@@ -9,7 +9,7 @@ const path = require("node:path");
 const {runInNewContext} = require("node:vm");
 const benchmark = require("../scripts/benchmark-gpu-algos");
 const release = require("../scripts/check-release-performance");
-const comparison = require("../scripts/compare-gpu-benchmarks");
+const comparison = require("./tools/compare-gpu-benchmarks");
 const performance = require("../scripts/readme-performance");
 const {windowsCmdArgs} = require("../scripts/windows-command");
 
@@ -158,6 +158,15 @@ test.describe("Correctness test dispatcher", {concurrency: false}, () => {
       assert.equal(result.calls[0]?.command, "fixture-local-node");
       assert.equal(result.routed.length, 0);
     }
+  });
+
+  test("source suites clear developer build controls from the test environment", () => {
+    const env = {MOM_CPU_MARCH: "native", MOM_FORCE_REBUILD: "1", MOM_NATIVE_CACHE: "0", MOM_DEPLOY_REUSE_ARCHIVE: "/a.tar"};
+    for (const suite of ["logic", "host"]) {
+      const childEnv = dispatch(suite, {env}).calls[0]?.env || {};
+      for (const key of Object.keys(env)) {assert.ok(Object.hasOwn(childEnv, key) && childEnv[key] === undefined, `${suite} clears ${key}`);}
+    }
+    assert.equal(Object.hasOwn(dispatch("cpu", {env}).routed[0]?.env || {}, "MOM_CPU_MARCH"), false, "hardware suites keep the caller environment");
   });
 
   test("default all shares canonical logic coverage and routes hardware", () => {
@@ -1858,7 +1867,7 @@ test.describe("Benchmark and installer scripts", {concurrency: false}, () => {
       assert.match(amdBuilder,
         /Remove-Item -LiteralPath \$acpp, \$source, \$build -Recurse -Force/);
 
-      const currentTest = read("scripts", "test-windows-current-multicompiler.ps1");
+      const currentTest = read("tests", "windows", "test-windows-current-multicompiler.ps1");
       assert.match(currentTest, /\[ValidateSet\('intel','intel_igpu','nvidia','amd','opencl'\)\]/);
       assert.match(currentTest,
         /'opencl' \{\n {4}if \(\$Compiler -in @\('all','portable'\)\) \{\n {6}Invoke-PortableSuite 'OpenCL'\n {6}\$portableLanes = 1\n {4}\}\n {2}\}/);

@@ -2,7 +2,7 @@
 
 const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), path = require("node:path"), os = require("node:os");
 const {spawnSync} = require("node:child_process");
-const {openclInputs, pins} = require("../scripts/probe-static-dpcpp");
+const {openclInputs, pins} = require("../scripts/native-dpcpp-pins");
 const read = (/** @type {string} */ name) => fs.readFileSync(path.join(__dirname, "..", name), "utf8");
 const patch = read("runtime/dpcpp-static-opencl.patch");
 
@@ -118,8 +118,8 @@ test.describe("Static OpenCL full proof boundaries", () => {
     assert.doesNotMatch(patch, /^diff --git .*adapters\/level_zero\//m);
   });
   test("build inputs cannot implicitly run GPU work or enable OpenCL in normal commands", () => {
-    for (const name of ["scripts/dev.js", "scripts/build-release.js"]) {assert.doesNotMatch(read(name), /probe-static-dpcpp/);}
-    assert.match(read("scripts/probe-static-dpcpp.js"), /MOM_AOT_BUILD_ONLY/);
+    for (const name of ["scripts/dev.js", "scripts/build-release.js"]) {assert.doesNotMatch(read(name), /native-dpcpp-pins/);}
+    assert.match(read("scripts/native-dpcpp-pins.js"), /MOM_AOT_BUILD_ONLY/);
   });
   test("Windows validates the actual adapter archive, not a second copy of its binding source", () => {
     const windows = cmake.slice(cmake.indexOf("add_custom_target(mom-static-dpcpp-libs"), cmake.indexOf("# Linux fixtures below"));

@@ -9,7 +9,7 @@ const {buildLocalNativeSdk, buildLocalNativeSupportSdk, buildLocalCompilerInputs
   require("../scripts/build-local-native-sdk");
 const {archiveName} = require("../scripts/native-llvm-sdk");
 const {sdkComponents} = require("../scripts/prepare-native-sdk-sources");
-const nativeCi = require("../scripts/prepare-native-ci");
+const ciSupport = require("../scripts/native-ci-linux-support");
 
 const repo = fs.realpathSync(path.resolve(__dirname, "..")), node = process.execPath;
 
@@ -367,26 +367,26 @@ test.describe("local Linux static support SDK bootstrap slice", {skip: process.p
     const result = buildLocalNativeSupportSdk(ctx, dependencies(runner, support, mocked, audits)), paths = supportPaths(f.workspace);
     assert.deepEqual(result.reused, {hermes: false, io: false, openssl: false, zstd: false, openmp: false});
     const call = (/** @type {string} */ label) => mocked.calls.find(row => row.label === label)?.child;
-    const hermes = nativeCi.hermesBuildCommand(/** @type {Parameters<typeof nativeCi.hermesBuildCommand>[0]} */ (/** @type {unknown} */
-        ({source: paths.hermesSource, sdkRoot: paths.hermesSdk})), support.hermes),
+    const hermes = ciSupport.hermesBuildCommand(/** @type {Parameters<typeof ciSupport.hermesBuildCommand>[0]} */ (/** @type {unknown} */
+        ({source: paths.hermesSource, sdkRoot: paths.hermesSdk})), support.hermes, "2"),
       hermesCall = call("static Hermes SDK producer");
     assert.equal(hermesCall?.[1], path.join(repo, "scripts", hermes.script)); assert.deepEqual(hermesCall?.slice(2), hermes.args);
-    const ioPaths = /** @type {Parameters<typeof nativeCi.ioOpenSslBuildCommands>[0]} */ (/** @type {unknown} */
+    const ioPaths = /** @type {Parameters<typeof ciSupport.ioOpenSslBuildCommands>[0]} */ (/** @type {unknown} */
         ({env: {}, source: f.buildInputs, ioSource: paths.ioSource, ioSdk: paths.ioSdk,
           opensslSdk: paths.opensslSdk, opensslTools: paths.opensslTools})),
-      ioCommands = nativeCi.ioOpenSslBuildCommands(ioPaths, support.cmake, support.ninja, support.openssl),
+      ioCommands = ciSupport.ioOpenSslBuildCommands(ioPaths, support.cmake, support.ninja, support.openssl, "2"),
       ioCall = call("static I/O SDK producer"), opensslCall = call("static OpenSSL SDK producer");
     assert.equal(ioCall?.[1], path.join(repo, "scripts", ioCommands[0]?.script || "")); assert.deepEqual(ioCall?.slice(2), ioCommands[0]?.args);
     assert.equal(opensslCall?.[1], path.join(repo, "scripts", ioCommands[1]?.script || "")); assert.deepEqual(opensslCall?.slice(2), ioCommands[1]?.args);
     assert.deepEqual(JSON.parse(fs.readFileSync(paths.opensslTools, "utf8")), {version: 1, jobs: 2, tools: support.openssl});
-    const zstdState = /** @type {Parameters<typeof nativeCi.zstdBuildCommand>[0]} */ ({source: paths.zstdSource,
+    const zstdState = /** @type {Parameters<typeof ciSupport.zstdBuildCommand>[0]} */ ({source: paths.zstdSource,
         archive: path.join(paths.zstdSource, "zstd-1.5.7.tar.gz"), sdkRoot: paths.zstdSdk, toolsFile: paths.zstdTools}),
-      zstd = nativeCi.zstdBuildCommand(zstdState, paths.zstdTools), zstdCall = call("static zstd SDK producer");
+      zstd = ciSupport.zstdBuildCommand(zstdState, paths.zstdTools), zstdCall = call("static zstd SDK producer");
     assert.equal(zstdCall?.[1], path.join(repo, "scripts", zstd.script)); assert.deepEqual(zstdCall?.slice(2), zstd.args);
     assert.deepEqual(JSON.parse(fs.readFileSync(paths.zstdTools, "utf8")), {version: 1, jobs: 4, tools: support.zstd});
-    const openmpState = /** @type {Parameters<typeof nativeCi.openmpBuildCommand>[0]} */ ({source: f.buildInputs,
+    const openmpState = /** @type {Parameters<typeof ciSupport.openmpBuildCommand>[0]} */ ({source: f.buildInputs,
         archive: path.join(f.buildInputs, archiveName), sdkRoot: paths.openmpSdk, toolsFile: paths.openmpTools}),
-      openmp = nativeCi.openmpBuildCommand(openmpState), openmpCall = call("static OpenMP SDK producer");
+      openmp = ciSupport.openmpBuildCommand(openmpState), openmpCall = call("static OpenMP SDK producer");
     assert.equal(openmpCall?.[1], path.join(repo, "scripts", openmp.script)); assert.deepEqual(openmpCall?.slice(2), openmp.args);
     assert.deepEqual(JSON.parse(fs.readFileSync(paths.openmpTools, "utf8")), {version: 1, jobs: 2, tools: support.openmp});
     assert.ok(mocked.calls.every(row => row.child[0] === node));
@@ -659,7 +659,7 @@ test.describe("local Linux JIT resource bootstrap slice", {skip: process.platfor
   test("binds a completed local admission to the shared auditor fingerprints and leaves warm receipts unchanged", t => {
     const f = fixture(t), runner = fakeTools(f.root), tools = jitTools(runner), paths = supportPaths(f.workspace), state = localLinuxJitResourceState(paths);
     makeJitToolsExecutable(runner); fs.writeFileSync(paths.linuxJitTools, JSON.stringify(localJitToolsReceipt(tools)) + "\n");
-    const fingerprintPath = path.join(repo, "scripts/prepare-native-ci.js"), admission = {resources: {target: "x86_64-unknown-linux-gnu",
+    const fingerprintPath = path.join(repo, "scripts/native-ci-linux-jit.js"), admission = {resources: {target: "x86_64-unknown-linux-gnu",
       directory: state.resources, overlay: path.join(state.resources, "overlay"), manifestHash: "a".repeat(64), inputs: {[fingerprintPath]: "b".repeat(64)}},
     sourceDate: "20260711", fingerprints: {[fingerprintPath]: "b".repeat(64)}};
     let builds = 0, audits = 0;
@@ -695,7 +695,7 @@ test.describe("local Linux JIT resource bootstrap slice", {skip: process.platfor
     let audited = false;
     assert.throws(() => runLocalJitResourceChild("audit", partial.workspace, tools,
       {verifyScope() {assert.ok(true);}, validateTools(selected) {assert.deepEqual(selected, tools);}, auditTree() {
-        audited = true; return /** @type {ReturnType<typeof nativeCi.auditLinuxJitResourceTree>} */ (/** @type {unknown} */ ({}));
+        audited = true; return /** @type {ReturnType<typeof import("../scripts/native-ci-linux-jit").auditLinuxJitResourceTree>} */ (/** @type {unknown} */ ({}));
       }}), /incomplete or out of order/);
     assert.equal(audited, false); assert.equal(fs.readFileSync(path.join(state.root, "unknown-partial.log"), "utf8"), "preserve\n");
 

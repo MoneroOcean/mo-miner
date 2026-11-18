@@ -7,11 +7,11 @@ const fs = require("node:fs"), path = require("node:path"), {createHash} = requi
   {isDeepStrictEqual} = require("node:util");
 const {sourceInputs, verifySourceInputs} = require("./build-source-inputs");
 const {archiveName, archiveSha256} = require("./native-llvm-sdk");
-const llvmBuilder = require("./build-native-llvm21-sdk");
+const llvmBuilder = require("./build-native-llvm-sdk");
 
 const repo = path.resolve(__dirname, ".."), format = "mom-linux-llvm-sdk-handoff-v1",
   role = "linux-llvm21-installed-sdk", receiptNames = ["result.json", "configured.json", "install.json", "build-complete.json"],
-  recipeFiles = ["scripts/native-linux-llvm-sdk-handoff.js", "scripts/build-native-llvm21-sdk.js", "scripts/native-llvm-sdk.js",
+  recipeFiles = ["scripts/native-linux-llvm-sdk-handoff.js", "scripts/build-native-llvm-sdk.js", "scripts/native-llvm-sdk.js",
     "scripts/native-audit.js", "scripts/build-source-inputs.js"],
   maxFiles = 10000, maxDepth = 32, maxMemberBytes = 512 << 20, maxSdkBytes = 2 * 1024 ** 3,
   maxReceiptBytes = 8 << 20, maxManifestBytes = 16 << 20, reserveBytes = 2 * 1024 ** 3;
@@ -259,15 +259,14 @@ function verifyOriginalReceiptChain(output, receipts, pins, identity) {
   return {result, snapshot};
 }
 
-/** @param {string} admittedOutput @param {string} outputRoot @param {{runAttempt:string}} identity
+/** @param {string} admittedOutput @param {string} outputRoot
  * @param {(output:string)=>any} [reader] Internal small-fixture seam; production uses full public admission. */
-function exportLinuxLlvmSdk(admittedOutput, outputRoot, identity, reader = llvmBuilder.verifyLinuxLlvmAdmission) {
+function exportLinuxLlvmSdk(admittedOutput, outputRoot, reader = llvmBuilder.verifyLinuxLlvmAdmission) {
   const sourceOutput = canonicalDirectory(admittedOutput, "Admitted Linux LLVM output"),
     sourceSdk = path.join(sourceOutput, "sdk"), outputParent = canonicalDirectory(path.dirname(outputRoot), "Linux LLVM SDK handoff parent");
-  if (!identity || typeof identity.runAttempt !== "string" || !/^[0-9]{1,20}-[1-9][0-9]{0,5}$/.test(identity.runAttempt) ||
-      !path.isAbsolute(outputRoot) || path.resolve(outputRoot) !== outputRoot || fs.existsSync(outputRoot) ||
+  if (!path.isAbsolute(outputRoot) || path.resolve(outputRoot) !== outputRoot || fs.existsSync(outputRoot) ||
       overlaps(sourceOutput, outputRoot)) {
-    throw new Error("Linux LLVM installed-SDK handoff requires a fresh disjoint output and exact run attempt");
+    throw new Error("Linux LLVM installed-SDK handoff requires a fresh disjoint output");
   }
   const admitted = reader(sourceOutput), resultPin = stableJson(path.join(sourceOutput, "result.json"), maxReceiptBytes, "Original LLVM result receipt"),
     result = resultPin.value;
@@ -362,7 +361,7 @@ function exportLinuxLlvmSdk(admittedOutput, outputRoot, identity, reader = llvmB
     }
   }
   verifySourceInputs(recipe, sourceInputs(repo, [], recipeFiles), "Linux LLVM SDK handoff recipe");
-  const handoff = {version: 1, format, role, runAttempt: identity.runAttempt, runId: result.runId,
+  const handoff = {version: 1, format, role, runId: result.runId,
     buildOnly: true, compiled: true, executed: false, publicationQualified: false,
     original: {output: result.plan.output, prefix: result.plan.prefix, resultSha256: receiptPins["result.json"]?.sha256},
     sourceArchive: {name: archiveName, sha256: archiveSha256, bundled: false},
@@ -418,18 +417,17 @@ function expectedBundleDirectories(handoff) {
   return [...directories].sort();
 }
 
-/** @param {string} bundleRoot @param {{runAttempt:string,handoffSha256:string}} expectation */
+/** @param {string} bundleRoot @param {{handoffSha256:string}} expectation */
 function linuxLlvmSdkHandoffInputs(bundleRoot, expectation) {
   const root = canonicalDirectory(bundleRoot, "Linux LLVM SDK handoff root");
-  if (!expectation || typeof expectation !== "object" || !/^[0-9]{1,20}-[1-9][0-9]{0,5}$/.test(expectation.runAttempt || "") ||
-      !/^[a-f0-9]{64}$/.test(expectation.handoffSha256 || "")) {
-    throw new Error("Linux LLVM SDK handoff requires its exact run attempt and external manifest pin");
+  if (!expectation || typeof expectation !== "object" || !/^[a-f0-9]{64}$/.test(expectation.handoffSha256 || "")) {
+    throw new Error("Linux LLVM SDK handoff requires its external manifest pin");
   }
   const manifestPath = path.join(root, "handoff.json"), manifestPin = stableJson(manifestPath, maxManifestBytes, "Linux LLVM SDK handoff manifest"),
     handoff = manifestPin.value;
-  if (!exactKeys(handoff, ["version", "format", "role", "runAttempt", "runId", "buildOnly", "compiled", "executed", "publicationQualified",
+  if (!exactKeys(handoff, ["version", "format", "role", "runId", "buildOnly", "compiled", "executed", "publicationQualified",
     "original", "sourceArchive", "sdk", "receipts", "files", "recipe"]) || handoff.version !== 1 || handoff.format !== format ||
-      handoff.role !== role || handoff.runAttempt !== expectation.runAttempt || handoff.buildOnly !== true || handoff.compiled !== true ||
+      handoff.role !== role || handoff.buildOnly !== true || handoff.compiled !== true ||
       handoff.executed !== false || handoff.publicationQualified !== false || manifestPin.pin.sha256 !== expectation.handoffSha256 ||
       typeof handoff.runId !== "string" || !/^[0-9a-f-]{36}$/i.test(handoff.runId) ||
       !exactKeys(handoff.original, ["output", "prefix", "resultSha256"]) ||
@@ -491,7 +489,7 @@ function linuxLlvmSdkHandoffInputs(bundleRoot, expectation) {
     throw new Error("Linux LLVM SDK handoff changed during admission");
   }
   const files = Object.fromEntries(handoffFiles.map(row => [row.path, row]));
-  return {sdkRoot, files, runId: handoff.runId, runAttempt: handoff.runAttempt,
+  return {sdkRoot, files, runId: handoff.runId,
     resultSha256: handoff.original.resultSha256, handoffSha256: expectation.handoffSha256,
     sourceArchiveSha256: archiveSha256};
 }

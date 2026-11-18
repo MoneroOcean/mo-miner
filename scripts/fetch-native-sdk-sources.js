@@ -5,6 +5,7 @@
 const fs = require("node:fs"), path = require("node:path"), {spawn, spawnSync} = require("node:child_process"), {createHash} = require("node:crypto");
 const {isDeepStrictEqual} = require("node:util");
 const {Readable, Transform} = require("node:stream"), {pipeline} = require("node:stream/promises");
+const {setTimeout: sleep} = require("node:timers/promises");
 const {sdkComponents, sdkSourceEnvironment} = require("./prepare-native-sdk-sources");
 const {fileHash, sourceInputs, readBuildText} = require("./build-source-inputs");
 const {ioPins} = require("./build-native-io");
@@ -42,6 +43,16 @@ const zstdArchiveUrl = "https://github.com/facebook/zstd/releases/download/v" + 
 const maxZstdArchiveBytes = 16 << 20;
 const nvrtcArchiveOrigin = "https://developer.download.nvidia.com", maxNvrtcArchiveBytes = 320 << 20;
 const windowsHostOrigin = "https://download.visualstudio.microsoft.com", maxWindowsHostArchiveBytes = 64 << 20;
+// A transient network error, 429 or 5xx is retried after these delays; pinned hashes are never retried into success.
+const archiveRetryDelaysMs = Object.freeze([2000, 8000]), gitFetchAttempts = 3;
+/** @type {WeakSet<object>} */ const transientErrors = new WeakSet();
+
+/** Mark an error as a transient network failure. @param {unknown} error */
+function transient(error) {
+  const marked = error instanceof Error ? error : new Error(String(error));
+  transientErrors.add(marked);
+  return marked;
+}
 const windowsHostLock = /** @type {WindowsHostSdkLock} */ (require("../runtime/windows-host-sdk.json"));
 /** @typedef {{libuv: {directory: string, sha256: string}, zlib: {directory: string, sha256: string}}} IoArchivePins */
 /** @typedef {Pick<Response, "status" | "url" | "body"> & {headers: Pick<Headers, "get">}} IoFetchResponse */
@@ -50,7 +61,8 @@ const windowsHostLock = /** @type {WindowsHostSdkLock} */ (require("../runtime/w
 /** @typedef {Record<string, {fileName: string, url: string, origins: readonly string[]}>} ArchiveSpecs */
 /** @typedef {ReturnType<typeof ioSourceRecipe>} ArchiveRecipe */
 /** @typedef {{target: string, sourceLabel: string, archiveLabel: string, specs: ArchiveSpecs, pins: ArchiveHashes,
- * maxBytes: number, timeoutMs: number, recipeFor: () => ArchiveRecipe, pinSnapshot: () => string, fetchImpl: IoArchiveFetch}} PinnedArchiveCohort */
+ * maxBytes: number, timeoutMs: number, recipeFor: () => ArchiveRecipe, pinSnapshot: () => string, fetchImpl: IoArchiveFetch,
+ * retryDelaysMs?: readonly number[]}} PinnedArchiveCohort */
 /** @typedef {"llvm" | "openssl"} BuildArchiveName */
 /** @typedef {"linux" | "windows" | "compiler" | "hermes" | "acpp" | "rocm"} GitSourceTarget */
 /** @typedef {{version: number, target: string, status: string, networked: boolean, buildOnly: boolean, compiled: boolean,
@@ -65,7 +77,7 @@ function gitSourceComponents(target) {
     return {hermes: {revision: hermesPins.revision, patches: ["hermes-host-rejections.patch", "hermes-clang-cl.patch"]}};
   }
   if (target === "acpp") {
-    const {syclRevision} = require("./probe-static-sycl");
+    const {syclRevision} = require("./native-sycl-inputs");
     return {acpp: {revision: syclRevision, patches: ["adaptivecpp-static.patch", "adaptivecpp-jit.patch"]}};
   }
   if (target === "rocm") {
@@ -85,12 +97,12 @@ function sourceRecipe(target) {
   const components = gitSourceComponents(target);
   let producers;
   if (target === "hermes") {producers = ["scripts/build-native-hermes.js"];} else if (target === "acpp") {
-    producers = ["scripts/build-native-sycl-sdk.js", "scripts/prepare-native-sdk-sources.js", "scripts/probe-static-sycl.js", "scripts/native-hcf.js", "scripts/probe-native-jit.js",
+    producers = ["scripts/build-native-sycl-sdk.js", "scripts/prepare-native-sdk-sources.js", "scripts/native-sycl-inputs.js", "scripts/native-hcf.js", "scripts/native-jit-link.js",
       "scripts/native-audit.js", "scripts/native-resources.js"];
   } else if (target === "rocm") {
     producers = ["scripts/build-native-comgr-sdk.js", "scripts/build-native-rocm-host-runtime.js", "scripts/build-native-rocm-resources.js",
-      "scripts/native-comgr-inputs.js", "scripts/build-native-sycl-sdk.js", "scripts/probe-static-sycl.js", "scripts/native-hcf.js", "scripts/native-audit.js"];
-  } else {producers = ["scripts/prepare-native-sdk-sources.js", "scripts/probe-static-dpcpp.js"];}
+      "scripts/native-comgr-inputs.js", "scripts/build-native-sycl-sdk.js", "scripts/native-sycl-inputs.js", "scripts/native-hcf.js", "scripts/native-audit.js"];
+  } else {producers = ["scripts/prepare-native-sdk-sources.js", "scripts/native-dpcpp-pins.js"];}
   const files = [...producers, "scripts/build-source-inputs.js", "scripts/build-environment.js",
     ...new Set(Object.values(components).flatMap(component => component.patches.map(name => "runtime/" + name)))];
   return sourceInputs(repo, [], files);
@@ -139,7 +151,7 @@ function runGit(git, args, env, log, deadline) {
 /** Stage complete shallow Git roots for existing offline source consumers.
  * @param {GitSourceTarget} target @param {string} git @param {string} output
  * @param {NodeJS.ProcessEnv} [environment] @param {boolean} [allowNetwork]
- * @param {{run?: typeof runGit, sourceRecipe?: typeof sourceRecipe}} [dependencies] */
+ * @param {{run?: typeof runGit, sourceRecipe?: typeof sourceRecipe, retryDelaysMs?: readonly number[]}} [dependencies] */
 async function fetchSdkSources(target, git, output, environment = process.env, allowNetwork = false, dependencies = {}) {
   const selected = gitSourceComponents(target), names = /** @type {(keyof typeof origins)[]} */ (Object.keys(selected));
   if (process.platform !== "linux" || environment["MOM_AOT_BUILD_ONLY"] !== "1" || !allowNetwork) {
@@ -159,7 +171,7 @@ async function fetchSdkSources(target, git, output, environment = process.env, a
   const env = {...sdkSourceEnvironment(environment), GIT_TERMINAL_PROMPT: "0", GIT_ALLOW_PROTOCOL: "https"};
   const version = spawnSync(tool, ["--version"], {env, encoding: "utf8", timeout: 5000, maxBuffer: 4096});
   if (version.error || version.status !== 0 || !/^git version \d+\./.test(version.stdout || "")) {throw new Error("SDK fetch tool is not a working Git executable");}
-  const run = dependencies.run || runGit;
+  const run = dependencies.run || runGit, retryDelaysMs = dependencies.retryDelaysMs || archiveRetryDelaysMs;
   fs.mkdirSync(destination); fs.mkdirSync(path.join(destination, "roots")); fs.mkdirSync(path.join(destination, "logs"));
   const template = path.join(destination, ".empty-git-template"); fs.mkdirSync(template);
   /** @type {Record<string, string>} */ const roots = {};
@@ -176,7 +188,17 @@ async function fetchSdkSources(target, git, output, environment = process.env, a
     if (fs.readdirSync(template).length) {throw new Error("Git template directory changed during SDK fetch");}
     await gitRun(["init", "--bare", `--template=${template}`, "--quiet", root]);
     await gitRun(["-C", root, "remote", "add", "origin", origin]);
-    await gitRun(["-C", root, "fetch", "--depth=1", "--no-tags", "--no-recurse-submodules", "origin", revision]);
+    // Only the network step is retried; the fetched revision is still checked below.
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await gitRun(["-C", root, "fetch", "--depth=1", "--no-tags", "--no-recurse-submodules", "origin", revision]);
+        break;
+      } catch (error) {
+        if (attempt >= gitFetchAttempts || Date.now() >= deadline) {throw error;}
+        console.error("[native-sdk] Git fetch retry " + attempt + " after a failure: " + name);
+        await sleep(retryDelaysMs[attempt - 1] ?? 0);
+      }
+    }
     await gitRun(["-C", root, "cat-file", "-e", revision + "^{commit}"]);
     // FETCH_HEAD alone is not cloned by Git-aware SDK producers. Keep the pinned commit
     // reachable (also safe from Git GC) and make a normal offline clone transfer it.
@@ -228,7 +250,8 @@ function archiveLeaf(value, maximum = 255) {
  * @param {string} output @param {NodeJS.ProcessEnv} environment @param {boolean} allowNetwork
  * @param {PinnedArchiveCohort} cohort */
 async function fetchArchiveCohort(output, environment, allowNetwork, cohort) {
-  const {target, sourceLabel, archiveLabel, specs, pins, maxBytes, timeoutMs, recipeFor, pinSnapshot, fetchImpl} = cohort;
+  const {target, sourceLabel, archiveLabel, specs, pins, maxBytes, timeoutMs, recipeFor, pinSnapshot, fetchImpl,
+    retryDelaysMs = archiveRetryDelaysMs} = cohort;
   if (!["linux", "win32"].includes(process.platform) || environment["MOM_AOT_BUILD_ONLY"] !== "1" || !allowNetwork) {
     throw new Error(sourceLabel + " fetch requires Linux/Windows, MOM_AOT_BUILD_ONLY=1, and explicit --allow-network");
   }
@@ -277,10 +300,11 @@ async function fetchArchiveCohort(output, environment, allowNetwork, cohort) {
       })) {throw new Error(archiveLabel + " URL is outside the approved HTTPS origins: " + name);}
       const controller = new AbortController(), timer = setTimeout(() => controller.abort(), timeoutMs);
       const temporary = path.join(staging, spec.fileName), finalPath = path.join(destination, spec.fileName);
-      try {
+      /** Download one attempt into the staging file; only network failures, 429 and 5xx are marked transient. */
+      const attempt = async () => {
         let current = parsed;
         for (let redirects = 0; ; redirects++) {
-          const response = await fetchImpl(current.href, {redirect: "manual", signal: controller.signal});
+          const response = await fetchImpl(current.href, {redirect: "manual", signal: controller.signal}).catch(error => {throw transient(error);});
           if (response.status >= 300 && response.status < 400) {
             const location = response.headers?.get("location");
             try {await response.body?.cancel();} catch { /* discard an untrusted redirect body */ }
@@ -294,7 +318,8 @@ async function fetchArchiveCohort(output, environment, allowNetwork, cohort) {
           }
           if (response.status !== 200 || !response.body) {
             try {await response.body?.cancel();} catch { /* discard an invalid response body */ }
-            throw new Error(archiveLabel + " download did not return a complete response: " + name);
+            const error = new Error(archiveLabel + " download did not return a complete response: " + name + " (HTTP " + response.status + ")");
+            throw response.status === 429 || response.status >= 500 ? transient(error) : error;
           }
           if (typeof response.url !== "string" || !response.url || !approvedOrigins.includes(new URL(response.url).origin)) {
             try {await response.body.cancel();} catch { /* discard an untrusted response body */ }
@@ -311,13 +336,15 @@ async function fetchArchiveCohort(output, environment, allowNetwork, cohort) {
               throw new Error(archiveLabel + " exceeds its configured archive bound: " + name);
             }
           }
-          const hash = createHash("sha256"); let bytes = 0;
+          const hash = createHash("sha256"), oversized = new Error(archiveLabel + " exceeds its configured archive bound: " + name);
+          let bytes = 0;
           const limiter = new Transform({transform(chunk, _encoding, callback) {
             bytes += chunk.length;
-            if (bytes > maxBytes) {callback(new Error(archiveLabel + " exceeds its configured archive bound: " + name)); return;}
+            if (bytes > maxBytes) {callback(oversized); return;}
             hash.update(chunk); callback(null, chunk);
           }});
-          await pipeline(Readable.fromWeb(response.body), limiter, fs.createWriteStream(temporary, {flags: "wx", mode: 0o600}), {signal: controller.signal});
+          await pipeline(Readable.fromWeb(response.body), limiter, fs.createWriteStream(temporary, {flags: "wx", mode: 0o600}),
+            {signal: controller.signal}).catch(error => {throw error === oversized ? error : transient(error);});
           const sha256 = hash.digest("hex");
           if (sha256 !== pin.sha256) {
             throw new Error(archiveLabel + " SHA256 differs from its pinned original: " + name +
@@ -329,8 +356,21 @@ async function fetchArchiveCohort(output, environment, allowNetwork, cohort) {
           promoted.push({path: finalPath, dev: stat.dev, ino: stat.ino});
           fs.unlinkSync(temporary);
           if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o222) !== 0) {throw new Error("Promoted " + archiveLabel + " is not read-only: " + name);}
-          archives[name] = {path: finalPath, url, sha256, bytes};
-          break;
+          return {path: finalPath, url, sha256, bytes};
+        }
+      };
+      try {
+        for (let retry = 0; ; retry++) {
+          try {
+            archives[name] = await attempt();
+            break;
+          } catch (error) {
+            fs.rmSync(temporary, {force: true});
+            const delay = retryDelaysMs[retry];
+            if (controller.signal.aborted || delay === undefined || !transientErrors.has(Object(error))) {throw error;}
+            console.error("[native-sdk] " + archiveLabel + " retry " + (retry + 1) + " after a transient failure: " + name);
+            await sleep(delay, undefined, {signal: controller.signal});
+          }
         }
       } catch (error) {
         if (controller.signal.aborted) {throw new Error(archiveLabel + " component deadline exceeded: " + name, {cause: error});}

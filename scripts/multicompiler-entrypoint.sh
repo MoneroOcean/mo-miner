@@ -347,9 +347,9 @@ chown --reference="$PWD" build
 export MOM_NATIVE_DIR="$PWD/build/lin/Release"
 export MOM_NATIVE_PATH="$MOM_NATIVE_DIR/$default/mom.node"
 export MOM_NATIVE_PATH_LAUNCHER_DEFAULT="$MOM_NATIVE_PATH"
-# Bootstrap missing dependencies for npm commands, without making ordinary miner/build commands
-# pay for a package-registry check.
+# Bootstrap missing dependencies for npm commands from the lockfile (never rewriting it), without
+# making ordinary miner/build commands pay for a package-registry check.
 if [ "${1:-}" = npm ] && ! npm ls --depth=0 --silent >/dev/null 2>&1; then
-  npm install --ignore-scripts --no-audit --no-fund
+  npm ci --ignore-scripts --no-audit --no-fund
 fi
 exec "$@"

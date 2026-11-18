@@ -48,7 +48,7 @@ function fixture(t, variant = "valid") {
     fs.rmSync(appRoot, {recursive: true, force: true}); fs.rmSync(evidenceRoot, {recursive: true, force: true});
     fs.rmSync(runnerTemp, {recursive: true, force: true});
   });
-  const env = {...process.env, RUNNER_TEMP: runnerTemp, GITHUB_RUN_ID: run, GITHUB_RUN_ATTEMPT: attempt,
+  const env = {...process.env, RUNNER_TEMP: runnerTemp, MOM_NATIVE_CI_SUFFIX: `${run}-${attempt}`,
     MOM_NATIVE_APPLICATION_DEADLINE_EPOCH: String(Math.floor(Date.now() / 1000) + 600), GITHUB_OUTPUT: outputFile};
   return {env, runnerTemp, run, attempt, suffix, appRoot, binary, receiptPath, entrypointPath, configPath,
     evidenceRoot, archive, runtimeDirectory, outputFile, executableHash, executableBytes, configHash, receiptHash};
@@ -80,7 +80,7 @@ test.describe("Linux compact application build handoff", {skip: process.platform
     assert.equal(outputs["build_handoff_artifact_name"], `native-linux-application-build-${f.suffix}.tar`);
     assert.equal(outputs["build_handoff_bundle_sha256"], hash(fs.readFileSync(f.archive)));
 
-    const ci = require("../scripts/prepare-native-ci.js"),
+    const ci = require("../scripts/native-ci-tar"),
       rootName = `native-linux-application-build-${f.suffix}`, members = ci.listState(f.archive, [rootName]).map(name => name.replace(/\/$/, "")).sort(),
       expected = [rootName, ...["application-config.json", "entrypoint.json", "handoff.json", "result.json"].map(name => `${rootName}/${name}`)].sort(),
       extraction = fs.mkdtempSync(path.join(f.runnerTemp, "extract-"));
@@ -89,7 +89,7 @@ test.describe("Linux compact application build handoff", {skip: process.platform
     assert.ok(fs.statSync(f.archive).size < 128 * 1024 * 1024);
     ci.extractState(f.archive, extraction, [rootName]);
     const evidence = path.join(extraction, rootName), handoffPath = path.join(evidence, "handoff.json"), handoff = JSON.parse(fs.readFileSync(handoffPath, "utf8"));
-    assert.deepEqual(handoff, {version: 1, format: "mom-linux-application-build-handoff-v1", runAttempt: f.suffix,
+    assert.deepEqual(handoff, {version: 1, format: "mom-linux-application-build-handoff-v1",
       target: "x86_64-unknown-linux-gnu", artifact: {file: "mom", bytes: f.executableBytes, sha256: f.executableHash},
       config: {file: "application-config.json", sha256: f.configHash},
       producerReceipt: {file: "result.json", sha256: f.receiptHash},
@@ -116,10 +116,10 @@ test.describe("Linux compact application build handoff", {skip: process.platform
   test("refuses an expired application deadline or an existing runtime directory before creating output", t => {
     const expired = fixture(t), result = runHandoff({...expired.env, MOM_NATIVE_APPLICATION_DEADLINE_EPOCH: String(Math.floor(Date.now() / 1000) - 1)});
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /^\[native-ci\] Linux application handoff paths are not the fresh canonical run-attempt plan/);
+    assert.match(result.stderr, /^\[native-ci\] Linux application handoff paths are not the fresh canonical CI work-root plan/);
     fs.mkdirSync(expired.runtimeDirectory);
     const occupied = runHandoff(expired.env);
-    assert.match(occupied.stderr, /fresh canonical run-attempt plan/);
+    assert.match(occupied.stderr, /fresh canonical CI work-root plan/);
     assert.equal(fs.existsSync(expired.evidenceRoot), false);
     assert.equal(fs.readFileSync(expired.outputFile, "utf8"), "");
   });

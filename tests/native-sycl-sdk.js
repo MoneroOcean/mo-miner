@@ -1,11 +1,11 @@
 "use strict";
 const fs = require("node:fs"), os = require("node:os"), path = require("node:path"), assert = require("node:assert/strict"), test = require("node:test");
 const {spawnSync} = require("node:child_process");
-const {cudaRuntimeInputs, admitSyclSource, validateStaticSyclBackendCache, countHcfKernelGlobals, hcfReproPlan, hcfReproFailures} = require("../scripts/probe-static-sycl");
+const {cudaRuntimeInputs, admitSyclSource, validateStaticSyclBackendCache, countHcfKernelGlobals, hcfReproPlan, hcfReproFailures} = require("../scripts/native-sycl-inputs");
 const {parseHcfObject, inspectHcfObjects, assertUniqueHcfIds} = require("../scripts/native-hcf");
 const {staticSyclSdkPlan, sdkStage, buildStaticSyclSdk, admitCudaLibraries, cmakeCompilerPath, compilerEnvironment,
   sdkHostEnvironment, verifyCompilerEnvironment, staticSyclValidationEnvironment, hostCompilerEvidence} = require("../scripts/build-native-sycl-sdk");
-const {cudaBuildHeaders} = require("../scripts/build-native-gpu-probe");
+const {cudaBuildHeaders} = require("../scripts/native-gpu-build");
 const {fileHash} = require("../scripts/build-source-inputs");
 /** @param {import("node:test").TestContext} t */
 function fixture(t) {
@@ -32,7 +32,7 @@ function reproRecord(name, id, deviceIRSha256, objectSha256, normalizedHeaderSha
 
 test.describe("AdaptiveCpp HCF object reproducibility", () => {
   test("the CLI keeps the CPU host link distinct from the LLVM device compiler", () => {
-    const script = fs.readFileSync(path.join(__dirname, "../scripts/probe-static-sycl.js"), "utf8");
+    const script = fs.readFileSync(path.join(__dirname, "../scripts/native-sycl-inputs.js"), "utf8");
     assert.match(script, /CMAKE_CXX_COMPILER:\[\^=\]\+=/);
     assert.match(script, /runJitCacheIdentity\(hostCxx, flags, source, build, output, repo\)/);
     assert.match(script, /runHcfRepro\(cxx, flags, source, build, output, repo\)/);
@@ -192,7 +192,7 @@ test.describe("Pinned static SYCL source admission", {skip: process.platform !==
     assert.deepEqual(f.calls[2], ["--no-optional-locks", "-C", "/source", "ls-files", "--others", "--directory", "--"]);
   });
   test("DPC++ source admission applies the same ignored-file boundary", () => {
-    const script = fs.readFileSync(path.resolve(__dirname, "../scripts/probe-static-dpcpp.js"), "utf8");
+    const script = fs.readFileSync(path.resolve(__dirname, "../scripts/native-dpcpp-pins.js"), "utf8");
     assert.match(script, /"ls-files", "--others", "--directory", "--"\]\)\.length !== 0/);
     assert.doesNotMatch(script, /"--exclude-standard"/);
   });

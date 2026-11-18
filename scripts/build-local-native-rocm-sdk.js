@@ -3,11 +3,12 @@
 // Continue an admitted local Linux LLVM slice through the public CPU-only ROCm producers.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process"),
   {createHash} = require("node:crypto"), {isDeepStrictEqual} = require("node:util");
-const local = require("./build-local-native-sdk"), nativeCi = require("./prepare-native-ci"),
+const local = require("./build-local-native-sdk"), ciRocm = require("./native-ci-linux-rocm"),
+  ciSources = require("./native-ci-linux-sources"),
   rocmProducer = require("./build-native-rocm-host-runtime");
 const {fileHash, readBuildJson} = require("./build-source-inputs");
 const {sdkSourceFiles} = require("./prepare-native-sdk-sources");
-const {verifyLinuxLlvmAdmission} = require("./build-native-llvm21-sdk");
+const {verifyLinuxLlvmAdmission} = require("./build-native-llvm-sdk");
 const {gitSourceComponents} = require("./fetch-native-sdk-sources");
 const {isStaticArchive} = require("./native-audit");
 const {verifyPreparedRoots} = require("./build-local-native-jit-sdk");
@@ -144,7 +145,7 @@ function auditLocalHipHeaders(state, tools, git = "/usr/bin/git") {
       throw new Error("ROCm HIP patch evidence did not pass its exact public command");
     }
   }
-  const expectedConfigure = nativeCi.hipHeaderConfigureCommand(state, tools), configure = record.configure;
+  const expectedConfigure = ciRocm.hipHeaderConfigureCommand(state, tools), configure = record.configure;
   if (!configure || configure.status !== 0 || configure.configureOnly !== true || configure.log !== "cmake-configure.log" ||
       !isDeepStrictEqual(configure.command, expectedConfigure) ||
       !isDeepStrictEqual(configure.environment, {GIT_DIR: path.join(state.source, "roots/clr")}) ||
@@ -232,8 +233,8 @@ function localRocmSourceState(paths) {
 
 /** Admit canonical local receipt files before the public verifier parses them.
  * @param {ReturnType<typeof localRocmSdkPaths>} paths @param {NodeJS.ProcessEnv} env @param {string} git
- * @param {typeof nativeCi.verifyRocmSources} [verify] */
-function verifyLocalRocmSources(paths, env, git, verify = nativeCi.verifyRocmSources) {
+ * @param {typeof ciSources.verifyRocmSources} [verify] */
+function verifyLocalRocmSources(paths, env, git, verify = ciSources.verifyRocmSources) {
   realDirectory(paths.source, "Local pinned ROCm source cohort");
   regularFile(paths.fetchReceipt, "Pinned ROCm source fetch receipt", true);
   regularFile(paths.rootsFile, "Pinned ROCm source roots receipt", true);
@@ -245,14 +246,14 @@ function verifyLocalRocmSources(paths, env, git, verify = nativeCi.verifyRocmSou
 
 /** Validate every input through the existing public source/LLVM and ROCm auditors. @param {ReturnType<typeof localRocmSdkContext>} context
  * @param {{cc:string,cxx:string,cmake:string}} tools
- * @param {{verifyInputs?:typeof verifyRocmBuildInputs,verifySources?:typeof nativeCi.verifyRocmSources,
- *   auditComgr?:typeof nativeCi.auditRocmComgrSdk}} [dependencies] */
+ * @param {{verifyInputs?:typeof verifyRocmBuildInputs,verifySources?:typeof ciSources.verifyRocmSources,
+ *   auditComgr?:typeof ciRocm.auditRocmComgrSdk}} [dependencies] */
 function auditLocalRocmComgrInputs(context, tools, dependencies = {}) {
   const selected = localRocmSdkContext(context), state = localRocmBuildState(selected), git = "/usr/bin/git",
     env = {...process.env, MOM_AOT_BUILD_ONLY: "1"};
   (dependencies.verifyInputs || verifyRocmBuildInputs)(selected);
-  verifyLocalRocmSources(selected.paths, env, git, dependencies.verifySources || nativeCi.verifyRocmSources);
-  const hip = auditLocalHipHeaders(state, tools, git), comgr = (dependencies.auditComgr || nativeCi.auditRocmComgrSdk)(state, tools),
+  verifyLocalRocmSources(selected.paths, env, git, dependencies.verifySources || ciSources.verifyRocmSources);
+  const hip = auditLocalHipHeaders(state, tools, git), comgr = (dependencies.auditComgr || ciRocm.auditRocmComgrSdk)(state, tools),
     expected = localComgrAdmission(selected, tools, {hip, comgr});
   return {context: selected, state, hip, comgr, receipt: expected};
 }
@@ -265,7 +266,7 @@ function localRocmHostState(context) {
 }
 
 /** This check is intentionally non-mutating; the public builder performs exact hash/version admission.
- * @param {Pick<ReturnType<typeof nativeCi.rocmHostBuildTools>, "python3">} tools @param {NodeJS.ProcessEnv} env */
+ * @param {Pick<ReturnType<typeof ciRocm.rocmHostBuildTools>, "python3">} tools @param {NodeJS.ProcessEnv} env */
 function checkRocmHostPrerequisites(tools, env) {
   const result = spawnSync(tools.python3, ["-c", "import CppHeaderParser, ply, ply.lex"],
     {encoding: "utf8", env, timeout: 30000, maxBuffer: 1 << 20});
@@ -275,15 +276,15 @@ function checkRocmHostPrerequisites(tools, env) {
 /** Resolve only existing host-runtime prerequisites; this never provisions packages or Python.
  * @param {ReturnType<typeof localRocmSdkContext>} context @param {{cc:string,cxx:string,cmake:string}} tools
  * @param {NodeJS.ProcessEnv} env
- * @param {{hostTools?:(state:ReturnType<typeof localRocmHostState>)=>ReturnType<typeof nativeCi.rocmHostBuildTools>,
- *   hostConfig?:(state:ReturnType<typeof localRocmHostState>,tools:ReturnType<typeof nativeCi.rocmHostBuildTools>)=>ReturnType<typeof nativeCi.rocmHostBuildConfig>,
+ * @param {{hostTools?:(state:ReturnType<typeof localRocmHostState>)=>ReturnType<typeof ciRocm.rocmHostBuildTools>,
+ *   hostConfig?:(state:ReturnType<typeof localRocmHostState>,tools:ReturnType<typeof ciRocm.rocmHostBuildTools>)=>ReturnType<typeof ciRocm.rocmHostBuildConfig>,
  *   verifyHostPrerequisites?:typeof checkRocmHostPrerequisites}} [dependencies] */
 function localRocmHostInputs(context, tools, env, dependencies = {}) {
   const state = localRocmHostState(context);
   let hostTools, config;
   try {
-    hostTools = (dependencies.hostTools || nativeCi.rocmHostBuildTools)(state);
-    config = (dependencies.hostConfig || nativeCi.rocmHostBuildConfig)(state, hostTools);
+    hostTools = (dependencies.hostTools || ciRocm.rocmHostBuildTools)(state);
+    config = (dependencies.hostConfig || ciRocm.rocmHostBuildConfig)(state, hostTools);
   } catch (error) {throw new Error(hostPrerequisiteMessage, {cause: error});}
   if (tools.cmake !== hostTools.cmake || fs.realpathSync(hostTools.cc) !== hostTools.cc || fs.realpathSync(hostTools.cxx) !== hostTools.cxx ||
       fs.realpathSync(tools.cc) !== hostTools.cc || fs.realpathSync(tools.cxx) !== hostTools.cxx) {
@@ -300,15 +301,15 @@ function localRocmHostInputs(context, tools, env, dependencies = {}) {
 }
 
 /** @param {ReturnType<typeof localRocmSdkContext>} context @param {unknown} tools
- * @param {{verifyInputs?:typeof verifyRocmBuildInputs,verifySources?:typeof nativeCi.verifyRocmSources,
- *   auditComgr?:typeof nativeCi.auditRocmComgrSdk,auditHost?:typeof nativeCi.auditRocmHostSdk,
+ * @param {{verifyInputs?:typeof verifyRocmBuildInputs,verifySources?:typeof ciSources.verifyRocmSources,
+ *   auditComgr?:typeof ciRocm.auditRocmComgrSdk,auditHost?:typeof ciRocm.auditRocmHostSdk,
  *   verifyHostPrerequisites?:typeof checkRocmHostPrerequisites,
- *   hostTools?:(state:ReturnType<typeof localRocmHostState>)=>ReturnType<typeof nativeCi.rocmHostBuildTools>,
- *   hostConfig?:(state:ReturnType<typeof localRocmHostState>,tools:ReturnType<typeof nativeCi.rocmHostBuildTools>)=>ReturnType<typeof nativeCi.rocmHostBuildConfig>}} [dependencies] */
+ *   hostTools?:(state:ReturnType<typeof localRocmHostState>)=>ReturnType<typeof ciRocm.rocmHostBuildTools>,
+ *   hostConfig?:(state:ReturnType<typeof localRocmHostState>,tools:ReturnType<typeof ciRocm.rocmHostBuildTools>)=>ReturnType<typeof ciRocm.rocmHostBuildConfig>}} [dependencies] */
 function auditLocalRocmSdkInputs(context, tools, dependencies = {}) {
   const selected = localRocmSdkContext(context), comgrTools = localRocmTools(tools), comgr = auditLocalRocmComgrInputs(selected, comgrTools, dependencies),
     host = localRocmHostInputs(selected, comgrTools, process.env, dependencies),
-    audit = (dependencies.auditHost || nativeCi.auditRocmHostSdk)(host.state, host.config), paths = selected.paths,
+    audit = (dependencies.auditHost || ciRocm.auditRocmHostSdk)(host.state, host.config), paths = selected.paths,
     expected = localHostAdmission(selected, host.tools, audit);
   return {context: selected, comgr, state: host.state, hostTools: host.tools, config: host.config, audit, receipt: expected, paths};
 }
@@ -346,8 +347,8 @@ function localRocmTools(value, compilerBin = path.join(oneapiCompilerRoot, "2026
   return /** @type {{cc:string,cxx:string,cmake:string}} */ (selected);
 }
 
-/** @param {ReturnType<typeof localRocmSdkContext>} context @param {ReturnType<typeof nativeCi.rocmHostBuildTools>} tools
- * @param {ReturnType<typeof nativeCi.auditRocmHostSdk>} audit */
+/** @param {ReturnType<typeof localRocmSdkContext>} context @param {ReturnType<typeof ciRocm.rocmHostBuildTools>} tools
+ * @param {ReturnType<typeof ciRocm.auditRocmHostSdk>} audit */
 function localHostAdmission(context, tools, audit) {
   const state = localRocmHostState(context), configPath = context.paths.hostConfig, resultPath = path.join(state.runtimeOutput, "result.json");
   return {version: 1, target: "linux-rocm-host", root: state.hostSdkRoot,
@@ -361,19 +362,19 @@ function localHostAdmission(context, tools, audit) {
  * All acquisition and vendor work remains inside one systemd cgroup scope.
  * @param {unknown} context @param {unknown} tools
  * @param {{run?:typeof local.runCommand,verifyScope?:()=>unknown,verifyInputs?:typeof verifyRocmBuildInputs,
- *   verifySources?:typeof nativeCi.verifyRocmSources,assertFetch?:typeof nativeCi.assertSdkFetchProvenance,
- *   fetchParser?:typeof nativeCi.fetchRocmParserSource,buildComgr?:typeof nativeCi.buildRocmComgrFromInputs,
- *   auditComgr?:typeof nativeCi.auditRocmComgrSdk,buildHost?:(config:unknown,output:string,env:NodeJS.ProcessEnv,configFile:string)=>unknown,
- *   auditHost?:typeof nativeCi.auditRocmHostSdk,verifyHostPrerequisites?:typeof checkRocmHostPrerequisites,
- *   hostTools?:(state:ReturnType<typeof localRocmHostState>)=>ReturnType<typeof nativeCi.rocmHostBuildTools>,
- *   hostConfig?:(state:ReturnType<typeof localRocmHostState>,tools:ReturnType<typeof nativeCi.rocmHostBuildTools>)=>ReturnType<typeof nativeCi.rocmHostBuildConfig>,
+ *   verifySources?:typeof ciSources.verifyRocmSources,assertFetch?:typeof ciSources.assertSdkFetchProvenance,
+ *   fetchParser?:typeof ciSources.fetchRocmParserSource,buildComgr?:typeof ciRocm.buildRocmComgrFromInputs,
+ *   auditComgr?:typeof ciRocm.auditRocmComgrSdk,buildHost?:(config:unknown,output:string,env:NodeJS.ProcessEnv,configFile:string)=>unknown,
+ *   auditHost?:typeof ciRocm.auditRocmHostSdk,verifyHostPrerequisites?:typeof checkRocmHostPrerequisites,
+ *   hostTools?:(state:ReturnType<typeof localRocmHostState>)=>ReturnType<typeof ciRocm.rocmHostBuildTools>,
+ *   hostConfig?:(state:ReturnType<typeof localRocmHostState>,tools:ReturnType<typeof ciRocm.rocmHostBuildTools>)=>ReturnType<typeof ciRocm.rocmHostBuildConfig>,
  *   validateTools?:(tools:unknown)=>{cc:string,cxx:string,cmake:string}}} [dependencies] */
 function runLocalRocmSdkChild(context, tools, dependencies = {}) {
   (dependencies.verifyScope || local.verifyCurrentMemoryScope)();
   const selected = localRocmSdkContext(context), comgrTools = (dependencies.validateTools || localRocmTools)(tools), paths = selected.paths,
     env = {...process.env, MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: "2"}, git = "/usr/bin/git",
-    verifyInputs = dependencies.verifyInputs || verifyRocmBuildInputs, verifySources = dependencies.verifySources || nativeCi.verifyRocmSources,
-    assertFetch = dependencies.assertFetch || nativeCi.assertSdkFetchProvenance, fetchParser = dependencies.fetchParser || nativeCi.fetchRocmParserSource,
+    verifyInputs = dependencies.verifyInputs || verifyRocmBuildInputs, verifySources = dependencies.verifySources || ciSources.verifyRocmSources,
+    assertFetch = dependencies.assertFetch || ciSources.assertSdkFetchProvenance, fetchParser = dependencies.fetchParser || ciSources.fetchRocmParserSource,
     run = dependencies.run || local.runCommand;
   verifyInputs(selected);
   const host = localRocmHostInputs(selected, comgrTools, env, dependencies);
@@ -383,7 +384,7 @@ function runLocalRocmSdkChild(context, tools, dependencies = {}) {
   if (!reusedSources) {
     if (fs.lstatSync(paths.pythonSourceRoot, {throwIfNoEntry: false})) {throw new Error("ROCm parser source exists without its ROCm source cohort; preserve the workspace");}
     const fetcher = path.join(repo, "scripts/fetch-native-sdk-sources.js");
-    run(process.execPath, [fetcher, ...nativeCi.rocmSourceFetchArgs(sourceState, git)],
+    run(process.execPath, [fetcher, ...ciSources.rocmSourceFetchArgs(sourceState, git)],
       {label: "Pinned ROCm Git source acquisition", env, cwd: repo});
     realDirectory(paths.source, "Fetched local ROCm source cohort");
     regularFile(paths.fetchReceipt, "Pinned ROCm source fetch receipt", true);
@@ -401,7 +402,7 @@ function runLocalRocmSdkChild(context, tools, dependencies = {}) {
   if (!outputExists.some(Boolean)) {
     if (admissionStat || configExists) {throw new Error("ROCm COMGR admission or config exists without all producer outputs; preserve the workspace");}
     const verifyLlvm = () => verifyInputs(selected);
-    (dependencies.buildComgr || nativeCi.buildRocmComgrFromInputs)(buildState, comgrTools, env, verifyLlvm);
+    (dependencies.buildComgr || ciRocm.buildRocmComgrFromInputs)(buildState, comgrTools, env, verifyLlvm);
     const audited = auditLocalRocmComgrInputs(selected, comgrTools, dependencies);
     fs.writeFileSync(paths.comgrAdmission, JSON.stringify(audited.receipt, null, 2) + "\n", {flag: "wx", mode: 0o600});
     reusedComgr = false;
@@ -439,7 +440,7 @@ function runLocalRocmSdkChild(context, tools, dependencies = {}) {
   fs.writeFileSync(paths.hostConfig, JSON.stringify(hostConfig, null, 2) + "\n", {flag: "wx", mode: 0o600});
   const producer = dependencies.buildHost || rocmProducer.buildRocmHostRuntime;
   producer(hostConfig, paths.runtimeOutput, env, paths.hostConfig);
-  const audit = (dependencies.auditHost || nativeCi.auditRocmHostSdk)(hostState, hostConfig),
+  const audit = (dependencies.auditHost || ciRocm.auditRocmHostSdk)(hostState, hostConfig),
     receipt = localHostAdmission(selected, hostTools, audit);
   fs.writeFileSync(paths.hostAdmission, JSON.stringify(receipt, null, 2) + "\n", {flag: "wx", mode: 0o600});
   return rocmSdkResult(selected, {reusedSources, reusedComgr, reusedHost: false});

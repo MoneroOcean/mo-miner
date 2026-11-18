@@ -2,7 +2,7 @@
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process"),
   test = require("node:test"), assert = require("node:assert/strict");
 const {fileHash} = require("../scripts/build-source-inputs");
-const ci = require("../scripts/prepare-native-ci");
+const ci = require("../scripts/native-ci-tar");
 const {stageWindowsDpcppComponent, windowsDpcppComponentInputs} = require("../scripts/native-windows-dpcpp-component");
 const {jobEnvironment, sealComponent} = require("../scripts/ci/windows-dpcpp");
 const {fixture} = require("./common/native-windows-component");
@@ -14,7 +14,7 @@ const pinKeys = ["SOURCE_BUNDLE_SHA256", "DPCPP_BUNDLE_SHA256", "DPCPP_MANIFEST_
  * @param {number} now @returns {NodeJS.ProcessEnv} */
 function preflightEnv(now) {
   return {...Object.fromEntries(pinKeys.map(key => ["MOM_NATIVE_WINDOWS_DPCPP_STATIC_" + key, "a".repeat(64)])),
-    RUNNER_TEMP: "/runner/temp", GITHUB_RUN_ID: "20261109", GITHUB_RUN_ATTEMPT: "1", MOM_CI_DEADLINE_EPOCH: String(now + 900)};
+    RUNNER_TEMP: "/runner/temp", MOM_NATIVE_CI_SUFFIX: "20261109-1", MOM_CI_DEADLINE_EPOCH: String(now + 900)};
 }
 
 /** Stage a fresh same-run component under /tmp plus a private runner temp with an empty GITHUB_OUTPUT.
@@ -28,7 +28,7 @@ function sealFixture(t) {
   t.after(() => fs.rmSync(runnerTemp, {recursive: true, force: true}));
   stageWindowsDpcppComponent(f.links, {path: "/original/adapter-receipt.json", sha256: "1".repeat(64)}, root);
   fs.writeFileSync(output, "", {flag: "wx"});
-  const env = {RUNNER_TEMP: runnerTemp, GITHUB_RUN_ID: suffix.split("-")[0], GITHUB_RUN_ATTEMPT: "1", GITHUB_OUTPUT: output,
+  const env = {RUNNER_TEMP: runnerTemp, MOM_NATIVE_CI_SUFFIX: suffix.split("-")[0] + "-1", GITHUB_OUTPUT: output,
     MOM_NATIVE_WINDOWS_DPCPP_STATIC_COMPONENT_ROOT: root};
   return {f, name, root, archive, output, env};
 }

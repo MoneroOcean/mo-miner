@@ -2,9 +2,10 @@
 
 // Runs dependent build phases inside one hosted job. Each phase starts from the state a fresh runner
 // had in the former one-job-per-phase pipeline: the predecessor's state archives move into incoming/
-// and every run-scoped root a phase extracted or created under /tmp or RUNNER_TEMP is removed. The
+// and every work root a phase extracted or created under /tmp or RUNNER_TEMP is removed. The
 // unchanged phase scripts therefore keep their fresh-root, pinned-archive and receipt admission.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
+const {ciSuffix, ciScopedEntries, removeTree} = require("../native-ci-job");
 
 const repo = path.resolve(__dirname, "../.."), phaseBudgetSeconds = 55 * 60, minimumPhaseSeconds = 2 * 60,
   maxReportBytes = 1 << 20;
@@ -12,27 +13,20 @@ const repo = path.resolve(__dirname, "../.."), phaseBudgetSeconds = 55 * 60, min
 /** @typedef {{suffix: string, runnerTemp: string, incoming: string, reports: string, deadlineEpoch: number,
  * runDeadlineEpoch: number, baseline: Set<string>, environment: NodeJS.ProcessEnv, step: number}} ChainContext */
 
-/** List run-scoped entries; every CI root embeds the run-attempt suffix.
- * @param {string[]} roots @param {string} suffix */
-function runScopedEntries(roots, suffix) {
-  return new Set(roots.flatMap(root => fs.readdirSync(root).filter(name => name.includes(suffix)).map(name => path.join(root, name))));
-}
-
-/** Validate the job identity and deadline once and record pre-existing run-scoped entries.
+/** Validate the job suffix and deadline once and record pre-existing work-root entries.
  * @param {NodeJS.ProcessEnv} [environment] @returns {ChainContext} */
 function chainContext(environment = process.env) {
-  const run = environment["GITHUB_RUN_ID"] || "", attempt = environment["GITHUB_RUN_ATTEMPT"] || "",
-    runnerTemp = environment["RUNNER_TEMP"] || "", deadline = environment["MOM_CI_DEADLINE_EPOCH"] || "";
-  if (!/^[0-9]{1,20}$/.test(run) || !/^[1-9][0-9]{0,5}$/.test(attempt) || !path.isAbsolute(runnerTemp) ||
-      fs.realpathSync(runnerTemp) !== runnerTemp || !/^[0-9]{10}$/.test(deadline) || Number(deadline) * 1000 <= Date.now()) {
-    throw new Error("Chained CI job needs its run identity, a canonical RUNNER_TEMP and a future MOM_CI_DEADLINE_EPOCH");
+  const runnerTemp = environment["RUNNER_TEMP"] || "", deadline = environment["MOM_CI_DEADLINE_EPOCH"] || "";
+  if (!path.isAbsolute(runnerTemp) || fs.realpathSync(runnerTemp) !== runnerTemp || !/^[0-9]{10}$/.test(deadline) ||
+      Number(deadline) * 1000 <= Date.now()) {
+    throw new Error("Chained CI job needs a canonical RUNNER_TEMP and a future MOM_CI_DEADLINE_EPOCH");
   }
-  const suffix = run + "-" + attempt, incoming = path.join(runnerTemp, "incoming"), reports = path.join(runnerTemp, "chain-reports");
+  const suffix = ciSuffix(environment), incoming = path.join(runnerTemp, "incoming"), reports = path.join(runnerTemp, "chain-reports");
   fs.mkdirSync(incoming, {recursive: true, mode: 0o700});
   fs.mkdirSync(reports, {mode: 0o700});
   // Downstream jobs re-admit the final state against this run deadline, so it outlives the job (8 h bound).
   return {suffix, runnerTemp, incoming, reports, deadlineEpoch: Number(deadline), runDeadlineEpoch: Math.floor(Date.now() / 1000) + 8 * 60 * 60,
-    baseline: runScopedEntries(["/tmp", runnerTemp], suffix), environment, step: 0};
+    baseline: ciScopedEntries(["/tmp", runnerTemp], suffix), environment, step: 0};
 }
 
 /** One phase keeps the former per-job deadline (55 minutes) and never outlives the merged job.
@@ -93,22 +87,11 @@ function retire(context, names) {
   for (const name of names) {fs.rmSync(path.join(context.incoming, path.basename(name)));}
 }
 
-/** Remove a tree even when a producer made directories read-only. @param {string} target */
-function removeTree(target) {
-  try {
-    fs.rmSync(target, {recursive: true, force: true});
-  } catch {
-    const chmod = spawnSync("/usr/bin/chmod", ["-R", "u+rwX", target], {stdio: "inherit"});
-    if (chmod.error || chmod.status !== 0) {throw new Error("Cannot reset chained CI root: " + target, {cause: chmod.error});}
-    fs.rmSync(target, {recursive: true, force: true});
-  }
-}
-
 /** Return /tmp and RUNNER_TEMP to the fresh-runner state, keeping incoming/ and listed final outputs.
  * @param {ChainContext} context @param {string[]} keep */
-function resetRunScopedRoots(context, keep = []) {
+function resetWorkRoots(context, keep = []) {
   const kept = new Set(keep.map(name => path.join(context.runnerTemp, name)));
-  for (const entry of runScopedEntries(["/tmp", context.runnerTemp], context.suffix)) {
+  for (const entry of ciScopedEntries(["/tmp", context.runnerTemp], context.suffix)) {
     if (!context.baseline.has(entry) && !kept.has(entry)) {removeTree(entry);}
   }
 }
@@ -134,5 +117,5 @@ function requiredOutput(values, key) {
   return value;
 }
 
-module.exports = {chainContext, phaseDeadline, readWorkflowFile, runPhaseCommand, handOff, retire, resetRunScopedRoots,
-  writeWorkflowOutputs, nodeScript, requiredOutput, runScopedEntries};
+module.exports = {chainContext, phaseDeadline, readWorkflowFile, runPhaseCommand, handOff, retire, resetWorkRoots,
+  writeWorkflowOutputs, nodeScript, requiredOutput};

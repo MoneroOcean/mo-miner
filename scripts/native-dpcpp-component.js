@@ -4,7 +4,7 @@
 // build trees. The actual Ninja link edge owns archive membership; no second library list.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process"), {isDeepStrictEqual} = require("node:util");
 const {fileHash, readBuildJson} = require("./build-source-inputs");
-const {pins} = require("./probe-static-dpcpp");
+const {pins} = require("./native-dpcpp-pins");
 const {isStaticArchive} = require("./native-audit");
 const {nativeSdkEnvironment} = require("./build-environment");
 const objectNames = ["cuda-adapter.o", "level-zero-v2-adapter.o", "source-jit.o"];

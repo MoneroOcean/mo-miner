@@ -1005,7 +1005,7 @@ $ErrorActionPreference = 'Stop'
   test("Windows portable runtime fixture extracts LF and CRLF source identically", () => {
     const build = readSource(
       path.join(repo, "scripts/build-windows-multicompiler.ps1"));
-    const consumer = readSource(path.join(repo, "scripts/test-windows-current-multicompiler.ps1"));
+    const consumer = readSource(path.join(repo, "tests/windows/test-windows-current-multicompiler.ps1"));
     const lf = extractWindowsPortableRuntimeFixture(build, consumer);
     const crlf = extractWindowsPortableRuntimeFixture(
       build.replace(/\n/g, "\r\n"), consumer.replace(/\n/g, "\r\n"));
@@ -1018,7 +1018,7 @@ $ErrorActionPreference = 'Stop'
   test("Windows portable runtime fixture still rejects missing source or consumer boundaries", () => {
     const build = readSource(
       path.join(repo, "scripts/build-windows-multicompiler.ps1"));
-    const consumer = readSource(path.join(repo, "scripts/test-windows-current-multicompiler.ps1"));
+    const consumer = readSource(path.join(repo, "tests/windows/test-windows-current-multicompiler.ps1"));
     assert.throws(() => extractWindowsPortableRuntimeFixture(
       build.replace("function Save-DpcppRuntime(", "function Save-DpcppRuntimeMissing("), consumer),
     /source runtime staging contract is missing/);
@@ -1032,7 +1032,7 @@ $ErrorActionPreference = 'Stop'
   }, () => {
     const runtime = extractWindowsPortableRuntimeFixture(
       readSource(path.join(repo, "scripts/build-windows-multicompiler.ps1")),
-      readSource(path.join(repo, "scripts/test-windows-current-multicompiler.ps1")));
+      readSource(path.join(repo, "tests/windows/test-windows-current-multicompiler.ps1")));
     for (const sibling of [false, true]) {
       const fixture = makeFixture();
       try {
@@ -2529,7 +2529,7 @@ try {
       fs.writeFileSync(sentinel, "sentinel");
       const driver = makeDriver(fixture, outputDriverSource);
       assertRejected(driver, [
-        "-ScriptPath", path.join(repo, "scripts", "test-windows-unified-release.ps1"),
+        "-ScriptPath", path.join(repo, "tests", "windows", "test-windows-unified-release.ps1"),
         "-OutputDirectory", output, "-ExpectedText", "unowned",
       ], "unowned output directory");
       assert.equal(fs.readFileSync(sentinel, "utf8"), "sentinel");
@@ -2540,7 +2540,7 @@ try {
       fs.writeFileSync(path.join(wrongMarkerOutput, ".mom-windows-unified-results"), "wrong-marker");
       fs.writeFileSync(wrongMarkerSentinel, "sentinel");
       assertRejected(driver, [
-        "-ScriptPath", path.join(repo, "scripts", "test-windows-unified-release.ps1"),
+        "-ScriptPath", path.join(repo, "tests", "windows", "test-windows-unified-release.ps1"),
         "-OutputDirectory", wrongMarkerOutput, "-ExpectedText", "ownership marker",
       ], "wrong output marker");
       assert.equal(fs.readFileSync(wrongMarkerSentinel, "utf8"), "sentinel");
@@ -2562,7 +2562,7 @@ try {
       fs.writeFileSync(stale, "stale");
       const driver = makeDriver(fixture, ownedOutputDriverSource);
       const result = runPowerShell(driver, [
-        "-ScriptPath", path.join(repo, "scripts", "test-windows-unified-release.ps1"),
+        "-ScriptPath", path.join(repo, "tests", "windows", "test-windows-unified-release.ps1"),
         "-OutputDirectory", output,
       ]);
       assert.equal(result.status, 0,
@@ -2584,7 +2584,7 @@ try {
       fs.mkdirSync(output);
       const driver = makeDriver(fixture, ownedOutputDriverSource);
       const result = runPowerShell(driver, [
-        "-ScriptPath", path.join(repo, "scripts", "test-windows-unified-release.ps1"),
+        "-ScriptPath", path.join(repo, "tests", "windows", "test-windows-unified-release.ps1"),
         "-OutputDirectory", output,
       ]);
       assert.equal(result.status, 0,
@@ -2606,7 +2606,7 @@ try {
       fs.writeFileSync(output, "sentinel");
       const driver = makeDriver(fixture, outputDriverSource);
       assertRejected(driver, [
-        "-ScriptPath", path.join(repo, "scripts", "test-windows-unified-release.ps1"),
+        "-ScriptPath", path.join(repo, "tests", "windows", "test-windows-unified-release.ps1"),
         "-OutputDirectory", output, "-ExpectedText", "not a directory",
       ], "file output");
       assert.equal(fs.readFileSync(output, "utf8"), "sentinel");
@@ -2631,7 +2631,7 @@ try {
       }
       const driver = makeDriver(fixture, outputDriverSource);
       assertRejected(driver, [
-        "-ScriptPath", path.join(repo, "scripts", "test-windows-unified-release.ps1"),
+        "-ScriptPath", path.join(repo, "tests", "windows", "test-windows-unified-release.ps1"),
         "-OutputDirectory", output, "-ExpectedText", "reparse point",
       ], "reparse output");
       assert.equal(fs.readFileSync(sentinel, "utf8"), "sentinel");
@@ -2656,7 +2656,7 @@ try {
       }
       const driver = makeDriver(fixture, outputDriverSource);
       assertRejected(driver, [
-        "-ScriptPath", path.join(repo, "scripts", "test-windows-unified-release.ps1"),
+        "-ScriptPath", path.join(repo, "tests", "windows", "test-windows-unified-release.ps1"),
         "-OutputDirectory", output, "-ExpectedText", "reparse-point ancestor",
       ], "reparse ancestor");
       assert.equal(fs.readFileSync(sentinel, "utf8"), "sentinel");

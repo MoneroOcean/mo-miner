@@ -1,14 +1,12 @@
 name: Stability
 
 # Pull requests and pushes run the fast source gates only. The complete cold native build, runtime lanes
-# and packaging run weekly and on demand (and on every release tag via release.yml).
+# and packaging run only on demand (and on every release tag via release.yml).
 on:
   pull_request:
   push:
     branches:
       - master
-  schedule:
-    - cron: "17 3 * * 1"
   workflow_dispatch:
 
 permissions:
@@ -25,5 +23,5 @@ jobs:
     uses: ./.github/workflows/source-gates.yml
 
   native:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch'
     uses: ./.github/workflows/build-release-artifacts.yml

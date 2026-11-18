@@ -5,7 +5,7 @@ const {test, describe} = require("node:test"), assert = require("node:assert/str
 const {createHash} = require("node:crypto");
 const sourceIO = require("../scripts/build-source-inputs"), llvmTools = require("../scripts/native-linux-llvm-tools");
 const sourcePins = require("../scripts/fetch-native-sdk-sources"), llvmSdk = require("../scripts/native-llvm-sdk");
-const ci = require("../scripts/prepare-native-ci");
+const ci = require("../scripts/native-ci-linux-sources");
 const localSdk = require("../scripts/build-local-native-sdk"), localRocm = require("../scripts/build-local-native-rocm-sdk");
 const {windowsAmdhipCatalog, prepareWindowsAmdhip, admitWindowsAmdhip, windowsAmdhipInputs, amdhipRecipe,
   deriveDefinition, verifyLinuxToolHandoff, prepareLocalAmdhipWindows} = require("../scripts/prepare-native-amdhip-windows");
@@ -35,7 +35,7 @@ function receiptFixture(root, library, license) {
   const receipt = {
     version: 2, target: "windows-amdhip64", status: "PASS", networked: false, buildOnly: true, compiled: false, executed: false,
     vendorPrebuilt: false, sourceGenerated: true, publicationQualified: false, redistributionQualified: false, producerSha256: "a".repeat(64),
-    runAttempt: "123456-1", recipe: {sha256: sha256(JSON.stringify(recipe)), files: recipe.graph},
+    recipe: {sha256: sha256(JSON.stringify(recipe)), files: recipe.graph},
     source: {origin: c.source.origin, revision: c.source.revision, sourceRoot: "/tmp/mom-native-rocm-prerequisites-123456-1",
       fetchReceiptSha256: "b".repeat(64), rootsReceiptSha256: "c".repeat(64), git: {path: "/usr/bin/git", bytes: 123456, sha256: "d".repeat(64)},
       definition: {path: c.source.definition.path, blob: c.source.definition.blob, bytes: c.source.definition.bytes,
@@ -165,7 +165,7 @@ describe("Source-generated Windows AMD import-library input", {skip: process.pla
 
   test("rejects wrong roots and missing public source state before creating output", async t => {
     const root = fixtureRoot(t), suffix = "99999999999999999999-4", env = {
-        GITHUB_RUN_ID: "99999999999999999999", GITHUB_RUN_ATTEMPT: "4", RUNNER_TEMP: root,
+        MOM_NATIVE_CI_SUFFIX: suffix, RUNNER_TEMP: root,
         MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: "2", MOM_NATIVE_ROCM_SOURCE_DIR: "/tmp/mom-native-rocm-prerequisites-" + suffix,
       }, source = env.MOM_NATIVE_ROCM_SOURCE_DIR, bundle = path.join(root, "native-linux-llvm-tools-" + suffix), output = path.join(root, "native-windows-amdhip-" + suffix),
       pin = "f".repeat(64);
@@ -184,7 +184,7 @@ describe("Source-generated Windows AMD import-library input", {skip: process.pla
       bin = path.join(bundle, "bin"), toolRoot = bin, targetLeaf = c.toolchain.llvmLibTarget,
       handoff = {toolRoot, files: {[c.toolchain.llvmLibAlias]: {type: "symlink", target: targetLeaf},
         ["bin/" + targetLeaf]: {type: "file", bytes: 1234, sha256: "1".repeat(64)}}},
-      env = {GITHUB_RUN_ID: "99999999999999999998", GITHUB_RUN_ATTEMPT: "5", RUNNER_TEMP: runnerTemp,
+      env = {MOM_NATIVE_CI_SUFFIX: suffix, RUNNER_TEMP: runnerTemp,
         MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: "2", MOM_NATIVE_ROCM_SOURCE_DIR: sourceRoot};
     fs.mkdirSync(runnerTemp); fs.mkdirSync(stateDir); fs.mkdirSync(bin, {recursive: true});
     writePrivate(fetchReceipt, "pinned mocked source acquisition receipt\n"); writePrivate(rootsFile, "pinned mocked root inventory\n");
@@ -281,12 +281,12 @@ describe("Source-generated Windows AMD import-library input", {skip: process.pla
         "receipts/result.json": {type: "file", bytes: fs.statSync(path.join(receipts, "result.json")).size,
           sha256: sourceIO.fileHash(path.join(receipts, "result.json"))}}};
     t.mock.method(llvmTools, "linuxLlvmToolHandoffInputs", () => input);
-    const selected = verifyLinuxToolHandoff(bundle, "123-1", "0".repeat(64));
+    const selected = verifyLinuxToolHandoff(bundle, "0".repeat(64));
     assert.equal(selected.llvmLib, alias);
     const aliasProof = input.files[c.toolchain.llvmLibAlias];
     assert.ok(aliasProof);
     aliasProof.target = "other-ar";
-    assert.throws(() => verifyLinuxToolHandoff(bundle, "123-1", "0".repeat(64)), /stale or does not contain/);
+    assert.throws(() => verifyLinuxToolHandoff(bundle, "0".repeat(64)), /stale or does not contain/);
   });
 
   test("admits a sealed generated payload, returns its inputs and allows relocation", t => {

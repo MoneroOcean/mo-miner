@@ -1,7 +1,7 @@
 "use strict";
 
 const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), path = require("node:path"), os = require("node:os");
-const local = require("../scripts/build-local-native-sdk"), nativeCi = require("../scripts/prepare-native-ci"),
+const local = require("../scripts/build-local-native-sdk"), nativeCi = require("../scripts/native-ci-linux-rocm"),
   {localRocmSdkPaths, localRocmSdkContextFromWorkspace, localRocmSdkContext, localRocmBuildState, localRocmHostState,
     localRocmTools, localRocmHostInputs, runLocalRocmSdkChild, buildLocalLinuxRocmSdk, main} = require("../scripts/build-local-native-rocm-sdk");
 

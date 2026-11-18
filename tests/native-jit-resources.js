@@ -7,8 +7,7 @@ const {fileHash} = require("../scripts/build-source-inputs");
 const {prepare, validateProfile, resourceTarget, verifyJitResources, resourceSourceInputs} = require("../scripts/prepare-native-sycl-jit-resources");
 const {jitEmitterPlan, buildJitEmitter, jitSourceInputs} = require("../scripts/native-jit-sdk");
 const producerSource = fs.readFileSync(path.join(__dirname, "../scripts/prepare-native-sycl-jit-resources.js"), "utf8");
-const legacyBuildInput = "tests/native/dpcpp-jit/CMakeLists.txt";
-const legacyBuildInputSha256 = "66a631feb1d8fab961f84d7e73e981a84e897e08d9c265fece512abe628ea021";
+const buildOnlyInput = "tests/native/dpcpp-jit/CMakeLists.txt";
 
 /** @typedef {{version: number, target: string, fixture?: string, clang?: string, receipt?: string, gnuRoot?: string, baseRoot?: string,
  * noticeRoot?: string, syclInclude?: string, clangBuiltinInclude?: string, baseManifest?: string, headerRoots?: Array<{path: string, virtual: string}>,
@@ -132,18 +131,12 @@ test.describe("Compiler SDK resource admission", {skip: process.platform !== "li
     a.manifest.sourceInputs.extra = "a".repeat(64); a.save();
     assert.throws(() => verifyJitResources(a.root, "x86_64-w64-windows-gnu"), /source footprint/);
   });
-  test("accepts only the exact historical CMake-only resource extra", t => {
+  test("accepts only the current resource source footprint", t => {
     const a = artifact(t); if (!a) {return;}
     assert.deepEqual(Object.keys(a.manifest.sourceInputs).sort(), [...resourceSourceInputs].sort());
-    a.manifest.sourceInputs[legacyBuildInput] = legacyBuildInputSha256; a.save();
-    assert.equal(verifyJitResources(a.root, "x86_64-w64-windows-gnu").target, "x86_64-w64-windows-gnu");
-
-    a.manifest.sourceInputs[legacyBuildInput] = "0".repeat(64); a.save();
+    a.manifest.sourceInputs[buildOnlyInput] = "a".repeat(64); a.save();
     assert.throws(() => verifyJitResources(a.root, "x86_64-w64-windows-gnu"), /source footprint/);
-    a.manifest.sourceInputs[legacyBuildInput] = legacyBuildInputSha256;
-    a.manifest.sourceInputs.unrecognized = "a".repeat(64); a.save();
-    assert.throws(() => verifyJitResources(a.root, "x86_64-w64-windows-gnu"), /source footprint/);
-    delete a.manifest.sourceInputs.unrecognized;
+    delete a.manifest.sourceInputs[buildOnlyInput];
     delete a.manifest.sourceInputs[resourceSourceInputs[0] || ""]; a.save();
     assert.throws(() => verifyJitResources(a.root, "x86_64-w64-windows-gnu"), /source footprint/);
   });
@@ -214,9 +207,8 @@ test.describe("CPU-only JIT resource bootstrap", {skip: process.platform !== "li
     assert.ok(Object.isFrozen(jitSourceInputs)); assert.ok(Object.isFrozen(resourceSourceInputs));
     assert.ok(jitSourceInputs.includes("sycl/kawpow/program.inc"));
     assert.ok(jitSourceInputs.includes("tests/reference/native-kawpow-source.cpp"));
-    assert.ok(jitSourceInputs.includes(legacyBuildInput)); assert.ok(!resourceSourceInputs.includes(legacyBuildInput));
-    assert.deepEqual(resourceSourceInputs, jitSourceInputs.filter(name => name !== legacyBuildInput));
-    assert.match(producerSource, /jitSourceInputs\.filter\(name => name !== LEGACY_BUILD_INPUT\)/);
+    assert.ok(jitSourceInputs.includes(buildOnlyInput)); assert.ok(!resourceSourceInputs.includes(buildOnlyInput));
+    assert.deepEqual(resourceSourceInputs, jitSourceInputs.filter(name => name !== buildOnlyInput));
   });
   test("does not mutate earlier or later plans", () => {
     const p = jitEmitterPlan("/sdk", "/output"); p.compile.length = 0;
@@ -406,7 +398,7 @@ test.describe("Windows GNU static-JIT resource producer", {skip: process.platfor
     const profile = actualProfile(t);
     if (!profile.fixture || !profile.receipt) {return;}
     const receipt = JSON.parse(fs.readFileSync(profile.receipt, "utf8"));
-    delete receipt.inputs[path.resolve(__dirname, "..", legacyBuildInput)];
+    delete receipt.inputs[path.resolve(__dirname, "..", buildOnlyInput)];
     fs.writeFileSync(profile.receipt, JSON.stringify(receipt));
     const output = path.join(path.dirname(profile.fixture), "missing-recipe-input");
     assert.throws(() => prepare(profile, output), /does not pin maintained source input/);

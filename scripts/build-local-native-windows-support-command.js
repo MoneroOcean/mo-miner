@@ -4,7 +4,7 @@
 // transport unchanged; only selected support artifacts are exported back to WSL.
 const fs = require("node:fs"), path = require("node:path"), {createHash} = require("node:crypto");
 const support = require("./build-local-native-windows-support"), sources = require("./fetch-native-sdk-sources"),
-  ci = require("./prepare-native-ci"), exporter = require("./export-local-windows-support");
+  ci = require("./native-ci-windows-controller"), exporter = require("./build-local-native-windows-support-export");
 const {fileHash} = require("./build-source-inputs"), {opensslPin} = require("./build-native-openssl");
 const repo = fs.realpathSync(path.resolve(__dirname, "..")), maxInputBytes = 64 << 10, maxToolsBytes = 128 << 10, maxOutputBytes = 16 << 20;
 const inputKeys = ["exportWorkspace", "hermesArchive", "workspace"], archiveKeys = ["originalRoot", "path", "rootName", "sha256"],

@@ -43,7 +43,7 @@ jobs:
       ORIGINAL_BUILD_BUNDLE_SHA256: ${{ inputs.original_build_bundle_sha256 }}
       ORIGINAL_HANDOFF_SHA256: ${{ inputs.original_handoff_sha256 }}
       NATIVE_NAME: native-${{ inputs.platform == 'win32' && 'windows' || 'linux' }}
-      NATIVE_SUFFIX: ${{ github.run_id }}-${{ github.run_attempt }}
+      MOM_NATIVE_CI_SUFFIX: ci
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -53,15 +53,15 @@ jobs:
         run: node scripts/ci/package-native.js preflight
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          name: ${{ env.NATIVE_NAME }}-executable-${{ env.NATIVE_SUFFIX }}
+          name: ${{ env.NATIVE_NAME }}-executable-${{ env.MOM_NATIVE_CI_SUFFIX }}
           path: ${{ runner.temp }}/native-package-inputs/raw
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          name: ${{ env.NATIVE_NAME }}-packed-executable-${{ env.NATIVE_SUFFIX }}
+          name: ${{ env.NATIVE_NAME }}-packed-executable-${{ env.MOM_NATIVE_CI_SUFFIX }}
           path: ${{ runner.temp }}/native-package-inputs/packed-executable
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          pattern: "${{ env.NATIVE_NAME }}-{packed,application}-build-${{ env.NATIVE_SUFFIX }}.tar"
+          pattern: "${{ env.NATIVE_NAME }}-{packed,application}-build-${{ env.MOM_NATIVE_CI_SUFFIX }}.tar"
           merge-multiple: true
           path: ${{ runner.temp }}/incoming
       - id: package
@@ -74,6 +74,7 @@ jobs:
           path: ${{ steps.package.outputs.archive_file }}
           compression-level: 0
           if-no-files-found: error
+          overwrite: true
           retention-days: 3
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
@@ -82,4 +83,5 @@ jobs:
           archive: false
           compression-level: 0
           if-no-files-found: error
+          overwrite: true
           retention-days: 3

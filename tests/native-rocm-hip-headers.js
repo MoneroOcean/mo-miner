@@ -3,7 +3,7 @@
 const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), path = require("node:path"),
   {createHash} = require("node:crypto");
 const {exportRocmHipHeaders, rocmHipHeaderInputs} = require("../scripts/native-rocm-hip-headers");
-const nativeCi = require("../scripts/prepare-native-ci");
+const nativeCi = require("../scripts/native-ci-tar");
 const {gitSourceComponents} = require("../scripts/fetch-native-sdk-sources");
 const {sdkSourceFiles} = require("../scripts/prepare-native-sdk-sources");
 
@@ -95,12 +95,12 @@ function fixture(t, duplicateRequired = false) {
 
 /** @param {ReturnType<typeof fixture>} f */
 function exportAndRestore(f) {
-  const exported = exportRocmHipHeaders(f.sourceRoot, f.outputRoot, {runAttempt: f.suffix});
+  const exported = exportRocmHipHeaders(f.sourceRoot, f.outputRoot, f.suffix);
   const rootName = path.basename(f.outputRoot);
   nativeCi.packState(f.archivePath, f.outputParent, [rootName]);
   fs.rmSync(f.outputRoot, {recursive: true});
   nativeCi.extractState(f.archivePath, "/tmp", [rootName]);
-  return {exported, admitted: rocmHipHeaderInputs(f.consumerRoot, {runAttempt: f.suffix, handoffSha256: exported.handoffSha256})};
+  return {exported, admitted: rocmHipHeaderInputs(f.consumerRoot, {handoffSha256: exported.handoffSha256})};
 }
 
 test.describe("ROCm HIP header handoff", {skip: process.platform !== "linux" && "Linux cross-build header transport"}, () => {
@@ -120,7 +120,7 @@ test.describe("ROCm HIP header handoff", {skip: process.platform !== "linux" && 
 
   test("rejects writing the state tar inside a selected input before creating it", t => {
     const f = fixture(t), rootName = path.basename(f.outputRoot);
-    exportRocmHipHeaders(f.sourceRoot, f.outputRoot, {runAttempt: f.suffix});
+    exportRocmHipHeaders(f.sourceRoot, f.outputRoot, f.suffix);
     const archiveInsideInput = path.join(f.outputRoot, "inside.tar");
     assert.throws(() => nativeCi.packState(archiveInsideInput, f.outputParent, [rootName]), /outside its inputs/);
     assert.equal(fs.existsSync(archiveInsideInput), false);
@@ -136,32 +136,31 @@ test.describe("ROCm HIP header handoff", {skip: process.platform !== "linux" && 
     assert.equal(admitted.handoffSha256, exported.handoffSha256);
   });
 
-  test("rejects another run attempt, an unpinned handoff, or a noncanonical consumer root", t => {
+  test("rejects an unpinned handoff or a noncanonical consumer root", t => {
     const f = fixture(t), {exported} = exportAndRestore(f);
-    assert.throws(() => rocmHipHeaderInputs(f.consumerRoot, {runAttempt: f.suffix + "1", handoffSha256: exported.handoffSha256}), /run path/);
-    assert.throws(() => rocmHipHeaderInputs(f.consumerRoot, {runAttempt: f.suffix, handoffSha256: "0".repeat(64)}), /external hash pin/);
-    assert.throws(() => rocmHipHeaderInputs(f.outputParent, {runAttempt: f.suffix, handoffSha256: exported.handoffSha256}), /canonical run path/);
+    assert.throws(() => rocmHipHeaderInputs(f.consumerRoot, {handoffSha256: "0".repeat(64)}), /external hash pin/);
+    assert.throws(() => rocmHipHeaderInputs(f.outputParent, {handoffSha256: exported.handoffSha256}), /canonical run path/);
   });
 
   test("rejects mismatched upstream revisions and changed HIPRTC CMake source before copying", t => {
     const f = fixture(t); f.package.pins.hip = "0".repeat(40);
     fs.writeFileSync(f.packagePath, JSON.stringify(f.package));
-    assert.throws(() => exportRocmHipHeaders(f.sourceRoot, f.outputRoot, {runAttempt: f.suffix}), /pinned build-only/);
+    assert.throws(() => exportRocmHipHeaders(f.sourceRoot, f.outputRoot, f.suffix), /pinned build-only/);
     const other = fixture(t), cmake = path.join(other.sourceRoot, "source/clr-hipamd/src/hiprtc/CMakeLists.txt");
     fs.appendFileSync(cmake, "# stale\n");
-    assert.throws(() => exportRocmHipHeaders(other.sourceRoot, other.outputRoot, {runAttempt: other.suffix}), /source exports/);
+    assert.throws(() => exportRocmHipHeaders(other.sourceRoot, other.outputRoot, other.suffix), /source exports/);
   });
 
   test("rejects a changed header, package receipt, and unlisted extra payload", t => {
     const changed = fixture(t), {exported: changedExport} = exportAndRestore(changed), header = path.join(changed.consumerRoot, "include/hip/hiprtc.h");
     fs.appendFileSync(header, "changed\n");
-    assert.throws(() => rocmHipHeaderInputs(changed.consumerRoot, {runAttempt: changed.suffix, handoffSha256: changedExport.handoffSha256}), /package|payload/);
+    assert.throws(() => rocmHipHeaderInputs(changed.consumerRoot, {handoffSha256: changedExport.handoffSha256}), /package|payload/);
     const manifest = fixture(t), {exported: manifestExport} = exportAndRestore(manifest);
     fs.appendFileSync(path.join(manifest.consumerRoot, "header-package.json"), " ");
-    assert.throws(() => rocmHipHeaderInputs(manifest.consumerRoot, {runAttempt: manifest.suffix, handoffSha256: manifestExport.handoffSha256}), /external hash pin|package/);
+    assert.throws(() => rocmHipHeaderInputs(manifest.consumerRoot, {handoffSha256: manifestExport.handoffSha256}), /external hash pin|package/);
     const extra = fixture(t), {exported: extraExport} = exportAndRestore(extra);
     write(path.join(extra.consumerRoot, "include/hip/unlisted.h"), "extra\n");
-    assert.throws(() => rocmHipHeaderInputs(extra.consumerRoot, {runAttempt: extra.suffix, handoffSha256: extraExport.handoffSha256}), /manifest/);
+    assert.throws(() => rocmHipHeaderInputs(extra.consumerRoot, {handoffSha256: extraExport.handoffSha256}), /manifest/);
   });
 
   test("rejects rewritten manifests even when a caller supplies their new digest", t => {
@@ -170,13 +169,13 @@ test.describe("ROCm HIP header handoff", {skip: process.platform !== "linux" && 
     handoff.recipe.graph["scripts/native-rocm-hip-headers.js"] = "0".repeat(64);
     fs.chmodSync(handoffFile, 0o644); fs.writeFileSync(handoffFile, JSON.stringify(handoff, null, 2) + "\n");
     assert.notEqual(hash(handoffFile), exported.handoffSha256);
-    assert.throws(() => rocmHipHeaderInputs(f.consumerRoot, {runAttempt: f.suffix, handoffSha256: hash(handoffFile)}), /recipe/);
+    assert.throws(() => rocmHipHeaderInputs(f.consumerRoot, {handoffSha256: hash(handoffFile)}), /recipe/);
   });
 
   test("rejects a top-level payload outside the exact handoff root", t => {
     const f = fixture(t), {exported} = exportAndRestore(f);
     write(path.join(f.consumerRoot, "unexpected.json"), "{}\n");
-    assert.throws(() => rocmHipHeaderInputs(f.consumerRoot, {runAttempt: f.suffix, handoffSha256: exported.handoffSha256}), /top-level members/);
+    assert.throws(() => rocmHipHeaderInputs(f.consumerRoot, {handoffSha256: exported.handoffSha256}), /top-level members/);
     const linked = fixture(t), {exported: linkedExport} = exportAndRestore(linked);
     try {
       fs.symlinkSync(path.join(linked.consumerRoot, "header-package.json"), path.join(linked.consumerRoot, "unexpected-link"));
@@ -184,14 +183,14 @@ test.describe("ROCm HIP header handoff", {skip: process.platform !== "linux" && 
       t.skip("symbolic links are unavailable on this filesystem");
       return;
     }
-    assert.throws(() => rocmHipHeaderInputs(linked.consumerRoot, {runAttempt: linked.suffix, handoffSha256: linkedExport.handoffSha256}), /top-level members/);
+    assert.throws(() => rocmHipHeaderInputs(linked.consumerRoot, {handoffSha256: linkedExport.handoffSha256}), /top-level members/);
   });
 
   test("rejects a configure receipt that did not succeed", t => {
     const f = fixture(t);
     f.package.configure.status = 1;
     rewritePackage(f);
-    assert.throws(() => exportRocmHipHeaders(f.sourceRoot, f.outputRoot, {runAttempt: f.suffix}), /successful configure-only/);
+    assert.throws(() => exportRocmHipHeaders(f.sourceRoot, f.outputRoot, f.suffix), /successful configure-only/);
   });
 
   test("requires clean process evidence for a status-zero patch check", t => {
@@ -199,7 +198,7 @@ test.describe("ROCm HIP header handoff", {skip: process.platform !== "linux" && 
       invalidRows = [{signal: "SIGTERM"}, {error: "spawn failed"}, {stdout: 0}, {stderr: null}];
     for (const invalid of invalidRows) {
       fs.writeFileSync(log, JSON.stringify({...valid, ...invalid}) + "\n");
-      assert.throws(() => exportRocmHipHeaders(f.sourceRoot, f.outputRoot, {runAttempt: f.suffix}), /patch receipt did not pass/);
+      assert.throws(() => exportRocmHipHeaders(f.sourceRoot, f.outputRoot, f.suffix), /patch receipt did not pass/);
     }
   });
 
@@ -207,14 +206,14 @@ test.describe("ROCm HIP header handoff", {skip: process.platform !== "linux" && 
     const f = fixture(t);
     f.package.patch.sha256 = "0".repeat(64);
     rewritePackage(f);
-    assert.throws(() => exportRocmHipHeaders(f.sourceRoot, f.outputRoot, {runAttempt: f.suffix}), /reviewed source patch/);
+    assert.throws(() => exportRocmHipHeaders(f.sourceRoot, f.outputRoot, f.suffix), /reviewed source patch/);
   });
 
   test("rejects duplicate CMake overrides instead of accepting a later runtime value", t => {
     const f = fixture(t);
     f.package.configure.command.push("-DHIP_RUNTIME:STRING=hip");
     rewritePackage(f);
-    assert.throws(() => exportRocmHipHeaders(f.sourceRoot, f.outputRoot, {runAttempt: f.suffix}), /configure command differs/);
+    assert.throws(() => exportRocmHipHeaders(f.sourceRoot, f.outputRoot, f.suffix), /configure command differs/);
   });
 
   test("rejects a package that omits a HIPRTC-required header", t => {
@@ -222,27 +221,27 @@ test.describe("ROCm HIP header handoff", {skip: process.platform !== "linux" && 
     assert.ok(requiredHeader);
     delete f.package.files[requiredHeader];
     rewritePackage(f);
-    assert.throws(() => exportRocmHipHeaders(f.sourceRoot, f.outputRoot, {runAttempt: f.suffix}), /not covered by the package map/);
+    assert.throws(() => exportRocmHipHeaders(f.sourceRoot, f.outputRoot, f.suffix), /not covered by the package map/);
   });
 
   test("rejects symbolic links, hard links, excessive file size, and overdeep trees", t => {
     const symlink = fixture(t), {exported: symlinkExport} = exportAndRestore(symlink), target = path.join(symlink.consumerRoot, "include/hip/hip_runtime_api.h"),
       linked = path.join(symlink.consumerRoot, "include/hip/hiprtc.h");
     fs.unlinkSync(linked); fs.symlinkSync(path.basename(target), linked);
-    assert.throws(() => rocmHipHeaderInputs(symlink.consumerRoot, {runAttempt: symlink.suffix, handoffSha256: symlinkExport.handoffSha256}), /symbolic link/);
+    assert.throws(() => rocmHipHeaderInputs(symlink.consumerRoot, {handoffSha256: symlinkExport.handoffSha256}), /symbolic link/);
 
     const hardlink = fixture(t), {exported: hardlinkExport} = exportAndRestore(hardlink), source = path.join(hardlink.consumerRoot, "include/hip/hip_runtime_api.h"),
       alias = path.join(hardlink.consumerRoot, "include/hip/alias.h");
     try {fs.linkSync(source, alias);} catch {t.skip("hard links are unavailable on this filesystem"); return;}
-    assert.throws(() => rocmHipHeaderInputs(hardlink.consumerRoot, {runAttempt: hardlink.suffix, handoffSha256: hardlinkExport.handoffSha256}), /singly-linked/);
+    assert.throws(() => rocmHipHeaderInputs(hardlink.consumerRoot, {handoffSha256: hardlinkExport.handoffSha256}), /singly-linked/);
 
     const oversized = fixture(t), {exported: oversizedExport} = exportAndRestore(oversized), large = path.join(oversized.consumerRoot, "include/hip/hiprtc.h");
     fs.truncateSync(large, 8 * 1024 * 1024 + 1);
-    assert.throws(() => rocmHipHeaderInputs(oversized.consumerRoot, {runAttempt: oversized.suffix, handoffSha256: oversizedExport.handoffSha256}), /bounded/);
+    assert.throws(() => rocmHipHeaderInputs(oversized.consumerRoot, {handoffSha256: oversizedExport.handoffSha256}), /bounded/);
 
     const deep = fixture(t), {exported: deepExport} = exportAndRestore(deep); let nested = path.join(deep.consumerRoot, "include");
     for (let index = 0; index < 17; index++) {nested = path.join(nested, "d" + index);}
     write(path.join(nested, "too-deep.h"), "x\n");
-    assert.throws(() => rocmHipHeaderInputs(deep.consumerRoot, {runAttempt: deep.suffix, handoffSha256: deepExport.handoffSha256}), /depth/);
+    assert.throws(() => rocmHipHeaderInputs(deep.consumerRoot, {handoffSha256: deepExport.handoffSha256}), /depth/);
   });
 });

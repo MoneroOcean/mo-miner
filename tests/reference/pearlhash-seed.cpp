@@ -8,6 +8,7 @@
 #include <cstring>
 #include <cstdlib>
 
+#include "../../sycl/blake3-device.inc"
 #include "../../sycl/pearlhash/blake3.inc"
 #include "../../sycl/pearlhash/claim.h"
 #include "../../sycl/pearlhash/seed.inc"

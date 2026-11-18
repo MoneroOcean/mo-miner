@@ -12,7 +12,7 @@ $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
 
 function Invoke-NativeStage([string]$Stage) {
   $node = Resolve-Application 'node.exe'
-  & $node (Join-Path $repoRoot 'scripts\prepare-native-ci.js') stage $Stage
+  & $node (Join-Path $repoRoot 'scripts\run-native-ci.js') stage $Stage
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 

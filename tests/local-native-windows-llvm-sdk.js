@@ -3,7 +3,7 @@
 const {describe, test} = require("node:test"), assert = require("node:assert/strict"),
   fs = require("node:fs"), path = require("node:path"), os = require("node:os");
 const local = require("../scripts/build-local-native-sdk"), {fileHash, readBuildJson} = require("../scripts/build-source-inputs"),
-  windowsLlvm = require("../scripts/build-native-windows-llvm21-sdk"), {archiveName, archiveSha256} = require("../scripts/native-llvm-sdk"),
+  windowsLlvm = require("../scripts/build-native-windows-llvm-sdk"), {archiveName, archiveSha256} = require("../scripts/native-llvm-sdk"),
   windowsIntelRuntime = require("../runtime/windows-intel-runtime.json"),
   {localWindowsLlvmSdkPaths, localWindowsLlvmDescriptorTools, verifyLocalWindowsLlvmOutput, buildLocalNativeWindowsLlvmSdk} =
     require("../scripts/build-local-native-windows-llvm-sdk");

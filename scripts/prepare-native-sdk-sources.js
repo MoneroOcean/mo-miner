@@ -3,7 +3,7 @@
 // Materialize original pinned SDK objects plus reviewed patches, never a private prebuilt
 // archive or edits from an Engineering checkout. Source preparation needs no VM or GPU.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
-const {pins} = require("./probe-static-dpcpp");
+const {pins} = require("./native-dpcpp-pins");
 const {fileHash, sourceInputs, verifySourceInputs, readBuildJson} = require("./build-source-inputs");
 const {sdkSourceEnvironment} = require("./build-environment");
 const {createHash} = require("node:crypto");
@@ -57,7 +57,7 @@ function sdkPatchScope(target, patch) {
  * @returns {Record<string, {revision: string, paths: string[], leaves: string[], patches: string[]}>} */
 function preparationComponents(target) {
   if (target === "acpp") {
-    const {syclRevision} = require("./probe-static-sycl");
+    const {syclRevision} = require("./native-sycl-inputs");
     return {acpp: {revision: syclRevision, paths: [], leaves: [], patches: ["adaptivecpp-static.patch", "adaptivecpp-jit.patch"]}};
   }
   return sdkComponents(target);
@@ -68,7 +68,7 @@ const safe = name => typeof name === "string" && path.isAbsolute(name) && !Array
 /** The consumer reuses the exact target's recipe, not a receipt's patch/file selection.
  * @param {string} target */
 function sdkSourceRecipe(target) {
-  return sourceInputs(repo, [], ["scripts/prepare-native-sdk-sources.js", target === "acpp" ? "scripts/probe-static-sycl.js" : "scripts/probe-static-dpcpp.js", "scripts/build-source-inputs.js", "scripts/build-environment.js",
+  return sourceInputs(repo, [], ["scripts/prepare-native-sdk-sources.js", target === "acpp" ? "scripts/native-sycl-inputs.js" : "scripts/native-dpcpp-pins.js", "scripts/build-source-inputs.js", "scripts/build-environment.js",
     ...(target === "acpp" ? ["scripts/native-hcf.js"] : []),
     ...new Set(Object.values(preparationComponents(target)).flatMap(component => component.patches.map(name => "runtime/" + name)))]);
 }
@@ -130,7 +130,7 @@ function verifyAcppCheckout(root, output, env) {
   if (!stat.isDirectory() || stat.isSymbolicLink() || fs.existsSync(path.join(git, "objects/info/alternates"))) {
     throw new Error("AdaptiveCpp source must retain an independent regular Git directory");
   }
-  const {admitSyclSource} = require("./probe-static-sycl");
+  const {admitSyclSource} = require("./native-sycl-inputs");
   admitSyclSource(root, output, true, (command, args) => sourceQuery(env, command, args, "AdaptiveCpp checkout"));
 }
 

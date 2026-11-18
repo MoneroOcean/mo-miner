@@ -84,6 +84,20 @@ test.describe("Windows Core stable MSBuild work graph cache", () => {
     assert.equal(first.MOM_FORCE_REBUILD, "1");
   });
 
+  test("ignores per-session, temp and parallelism variables in the Core environment identity", () => {
+    const base = {PATH: "tool-path", INCLUDE: "inc", Platform: "x64", TEMP: "C:\\t1", WT_SESSION: "a", GITHUB_RUN_ID: "1",
+      SESSIONNAME: "Console", PROMPT: "$P$G", MOM_BUILD_JOBS: "2", vscode_ipc_hook: "a"};
+    const hash = windowsCoreEnvironmentSha256(sanitizeBuildEnvironment(base, "python.exe"));
+    const volatile = {...base, TEMP: "C:\\t2", WT_SESSION: "b", GITHUB_RUN_ID: "2", SESSIONNAME: "RDP", PROMPT: "> ", MOM_BUILD_JOBS: "4",
+      vscode_ipc_hook: "b", TMP: "x", OMP_NUM_THREADS: "4"};
+    const child = sanitizeBuildEnvironment(volatile, "python.exe");
+    assert.equal(windowsCoreEnvironmentSha256(child), hash);
+    assert.equal(child["WT_SESSION"], "b", "the child environment keeps volatile variables");
+    for (const [key, value] of /** @type {const} */ ([["PATH", "other"], ["INCLUDE", "other"], ["Platform", "Win32"]])) {
+      assert.notEqual(windowsCoreEnvironmentSha256(sanitizeBuildEnvironment({...base, [key]: value}, "python.exe")), hash, key);
+    }
+  });
+
   test("clears ambient LIB only for the static Core tracker census, not build identity or MSBuild", () => {
     const first = {PATH: "tool-path", LIB: "sdk-lib-a;intel-lib"}, second = {...first, LIB: "sdk-lib-b;intel-lib"};
     const trackerFirst = windowsCoreTrackerEnvironment(first), trackerSecond = windowsCoreTrackerEnvironment(second);

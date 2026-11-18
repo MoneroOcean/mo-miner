@@ -350,9 +350,15 @@ function windowsCoreTrackerSnapshot(buildRoot, cacheRoot, plan, environment, req
   return {complete: snapshot.Complete, membership: snapshot.Membership, inputs, artifacts, toolchain, powershellSha256: fileHash(powershell)};
 }
 
-/** @param {NodeJS.ProcessEnv} environment */
+// Per-session, per-run, temp-location and parallelism variables never reach the generated objects, but
+// MSBuild imports every other variable as a property, so only this curated set leaves the cache key.
+const volatileEnvironment = /^(?:WT_|VSCODE_|SSH_|GITHUB_|RUNNER_|ACTIONS_|TERM|COLORTERM$|SESSIONNAME$|CLIENTNAME$|PROMPT$|PWD$|OLDPWD$|SHLVL$|_$|TEMP$|TMP$|MOM_BUILD_JOBS$|OMP_NUM_THREADS$)/i;
+
+/** Hash the build environment for the Core cache key; the child process still receives every variable.
+ * @param {NodeJS.ProcessEnv} environment */
 function windowsCoreEnvironmentSha256(environment) {
-  const normalized = Object.fromEntries(Object.entries(environment).sort(([a], [b]) => a.localeCompare(b)));
+  const normalized = Object.fromEntries(Object.entries(environment).filter(([key]) => !volatileEnvironment.test(key))
+    .sort(([a], [b]) => a.localeCompare(b)));
   return createHash("sha256").update(JSON.stringify(normalized)).digest("hex");
 }
 

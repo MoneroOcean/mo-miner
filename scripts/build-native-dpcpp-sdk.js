@@ -4,7 +4,7 @@
 // materializer used on Windows. Reuse the CMake graph and whole-archive audit, never run it.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
 const {verifyPreparedSdkSources, sdkSourceFiles, validateSourceRoots} = require("./prepare-native-sdk-sources");
-const {pins, sdkIdentity, auditBuild} = require("./probe-static-dpcpp");
+const {pins, sdkIdentity, auditBuild} = require("./native-dpcpp-pins");
 const {fileHash, readBuildJson, sourceInputs, verifySourceInputs, buildFileInputs} = require("./build-source-inputs");
 const {nativeSdkEnvironment} = require("./build-environment");
 const {compilerEnvironment: sdkCompilerEnvironment, sdkHostEnvironment, verifyCompilerEnvironment} = require("./build-native-sycl-sdk");
@@ -17,7 +17,7 @@ const repo = path.resolve(__dirname, "..");
 function linuxStaticSdkRecipe() {
   return sourceInputs(repo, ["tests/native/dpcpp-static"], ["scripts/build-native-dpcpp-sdk.js", "scripts/prepare-native-sdk-sources.js",
     "scripts/build-source-inputs.js", "scripts/build-environment.js", "scripts/build-native-sycl-sdk.js", "scripts/build-native-release.js",
-    "scripts/probe-static-sycl.js", "scripts/native-hcf.js", "scripts/probe-native-jit.js", "scripts/native-comgr-inputs.js", "scripts/probe-static-dpcpp.js",
+    "scripts/native-sycl-inputs.js", "scripts/native-hcf.js", "scripts/native-jit-link.js", "scripts/native-comgr-inputs.js", "scripts/native-dpcpp-pins.js",
     "scripts/native-audit.js", "scripts/native-dpcpp-component.js",
     "scripts/native-cuda-adapter.js", "scripts/native-level-zero-adapter.js", "scripts/native-compiler-isolation.js", "runtime/system-driver.h",
     "runtime/driver-library.cpp", "tests/reference/native-dpcpp-static.cpp", "tests/reference/native-static-adapter-selection.cpp",

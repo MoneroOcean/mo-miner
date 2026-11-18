@@ -4,10 +4,21 @@ const fs = require("node:fs"), {createHash} = require("node:crypto"), {spawnSync
 const {isDeepStrictEqual} = require("node:util");
 const {fileHash} = require("./build-source-inputs");
 
+// Release bytes and audits use the host's packaged binutils, never whatever PATH resolves first.
+const readelfTool = "/usr/bin/readelf", stripTool = "/usr/bin/strip";
+
+/** Identify one packaged binutils program for the release receipt. @param {string} tool */
+function binutilsIdentity(tool) {
+  const canonical = fs.realpathSync(tool), result = spawnSync(tool, ["--version"], {encoding: "utf8", timeout: 30000, maxBuffer: 1 << 20});
+  const version = result.stdout?.split("\n")[0]?.trim() || "";
+  if (result.error || result.signal || result.status !== 0 || !version) {throw new Error("Cannot identify binutils tool: " + tool, {cause: result.error});}
+  return {path: canonical, sha256: fileHash(canonical), version};
+}
+
 /** Build tooling only: inspect bounded binutils metadata, never execute the candidate.
  * @param {string} file @param {string} flag */
 function elfReport(file, flag) {
-  const result = spawnSync("readelf", ["--wide", flag, file], {encoding: "utf8", timeout: 30000, maxBuffer: 1 << 20});
+  const result = spawnSync(readelfTool, ["--wide", flag, file], {encoding: "utf8", timeout: 30000, maxBuffer: 1 << 20});
   if (result.error || result.signal || result.status !== 0) {throw new Error("Cannot inspect native ELF: " + flag, {cause: result.error});}
   return result.stdout;
 }
@@ -83,4 +94,4 @@ function verifyNativeStrip(before, after) {
   }
 }
 
-module.exports = {elfReport, elfRangeHash, elfSections, nativeElf, verifyNativeStrip};
+module.exports = {readelfTool, stripTool, binutilsIdentity, elfReport, elfRangeHash, elfSections, nativeElf, verifyNativeStrip};

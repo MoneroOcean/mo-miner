@@ -130,7 +130,7 @@ describe("native SDK source acquisition", () => {
   test("ordinary fetcher import does not load the ACPP, LLVM JIT, or release dependency graph", {skip: process.platform !== "linux"}, () => {
     const file = path.resolve(__dirname, "../scripts/fetch-native-sdk-sources.js"), source = `
       const Module = require("node:module"), path = require("node:path"), original = Module._load;
-      const forbidden = new Set(["probe-static-sycl", "probe-static-nvrtc", "build-native-sycl-sdk", "build-native-release", "native-release-sdk-inputs"]), loaded = [];
+      const forbidden = new Set(["native-sycl-inputs", "probe-static-nvrtc", "build-native-sycl-sdk", "build-native-release", "native-release-sdk-inputs"]), loaded = [];
       Module._load = function(request, parent, isMain) {
         const name = path.basename(String(request)).replace(/\\.js$/, "");
         if (forbidden.has(name)) {loaded.push(name);}
@@ -285,9 +285,24 @@ describe("native SDK source acquisition", () => {
   test("a failed fetch or mutated Git tool never writes a usable roots manifest", {skip: process.platform !== "linux"}, async t => {
     for (const options of [{failFetch: true}, {mutateTool: true}]) {
       const f = fixture(t), mock = mockGit(options);
-      await assert.rejects(fetchSdkSources("linux", f.git, f.output, {PATH: process.env["PATH"], MOM_AOT_BUILD_ONLY: "1"}, true, {run: mock.run}));
+      await assert.rejects(fetchSdkSources("linux", f.git, f.output, {PATH: process.env["PATH"], MOM_AOT_BUILD_ONLY: "1"}, true,
+        {run: mock.run, retryDelaysMs: [0, 0]}));
       assert.equal(fs.existsSync(path.join(f.output, "roots.json")), false);
     }
+  });
+
+  test("retries a transiently failing Git fetch and still verifies the fetched revision", {skip: process.platform !== "linux"}, async t => {
+    const f = fixture(t), mock = mockGit();
+    let failures = 1;
+    /** @type {typeof mock.run} */
+    const run = async (git, args, env, log, deadline) => {
+      if (args[2] === "fetch" && failures-- > 0) {throw new Error("transient fetch failure");}
+      return mock.run(git, args, env, log, deadline);
+    };
+    const result = await fetchSdkSources("hermes", f.git, f.output, {PATH: process.env["PATH"], MOM_AOT_BUILD_ONLY: "1"}, true,
+      {run, retryDelaysMs: [0, 0]});
+    assert.equal(result.status, "PASS");
+    assert.equal(mock.calls.filter(call => call.args[2] === "fetch").length, 1);
   });
 
   test("runGit propagates a fake child failure and keeps output in its disk log", {skip: process.platform !== "linux"}, async t => {
@@ -300,8 +315,8 @@ describe("native SDK source acquisition", () => {
     const f = fixture(t), pidFile = path.join(f.root, "descendant.pid"), log = path.join(f.root, "child.log");
     const descendant = 'process.on("SIGTERM",()=>{});setInterval(()=>{},1000);';
     const leader = `const{spawn}=require("node:child_process"),fs=require("node:fs");const c=spawn(process.execPath,["-e",${JSON.stringify(descendant)}],{stdio:"ignore"});fs.writeFileSync(${JSON.stringify(pidFile)},String(c.pid));process.on("SIGTERM",()=>process.exit(0));setInterval(()=>{},1000);`;
-    const pending = runGit(process.execPath, ["-e", leader], process.env, log, Date.now() + 1000);
-    for (let attempt = 0; attempt < 50 && !fs.existsSync(pidFile); attempt++) {await new Promise(resolve => setTimeout(resolve, 20));}
+    const deadline = Date.now() + 5000, pending = runGit(process.execPath, ["-e", leader], process.env, log, deadline);
+    while (Date.now() < deadline && !fs.existsSync(pidFile)) {await new Promise(resolve => setTimeout(resolve, 20));}
     assert.ok(fs.existsSync(pidFile), "fake child launched its TERM-ignoring descendant");
     const pid = Number(fs.readFileSync(pidFile, "utf8")); assert.ok(Number.isSafeInteger(pid) && pid > 0);
     await assert.rejects(pending, /10 minute SDK source component deadline exceeded/);
@@ -586,7 +601,7 @@ describe("native controller source acquisition", () => {
     const f = fixture(t), mock = mockGit(), callerEnv = {...env(), GIT_DIR: "/ambient/repo", GIT_CONFIG_COUNT: "1",
         GIT_CONFIG_KEY_0: "include.path", GIT_CONFIG_VALUE_0: "/ambient/config", TAR_OPTIONS: "--to-command=unsafe"},
       result = await fetchSdkSources("acpp", f.git, f.output, callerEnv, true, {run: mock.run}),
-      {syclRevision, admitSyclSource} = require("../scripts/probe-static-sycl"),
+      {syclRevision, admitSyclSource} = require("../scripts/native-sycl-inputs"),
       roots = JSON.parse(fs.readFileSync(path.join(f.output, "roots.json"), "utf8")), root = path.join(f.output, "roots/acpp"),
       recipe = sourceRecipe("acpp"), patchText = ["adaptivecpp-static.patch", "adaptivecpp-jit.patch"]
         .map(name => fs.readFileSync(path.resolve(__dirname, "../runtime", name), "utf8")).join("");
@@ -601,8 +616,8 @@ describe("native controller source acquisition", () => {
     assert.equal(fs.existsSync(path.join(root, "source")), false, "source ingress remains a bare Git root without a worktree or patches");
     assert.deepEqual(Object.keys(result.recipe.files).sort(), ["runtime/adaptivecpp-jit.patch", "runtime/adaptivecpp-static.patch",
       "scripts/build-environment.js", "scripts/build-native-sycl-sdk.js", "scripts/build-source-inputs.js", "scripts/native-audit.js",
-      "scripts/native-hcf.js", "scripts/native-resources.js", "scripts/prepare-native-sdk-sources.js", "scripts/probe-native-jit.js", "scripts/probe-static-sycl.js"]);
-    assert.equal(result.recipe.files["scripts/probe-static-sycl.js"], recipe.graph["scripts/probe-static-sycl.js"]);
+      "scripts/native-hcf.js", "scripts/native-jit-link.js", "scripts/native-resources.js", "scripts/native-sycl-inputs.js", "scripts/prepare-native-sdk-sources.js"]);
+    assert.equal(result.recipe.files["scripts/native-sycl-inputs.js"], recipe.graph["scripts/native-sycl-inputs.js"]);
     assert.equal(result.recipe.files["scripts/build-native-sycl-sdk.js"], recipe.graph["scripts/build-native-sycl-sdk.js"]);
     assert.equal(result.recipe.files["scripts/prepare-native-sdk-sources.js"], recipe.graph["scripts/prepare-native-sdk-sources.js"]);
     assert.ok(mock.calls.every(call => !call.args.includes("checkout") && !call.args.includes("apply")));
@@ -675,7 +690,7 @@ describe("native controller source acquisition", () => {
   test("Hermes refuses changed origins, incomplete blobs and failed fetches", {skip: process.platform !== "linux"}, async t => {
     for (const options of [{invalidOrigin: true}, {promisor: true}, {shallow: false}, {failFetch: true}, {mutateTool: true}]) {
       const f = fixture(t), mock = mockGit(options);
-      await assert.rejects(fetchSdkSources("hermes", f.git, f.output, env(), true, {run: mock.run}));
+      await assert.rejects(fetchSdkSources("hermes", f.git, f.output, env(), true, {run: mock.run, retryDelaysMs: [0, 0]}));
       assert.equal(fs.existsSync(path.join(f.output, "roots.json")), false);
       assert.equal(fs.existsSync(path.join(f.output, "fetch.json")), false);
     }
@@ -810,7 +825,7 @@ describe("native I/O archive acquisition", () => {
   test("rejects a failed status, absent body, and malformed Content-Length", {skip: process.platform !== "linux"}, async t => {
     /** @type {Array<{fetch: TestArchiveFetch, match: RegExp}>} */
     const cases = [
-      {fetch: async url => archiveResponse(url, 503, "unavailable"), match: /complete response/},
+      {fetch: async url => archiveResponse(url, 404, "missing"), match: /complete response/},
       {fetch: async url => ({status: 200, url, headers: {get: () => null}, body: null}), match: /complete response/},
       {fetch: async url => archiveResponse(url, 200, "x", {"content-length": "1e9"}), match: /invalid Content-Length/},
     ];
@@ -1198,6 +1213,32 @@ describe("trusted pinned archive-cohort API", {skip: !["linux", "win32"].include
       await assert.rejects(fetchArchiveCohort(f.output, env(), true,
         pinnedArchiveFixture(bytes, fetch, {maxBytes: row.maxBytes})), row.match);
       assert.equal(fs.existsSync(f.output), false);
+    }
+  });
+
+  test("retries network errors, 429 and 5xx with a clean partial file but never a hash mismatch", async t => {
+    const bytes = Buffer.from("pinned bytes"), changed = Buffer.from("other bytes");
+    const broken = () => new ReadableStream({start(controller) {controller.enqueue(bytes.subarray(0, 3)); controller.error(new Error("reset"));}});
+    let calls = 0;
+    const responses = /** @type {Array<(url: string) => TestArchiveResponse>} */ ([
+      () => {throw new TypeError("fetch failed");},
+      url => ({...archiveResponse(url, 200, bytes), body: broken()}),
+      url => archiveResponse(url, 429, "slow down"),
+    ]);
+    /** @type {TestArchiveFetch} */ const flaky = async url => {
+      const next = responses[calls++];
+      return next ? next(url) : archiveResponse(url, 200, bytes);
+    };
+    const f = fixture(t), cohort = {...pinnedArchiveFixture(bytes, flaky), retryDelaysMs: [0, 0, 0]};
+    const result = await fetchArchiveCohort(f.output, env(), true, cohort);
+    assert.equal(calls, 4);
+    assert.equal(fs.readFileSync(result.archives["payload"]?.path || "").compare(bytes), 0);
+    for (const [status, body, attempts, match] of /** @type {const} */ ([[503, bytes, 3, /HTTP 503/], [200, changed, 1, /SHA256 differs/]])) {
+      const g = fixture(t); let count = 0;
+      /** @type {TestArchiveFetch} */ const fetch = async url => {count++; return archiveResponse(url, status, body);};
+      await assert.rejects(fetchArchiveCohort(g.output, env(), true, {...pinnedArchiveFixture(bytes, fetch), retryDelaysMs: [0, 0]}), match);
+      assert.equal(count, attempts);
+      assert.equal(fs.existsSync(g.output), false);
     }
   });
 

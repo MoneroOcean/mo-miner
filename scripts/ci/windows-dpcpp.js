@@ -4,7 +4,11 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const {spawnSync} = require("node:child_process");
-const ci = require("../prepare-native-ci");
+const ciSources = require("../native-ci-linux-sources"),
+  ciTar = require("../native-ci-tar"),
+  ciWindowsLlvm = require("../native-ci-windows-llvm"),
+  dpcppInputs = require("../native-dpcpp-cuda-inputs");
+const {ciSuffix} = require("../native-ci-job");
 const {fileHash, readBuildJson} = require("../build-source-inputs");
 const {sdkComponents} = require("../prepare-native-sdk-sources");
 const {linuxLlvmToolHandoffInputs} = require("../native-linux-llvm-tools");
@@ -65,7 +69,7 @@ function jobEnvironment(environment, nowSeconds = Math.floor(Date.now() / 1000))
   const pins = readPins(environment);
   if (deadline - nowSeconds < 120) {throw new Error("Insufficient time remains before the job deadline");}
   const runnerTemp = requiredEnv(environment, "RUNNER_TEMP"),
-    suffix = requiredEnv(environment, "GITHUB_RUN_ID") + "-" + requiredEnv(environment, "GITHUB_RUN_ATTEMPT"),
+    suffix = ciSuffix(environment),
     workRoot = path.join(runnerTemp, "mom-native-windows-host-sdk-" + suffix);
   const hostSdk = {
     MOM_NATIVE_WINDOWS_HOST_SDK_DEADLINE_EPOCH: String(deadline),
@@ -112,13 +116,13 @@ function pinArchive(file, sha256, maximum = 16 * 1024 ** 3) {
  * @param {string} base @param {number} maximumExpandedBytes */
 function restore(deadline, archive, sha256, roots, base, maximumExpandedBytes) {
   pinArchive(archive, sha256);
-  const members = ci.listState(archive, roots, remainingMs(deadline, 5 * 60 * 1000)),
-    expanded = ci.tarExpandedBytes(archive, members.length, remainingMs(deadline, 5 * 60 * 1000)),
+  const members = ciTar.listState(archive, roots, remainingMs(deadline, 5 * 60 * 1000)),
+    expanded = ciTar.tarExpandedBytes(archive, members.length, remainingMs(deadline, 5 * 60 * 1000)),
     disk = fs.statfsSync(base, {bigint: true});
   if (expanded > maximumExpandedBytes || BigInt(expanded) + 4n * 1024n ** 3n > disk.bavail * disk.bsize) {
     throw new Error("Pinned Windows DPC++ input exceeds its extraction bound or four-GiB disk reserve");
   }
-  ci.extractState(archive, base, roots, roots, remainingMs(deadline, 10 * 60 * 1000));
+  ciTar.extractState(archive, base, roots, roots, remainingMs(deadline, 10 * 60 * 1000));
   return members;
 }
 
@@ -128,7 +132,7 @@ function restore(deadline, archive, sha256, roots, base, maximumExpandedBytes) {
 function buildComponent() {
   const env = process.env, {deadline, pins, hostSdk} = jobEnvironment(env);
   Object.assign(env, hostSdk);
-  const suffix = `${env["GITHUB_RUN_ID"]}-${env["GITHUB_RUN_ATTEMPT"]}`, paths = ci.ciPaths(), temp = paths.runnerTemp,
+  const suffix = ciSuffix(env), paths = ciSources.ciPaths(), temp = paths.runnerTemp,
     incoming = path.join(temp, "incoming"),
     rootsFile = path.join(temp, `windows-dpcpp-static-source-roots-${suffix}.json`),
     descriptorFile = path.join(temp, `windows-dpcpp-static-descriptor-${suffix}.json`),
@@ -137,8 +141,8 @@ function buildComponent() {
     jitIsolation = path.join("/tmp", `mom-native-windows-dpcpp-jit-isolated-${suffix}`),
     sdkRoot = path.join("/tmp", `mom-native-windows-dpcpp-sdk-${suffix}`),
     adaptersRoot = path.join("/tmp", `mom-native-windows-dpcpp-adapters-${suffix}`);
-  const runAttempt = suffix, source = ci.linuxSourceStatePaths(paths, env), dpcpp = ci.dpcppCudaInputsStatePaths(paths, env),
-    hermes = ci.hermesStatePaths(paths, env), jitName = `mom-native-windows-jit-${suffix}`,
+  const source = ciSources.linuxSourceStatePaths(paths, env), dpcpp = ciSources.dpcppCudaInputsStatePaths(paths, env),
+    hermes = ciSources.hermesStatePaths(paths, env), jitName = `mom-native-windows-jit-${suffix}`,
     toolsName = `native-linux-llvm-tools-${suffix}`, ioName = `native-windows-controller-io-${suffix}`,
     windowsHermesName = `native-windows-controller-hermes-${suffix}`,
     sourceTar = path.join(incoming, path.basename(source.sourceTar)),
@@ -152,13 +156,13 @@ function buildComponent() {
     windowsIoRoot = path.join(temp, ioName), windowsHermesRoot = path.join(temp, windowsHermesName),
     jitRoot = path.join("/tmp", jitName), jitSdk = path.join(jitRoot, "sdk");
   for (const output of [rootsFile, descriptorFile, toolsManifest, componentRoot, toolsParent, jitIsolation, sdkRoot, adaptersRoot]) {
-    if (fs.existsSync(output)) {throw new Error("Windows DPC++ CI refuses an existing run-attempt output: " + path.basename(output));}
+    if (fs.existsSync(output)) {throw new Error("Windows DPC++ CI refuses an existing CI work-root output: " + path.basename(output));}
   }
 
   restore(deadline, sourceTar, pins.source, [source.sourceName], "/tmp", 8 * 1024 ** 3);
-  ci.verifyLinuxSources(paths, source, fs.realpathSync("/usr/bin/git"));
+  ciSources.verifyLinuxSources(paths, source, fs.realpathSync("/usr/bin/git"));
   restore(deadline, dpcppTar, pins.dpcpp, [dpcpp.name], "/tmp", 8 * 1024 ** 3);
-  ci.auditDpcppCudaInputs(dpcpp, windowsGpuDpcppManifest(dpcpp.manifest, pins.dpcppManifest, pins.source), pins.dpcppManifest);
+  dpcppInputs.auditDpcppCudaInputs(dpcpp, windowsGpuDpcppManifest(dpcpp.manifest, pins.dpcppManifest, pins.source), pins.dpcppManifest);
   restore(deadline, jitTar, pins.jit, [jitName], "/tmp", 12 * 1024 ** 3);
   fs.mkdirSync(toolsParent, {mode: 0o700});
   restore(deadline, toolsTar, pins.tools, [toolsName], toolsParent, 2 * 1024 ** 3);
@@ -166,9 +170,9 @@ function buildComponent() {
   restore(deadline, windowsHermesTar, pins.hermes, [windowsHermesName], temp, 2 * 1024 ** 3);
   restore(deadline, linuxHermesTar, pins.linuxHermes, [hermes.sourceName, hermes.sdkName], "/tmp", 12 * 1024 ** 3);
 
-  const tools = linuxLlvmToolHandoffInputs(path.join(toolsParent, toolsName), {runAttempt, handoffSha256: pins.toolsHandoff}),
-    io = windowsControllerHandoffInputs(windowsIoRoot, {kind: "io", runAttempt, handoffSha256: pins.ioHandoff}),
-    windowsHermes = windowsControllerHandoffInputs(windowsHermesRoot, {kind: "hermes", runAttempt, handoffSha256: pins.hermesHandoff}),
+  const tools = linuxLlvmToolHandoffInputs(path.join(toolsParent, toolsName), {handoffSha256: pins.toolsHandoff}),
+    io = windowsControllerHandoffInputs(windowsIoRoot, {kind: "io", handoffSha256: pins.ioHandoff}),
+    windowsHermes = windowsControllerHandoffInputs(windowsHermesRoot, {kind: "hermes", handoffSha256: pins.hermesHandoff}),
     linuxHermes = nativeHermesInputs(path.join(hermes.sdkRoot, "result.json"));
   if (io.kind !== "io" || windowsHermes.kind !== "hermes" || !windowsHermes.intelRuntime) {
     throw new Error("Windows DPC++ composition requires admitted same-run I/O and Hermes handoffs");
@@ -183,16 +187,16 @@ function buildComponent() {
   const windowsRoots = Object.fromEntries(windowsNames.map(name => [name, roots[name]]));
   fs.writeFileSync(rootsFile, JSON.stringify(windowsRoots) + "\n", {flag: "wx", mode: 0o444});
   runNode(deadline, "scripts/prepare-native-sdk-sources.js", ["windows", rootsFile, preparedWindows], 10 * 60 * 1000);
-  const sourcesFile = path.join(preparedWindows, "sources.json"), hostState = ci.windowsHostSdkStatePaths(),
-    hostProducer = ci.buildWindowsHostSdkSourcesCi(), hostPins = windowsGpuHostSdkPins(hostState.sdkOutput, hostProducer),
+  const sourcesFile = path.join(preparedWindows, "sources.json"), hostState = ciWindowsLlvm.windowsHostSdkStatePaths(),
+    hostProducer = ciWindowsLlvm.buildWindowsHostSdkSourcesCi(), hostPins = windowsGpuHostSdkPins(hostState.sdkOutput, hostProducer),
     clangCl = path.join(intelRoot, "bin/icx-cl"),
-    llvmDescriptor = ci.composeWindowsLlvmSdkDescriptor({windowsSdkRoot: hostState.sdkOutput, windowsSdkPins: hostPins,
-      hermesRoot: windowsHermesRoot, hermesExpectation: {kind: "hermes", runAttempt, handoffSha256: pins.hermesHandoff},
+    llvmDescriptor = ciWindowsLlvm.composeWindowsLlvmSdkDescriptor({windowsSdkRoot: hostState.sdkOutput, windowsSdkPins: hostPins,
+      hermesRoot: windowsHermesRoot, hermesExpectation: {kind: "hermes", handoffSha256: pins.hermesHandoff},
       tools: {clangCl: {path: clangCl, sha256: fileHash(clangCl)},
         lldLink: {path: tools.lldLink, sha256: fileHash(tools.lldLink), linkTarget: "lld"},
         llvmNm: {path: tools.llvmNm, sha256: fileHash(tools.llvmNm)},
         clangResourceInclude: path.join(intelRoot, "lib/clang/23/include")}}),
-    config = composeWindowsApplicationConfig({runAttempt, llvmDescriptor: llvmDescriptor.descriptor, io, hermes: windowsHermes,
+    config = composeWindowsApplicationConfig({llvmDescriptor: llvmDescriptor.descriptor, io, hermes: windowsHermes,
       hermesAot: linuxHermes, tools: {shermaot: linuxHermes.artifacts["compiler"], llvmReadobj: path.join(tools.toolRoot, "llvm-readobj")}, allowedImports});
   fs.writeFileSync(descriptorFile, JSON.stringify(config, null, 2) + "\n", {flag: "wx", mode: 0o444});
   fs.writeFileSync(toolsManifest, JSON.stringify({version: 1, tools: {llvmAr: path.join(tools.toolRoot, "llvm-ar"),
@@ -219,7 +223,7 @@ function buildComponent() {
  * RUNNER_TEMP/native-windows-dpcpp-static-<run>-<attempt>.tar, and write the hash-bound job outputs.
  * @param {NodeJS.ProcessEnv} env */
 function sealComponent(env) {
-  const suffix = `${requiredEnv(env, "GITHUB_RUN_ID")}-${requiredEnv(env, "GITHUB_RUN_ATTEMPT")}`,
+  const suffix = ciSuffix(env),
     root = path.join("/tmp", `native-windows-dpcpp-static-${suffix}`),
     archive = path.join(fs.realpathSync(requiredEnv(env, "RUNNER_TEMP")), `native-windows-dpcpp-static-${suffix}.tar`),
     receipt = path.join(root, "component.json"), result = windowsDpcppComponentInputs(root),
@@ -230,10 +234,10 @@ function sealComponent(env) {
   }
   const name = path.basename(root), rows = [...metadata.link.libraries, ...metadata.link.wholeArchives, ...metadata.link.objects],
     expected = [name, name + "/component.json", name + "/lib", name + "/objects", ...rows.map(row => name + "/" + row)].sort(),
-    packed = ci.packState(archive, path.dirname(root), [name], 5 * 60 * 1000),
-    members = ci.listState(archive, [name]).map(member => member.replace(/\/$/, "")).sort();
+    packed = ciTar.packState(archive, path.dirname(root), [name], 5 * 60 * 1000),
+    members = ciTar.listState(archive, [name]).map(member => member.replace(/\/$/, "")).sort();
   if (!packed.bytes || !Number.isSafeInteger(packed.bytes) || members.join("\0") !== expected.join("\0") ||
-      ci.tarExpandedBytes(archive, members.length) > 1024 ** 3 || fileHash(receipt) !== result.files[receipt]) {
+      ciTar.tarExpandedBytes(archive, members.length) > 1024 ** 3 || fileHash(receipt) !== result.files[receipt]) {
     throw new Error("Windows DPC++ component bundle is incomplete or changed while packing");
   }
   fs.appendFileSync(requiredEnv(env, "GITHUB_OUTPUT"), `bundle_sha256=${fileHash(archive)}\ncomponent_manifest_sha256=${fileHash(receipt)}\n` +

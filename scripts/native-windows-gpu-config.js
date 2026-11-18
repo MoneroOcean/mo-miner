@@ -12,9 +12,10 @@ const {linuxLlvmToolHandoffInputs} = linuxLlvmToolReader;
 const {vfsFiles} = require("./build-native-windows-controller");
 const {resolveOneapiCompiler, validateWindowsGpuConfig} = require("./build-native-windows-gpu");
 const {releaseBuildEnvironment, nativeSdkEnvironment} = require("./build-environment");
-const {pins: dpcppPins, sdkIdentity: dpcppSdkIdentity} = require("./probe-static-dpcpp");
-const {syclRevision} = require("./probe-static-sycl");
+const {pins: dpcppPins, sdkIdentity: dpcppSdkIdentity} = require("./native-dpcpp-pins");
+const {syclRevision} = require("./native-sycl-inputs");
 const hipHeaderReader = require("./native-rocm-hip-headers");
+const {validCiSuffix} = require("./native-ci-job");
 
 const dpcppSdkHeaders = Object.freeze([
   "CL/cl.h", "CL/cl_ext.h", "CL/cl_platform.h", "CL/cl_version.h",
@@ -26,7 +27,7 @@ const windowsSdkVirtualIncludeRoots = Object.freeze([
   "/mom-sdk/msvc/include", "/mom-sdk/sdk/include/ucrt", "/mom-sdk/sdk/include/shared",
   "/mom-sdk/sdk/include/um", "/mom-sdk/sdk/include/winrt",
 ]);
-/** @typedef {ReturnType<typeof import("./prepare-native-ci").dpcppCudaInputsStatePaths>} DpcppCudaInputsState */
+/** @typedef {ReturnType<typeof import("./native-ci-linux-sources").dpcppCudaInputsStatePaths>} DpcppCudaInputsState */
 /** @typedef {{resourceInclude:string,syclInclude:string,dpcppInclude:string,dpcppSyclInclude:string,urInclude:string,windowsSdkIncludeRoots:string[]}} WindowsGpuIncludePlanInput */
 /** @typedef {WindowsGpuIncludePlanInput} WindowsOneapiIncludePlanInput */
 /** @typedef {{root:string,archiveSha256:string,marker:{path:string,sha256:string},clang:{path:string,sha256:string},clangxx:{path:string,sha256:string},clangVersion:string}} DpcppCompilerRecord */
@@ -85,7 +86,7 @@ const maxWindowsAcppSdkArchiveBytes = 16 * 1024 ** 3, maxWindowsAcppSdkExpandedB
  * @param {{archive:string,bundleSha256:string,root:string,sourceRoot:string}} input @param {string} suffix */
 function windowsNativeAcppInputs(input, suffix) {
   if (process.platform !== "linux" || process.arch !== "x64" || !hasExactKeys(input, ["archive", "bundleSha256", "root", "sourceRoot"]) ||
-      !/^[0-9]{1,20}-[1-9][0-9]{0,5}$/.test(suffix) || !/^[a-f0-9]{64}$/.test(input.bundleSha256 || "")) {
+      !validCiSuffix(suffix) || !/^[a-f0-9]{64}$/.test(input.bundleSha256 || "")) {
     throw new Error("Windows ACPP inputs require the exact same-run Linux handoff and archive pin");
   }
   const runnerTemp = process.env["RUNNER_TEMP"] || "", incoming = path.join(runnerTemp, "incoming"),
@@ -101,7 +102,7 @@ function windowsNativeAcppInputs(input, suffix) {
 
   const archivePin = stableRegular(archive, "ACPP SDK bundle", maxWindowsAcppSdkArchiveBytes);
   if (archivePin.sha256 !== input.bundleSha256) {throw new Error("ACPP SDK tar differs from its external same-run pin");}
-  const ci = require("./prepare-native-ci"), inspectionDeadline = Date.now() + maxWindowsAcppTarInspectionMs,
+  const ci = require("./native-ci-tar"), inspectionDeadline = Date.now() + maxWindowsAcppTarInspectionMs,
     remainingInspectionMs = () => {
       const remaining = inspectionDeadline - Date.now();
       if (remaining < 1000) {throw new Error("ACPP tar inspection exceeded its shared five-minute budget");}
@@ -372,15 +373,14 @@ function validateWindowsSdkVfsRoots(host) {
  * @param {string} profile
  * @param {{windowsSdkRoot:string,windowsSdkPins:{resultSha256:string,descriptorSha256:string,filesSha256:string,overlaySha256:string},
  * windowsSourcesFile:string,dpcppState:DpcppCudaInputsState,dpcppManifestSha256:string,
- * toolsRoot:string,toolsExpectation:{runAttempt:string,handoffSha256:string},compilerRoot:string,
+ * toolsRoot:string,toolsExpectation:{handoffSha256:string},compilerRoot:string,suffix:string,
  * cudaImages?:{archive:string,bundleSha256:string,root:string}}} input
  */
 function windowsNativeGpuConfig(profile, input) {
   const baseInputKeys = ["windowsSdkRoot", "windowsSdkPins", "windowsSourcesFile", "dpcppState", "dpcppManifestSha256",
-      "toolsRoot", "toolsExpectation", "compilerRoot"], inputKeys = profile === "dpcpp" ? [...baseInputKeys, "cudaImages"] : baseInputKeys;
+      "toolsRoot", "toolsExpectation", "compilerRoot", "suffix"], inputKeys = profile === "dpcpp" ? [...baseInputKeys, "cudaImages"] : baseInputKeys;
   if (!hasExactKeys(input, inputKeys) || typeof input.dpcppManifestSha256 !== "string" ||
-      !/^[a-f0-9]{64}$/.test(input.dpcppManifestSha256) || !hasExactKeys(input.toolsExpectation, ["runAttempt", "handoffSha256"]) ||
-      typeof input.toolsExpectation.runAttempt !== "string" || !/^[0-9]{1,20}-[1-9][0-9]{0,5}$/.test(input.toolsExpectation.runAttempt) ||
+      !/^[a-f0-9]{64}$/.test(input.dpcppManifestSha256) || !hasExactKeys(input.toolsExpectation, ["handoffSha256"]) || !validCiSuffix(input.suffix) ||
       typeof input.toolsExpectation.handoffSha256 !== "string" || !/^[a-f0-9]{64}$/.test(input.toolsExpectation.handoffSha256) ||
       typeof input.windowsSdkRoot !== "string" || !path.isAbsolute(input.windowsSdkRoot) ||
       typeof input.windowsSourcesFile !== "string" || !path.isAbsolute(input.windowsSourcesFile) ||
@@ -391,7 +391,7 @@ function windowsNativeGpuConfig(profile, input) {
   if (!["oneapi", "dpcpp", "dpcpp-opencl"].includes(profile)) {throw new Error("Unsupported Windows GPU config profile");}
   if (process.platform !== "linux" || process.arch !== "x64") {throw new Error("Windows GPU config is composed on Linux x64 only");}
 
-  const suffix = input.toolsExpectation.runAttempt, expectedDpcppName = "mom-native-dpcpp-cuda-inputs-" + suffix,
+  const suffix = input.suffix, expectedDpcppName = "mom-native-dpcpp-cuda-inputs-" + suffix,
     state = input.dpcppState;
   if (!state || typeof state !== "object" || typeof state.root !== "string" || typeof state.name !== "string" ||
       typeof state.dpcppRoot !== "string" || typeof state.manifest !== "string" || !state.linux ||
@@ -401,7 +401,7 @@ function windowsNativeGpuConfig(profile, input) {
       state.manifest !== path.join(state.root, "inputs.json") ||
       state.linux.sourceName !== "mom-native-linux-source-prerequisites-" + suffix ||
       path.basename(state.linux.source) !== state.linux.sourceName || state.linux.prepared !== path.join(state.linux.source, "prepared")) {
-    throw new Error("Windows GPU DPC++ input paths do not match the selected run attempt");
+    throw new Error("Windows GPU DPC++ input paths do not match the CI work-root suffix");
   }
   canonicalDirectory(state.root, "DPC++/CUDA input root");
   canonicalDirectory(state.dpcppRoot, "DPC++ SDK root");
@@ -420,7 +420,7 @@ function windowsNativeGpuConfig(profile, input) {
   if (manifestPin.sha256 !== input.dpcppManifestSha256) {throw new Error("DPC++/CUDA input manifest differs from its external pin");}
   const dpcppManifest = readBuildJson(state.manifest);
   // This is the maintained same-run audit; do not turn the copied SDK into a second receipt.
-  const {auditDpcppCudaInputs} = require("./prepare-native-ci");
+  const {auditDpcppCudaInputs} = require("./native-dpcpp-cuda-inputs");
   auditDpcppCudaInputs(state, dpcppManifest, input.dpcppManifestSha256);
   if (fileHash(state.manifest) !== input.dpcppManifestSha256) {throw new Error("DPC++/CUDA manifest changed during admission");}
 
@@ -437,7 +437,7 @@ function windowsNativeGpuConfig(profile, input) {
     expectedWindowsSdkLeaf = "native-windows-host-sdk-" + suffix;
   if (path.basename(path.dirname(input.windowsSdkRoot)) !== expectedWindowsSdkBase ||
       path.basename(input.windowsSdkRoot) !== expectedWindowsSdkLeaf) {
-    throw new Error("Windows SDK root does not match the selected run attempt");
+    throw new Error("Windows SDK root does not match the CI work-root suffix");
   }
   const host = windowsHostSdkInputs(input.windowsSdkRoot, input.windowsSdkPins);
   /** @type {ReturnType<typeof windowsNativeGpuCudaImages> | null} */ let cudaImages = null;
@@ -453,7 +453,7 @@ function windowsNativeGpuConfig(profile, input) {
       createHash("sha256").update(JSON.stringify(sources.prepared.dpcpp.files)).digest("hex")},
     dpcppCuda: {manifestSha256: manifestPin.sha256, sourceTarSha256: dpcppManifest.source.tarSha256,
       sdkArchiveSha256: dpcppManifest.dpcpp.archiveSha256, selectedHeaders: built.selectedHeaders},
-    linuxLlvmTools: {runAttempt: input.toolsExpectation.runAttempt, handoffSha256: input.toolsExpectation.handoffSha256,
+    linuxLlvmTools: {handoffSha256: input.toolsExpectation.handoffSha256,
       files: Object.fromEntries(toolFiles.map(name => [path.join(tools.toolRoot, path.basename(name)), tools.files[name].sha256]))},
     ...(cudaImages ? {cudaImages: cudaImages.hashes} : {}),
     compiler: built.compiler,
@@ -552,23 +552,21 @@ function composeWindowsDpcppGpuConfig(profile, input) {
 function windowsNativeAcppGpuConfig(profile, input) {
   if (!["acpp-cuda", "acpp-hip"].includes(profile)) {throw new Error("Unsupported Windows ACPP GPU config profile");}
   if (process.platform !== "linux" || process.arch !== "x64") {throw new Error("Windows ACPP config is composed on Linux x64 only");}
-  const commonKeys = ["windowsSdkRoot", "windowsSdkPins", "toolsRoot", "toolsExpectation", "frontendRoot", "frontendExpectation", "acpp"],
+  const commonKeys = ["windowsSdkRoot", "windowsSdkPins", "toolsRoot", "toolsExpectation", "frontendRoot", "frontendExpectation", "acpp", "suffix"],
     cudaKeys = ["dpcppState", "dpcppManifestSha256", "cudaImages"],
     inputKeys = profile === "acpp-cuda" ? [...commonKeys, ...cudaKeys] : [...commonKeys, "hipHeaders"];
   if (!hasExactKeys(input, inputKeys) || !absolutePath(input.windowsSdkRoot) || !absolutePath(input.toolsRoot) ||
-      !absolutePath(input.frontendRoot) || !hasExactKeys(input.toolsExpectation, ["runAttempt", "handoffSha256"]) ||
+      !absolutePath(input.frontendRoot) || !hasExactKeys(input.toolsExpectation, ["handoffSha256"]) ||
       profile === "acpp-hip" && !hasExactKeys(input.hipHeaders, ["root", "handoffSha256"]) ||
-      !hasExactKeys(input.frontendExpectation, ["runAttempt", "handoffSha256"]) ||
-      input.toolsExpectation.runAttempt !== input.frontendExpectation.runAttempt ||
-      !/^[0-9]{1,20}-[1-9][0-9]{0,5}$/.test(input.toolsExpectation.runAttempt || "") ||
+      !hasExactKeys(input.frontendExpectation, ["handoffSha256"]) || !validCiSuffix(input.suffix) ||
       !/^[a-f0-9]{64}$/.test(input.toolsExpectation.handoffSha256 || "") ||
       !/^[a-f0-9]{64}$/.test(input.frontendExpectation.handoffSha256 || "")) {
     throw new Error("Windows ACPP config requires exact same-run SDK, tool and frontend inputs");
   }
-  const suffix = input.toolsExpectation.runAttempt,
+  const suffix = input.suffix,
     expectedSdkBase = "mom-native-windows-host-sdk-" + suffix, expectedSdkLeaf = "native-windows-host-sdk-" + suffix;
   if (path.basename(path.dirname(input.windowsSdkRoot)) !== expectedSdkBase || path.basename(input.windowsSdkRoot) !== expectedSdkLeaf) {
-    throw new Error("Windows SDK root does not match the selected run attempt");
+    throw new Error("Windows SDK root does not match the CI work-root suffix");
   }
   const host = windowsHostSdkReader.windowsHostSdkInputs(input.windowsSdkRoot, input.windowsSdkPins),
     tools = linuxLlvmToolReader.linuxLlvmToolHandoffInputs(input.toolsRoot, input.toolsExpectation),
@@ -582,7 +580,7 @@ function windowsNativeAcppGpuConfig(profile, input) {
   // Native HIP interop consumes upstream HIP declarations as well as SYCL headers. CUDA
   // must not inherit this separate platform's include tree or dependency chain.
   const hipHeaders = profile === "acpp-hip" ? hipHeaderReader.rocmHipHeaderInputs(input.hipHeaders?.root,
-    {runAttempt: suffix, handoffSha256: input.hipHeaders?.handoffSha256}) : null;
+    {handoffSha256: input.hipHeaders?.handoffSha256}) : null;
   /** @type {ReturnType<typeof windowsNativeGpuCudaImages>|null} */ let cudaImages = null, dpcpp = null;
   if (profile === "acpp-cuda") {
     dpcpp = admitAcppCudaInputs(input.dpcppState, input.dpcppManifestSha256, suffix);
@@ -597,9 +595,9 @@ function windowsNativeAcppGpuConfig(profile, input) {
     acpp: {...acpp.hashes, generatedFiles: acppFiles},
     ...(hipHeaders ? {hipHeaders: {handoffSha256: hipHeaders.handoffSha256,
       manifestSha256: hipHeaders.manifestSha256, files: hipHeaders.files}} : {}),
-    linuxLlvmTools: {runAttempt: suffix, handoffSha256: input.toolsExpectation.handoffSha256,
+    linuxLlvmTools: {handoffSha256: input.toolsExpectation.handoffSha256,
       files: Object.fromEntries(toolNames.map(name => [path.join(tools.toolRoot, path.basename(name)), tools.files[name].sha256]))},
-    linuxLlvmAcppFrontend: {runAttempt: suffix, handoffSha256: input.frontendExpectation.handoffSha256,
+    linuxLlvmAcppFrontend: {handoffSha256: input.frontendExpectation.handoffSha256,
       version: resolvedFrontend.version, resourceInclude: resolvedFrontend.resourceInclude,
       files: Object.fromEntries(Object.entries(frontend.files).filter(([, row]) => row.type === "file")
         .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0).map(([name, row]) => [path.join(input.frontendRoot, name), row.sha256]))},
@@ -654,13 +652,13 @@ function admitAcppCudaInputs(state, expectedManifestSha256, suffix) {
       state.cudaRoot !== path.join(state.root, "cuda") || state.manifest !== path.join(state.root, "inputs.json") ||
       state.linux?.sourceName !== sourceName || state.linux.source !== path.join("/tmp", sourceName) ||
       state.linux.prepared !== path.join(state.linux.source, "prepared")) {
-    throw new Error("ACPP CUDA inputs do not match the selected DPC++/CUDA run attempt");
+    throw new Error("ACPP CUDA inputs do not match the selected DPC++/CUDA inputs");
   }
   canonicalDirectory(state.root, "DPC++/CUDA input root"); canonicalDirectory(state.dpcppRoot, "DPC++ SDK root");
   canonicalDirectory(state.cudaRoot, "CUDA SDK root"); canonicalDirectory(state.linux.source, "Linux SDK source root");
   const manifestPin = stableRegular(state.manifest, "DPC++/CUDA input manifest", 8 << 20);
   if (manifestPin.sha256 !== expectedManifestSha256) {throw new Error("DPC++/CUDA manifest differs from its external pin");}
-  const manifest = readBuildJson(state.manifest), {auditDpcppCudaInputs} = require("./prepare-native-ci");
+  const manifest = readBuildJson(state.manifest), {auditDpcppCudaInputs} = require("./native-dpcpp-cuda-inputs");
   // Preserve acquisition provenance across unrelated CI edits, retaining all payload checks.
   auditDpcppCudaInputs(state, manifest, expectedManifestSha256);
   if (fileHash(state.manifest) !== manifestPin.sha256) {throw new Error("DPC++/CUDA manifest changed during admission");}
@@ -730,11 +728,10 @@ function resolveAcppFrontend(root, frontend, spawn = childProcess.spawnSync) {
  * the archive pin alone is not treated as proof that the extracted tree is unchanged.
  * @param {{archive:string,bundleSha256:string,root:string}} input @param {string} suffix */
 function windowsNativeGpuCudaImages(input, suffix) {
-  const run = suffix, runnerTemp = process.env["RUNNER_TEMP"] || "",
-    incoming = path.join(runnerTemp, "incoming"), archiveName = "native-linux-cuda-images-" + run + ".tar",
-    handoffName = "mom-native-cuda-images-handoff-" + run;
-  if (!hasExactKeys(input, ["archive", "bundleSha256", "root"]) ||
-      !/^[0-9]{1,20}-[1-9][0-9]{0,5}$/.test(run) ||
+  const runnerTemp = process.env["RUNNER_TEMP"] || "",
+    incoming = path.join(runnerTemp, "incoming"), archiveName = "native-linux-cuda-images-" + suffix + ".tar",
+    handoffName = "mom-native-cuda-images-handoff-" + suffix;
+  if (!hasExactKeys(input, ["archive", "bundleSha256", "root"]) || !validCiSuffix(suffix) ||
       !/^[a-f0-9]{64}$/.test(input.bundleSha256 || "") ||
       !path.isAbsolute(runnerTemp) || fs.realpathSync(runnerTemp) !== runnerTemp ||
       fs.realpathSync(incoming) !== incoming || input.archive !== path.join(incoming, archiveName) ||
@@ -750,7 +747,7 @@ function windowsNativeGpuCudaImages(input, suffix) {
       const remaining = inspectionDeadline - Date.now();
       if (remaining < 1000) {throw new Error("CUDA image tar inspection exceeded its shared five-minute budget");}
       return remaining;
-    }, ci = require("./prepare-native-ci"), members = ci.listState(input.archive, [handoffName], remainingInspectionMs());
+    }, ci = require("./native-ci-tar"), members = ci.listState(input.archive, [handoffName], remainingInspectionMs());
   if (members.length > 200000 || new Set(members.map(name => name.endsWith("/") ? name.slice(0, -1) : name)).size !== members.length) {
     throw new Error("CUDA image archive has duplicate or excessive members");
   }
@@ -764,7 +761,7 @@ function windowsNativeGpuCudaImages(input, suffix) {
     resultFile = path.join(input.root, "result.json"), includePin = stableRegular(include, "CUDA image include", 512 * 1024 * 1024),
     sidecarPin = stableRegular(sidecar, "CUDA image sidecar", 8 << 20), resultPin = stableRegular(resultFile, "CUDA image result", 1 << 20),
     admitted = require("./native-cuda-images").cudaImageInputs(include, path.resolve(__dirname, "..")),
-    result = readBuildJson(resultFile), expectedOrigin = path.join("/tmp", "mom-native-cuda-images-" + run, "bundle", "cuda-images.inc"),
+    result = readBuildJson(resultFile), expectedOrigin = path.join("/tmp", "mom-native-cuda-images-" + suffix, "bundle", "cuda-images.inc"),
     versions = Array.isArray(result.compilerVersions) ? [...result.compilerVersions].sort() : [],
     manifestImages = admitted.manifest["images"], manifestBytes = admitted.manifest["resourceBytes"];
   if (!hasExactKeys(result, ["format", "include", "sidecar", "compilerVersions", "plannedImages", "embeddedBytes", "sourceSha256"]) ||

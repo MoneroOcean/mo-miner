@@ -324,7 +324,7 @@ fi
 
 cp -r tests "$package_dir/"
 mkdir -p "$package_dir/scripts"
-cp scripts/validate-portable-opencl.js scripts/windows-command.js "$package_dir/scripts/"
+cp scripts/check-portable-opencl.js scripts/windows-command.js "$package_dir/scripts/"
 
 system_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 export PATH="$package_dir:$system_path"

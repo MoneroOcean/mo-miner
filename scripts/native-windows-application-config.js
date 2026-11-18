@@ -10,26 +10,23 @@ const hash = /^[a-f0-9]{64}$/;
 /** @param {unknown} value @returns {value is Record<string, unknown>} */
 function object(value) {return Boolean(value && typeof value === "object" && !Array.isArray(value));}
 
-/** @param {unknown} value @param {"io" | "hermes"} kind @param {string} runAttempt */
-function admittedHandoff(value, kind, runAttempt) {
-  if (!object(value) || value["kind"] !== kind || value["runAttempt"] !== runAttempt || typeof value["handoff"] !== "string" ||
+/** @param {unknown} value @param {"io" | "hermes"} kind */
+function admittedHandoff(value, kind) {
+  if (!object(value) || value["kind"] !== kind || typeof value["handoff"] !== "string" ||
       !path.isAbsolute(value["handoff"]) || path.resolve(value["handoff"]) !== value["handoff"] ||
       typeof value["handoffSha256"] !== "string" || !hash.test(value["handoffSha256"]) || !object(value["files"])) {
     throw new Error("Windows application config requires the same-run admitted " + kind + " handoff");
   }
 }
 
-/** CI adds transport identity to the shared descriptor composer, never substitutes it
- * for producer admission. Local builds use the same descriptor logic without a fake run ID.
+/** CI composition additionally requires the admitted controller handoffs; it never substitutes
+ * for producer admission. Local builds call the shared descriptor composer directly.
  * @param {unknown} input */
 function composeWindowsApplicationConfig(input) {
   if (!object(input)) {throw new Error("Invalid Windows application config composition input");}
-  const {runAttempt, ...row} = input;
-  if (!Object.hasOwn(input, "runAttempt") || typeof runAttempt !== "string" || !/^[0-9]{1,20}-[1-9][0-9]{0,5}$/.test(runAttempt)) {
-    throw new Error("Windows application config input is incomplete");
-  }
-  admittedHandoff(row["io"], "io", runAttempt); admittedHandoff(row["hermes"], "hermes", runAttempt);
-  return composeWindowsApplicationDescriptor(row);
+  admittedHandoff(input["io"], "io");
+  admittedHandoff(input["hermes"], "hermes");
+  return composeWindowsApplicationDescriptor(input);
 }
 
 /** Pure composition of already-admitted local or CI reader results; this does not admit files.

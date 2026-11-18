@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <vector>
 
-#include "../../sycl/equihash-pow.hpp"
+#include "../../sycl/equihash-pow.h"
 
 namespace {
 

@@ -2,8 +2,8 @@
 const test = require("node:test"), assert = require("node:assert/strict");
 const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
 const {spawnSync} = require("node:child_process");
-const {adaptiveCppCompileCommands, nativeIncludeRoots, gpuProfile, writeAdaptiveCppUmbrella} = require("../scripts/build-native-gpu-probe");
-const {dpcppCompileCommands, oneapiCompilerInputs, buildInputs} = require("../scripts/build-native-dpcpp-probe");
+const {adaptiveCppCompileCommands, nativeIncludeRoots, gpuProfile, writeAdaptiveCppUmbrella} = require("../scripts/native-gpu-build");
+const {dpcppCompileCommands, oneapiCompilerInputs, buildInputs} = require("../scripts/build-native-gpu");
 const {windowsGpuCompileCommands, windowsGpuHostFlags, windowsGpuDeviceFlags, windowsGpuSourceFlags, validateWindowsGpuConfig} = require("../scripts/build-native-windows-gpu");
 
 const repo = path.resolve(__dirname, "..");
@@ -194,8 +194,8 @@ test.describe("Native GPU compile planning", () => {
 
   test("all object batches precede the fresh link or isolation step and finalize complete live graphs", () => {
     for (const [file, after] of /** @type {Array<[string, string]>} */ ([
-      ["scripts/build-native-gpu-probe.js", "isolateGpuObjects(inputs.cxx"],
-      ["scripts/build-native-dpcpp-probe.js", "const linked = run(compiler"],
+      ["scripts/native-gpu-build.js", "isolateGpuObjects(inputs.cxx"],
+      ["scripts/build-native-gpu.js", "const linked = run(compiler"],
       ["scripts/build-native-windows-gpu.js", "if (!acpp && run(config.tools.clang, deviceLink"],
     ])) {
       const source = fs.readFileSync(path.join(repo, file), "utf8");
@@ -211,12 +211,12 @@ test.describe("Native GPU compile planning", () => {
     assert.match(windows, /\.\.\.Object.keys\(imageInputs\)/, "CUDA bundle and sidecar remain admitted SDK inputs");
     assert.match(windows, /PATH: \[cudaBin, \.\.\.\(env\["PATH"\]/);
     assert.match(windows, /run\(config\.tools\.clang, deviceLink, "device-link", 900000, deviceLinkEnvironment\)/);
-    assert.match(fs.readFileSync(path.join(repo, "scripts/build-native-dpcpp-probe.js"), "utf8"), /nvvm\/libdevice\/libdevice\.10\.bc/);
-    assert.match(fs.readFileSync(path.join(repo, "scripts/build-native-dpcpp-probe.js"), "utf8"), /oneapiCompilerInputs\(oneapi\)/);
+    assert.match(fs.readFileSync(path.join(repo, "scripts/build-native-gpu.js"), "utf8"), /nvvm\/libdevice\/libdevice\.10\.bc/);
+    assert.match(fs.readFileSync(path.join(repo, "scripts/build-native-gpu.js"), "utf8"), /oneapiCompilerInputs\(oneapi\)/);
   });
 
   test("CUDA image bundles remain hash-bound inputs and are not copied into per-factory objects", () => {
-    for (const file of ["scripts/build-native-dpcpp-probe.js", "scripts/build-native-gpu-probe.js", "scripts/build-native-windows-gpu.js"]) {
+    for (const file of ["scripts/build-native-gpu.js", "scripts/native-gpu-build.js", "scripts/build-native-windows-gpu.js"]) {
       const source = fs.readFileSync(path.join(repo, file), "utf8");
       assert.match(source, /cudaImageInputs\(images\)\.files/, file);
       assert.match(source, /\.\.\.\(images \? \{cudaImages: images\} : \{\}\)/, file + " must attest image mode with the selected include path");
@@ -272,7 +272,7 @@ test.describe("Native GPU compile planning", () => {
   });
 
   test("AdaptiveCpp uses the explicit hipSYCL include root rather than an output-directory symlink", () => {
-    const source = fs.readFileSync(path.join(repo, "scripts/build-native-gpu-probe.js"), "utf8");
+    const source = fs.readFileSync(path.join(repo, "scripts/native-gpu-build.js"), "utf8");
     assert.match(source, /"-isystem", path\.join\(inputs\.source, "include"\)/);
     assert.ok(source.includes("writeAdaptiveCppUmbrella(inputs.source, output);"), "Linux uses the tested shared forwarding header");
     assert.doesNotMatch(source, /fs\.symlinkSync/);

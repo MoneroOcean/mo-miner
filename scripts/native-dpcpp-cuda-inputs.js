@@ -6,14 +6,14 @@ const fs = require("node:fs"), path = require("node:path"), {spawnSync} = requir
 const {isDeepStrictEqual} = require("node:util");
 const {fileHash, readBuildJson} = require("./build-source-inputs");
 const {capturePackageCopyright} = require("./prepare-native-gnu-headers");
-const {pins: dpcppPins, sdkIdentity: dpcppSdkIdentity} = require("./probe-static-dpcpp");
+const {pins: dpcppPins, sdkIdentity: dpcppSdkIdentity} = require("./native-dpcpp-pins");
 const {sdkSourceFiles} = require("./prepare-native-sdk-sources");
 const {isStaticArchive} = require("./native-audit");
 
 const repo = path.resolve(__dirname, "..");
 const cudaPackageNames = ["cuda-cudart-12-6", "cuda-cudart-dev-12-6", "cuda-nvml-dev-12-6"];
 
-/** @typedef {import("./prepare-native-ci").LinuxPreparedSources & {sourceName:string,sourceTar?:string}} DpcppPreparedLinuxSourceState */
+/** @typedef {import("./native-ci-linux-sources").LinuxPreparedSources & {sourceName:string,sourceTar?:string}} DpcppPreparedLinuxSourceState */
 /** @typedef {{workspaceRoot?:string,name:string,root:string,dpcppRoot:string,cudaRoot:string,manifest:string,cudaVersionEvidence:string,cudaProbeEvidence:string,
  * cudaCmakeSource:string,cudaCmakeBuild:string,cudaCmakeLists:string,cudaCmakeEvidence:string,linux:DpcppPreparedLinuxSourceState}} DpcppCudaInputState */
 /** @typedef {{kind:"prepared-receipts",workspaceRoot:string,fetchReceipt:{path:string,sha256:string},linuxPreparation:{path:string,sha256:string},

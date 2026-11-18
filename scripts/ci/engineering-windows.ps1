@@ -1,14 +1,13 @@
 # Seal the Windows Engineering CPU addon and portable SYCL runtime, then re-admit both on the test runner.
-# Artifact files carry the run and attempt so a re-run never reuses or collides with an earlier upload.
+# Artifact names are fixed per run, so "Re-run failed jobs" finds the files an earlier attempt uploaded.
 param(
   [Parameter(Mandatory = $true)][ValidateSet('seal-cpu', 'seal-portable', 'stage')][string]$Action
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$suffix = "$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
-$cpuName = "mom-$suffix.node"
-$portableName = "engineering-dpcpp-opencl-$suffix.zip"
+$cpuName = 'engineering-mom.node'
+$portableName = 'engineering-dpcpp-opencl.zip'
 $portableDir = 'build/win/compilers/dpcpp-opencl'
 
 function Get-Sha256([string]$Path) {

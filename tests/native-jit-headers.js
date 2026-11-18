@@ -181,7 +181,7 @@ test.describe("Native CUDA prebuilt SDK admission", () => {
     const f = pack(t), api = path.join(f.root, "compiler"), output = path.join(f.root, "output");
     fs.mkdirSync(api); fs.mkdirSync(output);
     fs.writeFileSync(path.join(api, "nvrtc.h"), "selected API"); fs.writeFileSync(path.join(api, "driver_types.h"), "must not shadow runtime");
-    const result = require("../scripts/build-native-gpu-probe").cudaBuildHeaders(api, output, f.file, []);
+    const result = require("../scripts/native-gpu-build").cudaBuildHeaders(api, output, f.file, []);
     assert.deepEqual(fs.readdirSync(result.include), ["nvrtc.h"]);
     assert.equal(fs.readFileSync(path.join(result.include, "nvrtc.h"), "utf8"), "selected API");
     assert.equal(fs.readFileSync(path.join(output, "nvrtc-headers.inc"), "utf8"), f.source);
@@ -194,13 +194,13 @@ test.describe("Native CUDA prebuilt SDK admission", () => {
     t.mock.method(fs, "copyFileSync", (/** @type {fs.PathLike} */ source, /** @type {fs.PathLike} */ destination, /** @type {number | undefined} */ mode) => {
       copy(source, destination, mode); if (source === f.file) {fs.appendFileSync(f.metadata, "\n");}
     });
-    assert.throws(() => require("../scripts/build-native-gpu-probe").cudaBuildHeaders(api, output, f.file, []), /changed during admission/);
+    assert.throws(() => require("../scripts/native-gpu-build").cudaBuildHeaders(api, output, f.file, []), /changed during admission/);
   });
 });
 
 test.describe("Native Pearl JIT resource integration", () => {
   const read = (/** @type {string} */ file) => fs.readFileSync(path.join(__dirname, "..", file), "utf8");
-  const search = read("sycl/pearlhash/cuda-search.inc"), build = read("scripts/build-native-gpu-probe.js");
+  const search = read("sycl/pearlhash/cuda-search.inc"), build = read("scripts/native-gpu-build.js");
   test("GPU builds use the same bounded header generator as compiler proofs", () => {
     assert.match(build, /require\("\.\/native-jit-headers"\)/); assert.match(build, /cudaHeaderResources\(roots\)/);
   });
@@ -210,7 +210,7 @@ test.describe("Native Pearl JIT resource integration", () => {
     assert.match(reference, /for \(int i = 2; i < argc; \+\+i\)/);
   });
   test("compiler proof declares only its fresh cubin output as generated-code storage", () => {
-    assert.match(read("scripts/probe-native-jit-headers.js"), /auditNativeHeaders\(syscalls, headers\.roots, \[actual\]\)/);
+    assert.match(read("tests/tools/probe-native-jit-headers.js"), /auditNativeHeaders\(syscalls, headers\.roots, \[actual\]\)/);
   });
   test("the compiler archive trio comes from one selected SDK", () => {
     assert.match(build, /path\.join\(compilerLib, `lib\$\{name\}\.a`\)/);

@@ -7,7 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const compilerPolicy = require("../../compiler-policy");
-const {validateDirectory} = require("../../scripts/validate-portable-opencl");
+const {validateDirectory} = require("../../scripts/check-portable-opencl");
 const {
   gpuDeviceDiscoveryKey,
   getFirstSyclCpuDevice,

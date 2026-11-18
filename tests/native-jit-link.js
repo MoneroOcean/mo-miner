@@ -3,8 +3,8 @@
 const test = require("node:test"), assert = require("node:assert/strict");
 const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
 const {spawnSync} = require("node:child_process");
-const {lldInputs} = require("../scripts/probe-native-jit");
-const {rocmInputs} = require("../scripts/probe-static-sycl");
+const {lldInputs} = require("../scripts/native-jit-link");
+const {rocmInputs} = require("../scripts/native-sycl-inputs");
 
 test.describe("Native AMD linker target registration", {skip: process.platform === "win32"}, () => {
   // Compile the actual patched function in both modes; fake registrations never load a driver.
@@ -79,19 +79,19 @@ test.describe("Native in-process ELF linker SDK admission", () => {
     });
   }
   test("importing SDK validation cannot start a compiler or implicitly run a GPU", () => {
-    const result = spawnSync(process.execPath, ["-e", 'require("./scripts/probe-native-jit")'],
+    const result = spawnSync(process.execPath, ["-e", 'require("./scripts/native-jit-link")'],
       {cwd: path.join(__dirname, ".."), encoding: "utf8", timeout: 5000,
         env: {...process.env, LLVM_CONFIG: "/unavailable", MOM_AOT_LLD_ROOT: "/unavailable"}});
     assert.equal(result.status, 0, result.stderr); assert.equal(result.stdout, ""); assert.equal(result.stderr, "");
   });
   test("importing the AMD qualification helper never starts its build or workload", () => {
-    const result = spawnSync(process.execPath, ["-e", 'require("./scripts/probe-native-amdgpu")'],
+    const result = spawnSync(process.execPath, ["-e", 'require("./tests/tools/probe-native-amdgpu")'],
       {cwd: path.join(__dirname, ".."), encoding: "utf8", timeout: 5000,
         env: {...process.env, LLVM_CONFIG: "/unavailable", PATH: "/unavailable"}});
     assert.equal(result.status, 0, result.stderr); assert.equal(result.stdout, ""); assert.equal(result.stderr, "");
   });
   test("AMD qualification requires explicit source and build inputs before invoking tools", () => {
-    const result = spawnSync(process.execPath, [path.join(__dirname, "../scripts/probe-native-amdgpu.js")],
+    const result = spawnSync(process.execPath, [path.join(__dirname, "./tools/probe-native-amdgpu.js")],
       {encoding: "utf8", timeout: 5000, env: {...process.env, LLVM_CONFIG: "/unavailable", PATH: "/unavailable"}});
     assert.equal(result.status, 1); assert.equal(result.stdout, ""); assert.match(result.stderr, /Usage \(Linux\)/);
     assert.doesNotMatch(result.stderr, /ENOENT|spawn/);
@@ -360,7 +360,7 @@ test.describe("Native static ROCm SDK admission", () => {
     });
   }
   test("the HIP runtime lane refuses implicit execution before any device access", () => {
-    const result = spawnSync(process.execPath, [path.join(__dirname, "../scripts/probe-static-sycl.js")],
+    const result = spawnSync(process.execPath, [path.join(__dirname, "../scripts/native-sycl-inputs.js")],
       {encoding: "utf8", timeout: 5000, env: {...process.env, MOM_AOT_SYCL_BACKEND: "hip", MOM_AOT_BUILD_ONLY: "0", PATH: "/unavailable"}});
     assert.equal(result.status, 1); assert.equal(result.stdout, ""); assert.match(result.stderr, /verify fresh ownership/);
     assert.doesNotMatch(result.stderr, /ENOENT|spawn/);
@@ -383,7 +383,7 @@ test.describe("Native static ROCm SDK admission", () => {
     }
   });
   test("importing or invoking the HIPRTC fixture without inputs cannot build or execute a workload", () => {
-    for (const args of [["-e", 'require("./scripts/probe-native-hiprtc")'], [path.join(__dirname, "../scripts/probe-native-hiprtc.js")]]) {
+    for (const args of [["-e", 'require("./tests/tools/probe-native-hiprtc")'], [path.join(__dirname, "./tools/probe-native-hiprtc.js")]]) {
       const result = spawnSync(process.execPath, args, {cwd: path.join(__dirname, ".."), encoding: "utf8", timeout: 5000,
         env: {...process.env, PATH: "/unavailable"}});
       assert.equal(result.status, args[0] === "-e" ? 0 : 1);
@@ -432,8 +432,9 @@ test.describe("Native process-wide compiler gate", {skip: process.platform === "
     assert.equal((patch.match(/make_scope_exit\(mom_native_compiler_unlock\)/g) || []).length, 2);
   });
   test("every static GPU/compiler proof links the same gate implementation", () => {
-    for (const file of ["build-native-gpu-probe.js", "probe-static-sycl.js", "probe-native-amdgpu.js", "probe-native-ptx.js", "probe-native-hiprtc.js"]) {
-      assert.match(fs.readFileSync(path.join(__dirname, "../scripts", file), "utf8"), /runtime\/compiler-gate\.cpp/);
+    for (const file of ["../scripts/native-gpu-build.js", "../scripts/native-sycl-inputs.js", "tools/probe-native-amdgpu.js",
+      "tools/probe-native-ptx.js", "tools/probe-native-hiprtc.js"]) {
+      assert.match(fs.readFileSync(path.join(__dirname, file), "utf8"), /runtime\/compiler-gate\.cpp/);
     }
   });
 });

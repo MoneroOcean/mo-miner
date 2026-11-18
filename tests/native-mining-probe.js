@@ -2,9 +2,9 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const {verify, mine, miningServer, terminateChild, savedConfigPermissions} = require("../scripts/probe-native-mining");
+const {verify, mine, miningServer, terminateChild, savedConfigPermissions} = require("./tools/probe-native-mining");
 const {nativeCgroupParent, nativeContainerLaunch, nativeDeviceArgs, nativePearlFixtureTarget, nativePearlStraceArgs,
-  nativeVerifierModuleFiles, probeProfile} = require("../scripts/probe-native-pearl");
+  nativeVerifierModuleFiles, probeProfile} = require("./tools/probe-native-pearl");
 const {EventEmitter} = require("node:events");
 const {spawnSync} = require("node:child_process"), path = require("node:path");
 const net = require("node:net"), tls = require("node:tls");
@@ -159,13 +159,13 @@ test.describe("Native mining parity share verifier", {concurrency: false}, () =>
     await assert.rejects(verify(core, "cn/0", "00000000", "ab".repeat(32)), (value) => value === error);
   });
   test("native Pearl execution cannot implicitly launch from ordinary source tests", () => {
-    const result = spawnSync(process.execPath, [path.join(__dirname, "../scripts/probe-native-pearl.js")],
+    const result = spawnSync(process.execPath, [path.join(__dirname, "./tools/probe-native-pearl.js")],
       {encoding: "utf8", timeout: 5000, env: {...process.env, MOM_AOT_GPU_OWNERSHIP_VERIFIED: undefined}});
     assert.equal(result.status, 1); assert.match(result.stderr, /Verify fresh GPU ownership/);
     assert.doesNotMatch(result.stdout, /evidence/);
   });
   test("the explicit execution marker never admits malformed device identity", () => {
-    const result = spawnSync(process.execPath, [path.join(__dirname, "../scripts/probe-native-pearl.js"),
+    const result = spawnSync(process.execPath, [path.join(__dirname, "./tools/probe-native-pearl.js"),
       "/nonexistent/mom", "/nonexistent/verifier", "all"], {encoding: "utf8", timeout: 5000,
       env: {...process.env, MOM_AOT_GPU_OWNERSHIP_VERIFIED: "1"}});
     assert.equal(result.status, 1); assert.match(result.stderr, /Verify fresh GPU ownership/);
@@ -219,7 +219,7 @@ test.describe("Native mining parity share verifier", {concurrency: false}, () =>
     result = run(); assert.notEqual(result.status, 0); assert.equal(result.stdout, "");
   });
   test("invalid Docker parent is rejected before loading the verifier", () => {
-    const result = spawnSync(process.execPath, [path.join(__dirname, "../scripts/probe-native-pearl.js"),
+    const result = spawnSync(process.execPath, [path.join(__dirname, "./tools/probe-native-pearl.js"),
       "/nonexistent/mom", "/nonexistent/verifier", "GPU-376cdd2a-9343-0add-67da-9d230a3638df"],
     {encoding: "utf8", timeout: 5000, env: {...process.env,
       MOM_AOT_GPU_OWNERSHIP_VERIFIED: "1", MOM_NATIVE_CGROUP_PARENT: "/mom094native.slice"}});

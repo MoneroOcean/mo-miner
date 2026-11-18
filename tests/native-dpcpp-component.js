@@ -1,7 +1,7 @@
 "use strict";
 const fs = require("node:fs"), path = require("node:path"), os = require("node:os"), test = require("node:test"), assert = require("node:assert/strict");
 const {dpcppRuntimeGraph, dpcppComponentInputs, exportDpcppComponent} = require("../scripts/native-dpcpp-component");
-const {fileHash} = require("../scripts/build-source-inputs"), {pins} = require("../scripts/probe-static-dpcpp");
+const {fileHash} = require("../scripts/build-source-inputs"), {pins} = require("../scripts/native-dpcpp-pins");
 const {nativeSdkLinkInputs} = require("../scripts/build-native-release");
 const archives = ["libmom-sycl-static.a", "lib/libur_loader.a", "lib/libur_adapter_level_zero.a", "lib/libur_adapter_opencl.a", "lib/libze_loader.a", "deps/libhwloc.a"];
 const objects = ["cuda-adapter.o", "level-zero-v2-adapter.o", "source-jit.o"];

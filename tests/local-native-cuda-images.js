@@ -3,7 +3,7 @@
 const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"),
   path = require("node:path"), os = require("node:os");
 const local = require("../scripts/build-local-native-sdk");
-const {buildLinuxCudaImageTree} = require("../scripts/prepare-native-ci");
+const {buildLinuxCudaImageTree} = require("../scripts/native-ci-linux-cuda");
 const {localCudaImagePaths, verifyLocalCudaCompilerInputs, verifyLocalCudaHeaderRoots, auditLocalCudaImages,
   runLocalCudaImageChild, buildLocalCudaImages} =
   require("../scripts/build-local-native-cuda-images");

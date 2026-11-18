@@ -7,7 +7,10 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const {spawn} = require("node:child_process");
-const ci = require("../prepare-native-ci");
+const ciRelease = require("../native-ci-linux-release"),
+  ciSources = require("../native-ci-linux-sources"),
+  ciTar = require("../native-ci-tar");
+const {ciSuffix} = require("../native-ci-job");
 const {fileHash, readBuildJson} = require("../build-source-inputs");
 const {canonicalFile, appendOutputs} = require("./seal");
 
@@ -19,29 +22,22 @@ const linkDiagnosticsBytes = 16 << 20;
 /** Validate the requested Core or GPU factory profile. @param {NodeJS.ProcessEnv} [environment] */
 function componentProfile(environment = process.env) {
   const profile = environment["NATIVE_PROFILE"] || "";
-  if (profile !== "core" && !ci.linuxNativeGpuProfiles.includes(profile)) {
+  if (profile !== "core" && !ciRelease.linuxNativeGpuProfiles.includes(profile)) {
     throw new Error("Select one exact Linux Core or GPU factory profile");
   }
   return profile;
 }
 
 /** Seal one producer component tar after checking its exact root and manifest member.
- * @param {Pick<ReturnType<typeof ci.ciPaths>, "suffix" | "runnerTemp">} paths @param {string} profile
+ * @param {Pick<ReturnType<typeof ciSources.ciPaths>, "suffix" | "runnerTemp">} paths @param {string} profile
  * @returns {{bundle_sha256: string}} */
 function sealLinuxComponent(paths, profile) {
-  const state = ci.linuxNativeComponentStatePaths(paths, profile);
+  const state = ciRelease.linuxNativeComponentStatePaths(paths, profile);
   canonicalFile(state.archive, "Linux component handoff");
-  if (!ci.listState(state.archive, [state.name]).includes(state.name + "/component.json")) {
+  if (!ciTar.listState(state.archive, [state.name]).includes(state.name + "/component.json")) {
     throw new Error("Linux component handoff is missing its producer manifest");
   }
   return {bundle_sha256: fileHash(state.archive)};
-}
-
-/** Validate the GitHub run identity and return its `<run>-<attempt>` suffix. @param {NodeJS.ProcessEnv} environment */
-function runSuffix(environment) {
-  const run = environment["GITHUB_RUN_ID"] || "", attempt = environment["GITHUB_RUN_ATTEMPT"] || "";
-  if (!/^[0-9]{1,20}$/.test(run) || !/^[1-9][0-9]{0,5}$/.test(attempt)) {throw new Error("Linux application CI needs the GitHub run identity");}
-  return run + "-" + attempt;
 }
 
 /** Validate RUNNER_TEMP as an absolute canonical directory path. @param {NodeJS.ProcessEnv} environment */
@@ -57,8 +53,8 @@ function canonicalRunnerTemp(environment) {
  * as the uploaded diagnostics log, and on failure copy the head of the linker log beside it.
  * @param {NodeJS.ProcessEnv} [environment] @param {string[]} [command] @returns {Promise<number>} the stage exit status */
 async function runApplicationBuild(environment = process.env,
-  command = ["scripts/run-bounded-native-ci.sh", "node", "scripts/prepare-native-ci.js", "stage", "linux-native-application"]) {
-  const suffix = runSuffix(environment), runnerTemp = canonicalRunnerTemp(environment);
+  command = ["scripts/run-bounded-native-ci.sh", "node", "scripts/run-native-ci.js", "stage", "linux-native-application"]) {
+  const suffix = ciSuffix(environment), runnerTemp = canonicalRunnerTemp(environment);
   const child = spawn("/bin/sh", ["-c", "exec \"$@\" 2>&1", "sh", ...command], {cwd: repo, env: environment, stdio: ["ignore", "pipe", "inherit"]});
   /** @type {Buffer[]} */
   const chunks = [];
@@ -119,10 +115,10 @@ function assertApplicationReceipts(result, entrypoint, expected) {
   }
 }
 
-/** Plan the fresh run-attempt paths for the application handoff, validating the aggregate deadline.
+/** Plan the fresh CI work-root paths for the application handoff, validating the aggregate deadline.
  * @param {NodeJS.ProcessEnv} environment */
 function applicationHandoffPlan(environment) {
-  const suffix = runSuffix(environment), runnerTemp = canonicalRunnerTemp(environment),
+  const suffix = ciSuffix(environment), runnerTemp = canonicalRunnerTemp(environment),
     deadline = Number(environment["MOM_NATIVE_APPLICATION_DEADLINE_EPOCH"]), appRoot = path.join("/tmp", "mom-native-linux-application-" + suffix),
     evidenceName = "native-linux-application-build-" + suffix;
   const plan = {suffix, deadline, appRoot, evidenceName, evidenceRoot: path.join("/tmp", evidenceName),
@@ -131,7 +127,7 @@ function applicationHandoffPlan(environment) {
     configPath: path.join(runnerTemp, "native-linux-assembly-config-" + suffix + ".json")};
   if (!Number.isSafeInteger(deadline) || deadline * 1000 <= Date.now() || !path.isAbsolute(environment["GITHUB_OUTPUT"] || "") ||
       fs.existsSync(plan.runtimeDirectory) || fs.existsSync(plan.evidenceRoot) || fs.existsSync(plan.archive)) {
-    throw new Error("Linux application handoff paths are not the fresh canonical run-attempt plan");
+    throw new Error("Linux application handoff paths are not the fresh canonical CI work-root plan");
   }
   const rootStat = fs.lstatSync(appRoot);
   if (!rootStat.isDirectory() || rootStat.isSymbolicLink() || fs.realpathSync(appRoot) !== appRoot) {
@@ -166,7 +162,7 @@ function bindApplicationHandoff(environment = process.env) {
     fs.copyFileSync(source, destination, fs.constants.COPYFILE_EXCL);
     if (fileHash(source) !== sha256 || fileHash(destination) !== sha256) {throw new Error("Linux application evidence copy changed: " + name);}
   }
-  const handoff = {version: 1, format: "mom-linux-application-build-handoff-v1", runAttempt: suffix,
+  const handoff = {version: 1, format: "mom-linux-application-build-handoff-v1",
     target: "x86_64-unknown-linux-gnu", artifact: {file: "mom", bytes: artifact.bytes, sha256: artifact.sha256},
     config: {file: "application-config.json", sha256: configRecord.sha256},
     producerReceipt: {file: "result.json", sha256: resultRecord.sha256},
@@ -174,9 +170,9 @@ function bindApplicationHandoff(environment = process.env) {
     buildOnly: true, executed: false, publicationQualified: false};
   const handoffFile = path.join(evidenceRoot, "handoff.json");
   fs.writeFileSync(handoffFile, JSON.stringify(handoff, null, 2) + "\n", {flag: "wx", mode: 0o444});
-  const handoffSha256 = fileHash(handoffFile), packed = ci.packState(archive, "/tmp", [evidenceName], remainingMs(plan.deadline, 5 * 60 * 1000)),
+  const handoffSha256 = fileHash(handoffFile), packed = ciTar.packState(archive, "/tmp", [evidenceName], remainingMs(plan.deadline, 5 * 60 * 1000)),
     expectedMembers = [evidenceName, ...["application-config.json", "entrypoint.json", "handoff.json", "result.json"].map(name => evidenceName + "/" + name)].sort(),
-    members = ci.listState(archive, [evidenceName], remainingMs(plan.deadline, 5 * 60 * 1000)).map(name => name.replace(/\/$/, "")).sort();
+    members = ciTar.listState(archive, [evidenceName], remainingMs(plan.deadline, 5 * 60 * 1000)).map(name => name.replace(/\/$/, "")).sort();
   const runtimeStat = fs.lstatSync(binary), outputStat = fs.lstatSync(environment["GITHUB_OUTPUT"] || "");
   if (packed.bytes < 1 || packed.bytes > 128 << 20 || members.join("\0") !== expectedMembers.join("\0") ||
       fileHash(handoffFile) !== handoffSha256 ||
@@ -208,7 +204,7 @@ async function main(args) {
   if (command === "component-profile") {
     componentProfile();
   } else if (command === "component-seal") {
-    appendOutputs(sealLinuxComponent(ci.ciPaths(), componentProfile()));
+    appendOutputs(sealLinuxComponent(ciSources.ciPaths(), componentProfile()));
   } else if (command === "application-build") {
     return runApplicationBuild();
   } else if (command === "application-bind") {

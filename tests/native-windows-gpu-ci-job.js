@@ -34,7 +34,7 @@ function fixture(t) {
   /** @param {string} name */
   const suffixPath = name => path.join(tempRoot, name + "-" + suffix);
   const environment = /** @type {NodeJS.ProcessEnv} */ ({
-    RUNNER_TEMP: runnerTemp, GITHUB_RUN_ID: run, GITHUB_RUN_ATTEMPT: attempt, GITHUB_OUTPUT: output, GITHUB_STEP_SUMMARY: summary,
+    RUNNER_TEMP: runnerTemp, MOM_NATIVE_CI_SUFFIX: `${run}-${attempt}`, GITHUB_OUTPUT: output, GITHUB_STEP_SUMMARY: summary,
     MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: "2",
     MOM_NATIVE_SOURCE_DIR: suffixPath("mom-native-prerequisites"), MOM_NATIVE_LINUX_SDK_DIR: suffixPath("mom-native-llvm21-sdk"),
     MOM_NATIVE_IO_SOURCE_DIR: suffixPath("mom-native-io-prerequisites"), MOM_NATIVE_IO_SDK_DIR: suffixPath("mom-native-io-openssl-sdk"),
@@ -201,13 +201,14 @@ test.describe("Windows GPU CI job preflight", {skip: process.platform !== "linux
   });
 
   test("forwards the verified same-run manifest pin to the strict DPC++ auditor before retiring the pinned tar", t => {
-    const f = fixture(t), ci = require("../scripts/prepare-native-ci"),
-      state = {...ci.dpcppCudaInputsStatePaths({suffix: f.suffix, runnerTemp: f.runnerTemp}), manifest: path.join(f.runnerTemp, "inputs.json")},
+    const f = fixture(t), ciSources = require("../scripts/native-ci-linux-sources"),
+      dpcppInputs = require("../scripts/native-dpcpp-cuda-inputs"),
+      state = {...ciSources.dpcppCudaInputsStatePaths({suffix: f.suffix, runnerTemp: f.runnerTemp}), manifest: path.join(f.runnerTemp, "inputs.json")},
       sourceSha256 = fileHash(f.files[0] || ""), manifest = {source: {tarSha256: sourceSha256}};
     fs.writeFileSync(state.manifest, JSON.stringify(manifest) + "\n", {flag: "wx"});
     const manifestSha256 = fileHash(state.manifest);
     let calls = 0;
-    t.mock.method(ci, "auditDpcppCudaInputs", (/** @type {typeof state} */ actualState,
+    t.mock.method(dpcppInputs, "auditDpcppCudaInputs", (/** @type {typeof state} */ actualState,
       /** @type {typeof manifest} */ actualManifest, /** @type {string | undefined} */ actualPin) => {
       calls++; assert.equal(actualState, state); assert.deepEqual(actualManifest, manifest);
       assert.equal(actualPin, manifestSha256, "forward the byte-verified external manifest pin unchanged");

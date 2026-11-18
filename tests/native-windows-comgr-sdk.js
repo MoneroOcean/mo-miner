@@ -6,7 +6,7 @@ const {revision, hostSources, recipeFiles, windowsComgrSdkPlan, verifyWindowsDev
   verifyNativeIntelCompilerIdentity, verifyNativeClangIdentity, verifyNativeLibrarianIdentity, auditBc2hCompileCommands, verifyComgrCache, auditComgrCompileCommands, comgrArchive,
   auditComgrArchiveMembers, nativeRuntimeInputs, cleanEnvironment, canonicalNativeClang} = require("../scripts/build-native-windows-comgr-sdk");
 const {fileHash, buildFileInputs, sourceInputs} = require("../scripts/build-source-inputs");
-const {verifyWindowsLlvmAdmission} = require("../scripts/build-native-windows-llvm21-sdk");
+const {verifyWindowsLlvmAdmission} = require("../scripts/build-native-windows-llvm-sdk");
 
 const repo = path.resolve(__dirname, "..");
 

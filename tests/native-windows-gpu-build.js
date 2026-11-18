@@ -8,7 +8,7 @@ const assert = require("node:assert/strict");
 const {spawnSync} = require("node:child_process");
 const {createHash} = require("node:crypto");
 const {fileHash} = require("../scripts/build-source-inputs");
-const {syclSources, dpcppGpuFlags, dpcppSourceFlags} = require("../scripts/build-native-gpu-probe");
+const {syclSources, dpcppGpuFlags, dpcppSourceFlags} = require("../scripts/native-gpu-build");
 const {
   validateWindowsGpuConfig, resolveOneapiCompiler, windowsGpuGit, windowsGpuBuildJobs, windowsGpuSources, windowsGpuHostFlags, windowsGpuDeviceFlags,
   windowsGpuSourceFlags, windowsGpuCompileCommands, windowsHostSections,

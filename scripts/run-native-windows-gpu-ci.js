@@ -4,7 +4,12 @@
 // Downloaded tars are retired only after successful pinned restoration and admission.
 const fs = require("node:fs"), path = require("node:path");
 const {spawnSync} = require("node:child_process");
-const ci = require("./prepare-native-ci"), {fileHash, readBuildJson} = require("./build-source-inputs");
+const ciJob = require("./native-ci-job"),
+  ciSources = require("./native-ci-linux-sources"),
+  ciTar = require("./native-ci-tar"),
+  ciWindowsGpu = require("./native-ci-windows-gpu"),
+  ciWindowsLlvm = require("./native-ci-windows-llvm"),
+  dpcppInputs = require("./native-dpcpp-cuda-inputs"), {fileHash, readBuildJson} = require("./build-source-inputs");
 const {sdkComponents} = require("./prepare-native-sdk-sources");
 const {linuxLlvmToolHandoffInputs, linuxLlvmAcppFrontendInputs} = require("./native-linux-llvm-tools");
 const {windowsNativeGpuConfig, windowsNativeAcppGpuConfig} = require("./native-windows-gpu-config");
@@ -31,9 +36,9 @@ function windowsGpuAcppConfigInput(plan, windowsSdkRoot, windowsSdkPins) {
   const {acpp, dpcpp, cudaImages, hipHeaders, pins} = plan;
   if (!acpp) {throw new Error("The selected Windows GPU profile has no admitted ACPP inputs");}
   return {windowsSdkRoot, windowsSdkPins, toolsRoot: plan.toolsRoot,
-    toolsExpectation: {runAttempt: plan.suffix, handoffSha256: pins["TOOLS_HANDOFF"] || ""},
+    toolsExpectation: {handoffSha256: pins["TOOLS_HANDOFF"] || ""},
     frontendRoot: acpp.frontendRoot,
-    frontendExpectation: {runAttempt: plan.suffix, handoffSha256: pins["FRONTEND_HANDOFF"] || ""},
+    frontendExpectation: {handoffSha256: pins["FRONTEND_HANDOFF"] || ""}, suffix: plan.suffix,
     acpp: {archive: acpp.sdkTar, bundleSha256: pins["ACPP_SDK_BUNDLE"] || "", root: acpp.sdkRoot,
       sourceRoot: acpp.source.preparedCheckout},
     ...(dpcpp ? {dpcppState: dpcpp, dpcppManifestSha256: pins["DPCPP_MANIFEST"] || ""} : {}),
@@ -45,13 +50,13 @@ function windowsGpuAcppConfigInput(plan, windowsSdkRoot, windowsSdkPins) {
  * @param {string} profile */
 function windowsGpuCiJobPlan(profile) {
   const environment = process.env;
-  if (!windowsGpuProfiles.includes(profile) || environment["MOM_BUILD_JOBS"] !== ci.ciBuildJobs(environment)) {
+  if (!windowsGpuProfiles.includes(profile) || environment["MOM_BUILD_JOBS"] !== ciJob.ciBuildJobs(environment)) {
     throw new Error("Windows GPU CI stages only the five maintained factories with a valid job count");
   }
-  const paths = ci.ciPaths(), linux = ci.linuxSourceStatePaths(paths, environment),
-    dpcpp = profile === "acpp-hip" ? null : ci.dpcppCudaInputsStatePaths(paths, environment),
-    acppSource = acppGpuProfiles.includes(profile) ? ci.acppStatePaths(paths, environment) : null,
-    factory = ci.windowsGpuHandoffStatePaths(profile, environment), suffix = paths.suffix,
+  const paths = ciSources.ciPaths(), linux = ciSources.linuxSourceStatePaths(paths, environment),
+    dpcpp = profile === "acpp-hip" ? null : ciSources.dpcppCudaInputsStatePaths(paths, environment),
+    acppSource = acppGpuProfiles.includes(profile) ? ciSources.acppStatePaths(paths, environment) : null,
+    factory = ciWindowsGpu.windowsGpuHandoffStatePaths(profile, environment), suffix = paths.suffix,
     pinNames = ["SOURCE_BUNDLE", "TOOLS_BUNDLE", "TOOLS_HANDOFF",
       ...(dpcpp ? ["DPCPP_BUNDLE", "DPCPP_MANIFEST"] : []),
       ...(profile === "acpp-hip" ? ["HIP_HEADERS_BUNDLE", "HIP_HEADERS_HANDOFF"] : []),
@@ -73,7 +78,7 @@ function windowsGpuCiJobPlan(profile) {
     throw new Error("Windows GPU job received an input pin unused by its selected profile");
   }
   const deadlineEpoch = environment["MOM_NATIVE_WINDOWS_GPU_DEADLINE_EPOCH"] || "";
-  ci.windowsGpuDeadlineBudget(deadlineEpoch, "build");
+  ciWindowsGpu.windowsGpuDeadlineBudget(deadlineEpoch, "build");
   const toolsName = "native-linux-llvm-tools-" + suffix, incoming = path.join(paths.runnerTemp, "incoming"),
     toolsParent = path.join(paths.runnerTemp, "windows-gpu-tools-" + suffix),
     configSource = path.join(paths.runnerTemp, "windows-gpu-" + profile + "-config-" + suffix + ".json"),
@@ -152,7 +157,7 @@ function remaining(plan, capMs, reserveMs = 60000) {
 }
 
 /** Bind SDK metadata to the just-finished producer, not a new self-attested hash.
- * @param {string} root @param {Pick<ReturnType<typeof ci.buildWindowsHostSdkSourcesCi>,
+ * @param {string} root @param {Pick<ReturnType<typeof ciWindowsLlvm.buildWindowsHostSdkSourcesCi>,
  * "sdk_receipt_sha256"|"descriptor_sha256"|"files_provenance_sha256">} producer */
 function windowsGpuHostSdkPins(root, producer) {
   const resultFile = path.join(root, "result.json");
@@ -179,10 +184,10 @@ function windowsGpuDpcppManifest(file, manifestSha256, sourceSha256) {
 
 /** Re-admit the restored same-run DPC++ bundle with its already verified manifest pin.
  * The caller must first verify the external bundle pin and restore this root from that tar.
- * @param {ReturnType<typeof ci.dpcppCudaInputsStatePaths>} state @param {string} manifestSha256 @param {string} sourceSha256 */
+ * @param {ReturnType<typeof ciSources.dpcppCudaInputsStatePaths>} state @param {string} manifestSha256 @param {string} sourceSha256 */
 function admitWindowsGpuDpcppInputs(state, manifestSha256, sourceSha256) {
   const manifest = windowsGpuDpcppManifest(state.manifest, manifestSha256, sourceSha256);
-  return ci.auditDpcppCudaInputs(state, manifest, manifestSha256);
+  return dpcppInputs.auditDpcppCudaInputs(state, manifest, manifestSha256);
 }
 
 /** Restore one exact top-level cohort and keep a four-GiB disk reserve without keeping two copies.
@@ -190,13 +195,13 @@ function admitWindowsGpuDpcppInputs(state, manifestSha256, sourceSha256) {
  * @param {string} destination @param {string} root */
 function restore(plan, archive, pin, destination, root) {
   pinnedArchive(archive, pin);
-  const members = ci.listState(archive, [root], remaining(plan, 5 * 60 * 1000)),
-    expanded = ci.tarExpandedBytes(archive, members.length, remaining(plan, 5 * 60 * 1000)),
+  const members = ciTar.listState(archive, [root], remaining(plan, 5 * 60 * 1000)),
+    expanded = ciTar.tarExpandedBytes(archive, members.length, remaining(plan, 5 * 60 * 1000)),
     space = fs.statfsSync(destination, {bigint: true});
   if (BigInt(expanded) + 4n * 1024n ** 3n > space.bavail * space.bsize) {
     throw new Error("Windows GPU input restore would consume its four-GiB disk reserve");
   }
-  ci.extractState(archive, destination, [root], [root], remaining(plan, 10 * 60 * 1000));
+  ciTar.extractState(archive, destination, [root], [root], remaining(plan, 10 * 60 * 1000));
 }
 
 /** Run one existing factory producer; no runtime or hardware test is performed.
@@ -204,7 +209,7 @@ function restore(plan, archive, pin, destination, root) {
 function runWindowsGpuCiJob(profile) {
   const plan = windowsGpuCiJobPreflight(profile), {paths, linux, dpcpp, acpp, pins} = plan, git = fs.realpathSync("/usr/bin/git");
   restore(plan, plan.sourceTar, pins["SOURCE_BUNDLE"] || "", "/tmp", linux.sourceName);
-  ci.verifyLinuxSources(paths, linux, git);
+  ciSources.verifyLinuxSources(paths, linux, git);
   fs.unlinkSync(plan.sourceTar);
   if (dpcpp) {
     restore(plan, plan.dpcppTar || "", pins["DPCPP_BUNDLE"] || "", "/tmp", dpcpp.name);
@@ -213,14 +218,14 @@ function runWindowsGpuCiJob(profile) {
   }
   fs.mkdirSync(plan.toolsParent, {mode: 0o700});
   restore(plan, plan.toolsTar, pins["TOOLS_BUNDLE"] || "", plan.toolsParent, plan.toolsName);
-  linuxLlvmToolHandoffInputs(plan.toolsRoot, {runAttempt: plan.suffix, handoffSha256: pins["TOOLS_HANDOFF"] || ""});
+  linuxLlvmToolHandoffInputs(plan.toolsRoot, {handoffSha256: pins["TOOLS_HANDOFF"] || ""});
   fs.unlinkSync(plan.toolsTar);
   if (acpp) {
     restore(plan, acpp.sourceTar, pins["ACPP_SOURCE_BUNDLE"] || "", "/tmp", acpp.source.sourceName);
-    ci.verifyAcppSource(paths, acpp.source, git);
+    ciSources.verifyAcppSource(paths, acpp.source, git);
     fs.unlinkSync(acpp.sourceTar);
     restore(plan, acpp.frontendTar, pins["FRONTEND_BUNDLE"] || "", "/tmp", acpp.frontendName);
-    linuxLlvmAcppFrontendInputs(acpp.frontendRoot, {runAttempt: plan.suffix, handoffSha256: pins["FRONTEND_HANDOFF"] || ""});
+    linuxLlvmAcppFrontendInputs(acpp.frontendRoot, {handoffSha256: pins["FRONTEND_HANDOFF"] || ""});
     fs.unlinkSync(acpp.frontendTar);
     restore(plan, acpp.sdkTar, pins["ACPP_SDK_BUNDLE"] || "", "/tmp", acpp.sdkName);
   }
@@ -251,11 +256,11 @@ function runWindowsGpuCiJob(profile) {
     MOM_NATIVE_WINDOWS_HOST_SDK_ARCHIVE_DIR: path.join(sdkBase, "archives"), MOM_NATIVE_WINDOWS_HOST_SDK_OUTPUT_DIR: sdkRoot,
     MOM_NATIVE_WINDOWS_HOST_SDK_METADATA_TAR: plan.sdkMetadata,
     MOM_NATIVE_WINDOWS_HOST_SDK_DEADLINE_EPOCH: String(sdkDeadline)});
-  const sdkProducer = ci.buildWindowsHostSdkSourcesCi();
+  const sdkProducer = ciWindowsLlvm.buildWindowsHostSdkSourcesCi();
   // Match standalone compiler queries/builds without borrowing another profile's runtime.
   process.env["LD_LIBRARY_PATH"] = windowsGpuLibraryPath(profile, dpcpp?.dpcppRoot || null);
   const windowsSdkPins = windowsGpuHostSdkPins(sdkRoot, sdkProducer),
-    toolsExpectation = {runAttempt: plan.suffix, handoffSha256: pins["TOOLS_HANDOFF"] || ""};
+    toolsExpectation = {handoffSha256: pins["TOOLS_HANDOFF"] || ""};
   /** @type {{configBytes:Buffer,configSha256:string}} */
   let produced;
   if (acpp) {
@@ -266,7 +271,7 @@ function runWindowsGpuCiJob(profile) {
     produced = windowsNativeGpuConfig(profile, {windowsSdkRoot: sdkRoot, windowsSdkPins,
       windowsSourcesFile: path.join(windowsSources, "sources.json"), dpcppState: dpcpp,
       dpcppManifestSha256: pins["DPCPP_MANIFEST"] || "", toolsRoot: plan.toolsRoot,
-      toolsExpectation, compilerRoot: profile === "oneapi" ? "/opt/intel/oneapi/compiler/2026.2" : dpcpp?.dpcppRoot || "",
+      toolsExpectation, suffix: plan.suffix, compilerRoot: profile === "oneapi" ? "/opt/intel/oneapi/compiler/2026.2" : dpcpp?.dpcppRoot || "",
       ...(plan.cudaImages ? {cudaImages: plan.cudaImages} : {})});
   }
   // The config reader also verifies the original image artifact before it is retired.
@@ -274,7 +279,7 @@ function runWindowsGpuCiJob(profile) {
   if (plan.hipHeaders) {fs.unlinkSync(plan.hipHeaders.archive);}
   if (acpp) {fs.unlinkSync(acpp.sdkTar);}
   fs.writeFileSync(plan.configSource, produced.configBytes, {flag: "wx", mode: 0o444});
-  ci.buildWindowsGpuProfileCi(profile, plan.configSource, produced.configSha256);
+  ciWindowsGpu.buildWindowsGpuProfileCi(profile, plan.configSource, produced.configSha256);
 }
 
 module.exports = {windowsGpuCiJobPlan, windowsGpuCiJobPreflight, windowsGpuHostSdkPins, windowsGpuDpcppManifest,

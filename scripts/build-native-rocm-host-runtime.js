@@ -9,7 +9,7 @@ const {absolutePath} = require("./build-native-release");
 const {isStaticArchive} = require("./native-audit");
 const {comgrSdkInputs} = require("./native-comgr-inputs");
 const {sdkSourceFiles, verifySdkExport} = require("./prepare-native-sdk-sources");
-const {rocmInputs} = require("./probe-static-sycl");
+const {rocmInputs} = require("./native-sycl-inputs");
 
 const pins = Object.freeze({
   clr: "5b591b2ff64aac4c1c08be879b0d5f89fd713d50",
@@ -22,7 +22,7 @@ const hsakmtInstallArchiveName = "libhsakmt.a";
 const repo = path.resolve(__dirname, "..");
 const recipeFiles = ["scripts/build-native-rocm-host-runtime.js", "scripts/build-native-sycl-sdk.js", "scripts/build-native-comgr-sdk.js",
   "scripts/native-comgr-inputs.js", "scripts/prepare-native-sdk-sources.js", "scripts/build-native-release.js", "scripts/build-source-inputs.js",
-  "scripts/build-environment.js", "scripts/native-audit.js", "scripts/probe-static-sycl.js", "scripts/native-hcf.js"];
+  "scripts/build-environment.js", "scripts/native-audit.js", "scripts/native-sycl-inputs.js", "scripts/native-hcf.js"];
 const configKeys = "comgrReceipt,dependencies,hostCompilers,pkgConfigDir,sources,tools,version";
 const sourceKeys = "clr,hip,rocr", toolKeys = "ar,cmake,dpkgQuery,git,llvmObjcopy,ninja,perl,pkgConfig,python3,ranlib,tar,xxd";
 const dependencyKeys = "drm,drmAmdgpu,elf,numa";

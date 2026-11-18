@@ -4,7 +4,8 @@
 // bundle and original build handoff, then package and audit through the existing release APIs.
 // The candidate is never executed and nothing is rebuilt.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
-const ci = require("../prepare-native-ci"), {fileHash, readBuildJson} = require("../build-source-inputs");
+const ci = require("../native-ci-tar"), {fileHash, readBuildJson} = require("../build-source-inputs");
+const {validCiSuffix} = require("../native-ci-job");
 const {auditNativeRelease} = require("../check-native-release"), {packageNativeRelease} = require("../package-native-release");
 const {checkNativeNoticeReview} = require("../check-native-notices");
 
@@ -25,13 +26,13 @@ function sha256Pin(env, name) {
   return value !== undefined && hashPattern.test(value) ? value : null;
 }
 
-/** Derive this run attempt's exact platform, names and producer pins; nothing here touches artifacts.
+/** Derive the exact platform, names and producer pins; nothing here touches artifacts.
  * @param {NodeJS.ProcessEnv} env */
 function packagePlan(env) {
-  const suffix = env["GITHUB_RUN_ID"] + "-" + env["GITHUB_RUN_ATTEMPT"], target = env["NATIVE_PLATFORM"],
+  const suffix = env["MOM_NATIVE_CI_SUFFIX"], target = env["NATIVE_PLATFORM"],
     packedBundleSha256 = sha256Pin(env, "PACKED_BUILD_BUNDLE_SHA256"), rawSha256 = sha256Pin(env, "RAW_EXECUTABLE_SHA256"),
     originalBundleSha256 = sha256Pin(env, "ORIGINAL_BUILD_BUNDLE_SHA256"), originalHandoffSha256 = sha256Pin(env, "ORIGINAL_HANDOFF_SHA256");
-  if (!/^[0-9]{1,20}-[1-9][0-9]{0,5}$/.test(suffix) || (target !== "linux" && target !== "win32") ||
+  if (!validCiSuffix(suffix) || (target !== "linux" && target !== "win32") ||
       packedBundleSha256 === null || rawSha256 === null || originalBundleSha256 === null || originalHandoffSha256 === null) {
     return null;
   }
@@ -78,7 +79,7 @@ function resolveCmake(env) {
  * @param {NodeJS.ProcessEnv} env @param {Pick<PackageIo, "checkNativeNoticeReview">} io */
 function preflightPackage(env, io) {
   if (packagePlan(env) === null || !path.isAbsolute(env["GITHUB_WORKSPACE"] || "")) {
-    throw new Error("Late native packaging needs this run attempt's exact platform, workspace and build SHA-256 pins");
+    throw new Error("Late native packaging needs the exact platform, workspace and build SHA-256 pins");
   }
   io.checkNativeNoticeReview();
   const cmake = resolveCmake(env);
@@ -248,7 +249,7 @@ function packageNative(env, io) {
       candidate.producerReceipt?.path !== producer || candidate.producerReceipt.sha256 !== originProducerInfo.sha256 ||
       candidate.packingReceipt?.path !== packReceipt || candidate.packingReceipt.sha256 !== packInfo.sha256 ||
       candidate.configFile !== runTempConfig || candidate.configHash !== origin.configHash ||
-      !handoff || handoff.version !== 1 || handoff.format !== `mom-${platform}-application-build-handoff-v1` || handoff.runAttempt !== suffix ||
+      !handoff || handoff.version !== 1 || handoff.format !== `mom-${platform}-application-build-handoff-v1` ||
       handoff.target !== (target === "win32" ? "x86_64-pc-windows-msvc" : "x86_64-unknown-linux-gnu") ||
       handoff.buildOnly !== true || handoff.executed !== false || handoff.publicationQualified !== false ||
       handoff.artifact?.file !== binary || handoff.artifact.sha256 !== plan.rawSha256 || handoff.artifact.bytes !== rawInfo.bytes ||
@@ -265,7 +266,7 @@ function packageNative(env, io) {
       packing.artifact?.path !== path.join(packedRoot, binary) || packing.artifact.sha256 !== packedArtifact.sha256 ||
       packing.artifact.bytes !== packedArtifact.bytes || packing.buildOnly !== true || packing.publicationQualified !== false ||
       Object.keys(packing.logs || {}).sort().join(",") !== "integrity,pack,restore") {
-    throw new Error("Packed artifact, original handoff, raw executable or retained packing evidence does not join the pinned run attempt");
+    throw new Error("Packed artifact, original handoff, raw executable or retained packing evidence does not join the pinned build");
   }
   for (const stage of ["pack", "integrity", "restore"]) {
     const logPath = path.join(packedRoot, stage + ".log"), row = packing.logs[stage];

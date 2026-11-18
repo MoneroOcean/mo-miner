@@ -2,7 +2,8 @@ name: Build and test release archives
 
 # Complete cold native build: source gates, Engineering hashing, Linux and Windows SDK producers,
 # applications, raw and packed runtime lanes, then two audited packages. Producer jobs use native-job.yml;
-# "@" in artifact lists stands for <run>-<attempt>. Pins always come from producer job outputs.
+# "@" in artifact lists stands for the fixed work-root suffix MOM_NATIVE_CI_SUFFIX ("ci"), so "Re-run failed
+# jobs" finds the artifacts of earlier attempts. Pins always come from producer job outputs.
 on:
   workflow_call:
     outputs:
@@ -33,14 +34,14 @@ jobs:
       timeout: 30
       upload: >-
         native-linux-sdk-state-@-sources.tar
-      run: node scripts/prepare-native-ci.js stage linux-sources
+      run: node scripts/run-native-ci.js stage linux-sources
 
   llvm-sources:
     uses: ./.github/workflows/native-job.yml
     with:
       upload: >-
         native-llvm21-state-@-sources.tar
-      run: node scripts/prepare-native-ci.js stage sources
+      run: node scripts/run-native-ci.js stage sources
 
   hermes-sources:
     uses: ./.github/workflows/native-job.yml
@@ -48,7 +49,7 @@ jobs:
       timeout: 30
       upload: >-
         native-hermes-state-@-sources.tar
-      run: node scripts/prepare-native-ci.js stage hermes-sources
+      run: node scripts/run-native-ci.js stage hermes-sources
 
   acpp-sources:
     uses: ./.github/workflows/native-job.yml
@@ -57,8 +58,8 @@ jobs:
       upload: >-
         native-acpp-state-@-sources.tar
       run: |
-        node scripts/prepare-native-ci.js stage acpp-sources
-        s="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        node scripts/run-native-ci.js stage acpp-sources
+        s="$MOM_NATIVE_CI_SUFFIX"
         node scripts/ci/seal.js bundle_sha256="$RUNNER_TEMP/native-acpp-state-$s-sources.tar"
 
   zstd-sources:
@@ -67,7 +68,7 @@ jobs:
       timeout: 30
       upload: >-
         native-zstd-state-@-sources.tar
-      run: node scripts/prepare-native-ci.js stage zstd-sources
+      run: node scripts/run-native-ci.js stage zstd-sources
 
   rocm-sources:
     uses: ./.github/workflows/native-job.yml
@@ -76,8 +77,8 @@ jobs:
       upload: >-
         native-rocm-state-@-sources.tar
       run: |
-        node scripts/prepare-native-ci.js stage rocm-sources
-        s="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        node scripts/run-native-ci.js stage rocm-sources
+        s="$MOM_NATIVE_CI_SUFFIX"
         node scripts/ci/seal.js bundle_sha256="$RUNNER_TEMP/native-rocm-state-$s-sources.tar"
 
   gnu-headers-linux:
@@ -87,7 +88,7 @@ jobs:
       apt: libstdc++-13-dev libc6-dev linux-libc-dev
       upload: >-
         native-linux-gnu-headers-@.tar
-      run: node scripts/prepare-native-ci.js stage gnu-headers
+      run: node scripts/run-native-ci.js stage gnu-headers
 
   gnu-headers-windows:
     uses: ./.github/workflows/native-job.yml
@@ -97,8 +98,8 @@ jobs:
       upload: >-
         native-windows-gnu-headers-@.tar
       run: |
-        node scripts/prepare-native-ci.js stage windows-gnu-headers
-        s="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        node scripts/run-native-ci.js stage windows-gnu-headers
+        s="$MOM_NATIVE_CI_SUFFIX"
         root="$MOM_NATIVE_WINDOWS_GNU_HEADERS_DIR"
         node scripts/ci/seal.js windows_bundle_sha256="$RUNNER_TEMP/native-windows-gnu-headers-$s.tar" \
           windows_result_sha256="$root/result.json" windows_copyrights_sha256="$root/copyrights.json"
@@ -115,7 +116,7 @@ jobs:
         native-linux-dpcpp-cuda-inputs-@.tar
       pins: |
         MOM_NATIVE_LINUX_SOURCE_BUNDLE_SHA256=${{ fromJSON(needs.linux-sources.outputs.json).bundle_sha256 }}
-      run: node scripts/prepare-native-ci.js stage dpcpp-cuda-inputs
+      run: node scripts/run-native-ci.js stage dpcpp-cuda-inputs
 
   cuda-images:
     needs: [linux-sources, dpcpp-cuda-inputs]
@@ -132,8 +133,8 @@ jobs:
         MOM_NATIVE_LINUX_DPCPP_CUDA_MANIFEST_SHA256=${{ fromJSON(needs.dpcpp-cuda-inputs.outputs.json).manifest_sha256 }}
       run: |
         node scripts/ci/linux-sdk.js cuda-images-sources
-        scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage cuda-images-linux
-        s="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        scripts/run-bounded-native-ci.sh node scripts/run-native-ci.js stage cuda-images-linux
+        s="$MOM_NATIVE_CI_SUFFIX"
         node scripts/ci/seal.js bundle_sha256="$RUNNER_TEMP/native-linux-cuda-images-$s.tar"
 
   linux-llvm:
@@ -141,6 +142,8 @@ jobs:
     uses: ./.github/workflows/native-job.yml
     with:
       timeout: 330
+      dev: oneapi
+      cache: linux-llvm
       download: >-
         native-llvm21-state-@-sources.tar
       upload: >-
@@ -149,11 +152,11 @@ jobs:
         native-linux-llvm-tools-@.tar
         native-linux-llvm-acpp-frontend-@.tar
       run: |
-        scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage linux-llvm
-        s="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        scripts/run-bounded-native-ci.sh node scripts/run-native-ci.js stage linux-llvm
+        s="$MOM_NATIVE_CI_SUFFIX"
         node scripts/ci/seal.js sdk_bundle_sha256="$RUNNER_TEMP/native-linux-llvm21-sdk-$s.tar"
-        node scripts/prepare-native-ci.js stage linux-llvm-installed-sdk
-        node scripts/prepare-native-ci.js stage linux-llvm-tools
+        node scripts/run-native-ci.js stage linux-llvm-installed-sdk
+        node scripts/run-native-ci.js stage linux-llvm-tools
         node scripts/ci/linux-sdk.js acpp-frontend
 
   io-openssl:
@@ -164,7 +167,7 @@ jobs:
         native-llvm21-state-@-sources.tar
       upload: >-
         native-linux-io-openssl-sdk-@.tar
-      run: MOM_NATIVE_IO_OPENSSL_DEADLINE_EPOCH=$((MOM_CI_DEADLINE_EPOCH - 300)) scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage io-openssl
+      run: MOM_NATIVE_IO_OPENSSL_DEADLINE_EPOCH=$((MOM_CI_DEADLINE_EPOCH - 300)) scripts/run-bounded-native-ci.sh node scripts/run-native-ci.js stage io-openssl
 
   openmp-sdk:
     needs: [llvm-sources]
@@ -174,7 +177,7 @@ jobs:
         native-llvm21-state-@-sources.tar
       upload: >-
         native-linux-openmp-sdk-@.tar
-      run: scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage openmp-sdk
+      run: scripts/run-bounded-native-ci.sh node scripts/run-native-ci.js stage openmp-sdk
 
   zstd-sdk:
     needs: [zstd-sources]
@@ -184,7 +187,7 @@ jobs:
         native-zstd-state-@-sources.tar
       upload: >-
         native-linux-zstd-sdk-@.tar
-      run: scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage zstd-sdk
+      run: scripts/run-bounded-native-ci.sh node scripts/run-native-ci.js stage zstd-sdk
 
   hermes-sdk:
     needs: [hermes-sources]
@@ -195,8 +198,8 @@ jobs:
       upload: >-
         native-linux-hermes-sdk-@.tar
       run: |
-        scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage hermes-sdk
-        s="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        scripts/run-bounded-native-ci.sh node scripts/run-native-ci.js stage hermes-sdk
+        s="$MOM_NATIVE_CI_SUFFIX"
         node scripts/ci/seal.js bundle_sha256="$RUNNER_TEMP/native-linux-hermes-sdk-$s.tar"
 
   rocm-comgr:
@@ -213,7 +216,7 @@ jobs:
       pins: |
         MOM_NATIVE_LINUX_LLVM_SDK_HANDOFF_SHA256=${{ fromJSON(needs.linux-llvm.outputs.json).llvm_sdk_handoff_sha256 }}
       run: |
-        scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage rocm-comgr-sdk
+        scripts/run-bounded-native-ci.sh node scripts/run-native-ci.js stage rocm-comgr-sdk
         node scripts/ci/linux-sdk.js rocm-hip-headers
 
   rocm-host:
@@ -226,7 +229,7 @@ jobs:
         native-linux-rocm-host-sdk-@.tar
       pins: |
         MOM_NATIVE_LINUX_LLVM_SDK_HANDOFF_SHA256=${{ fromJSON(needs.linux-llvm.outputs.json).llvm_sdk_handoff_sha256 }}
-      run: scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage rocm-host-sdk
+      run: scripts/run-bounded-native-ci.sh node scripts/run-native-ci.js stage rocm-host-sdk
 
   acpp-sdk:
     needs: [acpp-sources, openmp-sdk, rocm-host, dpcpp-cuda-inputs, linux-llvm]
@@ -245,8 +248,8 @@ jobs:
         MOM_NATIVE_LINUX_DPCPP_CUDA_BUNDLE_SHA256=${{ fromJSON(needs.dpcpp-cuda-inputs.outputs.json).bundle_sha256 }}
         MOM_NATIVE_LINUX_DPCPP_CUDA_MANIFEST_SHA256=${{ fromJSON(needs.dpcpp-cuda-inputs.outputs.json).manifest_sha256 }}
       run: |
-        scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage acpp-cuda-hip-sdk
-        s="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        scripts/run-bounded-native-ci.sh node scripts/run-native-ci.js stage acpp-cuda-hip-sdk
+        s="$MOM_NATIVE_CI_SUFFIX"
         node scripts/ci/seal.js bundle_sha256="$RUNNER_TEMP/native-linux-acpp-cuda-hip-sdk-$s.tar"
 
 
@@ -265,7 +268,7 @@ jobs:
         MOM_NATIVE_LINUX_DPCPP_CUDA_BUNDLE_SHA256=${{ fromJSON(needs.dpcpp-cuda-inputs.outputs.json).bundle_sha256 }}
         MOM_NATIVE_LINUX_DPCPP_CUDA_MANIFEST_SHA256=${{ fromJSON(needs.dpcpp-cuda-inputs.outputs.json).manifest_sha256 }}
       run: |
-        scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage linux-jit-resources
+        scripts/run-bounded-native-ci.sh node scripts/run-native-ci.js stage linux-jit-resources
         node scripts/ci/linux-sdk.js linux-jit-resources-seal
 
   linux-jit:
@@ -300,7 +303,7 @@ jobs:
         MOM_NATIVE_LINUX_JIT_RUNTIME_BUNDLE_SHA256=${{ fromJSON(needs.linux-jit.outputs.json).bundle_sha256 }}
         MOM_NATIVE_LINUX_JIT_RUNTIME_BUNDLE_BYTES=${{ fromJSON(needs.linux-jit.outputs.json).bundle_bytes }}
       run: |
-        node scripts/prepare-native-ci.js stage linux-jit-runtime-admit
+        node scripts/run-native-ci.js stage linux-jit-runtime-admit
         export MOM_NATIVE_JIT_RUNTIME_FIXTURE="$(sed -n 's/^fixture_path=//p' "$GITHUB_OUTPUT")"
         export MOM_NATIVE_JIT_RUNTIME_EXPECTED_SHA256="$MOM_NATIVE_LINUX_JIT_RUNTIME_PROOF_SHA256"
         scripts/ci/linux-jit-runtime.sh run || { scripts/ci/linux-jit-runtime.sh bundle-evidence; exit 1; }
@@ -332,7 +335,7 @@ jobs:
         MOM_NATIVE_LINUX_LLVM_SDK_HANDOFF_SHA256=${{ fromJSON(needs.linux-llvm.outputs.json).llvm_sdk_handoff_sha256 }}
         MOM_NATIVE_LINUX_DPCPP_CUDA_BUNDLE_SHA256=${{ fromJSON(needs.dpcpp-cuda-inputs.outputs.json).bundle_sha256 }}
         MOM_NATIVE_LINUX_DPCPP_CUDA_MANIFEST_SHA256=${{ fromJSON(needs.dpcpp-cuda-inputs.outputs.json).manifest_sha256 }}
-      run: node scripts/prepare-native-ci.js stage linux-sdk-descriptor
+      run: node scripts/run-native-ci.js stage linux-sdk-descriptor
 
   component-core:
     needs: [linux-descriptor]
@@ -359,7 +362,7 @@ jobs:
       diagnostics: native-linux-component-core-diagnostics-@=/tmp/mom-native-linux-component-core-@/logs
       run: |
         export NATIVE_PROFILE=core MOM_NATIVE_COMPONENT_DEADLINE_EPOCH="$MOM_CI_DEADLINE_EPOCH"
-        scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage linux-native-component "$NATIVE_PROFILE"
+        scripts/run-bounded-native-ci.sh node scripts/run-native-ci.js stage linux-native-component "$NATIVE_PROFILE"
         node scripts/ci/linux-application.js component-seal
 
   component-acpp-cuda:
@@ -387,7 +390,7 @@ jobs:
       diagnostics: native-linux-component-acpp-cuda-diagnostics-@=/tmp/mom-native-linux-component-acpp-cuda-@/logs
       run: |
         export NATIVE_PROFILE=acpp-cuda MOM_NATIVE_COMPONENT_DEADLINE_EPOCH="$MOM_CI_DEADLINE_EPOCH"
-        scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage linux-native-component "$NATIVE_PROFILE"
+        scripts/run-bounded-native-ci.sh node scripts/run-native-ci.js stage linux-native-component "$NATIVE_PROFILE"
         node scripts/ci/linux-application.js component-seal
 
   component-acpp-hip:
@@ -415,7 +418,7 @@ jobs:
       diagnostics: native-linux-component-acpp-hip-diagnostics-@=/tmp/mom-native-linux-component-acpp-hip-@/logs
       run: |
         export NATIVE_PROFILE=acpp-hip MOM_NATIVE_COMPONENT_DEADLINE_EPOCH="$MOM_CI_DEADLINE_EPOCH"
-        scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage linux-native-component "$NATIVE_PROFILE"
+        scripts/run-bounded-native-ci.sh node scripts/run-native-ci.js stage linux-native-component "$NATIVE_PROFILE"
         node scripts/ci/linux-application.js component-seal
 
   component-dpcpp:
@@ -443,7 +446,7 @@ jobs:
       diagnostics: native-linux-component-dpcpp-diagnostics-@=/tmp/mom-native-linux-component-dpcpp-@/logs
       run: |
         export NATIVE_PROFILE=dpcpp MOM_NATIVE_COMPONENT_DEADLINE_EPOCH="$MOM_CI_DEADLINE_EPOCH"
-        scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage linux-native-component "$NATIVE_PROFILE"
+        scripts/run-bounded-native-ci.sh node scripts/run-native-ci.js stage linux-native-component "$NATIVE_PROFILE"
         node scripts/ci/linux-application.js component-seal
 
   component-dpcpp-opencl:
@@ -471,7 +474,7 @@ jobs:
       diagnostics: native-linux-component-dpcpp-opencl-diagnostics-@=/tmp/mom-native-linux-component-dpcpp-opencl-@/logs
       run: |
         export NATIVE_PROFILE=dpcpp-opencl MOM_NATIVE_COMPONENT_DEADLINE_EPOCH="$MOM_CI_DEADLINE_EPOCH"
-        scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage linux-native-component "$NATIVE_PROFILE"
+        scripts/run-bounded-native-ci.sh node scripts/run-native-ci.js stage linux-native-component "$NATIVE_PROFILE"
         node scripts/ci/linux-application.js component-seal
 
   component-oneapi:
@@ -499,7 +502,7 @@ jobs:
       diagnostics: native-linux-component-oneapi-diagnostics-@=/tmp/mom-native-linux-component-oneapi-@/logs
       run: |
         export NATIVE_PROFILE=oneapi MOM_NATIVE_COMPONENT_DEADLINE_EPOCH="$MOM_CI_DEADLINE_EPOCH"
-        scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage linux-native-component "$NATIVE_PROFILE"
+        scripts/run-bounded-native-ci.sh node scripts/run-native-ci.js stage linux-native-component "$NATIVE_PROFILE"
         node scripts/ci/linux-application.js component-seal
 
   linux-application:
@@ -574,6 +577,7 @@ jobs:
     timeout-minutes: 60
     env:
       MOM_BUILD_JOBS: "4"
+      MOM_NATIVE_CI_SUFFIX: ci
     outputs:
       bundle_sha256: ${{ steps.stage.outputs.bundle_sha256 }}
       handoff_sha256: ${{ steps.stage.outputs.handoff_sha256 }}
@@ -590,10 +594,11 @@ jobs:
         run: scripts/ci/prepare-native-windows-ci.ps1 -Role core
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          path: ${{ runner.temp }}/native-windows-core-${{ github.run_id }}-${{ github.run_attempt }}.tar
+          path: ${{ runner.temp }}/native-windows-core-${{ env.MOM_NATIVE_CI_SUFFIX }}.tar
           archive: false
           compression-level: 0
           if-no-files-found: error
+          overwrite: true
           retention-days: 3
 
   windows-controller:
@@ -604,6 +609,9 @@ jobs:
       fail-fast: false
       matrix:
         role: [io, hermes]
+    env:
+      MOM_BUILD_JOBS: "4"
+      MOM_NATIVE_CI_SUFFIX: ci
     # Matrix legs write disjoint io_* / hermes_* keys, which GitHub combines.
     outputs:
       io_bundle_sha256: ${{ steps.stage.outputs.io_bundle_sha256 }}
@@ -621,20 +629,21 @@ jobs:
       - if: matrix.role == 'hermes'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          name: native-hermes-state-${{ github.run_id }}-${{ github.run_attempt }}-sources.tar
+          name: native-hermes-state-${{ env.MOM_NATIVE_CI_SUFFIX }}-sources.tar
           path: ${{ runner.temp }}/incoming
       - id: stage
         shell: pwsh
         env:
-          MOM_NATIVE_WINDOWS_CONTROLLER_IO_DIR: ${{ runner.temp }}/mom-native-windows-controller-io-${{ github.run_id }}-${{ github.run_attempt }}
-          MOM_NATIVE_WINDOWS_CONTROLLER_HERMES_DIR: ${{ runner.temp }}/mom-native-windows-controller-hermes-${{ github.run_id }}-${{ github.run_attempt }}
+          MOM_NATIVE_WINDOWS_CONTROLLER_IO_DIR: ${{ runner.temp }}/mom-native-windows-controller-io-${{ env.MOM_NATIVE_CI_SUFFIX }}
+          MOM_NATIVE_WINDOWS_CONTROLLER_HERMES_DIR: ${{ runner.temp }}/mom-native-windows-controller-hermes-${{ env.MOM_NATIVE_CI_SUFFIX }}
         run: scripts/ci/prepare-native-windows-ci.ps1 -Role ${{ matrix.role }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          path: ${{ runner.temp }}/native-windows-controller-${{ matrix.role }}-${{ github.run_id }}-${{ github.run_attempt }}.tar
+          path: ${{ runner.temp }}/native-windows-controller-${{ matrix.role }}-${{ env.MOM_NATIVE_CI_SUFFIX }}.tar
           archive: false
           compression-level: 0
           if-no-files-found: error
+          overwrite: true
           retention-days: 3
 
   windows-jit-resources:
@@ -642,7 +651,6 @@ jobs:
     uses: ./.github/workflows/native-job.yml
     with:
       timeout: 30
-      jobs: "2"
       download: >-
         native-linux-sdk-state-@-sources.tar
         native-linux-dpcpp-cuda-inputs-@.tar

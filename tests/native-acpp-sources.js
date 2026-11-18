@@ -2,7 +2,7 @@
 const fs = require("node:fs"), path = require("node:path"), os = require("node:os"), {spawnSync} = require("node:child_process");
 const {test, describe} = require("node:test"), assert = require("node:assert/strict");
 const {prepareSdkSources, verifyPreparedSdkSources, validateSourceRoots, sdkSourceFiles, sdkSourceEnvironment, sdkPatchScope} = require("../scripts/prepare-native-sdk-sources");
-const {fileHash, sourceInputs} = require("../scripts/build-source-inputs"), {syclRevision} = require("../scripts/probe-static-sycl");
+const {fileHash, sourceInputs} = require("../scripts/build-source-inputs"), {syclRevision} = require("../scripts/native-sycl-inputs");
 const repo = path.resolve(__dirname, ".."), patches = ["runtime/adaptivecpp-static.patch", "runtime/adaptivecpp-jit.patch"];
 
 /** Only small local files/Git fixtures; no SDK, network, compiler, GPU or remote host. @param {import('node:test').TestContext} t */
@@ -17,7 +17,7 @@ function fixture(t) {
 function fakeReceipt(f) {
   fs.writeFileSync(path.join(f.source, "header.h"), "fixture header\n");
   const files = sdkSourceFiles(f.source), receipt = {version: 2, target: "acpp", status: "PASS", compiled: false, buildOnly: true, publicationQualified: false,
-    recipe: sourceInputs(repo, [], ["scripts/prepare-native-sdk-sources.js", "scripts/probe-static-sycl.js", "scripts/build-source-inputs.js", "scripts/build-environment.js", "scripts/native-hcf.js", ...patches]),
+    recipe: sourceInputs(repo, [], ["scripts/prepare-native-sdk-sources.js", "scripts/native-sycl-inputs.js", "scripts/build-source-inputs.js", "scripts/build-environment.js", "scripts/native-hcf.js", ...patches]),
     prepared: {acpp: {root: f.source, revision: syclRevision, paths: [], leaves: [], files,
       patches: Object.fromEntries(patches.map(file => [path.join(repo, file), fileHash(path.join(repo, file))]))}}};
   const file = path.join(f.root, "sources.json"); fs.writeFileSync(file, JSON.stringify(receipt)); return file;

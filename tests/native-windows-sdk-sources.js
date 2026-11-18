@@ -3,7 +3,7 @@ const fs = require("node:fs"), path = require("node:path"), os = require("node:o
 const {spawnSync} = require("node:child_process");
 const {sdkComponents, sdkPatchScope, validateSourceRoots, sdkSourceEnvironment, sdkSourceFiles, verifySdkExport, prepareSdkSources, verifyPreparedSdkSources} = require("../scripts/prepare-native-sdk-sources");
 const components = sdkComponents("windows");
-const {pins} = require("../scripts/probe-static-dpcpp"), {fileHash} = require("../scripts/build-source-inputs");
+const {pins} = require("../scripts/native-dpcpp-pins"), {fileHash} = require("../scripts/build-source-inputs");
 
 /** Isolated source fixtures never use installed SDKs, network, compilers, VMs or GPUs.
  * @param {import('node:test').TestContext} t */

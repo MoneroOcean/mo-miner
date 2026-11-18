@@ -2,12 +2,12 @@
 const test = require("node:test"), assert = require("node:assert/strict"), path = require("node:path"), fs = require("node:fs"), os = require("node:os");
 const {spawnSync} = require("node:child_process"), vm = require("node:vm");
 const {controllerEntry, nativeApplicationGpu, nativeGpuLinkArgs, nativeApplicationLinkPlan, nativeApplicationInputs,
-  nativeApplicationLinkCacheInputs, nativeApplicationBuildInputs} = require("../scripts/probe-native-controller");
+  nativeApplicationLinkCacheInputs, nativeApplicationBuildInputs} = require("../scripts/build-native-application");
 const {fileHash, nativeSourceInputs} = require("../scripts/build-source-inputs");
 const {admittedJitCacheTag} = require("../scripts/native-jit-cache-tag");
 
 test.describe("Native default-application compilation boundary", () => {
-  const repo = path.resolve(__dirname, ".."), script = path.join(repo, "scripts/probe-native-controller.js");
+  const repo = path.resolve(__dirname, ".."), script = path.join(repo, "scripts/build-native-application.js");
   const source = ['extern "C" const mom::runtime::GpuTable* mom_native_gpu_dpcpp();',
     'extern "C" const mom::runtime::GpuTable* mom_native_gpu_acpp_cuda();'].join("\n");
   const inputs = {defaultCompiler: "dpcpp", flags: [], links: []};
@@ -120,7 +120,7 @@ test.describe("Native default-application compilation boundary", () => {
     assert.match(text, /linkMapReceipt = \{path: linkPlan\.map, bytes: stat\.size, sha256: fileHash\(linkPlan\.map\)\}/);
   });
   test("the real static SYCL probe also compiles PIC and links PIE", () => {
-    const text = fs.readFileSync(path.join(repo, "scripts/probe-static-sycl.js"), "utf8");
+    const text = fs.readFileSync(path.join(repo, "scripts/native-sycl-inputs.js"), "utf8");
     const command = text.match(/run\(cxx, \[([\s\S]*?)\], path\.join\(output, "build\.log"\)\)/)?.[1] || "";
     assert.ok(command.includes('"-fPIC"'), "the probe must compile PIC objects");
     assert.ok(command.includes('"-pie"'), "the probe must link a PIE executable");

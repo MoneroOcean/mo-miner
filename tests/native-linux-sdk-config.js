@@ -54,7 +54,7 @@ test.describe("Shared Linux native SDK descriptor recipe", {skip: process.platfo
   });
 
   test("CI keeps re-exporting the shared recipe functions", () => {
-    const ci = require("../scripts/prepare-native-ci");
+    const ci = require("../scripts/native-linux-sdk-config");
     assert.equal(ci.linuxNativeSdkDescriptorConfig, recipe.linuxNativeSdkDescriptorConfig);
     assert.equal(ci.linuxNativeSdkLldPath, recipe.linuxNativeSdkLldPath);
   });

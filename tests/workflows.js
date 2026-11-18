@@ -9,7 +9,7 @@ const {parseWorkflowYaml} = require("./common/workflow-yaml");
 
 const repo = path.resolve(__dirname, "..");
 const workflowRoot = path.join(repo, ".github", "workflows");
-const suffixExpression = /\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/g;
+const suffixExpression = /\$\{\{ env\.MOM_NATIVE_CI_SUFFIX \}\}/g;
 
 /** @typedef {import("./common/workflow-yaml").YamlValue} YamlValue */
 /** @typedef {{[key: string]: YamlValue}} YamlMap */
@@ -67,8 +67,7 @@ function producedArtifacts() {
   for (const {step, job} of allSteps().filter(row => text(row.step["uses"]).startsWith("actions/upload-artifact@"))) {
     const options = map(step["with"]), raw = text(options["archive"]) === "false";
     for (const value of matrixValues(text(raw ? options["path"] : options["name"]), job)) {
-      const name = value.replace(suffixExpression, "@").replace(/\$\{\{ env\.NATIVE_SUFFIX \}\}/g, "@")
-        .replace(/\$\{\{ env\.NATIVE_NAME \}\}/g, "native-linux");
+      const name = value.replace(suffixExpression, "@").replace(/\$\{\{ env\.NATIVE_NAME \}\}/g, "native-linux");
       if (name) {produced.add(raw ? path.posix.basename(name) : name);}
     }
   }
@@ -89,7 +88,7 @@ describe("Workflow structure", () => {
     assert.ok(Object.keys(workflows).length >= 5);
     for (const {where, step} of allSteps()) {
       const uses = text(step["uses"]);
-      if (uses && !uses.startsWith("./")) {assert.match(uses, /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+@[0-9a-f]{40}$/, where + " " + uses);}
+      if (uses && !uses.startsWith("./")) {assert.match(uses, /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)?@[0-9a-f]{40}$/, where + " " + uses);}
     }
     for (const [file, workflow] of Object.entries(workflows)) {
       for (const [id, job] of Object.entries(map(workflow["jobs"]))) {
@@ -134,7 +133,11 @@ describe("Workflow structure", () => {
     for (const {where, step} of allSteps()) {
       const uses = text(step["uses"]);
       if (uses.startsWith("actions/checkout@")) {assert.equal(text(map(step["with"])["persist-credentials"]), "false", where);}
-      if (uses.startsWith("actions/upload-artifact@")) {assert.equal(text(map(step["with"])["retention-days"]), "3", where);}
+      if (uses.startsWith("actions/upload-artifact@")) {
+        // Artifact names are fixed per run, so a re-run attempt replaces what an earlier attempt uploaded.
+        assert.equal(text(map(step["with"])["retention-days"]), "3", where);
+        assert.equal(text(map(step["with"])["overwrite"]), "true", where);
+      }
     }
   });
 
@@ -145,8 +148,7 @@ describe("Workflow structure", () => {
     }
     for (const {where, step} of allSteps().filter(row => text(row.step["uses"]).startsWith("actions/download-artifact@"))) {
       const options = map(step["with"]);
-      const resolve = (/** @type {string} */ value) => value.replace(suffixExpression, "@").replace(/\$\{\{ env\.NATIVE_SUFFIX \}\}/g, "@")
-        .replace(/\$\{\{ env\.NATIVE_NAME \}\}/g, "native-linux");
+      const resolve = (/** @type {string} */ value) => value.replace(suffixExpression, "@").replace(/\$\{\{ env\.NATIVE_NAME \}\}/g, "native-linux");
       const name = resolve(text(options["name"])), pattern = resolve(text(options["pattern"]));
       if ((name || pattern).includes("${{")) {continue;}
       const names = downloadedNames(name, pattern);

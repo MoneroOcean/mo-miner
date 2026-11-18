@@ -6,7 +6,7 @@ const fs = require("node:fs"), path = require("node:path"), {spawnSync} = requir
 const {fileHash, sourceInputs, verifySourceInputs, readBuildText, readBuildJson, buildFileInputs, completeBuildInputs} = require("./build-source-inputs");
 const {sdkStage, selectHostCompilers, compilerEnvironment, sdkHostEnvironment, verifyCompilerEnvironment, pathsOverlap, hostCompilerEvidence} = require("./build-native-sycl-sdk");
 const {absolutePath} = require("./build-native-release");
-const {lldInputs} = require("./probe-native-jit");
+const {lldInputs} = require("./native-jit-link");
 const {isStaticArchive} = require("./native-audit");
 const {revision, patches, recipeFiles} = require("./native-comgr-inputs");
 

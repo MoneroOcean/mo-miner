@@ -6,7 +6,7 @@ const os = require("node:os");
 const path = require("node:path");
 const {composeWindowsApplicationConfig, composeWindowsApplicationDescriptor} = require("../scripts/native-windows-application-config");
 
-const runAttempt = "42-1", sha = "a".repeat(64), fixtureRoot = path.join(os.tmpdir(), "native-windows-controller-" + runAttempt),
+const sha = "a".repeat(64), fixtureRoot = path.join(os.tmpdir(), "native-windows-controller-42-1"),
   at = (/** @type {string} */ root, /** @type {string} */ file) => path.join(root, file);
 
 /** Reader-result fixtures; malformed cases intentionally mutate this shape. @returns {any} */
@@ -16,19 +16,18 @@ function inputs() {
     intelLibraries = Object.fromEntries(["libircmt.lib", "libirc.lib", "libmmt.lib", "svml_dispmt.lib", "libdecimal.lib"]
       .map(name => [name, at(intelRoot, name)])), hermesBuild = at(hermesRoot, "hermes/build");
   return {
-    runAttempt,
     llvmDescriptor: {version: 1, tools: {clangCl: "/tools/icx-cl.exe", lldLink: "/tools/lld-link.exe", llvmNm: "/tools/llvm-nm.exe",
       clangResourceInclude: "/tools/resource/include"}, windowsSdk: {sourceRoot: sdkRoot, overlay: at(sdkRoot, "overlay.json"),
       includeRoots: [at(sdkRoot, "msvc/include"), at(sdkRoot, "sdk/include")],
       libraryRoots: [at(sdkRoot, "sdk/lib/ucrt"), at(sdkRoot, "sdk/lib/um"), at(sdkRoot, "msvc/lib"), intelRoot],
       msvcLibraries: [at(sdkRoot, "msvc/lib/libcmt.lib"), ...Object.values(intelLibraries)],
       ucrtLibraries: [at(sdkRoot, "sdk/lib/ucrt/libvcruntime.lib")], importLibraries: [at(sdkRoot, "sdk/lib/um/kernel32.lib")]}},
-    io: {kind: "io", runAttempt, handoff: at(ioRoot, "handoff.json"), handoffSha256: sha, files: {},
+    io: {kind: "io", handoff: at(ioRoot, "handoff.json"), handoffSha256: sha, files: {},
       libraries: {sourceInclude: at(ioRoot, "openssl-sdk/include"), ssl: at(ioRoot, "openssl-sdk/lib/libssl.lib"),
         crypto: at(ioRoot, "openssl-sdk/lib/libcrypto.lib"), libuv: at(ioRoot, "io-sdk/lib/uv_a.lib"),
         zlib: at(ioRoot, "io-sdk/lib/zlibstatic.lib"), libuvInclude: at(ioRoot, "io-sdk/include"),
         zlibInclude: at(ioRoot, "io-sdk/include"), zlibGeneratedInclude: at(ioRoot, "io-sdk/include")}},
-    hermes: {kind: "hermes", runAttempt, handoff: at(hermesRoot, "handoff.json"), handoffSha256: sha, files: {},
+    hermes: {kind: "hermes", handoff: at(hermesRoot, "handoff.json"), handoffSha256: sha, files: {},
       hermes: {source: at(hermesRoot, "hermes/source"), build: hermesBuild},
       intelRuntime: {libRoot: intelRoot, libraries: intelLibraries, licenses: {license: at(hermesRoot, "intel-runtime/licenses/LICENSE.rtf")}}},
     hermesAot: {artifacts: {compiler: "/tmp/linux-hermes-sdk/build/bin/shermes"},
@@ -46,22 +45,16 @@ function application() {
 }
 
 test.describe("Windows full-controller descriptor composer", () => {
-  test("local reader results compose the same descriptor without fabricated CI identity", () => {
+  test("local reader results compose the same descriptor without CI handoff records", () => {
     const ci = inputs(), local = structuredClone(ci);
-    delete local.runAttempt;
     local.io = {libraries: local.io.libraries};
     local.hermes = {hermes: local.hermes.hermes, intelRuntime: local.hermes.intelRuntime};
     assert.deepEqual(composeWindowsApplicationDescriptor(local), composeWindowsApplicationConfig(ci));
-    assert.throws(() => composeWindowsApplicationConfig(local), /input is incomplete/);
-    assert.throws(() => composeWindowsApplicationDescriptor(ci), /unexpected shape/);
+    assert.throws(() => composeWindowsApplicationConfig(local), /same-run admitted io handoff/);
   });
 
-  test("CI transport identity remains explicit and cannot be inherited or omitted", () => {
+  test("CI composition requires the pinned controller handoffs", () => {
     const selected = inputs();
-    delete selected.runAttempt;
-    Object.setPrototypeOf(selected, {runAttempt});
-    assert.throws(() => composeWindowsApplicationConfig(selected), /input is incomplete/);
-    selected.runAttempt = runAttempt;
     delete selected.io.handoffSha256;
     assert.throws(() => composeWindowsApplicationConfig(selected), /same-run admitted io handoff/);
   });
@@ -74,7 +67,7 @@ test.describe("Windows full-controller descriptor composer", () => {
       (/** @type {any} */ row) => {row.hermesAot.files = {};},
       (/** @type {any} */ row) => {row.application = {core: "/app/core.lib"};},
     ]) {
-      const selected = inputs(); delete selected.runAttempt; mutate(selected);
+      const selected = inputs(); mutate(selected);
       assert.throws(() => composeWindowsApplicationDescriptor(selected));
     }
   });
@@ -100,11 +93,6 @@ test.describe("Windows full-controller descriptor composer", () => {
   test("rejects a support reader result for the wrong role", () => {
     const selected = inputs(); selected.io.kind = "hermes";
     assert.throws(() => composeWindowsApplicationConfig(selected), /same-run admitted io handoff/);
-  });
-
-  test("rejects IO and Hermes reader results from different attempts", () => {
-    const selected = inputs(); selected.hermes.runAttempt = "43-1";
-    assert.throws(() => composeWindowsApplicationConfig(selected), /same-run admitted hermes handoff/);
   });
 
   test("requires the base LLVM descriptor to retain every admitted Intel runtime path", () => {

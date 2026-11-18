@@ -1,9 +1,10 @@
 "use strict";
 
-// SDK-free native packing job: admit this run attempt's raw executable and compact build metadata,
+// SDK-free native packing job: admit this CI job's raw executable and compact build metadata,
 // then pack through the existing release API. No compiler, SDK or miner runs here.
 const fs = require("node:fs"), path = require("node:path");
-const ci = require("../prepare-native-ci"), {fileHash, readBuildJson} = require("../build-source-inputs");
+const ci = require("../native-ci-tar"), {fileHash, readBuildJson} = require("../build-source-inputs");
+const {validCiSuffix} = require("../native-ci-job");
 const {packNativeEntrypoint} = require("../build-release");
 const {prepareNativePackingTool} = require("../prepare-native-packing-tool");
 
@@ -24,17 +25,17 @@ function sha256Pin(env, name) {
   return value !== undefined && hashPattern.test(value) ? value : null;
 }
 
-/** Derive this run attempt's exact artifact names and admit the independent producer pins.
- * Artifact names are never inputs: they are fixed by platform and run attempt.
+/** Derive the exact artifact names and admit the independent producer pins.
+ * Artifact names are never inputs: they are fixed by platform and the CI suffix.
  * @param {NodeJS.ProcessEnv} env @returns {PackingPlan} */
 function packingPlan(env) {
-  const suffix = env["GITHUB_RUN_ID"] + "-" + env["GITHUB_RUN_ATTEMPT"],
+  const suffix = env["MOM_NATIVE_CI_SUFFIX"],
     target = env["NATIVE_PLATFORM"] === "win32" ? "win32" : env["NATIVE_PLATFORM"] === "linux" ? "linux" : null,
     rawSha256 = sha256Pin(env, "NATIVE_RAW_SHA256"), metadataSha256 = sha256Pin(env, "NATIVE_METADATA_SHA256"),
     handoffSha256 = sha256Pin(env, "NATIVE_HANDOFF_SHA256");
-  if (!/^[0-9]{1,20}-[1-9][0-9]{0,5}$/.test(suffix) || target === null ||
+  if (!validCiSuffix(suffix) || target === null ||
       rawSha256 === null || metadataSha256 === null || handoffSha256 === null) {
-    throw new Error("Native packing needs this run attempt's exact raw executable, build metadata and independent SHA-256 pins");
+    throw new Error("Native packing needs the exact raw executable, build metadata and independent SHA-256 pins");
   }
   const platform = target === "win32" ? "windows" : "linux";
   return {suffix, target, platform, binary: target === "win32" ? "mom.exe" : "mom", rawSha256, metadataSha256, handoffSha256,
@@ -78,7 +79,7 @@ function packNative(env, io) {
   const handoffFile = path.join(metadata, "handoff.json");
   admitPinnedFile(handoffFile, plan.handoffSha256, 8 << 20);
   const handoff = readBuildJson(handoffFile), target = plan.target === "win32" ? "x86_64-pc-windows-msvc" : "x86_64-unknown-linux-gnu";
-  if (handoff.version !== 1 || handoff.format !== `mom-${plan.platform}-application-build-handoff-v1` || handoff.runAttempt !== plan.suffix ||
+  if (handoff.version !== 1 || handoff.format !== `mom-${plan.platform}-application-build-handoff-v1` ||
       handoff.target !== target || handoff.buildOnly !== true || handoff.executed !== false || handoff.publicationQualified !== false ||
       handoff.artifact?.file !== plan.binary || handoff.artifact.sha256 !== plan.rawSha256 || handoff.artifact.bytes !== fs.statSync(raw).size) {
     throw new Error("Native packing metadata does not bind this raw candidate and attempt");

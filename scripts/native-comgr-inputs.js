@@ -8,7 +8,7 @@ const {isStaticArchive} = require("./native-audit");
 const revision = "27682a16360e33e37c4f3cc6adf9a620733f8fe1";
 const patches = ["runtime/rocm-comgr-llvm21.patch", "runtime/rocm-comgr-resources.patch"];
 const recipeFiles = ["scripts/build-native-comgr-sdk.js", "scripts/build-native-sycl-sdk.js", "scripts/build-source-inputs.js",
-  "scripts/build-environment.js", "scripts/probe-native-jit.js", "scripts/native-audit.js", "scripts/native-comgr-inputs.js", ...patches];
+  "scripts/build-environment.js", "scripts/native-jit-link.js", "scripts/native-audit.js", "scripts/native-comgr-inputs.js", ...patches];
 
 /** Read and rehash the exact completed source producer, never copy an archive into a fake
  * SDK prefix or restamp stale provenance. Dependency paths are explicit local build inputs;

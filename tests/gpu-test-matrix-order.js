@@ -39,8 +39,8 @@ function standaloneMatrix() {
         return {...require("./common/miner-command"), hasReleaseExecutable: true};
       }
       if (name === "./gpu-test-modes") {return require("./common/gpu-test-modes");}
-      if (name === "../../scripts/validate-portable-opencl") {
-        return require("../scripts/validate-portable-opencl");
+      if (name === "../../scripts/check-portable-opencl") {
+        return require("../scripts/check-portable-opencl");
       }
       return require(name);
     },

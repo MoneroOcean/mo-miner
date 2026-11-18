@@ -114,7 +114,7 @@ finish() {
 
 # Create the bounded keeper container, verify its host cgroup limits, then dispatch the suite.
 run_proof() {
-  evidence="$RUNNER_TEMP/native-linux-jit-runtime-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+  evidence="$RUNNER_TEMP/native-linux-jit-runtime-${MOM_NATIVE_CI_SUFFIX}"
   mkdir -m 700 "$evidence"
   exec > >(tee "$evidence/host.log") 2>&1
   test "$(node --version)" = "v24.15.0"
@@ -128,7 +128,7 @@ run_proof() {
   validate_mount_paths "$node_bin" "$test_script" "$MOM_NATIVE_JIT_RUNTIME_FIXTURE" || exit 2
   proof_before="$(sha256sum "$MOM_NATIVE_JIT_RUNTIME_FIXTURE" | awk '{print $1}')"
   test "$proof_before" = "$MOM_NATIVE_JIT_RUNTIME_EXPECTED_SHA256"
-  name="mom-native-linux-jit-runtime-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+  name="mom-native-linux-jit-runtime-${MOM_NATIVE_CI_SUFFIX}"
   created=0
   cgroup_path=""
   container_id=""
@@ -178,9 +178,9 @@ run_proof() {
 
 # Pack the evidence directory, if one was created, for the failure-only upload.
 bundle_evidence() {
-  local name="native-linux-jit-runtime-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+  local name="native-linux-jit-runtime-${MOM_NATIVE_CI_SUFFIX}"
   if [ -d "$RUNNER_TEMP/$name" ]; then
-    tar -cf "$RUNNER_TEMP/native-linux-jit-runtime-failure-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.tar" -C "$RUNNER_TEMP" "$name"
+    tar -cf "$RUNNER_TEMP/native-linux-jit-runtime-failure-${MOM_NATIVE_CI_SUFFIX}.tar" -C "$RUNNER_TEMP" "$name"
   fi
 }
 

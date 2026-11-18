@@ -6,8 +6,9 @@ const fs = require("node:fs"), path = require("node:path"), {spawnSync} = requir
   {randomUUID} = require("node:crypto"), {isDeepStrictEqual} = require("node:util");
 const local = require("./build-local-native-sdk"), localRocm = require("./build-local-native-rocm-sdk"),
   localAcpp = require("./build-local-native-acpp-sdk"), localWindowsLlvm = require("./build-local-native-windows-llvm-sdk"),
-  nativeCi = require("./prepare-native-ci"), dpcppInputs = require("./native-dpcpp-cuda-inputs"),
-  linuxLlvm = require("./build-native-llvm21-sdk"), windowsSdkReader = require("./native-windows-host-sdk-inputs"),
+  ciRocm = require("./native-ci-linux-rocm"),
+  ciSources = require("./native-ci-linux-sources"), dpcppInputs = require("./native-dpcpp-cuda-inputs"),
+  linuxLlvm = require("./build-native-llvm-sdk"), windowsSdkReader = require("./native-windows-host-sdk-inputs"),
   controllerHandoff = require("./native-windows-controller-handoff"), rocmResources = require("./build-native-rocm-resources"),
   windowsResources = require("./build-native-windows-comgr-sdk"), windowsHiprtc = require("./build-native-windows-hiprtc-sdk"),
   windowsAcpp = require("./build-native-windows-acpp-sdk"), windowsCudart = require("./prepare-native-cudart-windows"),
@@ -180,9 +181,9 @@ function observedRocmResult(rocmContext) {
 /** Re-admit original workspace source/LLVM/HIP/DPC++ inputs without rebuilding them.
  * @param {string} workspace @param {ReturnType<typeof local.localTools>} tools @param {NodeJS.ProcessEnv} env
  * @param {{verifyLinuxLlvm?:typeof linuxLlvm.verifyLinuxLlvmAdmission,auditRocmComgrInputs?:typeof localRocm.auditLocalRocmComgrInputs,
- * verifyRocmInputs?:typeof localRocm.verifyRocmBuildInputs,auditRocmSources?:typeof nativeCi.verifyRocmSources,
- * auditRocmComgr?:typeof nativeCi.auditRocmComgrSdk,auditDpcppCuda?:typeof dpcppInputs.auditDpcppCudaInputs,
- * prepareAcppSources?:typeof localAcpp.prepareLocalAcppSources,run?:typeof local.runCommand,verifyAcppSource?:typeof nativeCi.verifyAcppSource}} dependencies */
+ * verifyRocmInputs?:typeof localRocm.verifyRocmBuildInputs,auditRocmSources?:typeof ciSources.verifyRocmSources,
+ * auditRocmComgr?:typeof ciRocm.auditRocmComgrSdk,auditDpcppCuda?:typeof dpcppInputs.auditDpcppCudaInputs,
+ * prepareAcppSources?:typeof localAcpp.prepareLocalAcppSources,run?:typeof local.runCommand,verifyAcppSource?:typeof ciSources.verifyAcppSource}} dependencies */
 function admitWorkspaceInputs(workspace, tools, env, dependencies) {
   const support = local.supportPaths(workspace), verifyLinux = dependencies.verifyLinuxLlvm || linuxLlvm.verifyLinuxLlvmAdmission,
     linux = verifyLinux(support.llvmSdk);
@@ -195,7 +196,7 @@ function admitWorkspaceInputs(workspace, tools, env, dependencies) {
     auditRocm = dependencies.auditRocmComgrInputs || localRocm.auditLocalRocmComgrInputs,
     rocmAuditDependencies = /** @type {NonNullable<Parameters<typeof localRocm.auditLocalRocmComgrInputs>[2]>} */ ({});
   if (dependencies.verifyRocmInputs) {rocmAuditDependencies.verifyInputs = dependencies.verifyRocmInputs;}
-  rocmAuditDependencies.verifySources = dependencies.auditRocmSources || nativeCi.verifyRocmSources;
+  rocmAuditDependencies.verifySources = dependencies.auditRocmSources || ciSources.verifyRocmSources;
   if (dependencies.auditRocmComgr) {rocmAuditDependencies.auditComgr = dependencies.auditRocmComgr;}
   const rocmAdmission = auditRocm(rocmContext, rocmTools, rocmAuditDependencies);
   const rocmState = rocmAdmission.state, hipHeaders = rocmAdmission.hip,
@@ -205,7 +206,7 @@ function admitWorkspaceInputs(workspace, tools, env, dependencies) {
     acppTools = {git: tools.git, cmake: tools.cmake, ninja: tools.ninja, cc: tools.cc, cxx: tools.cxx},
     prepareAcppSources = dependencies.prepareAcppSources || localAcpp.prepareLocalAcppSources;
   prepareAcppSources(acppContext, acppTools, env, dependencies.run || local.runCommand);
-  const acppPaths = localAcpp.localAcppSdkPaths(workspace), acppSource = (dependencies.verifyAcppSource || nativeCi.verifyAcppSource)({env}, {
+  const acppPaths = localAcpp.localAcppSdkPaths(workspace), acppSource = (dependencies.verifyAcppSource || ciSources.verifyAcppSource)({env}, {
     source: acppPaths.fetch, preparedReceipt: acppPaths.preparedReceipt, preparedCheckout: acppPaths.preparedCheckout}, tools.git);
   realDirectory(acppPaths.preparedCheckout, "Pinned local AdaptiveCpp checkout");
   return {support, linux, rocmContext, rocmState, hipHeaders, rocmAdmission, dpcppState, dpcppManifest, dpcpp, rocmResult, acppPaths, acppSource};
@@ -241,11 +242,11 @@ function sameWindowsLlvm(first, second) {
  * @param {{verifyScope?:()=>unknown,admitWorkspace?:typeof local.admitWorkspace,resolveTools?:typeof local.localTools,
  * readWindowsHostSdk?:typeof windowsSdkReader.windowsHostSdkInputs,readHermes?:typeof controllerHandoff.windowsLocalControllerHandoffInputs,
  * verifyLinuxLlvm?:typeof linuxLlvm.verifyLinuxLlvmAdmission,verifyRocmInputs?:typeof localRocm.verifyRocmBuildInputs,
- * auditRocmSources?:typeof nativeCi.verifyRocmSources,auditRocmComgrInputs?:typeof localRocm.auditLocalRocmComgrInputs,
- * auditRocmComgr?:typeof nativeCi.auditRocmComgrSdk,verifyAcppSource?:typeof nativeCi.verifyAcppSource,
+ * auditRocmSources?:typeof ciSources.verifyRocmSources,auditRocmComgrInputs?:typeof localRocm.auditLocalRocmComgrInputs,
+ * auditRocmComgr?:typeof ciRocm.auditRocmComgrSdk,verifyAcppSource?:typeof ciSources.verifyAcppSource,
  * auditDpcppCuda?:typeof dpcppInputs.auditDpcppCudaInputs,prepareAcppSources?:typeof localAcpp.prepareLocalAcppSources,
  * run?:typeof local.runCommand,buildWindowsLlvm?:typeof localWindowsLlvm.buildLocalNativeWindowsLlvmSdk,
- * composeResourcesConfig?:typeof nativeCi.rocmResourcesConfig,buildResources?:typeof rocmResources.buildResources,
+ * composeResourcesConfig?:typeof ciRocm.rocmResourcesConfig,buildResources?:typeof rocmResources.buildResources,
  * verifyDeviceResources?:typeof windowsResources.verifyWindowsDeviceResources,
  * configureComgr?:typeof windowsResources.configureWindowsComgrSdk,buildComgr?:typeof windowsResources.buildWindowsComgrSdk,
  * prepareHiprtcSource?:typeof prepareLocalHiprtcSource,verifyHiprtcSource?:typeof verifyLocalHiprtcSource,
@@ -294,7 +295,7 @@ async function buildLocalNativeWindowsHostComponent(input, dependencies = {}) {
     buildWindowsLlvm = dependencies.buildWindowsLlvm || localWindowsLlvm.buildLocalNativeWindowsLlvmSdk,
     makeLlvmInput = () => ({workspace, windowsHostSdk: hostSdk, hermes, tools}),
     llvmResult = validateWindowsLlvmResult(buildWindowsLlvm(makeLlvmInput(), {environment}), windowsLlvmPaths, workspace),
-    composeResourcesConfig = dependencies.composeResourcesConfig || nativeCi.rocmResourcesConfig,
+    composeResourcesConfig = dependencies.composeResourcesConfig || ciRocm.rocmResourcesConfig,
     resourcesConfig = composeResourcesConfig({source: before.rocmContext.paths.source, llvmSdk: before.linux.sdk.path,
       hipIncludeRoot: before.rocmState.hipIncludeRoot}, {cc: tools.cc, cxx: tools.cxx, cmake: tools.cmake}, "win32");
   if (resourcesConfig?.target !== "win32") {throw new Error("Windows ROCm resource descriptor must use the public win32 target");}

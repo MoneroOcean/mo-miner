@@ -72,8 +72,8 @@ test.describe("Original Linux static SYCL SDK production", {skip: process.platfo
   });
   test("DPC++ producer recipe binds the shared host compiler environment", () => {
     const script = fs.readFileSync(path.resolve(__dirname, "../scripts/build-native-dpcpp-sdk.js"), "utf8");
-    for (const file of ["scripts/build-native-sycl-sdk.js", "scripts/build-native-release.js", "scripts/probe-static-sycl.js",
-      "scripts/probe-native-jit.js", "scripts/native-comgr-inputs.js"]) {assert.ok(script.includes('"' + file + '"'), file);}
+    for (const file of ["scripts/build-native-sycl-sdk.js", "scripts/build-native-release.js", "scripts/native-sycl-inputs.js",
+      "scripts/native-jit-link.js", "scripts/native-comgr-inputs.js"]) {assert.ok(script.includes('"' + file + '"'), file);}
   });
   test("relative roots, CMake interpolation, missing profiles and invalid job counts fail closed", () => {
     for (const jobs of [0, 17, NaN, 1.5]) {assert.throws(() => linuxStaticSdkPlan(roots, "/sdk", "/cuda", "/jit/compiler.o", "/new", tools, jobs), /explicit tools\/JIT/);}

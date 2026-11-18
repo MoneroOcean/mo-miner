@@ -7,10 +7,10 @@ const {isDeepStrictEqual} = require("node:util");
 const {fileHash, readBuildJson, readBuildText, sourceInputs, verifySourceInputs} = require("./build-source-inputs");
 const {isStaticArchive} = require("./native-audit");
 const {auditCoffArchiveInputs} = require("./native-coff-archive");
-const {verifyWindowsLlvmAdmission, archiveSha256} = require("./build-native-windows-llvm21-sdk");
+const {verifyWindowsLlvmAdmission, archiveSha256} = require("./build-native-windows-llvm-sdk");
 const {revision: comgrRevision, recipeFiles: comgrRecipeFiles, hostSources, verifyWindowsDeviceResources,
   windowsComgrSdkPlan, auditComgrCompileCommands, auditComgrArchiveMembers, comgrArchive} = require("./build-native-windows-comgr-sdk");
-const {admitSyclSource} = require("./probe-static-sycl");
+const {admitSyclSource} = require("./native-sycl-inputs");
 const {windowsAcppStaticHostPlan, artifacts: acppArtifacts, targets: acppTargets, auditAcppCompileCommands,
   forbiddenOutputs: acppForbiddenOutputs, recipeFiles: acppRecipeFiles, verifyWindowsRocmResources, buildInputKeys} = require("./build-native-windows-acpp-sdk");
 const {clrRevision: hiprtcSourceRevision, sourceFiles: hiprtcSourceFiles, recipeFiles: hiprtcRecipeFiles,
@@ -98,7 +98,7 @@ function archiveRecord(file, sha256, bytes, label) {
  * @param {ReturnType<typeof verifyWindowsLlvmAdmission>} llvm */
 function windowsHostComponentLlvmLayout(llvm) {
   const plan = llvm.receipt.plan;
-  return {source: plan.reuse?.source || plan.source, build: plan.reuse?.build || path.join(plan.output, "build")};
+  return {source: plan.source, build: path.join(plan.output, "build")};
 }
 
 /** @param {string} resultFile @param {ReturnType<typeof verifyWindowsLlvmAdmission>} llvm */

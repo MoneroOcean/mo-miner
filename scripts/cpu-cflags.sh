@@ -2,17 +2,6 @@
 
 set -e
 
-SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
-
-# ARM flags are architecture-detected, ignoring MOM_CPU_MARCH (which is x86-only).
-if "$SCRIPT_DIR/cpu-feature.sh" arm64; then
-  echo "-march=armv8-a+crypto -flax-vector-conversions"
-  exit 0
-elif "$SCRIPT_DIR/cpu-feature.sh" arm; then
-  echo "-mfpu=neon -flax-vector-conversions"
-  exit 0
-fi
-
 case "${MOM_CPU_MARCH:-}" in
   # Explicit "native" or unset both build native, except an unset value with
   # MOM_PORTABLE_BUILD=1, which selects a portable x86-64 baseline. Do not use

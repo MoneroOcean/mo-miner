@@ -75,15 +75,14 @@ function requireRegularMember(file, root, relative) {
 /** Validate one extracted profile bundle against same-run external pins and its unchanged
  * factory receipt. SDK input paths remain producer provenance; the handoff pins their exact
  * map, while the current source, isolation and object files are independently re-admitted.
- * @param {string} receiptFile @param {{profile:string,runAttempt:string,receiptSha256:string,configSha256:string,handoffSha256:string}} expected */
+ * @param {string} receiptFile @param {{profile:string,receiptSha256:string,configSha256:string,handoffSha256:string}} expected */
 function windowsGpuHandoffInputs(receiptFile, expected) {
   if (typeof receiptFile !== "string" || !path.isAbsolute(receiptFile) || path.resolve(receiptFile) !== receiptFile ||
-      !expected || !hasExactKeys(expected, ["profile", "runAttempt", "receiptSha256", "configSha256", "handoffSha256"]) ||
+      !expected || !hasExactKeys(expected, ["profile", "receiptSha256", "configSha256", "handoffSha256"]) ||
       typeof expected.profile !== "string" || !/^(?:acpp-cuda|acpp-hip|dpcpp|dpcpp-opencl|oneapi)$/.test(expected.profile) ||
-      typeof expected.runAttempt !== "string" || !/^[0-9]{1,20}-[1-9][0-9]{0,5}$/.test(expected.runAttempt) ||
       !hashPattern.test(expected.receiptSha256 || "") || !hashPattern.test(expected.configSha256 || "") ||
       !hashPattern.test(expected.handoffSha256 || "")) {
-    throw new Error("Windows GPU handoff needs exact profile, run-attempt and external SHA-256 pins");
+    throw new Error("Windows GPU handoff needs exact profile and external SHA-256 pins");
   }
   const output = path.dirname(receiptFile), root = path.dirname(output);
   requireDirectory(root, "root"); requireDirectory(output, "output");
@@ -110,8 +109,8 @@ function windowsGpuHandoffInputs(receiptFile, expected) {
   }
   const handoffRecord = readPinnedJson(handoffFile, maxHandoffBytes, "handoff receipt"), handoff = handoffRecord.value;
   if (handoffRecord.sha256 !== expected.handoffSha256 ||
-      !hasExactKeys(handoff, ["format", "runAttempt", "profile", "files", "sdkInputs", "buildOnly", "executed", "publicationQualified"]) ||
-      handoff.format !== "mom-windows-gpu-handoff-v1" || handoff.runAttempt !== expected.runAttempt || handoff.profile !== expected.profile ||
+      !hasExactKeys(handoff, ["format", "profile", "files", "sdkInputs", "buildOnly", "executed", "publicationQualified"]) ||
+      handoff.format !== "mom-windows-gpu-handoff-v1" || handoff.profile !== expected.profile ||
       handoff.buildOnly !== true || handoff.executed !== false || handoff.publicationQualified !== false ||
       !handoff.sdkInputs || typeof handoff.sdkInputs !== "object" || Array.isArray(handoff.sdkInputs) ||
       !isDeepStrictEqual(Object.keys(handoff.sdkInputs), Object.keys(handoff.sdkInputs).sort()) ||
@@ -161,7 +160,7 @@ function windowsGpuHandoffInputs(receiptFile, expected) {
     throw new Error("Windows GPU handoff bundle has extra, missing or substituted members");
   }
   files[handoffFile] = handoffRecord.sha256;
-  return {profile: expected.profile, runAttempt: expected.runAttempt, graph, files, handoffFile, handoffSha256: handoffRecord.sha256};
+  return {profile: expected.profile, graph, files, handoffFile, handoffSha256: handoffRecord.sha256};
 }
 
 module.exports = {windowsGpuHandoffInputs};

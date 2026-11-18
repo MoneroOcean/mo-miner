@@ -4,7 +4,9 @@
 // original LLVM descriptor are recomposed from pinned inputs (compose), then the unchanged phase runner
 // restores the pinned predecessor state. Phase deadlines never outlive the merged job.
 const fs = require("node:fs"), path = require("node:path"), chain = require("./chain");
-const ci = require("../prepare-native-ci"), {fileHash} = require("../build-source-inputs");
+const ciTar = require("../native-ci-tar"),
+  ciWindowsLlvm = require("../native-ci-windows-llvm"), {fileHash} = require("../build-source-inputs");
+const {ciSuffix} = require("../native-ci-job");
 const {linuxLlvmToolHandoffInputs} = require("../native-linux-llvm-tools");
 const {windowsControllerHandoffInputs} = require("../native-windows-controller-handoff");
 
@@ -26,18 +28,18 @@ function hostSdkDeadline(env, nowMs = Date.now()) {
  * @param {string} archive @param {string} name @param {string} temp @param {number} maxExpanded */
 function extractHandoff(archive, name, temp, maxExpanded) {
   if (fs.existsSync(path.join(temp, name))) {throw new Error("Descriptor handoff restore roots are not fresh");}
-  const members = ci.listState(archive, [name], 5 * 60 * 1000);
-  if (!members.length || members.length > 100000 || ci.tarExpandedBytes(archive, members.length, 5 * 60 * 1000) > maxExpanded) {
+  const members = ciTar.listState(archive, [name], 5 * 60 * 1000);
+  if (!members.length || members.length > 100000 || ciTar.tarExpandedBytes(archive, members.length, 5 * 60 * 1000) > maxExpanded) {
     throw new Error("Descriptor handoff exceeds its bounds: " + name);
   }
-  ci.extractState(archive, temp, [name], [name], 8 * 60 * 1000);
+  ciTar.extractState(archive, temp, [name], [name], 8 * 60 * 1000);
   return path.join(temp, name);
 }
 
 /** Compose the Windows host SDK and original LLVM descriptor; returns the environment the JIT phase reads.
  * @param {NodeJS.ProcessEnv} env */
 function composeWindowsJitInputs(env) {
-  const suffix = `${env["GITHUB_RUN_ID"]}-${env["GITHUB_RUN_ATTEMPT"]}`, temp = fs.realpathSync(env["RUNNER_TEMP"] || ""),
+  const suffix = ciSuffix(env), temp = fs.realpathSync(env["RUNNER_TEMP"] || ""),
     workRoot = path.join(temp, `mom-native-windows-host-sdk-${suffix}`), sdkRoot = path.join(workRoot, `native-windows-host-sdk-${suffix}`),
     toolName = `native-linux-llvm-tools-${suffix}`, hermesName = `native-windows-controller-hermes-${suffix}`,
     toolArchive = path.join(temp, "incoming", `${toolName}.tar`), hermesArchive = path.join(temp, "incoming", `${hermesName}.tar`),
@@ -51,24 +53,24 @@ function composeWindowsJitInputs(env) {
     MOM_NATIVE_WINDOWS_HOST_SDK_ARCHIVE_DIR: path.join(workRoot, "archives"), MOM_NATIVE_WINDOWS_HOST_SDK_OUTPUT_DIR: sdkRoot,
     MOM_NATIVE_WINDOWS_HOST_SDK_METADATA_TAR: path.join(temp, `native-windows-host-sdk-${suffix}-metadata.tar`),
     MOM_NATIVE_WINDOWS_HOST_SDK_DEADLINE_EPOCH: hostSdkDeadline(env)});
-  ci.buildWindowsHostSdkSourcesCi();
+  ciWindowsLlvm.buildWindowsHostSdkSourcesCi();
   const toolRoot = extractHandoff(toolArchive, toolName, temp, 512 * 1024 ** 2),
-    tools = linuxLlvmToolHandoffInputs(toolRoot, {runAttempt: suffix, handoffSha256: toolHandoffPin}),
+    tools = linuxLlvmToolHandoffInputs(toolRoot, {handoffSha256: toolHandoffPin}),
     hermesRoot = extractHandoff(hermesArchive, hermesName, temp, 4 * 1024 ** 3),
-    hermes = windowsControllerHandoffInputs(hermesRoot, {kind: "hermes", runAttempt: suffix, handoffSha256: hermesHandoffPin});
+    hermes = windowsControllerHandoffInputs(hermesRoot, {kind: "hermes", handoffSha256: hermesHandoffPin});
   if (hermes.kind !== "hermes" || !hermes.intelRuntime) {throw new Error("Hermes handoff omits the admitted Intel runtime");}
-  const descriptorState = ci.windowsNativeLlvmDescriptorCiStatePaths(process.env),
+  const descriptorState = ciWindowsLlvm.windowsNativeLlvmDescriptorCiStatePaths(process.env),
     inputFile = path.join(temp, `windows-llvm21-descriptor-input-${suffix}.json`),
     input = {windowsSdkRoot: sdkRoot, windowsSdkPins: {
       resultSha256: fileHash(path.join(sdkRoot, "result.json")), descriptorSha256: fileHash(path.join(sdkRoot, "sdk.json")),
       filesSha256: fileHash(path.join(sdkRoot, "files.json")), overlaySha256: fileHash(path.join(sdkRoot, "vfs-overlay.json"))},
-    hermesRoot, hermesExpectation: {kind: "hermes", runAttempt: suffix, handoffSha256: hermesHandoffPin},
+    hermesRoot, hermesExpectation: {kind: "hermes", handoffSha256: hermesHandoffPin},
     tools: {clangCl: {path: intelRoot + "/bin/icx-cl", sha256: fileHash(intelRoot + "/bin/icx-cl")},
       lldLink: {path: tools.lldLink, sha256: fileHash(tools.lldLink), linkTarget: "lld"},
       llvmNm: {path: tools.llvmNm, sha256: fileHash(tools.llvmNm)}, clangResourceInclude: intelRoot + "/lib/clang/23/include"}};
   if (fs.existsSync(inputFile)) {throw new Error("Descriptor composer input is not fresh");}
   fs.writeFileSync(inputFile, JSON.stringify(input) + "\n", {flag: "wx", mode: 0o600});
-  const produced = ci.buildWindowsNativeLlvmDescriptorCi([inputFile, fileHash(inputFile)], process.env);
+  const produced = ciWindowsLlvm.buildWindowsNativeLlvmDescriptorCi([inputFile, fileHash(inputFile)], process.env);
   if (produced["windows_llvm_descriptor_path"] !== descriptorState.descriptorOutput ||
       produced["windows_llvm_descriptor_provenance_path"] !== descriptorState.provenanceOutput) {
     throw new Error("Descriptor producer output path differs from the existing same-run contract");
@@ -120,7 +122,7 @@ function runWindowsJitChain(environment = process.env) {
     }
     chain.handOff(context, [archive]);
     if (previous) {chain.retire(context, [`native-windows-jit-sdk-${context.suffix}-${previous.phase}.tar`]);}
-    chain.resetRunScopedRoots(context);
+    chain.resetWorkRoots(context);
     previous = current;
   }
 }

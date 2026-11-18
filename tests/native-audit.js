@@ -204,7 +204,7 @@ test.describe("Native Linux deployment ABI baseline", () => {
     }
   });
   test("uses the glibc-compatible linker option, not the loader-incomplete generic spelling", () => {
-    const source = fs.readFileSync(path.join(__dirname, "../scripts/probe-native-controller.js"), "utf8");
+    const source = fs.readFileSync(path.join(__dirname, "../scripts/build-native-application.js"), "utf8");
     assert.match(source, /"-Wl,-z,pack-relative-relocs"/);
     assert.doesNotMatch(source, /--pack-dyn-relocs=relr/);
   });

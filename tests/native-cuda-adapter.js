@@ -3,7 +3,7 @@
 const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), path = require("node:path"), os = require("node:os");
 const {spawnSync} = require("node:child_process");
 const {driverImports, driverSignatures, forwardingSource} = require("../scripts/native-cuda-adapter");
-const {cudaSdkInput, adapterInputs, sourceJitInput} = require("../scripts/probe-static-dpcpp");
+const {cudaSdkInput, adapterInputs, sourceJitInput} = require("../scripts/native-dpcpp-pins");
 
 test.describe("Static DPC++ CUDA build admission and original graph", () => {
   const read = (/** @type {string} */ file) => fs.readFileSync(path.join(__dirname, "..", file), "utf8");
@@ -64,7 +64,7 @@ test.describe("Static DPC++ CUDA build admission and original graph", () => {
   });
   test("driver forwarding and isolation are build-only, not Engineering imports", () => {
     for (const file of ["scripts/dev.js", "scripts/build-release.js"]) {
-      assert.doesNotMatch(read(file), /native-cuda-adapter|probe-static-dpcpp/);
+      assert.doesNotMatch(read(file), /native-cuda-adapter|native-dpcpp-pins/);
     }
     const helper = read("scripts/native-cuda-adapter.js");
     assert.match(helper, /entryPoints: \["mom_ur_cuda_factory"\]/);

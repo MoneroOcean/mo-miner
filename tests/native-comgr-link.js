@@ -1,7 +1,7 @@
 "use strict";
 
 const test = require("node:test"), assert = require("node:assert/strict");
-const {nativeComgrLinkInputs} = require("../scripts/probe-native-controller");
+const {nativeComgrLinkInputs} = require("../scripts/build-native-application");
 const archive = "/component/build/libamd_comgr.a", receipt = "/component/result.json", sha = "a".repeat(64), receiptSha = "b".repeat(64);
 function fixture() {
   const comgr = {archive, receipt, sha256: sha, receiptSha256: receiptSha};

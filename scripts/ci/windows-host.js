@@ -5,7 +5,13 @@
 
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process"),
   {createHash} = require("node:crypto"), {isDeepStrictEqual} = require("node:util");
-const ci = require("../prepare-native-ci"), {fileHash, readBuildJson} = require("../build-source-inputs");
+const ciJob = require("../native-ci-job"),
+  ciRocm = require("../native-ci-linux-rocm"),
+  ciSources = require("../native-ci-linux-sources"),
+  ciTar = require("../native-ci-tar"),
+  ciWindowsLlvm = require("../native-ci-windows-llvm"),
+  dpcppInputs = require("../native-dpcpp-cuda-inputs"), {fileHash, readBuildJson} = require("../build-source-inputs");
+const {ciSuffix, validCiSuffix} = require("../native-ci-job");
 
 const repo = path.resolve(__dirname, "../.."), digest = /^[a-f0-9]{64}$/, epochPattern = /^\d{10}$/,
   intelBin = "/opt/intel/oneapi/compiler/2026.2/bin", sourceGit = "/usr/bin/git",
@@ -34,14 +40,6 @@ const inputPins = {
 /** @typedef {Record<PinLabel, string>} Pins */
 /** @typedef {{suffix: string, runnerTemp: string, sdkName: string, deadlineMs: number}} RestoreContext */
 
-/** Exact run-attempt suffix shared by every same-run artifact and restore root. @param {NodeJS.ProcessEnv} env */
-function runSuffix(env) {
-  const run = env["GITHUB_RUN_ID"] || "", attempt = env["GITHUB_RUN_ATTEMPT"] || "";
-  if (!/^[0-9]{1,20}$/.test(run) || !/^[1-9][0-9]{0,5}$/.test(attempt)) {
-    throw new Error("Windows host-component job needs the exact GitHub run id and attempt");
-  }
-  return run + "-" + attempt;
-}
 
 /** Validate all 15 external SHA-256 pins before any artifact is touched. @param {NodeJS.ProcessEnv} env @returns {Pins} */
 function externalPins(env) {
@@ -118,7 +116,7 @@ function jobEnvironment(runnerTemp, suffix, deadlines) {
 /** Fail fast at job start: validate pins and budget, then publish the exact same-run artifact names.
  * @param {NodeJS.ProcessEnv} env @param {number} [nowSeconds] */
 function validatePins(env, nowSeconds = Math.floor(Date.now() / 1000)) {
-  const suffix = runSuffix(env), output = env["GITHUB_OUTPUT"] || "";
+  const suffix = ciSuffix(env), output = env["GITHUB_OUTPUT"] || "";
   externalPins(env);
   const remaining = ciDeadline(env, nowSeconds) - nowSeconds;
   if (remaining > maxRunSeconds) {throw new Error("MOM_CI_DEADLINE_EPOCH exceeds eight hours");}
@@ -179,7 +177,7 @@ function pinnedManifest(file, expectedSha256, maxBytes = 1 << 20) {
 /** Admit the job identity, pins, Windows LLVM state manifest and the derived deadlines/environment.
  * @param {NodeJS.ProcessEnv} env @param {number} [nowMs] */
 function admitHostJob(env, nowMs = Date.now()) {
-  const suffix = runSuffix(env), pins = externalPins(env), names = artifactNames(suffix),
+  const suffix = ciSuffix(env), pins = externalPins(env), names = artifactNames(suffix),
     runnerTemp = env["RUNNER_TEMP"] || "", nowSeconds = Math.floor(nowMs / 1000);
   ciDeadline(env, nowSeconds);
   const manifestPin = pinnedManifest(incoming(env, names.windows_state_manifest), pins.WINDOWS_STATE_MANIFEST),
@@ -230,11 +228,11 @@ function availableBytes(directory) {
  * @param {string} base @param {number} maxExpandedBytes @param {number} [timeoutCapMs] @param {boolean} [createBase] */
 function restore(context, file, expectedSha256, roots, base, maxExpandedBytes, timeoutCapMs = 25 * minute, createBase = false) {
   pinnedFile(file, expectedSha256);
-  const members = ci.listState(file, roots, boundedTimeout(context.deadlineMs, 5 * minute)),
-    expandedBytes = ci.tarExpandedBytes(file, members.length, boundedTimeout(context.deadlineMs, 15 * minute));
+  const members = ciTar.listState(file, roots, boundedTimeout(context.deadlineMs, 5 * minute)),
+    expandedBytes = ciTar.tarExpandedBytes(file, members.length, boundedTimeout(context.deadlineMs, 15 * minute));
   if (expandedBytes > maxExpandedBytes) {throw new Error("Same-run input archive exceeds its expanded-size bound: " + path.basename(file));}
   if (roots.includes(context.sdkName)) {
-    ci.linuxNativeSdkDiskPreflight(expandedBytes, availableBytes(base), availableBytes(context.runnerTemp));
+    ciTar.linuxNativeSdkDiskPreflight(expandedBytes, availableBytes(base), availableBytes(context.runnerTemp));
   }
   pinnedFile(file, expectedSha256);
   if (createBase) {
@@ -245,7 +243,7 @@ function restore(context, file, expectedSha256, roots, base, maxExpandedBytes, t
     }
     fs.mkdirSync(base, {mode: 0o700});
   }
-  ci.extractState(file, base, roots, roots, boundedTimeout(context.deadlineMs, timeoutCapMs, 90_000));
+  ciTar.extractState(file, base, roots, roots, boundedTimeout(context.deadlineMs, timeoutCapMs, 90_000));
   pinnedFile(file, expectedSha256);
   return {members, expandedBytes};
 }
@@ -270,30 +268,30 @@ function restoreSameRunInputs(context, env, pins, names, sourceName) {
 }
 
 /** Admit every restored same-run input through its public verifier.
- * @param {ReturnType<typeof ci.ciPaths>} paths @param {Pins} pins @param {string} suffix
+ * @param {ReturnType<typeof ciSources.ciPaths>} paths @param {Pins} pins @param {string} suffix
  * @param {{toolsBundle: string, hermesRoot: string}} restored */
 function verifySameRunInputs(paths, pins, suffix, restored) {
-  const linuxSdk = require("../build-native-llvm21-sdk").verifyLinuxLlvmAdmission(paths.output),
-    linuxSources = ci.linuxSourceStatePaths(paths), dpcpp = ci.dpcppCudaInputsStatePaths(paths),
-    rocm = ci.rocmSourceStatePaths(paths), acpp = ci.acppStatePaths(paths),
+  const linuxSdk = require("../build-native-llvm-sdk").verifyLinuxLlvmAdmission(paths.output),
+    linuxSources = ciSources.linuxSourceStatePaths(paths), dpcpp = ciSources.dpcppCudaInputsStatePaths(paths),
+    rocm = ciSources.rocmSourceStatePaths(paths), acpp = ciSources.acppStatePaths(paths),
     toolInputs = require("../native-linux-llvm-tools").linuxLlvmToolHandoffInputs(restored.toolsBundle,
-      {runAttempt: suffix, handoffSha256: pins.LINUX_TOOLS_HANDOFF}),
+      {handoffSha256: pins.LINUX_TOOLS_HANDOFF}),
     hermes = require("../native-windows-controller-handoff").windowsControllerHandoffInputs(restored.hermesRoot,
-      {kind: "hermes", runAttempt: suffix, handoffSha256: pins.HERMES_HANDOFF}),
+      {kind: "hermes", handoffSha256: pins.HERMES_HANDOFF}),
     hipHeaders = require("../native-rocm-hip-headers").rocmHipHeaderInputs(path.join("/tmp", "native-rocm-hip-headers-" + suffix),
-      {runAttempt: suffix, handoffSha256: pins.HIP_HEADERS_HANDOFF});
+      {handoffSha256: pins.HIP_HEADERS_HANDOFF});
   if (!linuxSdk.sdk || !linuxSdk.sdk.path || hermes.kind !== "hermes" || !hermes.intelRuntime ||
       toolInputs.toolRoot !== path.join(restored.toolsBundle, "bin")) {
     throw new Error("Restored same-run SDK, Hermes runtime or thin Linux LLVM tool handoff is incomplete");
   }
-  ci.verifyLinuxSources(paths, linuxSources, sourceGit);
+  ciSources.verifyLinuxSources(paths, linuxSources, sourceGit);
   const dpcppManifest = readBuildJson(dpcpp.manifest);
-  if (ci.dpcppSourceArchivePin(dpcpp.incomingSourceTar, pins.LINUX_SOURCES_BUNDLE) !== dpcppManifest.source?.tarSha256) {
+  if (ciSources.dpcppSourceArchivePin(dpcpp.incomingSourceTar, pins.LINUX_SOURCES_BUNDLE) !== dpcppManifest.source?.tarSha256) {
     throw new Error("DPC++/CUDA manifest source cohort is not the externally pinned Linux source archive");
   }
-  ci.auditDpcppCudaInputs(dpcpp, dpcppManifest, pins.DPCPP_CUDA_MANIFEST);
-  ci.verifyRocmSources(paths, rocm, sourceGit);
-  ci.verifyAcppSource(paths, acpp, sourceGit);
+  dpcppInputs.auditDpcppCudaInputs(dpcpp, dpcppManifest, pins.DPCPP_CUDA_MANIFEST);
+  ciSources.verifyRocmSources(paths, rocm, sourceGit);
+  ciSources.verifyAcppSource(paths, acpp, sourceGit);
   return {linuxSdkPath: linuxSdk.sdk.path, dpcpp, rocm, acpp, toolInputs, hipHeaders};
 }
 
@@ -301,7 +299,7 @@ function verifySameRunInputs(paths, pins, suffix, restored) {
  * @param {string} runnerTemp @param {string} suffix @param {string} hermesRoot @param {string} hermesHandoffSha256
  * @param {{lldLink: string, llvmNm: string}} toolInputs */
 function writeDescriptorInput(runnerTemp, suffix, hermesRoot, hermesHandoffSha256, toolInputs) {
-  const hostSdkMetadata = ci.buildWindowsHostSdkSourcesCi(),
+  const hostSdkMetadata = ciWindowsLlvm.buildWindowsHostSdkSourcesCi(),
     windowsSdkRoot = path.join(runnerTemp, "mom-native-windows-host-sdk-" + suffix, "native-windows-host-sdk-" + suffix),
     windowsSdkPins = {resultSha256: fileHash(path.join(windowsSdkRoot, "result.json")), descriptorSha256: fileHash(path.join(windowsSdkRoot, "sdk.json")),
       filesSha256: fileHash(path.join(windowsSdkRoot, "files.json")), overlaySha256: fileHash(path.join(windowsSdkRoot, "vfs-overlay.json"))};
@@ -313,8 +311,8 @@ function writeDescriptorInput(runnerTemp, suffix, hermesRoot, hermesHandoffSha25
       llvmNm: {path: toolInputs.llvmNm, sha256: fileHash(toolInputs.llvmNm)},
       clangResourceInclude: "/opt/intel/oneapi/compiler/2026.2/lib/clang/23/include"},
     input = {windowsSdkRoot, windowsSdkPins, hermesRoot,
-      hermesExpectation: /** @type {{kind: "hermes", runAttempt: string, handoffSha256: string}} */ (
-        {kind: "hermes", runAttempt: suffix, handoffSha256: hermesHandoffSha256}), tools},
+      hermesExpectation: /** @type {{kind: "hermes", handoffSha256: string}} */ (
+        {kind: "hermes", handoffSha256: hermesHandoffSha256}), tools},
     file = path.join(runnerTemp, "windows-llvm21-descriptor-input-" + suffix + ".json"),
     bytes = Buffer.from(JSON.stringify(input) + "\n");
   if (fs.existsSync(file) || bytes.length > 8 * 1024 * 1024) {
@@ -330,12 +328,12 @@ function writeDescriptorInput(runnerTemp, suffix, hermesRoot, hermesHandoffSha25
 function restoreWindowsLlvm(job, archive, descriptor) {
   const windowsState = require("../native-windows-llvm-state").restoreWindowsNativeLlvmState(archive,
       job.pins.WINDOWS_STATE_BUNDLE, job.manifest, job.manifestSha256, process.env).state,
-    windowsLlvm = require("../build-native-windows-llvm21-sdk").verifyWindowsLlvmAdmission(windowsState.output, process.env),
+    windowsLlvm = require("../build-native-windows-llvm-sdk").verifyWindowsLlvmAdmission(windowsState.output, process.env),
     admissionSha = fileHash(path.join(windowsState.output, "admitted.json"));
   if (admissionSha !== job.pins.WINDOWS_ADMISSION) {
     throw new Error("Restored Windows LLVM admission receipt differs from the external pin");
   }
-  const composed = ci.composeWindowsLlvmSdkDescriptor(descriptor.input),
+  const composed = ciWindowsLlvm.composeWindowsLlvmSdkDescriptor(descriptor.input),
     originalInput = fs.readFileSync(path.join(windowsState.root, "descriptor-input.json")),
     originalProvenance = readBuildJson(path.join(windowsState.root, "descriptor-provenance.json")),
     expectedDescriptor = Buffer.from(JSON.stringify(composed.descriptor, null, 2) + "\n");
@@ -386,13 +384,13 @@ function checkoutPinnedSource(deadlineMs, bareSource, checkout, revision) {
 function buildComgr(deadlineMs, runnerTemp, suffix, input) {
   const resourcesRoot = path.join(runnerTemp, "native-windows-rocm-resources-" + suffix),
     configFile = path.join(runnerTemp, "native-windows-rocm-resources-config-" + suffix + ".json"),
-    config = ci.rocmResourcesConfig({source: input.rocmSource, llvmSdk: input.linuxSdkPath, hipIncludeRoot: input.hipInclude},
+    config = ciRocm.rocmResourcesConfig({source: input.rocmSource, llvmSdk: input.linuxSdkPath, hipIncludeRoot: input.hipInclude},
       {cmake: "/usr/bin/cmake", cc: intelBin + "/icx", cxx: intelBin + "/icpx"}, "win32");
   fs.writeFileSync(configFile, JSON.stringify(config, null, 2) + "\n", {flag: "wx", mode: 0o600});
   runBounded(deadlineMs, "scripts/build-native-rocm-resources.js", [configFile, resourcesRoot], 12 * minute);
   const resourceResult = path.join(resourcesRoot, "result.json"), comgrRoot = path.join(runnerTemp, "native-windows-comgr-" + suffix);
   runBounded(deadlineMs, "scripts/build-native-windows-comgr-sdk.js", ["configure", input.rocmSource + "/roots/rocmLlvm", input.descriptor,
-    input.llvmOutput, input.linuxSdkPath, intelBin + "/icx", resourceResult, comgrRoot, ci.ciBuildJobs()], 12 * minute);
+    input.llvmOutput, input.linuxSdkPath, intelBin + "/icx", resourceResult, comgrRoot, ciJob.ciBuildJobs()], 12 * minute);
   runBounded(deadlineMs, "scripts/build-native-windows-comgr-sdk.js", ["build", comgrRoot], 12 * minute);
   return {resourcesRoot, resourceResult, comgrResult: path.join(comgrRoot, "result.json")};
 }
@@ -447,7 +445,7 @@ function prepareCudart(deadlineMs, runnerTemp, suffix) {
 function buildHostComponent() {
   const job = admitHostJob(process.env);
   Object.assign(process.env, job.environment);
-  const paths = ci.ciPaths(), suffix = job.suffix, runnerTemp = paths.runnerTemp,
+  const paths = ciSources.ciPaths(), suffix = job.suffix, runnerTemp = paths.runnerTemp,
     context = {suffix, runnerTemp, sdkName: paths.sdkName, deadlineMs: job.deadlines.jobEpoch * 1000},
     deadlineMs = context.deadlineMs,
     restored = restoreSameRunInputs(context, process.env, job.pins, job.names, paths.sourceName),
@@ -473,7 +471,7 @@ function buildHostComponent() {
     output: componentRoot(suffix)});
 }
 
-/** Reserved final component root for this run attempt. @param {string} suffix */
+/** Reserved final component root of this CI job. @param {string} suffix */
 function componentRoot(suffix) {return path.join("/tmp", "native-windows-host-component-" + suffix);}
 
 /** Every archive member the exact component closure must contain, directories included.
@@ -500,7 +498,7 @@ function sealHostComponent(input, nowMs = Date.now()) {
     root = componentRoot(input.suffix), name = path.basename(root), runnerTemp = fs.realpathSync(input.runnerTemp),
     archive = path.join(runnerTemp, name + ".tar"), receipt = path.join(root, "component.json"),
     deadlineMs = Math.min(nowMs + 5 * minute, input.jobDeadlineEpoch * 1000 - 30_000);
-  if (!/^[0-9]{1,20}-[1-9][0-9]{0,5}$/.test(input.suffix) || !Number.isSafeInteger(deadlineMs) || deadlineMs - Date.now() < 2_000 ||
+  if (!validCiSuffix(input.suffix) || !Number.isSafeInteger(deadlineMs) || deadlineMs - Date.now() < 2_000 ||
       archive.startsWith("/tmp/") || !path.isAbsolute(input.outputFile)) {
     throw new Error("Windows host-component seal paths or inherited job deadline are invalid");
   }
@@ -509,10 +507,10 @@ function sealHostComponent(input, nowMs = Date.now()) {
   if (fs.existsSync(archive) || before.files[receipt] !== manifestSha256 || metadata.buildOnly !== true || metadata.publicationQualified !== false) {
     throw new Error("Windows host component differs from its fresh build-only manifest before sealing");
   }
-  const packed = ci.packState(archive, path.dirname(root), [name], operationTimeout()),
-    listed = ci.listState(archive, [name], operationTimeout()),
+  const packed = ciTar.packState(archive, path.dirname(root), [name], operationTimeout()),
+    listed = ciTar.listState(archive, [name], operationTimeout()),
     actual = listed.map(member => member.endsWith("/") ? member.slice(0, -1) : member).sort(),
-    after = windowsHostComponentInputs(root), expandedBytes = ci.tarExpandedBytes(archive, listed.length, operationTimeout()),
+    after = windowsHostComponentInputs(root), expandedBytes = ciTar.tarExpandedBytes(archive, listed.length, operationTimeout()),
     bundleSha256 = fileHash(archive);
   if (!packed.bytes || actual.join("\0") !== expectedMembers(root, before.files).join("\0") || expandedBytes < 1 ||
       expandedBytes > 1024 ** 3 || !isDeepStrictEqual(after.files, before.files) || !digest.test(bundleSha256) ||
@@ -531,7 +529,7 @@ function sealFromEnvironment(env) {
     outputFile: env["GITHUB_OUTPUT"] || ""});
 }
 
-module.exports = {inputPins, runSuffix, externalPins, artifactNames, jobDeadlines, jobEnvironment, validatePins,
+module.exports = {inputPins, externalPins, artifactNames, jobDeadlines, jobEnvironment, validatePins,
   pinnedFile, pinnedManifest, admitHostJob, restore, checkoutPinnedSource, buildHostComponent, sealHostComponent, sealFromEnvironment};
 
 if (require.main === module) {

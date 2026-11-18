@@ -9,10 +9,11 @@ const {prepare: prepareJitResources, verifyJitResources, validateProfile, resour
 const {auditGnuHeaders} = require("./prepare-native-gnu-headers");
 const {REQUIRED} = require("./prepare-native-jit-base");
 const {verifyPreparedSdkSources} = require("./prepare-native-sdk-sources");
+const {ciSuffix, validCiSuffix, ciBuildJobs} = require("./native-ci-job");
 
 const repo = path.resolve(__dirname, ".."), linuxTarget = "x86_64-unknown-linux-gnu", windowsTarget = "x86_64-w64-windows-gnu";
 // Mirrors the private RECIPE_FILES list in prepare-native-jit-base.js; the producer does not export it.
-const BASE_RECIPE_FILES = ["scripts/prepare-native-jit-base.js", "scripts/prepare-native-sdk-sources.js", "scripts/probe-static-dpcpp.js",
+const BASE_RECIPE_FILES = ["scripts/prepare-native-jit-base.js", "scripts/prepare-native-sdk-sources.js", "scripts/native-dpcpp-pins.js",
   "scripts/build-source-inputs.js", "scripts/build-environment.js", "scripts/build-native-release.js", "scripts/native-jit-headers.js",
   "scripts/native-jit-sdk.js", "scripts/prepare-native-sycl-jit-resources.js"];
 const EMITTER_RECIPE_FILES = [...new Set([...jitSourceInputs, "scripts/native-jit-sdk.js", "scripts/build-source-inputs.js", "scripts/build-environment.js"])];
@@ -65,9 +66,9 @@ function exactKeys(value, keys) {
     Object.keys(value).sort().join("\0") === [...keys].sort().join("\0");
 }
 
-/** The archive name and all producer roots carry the same immutable Actions run attempt. @param {string} value */
+/** The archive name and all producer roots carry the same CI work-root suffix. @param {string} value */
 function runSuffix(value) {
-  if (typeof value !== "string" || !/^\d{1,20}-[1-9]\d{0,5}$/.test(value)) {throw new Error("Invalid Windows JIT run/attempt identity");}
+  if (!validCiSuffix(value)) {throw new Error("Invalid Windows JIT CI work-root suffix");}
   return value;
 }
 
@@ -79,9 +80,9 @@ function runRoot(root, suffix, name) {
 }
 
 /** One resource artifact root retains emitter/profile evidence beside the prepared payload.
- * @param {string} runAttempt */
-function windowsJitResourcePaths(runAttempt) {
-  const root = path.join("/tmp", "mom-native-windows-jit-resources-" + runSuffix(runAttempt));
+ * @param {string} suffix */
+function windowsJitResourcePaths(suffix) {
+  const root = path.join("/tmp", "mom-native-windows-jit-resources-" + runSuffix(suffix));
   return {root, emitter: path.join(root, "emitter"), profile: path.join(root, "resource-profile.json"), resources: path.join(root, "resources"),
     nativeTools: path.join(root, "native-tools")};
 }
@@ -198,8 +199,8 @@ function validateWindowsJitNativeTools(outerRoot, suffix, source) {
   const manifest = readBuildJson(manifestFile), sourceRoot = "mom-native-linux-source-prerequisites-" + suffix,
     linuxRoot = path.join("/tmp", "mom-native-linux-jit-resources-" + suffix), expectedSourceReceipt = path.join("/tmp", sourceRoot, "prepared/compiler/sources.json"),
     expectedBuildRoot = path.join(linuxRoot, "bootstrap/build");
-  if (!exactKeys(manifest, ["version", "kind", "runAttempt", "buildOnly", "executed", "publicationQualified", "linux", "source", "files"]) ||
-      manifest.version !== 1 || manifest.kind !== "windows-jit-native-tablegen" || manifest.runAttempt !== suffix ||
+  if (!exactKeys(manifest, ["version", "kind", "buildOnly", "executed", "publicationQualified", "linux", "source", "files"]) ||
+      manifest.version !== 1 || manifest.kind !== "windows-jit-native-tablegen" ||
       manifest.buildOnly !== true || manifest.executed !== false || manifest.publicationQualified !== false ||
       !exactKeys(manifest.linux, ["root", "resultSha256", "baseReceiptSha256", "buildRoot"]) ||
       manifest.linux.root !== linuxRoot || !/^[a-f0-9]{64}$/.test(manifest.linux.resultSha256 || "") ||
@@ -247,7 +248,7 @@ function writeWindowsJitNativeTools(outerRoot, suffix, linux) {
     }
     return {path: "bin/" + row.name, bytes: stat.size, mode: 0o755, sha256: row.sha256};
   });
-  const manifest = {version: 1, kind: "windows-jit-native-tablegen", runAttempt: suffix,
+  const manifest = {version: 1, kind: "windows-jit-native-tablegen",
     buildOnly: true, executed: false, publicationQualified: false,
     linux: {root: linux.root, resultSha256: linux.resultSha256, baseReceiptSha256: linux.nativeTools.baseReceiptSha256,
       buildRoot: linux.nativeTools.buildRoot},
@@ -258,9 +259,9 @@ function writeWindowsJitNativeTools(outerRoot, suffix, linux) {
     receiptSha256: linux.nativeTools.sourceReceiptSha256, dpcppCommit: linux.nativeTools.dpcppCommit});
 }
 
-/** Re-admit the current same-run source receipt and its two generated native tools. @param {string} outerRoot @param {string} runAttempt */
-function admitWindowsJitNativeTools(outerRoot, runAttempt) {
-  const suffix = runSuffix(runAttempt), expectedSourceReceipt = path.join("/tmp", "mom-native-linux-source-prerequisites-" + suffix,
+/** Re-admit the current same-run source receipt and its two generated native tools. @param {string} outerRoot @param {string} suffix */
+function admitWindowsJitNativeTools(outerRoot, suffix) {
+  const expectedSourceReceipt = path.join("/tmp", "mom-native-linux-source-prerequisites-" + runSuffix(suffix),
     "prepared/compiler/sources.json");
   regularFile(expectedSourceReceipt, "same-run compiler source receipt");
   const sourceReceiptSha256 = fileHash(expectedSourceReceipt), receipt = verifyPreparedSdkSources(expectedSourceReceipt, "compiler"),
@@ -346,12 +347,12 @@ function profileFromAdmissions(base, gnu, emitter) {
 /**
  * Compose the existing Windows GNU resource profile after admitting all three independent
  * producer records. Archive extraction and its external bundle hash remain the caller's job.
- * @param {{runAttempt:string,linuxResourcesRoot:string,linuxResultSha256:string,windowsGnuRoot:string,windowsGnuResultSha256:string,
+ * @param {{suffix:string,linuxResourcesRoot:string,linuxResultSha256:string,windowsGnuRoot:string,windowsGnuResultSha256:string,
  * windowsGnuCopyrightsSha256:string,emitterRoot:string,emitterResultSha256:string,dpcppRoot:string,outputProfile:string}} input
  */
 function composeWindowsJitResourceProfile(input) {
   if (!input || typeof input !== "object" || Array.isArray(input)) {throw new Error("Windows JIT resource inputs are required");}
-  const paths = windowsJitResourcePaths(input.runAttempt), suffix = runSuffix(input.runAttempt);
+  const paths = windowsJitResourcePaths(input.suffix), suffix = input.suffix;
   runRoot(input.linuxResourcesRoot, suffix, "mom-native-linux-jit-resources");
   runRoot(input.windowsGnuRoot, suffix, "mom-native-windows-gnu-headers");
   directory(paths.root, "Windows JIT resource output");
@@ -359,7 +360,7 @@ function composeWindowsJitResourceProfile(input) {
     output = input.outputProfile;
   if (typeof output !== "string" || emitterRoot !== paths.emitter || output !== paths.profile ||
       !dpcppRoot.split(path.sep).some(part => part.endsWith(suffix))) {
-    throw new Error("Windows JIT emitter, DPC++ SDK or profile path is not bound to this run attempt");
+    throw new Error("Windows JIT emitter, DPC++ SDK or profile path is not bound to this CI work root");
   }
   hash(input.linuxResultSha256, "Linux JIT result"); hash(input.windowsGnuResultSha256, "Windows GNU result");
   hash(input.windowsGnuCopyrightsSha256, "Windows GNU copyrights"); hash(input.emitterResultSha256, "Windows JIT emitter receipt");
@@ -382,29 +383,32 @@ function composeWindowsJitResourceProfile(input) {
  * The caller must first restore DPC++/CUDA inputs from the externally pinned same-run bundle;
  * this function independently re-admits that root against its externally pinned manifest before
  * invoking the compiler. It never accepts a DPC++ path based only on a run-suffix match.
- * @param {{runAttempt:string,linuxResourcesRoot:string,linuxResultSha256:string,windowsGnuRoot:string,
+ * @param {{suffix:string,linuxResourcesRoot:string,linuxResultSha256:string,windowsGnuRoot:string,
  * windowsGnuResultSha256:string,windowsGnuCopyrightsSha256:string,dpcppRoot:string,
  * dpcppBundleSha256:string,dpcppManifestSha256:string,outputRoot:string}} input
  */
 function produceWindowsJitResources(input) {
-  if (process.platform !== "linux" || process.arch !== "x64" || process.env["MOM_AOT_BUILD_ONLY"] !== "1" ||
-      process.env["MOM_BUILD_JOBS"] !== "2") {throw new Error("Windows JIT resource production requires Linux x64, build-only mode, and two jobs");}
+  if (process.platform !== "linux" || process.arch !== "x64" || process.env["MOM_AOT_BUILD_ONLY"] !== "1") {
+    throw new Error("Windows JIT resource production requires Linux x64 and build-only mode");
+  }
+  ciBuildJobs();
   if (!input || typeof input !== "object" || Array.isArray(input)) {throw new Error("Windows JIT resource inputs are required");}
-  const suffix = runSuffix(input.runAttempt), paths = windowsJitResourcePaths(suffix), outputRoot = input.outputRoot;
-  if (outputRoot !== paths.root || process.env["GITHUB_RUN_ID"] + "-" + process.env["GITHUB_RUN_ATTEMPT"] !== suffix) {
-    throw new Error("Windows JIT resource output or workflow identity is not bound to this run attempt");
+  const suffix = input.suffix, paths = windowsJitResourcePaths(suffix), outputRoot = input.outputRoot;
+  if (outputRoot !== paths.root || ciSuffix() !== suffix) {
+    throw new Error("Windows JIT resource output or workflow suffix is not bound to this CI work root");
   }
 
   // The caller must verify the DPC++ archive pin before restoring it. Revalidate its external
   // manifest pin and all selected payloads here before the first compiler process is spawned.
-  const ci = require("./prepare-native-ci"), pathsCi = ci.ciPaths(), dpcppState = ci.dpcppCudaInputsStatePaths(pathsCi, process.env),
+  const ciSources = require("./native-ci-linux-sources"),
+    dpcppInputs = require("./native-dpcpp-cuda-inputs"), pathsCi = ciSources.ciPaths(), dpcppState = ciSources.dpcppCudaInputsStatePaths(pathsCi, process.env),
     manifestSha256 = hash(input.dpcppManifestSha256, "DPC++ manifest");
   hash(input.dpcppBundleSha256, "DPC++ bundle");
   if (pathsCi.suffix !== suffix || input.dpcppRoot !== dpcppState.dpcppRoot) {
     throw new Error("Windows JIT emitter requires the externally pinned same-run DPC++ input handoff");
   }
   const dpcppRecord = readBuildJson(dpcppState.manifest);
-  ci.auditDpcppCudaInputs(dpcppState, dpcppRecord, manifestSha256);
+  dpcppInputs.auditDpcppCudaInputs(dpcppState, dpcppRecord, manifestSha256);
 
   const linux = admitLinuxBase(input.linuxResourcesRoot, suffix, hash(input.linuxResultSha256, "Linux JIT result")),
     gnu = admitWindowsGnu(input.windowsGnuRoot, suffix, hash(input.windowsGnuResultSha256, "Windows GNU result"),
@@ -421,7 +425,7 @@ function produceWindowsJitResources(input) {
   fs.mkdirSync(outputRoot, {mode: 0o700});
   const nativeTools = writeWindowsJitNativeTools(outputRoot, suffix, linux);
   const emitterReceipt = buildJitEmitter(dpcppState.dpcppRoot, paths.emitter, process.env, targetHeaders),
-    composed = composeWindowsJitResourceProfile({runAttempt: suffix, linuxResourcesRoot: input.linuxResourcesRoot,
+    composed = composeWindowsJitResourceProfile({suffix, linuxResourcesRoot: input.linuxResourcesRoot,
       linuxResultSha256: input.linuxResultSha256, windowsGnuRoot: input.windowsGnuRoot,
       windowsGnuResultSha256: input.windowsGnuResultSha256, windowsGnuCopyrightsSha256: input.windowsGnuCopyrightsSha256,
       emitterRoot: paths.emitter, emitterResultSha256: fileHash(path.join(paths.emitter, "result.json")),
@@ -432,7 +436,7 @@ function produceWindowsJitResources(input) {
   const checkedLinux = admitLinuxBase(input.linuxResourcesRoot, suffix, input.linuxResultSha256),
     checkedNativeTools = admitWindowsJitNativeTools(outputRoot, suffix);
   admitWindowsGnu(input.windowsGnuRoot, suffix, input.windowsGnuResultSha256, input.windowsGnuCopyrightsSha256);
-  ci.auditDpcppCudaInputs(dpcppState, readBuildJson(dpcppState.manifest), manifestSha256);
+  dpcppInputs.auditDpcppCudaInputs(dpcppState, readBuildJson(dpcppState.manifest), manifestSha256);
   const checkedEmitter = admitEmitter(paths.emitter, dpcppState.dpcppRoot, gnu.root, gnu.headers, fileHash(path.join(paths.emitter, "result.json")));
   if (checkedEmitter.receiptSha256 !== fileHash(path.join(paths.emitter, "result.json")) ||
       checkedLinux.nativeTools.files.some((row, index) => row.sha256 !== nativeTools.hashes[index === 0 ? "clangTableGenSha256" : "llvmTableGenSha256"]) ||
@@ -456,20 +460,15 @@ if (require.main === module) {
   try {
     const args = process.argv.slice(2);
     if (args[0] === "produce") {
-      if (args.length !== 11) {throw new Error("Usage: native-windows-jit-resources.js produce <run-attempt> <linux-root> <linux-result-sha256> <windows-gnu-root> <gnu-result-sha256> <copyrights-sha256> <dpcpp-root> <dpcpp-bundle-sha256> <dpcpp-manifest-sha256> <new-output-root>");}
-      const [, runAttempt, linuxResourcesRoot, linuxResultSha256, windowsGnuRoot, windowsGnuResultSha256, windowsGnuCopyrightsSha256,
+      if (args.length !== 11) {throw new Error("Usage: native-windows-jit-resources.js produce <ci-suffix> <linux-root> <linux-result-sha256> <windows-gnu-root> <gnu-result-sha256> <copyrights-sha256> <dpcpp-root> <dpcpp-bundle-sha256> <dpcpp-manifest-sha256> <new-output-root>");}
+      const [, suffix, linuxResourcesRoot, linuxResultSha256, windowsGnuRoot, windowsGnuResultSha256, windowsGnuCopyrightsSha256,
         dpcppRoot, dpcppBundleSha256, dpcppManifestSha256, outputRoot] = /** @type {[string,string,string,string,string,string,string,string,string,string,string]} */ (args);
-      const result = produceWindowsJitResources({runAttempt, linuxResourcesRoot, linuxResultSha256, windowsGnuRoot, windowsGnuResultSha256,
+      const result = produceWindowsJitResources({suffix, linuxResourcesRoot, linuxResultSha256, windowsGnuRoot, windowsGnuResultSha256,
         windowsGnuCopyrightsSha256, dpcppRoot, dpcppBundleSha256, dpcppManifestSha256, outputRoot});
       process.stdout.write(JSON.stringify({root: result.root, resources: result.resources, manifestSha256: result.manifestSha256,
         buildOnly: true, executed: false, publicationQualified: false}) + "\n");
     } else {
-      if (args.length !== 10) {throw new Error("Usage: native-windows-jit-resources.js <run-attempt> <linux-resources-root> <linux-result-sha256> <windows-gnu-root> <windows-gnu-result-sha256> <copyrights-sha256> <emitter-root> <emitter-result-sha256> <dpcpp-root> <new-profile.json>");}
-      const [runAttempt, linuxResourcesRoot, linuxResultSha256, windowsGnuRoot, windowsGnuResultSha256, windowsGnuCopyrightsSha256,
-        emitterRoot, emitterResultSha256, dpcppRoot, outputProfile] = /** @type {[string,string,string,string,string,string,string,string,string,string]} */ (args);
-      const result = composeWindowsJitResourceProfile({runAttempt, linuxResourcesRoot, linuxResultSha256, windowsGnuRoot, windowsGnuResultSha256,
-        windowsGnuCopyrightsSha256, emitterRoot, emitterResultSha256, dpcppRoot, outputProfile});
-      process.stdout.write(JSON.stringify({target: result.profile.target, profileSha256: result.profileSha256, buildOnly: true, publicationQualified: false}) + "\n");
+      throw new Error("Usage: native-windows-jit-resources.js produce ...");
     }
   } catch (error) {
     console.error(error instanceof Error ? error.message : "Windows JIT resource profile admission failed"); process.exitCode = 1;

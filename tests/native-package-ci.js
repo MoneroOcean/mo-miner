@@ -2,7 +2,7 @@
 const fs = require("node:fs"), path = require("node:path"), os = require("node:os"), assert = require("node:assert/strict"),
   test = require("node:test"), {createHash} = require("node:crypto"), {spawnSync} = require("node:child_process"),
   {isDeepStrictEqual} = require("node:util");
-const {fileHash} = require("../scripts/build-source-inputs"), realCi = require("../scripts/prepare-native-ci");
+const {fileHash} = require("../scripts/build-source-inputs"), realCi = require("../scripts/native-ci-tar");
 const {packagePlan, preflightPackage, packageNative} = require("../scripts/ci/package-native");
 
 const suffix = "123456789-1", digest = (/** @type {string|Buffer} */ value) => createHash("sha256").update(value).digest("hex");
@@ -83,7 +83,7 @@ function fixture(t, target = "linux") {
     buildOnly: true, publicationQualified: false});
 
   /** @type {NodeJS.ProcessEnv} */
-  const env = {RUNNER_TEMP: temp, GITHUB_RUN_ID: "123456789", GITHUB_RUN_ATTEMPT: "1", NATIVE_PLATFORM: target,
+  const env = {RUNNER_TEMP: temp, MOM_NATIVE_CI_SUFFIX: "123456789-1", NATIVE_PLATFORM: target,
     RAW_EXECUTABLE_SHA256: rawSha, GITHUB_WORKSPACE: repoRoot, MOM_CMAKE_PATH: cmakePath,
     PATH: [cmakeDirectory, process.env["PATH"] || "/usr/bin:/bin"].join(path.delimiter), GITHUB_OUTPUT: path.join(temp, "outputs")};
   const tarFiles = {packed: path.join(incoming, roots.packed + ".tar"), original: path.join(incoming, roots.original + ".tar")};
@@ -197,8 +197,8 @@ test.describe("SDK-free late native package job", {skip: process.platform !== "l
         `metadata_artifact_name=${metadataName}.tar\nmetadata_file=${metadataTar}\n`);
     });
   }
-  test("rejects malformed platform, run identity, workspace and missing external pins before artifact access", t => {
-    for (const [key, value] of [["NATIVE_PLATFORM", "darwin"], ["NATIVE_PLATFORM", "windows"], ["GITHUB_RUN_ATTEMPT", "0"],
+  test("rejects malformed platform, CI suffix, workspace and missing external pins before artifact access", t => {
+    for (const [key, value] of [["NATIVE_PLATFORM", "darwin"], ["NATIVE_PLATFORM", "windows"], ["MOM_NATIVE_CI_SUFFIX", "../x"],
       ["ORIGINAL_HANDOFF_SHA256", ""], ["PACKED_BUILD_BUNDLE_SHA256", "0".repeat(63)], ["GITHUB_WORKSPACE", "relative"]]) {
       const f = fixture(t, "win32"); f.env[key || ""] = value;
       assert.throws(() => f.preflight(), /exact platform, workspace and build SHA-256 pins/);
@@ -207,8 +207,8 @@ test.describe("SDK-free late native package job", {skip: process.platform !== "l
     }
     assert.equal(packagePlan(fixture(t, "win32").env)?.platform, "windows");
   });
-  test("rejects another run attempt and stray incoming files before unpacking", t => {
-    const f = fixture(t); f.env["GITHUB_RUN_ATTEMPT"] = "2";
+  test("rejects another CI suffix and stray incoming files before unpacking", t => {
+    const f = fixture(t); f.env["MOM_NATIVE_CI_SUFFIX"] = "other";
     assert.throws(() => f.package(), /incoming build bundle contents/); assert.equal(reached(f, ["extract"]), false);
     const g = fixture(t); fs.writeFileSync(path.join(g.incoming, "extra.tar"), "x");
     assert.throws(() => g.package(), /incoming build bundle contents/); assert.equal(reached(g, ["extract"]), false);

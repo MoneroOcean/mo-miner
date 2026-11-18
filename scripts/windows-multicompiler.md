@@ -118,5 +118,3 @@ For a fresh machine, `scripts\install-dev.bat -Component all` installs the commo
 oneAPI, CUDA/HIP compiler SDKs, open DPC++, and both AdaptiveCpp trees without touching GPU display
 drivers. `-Component dpcpp`, `acpp-cuda`, or `acpp-hip` provides the same narrow staging used by CI.
 CI caches the source-built AdaptiveCpp trees; DPC++ is restored from its SHA256-pinned release asset.
-`scripts\validate-windows-toolchains.ps1` checks the Intel, CUDA, and HIP toolchains against their
-passthrough GPUs.

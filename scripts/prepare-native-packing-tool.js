@@ -14,7 +14,8 @@ function admitPackingFile(file, pin) {
 }
 
 /** Fetch just the official pinned archive and extract one member to an exclusive file.
- * Unknown/partial directories are preserved, not overwritten or silently re-admitted.
+ * Acquisition happens in a private partial directory that is renamed into place only after
+ * admission, so a failed download never blocks the next run; unknown final directories are preserved.
  * @param {string} output @param {NodeJS.ProcessEnv} [env] @param {typeof spawnSync} [spawn] */
 function prepareNativePackingTool(output, env = process.env, spawn = spawnSync) {
   if (process.platform !== "linux" || process.arch !== "x64") {throw new Error("The pinned packing host tool requires Linux x64");}
@@ -26,18 +27,17 @@ function prepareNativePackingTool(output, env = process.env, spawn = spawnSync) 
       ![tool.archive, tool.executable].every(row => Number.isSafeInteger(row.bytes) && row.bytes > 0 && row.bytes < (16 << 20) && /^[a-f0-9]{64}$/.test(row.sha256))) {
     throw new Error("Unexpected pinned native packing tool catalog");
   }
-  const archive = path.join(output, "upx.tar.xz"), executable = path.join(output, "upx"),
-    stat = fs.lstatSync(output, {throwIfNoEntry: false});
+  const stat = fs.lstatSync(output, {throwIfNoEntry: false});
   if (stat) {
     if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync(output) !== output ||
         fs.readdirSync(output).sort().join(",") !== "upx,upx.tar.xz") {
       throw new Error("Packing tool cache is unknown or incomplete; preserve it for diagnosis");
     }
-    admitPackingFile(archive, tool.archive); admitPackingFile(executable, tool.executable);
-    fs.accessSync(executable, fs.constants.X_OK);
-    return {upx: executable, upxSha256: tool.executable.sha256};
+    admitPackingFile(path.join(output, "upx.tar.xz"), tool.archive); admitPackingFile(path.join(output, "upx"), tool.executable);
+    fs.accessSync(path.join(output, "upx"), fs.constants.X_OK);
+    return {upx: path.join(output, "upx"), upxSha256: tool.executable.sha256};
   }
-  fs.mkdirSync(output, {mode: 0o700});
+  const partial = fs.mkdtempSync(output + ".partial-"), archive = path.join(partial, "upx.tar.xz"), executable = path.join(partial, "upx");
   /** @param {string} command @param {string[]} args @param {number} timeout @param {number} [stdout] */
   const run = (command, args, timeout, stdout) => {
     const result = spawn(command, args, {env: {...env, TAR_OPTIONS: "", LC_ALL: "C"}, timeout,
@@ -46,13 +46,21 @@ function prepareNativePackingTool(output, env = process.env, spawn = spawnSync) 
       throw new Error(`Pinned packing tool acquisition failed: ${command} (exit ${result.status}, signal ${result.signal || "none"})`, {cause: result.error});
     }
   };
-  run("curl", ["--disable", "--fail", "--location", "--proto", "=https", "--proto-redir", "=https", "--max-redirs", "5",
-    "--max-time", "120", "--max-filesize", String(tool.archive.bytes), "--output", archive, tool.archive.url], 125000);
-  admitPackingFile(archive, tool.archive);
-  const fd = fs.openSync(executable, "wx", 0o700);
-  try {run("tar", ["-xOf", archive, "--", tool.executable.member], 30000, fd);} finally {fs.closeSync(fd);}
-  admitPackingFile(executable, tool.executable); admitPackingFile(archive, tool.archive);
-  return {upx: executable, upxSha256: tool.executable.sha256};
+  try {
+    // Three retries of at most 120 s each, plus curl's short backoff, fit the 500 s process bound.
+    run("curl", ["--disable", "--fail", "--location", "--proto", "=https", "--proto-redir", "=https", "--max-redirs", "5",
+      "--retry", "3", "--retry-all-errors", "--max-time", "120", "--max-filesize", String(tool.archive.bytes),
+      "--output", archive, tool.archive.url], 500000);
+    admitPackingFile(archive, tool.archive);
+    const fd = fs.openSync(executable, "wx", 0o700);
+    try {run("tar", ["-xOf", archive, "--", tool.executable.member], 30000, fd);} finally {fs.closeSync(fd);}
+    admitPackingFile(executable, tool.executable); admitPackingFile(archive, tool.archive);
+    fs.renameSync(partial, output);
+  } catch (error) {
+    fs.rmSync(partial, {recursive: true, force: true});
+    throw error;
+  }
+  return {upx: path.join(output, "upx"), upxSha256: tool.executable.sha256};
 }
 
 module.exports = {admitPackingFile, prepareNativePackingTool};

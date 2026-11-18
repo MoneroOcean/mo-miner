@@ -13,7 +13,7 @@ const {spawnSync} = require("node:child_process");
 const {isDeepStrictEqual} = require("node:util");
 const {absolutePath} = require("./build-native-release");
 const {controllerBundleOptions, controllerAotCommand, verifyBundle, nativeApplicationRoot} = require("./native-bundle");
-const {controllerEntry, nativeApplicationBuildInputs} = require("./probe-native-controller");
+const {controllerEntry, nativeApplicationBuildInputs} = require("./build-native-application");
 const nativeResources = require("./native-resources");
 const {nativeJitCacheHeader} = require("./native-jit-cache-tag");
 const {buildDependencies, fileHash, readBuildJson, readBuildText} = require("./build-source-inputs");
@@ -55,7 +55,7 @@ const sourceLeaves = [
   "scripts/build-source-inputs.js",
   "scripts/native-bundle.js",
   "scripts/native-resources.js",
-  "scripts/probe-native-controller.js",
+  "scripts/build-native-application.js",
   "scripts/native-windows-application.js", "scripts/native-windows-driver.js", "scripts/native-pe-pages.js",
   "scripts/native-coff-archive.js", "scripts/native-compiler-isolation.js", "scripts/native-gpu-table.js",
   "scripts/native-windows-dpcpp-component.js", "scripts/native-windows-host-component.js",
@@ -353,7 +353,7 @@ function compileWindowsObjectBatch(batch) {
   const commands = /** @type {Parameters<typeof compileNativeObjects>[0]["commands"]} */ (
     batch.entries.map(({name: _name, log: _log, ...entry}) => ({...entry, timeout: 300000, dependencyFormat: /** @type {"nmake"} */ ("nmake")})));
   const result = compileNativeObjects({repo, output: batch.output, namespace: batch.namespace, commands,
-    environment: windowsToolEnvironment(batch.environment), jobs: 1, includeRoots: windowsObjectIncludeRoots(batch.entries, batch.output),
+    environment: windowsToolEnvironment(batch.environment), jobs: Number(batch.environment["MOM_BUILD_JOBS"] || "1"), includeRoots: windowsObjectIncludeRoots(batch.entries, batch.output),
     keyFiles: [batch.overlay],
     resolveDependencies: ({depfileText, repo: root}) => resolveWindowsDependencyPaths(depfileText, root, virtual),
     ...(batch.finalize ? {finalize: true, liveObjects: batch.liveObjects || []} : {})});

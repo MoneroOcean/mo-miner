@@ -4,16 +4,17 @@
 const fs = require("node:fs"), path = require("node:path"), childProcess = require("node:child_process");
 const {createHash, randomUUID} = require("node:crypto"), {isDeepStrictEqual} = require("node:util");
 const sourceIO = require("./build-source-inputs");
+const {ciSuffix, validCiSuffix} = require("./native-ci-job");
 const {readBuildJson, sourceInputs} = sourceIO;
 const localSdk = require("./build-local-native-sdk"), localRocm = require("./build-local-native-rocm-sdk"),
-  {verifyLinuxLlvmAdmission} = require("./build-native-llvm21-sdk"), nativeCi = require("./prepare-native-ci");
+  {verifyLinuxLlvmAdmission} = require("./build-native-llvm-sdk"), nativeCi = require("./native-ci-linux-sources");
 const repo = path.resolve(__dirname, ".."), catalogFile = path.join(repo, "runtime/windows-amdhip.json");
 const catalog = /** @type {AmdhipCatalog} */ (require("../runtime/windows-amdhip.json"));
 /** @param {object} value */
 function freezeTree(value) {for (const child of Object.values(value)) {if (child && typeof child === "object") {freezeTree(child);}} Object.freeze(value);}
 freezeTree(catalog);
 const recipeFiles = ["scripts/prepare-native-amdhip-windows.js", "runtime/windows-amdhip.json", "scripts/build-source-inputs.js",
-  "scripts/prepare-native-ci.js", "scripts/fetch-native-sdk-sources.js", "scripts/native-linux-llvm-tools.js",
+  "scripts/native-ci-linux-sources.js", "scripts/fetch-native-sdk-sources.js", "scripts/native-linux-llvm-tools.js",
   "scripts/native-llvm-sdk.js"];
 const deadlineMs = 15 * 60 * 1000, maxCommandOutput = 8 << 20, maxDefinitionBytes = 64 << 10, maxLibraryBytes = 4 << 20;
 const localBuildIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -32,7 +33,7 @@ const localBuildIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-
 /** @typedef {{kind:string,bytes:number,sha256:string,source:{kind:string,path:string,blob:string,sha256?:string}}} AmdhipFileProof */
 /** @typedef {{version:2,target:"windows-amdhip64",status:"PASS",networked:false,buildOnly:true,compiled:false,executed:false,
  * vendorPrebuilt:false,sourceGenerated:true,publicationQualified:false,redistributionQualified:false,producerSha256:string,
- * runAttempt?:string,localBuildId?:string,recipe:{sha256:string,files:Record<string,string>},source:AmdhipSourceProof,
+ * localBuildId?:string,recipe:{sha256:string,files:Record<string,string>},source:AmdhipSourceProof,
  * toolchain:AmdhipToolchainProof,definition:AmdhipDefinitionProof,library:AmdhipLibraryProof,
  * output:string,files:Record<string,AmdhipFileProof>,note:string}} AmdhipReceipt */
 /** @param {unknown} value @returns {value is string} */
@@ -113,9 +114,8 @@ function amdhipRecipe() {return sourceInputs(repo, [], recipeFiles);}
 
 /** @param {NodeJS.ProcessEnv} env */
 function runPaths(env) {
-  const run = env["GITHUB_RUN_ID"] || "", attempt = env["GITHUB_RUN_ATTEMPT"] || "", suffix = run + "-" + attempt,
-    runnerTemp = env["RUNNER_TEMP"] || "", rocmRoot = "/tmp/mom-native-rocm-prerequisites-" + suffix;
-  if (!/^[0-9]{1,20}$/.test(run) || !/^[1-9][0-9]{0,5}$/.test(attempt) || !absolute(runnerTemp) || fs.realpathSync(runnerTemp) !== runnerTemp ||
+  const suffix = ciSuffix(env), runnerTemp = env["RUNNER_TEMP"] || "", rocmRoot = "/tmp/mom-native-rocm-prerequisites-" + suffix;
+  if (!absolute(runnerTemp) || fs.realpathSync(runnerTemp) !== runnerTemp ||
       env["MOM_AOT_BUILD_ONLY"] !== "1" || !["2", "4"].includes(env["MOM_BUILD_JOBS"] || "") || env["MOM_NATIVE_ROCM_SOURCE_DIR"] !== rocmRoot) {
     throw new Error("Windows AMD generation needs the exact run-scoped ROCm source root and build-only CI environment");
   }
@@ -142,10 +142,10 @@ function deriveDefinition(definition, dllName) {
 }
 
 /** Admit the externally pinned tool-only handoff; never re-admit the full LLVM SDK here.
- * @param {string} bundleRoot @param {string} runAttempt @param {string} handoffSha256 */
-function verifyLinuxToolHandoff(bundleRoot, runAttempt, handoffSha256) {
+ * @param {string} bundleRoot @param {string} handoffSha256 */
+function verifyLinuxToolHandoff(bundleRoot, handoffSha256) {
   if (!/^[a-f0-9]{64}$/.test(handoffSha256 || "")) {throw new Error("Windows AMD Linux LLVM handoff SHA-256 is invalid");}
-  const input = require("./native-linux-llvm-tools").linuxLlvmToolHandoffInputs(bundleRoot, {runAttempt, handoffSha256}),
+  const input = require("./native-linux-llvm-tools").linuxLlvmToolHandoffInputs(bundleRoot, {handoffSha256}),
     root = path.dirname(input.toolRoot), files = input.files, aliasRelative = catalog.toolchain.llvmLibAlias,
     targetRelative = "bin/" + catalog.toolchain.llvmLibTarget,
     aliasRow = files[aliasRelative], targetRow = files[targetRelative];
@@ -190,7 +190,7 @@ function readPinnedClrBlob(sourceRoot, git, revision, relative, blob, size, hash
 
 /** Produce the shared sealed payload from the same pinned blobs and LLVM tool for CI and local callers.
  * @param {{selected:AmdhipCatalog,sourceRoot:string,destination:string,stagingParent:string,stagingPrefix:string,
- * identity:{runAttempt?:string,localBuildId?:string},toolchain:Omit<AmdhipToolchainProof,"command">,toolPath:string,fetchReceiptSha256:string,rootsReceiptSha256:string,
+ * identity:{localBuildId?:string},toolchain:Omit<AmdhipToolchainProof,"command">,toolPath:string,fetchReceiptSha256:string,rootsReceiptSha256:string,
  * recipe:ReturnType<typeof amdhipRecipe>,recipeSha256:string,producerSha256:string,verifyInputs:()=>unknown}} input */
 async function generateWindowsAmdhipPayload(input) {
   const {selected, sourceRoot, destination, stagingParent, stagingPrefix} = input, deadline = Date.now() + deadlineMs,
@@ -269,7 +269,7 @@ async function prepareWindowsAmdhip(sourceRoot, toolBundleRoot, toolHandoffSha25
     throw new Error("Windows AMD inputs must be the original ROCm source and externally pinned Linux LLVM tool handoff");
   }
   const recipe = amdhipRecipe(), recipeSha256 = createHash("sha256").update(JSON.stringify(recipe)).digest("hex"),
-    producerSha256 = sourceIO.fileHash(__filename), ci = require("./prepare-native-ci"),
+    producerSha256 = sourceIO.fileHash(__filename), ci = require("./native-ci-linux-sources"),
     ciRunPaths = ci.ciPaths(), sourceState = ci.rocmSourceStatePaths(ciRunPaths, environment),
     git = "/usr/bin/git";
   if (ciRunPaths.suffix !== paths.suffix || ciRunPaths.runnerTemp !== paths.runnerTemp || sourceState.source !== sourceRoot) {
@@ -277,11 +277,11 @@ async function prepareWindowsAmdhip(sourceRoot, toolBundleRoot, toolHandoffSha25
   }
   ci.verifyRocmSources(ciRunPaths, sourceState, git);
   const rootsBefore = sourceIO.fileHash(sourceState.rootsFile), sourceReceiptSha256 = sourceIO.fileHash(sourceState.fetchReceipt),
-    tools = verifyLinuxToolHandoff(toolBundleRoot, paths.suffix, toolHandoffSha256),
+    tools = verifyLinuxToolHandoff(toolBundleRoot, toolHandoffSha256),
     toolchain = {role: selected.toolchain.llvmRole, handoffRoot: tools.root, handoffSha256: toolHandoffSha256, llvmLib: tools.llvmLibIdentity},
     verifyInputs = () => {
       ci.verifyRocmSources(ciRunPaths, sourceState, git);
-      const toolsAfter = verifyLinuxToolHandoff(toolBundleRoot, paths.suffix, toolHandoffSha256);
+      const toolsAfter = verifyLinuxToolHandoff(toolBundleRoot, toolHandoffSha256);
       if (sourceIO.fileHash(sourceState.rootsFile) !== rootsBefore || sourceIO.fileHash(sourceState.fetchReceipt) !== sourceReceiptSha256 ||
           !isDeepStrictEqual(toolsAfter.llvmLibIdentity, tools.llvmLibIdentity) || sourceIO.fileHash(__filename) !== producerSha256 ||
           !isDeepStrictEqual(amdhipRecipe(), recipe) || !isDeepStrictEqual(windowsAmdhipCatalog(), selected)) {
@@ -289,7 +289,7 @@ async function prepareWindowsAmdhip(sourceRoot, toolBundleRoot, toolHandoffSha25
       }
     };
   return generateWindowsAmdhipPayload({selected, sourceRoot, destination, stagingParent: paths.runnerTemp,
-    stagingPrefix: ".native-windows-amdhip-" + paths.suffix, identity: {runAttempt: paths.suffix}, toolchain,
+    stagingPrefix: ".native-windows-amdhip-" + paths.suffix, identity: {}, toolchain,
     toolPath: tools.llvmLib, fetchReceiptSha256: sourceReceiptSha256, rootsReceiptSha256: rootsBefore,
     recipe, recipeSha256, producerSha256, verifyInputs});
 }
@@ -413,11 +413,11 @@ function admitWindowsAmdhip(directory) {
   const localReceipt = Boolean(receipt && typeof receipt === "object" && Object.hasOwn(receipt, "localBuildId")),
     receiptKeys = ["version", "target", "status", "networked", "buildOnly", "compiled", "executed", "vendorPrebuilt",
       "sourceGenerated", "publicationQualified", "redistributionQualified", "producerSha256", "recipe", "source", "toolchain", "definition",
-      "library", "output", "files", "note", localReceipt ? "localBuildId" : "runAttempt"],
-    identityValid = localReceipt ? typeof receipt.localBuildId === "string" && localBuildIdPattern.test(receipt.localBuildId) :
-      /^[0-9]{1,20}-[1-9][0-9]{0,5}$/.test(receipt.runAttempt || ""),
+      "library", "output", "files", "note", ...localReceipt ? ["localBuildId"] : []],
+    identityValid = !localReceipt || typeof receipt.localBuildId === "string" && localBuildIdPattern.test(receipt.localBuildId),
+    ciSourceSuffix = path.basename(source?.sourceRoot || "").slice("mom-native-rocm-prerequisites-".length),
     sourceRootValid = localReceipt ? absolute(source?.sourceRoot) && path.basename(source.sourceRoot) === "rocm-sources" :
-      source?.sourceRoot === "/tmp/mom-native-rocm-prerequisites-" + receipt.runAttempt,
+      validCiSuffix(ciSourceSuffix) && source?.sourceRoot === "/tmp/mom-native-rocm-prerequisites-" + ciSourceSuffix,
     toolchainIdentityValid = localReceipt ? exactKeys(toolchain, ["role", "sdkOutput", "sdkResultSha256", "llvmLib", "command"]) &&
       absolute(toolchain.sdkOutput) && /^[a-f0-9]{64}$/.test(toolchain.sdkResultSha256 || "") :
       exactKeys(toolchain, ["role", "handoffRoot", "handoffSha256", "llvmLib", "command"]) && provenancePath(toolchain.handoffRoot) &&

@@ -53,7 +53,7 @@ describe("Local Windows DPC++ GPU descriptor admission", {skip: process.platform
     }), /no enforced scope/);
   });
   test("rejects missing pins and CI identity fields instead of inventing a local handoff", () => {
-    for (const value of [null, {}, {runAttempt: "123-1"}, {workspace: "/missing", windowsSourceSha256: "a".repeat(64)}]) {
+    for (const value of [null, {}, {workspace: "/missing", windowsSourceSha256: "a".repeat(64)}]) {
       assert.throws(() => admitLocalWindowsDpcppGpuInputs(/** @type {any} */ (value), {verifyScope() {return undefined;}}), /explicit workspace\/source pins/);
     }
   });

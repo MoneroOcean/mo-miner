@@ -8,6 +8,8 @@ const path = require("node:path");
 const {describe, test} = require("node:test");
 const job = require("../scripts/ci/job");
 const chain = require("../scripts/ci/chain");
+const {cacheKey} = require("../scripts/ci/cache");
+const {reuseCachedLinuxLlvm} = require("../scripts/native-ci-linux-llvm");
 
 /** @param {import("node:test").TestContext} t */
 function workspace(t) {
@@ -15,15 +17,15 @@ function workspace(t) {
   t.after(() => fs.rmSync(root, {recursive: true, force: true}));
   const files = {GITHUB_ENV: path.join(root, "env"), GITHUB_OUTPUT: path.join(root, "output")};
   for (const file of Object.values(files)) {fs.writeFileSync(file, "");}
-  return {root, files, environment: {GITHUB_RUN_ID: "123", GITHUB_RUN_ATTEMPT: "2", RUNNER_TEMP: root, ...files}};
+  return {root, files, environment: {MOM_NATIVE_CI_SUFFIX: "123-2", RUNNER_TEMP: root, ...files}};
 }
 
 describe("Native CI job preparation", () => {
-  test("exports run roots and pins and plans exact transfers", t => {
+  test("exports work roots and pins and plans exact transfers", t => {
     const {root, files, environment} = workspace(t);
     job.prepareJob({...environment, NATIVE_JOB_PINS: "MOM_NATIVE_WINDOWS_GPU_PROFILE=oneapi\nMOM_X_SHA256=" + "a".repeat(64) + "\n",
       NATIVE_JOB_DOWNLOAD: "native-a-@.tar\n native-b-@.tar", NATIVE_JOB_UPLOAD: "native-c-@.tar native-exe-@=out-@/mom",
-      NATIVE_JOB_DIAGNOSTICS: "logs-@=/tmp/x-@/*.log"});
+      NATIVE_JOB_DIAGNOSTICS: "logs-@=/tmp/x-@/*.log"}, root);
     const env = fs.readFileSync(files.GITHUB_ENV, "utf8"), output = fs.readFileSync(files.GITHUB_OUTPUT, "utf8");
     assert.match(env, /^MOM_NATIVE_LINUX_SDK_DIR=\/tmp\/mom-native-llvm21-sdk-123-2$/m);
     assert.match(env, /^MOM_NATIVE_WINDOWS_GPU_DIR=\/tmp\/mom-native-windows-gpu-oneapi-123-2$/m);
@@ -34,6 +36,13 @@ describe("Native CI job preparation", () => {
     assert.match(output, /^diagnostics_name=logs-123-2$\ndiagnostics_path=\/tmp\/x-123-2\/\*\.log$/m);
   });
 
+  test("rejects a work root left by an earlier job on the same runner", t => {
+    const {root, files, environment} = workspace(t);
+    fs.mkdirSync(path.join(root, "mom-native-llvm21-sdk-123-2"));
+    assert.throws(() => job.prepareJob(environment, root), /work roots from an earlier job/);
+    assert.equal(fs.readFileSync(files.GITHUB_ENV, "utf8"), "");
+  });
+
   test("rejects empty, repeated or unprefixed pins and malformed transfers", () => {
     assert.throws(() => job.parsePins("MOM_A="), /malformed, empty or repeated/);
     assert.throws(() => job.parsePins("MOM_A=1\nMOM_A=2"), /malformed, empty or repeated/);
@@ -42,12 +51,12 @@ describe("Native CI job preparation", () => {
     assert.throws(() => job.uploadPlan(["a", "b", "c", "d", "e"], "/r"), /at most 4/);
     assert.throws(() => job.uploadPlan(["raw-*.tar"], "/r"), /malformed/);
     assert.equal(job.downloadPattern(["one.tar"]), "one.tar");
-    assert.throws(() => job.nativeCiEnvironment({GITHUB_RUN_ID: "1", GITHUB_RUN_ATTEMPT: "0"}), /run identity/);
+    assert.throws(() => job.nativeCiEnvironment({MOM_NATIVE_CI_SUFFIX: "../x"}), /MOM_NATIVE_CI_SUFFIX/);
   });
 });
 
 describe("Chained CI phases", () => {
-  test("hand off outputs, retire consumed inputs and reset only new run-scoped roots", t => {
+  test("hand off outputs, retire consumed inputs and reset only new work roots", t => {
     const {root, environment} = workspace(t), deadline = String(Math.floor(Date.now() / 1000) + 3600),
       existing = path.join(root, "kept-123-2");
     fs.mkdirSync(existing);
@@ -62,7 +71,7 @@ describe("Chained CI phases", () => {
     assert.equal(fs.readFileSync(path.join(context.incoming, "state-123-2.tar"), "utf8"), "state");
     assert.throws(() => chain.handOff(context, ["state-123-2.tar"]), /ENOENT/);
     fs.writeFileSync(path.join(root, "final-123-2.tar"), "final");
-    chain.resetRunScopedRoots(context, ["final-123-2.tar"]);
+    chain.resetWorkRoots(context, ["final-123-2.tar"]);
     assert.deepEqual([fs.existsSync(extracted), fs.existsSync(existing), fs.existsSync(other), fs.existsSync(path.join(root, "final-123-2.tar"))],
       [false, true, true, true]);
     chain.retire(context, ["state-123-2.tar"]);
@@ -84,5 +93,21 @@ describe("Chained CI phases", () => {
     assert.throws(() => chain.requiredOutput(result.outputs, "manifest_sha256"), /did not report/);
     assert.throws(() => chain.runPhaseCommand(context, "fails", [process.execPath, "-e", "process.exit(3)"], process.env), /phase failed: fails/);
     assert.throws(() => chain.chainContext({...environment, MOM_CI_DEADLINE_EPOCH: "1000000000"}), /future MOM_CI_DEADLINE_EPOCH/);
+  });
+});
+
+describe("Cached SDK work roots", () => {
+  test("a restored Linux LLVM root that fails admission is removed so the job rebuilds it", t => {
+    const {root} = workspace(t), sdkRoot = path.join(root, "mom-native-llvm21-sdk-123-2"), output = path.join(sdkRoot, "linux-llvm21-sdk");
+    assert.equal(reuseCachedLinuxLlvm({sdkRoot, output}), false, "a cache miss builds from scratch");
+    fs.mkdirSync(path.join(output, "build"), {recursive: true});
+    fs.writeFileSync(path.join(output, "result.json"), "{}\n");
+    fs.chmodSync(path.join(output, "build"), 0o500);
+    assert.equal(reuseCachedLinuxLlvm({sdkRoot, output}), false);
+    assert.equal(fs.existsSync(sdkRoot), false);
+  });
+
+  test("cache keys exist only for the maintained SDK roots", () => {
+    assert.throws(() => cacheKey("windows-everything", {MOM_NATIVE_CI_SUFFIX: "ci", MOM_BUILD_JOBS: "4"}), /Unknown native CI cache/);
   });
 });

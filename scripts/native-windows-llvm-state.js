@@ -4,13 +4,14 @@
 // callers must reconstitute the exact descriptor's external SDK/tool inputs before restore.
 const fs = require("node:fs"), path = require("node:path"), {createHash} = require("node:crypto");
 const {fileHash} = require("./build-source-inputs");
-const ci = require("./prepare-native-ci");
-const {buildPhases} = require("./build-native-windows-llvm21-sdk");
+const ciTar = require("./native-ci-tar"),
+  ciWindowsLlvm = require("./native-ci-windows-llvm");
+const {buildPhases} = require("./build-native-windows-llvm-sdk");
 
 const maxArchiveBytes = 16 * 1024 ** 3, maxExpandedBytes = 64 * 1024 ** 3,
   maxDeadlineRecords = 256, receiptLimit = 64 << 20, deadlineLimit = 1024;
 
-/** @typedef {{version:1,runAttempt:string,producerJob:string,producerDeadlineEpoch:string,runDeadlineEpoch:string,
+/** @typedef {{version:1,producerJob:string,producerDeadlineEpoch:string,runDeadlineEpoch:string,
  * archive:{sha256:string,bytes:number,members:number,expandedBytes:number},bindings:{descriptorSha256:string,
  * configureReceiptSha256:string,checkpointSha256:string|null,runDeadlineSha256:string,jobDeadlines:Array<{job:string,sha256:string}>}}} WindowsLlvmStateManifest */
 
@@ -47,7 +48,7 @@ function stateTreeSize(root, deadline) {
     if (depth > 128) {throw new Error("Windows LLVM state tree exceeds its depth bound");}
     for (const name of fs.readdirSync(directory)) {
       const relative = parentRelative ? parentRelative + "/" + name : name;
-      if (++entries > 500000 || Date.now() >= deadline || /[\\/\r\n\0]/.test(name) || !ci.safeRelative(relative)) {
+      if (++entries > 500000 || Date.now() >= deadline || /[\\/\r\n\0]/.test(name) || !ciTar.safeRelative(relative)) {
         throw new Error("Windows LLVM state tree exceeds its entry or time bound");
       }
       const item = path.join(directory, name), stat = fs.lstatSync(item, {bigint: true});
@@ -84,7 +85,7 @@ function stateTreeSize(root, deadline) {
   return {entries, payloadBytes, archiveUpperBound};
 }
 
-/** @param {ReturnType<typeof ci.windowsNativeLlvmCiStatePaths>} state */
+/** @param {ReturnType<typeof ciWindowsLlvm.windowsNativeLlvmCiStatePaths>} state */
 function stateBindings(state) {
   const descriptor = pinnedFile(state.descriptor, "Windows LLVM descriptor", 4 << 20),
     configure = pinnedFile(state.result, "Windows LLVM configure receipt", receiptLimit),
@@ -106,9 +107,9 @@ function manifestDigest(value) {
   return createHash("sha256").update(JSON.stringify(value) + "\n").digest("hex");
 }
 
-/** @param {ReturnType<typeof ci.windowsNativeLlvmCiStatePaths>} state @param {number} capMs */
+/** @param {ReturnType<typeof ciWindowsLlvm.windowsNativeLlvmCiStatePaths>} state @param {number} capMs */
 function operationTimeout(state, capMs) {
-  return Math.min(capMs, ci.windowsNativeLlvmCiDeadlineBudget(state.deadlineEpoch, "build", Date.now(), state.runDeadlineEpoch).timeoutMs);
+  return Math.min(capMs, ciWindowsLlvm.windowsNativeLlvmCiDeadlineBudget(state.deadlineEpoch, "build", Date.now(), state.runDeadlineEpoch).timeoutMs);
 }
 
 /** @param {unknown} value @param {string} expectedSha256 @returns {WindowsLlvmStateManifest} */
@@ -117,8 +118,8 @@ function validateManifest(value, expectedSha256) {
     throw new Error("Windows LLVM state manifest is invalid or differs from its external SHA-256 pin");
   }
   const row = /** @type {WindowsLlvmStateManifest} */ (value);
-  if (Object.keys(row).sort().join(",") !== "archive,bindings,producerDeadlineEpoch,producerJob,runAttempt,runDeadlineEpoch,version" ||
-      row.version !== 1 || !/^[0-9]{1,20}-[1-9][0-9]{0,5}$/.test(row.runAttempt || "") ||
+  if (Object.keys(row).sort().join(",") !== "archive,bindings,producerDeadlineEpoch,producerJob,runDeadlineEpoch,version" ||
+      row.version !== 1 ||
       !/^[A-Za-z0-9_-]{1,64}$/.test(row.producerJob || "") ||
       !/^\d{10}$/.test(row.producerDeadlineEpoch || "") || !/^\d{10}$/.test(row.runDeadlineEpoch || "") ||
       !row.archive || typeof row.archive !== "object" || Array.isArray(row.archive) ||
@@ -151,11 +152,11 @@ function validateManifest(value, expectedSha256) {
 
 /** @param {NodeJS.ProcessEnv} environment @param {number} nowMs */
 function currentState(environment, nowMs) {
-  const state = ci.windowsNativeLlvmCiStatePaths(environment);
+  const state = ciWindowsLlvm.windowsNativeLlvmCiStatePaths(environment);
   if (!state.runDeadlineEpoch || !state.jobId || !state.runDeadlineRecord) {
     throw new Error("Windows LLVM state transport requires the immutable cross-job run and job contract");
   }
-  ci.windowsNativeLlvmCiDeadlineBudget(state.deadlineEpoch, "build", nowMs, state.runDeadlineEpoch);
+  ciWindowsLlvm.windowsNativeLlvmCiDeadlineBudget(state.deadlineEpoch, "build", nowMs, state.runDeadlineEpoch);
   return state;
 }
 
@@ -167,35 +168,35 @@ function currentState(environment, nowMs) {
 function packWindowsNativeLlvmState(archive, environment = process.env, nowMs = Date.now()) {
   const state = currentState(environment, nowMs), phase = buildPhases[0];
   if (!phase) {throw new Error("Windows LLVM state transport has no maintained build phase");}
-  ci.windowsNativeLlvmCiPreflight(["build", phase.name], environment, "linux", "x64", nowMs);
-  ci.windowsNativeLlvmCiDeadlineRecord(state);
+  ciWindowsLlvm.windowsNativeLlvmCiPreflight(["build", phase.name], environment, "linux", "x64", nowMs);
+  ciWindowsLlvm.windowsNativeLlvmCiDeadlineRecord(state);
   const before = stateBindings(state), rootName = path.basename(state.root);
   if (path.dirname(state.root) !== "/tmp" || fs.realpathSync("/tmp") !== "/tmp" || rootName !== "mom-native-windows-llvm21-" + state.suffix) {
-    throw new Error("Windows LLVM state transport requires the exact canonical /tmp run-attempt root");
+    throw new Error("Windows LLVM state transport requires the exact canonical /tmp CI work-root root");
   }
   const archiveTarget = path.resolve(archive);
   if (archiveTarget === state.root || archiveTarget.startsWith(state.root + path.sep)) {
-    throw new Error("Windows LLVM state archive must be outside the preserved run-attempt root");
+    throw new Error("Windows LLVM state archive must be outside the preserved CI work-root root");
   }
-  ci.linuxNativeSdkDiskPreflight(0, availableBytes("/tmp"), availableBytes(state.runnerTemp));
+  ciTar.linuxNativeSdkDiskPreflight(0, availableBytes("/tmp"), availableBytes(state.runnerTemp));
   const sourceSize = stateTreeSize(state.root, Date.now() + operationTimeout(state, 30 * 60 * 1000)),
     archiveParent = path.dirname(archive), neededArchiveSpace = sourceSize.archiveUpperBound + 4 * 1024 ** 3;
   if (!path.isAbsolute(archive) || /[\r\n\0]/.test(archive) || fs.realpathSync(archiveParent) !== archiveParent ||
       availableBytes(archiveParent) < neededArchiveSpace) {
     throw new Error("Insufficient canonical runner-temp space for the bounded Windows LLVM state archive and reserve");
   }
-  const packed = ci.packState(archive, "/tmp", [rootName], operationTimeout(state, 30 * 60 * 1000)),
+  const packed = ciTar.packState(archive, "/tmp", [rootName], operationTimeout(state, 30 * 60 * 1000)),
     archivePin = pinnedFile(archive, "Windows LLVM state archive", maxArchiveBytes),
-    members = ci.listState(archive, [rootName], operationTimeout(state, 5 * 60 * 1000)),
-    expandedBytes = ci.tarExpandedBytes(archive, members.length, operationTimeout(state, 15 * 60 * 1000));
+    members = ciTar.listState(archive, [rootName], operationTimeout(state, 5 * 60 * 1000)),
+    expandedBytes = ciTar.tarExpandedBytes(archive, members.length, operationTimeout(state, 15 * 60 * 1000));
   if (packed.bytes !== archivePin.bytes || packed.bytes > sourceSize.archiveUpperBound || expandedBytes > maxExpandedBytes ||
       expandedBytes > sourceSize.payloadBytes || !Number.isSafeInteger(expandedBytes) ||
       !sameBindings(before, stateBindings(state))) {
     throw new Error("Windows LLVM state changed or exceeded bounds while it was packed");
   }
-  ci.linuxNativeSdkDiskPreflight(0, availableBytes("/tmp"), availableBytes(state.runnerTemp));
-  ci.windowsNativeLlvmCiDeadlineBudget(state.deadlineEpoch, "outputs", Date.now(), state.runDeadlineEpoch);
-  const manifest = {version: 1, runAttempt: state.suffix, producerJob: state.jobId,
+  ciTar.linuxNativeSdkDiskPreflight(0, availableBytes("/tmp"), availableBytes(state.runnerTemp));
+  ciWindowsLlvm.windowsNativeLlvmCiDeadlineBudget(state.deadlineEpoch, "outputs", Date.now(), state.runDeadlineEpoch);
+  const manifest = {version: 1, producerJob: state.jobId,
     producerDeadlineEpoch: state.deadlineEpoch, runDeadlineEpoch: state.runDeadlineEpoch,
     archive: {sha256: archivePin.sha256, bytes: archivePin.bytes, members: members.length, expandedBytes}, bindings: before};
   return {manifest, manifestSha256: manifestDigest(manifest)};
@@ -209,7 +210,7 @@ function sameBindings(left, right) {return JSON.stringify(left) === JSON.stringi
  * @param {NodeJS.ProcessEnv} [environment] @param {number} [nowMs] */
 function restoreWindowsNativeLlvmState(archive, archiveSha256, manifest, manifestSha256, environment = process.env, nowMs = Date.now()) {
   const state = currentState(environment, nowMs), pin = validateManifest(manifest, manifestSha256);
-  if (!/^[a-f0-9]{64}$/.test(archiveSha256 || "") || archiveSha256 !== pin.archive.sha256 || pin.runAttempt !== state.suffix ||
+  if (!/^[a-f0-9]{64}$/.test(archiveSha256 || "") || archiveSha256 !== pin.archive.sha256 ||
       pin.runDeadlineEpoch !== state.runDeadlineEpoch || !path.isAbsolute(archive) || path.resolve(archive) !== archive) {
     throw new Error("Windows LLVM restore does not match the external same-run archive and manifest pins");
   }
@@ -217,35 +218,35 @@ function restoreWindowsNativeLlvmState(archive, archiveSha256, manifest, manifes
   if (archivePin.sha256 !== archiveSha256 || archivePin.bytes !== pin.archive.bytes) {
     throw new Error("Windows LLVM incoming archive differs from its external SHA-256 and size pins");
   }
-  const rootName = path.basename(state.root), members = ci.listState(archive, [rootName], operationTimeout(state, 5 * 60 * 1000)),
-    expandedBytes = ci.tarExpandedBytes(archive, members.length, operationTimeout(state, 15 * 60 * 1000));
+  const rootName = path.basename(state.root), members = ciTar.listState(archive, [rootName], operationTimeout(state, 5 * 60 * 1000)),
+    expandedBytes = ciTar.tarExpandedBytes(archive, members.length, operationTimeout(state, 15 * 60 * 1000));
   if (members.length !== pin.archive.members || expandedBytes !== pin.archive.expandedBytes || expandedBytes > maxExpandedBytes) {
     throw new Error("Windows LLVM incoming archive differs from its admitted member or expanded-size bounds");
   }
-  ci.linuxNativeSdkDiskPreflight(expandedBytes, availableBytes("/tmp"), availableBytes(state.runnerTemp));
-  if (fs.existsSync(state.root)) {throw new Error("Windows LLVM state restore requires a fresh canonical run-attempt destination");}
-  ci.extractState(archive, "/tmp", [rootName], [rootName], operationTimeout(state, 30 * 60 * 1000));
+  ciTar.linuxNativeSdkDiskPreflight(expandedBytes, availableBytes("/tmp"), availableBytes(state.runnerTemp));
+  if (fs.existsSync(state.root)) {throw new Error("Windows LLVM state restore requires a fresh canonical CI work-root destination");}
+  ciTar.extractState(archive, "/tmp", [rootName], [rootName], operationTimeout(state, 30 * 60 * 1000));
   const sourceEnvironment = {...environment, GITHUB_JOB: pin.producerJob,
       MOM_NATIVE_WINDOWS_LLVM_DEADLINE_EPOCH: pin.producerDeadlineEpoch},
-    sourceState = ci.windowsNativeLlvmCiStatePaths(sourceEnvironment, "linux", "x64");
-  ci.windowsNativeLlvmCiDeadlineRecord(sourceState);
+    sourceState = ciWindowsLlvm.windowsNativeLlvmCiStatePaths(sourceEnvironment, "linux", "x64");
+  ciWindowsLlvm.windowsNativeLlvmCiDeadlineRecord(sourceState);
   const restored = stateBindings(sourceState);
   if (sourceState.suffix !== state.suffix || pin.producerJob !== sourceState.jobId || pin.bindings.descriptorSha256 !== restored.descriptorSha256 ||
       pin.bindings.configureReceiptSha256 !== restored.configureReceiptSha256 || pin.bindings.checkpointSha256 !== restored.checkpointSha256 ||
       pin.bindings.runDeadlineSha256 !== restored.runDeadlineSha256 || !sameBindings(pin.bindings, restored)) {
     throw new Error("Windows LLVM restored configure, checkpoint or deadline records differ from their external bindings");
   }
-  ci.windowsNativeLlvmCiDeadlineRecord(state, true);
+  ciWindowsLlvm.windowsNativeLlvmCiDeadlineRecord(state, true);
   const phase = buildPhases[0];
   if (!phase) {throw new Error("Windows LLVM state transport has no maintained build phase");}
-  ci.windowsNativeLlvmCiPreflight(["build", phase.name], environment, "linux", "x64", nowMs);
+  ciWindowsLlvm.windowsNativeLlvmCiPreflight(["build", phase.name], environment, "linux", "x64", nowMs);
   const finalBindings = stateBindings(sourceState), priorJobs = new Set(pin.bindings.jobDeadlines.map(row => row.job)),
     finalPriorBindings = {...finalBindings, jobDeadlines: finalBindings.jobDeadlines.filter(row => priorJobs.has(row.job))};
   if (archivePin.sha256 !== fileHash(archive) || !sameBindings(pin.bindings, finalPriorBindings) ||
       !finalBindings.jobDeadlines.some(row => row.job === state.jobId)) {
     throw new Error("Windows LLVM state or archive changed during restoration");
   }
-  ci.windowsNativeLlvmCiDeadlineBudget(state.deadlineEpoch, "outputs", Date.now(), state.runDeadlineEpoch);
+  ciWindowsLlvm.windowsNativeLlvmCiDeadlineBudget(state.deadlineEpoch, "outputs", Date.now(), state.runDeadlineEpoch);
   return {state, archiveSha256, manifestSha256, bindings: restored};
 }
 

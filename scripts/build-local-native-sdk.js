@@ -8,12 +8,15 @@ const {createHash} = require("node:crypto");
 const {prepareSdkSources, verifyPreparedSdkSources, sdkComponents} = require("./prepare-native-sdk-sources");
 const {fileHash, readBuildJson} = require("./build-source-inputs");
 const {archiveName} = require("./native-llvm-sdk");
-const {verifyLinuxLlvmAdmission} = require("./build-native-llvm21-sdk");
+const {verifyLinuxLlvmAdmission} = require("./build-native-llvm-sdk");
 const {ioPins, nativeIoInputs} = require("./build-native-io");
 const {opensslPin, nativeOpenSslInputs} = require("./build-native-openssl");
 const {zstdPin} = require("./build-native-zstd");
 const {verifyBuildArchives, verifyIoArchives, verifyZstdArchive} = require("./fetch-native-sdk-sources");
-const nativeCi = require("./prepare-native-ci");
+const ciJit = require("./native-ci-linux-jit"),
+  ciSources = require("./native-ci-linux-sources"),
+  ciSupport = require("./native-ci-linux-support"),
+  dpcppInputs = require("./native-dpcpp-cuda-inputs");
 
 const repo = fs.realpathSync(path.resolve(__dirname, "..")), markerName = ".mom-native-sdk-workspace.json",
   memoryMax = "4G", jobsDefault = 2, oneapiCompilerRoot = "/opt/intel/oneapi/compiler";
@@ -152,8 +155,8 @@ function verifyCompilerSources(file, output, verify) {
 
 /** Use the exact Linux support-SDK tool sets maintained by the CI recipes. */
 function localSupportTools() {
-  return {hermes: nativeCi.hermesBuildTools(), cmake: fs.realpathSync("/usr/bin/cmake"), ninja: fs.realpathSync("/usr/bin/ninja"),
-    openssl: nativeCi.linuxOpenSslTools(), zstd: nativeCi.linuxZstdTools(), openmp: nativeCi.openmpBuildTools()};
+  return {hermes: ciSupport.hermesBuildTools(), cmake: fs.realpathSync("/usr/bin/cmake"), ninja: fs.realpathSync("/usr/bin/ninja"),
+    openssl: ciSupport.linuxOpenSslTools(), zstd: ciSupport.linuxZstdTools(), openmp: ciSupport.openmpBuildTools()};
 }
 
 /** @param {string} workspace */
@@ -188,7 +191,7 @@ function localDpcppCudaState(paths) {
 }
 
 /** Shape stable local paths for the maintained Linux JIT resource builder/auditor.
- * @param {ReturnType<typeof supportPaths>} paths @returns {import("./prepare-native-ci").LinuxJitResourceTreeState} */
+ * @param {ReturnType<typeof supportPaths>} paths @returns {import("./native-ci-linux-jit").LinuxJitResourceTreeState} */
 function localLinuxJitResourceState(paths) {
   const root = paths.linuxJitResources, dpcpp = localDpcppCudaState(paths);
   return {root, emitter: path.join(root, "emitter"), bootstrap: path.join(root, "bootstrap"), bootstrapBuild: path.join(root, "bootstrap/build"),
@@ -229,16 +232,16 @@ function prepareOrAdmitLinuxSources(workspace, dependencies = {}) {
       linuxPrepared: paths.linuxSources, compilerPrepared: paths.compilerSources,
       preparedReceipt: path.join(paths.linuxSources, "sources.json"), compilerPreparedReceipt: path.join(paths.compilerSources, "sources.json")},
     env = {...(dependencies.environment || process.env), MOM_AOT_BUILD_ONLY: "1"}, git = fs.realpathSync("/usr/bin/git"),
-    assertFetch = dependencies.assertFetch || nativeCi.assertSdkFetchProvenance,
+    assertFetch = dependencies.assertFetch || ciSources.assertSdkFetchProvenance,
     verifyCompiler = dependencies.verifyCompiler || verifyCompilerSources,
     prepare = dependencies.prepare || prepareSdkSources,
-    verifyLinux = dependencies.verifyLinux || nativeCi.verifyLinuxSources;
+    verifyLinux = dependencies.verifyLinux || ciSources.verifyLinuxSources;
   fs.accessSync(git, fs.constants.X_OK);
   existingDirectory(paths.compilerFetch, "Pinned compiler source roots");
   regularFile(state.fetchReceipt, "Pinned compiler source fetch receipt"); regularFile(state.rootsFile, "Pinned compiler source roots receipt");
   const receipt = readBuildJson(state.fetchReceipt), roots = readBuildJson(state.rootsFile);
   assertFetch(receipt, roots, "compiler", state.source);
-  const plan = nativeCi.linuxSourcePreparationPlan(/** @type {Parameters<typeof nativeCi.linuxSourcePreparationPlan>[0]} */
+  const plan = ciSources.linuxSourcePreparationPlan(/** @type {Parameters<typeof ciSources.linuxSourcePreparationPlan>[0]} */
       (/** @type {unknown} */ (state)), roots), linuxPlan = plan[0];
   if (!linuxPlan || linuxPlan.target !== "linux" || linuxPlan.output !== paths.linuxSources) {
     throw new Error("Pinned Linux source preparation plan does not bind the stable workspace output");
@@ -311,7 +314,7 @@ function verifyPreparedSourceRoots(file, output, target) {
 /** Prepare/admit source receipts around the shared DPC++/CUDA input producer or its stable cache.
  * @param {string} workspace
  * @param {{environment?:NodeJS.ProcessEnv, installedRoots?:{dpcpp:string,cuda:string},
- *   prepareSources?:(workspace:string)=>unknown, verifyLinux?:(paths:{env:NodeJS.ProcessEnv},state:import("./prepare-native-ci").LinuxPreparedSources,git:string)=>unknown,
+ *   prepareSources?:(workspace:string)=>unknown, verifyLinux?:(paths:{env:NodeJS.ProcessEnv},state:import("./native-ci-linux-sources").LinuxPreparedSources,git:string)=>unknown,
  *   stageInputs?:(state:import("./native-dpcpp-cuda-inputs").DpcppCudaInputState,roots:{dpcpp:string,cuda:string},
  *     origin:import("./native-dpcpp-cuda-inputs").PreparedDpcppCudaSourceOrigin,env:NodeJS.ProcessEnv)=>unknown,
  *   auditInputs?:(state:import("./native-dpcpp-cuda-inputs").DpcppCudaInputState,record:any)=>unknown}} [dependencies] */
@@ -321,9 +324,9 @@ function stageLocalCompilerInputs(workspace, dependencies = {}) {
   const root = admitWorkspace(workspace, repo), paths = supportPaths(root), state = localDpcppCudaState(paths),
     env = {...(dependencies.environment || process.env), MOM_AOT_BUILD_ONLY: "1"}, git = fs.realpathSync("/usr/bin/git"),
     prepareSources = dependencies.prepareSources || prepareOrAdmitLinuxSources,
-    verifyLinux = dependencies.verifyLinux || nativeCi.verifyLinuxSources,
-    stageInputs = dependencies.stageInputs || nativeCi.stageDpcppCudaInputs,
-    auditInputs = dependencies.auditInputs || nativeCi.auditDpcppCudaInputs;
+    verifyLinux = dependencies.verifyLinux || ciSources.verifyLinuxSources,
+    stageInputs = dependencies.stageInputs || dpcppInputs.stageDpcppCudaInputs,
+    auditInputs = dependencies.auditInputs || dpcppInputs.auditDpcppCudaInputs;
   fs.accessSync(git, fs.constants.X_OK);
   prepareSources(root);
   const admitSources = () => verifyLinux({env}, state.linux, git), audit = () => auditInputs(state, readBuildJson(state.manifest));
@@ -333,7 +336,7 @@ function stageLocalCompilerInputs(workspace, dependencies = {}) {
     regularFile(state.manifest, "Local DPC++/CUDA input manifest");
     audit();
   } else {
-    stageInputs(state, localDpcppCudaRoots(dependencies.installedRoots), nativeCi.preparedDpcppCudaSourceOrigin(state.linux, root), env);
+    stageInputs(state, localDpcppCudaRoots(dependencies.installedRoots), dpcppInputs.preparedDpcppCudaSourceOrigin(state.linux, root), env);
   }
   admitSources(); audit();
   return {workspace: root, dpcppRoot: state.dpcppRoot, cudaRoot: state.cudaRoot, manifest: state.manifest, reused};
@@ -430,7 +433,7 @@ function buildLocalNativeSupportSdk(context, dependencies = {}) {
   }
   admitSupport("hermes-source", paths, invoke, dependencies);
   if (hermesReused) {admitSupport("hermes-sdk", paths, invoke, dependencies);} else {
-    const command = nativeCi.hermesBuildCommand(/** @type {Parameters<typeof nativeCi.hermesBuildCommand>[0]} */ (hermes), support.hermes);
+    const command = ciSupport.hermesBuildCommand(/** @type {Parameters<typeof ciSupport.hermesBuildCommand>[0]} */ (hermes), support.hermes, "2");
     invoke("static Hermes SDK producer", process.execPath, [producer(command.script), ...command.args]);
     admitSupport("hermes-sdk", paths, invoke, dependencies);
   }
@@ -442,8 +445,8 @@ function buildLocalNativeSupportSdk(context, dependencies = {}) {
   const ioPaths = {env, source: paths.buildInputs, buildInputs: paths.buildInputs, ioSource: paths.ioSource, ioSdk: paths.ioSdk,
       opensslSdk: paths.opensslSdk, opensslTools: paths.opensslTools},
     opensslConfig = {version: 1, jobs: 2, tools: support.openssl},
-    ioCommands = nativeCi.ioOpenSslBuildCommands(/** @type {Parameters<typeof nativeCi.ioOpenSslBuildCommands>[0]} */ (/** @type {unknown} */ (ioPaths)),
-      support.cmake, support.ninja, support.openssl);
+    ioCommands = ciSupport.ioOpenSslBuildCommands(/** @type {Parameters<typeof ciSupport.ioOpenSslBuildCommands>[0]} */ (/** @type {unknown} */ (ioPaths)),
+      support.cmake, support.ninja, support.openssl, "2");
   const ioReused = existingDirectory(paths.ioSdk, "Native I/O SDK");
   if (ioReused) {admitIo(ioPaths, {cmake: support.cmake, ninja: support.ninja, openssl: support.openssl});} else {
     const command = ioCommands[0];
@@ -468,19 +471,19 @@ function buildLocalNativeSupportSdk(context, dependencies = {}) {
   const zstdConfig = {version: 1, jobs: 4, tools: support.zstd}, zstdReused = existingDirectory(paths.zstdSdk, "static zstd SDK");
   admitToolDescriptor(paths.zstdTools, zstdConfig, zstdReused);
   if (zstdReused) {admitSupport("zstd-sdk", paths, invoke, dependencies);} else {
-    const state = /** @type {Parameters<typeof nativeCi.zstdBuildCommand>[0]} */ ({source: paths.zstdSource,
+    const state = /** @type {Parameters<typeof ciSupport.zstdBuildCommand>[0]} */ ({source: paths.zstdSource,
         archive: path.join(paths.zstdSource, "zstd-" + zstdPin.version + ".tar.gz"), sdkRoot: paths.zstdSdk}),
-      command = nativeCi.zstdBuildCommand(state, paths.zstdTools);
+      command = ciSupport.zstdBuildCommand(state, paths.zstdTools);
     invoke("static zstd SDK producer", process.execPath, [producer(command.script), ...command.args]);
     admitSupport("zstd-sdk", paths, invoke, dependencies);
   }
 
   const openmpConfig = {version: 1, jobs: 2, tools: support.openmp}, openmpReused = existingDirectory(paths.openmpSdk, "static OpenMP SDK");
   admitToolDescriptor(paths.openmpTools, openmpConfig, openmpReused);
-  const openmpState = /** @type {Parameters<typeof nativeCi.openmpBuildCommand>[0]} */ ({source: paths.buildInputs, archive,
+  const openmpState = /** @type {Parameters<typeof ciSupport.openmpBuildCommand>[0]} */ ({source: paths.buildInputs, archive,
     sdkRoot: paths.openmpSdk, toolsFile: paths.openmpTools});
   if (openmpReused) {admitSupport("openmp-sdk", paths, invoke, dependencies);} else {
-    const command = nativeCi.openmpBuildCommand(openmpState);
+    const command = ciSupport.openmpBuildCommand(openmpState);
     invoke("static OpenMP SDK producer", process.execPath, [producer(command.script), ...command.args]);
     admitSupport("openmp-sdk", paths, invoke, dependencies);
   }
@@ -558,7 +561,7 @@ function localJitToolsReceipt(tools) {
 
 /** Bind local cache reuse to the shared read-only auditor's complete fingerprint set.
  * @param {ReturnType<typeof localLinuxJitResourceState>} state @param {ReturnType<typeof localJitToolsReceipt>} tools
- * @param {ReturnType<typeof nativeCi.auditLinuxJitResourceTree>} admission */
+ * @param {ReturnType<typeof ciJit.auditLinuxJitResourceTree>} admission */
 function localJitAdmissionReceipt(state, tools, admission) {
   const fingerprints = admission?.fingerprints;
   if (admission?.resources?.target !== "x86_64-unknown-linux-gnu" || admission.resources.directory !== state.resources ||
@@ -577,7 +580,7 @@ function localJitAdmissionReceipt(state, tools, admission) {
 
 /** Invoke the shared builder/auditor only from the bounded internal command. @param {"build"|"audit"} mode
  * @param {string} workspace @param {{cmake:string,ninja:string,cc:string,cxx:string}} tools
- * @param {{buildTree?:typeof nativeCi.buildLinuxJitResourceTree,auditTree?:typeof nativeCi.auditLinuxJitResourceTree,
+ * @param {{buildTree?:typeof ciJit.buildLinuxJitResourceTree,auditTree?:typeof ciJit.auditLinuxJitResourceTree,
  *   validateTools?:(tools:{cmake:string,ninja:string,cc:string,cxx:string})=>unknown,verifyScope?:()=>unknown}} [dependencies] */
 function runLocalJitResourceChild(mode, workspace, tools, dependencies = {}) {
   if (!new Set(["build", "audit"]).has(mode)) {throw new Error("Invalid local Linux JIT resource operation");}
@@ -608,8 +611,8 @@ function runLocalJitResourceChild(mode, workspace, tools, dependencies = {}) {
   if (mode === "build" && (outputExists || receiptStat) || mode === "audit" && (!outputExists || !receiptStat?.isFile() || receiptStat.isSymbolicLink())) {
     throw new Error("Local Linux JIT output and admission receipt are incomplete or out of order; preserve them and investigate");
   }
-  const buildTree = dependencies.buildTree || nativeCi.buildLinuxJitResourceTree,
-    auditTree = dependencies.auditTree || nativeCi.auditLinuxJitResourceTree;
+  const buildTree = dependencies.buildTree || ciJit.buildLinuxJitResourceTree,
+    auditTree = dependencies.auditTree || ciJit.auditLinuxJitResourceTree;
   const admission = mode === "build" ? buildTree(state, tools, env) : auditTree(state, tools, env),
     expectedReceipt = localJitAdmissionReceipt(state, expectedTools, admission);
   if (mode === "build") {
@@ -676,24 +679,24 @@ function auditSupportInProcess(kind, workspace) {
     throw new Error("Native SDK workspace marker does not bind this checkout");
   }
   const paths = supportPaths(workspace), tools = localSupportTools(), env = {...process.env, MOM_AOT_BUILD_ONLY: "1"},
-    hermes = /** @type {Parameters<typeof nativeCi.auditHermesSdk>[0]} */ ({source: paths.hermesSource, sdkRoot: paths.hermesSdk}),
+    hermes = /** @type {Parameters<typeof ciSupport.auditHermesSdk>[0]} */ ({source: paths.hermesSource, sdkRoot: paths.hermesSdk}),
     zstd = {source: paths.zstdSource, archive: path.join(paths.zstdSource, "zstd-" + zstdPin.version + ".tar.gz"),
       sdkRoot: paths.zstdSdk, toolsFile: paths.zstdTools},
     openmp = {source: paths.buildInputs, archive: path.join(paths.buildInputs, archiveName), sdkRoot: paths.openmpSdk, toolsFile: paths.openmpTools};
   switch (kind) {
     case "compiler-sources": verifyCompilerSources(path.join(paths.compilerSources, "sources.json"), paths.compilerSources, verifyPreparedSdkSources); break;
     case "llvm-sdk": verifyLinuxLlvmAdmission(paths.llvmSdk); break;
-    case "hermes-source": nativeCi.verifyHermesSource(/** @type {Parameters<typeof nativeCi.verifyHermesSource>[0]} */ (/** @type {unknown} */ ({env})), hermes, tools.hermes.git); break;
-    case "hermes-sdk": nativeCi.verifyHermesSource(/** @type {Parameters<typeof nativeCi.verifyHermesSource>[0]} */ (/** @type {unknown} */ ({env})), hermes, tools.hermes.git); nativeCi.auditHermesSdk(hermes, tools.hermes); break;
+    case "hermes-source": ciSources.verifyHermesSource(/** @type {Parameters<typeof ciSources.verifyHermesSource>[0]} */ (/** @type {unknown} */ ({env})), hermes, tools.hermes.git); break;
+    case "hermes-sdk": ciSources.verifyHermesSource(/** @type {Parameters<typeof ciSources.verifyHermesSource>[0]} */ (/** @type {unknown} */ ({env})), hermes, tools.hermes.git); ciSupport.auditHermesSdk(hermes, tools.hermes, "2"); break;
     case "io-sdk":
       verifyIoArchives(paths.ioSource);
       verifyIoSdk({ioSource: paths.ioSource, ioSdk: paths.ioSdk}, {cmake: tools.cmake, ninja: tools.ninja, openssl: tools.openssl});
       break;
     case "openssl-sdk": verifyOpenSslSdk(paths, tools.openssl); break;
-    case "io-openssl": nativeCi.auditIoOpenSsl(/** @type {Parameters<typeof nativeCi.auditIoOpenSsl>[0]} */ (/** @type {unknown} */ ({env, source: paths.buildInputs,
+    case "io-openssl": ciSupport.auditIoOpenSsl(/** @type {Parameters<typeof ciSupport.auditIoOpenSsl>[0]} */ (/** @type {unknown} */ ({env, source: paths.buildInputs,
       ioSource: paths.ioSource, ioSdk: paths.ioSdk, opensslSdk: paths.opensslSdk, opensslTools: paths.opensslTools}))); break;
-    case "zstd-sdk": verifyZstdArchive(paths.zstdSource); nativeCi.auditZstdSdk(zstd, tools.zstd, paths.zstdTools); break;
-    case "openmp-sdk": verifyBuildArchives(paths.buildInputs); nativeCi.auditOpenmpSdk(/** @type {Parameters<typeof nativeCi.auditOpenmpSdk>[0]} */ (/** @type {unknown} */ (openmp)), tools.openmp); break;
+    case "zstd-sdk": verifyZstdArchive(paths.zstdSource); ciSupport.auditZstdSdk(zstd, tools.zstd, paths.zstdTools); break;
+    case "openmp-sdk": verifyBuildArchives(paths.buildInputs); ciSupport.auditOpenmpSdk(/** @type {Parameters<typeof ciSupport.auditOpenmpSdk>[0]} */ (/** @type {unknown} */ (openmp)), tools.openmp); break;
     default: throw new Error("Unknown local support SDK audit: " + kind);
   }
 }
@@ -871,7 +874,7 @@ function buildLocalNativeSdk(options = {}, dependencies = {}) {
       }
       for (const phase of phasesToBuild) {
         invoke("LLVM 21 build phase " + phase, process.execPath,
-          [producer("build-native-llvm21-sdk.js"), "build", llvmOutput, phase]);
+          [producer("build-native-llvm-sdk.js"), "build", llvmOutput, phase]);
       }
       if (!fs.lstatSync(buildComplete, {throwIfNoEntry: false})) {
         throw new Error("LLVM final phase receipt is incomplete; partial output preserved: " + llvmOutput);
@@ -881,9 +884,9 @@ function buildLocalNativeSdk(options = {}, dependencies = {}) {
         if (fs.lstatSync(configured.prefix, {throwIfNoEntry: false})) {
           throw new Error("LLVM install prefix exists without its receipt; partial output preserved: " + llvmOutput);
         }
-        invoke("LLVM 21 install", process.execPath, [producer("build-native-llvm21-sdk.js"), "install", llvmOutput]);
+        invoke("LLVM 21 install", process.execPath, [producer("build-native-llvm-sdk.js"), "install", llvmOutput]);
       }
-      invoke("LLVM 21 audit", process.execPath, [producer("build-native-llvm21-sdk.js"), "audit", llvmOutput]);
+      invoke("LLVM 21 audit", process.execPath, [producer("build-native-llvm-sdk.js"), "audit", llvmOutput]);
       invoke("LLVM 21 source SDK re-admission", process.execPath, [__filename, "--audit-support", "llvm-sdk", root]); llvmResumed = true;
     }
   } else {
@@ -893,13 +896,13 @@ function buildLocalNativeSdk(options = {}, dependencies = {}) {
     invoke("offline LLVM source archive verification", process.execPath, [producer("fetch-native-sdk-sources.js"), "verify-build", buildInputs]);
     const archive = path.join(buildInputs, archiveName);
     regularFile(archive, "Pinned LLVM 21.1.8 source archive");
-    invoke("LLVM 21 configure", process.execPath, [producer("build-native-llvm21-sdk.js"), "configure", archive, llvmOutput,
+    invoke("LLVM 21 configure", process.execPath, [producer("build-native-llvm-sdk.js"), "configure", archive, llvmOutput,
       tools.cmake, tools.ninja, tools.cc, tools.cxx, String(jobs)]);
     for (const phase of readConfigureState(path.join(llvmOutput, "configured.json"), llvmOutput).phases) {
-      invoke("LLVM 21 build phase " + phase, process.execPath, [producer("build-native-llvm21-sdk.js"), "build", llvmOutput, phase]);
+      invoke("LLVM 21 build phase " + phase, process.execPath, [producer("build-native-llvm-sdk.js"), "build", llvmOutput, phase]);
     }
-    invoke("LLVM 21 install", process.execPath, [producer("build-native-llvm21-sdk.js"), "install", llvmOutput]);
-    invoke("LLVM 21 audit", process.execPath, [producer("build-native-llvm21-sdk.js"), "audit", llvmOutput]);
+    invoke("LLVM 21 install", process.execPath, [producer("build-native-llvm-sdk.js"), "install", llvmOutput]);
+    invoke("LLVM 21 audit", process.execPath, [producer("build-native-llvm-sdk.js"), "audit", llvmOutput]);
     invoke("LLVM 21 source SDK re-admission", process.execPath, [__filename, "--audit-support", "llvm-sdk", root]);
   }
   return {workspace: root, compilerFetch, compilerSources, buildInputs, llvmSdk: llvmOutput, sourcesReused, llvmReused, llvmResumed, jobs, memoryMax};
@@ -971,7 +974,7 @@ function main(argv, verifyScope = verifyCurrentMemoryScope) {
     console.log(`[native-sdk] Linux CPU JIT resources admitted at ${result.root}; no JIT SDK, GPU, runtime or release package was built.`);
     return;
   }
-  if (command !== "source-llvm") {throw new Error("Select an explicit source-LLVM bootstrap slice; full local release orchestration is not implemented");}
+  if (command !== "source-llvm") {throw new Error("Select the source-LLVM bootstrap slice; `npm run build:release` runs the full local release");}
   /** @type {{workspace?: string, jobs?: number}} */ const options = {jobs: jobsDefault};
   for (let index = 0; index < args.length; index++) {
     if (args[index] === "--jobs") {

@@ -6,7 +6,7 @@
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
 const {fileHash, readBuildText, buildFileInputs, sourceInputs, verifySourceInputs} = require("./build-source-inputs");
 const {verifyPreparedSdkSources} = require("./prepare-native-sdk-sources");
-const {sdkIdentity, pins} = require("./probe-static-dpcpp");
+const {sdkIdentity, pins} = require("./native-dpcpp-pins");
 const {jitSdkPlan} = require("./native-jit-sdk");
 const {absolutePath} = require("./build-native-release");
 const {validName} = require("./native-jit-headers");
@@ -23,7 +23,7 @@ const REQUIRED = Object.freeze({
   libdevice: {virtual: "cuda/nvvm/libdevice/libdevice.10.bc", source: "nvvm/libdevice/libdevice.10.bc",
     sha256: "8c593e48547f85458b6bfbed93a2e6b05484644ccc6b429bb0d8424e06a68b6c"},
 });
-const RECIPE_FILES = ["scripts/prepare-native-jit-base.js", "scripts/prepare-native-sdk-sources.js", "scripts/probe-static-dpcpp.js",
+const RECIPE_FILES = ["scripts/prepare-native-jit-base.js", "scripts/prepare-native-sdk-sources.js", "scripts/native-dpcpp-pins.js",
   "scripts/build-source-inputs.js", "scripts/build-environment.js", "scripts/build-native-release.js", "scripts/native-jit-headers.js", "scripts/native-jit-sdk.js",
   "scripts/prepare-native-sycl-jit-resources.js"];
 const FORBIDDEN = /(?:^|[/\\])(?:msvc(?:[._-]|$)|msvcp(?:[._-]|$)|ucrt(?:[._-]|$)|vcruntime(?:[._-]|$)|api-ms-win(?:[._-]|$))|\.(?:dll|exe|obj|pdb|ilk)$/i;

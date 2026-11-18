@@ -5,14 +5,14 @@
 // a different compiler-generated specialization prefix. This builder does not execute GPUs.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
 const {fileHash, nativeSourceInputs, verifySourceInputs, buildFileInputs, readBuildJson, buildDependencies} = require("./build-source-inputs");
-const {syclSources, gpuProfile, dpcppGpuFlags, dpcppUniquePrefixFlags, dpcppSourceFlags, portableOpenclTranslatorFlags, nativeIncludeRoots, writeAdaptiveCppUmbrella} = require("./build-native-gpu-probe");
-const {admitSyclSource} = require("./probe-static-sycl");
+const {syclSources, gpuProfile, dpcppGpuFlags, dpcppUniquePrefixFlags, dpcppSourceFlags, portableOpenclTranslatorFlags, nativeIncludeRoots, writeAdaptiveCppUmbrella} = require("./native-gpu-build");
+const {admitSyclSource} = require("./native-sycl-inputs");
 const {windowsDeviceLinkArgs, transformWindowsWrapper, extractSpecializationIds, verifyWindowsHostRetention} = require("./native-windows-wrapper");
 const {dependencyHashes, absolutePath, vfsFiles} = require("./build-native-windows-controller");
 const {gpuTable} = require("./native-gpu-table"), {isolateCoffObjects} = require("./native-compiler-isolation");
-const {pins} = require("./probe-static-dpcpp"), nativeResources = require("./native-resources");
+const {pins} = require("./native-dpcpp-pins"), nativeResources = require("./native-resources");
 const {releaseBuildEnvironment} = require("./build-environment");
-const {validateDirectory} = require("./validate-portable-opencl");
+const {validateDirectory} = require("./check-portable-opencl");
 const {cudaHeaderInputs} = require("./native-jit-headers");
 const {compileNativeObjects, environmentValue} = require("./native-object-cache");
 const repo = path.resolve(__dirname, ".."), target = "--target=x86_64-pc-windows-msvc";

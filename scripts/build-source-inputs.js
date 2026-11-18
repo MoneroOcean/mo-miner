@@ -68,21 +68,21 @@ function sourceInputs(root, directories = ["native", "sycl", "xmrig"], leaves = 
 function nativeSourceInputs(root, kind) {
   if (!["cpu", "gpu"].includes(kind)) {throw new Error("Unknown native source scope");}
   const common = ["binding.gyp", "package.json", "scripts/build-source-inputs.js", "scripts/native-object-cache.js"];
-  const leaves = kind === "cpu" ? ["scripts/build-native-cpu-probe.js", "scripts/build-native-windows-core.js",
+  const leaves = kind === "cpu" ? ["scripts/build-native-core.js", "scripts/build-native-windows-core.js",
     "scripts/windows-incremental-build.ps1", "scripts/windows-msbuild-cache.ps1",
     "scripts/native-gpu-table.js", "scripts/native-compiler-isolation.js", "scripts/native-audit.js", "sycl/lib.h",
     "scripts/cpu-cflags.sh", "scripts/cpu-optflags.sh", "scripts/cpu-feature.sh"] :
-    ["scripts/build-native-gpu-probe.js", "scripts/build-native-dpcpp-probe.js", "scripts/build-native-windows-gpu.js", "scripts/native-windows-wrapper.js",
+    ["scripts/native-gpu-build.js", "scripts/build-native-gpu.js", "scripts/build-native-windows-gpu.js", "scripts/native-windows-wrapper.js",
       "scripts/build-native-windows-controller.js", "scripts/build-native-release.js", "scripts/build-environment.js",
       "runtime/adaptivecpp-static.patch", "runtime/adaptivecpp-jit.patch",
       "tests/native/dpcpp-static/static-windows.h", "scripts/native-gpu-table.js",
-      "scripts/native-compiler-isolation.js", "scripts/native-audit.js", "scripts/probe-static-sycl.js", "scripts/native-hcf.js",
+      "scripts/native-compiler-isolation.js", "scripts/native-audit.js", "scripts/native-sycl-inputs.js", "scripts/native-hcf.js",
       // Payload hashing and static-JIT admission are part of GPU production even though
       // imported by helpers; changing either must invalidate a previously audited object.
-      "scripts/native-elf.js", "scripts/native-jit-cache-tag.js", "scripts/probe-native-jit.js", "scripts/build-native-windows-hiprtc-sdk.js",
-      "scripts/probe-static-dpcpp.js", "scripts/native-comgr-inputs.js", "scripts/native-resources.js", "scripts/native-jit-headers.js",
+      "scripts/native-elf.js", "scripts/native-jit-cache-tag.js", "scripts/native-jit-link.js", "scripts/build-native-windows-hiprtc-sdk.js",
+      "scripts/native-dpcpp-pins.js", "scripts/native-comgr-inputs.js", "scripts/native-resources.js", "scripts/native-jit-headers.js",
       "scripts/native-cuda-images.js", "scripts/native-cuda-images.cpp",
-      "scripts/validate-portable-opencl.js", "scripts/cxx-combined.sh", "scripts/combined-build.sh", "runtime/driver-library.cpp",
+      "scripts/check-portable-opencl.js", "scripts/cxx-combined.sh", "scripts/combined-build.sh", "runtime/driver-library.cpp",
       "runtime/compiler-gate.cpp", "runtime/system-driver.h", "runtime/static-constructors.ld"];
   // Kernels also include shared native headers (constants, job bounds, JIT headers and CPU
   // scheduling). Inventory that whole tree, including future conditional headers, in both lanes.

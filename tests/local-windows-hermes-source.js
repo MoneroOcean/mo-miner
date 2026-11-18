@@ -3,7 +3,7 @@
 const {describe, test} = require("node:test"), assert = require("node:assert/strict"),
   fs = require("node:fs"), path = require("node:path"), os = require("node:os"), {spawnSync} = require("node:child_process"),
   {createHash} = require("node:crypto");
-const ci = require("../scripts/prepare-native-ci"), {fileHash} = require("../scripts/build-source-inputs"),
+const ci = require("../scripts/native-ci-windows-controller"), {fileHash} = require("../scripts/build-source-inputs"),
   {hermesPins} = require("../scripts/build-native-hermes"), {origins, sourceRecipe} = require("../scripts/fetch-native-sdk-sources");
 
 const repo = fs.realpathSync(path.resolve(__dirname, "..")), tarTool = "/usr/bin/tar", git = "/usr/bin/git";

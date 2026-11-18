@@ -4,7 +4,7 @@
 // test executables. The existing adapter producer owns its library order and constructor roots.
 const fs = require("node:fs"), path = require("node:path"), {isDeepStrictEqual} = require("node:util");
 const {fileHash, readBuildJson, sourceInputs, verifySourceInputs} = require("./build-source-inputs");
-const {pins} = require("./probe-static-dpcpp"), {isStaticArchive} = require("./native-audit");
+const {pins} = require("./native-dpcpp-pins"), {isStaticArchive} = require("./native-audit");
 const {coffSectionPayloads} = require("./native-compiler-isolation");
 const repo = path.resolve(__dirname, "..");
 const wholeNames = ["mom-sycl-static.lib", "ze_loader.lib"], objectNames = ["drivers.obj", "driver-aliases.obj"];

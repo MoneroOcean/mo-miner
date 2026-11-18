@@ -149,7 +149,7 @@ test.describe("Static SYCL build policy", () => {
     assert.match(queue, /\+#ifdef _OPENMP\n #include <omp\.h>\n\+#endif/);
   });
   test("the direct profile remains applicable only to the pinned AdaptiveCpp source", () => {
-    const probe = read("scripts/probe-static-sycl.js");
+    const probe = read("scripts/native-sycl-inputs.js");
     assert.match(probe, /const syclRevision = "da2463e45aa90aa36306c45abcfc05b87de51bc6"/);
     assert.match(patchBlock(runtime, "CMakeLists.txt"), /if\(ACPP_STATIC_RUNTIME AND WIN32\)/);
     assert.match(patchBlock(runtime, "src/runtime/CMakeLists.txt"), /if\(ACPP_STATIC_RUNTIME AND WIN32\)/);
@@ -165,7 +165,7 @@ test.describe("Static SYCL build policy", () => {
   });
   test("static CUDA uses its application-runtime archive without a mandatory driver import", () => {
     assert.match(added(jit), /if\(ACPP_STATIC_RUNTIME\)\s+set\(CUDA_LIBS CUDA::cudart_static\)/);
-    assert.doesNotMatch(read("scripts/probe-static-sycl.js"), /CUDA_cuda_driver_LIBRARY|"-lcuda"/);
+    assert.doesNotMatch(read("scripts/native-sycl-inputs.js"), /CUDA_cuda_driver_LIBRARY|"-lcuda"/);
   });
   test("shared CUDA keeps the existing runtime target", () => {
     assert.match(jit, / set\(CUDA_LIBS CUDA::cudart CUDA::cuda_driver\)/);
@@ -186,7 +186,7 @@ test.describe("Static SYCL build policy", () => {
     assert.match(added(jit), /Missing embedded bitcode library:/);
   });
   test("the real probe regenerates and incrementally builds reviewed compiler inputs", () => {
-    const probe = read("scripts/probe-native-ptx.js");
+    const probe = read("tests/tools/probe-native-ptx.js");
     assert.match(probe, /run\("cmake", \["-S", source, "-B", build\]/);
     assert.match(probe, /"--target", "llvm-to-ptx", "acpp-clang", "libkernel-sscp-ptx"/);
   });
@@ -196,30 +196,30 @@ test.describe("Static SYCL build policy", () => {
     assert.match(probe, /factory->fullTransformation\(generic, actual\) \|\| actual != ptx/);
   });
   test("the CUDA runtime lane refuses implicit execution before any device access", () => {
-    const result = spawnSync(process.execPath, [path.join(__dirname, "../scripts/probe-static-sycl.js")],
+    const result = spawnSync(process.execPath, [path.join(__dirname, "../scripts/native-sycl-inputs.js")],
       {encoding: "utf8", env: {...process.env, MOM_AOT_SYCL_BACKEND: "cuda", MOM_AOT_BUILD_ONLY: "0"}, timeout: 15000});
     assert.equal(result.status, 1); assert.match(result.stderr, /verify fresh ownership/);
     assert.doesNotMatch(result.stdout, /Static SYCL evidence/);
   });
   test("the combined runtime also requires build-only admission before any tool or device access", () => {
-    const result = spawnSync(process.execPath, [path.join(__dirname, "../scripts/probe-static-sycl.js")],
+    const result = spawnSync(process.execPath, [path.join(__dirname, "../scripts/native-sycl-inputs.js")],
       {encoding: "utf8", env: {...process.env, MOM_AOT_SYCL_BACKEND: "cuda-hip", MOM_AOT_BUILD_ONLY: "0", PATH: "/unavailable"}, timeout: 5000});
     assert.equal(result.status, 1); assert.match(result.stderr, /verify fresh ownership/);
     assert.doesNotMatch(result.stdout, /Static SYCL evidence/); assert.doesNotMatch(result.stderr, /ENOENT|spawn/);
   });
   test("per-backend factories stay isolated on the combined runtime cache", () => {
-    const probe = read("scripts/probe-static-sycl.js");
+    const probe = read("scripts/native-sycl-inputs.js");
     assert.match(probe, /validateStaticSyclBackendCache\(cache, backend\)/);
     assert.match(probe, /const backends = backend\.split\("-"\)/);
     assert.match(probe, /\.\.\.backends\.map\(\(name\) => path\.join\(build, `src\/runtime\/librt-backend-\$\{name\}\.a`\)\)/);
   });
   test("a runtime archive cache cannot silently come from another source tree", () => {
-    const probe = read("scripts/probe-static-sycl.js");
+    const probe = read("scripts/native-sycl-inputs.js");
     assert.match(probe, /CMAKE_HOME_DIRECTORY:INTERNAL/);
     assert.match(probe, /fs\.realpathSync\(configuredSource\) !== fs\.realpathSync\(source\)/);
   });
   test("complete GPU builds retain the reviewed resource generator and SSCP-only admission", () => {
-    const probe = read("scripts/probe-static-sycl.js");
+    const probe = read("scripts/native-sycl-inputs.js");
     assert.match(probe, /ACPP_RESOURCE_GENERATOR:FILEPATH/);
     assert.match(probe, /\["STDPAR_COMPILER", "ACCELERATED_CPU"\]\.some/);
   });
@@ -268,7 +268,7 @@ test.describe("Optional native CUDA driver boundary", {skip: process.platform !=
 });
 
 test.describe("Static DPC++ core build admission", () => {
-  const {pins, sdkIdentity, sourceJitInput} = require("../scripts/probe-static-dpcpp");
+  const {pins, sdkIdentity, sourceJitInput} = require("../scripts/native-dpcpp-pins");
   const version = `clang version 23.0.0git (https://github.com/intel/llvm ${pins.source})`;
   test("the matching Engineering SDK/source/archive pair is admitted", () => {sdkIdentity(version, pins.sdk + "\n");});
   test("a matching banner cannot bypass an absent or different archive receipt", () => {
@@ -281,13 +281,13 @@ test.describe("Static DPC++ core build admission", () => {
     assert.throws(() => sdkIdentity(version.replace("23.0.0git", "24.0.0git"), pins.sdk), /pinned/);
   });
   test("build-only admission precedes tool lookup and all input access", () => {
-    const run = spawnSync(process.execPath, [path.join(__dirname, "../scripts/probe-static-dpcpp.js")], {encoding: "utf8", timeout: 5000,
+    const run = spawnSync(process.execPath, [path.join(__dirname, "../scripts/native-dpcpp-pins.js")], {encoding: "utf8", timeout: 5000,
       env: {...process.env, MOM_AOT_BUILD_ONLY: "0", PATH: "/unavailable"}});
     assert.equal(run.status, 1); assert.match(run.stderr, /MOM_AOT_BUILD_ONLY=1/); assert.doesNotMatch(run.stderr, /ENOENT|spawn/);
   });
   test("relative and CMake-metacharacter paths fail before output mutation", () => {
     for (const unsafe of ["relative", "/tmp/injection;target", "/tmp/$expression", "/tmp/new\nline", '/tmp/quote"']) {
-      const run = spawnSync(process.execPath, [path.join(__dirname, "../scripts/probe-static-dpcpp.js"), unsafe,
+      const run = spawnSync(process.execPath, [path.join(__dirname, "../scripts/native-dpcpp-pins.js"), unsafe,
         "/sdk", "/emhash", "/umf", "/unavailable/output"], {encoding: "utf8", timeout: 5000,
         env: {...process.env, MOM_AOT_BUILD_ONLY: "1", PATH: "/unavailable"}});
       assert.equal(run.status, 1); assert.match(run.stderr, /Usage:/); assert.doesNotMatch(run.stderr, /Input query|ENOENT|mkdir/);
@@ -310,8 +310,8 @@ test.describe("Static DPC++ core build admission", () => {
     assert.match(cmake, /set\(FETCHCONTENT_FULLY_DISCONNECTED ON/); assert.match(cmake, /set\(UR_USE_EXTERNAL_UMF OFF/);
   });
   test("the experiment never becomes the Engineering or normal release entrypoint", () => {
-    for (const file of ["scripts/dev.js", "scripts/build-release.js"]) {assert.doesNotMatch(read(file), /probe-static-dpcpp/);}
-    assert.doesNotMatch(read("scripts/probe-static-dpcpp.js"), /capture\(executable|build\(executable|nvidia-smi/);
+    for (const file of ["scripts/dev.js", "scripts/build-release.js"]) {assert.doesNotMatch(read(file), /native-dpcpp-pins/);}
+    assert.doesNotMatch(read("scripts/native-dpcpp-pins.js"), /capture\(executable|build\(executable|nvidia-smi/);
   });
   test("source JIT requires one isolated compiler object or Windows archive", () => {
     assert.equal(sourceJitInput({}), null);
@@ -342,7 +342,7 @@ test.describe("Static DPC++ core build admission", () => {
 });
 
 test.describe("Static DPC++ adapter build admission", () => {
-  const {adapterInputs} = require("../scripts/probe-static-dpcpp");
+  const {adapterInputs} = require("../scripts/native-dpcpp-pins");
   const roots = {MOM_AOT_DPCPP_LEVEL_ZERO_SOURCE: "/loader", MOM_AOT_DPCPP_COMPUTE_HEADERS: "/headers", MOM_AOT_DPCPP_HWLOC_SOURCE: "/hwloc"};
   test("no adapter is selected implicitly", () => {assert.equal(adapterInputs({}), null);});
   test("explicit none still rejects inherited adapter roots", () => {
@@ -367,7 +367,7 @@ test.describe("Static DPC++ adapter build admission", () => {
     }
   });
   test("hwloc generation mutates a private git snapshot, not the pinned input", () => {
-    const source = read("scripts/probe-static-dpcpp.js");
+    const source = read("scripts/native-dpcpp-pins.js");
     assert.match(source, /\(hwloc\), "archive", "--format=tar"/);
     assert.match(source, /MOM_DPCPP_HWLOC: snapshot/);
   });
@@ -381,7 +381,7 @@ test.describe("Static DPC++ adapter build admission", () => {
     const patch = added(read("runtime/level-zero-static-complete.patch"));
     assert.match(patch, /if \(NOT MOM_EMBEDDED_LEVEL_ZERO\)[\s\S]*add_definitions\(-DL0_STATIC_LOADER_BUILD/);
     assert.match(patch, /if \(NOT BUILD_STATIC OR MOM_EMBEDDED_LEVEL_ZERO\)/);
-    assert.match(read("scripts/probe-static-dpcpp.js"), /directory === adapter\.levelZero.*level-zero-static-complete\.patch/);
+    assert.match(read("scripts/native-dpcpp-pins.js"), /directory === adapter\.levelZero.*level-zero-static-complete\.patch/);
   });
   test("the GPU-free loader fixture rejects an application-loader dependency", () => {
     const source = read("tests/reference/native-level-zero-static.cpp");
@@ -668,7 +668,7 @@ test.describe("Native compiler ELF namespace isolation", {skip: process.platform
 });
 
 test.describe("Static DPC++ complete-artifact receipts", {skip: process.platform !== "linux"}, () => {
-  const {auditBuild} = require("../scripts/probe-static-dpcpp");
+  const {auditBuild} = require("../scripts/native-dpcpp-pins");
   let root = "", serial = 0;
   test.before(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-dpcpp-receipts-"));
@@ -805,7 +805,7 @@ test.describe("Unused CUDA cleanup isolation", {skip: process.platform !== "linu
 });
 
 test.describe("Native GPU source profiles", () => {
-  const {gpuProfile} = require("../scripts/build-native-gpu-probe");
+  const {gpuProfile} = require("../scripts/native-gpu-build");
   for (const backend of ["cuda", "hip", "cuda-hip"]) {
     test(`${backend} enables exactly its declared source-JIT APIs`, () => {
       const profile = gpuProfile(backend);
@@ -826,7 +826,7 @@ test.describe("Native GPU source profiles", () => {
       assert.throws(() => gpuProfile(backend), /explicit cuda, hip or cuda-hip/);
     }
     if (process.platform !== "linux") {return;} // The executable producer is Linux-only.
-    const result = spawnSync(process.execPath, [path.join(__dirname, "../scripts/build-native-gpu-probe.js"),
+    const result = spawnSync(process.execPath, [path.join(__dirname, "../scripts/native-gpu-build.js"),
       "/unavailable/source", "/unavailable/build", "/unavailable/output"], {encoding: "utf8", timeout: 5000,
       env: {...process.env, MOM_AOT_SYCL_BACKEND: "auto", PATH: "/unavailable"}});
     assert.equal(result.status, 1); assert.match(result.stderr, /explicit cuda, hip or cuda-hip/);
@@ -835,7 +835,7 @@ test.describe("Native GPU source profiles", () => {
 });
 
 test.describe("Native GPU Core build boundary", () => {
-  const {syclSources} = require("../scripts/build-native-gpu-probe");
+  const {syclSources} = require("../scripts/native-gpu-build");
   const gyp = read("binding.gyp");
   test("the native build reads the maintained complete base source list", () => {
     const sources = syclSources(gyp);
@@ -863,24 +863,24 @@ test.describe("Native GPU Core build boundary", () => {
     assert.throws(() => syclSources(gyp.replace('"sycl/lib.cpp"', '"sycl/lib.cpp", "sycl/lib.cpp"')), /Unrecognized/);
   });
   test("full Core mode excludes generated CPU-proof GPU stubs", () => {
-    const build = read("scripts/build-native-cpu-probe.js");
+    const build = read("scripts/build-native-core.js");
     assert.match(build, /if \(!gpu\) \{[\s\S]*gpu-unavailable\.cpp[\s\S]*commands\.push\(/);
     assert.match(build, /const commands = cpuCompileCommands\(repo, output, flags, gpu, compiler\)/);
   });
   test("vendor CPU bitcode is materialized with its original compiler before GPU linking", () => {
-    const build = read("scripts/build-native-cpu-probe.js");
+    const build = read("scripts/build-native-core.js");
     assert.match(build, /magic !== "4243c0de" && magic !== "dec0170b"/);
     assert.match(build, /run\(compiler, \["-c", "-x", "ir"/);
   });
   test("the GPU linker receives flattened archive members, not a merged relocatable Core", () => {
-    const build = read("scripts/build-native-cpu-probe.js");
+    const build = read("scripts/build-native-core.js");
     assert.match(build, /gpu \? "cpu-core\.a" : "cpu-core\.o"/);
     assert.match(build, /if \(gpu\) \{\s*if \(!archiver\)[\s\S]*?run\(archiver\.path, \["qcLs"/);
     assert.match(build, /selectCpuArchiver\(compiler/);
     assert.match(build, /verifyCpuArchiver\(archiver\)[\s\S]*?finally \{\s*verifyCpuArchiver\(archiver\);\s*\}/);
   });
   test("controller integration requires explicit build-only admission and stub-free provenance", () => {
-    const probe = read("scripts/probe-native-controller.js");
+    const probe = read("scripts/build-native-application.js");
     assert.match(probe, /gpuManifest && \(!cpuCore \|\| process\.env\["MOM_AOT_BUILD_ONLY"\] !== "1"\)/);
     assert.match(probe, /provenance\.gpu !== true/);
     assert.match(probe, /file\.includes\("gpu-unavailable"\)/);
@@ -890,19 +890,19 @@ test.describe("Native GPU Core build boundary", () => {
     assert.match(host, /release_console_bindings\(SHConsoleContext \*context\) \{\s*mom::runtime::closeLoop\(context\);[\s\S]*?sycl_cleanup\(\);/);
   });
   test("the complete graph and primitive use the same reviewed runtime configuration", () => {
-    const build = read("scripts/build-native-gpu-probe.js");
-    assert.match(build, /require\("\.\/probe-static-sycl"\)/);
+    const build = read("scripts/native-gpu-build.js");
+    assert.match(build, /require\("\.\/native-sycl-inputs"\)/);
     assert.match(build, /staticSyclInputs\(source, build, output, backend\)/);
     assert.doesNotMatch(build, /spawnSync\([^\n]*(?:docker|nvidia-smi)|-lgomp|-lcudart\b/);
   });
   test("CN/GPU source JIT retains matching static compiler components, not a shared loader", () => {
-    const build = read("scripts/build-native-gpu-probe.js");
+    const build = read("scripts/native-gpu-build.js");
     assert.match(build, /\["nvrtc_static", "nvrtc-builtins_static", "nvptxcompiler_static"\]/);
     assert.match(build, /cuda && \["sycl\/cn-gpu\/cn-gpu\.cpp", "sycl\/pearlhash\/pearlhash\.cpp"\]\.includes\(file\) \? \["-DMOM_SYCL_HAS_CUDA"\]/);
     assert.match(build, /inputs\.libraries\.push\(file\)/);
   });
   test("every native GPU translation unit uses the same compiler API definition", () => {
-    const build = read("scripts/build-native-gpu-probe.js");
+    const build = read("scripts/native-gpu-build.js");
     const common = build.slice(build.indexOf("const compileFlags"), build.indexOf("function compile("));
     assert.match(common, /\.\.\.definitions/);
     assert.equal((build.match(/"-DMOM_STATIC_NVRTC"/g) || []).length, 1);
@@ -929,10 +929,10 @@ test.describe("Native GPU Core build boundary", () => {
         if (fixed) {assert.equal(result.status, 0, result.error?.message || result.stderr);} else {assert.ok(result.status === 0 || result.status === 1, result.stderr);}
       }
     } finally {fs.rmSync(temporary, {recursive: true, force: true});}
-    assert.match(read("scripts/build-native-gpu-probe.js"), /inputs\.links\.push\("-Wl,-T," \+ path\.join\(repo, "runtime\/static-constructors\.ld"\)\)/);
+    assert.match(read("scripts/native-gpu-build.js"), /inputs\.links\.push\("-Wl,-T," \+ path\.join\(repo, "runtime\/static-constructors\.ld"\)\)/);
   });
   test("the native policy embeds the maintained Markdown, not a parallel configuration table", () => {
-    const probe = read("scripts/probe-native-controller.js");
+    const probe = read("scripts/build-native-application.js");
     assert.match(probe, /fs\.readFileSync\(path\.join\(repo, "GPU-CONFIG\.md"\)\)/);
     assert.match(probe, /nativeResources\(\[\{name: "GPU-CONFIG\.md", data: policy\}\]\)/);
   });
@@ -944,7 +944,7 @@ test.describe("Native GPU Core build boundary", () => {
   test("embedded defaults remain optional outside the native controller build", () => {
     const services = read("runtime/services.cpp");
     assert.match(services, /#ifdef MOM_EMBEDDED_APP_RESOURCES\s*#include "app-resources\.inc"\s*#endif/);
-    assert.match(read("scripts/probe-native-controller.js"), /name === "services" \? \["-DMOM_EMBEDDED_APP_RESOURCES"/);
+    assert.match(read("scripts/build-native-application.js"), /name === "services" \? \["-DMOM_EMBEDDED_APP_RESOURCES"/);
   });
   test("native source-JIT binds the selected nonzero device in both compiler families", {
     skip: process.platform === "win32" ? "requires a host C++ compiler" : false,

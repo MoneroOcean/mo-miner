@@ -2,7 +2,7 @@
 
 const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), os = require("node:os"),
   path = require("node:path"), vm = require("node:vm"), {createHash} = require("node:crypto");
-const {buildPhases} = require("../scripts/build-native-windows-llvm21-sdk"),
+const {buildPhases} = require("../scripts/build-native-windows-llvm-sdk"),
   {windowsLlvmCiJobPlan, windowsLlvmCiJobPreflight, windowsLlvmDescriptorProducerPins, hostSdkDeadline} = require("../scripts/run-native-windows-llvm-ci");
 
 let fixtureSequence = 0;
@@ -18,7 +18,7 @@ function fixture(t, nowMs = Date.now()) {
     jobDeadlineEpoch = String(Math.ceil((nowMs + 55 * 60 * 1000) / 1000)),
     outputFile = path.join(runnerTemp, "github-output"), summaryFile = path.join(runnerTemp, "github-summary"),
     environmentFile = path.join(runnerTemp, "github-env"),
-    environment = /** @type {NodeJS.ProcessEnv} */ ({RUNNER_TEMP: runnerTemp, GITHUB_RUN_ID: runId, GITHUB_RUN_ATTEMPT: attempt,
+    environment = /** @type {NodeJS.ProcessEnv} */ ({RUNNER_TEMP: runnerTemp, MOM_NATIVE_CI_SUFFIX: `${runId}-${attempt}`,
       GITHUB_JOB: "windows_llvm", MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: "2",
       MOM_NATIVE_WINDOWS_LLVM_DIR: path.join("/tmp", "mom-native-windows-llvm21-" + suffix),
       MOM_NATIVE_WINDOWS_LLVM_DESCRIPTOR_DIR: path.join(runnerTemp, "mom-native-windows-llvm21-descriptor-" + suffix),
@@ -77,7 +77,7 @@ test.describe("Windows LLVM CI phase job plan", {skip: process.platform !== "lin
   test("reconstructs external SDK and tool inputs before admitting restored compiler state", () => {
     const source = fs.readFileSync(require.resolve("../scripts/run-native-windows-llvm-ci"), "utf8"),
       restore = source.indexOf("stateTransport.restoreWindowsNativeLlvmState("),
-      sdk = source.indexOf("ci.buildWindowsHostSdkSourcesCi();"),
+      sdk = source.indexOf(".buildWindowsHostSdkSourcesCi();"),
       tools = source.indexOf("const tools = linuxLlvmToolHandoffInputs("),
       hermes = source.indexOf("hermes = windowsControllerHandoffInputs(");
     assert.ok(Math.min(restore, sdk, tools, hermes) >= 0);
@@ -190,14 +190,14 @@ test.describe("Windows LLVM CI phase job plan", {skip: process.platform !== "lin
     assert.equal(fs.readFileSync(plan.incomingToolsArchive, "utf8"), "small tools archive fixture\n");
   });
 
-  test("rejects missing or wrong external bundle pins and mismatched run attempts before mutation", t => {
+  test("rejects missing or wrong external bundle pins and another work root before mutation", t => {
     const f = fixture(t), before = fs.readFileSync(f.outputFile, "utf8");
     const missingPin = {...f.environment}; delete missingPin["MOM_NATIVE_LINUX_LLVM_TOOLS_HANDOFF_SHA256"];
     assert.throws(() => windowsLlvmCiJobPlan("configure", missingPin, "linux", "x64"), /external artifact SHA-256 pin/);
     const wrongPin = {...f.environment, MOM_NATIVE_LINUX_LLVM_TOOLS_BUNDLE_SHA256: "f".repeat(64)};
     assert.throws(() => windowsLlvmCiJobPreflight("configure", wrongPin, "linux", "x64"), /external SHA-256 pin/);
-    const wrongRun = {...f.environment, GITHUB_RUN_ID: String(BigInt(f.runId) + 1n)};
-    assert.throws(() => windowsLlvmCiJobPreflight("configure", wrongRun, "linux", "x64"), /exact run-attempt plan/);
+    const wrongRun = {...f.environment, MOM_NATIVE_CI_SUFFIX: "other"};
+    assert.throws(() => windowsLlvmCiJobPreflight("configure", wrongRun, "linux", "x64"), /CI work-root plan/);
     const wrongDescriptorRoot = {...f.environment,
       MOM_NATIVE_WINDOWS_LLVM_DESCRIPTOR_DIR: path.join(f.runnerTemp, "redirected-descriptor")};
     assert.throws(() => windowsLlvmCiJobPlan("configure", wrongDescriptorRoot, "linux", "x64"), /exact same-run path/);

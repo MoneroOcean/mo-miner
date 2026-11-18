@@ -6,7 +6,8 @@ const fs = require("node:fs"), path = require("node:path"), {createHash, randomU
   {spawnSync} = require("node:child_process"), {isDeepStrictEqual} = require("node:util");
 const {fileHash, sourceInputs, readBuildJson, verifySourceInputs} = require("./build-source-inputs");
 const io = require("./build-native-io"), openssl = require("./build-native-openssl"), hermes = require("./build-native-hermes"),
-  core = require("./build-native-windows-core"), nativeCi = require("./prepare-native-ci"), {isStaticArchive} = require("./native-audit");
+  core = require("./build-native-windows-core"), ciController = require("./native-ci-windows-controller"),
+  ciCore = require("./native-ci-windows-core"), {isStaticArchive} = require("./native-audit");
 const repo = fs.realpathSync(path.resolve(__dirname, "..")), markerName = ".mom-native-windows-support.json", jobs = 2,
   runtimeCatalogPath = path.join(repo, "runtime/windows-intel-runtime.json"), runtimeCatalog = require("../runtime/windows-intel-runtime.json");
 
@@ -74,7 +75,7 @@ function validateWindowsSupportTools(tools, targetPlatform) {
 
 /** Read-only input/recipe/tool preflight and deterministic output identities. @param {WindowsSupportOptions} options
  * @param {{platform?:NodeJS.Platform,arch?:string,hash?:typeof fileHash,gitProbe?:(git:string,source:string)=>void,
- * compilerProbe?:(file:string)=>void,runtimeEntries?:(compiler:string)=>ReturnType<typeof nativeCi.windowsControllerIntelRuntimeEntries>}} [dependencies] */
+ * compilerProbe?:(file:string)=>void,runtimeEntries?:(compiler:string)=>ReturnType<typeof ciController.windowsControllerIntelRuntimeEntries>}} [dependencies] */
 function windowsSupportPlan(options, dependencies = {}) {
   const targetPlatform = dependencies.platform || process.platform, targetArch = dependencies.arch || process.arch,
     paths = windowsSupportPaths(options?.workspace || "", targetPlatform), hash = dependencies.hash || fileHash;
@@ -97,7 +98,7 @@ function windowsSupportPlan(options, dependencies = {}) {
   if (!isDeepStrictEqual(catalogFile, runtimeCatalog) || runtimeCatalog.compiler?.version !== "2026.2" ||
       hash(tools.io.cc) !== runtimeCatalog.compiler.sha256) {throw new Error("Intel compiler differs from the current pinned Windows runtime catalog");}
   (dependencies.compilerProbe || probeIntelCompiler)(tools.io.cc);
-  const runtimeEntries = (dependencies.runtimeEntries || nativeCi.windowsControllerIntelRuntimeEntries)(tools.io.cc);
+  const runtimeEntries = (dependencies.runtimeEntries || ciController.windowsControllerIntelRuntimeEntries)(tools.io.cc);
   if (!runtimeEntries.length) {throw new Error("Pinned Intel 2026.2 runtime catalog is empty");}
   for (const entry of runtimeEntries) {
     regularFile(entry.source, "Pinned Intel runtime " + entry.path);
@@ -296,7 +297,7 @@ function admitHermesOutput(plan, deps = {}) {
  * currentCoreAdmission?:(descriptor:string,prospectiveOutput:string,env:NodeJS.ProcessEnv)=>any,
  * admitIo?:(output:string,platform:string)=>any,admitOpenSsl?:(output:string,platform:string)=>any,readJson?:(file:string)=>any,
  * auditCore?:(state:any)=>any,compilerProbe?:(file:string)=>void,
- * runtimeEntries?:(compiler:string)=>ReturnType<typeof nativeCi.windowsControllerIntelRuntimeEntries>,
+ * runtimeEntries?:(compiler:string)=>ReturnType<typeof ciController.windowsControllerIntelRuntimeEntries>,
  * environment?:NodeJS.ProcessEnv,id?:()=>string}} [dependencies] */
 function buildLocalNativeWindowsSupport(options, dependencies = {}) {
   const inputEnv = dependencies.environment || process.env;
@@ -336,7 +337,7 @@ function buildLocalNativeWindowsSupport(options, dependencies = {}) {
     }
   } else {fs.writeFileSync(descriptor, JSON.stringify(descriptorValue, null, 2) + "\n", {flag: "wx", mode: 0o600});}
   if (fs.lstatSync(prospectiveCoreOutput, {throwIfNoEntry: false})) {throw new Error("Windows Core output identity is already occupied");}
-  const readJson = dependencies.readJson || readBuildJson, auditCore = dependencies.auditCore || nativeCi.auditWindowsNativeCoreOutput,
+  const readJson = dependencies.readJson || readBuildJson, auditCore = dependencies.auditCore || ciCore.auditWindowsNativeCoreOutput,
     forceCoreBuild = inputEnv["MOM_FORCE_REBUILD"] === "1" || inputEnv["MOM_NATIVE_CACHE"] === "0",
     currentAdmission = dependencies.currentCoreAdmission || core.windowsCoreCurrentCacheAdmission;
   /** @param {string} file */

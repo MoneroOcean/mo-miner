@@ -17,14 +17,8 @@ feature_pattern() {
   esac
 }
 
-case "$(uname -a)" in
-  # macOS: feature flags live in sysctl machdep.cpu.features (case-insensitive).
-  Darwin*) sysctl -n machdep.cpu.features | grep -i "$(feature_pattern "$QUERY")" >/dev/null;;
-  # Linux: arch from `uname -a`, feature flags from /proc/cpuinfo.
-  *) case "$QUERY" in
-       arm64)  uname -a | grep "aarch64" >/dev/null;;
-       arm)    uname -a | grep "armv7"   >/dev/null;;
-       x86_64) uname -a | grep "x86_64"  >/dev/null;;
-       *) grep "$(feature_pattern "$QUERY")" /proc/cpuinfo >/dev/null;;
-     esac;;
+# Linux x86-64 only (package.json `os`): arch from `uname -m`, feature flags from /proc/cpuinfo.
+case "$QUERY" in
+  x86_64) [ "$(uname -m)" = x86_64 ];;
+  *) grep "$(feature_pattern "$QUERY")" /proc/cpuinfo >/dev/null;;
 esac

@@ -14,11 +14,9 @@ const ALGORITHMS = ["kawpow", "firopow", "evrprogpow", "meowpow"];
 const BACKWARD_VIRTUAL = "include/mom-cxx/backward";
 const MAX_FILES = 16384, MAX_BYTES = 64 << 20, MAX_SOURCE = 16 << 20, MAX_DEPFILES = 4 << 20;
 const FORBIDDEN = /(?:^|[/\\])(?:msvc(?:[._-]|$)|msvcp(?:[._-]|$)|ucrt(?:[._-]|$)|vcruntime(?:[._-]|$)|api-ms-win(?:[._-]|$))|\.(?:dll|exe|obj|pdb|ilk)$/i;
-const LEGACY_BUILD_INPUT = "tests/native/dpcpp-jit/CMakeLists.txt";
-const LEGACY_BUILD_INPUT_SHA256 = "66a631feb1d8fab961f84d7e73e981a84e897e08d9c265fece512abe628ea021";
 // The CMake fixture remains in the complete SDK recipe, but its Windows-only PCH policy
 // cannot affect the standalone source emitter or the resource payload it produces.
-const SOURCE_INPUTS = Object.freeze(jitSourceInputs.filter(name => name !== LEGACY_BUILD_INPUT));
+const SOURCE_INPUTS = Object.freeze(jitSourceInputs.filter(name => name !== "tests/native/dpcpp-jit/CMakeLists.txt"));
 
 /** Same collector, target-specific GNU ABI and search roots. Linux also needs common
  * glibc headers; Windows alone must suppress host-vector aliases in OpenCL headers.
@@ -382,10 +380,7 @@ function verifyJitResources(directory, target) {
       manifest.publicationQualified !== false || !isDeepStrictEqual(manifest.undefines, selected.undefines)) {throw new Error("Wrong-target or changing JIT resources");}
   const sourceNames = manifest.sourceInputs && typeof manifest.sourceInputs === "object" && !Array.isArray(manifest.sourceInputs) ?
     Object.keys(manifest.sourceInputs).sort() : [];
-  const currentNames = [...SOURCE_INPUTS].sort(), legacyNames = [...SOURCE_INPUTS, LEGACY_BUILD_INPUT].sort();
-  const currentFootprint = isDeepStrictEqual(sourceNames, currentNames);
-  const legacyFootprint = isDeepStrictEqual(sourceNames, legacyNames) && manifest.sourceInputs[LEGACY_BUILD_INPUT] === LEGACY_BUILD_INPUT_SHA256;
-  if (!currentFootprint && !legacyFootprint) {throw new Error("Incomplete JIT resource source footprint");}
+  if (!isDeepStrictEqual(sourceNames, [...SOURCE_INPUTS].sort())) {throw new Error("Incomplete JIT resource source footprint");}
   for (const name of SOURCE_INPUTS) {if (manifest.sourceInputs[name] !== fileHash(path.join(repo, name))) {throw new Error("JIT resource source is stale: " + name);}}
   /** @type {Record<string,string>} */ const inputs = {[file]: manifestHash};
   let bytes = 0;

@@ -46,10 +46,10 @@ jobs:
         include:
           - scope: cpu
             components: base,node,oneapi
-            file: mom-${{ github.run_id }}-${{ github.run_attempt }}.node
+            file: engineering-mom.node
           - scope: portable
             components: base,node,dpcpp
-            file: engineering-dpcpp-opencl-${{ github.run_id }}-${{ github.run_attempt }}.zip
+            file: engineering-dpcpp-opencl.zip
     outputs:
       node_sha256: ${{ steps.seal.outputs.node_sha256 }}
       runtime_sha256: ${{ steps.seal.outputs.runtime_sha256 }}
@@ -72,6 +72,7 @@ jobs:
           archive: false
           compression-level: 0
           if-no-files-found: error
+          overwrite: true
           retention-days: 3
 
   windows-engineering:
@@ -94,7 +95,7 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          pattern: "{mom-${{ github.run_id }}-${{ github.run_attempt }}.node,engineering-dpcpp-opencl-${{ github.run_id }}-${{ github.run_attempt }}.zip}"
+          pattern: "{engineering-mom.node,engineering-dpcpp-opencl.zip}"
           merge-multiple: true
           skip-decompress: true
           path: ${{ runner.temp }}/incoming

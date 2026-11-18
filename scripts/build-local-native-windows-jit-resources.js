@@ -4,7 +4,7 @@
 // source-JIT resources without borrowing CI run identities or transport receipts.
 const fs = require("node:fs"), path = require("node:path"), {isDeepStrictEqual} = require("node:util");
 const local = require("./build-local-native-sdk"), localJit = require("./build-local-native-jit-sdk"),
-  nativeCi = require("./prepare-native-ci"), dpcppInputs = require("./native-dpcpp-cuda-inputs"),
+  nativeCi = require("./native-ci-linux-jit"), dpcppInputs = require("./native-dpcpp-cuda-inputs"),
   gnuHeaders = require("./prepare-native-gnu-headers"), jitSdk = require("./native-jit-sdk"),
   windowsResources = require("./native-windows-jit-resources"), resourceBuilder = require("./prepare-native-sycl-jit-resources");
 const {fileHash, readBuildJson} = require("./build-source-inputs");

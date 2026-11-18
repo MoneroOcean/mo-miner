@@ -2,7 +2,7 @@
 const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
 const test = require("node:test"), assert = require("node:assert/strict");
 const {fileHash} = require("../scripts/build-source-inputs");
-const {archiveSha256} = require("../scripts/build-native-windows-llvm21-sdk");
+const {archiveSha256} = require("../scripts/build-native-windows-llvm-sdk");
 const {revision: comgrRevision, hostSources} = require("../scripts/build-native-windows-comgr-sdk");
 const {clrRevision: hiprtcSourceRevision, sourceFiles: hiprtcSourceFiles} = require("../scripts/build-native-windows-hiprtc-sdk");
 const {exportWindowsHostComponent, windowsHostComponentInputs, windowsHostComponentLlvmLayout, copyRuntimeInput,
@@ -255,13 +255,7 @@ test.describe("Windows host component exporter preflight", {skip: process.platfo
       assert.throws(() => copyRuntimeInput(producer, relative, "/missing/output", {}), /runtime input path/);
     }
   });
-  test("resolves refreshed LLVM identity through its admitted source/build cache", () => {
-    const refreshed = windowsHostComponentLlvmLayout(/** @type {any} */ ({receipt: {plan: {
-      output: "/private/refresh-output", source: "/private/refresh-output/source", reuse: {
-        cacheRoot: "/private/original-cache", source: "/private/original-cache/source", build: "/private/original-cache/build",
-      },
-    }}}));
-    assert.deepEqual(refreshed, {source: "/private/original-cache/source", build: "/private/original-cache/build"});
+  test("resolves the LLVM source and build roots of its admitted output", () => {
     const original = windowsHostComponentLlvmLayout(/** @type {any} */ ({receipt: {plan: {
       output: "/private/original-output", source: "/private/original-output/source",
     }}}));

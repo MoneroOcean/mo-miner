@@ -255,7 +255,7 @@ if ($Suite -in @('all', 'cpu')) {
 
 Copy-Item tests (Join-Path $packageDir "tests") -Recurse
 New-Item -ItemType Directory -Force (Join-Path $packageDir 'scripts') | Out-Null
-Copy-Item scripts\validate-portable-opencl.js (Join-Path $packageDir 'scripts\validate-portable-opencl.js')
+Copy-Item scripts\check-portable-opencl.js (Join-Path $packageDir 'scripts\check-portable-opencl.js')
 Copy-Item scripts\windows-command.js (Join-Path $packageDir 'scripts\windows-command.js')
 
 # A developer image may already point OCL_ICD_FILENAMES at oneAPI's GPU ICD. CPU deployment gates

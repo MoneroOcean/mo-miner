@@ -3,7 +3,7 @@
 const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), path = require("node:path"), os = require("node:os");
 const {spawnSync} = require("node:child_process");
 const {gpuTable, gpuForwards} = require("../scripts/native-gpu-table");
-const {gpuProfile} = require("../scripts/build-native-gpu-probe");
+const {gpuProfile} = require("../scripts/native-gpu-build");
 
 test.describe("Native compiler graph dispatch and generated forwards", {skip: process.platform !== "linux"}, () => {
   let root = "";

@@ -4,14 +4,14 @@
 // LLVM 21 COFF build tree. Linux LLVM executables and Windows target libraries stay separate.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process"), {isDeepStrictEqual} = require("node:util");
 const {validateWindowsLlvmSdkConfig, windowsToolEnvironment, vfsFiles} = require("./build-native-windows-controller");
-const {admitSyclSource} = require("./probe-static-sycl");
+const {admitSyclSource} = require("./native-sycl-inputs");
 const {buildFileInputs, fileHash, readBuildJson, sourceInputs, verifySourceInputs} = require("./build-source-inputs");
 const {absolutePath} = require("./build-native-release");
 const {isStaticArchive} = require("./native-audit");
 const {nativeRuntimeLibraries} = require("./native-sdk-runtime");
 const {auditCoffArchiveInputs} = require("./native-coff-archive");
 const {windowsIntelRuleOverride} = require("./prepare-native-jit-toolchain");
-const {verifyWindowsLlvmAdmission} = require("./build-native-windows-llvm21-sdk");
+const {verifyWindowsLlvmAdmission} = require("./build-native-windows-llvm-sdk");
 const {pathsOverlap, sdkStage, selectHostCompilers, hostCompilerEvidence} = require("./build-native-sycl-sdk");
 const repo = path.resolve(__dirname, "..");
 const targetTriple = "x86_64-pc-windows-msvc";
@@ -35,9 +35,9 @@ const forbiddenOutputs = Object.freeze([
   "src/compiler/llvm-to-backend/llvm-to-ptx-tool.exe",
 ]);
 const recipeFiles = Object.freeze(["scripts/build-native-windows-acpp-sdk.js", "scripts/build-native-windows-controller.js",
-  "scripts/build-native-sycl-sdk.js", "scripts/build-native-windows-llvm21-sdk.js", "scripts/native-jit-stages.js",
+  "scripts/build-native-sycl-sdk.js", "scripts/build-native-windows-llvm-sdk.js", "scripts/native-jit-stages.js",
   "scripts/build-source-inputs.js", "scripts/build-native-release.js", "scripts/native-audit.js",
-  "scripts/probe-static-sycl.js", "scripts/native-hcf.js", "scripts/prepare-native-jit-toolchain.js", "scripts/native-resources.js", "scripts/native-sdk-runtime.js",
+  "scripts/native-sycl-inputs.js", "scripts/native-hcf.js", "scripts/prepare-native-jit-toolchain.js", "scripts/native-resources.js", "scripts/native-sdk-runtime.js",
   "scripts/native-coff-archive.js", "scripts/native-compiler-isolation.js",
   "runtime/adaptivecpp-static.patch", "runtime/adaptivecpp-jit.patch"]);
 
@@ -407,8 +407,8 @@ function buildWindowsAcppStaticHost(input, environment = process.env) {
     receiptFile: targetReceiptFile, admissionFile: targetAdmissionFile, objectsFile: targetObjectProofFile} = targetLlvm;
   const llvmTools = /** @type {{cmake: string, ninja: string}} */ ({cmake: /** @type {string} */ (targetReceipt.plan?.tools?.cmake),
     ninja: /** @type {string} */ (targetReceipt.plan?.tools?.ninja)});
-  const llvmPlan = targetReceipt.plan, admittedLlvmLayout = {source: llvmPlan.reuse?.source || llvmPlan.source,
-    build: llvmPlan.reuse?.build || path.join(llvmPlan.output, "build")};
+  const llvmPlan = targetReceipt.plan, admittedLlvmLayout = {source: llvmPlan.source,
+    build: path.join(llvmPlan.output, "build")};
   const plan = windowsAcppStaticHostPlan({...input, tools: llvmTools}, admittedLlvmLayout), env = cleanEnvironment(environment, plan.nativeRuntimeRoots);
   const outputParent = fs.realpathSync(path.dirname(input.output)), target = path.join(outputParent, path.basename(input.output));
   if (target !== input.output || fs.existsSync(input.output)) {throw new Error("Select a new canonical Windows ACPP output directory");}

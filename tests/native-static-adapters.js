@@ -80,7 +80,7 @@ int main(int argc,char** argv){
   test("an excluded failing CUDA factory is never invoked", () => {check(1, false, true, 0);});
   test("a selected factory failure is propagated", () => {check(2, false, true, 89);});
   test("the same original manifest filtering serves every static profile", () => {
-    const helper = fs.readFileSync(path.join(__dirname, "../scripts/probe-static-dpcpp.js"), "utf8");
+    const helper = fs.readFileSync(path.join(__dirname, "../scripts/native-dpcpp-pins.js"), "utf8");
     assert.match(helper, /adapter \|\| cudaSdk \|\| opencl \? \["dpcpp-static-adapters\.patch"\]/);
     assert.doesNotMatch(patch, /getenv\(|getenv_tobool\(|getenv_to_map\(/);
   });

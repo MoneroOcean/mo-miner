@@ -4,7 +4,7 @@
 // manufacturing CI archives or run identities for workspace-owned producers.
 const fs = require("node:fs"), path = require("node:path"), {isDeepStrictEqual} = require("node:util");
 const local = require("./build-local-native-sdk");
-const {verifyLinuxLlvmAdmission} = require("./build-native-llvm21-sdk");
+const {verifyLinuxLlvmAdmission} = require("./build-native-llvm-sdk");
 const {verifyPreparedSdkSources} = require("./prepare-native-sdk-sources");
 const {auditDpcppCudaInputs} = require("./native-dpcpp-cuda-inputs");
 const {windowsHostSdkInputs} = require("./native-windows-host-sdk-inputs");

@@ -5,7 +5,7 @@
 const fs = require("node:fs"), path = require("node:path"), {isDeepStrictEqual} = require("node:util");
 const local = require("./build-local-native-sdk"), localJit = require("./build-local-native-jit-sdk"),
   localWindowsLlvm = require("./build-local-native-windows-llvm-sdk"), localWindowsResources = require("./build-local-native-windows-jit-resources"),
-  nativeCi = require("./prepare-native-ci"),
+  nativeCi = require("./native-ci-linux-jit"),
   windowsToolchain = require("./prepare-native-jit-toolchain"), jitSdk = require("./build-native-jit-sdk"),
   windowsIsolation = require("./isolate-native-windows-jit"),
   {dpcppEntries} = require("./native-compiler-isolation"), {jitBuildStages} = require("./native-jit-stages"),

@@ -5,12 +5,15 @@
 // their exact state, re-admits current external inputs, invokes one phase or maintained group, and repacks.
 const fs = require("node:fs"), path = require("node:path"), {isDeepStrictEqual} = require("node:util"),
   {createHash} = require("node:crypto");
-const ci = require("./prepare-native-ci"), {fileHash} = require("./build-source-inputs");
+const ciJob = require("./native-ci-job"),
+  ciTar = require("./native-ci-tar"),
+  ciWindowsLlvm = require("./native-ci-windows-llvm"), {fileHash} = require("./build-source-inputs");
 const stateTransport = require("./native-windows-llvm-state");
+const {ciSuffix} = require("./native-ci-job");
 const {archiveName, archiveSha256} = require("./native-llvm-sdk");
 const {linuxLlvmToolHandoffInputs} = require("./native-linux-llvm-tools");
 const {windowsControllerHandoffInputs} = require("./native-windows-controller-handoff");
-const {buildPhases} = require("./build-native-windows-llvm21-sdk");
+const {buildPhases} = require("./build-native-windows-llvm-sdk");
 
 /** @type {Readonly<Record<string, {previousStage:string,outputPhase:string,phases:readonly string[]}>>} */
 const groupedStages = Object.freeze({"llvm-mid": Object.freeze({previousStage: "llvm-amdgpu", outputPhase: "llvm-core",
@@ -24,13 +27,11 @@ const maxHermesArchiveBytes = 2 * 1024 ** 3, maxToolsArchiveBytes = 1 * 1024 ** 
  * @param {string} [architecture] @param {number} [nowMs] */
 function windowsLlvmCiJobPlan(stage, environment = process.env, platform = process.platform, architecture = process.arch, nowMs = Date.now()) {
   if (!stages.includes(stage) || !Number.isSafeInteger(nowMs) || nowMs < 0) {throw new Error("Windows LLVM CI stage is not in the maintained phase order");}
-  const run = environment["GITHUB_RUN_ID"] || "", attempt = environment["GITHUB_RUN_ATTEMPT"] || "",
-    baseJob = environment["GITHUB_JOB"] || "", jobId = baseJob + "_" + stage;
-  if (!/^[0-9]{1,20}$/.test(run) || !/^[1-9][0-9]{0,5}$/.test(attempt) ||
-      !/^[A-Za-z0-9_-]{1,64}$/.test(baseJob) || !/^[A-Za-z0-9_-]{1,64}$/.test(jobId)) {
-    throw new Error("Windows LLVM CI needs a bounded run, attempt, and stage-specific workflow job identity");
+  const baseJob = environment["GITHUB_JOB"] || "", jobId = baseJob + "_" + stage;
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(baseJob) || !/^[A-Za-z0-9_-]{1,64}$/.test(jobId)) {
+    throw new Error("Windows LLVM CI needs a bounded stage-specific workflow job identity");
   }
-  const group = groupedStages[stage], suffix = run + "-" + attempt,
+  const group = groupedStages[stage], suffix = ciSuffix(environment),
     statePhase = stage === "configure" ? "configured" : stage === "audit" ? "audited" : group?.outputPhase || stage,
     previousStage = stage === "configure" ? null : stage === "audit" ? "lld" : group?.previousStage || buildPhases[buildPhases.findIndex(row => row.name === stage) - 1]?.name || "configured",
     previousProducerStage = stage === "clang" ? "llvm-mid" : previousStage,
@@ -42,8 +43,8 @@ function windowsLlvmCiJobPlan(stage, environment = process.env, platform = proce
   }
   const stageEnvironment = /** @type {NodeJS.ProcessEnv} */ ({...environment,
     MOM_NATIVE_WINDOWS_LLVM_RUN_DEADLINE_EPOCH: runDeadlineEpoch, GITHUB_JOB: jobId});
-  const state = ci.windowsNativeLlvmCiStatePaths(stageEnvironment, platform, architecture),
-    descriptorState = ci.windowsNativeLlvmDescriptorCiStatePaths(stageEnvironment, platform, architecture),
+  const state = ciWindowsLlvm.windowsNativeLlvmCiStatePaths(stageEnvironment, platform, architecture),
+    descriptorState = ciWindowsLlvm.windowsNativeLlvmDescriptorCiStatePaths(stageEnvironment, platform, architecture),
     runnerTemp = state.runnerTemp, incomingToolsArchive = path.join(runnerTemp, "incoming", `native-linux-llvm-tools-${suffix}.tar`),
     incomingHermesArchive = path.join(runnerTemp, "incoming", `native-windows-controller-hermes-${suffix}.tar`),
     incomingStateArchive = previousStage ? path.join(runnerTemp, "incoming", `native-windows-llvm-state-${suffix}-${previousStage}.tar`) : null,
@@ -63,7 +64,7 @@ function windowsLlvmCiJobPlan(stage, environment = process.env, platform = proce
   const hashPins = [toolsBundleSha256, toolsHandoffSha256, hermesBundleSha256, hermesHandoffSha256,
     ...(previousStage ? [stateBundleSha256, stateManifestSha256] : [])];
   if (hashPins.some(value => !/^[a-f0-9]{64}$/.test(value))) {throw new Error("Windows LLVM CI is missing an external artifact SHA-256 pin");}
-  const budget = ci.windowsNativeLlvmCiDeadlineBudget(jobDeadlineEpoch, stage === "configure" ? "configure" : stage === "audit" ? "audit" : "build",
+  const budget = ciWindowsLlvm.windowsNativeLlvmCiDeadlineBudget(jobDeadlineEpoch, stage === "configure" ? "configure" : stage === "audit" ? "audit" : "build",
     nowMs, runDeadlineEpoch);
   return {stage, builderPhases: group?.phases || (buildPhases.some(row => row.name === stage) ? [stage] : []),
     statePhase, previousStage, previousProducerStage, suffix,
@@ -78,10 +79,10 @@ function windowsLlvmCiJobPlan(stage, environment = process.env, platform = proce
  * @param {string} [architecture] @param {number} [nowMs] */
 function windowsLlvmCiJobPreflight(stage, environment = process.env, platform = process.platform, architecture = process.arch, nowMs = Date.now()) {
   const plan = windowsLlvmCiJobPlan(stage, environment, platform, architecture, nowMs), {environment: env} = plan;
-  if (env["MOM_AOT_BUILD_ONLY"] !== "1" || env["MOM_BUILD_JOBS"] !== ci.ciBuildJobs(env) ||
+  if (env["MOM_AOT_BUILD_ONLY"] !== "1" || env["MOM_BUILD_JOBS"] !== ciJob.ciBuildJobs(env) ||
       env["MOM_NATIVE_WINDOWS_LLVM_DIR"] !== plan.stateRoot ||
       env["MOM_NATIVE_WINDOWS_LLVM_DESCRIPTOR_DIR"] !== plan.descriptorState.root) {
-    throw new Error("Windows LLVM CI requires the fixed build-only run-attempt paths and a valid job count");
+    throw new Error("Windows LLVM CI requires the fixed build-only CI work-root paths and a valid job count");
   }
   const outputFiles = [env["GITHUB_OUTPUT"] || "", env["GITHUB_STEP_SUMMARY"] || ""],
     reportFiles = [...outputFiles, ...(plan.stage === "configure" ? [env["GITHUB_ENV"] || ""] : [])];
@@ -110,7 +111,7 @@ function windowsLlvmCiJobPreflight(stage, environment = process.env, platform = 
     const manifestFile = stableRegular(plan.incomingStateManifest || "", maxManifestBytes, "Prior Windows LLVM state manifest", plan.stateManifestSha256);
     manifestValue = JSON.parse(fs.readFileSync(plan.incomingStateManifest || "", "utf8"));
     const priorJobStage = plan.previousProducerStage === "configured" ? "configure" : plan.previousProducerStage;
-    if (manifestFile.bytes > maxManifestBytes || manifestValue.runAttempt !== plan.suffix ||
+    if (manifestFile.bytes > maxManifestBytes ||
         manifestValue.archive?.sha256 !== plan.stateBundleSha256 || manifestValue.producerJob !== `${plan.workflowJob}_${priorJobStage}`) {
       throw new Error("Prior Windows LLVM manifest does not bind the expected immediately preceding stage");
     }
@@ -126,7 +127,7 @@ function windowsLlvmCiJobPreflight(stage, environment = process.env, platform = 
   if (reportFiles.some((file, index) => file !== env["GITHUB_ENV"] && reportStats[index]?.bytes !== 0)) {
     throw new Error("Windows LLVM workflow output files must start empty");
   }
-  ci.windowsNativeLlvmCiDeadlineBudget(plan.jobDeadlineEpoch, stage === "configure" ? "configure" : stage === "audit" ? "audit" : "build",
+  ciWindowsLlvm.windowsNativeLlvmCiDeadlineBudget(plan.jobDeadlineEpoch, stage === "configure" ? "configure" : stage === "audit" ? "audit" : "build",
     nowMs, plan.runDeadlineEpoch);
   return {...plan, toolsArchive, hermesArchive, stateArchive, manifestValue};
 }
@@ -217,21 +218,21 @@ function runWindowsLlvmCiJob(stage, environment = process.env) {
     throw new Error("Windows LLVM handoff extraction root already exists");
   }
   fs.mkdirSync(toolsRoot, {mode: 0o700});
-  const toolsMembers = ci.listState(plan.incomingToolsArchive, [toolsName], remaining(5 * 60 * 1000)),
-    toolsExpanded = ci.tarExpandedBytes(plan.incomingToolsArchive, toolsMembers.length, remaining(5 * 60 * 1000));
+  const toolsMembers = ciTar.listState(plan.incomingToolsArchive, [toolsName], remaining(5 * 60 * 1000)),
+    toolsExpanded = ciTar.tarExpandedBytes(plan.incomingToolsArchive, toolsMembers.length, remaining(5 * 60 * 1000));
   if (toolsExpanded > 512 * 1024 ** 2 || availableDiskBytes(plan.runnerTemp) < toolsExpanded + 4 * 1024 ** 3) {
     throw new Error("Thin Linux LLVM tool handoff exceeds its expanded-size or runner-temp disk bound");
   }
-  ci.extractState(plan.incomingToolsArchive, toolsRoot, [toolsName], [toolsName], remaining(8 * 60 * 1000));
-  const tools = linuxLlvmToolHandoffInputs(path.join(toolsRoot, toolsName), {runAttempt: suffix, handoffSha256: plan.toolsHandoffSha256});
-  const hermesMembers = ci.listState(plan.incomingHermesArchive, [hermesName], remaining(5 * 60 * 1000)),
-    hermesExpanded = ci.tarExpandedBytes(plan.incomingHermesArchive, hermesMembers.length, remaining(5 * 60 * 1000));
+  ciTar.extractState(plan.incomingToolsArchive, toolsRoot, [toolsName], [toolsName], remaining(8 * 60 * 1000));
+  const tools = linuxLlvmToolHandoffInputs(path.join(toolsRoot, toolsName), {handoffSha256: plan.toolsHandoffSha256});
+  const hermesMembers = ciTar.listState(plan.incomingHermesArchive, [hermesName], remaining(5 * 60 * 1000)),
+    hermesExpanded = ciTar.tarExpandedBytes(plan.incomingHermesArchive, hermesMembers.length, remaining(5 * 60 * 1000));
   if (hermesExpanded > 4 * 1024 ** 3 || availableDiskBytes(plan.runnerTemp) < hermesExpanded + 4 * 1024 ** 3) {
     throw new Error("Windows Hermes source handoff exceeds its expanded-size or runner-temp disk bound");
   }
-  ci.extractState(plan.incomingHermesArchive, plan.runnerTemp, [hermesName], [hermesName], remaining(8 * 60 * 1000));
+  ciTar.extractState(plan.incomingHermesArchive, plan.runnerTemp, [hermesName], [hermesName], remaining(8 * 60 * 1000));
   const hermesRoot = path.join(plan.runnerTemp, hermesName), hermes = windowsControllerHandoffInputs(hermesRoot,
-    {kind: "hermes", runAttempt: suffix, handoffSha256: plan.hermesHandoffSha256});
+    {kind: "hermes", handoffSha256: plan.hermesHandoffSha256});
   if (hermes.kind !== "hermes" || !hermes.intelRuntime || tools.sourceArchive !== path.join(path.dirname(tools.toolRoot), archiveName) ||
       fileHash(tools.sourceArchive) !== archiveSha256) {
     throw new Error("Windows LLVM handoff lacks its admitted Hermes runtime or exact locked LLVM source archive");
@@ -246,7 +247,7 @@ function runWindowsLlvmCiJob(stage, environment = process.env) {
     MOM_NATIVE_WINDOWS_HOST_SDK_METADATA_TAR: path.join(plan.runnerTemp, `native-windows-host-sdk-${suffix}-metadata.tar`),
     MOM_NATIVE_WINDOWS_HOST_SDK_DEADLINE_EPOCH: sdkDeadline,
   });
-  ci.buildWindowsHostSdkSourcesCi();
+  ciWindowsLlvm.buildWindowsHostSdkSourcesCi();
   // State admission reads the descriptor's external SDK overlay and tools, so reconstruct them first.
   if (plan.previousStage) {
     const manifestBytes = copyPinned(plan.incomingStateManifest || "", plan.stateManifestSha256, "Windows LLVM state manifest");
@@ -255,10 +256,10 @@ function runWindowsLlvmCiJob(stage, environment = process.env) {
       plan.stateManifestSha256, env);
   }
   const inputFile = path.join(plan.runnerTemp, `windows-llvm21-descriptor-input-${suffix}.json`),
-    input = /** @type {Parameters<typeof ci.composeWindowsLlvmSdkDescriptor>[0]} */ ({windowsSdkRoot: sdkRoot, windowsSdkPins: {
+    input = /** @type {Parameters<typeof ciWindowsLlvm.composeWindowsLlvmSdkDescriptor>[0]} */ ({windowsSdkRoot: sdkRoot, windowsSdkPins: {
       resultSha256: fileHash(path.join(sdkRoot, "result.json")), descriptorSha256: fileHash(path.join(sdkRoot, "sdk.json")),
       filesSha256: fileHash(path.join(sdkRoot, "files.json")), overlaySha256: fileHash(path.join(sdkRoot, "vfs-overlay.json"))},
-    hermesRoot, hermesExpectation: {kind: "hermes", runAttempt: suffix, handoffSha256: plan.hermesHandoffSha256},
+    hermesRoot, hermesExpectation: {kind: "hermes", handoffSha256: plan.hermesHandoffSha256},
     tools: {clangCl: {path: "/opt/intel/oneapi/compiler/2026.2/bin/icx-cl", sha256: fileHash("/opt/intel/oneapi/compiler/2026.2/bin/icx-cl")},
       lldLink: {path: tools.lldLink, sha256: fileHash(tools.lldLink), linkTarget: "lld"},
       llvmNm: {path: tools.llvmNm, sha256: fileHash(tools.llvmNm)},
@@ -268,11 +269,11 @@ function runWindowsLlvmCiJob(stage, environment = process.env) {
   fs.writeFileSync(inputFile, inputBytes, {flag: "wx", mode: 0o600});
   const inputSha256 = fileHash(inputFile);
   if (stage === "configure") {
-    const generated = ci.buildWindowsNativeLlvmDescriptorCi([inputFile, inputSha256], env),
+    const generated = ciWindowsLlvm.buildWindowsNativeLlvmDescriptorCi([inputFile, inputSha256], env),
       // The producer owns a separate fresh root; configure retains the pinned descriptor in stateRoot.
       descriptorPath = plan.descriptorState.descriptorOutput, provenancePath = plan.descriptorState.provenanceOutput,
       {descriptorSha, provenanceSha} = windowsLlvmDescriptorProducerPins(generated, descriptorPath, provenancePath);
-    const values = ci.buildWindowsNativeLlvmCi(["configure", descriptorPath, descriptorSha, tools.sourceArchive, archiveSha256,
+    const values = ciWindowsLlvm.buildWindowsNativeLlvmCi(["configure", descriptorPath, descriptorSha, tools.sourceArchive, archiveSha256,
       "/usr/bin/cmake", fileHash("/usr/bin/cmake"), "/usr/bin/ninja", fileHash("/usr/bin/ninja")], env);
     copyToState(inputFile, path.join(plan.stateRoot, "descriptor-input.json"), inputSha256, 8 << 20);
     copyToState(provenancePath, path.join(plan.stateRoot, "descriptor-provenance.json"), provenanceSha, 8 << 20);
@@ -281,7 +282,7 @@ function runWindowsLlvmCiJob(stage, environment = process.env) {
   const savedInput = path.join(plan.stateRoot, "descriptor-input.json"), savedProvenance = path.join(plan.stateRoot, "descriptor-provenance.json"),
     savedInputBytes = copyPinned(savedInput, fileHash(savedInput), "Original descriptor input"),
     savedProvenanceBytes = copyPinned(savedProvenance, fileHash(savedProvenance), "Original descriptor provenance"),
-    descriptor = ci.composeWindowsLlvmSdkDescriptor(input),
+    descriptor = ciWindowsLlvm.composeWindowsLlvmSdkDescriptor(input),
     originalProvenance = JSON.parse(savedProvenanceBytes.toString("utf8"));
   if (!savedInputBytes.equals(inputBytes) || originalProvenance.status !== "PASS" ||
       originalProvenance.input?.sha256 !== inputSha256 || !isDeepStrictEqual(originalProvenance.composition, descriptor.provenance) ||
@@ -290,10 +291,10 @@ function runWindowsLlvmCiJob(stage, environment = process.env) {
     throw new Error("Recomposed Windows LLVM descriptor differs from the immutable configured inputs");
   }
   if (plan.builderPhases.length) {
-    return runBuilderPhases(plan.builderPhases, phase => ci.buildWindowsNativeLlvmCi(["build", phase], env),
+    return runBuilderPhases(plan.builderPhases, phase => ciWindowsLlvm.buildWindowsNativeLlvmCi(["build", phase], env),
       values => finishStage(plan, values, env));
   }
-  return finishStage(plan, ci.buildWindowsNativeLlvmCi(["audit"], env), env);
+  return finishStage(plan, ciWindowsLlvm.buildWindowsNativeLlvmCi(["audit"], env), env);
 }
 
 /** Publish only after every original builder phase has completed successfully.

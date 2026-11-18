@@ -35,7 +35,7 @@ function linuxResult(changes = {}) {
 
 /** @param {ReturnType<typeof roots>} selected @param {string} linuxResultSha256 */
 function input(selected, linuxResultSha256) {
-  return {runAttempt: suffix, linuxResourcesRoot: selected.linux, linuxResultSha256,
+  return {suffix, linuxResourcesRoot: selected.linux, linuxResultSha256,
     windowsGnuRoot: selected.windowsGnu, windowsGnuResultSha256: "a".repeat(64), windowsGnuCopyrightsSha256: "b".repeat(64),
     emitterRoot: selected.emitter, emitterResultSha256: "c".repeat(64), dpcppRoot: selected.dpcpp,
     outputProfile: path.join(selected.output, "resource-profile.json")};
@@ -106,7 +106,7 @@ function nativeToolsFixture(selected) {
     fs.writeFileSync(file, body, {flag: "wx"}); fs.chmodSync(file, 0o755);
     return {path: "bin/" + name, bytes: body.length, mode: 0o755, sha256: fileHash(file)};
   });
-  const manifest = {version: 1, kind: "windows-jit-native-tablegen", runAttempt: suffix, buildOnly: true, executed: false, publicationQualified: false,
+  const manifest = {version: 1, kind: "windows-jit-native-tablegen", buildOnly: true, executed: false, publicationQualified: false,
       linux, source, files}, manifestFile = path.join(nativeRoot, "manifest.json");
   fs.writeFileSync(manifestFile, JSON.stringify(manifest, null, 2) + "\n", {flag: "wx"});
   return {nativeRoot, binRoot, source, linux, files, manifest, manifestFile};
@@ -133,7 +133,7 @@ test.describe("Linux-hosted Windows resource filesystem admission", {concurrency
     assert.equal(paths.profile, path.join(paths.root, "resource-profile.json"));
     assert.equal(paths.resources, path.join(paths.root, "resources"));
     assert.equal(paths.nativeTools, path.join(paths.root, "native-tools"));
-    assert.throws(() => windowsJitResourcePaths("9000000000000008-0"), /run\/attempt/);
+    assert.throws(() => windowsJitResourcePaths("../0"), /work-root suffix/);
   });
 
   test("maps admitted Windows roots, existing base headers, required bitcode pins and notices into the established profile", () => {
@@ -168,8 +168,8 @@ test.describe("Linux-hosted Windows resource filesystem admission", {concurrency
     assert.throws(() => composeWindowsJitResourceProfile(input(selected, "0".repeat(64))), /differs from its external pin/);
   });
 
-  test("rejects a root from a different run attempt", context => {
-    const selected = roots(context); const request = input(selected, "a".repeat(64)); request.runAttempt = "9000000000000008-89";
+  test("rejects a root with a different work-root suffix", context => {
+    const selected = roots(context); const request = input(selected, "a".repeat(64)); request.suffix = "9000000000000008-89";
     assert.throws(() => composeWindowsJitResourceProfile(request), /canonical current-run root/);
   });
 
@@ -181,7 +181,7 @@ test.describe("Linux-hosted Windows resource filesystem admission", {concurrency
   test("requires profile output to remain a new sibling in the same Windows resource root", context => {
     const selected = roots(context), file = writeJson(selected.linux, linuxResult()), request = input(selected, fileHash(file));
     request.outputProfile = path.join(selected.linux, "profile.json");
-    assert.throws(() => composeWindowsJitResourceProfile(request), /profile path is not bound to this run attempt/);
+    assert.throws(() => composeWindowsJitResourceProfile(request), /profile path is not bound to this CI work root/);
   });
 
   test("admitWindowsGnu rechecks exact package versions and each captured notice body", context => {

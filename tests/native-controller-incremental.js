@@ -6,7 +6,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const {compileNativeObjects} = require("../scripts/native-object-cache");
-const {linuxCompileEnvironment} = require("../scripts/probe-native-controller");
+const {linuxCompileEnvironment} = require("../scripts/build-native-application");
 
 test.describe("Native controller object reuse", () => {
   test("fresh application manifests do not invalidate Linux object hits across fresh outputs", t => {

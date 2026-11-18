@@ -1,7 +1,7 @@
 "use strict";
 
 const fs = require("node:fs"), path = require("node:path"), {isDeepStrictEqual} = require("node:util");
-const local = require("./build-local-native-sdk"), ci = require("./prepare-native-ci");
+const local = require("./build-local-native-sdk"), ci = require("./native-ci-linux-cuda");
 const {auditDpcppCudaInputs} = require("./native-dpcpp-cuda-inputs");
 const {nvrtcSdkInputs} = require("./prepare-native-nvrtc-sdk");
 const {cudaImageInputs} = require("./native-cuda-images");
@@ -32,7 +32,7 @@ function localCudaImagePaths(workspace) {
 
 function localCudaImageRecipe() {
   return sourceInputs(repo, [], ["scripts/build-local-native-cuda-images.js", "scripts/build-native-cuda-images.js",
-    "scripts/prepare-native-ci.js", "scripts/native-dpcpp-cuda-inputs.js", "scripts/install-cutlass.sh",
+    "scripts/native-ci-linux-cuda.js", "scripts/native-dpcpp-cuda-inputs.js", "scripts/install-cutlass.sh",
     "scripts/prepare-native-nvrtc-sdk.js", "scripts/fetch-native-sdk-sources.js", "scripts/probe-static-nvrtc.js"]);
 }
 

@@ -32,7 +32,7 @@ runs:
       shell: bash
       env:
         COMPONENTS: ${{ inputs.dev }}
-      run: sudo env MOM_DEV_WORKSPACE="/var/tmp/mom-dev-ci-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" scripts/install-dev.sh --component "$COMPONENTS" --jobs 4
+      run: sudo env MOM_DEV_WORKSPACE="/var/tmp/mom-dev-ci" scripts/install-dev.sh --component "$COMPONENTS" --jobs 4
     - if: inputs.npm == 'true'
       shell: bash
       run: npm ci --ignore-scripts --no-audit --no-fund

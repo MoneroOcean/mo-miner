@@ -14,7 +14,7 @@ function phaseArchive(suffix, phase) {return "native-linux-jit-sdk-" + suffix + 
  * @param {NodeJS.ProcessEnv} [environment] */
 function runLinuxJitChain(environment = process.env) {
   const context = chain.chainContext(environment), proof = "native-linux-jit-runtime-proof-" + context.suffix + ".tar",
-    stage = (/** @type {string} */ name) => [...chain.nodeScript("scripts", "prepare-native-ci.js"), "stage", name];
+    stage = (/** @type {string} */ name) => [...chain.nodeScript("scripts", "run-native-ci.js"), "stage", name];
   /** @type {Record<string, string>} */
   let proofOutputs = {};
   let previous = "";
@@ -25,7 +25,7 @@ function runLinuxJitChain(environment = process.env) {
     const produced = phaseArchive(context.suffix, phase);
     chain.handOff(context, [produced]);
     if (previous) {chain.retire(context, [previous]);}
-    chain.resetRunScopedRoots(context, [proof]);
+    chain.resetWorkRoots(context, [proof]);
     previous = produced;
   }
   chain.writeWorkflowOutputs(environment, {proof_sha256: chain.requiredOutput(proofOutputs, "proof_sha256"),

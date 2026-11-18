@@ -2,7 +2,7 @@
 
 const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), os = require("node:os"),
   path = require("node:path"), {createHash} = require("node:crypto");
-const ci = require("../scripts/prepare-native-ci"), {fileHash} = require("../scripts/build-source-inputs"),
+const ci = require("../scripts/native-ci-windows-llvm"), {fileHash} = require("../scripts/build-source-inputs"),
   {archiveName} = require("../scripts/native-llvm-sdk"), {packWindowsNativeLlvmState, restoreWindowsNativeLlvmState} = require("../scripts/native-windows-llvm-state");
 
 /** @param {unknown} value */
@@ -14,7 +14,7 @@ function fixture(t, {checkpoint = true} = {}) {
     root = path.join("/tmp", "mom-native-windows-llvm21-" + suffix), outputFile = path.join(runnerTemp, "github-output"),
     summaryFile = path.join(runnerTemp, "github-summary"), archiveRoot = fs.mkdtempSync(path.join("/var/tmp", "mom-win-llvm-archive-")), now = Date.now(),
     epoch = (/** @type {number} */ minutes) => String(Math.ceil((now + minutes * 60 * 1000) / 1000)),
-    environment = /** @type {NodeJS.ProcessEnv} */ ({RUNNER_TEMP: runnerTemp, GITHUB_RUN_ID: run, GITHUB_RUN_ATTEMPT: "1", GITHUB_JOB: "llvm_configure",
+    environment = /** @type {NodeJS.ProcessEnv} */ ({RUNNER_TEMP: runnerTemp, MOM_NATIVE_CI_SUFFIX: run + "-1", GITHUB_JOB: "llvm_configure",
       MOM_NATIVE_WINDOWS_LLVM_DIR: root, MOM_NATIVE_WINDOWS_LLVM_RUN_DEADLINE_EPOCH: epoch(7 * 60),
       MOM_NATIVE_WINDOWS_LLVM_DEADLINE_EPOCH: epoch(55), MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: "2",
       GITHUB_OUTPUT: outputFile, GITHUB_STEP_SUMMARY: summaryFile}),
@@ -70,7 +70,7 @@ test.describe("Windows LLVM build-state transport", {skip: process.platform !== 
         ...(fs.existsSync(checkpoint) ? [checkpoint] : []), runDeadlineRecord, f.state.deadlineRecord, ...extraFiles],
       before = new Map(names.map(file => [file, {sha256: fileHash(file), mtimeMs: fs.statSync(file).mtimeMs}])),
       packed = packWindowsNativeLlvmState(f.archive, f.environment, f.now), archiveSha256 = packed.manifest.archive.sha256;
-    assert.equal(packed.manifest.runAttempt, f.state.suffix); assert.equal(packed.manifest.producerJob, "llvm_configure");
+    assert.equal(packed.manifest.producerJob, "llvm_configure");
     assert.equal(packed.manifest.bindings.checkpointSha256, before.get(checkpoint)?.sha256 || null);
     assert.equal(packed.manifestSha256, manifestHash(packed.manifest));
     fs.rmSync(f.state.root, {recursive: true});
@@ -113,15 +113,12 @@ test.describe("Windows LLVM build-state transport", {skip: process.platform !== 
     assert.equal(next.manifest.bindings.jobDeadlines.length, 2);
   });
 
-  test("rejects corrupt pins, stale identities, and extended or expired shared deadlines before extraction", t => {
+  test("rejects corrupt pins and extended or expired shared deadlines before extraction", t => {
     const f = fixture(t), packed = packWindowsNativeLlvmState(f.archive, f.environment, f.now), sha = packed.manifest.archive.sha256;
     fs.rmSync(f.state.root, {recursive: true});
     const receiver = {...f.environment, GITHUB_JOB: "llvm_build_lld", MOM_NATIVE_WINDOWS_LLVM_DEADLINE_EPOCH: f.epoch(50)};
     assert.throws(() => restoreWindowsNativeLlvmState(f.archive, "0".repeat(64), packed.manifest, packed.manifestSha256, receiver, f.now), /external same-run/);
     assert.throws(() => restoreWindowsNativeLlvmState(f.archive, sha, packed.manifest, "0".repeat(64), receiver, f.now), /external SHA-256 pin/);
-    const wrongRun = /** @type {NodeJS.ProcessEnv} */ ({...receiver, GITHUB_RUN_ID: String(BigInt(f.state.suffix.split("-")[0] || "0") + 1n)});
-    wrongRun["MOM_NATIVE_WINDOWS_LLVM_DIR"] = path.join("/tmp", "mom-native-windows-llvm21-" + (wrongRun["GITHUB_RUN_ID"] || "") + "-1");
-    assert.throws(() => restoreWindowsNativeLlvmState(f.archive, sha, packed.manifest, packed.manifestSha256, wrongRun, f.now), /same-run archive/);
     const extendedRun = {...receiver, MOM_NATIVE_WINDOWS_LLVM_RUN_DEADLINE_EPOCH: f.epoch(7 * 60 + 1)};
     assert.throws(() => restoreWindowsNativeLlvmState(f.archive, sha, packed.manifest, packed.manifestSha256, extendedRun, f.now), /same-run archive/);
     const jobBeyondRun = {...receiver, MOM_NATIVE_WINDOWS_LLVM_DEADLINE_EPOCH: f.epoch(8 * 60)};

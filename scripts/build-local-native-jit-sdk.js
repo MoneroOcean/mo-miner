@@ -3,9 +3,9 @@
 // Continue the admitted local source/LLVM/input/resource cohort through the existing
 // build-only JIT and static DPC++ producers. This is deliberately not a release command.
 const fs = require("node:fs"), path = require("node:path"), {isDeepStrictEqual} = require("node:util");
-const local = require("./build-local-native-sdk"), nativeCi = require("./prepare-native-ci");
+const local = require("./build-local-native-sdk"), nativeCi = require("./native-ci-linux-jit");
 const {verifyPreparedSdkSources} = require("./prepare-native-sdk-sources");
-const {verifyLinuxLlvmAdmission} = require("./build-native-llvm21-sdk");
+const {verifyLinuxLlvmAdmission} = require("./build-native-llvm-sdk");
 const {auditDpcppCudaInputs} = require("./native-dpcpp-cuda-inputs");
 const {jitSdkConfig} = require("./build-native-jit-sdk");
 const {jitBuildStages} = require("./native-jit-stages");
@@ -13,7 +13,7 @@ const {dpcppEntries, compilerArchives} = require("./native-compiler-isolation");
 const {linuxStaticSdkRecipe, linuxSdkJitInput, linuxSdkHeaders, linuxStaticSdkPlan, buildLinuxStaticSdk: _buildLinuxStaticSdk} =
   require("./build-native-dpcpp-sdk");
 const {dpcppComponentInputs} = require("./native-dpcpp-component");
-const {pins} = require("./probe-static-dpcpp");
+const {pins} = require("./native-dpcpp-pins");
 const {fileHash, readBuildJson, verifySourceInputs, buildFileInputs} = require("./build-source-inputs");
 const {isStaticArchive} = require("./native-audit");
 

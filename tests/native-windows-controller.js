@@ -202,7 +202,7 @@ test.describe("Windows COFF reproducibility", () => {
 
 test.describe("Windows maintained controller build recipe", () => {
   test("data-only producer and planner imports defer esbuild until bundle work", () => {
-    const ciPath = path.resolve(__dirname, "../scripts/prepare-native-ci.js"),
+    const ciPath = path.resolve(__dirname, "../scripts/run-native-ci.js"),
       controllerPath = path.resolve(__dirname, "../scripts/build-native-windows-controller.js"),
       planOutput = path.join(os.tmpdir(), "mom-esbuild-free-plan");
     const script = `
@@ -212,7 +212,7 @@ Module._load = function(request, ...args) {
   return originalLoad.call(this, request, ...args);
 };
 const ci = require(${JSON.stringify(ciPath)});
-if (typeof ci.packState !== "function") {throw new Error("Native CI producer API is missing");}
+if (typeof ci.runStage !== "function") {throw new Error("Native CI stage dispatcher is missing");}
 const controller = require(${JSON.stringify(controllerPath)});
 if (typeof controller.buildNativeWindowsController !== "function" || typeof controller.windowsControllerPlan !== "function") {
   throw new Error("Windows controller producer/planner API is missing");

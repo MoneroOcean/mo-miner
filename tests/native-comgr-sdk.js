@@ -4,7 +4,7 @@ const {spawnSync} = require("node:child_process");
 const {comgrSdkPlan, comgrDeviceInputs, comgrDependencies, buildComgrSdk} = require("../scripts/build-native-comgr-sdk");
 const {fileHash, sourceInputs} = require("../scripts/build-source-inputs");
 const {comgrSdkInputs, verifyComgrSdkSelection, revision, recipeFiles} = require("../scripts/native-comgr-inputs");
-const {rocmInputs, staticSyclInputs} = require("../scripts/probe-static-sycl");
+const {rocmInputs, staticSyclInputs} = require("../scripts/native-sycl-inputs");
 
 /** Exact tiny SDK registry, not enumeration of a real compiler installation.
  * @param {import('node:test').TestContext} t */
@@ -90,7 +90,7 @@ test.describe("Native COMGR pinned snapshot and literal recipe", {skip: process.
     assert.match(script, /version !== "21\.1\.8"/); assert.match(script, /clang version 21\\\.1\\\.8/);
   });
   test("producer receipts bind the shared host environment and LLVM admission helpers", () => {
-    for (const file of ["scripts/build-native-sycl-sdk.js", "scripts/build-environment.js", "scripts/probe-native-jit.js", "scripts/native-audit.js"]) {
+    for (const file of ["scripts/build-native-sycl-sdk.js", "scripts/build-environment.js", "scripts/native-jit-link.js", "scripts/native-audit.js"]) {
       assert.ok(recipeFiles.includes(file), file);
     }
     const script = fs.readFileSync(path.resolve(__dirname, "../scripts/build-native-comgr-sdk.js"), "utf8");

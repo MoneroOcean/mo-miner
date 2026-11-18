@@ -653,23 +653,25 @@ assembly must also recheck the current source and exact linked object cohort.
 
 - `stability.yml` runs only the source gates (`source-gates.yml`: lint, typecheck, logic/host tests on
   Linux, PowerShell syntax and logic on Windows) on pull requests and pushes. The complete native build
-  runs weekly, on `workflow_dispatch`, and on every `v*` tag through `release.yml`.
+  runs only on `workflow_dispatch` and on every `v*` tag through `release.yml`.
 - `build-release-artifacts.yml` holds the whole native graph: source gates, Engineering hashing, Linux and
   Windows SDK producers, components, applications, raw and packed runtime lanes, packing and packaging.
   Packaging waits for every gate; `release.yml` publishes only the two archives whose SHA-256 the package
   jobs reported, and only its tag job has `contents: write`.
-- Linux producer jobs use `native-job.yml`. It exports the run-scoped `/tmp` roots (`scripts/ci/job.js`),
+- Linux producer jobs use `native-job.yml`. It exports the `/tmp` work roots (`scripts/ci/job.js`),
   the caller's producer pins, `MOM_BUILD_JOBS=4` (public runners have 4 vCPU/16 GB) and a job deadline
   `MOM_CI_DEADLINE_EPOCH` five minutes before `timeout-minutes`. Downloads land flat in
   `$RUNNER_TEMP/incoming`; artifacts are named after their files and kept for three days.
-- Sequential chains run as one job of at most 330 minutes: Linux LLVM (`prepare-native-ci.js stage
+- Sequential chains run as one job of at most 330 minutes: Linux LLVM (`run-native-ci.js stage
   linux-llvm`), Linux source-JIT (`scripts/ci/linux-jit.js`), Windows LLVM (`scripts/ci/windows-llvm.js`)
   and Windows source-JIT (`scripts/ci/windows-jit.js`). The chain drivers keep each phase's own pinned
   state handoff, fresh-root admission and 55-minute deadline, but pass state locally instead of through
   artifacts. Other producers keep 60-minute jobs with 55-minute internal deadlines.
 - Heavy producers run under `scripts/run-bounded-native-ci.sh` (a swap-free 12 GiB scope, sized for four
   build jobs on a 16 GB runner).
-- Artifact names and `/tmp` roots still include the run attempt, so only "Re-run all jobs" works.
+- Work roots and artifact names carry the fixed suffix `MOM_NATIVE_CI_SUFFIX=ci` instead of the run id or
+  attempt, so "Re-run failed jobs" reuses the artifacts of earlier attempts and uploads overwrite them. A
+  job refuses to start when a work root from an earlier job is still present on the runner.
 - `tests/workflows.js` checks action pins, permissions, timeouts, artifact producers, job outputs and
   referenced scripts. Workflow fixtures do not replace a real hosted run, which is still outstanding.
 

@@ -2,8 +2,8 @@
 
 // Local WSL coordinator for the maintained Windows-target LLVM 21 builder.
 const fs = require("node:fs"), path = require("node:path"), {isDeepStrictEqual} = require("node:util");
-const local = require("./build-local-native-sdk"), nativeCi = require("./prepare-native-ci"),
-  linuxLlvm = require("./build-native-llvm21-sdk"), windowsLlvm = require("./build-native-windows-llvm21-sdk"),
+const local = require("./build-local-native-sdk"), nativeCi = require("./native-ci-windows-llvm"),
+  linuxLlvm = require("./build-native-llvm-sdk"), windowsLlvm = require("./build-native-windows-llvm-sdk"),
   sourceArchives = require("./fetch-native-sdk-sources");
 const {fileHash, readBuildJson, readBuildText} = require("./build-source-inputs"), {archiveName, archiveSha256} = require("./native-llvm-sdk");
 const repo = path.resolve(__dirname, ".."), jobs = 2, localBuildIdPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;

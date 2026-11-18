@@ -83,8 +83,8 @@ function resolveExecutable(name, env) {
   throw new Error("Cannot resolve native tool: " + name);
 }
 
-/** Paths in a fresh output are mapped into one stable, cache-owned source-like input tree. */
-/** @param {string} file @param {string} label */
+/** Paths in a fresh output are mapped into one stable, cache-owned source-like input tree.
+ * @param {string} file @param {string} label */
 function ensureDirectory(file, label) {
   const resolved = path.resolve(file);
   const parsed = path.parse(resolved), components = resolved.slice(parsed.root.length).split(path.sep).filter(Boolean);
@@ -195,8 +195,8 @@ function includeMembership(roots, output, generated, repo) {
   return digest(JSON.stringify(result));
 }
 
-/** Hash command environment without persisting its values in cache metadata. */
-/** @param {NativeEnvironment} env */
+/** Hash command environment without persisting its values in cache metadata.
+ * @param {NativeEnvironment} env */
 function environmentHash(env) {
   const values = Object.fromEntries(Object.keys(env).sort().map(name => [name, env[name]]));
   return digest(JSON.stringify(values));
@@ -219,7 +219,6 @@ function captureKeyFiles(files) {
   });
 }
 
-/** @param {string} file @param {number} [max] */
 /** @param {string} file @param {number} [max] @returns {any} */
 function readJson(file, max = MAX_JSON) {
   const stat = fs.lstatSync(file);
@@ -229,8 +228,8 @@ function readJson(file, max = MAX_JSON) {
   return JSON.parse(text);
 }
 
-/** Atomically publish small metadata within an already validated cache directory. */
-/** @param {string} file @param {unknown} value */
+/** Atomically publish small metadata within an already validated cache directory.
+ * @param {string} file @param {unknown} value */
 function atomicJson(file, value) {
   const temp = file + ".tmp-" + process.pid + "-" + crypto.randomBytes(6).toString("hex");
   const data = JSON.stringify(value) + "\n";
@@ -240,8 +239,8 @@ function atomicJson(file, value) {
   fs.renameSync(temp, file);
 }
 
-/** Remove only cache-owned regular files; symlinks are rejected, never followed. */
-/** @param {string} slot */
+/** Remove only cache-owned regular files; symlinks are rejected, never followed.
+ * @param {string} slot */
 function clearSlot(slot) {
   if (!fs.existsSync(slot)) {return;}
   const root = fs.lstatSync(slot);
@@ -252,8 +251,8 @@ function clearSlot(slot) {
   }
 }
 
-/** Clear all cache-owned artifacts in a slot without following links. */
-/** @param {string} slot */
+/** Clear all cache-owned artifacts in a slot without following links.
+ * @param {string} slot */
 function clearArtifacts(slot) {
   for (const name of fs.readdirSync(slot)) {
     const file = path.join(slot, name), stat = fs.lstatSync(file);
@@ -261,8 +260,8 @@ function clearArtifacts(slot) {
   }
 }
 
-/** Keep at most one slot per logical output across successive batches. */
-/** @param {string} root @param {string} objectKey @param {string} id */
+/** Keep at most one slot per logical output across successive batches.
+ * @param {string} root @param {string} objectKey @param {string} id */
 function updateSlotIndex(root, objectKey, id) {
   const indexFile = path.join(root, "slots.json");
   let index = /** @type {{version?: number, slots?: Record<string, string>}} */ ({});
@@ -284,8 +283,8 @@ function updateSlotIndex(root, objectKey, id) {
   }
 }
 
-/** Prune only after a caller has completed every batch in this object namespace. */
-/** @param {string} root @param {string} output @param {string[]} liveObjects */
+/** Prune only after a caller has completed every batch in this object namespace.
+ * @param {string} root @param {string} output @param {string[]} liveObjects */
 function finalizeSlots(root, output, liveObjects) {
   const live = new Set(liveObjects.map(file => path.relative(output, path.resolve(file)).split(path.sep).join("/")));
   const slotsRoot = path.join(root, "slots");
@@ -304,8 +303,8 @@ function finalizeSlots(root, output, liveObjects) {
   atomicJson(indexFile, {version: 1, slots: kept});
 }
 
-/** Recreate a slot's generated source tree from only this command's declared inputs. */
-/** @param {string} root */
+/** Recreate a slot's generated source tree from only this command's declared inputs.
+ * @param {string} root */
 function resetGeneratedTree(root) {
   if (fs.existsSync(root)) {
     const stat = fs.lstatSync(root);
@@ -354,8 +353,8 @@ function replacePath(text, needle, replacement) {
   return result;
 }
 
-/** Replace compiler depfile tokens while preserving either Make escapes or NMake quotes. */
-/** @param {string} text @param {string} from @param {string} to @param {"make" | "nmake"} [format] */
+/** Replace compiler depfile tokens while preserving either Make escapes or NMake quotes.
+ * @param {string} text @param {string} from @param {string} to @param {"make" | "nmake"} [format] */
 function rewriteDependencyPath(text, from, to, format = "make") {
   /** @param {string} value */
   const make = value => value.replaceAll("\\", "\\\\").replaceAll(" ", "\\ ").replaceAll("#", "\\#").replaceAll(":", "\\:");
@@ -365,8 +364,8 @@ function rewriteDependencyPath(text, from, to, format = "make") {
   return result;
 }
 
-/** Publish one fresh candidate file without following or replacing a symlink. */
-/** @param {string} file @param {string | Buffer} content */
+/** Publish one fresh candidate file without following or replacing a symlink.
+ * @param {string} file @param {string | Buffer} content */
 function writeFreshFile(file, content) {
   ensureDirectory(path.dirname(file), "Fresh native output path");
   if (fs.existsSync(file)) {
@@ -379,7 +378,6 @@ function writeFreshFile(file, content) {
 }
 
 /** @param {string} file @param {string} output @param {string} repo */
-/** @param {string} file @param {string} output @param {string} repo */
 function logicalPath(file, output, repo) {
   const resolved = path.resolve(file);
   if (contained(output, resolved)) {return "output/" + path.relative(output, resolved).split(path.sep).join("/");}
@@ -387,8 +385,8 @@ function logicalPath(file, output, repo) {
   return "external/" + fs.realpathSync(resolved);
 }
 
-/** A same-namespace build lock protects slot replacement and generated Ninja state. */
-/** @param {string} root */
+/** A same-namespace build lock protects slot replacement and generated Ninja state.
+ * @param {string} root */
 function acquireLock(root) {
   const lock = path.join(root, ".lock");
   for (let tries = 0; tries < 2; tries++) {
@@ -433,8 +431,8 @@ function ninjaPath(value) {
   return value.replaceAll("$", () => "$$").replaceAll(" ", "$ ").replaceAll(":", "$:");
 }
 
-/** Escape a shell-quoted command fragment for Ninja's variable syntax. */
-/** @param {string} value */
+/** Escape a shell-quoted command fragment for Ninja's variable syntax.
+ * @param {string} value */
 function ninjaValue(value) {return value.replaceAll("$", () => "$$");}
 
 /**

@@ -29,6 +29,8 @@ const repo = path.resolve(__dirname, ".."), sourceRootName = "llvm-project-21.1.
  * logs: Record<string, StageLog>, buildOnly: boolean, compiled: boolean, executed: boolean, publicationQualified: boolean}} OpenmpReceipt */
 /** @type {readonly ToolName[]} */
 const toolNames = Object.freeze(["cc", "cmake", "cxx", "ninja", "readelf", "tar"]);
+// Parallelism only: the CI and local build envelopes; libomp.a bytes do not depend on it.
+const buildJobs = Object.freeze([2, 4]);
 const sourceLeaves = Object.freeze(["scripts/build-native-openmp-sdk.js", "scripts/build-source-inputs.js", "scripts/build-environment.js",
   "scripts/native-audit.js", "scripts/native-llvm-sdk.js"]);
 // Acquisition is admitted separately by exact archive pins and immutable receipt identity.
@@ -83,8 +85,8 @@ function validateTools(value) {
  * cache: Record<string, string>, sourceEnvironment: Record<string, string>, smokeRun: string[]}} */
 function openmpSdkPlan(archive, output, tools, jobs = 2, platform = process.platform) {
   if (platform !== "linux" || process.arch !== "x64" || !absolute(archive) || path.basename(archive) !== archiveName ||
-      !absolute(output) || output.includes("=") || path.normalize(output) !== output || !Number.isInteger(jobs) || jobs !== 2) {
-    throw new Error("Static OpenMP SDK needs the pinned LLVM archive, a canonical Linux x64 output, and exactly two jobs");
+      !absolute(output) || output.includes("=") || path.normalize(output) !== output || !buildJobs.includes(jobs)) {
+    throw new Error("Static OpenMP SDK needs the pinned LLVM archive, a canonical Linux x64 output, and two or four jobs");
   }
   const selected = validateTools(tools), source = path.join(output, "source"), build = path.join(output, "build"),
     sdk = path.join(output, "sdk"), smoke = path.join(output, "smoke"), buildArchive = path.join(build, "runtime/src/libomp.a"),
@@ -106,7 +108,7 @@ function openmpSdkPlan(archive, output, tools, jobs = 2, platform = process.plat
     "-DLIBOMP_ENABLE_SHARED=OFF", "-DLIBOMP_OMPT_SUPPORT=OFF", "-DLIBOMP_OMPD_SUPPORT=OFF", "-DLIBOMP_USE_ITT_NOTIFY=OFF",
     "-DLIBOMP_USE_HWLOC=OFF"];
   const configure = [selected.cmake, "-G", "Ninja", "-S", path.join(source, "openmp"), "-B", build, ...definitions];
-  const buildCommand = [selected.cmake, "--build", build, "--target", "omp", "--parallel", "2", "--verbose"];
+  const buildCommand = [selected.cmake, "--build", build, "--target", "omp", "--parallel", String(jobs), "--verbose"];
   const smokeCompile = [selected.cc, "-O2", "-fPIC", "-ffunction-sections", "-fdata-sections", "-ffreestanding", "-fno-builtin", "-fopenmp", "-I", path.dirname(header),
     "-c", smokeC, "-o", smokeObject];
   // Mirror the release link's GC; keep -fopenmp off so icx cannot select shared Intel OpenMP.
@@ -400,7 +402,7 @@ function buildNativeOpenmpSdk(archive, output, config, environment, configFile, 
     throw new Error("Static OpenMP SDK production requires Linux x64 and MOM_AOT_BUILD_ONLY=1");
   }
   if (!config || typeof config !== "object" || Array.isArray(config) || Object.keys(config).sort().join(",") !== "jobs,tools,version" ||
-      config.version !== 1 || config.jobs !== 2 || !absolute(configFile || "") || !isHash(configSha256 || "")) {
+      config.version !== 1 || !buildJobs.includes(config.jobs) || !absolute(configFile || "") || !isHash(configSha256 || "")) {
     throw new Error("Invalid static OpenMP tool descriptor");
   }
   const tools = validateTools(config.tools), selectedOutput = path.resolve(output), parent = path.dirname(selectedOutput),
@@ -496,7 +498,7 @@ function nativeOpenmpInputs(root) {
   if (!isDeepStrictEqual(currentTools, record.tools) || !isDeepStrictEqual(versions, record.toolVersions)) {
     throw new Error("Static OpenMP SDK tool identity/version changed");
   }
-  const plan = openmpSdkPlan(record.archive.path, root, tools, 2, "linux");
+  const plan = openmpSdkPlan(record.archive.path, root, tools, record.plan?.jobs, "linux");
   if (!isDeepStrictEqual(record.plan, plan)) {throw new Error("Static OpenMP SDK command plan or path identity is stale");}
   const sourceRoot = path.dirname(record.archive.path), sourceInput = verifyOpenmpArchiveInput(record.archive.path), catalog = verifyArchiveCatalog(record.archive.path),
     listing = spawnSync(tools.tar, ["-tf", record.archive.path, "--quoting-style=literal"],
@@ -513,7 +515,7 @@ function nativeOpenmpInputs(root) {
   }
   const toolsPath = path.join(root, "tools.json"); regularInput(toolsPath, "tool descriptor");
   const toolsConfig = readBuildJson(toolsPath);
-  if (!isDeepStrictEqual(toolsConfig, {version: 1, jobs: 2, tools}) || fileHash(path.join(root, "tools.json")) !== record.config.sha256) {
+  if (!isDeepStrictEqual(toolsConfig, {version: 1, jobs: record.plan.jobs, tools}) || fileHash(path.join(root, "tools.json")) !== record.config.sha256) {
     throw new Error("Static OpenMP SDK tool descriptor changed");
   }
   const recipe = openmpBuildRecipe(); verifySourceInputs(record.recipe, recipe, "Static OpenMP SDK producer");
