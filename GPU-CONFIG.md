@@ -116,4 +116,5 @@ Legend: `—` means inherit the default in the matching Defaults row.
 Pearl profiles are fallbacks; native discovery supplies device-specific tuning.
 
 Intel selects discrete GPUs (`MOM_GPU_BACKEND=intel`); Intel_iGPU selects integrated GPUs
-(`MOM_GPU_BACKEND=intel_igpu`).
+(`MOM_GPU_BACKEND=intel_igpu`). Table names are case-insensitive forms of the `MOM_GPU_BACKEND`
+values documented in the README.

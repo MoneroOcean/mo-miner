@@ -1,9 +1,10 @@
 <div align="center">
 
-# MO-Miner
+# MoM
 
-`mom` is an open-source cryptocurrency miner for CPU and GPU
-algorithms. It supports pool algorithm switching and a simple command-line configuration.
+MoM (command `mom`, repository `mo-miner`) is an open-source cryptocurrency miner for CPU and GPU
+algorithms. It supports pool algorithm switching through `mom.moneroocean.stream` and a simple
+command-line configuration.
 
 <p>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg" alt="License: GPL-3.0-or-later"></a>
@@ -14,27 +15,26 @@ algorithms. It supports pool algorithm switching and a simple command-line confi
 
 </div>
 
-mom supports algorithm switching through `mom.moneroocean.stream`.
-
 ## Supported algorithms
 
 - CPU: the algorithms reported by `mom algorithms`, using the bundled XMRig engine.
 - GPU: the algorithms in the table below when supported by the selected device.
 
 NVIDIA compatibility targets Maxwell (GeForce GTX 750 Ti) and newer, subject to the memory
-requirements below. Older-card validation is ongoing.
+requirements below.
 
-Percentages compare mom with the named reference. A plain miner name is a controlled same-GPU,
+Percentages compare MoM with the named reference. A plain miner name is a controlled same-GPU,
 same-OS comparison. A `(Linux)` or `(Windows)` suffix identifies the reference OS. An asterisk marks
 a cell whose comparison is approximate: a limited measured average, another GPU or OS, a published
 result, a scaled estimate, or the best result found when no controlled same-GPU reference was available.
 `best peer*` is the fastest credible result found on a comparable GPU when no controlled same-model
 reference exists; it is context, not a same-hardware target.
-`TBD` means the reference comparison is being rechecked.
+`-` means not measured; `Unsupported` means the device cannot run the algorithm.
 
-Every listed algorithm is implemented by mom; `/ MO` marks algorithms served by MoneroOcean.
+Every listed algorithm is implemented by MoM; `/ MO` marks algorithms served by MoneroOcean.
 Preferred Cuckaroo names are `c29` and `c30`; accepted aliases are `cuckaroo`/`cuckaroo29`/`c29xtm` and
-`cuckaroo30`/`c30ctx`, respectively.
+`cuckaroo30`/`c30ctx`, respectively. `kawpow1`/`kawpow4` select `kawpow`, and `xel/2`, `xel/3` and
+`xel/v3` select `xelishashv3`.
 
 GPU cells use `A770` and `B580` for Intel Arc A770 and B580, `5060 Ti` for NVIDIA RTX 5060 Ti,
 and `9060 XT` for AMD RX 9060 XT. Measurements ran one selected GPU at a time. Each algorithm groups
@@ -184,12 +184,10 @@ The standalone native archive format contains the `mom` executable on Linux or `
 plus `THIRD-PARTY-NOTICES.txt`. Extract the archive and run the executable directly. It does not
 bundle Node.js, `.node` addons, an application `libs/` runtime tree, or host build tools. Ordinary
 operating-system libraries and the GPU vendor's display driver remain host prerequisites. A
-build-only candidate or package is not publication approval; see [DEVELOPMENT.md](DEVELOPMENT.md)
-for the current status.
+build or package alone is not a published release.
 
 Standalone builds target Linux and Windows x86-64. Linux runtime checks cover Ubuntu 24.04 LTS
-(glibc 2.39); older distributions have not yet been qualified. Current packed executables are
-77.6 MiB (Linux) and 70.9 MiB (Windows), excluding archive metadata and notices.
+(glibc 2.39); older distributions have not yet been qualified.
 
 ## Linux
 
@@ -217,13 +215,13 @@ The standalone package does not need Node.js/npm or a compiler installation. The
 display driver supplies the GPU interface; generic OpenCL additionally requires a driver that
 accepts SPIR-V programs.
 
-## Engineering Mode and legacy archive
+## Engineering Mode and Engineering archive
 
 Engineering Mode runs the original JavaScript from a source checkout. After the setup in
 [DEVELOPMENT.md](DEVELOPMENT.md), use `npm run dev -- algorithms` or
 `npm run dev -- mine config.json`. JavaScript-only edits require no native rebuild or relink.
 
-The separate Engineering archive runs the JavaScript controller and includes its Node runtime,
+The separate Engineering archive (a legacy Node.js package) runs the JavaScript controller and includes its Node runtime,
 backend `.node` workers, and isolated application runtime files. Its launcher is `./mom` on Linux
 and `mom.cmd` on Windows; this is different from the standalone `mom`/`mom.exe` package above.
 These bundled installers and their NVIDIA source-JIT prerequisites apply to Engineering archives,
@@ -237,8 +235,7 @@ sudo ./install.sh
 install.bat
 ```
 
-For Engineering Mode, development prerequisites, and the current native-build/release status, see
-[DEVELOPMENT.md](DEVELOPMENT.md).
+For Engineering Mode, development prerequisites and builds, see [DEVELOPMENT.md](DEVELOPMENT.md).
 
 Some GPU algorithms have a slow first launch while the GPU runtime compiles device code. The
 runtime/driver controls its compiled-code cache. Packed executables also decompress in memory on
@@ -247,7 +244,7 @@ each process launch; this is separate from kernel compilation and does not extra
 # GPU selection
 
 The standalone launcher auto-detects the backend on a single-vendor system. On a mixed-vendor
-system, select which GPU runtime mom should use for that process:
+system, select which GPU runtime MoM should use for that process:
 
 ```
 MOM_GPU_BACKEND=intel ./mom algorithms         # Linux standalone
@@ -257,13 +254,15 @@ set "MOM_GPU_BACKEND=intel" && .\mom.exe algorithms  # Windows Command Prompt st
 Valid values are `intel` (Intel discrete GPUs only), `intel_igpu` (Intel integrated GPUs only),
 `nvidia`, `amd`, and `opencl` (generic OpenCL GPUs). Use `MOM_GPU_BACKEND=intel_igpu` to select
 Intel integrated GPUs; `intel` never falls back to them. Set `MOM_OPENCL_DEVICE_TYPE=cpu`
-with `opencl` for the portable CPU path. Run separate mom processes to use different groups
-concurrently. To select one GPU, add the zero-based `MOM_GPU_INDEX`:
+with `opencl` for the portable CPU path. Run separate MoM processes to use different groups
+concurrently. To select one GPU, add the zero-based `MOM_GPU_INDEX` (0-1023):
 
 ```
 MOM_GPU_BACKEND=intel MOM_GPU_INDEX=0 ./mom algorithms
 set "MOM_GPU_BACKEND=intel" && set "MOM_GPU_INDEX=0" && .\mom.exe algorithms
 ```
+
+`all` is accepted only by `npm run dev` (see [DEVELOPMENT.md](DEVELOPMENT.md)), not at runtime.
 
 First run `algorithms` without the index to see each numbered GPU and its full hardware name.
 For Intel and OpenCL, displayed `gpuN` uses index `N-1`. Intel device numbers stay unchanged when
@@ -347,9 +346,14 @@ gpu1*[workgroup=256]^2
 Donation mining defaults to a 60-second window every 100 minutes through
 `mom.moneroocean.stream`. It reuses the current algorithm when supported, including fixed
 PearlHash, or uses measured compatible MoneroOcean algorithms on the same selected devices.
-Donation mining is disabled when no compatible algorithm is available.
+Donation mining is disabled when no compatible algorithm is available. A configuration that sets
+`pools` without `pool_ids.donate` keeps this donation pool, appended after your pools; set
+`pool_ids.donate` to a pool index or `null` (disabled) to choose otherwise.
 
-On its first run, this Linux example benchmarks MoneroOcean algorithms supported by mom plus `rx/2`
+A pool that stops answering is dropped and MoM fails over to the next pool: a request unanswered
+for 60 seconds, or no traffic at all for 20 minutes, counts as a dead connection.
+
+On its first run, this Linux example benchmarks MoneroOcean algorithms supported by MoM plus `rx/2`
 and `pearlhash`, then starts mining. Use `--bench_algo_params 2` to benchmark every locally supported
 algorithm instead. The example selects Intel; see [GPU selection](#gpu-selection) for other GPUs.
 
@@ -367,7 +371,8 @@ MOM_GPU_BACKEND=intel ./mom mine \
   --job.dev gpu1 --save_config config.json
 ```
 
-Next time you can reuse saved config.json file to avoid running benchmarks again before mining:
+Run `./mom --help` for every option (`--job.*`, `--pool_time.*`, `--add.pool`, `--new.algo_param.<name>`,
+`--log_level`). Next time you can reuse saved config.json file to avoid running benchmarks again before mining:
 
 ```
 MOM_GPU_BACKEND=intel ./mom mine ./config.json
@@ -421,7 +426,7 @@ These are public example recipients; verified ownership or purpose is shown wher
 own wallet address to receive payouts. Pool minimum payouts still apply.
 For CFX on Kryptex, append `.worker` to the address when passing it to `mom mine`.
 
-On first Verthash use, mom generates and verifies the 1.20-GiB `verthash.dat` file in the current
+On first Verthash use, MoM generates and verifies the 1.20-GiB `verthash.dat` file in the current
 directory. A message is printed before this one-time operation, which usually takes a few minutes.
 Use a trusted writable directory and keep the file for later runs; `MOM_VERTHASH_DATA` remains
 available as an optional path override.
@@ -437,11 +442,30 @@ You can benchmark an algorithm directly:
 
 ## CPU performance setup
 
-RandomX performs best with MSR tuning and large pages. Run mom as root or configure the required
+RandomX performs best with MSR tuning and large pages. Run MoM as root or configure the required
 permissions and [huge pages](https://xmrig.com/docs/miner/hugepages). These settings affect CPU
 mining only. On Linux, prepare the MSR interface with `sudo modprobe msr allow_writes=on` when
 needed; the standalone executable uses an available interface but does not load kernel modules.
 
+# Environment variables
+
+User-settable variables read by the shipped miner:
+
+| Variable                     | Effect                                                         |
+| ---------------------------- | -------------------------------------------------------------- |
+| `MOM_GPU_BACKEND`            | GPU runtime: `intel`, `intel_igpu`, `nvidia`, `amd`, `opencl`. |
+| `MOM_GPU_INDEX`              | Zero-based GPU within the selected backend (0-1023).           |
+| `MOM_OPENCL_DEVICE_TYPE`     | `gpu` or `cpu`; `cpu` selects the portable OpenCL CPU path.    |
+| `MOM_VERTHASH_DATA`          | Path of `verthash.dat` instead of the current directory.       |
+| `MOM_JIT_CACHE_DIR`          | Directory for the compiled GPU-kernel cache.                   |
+| `MOM_SKIP_MSR`               | `1` disables CPU MSR tuning (Linux).                           |
+| `MOM_USE_SUBPROCESS_WORKERS` | `1` runs workers as child processes (always on for AMD).       |
+| `MOM_DEBUG_STARTUP`          | Any value prints worker startup trace lines to stderr.         |
+| `MOM_COMMAND`                | Command name shown in `--help` output.                         |
+| `MOM_PEARLHASH_LOGIN`        | Forces the pearlpool.cloud login dialect for CLI mining.       |
+
+Other `MOM_*` variables are internal build, CI or test settings; do not set them for mining.
+
 # License
 
-mom is licensed under [GPL-3.0-or-later](LICENSE).
+MoM is licensed under [GPL-3.0-or-later](LICENSE).

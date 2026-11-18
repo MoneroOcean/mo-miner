@@ -7,8 +7,12 @@ unchanged except for a narrowly required integration fix.
   the same line. Do not combine sequential statements; a short guard clause may stay on one line.
 - Prefer short functions, early returns, and direct ownership of state. Do not hide simple control
   flow behind wrappers or introduce an abstraction without more than one concrete use.
-- Use descriptive internal names. Preserve snake_case names that are part of native, configuration,
-  environment, pool, or wire contracts.
+- Name MoM-owned files and directories in kebab-case (`pool-transport.js`, `native-ci.js`); the
+  exceptions are conventional or vendor-named files (`LICENSE`, `Hermes.cmake`, vendored headers)
+  and `xmrig/`. JavaScript and C++ internal identifiers are camelCase; preserve snake_case names that
+  are part of native, configuration, environment, pool, or wire contracts.
+- Reuse the shared helpers instead of re-declaring them: `helper/validate.js` for input checks and
+  `tests/common/cpp-source.js` for reading SYCL sources in tests.
 - JavaScript uses strict CommonJS, `node:` for built-ins, double quotes, semicolons, `const`/`let`,
   and no padding spaces inside object or destructuring braces.
 - Keep external values unknown or optional only at genuine input or lookup boundaries; normalize or
