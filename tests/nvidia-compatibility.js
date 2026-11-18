@@ -1163,8 +1163,8 @@ exit "\${FAKE_SMI_STATUS:-0}"
       const packageRoot = path.join(root, "package with spaces & (punctuation)");
       const launcher = path.join(packageRoot, "mom.cmd");
       try {
-        fs.mkdirSync(path.join(packageRoot, "helper"), {recursive: true});
-        for (const file of ["compiler-policy.js", "gpu-tuning.js", "helper/hash.js", "GPU-CONFIG.md"]) {
+        for (const dir of ["helper", "miner"]) {fs.mkdirSync(path.join(packageRoot, dir), {recursive: true});}
+        for (const file of ["compiler-policy.js", "gpu-tuning.js", "helper/hash.js", "miner/algorithms.js", "GPU-CONFIG.md"]) {
           fs.copyFileSync(path.join(__dirname, "..", file), path.join(packageRoot, file));
         }
         fs.copyFileSync(process.execPath, path.join(packageRoot, "mom-node.exe"));

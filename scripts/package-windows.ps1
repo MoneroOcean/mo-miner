@@ -169,8 +169,9 @@ $releaseFiles = @(
   'LICENSE', 'scripts/install.bat', 'scripts/install.ps1', 'scripts/install-cutlass.ps1'
 )
 Copy-Item $releaseFiles "$packageDir/"
-New-Item -ItemType Directory -Force "$packageDir/helper" | Out-Null
+New-Item -ItemType Directory -Force "$packageDir/helper", "$packageDir/miner" | Out-Null
 Copy-Item 'helper/hash.js' "$packageDir/helper/"
+Copy-Item 'miner/algorithms.js' "$packageDir/miner/"
 Copy-Item "$multiCompilerDir/*" $libsDir -Recurse -Force
 # Older cached build trees predate the AdaptiveCpp deployment-manifest copy. Repair them while
 # packaging; new builds already snapshot libdevice in this relocatable, upstream-defined path.

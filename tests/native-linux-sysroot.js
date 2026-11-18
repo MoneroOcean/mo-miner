@@ -75,7 +75,7 @@ test.describe("glibc 2.31 Linux sysroot", () => {
     assert.throws(() => sysroot.verifyLinuxSysrootRecord({...record, receiptSha256: "0".repeat(64)}, "Fixture SDK"), /rebuild it/);
   });
 
-  test("ambient Intel compiler configuration, pkg-config and toolchain variables are rejected, not inherited", () => {
+  test("ambient Intel compiler configuration, pkg-config and toolchain variables are rejected, not inherited", {skip: process.platform !== "linux"}, () => {
     for (const name of ["ICXCFG", "ICPXCFG", "PKG_CONFIG_PATH", "PKG_CONFIG_LIBDIR", "PKG_CONFIG_SYSROOT_DIR"]) {
       assert.throws(() => sysroot.applyLinuxSysrootEnvironment({PATH: "/usr/bin", [name]: "/host"}), new RegExp("Unset " + name));
       assert.throws(() => nativeSdkEnvironment({PATH: "/usr/bin", [name]: "/host"}), new RegExp("Unset " + name));

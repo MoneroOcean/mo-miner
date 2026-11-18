@@ -20,7 +20,7 @@ function workspace(t) {
   return {root, files, environment: {MOM_NATIVE_CI_SUFFIX: "123-2", RUNNER_TEMP: root, ...files}};
 }
 
-describe("Native CI job preparation", () => {
+describe("Native CI job preparation", {skip: process.platform !== "linux"}, () => {
   test("exports work roots and pins and plans exact transfers", t => {
     const {root, files, environment} = workspace(t);
     job.prepareJob({...environment, NATIVE_JOB_PINS: "MOM_NATIVE_WINDOWS_GPU_PROFILE=oneapi\nMOM_X_SHA256=" + "a".repeat(64) + "\n",
@@ -55,7 +55,7 @@ describe("Native CI job preparation", () => {
   });
 });
 
-describe("Chained CI phases", () => {
+describe("Chained CI phases", {skip: process.platform !== "linux"}, () => {
   test("hand off outputs, retire consumed inputs and reset only new work roots", t => {
     const {root, environment} = workspace(t), deadline = String(Math.floor(Date.now() / 1000) + 3600),
       existing = path.join(root, "kept-123-2");
@@ -96,7 +96,7 @@ describe("Chained CI phases", () => {
   });
 });
 
-describe("Cached SDK work roots", () => {
+describe("Cached SDK work roots", {skip: process.platform !== "linux"}, () => {
   test("a restored Linux LLVM root that fails admission is removed so the job rebuilds it", t => {
     const {root} = workspace(t), sdkRoot = path.join(root, "mom-native-llvm21-sdk-123-2"), output = path.join(sdkRoot, "linux-llvm21-sdk");
     assert.equal(reuseCachedLinuxLlvm({sdkRoot, output}), false, "a cache miss builds from scratch");

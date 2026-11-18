@@ -10,6 +10,31 @@ const test = require("node:test");
 
 test.describe("Release archive contracts", {concurrency: false}, () => {
   const repo = path.resolve(__dirname, "..");
+
+  // The Engineering archives ship compiler-policy.js and gpu-tuning.js beside the bundled controller;
+  // every local module they require must be packaged too, or the launcher fails at startup.
+  test("Engineering packagers ship the local require closure of the packaged policy modules", () => {
+    /** @type {Set<string>} */
+    const closure = new Set();
+    /** @param {string} file */
+    const walk = file => {
+      if (closure.has(file)) {return;}
+      closure.add(file);
+      const source = fs.readFileSync(path.join(repo, file), "utf8");
+      for (const match of source.matchAll(/require\(\s*["'](\.{1,2}\/[^"']+)["']\s*\)/g)) {
+        const target = path.posix.normalize(path.posix.join(path.posix.dirname(file), match[1] || ""));
+        walk(target.endsWith(".js") ? target : target + ".js");
+      }
+    };
+    walk("compiler-policy.js");
+    walk("gpu-tuning.js");
+    const linux = fs.readFileSync(PACKAGE_SCRIPT, "utf8");
+    const windows = fs.readFileSync(path.join(repo, "scripts", "package-windows.ps1"), "utf8");
+    for (const file of closure) {
+      assert.ok(linux.includes(file), `package-linux-combined.sh must ship ${file}`);
+      assert.ok(windows.includes(file), `package-windows.ps1 must ship ${file}`);
+    }
+  });
   const PACKAGE_SCRIPT = path.join(repo, "scripts",
     "package-linux-combined.sh");
   const LINUX_RELEASE_TEST_SCRIPT = path.join(repo, "scripts",

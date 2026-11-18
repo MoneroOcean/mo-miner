@@ -53,7 +53,12 @@ function findGyp() {
 }
 
 const gyp = findGyp();
-const python = process.env["PYTHON"] || (commandPath("python3") ? "python3" : commandPath("python"));
+/** Windows "App execution aliases" put python.exe stubs on PATH that only print a Store hint, so
+ * accept a candidate only if it actually runs. @param {string | undefined} command */
+const runnablePython = command => command &&
+  spawnSync(command, ["--version"], {encoding: "utf8", timeout: 5000}).status === 0 ? command : undefined;
+const python = process.env["PYTHON"] || runnablePython(commandPath("python3") ? "python3" : undefined) ||
+  runnablePython(commandPath("python"));
 
 /** @param {string} gypFile @returns {string} */
 function gypRoot(gypFile) {return path.dirname(path.dirname(gypFile));}

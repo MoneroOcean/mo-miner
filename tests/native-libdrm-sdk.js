@@ -26,7 +26,7 @@ function sdkFixture(t) {
   return {root, record, save};
 }
 
-test.describe("Static libdrm SDK producer", () => {
+test.describe("Static libdrm SDK producer", {skip: process.platform !== "linux"}, () => {
   test("pins the upstream release in the sysroot mirror and builds only libdrm core and amdgpu", () => {
     assert.equal(libdrmPin.url, linuxSysrootRelease + libdrmPin.fileName);
     const plan = libdrmSdkPlan("/out", "/fetch/" + libdrmPin.fileName, tools, 4);

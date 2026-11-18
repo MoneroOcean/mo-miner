@@ -188,7 +188,9 @@ build or package alone is not a published release.
 
 Standalone builds target Linux and Windows x86-64. The Linux executable is built against glibc 2.31
 and needs only the system C library, so it runs on Ubuntu 20.04, Debian 11, RHEL 9 and newer; GPUs
-additionally need a vendor driver that supports the distribution.
+additionally need a vendor driver that supports the distribution. The Windows executable supports
+Windows 10 and 11 (x64) and uses only standard system DLLs; current GPU drivers and the CUDA, Level
+Zero and ROCm runtimes also require Windows 10 or newer.
 
 ## Linux
 

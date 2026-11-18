@@ -1468,7 +1468,7 @@ test.describe("Native prerequisite provenance and transport", () => {
 
   test.describe("ROCm preinstalled host prerequisites", () => {
     test.describe("ROCm pkg-config host metadata", () => {
-      test("selects the sysroot libelf/libnuma archives and the source-built libdrm SDK, never host /usr/lib", () => {
+      test("selects the sysroot libelf/libnuma archives and the source-built libdrm SDK, never host /usr/lib", {skip: process.platform !== "linux"}, () => {
         /** @type {string[]} */ const admitted = [];
         const invoke = vm.runInNewContext("(" + rocmHostBuildConfig.toString() + ")", {path,
             requireLinuxSysroot: () => ({root: "/sysroot/root"}),
