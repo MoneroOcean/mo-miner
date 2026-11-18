@@ -236,7 +236,7 @@ $compileTasks += New-ClangTask $clangc @("-O3","-DNDEBUG",$inc,"-c","xmrig\crypt
 $objs += $b2b
 $hoo = Join-Path $obj "hoohash_host.obj"
 $compileTasks += New-ClangTask $clangc @("-O2","-fno-fast-math","-ffp-contract=off","-fno-builtin",
-  "-DNDEBUG","-D_CRT_SECURE_NO_WARNINGS","-c","sycl\hoohash\host_math.c","-o",$hoo) "hoohash host math"
+  "-DNDEBUG","-D_CRT_SECURE_NO_WARNINGS","-c","sycl\hoohash\host-math.c","-o",$hoo) "hoohash host math"
 $objs += $hoo
 if (@($compileTasks | Where-Object { -not $_.Skip }).Count -gt 0) {
   Remove-Item -LiteralPath $publishedOutput -Force -ErrorAction SilentlyContinue

@@ -32,7 +32,7 @@ namespace mom_fishhash {
 #include "device.inc"
 #include "search.inc"
 #if !defined(MOM_SYCL_PORTABLE_OPENCL)
-#include "cooperative_search.inc"
+#include "cooperative-search.inc"
 #endif
 #include "dag.inc"
 

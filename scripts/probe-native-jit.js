@@ -49,7 +49,7 @@ function main() {
   const executable = path.join(output, "jit-native");
   run(process.env["CXX"] || "c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
     ...(lldRoot ? ["-DMOM_NATIVE_AMDGPU_LINK_PROBE", "-isystem", path.join(lldRoot, "include")] : []),
-    "-isystem", include, path.join(__dirname, "..", "tests", "reference", "native_jit.cpp"),
+    "-isystem", include, path.join(__dirname, "..", "tests", "reference", "native-jit.cpp"),
     "-L", library, "-Wl,--gc-sections", "-static-libstdc++", "-static-libgcc", "-Wl,-Bstatic", ...lldLibraries, ...libs,
     "-lz", "-lzstd", "-Wl,-Bdynamic", "-lm", "-ldl", "-lpthread", "-o", executable], path.join(output, "build.log"));
   run(executable, [output], path.join(output, "jit.log"));

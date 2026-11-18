@@ -67,11 +67,11 @@ for profile in native portable cuda hip acpp acpp-cuda; do
     acpp-cuda) flags=(-DMOM_SYCL_ADAPTIVECPP -DMOM_SYCL_ADAPTIVECPP_CUDA) ;;
   esac
   "$cxx" -std=c++20 -O2 -Wall -Wextra -Werror -pedantic "${flags[@]}" -I "$out" \
-    "$root/tests/native/zelhash_layout.cpp" -o "$out/$profile"
+    "$root/tests/native/zelhash-layout.cpp" -o "$out/$profile"
   printf '%s: ' "$profile"
   "$out/$profile"
   "$cxx" -std=c++20 -O2 -Wall -Wextra -Werror -pedantic "${flags[@]}" -I "$out" \
-    "$root/tests/native/zelhash_state.cpp" -o "$out/$profile-state"
+    "$root/tests/native/zelhash-state.cpp" -o "$out/$profile-state"
   printf '%s-state: ' "$profile"
   "$out/$profile-state"
 done

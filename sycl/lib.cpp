@@ -1,7 +1,7 @@
 // Copyright GNU GPLv3 (c) 2023-2026 MoneroOcean <support@moneroocean.stream>
 
 #include "lib-internal.h"
-#include "cn_gpu/launch.h"
+#include "cn-gpu/launch.h"
 #include "../native/cpu-scheduling.h"
 #include <algorithm>
 #include <cctype>
@@ -18,4 +18,4 @@
 using mom::cpu::add_result_dev;
 using mom::cpu::append_grouped_cpu_devs;
 using mom::cpu::cpu_thread_batches;
-#include "algo_params.inc"
+#include "algo-params.inc"

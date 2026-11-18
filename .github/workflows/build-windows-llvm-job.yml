@@ -237,7 +237,7 @@ jobs:
 
       - name: Test bounded Windows LLVM stage contracts
         timeout-minutes: 5
-        run: node --require ./tests/common/no_pool_network.js --test tests/native_ci.js tests/native_sdk_fetch.js tests/native_windows_sdk.js tests/native_windows_llvm21_sdk.js tests/native_windows_llvm_state.js tests/native_windows_llvm_ci_job.js tests/native_windows_host_sdk_inputs.js tests/native_linux_llvm_tools.js
+        run: node --require ./tests/common/no-pool-network.js --test tests/native-ci.js tests/native-sdk-fetch.js tests/native-windows-sdk.js tests/native-windows-llvm21-sdk.js tests/native-windows-llvm-state.js tests/native-windows-llvm-ci-job.js tests/native-windows-host-sdk-inputs.js tests/native-linux-llvm-tools.js
 
       - name: Run maintained Windows LLVM phase or group and pack its state
         id: run-phase

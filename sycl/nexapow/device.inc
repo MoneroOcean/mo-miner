@@ -52,7 +52,7 @@ static constexpr U256 kGeneratorY{{
     0x483ada77u,
 }};
 
-#include "generator_lut.inc"
+#include "generator-lut.inc"
 
 inline U256 np_zero() {
   return U256{};

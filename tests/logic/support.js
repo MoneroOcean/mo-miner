@@ -10,8 +10,8 @@ const path = require("node:path");
 const tls = require("node:tls");
 const vm = require("node:vm");
 
-const {formatHashrate, parseFormattedHashrate} = require("../common/miner_command");
-const specReporter = require("../common/spec_reporter");
+const {formatHashrate, parseFormattedHashrate} = require("../common/miner-command");
+const specReporter = require("../common/spec-reporter");
 const repoRoot = path.join(__dirname, "..", "..");
 
 /** @typedef {import("node:child_process").ChildProcess} ChildProcess */
@@ -79,7 +79,7 @@ const repoRoot = path.join(__dirname, "..", "..");
  * }} MinerTestExports */
 /** @typedef {{__test?: MinerTestExports}} VmExports */
 /** @typedef {{callback: () => void, delay: number, cleared: boolean}} MinerTimer */
-/** @typedef {Parameters<typeof import("../../miner/gpu_autotune")>[0]["benchAlgo"]} BenchAlgo */
+/** @typedef {Parameters<typeof import("../../miner/gpu-autotune")>[0]["benchAlgo"]} BenchAlgo */
 /** @typedef {{opt: TestOptions}} TestGlobal */
 /** @typedef {import("node:events").EventEmitter & {
  *   argv: string[], env: NodeJS.ProcessEnv, platform: NodeJS.Platform,
@@ -267,9 +267,9 @@ async function loadMinerWithStubs(options = {}) {
     if (id === "./opts.js") {return opts;}
     if (id === "./compiler-policy.js") {return require("../../compiler-policy.js");}
     if (id === "./gpu-tuning.js") {return require("../../gpu-tuning.js");}
-    if (id === "./miner/gpu_autotune") {
+    if (id === "./miner/gpu-autotune") {
       const create = require(path.join(repoRoot, id));
-      return (/** @type {Parameters<typeof import("../../miner/gpu_autotune")>[0]} */ dependencies) => {
+      return (/** @type {Parameters<typeof import("../../miner/gpu-autotune")>[0]} */ dependencies) => {
         capturedBenchAlgo = dependencies.benchAlgo;
         return create(dependencies);
       };

@@ -13,13 +13,13 @@ describe("JavaScript logic tests", () => {
     require("./logic/pool");
   });
   describe("Native proxy submission", () => {
-    require("./logic/proxy_submit");
+    require("./logic/proxy-submit");
   });
   describe("Native proxy pool negotiation", () => {
-    require("./logic/proxy_pool");
+    require("./logic/proxy-pool");
   });
   describe("Proof-of-work protocol adapters", () => {
-    require("./logic/pow_protocols");
+    require("./logic/pow-protocols");
   });
   describe("ZHash-family protocols", () => {
     require("./logic/zelhash");
@@ -43,6 +43,6 @@ describe("JavaScript logic tests", () => {
     require("./logic/nexapow");
   });
   describe("IPC follow-on lifecycle", () => {
-    require("./ipc_followon");
+    require("./ipc-followon");
   });
 });

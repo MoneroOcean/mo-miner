@@ -28,8 +28,8 @@
     "build:release": "node scripts/build-release.js",
     "check": "npm run lint && npm run typecheck",
     "lint": "eslint .",
-    "test": "npm run check && node tests/run_hash.js",
-    "test:perf": "node tests/run_perf.js",
+    "test": "npm run check && node tests/run-hash.js",
+    "test:perf": "node tests/run-perf.js",
     "test:deploy": "node scripts/test-deploy.js",
     "typecheck": "tsc --project jsconfig.json"
   },

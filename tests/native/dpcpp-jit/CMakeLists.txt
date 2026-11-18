@@ -45,8 +45,8 @@ if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM" AND
   mom_strip_direct_lld_delayload_wrappers(LLVMSupport)
 endif()
 
-set(native_dpcpp_jit_sources "${MOM_SOURCE_REPO}/tests/reference/native_dpcpp_jit.cpp"
-    "${MOM_SOURCE_REPO}/tests/reference/native_kawpow_source.cpp")
+set(native_dpcpp_jit_sources "${MOM_SOURCE_REPO}/tests/reference/native-dpcpp-jit.cpp"
+    "${MOM_SOURCE_REPO}/tests/reference/native-kawpow-source.cpp")
 if(NOT WIN32)
   # The Linux-only loader interposition boundary is unrelated to this CPU-only source proof.
   list(APPEND native_dpcpp_jit_sources "${MOM_SOURCE_REPO}/runtime/driver-library.cpp")

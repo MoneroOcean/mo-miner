@@ -171,17 +171,17 @@ function auditSymbols(executable, output, requiredSymbols = []) {
  * @param {string} repo @param {boolean} [application] */
 function controllerEntry(repo, application = false) {
   if (application) {return `require(${JSON.stringify(path.join(repo, "mom.js"))});\n`;}
-  return `if (process.env.MOM_AOT_CHILD_TASK) {require(${JSON.stringify(path.join(repo, "tests/reference/native_child_task.js"))});}` +
-    ` else if (process.env.MOM_AOT_FILE_FAULT) {require(${JSON.stringify(path.join(repo, "tests/reference/native_filesystem_fault.js"))});}` +
-    ` else if (process.env.MOM_AOT_REJECTION) {require(${JSON.stringify(path.join(repo, "tests/reference/native_rejections.js"))});}` +
-    ` else if (process.env.MOM_AOT_PROGPOW === "1") {require(${JSON.stringify(path.join(repo, "tests/reference/native_progpow.js"))}).probe()` +
+  return `if (process.env.MOM_AOT_CHILD_TASK) {require(${JSON.stringify(path.join(repo, "tests/reference/native-child-task.js"))});}` +
+    ` else if (process.env.MOM_AOT_FILE_FAULT) {require(${JSON.stringify(path.join(repo, "tests/reference/native-filesystem-fault.js"))});}` +
+    ` else if (process.env.MOM_AOT_REJECTION) {require(${JSON.stringify(path.join(repo, "tests/reference/native-rejections.js"))});}` +
+    ` else if (process.env.MOM_AOT_PROGPOW === "1") {require(${JSON.stringify(path.join(repo, "tests/reference/native-progpow.js"))}).probe()` +
     ".then((value) => console.log(JSON.stringify(value))).catch((error) => setTimeout(() => {throw error;}, 0));}" +
-    ` else if (process.env.MOM_AOT_BULK) {require(${JSON.stringify(path.join(repo, "tests/reference/native_bulk.js"))})(process.env.MOM_AOT_BULK)` +
+    ` else if (process.env.MOM_AOT_BULK) {require(${JSON.stringify(path.join(repo, "tests/reference/native-bulk.js"))})(process.env.MOM_AOT_BULK)` +
     ".then((value) => console.log(JSON.stringify(value))).catch((error) => setTimeout(() => {throw error;}, 0));}" +
-    ` else if (process.env.MOM_AOT_FAILURE === "spawn") {require(${JSON.stringify(path.join(repo, "tests/reference/native_spawn_failure.js"))})();}` +
-    ` else if (["childTeardown", "promiseTeardown"].includes(process.env.MOM_AOT_FAILURE)) {require(${JSON.stringify(path.join(repo, "tests/reference/native_child_failure.js"))})(process.env.MOM_AOT_FAILURE === "promiseTeardown");}` +
+    ` else if (process.env.MOM_AOT_FAILURE === "spawn") {require(${JSON.stringify(path.join(repo, "tests/reference/native-spawn-failure.js"))})();}` +
+    ` else if (["childTeardown", "promiseTeardown"].includes(process.env.MOM_AOT_FAILURE)) {require(${JSON.stringify(path.join(repo, "tests/reference/native-child-failure.js"))})(process.env.MOM_AOT_FAILURE === "promiseTeardown");}` +
     ` else if (process.env.MOM_AOT_RUN_CONTROLLER === "1") {require(${JSON.stringify(path.join(repo, "mom.js"))});}` +
-    ` else {require(${JSON.stringify(path.join(repo, "tests/reference/native_controller.js"))});}\n`;
+    ` else {require(${JSON.stringify(path.join(repo, "tests/reference/native-controller.js"))});}\n`;
 }
 
 /** Derive the complete factory set from maintained dispatch declarations, not a parallel list.
@@ -511,7 +511,7 @@ async function main() {
   fs.writeFileSync(path.join(files, "binary"), Buffer.from([0, 255, 128, 10]));
   fs.writeFileSync(path.join(files, "empty"), "");
   oracleEnv["MOM_AOT_FS_DIRECTORY"] = files;
-  const fixture = path.join(repo, "tests", "reference", "native_controller.js");
+  const fixture = path.join(repo, "tests", "reference", "native-controller.js");
   const entry = path.join(output, "entry.js");
   fs.writeFileSync(entry, controllerEntry(repo, application));
   const bundle = path.join(output, "controller.js");
@@ -636,7 +636,7 @@ async function main() {
     "awaitCaught", "chain", "recovered", "lateHandled", "handlerThrows"];
   for (const mode of rejectionModes) {
     const fails = ["error", "primitive", "async", "then", "timer", "handlerThrows"].includes(mode);
-    const oracle = run(process.execPath, [path.join(repo, "tests/reference/native_rejections.js")],
+    const oracle = run(process.execPath, [path.join(repo, "tests/reference/native-rejections.js")],
       path.join(output, `rejection-${mode}-node.log`), fails ? 1 : 0, {MOM_AOT_REJECTION: mode});
     const actual = run(executable, [], path.join(output, `rejection-${mode}-native.log`), fails ? 1 : 0, {MOM_AOT_REJECTION: mode});
     const marker = mode === "handlerThrows" ? "native-rejection-handler-fixture" : "native-rejection-fixture";
@@ -645,7 +645,7 @@ async function main() {
     }
   }
   for (const mode of cpuCore ? ["bulk", "burst", "burstClosed"] : ["bulk"]) {
-    const bulkOracle = run(process.execPath, ["-e", `require(${JSON.stringify(path.join(repo, "tests/reference/native_bulk.js"))})(${JSON.stringify(mode)}).then((value) => console.log(JSON.stringify(value))).catch((error) => {console.error(error); process.exitCode = 1;});`],
+    const bulkOracle = run(process.execPath, ["-e", `require(${JSON.stringify(path.join(repo, "tests/reference/native-bulk.js"))})(${JSON.stringify(mode)}).then((value) => console.log(JSON.stringify(value))).catch((error) => {console.error(error); process.exitCode = 1;});`],
       path.join(output, `${mode}-node.log`), 0, oracleEnv);
     const bulkNative = run(executable, [], path.join(output, `${mode}-native.log`), 0, {...oracleEnv, MOM_AOT_BULK: mode});
     const actual = JSON.parse(bulkNative), expected = JSON.parse(bulkOracle);
@@ -663,12 +663,12 @@ async function main() {
   const faultObject = path.join(output, "write-failure.o");
   const faultExecutable = path.join(output, "controller-write-failure");
   run(cxx, ["-std=c++17", "-O2", "-fPIC", "-Wall", "-Wextra", "-Werror", "-c",
-    ...ioFlags, path.join(repo, "tests", "reference", "native_write_failure.cpp"), "-o", faultObject], path.join(output, "fault-compile.log"));
+    ...ioFlags, path.join(repo, "tests", "reference", "native-write-failure.cpp"), "-o", faultObject], path.join(output, "fault-compile.log"));
   run(cxx, [...linkArgs, faultObject, "-Wl,--wrap=uv_write", "-Wl,--wrap=uv_spawn", "-o", faultExecutable],
     path.join(output, "fault-link.log"));
   const fileFaultObject = path.join(output, "filesystem-faults.o"), fileFaultExecutable = path.join(output, "controller-filesystem-faults");
   run(cxx, ["-std=c++17", "-O2", "-fPIC", "-Wall", "-Wextra", "-Werror", "-c",
-    ...ioFlags, path.join(repo, "tests/native/filesystem_faults.cpp"), "-o", fileFaultObject], path.join(output, "filesystem-fault-compile.log"));
+    ...ioFlags, path.join(repo, "tests/native/filesystem-faults.cpp"), "-o", fileFaultObject], path.join(output, "filesystem-fault-compile.log"));
   run(cxx, [...linkArgs, fileFaultObject, ...["open", "write", "close"].map((name) => `-Wl,--wrap=uv_fs_${name}`),
     "-o", fileFaultExecutable], path.join(output, "filesystem-fault-link.log"));
   const fileFaults = [];
@@ -785,7 +785,7 @@ async function main() {
   run(openssl, ["x509", "-in", certificate, "-signkey", key,
     "-not_before", "20200101000000Z", "-not_after", "20200102000000Z", "-out", expired],
   path.join(output, "expired-certificate.log"));
-  const server = fork(path.join(repo, "tests", "reference", "native_pool_server.js"), [key, certificate, expired], {
+  const server = fork(path.join(repo, "tests", "reference", "native-pool-server.js"), [key, certificate, expired], {
     stdio: ["ignore", "ignore", "pipe", "ipc"],
   });
   server.stderr?.on("data", (data) => fs.appendFileSync(path.join(output, "server.log"), data));

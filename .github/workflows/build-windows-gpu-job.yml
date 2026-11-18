@@ -120,7 +120,7 @@ jobs:
         timeout-minutes: 5
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Test factory inputs and job safety before mutation
-        run: node --test tests/native_windows_gpu_config.js tests/native_windows_gpu_ci_job.js tests/native_windows_host_sdk_inputs.js
+        run: node --test tests/native-windows-gpu-config.js tests/native-windows-gpu-ci-job.js tests/native-windows-host-sdk-inputs.js
       - name: Install SDK extraction tools and the selected compiler
         timeout-minutes: 15
         run: |

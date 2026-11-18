@@ -220,7 +220,7 @@ jobs:
 
       - name: Test host-component producer and same-run input contracts
         timeout-minutes: 8
-        run: node --require ./tests/common/no_pool_network.js --test tests/native_ci.js tests/native_windows_host_component.js tests/native_windows_llvm_state.js tests/native_windows_llvm21_sdk.js tests/native_windows_sdk.js tests/native_windows_host_sdk_inputs.js tests/native_windows_acpp_sdk.js tests/native_windows_comgr_sdk.js tests/native_windows_hiprtc_sdk.js tests/native_windows_cudart.js tests/native_windows_amdhip.js tests/native_linux_llvm_tools.js tests/native_rocm_hip_headers.js tests/native_rocm_resources.js tests/native_windows_host_ci_job.js
+        run: node --require ./tests/common/no-pool-network.js --test tests/native-ci.js tests/native-windows-host-component.js tests/native-windows-llvm-state.js tests/native-windows-llvm21-sdk.js tests/native-windows-sdk.js tests/native-windows-host-sdk-inputs.js tests/native-windows-acpp-sdk.js tests/native-windows-comgr-sdk.js tests/native-windows-hiprtc-sdk.js tests/native-windows-cudart.js tests/native-windows-amdhip.js tests/native-linux-llvm-tools.js tests/native-rocm-hip-headers.js tests/native-rocm-resources.js tests/native-windows-host-ci-job.js
 
       - name: Provision pinned Intel 2026.2 compiler
         timeout-minutes: 20

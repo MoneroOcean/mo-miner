@@ -143,7 +143,7 @@ For the same early hashing gate used by CI (CPU vectors, addon contracts, and al
 CPU algorithms), install the CPU OpenCL runtime, then run the ordinary development entrypoint:
 
 ~~~sh
-MOM_DEV_HOST=1 MOM_GPU_BACKEND=opencl MOM_LINUX_BUILD_COMPILER=dpcpp-opencl MOM_OPENCL_DEVICE_TYPE=cpu ONEAPI_DEVICE_SELECTOR=opencl:cpu MOM_REQUIRE_PORTABLE_CPU_TESTS=1 npm run dev -- node tests/run_hash.js engineering
+MOM_DEV_HOST=1 MOM_GPU_BACKEND=opencl MOM_LINUX_BUILD_COMPILER=dpcpp-opencl MOM_OPENCL_DEVICE_TYPE=cpu ONEAPI_DEVICE_SELECTOR=opencl:cpu MOM_REQUIRE_PORTABLE_CPU_TESTS=1 npm run dev -- node tests/run-hash.js engineering
 ~~~
 
 On a Linux host, `bash scripts/install-opencl-cpu.sh` installs the pinned CPU runtime; Windows
@@ -421,10 +421,10 @@ A pinned recipe and repeatable automation are not, by themselves, proof of bit-f
 reproducibility. Run the focused real-tool checks with the selected pinned tools:
 
 ~~~sh
-MOM_TEST_CMAKE=/absolute/cmake node --test tests/native_release_archive.js
-MOM_TEST_SHERMES=/absolute/shermes node --test tests/native_bundle.js tests/native_path.js
-MOM_TEST_WINDOWS_CC=/absolute/icx-cl MOM_TEST_WINDOWS_LINKER=/absolute/lld-link node --test tests/native_windows_controller.js
-MOM_TEST_WINDOWS_GPU_COMPILER=/absolute/icpx node --test --test-name-pattern='Windows GPU deterministic COFF timestamps' tests/native_windows_gpu_build.js
+MOM_TEST_CMAKE=/absolute/cmake node --test tests/native-release-archive.js
+MOM_TEST_SHERMES=/absolute/shermes node --test tests/native-bundle.js tests/native-path.js
+MOM_TEST_WINDOWS_CC=/absolute/icx-cl MOM_TEST_WINDOWS_LINKER=/absolute/lld-link node --test tests/native-windows-controller.js
+MOM_TEST_WINDOWS_GPU_COMPILER=/absolute/icpx node --test --test-name-pattern='Windows GPU deterministic COFF timestamps' tests/native-windows-gpu-build.js
 ~~~
 
 The pinned UPX 5.2.1 recipe ignores ambient `UPX` options and keeps maximum LZMA search
@@ -435,7 +435,7 @@ On Linux the archive command tests both TGZ and ZIP. On Windows, select only its
 
 ~~~powershell
 $env:MOM_TEST_CMAKE = 'C:\absolute\cmake.exe'
-node --test --test-name-pattern='Windows ZIP repeat packaging ignores source mtimes and local timezone' tests/native_release_archive.js
+node --test --test-name-pattern='Windows ZIP repeat packaging ignores source mtimes and local timezone' tests/native-release-archive.js
 ~~~
 
 Real-tool checks are opt-in: without the corresponding environment variables, the compiler and
@@ -487,7 +487,7 @@ MOM_TEST_NATIVE_REPRO_UPX_SHA256='<64-lowercase-hex>' \
 MOM_TEST_NATIVE_REPRO_CMAKE=/absolute/pinned/cmake \
 MOM_TEST_NATIVE_REPRO_ROOT=/absolute/new-pair-directory \
 MOM_TEST_NATIVE_REPRO_KEEP=1 \
-node --test --test-concurrency=1 tests/native_release_repro.js
+node --test --test-concurrency=1 tests/native-release-repro.js
 ~~~
 
 The output root must not exist, its parent must exist, and it must be outside the checkout.

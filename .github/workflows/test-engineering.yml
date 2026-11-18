@@ -39,7 +39,7 @@ jobs:
           bash scripts/install-opencl-cpu.sh
       - name: Build and test Linux Engineering Mode
         shell: bash
-        run: scripts/run-bounded-native-ci.sh npm run dev -- node tests/run_hash.js engineering
+        run: scripts/run-bounded-native-ci.sh npm run dev -- node tests/run-hash.js engineering
 
   windows-cpu:
     name: Build Windows CPU addon
@@ -202,5 +202,5 @@ jobs:
       - name: Test Windows Engineering Mode
         shell: pwsh
         run: |
-          node tests/run_hash.js engineering
+          node tests/run-hash.js engineering
           if ($LASTEXITCODE) { exit $LASTEXITCODE }

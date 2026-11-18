@@ -75,11 +75,11 @@ namespace mom_beamhash3 {
 
 #include "common.inc"
 #include "layout.inc"
-#include "compact_solver.inc"
+#include "compact-solver.inc"
 
-#include "generic_solver.inc"
+#include "generic-solver.inc"
 #include "state.inc"
-#include "gen_test.inc"
+#include "gen-test.inc"
 
 } // namespace mom_beamhash3
 

@@ -86,7 +86,7 @@ jobs:
             echo "CMake is required for the real archive reproducibility regression." >&2
             exit 1
           fi
-          MOM_TEST_CMAKE="$cmake_path" node --test tests/native_release_archive.js
+          MOM_TEST_CMAKE="$cmake_path" node --test tests/native-release-archive.js
 
       - name: Test offline source gate
         run: npm test -- host
@@ -118,9 +118,9 @@ jobs:
           . scripts\import-vcvars.ps1
           Import-MomVcVars64
           # source-quality owns lint/typecheck; keep the platform-specific logic run here.
-          node tests/run_hash.js logic
+          node tests/run-hash.js logic
           $logicExit = $LASTEXITCODE
-          node --test tests/windows_script_safety.js
+          node --test tests/windows-script-safety.js
           $safetyExit = $LASTEXITCODE
           Write-Host "Source gate results: logic=$logicExit safety=$safetyExit"
           if ($logicExit -ne 0 -or $safetyExit -ne 0) { exit 1 }

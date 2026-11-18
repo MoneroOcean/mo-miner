@@ -109,7 +109,7 @@ function main() {
   for (const file of archives) {if (!fs.existsSync(file)) {throw new Error(`Missing matching compiler archive: ${file}`);}}
   const cxx = process.env["CXX"] || "c++";
   const flags = ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror", "-ffunction-sections", "-fdata-sections",
-    "-isystem", path.join(sdk, "include"), path.join(repo, "tests/reference/native_nvrtc_static.cpp"),
+    "-isystem", path.join(sdk, "include"), path.join(repo, "tests/reference/native-nvrtc-static.cpp"),
     "-Wl,--gc-sections", "-static-libstdc++", "-static-libgcc"];
   const executable = path.join(output, "nvrtc-native"), dynamic = path.join(output, "nvrtc-oracle");
   run(cxx, [...flags, "-DMOM_STATIC_NVRTC", "-Wl,--start-group", ...archives, "-Wl,--end-group", "-ldl", "-lpthread", "-lm", "-o", executable], path.join(output, "build.log"));
@@ -156,7 +156,7 @@ function main() {
   }
   fs.writeFileSync(path.join(output, "result.json"), JSON.stringify({sdk, bytes: fs.statSync(executable).size, needed,
     archives: archives.map((file) => ({file, sha256: fileHash(file)})), files,
-    source: {file: "sycl/cn_gpu/cuda_expand_kernel.inc", sha256: hash(path.join(repo, "sycl/cn_gpu/cuda_expand_kernel.inc"))},
+    source: {file: "sycl/cn-gpu/cuda-expand-kernel.inc", sha256: hash(path.join(repo, "sycl/cn-gpu/cuda-expand-kernel.inc"))},
     lld: {bytes: fs.statSync(lld).size, constructorScript: hash(path.join(repo, "runtime/static-constructors.ld")), byteExactOracle: true},
     ...(vendor ? {vendor} : {}),
     scope: "Maintained CN/GPU source compiled statically, byte-exact shared compiler oracle; CPU only, no GPU/runtime/performance qualification"}, null, 2) + "\n");

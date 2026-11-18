@@ -50,8 +50,8 @@ function main() {
   const library = run(config, ["--libdir"], path.join(output, "llvm-lib.log")).trim();
   const libs = run(config, ["--link-static", "--libs", "all"], path.join(output, "llvm-libraries.log")).trim().split(/\s+/);
   const includes = ["-isystem", path.join(source, "include"), "-isystem", path.join(build, "include")];
-  const input = path.join(output, "native_sscp_kernel.cpp");
-  fs.writeFileSync(input, fs.readFileSync(path.join(repo, "tests/reference/native_sscp_kernel.cpp"), "utf8")
+  const input = path.join(output, "native-sscp-kernel.cpp");
+  fs.writeFileSync(input, fs.readFileSync(path.join(repo, "tests/reference/native-sscp-kernel.cpp"), "utf8")
     .replace('"../../sycl/blake3-device.inc"', JSON.stringify(path.join(repo, "sycl/blake3-device.inc"))));
   const plugin = path.join(build, "src/compiler/libacpp-clang.so");
   run(path.join(tool, "clang++"), ["-std=c++17", "-O2", "-D__ACPP__", "-D__ACPP_ENABLE_LLVM_SSCP_TARGET__", ...includes,
@@ -67,7 +67,7 @@ function main() {
   fs.writeFileSync(path.join(output, "amdgpu-resources.inc"), resources(values));
   const executable = path.join(output, "amdgpu-native"), lld = path.resolve(setting("LLD_DIR") || "/unavailable", "../../..");
   run(process.env["CXX"] || "c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror", "-DHIPSYCL_COMPILER_COMPONENT", "-DACPP_STATIC_RUNTIME",
-    ...includes, "-isystem", include, "-I", output, path.join(repo, "tests/reference/native_amdgpu_translator.cpp"), path.join(repo, "runtime/compiler-gate.cpp"),
+    ...includes, "-isystem", include, "-I", output, path.join(repo, "tests/reference/native-amdgpu-translator.cpp"), path.join(repo, "runtime/compiler-gate.cpp"),
     "-Wl,--gc-sections", "-static-libstdc++", "-static-libgcc", "-Wl,-Bstatic,--start-group",
     ...["llvm-to-amdgpu", "llvm-to-backend"].map((name) => path.join(build, "src/compiler/llvm-to-backend", `lib${name}.a`)),
     path.join(build, "src/common/libacpp-common.a"), ...lldInputs(lld, version), path.join(library, "libclangBasic.a"),

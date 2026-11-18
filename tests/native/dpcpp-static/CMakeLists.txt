@@ -266,9 +266,9 @@ if(WIN32)
     # with UR_STATIC_OPENCL_ICD missing must fail --bindings-only even without GPU hardware.
     # icx-cl treats a root-absolute /workspace source token as an option, so stage this TU
     # in the build tree before handing it to the Windows-compatible compiler driver.
-    configure_file("${MOM_SOURCE_REPO}/tests/reference/native_opencl_binding.cpp"
-      "${CMAKE_CURRENT_BINARY_DIR}/native_opencl_binding.cpp" COPYONLY)
-    add_executable(native-opencl-binding-static "${CMAKE_CURRENT_BINARY_DIR}/native_opencl_binding.cpp")
+    configure_file("${MOM_SOURCE_REPO}/tests/reference/native-opencl-binding.cpp"
+      "${CMAKE_CURRENT_BINARY_DIR}/native-opencl-binding.cpp" COPYONLY)
+    add_executable(native-opencl-binding-static "${CMAKE_CURRENT_BINARY_DIR}/native-opencl-binding.cpp")
     target_include_directories(native-opencl-binding-static PRIVATE "${MOM_DPCPP_OPENCL_HEADERS}")
     target_compile_definitions(native-opencl-binding-static PRIVATE MOM_NATIVE_OPENCL_LINKED)
     target_link_libraries(native-opencl-binding-static PRIVATE ur_adapter_opencl OpenCL)
@@ -278,7 +278,7 @@ if(WIN32)
   # Linux fixtures below use ELF interposition; Windows PE/runtime checks are separate.
   return()
 endif()
-add_executable(native-dpcpp-core "${MOM_SOURCE_REPO}/tests/reference/native_dpcpp_static.cpp"
+add_executable(native-dpcpp-core "${MOM_SOURCE_REPO}/tests/reference/native-dpcpp-static.cpp"
     "${MOM_SOURCE_REPO}/runtime/driver-library.cpp")
 if(MOM_DPCPP_JIT_OBJECT)
   target_compile_definitions(native-dpcpp-core PRIVATE MOM_NATIVE_DPCPP_JIT SYCL_EXT_JIT_ENABLE=1)
@@ -295,7 +295,7 @@ if(MOM_DPCPP_OPENCL_SOURCE)
   # distinguish a genuinely linked ICD from an adapter whose dynamic load was rejected.
   foreach(mode static dynamic)
     set(probe "native-opencl-binding-${mode}")
-    add_executable(${probe} "${MOM_SOURCE_REPO}/tests/reference/native_opencl_binding.cpp"
+    add_executable(${probe} "${MOM_SOURCE_REPO}/tests/reference/native-opencl-binding.cpp"
         "${MOM_SOURCE_REPO}/runtime/driver-library.cpp"
         "${MOM_DPCPP_SOURCE}/unified-runtime/source/adapters/opencl/ocl_dynamic_lib.cpp")
     get_target_property(adapter_includes ur_adapter_opencl INCLUDE_DIRECTORIES)
@@ -309,7 +309,7 @@ if(MOM_DPCPP_OPENCL_SOURCE)
     add_dependencies(native-dpcpp-core ${probe})
   endforeach()
   # A loader spy exercises actual Khronos ICD forwarding without loading any GPU driver.
-  add_executable(native-opencl-driver "${MOM_SOURCE_REPO}/tests/native/driver_library.cpp"
+  add_executable(native-opencl-driver "${MOM_SOURCE_REPO}/tests/native/driver-library.cpp"
       "${MOM_SOURCE_REPO}/runtime/driver-library.cpp")
   target_compile_definitions(native-opencl-driver PRIVATE MOM_TEST_KHRONOS_ICD)
   target_link_libraries(native-opencl-driver PRIVATE OpenCL Threads::Threads dl)
@@ -318,11 +318,11 @@ if(MOM_DPCPP_OPENCL_SOURCE)
 endif()
 if(MOM_DPCPP_LEVEL_ZERO_SOURCE)
   target_compile_definitions(native-dpcpp-core PRIVATE MOM_NATIVE_DPCPP_L0)
-  add_executable(native-level-zero-driver "${MOM_SOURCE_REPO}/tests/reference/native_level_zero_static.cpp"
+  add_executable(native-level-zero-driver "${MOM_SOURCE_REPO}/tests/reference/native-level-zero-static.cpp"
       "${MOM_SOURCE_REPO}/runtime/driver-library.cpp")
   target_link_libraries(native-level-zero-driver PRIVATE LevelZeroLoader dl pthread m)
   target_link_options(native-level-zero-driver PRIVATE -Wl,--wrap=dlopen -Wl,--wrap=dlerror -static-libstdc++ -static-libgcc)
-  add_executable(native-umf-static "${MOM_SOURCE_REPO}/tests/reference/native_umf_static.cpp"
+  add_executable(native-umf-static "${MOM_SOURCE_REPO}/tests/reference/native-umf-static.cpp"
       "${MOM_SOURCE_REPO}/runtime/driver-library.cpp")
   target_link_libraries(native-umf-static PRIVATE umf::umf LevelZeroLoader dl pthread m)
   target_include_directories(native-umf-static PRIVATE "${LEVEL_ZERO_INCLUDE_DIR}")
@@ -335,7 +335,7 @@ target_link_libraries(native-dpcpp-core PRIVATE -Wl,--whole-archive mom-sycl-sta
 target_link_options(native-dpcpp-core PRIVATE -Wl,--no-gc-sections -Wl,--wrap=dlopen -Wl,--wrap=dlerror -static-libstdc++ -static-libgcc)
 if(MOM_DPCPP_LEVEL_ZERO_SOURCE OR MOM_DPCPP_CUDA_SDK OR MOM_DPCPP_OPENCL_SOURCE)
   add_executable(native-static-adapter-selection
-      "${MOM_SOURCE_REPO}/tests/reference/native_static_adapter_selection.cpp"
+      "${MOM_SOURCE_REPO}/tests/reference/native-static-adapter-selection.cpp"
       "${MOM_SOURCE_REPO}/runtime/driver-library.cpp")
   # Link only the original loader/common archives: spies replace adapter factories, not
   # the parser/registry. Transitive real adapters would invalidate this GPU-free fixture.

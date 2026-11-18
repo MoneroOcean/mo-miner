@@ -123,7 +123,7 @@ static int scan_host(const uint8_t* input, unsigned extra_bytes, uint64_t first,
 }
 
 #ifndef MOM_NEXAPOW_HOST_TEST
-#include "sycl_pipeline.inc"
+#include "sycl-pipeline.inc"
 
 #include "state.inc"
 

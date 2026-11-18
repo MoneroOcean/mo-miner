@@ -135,7 +135,7 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Test DPC++ component and reusable-job contracts before mutation
         timeout-minutes: 5
-        run: node --require ./tests/common/no_pool_network.js --test tests/native_windows_dpcpp_ci_job.js tests/native_windows_dpcpp_component.js tests/native_windows_adapters.js tests/native_windows_sdk_build.js tests/native_windows_application_config.js
+        run: node --require ./tests/common/no-pool-network.js --test tests/native-windows-dpcpp-ci-job.js tests/native-windows-dpcpp-component.js tests/native-windows-adapters.js tests/native-windows-sdk-build.js tests/native-windows-application-config.js
 
       - name: Install extraction tools and pinned Intel 2026.2 compiler
         timeout-minutes: 20

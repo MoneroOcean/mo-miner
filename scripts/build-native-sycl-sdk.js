@@ -213,8 +213,8 @@ function buildStaticSyclSdk(source, llvm, cuda, output, environment = process.en
   Object.assign(env, sdkHostEnvironment(env, plan.hostCompilers), {LLVM_CONFIG: path.join(llvm, "bin/llvm-config")});
   verifyCompilerEnvironment(plan.hostCompilers, env);
   const recipe = sourceInputs(repo, [], ["scripts/build-native-sycl-sdk.js", "scripts/probe-static-sycl.js", "scripts/native-hcf.js",
-    "tests/reference/native_sycl_hcf_repro.cpp",
-    "tests/reference/native_jit_cache.cpp",
+    "tests/reference/native-sycl-hcf-repro.cpp",
+    "tests/reference/native-jit-cache.cpp",
     "scripts/probe-native-jit.js", "scripts/build-environment.js", "scripts/native-audit.js", "scripts/native-resources.js",
     "runtime/adaptivecpp-static.patch", "runtime/adaptivecpp-jit.patch"]);
   fs.mkdirSync(output); fs.mkdirSync(path.join(output, "pre")); fs.mkdirSync(path.join(output, "post"));

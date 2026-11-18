@@ -3764,7 +3764,7 @@ function packNvrtcVerification(state, proofDirectory, admitted) {
   copyNvrtcEvidenceFile(admitted.receiptFile, path.join(state.evidence, "sdk.json"));
   if (state.platform === "linux") {
     const proofReceipt = path.join(proofDirectory, "result.json"), proof = readBuildJson(proofReceipt),
-      expectedSource = {file: "sycl/cn_gpu/cuda_expand_kernel.inc", sha256: fileHash(path.join(repo, "sycl/cn_gpu/cuda_expand_kernel.inc"))};
+      expectedSource = {file: "sycl/cn-gpu/cuda-expand-kernel.inc", sha256: fileHash(path.join(repo, "sycl/cn-gpu/cuda-expand-kernel.inc"))};
     if (proof.sdk !== state.sdkRoot || proof.vendor?.receiptSha256 !== admitted.receiptSha256 ||
         !Array.isArray(proof.files) || proof.files.length !== 4 || !isDeepStrictEqual(proof.source, expectedSource)) {
       throw new Error("NVRTC CPU proof does not bind the admitted run-scoped SDK and maintained source");

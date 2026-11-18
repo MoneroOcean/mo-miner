@@ -19,7 +19,7 @@
 // - Cycle search and final proof validation intentionally run on the host after GPU graph trimming,
 //   so C30 process CPU usage is not a reliable signal of runtime busy-waiting.
 #include "c30.h"
-#include "c30_host.h"
+#include "c30-host.h"
 
 #include "../lib-internal.h"
 
@@ -42,7 +42,7 @@
 #include <utility>
 #include <vector>
 
-#include "c30_kernels.inc"
+#include "c30-kernels.inc"
 
 namespace mom::c30 {
 namespace {

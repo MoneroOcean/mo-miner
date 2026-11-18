@@ -231,7 +231,7 @@ if (!h.cluster_process()) {
     h.messageWorkers({type: "bench", job: last_job = job});
   }
 
-  const gpuAutotune = require("./miner/gpu_autotune")({
+  const gpuAutotune = require("./miner/gpu-autotune")({
     h, opt: global.opt, gpuTuning, benchAlgo: bench_algo,
   });
 

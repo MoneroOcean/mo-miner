@@ -462,7 +462,7 @@ try {
   if ($Suite -in @('gpu', 'gpu-discrete', 'gpu-integrated', 'gpu-multi')) { $env:MOM_REQUIRE_GPU_TESTS = '1' }
   if ($Suite -eq 'gpu-integrated') { $env:MOM_REQUIRE_INTEGRATED_GPU_TESTS = '1' }
   if ($Suite -eq 'gpu-multi') { $env:MOM_REQUIRE_MULTI_GPU_TESTS = '1' }
-  & $node tests/run_hash.js $Suite
+  & $node tests/run-hash.js $Suite
   if ($LASTEXITCODE -ne 0) {
     throw "Hash suite failed: $Suite"
   }

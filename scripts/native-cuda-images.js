@@ -8,19 +8,19 @@ const {cudaHeaderInputs, collectHeaders, packHeaders} = require("./native-jit-he
 
 const maxImageBytes = 64 << 20, maxIncBytes = 512 << 20, maxImages = 2048, maxInputFiles = 4096;
 const profiles = [
-  {name: "cn-expand", source: "sycl/cn_gpu/cuda_expand_kernel.inc", program: "cn-gpu-expand.cu", exports: ["cn_gpu_expand_cuda"]},
-  {name: "pearl-rank128", source: "sycl/pearlhash/cuda_kernel.inc", program: "pearlhash-cute.cu", rank: 128,
+  {name: "cn-expand", source: "sycl/cn-gpu/cuda-expand-kernel.inc", program: "cn-gpu-expand.cu", exports: ["cn_gpu_expand_cuda"]},
+  {name: "pearl-rank128", source: "sycl/pearlhash/cuda-kernel.inc", program: "pearlhash-cute.cu", rank: 128,
     exports: ["pearlhash_cuda_gemm", "pearlhash_cuda_hash"]},
-  {name: "pearl-rank256", source: "sycl/pearlhash/cuda_kernel.inc", program: "pearlhash-cute.cu", rank: 256,
+  {name: "pearl-rank256", source: "sycl/pearlhash/cuda-kernel.inc", program: "pearlhash-cute.cu", rank: 256,
     exports: ["pearlhash_cuda_gemm", "pearlhash_cuda_hash"]},
-  {name: "pearl-compact", source: "sycl/pearlhash/cuda_compact_kernel.inc", program: "pearlhash-cute.cu", rank: 128,
+  {name: "pearl-compact", source: "sycl/pearlhash/cuda-compact-kernel.inc", program: "pearlhash-cute.cu", rank: 128,
     compact: true, exports: ["compact_gemm", "selector_prepare"]},
 ];
 const profileOrder = new Map(profiles.map(({name}, index) => [name, index]));
 const genericProfiles = profiles.slice(0, 3);
 const sourceFiles = ["scripts/build-source-inputs.js", "scripts/native-cuda-images.cpp",
   "scripts/native-cuda-images.js", "scripts/native-jit-headers.js", "scripts/native-resources.js",
-  "sycl/cn_gpu/cuda_expand_kernel.inc", "sycl/pearlhash/cuda_kernel.inc", "sycl/pearlhash/cuda_compact_kernel.inc"];
+  "sycl/cn-gpu/cuda-expand-kernel.inc", "sycl/pearlhash/cuda-kernel.inc", "sycl/pearlhash/cuda-compact-kernel.inc"];
 
 /** @typedef {{major: number, minor: number, supportedArchs: number[]}} NvrtcInfo */
 /** @typedef {{profile: string, target: string, format: "cubin" | "ptx", role: "exact" | "primary" | "compatibility-candidate", compiler: NvrtcInfo}} ImageJob */

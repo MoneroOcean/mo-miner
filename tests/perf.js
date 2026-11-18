@@ -3,7 +3,7 @@
 const {describe, it} = require("node:test");
 const assert = require("node:assert/strict");
 
-const {benchmarkTestTimeoutMs, formatHashrate, runMinerBench} = require("./common/miner_command");
+const {benchmarkTestTimeoutMs, formatHashrate, runMinerBench} = require("./common/miner-command");
 const {perfTests} = require("./vectors");
 
 const selectedAlgo = process.env["MOM_PERF_ALGO"] || "";

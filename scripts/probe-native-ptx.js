@@ -57,7 +57,7 @@ function main() {
     path.join(output, "llvm-components.log")).trim().split(/\s+/);
   const clang = path.join(tools, "clang++"), plugin = path.join(build, "src/compiler/libacpp-clang.so");
   const includes = ["-isystem", path.join(source, "include"), "-isystem", path.join(build, "include")];
-  for (const [file, mode] of [["native_ptx_kernel.cpp", "device"], ["native_sscp_kernel.cpp", "generic"]]) {
+  for (const [file, mode] of [["native-ptx-kernel.cpp", "device"], ["native-sscp-kernel.cpp", "generic"]]) {
     if (!file || !mode) {throw new Error("Missing kernel fixture");}
     const input = path.join(output, file);
     fs.writeFileSync(input, fs.readFileSync(path.join(repo, "tests/reference", file), "utf8")
@@ -70,7 +70,7 @@ function main() {
   const libdevice = cache.match(/^CUDA_DEVICE_LIBS_PATH:PATH=(.+)$/m)?.[1];
   if (!libdevice) {throw new Error("Build cache has no pinned CUDA device library path");}
   const inputs = [{name: "device.ll", file: path.join(output, "device.ll")},
-    {name: "generic.hcf", file: path.join(output, "native_sscp_kernel.cpp.hcf")},
+    {name: "generic.hcf", file: path.join(output, "native-sscp-kernel.cpp.hcf")},
     {name: "libdevice.10.bc", file: path.join(libdevice, "libdevice.10.bc")},
     {name: "libkernel-sscp-ptx-full.bc", file: path.join(build, "src/libkernel/sscp/ptx/libkernel-sscp-ptx-full.bc")}]
     .map(({name, file}) => ({name, data: fs.readFileSync(file)}));
@@ -78,7 +78,7 @@ function main() {
   const provenance = inputs.map(({name, data}) => ({name, bytes: data.length, sha256: createHash("sha256").update(data).digest("hex")}));
   const executable = path.join(output, "ptx-native");
   run(process.env["CXX"] || "c++", ["-std=c++17", "-O2", "-ffunction-sections", "-fdata-sections", "-DHIPSYCL_COMPILER_COMPONENT", "-DACPP_STATIC_RUNTIME",
-    ...includes, "-isystem", include, "-I", output, path.join(repo, "tests/reference/native_ptx_translator.cpp"), path.join(repo, "runtime/compiler-gate.cpp"),
+    ...includes, "-isystem", include, "-I", output, path.join(repo, "tests/reference/native-ptx-translator.cpp"), path.join(repo, "runtime/compiler-gate.cpp"),
     "-Wl,--gc-sections", "-static-libstdc++", "-static-libgcc",
     "-Wl,--start-group", ...["llvm-to-ptx", "llvm-to-backend"].map((name) => path.join(build, "src/compiler/llvm-to-backend", `lib${name}.a`)),
     path.join(build, "src/common/libacpp-common.a"), "-L", library, ...libs, "-Wl,--end-group", "-Wl,-Bstatic", "-lz", "-lzstd", "-Wl,-Bdynamic", "-lm", "-ldl", "-lpthread", "-o", executable], path.join(output, "link.log"));

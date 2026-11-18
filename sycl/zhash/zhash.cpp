@@ -48,11 +48,11 @@
 #include <memory>
 #include <mutex>
 
-#include "../equihash_pow.hpp"
+#include "../equihash-pow.hpp"
 #include "../lib-internal.h"
 #include "../../native/consts.h"
-#include "equihash_sycl.hpp"
-#include "zhash_session.hpp"
+#include "equihash-sycl.hpp"
+#include "zhash-session.hpp"
 
 namespace mom_zhash {
 

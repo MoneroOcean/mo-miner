@@ -97,16 +97,16 @@ function auditBuild(output, levelZero, sourceJit = false, cuda = false, opencl =
   });
   const repo = path.resolve(__dirname, "..");
   const inputs = ["scripts/probe-static-dpcpp.js", "scripts/native-audit.js", "tests/native/dpcpp-static/CMakeLists.txt",
-    "tests/reference/native_dpcpp_static.cpp", "runtime/driver-library.cpp",
+    "tests/reference/native-dpcpp-static.cpp", "runtime/driver-library.cpp",
     ...(sourceJit ? ["runtime/dpcpp-static-jit.patch"] : []),
-    ...(opencl ? ["runtime/dpcpp-static-opencl.patch", "tests/reference/native_opencl_binding.cpp", "tests/native/driver_library.cpp"] : []),
-    ...(staticAdapters ? ["runtime/dpcpp-static-adapters.patch", "tests/reference/native_static_adapter_selection.cpp"] : []),
+    ...(opencl ? ["runtime/dpcpp-static-opencl.patch", "tests/reference/native-opencl-binding.cpp", "tests/native/driver-library.cpp"] : []),
+    ...(staticAdapters ? ["runtime/dpcpp-static-adapters.patch", "tests/reference/native-static-adapter-selection.cpp"] : []),
     ...(cuda ? ["runtime/system-driver.h", "scripts/native-cuda-adapter.js",
       "scripts/native-compiler-isolation.js", "tests/native/dpcpp-static/cuda-factory.cpp"] : []),
     ...(levelZero ? ["runtime/umf-static-level-zero.patch", "runtime/level-zero-static-complete.patch",
       "scripts/native-level-zero-adapter.js", "scripts/native-compiler-isolation.js",
       "tests/native/dpcpp-static/level-zero-v2-factory.cpp",
-      "tests/reference/native_umf_static.cpp", "tests/reference/native_level_zero_static.cpp"] : [])];
+      "tests/reference/native-umf-static.cpp", "tests/reference/native-level-zero-static.cpp"] : [])];
   const sources = Object.fromEntries(inputs.map((name) => [name,
     createHash("sha256").update(fs.readFileSync(path.join(repo, name))).digest("hex")]));
   const receipt = {audit, artifacts, sources};

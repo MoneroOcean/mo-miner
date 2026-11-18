@@ -804,7 +804,7 @@ function runNativeSuite(candidate, suite, executable, assertUnchanged, options, 
         return result;
       };
       // This is the unchanged controller as a test oracle, never a production Node dependency.
-      const expected = invoke(process.execPath, ["--max-old-space-size=128", "--require", path.join(repo, "tests/common/no_pool_network.js"), path.join(repo, "mom.js"), ...args]);
+      const expected = invoke(process.execPath, ["--max-old-space-size=128", "--require", path.join(repo, "tests/common/no-pool-network.js"), path.join(repo, "mom.js"), ...args]);
       const actual = invoke(executable, args), ok = (/** @type {typeof actual} */ result) =>
         !result.error && !result.signal && result.status === 1 && typeof result.stdout === "string" && typeof result.stderr === "string";
       const output = (expected.stdout || "") + (expected.stderr || "");
@@ -838,7 +838,7 @@ function runNativeSuite(candidate, suite, executable, assertUnchanged, options, 
   }
   const testSuite = suite === "gpu" ? "gpu-discrete" : suite;
   try {
-    const result = runner(process.execPath, [path.join(repo, "tests", "run_hash.js"), testSuite], {
+    const result = runner(process.execPath, [path.join(repo, "tests", "run-hash.js"), testSuite], {
       cwd: repo, env, encoding: "utf8",
       timeout: suiteTimeoutMs, maxBuffer: maxOutputBytes, windowsHide: true,
     });

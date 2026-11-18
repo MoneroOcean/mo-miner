@@ -23,7 +23,7 @@
 
 #include "../lib-internal.h"
 #include "../../native/consts.h"
-#include "data_file.hpp"
+#include "data-file.hpp"
 
 namespace mom_verthash {
 

@@ -20,7 +20,7 @@
 
 #include "../lib-internal.h"
 #include "../../native/consts.h"
-#include "host_math.h"
+#include "host-math.h"
 
 namespace mom_hoohash {
 

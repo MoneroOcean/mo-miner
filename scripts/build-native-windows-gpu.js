@@ -184,8 +184,8 @@ function windowsGpuSources(gyp) {
   const blocks = [...source.matchAll(/"OS=='win'"\s*,\s*\{[\s\S]*?"sources"\s*:\s*(\[[\s\S]*?\])/g)];
   if (blocks.length !== 1) {throw new Error("Unrecognized maintained Windows GPU source inventory");}
   const extra = JSON.parse((blocks[0]?.[1] || "null").replace(/^\s*#[^\r\n]*/gm, ""));
-  if (!Array.isArray(extra) || extra.length < 4 || extra.length > 16 || extra.some(file => typeof file !== "string" || !/^(?:sycl|xmrig)\/[A-Za-z0-9_/]+\.c(?:pp)?$/.test(file))) {throw new Error("Invalid maintained Windows GPU support sources");}
-  const support = [...extra, "sycl/hoohash/host_math.c"];
+  if (!Array.isArray(extra) || extra.length < 4 || extra.length > 16 || extra.some(file => typeof file !== "string" || !/^(?:sycl|xmrig)\/[A-Za-z0-9_/-]+\.c(?:pp)?$/.test(file))) {throw new Error("Invalid maintained Windows GPU support sources");}
+  const support = [...extra, "sycl/hoohash/host-math.c"];
   if (new Set([...main, ...support]).size !== main.length + support.length) {throw new Error("Duplicated Windows GPU source");}
   return {main, support};
 }
@@ -237,7 +237,7 @@ function windowsGpuSourceFlags(config, file, wrapper) {
   }
   if (config.profile !== "acpp-cuda" && config.profile !== "acpp-hip") {return [];}
   return [
-    ...(config.profile === "acpp-cuda" && ["sycl/cn_gpu/cn_gpu.cpp", "sycl/pearlhash/pearlhash.cpp"].includes(file) ? ["-DMOM_SYCL_HAS_CUDA"] : []),
+    ...(config.profile === "acpp-cuda" && ["sycl/cn-gpu/cn-gpu.cpp", "sycl/pearlhash/pearlhash.cpp"].includes(file) ? ["-DMOM_SYCL_HAS_CUDA"] : []),
     ...(config.profile === "acpp-cuda" && !config.cuda?.images && file === "sycl/pearlhash/pearlhash.cpp" ? ["-DMOM_EMBEDDED_NVRTC_HEADERS"] : []),
     ...(file.startsWith("sycl/") && file.endsWith(".cpp") ? ["-mllvm", "-acpp-sscp-hcf-object-id-namespace=" + config.profile] : []),
   ];
@@ -255,7 +255,7 @@ function windowsGpuCompileCommands(plan) {
     // Plain support TUs bypass the mixed-SYCL host selector. Keep their memory builtins,
     // but use the public Intel codegen switch instead of requiring libirc helpers.
     const hostRuntime = !device && plan.config.profile === "oneapi" && plan.config.compilerRoot ? ["-i_no-use-libirc"] : [];
-    const strict = file === "sycl/hoohash/host_math.c" ? ["-O2", "-fno-fast-math", "-ffp-contract=off", "-fno-builtin"] : [];
+    const strict = file === "sycl/hoohash/host-math.c" ? ["-O2", "-fno-fast-math", "-ffp-contract=off", "-fno-builtin"] : [];
     const generatedInputs = [];
     if (plan.config.acpp && file.startsWith("sycl/") && !c) {generatedInputs.push(path.join(plan.output, "sycl/sycl.hpp"));}
     if (!plan.config.acpp && file === "sycl/kawpow/kawpow.cpp") {generatedInputs.push(path.join(plan.output, "kawpow-jit-resources.inc"));}

@@ -3,7 +3,7 @@
 //
 // The input is the 32-byte Keccak-256 problem hash followed by an 8-byte LE nonce,
 // matching the etchash-style GPU ABI.  The consensus details intentionally mirror
-// tests/reference/octopus_conflux.cpp. Portable tests use the light cache; explicit native-vector
+// tests/reference/octopus-conflux.cpp. Portable tests use the light cache; explicit native-vector
 // coverage requires the full DAG and rejects native fallback only on capability-positive devices.
 //
 // Performance/portability notes:

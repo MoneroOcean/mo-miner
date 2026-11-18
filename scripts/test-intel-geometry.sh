@@ -61,7 +61,7 @@ for profile in native acpp portable cuda hip acpp-cuda; do
     acpp-cuda) flags=(-DMOM_SYCL_ADAPTIVECPP -DMOM_SYCL_ADAPTIVECPP_CUDA) ;;
   esac
   "$cxx" -std=c++17 -O2 -Wall -Wextra -Werror -pedantic "${flags[@]}" -I "$out" \
-    "$root/tests/native/intel_geometry.cpp" -o "$out/$profile"
+    "$root/tests/native/intel-geometry.cpp" -o "$out/$profile"
   printf '%s: ' "$profile"
   "$out/$profile"
 done

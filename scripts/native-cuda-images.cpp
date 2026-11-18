@@ -21,13 +21,13 @@ constexpr size_t kMaxLogBytes = 1U * 1024U * 1024U;
 constexpr size_t kMaxIncludeRoots = 16;
 
 const char cnSource[] =
-#include "../sycl/cn_gpu/cuda_expand_kernel.inc"
+#include "../sycl/cn-gpu/cuda-expand-kernel.inc"
 ;
 const char pearlSource[] =
-#include "../sycl/pearlhash/cuda_kernel.inc"
+#include "../sycl/pearlhash/cuda-kernel.inc"
 ;
 const char compactSource[] =
-#include "../sycl/pearlhash/cuda_compact_kernel.inc"
+#include "../sycl/pearlhash/cuda-compact-kernel.inc"
 ;
 
 struct Program {
@@ -105,19 +105,19 @@ std::string compilerJson(const CompilerInfo& info) {
 
 Profile profileFor(std::string_view name) {
   if (name == "cn-expand") {
-    return {"cn-expand", "sycl/cn_gpu/cuda_expand_kernel.inc", "cn-gpu-expand.cu", cnSource,
+    return {"cn-expand", "sycl/cn-gpu/cuda-expand-kernel.inc", "cn-gpu-expand.cu", cnSource,
       0, false, false, {"cn_gpu_expand_cuda"}};
   }
   if (name == "pearl-rank128") {
-    return {"pearl-rank128", "sycl/pearlhash/cuda_kernel.inc", "pearlhash-cute.cu", pearlSource,
+    return {"pearl-rank128", "sycl/pearlhash/cuda-kernel.inc", "pearlhash-cute.cu", pearlSource,
       128, false, true, {"pearlhash_cuda_gemm", "pearlhash_cuda_hash"}};
   }
   if (name == "pearl-rank256") {
-    return {"pearl-rank256", "sycl/pearlhash/cuda_kernel.inc", "pearlhash-cute.cu", pearlSource,
+    return {"pearl-rank256", "sycl/pearlhash/cuda-kernel.inc", "pearlhash-cute.cu", pearlSource,
       256, false, true, {"pearlhash_cuda_gemm", "pearlhash_cuda_hash"}};
   }
   if (name == "pearl-compact") {
-    return {"pearl-compact", "sycl/pearlhash/cuda_compact_kernel.inc", "pearlhash-cute.cu", compactSource,
+    return {"pearl-compact", "sycl/pearlhash/cuda-compact-kernel.inc", "pearlhash-cute.cu", compactSource,
       128, true, true, {"compact_gemm", "selector_prepare"}};
   }
   throw std::runtime_error("unknown image profile");

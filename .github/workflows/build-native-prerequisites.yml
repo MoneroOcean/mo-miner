@@ -111,7 +111,7 @@ jobs:
         with:
           node-version: 24.15.0
       - name: Test bounded GNU header staging
-        run: node --test tests/native_gnu_headers.js tests/native_ci.js
+        run: node --test tests/native-gnu-headers.js tests/native-ci.js
       - name: Install only the three GNU header packages
         timeout-minutes: 10
         run: |
@@ -178,7 +178,7 @@ jobs:
         with:
           node-version: 24.15.0
       - name: Test native prerequisite workflow
-        run: node --test tests/native_ci.js tests/native_sdk_fetch.js tests/native_zstd_sdk.js
+        run: node --test tests/native-ci.js tests/native-sdk-fetch.js tests/native-zstd-sdk.js
       - name: Fetch and verify the original pinned zstd archive
         timeout-minutes: 15
         run: node scripts/prepare-native-ci.js stage zstd-sources
@@ -250,7 +250,7 @@ jobs:
         with:
           node-version: 24.15.0
       - name: Test native prerequisite workflow
-        run: node --test tests/native_ci.js tests/native_sdk_fetch.js
+        run: node --test tests/native-ci.js tests/native-sdk-fetch.js
       - name: Fetch and verify the pinned Hermes source root
         timeout-minutes: 15
         run: node scripts/prepare-native-ci.js stage hermes-sources
@@ -278,7 +278,7 @@ jobs:
         with:
           node-version: 24.15.0
       - name: Test native prerequisite workflow
-        run: node --test tests/native_ci.js tests/native_sdk_fetch.js tests/native_acpp_sources.js
+        run: node --test tests/native-ci.js tests/native-sdk-fetch.js tests/native-acpp-sources.js
       - name: Fetch and prepare pinned ACPP source
         timeout-minutes: 25
         run: node scripts/prepare-native-ci.js stage acpp-sources
@@ -322,7 +322,7 @@ jobs:
         with:
           node-version: 24.15.0
       - name: Test Linux source and SDK producer contracts
-        run: node --test tests/native_ci.js tests/native_sdk_fetch.js tests/native_dpcpp_sdk.js
+        run: node --test tests/native-ci.js tests/native-sdk-fetch.js tests/native-dpcpp-sdk.js
       - name: Fetch compiler source closure and prepare Linux and compiler views offline
         id: sources
         timeout-minutes: 25
@@ -362,7 +362,7 @@ jobs:
         with:
           node-version: 24.15.0
       - name: Test same-run DPC++/CUDA input handoff
-        run: node --test tests/native_ci.js tests/native_dpcpp_sdk.js
+        run: node --test tests/native-ci.js tests/native-dpcpp-sdk.js
       - name: Download same-run prepared Linux source cohort
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
@@ -409,7 +409,7 @@ jobs:
           node-version: 24.15.0
       - name: Test NVRTC, CUDA image, and same-run input contracts
         timeout-minutes: 10
-        run: node --test tests/native_ci.js tests/native_sdk_fetch.js tests/native_nvrtc_sdk.js tests/native_cuda_images.js tests/native_cuda_images_build.js
+        run: node --test tests/native-ci.js tests/native-sdk-fetch.js tests/native-nvrtc-sdk.js tests/native-cuda-images.js tests/native-cuda-images-build.js
       - name: Download original source receipts for CUDA input admission
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
@@ -483,7 +483,7 @@ jobs:
           node-version: 24.15.0
       - name: Test source-JIT resource handoff contracts
         timeout-minutes: 10
-        run: node --test tests/native_ci.js tests/native_jit_base.js tests/native_jit_resources.js
+        run: node --test tests/native-ci.js tests/native-jit-base.js tests/native-jit-resources.js
       - name: Download exact same-run prepared Linux source cohort
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
@@ -579,7 +579,7 @@ jobs:
           node-version: 24.15.0
       - name: Test Windows source-JIT resource admission and job contracts
         timeout-minutes: 5
-        run: node --test tests/native_ci.js tests/native_windows_jit_resources.js tests/native_windows_jit_ci_job.js
+        run: node --test tests/native-ci.js tests/native-windows-jit-resources.js tests/native-windows-jit-ci-job.js
       - name: Download exact same-run Linux source cohort
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
@@ -855,7 +855,7 @@ jobs:
           node-version: 24.15.0
       - name: Test source-JIT handoff contracts
         timeout-minutes: 10
-        run: node --test tests/native_ci.js tests/native_jit_sdk.js tests/native_dpcpp_sdk.js
+        run: node --test tests/native-ci.js tests/native-jit-sdk.js tests/native-dpcpp-sdk.js
       - name: Download same-run Linux source cohort
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
@@ -911,7 +911,7 @@ jobs:
           node-version: 24.15.0
       - name: Test source-JIT handoff contracts
         timeout-minutes: 10
-        run: node --test tests/native_ci.js tests/native_jit_sdk.js tests/native_dpcpp_sdk.js
+        run: node --test tests/native-ci.js tests/native-jit-sdk.js tests/native-dpcpp-sdk.js
       - name: Download same-run Linux source cohort
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
@@ -965,7 +965,7 @@ jobs:
           node-version: 24.15.0
       - name: Test source-JIT handoff contracts
         timeout-minutes: 10
-        run: node --test tests/native_ci.js tests/native_jit_sdk.js tests/native_dpcpp_sdk.js
+        run: node --test tests/native-ci.js tests/native-jit-sdk.js tests/native-dpcpp-sdk.js
       - name: Download same-run Linux source cohort
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
@@ -1019,7 +1019,7 @@ jobs:
           node-version: 24.15.0
       - name: Test source-JIT handoff contracts
         timeout-minutes: 10
-        run: node --test tests/native_ci.js tests/native_jit_sdk.js tests/native_dpcpp_sdk.js
+        run: node --test tests/native-ci.js tests/native-jit-sdk.js tests/native-dpcpp-sdk.js
       - name: Download same-run Linux source cohort
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
@@ -1078,7 +1078,7 @@ jobs:
           node-version: 24.15.0
       - name: Test source-JIT handoff contracts
         timeout-minutes: 10
-        run: node --test tests/native_ci.js tests/native_jit_sdk.js tests/native_dpcpp_sdk.js
+        run: node --test tests/native-ci.js tests/native-jit-sdk.js tests/native-dpcpp-sdk.js
       - name: Download same-run Linux source cohort
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
@@ -1180,7 +1180,7 @@ jobs:
           node_bin="$(node -p 'process.execPath')"
           test -f "$node_bin"
           test -x "$node_bin"
-          test_script="$GITHUB_WORKSPACE/tests/native_jit_runtime.js"
+          test_script="$GITHUB_WORKSPACE/tests/native-jit-runtime.js"
           test -f "$test_script"
           for input_path in "$node_bin" "$test_script" "$MOM_NATIVE_JIT_RUNTIME_FIXTURE"; do
             case "$input_path" in *','*|*$'\n'*|*$'\r'*) exit 2 ;; esac
@@ -1246,7 +1246,7 @@ jobs:
             --read-only --user 10001:10001 --cap-drop ALL --security-opt no-new-privileges:true \
             --tmpfs /tmp:rw,nosuid,nodev,noexec,size=134217728,mode=1777 \
             --mount "type=bind,source=$node_bin,target=/qa/node,readonly" \
-            --mount "type=bind,source=$test_script,target=/qa/tests/native_jit_runtime.js,readonly" \
+            --mount "type=bind,source=$test_script,target=/qa/tests/native-jit-runtime.js,readonly" \
             --mount "type=bind,source=$MOM_NATIVE_JIT_RUNTIME_FIXTURE,target=/proof/native-dpcpp-jit,readonly" \
             --workdir /tmp --entrypoint /bin/bash "$image" -ec 'while :; do sleep 3600; done' > "$evidence/container-id.txt"
           created=1
@@ -1293,7 +1293,7 @@ jobs:
               test "$(cat /sys/fs/cgroup/pids.max)" = 128
               test "$(cat /sys/fs/cgroup/memory.oom.group)" = 1
               set +e
-              /usr/bin/timeout --signal=TERM --kill-after=10s 20m /qa/node --test --test-concurrency=1 --test-reporter=tap /qa/tests/native_jit_runtime.js 2>&1 | tee /tmp/native-jit-runtime.tap
+              /usr/bin/timeout --signal=TERM --kill-after=10s 20m /qa/node --test --test-concurrency=1 --test-reporter=tap /qa/tests/native-jit-runtime.js 2>&1 | tee /tmp/native-jit-runtime.tap
               test_status=${PIPESTATUS[0]}
               set -e
               if [ "$test_status" -eq 124 ]; then exit 124; fi
@@ -1355,7 +1355,7 @@ jobs:
           node-version: 24.15.0
       - name: Test static DPC++ handoff contracts
         timeout-minutes: 10
-        run: node --test tests/native_ci.js tests/native_dpcpp_sdk.js tests/native_dpcpp_component.js
+        run: node --test tests/native-ci.js tests/native-dpcpp-sdk.js tests/native-dpcpp-component.js
       - name: Download same-run Linux source cohort
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
@@ -1418,7 +1418,7 @@ jobs:
         with:
           node-version: 24.15.0
       - name: Test ROCm source admission and CI handoff
-        run: node --test tests/native_sdk_fetch.js tests/native_ci.js
+        run: node --test tests/native-sdk-fetch.js tests/native-ci.js
       - name: Fetch and re-admit the pinned ROCm source cohort
         timeout-minutes: 25
         run: node scripts/prepare-native-ci.js stage rocm-sources
@@ -1468,7 +1468,7 @@ jobs:
         with:
           node-version: 24.15.0
       - name: Test ROCm resource, COMGR, and CI handoff contracts
-        run: node --test tests/native_ci.js tests/native_rocm_resources.js tests/native_rocm_hip_headers.js tests/native_comgr_sdk.js
+        run: node --test tests/native-ci.js tests/native-rocm-resources.js tests/native-rocm-hip-headers.js tests/native-comgr-sdk.js
       - name: Download same-run ROCm source state
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
@@ -1544,7 +1544,7 @@ jobs:
         with:
           node-version: 24.15.0
       - name: Test ROCm host producer and same-run handoff
-        run: node --test tests/native_ci.js tests/native_rocm_host_runtime.js tests/native_release_sdk_inputs.js
+        run: node --test tests/native-ci.js tests/native-rocm-host-runtime.js tests/native-release-sdk-inputs.js
       - name: Download the same-run audited LLVM/ROCm/COMGR state
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
@@ -1637,7 +1637,7 @@ jobs:
         with:
           node-version: 24.15.0
       - name: Test native prerequisite workflow
-        run: node --test tests/native_ci.js tests/native_sdk_fetch.js
+        run: node --test tests/native-ci.js tests/native-sdk-fetch.js
       - name: Fetch and verify pinned LLVM/OpenSSL and I/O source state
         timeout-minutes: 55
         run: node scripts/prepare-native-ci.js stage sources
@@ -1664,7 +1664,7 @@ jobs:
         with:
           node-version: 24.15.0
       - name: Test static OpenMP producer and CI handoff
-        run: node --test tests/native_openmp_sdk.js tests/native_ci.js
+        run: node --test tests/native-openmp-sdk.js tests/native-ci.js
       - name: Download same-run pinned LLVM source tar
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
@@ -1708,7 +1708,7 @@ jobs:
         with:
           node-version: 24.15.0
       - name: Test ACPP CUDA/HIP producer and same-run admission
-        run: node --test tests/native_ci.js tests/native_sycl_sdk.js tests/native_release_sdk_inputs.js
+        run: node --test tests/native-ci.js tests/native-sycl-sdk.js tests/native-release-sdk-inputs.js
       - name: Download same-run ACPP source, OpenMP and ROCm host SDK state
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
@@ -2000,7 +2000,7 @@ jobs:
           /tmp
           mom-native-llvm21-sdk-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Test NVRTC acquisition, assembly, and CI contracts
-        run: node --test tests/native_ci.js tests/native_sdk_fetch.js tests/native_nvrtc_sdk.js
+        run: node --test tests/native-ci.js tests/native-sdk-fetch.js tests/native-nvrtc-sdk.js
       - name: Install syscall tracing prerequisite
         timeout-minutes: 10
         run: |
@@ -2042,7 +2042,7 @@ jobs:
         with:
           node-version: 24.15.0
       - name: Test NVRTC acquisition, assembly, and CI contracts
-        run: node --test tests/native_ci.js tests/native_sdk_fetch.js tests/native_nvrtc_sdk.js
+        run: node --test tests/native-ci.js tests/native-sdk-fetch.js tests/native-nvrtc-sdk.js
       - name: Fetch, assemble, and admit Windows NVRTC; retain evidence only
         timeout-minutes: 35
         run: node scripts/prepare-native-ci.js stage nvrtc-windows
@@ -2087,7 +2087,7 @@ jobs:
           node -e 'for (const name of ["buffer/", "events/", "string_decoder/", "core-js-pure"]) require.resolve(name); require("esbuild").transformSync("const ready = 1");'
       - name: Test descriptor composition and same-run artifact contracts
         timeout-minutes: 5
-        run: node --test tests/native_ci.js tests/native_release_sdk_inputs.js tests/native_dpcpp_component.js tests/native_notices.js
+        run: node --test tests/native-ci.js tests/native-release-sdk-inputs.js tests/native-dpcpp-component.js tests/native-notices.js
       - name: Download same-run Linux sources
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
@@ -2497,9 +2497,9 @@ jobs:
         timeout-minutes: 5
         shell: pwsh
         run: >-
-          node --require ./tests/common/no_pool_network.js --test tests/native_ci.js tests/native_windows_core.js
-          tests/native_windows_core_build.js tests/native_windows_core_incremental.js tests/native_windows_core_handoff.js
-          tests/native_windows_ci_tools.js tests/native_notices.js
+          node --require ./tests/common/no-pool-network.js --test tests/native-ci.js tests/native-windows-core.js
+          tests/native-windows-core-build.js tests/native-windows-core-incremental.js tests/native-windows-core-handoff.js
+          tests/native-windows-ci-tools.js tests/native-notices.js
 
       - name: Build and stage the public Windows Core producer output
         id: stage-core
@@ -2564,8 +2564,8 @@ jobs:
         timeout-minutes: 5
         shell: pwsh
         run: >-
-          node --require ./tests/common/no_pool_network.js --test tests/native_ci.js tests/native_sdk_fetch.js tests/native_windows_ci_tools.js
-          tests/native_io_sdk.js tests/native_openssl_sdk.js tests/native_hermes_sdk.js tests/native_windows_controller_handoff.js
+          node --require ./tests/common/no-pool-network.js --test tests/native-ci.js tests/native-sdk-fetch.js tests/native-windows-ci-tools.js
+          tests/native-io-sdk.js tests/native-openssl-sdk.js tests/native-hermes-sdk.js tests/native-windows-controller-handoff.js
       - name: Download same-run pinned Hermes source
         if: matrix.role == 'hermes'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8

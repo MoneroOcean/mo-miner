@@ -28,7 +28,7 @@ function dpcppRuntimeGraph(text, build, jit) {
     const implicit = line.match(/^ {4}\| (.+)$/), input = implicit?.[1] || line.match(/^ {4}(.+)$/)?.[1];
     if (!input || !absolute(path.resolve(build, input)) || /[\\\0]/.test(input) || input.split("/").some(p => p === "..")) {throw new Error("Invalid DPC++ graph input");}
     if (!implicit && input === jit) {if (objects.has("source-jit.o")) {throw new Error("Duplicate DPC++ source JIT");} objects.add("source-jit.o"); continue;}
-    if (!implicit && /^CMakeFiles\/native-dpcpp-core\.dir\/.+\/(?:native_dpcpp_static|driver-library)\.cpp\.o$/.test(input)) {fixtures.push(input); continue;}
+    if (!implicit && /^CMakeFiles\/native-dpcpp-core\.dir\/.+\/(?:native-dpcpp-static|driver-library)\.cpp\.o$/.test(input)) {fixtures.push(input); continue;}
     if (path.isAbsolute(input)) {throw new Error("DPC++ runtime graph contains an unexpected external input");}
     if (implicit && /^[A-Za-z0-9_./-]+\.a$/.test(input)) {archives.push(input); continue;}
     const object = {"cuda-native/adapter.o": "cuda-adapter.o", "level-zero-v2-native/adapter.o": "level-zero-v2-adapter.o"};

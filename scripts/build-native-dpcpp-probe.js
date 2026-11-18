@@ -287,7 +287,7 @@ function main() {
   for (const file of sdkFiles) {if (!fs.statSync(file).isFile()) {throw new Error("Missing regular SDK/header input: " + file);}}
   const gyp = fs.readFileSync(path.join(repo, "binding.gyp"), "utf8");
   const sourceState = nativeSourceInputs(repo, "gpu"), startedAt = Date.now();
-  const sources = [...syclSources(gyp), "sycl/hoohash/host_math.c"], engineeringFlags = dpcppGpuFlags(gyp, profile);
+  const sources = [...syclSources(gyp), "sycl/hoohash/host-math.c"], engineeringFlags = dpcppGpuFlags(gyp, profile);
   if (oneapi && oneapiMixedFrontendSources.some((file) => !sources.includes(file))) {
     throw new Error("The maintained oneAPI mixed frontend source graph is incomplete");
   }

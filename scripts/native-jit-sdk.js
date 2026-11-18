@@ -8,7 +8,7 @@ const {fileHash, sourceInputs, verifySourceInputs, buildFileInputs, completeBuil
 const {nativeSdkEnvironment} = require("./build-environment");
 const repo = path.resolve(__dirname, "..");
 // One footprint for source emission and resource admission; no separate generated algorithm.
-const jitSourceInputs = Object.freeze(["tests/reference/native_dpcpp_jit.cpp", "tests/reference/native_kawpow_source.cpp",
+const jitSourceInputs = Object.freeze(["tests/reference/native-dpcpp-jit.cpp", "tests/reference/native-kawpow-source.cpp",
   "tests/native/dpcpp-jit/CMakeLists.txt", "scripts/native-resources.js", "sycl/kawpow/device.inc",
   "sycl/kawpow/epoch.h", "sycl/kawpow/jit.inc", "sycl/kawpow/keccak.inc", "sycl/kawpow/program.inc",
   "sycl/device-state.h", "sycl/lib-internal.h", "sycl/lib.h", "sycl/workgroup-limits.h",
@@ -81,7 +81,7 @@ function jitEmitterPlan(sdk, output) {
     resources: [process.execPath, path.join(repo, "scripts/native-resources.js"), path.join(output, "kawpow-jit-resources.inc"),
       "kawpow-device.inc", path.join(repo, "sycl/kawpow/device.inc"), "kawpow-keccak.inc", path.join(repo, "sycl/kawpow/keccak.inc")],
     compile: [cxx, "-std=c++17", "-O2", "-DMOM_EMBEDDED_SYCL_JIT", "-DMOM_SYCL_HAS_CUDA", "-DMOM_KAWPOW_SOURCE_EMITTER",
-      "-I" + path.join(sdk, "include"), "-I" + output, "-MD", "-MF", depfile, path.join(repo, "tests/reference/native_kawpow_source.cpp"), "-o", binary]};
+      "-I" + path.join(sdk, "include"), "-I" + output, "-MD", "-MF", depfile, path.join(repo, "tests/reference/native-kawpow-source.cpp"), "-o", binary]};
 }
 
 /** Compile only a new host emitter, retaining exact tool/source/header dependencies. Its

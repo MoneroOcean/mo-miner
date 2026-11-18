@@ -430,7 +430,7 @@ if [ "$suite" = cpu ]; then
   (cd "$package_dir" && env \
     MOM_NATIVE_PATH="$libs_dir/oneapi/mom.node" \
     LD_LIBRARY_PATH="$libs_dir/oneapi" \
-    "$node_bin" tests/run_hash.js "$suite")
+    "$node_bin" tests/run-hash.js "$suite")
 else
-  (cd "$package_dir" && "$node_bin" tests/run_hash.js "$suite")
+  (cd "$package_dir" && "$node_bin" tests/run-hash.js "$suite")
 fi

@@ -40,7 +40,7 @@
 #include <vector>
 
 #include "../lib-internal.h"
-#include "../blake2b_pair.hpp"
+#include "../blake2b-pair.hpp"
 #include "../../native/consts.h"
 
 namespace mom_zelhash {
@@ -56,7 +56,7 @@ namespace mom_zelhash {
 #if defined(MOM_EQ_FORWARD_MAP)
 constexpr uint32_t L0_INVERT_HEADS = NBUCKETS;
 #endif
-#include "l0_invert.inc"
+#include "l0-invert.inc"
 // ===========================================================================================
 #include "state.inc"
 

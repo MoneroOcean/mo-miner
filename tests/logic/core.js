@@ -2472,7 +2472,7 @@ describe("PearlHash job and tuning propagation", () => {
   });
 
   test("PearlHash V3 vector tuning reaches the worker without embedded shape fields", async () => {
-    const v3 = require("../vectors/memory_hard").find(({name}) => name.startsWith("pearlhash v3 "));
+    const v3 = require("../vectors/memory-hard").find(({name}) => name.startsWith("pearlhash v3 "));
     const portable = require("../vectors/equihash").find(({job}) => job.algo === "pearlhash");
     assert.ok(v3);
     assert.ok(portable);

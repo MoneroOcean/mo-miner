@@ -114,7 +114,7 @@ function prepareWindowsAdapters(sdkFile, descriptorFile, cuda, output, environme
   const urHeaders = path.join(before.source.prepared.dpcpp.root, "unified-runtime/include");
   const leaves = ["scripts/prepare-native-windows-adapters.js", "scripts/prepare-native-sdk-sources.js", "scripts/build-native-windows-sdk.js", "scripts/build-native-windows-controller.js",
     "scripts/native-coff-archive.js", "scripts/native-compiler-isolation.js", "scripts/native-cuda-adapter.js", "scripts/native-windows-driver.js", "scripts/native-windows-application.js", "scripts/build-source-inputs.js", "scripts/build-environment.js",
-    "tests/native/dpcpp-static/cuda-factory.cpp", "tests/native/dpcpp-static/level-zero-v2-factory.cpp", "tests/reference/native_dpcpp_static.cpp",
+    "tests/native/dpcpp-static/cuda-factory.cpp", "tests/native/dpcpp-static/level-zero-v2-factory.cpp", "tests/reference/native-dpcpp-static.cpp",
     "tests/native/dpcpp-static/static-windows.h", "runtime/system-driver.h", "runtime/windows-cuda-driver.h"];
   const recipe = sourceInputs(repo, [], leaves), inputs = Object.fromEntries([sdkFile, descriptorFile, config.tools.clangCl, config.tools.llvmReadobj, path.join(bin, "llvm-lib"), ...Object.values(tools)].map(file => [file, fileHash(file)]));
   fs.mkdirSync(output);
@@ -180,7 +180,7 @@ function prepareWindowsAdapters(sdkFile, descriptorFile, cuda, output, environme
   if (before.sdk.sourceJit?.enabled === true) {
     // Link the SAME host-JIT lifecycle/source/cache/recovery checks as Linux. The dedicated
     // compile flag excludes device discovery; build success is not Windows execution proof.
-    const source = path.join(repo, "tests/reference/native_dpcpp_static.cpp"), object = path.join(output, "host-jit.obj"), dep = path.join(output, "host-jit.d");
+    const source = path.join(repo, "tests/reference/native-dpcpp-static.cpp"), object = path.join(output, "host-jit.obj"), dep = path.join(output, "host-jit.d");
     const headers = path.join(before.source.prepared.dpcpp.root, "sycl-jit/jit-compiler/include");
     const command = compileCommand(config, source, object, dep, false);
     command.args.push("-DMOM_NATIVE_DPCPP_JIT", "-DMOM_NATIVE_DPCPP_JIT_ONLY", "-DSYCL_EXT_JIT_ENABLE=1", "-DNOMINMAX", "/FI" + path.join(repo, "tests/native/dpcpp-static/static-windows.h"),

@@ -21,7 +21,7 @@ const {StringDecoder} = require("node:string_decoder"), {createHash} = require("
  * sdk: {libraries: string[], wholeArchives: string[], objects: string[], includeRoots: string[], nvmlHeader: string, hipDriverLibrary: string, dpcppComponent?: string, hostComponent?: string, nvrtcSdk?: string, cudaImages?: string}}} WindowsApplication */
 
 const embeddedCudaProfiles = new Set(["dpcpp", "acpp-cuda"]);
-const embeddedCudaSources = ["sycl/cn_gpu/cn_gpu.cpp", "sycl/pearlhash/pearlhash.cpp"];
+const embeddedCudaSources = ["sycl/cn-gpu/cn-gpu.cpp", "sycl/pearlhash/pearlhash.cpp"];
 const staticNvrtcArchiveStems = new Set(["nvrtc_static", "nvrtc-builtins_static", "nvptxcompiler_static"]);
 const staticNvrtcInputs = new Set(["nvrtc.h", "nvptxcompiler.h", "nvrtc-headers.inc"]);
 /** @typedef {{compiled?: Array<{file?: string, flags?: unknown}>,

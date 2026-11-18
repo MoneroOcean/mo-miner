@@ -4,7 +4,7 @@
 const hashTests = [
   ...require("./vectors/cpu"),
   ...require("./vectors/progpow"),
-  ...require("./vectors/memory_hard"),
+  ...require("./vectors/memory-hard"),
   ...require("./vectors/equihash"),
 ];
 

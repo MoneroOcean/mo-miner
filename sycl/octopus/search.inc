@@ -115,7 +115,7 @@ static sycl::event search_cooperative(sycl::queue& queue, const uint8_t* const h
 
 #if defined(MOM_OCTOPUS_HAS_SYCL_NATIVE)
 #if defined(MOM_SYCL_HAS_HIP)
-#include "amd_wmma.inc"
+#include "amd-wmma.inc"
 #endif
-#include "nvidia_tensor.inc"
+#include "nvidia-tensor.inc"
 #endif

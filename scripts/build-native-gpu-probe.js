@@ -50,13 +50,13 @@ function adaptiveCppCompileCommands(sourceFiles, compiler, repo, output, compile
   return sourceFiles.map((file, index) => {
     const object = path.join(output, `${index}.o`), depfile = path.join(output, `${index}.d`);
     const flags = file.endsWith(".c") ? ["-x", "c", "-O3", "-ffp-contract=off", "-fPIC"] :
-      [...compileFlags, ...(cuda && ["sycl/cn_gpu/cn_gpu.cpp", "sycl/pearlhash/pearlhash.cpp"].includes(file) ? ["-DMOM_SYCL_HAS_CUDA"] : []),
+      [...compileFlags, ...(cuda && ["sycl/cn-gpu/cn-gpu.cpp", "sycl/pearlhash/pearlhash.cpp"].includes(file) ? ["-DMOM_SYCL_HAS_CUDA"] : []),
         ...(cuda && !images && file === "sycl/pearlhash/pearlhash.cpp" ? ["-DMOM_EMBEDDED_NVRTC_HEADERS"] : [])];
     const hcfNamespace = file.startsWith("sycl/") && file.endsWith(".cpp") ?
       ["-mllvm", "-acpp-sscp-hcf-object-id-namespace=acpp-" + backend] : [];
     const generatedInputs = [];
     if (file.startsWith("sycl/") && !file.endsWith(".c")) {generatedInputs.push(path.join(output, "sycl/sycl.hpp"));}
-    if (cuda && !images && ["sycl/cn_gpu/cn_gpu.cpp", "sycl/pearlhash/pearlhash.cpp"].includes(file)) {
+    if (cuda && !images && ["sycl/cn-gpu/cn-gpu.cpp", "sycl/pearlhash/pearlhash.cpp"].includes(file)) {
       generatedInputs.push(path.join(output, "nvrtc-api/nvrtc.h"));
     }
     if (cuda && !images && file === "sycl/pearlhash/pearlhash.cpp") {generatedInputs.push(path.join(output, "nvrtc-headers.inc"));}
@@ -97,7 +97,7 @@ function syclSources(gyp) {
   const targets = [...gyp.matchAll(/"target_name"\s*:\s*"sycl"[\s\S]*?"sources"\s*:\s*(\[[\s\S]*?\])/g)];
   const sources = targets.length === 1 ? JSON.parse(targets[0]?.[1] || "null") : null;
   if (!Array.isArray(sources) || sources.length < 20 || new Set(sources).size !== sources.length || sources.some((file) =>
-    typeof file !== "string" || !/^sycl\/[A-Za-z0-9_/]+\.cpp$/.test(file))) {
+    typeof file !== "string" || !/^sycl\/[A-Za-z0-9_/-]+\.cpp$/.test(file))) {
     throw new Error("Unrecognized maintained SYCL source graph");
   }
   return sources;
@@ -301,7 +301,7 @@ function main() {
   fs.writeFileSync(path.join(output, "sdk-inputs-before.json"), JSON.stringify({version: 1, startedAt, compiler: inputs.cxx,
     flags: compileFlags, files: sdkBefore}, null, 2) + "\n", {flag: "wx"});
   // The same strict-FP host helper is already a separate gyp dependency; it is not a GPU rewrite.
-  const sourceFiles = [...sources, "sycl/hoohash/host_math.c", "runtime/driver-library.cpp", "runtime/compiler-gate.cpp"];
+  const sourceFiles = [...sources, "sycl/hoohash/host-math.c", "runtime/driver-library.cpp", "runtime/compiler-gate.cpp"];
   const commands = adaptiveCppCompileCommands(sourceFiles, inputs.cxx, repo, output, compileFlags, cuda, backend, Boolean(images));
   const compiled = compileNativeObjects({repo, output, namespace: `linux/gpu/acpp-${backend}`, commands,
     includeRoots: [output, ...nativeIncludeRoots(commands.flatMap(item => item.args), repo, output)], jobs: 1,

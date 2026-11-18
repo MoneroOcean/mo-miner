@@ -20,8 +20,8 @@ function linuxStaticSdkRecipe() {
     "scripts/probe-static-sycl.js", "scripts/native-hcf.js", "scripts/probe-native-jit.js", "scripts/native-comgr-inputs.js", "scripts/probe-static-dpcpp.js",
     "scripts/native-audit.js", "scripts/native-dpcpp-component.js",
     "scripts/native-cuda-adapter.js", "scripts/native-level-zero-adapter.js", "scripts/native-compiler-isolation.js", "runtime/system-driver.h",
-    "runtime/driver-library.cpp", "tests/reference/native_dpcpp_static.cpp", "tests/reference/native_static_adapter_selection.cpp",
-    "tests/reference/native_umf_static.cpp", "tests/reference/native_level_zero_static.cpp", "tests/reference/native_opencl_binding.cpp", "tests/native/driver_library.cpp"]);
+    "runtime/driver-library.cpp", "tests/reference/native-dpcpp-static.cpp", "tests/reference/native-static-adapter-selection.cpp",
+    "tests/reference/native-umf-static.cpp", "tests/reference/native-level-zero-static.cpp", "tests/reference/native-opencl-binding.cpp", "tests/native/driver-library.cpp"]);
 }
 /** CMake tokens must be absolute literals, not list/interpolation fragments.
  * @param {unknown} value @returns {value is string} */

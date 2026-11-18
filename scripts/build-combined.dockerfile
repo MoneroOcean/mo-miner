@@ -81,4 +81,4 @@ chmod +x /root/entrypoint.sh
 
 ENTRYPOINT ["/root/entrypoint.sh"]
 WORKDIR /root/mom
-CMD node --require ./tests/common/test_output_buffer.js --test --test-reporter=./tests/common/spec_reporter.js --test-concurrency=1 tests/all.js
+CMD node --require ./tests/common/test-output-buffer.js --test --test-reporter=./tests/common/spec-reporter.js --test-concurrency=1 tests/all.js

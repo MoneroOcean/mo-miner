@@ -231,7 +231,7 @@ jobs:
 
       - name: Test original JIT and Windows SDK handoff contracts
         timeout-minutes: 5
-        run: node --require ./tests/common/no_pool_network.js --test tests/native_windows_jit_ci_job.js tests/native_ci.js tests/native_windows_llvm21_sdk.js tests/native_windows_llvm_state.js tests/native_linux_llvm_tools.js tests/native_windows_controller_handoff.js
+        run: node --require ./tests/common/no-pool-network.js --test tests/native-windows-jit-ci-job.js tests/native-ci.js tests/native-windows-llvm21-sdk.js tests/native-windows-llvm-state.js tests/native-linux-llvm-tools.js tests/native-windows-controller-handoff.js
 
       - name: Compose the same-run Windows SDK and original controller descriptor
         id: compose-inputs

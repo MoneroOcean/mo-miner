@@ -374,7 +374,7 @@
     {
       "target_name": "hoohash_host",
       "type": "static_library",
-      "sources": [ "sycl/hoohash/host_math.c" ],
+      "sources": [ "sycl/hoohash/host-math.c" ],
       "cflags!": [ "-O3", "-ffast-math" ],
       "cflags+": [ "-O2", "-fno-fast-math", "-ffp-contract=off", "-fno-builtin" ],
       "conditions": [
@@ -400,8 +400,8 @@
         "sycl/pearlhash/pearlhash.cpp",
         "sycl/c29/c29.cpp",
         "sycl/c30/c30.cpp",
-        "sycl/c30/c30_host.cpp",
-        "sycl/cn_gpu/cn_gpu.cpp",
+        "sycl/c30/c30-host.cpp",
+        "sycl/cn-gpu/cn-gpu.cpp",
         "sycl/kawpow/kawpow.cpp",
         "sycl/fishhash/fishhash.cpp",
         "sycl/hoohash/hoohash.cpp",
@@ -411,7 +411,7 @@
         "sycl/nexapow/validation.cpp",
         "sycl/verthash/verthash.cpp",
         "sycl/zhash/zhash.cpp",
-        "sycl/equihash192_7/equihash192_7.cpp",
+        "sycl/equihash192-7/equihash192-7.cpp",
         "sycl/octopus/octopus.cpp",
         "sycl/zelhash/zelhash.cpp",
         "sycl/beamhash3/beamhash3.cpp"

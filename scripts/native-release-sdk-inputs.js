@@ -16,8 +16,8 @@ const syclRevision = "da2463e45aa90aa36306c45abcfc05b87de51bc6";
 const openmpContainerPath = "/openmp/libomp.a";
 const openmpProviderFile = /^lib(?:omp|iomp5|gomp)(?:\.a|\.so(?:\.[0-9]+)*)?$/i;
 const syclRecipe = ["scripts/build-native-sycl-sdk.js", "scripts/probe-static-sycl.js", "scripts/native-hcf.js", "scripts/probe-native-jit.js",
-  "tests/reference/native_sycl_hcf_repro.cpp",
-  "tests/reference/native_jit_cache.cpp",
+  "tests/reference/native-sycl-hcf-repro.cpp",
+  "tests/reference/native-jit-cache.cpp",
   "scripts/build-environment.js", "scripts/native-audit.js", "scripts/native-resources.js",
   "runtime/adaptivecpp-static.patch", "runtime/adaptivecpp-jit.patch"];
 const hermesRecipe = ["scripts/build-native-hermes.js", "scripts/build-source-inputs.js", "scripts/build-environment.js",
@@ -600,7 +600,7 @@ function nativeNvrtcInputs(receipt, options = {}) {
   const nvrtcScope = "Maintained CN/GPU source compiled statically, byte-exact shared compiler oracle; CPU only, no GPU/runtime/performance qualification";
   if (!Number.isSafeInteger(r.bytes) || r.bytes < 1 || !Array.isArray(r.needed) || r.needed.length > 64 ||
       r.needed.some(name => typeof name !== "string" || !/^[A-Za-z0-9_.+-]{1,256}$/.test(name)) || new Set(r.needed).size !== r.needed.length ||
-      !Array.isArray(r.archives) || r.archives.length !== 3 || r.source.file !== "sycl/cn_gpu/cuda_expand_kernel.inc" || !digest.test(r.source.sha256) ||
+      !Array.isArray(r.archives) || r.archives.length !== 3 || r.source.file !== "sycl/cn-gpu/cuda-expand-kernel.inc" || !digest.test(r.source.sha256) ||
       !Number.isSafeInteger(r.lld.bytes) || r.lld.bytes < 1 || r.lld.byteExactOracle !== true || !digest.test(r.lld.constructorScript) ||
       r.scope !== nvrtcScope) {throw new Error("Invalid static NVRTC probe receipt");}
   const source = path.join(repo, r.source.file), constructorScript = path.join(repo, "runtime/static-constructors.ld");

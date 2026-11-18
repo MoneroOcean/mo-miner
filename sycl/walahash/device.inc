@@ -222,7 +222,7 @@ inline void sha3_words64(uint32_t io[8]) {
 #endif
 
 #ifdef MOM_SYCL_HAS_HIP
-#include "amd_wmma.inc"
+#include "amd-wmma.inc"
 #endif
 
 #if defined(WALAHASH_ESIMD) || defined(MOM_SYCL_HAS_CUDA) || defined(MOM_SYCL_ADAPTIVECPP_CUDA) || defined(MOM_SYCL_HAS_HIP)

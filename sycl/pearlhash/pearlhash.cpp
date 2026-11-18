@@ -22,7 +22,7 @@
 #endif
 #include "../../native/job-boundary.h"
 #include "../pow-intensity.h"
-#include "esimd_route.h"
+#include "esimd-route.h"
 #if defined(MOM_SYCL_HAS_CUDA) && !defined(__SYCL_DEVICE_ONLY__) && !defined(MOM_PEARLHASH_ESIMD_TU)
 #include "../cuda-api.h"
 #if defined(MOM_EMBEDDED_NVRTC_HEADERS) && !defined(MOM_EMBEDDED_CUDA_IMAGES)
@@ -85,16 +85,16 @@ namespace mom_pearlhash {
 
 #include "matrix.inc"
 
-#include "sycl_search.inc"
+#include "sycl-search.inc"
 
 // NVIDIA pearlhash throughput lives entirely in the int8 Tensor Cores, reached here through the
 // mma.sync path below. It is built with the intel/llvm DPC++ CUDA backend (nvptx64) -- the SAME
 // DPC++ as the Intel build -- so every SYCL kernel stays unified across both GPU vendors, and the
 // runtime kernel_compiler JIT that kawpow's per-period specialization relies on is available too.
-#include "cuda_sycl_search.inc"
+#include "cuda-sycl-search.inc"
 
-#include "esimd_search.inc"
-#include "dpasw_search.inc"
+#include "esimd-search.inc"
+#include "dpasw-search.inc"
 
 #ifdef MOM_PEARLHASH_ESIMD_TU
 } // namespace mom_pearlhash
@@ -105,9 +105,9 @@ namespace mom_pearlhash {
 namespace compact_private {
 static bool selected(int m,int n,int k,int rank);
 }
-#include "cuda_jit.inc"
+#include "cuda-jit.inc"
 
-#include "hip_jit.inc"
+#include "hip-jit.inc"
 
 #include "dispatch.inc"
 
@@ -137,7 +137,7 @@ bool compact_available(const sycl::device& device) noexcept {
 using namespace mom_pearlhash;
 
 #include "host.inc"
-#include "compact_policy.inc"
+#include "compact-policy.inc"
 namespace mom_pearlhash::compact_private {
 static bool selected(int m,int n,int k,int rank) {
   // Shape selects the candidate; CUDA hardware/compiler/resource admission is

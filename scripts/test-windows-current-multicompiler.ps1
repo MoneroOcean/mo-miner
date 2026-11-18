@@ -58,7 +58,7 @@ function Invoke-GpuSuite(
 
   $log = Join-Path $env:TEMP ("mom-gpu-{0}.log" -f ($Label -replace '[^A-Za-z0-9_.-]', '-'))
   Write-Host "=== $Label ==="
-  & node.exe --require .\tests\common\test_output_buffer.js --test --test-concurrency=1 ".\tests\$Suite.js" *> $log
+  & node.exe --require .\tests\common\test-output-buffer.js --test --test-concurrency=1 ".\tests\$Suite.js" *> $log
   $status = $LASTEXITCODE
   if ($status -ne 0) {
     Get-Content $log
@@ -90,7 +90,7 @@ function Invoke-PortableSuite(
   Write-Host "=== Portable OpenCL: CPU and $DisplayVendorName GPU ==="
   $env:MOM_GPU_BACKEND = 'opencl'
   Remove-Item Env:MOM_GPU_TEST_VENDORS -ErrorAction SilentlyContinue
-  & node.exe .\tests\run_hash.js gpu
+  & node.exe .\tests\run-hash.js gpu
   if ($LASTEXITCODE -ne 0) { throw "Portable OpenCL compatibility suite failed: $LASTEXITCODE" }
 }
 

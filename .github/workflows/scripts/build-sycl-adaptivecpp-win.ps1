@@ -108,7 +108,7 @@ Invoke-IncrementalCompile $clang @('-O3', '-DNDEBUG', '-D_CRT_SECURE_NO_WARNINGS
 $objects += $blakeObject
 $hoohashObject = Join-Path $obj 'hoohash_host.obj'
 Invoke-IncrementalCompile $clang @('-O2', '-fno-fast-math', '-ffp-contract=off', '-fno-builtin', '-DNDEBUG',
-  '-D_CRT_SECURE_NO_WARNINGS', '-c', 'sycl\hoohash\host_math.c', '-o', $hoohashObject) 'sycl\hoohash\host_math.c' $hoohashObject 'compile hoohash host math'
+  '-D_CRT_SECURE_NO_WARNINGS', '-c', 'sycl\hoohash\host-math.c', '-o', $hoohashObject) 'sycl\hoohash\host-math.c' $hoohashObject 'compile hoohash host math'
 $objects += $hoohashObject
 
 Invoke-MomIncrementalLink $python (@($acpp, '--acpp-targets=generic', '-shared') + $objects + $backendFlags + @('-o', $out)) $objects $out (Join-Path $obj 'link.json') $buildContext

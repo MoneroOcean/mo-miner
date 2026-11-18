@@ -30,7 +30,7 @@ function main() {
   const archives = ["nvrtc_static", "nvrtc-builtins_static", "nvptxcompiler_static"].map((name) => path.join(sdk, `lib64/lib${name}.a`));
   for (const file of archives) {if (!fs.existsSync(file)) {throw new Error("Missing compiler archive: " + file);}}
   const flags = ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror", "-ffunction-sections", "-fdata-sections",
-    "-isystem", path.join(sdk, "include"), "-I", output, path.join(repo, "tests/reference/native_nvrtc_headers.cpp"),
+    "-isystem", path.join(sdk, "include"), "-I", output, path.join(repo, "tests/reference/native-nvrtc-headers.cpp"),
     "--ld-path=/usr/lib/llvm-21/bin/ld.lld", "-Wl,--threads=4", "-Wl,--gc-sections",
     "-static-libstdc++", "-static-libgcc", "-ldl", "-lpthread", "-lm"];
   const executable = path.join(output, "nvrtc-headers"), oracle = path.join(output, "nvrtc-oracle");
@@ -57,7 +57,7 @@ function main() {
   const hash = (/** @type {string} */ file) => crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
   fs.writeFileSync(path.join(output, "result.json"), JSON.stringify({headers, roots, files, needed, bytes: fs.statSync(executable).size,
     sha256: hash(executable), archives: archives.map((file) => ({file, sha256: hash(file)})),
-    sources: ["sycl/pearlhash/cuda_kernel.inc", "sycl/pearlhash/cuda_compact_kernel.inc"].map((file) => ({file, sha256: hash(path.join(repo, file))})),
+    sources: ["sycl/pearlhash/cuda-kernel.inc", "sycl/pearlhash/cuda-compact-kernel.inc"].map((file) => ({file, sha256: hash(path.join(repo, file))})),
     scope: "Maintained Pearl standard/compact sources, memory-only vs filesystem includes; byte-exact cubins. CPU compiler only, no GPU correctness/performance qualification."}, null, 2) + "\n");
   console.log("Maintained Pearl in-memory headers match filesystem compiler output; GPU dispatch remains unqualified.");
 }

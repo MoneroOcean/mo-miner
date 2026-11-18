@@ -14,7 +14,7 @@ const maxImageBytes = 64 << 20, maxCommandOutput = 4 << 20, maxDiagnosticBytes =
 const defaultTimeoutMs = 900000, maxTimeoutMs = 1800000;
 const maintainedInputs = ["scripts/build-source-inputs.js", "scripts/native-cuda-images.cpp",
   "scripts/native-cuda-images.js", "scripts/native-jit-headers.js", "scripts/native-resources.js",
-  "sycl/cn_gpu/cuda_expand_kernel.inc", "sycl/pearlhash/cuda_kernel.inc", "sycl/pearlhash/cuda_compact_kernel.inc"];
+  "sycl/cn-gpu/cuda-expand-kernel.inc", "sycl/pearlhash/cuda-kernel.inc", "sycl/pearlhash/cuda-compact-kernel.inc"];
 
 /** @typedef {{command: string, args: string[], inputs: Record<string, string>, environment?: Record<string, string>}} WorkerRecipe */
 /** @typedef {{worker: WorkerRecipe, headerPack: string}} CompilerRecipe */

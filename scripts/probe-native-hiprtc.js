@@ -17,7 +17,7 @@ function main() {
     throw new Error("Use the complete static HIP GPU source manifest");
   }
   const repo = path.resolve(__dirname, ".."), output = fs.mkdtempSync(path.join(path.resolve(parent || os.tmpdir()), "mom-hiprtc-"));
-  const caller = fs.readFileSync(path.join(repo, "sycl/octopus/amd_wmma.inc"), "utf8");
+  const caller = fs.readFileSync(path.join(repo, "sycl/octopus/amd-wmma.inc"), "utf8");
   const start = caller.indexOf("    const std::string source ="), end = caller.indexOf("    const std::string arch_option", start);
   if (start < 0 || end < start) {throw new Error("Missing maintained Octopus source expression");}
   fs.writeFileSync(path.join(output, "octopus-wmma-source.inc"),
@@ -35,7 +35,7 @@ function main() {
     extra.push("-isystem", config.stdout.trim(), "-isystem", path.resolve(lld, "../../include"),
       "-Wl,--wrap=_ZN3lld7lldMainEN4llvm8ArrayRefIPKcEERNS0_11raw_ostreamES6_NS1_INS_9DriverDefEEE");
   }
-  const fixture = path.join(repo, mixed ? "tests/reference/native_compiler_concurrency.cpp" : "tests/reference/native_hiprtc.cpp");
+  const fixture = path.join(repo, mixed ? "tests/reference/native-compiler-concurrency.cpp" : "tests/reference/native-hiprtc.cpp");
   fs.copyFileSync(fixture, path.join(output, "fixture-source.cpp")); // Preserve the exact negative/positive control input.
   const args = [...inputs.compileFlags, ...extra, "-I", output, fixture,
     path.join(repo, "runtime/driver-library.cpp"), path.join(repo, "runtime/compiler-gate.cpp"),

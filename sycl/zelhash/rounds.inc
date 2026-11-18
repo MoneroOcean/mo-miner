@@ -22,7 +22,7 @@ static sycl::event submit_round(sycl::queue& q, const uint32_t* d_in, uint32_t* 
   constexpr unsigned IN_U32 = level_u32(R, GPU_COMPACT);
   constexpr unsigned OUT_FIELDS = level_fields(R + 1); // 4,3,2,1
   constexpr unsigned OUT_U32 = level_u32(R + 1, GPU_COMPACT);
-#include "round_cuda.inc"
+#include "round-cuda.inc"
   if constexpr (ROUND_DIRECT_CHAINS) {
     constexpr unsigned SPLITS = R < 2u ? 2u : 1u;
     constexpr unsigned SPLIT_BITS = R < 2u ? 1u : 0u;

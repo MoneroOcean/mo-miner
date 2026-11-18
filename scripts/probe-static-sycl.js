@@ -214,7 +214,7 @@ function countHcfKernelGlobals(text) {
  * @param {string} cxx @param {string[]} flags @param {string} source @param {string} build
  * @param {string} output @param {string} repo @returns {HcfReproPlan[]} */
 function hcfReproPlan(cxx, flags, source, build, output, repo) {
-  const fixture = path.join(repo, "tests/reference/native_sycl_hcf_repro.cpp"),
+  const fixture = path.join(repo, "tests/reference/native-sycl-hcf-repro.cpp"),
     compilerFlags = flags.filter(flag => !flag.startsWith("-Wl,") && !flag.startsWith("--ld-path=")),
     common = ["-std=c++17", "-O2", "-fPIC", "-ffunction-sections", "-fdata-sections", "-DACPP_STATIC_RUNTIME", "-D__ACPP__",
       ...compilerFlags, "-isystem", path.join(source, "include"), "-isystem", path.join(build, "include")];
@@ -257,7 +257,7 @@ function hcfReproFailures(records) {
  * @param {string} cxx @param {string[]} flags @param {string} source @param {string} build
  * @param {string} output @param {string} repo */
 function runHcfRepro(cxx, flags, source, build, output, repo) {
-  const fixture = path.join(repo, "tests/reference/native_sycl_hcf_repro.cpp");
+  const fixture = path.join(repo, "tests/reference/native-sycl-hcf-repro.cpp");
   const plugin = path.join(build, "src/compiler/libacpp-clang.so");
   const reader = path.join(__dirname, "native-hcf.js");
   const compilerSha256 = fileHash(cxx), fixtureSha256 = fileHash(fixture), pluginSha256 = fileHash(plugin), readerSha256 = fileHash(reader);
@@ -296,7 +296,7 @@ function runJitCacheIdentity(cxx, flags, source, build, output, repo) {
   run(cxx, ["-std=c++17", "-O1", "-ffunction-sections", "-fdata-sections",
     ...flags.filter(flag => flag.startsWith("--ld-path=")),
     "-isystem", path.join(source, "include"), "-isystem", path.join(build, "include"),
-    path.join(repo, "tests/reference/native_jit_cache.cpp"), path.join(build, "src/common/libacpp-common.a"),
+    path.join(repo, "tests/reference/native-jit-cache.cpp"), path.join(build, "src/common/libacpp-common.a"),
     "-Wl,--gc-sections", "-pthread", "-ldl", "-o", executable], path.join(output, "cache-identity-build.log"));
   const records = Object.fromEntries(["untagged", "a", "b", "a-repeat"].map(name => [name,
     run(executable, [name === "a-repeat" ? "a" : name, root], path.join(output, `cache-identity-${name}.log`)).trim()]));
@@ -329,7 +329,7 @@ function main() {
   run(cxx, ["-std=c++17", "-O2", "-fPIC", "-ffunction-sections", "-fdata-sections", "-DACPP_STATIC_RUNTIME", "-D__ACPP__",
     ...(gpu ? [backend === "cuda-hip" ? "-DMOM_NATIVE_GPU_PROBE" : backend === "hip" ? "-DMOM_NATIVE_HIP_PROBE" : "-DMOM_NATIVE_CUDA_PROBE"] : []),
     ...flags, "-isystem", path.join(source, "include"), "-isystem", path.join(build, "include"),
-    path.join(repo, "tests/reference/native_sycl_static.cpp"), ...(gpu ? [path.join(repo, "runtime/driver-library.cpp"), path.join(repo, "runtime/compiler-gate.cpp")] : []),
+    path.join(repo, "tests/reference/native-sycl-static.cpp"), ...(gpu ? [path.join(repo, "runtime/driver-library.cpp"), path.join(repo, "runtime/compiler-gate.cpp")] : []),
     "-pie", "-Wl,--gc-sections", "-static-libstdc++", "-static-libgcc",
     "-Wl,--start-group", ...libraries, ...links, "-Wl,--end-group", "-o", executable], path.join(output, "build.log"));
   if (buildOnly) {

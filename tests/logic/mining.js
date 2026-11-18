@@ -13,8 +13,8 @@ const {
 const assert = s.assert;
 /** @type {(job: PoolJob) => MiningJob} */
 const completeMiningJob = s.completeMiningJob;
-const makeMinerExecution = require("../common/miner_execution");
-const {benchmarkTestTimeoutMs, benchmarkTimeoutMs} = require("../common/miner_command");
+const makeMinerExecution = require("../common/miner-execution");
+const {benchmarkTestTimeoutMs, benchmarkTimeoutMs} = require("../common/miner-command");
 /** @typedef {EventEmitter & {stdin: PassThrough, stdout: PassThrough, stderr: PassThrough}} HarnessChild */
 /** @typedef {{callback: () => void, delay: number, cleared: boolean, unref: () => undefined}} HarnessTimer */
 /** @typedef {Record<string, string | undefined> & {
