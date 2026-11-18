@@ -17,7 +17,7 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 if (-not $RepoRoot) {
   # Windows PowerShell 5.1 does not populate $PSScriptRoot while evaluating parameter defaults.
-  $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
+  $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 } else {
   $RepoRoot = (Resolve-Path $RepoRoot).Path
 }

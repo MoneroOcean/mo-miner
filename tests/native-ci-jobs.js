@@ -1,0 +1,88 @@
+"use strict";
+
+// Behaviour of the CI job helpers: job preparation (native-job.yml) and chained-phase relays.
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const {describe, test} = require("node:test");
+const job = require("../scripts/ci/job");
+const chain = require("../scripts/ci/chain");
+
+/** @param {import("node:test").TestContext} t */
+function workspace(t) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mom-ci-jobs-")));
+  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const files = {GITHUB_ENV: path.join(root, "env"), GITHUB_OUTPUT: path.join(root, "output")};
+  for (const file of Object.values(files)) {fs.writeFileSync(file, "");}
+  return {root, files, environment: {GITHUB_RUN_ID: "123", GITHUB_RUN_ATTEMPT: "2", RUNNER_TEMP: root, ...files}};
+}
+
+describe("Native CI job preparation", () => {
+  test("exports run roots and pins and plans exact transfers", t => {
+    const {root, files, environment} = workspace(t);
+    job.prepareJob({...environment, NATIVE_JOB_PINS: "MOM_NATIVE_WINDOWS_GPU_PROFILE=oneapi\nMOM_X_SHA256=" + "a".repeat(64) + "\n",
+      NATIVE_JOB_DOWNLOAD: "native-a-@.tar\n native-b-@.tar", NATIVE_JOB_UPLOAD: "native-c-@.tar native-exe-@=out-@/mom",
+      NATIVE_JOB_DIAGNOSTICS: "logs-@=/tmp/x-@/*.log"});
+    const env = fs.readFileSync(files.GITHUB_ENV, "utf8"), output = fs.readFileSync(files.GITHUB_OUTPUT, "utf8");
+    assert.match(env, /^MOM_NATIVE_LINUX_SDK_DIR=\/tmp\/mom-native-llvm21-sdk-123-2$/m);
+    assert.match(env, /^MOM_NATIVE_WINDOWS_GPU_DIR=\/tmp\/mom-native-windows-gpu-oneapi-123-2$/m);
+    assert.match(env, /^MOM_X_SHA256=a{64}$/m);
+    assert.match(output, /^pattern=\{native-a-123-2\.tar,native-b-123-2\.tar\}$/m);
+    assert.match(output, new RegExp("^upload_1=" + path.join(root, "native-c-123-2.tar") + "$\\nupload_1_name=$", "m"));
+    assert.match(output, new RegExp("^upload_2=" + path.join(root, "out-123-2/mom") + "$\\nupload_2_name=native-exe-123-2$", "m"));
+    assert.match(output, /^diagnostics_name=logs-123-2$\ndiagnostics_path=\/tmp\/x-123-2\/\*\.log$/m);
+  });
+
+  test("rejects empty, repeated or unprefixed pins and malformed transfers", () => {
+    assert.throws(() => job.parsePins("MOM_A="), /malformed, empty or repeated/);
+    assert.throws(() => job.parsePins("MOM_A=1\nMOM_A=2"), /malformed, empty or repeated/);
+    assert.throws(() => job.parsePins("PATH=/tmp"), /malformed/);
+    assert.throws(() => job.downloadPattern(["../x.tar"]), /plain file names/);
+    assert.throws(() => job.uploadPlan(["a", "b", "c", "d", "e"], "/r"), /at most 4/);
+    assert.throws(() => job.uploadPlan(["raw-*.tar"], "/r"), /malformed/);
+    assert.equal(job.downloadPattern(["one.tar"]), "one.tar");
+    assert.throws(() => job.nativeCiEnvironment({GITHUB_RUN_ID: "1", GITHUB_RUN_ATTEMPT: "0"}), /run identity/);
+  });
+});
+
+describe("Chained CI phases", () => {
+  test("hand off outputs, retire consumed inputs and reset only new run-scoped roots", t => {
+    const {root, environment} = workspace(t), deadline = String(Math.floor(Date.now() / 1000) + 3600),
+      existing = path.join(root, "kept-123-2");
+    fs.mkdirSync(existing);
+    const context = chain.chainContext({...environment, MOM_CI_DEADLINE_EPOCH: deadline});
+    const state = path.join(root, "state-123-2.tar"), extracted = path.join(root, "extracted-123-2"), other = path.join(root, "unrelated");
+    fs.writeFileSync(state, "state");
+    fs.mkdirSync(path.join(extracted, "ro"), {recursive: true});
+    fs.writeFileSync(path.join(extracted, "ro", "file"), "x");
+    fs.chmodSync(path.join(extracted, "ro"), 0o500);
+    fs.mkdirSync(other);
+    chain.handOff(context, ["state-123-2.tar"]);
+    assert.equal(fs.readFileSync(path.join(context.incoming, "state-123-2.tar"), "utf8"), "state");
+    assert.throws(() => chain.handOff(context, ["state-123-2.tar"]), /ENOENT/);
+    fs.writeFileSync(path.join(root, "final-123-2.tar"), "final");
+    chain.resetRunScopedRoots(context, ["final-123-2.tar"]);
+    assert.deepEqual([fs.existsSync(extracted), fs.existsSync(existing), fs.existsSync(other), fs.existsSync(path.join(root, "final-123-2.tar"))],
+      [false, true, true, true]);
+    chain.retire(context, ["state-123-2.tar"]);
+    assert.equal(fs.existsSync(path.join(context.incoming, "state-123-2.tar")), false);
+  });
+
+  test("bounds each phase by 55 minutes and the job deadline, and runs phases with fresh workflow files", t => {
+    const {environment} = workspace(t), now = Date.now(), deadline = Math.floor(now / 1000) + 600;
+    const context = chain.chainContext({...environment, MOM_CI_DEADLINE_EPOCH: String(deadline)});
+    assert.equal(chain.phaseDeadline(context, now), String(deadline));
+    assert.equal(chain.phaseDeadline({...context, deadlineEpoch: deadline + 7200}, now), String(Math.floor(now / 1000) + 3300));
+    assert.throws(() => chain.phaseDeadline(context, (deadline - 60) * 1000), /no time for the next phase/);
+    assert.ok(context.runDeadlineEpoch > deadline);
+    const script = "const fs=require('node:fs');fs.appendFileSync(process.env.GITHUB_OUTPUT,'bundle_sha256=" + "b".repeat(64) + "\\n');" +
+      "fs.appendFileSync(process.env.GITHUB_ENV,'MOM_Y=1\\n');";
+    const result = chain.runPhaseCommand(context, "phase", [process.execPath, "-e", script], process.env);
+    assert.deepEqual(result, {outputs: {bundle_sha256: "b".repeat(64)}, exported: {MOM_Y: "1"}});
+    assert.equal(chain.requiredOutput(result.outputs, "bundle_sha256"), "b".repeat(64));
+    assert.throws(() => chain.requiredOutput(result.outputs, "manifest_sha256"), /did not report/);
+    assert.throws(() => chain.runPhaseCommand(context, "fails", [process.execPath, "-e", "process.exit(3)"], process.env), /phase failed: fails/);
+    assert.throws(() => chain.chainContext({...environment, MOM_CI_DEADLINE_EPOCH: "1000000000"}), /future MOM_CI_DEADLINE_EPOCH/);
+  });
+});

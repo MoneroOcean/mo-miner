@@ -2,12 +2,10 @@
 
 const fs = require("node:fs"), path = require("node:path"), os = require("node:os");
 const test = require("node:test"), assert = require("node:assert/strict");
-const {spawnSync} = require("node:child_process");
 const {fileHash} = require("../scripts/build-source-inputs");
 const {windowsGpuCiJobPlan, windowsGpuCiJobPreflight, windowsGpuHostSdkPins, windowsGpuDpcppManifest,
   admitWindowsGpuDpcppInputs, windowsGpuLibraryPath, windowsGpuAcppConfigInput} =
   require("../scripts/run-native-windows-gpu-ci");
-const repo = path.resolve(__dirname, "..");
 
 let runCounter = 0;
 const managedKeys = ["RUNNER_TEMP", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_OUTPUT", "GITHUB_STEP_SUMMARY",
@@ -110,7 +108,7 @@ test.describe("Windows GPU CI job preflight", {skip: process.platform !== "linux
     assert.equal(plan.factory.profile, "oneapi");
     assert.equal(plan.factory.root, path.join("/tmp", "mom-native-windows-gpu-oneapi-" + f.suffix));
     assert.equal(plan.configSource, path.join(f.runnerTemp, "windows-gpu-oneapi-config-" + f.suffix + ".json"));
-    assert.throws(() => windowsGpuCiJobPlan("unsupported"), /five maintained two-job factories/);
+    assert.throws(() => windowsGpuCiJobPlan("unsupported"), /five maintained factories/);
     process.env["MOM_NATIVE_WINDOWS_GPU_TOOLS_HANDOFF_SHA256"] = "not-a-sha";
     assert.throws(() => windowsGpuCiJobPlan("oneapi"), /every selected input's external same-run SHA-256 pin/);
   });
@@ -162,9 +160,9 @@ test.describe("Windows GPU CI job preflight", {skip: process.platform !== "linux
     assert.equal(fs.existsSync(plan.factory.root), false);
   });
 
-  test("rejects a non-two-job environment before deriving factory paths", t => {
-    fixture(t); process.env["MOM_BUILD_JOBS"] = "4";
-    assert.throws(() => windowsGpuCiJobPlan("oneapi"), /five maintained two-job factories/);
+  test("rejects an unsupported job count before deriving factory paths", t => {
+    fixture(t); process.env["MOM_BUILD_JOBS"] = "3";
+    assert.throws(() => windowsGpuCiJobPlan("oneapi"), /MOM_BUILD_JOBS set to 2 or 4/);
   });
 
   test("binds host-SDK pins to producer receipt fields and rejects repinned metadata drift", t => {
@@ -181,60 +179,6 @@ test.describe("Windows GPU CI job preflight", {skip: process.platform !== "linux
     assert.throws(() => windowsGpuHostSdkPins(root, producer), /receipt changed after its producer/);
     const repinned = {...producer, sdk_receipt_sha256: fileHash(resultFile)};
     assert.throws(() => windowsGpuHostSdkPins(root, repinned), /metadata differs from its producer pins/);
-  });
-
-  test("wires three same-run inputs to one bounded build-only factory artifact", () => {
-    const workflow = fs.readFileSync(path.join(repo, ".github/workflows/build-native-prerequisites.yml"), "utf8"),
-      job = fs.readFileSync(path.join(repo, ".github/workflows/build-windows-gpu-job.yml"), "utf8");
-    assert.match(job, /runs-on: ubuntu-24\.04/); assert.match(job, /timeout-minutes: 60/);
-    const deadline = job.indexOf("MOM_NATIVE_WINDOWS_GPU_DEADLINE_EPOCH=$(( $(date -u +%s) + 3300 ))"),
-      provision = job.indexOf("Install SDK extraction tools and the selected compiler"), firstDownload = job.indexOf("uses: actions/download-artifact@");
-    assert.ok(deadline >= 0 && deadline < provision && deadline < firstDownload, "the aggregate deadline begins before provisioning and downloads");
-    const dependencies = job.indexOf("npm ci --ignore-scripts --no-audit --no-fund");
-    assert.ok(dependencies >= 0 && dependencies < job.indexOf("run: node --test"),
-      "SDK config tests load the controller helpers and need locked build dependencies first");
-    /** @param {string} content */
-    const expression = content => String.fromCharCode(36) + "{{ " + content + " }}";
-    for (const field of ["bundle", "result", "config", "handoff"]) {
-      assert.ok(job.includes("value: " + expression("jobs.factory.outputs." + field + "_sha256")),
-        "reusable job exports the external " + field + " pin");
-      assert.ok(job.includes(field + "_sha256: " + expression("steps.factory.outputs.windows_gpu_" + field + "_sha256")),
-        "producer " + field + " pin reaches the reusable output unchanged");
-    }
-    for (const [name, profile] of [["build-windows-oneapi-gpu", "oneapi"], ["build-windows-opencl-gpu", "dpcpp-opencl"]]) {
-      const caller = workflow.split("\n  " + name + ":\n")[1]?.split(/\n {2}[a-z][a-z0-9-]*:\n/)[0];
-      assert.ok(caller, "distinct caller exists: " + name);
-      assert.match(caller, /needs: \[linux-sources, provision-linux-dpcpp-cuda-inputs, install-audit-linux-sdk\]/);
-      assert.match(caller, /uses: \.\/\.github\/workflows\/build-windows-gpu-job\.yml/);
-      assert.ok(caller.includes("profile: " + profile));
-      for (const [key, reference] of [
-        ["source_bundle_sha256", "needs.linux-sources.outputs.bundle_sha256"],
-        ["dpcpp_bundle_sha256", "needs.provision-linux-dpcpp-cuda-inputs.outputs.bundle_sha256"],
-        ["dpcpp_manifest_sha256", "needs.provision-linux-dpcpp-cuda-inputs.outputs.manifest_sha256"],
-        ["tools_bundle_sha256", "needs.install-audit-linux-sdk.outputs.tools_bundle_sha256"],
-        ["tools_handoff_sha256", "needs.install-audit-linux-sdk.outputs.tools_handoff_sha256"],
-      ]) {assert.ok(caller.includes(key + ": " + expression(reference || "")));}
-    }
-    for (const variable of ["SOURCE_BUNDLE", "DPCPP_BUNDLE", "DPCPP_MANIFEST", "TOOLS_BUNDLE", "TOOLS_HANDOFF"]) {
-      assert.ok(job.includes("MOM_NATIVE_WINDOWS_GPU_" + variable + "_SHA256: " + expression("inputs." + variable.toLowerCase() + "_sha256")));
-    }
-    assert.equal((job.match(/uses: actions\/download-artifact@/g) || []).length, 8,
-      "source, DPC++, tools, CUDA images, ACPP source/SDK, LLVM frontend and HIP headers are profile-selected");
-    assert.match(job, /if: inputs\.profile == 'acpp-hip'\n {8}uses: actions\/download-artifact@/);
-    assert.match(job, /if: inputs\.profile != 'acpp-hip'\n {8}uses: actions\/download-artifact@/);
-    assert.match(job, /if: inputs\.profile == 'dpcpp' \|\| inputs\.profile == 'acpp-cuda'\n {8}uses: actions\/download-artifact@/);
-    assert.equal((job.match(/if: startsWith\(inputs\.profile, 'acpp-'\)/g) || []).length, 3);
-    assert.equal((job.match(/uses: actions\/upload-artifact@/g) || []).length, 1, "only the resulting factory handoff is uploaded");
-    for (const artifact of ["native-linux-sdk-state-", "native-linux-dpcpp-cuda-inputs-", "native-linux-llvm-tools-"]) {
-      assert.ok(job.includes("name: " + artifact), "input tar contract is present: " + artifact);
-    }
-    assert.ok(job.includes("name: native-windows-gpu-" + expression("inputs.profile")) &&
-      job.includes("path: " + expression("runner.temp") + "/native-windows-gpu-" + expression("inputs.profile")),
-    "one output tar is retained under its same-run name");
-    assert.match(job, /run: scripts\/run-bounded-native-ci\.sh node scripts\/run-native-windows-gpu-ci\.js "\$MOM_NATIVE_WINDOWS_GPU_PROFILE"/);
-    assert.match(job, /if \[\[ "\$MOM_NATIVE_WINDOWS_GPU_PROFILE" == oneapi \]\]; then/);
-    assert.doesNotMatch(job, /actions\/cache|self-hosted|nvidia-smi|\/dev\/nvidia/);
-    assert.match(workflow.slice(0, workflow.indexOf("jobs:")), /MOM_AOT_BUILD_ONLY: "1"[\s\S]*MOM_BUILD_JOBS: "2"/);
   });
 
   test("selects a separate OpenCL factory and profile-scoped descriptor paths", t => {
@@ -262,13 +206,6 @@ test.describe("Windows GPU CI job preflight", {skip: process.platform !== "linux
       sourceSha256 = fileHash(f.files[0] || ""), manifest = {source: {tarSha256: sourceSha256}};
     fs.writeFileSync(state.manifest, JSON.stringify(manifest) + "\n", {flag: "wx"});
     const manifestSha256 = fileHash(state.manifest);
-    const source = fs.readFileSync(path.join(repo, "scripts/run-native-windows-gpu-ci.js"), "utf8"),
-      run = source.slice(source.indexOf("function runWindowsGpuCiJob"), source.indexOf("\nmodule.exports")),
-      restoreAt = run.indexOf('restore(plan, plan.dpcppTar || "", pins["DPCPP_BUNDLE"] || "", "/tmp", dpcpp.name)'),
-      admitAt = run.indexOf('admitWindowsGpuDpcppInputs(dpcpp, pins["DPCPP_MANIFEST"] || "", pins["SOURCE_BUNDLE"] || "")'),
-      retireAt = run.indexOf('fs.unlinkSync(plan.dpcppTar || "")', admitAt);
-    assert.ok(restoreAt >= 0 && admitAt > restoreAt && retireAt > admitAt,
-      "the externally bundle-pinned archive must be restored before strict manifest admission and retired only afterward");
     let calls = 0;
     t.mock.method(ci, "auditDpcppCudaInputs", (/** @type {typeof state} */ actualState,
       /** @type {typeof manifest} */ actualManifest, /** @type {string | undefined} */ actualPin) => {
@@ -298,10 +235,6 @@ test.describe("Windows GPU CI job preflight", {skip: process.platform !== "linux
     assert.equal(fs.existsSync(plan.factory.root), false);
     process.env["MOM_NATIVE_WINDOWS_GPU_DIR"] = path.join("/tmp", "mom-native-windows-gpu-oneapi-" + f.suffix);
     assert.throws(() => windowsGpuCiJobPlan("oneapi"), /Only the DPC\+\+ CUDA or ACPP CUDA factories/);
-    const workflow = fs.readFileSync(path.join(repo, ".github/workflows/build-native-prerequisites.yml"), "utf8"),
-      caller = workflow.split("\n  build-windows-dpcpp-gpu:\n")[1]?.split(/\n {2}[a-z][a-z0-9-]*:\n/)[0] || "";
-    assert.match(caller, /needs: \[linux-sources, provision-linux-dpcpp-cuda-inputs, install-audit-linux-sdk, build-linux-cuda-images\]/);
-    assert.ok(caller.includes("images_bundle_sha256: " + String.fromCharCode(36) + "{{ needs.build-linux-cuda-images.outputs.bundle_sha256 }}"));
   });
 
   test("admits ACPP CUDA only with the same-run ACPP, frontend, DPC++ and CUDA image bundles", t => {
@@ -345,18 +278,6 @@ test.describe("Windows GPU CI job preflight", {skip: process.platform !== "linux
     assert.equal(windowsGpuLibraryPath("acpp-cuda", null), "/usr/lib/x86_64-linux-gnu");
     assert.throws(() => windowsGpuLibraryPath("dpcpp", null), /require their admitted compiler root/);
 
-    const workflow = fs.readFileSync(path.join(repo, ".github/workflows/build-native-prerequisites.yml"), "utf8"),
-      cudaCaller = workflow.split("\n  build-windows-acpp-cuda-gpu:\n")[1]?.split(/\n {2}[a-z][a-z0-9-]*:\n/)[0] || "",
-      hipCaller = workflow.split("\n  build-windows-acpp-hip-gpu:\n")[1]?.split(/\n {2}[a-z][a-z0-9-]*:\n/)[0] || "";
-    assert.match(cudaCaller, /provision-linux-dpcpp-cuda-inputs/);
-    assert.match(cudaCaller, /build-linux-cuda-images/);
-    for (const key of ["acpp_source_bundle_sha256", "acpp_sdk_bundle_sha256", "frontend_bundle_sha256", "frontend_handoff_sha256"]) {
-      assert.ok(cudaCaller.includes(key + ": "), "ACPP CUDA caller pins " + key);
-      assert.ok(hipCaller.includes(key + ": "), "ACPP HIP caller pins " + key);
-    }
-    assert.doesNotMatch(hipCaller, /provision-linux-dpcpp-cuda-inputs|build-linux-cuda-images|dpcpp_bundle_sha256|dpcpp_manifest_sha256|images_bundle_sha256/);
-    assert.match(hipCaller, /build-linux-rocm-comgr-sdk/);
-    for (const key of ["hip_headers_bundle_sha256", "hip_headers_handoff_sha256"]) {assert.ok(hipCaller.includes(key + ": "));}
   });
 
   test("requires both HIP header pins and rejects unused HIP inputs on CUDA", t => {
@@ -375,28 +296,4 @@ test.describe("Windows GPU CI job preflight", {skip: process.platform !== "linux
     assert.throws(() => windowsGpuCiJobPlan("oneapi"), /unused by its selected profile/);
   });
 
-  test("exports exact original CUDA and ACPP bundle pins and fails closed before publishing missing or redirected inputs", t => {
-    const f = fixture(t), workflow = fs.readFileSync(path.join(repo, ".github/workflows/build-native-prerequisites.yml"), "utf8");
-    for (const [job, basename] of /** @type {Array<[string,string]>} */ ([
-      ["fetch-linux-acpp-sources", "native-acpp-state-123-1-sources.tar"],
-      ["build-linux-cuda-images", "native-linux-cuda-images-123-1.tar"],
-      ["build-linux-acpp-cuda-hip-sdk", "native-linux-acpp-cuda-hip-sdk-123-1.tar"],
-    ])) {
-      const body = workflow.split("\n  " + job + ":\n")[1]?.split(/\n {2}[a-z][a-z0-9-]*:\n/)[0] || "";
-      assert.ok(body.includes("bundle_sha256: " + String.fromCharCode(36) + "{{ steps.handoff.outputs.bundle_sha256 }}"));
-      const script = body.match(/ {8}id: handoff\n {8}run: \|\n((?: {10}.*\n)+)/)?.[1]?.replace(/^ {10}/gm, "") || "";
-      assert.ok(script, "the bundle pin is emitted by a dedicated post-producer step");
-      const archive = path.join(f.runnerTemp, basename), env = {...process.env, RUNNER_TEMP: f.runnerTemp,
-        GITHUB_RUN_ID: "123", GITHUB_RUN_ATTEMPT: "1", GITHUB_OUTPUT: f.output};
-      const run = () => spawnSync("/bin/bash", ["-euo", "pipefail", "-c", script], {env, encoding: "utf8"});
-      assert.notEqual(run().status, 0, "a missing producer archive must not publish an empty pin");
-      assert.equal(fs.readFileSync(f.output, "utf8"), "");
-      fs.writeFileSync(archive, "original " + job, {flag: "wx"});
-      assert.equal(run().status, 0);
-      assert.equal(fs.readFileSync(f.output, "utf8"), "bundle_sha256=" + fileHash(archive) + "\n");
-      fs.writeFileSync(f.output, ""); fs.unlinkSync(archive); fs.symlinkSync(f.files[0] || "", archive);
-      assert.notEqual(run().status, 0, "a symlink cannot substitute a different handoff");
-      assert.equal(fs.readFileSync(f.output, "utf8"), ""); fs.unlinkSync(archive);
-    }
-  });
 });

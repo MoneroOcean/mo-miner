@@ -13,7 +13,7 @@ $ProgressPreference = 'SilentlyContinue'
 if (-not $RepoRoot) {
   # Windows PowerShell 5.1 does not populate $PSScriptRoot while evaluating parameter defaults.
   # Resolve it after parameter binding so this script works both directly and through the wrappers.
-  $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
+  $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 }
 Set-Location $RepoRoot
 . (Join-Path $RepoRoot 'scripts\windows-incremental-build.ps1')

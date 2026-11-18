@@ -494,7 +494,7 @@ test_linux_release() {
       if [ "'"$DEPLOY_SKIP_VECTORS"'" != 1 ]; then
         vector_log=$(mktemp); status=0
         NODE_BIN="$(command -v node)" MOM_RELEASE_TEST_DIR=/tmp/mom-release-vectors \
-          .github/workflows/scripts/test-release-linux.sh "$MOM_RELEASE_ARCHIVE" '"$suite"' \
+          scripts/test-release-linux.sh "$MOM_RELEASE_ARCHIVE" '"$suite"' \
           >"$vector_log" 2>&1 || status=$?
         awk '\''/^ *ℹ (tests|pass|fail|skipped) [0-9]+$/ {v[$2]=$3} END {
           if (v["tests"]) print "MOM_TEST_SUMMARY",v["tests"],v["pass"],v["fail"],v["skipped"]
@@ -623,7 +623,7 @@ test_windows_multi_release() {
     env MOM_SKIP_MSR=1 MOM_GPU_BACKEND=nvidia MOM_GPU_TEST_VENDORS=nvidia,amd \
       MOM_REQUIRE_MULTI_GPU_TESTS=1 \
     powershell -NoProfile -ExecutionPolicy Bypass -File \
-      .github\\workflows\\scripts\\test-release-windows.ps1 \
+      scripts\\test-release-windows.ps1 \
       -Archive "${WINDOWS_STAGE//\//\\}\\$WINDOWS_ARCHIVE" -Suite gpu-multi >"$vector_log" 2>&1 || status=$?
   cat "$vector_log"
   # PowerShell 5.1 can decode the spec reporter's UTF-8 info symbol as Γä╣.

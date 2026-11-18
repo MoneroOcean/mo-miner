@@ -48,7 +48,7 @@ test.describe("Windows incremental builds", {concurrency: false}, () => {
   });
 
   test("MSBuild signs outputs only after complete tracker admission", () => {
-    const source = fs.readFileSync(path.join(repo, ".github/workflows/scripts/build-windows.ps1"), "utf8");
+    const source = fs.readFileSync(path.join(repo, "scripts/build-windows.ps1"), "utf8");
     const coverage = source.indexOf("Assert-MomTrackedOutputCoverage $trackedOutputs");
     const publish = source.indexOf("Write-MomBuildState $trackedStatePath");
     assert(coverage > 0 && publish > coverage);
@@ -63,7 +63,7 @@ test.describe("Windows incremental builds", {concurrency: false}, () => {
     const fixture = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "mom-win-tracker-coverage-")));
     /** @param {string} value @returns {string} */
     const quote = value => "'" + value.replaceAll("'", "''") + "'";
-    const source = fs.readFileSync(path.join(repo, ".github/workflows/scripts/build-windows.ps1"), "utf8").replace(/\r\n/g, "\n");
+    const source = fs.readFileSync(path.join(repo, "scripts/build-windows.ps1"), "utf8").replace(/\r\n/g, "\n");
     const start = source.indexOf("try {\n  $trackedOutputs = @(Get-MomTrackedOutputs");
     const end = source.indexOf("Write-MomBuildState $trackedStatePath", start);
     assert(start >= 0 && end > start, "tracker publication boundary missing");
@@ -226,7 +226,7 @@ Write-Output 'LINK_STATUS_FIXTURE_OK'
     assert.match(source, /Get-MomBuildHash \$_\.Path/);
     assert.match(source, /MOM_FORCE_REBUILD/);
     for (const name of ["build-sycl-cuda-win.ps1", "build-sycl-adaptivecpp-win.ps1"]) {
-      const worker = fs.readFileSync(path.join(repo, ".github/workflows/scripts", name), "utf8");
+      const worker = fs.readFileSync(path.join(repo, "scripts", name), "utf8");
       assert.match(worker, /build\\\.incremental\\sycl-/);
       assert.match(worker, /Invoke-MomIncrementalLink/);
       assert.match(worker, /Complete-MomCompileTask/);
@@ -236,7 +236,7 @@ Write-Output 'LINK_STATUS_FIXTURE_OK'
   });
 
   test("DPC++ workers isolate headers from inherited oneAPI compiler overrides", () => {
-    const source = fs.readFileSync(path.join(repo, ".github/workflows/scripts/build-sycl-cuda-win.ps1"), "utf8");
+    const source = fs.readFileSync(path.join(repo, "scripts/build-sycl-cuda-win.ps1"), "utf8");
     assert.match(source, /Remove-Item Env:CPATH, Env:CPLUS_INCLUDE_PATH, Env:C_INCLUDE_PATH/);
     assert(source.indexOf("Remove-Item Env:CPATH") < source.indexOf("Initialize-MomIncrementalBuild $obj"));
     assert.match(source, /\$syclIncludes = .*Join-Path \$ToolchainDir 'include\\sycl'.*Join-Path \$ToolchainDir 'include'/);
@@ -244,7 +244,7 @@ Write-Output 'LINK_STATUS_FIXTURE_OK'
   });
 
   test("DPC++ header isolation removes poisoned search paths in Windows PowerShell", {skip: process.platform !== "win32"}, () => {
-    const source = fs.readFileSync(path.join(repo, ".github/workflows/scripts/build-sycl-cuda-win.ps1"), "utf8"),
+    const source = fs.readFileSync(path.join(repo, "scripts/build-sycl-cuda-win.ps1"), "utf8"),
       cleanup = source.match(/^Remove-Item Env:CPATH[^\r\n]+/m)?.[0],
       includes = source.match(/^\$syclIncludes = [^\r\n]+/m)?.[0];
     assert(cleanup && includes);
@@ -263,13 +263,13 @@ Write-Output 'LINK_STATUS_FIXTURE_OK'
 
   test("Windows publication guards precede output mutations", () => {
     for (const name of ["build-sycl-cuda-win.ps1", "build-sycl-adaptivecpp-win.ps1"]) {
-      const source = fs.readFileSync(path.join(repo, ".github/workflows/scripts", name), "utf8");
+      const source = fs.readFileSync(path.join(repo, "scripts", name), "utf8");
       const outputGuard = source.indexOf("Assert-MomBuildArtifactPath $publishedOutput $buildRoot");
       assert(outputGuard > 0);
       assert(outputGuard < source.indexOf("New-Item -ItemType Directory -Force $obj"));
       assert(outputGuard < source.indexOf("Remove-Item -LiteralPath $publishedOutput"));
     }
-    const source = fs.readFileSync(path.join(repo, ".github/workflows/scripts/build-windows-multicompiler.ps1"), "utf8");
+    const source = fs.readFileSync(path.join(repo, "scripts/build-windows-multicompiler.ps1"), "utf8");
     assert(source.indexOf("Assert-MomBuildOutputTree $dest $platformRoot") < source.indexOf("Remove-Item -LiteralPath $dest"));
     assert(source.indexOf("Assert-MomBuildOutputTree $out $platformRoot") < source.indexOf("Remove-Item -LiteralPath $out"));
   });
@@ -284,9 +284,9 @@ Write-Output 'LINK_STATUS_FIXTURE_OK'
       assert(start >= 0 && end > start, "production publication boundary is missing");
       return source.slice(start, end);
     };
-    const cuda = fs.readFileSync(path.join(repo, ".github/workflows/scripts/build-sycl-cuda-win.ps1"), "utf8");
-    const acpp = fs.readFileSync(path.join(repo, ".github/workflows/scripts/build-sycl-adaptivecpp-win.ps1"), "utf8");
-    const multi = fs.readFileSync(path.join(repo, ".github/workflows/scripts/build-windows-multicompiler.ps1"), "utf8");
+    const cuda = fs.readFileSync(path.join(repo, "scripts/build-sycl-cuda-win.ps1"), "utf8");
+    const acpp = fs.readFileSync(path.join(repo, "scripts/build-sycl-adaptivecpp-win.ps1"), "utf8");
+    const multi = fs.readFileSync(path.join(repo, "scripts/build-windows-multicompiler.ps1"), "utf8");
     const blocks = [extract(cuda, "$variant = if", "$buildContext = Initialize-"),
       extract(acpp, "$obj = ", "$python = ")];
     const save = extract(multi, "function Save-Compiler(", "function Save-DpcppRuntime(");

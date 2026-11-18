@@ -17,7 +17,7 @@ const version = require("../package.json").version;
  * @param {string} [releaseVersion]
  */
 function engineeringArchiveCommands(platform, packageOnly = false, releaseVersion = version) {
-  const scripts = path.join(repo, ".github", "workflows", "scripts");
+  const scripts = path.join(repo, "scripts");
   if (platform === "linux") {
     // Keep the existing cache lock through publication, including package-only runs.
     // Development parents already own this host lock around their entire command.

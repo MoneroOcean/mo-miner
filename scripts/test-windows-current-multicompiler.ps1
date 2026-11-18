@@ -12,7 +12,7 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 Set-Location $repo
 
 if (-not $SkipBuild) {
-  & "$repo\.github\workflows\scripts\build-windows-multicompiler.ps1" -Backend $Backend -Compiler $Compiler
+  & "$repo\scripts\build-windows-multicompiler.ps1" -Backend $Backend -Compiler $Compiler
 }
 
 $basePath = $env:Path

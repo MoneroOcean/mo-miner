@@ -9,7 +9,7 @@ param(
   [string]$CudaPath = $env:CUDA_PATH
 )
 $ErrorActionPreference = 'Stop'
-$repo = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
+$repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 Set-Location $repo
 . "$repo\scripts\windows-incremental-build.ps1"
 Initialize-MomBuildEnvironment $repo

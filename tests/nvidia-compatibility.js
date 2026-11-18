@@ -710,10 +710,10 @@ void* mock_dlsym(void*,const char*);
   /** @typedef {{line: string, expression: string}} WindowsBootstrap */
 
   const linuxLauncherSourcePath = path.join(
-    __dirname, "..", ".github", "workflows", "scripts", "package-linux-combined.sh",
+    __dirname, "..", "scripts", "package-linux-combined.sh",
   );
   const windowsLauncherSourcePath = path.join(
-    __dirname, "..", ".github", "workflows", "scripts", "package-windows.ps1",
+    __dirname, "..", "scripts", "package-windows.ps1",
   );
 
   /** @returns {string} */

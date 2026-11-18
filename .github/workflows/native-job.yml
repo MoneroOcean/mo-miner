@@ -1,0 +1,133 @@
+name: Native build job
+
+# One Linux job template for every native producer. Artifact lists name exact files with "@" for
+# "<run>-<attempt>"; downloads land flat in $RUNNER_TEMP/incoming. Pins are KEY=value lines taken from
+# producer job outputs, never from hashes computed after download. All step outputs of the `run` step
+# are returned as one JSON object (fromJSON(needs.<job>.outputs.json).<key>).
+on:
+  workflow_call:
+    inputs:
+      run:
+        description: Bash commands; every machine output must be written by this one step
+        required: true
+        type: string
+      timeout:
+        description: Job timeout in minutes; MOM_CI_DEADLINE_EPOCH ends five minutes earlier
+        default: 60
+        type: number
+      download:
+        default: ""
+        type: string
+      upload:
+        description: Up to four "file" (raw) or "name=path" (zipped) entries, relative to RUNNER_TEMP
+        default: ""
+        type: string
+      diagnostics:
+        description: One "name=path" uploaded only on failure
+        default: ""
+        type: string
+      pins:
+        default: ""
+        type: string
+      jobs:
+        description: MOM_BUILD_JOBS for this job
+        default: "4"
+        type: string
+      npm:
+        default: false
+        type: boolean
+      apt:
+        default: ""
+        type: string
+      dev:
+        default: ""
+        type: string
+    outputs:
+      json:
+        value: ${{ jobs.run.outputs.json }}
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ inputs.timeout }}
+    env:
+      MOM_AOT_BUILD_ONLY: "1"
+      MOM_BUILD_JOBS: ${{ inputs.jobs }}
+    outputs:
+      json: ${{ toJSON(steps.run.outputs) }}
+    steps:
+      - name: Start the job deadline
+        env:
+          TIMEOUT_MINUTES: ${{ inputs.timeout }}
+        run: echo "MOM_CI_DEADLINE_EPOCH=$(( $(date -u +%s) + TIMEOUT_MINUTES * 60 - 300 ))" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          npm: ${{ inputs.npm }}
+          apt: ${{ inputs.apt }}
+          dev: ${{ inputs.dev }}
+      - name: Export run roots, pins and the transfer plan
+        id: plan
+        env:
+          NATIVE_JOB_PINS: ${{ inputs.pins }}
+          NATIVE_JOB_DOWNLOAD: ${{ inputs.download }}
+          NATIVE_JOB_UPLOAD: ${{ inputs.upload }}
+          NATIVE_JOB_DIAGNOSTICS: ${{ inputs.diagnostics }}
+        run: node scripts/ci/job.js
+      - if: steps.plan.outputs.pattern != ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: ${{ steps.plan.outputs.pattern }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/incoming
+      - id: run
+        run: ${{ inputs.run }}
+      - if: failure() && steps.plan.outputs.diagnostics_name != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: ${{ steps.plan.outputs.diagnostics_name }}
+          path: ${{ steps.plan.outputs.diagnostics_path }}
+          if-no-files-found: warn
+          retention-days: 3
+      - if: steps.plan.outputs.upload_1 != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: ${{ steps.plan.outputs.upload_1_name || 'raw' }}
+          path: ${{ steps.plan.outputs.upload_1 }}
+          archive: ${{ steps.plan.outputs.upload_1_name != '' }}
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 3
+      - if: steps.plan.outputs.upload_2 != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: ${{ steps.plan.outputs.upload_2_name || 'raw' }}
+          path: ${{ steps.plan.outputs.upload_2 }}
+          archive: ${{ steps.plan.outputs.upload_2_name != '' }}
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 3
+      - if: steps.plan.outputs.upload_3 != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: ${{ steps.plan.outputs.upload_3_name || 'raw' }}
+          path: ${{ steps.plan.outputs.upload_3 }}
+          archive: ${{ steps.plan.outputs.upload_3_name != '' }}
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 3
+      - if: steps.plan.outputs.upload_4 != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: ${{ steps.plan.outputs.upload_4_name || 'raw' }}
+          path: ${{ steps.plan.outputs.upload_4 }}
+          archive: ${{ steps.plan.outputs.upload_4_name != '' }}
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 3

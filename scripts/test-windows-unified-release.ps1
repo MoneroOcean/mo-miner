@@ -89,7 +89,7 @@ $basePath = $env:Path
 $env:SYCL_CACHE_PERSISTENT = '1'
 
 try {
-  & "$repo\.github\workflows\scripts\test-powershell-syntax.ps1"
+  & "$repo\scripts\ci\test-powershell-syntax.ps1"
 
   & npm.cmd install --ignore-scripts --no-audit --no-fund
   if ($LASTEXITCODE -ne 0) { throw "JavaScript tooling install failed: $LASTEXITCODE" }
@@ -109,7 +109,7 @@ try {
   }
 
   if (-not $SkipBuild) {
-    & "$repo\.github\workflows\scripts\build-windows-multicompiler.ps1" `
+    & "$repo\scripts\build-windows-multicompiler.ps1" `
       -Backend all -DpcppDir $DpcppDir -AcppCudaDir $AcppCudaDir -AcppHipDir $AcppHipDir `
       -HipPath $HipPath -CudaPath $CudaPath
   }
@@ -134,14 +134,14 @@ try {
 
   $archiveName = "mom-v$version-win.zip"
   $archive = Join-Path $output $archiveName
-  & "$repo\.github\workflows\scripts\package-windows.ps1" -Archive $archive
+  & "$repo\scripts\package-windows.ps1" -Archive $archive
 
   Clear-CompilerEnvironment
   foreach ($suite in @('cpu', 'gpu-portable-cpu')) {
     Remove-Item Env:MOM_GPU_BACKEND -ErrorAction SilentlyContinue
     Remove-Item Env:MOM_OPENCL_DEVICE_TYPE -ErrorAction SilentlyContinue
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
-      "$repo\.github\workflows\scripts\test-release-windows.ps1" -Archive $archive -Suite $suite
+      "$repo\scripts\test-release-windows.ps1" -Archive $archive -Suite $suite
     if ($LASTEXITCODE -ne 0) { throw "Extracted Windows $suite gate failed: $LASTEXITCODE" }
   }
   Remove-Item Env:MOM_OPENCL_DEVICE_TYPE -ErrorAction SilentlyContinue
@@ -149,7 +149,7 @@ try {
     foreach ($vendor in @('intel', 'nvidia', 'amd')) {
       $env:MOM_GPU_BACKEND = $vendor
       & powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
-        "$repo\.github\workflows\scripts\test-release-windows.ps1" -Archive $archive -Suite gpu
+        "$repo\scripts\test-release-windows.ps1" -Archive $archive -Suite gpu
       if ($LASTEXITCODE -ne 0) { throw "Extracted Windows $vendor GPU gate failed: $LASTEXITCODE" }
     }
   }

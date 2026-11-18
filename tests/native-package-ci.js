@@ -1,394 +1,268 @@
 "use strict";
 const fs = require("node:fs"), path = require("node:path"), os = require("node:os"), assert = require("node:assert/strict"),
-  test = require("node:test"), {runInNewContext, Script} = require("node:vm"),
-  {spawnSync} = require("node:child_process"),
-  {isDeepStrictEqual} = require("node:util"), {fileHash} = require("../scripts/build-source-inputs"),
-  {packState, listState} = require("../scripts/prepare-native-ci");
-const workflow = fs.readFileSync(path.join(__dirname, "../.github/workflows/package-native-application.yml"), "utf8"),
-  bodies = [...workflow.matchAll(/node <<'NODE'\n([\s\S]*?)\n {10}NODE/g)].map(match =>
-    (match[1] || "").split("\n").map(line => line.slice(10)).join("\n")),
-  cmakeStep = workflow.split("      - name: Resolve CMake before artifact downloads\n")[1]?.split("\n      - name: ")[0] || "",
-  cmakeRun = cmakeStep.match(/\x20{8}run: \|\n((?:\x20{10}.*(?:\n|$))+)/),
-  cmakeBody = (cmakeRun?.[1] || "").split("\n").map(line => line.slice(10)).join("\n");
+  test = require("node:test"), {createHash} = require("node:crypto"), {spawnSync} = require("node:child_process"),
+  {isDeepStrictEqual} = require("node:util");
+const {fileHash} = require("../scripts/build-source-inputs"), realCi = require("../scripts/prepare-native-ci");
+const {packagePlan, preflightPackage, packageNative} = require("../scripts/ci/package-native");
 
-/** Exercise the late packaging job with same-run artifact-shaped inputs and no candidate execution.
- * The two fixed /tmp roots are virtualized into this fixture's private temp directory.
+const suffix = "123456789-1", digest = (/** @type {string|Buffer} */ value) => createHash("sha256").update(value).digest("hex");
+
+/** Build the late packaging job's same-run inputs with no candidate execution: real raw/original/packed
+ * tars in RUNNER_TEMP/incoming, both executables in their own download directories, a fixture
+ * workspace with reviewed notices, and a private state root standing in for /tmp.
  * @param {import('node:test').TestContext} t @param {'linux'|'win32'} [target] */
 function fixture(t, target = "linux") {
-  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-package-ci-")), suffix = "123456789-1",
-    cmakeDirectory = path.join(temp, "cmake-bin"), cmakePath = path.join(cmakeDirectory, "cmake"),
+  const temp = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "mom-native-package-ci-")),
     platform = target === "win32" ? "windows" : "linux", binary = target === "win32" ? "mom.exe" : "mom",
     roots = {packed: `native-${platform}-packed-build-${suffix}`, original: `native-${platform}-application-build-${suffix}`},
-    restored = {packed: path.join(temp, "restored-packed"), original: path.join(temp, "restored-original")},
-    source = {packed: path.join(temp, "archive-packed"), original: path.join(temp, "archive-original")},
+    stateRoot = path.join(temp, "state"), staging = path.join(temp, "staging"), incoming = path.join(temp, "incoming"),
+    tree = {packed: path.join(staging, roots.packed), original: path.join(staging, roots.original)},
+    cmakeDirectory = path.join(temp, "cmake-bin"), cmakePath = path.join(cmakeDirectory, "cmake"),
     repoRoot = path.join(temp, "repo"), noticeBody = path.join(repoRoot, "THIRD-PARTY-NOTICES.txt"),
     noticeManifest = path.join(repoRoot, "runtime/native-notice-review.json"),
-    inputRoot = path.join(temp, "native-package-inputs"), inputDirs = {
-      raw: path.join(inputRoot, "raw"), "packed-executable": path.join(inputRoot, "packed-executable"),
-      "packed-build": path.join(inputRoot, "packed-build"), "original-build": path.join(inputRoot, "original-build"),
-    }, calls = /** @type {Array<{stage:string, [key:string]:any}>} */ ([]);
-  let tarOverride = /** @type {{kind:string, members:string[]}|undefined} */ (undefined),
-    expandedOverride = /** @type {number|undefined} */ (undefined), apiOverride = /** @type {string|undefined} */ (undefined);
-  for (const directory of [...Object.values(inputDirs), ...Object.values(source)]) {fs.mkdirSync(directory, {recursive: true});}
-  fs.mkdirSync(cmakeDirectory);
+    inputDirs = {raw: path.join(temp, "native-package-inputs/raw"), packed: path.join(temp, "native-package-inputs/packed-executable")},
+    calls = /** @type {Array<{stage:string, [key:string]:any}>} */ ([]);
+  let expandedOverride = /** @type {number|undefined} */ (undefined), apiOverride = /** @type {string|undefined} */ (undefined);
+  t.after(() => fs.rmSync(temp, {recursive: true, force: true}));
+  for (const directory of [...Object.values(inputDirs), ...Object.values(tree), stateRoot, incoming, cmakeDirectory, path.dirname(noticeManifest)]) {
+    fs.mkdirSync(directory, {recursive: true});
+  }
   fs.writeFileSync(cmakePath, "#!/bin/sh\nprintf 'cmake version 3.99.0\\n'\n", {mode: 0o755});
-  fs.mkdirSync(path.dirname(noticeManifest), {recursive: true});
+  fs.writeFileSync(path.join(repoRoot, "package.json"), JSON.stringify({version: "1.2.3"}));
   const noticeBytes = Buffer.from("Fixture reviewed notices\n"), noticeDependencies = {fixture: {revision: "a".repeat(40)}},
-    noticeSnapshot = {version: 1, notice: {bytes: noticeBytes.length, sha256: require("node:crypto").createHash("sha256").update(noticeBytes).digest("hex")},
-      dependencies: noticeDependencies};
+    noticeSnapshot = {version: 1, notice: {bytes: noticeBytes.length, sha256: digest(noticeBytes)}, dependencies: noticeDependencies};
   fs.writeFileSync(noticeBody, noticeBytes);
-  fs.writeFileSync(noticeManifest, JSON.stringify({version: 1, notice: noticeSnapshot.notice, dependencies: noticeDependencies}, null, 2) + "\n");
+  fs.writeFileSync(noticeManifest, JSON.stringify(noticeSnapshot, null, 2) + "\n");
   const pinnedNoticeHash = fileHash(noticeBody), pinnedManifestHash = fileHash(noticeManifest);
-  for (const file of ["outputs", "summary"]) {fs.writeFileSync(path.join(temp, file), "");}
-  const mapFixed = (/** @type {string} */ file) => {
-    for (const key of /** @type {Array<keyof typeof roots>} */ (["packed", "original"])) {
-      const root = path.join("/tmp", roots[key]);
-      if (file === root || file.startsWith(root + path.sep)) {return path.join(restored[key], path.relative(root, file));}
-    }
-    return file;
-  };
-  const virtualFs = new Proxy(fs, {get(object, key) {
-    const value = Reflect.get(object, key); if (typeof value !== "function") {return value;}
-    if (key === "realpathSync") {
-      return (/** @type {string} */ file) => {
-        const actual = mapFixed(file), real = value.call(object, actual);
-        return actual !== file && real === actual ? file : real;
-      };
-    }
-    if (key === "copyFileSync") {
-      return (/** @type {string} */ from, /** @type {string} */ to, /** @type {number} */ flags) =>
-        value.call(object, mapFixed(from), mapFixed(to), flags);
-    }
-    if (key === "mkdirSync") {return (/** @type {string} */ file, /** @type {any[]} */ ...args) => value.call(object, mapFixed(file), ...args);}
-    return (/** @type {string} */ file, /** @type {any[]} */ ...args) => value.call(object, typeof file === "string" ? mapFixed(file) : file, ...args);
-  }});
+  fs.writeFileSync(path.join(temp, "outputs"), "");
+
   const rawBytes = Buffer.alloc(96, target === "linux" ? 0x41 : 0x42); rawBytes.write(target === "linux" ? "\x7fELF" : "MZ");
   const packedBytes = Buffer.concat([Buffer.from(target === "linux" ? "\x7fELF" : "MZ"), Buffer.alloc(92, 0x50)]),
-    rawPath = path.join(inputDirs.raw, binary), packedDownload = path.join(inputDirs["packed-executable"], binary);
-  fs.writeFileSync(rawPath, rawBytes, {mode: 0o755}); fs.writeFileSync(packedDownload, packedBytes, {mode: 0o755});
-  const packedTar = path.join(inputDirs["packed-build"], roots.packed + ".tar"),
-    originalTar = path.join(inputDirs["original-build"], roots.original + ".tar");
-  for (const file of [packedTar, originalTar]) {fs.writeFileSync(file, "fixture transport");}
+    rawPath = path.join(inputDirs.raw, binary), rawSha = digest(rawBytes), packedSha = digest(packedBytes);
+  fs.writeFileSync(rawPath, rawBytes, {mode: 0o755}); fs.writeFileSync(path.join(inputDirs.packed, binary), packedBytes, {mode: 0o755});
+  const writeJson = (/** @type {string} */ file, /** @type {unknown} */ value) => fs.writeFileSync(file, JSON.stringify(value, null, 2) + "\n");
   const runTempConfig = path.join(temp, target === "linux" ? `native-linux-assembly-config-${suffix}.json` : `native-windows-application-config-${suffix}.json`),
-    configBytes = JSON.stringify({version: 1, buildOnly: true}), configHash = require("node:crypto").createHash("sha256").update(configBytes).digest("hex");
-  const metadataTree = (/** @type {string} */ directory, /** @type {string} */ name, /** @type {unknown} */ value) =>
-    fs.writeFileSync(path.join(directory, name), JSON.stringify(value, null, 2) + "\n");
+    configBytes = JSON.stringify({version: 1, buildOnly: true}), configHash = digest(configBytes);
+
   const originalSourcePath = path.join(target === "linux" ? "/tmp" : temp,
       target === "linux" ? `mom-native-linux-application-${suffix}` : `native-windows-application-output-${suffix}`, binary),
-    originalProducerPath = path.join(path.dirname(originalSourcePath), "result.json"),
-    originalTree = source.original;
-  fs.writeFileSync(path.join(originalTree, "application-config.json"), configBytes);
-  const producerRecord = target === "win32" ? {target: "x86_64-pc-windows-msvc", nativeRuntime: true, executed: false,
-    artifact: {path: originalSourcePath, bytes: rawBytes.length, sha256: fileHash(rawPath)}, configHash, buildOnly: true, publicationQualified: false} :
-    {binary: originalSourcePath, bytes: rawBytes.length, sha256: fileHash(rawPath), configHash, buildOnly: true, publicationQualified: false};
-  metadataTree(originalTree, "result.json", producerRecord);
-  const producerHash = fileHash(path.join(originalTree, "result.json")), originEntry = {
-    version: 1, target, configFile: runTempConfig, configHash,
-    source: {path: originalSourcePath, bytes: rawBytes.length, sha256: fileHash(rawPath)},
-    artifact: {path: originalSourcePath, bytes: rawBytes.length, sha256: fileHash(rawPath)},
-    recipe: {}, componentHashes: {[originalProducerPath]: producerHash},
-    producerReceipt: {path: originalProducerPath, sha256: producerHash}, buildOnly: true, publicationQualified: false,
-  };
-  metadataTree(originalTree, "entrypoint.json", originEntry);
-  const originEntryHash = fileHash(path.join(originalTree, "entrypoint.json")),
-    handoff = {version: 1, format: `mom-${platform}-application-build-handoff-v1`, runAttempt: suffix,
-      target: target === "win32" ? "x86_64-pc-windows-msvc" : "x86_64-unknown-linux-gnu",
-      artifact: {file: binary, bytes: rawBytes.length, sha256: fileHash(rawPath)},
-      config: {file: "application-config.json", sha256: fileHash(path.join(originalTree, "application-config.json"))},
-      producerReceipt: {file: "result.json", sha256: producerHash}, entrypointReceipt: {file: "entrypoint.json", sha256: originEntryHash},
-      buildOnly: true, executed: false, publicationQualified: false};
-  metadataTree(originalTree, "handoff.json", handoff);
-  const originalMembers = [roots.original, ...["application-config.json", "entrypoint.json", "handoff.json", "result.json"].map(name => `${roots.original}/${name}`)];
-  const packedTree = source.packed, packedCandidate = path.join(packedTree, binary),
-    packedSha = (fs.writeFileSync(packedCandidate, packedBytes, {mode: 0o755}), fileHash(packedCandidate)),
-    packLogs = /** @type {Record<string, {path:string, sha256:string}>} */ ({});
+    originalProducerPath = path.join(path.dirname(originalSourcePath), "result.json");
+  fs.writeFileSync(path.join(tree.original, "application-config.json"), configBytes);
+  writeJson(path.join(tree.original, "result.json"), {binary: originalSourcePath, bytes: rawBytes.length, sha256: rawSha, configHash,
+    buildOnly: true, publicationQualified: false});
+  const producerHash = fileHash(path.join(tree.original, "result.json"));
+  writeJson(path.join(tree.original, "entrypoint.json"), {version: 1, target, configFile: runTempConfig, configHash,
+    source: {path: originalSourcePath, bytes: rawBytes.length, sha256: rawSha},
+    artifact: {path: originalSourcePath, bytes: rawBytes.length, sha256: rawSha}, recipe: {},
+    componentHashes: {[originalProducerPath]: producerHash}, producerReceipt: {path: originalProducerPath, sha256: producerHash},
+    buildOnly: true, publicationQualified: false});
+  const originEntryHash = fileHash(path.join(tree.original, "entrypoint.json"));
+  writeJson(path.join(tree.original, "handoff.json"), {version: 1, format: `mom-${platform}-application-build-handoff-v1`, runAttempt: suffix,
+    target: target === "win32" ? "x86_64-pc-windows-msvc" : "x86_64-unknown-linux-gnu",
+    artifact: {file: binary, bytes: rawBytes.length, sha256: rawSha}, config: {file: "application-config.json", sha256: configHash},
+    producerReceipt: {file: "result.json", sha256: producerHash}, entrypointReceipt: {file: "entrypoint.json", sha256: originEntryHash},
+    buildOnly: true, executed: false, publicationQualified: false});
+
+  const restoredPacked = path.join(stateRoot, roots.packed), packLogs = /** @type {Record<string, {path:string, sha256:string}>} */ ({});
+  fs.writeFileSync(path.join(tree.packed, binary), packedBytes, {mode: 0o755});
   for (const stage of ["pack", "integrity", "restore"]) {
-    const file = path.join(packedTree, stage + ".log"); fs.writeFileSync(file, stage + " log\n");
-    packLogs[stage] = {path: path.join("/tmp", roots.packed, stage + ".log"), sha256: fileHash(file)};
+    const file = path.join(tree.packed, stage + ".log"); fs.writeFileSync(file, stage + " log\n");
+    packLogs[stage] = {path: path.join(restoredPacked, stage + ".log"), sha256: fileHash(file)};
   }
-  const candidateProducerPath = path.join(temp, "native-raw", "result.json"), packedReceipt = {
-    source: {path: path.join(temp, "native-raw", binary), bytes: rawBytes.length, sha256: fileHash(rawPath)},
-    artifact: {path: path.join("/tmp", roots.packed, binary), bytes: packedBytes.length, sha256: packedSha},
-    buildOnly: true, publicationQualified: false, logs: Object.fromEntries(Object.entries(packLogs).map(([stage, row]) => [stage, row])),
-  };
-  metadataTree(packedTree, "result.json", packedReceipt);
-  const packHash = fileHash(path.join(packedTree, "result.json")), candidateComponents = {[candidateProducerPath]: producerHash},
-    candidate = {version: 1, target, configFile: runTempConfig, configHash, recipe: {}, componentHashes: candidateComponents,
-      source: {path: path.join(temp, "native-raw", binary), bytes: rawBytes.length, sha256: fileHash(rawPath)},
-      artifact: {path: path.join("/tmp", roots.packed, binary), bytes: packedBytes.length, sha256: packedSha},
-      sourceEntrypoint: {path: path.join("/tmp", roots.original, "entrypoint.json"), sha256: originEntryHash},
-      producerReceipt: {path: candidateProducerPath, sha256: producerHash},
-      packingReceipt: {path: path.join("/tmp", roots.packed, "result.json"), sha256: packHash},
-      buildOnly: true, publicationQualified: false};
-  metadataTree(packedTree, "entrypoint.json", candidate);
-  const packedMembers = [roots.packed, ...[binary, "entrypoint.json", "result.json", "pack.log", "integrity.log", "restore.log"].map(name => `${roots.packed}/${name}`)];
-  const packedExpected = packedMembers.map(name => name === roots.packed ? name + "/" : name),
-    originalExpected = originalMembers.map(name => name === roots.original ? name + "/" : name);
-  const archiveMembers = (/** @type {string} */ archive) => archive === packedTar ? packedExpected : archive === originalTar ? originalExpected :
-    [path.basename(archive, ".tar") + "/", `${path.basename(archive, ".tar")}/build-audit.json`,
-      `${path.basename(archive, ".tar")}/native-package.json`, `${path.basename(archive, ".tar")}/native-notice-review.json`];
-  const ci = {
-    listState: (/** @type {string} */ archive) => {
-      const kind = archive === packedTar ? "packed" : archive === originalTar ? "original" : "metadata";
-      return tarOverride?.kind === kind ? tarOverride.members : archiveMembers(archive);
-    },
-    tarExpandedBytes: () => expandedOverride ?? 4096,
-    extractState: (/** @type {string} */ archive, /** @type {string} */ base, /** @type {string[]} */ _expected, /** @type {string[]} */ restoreRoots) => {
-      const kind = archive === packedTar ? "packed" : "original";
-      calls.push({stage: "extract", kind});
-      const destination = mapFixed(path.join(base, restoreRoots[0] || ""));
-      fs.mkdirSync(destination, {recursive: false}); fs.cpSync(source[kind], destination, {recursive: true});
-    },
-    packState: (/** @type {string} */ archive, /** @type {string} */ base, /** @type {string[]} */ selected) => {
-      // Use the real archive boundary and tiny metadata tar, not a permissive byte-writing stub.
-      calls.push({stage: "pack-metadata", selected}); return packState(archive, base, selected, 60000);
-    },
-  };
+  const rawRestore = path.join(temp, "native-raw", binary), candidateProducerPath = path.join(temp, "native-raw", "result.json");
+  writeJson(path.join(tree.packed, "result.json"), {source: {path: rawRestore, bytes: rawBytes.length, sha256: rawSha},
+    artifact: {path: path.join(restoredPacked, binary), bytes: packedBytes.length, sha256: packedSha},
+    buildOnly: true, publicationQualified: false, logs: packLogs});
+  writeJson(path.join(tree.packed, "entrypoint.json"), {version: 1, target, configFile: runTempConfig, configHash, recipe: {},
+    componentHashes: {[candidateProducerPath]: producerHash},
+    source: {path: rawRestore, bytes: rawBytes.length, sha256: rawSha},
+    artifact: {path: path.join(restoredPacked, binary), bytes: packedBytes.length, sha256: packedSha},
+    sourceEntrypoint: {path: path.join(stateRoot, roots.original, "entrypoint.json"), sha256: originEntryHash},
+    producerReceipt: {path: candidateProducerPath, sha256: producerHash},
+    packingReceipt: {path: path.join(restoredPacked, "result.json"), sha256: fileHash(path.join(tree.packed, "result.json"))},
+    buildOnly: true, publicationQualified: false});
+
+  /** @type {NodeJS.ProcessEnv} */
   const env = {RUNNER_TEMP: temp, GITHUB_RUN_ID: "123456789", GITHUB_RUN_ATTEMPT: "1", NATIVE_PLATFORM: target,
-    PACKED_BUILD_BUNDLE_SHA256: fileHash(packedTar), RAW_EXECUTABLE_SHA256: fileHash(rawPath),
-    ORIGINAL_BUILD_BUNDLE_SHA256: fileHash(originalTar), ORIGINAL_HANDOFF_SHA256: fileHash(path.join(originalTree, "handoff.json")),
-    GITHUB_WORKSPACE: repoRoot,
-    MOM_CMAKE_PATH: cmakePath,
-    GITHUB_OUTPUT: path.join(temp, "outputs"), GITHUB_STEP_SUMMARY: path.join(temp, "summary")};
-  const hash = (/** @type {string} */ file) => fileHash(mapFixed(file));
-  const execute = (/** @type {number} */ index) => runInNewContext(bodies[index] || "", {
-    process: {env, cwd: () => repoRoot}, console: {log: (/** @type {unknown[]} */ ...args) => {calls.push({stage: "console", args});}},
-    require: (/** @type {string} */ name) => {
-      if (name === "node:fs") {return virtualFs;}
-      if (name === "node:path") {return path;}
-      if (name === "node:child_process") {
-        return {spawnSync: (/** @type {string} */ command, /** @type {string[]} */ args) => {
-          calls.push({stage: "tar-list", command, args});
-          const names = archiveMembers(args[args.indexOf("--file") + 1] || "");
-          const stdout = names.map(member => `${member.endsWith("/") ? "drwxr-xr-x" : "-rw-r--r--"} 0/0 0 2026-01-01 00:00:00 ${member}`).join("\n") + "\n";
-          return {status: 0, stdout};
-        }};
+    RAW_EXECUTABLE_SHA256: rawSha, GITHUB_WORKSPACE: repoRoot, MOM_CMAKE_PATH: cmakePath,
+    PATH: [cmakeDirectory, process.env["PATH"] || "/usr/bin:/bin"].join(path.delimiter), GITHUB_OUTPUT: path.join(temp, "outputs")};
+  const tarFiles = {packed: path.join(incoming, roots.packed + ".tar"), original: path.join(incoming, roots.original + ".tar")};
+  // Seal both staged trees into real same-run tars and pin them like the producer job outputs.
+  const seal = () => {
+    for (const kind of /** @type {Array<'packed'|'original'>} */ (["packed", "original"])) {
+      fs.rmSync(tarFiles[kind], {force: true}); realCi.packState(tarFiles[kind], staging, [roots[kind]], 60000);
+    }
+    env["PACKED_BUILD_BUNDLE_SHA256"] = fileHash(tarFiles.packed); env["ORIGINAL_BUILD_BUNDLE_SHA256"] = fileHash(tarFiles.original);
+    env["ORIGINAL_HANDOFF_SHA256"] = fileHash(path.join(tree.original, "handoff.json"));
+  };
+  seal();
+
+  const io = {stateRoot, workspace: repoRoot,
+    ci: {listState: realCi.listState, packState: realCi.packState,
+      tarExpandedBytes: (/** @type {Parameters<typeof realCi.tarExpandedBytes>} */ ...args) => expandedOverride ?? realCi.tarExpandedBytes(...args),
+      extractState: (/** @type {Parameters<typeof realCi.extractState>} */ ...args) => {calls.push({stage: "extract"}); realCi.extractState(...args);}},
+    checkNativeNoticeReview: (/** @type {string|undefined} */ manifestPath, /** @type {string|undefined} */ noticePath) => {
+      calls.push({stage: "notice-review", manifestPath, noticePath});
+      const selectedNotice = noticePath || noticeBody,
+        selected = {version: 1, notice: {bytes: fs.statSync(selectedNotice).size, sha256: fileHash(selectedNotice)}, dependencies: noticeDependencies};
+      if (manifestPath !== undefined || selectedNotice !== noticeBody || fileHash(noticeManifest) !== pinnedManifestHash ||
+          selected.notice.sha256 !== pinnedNoticeHash || !isDeepStrictEqual(JSON.parse(fs.readFileSync(noticeManifest, "utf8")), noticeSnapshot)) {
+        throw new Error("fixture native notice review drift");
       }
-      if (name === "./scripts/prepare-native-ci") {return ci;}
-      if (name === "./scripts/build-source-inputs") {
-        return {fileHash: hash,
-          readBuildJson: (/** @type {string} */ file) => JSON.parse(fs.readFileSync(mapFixed(file), "utf8"))};
-      }
-      if (name === "./scripts/check-native-release") {
-        return {auditNativeRelease: (/** @type {string} */ entrypoint, /** @type {any} */ options) => {
-          calls.push({stage: options?.archive ? "archive-audit" : "build-audit", entrypoint, options});
-          if (apiOverride === "pre-audit" && !options?.archive) {throw new Error("fixture pre-audit rejected");}
-          if (apiOverride === "post-audit" && options?.archive) {throw new Error("fixture archive audit rejected");}
-          const answer = {scope: "build-audit", target, sourceSha256: fileHash(rawPath), sha256: packedSha, bytes: packedBytes.length,
-            buildEvidencePassed: true, runtimeTested: false, publicationQualified: false};
-          return options?.archive ? {...answer, archiveChecked: true, archiveSha256: fileHash(options.archive.path)} : answer;
-        }};
-      }
-      if (name === "./scripts/check-native-notices") {
-        return {checkNativeNoticeReview: (/** @type {string|undefined} */ manifestPath, /** @type {string|undefined} */ noticePath) => {
-          calls.push({stage: "notice-review", manifestPath, noticePath});
-          const selectedManifest = manifestPath || noticeManifest, selectedNotice = noticePath || path.join(repoRoot, "THIRD-PARTY-NOTICES.txt"),
-            selected = {version: 1, notice: {bytes: fs.statSync(selectedNotice).size, sha256: fileHash(selectedNotice)},
-              dependencies: noticeDependencies};
-          if (selectedManifest !== noticeManifest || selectedNotice !== noticeBody ||
-              fileHash(selectedManifest) !== pinnedManifestHash || selected.notice.sha256 !== pinnedNoticeHash ||
-              !isDeepStrictEqual(JSON.parse(fs.readFileSync(selectedManifest, "utf8")),
-                {version: 1, notice: noticeSnapshot.notice, dependencies: noticeDependencies})) {
-            throw new Error("fixture native notice review drift");
-          }
-          return selected;
-        }};
-      }
-      if (name === "./scripts/package-native-release") {
-        return {packageNativeRelease: (/** @type {string} */ entrypoint, /** @type {string} */ tool,
-        /** @type {string} */ version, /** @type {unknown} */ spawn, /** @type {any} */ lateNotice) => {
-          calls.push({stage: "package", entrypoint, tool, version, spawn, lateNotice});
-          if (apiOverride === "package") {throw new Error("fixture package rejected");}
-          fs.mkdirSync(lateNotice.output); fs.copyFileSync(mapFixed(lateNotice.notices), path.join(lateNotice.output, "THIRD-PARTY-NOTICES.txt"));
-          if (apiOverride === "mutate-notice-body") {fs.appendFileSync(noticeBody, "changed during package\n");}
-          if (apiOverride === "mutate-notice-manifest") {fs.appendFileSync(noticeManifest, " ");}
-          const archivePath = path.join(lateNotice.output, `mom-v${version}-${target === "win32" ? "win.zip" : "lin.tgz"}`);
-          fs.writeFileSync(archivePath, "fixture archive"); const archiveSha = fileHash(archivePath), artifactPath = path.join("/tmp", roots.packed, binary);
-          const receiptPath = path.join(lateNotice.output, "native-package.json"); fs.writeFileSync(receiptPath, "fixture package receipt\n");
-          return {archive: {path: archivePath, bytes: fs.statSync(archivePath).size, sha256: archiveSha},
-            executable: {path: artifactPath, bytes: packedBytes.length, sha256: packedSha}, buildOnly: true,
-            publicationQualified: false, members: apiOverride === "extra-members" ? [binary, "THIRD-PARTY-NOTICES.txt", "extra"] : [binary, "THIRD-PARTY-NOTICES.txt"]};
-        }};
-      }
-      if (name === "./package.json") {return require("../package.json");}
-      return require(name);
+      return selected;
     },
-  }, {timeout: 10000});
-  t.after(() => fs.rmSync(temp, {recursive: true, force: true}));
-  return {env, calls, execute, temp, roots, inputDirs, rawPath, packedTar, originalTar, originalTree, source, noticeBody, noticeManifest,
-    cmakeDirectory, cmakePath,
-    setTar: (/** @type {string[]} */ value, /** @type {'packed'|'original'} */ kind) => {tarOverride = {kind, members: value};},
-    setExpanded: (/** @type {number} */ value) => {expandedOverride = value;},
-    setApi: (/** @type {string} */ value) => {apiOverride = value;}};
+    auditNativeRelease: /** @type {any} */ ((/** @type {string} */ entrypoint, /** @type {any} */ options) => {
+      calls.push({stage: options?.archive ? "archive-audit" : "build-audit", entrypoint, options});
+      if (apiOverride === "pre-audit" && !options?.archive) {throw new Error("fixture pre-audit rejected");}
+      if (apiOverride === "post-audit" && options?.archive) {throw new Error("fixture archive audit rejected");}
+      const answer = {scope: "build-audit", target, sourceSha256: rawSha, sha256: packedSha, bytes: packedBytes.length,
+        buildEvidencePassed: true, runtimeTested: false, publicationQualified: false};
+      return options?.archive ? {...answer, archiveChecked: true, archiveSha256: fileHash(options.archive.path)} : answer;
+    }),
+    packageNativeRelease: /** @type {any} */ ((/** @type {string} */ entrypoint, /** @type {string} */ tool,
+      /** @type {string} */ version, /** @type {unknown} */ spawn, /** @type {any} */ lateNotice) => {
+      calls.push({stage: "package", entrypoint, tool, version, spawn, lateNotice});
+      fs.mkdirSync(lateNotice.output); fs.copyFileSync(lateNotice.notices, path.join(lateNotice.output, "THIRD-PARTY-NOTICES.txt"));
+      if (apiOverride === "mutate-notice-body") {fs.appendFileSync(noticeBody, "changed during package\n");}
+      if (apiOverride === "mutate-notice-manifest") {fs.appendFileSync(noticeManifest, " ");}
+      const archivePath = path.join(lateNotice.output, `mom-v${version}-${target === "win32" ? "win.zip" : "lin.tgz"}`);
+      fs.writeFileSync(archivePath, "fixture archive"); fs.writeFileSync(path.join(lateNotice.output, "native-package.json"), "fixture package receipt\n");
+      return {archive: {path: archivePath, bytes: fs.statSync(archivePath).size, sha256: fileHash(archivePath)},
+        executable: {path: path.join(restoredPacked, binary), bytes: packedBytes.length, sha256: packedSha}, buildOnly: true,
+        publicationQualified: false, members: apiOverride === "extra-members" ? [binary, "THIRD-PARTY-NOTICES.txt", "extra"] : [binary, "THIRD-PARTY-NOTICES.txt"]};
+    })};
+  return {env, calls, temp, roots, tree, inputDirs, incoming, rawPath, noticeBody, noticeManifest, cmakeDirectory, cmakePath, stateRoot, seal,
+    output: () => fs.readFileSync(path.join(temp, "outputs"), "utf8"),
+    preflight: () => preflightPackage(env, io), package: () => packageNative(env, io),
+    setExpanded: (/** @type {number} */ value) => {expandedOverride = value;}, setApi: (/** @type {string} */ value) => {apiOverride = value;}};
 }
 
-test.describe("SDK-free late native package workflow", {skip: process.platform !== "linux" && "Linux workflow harness"}, () => {
-  test("job is bounded, pinned, and packages without rebuilding or running the candidate", () => {
-    assert.equal(bodies.length, 2); bodies.forEach(body => new Script(body)); assert.ok(cmakeBody);
-    assert.match(workflow, /timeout-minutes: 30/); assert.match(workflow, /timeout-minutes: 25/);
-    assert.match(workflow, /node-version: 24\.15\.0/); assert.match(workflow, /packageNativeRelease\(entrypoint, cmake/);
-    assert.match(workflow, /auditNativeRelease\(entrypoint, \{archive:/);
-    assert.match(cmakeBody, /command -v cmake/); assert.match(cmakeBody, /realpath -e/);
-    assert.match(workflow, /MOM_CMAKE_PATH: \$\{\{ steps\.cmake\.outputs\.path \}\}/);
-    const resolveCmake = workflow.indexOf("- name: Resolve CMake before artifact downloads"),
-      firstDownload = workflow.indexOf("- name: Download the original raw executable"),
-      packageBody = bodies[1] || "", cmakeGuard = packageBody.indexOf("if (!canonicalExecutable(cmake))"),
-      firstArtifactAccess = packageBody.indexOf("for (const directory of Object.values(inputDirs))");
-    assert.ok(resolveCmake >= 0 && resolveCmake < firstDownload);
-    assert.ok(cmakeGuard >= 0 && cmakeGuard < firstArtifactAccess);
-    assert.doesNotMatch(workflow, /cmake\s*=\s*["']\/usr\/bin\/cmake/);
-    assert.doesNotMatch(workflow, /actions\/cache@|npm run build|npm ci|self-hosted|checkNativeExecutable|packNativeEntrypoint/);
-    for (const match of workflow.matchAll(/uses: (actions\/[\w-]+)@([^\s#]+)/g)) {assert.match(match[2] || "", /^[a-f0-9]{40}$/);}
-    assert.match(workflow, /archive: true/); assert.match(workflow, /retention-days: 1/);
-    assert.match(bodies[0] || "", /checkNativeNoticeReview\(\)/);
-    assert.match(bodies[1] || "", /checkNativeNoticeReview\(undefined, noticeBody\)/);
-    assert.match(workflow, /lateNotice = \{output: outputRoot, notices: noticeBody\}/);
-    assert.match(workflow, /native-notice-review\.json/);
-    assert.doesNotMatch(workflow, /NOTICES_BUNDLE|NOTICES_RECEIPT|native-release-notices|native-notices\.json|notice-source bundle/);
-    const platformExpression = ["$", "{{ inputs.platform == 'win32' && 'windows' || 'linux' }}"].join(""),
-      downloadNames = workflow.split("\n").filter(line => line.trimStart().startsWith("name: native-${{ inputs.platform"));
-    assert.equal(downloadNames.length, 4);
-    for (const suffix of ["-executable-", "-packed-executable-", "-packed-build-", "-application-build-"]) {
-      assert.ok(downloadNames.some(line => line.includes(platformExpression + suffix)), `missing platform mapping for ${suffix}`);
-    }
-  });
+/** @param {ReturnType<typeof fixture>} f @param {string[]} stages */
+const reached = (f, stages) => f.calls.some(row => stages.includes(row.stage));
 
+test.describe("SDK-free late native package job", {skip: process.platform !== "linux" && "Linux tar and state paths"}, () => {
   test("resolves canonical PATH CMake before downloads and reuses it for package and archive audit", t => {
     const f = fixture(t), realTool = path.join(f.cmakeDirectory, "cmake-real");
     fs.renameSync(f.cmakePath, realTool); fs.symlinkSync(realTool, f.cmakePath);
-    const result = spawnSync("/bin/bash", ["-c", cmakeBody], {encoding: "utf8",
-      env: {...process.env, PATH: [f.cmakeDirectory, process.env["PATH"] || "/usr/bin:/bin"].join(path.delimiter), GITHUB_OUTPUT: f.env.GITHUB_OUTPUT}});
-    assert.equal(result.status, 0, result.error?.message || result.stderr);
-    const output = fs.readFileSync(f.env.GITHUB_OUTPUT, "utf8"), resolved = output.match(/^path=(.*)$/m)?.[1];
-    assert.equal(resolved, fs.realpathSync(realTool)); assert.notEqual(resolved, "/usr/bin/cmake");
-    f.env.MOM_CMAKE_PATH = resolved;
-    f.execute(0); f.execute(1);
-    const packaged = f.calls.find(row => row.stage === "package"), audit = f.calls.find(row => row.stage === "archive-audit");
-    assert.equal(packaged?.["tool"], resolved); assert.equal(audit?.["options"]?.archive?.tool, resolved);
+    const resolved = f.preflight();
+    assert.equal(resolved, realTool); assert.equal(f.output(), `path=${realTool}\n`);
+    f.env["MOM_CMAKE_PATH"] = resolved; f.package();
+    assert.equal(f.calls.find(row => row.stage === "package")?.["tool"], realTool);
+    assert.equal(f.calls.find(row => row.stage === "archive-audit")?.["options"]?.archive?.tool, realTool);
   });
-
-  test("missing or invalid PATH CMake fails before artifact downloads and package APIs", t => {
-    const missing = fixture(t), emptyBin = path.join(missing.temp, "empty-bin"); fs.mkdirSync(emptyBin);
-    fs.writeFileSync(missing.env.GITHUB_OUTPUT, "");
-    const missingResult = spawnSync("/bin/bash", ["-c", cmakeBody], {encoding: "utf8",
-      env: {...process.env, PATH: emptyBin, GITHUB_OUTPUT: missing.env.GITHUB_OUTPUT}});
-    assert.notEqual(missingResult.status, 0); assert.match(missingResult.stderr || "", /CMake is required/);
-    assert.equal(fs.readFileSync(missing.env.GITHUB_OUTPUT, "utf8"), ""); assert.equal(missing.calls.length, 0);
-
-    const invalid = fixture(t), invalidBin = path.join(invalid.temp, "invalid-bin"), invalidTool = path.join(invalidBin, "cmake");
-    fs.mkdirSync(invalidBin); fs.writeFileSync(invalidTool, "#!/bin/sh\nprintf 'cmake version 3.bad\\n'\n", {mode: 0o755});
-    fs.writeFileSync(invalid.env.GITHUB_OUTPUT, "");
-    const invalidResult = spawnSync("/bin/bash", ["-c", cmakeBody], {encoding: "utf8",
-      env: {...process.env, PATH: [invalidBin, process.env["PATH"] || "/usr/bin:/bin"].join(path.delimiter), GITHUB_OUTPUT: invalid.env.GITHUB_OUTPUT}});
-    assert.notEqual(invalidResult.status, 0); assert.match(invalidResult.stderr || "", /invalid version banner/);
-    assert.equal(fs.readFileSync(invalid.env.GITHUB_OUTPUT, "utf8"), ""); assert.equal(invalid.calls.length, 0);
+  test("missing, failing or malformed PATH CMake fails before artifact access", t => {
+    /** @type {Array<[string, string, RegExp]>} */
+    const cases = [["empty", "", /CMake is required/], ["failing", "#!/bin/sh\nexit 3\n", /failed its version check/],
+      ["malformed", "#!/bin/sh\nprintf 'cmake version 3.bad\\n'\n", /invalid version banner/]];
+    for (const [name, script, expected] of cases) {
+      const f = fixture(t), bin = path.join(f.temp, name + "-bin"); fs.mkdirSync(bin);
+      if (script) {fs.writeFileSync(path.join(bin, "cmake"), script, {mode: 0o755});}
+      f.env["PATH"] = script ? [bin, process.env["PATH"] || "/usr/bin:/bin"].join(path.delimiter) : bin;
+      assert.throws(() => f.preflight(), expected); assert.equal(f.output(), "");
+      assert.deepEqual(f.calls.map(row => row.stage), ["notice-review"]);
+    }
   });
-
-  test("package-body CMake guard has no missing-path or symlink bypass", t => {
-    const missing = fixture(t); missing.execute(0); Reflect.deleteProperty(missing.env, "MOM_CMAKE_PATH");
-    assert.throws(() => missing.execute(1), /Resolved CMake path is missing/);
-    assert.equal(missing.calls.some(row => ["extract", "package", "archive-audit"].includes(row.stage)), false);
-
-    const linked = fixture(t), linkPath = path.join(linked.cmakeDirectory, "cmake-link"); linked.execute(0);
-    fs.symlinkSync(linked.cmakePath, linkPath); linked.env.MOM_CMAKE_PATH = linkPath;
-    assert.throws(() => linked.execute(1), /Resolved CMake path is missing/);
-    assert.equal(linked.calls.some(row => ["extract", "package", "archive-audit"].includes(row.stage)), false);
+  test("package CMake guard has no missing-path or symlink bypass", t => {
+    const missing = fixture(t); Reflect.deleteProperty(missing.env, "MOM_CMAKE_PATH");
+    assert.throws(() => missing.package(), /Resolved CMake path is missing/);
+    assert.equal(reached(missing, ["extract", "package", "archive-audit"]), false);
+    const linked = fixture(t), linkPath = path.join(linked.cmakeDirectory, "cmake-link");
+    fs.symlinkSync(linked.cmakePath, linkPath); linked.env["MOM_CMAKE_PATH"] = linkPath;
+    assert.throws(() => linked.package(), /Resolved CMake path is missing/);
+    assert.equal(reached(linked, ["extract", "package", "archive-audit"]), false);
   });
-
   for (const target of ["linux", "win32"]) {
     test(`${target} restores the exact pinned provenance and uses only the existing package/audit APIs`, t => {
-      const f = fixture(t, /** @type {'linux'|'win32'} */ (target)); f.execute(0); f.execute(1);
-      const stages = f.calls.map(row => row.stage);
+      const f = fixture(t, /** @type {'linux'|'win32'} */ (target)); f.preflight(); f.package();
+      const stages = f.calls.map(row => row.stage), platform = target === "win32" ? "windows" : "linux";
       assert.deepEqual(stages.filter(stage => stage === "extract"), ["extract", "extract"]);
       assert.deepEqual(stages.filter(stage => stage.endsWith("audit")), ["build-audit", "archive-audit"]);
       const packaged = f.calls.find(row => row.stage === "package"); assert.ok(packaged);
-      assert.equal(packaged["entrypoint"], path.join("/tmp", f.roots.packed, "entrypoint.json"));
-      assert.equal(packaged["tool"], f.cmakePath); assert.equal(packaged["spawn"], undefined);
+      assert.equal(packaged["entrypoint"], path.join(f.stateRoot, f.roots.packed, "entrypoint.json"));
+      assert.equal(packaged["tool"], f.cmakePath); assert.equal(packaged["spawn"], undefined); assert.equal(packaged["version"], "1.2.3");
       assert.equal(f.calls.find(row => row.stage === "archive-audit")?.["options"]?.archive?.tool, f.cmakePath);
-      assert.deepEqual(Object.keys(packaged["lateNotice"]).sort(), ["notices", "output"]);
-      assert.equal(packaged["lateNotice"].notices, f.noticeBody);
+      assert.deepEqual(packaged["lateNotice"], {output: path.join(f.temp, `native-${platform}-package-output-${suffix}`), notices: f.noticeBody});
       const reviews = f.calls.filter(row => row.stage === "notice-review");
       assert.deepEqual(reviews.map(row => [row["manifestPath"], row["noticePath"]]), [[undefined, undefined], [undefined, f.noticeBody]]);
-      const metadataName = "native-" + (target === "win32" ? "windows" : "linux") + "-package-metadata-123456789-1";
-      const reviewAudit = JSON.parse(fs.readFileSync(path.join(packaged["lateNotice"].output, metadataName,
-        "native-notice-review.json"), "utf8"));
-      assert.deepEqual(listState(path.join(f.temp, metadataName + ".tar"), [metadataName], 60000)
-        .map(name => name.replace(/\/$/, "")).sort(), [metadataName, ...["build-audit.json", "native-package.json",
-        "native-notice-review.json"].map(name => metadataName + "/" + name)].sort());
+      const metadataName = `native-${platform}-package-metadata-${suffix}`, metadataTar = path.join(f.temp, metadataName + ".tar"),
+        archiveFile = path.join(packaged["lateNotice"].output, `mom-v1.2.3-${target === "win32" ? "win.zip" : "lin.tgz"}`);
+      const reviewAudit = JSON.parse(fs.readFileSync(path.join(packaged["lateNotice"].output, metadataName, "native-notice-review.json"), "utf8"));
+      assert.deepEqual(realCi.listState(metadataTar, [metadataName], 60000).map(name => name.replace(/\/$/, "")).sort(),
+        [metadataName, ...["build-audit.json", "native-package.json", "native-notice-review.json"].map(name => metadataName + "/" + name)].sort());
       assert.equal(reviewAudit.manifest.sha256, fileHash(f.noticeManifest));
       assert.deepEqual(reviewAudit.snapshot, {version: 1, notice: {bytes: fs.statSync(f.noticeBody).size, sha256: fileHash(f.noticeBody)},
         dependencies: {fixture: {revision: "a".repeat(40)}}});
-      assert.match(fs.readFileSync(f.env.GITHUB_OUTPUT, "utf8"), /archive_sha256=[a-f0-9]{64}/);
-      assert.match(fs.readFileSync(f.env.GITHUB_OUTPUT, "utf8"), /metadata_artifact_name=native-.*-package-metadata-123456789-1\.tar/);
-      assert.match(fs.readFileSync(f.env.GITHUB_STEP_SUMMARY, "utf8"), /no candidate execution or publication qualification/);
+      assert.equal(f.output(), `path=${f.cmakePath}\narchive_artifact_name=native-${platform}-application-package-${suffix}\n` +
+        `archive_sha256=${fileHash(archiveFile)}\narchive_file=${archiveFile}\n` +
+        `metadata_artifact_name=${metadataName}.tar\nmetadata_file=${metadataTar}\n`);
     });
   }
-
-  test("rejects another run attempt before unpacking the same-run build artifact", t => {
-    const f = fixture(t); Reflect.set(f.env, "GITHUB_RUN_ATTEMPT", "2");
-    f.execute(0);
-    assert.throws(() => f.execute(1), /packed-build bundle contents/);
-    assert.equal(f.calls.filter(row => row.stage === "extract").length, 0);
+  test("rejects malformed platform, run identity, workspace and missing external pins before artifact access", t => {
+    for (const [key, value] of [["NATIVE_PLATFORM", "darwin"], ["NATIVE_PLATFORM", "windows"], ["GITHUB_RUN_ATTEMPT", "0"],
+      ["ORIGINAL_HANDOFF_SHA256", ""], ["PACKED_BUILD_BUNDLE_SHA256", "0".repeat(63)], ["GITHUB_WORKSPACE", "relative"]]) {
+      const f = fixture(t, "win32"); f.env[key || ""] = value;
+      assert.throws(() => f.preflight(), /exact platform, workspace and build SHA-256 pins/);
+      assert.throws(() => f.package(), /Late native package paths, pins, platform or run identity/);
+      assert.equal(f.calls.length, 0);
+    }
+    assert.equal(packagePlan(fixture(t, "win32").env)?.platform, "windows");
   });
-  test("rejects malformed platform and missing external pins before artifact access", t => {
-    const f = fixture(t); Reflect.set(f.env, "NATIVE_PLATFORM", "darwin");
-    assert.throws(() => f.execute(0), /exact platform, workspace and build SHA-256 pins/); Reflect.set(f.env, "NATIVE_PLATFORM", "linux");
-    Reflect.set(f.env, "ORIGINAL_HANDOFF_SHA256", ""); assert.throws(() => f.execute(0), /exact platform, workspace and build SHA-256 pins/);
-    assert.equal(f.calls.length, 0);
-  });
-  test("rejects the windows alias in both guards while retaining win32 as the canonical Windows input", t => {
-    const f = fixture(t, "win32"); Reflect.set(f.env, "NATIVE_PLATFORM", "windows");
-    assert.throws(() => f.execute(0), /exact platform, workspace and build SHA-256 pins/);
-    assert.throws(() => f.execute(1), /Late native package paths, pins, platform or run identity/);
-    assert.equal(f.calls.length, 0);
-    const g = fixture(t, "win32"); g.execute(0);
-    assert.deepEqual(g.calls.map(row => row.stage), ["notice-review"]);
+  test("rejects another run attempt and stray incoming files before unpacking", t => {
+    const f = fixture(t); f.env["GITHUB_RUN_ATTEMPT"] = "2";
+    assert.throws(() => f.package(), /incoming build bundle contents/); assert.equal(reached(f, ["extract"]), false);
+    const g = fixture(t); fs.writeFileSync(path.join(g.incoming, "extra.tar"), "x");
+    assert.throws(() => g.package(), /incoming build bundle contents/); assert.equal(reached(g, ["extract"]), false);
   });
   test("rejects an unexpected raw download member and raw byte tampering", t => {
-    const f = fixture(t); fs.writeFileSync(path.join(f.inputDirs["raw"], "extra"), "not raw"); f.execute(0);
-    assert.throws(() => f.execute(1), /raw executable artifact contents/);
-    const g = fixture(t); fs.appendFileSync(g.rawPath, "changed"); g.execute(0);
-    assert.throws(() => g.execute(1), /raw executable/); assert.equal(g.calls.filter(row => row.stage === "extract").length, 0);
+    const f = fixture(t); fs.writeFileSync(path.join(f.inputDirs.raw, "extra"), "not raw");
+    assert.throws(() => f.package(), /raw executable artifact contents/);
+    const g = fixture(t); fs.appendFileSync(g.rawPath, "changed");
+    assert.throws(() => g.package(), /raw executable/); assert.equal(reached(g, ["extract"]), false);
   });
-  test("rejects extra packed-build/original members and oversized packed expansion before extraction", t => {
-    const f = fixture(t); f.setTar(["native-linux-packed-build-123456789-1/", "unexpected"], "packed"); f.execute(0);
-    assert.throws(() => f.execute(1), /missing or unexpected members/); assert.equal(f.calls.filter(row => row.stage === "extract").length, 0);
-    const g = fixture(t); g.setTar(["native-linux-application-build-123456789-1/", "bad"], "original"); g.execute(0);
-    assert.throws(() => g.execute(1), /missing or unexpected members/); assert.equal(g.calls.filter(row => row.stage === "extract").length, 0);
-    const h = fixture(t); h.setExpanded(129 << 20); h.execute(0);
-    assert.throws(() => h.execute(1), /bounded expansion limit/); assert.equal(h.calls.filter(row => row.stage === "extract").length, 0);
+  test("rejects extra packed-build/original members and oversized expansion before extraction", t => {
+    for (const kind of /** @type {Array<'packed'|'original'>} */ (["packed", "original"])) {
+      const f = fixture(t); fs.writeFileSync(path.join(f.tree[kind], "unexpected"), "x"); f.seal();
+      assert.throws(() => f.package(), /missing or unexpected members/); assert.equal(reached(f, ["extract"]), false);
+    }
+    const h = fixture(t); h.setExpanded(129 << 20);
+    assert.throws(() => h.package(), /bounded expansion limit/); assert.equal(reached(h, ["extract"]), false);
   });
-  test("rejects a false original-to-packed source chain", t => {
-    const f = fixture(t); f.execute(0);
-    const entry = path.join(f.source.packed, "entrypoint.json"), candidate = JSON.parse(fs.readFileSync(entry, "utf8"));
-    candidate.sourceEntrypoint.sha256 = "0".repeat(64); fs.writeFileSync(entry, JSON.stringify(candidate, null, 2) + "\n");
-    assert.throws(() => f.execute(1), /Packed artifact, original handoff, raw executable or retained packing evidence/);
+  test("rejects a changed bundle against its producer pin and a false original-to-packed source chain", t => {
+    const f = fixture(t), pinned = f.env["PACKED_BUILD_BUNDLE_SHA256"];
+    fs.writeFileSync(path.join(f.tree.packed, "pack.log"), "other log\n"); f.seal(); f.env["PACKED_BUILD_BUNDLE_SHA256"] = pinned;
+    assert.throws(() => f.package(), /packed-build bundle/); assert.equal(reached(f, ["extract"]), false);
+    const g = fixture(t), entry = path.join(g.tree.packed, "entrypoint.json"), candidate = JSON.parse(fs.readFileSync(entry, "utf8"));
+    candidate.sourceEntrypoint.sha256 = "0".repeat(64); fs.writeFileSync(entry, JSON.stringify(candidate, null, 2) + "\n"); g.seal();
+    assert.throws(() => g.package(), /Packed artifact, original handoff, raw executable or retained packing evidence/);
   });
   test("pre-package audit failure blocks packaging and archive upload outputs", t => {
-    const f = fixture(t); f.setApi("pre-audit"); f.execute(0); assert.throws(() => f.execute(1), /fixture pre-audit rejected/);
-    assert.equal(f.calls.some(row => row.stage === "package"), false); assert.equal(fs.readFileSync(f.env.GITHUB_OUTPUT, "utf8"), "");
+    const f = fixture(t); f.setApi("pre-audit"); assert.throws(() => f.package(), /fixture pre-audit rejected/);
+    assert.equal(reached(f, ["package"]), false); assert.equal(f.output(), "");
   });
   test("package result cannot broaden its member set or skip archive audit", t => {
-    const f = fixture(t); f.setApi("extra-members"); f.execute(0); assert.throws(() => f.execute(1), /different bytes or members/);
-    assert.equal(f.calls.some(row => row.stage === "archive-audit"), false);
-    const g = fixture(t); g.setApi("post-audit"); g.execute(0); assert.throws(() => g.execute(1), /fixture archive audit rejected/);
-    assert.equal(fs.readFileSync(g.env.GITHUB_OUTPUT, "utf8"), "");
+    const f = fixture(t); f.setApi("extra-members"); assert.throws(() => f.package(), /different bytes or members/);
+    assert.equal(reached(f, ["archive-audit"]), false);
+    const g = fixture(t); g.setApi("post-audit"); assert.throws(() => g.package(), /fixture archive audit rejected/);
+    assert.equal(g.output(), "");
   });
   test("notice review drift blocks before downloads and again at the tracked body path", t => {
     const f = fixture(t); fs.appendFileSync(f.noticeManifest, " ");
-    assert.throws(() => f.execute(0), /fixture native notice review drift/);
+    assert.throws(() => f.preflight(), /fixture native notice review drift/);
     assert.deepEqual(f.calls.map(row => row.stage), ["notice-review"]);
-    const g = fixture(t); g.execute(0); fs.appendFileSync(g.noticeBody, "changed after preflight\n");
-    assert.throws(() => g.execute(1), /fixture native notice review drift/);
-    assert.equal(g.calls.some(row => row.stage === "package"), false);
-    assert.equal(g.calls.filter(row => row.stage === "extract").length, 0);
+    const g = fixture(t); g.preflight(); fs.appendFileSync(g.noticeBody, "changed after preflight\n");
+    assert.throws(() => g.package(), /fixture native notice review drift/);
+    assert.equal(reached(g, ["package", "extract"]), false);
   });
   test("body and review manifest mutation during package generation blocks archive admission", t => {
     for (const mutation of ["mutate-notice-body", "mutate-notice-manifest"]) {
-      const f = fixture(t); f.setApi(mutation); f.execute(0);
-      assert.throws(() => f.execute(1), /changed during packaging/);
-      assert.equal(f.calls.some(row => row.stage === "archive-audit"), false);
-      assert.equal(fs.readFileSync(f.env.GITHUB_OUTPUT, "utf8"), "");
+      const f = fixture(t); f.setApi(mutation);
+      assert.throws(() => f.package(), /changed during packaging/);
+      assert.equal(reached(f, ["archive-audit"]), false); assert.equal(f.output(), "");
     }
+  });
+  test("the CLI reports failures with the native-ci prefix", () => {
+    const result = spawnSync(process.execPath, [path.join(__dirname, "../scripts/ci/package-native.js"), "unknown"],
+      {encoding: "utf8", env: {PATH: process.env["PATH"] || ""}});
+    assert.equal(result.status, 1); assert.match(result.stderr, /^\[native-ci\] Usage: /);
   });
 });

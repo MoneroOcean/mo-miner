@@ -257,6 +257,14 @@ function hasExactKeys(value, keys) {
     Object.keys(value).sort().join("\0") === [...keys].sort().join("\0");
 }
 
+/** CI producers and their same-run consumers share the workflow's validated build parallelism.
+ * @param {NodeJS.ProcessEnv} [environment] */
+function ciBuildJobs(environment = process.env) {
+  const jobs = environment["MOM_BUILD_JOBS"] || "";
+  if (!["2", "4"].includes(jobs)) {throw new Error("Native CI needs MOM_BUILD_JOBS set to 2 or 4");}
+  return jobs;
+}
+
 /** @returns {{suffix: string, source: string, sourceName: string, ioSource: string, ioSourceName: string,
  * zstdSource: string, zstdSourceName: string, zstdSdkRoot: string, zstdSdkName: string,
  * linuxJitResourcesRoot: string, linuxJitResourcesName: string,
@@ -503,7 +511,7 @@ function buildAcppCudaHipSdk(paths) {
     state.incomingLinuxTar, state.incomingCudaInputsTar]) {fs.unlinkSync(incoming);}
   const tools = {cc: canonicalExecutable("/opt/intel/oneapi/compiler/2026.2/bin/icx"),
     cxx: canonicalExecutable("/opt/intel/oneapi/compiler/2026.2/bin/icpx")};
-  const command = acppCudaHipSdkBuildCommand(state, tools), buildEnv = {...sourceEnv, MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: "2",
+  const command = acppCudaHipSdkBuildCommand(state, tools), buildEnv = {...sourceEnv, MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: ciBuildJobs(paths.env),
     MOM_AOT_SYCL_BACKEND: "cuda-hip", MOM_AOT_ROCM_STATIC_ROOT: state.rocmSdk, MOM_AOT_LLD_ROOT: state.llvmSdk,
     ROCM_DEVICE_LIBS_PATH: state.deviceBitcode, MOM_AOT_COMGR_RECEIPT: state.comgrReceipt, MOM_AOT_OPENMP_LIBRARY: state.openmpLibrary};
   runNode(command.script, command.args, buildEnv, 45 * 60 * 1000);
@@ -1773,7 +1781,7 @@ function buildLinuxNativeComponent(paths, profile) {
     linuxNativeComponentChildTimeout(Number(epoch) * 1000, 15 * 60 * 1000, Date.now() + 10 * 60 * 1000));
   const handoff = restoreLinuxNativeDescriptorHandoff(descriptorState, paths, preflightArchives);
   fs.mkdirSync(component.root, {mode: 0o700}); fs.mkdirSync(path.join(component.root, "logs"));
-  const {nativeStage} = require("./build-native-release"), environment = {...paths.env, MOM_BUILD_JOBS: "2"},
+  const {nativeStage} = require("./build-native-release"), environment = {...paths.env, MOM_BUILD_JOBS: ciBuildJobs(paths.env)},
     buildTimeout = Math.min(35 * 60 * 1000, Number(epoch) * 1000 - Date.now() - 5 * 60 * 1000);
   if (!Number.isSafeInteger(buildTimeout) || buildTimeout < 5 * 60 * 1000) {throw new Error("Native component deadline leaves insufficient bounded build time");}
   const buildDeadline = Date.now() + buildTimeout;
@@ -3172,7 +3180,7 @@ function buildRocmComgrFromInputs(state, tools, environment, verifyLlvmAdmission
     generatedHeader: {path: relative(generatedHeader), sha256: fileHash(generatedHeader)},
     files: headerPackage.files, requiredHiprtcHeaders: headerPackage.required.map(file => path.relative(state.hipIncludeRoot, file).split(path.sep).join("/")),
     buildOnly: true, publicationQualified: false}, null, 2) + "\n", {flag: "wx", mode: 0o600});
-  const commands = rocmComgrBuildCommands(state, tools), buildEnv = {...environment, MOM_BUILD_JOBS: "2",
+  const commands = rocmComgrBuildCommands(state, tools), buildEnv = {...environment, MOM_BUILD_JOBS: ciBuildJobs(environment),
     GIT_ALLOW_PROTOCOL: "file", GIT_NO_LAZY_FETCH: "1", GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0"};
   fs.writeFileSync(state.resourcesConfig, JSON.stringify(rocmResourcesConfig(state, tools), null, 2) + "\n", {flag: "wx", mode: 0o600});
   try {
@@ -3524,7 +3532,7 @@ function buildRocmHostSdk(paths) {
   fs.mkdirSync(state.hostSdkRoot, {mode: 0o700});
   fs.writeFileSync(state.configFile, JSON.stringify(config, null, 2) + "\n", {flag: "wx", mode: 0o600});
   fs.writeFileSync(path.join(state.hostSdkRoot, "python-parser-install.json"), JSON.stringify(parser, null, 2) + "\n", {flag: "wx", mode: 0o600});
-  const buildEnv = {...env, MOM_BUILD_JOBS: "2", MOM_AOT_BUILD_ONLY: "1"};
+  const buildEnv = {...env, MOM_BUILD_JOBS: ciBuildJobs(env), MOM_AOT_BUILD_ONLY: "1"};
   runNode("scripts/build-native-rocm-host-runtime.js", [state.configFile, state.runtimeOutput], buildEnv, 32 * 60 * 1000);
   const admitted = auditRocmHostSdk(state, config);
   captureRocmHostNoticeSources(state, admitted, paths.env);
@@ -4407,10 +4415,10 @@ function windowsHostSdkStatePaths(environment = process.env, platform = process.
     outputName = "native-windows-host-sdk-" + suffix, workRoot = path.join(canonicalTemp, workName),
     archiveRoot = path.join(workRoot, "archives"), sdkOutput = path.join(workRoot, outputName),
     metadataTar = path.join(canonicalTemp, outputName + "-metadata.tar");
-  if (environment["MOM_AOT_BUILD_ONLY"] !== "1" || environment["MOM_BUILD_JOBS"] !== "2" ||
+  if (environment["MOM_AOT_BUILD_ONLY"] !== "1" || environment["MOM_BUILD_JOBS"] !== ciBuildJobs(environment) ||
       environment["MOM_NATIVE_WINDOWS_HOST_SDK_WORK_ROOT"] !== workRoot || environment["MOM_NATIVE_WINDOWS_HOST_SDK_ARCHIVE_DIR"] !== archiveRoot ||
       environment["MOM_NATIVE_WINDOWS_HOST_SDK_OUTPUT_DIR"] !== sdkOutput || environment["MOM_NATIVE_WINDOWS_HOST_SDK_METADATA_TAR"] !== metadataTar) {
-    throw new Error("Windows host-SDK CI paths, two-job envelope, or build-only mode differ from this run");
+    throw new Error("Windows host-SDK CI paths, job envelope, or build-only mode differ from this run");
   }
   return {suffix, runnerTemp: canonicalTemp, workRoot, workName, archiveRoot, archiveName: "archives", sdkOutput, outputName, metadataTar,
     deadlineEpoch: environment["MOM_NATIVE_WINDOWS_HOST_SDK_DEADLINE_EPOCH"] || ""};
@@ -4491,7 +4499,7 @@ function retainWindowsHostSdkMetadata(state, fetchReceiptHash) {
 
 /** Fetch the 42 pinned vendor archives, compose the selected roots offline, and upload receipts only. */
 function buildWindowsHostSdkSourcesCi() {
-  const state = windowsHostSdkStatePaths(), environment = {...process.env, MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: "2"},
+  const state = windowsHostSdkStatePaths(), environment = {...process.env, MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: ciBuildJobs()},
     lock = windowsHostSdkCatalog(), outputFile = process.env["GITHUB_OUTPUT"] || "", summary = process.env["GITHUB_STEP_SUMMARY"] || "";
   if (Object.keys(lock.packages).length + Object.keys(lock.cabinets).length !== 42 || !path.isAbsolute(outputFile) || !path.isAbsolute(summary)) {
     throw new Error("Windows host-SDK CI requires the fixed 42-archive cohort and workflow output files");
@@ -5237,8 +5245,8 @@ function windowsNativeLlvmCiStatePaths(environment = process.env, platform = pro
   const runDeadlineEpoch = environment["MOM_NATIVE_WINDOWS_LLVM_RUN_DEADLINE_EPOCH"] || "", jobId = environment["GITHUB_JOB"] || "";
   if (platform !== "linux" || architecture !== "x64" || !path.isAbsolute(runnerTemp) ||
       !/^[0-9]{1,20}$/.test(run) || !/^[1-9][0-9]{0,5}$/.test(attempt) ||
-      environment["MOM_AOT_BUILD_ONLY"] !== "1" || environment["MOM_BUILD_JOBS"] !== "2") {
-    throw new Error("Windows LLVM CI needs a Linux x64 runner, exact run attempt, build-only mode and two jobs");
+      environment["MOM_AOT_BUILD_ONLY"] !== "1" || environment["MOM_BUILD_JOBS"] !== ciBuildJobs(environment)) {
+    throw new Error("Windows LLVM CI needs a Linux x64 runner, exact run attempt, build-only mode and a valid job count");
   }
   if (!runDeadlineEpoch || !/^[A-Za-z0-9_-]{1,64}$/.test(jobId)) {
     throw new Error("Windows LLVM CI needs its original run deadline and a safe bounded GITHUB_JOB identity");
@@ -5432,7 +5440,7 @@ function windowsNativeLlvmCiPreflight(args, environment = process.env, platform 
     descriptorHash = fileHash(state.descriptor), plan = receipt.plan;
   windowsNativeLlvmCiRejectReportInputOverlap(reports, [repo, state.descriptor, plan?.archive || "",
     plan?.tools?.cmake || "", plan?.tools?.ninja || ""]);
-  if (!plan || plan.output !== state.output || plan.descriptorFile !== state.descriptor || plan.jobs !== 2 || plan.reuse !== undefined ||
+  if (!plan || plan.output !== state.output || plan.descriptorFile !== state.descriptor || plan.jobs !== Number(ciBuildJobs(environment)) || plan.reuse !== undefined ||
       receipt.role !== "windows-llvm21-host-sdk" || receipt.stage !== "configured" || receipt.buildOnly !== true || receipt.compiled !== false ||
       receipt.executed !== false || receipt.publicationQualified !== false || receipt.fingerprints?.[state.descriptor] !== descriptorHash ||
       descriptorStat.nlink !== 1 || receiptStat.nlink !== 1) {
@@ -5471,11 +5479,11 @@ function buildWindowsNativeLlvmCi(args, environment = process.env) {
     const childTimeoutMs = Math.min(input.timeoutMs,
       windowsNativeLlvmCiDeadlineBudget(state.deadlineEpoch, phase, Date.now(), state.runDeadlineEpoch).timeoutMs);
     runNodeProcessGroup(builder, ["configure", state.descriptor, input.archive, state.output,
-      input.tools.cmake, input.tools.ninja, "2"], buildEnvironment, childTimeoutMs);
+      input.tools.cmake, input.tools.ninja, ciBuildJobs(buildEnvironment)], buildEnvironment, childTimeoutMs);
     const receipt = windowsControllerReadJson(state.result, 64 << 20, "Windows LLVM configure receipt");
     windowsNativeLlvmCiDeadlineRecord(state);
     if (receipt.role !== "windows-llvm21-host-sdk" || receipt.stage !== "configured" || receipt.plan?.output !== state.output ||
-        receipt.plan?.descriptorFile !== state.descriptor || receipt.plan?.jobs !== 2 || receipt.compiled !== false ||
+        receipt.plan?.descriptorFile !== state.descriptor || receipt.plan?.jobs !== Number(ciBuildJobs(buildEnvironment)) || receipt.compiled !== false ||
         receipt.buildOnly !== true || receipt.executed !== false || receipt.publicationQualified !== false ||
         fileHash(state.descriptor) !== input.descriptorSha256 || fileHash(input.descriptorSource) !== input.descriptorSha256 ||
         fileHash(input.archive) !== input.archiveSha256 || fileHash(input.tools.cmake) !== input.toolHashes.cmake ||
@@ -6111,6 +6119,36 @@ function buildWindowsControllerHermesCi() {
   return packaged;
 }
 
+/** Bound one child by both its own cap and the merged job's deadline (job start + timeout - margin).
+ * @param {NodeJS.ProcessEnv} environment @param {number} maximumMs */
+function ciJobChildTimeout(environment, maximumMs) {
+  const epoch = environment["MOM_CI_DEADLINE_EPOCH"] || "", timeoutMs = Math.min(maximumMs, Number(epoch) * 1000 - Date.now());
+  if (!/^\d{10}$/.test(epoch) || !Number.isSafeInteger(timeoutMs) || timeoutMs < 60 * 1000) {
+    throw new Error("Native CI job deadline is malformed or leaves no time for the next child");
+  }
+  return timeoutMs;
+}
+
+/** Cold-build the Linux LLVM SDK in one job: one source restore and oneAPI provisioning, then the
+ * maintained configure, build-phase, install and audit order without intermediate state transfers.
+ * Each child keeps its existing cap and is also bounded by the job deadline.
+ * @param {ReturnType<typeof ciPaths>} paths */
+function buildLinuxLlvmCi(paths) {
+  const builder = "scripts/build-native-llvm21-sdk.js", env = paths.env,
+    phases = [...Object.values(linuxLlvmCiStageDefinitions).flatMap(row => row.phases || [row.artifactStage]), "lld", "tools"];
+  ciJobChildTimeout(env, 60 * 1000);
+  restorePrior(paths, "sources", false);
+  provisionOneApi(paths);
+  if (fs.existsSync(paths.sdkRoot)) {throw new Error("Native SDK configure output already exists");}
+  fs.mkdirSync(paths.sdkRoot, {mode: 0o700});
+  const command = linuxLlvmConfigureCommand(paths);
+  runNode(command.script, command.args, env, ciJobChildTimeout(env, 50 * 60 * 1000));
+  for (const phase of phases) {runNode(builder, ["build", paths.output, phase], env, ciJobChildTimeout(env, 50 * 60 * 1000));}
+  runNode(builder, ["install", paths.output], env, ciJobChildTimeout(env, 50 * 60 * 1000));
+  runNode(builder, ["audit", paths.output], env, ciJobChildTimeout(env, 15 * 60 * 1000));
+  packState(path.join(paths.runnerTemp, "native-linux-llvm21-sdk-" + paths.suffix + ".tar"), temp, [paths.sourceName, paths.sdkName]);
+}
+
 /** @param {string[]} args */
 async function runStage(args) {
   const stage = args[0] || "";
@@ -6136,6 +6174,7 @@ async function runStage(args) {
     admitLinuxLlvmOutput(paths);
     return;
   }
+  if (stage === "linux-llvm") {buildLinuxLlvmCi(paths); return;}
   if (stage === "linux-llvm-installed-sdk") {buildLinuxLlvmSdkHandoff(paths); return;}
   if (stage === "sources") {
     runNode("scripts/fetch-native-sdk-sources.js", ["build", paths.source, "--allow-network"], paths.env, 25 * 60 * 1000);
@@ -6207,7 +6246,7 @@ async function runStage(args) {
   packCurrent(paths, outputStageName(stage));
 }
 
-module.exports = {safeRelative, listState, packState, extractState, ciPaths, provisionOneApi, verifyIoSource, verifyLinuxLlvmAdmissionCi, buildLinuxLlvmGroupCi,
+module.exports = {safeRelative, listState, packState, extractState, ciBuildJobs, ciPaths, provisionOneApi, verifyIoSource, verifyLinuxLlvmAdmissionCi, buildLinuxLlvmGroupCi,
   linuxLlvmCiStagePlan,
   admitLinuxLlvmOutput, linuxOpenSslTools, buildLinuxLlvmToolsCi, buildLinuxLlvmSdkHandoff,
   windowsNativeCoreStatePaths, windowsNativeCoreDescriptor, windowsNativeCoreDeadlineBudget, auditWindowsNativeCoreOutput, packWindowsNativeCoreHandoff, buildWindowsNativeCoreCi,
@@ -6256,7 +6295,8 @@ module.exports = {safeRelative, listState, packState, extractState, ciPaths, pro
   writeLinuxNativeComponentManifest, partitionLinuxNativeDownloads, restoreLinuxNativeDescriptorHandoff,
   buildLinuxNativeComponent, auditLinuxNativeComponentTree, restoreLinuxNativeComponents,
   linuxNativeApplicationStatePaths, linuxNativeApplicationBuildCommand, auditLinuxNativeApplicationEntrypoint, buildLinuxNativeApplication,
-  staticNvrtcLlvmConfig, packNvrtcVerification, verifyNvrtcTarget, runStage, outputStageName};
+  staticNvrtcLlvmConfig, packNvrtcVerification, verifyNvrtcTarget, ciJobChildTimeout, buildLinuxLlvmCi, runStage, outputStageName,
+  runNodeProcessGroup};
 
 if (require.main === module) {
   try {
@@ -6272,7 +6312,7 @@ if (require.main === module) {
       });
     } else {
       // Linux LLVM stages come from their table; their builder phases are not stages.
-      const stages = ["sources", "acpp-sources", "linux-sources", "linux-llvm-admission", "linux-llvm-installed-sdk", "linux-llvm-tools",
+      const stages = ["sources", "acpp-sources", "linux-sources", "linux-llvm", "linux-llvm-admission", "linux-llvm-installed-sdk", "linux-llvm-tools",
         "linux-native-component <component>", "windows-native-core", "windows-host-sdk-sources", "windows-controller-io",
         "windows-controller-hermes", "windows-native-gpu <profile> <config.json> <config-sha256>",
         "windows-native-llvm21-descriptor <input.json> <sha256>", "dpcpp-cuda-inputs", "gnu-headers", "windows-gnu-headers",

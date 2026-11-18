@@ -298,14 +298,13 @@ test.describe("Native deployment dispatcher", () => {
     const temp = path.join(root, "temp");
     const release = path.join(root, "fixture-release");
     const scripts = path.join(root, "scripts");
-    const vectors = path.join(root, ".github", "workflows", "scripts");
     try {
-      for (const directory of [temp, release, scripts, vectors]) {fs.mkdirSync(directory, {recursive: true});}
+      for (const directory of [temp, release, scripts]) {fs.mkdirSync(directory, {recursive: true});}
       fs.writeFileSync(path.join(root, "mom-v9.2.1-win.zip"), "fixture archive; expansion substituted");
       fs.writeFileSync(path.join(release, "install.bat"),
         "@echo off\r\necho FIXTURE_INSTALL\r\necho FIXTURE_INSTALL_STDERR 1>&2\r\nexit /b %MOM_FIXTURE_INSTALL_EXIT%\r\n");
       fs.writeFileSync(path.join(root, "README.md"), "fixture readme");
-      fs.writeFileSync(path.join(vectors, "test-release-windows.ps1"),
+      fs.writeFileSync(path.join(scripts, "test-release-windows.ps1"),
         "param([string]$Archive,[string]$Suite)\nWrite-Output 'FIXTURE_VECTOR'\nexit ([int]$env:MOM_FIXTURE_VECTOR_EXIT)\n");
       fs.writeFileSync(path.join(scripts, "check-release-performance.js"), `
         const fs=require('node:fs'),path=require('node:path');

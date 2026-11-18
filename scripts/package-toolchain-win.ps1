@@ -10,7 +10,7 @@ param(
 )
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
-. (Join-Path $PSScriptRoot '../../../scripts/windows-install-helpers.ps1')
+. (Join-Path $PSScriptRoot 'windows-install-helpers.ps1')
 
 if (-not (Test-Path (Join-Path $BuildDir "bin\clang++.exe"))) {
   throw "clang++.exe not found under $BuildDir\bin - point -BuildDir at the from-source --cuda build dir."

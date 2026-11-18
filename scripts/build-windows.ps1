@@ -82,7 +82,7 @@ function Find-MominerNodeGyp {
   return $null
 }
 
-$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "../../..")).Path
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $repoRoot
 . (Join-Path $repoRoot 'scripts\windows-incremental-build.ps1')
 Initialize-MomBuildEnvironment $repoRoot

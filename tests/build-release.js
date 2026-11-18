@@ -232,29 +232,7 @@ test.describe("Explicit Engineering archive build", {concurrency: false}, () => 
     assert.equal(result.stdout, "");
   });
 
-  test("release workflow packages exact native candidate handoffs", () => {
-    const workflow = fs.readFileSync(path.join(__dirname, "../.github/workflows/build-release-artifacts.yml"), "utf8");
-    assert.match(workflow, /uses: \.\/\.github\/workflows\/build-native-prerequisites\.yml/);
-    assert.doesNotMatch(workflow, /npm run build:release|--engineering-archive|--package-only/);
-
-    const linuxStart = workflow.indexOf("  package-linux:");
-    const windowsStart = workflow.indexOf("  package-windows:");
-    assert.ok(linuxStart >= 0 && windowsStart > linuxStart);
-    const linuxPackage = workflow.slice(linuxStart, windowsStart);
-    const windowsPackage = workflow.slice(windowsStart);
-    /** @param {string} job @param {string} platform */
-    const assertNativePackage = (job, platform) => {
-      assert.match(job, /needs: \[build-native-prerequisites, engineering-hash, source-quality, windows-script-quality\]/);
-      assert.match(job, /uses: \.\/\.github\/workflows\/package-native-application\.yml/);
-      assert.match(job, new RegExp(`platform: ${platform}\\b`));
-    };
-    assertNativePackage(linuxPackage, "linux");
-    assertNativePackage(windowsPackage, "win32");
-    assert.match(linuxPackage, /packed_build_bundle_sha256: \$\{\{ needs\.build-native-prerequisites\.outputs\.linux_packing_bundle_sha256 \}\}/);
-    assert.match(linuxPackage, /original_handoff_sha256: \$\{\{ needs\.build-native-prerequisites\.outputs\.linux_application_handoff_sha256 \}\}/);
-    assert.match(windowsPackage, /packed_build_bundle_sha256: \$\{\{ needs\.build-native-prerequisites\.outputs\.windows_packing_bundle_sha256 \}\}/);
-    assert.match(windowsPackage, /original_handoff_sha256: \$\{\{ needs\.build-native-prerequisites\.outputs\.windows_application_handoff_sha256 \}\}/);
-
+  test("bare package-only invocation refuses the legacy Node archive", () => {
     const bareEnvironment = {...process.env};
     for (const key of Object.keys(bareEnvironment)) {
       if (["MOM_NATIVE_SDK", "MOM_NATIVE_OUTPUT", "MOM_NATIVE_UPX", "MOM_NATIVE_UPX_SHA256"].includes(key.toUpperCase())) {

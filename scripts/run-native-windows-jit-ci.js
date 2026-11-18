@@ -108,8 +108,8 @@ function windowsJitCiJobPlan(stage, configPath, configSha256, environment = proc
   architecture = process.arch, nowMs = Date.now()) {
   const validConfigPin = stage === "configure" ? configSha256 === undefined || configSha256 === "" : /^[a-f0-9]{64}$/.test(configSha256 || "");
   if (!phases.includes(stage) || platform !== "linux" || architecture !== "x64" || !validConfigPin ||
-      environment["MOM_AOT_BUILD_ONLY"] !== "1" || environment["MOM_BUILD_JOBS"] !== "2") {
-    throw new Error("Windows source-JIT CI needs a maintained phase, Linux x64, build-only mode, and two jobs");
+      environment["MOM_AOT_BUILD_ONLY"] !== "1" || environment["MOM_BUILD_JOBS"] !== ci.ciBuildJobs(environment)) {
+    throw new Error("Windows source-JIT CI needs a maintained phase, Linux x64, build-only mode, and a valid job count");
   }
   const run = environment["GITHUB_RUN_ID"] || "", attempt = environment["GITHUB_RUN_ATTEMPT"] || "",
     baseJob = environment["GITHUB_JOB"] || "", jobId = baseJob + "_" + stage;
@@ -141,7 +141,7 @@ function windowsJitCiJobPlan(stage, configPath, configSha256, environment = proc
     statePhase = stage === "configure" ? "configured" : stage, index = phases.indexOf(stage),
     previousPhase = index === 0 ? "" : index === 1 ? "configured" : phases[index - 1],
     archive = path.join(fs.realpathSync(runnerTemp), artifactName + "-" + statePhase + ".tar"),
-    incomingState = previousPhase ? path.join(fs.realpathSync(runnerTemp), "incoming/state", artifactName + "-" + previousPhase + ".tar") : "";
+    incomingState = previousPhase ? path.join(fs.realpathSync(runnerTemp), "incoming", artifactName + "-" + previousPhase + ".tar") : "";
   if (path.resolve(configPath) !== expectedConfig || environment["MOM_NATIVE_WINDOWS_JIT_DIR"] !== root ||
       environment["MOM_NATIVE_WINDOWS_JIT_RESOURCES_DIR"] !== path.join("/tmp", resourcesName) ||
       environment["MOM_NATIVE_WINDOWS_JIT_DESCRIPTOR_FILE"] !== descriptor || environment["MOM_NATIVE_WINDOWS_JIT_WINDOWS_SDK_ROOT"] !== windowsSdk ||
@@ -178,21 +178,21 @@ function windowsJitCiJobPlan(stage, configPath, configSha256, environment = proc
   return {stage, suffix, baseJob, jobId, rootName, root, output, artifactName, archive, incomingState, previousPhase: previousPhase || null,
     runnerTemp: fs.realpathSync(runnerTemp), config: expectedConfig, descriptor, toolchain, windowsSdk, linux, dpcpp,
     resourcesArtifactRoot, resourcesRoot,
-    toolsArchive: path.join(fs.realpathSync(runnerTemp), "incoming/tools", toolsName + ".tar"), toolsName,
-    hermesArchive: path.join(fs.realpathSync(runnerTemp), "incoming/hermes", hermesName + ".tar"), hermesName,
-    resourcesArchive: path.join(fs.realpathSync(runnerTemp), "incoming/resources", resourcesName + ".tar"), resourcesName,
+    toolsArchive: path.join(fs.realpathSync(runnerTemp), "incoming", toolsName + ".tar"), toolsName,
+    hermesArchive: path.join(fs.realpathSync(runnerTemp), "incoming", hermesName + ".tar"), hermesName,
+    resourcesArchive: path.join(fs.realpathSync(runnerTemp), "incoming", resourcesName + ".tar"), resourcesName,
     sourceArchive: linux.incomingTar, sourceName, dpcppArchive: path.join(fs.realpathSync(runnerTemp), "incoming", path.basename(dpcpp.sdkTar)), dpcppName,
     pins, stateBundleSha256: pins.state, runDeadlineEpoch, jobDeadlineEpoch, budget, reportFiles,
     environment: {...environment, GITHUB_JOB: jobId, MOM_NATIVE_WINDOWS_JIT_RUN_DEADLINE_EPOCH: runDeadlineEpoch}};
 }
 
 /** Pure checks for the original build-native-jit-sdk.js configuration. @param {unknown} value
- * @param {{sources:string,sdk:string,resources:string,toolchain:string,compiler:string,requiredInputs:string[],allowedRoots:string[]}} expected */
+ * @param {{sources:string,sdk:string,resources:string,toolchain:string,compiler:string,jobs:number,requiredInputs:string[],allowedRoots:string[]}} expected */
 function validateWindowsJitConfig(value, expected) {
   const config = jitSdkConfig(value);
   if (!Array.isArray(config.inputs)) {throw new Error("Windows JIT configuration must bind its exact input files");}
   const inputs = config.inputs;
-  if (config.target !== "windows" || config.jobs !== 2 || config.sources !== expected.sources || config.sdk !== expected.sdk ||
+  if (config.target !== "windows" || config.jobs !== expected.jobs || config.sources !== expected.sources || config.sdk !== expected.sdk ||
       config.resources !== expected.resources || !path.isAbsolute(expected.compiler) || path.normalize(expected.compiler) !== expected.compiler ||
       config.tools.cc !== expected.compiler || config.tools.cxx !== expected.compiler ||
       config.tools.toolchain !== expected.toolchain || config.tools.cmake !== fs.realpathSync("/usr/bin/cmake") ||
@@ -230,7 +230,7 @@ function composeWindowsJitConfig(plan, admitted) {
   }
   return jitSdkConfig({version: 1, target: "windows", sources: admitted.linux.compilerPreparedReceipt,
     sdk: admitted.dpcpp.dpcppRoot, resources: plan.resourcesRoot,
-    tools: {cc: compiler, cxx: compiler, cmake, ninja, toolchain}, jobs: 2,
+    tools: {cc: compiler, cxx: compiler, cmake, ninja, toolchain}, jobs: Number(ci.ciBuildJobs(plan.environment)),
     inputs: [...new Set([...toolchainInputs, ...nativeInputs.map(row => row.file), plan.descriptor, compiler, cmake, ninja])].sort()});
 }
 
@@ -354,7 +354,7 @@ function admitInputs(plan, config) {
     path.dirname(descriptor.tools.lldLink), "/opt/intel/oneapi/compiler/2026.2", "/usr/bin"];
   const expected = {sources: linux.compilerPreparedReceipt, sdk: dpcpp.dpcppRoot,
       resources: resourcesRoot, toolchain: path.join(plan.toolchain, "toolchain.cmake"), compiler,
-      requiredInputs: [plan.descriptor, ...toolchainInputs, ...nativeInputs.map(row => row.file)], allowedRoots}, generatedConfig = composeWindowsJitConfig(plan,
+      jobs: Number(ci.ciBuildJobs(env)), requiredInputs: [plan.descriptor, ...toolchainInputs, ...nativeInputs.map(row => row.file)], allowedRoots}, generatedConfig = composeWindowsJitConfig(plan,
       {linux, dpcpp, compiler, nativeJitTools, toolchainResult}),
     expectedConfig = config === undefined ? generatedConfig : validateWindowsJitConfig(config, expected);
   if (!isDeepStrictEqual(expectedConfig, generatedConfig)) {throw new Error("Windows JIT config is not the exact config derived from admitted inputs");}

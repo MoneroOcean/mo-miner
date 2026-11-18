@@ -1,0 +1,65 @@
+name: Source gates
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  source-quality:
+    name: Source / lint, typecheck and logic
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      MOM_PORTABLE_BUILD: "1"
+      MOM_BUILD_JOBS: "4"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          npm: true
+          apt: cmake ninja-build patchelf libboost-dev libuv1-dev libssl-dev strace unzip
+      - name: Validate release tag matches package version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: test "$GITHUB_REF_NAME" = "v$(node -p "require('./package.json').version")"
+      - name: Validate workflows and shell syntax
+        run: |
+          docker run --rm -v "$PWD:/repo:ro" -w /repo \
+            rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 \
+            -color .github/workflows/*.yml
+          git ls-files -z -- '*.sh' | xargs -0 -n1 bash -n
+          fake_icx="$(mktemp)"
+          printf '#!/usr/bin/env sh\nprintf "Intel(R) oneAPI DPC++/C++ Compiler\\n"\n' >"$fake_icx"
+          chmod +x "$fake_icx"
+          test "$(CXX="$fake_icx" scripts/cpu-cflags.sh)" = "-march=x86-64 -mtune=generic -maes"
+      - name: Real CMake archive reproducibility regression
+        run: MOM_TEST_CMAKE="$(command -v cmake)" node --test tests/native-release-archive.js
+      - name: Lint, typecheck, logic and host tests
+        run: npm test -- host
+
+  windows-script-quality:
+    name: Source / Windows scripts and logic
+    runs-on: windows-2022
+    timeout-minutes: 30
+    env:
+      ONEAPI_ROOT: C:/Program Files (x86)/Intel/oneAPI
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          npm: true
+      - name: PowerShell syntax, logic and script-safety tests
+        shell: powershell
+        run: |
+          scripts\ci\test-powershell-syntax.ps1
+          . scripts\import-vcvars.ps1
+          Import-MomVcVars64
+          node tests/run-hash.js logic
+          $logicExit = $LASTEXITCODE
+          node --test tests/windows-script-safety.js
+          if ($logicExit -ne 0 -or $LASTEXITCODE -ne 0) { exit 1 }

@@ -8,7 +8,7 @@ const {spawnSync} = require("node:child_process");
 const test = require("node:test");
 
 const repo = path.resolve(__dirname, "..");
-const scripts = path.join(repo, ".github/workflows/scripts");
+const scripts = path.join(repo, "scripts");
 const source = fs.readFileSync(path.join(scripts, "build-windows-multicompiler.ps1"), "utf8");
 const oneapi = fs.readFileSync(path.join(scripts, "build-windows.ps1"), "utf8");
 
@@ -496,9 +496,8 @@ Write-Output 'STAGING_BOUNDARY_FIXTURE_OK'
       skip: process.platform !== "win32",
     }, () => {
       const fixture = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "mom-incremental-orchestration-")));
-      const dir = path.join(fixture, ".github/workflows/scripts");
+      const dir = path.join(fixture, "scripts");
       fs.mkdirSync(dir, {recursive: true});
-      fs.mkdirSync(path.join(fixture, "scripts"));
       fs.mkdirSync(path.join(fixture, "build/win/Release"), {recursive: true});
       fs.mkdirSync(path.join(fixture, "build/win/obj"));
       fs.mkdirSync(path.join(fixture, "build/win/.incremental/oneapi"), {recursive: true});

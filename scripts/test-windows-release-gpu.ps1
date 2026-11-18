@@ -136,7 +136,7 @@ try {
       $global:LASTEXITCODE = $null
       $vectorPowerShell = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
       & $vectorPowerShell -NoProfile -ExecutionPolicy Bypass -File `
-        (Join-Path $root ".github\workflows\scripts\test-release-windows.ps1") `
+        (Join-Path $root "scripts\test-release-windows.ps1") `
         -Archive $archivePath -Suite gpu-discrete *> $vectorLogPath
       $vectorExit = if ($null -eq $global:LASTEXITCODE) { 1 } else { $global:LASTEXITCODE }
     } catch {

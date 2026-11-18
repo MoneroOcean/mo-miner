@@ -9,7 +9,7 @@ if ($PSVersionTable.PSVersion.Major -ge 7) {
   $PSNativeCommandUseErrorActionPreference = $true
 }
 
-$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "../../..")).Path
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $repoRoot
 if (-not $env:ONEAPI_ROOT) {
   $env:ONEAPI_ROOT = "C:\Program Files (x86)\Intel\oneAPI"

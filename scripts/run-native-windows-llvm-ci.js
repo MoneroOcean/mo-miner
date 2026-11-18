@@ -44,10 +44,10 @@ function windowsLlvmCiJobPlan(stage, environment = process.env, platform = proce
     MOM_NATIVE_WINDOWS_LLVM_RUN_DEADLINE_EPOCH: runDeadlineEpoch, GITHUB_JOB: jobId});
   const state = ci.windowsNativeLlvmCiStatePaths(stageEnvironment, platform, architecture),
     descriptorState = ci.windowsNativeLlvmDescriptorCiStatePaths(stageEnvironment, platform, architecture),
-    runnerTemp = state.runnerTemp, incomingToolsArchive = path.join(runnerTemp, "incoming/tools", `native-linux-llvm-tools-${suffix}.tar`),
-    incomingHermesArchive = path.join(runnerTemp, "incoming/hermes", `native-windows-controller-hermes-${suffix}.tar`),
-    incomingStateArchive = previousStage ? path.join(runnerTemp, "incoming/state", `native-windows-llvm-state-${suffix}-${previousStage}.tar`) : null,
-    incomingStateManifest = previousStage ? path.join(runnerTemp, "incoming/state", `native-windows-llvm-state-${suffix}-${previousStage}.json`) : null,
+    runnerTemp = state.runnerTemp, incomingToolsArchive = path.join(runnerTemp, "incoming", `native-linux-llvm-tools-${suffix}.tar`),
+    incomingHermesArchive = path.join(runnerTemp, "incoming", `native-windows-controller-hermes-${suffix}.tar`),
+    incomingStateArchive = previousStage ? path.join(runnerTemp, "incoming", `native-windows-llvm-state-${suffix}-${previousStage}.tar`) : null,
+    incomingStateManifest = previousStage ? path.join(runnerTemp, "incoming", `native-windows-llvm-state-${suffix}-${previousStage}.json`) : null,
     archive = path.join(runnerTemp, `native-windows-llvm-state-${suffix}-${statePhase}.tar`),
     manifest = path.join(runnerTemp, `native-windows-llvm-state-${suffix}-${statePhase}.json`),
     toolsBundleSha256 = environment["MOM_NATIVE_LINUX_LLVM_TOOLS_BUNDLE_SHA256"] || "",
@@ -78,10 +78,10 @@ function windowsLlvmCiJobPlan(stage, environment = process.env, platform = proce
  * @param {string} [architecture] @param {number} [nowMs] */
 function windowsLlvmCiJobPreflight(stage, environment = process.env, platform = process.platform, architecture = process.arch, nowMs = Date.now()) {
   const plan = windowsLlvmCiJobPlan(stage, environment, platform, architecture, nowMs), {environment: env} = plan;
-  if (env["MOM_AOT_BUILD_ONLY"] !== "1" || env["MOM_BUILD_JOBS"] !== "2" ||
+  if (env["MOM_AOT_BUILD_ONLY"] !== "1" || env["MOM_BUILD_JOBS"] !== ci.ciBuildJobs(env) ||
       env["MOM_NATIVE_WINDOWS_LLVM_DIR"] !== plan.stateRoot ||
       env["MOM_NATIVE_WINDOWS_LLVM_DESCRIPTOR_DIR"] !== plan.descriptorState.root) {
-    throw new Error("Windows LLVM CI requires the fixed build-only, two-job run-attempt paths");
+    throw new Error("Windows LLVM CI requires the fixed build-only run-attempt paths and a valid job count");
   }
   const outputFiles = [env["GITHUB_OUTPUT"] || "", env["GITHUB_STEP_SUMMARY"] || ""],
     reportFiles = [...outputFiles, ...(plan.stage === "configure" ? [env["GITHUB_ENV"] || ""] : [])];

@@ -88,7 +88,7 @@ test.describe("Windows source worker discovery", {concurrency: false}, () => {
   });
 
   test("oneAPI source export carries its matched dynamically loaded runtime and DLL closure", () => {
-    const builder = fs.readFileSync(path.join(repo, ".github", "workflows", "scripts",
+    const builder = fs.readFileSync(path.join(repo, "scripts",
       "build-windows-multicompiler.ps1"), "utf8");
     const start = builder.indexOf("      Save-Compiler oneapi\n");
     const end = builder.indexOf("\n    # Targeted Intel builds", start);
@@ -99,7 +99,7 @@ test.describe("Windows source worker discovery", {concurrency: false}, () => {
     assert.ok(exportSource.indexOf("Remove-Item Env:MOM_DPCPP_DIR, Env:MOM_ACPP_DIR") <
       exportSource.indexOf("Copy-MominerDllClosure"));
     assert.match(exportSource, /finally \{[\s\S]*\$env:MOM_DPCPP_DIR = \$oneApiSavedDpcpp[\s\S]*\$env:MOM_ACPP_DIR = \$oneApiSavedAcpp/);
-    const runtimeHelper = fs.readFileSync(path.join(repo, ".github", "workflows", "scripts",
+    const runtimeHelper = fs.readFileSync(path.join(repo, "scripts",
       "windows-dll-deps.ps1"), "utf8");
     const patterns = runtimeHelper.slice(runtimeHelper.indexOf("function Copy-MominerOptionalRuntimeFiles"),
       runtimeHelper.indexOf("function Copy-MominerHipDynamicRuntimeFiles"));

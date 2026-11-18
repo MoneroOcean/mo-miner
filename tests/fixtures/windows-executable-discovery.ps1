@@ -47,7 +47,7 @@ function Assert-Missing([scriptblock]$Body, [string]$Text) {
 # Only pure definitions and the exact consumer statements are loaded. Installer entry points,
 # package cleanup/build/archive phases and real executable discovery are never evaluated.
 . (Join-Path $SourceRoot 'scripts\windows-install-helpers.ps1')
-. (Join-Path $SourceRoot '.github\workflows\scripts\windows-dll-deps.ps1')
+. (Join-Path $SourceRoot 'scripts\windows-dll-deps.ps1')
 $install = Read-ProductionAst 'scripts\install-dev.ps1'
 $hip = $install.Find({ param($node)
   $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
@@ -55,7 +55,7 @@ $hip = $install.Find({ param($node)
 }, $true)
 Assert-True ($null -ne $hip) 'Install-Hip consumer is missing'
 . ([scriptblock]::Create($hip.Extent.Text))
-$package = Read-ProductionAst '.github\workflows\scripts\package-windows.ps1'
+$package = Read-ProductionAst 'scripts\package-windows.ps1'
 $lookup = $package.Find({ param($node)
   $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
   $node.Left.Extent.Text -eq '$nodeExe'
@@ -68,7 +68,7 @@ $copy = $package.Find({ param($node)
 Assert-True ($null -ne $lookup -and $null -ne $copy) 'Node packaging consumer is missing'
 $lookupNode = [scriptblock]::Create($lookup.Extent.Text)
 $copyNode = [scriptblock]::Create($copy.Extent.Text)
-$build = Read-ProductionAst '.github\workflows\scripts\build-windows.ps1'
+$build = Read-ProductionAst 'scripts\build-windows.ps1'
 $findGyp = $build.Find({ param($node)
   $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
   $node.Name -eq 'Find-MominerNodeGyp'

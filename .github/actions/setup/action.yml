@@ -1,0 +1,38 @@
+name: Set up MoM CI
+description: Pinned Node.js plus optional locked npm packages, APT packages and install-dev.sh components.
+
+inputs:
+  npm:
+    description: Run npm ci without lifecycle scripts
+    default: "false"
+  apt:
+    description: Space-separated APT packages (Linux)
+    default: ""
+  dev:
+    description: Comma-separated scripts/install-dev.sh components (Linux)
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+      with:
+        node-version: 24.15.0
+    - if: inputs.apt != ''
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.apt }}
+      run: |
+        # A dead first-choice mirror must not consume the job deadline.
+        options=(-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
+        sudo apt-get "${options[@]}" update -qq
+        # shellcheck disable=SC2086
+        sudo apt-get "${options[@]}" install --yes --no-install-recommends $PACKAGES
+    - if: inputs.dev != ''
+      shell: bash
+      env:
+        COMPONENTS: ${{ inputs.dev }}
+      run: sudo env MOM_DEV_WORKSPACE="/var/tmp/mom-dev-ci-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" scripts/install-dev.sh --component "$COMPONENTS" --jobs 4
+    - if: inputs.npm == 'true'
+      shell: bash
+      run: npm ci --ignore-scripts --no-audit --no-fund

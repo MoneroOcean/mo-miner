@@ -28,7 +28,7 @@ test.describe("Correctness test dispatcher", {concurrency: false}, () => {
     "tests/pearlhash-f16-lowering.js", "tests/readme-performance.js",
     "tests/benchmark-scripts.js", "tests/windows-command.js", "tests/pool-transport.js",
     "tests/helper-workers.js", "tests/release-archive.js", "tests/build-release.js", "tests/build-environment.js",
-    "tests/bounded-native-ci.js",
+    "tests/bounded-native-ci.js", "tests/workflows.js",
     "tests/incremental-linux-build.js", "tests/windows-incremental-build.js",
     "tests/windows-incremental-orchestration.js",
     "tests/windows-worker-discovery.js", "tests/dev.js", "tests/native-deploy.js",
@@ -1272,8 +1272,8 @@ test.describe("Benchmark and installer scripts", {concurrency: false}, () => {
       assert.match(powershellInstaller,
         /if \(\$DryRun\)[\s\S]*?exit 0\s*}[\s\S]*?Install-OpenClCpuRuntime/);
 
-      const oneApiInstaller = fs.readFileSync(path.join(__dirname, "..", ".github", "workflows",
-        "scripts", "install-oneapi.bat"), "utf8");
+      const oneApiInstaller = fs.readFileSync(path.join(__dirname, "..", "scripts",
+        "install-oneapi.bat"), "utf8");
       assert.match(oneApiInstaller, /\$id=New-Guid; \$id\.Guid/);
       assert.match(oneApiInstaller, /%TEMP%\\mom-oneapi-%RUN_ID%/);
       assert.doesNotMatch(oneApiInstaller, /oneapi_webimage_extracted/);
@@ -1863,21 +1863,12 @@ test.describe("Benchmark and installer scripts", {concurrency: false}, () => {
       assert.match(currentTest,
         /'opencl' \{\n {4}if \(\$Compiler -in @\('all','portable'\)\) \{\n {6}Invoke-PortableSuite 'OpenCL'\n {6}\$portableLanes = 1\n {4}\}\n {2}\}/);
 
-      const workflow = read(".github", "workflows", "build-release-artifacts.yml");
-      assert.match(workflow, /uses: \.\/\.github\/workflows\/build-native-prerequisites\.yml/);
-      assert.doesNotMatch(workflow, /build-windows-adaptivecpp-(?:base|amd)\.ps1/);
-      const prerequisites = read(".github", "workflows", "build-native-prerequisites.yml");
-      assert.match(prerequisites, /^ {2}build-windows-acpp-cuda-gpu:/m);
-      assert.match(prerequisites, /^ {2}build-windows-acpp-hip-gpu:/m);
-      assert.match(prerequisites, /^ {2}assemble-windows-native-application:/m);
-      assert.doesNotMatch(prerequisites, /build-windows-adaptivecpp-(?:base|amd)\.ps1/);
-
-      const packageWindows = read(".github", "workflows", "scripts", "package-windows.ps1");
+      const packageWindows = read("scripts", "package-windows.ps1");
       assert.doesNotMatch(packageWindows, /ONEAPI_DEVICE_SELECTOR=level_zero:%MOM_GPU_INDEX%/);
       assert.match(packageWindows, /addon applies MOM_GPU_INDEX after stable hardware-name sorting/);
       assert.match(packageWindows, /ONEAPI_DEVICE_SELECTOR=level_zero:gpu/);
 
-      const packageLinux = read(".github", "workflows", "scripts", "package-linux-combined.sh");
+      const packageLinux = read("scripts", "package-linux-combined.sh");
       assert.match(packageLinux, /MOM_GPU_BACKEND=intel\|intel_igpu\|nvidia\|amd\|opencl is intentionally explicit/);
 
       const docs = read("scripts", "windows-multicompiler.md");
@@ -1885,7 +1876,7 @@ test.describe("Benchmark and installer scripts", {concurrency: false}, () => {
       assert.match(docs, /MOM_GPU_BACKEND=intel\|intel_igpu\|nvidia\|amd\|opencl/);
       assert.match(docs, /-Backend opencl/);
 
-      const releaseWindows = read(".github", "workflows", "scripts", "test-release-windows.ps1");
+      const releaseWindows = read("scripts", "test-release-windows.ps1");
       const suiteGuard = 'if ($Suite -notin @("all", "cpu", "gpu", "gpu-discrete", "gpu-integrated", "gpu-multi", "gpu-portable-cpu"))';
       assert.equal(releaseWindows.split(suiteGuard).length - 1, 1);
       assert.match(releaseWindows,
@@ -1907,7 +1898,7 @@ test.describe("Benchmark and installer scripts", {concurrency: false}, () => {
       assert.match(releaseWindows,
         /if \(\$gpuVendors\.Count -ne 1 -or \$gpuVendors\[0\] -ne '8086'\) \{ return \}/);
 
-      const releaseLinux = read(".github", "workflows", "scripts", "test-release-linux.sh");
+      const releaseLinux = read("scripts", "test-release-linux.sh");
       assert.match(releaseLinux,
         /all\|cpu\|gpu\|gpu-discrete\|gpu-integrated\|gpu-multi\|gpu-portable-cpu/);
       assert.match(releaseLinux, /MOM_REQUIRE_INTEGRATED_GPU_TESTS=1/);
@@ -1932,11 +1923,6 @@ test.describe("Benchmark and installer scripts", {concurrency: false}, () => {
       assert.match(deploy,
         /GPU_GROUP=none WIN_MOM_RUN_BASE="\$WIN_MOM_DEV_BASE" "\$WIN_RUN" \\\n+ {4}--release --download build\/win --download "\$WINDOWS_ARCHIVE"/);
       assert.doesNotMatch(deploy, /GPU_GROUP=nvidia WIN_MOM_RUN_BASE="\$WIN_MOM_DEV_BASE"/);
-
-      const releaseWorkflow = read(".github", "workflows", "release.yml");
-      assert.match(releaseWorkflow, /sha256sum "\$filename" > "\$filename\.sha256"/);
-      assert.match(releaseWorkflow, /sha256sum -c "\$filename\.sha256"/);
-      assert.match(releaseWorkflow, /files=\("\$\{archives\[@\]\}" "\$\{checksums\[@\]\}"\)/);
     });
 
     test("development installer rejects invalid configuration before privilege escalation", {
@@ -2095,7 +2081,7 @@ test.describe("Benchmark and installer scripts", {concurrency: false}, () => {
     }, () => {
       const root = path.join(__dirname, "..");
       const archiveRoot = `mom-v${require(path.join(root, "package.json")).version}`;
-      const linux = path.join(root, ".github", "workflows", "scripts", "test-release-linux.sh");
+      const linux = path.join(root, "scripts", "test-release-linux.sh");
       const invalidWorkspace = spawnSync("bash", [linux, "/missing/archive"], {
         encoding: "utf8", env: {...process.env, MOM_RELEASE_TEST_DIR: "/tmp/release-test"},
       });
@@ -2214,7 +2200,7 @@ test.describe("Benchmark and installer scripts", {concurrency: false}, () => {
       }
 
       const windows = fs.readFileSync(path.join(root,
-        ".github", "workflows", "scripts", "test-release-windows.ps1"), "utf8");
+        "scripts", "test-release-windows.ps1"), "utf8");
       assert.match(windows, /\$workLeaf -notmatch '\^mom-release-/);
       assert.match(windows, /\$workspaceMarker = Join-Path \$workDir '\.mom-release-test-workspace'/);
       assert.match(windows, /\[IO\.FileAttributes\]::ReparsePoint/);
@@ -2234,14 +2220,12 @@ test.describe("Benchmark and installer scripts", {concurrency: false}, () => {
       const sourceRoot = path.join(__dirname, "..");
       const temp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-deploy-args-test-"));
       const scriptRoot = path.join(temp, "scripts");
-      const packageScript = path.join(temp, ".github", "workflows", "scripts",
-        "package-linux-combined.sh");
+      const packageScript = path.join(scriptRoot, "package-linux-combined.sh");
       const bin = path.join(temp, "bin");
       const argsPath = path.join(temp, "package-args");
       const dockerArgsPath = path.join(temp, "docker-args");
       const evidenceRoot = path.join(temp, "evidence");
       fs.mkdirSync(scriptRoot, {recursive: true});
-      fs.mkdirSync(path.dirname(packageScript), {recursive: true});
       fs.mkdirSync(bin);
       fs.mkdirSync(evidenceRoot);
       fs.copyFileSync(path.join(sourceRoot, "scripts", "test-deploy.sh"),

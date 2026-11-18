@@ -31,7 +31,7 @@ trap {
   throw $_.Exception
 }
 
-$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "../../..")).Path
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $repoRoot
 . (Join-Path $repoRoot 'scripts\windows-install-helpers.ps1')
 

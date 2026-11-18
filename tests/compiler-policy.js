@@ -247,7 +247,7 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
     });
 
     test("release packagers never recursively remove a caller-selected archive", () => {
-      const scripts = path.join(__dirname, "../.github/workflows/scripts");
+      const scripts = path.join(__dirname, "../scripts");
       const linux = fs.readFileSync(path.join(scripts, "package-linux-combined.sh"), "utf8");
       assert.match(linux, /\[ -d "\$archive" \]/);
       assert.doesNotMatch(linux, /rm -f -- "\$archive"/);
@@ -263,7 +263,7 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
 
     test("Windows package launcher keeps the selected runtime ahead of shared oneAPI", () => {
       const script = fs.readFileSync(
-        path.join(__dirname, "../.github/workflows/scripts/package-windows.ps1"), "utf8");
+        path.join(__dirname, "../scripts/package-windows.ps1"), "utf8");
       const runtimePathLine = String.raw`if defined MOM_RUNTIME_DIR set "PATH=%MOM_RUNTIME_DIR%;%MOM_RUNTIME_DIR%\hipSYCL;%PATH%"`;
       const sharedDpcppPathLine = String.raw`if /I "%MOM_GPU_BACKEND%"=="opencl" set "PATH=%MOM_LIBS%\oneapi;%PATH%"`;
       const integratedPathLine = String.raw`if /I "%MOM_GPU_BACKEND%"=="intel_igpu" set "PATH=%MOM_LIBS%\oneapi;%PATH%"`;
@@ -298,7 +298,7 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       skip: process.platform === "win32",
     }, () => {
       const root = path.join(__dirname, "..");
-      const script = path.join(root, ".github/workflows/scripts/package-linux-combined.sh");
+      const script = path.join(root, "scripts/package-linux-combined.sh");
       const temp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-package-safety-test-"));
       const marker = path.join(temp, "release-combined", "marker");
       const archive = path.join(temp, "release-combined", "nested", "archive.tgz");
@@ -320,7 +320,7 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
     test("Linux native packager checks every compiler worker before collecting runtimes", {
       skip: process.platform === "win32",
     }, () => {
-      const source = fs.readFileSync(path.join(__dirname, "../.github/workflows/scripts/package-linux-combined.sh"), "utf8");
+      const source = fs.readFileSync(path.join(__dirname, "../scripts/package-linux-combined.sh"), "utf8");
       const compilers = source.match(/^compilers=\([^\n]+\)$/m)?.[0];
       // eslint-disable-next-line no-template-curly-in-string -- Match the Bash array expansion.
       const start = source.indexOf("for key in \"${compilers[@]}\"; do", source.indexOf("cp sycl/kawpow/keccak.inc"));
@@ -351,7 +351,7 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
     test("Native runtime patterns expand files without evaluating commands", {
       skip: process.platform === "win32",
     }, () => {
-      const source = fs.readFileSync(path.join(__dirname, "../.github/workflows/scripts/package-linux-combined.sh"), "utf8");
+      const source = fs.readFileSync(path.join(__dirname, "../scripts/package-linux-combined.sh"), "utf8");
       const start = source.indexOf("runtime_matches() (");
       const end = source.indexOf("copy_matches() {", start);
       assert.ok(start >= 0 && end > start);
@@ -376,7 +376,7 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
     test("Native packaging includes indirectly loaded oneAPI OpenCL runtime files", {
       skip: process.platform === "win32",
     }, () => {
-      const source = fs.readFileSync(path.join(__dirname, "../.github/workflows/scripts/package-linux-combined.sh"), "utf8");
+      const source = fs.readFileSync(path.join(__dirname, "../scripts/package-linux-combined.sh"), "utf8");
       const patterns = source.slice(source.indexOf("runtime_matches() ("), source.indexOf("copy_dependency_closure() {"));
       const start = source.indexOf("copy_oneapi_opencl_runtime() {");
       const end = source.indexOf("\nbegin_runtime oneapi", start);
@@ -423,7 +423,7 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       {name: "validator rejects a wrong executable HIP linker alias", alias: "wrong"},
     ]) {
       test(`AdaptiveCpp release LLVM ${fixture.name}`, {skip: process.platform === "win32"}, () => {
-        const scripts = path.join(__dirname, "../.github/workflows/scripts");
+        const scripts = path.join(__dirname, "../scripts");
         const packager = fs.readFileSync(path.join(scripts, "package-linux-combined.sh"), "utf8");
         const validator = fs.readFileSync(path.join(scripts, "test-release-linux.sh"), "utf8");
         const functionStart = packager.indexOf("copy_acpp_runtime() {");
@@ -516,7 +516,7 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
     test("Linux SEA configuration preserves quoted and escaped checkout paths", {
       skip: process.platform === "win32",
     }, () => {
-      const packager = fs.readFileSync(path.join(__dirname, "../.github/workflows/scripts/package-linux-combined.sh"), "utf8");
+      const packager = fs.readFileSync(path.join(__dirname, "../scripts/package-linux-combined.sh"), "utf8");
       const command = packager.match(/^"\$node_bin" - .*<<'NODE_SEA_CONFIG'\n[\s\S]*?^NODE_SEA_CONFIG$/m)?.[0];
       assert.ok(command, "Exercise the actual serialized SEA configuration command");
       const temp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-sea-paths-"));
@@ -817,7 +817,7 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       const root = path.join(__dirname, "..");
       const installer = fs.readFileSync(path.join(root, "scripts/install-dev.sh"), "utf8");
       const packager = fs.readFileSync(path.join(root,
-        ".github/workflows/scripts/package-linux-combined.sh"), "utf8");
+        "scripts/package-linux-combined.sh"), "utf8");
       const buildStart = installer.indexOf("build_adaptivecpp() {");
       const optionsStart = installer.indexOf("  local -a options=(", buildStart);
       const optionsEnd = installer.indexOf("\n  cmake -S", optionsStart);
@@ -882,7 +882,7 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
     test("AdaptiveCpp packaging rejects missing, malformed, or wrong-backend LLVM identity", {
       skip: process.platform === "win32",
     }, () => {
-      const packager = fs.readFileSync(path.join(__dirname, "../.github/workflows/scripts/package-linux-combined.sh"), "utf8");
+      const packager = fs.readFileSync(path.join(__dirname, "../scripts/package-linux-combined.sh"), "utf8");
       const start = packager.indexOf("copy_acpp_runtime() {");
       const end = packager.indexOf("  begin_runtime", start);
       assert.ok(start >= 0 && end > start);
@@ -904,7 +904,7 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
     test("AdaptiveCpp HIP bitcode stays with the recorded SDK cohort", {
       skip: process.platform === "win32",
     }, () => {
-      const packager = fs.readFileSync(path.join(__dirname, "../.github/workflows/scripts/package-linux-combined.sh"), "utf8");
+      const packager = fs.readFileSync(path.join(__dirname, "../scripts/package-linux-combined.sh"), "utf8");
       const matchesStart = packager.indexOf("runtime_matches() (");
       const matchesEnd = packager.indexOf("\n)\n", matchesStart);
       const setupStart = packager.indexOf("copy_acpp_runtime() {");
@@ -963,7 +963,7 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
     test("AdaptiveCpp CUDA bitcode stays with the recorded SDK cohort", {
       skip: process.platform === "win32",
     }, () => {
-      const packager = fs.readFileSync(path.join(__dirname, "../.github/workflows/scripts/package-linux-combined.sh"), "utf8");
+      const packager = fs.readFileSync(path.join(__dirname, "../scripts/package-linux-combined.sh"), "utf8");
       const setupStart = packager.indexOf("copy_acpp_runtime() {");
       const setupEnd = packager.indexOf("  begin_runtime", setupStart);
       const branchStart = packager.indexOf('  elif [ "$key" = acpp-cuda ]; then\n', setupEnd);
@@ -1039,7 +1039,7 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       skip: process.platform === "win32",
     }, () => {
       const root = path.join(__dirname, "..");
-      const script = path.join(root, ".github/workflows/scripts/package-linux-combined.sh");
+      const script = path.join(root, "scripts/package-linux-combined.sh");
       const workers = ["oneapi", "dpcpp", "dpcpp-opencl", "acpp-cuda", "acpp-hip"];
       const contents = "worker fixture\n";
       const sha256 = createHash("sha256").update(contents).digest("hex");
@@ -1184,7 +1184,7 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       const root = path.join(__dirname, "..");
       const traversalVersion = "../release-pwn";
       const linux = spawnSync("bash", [
-        path.join(root, ".github/workflows/scripts/package-linux-combined.sh"), traversalVersion,
+        path.join(root, "scripts/package-linux-combined.sh"), traversalVersion,
       ], {cwd: root, encoding: "utf8"});
       assert.equal(linux.status, 2, linux.error?.message);
       assert.match(linux.stderr, /^Invalid release version:/);
@@ -1206,7 +1206,7 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       const root = path.join(__dirname, "..");
       const windows = spawnSync("powershell.exe", [
         "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-        path.join(root, ".github/workflows/scripts/package-windows.ps1"),
+        path.join(root, "scripts/package-windows.ps1"),
         "-Version", "../release-pwn",
       ], {cwd: root, encoding: "utf8"});
       assert.notEqual(windows.status, 0, windows.error?.message);
@@ -2191,7 +2191,7 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       const linux = fs.readFileSync(
         path.join(__dirname, "../scripts/multicompiler-entrypoint.sh"), "utf8");
       const windows = fs.readFileSync(
-        path.join(__dirname, "../.github/workflows/scripts/build-sycl-adaptivecpp-win.ps1"), "utf8");
+        path.join(__dirname, "../scripts/build-sycl-adaptivecpp-win.ps1"), "utf8");
       assert.match(linux, /ACPP_TARGETS=generic ACPP_VISIBILITY_MASK="\$target"/);
       assert.match(windows, /--acpp-targets=generic/);
       assert.doesNotMatch(`${linux}\n${windows}`, /(?:--offload-arch=|--acpp-targets=hip:|ACPP_TARGETS=hip:)/);
@@ -2356,13 +2356,13 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
     test("Windows Intel NexaPoW uses oneAPI after the cold-JIT fix", () => {
       assert.equal(policy.selection("nexapow", "intel", "win32").key, "oneapi");
       const build = fs.readFileSync(path.join(__dirname,
-        "../.github/workflows/scripts/build-sycl-cuda-win.ps1"), "utf8");
+        "../scripts/build-sycl-cuda-win.ps1"), "utf8");
       assert.match(build, /PortableOpencl[\s\S]*MOM_NEXAPOW_PORTABLE_FIELD32/);
     });
 
     test("Windows CUDA device flags enable SYCL-native Octopus", () => {
       const build = fs.readFileSync(path.join(__dirname,
-        "../.github/workflows/scripts/build-sycl-cuda-win.ps1"), "utf8");
+        "../scripts/build-sycl-cuda-win.ps1"), "utf8");
       const withCudaBlock = build.match(
         /if \(\$withCuda\) \{\n\s{2}\$targetList \+= \$CudaArch\n\s{2}\$F \+= @\(([\s\S]*?)\)\n\}/);
       assert.ok(withCudaBlock, "Windows CUDA device flag block must exist");
@@ -2827,9 +2827,9 @@ int main() {
 
     test("Windows unified GPU workers link HooHash's strict host verifier", () => {
       const cuda = fs.readFileSync(path.join(__dirname,
-        "../.github/workflows/scripts/build-sycl-cuda-win.ps1"), "utf8");
+        "../scripts/build-sycl-cuda-win.ps1"), "utf8");
       const acpp = fs.readFileSync(path.join(__dirname,
-        "../.github/workflows/scripts/build-sycl-adaptivecpp-win.ps1"), "utf8");
+        "../scripts/build-sycl-adaptivecpp-win.ps1"), "utf8");
       for (const script of [cuda, acpp]) {
         assert.match(script, /-fno-fast-math[\s\S]*?-ffp-contract=off[\s\S]*?-fno-builtin/);
         assert.match(script, /sycl\\hoohash\\host-math\.c/);
@@ -3031,7 +3031,7 @@ int main() {
     test("NexaPoW staged tables use the Windows HIP small table and capacity elsewhere", () => {
       const binding = fs.readFileSync(path.join(__dirname, "../binding.gyp"), "utf8");
       const windowsBuild = fs.readFileSync(path.join(__dirname,
-        "../.github/workflows/scripts/build-sycl-cuda-win.ps1"), "utf8");
+        "../scripts/build-sycl-cuda-win.ps1"), "utf8");
       const pipeline = fs.readFileSync(path.join(__dirname, "../sycl/nexapow/sycl-pipeline.inc"), "utf8");
       const source = readSyclSource(path.join(__dirname, "../sycl/nexapow/nexapow.cpp"));
       assert.doesNotMatch(binding, /MOM_NEXAPOW_LARGE_TABLE/);
@@ -3077,7 +3077,7 @@ int main() {
       assert.match(linkerOptions, /"\/DLL"/);
       assert.doesNotMatch(linkerOptions, /fsycl|device-code-split/);
       const producer = fs.readFileSync(path.join(__dirname,
-        "../.github/workflows/scripts/build-windows.ps1"), "utf8");
+        "../scripts/build-windows.ps1"), "utf8");
       const driverProperty = producer.match(/"\/p:DPCPPLINKOptions=([^"\r\n]+)"/);
       assert(driverProperty, "Windows SYCL link must forward the driver-prefix property");
       assert.equal(driverProperty[1], "/clang:-fsycl-device-code-split=per_kernel");

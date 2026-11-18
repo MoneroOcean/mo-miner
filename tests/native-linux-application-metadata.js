@@ -3,16 +3,7 @@
 const assert = require("node:assert/strict"), fs = require("node:fs"), path = require("node:path"),
   {spawnSync} = require("node:child_process"), {createHash} = require("node:crypto"), test = require("node:test");
 
-const repository = path.resolve(__dirname, ".."), workflowPath = path.join(repository, ".github/workflows/build-native-prerequisites.yml");
-
-function applicationHandoffScript() {
-  const workflow = fs.readFileSync(workflowPath, "utf8"), stepStart = workflow.indexOf("id: native-runtime-input");
-  assert.notEqual(stepStart, -1, "Linux application runtime handoff step exists");
-  const stepEnd = workflow.indexOf("\n      - name:", stepStart), step = workflow.slice(stepStart, stepEnd === -1 ? undefined : stepEnd),
-    match = step.match(/^ {10}node <<'NODE'\n([\s\S]*?)^ {10}NODE\s*$/m);
-  assert.ok(match, "Linux application handoff embeds the tested Node implementation");
-  return match[1] || "";
-}
+const repository = path.resolve(__dirname, "..");
 
 /** @param {string | Buffer} data */
 function hash(data) {return createHash("sha256").update(data).digest("hex");}
@@ -20,7 +11,7 @@ function hash(data) {return createHash("sha256").update(data).digest("hex");}
 /** @param {import('node:test').TestContext} t @param {string} [variant] */
 function fixture(t, variant = "valid") {
   const runnerTemp = fs.mkdtempSync(path.join(fs.realpathSync("/var/tmp"), "mom-linux-app-metadata-")), attempt = "1",
-    outputFile = path.join(runnerTemp, "github-output"), summaryFile = path.join(runnerTemp, "github-summary");
+    outputFile = path.join(runnerTemp, "github-output");
   let run = String(BigInt(Date.now()) * 100000n + BigInt(process.pid) * 100n), suffix = run + "-" + attempt,
     appRoot = path.join("/tmp", "mom-native-linux-application-" + suffix), evidenceRoot = path.join("/tmp", "native-linux-application-build-" + suffix),
     runtimeDirectory = path.join(runnerTemp, "mom-native-runtime-" + suffix),
@@ -41,7 +32,7 @@ function fixture(t, variant = "valid") {
   executable.set([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1]);
   fs.writeFileSync(binary, executable, {flag: "wx", mode: 0o755}); fs.chmodSync(binary, 0o755);
   fs.writeFileSync(configPath, JSON.stringify({version: 1, target: "linux", application: {application: true}}) + "\n", {flag: "wx"});
-  fs.writeFileSync(outputFile, "", {flag: "wx"}); fs.writeFileSync(summaryFile, "", {flag: "wx"});
+  fs.writeFileSync(outputFile, "", {flag: "wx"});
   const executableHash = hash(executable), executableBytes = executable.length, configHash = hash(fs.readFileSync(configPath)),
     receipt = {binary, sha256: executableHash, bytes: executableBytes, configHash, buildOnly: true,
       publicationQualified: false, application: {application: true, entrypoint: "mom.js", buildOnly: true}},
@@ -57,16 +48,15 @@ function fixture(t, variant = "valid") {
     fs.rmSync(appRoot, {recursive: true, force: true}); fs.rmSync(evidenceRoot, {recursive: true, force: true});
     fs.rmSync(runnerTemp, {recursive: true, force: true});
   });
-  const env = {...process.env, RUNNER_TEMP: runnerTemp, NATIVE_RUN_ID: run, NATIVE_RUN_ATTEMPT: attempt,
-    NATIVE_APP_ROOT: appRoot, NATIVE_RUNTIME_DIRECTORY: runtimeDirectory, MOM_NATIVE_APPLICATION_DEADLINE_EPOCH: String(Math.floor(Date.now() / 1000) + 600),
-    GITHUB_OUTPUT: outputFile, GITHUB_STEP_SUMMARY: summaryFile};
+  const env = {...process.env, RUNNER_TEMP: runnerTemp, GITHUB_RUN_ID: run, GITHUB_RUN_ATTEMPT: attempt,
+    MOM_NATIVE_APPLICATION_DEADLINE_EPOCH: String(Math.floor(Date.now() / 1000) + 600), GITHUB_OUTPUT: outputFile};
   return {env, runnerTemp, run, attempt, suffix, appRoot, binary, receiptPath, entrypointPath, configPath,
-    evidenceRoot, archive, runtimeDirectory, outputFile, summaryFile, executableHash, executableBytes, configHash, receiptHash};
+    evidenceRoot, archive, runtimeDirectory, outputFile, executableHash, executableBytes, configHash, receiptHash};
 }
 
-/** @param {NodeJS.ProcessEnv} env */
+/** Run the CI bind command exactly as the workflow does. @param {NodeJS.ProcessEnv} env */
 function runHandoff(env) {
-  return spawnSync(process.execPath, ["-e", applicationHandoffScript()], {cwd: repository, env, encoding: "utf8", timeout: 15_000});
+  return spawnSync(process.execPath, ["scripts/ci/linux-application.js", "application-bind"], {cwd: repository, env, encoding: "utf8", timeout: 15_000});
 }
 
 test.describe("Linux compact application build handoff", {skip: process.platform !== "linux"}, () => {
@@ -83,6 +73,7 @@ test.describe("Linux compact application build handoff", {skip: process.platform
       const index = line.indexOf("="); return [line.slice(0, index), line.slice(index + 1)];
     }));
     assert.equal(outputs["sha256"], f.executableHash);
+    assert.equal(outputs["artifact_name"], `native-linux-executable-${f.suffix}`);
     assert.equal(outputs["executable_bytes"], String(f.executableBytes));
     assert.equal(outputs["entrypoint_sha256"], originalEntrypointHash);
     assert.equal(outputs["producer_receipt_sha256"], originalReceiptHash);
@@ -108,7 +99,6 @@ test.describe("Linux compact application build handoff", {skip: process.platform
     assert.equal(hash(fs.readFileSync(path.join(evidence, "application-config.json"))), f.configHash);
     assert.equal(hash(fs.readFileSync(path.join(evidence, "entrypoint.json"))), originalEntrypointHash);
     assert.equal(hash(fs.readFileSync(path.join(evidence, "result.json"))), originalReceiptHash);
-    assert.match(fs.readFileSync(f.summaryFile, "utf8"), /no executable ran and this is not publication qualification/);
   });
 
   for (const [variant, reason] of /** @type {[string, RegExp][]} */ ([["raw-hash", /producer receipt/], ["target", /entrypoint, config or producer receipt/]])) {
@@ -122,4 +112,15 @@ test.describe("Linux compact application build handoff", {skip: process.platform
       assert.equal(fs.readFileSync(f.outputFile, "utf8"), "");
     });
   }
+
+  test("refuses an expired application deadline or an existing runtime directory before creating output", t => {
+    const expired = fixture(t), result = runHandoff({...expired.env, MOM_NATIVE_APPLICATION_DEADLINE_EPOCH: String(Math.floor(Date.now() / 1000) - 1)});
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /^\[native-ci\] Linux application handoff paths are not the fresh canonical run-attempt plan/);
+    fs.mkdirSync(expired.runtimeDirectory);
+    const occupied = runHandoff(expired.env);
+    assert.match(occupied.stderr, /fresh canonical run-attempt plan/);
+    assert.equal(fs.existsSync(expired.evidenceRoot), false);
+    assert.equal(fs.readFileSync(expired.outputFile, "utf8"), "");
+  });
 });

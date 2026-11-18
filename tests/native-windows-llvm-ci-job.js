@@ -266,13 +266,6 @@ test.describe("Windows LLVM CI phase job plan", {skip: process.platform !== "lin
       MOM_NATIVE_WINDOWS_LLVM_DEADLINE_EPOCH: String(Math.ceil((nowMs + 5 * 60 * 1000) / 1000))};
     assert.throws(() => windowsLlvmCiJobPlan("llvm-mid", shortDeadline, "linux", "x64", nowMs), /Insufficient shared job time/);
 
-    const workflow = fs.readFileSync(path.join(__dirname, "../.github/workflows/build-windows-llvm-job.yml"), "utf8");
-    assert.match(workflow, /timeout-minutes: 60/);
-    assert.match(workflow, /job_epoch=\$\(\(now \+ 3300\)\)/);
-    assert.doesNotMatch(workflow, /REQUESTED_PHASE.*== llvm-mid/, "cold transfer costs do not get a shorter special-case budget");
-    const source = fs.readFileSync(require.resolve("../scripts/run-native-windows-llvm-ci"), "utf8");
-    assert.match(source, /ci\.buildWindowsNativeLlvmCi\(\["build", phase\], env\)/,
-      "every original builder phase receives the same immutable job/run deadline environment");
   });
 
   test("cold grouped transfers retain SDK reserves without extending the job or original run", t => {

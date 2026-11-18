@@ -101,7 +101,7 @@ function runDev(platform, arch, env, args, spawn = spawnSync) {
     const command = windowsDevCommand(args, runtimeEnv);
     const backend = runtimeEnv["MOM_GPU_BACKEND"] || "intel";
     commands.push(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-      path.join(repo, ".github", "workflows", "scripts", "build-windows-multicompiler.ps1"),
+      path.join(repo, "scripts", "build-windows-multicompiler.ps1"),
       "-Backend", backend]);
     commands.push(command);
   } else {

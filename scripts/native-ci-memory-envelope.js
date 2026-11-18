@@ -1,7 +1,7 @@
 "use strict";
 
 const fs = require("node:fs"), path = require("node:path");
-const expectedMemory = Object.freeze({"memory.max": "5368709120", "memory.swap.max": "0"});
+const expectedMemory = Object.freeze({"memory.max": "12884901888", "memory.swap.max": "0"});
 const hostReserveBytes = 536870912;
 
 /** Parse the kernel's single MemAvailable value from /proc/meminfo.
@@ -27,7 +27,7 @@ function parseMemAvailableBytes(procMeminfo) {
 function verifyNativeCiHostHeadroom(procMeminfo) {
   const availableBytes = parseMemAvailableBytes(procMeminfo), requiredBytes = Number(expectedMemory["memory.max"]) + hostReserveBytes;
   if (availableBytes <= requiredBytes) {
-    throw new Error("Native CI host requires more than 5 GiB plus 512 MiB available memory");
+    throw new Error("Native CI host requires more than 12 GiB plus 512 MiB available memory");
   }
   return {availableBytes, requiredBytes};
 }
@@ -68,7 +68,7 @@ if (require.main === module) {
       process.stdout.write("[native-ci] Verified host available memory " + availableBytes + " > " + requiredBytes + " bytes\n");
     } else if (process.argv.length === 2) {
       const directory = verifyNativeCiMemoryEnvelope(fs.readFileSync("/proc/self/cgroup", "utf8"));
-      process.stdout.write("[native-ci] Verified 5 GiB memory and zero swap at " + directory + "\n");
+      process.stdout.write("[native-ci] Verified 12 GiB memory and zero swap at " + directory + "\n");
     } else {throw new Error("Invalid native CI memory-envelope mode");}
   } catch (error) {
     process.stderr.write("[native-ci] Native CI memory admission failed: " +

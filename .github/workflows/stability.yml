@@ -1,10 +1,14 @@
 name: Stability
 
+# Pull requests and pushes run the fast source gates only. The complete cold native build, runtime lanes
+# and packaging run weekly and on demand (and on every release tag via release.yml).
 on:
   pull_request:
   push:
     branches:
       - master
+  schedule:
+    - cron: "17 3 * * 1"
   workflow_dispatch:
 
 permissions:
@@ -12,11 +16,14 @@ permissions:
   contents: read
 
 concurrency:
-  # Keep same-commit retries serialized; fixes need not wait for an older commit's remaining evidence.
-  group: stability-${{ github.ref }}-${{ github.sha }}
-  cancel-in-progress: false
+  group: stability-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  build-and-test:
-    name: Build and test release archives
+  source:
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    uses: ./.github/workflows/source-gates.yml
+
+  native:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     uses: ./.github/workflows/build-release-artifacts.yml

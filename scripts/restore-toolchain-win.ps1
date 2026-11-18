@@ -12,7 +12,7 @@ param(
 )
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
-$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 . (Join-Path $repoRoot 'scripts\windows-install-helpers.ps1')
 if ([string]::IsNullOrWhiteSpace($Asset) -or
     $Asset -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {

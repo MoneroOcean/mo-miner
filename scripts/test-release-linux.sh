@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-archive="${1:?Usage: .github/workflows/scripts/test-release-linux.sh <archive> [suite]}"
+archive="${1:?Usage: scripts/test-release-linux.sh <archive> [suite]}"
 suite="${2:-all}"
 case "$suite" in
   all|cpu|gpu|gpu-discrete|gpu-integrated|gpu-multi|gpu-portable-cpu) ;;
@@ -20,7 +20,7 @@ if [ "$suite" = gpu-portable-cpu ]; then
   export ONEAPI_DEVICE_SELECTOR=opencl:cpu
 fi
 script_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-repo_root="$(CDPATH= cd -- "$script_dir/../../.." && pwd -P)"
+repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd -P)"
 node_bin="${NODE_BIN:-$(command -v node)}"
 work_dir="$(realpath -m -- "${MOM_RELEASE_TEST_DIR:-mom-release-test}")"
 if [[ ! ${work_dir##*/} =~ ^mom-release-[A-Za-z0-9_.-]+$ ]]; then

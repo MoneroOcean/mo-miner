@@ -1,154 +1,1012 @@
 name: Build and test release archives
 
+# Complete cold native build: source gates, Engineering hashing, Linux and Windows SDK producers,
+# applications, raw and packed runtime lanes, then two audited packages. Producer jobs use native-job.yml;
+# "@" in artifact lists stands for <run>-<attempt>. Pins always come from producer job outputs.
 on:
   workflow_call:
     outputs:
       linux_archive_artifact_name:
-        description: Exact package artifact produced after the complete Linux native runtime gate
         value: ${{ jobs.package-linux.outputs.archive_artifact_name }}
       linux_archive_sha256:
-        description: SHA-256 of the exact Linux archive admitted by package-native-application
         value: ${{ jobs.package-linux.outputs.archive_sha256 }}
       windows_archive_artifact_name:
-        description: Exact package artifact produced after the complete Windows native runtime gate
         value: ${{ jobs.package-windows.outputs.archive_artifact_name }}
       windows_archive_sha256:
-        description: SHA-256 of the exact Windows archive admitted by package-native-application
         value: ${{ jobs.package-windows.outputs.archive_sha256 }}
 
 permissions:
   actions: read
   contents: read
 
-env:
-  MOM_PORTABLE_BUILD: "1"
-  # Hosted x64 runners expose two effective build cores. Keep nested node-gyp/LLVM work inside that
-  # budget so compiler jobs do not lose time to oversubscription.
-  MOM_BUILD_JOBS: "2"
-  ONEAPI_ROOT: C:/Program Files (x86)/Intel/oneAPI
-
-# The native reusable workflow owns target builds and the complete raw + packed CPU runtime gate.
-# These source checks remain independent required gates; package jobs wait for the successful whole call.
 jobs:
-  engineering-hash:
-    name: Engineering / CPU and portable SYCL hashing
+  source:
+    uses: ./.github/workflows/source-gates.yml
+
+  engineering:
     uses: ./.github/workflows/test-engineering.yml
 
-  source-quality:
-    name: Source / lint and logic
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+  # Pinned source fetches and target headers.
+  linux-sources:
+    uses: ./.github/workflows/native-job.yml
+    with:
+      timeout: 30
+      upload: >-
+        native-linux-sdk-state-@-sources.tar
+      run: node scripts/prepare-native-ci.js stage linux-sources
 
-      - name: Setup Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version: 24.15.0
+  llvm-sources:
+    uses: ./.github/workflows/native-job.yml
+    with:
+      upload: >-
+        native-llvm21-state-@-sources.tar
+      run: node scripts/prepare-native-ci.js stage sources
 
-      - name: Validate release tag matches package version
-        if: startsWith(github.ref, 'refs/tags/')
-        run: |
-          set -euo pipefail
-          version="$(node -p "require('./package.json').version")"
-          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
-            echo "Release tag $GITHUB_REF_NAME does not match package version v$version." >&2
-            exit 1
-          fi
+  hermes-sources:
+    uses: ./.github/workflows/native-job.yml
+    with:
+      timeout: 30
+      upload: >-
+        native-hermes-state-@-sources.tar
+      run: node scripts/prepare-native-ci.js stage hermes-sources
 
-      - name: Validate workflows and shell syntax
-        run: |
-          set -euo pipefail
-          docker run --rm -v "$PWD:/repo:ro" -w /repo \
-            rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 \
-            -color .github/workflows/*.yml
-          git ls-files -z -- '*.sh' | xargs -0 -n1 bash -n
-          fake_icx="$(mktemp)"
-          printf '#!/usr/bin/env sh\nprintf "Intel(R) oneAPI DPC++/C++ Compiler\\n"\n' >"$fake_icx"
-          chmod +x "$fake_icx"
-          test "$(MOM_PORTABLE_BUILD=1 CXX="$fake_icx" scripts/cpu-cflags.sh)" = \
-            "-march=x86-64 -mtune=generic -maes"
-          rm -f "$fake_icx"
+  acpp-sources:
+    uses: ./.github/workflows/native-job.yml
+    with:
+      timeout: 30
+      upload: >-
+        native-acpp-state-@-sources.tar
+      run: |
+        node scripts/prepare-native-ci.js stage acpp-sources
+        s="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        node scripts/ci/seal.js bundle_sha256="$RUNNER_TEMP/native-acpp-state-$s-sources.tar"
 
-      - name: Install JavaScript tooling
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends cmake ninja-build patchelf libboost-dev libuv1-dev libssl-dev strace unzip
-          npm ci --ignore-scripts
+  zstd-sources:
+    uses: ./.github/workflows/native-job.yml
+    with:
+      timeout: 30
+      upload: >-
+        native-zstd-state-@-sources.tar
+      run: node scripts/prepare-native-ci.js stage zstd-sources
 
-      - name: Run real CMake archive reproducibility regression
-        shell: bash
-        run: |
-          set -euo pipefail
-          cmake_path="$(command -v cmake || true)"
-          if [[ -z "$cmake_path" ]]; then
-            echo "CMake is required for the real archive reproducibility regression." >&2
-            exit 1
-          fi
-          MOM_TEST_CMAKE="$cmake_path" node --test tests/native-release-archive.js
+  rocm-sources:
+    uses: ./.github/workflows/native-job.yml
+    with:
+      timeout: 30
+      upload: >-
+        native-rocm-state-@-sources.tar
+      run: |
+        node scripts/prepare-native-ci.js stage rocm-sources
+        s="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        node scripts/ci/seal.js bundle_sha256="$RUNNER_TEMP/native-rocm-state-$s-sources.tar"
 
-      - name: Test offline source gate
-        run: npm test -- host
+  gnu-headers-linux:
+    uses: ./.github/workflows/native-job.yml
+    with:
+      timeout: 30
+      apt: libstdc++-13-dev libc6-dev linux-libc-dev
+      upload: >-
+        native-linux-gnu-headers-@.tar
+      run: node scripts/prepare-native-ci.js stage gnu-headers
 
-  windows-script-quality:
-    name: Source / Windows scripts
+  gnu-headers-windows:
+    uses: ./.github/workflows/native-job.yml
+    with:
+      timeout: 30
+      apt: mingw-w64-common mingw-w64-x86-64-dev g++-mingw-w64-x86-64-posix
+      upload: >-
+        native-windows-gnu-headers-@.tar
+      run: |
+        node scripts/prepare-native-ci.js stage windows-gnu-headers
+        s="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        root="$MOM_NATIVE_WINDOWS_GNU_HEADERS_DIR"
+        node scripts/ci/seal.js windows_bundle_sha256="$RUNNER_TEMP/native-windows-gnu-headers-$s.tar" \
+          windows_result_sha256="$root/result.json" windows_copyrights_sha256="$root/copyrights.json"
+
+
+  # Linux SDK producers.
+  dpcpp-cuda-inputs:
+    needs: [linux-sources]
+    uses: ./.github/workflows/native-job.yml
+    with:
+      download: >-
+        native-linux-sdk-state-@-sources.tar
+      upload: >-
+        native-linux-dpcpp-cuda-inputs-@.tar
+      pins: |
+        MOM_NATIVE_LINUX_SOURCE_BUNDLE_SHA256=${{ fromJSON(needs.linux-sources.outputs.json).bundle_sha256 }}
+      run: node scripts/prepare-native-ci.js stage dpcpp-cuda-inputs
+
+  cuda-images:
+    needs: [linux-sources, dpcpp-cuda-inputs]
+    uses: ./.github/workflows/native-job.yml
+    with:
+      download: >-
+        native-linux-sdk-state-@-sources.tar
+        native-linux-dpcpp-cuda-inputs-@.tar
+      upload: >-
+        native-linux-cuda-images-@.tar
+      pins: |
+        MOM_NATIVE_LINUX_SOURCE_BUNDLE_SHA256=${{ fromJSON(needs.linux-sources.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_LINUX_DPCPP_CUDA_BUNDLE_SHA256=${{ fromJSON(needs.dpcpp-cuda-inputs.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_LINUX_DPCPP_CUDA_MANIFEST_SHA256=${{ fromJSON(needs.dpcpp-cuda-inputs.outputs.json).manifest_sha256 }}
+      run: |
+        node scripts/ci/linux-sdk.js cuda-images-sources
+        scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage cuda-images-linux
+        s="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        node scripts/ci/seal.js bundle_sha256="$RUNNER_TEMP/native-linux-cuda-images-$s.tar"
+
+  linux-llvm:
+    needs: [llvm-sources]
+    uses: ./.github/workflows/native-job.yml
+    with:
+      timeout: 330
+      download: >-
+        native-llvm21-state-@-sources.tar
+      upload: >-
+        native-linux-llvm21-sdk-@.tar
+        native-linux-llvm21-installed-sdk-@.tar
+        native-linux-llvm-tools-@.tar
+        native-linux-llvm-acpp-frontend-@.tar
+      run: |
+        scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage linux-llvm
+        s="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        node scripts/ci/seal.js sdk_bundle_sha256="$RUNNER_TEMP/native-linux-llvm21-sdk-$s.tar"
+        node scripts/prepare-native-ci.js stage linux-llvm-installed-sdk
+        node scripts/prepare-native-ci.js stage linux-llvm-tools
+        node scripts/ci/linux-sdk.js acpp-frontend
+
+  io-openssl:
+    needs: [llvm-sources]
+    uses: ./.github/workflows/native-job.yml
+    with:
+      download: >-
+        native-llvm21-state-@-sources.tar
+      upload: >-
+        native-linux-io-openssl-sdk-@.tar
+      run: MOM_NATIVE_IO_OPENSSL_DEADLINE_EPOCH=$((MOM_CI_DEADLINE_EPOCH - 300)) scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage io-openssl
+
+  openmp-sdk:
+    needs: [llvm-sources]
+    uses: ./.github/workflows/native-job.yml
+    with:
+      download: >-
+        native-llvm21-state-@-sources.tar
+      upload: >-
+        native-linux-openmp-sdk-@.tar
+      run: scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage openmp-sdk
+
+  zstd-sdk:
+    needs: [zstd-sources]
+    uses: ./.github/workflows/native-job.yml
+    with:
+      download: >-
+        native-zstd-state-@-sources.tar
+      upload: >-
+        native-linux-zstd-sdk-@.tar
+      run: scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage zstd-sdk
+
+  hermes-sdk:
+    needs: [hermes-sources]
+    uses: ./.github/workflows/native-job.yml
+    with:
+      download: >-
+        native-hermes-state-@-sources.tar
+      upload: >-
+        native-linux-hermes-sdk-@.tar
+      run: |
+        scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage hermes-sdk
+        s="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        node scripts/ci/seal.js bundle_sha256="$RUNNER_TEMP/native-linux-hermes-sdk-$s.tar"
+
+  rocm-comgr:
+    needs: [rocm-sources, llvm-sources, linux-llvm]
+    uses: ./.github/workflows/native-job.yml
+    with:
+      download: >-
+        native-rocm-state-@-sources.tar
+        native-llvm21-state-@-sources.tar
+        native-linux-llvm21-installed-sdk-@.tar
+      upload: >-
+        native-linux-rocm-comgr-sdk-@.tar
+        native-rocm-hip-headers-@.tar
+      pins: |
+        MOM_NATIVE_LINUX_LLVM_SDK_HANDOFF_SHA256=${{ fromJSON(needs.linux-llvm.outputs.json).llvm_sdk_handoff_sha256 }}
+      run: |
+        scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage rocm-comgr-sdk
+        node scripts/ci/linux-sdk.js rocm-hip-headers
+
+  rocm-host:
+    needs: [rocm-comgr, linux-llvm]
+    uses: ./.github/workflows/native-job.yml
+    with:
+      download: >-
+        native-linux-rocm-comgr-sdk-@.tar
+      upload: >-
+        native-linux-rocm-host-sdk-@.tar
+      pins: |
+        MOM_NATIVE_LINUX_LLVM_SDK_HANDOFF_SHA256=${{ fromJSON(needs.linux-llvm.outputs.json).llvm_sdk_handoff_sha256 }}
+      run: scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage rocm-host-sdk
+
+  acpp-sdk:
+    needs: [acpp-sources, openmp-sdk, rocm-host, dpcpp-cuda-inputs, linux-llvm]
+    uses: ./.github/workflows/native-job.yml
+    with:
+      download: >-
+        native-acpp-state-@-sources.tar
+        native-linux-openmp-sdk-@.tar
+        native-linux-sdk-state-@-sources.tar
+        native-linux-dpcpp-cuda-inputs-@.tar
+        native-linux-rocm-host-sdk-@.tar
+      upload: >-
+        native-linux-acpp-cuda-hip-sdk-@.tar
+      pins: |
+        MOM_NATIVE_LINUX_LLVM_SDK_HANDOFF_SHA256=${{ fromJSON(needs.linux-llvm.outputs.json).llvm_sdk_handoff_sha256 }}
+        MOM_NATIVE_LINUX_DPCPP_CUDA_BUNDLE_SHA256=${{ fromJSON(needs.dpcpp-cuda-inputs.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_LINUX_DPCPP_CUDA_MANIFEST_SHA256=${{ fromJSON(needs.dpcpp-cuda-inputs.outputs.json).manifest_sha256 }}
+      run: |
+        scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage acpp-cuda-hip-sdk
+        s="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        node scripts/ci/seal.js bundle_sha256="$RUNNER_TEMP/native-linux-acpp-cuda-hip-sdk-$s.tar"
+
+
+  # Linux source-JIT: resources, then configure..link, proof fixture and static DPC++ in one job.
+  linux-jit-resources:
+    needs: [linux-sources, dpcpp-cuda-inputs, gnu-headers-linux]
+    uses: ./.github/workflows/native-job.yml
+    with:
+      download: >-
+        native-linux-sdk-state-@-sources.tar
+        native-linux-dpcpp-cuda-inputs-@.tar
+        native-linux-gnu-headers-@.tar
+      upload: >-
+        native-linux-jit-resources-@.tar
+      pins: |
+        MOM_NATIVE_LINUX_DPCPP_CUDA_BUNDLE_SHA256=${{ fromJSON(needs.dpcpp-cuda-inputs.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_LINUX_DPCPP_CUDA_MANIFEST_SHA256=${{ fromJSON(needs.dpcpp-cuda-inputs.outputs.json).manifest_sha256 }}
+      run: |
+        scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage linux-jit-resources
+        node scripts/ci/linux-sdk.js linux-jit-resources-seal
+
+  linux-jit:
+    needs: [dpcpp-cuda-inputs, linux-jit-resources]
+    uses: ./.github/workflows/native-job.yml
+    with:
+      timeout: 330
+      download: >-
+        native-linux-sdk-state-@-sources.tar
+        native-linux-dpcpp-cuda-inputs-@.tar
+        native-linux-gnu-headers-@.tar
+        native-linux-jit-resources-@.tar
+      upload: >-
+        native-linux-jit-sdk-@-static-dpcpp.tar
+        native-linux-jit-runtime-proof-@.tar
+      pins: |
+        MOM_NATIVE_LINUX_DPCPP_CUDA_BUNDLE_SHA256=${{ fromJSON(needs.dpcpp-cuda-inputs.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_LINUX_DPCPP_CUDA_MANIFEST_SHA256=${{ fromJSON(needs.dpcpp-cuda-inputs.outputs.json).manifest_sha256 }}
+      run: scripts/run-bounded-native-ci.sh node scripts/ci/linux-jit.js
+
+  linux-jit-runtime:
+    needs: [linux-jit]
+    uses: ./.github/workflows/native-job.yml
+    with:
+      timeout: 30
+      download: >-
+        native-linux-jit-runtime-proof-@.tar
+      diagnostics: native-linux-jit-runtime-failure-@=native-linux-jit-runtime-failure-@.tar
+      pins: |
+        MOM_NATIVE_LINUX_JIT_RUNTIME_PROOF_SHA256=${{ fromJSON(needs.linux-jit.outputs.json).proof_sha256 }}
+        MOM_NATIVE_LINUX_JIT_RUNTIME_RESULT_SHA256=${{ fromJSON(needs.linux-jit.outputs.json).result_sha256 }}
+        MOM_NATIVE_LINUX_JIT_RUNTIME_BUNDLE_SHA256=${{ fromJSON(needs.linux-jit.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_LINUX_JIT_RUNTIME_BUNDLE_BYTES=${{ fromJSON(needs.linux-jit.outputs.json).bundle_bytes }}
+      run: |
+        node scripts/prepare-native-ci.js stage linux-jit-runtime-admit
+        export MOM_NATIVE_JIT_RUNTIME_FIXTURE="$(sed -n 's/^fixture_path=//p' "$GITHUB_OUTPUT")"
+        export MOM_NATIVE_JIT_RUNTIME_EXPECTED_SHA256="$MOM_NATIVE_LINUX_JIT_RUNTIME_PROOF_SHA256"
+        scripts/ci/linux-jit-runtime.sh run || { scripts/ci/linux-jit-runtime.sh bundle-evidence; exit 1; }
+
+
+  # Linux application: descriptor, Core and five GPU factories, assembly, runtime, packing.
+  linux-descriptor:
+    needs: [linux-llvm, linux-sources, dpcpp-cuda-inputs, cuda-images, linux-jit, acpp-sources, acpp-sdk, hermes-sdk, rocm-host, openmp-sdk, zstd-sdk, io-openssl, gnu-headers-linux]
+    uses: ./.github/workflows/native-job.yml
+    with:
+      npm: true
+      dev: node
+      download: >-
+        native-linux-sdk-state-@-sources.tar
+        native-linux-dpcpp-cuda-inputs-@.tar
+        native-linux-gnu-headers-@.tar
+        native-linux-cuda-images-@.tar
+        native-linux-jit-sdk-@-static-dpcpp.tar
+        native-acpp-state-@-sources.tar
+        native-linux-acpp-cuda-hip-sdk-@.tar
+        native-linux-hermes-sdk-@.tar
+        native-linux-rocm-host-sdk-@.tar
+        native-linux-openmp-sdk-@.tar
+        native-linux-zstd-sdk-@.tar
+        native-linux-io-openssl-sdk-@.tar
+      upload: >-
+        native-linux-sdk-descriptor-@.tar
+      pins: |
+        MOM_NATIVE_LINUX_LLVM_SDK_HANDOFF_SHA256=${{ fromJSON(needs.linux-llvm.outputs.json).llvm_sdk_handoff_sha256 }}
+        MOM_NATIVE_LINUX_DPCPP_CUDA_BUNDLE_SHA256=${{ fromJSON(needs.dpcpp-cuda-inputs.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_LINUX_DPCPP_CUDA_MANIFEST_SHA256=${{ fromJSON(needs.dpcpp-cuda-inputs.outputs.json).manifest_sha256 }}
+      run: node scripts/prepare-native-ci.js stage linux-sdk-descriptor
+
+  component-core:
+    needs: [linux-descriptor]
+    uses: ./.github/workflows/native-job.yml
+    with:
+      npm: true
+      dev: node
+      download: >-
+        native-linux-sdk-state-@-sources.tar
+        native-linux-dpcpp-cuda-inputs-@.tar
+        native-linux-gnu-headers-@.tar
+        native-linux-cuda-images-@.tar
+        native-linux-jit-sdk-@-static-dpcpp.tar
+        native-acpp-state-@-sources.tar
+        native-linux-acpp-cuda-hip-sdk-@.tar
+        native-linux-hermes-sdk-@.tar
+        native-linux-rocm-host-sdk-@.tar
+        native-linux-openmp-sdk-@.tar
+        native-linux-zstd-sdk-@.tar
+        native-linux-io-openssl-sdk-@.tar
+        native-linux-sdk-descriptor-@.tar
+      upload: >-
+        native-linux-component-core-@.tar
+      diagnostics: native-linux-component-core-diagnostics-@=/tmp/mom-native-linux-component-core-@/logs
+      run: |
+        export NATIVE_PROFILE=core MOM_NATIVE_COMPONENT_DEADLINE_EPOCH="$MOM_CI_DEADLINE_EPOCH"
+        scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage linux-native-component "$NATIVE_PROFILE"
+        node scripts/ci/linux-application.js component-seal
+
+  component-acpp-cuda:
+    needs: [linux-descriptor]
+    uses: ./.github/workflows/native-job.yml
+    with:
+      npm: true
+      dev: node
+      download: >-
+        native-linux-sdk-state-@-sources.tar
+        native-linux-dpcpp-cuda-inputs-@.tar
+        native-linux-gnu-headers-@.tar
+        native-linux-cuda-images-@.tar
+        native-linux-jit-sdk-@-static-dpcpp.tar
+        native-acpp-state-@-sources.tar
+        native-linux-acpp-cuda-hip-sdk-@.tar
+        native-linux-hermes-sdk-@.tar
+        native-linux-rocm-host-sdk-@.tar
+        native-linux-openmp-sdk-@.tar
+        native-linux-zstd-sdk-@.tar
+        native-linux-io-openssl-sdk-@.tar
+        native-linux-sdk-descriptor-@.tar
+      upload: >-
+        native-linux-component-acpp-cuda-@.tar
+      diagnostics: native-linux-component-acpp-cuda-diagnostics-@=/tmp/mom-native-linux-component-acpp-cuda-@/logs
+      run: |
+        export NATIVE_PROFILE=acpp-cuda MOM_NATIVE_COMPONENT_DEADLINE_EPOCH="$MOM_CI_DEADLINE_EPOCH"
+        scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage linux-native-component "$NATIVE_PROFILE"
+        node scripts/ci/linux-application.js component-seal
+
+  component-acpp-hip:
+    needs: [linux-descriptor]
+    uses: ./.github/workflows/native-job.yml
+    with:
+      npm: true
+      dev: node
+      download: >-
+        native-linux-sdk-state-@-sources.tar
+        native-linux-dpcpp-cuda-inputs-@.tar
+        native-linux-gnu-headers-@.tar
+        native-linux-cuda-images-@.tar
+        native-linux-jit-sdk-@-static-dpcpp.tar
+        native-acpp-state-@-sources.tar
+        native-linux-acpp-cuda-hip-sdk-@.tar
+        native-linux-hermes-sdk-@.tar
+        native-linux-rocm-host-sdk-@.tar
+        native-linux-openmp-sdk-@.tar
+        native-linux-zstd-sdk-@.tar
+        native-linux-io-openssl-sdk-@.tar
+        native-linux-sdk-descriptor-@.tar
+      upload: >-
+        native-linux-component-acpp-hip-@.tar
+      diagnostics: native-linux-component-acpp-hip-diagnostics-@=/tmp/mom-native-linux-component-acpp-hip-@/logs
+      run: |
+        export NATIVE_PROFILE=acpp-hip MOM_NATIVE_COMPONENT_DEADLINE_EPOCH="$MOM_CI_DEADLINE_EPOCH"
+        scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage linux-native-component "$NATIVE_PROFILE"
+        node scripts/ci/linux-application.js component-seal
+
+  component-dpcpp:
+    needs: [linux-descriptor]
+    uses: ./.github/workflows/native-job.yml
+    with:
+      npm: true
+      dev: node
+      download: >-
+        native-linux-sdk-state-@-sources.tar
+        native-linux-dpcpp-cuda-inputs-@.tar
+        native-linux-gnu-headers-@.tar
+        native-linux-cuda-images-@.tar
+        native-linux-jit-sdk-@-static-dpcpp.tar
+        native-acpp-state-@-sources.tar
+        native-linux-acpp-cuda-hip-sdk-@.tar
+        native-linux-hermes-sdk-@.tar
+        native-linux-rocm-host-sdk-@.tar
+        native-linux-openmp-sdk-@.tar
+        native-linux-zstd-sdk-@.tar
+        native-linux-io-openssl-sdk-@.tar
+        native-linux-sdk-descriptor-@.tar
+      upload: >-
+        native-linux-component-dpcpp-@.tar
+      diagnostics: native-linux-component-dpcpp-diagnostics-@=/tmp/mom-native-linux-component-dpcpp-@/logs
+      run: |
+        export NATIVE_PROFILE=dpcpp MOM_NATIVE_COMPONENT_DEADLINE_EPOCH="$MOM_CI_DEADLINE_EPOCH"
+        scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage linux-native-component "$NATIVE_PROFILE"
+        node scripts/ci/linux-application.js component-seal
+
+  component-dpcpp-opencl:
+    needs: [linux-descriptor]
+    uses: ./.github/workflows/native-job.yml
+    with:
+      npm: true
+      dev: node
+      download: >-
+        native-linux-sdk-state-@-sources.tar
+        native-linux-dpcpp-cuda-inputs-@.tar
+        native-linux-gnu-headers-@.tar
+        native-linux-cuda-images-@.tar
+        native-linux-jit-sdk-@-static-dpcpp.tar
+        native-acpp-state-@-sources.tar
+        native-linux-acpp-cuda-hip-sdk-@.tar
+        native-linux-hermes-sdk-@.tar
+        native-linux-rocm-host-sdk-@.tar
+        native-linux-openmp-sdk-@.tar
+        native-linux-zstd-sdk-@.tar
+        native-linux-io-openssl-sdk-@.tar
+        native-linux-sdk-descriptor-@.tar
+      upload: >-
+        native-linux-component-dpcpp-opencl-@.tar
+      diagnostics: native-linux-component-dpcpp-opencl-diagnostics-@=/tmp/mom-native-linux-component-dpcpp-opencl-@/logs
+      run: |
+        export NATIVE_PROFILE=dpcpp-opencl MOM_NATIVE_COMPONENT_DEADLINE_EPOCH="$MOM_CI_DEADLINE_EPOCH"
+        scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage linux-native-component "$NATIVE_PROFILE"
+        node scripts/ci/linux-application.js component-seal
+
+  component-oneapi:
+    needs: [linux-descriptor]
+    uses: ./.github/workflows/native-job.yml
+    with:
+      npm: true
+      dev: node
+      download: >-
+        native-linux-sdk-state-@-sources.tar
+        native-linux-dpcpp-cuda-inputs-@.tar
+        native-linux-gnu-headers-@.tar
+        native-linux-cuda-images-@.tar
+        native-linux-jit-sdk-@-static-dpcpp.tar
+        native-acpp-state-@-sources.tar
+        native-linux-acpp-cuda-hip-sdk-@.tar
+        native-linux-hermes-sdk-@.tar
+        native-linux-rocm-host-sdk-@.tar
+        native-linux-openmp-sdk-@.tar
+        native-linux-zstd-sdk-@.tar
+        native-linux-io-openssl-sdk-@.tar
+        native-linux-sdk-descriptor-@.tar
+      upload: >-
+        native-linux-component-oneapi-@.tar
+      diagnostics: native-linux-component-oneapi-diagnostics-@=/tmp/mom-native-linux-component-oneapi-@/logs
+      run: |
+        export NATIVE_PROFILE=oneapi MOM_NATIVE_COMPONENT_DEADLINE_EPOCH="$MOM_CI_DEADLINE_EPOCH"
+        scripts/run-bounded-native-ci.sh node scripts/prepare-native-ci.js stage linux-native-component "$NATIVE_PROFILE"
+        node scripts/ci/linux-application.js component-seal
+
+  linux-application:
+    needs: [linux-descriptor, component-core, component-acpp-cuda, component-acpp-hip, component-dpcpp, component-dpcpp-opencl, component-oneapi]
+    uses: ./.github/workflows/native-job.yml
+    with:
+      npm: true
+      dev: node
+      download: >-
+        native-linux-sdk-state-@-sources.tar
+        native-linux-dpcpp-cuda-inputs-@.tar
+        native-linux-gnu-headers-@.tar
+        native-linux-cuda-images-@.tar
+        native-linux-jit-sdk-@-static-dpcpp.tar
+        native-acpp-state-@-sources.tar
+        native-linux-acpp-cuda-hip-sdk-@.tar
+        native-linux-hermes-sdk-@.tar
+        native-linux-rocm-host-sdk-@.tar
+        native-linux-openmp-sdk-@.tar
+        native-linux-zstd-sdk-@.tar
+        native-linux-io-openssl-sdk-@.tar
+        native-linux-sdk-descriptor-@.tar
+        native-linux-component-core-@.tar
+        native-linux-component-acpp-cuda-@.tar
+        native-linux-component-acpp-hip-@.tar
+        native-linux-component-dpcpp-@.tar
+        native-linux-component-dpcpp-opencl-@.tar
+        native-linux-component-oneapi-@.tar
+      upload: >-
+        native-linux-executable-@=mom-native-runtime-@/mom
+        native-linux-application-build-@.tar
+      diagnostics: native-linux-application-diagnostics-@=native-linux-application-*diagnostics-@.log
+      pins: |
+        MOM_NATIVE_LINUX_COMPONENT_CORE_SHA256=${{ fromJSON(needs.component-core.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_LINUX_COMPONENT_ACPP_CUDA_SHA256=${{ fromJSON(needs.component-acpp-cuda.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_LINUX_COMPONENT_ACPP_HIP_SHA256=${{ fromJSON(needs.component-acpp-hip.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_LINUX_COMPONENT_DPCPP_SHA256=${{ fromJSON(needs.component-dpcpp.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_LINUX_COMPONENT_DPCPP_OPENCL_SHA256=${{ fromJSON(needs.component-dpcpp-opencl.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_LINUX_COMPONENT_ONEAPI_SHA256=${{ fromJSON(needs.component-oneapi.outputs.json).bundle_sha256 }}
+      run: |
+        export MOM_NATIVE_APPLICATION_DEADLINE_EPOCH="$MOM_CI_DEADLINE_EPOCH"
+        node scripts/ci/linux-application.js application-build
+        node scripts/ci/linux-application.js application-bind
+
+  linux-runtime:
+    needs: linux-application
+    uses: ./.github/workflows/test-native-release.yml
+    with:
+      platform: linux
+      expected_sha256: ${{ fromJSON(needs.linux-application.outputs.json).sha256 }}
+
+  linux-pack:
+    needs: linux-application
+    uses: ./.github/workflows/pack-native-application.yml
+    with:
+      platform: linux
+      executable_sha256: ${{ fromJSON(needs.linux-application.outputs.json).sha256 }}
+      build_handoff_bundle_sha256: ${{ fromJSON(needs.linux-application.outputs.json).build_handoff_bundle_sha256 }}
+      build_handoff_sha256: ${{ fromJSON(needs.linux-application.outputs.json).build_handoff_sha256 }}
+
+  linux-packed-runtime:
+    needs: linux-pack
+    uses: ./.github/workflows/test-native-release.yml
+    with:
+      platform: linux
+      variant: packed
+      expected_sha256: ${{ needs.linux-pack.outputs.executable_sha256 }}
+
+  # Windows: MSVC Core and controller SDKs on Windows runners; everything else cross-builds on Linux.
+  windows-core:
     runs-on: windows-2022
-    timeout-minutes: 20
-
+    timeout-minutes: 60
+    env:
+      MOM_BUILD_JOBS: "4"
+    outputs:
+      bundle_sha256: ${{ steps.stage.outputs.bundle_sha256 }}
+      handoff_sha256: ${{ steps.stage.outputs.handoff_sha256 }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      - name: Setup Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+      - shell: pwsh
+        run: '"MOM_NATIVE_WINDOWS_CORE_DEADLINE_EPOCH=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 3300)" >> $env:GITHUB_ENV'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          node-version: 24.15.0
+          persist-credentials: false
+      - shell: cmd
+        run: scripts\install-dev.bat -Component base,node,oneapi -Jobs 4
+      - id: stage
+        shell: pwsh
+        run: scripts/ci/prepare-native-windows-ci.ps1 -Role core
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          path: ${{ runner.temp }}/native-windows-core-${{ github.run_id }}-${{ github.run_attempt }}.tar
+          archive: false
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 3
 
-      - name: Install JavaScript tooling
-        shell: powershell
-        run: |
-          npm ci --ignore-scripts
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  windows-controller:
+    needs: hermes-sources
+    runs-on: windows-2022
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        role: [io, hermes]
+    # Matrix legs write disjoint io_* / hermes_* keys, which GitHub combines.
+    outputs:
+      io_bundle_sha256: ${{ steps.stage.outputs.io_bundle_sha256 }}
+      io_handoff_sha256: ${{ steps.stage.outputs.io_handoff_sha256 }}
+      hermes_bundle_sha256: ${{ steps.stage.outputs.hermes_bundle_sha256 }}
+      hermes_handoff_sha256: ${{ steps.stage.outputs.hermes_handoff_sha256 }}
+    steps:
+      - shell: pwsh
+        run: '"MOM_NATIVE_WINDOWS_CONTROLLER_DEADLINE_EPOCH=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 3300)" >> $env:GITHUB_ENV'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - shell: pwsh
+        run: '& scripts/install-dev.ps1 -Component $(if ("${{ matrix.role }}" -eq "io") { "base,node,oneapi,perl" } else { "base,node,oneapi" }) -Jobs 4'
+      - if: matrix.role == 'hermes'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: native-hermes-state-${{ github.run_id }}-${{ github.run_attempt }}-sources.tar
+          path: ${{ runner.temp }}/incoming
+      - id: stage
+        shell: pwsh
+        env:
+          MOM_NATIVE_WINDOWS_CONTROLLER_IO_DIR: ${{ runner.temp }}/mom-native-windows-controller-io-${{ github.run_id }}-${{ github.run_attempt }}
+          MOM_NATIVE_WINDOWS_CONTROLLER_HERMES_DIR: ${{ runner.temp }}/mom-native-windows-controller-hermes-${{ github.run_id }}-${{ github.run_attempt }}
+        run: scripts/ci/prepare-native-windows-ci.ps1 -Role ${{ matrix.role }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          path: ${{ runner.temp }}/native-windows-controller-${{ matrix.role }}-${{ github.run_id }}-${{ github.run_attempt }}.tar
+          archive: false
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 3
 
-      - name: Test native Windows source gate
-        shell: powershell
-        run: |
-          .github\workflows\scripts\test-powershell-syntax.ps1
-          . scripts\import-vcvars.ps1
-          Import-MomVcVars64
-          # source-quality owns lint/typecheck; keep the platform-specific logic run here.
-          node tests/run-hash.js logic
-          $logicExit = $LASTEXITCODE
-          node --test tests/windows-script-safety.js
-          $safetyExit = $LASTEXITCODE
-          Write-Host "Source gate results: logic=$logicExit safety=$safetyExit"
-          if ($logicExit -ne 0 -or $safetyExit -ne 0) { exit 1 }
+  windows-jit-resources:
+    needs: [linux-sources, dpcpp-cuda-inputs, gnu-headers-windows, linux-jit-resources]
+    uses: ./.github/workflows/native-job.yml
+    with:
+      timeout: 30
+      jobs: "2"
+      download: >-
+        native-linux-sdk-state-@-sources.tar
+        native-linux-dpcpp-cuda-inputs-@.tar
+        native-linux-jit-resources-@.tar
+        native-windows-gnu-headers-@.tar
+      upload: >-
+        mom-native-windows-jit-resources-@.tar
+      pins: |
+        MOM_NATIVE_LINUX_SOURCE_BUNDLE_SHA256=${{ fromJSON(needs.linux-sources.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_LINUX_DPCPP_CUDA_BUNDLE_SHA256=${{ fromJSON(needs.dpcpp-cuda-inputs.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_LINUX_DPCPP_CUDA_MANIFEST_SHA256=${{ fromJSON(needs.dpcpp-cuda-inputs.outputs.json).manifest_sha256 }}
+        MOM_NATIVE_LINUX_JIT_RESOURCES_BUNDLE_SHA256=${{ fromJSON(needs.linux-jit-resources.outputs.json).resources_bundle_sha256 }}
+        MOM_NATIVE_LINUX_JIT_RESOURCES_RESULT_SHA256=${{ fromJSON(needs.linux-jit-resources.outputs.json).resources_result_sha256 }}
+        MOM_NATIVE_LINUX_JIT_RESOURCES_MANIFEST_SHA256=${{ fromJSON(needs.linux-jit-resources.outputs.json).resources_manifest_sha256 }}
+        MOM_NATIVE_WINDOWS_GNU_BUNDLE_SHA256=${{ fromJSON(needs.gnu-headers-windows.outputs.json).windows_bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_GNU_RESULT_SHA256=${{ fromJSON(needs.gnu-headers-windows.outputs.json).windows_result_sha256 }}
+        MOM_NATIVE_WINDOWS_GNU_COPYRIGHTS_SHA256=${{ fromJSON(needs.gnu-headers-windows.outputs.json).windows_copyrights_sha256 }}
+      run: node scripts/ci/linux-sdk.js windows-jit-resources
 
-  build-native-prerequisites:
-    name: Build, pack, and runtime-check Linux and Windows candidates
-    # Source checks consume no SDK output; overlap them with the cold build, but
-    # require both before either archive can be packaged.
-    uses: ./.github/workflows/build-native-prerequisites.yml
+  windows-llvm:
+    needs: [windows-controller, linux-llvm]
+    uses: ./.github/workflows/native-job.yml
+    with:
+      timeout: 330
+      npm: true
+      apt: 7zip msitools
+      dev: oneapi
+      download: >-
+        native-windows-controller-hermes-@.tar
+        native-linux-llvm-tools-@.tar
+      upload: >-
+        native-windows-llvm-state-@-audited.tar
+        native-windows-llvm-state-@-audited.json
+      pins: |
+        MOM_NATIVE_WINDOWS_LLVM_HERMES_BUNDLE_SHA256=${{ needs.windows-controller.outputs.hermes_bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_LLVM_HERMES_HANDOFF_SHA256=${{ needs.windows-controller.outputs.hermes_handoff_sha256 }}
+        MOM_NATIVE_LINUX_LLVM_TOOLS_BUNDLE_SHA256=${{ fromJSON(needs.linux-llvm.outputs.json).tools_bundle_sha256 }}
+        MOM_NATIVE_LINUX_LLVM_TOOLS_HANDOFF_SHA256=${{ fromJSON(needs.linux-llvm.outputs.json).tools_handoff_sha256 }}
+      run: scripts/run-bounded-native-ci.sh node scripts/ci/windows-llvm.js
+
+  windows-jit:
+    needs: [windows-jit-resources, linux-sources, dpcpp-cuda-inputs, windows-controller, linux-llvm]
+    uses: ./.github/workflows/native-job.yml
+    with:
+      timeout: 330
+      npm: true
+      apt: 7zip msitools
+      dev: oneapi
+      download: >-
+        native-linux-sdk-state-@-sources.tar
+        native-linux-dpcpp-cuda-inputs-@.tar
+        native-windows-controller-hermes-@.tar
+        native-linux-llvm-tools-@.tar
+        mom-native-windows-jit-resources-@.tar
+      upload: >-
+        native-windows-jit-sdk-@-link.tar
+      pins: |
+        MOM_NATIVE_WINDOWS_JIT_SOURCE_BUNDLE_SHA256=${{ fromJSON(needs.linux-sources.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_JIT_DPCPP_BUNDLE_SHA256=${{ fromJSON(needs.dpcpp-cuda-inputs.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_JIT_DPCPP_MANIFEST_SHA256=${{ fromJSON(needs.dpcpp-cuda-inputs.outputs.json).manifest_sha256 }}
+        MOM_NATIVE_WINDOWS_JIT_RESOURCES_BUNDLE_SHA256=${{ fromJSON(needs.windows-jit-resources.outputs.json).resources_bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_CONTROLLER_HERMES_BUNDLE_SHA256=${{ needs.windows-controller.outputs.hermes_bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_CONTROLLER_HERMES_HANDOFF_SHA256=${{ needs.windows-controller.outputs.hermes_handoff_sha256 }}
+        MOM_NATIVE_LINUX_LLVM_TOOLS_BUNDLE_SHA256=${{ fromJSON(needs.linux-llvm.outputs.json).tools_bundle_sha256 }}
+        MOM_NATIVE_LINUX_LLVM_TOOLS_HANDOFF_SHA256=${{ fromJSON(needs.linux-llvm.outputs.json).tools_handoff_sha256 }}
+      run: scripts/run-bounded-native-ci.sh node scripts/ci/windows-jit.js chain
+
+  windows-dpcpp:
+    needs: [windows-jit, linux-sources, dpcpp-cuda-inputs, windows-controller, hermes-sdk, linux-llvm]
+    uses: ./.github/workflows/native-job.yml
+    with:
+      npm: true
+      apt: 7zip msitools
+      dev: oneapi
+      download: >-
+        native-linux-sdk-state-@-sources.tar
+        native-linux-dpcpp-cuda-inputs-@.tar
+        native-windows-jit-sdk-@-link.tar
+        native-linux-llvm-tools-@.tar
+        native-windows-controller-io-@.tar
+        native-windows-controller-hermes-@.tar
+        native-linux-hermes-sdk-@.tar
+      upload: >-
+        native-windows-dpcpp-static-@.tar
+      pins: |
+        MOM_NATIVE_WINDOWS_DPCPP_STATIC_SOURCE_BUNDLE_SHA256=${{ fromJSON(needs.linux-sources.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_DPCPP_STATIC_DPCPP_BUNDLE_SHA256=${{ fromJSON(needs.dpcpp-cuda-inputs.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_DPCPP_STATIC_DPCPP_MANIFEST_SHA256=${{ fromJSON(needs.dpcpp-cuda-inputs.outputs.json).manifest_sha256 }}
+        MOM_NATIVE_WINDOWS_DPCPP_STATIC_JIT_BUNDLE_SHA256=${{ fromJSON(needs.windows-jit.outputs.json).state_bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_DPCPP_STATIC_IO_BUNDLE_SHA256=${{ needs.windows-controller.outputs.io_bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_DPCPP_STATIC_IO_HANDOFF_SHA256=${{ needs.windows-controller.outputs.io_handoff_sha256 }}
+        MOM_NATIVE_WINDOWS_DPCPP_STATIC_LINUX_HERMES_BUNDLE_SHA256=${{ fromJSON(needs.hermes-sdk.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_DPCPP_STATIC_HERMES_BUNDLE_SHA256=${{ needs.windows-controller.outputs.hermes_bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_DPCPP_STATIC_HERMES_HANDOFF_SHA256=${{ needs.windows-controller.outputs.hermes_handoff_sha256 }}
+        MOM_NATIVE_WINDOWS_DPCPP_STATIC_TOOLS_BUNDLE_SHA256=${{ fromJSON(needs.linux-llvm.outputs.json).tools_bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_DPCPP_STATIC_TOOLS_HANDOFF_SHA256=${{ fromJSON(needs.linux-llvm.outputs.json).tools_handoff_sha256 }}
+      run: |
+        export PATH="/opt/intel/oneapi/compiler/2026.2/bin:$PATH"
+        node scripts/ci/windows-dpcpp.js build
+        set -a
+        . "$GITHUB_ENV"
+        set +a
+        node scripts/ci/windows-dpcpp.js seal
+
+  windows-gpu-oneapi:
+    needs: [linux-sources, dpcpp-cuda-inputs, linux-llvm]
+    uses: ./.github/workflows/native-job.yml
+    with:
+      npm: true
+      apt: cmake ninja-build python3 binutils 7zip msitools
+      dev: oneapi
+      download: >-
+        native-linux-sdk-state-@-sources.tar
+        native-linux-llvm-tools-@.tar
+        native-linux-dpcpp-cuda-inputs-@.tar
+      upload: >-
+        native-windows-gpu-oneapi-@.tar
+      pins: |
+        MOM_NATIVE_WINDOWS_GPU_PROFILE=oneapi
+        MOM_NATIVE_WINDOWS_GPU_SOURCE_BUNDLE_SHA256=${{ fromJSON(needs.linux-sources.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_GPU_TOOLS_BUNDLE_SHA256=${{ fromJSON(needs.linux-llvm.outputs.json).tools_bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_GPU_TOOLS_HANDOFF_SHA256=${{ fromJSON(needs.linux-llvm.outputs.json).tools_handoff_sha256 }}
+        MOM_NATIVE_WINDOWS_GPU_DPCPP_BUNDLE_SHA256=${{ fromJSON(needs.dpcpp-cuda-inputs.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_GPU_DPCPP_MANIFEST_SHA256=${{ fromJSON(needs.dpcpp-cuda-inputs.outputs.json).manifest_sha256 }}
+      run: scripts/run-bounded-native-ci.sh node scripts/run-native-windows-gpu-ci.js "$MOM_NATIVE_WINDOWS_GPU_PROFILE"
+
+  windows-gpu-dpcpp:
+    needs: [linux-sources, dpcpp-cuda-inputs, linux-llvm, cuda-images]
+    uses: ./.github/workflows/native-job.yml
+    with:
+      npm: true
+      apt: cmake ninja-build python3 binutils 7zip msitools
+      download: >-
+        native-linux-sdk-state-@-sources.tar
+        native-linux-llvm-tools-@.tar
+        native-linux-dpcpp-cuda-inputs-@.tar
+        native-linux-cuda-images-@.tar
+      upload: >-
+        native-windows-gpu-dpcpp-@.tar
+      pins: |
+        MOM_NATIVE_WINDOWS_GPU_PROFILE=dpcpp
+        MOM_NATIVE_WINDOWS_GPU_SOURCE_BUNDLE_SHA256=${{ fromJSON(needs.linux-sources.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_GPU_TOOLS_BUNDLE_SHA256=${{ fromJSON(needs.linux-llvm.outputs.json).tools_bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_GPU_TOOLS_HANDOFF_SHA256=${{ fromJSON(needs.linux-llvm.outputs.json).tools_handoff_sha256 }}
+        MOM_NATIVE_WINDOWS_GPU_DPCPP_BUNDLE_SHA256=${{ fromJSON(needs.dpcpp-cuda-inputs.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_GPU_DPCPP_MANIFEST_SHA256=${{ fromJSON(needs.dpcpp-cuda-inputs.outputs.json).manifest_sha256 }}
+        MOM_NATIVE_WINDOWS_GPU_IMAGES_BUNDLE_SHA256=${{ fromJSON(needs.cuda-images.outputs.json).bundle_sha256 }}
+      run: scripts/run-bounded-native-ci.sh node scripts/run-native-windows-gpu-ci.js "$MOM_NATIVE_WINDOWS_GPU_PROFILE"
+
+  windows-gpu-dpcpp-opencl:
+    needs: [linux-sources, dpcpp-cuda-inputs, linux-llvm]
+    uses: ./.github/workflows/native-job.yml
+    with:
+      npm: true
+      apt: cmake ninja-build python3 binutils 7zip msitools
+      download: >-
+        native-linux-sdk-state-@-sources.tar
+        native-linux-llvm-tools-@.tar
+        native-linux-dpcpp-cuda-inputs-@.tar
+      upload: >-
+        native-windows-gpu-dpcpp-opencl-@.tar
+      pins: |
+        MOM_NATIVE_WINDOWS_GPU_PROFILE=dpcpp-opencl
+        MOM_NATIVE_WINDOWS_GPU_SOURCE_BUNDLE_SHA256=${{ fromJSON(needs.linux-sources.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_GPU_TOOLS_BUNDLE_SHA256=${{ fromJSON(needs.linux-llvm.outputs.json).tools_bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_GPU_TOOLS_HANDOFF_SHA256=${{ fromJSON(needs.linux-llvm.outputs.json).tools_handoff_sha256 }}
+        MOM_NATIVE_WINDOWS_GPU_DPCPP_BUNDLE_SHA256=${{ fromJSON(needs.dpcpp-cuda-inputs.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_GPU_DPCPP_MANIFEST_SHA256=${{ fromJSON(needs.dpcpp-cuda-inputs.outputs.json).manifest_sha256 }}
+      run: scripts/run-bounded-native-ci.sh node scripts/run-native-windows-gpu-ci.js "$MOM_NATIVE_WINDOWS_GPU_PROFILE"
+
+  windows-gpu-acpp-cuda:
+    needs: [linux-sources, acpp-sources, acpp-sdk, linux-llvm, dpcpp-cuda-inputs, cuda-images]
+    uses: ./.github/workflows/native-job.yml
+    with:
+      npm: true
+      apt: cmake ninja-build python3 binutils 7zip msitools
+      download: >-
+        native-linux-sdk-state-@-sources.tar
+        native-linux-llvm-tools-@.tar
+        native-linux-dpcpp-cuda-inputs-@.tar
+        native-linux-cuda-images-@.tar
+        native-acpp-state-@-sources.tar
+        native-linux-acpp-cuda-hip-sdk-@.tar
+        native-linux-llvm-acpp-frontend-@.tar
+      upload: >-
+        native-windows-gpu-acpp-cuda-@.tar
+      pins: |
+        MOM_NATIVE_WINDOWS_GPU_PROFILE=acpp-cuda
+        MOM_NATIVE_WINDOWS_GPU_SOURCE_BUNDLE_SHA256=${{ fromJSON(needs.linux-sources.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_GPU_TOOLS_BUNDLE_SHA256=${{ fromJSON(needs.linux-llvm.outputs.json).tools_bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_GPU_TOOLS_HANDOFF_SHA256=${{ fromJSON(needs.linux-llvm.outputs.json).tools_handoff_sha256 }}
+        MOM_NATIVE_WINDOWS_GPU_DPCPP_BUNDLE_SHA256=${{ fromJSON(needs.dpcpp-cuda-inputs.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_GPU_DPCPP_MANIFEST_SHA256=${{ fromJSON(needs.dpcpp-cuda-inputs.outputs.json).manifest_sha256 }}
+        MOM_NATIVE_WINDOWS_GPU_IMAGES_BUNDLE_SHA256=${{ fromJSON(needs.cuda-images.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_GPU_ACPP_SOURCE_BUNDLE_SHA256=${{ fromJSON(needs.acpp-sources.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_GPU_ACPP_SDK_BUNDLE_SHA256=${{ fromJSON(needs.acpp-sdk.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_GPU_FRONTEND_BUNDLE_SHA256=${{ fromJSON(needs.linux-llvm.outputs.json).frontend_bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_GPU_FRONTEND_HANDOFF_SHA256=${{ fromJSON(needs.linux-llvm.outputs.json).frontend_handoff_sha256 }}
+      run: scripts/run-bounded-native-ci.sh node scripts/run-native-windows-gpu-ci.js "$MOM_NATIVE_WINDOWS_GPU_PROFILE"
+
+  windows-gpu-acpp-hip:
+    needs: [linux-sources, acpp-sources, acpp-sdk, linux-llvm, rocm-comgr]
+    uses: ./.github/workflows/native-job.yml
+    with:
+      npm: true
+      apt: cmake ninja-build python3 binutils 7zip msitools
+      download: >-
+        native-linux-sdk-state-@-sources.tar
+        native-linux-llvm-tools-@.tar
+        native-acpp-state-@-sources.tar
+        native-linux-acpp-cuda-hip-sdk-@.tar
+        native-linux-llvm-acpp-frontend-@.tar
+        native-rocm-hip-headers-@.tar
+      upload: >-
+        native-windows-gpu-acpp-hip-@.tar
+      pins: |
+        MOM_NATIVE_WINDOWS_GPU_PROFILE=acpp-hip
+        MOM_NATIVE_WINDOWS_GPU_SOURCE_BUNDLE_SHA256=${{ fromJSON(needs.linux-sources.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_GPU_TOOLS_BUNDLE_SHA256=${{ fromJSON(needs.linux-llvm.outputs.json).tools_bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_GPU_TOOLS_HANDOFF_SHA256=${{ fromJSON(needs.linux-llvm.outputs.json).tools_handoff_sha256 }}
+        MOM_NATIVE_WINDOWS_GPU_ACPP_SOURCE_BUNDLE_SHA256=${{ fromJSON(needs.acpp-sources.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_GPU_ACPP_SDK_BUNDLE_SHA256=${{ fromJSON(needs.acpp-sdk.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_GPU_FRONTEND_BUNDLE_SHA256=${{ fromJSON(needs.linux-llvm.outputs.json).frontend_bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_GPU_FRONTEND_HANDOFF_SHA256=${{ fromJSON(needs.linux-llvm.outputs.json).frontend_handoff_sha256 }}
+        MOM_NATIVE_WINDOWS_GPU_HIP_HEADERS_BUNDLE_SHA256=${{ fromJSON(needs.rocm-comgr.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_GPU_HIP_HEADERS_HANDOFF_SHA256=${{ fromJSON(needs.rocm-comgr.outputs.json).handoff_sha256 }}
+      run: scripts/run-bounded-native-ci.sh node scripts/run-native-windows-gpu-ci.js "$MOM_NATIVE_WINDOWS_GPU_PROFILE"
+
+  windows-host:
+    needs: [windows-llvm, windows-controller, linux-llvm, linux-sources, dpcpp-cuda-inputs, rocm-sources, acpp-sources, rocm-comgr]
+    uses: ./.github/workflows/native-job.yml
+    with:
+      npm: true
+      apt: 7zip msitools unzip
+      dev: oneapi
+      download: >-
+        native-windows-llvm-state-@-audited.tar
+        native-windows-llvm-state-@-audited.json
+        native-windows-controller-hermes-@.tar
+        native-linux-llvm-tools-@.tar
+        native-linux-llvm21-sdk-@.tar
+        native-linux-sdk-state-@-sources.tar
+        native-linux-dpcpp-cuda-inputs-@.tar
+        native-rocm-state-@-sources.tar
+        native-acpp-state-@-sources.tar
+        native-rocm-hip-headers-@.tar
+      upload: >-
+        native-windows-host-component-@.tar
+      pins: |
+        MOM_NATIVE_WINDOWS_LLVM_STATE_BUNDLE_SHA256=${{ fromJSON(needs.windows-llvm.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_LLVM_STATE_MANIFEST_SHA256=${{ fromJSON(needs.windows-llvm.outputs.json).manifest_sha256 }}
+        MOM_NATIVE_WINDOWS_LLVM_ADMISSION_SHA256=${{ fromJSON(needs.windows-llvm.outputs.json).admission_sha256 }}
+        MOM_NATIVE_WINDOWS_LLVM_HERMES_BUNDLE_SHA256=${{ needs.windows-controller.outputs.hermes_bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_LLVM_HERMES_HANDOFF_SHA256=${{ needs.windows-controller.outputs.hermes_handoff_sha256 }}
+        MOM_NATIVE_LINUX_LLVM_TOOLS_BUNDLE_SHA256=${{ fromJSON(needs.linux-llvm.outputs.json).tools_bundle_sha256 }}
+        MOM_NATIVE_LINUX_LLVM_TOOLS_HANDOFF_SHA256=${{ fromJSON(needs.linux-llvm.outputs.json).tools_handoff_sha256 }}
+        MOM_NATIVE_LINUX_SDK_BUNDLE_SHA256=${{ fromJSON(needs.linux-llvm.outputs.json).sdk_bundle_sha256 }}
+        MOM_NATIVE_LINUX_SOURCE_BUNDLE_SHA256=${{ fromJSON(needs.linux-sources.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_LINUX_DPCPP_CUDA_BUNDLE_SHA256=${{ fromJSON(needs.dpcpp-cuda-inputs.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_LINUX_DPCPP_CUDA_MANIFEST_SHA256=${{ fromJSON(needs.dpcpp-cuda-inputs.outputs.json).manifest_sha256 }}
+        MOM_NATIVE_ROCM_SOURCE_BUNDLE_SHA256=${{ fromJSON(needs.rocm-sources.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_ACPP_SOURCE_BUNDLE_SHA256=${{ fromJSON(needs.acpp-sources.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_ROCM_HIP_HEADERS_BUNDLE_SHA256=${{ fromJSON(needs.rocm-comgr.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_ROCM_HIP_HEADERS_HANDOFF_SHA256=${{ fromJSON(needs.rocm-comgr.outputs.json).handoff_sha256 }}
+      run: |
+        node scripts/ci/windows-host.js pins
+        node scripts/ci/windows-host.js build
+        node scripts/ci/windows-host.js seal
+
+  windows-application:
+    needs: [windows-core, windows-dpcpp, windows-host, windows-controller, hermes-sdk, linux-llvm, dpcpp-cuda-inputs, linux-sources, rocm-comgr, cuda-images, windows-gpu-oneapi, windows-gpu-dpcpp, windows-gpu-dpcpp-opencl, windows-gpu-acpp-cuda, windows-gpu-acpp-hip]
+    uses: ./.github/workflows/native-job.yml
+    with:
+      npm: true
+      apt: 7zip msitools unzip
+      dev: oneapi
+      download: >-
+        native-windows-core-@.tar
+        native-windows-dpcpp-static-@.tar
+        native-windows-host-component-@.tar
+        native-windows-controller-io-@.tar
+        native-windows-controller-hermes-@.tar
+        native-linux-hermes-sdk-@.tar
+        native-linux-llvm-tools-@.tar
+        native-linux-dpcpp-cuda-inputs-@.tar
+        native-linux-sdk-state-@-sources.tar
+        native-rocm-hip-headers-@.tar
+        native-linux-cuda-images-@.tar
+        native-windows-gpu-oneapi-@.tar
+        native-windows-gpu-dpcpp-@.tar
+        native-windows-gpu-dpcpp-opencl-@.tar
+        native-windows-gpu-acpp-cuda-@.tar
+        native-windows-gpu-acpp-hip-@.tar
+      upload: >-
+        native-windows-executable-@=native-windows-application-output-@/mom.exe
+        native-windows-application-build-@.tar
+      pins: |
+        MOM_NATIVE_WINDOWS_APPLICATION_CORE_BUNDLE_SHA256=${{ needs.windows-core.outputs.bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_APPLICATION_CORE_HANDOFF_SHA256=${{ needs.windows-core.outputs.handoff_sha256 }}
+        MOM_NATIVE_WINDOWS_APPLICATION_DPCPP_COMPONENT_BUNDLE_SHA256=${{ fromJSON(needs.windows-dpcpp.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_APPLICATION_DPCPP_COMPONENT_MANIFEST_SHA256=${{ fromJSON(needs.windows-dpcpp.outputs.json).component_manifest_sha256 }}
+        MOM_NATIVE_WINDOWS_APPLICATION_HOST_COMPONENT_BUNDLE_SHA256=${{ fromJSON(needs.windows-host.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_APPLICATION_HOST_COMPONENT_MANIFEST_SHA256=${{ fromJSON(needs.windows-host.outputs.json).manifest_sha256 }}
+        MOM_NATIVE_WINDOWS_APPLICATION_IO_BUNDLE_SHA256=${{ needs.windows-controller.outputs.io_bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_APPLICATION_IO_HANDOFF_SHA256=${{ needs.windows-controller.outputs.io_handoff_sha256 }}
+        MOM_NATIVE_WINDOWS_APPLICATION_HERMES_BUNDLE_SHA256=${{ needs.windows-controller.outputs.hermes_bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_APPLICATION_HERMES_HANDOFF_SHA256=${{ needs.windows-controller.outputs.hermes_handoff_sha256 }}
+        MOM_NATIVE_WINDOWS_APPLICATION_LINUX_TOOLS_BUNDLE_SHA256=${{ fromJSON(needs.linux-llvm.outputs.json).tools_bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_APPLICATION_LINUX_TOOLS_HANDOFF_SHA256=${{ fromJSON(needs.linux-llvm.outputs.json).tools_handoff_sha256 }}
+        MOM_NATIVE_WINDOWS_APPLICATION_LINUX_HERMES_BUNDLE_SHA256=${{ fromJSON(needs.hermes-sdk.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_APPLICATION_DPCPP_INPUTS_BUNDLE_SHA256=${{ fromJSON(needs.dpcpp-cuda-inputs.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_APPLICATION_DPCPP_INPUTS_MANIFEST_SHA256=${{ fromJSON(needs.dpcpp-cuda-inputs.outputs.json).manifest_sha256 }}
+        MOM_NATIVE_WINDOWS_APPLICATION_LINUX_SOURCES_BUNDLE_SHA256=${{ fromJSON(needs.linux-sources.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_APPLICATION_HIP_HEADERS_BUNDLE_SHA256=${{ fromJSON(needs.rocm-comgr.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_APPLICATION_HIP_HEADERS_HANDOFF_SHA256=${{ fromJSON(needs.rocm-comgr.outputs.json).handoff_sha256 }}
+        MOM_NATIVE_WINDOWS_APPLICATION_CUDA_IMAGES_BUNDLE_SHA256=${{ fromJSON(needs.cuda-images.outputs.json).bundle_sha256 }}
+        MOM_NATIVE_WINDOWS_APPLICATION_GPU_HANDOFFS_JSON=[{"profile":"oneapi","bundleSha256":"${{ fromJSON(needs.windows-gpu-oneapi.outputs.json).windows_gpu_bundle_sha256 }}","receiptSha256":"${{ fromJSON(needs.windows-gpu-oneapi.outputs.json).windows_gpu_result_sha256 }}","configSha256":"${{ fromJSON(needs.windows-gpu-oneapi.outputs.json).windows_gpu_config_sha256 }}","handoffSha256":"${{ fromJSON(needs.windows-gpu-oneapi.outputs.json).windows_gpu_handoff_sha256 }}"},{"profile":"dpcpp","bundleSha256":"${{ fromJSON(needs.windows-gpu-dpcpp.outputs.json).windows_gpu_bundle_sha256 }}","receiptSha256":"${{ fromJSON(needs.windows-gpu-dpcpp.outputs.json).windows_gpu_result_sha256 }}","configSha256":"${{ fromJSON(needs.windows-gpu-dpcpp.outputs.json).windows_gpu_config_sha256 }}","handoffSha256":"${{ fromJSON(needs.windows-gpu-dpcpp.outputs.json).windows_gpu_handoff_sha256 }}"},{"profile":"dpcpp-opencl","bundleSha256":"${{ fromJSON(needs.windows-gpu-dpcpp-opencl.outputs.json).windows_gpu_bundle_sha256 }}","receiptSha256":"${{ fromJSON(needs.windows-gpu-dpcpp-opencl.outputs.json).windows_gpu_result_sha256 }}","configSha256":"${{ fromJSON(needs.windows-gpu-dpcpp-opencl.outputs.json).windows_gpu_config_sha256 }}","handoffSha256":"${{ fromJSON(needs.windows-gpu-dpcpp-opencl.outputs.json).windows_gpu_handoff_sha256 }}"},{"profile":"acpp-cuda","bundleSha256":"${{ fromJSON(needs.windows-gpu-acpp-cuda.outputs.json).windows_gpu_bundle_sha256 }}","receiptSha256":"${{ fromJSON(needs.windows-gpu-acpp-cuda.outputs.json).windows_gpu_result_sha256 }}","configSha256":"${{ fromJSON(needs.windows-gpu-acpp-cuda.outputs.json).windows_gpu_config_sha256 }}","handoffSha256":"${{ fromJSON(needs.windows-gpu-acpp-cuda.outputs.json).windows_gpu_handoff_sha256 }}"},{"profile":"acpp-hip","bundleSha256":"${{ fromJSON(needs.windows-gpu-acpp-hip.outputs.json).windows_gpu_bundle_sha256 }}","receiptSha256":"${{ fromJSON(needs.windows-gpu-acpp-hip.outputs.json).windows_gpu_result_sha256 }}","configSha256":"${{ fromJSON(needs.windows-gpu-acpp-hip.outputs.json).windows_gpu_config_sha256 }}","handoffSha256":"${{ fromJSON(needs.windows-gpu-acpp-hip.outputs.json).windows_gpu_handoff_sha256 }}"}]
+      run: |
+        node scripts/ci/windows-application.js pins
+        test "$(/opt/intel/oneapi/compiler/2026.2/bin/icx-cl --version | grep -c 2026.2)" -gt 0
+        node scripts/ci/windows-application.js build
+        while IFS='=' read -r key value; do export "${key^^}=$value"; done < "$GITHUB_OUTPUT"
+        node scripts/ci/windows-application.js seal
+
+  windows-runtime:
+    needs: windows-application
+    uses: ./.github/workflows/test-native-release.yml
+    with:
+      platform: win32
+      expected_sha256: ${{ fromJSON(needs.windows-application.outputs.json).executable_sha256 }}
+
+  windows-pack:
+    needs: windows-application
+    uses: ./.github/workflows/pack-native-application.yml
+    with:
+      platform: win32
+      executable_sha256: ${{ fromJSON(needs.windows-application.outputs.json).executable_sha256 }}
+      build_handoff_bundle_sha256: ${{ fromJSON(needs.windows-application.outputs.json).build_handoff_bundle_sha256 }}
+      build_handoff_sha256: ${{ fromJSON(needs.windows-application.outputs.json).build_handoff_sha256 }}
+
+  windows-packed-runtime:
+    needs: windows-pack
+    uses: ./.github/workflows/test-native-release.yml
+    with:
+      platform: win32
+      variant: packed
+      expected_sha256: ${{ needs.windows-pack.outputs.executable_sha256 }}
 
   package-linux:
-    name: Package admitted Linux candidate
-    needs: [build-native-prerequisites, engineering-hash, source-quality, windows-script-quality]
+    needs: [source, engineering, linux-jit-runtime, linux-application, linux-runtime, linux-pack, linux-packed-runtime, windows-application, windows-runtime, windows-pack, windows-packed-runtime]
     uses: ./.github/workflows/package-native-application.yml
     with:
       platform: linux
-      packed_build_bundle_sha256: ${{ needs.build-native-prerequisites.outputs.linux_packing_bundle_sha256 }}
-      raw_executable_sha256: ${{ needs.build-native-prerequisites.outputs.linux_raw_executable_sha256 }}
-      original_build_bundle_sha256: ${{ needs.build-native-prerequisites.outputs.linux_application_build_bundle_sha256 }}
-      original_handoff_sha256: ${{ needs.build-native-prerequisites.outputs.linux_application_handoff_sha256 }}
+      packed_build_bundle_sha256: ${{ needs.linux-pack.outputs.build_bundle_sha256 }}
+      raw_executable_sha256: ${{ fromJSON(needs.linux-application.outputs.json).sha256 }}
+      original_build_bundle_sha256: ${{ fromJSON(needs.linux-application.outputs.json).build_handoff_bundle_sha256 }}
+      original_handoff_sha256: ${{ fromJSON(needs.linux-application.outputs.json).build_handoff_sha256 }}
 
   package-windows:
-    name: Package admitted Windows candidate
-    needs: [build-native-prerequisites, engineering-hash, source-quality, windows-script-quality]
+    needs: [source, engineering, linux-jit-runtime, linux-application, linux-runtime, linux-pack, linux-packed-runtime, windows-application, windows-runtime, windows-pack, windows-packed-runtime]
     uses: ./.github/workflows/package-native-application.yml
     with:
       platform: win32
-      packed_build_bundle_sha256: ${{ needs.build-native-prerequisites.outputs.windows_packing_bundle_sha256 }}
-      raw_executable_sha256: ${{ needs.build-native-prerequisites.outputs.windows_raw_executable_sha256 }}
-      original_build_bundle_sha256: ${{ needs.build-native-prerequisites.outputs.windows_application_build_bundle_sha256 }}
-      original_handoff_sha256: ${{ needs.build-native-prerequisites.outputs.windows_application_handoff_sha256 }}
+      packed_build_bundle_sha256: ${{ needs.windows-pack.outputs.build_bundle_sha256 }}
+      raw_executable_sha256: ${{ fromJSON(needs.windows-application.outputs.json).executable_sha256 }}
+      original_build_bundle_sha256: ${{ fromJSON(needs.windows-application.outputs.json).build_handoff_bundle_sha256 }}
+      original_handoff_sha256: ${{ fromJSON(needs.windows-application.outputs.json).build_handoff_sha256 }}

@@ -236,22 +236,12 @@ describe("Shared NVIDIA compiler provisioning", {skip: process.platform !== "lin
     assert.match(source, /install_nvrtc_current\n\s+else/u);
     assert.match(source, /ca-certificates curl g\+\+ xz-utils/u);
   });
-  test("Engineering consumers use the shared helper and native release CI admits pinned SDKs", () => {
+  test("Engineering consumers use the shared helper", () => {
     for (const relative of ["scripts/build-combined.dockerfile", "scripts/build-multicompiler.dockerfile",
-      "scripts/build-nvidia-adaptivecpp.dockerfile", ".github/workflows/scripts/package-linux-combined.sh"]) {
+      "scripts/build-nvidia-adaptivecpp.dockerfile", "scripts/package-linux-combined.sh"]) {
       assert.match(fs.readFileSync(path.join(__dirname, "..", relative), "utf8"), /install-nvrtc-current\.sh/u);
     }
     assert.match(fs.readFileSync(path.join(__dirname, "run-hash.js"), "utf8"), /"tests\/nvrtc-installer\.js"/u);
-
-    const releaseWorkflow = fs.readFileSync(path.join(__dirname, "../.github/workflows/build-release-artifacts.yml"), "utf8");
-    assert.match(releaseWorkflow, /uses: \.\/\.github\/workflows\/build-native-prerequisites\.yml/u);
-    assert.doesNotMatch(releaseWorkflow, /install-nvrtc-current\.sh/u);
-    const nativeWorkflow = fs.readFileSync(path.join(__dirname, "../.github/workflows/build-native-prerequisites.yml"), "utf8");
-    assert.match(nativeWorkflow, /^ {2}verify-linux-nvrtc:/mu);
-    assert.match(nativeWorkflow, /^ {2}verify-windows-nvrtc:/mu);
-    assert.match(nativeWorkflow, /node scripts\/prepare-native-ci\.js stage nvrtc-linux/u);
-    assert.match(nativeWorkflow, /node scripts\/prepare-native-ci\.js stage nvrtc-windows/u);
-    assert.match(nativeWorkflow, /tests\/native-nvrtc-sdk\.js/u);
   });
 });
 after(() => {if (work) {fs.rmSync(work, {recursive: true, force: true});}});

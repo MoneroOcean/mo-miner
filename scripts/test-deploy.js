@@ -143,7 +143,7 @@ function deploy(platform, arch, env, spawn = spawnSync, exists = fs.existsSync, 
         present.length < 2 ? "fewer than two discrete GPU vendors available" : "";
     if (reason) {report(`SKIP multi-windows: ${reason}`);} else {
       const status = run("powershell.exe", [...powershell, "-File",
-        path.join(repo, ".github", "workflows", "scripts", "test-release-windows.ps1"),
+        path.join(repo, "scripts", "test-release-windows.ps1"),
         "-Archive", path.relative(repo, options.archive), "-Suite", "gpu-multi"],
       {...gateEnvironment(baseEnv), MOM_GPU_BACKEND: present[0],
         MOM_GPU_TEST_VENDORS: present.join(","), MOM_REQUIRE_MULTI_GPU_TESTS: "1"});

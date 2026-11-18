@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 
-$repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
+$repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $gitDir = Join-Path $repo '.git'
 if (Test-Path $gitDir) {
   $relativePaths = @(& git.exe -C $repo ls-files --cached --others --exclude-standard -- '*.ps1')
@@ -8,12 +8,11 @@ if (Test-Path $gitDir) {
   $paths = @($relativePaths | ForEach-Object { Join-Path $repo $_ })
 } else {
   # run.sh and release-source exports deliberately omit .git. PowerShell sources live at the root
-  # or under these two script trees; enumerate them directly without descending into uploaded
-  # build/toolchain caches or node_modules.
+  # or under scripts/ (including scripts/ci); enumerate them directly without descending into
+  # uploaded build/toolchain caches or node_modules.
   $paths = @(
     Get-ChildItem $repo -File -Filter '*.ps1'
     Get-ChildItem (Join-Path $repo 'scripts') -File -Filter '*.ps1' -Recurse
-    Get-ChildItem (Join-Path $repo '.github\workflows\scripts') -File -Filter '*.ps1' -Recurse
   )
 }
 
@@ -49,7 +48,7 @@ if ($failed) { throw 'PowerShell syntax validation failed.' }
 $windirWasPresent = $null -ne (Get-Item Env:WINDIR -ErrorAction SilentlyContinue)
 $originalWindir = $env:WINDIR
 try {
-  . (Join-Path $PSScriptRoot 'windows-dll-deps.ps1')
+  . (Join-Path $repo 'scripts\windows-dll-deps.ps1')
   $env:WINDIR = 'C:\Windows'
   if (-not (Test-MominerWindowsPath 'C:\Windows')) {
     throw 'Test-MominerWindowsPath rejected C:\Windows.'

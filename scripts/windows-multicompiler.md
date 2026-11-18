@@ -42,7 +42,7 @@ Build every miner worker in one command:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File `
-  .github/workflows/scripts/build-windows-multicompiler.ps1
+  scripts/build-windows-multicompiler.ps1
 ```
 
 The default `-Backend all` builds every worker once. For an isolated source run, add `-Backend intel`,
@@ -58,27 +58,27 @@ for each vendor:
 ```bash
 GPU_GROUP=none ~/win/run.sh --download build/win -- \
   powershell -NoProfile -ExecutionPolicy Bypass -File \
-  .github\workflows\scripts\build-windows-multicompiler.ps1
+  scripts\build-windows-multicompiler.ps1
 GPU_GROUP=none ~/win/run.sh --download build/win --download mom-v0.9.0-win.zip -- \
   powershell -NoProfile -ExecutionPolicy Bypass -Command \
-  'npm install --ignore-scripts --no-audit --no-fund; if ($LASTEXITCODE) { exit $LASTEXITCODE }; & .github/workflows/scripts/package-windows.ps1'
+  'npm install --ignore-scripts --no-audit --no-fund; if ($LASTEXITCODE) { exit $LASTEXITCODE }; & scripts/package-windows.ps1'
 mkdir -p build/win-package
 ln -f mom-v0.9.0-win.zip build/win-package/mom-v0.9.0-win.zip
 GPU_GROUP=none ~/win/run.sh --release --download build/win-package -- \
   powershell -NoProfile -ExecutionPolicy Bypass -File \
-  .github/workflows/scripts/test-release-windows.ps1 -Archive build/win-package/mom-v0.9.0-win.zip -Suite cpu
+  scripts/test-release-windows.ps1 -Archive build/win-package/mom-v0.9.0-win.zip -Suite cpu
 GPU_GROUP=none ~/win/run.sh --release --download build/win-package -- \
   powershell -NoProfile -ExecutionPolicy Bypass -File \
-  .github/workflows/scripts/test-release-windows.ps1 -Archive build/win-package/mom-v0.9.0-win.zip -Suite gpu-portable-cpu
+  scripts/test-release-windows.ps1 -Archive build/win-package/mom-v0.9.0-win.zip -Suite gpu-portable-cpu
 GPU_GROUP=intel ~/win/run.sh --release --download build/win-package -- \
   powershell -NoProfile -ExecutionPolicy Bypass -File \
-  .github/workflows/scripts/test-release-windows.ps1 -Archive build/win-package/mom-v0.9.0-win.zip -Suite gpu
+  scripts/test-release-windows.ps1 -Archive build/win-package/mom-v0.9.0-win.zip -Suite gpu
 GPU_GROUP=nvidia ~/win/run.sh --release --download build/win-package -- \
   powershell -NoProfile -ExecutionPolicy Bypass -File \
-  .github/workflows/scripts/test-release-windows.ps1 -Archive build/win-package/mom-v0.9.0-win.zip -Suite gpu
+  scripts/test-release-windows.ps1 -Archive build/win-package/mom-v0.9.0-win.zip -Suite gpu
 GPU_GROUP=amd ~/win/run.sh --release --download build/win-package -- \
   powershell -NoProfile -ExecutionPolicy Bypass -File \
-  .github/workflows/scripts/test-release-windows.ps1 -Archive build/win-package/mom-v0.9.0-win.zip -Suite gpu
+  scripts/test-release-windows.ps1 -Archive build/win-package/mom-v0.9.0-win.zip -Suite gpu
 ```
 
 Run the build and packaging commands in the development VM. The release VM is runtime-only and is
@@ -97,7 +97,7 @@ build\win\compilers\
   acpp-hip\     mom.node, sycl.dll, HIP + required OMP host plugins, device bitcode, ROCm opt/llc
 ```
 
-`.github/workflows/scripts/package-windows.ps1` preserves those directories. `mom.cmd` auto-detects
+`scripts/package-windows.ps1` preserves those directories. `mom.cmd` auto-detects
 a single GPU vendor and loads its default addon before `algorithms` discovery. `GPU-CONFIG.md` then
 selects each worker before it is spawned, so incompatible `sycl9.dll`/AdaptiveCpp runtimes never
 enter the same process.

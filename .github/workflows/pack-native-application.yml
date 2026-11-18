@@ -6,13 +6,7 @@ on:
       platform:
         required: true
         type: string
-      executable_artifact_name:
-        required: true
-        type: string
       executable_sha256:
-        required: true
-        type: string
-      build_handoff_artifact_name:
         required: true
         type: string
       build_handoff_bundle_sha256:
@@ -44,128 +38,45 @@ jobs:
       build_bundle_sha256: ${{ steps.pack.outputs.build_bundle_sha256 }}
     env:
       NATIVE_PLATFORM: ${{ inputs.platform }}
-      NATIVE_RAW_ARTIFACT: ${{ inputs.executable_artifact_name }}
       NATIVE_RAW_SHA256: ${{ inputs.executable_sha256 }}
-      NATIVE_METADATA_ARTIFACT: ${{ inputs.build_handoff_artifact_name }}
       NATIVE_METADATA_SHA256: ${{ inputs.build_handoff_bundle_sha256 }}
       NATIVE_HANDOFF_SHA256: ${{ inputs.build_handoff_sha256 }}
+      NATIVE_NAME: native-${{ inputs.platform == 'win32' && 'windows' || 'linux' }}
+      NATIVE_SUFFIX: ${{ github.run_id }}-${{ github.run_attempt }}
     steps:
-      - name: Checkout packing recipe
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - name: Setup Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+      - uses: ./.github/actions/setup
+      - run: node scripts/ci/pack-native.js validate
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          node-version: 24.15.0
-      - name: Validate exact same-run input names before downloading
-        shell: bash
-        run: |
-          node <<'NODE'
-          const env = process.env, suffix = env.GITHUB_RUN_ID + "-" + env.GITHUB_RUN_ATTEMPT;
-          const platform = env.NATIVE_PLATFORM === "win32" ? "windows" : env.NATIVE_PLATFORM;
-          if (!/^[0-9]{1,20}-[1-9][0-9]{0,5}$/.test(suffix) || !["linux", "win32"].includes(env.NATIVE_PLATFORM) ||
-              !["linux", "windows"].includes(platform) ||
-              env.NATIVE_RAW_ARTIFACT !== `native-${platform}-executable-${suffix}` ||
-              env.NATIVE_METADATA_ARTIFACT !== `native-${platform}-application-build-${suffix}.tar` ||
-              ![env.NATIVE_RAW_SHA256, env.NATIVE_METADATA_SHA256, env.NATIVE_HANDOFF_SHA256].every(pin => /^[a-f0-9]{64}$/.test(pin || ""))) {
-            throw new Error("Native packing needs this run attempt's exact raw executable, build metadata and independent SHA-256 pins");
-          }
-          NODE
-      - name: Download only the raw executable
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: ${{ inputs.executable_artifact_name }}
+          name: ${{ env.NATIVE_NAME }}-executable-${{ env.NATIVE_SUFFIX }}
           path: ${{ runner.temp }}/native-raw
-      - name: Download only compact build metadata
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          name: ${{ inputs.build_handoff_artifact_name }}
-          path: ${{ runner.temp }}/native-metadata
-      - name: Admit inputs and pack through the existing release API
-        id: pack
-        timeout-minutes: 25
-        shell: bash
-        run: |
-          node <<'NODE'
-          "use strict";
-          const fs = require("node:fs"), path = require("node:path"),
-            ci = require("./scripts/prepare-native-ci"), {fileHash, readBuildJson} = require("./scripts/build-source-inputs"),
-            {packNativeEntrypoint} = require("./scripts/build-release"),
-            {prepareNativePackingTool} = require("./scripts/prepare-native-packing-tool");
-          const env = process.env, temp = env.RUNNER_TEMP, suffix = env.GITHUB_RUN_ID + "-" + env.GITHUB_RUN_ATTEMPT,
-            platform = env.NATIVE_PLATFORM === "win32" ? "windows" : "linux", binary = platform === "windows" ? "mom.exe" : "mom",
-            metadataName = `native-${platform}-application-build-${suffix}`, metadata = path.join("/tmp", metadataName),
-            archive = path.join(temp, "native-metadata", env.NATIVE_METADATA_ARTIFACT), raw = path.join(temp, "native-raw", binary),
-            outputName = `native-${platform}-packed-build-${suffix}`, output = path.join("/tmp", outputName);
-          const regular = (file, pin, maximum) => {
-            const stat = fs.lstatSync(file);
-            if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size < 1 || stat.size > maximum ||
-                fs.realpathSync(file) !== file || !/^[a-f0-9]{64}$/.test(pin || "") || fileHash(file) !== pin) {
-              throw new Error("Native packing input differs from its bounded regular-file pin: " + file);
-            }
-            return stat;
-          };
-          regular(archive, env.NATIVE_METADATA_SHA256, 128 << 20);
-          regular(raw, env.NATIVE_RAW_SHA256, (1 << 30) - 1);
-          if (fs.readdirSync(path.dirname(raw)).join() !== binary) {throw new Error("Raw runtime artifact contains unexpected files");}
-          const members = ci.listState(archive, [metadataName], 60000).map(name => name.replace(/\/$/, "")).sort(),
-            expected = [metadataName, ...["application-config.json", "entrypoint.json", "handoff.json", "result.json"].map(name => metadataName + "/" + name)].sort();
-          if (members.join("\0") !== expected.join("\0")) {throw new Error("Native packing metadata has unexpected members");}
-          ci.extractState(archive, "/tmp", [metadataName], [metadataName], 60000);
-          const handoffFile = path.join(metadata, "handoff.json"); regular(handoffFile, env.NATIVE_HANDOFF_SHA256, 8 << 20);
-          const handoff = readBuildJson(handoffFile), target = platform === "windows" ? "x86_64-pc-windows-msvc" : "x86_64-unknown-linux-gnu";
-          if (handoff.version !== 1 || handoff.format !== `mom-${platform}-application-build-handoff-v1` || handoff.runAttempt !== suffix ||
-              handoff.target !== target || handoff.buildOnly !== true || handoff.executed !== false || handoff.publicationQualified !== false ||
-              handoff.artifact?.file !== binary || handoff.artifact.sha256 !== env.NATIVE_RAW_SHA256 || handoff.artifact.bytes !== fs.statSync(raw).size) {
-            throw new Error("Native packing metadata does not bind this raw candidate and attempt");
-          }
-          for (const [key, name] of [["config", "application-config.json"], ["entrypointReceipt", "entrypoint.json"], ["producerReceipt", "result.json"]]) {
-            if (handoff[key]?.file !== name) {throw new Error("Native packing metadata has an unexpected receipt name");}
-            regular(path.join(metadata, name), handoff[key].sha256, 128 << 20);
-          }
-          const entrypoint = readBuildJson(path.join(metadata, "entrypoint.json"));
-          if (entrypoint.configHash !== handoff.config.sha256) {throw new Error("Native packing descriptor binding differs");}
-          const producer = path.join(path.dirname(raw), "result.json");
-          fs.copyFileSync(path.join(metadata, "result.json"), producer, fs.constants.COPYFILE_EXCL);
-          // Only the pinned official packer is fetched; no compiler, SDK or miner is run here.
-          const {upx, upxSha256} = prepareNativePackingTool(path.join(temp, "native-packing-tool"), env);
-          const packed = packNativeEntrypoint({entrypointPath: path.join(metadata, "entrypoint.json"), entrypointSha256: handoff.entrypointReceipt.sha256,
-            sourcePath: raw, sourceSha256: env.NATIVE_RAW_SHA256, producerReceiptPath: producer, target: env.NATIVE_PLATFORM,
-            output, upx, upxSha256});
-          regular(archive, env.NATIVE_METADATA_SHA256, 128 << 20); regular(handoffFile, env.NATIVE_HANDOFF_SHA256, 8 << 20);
-          const buildArchive = path.join(temp, outputName + ".tar"); ci.packState(buildArchive, "/tmp", [outputName], 60000);
-          fs.appendFileSync(env.GITHUB_OUTPUT, `executable_artifact_name=native-${platform}-packed-executable-${suffix}\n` +
-            `executable_sha256=${packed.artifact.sha256}\nbuild_bundle_sha256=${fileHash(buildArchive)}\n`);
-          fs.appendFileSync(env.GITHUB_STEP_SUMMARY, `### Packed ${platform} candidate\n- Raw executable preserved; no SDK/controller rebuild.\n` +
-            `- Packed SHA-256: ${packed.artifact.sha256}.\n- Integrity and offline round-trip checks passed; runtime/publication remain unqualified.\n`);
-          NODE
-      - name: Upload UPX stage logs after a packing failure
-        if: failure() && steps.pack.outcome == 'failure'
+          name: ${{ env.NATIVE_NAME }}-application-build-${{ env.NATIVE_SUFFIX }}.tar
+          path: ${{ runner.temp }}/incoming
+      - id: pack
+        run: node scripts/ci/pack-native.js pack
+      - if: failure() && steps.pack.outcome == 'failure'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: native-${{ inputs.platform == 'win32' && 'windows' || 'linux' }}-packing-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            /tmp/native-${{ inputs.platform == 'win32' && 'windows' || 'linux' }}-packed-build-${{ github.run_id }}-${{ github.run_attempt }}/pack.log
-            /tmp/native-${{ inputs.platform == 'win32' && 'windows' || 'linux' }}-packed-build-${{ github.run_id }}-${{ github.run_attempt }}/integrity.log
-            /tmp/native-${{ inputs.platform == 'win32' && 'windows' || 'linux' }}-packed-build-${{ github.run_id }}-${{ github.run_attempt }}/restore.log
+          name: ${{ env.NATIVE_NAME }}-packing-diagnostics-${{ env.NATIVE_SUFFIX }}
+          path: /tmp/${{ env.NATIVE_NAME }}-packed-build-${{ env.NATIVE_SUFFIX }}/*.log
           if-no-files-found: ignore
-          retention-days: 1
-      - name: Upload the exact packed runtime executable
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+          retention-days: 3
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: ${{ steps.pack.outputs.executable_artifact_name }}
-          path: /tmp/native-${{ inputs.platform == 'win32' && 'windows' || 'linux' }}-packed-build-${{ github.run_id }}-${{ github.run_attempt }}/${{ inputs.platform == 'win32' && 'mom.exe' || 'mom' }}
-          if-no-files-found: error
-          archive: true
+          name: ${{ env.NATIVE_NAME }}-packed-executable-${{ env.NATIVE_SUFFIX }}
+          path: /tmp/${{ env.NATIVE_NAME }}-packed-build-${{ env.NATIVE_SUFFIX }}/${{ inputs.platform == 'win32' && 'mom.exe' || 'mom' }}
           compression-level: 0
-          retention-days: 1
-      - name: Retain packing receipts and candidate for later notice packaging
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: native-${{ inputs.platform == 'win32' && 'windows' || 'linux' }}-packed-build-${{ github.run_id }}-${{ github.run_attempt }}.tar
-          path: ${{ runner.temp }}/native-${{ inputs.platform == 'win32' && 'windows' || 'linux' }}-packed-build-${{ github.run_id }}-${{ github.run_attempt }}.tar
           if-no-files-found: error
+          retention-days: 3
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          path: ${{ runner.temp }}/${{ env.NATIVE_NAME }}-packed-build-${{ env.NATIVE_SUFFIX }}.tar
           archive: false
           compression-level: 0
-          retention-days: 1
+          if-no-files-found: error
+          retention-days: 3

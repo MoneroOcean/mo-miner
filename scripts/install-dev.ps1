@@ -180,10 +180,9 @@ function Add-MachinePath([string]$Entry) {
     [Environment]::SetEnvironmentVariable('Path', (($parts + $Entry) -join ';'), 'Machine')
   }
   if (($env:Path -split ';') -notcontains $Entry) { $env:Path = "$Entry;$env:Path" }
-  # Each GitHub Actions step starts a fresh process with the runner's original PATH. In particular,
-  # free-windows-disk.ps1 removes the hosted Node tool cache before this installer supplies the
-  # pinned replacement under Program Files. Persist every installed path for subsequent build and
-  # package steps instead of relying on the machine environment to be reloaded implicitly.
+  # Each GitHub Actions step starts a fresh process with the runner's original PATH. Persist every
+  # installed path for subsequent build and package steps instead of relying on the machine
+  # environment to be reloaded implicitly.
   if ($env:GITHUB_PATH) { $Entry | Out-File $env:GITHUB_PATH -Append -Encoding utf8 }
 }
 function Export-DevelopmentEnvironment([string]$Name, [string]$Value) {
@@ -466,7 +465,7 @@ function Install-OpenClCpu {
 function Install-OneApi {
   if (-not (Test-OneApi)) {
     Require-Administrator
-    Invoke-Checked (Join-Path $repo '.github\workflows\scripts\install-oneapi.bat') @(
+    Invoke-Checked (Join-Path $repo 'scripts\install-oneapi.bat') @(
       $oneApiUrl,$oneApiComponents,$oneApiPackage)
   }
   Export-DevelopmentEnvironment ONEAPI_ROOT 'C:\Program Files (x86)\Intel\oneAPI'
@@ -521,7 +520,7 @@ function Test-Dpcpp {
 }
 function Install-Dpcpp {
   if (-not (Test-Dpcpp)) {
-    & (Join-Path $repo '.github\workflows\scripts\restore-toolchain-win.ps1') `
+    & (Join-Path $repo 'scripts\restore-toolchain-win.ps1') `
       -Dest $DpcppDir -ExpectedSha256 $DpcppSha256
   }
   Export-DevelopmentEnvironment MOM_DPCPP_DIR $DpcppDir

@@ -6,7 +6,7 @@ const fs = require("node:fs"), path = require("node:path");
 const os = require("node:os");
 
 const root = path.resolve(__dirname, "..");
-const wrapper = fs.readFileSync(path.join(root, ".github/workflows/scripts/prepare-native-windows-ci.ps1"), "utf8");
+const wrapper = fs.readFileSync(path.join(root, "scripts/ci/prepare-native-windows-ci.ps1"), "utf8");
 const helper = fs.readFileSync(path.join(root, "scripts/native-windows-tools.ps1"), "utf8");
 const installer = fs.readFileSync(path.join(root, "scripts/install-dev.ps1"), "utf8");
 const shellInstaller = fs.readFileSync(path.join(root, "scripts/install-dev.sh"), "utf8");
@@ -23,46 +23,16 @@ describe("Windows native CI tool preparation", () => {
     assert.equal(version, "v" + installNode);
     assert.match(node, /return \$nodePath/);
   });
-  test("literal workflow workspaces satisfy install-dev.sh's dedicated basename contract", () => {
+  test("the CI setup action's install-dev.sh workspace satisfies its dedicated basename contract", () => {
     const workspaceGuard = /\[\[ ! \$\{WORKSPACE##\*\/\} =~ (.*?) \]\]/.exec(shellInstaller);
-    assert.ok(workspaceGuard, "install-dev.sh workspace basename guard was not found");
-    assert.ok(workspaceGuard[1]);
-    const allowedBasename = new RegExp(workspaceGuard[1]);
-    const workflowsDir = path.join(root, ".github/workflows");
-    const workspaceAssignment = /\bMOM_DEV_WORKSPACE\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'\\]+))/g;
-    const githubRunExpression = /\$\{\{\s*github\.run_(?:id|attempt)\s*\}\}/g;
-    const invalid = [];
-    let literalAssignments = 0;
-
-    for (const file of fs.readdirSync(workflowsDir).filter(name => /\.ya?ml$/i.test(name))) {
-      const workflowPath = path.join(workflowsDir, file);
-      const workflow = fs.readFileSync(workflowPath, "utf8").replace(githubRunExpression, "1");
-      for (const match of workflow.matchAll(workspaceAssignment)) {
-        const value = match[1] ?? match[2] ?? match[3];
-        assert.ok(value);
-        if (value.includes("$")) {continue;} // Ignore shell or workflow variables rather than literal paths.
-        literalAssignments++;
-        const basename = path.posix.basename(value.replaceAll("\\", "/"));
-        if (!allowedBasename.test(basename)) {invalid.push(`${file}: ${value} (basename ${basename})`);}
-      }
-    }
-
-    assert.ok(literalAssignments > 0, "workflow files must contain a literal MOM_DEV_WORKSPACE assignment");
-    assert.deepEqual(invalid, [], `invalid literal MOM_DEV_WORKSPACE values:\n${invalid.join("\n")}`);
+    assert.ok(workspaceGuard?.[1], "install-dev.sh workspace basename guard was not found");
+    const action = fs.readFileSync(path.join(root, ".github/actions/setup/action.yml"), "utf8"),
+      value = /\bMOM_DEV_WORKSPACE="([^"]+)"/.exec(action)?.[1];
+    assert.ok(value, "the setup action passes an explicit install-dev.sh workspace");
+    const basename = path.posix.basename(value.replace(/\$GITHUB_RUN_(?:ID|ATTEMPT)/g, "1"));
+    assert.match(basename, new RegExp(workspaceGuard[1]));
   });
 
-  test("Windows source harnesses inherit the selected C++ compiler environment", () => {
-    const workflow = fs.readFileSync(path.join(root, ".github/workflows/build-release-artifacts.yml"), "utf8");
-    const step = workflow.slice(workflow.indexOf("- name: Test native Windows source gate"), workflow.indexOf("  build-native-prerequisites:"));
-    assert.match(step, /\. scripts\\import-vcvars\.ps1\s+Import-MomVcVars64/);
-    assert.ok(step.indexOf("Import-MomVcVars64") < step.indexOf("node tests/run-hash.js logic"));
-  });
-  test("Windows source gate collects both suites before rejecting either failure", () => {
-    const workflow = fs.readFileSync(path.join(root, ".github/workflows/build-release-artifacts.yml"), "utf8");
-    const step = workflow.slice(workflow.indexOf("- name: Test native Windows source gate"), workflow.indexOf("  build-native-prerequisites:"));
-    assert.match(step, /node tests\/run-hash\.js logic\s+\$logicExit = \$LASTEXITCODE\s+node --test tests\/windows-script-safety\.js\s+\$safetyExit = \$LASTEXITCODE/);
-    assert.match(step, /if \(\$logicExit -ne 0 -or \$safetyExit -ne 0\) \{ exit 1 \}/);
-  });
   test("CI imports the shared selector, which loads x64 VC setup before role resolution", () => {
     assert.match(wrapper, /scripts\\native-windows-tools\.ps1/);
     assert.match(wrapper, /Get-MomNativeWindowsBuildTools -Role \$Role/);

@@ -45,8 +45,8 @@ function windowsGpuAcppConfigInput(plan, windowsSdkRoot, windowsSdkPins) {
  * @param {string} profile */
 function windowsGpuCiJobPlan(profile) {
   const environment = process.env;
-  if (!windowsGpuProfiles.includes(profile) || environment["MOM_BUILD_JOBS"] !== "2") {
-    throw new Error("Windows GPU CI stages only the five maintained two-job factories");
+  if (!windowsGpuProfiles.includes(profile) || environment["MOM_BUILD_JOBS"] !== ci.ciBuildJobs(environment)) {
+    throw new Error("Windows GPU CI stages only the five maintained factories with a valid job count");
   }
   const paths = ci.ciPaths(), linux = ci.linuxSourceStatePaths(paths, environment),
     dpcpp = profile === "acpp-hip" ? null : ci.dpcppCudaInputsStatePaths(paths, environment),

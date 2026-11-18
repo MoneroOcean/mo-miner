@@ -63,7 +63,7 @@ test.describe("Windows script safety", {concurrency: false}, () => {
   });
 
   test("oneAPI installer pins Windows PowerShell and its built-in module path", () => {
-    const source = readSource(path.join(repo, ".github/workflows/scripts/install-oneapi.bat"));
+    const source = readSource(path.join(repo, "scripts/install-oneapi.bat"));
     const setupEnd = source.indexOf('\nif "%PACKAGE%"');
     assert(setupEnd > 0, "oneAPI installer setup boundary is missing");
     const setup = source.slice(0, setupEnd);
@@ -87,7 +87,7 @@ test.describe("Windows script safety", {concurrency: false}, () => {
   }, () => {
     const fixture = makeFixture();
     try {
-      const installer = readSource(path.join(repo, ".github/workflows/scripts/install-oneapi.bat"));
+      const installer = readSource(path.join(repo, "scripts/install-oneapi.bat"));
       const guidEnd = installer.indexOf("\nif not defined RUN_ID");
       assert(guidEnd > 0, "oneAPI installer GUID boundary is missing");
       const resolverInvocation = installer.split("\n").find(line =>
@@ -246,7 +246,7 @@ test.describe("Windows script safety", {concurrency: false}, () => {
       /** @param {string} value */
       const quote = value => "'" + value.replace(/'/g, "''") + "'";
       try {
-        const vectorScript = path.join(fixture, ".github/workflows/scripts/test-release-windows.ps1");
+        const vectorScript = path.join(fixture, "scripts/test-release-windows.ps1");
         fs.mkdirSync(path.dirname(vectorScript), {recursive: true});
         fs.writeFileSync(vectorScript, [
           "param([string]$Archive, [string]$Suite)",
@@ -328,7 +328,7 @@ test.describe("Windows script safety", {concurrency: false}, () => {
   for (const shadow of ["0", "$null"]) {
     for (const code of [0, 17, null]) {
       test(`Windows MSBuild native status ignores local shadow ${shadow} with exit ${code}`, {skip: !WINDOWS}, () => {
-        const source = readSource(path.join(repo, ".github/workflows/scripts/build-windows.ps1"));
+        const source = readSource(path.join(repo, "scripts/build-windows.ps1"));
         const start = source.indexOf("$msbuildCapturePreference = ");
         const end = source.indexOf("\nNew-Item -ItemType Directory -Force build\\Release", start);
         assert(start >= 0 && end > start, "MSBuild publication boundary is missing");
@@ -381,7 +381,7 @@ test.describe("Windows script safety", {concurrency: false}, () => {
     {name: "missing native status despite stale success", output: "No native status", code: null, accepted: false},
   ]) {
     test(`Windows MSBuild publication guard: ${fixtureCase.name}`, {skip: !WINDOWS}, () => {
-      const source = readSource(path.join(repo, ".github", "workflows", "scripts", "build-windows.ps1"));
+      const source = readSource(path.join(repo, "scripts", "build-windows.ps1"));
       const start = source.indexOf("$msbuildCapturePreference = ");
       const end = source.indexOf("\nNew-Item -ItemType Directory -Force build\\Release", start);
       assert(start >= 0 && end > start, "MSBuild publication boundary is missing");
@@ -422,7 +422,7 @@ test.describe("Windows script safety", {concurrency: false}, () => {
   }
 
   test("Windows MSBuild SYCL hook forwards the exact driver property before publication", {skip: !WINDOWS}, () => {
-    const source = readSource(path.join(repo, ".github", "workflows", "scripts", "build-windows.ps1"));
+    const source = readSource(path.join(repo, "scripts", "build-windows.ps1"));
     const start = source.indexOf("$msbuildCapturePreference = ");
     const end = source.indexOf("\nNew-Item -ItemType Directory -Force build\\Release", start);
     assert(start >= 0 && end > start, "MSBuild publication boundary is missing");
@@ -468,7 +468,7 @@ test.describe("Windows script safety", {concurrency: false}, () => {
     {name: "missing executable with stale success", stderr: "", code: null, accepted: false},
   ]) {
     test(`Windows MSBuild native stderr capture: ${fixtureCase.name}`, {skip: !WINDOWS}, () => {
-      const source = readSource(path.join(repo, ".github", "workflows", "scripts", "build-windows.ps1"));
+      const source = readSource(path.join(repo, "scripts", "build-windows.ps1"));
       const start = source.indexOf("$msbuildCapturePreference = ");
       const end = source.indexOf("\nNew-Item -ItemType Directory -Force build\\Release", start);
       assert(start >= 0 && end > start, "MSBuild publication boundary is missing");
@@ -557,7 +557,7 @@ test.describe("Windows script safety", {concurrency: false}, () => {
     skip: !WINDOWS,
   }, () => {
     const source = readSource(
-      path.join(repo, ".github", "workflows", "scripts", "package-windows.ps1"));
+      path.join(repo, "scripts", "package-windows.ps1"));
     const start = source.indexOf("if (-not $Version) {");
     const end = source.indexOf('\n. "$PSScriptRoot/windows-dll-deps.ps1"', start);
     assert.notEqual(start, -1, "version selection is missing");
@@ -875,7 +875,7 @@ Write-Output 'PUBLISH_OK'
     skip: !WINDOWS,
   }, () => {
     const result = runPowerShell(
-      path.join(repo, ".github/workflows/scripts/test-release-windows.ps1"),
+      path.join(repo, "scripts/test-release-windows.ps1"),
       ["-Archive", path.join(repo, "missing-release-fixture.zip")],
     );
     assert.notEqual(result.status, 0, result.stdout + result.stderr);
@@ -954,7 +954,7 @@ $ErrorActionPreference = 'Stop'
       fs.mkdirSync(path.join(dpcpp, "include"));
       fs.mkdirSync(path.join(dpcpp, "lib"));
       const packaging = runPowerShell(
-        path.join(repo, ".github", "workflows", "scripts", "package-toolchain-win.ps1"),
+        path.join(repo, "scripts", "package-toolchain-win.ps1"),
         ["-BuildDir", dpcpp, "-OutFile", archive]);
       assert.notEqual(packaging.status, 0, packaging.stdout + packaging.stderr);
       assert.match(packaging.stdout + packaging.stderr, /matching real UR loader/);
@@ -971,7 +971,7 @@ $ErrorActionPreference = 'Stop'
 
   test("Windows portable source runtime ownership is explicit", () => {
     const build = readSource(
-      path.join(repo, ".github/workflows/scripts/build-windows-multicompiler.ps1"));
+      path.join(repo, "scripts/build-windows-multicompiler.ps1"));
     const portable = build.match(/Save-Compiler dpcpp-opencl[^\r\n]*\r?\n([\s\S]*?)\r?\n {2}\}/)?.[1];
     assert.ok(portable, "portable source-build branch is missing");
     assert.match(portable, /^ {4}Save-DpcppRuntime -Name dpcpp-opencl$/m);
@@ -1004,7 +1004,7 @@ $ErrorActionPreference = 'Stop'
 
   test("Windows portable runtime fixture extracts LF and CRLF source identically", () => {
     const build = readSource(
-      path.join(repo, ".github/workflows/scripts/build-windows-multicompiler.ps1"));
+      path.join(repo, "scripts/build-windows-multicompiler.ps1"));
     const consumer = readSource(path.join(repo, "scripts/test-windows-current-multicompiler.ps1"));
     const lf = extractWindowsPortableRuntimeFixture(build, consumer);
     const crlf = extractWindowsPortableRuntimeFixture(
@@ -1017,7 +1017,7 @@ $ErrorActionPreference = 'Stop'
 
   test("Windows portable runtime fixture still rejects missing source or consumer boundaries", () => {
     const build = readSource(
-      path.join(repo, ".github/workflows/scripts/build-windows-multicompiler.ps1"));
+      path.join(repo, "scripts/build-windows-multicompiler.ps1"));
     const consumer = readSource(path.join(repo, "scripts/test-windows-current-multicompiler.ps1"));
     assert.throws(() => extractWindowsPortableRuntimeFixture(
       build.replace("function Save-DpcppRuntime(", "function Save-DpcppRuntimeMissing("), consumer),
@@ -1031,7 +1031,7 @@ $ErrorActionPreference = 'Stop'
     skip: !WINDOWS,
   }, () => {
     const runtime = extractWindowsPortableRuntimeFixture(
-      readSource(path.join(repo, ".github/workflows/scripts/build-windows-multicompiler.ps1")),
+      readSource(path.join(repo, "scripts/build-windows-multicompiler.ps1")),
       readSource(path.join(repo, "scripts/test-windows-current-multicompiler.ps1")));
     for (const sibling of [false, true]) {
       const fixture = makeFixture();
@@ -1102,7 +1102,7 @@ Invoke-PortableSuite 'fixture'
 if ($script:NodeCalls -ne 1) { throw 'portable suite did not reach its runner exactly once' }
 `);
         const result = runPowerShell(driver, ["-Root", fixture, "-Helper",
-          path.join(repo, ".github/workflows/scripts/windows-dll-deps.ps1")]);
+          path.join(repo, "scripts/windows-dll-deps.ps1")]);
         assert.equal(result.status, 0, result.stdout + result.stderr);
         for (const file of cohort) {
           assert.equal(fs.readFileSync(path.join(fixture, "workers/dpcpp-opencl", file), "utf8"),
@@ -1110,7 +1110,7 @@ if ($script:NodeCalls -ne 1) { throw 'portable suite did not reach its runner ex
         }
         if (sibling) {
           const missing = runPowerShell(driver, ["-Root", fixture, "-Helper",
-            path.join(repo, ".github/workflows/scripts/windows-dll-deps.ps1"), "-DropPortableRuntime"]);
+            path.join(repo, "scripts/windows-dll-deps.ps1"), "-DropPortableRuntime"]);
           assert.notEqual(missing.status, 0, missing.stdout + missing.stderr);
           assert.match(missing.stdout + missing.stderr,
             /Portable DPC\+\+ worker dependency is missing:[\s\S]*?dpcpp-opencl[\\/]sycl9\.dll/);
@@ -1134,7 +1134,7 @@ if ($script:NodeCalls -ne 1) { throw 'portable suite did not reach its runner ex
 
   test("Windows packaging preserves distinct coherent UR runtime cohorts", (t) => {
     const source = readSource(
-      path.join(repo, ".github", "workflows", "scripts", "package-windows.ps1"));
+      path.join(repo, "scripts", "package-windows.ps1"));
     const assertions = source.slice(source.indexOf("function Assert-BuildArtifact"),
       source.indexOf("if (Test-Path -LiteralPath $Archive"));
     const cleanupStart = source.indexOf("foreach ($worker in @('dpcpp', 'dpcpp-opencl')) {");
@@ -1204,7 +1204,7 @@ Remove-Item Env:MOM_DPCPP_CUDA_DIR, Env:MOM_ACPP_DIR, Env:HIP_PATH, Env:ROCM_PAT
             "not a PE binary");
         }
         const result = runPowerShell(driver, ["-Root", root, "-Helper",
-          path.join(repo, ".github", "workflows", "scripts", "windows-dll-deps.ps1")]);
+          path.join(repo, "scripts", "windows-dll-deps.ps1")]);
         const output = result.stdout + result.stderr;
         if (mode !== "complete") {
           assert.notEqual(result.status, 0, `${mode}: missing runtime unexpectedly accepted\n${output}`);
@@ -1262,7 +1262,7 @@ Remove-Item Env:MOM_DPCPP_CUDA_DIR, Env:MOM_ACPP_DIR, Env:HIP_PATH, Env:ROCM_PAT
       }
       const result = spawnSync("powershell.exe", [
         "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
-        path.join(repo, ".github/workflows/scripts/test-release-windows.ps1"),
+        path.join(repo, "scripts/test-release-windows.ps1"),
         "-Archive", path.join(fixture, "missing.zip"),
       ], {
         encoding: "utf8",
@@ -1310,7 +1310,7 @@ try {
   $stream.Dispose()
 }
 `);
-    const validator = path.join(repo, ".github/workflows/scripts/test-release-windows.ps1");
+    const validator = path.join(repo, "scripts/test-release-windows.ps1");
     try {
     /** @type {Array<[string, RegExp | null]>} */
       const cases = [
@@ -1746,7 +1746,7 @@ try {
   }
 
   test("Windows CUDA preflight precedes staging and installer environment publication", () => {
-    const build = readSource(path.join(repo, ".github/workflows/scripts/build-windows-multicompiler.ps1"));
+    const build = readSource(path.join(repo, "scripts/build-windows-multicompiler.ps1"));
     const preflight = build.indexOf("Assert-MomCudaCompilerSdk $CudaPath");
     assert(preflight > 0 && preflight < build.indexOf("Move-Item $platformRoot $platformsHold"));
     assert(preflight < build.indexOf('& "$PSScriptRoot\\build-windows.ps1"'));
@@ -1765,11 +1765,10 @@ try {
   test("Windows release preflight rejects missing CUDA NVML or DPCPP loader before staging", {skip: !WINDOWS}, () => {
     const fixture = makeFixture();
     try {
-      const scripts = path.join(fixture, ".github/workflows/scripts");
+      const scripts = path.join(fixture, "scripts");
       fs.mkdirSync(scripts, {recursive: true});
-      fs.mkdirSync(path.join(fixture, "scripts"));
       for (const name of ["build-windows-multicompiler.ps1", "windows-dll-deps.ps1"]) {
-        fs.copyFileSync(path.join(repo, ".github/workflows/scripts", name), path.join(scripts, name));
+        fs.copyFileSync(path.join(repo, "scripts", name), path.join(scripts, name));
       }
       fs.copyFileSync(path.join(repo, "scripts/windows-install-helpers.ps1"),
         path.join(fixture, "scripts/windows-install-helpers.ps1"));
@@ -1821,7 +1820,7 @@ try {
       for (const name of ["clang++.exe", "clang.exe", "lld-link.exe"]) {
         fs.writeFileSync(path.join(toolchain, name), "fixture");
       }
-      const child = runPowerShell(path.join(repo, ".github/workflows/scripts/build-sycl-cuda-win.ps1"),
+      const child = runPowerShell(path.join(repo, "scripts/build-sycl-cuda-win.ps1"),
         ["-ToolchainDir", path.dirname(toolchain), "-CudaPath", cuda, "-RequireCuda"]);
       assert.notEqual(child.status, 0);
       assert.match(child.stdout + child.stderr, /include\\nvml\.h/);
@@ -1885,7 +1884,7 @@ function Export-DevelopmentEnvironment { throw 'EXPORT_REACHED' }
       fs.writeFileSync(path.join(toolchain, "bin", "clang.exe"), "fixture");
       fs.writeFileSync(path.join(toolchain, "bin", "lld-link.exe"), "fixture");
       const result = runPowerShell(
-        path.join(repo, ".github/workflows/scripts/build-sycl-cuda-win.ps1"),
+        path.join(repo, "scripts/build-sycl-cuda-win.ps1"),
         ["-ToolchainDir", toolchain, "-CudaPath", path.join(fixture, "missing-cuda"),
           "-RequireCuda"],
       );
@@ -1915,7 +1914,7 @@ try {
 }
 `);
       const result = runPowerShell(driver, [
-        "-ScriptPath", path.join(repo, ".github/workflows/scripts/build-sycl-cuda-win.ps1"),
+        "-ScriptPath", path.join(repo, "scripts/build-sycl-cuda-win.ps1"),
       ]);
       assert.equal(result.status, 0, result.stdout + result.stderr);
     } finally {
@@ -2190,10 +2189,10 @@ try {
   /** @returns {{fixture: string, script: string, archive: string, marker: string, driver: string}} */
   function makeWindowsPackageFixture() {
     const fixture = makeFixture();
-    const scriptDirectory = path.join(fixture, ".github", "workflows", "scripts");
+    const scriptDirectory = path.join(fixture, "scripts");
     fs.mkdirSync(scriptDirectory, {recursive: true});
     for (const file of ["package-windows.ps1", "windows-dll-deps.ps1"]) {
-      fs.copyFileSync(path.join(repo, ".github", "workflows", "scripts", file),
+      fs.copyFileSync(path.join(repo, "scripts", file),
         path.join(scriptDirectory, file));
     }
     fs.writeFileSync(path.join(fixture, "node.exe"), "fixture node");
@@ -2226,7 +2225,7 @@ try {
   /** @returns {string} */
   function extractWindowsArchivePublicationBlock() {
     const source = readSource(
-      path.join(repo, ".github", "workflows", "scripts", "package-windows.ps1"));
+      path.join(repo, "scripts", "package-windows.ps1"));
     const startMarker = "$archiveDirectory = ";
     const endMarker = "Write-Output $Archive";
     const start = source.indexOf(startMarker);
@@ -2762,7 +2761,7 @@ try {
       fs.mkdirSync(directory);
       fs.writeFileSync(directorySentinel, "sentinel");
       assertRejected(driver, [
-        "-ScriptPath", path.join(repo, ".github", "workflows", "scripts", "restore-toolchain-win.ps1"),
+        "-ScriptPath", path.join(repo, "scripts", "restore-toolchain-win.ps1"),
         "-Destination", directory, "-ExpectedText", "unowned nonempty",
       ], "toolchain directory");
       assert.equal(fs.readFileSync(directorySentinel, "utf8"), "sentinel");
@@ -2773,7 +2772,7 @@ try {
       fs.writeFileSync(path.join(wrongMarker, ".mom-toolchain-sha256"), "wrong");
       fs.writeFileSync(wrongMarkerSentinel, "sentinel");
       assertRejected(driver, [
-        "-ScriptPath", path.join(repo, ".github", "workflows", "scripts", "restore-toolchain-win.ps1"),
+        "-ScriptPath", path.join(repo, "scripts", "restore-toolchain-win.ps1"),
         "-Destination", wrongMarker, "-ExpectedText", "unowned nonempty",
       ], "toolchain wrong marker");
       assert.equal(fs.readFileSync(wrongMarkerSentinel, "utf8"), "sentinel");
@@ -2781,7 +2780,7 @@ try {
       const file = path.join(fixture, "toolchain-file");
       fs.writeFileSync(file, "sentinel");
       assertRejected(driver, [
-        "-ScriptPath", path.join(repo, ".github", "workflows", "scripts", "restore-toolchain-win.ps1"),
+        "-ScriptPath", path.join(repo, "scripts", "restore-toolchain-win.ps1"),
         "-Destination", file, "-ExpectedText", "not a directory",
       ], "toolchain file");
       assert.equal(fs.readFileSync(file, "utf8"), "sentinel");
@@ -2803,7 +2802,7 @@ try {
       fs.writeFileSync(sentinel, "sentinel");
       if (tryMakeJunction(destination, target)) {
         assertRejected(driver, [
-          "-ScriptPath", path.join(repo, ".github", "workflows", "scripts", "restore-toolchain-win.ps1"),
+          "-ScriptPath", path.join(repo, "scripts", "restore-toolchain-win.ps1"),
           "-Destination", destination, "-ExpectedText", "reparse point",
         ], "toolchain junction");
         assert.equal(fs.readFileSync(sentinel, "utf8"), "sentinel");
@@ -2817,7 +2816,7 @@ try {
       fs.writeFileSync(parentSentinel, "sentinel");
       if (tryMakeJunction(parentLink, parentTarget)) {
         assertRejected(driver, [
-          "-ScriptPath", path.join(repo, ".github", "workflows", "scripts", "restore-toolchain-win.ps1"),
+          "-ScriptPath", path.join(repo, "scripts", "restore-toolchain-win.ps1"),
           "-Destination", path.join(parentLink, "toolchain"), "-ExpectedText", "reparse point",
         ], "toolchain parent junction");
         assert.equal(fs.readFileSync(parentSentinel, "utf8"), "sentinel");
@@ -2827,7 +2826,7 @@ try {
       const systemDrive = process.env["SystemDrive"];
       assert.ok(systemDrive);
       assertRejected(driver, [
-        "-ScriptPath", path.join(repo, ".github", "workflows", "scripts", "restore-toolchain-win.ps1"),
+        "-ScriptPath", path.join(repo, "scripts", "restore-toolchain-win.ps1"),
         "-Destination", `${systemDrive}\\`, "-ExpectedText", "filesystem root",
       ], "toolchain root");
     } finally {
@@ -2843,12 +2842,12 @@ try {
       const driver = makeDriver(fixture, toolchainDriverSource);
       const destination = path.join(fixture, "toolchain");
       assertRejected(driver, [
-        "-ScriptPath", path.join(repo, ".github", "workflows", "scripts", "restore-toolchain-win.ps1"),
+        "-ScriptPath", path.join(repo, "scripts", "restore-toolchain-win.ps1"),
         "-Destination", destination, "-ExpectedText", "leaf filename",
         "-Asset", "..\\outside.tar.gz",
       ], "toolchain asset path");
       assertRejected(driver, [
-        "-ScriptPath", path.join(repo, ".github", "workflows", "scripts", "restore-toolchain-win.ps1"),
+        "-ScriptPath", path.join(repo, "scripts", "restore-toolchain-win.ps1"),
         "-Destination", destination, "-ExpectedText", "64 hexadecimal",
         "-ExpectedSha256", "not-a-digest",
       ], "toolchain digest");
@@ -2863,9 +2862,9 @@ try {
     const fixture = makeFixture();
     try {
       const result = runPowerShell(makeDriver(fixture, toolchainDefaultsDriverSource), [
-        "-Restore", path.join(repo, ".github/workflows/scripts/restore-toolchain-win.ps1"),
+        "-Restore", path.join(repo, "scripts/restore-toolchain-win.ps1"),
         "-Install", path.join(repo, "scripts/install-dev.ps1"),
-        "-Package", path.join(repo, ".github/workflows/scripts/package-toolchain-win.ps1"),
+        "-Package", path.join(repo, "scripts/package-toolchain-win.ps1"),
       ]);
       assert.equal(result.status, 0, result.stdout + result.stderr);
       assert.deepEqual(JSON.parse(result.stdout), {
@@ -2884,7 +2883,7 @@ try {
   }, () => {
     const fixture = makeFixture();
     try {
-      const script = path.join(repo, ".github/workflows/scripts/restore-toolchain-win.ps1");
+      const script = path.join(repo, "scripts/restore-toolchain-win.ps1");
       const payload = path.join(fixture, "payload");
       const archive = path.join(fixture, "fixture-toolchain.tar.gz");
       for (const file of [
@@ -2979,7 +2978,7 @@ if ($LASTEXITCODE -ne 0) { throw "FIXTURE_TAR_FAILED: $LASTEXITCODE" }
         return;
       }
       assertRejected(makeDriver(fixture, toolchainDriverSource), [
-        "-ScriptPath", path.join(repo, ".github/workflows/scripts/restore-toolchain-win.ps1"),
+        "-ScriptPath", path.join(repo, "scripts/restore-toolchain-win.ps1"),
         "-Destination", directory, "-ExpectedText", "unowned nonempty",
         "-Asset", DPCPP_ASSET, "-ExpectedSha256", DPCPP_SHA256,
       ], "toolchain marker symlink");

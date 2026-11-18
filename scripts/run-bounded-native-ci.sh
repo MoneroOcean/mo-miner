@@ -45,7 +45,7 @@ verifier_node="$(readlink -f -- "$verifier_node")" || fail 'cannot resolve the w
 [[ "$verifier_node" == /* && -x "$verifier_node" ]] || fail 'invalid workflow Node executable'
 
 /usr/bin/env -i "$verifier_node" "$script_dir/native-ci-memory-envelope.js" --host-headroom ||
-  fail 'host lacks more than 5 GiB plus 512 MiB of available memory'
+  fail 'host lacks more than 12 GiB plus 512 MiB of available memory'
 
 sudo_path=/usr/bin/sudo
 systemd_run_path=/usr/bin/systemd-run
@@ -55,6 +55,6 @@ for executable in "$sudo_path" "$systemd_run_path" "$runuser_path"; do
 done
 
 /usr/bin/env -0 | "$sudo_path" -n "$systemd_run_path" --scope --quiet --same-dir \
-  -p MemoryMax=5368709120 -p MemorySwapMax=0 -- \
+  -p MemoryMax=12884901888 -p MemorySwapMax=0 -- \
   "$runuser_path" --user "$original_user" -- \
   "$script_path" --verify "$original_uid" "$verifier_node" -- "$@"

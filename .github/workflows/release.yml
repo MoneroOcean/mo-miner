@@ -17,7 +17,6 @@ concurrency:
 
 jobs:
   build-and-test:
-    name: Build and test release archives
     uses: ./.github/workflows/build-release-artifacts.yml
 
   publish:
@@ -27,88 +26,17 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write
-
     steps:
-      - name: Checkout release metadata
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-
-      - name: Download the exact admitted Linux archive
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          name: ${{ needs.build-and-test.outputs.linux_archive_artifact_name }}
+          pattern: "{${{ needs.build-and-test.outputs.linux_archive_artifact_name }},${{ needs.build-and-test.outputs.windows_archive_artifact_name }}}"
           path: artifacts
-
-      - name: Download the exact admitted Windows archive
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: ${{ needs.build-and-test.outputs.windows_archive_artifact_name }}
-          path: artifacts
-
-      - name: Publish GitHub release
+      - name: Verify admitted archive hashes and publish
         env:
           GH_TOKEN: ${{ github.token }}
           EXPECTED_LINUX_ARCHIVE_SHA256: ${{ needs.build-and-test.outputs.linux_archive_sha256 }}
           EXPECTED_WINDOWS_ARCHIVE_SHA256: ${{ needs.build-and-test.outputs.windows_archive_sha256 }}
-        run: |
-          set -euo pipefail
-          for expected in "$EXPECTED_LINUX_ARCHIVE_SHA256" "$EXPECTED_WINDOWS_ARCHIVE_SHA256"; do
-            if [[ ! "$expected" =~ ^[a-f0-9]{64}$ ]]; then
-              printf 'Missing or malformed package archive SHA-256 output.\n' >&2
-              exit 1
-            fi
-          done
-          version="$(node -p 'require("./package.json").version')"
-          case "$version" in
-            ''|*[!0-9A-Za-z.-]*)
-              printf 'Invalid package version: %s\n' "$version" >&2
-              exit 1
-              ;;
-          esac
-          expected_tag="v$version"
-          if [[ "${GITHUB_REF_NAME}" != "$expected_tag" ]]; then
-            printf 'Release tag does not match package version: expected %s\n' "$expected_tag" >&2
-            exit 1
-          fi
-          linux_name="mom-${expected_tag}-lin.tgz"
-          windows_name="mom-${expected_tag}-win.zip"
-          mapfile -d '' archives < <(find artifacts -type f -print0)
-          mapfile -d '' linux_files < <(find artifacts -type f -name "$linux_name" -print0)
-          mapfile -d '' windows_files < <(find artifacts -type f -name "$windows_name" -print0)
-          if (( ${#archives[@]} != 2 || ${#linux_files[@]} != 1 || ${#windows_files[@]} != 1 )); then
-            printf 'Expected exactly one unified Linux tgz and one unified Windows zip; found:\n' >&2
-            printf '  %s\n' "${archives[@]}" >&2
-            exit 1
-          fi
-          linux_sha256="$(sha256sum -- "${linux_files[0]}" | awk '{print $1}')"
-          windows_sha256="$(sha256sum -- "${windows_files[0]}" | awk '{print $1}')"
-          if [[ "$linux_sha256" != "$EXPECTED_LINUX_ARCHIVE_SHA256" ||
-                "$windows_sha256" != "$EXPECTED_WINDOWS_ARCHIVE_SHA256" ]]; then
-            printf 'Downloaded release archive bytes differ from the package workflow outputs.\n' >&2
-            exit 1
-          fi
-          for archive in "${archives[@]}"; do
-            case "$(basename "$archive")" in
-              "$linux_name"|"$windows_name") ;;
-              *) printf 'Unexpected release archive name: %s\n' "$(basename "$archive")" >&2; exit 1 ;;
-            esac
-          done
-          checksums=()
-          for archive in "${archives[@]}"; do
-            directory="$(dirname "$archive")"
-            filename="$(basename "$archive")"
-            checksum="$archive.sha256"
-            (cd "$directory" && sha256sum "$filename" > "$filename.sha256")
-            (cd "$directory" && sha256sum -c "$filename.sha256" >/dev/null)
-            checksums+=("$checksum")
-          done
-          files=("${archives[@]}" "${checksums[@]}")
-          meta=(--repo "${GITHUB_REPOSITORY}" --title "${GITHUB_REF_NAME}" --notes "mom ${GITHUB_REF_NAME}")
-          if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            # Release already exists (e.g. a re-run): refresh metadata, then overwrite assets.
-            gh release edit "${GITHUB_REF_NAME}" "${meta[@]}"
-            gh release upload "${GITHUB_REF_NAME}" "${files[@]}" --repo "${GITHUB_REPOSITORY}" --clobber
-          else
-            gh release create "${GITHUB_REF_NAME}" "${files[@]}" "${meta[@]}"
-          fi
+        run: scripts/ci/publish-release.sh artifacts

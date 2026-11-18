@@ -643,93 +643,35 @@ tools or full build caches. Hermes consumes the same-run pinned source archive f
 the shared HTTP downloader acquires the smaller I/O/OpenSSL archives directly on Windows.
 These newly wired stages still need a complete fresh-run qualification and downstream integration.
 
-The reusable Windows LLVM workflow runs on Ubuntu 24.04 and cross-builds the Windows-target LLVM
-host libraries; it does not build or run the MoM Windows application. Its ordered stages are
-configure, `llvm-amdgpu`, `llvm-mid` (NVPTX, X86 and core), `clang`, `lld`, then audit.
-The grouped job retains all three original builder receipts but transfers only its final state.
-`scripts/run-native-windows-llvm-ci.js` re-admits the same-run Hermes and thin
-Linux LLVM-tool inputs and resumes the public builder from the immediately preceding state.
-Each transition uses a same-run archive plus a separately SHA-pinned manifest; external Windows
-SDK/tool inputs are reconstructed at their recorded paths instead of being bundled into that state.
-Configure establishes an eight-hour run deadline that later jobs must carry forward, and each
-job has its own non-extendable deadline: 25 minutes inside a 30-minute job for `llvm-mid`,
-55 minutes inside a 60-minute job otherwise. The reusable workflow declares
-only `actions: read` and `contents: read` token permissions. This connected source workflow still
-needs fresh GitHub-run qualification; its build-only state feeds the Windows application/runtime
-jobs and is not a release by itself.
-
-Linux LLVM groups common libraries, backends/Clang analysis, and the tools/install/audit tail
-into 30-minute cold-build jobs; long code-generation and frontend phases remain separate.
-Independent source checks run alongside SDK production and remain mandatory packaging gates.
-Job budgets include setup and artifact transfers; persistent build caches are not required.
-
-The Windows static host-component job consumes that audited LLVM state and the separately
-hash-pinned full Linux LLVM SDK, thin tools, Hermes, DPC++/CUDA, ROCm, ACPP and HIP-header
-handoffs. It rebuilds resources, COMGR and AdaptiveCpp through their public producers, then
-exports only the admitted static host component. Preparation and compilation share a
-55-minute deadline within one 60-minute job; no persistent cache or GPU/VM execution is used.
-This new job still needs fresh-run qualification; its artifact is not a qualified application.
-
-The Windows oneAPI, DPC++ CUDA and portable OpenCL GPU-factory jobs reuse the original source, DPC++ input and
-thin LLVM-tool handoffs, check their external hashes, and compose their Windows SDK inputs
-through the existing producer. Their shared workflow keeps preparation and compilation within
-one 55-minute deadline inside a 60-minute job; only oneAPI provisions the Intel compiler.
-Only the CUDA job also restores the externally hash-pinned CUDA-image handoff; it does not
-recompile those images. Each isolated factory tar is build-only; the two AdaptiveCpp GPU
-factories are also wired, but the complete connected pipeline still needs fresh-run qualification.
-
 GPU factory transports include a separately hash-pinned `handoff.json` that binds the unchanged
 factory/configuration/isolation receipts and isolated objects to the original SDK input hashes.
 The producer rechecks those SDK files before and after packaging; they are not copied into the
 compact transport. This is build provenance, not runtime or publication qualification. Final
 assembly must also recheck the current source and exact linked object cohort.
 
-The final Windows application job re-admits the Core, all five GPU factories, static host and
-DPC++ components, and controller support using separate same-run bundle/receipt hashes. It
-reconstructs the official Windows SDK locally and invokes `npm run build:release -- --native`
-with the existing application composer. Its runtime artifact contains only `mom.exe`; compact
-build receipts are uploaded separately. The following Windows runtime job consumes that exact
-executable and its SHA-256. Assembly shares a 55-minute deadline inside a 60-minute job, with no
-persistent Actions cache. Workflow fixtures and schema checks are not a substitute for running
-this pipeline or qualifying the resulting executable on physical GPUs.
+### CI layout
 
-The prerequisite workflow's `compose-linux-sdk-descriptor` job restores and re-admits its
-12 same-run source/SDK tars, then emits the public `sdk.json` descriptor and a hash-bound
-admission manifest without compiling the application. Separate jobs build the portable Core
-and each of the five GPU factories with their existing public producers. The application job
-re-admits those six unchanged outputs, adds their complete `components` map to a derived SDK
-descriptor, and invokes the public build frontdoor for application-only compilation and linking.
-Each component producer exposes its raw-tar SHA-256 through a separate named reusable-job
-output. Assembly checks all six external hashes before reading component tar members and
-rechecks them before extraction; it does not trust hashes computed only after downloading.
-Each consumer currently restores the complete SDK cohort to preserve full public admission;
-the split does not yet prove that every cold component build fits its job budget.
-Jobs use bounded deadlines and no Actions cache. They reuse `install-dev.sh --component node`
-for matching native-build headers and node-gyp, and `npm ci --ignore-scripts` for build-time
-packages; neither ships in MoM. Intel compiler provisioning is required on each fresh build runner.
-The Core job still prepares the existing portable Engineering cache, including its oneAPI GPU
-dependency. A Linux Core-only GYP path is not yet qualified; do not count that setup as a measured
-cold-build saving or assume it supplies the separate GPU-factory jobs' objects.
-The SDK inputs are not a portable bundle: consumers must restore them at their recorded paths.
-Reviewed notices, release packaging, physical-GPU performance, and publication qualification
-remain separate; the descriptor and raw executable alone do not establish them.
-
-The Linux source-JIT prerequisites include a separate, 30-minute GNU-header job. It captures
-only the three named package file lists into four target include roots, retaining package
-versions, hashes and copyright texts. Its target-headers.json is passed directly to the
-existing source emitter; no private historical overlay or persistent cache is required.
-Receiving jobs re-admit both headers and copyright files before resource generation. Final SDK
-composition also binds this same-run tar and its exact package copyright sources; that subset
-alone does not establish complete release notices.
-
-Release and Stability share one native orchestrator: source checks, the complete native build and
-raw/packed runtime gates for both platforms, then two audited packages with reviewed notices.
-Packaging waits for the whole native workflow, not merely its executable outputs. Release checks
-the forwarded archive hashes before publication; Stability does not publish. Archive extraction
-must reproduce the exact executable already runtime-tested, so packaging does not repeat mining
-tests. Hosted CI uses CPU/portable-GPU vectors without external pools; physical-GPU performance
-and live-pool qualification remain separate requirements. Wiring these gates is not evidence that
-a cold hosted run has passed them.
+- `stability.yml` runs only the source gates (`source-gates.yml`: lint, typecheck, logic/host tests on
+  Linux, PowerShell syntax and logic on Windows) on pull requests and pushes. The complete native build
+  runs weekly, on `workflow_dispatch`, and on every `v*` tag through `release.yml`.
+- `build-release-artifacts.yml` holds the whole native graph: source gates, Engineering hashing, Linux and
+  Windows SDK producers, components, applications, raw and packed runtime lanes, packing and packaging.
+  Packaging waits for every gate; `release.yml` publishes only the two archives whose SHA-256 the package
+  jobs reported, and only its tag job has `contents: write`.
+- Linux producer jobs use `native-job.yml`. It exports the run-scoped `/tmp` roots (`scripts/ci/job.js`),
+  the caller's producer pins, `MOM_BUILD_JOBS=4` (public runners have 4 vCPU/16 GB) and a job deadline
+  `MOM_CI_DEADLINE_EPOCH` five minutes before `timeout-minutes`. Downloads land flat in
+  `$RUNNER_TEMP/incoming`; artifacts are named after their files and kept for three days.
+- Sequential chains run as one job of at most 330 minutes: Linux LLVM (`prepare-native-ci.js stage
+  linux-llvm`), Linux source-JIT (`scripts/ci/linux-jit.js`), Windows LLVM (`scripts/ci/windows-llvm.js`)
+  and Windows source-JIT (`scripts/ci/windows-jit.js`). The chain drivers keep each phase's own pinned
+  state handoff, fresh-root admission and 55-minute deadline, but pass state locally instead of through
+  artifacts. Other producers keep 60-minute jobs with 55-minute internal deadlines.
+- Heavy producers run under `scripts/run-bounded-native-ci.sh` (a swap-free 12 GiB scope, sized for four
+  build jobs on a 16 GB runner).
+- Artifact names and `/tmp` roots still include the run attempt, so only "Re-run all jobs" works.
+- `tests/workflows.js` checks action pins, permissions, timeouts, artifact producers, job outputs and
+  referenced scripts. Workflow fixtures do not replace a real hosted run, which is still outstanding.
 
 ## Useful entrypoints
 

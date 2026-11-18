@@ -1,36 +1,10 @@
 "use strict";
-const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), os = require("node:os"), path = require("node:path"),
-  {spawnSync} = require("node:child_process");
+const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), os = require("node:os"), path = require("node:path");
 const {windowsJitCiJobPlan, validateWindowsJitConfig, composeWindowsJitConfig, writeWindowsJitConfig,
   validateWindowsJitDescriptorInputs} = require("../scripts/run-native-windows-jit-ci");
 const {validateWindowsJitDescriptor, windowsJitToolchainPlan} = require("../scripts/prepare-native-jit-toolchain");
 
 const hash = "a".repeat(64), now = Date.now();
-const workflowPath = path.join(__dirname, "..", ".github", "workflows", "build-windows-jit-job.yml");
-
-/** Read one literal bash block without adding a YAML parser dependency. @param {string} name */
-function workflowRunBlock(name) {
-  const workflow = fs.readFileSync(workflowPath, "utf8"), marker = `      - name: ${name}\n`, begin = workflow.indexOf(marker);
-  assert.notEqual(begin, -1, `missing workflow step: ${name}`);
-  const nextStep = workflow.indexOf("\n      - name:", begin + marker.length), block = workflow.slice(begin, nextStep < 0 ? undefined : nextStep),
-    runMarker = "        run: |\n", runStart = block.indexOf(runMarker);
-  assert.notEqual(runStart, -1, `step has no literal run block: ${name}`);
-  const lines = block.slice(runStart + runMarker.length).split("\n");
-  while (lines.length && !(lines.at(-1) || "").trim()) {lines.pop();}
-  assert.ok(lines.every(line => !line.trim() || line.startsWith("          ")), `unexpected indentation in ${name}`);
-  return lines.map(line => line.startsWith("          ") ? line.slice(10) : "").join("\n");
-}
-
-/** Execute only the workflow's phase/artifact guard, not any download or build step.
- * @param {string} root @param {string} phase @param {string} previous @param {string} config @param {string} state */
-function runArtifactNamesGuard(root, phase, previous, config, state) {
-  const output = path.join(root, `workflow-${phase}-${previous || "none"}-${config || "none"}-${state || "none"}.out`),
-    result = spawnSync("bash", ["-c", workflowRunBlock("Validate phase and derive exact artifact names")], {
-      encoding: "utf8", env: {...process.env, GITHUB_RUN_ID: "9000000000000008", GITHUB_RUN_ATTEMPT: "88", GITHUB_OUTPUT: output,
-        PHASE: phase, PREVIOUS_PHASE: previous, CONFIG_SHA256: config, STATE_SHA256: state},
-    });
-  return {result, outputs: fs.existsSync(output) ? Object.fromEntries(fs.readFileSync(output, "utf8").trim().split("\n").map(line => line.split("="))) : {}};
-}
 
 /** @param {string} root @param {string} stage */
 function environment(root, stage = "configure") {
@@ -126,7 +100,7 @@ test.describe("Windows original source-JIT CI phases", {skip: process.platform !
   test("rejects unknown phases, malformed identities and non-Linux or non-build-only jobs", () => {
     const env = environment(root), config = path.join(env["RUNNER_TEMP"] || "", "incoming/config/native-windows-jit-sdk-9000000000000008-88.json");
     for (const stage of ["all", "configure;link", "constructor"]) {assert.throws(() => windowsJitCiJobPlan(stage, config, hash, env, "linux", "x64", now));}
-    for (const changed of [{...env, GITHUB_RUN_ID: "../x"}, {...env, GITHUB_RUN_ATTEMPT: "0"}, {...env, MOM_BUILD_JOBS: "4"}]) {
+    for (const changed of [{...env, GITHUB_RUN_ID: "../x"}, {...env, GITHUB_RUN_ATTEMPT: "0"}, {...env, MOM_BUILD_JOBS: "3"}]) {
       assert.throws(() => windowsJitCiJobPlan("configure", config, undefined, changed, "linux", "x64", now));
     }
     assert.throws(() => windowsJitCiJobPlan("configure", config, undefined, env, "win32", "x64", now));
@@ -199,7 +173,7 @@ test.describe("Windows original source-JIT CI phases", {skip: process.platform !
           cmake: tools.cmake, ninja: tools.ninja, toolchain: runRoot + "/toolchain/toolchain.cmake"},
         jobs: 2, inputs: [runRoot + "/toolchain/toolchain.cmake", runRoot + "/descriptor.json", runRoot + "/icx-real"]},
       expected = {sources: config.sources, sdk: config.sdk, resources: config.resources, toolchain: config.tools.toolchain,
-        compiler: config.tools.cc, requiredInputs: [config.tools.toolchain, runRoot + "/descriptor.json", runRoot + "/icx-real"], allowedRoots: [runRoot]};
+        compiler: config.tools.cc, jobs: 2, requiredInputs: [config.tools.toolchain, runRoot + "/descriptor.json", runRoot + "/icx-real"], allowedRoots: [runRoot]};
     assert.deepEqual(validateWindowsJitConfig(config, expected), config);
     for (const changed of [
       {...config, target: "linux"}, {...config, jobs: 4}, {...config, tools: {...config.tools, cc: "/usr/bin/clang"}},
@@ -282,54 +256,8 @@ test.describe("Windows original source-JIT CI phases", {skip: process.platform !
           cmake: fs.realpathSync("/usr/bin/cmake"), ninja: fs.realpathSync("/usr/bin/ninja"), toolchain: runRoot + "/toolchain.cmake"},
         jobs: 2, inputs: [runRoot + "/toolchain.cmake", runRoot + "/descriptor.json", canonical]},
       expected = {sources: config.sources, sdk: config.sdk, resources: config.resources, toolchain: config.tools.toolchain,
-        compiler: canonical, requiredInputs: config.inputs, allowedRoots: [runRoot]};
+        compiler: canonical, jobs: 2, requiredInputs: config.inputs, allowedRoots: [runRoot]};
     assert.deepEqual(validateWindowsJitConfig(config, expected), config);
     assert.throws(() => validateWindowsJitConfig({...config, tools: {...config.tools, cc: alias, cxx: alias}}, expected), /admitted same-run/);
-  });
-
-  test("workflow phase guard derives only the immediate predecessor and exact artifact names", () => {
-    const suffix = "9000000000000008-88", phases = [
-      {phase: "configure", previous: "", output: "configured"},
-      {phase: "support", previous: "configured", output: "support"},
-      {phase: "targets", previous: "support", output: "targets"},
-      {phase: "frontend", previous: "targets", output: "frontend"},
-      {phase: "link", previous: "frontend", output: "link"},
-    ];
-    for (const row of phases) {
-      const config = row.phase === "configure" ? "" : hash, state = row.phase === "configure" ? "" : hash,
-        {result, outputs} = runArtifactNamesGuard(root, row.phase, row.previous, config, state);
-      assert.equal(result.status, 0, result.stderr);
-      assert.equal(outputs.config_artifact_name, `native-windows-jit-sdk-${suffix}.json`);
-      assert.equal(outputs.state_artifact_name, `native-windows-jit-sdk-${suffix}-${row.output}.tar`);
-      if (row.previous) {assert.equal(outputs.state_input_artifact_name, `native-windows-jit-sdk-${suffix}-${row.previous}.tar`);} else {assert.equal(Object.hasOwn(outputs, "state_input_artifact_name"), false);}
-    }
-  });
-
-  test("workflow phase guard rejects stale predecessors and missing or malformed external pins", () => {
-    for (const input of [
-      {phase: "targets", previous: "configured", config: hash, state: hash},
-      {phase: "support", previous: "configured", config: "", state: hash},
-      {phase: "support", previous: "configured", config: "x".repeat(64), state: hash},
-      {phase: "support", previous: "configured", config: hash, state: "0".repeat(63)},
-      {phase: "configure", previous: "", config: hash, state: ""},
-    ]) {
-      const {result} = runArtifactNamesGuard(root, input.phase, input.previous, input.config, input.state);
-      assert.notEqual(result.status, 0, `${input.phase} accepted an invalid predecessor/config/state tuple`);
-    }
-  });
-
-  test("reusable workflow uploads config separately, bounds jobs, and avoids caches or runtime tests", () => {
-    const workflow = fs.readFileSync(workflowPath, "utf8"), jobStart = workflow.indexOf("  windows-jit:\n"), stepsStart = workflow.indexOf("    steps:\n", jobStart),
-      jobHeader = workflow.slice(jobStart, stepsStart);
-    assert.ok(jobStart >= 0 && stepsStart > jobStart);
-    assert.match(jobHeader, /runs-on: ubuntu-24\.04/); assert.match(jobHeader, /timeout-minutes: 60/);
-    assert.doesNotMatch(jobHeader, /runner\.temp/, "runner.temp is step-scoped, not valid at job env scope");
-    assert.match(workflow, /MOM_DEV_WORKSPACE=\/var\/tmp\/mom-dev-native-windows-jit-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/);
-    assert.match(workflow, /now \+ 3300/); assert.match(workflow, /timeout-minutes: 45/);
-    assert.match(workflow, /MOM_AOT_BUILD_ONLY: "1"/); assert.match(workflow, /MOM_BUILD_JOBS: "2"/);
-    assert.match(workflow, /name: \$\{\{ steps\.artifact-names\.outputs\.config_artifact_name \}\}[\s\S]*?archive: false[\s\S]*?retention-days: 1/);
-    assert.match(workflow, /name: \$\{\{ steps\.artifact-names\.outputs\.state_artifact_name \}\}[\s\S]*?archive: false[\s\S]*?retention-days: 1/);
-    assert.doesNotMatch(workflow, /actions\/cache|qemu|stratum\+tcp|moneroocean/i);
-    assert.match(workflow, /MOM_NATIVE_WINDOWS_LLVM_DESCRIPTOR_DIR=\$RUNNER_TEMP\/mom-native-windows-llvm21-descriptor-/);
   });
 });
