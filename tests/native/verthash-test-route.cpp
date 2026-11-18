@@ -1,5 +1,5 @@
 // Host-only source-derived test for the Verthash bounded-data admission boundary.
-// The compiler-policy test extracts the production get_state() definition into the include below;
+// The compiler-policy test extracts the production state_for() definition into the include below;
 // this file supplies only a lightweight device, State, and real DeviceStateRegistry harness.
 
 #include "../../sycl/device-state.h"
@@ -61,7 +61,7 @@ static DeviceStateRegistry<State>& registry() {
   return *value;
 }
 
-#include "verthash_get_state.inc"
+#include "verthash_state_for.inc"
 
 static void require(const bool condition, const char* const reason) {
   if (!condition)
@@ -99,7 +99,7 @@ static void test_admission_matrix() {
             configure_env(env);
             registry().clear();
             const unsigned before_queries = fixture_device_queries;
-            State& state = get_state("matrix", is_test, is_benchmark);
+            State& state = state_for("matrix", is_test, is_benchmark);
             require(state.compact_test_data ==
                         expected_compact(cpu, integrated, is_test, is_benchmark, env),
                     "bounded Verthash admission mismatch");
@@ -114,42 +114,42 @@ static void test_state_keys() {
   fixture_integrated = false;
   configure_env(nullptr);
   registry().clear();
-  State* const normal = &get_state("normal", false, false);
-  require(normal == &get_state("normal", false, false), "normal Verthash state key is not reused");
-  require(normal == &get_state("normal", true, false),
+  State* const normal = &state_for("normal", false, false);
+  require(normal == &state_for("normal", false, false), "normal Verthash state key is not reused");
+  require(normal == &state_for("normal", true, false),
           "official test state should reuse the normal Verthash state");
   require(!normal->compact_test_data, "official Verthash state became compact without switch");
 
   configure_env("1");
   registry().clear();
-  State* const compact = &get_state("transition", true, false);
+  State* const compact = &state_for("transition", true, false);
   require(compact->compact_test_data, "CPU test did not select compact Verthash state");
-  require(compact == &get_state("transition", true, false),
+  require(compact == &state_for("transition", true, false),
           "compact Verthash state key is not reused");
-  State* const mining = &get_state("transition", false, false);
+  State* const mining = &state_for("transition", false, false);
   require(mining != compact, "compact Verthash state leaked into mining");
   require(!mining->compact_test_data, "mining reused compact Verthash state");
-  require(mining == &get_state("transition", false, false),
+  require(mining == &state_for("transition", false, false),
           "mining Verthash state key is not reused");
-  require(compact == &get_state("transition", true, false),
+  require(compact == &state_for("transition", true, false),
           "compact Verthash state was not retained across mining admission");
 
   fixture_cpu = false;
   fixture_integrated = false;
   registry().clear();
-  State* const gpu_test = &get_state("gpu", true, false);
+  State* const gpu_test = &state_for("gpu", true, false);
   require(!gpu_test->compact_test_data, "GPU inherited test switch selected compact data");
-  require(gpu_test == &get_state("gpu", false, false),
+  require(gpu_test == &state_for("gpu", false, false),
           "GPU inherited test switch created a second official state");
 
   fixture_integrated = true;
   registry().clear();
-  State* const integrated_compact = &get_state("integrated", true, false);
+  State* const integrated_compact = &state_for("integrated", true, false);
   require(integrated_compact->compact_test_data,
           "integrated GPU test did not select compact Verthash state");
-  require(integrated_compact == &get_state("integrated", true, false),
+  require(integrated_compact == &state_for("integrated", true, false),
           "integrated compact Verthash state key is not reused");
-  State* const integrated_full = &get_state("integrated", true, true);
+  State* const integrated_full = &state_for("integrated", true, true);
   require(integrated_full != integrated_compact,
           "integrated benchmark reused compact Verthash state");
   require(!integrated_full->compact_test_data,

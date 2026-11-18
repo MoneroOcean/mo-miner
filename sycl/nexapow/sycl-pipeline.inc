@@ -102,6 +102,7 @@ static_assert(alignof(AffineTablePoint) == 16);
 static_assert(sizeof(SearchResult) == 8 + 8 * SearchResult::kCapacity);
 
 #ifdef MOM_NEXAPOW_USE_NATIVE_FIELD
+// Load the shared 8x32 integer into the native 8x32 field limbs (identical layout).
 MOM_NEXAPOW_FIELD_INLINE Field field_from_u256(const U256& value) {
   Field result{};
   for (uint32_t i = 0; i != 8u; ++i)

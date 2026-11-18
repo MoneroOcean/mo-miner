@@ -121,6 +121,7 @@ public:
 };
 } // namespace
 
+// Install the synchronous __mom* host services: crypto, hashing, gzip, files, CPU/GPU and IP queries.
 void installServices(Runtime &rt) {
   initializeCrypto(); // Disable host OpenSSL configuration before any RAND/EVP auto-initialization.
   binding(rt, "__momNvidiaComputeCapabilities", 0, [](Runtime &rt, const Value *) -> Value {

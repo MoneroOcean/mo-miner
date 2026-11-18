@@ -1,7 +1,6 @@
 
 // Cuckaroo Cycle algorithm constants and fixed kernel sizing.
-const constexpr uint64_t DUCK_SIZE_A = 129, DUCK_SIZE_B = 83, INDEX_SIZE = 4096,
-                         MAX_INITIAL_INDEX_SIZE = 65536;
+const constexpr uint64_t DUCK_SIZE_A = 129, DUCK_SIZE_B = 83, MAX_INITIAL_INDEX_SIZE = 65536;
 
 const constexpr uint64_t BUFFER_SIZE_A1 = DUCK_SIZE_A * 1024 * (4096 - 128) * 2,
                          BUFFER_SIZE_A2 = DUCK_SIZE_A * 1024 * 256 * 2,
@@ -79,6 +78,7 @@ uint32_t c29_seed_blocks_per_item() {
   return v;
 }
 
+// Trim-pair count for the device: Intel uses the shallower 42-pair depth (see c29.cpp notes).
 static uint32_t c29_trim_rounds(const sycl::device& device) {
 #ifdef MOM_C29_INTEL
   // The combined DPC++ artifact also contains a CUDA image; keep its established trim depth.
@@ -117,11 +117,11 @@ struct C29Profile {
 
     std::printf(
         "[c29-profile] graph start job=%u nonce=%llu proof=%u device=\"%s\" platform=\"%s\" "
-        "index_size=%llu trim_rounds=%u compute_threads=%u seed_local=%u seed_blocks=%u\n",
+        "trim_rounds=%u compute_threads=%u seed_local=%u seed_blocks=%u\n",
         job_ref, static_cast<unsigned long long>(nonce), proof_size,
         device.get_info<sycl::info::device::name>().c_str(),
         device.get_platform().get_info<sycl::info::platform::name>().c_str(),
-        static_cast<unsigned long long>(INDEX_SIZE), c29_trim_rounds(device), COMPUTE_THREADS,
+        c29_trim_rounds(device), COMPUTE_THREADS,
         c29_seed_local_size(), c29_seed_blocks_per_item());
   }
 

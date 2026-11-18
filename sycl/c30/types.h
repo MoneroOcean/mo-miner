@@ -7,7 +7,7 @@
 #include <array>
 #include <cstdint>
 
-namespace mom::c30 {
+namespace mom_c30 {
 
 inline constexpr unsigned kEdgeBits = 30;
 inline constexpr unsigned kProofSize = 42;
@@ -24,4 +24,4 @@ struct Solution {
   std::array<std::uint8_t, 32> hash{};
 };
 
-} // namespace mom::c30
+} // namespace mom_c30

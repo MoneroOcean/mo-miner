@@ -162,7 +162,7 @@ function staticSyclInputs(sourceArg, buildArg, output, backend, environment = pr
     cxx = path.join(tools, "clang++");
     const plugin = path.join(build, "src/compiler/libacpp-clang.so");
     // The real runtime archives use Clang ThinLTO; bind the matching linker, not host BFD.
-    flags = [`--ld-path=${path.join(tools, "ld.lld")}`, "-Wl,--threads=4", "-Wl,--thinlto-jobs=4", "-Wl,--wrap=dlopen", "-Wl,--wrap=dlerror",
+    flags = [`--ld-path=${path.join(tools, "ld.lld")}`, "-Wl,--threads=4", "-Wl,--thinlto-jobs=4", "-Wl,--wrap=dlopen", "-Wl,--wrap=dlerror", "-Wl,--wrap=dlsym,--wrap=dlvsym",
       "-D__ACPP_ENABLE_LLVM_SSCP_TARGET__", "-include", path.join(source, "include/hipSYCL/glue/llvm-sscp/hcf_registration.hpp"),
       `-fplugin=${plugin}`, `-fpass-plugin=${plugin}`, "-Xclang", "-disable-O0-optnone", "-mllvm", "-acpp-sscp"];
     libraries.push(path.join(build, "src/runtime/librt-backend-omp.a"),

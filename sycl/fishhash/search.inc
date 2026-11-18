@@ -120,10 +120,10 @@ submit_fishhash_search(sycl::queue& q, const uint8_t* d_input, unsigned input_si
           uint8_t final_hash[32];
           blake3_dev(final_hash, 32, final_data, 96);
 
-          const bool hit = target_be ? meets_target_be_dev(final_hash, d_target)
-                                     : meets_target_le_dev(final_hash, d_target);
+          const bool hit = target_be ? mom_meets_target_be(final_hash, d_target)
+                                     : mom_meets_target_le(final_hash, d_target);
           if ((is_test && gid == 0) || hit)
-            store_fish_result(d_result, nonce, final_hash);
+            mom_store_pow_hit(d_result, nonce, final_hash);
         });
   });
 }
@@ -133,6 +133,8 @@ submit_fishhash_search(sycl::queue& q, const uint8_t* d_input, unsigned input_si
 // mix = seed||seed; 32 rounds (mixGroup-fold index); collapse 32->8 u32; final = BLAKE3_32(mix_hash).
 // Input = 80-byte Kaspa-style blob, 8-byte nonce at offset 72.
 template <bool FULL> class KarlsenKernel;
+// Submit the scalar KarlsenHashV2 search: one nonce per work-item over the full DAG (FULL) or
+// light-cache rows derived on the fly for short offline vectors.
 template <bool FULL>
 static sycl::event submit_karlsenhashv2_search(
     sycl::queue& q, const uint8_t* d_input, unsigned input_size, uint64_t start_nonce,
@@ -240,8 +242,8 @@ static sycl::event submit_karlsenhashv2_search(
           uint8_t final_hash[32];
           blake3_dev(final_hash, 32, mix_hash, 32);
 
-          if ((is_test && gid == 0) || meets_target_le_dev(final_hash, d_target))
-            store_fish_result(d_result, nonce, final_hash);
+          if ((is_test && gid == 0) || mom_meets_target_le(final_hash, d_target))
+            mom_store_pow_hit(d_result, nonce, final_hash);
         });
   });
 }

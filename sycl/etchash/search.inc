@@ -2,7 +2,7 @@ template <bool INLINE_PAIR> class EtchashSearchKernel; // distinct kernel name p
 
 // GPU etchash search kernel, instantiated for the inlined (fast) and noinline (always-correct) pair
 // Keccak. Identical to the 0.7.0 kernel except the two per-nonce Keccaks select their permutation by
-// INLINE_PAIR. The caller picks the instantiation per device from EtchashState::use_inline_pair().
+// INLINE_PAIR. The caller picks the instantiation per device from State::use_inline_pair().
 template <bool INLINE_PAIR>
 static sycl::event submit_etchash_search_gpu(
     sycl::queue& q, const uint8_t* const d_input, const uint64_t start_nonce,
@@ -21,7 +21,7 @@ static sycl::event submit_etchash_search_gpu(
     sycl::local_accessor<uint32_t, 1> exchange(sycl::range<1>(GROUP4_WORKGROUP * 2), h);
 #endif
     h.parallel_for<EtchashSearchKernel<INLINE_PAIR>>(
-        sycl::nd_range<1>(sycl::range<1>(round_up_size(intensity, GROUP4_WORKGROUP)),
+        sycl::nd_range<1>(sycl::range<1>(mom_round_up_size(intensity, GROUP4_WORKGROUP)),
                           sycl::range<1>(GROUP4_WORKGROUP)),
         [=](sycl::nd_item<1> item) MOM_REQD_SG_16 MOM_SYCL_KERNEL_ARGS_RESTRICT {
           const uint32_t lid = static_cast<uint32_t>(item.get_local_id(0));
@@ -128,7 +128,7 @@ static sycl::event submit_etchash_search_gpu(
 
               uint8_t final_hash[32];
               keccak_256_seed_mix_pair_dev<INLINE_PAIR>(seed, compressed_mix, final_hash);
-              if ((is_test && hash_index == 0) || meets_target_dev(final_hash, d_target)) {
+              if ((is_test && hash_index == 0) || mom_meets_target_be(final_hash, d_target)) {
                 store_etchash_result(d_result, start_nonce + hash_index, final_hash,
                                      compressed_mix);
               }

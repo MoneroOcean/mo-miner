@@ -124,7 +124,7 @@ test.describe("Native compiler graph dispatch and generated forwards", {skip: pr
     for (const [profile, bucket, chains] of [["cuda", 13, 16], ["hip", 12, 4]]) {
       const definitions = gpuProfile(String(profile)).definitions;
       const result = spawnSync(process.env["CXX"] || "c++", ["-x", "c++", "-E", "-P", "-DMOM_SYCL_ADAPTIVECPP", ...definitions,
-        "-I", path.join(__dirname, ".."), "-"], {input: '#include "sycl/c30/c30-kernels.inc"\n', encoding: "utf8", timeout: 10000});
+        "-I", path.join(__dirname, ".."), "-"], {input: '#include "sycl/c30/device.inc"\n', encoding: "utf8", timeout: 10000});
       assert.equal(result.status, 0, result.error?.message || result.stderr);
       assert.match(result.stdout, new RegExp(`C30_BUCKET_BITS = ${bucket}`));
       assert.match(result.stdout, new RegExp(`C30_SEED_BLOCKS_PER_ITEM = ${chains}u`));

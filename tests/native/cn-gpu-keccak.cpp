@@ -17,10 +17,10 @@ inline uint64_t bitselect(const uint64_t a, const uint64_t b, const uint64_t c) 
 } // namespace sycl
 
 inline constexpr unsigned cn_gpu_lanes_per_hash = 16;
-template <typename T> inline T mo_rotate(const T value, const T amount) {
+template <typename T> inline T mom_rotate(const T value, const T amount) {
   return std::rotl(value, static_cast<int>(amount & (sizeof(T) * 8 - 1)));
 }
-template <typename T> inline T mo_bitselect(const T a, const T b, const T c) {
+template <typename T> inline T mom_bitselect(const T a, const T b, const T c) {
   return (a & ~c) | (b & c);
 }
 

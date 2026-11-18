@@ -7,31 +7,31 @@
 #include <stddef.h>
 #include <string.h>
 
+/* Compare `length` bytes with ASCII case folding. */
+static int mom_native_ascii_iequal(const char* a, const char* b, size_t length) {
+  for (size_t i = 0; i < length; ++i) {
+    const unsigned char x = (unsigned char)a[i], y = (unsigned char)b[i];
+    if ((x >= 'A' && x <= 'Z' ? x + 32 : x) != (y >= 'A' && y <= 'Z' ? y + 32 : y)) return 0;
+  }
+  return 1;
+}
+
 static int mom_native_portable_cpu_tests_enabled(void) {
   char value[2] = {0, 0};
   return GetEnvironmentVariableA("MOM_REQUIRE_PORTABLE_CPU_TESTS", value, sizeof(value)) == 1 &&
       value[0] == '1' && value[1] == 0;
 }
 
+/* Is this the Intel CPU OpenCL runtime's ICD under its registered Program Files root? */
 static int mom_native_portable_cpu_opencl_path(const char* name, size_t length) {
   static const char root[] = "C:\\Program Files (x86)\\Common Files\\Intel\\Shared Libraries\\";
   static const char filename[] = "intelocl64.dll";
   const size_t rootLength = sizeof(root) - 1, filenameLength = sizeof(filename) - 1;
-  if (length < rootLength + filenameLength) return 0;
-  for (size_t i = 0; i < rootLength; ++i) {
-    const unsigned char a = (unsigned char)name[i], b = (unsigned char)root[i];
-    const unsigned char lowerA = a >= 'A' && a <= 'Z' ? a + 32 : a;
-    const unsigned char lowerB = b >= 'A' && b <= 'Z' ? b + 32 : b;
-    if (lowerA != lowerB) return 0;
-  }
+  if (length < rootLength + filenameLength || !mom_native_ascii_iequal(name, root, rootLength))
+    return 0;
   const char* leaf = strrchr(name, '\\');
-  if (!leaf || (size_t)(name + length - (leaf + 1)) != filenameLength) return 0;
-  for (size_t i = 0; i < filenameLength; ++i) {
-    const unsigned char a = (unsigned char)leaf[1 + i], b = (unsigned char)filename[i];
-    const unsigned char lowerA = a >= 'A' && a <= 'Z' ? a + 32 : a;
-    if (lowerA != b) return 0;
-  }
-  return 1;
+  return leaf && (size_t)(name + length - (leaf + 1)) == filenameLength &&
+      mom_native_ascii_iequal(leaf + 1, filename, filenameLength);
 }
 
 /* Preserve the registered spelling; reject paths Windows could normalize outside System32.
@@ -59,10 +59,7 @@ static void* mom_native_opencl_load_driver(const char* name) {
       if (!count || count >= MAX_PATH || length <= count || name[count] != '\\') return NULL;
       // ASCII folding suffices for ordinary Windows directory names; unusual case aliases
       // fail closed rather than permitting a different directory through normalization.
-      for (size_t i = 0; i < count; ++i) {
-        const unsigned char a = (unsigned char)name[i], b = (unsigned char)system[i];
-        if ((a >= 'A' && a <= 'Z' ? a + 32 : a) != (b >= 'A' && b <= 'Z' ? b + 32 : b)) return NULL;
-      }
+      if (!mom_native_ascii_iequal(name, system, count)) return NULL;
     }
     start = 3;
   } else if (strchr(name, ':')) return NULL;

@@ -1,12 +1,12 @@
-struct
-    CnGpuState { // Per-device queue and persistent allocations; avoids buffer churn in the hot path.
+// Per-device queue and persistent allocations; avoids buffer churn in the hot path.
+struct CnGpuState {
   sycl::device device;
   sycl::queue queue;
   bool shared_scratch; // CPU or backends without device allocation need shared scratch/IO.
   bool shared_io;
   bool native_notice = false;
-  uint8_t *inputs = nullptr, *outputs = nullptr;
-  uint64_t *spads = nullptr, *lpads = nullptr;
+  UsmPtr<uint8_t> inputs, outputs;
+  UsmPtr<uint64_t> spads, lpads;
   MomBufferAllocation<uint8_t> buffered_inputs, buffered_outputs;
   MomBufferAllocation<uint64_t> buffered_spads, buffered_lpads;
   CnGpuCudaExpand cuda_expand;
@@ -25,20 +25,11 @@ struct
         throw std::string("cn/gpu SYCL device does not support required allocations");
       }
     }
-
-    if (!mom_is_cuda(device)) {
-      // The OpenCL "-cl-*" build options are an OpenCL/Level-Zero JIT mechanism for the Intel build.
-      // On the CUDA backend, setting SYCL_PROGRAM_COMPILE_OPTIONS to them makes the AOT nvptx module
-      // fail at runtime with UR_RESULT_ERROR_UNKNOWN, so skip it there; CUDA FP determinism comes
-      // instead from -ffp-contract=off in the build flags (binding.gyp).
-      set_sycl_env("SYCL_PROGRAM_COMPILE_OPTIONS", cn_gpu_fp_compile_options(device));
-    }
   }
 
-  // Drain SYCL kernels before releasing batch allocations.
+  // Drain SYCL kernels before the members release batch allocations.
   ~CnGpuState() {
     sycl_cleanup_noexcept("cn/gpu wait", [&] { queue.wait_and_throw(); });
-    sycl_cleanup_noexcept("cn/gpu release", [&] { release(); });
   }
 
   // Release buffer or USM storage and invalidate capacity keys.
@@ -49,21 +40,12 @@ struct
       buffered_lpads.release();
       buffered_outputs.release();
     } else {
-      auto free_ptr = [&](auto*& ptr) {
-        if (ptr)
-          sycl::free(ptr, queue);
-        ptr = nullptr;
-      };
-      free_ptr(inputs);
-      free_ptr(spads);
-      free_ptr(lpads);
-      free_ptr(outputs);
+      inputs.reset();
+      spads.reset();
+      lpads.reset();
+      outputs.reset();
     }
     input_cap = batch_cap = 0;
-  }
-
-  template <typename T> T* allocate(const size_t count, const bool shared) {
-    return shared ? sycl::malloc_shared<T>(count, queue) : sycl::malloc_device<T>(count, queue);
   }
 
   // Resize only after queued users finish; failure leaves no reusable capacity.
@@ -83,12 +65,14 @@ struct
         buffered_lpads.allocate(static_cast<size_t>(CN_MEMORY8) * batch);
         buffered_outputs.allocate(static_cast<size_t>(HASH_LEN) * batch);
       } else {
-        inputs = allocate<uint8_t>(requested_input_cap, shared_io);
-        spads = allocate<uint64_t>(static_cast<size_t>(25) * batch, shared_scratch);
-        lpads = allocate<uint64_t>(static_cast<size_t>(CN_MEMORY8) * batch, shared_scratch);
-        outputs = allocate<uint8_t>(static_cast<size_t>(HASH_LEN) * batch, shared_io);
-        if (!inputs || !spads || !lpads || !outputs)
-          throw std::string("Can't allocate cn/gpu SYCL buffers");
+        const char* const failure = "Can't allocate cn/gpu SYCL buffers";
+        inputs = mom_usm_alloc<uint8_t>(queue, requested_input_cap, shared_io, failure);
+        spads = mom_usm_alloc<uint64_t>(queue, static_cast<size_t>(25) * batch, shared_scratch,
+                                        failure);
+        lpads = mom_usm_alloc<uint64_t>(queue, static_cast<size_t>(CN_MEMORY8) * batch,
+                                        shared_scratch, failure);
+        outputs = mom_usm_alloc<uint8_t>(queue, static_cast<size_t>(HASH_LEN) * batch, shared_io,
+                                         failure);
       }
       input_cap = requested_input_cap;
       batch_cap = batch;
@@ -106,6 +90,7 @@ static DeviceStateRegistry<CnGpuState>& cn_gpu_registry() {
   return *registry;
 }
 
+// Reuse one mutex-serialized batch-buffer owner for the selected device.
 static CnGpuState& cn_gpu_state(const std::string& dev_str) {
   return cn_gpu_registry().get(dev_str, [&] { return std::make_unique<CnGpuState>(dev_str); });
 }
@@ -143,12 +128,13 @@ public:
                   state.spads,
                   state.lpads,
                   state.outputs,
-                  reinterpret_cast<uint32_t*>(state.spads),
-                  reinterpret_cast<int32_t*>(state.lpads),
-                  reinterpret_cast<sycl::uint4*>(state.lpads)} {
+                  reinterpret_cast<uint32_t*>(state.spads.get()),
+                  reinterpret_cast<int32_t*>(state.lpads.get()),
+                  reinterpret_cast<sycl::uint4*>(state.lpads.get())} {
     (void)handler;
   }
 
+  // Device pointers captured by the kernels of this submission.
   CnGpuDevicePointers pointers() const {
     return pointers_;
   }
@@ -169,6 +155,7 @@ public:
         lpads_(state.buffered_lpads.device_view<sycl::access_mode::read_write>(handler)) {
   }
 
+  // Device pointers of the bound accessors, valid only inside this submission's kernels.
   CnGpuDevicePointers pointers() const {
     auto* const inputs = inputs_.template get_multi_ptr<sycl::access::decorated::no>().get();
     auto* const spads = spads_.template get_multi_ptr<sycl::access::decorated::no>().get();

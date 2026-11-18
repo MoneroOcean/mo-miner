@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-constexpr uint32_t HASH_LEN = 32, MAX_ETCHASH_OUTPUTS = 15, ETHASH_MIX_WORDS = 32, GPU_MAX_HITS = 15;
+constexpr uint32_t HASH_LEN = 32, ETHASH_MIX_WORDS = 32, GPU_MAX_HITS = 15;
 #include "result.inc"
 struct FastModData {};
 static FastModData make_fast_mod_data(uint32_t) { return {}; }
@@ -145,7 +145,7 @@ static sycl::event submit_etchash_search_gpu(sycl::queue&, const uint8_t*, uint6
     if ((scenario == 8 && Inline) || (scenario == 10 && !Inline))
       inject();
     result->count = scenario == 3 && Inline ? 0 : 1;
-    std::memset(result->output[0], scenario == 1 && Inline ? 29 : 17, HASH_LEN);
+    std::memset(result->hash[0], scenario == 1 && Inline ? 29 : 17, HASH_LEN);
     std::memset(result->mix_hash[0], scenario == 2 && Inline ? 29 : 17, HASH_LEN);
     return {Inline ? 1 : 2};
   }
@@ -156,12 +156,12 @@ static sycl::event submit_etchash_search_gpu(sycl::queue&, const uint8_t*, uint6
     ++counts.reference_searches;
   result->count = 1;
   result->nonce[0] = 99;
-  std::memset(result->output[0], 17, HASH_LEN);
+  std::memset(result->hash[0], 17, HASH_LEN);
   std::memset(result->mix_hash[0], 19, HASH_LEN);
   return {};
 }
 
-class EtchashState {
+class State {
 public:
   int inline_pair_ok = -1;
   sycl::device device;
@@ -170,7 +170,7 @@ public:
 #include "probe.inc"
 };
 
-static int caller(EtchashState& state, uint8_t* output, uint8_t* mix_hash, uint64_t* pnonce) {
+static int caller(State& state, uint8_t* output, uint8_t* mix_hash, uint64_t* pnonce) {
   sycl::queue& q = state.queue;
   uint8_t input[40]{}, target[HASH_LEN]{};
   uint32_t dag[1]{};
@@ -189,7 +189,7 @@ static int caller(EtchashState& state, uint8_t* output, uint8_t* mix_hash, uint6
 }
 
 static void run() {
-  EtchashState state;
+  State state;
   uint8_t output[HASH_LEN], mix[HASH_LEN];
   std::memset(output, 23, sizeof(output));
   std::memset(mix, 23, sizeof(mix));

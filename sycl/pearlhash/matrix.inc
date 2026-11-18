@@ -28,9 +28,8 @@ static size_t checked_chunk_count(const size_t bytes, const char* const name) {
 // ("the pragma unroll is not doing what is expected" over an array of matrix
 // fragments). It is gated by the host icpx -O2 SPIR-V shape (not the IGC JIT
 // level), is non-monotonic in fragment count (NTILE 2/3 crash, 1/4/6/8 ran), and
-// still reproduces on nightly-2026-06-12. A standalone reproducer + analysis
-// lives in ~/bug_report3. The fix from #21409 is to replace the loop with a
-// C++17 fold-expression manual unroll, which generates correct code at every
+// still reproduces on nightly-2026-06-12. The fix from #21409 is to replace the
+// loop with a C++17 fold-expression manual unroll, which generates correct code at every
 // NTILE; MU<N>(f) below is exactly that and is used for every loop that touches
 // the accumulator-fragment array. Do NOT turn these back into a `for` loop.
 template <class T, T... I, class F>
@@ -65,9 +64,6 @@ static inline uint32_t mulhi(uint32_t a, uint32_t b) {
 }
 static inline uint32_t rotl(uint32_t x, int n) {
   return (x << n) | (x >> (32 - n));
-}
-static inline uint32_t rd_u32le(const uint8_t* p) {
-  return pearlhash_b3::le32(p);
 }
 // Sparse-noise index pair for one k-column: first index `f` in [0,rank), second `se != f` (a
 // permutation step within the rank). Same mapping for both the A and B noise tables.
@@ -178,6 +174,9 @@ static size_t reduce_tree(sycl::queue& q, uint8_t* cvs, const uint8_t* key, int 
   }
   return rd;
 }
+// Commit to the attempt's raw A and Bt byte streams: hash every 1024-byte leaf in parallel,
+// reduce both keyed Merkle trees, then derive cB/cA from the roots on the device. A fixed-B pair
+// attempt keeps CVB/cB from its first attempt and recomputes only A. Returns the seed event.
 [[maybe_unused]] static sycl::event k_roots(sycl::queue& q, const Buffers& bb, uint32_t seed, int m,
                                             int n, int k) {
   auto B = bb;
@@ -307,7 +306,7 @@ struct PearlHashEventPair {
       int idx = i * 8 + kk;
       if (idx >= k)
         break;
-      perm_pair(rd_u32le(h + kk * 4), rank, B.EARp1[idx], B.EARp2[idx]);
+      perm_pair(load32_le_dev(h + kk * 4), rank, B.EARp1[idx], B.EARp2[idx]);
     }
     });
   });
@@ -325,7 +324,7 @@ struct PearlHashEventPair {
         int idx = i * 8 + kk;
         if (idx >= k)
           break;
-        perm_pair(rd_u32le(h + kk * 4), rank, B.EBLq1[idx], B.EBLq2[idx]);
+        perm_pair(load32_le_dev(h + kk * 4), rank, B.EBLq1[idx], B.EBLq2[idx]);
       }
     });
   });
@@ -412,8 +411,8 @@ static void prepare_noise_cpu(const Buffers& B, int m, int n, int k, int rank) {
       const int index = i * 8 + lane;
       if (index >= k)
         break;
-      perm_pair(rd_u32le(hashA + lane * 4), rank, B.EARp1[index], B.EARp2[index]);
-      perm_pair(rd_u32le(hashB + lane * 4), rank, B.EBLq1[index], B.EBLq2[index]);
+      perm_pair(load32_le_dev(hashA + lane * 4), rank, B.EARp1[index], B.EARp2[index]);
+      perm_pair(load32_le_dev(hashB + lane * 4), rank, B.EBLq1[index], B.EBLq2[index]);
     }
   }
 }
@@ -432,6 +431,10 @@ static inline size_t nvidia_vector128_offset(size_t row, size_t depth, int k) {
          (word / 4U) * 512U + lane * 16U + (word % 4U) * 4U + (depth & 3U);
 }
 
+// Materialize the noised search operands A'[i,c] = A[i,c] + EAL[i,p1(c)] - EAL[i,p2(c)] (B' alike
+// from EBR and the EBLq pairs) in the layout the selected search consumes: row-major for the
+// portable dp4a search, the DPAS/DPASW packing on Intel, or the 128-bit packets of the CUDA
+// source-JIT route. Values wrap to int8 exactly as the verifier computes them.
 template <bool Dpasw = false, bool PackedCuda = false>
 [[maybe_unused]] static sycl::event compute_ab(sycl::queue& q, const Buffers& bb, uint32_t seed,
                                                 int m, int n, int k, int rank, bool portable,

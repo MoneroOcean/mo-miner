@@ -57,6 +57,8 @@
 
 #include "../lib-internal.h"
 #include "../nvidia-features.h"
+#include "../pow-hits.h"
+#include "../pow-target.h"
 #include "validation.h"
 #include "../../native/consts.h"
 #include "../../xmrig/3rdparty/libethash/ethash.h"
@@ -69,6 +71,7 @@ namespace mom_octopus {
 
 #include "state.inc"
 
+// Release device state before the compiler runtime unloads without escaping exceptions.
 void octopus_cleanup_states() noexcept {
   try {
     registry().clear();
@@ -167,12 +170,12 @@ int octopus(unsigned, uint32_t height, const uint8_t* input, unsigned input_size
         std::memset(state.result, 0, sizeof(*state.result));
     }
 #endif
-    const auto validation_failure = mom::octopus::test_path_failure(
+    const auto validation_failure = mom_octopus::test_path_failure(
         is_test && std::getenv("MOM_OCTOPUS_TEST_FULL_DAG"), state.full_dag,
         prove_native, native_supported, searched);
-    if (validation_failure == mom::octopus::TestPathFailure::full_dag)
+    if (validation_failure == mom_octopus::TestPathFailure::full_dag)
       throw std::string("Octopus full-DAG validation could not run");
-    if (validation_failure == mom::octopus::TestPathFailure::native)
+    if (validation_failure == mom_octopus::TestPathFailure::native)
       throw std::string("Octopus SYCL-native full-DAG validation could not run");
     if (!searched && state.full_dag) {
       if (scalar) {
@@ -206,13 +209,7 @@ int octopus(unsigned, uint32_t height, const uint8_t* input, unsigned input_size
                             state.device);
       }
     }
-    static_assert(MAX_RESULTS <= GPU_MAX_HITS);
-    const uint32_t hits = std::min(state.result->count, MAX_RESULTS);
-    for (uint32_t index = 0; index < hits; ++index) {
-      nonce[index] = state.result->nonce[index];
-      std::memcpy(output + index * HASH_LEN, state.result->hash[index], HASH_LEN);
-    }
-    return static_cast<int>(hits);
+    return mom_take_pow_hits(*state.result, output, nonce);
   } catch (...) {
     // A failed upload must not make a same-header retry skip its header or target copy.
     state.points_ready = state.target_ready = false;

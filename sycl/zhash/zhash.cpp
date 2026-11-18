@@ -48,11 +48,11 @@
 #include <memory>
 #include <mutex>
 
-#include "../equihash-pow.hpp"
+#include "../equihash-pow.h"
 #include "../lib-internal.h"
 #include "../../native/consts.h"
-#include "equihash-sycl.hpp"
-#include "zhash-session.hpp"
+#include "../equihash-sycl.h"
+#include "session.h"
 
 namespace mom_zhash {
 
@@ -93,7 +93,7 @@ static int run_generation_test(const std::string& device_name, const std::uint8_
   return 1;
 }
 
-class MiningState {
+class State {
 public:
   sycl::queue queue;
   const SessionOptions session_options;
@@ -108,7 +108,7 @@ public:
     return value;
   }
 
-  explicit MiningState(const std::string& device_name)
+  explicit State(const std::string& device_name)
       : queue(get_dev(device_name),
               sycl::property_list{sycl::property::queue::in_order{}}),
         session_options(options()),
@@ -226,14 +226,14 @@ private:
 };
 
 // Keep persistent sessions under explicit shutdown control to avoid late static SYCL teardown.
-static DeviceStateRegistry<MiningState>& registry() {
-  static auto* const value = new DeviceStateRegistry<MiningState>;
+static DeviceStateRegistry<State>& registry() {
+  static auto* const value = new DeviceStateRegistry<State>;
   return *value;
 }
 
-static MiningState& state_for(const std::string& device_name) {
+static State& state_for(const std::string& device_name) {
   return registry().get(device_name, [&] {
-    return std::make_unique<MiningState>(device_name);
+    return std::make_unique<State>(device_name);
   });
 }
 
@@ -285,28 +285,14 @@ int zhash(unsigned, std::uint32_t, const std::uint8_t* input, const unsigned inp
       report.status == mom_zhash::SessionStatus::device_error)
     throw report.error.empty() ? std::string("zhash solver failed") : report.error;
 
-  if (is_test)
+  if (is_test) {
     std::sort(report.solutions.begin(), report.solutions.end(),
-              [](const auto& left, const auto& right) {
-                return left.encoded < right.encoded;
-              });
-  if (is_test)
+              [](const auto& left, const auto& right) { return left.encoded < right.encoded; });
     std::memset(solution_out, 0, SMALL_BLOB_SOL_LEN);
-  const std::size_t capacity = std::min<std::size_t>(
-      255, (EQUIHASH_SOL_BUFFER_LEN - 1) / mom_zhash::ZHashSpec::solution_length);
-  unsigned count = 0;
-  for (const auto& solution : report.solutions) {
-    if (count == capacity || (is_test && count == 1))
-      break;
-    if (!is_test && !is_benchmark &&
-        !mom_equihash::pow::meets_target(header, sizeof(header), solution.encoded.data(),
-                                         solution.encoded.size(), target))
-      continue;
-    std::memcpy(solution_out + 1 + count * solution.encoded.size(), solution.encoded.data(),
-                solution.encoded.size());
-    ++count;
   }
-  solution_out[0] = static_cast<std::uint8_t>(count);
+  const unsigned count = mom_equihash::pow::write_solutions(
+      report.solutions, mom_zhash::ZHashSpec::solution_length, EQUIHASH_SOL_BUFFER_LEN, is_test,
+      header, sizeof(header), is_test || is_benchmark ? nullptr : target, solution_out);
   // Bench and mining report distinct proofs (Sol/s); mining submits the solution_out[0] payload.
   return is_test ? static_cast<int>(count) : static_cast<int>(report.solutions.size());
 }

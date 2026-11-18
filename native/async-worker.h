@@ -92,6 +92,8 @@ class AsyncWorker {
   void terminal(WorkerEvent::Type type, std::string message = {}) noexcept {
     try {m_events->publish(WorkerEvent(type, std::move(message)));} catch (...) {}
   }
+  // Compute-thread body: run Execute() and publish exactly one terminal event (complete or
+  // error), after which the worker accepts no more messages and its event channel finishes.
   void run() {
     try {
       debug_async_worker("AsyncWorker run entered");
@@ -112,6 +114,8 @@ class AsyncWorker {
     m_stopped = true;
     m_events->finish();
   }
+  // Open the event channel and start the compute thread on the first post(); a failure before the
+  // channel opened leaves the worker startable again.
   void start() {
     bool expected = false;
     if (!m_started.compare_exchange_strong(expected, true)) {return;}
@@ -141,6 +145,9 @@ protected:
     }
     if (m_thread.joinable()) {m_thread.join();}
   }
+  // Runs on the posting (loop) thread with the first message, before the compute thread exists:
+  // the only point where process-wide setup such as an environment write cannot race it.
+  virtual void prepare(const Message&) {}
   void sendToNode(Message message) {
     try {m_events->publish(WorkerEvent(std::move(message)));} catch (...) {}
   }
@@ -151,8 +158,11 @@ public:
     if (!m_events) {throw std::invalid_argument("Worker event channel is required");}
   }
   virtual ~AsyncWorker() {stop();}
+  // Queue a controller message for the compute thread, starting it on first use. "close" is the
+  // last message accepted; posting after the worker stopped throws.
   void post(Message message) {
     if (!m_accepting.load()) {throw std::string("AsyncWorker is stopped");}
+    if (!m_started.load()) {prepare(message);}
     start();
     if (!m_accepting.load()) {throw std::string("AsyncWorker is stopped");}
     const bool closes = message.name == "close";

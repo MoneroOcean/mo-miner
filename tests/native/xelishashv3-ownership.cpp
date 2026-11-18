@@ -1,3 +1,4 @@
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -6,6 +7,7 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 struct Ledger {
   std::set<void*> live;
@@ -39,6 +41,10 @@ template <typename T> T* malloc_device(std::size_t count, const queue&) {
   return pointer;
 }
 
+template <typename T> T* malloc_shared(std::size_t count, const queue& q) {
+  return malloc_device<T>(count, q);
+}
+
 template <typename T> void free(T* pointer, const queue&) {
   if (!pointer)
     return;
@@ -59,6 +65,7 @@ template <typename Fn> void sycl_cleanup_noexcept(const char*, Fn&& fn) noexcept
     ++ledger.suppressed;
   }
 }
+#include "usm.inc"
 struct Result {};
 constexpr std::size_t WORDS = 2;
 static std::uint64_t xelishashv3_scratch_capacity(const sycl::device&) {
@@ -68,10 +75,10 @@ class State {
 public:
   sycl::device device;
   sycl::queue queue;
-  std::uint8_t *input = nullptr, *target = nullptr;
-  std::uint64_t* scratch = nullptr;
-  double* lut = nullptr;
-  Result* result = nullptr;
+  UsmPtr<std::uint8_t> input, target;
+  UsmPtr<std::uint64_t> scratch;
+  UsmPtr<double> lut;
+  UsmPtr<Result> result;
   unsigned capacity = 0;
 
 #include "ownership.inc"
@@ -83,57 +90,48 @@ static void reset() {
   scratch_limit = 100;
 }
 static void allocate_all(State& state) {
-  state.input = sycl::malloc_device<std::uint8_t>(1, state.queue);
-  state.target = sycl::malloc_device<std::uint8_t>(1, state.queue);
-  state.scratch = sycl::malloc_device<std::uint64_t>(WORDS, state.queue);
-  state.lut = sycl::malloc_device<double>(1, state.queue);
-  state.result = sycl::malloc_device<Result>(1, state.queue);
+  state.input = mom_usm_alloc<std::uint8_t>(state.queue, 1, false, "input");
+  state.target = mom_usm_alloc<std::uint8_t>(state.queue, 1, false, "target");
+  state.scratch = mom_usm_alloc<std::uint64_t>(state.queue, WORDS, false, "scratch");
+  state.lut = mom_usm_alloc<double>(state.queue, 1, false, "lut");
+  state.result = mom_usm_alloc<Result>(state.queue, 1, false, "result");
   state.capacity = 1;
-  require(state.input && state.target && state.scratch && state.lut && state.result,
-          "fixture setup allocation failed");
 }
 static void cleanup_cases() {
   reset();
-  { State state; allocate_all(state); state.cleanup(); state.cleanup();
-    require(ledger.free_calls == 5 && ledger.live.empty() && !ledger.invalid_free,
-            "ordinary cleanup leaked or repeated a resource"); }
+  { State state; allocate_all(state); }
+  require(ledger.free_calls == 5 && ledger.waits == 1 && ledger.live.empty() &&
+              !ledger.invalid_free,
+          "ordinary teardown leaked or repeated a resource");
   reset();
-  { State state; allocate_all(state); throw_free = true; state.cleanup(); state.cleanup();
-    require(ledger.free_calls == 5 && ledger.live.empty() && !ledger.invalid_free,
-            "throwing frees did not detach every resource"); }
+  { State state; allocate_all(state); throw_free = true; }
+  require(ledger.free_calls == 5 && ledger.suppressed == 5 && ledger.live.empty() &&
+              !ledger.invalid_free,
+          "throwing frees did not detach every resource");
   reset();
-  { State state; allocate_all(state); throw_free = true; throw_wait = true;
-    bool caught = false;
-    try { state.cleanup(); } catch (const std::runtime_error& error) {
-      caught = std::string(error.what()) == "original wait failure";
-    }
-    const unsigned frees = ledger.free_calls;
-    try { state.cleanup(); } catch (const std::runtime_error& error) {
-      caught = caught && std::string(error.what()) == "original wait failure";
-    }
-    require(caught && frees == 5 && ledger.free_calls == frees && ledger.live.empty(),
-            "cleanup replaced the wait failure or retried frees"); }
+  { State state; allocate_all(state); throw_free = true; throw_wait = true; }
+  require(ledger.free_calls == 5 && ledger.suppressed == 6 && ledger.live.empty(),
+          "a failed teardown wait skipped a free");
 }
 static void grow_cases() {
   reset();
-  { State state; state.scratch = sycl::malloc_device<std::uint64_t>(WORDS, state.queue);
-    state.capacity = 1; auto* const old = state.scratch; fail_alloc = true;
+  { State state; state.scratch = mom_usm_alloc<std::uint64_t>(state.queue, WORDS, false, "old");
+    state.capacity = 1; auto* const old = state.scratch.get(); fail_alloc = true;
     bool caught = false;
     try { state.ensure(2); } catch (const std::string&) { caught = true; }
-    require(caught && state.scratch == old && state.capacity == 1 && ledger.free_calls == 0,
+    require(caught && state.scratch.get() == old && state.capacity == 1 && ledger.free_calls == 0,
             "failed scratch growth discarded the old allocation");
-    state.cleanup(); }
+    fail_alloc = false; }
   reset();
-  { State state; state.scratch = sycl::malloc_device<std::uint64_t>(WORDS, state.queue);
-    state.capacity = 1; auto* const old = state.scratch; throw_free = true;
+  { State state; state.scratch = mom_usm_alloc<std::uint64_t>(state.queue, WORDS, false, "old");
+    state.capacity = 1; auto* const old = state.scratch.get(); throw_free = true;
     state.ensure(2);
-    auto* const replacement = state.scratch;
+    auto* const replacement = state.scratch.get();
     require(replacement != old && state.capacity == 2 && ledger.free_calls == 1 &&
                 ledger.frees[old] == 1 && !ledger.live.count(old) && ledger.live.count(replacement),
-            "scratch growth did not commit the replacement exactly once");
-    state.cleanup(); state.cleanup();
-    require(ledger.free_calls == 2 && ledger.live.empty() && !ledger.invalid_free,
-            "replacement cleanup leaked or repeated a free"); }
+            "scratch growth did not commit the replacement exactly once"); }
+  require(ledger.free_calls == 2 && ledger.live.empty() && !ledger.invalid_free,
+          "replacement teardown leaked or repeated a free");
 }
 int main() {
   try {

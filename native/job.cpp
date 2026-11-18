@@ -22,8 +22,27 @@
 const constexpr unsigned MAX_BLOB_LEN    = 512;
 #include "job/algorithms.inc"
 
-#include "job/execution.inc"
+#include "job/setup.inc"
 
+// Publish the first GPU job's SYCL program build options from the loop thread before the compute
+// thread starts; compute threads never write the environment (other threads read it concurrently).
+// DPC++ applies the options at the process's first program build, so later jobs cannot change them.
+void Core::prepare(const Message& first) {
+  if (first.name != "job" && first.name != "bench" && first.name != "test")
+    return;
+  const auto algo = first.values.find("algo");
+  const auto dev = first.values.find("dev");
+  if (algo == first.values.end() || dev == first.values.end() || !gpu_algos.contains(algo->second))
+    return;
+  try {
+    sycl_set_compile_options(algo->second, dev->second.substr(0, dev->second.find('*')));
+  } catch (...) {
+    // The job itself reports an unusable device or missing GPU runtime.
+  }
+}
+
+// Answer "algo_params": every supported algorithm with its default devices and tuning for this
+// host, from the controller's CPU topology plus SYCL GPU discovery (skipped for CPU-only runs).
 void Core::get_algo_params(const MessageValues& v) {
   if (!v.contains("cpu_sockets")) throw std::string("Missing cpu_sockets algo_params key");
   if (!v.contains("cpu_threads")) throw std::string("Missing cpu_threads algo_params key");
@@ -51,11 +70,11 @@ void Core::get_algo_params(const MessageValues& v) {
   // algo_params returns std::map<std::string,std::string>, which is exactly MessageValues
   send_msg("algo_params", algo_params(
     MAX_CN_CPU_WAYS, cpu_sockets, cpu_threads, cpu_l3cache, algo2mem, keys2set(cpu_name2algo),
-    keys2set(gpu_cn_algo2fn), keys2set(gpu_c29_algo2fn), keys2set(gpu_kawpow_algo2fn),
-    keys2set(gpu_etchash_algo2fn), keys2set(gpu_autolykos2_algo2fn),
-    keys2set(gpu_pearlhash_algo2fn), keys2set(gpu_fishhash_algo2fn),
-    keys2set(gpu_karlsenhashv2_algo2fn), keys2set(gpu_misc_algo2fn),
-    keys2set(gpu_verthash_algo2fn), keys2set(gpu_zelhash_algo2fn),
-    keys2set(gpu_beamhash3_algo2fn)
+    gpu_algos_with(&FN::gpu_cn), gpu_algos_with(&FN::gpu_c29), gpu_algos_with(&FN::gpu_kawpow),
+    gpu_algos_with(&FN::gpu_etchash), gpu_algos_with(&FN::gpu_autolykos2),
+    gpu_algos_with(&FN::gpu_pearlhash), gpu_algos_with(&FN::gpu_fishhash),
+    gpu_algos_with(&FN::gpu_karlsenhashv2), gpu_algos_with(&FN::gpu_misc),
+    gpu_algos_with(&FN::gpu_verthash), gpu_algos_with(&FN::gpu_zelhash),
+    gpu_algos_with(&FN::gpu_beamhash3)
   ));
 }

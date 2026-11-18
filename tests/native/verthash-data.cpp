@@ -1,4 +1,4 @@
-#include "../../sycl/verthash/data-file.hpp"
+#include "../../sycl/verthash/data-file.h"
 
 #include <array>
 #include <exception>

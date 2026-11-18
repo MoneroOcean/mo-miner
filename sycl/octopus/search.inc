@@ -37,6 +37,7 @@ static sycl::event build_dag(sycl::queue& queue, const uint32_t* const cache,
   });
 }
 
+// Submit the one-nonce-per-work-group reference kernel (MOM_OCTOPUS_SCALAR correctness oracle).
 template <bool FULL_DAG>
 static sycl::event
 search_scalar(sycl::queue& queue, const uint8_t* const header, const uint32_t* const cache,
@@ -66,6 +67,7 @@ search_scalar(sycl::queue& queue, const uint8_t* const header, const uint32_t* c
   });
 }
 
+// Submit the portable batched kernel over the lane-aligned range covering [start, start + count).
 template <bool FULL_DAG>
 static sycl::event
 search_batched(sycl::queue& queue, const uint8_t* const header, const uint32_t* const cache,

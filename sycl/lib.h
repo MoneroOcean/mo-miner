@@ -219,6 +219,10 @@ MOM_SYCL_API uint64_t pearlhash_attempt_hashes(
   unsigned intensity, unsigned n, unsigned k, unsigned rank
 );
 
+// Publish the SYCL program build options for a worker's first job (algo, public device name). Call
+// on the loop thread before the worker's compute thread starts: it may write the environment.
+MOM_SYCL_API void sycl_set_compile_options(const std::string& algo, const std::string& dev_str);
+
 // Release process-scoped SYCL state that requires ordered teardown while the Node environment and
 // compiler runtime are still alive. The addon registers this as an environment cleanup hook; it is
 // separate from C++ static destruction because runtime-compiled images have module destructors.

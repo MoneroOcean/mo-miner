@@ -23,5 +23,8 @@ int main() {
   if (dlsym(self, "mom_no_such_symbol")) return 91;
   const char* newer = dlerror();
   if (!newer || !std::strstr(newer, "mom_no_such_symbol") || dlerror()) return 92;
+  // A successful lookup after a refusal leaves no error pending.
+  if (dlopen("mom-forbidden-application.so", RTLD_NOW)) return 93;
+  if (!dlsym(RTLD_DEFAULT, "strlen") || dlerror()) return 94;
   return dlclose(self);
 }

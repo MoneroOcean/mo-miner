@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include "../../sycl/blake3-device.inc"
 #include "../../sycl/pearlhash/blake3.inc"
 
 int main() {

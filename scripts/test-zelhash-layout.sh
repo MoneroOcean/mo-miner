@@ -14,11 +14,6 @@ awk '
   END { if (copies != 1 || complete != 1) exit 1 }
 ' "$root/sycl/zelhash/layout.inc" > "$out/zelhash_layout_math.inc"
 awk '
-  /^static constexpr uint64_t B2B_IV/ { copies++; copying = 1 }
-  copying { print }
-  END { if (copies != 1) exit 1 }
-' "$root/sycl/zelhash/layout.inc" > "$out/zelhash_blake_constants.inc"
-awk '
   /^inline void dense_l0_store_compact\(/ { copies++; copying = 1 }
   copying { print }
   copying && /^}/ { complete++; copying = 0 }
@@ -45,11 +40,17 @@ awk '
 ' "$root/sycl/zelhash/state.inc" > "$out/zelhash_state.inc"
 awk '
   /^  const bool filter_target/ { copies++; copying = 1 }
-  copying && /^  ZelHashState& state/ { complete++; copying = 0 }
+  copying && /^  State& state/ { complete++; copying = 0 }
   copying { print }
   END { if (copies != 1 || complete != 1 || copying) exit 1 }
 ' "$root/sycl/zelhash/zelhash.cpp" > "$out/zelhash_entry_guard.inc"
 test "$(grep -cF 'if (!filter_target)' "$root/sycl/zelhash/zelhash.cpp")" -eq 1
+awk '
+  /^class UsmPtr \{$/ { copies++; copying = 1; print previous }
+  copying { print }
+  { previous = $0 }
+  END { if (copies != 1) exit 1 }
+' "$root/sycl/lib-internal.h" > "$out/usm_ptr.inc"
 awk '
   /^inline bool mom_parse_env_ulong\(/ { copies++; copying = 1 }
   copying { print }

@@ -2,6 +2,9 @@
 // Used by the PearlHash kernel for matrix-commitment roots, commitment hashes, the noise PRNG and the
 // PoW jackpot. Ported from the BLAKE3 reference impl; validated against the python verifier.
 // Device-friendly: no std::, no heap, no recursion; cv_stack is a fixed array.
+// Requires ../blake3-device.inc first (B3_IV, b3_g, load32_le_dev and store32_le_dev). This
+// variant keeps whole-word blocks and permutes the message in registers between rounds, unlike
+// the byte-oriented single-chunk blake3_dev there.
 namespace pearlhash_b3 {
 
 constexpr uint32_t B3_CHUNK_START = 1u << 0;
@@ -14,33 +17,10 @@ constexpr int B3_PERM[16] = {2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 
 
 // Load the fixed BLAKE3 IV into device-compatible words.
 inline void iv_words(uint32_t o[8]) {
-  o[0] = 0x6a09e667;
-  o[1] = 0xbb67ae85;
-  o[2] = 0x3c6ef372;
-  o[3] = 0xa54ff53a;
-  o[4] = 0x510e527f;
-  o[5] = 0x9b05688c;
-  o[6] = 0x1f83d9ab;
-  o[7] = 0x5be0cd19;
-}
-inline uint32_t b3_rotr(uint32_t w, int c) {
-  return (w >> c) | (w << (32 - c));
-}
-inline uint32_t le32(const uint8_t* p) {
-  return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+  for (int i = 0; i < 8; i++)
+    o[i] = B3_IV[i];
 }
 
-// Mix one BLAKE3 column/diagonal with its two scheduled message words.
-inline void b3_g(uint32_t* s, int a, int b, int c, int d, uint32_t mx, uint32_t my) {
-  s[a] = s[a] + s[b] + mx;
-  s[d] = b3_rotr(s[d] ^ s[a], 16);
-  s[c] = s[c] + s[d];
-  s[b] = b3_rotr(s[b] ^ s[c], 12);
-  s[a] = s[a] + s[b] + my;
-  s[d] = b3_rotr(s[d] ^ s[a], 8);
-  s[c] = s[c] + s[d];
-  s[b] = b3_rotr(s[b] ^ s[c], 7);
-}
 // Apply one BLAKE3 round before the caller advances the message schedule.
 inline void b3_round(uint32_t* s, const uint32_t* m) {
   b3_g(s, 0, 4, 8, 12, m[0], m[1]);
@@ -53,16 +33,14 @@ inline void b3_round(uint32_t* s, const uint32_t* m) {
   b3_g(s, 3, 4, 9, 14, m[14], m[15]);
 }
 
-// compress -> full 16-word state.
+// Compress one block of little-endian words and return the full 16-word output state.
 inline void b3_compress(const uint32_t cv[8], const uint32_t block[16], uint64_t counter,
                         uint32_t block_len, uint32_t flags, uint32_t out[16]) {
   uint32_t s[16];
   for (int i = 0; i < 8; i++)
     s[i] = cv[i];
-  s[8] = 0x6a09e667;
-  s[9] = 0xbb67ae85;
-  s[10] = 0x3c6ef372;
-  s[11] = 0xa54ff53a;
+  for (int i = 0; i < 4; i++)
+    s[8 + i] = B3_IV[i];
   s[12] = (uint32_t)counter;
   s[13] = (uint32_t)(counter >> 32);
   s[14] = block_len;
@@ -91,10 +69,10 @@ inline void b3_compress(const uint32_t cv[8], const uint32_t block[16], uint64_t
 inline void b3_keyed_64_words(const uint32_t words[16], const uint8_t key32[32], uint8_t out[32]) {
   uint32_t key[8], compressed[16];
   for (int i = 0; i < 8; ++i)
-    key[i] = le32(key32 + i * 4);
+    key[i] = load32_le_dev(key32 + i * 4);
   b3_compress(key, words, 0, 64, B3_KEYED | B3_CHUNK_START | B3_CHUNK_END | B3_ROOT, compressed);
-  for (int i = 0; i < 32; ++i)
-    out[i] = static_cast<uint8_t>(compressed[i / 4] >> (8 * (i % 4)));
+  for (int i = 0; i < 8; ++i)
+    store32_le_dev(out + i * 4, compressed[i]);
 }
 
 // Decode a partial block into zero-padded little-endian BLAKE3 words.
@@ -129,12 +107,8 @@ inline void output_cv(const Output& o, uint32_t cv[8]) {
 inline void output_root(const Output& o, uint8_t out[32]) {
   uint32_t t[16];
   b3_compress(o.input_cv, o.block_words, 0, o.block_len, o.flags | B3_ROOT, t);
-  for (int i = 0; i < 8; i++) {
-    out[i * 4] = t[i];
-    out[i * 4 + 1] = t[i] >> 8;
-    out[i * 4 + 2] = t[i] >> 16;
-    out[i * 4 + 3] = t[i] >> 24;
-  }
+  for (int i = 0; i < 8; i++)
+    store32_le_dev(out + i * 4, t[i]);
 }
 // Create the binary-tree parent descriptor from two chaining values and the keyed-hash flags.
 inline void parent_output(const uint32_t left[8], const uint32_t right[8], const uint32_t key[8],
@@ -154,7 +128,7 @@ inline void b3(const uint8_t* input, uint32_t len, const uint8_t* key32, uint8_t
   uint32_t key[8], base_flags = 0;
   if (key32) {
     for (int i = 0; i < 8; i++)
-      key[i] = le32(key32 + i * 4);
+      key[i] = load32_le_dev(key32 + i * 4);
     base_flags = B3_KEYED;
   } else
     iv_words(key);
@@ -263,20 +237,17 @@ inline void b3(const uint8_t* input, uint32_t len, const uint8_t* key32, uint8_t
 inline void load_key(const uint8_t* key32, uint32_t key[8], uint32_t& base_flags) {
   if (key32) {
     for (int i = 0; i < 8; i++)
-      key[i] = le32(key32 + i * 4);
+      key[i] = load32_le_dev(key32 + i * 4);
     base_flags = B3_KEYED;
   } else {
     iv_words(key);
     base_flags = 0;
   }
 }
+// Serialize a chaining value as the 32 little-endian bytes BLAKE3 tree nodes exchange.
 inline void cv_to_bytes(const uint32_t cv[8], uint8_t out[32]) {
-  for (int i = 0; i < 8; i++) {
-    out[i * 4] = cv[i];
-    out[i * 4 + 1] = cv[i] >> 8;
-    out[i * 4 + 2] = cv[i] >> 16;
-    out[i * 4 + 3] = cv[i] >> 24;
-  }
+  for (int i = 0; i < 8; i++)
+    store32_le_dev(out + i * 4, cv[i]);
 }
 // Non-root chaining value of one chunk (<=1024 bytes) at chunkIndex.
 inline void chunk_cv(const uint8_t* data, uint32_t len, uint64_t chunkIndex, const uint8_t* key32,
@@ -313,8 +284,8 @@ inline void parent_cv(const uint8_t l[32], const uint8_t r[32], const uint8_t* k
   load_key(key32, key, base);
   uint32_t block[16];
   for (int i = 0; i < 8; i++) {
-    block[i] = le32(l + i * 4);
-    block[8 + i] = le32(r + i * 4);
+    block[i] = load32_le_dev(l + i * 4);
+    block[8 + i] = load32_le_dev(r + i * 4);
   }
   uint32_t t[16];
   b3_compress(key, block, 0, 64, base | B3_PARENT | (isRoot ? B3_ROOT : 0), t);

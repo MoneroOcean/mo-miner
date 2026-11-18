@@ -4,18 +4,18 @@ inline __attribute__((always_inline)) void siphash_round(uint64_t& v0, uint64_t&
                                                          uint64_t& v3) {
   v0 += v1;
   v2 += v3;
-  v1 = mo_rotate(v1, static_cast<uint64_t>(13));
-  v3 = mo_rotate(v3, static_cast<uint64_t>(16));
+  v1 = mom_rotate(v1, static_cast<uint64_t>(13));
+  v3 = mom_rotate(v3, static_cast<uint64_t>(16));
   v1 ^= v0;
   v3 ^= v2;
-  v0 = mo_rotate(v0, static_cast<uint64_t>(32));
+  v0 = mom_rotate(v0, static_cast<uint64_t>(32));
   v2 += v1;
   v0 += v3;
-  v1 = mo_rotate(v1, static_cast<uint64_t>(17));
-  v3 = mo_rotate(v3, static_cast<uint64_t>(21));
+  v1 = mom_rotate(v1, static_cast<uint64_t>(17));
+  v3 = mom_rotate(v3, static_cast<uint64_t>(21));
   v1 ^= v2;
   v3 ^= v0;
-  v2 = mo_rotate(v2, static_cast<uint64_t>(32));
+  v2 = mom_rotate(v2, static_cast<uint64_t>(32));
 }
 
 // Walk the stateful 64-nonce SipHash block; callers apply the final-word XOR to its edges.

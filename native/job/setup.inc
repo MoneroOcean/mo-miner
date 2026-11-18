@@ -1,10 +1,14 @@
+// Adapt GhostRider to the CPU hash-function ABI (height is unused).
 void ghostrider(
   const uint8_t* input, const size_t input_size, uint8_t* const output,
-  cryptonight_ctx** const ctx, const uint64_t height
+  cryptonight_ctx** const ctx, const uint64_t /*height*/
 ) {
   xmrig::ghostrider::hash_octa(input, input_size, output, ctx, nullptr);
 }
 
+// Initialise one slice of the RandomX dataset. xmrig's AVX2 dataset code processes items in groups
+// of five, so a slice whose length is not a multiple of five is split: the bulk in whole groups,
+// then the final five items (overlapping already-written ones, which is harmless).
 static void init_rx_dataset_thread(
   randomx_dataset* const dataset, randomx_cache* const cache,
   const unsigned long start, const unsigned long count
@@ -15,6 +19,8 @@ static void init_rx_dataset_thread(
   } else randomx_init_dataset(dataset, cache, start, count);
 }
 
+// VM flags for the CPU and allocation in use: large pages only for a huge-page dataset (not
+// Panthera's), full-memory mode when a dataset exists, JIT unless cache creation fell back.
 static randomx_flags get_rx_vm_flags(
   const std::string& algo, const bool is_rx_jit, const randomx_dataset* const m_rx_dataset,
   const xmrig::VirtualMemory* const m_rx_dataset_mem
@@ -39,6 +45,52 @@ static randomx_flags get_rx_vm_flags(
   return static_cast<randomx_flags>(rx_flags);
 }
 
+// Embed this worker's first single-blob batch start, base + m_thread_id * m_batch, and return the
+// next batch start. Throws when the first batch leaves the counter range or the pool-owned
+// (NiceHash) prefix bits while mining.
+template <typename UInt>
+UInt Core::first_blob_batch(const UInt base, const bool big_endian) {
+  const UInt mask = static_cast<UInt>(m_nicehash_mask);
+  UInt first = static_cast<UInt>(base + static_cast<UInt>(m_thread_id) * m_batch);
+  UInt last = 0;
+  if (m_target && (!mom::job_boundary::nonce_with_offset<UInt>(
+                      base, m_thread_id, m_batch, mask, first) ||
+                   !mom::job_boundary::nonce_with_offset<UInt>(first, m_batch - 1, 1, mask, last)))
+    throw std::string("Initial worker nonce range overflows");
+  mom::job_boundary::store_nonce(nonce_address(), first, big_endian);
+  return next_nonce_after_batch(first, m_batch, 1, m_nonce_step, mask);
+}
+
+// Lay out this worker's first generic multi-lane batch: lane i stores the big-endian nonce
+// first + i * m_nonce_step, where first = base + m_thread_id * nonce_unit keeps the NiceHash
+// prefix bits of the job blob `input`. Returns the next batch start; throws when the first batch
+// already leaves the worker's range while mining.
+template <typename UInt>
+UInt Core::first_lane_batch(const UInt base, uint8_t* const input, const unsigned nonce_unit) {
+  const UInt mask = static_cast<UInt>(m_nicehash_mask);
+  UInt first = static_cast<UInt>(base + static_cast<UInt>(m_thread_id * nonce_unit));
+  if (m_target && !mom::job_boundary::nonce_with_offset<UInt>(
+        base, m_thread_id, nonce_unit, 0, first))
+    throw std::string("Initial worker nonce overflows");
+  if (mask)
+    first |= mom::job_boundary::load_nonce<UInt>(nonce_address(input), true) & mask;
+  UInt last = 0;
+  if (m_target && !mom::job_boundary::nonce_with_offset<UInt>(
+        first, m_batch - 1, m_nonce_step, mask, last))
+    throw std::string("Initial worker nonce range overflows");
+  for (unsigned i = 0; i != m_batch; ++i)
+    mom::job_boundary::store_nonce(nonce_address(i), first + i * m_nonce_step, true);
+  return next_nonce_after_batch(
+    first, m_batch, m_nonce_step, static_cast<uint64_t>(m_batch) * m_nonce_step, mask);
+}
+
+// Validate a job/bench/test message and switch the worker to it. Key and layout validation runs
+// before any state changes, so such a rejection keeps the previous job running. A same-input
+// retarget only refreshes submit metadata and keeps the search position. Otherwise the previous
+// function is stopped first (clear_fn, new m_job_ref), buffers are rebuilt only where the device,
+// batch or memory shape changed, fn_extra_setup installs the job's target and ids, and the first
+// nonces are prepared; failures after the stop leave the loop idle and replace_job() reports the
+// old job's progress.
 void Core::set_job(
   const JobMode mode, const bool is_no_same_input, const MessageValues& v,
   std::function<void(void)> fn_extra_setup
@@ -108,29 +160,11 @@ void Core::set_job(
         ? static_cast<unsigned>(parse_uint(
             std::string(dev_batch_view), 10, std::numeric_limits<unsigned>::max(), "dev batch"))
         : 1);
+  // Unknown GPU algorithms take the cn/gpu path and are rejected by its entry-point lookup.
+  const auto gpu_algo = gpu_algos.find(new_algo_str);
   const DEV new_dev =
     new_dev_name == "cpu" ? (rx_cpu_name2config.contains(new_algo_str) ? DEV::RX_CPU : DEV::CPU) :
-    new_algo_str == "kawpow" ? DEV::KAWPOW_GPU :
-    new_algo_str == "firopow" ? DEV::KAWPOW_GPU :
-    new_algo_str == "evrprogpow" ? DEV::KAWPOW_GPU :
-    new_algo_str == "meowpow" ? DEV::KAWPOW_GPU :
-    new_algo_str == "etchash" ? DEV::ETCHASH_GPU :
-    new_algo_str == "octopus" ? DEV::ETCHASH_GPU :
-    new_algo_str == "autolykos2" ? DEV::AUTOLYKOS2_GPU :
-    new_algo_str == "pearlhash" ? DEV::PEARLHASH_GPU :
-    new_algo_str == "fishhash" ? DEV::FISHHASH_GPU :
-    new_algo_str == "karlsenhashv2" ? DEV::KARLSENHASHV2_GPU :
-    new_algo_str == "hoohash" ? DEV::MISC_GPU :
-    new_algo_str == "walahash" ? DEV::MISC_GPU :
-    new_algo_str == "xelishashv3" ? DEV::MISC_GPU :
-    new_algo_str == "nexapow" ? DEV::MISC_GPU :
-    new_algo_str == "verthash" ? DEV::VERTHASH_GPU :
-    new_algo_str == "equihash192_7" ? DEV::ZELHASH_GPU :
-    new_algo_str == "zelhash" ? DEV::ZELHASH_GPU :
-    new_algo_str == "zhash" ? DEV::ZELHASH_GPU :
-    new_algo_str == "beamhash3" ? DEV::BEAMHASH3_GPU :
-    new_algo_str == "c29" ? DEV::C29_GPU :
-    new_algo_str == "c30" ? DEV::C30_GPU : DEV::GPU;
+    gpu_algo != gpu_algos.end() ? gpu_algo->second.dev : DEV::GPU;
   std::uint32_t new_pearlhash_seed_base = 0;
   std::uint32_t new_pearlhash_seed_stride = 1;
   std::uint32_t new_pearlhash_seed_start = 0;
@@ -245,63 +279,21 @@ void Core::set_job(
       if ((new_seed_hex.size() & 1) || new_seed_hex.size() > MAX_BLOB_LEN * 2)
         throw std::string("Bad seed length");
       new_seed_len = new_seed_hex.size() / 2;
-      if (!hex2bin(new_seed_hex.c_str(), new_seed_len, new_seed)) throw std::string("Bad seed hex");
+      if (!mom::job_boundary::decode_hex(new_seed_hex, new_seed)) throw std::string("Bad seed hex");
       new_rx_config = algo_lookup(rx_cpu_name2config, new_algo_str);
       // All RandomX work is done in m_rx_threads, not the main dispatch loop.
       break;
     }
 
-    case DEV::GPU:
-      new_fn.gpu_cn = algo_lookup(gpu_cn_algo2fn, new_algo_str);
-      break;
-
-    case DEV::C29_GPU:
-    case DEV::C30_GPU:
-      new_fn.gpu_c29 = algo_lookup(gpu_c29_algo2fn, new_algo_str);
-      break;
-
-    case DEV::KAWPOW_GPU:
-      new_fn.gpu_kawpow = algo_lookup(gpu_kawpow_algo2fn, new_algo_str);
-      break;
-
     case DEV::ETCHASH_GPU:
+      // Etchash and Octopus resolve their epoch from an optional pool seed hash.
       if (!new_seed_hex.empty()) {
         if (new_seed_hex.size() != HASH_LEN * 2) throw std::string("Bad seed length");
-        if (!hex2bin(new_seed_hex.c_str(), HASH_LEN, new_seed)) throw std::string("Bad seed hex");
+        if (!mom::job_boundary::decode_hex(new_seed_hex, new_seed)) throw std::string("Bad seed hex");
       }
-      new_fn.gpu_etchash = algo_lookup(gpu_etchash_algo2fn, new_algo_str);
-      break;
-
-    case DEV::AUTOLYKOS2_GPU:
-      new_fn.gpu_autolykos2 = algo_lookup(gpu_autolykos2_algo2fn, new_algo_str);
-      break;
-
-    case DEV::PEARLHASH_GPU:
-      new_fn.gpu_pearlhash = algo_lookup(gpu_pearlhash_algo2fn, new_algo_str);
-      break;
-
-    case DEV::FISHHASH_GPU:
-      new_fn.gpu_fishhash = algo_lookup(gpu_fishhash_algo2fn, new_algo_str);
-      break;
-
-    case DEV::KARLSENHASHV2_GPU:
-      new_fn.gpu_karlsenhashv2 = algo_lookup(gpu_karlsenhashv2_algo2fn, new_algo_str);
-      break;
-
-    case DEV::MISC_GPU:
-      new_fn.gpu_misc = algo_lookup(gpu_misc_algo2fn, new_algo_str);
-      break;
-
-    case DEV::VERTHASH_GPU:
-      new_fn.gpu_verthash = algo_lookup(gpu_verthash_algo2fn, new_algo_str);
-      break;
-
-    case DEV::ZELHASH_GPU:
-      new_fn.gpu_zelhash = algo_lookup(gpu_zelhash_algo2fn, new_algo_str);
-      break;
-
-    case DEV::BEAMHASH3_GPU:
-      new_fn.gpu_beamhash3 = algo_lookup(gpu_beamhash3_algo2fn, new_algo_str);
+      [[fallthrough]];
+    default:
+      new_fn = algo_lookup(gpu_algos, new_algo_str).fn;
       break;
   }
 
@@ -310,7 +302,7 @@ void Core::set_job(
   if ((new_input_size & 1) || new_input_size / 2 > MAX_BLOB_LEN)
     throw std::string("Bad input length");
   const unsigned new_input_len = static_cast<unsigned>(new_input_size / 2);
-  if (!hex2bin(new_input_hex.c_str(), new_input_len, new_input))
+  if (!mom::job_boundary::decode_hex(new_input_hex, new_input))
     throw std::string("Bad input hex");
   if (new_dev == DEV::C30_GPU) {
     const bool canonical_search = new_input_len == 32 && new_nonce_bytes == 8 &&
@@ -447,7 +439,7 @@ void Core::set_job(
   if (m_batch != new_batch || m_mem_size != new_mem_size || m_seed_hex != new_seed_hex ||
       is_algo_changed || m_dev != new_dev) {
     if (m_dev == DEV::RX_CPU && new_dev == DEV::RX_CPU && m_seed_hex != new_seed_hex)
-      destroy_rx_vms();
+      m_vms.clear();
     // free previous memory
     const bool is_device_owned_memory_change =
       is_small_blob_gpu_dev(m_dev) || is_small_blob_gpu_dev(new_dev) ||
@@ -651,8 +643,7 @@ void Core::set_job(
                   randomx_calculate_commitment(
                     job_input.data(), input_len, raw_hash, output);
                 }
-                char hash[HASH_LEN * 2 + 1];
-                send_msg("test", "result", hash_bin2hex(output, hash));
+                send_msg("test", "result", bin2hex(output, HASH_LEN));
                 return;
               }
 
@@ -741,58 +732,19 @@ void Core::set_job(
       set_fn(new_fn);
       return;
     }
-    if (new_dev == DEV::VERTHASH_GPU) {
+    // Single-blob GPU searches hash m_batch consecutive nonces from the one embedded in the header.
+    if (is_small_blob_gpu_dev(new_dev)) {
       memcpy(m_input, new_input, m_input_len);
       m_nonce_step = new_thread_num * m_batch;
       m_nonce32 = 0;
-      if (is_set_nonce) {
-        const uint32_t mask = static_cast<uint32_t>(new_nicehash_mask);
-        uint32_t current_nonce = static_cast<uint32_t>(new_nonce) + new_thread_id * m_batch;
-        uint32_t last_nonce = current_nonce + m_batch - 1;
-        if (m_target && (!mom::job_boundary::nonce_with_offset<uint32_t>(
-              static_cast<uint32_t>(new_nonce), new_thread_id, m_batch, mask,
-              current_nonce) ||
-            !mom::job_boundary::nonce_with_offset<uint32_t>(
-              current_nonce, m_batch - 1, 1, mask, last_nonce))) {
-          throw std::string("Initial worker nonce range overflows");
-        }
-        std::memcpy(m_input + m_nonce_offset, &current_nonce, sizeof(current_nonce));
-
-        m_nonce32 = next_nonce_after_batch(
-          current_nonce, m_batch, 1, m_nonce_step, mask);
-      }
-      m_nonce64 = 0;
-      set_fn(new_fn);
-      return;
-    }
-    // Single-blob GPU pow with an embedded nonce: kawpow/etchash/autolykos2 (nonce at offset 32) and
-    // KarlsenHashV2 (8-byte nonce at offset 72). One header blob (not a per-batch buffer); the kernel
-    // searches start_nonce..start_nonce+batch. m_nonce_offset (not a hardcoded 32) places the nonce.
-    if (is_nonce_at_32_gpu_dev(new_dev) || new_dev == DEV::KARLSENHASHV2_GPU ||
-        new_dev == DEV::MISC_GPU || is_equihash_gpu_dev(new_dev)) {
-      memcpy(m_input, new_input, m_input_len);
-      m_nonce_step = new_thread_num * m_batch;
-      // Mine mode embeds the starting nonce and points m_nonce64 at the next one. Live Iron Fish
-      // (fishhash, 180-byte header) reads the 8-byte nonce big-endian, so embed it byte-swapped there;
-      // XelisHashV3 and NexaPow also use BE; the remaining embedded-nonce layouts use LE.
       m_nonce64 = 0;
       if (is_set_nonce) {
-        uint64_t current_nonce = new_nonce + static_cast<uint64_t>(new_thread_id) * m_batch;
-        uint64_t last_nonce = current_nonce + m_batch - 1;
-        if (m_target && (!mom::job_boundary::nonce_with_offset<uint64_t>(
-              new_nonce, new_thread_id, m_batch, new_nicehash_mask, current_nonce) ||
-            !mom::job_boundary::nonce_with_offset<uint64_t>(
-              current_nonce, m_batch - 1, 1, new_nicehash_mask, last_nonce))) {
-          throw std::string("Initial worker nonce range overflows");
-        }
-        mom::job_boundary::store_nonce(
-          nonce_address(), current_nonce,
-          mom::job_boundary::nonce_big_endian(new_algo_str, m_input_len));
-
-        m_nonce64 = next_nonce_after_batch(
-          current_nonce, m_batch, 1, m_nonce_step, new_nicehash_mask);
+        const bool big_endian = mom::job_boundary::nonce_big_endian(new_algo_str, m_input_len);
+        if (m_nonce_bytes == 4)
+          m_nonce32 = first_blob_batch(static_cast<uint32_t>(new_nonce), big_endian);
+        else
+          m_nonce64 = first_blob_batch(new_nonce, big_endian);
       }
-      m_nonce32 = 0;
       set_fn(new_fn);
       return;
     }
@@ -801,60 +753,13 @@ void Core::set_job(
       static_cast<uint64_t>(new_thread_num) * nonce_unit);
     for (unsigned i = 0; i != m_batch; ++i)
       memcpy(m_input + m_input_len*i, new_input, m_input_len);
-    if (m_nonce_bytes == 4) {
-      m_nonce32 = 0;
-      m_nonce64 = 0;
-      if (is_set_nonce) {
-        const uint32_t mask = static_cast<uint32_t>(m_nicehash_mask);
-        m_nonce32 = static_cast<uint32_t>(new_nonce) +
-          static_cast<uint32_t>(new_thread_id * nonce_unit);
-        if (m_target && !mom::job_boundary::nonce_with_offset<uint32_t>(
-            static_cast<uint32_t>(new_nonce), new_thread_id, nonce_unit, 0, m_nonce32)) {
-          throw std::string("Initial worker nonce overflows");
-        }
-        if (m_nicehash_mask) {
-          m_nonce32 |= mom::job_boundary::load_nonce<uint32_t>(
-            nonce_address(new_input), true) & mask;
-        }
-        const uint32_t first_nonce = m_nonce32;
-        uint32_t last_nonce = first_nonce + (m_batch - 1) * m_nonce_step;
-        if (m_target && !mom::job_boundary::nonce_with_offset<uint32_t>(
-            first_nonce, m_batch - 1, m_nonce_step, mask, last_nonce)) {
-          throw std::string("Initial worker nonce range overflows");
-        }
-        for (unsigned i = 0; i != m_batch; ++i)
-          mom::job_boundary::store_nonce(
-            nonce_address(i), first_nonce + i * m_nonce_step, true);
-        m_nonce32 = next_nonce_after_batch(
-          first_nonce, m_batch, m_nonce_step,
-          static_cast<uint64_t>(m_batch) * m_nonce_step, mask);
-      }
-    } else {
-      m_nonce32 = 0;
-      m_nonce64 = 0;
-      if (is_set_nonce) {
-        m_nonce64 = new_nonce + new_thread_id;
-        if (m_target && !mom::job_boundary::nonce_with_offset<uint64_t>(
-            new_nonce, new_thread_id, 1, 0, m_nonce64)) {
-          throw std::string("Initial worker nonce overflows");
-        }
-        if (m_nicehash_mask) {
-          m_nonce64 |= mom::job_boundary::load_nonce<uint64_t>(
-            nonce_address(new_input), true) & m_nicehash_mask;
-        }
-        const uint64_t first_nonce = m_nonce64;
-        uint64_t last_nonce = first_nonce + (m_batch - 1) * m_nonce_step;
-        if (m_target && !mom::job_boundary::nonce_with_offset<uint64_t>(
-            first_nonce, m_batch - 1, m_nonce_step, m_nicehash_mask, last_nonce)) {
-          throw std::string("Initial worker nonce range overflows");
-        }
-        for (unsigned i = 0; i != m_batch; ++i)
-          mom::job_boundary::store_nonce(
-            nonce_address(i), first_nonce + i * m_nonce_step, true);
-        m_nonce64 = next_nonce_after_batch(
-          first_nonce, m_batch, m_nonce_step,
-          static_cast<uint64_t>(m_batch) * m_nonce_step, m_nicehash_mask);
-      }
+    m_nonce32 = 0;
+    m_nonce64 = 0;
+    if (is_set_nonce) {
+      if (m_nonce_bytes == 4)
+        m_nonce32 = first_lane_batch(static_cast<uint32_t>(new_nonce), new_input, nonce_unit);
+      else
+        m_nonce64 = first_lane_batch(new_nonce, new_input, nonce_unit);
     }
     set_fn(new_fn);
   }

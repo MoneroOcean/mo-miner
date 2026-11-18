@@ -1,5 +1,5 @@
 // CPU-only test for the c30 Cortex primitives.
-#include "../../sycl/c30/c30-host.h"
+#include "../../sycl/c30/host.h"
 
 #include "crypto/randomx/blake2/blake2.h"
 
@@ -12,7 +12,7 @@ void (*rx_blake2b_compress)(blake2b_state*, const std::uint8_t*) = rx_blake2b_co
 int (*rx_blake2b)(void*, std::size_t, const void*, std::size_t) = rx_blake2b_default;
 
 int main() {
-  using namespace mom::c30;
+  using namespace mom_c30;
   const std::array<std::uint8_t, 32> header = {0x8b, 0xbb, 0x88, 0x97, 0xa7, 0x96, 0x76, 0x34,
                                                0xe1, 0x5b, 0xae, 0x66, 0x2e, 0xe2, 0x3e, 0x16,
                                                0xe8, 0xc8, 0x56, 0x69, 0xf3, 0xca, 0x0a, 0x9e,

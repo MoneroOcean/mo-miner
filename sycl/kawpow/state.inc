@@ -33,16 +33,16 @@ static bool kawpow_default_subgroup_exchange(const sycl::device& device) {
   return (build < 30000u || build >= 35000u) && mom_intel_eu_simd_width(device) != 8;
 }
 
-class KawpowState {
+class State {
 public:
   sycl::device device;
   sycl::queue queue;
   bool shared_io;
   bool shared_dag;
-  uint8_t* input = nullptr;
-  uint32_t* light_cache = nullptr;
-  uint32_t* dag = nullptr;
-  KawpowResult* result = nullptr;
+  UsmPtr<uint8_t> input;
+  UsmPtr<uint32_t> light_cache;
+  UsmPtr<uint32_t> dag;
+  UsmPtr<KawpowResult> result;
   uint32_t input_cap = 0;
   uint64_t light_cache_words = 0;
   uint64_t dag_words = 0;
@@ -58,7 +58,7 @@ public:
   std::mutex mutex;
 
   // Active ProgPoW seal (set per-call from the variant, under `mutex`). On CUDA it is baked into the
-  // JIT source (kawpow_emit_seal); on Intel/spir64 it rides in via SealParams. A device's KawpowState
+  // JIT source (kawpow_emit_seal); on Intel/spir64 it rides in via SealParams. A device's State
   // is shared across the kawpow/firopow/evrprogpow entrypoints, so the seal can change between calls
   // and participates in the bundle cache key below (a seal change forces a rebuild).
   SealMode seal = SealMode::KAWPOW;
@@ -104,7 +104,7 @@ public:
   std::atomic<int> cuda_use_jit{-1};
 
   // Bind allocations and launch policy to one device shared by all variants.
-  explicit KawpowState(const std::string& dev_str)
+  explicit State(const std::string& dev_str)
       : device(get_dev(dev_str)),
         queue(device, sycl::property_list{sycl::property::queue::in_order{}}),
         shared_io(device.is_cpu() || !mom_has_usm_device(device)),
@@ -115,7 +115,6 @@ public:
       throw std::string("kawpow SYCL device does not support required allocations");
     }
 
-    set_sycl_env("SYCL_PROGRAM_COMPILE_OPTIONS", kawpow_compile_options());
     if (device.is_gpu() && sycl_is_level_zero_gpu(device) && !default_subgroup_exchange) {
       std::fprintf(stderr, "kawpow: Intel driver build %u uses stable local-memory exchange\n",
                    mom_driver_build(device));
@@ -123,7 +122,7 @@ public:
   }
 
   // Join background compilation and drain kernels before releasing their state.
-  ~KawpowState() {
+  ~State() {
     if (prefetch_thread.joinable())
       prefetch_thread.join();
     sycl_cleanup_noexcept("kawpow wait", [&] { queue.wait_and_throw(); });
@@ -181,12 +180,7 @@ public:
         KAWPOW_CACHE_WORDS * sizeof(uint32_t), sizeof(uint32_t), sizeof(uint32_t), KAWPOW_LANES);
   }
 
-  // Tune DAG generation independently of the search launch shape.
-  static unsigned kawpow_dag_workgroup(const sycl::device& dev) {
-    return select_workgroup("MOM_KAWPOW_DAG_WORKGROUP", dev, {32, 64, 128, 256, 512},
-                            dev.is_cpu() ? 128 : 64);
-  }
-
+  // DAG nodes per dispatch, or 0 for one dispatch; MOM_KAWPOW_DAG_CHUNK_NODES overrides.
   static uint32_t kawpow_dag_chunk_nodes(const sycl::device& dev) {
     uint32_t parsed;
     if (parse_env_u32("MOM_KAWPOW_DAG_CHUNK_NODES", parsed))
@@ -203,23 +197,6 @@ public:
     return 0; // Single full-DAG dispatch for other discrete GPUs.
   }
 
-  static const char* kawpow_compile_options() {
-    // "-O3" is process-global; pearlhash's ESIMD image rejects it (and it's a no-op for kawpow), so
-    // default to none. Override via MOM_KAWPOW_COMPILE_OPTIONS if needed.
-    const char* const value = std::getenv("MOM_KAWPOW_COMPILE_OPTIONS");
-    return value ? value : "";
-  }
-
-  template <typename T> T* allocate(const size_t count, const bool shared) {
-    return shared ? sycl::malloc_shared<T>(count, queue) : sycl::malloc_device<T>(count, queue);
-  }
-
-  void free_ptr(auto*& ptr) {
-    if (ptr)
-      sycl::free(ptr, queue);
-    ptr = nullptr;
-  }
-
   // Invalidate DAG/program keys along with their persistent allocations.
   void release() {
     // Source-built bundles must die while DPC++'s ProgramManager is still alive. In particular, the
@@ -228,10 +205,10 @@ public:
     // so shutdown never leaves an outstanding prefetch/period image behind the queue allocations.
     next_bundle.reset();
     period_bundle.reset();
-    free_ptr(input);
-    free_ptr(light_cache);
-    free_ptr(dag);
-    free_ptr(result);
+    input.reset();
+    light_cache.reset();
+    dag.reset();
+    result.reset();
     input_cap = 0;
     light_cache_words = 0;
     dag_words = 0;
@@ -245,20 +222,12 @@ public:
     if (input && input_size <= input_cap && result)
       return;
     queue.wait_and_throw();
-    free_ptr(input);
-    free_ptr(result);
+    input.reset();
+    result.reset();
     input_cap = 0;
-    try {
-      input = allocate<uint8_t>(input_size, shared_io);
-      result = sycl::malloc_shared<KawpowResult>(1, queue);
-      if (!input || !result)
-        throw std::string("Can't allocate kawpow SYCL input buffers");
-    } catch (...) {
-      free_ptr(input);
-      free_ptr(result);
-      input_cap = 0;
-      throw;
-    }
+    constexpr const char* failure = "Can't allocate kawpow SYCL input buffers";
+    input = mom_usm_alloc<uint8_t>(queue, input_size, shared_io, failure);
+    result = mom_usm_alloc<KawpowResult>(queue, 1, true, failure);
     input_cap = input_size;
   }
 
@@ -284,29 +253,27 @@ public:
       throw std::string("KawPow DAG exceeds 32-bit word addressing");
 
     std::vector<uint32_t> host_cache;
-    const uint64_t start_ms = now_ms();
-    compute_light_cache(host_cache, new_cache_bytes, seed_epoch);
+    const uint64_t start_ms = mom_now_ms();
+    compute_light_cache(host_cache, new_cache_bytes, seed_epoch,
+                        "Can't calculate kawpow light cache");
 
     queue.wait_and_throw();
     // Invalidate the old key before an in-place rebuild can fail; it must not remain reusable.
     epoch = UINT32_MAX;
     dag_bytes = 0;
+    constexpr const char* failure = "Can't allocate kawpow DAG buffers";
     if (new_light_cache_words != light_cache_words || !light_cache) {
-      free_ptr(light_cache);
+      light_cache.reset();
       light_cache_words = 0;
-      light_cache = allocate<uint32_t>(new_light_cache_words, shared_dag);
-      if (light_cache)
-        light_cache_words = new_light_cache_words;
+      light_cache = mom_usm_alloc<uint32_t>(queue, new_light_cache_words, shared_dag, failure);
+      light_cache_words = new_light_cache_words;
     }
     if (new_dag_words != dag_words || !dag) {
-      free_ptr(dag);
+      dag.reset();
       dag_words = 0;
-      dag = allocate<uint32_t>(new_dag_words, shared_dag);
-      if (dag)
-        dag_words = new_dag_words;
+      dag = mom_usm_alloc<uint32_t>(queue, new_dag_words, shared_dag, failure);
+      dag_words = new_dag_words;
     }
-    if (!light_cache || !dag)
-      throw std::string("Can't allocate kawpow DAG buffers");
 
     MomSyclHostTransferGuard host_cache_transfers(queue, "kawpow cache upload");
     if (shared_dag)
@@ -317,69 +284,16 @@ public:
           device);
 
     const uint32_t light_nodes = static_cast<uint32_t>(new_light_cache_words / NODE_WORDS);
-    const FastModData light_mod = make_fast_mod_data(light_nodes);
-
-    const uint32_t dag_workgroup = kawpow_dag_workgroup(device);
-    const uint32_t total = static_cast<uint32_t>(new_dag_words / NODE_WORDS); // DAG node count
-    const uint32_t chunk_nodes = kawpow_dag_chunk_nodes(device);
-    uint32_t* const d_light = light_cache;
-    uint32_t* const d_dag = dag;
-    sycl::queue& q = queue;
-
-    sycl::event dag_event;
-    for (uint32_t start_node = 0; start_node < total;) {
-      const uint32_t current_nodes =
-          chunk_nodes ? std::min(chunk_nodes, total - start_node) : total;
-      const uint32_t chunk_start = start_node;
-      dag_event = q.submit([&](sycl::handler& h) {
-        h.parallel_for(sycl::nd_range<1>(sycl::range<1>(round_up_size(current_nodes, dag_workgroup)),
-                                         sycl::range<1>(dag_workgroup)),
-                       [=](sycl::nd_item<1> item) MOM_SYCL_KERNEL_ARGS_RESTRICT {
-                         const uint32_t local_node = item.get_global_id(0);
-                         if (local_node >= current_nodes)
-                           return;
-                         const uint32_t node_index = chunk_start + local_node;
-
-                         uint32_t dag_node[NODE_WORDS];
-                         const uint32_t init = fast_mod_dev(node_index, light_mod);
-#pragma unroll
-                         for (unsigned w = 0; w < NODE_WORDS; ++w)
-                           dag_node[w] = d_light[init * NODE_WORDS + w];
-                         dag_node[0] ^= node_index;
-                         keccak_512_words_dev(dag_node);
-
-                         for (uint32_t i = 0; i < KAWPOW_DATASET_PARENTS; ++i) {
-                           const uint32_t parent_index = fast_mod_dev(
-                               fnv_dev(node_index ^ i, dag_node[i & (NODE_WORDS - 1)]), light_mod);
-                           const uint32_t parent_base = parent_index * NODE_WORDS;
-#pragma unroll
-                           for (unsigned w = 0; w < NODE_WORDS; ++w) {
-                             dag_node[w] = fnv_dev(dag_node[w], d_light[parent_base + w]);
-                           }
-                         }
-                         keccak_512_words_dev(dag_node);
-
-                         const uint32_t base = node_index * NODE_WORDS;
-#pragma unroll
-                         for (unsigned w = 0; w < NODE_WORDS; ++w)
-                           d_dag[base + w] = dag_node[w];
-                       });
-      });
-      if (!chunk_nodes)
-        break;
-      // Force the runtime to submit and retire this command list before recording the next one.
-      // Merely queuing smaller kernels can still appear to the driver as one watchdog-length batch.
-      sycl_wait_and_throw(dag_event, device);
-      start_node += current_nodes;
-    }
-    if (!chunk_nodes)
-      sycl_wait_and_throw(dag_event, device);
+    generate_ethash_dag<KAWPOW_DATASET_PARENTS>(
+        queue, device, light_cache, light_nodes, dag,
+        static_cast<uint32_t>(new_dag_words / NODE_WORDS),
+        ethash_dag_workgroup(device, "MOM_KAWPOW_DAG_WORKGROUP"), kawpow_dag_chunk_nodes(device));
 
     epoch = new_epoch;
     dag_bytes = new_dag_bytes;
     if (should_log) {
       char elapsed[32];
-      format_duration_ms(elapsed, sizeof(elapsed), now_ms() - start_ms);
+      mom_format_duration_ms(elapsed, sizeof(elapsed), mom_now_ms() - start_ms);
       std::fprintf(stderr, "KawPow DAG for epoch %u calculated (%s)\n", new_epoch, elapsed);
     }
   }
@@ -490,7 +404,7 @@ public:
 #endif
   }
 
-  // The seal AND the inner-loop shape participate in the cache key: a device's KawpowState is shared
+  // The seal AND the inner-loop shape participate in the cache key: a device's State is shared
   // across the kawpow/firopow/evrprogpow/meowpow entrypoints, so an algo switch can change the seal or
   // shape even when period/epoch are unchanged -- it must force a rebuild. `b*` are the current call's.
   static bool bundle_key_eq(const SealMode a, const uint32_t am[15], const uint32_t ar,
@@ -574,13 +488,11 @@ public:
       }
     });
   }
-
-  static uint64_t now_ms() {
-    return std::chrono::duration_cast<std::chrono::milliseconds>(
-               std::chrono::steady_clock::now().time_since_epoch())
-        .count();
-  }
 };
 
-
-// Heap-own the registry and lock so they have no competing C++ static destructors. Node's explicit
+// Program build options for sycl_set_compile_options(): none by default ("-O3" is process-global,
+// PearlHash's ESIMD image rejects it, and it does not help ProgPoW); MOM_KAWPOW_COMPILE_OPTIONS
+// overrides.
+const char* kawpow_compile_options() {
+  return std::getenv("MOM_KAWPOW_COMPILE_OPTIONS");
+}

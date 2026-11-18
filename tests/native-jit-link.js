@@ -167,7 +167,7 @@ test.describe("Native application-library load boundary", {skip: process.platfor
     const executable = path.join(files.directory, "error-contract");
     const built = spawnSync(process.env["CXX"] || "c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
       path.join(__dirname, "native/driver-library-error.cpp"), path.join(__dirname, "../runtime/driver-library.cpp"),
-      "-Wl,--wrap=dlopen", "-Wl,--wrap=dlerror", "-ldl", "-pthread", "-o", executable], {encoding: "utf8", timeout: 30000});
+      "-Wl,--wrap=dlopen", "-Wl,--wrap=dlerror", "-Wl,--wrap=dlsym,--wrap=dlvsym", "-ldl", "-pthread", "-o", executable], {encoding: "utf8", timeout: 30000});
     assert.equal(built.status, 0, built.stderr);
     const run = spawnSync(executable, [], {encoding: "utf8", timeout: 5000});
     assert.equal(run.status, 0, run.stderr);

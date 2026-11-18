@@ -1,11 +1,43 @@
+// Copyright GNU GPLv3 (c) 2026 MoneroOcean <support@moneroocean.stream>
+
 #pragma once
 
+// Proof-level helpers shared by the Equihash-family adapters (ZHash, ZelHash, Equihash 192,7 and
+// BeamHash III): leaf canonicalisation and distinctness, the host SHA-256 used by share targets, and
+// the count-prefixed solution buffer handed to the native worker.
+
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <vector>
 
 namespace mom_equihash::pow {
+
+// Reorder recovered leaves into the canonical IndicesBefore form: at every tree level the sibling
+// subtree with the smaller first leaf comes first. Leaves must be distinct; host and device safe.
+template <unsigned K>
+inline void canonicalize_leaves(std::uint32_t* const leaves) {
+  for (unsigned level = 0; level < K; ++level) {
+    const unsigned half = 1u << level;
+    for (unsigned begin = 0; begin < (1u << K); begin += 2 * half) {
+      if (leaves[begin] < leaves[begin + half]) continue;
+      for (unsigned i = 0; i < half; ++i) {
+        const std::uint32_t swap = leaves[begin + i];
+        leaves[begin + i] = leaves[begin + half + i];
+        leaves[begin + half + i] = swap;
+      }
+    }
+  }
+}
+
+// Equihash proofs require every leaf index to be unique; host and device safe.
+inline bool leaves_distinct(const std::uint32_t* const leaves, const unsigned count) {
+  for (unsigned i = 0; i < count; ++i)
+    for (unsigned j = i + 1; j < count; ++j)
+      if (leaves[i] == leaves[j]) return false;
+  return true;
+}
 
 inline std::uint32_t rotr(const std::uint32_t value, const unsigned bits) {
   return (value >> bits) | (value << (32 - bits));
@@ -105,6 +137,30 @@ inline bool meets_target(const std::uint8_t* header, const std::size_t header_le
   for (unsigned i = 0; i < 32; ++i)
     if (hash[31 - i] != target[i]) return hash[31 - i] < target[i];
   return true;
+}
+
+// Fill the worker's out-of-band buffer as [count:u8][count * proof bytes] from canonical proofs that
+// expose `encoded` bytes. A non-null target keeps only proofs meeting it (mining); tests keep only
+// the first proof. Returns the number written.
+template <typename Solutions>
+inline unsigned write_solutions(const Solutions& solutions, const std::size_t proof_length,
+                                const std::size_t buffer_length, const bool first_only,
+                                const std::uint8_t* const header, const std::size_t header_length,
+                                const std::uint8_t* const target, std::uint8_t* const out) {
+  const std::size_t capacity =
+      first_only ? 1 : std::min<std::size_t>(255, (buffer_length - 1) / proof_length);
+  unsigned count = 0;
+  for (const auto& solution : solutions) {
+    if (count == capacity)
+      break;
+    if (target && !meets_target(header, header_length, solution.encoded.data(), proof_length,
+                                target))
+      continue;
+    std::memcpy(out + 1 + count * proof_length, solution.encoded.data(), proof_length);
+    ++count;
+  }
+  out[0] = static_cast<std::uint8_t>(count);
+  return count;
 }
 
 }  // namespace mom_equihash::pow

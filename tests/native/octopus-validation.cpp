@@ -5,8 +5,8 @@
 #include <cassert>
 
 int main() {
-  using mom::octopus::test_path_failure;
-  using mom::octopus::TestPathFailure;
+  using mom_octopus::test_path_failure;
+  using mom_octopus::TestPathFailure;
   // Older/unknown AMD and the generic CUDA worker still validate the ordinary full-DAG kernel.
   assert(test_path_failure(true, true, true, false, false) == TestPathFailure::none);
   assert(test_path_failure(true, true, false, true, false) == TestPathFailure::none);

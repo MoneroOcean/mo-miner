@@ -3,11 +3,9 @@ class State {
 public:
   sycl::device device;
   sycl::queue queue;
-  uint8_t* matrix = nullptr;
-  uint8_t* input = nullptr;
-  uint8_t* target = nullptr;
+  UsmPtr<uint8_t> matrix, input, target;
   uint8_t matrix_seed[32]{};
-  Result* result = nullptr;
+  UsmPtr<PowHits<>> result;
   bool matrix_ready = false;
 #ifdef MOM_SYCL_HAS_CUDA
   const int cuda_sm = mom::nvidia::compute_capability(device);
@@ -20,67 +18,29 @@ public:
   Blake3Cv prehash_cv{};
 #endif
 #if defined(WALAHASH_ESIMD) || defined(MOM_SYCL_HAS_HIP)
-  uint8_t *hashes = nullptr, *mixed = nullptr;
+  UsmPtr<uint8_t> hashes, mixed;
   unsigned capacity = 0;
 #if defined(WALAHASH_ESIMD)
-  uint8_t* vectors = nullptr;
+  UsmPtr<uint8_t> vectors;
 #endif
 #endif
-  // Create per-device in-order ownership and fixed work buffers, unwinding partial allocation on failure.
+  // Create per-device in-order ownership and fixed work buffers.
   explicit State(const std::string& dev)
       : device(get_dev(dev)), queue(device, sycl::property::queue::in_order{}) {
     if (!mom_has_usm_device(device))
       throw std::string("walahash requires SYCL device USM");
-    try {
-      matrix = sycl::malloc_device<uint8_t>(4096, queue);
-      input = sycl::malloc_device<uint8_t>(72, queue);
-      target = sycl::malloc_device<uint8_t>(32, queue);
-      result = sycl::malloc_device<Result>(1, queue);
-      if (!matrix || !input || !target || !result)
-        throw std::string("Can't allocate walahash buffers");
-    } catch (...) {
-      release();
-      throw;
-    }
+    const char* const failure = "Can't allocate walahash buffers";
+    matrix = mom_usm_alloc<uint8_t>(queue, 4096, false, failure);
+    input = mom_usm_alloc<uint8_t>(queue, 72, false, failure);
+    target = mom_usm_alloc<uint8_t>(queue, 32, false, failure);
+    result = mom_usm_alloc<PowHits<>>(queue, 1, false, failure);
   }
+  // Drain outstanding kernels before the members release their USM.
   ~State() {
-    release();
-  }
-  // Best-effort release on the owning queue and clear the stored pointer.
-  template <typename T> void free_ptr(T*& pointer) noexcept {
-    if (pointer)
-      try {
-        sycl::free(pointer, queue);
-      } catch (...) {
-      }
-    pointer = nullptr;
+    sycl_cleanup_noexcept("walahash wait", [&] { queue.wait_and_throw(); });
   }
 #if defined(WALAHASH_ESIMD) || defined(MOM_SYCL_HAS_HIP)
-  // Drop all staged hash/vector/mix buffers before resizing their shared capacity.
-  void free_accelerated() noexcept {
-#if defined(WALAHASH_ESIMD)
-    free_ptr(vectors);
-#endif
-    free_ptr(mixed);
-    free_ptr(hashes);
-    capacity = 0;
-  }
-#endif
-  // Drain outstanding kernels before releasing the fixed and accelerated USM buffers.
-  void release() noexcept {
-    sycl_cleanup_noexcept("walahash wait", [&] {
-      queue.wait_and_throw();
-    });
-#if defined(WALAHASH_ESIMD) || defined(MOM_SYCL_HAS_HIP)
-    free_accelerated();
-#endif
-    free_ptr(result);
-    free_ptr(target);
-    free_ptr(input);
-    free_ptr(matrix);
-  }
-#if defined(WALAHASH_ESIMD) || defined(MOM_SYCL_HAS_HIP)
-  // Grow nonce scratch to the padded backend capacity, unwinding partial allocations on failure.
+  // Grow nonce scratch to the padded backend capacity; a failed allocation leaves capacity zero.
   void ensure(unsigned count) {
     if (count <= capacity)
       return;
@@ -92,24 +52,19 @@ public:
 #endif
     const unsigned next_capacity = (count + alignment - 1) & ~(alignment - 1);
     queue.wait_and_throw();
-    free_accelerated();
-    try {
+    capacity = 0;
+    const char* const failure = "Can't allocate accelerated walahash buffers";
 #if defined(WALAHASH_ESIMD)
-      vectors = sycl::malloc_device<uint8_t>(static_cast<size_t>(next_capacity) * 64, queue);
+    vectors.reset();
 #endif
-      hashes = sycl::malloc_device<uint8_t>(static_cast<size_t>(next_capacity) * 32, queue);
-      mixed = sycl::malloc_device<uint8_t>(static_cast<size_t>(next_capacity) * 32, queue);
+    mixed.reset();
+    hashes.reset();
 #if defined(WALAHASH_ESIMD)
-      if (!vectors || !hashes || !mixed)
-#else
-      if (!hashes || !mixed)
+    vectors = mom_usm_alloc<uint8_t>(queue, static_cast<size_t>(next_capacity) * 64, false, failure);
 #endif
-        throw std::string("Can't allocate accelerated walahash buffers");
-      capacity = next_capacity;
-    } catch (...) {
-      free_accelerated();
-      throw;
-    }
+    hashes = mom_usm_alloc<uint8_t>(queue, static_cast<size_t>(next_capacity) * 32, false, failure);
+    mixed = mom_usm_alloc<uint8_t>(queue, static_cast<size_t>(next_capacity) * 32, false, failure);
+    capacity = next_capacity;
   }
 #endif
 };

@@ -22,17 +22,13 @@
 #include <vector>
 
 #include "../lib-internal.h"
-#include "../../native/consts.h"
-#include "data-file.hpp"
+#include "../pow-hits.h"
+#include "data-file.h"
 
 namespace mom_verthash {
 
 struct Uint2 {
   uint32_t x, y;
-};
-constexpr unsigned MAX_RESULTS = 15;
-struct Result {
-  uint32_t count, nonce[MAX_RESULTS], hash[MAX_RESULTS][8];
 };
 constexpr size_t DATA_BYTES = data_file::expected_bytes;
 static_assert(sizeof(Uint2) == 8 && DATA_BYTES % sizeof(Uint2) == 0);
@@ -59,49 +55,6 @@ inline Uint2 test_data_item(const size_t index) {
           test_data_word(index, 0x13198a2e03707344ULL)};
 }
 
-inline uint64_t rotl64(uint64_t value, unsigned shift) {
-  return (value << shift) | (value >> (64 - shift));
-}
-
-// Run the 24-round permutation shared by header seed and final hash construction.
-inline void keccakf1600(uint64_t state[25]) {
-  static constexpr uint64_t rc[24] = {
-      0x0000000000000001ULL, 0x0000000000008082ULL, 0x800000000000808aULL, 0x8000000080008000ULL,
-      0x000000000000808bULL, 0x0000000080000001ULL, 0x8000000080008081ULL, 0x8000000000008009ULL,
-      0x000000000000008aULL, 0x0000000000000088ULL, 0x0000000080008009ULL, 0x000000008000000aULL,
-      0x000000008000808bULL, 0x800000000000008bULL, 0x8000000000008089ULL, 0x8000000000008003ULL,
-      0x8000000000008002ULL, 0x8000000000000080ULL, 0x000000000000800aULL, 0x800000008000000aULL,
-      0x8000000080008081ULL, 0x8000000000008080ULL, 0x0000000080000001ULL, 0x8000000080008008ULL};
-  static constexpr unsigned rotations[24] = {1,  3,  6,  10, 15, 21, 28, 36, 45, 55, 2,  14,
-                                             27, 41, 56, 8,  25, 43, 62, 18, 39, 61, 20, 44};
-  static constexpr unsigned positions[24] = {10, 7,  11, 17, 18, 3, 5,  16, 8,  21, 24, 4,
-                                             15, 23, 19, 13, 12, 2, 20, 14, 22, 9,  6,  1};
-  for (unsigned round = 0; round < 24; ++round) {
-    uint64_t column[5];
-    for (unsigned i = 0; i < 5; ++i)
-      column[i] = state[i] ^ state[i + 5] ^ state[i + 10] ^ state[i + 15] ^ state[i + 20];
-    for (unsigned i = 0; i < 5; ++i) {
-      const uint64_t value = column[(i + 4) % 5] ^ rotl64(column[(i + 1) % 5], 1);
-      for (unsigned j = 0; j < 25; j += 5)
-        state[j + i] ^= value;
-    }
-    uint64_t value = state[1];
-    for (unsigned i = 0; i < 24; ++i) {
-      const unsigned position = positions[i];
-      column[0] = state[position];
-      state[position] = rotl64(value, rotations[i]);
-      value = column[0];
-    }
-    for (unsigned j = 0; j < 25; j += 5) {
-      for (unsigned i = 0; i < 5; ++i)
-        column[i] = state[j + i];
-      for (unsigned i = 0; i < 5; ++i)
-        state[j + i] ^= (~column[(i + 1) % 5]) & column[(i + 2) % 5];
-    }
-    state[0] ^= rc[round];
-  }
-}
-
 // Precompute a seed state with a low-byte header increment before per-nonce work.
 inline void make_state(const uint32_t* header, unsigned first, uint64_t state[25]) {
   for (unsigned i = 0; i < 25; ++i)
@@ -111,7 +64,7 @@ inline void make_state(const uint32_t* header, unsigned first, uint64_t state[25
   for (unsigned i = 1; i < 9; ++i)
     state[i] =
         static_cast<uint64_t>(header[i * 2]) | (static_cast<uint64_t>(header[i * 2 + 1]) << 32);
-  keccakf1600(state);
+  data_file::keccak(state);
 }
 
 inline uint32_t fnv1a(uint32_t a, uint32_t b) {
@@ -126,12 +79,12 @@ public:
   sycl::device device;
   sycl::queue queue;
   bool compact_test_data = false;
-  Uint2* data = nullptr;
-  uint32_t* header = nullptr;
-  uint64_t* states = nullptr;
-  Uint2* hashes = nullptr;
-  uint32_t* target = nullptr;
-  Result* result = nullptr;
+  UsmPtr<Uint2> data;
+  UsmPtr<uint32_t> header;
+  UsmPtr<uint64_t> states;
+  UsmPtr<Uint2> hashes;
+  UsmPtr<uint32_t> target;
+  UsmPtr<PowHits<uint32_t>> result;
   unsigned hash_capacity = 0;
   std::mutex mutex;
 
@@ -143,57 +96,26 @@ public:
                           (device.is_cpu() || is_integrated_gpu(device))) {
     if (!mom_has_usm_device(device) || !mom_has_usm_shared(device))
       throw std::string("verthash requires SYCL device and shared USM");
-    try {
-      load_data();
-      header = sycl::malloc_device<uint32_t>(20, queue);
-      states = sycl::malloc_device<uint64_t>(8 * 25, queue);
-      target = sycl::malloc_device<uint32_t>(8, queue);
-      result = sycl::malloc_shared<Result>(1, queue);
-      if (!header || !states || !target || !result)
-        throw std::string("Can't allocate verthash buffers");
-    } catch (...) {
-      release();
-      throw;
-    }
+    load_data();
+    const char* const failure = "Can't allocate verthash buffers";
+    header = mom_usm_alloc<uint32_t>(queue, 20, false, failure);
+    states = mom_usm_alloc<uint64_t>(queue, 8 * 25, false, failure);
+    target = mom_usm_alloc<uint32_t>(queue, 8, false, failure);
+    result = mom_usm_alloc<PowHits<uint32_t>>(queue, 1, true, failure);
   }
+  // Drain accepted kernels before the members release their allocations.
   ~State() {
-    release();
-  }
-  // Drain accepted kernels before releasing all allocations, including partial construction.
-  void release() noexcept {
-    sycl_cleanup_noexcept("verthash wait", [&] {
-      queue.wait_and_throw();
-    });
-    free_all();
-  }
-  void free_ptr(auto*& p) noexcept {
-    if (p)
-      try {
-        sycl::free(p, queue);
-      } catch (...) {
-      }
-    p = nullptr;
-  }
-  // Release every owned allocation without letting teardown errors escape.
-  void free_all() noexcept {
-    free_ptr(result);
-    free_ptr(target);
-    free_ptr(hashes);
-    free_ptr(states);
-    free_ptr(header);
-    free_ptr(data);
+    sycl_cleanup_noexcept("verthash wait", [&] { queue.wait_and_throw(); });
   }
   // Grow per-nonce scratch storage only after queued consumers finish.
   void ensure_hashes(unsigned count) {
     if (hashes && count <= hash_capacity)
       return;
     queue.wait_and_throw();
-    free_ptr(hashes);
+    hashes.reset();
     hash_capacity = 0;
-    Uint2* const next = sycl::malloc_device<Uint2>(static_cast<size_t>(count) * 4, queue);
-    if (!next)
-      throw std::string("Can't allocate verthash hash buffer");
-    hashes = next;
+    hashes = mom_usm_alloc<Uint2>(queue, static_cast<size_t>(count) * 4, false,
+                                  "Can't allocate verthash hash buffer");
     hash_capacity = count;
   }
 
@@ -245,11 +167,9 @@ private:
     // USM. Shared USM is native host memory on a CPU and avoids that runtime path; GPU builds retain
     // device USM and its measured random-read performance.
     const bool cpu_data = device.is_cpu();
-    data = cpu_data ? sycl::malloc_shared<Uint2>(host.size(), queue)
-                    : sycl::malloc_device<Uint2>(host.size(), queue);
-    if (!data)
-      throw compact_test_data ? std::string("Can't allocate bounded Verthash test dataset")
-                              : std::string("Can't allocate verthash dataset (1.20 GiB)");
+    data = mom_usm_alloc<Uint2>(queue, host.size(), cpu_data,
+                                compact_test_data ? "Can't allocate bounded Verthash test dataset"
+                                                  : "Can't allocate verthash dataset (1.20 GiB)");
     MomSyclHostTransferGuard host_data_transfers(queue, "verthash data upload");
     if (cpu_data)
       std::memcpy(data, host.data(), data_bytes);
@@ -265,7 +185,7 @@ static DeviceStateRegistry<State>& registry() {
 }
 
 // Keep compact correctness fixtures separate from the official dataset registry key.
-static State& get_state(const std::string& dev_str, const bool is_test,
+static State& state_for(const std::string& dev_str, const bool is_test,
                         const bool is_benchmark) {
   const char* const configured = std::getenv("MOM_SYCL_PORTABLE_TEST");
   const bool requested = is_test && !is_benchmark && configured &&
@@ -286,15 +206,15 @@ void verthash_cleanup_states() noexcept {
   }
 }
 
-template <bool Compact>
 // Sequence seed generation and four-lane dependent dataset mixing for the nonce range.
+template <bool Compact>
 static sycl::event submit_search(State& s, uint32_t start_nonce, unsigned count, bool is_test) {
   uint32_t* const header = s.header;
   uint64_t* const states = s.states;
   Uint2* const data = s.data;
   Uint2* const hashes = s.hashes;
   uint32_t* const target = s.target;
-  Result* const result = s.result;
+  PowHits<uint32_t>* const result = s.result;
   constexpr uint32_t data_mdiv = Compact ? TEST_MDIV : MDIV;
   s.queue.submit([&](sycl::handler& h) {
     h.parallel_for<SeedKernel<Compact>>(
@@ -308,7 +228,7 @@ static sycl::event submit_search(State& s, uint32_t start_nonce, unsigned count,
       st[9] = static_cast<uint64_t>(header[18]) | (static_cast<uint64_t>(nonce) << 32);
       st[10] ^= 0x06u;
       st[16] ^= 0x8000000000000000ULL;
-      keccakf1600(st);
+      data_file::keccak(st);
       for (unsigned i = 0; i < 4; ++i)
         hashes[hash * 4 + i] = {static_cast<uint32_t>(st[i]), static_cast<uint32_t>(st[i] >> 32)};
     });
@@ -343,7 +263,7 @@ static sycl::event submit_search(State& s, uint32_t start_nonce, unsigned count,
             st[0] ^= static_cast<uint64_t>(header[18]) | (static_cast<uint64_t>(nonce) << 32);
             st[1] ^= 0x06u;
             st[8] ^= 0x8000000000000000ULL;
-            keccakf1600(st);
+            data_file::keccak(st);
             for (unsigned i = 0; i < 8; ++i) {
               const unsigned at = (lane * 16 + pass * 8 + i) * 2;
               combined[at] = static_cast<uint32_t>(st[i]);
@@ -357,7 +277,7 @@ static sycl::event submit_search(State& s, uint32_t start_nonce, unsigned count,
           for (unsigned i = 0; i < 4096; ++i) {
             const uint32_t word = combined[i & 127u];
             const unsigned shift = i >> 7;
-            const uint32_t seek = shift ? mo_rotate(word, shift) : word;
+            const uint32_t seek = shift ? mom_rotate(word, shift) : word;
             const Uint2 item = data[((fnv1a(seek, accumulator) % data_mdiv) << 1) + lane];
             value.x = fnv1a(value.x, item.x);
             value.y = fnv1a(value.y, item.y);
@@ -403,17 +323,8 @@ static sycl::event submit_search(State& s, uint32_t start_nonce, unsigned count,
               hit = words[i] < target[i];
               break;
             }
-          if ((is_test && hash == 0) || hit) {
-            using Atomic =
-                sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
-                                 sycl::access::address_space::global_space>;
-            const uint32_t index = Atomic(result->count).fetch_add(1);
-            if (index < MAX_RESULTS) {
-              result->nonce[index] = nonce;
-              for (unsigned i = 0; i < 8; ++i)
-                result->hash[index][i] = words[i];
-            }
-          }
+          if ((is_test && hash == 0) || hit)
+            mom_store_pow_hit(result, nonce, words);
         });
   });
 }
@@ -432,7 +343,7 @@ int verthash(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint
   if (intensity == 0 || intensity % 16)
     throw std::string("verthash intensity must be positive and divisible by 16");
   // Bounded data is a correctness fixture only; benchmarks and all mining use the official state.
-  State& state = get_state(dev_str, is_test, is_benchmark);
+  State& state = state_for(dev_str, is_test, is_benchmark);
   std::lock_guard<std::mutex> lock(state.mutex);
   state.ensure_hashes(intensity);
   uint32_t header[20];
@@ -445,16 +356,10 @@ int verthash(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint
   state.queue.memcpy(state.header, header, sizeof(header));
   state.queue.memcpy(state.states, states, sizeof(states));
   state.queue.memcpy(state.target, target, HASH_LEN);
-  std::memset(state.result, 0, sizeof(Result));
+  std::memset(state.result, 0, sizeof(PowHits<uint32_t>));
   const sycl::event search = state.compact_test_data
                                  ? submit_search<true>(state, start_nonce, intensity, is_test)
                                  : submit_search<false>(state, start_nonce, intensity, is_test);
   sycl_wait_and_throw(search, state.device);
-  static_assert(MAX_RESULTS <= GPU_MAX_HITS);
-  const uint32_t hits = std::min(state.result->count, MAX_RESULTS);
-  for (uint32_t index = 0; index < hits; ++index) {
-    pnonce[index] = state.result->nonce[index];
-    std::memcpy(output + index * HASH_LEN, state.result->hash[index], HASH_LEN);
-  }
-  return static_cast<int>(hits);
+  return mom_take_pow_hits(*state.result, output, pnonce);
 }

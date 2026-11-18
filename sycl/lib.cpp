@@ -16,6 +16,7 @@
 #include "runtime.inc"
 #include "intensity.inc"
 using mom::cpu::add_result_dev;
-using mom::cpu::append_grouped_cpu_devs;
-using mom::cpu::cpu_thread_batches;
+using mom::cpu::cpu_algo_devs;
+using mom::cpu::CpuTopology;
+using mom::cpu::normalize_cpu_topology;
 #include "algo-params.inc"

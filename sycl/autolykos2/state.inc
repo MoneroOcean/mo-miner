@@ -46,15 +46,15 @@ struct AutolykosPipelineSelection {
 };
 #endif
 
-struct AutolykosState {
+struct State {
   sycl::device device;
   sycl::queue queue;
-  uint32_t* table = nullptr;
-  uint32_t* bhashes = nullptr;
+  UsmPtr<uint32_t> table;
+  UsmPtr<uint32_t> bhashes;
   MomBufferAllocation<AutolykosPortableResult> portable_results;
   uint32_t portable_result_cap = 0;
-  AutolykosResult* result = nullptr;
-  uint32_t* table_mismatches = nullptr;
+  UsmPtr<PowHits<>> result;
+  UsmPtr<uint32_t> table_mismatches;
   uint32_t table_height = UINT32_MAX;
   uint32_t table_n = 0;
   uint32_t table_cap_n = 0;
@@ -76,7 +76,7 @@ struct AutolykosState {
   // so the cheapest place to pay them is one concentrated rebuild per height.
 
   // Bind launch policy to one device; portable builds use buffers instead of shared USM.
-  explicit AutolykosState(const std::string& dev_str)
+  explicit State(const std::string& dev_str)
       : device(get_dev(dev_str)),
         queue(device, sycl::property_list{sycl::property::queue::in_order{}}),
         workgroup(autolykos_workgroup(device)),
@@ -86,16 +86,14 @@ struct AutolykosState {
         throw std::string("autolykos2 SYCL device does not support shared allocations");
       }
     }
-
-    set_sycl_env("SYCL_PROGRAM_COMPILE_OPTIONS", autolykos_compile_options(device));
   }
 
-  // Drain accepted kernels before releasing allocations without throwing during teardown.
-  ~AutolykosState() {
+  // Drain accepted kernels before the members release their allocations.
+  ~State() {
     sycl_cleanup_noexcept("autolykos2 wait", [&] { queue.wait_and_throw(); });
-    sycl_cleanup_noexcept("autolykos2 release", [&] { release(); });
   }
 
+  // Pick the search workgroup per backend; MOM_AUTOLYKOS2_WORKGROUP may override it.
   static unsigned autolykos_workgroup(const sycl::device& dev) {
     // CUDA/HIP: 128 is a reliable default for both the scalar diagnostic and the eight-lane
     // subgroup path. The latter is insensitive between 64 and 128 on current NVIDIA hardware.
@@ -126,17 +124,6 @@ struct AutolykosState {
         sycl_workgroup_fits(dev, static_cast<unsigned>(parsed)))
       return parsed;
     return fallback;
-  }
-
-  static const char* autolykos_compile_options(const sycl::device& dev) {
-    const char* const value = std::getenv("MOM_AUTOLYKOS2_COMPILE_OPTIONS");
-    if (value)
-      return value;
-    // SYCL_PROGRAM_COMPILE_OPTIONS is process-global; pearlhash's ESIMD (VC-backend) image rejects "-O3",
-    // and it's a measured no-op for this kernel anyway (36.44 vs 36.41 MH/s on B580). Override via
-    // MOM_AUTOLYKOS2_COMPILE_OPTIONS if needed.
-    (void)dev;
-    return "";
   }
 
   // Unlike the kawpow DAG chunking this defaults on: at live N the monolithic build is one
@@ -179,37 +166,12 @@ struct AutolykosState {
     return value && (!std::strcmp(value, "1") || !std::strcmp(value, "true"));
   }
 
-  // Release allocations and invalidate all table and capacity reuse keys.
-  void release() {
-    free_ptr(table);
-    free_ptr(bhashes);
-    if constexpr (mom_sycl_portable_opencl) {
-      portable_results.release();
-      portable_result_cap = 0;
-    } else {
-      free_ptr(result);
-    }
-    free_ptr(table_mismatches);
-    table_height = UINT32_MAX;
-    table_n = 0;
-    table_cap_n = 0;
-    bhashes_cap = 0;
-  }
-
-  void free_ptr(auto*& ptr) {
-    if (ptr)
-      sycl::free(ptr, queue);
-    ptr = nullptr;
-  }
-
   // Allocate shared hits lazily; portable builds instead retain per-nonce buffer results.
   void ensure_result() {
     if constexpr (!mom_sycl_portable_opencl) {
-      if (result)
-        return;
-      result = sycl::malloc_shared<AutolykosResult>(1, queue);
       if (!result)
-        throw std::string("Can't allocate autolykos2 SYCL result buffer");
+        result = mom_usm_alloc<PowHits<>>(queue, 1, true,
+                                          "Can't allocate autolykos2 SYCL result buffer");
     }
   }
 
@@ -229,11 +191,10 @@ struct AutolykosState {
     if (bhashes && bhashes_cap >= intensity)
       return;
     queue.wait_and_throw();
-    free_ptr(bhashes);
+    bhashes.reset();
     bhashes_cap = 0;
-    bhashes = sycl::malloc_device<uint32_t>(static_cast<uint64_t>(intensity) * 8U, queue);
-    if (!bhashes)
-      throw std::string("Can't allocate autolykos2 intermediate buffer");
+    bhashes = mom_usm_alloc<uint32_t>(queue, static_cast<uint64_t>(intensity) * 8U, false,
+                                      "Can't allocate autolykos2 intermediate buffer");
     bhashes_cap = intensity;
   }
 
@@ -274,11 +235,9 @@ struct AutolykosState {
     if (!mode)
       return;
 
-    if (!table_mismatches) {
-      table_mismatches = sycl::malloc_shared<uint32_t>(1, queue);
-      if (!table_mismatches)
-        throw std::string("Can't allocate autolykos2 verify counter");
-    }
+    if (!table_mismatches)
+      table_mismatches = mom_usm_alloc<uint32_t>(queue, 1, true,
+                                                 "Can't allocate autolykos2 verify counter");
     *table_mismatches = 0;
 
     const uint32_t stride = mode >= 2 ? 1 : 65521; // prime; ~3.3k of 216M rows in default mode
@@ -289,7 +248,7 @@ struct AutolykosState {
 
     sycl_wait_and_throw(queue.submit([&](sycl::handler& h) {
       h.parallel_for(
-          sycl::nd_range<1>(sycl::range<1>(round_up_size(count, local)), sycl::range<1>(local)),
+          sycl::nd_range<1>(sycl::range<1>(mom_round_up_size(count, local)), sycl::range<1>(local)),
           [=](sycl::nd_item<1> item) MOM_SYCL_KERNEL_ARGS_RESTRICT {
             const uint32_t gid = item.get_global_id(0);
             if (gid >= count)
@@ -331,7 +290,7 @@ struct AutolykosState {
     if (!should_use_table(is_test, n_len)) {
       if (table) {
         queue.wait_and_throw();
-        free_ptr(table);
+        table.reset();
       }
       table_height = UINT32_MAX;
       table_n = 0;
@@ -345,16 +304,15 @@ struct AutolykosState {
       throw std::string("autolykos2 SYCL GPU device does not support device allocations");
     }
 
-    const uint64_t start_ms = now_ms();
+    const uint64_t start_ms = mom_now_ms();
     table_height = UINT32_MAX;
     if (!table || table_cap_n != n_len) {
       queue.wait_and_throw();
-      free_ptr(table);
+      table.reset();
       table_cap_n = 0;
-      table = sycl::malloc_device<uint32_t>(
-          static_cast<uint64_t>(n_len) * (TABLE_ENTRY_BYTES / sizeof(uint32_t)), queue);
-      if (!table)
-        throw std::string("Can't allocate autolykos2 table");
+      table = mom_usm_alloc<uint32_t>(
+          queue, static_cast<uint64_t>(n_len) * (TABLE_ENTRY_BYTES / sizeof(uint32_t)), false,
+          "Can't allocate autolykos2 table");
       table_cap_n = n_len;
     }
 
@@ -369,7 +327,7 @@ struct AutolykosState {
       const uint32_t chunk_start = start_row;
       build_event = q.submit([&](sycl::handler& h) {
         h.parallel_for(
-            sycl::nd_range<1>(sycl::range<1>(round_up_size(current_rows, local)),
+            sycl::nd_range<1>(sycl::range<1>(mom_round_up_size(current_rows, local)),
                               sycl::range<1>(local)),
             [=](sycl::nd_item<1> item) {
               const uint32_t local_row = item.get_global_id(0);
@@ -389,9 +347,16 @@ struct AutolykosState {
     table_n = n_len;
     if (should_log || std::getenv("MOM_LOOP_STATS")) {
       char elapsed[32];
-      format_duration_ms(elapsed, sizeof(elapsed), now_ms() - start_ms);
+      mom_format_duration_ms(elapsed, sizeof(elapsed), mom_now_ms() - start_ms);
       std::fprintf(stderr, "Autolykos2 table for height %u N %u calculated (%s)\n", height, n_len,
                    elapsed);
     }
   }
 };
+
+// Program build options for sycl_set_compile_options(): none by default ("-O3" is process-global,
+// PearlHash's ESIMD image rejects it, and it measured as a no-op here: 36.44 vs 36.41 MH/s on B580);
+// MOM_AUTOLYKOS2_COMPILE_OPTIONS overrides.
+const char* autolykos2_compile_options() {
+  return std::getenv("MOM_AUTOLYKOS2_COMPILE_OPTIONS");
+}

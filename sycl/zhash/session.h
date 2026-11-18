@@ -13,8 +13,8 @@
 #include <string>
 #include <vector>
 
-#include "equihash-sycl.hpp"
-#include "zhash-session-layout.hpp"
+#include "../equihash-sycl.h"
+#include "session-layout.h"
 
 namespace mom_zhash {
 

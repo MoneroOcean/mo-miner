@@ -78,3 +78,15 @@ extern "C" void* __wrap_dlopen(const char* name, int flags) {
   deniedLibrary = true;
   return nullptr;
 }
+extern "C" void* __real_dlsym(void* handle, const char* symbol);
+extern "C" void* __real_dlvsym(void* handle, const char* symbol, const char* version);
+// Every glibc dl call replaces the pending error state; a later symbol lookup supersedes a refused
+// dlopen, so its success must not leave the refusal for dlerror() to report.
+extern "C" void* __wrap_dlsym(void* handle, const char* symbol) {
+  deniedLibrary = false;
+  return __real_dlsym(handle, symbol);
+}
+extern "C" void* __wrap_dlvsym(void* handle, const char* symbol, const char* version) {
+  deniedLibrary = false;
+  return __real_dlvsym(handle, symbol, version);
+}

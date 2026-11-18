@@ -18,8 +18,8 @@
 //   in-order queue still carries dependencies within seed, trim, compact, and recovery chains.
 // - Cycle search and final proof validation intentionally run on the host after GPU graph trimming,
 //   so C30 process CPU usage is not a reliable signal of runtime busy-waiting.
-#include "c30.h"
-#include "c30-host.h"
+#include "types.h"
+#include "host.h"
 
 #include "../lib-internal.h"
 
@@ -42,9 +42,9 @@
 #include <utility>
 #include <vector>
 
-#include "c30-kernels.inc"
+#include "device.inc"
 
-namespace mom::c30 {
+namespace mom_c30 {
 namespace {
 
 constexpr std::uint64_t kEdgeCount = 1ull << kEdgeBits;
@@ -445,12 +445,12 @@ struct Solver {
   }
 };
 
-} // namespace mom::c30
+} // namespace mom_c30
 
 namespace {
 
 struct C30State {
-  mom::c30::Solver solver;
+  mom_c30::Solver solver;
   std::mutex mutex;
   explicit C30State(const std::string& dev_str) : solver(dev_str) {
   }
@@ -467,10 +467,10 @@ C30State& c30_state(const std::string& dev_str) {
 }
 
 // Check four block-boundary endpoints on device without allocating the full C30 graph.
-int c30_portable_test(const mom::c30::Job& job, std::uint8_t* output, const std::string& dev_str) {
+int c30_portable_test(const mom_c30::Job& job, std::uint8_t* output, const std::string& dev_str) {
   sycl::queue queue(get_dev(dev_str), sycl::property::queue::in_order{});
   const sycl::device device = queue.get_device();
-  const mom::c30::host::SipKey host_key = mom::c30::host::graph_key(job.header, job.nonce);
+  const mom_c30::host::SipKey host_key = mom_c30::host::graph_key(job.header, job.nonce);
   const C30DeviceKey key{host_key.k0, host_key.k1, host_key.k2, host_key.k3};
   sycl::uint2* endpoints = sycl::malloc_shared<sycl::uint2>(4, queue);
   if (!endpoints)
@@ -516,11 +516,11 @@ int c30(unsigned, const unsigned proof_size, const std::uint8_t* input, const un
   if (input_size != 32 && input_size != 40)
     throw std::string("c30 requires a 32-byte search header or 40-byte test vector; got ") +
         std::to_string(input_size) + " bytes";
-  if (proof_size != mom::c30::kProofSize)
+  if (proof_size != mom_c30::kProofSize)
     throw std::string("c30 requires proof size 42; got ") + std::to_string(proof_size);
   // Search uses the canonical 32-byte header with an external nonce. The 40-byte header-plus-nonce
   // form remains for test vectors, whose embedded nonce is extracted below.
-  mom::c30::Job job;
+  mom_c30::Job job;
   std::copy_n(input, job.header.size(), job.header.begin());
   if (input_size == 40) {
     job.nonce = 0;
@@ -532,7 +532,7 @@ int c30(unsigned, const unsigned proof_size, const std::uint8_t* input, const un
     return c30_portable_test(job, output, dev_str);
   C30State& state = c30_state(dev_str);
   std::lock_guard<std::mutex> lock(state.mutex);
-  const std::optional<mom::c30::Solution> solution = state.solver.solve(job);
+  const std::optional<mom_c30::Solution> solution = state.solver.solve(job);
   if (!solution)
     return 0;
   *nonce = solution->nonce;

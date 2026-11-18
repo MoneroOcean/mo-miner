@@ -19,7 +19,7 @@
 // Bit-exactly mirrors the BeamHash III reference algorithm. The is_test path validates gen+mix on-device.
 //
 // Mining runs the complete BeamHash III solve path. The default is_test path keeps the cheap gen+mix
-// oracle validation; set MOM_BEAMHASH3_SOLVE for the M4 keystone full-solve vector.
+// oracle validation; set MOM_BEAMHASH3_SOLVE for the full-solve vector.
 //
 // Performance/portability notes:
 // - Sol/s varies with the nonce window. Repeating a fresh process repeats its initial work;
@@ -67,19 +67,20 @@
 #include <mutex>
 #include <type_traits>
 #include <vector>
-
+#include "../blake2b.h"
+#include "../equihash-pow.h"
 #include "../lib-internal.h"
 #include "../../native/consts.h"
 
 namespace mom_beamhash3 {
 
-#include "common.inc"
+#include "device.inc"
 #include "layout.inc"
 #include "compact-solver.inc"
-
 #include "generic-solver.inc"
 #include "state.inc"
-#include "gen-test.inc"
+#include "generation.inc"
+#include "proof.inc"
 
 } // namespace mom_beamhash3
 
@@ -125,7 +126,7 @@ static void beamhash3_log_kernel_limit(const sycl::context& context,
 
 // BeamHash III entrypoint. ABI matches zelhash (c29-like out-of-band solution count).
 //   input  : prework(32) || nonce(8) || extranonce(4) = 44-byte blob.
-//   is_test (default): M1 gen-validation -- dumps the first BEAMHASH3_TEST_ROWS raw 448-bit leaf rows
+//   is_test (default): generation validation -- dumps the first BEAMHASH3_TEST_ROWS raw 448-bit leaf rows
 //            (7 LE u64 words each) into solution_out for the JS-oracle diff. MOM_BEAMHASH3_SOLVE switches
 //            it to the full Wagner solve and dumps the found 104-byte solution(s).
 //   mining (!is_test): the full Wagner solve; writes [count:u8][count*104-byte solution] to solution_out.
@@ -137,7 +138,7 @@ int beamhash3(const unsigned, const uint32_t, const uint8_t* const input, const 
       input_size != BLOB_BYTES || intensity != 1)
     throw std::string(
       "beamhash3 requires input, output, a mining target, a 44-byte header, and intensity 1");
-  BeamState& state = beam_state(dev_str);
+  State& state = state_for(dev_str);
   std::lock_guard<std::mutex> lock(state.mutex);
   state.ensure_io();
 
@@ -149,7 +150,7 @@ int beamhash3(const unsigned, const uint32_t, const uint8_t* const input, const 
   const bool solve_in_test = is_test && std::getenv("MOM_BEAMHASH3_SOLVE") != nullptr;
 
   if (is_test && !solve_in_test) {
-    // M1: dump the first BEAMHASH3_TEST_ROWS raw 448-bit leaf rows.
+    // Dump the first BEAMHASH3_TEST_ROWS raw 448-bit leaf rows.
     const size_t rows_bytes = (size_t)BEAMHASH3_TEST_ROWS * ROW_BYTES;
     std::memset(state.rows, 0, rows_bytes);
     sycl_wait_and_throw(submit_gen_test(state.queue, state.prePow, state.rows),
@@ -163,7 +164,7 @@ int beamhash3(const unsigned, const uint32_t, const uint8_t* const input, const 
     return 1;
   }
 
-  // ---- M2/M3 full Wagner solve. -------------------------------------------------------------------
+  // ---- Full Wagner solve. ----
   // Per-solve reports are test/profiling diagnostics, not ordinary mining output.
   static const bool prof = std::getenv("MOM_BEAMHASH3_PROF") != nullptr;
   const bool log = is_test || prof;
@@ -172,7 +173,7 @@ int beamhash3(const unsigned, const uint32_t, const uint8_t* const input, const 
     throw std::string("BeamHash3 requires more local memory than this device provides");
   state.ensure_arenas(log);
   std::memset(solution_out, 0, SMALL_BLOB_SOL_LEN);
-  const uint64_t t_start = BeamState::now_ms();
+  const uint64_t t_start = mom_now_ms();
   sycl::queue& q = state.queue;
   const bool cuda_layout = mom_is_cuda(state.device);
   const bool level_zero_layout = sycl_is_level_zero_gpu(state.device);
@@ -229,12 +230,12 @@ int beamhash3(const unsigned, const uint32_t, const uint8_t* const input, const 
     // Mining profiles the second solve to exclude first-dispatch JIT. A full-solve test runs only
     // once: its requested stage diagnostics must include that first solve, including JIT time.
     const bool compact_profile = prof && compact_profile_call++ == (is_test ? 0u : 1u);
-    uint64_t compact_stage_start = compact_profile ? BeamState::now_ms() : 0;
+    uint64_t compact_stage_start = compact_profile ? mom_now_ms() : 0;
     auto compact_stage_done = [&](const char* name, sycl::event event) {
       if (!compact_profile)
         return;
       sycl_wait_and_throw(event, state.device);
-      const uint64_t now = BeamState::now_ms();
+      const uint64_t now = mom_now_ms();
       std::fprintf(stderr, "beamhash3 compact %s: %llu ms\n", name,
                    (unsigned long long)(now - compact_stage_start));
       std::fflush(stderr);
@@ -273,42 +274,42 @@ int beamhash3(const unsigned, const uint32_t, const uint8_t* const input, const 
     if (compact_pair_partitions)
       compact_event = submit_compact_round<1, true>(
           q, state.compact[0], state.compact_ns[0], state.compact[1], state.compact_ns[1], state.cand,
-          state.cand_count, BeamState::CAND_CAP, compact_pair_round1_wg);
+          state.cand_count, State::CAND_CAP, compact_pair_round1_wg);
     else
       compact_event = submit_compact_round<1>(
           q, state.compact[0], state.compact_ns[0], state.compact[1], state.compact_ns[1], state.cand,
-          state.cand_count, BeamState::CAND_CAP, compact_round_wg);
+          state.cand_count, State::CAND_CAP, compact_round_wg);
     compact_stage_done("round 1", compact_event);
     q.memset(state.compact_ns[0], 0, (size_t)compact_nbuckets(2) * sizeof(uint32_t));
     compact_event = submit_compact_round<2>(
         q, state.compact[1], state.compact_ns[1], state.compact[0], state.compact_ns[0], state.cand,
-        state.cand_count, BeamState::CAND_CAP, compact_round_wg);
+        state.cand_count, State::CAND_CAP, compact_round_wg);
     compact_stage_done("round 2", compact_event);
     q.memset(state.compact_ns[1], 0, (size_t)compact_nbuckets(3) * sizeof(uint32_t));
     compact_event = submit_compact_round<3>(
         q, state.compact[0], state.compact_ns[0], state.compact[1], state.compact_ns[1], state.cand,
-        state.cand_count, BeamState::CAND_CAP, compact_round_wg);
+        state.cand_count, State::CAND_CAP, compact_round_wg);
     compact_stage_done("round 3", compact_event);
     q.memset(state.compact_ns[0], 0, (size_t)compact_nbuckets(4) * sizeof(uint32_t));
     if (compact_pair_partitions)
       compact_event = submit_compact_round<4, true>(
           q, state.compact[1], state.compact_ns[1], state.compact[0], state.compact_ns[0], state.cand,
-          state.cand_count, BeamState::CAND_CAP, compact_pair_round_wg);
+          state.cand_count, State::CAND_CAP, compact_pair_round_wg);
     else
       compact_event = submit_compact_round<4>(
           q, state.compact[1], state.compact_ns[1], state.compact[0], state.compact_ns[0], state.cand,
-          state.cand_count, BeamState::CAND_CAP, compact_round_wg);
+          state.cand_count, State::CAND_CAP, compact_round_wg);
     compact_stage_done("round 4", compact_event);
     auto compact_tail = submit_compact_final_thin(
-        q, reinterpret_cast<const BeamLevel4Row*>(state.compact[0]),
-        state.compact_ns[0], state.compact[1], state.cand, state.cand_count, BeamState::CAND_CAP,
+        q, reinterpret_cast<const BeamLevel4Row*>(state.compact[0].get()),
+        state.compact_ns[0], state.compact[1], state.cand, state.cand_count, State::CAND_CAP,
         compact_round_wg);
     compact_stage_done("round 5", compact_tail);
     sycl_wait_and_throw(compact_tail, state.device);
     if (log) {
       std::fprintf(stderr, "beamhash3 compact solve candidates=%u (%llu ms)\n",
-                   std::min<uint32_t>(*state.cand_count, BeamState::CAND_CAP),
-                   (unsigned long long)(BeamState::now_ms() - t_start));
+                   std::min<uint32_t>(*state.cand_count, State::CAND_CAP),
+                   (unsigned long long)(mom_now_ms() - t_start));
       std::fflush(stderr);
     }
   } else
@@ -337,7 +338,7 @@ int beamhash3(const unsigned, const uint32_t, const uint8_t* const input, const 
     // Level 0 is never materialized: round-1 scatter regenerates each leaf at slot==index. Thereafter,
     // collision R immediately applies mix R+1 and advances into the opposite parity bucket arena. This
     // preserves the linear oslot as the tree-log source ID while eliminating levels 1..4's linear arena.
-    const uint64_t t_gen0 = prof ? BeamState::now_ms() : 0;
+    const uint64_t t_gen0 = prof ? mom_now_ms() : 0;
     auto gen_clear = q.memset(state.bucket_ns[0], 0, (size_t)NBUCKETS * sizeof(uint32_t));
     if (!async_pipeline)
       sycl_wait_and_throw(gen_clear, state.device);
@@ -348,7 +349,7 @@ int beamhash3(const unsigned, const uint32_t, const uint8_t* const input, const 
       sycl_wait_and_throw(gen_scatter, state.device);
     if (prof) {
       std::fprintf(stderr, "beamhash3 gen/mix/scatter r1: %llu ms\n",
-                   (unsigned long long)(BeamState::now_ms() - t_gen0));
+                   (unsigned long long)(mom_now_ms() - t_gen0));
       std::fflush(stderr);
     }
 
@@ -368,7 +369,7 @@ int beamhash3(const unsigned, const uint32_t, const uint8_t* const input, const 
           if (!async_fused)
             sycl_wait_and_throw(clear, state.device);
         }
-      const uint64_t t_co = prof ? BeamState::now_ms() : 0;
+      const uint64_t t_co = prof ? mom_now_ms() : 0;
       uint64_t t_collide_done = 0;
       if (cuda_layout) {
         // NVIDIA keeps a linear/coalesced handoff: the direct fused random wide writes regress by
@@ -381,7 +382,7 @@ int beamhash3(const unsigned, const uint32_t, const uint8_t* const input, const 
           fused_tail = collide;
         else
           sycl_wait_and_throw(collide, state.device);
-        t_collide_done = prof ? BeamState::now_ms() : 0;
+        t_collide_done = prof ? mom_now_ms() : 0;
         if constexpr (R < NUM_ROUNDS) {
           auto clear = q.memset(state.bucket_ns[0], 0, (size_t)NBUCKETS * sizeof(uint32_t));
           if (async_cuda)
@@ -428,7 +429,7 @@ int beamhash3(const unsigned, const uint32_t, const uint8_t* const input, const 
       if (!async_pipeline && (prof || log)) {
         const uint32_t out = std::min<uint32_t>(state.mixed_count[R], (uint32_t)MIXED_CAP);
         if (prof) {
-          const uint64_t t_end = BeamState::now_ms();
+          const uint64_t t_end = mom_now_ms();
           // Peak input-bucket demand (bucket_ns keeps counting past NSLOTS) -> NSLOTS sizing headroom.
           uint32_t maxns = 0;
           {
@@ -488,14 +489,14 @@ int beamhash3(const unsigned, const uint32_t, const uint8_t* const input, const 
         std::min<uint32_t>(state.mixed_count[NUM_ROUNDS], (uint32_t)MIXED_CAP);
     sycl_wait_and_throw(
         submit_final(q, cuda_layout ? state.linear_mixed : state.final_mixed,
-                     fin_count, lv, state.cand, state.cand_count, BeamState::CAND_CAP),
+                     fin_count, lv, state.cand, state.cand_count, State::CAND_CAP),
         state.device);
   }
 
-  const uint32_t cand_count = std::min<uint32_t>(*state.cand_count, BeamState::CAND_CAP);
+  const uint32_t cand_count = std::min<uint32_t>(*state.cand_count, State::CAND_CAP);
   if (log) {
     std::fprintf(stderr, "beamhash3 candidates=%u (%llu ms)\n", cand_count,
-                 (unsigned long long)(BeamState::now_ms() - t_start));
+                 (unsigned long long)(mom_now_ms() - t_start));
     std::fflush(stderr);
   }
 
@@ -513,15 +514,8 @@ int beamhash3(const unsigned, const uint32_t, const uint8_t* const input, const 
     std::vector<std::array<uint8_t, 104>> seen;
     for (uint32_t ci = 0; ci < cand_count; ++ci) {
       const uint32_t* leaves = cand_h[ci].leaves;
-      // distinct check (defensive; the device already filtered).
-      bool distinct = true;
-      for (unsigned i = 0; i < NUM_LEAVES && distinct; ++i)
-        for (unsigned j = i + 1; j < NUM_LEAVES; ++j)
-          if (leaves[i] == leaves[j]) {
-            distinct = false;
-            break;
-          }
-      if (!distinct)
+      // Defensive: the device already filtered repeated leaves.
+      if (!mom_equihash::pow::leaves_distinct(leaves, NUM_LEAVES))
         continue;
       std::array<uint8_t, 104> sol{};
       uint8_t minimal[100];
@@ -541,10 +535,9 @@ int beamhash3(const unsigned, const uint32_t, const uint8_t* const input, const 
     distinct_count = seen.size();
     std::sort(seen.begin(), seen.end());
 
-    // M5 mining path: every distinct solution is a valid BeamHash III proof, but only those whose
-    // SHA-256 meets the packed Beam network difficulty are submittable. The is_test SOLVE path keeps
-    // ALL distinct solutions (so the offline checker can assert the known keystone is present
-    // regardless of the difficulty), and benching reports the raw distinct count as the Sol/s unit.
+    // Mining submits only distinct proofs whose SHA-256 meets the packed Beam network difficulty.
+    // The is_test SOLVE path keeps every distinct solution so the offline checker can assert the known
+    // proof is present regardless of difficulty; benchmarks report the distinct count as Sol/s.
     // The packed int32 difficulty is carried in the low 4 bytes of the 32-byte big-endian target.
     const uint32_t packed = target ? (((uint32_t)target[28] << 24) | ((uint32_t)target[29] << 16) |
                                       ((uint32_t)target[30] << 8) | (uint32_t)target[31])
@@ -557,10 +550,10 @@ int beamhash3(const unsigned, const uint32_t, const uint8_t* const input, const 
     if (force_submit && !is_test && !is_benchmark && !seen.empty()) {
       size_t best = 0;
       uint8_t best_h[32];
-      sha256(seen[0].data(), 104, best_h);
+      mom_equihash::pow::sha256(seen[0].data(), 104, best_h);
       for (size_t i = 1; i < seen.size(); ++i) {
         uint8_t h[32];
-        sha256(seen[i].data(), 104, h);
+        mom_equihash::pow::sha256(seen[i].data(), 104, h);
         if (std::memcmp(h, best_h, 32) < 0) {
           std::memcpy(best_h, h, 32);
           best = i;
@@ -574,7 +567,7 @@ int beamhash3(const unsigned, const uint32_t, const uint8_t* const input, const 
           continue;
         }
         uint8_t digest[32];
-        sha256(sol.data(), 104, digest);
+        mom_equihash::pow::sha256(sol.data(), 104, digest);
         if (beam_target_reached(digest, packed))
           emit.push_back(sol);
       }
@@ -602,7 +595,7 @@ int beamhash3(const unsigned, const uint32_t, const uint8_t* const input, const 
 
   if (log) {
     std::fprintf(stderr, "beamhash3 solve done (%llu ms, %d solutions, %zu distinct)\n",
-                 (unsigned long long)(BeamState::now_ms() - t_start), n_solutions, distinct_count);
+                 (unsigned long long)(mom_now_ms() - t_start), n_solutions, distinct_count);
     std::fflush(stderr);
   }
 

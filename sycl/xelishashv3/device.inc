@@ -2,12 +2,6 @@
 #include "../blake3-device.inc"
 
 constexpr size_t WORDS = 531 * 128, HALF = WORDS / 2, BYTES = WORDS * 8;
-constexpr unsigned MAX_RESULTS = 15;
-struct Result {
-  uint32_t count;
-  uint64_t nonce[MAX_RESULTS];
-  uint8_t hash[MAX_RESULTS][32];
-};
 template <bool> class Stage1Kernel;
 template <bool, bool> class Stage3Kernel;
 #ifdef MOM_XELISHASHV3_ESIMD
@@ -31,17 +25,17 @@ inline uint64_t xelishashv3_scratch_capacity(const sycl::device& dev) {
 #endif
 
 inline uint64_t rotl64(uint64_t x, uint32_t n) {
-  return mo_rotate(x, static_cast<uint64_t>(n));
+  return mom_rotate(x, static_cast<uint64_t>(n));
 }
 inline uint64_t rotr64(uint64_t x, uint32_t n) {
-  return mo_rotate(x, static_cast<uint64_t>(-n));
+  return mom_rotate(x, static_cast<uint64_t>(-n));
 }
 // Form an exact 32x32 product; the host fixture and device path keep identical unsigned semantics.
 inline uint64_t mul_wide32(uint32_t a, uint32_t b) {
 #ifdef MOM_XELISHASHV3_HOST_TEST
   return static_cast<uint64_t>(a) * b;
 #else
-  return mo_mul_wide_u32(a, b);
+  return mom_mul_wide_u32(a, b);
 #endif
 }
 // Assemble the high half of a 64x64 product from 32-bit limbs without device uint128 support.

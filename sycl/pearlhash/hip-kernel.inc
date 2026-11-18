@@ -46,6 +46,7 @@ struct PearlHashResult {
 DEV uint32_t rotr32(uint32_t x, int n) { return (x >> n) | (x << (32 - n)); }
 DEV uint32_t rotl32(uint32_t x, int n) { return (x << n) | (x >> (32 - n)); }
 
+// BLAKE3 quarter-round on state words a,b,c,d with message words mx,my (32-bit wraparound).
 DEV void b3_g(uint32_t* s, int a, int b, int c, int d, uint32_t mx, uint32_t my) {
   s[a] = s[a] + s[b] + mx;
   s[d] = rotr32(s[d] ^ s[a], 16);
@@ -57,6 +58,7 @@ DEV void b3_g(uint32_t* s, int a, int b, int c, int d, uint32_t mx, uint32_t my)
   s[b] = rotr32(s[b] ^ s[c], 7);
 }
 
+// One BLAKE3 round; the caller permutes m between rounds.
 DEV void b3_round(uint32_t* s, const uint32_t* m) {
   b3_g(s, 0, 4, 8, 12, m[0], m[1]);
   b3_g(s, 1, 5, 9, 13, m[2], m[3]);
@@ -106,6 +108,7 @@ DEV void b3_keyed_64(const uint32_t block[16], const uint8_t* key, uint32_t out[
   }
 }
 
+// Keyed-BLAKE3 one 16-word transcript and test the little-endian jackpot <= target inclusively.
 DEV bool tile_wins(const uint32_t tr[16], const uint8_t* key, const uint8_t* target,
                    uint32_t jackpot[8]) {
   b3_keyed_64(tr, key, jackpot);
@@ -131,6 +134,7 @@ DEV uint32_t pearlhash_xor_dpp(uint32_t x) {
 }
 #endif
 
+// Debug-only position-salted transcript checksum (MOM_PEARLHASH_CHK); not part of consensus.
 DEV uint32_t tile_mix(uint32_t row, uint32_t col, const uint32_t tr[16]) {
   uint32_t h = row * 2654435761u + col * 2246822519u + 0x9e3779b9u;
   #pragma unroll
@@ -140,6 +144,8 @@ DEV uint32_t tile_mix(uint32_t row, uint32_t col, const uint32_t tr[16]) {
   return h;
 }
 
+// Map a wave index to its (ER*16)x(EC*16) output block. Grids that are multiples of the cache
+// block walk rows inside column bands for L2 reuse; others fall back to row-major order.
 DEV void wave_groups(uint32_t wave, int m, int n, int* row_group, int* col_group) {
   const int blocks_m = m / (16 * PEARLHASH_ER) + (m % (16 * PEARLHASH_ER) != 0);
   const int blocks_n = n / (16 * PEARLHASH_EC) + (n % (16 * PEARLHASH_EC) != 0);
@@ -184,6 +190,9 @@ DEV __amdgpu_buffer_rsrc_t pearlhash_input_resource(const int8_t* base, int tile
 #else
 #define PEARLHASH_RAW_BUFFER 0
 #endif
+// One wave64 per (ER*16)x(EC*16) block of K-packed A/B: accumulate int8 WMMA tiles, fold each
+// rank checkpoint into the 4x64 proof transcripts, then hash every transcript in-kernel and
+// publish the first winner. Tail waves still execute the collectives on clamped tiles.
 extern "C" __global__ __launch_bounds__(256)
 void pearlhash_wmma_hash_fused(const int8_t* A, const int8_t* B,
                                const uint8_t* key, const uint8_t* target,

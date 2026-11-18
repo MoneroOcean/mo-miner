@@ -3,7 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "equihash-core.hpp"
+#include "../equihash-core.h"
 
 namespace mom_zhash {
 

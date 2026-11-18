@@ -38,59 +38,34 @@ bool Core::process_message(const std::string& type, const MessageValues& v) {
     if (!v.contains("job_id"))    throw std::string("Missing job_id job key");
     if (!v.contains("job_token") || v.at("job_token").empty())
       throw std::string("Missing job_token job key");
-    const std::string new_target_str = strip_hex_prefix(v.at("target"));
-    if (new_target_str.size() & 1) {
-      throw std::string("Bad target hex");
-    }
-
     const std::string algo = v.contains("algo") ? v.at("algo") : "";
-    const bool is_kawpow_target = algo == "kawpow";
-    // etchash/autolykos2/pearlhash/fishhash/xelishashv3 use a full 32-byte target instead of a single 64-bit word
-    // (fishhash: live Iron Fish sends a 256-bit big-endian target -> m_target_bin -> meets_target_be_dev)
-    const bool is_big_target = algo == "etchash" || algo == "octopus" || algo == "autolykos2" || algo == "pearlhash" ||
-      algo == "fishhash" || algo == "c30" || algo == "equihash192_7" ||
-      algo == "zelhash" || algo == "zhash" || algo == "beamhash3" ||
-      // Kaspa-family hashes and Verthash compare against a full 256-bit boundary via m_target_bin.
-      algo == "karlsenhashv2" || algo == "hoohash" || algo == "walahash" || algo == "verthash" ||
-      // XelisHashV3 compares the digest and target in consensus byte order (index 0 is the MSB).
-      algo == "xelishashv3" || algo == "nexapow";
-    const uint64_t new_target = is_big_target ? 1 : parse_target_hex(new_target_str, is_kawpow_target);
-    uint8_t new_target_bin[HASH_LEN]{};
-    if (is_big_target) {
-      parse_big_target_hex(new_target_str, new_target_bin);
-    }
+    mom::job_boundary::ShareTarget target;
+    if (!mom::job_boundary::parse_share_target(
+          algo, mom::job_boundary::strip_hex_prefix(v.at("target")), target))
+      throw std::string("Bad target hex");
     // Preserve the original pool base target for Pearl's native pattern selection.
     // A final jackpot target has no base field and must never be scaled twice.
     const bool new_pearlhash_has_base_target = algo == "pearlhash" &&
         v.contains("pearlhash_base_target");
     uint8_t new_pearlhash_base_target[HASH_LEN]{};
     if (new_pearlhash_has_base_target) {
-      std::string base = strip_hex_prefix(v.at("pearlhash_base_target"));
+      std::string base(mom::job_boundary::strip_hex_prefix(v.at("pearlhash_base_target")));
       if (base.empty() || base.size() > HASH_LEN * 2)
         throw std::string("Bad PearlHash base target hex");
       if (base.size() & 1)
         base.insert(0, 1, '0');
-      parse_big_target_hex(base, new_pearlhash_base_target);
+      if (!mom::job_boundary::parse_big_target(base, new_pearlhash_base_target))
+        throw std::string("Bad target hex");
     }
-    // The KarlsenHashV2 and Verthash kernels compare their little-endian-stored 32-byte hashes
-    // against a little-endian target array (index 31 = MSB), but the share target hex is big-endian.
-    // Reverse the bytes so target[31] is the MSB, matching the hash's LE byte layout. (is_test passes a
-    // zero target, which is symmetric, so the offline vector path is unaffected.)
-    if (is_big_target && (algo == "karlsenhashv2" || algo == "hoohash" || algo == "walahash" || algo == "verthash"))
-      for (unsigned i = 0; i < HASH_LEN / 2; ++i) {
-        const uint8_t t = new_target_bin[i];
-        new_target_bin[i] = new_target_bin[HASH_LEN - 1 - i];
-        new_target_bin[HASH_LEN - 1 - i] = t;
-      }
 
     replace_job(JobMode::mine, true, v, [&]() {
-      m_target    = new_target;
+      m_target    = target.word;
       // This callback also runs on same-input retargets. Always replace/clear
       // both the flag and bytes so final-target jobs cannot reuse an old base.
       m_pearlhash_has_base_target = new_pearlhash_has_base_target;
       std::memcpy(m_pearlhash_base_target_bin, new_pearlhash_base_target, HASH_LEN);
-      if (is_big_target) {
-        std::memcpy(m_target_bin, new_target_bin, HASH_LEN);
+      if (target.full) {
+        std::memcpy(m_target_bin, target.bytes, HASH_LEN);
       }
       m_pool_id   = v.at("pool_id");
       m_worker_id = v.at("worker_id");

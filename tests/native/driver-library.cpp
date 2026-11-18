@@ -9,6 +9,8 @@ static void* recordLoad(const char* name, int flags) {
 }
 extern "C" void* __real_dlopen(const char* name, int flags) {return recordLoad(name, flags);}
 extern "C" char* __real_dlerror() {return nullptr;}
+extern "C" void* __real_dlsym(void*, const char*) {return nullptr;}
+extern "C" void* __real_dlvsym(void*, const char*, const char*) {return nullptr;}
 extern "C" void* __wrap_dlopen(const char* name, int flags);
 #ifdef MOM_TEST_KHRONOS_ICD
 // --wrap also rewrites __real_dlopen references back to dlopen. Intercept that final edge;

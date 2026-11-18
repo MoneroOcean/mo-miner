@@ -3,7 +3,7 @@
 
 namespace {
 
-constexpr std::uint32_t C30_EDGE_MASK = (1u << mom::c30::kEdgeBits) - 1u;
+constexpr std::uint32_t C30_EDGE_MASK = (1u << mom_c30::kEdgeBits) - 1u;
 constexpr std::uint32_t C30_EDGE_BLOCK_MASK = 63u;
 constexpr std::uint32_t C30_EDGE_BLOCK_SIZE = C30_EDGE_BLOCK_MASK + 1u;
 #ifndef MOM_C30_BUCKET_BITS
@@ -28,7 +28,7 @@ constexpr std::uint32_t C30_SEED_BLOCKS_PER_ITEM = 1u;
 #endif
 constexpr std::uint32_t C30_BUCKET_BITS = MOM_C30_BUCKET_BITS;
 constexpr std::uint32_t C30_BUCKET_COUNT = 1u << C30_BUCKET_BITS;
-constexpr std::uint32_t C30_COUNTER_WORDS = 1u << (mom::c30::kEdgeBits - C30_BUCKET_BITS - 5u);
+constexpr std::uint32_t C30_COUNTER_WORDS = 1u << (mom_c30::kEdgeBits - C30_BUCKET_BITS - 5u);
 constexpr std::uint32_t C30_COUNTER_WORDS_2 = C30_COUNTER_WORDS * 2u;
 constexpr std::uint32_t C30_SPARSE_EDGE_CAPACITY = 512u;
 constexpr std::uint32_t C30_SPARSE_TABLE_SIZE = 1024u;
@@ -324,7 +324,7 @@ sycl::event c30_seed_fixed(sycl::queue& queue, const C30DeviceKey key, std::uint
                            std::uint32_t* overflow) {
   constexpr std::size_t local_size = C30_SEED_LOCAL_SIZE;
   constexpr std::size_t work_items =
-      (1ull << mom::c30::kEdgeBits) / (C30_EDGE_BLOCK_SIZE * C30_SEED_BLOCKS_PER_ITEM);
+      (1ull << mom_c30::kEdgeBits) / (C30_EDGE_BLOCK_SIZE * C30_SEED_BLOCKS_PER_ITEM);
   return queue.submit([&](sycl::handler& handler) {
     handler.parallel_for(
         sycl::nd_range<1>{sycl::range<1>{work_items}, sycl::range<1>{local_size}},
@@ -359,7 +359,7 @@ sycl::event c30_seed_packed(sycl::queue& queue, const C30DeviceKey key, std::uin
                             std::uint32_t* overflow) {
   constexpr std::size_t local_size = C30_SEED_LOCAL_SIZE;
   constexpr std::size_t work_items =
-      (1ull << mom::c30::kEdgeBits) / (C30_EDGE_BLOCK_SIZE * C30_SEED_BLOCKS_PER_ITEM);
+      (1ull << mom_c30::kEdgeBits) / (C30_EDGE_BLOCK_SIZE * C30_SEED_BLOCKS_PER_ITEM);
   return queue.submit([&](sycl::handler& handler) {
     handler.parallel_for(
         sycl::nd_range<1>{sycl::range<1>{work_items}, sycl::range<1>{local_size}},
@@ -632,7 +632,7 @@ sycl::event c30_recover(sycl::queue& queue, const C30DeviceKey key,
                         const std::uint32_t* target_u, const std::uint32_t* target_v,
                         std::uint32_t* recovered) {
   constexpr std::size_t local_size = C30_SEED_LOCAL_SIZE;
-  constexpr std::size_t block_count = 1ull << (mom::c30::kEdgeBits - 6u);
+  constexpr std::size_t block_count = 1ull << (mom_c30::kEdgeBits - 6u);
   return queue.submit([&](sycl::handler& handler) {
     sycl::local_accessor<std::uint32_t, 1> table{sycl::range<1>{C30_RECOVER_TABLE_SIZE}, handler};
     handler.parallel_for(
@@ -642,7 +642,7 @@ sycl::event c30_recover(sycl::queue& queue, const C30DeviceKey key,
           for (std::uint32_t slot = lane; slot < C30_RECOVER_TABLE_SIZE; slot += local_size)
             table[slot] = 0;
           sycl::group_barrier(item.get_group());
-          for (std::uint32_t index = lane; index < mom::c30::kProofSize; index += local_size)
+          for (std::uint32_t index = lane; index < mom_c30::kProofSize; index += local_size)
             c30_recover_insert(table, target_u, target_v, index);
           sycl::group_barrier(item.get_group());
           const std::uint32_t block = item.get_global_id(0);
@@ -664,7 +664,7 @@ sycl::event c30_recover(sycl::queue& queue, const C30DeviceKey key,
 sycl::event c30_recover32(sycl::queue& queue, const C30DeviceKey key,
                           const std::uint32_t* target_u, const std::uint32_t* target_v,
                           std::uint32_t* recovered) {
-  constexpr std::size_t block_count = 1ull << (mom::c30::kEdgeBits - 6u);
+  constexpr std::size_t block_count = 1ull << (mom_c30::kEdgeBits - 6u);
   return queue.submit([&](sycl::handler& handler) {
     sycl::local_accessor<std::uint32_t, 1> table{sycl::range<1>{C30_RECOVER_TABLE_SIZE}, handler};
     handler.parallel_for(
@@ -675,7 +675,7 @@ sycl::event c30_recover32(sycl::queue& queue, const C30DeviceKey key,
                slot += C30_SEED_LOCAL_SIZE)
             table[slot] = 0;
           sycl::group_barrier(item.get_group());
-          for (std::uint32_t index = lane; index < mom::c30::kProofSize;
+          for (std::uint32_t index = lane; index < mom_c30::kProofSize;
                index += C30_SEED_LOCAL_SIZE)
             c30_recover_insert(table, target_u, target_v, index);
           sycl::group_barrier(item.get_group());

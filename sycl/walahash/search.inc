@@ -1,15 +1,3 @@
-// Reserve a bounded hit slot; kernel completion publishes its payload.
-inline void store_result(Result* const result, const uint64_t nonce, const uint8_t hash[32]) {
-  using A = sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
-                             sycl::access::address_space::global_space>;
-  const uint32_t index = A(result->count).fetch_add(1);
-  if (index >= MAX_RESULTS)
-    return;
-  result->nonce[index] = nonce;
-  for (unsigned i = 0; i < 32; ++i)
-    result->hash[index][i] = hash[i];
-}
-
 // Portable and accelerated search submissions; in-order queues connect the staged routes.
 template <bool Native, bool FixedHashes>
 static sycl::event search(State& s, uint64_t first, unsigned count, bool is_test,
@@ -21,7 +9,7 @@ static sycl::event search(State& s, uint64_t first, unsigned count, bool is_test
   const Blake3Cv prehash_cv = s.prehash_cv;
 #endif
   const uint8_t* target = s.target;
-  Result* result = s.result;
+  PowHits<>* result = s.result;
   return s.queue.submit([&](sycl::handler& h) {
     h.parallel_for<SearchKernel<Native, FixedHashes>>(
         sycl::nd_range<1>(global, work_group),
@@ -86,14 +74,8 @@ static sycl::event search(State& s, uint64_t first, unsigned count, bool is_test
           else
 #endif
             blake3_dev(pow, 32, mixed, 32);
-          bool hit = true;
-          for (int i = 31; i >= 0; --i)
-            if (pow[i] != target[i]) {
-              hit = pow[i] < target[i];
-              break;
-            }
-          if ((is_test && gid == 0) || hit)
-            store_result(result, nonce, pow);
+          if ((is_test && gid == 0) || mom_meets_target_le(pow, target))
+            mom_store_pow_hit(result, nonce, pow);
         });
   });
 }
@@ -131,8 +113,8 @@ static sycl::event prehash(State& s, uint64_t first, unsigned count) {
 }
 // Multiply packed vectors by the job matrix and fold nibble products into the original hashes.
 template <unsigned Width> static sycl::event multiply_esimd(State& s, unsigned count) {
-  const int8_t* matrix = reinterpret_cast<int8_t*>(s.matrix);
-  const int8_t* vectors = reinterpret_cast<int8_t*>(s.vectors);
+  const int8_t* matrix = reinterpret_cast<int8_t*>(s.matrix.get());
+  const int8_t* vectors = reinterpret_cast<int8_t*>(s.vectors.get());
   const uint8_t* hashes = s.hashes;
   uint8_t* mixed = s.mixed;
   const unsigned stride = s.capacity;
@@ -169,7 +151,7 @@ static sycl::event finalize(State& s, uint64_t first, unsigned count, bool is_te
   const uint8_t* mixed = s.mixed;
   const unsigned stride = s.capacity;
   const uint8_t* target = s.target;
-  Result* result = s.result;
+  PowHits<>* result = s.result;
   return s.queue.submit([&](sycl::handler& h) {
     h.parallel_for<FinalKernel>(
         sycl::range<1>(count), [=](sycl::id<1> id) MOM_SYCL_KERNEL_ARGS_RESTRICT {
@@ -190,7 +172,7 @@ static sycl::event finalize(State& s, uint64_t first, unsigned count, bool is_te
         uint8_t hash[32];
         for (unsigned i = 0; i < 32; ++i)
           hash[i] = pow[i >> 2] >> (8 * (i & 3));
-        store_result(result, first + gid, hash);
+        mom_store_pow_hit(result, first + gid, hash);
       }
     });
   });
@@ -221,7 +203,7 @@ static sycl::event prehash_amd(State& s, uint64_t first, unsigned count) {
 static sycl::event finalize_amd(State& s, uint64_t first, unsigned count, bool is_test) {
   const uint8_t* mixed = s.mixed;
   const uint8_t* target = s.target;
-  Result* result = s.result;
+  PowHits<>* result = s.result;
   return s.queue.submit([&](sycl::handler& h) {
     h.parallel_for<AmdFinalKernel>(
         sycl::range<1>(count), [=](sycl::id<1> id) MOM_SYCL_KERNEL_ARGS_RESTRICT {
@@ -233,14 +215,8 @@ static sycl::event finalize_amd(State& s, uint64_t first, unsigned count, bool i
       for (unsigned i = 0; i < 32; ++i)
         block[i] = mixed[(size_t)gid * 32 + i];
       b3_32(pow_words, block_words);
-      bool hit = true;
-      for (int i = 31; i >= 0; --i)
-        if (pow[i] != target[i]) {
-          hit = pow[i] < target[i];
-          break;
-        }
-      if ((is_test && gid == 0) || hit)
-        store_result(result, first + gid, pow);
+      if ((is_test && gid == 0) || mom_meets_target_le(pow, target))
+        mom_store_pow_hit(result, first + gid, pow);
     });
   });
 }

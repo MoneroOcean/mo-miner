@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <cstdlib>
 
-#include "../../sycl/zhash/equihash-core.hpp"
+#include "../../sycl/equihash-core.h"
 
 namespace {
 

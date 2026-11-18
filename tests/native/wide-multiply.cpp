@@ -7,7 +7,7 @@
 
 int main() {
   const auto check = [](uint64_t a, uint64_t b) {
-    assert(mo_mul_wide_u32(uint32_t(a), uint32_t(b)) == uint64_t(uint32_t(a)) * uint32_t(b));
+    assert(mom_mul_wide_u32(uint32_t(a), uint32_t(b)) == uint64_t(uint32_t(a)) * uint32_t(b));
     assert(mul_hi64_portable(a, b) == uint64_t((static_cast<unsigned __int128>(a) * b) >> 64));
   };
   constexpr std::array<uint64_t, 12> edges{

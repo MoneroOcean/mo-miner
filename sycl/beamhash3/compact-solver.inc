@@ -43,6 +43,7 @@ SYCL_ESIMD_FUNCTION inline U64Pair rotl(U64Pair value) {
   }
 }
 
+// SipHash nonce (index << 3) + Offset of one leaf work word, as 32-bit halves.
 template <unsigned Offset>
 SYCL_ESIMD_FUNCTION inline U64Pair nonce(U32 index) {
   const U32 base_lo = index << 3;

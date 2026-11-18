@@ -143,12 +143,6 @@ public:
     return true;
   }
 
-  static uint64_t now_ms() {
-    return std::chrono::duration_cast<std::chrono::milliseconds>(
-               std::chrono::steady_clock::now().time_since_epoch())
-        .count();
-  }
-
   // Resolve explicit DAG policy before automatic device-capacity selection.
   bool wants_full_dag() const {
     if (device.is_cpu() || shared_io || std::getenv("MOM_OCTOPUS_LIGHT"))
@@ -202,7 +196,7 @@ public:
     if (!candidate)
       return; // The light path remains correct on small or fragmented devices.
 
-    const uint64_t start = now_ms();
+    const uint64_t start = mom_now_ms();
     const uint32_t chunk =
         1U << 18; // Keep individual dispatches below Windows WDDM watchdog limits.
     try {
@@ -223,7 +217,7 @@ public:
     full_dag = true;
     if (log)
       std::fprintf(stderr, "Octopus DAG epoch %u built (%.2f s)\n", epoch,
-                   static_cast<double>(now_ms() - start) / 1000.0);
+                   static_cast<double>(mom_now_ms() - start) / 1000.0);
   }
 
   // Refresh epoch resources before search; test mode retains its bounded DAG policy.

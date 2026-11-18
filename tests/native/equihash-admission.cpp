@@ -20,12 +20,12 @@ struct device {
 
 // Production sycl_local_memory_fits from sycl/lib-internal.h.
 #include "local_memory_fits.inc"
-#include "../../sycl/zhash/zhash-session-layout.hpp"
+#include "../../sycl/zhash/session-layout.h"
 
 namespace mom_equihash192_7 {
 namespace direct {
 using Spec = mom_equihash::Equihash192_7;
-// Production BucketLayout and ProductionSlotsPerBucket from equihash192-7-direct.hpp.
+// Production BucketLayout and ProductionSlotsPerBucket from sycl/equihash192-7/layout.h.
 #include "equihash192_layout.inc"
 } // namespace direct
 // Session<>::Layout is ProductionArena's level-0 layout, ArenaLayout<12, ProductionSlotsPerBucket>.

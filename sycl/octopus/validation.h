@@ -2,7 +2,7 @@
 
 #pragma once
 
-namespace mom::octopus {
+namespace mom_octopus {
 
 enum class TestPathFailure { none, full_dag, native };
 
@@ -18,4 +18,4 @@ constexpr TestPathFailure test_path_failure(const bool require_full_dag, const b
   return TestPathFailure::none;
 }
 
-} // namespace mom::octopus
+} // namespace mom_octopus

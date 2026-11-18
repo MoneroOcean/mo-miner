@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <iostream>
 
-#include "../../sycl/zhash/zhash-session-layout.hpp"
+#include "../../sycl/zhash/session-layout.h"
 
 namespace {
 

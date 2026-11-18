@@ -100,6 +100,7 @@ __device__ __forceinline__ uint32_t pearlhash_xor3(uint32_t a, uint32_t b, uint3
                : "=r"(out) : "r"(a), "r"(b), "r"(c));
   return out;
 }
+// BLAKE3 quarter-round on state words a,b,c,d with message words x,y (32-bit wraparound).
 __device__ __forceinline__ void b3_g(
     uint32_t* s, int a, int b, int c, int d, uint32_t x, uint32_t y) {
   s[a] += s[b] + x;
@@ -111,6 +112,7 @@ __device__ __forceinline__ void b3_g(
   s[c] += s[d];
   s[b] = rotr32(s[b] ^ s[c], 7);
 }
+// One BLAKE3 round; the caller permutes m between rounds.
 __device__ __forceinline__ void b3_round(uint32_t* s, const uint32_t* m) {
   b3_g(s,0,4,8,12,m[0],m[1]);
   b3_g(s,1,5,9,13,m[2],m[3]);
@@ -121,6 +123,8 @@ __device__ __forceinline__ void b3_round(uint32_t* s, const uint32_t* m) {
   b3_g(s,2,7,8,13,m[12],m[13]);
   b3_g(s,3,4,9,14,m[14],m[15]);
 }
+// Debug-only FNV-style checksum of one tile's transcript and position, summed across tiles so
+// MOM_PEARLHASH_CHK runs can compare backends. It is not part of consensus.
 __device__ __forceinline__ uint32_t tile_mix(
     uint32_t row, uint32_t col, const uint32_t* tr) {
   uint32_t h = row * 2654435761u + col * 2246822519u + 0x9e3779b9u;
@@ -131,6 +135,9 @@ __device__ __forceinline__ uint32_t tile_mix(
   return h;
 }
 
+// One thread per 16x16 tile: keyed-BLAKE3 the tile's 64-byte transcript record (the root
+// compression only) and compare the jackpot little-endian against the target. The first winner
+// claims `result` with atomicExch; later winners of the same launch are dropped.
 extern "C" __global__ __launch_bounds__(256)
 void pearlhash_cuda_hash(const uint32_t* transcript, const unsigned char* key,
                      const unsigned char* target, PearlHashResult* result,
@@ -218,6 +225,9 @@ void pearlhash_cuda_hash(const uint32_t* transcript, const unsigned char* key,
 }
 
 #if PEARLHASH_RANK != 128
+// Rank-256 staged CuTe mainloop: each 128x256 CTA streams K128 slices of A/B through swizzled
+// shared memory and emits one 16-word XOR/rotl13 transcript record per 16x16 output tile.
+// m/n/k are host-admitted multiples of the CTA tile; A and B are K-major int8.
 extern "C" __global__ __launch_bounds__(256)
 void pearlhash_cuda_gemm(const int8_t* __restrict__ ap, const int8_t* __restrict__ bp,
                      int m, int n, int k, uint32_t* transcript_out) {

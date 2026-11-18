@@ -37,6 +37,7 @@
 namespace mom_kawpow {
 
 #include "program.inc"
+#include "../ethash-dag.inc"
 #include "state.inc"
 
 // The portable correctness fixture still builds and searches a real ProgPoW cache/DAG, but keeps
@@ -50,18 +51,19 @@ static bool kawpow_portable_test(const bool is_test, const bool is_benchmark,
 }
 
 // The environment cleanup hook calls kawpow_cleanup_states() at the correct runtime-lifetime boundary.
-static DeviceStateRegistry<KawpowState>& kawpow_registry() {
-  static auto* const registry = new DeviceStateRegistry<KawpowState>;
-  return *registry;
+static DeviceStateRegistry<State>& registry() {
+  static auto* const value = new DeviceStateRegistry<State>;
+  return *value;
 }
 
-static KawpowState& kawpow_state(const std::string& dev_str) {
-  return kawpow_registry().get(dev_str, [&] { return std::make_unique<KawpowState>(dev_str); });
+static State& state_for(const std::string& dev_str) {
+  return registry().get(dev_str, [&] { return std::make_unique<State>(dev_str); });
 }
 
+// Release device state before the compiler runtime unloads without escaping exceptions.
 void kawpow_cleanup_states() noexcept {
   try {
-    kawpow_registry().clear();
+    registry().clear();
   } catch (const std::exception& error) {
     std::fprintf(stderr, "kawpow: ordered SYCL cleanup failed: %s\n", error.what());
   } catch (...) {
@@ -96,7 +98,7 @@ static int kawpow_core(const KawpowVariant& variant, const uint32_t block_height
   for (unsigned i = 0; i < 15; ++i)
     seal_params.magic[i] = variant.magic[i];
 
-  KawpowState& state = kawpow_state(dev_str);
+  State& state = state_for(dev_str);
   std::lock_guard<std::mutex> state_lock(state.mutex);
   // Publish this call's seal into the state (under the mutex) so build_period_bundle bakes it into the
   // runtime-JIT source and the bundle cache key reflects it. A device shared across algos can switch seal.
@@ -153,7 +155,7 @@ static int kawpow_core(const KawpowVariant& variant, const uint32_t block_height
   if (search_intensity > std::numeric_limits<uint32_t>::max() - (state.workgroup - 1))
     throw std::string("KawPow intensity is too large");
   const size_t global_size =
-      round_up_size(std::max(search_intensity, state.workgroup), state.workgroup);
+      mom_round_up_size(std::max(search_intensity, state.workgroup), state.workgroup);
   const uint32_t dag_elements = static_cast<uint32_t>(dag_bytes / 256);
   const FastModData dag_mod = make_fast_mod_data(dag_elements);
   MomSyclHostTransferGuard host_transfers(state.queue, "kawpow host transfers");
@@ -167,7 +169,7 @@ static int kawpow_core(const KawpowVariant& variant, const uint32_t block_height
   sycl::queue& q = state.queue;
   const unsigned local_size = state.workgroup;
   uint8_t* const d_input = state.input;
-  const DagLoad* const d_dag_load = reinterpret_cast<const DagLoad*>(state.dag);
+  const DagLoad* const d_dag_load = reinterpret_cast<const DagLoad*>(state.dag.get());
   KawpowResult* const d_result = state.result;
 
   // Capability/driver policy selects subgroup or local-memory exchange. Explicit overrides keep

@@ -1,53 +1,5 @@
-inline uint64_t b2b_rotr64(uint64_t x, unsigned n) {
-  return (x >> n) | (x << (64 - n));
-}
-inline uint64_t b2b_load64(const uint8_t* p) {
-  return (uint64_t)p[0] | ((uint64_t)p[1] << 8) | ((uint64_t)p[2] << 16) | ((uint64_t)p[3] << 24) |
-         ((uint64_t)p[4] << 32) | ((uint64_t)p[5] << 40) | ((uint64_t)p[6] << 48) |
-         ((uint64_t)p[7] << 56);
-}
 inline uint32_t b2b_load32le(const uint8_t* p) {
   return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
-}
-
-// Apply the prescribed BLAKE2b G primitive for the Flux generation hash.
-inline void b2b_g(uint64_t* v, unsigned a, unsigned b, unsigned c, unsigned d, uint64_t x,
-                  uint64_t y) {
-  v[a] = v[a] + v[b] + x;
-  v[d] = b2b_rotr64(v[d] ^ v[a], 32);
-  v[c] = v[c] + v[d];
-  v[b] = b2b_rotr64(v[b] ^ v[c], 24);
-  v[a] = v[a] + v[b] + y;
-  v[d] = b2b_rotr64(v[d] ^ v[a], 16);
-  v[c] = v[c] + v[d];
-  v[b] = b2b_rotr64(v[b] ^ v[c], 63);
-}
-
-// Compress a 128-byte block (16 u64 m[]) into the 8-word chain h[] with counter t0/t1 and final flag.
-// Compress one personalized block with explicit byte-count and last-block state.
-inline void b2b_compress(uint64_t h[8], const uint64_t m[16], uint64_t t0, uint64_t t1, bool last) {
-  uint64_t v[16];
-  for (unsigned i = 0; i < 8; ++i) {
-    v[i] = h[i];
-    v[i + 8] = B2B_IV[i];
-  }
-  v[12] ^= t0;
-  v[13] ^= t1;
-  if (last)
-    v[14] ^= 0xffffffffffffffffull;
-  for (unsigned r = 0; r < 12; ++r) {
-    const uint8_t* s = B2B_SIGMA[r];
-    b2b_g(v, 0, 4, 8, 12, m[s[0]], m[s[1]]);
-    b2b_g(v, 1, 5, 9, 13, m[s[2]], m[s[3]]);
-    b2b_g(v, 2, 6, 10, 14, m[s[4]], m[s[5]]);
-    b2b_g(v, 3, 7, 11, 15, m[s[6]], m[s[7]]);
-    b2b_g(v, 0, 5, 10, 15, m[s[8]], m[s[9]]);
-    b2b_g(v, 1, 6, 11, 12, m[s[10]], m[s[11]]);
-    b2b_g(v, 2, 7, 8, 13, m[s[12]], m[s[13]]);
-    b2b_g(v, 3, 4, 9, 14, m[s[14]], m[s[15]]);
-  }
-  for (unsigned i = 0; i < 8; ++i)
-    h[i] ^= v[i] ^ v[i + 8];
 }
 
 // The personalized blake2b base state after absorbing the full 140-byte header: 8 chain words +
@@ -58,44 +10,14 @@ struct BaseState {
   uint8_t pending[12]; // header bytes 128..139
 };
 
-// Build the personalized base state on the host from the 140-byte header.
-// Personalize the ZelProof hash and retain the header's pending tail for indexed generation.
+// Personalize BLAKE2b as "ZelProof" || le32(N) || le32(K) on the host, compress the first header
+// block and retain the 12-byte tail for indexed generation.
 static BaseState make_base_state(const uint8_t* header140) {
-  // Personalization param block (64 bytes): out_len=64, fanout=1, depth=1, personal[48..63].
-  // personal = "ZelProof" || htole32(125) || htole32(4).
-  uint8_t param[64] = {0};
-  param[0] = HASH_OUTPUT; // 64
-  param[2] = 1;           // fanout
-  param[3] = 1;           // depth
-  const uint8_t personal[16] = {
-      'Z',
-      'e',
-      'l',
-      'P',
-      'r',
-      'o',
-      'o',
-      'f',
-      (uint8_t)(N & 0xFF),
-      (uint8_t)((N >> 8) & 0xFF),
-      (uint8_t)((N >> 16) & 0xFF),
-      (uint8_t)((N >> 24) & 0xFF),
-      (uint8_t)(K & 0xFF),
-      (uint8_t)((K >> 8) & 0xFF),
-      (uint8_t)((K >> 16) & 0xFF),
-      (uint8_t)((K >> 24) & 0xFF),
-  };
-  std::memcpy(param + 48, personal, 16);
-
+  uint8_t personal[16];
+  mom_blake2b::equihash_personal("ZelProof", N, K, personal);
   BaseState st;
-  for (unsigned i = 0; i < 8; ++i)
-    st.h[i] = B2B_IV[i] ^ b2b_load64(param + i * 8);
-
-  // Absorb 140 header bytes: one full 128-byte block compressed (t0=128), 12 bytes left pending.
-  uint64_t m[16];
-  for (unsigned i = 0; i < 16; ++i)
-    m[i] = b2b_load64(header140 + i * 8);
-  b2b_compress(st.h, m, 128, 0, false);
+  mom_blake2b::init(st.h, HASH_OUTPUT, personal);
+  mom_blake2b::compress_bytes(st.h, header140, 128, false);
   for (unsigned i = 0; i < 12; ++i)
     st.pending[i] = header140[128 + i];
   return st;
@@ -119,10 +41,7 @@ inline void stock_hash_words(const uint64_t base_h[8], const uint8_t base_pendin
   uint64_t h[8];
   for (unsigned i = 0; i < 8; ++i)
     h[i] = base_h[i];
-  uint64_t m[16];
-  for (unsigned i = 0; i < 16; ++i)
-    m[i] = b2b_load64(blk + i * 8);
-  b2b_compress(h, m, 144, 0, true); // t0 = 128 (base) + 16 (pending) = 144; last block
+  mom_blake2b::compress_bytes(h, blk, 144, true); // 128 base + 16 pending bytes; last block
 
   // Emit the 64-byte digest as 16 little-endian u32 words.
   for (unsigned w = 0; w < 8; ++w) {
@@ -137,12 +56,9 @@ inline void stock_hash_words(const uint64_t base_h[8], const uint8_t base_pendin
 // 32 -> half-swap, by 24/16/63 -> shift pairs, add -> add-with-carry). Same technique as autolykos2's
 // prehash (~1.7x there). Bit-identical to stock_hash_words; the gen output is the 16 LE u32 lanes
 // out[2w]=h[w].lo, out[2w+1]=h[w].hi -- so the pair form maps to the output with NO recombination.
-using B2bPair = mom_blake2b_pair::Word;
+using B2bPair = mom_blake2b::Word;
 
-inline void b2b_g_pair(B2bPair& a, B2bPair& b, B2bPair& c, B2bPair& d, B2bPair x, B2bPair y) {
-  mom_blake2b_pair::mix(a, b, c, d, x, y);
-}
-
+// Select message word I of the final block; only words 0 and 1 are non-zero.
 template <uint8_t I> inline B2bPair b2b_message_pair(const B2bPair m0, const B2bPair m1) {
   if constexpr (I == 0)
     return m0;
@@ -158,22 +74,22 @@ template <unsigned R>
 // Unroll the final two-word BLAKE2b block using paired arithmetic for the device hashing path.
 inline void b2b_rounds_pair(B2bPair (&v)[16], const B2bPair m0, const B2bPair m1) {
   static_assert(R < 12);
-  b2b_g_pair(v[0], v[4], v[8], v[12], b2b_message_pair<B2B_SIGMA[R][0]>(m0, m1),
-             b2b_message_pair<B2B_SIGMA[R][1]>(m0, m1));
-  b2b_g_pair(v[1], v[5], v[9], v[13], b2b_message_pair<B2B_SIGMA[R][2]>(m0, m1),
-             b2b_message_pair<B2B_SIGMA[R][3]>(m0, m1));
-  b2b_g_pair(v[2], v[6], v[10], v[14], b2b_message_pair<B2B_SIGMA[R][4]>(m0, m1),
-             b2b_message_pair<B2B_SIGMA[R][5]>(m0, m1));
-  b2b_g_pair(v[3], v[7], v[11], v[15], b2b_message_pair<B2B_SIGMA[R][6]>(m0, m1),
-             b2b_message_pair<B2B_SIGMA[R][7]>(m0, m1));
-  b2b_g_pair(v[0], v[5], v[10], v[15], b2b_message_pair<B2B_SIGMA[R][8]>(m0, m1),
-             b2b_message_pair<B2B_SIGMA[R][9]>(m0, m1));
-  b2b_g_pair(v[1], v[6], v[11], v[12], b2b_message_pair<B2B_SIGMA[R][10]>(m0, m1),
-             b2b_message_pair<B2B_SIGMA[R][11]>(m0, m1));
-  b2b_g_pair(v[2], v[7], v[8], v[13], b2b_message_pair<B2B_SIGMA[R][12]>(m0, m1),
-             b2b_message_pair<B2B_SIGMA[R][13]>(m0, m1));
-  b2b_g_pair(v[3], v[4], v[9], v[14], b2b_message_pair<B2B_SIGMA[R][14]>(m0, m1),
-             b2b_message_pair<B2B_SIGMA[R][15]>(m0, m1));
+  mom_blake2b::mix(v[0], v[4], v[8], v[12], b2b_message_pair<mom_blake2b::SIGMA[R][0]>(m0, m1),
+                   b2b_message_pair<mom_blake2b::SIGMA[R][1]>(m0, m1));
+  mom_blake2b::mix(v[1], v[5], v[9], v[13], b2b_message_pair<mom_blake2b::SIGMA[R][2]>(m0, m1),
+                   b2b_message_pair<mom_blake2b::SIGMA[R][3]>(m0, m1));
+  mom_blake2b::mix(v[2], v[6], v[10], v[14], b2b_message_pair<mom_blake2b::SIGMA[R][4]>(m0, m1),
+                   b2b_message_pair<mom_blake2b::SIGMA[R][5]>(m0, m1));
+  mom_blake2b::mix(v[3], v[7], v[11], v[15], b2b_message_pair<mom_blake2b::SIGMA[R][6]>(m0, m1),
+                   b2b_message_pair<mom_blake2b::SIGMA[R][7]>(m0, m1));
+  mom_blake2b::mix(v[0], v[5], v[10], v[15], b2b_message_pair<mom_blake2b::SIGMA[R][8]>(m0, m1),
+                   b2b_message_pair<mom_blake2b::SIGMA[R][9]>(m0, m1));
+  mom_blake2b::mix(v[1], v[6], v[11], v[12], b2b_message_pair<mom_blake2b::SIGMA[R][10]>(m0, m1),
+                   b2b_message_pair<mom_blake2b::SIGMA[R][11]>(m0, m1));
+  mom_blake2b::mix(v[2], v[7], v[8], v[13], b2b_message_pair<mom_blake2b::SIGMA[R][12]>(m0, m1),
+                   b2b_message_pair<mom_blake2b::SIGMA[R][13]>(m0, m1));
+  mom_blake2b::mix(v[3], v[4], v[9], v[14], b2b_message_pair<mom_blake2b::SIGMA[R][14]>(m0, m1),
+                   b2b_message_pair<mom_blake2b::SIGMA[R][15]>(m0, m1));
   if constexpr (R + 1 < 12)
     b2b_rounds_pair<R + 1>(v, m0, m1);
 }
@@ -189,7 +105,7 @@ inline void stock_hash_words_pair(const B2bPair base_h[8], B2bPair m0, B2bPair m
   for (unsigned i = 0; i < 8; ++i)
     v[i] = base_h[i];
   for (unsigned i = 0; i < 8; ++i)
-    v[i + 8] = B2bPair{(uint32_t)(B2B_IV[i] & 0xffffffffull), (uint32_t)(B2B_IV[i] >> 32)};
+    v[i + 8] = B2bPair{(uint32_t)(mom_blake2b::IV[i] & 0xffffffffull), (uint32_t)(mom_blake2b::IV[i] >> 32)};
   v[12].lo ^= 144u; // t0 = 144; t1 = 0
   v[14].lo = ~v[14].lo;
   v[14].hi = ~v[14].hi; // last block
@@ -203,15 +119,15 @@ inline void stock_hash_words_pair(const B2bPair base_h[8], B2bPair m0, B2bPair m
     return i == 0 ? m0 : (i == 1 ? m1 : zero);
   };
   for (unsigned r = 0; r < 12; ++r) {
-    const uint8_t* s = B2B_SIGMA[r];
-    b2b_g_pair(v[0], v[4], v[8], v[12], mw(s[0]), mw(s[1]));
-    b2b_g_pair(v[1], v[5], v[9], v[13], mw(s[2]), mw(s[3]));
-    b2b_g_pair(v[2], v[6], v[10], v[14], mw(s[4]), mw(s[5]));
-    b2b_g_pair(v[3], v[7], v[11], v[15], mw(s[6]), mw(s[7]));
-    b2b_g_pair(v[0], v[5], v[10], v[15], mw(s[8]), mw(s[9]));
-    b2b_g_pair(v[1], v[6], v[11], v[12], mw(s[10]), mw(s[11]));
-    b2b_g_pair(v[2], v[7], v[8], v[13], mw(s[12]), mw(s[13]));
-    b2b_g_pair(v[3], v[4], v[9], v[14], mw(s[14]), mw(s[15]));
+    const uint8_t* s = mom_blake2b::SIGMA[r];
+    mom_blake2b::mix(v[0], v[4], v[8], v[12], mw(s[0]), mw(s[1]));
+    mom_blake2b::mix(v[1], v[5], v[9], v[13], mw(s[2]), mw(s[3]));
+    mom_blake2b::mix(v[2], v[6], v[10], v[14], mw(s[4]), mw(s[5]));
+    mom_blake2b::mix(v[3], v[7], v[11], v[15], mw(s[6]), mw(s[7]));
+    mom_blake2b::mix(v[0], v[5], v[10], v[15], mw(s[8]), mw(s[9]));
+    mom_blake2b::mix(v[1], v[6], v[11], v[12], mw(s[10]), mw(s[11]));
+    mom_blake2b::mix(v[2], v[7], v[8], v[13], mw(s[12]), mw(s[13]));
+    mom_blake2b::mix(v[3], v[4], v[9], v[14], mw(s[14]), mw(s[15]));
   }
 #else
   b2b_rounds_pair<0>(v, m0, m1);
@@ -328,7 +244,7 @@ inline void words_to_fields_25(const uint32_t* w, uint32_t f[NLEVELS]) {
 }
 
 // ===========================================================================================
-// M1 gen-kernel validation: compute the first EQUIHASH_TEST_ROWS entries' 20-byte expanded rows.
+// Generation-kernel validation: compute the first EQUIHASH_TEST_ROWS entries' 20-byte expanded rows.
 // NAIVE_TWIST=true uses the per-entry naive twist; false uses the sub-group inclusive-scan over the
 // 16-aligned block (one sub-group per block prefix-sums the 16 stock hashes). Both must produce
 // identical rows; the entrypoint runs both so hash-vector tests cover both implementations.

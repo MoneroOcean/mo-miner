@@ -76,12 +76,13 @@ awk '
 ' "$root/sycl/beamhash3/layout.inc" > "$out/beamhash3_workgroup.inc"
 build_run beamhash3-admission -UNDEBUG -I "$out" "$root/tests/native/beamhash3-admission.cpp"
 awk '
-  /^inline void set_sycl_env\(/ { copies++; copying = 1 }
+  /^inline void mom_set_compile_options_env\(/ { copies++; copying = 1 }
   copying { print }
   copying && /^}$/ { copying = 0; complete++ }
   END { if (copies != 1 || complete != 1 || copying) exit 1 }
 ' "$root/sycl/lib-internal.h" > "$out/sycl_env.inc"
-build_run sycl-env -UNDEBUG -I "$out" "$root/tests/native/sycl-env.cpp" -Wl,--wrap=setenv
+build_run sycl-env -UNDEBUG -pthread -I "$out" -I "$root/native" "$root/tests/native/sycl-env.cpp" \
+  -Wl,--wrap=setenv
 
 awk '
   /^    if \(new_dag_words > / { copies++; copying = 1 }
@@ -169,7 +170,7 @@ awk '
   copying && /^(};|#endif)$/ { copying = 0; complete++ }
   { previous = $0 }
   END { if (copies != 1 || slots != 1 || complete != 2 || copying) exit 1 }
-' "$root/sycl/equihash192-7/equihash192-7-direct.hpp" > "$out/equihash192_layout.inc"
+' "$root/sycl/equihash192-7/layout.h" > "$out/equihash192_layout.inc"
 awk '
   /^unsigned equihash192_7_intensity\(/ { copies++; copying = 1 }
   copying { print }
@@ -201,7 +202,7 @@ build_run equihash192-core-spir -D__SYCL_DEVICE_ONLY__ -D__SPIR__ \
 build_run zhash-core-spir -D__SYCL_DEVICE_ONLY__ -D__SPIR__ \
   "$root/tests/native/zhash-core.cpp"
 build_run c30-host -I "$root/xmrig" -I "$root/sycl/c30" \
-  "$root/sycl/c30/c30-host.cpp" \
+  "$root/sycl/c30/host.cpp" \
   "$root/tests/native/c30-host.cpp" \
   "$root/xmrig/crypto/randomx/blake2/blake2b.c" \
   "$root/xmrig/base/crypto/keccak.cpp"

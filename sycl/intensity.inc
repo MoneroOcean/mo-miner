@@ -70,8 +70,8 @@ static unsigned pow_intensity(const sycl::device& dev, const char* const workgro
   return pow_intensity(profile, heuristic, local, max_work_items_per_gib);
 }
 
+// Bound the shared ProgPoW path; non-CUDA Firo, Evr and Meow use this heuristic too.
 static unsigned kawpow_intensity(const sycl::device& dev) {
-  // Bound the shared ProgPoW path; non-CUDA Firo, Evr and Meow use this heuristic too.
   return pow_intensity(dev, "MOM_KAWPOW_WORKGROUP", "MOM_KAWPOW_INTENSITY",
                        progpow_intensity_heuristic);
 }
@@ -94,13 +94,14 @@ static unsigned firopow_intensity(const sycl::device& dev) {
 #endif
 }
 
+// Four Mi work-items/GiB places high-EU devices on the measured broad Etchash plateau; current
+// Xe2, NVIDIA, and AMD heuristics are already shallower and therefore remain unchanged.
 static unsigned etchash_intensity(const sycl::device& dev) {
-  // Four Mi work-items/GiB places high-EU devices on the measured broad Etchash plateau; current
-  // Xe2, NVIDIA, and AMD heuristics are already shallower and therefore remain unchanged.
   return pow_intensity(dev, "MOM_ETCHASH_WORKGROUP", "MOM_ETCHASH_INTENSITY",
                        {{64, 32768, 36}, {64, 65536, 36}, {64, 131072, 40}}, 4);
 }
 
+// Octopus shares the Etchash overrides and heuristic except on AMD's WMMA pipeline.
 static unsigned octopus_intensity(const sycl::device& dev) {
   if (!mom_is_hip(dev))
     return etchash_intensity(dev);
@@ -227,7 +228,7 @@ static unsigned fishhash_intensity(const sycl::device& dev) {
   if (mom_is_hip(dev)) {
     // The Windows HIP cooperative path reaches its throughput knee at 7.46M (11.43/11.41 MH/s)
     // versus 10.71/10.67 at the old 1.86M default. 14.9M gains under 1%, so retain the lower-latency
-    // 4x point. Local 128 matches FishState's AMD workgroup while preserving all profile tiers.
+    // 4x point. Local 128 matches the FishHash state's AMD workgroup and keeps all profile tiers.
     return pow_intensity(dev, "MOM_FISHHASH_WORKGROUP", "MOM_FISHHASH_INTENSITY",
                          {{128, 65536, 36}, {128, 131072, 36}, {128, 262144, 40}});
   }

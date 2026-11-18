@@ -1,6 +1,6 @@
 // Copyright GNU GPLv3 (c) 2025-2026 MoneroOcean <support@moneroocean.stream>
 
-// SYCL c29 miner prototype based on Grin GPU Miner (https://github.com/swap-dev/SwapReferenceMiner)
+// SYCL c29 miner based on Grin GPU Miner (https://github.com/swap-dev/SwapReferenceMiner)
 // OpenCL mining code by Jiri Photon Vadura and John Tromp
 //
 // Performance/portability notes:
@@ -53,11 +53,6 @@ int c29(const unsigned job_ref, const unsigned c29_proof_size, const uint8_t* co
       throw std::string("c29 requires output, edge, nonce, and nonempty-input pointers");
     if (c29_proof_size != 32 && c29_proof_size != 42)
       throw std::string("c29 requires proof size 32 or 42");
-
-    // SYCL_PROGRAM_COMPILE_OPTIONS is process-global; pearlhash's ESIMD (VC-backend) image rejects "-O3"
-    // ("invalid api option"), which is a no-op for c29 anyway, so leave it empty to stay compatible.
-    [[maybe_unused]] static const bool sycl_compile_env_set =
-        (set_sycl_env("SYCL_PROGRAM_COMPILE_OPTIONS", ""), true);
 
     // The bounded guard starts no asynchronous search, so its empty-input poll drains immediately.
     if (std::getenv("MOM_C29_TEST_EDGE"))
@@ -226,6 +221,8 @@ int c29(const unsigned job_ref, const unsigned c29_proof_size, const uint8_t* co
 
 namespace {
 
+// MOM_C29_TEST_EDGE guard: derive the graph key from the header and return the endpoints of edges
+// 0, 1, 62 and 63 of the first SipHash block, without trimming or cycle search.
 int c29_portable_test(const uint8_t* const input, const unsigned input_size,
                       uint8_t* const output, const std::string& dev_str) {
   // CPU-compatible bounded guard; full C29 vectors retain end-to-end solver coverage on discrete

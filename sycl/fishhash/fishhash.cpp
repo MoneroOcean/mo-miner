@@ -24,6 +24,8 @@
 #include <vector>
 
 #include "../lib-internal.h"
+#include "../pow-hits.h"
+#include "../pow-target.h"
 #include "../../native/job-boundary.h"
 #include "../../native/consts.h"
 
@@ -37,17 +39,6 @@ namespace mom_fishhash {
 #include "dag.inc"
 
 #include "state.inc"
-
-// Copy every recorded hit into the single-blob result ABI (sycl/lib.h).
-static int take_fish_hits(const FishResult& result, uint8_t* const output, uint64_t* const pnonce) {
-  static_assert(MAX_OUTPUTS <= GPU_MAX_HITS);
-  const uint32_t hits = std::min(result.count, MAX_OUTPUTS);
-  for (uint32_t index = 0; index < hits; ++index) {
-    pnonce[index] = result.nonce[index];
-    std::memcpy(output + index * HASH_LEN, result.output[index], HASH_LEN);
-  }
-  return static_cast<int>(hits);
-}
 
 } // namespace mom_fishhash
 
@@ -69,7 +60,7 @@ int fishhash(const unsigned, const uint32_t, const uint8_t* const input, const u
     throw std::string(
         "fishhash requires a 40-byte header with nonce at offset 32 or a 180-byte header with "
         "nonce at offset 172");
-  FishState& state = fishhash_state(dev_str);
+  State& state = state_for(dev_str);
   std::lock_guard<std::mutex> lock(state.mutex);
   state.ensure_io(input_size);
   // MOM_FISHHASH_FULL_TEST makes the normal one-nonce vector build/use the full DAG, so the
@@ -138,7 +129,7 @@ int fishhash(const unsigned, const uint32_t, const uint8_t* const input, const u
     }
   }
 
-  return take_fish_hits(*state.result, output, pnonce);
+  return mom_take_pow_hits(*state.result, output, pnonce);
 }
 
 // Reuse the fixed FishHash dataset with Karlsen hashing and target byte order.
@@ -154,8 +145,8 @@ int karlsenhashv2(const unsigned, const uint32_t, const uint8_t* const input,
     throw std::string("karlsenhashv2 intensity is too large");
   if (!mom::job_boundary::valid_karlsenhashv2_layout(input_size, 72))
     throw std::string("karlsenhashv2 requires an 80-byte header with nonce at offset 72");
-  FishState& state =
-      fishhash_state(dev_str); // shares the FishHash 4.6 GB DAG (identical seed/params)
+  State& state =
+      state_for(dev_str); // shares the FishHash 4.6 GB DAG (identical seed/params)
   std::lock_guard<std::mutex> lock(state.mutex);
   state.ensure_io(input_size);
   const bool full_test = is_test && std::getenv("MOM_FISHHASH_FULL_TEST") != nullptr;
@@ -217,5 +208,5 @@ int karlsenhashv2(const unsigned, const uint32_t, const uint8_t* const input,
     }
   }
 
-  return take_fish_hits(*state.result, output, pnonce);
+  return mom_take_pow_hits(*state.result, output, pnonce);
 }

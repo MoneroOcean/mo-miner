@@ -52,39 +52,38 @@ static unsigned zelhash_configured_slots(const sycl::device& device) {
   return capacity;
 }
 
-// Per-device state: queue + USM arenas (modeled on FishState). The Wagner arenas
-// are allocated lazily on the first mining solve to prove headroom; the M1 test path only needs the
-// small base-state + rows buffers.
-class ZelHashState {
+// Per-device state: queue + USM arenas. The Wagner arenas are allocated lazily on the first solve;
+// the generation test path only needs the small base-state and rows buffers.
+class State {
 public:
   sycl::device device;
   sycl::queue queue;
   bool shared_io, gpu_compact;
   unsigned slot_capacity;
-  // M1 I/O
-  uint64_t* base_h = nullptr;      // 8 words
-  uint8_t* base_pending = nullptr; // 12 bytes
-  uint8_t* rows = nullptr;         // EQUIHASH_TEST_ROWS * HASH_LENGTH
+  // Generation-test I/O
+  UsmPtr<uint64_t> base_h;      // 8 words
+  UsmPtr<uint8_t> base_pending; // 12 bytes
+  UsmPtr<uint8_t> rows;         // EQUIHASH_TEST_ROWS * HASH_LENGTH
   // Four compact bucket levels plus counters and tiny recovery lists. The final round emits only
   // zero-field pairs; their parent trees are reconstructed after that filter.
-  uint32_t* level[NSTORED_LEVELS] = {}; // level[L]: materialized bucketed collision records
-  uint32_t* l0_index = nullptr;         // CUDA compact level-0 leaf mapping (cold recovery stream)
-  uint32_t* nslots = nullptr;           // NSTORED_LEVELS * NBUCKETS atomic counters
-  EqCandidateRef* ref = nullptr;        // zero-node references awaiting compact recovery
-  uint32_t* ref_count = nullptr;        // shared: zero-node reference counter
-  EqCandidate* cand = nullptr;          // final candidate list (recovered leaf indices)
-  uint32_t* cand_count = nullptr;       // shared: atomic candidate counter
+  UsmPtr<uint32_t> level[NSTORED_LEVELS]; // level[L]: materialized bucketed collision records
+  UsmPtr<uint32_t> l0_index;              // CUDA compact level-0 leaf mapping (cold recovery stream)
+  UsmPtr<uint32_t> nslots;                // NSTORED_LEVELS * NBUCKETS atomic counters
+  UsmPtr<EqCandidateRef> ref;             // zero-node references awaiting compact recovery
+  UsmPtr<uint32_t> ref_count;             // shared: zero-node reference counter
+  UsmPtr<EqCandidate> cand;               // final candidate list (recovered leaf indices)
+  UsmPtr<uint32_t> cand_count;            // shared: atomic candidate counter
 #if defined(MOM_EQ_FORWARD_MAP)
-  uint32_t* invert_target = nullptr; // cold leaf-position inversion scratch
-  uint32_t* invert_next = nullptr;
-  uint32_t* invert_head = nullptr;
+  UsmPtr<uint32_t> invert_target; // cold leaf-position inversion scratch
+  UsmPtr<uint32_t> invert_next;
+  UsmPtr<uint32_t> invert_head;
 #endif
   static constexpr uint32_t CAND_CAP = 4096;
   bool arenas_built = false;
   std::mutex mutex;
 
   // Select backend record layout and capacity before creating persistent ordered solver state.
-  explicit ZelHashState(const std::string& dev_str)
+  explicit State(const std::string& dev_str)
       : device(get_dev(dev_str)),
         queue(device, sycl::property_list{sycl::property::queue::in_order{}}),
         shared_io(device.is_cpu() || !mom_has_usm_device(device)),
@@ -93,108 +92,81 @@ public:
     if (!mom_has_usm_shared(device) || (!device.is_cpu() && !mom_has_usm_device(device)))
       throw std::string("zelhash SYCL device does not support required allocations");
   }
-  // Drain submitted work before freeing allocations; late runtime teardown errors cannot escape.
-  ~ZelHashState() {
+  // Drain submitted work before the USM members free their allocations.
+  ~State() {
     sycl_cleanup_noexcept("zelhash wait", [&] { queue.wait_and_throw(); });
-    sycl_cleanup_noexcept("zelhash release", [&] { free_all(); });
   }
-  template <typename T> T* alloc(size_t n) {
-    return shared_io ? sycl::malloc_shared<T>(n, queue) : sycl::malloc_device<T>(n, queue);
-  }
-  void free_ptr(auto*& p) {
-    if (p)
-      sycl::free(p, queue);
-    p = nullptr;
-  }
-  // Release tiny shared I/O together with every lazily allocated mining arena.
-  void free_all() {
-    free_ptr(base_h);
-    free_ptr(base_pending);
-    free_ptr(rows);
-    free_all_arenas();
+  // Allocate I/O-placed USM (shared on CPUs and devices without device USM).
+  template <typename T> UsmPtr<T> alloc(const size_t n, const char* const failure) {
+    return mom_usm_alloc<T>(queue, n, shared_io, failure);
   }
   // Clear layout-specific arenas and recovery scratch so failed construction can be retried cleanly.
   void free_all_arenas() {
-    for (unsigned L = 0; L < NSTORED_LEVELS; ++L)
-      free_ptr(level[L]);
-    free_ptr(l0_index);
-    free_ptr(nslots);
-    free_ptr(ref);
-    free_ptr(ref_count);
-    free_ptr(cand);
-    free_ptr(cand_count);
+    for (auto& arena : level)
+      arena.reset();
+    l0_index.reset();
+    nslots.reset();
+    ref.reset();
+    ref_count.reset();
+    cand.reset();
+    cand_count.reset();
 #if defined(MOM_EQ_FORWARD_MAP)
-    free_ptr(invert_target);
-    free_ptr(invert_next);
-    free_ptr(invert_head);
+    invert_target.reset();
+    invert_next.reset();
+    invert_head.reset();
 #endif
     arenas_built = false;
   }
-  // Lazily allocate shared header/test buffers, rolling back all partial I/O on failure.
+  // Lazily allocate the tiny header/test buffers; a failure leaves none of them allocated.
   void ensure_io() {
     if (base_h && base_pending && rows)
       return;
-    free_ptr(base_h);
-    free_ptr(base_pending);
-    free_ptr(rows);
-    try {
-      // Shared (host-accessible) -- these are tiny and both the host (base-state write, M1 row readback)
-      // and the device touch them, so keep them shared even on discrete GPUs (cf. FishState::result).
-      base_h = sycl::malloc_shared<uint64_t>(8, queue);
-      base_pending = sycl::malloc_shared<uint8_t>(12, queue);
-      rows = sycl::malloc_shared<uint8_t>((size_t)EQUIHASH_TEST_ROWS * HASH_LENGTH, queue);
-      if (!base_h || !base_pending || !rows)
-        throw std::string("Can't allocate zelhash I/O buffers");
-    } catch (...) {
-      free_ptr(base_h);
-      free_ptr(base_pending);
-      free_ptr(rows);
-      throw;
-    }
+    // Both the host (base-state write, test-row readback) and the device touch these, so keep them
+    // shared even on discrete GPUs.
+    constexpr const char* failure = "Can't allocate zelhash I/O buffers";
+    auto new_base_h = mom_usm_alloc<uint64_t>(queue, 8, true, failure);
+    auto new_base_pending = mom_usm_alloc<uint8_t>(queue, 12, true, failure);
+    auto new_rows =
+        mom_usm_alloc<uint8_t>(queue, (size_t)EQUIHASH_TEST_ROWS * HASH_LENGTH, true, failure);
+    base_h = std::move(new_base_h);
+    base_pending = std::move(new_base_pending);
+    rows = std::move(new_rows);
   }
-  // Allocate the four materialized Wagner levels, per-level counters, and bounded recovery output.
-  // Allocate the capacity-selected Wagner arenas only for solving, with complete failure rollback.
+  // Allocate the capacity-selected Wagner levels, per-level counters and bounded recovery output on
+  // the first solve; any failure releases every arena so a later solve retries from scratch.
   void ensure_arenas(bool log) {
     if (arenas_built)
       return;
-    const uint64_t t0 = now_ms();
+    const uint64_t t0 = mom_now_ms();
     free_all_arenas();
     try {
       const size_t slots_per_level = (size_t)NBUCKETS * slot_capacity;
       size_t total = 0;
       for (unsigned L = 0; L < NSTORED_LEVELS; ++L) {
         const size_t lvl_u32 = slots_per_level * level_u32(L, gpu_compact);
-        level[L] = alloc<uint32_t>(lvl_u32);
+        level[L] = alloc<uint32_t>(lvl_u32, "Can't allocate zelhash level arena");
         total += lvl_u32 * 4;
-        if (!level[L])
-          throw std::string("Can't allocate zelhash level arena");
       }
       if (level_u32(0, gpu_compact) == 4u) {
-        l0_index = alloc<uint32_t>(slots_per_level);
+        l0_index = alloc<uint32_t>(slots_per_level, "Can't allocate zelhash level-0 index arena");
         total += slots_per_level * sizeof(uint32_t);
-        if (!l0_index)
-          throw std::string("Can't allocate zelhash level-0 index arena");
       }
-      nslots = alloc<uint32_t>((size_t)NSTORED_LEVELS * NBUCKETS);
+      constexpr const char* counters = "Can't allocate zelhash counters/candidates";
+      nslots = alloc<uint32_t>((size_t)NSTORED_LEVELS * NBUCKETS, counters);
       total += (size_t)NSTORED_LEVELS * NBUCKETS * 4;
-      ref = alloc<EqCandidateRef>(CAND_CAP);
-      ref_count = sycl::malloc_shared<uint32_t>(1, queue);
-      cand = alloc<EqCandidate>(CAND_CAP);
-      cand_count = sycl::malloc_shared<uint32_t>(1, queue); // host reads the candidate count
+      ref = alloc<EqCandidateRef>(CAND_CAP, counters);
+      ref_count = mom_usm_alloc<uint32_t>(queue, 1, true, counters);
+      cand = alloc<EqCandidate>(CAND_CAP, counters);
+      cand_count = mom_usm_alloc<uint32_t>(queue, 1, true, counters); // host reads the count
 #if defined(MOM_EQ_FORWARD_MAP)
       if (gpu_compact) {
         constexpr size_t targets = (size_t)CAND_CAP * (1u << K);
-        invert_target = alloc<uint32_t>(targets);
-        invert_next = alloc<uint32_t>(targets);
-        invert_head = alloc<uint32_t>(L0_INVERT_HEADS);
+        constexpr const char* scratch = "Can't allocate zelhash recovery scratch";
+        invert_target = alloc<uint32_t>(targets, scratch);
+        invert_next = alloc<uint32_t>(targets, scratch);
+        invert_head = alloc<uint32_t>(L0_INVERT_HEADS, scratch);
         total += (targets * 2u + L0_INVERT_HEADS) * sizeof(uint32_t);
       }
-#endif
-      if (!nslots || !ref || !ref_count || !cand || !cand_count)
-        throw std::string("Can't allocate zelhash counters/candidates");
-#if defined(MOM_EQ_FORWARD_MAP)
-      if (gpu_compact && (!invert_target || !invert_next || !invert_head))
-        throw std::string("Can't allocate zelhash recovery scratch");
 #endif
       // Touch the counter array (lazily mapped USM device allocs surface OOM here, not mid-kernel).
       sycl_wait_and_throw(
@@ -204,7 +176,7 @@ public:
         std::fprintf(stderr,
                      "zelhash Wagner arenas (~%.1f GiB, %u slots/bucket) allocated (%llu ms)\n",
                      (double)total / (1024.0 * 1024.0 * 1024.0), slot_capacity,
-                     (unsigned long long)(now_ms() - t0));
+                     (unsigned long long)(mom_now_ms() - t0));
         std::fflush(stderr);
       }
     } catch (...) {
@@ -212,27 +184,22 @@ public:
       throw;
     }
   }
-  static uint64_t now_ms() {
-    return std::chrono::duration_cast<std::chrono::milliseconds>(
-               std::chrono::steady_clock::now().time_since_epoch())
-        .count();
-  }
 };
 
 // Keep runtime-owned state under explicit shutdown control instead of static destructor order.
-static DeviceStateRegistry<ZelHashState>& zelhash_registry() {
-  static auto* const registry = new DeviceStateRegistry<ZelHashState>;
+static DeviceStateRegistry<State>& registry() {
+  static auto* const registry = new DeviceStateRegistry<State>;
   return *registry;
 }
 
-static ZelHashState& zelhash_state(const std::string& dev_str) {
-  return zelhash_registry().get(dev_str, [&] { return std::make_unique<ZelHashState>(dev_str); });
+static State& state_for(const std::string& dev_str) {
+  return registry().get(dev_str, [&] { return std::make_unique<State>(dev_str); });
 }
 
 // Drain persistent device states during ordered shutdown without propagating cleanup errors.
 void zelhash_cleanup_states() noexcept {
   try {
-    zelhash_registry().clear();
+    registry().clear();
   } catch (...) {
     std::fprintf(stderr, "zelhash: ordered SYCL cleanup failed\n");
   }

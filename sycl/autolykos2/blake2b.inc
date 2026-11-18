@@ -12,7 +12,6 @@ constexpr uint32_t INCREASE_START = 600U * 1024U;
 constexpr uint32_t INCREASE_END = 4198400U;
 constexpr uint32_t INCREASE_PERIOD = 50U * 1024U;
 constexpr uint32_t TABLE_ENTRY_BYTES = 32;
-constexpr uint32_t MAX_AUTOLYKOS_OUTPUTS = 15;
 
 constexpr uint64_t BLAKE2B_IV[8] = {
     0x6A09E667F3BCC908ULL, 0xBB67AE8584CAA73BULL, 0x3C6EF372FE94F82BULL, 0xA54FF53A5F1D36F1ULL,
@@ -105,12 +104,6 @@ struct AutolykosJobData {
   uint8_t target[HASH_LEN];
 };
 
-struct AutolykosResult {
-  uint32_t count;
-  uint64_t nonce[MAX_AUTOLYKOS_OUTPUTS];
-  uint8_t output[MAX_AUTOLYKOS_OUTPUTS][HASH_LEN];
-};
-
 struct AutolykosPortableResult {
   uint32_t found;
   uint64_t nonce;
@@ -119,19 +112,19 @@ struct AutolykosPortableResult {
 
 // Fast unsigned remainder by a runtime divisor. The K_LEN=32 dataset reads do `idx % n_len` per nonce
 // and n_len is a per-height runtime value. Keeping this divide-free helps both NVIDIA's nvptx image
-// and Intel Level Zero on Arc. M = floor(2^64 / n_len) + 1 is precomputed once on the host (mo_modM),
+// and Intel Level Zero on Arc. M = floor(2^64 / n_len) + 1 is precomputed once on the host (modM),
 // then x % n_len == hi64( (M*x mod 2^64) * n_len ). Bit-exact for x, n_len in [1, 2^32).
 // Build the reciprocal for 32-bit remainder; zero denotes an unused modulus.
-inline uint64_t mo_modM(const uint32_t d) {
+inline uint64_t modM(const uint32_t d) {
   return d ? (0xFFFFFFFFFFFFFFFFULL / d) + 1ULL : 0ULL;
 }
-AUTOLYKOS_DEVICE_INLINE uint32_t mo_mod_u32(const uint32_t x, const uint32_t d, const uint64_t M) {
+AUTOLYKOS_DEVICE_INLINE uint32_t mod_u32(const uint32_t x, const uint32_t d, const uint64_t M) {
   return static_cast<uint32_t>(
-      mo_mul_hi_u64(M * static_cast<uint64_t>(x), static_cast<uint64_t>(d)));
+      mom_mul_hi_u64(M * static_cast<uint64_t>(x), static_cast<uint64_t>(d)));
 }
 
 // Build a floor reciprocal for 64-bit division, handling exact reciprocal boundaries.
-inline uint64_t mo_divM64(const uint32_t d) {
+inline uint64_t divM64(const uint32_t d) {
   if (!d)
     return 0;
   const uint64_t q = 0xFFFFFFFFFFFFFFFFULL / d;
@@ -142,10 +135,10 @@ inline uint64_t mo_divM64(const uint32_t d) {
 // q = high64(x * floor(2^64/d)) is at most one low, so one subtraction after
 // x - q*d produces the exact remainder.
 // Reduce a 64-bit input with one correction; the floor reciprocal cannot overestimate.
-AUTOLYKOS_DEVICE_INLINE uint32_t mo_mod_u64(const uint64_t x, const uint32_t d, const uint64_t M) {
+AUTOLYKOS_DEVICE_INLINE uint32_t mod_u64(const uint64_t x, const uint32_t d, const uint64_t M) {
   if (d <= 1)
     return 0;
-  const uint64_t q = mo_mul_hi_u64(x, M);
+  const uint64_t q = mom_mul_hi_u64(x, M);
   uint64_t r = x - q * static_cast<uint64_t>(d);
   if (r >= d)
     r -= d;
@@ -216,6 +209,7 @@ AUTOLYKOS_DEVICE_INLINE uint64_t load64_be_dev(const uint8_t* const input) {
          static_cast<uint64_t>(load32_be_dev(input + 4));
 }
 
+// Read one little-endian 64-bit BLAKE2b message word.
 AUTOLYKOS_DEVICE_INLINE uint64_t load64_le_dev(const uint8_t* const input) {
   return static_cast<uint64_t>(input[0]) | (static_cast<uint64_t>(input[1]) << 8) |
          (static_cast<uint64_t>(input[2]) << 16) | (static_cast<uint64_t>(input[3]) << 24) |

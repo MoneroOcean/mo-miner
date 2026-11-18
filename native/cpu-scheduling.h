@@ -8,6 +8,7 @@
 
 namespace mom::cpu {
 
+// Append one entry to a comma-separated device list.
 inline void add_result_dev(std::string& result_dev, const std::string& add_str) {
   if (!result_dev.empty()) {
     result_dev += ",";
@@ -15,6 +16,9 @@ inline void add_result_dev(std::string& result_dev, const std::string& add_str) 
   result_dev += add_str;
 }
 
+// Plan CPU worker processes for one algorithm: the batch (hashes per process) of each process,
+// filling the L3 cache with batch_mem bytes per hash. RandomX runs one process per socket that
+// shares its dataset; Argon2 keeps single-hash processes; GhostRider always hashes 8 at a time.
 inline std::list<unsigned> cpu_thread_batches(
   const std::string& algo, const unsigned max_cpu_batch, const unsigned socket_count,
   const unsigned thread_count, const unsigned l3cache, const unsigned batch_mem
@@ -54,6 +58,7 @@ inline std::list<unsigned> cpu_thread_batches(
   return threads;
 }
 
+// Append the planned processes as "cpu[*batch][^count]" entries, merging runs of equal batches.
 inline void append_grouped_cpu_devs(
   std::string& result_dev, const std::list<unsigned>& threads
 ) {
@@ -76,6 +81,30 @@ inline void append_grouped_cpu_devs(
     ++same_batch_threads;
   }
   add_last_dev();
+}
+
+// Controller-reported topology with scheduling defaults: at least one socket and thread, and 2 MiB
+// of L3 per thread when the platform exposes none, so every thread still gets a worker.
+struct CpuTopology {
+  unsigned sockets;
+  unsigned threads;
+  unsigned l3cache;
+};
+
+inline CpuTopology normalize_cpu_topology(const unsigned sockets, const unsigned threads,
+                                          const unsigned l3cache) {
+  const unsigned thread_count = std::max(1u, threads);
+  return {std::max(1u, sockets), thread_count,
+          l3cache ? l3cache : thread_count * 2u * 1024u * 1024u};
+}
+
+// CPU device list for one algorithm that needs batch_mem bytes of L3 cache per hash.
+inline std::string cpu_algo_devs(const std::string& algo, const unsigned max_cpu_batch,
+                                 const CpuTopology& cpu, const unsigned batch_mem) {
+  std::string result;
+  append_grouped_cpu_devs(result, cpu_thread_batches(
+    algo, max_cpu_batch, cpu.sockets, cpu.threads, cpu.l3cache, batch_mem));
+  return result;
 }
 
 } // namespace mom::cpu

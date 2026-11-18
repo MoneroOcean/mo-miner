@@ -26,7 +26,7 @@ struct State {
   bool arena_log = false;
   void ensure_arenas(bool log) { arena_log = log; }
 };
-struct BeamState { static unsigned now_ms() { return 1; } };
+static unsigned mom_now_ms() { return 1; }
 static bool zel(bool is_test, bool is_benchmark, bool expected) {
   State state; Queue q;
   const unsigned cand_count = 1;

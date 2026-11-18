@@ -19,16 +19,22 @@ struct CompactProfile {
     return row >= 0 && m >= 178 && row <= m - 178 && row % 192 < 16 && row % 2 == 0;
   }
 
+  // Expand a winning compact origin into its proof's 24 A rows (adjacent pairs 16 apart) and 8 B
+  // columns (pairs 8 apart, 64 between pairs). Returns false, with both lists empty, for an origin
+  // the compact kernel can never report.
   static bool lists(int row, int col, int m, int n,
                     std::vector<int>& a, std::vector<int>& b) {
     a.clear(); b.clear();
     if (!row_valid(row, m) || !(col >= 0 && n >= 201 && col <= n - 201 && col % 256 < 56 && col % 16 < 8))
       return false;
-    for (int i = 0; i < rows; ++i) a.push_back(row + 16 * (i / 2) + i % 2);
-    for (int i = 0; i < cols; ++i) b.push_back(col + 64 * (i / 2) + 8 * (i % 2));
+    for (int i = 0; i < rows; ++i)
+      a.push_back(row + 16 * (i / 2) + i % 2);
+    for (int i = 0; i < cols; ++i)
+      b.push_back(col + 64 * (i / 2) + 8 * (i % 2));
     return true;
   }
 
+  // Job key: BLAKE3 of the 76-byte header followed by the compact profile's config bytes.
   static void derive_key(const uint8_t* header, uint8_t* key) {
     if (!header || !key) throw std::string("Missing compact job key input");
     uint8_t block[128];
@@ -49,6 +55,7 @@ class CompactRootPath {
   uint32_t seed_ = 0, b_seed_ = 0;
   bool valid_ = false;
 
+  // Chaining value of A's first 1024-byte leaf, the only leaf that depends on the seed.
   static CV leaf(uint32_t seed, int m, int n, const uint8_t* key) {
     uint8_t bytes[1024];
     const size_t size = gen_leaf('A', seed, 0, m, n, CompactProfile::k, bytes, true, true);
@@ -61,9 +68,14 @@ class CompactRootPath {
   CV first_leaf{}, root{}; // State-owned upload sources survive asynchronous queue submission.
 
   void reset() noexcept {
-    valid_ = false; m_ = n_ = 0; seed_ = b_seed_ = 0; key_.fill(0);
-    a_.clear(); b_.clear();
-    first_leaf.fill(0); root.fill(0);
+    valid_ = false;
+    m_ = n_ = 0;
+    seed_ = b_seed_ = 0;
+    key_.fill(0);
+    a_.clear();
+    b_.clear();
+    first_leaf.fill(0);
+    root.fill(0);
   }
   size_t retained_bytes() const noexcept {
     size_t bytes = 0;
@@ -73,6 +85,8 @@ class CompactRootPath {
   }
   bool valid() const noexcept { return valid_; }
 
+  // Retain the full A/B commitment trees produced for a new key/shape after verifying their first
+  // leaves against host regeneration, then derive this seed's root. Any mismatch leaves no path.
   void capture(const std::array<uint8_t, 32>& key, int m, int n, int k, int rank,
                uint32_t seed, const std::vector<CV>& leaves,
                const std::vector<CV>& b_leaves) {
@@ -82,18 +96,26 @@ class CompactRootPath {
         leaves.empty() || leaves.front() != leaf(seed, m, n, key.data()) ||
         b_leaves.size() != checked_chunk_count(checked_elements(n,k,"compact B"),"compact B"))
       throw std::string("Invalid compact root capture");
-    uint8_t bytes[1024]; CV first_b{};
+    uint8_t bytes[1024];
+    CV first_b{};
     const size_t len = gen_leaf('B',seed,0,m,n,k,bytes,true,true);
     pearlhash_b3::chunk_cv(bytes,uint32_t(len),0,key.data(),first_b.data());
     if (b_leaves.empty() || b_leaves.front() != first_b)
       throw std::string("Invalid compact B capture");
     auto a = build_layers('A',seed,int(leaves.size()),m,n,k,key.data(),&leaves,true,true);
     auto b = build_layers('B',seed,int(b_leaves.size()),m,n,k,key.data(),&b_leaves,true,true);
-    key_ = key; m_ = m; n_ = n; b_seed_ = seed;
-    a_ = std::move(a); b_ = std::move(b); valid_ = true;
+    key_ = key;
+    m_ = m;
+    n_ = n;
+    b_seed_ = seed;
+    a_ = std::move(a);
+    b_ = std::move(b);
+    valid_ = true;
     update(key,m,n,k,rank,seed);
   }
 
+  // Recompute A's root for a new seed by replacing its first leaf and rehashing only the leftmost
+  // path. A key/shape that differs from the captured trees resets the path and throws.
   void update(const std::array<uint8_t, 32>& key, int m, int n, int k, int rank,
               uint32_t seed) {
     if (!valid_ || key != key_ || m != m_ || n != n_ ||
@@ -115,6 +137,8 @@ class CompactRootPath {
     seed_ = seed;
   }
 
+  // Serialize the PlainProof for a winning origin from the retained trees; empty when the origin
+  // is not a legal compact proof. The trees must match this exact key, shape and seed.
   std::string proof(const std::array<uint8_t,32>& key,int m,int n,int k,int rank,
                      uint32_t seed,int row,int col,uint32_t* factor) {
     if (!valid_ || key != key_ || m != m_ || n != n_ || seed != seed_ ||

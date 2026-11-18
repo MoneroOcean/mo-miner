@@ -19,6 +19,7 @@
 #include <mutex>
 
 #include "../lib-internal.h"
+#include "../pow-target.h"
 #include "../../native/consts.h"
 #include "host-math.h"
 
@@ -32,7 +33,8 @@ namespace mom_hoohash {
 
 struct Result {
   uint32_t offset;
-  // Test-only output keeps the GPU filter observable; accepted hashes use canonical host math.
+  // Test-only sink that keeps the GPU filter from being optimized out of the test kernel; the
+  // host never reads it because accepted hashes use canonical host math.
   uint8_t hash[32];
 };
 struct FloatPair {
@@ -93,7 +95,7 @@ inline uint64_t shl_join(uint64_t a, uint64_t b, unsigned shift) {
   return shift ? (a << shift) | (b >> (64 - shift)) : a;
 }
 inline uint64_t mul_hi64(uint64_t a, uint64_t b) {
-  return mo_mul_hi_u64(a, b);
+  return mom_mul_hi_u64(a, b);
 }
 // Reduce large positive finite arguments with the multiword 4/pi table.
 inline void trig_reduce(double x, uint64_t& octant, double& reduced) {
@@ -211,11 +213,11 @@ public:
   sycl::device device;
   sycl::queue queue;
   unsigned workgroup;
-  double *matrix = nullptr, *exp_lut = nullptr, *sin2_lut = nullptr;
+  UsmPtr<double> matrix, exp_lut, sin2_lut;
   double canonical_matrix[4096]{};
-  FloatPair* normal = nullptr;
-  uint8_t *input = nullptr, *target = nullptr;
-  Result* result = nullptr;
+  UsmPtr<FloatPair> normal;
+  UsmPtr<uint8_t> input, target;
+  UsmPtr<Result> result;
   std::mutex mutex;
   uint8_t matrix_seed[32]{};
   bool matrix_ready = false;
@@ -234,59 +236,31 @@ public:
         throw std::string("MOM_HOOHASH_WORKGROUP exceeds the device limit");
       workgroup = static_cast<unsigned>(override);
     }
-    try {
-      matrix = sycl::malloc_device<double>(4096, queue);
-      normal = sycl::malloc_device<FloatPair>(4096 * 16, queue);
-      exp_lut = sycl::malloc_device<double>(PERIODIC_LUT_SIZE + 1, queue);
-      sin2_lut = sycl::malloc_device<double>(PERIODIC_LUT_SIZE + 1, queue);
-      input = sycl::malloc_device<uint8_t>(72, queue);
-      target = sycl::malloc_device<uint8_t>(32, queue);
-      result = sycl::malloc_device<Result>(1, queue);
-      if (!matrix || !normal || !exp_lut || !sin2_lut || !input || !target || !result)
-        throw std::string("Can't allocate hoohash buffers");
-      auto exp_host = std::make_unique<double[]>(PERIODIC_LUT_SIZE + 1);
-      auto sin2_host = std::make_unique<double[]>(PERIODIC_LUT_SIZE + 1);
-      for (unsigned i = 0; i <= PERIODIC_LUT_SIZE; ++i) {
-        const double angle = 6.28318530717958647693 * i / PERIODIC_LUT_SIZE;
-        const double sine = std::sin(angle);
-        exp_host[i] = std::exp(sine + std::cos(angle));
-        sin2_host[i] = sine * sine;
-      }
-      MomSyclHostTransferGuard host_transfers(queue, "hoohash LUT uploads");
-      queue.memcpy(exp_lut, exp_host.get(), sizeof(double) * (PERIODIC_LUT_SIZE + 1));
-      sycl_wait_and_throw(
-          queue.memcpy(sin2_lut, sin2_host.get(), sizeof(double) * (PERIODIC_LUT_SIZE + 1)),
-          device);
-    } catch (...) {
-      free_all();
-      throw;
+    const char* const failure = "Can't allocate hoohash buffers";
+    matrix = mom_usm_alloc<double>(queue, 4096, false, failure);
+    normal = mom_usm_alloc<FloatPair>(queue, 4096 * 16, false, failure);
+    exp_lut = mom_usm_alloc<double>(queue, PERIODIC_LUT_SIZE + 1, false, failure);
+    sin2_lut = mom_usm_alloc<double>(queue, PERIODIC_LUT_SIZE + 1, false, failure);
+    input = mom_usm_alloc<uint8_t>(queue, 72, false, failure);
+    target = mom_usm_alloc<uint8_t>(queue, 32, false, failure);
+    result = mom_usm_alloc<Result>(queue, 1, false, failure);
+    auto exp_host = std::make_unique<double[]>(PERIODIC_LUT_SIZE + 1);
+    auto sin2_host = std::make_unique<double[]>(PERIODIC_LUT_SIZE + 1);
+    for (unsigned i = 0; i <= PERIODIC_LUT_SIZE; ++i) {
+      const double angle = 6.28318530717958647693 * i / PERIODIC_LUT_SIZE;
+      const double sine = std::sin(angle);
+      exp_host[i] = std::exp(sine + std::cos(angle));
+      sin2_host[i] = sine * sine;
     }
+    MomSyclHostTransferGuard host_transfers(queue, "hoohash LUT uploads");
+    queue.memcpy(exp_lut, exp_host.get(), sizeof(double) * (PERIODIC_LUT_SIZE + 1));
+    sycl_wait_and_throw(
+        queue.memcpy(sin2_lut, sin2_host.get(), sizeof(double) * (PERIODIC_LUT_SIZE + 1)),
+        device);
   }
-  // Drain accepted work before releasing device storage; teardown cannot throw.
+  // Drain accepted work before the members release device storage; teardown cannot throw.
   ~State() {
-    try {
-      queue.wait_and_throw();
-    } catch (...) {
-    }
-    free_all();
-  }
-  template <typename T> void free_ptr(T*& pointer) noexcept {
-    if (pointer)
-      try {
-        sycl::free(pointer, queue);
-      } catch (...) {
-      }
-    pointer = nullptr;
-  }
-  // Release partial construction as well as fully initialized device state.
-  void free_all() noexcept {
-    free_ptr(result);
-    free_ptr(target);
-    free_ptr(input);
-    free_ptr(sin2_lut);
-    free_ptr(exp_lut);
-    free_ptr(normal);
-    free_ptr(matrix);
+    sycl_cleanup_noexcept("hoohash wait", [&] { queue.wait_and_throw(); });
   }
 };
 // Keep the registry shell alive across static teardown; ordered cleanup releases its values.
@@ -294,6 +268,7 @@ static DeviceStateRegistry<State>& registry() {
   static auto* const value = new DeviceStateRegistry<State>;
   return *value;
 }
+// Reuse one mutex-serialized matrix/LUT owner for the selected device.
 static State& state_for(const std::string& dev) {
   return registry().get(dev, [&] { return std::make_unique<State>(dev); });
 }
@@ -364,14 +339,6 @@ filter_hash(const uint8_t first[32], uint32_t hash_mod, uint64_t nonce, const do
   blake3_dev(out, 32, mixed, 32);
 }
 
-// Compare the hash and target as little-endian 256-bit unsigned integers.
-inline bool meets_target(const uint8_t hash[32], const uint8_t target[32]) {
-  for (int i = 31; i >= 0; --i)
-    if (hash[i] != target[i])
-      return hash[i] < target[i];
-  return true;
-}
-
 // Retain the earliest filter candidate so host rejection can resume the remaining range.
 static sycl::event search(State& s, uint64_t first_nonce, unsigned count) {
   const double* matrix = s.matrix;
@@ -394,7 +361,7 @@ static sycl::event search(State& s, uint64_t first_nonce, unsigned count) {
           uint8_t first[32], out[32];
           const uint32_t hash_mod = prepare_first(input, nonce, first);
           filter_hash(first, hash_mod, nonce, matrix, exp_lut, sin2_lut, normal, out);
-          if (meets_target(out, target)) {
+          if (mom_meets_target_le(out, target)) {
             using Atomic =
                 sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
                                  sycl::access::address_space::global_space>;
@@ -495,7 +462,7 @@ int hoohash(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint8
     const uint64_t candidate_nonce = first_nonce + result.offset;
     uint8_t* const hash = output + hits * HASH_LEN;
     mom_hoohash_canonical_hash(input, candidate_nonce, hash);
-    if (meets_target(hash, target)) {
+    if (mom_meets_target_le(hash, target)) {
       pnonce[hits++] = candidate_nonce;
     } else if (++rejected_candidates == MAX_FILTER_RETRIES) {
       // Bound work controlled by an untrusted pool target while retaining later candidates in the

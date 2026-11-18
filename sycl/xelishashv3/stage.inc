@@ -84,13 +84,13 @@ inline void chacha_block(uint32_t out[16], const uint8_t key[32], const uint8_t 
     v[i] = x[i];
 #define QR(a, b, c, d)                                                                             \
   v[a] += v[b];                                                                                    \
-  v[d] = mo_rotate(v[d] ^ v[a], 16u);                                                              \
+  v[d] = mom_rotate(v[d] ^ v[a], 16u);                                                              \
   v[c] += v[d];                                                                                    \
-  v[b] = mo_rotate(v[b] ^ v[c], 12u);                                                              \
+  v[b] = mom_rotate(v[b] ^ v[c], 12u);                                                              \
   v[a] += v[b];                                                                                    \
-  v[d] = mo_rotate(v[d] ^ v[a], 8u);                                                               \
+  v[d] = mom_rotate(v[d] ^ v[a], 8u);                                                               \
   v[c] += v[d];                                                                                    \
-  v[b] = mo_rotate(v[b] ^ v[c], 7u)
+  v[b] = mom_rotate(v[b] ^ v[c], 7u)
   for (unsigned round = 0; round < 4; ++round) {
     QR(0, 4, 8, 12);
     QR(1, 5, 9, 13);

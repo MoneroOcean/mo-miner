@@ -3,15 +3,15 @@ class State {
 public:
   sycl::device device;
   sycl::queue queue;
-  uint8_t *input = nullptr, *target = nullptr;
-  uint64_t* scratch = nullptr;
-  double* lut = nullptr;
-  Result* result = nullptr;
+  UsmPtr<uint8_t> input, target;
+  UsmPtr<uint64_t> scratch;
+  UsmPtr<double> lut;
+  UsmPtr<PowHits<>> result;
   unsigned capacity = 0;
   std::mutex mutex;
   const bool profile;
   unsigned profile_reports = 0;
-  // Allocate fixed work/LUT state on an in-order queue and unwind failed constructor setup.
+  // Allocate fixed work/LUT state on an in-order queue.
   explicit State(const std::string& dev)
       : device(get_dev(dev)),
         queue(device,
@@ -24,78 +24,38 @@ public:
           const char* configured = std::getenv("MOM_XELISHASHV3_PROFILE");
           return configured && *configured && std::strcmp(configured, "0") != 0;
         }()) {
-    try {
-      if (!xelishashv3_supported(device))
-        throw std::string("xelishashv3 requires SYCL device USM");
-      input = sycl::malloc_device<uint8_t>(112, queue);
-      target = sycl::malloc_device<uint8_t>(32, queue);
-      result = sycl::malloc_device<Result>(1, queue);
-      if (!input || !target || !result)
-        throw std::string("Can't allocate xelishashv3 buffers");
-      if (device.has(sycl::aspect::fp64)) {
-        lut = sycl::malloc_device<double>(512, queue);
-        if (!lut)
-          throw std::string("Can't allocate xelishashv3 reciprocal table");
-        double host[512];
-        for (unsigned i = 0; i < 512; ++i)
-          host[i] = 1.0 / ((512.5 + i) * (1u << 22));
-        sycl_wait_and_throw(queue.memcpy(lut, host, sizeof(host)), device);
-      }
-    } catch (...) {
-      sycl_cleanup_noexcept("xelishashv3 constructor", [&] {
-        cleanup();
-      });
-      throw;
+    if (!xelishashv3_supported(device))
+      throw std::string("xelishashv3 requires SYCL device USM");
+    const char* const failure = "Can't allocate xelishashv3 buffers";
+    input = mom_usm_alloc<uint8_t>(queue, 112, false, failure);
+    target = mom_usm_alloc<uint8_t>(queue, 32, false, failure);
+    result = mom_usm_alloc<PowHits<>>(queue, 1, false, failure);
+    if (device.has(sycl::aspect::fp64)) {
+      lut = mom_usm_alloc<double>(queue, 512, false, "Can't allocate xelishashv3 reciprocal table");
+      double host[512];
+      for (unsigned i = 0; i < 512; ++i)
+        host[i] = 1.0 / ((512.5 + i) * (1u << 22));
+      sycl_wait_and_throw(queue.memcpy(lut, host, sizeof(host)), device);
     }
   }
+  // Drain kernels before the members free their work, LUT, result, and scratch allocations.
   ~State() {
-    sycl_cleanup_noexcept("xelishashv3", [&] {
-      cleanup();
-    });
+    sycl_cleanup_noexcept("xelishashv3 wait", [&] { queue.wait_and_throw(); });
   }
-  // Detach before a potentially throwing runtime free; still attempt every other allocation.
-  template <typename T> void free_ptr(T*& pointer) noexcept {
-    T* const released = pointer;
-    pointer = nullptr;
-    if (released)
-      sycl_cleanup_noexcept("xelishashv3 USM release", [&] { sycl::free(released, queue); });
-  }
-  void free_all() noexcept {
-    free_ptr(lut);
-    free_ptr(scratch);
-    free_ptr(result);
-    free_ptr(target);
-    free_ptr(input);
-    capacity = 0;
-  }
-  // Drain kernels before freeing their work, LUT, result, and scratch allocations.
-  void cleanup() {
-    try {
-      queue.wait_and_throw();
-    } catch (...) {
-      free_all();
-      throw;
-    }
-    free_all();
-  }
-  // Grow per-nonce scratch within both allocation and total-memory limits.
+  // Grow per-nonce scratch within both allocation and total-memory limits. A failed allocation
+  // keeps the previous scratch; the old buffer is released only after its replacement exists.
   void ensure(unsigned count) {
     if (static_cast<uint64_t>(count) > xelishashv3_scratch_capacity(device))
       throw std::string("xelishashv3 intensity exceeds device memory limit");
     const size_t max_count = std::numeric_limits<size_t>::max() / WORDS;
     if (static_cast<uint64_t>(count) > max_count)
       throw std::string("xelishashv3 intensity is too large");
-    const size_t count_size = static_cast<size_t>(count);
     if (count <= capacity)
       return;
     queue.wait_and_throw();
-    uint64_t* replacement = sycl::malloc_device<uint64_t>(count_size * WORDS, queue);
-    if (!replacement)
-      throw std::string("Can't allocate xelishashv3 scratchpads");
-    uint64_t* old_scratch = scratch;
-    scratch = replacement;
+    scratch = mom_usm_alloc<uint64_t>(queue, static_cast<size_t>(count) * WORDS, false,
+                                      "Can't allocate xelishashv3 scratchpads");
     capacity = count;
-    free_ptr(old_scratch);
   }
 };
 // Keep device owners heap-registered so explicit shutdown controls SYCL destruction order.

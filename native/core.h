@@ -131,7 +131,7 @@ inline bool is_small_blob_gpu_dev(const DEV dev) {
 }
 
 class Core: public AsyncWorker {
-  const unsigned HASHRATE_COUNTER_INTERVAL = 10; // iterations to skip to update/check hashrate
+  static constexpr unsigned HASHRATE_COUNTER_INTERVAL = 10; // iterations to skip to update/check hashrate
   inline static std::atomic<unsigned> s_job_ref_source{0};
   FN m_fn;
   DEV m_dev;
@@ -187,6 +187,9 @@ class Core: public AsyncWorker {
   inline uint64_t result_word(const unsigned batch = 0) const {
     return result_word(m_output, batch);
   }
+  // Return the start of the batch after one starting at `first`. While mining, a batch that would
+  // leave the counter range or the pool-owned mask sets m_nonce_exhausted and returns the final
+  // nonce of the current batch instead (bench/test nonces may wrap freely).
   template <typename UInt>
   inline UInt next_nonce_after_batch(
     UInt first, uint64_t count, uint64_t lane_stride, uint64_t batch_stride,
@@ -204,8 +207,7 @@ class Core: public AsyncWorker {
     return next;
   }
 
-  char* hash_bin2hex(const uint8_t* const output, char* hash, const unsigned batch = 0) const;
-  char* hash_bin2hex(char* const hash, const unsigned batch) const;
+  static std::string bin2hex(const uint8_t* data, size_t size);
   void send_msg(const std::string key, const MessageValues& values);
   void send_msg(
     const std::string& topic, const std::string& key = std::string(),
@@ -224,8 +226,11 @@ class Core: public AsyncWorker {
   );
   bool send_gpu_hits(int hits, const uint64_t* nonces, unsigned noncebytes, const uint8_t* mix_hash);
   void send_equihash_results(uint64_t nonce, unsigned solution_size, bool compact_size_prefix);
+  void advance_blob_nonce();
+  template <typename UInt> void finish_lane_batch(UInt& nonce, int dev_sols, uint64_t dev_nonce);
+  template <typename UInt> UInt first_blob_batch(UInt base, bool big_endian);
+  template <typename UInt> UInt first_lane_batch(UInt base, uint8_t* input, unsigned nonce_unit);
   void stop_rx_threads() noexcept;
-  void destroy_rx_vms() noexcept;
   void free_memory(
     const bool is_batch_changed    = true,
     const bool is_mem_size_changed = true,
@@ -243,9 +248,9 @@ class Core: public AsyncWorker {
     std::function<void(void)> fn_extra_setup = [](){}
   );
   void get_algo_params(const MessageValues& v);
+  void prepare(const Message& first) override;
   bool process_message(const std::string& type, const MessageValues& v);
 
-  static bool hex2bin(const char* in, unsigned int len, unsigned char* out);
   inline void next_job_ref() {
     m_job_ref.store(s_job_ref_source.fetch_add(1, std::memory_order_relaxed),
                     std::memory_order_relaxed);

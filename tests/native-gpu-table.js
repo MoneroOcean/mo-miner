@@ -8,7 +8,7 @@ const original = fs.readFileSync(path.join(__dirname, "../sycl/lib.h"), "utf8");
 test.describe("Native GPU table follows the maintained interface", () => {
   test("every original declaration produces one typed table field", () => {
     const {entries, header} = gpuTable(original, "mom_native_gpu_dpcpp");
-    assert.equal(entries.length, 26);
+    assert.equal(entries.length, 27);
     for (const {name} of entries) {assert.ok(header.includes(`decltype(&::${name}) ${name};`));}
   });
   test("nested template commas do not split parameter names", () => {

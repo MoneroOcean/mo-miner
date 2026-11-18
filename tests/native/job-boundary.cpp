@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <limits>
 #include <set>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -31,6 +32,11 @@ using mom::job_boundary::valid_nexapow_layout;
 using mom::job_boundary::valid_pearlhash_shape;
 using mom::job_boundary::c29_completed_graphs;
 using mom::job_boundary::for_each_gpu_hit;
+using mom::job_boundary::decode_hex;
+using mom::job_boundary::parse_big_target;
+using mom::job_boundary::parse_share_target;
+using mom::job_boundary::ShareTarget;
+using mom::job_boundary::strip_hex_prefix;
 
 void test_parse_unsigned() {
   std::uint32_t value32 = 7;
@@ -355,6 +361,46 @@ void test_gpu_hits() {
   assert(reported.empty());
 }
 
+std::uint64_t word_target(std::string_view algo, std::string_view hex) {
+  ShareTarget target;
+  assert(parse_share_target(algo, hex, target));
+  assert(!target.full);
+  return target.word;
+}
+
+void test_share_targets() {
+  // Up to 8 digits: little-endian uint32 compact target expanded to a 64-bit threshold.
+  assert(word_target("rx/0", "b88d0600") == 0x68db8bac710cbULL);
+  assert(word_target("cn/r", "ffffff00") == 0xffffffffffffffULL);
+  // 9..16 digits: little-endian uint64, right-padded.
+  assert(word_target("rx/0", "0011223344") == 0x4433221100ULL);
+  assert(word_target("rx/0", "0011223344556677") == 0x7766554433221100ULL);
+  // Longer targets and KawPoW: the most-significant big-endian word.
+  assert(word_target("c29", "00000000ffff00000000000000000000") == 0xffff0000ULL);
+  assert(word_target("kawpow", "ff") == 0xff00000000000000ULL);
+
+  ShareTarget target;
+  assert(parse_share_target("etchash", "01", target) && target.full && target.word == 1);
+  assert(target.bytes[31] == 1 && target.bytes[0] == 0);
+  // Kaspa-family and Verthash kernels compare little-endian words: byte 0 becomes the MSB.
+  assert(parse_share_target("walahash", "0100", target) && target.bytes[1] == 1);
+  assert(parse_share_target("verthash", "01" + std::string(62, '0'), target));
+  assert(target.bytes[31] == 1 && target.bytes[0] == 0);
+
+  for (const std::string_view bad : {"", "0", "abc", "zz", "00", "00000000"})
+    assert(!parse_share_target("rx/0", bad, target));
+  assert(!parse_share_target("etchash", "0000", target));
+  assert(!parse_share_target("etchash", std::string(66, '1'), target));
+  assert(!parse_share_target("kawpow", "0000000000000000ff", target));
+
+  std::uint8_t bytes[32];
+  assert(parse_big_target(std::string(64, 'f'), bytes) && bytes[0] == 0xff && bytes[31] == 0xff);
+  assert(!parse_big_target("0g", bytes));
+  std::uint8_t decoded[2]{};
+  assert(decode_hex("aB0f", decoded) && decoded[0] == 0xab && decoded[1] == 0x0f);
+  assert(strip_hex_prefix("0Xff") == "ff" && strip_hex_prefix("ff") == "ff");
+}
+
 } // namespace
 
 int main() {
@@ -369,5 +415,6 @@ int main() {
   test_pearlhash_shapes();
   test_c29_completed_graphs();
   test_gpu_hits();
+  test_share_targets();
   return 0;
 }

@@ -152,7 +152,6 @@ static C29State& c29_state(const std::string& dev) {
   return *active;
 }
 #include "activate.inc"
-static void set_sycl_env(const char*, const char*) {}
 static int c29_portable_test(const uint8_t*, unsigned, uint8_t*, const std::string&) {
   throw std::logic_error("hardware/portable guard unexpectedly selected");
 }

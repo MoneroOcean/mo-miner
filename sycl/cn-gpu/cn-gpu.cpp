@@ -37,6 +37,13 @@
 
 #include "state.inc"
 
+// Program build options for sycl_set_compile_options(): the FP determinism flags on JIT backends.
+// The CUDA images are AOT and take determinism from -ffp-contract=off (binding.gyp); these OpenCL
+// options would make the nvptx module fail there with UR_RESULT_ERROR_UNKNOWN.
+const char* cn_gpu_compile_options(const sycl::device& device) {
+  return mom_is_cuda(device) ? nullptr : cn_gpu_fp_compile_options(device);
+}
+
 // cn_gpu owns the full submit chain so the hot path is visible in one function.
 // Validate and pad the batch, then sequence expansion, recurrence, and finalization.
 void cn_gpu(const uint8_t* const inputs, const unsigned input_size, uint8_t* const output,
@@ -71,7 +78,7 @@ void cn_gpu(const uint8_t* const inputs, const unsigned input_size, uint8_t* con
   [[maybe_unused]] const sycl::event initial_keccak = q.submit([&](sycl::handler& h) {
     CnGpuActiveViews cn_views(state, h);
     h.parallel_for(
-        sycl::nd_range(sycl::range(round_up_size(batch, WORKGROUP_SIZE)),
+        sycl::nd_range(sycl::range(mom_round_up_size(batch, WORKGROUP_SIZE)),
                        sycl::range(WORKGROUP_SIZE)),
         [=](sycl::nd_item<1> nd) {
           const auto [d_inputs, d_spads, d_lpads, d_outputs, d_spads4, d_lpads4, d_lpads16] =
@@ -133,7 +140,7 @@ void cn_gpu(const uint8_t* const inputs, const unsigned input_size, uint8_t* con
           expand_wg = 8;
 #endif
         const unsigned wg_size = std::min(expand_wg, stripes);
-        h.parallel_for(sycl::nd_range(sycl::range(round_up_size(total_threads, wg_size)),
+        h.parallel_for(sycl::nd_range(sycl::range(mom_round_up_size(total_threads, wg_size)),
                                      sycl::range(wg_size)),
                        [=](sycl::nd_item<1> nd) {
                          const auto [d_inputs, d_spads, d_lpads, d_outputs, d_spads4, d_lpads4,
@@ -215,7 +222,7 @@ void cn_gpu(const uint8_t* const inputs, const unsigned input_size, uint8_t* con
 
         cn_recurrence_barrier(nd, use_narrow_recurrence_barriers);
 
-        single_comupte_wrap(vi[cn_lane_select(l, 0)], vi[cn_lane_select(l, 1)],
+        single_compute_wrap(vi[cn_lane_select(l, 0)], vi[cn_lane_select(l, 1)],
                             vi[cn_lane_select(l, 2)], vi[cn_lane_select(l, 3)], lm,
                             cn_lane_count(l), sf, vf + l, vo + l);
 
@@ -272,10 +279,10 @@ void cn_gpu(const uint8_t* const inputs, const unsigned input_size, uint8_t* con
         const auto spad = d_spads4 + (nd.get_global_id(0) * (25 * 2));
         const sycl::uint4* const lpad = &d_lpads16[nd.get_global_id(0) * CN_MEMORY16];
         sycl::uint4 x;
-        mo_vec_load(x, l1 + 4, spad);
+        mom_vec_load(x, l1 + 4, spad);
         alignas(32) AesKey key;
-        mo_vec_load(key.u8[0], 1, spad);
-        aes_expend_key(key.u);
+        mom_vec_load(key.u8[0], 1, spad);
+        aes_expand_key(key.u);
         const auto sg = nd.get_sub_group();
         const unsigned row_lane_base = sg.get_local_linear_id() & ~7u;
 
@@ -313,7 +320,7 @@ void cn_gpu(const uint8_t* const inputs, const unsigned input_size, uint8_t* con
           const sycl::uint4 x1l = next_row_value(x1s);
           x ^= x1l;
         }
-        mo_vec_store(x, l1 + 4, spad);
+        mom_vec_store(x, l1 + 4, spad);
       };
       if (use_native_width8)
         h.parallel_for(aes_range, [=](sycl::nd_item<2> nd) { aes_kernel(nd); });
@@ -343,10 +350,10 @@ void cn_gpu(const uint8_t* const inputs, const unsigned input_size, uint8_t* con
             const auto spad = d_spads4 + (nd.get_global_id(0) * (25 * 2));
             const sycl::uint4* const lpad = &d_lpads16[nd.get_global_id(0) * CN_MEMORY16];
             sycl::uint4 x;
-            mo_vec_load(x, l1 + 4, spad);
+            mom_vec_load(x, l1 + 4, spad);
             alignas(32) AesKey key;
-            mo_vec_load(key.u8[0], 1, spad);
-            aes_expend_key(key.u);
+            mom_vec_load(key.u8[0], 1, spad);
+            aes_expand_key(key.u);
             sycl::uint4 &x1s = x1[l0][l1], &x1l = x1[l0][(l1 + 1) % 8], &x2s = x2[l0][l1],
                         &x2l = x2[l0][(l1 + 1) % 8];
             x2s = sycl::uint4(0);
@@ -378,7 +385,7 @@ void cn_gpu(const uint8_t* const inputs, const unsigned input_size, uint8_t* con
               nd.barrier(sycl::access::fence_space::local_space);
               x ^= x1l;
             }
-            mo_vec_store(x, l1 + 4, spad);
+            mom_vec_store(x, l1 + 4, spad);
           });
     });
   }
@@ -387,7 +394,7 @@ void cn_gpu(const uint8_t* const inputs, const unsigned input_size, uint8_t* con
       q.submit([&](sycl::handler&
                        h) { // Final Keccak stays on device; the host scratchpad argument is unused.
         CnGpuActiveViews cn_views(state, h);
-        h.parallel_for(sycl::nd_range(sycl::range(round_up_size(batch, WORKGROUP_SIZE)),
+        h.parallel_for(sycl::nd_range(sycl::range(mom_round_up_size(batch, WORKGROUP_SIZE)),
                                       sycl::range(WORKGROUP_SIZE)),
                        [=](sycl::nd_item<1> nd) {
                          const auto [d_inputs, d_spads, d_lpads, d_outputs, d_spads4, d_lpads4,

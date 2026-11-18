@@ -39,6 +39,8 @@ __device__ __forceinline__ uint32_t rotl13(uint32_t x) {
   return (x << 13) | (x >> 19);
 }
 
+// Remap CTA ids into 16 x (2 or 16) supertiles so neighbouring CTAs reuse A/B through L2. Grids
+// that are not supertile multiples keep the identity mapping (see swizzle_with_tails).
 __device__ __forceinline__ void swizzle_cta(int& block_m, int& block_n,
                                              int m, int n, int k) {
   constexpr int swizzle_m = 16;
@@ -73,6 +75,7 @@ __device__ __forceinline__ uint32_t rotr32(uint32_t x, int n) {
   return (x >> n) | (x << (32 - n));
 }
 
+// BLAKE3 quarter-round on state words a,b,c,d with message words x,y (32-bit wraparound).
 __device__ __forceinline__ void b3_g(uint32_t* s, int a, int b, int c, int d,
                                      uint32_t x, uint32_t y) {
   s[a] += s[b] + x;
@@ -85,6 +88,7 @@ __device__ __forceinline__ void b3_g(uint32_t* s, int a, int b, int c, int d,
   s[b] = rotr32(s[b] ^ s[c], 7);
 }
 
+// One BLAKE3 round; the caller permutes msg between rounds.
 __device__ __forceinline__ void b3_round(uint32_t* s, const uint32_t* msg) {
   b3_g(s, 0, 4, 8, 12, msg[0], msg[1]);
   b3_g(s, 1, 5, 9, 13, msg[2], msg[3]);
@@ -96,6 +100,8 @@ __device__ __forceinline__ void b3_round(uint32_t* s, const uint32_t* msg) {
   b3_g(s, 3, 4, 9, 14, msg[14], msg[15]);
 }
 
+// Debug-only position-salted checksum of one transcript, summed across the launch when
+// MOM_PEARLHASH_CHK is set. It is not part of consensus.
 __device__ __forceinline__ uint32_t tile_mix(uint32_t row, uint32_t col,
                                               const uint32_t* transcript) {
   uint32_t h = row * 2654435761u + col * 2246822519u + 0x9e3779b9u;
@@ -208,6 +214,7 @@ struct PearlRawLDSM {
   using SRegisters = cute::uint128_t[1];
   using DRegisters = uint32_t[4];
 
+  // Byte-transposing 16x16 LDSM (sm120a .b8 form); a whole-warp collective.
   __device__ __forceinline__ static void copy(
       cute::uint128_t const& source, uint32_t& d0, uint32_t& d1,
       uint32_t& d2, uint32_t& d3) {
@@ -230,6 +237,8 @@ struct ReconstructSharedStorage {
 static_assert(sizeof(ReconstructSharedStorage) == kSharedBytes,
               "reconstruct storage accounting changed");
 
+// Load two rank-noise rows with byte-transposing LDSM and return their per-byte difference plus
+// kByteBias (the +32 upload bias of both rows cancels). Whole-warp collective.
 __device__ __forceinline__ uint4 rank_pair_packet(
     const uint8_t* first, const uint8_t* second) {
   uint4 lhs;
@@ -244,6 +253,8 @@ __device__ __forceinline__ uint4 rank_pair_packet(
                     lhs.w + kByteBias - rhs.w);
 }
 
+// Subtract the seed-bearing A prefix from the first CTA's first fragments: lanes 0..3 own the 32
+// seed bits at K positions kfuture.., each contributing (bit ^ 1) to its byte.
 __device__ __forceinline__ void apply_a_prefix(uint4& packet, uint32_t seed,
                                                 int kfuture, int lane) {
   if (lane >= 4)
@@ -379,6 +390,7 @@ __device__ __forceinline__ RawBPair load_pending_a(
     storage.eal_rank+uint64_t(second)*kPitchA+row),p.second.x,p.second.y,p.second.z,p.second.w);
   return p;
 }
+// Finish a load_pending_a pair (bias-corrected difference) and store it to the A stage slot.
 template<bool Extra>
 __device__ __forceinline__ void publish_pending_a(
     ReconstructSharedStorage& storage,int slot,int owner,int group,int lane,
@@ -473,6 +485,11 @@ __device__ __forceinline__ void upload_noise_words(uint8_t* output,const int8_t*
   }
 }
 
+// Fused compact solver for one 192x256 CTA: reconstruct noised A/B fragments from the rank-128
+// noise rows and the prepared selectors, run the K loop on int8 tensor cores while folding each
+// 24x8 opening's checkpoints into its 16-word transcript, then hash every transcript against the
+// target. Invalid shapes or arguments return without writing; FixedK lets the production K65536
+// loop compile with a constant trip count.
 template<int FixedK>
 __device__ __forceinline__ void compact_gemm_impl(
                   ReconstructSharedStorage& storage,const int8_t* __restrict__ eal,
@@ -645,6 +662,7 @@ __device__ __forceinline__ void compact_gemm_impl(
   dense_warp96::hash_local(transcript, key, target, result, seed, row, col, debug_checksum);
 }
 
+// Module entry: dispatch the constant-K production specialization or the generic-K fallback.
 extern "C" __global__ __launch_bounds__(256)
 void compact_gemm(const int8_t* __restrict__ eal,
                   const int8_t* __restrict__ ebr,
@@ -692,6 +710,7 @@ __device__ __forceinline__ unsigned swap_max(const BankGroup& g,unsigned outgoin
   if(a==b)return max(unsigned(g.maximum)-(remove>add&&g.banks[a]==g.maximum&&g.at_maximum==1),unsigned(g.banks[a])+add-remove);
   return max(unsigned(g.maximum)-(remove&&g.banks[a]==g.maximum&&g.at_maximum==1),unsigned(g.banks[b])+add);
 }
+// Recompute the group's peak per-bank load and how many banks reach it.
 __device__ __forceinline__ void refresh(BankGroup& g) {
   unsigned m=0,n=0;
 #pragma unroll
@@ -700,6 +719,7 @@ __device__ __forceinline__ void refresh(BankGroup& g) {
   for(unsigned b=0;b<8;++b)n+=g.banks[b]==m;
   g.maximum=m;g.at_maximum=n;
 }
+// Apply an accepted rank swap to the group's counters.
 __device__ __forceinline__ void exchange(BankGroup& g,unsigned outgoing,unsigned incoming) {
   if(--g.ranks[outgoing]==0)--g.banks[outgoing&7];
   if(g.ranks[incoming]++==0)++g.banks[incoming&7];

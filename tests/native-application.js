@@ -43,7 +43,7 @@ test.describe("Native default-application compilation boundary", () => {
   test("factories and their compile definitions follow maintained declarations", () => {
     assert.deepEqual(nativeApplicationGpu(source, inputs), {factories: ["mom_native_gpu_dpcpp", "mom_native_gpu_acpp_cuda"],
       definitions: ['-DMOM_NATIVE_GPU_DEFAULT="dpcpp"', "-DMOM_NATIVE_GPU_DPCPP", "-DMOM_NATIVE_GPU_ACPP_CUDA"],
-      linkFlags: ["-Wl,--wrap=dlopen", "-Wl,--wrap=dlerror", "-Wl,--undefined=mom_native_gpu_dpcpp", "-Wl,--undefined=mom_native_gpu_acpp_cuda"]});
+      linkFlags: ["-Wl,--wrap=dlopen", "-Wl,--wrap=dlerror", "-Wl,--wrap=dlsym,--wrap=dlvsym", "-Wl,--undefined=mom_native_gpu_dpcpp", "-Wl,--undefined=mom_native_gpu_acpp_cuda"]});
   });
   test("the actual dispatch source yields a nonempty complete unique factory set", () => {
     const actual = fs.readFileSync(path.join(repo, "runtime/gpu-dispatch.cpp"), "utf8");

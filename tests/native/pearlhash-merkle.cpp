@@ -5,6 +5,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <vector>
+#include "sycl/blake3-device.inc"
 #include "sycl/pearlhash/blake3.inc"
 
 namespace fixture {

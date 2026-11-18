@@ -35,6 +35,7 @@ bool compact_available(const sycl::device&) noexcept;
 
 namespace mom_autolykos2 {
 void autolykos2_cleanup_states() noexcept;
+const char* autolykos2_compile_options();
 }
 namespace mom_beamhash3 {
 void beamhash3_cleanup_states() noexcept;
@@ -46,12 +47,14 @@ unsigned zelhash_slot_capacity(const sycl::device&);
 } // namespace mom_zelhash
 namespace mom_etchash {
 void etchash_cleanup_states() noexcept;
+const char* etchash_compile_options();
 }
 namespace mom_fishhash {
 void fishhash_cleanup_states() noexcept;
 }
 namespace mom_kawpow {
 void kawpow_cleanup_states() noexcept;
+const char* kawpow_compile_options();
 }
 namespace mom_hoohash {
 void hoohash_cleanup_states() noexcept;
@@ -64,6 +67,7 @@ void xelishashv3_cleanup_states() noexcept;
 }
 namespace mom_nexapow {
 void nexapow_cleanup_states() noexcept;
+const char* nexapow_compile_options(const sycl::device&);
 }
 namespace mom_octopus {
 void octopus_cleanup_states() noexcept;
@@ -76,10 +80,11 @@ void zhash_cleanup_states() noexcept;
 unsigned zhash_intensity(const sycl::device&);
 }
 namespace mom_equihash192_7 {
-void cleanup_states() noexcept;
+void equihash192_7_cleanup_states() noexcept;
 unsigned equihash192_7_intensity(const sycl::device&);
 }
 void cn_gpu_cleanup_states() noexcept;
+const char* cn_gpu_compile_options(const sycl::device&);
 void c29_cleanup_states() noexcept;
 void c30_cleanup_states() noexcept;
 uint32_t c29_seed_local_size();
@@ -112,11 +117,12 @@ void sycl_cleanup() noexcept {
   mom_octopus::octopus_cleanup_states();
   mom_verthash::verthash_cleanup_states();
   mom_zhash::zhash_cleanup_states();
-  mom_equihash192_7::cleanup_states();
+  mom_equihash192_7::equihash192_7_cleanup_states();
   pearlhash_cleanup_states();
   str2dev.clear();
 }
 
+// Key that recognises one physical GPU across backends: vendor, name and its index on the platform.
 static std::string gpu_identity_key(const sycl::device& device, const unsigned platform_gpu_num) {
   return device.get_info<sycl::info::device::vendor>() + "|" +
          device.get_info<sycl::info::device::name>() + "|" + std::to_string(platform_gpu_num);
@@ -164,6 +170,7 @@ static unsigned selected_stable_gpu_number() {
 }
 
 // Assign API-independent public names before filtering, retaining CPU device names unchanged.
+// GPUs are renumbered in device-name order; equal names keep their previous gpuN order.
 static void sort_gpus_by_name() {
   std::vector<std::pair<std::string, unsigned>> physical_gpus;
   for (const auto& pair : str2dev) {

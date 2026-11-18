@@ -155,6 +155,7 @@ static int verify_candidates(const uint8_t* input, unsigned extra_bytes, uint64_
 // The staged search writes at most this many candidates for the host to re-verify.
 static_assert(sycl_pipeline::SearchResult::kCapacity == Result::kCapacity);
 
+// Release device state before the compiler runtime unloads without escaping exceptions.
 void nexapow_cleanup_states() noexcept {
   try {
     registry().clear();

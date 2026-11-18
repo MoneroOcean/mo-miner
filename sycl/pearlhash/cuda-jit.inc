@@ -8,6 +8,8 @@ using mom::cuda_check;
 
 #if !defined(MOM_EMBEDDED_CUDA_IMAGES)
 #if !defined(MOM_EMBEDDED_NVRTC_HEADERS)
+// Return the first include root (configured override, then candidates) containing `required`;
+// empty when none does.
 static std::filesystem::path
 pearlhash_cuda_header_root(const char* configured,
                            const std::vector<std::filesystem::path>& candidates,

@@ -18,7 +18,7 @@ constexpr unsigned HASH_OUTPUT = INDICES_PER_HASH * ((N + 7) >> 3); // 64
 constexpr unsigned SUB_ELEMENT_BYTES = (N + 7) >> 3;                // 16
 constexpr uint64_t HEADER_LEN = 140;
 [[maybe_unused]] constexpr uint64_t NUM_ENTRIES = 1ull
-                                                  << (COLLISION_BIT_LENGTH + 1); // 2^26 (M2 rounds)
+                                                  << (COLLISION_BIT_LENGTH + 1); // 2^26
 static_assert(HASH_LENGTH == EQUIHASH_ROW_LEN,
               "row length must match the host-side dump buffer width");
 
@@ -37,6 +37,7 @@ constexpr unsigned round_up(unsigned value, unsigned alignment) {
 constexpr unsigned round_down(unsigned value, unsigned alignment) {
   return value / alignment * alignment;
 }
+// Slots per bucket: the mean load plus `deviations` standard deviations, aligned (see below).
 constexpr unsigned bucket_capacity(unsigned buckets, unsigned deviations, unsigned alignment,
                                    bool round_capacity_down = false) {
   // Bucket occupancy is binomial. Size the arena from its mean plus a backend-appropriate number
@@ -134,6 +135,7 @@ inline uint32_t field_from_parts(uint32_t bucket, uint32_t rest) {
   return (bucket << RESTBITS) | rest;
 }
 #endif
+// Exact-bin key (the bits below the bucket) of a round-R record's next collision field.
 template <unsigned R, bool GPU_COMPACT> inline uint32_t collision_rest(const uint32_t* g) {
 #if defined(MOM_SYCL_HAS_CUDA)
   if constexpr (GPU_COMPACT && R == 0u)
@@ -197,6 +199,7 @@ inline void dense_l0_store(uint32_t* o, const uint32_t* f, uint32_t eh_index) {
   o[3] = (f[3] >> 21) | ((f[4] & 0x01ffffffu) << 4) | ((eh_index & 0x7u) << 29);
   o[4] = eh_index >> 3;
 }
+// Load follower field k (the fields after the one being collided) of a round-R record.
 template <unsigned R, bool GPU_COMPACT>
 inline uint32_t load_follower(const uint32_t* g, unsigned k) {
   if constexpr (R == 0) {
@@ -243,6 +246,7 @@ inline void store_aligned_u32x4(uint32_t* p, uint32_t x, uint32_t y, uint32_t z,
   // the two traffic-heavy CUDA rounds lower to one vector global store per survivor.
   *reinterpret_cast<NativeU32x4*>(p) = NativeU32x4{x, y, z, w};
 }
+// Store a CUDA compact level-0 record: f1..f4 directly, with f0's exact-bin bits in spare high bits.
 inline void dense_l0_store_compact(uint32_t* o, const uint32_t* f) {
   // CUDA keeps the 125 hash bits in one aligned vector and writes the leaf mapping to a separate
   // stream. Generation scatters and round-0 reads are 16 rather than 20 bytes per row.
@@ -259,26 +263,3 @@ inline void dense_l0_store_compact(uint32_t* o, const uint32_t* f) {
 }
 #endif
 
-// ===========================================================================================
-// BLAKE2b-512 with personalization (RFC 7693 + BLAKE2 param block). Self-contained so the personal
-// param block matches the Equihash 125,4 reference exactly. Used host-side (base midstate) and device-side
-// (per-index finalize). All scalar / IGC-safe.
-// ===========================================================================================
-static constexpr uint64_t B2B_IV[8] = {
-    0x6a09e667f3bcc908ull, 0xbb67ae8584caa73bull, 0x3c6ef372fe94f82bull, 0xa54ff53a5f1d36f1ull,
-    0x510e527fade682d1ull, 0x9b05688c2b3e6c1full, 0x1f83d9abfb41bd6bull, 0x5be0cd19137e2179ull,
-};
-static constexpr uint8_t B2B_SIGMA[12][16] = {
-    {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15},
-    {14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3},
-    {11, 8, 12, 0, 5, 2, 15, 13, 10, 14, 3, 6, 7, 1, 9, 4},
-    {7, 9, 3, 1, 13, 12, 11, 14, 2, 6, 5, 10, 4, 0, 15, 8},
-    {9, 0, 5, 7, 2, 4, 10, 15, 14, 1, 11, 12, 6, 8, 3, 13},
-    {2, 12, 6, 10, 0, 11, 8, 3, 4, 13, 7, 5, 15, 14, 1, 9},
-    {12, 5, 1, 15, 14, 13, 4, 10, 0, 7, 6, 3, 9, 2, 8, 11},
-    {13, 11, 7, 14, 12, 1, 3, 9, 5, 0, 15, 4, 8, 6, 2, 10},
-    {6, 15, 14, 9, 11, 3, 0, 8, 12, 2, 13, 7, 1, 4, 10, 5},
-    {10, 2, 8, 4, 7, 6, 1, 5, 15, 11, 9, 14, 3, 12, 13, 0},
-    {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15},
-    {14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3},
-};

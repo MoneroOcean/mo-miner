@@ -104,7 +104,7 @@ static sycl::event submit_gen_test(sycl::queue& q, const uint64_t* d_base_h,
 }
 
 // ===========================================================================================
-// M2/M3 solver kernels: gen-fill (round-0 bucketing) + collision rounds + candidate collection.
+// Solver kernels: gen-fill (round-0 bucketing) + collision rounds + candidate collection.
 // ===========================================================================================
 //
 // A level-L slot lives at level[L] + ((bucket * slot_capacity + slot) * level_u32(L, gpu_compact)).
@@ -195,7 +195,7 @@ inline void zelhash_scan16_words(const sycl::sub_group& sg, const uint32_t mine[
 #endif
 
 // ---- Gen-fill: produce all 2^26 entries and scatter each into its round-0 bucket. One sub-group of
-// 16 lanes per 16-aligned hash-index block (the validated M1 scan), then each lane emits its 4
+// 16 lanes per 16-aligned hash-index block (the validated generation scan), then each lane emits its 4
 // sub-element entries. field_bucket() maps field-0 to the physical bucket; the recovery index is
 // packed into each common record or written to CUDA's separate cold stream.
 template <bool GPU_COMPACT> class ZelHashGenFillKernelT;

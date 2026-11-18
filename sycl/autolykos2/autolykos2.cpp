@@ -5,7 +5,6 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <cinttypes>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -16,7 +15,8 @@
 #include <vector>
 
 #include "../lib-internal.h"
-#include "../../native/consts.h"
+#include "../pow-hits.h"
+#include "../pow-target.h"
 
 namespace mom_autolykos2 {
 
@@ -36,26 +36,11 @@ inline uint32_t calc_n(const uint32_t height) {
   return n;
 }
 
-static uint64_t now_ms() {
-  return std::chrono::duration_cast<std::chrono::milliseconds>(
-             std::chrono::steady_clock::now().time_since_epoch())
-      .count();
-}
-
+// Monotonic microseconds for pipeline selection and AUTOLYKOS2_PROFILE timing.
 static uint64_t now_us() {
   return std::chrono::duration_cast<std::chrono::microseconds>(
              std::chrono::steady_clock::now().time_since_epoch())
       .count();
-}
-
-static void format_duration_ms(char* out, size_t out_size, uint64_t ms) {
-  if (ms < 1000) {
-    std::snprintf(out, out_size, "%" PRIu64 "ms", ms);
-  } else if (ms < 60000) {
-    std::snprintf(out, out_size, "%.2f s", static_cast<double>(ms) / 1000.0);
-  } else {
-    std::snprintf(out, out_size, "%.2f min", static_cast<double>(ms) / 60000.0);
-  }
 }
 
 // Parse env var `name` as a u32, leaving the caller's fallback intact on invalid input.
@@ -71,20 +56,22 @@ static bool env_u32(const char* name, uint32_t& out) {
 
 // sycl_cleanup() clears device-owning values before the compiler runtime unloads. Keep the
 // registry shell heap-owned so C++ static destruction cannot race runtime DLL teardown.
-static DeviceStateRegistry<AutolykosState>& autolykos_registry() {
-  static auto* const registry = new DeviceStateRegistry<AutolykosState>;
+static DeviceStateRegistry<State>& registry() {
+  static auto* const registry = new DeviceStateRegistry<State>;
   return *registry;
 }
 
-static AutolykosState& autolykos_state(const std::string& dev_str) {
-  return autolykos_registry().get(dev_str, [&] {
-    return std::make_unique<AutolykosState>(dev_str);
+// Reuse one mutex-serialized table owner for the selected device.
+static State& state_for(const std::string& dev_str) {
+  return registry().get(dev_str, [&] {
+    return std::make_unique<State>(dev_str);
   });
 }
 
+// Release device state before the compiler runtime unloads without escaping exceptions.
 void autolykos2_cleanup_states() noexcept {
   try {
-    autolykos_registry().clear();
+    registry().clear();
   } catch (...) {
     std::fprintf(stderr, "autolykos2: ordered SYCL cleanup failed\n");
   }
@@ -102,17 +89,6 @@ struct QueueUsmFree {
   }
 };
 
-// Copy every hit a mining kernel recorded into the single-blob result ABI (sycl/lib.h).
-static int take_autolykos_result(const AutolykosResult* result, uint8_t* output, uint64_t* pnonce) {
-  static_assert(MAX_AUTOLYKOS_OUTPUTS <= GPU_MAX_HITS);
-  const uint32_t hits = std::min(result->count, MAX_AUTOLYKOS_OUTPUTS);
-  for (uint32_t index = 0; index < hits; ++index) {
-    pnonce[index] = result->nonce[index];
-    std::memcpy(output + index * HASH_LEN, result->output[index], HASH_LEN);
-  }
-  return static_cast<int>(hits);
-}
-
 } // namespace mom_autolykos2
 
 using namespace mom_autolykos2;
@@ -125,13 +101,13 @@ int autolykos2(const unsigned, const uint32_t height, const uint8_t* const input
   if (!input || !output || !pnonce || !target || input_size < 40 || !intensity)
     throw std::string("Autolykos2 requires input, output, target, nonce, and nonzero intensity");
 
-  AutolykosState& state = autolykos_state(dev_str);
+  State& state = state_for(dev_str);
   std::lock_guard<std::mutex> state_lock(state.mutex);
   state.ensure_result();
   const uint32_t n_len = calc_n(height);
   const uint64_t n_len_M =
-      mo_modM(n_len); // Lemire magic for the hot `idx % n_len` (see mo_mod_u32)
-  const uint64_t n_len_divM = mo_divM64(n_len);
+      modM(n_len); // Lemire magic for the hot `idx % n_len` (see mod_u32)
+  const uint64_t n_len_divM = divM64(n_len);
   state.ensure_table(height, n_len, is_test, !is_benchmark);
 
   AutolykosJobData job{};
@@ -145,26 +121,26 @@ int autolykos2(const unsigned, const uint32_t height, const uint8_t* const input
       (std::numeric_limits<uint32_t>::max() - (state.workgroup - 1)) / 8U)
     throw std::string("Autolykos2 intensity is too large");
   const size_t global_size =
-      round_up_size(std::max(effective_intensity, state.workgroup), state.workgroup);
+      mom_round_up_size(std::max(effective_intensity, state.workgroup), state.workgroup);
   if constexpr (mom_sycl_portable_opencl) {
     state.ensure_portable_results(effective_intensity);
     AutolykosPortableResult empty_portable_result{};
     sycl_wait_and_throw(state.portable_results.fill(state.queue, empty_portable_result),
                         state.device);
   } else {
-    std::memset(state.result, 0, sizeof(AutolykosResult));
+    std::memset(state.result, 0, sizeof(PowHits<>));
   }
 
   sycl::queue& q = state.queue;
   const uint32_t* const __restrict__ d_table = state.table;
   // Portable OpenCL compiles out the split-table path below and uses per-nonce results. Other
   // profiles share this result buffer between the split-table and monolithic paths.
-  AutolykosResult* const d_result = mom_sycl_portable_opencl ? nullptr : state.result;
+  PowHits<>* const d_result = mom_sycl_portable_opencl ? nullptr : state.result;
   const uint32_t local_size = state.workgroup;
   const bool profile = std::getenv("MOM_AUTOLYKOS2_PROFILE") != nullptr;
 
 #if !defined(MOM_SYCL_PORTABLE_OPENCL)
-  bool split_table = AutolykosState::autolykos_split_table();
+  bool split_table = State::autolykos_split_table();
 #if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
   const bool auto_pipeline = AutolykosPipelineSelection::eligible(
       mom_is_cuda(state.device), d_table != nullptr, is_test,
@@ -200,9 +176,9 @@ int autolykos2(const unsigned, const uint32_t height, const uint8_t* const input
       sycl_wait_and_throw(index_event, state.device);
     const uint64_t profile_t1 = profile ? now_us() : 0;
     const bool subgroup_coop = (mom_is_hip(state.device) || mom_is_cuda(state.device)) &&
-                               AutolykosState::autolykos_subgroup_coop();
+                               State::autolykos_subgroup_coop();
     const uint32_t verify_count = subgroup_coop &&
-                                          AutolykosState::autolykos_subgroup_coop_verify() &&
+                                          State::autolykos_subgroup_coop_verify() &&
                                           !state.subgroup_coop_verified
                                       ? std::min<uint32_t>(effective_intensity, 256U)
                                       : 0U;
@@ -216,7 +192,7 @@ int autolykos2(const unsigned, const uint32_t height, const uint8_t* const input
     sycl::event search_event;
     if (subgroup_coop) {
       const size_t coop_global =
-          round_up_size(static_cast<uint64_t>(effective_intensity) * 8U, local_size);
+          mom_round_up_size(static_cast<uint64_t>(effective_intensity) * 8U, local_size);
       search_event = q.submit([&](sycl::handler& h) {
         h.parallel_for(
             sycl::nd_range<1>(sycl::range<1>(coop_global), sycl::range<1>(local_size)),
@@ -286,8 +262,8 @@ int autolykos2(const unsigned, const uint32_t height, const uint8_t* const input
                 store32_be_dev(final_input + i * 4, sum[i]);
               uint8_t final_hash[32];
               blake2b256_oneblock_dev(final_input, sizeof(final_input), final_hash);
-              if (meets_target_dev(final_hash, job.target))
-                store_autolykos_result(d_result, start_nonce + gid, final_hash);
+              if (mom_meets_target_be(final_hash, job.target))
+                mom_store_pow_hit(d_result, start_nonce + gid, final_hash);
             });
       });
     } else {
@@ -328,7 +304,7 @@ int autolykos2(const unsigned, const uint32_t height, const uint8_t* const input
                              idx = (words[word_index] << 24) | (words[word_index + 1] >> 8);
                              break;
                            }
-                           idx = mo_mod_u32(idx, n_len, n_len_M);
+                           idx = mod_u32(idx, n_len, n_len_M);
                            add_limbs_dev(sum, d_table + static_cast<uint64_t>(idx) *
                                                             (TABLE_ENTRY_BYTES / sizeof(uint32_t)));
                          }
@@ -340,8 +316,8 @@ int autolykos2(const unsigned, const uint32_t height, const uint8_t* const input
 
                          uint8_t final_hash[32];
                          blake2b256_oneblock_dev(final_input, sizeof(final_input), final_hash);
-                         if (meets_target_dev(final_hash, job.target))
-                           store_autolykos_result(d_result, start_nonce + gid, final_hash);
+                         if (mom_meets_target_be(final_hash, job.target))
+                           mom_store_pow_hit(d_result, start_nonce + gid, final_hash);
                        });
       });
     }
@@ -353,7 +329,7 @@ int autolykos2(const unsigned, const uint32_t height, const uint8_t* const input
       if (!mismatches)
         throw std::string("Can't allocate Autolykos2 subgroup verification counter");
       *mismatches = 0;
-      const size_t verify_global = round_up_size(verify_count, local_size);
+      const size_t verify_global = mom_round_up_size(verify_count, local_size);
       sycl_wait_and_throw(q.submit([&](sycl::handler& h) {
         h.parallel_for(
             sycl::nd_range<1>(sycl::range<1>(verify_global), sycl::range<1>(local_size)),
@@ -386,7 +362,7 @@ int autolykos2(const unsigned, const uint32_t height, const uint8_t* const input
                   idx = (words[wi] << 24) | (words[wi + 1] >> 8);
                   break;
                 }
-                idx = mo_mod_u32(idx, n_len, n_len_M);
+                idx = mod_u32(idx, n_len, n_len_M);
                 add_limbs_dev(expected, d_table + static_cast<uint64_t>(idx) * 8U);
               }
               bool differs = false;
@@ -423,7 +399,7 @@ int autolykos2(const unsigned, const uint32_t height, const uint8_t* const input
     if constexpr (mom_sycl_portable_opencl) {
       throw std::string("Autolykos2 portable OpenCL table path is unavailable");
     } else {
-      const int found = take_autolykos_result(state.result, output, pnonce);
+      const int found = mom_take_pow_hits(*state.result, output, pnonce);
 #if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
       if (pipeline_started)
         state.pipeline_selection.observe(static_cast<double>(now_us() - pipeline_started));
@@ -448,7 +424,7 @@ int autolykos2(const unsigned, const uint32_t height, const uint8_t* const input
 #pragma unroll
       for (unsigned k = 0; k < K_LEN; ++k) {
         const uint32_t idx =
-            mo_mod_u32((static_cast<uint32_t>(index_hash[(k + 0) & 31U]) << 24) |
+            mod_u32((static_cast<uint32_t>(index_hash[(k + 0) & 31U]) << 24) |
                            (static_cast<uint32_t>(index_hash[(k + 1) & 31U]) << 16) |
                            (static_cast<uint32_t>(index_hash[(k + 2) & 31U]) << 8) |
                            static_cast<uint32_t>(index_hash[(k + 3) & 31U]),
@@ -468,7 +444,7 @@ int autolykos2(const unsigned, const uint32_t height, const uint8_t* const input
       blake2b256_oneblock_dev(final_input, sizeof(final_input), final_hash);
 
       AutolykosPortableResult candidate{};
-      if (is_test || meets_target_dev(final_hash, job.target)) {
+      if (is_test || mom_meets_target_be(final_hash, job.target)) {
         candidate.found = 1;
         candidate.nonce = nonce;
 #pragma unroll
@@ -502,7 +478,7 @@ int autolykos2(const unsigned, const uint32_t height, const uint8_t* const input
 
 #pragma unroll
             for (unsigned k = 0; k < K_LEN; ++k) {
-              indices[k] = mo_mod_u32(((static_cast<uint32_t>(index_hash[(k + 0) & 31U]) << 24) |
+              indices[k] = mod_u32(((static_cast<uint32_t>(index_hash[(k + 0) & 31U]) << 24) |
                                        (static_cast<uint32_t>(index_hash[(k + 1) & 31U]) << 16) |
                                        (static_cast<uint32_t>(index_hash[(k + 2) & 31U]) << 8) |
                                        static_cast<uint32_t>(index_hash[(k + 3) & 31U])),
@@ -558,8 +534,8 @@ int autolykos2(const unsigned, const uint32_t height, const uint8_t* const input
 
           uint8_t final_hash[32];
           blake2b256_oneblock_dev(final_input, sizeof(final_input), final_hash);
-          if (is_test || meets_target_dev(final_hash, job.target)) {
-            store_autolykos_result(d_result, nonce, final_hash);
+          if (is_test || mom_meets_target_be(final_hash, job.target)) {
+            mom_store_pow_hit(d_result, nonce, final_hash);
           }
         });
   });
@@ -586,7 +562,7 @@ int autolykos2(const unsigned, const uint32_t height, const uint8_t* const input
   }
   return hits;
 #else
-  const int found = take_autolykos_result(state.result, output, pnonce);
+  const int found = mom_take_pow_hits(*state.result, output, pnonce);
 #if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
   if (pipeline_started)
     state.pipeline_selection.observe(static_cast<double>(now_us() - pipeline_started));

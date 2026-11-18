@@ -122,16 +122,6 @@ static bool kawpow_loop_stats() {
   return enabled;
 }
 
-static void format_duration_ms(char* out, size_t out_size, uint64_t ms) {
-  if (ms < 1000) {
-    std::snprintf(out, out_size, "%" PRIu64 "ms", ms);
-  } else if (ms < 60000) {
-    std::snprintf(out, out_size, "%.2f s", static_cast<double>(ms) / 1000.0);
-  } else {
-    std::snprintf(out, out_size, "%.2f min", static_cast<double>(ms) / 60000.0);
-  }
-}
-
 struct KawpowCacheOp {
   uint32_t src;
   uint32_t dst;
@@ -334,19 +324,6 @@ KawpowProgram make_program(const uint64_t period, const uint32_t regs = KAWPOW_R
   }
 
   return program;
-}
-
-// cache_bytes sizes the cache (classic cache_sizes[] or MeowPow's chfast/scaled size); seed_epoch is
-// the epoch the keccak seedhash is derived from (== epoch except for MeowPow >= dag-change, where the
-// SIZE uses epoch*4 but the SEED keeps the real epoch).
-void compute_light_cache(std::vector<uint32_t>& cache, const uint64_t cache_bytes,
-                         const uint32_t seed_epoch) {
-  cache.assign(cache_bytes / sizeof(uint32_t), 0);
-
-  const ethash_h256_t seed = ethash_get_seedhash(seed_epoch);
-  if (!ethash_compute_cache_nodes(cache.data(), cache_bytes, &seed)) {
-    throw std::string("Can't calculate kawpow light cache");
-  }
 }
 
 // Named so the per-period specialized bundle can be built ahead of time.

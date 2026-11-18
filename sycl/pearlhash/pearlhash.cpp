@@ -78,6 +78,7 @@
 #include "../jit-cache.h"
 #endif
 
+#include "../blake3-device.inc"
 #include "blake3.inc"
 #include "seed.inc"
 
@@ -224,7 +225,7 @@ int pearlhash(const unsigned job_ref, const uint32_t, const uint8_t* const input
 
   // Device state is acquired only after all input/profile validation. Once the state is valid, clear
   // the prior fixed-B snapshot before any route, allocation, producer, or proof operation can throw.
-  PearlHashState& st = pearlhash_state(dev_str);
+  State& st = state_for(dev_str);
   std::lock_guard<std::mutex> lock(st.mutex);
   const bool prior_fixed_b_valid = st.fixed_b_valid;
   const uint32_t prior_fixed_b_seed = st.fixed_b_seed;

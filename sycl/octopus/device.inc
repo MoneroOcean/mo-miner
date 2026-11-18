@@ -41,13 +41,7 @@ constexpr uint32_t COOPERATIVE_WARPS = 4;
 constexpr uint32_t ACCESSES = 32;
 constexpr uint32_t FNV_PRIME = 0x01000193U;
 constexpr uint64_t EPOCH_LENGTH = 1ULL << 19;
-constexpr unsigned MAX_RESULTS = 15;
-
-struct Result {
-  uint32_t count;
-  uint64_t nonce[MAX_RESULTS];
-  uint8_t hash[MAX_RESULTS][HASH_LEN];
-};
+using Result = PowHits<>;
 
 inline uint32_t load32(const uint8_t* const p) {
   return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
@@ -58,6 +52,7 @@ inline uint64_t load64(const uint8_t* const p) {
   return static_cast<uint64_t>(load32(p)) | (static_cast<uint64_t>(load32(p + 4)) << 32);
 }
 
+// Store a little-endian 32-bit word.
 inline void store32(uint8_t* const p, const uint32_t x) {
   p[0] = static_cast<uint8_t>(x);
   p[1] = static_cast<uint8_t>(x >> 8);
@@ -66,7 +61,7 @@ inline void store32(uint8_t* const p, const uint32_t x) {
 }
 
 inline uint64_t rotl64(const uint64_t x, const unsigned n) {
-  return mo_rotate(x, static_cast<uint64_t>(n));
+  return mom_rotate(x, static_cast<uint64_t>(n));
 }
 
 inline uint32_t fnv32(const uint32_t x, const uint32_t y) {
@@ -228,6 +223,7 @@ struct SipHash {
   }
 };
 
+// Euclid's greatest common divisor.
 inline uint32_t gcd(uint32_t a, uint32_t b) {
   while (b != 0) {
     const uint32_t remainder = a % b;
@@ -294,27 +290,6 @@ inline uint32_t mad_field(const uint32_t a, const uint32_t b, const uint32_t c) 
   if (remainder >= static_cast<int32_t>(MOD))
     remainder -= MOD;
   return static_cast<uint32_t>(remainder);
-}
-
-// Compare display-order hash bytes against the inclusive pool target.
-inline bool meets_target(const uint8_t hash[HASH_LEN], const uint8_t* const target) {
-  for (unsigned i = 0; i < HASH_LEN; ++i) {
-    if (hash[i] != target[i])
-      return hash[i] < target[i];
-  }
-  return true;
-}
-
-// Claim one winner atomically before publishing its nonce and hash.
-inline void save_result(Result* const result, const uint64_t nonce, const uint8_t hash[HASH_LEN]) {
-  using Atomic = sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
-                                  sycl::access::address_space::global_space>;
-  const uint32_t index = Atomic(result->count).fetch_add(1);
-  if (index >= MAX_RESULTS)
-    return;
-  result->nonce[index] = nonce;
-  for (unsigned i = 0; i < HASH_LEN; ++i)
-    result->hash[index][i] = hash[i];
 }
 
 // Regenerate one Ethash-style dataset node from the epoch cache for light-DAG search.
@@ -469,11 +444,14 @@ inline void octopus_hash_scalar(
       local_compressed[i] = compressed[i];
     uint8_t output[HASH_LEN];
     keccak256_seed_mix(local_seed, local_compressed, output);
-    if (is_test || meets_target(output, target))
-      save_result(result, nonce, output);
+    if (is_test || mom_meets_target_be(output, target))
+      mom_store_pow_hit(result, nonce, output);
   }
 }
 
+// Hash one nonce per work-item: each 32-lane block shares one set of polynomial coefficients, then
+// every active lane evaluates its points and mixes full-DAG or light-cache pages. Padding lanes
+// outside [start, start + count) only help build coefficients and never record a hit.
 template <bool FULL_DAG>
 inline void
 octopus_hash_batched(sycl::nd_item<1> item, const uint8_t* const header, const uint64_t start,
@@ -566,8 +544,8 @@ octopus_hash_batched(sycl::nd_item<1> item, const uint8_t* const header, const u
   }
   uint8_t output[HASH_LEN];
   keccak256_seed_mix(seed, compressed, output);
-  if (is_test ? nonce == start : meets_target(output, target))
-    save_result(result, nonce, output);
+  if (is_test ? nonce == start : mom_meets_target_be(output, target))
+    mom_store_pow_hit(result, nonce, output);
 }
 
 inline uint32_t fnv_reduce4(const uint32_t value[4]) {
@@ -677,6 +655,6 @@ inline void octopus_hash_cooperative(sycl::nd_item<1> item, const uint8_t* const
   }
   uint8_t output[HASH_LEN];
   keccak256_seed_mix(seed, final_mix, output);
-  if (active && (is_test ? nonce == start : meets_target(output, target)))
-    save_result(result, nonce, output);
+  if (active && (is_test ? nonce == start : mom_meets_target_be(output, target)))
+    mom_store_pow_hit(result, nonce, output);
 }

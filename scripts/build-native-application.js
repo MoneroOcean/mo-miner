@@ -201,7 +201,7 @@ function nativeApplicationGpu(source, inputs) {
   return {factories, definitions: ["-DMOM_NATIVE_GPU_DEFAULT=" + JSON.stringify(inputs.defaultCompiler),
     ...factories.map((name) => "-DMOM_NATIVE_GPU_" + name.replace("mom_native_gpu_", "").toUpperCase())],
   // Driver-only loading is application policy, never an optional SDK manifest setting.
-  linkFlags: ["-Wl,--wrap=dlopen", "-Wl,--wrap=dlerror", ...factories.map(name => "-Wl,--undefined=" + name)]};
+  linkFlags: ["-Wl,--wrap=dlopen", "-Wl,--wrap=dlerror", "-Wl,--wrap=dlsym,--wrap=dlvsym", ...factories.map(name => "-Wl,--undefined=" + name)]};
 }
 
 /** Static SYCL runtimes must initialize before regular-priority image registrations. Keep

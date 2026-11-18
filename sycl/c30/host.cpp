@@ -1,16 +1,14 @@
 // Host-side Cortex c30 graph, proof, and solution-hash implementation.
-#include "c30-host.h"
+#include "host.h"
 
 #include "crypto/randomx/blake2/blake2.h"
 #include "base/crypto/keccak.h"
 
 #include <algorithm>
 #include <array>
-#include <cstring>
-#include <limits>
 #include <unordered_map>
 
-namespace mom::c30::host {
+namespace mom_c30::host {
 namespace {
 
 constexpr std::uint32_t kEdgeMask = (1u << kEdgeBits) - 1u;
@@ -75,59 +73,6 @@ void reverse_path(Graph& graph_u, Graph& graph_v, const std::vector<std::uint32_
   }
 }
 
-std::optional<std::array<Endpoints, kProofSize>>
-// Maintain a bipartite forest and return the first 42-edge cycle within the bounded host handoff.
-find_cycle_graph(const std::vector<Endpoints>& edges) {
-  if (edges.size() > (1u << 22))
-    return std::nullopt;
-  Graph graph_u, graph_v;
-  graph_u.reserve(edges.size());
-  graph_v.reserve(edges.size());
-
-  for (const Endpoints edge : edges) {
-    const auto u_link = graph_u.find(edge.u);
-    if (u_link != graph_u.end() && u_link->second == edge.v)
-      continue;
-    const auto v_link = graph_v.find(edge.v);
-    if (v_link != graph_v.end() && v_link->second == edge.u)
-      continue;
-    const auto path_u = create_path(graph_u, graph_v, true, edge.u);
-    const auto path_v = create_path(graph_u, graph_v, false, edge.v);
-    std::size_t join_u = path_u.size(), join_v = path_v.size();
-    for (std::size_t i = 0; i < path_u.size() && join_u == path_u.size(); ++i) {
-      // The endpoint number spaces overlap, but u and v remain distinct graph partitions. Since
-      // these paths start on opposite sides, a real intersection has opposite index parity.
-      for (std::size_t j = 1u - (i & 1u); j < path_v.size(); j += 2u)
-        if (path_v[j] == path_u[i]) {
-          join_u = i;
-          join_v = j;
-          break;
-        }
-    }
-    if (join_u != path_u.size()) {
-      if (1 + join_u + join_v != kProofSize)
-        continue;
-      std::array<Endpoints, kProofSize> cycle{};
-      std::size_t output = 0;
-      cycle[output++] = edge;
-      for (std::size_t i = 0; i < join_u; ++i)
-        cycle[output++] =
-            i & 1u ? Endpoints{path_u[i + 1], path_u[i]} : Endpoints{path_u[i], path_u[i + 1]};
-      for (std::size_t i = 0; i < join_v; ++i)
-        cycle[output++] =
-            i & 1u ? Endpoints{path_v[i], path_v[i + 1]} : Endpoints{path_v[i + 1], path_v[i]};
-      return cycle;
-    }
-    if (path_u.size() > path_v.size()) {
-      reverse_path(graph_u, graph_v, path_v, false);
-      graph_v[edge.v] = edge.u;
-    } else {
-      reverse_path(graph_u, graph_v, path_u, true);
-      graph_u[edge.u] = edge.v;
-    }
-  }
-  return std::nullopt;
-}
 
 } // namespace
 
@@ -144,22 +89,6 @@ SipKey graph_key(const std::array<std::uint8_t, 32>& header, const std::uint64_t
     return {};
   return {load_le64(digest.data()), load_le64(digest.data() + 8), load_le64(digest.data() + 16),
           load_le64(digest.data() + 24)};
-}
-
-// Provide the single-nonce 4/8 SipHash primitive; graph edges require the stateful block variant.
-std::uint64_t siphash48(const SipKey& key, const std::uint64_t nonce) {
-  std::uint64_t v0 = key.k0;
-  std::uint64_t v1 = key.k1;
-  std::uint64_t v2 = key.k2;
-  std::uint64_t v3 = key.k3;
-  v3 ^= nonce;
-  for (unsigned i = 0; i < 4; ++i)
-    sip_round(v0, v1, v2, v3);
-  v0 ^= nonce;
-  v2 ^= 0xff;
-  for (unsigned i = 0; i < 8; ++i)
-    sip_round(v0, v1, v2, v3);
-  return (v0 ^ v1) ^ (v2 ^ v3);
 }
 
 Endpoints edge(const SipKey& key, const std::uint32_t nonce) {
@@ -242,38 +171,57 @@ std::array<std::uint8_t, 32> solution_hash(const std::array<std::uint32_t, kProo
   return digest;
 }
 
-std::optional<std::array<Endpoints, kProofSize>>
-find_cycle(const std::vector<Endpoints>& trimmed_edges) {
-  return find_cycle_graph(trimmed_edges);
-}
+// Maintain a bipartite forest and return the first 42-edge cycle within the bounded host handoff.
+std::optional<std::array<Endpoints, kProofSize>> find_cycle(const std::vector<Endpoints>& edges) {
+  if (edges.size() > (1u << 22))
+    return std::nullopt;
+  Graph graph_u, graph_v;
+  graph_u.reserve(edges.size());
+  graph_v.reserve(edges.size());
 
-std::optional<std::array<std::uint32_t, kProofSize>>
-// Map a recovered endpoint cycle back to distinct input nonces, then verify the canonical proof.
-find_cycle(const SipKey& key, const std::vector<std::uint32_t>& trimmed_edges) {
-  if (trimmed_edges.size() > (1u << 22))
-    return std::nullopt;
-  std::vector<Endpoints> edges;
-  edges.reserve(trimmed_edges.size());
-  for (const std::uint32_t nonce : trimmed_edges)
-    edges.push_back(edge(key, nonce));
-  const auto cycle = find_cycle_graph(edges);
-  if (!cycle)
-    return std::nullopt;
-  std::array<std::uint32_t, kProofSize> candidate{};
-  std::vector<bool> used(edges.size());
-  for (unsigned i = 0; i < kProofSize; ++i) {
-    const auto match = std::find_if(edges.begin(), edges.end(), [&](const Endpoints& edge) {
-      const std::size_t index = &edge - edges.data();
-      return !used[index] && edge.u == (*cycle)[i].u && edge.v == (*cycle)[i].v;
-    });
-    if (match == edges.end())
-      return std::nullopt;
-    const std::size_t index = static_cast<std::size_t>(match - edges.begin());
-    used[index] = true;
-    candidate[i] = trimmed_edges[index];
+  for (const Endpoints edge : edges) {
+    const auto u_link = graph_u.find(edge.u);
+    if (u_link != graph_u.end() && u_link->second == edge.v)
+      continue;
+    const auto v_link = graph_v.find(edge.v);
+    if (v_link != graph_v.end() && v_link->second == edge.u)
+      continue;
+    const auto path_u = create_path(graph_u, graph_v, true, edge.u);
+    const auto path_v = create_path(graph_u, graph_v, false, edge.v);
+    std::size_t join_u = path_u.size(), join_v = path_v.size();
+    for (std::size_t i = 0; i < path_u.size() && join_u == path_u.size(); ++i) {
+      // The endpoint number spaces overlap, but u and v remain distinct graph partitions. Since
+      // these paths start on opposite sides, a real intersection has opposite index parity.
+      for (std::size_t j = 1u - (i & 1u); j < path_v.size(); j += 2u)
+        if (path_v[j] == path_u[i]) {
+          join_u = i;
+          join_v = j;
+          break;
+        }
+    }
+    if (join_u != path_u.size()) {
+      if (1 + join_u + join_v != kProofSize)
+        continue;
+      std::array<Endpoints, kProofSize> cycle{};
+      std::size_t output = 0;
+      cycle[output++] = edge;
+      for (std::size_t i = 0; i < join_u; ++i)
+        cycle[output++] =
+            i & 1u ? Endpoints{path_u[i + 1], path_u[i]} : Endpoints{path_u[i], path_u[i + 1]};
+      for (std::size_t i = 0; i < join_v; ++i)
+        cycle[output++] =
+            i & 1u ? Endpoints{path_v[i], path_v[i + 1]} : Endpoints{path_v[i + 1], path_v[i]};
+      return cycle;
+    }
+    if (path_u.size() > path_v.size()) {
+      reverse_path(graph_u, graph_v, path_v, false);
+      graph_v[edge.v] = edge.u;
+    } else {
+      reverse_path(graph_u, graph_v, path_u, true);
+      graph_u[edge.u] = edge.v;
+    }
   }
-  std::sort(candidate.begin(), candidate.end());
-  return verify(key, candidate) ? std::optional{candidate} : std::nullopt;
+  return std::nullopt;
 }
 
-} // namespace mom::c30::host
+} // namespace mom_c30::host

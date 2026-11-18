@@ -203,6 +203,7 @@ inline unsigned pow_device_score(const PowDeviceProfile& profile) {
   return score;
 }
 
+// Pick the heuristic tier from the device score: wide (>= 5), balanced (>= 3), else compact.
 inline PowIntensityScale select_pow_intensity_scale(const PowDeviceProfile& profile,
                                                     const PowIntensityHeuristic& heuristic) {
   const unsigned score = pow_device_score(profile);

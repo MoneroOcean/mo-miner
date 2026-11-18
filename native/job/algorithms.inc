@@ -64,120 +64,74 @@ static const xmrig::CnHash::AlgoVariant cpu_params2variant[MAX_CN_CPU_WAYS][2] =
   { xmrig::CnHash::AV_PENTA,  xmrig::CnHash::AV_PENTA_SOFT  }
 };
 
-static const std::map<std::string, gpu_cn_hash_fun> gpu_cn_algo2fn = {
-  { "cn/gpu", cn_gpu },
+// GPU algorithms with their dispatch kind and native entry point; exactly one FN slot is set.
+struct GpuAlgo {
+  DEV dev;
+  FN fn;
+};
+static const std::map<std::string, GpuAlgo> gpu_algos = {
+  { "cn/gpu",        { DEV::GPU,               { .gpu_cn = cn_gpu } } },
+  { "c29",           { DEV::C29_GPU,           { .gpu_c29 = c29 } } },
+  { "c30",           { DEV::C30_GPU,           { .gpu_c29 = c30 } } },
+  { "kawpow",        { DEV::KAWPOW_GPU,        { .gpu_kawpow = kawpow } } },
+  { "firopow",       { DEV::KAWPOW_GPU,        { .gpu_kawpow = firopow } } },
+  { "evrprogpow",    { DEV::KAWPOW_GPU,        { .gpu_kawpow = evrprogpow } } },
+  { "meowpow",       { DEV::KAWPOW_GPU,        { .gpu_kawpow = meowpow } } },
+  { "etchash",       { DEV::ETCHASH_GPU,       { .gpu_etchash = etchash } } },
+  { "octopus",       { DEV::ETCHASH_GPU,       { .gpu_etchash = octopus } } },
+  { "autolykos2",    { DEV::AUTOLYKOS2_GPU,    { .gpu_autolykos2 = autolykos2 } } },
+  { "pearlhash",     { DEV::PEARLHASH_GPU,     { .gpu_pearlhash = pearlhash } } },
+  { "fishhash",      { DEV::FISHHASH_GPU,      { .gpu_fishhash = fishhash } } },
+  { "karlsenhashv2", { DEV::KARLSENHASHV2_GPU, { .gpu_karlsenhashv2 = karlsenhashv2 } } },
+  { "hoohash",       { DEV::MISC_GPU,          { .gpu_misc = hoohash } } },
+  { "walahash",      { DEV::MISC_GPU,          { .gpu_misc = walahash } } },
+  { "xelishashv3",   { DEV::MISC_GPU,          { .gpu_misc = xelishashv3 } } },
+  { "nexapow",       { DEV::MISC_GPU,          { .gpu_misc = nexapow } } },
+  { "verthash",      { DEV::VERTHASH_GPU,      { .gpu_verthash = verthash } } },
+  { "equihash192_7", { DEV::ZELHASH_GPU,       { .gpu_zelhash = equihash192_7 } } },
+  { "zelhash",       { DEV::ZELHASH_GPU,       { .gpu_zelhash = zelhash } } },
+  { "zhash",         { DEV::ZELHASH_GPU,       { .gpu_zelhash = zhash } } },
+  { "beamhash3",     { DEV::BEAMHASH3_GPU,     { .gpu_beamhash3 = beamhash3 } } },
 };
 
-static const std::map<std::string, gpu_c29_hash_fun> gpu_c29_algo2fn = {
-  { "c29", c29 },
-  { "c30", c30 }
-};
+// Names of the GPU algorithms dispatched through one FN slot, as sycl/lib.h algo_params() takes.
+template <typename Fn> static std::set<std::string> gpu_algos_with(Fn FN::* const slot) {
+  std::set<std::string> result;
+  for (const auto& [name, algo] : gpu_algos) {
+    if (algo.fn.*slot)
+      result.insert(name);
+  }
+  return result;
+}
 
-static const std::map<std::string, gpu_kawpow_hash_fun> gpu_kawpow_algo2fn = {
-  { "kawpow", kawpow },
-  { "firopow", firopow },
-  { "evrprogpow", evrprogpow },
-  { "meowpow", meowpow }
-};
-
-static const std::map<std::string, gpu_etchash_hash_fun> gpu_etchash_algo2fn = {
-  { "etchash", etchash },
-  { "octopus", octopus }
-};
-
-static const std::map<std::string, gpu_autolykos2_hash_fun> gpu_autolykos2_algo2fn = {
-  { "autolykos2", autolykos2 }
-};
-
-static const std::map<std::string, gpu_pearlhash_hash_fun> gpu_pearlhash_algo2fn = {
-  { "pearlhash", pearlhash }
-};
-
-static const std::map<std::string, gpu_fishhash_hash_fun> gpu_fishhash_algo2fn = {
-  { "fishhash", fishhash }
-};
-
-static const std::map<std::string, gpu_karlsenhashv2_hash_fun> gpu_karlsenhashv2_algo2fn = {
-  { "karlsenhashv2", karlsenhashv2 }
-};
-
-static const std::map<std::string, gpu_etchash_hash_fun> gpu_misc_algo2fn = {
-  { "hoohash", hoohash },
-  { "walahash", walahash },
-  { "xelishashv3", xelishashv3 },
-  { "nexapow", nexapow }
-};
-
-static const std::map<std::string, gpu_verthash_hash_fun> gpu_verthash_algo2fn = {
-  { "verthash", verthash }
-};
-
-static const std::map<std::string, gpu_zelhash_hash_fun> gpu_zelhash_algo2fn = {
-  { "equihash192_7", equihash192_7 },
-  { "zelhash", zelhash },
-  { "zhash", zhash }
-};
-
-static const std::map<std::string, gpu_beamhash3_hash_fun> gpu_beamhash3_algo2fn = {
-  { "beamhash3", beamhash3 }
-};
-
+// Host scratch bytes per hash. GPU algorithms keep their memory on the device; cn/gpu's value only
+// sizes algo_params batches.
 static const std::map<std::string, unsigned> algo2mem = [](){
-  std::map<std::string, unsigned> result = {
-    { "cn/gpu", 2*1024*1024 }, // host memory is not really used (number used only for algo_params calcs)
-    { "c29",    0 },           // host memory is not used even for algo_params calcs
-    { "c30",    0 },
-    { "kawpow", 0 },
-    { "firopow", 0 },
-    { "evrprogpow", 0 },
-    { "meowpow", 0 },
-    { "etchash", 0 },
-    { "octopus", 0 },
-    { "autolykos2", 0 },
-    { "pearlhash", 0 },
-    { "fishhash", 0 },
-    { "karlsenhashv2", 0 },
-    { "hoohash", 0 },
-    { "walahash", 0 },
-    { "xelishashv3", 0 },
-    { "nexapow", 0 },
-    { "verthash", 0 },
-    { "equihash192_7", 0 },
-    { "zelhash", 0 },
-    { "zhash", 0 },
-    { "beamhash3", 0 }
-  };
+  std::map<std::string, unsigned> result;
+  for (const auto& i : gpu_algos) {
+    result[i.first] = 0;
+  }
+  result["cn/gpu"] = 2*1024*1024;
   for (const auto& i : cpu_name2algo) {
     result[i.first] = xmrig::Algorithm(i.second).l3();
   }
   return result;
 }();
 
-static void add_cpu_algo_dev(
-  std::map<std::string, std::string>& result, const std::string& algo,
-  const unsigned max_cpu_batch, const unsigned socket_count,
-  const unsigned thread_count, const unsigned l3cache
-) {
-  const auto mem = algo2mem.find(algo);
-  if (mem == algo2mem.end()) return;
-  std::string result_dev;
-  mom::cpu::append_grouped_cpu_devs(result_dev, mom::cpu::cpu_thread_batches(
-    algo, max_cpu_batch, socket_count, thread_count, l3cache, mem->second
-  ));
-  result[algo] = result_dev;
-}
-
+// CPU-only algo_params answer (MOM_SKIP_SYCL_ALGO_PARAMS): each CPU algorithm's device list.
 static std::map<std::string, std::string> cpu_only_algo_params(
   const unsigned max_cpu_batch,
   const unsigned cpu_sockets, const unsigned cpu_threads, const unsigned cpu_l3cache,
   const std::set<std::string>& cpu_algos
 ) {
-  const unsigned socket_count = std::max(1u, cpu_sockets);
-  const unsigned thread_count = std::max(1u, cpu_threads);
-  const unsigned l3cache = cpu_l3cache ? cpu_l3cache : thread_count * 2u * 1024u * 1024u;
+  const mom::cpu::CpuTopology cpu =
+    mom::cpu::normalize_cpu_topology(cpu_sockets, cpu_threads, cpu_l3cache);
   std::map<std::string, std::string> result;
-  for (const auto& algo : cpu_algos)
-    add_cpu_algo_dev(result, algo, max_cpu_batch, socket_count, thread_count, l3cache);
+  for (const auto& algo : cpu_algos) {
+    const auto mem = algo2mem.find(algo);
+    if (mem != algo2mem.end())
+      result[algo] = mom::cpu::cpu_algo_devs(algo, max_cpu_batch, cpu, mem->second);
+  }
   return result;
 }
 

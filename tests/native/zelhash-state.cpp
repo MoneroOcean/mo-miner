@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "../../native/consts.h"
@@ -98,6 +99,7 @@ static void sycl_wait_and_throw(sycl::event, const sycl::device &) {
   if (fail_memset) throw std::runtime_error("event failure");
 }
 #include "ulong_parser.inc"
+#include "usm_ptr.inc"
 namespace mom_zelhash {
 #include "zelhash_layout_math.inc"
 struct EqCandidateRef {
@@ -206,7 +208,7 @@ static void test_lifetime() {
     unsigned arena_attempts = 0;
     {
       reset_failure();
-      ZelHashState state("fixture");
+      State state("fixture");
       state.ensure_io();
       require(live.size() == 3, "three actual I/O allocations");
       allocations = 0;
@@ -221,7 +223,7 @@ static void test_lifetime() {
     for (bool throws : {false, true})
       for (unsigned fail = 1; fail <= 3; ++fail) {
         reset_failure(fail, throws);
-        ZelHashState state("fixture");
+        State state("fixture");
         bool rejected = false;
         try {
           state.ensure_io();
@@ -238,7 +240,7 @@ static void test_lifetime() {
     for (bool throws : {false, true})
       for (unsigned fail = 1; fail <= arena_attempts; ++fail) {
         reset_failure();
-        ZelHashState state("fixture");
+        State state("fixture");
         state.ensure_io();
         reset_failure(fail, throws);
         bool rejected = false;
@@ -249,7 +251,7 @@ static void test_lifetime() {
         }
         require(rejected && live.size() == 3 && !state.arenas_built,
                 "partial arenas failure-atomic; I/O preserved");
-        for (auto *pointer : state.level)
+        for (const auto &pointer : state.level)
           require(!pointer, "level pointer reset");
         require(!state.l0_index && !state.nslots && !state.ref && !state.ref_count && !state.cand &&
                     !state.cand_count,
@@ -261,7 +263,7 @@ static void test_lifetime() {
     require(live.empty(), "arena retry teardown");
     {
       reset_failure();
-      ZelHashState state("fixture");
+      State state("fixture");
       state.ensure_io();
       fail_memset = true;
       bool rejected = false;
@@ -278,7 +280,7 @@ static void test_lifetime() {
     require(live.empty(), "retirement retry teardown");
     {
       reset_failure();
-      ZelHashState state("fixture");
+      State state("fixture");
       state.ensure_io();
       state.ensure_arenas(false);
       fail_wait = true;

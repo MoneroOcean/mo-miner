@@ -73,8 +73,7 @@ static void free(void* pointer, const queue&) {
 
 #include "cleanup.inc"
 
-constexpr uint32_t HASH_LEN = 32, CACHE_NODE_WORDS = 16, EPOCH_LENGTH = 1U << 19, MAX_RESULTS = 15,
-                   GPU_MAX_HITS = 15;
+constexpr uint32_t HASH_LEN = 32, CACHE_NODE_WORDS = 16, EPOCH_LENGTH = 1U << 19, GPU_MAX_HITS = 15;
 #include "result.inc"
 struct FastModData {};
 static FastModData make_fast_mod_data(uint64_t) { return {}; }
@@ -107,6 +106,8 @@ static void sycl_wait_and_throw(sycl::event event, sycl::device) {
   pending_build = false;
 }
 
+static uint64_t mom_now_ms() { return 100; }
+
 class State {
 public:
   sycl::device device;
@@ -137,7 +138,6 @@ public:
       inject();
     return mode != 1;
   }
-  uint64_t now_ms() const { return 100; }
   void ensure_cache(uint32_t) { cache_nodes = 1; }
   bool ensure_points(const uint8_t*) {
     ++counts.points;

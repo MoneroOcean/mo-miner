@@ -423,6 +423,7 @@ static void search_cuda_pipe(sycl::queue& q, const Buffers& bb, uint32_t seed, i
         });
   });
 }
+// Launch the SYCL mma.sync search variant for this device and profile (blocks until done).
 [[maybe_unused]] static void search_cuda(sycl::queue& q, const Buffers& b, uint32_t seed, int m,
                                          int n, int k, int rank, const bool debug) {
   const std::string name = q.get_device().get_info<sycl::info::device::name>();

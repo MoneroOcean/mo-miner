@@ -60,8 +60,6 @@
 #define MOM_NEXA_F64_PTX_MADDS(r, a, b, c)                                                         \
   asm volatile("madc.hi.s64 %0, %1, %2, %3;" : "=l"(r) : "l"(a), "l"(b), "l"(c));
 
-#define MOM_NEXA_F64_PTX_IS_POSITIVE(x) (((int64_t)(x[4])) >= 0LL)
-
 #define MOM_NEXA_F64_PTX_SUBP(r)                                                                   \
   {                                                                                                \
     MOM_NEXA_F64_PTX_USUBO1(r[0], 0xFFFFFFFEFFFFFC2FULL);                                          \
@@ -69,26 +67,6 @@
     MOM_NEXA_F64_PTX_USUBC1(r[2], 0xFFFFFFFFFFFFFFFFULL);                                          \
     MOM_NEXA_F64_PTX_USUBC1(r[3], 0xFFFFFFFFFFFFFFFFULL);                                          \
     MOM_NEXA_F64_PTX_USUB1(r[4], 0ULL);                                                            \
-  }
-
-#define MOM_NEXA_F64_PTX_UMULT(r, a, b)                                                            \
-  {                                                                                                \
-    MOM_NEXA_F64_PTX_UMULLO(r[0], a[0], b);                                                        \
-    MOM_NEXA_F64_PTX_UMULLO(r[1], a[1], b);                                                        \
-    MOM_NEXA_F64_PTX_MADDO(r[1], a[0], b, r[1]);                                                   \
-    MOM_NEXA_F64_PTX_UMULLO(r[2], a[2], b);                                                        \
-    MOM_NEXA_F64_PTX_MADDC(r[2], a[1], b, r[2]);                                                   \
-    MOM_NEXA_F64_PTX_UMULLO(r[3], a[3], b);                                                        \
-    MOM_NEXA_F64_PTX_MADDC(r[3], a[2], b, r[3]);                                                   \
-    MOM_NEXA_F64_PTX_MADD(r[4], a[3], b, 0ULL);                                                    \
-  }
-
-#define MOM_NEXA_F64_PTX_LOAD256(r, a)                                                             \
-  {                                                                                                \
-    (r)[0] = (a)[0];                                                                               \
-    (r)[1] = (a)[1];                                                                               \
-    (r)[2] = (a)[2];                                                                               \
-    (r)[3] = (a)[3];                                                                               \
   }
 
 #define MOM_NEXA_F64_PTX_MM64 0xD838091DD2253531ULL
@@ -135,224 +113,6 @@
 
 namespace mom_nexa_field64_ptx {
 namespace detail {
-
-// Add canonical field limbs with PTX carries and conditionally subtract the secp256k1 modulus.
-inline void mom_nexa_field64_ptx_mod_add256(uint64_t* r, const uint64_t* a, const uint64_t* b) {
-  uint64_t rr[5];
-
-  MOM_NEXA_F64_PTX_UADDO(rr[0], a[0], b[0]);
-  MOM_NEXA_F64_PTX_UADDC(rr[1], a[1], b[1]);
-  MOM_NEXA_F64_PTX_UADDC(rr[2], a[2], b[2]);
-  MOM_NEXA_F64_PTX_UADDC(rr[3], a[3], b[3]);
-  MOM_NEXA_F64_PTX_UADD(rr[4], 0UL, 0UL);
-
-  MOM_NEXA_F64_PTX_LOAD256(r, rr);
-
-  MOM_NEXA_F64_PTX_SUBP(rr);
-
-  if (MOM_NEXA_F64_PTX_IS_POSITIVE(rr)) {
-    MOM_NEXA_F64_PTX_LOAD256(r, rr);
-  }
-}
-
-// Subtract field limbs with PTX borrows and restore the secp256k1 modulus on underflow.
-inline void mom_nexa_field64_ptx_mod_sub256(uint64_t* r, const uint64_t* a, const uint64_t* b) {
-  uint64_t t;
-  uint64_t T[4];
-
-  MOM_NEXA_F64_PTX_USUBO(r[0], a[0], b[0]);
-  MOM_NEXA_F64_PTX_USUBC(r[1], a[1], b[1]);
-  MOM_NEXA_F64_PTX_USUBC(r[2], a[2], b[2]);
-  MOM_NEXA_F64_PTX_USUBC(r[3], a[3], b[3]);
-  MOM_NEXA_F64_PTX_USUB(t, 0ULL, 0ULL);
-
-  T[0] = 0xFFFFFFFEFFFFFC2FULL & t;
-  T[1] = 0xFFFFFFFFFFFFFFFFULL & t;
-  T[2] = 0xFFFFFFFFFFFFFFFFULL & t;
-  T[3] = 0xFFFFFFFFFFFFFFFFULL & t;
-
-  MOM_NEXA_F64_PTX_UADDO1(r[0], T[0]);
-  MOM_NEXA_F64_PTX_UADDC1(r[1], T[1]);
-  MOM_NEXA_F64_PTX_UADDC1(r[2], T[2]);
-  MOM_NEXA_F64_PTX_UADD1(r[3], T[3]);
-}
-
-// Compute a*b*(mod n)
-// a and b must be lower than n
-inline void mom_nexa_field64_ptx_mod_mult(uint64_t* r, const uint64_t* a, const uint64_t* b) {
-  uint64_t r512[8];
-  uint64_t t[5];
-  uint64_t ah, al;
-
-  r512[5] = 0;
-  r512[6] = 0;
-  r512[7] = 0;
-
-  // 256*256 multiplier
-  MOM_NEXA_F64_PTX_UMULT(r512, a, b[0]);
-  MOM_NEXA_F64_PTX_UMULT(t, a, b[1]);
-  MOM_NEXA_F64_PTX_UADDO1(r512[1], t[0]);
-  MOM_NEXA_F64_PTX_UADDC1(r512[2], t[1]);
-  MOM_NEXA_F64_PTX_UADDC1(r512[3], t[2]);
-  MOM_NEXA_F64_PTX_UADDC1(r512[4], t[3]);
-  MOM_NEXA_F64_PTX_UADD1(r512[5], t[4]);
-  MOM_NEXA_F64_PTX_UMULT(t, a, b[2]);
-  MOM_NEXA_F64_PTX_UADDO1(r512[2], t[0]);
-  MOM_NEXA_F64_PTX_UADDC1(r512[3], t[1]);
-  MOM_NEXA_F64_PTX_UADDC1(r512[4], t[2]);
-  MOM_NEXA_F64_PTX_UADDC1(r512[5], t[3]);
-  MOM_NEXA_F64_PTX_UADD1(r512[6], t[4]);
-  MOM_NEXA_F64_PTX_UMULT(t, a, b[3]);
-  MOM_NEXA_F64_PTX_UADDO1(r512[3], t[0]);
-  MOM_NEXA_F64_PTX_UADDC1(r512[4], t[1]);
-  MOM_NEXA_F64_PTX_UADDC1(r512[5], t[2]);
-  MOM_NEXA_F64_PTX_UADDC1(r512[6], t[3]);
-  MOM_NEXA_F64_PTX_UADD1(r512[7], t[4]);
-
-  // Reduce from 512 to 320
-  MOM_NEXA_F64_PTX_UMULT(t, (r512 + 4), 0x1000003D1ULL);
-  MOM_NEXA_F64_PTX_UADDO1(r512[0], t[0]);
-  MOM_NEXA_F64_PTX_UADDC1(r512[1], t[1]);
-  MOM_NEXA_F64_PTX_UADDC1(r512[2], t[2]);
-  MOM_NEXA_F64_PTX_UADDC1(r512[3], t[3]);
-
-  // Reduce from 320 to 256
-  MOM_NEXA_F64_PTX_UADD1(t[4], 0ULL);
-  MOM_NEXA_F64_PTX_UMULLO(al, t[4], 0x1000003D1ULL);
-  MOM_NEXA_F64_PTX_UMULHI(ah, t[4], 0x1000003D1ULL);
-  MOM_NEXA_F64_PTX_UADDO(r[0], r512[0], al);
-  MOM_NEXA_F64_PTX_UADDC(r[1], r512[1], ah);
-  MOM_NEXA_F64_PTX_UADDC(r[2], r512[2], 0ULL);
-  MOM_NEXA_F64_PTX_UADD(r[3], r512[3], 0ULL);
-}
-
-// Square with PTX carry chains and fold the wide result by the prime complement.
-inline void mom_nexa_field64_ptx_mod_sqr(uint64_t* rp, const uint64_t* up) {
-  uint64_t r512[8];
-
-  uint64_t u10, u11;
-
-  uint64_t r0;
-  uint64_t r1;
-  uint64_t r3;
-  uint64_t r4;
-
-  uint64_t t1;
-  uint64_t t2;
-
-  //k=0
-  MOM_NEXA_F64_PTX_UMULLO(r512[0], up[0], up[0]);
-  MOM_NEXA_F64_PTX_UMULHI(r1, up[0], up[0]);
-
-  //k=1
-  MOM_NEXA_F64_PTX_UMULLO(r3, up[0], up[1]);
-  MOM_NEXA_F64_PTX_UMULHI(r4, up[0], up[1]);
-  MOM_NEXA_F64_PTX_UADDO1(r3, r3);
-  MOM_NEXA_F64_PTX_UADDC1(r4, r4);
-  MOM_NEXA_F64_PTX_UADD(t1, 0x0ULL, 0x0ULL);
-  MOM_NEXA_F64_PTX_UADDO1(r3, r1);
-  MOM_NEXA_F64_PTX_UADDC1(r4, 0x0ULL);
-  MOM_NEXA_F64_PTX_UADD1(t1, 0x0ULL);
-  r512[1] = r3;
-
-  //k=2
-  MOM_NEXA_F64_PTX_UMULLO(r0, up[0], up[2]);
-  MOM_NEXA_F64_PTX_UMULHI(r1, up[0], up[2]);
-  MOM_NEXA_F64_PTX_UADDO1(r0, r0);
-  MOM_NEXA_F64_PTX_UADDC1(r1, r1);
-  MOM_NEXA_F64_PTX_UADD(t2, 0x0ULL, 0x0ULL);
-  MOM_NEXA_F64_PTX_UMULLO(u10, up[1], up[1]);
-  MOM_NEXA_F64_PTX_UMULHI(u11, up[1], up[1]);
-  MOM_NEXA_F64_PTX_UADDO1(r0, u10);
-  MOM_NEXA_F64_PTX_UADDC1(r1, u11);
-  MOM_NEXA_F64_PTX_UADD1(t2, 0x0ULL);
-  MOM_NEXA_F64_PTX_UADDO1(r0, r4);
-  MOM_NEXA_F64_PTX_UADDC1(r1, t1);
-  MOM_NEXA_F64_PTX_UADD1(t2, 0x0ULL);
-
-  r512[2] = r0;
-
-  //k=3
-  MOM_NEXA_F64_PTX_UMULLO(r3, up[0], up[3]);
-  MOM_NEXA_F64_PTX_UMULHI(r4, up[0], up[3]);
-  MOM_NEXA_F64_PTX_UMULLO(u10, up[1], up[2]);
-  MOM_NEXA_F64_PTX_UMULHI(u11, up[1], up[2]);
-  MOM_NEXA_F64_PTX_UADDO1(r3, u10);
-  MOM_NEXA_F64_PTX_UADDC1(r4, u11);
-  MOM_NEXA_F64_PTX_UADD(t1, 0x0ULL, 0x0ULL);
-  t1 += t1;
-  MOM_NEXA_F64_PTX_UADDO1(r3, r3);
-  MOM_NEXA_F64_PTX_UADDC1(r4, r4);
-  MOM_NEXA_F64_PTX_UADD1(t1, 0x0ULL);
-  MOM_NEXA_F64_PTX_UADDO1(r3, r1);
-  MOM_NEXA_F64_PTX_UADDC1(r4, t2);
-  MOM_NEXA_F64_PTX_UADD1(t1, 0x0ULL);
-
-  r512[3] = r3;
-
-  //k=4
-  MOM_NEXA_F64_PTX_UMULLO(r0, up[1], up[3]);
-  MOM_NEXA_F64_PTX_UMULHI(r1, up[1], up[3]);
-  MOM_NEXA_F64_PTX_UADDO1(r0, r0);
-  MOM_NEXA_F64_PTX_UADDC1(r1, r1);
-  MOM_NEXA_F64_PTX_UADD(t2, 0x0ULL, 0x0ULL);
-  MOM_NEXA_F64_PTX_UMULLO(u10, up[2], up[2]);
-  MOM_NEXA_F64_PTX_UMULHI(u11, up[2], up[2]);
-  MOM_NEXA_F64_PTX_UADDO1(r0, u10);
-  MOM_NEXA_F64_PTX_UADDC1(r1, u11);
-  MOM_NEXA_F64_PTX_UADD1(t2, 0x0ULL);
-  MOM_NEXA_F64_PTX_UADDO1(r0, r4);
-  MOM_NEXA_F64_PTX_UADDC1(r1, t1);
-  MOM_NEXA_F64_PTX_UADD1(t2, 0x0ULL);
-
-  r512[4] = r0;
-
-  //k=5
-  MOM_NEXA_F64_PTX_UMULLO(r3, up[2], up[3]);
-  MOM_NEXA_F64_PTX_UMULHI(r4, up[2], up[3]);
-  MOM_NEXA_F64_PTX_UADDO1(r3, r3);
-  MOM_NEXA_F64_PTX_UADDC1(r4, r4);
-  MOM_NEXA_F64_PTX_UADD(t1, 0x0ULL, 0x0ULL);
-  MOM_NEXA_F64_PTX_UADDO1(r3, r1);
-  MOM_NEXA_F64_PTX_UADDC1(r4, t2);
-  MOM_NEXA_F64_PTX_UADD1(t1, 0x0ULL);
-
-  r512[5] = r3;
-
-  //k=6
-  MOM_NEXA_F64_PTX_UMULLO(r0, up[3], up[3]);
-  MOM_NEXA_F64_PTX_UMULHI(r1, up[3], up[3]);
-  MOM_NEXA_F64_PTX_UADDO1(r0, r4);
-  MOM_NEXA_F64_PTX_UADD1(r1, t1);
-  r512[6] = r0;
-
-  //k=7
-  r512[7] = r1;
-
-  // Reduce from 512 to 320
-  MOM_NEXA_F64_PTX_UMULLO(r0, r512[4], 0x1000003D1ULL);
-  MOM_NEXA_F64_PTX_UMULLO(r1, r512[5], 0x1000003D1ULL);
-  MOM_NEXA_F64_PTX_MADDO(r1, r512[4], 0x1000003D1ULL, r1);
-  MOM_NEXA_F64_PTX_UMULLO(t2, r512[6], 0x1000003D1ULL);
-  MOM_NEXA_F64_PTX_MADDC(t2, r512[5], 0x1000003D1ULL, t2);
-  MOM_NEXA_F64_PTX_UMULLO(r3, r512[7], 0x1000003D1ULL);
-  MOM_NEXA_F64_PTX_MADDC(r3, r512[6], 0x1000003D1ULL, r3);
-  MOM_NEXA_F64_PTX_MADD(r4, r512[7], 0x1000003D1ULL, 0ULL);
-
-  MOM_NEXA_F64_PTX_UADDO1(r512[0], r0);
-  MOM_NEXA_F64_PTX_UADDC1(r512[1], r1);
-  MOM_NEXA_F64_PTX_UADDC1(r512[2], t2);
-  MOM_NEXA_F64_PTX_UADDC1(r512[3], r3);
-
-  // Reduce from 320 to 256
-  MOM_NEXA_F64_PTX_UADD1(r4, 0ULL);
-  MOM_NEXA_F64_PTX_UMULLO(u10, r4, 0x1000003D1ULL);
-  MOM_NEXA_F64_PTX_UMULHI(u11, r4, 0x1000003D1ULL);
-  MOM_NEXA_F64_PTX_UADDO(rp[0], r512[0], u10);
-  MOM_NEXA_F64_PTX_UADDC(rp[1], r512[1], u11);
-  MOM_NEXA_F64_PTX_UADDC(rp[2], r512[2], 0ULL);
-  MOM_NEXA_F64_PTX_UADD(rp[3], r512[3], 0ULL);
-}
 
 // Shift the extended signed divstep state by 62 bits, retaining its high carry/sign information.
 inline void mom_nexa_field64_ptx_shift_r62(uint64_t* r) {
@@ -710,14 +470,6 @@ inline bool mom_nexa_field64_ptx_is_quad(const uint64_t r[4]) {
 
 } // namespace detail
 
-inline void add(uint64_t* r, const uint64_t* a, const uint64_t* b) {
-  detail::mom_nexa_field64_ptx_mod_add256(r, a, b);
-}
-
-inline void sub(uint64_t* r, const uint64_t* a, const uint64_t* b) {
-  detail::mom_nexa_field64_ptx_mod_sub256(r, a, b);
-}
-
 // Add canonical four-limb values modulo the supplied modulus with explicit carry handling.
 inline void add_mod(uint64_t* r, const uint64_t* a, const uint64_t* b, const uint64_t* modulus) {
   uint64_t sum[5], reduced[5];
@@ -750,14 +502,7 @@ inline void sub_mod(uint64_t* r, const uint64_t* a, const uint64_t* b, const uin
   MOM_NEXA_F64_PTX_UADD1(r[3], modulus[3] & borrow);
 }
 
-inline void mul(uint64_t* r, const uint64_t* a, const uint64_t* b) {
-  detail::mom_nexa_field64_ptx_mod_mult(r, a, b);
-}
-
-inline void square(uint64_t* r, const uint64_t* a) {
-  detail::mom_nexa_field64_ptx_mod_sqr(r, a);
-}
-
+// Invert a canonical four-limb field element in place via the extended-limb divstep path.
 inline void inverse(uint64_t r[4]) {
   uint64_t work[5] = {r[0], r[1], r[2], r[3], 0ULL};
   detail::mom_nexa_field64_ptx_mod_inv(work);
@@ -767,6 +512,7 @@ inline void inverse(uint64_t r[4]) {
   r[3] = work[3];
 }
 
+// Report whether a canonical four-limb field element is a quadratic residue.
 inline bool is_quadratic_residue(const uint64_t r[4]) {
   return detail::mom_nexa_field64_ptx_is_quad(r);
 }
@@ -791,10 +537,7 @@ inline bool is_quadratic_residue(const uint64_t r[4]) {
 #undef MOM_NEXA_F64_PTX_MADDC
 #undef MOM_NEXA_F64_PTX_MADD
 #undef MOM_NEXA_F64_PTX_MADDS
-#undef MOM_NEXA_F64_PTX_IS_POSITIVE
 #undef MOM_NEXA_F64_PTX_SUBP
-#undef MOM_NEXA_F64_PTX_UMULT
-#undef MOM_NEXA_F64_PTX_LOAD256
 #undef MOM_NEXA_F64_PTX_MM64
 #undef MOM_NEXA_F64_PTX_NBBLOCK
 #undef MOM_NEXA_F64_PTX_MSK62

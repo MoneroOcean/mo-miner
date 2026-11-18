@@ -16,7 +16,7 @@
 #include <vector>
 
 #include "../lib-internal.h"
-#include "equihash192-7-direct.hpp"
+#include "layout.h"
 
 namespace mom_equihash192_7::direct {
 

@@ -6,8 +6,8 @@
 //   gen    : 2^26 entries from a personalized "ZelProof" blake2b over the 140-byte header + the
 //            ZelHash "twist" (16-aligned block prefix-sum of stock hashes), masked, split into 4
 //            sub-elements, ExpandArray(25) -> 25-bit collision fields.
-//   round  : (M2+) bucket by high BUCKBITS, collide low RESTBITS, XOR pairs -> next round.
-//   recover: (M3+) walk tree -> 16 leaf indices -> CompressArray(26) -> 52-byte solution.
+//   round  : bucket by high BUCKBITS, collide low RESTBITS, XOR pairs -> next round.
+//   recover: walk tree -> 16 leaf indices -> CompressArray(26) -> 52-byte solution.
 //
 // Mining runs the complete solve path: gen-fill, four collision rounds, fused final filtering, recovery, and target
 // filtering. The default is_test path still uses the cheaper gen-kernel cross-check; set
@@ -39,8 +39,9 @@
 #include <mutex>
 #include <vector>
 
+#include "../blake2b.h"
+#include "../equihash-pow.h"
 #include "../lib-internal.h"
-#include "../blake2b-pair.hpp"
 #include "../../native/consts.h"
 
 namespace mom_zelhash {
@@ -77,7 +78,7 @@ int zelhash(const unsigned, const uint32_t, const uint8_t* const input, const un
       input_size != HEADER_LEN || intensity != 1)
     throw std::string(
       "zelhash requires input, output, a mining target, a 140-byte header, and intensity 1");
-  ZelHashState& state = zelhash_state(dev_str);
+  State& state = state_for(dev_str);
   std::lock_guard<std::mutex> lock(state.mutex);
   state.ensure_io();
 
@@ -92,14 +93,14 @@ int zelhash(const unsigned, const uint32_t, const uint8_t* const input, const un
   const bool solve_in_test = is_test && std::getenv("MOM_ZELHASH_SOLVE") != nullptr;
 
   if (is_test && !solve_in_test) {
-    // M1: run the naive gen kernel, then the optimized sub-group-scan kernel, and confirm they match
+    // Generation check: run the naive gen kernel, then the optimized sub-group-scan kernel, and confirm they match
     // on-device before handing the rows back. The standalone checker diffs them vs the JS oracle.
     const size_t rows_bytes = (size_t)EQUIHASH_TEST_ROWS * HASH_LENGTH;
     std::memset(state.rows, 0, rows_bytes);
     sycl_wait_and_throw(submit_gen_test<true>(state.queue, state.base_h, state.base_pending,
                                               state.rows),
                         state.device);
-    std::vector<uint8_t> naive(state.rows, state.rows + rows_bytes);
+    std::vector<uint8_t> naive(state.rows.get(), state.rows.get() + rows_bytes);
 
     // CPU devices are the standards-portability oracle. Some OpenCL CPU implementations under
     // full-system emulation miscompile group scans even though the scalar kernel remains exact;
@@ -113,7 +114,7 @@ int zelhash(const unsigned, const uint32_t, const uint8_t* const input, const un
     sycl_wait_and_throw(submit_gen_test<false>(state.queue, state.base_h, state.base_pending,
                                                state.rows),
                         state.device);
-    std::vector<uint8_t> scan(state.rows, state.rows + rows_bytes);
+    std::vector<uint8_t> scan(state.rows.get(), state.rows.get() + rows_bytes);
 
     const bool match = (naive == scan);
     if (!match) {
@@ -121,7 +122,7 @@ int zelhash(const unsigned, const uint32_t, const uint8_t* const input, const un
       for (size_t e = 0; e < EQUIHASH_TEST_ROWS; ++e)
         if (std::memcmp(naive.data() + e * HASH_LENGTH, scan.data() + e * HASH_LENGTH,
                         HASH_LENGTH)) {
-          std::fprintf(stderr, "zelhash M1: optimized scan != naive at entry %zu\n", e);
+          std::fprintf(stderr, "zelhash: optimized scan != naive at entry %zu\n", e);
           break;
         }
     }
@@ -130,14 +131,14 @@ int zelhash(const unsigned, const uint32_t, const uint8_t* const input, const un
     return match ? 1 : 0;
   }
 
-  // ---- M2/M3 full Wagner solve over the gen output for this exact 140-byte header. -----------------
+  // ---- Full Wagner solve over the gen output for this exact 140-byte header. ----
   // Profiling enables verbose counters and per-stage waits; keep both off during ordinary mining
   // and throughput measurements. Full-solve tests retain their diagnostics.
   static const bool prof = std::getenv("MOM_ZELHASH_PROF") != nullptr;
   const bool log = is_test || prof;
   state.ensure_arenas(log);
   std::memset(solution_out, 0, SMALL_BLOB_SOL_LEN);
-  const uint64_t t_start = ZelHashState::now_ms();
+  const uint64_t t_start = mom_now_ms();
   sycl::queue& q = state.queue;
 
   // A fixed-stage CUDA chain avoids redundant event waits: it is essential on Windows and gives a
@@ -175,7 +176,7 @@ int zelhash(const unsigned, const uint32_t, const uint8_t* const input, const un
   constexpr unsigned wg = ROUND_WG;
 
   // Level 0: gen-fill 2^26 entries into round-0 buckets (field-0 bucketing).
-  const uint64_t t_gen0 = ZelHashState::now_ms();
+  const uint64_t t_gen0 = mom_now_ms();
 #if defined(MOM_EQ_ALIGNED_GPU_RECORDS)
   auto gen = state.gpu_compact
                  ? submit_gen_fill<true>(q, state.base_h, state.base_pending, state.level[0],
@@ -192,7 +193,7 @@ int zelhash(const unsigned, const uint32_t, const uint8_t* const input, const un
   if (wait_stages)
     sycl_wait_and_throw(gen, state.device);
   // Rounds 0..3: collide field R over (bucket, RESTBITS), XOR -> level R+1.
-  const uint64_t t_r0 = ZelHashState::now_ms();
+  const uint64_t t_r0 = mom_now_ms();
   uint64_t t_round[4] = {0, 0, 0, 0};
 #if defined(MOM_SYCL_HAS_CUDA)
   // The combined Intel+CUDA build must retain both layouts and select by the actual queue backend.
@@ -207,10 +208,10 @@ int zelhash(const unsigned, const uint32_t, const uint8_t* const input, const un
   [[maybe_unused]] const auto round_events =
       run_collision_rounds<false>(state, wg, wait_stages, prof, t_round);
 #endif
-  const uint64_t t_rounds_end = ZelHashState::now_ms();
+  const uint64_t t_rounds_end = mom_now_ms();
 
   // The fused round-3 kernel already retained only final-field-zero pairs.
-  const uint64_t t_final = ZelHashState::now_ms();
+  const uint64_t t_final = mom_now_ms();
 
   EqLevels lv;
   for (unsigned L = 0; L < NSTORED_LEVELS; ++L)
@@ -220,18 +221,18 @@ int zelhash(const unsigned, const uint32_t, const uint8_t* const input, const un
 #if defined(MOM_SYCL_HAS_CUDA)
     if (state.gpu_compact)
       return submit_recover<true>(q, lv, state.nslots, state.ref, count, state.cand,
-                                  state.cand_count, ZelHashState::CAND_CAP, wg,
+                                  state.cand_count, State::CAND_CAP, wg,
                                   state.slot_capacity, device_count);
     return submit_recover<false>(q, lv, state.nslots, state.ref, count, state.cand,
-                                 state.cand_count, ZelHashState::CAND_CAP, wg,
+                                 state.cand_count, State::CAND_CAP, wg,
                                  state.slot_capacity, device_count);
 #elif defined(MOM_SYCL_HAS_HIP) || defined(MOM_SYCL_ADAPTIVECPP)
     return submit_recover<true>(q, lv, state.nslots, state.ref, count, state.cand,
-                                state.cand_count, ZelHashState::CAND_CAP, wg,
+                                state.cand_count, State::CAND_CAP, wg,
                                 state.slot_capacity, device_count);
 #else
     return submit_recover<false>(q, lv, state.nslots, state.ref, count, state.cand,
-                                 state.cand_count, ZelHashState::CAND_CAP, wg,
+                                 state.cand_count, State::CAND_CAP, wg,
                                  state.slot_capacity, device_count);
 #endif
   };
@@ -239,15 +240,15 @@ int zelhash(const unsigned, const uint32_t, const uint8_t* const input, const un
   if (async_chain) {
     // Queue the maximum bounded grid behind round 3 and let each work-group consult the device
     // counter. This retains one final completion point instead of a host wait before recovery.
-    sycl_wait_and_throw(submit_recovery(ZelHashState::CAND_CAP, state.ref_count), state.device);
+    sycl_wait_and_throw(submit_recovery(State::CAND_CAP, state.ref_count), state.device);
   } else {
-    const uint32_t ref_n = std::min<uint32_t>(*state.ref_count, ZelHashState::CAND_CAP);
+    const uint32_t ref_n = std::min<uint32_t>(*state.ref_count, State::CAND_CAP);
     if (ref_n != 0)
       sycl_wait_and_throw(submit_recovery(ref_n, nullptr), state.device);
   }
 #if defined(MOM_EQ_FORWARD_MAP)
   if (state.gpu_compact) {
-    const uint32_t recovered = std::min<uint32_t>(*state.cand_count, ZelHashState::CAND_CAP);
+    const uint32_t recovered = std::min<uint32_t>(*state.cand_count, State::CAND_CAP);
     if (recovered != 0) {
       sycl_wait_and_throw(submit_l0_invert(q, state.l0_index, state.cand, recovered * (1u << K),
                                            state.invert_target, state.invert_next, state.invert_head),
@@ -255,7 +256,7 @@ int zelhash(const unsigned, const uint32_t, const uint8_t* const input, const un
     }
   }
 #endif
-  const uint64_t t_rounds = ZelHashState::now_ms();
+  const uint64_t t_rounds = mom_now_ms();
   if (prof) {
     std::fprintf(stderr,
                  "[eq-prof] gen-fill %llums | r0 %llu r1 %llu r2 %llu r3 %llu (rounds %llums) | "
@@ -270,9 +271,9 @@ int zelhash(const unsigned, const uint32_t, const uint8_t* const input, const un
   }
 
   // ---- Pull only the recovered candidate list to the host. ----
-  const uint64_t t_recov0 = ZelHashState::now_ms();
+  const uint64_t t_recov0 = mom_now_ms();
   uint32_t cand_count = *state.cand_count;
-  const uint32_t cand_n = std::min<uint32_t>(cand_count, ZelHashState::CAND_CAP);
+  const uint32_t cand_n = std::min<uint32_t>(cand_count, State::CAND_CAP);
 
   if (log) {
     // Survivor counters are diagnostic-only; normal mining needs just the candidate readback below.
@@ -307,23 +308,13 @@ int zelhash(const unsigned, const uint32_t, const uint8_t* const input, const un
     // De-dup distinct solutions (the same proof can surface via several candidates).
     std::vector<std::array<uint8_t, 52>> seen;
     for (uint32_t ci = 0; ci < cand_n; ++ci) {
-      // Each candidate is one recovered final-zero pair with 16 distinct leaf indices.
+      // Each candidate is one recovered final-zero pair; DistinctIndices requires unique leaves.
       std::vector<uint32_t> leaves(cand_h[ci].leaves, cand_h[ci].leaves + (1u << K));
-
-      // DistinctIndices: all 16 leaves must be unique.
-      std::vector<uint32_t> sorted = leaves;
-      std::sort(sorted.begin(), sorted.end());
-      bool distinct = true;
-      for (size_t i = 1; i < sorted.size(); ++i)
-        if (sorted[i] == sorted[i - 1]) {
-          distinct = false;
-          break;
-        }
-      if (!distinct)
+      if (!mom_equihash::pow::leaves_distinct(leaves.data(), 1u << K))
         continue;
 
       // Canonical IndicesBefore ordering, then compress to 52 bytes.
-      order_indices(leaves);
+      mom_equihash::pow::canonicalize_leaves<K>(leaves.data());
       std::array<uint8_t, 52> sol{};
       compress_indices(leaves, sol.data());
       bool dup = false;
@@ -338,10 +329,9 @@ int zelhash(const unsigned, const uint32_t, const uint8_t* const input, const un
     }
 
     distinct_count = seen.size();
-    // M5 mining path: each distinct solution is a valid Equihash proof, but only those whose Flux
-    // block hash dSHA256(header || 0x34 || solution) meets the 256-bit PoW target are submittable.
-    // The is_test SOLVE path (keystone / offline vector) keeps ALL distinct solutions so the checker
-    // can assert the known block-400000 solution is present regardless of the (all-0xFF) target.
+    // Mining submits only distinct proofs whose Flux block hash meets the PoW target. The is_test
+    // SOLVE path keeps every distinct solution so the checker can assert the known block-400000
+    // solution is present regardless of the target.
     std::vector<std::array<uint8_t, 52>> emit;
     emit.reserve(seen.size());
     for (const auto& sol : seen) {
@@ -350,9 +340,8 @@ int zelhash(const unsigned, const uint32_t, const uint8_t* const input, const un
           emit.push_back(sol); // SOLVE-test: emit every distinct solution
         continue;              // benchmark: count proofs without touching a target
       }
-      uint8_t blockhash[32];
-      flux_block_hash(input, sol.data(), blockhash);
-      if (flux_meets_target(blockhash, target))
+      // Flux PoW: dSHA256(header || compactSize(52) || solution), read little-endian, <= target.
+      if (mom_equihash::pow::meets_target(input, HEADER_LEN, sol.data(), sol.size(), target))
         emit.push_back(sol);
     }
 
@@ -406,19 +395,19 @@ int zelhash(const unsigned, const uint32_t, const uint8_t* const input, const un
 
   if (prof) {
     std::fprintf(stderr, "[eq-prof] host-recovery %llums (cand=%u) | total %llums\n",
-                 (unsigned long long)(ZelHashState::now_ms() - t_recov0), cand_count,
-                 (unsigned long long)(ZelHashState::now_ms() - t_start));
+                 (unsigned long long)(mom_now_ms() - t_recov0), cand_count,
+                 (unsigned long long)(mom_now_ms() - t_start));
     std::fflush(stderr);
   }
   if (log) {
     std::fprintf(stderr, "zelhash solve done (%llu ms, %d target-passing, %zu distinct)\n",
-                 (unsigned long long)(ZelHashState::now_ms() - t_start), n_solutions,
+                 (unsigned long long)(mom_now_ms() - t_start), n_solutions,
                  distinct_count);
     std::fflush(stderr);
   }
 
   // Return semantics depend on the caller:
-  //  * is_test SOLVE path (the keystone / offline vector): the core's is_test handler dumps the whole
+  //  * is_test SOLVE path (the offline vector): the core's is_test handler dumps the whole
   //    out-of-band buffer when this returns 1, so report 1-on-any-solution (the payload count is in
   //    solution_out[0]).
   //  * bench and mining: report the raw solver throughput (distinct proofs found this solve,

@@ -30,6 +30,8 @@
 #include <vector>
 
 #include "../lib-internal.h"
+#include "../pow-hits.h"
+#include "../pow-target.h"
 #include "../nvidia-features.h"
 #if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
 #include "../nvidia-dot.h"
@@ -40,7 +42,6 @@
 #elif !defined(MOM_SYCL_ADAPTIVECPP)
 #include <sycl/ext/oneapi/dot_product.hpp>
 #endif
-#include "../../native/consts.h"
 
 namespace mom_walahash {
 
@@ -48,6 +49,7 @@ namespace mom_walahash {
 
 #include "state.inc"
 
+// Release device state before the compiler runtime unloads without escaping exceptions.
 void walahash_cleanup_states() noexcept {
   try {
     registry().clear();
@@ -131,7 +133,7 @@ int walahash(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint
     std::memcpy(state.matrix_seed, input, 32);
     state.matrix_ready = true;
   }
-  state.queue.memset(state.result, 0, sizeof(Result));
+  state.queue.memset(state.result, 0, sizeof(PowHits<>));
   sycl::event search_event;
   bool dispatched = false;
 #ifdef WALAHASH_ESIMD
@@ -159,7 +161,7 @@ int walahash(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint
     const unsigned matrix_count = (intensity + 63u) & ~63u;
     prehash_amd(state, *pnonce, matrix_count);
     walahash_amd_mix(
-        state.queue, state.amd_wmma, reinterpret_cast<int8_t*>(state.matrix), state.hashes,
+        state.queue, state.amd_wmma, reinterpret_cast<int8_t*>(state.matrix.get()), state.hashes,
         state.mixed, matrix_count);
     search_event = finalize_amd(state, *pnonce, intensity, is_test);
     dispatched = true;
@@ -174,13 +176,7 @@ int walahash(unsigned, uint32_t, const uint8_t* input, unsigned input_size, uint
   // Some runtimes busy-spin while submitting a host copy behind live kernels. Complete the GPU
   // search with the shared low-CPU wait before enqueuing the already-ready result copy.
   sycl_wait_and_throw(search_event, state.device);
-  Result result;
-  sycl_wait_and_throw(state.queue.memcpy(&result, state.result, sizeof(result)), state.device);
-  static_assert(MAX_RESULTS <= GPU_MAX_HITS);
-  const uint32_t hits = std::min(result.count, MAX_RESULTS);
-  for (uint32_t index = 0; index < hits; ++index) {
-    pnonce[index] = result.nonce[index];
-    std::memcpy(output + index * HASH_LEN, result.hash[index], HASH_LEN);
-  }
-  return static_cast<int>(hits);
+  PowHits<> hits;
+  sycl_wait_and_throw(state.queue.memcpy(&hits, state.result, sizeof(hits)), state.device);
+  return mom_take_pow_hits(hits, output, pnonce);
 }

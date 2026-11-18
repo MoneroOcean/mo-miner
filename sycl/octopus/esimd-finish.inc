@@ -195,13 +195,13 @@ static sycl::event native_finish_esimd(
               store32(output + word * 8 + 4, static_cast<uint32_t>(value >> 32));
             }
             const bool active = nonce >= start && nonce - start < count;
-            if (active && (is_test ? nonce == start : meets_target(output, target))) {
+            if (active && (is_test ? nonce == start : mom_meets_target_be(output, target))) {
               const octopus_esimd::simd<uint32_t, 1> old_index =
                   octopus_esimd::atomic_update<octopus_esimd::atomic_op::add>(
                       &result->count, octopus_esimd::simd<uint32_t, 1>(0),
                       octopus_esimd::simd<uint32_t, 1>(1), octopus_esimd::simd_mask<1>(1));
               const uint32_t index = old_index[0];
-              if (index < MAX_RESULTS) {
+              if (index < GPU_MAX_HITS) {
                 result->nonce[index] = nonce;
 #pragma unroll
                 for (unsigned byte = 0; byte < HASH_LEN; ++byte)

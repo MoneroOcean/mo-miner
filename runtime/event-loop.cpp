@@ -127,7 +127,18 @@ struct Resource {
   uv_stream_t *stream() {
     return kind == Kind::pipe ? reinterpret_cast<uv_stream_t *>(&pipe) : reinterpret_cast<uv_stream_t *>(&tcp);
   }
+  // Stop the per-address connect timer; harmless when it is idle.
+  void stopConnectTimer() {
+    connectTimerActive = false;
+    if (connectTimerInitialized) {uv_timer_stop(&timer);}
+  }
 };
+
+// libuv read allocator: one 64-KiB heap chunk per read, owned by the read callback.
+void allocateRead(uv_handle_t *, size_t, uv_buf_t *buffer) {
+  buffer->base = new (std::nothrow) char[65536];
+  buffer->len = buffer->base ? 65536 : 0;
+}
 
 Object ioError(Runtime &rt, int status) {
   auto error = rt.global().getPropertyAsFunction(rt, "Error")
@@ -208,8 +219,7 @@ void finishClose(Resource &resource) {
   if (resource.idleInitialized) {queueClose(reinterpret_cast<uv_handle_t *>(&resource.idle));}
   if (resource.kind == Kind::tcp) {
     if (resource.connectTimerInitialized && !uv_is_closing(reinterpret_cast<uv_handle_t *>(&resource.timer))) {
-      resource.connectTimerActive = false;
-      uv_timer_stop(&resource.timer);
+      resource.stopConnectTimer();
       queueClose(reinterpret_cast<uv_handle_t *>(&resource.timer));
     }
     if (resource.tcpInitialized && !uv_is_closing(reinterpret_cast<uv_handle_t *>(&resource.tcp))) {
@@ -238,10 +248,7 @@ void close(Resource &resource) {
   resource.closing = true;
   if (resource.kind == Kind::tcp && resource.connectResetPending) {
     if (resource.resolver) {uv_cancel(reinterpret_cast<uv_req_t *>(resource.resolver));}
-    if (resource.connectTimerInitialized) {
-      resource.connectTimerActive = false;
-      uv_timer_stop(&resource.timer);
-    }
+    resource.stopConnectTimer();
     return;
   }
   finishClose(resource);
@@ -267,6 +274,9 @@ void resumeWorkers(SHConsoleContext &owner) {
   }
 }
 
+// Deliver up to 64 queued compute-worker events to their JS callbacks per loop turn, stopping
+// early when the worker closes, the loop failed or stdout is backpressured; freed queue space
+// wakes the blocked producer.
 void drainWorker(Resource &resource) {
   guarded(resource.owner, [&] {
     auto &rt = resource.owner.runtime;
@@ -487,11 +497,7 @@ std::shared_ptr<Resource> allocate(SHConsoleContext &owner, Kind kind, const Val
 void readPipe(Resource &resource, bool reading) {
   if (resource.closing) {return;}
   if (!reading) {checkSystem(resource.owner.runtime, uv_read_stop(resource.stream()), "read_stop"); return;}
-  const int status = uv_read_start(resource.stream(),
-      [](uv_handle_t *, size_t, uv_buf_t *buffer) {
-        buffer->base = new (std::nothrow) char[65536];
-        buffer->len = buffer->base ? 65536 : 0;
-      }, [](uv_stream_t *stream, ssize_t size, const uv_buf_t *buffer) {
+  const int status = uv_read_start(resource.stream(), allocateRead, [](uv_stream_t *stream, ssize_t size, const uv_buf_t *buffer) {
         std::unique_ptr<char[]> storage(buffer->base);
         auto &resource = *static_cast<Resource *>(stream->data);
         if (resource.closing) {return;}
@@ -578,6 +584,8 @@ std::vector<std::string> processStrings(Runtime &rt, const Value &value) {
   return result;
 }
 
+// Spawn a compute worker: only this executable, with an explicit environment and validated
+// working directory, as a resource that reports the child's exit back to JS.
 Value spawnProcess(SHConsoleContext &owner, const Value *values) {
   auto &rt = owner.runtime;
   auto args = processStrings(rt, values[0]);
@@ -593,8 +601,10 @@ Value spawnProcess(SHConsoleContext &owner, const Value *values) {
   }
   const char *directory = prepareWorkerDirectory(env); // Before taking pointers into env storage.
   std::vector<char *> argv, environmentPointers;
-  for (auto &arg : args) {argv.push_back(arg.data());} argv.push_back(nullptr);
-  for (auto &entry : env) {environmentPointers.push_back(entry.data());} environmentPointers.push_back(nullptr);
+  for (auto &arg : args) {argv.push_back(arg.data());}
+  argv.push_back(nullptr);
+  for (auto &entry : env) {environmentPointers.push_back(entry.data());}
+  environmentPointers.push_back(nullptr);
   values[2].asObject(rt).asFunction(rt); // Validate before any handle allocation.
   std::array<std::shared_ptr<Resource>, 3> pipes;
   std::shared_ptr<Resource> process;
@@ -721,13 +731,12 @@ bool appendConnectAddress(std::vector<ConnectAddress> &addresses, int family,
 
 void startConnect(Resource &resource);
 
+// Move on from a failed or timed-out address: report the error after the last candidate,
+// otherwise close the socket and retry the next address on a freshly initialised handle.
 void connectAttemptFailed(Resource &resource, int status) {
   if (resource.closing || resource.connectResetPending) {return;}
   resource.connectPending = false;
-  if (resource.connectTimerInitialized) {
-    resource.connectTimerActive = false;
-    uv_timer_stop(&resource.timer);
-  }
+  resource.stopConnectTimer();
   if (resource.nextConnectAddress >= resource.connectAddresses.size()) {
     fail(resource, status);
     return;
@@ -777,16 +786,9 @@ void startConnect(Resource &resource) {
         auto &resource = *static_cast<Resource *>(request->data);
         if (resource.closing || resource.connectResetPending || !resource.connectPending) {return;}
         resource.connectPending = false;
-        if (resource.connectTimerInitialized) {
-          resource.connectTimerActive = false;
-          uv_timer_stop(&resource.timer);
-        }
+        resource.stopConnectTimer();
         if (status) {connectAttemptFailed(resource, status); return;}
-        const int reading = uv_read_start(reinterpret_cast<uv_stream_t *>(&resource.tcp),
-            [](uv_handle_t *, size_t, uv_buf_t *buffer) {
-              buffer->base = new (std::nothrow) char[65536];
-              buffer->len = buffer->base ? 65536 : 0;
-            },
+        const int reading = uv_read_start(reinterpret_cast<uv_stream_t *>(&resource.tcp), allocateRead,
             [](uv_stream_t *stream, ssize_t size, const uv_buf_t *buffer) {
               std::unique_ptr<char[]> storage(buffer->base);
               auto &resource = *static_cast<Resource *>(stream->data);
@@ -823,10 +825,7 @@ void startConnect(Resource &resource) {
   // final OS connect keeps its normal platform deadline; an idle auxiliary timer must not hold
   // an unref'd socket open after there is nothing left to race.
   if (resource.nextConnectAddress >= resource.connectAddresses.size()) {
-    if (resource.connectTimerActive) {
-      resource.connectTimerActive = false;
-      uv_timer_stop(&resource.timer);
-    }
+    if (resource.connectTimerActive) {resource.stopConnectTimer();}
     if (uv_has_ref(reinterpret_cast<uv_handle_t *>(&resource.timer))) {
       uv_unref(reinterpret_cast<uv_handle_t *>(&resource.timer));
     }
@@ -838,8 +837,7 @@ void startConnect(Resource &resource) {
     if (resource.closing || !resource.connectPending) {return;}
     resource.connectPending = false;
     ++resource.connectGeneration;
-    resource.connectTimerActive = false;
-    uv_timer_stop(timer);
+    resource.stopConnectTimer();
     connectAttemptFailed(resource, UV_ETIMEDOUT);
   }, resource.connectAttemptTimeout, 0);
   if (timer) {
@@ -1073,6 +1071,8 @@ template <typename Action> void binding(SHConsoleContext &owner, const char *nam
 
 namespace mom::runtime {
 using namespace detail;
+// Create the application's libuv loop and install the __mom* event-loop bindings (timers, sockets,
+// pipes, processes, signals, workers) on `runtime`; the caller owns the returned context.
 SHConsoleContext *createLoop(Runtime &runtime, WorkerFactory workerFactory) {
   auto owner = std::make_unique<SHConsoleContext>(runtime, workerFactory);
   const int status = uv_loop_init(&owner->loop);
@@ -1318,6 +1318,8 @@ SHConsoleContext *createLoop(Runtime &runtime, WorkerFactory workerFactory) {
   return owner.release();
 }
 
+// Alternate deferred JS jobs with libuv turns until both are exhausted or a callback failed;
+// returns false (after printing the failure) when the application must exit unsuccessfully.
 bool runLoop(SHConsoleContext *context) {
   guarded(*context, [] {});
   while (context->failure.empty() && (!context->deferred.empty() || uv_loop_alive(&context->loop))) {

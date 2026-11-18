@@ -101,6 +101,8 @@ MO_KAW_AINLINE void random_merge_dev(uint32_t& a, const uint32_t b, const uint32
   }
 }
 
+// Apply ProgPoW program step I and recurse: cache load I (while I < CNT_CACHE), then random math I,
+// unrolled at compile time so a baked program folds to straight-line operations.
 // CNT_CACHE/CNT_MATH are template non-type params (default to the KawPoW 11/18) so meowpow can run the
 // shorter 6/9 sequence with the SAME KawpowProgram layout (arrays still sized at the 18/11 max; only
 // the active prefix is generated/applied). KawPoW/FiroPow/EvrProgPow keep the defaults -> bit-identical.

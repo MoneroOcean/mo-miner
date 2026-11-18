@@ -4,7 +4,7 @@ static void search(State& s, uint64_t first, unsigned count, bool test, bool use
   const uint8_t* input = s.input;
   uint64_t* scratch = s.scratch;
   const uint8_t* target = s.target;
-  Result* result = s.result;
+  PowHits<>* result = s.result;
   const double* lut = s.lut;
   using Clock = std::chrono::steady_clock;
   const auto total_start = s.profile ? Clock::now() : Clock::time_point{};
@@ -77,28 +77,8 @@ static void search(State& s, uint64_t first, unsigned count, bool test, bool use
           sycl::range<1>(count), [=](sycl::id<1> id) MOM_SYCL_KERNEL_ARGS_RESTRICT {
         uint8_t hash[32];
         stage4(scratch + id[0] * WORDS, hash);
-        bool hit = true;
-        for (unsigned i = 0; i < 32; ++i)
-          if (hash[i] != target[i]) {
-            hit = hash[i] < target[i];
-            break;
-          }
-        if (test && id[0] == 0) {
-          result->count = 1;
-          result->nonce[0] = first;
-          for (unsigned i = 0; i < 32; ++i)
-            result->hash[0][i] = hash[i];
-        } else if (!test && hit) {
-          using Atomic =
-              sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
-                               sycl::access::address_space::global_space>;
-          const uint32_t index = Atomic(result->count).fetch_add(1);
-          if (index < MAX_RESULTS) {
-            result->nonce[index] = first + id[0];
-            for (unsigned i = 0; i < 32; ++i)
-              result->hash[index][i] = hash[i];
-          }
-        }
+        if (test ? id[0] == 0 : mom_meets_target_be(hash, target))
+          mom_store_pow_hit(result, first + id[0], hash);
       });
     });
   });

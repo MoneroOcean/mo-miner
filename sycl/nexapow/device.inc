@@ -428,6 +428,7 @@ inline U256 np_field_inverse(const U256& value) {
   return np_field_mul(high, low); // 2^256 - 2^32 - 979 == p - 2
 }
 
+// Convert Jacobian coordinates to affine form (z = 1) with one field inversion.
 inline Point np_affine(const Point& point) {
   if (point.infinity)
     return point;
@@ -437,21 +438,7 @@ inline Point np_affine(const Point& point) {
   return {np_field_mul(point.x, inverse2), np_field_mul(point.y, inverse3), np_one(), false};
 }
 
-// Check the secp256k1 Legendre symbol through the shared fixed exponentiation chain.
-inline bool np_quadratic_residue_power(const U256& value) {
-  // Since p == 3 (mod 4), value is a residue iff value^((p + 1) / 4) squares back.
-  const auto chain = np_field_power_chain(value);
-  U256 root = chain.x223;
-  for (unsigned i = 0; i < 23; ++i)
-    root = np_field_square(root);
-  root = np_field_mul(root, chain.x22);
-  for (unsigned i = 0; i < 6; ++i)
-    root = np_field_square(root);
-  root = np_field_mul(root, chain.x2);
-  root = np_field_square(np_field_square(root));
-  return np_cmp(np_field_square(root), value) == 0;
-}
-
+// Shift a 256-bit little-endian-word integer right by one bit.
 inline void np_shift_right(U256& value) {
   uint32_t carry = 0;
   for (int i = 7; i >= 0; --i) {
@@ -572,6 +559,7 @@ inline void np_sha256_init(uint32_t state[8]) {
     state[i] = initial[i];
 }
 
+// Serialize the SHA-256 state words as the big-endian 32-byte digest.
 inline void np_sha256_output(const uint32_t state[8], uint8_t output[32]) {
   for (unsigned i = 0; i < 8; ++i) {
     output[4 * i] = static_cast<uint8_t>(state[i] >> 24);

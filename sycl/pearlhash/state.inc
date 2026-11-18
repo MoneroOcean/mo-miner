@@ -128,7 +128,7 @@ namespace {
 // PlainProof carries M/N/K/rank, so the job can select a device-efficient profile without changing
 // proof semantics. mom.js obtains defaults from GPU-CONFIG.md and passes explicit config values.
 // One persistent in-order queue + device buffer set per GPU; the seed search reuses them.
-struct PearlHashState {
+struct State {
   sycl::queue queue;
   sycl::queue prep_queue;
 // SSCP's generic image does not compile search_cuda_direct's inline-PTX MMA body. Enabling
@@ -167,7 +167,7 @@ struct PearlHashState {
   bool native_notice = false;
   double wait_ema_us = 0.0; // EMA of recent attempt wall times (us); paces the pre-wait sleep below
   std::mutex mutex;
-  explicit PearlHashState(const std::string& dev_str)
+  explicit State(const std::string& dev_str)
       : queue(get_dev(dev_str), sycl::property::queue::in_order{}),
         prep_queue(queue.get_context(), queue.get_device(), sycl::property::queue::in_order{}) {
   }
@@ -186,8 +186,10 @@ struct PearlHashState {
     hip_jit_buffers = false;
     cuda_jit_buffers = false;
     // The queue drain above must precede resetting async upload sources.
-    compact_roots.reset();compact_a.fill(0);compact_b.fill(0);
-    wait_ema_us=0.0;
+    compact_roots.reset();
+    compact_a.fill(0);
+    compact_b.fill(0);
+    wait_ema_us = 0.0;
     fixed_b_valid = false;
     have_header = false;
     header_pair_dist8 = false;
@@ -209,19 +211,19 @@ struct PearlHashState {
     have_header = false;
     fixed_b_valid = false;
   }
-  ~PearlHashState() {
+  ~State() {
     release();
   }
 };
 // Keep the registry heap-owned to avoid unsafe runtime destruction at process exit.
-DeviceStateRegistry<PearlHashState>& pearlhash_registry() {
-  static auto* const registry = new DeviceStateRegistry<PearlHashState>;
+DeviceStateRegistry<State>& pearlhash_registry() {
+  static auto* const registry = new DeviceStateRegistry<State>;
   return *registry;
 }
 // Reuse one queue/buffer owner per device; its mutex serializes profile changes and searches.
-PearlHashState& pearlhash_state(const std::string& dev_str) {
+State& state_for(const std::string& dev_str) {
   return pearlhash_registry().get(dev_str, [&] {
-    return std::make_unique<PearlHashState>(dev_str);
+    return std::make_unique<State>(dev_str);
   });
 }
 thread_local std::string

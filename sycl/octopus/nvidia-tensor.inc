@@ -97,6 +97,8 @@ constexpr uint64_t NativeMaxTotal =
     (static_cast<uint64_t>(MOD) - 1);
 static_assert(NativeMaxTotal < (uint64_t{1} << 50));
 
+// Upper bound of a value <= max after one 2^NativeModBits fold of the field reduction; chaining it
+// proves how many folds bring a GEMM accumulator below the modulus range.
 constexpr uint64_t native_max_after_fold(const uint64_t max) {
   const uint64_t quotient = max >> NativeModBits;
   const uint64_t remainder = max & NativeModMask;
@@ -251,6 +253,7 @@ struct NativeGemmContext {
 };
 
 #if defined(__SYCL_DEVICE_ONLY__) && defined(__NVPTX__)
+// One m16n8k32 int8 tensor-core MMA accumulating into this lane's four s32 fragments.
 inline void octopus_cuda_mma(int32_t accumulators[4], const uint32_t a[4], const uint32_t b[2]) {
   asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 "
                "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
@@ -259,6 +262,7 @@ inline void octopus_cuda_mma(int32_t accumulators[4], const uint32_t a[4], const
                : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]));
 }
 
+// Convert a generic pointer into shared memory to the 32-bit address cp.async/ldmatrix expect.
 inline uint32_t octopus_cuda_shared_address(const void* const pointer) {
   uint32_t address;
   asm("{ .reg .u64 shared; cvta.to.shared.u64 shared, %1; cvt.u32.u64 %0, shared; }"
@@ -291,6 +295,7 @@ inline void octopus_cuda_load_matrix_b(uint32_t values[2], const uint32_t shared
                : "r"(shared));
 }
 
+// Load 16 bytes of streamed global data without keeping them in L1.
 inline void octopus_cuda_load4(uint32_t values[4], const uint32_t* const source) {
   asm volatile("ld.global.L1::evict_first.v4.u32 {%0,%1,%2,%3}, [%4];\n"
                : "=r"(values[0]), "=r"(values[1]), "=r"(values[2]), "=r"(values[3])
@@ -298,6 +303,7 @@ inline void octopus_cuda_load4(uint32_t values[4], const uint32_t* const source)
                : "memory");
 }
 
+// Store two adjacent s32 results with one vector store.
 inline void octopus_cuda_store2(int32_t* const destination, const int32_t first,
                                 const int32_t second) {
   asm volatile("st.global.v2.s32 [%0], {%1,%2};\n"
@@ -771,8 +777,8 @@ static sycl::event native_finish(sycl::queue& queue, const uint8_t* const header
           uint8_t output[HASH_LEN];
           keccak256_seed_mix(seed, final_mix, output);
           const bool active = nonce >= start && nonce - start < count;
-          if (active && (is_test ? nonce == start : meets_target(output, target)))
-            save_result(result, nonce, output);
+          if (active && (is_test ? nonce == start : mom_meets_target_be(output, target)))
+            mom_store_pow_hit(result, nonce, output);
         };
     handler.parallel_for<OctopusSyclNativeFinish>(range, finish_kernel);
   });

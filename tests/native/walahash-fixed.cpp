@@ -18,7 +18,7 @@ inline uint32_t rotate(uint32_t value, uint32_t count) {
   return std::rotl(value, static_cast<int>(count));
 }
 }
-inline uint32_t mo_rotate(uint32_t value, uint32_t count) {
+inline uint32_t mom_rotate(uint32_t value, uint32_t count) {
   return sycl::rotate(value, count);
 }
 #define MOM_SYCL_ADAPTIVECPP

@@ -10,14 +10,13 @@
 #include <utility>
 #include <vector>
 
-#include "../../sycl/blake2b-pair.hpp"
+#include "../../sycl/blake2b.h"
 
 constexpr unsigned EQUIHASH_ROW_LEN = 20;
 namespace mom_zelhash {
 // Source fragments deliberately follow their producer dependency order.
 // clang-format off
 #include "zelhash_layout_math.inc"
-#include "zelhash_blake_constants.inc"
 #include "../../sycl/zelhash/blake2b.inc"
 #include "zelhash_recovery_follower.inc"
 // clang-format on

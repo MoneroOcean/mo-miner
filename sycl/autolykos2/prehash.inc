@@ -254,33 +254,7 @@ AUTOLYKOS_DEVICE_INLINE uint32_t autolykos_index_from_words_dev(const uint32_t w
       idx = (word0 << 24) | (word1 >> 8);
     break;
   }
-  return mo_mod_u32(idx, n_len, n_len_M);
-}
-
-// Compare the full hash and target as big-endian 256-bit integers.
-AUTOLYKOS_DEVICE_INLINE bool meets_target_dev(const uint8_t output[32], const uint8_t target[32]) {
-  for (unsigned i = 0; i < 32; ++i) {
-    if (output[i] == target[i])
-      continue;
-    return output[i] < target[i];
-  }
-  return true;
-}
-
-// Reserve a bounded hit slot; kernel completion publishes the non-atomic payload.
-inline void store_autolykos_result(AutolykosResult* const result, const uint64_t nonce,
-                                   const uint8_t output[32]) {
-  using atomic_ref =
-      sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
-                       sycl::access::address_space::global_space>;
-  const uint32_t index = atomic_ref(result->count).fetch_add(1);
-  if (index >= MAX_AUTOLYKOS_OUTPUTS)
-    return;
-
-  result->nonce[index] = nonce;
-#pragma unroll
-  for (unsigned i = 0; i < 32; ++i)
-    result->output[index][i] = output[i];
+  return mod_u32(idx, n_len, n_len_M);
 }
 
 // Autolykos2 per-nonce prehash: blake2b(message||nonce) selects table row h3, then
@@ -305,7 +279,7 @@ autolykos_index_hash_dev(const uint8_t message[32], const uint64_t nonce,
 
   uint8_t h1[32];
   blake2b256_oneblock_dev(h1_input, sizeof(h1_input), h1);
-  const uint32_t h3 = mo_mod_u64(load64_be_dev(h1 + 24), n_len, n_len_divM);
+  const uint32_t h3 = mod_u64(load64_be_dev(h1 + 24), n_len, n_len_divM);
 
   uint8_t seed[71]; // row[1..31] (31) || message (32) || nonce (8)
   if (table) {
@@ -354,7 +328,7 @@ autolykos_index_hash_portable_dev(const uint8_t message[32], const uint64_t nonc
 
   uint8_t h1[32];
   blake2b256_oneblock_dev(h1_input, sizeof(h1_input), h1);
-  const uint32_t h3 = mo_mod_u64(load64_be_dev(h1 + 24), n_len, n_len_divM);
+  const uint32_t h3 = mod_u64(load64_be_dev(h1 + 24), n_len, n_len_divM);
   uint8_t h3_digest[32];
   autolykos_prehash_digest_dev(h3, height, h3_digest);
 

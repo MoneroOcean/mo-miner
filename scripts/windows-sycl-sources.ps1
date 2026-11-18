@@ -7,7 +7,7 @@ function Get-MomWindowsSyclSources {
     pearlhash    = 'sycl\pearlhash\pearlhash.cpp'
     c29          = 'sycl\c29\c29.cpp'
     c30          = 'sycl\c30\c30.cpp'
-    c30_host     = 'sycl\c30\c30-host.cpp'
+    c30_host     = 'sycl\c30\host.cpp'
     octopus      = 'sycl\octopus\octopus.cpp'
     cn_gpu       = 'sycl\cn-gpu\cn-gpu.cpp'
     kawpow       = 'sycl\kawpow\kawpow.cpp'

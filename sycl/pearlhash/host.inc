@@ -1,6 +1,8 @@
-// 52-byte NoisyGEMM config block hashed with the 76-byte header into the per-job key (k, rank, and
-// the two row/column pattern bytes at [9]/[15]); bytes 0..3 = k LE, 4..5 = rank LE.
-static void config_bytes(uint8_t cfg[52], int k, int rank, int rows = 16, int cols = 16) {
+// 52-byte NoisyGEMM config block hashed with the 76-byte header into the per-job key: bytes 0..3 =
+// k LE, 4..5 = rank LE, then the six-byte row and column opening-pattern descriptors at [8]/[14].
+static void config_bytes_pattern(uint8_t cfg[52], int k, int rank,
+                                 const std::array<uint8_t, 6>& rows,
+                                 const std::array<uint8_t, 6>& cols) {
   memset(cfg, 0, 52);
   cfg[0] = k & 0xff;
   cfg[1] = (k >> 8) & 0xff;
@@ -8,17 +10,26 @@ static void config_bytes(uint8_t cfg[52], int k, int rank, int rows = 16, int co
   cfg[3] = (k >> 24) & 0xff;
   cfg[4] = rank & 0xff;
   cfg[5] = (rank >> 8) & 0xff;
-  cfg[9] = static_cast<uint8_t>(rows - 1);
-  cfg[15] = static_cast<uint8_t>(cols - 1);
+  std::copy(rows.begin(), rows.end(), cfg + 8);
+  std::copy(cols.begin(), cols.end(), cfg + 14);
+}
+// Contiguous rows x cols openings encode only their extent minus one at pattern byte 1.
+static void config_bytes(uint8_t cfg[52], int k, int rank, int rows = 16, int cols = 16) {
+  config_bytes_pattern(cfg, k, rank, {0, static_cast<uint8_t>(rows - 1), 0, 0, 0, 0},
+                       {0, static_cast<uint8_t>(cols - 1), 0, 0, 0, 0});
 }
 // Per-job key = unkeyed BLAKE3 of the 76-byte header concatenated with the 52-byte config block.
-static void derive_key(const uint8_t* header76, int k, int rank, uint8_t key32[32],
-                       int rows = 16, int cols = 16) {
-  uint8_t cfg[52], kb[128];
-  config_bytes(cfg, k, rank, rows, cols);
+static void key_from_config(const uint8_t* header76, const uint8_t cfg[52], uint8_t key32[32]) {
+  uint8_t kb[128];
   memcpy(kb, header76, 76);
   memcpy(kb + 76, cfg, 52);
   pearlhash_b3::b3(kb, 128, nullptr, key32);
+}
+static void derive_key(const uint8_t* header76, int k, int rank, uint8_t key32[32],
+                       int rows = 16, int cols = 16) {
+  uint8_t cfg[52];
+  config_bytes(cfg, k, rank, rows, cols);
+  key_from_config(header76, cfg, key32);
 }
 
 // Native CUDA rank-128 pairs use the verifier's canonical 8-by-8-by-2 opening
@@ -35,6 +46,7 @@ static bool pair_dist8_offset_valid(int offset, int dimension) {
   return residue == 0 || residue == 2 || residue == 4 || residue == 6;
 }
 
+// Expand a pair-dist8 winner into its 16 opened A rows and Bt rows; false for an illegal origin.
 static bool pair_dist8_lists(int row, int col, int m, int n,
                              std::vector<int>& a_rows, std::vector<int>& bt_rows) {
   if (!pair_dist8_offset_valid(row, m) || !pair_dist8_offset_valid(col, n))
@@ -50,26 +62,10 @@ static bool pair_dist8_lists(int row, int col, int m, int n,
   return true;
 }
 
-static void config_bytes_pattern(uint8_t cfg[52], int k, int rank,
-                                 const std::array<uint8_t, 6>& rows,
-                                 const std::array<uint8_t, 6>& cols) {
-  memset(cfg, 0, 52);
-  cfg[0] = k & 0xff;
-  cfg[1] = (k >> 8) & 0xff;
-  cfg[2] = (k >> 16) & 0xff;
-  cfg[3] = (k >> 24) & 0xff;
-  cfg[4] = rank & 0xff;
-  cfg[5] = (rank >> 8) & 0xff;
-  std::copy(rows.begin(), rows.end(), cfg + 8);
-  std::copy(cols.begin(), cols.end(), cfg + 14);
-}
-
 static void derive_key_pair_dist8(const uint8_t* header76, int k, int rank, uint8_t key32[32]) {
-  uint8_t cfg[52], kb[128];
+  uint8_t cfg[52];
   config_bytes_pattern(cfg, k, rank, kPairDist8PatternBytes, kPairDist8PatternBytes);
-  memcpy(kb, header76, 76);
-  memcpy(kb + 76, cfg, 52);
-  pearlhash_b3::b3(kb, 128, nullptr, key32);
+  key_from_config(header76, cfg, key32);
 }
 
 // ---- PlainProof construction on the host (the pool submission for a winning tile) ----

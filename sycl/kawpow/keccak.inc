@@ -147,7 +147,7 @@ inline void keccakf1600_pair_dev(Uint2 st[25]) {
 // isolation, so forcing the permutation OUT OF LINE (noinline) dodges the register-allocation
 // miscompile while keeping the fast pair path, bit-exact on every IGC. (KawPoW uses this pair Keccak
 // only in DAG generation; the per-nonce seal uses keccak_f800, unaffected.) Clean 2.28.4-good ->
-// 2.36.3-broken regression; see ~/bug_report5 (sibling of intel-graphics-compiler#414).
+// 2.36.3-broken regression (sibling of intel-graphics-compiler#414).
 inline __attribute__((noinline)) void keccakf1600_pair_dev(Uint2 st[25]) {
   for (unsigned round = 0; round < 24; ++round)
     keccakf1600_pair_round_dev(st, round);

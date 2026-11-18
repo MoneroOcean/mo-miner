@@ -10,6 +10,21 @@ namespace mom_nexapow {
 #include "../../sycl/nexapow/device.inc"
 #include "../../sycl/nexapow/field-8x32-portable.inc"
 
+// Independent Legendre-symbol oracle: exponentiate through the shared fixed power chain.
+inline bool np_quadratic_residue_power(const U256& value) {
+  // Since p == 3 (mod 4), value is a residue iff value^((p + 1) / 4) squares back.
+  const auto chain = np_field_power_chain(value);
+  U256 root = chain.x223;
+  for (unsigned i = 0; i < 23; ++i)
+    root = np_field_square(root);
+  root = np_field_mul(root, chain.x22);
+  for (unsigned i = 0; i < 6; ++i)
+    root = np_field_square(root);
+  root = np_field_mul(root, chain.x2);
+  root = np_field_square(np_field_square(root));
+  return np_cmp(np_field_square(root), value) == 0;
+}
+
 inline bool same_point(const Point& left, const Point& right) {
   if (left.infinity || right.infinity)
     return left.infinity == right.infinity;

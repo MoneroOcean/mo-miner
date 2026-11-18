@@ -1,5 +1,5 @@
 // BeamHash III Wagner solver kernels and per-device state. Included into beamhash3.cpp inside
-// namespace mom_beamhash3 (M2/M3).
+// namespace mom_beamhash3.
 //
 // Pipeline (5 rounds, k=5):
 //   gen/r1   : regenerate each of the 2^25 leaves, applyMix(448), scatter into bucketed[0].
@@ -83,6 +83,7 @@ constexpr uint32_t INDEX_MASK = (1u << INDEX_BITS) - 1u;
 constexpr uint32_t low_mask_u32(unsigned bits) {
   return bits >= 32 ? 0xffffffffu : ((1u << bits) - 1u);
 }
+// Spare bits a level-L bucket record offers for packing its source ID (work-word and index padding).
 constexpr unsigned bucket_source_capacity(unsigned L) {
   if (L == 0)
     return INDEX_BITS;

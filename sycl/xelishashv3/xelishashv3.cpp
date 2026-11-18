@@ -42,7 +42,7 @@ inline float rsqrt(float x) {
   return 1.0f / std::sqrt(x);
 }
 } // namespace sycl
-inline uint64_t mo_rotate(uint64_t x, uint64_t n) {
+inline uint64_t mom_rotate(uint64_t x, uint64_t n) {
   const uint64_t shift = n & 63;
   return (x << shift) | (x >> ((64 - shift) & 63));
 }
@@ -64,7 +64,8 @@ inline uint64_t mo_rotate(uint64_t x, uint64_t n) {
 #include <mutex>
 
 #include "../lib-internal.h"
-#include "../../native/consts.h"
+#include "../pow-hits.h"
+#include "../pow-target.h"
 #endif
 
 namespace mom_xelishashv3 {
@@ -76,6 +77,7 @@ namespace mom_xelishashv3 {
 
 #include "state.inc"
 
+// Release device state before the compiler runtime unloads without escaping exceptions.
 void xelishashv3_cleanup_states() noexcept {
   try {
     registry().clear();
@@ -101,7 +103,7 @@ int xelishashv3(unsigned, uint32_t, const uint8_t* input, unsigned input_size, u
   s.ensure(intensity);
   sycl_wait_and_throw(s.queue.memcpy(s.input, input, 112), s.device);
   sycl_wait_and_throw(s.queue.memcpy(s.target, target, 32), s.device);
-  sycl_wait_and_throw(s.queue.memset(s.result, 0, sizeof(Result)), s.device);
+  sycl_wait_and_throw(s.queue.memset(s.result, 0, sizeof(PowHits<>)), s.device);
   const char* configured = std::getenv("MOM_XELISHASHV3_SYCL_NATIVE");
   const bool native = !configured || std::strcmp(configured, "0");
 #ifdef MOM_XELISHASHV3_ESIMD
@@ -116,15 +118,9 @@ int xelishashv3(unsigned, uint32_t, const uint8_t* input, unsigned input_size, u
     search<true>(s, *nonce, intensity, is_test, use_esimd);
   else
     search<false>(s, *nonce, intensity, is_test);
-  Result found;
-  sycl_wait_and_throw(s.queue.memcpy(&found, s.result, sizeof(found)), s.device);
-  static_assert(MAX_RESULTS <= GPU_MAX_HITS);
-  const uint32_t hits = std::min(found.count, MAX_RESULTS);
-  for (uint32_t index = 0; index < hits; ++index) {
-    nonce[index] = found.nonce[index];
-    std::memcpy(output + index * 32, found.hash[index], 32);
-  }
-  return static_cast<int>(hits);
+  PowHits<> hits;
+  sycl_wait_and_throw(s.queue.memcpy(&hits, s.result, sizeof(hits)), s.device);
+  return mom_take_pow_hits(hits, output, nonce);
 } catch (const sycl::exception& error) {
   std::fprintf(stderr, "XelisHashV3 SYCL error: %s\n", error.what());
   throw;

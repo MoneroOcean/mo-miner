@@ -1,4 +1,3 @@
-constexpr uint32_t MAX_OUTPUTS = 15;
 constexpr uint32_t FNV_PRIME = 0x01000193u;
 constexpr int LIGHT_CACHE_NUM_ITEMS = 1179641;   // x 64B  = 72 MiB
 constexpr int FULL_DATASET_NUM_ITEMS = 37748717; // x 128B = 4.6 GiB
@@ -10,11 +9,7 @@ static constexpr uint8_t FISH_SEED[32] = {
     0xeb, 0x01, 0x63, 0xae, 0xf2, 0xab, 0x1c, 0x5a, 0x66, 0x31, 0x0c, 0x1c, 0x14, 0xd6, 0x0f, 0x42,
     0x55, 0xa9, 0xb3, 0x9b, 0x0e, 0xdf, 0x26, 0x53, 0x98, 0x44, 0xf1, 0x17, 0xad, 0x67, 0x21, 0x19};
 
-struct FishResult {
-  uint32_t count;
-  uint64_t nonce[MAX_OUTPUTS];
-  uint8_t output[MAX_OUTPUTS][HASH_LEN];
-};
+using FishResult = PowHits<>;
 
 // ---- LE load/store ----
 #include "../blake3-device.inc"
@@ -123,37 +118,6 @@ inline void fish_item_half(const uint64_t* __restrict cache, uint32_t index, uin
 inline void fish_dataset_item(const uint64_t* __restrict cache, uint32_t index, uint64_t out[16]) {
   fish_item_half(cache, index * 2, out);         // out[0..7]
   fish_item_half(cache, index * 2 + 1, out + 8); // out[8..15]
-}
-
-// Compare output and target as little-endian 256-bit unsigned integers.
-inline bool meets_target_le_dev(const uint8_t out[32], const uint8_t* target) {
-  for (int i = 31; i >= 0; --i) {
-    if (out[i] == target[i])
-      continue;
-    return out[i] < target[i];
-  }
-  return true;
-}
-// Big-endian compare (Iron Fish: hashValue and set_target are both 256-bit BE, byte 0 = MSB).
-// Compare output and target as big-endian 256-bit unsigned integers.
-inline bool meets_target_be_dev(const uint8_t out[32], const uint8_t* target) {
-  for (int i = 0; i < 32; ++i) {
-    if (out[i] == target[i])
-      continue;
-    return out[i] < target[i];
-  }
-  return true;
-}
-// Reserve a bounded shared hit slot; kernel completion publishes its payload.
-inline void store_fish_result(FishResult* r, uint64_t nonce, const uint8_t out[32]) {
-  using ar = sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
-                              sycl::access::address_space::global_space>;
-  const uint32_t idx = ar(r->count).fetch_add(1);
-  if (idx >= MAX_OUTPUTS)
-    return;
-  r->nonce[idx] = nonce;
-  for (unsigned i = 0; i < 32; ++i)
-    r->output[idx][i] = out[i];
 }
 
 // ---- Read-only-cache (LDG) DAG load + software prefetch (NVIDIA only) ----

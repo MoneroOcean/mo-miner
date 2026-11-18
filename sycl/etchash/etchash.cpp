@@ -20,6 +20,8 @@
 #endif
 
 #include "../lib-internal.h"
+#include "../pow-hits.h"
+#include "../pow-target.h"
 #include "../../native/consts.h"
 #include "../../xmrig/3rdparty/libethash/ethash.h"
 #include "../../xmrig/3rdparty/libethash/data_sizes.h"
@@ -27,6 +29,8 @@
 namespace mom_etchash {
 
 #include "device.inc"
+
+#include "../ethash-dag.inc"
 
 #include "search.inc"
 
@@ -54,7 +58,7 @@ int etchash(const unsigned, const uint32_t block_height, const uint8_t* const in
   if (!input || !output || !mix_hash || !pnonce || !target || input_size < 40 || !intensity)
     throw std::string("Etchash requires input, output, target, nonce, and nonzero intensity");
 
-  EtchashState& state = etchash_state(dev_str);
+  State& state = state_for(dev_str);
   std::lock_guard<std::mutex> state_lock(state.mutex);
   state.ensure_input(input_size);
   uint32_t epoch = 0;
@@ -94,7 +98,7 @@ int etchash(const unsigned, const uint32_t block_height, const uint8_t* const in
 
   if (state.device.is_gpu()) {
     // Pick the inlined (fast) or noinline (always-correct) pair-Keccak search kernel per device. The
-    // gate is a cached one-time self-test (see EtchashState::use_inline_pair); DAG-gen above is always
+    // gate is a cached one-time self-test (see State::use_inline_pair); DAG-gen above is always
     // noinline so the dataset is correct regardless.
     sycl_wait_and_throw(
         state.use_inline_pair()
@@ -164,7 +168,7 @@ int etchash(const unsigned, const uint32_t block_height, const uint8_t* const in
 
             uint8_t final_hash[32];
             keccak_256_seed_mix_dev(seed, compressed_mix, final_hash);
-            if ((is_test && gid == 0) || meets_target_dev(final_hash, d_target)) {
+            if ((is_test && gid == 0) || mom_meets_target_be(final_hash, d_target)) {
               store_etchash_result(d_result, nonce, final_hash, compressed_mix);
             }
           });
@@ -172,12 +176,8 @@ int etchash(const unsigned, const uint32_t block_height, const uint8_t* const in
                         state.device);
   }
 
-  static_assert(MAX_ETCHASH_OUTPUTS <= GPU_MAX_HITS);
-  const uint32_t hits = std::min(state.result->count, MAX_ETCHASH_OUTPUTS);
-  for (uint32_t index = 0; index < hits; ++index) {
-    pnonce[index] = state.result->nonce[index];
-    std::memcpy(output + index * HASH_LEN, state.result->output[index], HASH_LEN);
+  const int hits = mom_take_pow_hits<uint8_t>(*state.result, output, pnonce);
+  for (int index = 0; index < hits; ++index)
     std::memcpy(mix_hash + index * HASH_LEN, state.result->mix_hash[index], HASH_LEN);
-  }
-  return static_cast<int>(hits);
+  return hits;
 }

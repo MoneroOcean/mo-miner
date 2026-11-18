@@ -12,7 +12,6 @@
 #include "crypto/rx/RxFix.h"
 #include "hw/msr/Msr.h"
 #include "3rdparty/argon2.h"
-#include "base/tools/bswap_64.h"
 
 #include <chrono>
 #include <cstdlib>

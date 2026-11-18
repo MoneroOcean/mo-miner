@@ -1,6 +1,6 @@
+// Expand one 512-byte scratchpad stripe `idx` from the Keccak state `in` (three permutations).
 template <bool IntelNative64 = false>
-void generate512(const unsigned idx, const uint64_t* const in,
-                 uint64_t* out) { // Expands one scratchpad stripe.
+void generate512(const unsigned idx, const uint64_t* const in, uint64_t* out) {
   uint64_t hash[25];
   hash[0] = in[0] ^ idx;
 #if defined(__clang__)
@@ -38,7 +38,7 @@ inline int32_t* lpad_ptr(const unsigned idx, const unsigned n, int32_t* const lp
 // for some operands (not correctly rounded), and a single 1-ULP error desyncs the chaotic
 // recurrence into a wrong hash. Force the PTX correctly-rounded div.rn.f32 per component in the
 // nvptx device pass (__NVPTX__); everywhere else use the plain operator/ (unchanged Intel codegen).
-inline sycl::float4 mo_div_rn(const sycl::float4 a, const sycl::float4 b) {
+inline sycl::float4 div_rn(const sycl::float4 a, const sycl::float4 b) {
 #if defined(__NVPTX__) && (!defined(MOM_SYCL_ADAPTIVECPP) || defined(__CUDA_ARCH__))
   sycl::float4 r;
 #pragma unroll
@@ -54,14 +54,14 @@ inline sycl::float4 mo_div_rn(const sycl::float4 a, const sycl::float4 b) {
 }
 
 inline sycl::float4
-my_and_or_ps(const sycl::float4 x, const uint32_t _and,
+and_or_ps(const sycl::float4 x, const uint32_t _and,
              const uint32_t _or) { // Float bit shaping used by cn/gpu recurrence.
   const sycl::uint4 i = (sycl::bit_cast<sycl::uint4>(x) & _and) | _or;
   return sycl::bit_cast<sycl::float4>(i);
 }
 
 inline sycl::float4 fma_break(const sycl::float4 x) { // Breaks the FMA dependency chain.
-  return my_and_or_ps(x, 0xFEFFFFFF, 0x00800000);
+  return and_or_ps(x, 0xFEFFFFFF, 0x00800000);
 }
 
 // Retain correctly rounded division and prevent backend reassociation of the chaotic recurrence.
@@ -95,10 +95,12 @@ inline void sub_round(const sycl::float4 n0, const sycl::float4 n1, const sycl::
   const sycl::float4 dd = fma_break((n3 - *pc) * (dd2 * dd2));
   *pd += dd;
   *pc = ((*pc + rnd_c) + sycl::float4(0.734375f)) +
-        my_and_or_ps(nn + dd, 0x807FFFFF, 0x40000000); // order matters
+        and_or_ps(nn + dd, 0x807FFFFF, 0x40000000); // order matters
 }
 
-inline void round_compute( // The divisor mask also prevents divide-by-near-zero overflow.
+// One cn/gpu FP round: eight sub-rounds accumulate a numerator/denominator pair that is divided
+// into *pr. The divisor mask also prevents divide-by-near-zero overflow.
+inline void round_compute(
     const sycl::float4 n0, const sycl::float4 n1, const sycl::float4 n2, const sycl::float4 n3,
     const sycl::float4 rnd_c, sycl::float4* const pc, sycl::float4* const pr) {
   sycl::float4 n = sycl::float4(0.0f);
@@ -112,11 +114,11 @@ inline void round_compute( // The divisor mask also prevents divide-by-near-zero
   sub_round(n2, n1, n0, n3, rnd_c, &n, &d, pc);
   sub_round(n1, n0, n3, n2, rnd_c, &n, &d, pc);
   sub_round(n0, n3, n2, n1, rnd_c, &n, &d, pc);
-  *pr += mo_div_rn(n, my_and_or_ps(d, 0xFF7FFFFF, 0x40000000));
+  *pr += div_rn(n, and_or_ps(d, 0xFF7FFFFF, 0x40000000));
 }
 
 // Run four recurrence rounds and convert the shaped result with round-to-nearest-even.
-inline sycl::int4 single_comupte(const sycl::float4 n0, const sycl::float4 n1,
+inline sycl::int4 single_compute(const sycl::float4 n0, const sycl::float4 n1,
                                  const sycl::float4 n2, const sycl::float4 n3, const float cnt,
                                  const sycl::float4 rnd_c, sycl::float4* const psum) {
   sycl::float4 c = sycl::float4(cnt);
@@ -126,13 +128,13 @@ inline sycl::int4 single_comupte(const sycl::float4 n0, const sycl::float4 n1,
   for (int i = 0; i < 4; ++i)
     round_compute(n0, n1, n2, n3, rnd_c, &c, &r);
 
-  const sycl::float4 r2 = my_and_or_ps(r, 0x807FFFFF, 0x40000000);
+  const sycl::float4 r2 = and_or_ps(r, 0x807FFFFF, 0x40000000);
   *psum = r2;
   return (r2 * sycl::float4(536870880.0f)).convert<int32_t, sycl::rounding_mode::rte>();
 }
 
 // Rotate the 128-bit result by a nonzero byte count, preserving bits across signed lanes.
-inline sycl::int4 my_alignr_epi8(const sycl::int4 a, const unsigned rot) {
+inline sycl::int4 alignr_epi8(const sycl::int4 a, const unsigned rot) {
   const unsigned right = 8 * rot;
   const unsigned left = 32 - right;
   // Reinterpret int->uint (bit-preserving) by explicit construction.
@@ -144,7 +146,7 @@ inline sycl::int4 my_alignr_epi8(const sycl::int4 a, const unsigned rot) {
 }
 
 // Convert integer lanes to float, run recurrence, and apply the lane-specific byte rotation.
-inline void single_comupte_wrap(const sycl::int4 v0, const sycl::int4 v1, const sycl::int4 v2,
+inline void single_compute_wrap(const sycl::int4 v0, const sycl::int4 v1, const sycl::int4 v2,
                                 const sycl::int4 v3, const unsigned rot, const float cnt,
                                 const sycl::float4 rnd_c, sycl::float4* const psum,
                                 sycl::int4* const pout) {
@@ -152,9 +154,9 @@ inline void single_comupte_wrap(const sycl::int4 v0, const sycl::int4 v1, const 
                      n1 = v1.convert<float, sycl::rounding_mode::rte>(),
                      n2 = v2.convert<float, sycl::rounding_mode::rte>(),
                      n3 = v3.convert<float, sycl::rounding_mode::rte>();
-  const sycl::int4 r = single_comupte(n0, n1, n2, n3, cnt, rnd_c, psum);
+  const sycl::int4 r = single_compute(n0, n1, n2, n3, cnt, rnd_c, psum);
 
-  *pout = rot == 0 ? r : my_alignr_epi8(r, rot);
+  *pout = rot == 0 ? r : alignr_epi8(r, rot);
 }
 
 template <bool NarrowSupported = !mom_sycl_adaptivecpp && !mom_sycl_portable_opencl>
@@ -309,7 +311,8 @@ inline float cn_lane_count(const unsigned lane) {
   }
 }
 
-inline uint32_t sw(const uint32_t inw) { // AES S-box for key expansion.
+// Apply the AES S-box to each byte of a key-expansion word.
+inline uint32_t sw(const uint32_t inw) {
 #if !defined(MOM_SYCL_PORTABLE_OPENCL)
   static const uint8_t sbox[256] = {
       0x63, 0x7C, 0x77, 0x7B, 0xF2, 0x6B, 0x6F, 0xC5, 0x30, 0x01, 0x67, 0x2B, 0xFE, 0xD7, 0xAB,
@@ -350,7 +353,8 @@ inline uint32_t sw(const uint32_t inw) { // AES S-box for key expansion.
   return u;
 }
 
-void aes_expend_key(uint32_t* const keybuf) { // Unrolled AES-256 key expansion.
+// Expand the 8-word AES-256 key in keybuf[0..7] into the 40-word schedule used by cn/gpu.
+void aes_expand_key(uint32_t* const keybuf) {
 #if !defined(MOM_SYCL_PORTABLE_OPENCL)
   static const uint32_t rcon[8] = {0x8d, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40};
 #endif
@@ -366,7 +370,7 @@ void aes_expend_key(uint32_t* const keybuf) { // Unrolled AES-256 key expansion.
 #else
       const uint32_t round_constant = rcon[i++];
 #endif
-      keybuf[c] = keybuf[c - 8] ^ mo_rotate(t, 24U) ^ round_constant;
+      keybuf[c] = keybuf[c - 8] ^ mom_rotate(t, 24U) ^ round_constant;
     } else {
       keybuf[c] = keybuf[c - 8] ^ t;
     }
@@ -389,9 +393,9 @@ inline void aes_fill_tables(const AesTable& aes0, const AesTable& aes1, const Ae
     const uint32_t a = AES[i];
 #endif
     aes0[i] = a;
-    aes1[i] = mo_rotate(a, 8U);
-    aes2[i] = mo_rotate(a, 16U);
-    aes3[i] = mo_rotate(a, 24U);
+    aes1[i] = mom_rotate(a, 8U);
+    aes2[i] = mom_rotate(a, 16U);
+    aes3[i] = mom_rotate(a, 24U);
   }
 }
 

@@ -12,14 +12,12 @@ template <typename Fn> static void for_each_default_gpu(Fn&& fn) {
 
 // Select native CPU process/batch geometry from cache capacity and the algorithm's scratch size.
 static void add_cpu_algo_dev(std::string& result_dev, const std::string& algo,
-                             const unsigned max_cpu_batch, const unsigned socket_count,
-                             const unsigned thread_count, const unsigned l3cache,
+                             const unsigned max_cpu_batch, const CpuTopology& cpu,
                              const std::map<std::string, unsigned>& algo2mem) {
   const auto mem = algo2mem.find(algo);
-  if (mem == algo2mem.end())
-    return add_result_dev(result_dev, "cpu^" + std::to_string(thread_count));
-  append_grouped_cpu_devs(result_dev, cpu_thread_batches(algo, max_cpu_batch, socket_count,
-                                                         thread_count, l3cache, mem->second));
+  add_result_dev(result_dev, mem == algo2mem.end()
+                                 ? "cpu^" + std::to_string(cpu.threads)
+                                 : cpu_algo_devs(algo, max_cpu_batch, cpu, mem->second));
 }
 
 // Clamp an explicit CN batch to the supplied bound; zero/malformed input keeps the default.
@@ -254,6 +252,28 @@ sycl::device get_dev(const std::string& dev_str) {
   return str2dev.at(dev_str);
 }
 
+// Publish the program build options of the algorithm a worker is about to run. DPC++ reads them
+// once, at the process's first program build, so the worker's first job decides. The native core
+// calls this on the loop thread before the compute thread starts; compute threads never write the
+// environment. A device the job cannot use is left for the job itself to report.
+void sycl_set_compile_options(const std::string& algo, const std::string& dev_str) {
+  try {
+    const char* options = nullptr;
+    if (algo == "etchash")
+      options = mom_etchash::etchash_compile_options();
+    else if (algo == "kawpow" || algo == "firopow" || algo == "evrprogpow" || algo == "meowpow")
+      options = mom_kawpow::kawpow_compile_options();
+    else if (algo == "autolykos2")
+      options = mom_autolykos2::autolykos2_compile_options();
+    else if (algo == "cn/gpu")
+      options = cn_gpu_compile_options(get_dev(dev_str));
+    else if (algo == "nexapow")
+      options = mom_nexapow::nexapow_compile_options(get_dev(dev_str));
+    mom_set_compile_options_env(options);
+  } catch (...) {
+  }
+}
+
 // Return eligible algorithms with resource-based defaults; these are heuristics, not measured optima.
 std::map<std::string, std::string> algo_params(
     const unsigned max_cpu_batch, const unsigned cpu_sockets, const unsigned cpu_threads,
@@ -276,11 +296,7 @@ std::map<std::string, std::string> algo_params(
       gpu_algo_sets.begin(), gpu_algo_sets.end(), [](const auto* algos) { return !algos->empty(); });
   if (need_sycl_devices && str2dev.empty())
     update_str2dev(true);
-  const unsigned socket_count = std::max(1u, cpu_sockets);
-  const unsigned thread_count = std::max(1u, cpu_threads);
-  // Some platforms do not expose L3 topology. Estimate enough cache for at
-  // least one CPU worker per logical thread instead of emitting cpu*0.
-  const unsigned l3cache = cpu_l3cache ? cpu_l3cache : thread_count * 2u * 1024u * 1024u;
+  const CpuTopology cpu = normalize_cpu_topology(cpu_sockets, cpu_threads, cpu_l3cache);
   std::map<std::string, std::string> result;
   std::set<std::string> algos = cpu_algos;
   for (const auto* gpu_algos : gpu_algo_sets)
@@ -288,8 +304,7 @@ std::map<std::string, std::string> algo_params(
   for (const auto& algo : algos) {
     std::string result_dev;
     if (cpu_algos.contains(algo))
-      add_cpu_algo_dev(result_dev, algo, max_cpu_batch, socket_count, thread_count, l3cache,
-                       algo2mem);
+      add_cpu_algo_dev(result_dev, algo, max_cpu_batch, cpu, algo2mem);
     // Dataset bytes (largest single allocation) and minimum global memory per GPU algo.
     if (gpu_cn_algos.contains(algo)) {
       std::string backend_hint;

@@ -113,7 +113,7 @@ struct C30DeviceKey { std::uint64_t k0, k1, k2, k3; };
 struct C30PackedEdge {};
 constexpr unsigned C30_BUCKET_COUNT = 2;
 #include "c30-types.inc"
-namespace mom::c30::host {
+namespace mom_c30::host {
 struct SipKey { std::uint64_t k0, k1, k2, k3; };
 struct Endpoints { std::uint32_t u = 0, v = 0; };
 static SipKey graph_key(const std::array<std::uint8_t, 32>&, std::uint64_t nonce) {
@@ -141,7 +141,7 @@ static bool verify(SipKey, const std::array<std::uint32_t, kProofSize>& edges) {
   return true;
 }
 }
-namespace mom::c30 {
+namespace mom_c30 {
 constexpr unsigned kDefaultTrimRounds = 384, kDefaultSparseTrimStart = 64;
 constexpr unsigned kSeedBucketStride = 1, kTrimBucketStride = 1, kLowMemoryTrimBucketStride = 1;
 constexpr unsigned kMaxHostEdges = 64;
@@ -214,7 +214,7 @@ static sycl::event c30_recover(sycl::queue& q, C30DeviceKey, std::uint32_t*,
 #include "solver.inc"
 }
 struct C30State {
-  mom::c30::Solver solver;
+  mom_c30::Solver solver;
   std::mutex mutex;
   C30State() : solver("fixture") {}
 };
@@ -223,7 +223,7 @@ static C30State& c30_state(const std::string& dev) {
   require(dev == "fixture", "entry device binding changed");
   return *active;
 }
-static int c30_portable_test(const mom::c30::Job&, std::uint8_t*, const std::string&) {
+static int c30_portable_test(const mom_c30::Job&, std::uint8_t*, const std::string&) {
   throw std::logic_error("hardware opt-in unexpectedly selected");
 }
 #include "entry.inc"

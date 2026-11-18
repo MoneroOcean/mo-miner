@@ -39,6 +39,7 @@ static inline void pearlhash_commitment_seed_b(
   pearlhash_b3::b3(input, 64, nullptr, c_b);
 }
 
+// Chain cA = BLAKE3(cB || bound_rootA) after pearlhash_commitment_seed_b produced cB.
 static inline void pearlhash_commitment_seed_a(
     const uint8_t c_b[32], const uint8_t raw_root_a[32], const uint32_t m, uint8_t c_a[32]) {
   uint8_t root_a[32], input[64];
@@ -50,6 +51,7 @@ static inline void pearlhash_commitment_seed_a(
   pearlhash_b3::b3(input, 64, nullptr, c_a);
 }
 
+// Derive both noise seeds for one attempt in their required B-then-A order.
 static inline void pearlhash_commitment_seeds(
     const uint8_t key[32], const uint8_t raw_root_a[32], const uint8_t raw_root_b[32],
     const uint32_t m, const uint32_t n, uint8_t c_b[32], uint8_t c_a[32]) {

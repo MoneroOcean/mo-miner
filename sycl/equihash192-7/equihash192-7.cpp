@@ -72,10 +72,10 @@
 #include <mutex>
 #include <string>
 
-#include "../equihash-pow.hpp"
+#include "../equihash-pow.h"
 #include "../lib-internal.h"
 #include "../../native/consts.h"
-#include "equihash192-7-direct-session.hpp"
+#include "session.h"
 
 namespace mom_equihash192_7 {
 
@@ -113,25 +113,25 @@ static int run_generation_test(const std::string& device_name, const std::uint8_
   return 1;
 }
 
-struct MiningState {
+struct State {
   std::mutex mutex;
   Solver solver;
-  explicit MiningState(const std::string& device_name) : solver(get_dev(device_name)) {
+  explicit State(const std::string& device_name) : solver(get_dev(device_name)) {
   }
 };
 
 // Keep persistent solver ownership under explicit shutdown control rather than static destruction.
-static DeviceStateRegistry<MiningState>& registry() {
-  static auto* const value = new DeviceStateRegistry<MiningState>;
+static DeviceStateRegistry<State>& registry() {
+  static auto* const value = new DeviceStateRegistry<State>;
   return *value;
 }
 
-static MiningState& state_for(const std::string& device_name) {
-  return registry().get(device_name, [&] { return std::make_unique<MiningState>(device_name); });
+static State& state_for(const std::string& device_name) {
+  return registry().get(device_name, [&] { return std::make_unique<State>(device_name); });
 }
 
 // Release cached device solvers at ordered shutdown without propagating late runtime failures.
-void cleanup_states() noexcept {
+void equihash192_7_cleanup_states() noexcept {
   try {
     registry().clear();
   } catch (...) {
@@ -158,26 +158,13 @@ int equihash192_7(unsigned, std::uint32_t, const std::uint8_t* input, const unsi
   std::uint8_t header[Spec::header_length];
   std::memcpy(header, input, sizeof(header));
   auto solutions = state.solver.run(header);
-  if (is_test)
-    std::sort(solutions.begin(), solutions.end(), [](const auto& left, const auto& right) {
-      return left.encoded < right.encoded;
-    });
-  if (is_test)
+  if (is_test) {
+    std::sort(solutions.begin(), solutions.end(),
+              [](const auto& left, const auto& right) { return left.encoded < right.encoded; });
     std::memset(solution_out, 0, SMALL_BLOB_SOL_LEN);
-  const std::size_t capacity =
-      std::min<std::size_t>(255, (EQUIHASH_SOL_BUFFER_LEN - 1) / Spec::solution_length);
-  unsigned count = 0;
-  for (const auto& solution : solutions) {
-    if (count == capacity || (is_test && count == 1))
-      break;
-    if (!is_test && !is_benchmark &&
-        !mom_equihash::pow::meets_target(header, sizeof(header), solution.encoded.data(),
-                                         solution.encoded.size(), target))
-      continue;
-    std::memcpy(solution_out + 1 + count * solution.encoded.size(), solution.encoded.data(),
-                solution.encoded.size());
-    ++count;
   }
-  solution_out[0] = static_cast<std::uint8_t>(count);
+  const unsigned count = mom_equihash::pow::write_solutions(
+      solutions, Spec::solution_length, EQUIHASH_SOL_BUFFER_LEN, is_test, header, sizeof(header),
+      is_test || is_benchmark ? nullptr : target, solution_out);
   return static_cast<int>(count);
 }

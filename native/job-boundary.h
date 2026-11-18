@@ -1,5 +1,8 @@
+// Copyright GNU GPLv3 (c) 2023-2026 MoneroOcean <support@moneroocean.stream>
+
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -8,6 +11,8 @@
 
 namespace mom::job_boundary {
 
+// Parse a complete unsigned number in `base` (2..36), rejecting empty text, stray characters and
+// overflow; `out` is written only on success. Hex input may carry a 0x prefix when allowed.
 template <typename UInt>
 inline bool parse_unsigned(std::string_view text, UInt& out, int base = 10,
                            bool allow_hex_prefix = false) {
@@ -50,6 +55,7 @@ inline bool parse_unsigned(std::string_view text, UInt& out, int base = 10,
   return true;
 }
 
+// Split "left<delimiter>right" where both sides are non-empty and the delimiter occurs once.
 inline bool split_once(std::string_view text, char delimiter, std::string_view& left,
                        std::string_view& right) {
   const std::size_t position = text.find(delimiter);
@@ -62,6 +68,8 @@ inline bool split_once(std::string_view text, char delimiter, std::string_view& 
   return true;
 }
 
+// Protocol byte order of the embedded nonce: Iron Fish FishHash headers, XelisHashV3, NexaPow and
+// BeamHash III store it big-endian; every other embedded-nonce layout is little-endian.
 inline bool nonce_big_endian(std::string_view algo, std::size_t blob_size) {
   return (algo == "fishhash" && blob_size == 180) || algo == "xelishashv3" ||
     algo == "nexapow" || algo == "beamhash3";
@@ -102,6 +110,8 @@ inline bool padded_u32_range_fits(std::uint32_t count, std::uint32_t alignment) 
     count <= std::numeric_limits<std::uint32_t>::max() - (alignment - 1);
 }
 
+// Accept only PearlHash matrix profiles whose dimensions keep tile, transcript and proof indices
+// inside the 32-bit signed ranges the kernels use, and whose M*N*K product fits uint64_t.
 inline bool valid_pearlhash_shape(std::uint64_t m, std::uint64_t n, std::uint64_t k,
                                  std::uint64_t rank) {
   const bool rank_power_of_two = rank && (rank & (rank - 1)) == 0;
@@ -126,11 +136,13 @@ inline constexpr std::uint64_t c29_completed_graphs(int result) {
   return result == 0 ? 1 : 0;
 }
 
+// A counter step overflowed when it wrapped or changed a pool-owned (masked) prefix bit.
 inline bool nonce_overflowed(std::uint64_t previous, std::uint64_t next,
                              std::uint64_t protected_mask) {
   return previous > next || (previous & protected_mask) != (next & protected_mask);
 }
 
+// result = base + index * stride without wrapping UInt or changing the masked prefix bits.
 template <typename UInt>
 inline bool nonce_with_offset(UInt base, std::uint64_t index, std::uint64_t stride,
                               UInt protected_mask, UInt& result) {
@@ -184,6 +196,10 @@ inline bool for_each_gpu_hit(int hits, unsigned capacity, Visit&& visit) {
   return true;
 }
 
+// For a batch of `count` nonces starting at `first` with `lane_stride` between lanes, set `last`
+// to its final nonce and `next` to the following batch start (`first + batch_stride`). Returns
+// false when this batch or the next one leaves the counter range; `last` is then still valid if
+// only the next batch overflowed.
 template <typename UInt>
 inline bool next_nonce_batch(UInt first, std::uint64_t count, std::uint64_t lane_stride,
                              std::uint64_t batch_stride, UInt protected_mask,
@@ -197,6 +213,7 @@ inline bool next_nonce_batch(UInt first, std::uint64_t count, std::uint64_t lane
     nonce_with_offset(next, count - 1, lane_stride, protected_mask, next_last);
 }
 
+// Read a sizeof(UInt)-byte counter in the given byte order.
 template <typename UInt>
 inline UInt load_nonce(const std::uint8_t* data, bool big_endian) {
   static_assert(std::is_integral_v<UInt> && std::is_unsigned_v<UInt> &&
@@ -213,6 +230,7 @@ inline UInt load_nonce(const std::uint8_t* data, bool big_endian) {
   return value;
 }
 
+// Write a sizeof(UInt)-byte counter in the given byte order.
 template <typename UInt>
 inline void store_nonce(std::uint8_t* data, UInt value, bool big_endian) {
   static_assert(std::is_integral_v<UInt> && std::is_unsigned_v<UInt> &&
@@ -227,6 +245,95 @@ inline void store_nonce(std::uint8_t* data, UInt value, bool big_endian) {
   }
   for (std::size_t i = 0; i < sizeof(UInt); ++i)
     data[i] = static_cast<std::uint8_t>(value >> (i * 8));
+}
+
+// Decode one ASCII hex digit.
+inline bool hex_digit(const char character, unsigned& value) {
+  if (character >= '0' && character <= '9')
+    value = static_cast<unsigned>(character - '0');
+  else if (character >= 'a' && character <= 'f')
+    value = static_cast<unsigned>(character - 'a') + 10;
+  else if (character >= 'A' && character <= 'F')
+    value = static_cast<unsigned>(character - 'A') + 10;
+  else
+    return false;
+  return true;
+}
+
+// Decode an even-length hex string into hex.size() / 2 bytes; false on any non-hex digit.
+inline bool decode_hex(std::string_view hex, std::uint8_t* out) {
+  for (std::size_t i = 0; i + 1 < hex.size(); i += 2) {
+    unsigned high = 0;
+    unsigned low = 0;
+    if (!hex_digit(hex[i], high) || !hex_digit(hex[i + 1], low))
+      return false;
+    *out++ = static_cast<std::uint8_t>(high << 4 | low);
+  }
+  return true;
+}
+
+inline std::string_view strip_hex_prefix(std::string_view hex) {
+  const bool prefixed = hex.size() >= 2 && hex[0] == '0' && (hex[1] == 'x' || hex[1] == 'X');
+  return prefixed ? hex.substr(2) : hex;
+}
+
+// Parse a nonzero 256-bit big-endian target of 2..64 hex digits (even length, no prefix),
+// left-padding shorter values with zeros.
+inline bool parse_big_target(std::string_view hex, std::uint8_t (&out)[32]) {
+  if (hex.empty() || hex.size() > 64 || (hex.size() & 1))
+    return false;
+  std::fill(std::begin(out), std::end(out), std::uint8_t{0});
+  if (!decode_hex(hex, out + 32 - hex.size() / 2))
+    return false;
+  return std::any_of(std::begin(out), std::end(out), [](std::uint8_t byte) { return byte != 0; });
+}
+
+// A pool share target as the workers compare it. Algorithms whose kernels test the full 256-bit
+// value use `bytes` (word is then 1, marking an active target); the CryptoNight, RandomX, C29 and
+// KawPoW paths compare one 64-bit word against the hash's most-significant word.
+struct ShareTarget {
+  bool full = false;
+  std::uint64_t word = 0;
+  std::uint8_t bytes[32]{};
+};
+
+inline bool uses_full_target(std::string_view algo) {
+  return algo == "etchash" || algo == "octopus" || algo == "autolykos2" || algo == "pearlhash" ||
+    algo == "fishhash" || algo == "c30" || algo == "equihash192_7" || algo == "zelhash" ||
+    algo == "zhash" || algo == "beamhash3" || algo == "karlsenhashv2" || algo == "hoohash" ||
+    algo == "walahash" || algo == "verthash" || algo == "xelishashv3" || algo == "nexapow";
+}
+
+// Parse the job's target hex (without 0x prefix). Full targets are big-endian on the wire; the
+// Kaspa-family and Verthash kernels compare little-endian hash words, so their bytes are reversed
+// (byte 31 becomes the most significant). Word targets: KawPoW and values longer than 16 digits
+// are the most-significant word of a big-endian 256-bit target, 9..16 digits a little-endian
+// uint64, and up to 8 digits a little-endian uint32 compact target expanded to the equivalent
+// 64-bit threshold. A zero target is invalid.
+inline bool parse_share_target(std::string_view algo, std::string_view hex, ShareTarget& target) {
+  target = ShareTarget{};
+  if (uses_full_target(algo)) {
+    if (!parse_big_target(hex, target.bytes))
+      return false;
+    if (algo == "karlsenhashv2" || algo == "hoohash" || algo == "walahash" || algo == "verthash")
+      std::reverse(std::begin(target.bytes), std::end(target.bytes));
+    target.full = true;
+    target.word = 1;
+    return true;
+  }
+  if (hex.empty() || hex.size() > 64 || (hex.size() & 1))
+    return false;
+  std::uint8_t bytes[32]{};
+  if (!decode_hex(hex, bytes))
+    return false;
+  const bool high_word = algo == "kawpow" || hex.size() > 16;
+  const std::uint64_t value = load_nonce<std::uint64_t>(bytes, high_word);
+  if (!value)
+    return false;
+  constexpr std::uint64_t compact_limit = std::numeric_limits<std::uint32_t>::max();
+  target.word = high_word || hex.size() > 8
+    ? value : std::numeric_limits<std::uint64_t>::max() / (compact_limit / value);
+  return true;
 }
 
 } // namespace mom::job_boundary

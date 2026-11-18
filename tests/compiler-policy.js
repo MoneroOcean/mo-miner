@@ -1757,10 +1757,10 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       const root = path.join(__dirname, "..");
       const source = fs.readFileSync(path.join(root, "sycl/verthash/verthash.cpp"), "utf8");
       const internal = fs.readFileSync(path.join(root, "sycl/lib-internal.h"), "utf8");
-      const begin = source.indexOf("static State& get_state(");
+      const begin = source.indexOf("static State& state_for(");
       const end = source.indexOf("\nvoid verthash_cleanup_states()", begin);
       assert.ok(begin >= 0 && end > begin);
-      assert.match(source, /get_state\(dev_str, is_test, is_benchmark\)/);
+      assert.match(source, /state_for\(dev_str, is_test, is_benchmark\)/);
       assert.match(source,
         /compact_test_data\(use_compact_test_data &&\s*\(device\.is_cpu\(\) \|\| is_integrated_gpu\(device\)\)\)/);
       /** @param {string} text @param {string} signature @returns {string} */
@@ -1788,7 +1788,7 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       try {
         fs.copyFileSync(path.join(__dirname, "native/verthash-test-route.cpp"),
           path.join(directory, "route.cpp"));
-        fs.writeFileSync(path.join(directory, "verthash_get_state.inc"),
+        fs.writeFileSync(path.join(directory, "verthash_state_for.inc"),
           `${compactHelpers}\n\n${source.slice(begin, end)}`);
         /** @type {[string, string][]} */
         const cases = [
@@ -2520,15 +2520,19 @@ test.describe("Compiler policy and GPU contracts", {concurrency: false}, () => {
       skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
     }, () => {
       const state = fs.readFileSync(path.join(__dirname, "../sycl/xelishashv3/state.inc"), "utf8");
-      const begin = state.indexOf("  // Detach before");
+      const begin = state.indexOf("  // Drain kernels before the members");
       const end = state.indexOf("\n};", begin);
       assert.ok(begin > 0 && end > begin);
+      const internal = fs.readFileSync(path.join(__dirname, "../sycl/lib-internal.h"), "utf8");
+      const usm = internal.indexOf("template <typename T>\nclass UsmPtr");
+      assert.ok(usm > 0);
       const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-xelis-ownership-"));
       try {
         const source = path.join(fixture, "fixture.cpp");
         const executable = path.join(fixture, "fixture");
         fs.copyFileSync(path.join(__dirname, "native/xelishashv3-ownership.cpp"), source);
         fs.writeFileSync(path.join(fixture, "ownership.inc"), state.slice(begin, end));
+        fs.writeFileSync(path.join(fixture, "usm.inc"), internal.slice(usm));
         const compiled = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
           "-pedantic", source, "-o", executable], {encoding: "utf8"});
         assert.equal(compiled.status, 0, compiled.stderr);
@@ -2734,7 +2738,7 @@ int main() {
     test("Verthash keeps the large portable CPU dataset in shared USM", () => {
       const source = fs.readFileSync(path.join(__dirname, "../sycl/verthash/verthash.cpp"), "utf8");
       assert.match(source,
-        /const bool cpu_data = device\.is_cpu\(\);[\s\S]*?cpu_data \? sycl::malloc_shared<Uint2>[\s\S]*?: sycl::malloc_device<Uint2>/);
+        /const bool cpu_data = device\.is_cpu\(\);[\s\S]*?data = mom_usm_alloc<Uint2>\(queue, host\.size\(\), cpu_data,/);
       assert.match(source,
         /const size_t data_bytes = host\.size\(\) \* sizeof\(Uint2\);/);
       assert.match(source,
@@ -2744,7 +2748,7 @@ int main() {
     test("Xelis portable OpenCL avoids vendor-specific 64-bit mul_hi", () => {
       const source = readSyclSource(path.join(__dirname, "../sycl/xelishashv3/xelishashv3.cpp"));
       assert.match(source,
-        /#ifdef MOM_XELISHASHV3_HOST_TEST\s+return static_cast<uint64_t>\(a\) \* b;\s+#else\s+return mo_mul_wide_u32\(a, b\);/);
+        /#ifdef MOM_XELISHASHV3_HOST_TEST\s+return static_cast<uint64_t>\(a\) \* b;\s+#else\s+return mom_mul_wide_u32\(a, b\);/);
       assert.match(source,
         /const uint32_t a0 = static_cast<uint32_t>\(a\), a1 = a >> 32,[\s\S]*?return mul_wide32\(a1, b1\)/);
       assert.match(source,
@@ -2759,8 +2763,8 @@ int main() {
       const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mom-wide-multiply-"));
       t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
       fs.writeFileSync(path.join(directory, "wide-multiply.inc"),
-        extractCppBlock(shared, "inline uint64_t mo_mul_wide_u32(") +
-        "inline uint64_t mul_wide32(uint32_t a, uint32_t b) { return mo_mul_wide_u32(a,b); }\n" +
+        extractCppBlock(shared, "inline uint64_t mom_mul_wide_u32(") +
+        "inline uint64_t mul_wide32(uint32_t a, uint32_t b) { return mom_mul_wide_u32(a,b); }\n" +
         extractCppBlock(xelis, "inline uint64_t mul_hi64_portable("));
       const variants = [[], ["MOM_SYCL_PORTABLE_OPENCL"], ["MOM_XELISHASHV3_ESIMD"],
         ["MOM_XELISHASHV3_ESIMD", "__INTEL_LLVM_COMPILER=20260000"]];
@@ -2782,11 +2786,11 @@ int main() {
       const source = fs.readFileSync(
         path.join(__dirname, "../sycl/hoohash/hoohash.cpp"), "utf8");
       const shared = fs.readFileSync(path.join(__dirname, "../sycl/lib-internal.h"), "utf8");
-      assert.match(source, /return mo_mul_hi_u64\(a, b\);/);
+      assert.match(source, /return mom_mul_hi_u64\(a, b\);/);
       assert.match(shared,
         /#if defined\(MOM_SYCL_PORTABLE_OPENCL\) \|\| \\\s+\(defined\(MOM_XELISHASHV3_ESIMD\) && !defined\(__INTEL_LLVM_COMPILER\)\)\s+const uint32_t a0 = static_cast<uint16_t>\(a\), a1 = a >> 16,[\s\S]*?return p0 \+ \(\(p1 \+ p2\) << 16\) \+ \(p3 << 32\);/);
       assert.match(shared,
-        /#if defined\(MOM_SYCL_ADAPTIVECPP\) \|\| defined\(MOM_SYCL_PORTABLE_OPENCL\)[\s\S]*?mo_mul_wide_u32\(a1, b1\)/);
+        /#if defined\(MOM_SYCL_ADAPTIVECPP\) \|\| defined\(MOM_SYCL_PORTABLE_OPENCL\)[\s\S]*?mom_mul_wide_u32\(a1, b1\)/);
     });
 
     test("HooHash verifies GPU filter candidates with the canonical host hash", () => {
@@ -2803,11 +2807,11 @@ int main() {
       const testKernel = source.slice(testStart, testEnd);
       const searchKernel = source.slice(searchStart, testStart);
       assert.match(testKernel, /single_task<TestKernel>[\s\S]*?filter_hash\(/);
-      assert.match(searchKernel, /filter_hash\([\s\S]*?meets_target\(/);
+      assert.match(searchKernel, /filter_hash\([\s\S]*?mom_meets_target_le\(/);
       assert.doesNotMatch(searchKernel, /canonical_hash\(/);
       assert.doesNotMatch(searchKernel, /\bis_test\b/);
       assert.match(source,
-        /mom_hoohash_canonical_hash\(input, candidate_nonce, hash\);[\s\S]*?if \(meets_target\(hash, target\)\)/);
+        /mom_hoohash_canonical_hash\(input, candidate_nonce, hash\);[\s\S]*?if \(mom_meets_target_le\(hash, target\)\)/);
       assert.match(source,
         /fetch_min\(static_cast<uint32_t>\(id\)\)[\s\S]*?remaining -= consumed;[\s\S]*?first_nonce = candidate_nonce \+ 1;/);
       assert.match(source,
@@ -2843,7 +2847,7 @@ int main() {
   test.describe("Equihash geometry, cache policy, and compiler scoping", {concurrency: false}, () => {
     test("BeamHash3 paired 32-bit arithmetic stays scoped to Intel oneAPI", () => {
       const binding = fs.readFileSync(path.join(__dirname, "../binding.gyp"), "utf8");
-      const source = fs.readFileSync(path.join(__dirname, "../sycl/beamhash3/common.inc"), "utf8");
+      const source = fs.readFileSync(path.join(__dirname, "../sycl/beamhash3/device.inc"), "utf8");
       assert.equal(binding.match(/MOM_BEAMHASH3_INTEL_PAIR32/g)?.length, 2);
       assert.match(binding, /"\/DMOM_BEAMHASH3_INTEL_PAIR32"/);
       assert.match(binding, /mom_sycl_impl=='dpcpp'[\s\S]*?-DMOM_BEAMHASH3_INTEL_PAIR32/);
@@ -2868,7 +2872,7 @@ int main() {
 
     test("Equihash 192,7 scopes wider first-round partitioning to HIP", () => {
       const source = fs.readFileSync(
-        path.join(__dirname, "../sycl/equihash192-7/equihash192-7-direct-session.hpp"), "utf8");
+        path.join(__dirname, "../sycl/equihash192-7/session.h"), "utf8");
       assert.match(source,
         /defined\(MOM_SYCL_HAS_HIP\)[\s\S]*?default_round0_partitions = 8;[\s\S]*?#else[\s\S]*?default_round0_partitions = 2;/);
       assert.match(source, /unsigned Round0Partitions = default_round0_partitions/);
@@ -2876,7 +2880,7 @@ int main() {
 
     test("Equihash 192,7 derives first split partitions from the active bucket width", () => {
       const source = fs.readFileSync(
-        path.join(__dirname, "../sycl/equihash192-7/equihash192-7-direct-session.hpp"), "utf8");
+        path.join(__dirname, "../sycl/equihash192-7/session.h"), "utf8");
       assert.match(source,
         /constexpr unsigned partitions = 1u << \(15 - ActiveRound1::bucket_bits\);/);
       assert.match(source,
@@ -2885,7 +2889,7 @@ int main() {
 
     test("Equihash 192,7 scopes split-record partitioning to Level Zero", () => {
       const source = fs.readFileSync(
-        path.join(__dirname, "../sycl/equihash192-7/equihash192-7-direct-session.hpp"), "utf8");
+        path.join(__dirname, "../sycl/equihash192-7/session.h"), "utf8");
       const splitOutput = source.indexOf("submit_collision_round_bucketed_split_output_partitioned");
       const start = source.lastIndexOf("if (level_zero_)", splitOutput);
       const end = source.indexOf("if (level_zero_)", splitOutput);
@@ -2903,9 +2907,9 @@ int main() {
     test("ZHash bucket tuning stays scoped to Intel oneAPI", () => {
       const binding = fs.readFileSync(path.join(__dirname, "../binding.gyp"), "utf8");
       const core = fs.readFileSync(
-        path.join(__dirname, "../sycl/zhash/equihash-core.hpp"), "utf8");
+        path.join(__dirname, "../sycl/equihash-core.h"), "utf8");
       const layout = fs.readFileSync(
-        path.join(__dirname, "../sycl/zhash/zhash-session-layout.hpp"), "utf8");
+        path.join(__dirname, "../sycl/zhash/session-layout.h"), "utf8");
       assert.equal((binding.match(/MOM_ZHASH_INTEL_LATE_BUCKETS/g) || []).length, 2);
       assert.match(binding, /"\/DMOM_ZHASH_INTEL_LATE_BUCKETS"/);
       assert.match(binding,
@@ -2968,7 +2972,7 @@ int main() {
 
     test("Equihash 192,7 scopes late-round partitioning to Level Zero", () => {
       const source = fs.readFileSync(
-        path.join(__dirname, "../sycl/equihash192-7/equihash192-7-direct-session.hpp"), "utf8");
+        path.join(__dirname, "../sycl/equihash192-7/session.h"), "utf8");
       const start = source.indexOf("submit_split_collision_round_bucketed<");
       const end = source.indexOf("#endif", start);
       const lateRounds = source.slice(start, end);
@@ -2980,14 +2984,14 @@ int main() {
     test("CN/GPU keeps Windows HIP input and output in device memory", () => {
       const state = fs.readFileSync(path.join(__dirname, "../sycl/cn-gpu/state.inc"), "utf8");
       assert.doesNotMatch(state, /mom_is_hip\(device\)/);
-      assert.match(state, /outputs = allocate<uint8_t>\([^;]*shared_io\)/);
+      assert.match(state, /outputs = mom_usm_alloc<uint8_t>\([^;]*shared_io,/);
     });
 
     test("Equihash 192,7 gates its HIP input cache on local memory", () => {
       const session = fs.readFileSync(
-        path.join(__dirname, "../sycl/equihash192-7/equihash192-7-direct-session.hpp"), "utf8");
+        path.join(__dirname, "../sycl/equihash192-7/session.h"), "utf8");
       const shared = fs.readFileSync(
-        path.join(__dirname, "../sycl/zhash/equihash-sycl.hpp"), "utf8");
+        path.join(__dirname, "../sycl/equihash-sycl.h"), "utf8");
       assert.match(shared, /bool CacheInput = false/);
       assert.match(shared, /partitioned_collision_local_bytes/);
       assert.match(session,
@@ -2998,9 +3002,9 @@ int main() {
 
     test("ZHash gates its HIP collision caches on local memory", () => {
       const session = fs.readFileSync(
-        path.join(__dirname, "../sycl/zhash/zhash-session.hpp"), "utf8");
+        path.join(__dirname, "../sycl/zhash/session.h"), "utf8");
       const shared = fs.readFileSync(
-        path.join(__dirname, "../sycl/zhash/equihash-sycl.hpp"), "utf8");
+        path.join(__dirname, "../sycl/equihash-sycl.h"), "utf8");
       assert.match(shared, /bool CacheHead = false/);
       assert.match(shared, /partitioned_split_collision_local_bytes/);
       assert.match(session,
@@ -3119,10 +3123,12 @@ int main() {
       assert.match(block,
         /if \(mom_is_cuda\(dev\) \|\| mom_is_hip\(dev\)\)\s*return 1u << 18;/);
       assert.match(block, /return 0;/);
-      const chunkGuard = state.indexOf("if (!chunk_nodes)", end);
-      const chunkWait = state.indexOf("sycl_wait_and_throw(dag_event, device);", chunkGuard);
-      const chunkAdvance = state.indexOf("start_node += current_nodes;", chunkGuard);
-      assert.ok(chunkGuard > end && chunkWait > chunkGuard && chunkAdvance > chunkWait,
+      assert.match(state, /generate_ethash_dag<\w+>\([\s\S]*?kawpow_dag_chunk_nodes\(device\)\);/);
+      const dag = fs.readFileSync(path.join(__dirname, "../sycl/ethash-dag.inc"), "utf8");
+      const chunkGuard = dag.indexOf("if (!chunk_nodes)");
+      const chunkWait = dag.indexOf("sycl_wait_and_throw(dag_event, device);", chunkGuard);
+      const chunkAdvance = dag.indexOf("start_node += current_nodes;", chunkGuard);
+      assert.ok(chunkGuard > 0 && chunkWait > chunkGuard && chunkAdvance > chunkWait,
         "chunked DAG dispatches must retire before the next chunk is recorded");
     });
 
@@ -3133,7 +3139,7 @@ int main() {
         /ensure_period_bundle\(period, epoch, dag_mod, !is_benchmark\)/);
 
       const start = state.indexOf("void ensure_period_bundle(");
-      const end = state.indexOf("\n  static uint64_t now_ms", start);
+      const end = state.indexOf("\n};", start);
       assert.ok(start >= 0 && end > start, "ProgPoW period-bundle policy must exist");
       const block = state.slice(start, end);
       assert.match(block, /const bool prefetch_next/);
@@ -3156,10 +3162,12 @@ int main() {
         "Etchash must apply the explicit override before its integrated-GPU default");
       assert.match(block, /if \(is_integrated_gpu\(dev\)\)\s*return 1u << 12;/);
       assert.match(block, /return 0;/);
-      const chunkGuard = state.indexOf("if (!chunk_nodes)", end);
-      const chunkWait = state.indexOf("sycl_wait_and_throw(dag_event, device);", chunkGuard);
-      const chunkAdvance = state.indexOf("start_node += current_nodes;", chunkGuard);
-      assert.ok(chunkGuard > end && chunkWait > chunkGuard && chunkAdvance > chunkWait,
+      assert.match(state, /generate_ethash_dag<\w+>\([\s\S]*?etchash_dag_chunk_nodes\(device\)\);/);
+      const dag = fs.readFileSync(path.join(__dirname, "../sycl/ethash-dag.inc"), "utf8");
+      const chunkGuard = dag.indexOf("if (!chunk_nodes)");
+      const chunkWait = dag.indexOf("sycl_wait_and_throw(dag_event, device);", chunkGuard);
+      const chunkAdvance = dag.indexOf("start_node += current_nodes;", chunkGuard);
+      assert.ok(chunkGuard > 0 && chunkWait > chunkGuard && chunkAdvance > chunkWait,
         "chunked Etchash DAG dispatches must retire before the next chunk is recorded");
     });
   });
@@ -3644,9 +3652,13 @@ struct Worker {
     proof = "captured-proof-" + std::to_string(found_seed);
     return proof.c_str();
   }
-  char* hash_bin2hex(const uint8_t* hash, char* hex, unsigned batch) {
-    assert(batch == 0);
-    for (unsigned i = 0; i < HASH_LEN; ++i) std::snprintf(hex + 2 * i, 3, "%02x", hash[i]);
+  std::string bin2hex(const uint8_t* hash, size_t size) {
+    std::string hex;
+    char digits[3];
+    for (size_t i = 0; i < size; ++i) {
+      std::snprintf(digits, sizeof(digits), "%02x", hash[i]);
+      hex += digits;
+    }
     return hex;
   }
   void send_msg(const std::string& name, const MessageValues& values) { sent.emplace_back(name, values); }
@@ -4112,7 +4124,7 @@ int main() {
       const library = fs.readFileSync(path.join(root, "lib-internal.h"), "utf8");
       const nexa = fs.readFileSync(path.join(root, "nexapow/sycl-pipeline.inc"), "utf8");
       const monolithic = readSyclSource(path.join(root, "nexapow/nexapow.cpp"));
-      const equi = fs.readFileSync(path.join(root, "equihash192-7/equihash192-7-direct-session.hpp"), "utf8");
+      const equi = fs.readFileSync(path.join(root, "equihash192-7/session.h"), "utf8");
       /** @param {string} source @param {string} start @param {string} end */
       const cut = (source, start, end) => {
         const a = source.indexOf(start), b = source.indexOf(end, a);
@@ -4268,10 +4280,10 @@ inline uint64_t bitselect(const uint64_t a, const uint64_t b, const uint64_t c) 
 } // namespace sycl
 
 inline constexpr unsigned cn_gpu_lanes_per_hash = 16;
-template <typename T> inline T mo_rotate(const T value, const T amount) {
+template <typename T> inline T mom_rotate(const T value, const T amount) {
   return std::rotl(value, static_cast<int>(amount & (sizeof(T) * 8 - 1)));
 }
-template <typename T> inline T mo_bitselect(const T a, const T b, const T c) {
+template <typename T> inline T mom_bitselect(const T a, const T b, const T c) {
   return (a & ~c) | (b & c);
 }
 #include "crypto.inc"
@@ -7766,8 +7778,8 @@ int main(int argc, char** argv) {
     }, () => {
       const root = path.join(__dirname, "..");
       const state = readSyclSource(path.join(root, "sycl/zhash/zhash.cpp"));
-      const session = readSyclSource(path.join(root, "sycl/zhash/zhash-session.hpp"));
-      const layout = readSyclSource(path.join(root, "sycl/zhash/zhash-session-layout.hpp"));
+      const session = readSyclSource(path.join(root, "sycl/zhash/session.h"));
+      const layout = readSyclSource(path.join(root, "sycl/zhash/session-layout.h"));
       const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-zhash-scheduling-"));
       try {
         fs.writeFileSync(path.join(fixture, "reports.inc"),
@@ -7805,7 +7817,7 @@ int main(int argc, char** argv) {
       skip: process.platform === "win32" ? "requires a POSIX host C++ compiler" : false,
     }, () => {
       const session = readSyclSource(path.join(__dirname,
-        "../sycl/equihash192-7/equihash192-7-direct-session.hpp"));
+        "../sycl/equihash192-7/session.h"));
       const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-e192-arena-selection-"));
       try {
         const source = path.join(fixture, "fixture.cpp");
@@ -7861,8 +7873,11 @@ int main(int argc, char** argv) {
           extractCppBlock(octopus, "  template <typename T> void free_ptr") + "\n" +
         extractCppBlock(octopus, "  void ensure_dag(") + "\n" +
         extractCppBlock(octopus, "  void ensure_epoch(") + "\n");
+        const hits = fs.readFileSync(path.join(root, "sycl/pow-hits.h"), "utf8");
         fs.writeFileSync(path.join(fixture, "result.inc"),
-          extractCppBlock(octopus, "struct Result {") + ";\n");
+          hits.slice(hits.indexOf("template <typename Word = uint8_t>"), hits.indexOf("// Claim the next hit slot")) +
+          hits.slice(hits.indexOf("// Copy completed hits")) + "using Result = PowHits<>;\n");
+        assert.ok(octopus.includes("using Result = PowHits<>;"));
         fs.writeFileSync(path.join(fixture, "caller.inc"), octopus.slice(callerStart));
         fs.copyFileSync(path.join(root, "sycl/octopus/validation.h"), path.join(fixture, "validation.inc"));
         fs.writeFileSync(path.join(fixture, "compute-catch.inc"), execution.slice(catchStart, catchEnd));
@@ -7908,6 +7923,7 @@ int main(int argc, char** argv) {
       const state = fs.readFileSync(path.join(root, "etchash/state.inc"), "utf8");
       const entry = fs.readFileSync(path.join(root, "etchash/etchash.cpp"), "utf8");
       const device = fs.readFileSync(path.join(root, "etchash/device.inc"), "utf8");
+      const hits = fs.readFileSync(path.join(root, "pow-hits.h"), "utf8");
       const library = fs.readFileSync(path.join(root, "lib-internal.h"), "utf8");
       /** @param {string} source @param {string} start @param {string} end */
       const extract = (source, start, end) => {
@@ -7922,15 +7938,17 @@ int main(int argc, char** argv) {
       try {
         fs.copyFileSync(path.join(__dirname, "native/etchash-probe-fault.cpp"), source);
         fs.writeFileSync(path.join(fixture, "probe.inc"),
-          extract(state, "  bool use_inline_pair()", "  explicit EtchashState("));
+          extract(state, "  bool use_inline_pair()", "  explicit State("));
         fs.writeFileSync(path.join(fixture, "result.inc"),
-          extract(device, "struct EtchashResult {", "struct Uint2 {"));
+          extract(hits, "template <typename Word = uint8_t>", "// Claim the next hit slot") +
+          hits.slice(hits.indexOf("// Copy completed hits")) +
+          extract(device, "struct EtchashResult : PowHits<> {", "struct Uint2 {"));
         fs.writeFileSync(path.join(fixture, "cleanup.inc"),
           extract(library, "inline void sycl_log_cleanup_exception(", "sycl::device get_dev("));
         fs.writeFileSync(path.join(fixture, "selection.inc"),
           extract(entry, "    sycl_wait_and_throw(\n        state.use_inline_pair()", "\n  } else {"));
         fs.writeFileSync(path.join(fixture, "commit.inc"),
-          extract(entry, "  static_assert(MAX_ETCHASH_OUTPUTS <= GPU_MAX_HITS);", "\n}"));
+          extract(entry, "  const int hits = mom_take_pow_hits", "\n}"));
         const compiled = spawnSync("c++", ["-std=c++17", "-O1", "-Wall", "-Wextra", "-Werror",
           "-pedantic", "-fsanitize=address", "-fsanitize-address-use-after-scope",
           "-fno-omit-frame-pointer", ...(process.platform === "linux" ? ["-fno-pie", "-no-pie"] : []),
@@ -8107,10 +8125,10 @@ int main(int argc, char** argv) {
       const executable = path.join(fixture, "c30_async_fault");
       try {
         fs.copyFileSync(path.join(__dirname, "native/c30-async-fault.cpp"), source);
-        fs.copyFileSync(path.join(root, "sycl/c30/c30.h"), path.join(fixture, "c30-types.inc"));
+        fs.copyFileSync(path.join(root, "sycl/c30/types.h"), path.join(fixture, "c30-types.inc"));
         fs.copyFileSync(path.join(root, "native/job-boundary.h"), path.join(fixture, "job-boundary.inc"));
         fs.writeFileSync(path.join(fixture, "solver.inc"),
-          extract(c30, "struct Solver {", "\n} // namespace mom::c30"));
+          extract(c30, "struct Solver {", "\n} // namespace mom_c30"));
         fs.writeFileSync(path.join(fixture, "entry.inc"), c30.slice(entryStart));
         fs.writeFileSync(path.join(fixture, "cleanup.inc"),
           extract(library, "inline void sycl_log_cleanup_exception(", "sycl::device get_dev("));
@@ -8121,7 +8139,7 @@ int main(int argc, char** argv) {
         fs.writeFileSync(path.join(fixture, "compute-catch.inc"), execution.slice(catchStart, catchEnd));
         fs.writeFileSync(path.join(fixture, "accounting.inc"),
           extract(execution, "      uint64_t completed = m_batch;",
-            "      if (m_dev == DEV::KAWPOW_GPU || m_dev == DEV::ETCHASH_GPU) {"));
+            "      if (m_dev == DEV::KAWPOW_GPU || m_dev == DEV::ETCHASH_GPU ||"));
         fs.writeFileSync(path.join(fixture, "nonce-commit.inc"),
           extract(execution, "      if (m_dev == DEV::C30_GPU) {", "      if (m_nonce_bytes == 4) {"));
         const compiled = spawnSync("c++", ["-std=c++17", "-O1", "-Wall", "-Wextra", "-Werror",
@@ -8371,7 +8389,7 @@ int main() {
         fs.writeFileSync(path.join(fixture, "compute-catch.inc"), execution.slice(catchStart, catchEnd));
         fs.writeFileSync(path.join(fixture, "accounting.inc"),
           extract(execution, "      uint64_t completed = m_batch;",
-            "      if (m_dev == DEV::KAWPOW_GPU || m_dev == DEV::ETCHASH_GPU) {"));
+            "      if (m_dev == DEV::KAWPOW_GPU || m_dev == DEV::ETCHASH_GPU ||"));
         const compiled = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
           "-pedantic", source, "-o", executable], {encoding: "utf8"});
         assert.equal(compiled.error, undefined);
@@ -8858,7 +8876,7 @@ int main() {
     }, async (t) => {
       const root = path.join(__dirname, "../sycl");
       const library = fs.readFileSync(path.join(root, "lib-internal.h"), "utf8");
-      const session = fs.readFileSync(path.join(root, "zhash/zhash-session.hpp"), "utf8");
+      const session = fs.readFileSync(path.join(root, "zhash/session.h"), "utf8");
       /** @param {string} source @param {string} start @param {string} end */
       const extract = (source, start, end) => {
         const first = source.indexOf(start);
@@ -8943,7 +8961,7 @@ int main() {
       skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
     }, () => {
       const root = path.join(__dirname, "../sycl"),
-        session = fs.readFileSync(path.join(root, "zhash/zhash-session.hpp"), "utf8"),
+        session = fs.readFileSync(path.join(root, "zhash/session.h"), "utf8"),
         library = fs.readFileSync(path.join(root, "lib-internal.h"), "utf8"),
         fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-zhash-host-usm-")),
         source = path.join(fixture, "host-transfer-fault.cpp");

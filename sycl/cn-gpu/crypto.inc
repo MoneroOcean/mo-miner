@@ -155,20 +155,21 @@ inline uint32_t cn_keccak_round_constant(const unsigned round, const bool high) 
 // Keep both measured Keccak forms inside the common pipeline. Width-8 Intel expansion needs the
 // uint64 SYCL intrinsics; Xe2 keeps its faster uint32 pairs, and CUDA keeps its existing builtins.
 #if !defined(MOM_SYCL_PORTABLE_OPENCL)
+// Keccak-f[1600] on 25 uint64 lanes; IntelNative64 selects the uint64 rotate form.
 template <bool IntelNative64> void keccak64(uint64_t* const s) {
   const auto rotate = [](const uint64_t value, const uint64_t amount) {
 #if !defined(MOM_SYCL_ADAPTIVECPP)
     if constexpr (IntelNative64)
       return sycl::rotate(value, amount);
 #endif
-    return mo_rotate(value, amount);
+    return mom_rotate(value, amount);
   };
   const auto bitselect = [](const uint64_t a, const uint64_t b, const uint64_t c) {
 #if !defined(MOM_SYCL_ADAPTIVECPP)
     if constexpr (IntelNative64)
       return sycl::bitselect(a, b, c);
 #endif
-    return mo_bitselect(a, b, c);
+    return mom_bitselect(a, b, c);
   };
   static const uint32_t rotc[24] = {1,  3,  6,  10, 15, 21, 28, 36, 45, 55, 2,  14,
                                     27, 41, 56, 8,  25, 43, 62, 18, 39, 61, 20, 44},
@@ -251,7 +252,7 @@ template <bool IntelNative64> void keccak64(uint64_t* const s) {
 // (the loop is fully unrolled), so each rotl64 reduces to shift+or on uint32.
 
 // rotl64(value held as lo/hi) by a compile-time amount R, 1 <= R <= 63.
-template <unsigned R> static inline void mo_rotl64_32(uint32_t& lo, uint32_t& hi) {
+template <unsigned R> static inline void rotl64_32(uint32_t& lo, uint32_t& hi) {
   if constexpr (R == 32) {
     const uint32_t t = lo;
     lo = hi;
@@ -272,11 +273,11 @@ template <unsigned R> static inline void mo_rotl64_32(uint32_t& lo, uint32_t& hi
 
 template <unsigned Position, unsigned Rotation>
 // Rotate/relocate one split lane while preserving the displaced lane for the next step.
-static inline void mo_rho_pi_32(uint32_t* const lo, uint32_t* const hi, uint32_t& tlo,
+static inline void rho_pi_32(uint32_t* const lo, uint32_t* const hi, uint32_t& tlo,
                                 uint32_t& thi) {
   const uint32_t next_lo = lo[Position], next_hi = hi[Position];
   uint32_t rotated_lo = tlo, rotated_hi = thi;
-  mo_rotl64_32<Rotation>(rotated_lo, rotated_hi);
+  rotl64_32<Rotation>(rotated_lo, rotated_hi);
   lo[Position] = rotated_lo;
   hi[Position] = rotated_hi;
   tlo = next_lo;
@@ -347,31 +348,31 @@ void keccak32(uint64_t* const s) {
     // piln = {10,7,11,17,18,3,5,16,8,21,24,4,15,23,19,13,12,2,20,14,22,9,6,1}
     // rotc = {1,3,6,10,15,21,28,36,45,55,2,14,27,41,56,8,25,43,62,18,39,61,20,44}
     uint32_t tlo = lo[1], thi = hi[1];
-    mo_rho_pi_32<10, 1>(lo, hi, tlo, thi);
-    mo_rho_pi_32<7, 3>(lo, hi, tlo, thi);
-    mo_rho_pi_32<11, 6>(lo, hi, tlo, thi);
-    mo_rho_pi_32<17, 10>(lo, hi, tlo, thi);
-    mo_rho_pi_32<18, 15>(lo, hi, tlo, thi);
-    mo_rho_pi_32<3, 21>(lo, hi, tlo, thi);
-    mo_rho_pi_32<5, 28>(lo, hi, tlo, thi);
-    mo_rho_pi_32<16, 36>(lo, hi, tlo, thi);
-    mo_rho_pi_32<8, 45>(lo, hi, tlo, thi);
-    mo_rho_pi_32<21, 55>(lo, hi, tlo, thi);
-    mo_rho_pi_32<24, 2>(lo, hi, tlo, thi);
-    mo_rho_pi_32<4, 14>(lo, hi, tlo, thi);
-    mo_rho_pi_32<15, 27>(lo, hi, tlo, thi);
-    mo_rho_pi_32<23, 41>(lo, hi, tlo, thi);
-    mo_rho_pi_32<19, 56>(lo, hi, tlo, thi);
-    mo_rho_pi_32<13, 8>(lo, hi, tlo, thi);
-    mo_rho_pi_32<12, 25>(lo, hi, tlo, thi);
-    mo_rho_pi_32<2, 43>(lo, hi, tlo, thi);
-    mo_rho_pi_32<20, 62>(lo, hi, tlo, thi);
-    mo_rho_pi_32<14, 18>(lo, hi, tlo, thi);
-    mo_rho_pi_32<22, 39>(lo, hi, tlo, thi);
-    mo_rho_pi_32<9, 61>(lo, hi, tlo, thi);
-    mo_rho_pi_32<6, 20>(lo, hi, tlo, thi);
-    mo_rho_pi_32<1, 44>(lo, hi, tlo, thi);
-    // Chi step. mo_bitselect(a,b,c) = (a & ~c) | (b & c), component-wise.
+    rho_pi_32<10, 1>(lo, hi, tlo, thi);
+    rho_pi_32<7, 3>(lo, hi, tlo, thi);
+    rho_pi_32<11, 6>(lo, hi, tlo, thi);
+    rho_pi_32<17, 10>(lo, hi, tlo, thi);
+    rho_pi_32<18, 15>(lo, hi, tlo, thi);
+    rho_pi_32<3, 21>(lo, hi, tlo, thi);
+    rho_pi_32<5, 28>(lo, hi, tlo, thi);
+    rho_pi_32<16, 36>(lo, hi, tlo, thi);
+    rho_pi_32<8, 45>(lo, hi, tlo, thi);
+    rho_pi_32<21, 55>(lo, hi, tlo, thi);
+    rho_pi_32<24, 2>(lo, hi, tlo, thi);
+    rho_pi_32<4, 14>(lo, hi, tlo, thi);
+    rho_pi_32<15, 27>(lo, hi, tlo, thi);
+    rho_pi_32<23, 41>(lo, hi, tlo, thi);
+    rho_pi_32<19, 56>(lo, hi, tlo, thi);
+    rho_pi_32<13, 8>(lo, hi, tlo, thi);
+    rho_pi_32<12, 25>(lo, hi, tlo, thi);
+    rho_pi_32<2, 43>(lo, hi, tlo, thi);
+    rho_pi_32<20, 62>(lo, hi, tlo, thi);
+    rho_pi_32<14, 18>(lo, hi, tlo, thi);
+    rho_pi_32<22, 39>(lo, hi, tlo, thi);
+    rho_pi_32<9, 61>(lo, hi, tlo, thi);
+    rho_pi_32<6, 20>(lo, hi, tlo, thi);
+    rho_pi_32<1, 44>(lo, hi, tlo, thi);
+    // Chi step. mom_bitselect(a,b,c) = (a & ~c) | (b & c), component-wise.
     for (unsigned i = 0; i < 25; i += 5) {
       const uint32_t t1lo = lo[i], t1hi = hi[i];
       const uint32_t t2lo = lo[i + 1], t2hi = hi[i + 1];

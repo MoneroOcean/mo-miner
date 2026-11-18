@@ -92,10 +92,10 @@ static sycl::event submit_fishhash_search_coop(sycl::queue& q, const uint8_t* d_
           if (team_lane == 0 && active) {
             uint8_t final_hash[32];
             blake3_dev(final_hash, 32, work, 96);
-            const bool hit = target_be ? meets_target_be_dev(final_hash, d_target)
-                                       : meets_target_le_dev(final_hash, d_target);
+            const bool hit = target_be ? mom_meets_target_be(final_hash, d_target)
+                                       : mom_meets_target_le(final_hash, d_target);
             if ((is_test && gid == 0) || hit)
-              store_fish_result(d_result, nonce, final_hash);
+              mom_store_pow_hit(d_result, nonce, final_hash);
           }
         });
   });
@@ -188,8 +188,8 @@ static sycl::event submit_karlsenhashv2_search_coop(
           if (team_lane == 0 && active) {
             uint8_t final_hash[32];
             blake3_dev(final_hash, 32, work, 32);
-            if ((is_test && gid == 0) || meets_target_le_dev(final_hash, d_target))
-              store_fish_result(d_result, nonce, final_hash);
+            if ((is_test && gid == 0) || mom_meets_target_le(final_hash, d_target))
+              mom_store_pow_hit(d_result, nonce, final_hash);
           }
         });
   });

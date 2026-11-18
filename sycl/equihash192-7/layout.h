@@ -5,7 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "../zhash/equihash-sycl.hpp"
+#include "../equihash-sycl.h"
 
 namespace mom_equihash192_7::direct {
 
@@ -161,44 +161,6 @@ template <unsigned WorkGroup, typename Layout> struct LaunchLayout : Layout {
   static constexpr unsigned collision_work_group = WorkGroup;
 };
 
-template <typename Record>
-// Expand a bounded layer of parent references; invalid slots reject the candidate before dereference.
-inline bool expand_round(const Record* const records, std::uint32_t* const current,
-                         std::uint32_t* const next, const unsigned count,
-                         const std::uint32_t capacity) {
-  for (unsigned i = 0; i < count; ++i) {
-    if (current[i] >= capacity) return false;
-    const Record& record = records[current[i]];
-    next[2 * i] = mom_equihash::load_bucket_parent(record, false);
-    next[2 * i + 1] = mom_equihash::load_bucket_parent(record, true);
-  }
-  for (unsigned i = 0; i < 2 * count; ++i) {
-    current[i] = next[i];
-  }
-  return true;
-}
-
-#ifndef MOM_SYCL_HAS_HIP
-template <typename Record>
-// Expand split-head records with the same bounds checks as packed-record recovery.
-inline bool expand_split_round(const mom_equihash::SplitRecordHead* const heads,
-                               const std::uint32_t* const tails,
-                               std::uint32_t* const current, std::uint32_t* const next,
-                               const unsigned count, const std::uint32_t capacity) {
-  static_assert(Record::word_count == 5);
-  for (unsigned i = 0; i < count; ++i) {
-    if (current[i] >= capacity) return false;
-    const Record record = mom_equihash::load_split_record<Record>(heads, tails, current[i]);
-    next[2 * i] = mom_equihash::load_bucket_parent(record, false);
-    next[2 * i + 1] = mom_equihash::load_bucket_parent(record, true);
-  }
-  for (unsigned i = 0; i < 2 * count; ++i) {
-    current[i] = next[i];
-  }
-  return true;
-}
-#endif
-
 template <typename Arena>
 class RecoverLeavesKernel;
 
@@ -230,23 +192,17 @@ inline sycl::event submit_recover_leaves(
         current[0] = mom_equihash::load_collision_left<Spec, 1>(root);
         current[1] = mom_equihash::load_collision_right<Spec, 1>(root);
         unsigned count = 2;
-        bool ok = expand_round(round6, current, next, count, slots);
-        count *= 2;
-        ok = ok && expand_round(round5, current, next, count, slots);
-        count *= 2;
-        ok = ok && expand_round(round4, current, next, count, slots);
-        count *= 2;
+        bool ok = mom_equihash::expand_recovery_round(round6, current, next, count, slots) &&
+                  mom_equihash::expand_recovery_round(round5, current, next, count, slots) &&
+                  mom_equihash::expand_recovery_round(round4, current, next, count, slots);
 #ifdef MOM_SYCL_HAS_HIP
-        ok = ok && expand_round(round3, current, next, count, slots);
+        ok = ok && mom_equihash::expand_recovery_round(round3, current, next, count, slots);
 #else
-        ok = ok && expand_split_round<typename Arena::Round3Record>(
-            round3_heads, round3_tails, current, next, count, slots);
+        ok = ok && mom_equihash::expand_split_recovery_round<typename Arena::Round3Record>(
+                       round3_heads, round3_tails, current, next, count, slots);
 #endif
-        count *= 2;
-        ok = ok && expand_round(round2, current, next, count, slots);
-        count *= 2;
-        ok = ok && expand_round(round1, current, next, count, slots);
-        count *= 2;
+        ok = ok && mom_equihash::expand_recovery_round(round2, current, next, count, slots) &&
+             mom_equihash::expand_recovery_round(round1, current, next, count, slots);
         const unsigned base = candidate * Spec::proof_indices;
         for (unsigned i = 0; i < count; ++i) {
           ok = ok && current[i] < slots;
@@ -254,17 +210,8 @@ inline sycl::event submit_recover_leaves(
             leaves[base + i] = mom_equihash::load_bucket_level0_leaf(level0[current[i]]);
           }
         }
-        for (unsigned level = 0; ok && level < Spec::k; ++level) {
-          const unsigned half = 1u << level;
-          for (unsigned begin = 0; begin < Spec::proof_indices; begin += 2 * half) {
-            if (leaves[base + begin] < leaves[base + begin + half]) continue;
-            for (unsigned i = 0; i < half; ++i) {
-              const std::uint32_t swap = leaves[base + begin + i];
-              leaves[base + begin + i] = leaves[base + begin + half + i];
-              leaves[base + begin + half + i] = swap;
-            }
-          }
-        }
+        if (ok)
+          mom_equihash::pow::canonicalize_leaves<Spec::k>(leaves + base);
         valid[candidate] = ok;
       });
 }

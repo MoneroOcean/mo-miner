@@ -1,12 +1,6 @@
 // WalaHash consensus math and packed hash primitives; included inside mom_walahash.
 #include "../blake3-device.inc"
 
-constexpr unsigned MAX_RESULTS = 15;
-struct Result {
-  uint32_t count;
-  uint64_t nonce[MAX_RESULTS];
-  uint8_t hash[MAX_RESULTS][32];
-};
 template <bool, bool> class SearchKernel;
 #ifdef WALAHASH_ESIMD
 class PrehashKernel;
@@ -323,11 +317,11 @@ template <unsigned N> inline KeccakWord keccak_rotl(KeccakWord a) {
     return {sycl::rotate(a.hi, (N + 1) / 2u), sycl::rotate(a.lo, N / 2u)};
 #else
   if constexpr ((N & 1) == 0)
-    return {mo_rotate(a.lo, static_cast<uint32_t>(N / 2u)),
-            mo_rotate(a.hi, static_cast<uint32_t>(N / 2u))};
+    return {mom_rotate(a.lo, static_cast<uint32_t>(N / 2u)),
+            mom_rotate(a.hi, static_cast<uint32_t>(N / 2u))};
   else
-    return {mo_rotate(a.hi, static_cast<uint32_t>((N + 1) / 2u)),
-            mo_rotate(a.lo, static_cast<uint32_t>(N / 2u))};
+    return {mom_rotate(a.hi, static_cast<uint32_t>((N + 1) / 2u)),
+            mom_rotate(a.lo, static_cast<uint32_t>(N / 2u))};
 #endif
 }
 // Gather alternating bits into one 32-bit half of a bit-interleaved Keccak lane.

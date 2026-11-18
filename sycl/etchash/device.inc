@@ -5,15 +5,10 @@ constexpr uint32_t ETHASH_NODE_WORDS = 16;
 constexpr uint32_t ETHASH_MIX_WORDS = ETHASH_MIX_BYTES / sizeof(uint32_t);
 constexpr uint32_t ETHASH_DATASET_PARENTS2 = 256;
 constexpr uint32_t FNV_PRIME = 0x01000193U;
-constexpr uint32_t MAX_ETCHASH_OUTPUTS = 15;
 
-// FastModData / make_fast_mod_data / fast_mod_dev are shared from lib-internal.h.
-
-struct EtchashResult {
-  uint32_t count;
-  uint64_t nonce[MAX_ETCHASH_OUTPUTS];
-  uint8_t output[MAX_ETCHASH_OUTPUTS][HASH_LEN];
-  uint8_t mix_hash[MAX_ETCHASH_OUTPUTS][HASH_LEN];
+// Target hits plus the mix hash each share submits.
+struct EtchashResult : PowHits<> {
+  uint8_t mix_hash[GPU_MAX_HITS][HASH_LEN];
 };
 
 struct Uint2 {
@@ -41,6 +36,7 @@ inline uint64_t load64_le_dev(const uint8_t* const input) {
          (static_cast<uint64_t>(load32_le_dev(input + 4)) << 32);
 }
 
+// Store a little-endian 32-bit word.
 inline void store32_le_dev(uint8_t* const output, const uint32_t value) {
   output[0] = static_cast<uint8_t>(value);
   output[1] = static_cast<uint8_t>(value >> 8);
@@ -259,7 +255,7 @@ inline void keccakf1600_pair_dev(Uint2 st[25]) {
 // (Arc B580): the pair state held live across the loop comes out 100% wrong. The permutation is
 // bit-exact in isolation, so forcing it OUT OF LINE (noinline) dodges the register-allocation
 // miscompile while keeping the fast 32-bit pair path -- ~13% faster than a scalar u64 fallback and
-// bit-exact on every IGC. Clean IGC 2.28.4-good -> 2.36.3-broken regression; see ~/bug_report5
+// bit-exact on every IGC. Clean IGC 2.28.4-good -> 2.36.3-broken regression
 // (sibling of intel-graphics-compiler#414). This out-of-line function is the always-correct reference
 // path (used by DAG-gen and by the noinline search instantiation, byte-identical to 0.7.0 codegen).
 inline __attribute__((noinline)) void keccakf1600_pair_dev(Uint2 st[25]) {
@@ -358,31 +354,14 @@ inline void keccak_256_seed_mix_pair_dev(const uint32_t seed[16], const uint32_t
   }
 }
 
-// Compare the complete hash and target as big-endian unsigned integers.
-inline bool meets_target_dev(const uint8_t output[32], const uint8_t* const target) {
-  for (unsigned i = 0; i < 32; ++i) {
-    if (output[i] == target[i])
-      continue;
-    return output[i] < target[i];
-  }
-  return true;
-}
-
-// Reserve a bounded hit slot; queue completion publishes its payload.
+// Record a target hit with its mix hash; hits past the slot capacity are dropped.
 inline void store_etchash_result(EtchashResult* const result, const uint64_t nonce,
                                  const uint8_t output[32], const uint32_t mix_hash_words[8]) {
-  using atomic_ref =
-      sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
-                       sycl::access::address_space::global_space>;
-  const uint32_t index = atomic_ref(result->count).fetch_add(1);
-  if (index >= MAX_ETCHASH_OUTPUTS)
+  const uint32_t slot = mom_store_pow_hit<uint8_t>(result, nonce, output);
+  if (slot >= GPU_MAX_HITS)
     return;
-
-  result->nonce[index] = nonce;
-  for (unsigned i = 0; i < 32; ++i)
-    result->output[index][i] = output[i];
   for (unsigned i = 0; i < 8; ++i)
-    store32_le_dev(result->mix_hash[index] + i * 4, mix_hash_words[i]);
+    store32_le_dev(result->mix_hash[slot] + i * 4, mix_hash_words[i]);
 }
 
 // Apply doubled DAG epochs after the fork while retaining pre-fork Ethash epochs.
@@ -395,27 +374,6 @@ inline uint32_t etchash_epoch(const uint32_t height) {
 // Keep the seed chain on 30,000-block epochs after DAG epochs double.
 inline uint32_t etchash_seed_epoch(const uint32_t height) {
   return height / ETHASH_EPOCH;
-}
-
-static void format_duration_ms(char* out, size_t out_size, uint64_t ms) {
-  if (ms < 1000) {
-    std::snprintf(out, out_size, "%" PRIu64 "ms", ms);
-  } else if (ms < 60000) {
-    std::snprintf(out, out_size, "%.2f s", static_cast<double>(ms) / 1000.0);
-  } else {
-    std::snprintf(out, out_size, "%.2f min", static_cast<double>(ms) / 60000.0);
-  }
-}
-
-// Build light-cache nodes from the seed epoch, which need not equal the DAG epoch.
-void compute_light_cache(std::vector<uint32_t>& cache, const uint64_t cache_bytes,
-                         const uint32_t seed_epoch) {
-  cache.assign(cache_bytes / sizeof(uint32_t), 0);
-
-  const ethash_h256_t seed = ethash_get_seedhash(seed_epoch);
-  if (!ethash_compute_cache_nodes(cache.data(), cache_bytes, &seed)) {
-    throw std::string("Can't calculate etchash light cache");
-  }
 }
 
 // Treat an all-zero pool seed as absent for height-based selection.

@@ -400,7 +400,7 @@
         "sycl/pearlhash/pearlhash.cpp",
         "sycl/c29/c29.cpp",
         "sycl/c30/c30.cpp",
-        "sycl/c30/c30-host.cpp",
+        "sycl/c30/host.cpp",
         "sycl/cn-gpu/cn-gpu.cpp",
         "sycl/kawpow/kawpow.cpp",
         "sycl/fishhash/fishhash.cpp",

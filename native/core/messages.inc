@@ -32,39 +32,15 @@ static const std::map<xmrig::ICpuInfo::MsrMod, MsrItems> msr_mods = {
   }}
 };
 
-static inline unsigned char hf_hex2bin(const char c, bool& err) {
-  if (c >= '0' && c <= '9') return c - '0';
-  if (c >= 'a' && c <= 'f') return c - 'a' + 0xA;
-  if (c >= 'A' && c <= 'F') return c - 'A' + 0xA;
-  err = true;
-  return 0;
-}
-
-bool Core::hex2bin(const char* in, unsigned int len, unsigned char* out) {
-  bool error = false;
-  for (unsigned int i = 0; i < len; ++i, ++out, in += 2) {
-    *out = (hf_hex2bin(*in, error) << 4) | hf_hex2bin(*(in + 1), error);
-    if (error) return false;
+// Lower-case hex of `size` bytes, as the controller expects for hashes, proofs and test rows.
+std::string Core::bin2hex(const uint8_t* const data, const size_t size) {
+  static constexpr char digits[] = "0123456789abcdef";
+  std::string hex(size * 2, '0');
+  for (size_t i = 0; i < size; ++i) {
+    hex[i * 2] = digits[data[i] >> 4];
+    hex[i * 2 + 1] = digits[data[i] & 0xF];
   }
-  return true;
-}
-
-static inline char hf_bin2hex(const unsigned n) {
-  return n < 10 ? '0' + n : 'a' + (n - 10);
-}
-
-char* Core::hash_bin2hex(const uint8_t* const output, char* hash, const unsigned batch) const {
-  char* hash0 = hash;
-  for (unsigned i = 0, offset = batch * HASH_LEN; i != HASH_LEN; ++i, ++offset) {
-    *hash++ = hf_bin2hex(output[offset] >> 4);
-    *hash++ = hf_bin2hex(output[offset] & 0xF);
-  }
-  *hash = 0;
-  return hash0;
-}
-
-char* Core::hash_bin2hex(char* const hash, const unsigned batch) const {
-  return hash_bin2hex(m_output, hash, batch);
+  return hex;
 }
 
 void Core::send_msg(const std::string key, const MessageValues& values) {
@@ -96,6 +72,8 @@ static std::string nonce_to_hex(const uint64_t nonce, const unsigned noncebytes)
   return hex;
 }
 
+// Send one share: nonce (plus hash, CompactSize-prefixed Equihash solution, RandomX commitment,
+// mix hash or cycle edges as present) with the current job's submit ids.
 void Core::send_result(
   const uint64_t nonce, const unsigned noncebytes, const uint8_t* const output,
   const uint32_t* const edges, const unsigned c29_proof_size,
@@ -106,29 +84,20 @@ void Core::send_result(
   values["nonce"] = nonce_to_hex(nonce, noncebytes);
 
   if (output) {
-    char hash_hex[HASH_LEN * 2 + 1];
-    values["hash"] = hash_bin2hex(output, hash_hex);
+    values["hash"] = bin2hex(output, HASH_LEN);
   }
 
   // ZIP-301 shares carry a compactSize-prefixed Equihash proof instead of a 32-byte hash.
   if (solution && solution_len) {
-    std::string solution_hex;
-    solution_hex.reserve(solution_len * 2);
-    for (unsigned i = 0; i < solution_len; ++i) {
-      solution_hex += hf_bin2hex(solution[i] >> 4);
-      solution_hex += hf_bin2hex(solution[i] & 0xF);
-    }
-    values["solution"] = solution_hex;
+    values["solution"] = bin2hex(solution, solution_len);
   }
 
   if (commitment) {
-    char commitment_hex[HASH_LEN * 2 + 1];
-    values["commitment"] = hash_bin2hex(commitment, commitment_hex);
+    values["commitment"] = bin2hex(commitment, HASH_LEN);
   }
 
   if (mix_hash) {
-    char mix_hash_hex[HASH_LEN * 2 + 1];
-    values["mix_hash"] = hash_bin2hex(mix_hash, mix_hash_hex);
+    values["mix_hash"] = bin2hex(mix_hash, HASH_LEN);
   }
 
   if (edges) {
@@ -171,6 +140,10 @@ bool Core::send_gpu_hits(
   return valid;
 }
 
+// Send each proof an Equihash solver left in m_spads as [count:u8][count * solution_size bytes].
+// ZIP-301 pools take each proof with its CompactSize length prefix (1 byte below 253, else 0xfd
+// plus a little-endian uint16); Beam takes the bare solution. A count beyond the buffer is an
+// invalid solver result and is reported instead.
 void Core::send_equihash_results(
   const uint64_t nonce, const unsigned solution_size, const bool compact_size_prefix
 ) {
@@ -205,6 +178,8 @@ void Core::send_equihash_results(
   }
 }
 
+// Report how far a pool job got so the controller can resume it later; bench/test jobs have no
+// pool ids and report nothing.
 void Core::send_last_nonce(
   const uint64_t nonce, const unsigned noncebytes, const std::string& pool_id,
   const std::string& job_id, const std::string& job_token
@@ -220,67 +195,6 @@ void Core::send_last_nonce(
   send_msg("last_nonce", result);
 }
 
-static uint64_t parse_padded_le_hex(const std::string& hex, const unsigned bytes) {
-  bool error = false;
-  uint64_t value = 0;
-  for (unsigned i = 0; i < bytes; ++i) {
-    const unsigned pos = i * 2;
-    const unsigned char byte =
-      (hf_hex2bin(pos < hex.size() ? hex[pos] : '0', error) << 4) |
-       hf_hex2bin(pos + 1 < hex.size() ? hex[pos + 1] : '0', error);
-    value |= static_cast<uint64_t>(byte) << (i * 8);
-  }
-  if (error) throw std::string("Bad target hex");
-  return value;
-}
-
-static uint64_t parse_high_target_word(const std::string& target) {
-  if (target.empty() || target.size() > HASH_LEN * 2)
-    throw std::string("Bad target hex");
-  bool error = false;
-  for (const char c : target) {
-    hf_hex2bin(c, error);
-  }
-  if (error) throw std::string("Bad target hex");
-  std::string target64 = target.substr(0, sizeof(uint64_t) * 2);
-  target64.resize(sizeof(uint64_t) * 2, '0');
-  char* end = nullptr;
-  const uint64_t value = strtoull(target64.c_str(), &end, 16);
-  if (end == target64.c_str() || *end || value == 0) throw std::string("Bad target hex");
-  return value;
-}
-
-static uint64_t parse_target_hex(const std::string& target, const bool is_kawpow_target) {
-  if (is_kawpow_target || target.size() > sizeof(uint64_t) * 2) return parse_high_target_word(target);
-
-  const uint64_t value = parse_padded_le_hex(target, target.size() <= sizeof(uint32_t) * 2 ?
-                                                    sizeof(uint32_t) : sizeof(uint64_t));
-  if (value == 0) throw std::string("Bad target hex");
-  if (target.size() > sizeof(uint32_t) * 2) return value;
-  return 0xFFFFFFFFFFFFFFFFULL / (0xFFFFFFFFULL / value);
-}
-
-static std::string strip_hex_prefix(const std::string& value) {
-  return value.starts_with("0x") || value.starts_with("0X") ? value.substr(2) : value;
-}
-
-static void parse_big_target_hex(const std::string& target, uint8_t* const out) {
-  std::string hex = strip_hex_prefix(target);
-  if (hex.empty() || hex.size() > HASH_LEN * 2 || (hex.size() & 1))
-    throw std::string("Bad target hex");
-  hex.insert(0, HASH_LEN * 2 - hex.size(), '0');
-  bool error = false;
-  uint8_t any = 0;
-  for (unsigned i = 0; i < HASH_LEN; ++i) {
-    out[i] = (hf_hex2bin(hex[i * 2], error) << 4) | hf_hex2bin(hex[i * 2 + 1], error);
-    if (error) throw std::string("Bad target hex");
-    any |= out[i];
-  }
-  if (!any) throw std::string("Bad target hex"); // reject all-zero target
-}
-
-static void free_mem(void* const mem) { _mm_free(mem); }
-
 void Core::stop_rx_threads() noexcept {
   if (m_rx_threads.empty()) {
     return;
@@ -290,10 +204,10 @@ void Core::stop_rx_threads() noexcept {
   m_rx_threads.clear();
 }
 
-void Core::destroy_rx_vms() noexcept {
-  m_vms.clear();
-}
-
+// Release worker buffers selectively for a job switch (all of them by default): a batch change
+// frees the per-batch input/output/scratch buffers, a memory-size change the large pages, and the
+// CN/RX flags their hash contexts and RandomX cache/dataset. RandomX threads and VMs stop first
+// because they reference all of these.
 void Core::free_memory(
   const bool is_batch_changed,
   const bool is_mem_size_changed,
@@ -302,7 +216,7 @@ void Core::free_memory(
 ) {
   if (is_batch_changed || is_mem_size_changed || is_free_rx) {
     stop_rx_threads();
-    destroy_rx_vms();
+    m_vms.clear();
   }
   if (is_batch_changed || is_mem_size_changed) {
     if (m_lpads) {
@@ -312,11 +226,11 @@ void Core::free_memory(
   }
   if (is_batch_changed) {
     if (m_input) {
-      free_mem(m_input);
+      _mm_free(m_input);
       m_input = nullptr;
     }
     if (m_output) {
-      free_mem(m_output);
+      _mm_free(m_output);
       m_output = nullptr;
     }
   }
@@ -329,7 +243,7 @@ void Core::free_memory(
   }
   if (is_batch_changed || is_free_cn) {
     if (m_spads) {
-      free_mem(m_spads);
+      _mm_free(m_spads);
       m_spads = nullptr;
     }
   }

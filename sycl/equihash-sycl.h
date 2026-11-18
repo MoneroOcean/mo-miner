@@ -2,7 +2,8 @@
 
 #include <sycl/sycl.hpp>
 
-#include "equihash-core.hpp"
+#include "equihash-core.h"
+#include "equihash-pow.h"
 
 namespace mom_equihash {
 
@@ -129,6 +130,7 @@ inline bool bucket_parents_overlap(
   return a_left == b_left || a_left == b_right || a_right == b_left || a_right == b_right;
 }
 
+// Store a collision with absolute parent slots (bucket * input_slots + local slot).
 template <typename Spec, unsigned FieldCount>
 inline void store_bucket_output(PackedCollisionRecord<Spec, FieldCount>& record,
                                 const std::uint32_t fields[FieldCount],
@@ -138,6 +140,7 @@ inline void store_bucket_output(PackedCollisionRecord<Spec, FieldCount>& record,
   store_collision(record, fields, base + left_slot, base + right_slot);
 }
 
+// Store a collision with bucket-relative parent references; input_slots is implied by the record.
 template <typename Spec, unsigned FieldCount, unsigned LocalBits, unsigned ParentBucketBits,
           unsigned ParentSlots>
 inline void store_bucket_output(
@@ -424,11 +427,7 @@ inline sycl::event submit_generation_bucketed_full(
                                       sycl::memory_scope::device,
                                       sycl::access::address_space::global_space>;
   constexpr std::size_t work_group = 512;
-#ifdef MOM_EQUIHASH_GENERATION_WORKERS
-  constexpr std::size_t global = MOM_EQUIHASH_GENERATION_WORKERS;
-#else
   constexpr std::size_t global = 2097152;
-#endif
   static_assert(global % work_group == 0);
   return queue.parallel_for<GenerateBucketedFullKernel<Spec, Layout>>(
       sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(work_group)),
@@ -1501,37 +1500,17 @@ inline sycl::event submit_sum_bucket_counts(sycl::queue& queue,
 
 template <typename Spec, typename Round2, typename Round3, typename Round4>
 class RecoverRootLeavesKernel;
-// Expand one absolute-reference provenance layer after checking each record slot.
-template <typename Spec, unsigned FieldCount>
-inline bool expand_recovery_round(const PackedCollisionRecord<Spec, FieldCount>* records,
-                                  std::uint32_t* current, std::uint32_t* next,
-                                  unsigned& count, const std::uint32_t arena_capacity) {
+// Expand one provenance layer: replace each of `count` record slots by its two parent references,
+// doubling `count`. A slot outside the arena rejects the candidate before it is dereferenced.
+template <typename Record>
+inline bool expand_recovery_round(const Record* records, std::uint32_t* current,
+                                  std::uint32_t* next, unsigned& count,
+                                  const std::uint32_t arena_capacity) {
   for (unsigned i = 0; i < count; ++i) {
     if (current[i] >= arena_capacity) return false;
-    const auto& record = records[current[i]];
-    next[2 * i] = load_collision_left<Spec, FieldCount>(record);
-    next[2 * i + 1] = load_collision_right<Spec, FieldCount>(record);
-  }
-  count *= 2;
-  for (unsigned i = 0; i < count; ++i) {
-    current[i] = next[i];
-  }
-  return true;
-}
-
-// Expand bucket-relative parent references with the same slot bounds as absolute recovery.
-template <typename Spec, unsigned FieldCount, unsigned LocalBits, unsigned ParentBucketBits,
-          unsigned ParentSlots>
-inline bool expand_recovery_round(
-    const PackedBucketCollisionRecord<Spec, FieldCount, LocalBits, ParentBucketBits, ParentSlots>*
-        records,
-    std::uint32_t* current, std::uint32_t* next, unsigned& count,
-    const std::uint32_t arena_capacity) {
-  for (unsigned i = 0; i < count; ++i) {
-    if (current[i] >= arena_capacity) return false;
-    const auto& record = records[current[i]];
-    next[2 * i] = load_bucket_collision_parent(record, false);
-    next[2 * i + 1] = load_bucket_collision_parent(record, true);
+    const Record& record = records[current[i]];
+    next[2 * i] = load_bucket_parent(record, false);
+    next[2 * i + 1] = load_bucket_parent(record, true);
   }
   count *= 2;
   for (unsigned i = 0; i < count; ++i) {
@@ -1596,18 +1575,8 @@ inline sycl::event submit_recover_root_leaves(
             leaves[candidate * Spec::proof_indices + i] = load_bucket_level0_leaf(record);
           }
         }
-        const unsigned base = candidate * Spec::proof_indices;
-        for (unsigned level = 0; ok && level < Spec::k; ++level) {
-          const unsigned half = 1u << level;
-          for (unsigned begin = 0; begin < Spec::proof_indices; begin += 2 * half) {
-            if (leaves[base + begin] < leaves[base + begin + half]) continue;
-            for (unsigned i = 0; i < half; ++i) {
-              const std::uint32_t swap = leaves[base + begin + i];
-              leaves[base + begin + i] = leaves[base + begin + half + i];
-              leaves[base + begin + half + i] = swap;
-            }
-          }
-        }
+        if (ok)
+          pow::canonicalize_leaves<Spec::k>(leaves + candidate * Spec::proof_indices);
         valid[candidate] = ok;
       });
 }
@@ -1638,12 +1607,7 @@ inline sycl::event submit_verify_recovered_leaves(
         const unsigned candidate = candidate_begin + static_cast<unsigned>(id[0]);
         if (candidate >= candidate_count[0] || !valid[candidate]) return;
         const unsigned leaf_base = candidate * Spec::proof_indices;
-        bool ok = true;
-        for (unsigned i = 0; ok && i < Spec::proof_indices; ++i)
-          for (unsigned j = 0; j < i; ++j)
-            if (leaves[leaf_base + i] == leaves[leaf_base + j]) {
-              ok = false;
-            }
+        bool ok = pow::leaves_distinct(leaves + leaf_base, Spec::proof_indices);
         for (unsigned level = 0; ok && level < Spec::k; ++level) {
           const unsigned half = 1u << level, step = 2u * half;
           const unsigned active_fields = Spec::rounds - level;

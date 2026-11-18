@@ -16,6 +16,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <utility>
 
 #if defined(_MSC_VER)
 #include <intrin.h>
@@ -148,7 +149,7 @@ using MomExecutableKernelBundle = sycl::kernel_bundle<sycl::bundle_state::execut
 // Thin wrappers kept for call-site readability. Clang's rotate builtins are available in every
 // compiler used here and lower to the native funnel-shift/rotate instruction. The portable profile
 // deliberately keeps its volatile expression so the SPIR-V translator cannot recreate llvm.fshl.
-template <typename T> inline T mo_rotate(const T x, const T n) {
+template <typename T> inline T mom_rotate(const T x, const T n) {
   if constexpr (mom_sycl_portable_opencl) {
     constexpr T bits = sizeof(T) * 8;
     const T shift = n & (bits - 1);
@@ -163,12 +164,12 @@ template <typename T> inline T mo_rotate(const T x, const T n) {
     return static_cast<T>(__builtin_rotateleft64(static_cast<uint64_t>(x),
                                                  static_cast<uint64_t>(n)));
 }
-template <typename T> inline T mo_bitselect(const T a, const T b, const T c) {
+template <typename T> inline T mom_bitselect(const T a, const T b, const T c) {
   return (a & ~c) | (b & c);
 }
 // offset is in units of N elements (matching the SYCL vec load/store contract).
 template <typename VecT, typename T>
-inline void mo_vec_load(VecT& v, const size_t offset, const T* const p) {
+inline void mom_vec_load(VecT& v, const size_t offset, const T* const p) {
   if constexpr (mom_sycl_adaptivecpp)
     for (size_t i = 0; i < v.size(); ++i) {
       v[i] = p[offset * v.size() + i];
@@ -176,9 +177,9 @@ inline void mo_vec_load(VecT& v, const size_t offset, const T* const p) {
   else
     v.load(offset, p);
 }
-// Mirror mo_vec_load's vector-sized offset on runtimes without compatible vec::store support.
+// Mirror mom_vec_load's vector-sized offset on runtimes without compatible vec::store support.
 template <typename VecT, typename T>
-inline void mo_vec_store(const VecT& v, const size_t offset, T* const p) {
+inline void mom_vec_store(const VecT& v, const size_t offset, T* const p) {
   if constexpr (mom_sycl_adaptivecpp)
     for (size_t i = 0; i < v.size(); ++i) {
       p[offset * v.size() + i] = v[i];
@@ -187,17 +188,21 @@ inline void mo_vec_store(const VecT& v, const size_t offset, T* const p) {
     v.store(offset, p);
 }
 
-// Set a SYCL runtime option from the compute thread while other threads may call getenv. Skip
-// unchanged values; create_worker reserved environment capacity on the loop thread, so the first
-// new name fills that slot instead of reallocating the array under a reader.
-inline void set_sycl_env(const char* name, const char* value) {
-  const char* const current = std::getenv(name);
+// Publish an algorithm's DPC++ program build options. DPC++ reads SYCL_PROGRAM_COMPILE_OPTIONS once,
+// at the process's first program build, and an empty value would override every image's own
+// options (large GRF, ESIMD), so an empty request leaves the variable alone. Call only from
+// sycl_set_compile_options() on the worker's loop thread before its compute thread exists: setenv
+// may reallocate the environment under concurrent readers.
+inline void mom_set_compile_options_env(const char* const value) {
+  if (!value || !*value)
+    return;
+  const char* const current = std::getenv("SYCL_PROGRAM_COMPILE_OPTIONS");
   if (current && std::strcmp(current, value) == 0)
     return;
 #ifdef _WIN32
-  _putenv_s(name, value);
+  _putenv_s("SYCL_PROGRAM_COMPILE_OPTIONS", value);
 #else
-  setenv(name, value, 1);
+  setenv("SYCL_PROGRAM_COMPILE_OPTIONS", value, 1);
 #endif
 }
 
@@ -365,7 +370,7 @@ inline bool mom_is_opencl(const sycl::device& device) {
 // Keep portable/nightly ESIMD products in supported widths: LLVM's high-product
 // recognition can otherwise form unsupported i128 SPIR-V. Intel's frontend must
 // retain its original wide product; the narrowed ESIMD form miscomputes on DG2.
-inline uint64_t mo_mul_wide_u32(const uint32_t a, const uint32_t b) {
+inline uint64_t mom_mul_wide_u32(const uint32_t a, const uint32_t b) {
 #if defined(MOM_SYCL_PORTABLE_OPENCL) || \
     (defined(MOM_XELISHASHV3_ESIMD) && !defined(__INTEL_LLVM_COMPILER))
   const uint32_t a0 = static_cast<uint16_t>(a), a1 = a >> 16,
@@ -378,12 +383,12 @@ inline uint64_t mo_mul_wide_u32(const uint32_t a, const uint32_t b) {
 }
 
 // Return the upper product half, retaining carries on runtimes without a usable 64-bit mul_hi.
-inline uint64_t mo_mul_hi_u64(const uint64_t a, const uint64_t b) {
+inline uint64_t mom_mul_hi_u64(const uint64_t a, const uint64_t b) {
 #if defined(MOM_SYCL_ADAPTIVECPP) || defined(MOM_SYCL_PORTABLE_OPENCL)
   const uint32_t a0 = static_cast<uint32_t>(a), a1 = a >> 32,
                  b0 = static_cast<uint32_t>(b), b1 = b >> 32;
-  const uint64_t p0 = mo_mul_wide_u32(a0, b0), p1 = mo_mul_wide_u32(a0, b1),
-                 p2 = mo_mul_wide_u32(a1, b0), p3 = mo_mul_wide_u32(a1, b1);
+  const uint64_t p0 = mom_mul_wide_u32(a0, b0), p1 = mom_mul_wide_u32(a0, b1),
+                 p2 = mom_mul_wide_u32(a1, b0), p3 = mom_mul_wide_u32(a1, b1);
   const uint64_t carry = (p0 >> 32) + static_cast<uint32_t>(p1) + static_cast<uint32_t>(p2);
   return p3 + (p1 >> 32) + (p2 >> 32) + (carry >> 32);
 #else
@@ -455,7 +460,7 @@ inline unsigned sycl_default_workgroup(
 struct FastModData { uint32_t reciprocal, increment, shift, divisor; };
 
 // Count leading zeroes for a nonzero host value; zero is excluded by make_fast_mod_data.
-inline uint32_t clz32_host(const uint32_t value) {
+inline uint32_t mom_clz32(const uint32_t value) {
 #if defined(_MSC_VER)
   unsigned long index;
   _BitScanReverse(&index, value);
@@ -473,9 +478,9 @@ inline FastModData make_fast_mod_data(const uint32_t divisor) {
   data.divisor = divisor;
   if ((divisor & (divisor - 1U)) == 0) {  // power of two: exact shift, reciprocal 1
     data.reciprocal = 1;
-    data.shift = 31U - clz32_host(divisor);
+    data.shift = 31U - mom_clz32(divisor);
   } else {
-    data.shift = 63U - clz32_host(divisor);
+    data.shift = 63U - mom_clz32(divisor);
     const uint64_t n = 1ULL << data.shift;
     const uint64_t q = n / divisor;
     const uint64_t r = n - q * divisor;
@@ -491,7 +496,7 @@ inline FastModData make_fast_mod_data(const uint32_t divisor) {
 }
 
 // Align a range upward without wrapping either uint64_t arithmetic or the host's size_t.
-inline size_t round_up_size(const uint64_t value, const uint64_t step) {
+inline size_t mom_round_up_size(const uint64_t value, const uint64_t step) {
   const uint64_t maximum = std::numeric_limits<size_t>::max();
   if (!step || step > maximum || value > maximum - (step - 1))
     throw std::string("SYCL range is too large");
@@ -587,3 +592,69 @@ public:
 };
 
 sycl::device get_dev(const std::string& dev_str);
+
+// Own one USM allocation and free it on the queue that made it. The owner must keep that queue
+// alive for longer (declare UsmPtr members after the queue) and retire kernels using the storage
+// first. Teardown never throws: a failed free is reported only under MOM_SYCL_CLEANUP_DEBUG.
+// Converts implicitly to the raw pointer that kernels capture and runtime calls take.
+template <typename T>
+class UsmPtr {
+  T* pointer_ = nullptr;
+  sycl::queue* queue_ = nullptr;
+
+public:
+  UsmPtr() = default;
+  UsmPtr(T* const pointer, sycl::queue& queue) noexcept : pointer_(pointer), queue_(&queue) {}
+  UsmPtr(UsmPtr&& other) noexcept
+      : pointer_(std::exchange(other.pointer_, nullptr)), queue_(other.queue_) {}
+  UsmPtr& operator=(UsmPtr&& other) noexcept {
+    if (this != &other) {
+      reset();
+      pointer_ = std::exchange(other.pointer_, nullptr);
+      queue_ = other.queue_;
+    }
+    return *this;
+  }
+  UsmPtr(const UsmPtr&) = delete;
+  UsmPtr& operator=(const UsmPtr&) = delete;
+  ~UsmPtr() { reset(); }
+
+  void reset() noexcept {
+    if (!pointer_)
+      return;
+    T* const pointer = std::exchange(pointer_, nullptr);
+    sycl_cleanup_noexcept("USM free", [&] { sycl::free(pointer, *queue_); });
+  }
+
+  T* get() const noexcept { return pointer_; }
+  T* operator->() const noexcept { return pointer_; }
+  operator T*() const noexcept { return pointer_; }
+};
+
+// Allocate `count` elements of shared or device USM on `queue`; a null result throws `failure`.
+template <typename T>
+UsmPtr<T> mom_usm_alloc(sycl::queue& queue, const size_t count, const bool shared,
+                        const char* const failure) {
+  T* const pointer =
+      shared ? sycl::malloc_shared<T>(count, queue) : sycl::malloc_device<T>(count, queue);
+  if (!pointer)
+    throw std::string(failure);
+  return UsmPtr<T>(pointer, queue);
+}
+
+// Monotonic milliseconds for host-side progress and profiling logs.
+inline uint64_t mom_now_ms() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
+// Format a log duration in ms, seconds or minutes, whichever reads best.
+inline void mom_format_duration_ms(char* const out, const size_t out_size, const uint64_t ms) {
+  if (ms < 1000)
+    std::snprintf(out, out_size, "%llums", static_cast<unsigned long long>(ms));
+  else if (ms < 60000)
+    std::snprintf(out, out_size, "%.2f s", static_cast<double>(ms) / 1000.0);
+  else
+    std::snprintf(out, out_size, "%.2f min", static_cast<double>(ms) / 60000.0);
+}

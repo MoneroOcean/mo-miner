@@ -15,12 +15,9 @@ struct PearlHashCudaSearch {
   bool packed = false;
   unsigned stats_printed = 0;
 
+  // Mirrors the stub in cuda-jit.inc, which reports false in workers without the CUDA JIT.
   static bool is_cuda(const sycl::device& device) {
-#if defined(MOM_SYCL_ADAPTIVECPP)
-    return device.get_backend() == sycl::backend::cuda;
-#else
-    return device.get_backend() == sycl::backend::ext_oneapi_cuda;
-#endif
+    return mom_is_cuda(device);
   }
   static CUdevice native_device(const sycl::device& device) {
 #if defined(MOM_SYCL_ADAPTIVECPP)
@@ -62,6 +59,7 @@ struct PearlHashCudaSearch {
 #if !defined(MOM_EMBEDDED_CUDA_IMAGES)
   // Discovery and dispatch share dependency and resource admission.
 #if defined(MOM_EMBEDDED_NVRTC_HEADERS)
+  // Embedded CUDA/CUTLASS/CCCL headers for NVRTC; throws if a required root header is missing.
   static const mom::JitHeaders& compiler_headers() {
     // Decode once, keep all NVRTC header pointers alive, and never consult an installed SDK.
     static const mom::JitHeaders headers(embedded_resource("jit-headers.gz"), kJitHeadersSize);
@@ -71,6 +69,8 @@ struct PearlHashCudaSearch {
     return headers;
   }
 #else
+  // Locate installed CUDA runtime, CUTLASS and CCCL include roots (environment overrides first);
+  // throws when any is missing so callers keep the SYCL route.
   static std::array<std::filesystem::path, 3> compiler_headers() {
     std::vector<std::filesystem::path> cuda_candidates;
     if (const char* path = std::getenv("CUDA_PATH"); path && *path)
@@ -125,6 +125,8 @@ struct PearlHashCudaSearch {
 #endif
 #endif
 
+  // The compact kernel needs 32-lane warps, 256-thread CTAs, 98 KiB opt-in shared memory and the
+  // full 255-register budget per thread; throws otherwise.
   static void require_compact_resources(PearlHashCudaDriverApi& driver, CUdevice device) {
     const auto limit = [&](const CUdevice_attribute attribute, const int required) {
       int value = 0;
@@ -142,6 +144,7 @@ struct PearlHashCudaSearch {
   }
 
 #if defined(MOM_EMBEDDED_CUDA_IMAGES)
+  // Admit the compact route only on sm120 with its block resources; throws otherwise.
   static void require_compact(PearlHashCudaDriverApi& driver, CUdevice device,
                               int capability_major, int capability_minor) {
     // Build-time producer qualification guarantees the embedded sm120a image came from NVRTC 13.3+.
@@ -150,6 +153,7 @@ struct PearlHashCudaSearch {
     require_compact_resources(driver, device);
   }
 #else
+  // Admit the compact route only on sm120 with its block resources; throws otherwise.
   static void require_compact(PearlHashCudaDriverApi& driver, PearlHashNvrtcApi& rtc,
                               CUdevice device, int capability_major, int capability_minor,
                               int& compiler_major, int& compiler_minor) {
@@ -165,6 +169,7 @@ struct PearlHashCudaSearch {
     require_compact_resources(driver, device);
   }
 
+  // Newest NVRTC-supported architecture not above the device's; 0 when none qualifies.
   static int compiler_arch(PearlHashNvrtcApi& rtc, const int device_arch) {
     int arch_count = 0;
     nvrtcResult arch_status = rtc.get_num_supported_archs(&arch_count);
@@ -527,12 +532,19 @@ struct PearlHashCudaSearch {
     if (compact) {
       if (!compact_private::selected(m,n,k,128))
         throw std::string("Compact shape changed after admission");
-      void* source=b.Ap;void* packed=b.Bp;
-      unsigned count=static_cast<unsigned>(k);
-      void* prepare_args[]={&source,&packed,&count};
-      void* eal=b.EAL;void* ebr=b.EBRt;
-      void* unused_a=b.EARp2;void* unused_b=b.EBLq1;void* unused_c=b.EBLq2;
-      void* no_transcript=nullptr;int row_offset=0;
+      // The selector kernel rewrites the packed selectors from Ap into Bp; the fused solver reads
+      // them there. Its three compatibility slots and transcript output are unused here.
+      void* source = b.Ap;
+      void* packed = b.Bp;
+      unsigned count = static_cast<unsigned>(k);
+      void* prepare_args[] = {&source, &packed, &count};
+      void* eal = b.EAL;
+      void* ebr = b.EBRt;
+      void* unused_a = b.EARp2;
+      void* unused_b = b.EBLq1;
+      void* unused_c = b.EBLq2;
+      void* no_transcript = nullptr;
+      int row_offset = 0;
       uint32_t b_seed=b.fixed_b_seed;
       void* args[]={&eal,&ebr,&packed,&unused_a,&unused_b,&unused_c,&seed,&b_seed,
                     &m,&n,&k,&no_transcript,&key,&target,&result,&row_offset,&debug_int};

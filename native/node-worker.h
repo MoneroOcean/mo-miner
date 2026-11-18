@@ -64,6 +64,8 @@ private:
     return callback;
   }
 
+  // Thread-safe-function callback on the JS thread: take ownership of one queued worker event and
+  // invoke the matching JS callback (progress, error or complete). Teardown calls carry no env.
   static void call_event(napi_env env, napi_value, void* context, void* data) {
     std::unique_ptr<CallbackEvent> event(static_cast<CallbackEvent*>(data));
     if (!env || !context || !event) {
@@ -242,6 +244,7 @@ class AsyncWorkerWrapper {
     }
   }
 
+  // JS sendToCpp(name, values?): validate and convert the message, then post it to the worker.
   static napi_value sendToCpp(napi_env env, napi_callback_info info) {
     try {
       debug_async_worker("sendToCpp entered");

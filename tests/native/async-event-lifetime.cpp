@@ -70,14 +70,14 @@ struct queue {
 };
 }
 static void sycl_wait_and_throw(const sycl::event&, const sycl::device&) { pool.complete(); }
-struct Result {};
+template <typename = uint8_t> struct PowHits {};
 struct State {
   sycl::queue queue;
   sycl::device device;
   const uint8_t* input = nullptr;
   uint64_t* scratch = nullptr;
   const uint8_t* target = nullptr;
-  Result* result = nullptr;
+  PowHits<>* result = nullptr;
   const double* lut = nullptr;
   bool profile = false;
   unsigned profile_reports = 8; // Do not emit ordinary profiling chatter from the fixture.
@@ -85,7 +85,9 @@ struct State {
 #include "xelis-search.inc"
 
 constexpr unsigned NBUCKETS = 1;
-struct ZelHashState {
+// ZelHash names its state State, like the XelisHashV3 mock above; keep them apart.
+namespace zelhash {
+struct State {
   sycl::queue queue;
   sycl::device device;
   uint32_t storage[5]{};
@@ -96,14 +98,15 @@ struct ZelHashState {
   unsigned slot_capacity = 1;
   bool gpu_compact = true;
   static constexpr unsigned CAND_CAP = 1;
-  static uint64_t now_ms() { return 0; }
 };
+static uint64_t mom_now_ms() { return 0; }
 template <unsigned Round, bool Compact, class... Arguments>
 static sycl::event submit_round(sycl::queue& queue, Arguments...) {
   static const char* names[] = {"r0", "r1", "r2", "r3"};
   return queue.submit(names[Round]);
 }
 #include "zel-rounds.inc"
+} // namespace zelhash
 
 static bool check(const std::vector<std::string>& expected, unsigned waits, bool hazardous) {
   if (pool.order != expected || pool.waits != waits ||
@@ -132,7 +135,7 @@ static bool xelis(bool profile, bool esimd, bool fp64) {
 static bool zel(bool wait_stages, bool compact) {
   pool = {};
   {
-    ZelHashState state;
+    zelhash::State state;
     state.gpu_compact = compact;
     unsigned wg = 1;
     bool prof = wait_stages;
