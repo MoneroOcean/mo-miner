@@ -4806,7 +4806,7 @@ function windowsNativeLlvmDescriptorCiStatePaths(environment = process.env, plat
 function windowsNativeLlvmDescriptorCiPreflight(args, environment = process.env, platform = process.platform, architecture = process.arch, nowMs = Date.now()) {
   if (args.length !== 2) {throw new Error("Windows LLVM descriptor stage needs one input JSON and its SHA-256 pin");}
   const state = windowsNativeLlvmDescriptorCiStatePaths(environment, platform, architecture),
-    reports = windowsNativeLlvmCiReports(environment), budget = windowsNativeLlvmCiDeadlineBudget(state.deadlineEpoch, "configure", nowMs, state.runDeadlineEpoch || ""),
+    reports = windowsNativeLlvmCiReports(environment), budget = windowsNativeLlvmCiDeadlineBudget(state.deadlineEpoch, "configure", nowMs, state.runDeadlineEpoch),
     inputFile = args[0] || "", inputSha256 = args[1] || "";
   if (!/^[a-f0-9]{64}$/.test(inputSha256) || !path.isAbsolute(inputFile) || /[\r\n\0]/.test(inputFile) ||
       !windowsNativeLlvmCiContains(state.runnerTemp, inputFile) || path.resolve(fs.realpathSync(inputFile)) !== path.resolve(inputFile)) {
@@ -4879,7 +4879,7 @@ function buildWindowsNativeLlvmDescriptorCi(args, environment = process.env, pla
     if (!isDeepStrictEqual(currentTools, toolIdentities)) {throw new Error("Windows LLVM descriptor tool identity changed during production");}
   };
   verifyInputs();
-  windowsNativeLlvmCiDeadlineBudget(state.deadlineEpoch, "configure", Date.now(), state.runDeadlineEpoch || "");
+  windowsNativeLlvmCiDeadlineBudget(state.deadlineEpoch, "configure", Date.now(), state.runDeadlineEpoch);
   const descriptorBytes = Buffer.from(JSON.stringify(composed.descriptor, null, 2) + "\n"), descriptorSha256 = createHash("sha256").update(descriptorBytes).digest("hex"),
     provenance = {version: 1, format: "mom-windows-llvm21-descriptor-ci-v1", status: "PASS", runAttempt: state.suffix,
       deadlineEpoch: state.deadlineEpoch, buildOnly: true, compiled: false, executed: false, publicationQualified: false,
@@ -4891,14 +4891,14 @@ function buildWindowsNativeLlvmDescriptorCi(args, environment = process.env, pla
   fs.writeFileSync(state.provenanceOutput, provenanceBytes, {flag: "wx", mode: 0o444});
   const verified = composer(input);
   verifyInputs();
-  windowsNativeLlvmCiDeadlineBudget(state.deadlineEpoch, "configure", Date.now(), state.runDeadlineEpoch || "");
+  windowsNativeLlvmCiDeadlineBudget(state.deadlineEpoch, "configure", Date.now(), state.runDeadlineEpoch);
   if (!isDeepStrictEqual(verified, composed) || fileHash(state.descriptorOutput) !== descriptorSha256 ||
       fileHash(state.provenanceOutput) !== createHash("sha256").update(provenanceBytes).digest("hex")) {
     throw new Error("Windows LLVM descriptor source, tool or retained output changed during production");
   }
   const values = {windows_llvm_descriptor_path: state.descriptorOutput, windows_llvm_descriptor_sha256: descriptorSha256,
     windows_llvm_descriptor_provenance_path: state.provenanceOutput, windows_llvm_descriptor_provenance_sha256: fileHash(state.provenanceOutput)};
-  windowsNativeLlvmCiDeadlineBudget(state.deadlineEpoch, "outputs", Date.now(), state.runDeadlineEpoch || "");
+  windowsNativeLlvmCiDeadlineBudget(state.deadlineEpoch, "outputs", Date.now(), state.runDeadlineEpoch);
   for (const report of reports) {verifyWindowsNativeLlvmCiReport(report);}
   appendWorkflowOutputs(environment, values);
   fs.appendFileSync(environment["GITHUB_STEP_SUMMARY"] || "", `### Windows LLVM 21 descriptor inputs\n- Same-run descriptor: ${state.descriptorOutput} (SHA-256 ${descriptorSha256}).\n` +
@@ -5187,7 +5187,7 @@ const windowsNativeLlvmPackReserveMs = 60 * 1000, windowsNativeLlvmMinPhaseMs = 
   windowsNativeLlvmMaxChildMs = 45 * 60 * 1000, windowsNativeLlvmMaxJobMs = 60 * 60 * 1000,
   windowsNativeLlvmMaxRunMs = 8 * 60 * 60 * 1000;
 
-/** The opt-in run deadline is set before configure and must not be recreated by a later job.
+/** The run deadline is set before configure and must not be recreated by a later job.
  * @param {string} epoch @param {number} [nowMs] */
 function windowsNativeLlvmCiRunDeadlineBudget(epoch, nowMs = Date.now()) {
   if (!/^\d{10}$/.test(epoch) || !Number.isSafeInteger(nowMs) || nowMs < 0) {
@@ -5227,7 +5227,7 @@ function windowsNativeLlvmCiDeadlineBudget(epoch, phase, nowMs = Date.now(), run
 }
 
 /** @typedef {{suffix:string, runnerTemp:string, root:string, output:string, descriptor:string, deadlineRecord:string, result:string,
- * deadlineEpoch:string, jobId?:string, runDeadlineEpoch?:string, runDeadlineRecord?:string}} WindowsNativeLlvmCiState */
+ * deadlineEpoch:string, jobId:string, runDeadlineEpoch:string, runDeadlineRecord:string}} WindowsNativeLlvmCiState */
 
 /** Fixed same-run paths keep the builder's absolute receipts valid for each in-job phase call.
  * @param {NodeJS.ProcessEnv} [environment] @param {NodeJS.Platform} [platform] @param {string} [architecture]
@@ -5240,70 +5240,54 @@ function windowsNativeLlvmCiStatePaths(environment = process.env, platform = pro
       environment["MOM_AOT_BUILD_ONLY"] !== "1" || environment["MOM_BUILD_JOBS"] !== "2") {
     throw new Error("Windows LLVM CI needs a Linux x64 runner, exact run attempt, build-only mode and two jobs");
   }
-  if (runDeadlineEpoch && !/^[A-Za-z0-9_-]{1,64}$/.test(jobId)) {
-    throw new Error("Windows LLVM cross-job mode needs a safe bounded GITHUB_JOB identity");
+  if (!runDeadlineEpoch || !/^[A-Za-z0-9_-]{1,64}$/.test(jobId)) {
+    throw new Error("Windows LLVM CI needs its original run deadline and a safe bounded GITHUB_JOB identity");
   }
   const canonicalTemp = fs.realpathSync(runnerTemp), suffix = run + "-" + attempt,
     root = path.join(temp, "mom-native-windows-llvm21-" + suffix), output = path.join(root, "output"),
-    descriptor = path.join(root, "descriptor.json"), deadlineRecord = path.join(root, "ci-deadline.json");
+    descriptor = path.join(root, "descriptor.json");
   if (canonicalTemp !== path.resolve(runnerTemp) || !fs.lstatSync(canonicalTemp).isDirectory() ||
       fs.realpathSync(temp) !== temp || environment["MOM_NATIVE_WINDOWS_LLVM_DIR"] !== root ||
       path.dirname(root) !== temp || path.resolve(root) !== root) {
     throw new Error("Windows LLVM CI paths must match the exact run-attempt plan");
   }
-  const state = {suffix, runnerTemp: canonicalTemp, root, output, descriptor, deadlineRecord,
-    result: path.join(output, "result.json"), deadlineEpoch: environment["MOM_NATIVE_WINDOWS_LLVM_DEADLINE_EPOCH"] || ""};
-  return runDeadlineEpoch ? {...state, jobId, runDeadlineEpoch,
-    deadlineRecord: path.join(root, "ci-job-deadline-" + jobId + ".json"),
-    runDeadlineRecord: path.join(root, "ci-run-deadline.json")} : state;
+  return {suffix, runnerTemp: canonicalTemp, root, output, descriptor, result: path.join(output, "result.json"),
+    deadlineEpoch: environment["MOM_NATIVE_WINDOWS_LLVM_DEADLINE_EPOCH"] || "", jobId, runDeadlineEpoch,
+    deadlineRecord: path.join(root, "ci-job-deadline-" + jobId + ".json"), runDeadlineRecord: path.join(root, "ci-run-deadline.json")};
 }
 
-/** Bind all phase calls to the first configure invocation without changing public builder receipts.
+/** Bind each phase call to the run deadline recorded at configure and to its job's first deadline,
+ * without changing public builder receipts. Returns null when the job record is absent and not created.
  * @param {ReturnType<typeof windowsNativeLlvmCiStatePaths>} state @param {boolean} [create] */
 function windowsNativeLlvmCiDeadlineRecord(state, create = false) {
-  if (state.runDeadlineEpoch) {
-    const jobId = state.jobId, runDeadlineRecord = state.runDeadlineRecord;
-    if (!jobId || !runDeadlineRecord) {throw new Error("Windows LLVM cross-job state is missing its job identity or run record path");}
-    const readRecord = (/** @type {string} */ file, /** @type {string} */ label) => {
-      const stat = windowsControllerRegularFile(file, label);
-      if (stat.nlink !== 1 || stat.size > 1024) {throw new Error(label + " is aliased or invalid");}
-      return windowsControllerReadJson(file, 1024, label);
-    };
-    let runRecord;
-    if (!fs.existsSync(runDeadlineRecord)) {
-      if (!create || fs.existsSync(state.output)) {throw new Error("Windows LLVM cross-job state is missing its original run deadline record");}
-      runRecord = {version: 1, runAttempt: state.suffix, runDeadlineEpoch: state.runDeadlineEpoch};
-      fs.writeFileSync(runDeadlineRecord, JSON.stringify(runRecord) + "\n", {flag: "wx", mode: 0o444});
-    } else {
-      runRecord = readRecord(runDeadlineRecord, "Windows LLVM run deadline record");
-      if (runRecord.version !== 1 || runRecord.runAttempt !== state.suffix || runRecord.runDeadlineEpoch !== state.runDeadlineEpoch) {
-        throw new Error("Windows LLVM cross-job phase attempted to replace or reset its original run deadline");
-      }
+  const jobId = state.jobId, runDeadlineRecord = state.runDeadlineRecord;
+  const readRecord = (/** @type {string} */ file, /** @type {string} */ label) => {
+    const stat = windowsControllerRegularFile(file, label);
+    if (stat.nlink !== 1 || stat.size > 1024) {throw new Error(label + " is aliased or invalid");}
+    return windowsControllerReadJson(file, 1024, label);
+  };
+  let runRecord;
+  if (!fs.existsSync(runDeadlineRecord)) {
+    if (!create || fs.existsSync(state.output)) {throw new Error("Windows LLVM cross-job state is missing its original run deadline record");}
+    runRecord = {version: 1, runAttempt: state.suffix, runDeadlineEpoch: state.runDeadlineEpoch};
+    fs.writeFileSync(runDeadlineRecord, JSON.stringify(runRecord) + "\n", {flag: "wx", mode: 0o444});
+  } else {
+    runRecord = readRecord(runDeadlineRecord, "Windows LLVM run deadline record");
+    if (runRecord.version !== 1 || runRecord.runAttempt !== state.suffix || runRecord.runDeadlineEpoch !== state.runDeadlineEpoch) {
+      throw new Error("Windows LLVM cross-job phase attempted to replace or reset its original run deadline");
     }
-    const jobStat = fs.lstatSync(state.deadlineRecord, {throwIfNoEntry: false});
-    if (!jobStat) {
-      if (!create) {return null;}
-      const record = {version: 1, runAttempt: state.suffix, job: jobId,
-        deadlineEpoch: state.deadlineEpoch, runDeadlineEpoch: state.runDeadlineEpoch};
-      fs.writeFileSync(state.deadlineRecord, JSON.stringify(record) + "\n", {flag: "wx", mode: 0o444});
-      return record;
-    }
-    const record = readRecord(state.deadlineRecord, "Windows LLVM job deadline record");
-    if (record.version !== 1 || record.runAttempt !== state.suffix || record.job !== jobId ||
-        record.deadlineEpoch !== state.deadlineEpoch || record.runDeadlineEpoch !== state.runDeadlineEpoch) {
-      throw new Error("Windows LLVM phase attempted to replace or reset its original job deadline");
-    }
-    return record;
   }
-  if (create) {
-    const record = {version: 1, runAttempt: state.suffix, deadlineEpoch: state.deadlineEpoch};
+  const jobStat = fs.lstatSync(state.deadlineRecord, {throwIfNoEntry: false});
+  if (!jobStat) {
+    if (!create) {return null;}
+    const record = {version: 1, runAttempt: state.suffix, job: jobId,
+      deadlineEpoch: state.deadlineEpoch, runDeadlineEpoch: state.runDeadlineEpoch};
     fs.writeFileSync(state.deadlineRecord, JSON.stringify(record) + "\n", {flag: "wx", mode: 0o444});
     return record;
   }
-  const stat = windowsControllerRegularFile(state.deadlineRecord, "Windows LLVM shared deadline record");
-  if (stat.nlink !== 1 || stat.size > 1024) {throw new Error("Windows LLVM shared deadline record is aliased or invalid");}
-  const record = windowsControllerReadJson(state.deadlineRecord, 1024, "Windows LLVM shared deadline record");
-  if (record.version !== 1 || record.runAttempt !== state.suffix || record.deadlineEpoch !== state.deadlineEpoch) {
+  const record = readRecord(state.deadlineRecord, "Windows LLVM job deadline record");
+  if (record.version !== 1 || record.runAttempt !== state.suffix || record.job !== jobId ||
+      record.deadlineEpoch !== state.deadlineEpoch || record.runDeadlineEpoch !== state.runDeadlineEpoch) {
     throw new Error("Windows LLVM phase attempted to replace or reset its original job deadline");
   }
   return record;
@@ -5373,7 +5357,7 @@ function windowsNativeLlvmCiPreflight(args, environment = process.env, platform 
     {validateWindowsLlvmSdkConfig} = require("./build-native-windows-controller"),
     {windowsLlvmSdkPlan, buildPhases} = require("./build-native-windows-llvm21-sdk");
   const state = windowsNativeLlvmCiStatePaths(environment, platform, architecture), reports = windowsNativeLlvmCiReports(environment),
-    budget = windowsNativeLlvmCiDeadlineBudget(state.deadlineEpoch, phase, nowMs, state.runDeadlineEpoch || "");
+    budget = windowsNativeLlvmCiDeadlineBudget(state.deadlineEpoch, phase, nowMs, state.runDeadlineEpoch);
   if (reports.some(report => windowsNativeLlvmCiContains(state.root, report.file))) {
     throw new Error("Windows LLVM CI state and workflow reports must not overlap");
   }
@@ -5430,7 +5414,7 @@ function windowsNativeLlvmCiPreflight(args, environment = process.env, platform 
         fileHash(descriptorSource || "") !== descriptorSha256) {
       throw new Error("Windows LLVM configure input identity, pin or output isolation changed during preflight");
     }
-    const afterBudget = windowsNativeLlvmCiDeadlineBudget(state.deadlineEpoch, "configure", Date.now(), state.runDeadlineEpoch || "");
+    const afterBudget = windowsNativeLlvmCiDeadlineBudget(state.deadlineEpoch, "configure", Date.now(), state.runDeadlineEpoch);
     return {phase, state, reports, descriptorSource: descriptorSource || "", descriptorSha256: descriptorSha256 || "",
       descriptorBytes, archive: archive || "", archiveSha256: archiveSha256 || "", tools, toolHashes: {cmake: cmakeSha256 || "", ninja: ninjaSha256 || ""},
       plan, timeoutMs: Math.min(budget.timeoutMs, afterBudget.timeoutMs), sourceStats: {descriptor: descriptorStat, archive: archiveStat,
@@ -5463,7 +5447,7 @@ function windowsNativeLlvmCiPreflight(args, environment = process.env, platform 
   } else if ([path.join(state.output, "admitted.json"), path.join(state.output, "admitted-objects.json")].some(file => fs.existsSync(file))) {
     throw new Error("Windows LLVM audit refuses to restamp existing admission receipts");
   }
-  const beforeReceiptSha256 = fileHash(state.result), budgetAfter = windowsNativeLlvmCiDeadlineBudget(state.deadlineEpoch, phase, Date.now(), state.runDeadlineEpoch || "");
+  const beforeReceiptSha256 = fileHash(state.result), budgetAfter = windowsNativeLlvmCiDeadlineBudget(state.deadlineEpoch, phase, Date.now(), state.runDeadlineEpoch);
   return {phase, state, reports, receipt, descriptorHash, beforeReceiptSha256, timeoutMs: Math.min(budget.timeoutMs, budgetAfter.timeoutMs)};
 }
 
@@ -5484,9 +5468,8 @@ function buildWindowsNativeLlvmCi(args, environment = process.env) {
         fileHash(input.tools.cmake) !== input.toolHashes.cmake || fileHash(input.tools.ninja) !== input.toolHashes.ninja) {
       throw new Error("Windows LLVM configure inputs changed before the public builder started");
     }
-    const childTimeoutMs = state.runDeadlineEpoch
-      ? Math.min(input.timeoutMs, windowsNativeLlvmCiDeadlineBudget(state.deadlineEpoch, phase, Date.now(), state.runDeadlineEpoch).timeoutMs)
-      : input.timeoutMs;
+    const childTimeoutMs = Math.min(input.timeoutMs,
+      windowsNativeLlvmCiDeadlineBudget(state.deadlineEpoch, phase, Date.now(), state.runDeadlineEpoch).timeoutMs);
     runNodeProcessGroup(builder, ["configure", state.descriptor, input.archive, state.output,
       input.tools.cmake, input.tools.ninja, "2"], buildEnvironment, childTimeoutMs);
     const receipt = windowsControllerReadJson(state.result, 64 << 20, "Windows LLVM configure receipt");
@@ -5500,9 +5483,8 @@ function buildWindowsNativeLlvmCi(args, environment = process.env) {
       throw new Error("Windows LLVM configure result lost its externally pinned inputs or build-only status");
     }
   } else {
-    const childTimeoutMs = state.runDeadlineEpoch
-      ? Math.min(input.timeoutMs, windowsNativeLlvmCiDeadlineBudget(state.deadlineEpoch, phase, Date.now(), state.runDeadlineEpoch).timeoutMs)
-      : input.timeoutMs;
+    const childTimeoutMs = Math.min(input.timeoutMs,
+      windowsNativeLlvmCiDeadlineBudget(state.deadlineEpoch, phase, Date.now(), state.runDeadlineEpoch).timeoutMs);
     windowsNativeLlvmCiDeadlineRecord(state, true);
     runNodeProcessGroup(builder, phase === "build" ? ["build", state.output, args[1] || ""] : ["audit", state.output],
       buildEnvironment, childTimeoutMs);
@@ -5532,7 +5514,7 @@ function buildWindowsNativeLlvmCi(args, environment = process.env) {
     values["windows_llvm_admission_sha256"] = fileHash(path.join(state.output, "admitted.json"));
     values["windows_llvm_objects_sha256"] = fileHash(path.join(state.output, "admitted-objects.json"));
   }
-  windowsNativeLlvmCiDeadlineBudget(state.deadlineEpoch, "outputs", Date.now(), state.runDeadlineEpoch || "");
+  windowsNativeLlvmCiDeadlineBudget(state.deadlineEpoch, "outputs", Date.now(), state.runDeadlineEpoch);
   for (const report of input.reports) {verifyWindowsNativeLlvmCiReport(report);}
   appendWorkflowOutputs(environment, values);
   const summary = environment["GITHUB_STEP_SUMMARY"] || "";
@@ -6140,13 +6122,6 @@ async function runStage(args) {
     if (args.length !== 4) {throw new Error("Windows GPU profile stage requires an explicit profile, config path and config SHA-256");}
     buildWindowsGpuProfileCi(args[1] || "", args[2] || "", args[3] || ""); return;
   }
-  if (stage === "windows-native-llvm21") {
-    const phase = args[1] || "", expectedCount = phase === "configure" ? 10 : phase === "build" ? 3 : phase === "audit" ? 2 : 0;
-    if (!expectedCount || args.length !== expectedCount) {
-      throw new Error("Windows LLVM stage expects configure with eight pins, build with one named phase, or audit only");
-    }
-    buildWindowsNativeLlvmCi(args.slice(1)); return;
-  }
   if (stage === "windows-native-llvm21-descriptor") {
     if (args.length !== 3) {throw new Error("Windows LLVM descriptor stage needs one input JSON and its SHA-256 pin");}
     buildWindowsNativeLlvmDescriptorCi(args.slice(1)); return;
@@ -6296,7 +6271,18 @@ if (require.main === module) {
         process.exitCode = 1;
       });
     } else {
-      throw new Error("Usage: prepare-native-ci.js stage sources|acpp-sources|linux-sources|linux-llvm-admission|linux-llvm-installed-sdk|windows-native-core|windows-host-sdk-sources|windows-controller-io|windows-controller-hermes|windows-native-gpu <profile> <config.json> <config-sha256>|windows-native-llvm21-descriptor <input.json> <sha256>|windows-native-llvm21 configure <descriptor> <sha256> <archive> <sha256> <cmake> <sha256> <ninja> <sha256>|windows-native-llvm21 build <phase>|windows-native-llvm21 audit|dpcpp-cuda-inputs|gnu-headers|windows-gnu-headers|linux-jit-resources|linux-jit-configure|linux-jit-support|linux-jit-targets|linux-jit-frontend|linux-jit-link|linux-jit-runtime-proof|linux-jit-runtime-admit|linux-jit-static-dpcpp|rocm-sources|rocm-comgr-sdk|rocm-host-sdk|hermes-sources|hermes-sdk|zstd-sources|zstd-sdk|openmp-sdk|acpp-cuda-hip-sdk|nvrtc-linux|nvrtc-windows|cuda-images-linux|linux-sdk-descriptor|linux-native-application|configure|llvm-foundation|llvm-core|llvm-core-codegen|llvm-x86|llvm-nvptx|llvm-amdgpu|clang-base|clang-sema|clang-frontend|lld|tools|install-audit|io-openssl | pack /new/state.tar /base relative-path... | extract /state.tar /base expected-root...");
+      // Linux LLVM stages come from their table; their builder phases are not stages.
+      const stages = ["sources", "acpp-sources", "linux-sources", "linux-llvm-admission", "linux-llvm-installed-sdk", "linux-llvm-tools",
+        "linux-native-component <component>", "windows-native-core", "windows-host-sdk-sources", "windows-controller-io",
+        "windows-controller-hermes", "windows-native-gpu <profile> <config.json> <config-sha256>",
+        "windows-native-llvm21-descriptor <input.json> <sha256>", "dpcpp-cuda-inputs", "gnu-headers", "windows-gnu-headers",
+        "linux-jit-resources", "linux-jit-configure", "linux-jit-support", "linux-jit-targets", "linux-jit-frontend", "linux-jit-link",
+        "linux-jit-runtime-proof", "linux-jit-runtime-admit", "linux-jit-static-dpcpp", "rocm-sources", "rocm-comgr-sdk", "rocm-host-sdk",
+        "hermes-sources", "hermes-sdk", "zstd-sources", "zstd-sdk", "openmp-sdk", "acpp-cuda-hip-sdk", "nvrtc-linux", "nvrtc-windows",
+        "cuda-images-linux", "linux-sdk-descriptor", "linux-native-application", "io-openssl",
+        "configure", ...Object.keys(linuxLlvmCiStageDefinitions), "install-audit"];
+      throw new Error("Usage: prepare-native-ci.js stage " + stages.join("|") +
+        " | pack /new/state.tar /base relative-path... | extract /state.tar /base expected-root...");
     }
   } catch (error) {
     console.error("[native-ci] " + (error instanceof Error ? error.message : String(error)));

@@ -400,7 +400,9 @@ function admitExportWorkspace(workspace, support, receipts) {
       handoffSha256: record.handoffSha256, currentSourceAdmitted: false};
   });
 }
-/** @param {any} support @param {{workspace:string,sourceReceipts:{hermesFetch:string,hermesRoots:string,ioFetch:string,opensslFetch:string}}} options
+/** Export the current support closure or re-admit its existing generation, then delete older
+ * generations; retirementCandidates lists the deleted ones.
+ * @param {any} support @param {{workspace:string,sourceReceipts:{hermesFetch:string,hermesRoots:string,ioFetch:string,opensslFetch:string}}} options
  * @param {{planSupport?:typeof windowsSupport.windowsSupportPlan,admitIo?:typeof windowsSupport.admitIoOutput,
  * admitOpenSsl?:typeof windowsSupport.admitOpenSslOutput,admitHermes?:typeof windowsSupport.admitHermesOutput,
  * ioAdmission?:Parameters<typeof windowsSupport.admitIoOutput>[1],openSslAdmission?:Parameters<typeof windowsSupport.admitOpenSslOutput>[1],
@@ -432,7 +434,7 @@ function exportOrAdmitLocalWindowsSupport(support, options, dependencies = {}) {
     if (!isDeepStrictEqual(current.plan, latest.plan)) {throw new Error("Original Windows support plan changed during warm handoff admission");}
     joinCurrentHandoffs(latest, receipts, receiptHashes, latestResult);
     assertSourceReceiptsUnchanged(receipts, receiptHashes, "warm export admission");
-    return {...latestResult, generationKey: key, reused: true, retirementCandidates: generations.filter(row => row.generationKey !== key)};
+    return {...latestResult, generationKey: key, reused: true, retirementCandidates: retireGenerations(options.workspace, generations, key)};
   }
 
   if (generations.length >= maxExportGenerations) {throw new Error("Windows support export cache reached its generation bound; preserve it for inspection");}
@@ -462,7 +464,20 @@ function exportOrAdmitLocalWindowsSupport(support, options, dependencies = {}) {
   if (!isDeepStrictEqual(current.plan, latest.plan)) {throw new Error("Original Windows support plan changed during handoff commit");}
   joinCurrentHandoffs(latest, receipts, receiptHashes, latestResult);
   assertSourceReceiptsUnchanged(receipts, receiptHashes, "handoff commit");
-  return {...latestResult, generationKey: key, reused: false, retirementCandidates: generations};
+  return {...latestResult, generationKey: key, reused: false, retirementCandidates: retireGenerations(options.workspace, generations, key)};
+}
+/** Delete every admitted generation except the current one and return the deleted rows. Only the
+ * current generation is read by this build, and the held Engineering build lock serializes builds
+ * of one checkout. admitExportWorkspace proved each row is a direct 64-hex canonical directory; the
+ * re-check here rejects a swap since then, and rmSync unlinks nested links instead of following them.
+ * @param {string} workspace @param {ReturnType<typeof admitExportWorkspace>} generations @param {string} current */
+function retireGenerations(workspace, generations, current) {
+  const retired = generations.filter(row => row.generationKey !== current);
+  for (const row of retired) {
+    canonicalDirectory(path.join(workspace, row.generationKey), "Retired Windows support export generation");
+    fs.rmSync(path.join(workspace, row.generationKey), {recursive: true});
+  }
+  return retired;
 }
 /** @param {Record<string,string>} receipts @param {WindowsExportIdentity["sourceReceiptHashes"]} hashes @param {string} phase */
 function assertSourceReceiptsUnchanged(receipts, hashes, phase) {

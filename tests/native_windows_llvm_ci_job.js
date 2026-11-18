@@ -317,6 +317,28 @@ test.describe("Windows LLVM CI phase job plan", {skip: process.platform !== "lin
     assert.deepEqual(published, [], "no grouped state handoff is published after a failed phase");
   });
 
+  test("reports a completed stage as passed even when little job time remains", t => {
+    const f = fixture(t), expected = phaseFixture(f, "llvm-mid"),
+      source = fs.readFileSync(require.resolve("../scripts/run-native-windows-llvm-ci"), "utf8"),
+      start = source.indexOf("if (require.main === module) {");
+    assert.ok(start >= 0, "the CLI entry remains extractable for direct behavior coverage");
+    // The stage finished with three minutes left, below the six-minute budget needed to start a phase.
+    const env = /** @type {NodeJS.ProcessEnv} */ ({...f.environment,
+        MOM_NATIVE_WINDOWS_LLVM_DEADLINE_EPOCH: String(Math.ceil((Date.now() + 3 * 60 * 1000) / 1000))}),
+      cli = {argv: ["node", "run-native-windows-llvm-ci.js", "llvm-mid"], env, exitCode: 0, written: "",
+        stdout: {write: (/** @type {string} */ text) => {cli.written += text;}}, stderr: {write: (/** @type {string} */ text) => {cli.written += text;}}},
+      main = {};
+    vm.runInNewContext(source.slice(start), {process: cli, require: {main}, module: main,
+      stages: ["configure", "llvm-amdgpu", "llvm-mid", "clang", "lld", "audit"],
+      windowsLlvmCiJobPlan: (/** @type {string} */ stage) => windowsLlvmCiJobPlan(stage, cli.env, "linux", "x64"),
+      runWindowsLlvmCiJob: () => {
+        cli.env["GITHUB_JOB"] = expected.jobId;
+        return {windows_llvm_phase: "build-llvm-core", bundle_sha256: "a".repeat(64), manifest_sha256: "b".repeat(64)};
+      }});
+    assert.equal(cli.exitCode, 0, cli.written);
+    assert.equal(JSON.parse(cli.written).output, "build-llvm-core");
+  });
+
   test("rejects expired, extended, or missing original run deadlines and oversized phase identities", t => {
     const f = fixture(t), expired = {...f.environment, MOM_NATIVE_WINDOWS_LLVM_DEADLINE_EPOCH: "1000000000"};
     assert.throws(() => windowsLlvmCiJobPlan("configure", expired, "linux", "x64"), /expired|60-minute|Insufficient/);

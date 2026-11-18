@@ -27,8 +27,9 @@ function nativeJitCacheTag(target, artifacts, recipes, linkPlan = []) {
         roles.has(row.role) || typeof row.sha256 !== "string" || !digest.test(row.sha256)) {throw new Error("Invalid native JIT cache artifact");}
     roles.add(row.role);
   }
+  // Recipes hash all of runtime/, so the bound must leave room for that tree to grow.
   const entries = Object.entries(recipes).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
-  if (!entries.length || entries.length > 128 || entries.some(([name, hash]) =>
+  if (!entries.length || entries.length > 4096 || entries.some(([name, hash]) =>
     name.length > 256 || !/^(runtime|scripts)\/[A-Za-z0-9_./-]+$/.test(name) ||
     name.split("/").some(part => !part || part === "." || part === "..") || typeof hash !== "string" || !digest.test(hash))) {
     throw new Error("Invalid native JIT cache recipe");

@@ -220,6 +220,26 @@ test.describe("local native Windows support", () => {
     assert.equal(local.managedCoreCandidates(plan.paths.coreRuns, second.core.output).length, 4);
   });
 
+  test("retires stale support outputs and Core runs without following links out of the cache", t => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-win-support-retire-"));
+    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const outside = write(path.join(root, "outside", "keep.txt")),
+      ioParent = path.join(root, "io"), coreParent = path.join(root, "core");
+    const current = write(path.join(ioParent, "a".repeat(64), "receipt.json")),
+      stale = write(path.join(ioParent, "b".repeat(64), "receipt.json")),
+      currentCore = write(path.join(coreParent, "00000000-0000-4000-8000-000000000001", "inputs.json")),
+      staleCore = write(path.join(coreParent, "00000000-0000-4000-8000-000000000002", "inputs.json"));
+    fs.symlinkSync(path.dirname(outside), path.join(path.dirname(stale), "link"), "dir");
+    const retired = local.retireManagedOutputs({
+      io: local.managedOutputCandidates(ioParent, path.dirname(current)), openssl: [], hermes: [],
+      core: local.managedCoreCandidates(coreParent, path.dirname(currentCore)),
+    });
+    assert.deepEqual(retired.io.map(row => row.root), [path.dirname(stale)]);
+    assert.deepEqual(retired.core.map(row => row.root), [path.dirname(staleCore)]);
+    assert.ok(fs.existsSync(current) && fs.existsSync(currentCore) && fs.existsSync(outside));
+    assert.ok(!fs.existsSync(path.dirname(stale)) && !fs.existsSync(path.dirname(staleCore)));
+  });
+
   test("does not reuse an occupied SDK path when its public receipt admission fails", t => {
     const f = fixture(t), plan = local.windowsSupportPlan(f.options, f.dependencies);
     local.admitWindowsSupportWorkspace(plan.paths.workspace, "win32");

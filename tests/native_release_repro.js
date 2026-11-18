@@ -288,8 +288,8 @@ test.describe("Native build reproducibility opt-in admission", () => {
   // Node), including when it emits Windows artifacts. Other hosts and Node versions still test
   // the schema/hash guards above.
   const reviewedBuildNode = require("../runtime/native-notice-review.json").dependencies.buildNode.version;
-  test("late notice body and review manifest hashes are checked against maintained review",
-    {skip: process.platform !== "linux" || process.version !== reviewedBuildNode}, t => {
+  const skip = process.platform !== "linux" || process.version !== reviewedBuildNode;
+  test("late notice body and review manifest hashes are checked against maintained review", {skip}, t => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "native-repro-notice-review-"));
     t.after(() => fs.rmSync(root, {recursive: true, force: true}));
     const env = validReviewedLateNoticeEnvironment(), late = settingsFromEnvironment(env)?.lateNotice; assert.ok(late);

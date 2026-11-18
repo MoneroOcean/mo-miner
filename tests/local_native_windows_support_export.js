@@ -197,13 +197,15 @@ test.describe("local Windows support export", () => {
     assert.deepEqual(warm.retirementCandidates, []);
   });
 
-  test("preserves and reports an earlier complete generation without retiring it", t => {
+  test("retires an earlier complete generation after exporting a new one without following its links", t => {
     const f = fixture(t), dependencies = admissionDependencies(f), options = {workspace: f.cache, sourceReceipts: f.options.sourceReceipts},
       first = exportOrAdmitLocalWindowsSupport(f.support, options, dependencies),
-      fetchReceipt = JSON.parse(fs.readFileSync(f.options.sourceReceipts.ioFetch, "utf8"));
+      fetchReceipt = JSON.parse(fs.readFileSync(f.options.sourceReceipts.ioFetch, "utf8")),
+      outside = write(path.join(f.base, "outside/keep.txt"), "not owned by the export cache\n");
+    fs.symlinkSync(path.dirname(outside), path.join(first.io.root, "outside-link"), "junction");
     fetchReceipt.fetcherSha256 = sha("a newer source-fetch run"); save(f.options.sourceReceipts.ioFetch, fetchReceipt);
-    // An older payload may no longer pass today's source recipe. It is preserved,
-    // not selected or freshly qualified, and must not prevent creating a new key.
+    // An older payload may no longer pass today's source recipe. It is never selected or
+    // freshly qualified, and must not prevent creating a new key.
     dependencies.readHandoff = (/** @type {string} */ root, /** @type {any} */ expected) => {
       if (root.includes(first.generationKey)) {throw new Error("historical recipe is no longer current");}
       return require("../scripts/native-windows-controller-handoff").windowsLocalControllerHandoffInputs(root, expected);
@@ -211,9 +213,10 @@ test.describe("local Windows support export", () => {
     const second = exportOrAdmitLocalWindowsSupport(f.support, options, dependencies);
     assert.notEqual(second.generationKey, first.generationKey);
     assert.deepEqual(second.retirementCandidates.map(row => row.generationKey), [first.generationKey]);
-    assert.equal(second.retirementCandidates[0]?.currentSourceAdmitted, false);
-    assert.equal(fs.existsSync(path.join(f.cache, first.generationKey, "commit.json")), true);
+    assert.equal(fs.existsSync(path.join(f.cache, first.generationKey)), false);
+    assert.equal(fs.readFileSync(outside, "utf8"), "not owned by the export cache\n");
     assert.equal(fs.existsSync(path.join(f.cache, second.generationKey, "commit.json")), true);
+    assert.equal(exportOrAdmitLocalWindowsSupport(f.support, options, dependencies).reused, true);
   });
 
   test("rejects a self-consistent cached payload that no longer matches current producer bytes", t => {

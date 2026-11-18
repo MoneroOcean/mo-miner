@@ -584,6 +584,17 @@ test.describe("Native prerequisite acquisition workflow", () => {
     assert.throws(() => buildLinuxLlvmGroupCi(paths, "llvm-x86"), /maintained phase group/);
   });
 
+  test("CLI usage lists the maintained LLVM stages, not their builder phases", () => {
+    const result = spawnSync(process.execPath, ["scripts/prepare-native-ci.js"], {cwd: root, encoding: "utf8", timeout: 10000}),
+      usage = result.stderr.slice(result.stderr.indexOf(" stage ") + 7, result.stderr.indexOf(" | pack ")),
+      listed = usage.split("|").map(entry => entry.split(" ")[0]);
+    assert.equal(result.status, 1);
+    for (const stage of ["configure", "llvm-common", "llvm-core-codegen", "llvm-backends-clang", "clang-frontend", "install-audit",
+      "linux-llvm-tools", "linux-native-component"]) {assert.ok(listed.includes(stage), stage);}
+    for (const phase of ["llvm-foundation", "llvm-core", "llvm-x86", "llvm-nvptx", "llvm-amdgpu", "clang-base", "clang-sema", "lld", "tools",
+      "windows-native-llvm21"]) {assert.ok(!listed.includes(phase), phase);}
+  });
+
   test("Linux LLVM reusable stages derive only pinned same-run predecessor and output artifacts", t => {
     const environment = {GITHUB_RUN_ID: "123456789", GITHUB_RUN_ATTEMPT: "2"}, prefix = "native-llvm21-state-123456789-2-";
     assert.deepEqual(linuxLlvmCiStagePlan("llvm-common", environment), {
@@ -5428,6 +5439,7 @@ test.describe("Windows LLVM descriptor CI producer", () => {
       MOM_NATIVE_WINDOWS_LLVM_DIR: path.join(os.tmpdir(), "mom-native-windows-llvm21-" + suffix),
       MOM_NATIVE_WINDOWS_LLVM_DESCRIPTOR_DIR: path.join(runnerTemp, "mom-native-windows-llvm21-descriptor-" + suffix),
       MOM_NATIVE_WINDOWS_LLVM_DEADLINE_EPOCH: deadlineEpoch, MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: "2",
+      MOM_NATIVE_WINDOWS_LLVM_RUN_DEADLINE_EPOCH: String(Math.ceil((Date.now() + 7 * 60 * 60 * 1000) / 1000)), GITHUB_JOB: "llvm_configure",
       GITHUB_OUTPUT: outputFile, GITHUB_STEP_SUMMARY: summaryFile});
     const state = windowsNativeLlvmDescriptorCiStatePaths(environment, "linux", "x64"), sha = (/** @type {string} */ file) => fileHash(file);
     t.after(() => fs.rmSync(state.root, {recursive: true, force: true}));
@@ -5540,6 +5552,7 @@ test.describe("Windows LLVM 21 CI phase frontdoor", () => {
     }
     const environment = /** @type {NodeJS.ProcessEnv} */ ({RUNNER_TEMP: runnerTemp, GITHUB_RUN_ID: run, GITHUB_RUN_ATTEMPT: "1",
         MOM_NATIVE_WINDOWS_LLVM_DIR: root, MOM_NATIVE_WINDOWS_LLVM_DEADLINE_EPOCH: deadlineEpoch, MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: "2",
+        MOM_NATIVE_WINDOWS_LLVM_RUN_DEADLINE_EPOCH: String(Math.ceil((Date.now() + 7 * 60 * 60 * 1000) / 1000)), GITHUB_JOB: "llvm_configure",
         GITHUB_OUTPUT: outputFile, GITHUB_STEP_SUMMARY: summaryFile}),
       state = windowsNativeLlvmCiStatePaths(environment, "linux", "x64");
     t.after(() => fs.rmSync(state.root, {recursive: true, force: true}));
@@ -5553,7 +5566,10 @@ test.describe("Windows LLVM 21 CI phase frontdoor", () => {
     const f = fixture(t);
     assert.equal(f.state.root, f.environment["MOM_NATIVE_WINDOWS_LLVM_DIR"]);
     assert.equal(f.state.output, path.join(f.state.root, "output"));
-    assert.equal(f.state.deadlineRecord, path.join(f.state.root, "ci-deadline.json"));
+    assert.equal(f.state.deadlineRecord, path.join(f.state.root, "ci-job-deadline-llvm_configure.json"));
+    // Every phase needs the original run deadline; there is no single-job record that a later phase would recreate.
+    const singleJob = {...f.environment}; delete singleJob["MOM_NATIVE_WINDOWS_LLVM_RUN_DEADLINE_EPOCH"];
+    assert.throws(() => windowsNativeLlvmCiStatePaths(singleJob, "linux", "x64"), /original run deadline/);
     assert.throws(() => windowsNativeLlvmCiStatePaths({...f.environment, MOM_NATIVE_WINDOWS_LLVM_DIR: path.join(f.runnerTemp, "ambient")}, "linux", "x64"), /exact run-attempt plan/);
     assert.throws(() => windowsNativeLlvmCiStatePaths(f.environment, "win32", "x64"), /Linux x64 runner/);
     assert.throws(() => windowsNativeLlvmCiStatePaths({...f.environment, MOM_BUILD_JOBS: "4"}, "linux", "x64"), /two jobs/);
@@ -5578,9 +5594,7 @@ test.describe("Windows LLVM 21 CI phase frontdoor", () => {
     assert.equal(f.sha(f.descriptorFile), descriptorHash);
     assert.equal(fs.existsSync(f.state.root), false, "overlapping report paths are rejected before output creation");
 
-    fs.mkdirSync(f.state.output, {recursive: true});
-    fs.writeFileSync(f.state.deadlineRecord, JSON.stringify({version: 1, runAttempt: f.state.suffix,
-      deadlineEpoch: f.state.deadlineEpoch}) + "\n", {flag: "wx", mode: 0o444});
+    fs.mkdirSync(f.state.root, {mode: 0o700}); windowsNativeLlvmCiDeadlineRecord(f.state, true); fs.mkdirSync(f.state.output);
     fs.copyFileSync(f.descriptorFile, f.state.descriptor);
     const stagedHash = f.sha(f.state.descriptor), receipt = {role: "windows-llvm21-host-sdk", stage: "configured",
       buildOnly: true, compiled: false, executed: false, publicationQualified: false,
@@ -5604,14 +5618,13 @@ test.describe("Windows LLVM 21 CI phase frontdoor", () => {
 
   test("refuses a reset deadline between successive phase calls", skipLinuxFixedRootTests, t => {
     const f = fixture(t), state = f.state, original = f.environment["MOM_NATIVE_WINDOWS_LLVM_DEADLINE_EPOCH"] || "";
-    fs.mkdirSync(state.output, {recursive: true});
-    fs.writeFileSync(state.deadlineRecord, JSON.stringify({version: 1, runAttempt: state.suffix, deadlineEpoch: original}) + "\n", {flag: "wx"});
+    fs.mkdirSync(state.root, {mode: 0o700}); windowsNativeLlvmCiDeadlineRecord(state, true); fs.mkdirSync(state.output);
     const changed = {...f.environment, MOM_NATIVE_WINDOWS_LLVM_DEADLINE_EPOCH: String(Number(original) + 60)};
     assert.throws(() => windowsNativeLlvmCiPreflight(["build", "llvm-amdgpu"], changed, "linux", "x64"), /replace or reset its original job deadline/);
     assert.equal(fs.existsSync(state.result), false);
   });
 
-  test("opt-in cross-job limits fail before configure mutation and keep the run inside eight hours", skipLinuxFixedRootTests, t => {
+  test("cross-job limits fail before configure mutation and keep the run inside eight hours", skipLinuxFixedRootTests, t => {
     const f = fixture(t), now = Date.now(), epoch = (/** @type {number} */ minutes) => String(Math.ceil((now + minutes * 60 * 1000) / 1000)),
       valid = {...f.environment, GITHUB_JOB: "llvm_configure", MOM_NATIVE_WINDOWS_LLVM_RUN_DEADLINE_EPOCH: epoch(7 * 60),
         MOM_NATIVE_WINDOWS_LLVM_DEADLINE_EPOCH: epoch(55)};
@@ -5633,8 +5646,6 @@ test.describe("Windows LLVM 21 CI phase frontdoor", () => {
       assert.throws(() => windowsNativeLlvmCiPreflight(f.configureArgs, environment, "linux", "x64", now), pattern);
       assert.equal(fs.existsSync(f.state.root), false, "invalid cross-job deadlines leave the LLVM state root untouched");
     }
-    const legacy = windowsNativeLlvmCiStatePaths(f.environment, "linux", "x64");
-    assert.equal(legacy.deadlineRecord, path.join(legacy.root, "ci-deadline.json"), "legacy single-job record path is unchanged");
     const split = windowsNativeLlvmCiStatePaths(valid, "linux", "x64");
     assert.equal(split.deadlineRecord, path.join(split.root, "ci-job-deadline-llvm_configure.json"));
     assert.equal(split.runDeadlineRecord, path.join(split.root, "ci-run-deadline.json"));
@@ -5673,9 +5684,8 @@ test.describe("Windows LLVM 21 CI phase frontdoor", () => {
     assert.throws(() => windowsNativeLlvmCiDeadlineRecord(secondState), /replace or reset its original run deadline/);
   });
 
-  test("dispatches only explicit configure/build/audit phases through the public builder", async () => {
-    await assert.rejects(runStage(["windows-native-llvm21"]), /expects configure with eight pins/);
-    await assert.rejects(runStage(["windows-native-llvm21", "unknown"]), /expects configure with eight pins/);
+  test("runs configure/build/audit phases only through the public builder, not a stage CLI", async () => {
+    await assert.rejects(runStage(["windows-native-llvm21", "audit"]), /takes no extra arguments/);
     const source = helper.slice(helper.indexOf("function buildWindowsNativeLlvmCi"), helper.indexOf("/** Fresh native Windows controller-support"));
     assert.match(source, /runNodeProcessGroup\(builder, \["configure"/);
     assert.match(source, /\["build", state\.output, args\[1\] \|\| ""\]/);

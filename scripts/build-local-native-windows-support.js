@@ -190,8 +190,9 @@ function existingOutputDirectory(directory) {
     throw new Error("Windows support cache output is redirected or not a directory: " + directory);
   }
 }
-/** Enumerate only this adapter's direct content-addressed output roots; the caller re-admits
- * older candidates before retiring them after the complete release graph succeeds. @param {string} parent @param {string} current */
+/** Enumerate only this adapter's direct content-addressed output roots. Rows that are not current
+ * are retired by retireManagedOutputs() once the support build and its export succeed.
+ * @param {string} parent @param {string} current */
 function managedOutputCandidates(parent, current) {
   return fs.readdirSync(parent, {withFileTypes: true}).filter(entry => /^[a-f0-9]{64}$/.test(entry.name)).map(entry => {
     const root = path.join(parent, entry.name);
@@ -210,6 +211,20 @@ function managedCoreCandidates(parent, current) {
     }
     return {root, receipt, current: samePath(root, current)};
   });
+}
+
+/** Delete every non-current support output and Core run and return the deleted rows. Outputs are
+ * content-addressed and Core runs are keyed by cache state, so a later build never reads an older
+ * root again; builds of one checkout are serialized by the Engineering build lock. Each root is
+ * re-checked just before removal, and rmSync unlinks nested links instead of following them.
+ * @param {Record<"core"|"hermes"|"io"|"openssl", {root:string,current:boolean}[]>} candidates */
+function retireManagedOutputs(candidates) {
+  const retired = Object.fromEntries(Object.entries(candidates).map(([kind, rows]) => [kind, rows.filter(row => !row.current)]));
+  for (const row of Object.values(retired).flat()) {
+    existingOutputDirectory(row.root);
+    fs.rmSync(row.root, {recursive: true});
+  }
+  return /** @type {typeof candidates} */ (retired);
 }
 
 /** Re-admit a content-addressed I/O output against this exact source/tool/recipe identity. @param {any} plan @param {any} deps */
@@ -413,4 +428,5 @@ function buildLocalNativeWindowsSupport(options, dependencies = {}) {
 }
 
 module.exports = {windowsSupportPaths, validateWindowsSupportTools, windowsSupportPlan, admitWindowsSupportWorkspace,
-  admitIoOutput, admitOpenSslOutput, admitHermesOutput, managedOutputCandidates, managedCoreCandidates, buildLocalNativeWindowsSupport};
+  admitIoOutput, admitOpenSslOutput, admitHermesOutput, managedOutputCandidates, managedCoreCandidates, retireManagedOutputs,
+  buildLocalNativeWindowsSupport};

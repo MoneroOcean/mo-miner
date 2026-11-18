@@ -365,9 +365,10 @@ if (require.main === module) {
   try {
     const [stage, ...extra] = process.argv.slice(2);
     if (extra.length || !stage || !stages.includes(stage)) {throw new Error("Usage: run-native-windows-llvm-ci.js configure|llvm-amdgpu|llvm-mid|clang|lld|audit");}
+    // Report from the result: re-planning here would re-check the phase budget after the work is
+    // done and would derive the job id from the GITHUB_JOB the run already rewrote.
     const result = runWindowsLlvmCiJob(stage);
-    const plan = windowsLlvmCiJobPlan(stage);
-    process.stdout.write(JSON.stringify({status: "PASS", stage, output: plan.statePhase,
+    process.stdout.write(JSON.stringify({status: "PASS", stage, output: result["windows_llvm_phase"],
       bundleSha256: result["bundle_sha256"], manifestSha256: result["manifest_sha256"], buildOnly: true,
       executed: false, publicationQualified: false}) + "\n");
   } catch (error) {

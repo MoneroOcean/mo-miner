@@ -22,6 +22,10 @@ describe("Native JIT closure identity", () => {
     assert.equal(nativeJitCacheTag("linux-x64", artifacts, {"runtime/main.cpp": a, "scripts/build.js": b}),
       nativeJitCacheTag("linux-x64", artifacts, {"scripts/build.js": b, "runtime/main.cpp": a}));
   });
+  test("accepts a runtime recipe tree larger than 128 files", () => {
+    const grown = Object.fromEntries(Array.from({length: 200}, (_, index) => ["runtime/file-" + index + ".cpp", a]));
+    assert.match(nativeJitCacheTag("linux-x64", artifacts, grown), /^[a-f0-9]{64}$/);
+  });
   test("archive selection mode and interleaved linker directives affect identity", () => {
     const base = nativeJitCacheTag("linux-x64", [first], recipes, ["@sdk/0"]);
     assert.notEqual(base, nativeJitCacheTag("linux-x64", [first], recipes, ["--whole-archive", "@sdk/0", "--no-whole-archive"]));

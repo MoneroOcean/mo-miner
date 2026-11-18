@@ -218,7 +218,7 @@ function sourceDirectory(root, label) {
  * fetchIo?:typeof sources.fetchIoArchives,verifyIo?:typeof sources.verifyIoArchives,
  * fetchOpenSsl?:typeof sources.fetchWindowsOpenSslArchives,verifyOpenSsl?:typeof sources.verifyWindowsOpenSslArchives,
  * extractHermes?:typeof ci.extractWindowsHermesSource,readHermes?:(state:any,originalRoot:string)=>any,
- * buildSupport?:typeof support.buildLocalNativeWindowsSupport,exportSupport?:(value:any,options:any)=>any,
+ * buildSupport?:typeof support.buildLocalNativeWindowsSupport,exportSupport?:(value:any,options:any)=>any,retireSupport?:(candidates:any)=>any,
  * environment?:NodeJS.ProcessEnv}} [dependencies] */
 async function buildLocalWindowsSupportCommand(input, dependencies = {}) {
   if ((dependencies.platform || process.platform) !== "win32" || process.arch !== "x64") {
@@ -272,7 +272,8 @@ async function buildLocalWindowsSupportCommand(input, dependencies = {}) {
     admitted: {kind, localBuildId: exported.localBuildId}});
   return {controllerSupport: {localBuildId: exported.localBuildId, io: reference(exported.io, "io"), hermes: reference(exported.hermes, "hermes")},
     coreArchive: built.core.archive, coreReceipt: {path: built.core.receipt, sha256: fileHash(built.core.receipt)},
-    supportRetirementCandidates: built.managedOutputCandidates, exportRetirementCandidates: exported.retirementCandidates};
+    supportRetirementCandidates: (dependencies.retireSupport || support.retireManagedOutputs)(built.managedOutputCandidates),
+    exportRetirementCandidates: exported.retirementCandidates};
 }
 
 module.exports = {sourceDirectory, buildLocalWindowsSupportCommand, runLocalWindowsSupportCommandCli};
