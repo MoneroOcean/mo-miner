@@ -1,6 +1,8 @@
 # Windows multi-compiler development image
 
-The Windows development environment is `win-mom-dev-base.qcow2`, a child of the
+This page covers the Windows VM workflow for the Engineering archive (the Node.js package built by
+`scripts/package-windows.ps1`), not the standalone release; see [DEVELOPMENT.md](../DEVELOPMENT.md)
+for `npm run build:release`. The Windows development environment is `win-mom-dev-base.qcow2`, a child of the
 host's GPU-driver base. Recreate it from the repository root with:
 
 ```bash
@@ -45,40 +47,53 @@ powershell -NoProfile -ExecutionPolicy Bypass -File `
   scripts/build-windows-multicompiler.ps1
 ```
 
-The default `-Backend all` builds every worker once. For an isolated source run, add `-Backend intel`,
-`-Backend nvidia`, `-Backend amd`, or `-Backend opencl`. Intel emits oneAPI and open-source DPC++
-SPIR-V workers; NVIDIA emits the combined SPIR-V/NVPTX DPC++ worker plus AdaptiveCpp CUDA; AMD emits
-AdaptiveCpp HIP. The local helper derives the narrow choice from a single-vendor `GPU_GROUP`, sets
-`MOM_NATIVE_DIR` to the isolated worker tree, and skips its automatic prebuild when the requested
-PowerShell command already manages the build or tests.
+The default `-Backend all` builds every worker once. Options narrow an isolated source run:
+
+| Option      | Values                                                  | Effect                                               |
+| ----------- | ------------------------------------------------------- | ---------------------------------------------------- |
+| `-Backend`  | `all`, `intel`, `intel_igpu`, `nvidia`, `amd`, `opencl` | Select the vendor group to build                     |
+| `-Compiler` | `all`, `oneapi`, `dpcpp`, `portable`, `adaptivecpp`     | Select one compiler family (see below)               |
+| `-Scope`    | `all`, `cpu`, `portable`                                | Build only the CPU addon or only the portable worker |
+
+`-Compiler` must be available for the backend: `intel` accepts `oneapi`, `dpcpp` and `portable`;
+`nvidia` accepts `dpcpp`, `portable` and `adaptivecpp`; `amd` accepts `portable` and `adaptivecpp`;
+`intel_igpu` and `opencl` accept only `portable`. `-Scope cpu|portable` cannot be combined with a
+targeted `-Backend` or `-Compiler`. Intel emits oneAPI and open-source DPC++ SPIR-V workers; NVIDIA
+emits the combined SPIR-V/NVPTX DPC++ worker plus AdaptiveCpp CUDA; AMD emits AdaptiveCpp HIP;
+`intel_igpu` and `opencl` (for example `-Backend opencl`) use the standards-only portable DPC++ OpenCL worker. The local helper
+derives the narrow choice from a single-vendor `GPU_GROUP`, sets `MOM_NATIVE_DIR` to the isolated
+worker tree, and skips its automatic prebuild when the requested PowerShell command already manages
+the build or tests.
 
 Build the archive once in the development VM, then test the extracted package in the runtime VM
-for each vendor:
+for each vendor. `package-windows.ps1` takes its version from `package.json` (or a release tag), so
+set `VERSION` to match:
 
 ```bash
+VERSION=$(node -p "require('./package.json').version")
 GPU_GROUP=none ~/win/run.sh --download build/win -- \
   powershell -NoProfile -ExecutionPolicy Bypass -File \
   scripts\build-windows-multicompiler.ps1
-GPU_GROUP=none ~/win/run.sh --download build/win --download mom-v0.9.0-win.zip -- \
+GPU_GROUP=none ~/win/run.sh --download build/win --download mom-v$VERSION-win.zip -- \
   powershell -NoProfile -ExecutionPolicy Bypass -Command \
   'npm install --ignore-scripts --no-audit --no-fund; if ($LASTEXITCODE) { exit $LASTEXITCODE }; & scripts/package-windows.ps1'
 mkdir -p build/win-package
-ln -f mom-v0.9.0-win.zip build/win-package/mom-v0.9.0-win.zip
+ln -f mom-v$VERSION-win.zip build/win-package/mom-v$VERSION-win.zip
 GPU_GROUP=none ~/win/run.sh --release --download build/win-package -- \
   powershell -NoProfile -ExecutionPolicy Bypass -File \
-  scripts/test-release-windows.ps1 -Archive build/win-package/mom-v0.9.0-win.zip -Suite cpu
+  scripts/test-release-windows.ps1 -Archive build/win-package/mom-v$VERSION-win.zip -Suite cpu
 GPU_GROUP=none ~/win/run.sh --release --download build/win-package -- \
   powershell -NoProfile -ExecutionPolicy Bypass -File \
-  scripts/test-release-windows.ps1 -Archive build/win-package/mom-v0.9.0-win.zip -Suite gpu-portable-cpu
+  scripts/test-release-windows.ps1 -Archive build/win-package/mom-v$VERSION-win.zip -Suite gpu-portable-cpu
 GPU_GROUP=intel ~/win/run.sh --release --download build/win-package -- \
   powershell -NoProfile -ExecutionPolicy Bypass -File \
-  scripts/test-release-windows.ps1 -Archive build/win-package/mom-v0.9.0-win.zip -Suite gpu
+  scripts/test-release-windows.ps1 -Archive build/win-package/mom-v$VERSION-win.zip -Suite gpu
 GPU_GROUP=nvidia ~/win/run.sh --release --download build/win-package -- \
   powershell -NoProfile -ExecutionPolicy Bypass -File \
-  scripts/test-release-windows.ps1 -Archive build/win-package/mom-v0.9.0-win.zip -Suite gpu
+  scripts/test-release-windows.ps1 -Archive build/win-package/mom-v$VERSION-win.zip -Suite gpu
 GPU_GROUP=amd ~/win/run.sh --release --download build/win-package -- \
   powershell -NoProfile -ExecutionPolicy Bypass -File \
-  scripts/test-release-windows.ps1 -Archive build/win-package/mom-v0.9.0-win.zip -Suite gpu
+  scripts/test-release-windows.ps1 -Archive build/win-package/mom-v$VERSION-win.zip -Suite gpu
 ```
 
 Run the build and packaging commands in the development VM. The release VM is runtime-only and is
@@ -115,6 +130,10 @@ HIPRTC-builtins and versioned COMGR DLL used by AdaptiveCpp's HIP backend. `amdh
 the installed display driver because mixing a bundled SDK runtime with the driver runtime can crash.
 
 For a fresh machine, `scripts\install-dev.bat -Component all` installs the common build tools, Node,
-oneAPI, CUDA/HIP compiler SDKs, open DPC++, and both AdaptiveCpp trees without touching GPU display
-drivers. `-Component dpcpp`, `acpp-cuda`, or `acpp-hip` provides the same narrow staging used by CI.
+oneAPI, the CPU OpenCL runtime, CUDA/HIP compiler SDKs, open DPC++, both AdaptiveCpp trees and the
+native Perl build prerequisite without touching GPU display drivers. The installer has no usage
+output: its components are `base`, `node`, `oneapi`, `opencl-cpu`, `cuda`, `hip`, `dpcpp`,
+`acpp-cuda`, `acpp-hip` and `perl` (comma-separated or repeated; see the `param` block and
+`$valid` list in `scripts/install-dev.ps1`). `-Component dpcpp`, `acpp-cuda`, or `acpp-hip`
+provides the same narrow staging used by CI.
 CI caches the source-built AdaptiveCpp trees; DPC++ is restored from its SHA256-pinned release asset.

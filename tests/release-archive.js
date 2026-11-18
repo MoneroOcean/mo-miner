@@ -385,8 +385,8 @@ ConvertTo-Json -InputObject $results -Compress
     const example = docs.slice(exampleStart, exampleEnd);
     assert.match(example, /GPU_GROUP=none[\s\S]{0,180}build-windows-multicompiler\.ps1/);
     assert.match(example, /GPU_GROUP=none[\s\S]{0,300}npm install --ignore-scripts --no-audit --no-fund[\s\S]{0,180}package-windows\.ps1/);
-    assert.match(example, /ln -f mom-v0\.9\.0-win\.zip build\/win-package\/mom-v0\.9\.0-win\.zip/);
-    assert.doesNotMatch(example, /--release --download mom-v0\.9\.0-win\.zip/);
+    assert.match(example, /ln -f mom-v\S+-win\.zip build\/win-package\/mom-v\S+-win\.zip/);
+    assert.doesNotMatch(example, /--release --download mom-v\S+-win\.zip/);
     for (const vendor of ["intel", "nvidia", "amd"]) {
       assert.match(example, new RegExp(`GPU_GROUP=${vendor}[^\\n]*--release[\\s\\S]{0,300}test-release-windows\\.ps1[\\s\\S]{0,120}-Suite gpu`));
     }
