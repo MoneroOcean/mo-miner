@@ -375,10 +375,11 @@ std::map<std::string, std::string> algo_params(
             GpuUsm::both, 1024, 0, true, false);
       }
     } else if (gpu_beamhash3_algos.contains(algo)) {
-      // The reported workgroup and solver share one device/compiler heuristic.
+      // The reported workgroup and solver share one device/compiler heuristic, including its
+      // local-memory admission (0 skips the device).
       add_gpu_dataset_algo_dev(
           result_dev, 3000 * MiB, 8 * GiB, mom_beamhash3::beamhash3_workgroup,
-          "workgroup", GpuUsm::both, 128, 24580);
+          "workgroup", GpuUsm::both, 128);
     }
     if (!result_dev.empty())
       result[algo] = result_dev;

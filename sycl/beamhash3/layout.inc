@@ -291,14 +291,17 @@ inline bool beam_compact_enabled(const sycl::device& device) {
 }
 
 // Choose a supported launch width bounded by fixed collision and per-item scatter local-memory costs.
+// Discovery and the solver share this admission: 0 means the device cannot host either kernel.
 unsigned beamhash3_workgroup(const sycl::device& device) {
   const bool compact = beam_compact_enabled(device);
   const size_t fixed_local =
       compact ? COMPACT_COLLISION_LOCAL_BYTES : GENERIC_COLLISION_LOCAL_BYTES;
   const size_t per_item_local =
       compact ? COMPACT_SEED_LOCAL_BYTES_PER_ITEM : GENERIC_SCATTER_LOCAL_BYTES_PER_ITEM;
-  if (!sycl_local_memory_fits(device, fixed_local))
-    throw std::string("BeamHash3 requires more local memory than this device provides");
+  // 128 is the smallest width in both candidate lists below, so they cannot run out of choices.
+  if (!sycl_local_memory_fits(device, fixed_local) ||
+      !sycl_workgroup_fits(device, 128, 0, per_item_local))
+    return 0;
 
   if (compact) {
     const unsigned preferred = (mom_is_hip(device) || sycl_is_level_zero_gpu(device)) ? 512 : 256;
@@ -313,6 +316,10 @@ unsigned beamhash3_workgroup(const sycl::device& device) {
     return result;
   }
 
+  // With SLM-staged collision keys, a larger WG hides the wide-record latency. Packed/fused whole-
+  // solve A/Bs on Arc B580 repeated at 11.94 H/s for WG1024 versus 11.39--11.40 for WG640 (+4.8%).
+  // On RTX 5060 Ti, DPC++ CUDA's 150-solve stage mean improves 172.7 -> 161.8 ms at WG768, while
+  // AdaptiveCpp peaks at WG640 (151.6 ms); HIP remains flat around its WG640 default.
   unsigned preferred = sycl_is_level_zero_gpu(device) ? 1024 : 640;
 #if !defined(MOM_SYCL_ADAPTIVECPP)
   if (mom_is_cuda(device))

@@ -191,23 +191,25 @@ public:
     return value ? value : "";
   }
 
-  // Cache pool-seed resolution separately from the fork-adjusted DAG epoch.
+  // Cache pool-seed resolution separately from the fork-adjusted DAG epoch. Pool heights are
+  // unbounded, so reject epochs past the libethash size tables before the caller indexes them.
   void resolve_epochs(const uint32_t block_height, const uint8_t* const seed_hash,
                       uint32_t& epoch, uint32_t& seed_epoch) {
     if (!seed_hash || is_zero_hash(seed_hash)) {
       epoch = etchash_epoch(block_height);
       seed_epoch = etchash_seed_epoch(block_height);
-      return;
+    } else {
+      if (cached_seed_epoch == UINT32_MAX ||
+          std::memcmp(cached_seed_hash, seed_hash, HASH_LEN) != 0) {
+        const uint32_t resolved_seed_epoch = seed_epoch_from_hash(seed_hash);
+        std::memcpy(cached_seed_hash, seed_hash, HASH_LEN);
+        cached_seed_epoch = resolved_seed_epoch;
+      }
+      seed_epoch = cached_seed_epoch;
+      epoch = seed_epoch < ETCHASH_FORK_BLOCK / ETHASH_EPOCH ? seed_epoch : seed_epoch / 2;
     }
-
-    if (cached_seed_epoch == UINT32_MAX ||
-        std::memcmp(cached_seed_hash, seed_hash, HASH_LEN) != 0) {
-      const uint32_t resolved_seed_epoch = seed_epoch_from_hash(seed_hash);
-      std::memcpy(cached_seed_hash, seed_hash, HASH_LEN);
-      cached_seed_epoch = resolved_seed_epoch;
-    }
-    seed_epoch = cached_seed_epoch;
-    epoch = seed_epoch < ETCHASH_FORK_BLOCK / ETHASH_EPOCH ? seed_epoch : seed_epoch / 2;
+    if (epoch >= sizeof(dag_sizes) / sizeof(dag_sizes[0]))
+      throw std::string("Bad etchash epoch");
   }
 
   template <typename T> T* allocate(const size_t count, const bool shared) {

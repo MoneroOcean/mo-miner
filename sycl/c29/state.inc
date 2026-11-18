@@ -89,15 +89,6 @@ static uint32_t c29_trim_rounds(const sycl::device& device) {
 #endif
 }
 
-// Use direct seeding by default; values beginning with 0 retain the legacy staging path.
-static bool c29_direct_seed_enabled() {
-  static const bool v = []() {
-    const char* e = std::getenv("MOM_C29_DIRECT_SEED");
-    return !(e && e[0] == '0');
-  }();
-  return v;
-}
-
 static uint64_t c29_now_us() {
   return std::chrono::duration_cast<std::chrono::microseconds>(
              std::chrono::steady_clock::now().time_since_epoch())
@@ -126,13 +117,12 @@ struct C29Profile {
 
     std::printf(
         "[c29-profile] graph start job=%u nonce=%llu proof=%u device=\"%s\" platform=\"%s\" "
-        "index_size=%llu trim_rounds=%u compute_threads=%u seed_local=%u seed_blocks=%u "
-        "direct_seed=%u\n",
+        "index_size=%llu trim_rounds=%u compute_threads=%u seed_local=%u seed_blocks=%u\n",
         job_ref, static_cast<unsigned long long>(nonce), proof_size,
         device.get_info<sycl::info::device::name>().c_str(),
         device.get_platform().get_info<sycl::info::platform::name>().c_str(),
         static_cast<unsigned long long>(INDEX_SIZE), c29_trim_rounds(device), COMPUTE_THREADS,
-        c29_seed_local_size(), c29_seed_blocks_per_item(), c29_direct_seed_enabled() ? 1u : 0u);
+        c29_seed_local_size(), c29_seed_blocks_per_item());
   }
 
   // Measure host progress since the prior mark, independently of device event timings.

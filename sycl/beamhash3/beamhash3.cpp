@@ -167,6 +167,9 @@ int beamhash3(const unsigned, const uint32_t, const uint8_t* const input, const 
   // Per-solve reports are test/profiling diagnostics, not ordinary mining output.
   static const bool prof = std::getenv("MOM_BEAMHASH3_PROF") != nullptr;
   const bool log = is_test || prof;
+  const unsigned wg = beamhash3_workgroup(state.device);
+  if (!wg)
+    throw std::string("BeamHash3 requires more local memory than this device provides");
   state.ensure_arenas(log);
   std::memset(solution_out, 0, SMALL_BLOB_SOL_LEN);
   const uint64_t t_start = BeamState::now_ms();
@@ -202,7 +205,6 @@ int beamhash3(const unsigned, const uint32_t, const uint8_t* const input, const 
     *state.cand_count = 0;
     // B580 uses measured per-round workgroup sizes: 768 for ordinary collision rounds, 640 for paired
     // round 1, and 1024 for paired round 4 when each fits the device.
-    const unsigned compact_wg = beamhash3_workgroup(state.device);
     const bool compact_pair_partitions =
         sycl_is_level_zero_gpu(state.device) &&
         sycl_workgroup_fits(state.device, 768, COMPACT_PAIRED_COLLISION_LOCAL_BYTES);
@@ -212,7 +214,7 @@ int beamhash3(const unsigned, const uint32_t, const uint8_t* const input, const 
                                     compact_pair_partitions ? COMPACT_PAIRED_COLLISION_LOCAL_BYTES
                                                             : COMPACT_COLLISION_LOCAL_BYTES)
             ? 768
-            : compact_wg;
+            : wg;
     const unsigned compact_pair_round_wg =
         compact_pair_partitions &&
                 sycl_workgroup_fits(state.device, 1024, COMPACT_PAIRED_COLLISION_LOCAL_BYTES)
@@ -251,10 +253,10 @@ int beamhash3(const unsigned, const uint32_t, const uint8_t* const input, const 
         use_esimd_seed ? submit_compact_seed_esimd(q, state.prePow, state.compact[0],
                                                    state.compact_ns[0])
                        : submit_compact_seed(q, state.prePow, state.compact[0],
-                                             state.compact_ns[0], compact_wg);
+                                             state.compact_ns[0], wg);
 #else
     auto compact_event = submit_compact_seed(q, state.prePow, state.compact[0],
-                                             state.compact_ns[0], compact_wg);
+                                             state.compact_ns[0], wg);
 #endif
     compact_stage_done("seed", compact_event);
 #if !defined(MOM_SYCL_ADAPTIVECPP) && !defined(MOM_SYCL_PORTABLE_OPENCL)
@@ -312,12 +314,6 @@ int beamhash3(const unsigned, const uint32_t, const uint8_t* const input, const 
   } else
 #endif
   {
-
-    // With SLM-staged collision keys, a larger WG hides the wide-record latency. Packed/fused whole-
-    // solve A/Bs on Arc B580 repeated at 11.94 H/s for WG1024 versus 11.39--11.40 for WG640 (+4.8%).
-    // On RTX 5060 Ti, DPC++ CUDA's 150-solve stage mean improves 172.7 -> 161.8 ms at WG768, while
-    // AdaptiveCpp peaks at WG640 (151.6 ms); HIP remains flat around its WG640 default.
-    const unsigned wg = beamhash3_workgroup(state.device);
     unsigned scatter_wg = sycl_default_workgroup(
         state.device, {16, 32, 64, 128}, 128, 0, GENERIC_SCATTER_LOCAL_BYTES_PER_ITEM);
     {

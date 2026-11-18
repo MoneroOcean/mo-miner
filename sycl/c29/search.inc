@@ -38,17 +38,6 @@ inline __attribute__((always_inline)) void siphash_fill_block(uint64_t& v0, uint
   }
 }
 
-template <typename Destination, typename Store>
-// Copy one full eight-edge scatter group; the caller reserves both destination vectors.
-inline __attribute__((always_inline)) void c29_write8(Destination& destination,
-                                                      const uint32_t index, const Store& store,
-                                                      const uint32_t bucket, const uint32_t base) {
-  destination[index] = sycl::ulong4(store[bucket][base], store[bucket][base + 1],
-                                    store[bucket][base + 2], store[bucket][base + 3]);
-  destination[index + 1] = sycl::ulong4(store[bucket][base + 4], store[bucket][base + 5],
-                                        store[bucket][base + 6], store[bucket][base + 7]);
-}
-
 struct C29SearchCompletionGuard {
   std::shared_ptr<C29ResultState> result_state;
   unsigned job_ref;

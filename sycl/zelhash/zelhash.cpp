@@ -106,7 +106,6 @@ int zelhash(const unsigned, const uint32_t, const uint8_t* const input, const un
     // real-GPU lanes below still cross-check the optimized mining scan against these same rows.
     if (state.device.is_cpu()) {
       std::memcpy(solution_out, naive.data(), rows_bytes);
-      (void)is_benchmark;
       return 1;
     }
 
@@ -128,7 +127,6 @@ int zelhash(const unsigned, const uint32_t, const uint8_t* const input, const un
     }
     // Hand back the NAIVE rows (the reference-of-record); the checker also asserts naive==scan above.
     std::memcpy(solution_out, naive.data(), (size_t)EQUIHASH_TEST_ROWS * HASH_LENGTH);
-    (void)is_benchmark;
     return match ? 1 : 0;
   }
 
@@ -311,8 +309,6 @@ int zelhash(const unsigned, const uint32_t, const uint8_t* const input, const un
     for (uint32_t ci = 0; ci < cand_n; ++ci) {
       // Each candidate is one recovered final-zero pair with 16 distinct leaf indices.
       std::vector<uint32_t> leaves(cand_h[ci].leaves, cand_h[ci].leaves + (1u << K));
-      if (leaves.size() != (size_t)(1u << K))
-        continue; // PROOFSIZE = 16
 
       // DistinctIndices: all 16 leaves must be unique.
       std::vector<uint32_t> sorted = leaves;

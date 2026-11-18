@@ -154,25 +154,30 @@ static void test_capacity() {
   unsetenv("MOM_ZELHASH_SLOTS");
   const unsigned mean = ceil_div_u64(NUM_ENTRIES, NBUCKETS);
   const unsigned minimum = round_up(mean + ceil_sqrt(mean), 16);
+  require(MIN_SLOTS == minimum, "minimum is mean plus one deviation");
   sycl::device d;
   require(zelhash_slot_capacity(d) == MAX_SLOTS, "large-device capacity");
+  require(zelhash_configured_slots(d) == MAX_SLOTS, "automatic workload capacity");
   const uint64_t bytes_per_slot = uint64_t(NBUCKETS) * level_u32(0, false) * 4;
   d.max_allocation = bytes_per_slot * minimum;
   require(zelhash_slot_capacity(d) == minimum, "exact allocation minimum");
   d.max_allocation = bytes_per_slot * minimum - 1;
+  // Discovery calls zelhash_slot_capacity without a try block; it must skip, not throw.
+  require(zelhash_slot_capacity(d) == 0, "below allocation minimum skipped by discovery");
   bool rejected = false;
   try {
-    (void)zelhash_slot_capacity(d);
+    (void)zelhash_configured_slots(d);
   } catch (const std::string &) {
     rejected = true;
   }
-  require(rejected, "below allocation minimum rejected");
+  require(rejected, "below allocation minimum rejected by the workload");
   d = {};
   for (const char *value : {"junk", "1x", "0", "-1", "999999999999999999999999999999999999", "1"}) {
     setenv("MOM_ZELHASH_SLOTS", value, 1);
+    require(zelhash_slot_capacity(d) == MAX_SLOTS, "invalid override leaves discovery intact");
     rejected = false;
     try {
-      (void)zelhash_slot_capacity(d);
+      (void)zelhash_configured_slots(d);
     } catch (const std::string &) {
       rejected = true;
     }
@@ -181,12 +186,12 @@ static void test_capacity() {
   }
   const std::string valid = std::to_string(minimum);
   setenv("MOM_ZELHASH_SLOTS", valid.c_str(), 1);
-  require(zelhash_slot_capacity(d) == minimum, "minimum override");
+  require(zelhash_configured_slots(d) == minimum, "minimum override");
   const std::string whitespace = " " + valid;
   setenv("MOM_ZELHASH_SLOTS", whitespace.c_str(), 1);
   rejected = false;
   try {
-    (void)zelhash_slot_capacity(d);
+    (void)zelhash_configured_slots(d);
   } catch (const std::string &) {
     rejected = true;
   }

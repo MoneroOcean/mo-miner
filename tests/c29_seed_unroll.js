@@ -14,12 +14,7 @@ const pragma = "#pragma clang loop unroll_count(2)";
 
 function seedUnrollDirectives() {
   const lines = seed.split(/\r?\n/);
-  const directSeed = lines.findIndex(line => line.trim() === "if (direct_seed) {");
-  assert.ok(directSeed >= 0, "Expected the direct C29 seed path");
-  const directSeedEnd = lines.findIndex((line, index) => index > directSeed && line.trim() === "} else {");
-  assert.ok(directSeedEnd > directSeed, "Expected the fallback seed path after direct seeding");
-  const loopLines = lines.flatMap((line, index) =>
-    index > directSeed && index < directSeedEnd && line.trim() === loop ? [index] : []);
+  const loopLines = lines.flatMap((line, index) => line.trim() === loop ? [index] : []);
   assert.equal(loopLines.length, 1, "Expected exactly one C29 seed hash_index loop");
 
   const loopIndex = loopLines[0];
@@ -51,7 +46,7 @@ function seedUnrollDirectives() {
 }
 
 test.describe("C29 seed unroll guard", {concurrency: false}, () => {
-  test("keeps the exact HIP-specific unroll pragma adjacent to the direct seed loop", () => {
+  test("keeps the exact HIP-specific unroll pragma adjacent to the seed loop", () => {
     seedUnrollDirectives();
   });
 

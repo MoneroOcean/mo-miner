@@ -101,6 +101,10 @@ constexpr bool ROUND_DIRECT_CHAINS = false;
 #endif
 constexpr unsigned NLEVELS = K + 1;    // five progressive field counts
 constexpr unsigned NSTORED_LEVELS = K; // final zero pairs replace level 4
+// Slot strides stay 16-aligned. Automatic capacity and MOM_ZELHASH_SLOTS may not fall below the
+// mean bucket load plus one standard deviation.
+constexpr unsigned SLOT_ALIGNMENT = 16u;
+constexpr unsigned MIN_SLOTS = bucket_capacity(NBUCKETS, 1u, SLOT_ALIGNMENT);
 static_assert(MAX_SLOTS < (1u << 16));
 #if defined(MOM_EQ_FORWARD_MAP)
 // The recovery key reserves 14 low bits for a slot; its upper bits identify the bucket.

@@ -60,6 +60,21 @@ awk '
 test -s "$out/beam_compact_flush.inc"
 test -s "$out/beam_generic_flush.inc"
 build_run beam-scatter -UNDEBUG -I "$out" "$root/tests/native/beam_scatter.cpp"
+awk '
+  /^inline (bool (sycl_local_memory_fits|sycl_workgroup_fits|mom_parse_env_ulong)|unsigned sycl_default_workgroup)\(/ {
+    copies++; copying = 1
+  }
+  copying { print }
+  copying && /^}$/ { copying = 0; complete++ }
+  END { if (copies != 4 || complete != 4 || copying) exit 1 }
+' "$root/sycl/lib-internal.h" > "$out/beam_workgroup_helpers.inc"
+awk '
+  /^(inline bool beam_compact_enabled|unsigned beamhash3_workgroup)\(/ { copies++; copying = 1 }
+  copying { print }
+  copying && /^}$/ { copying = 0; complete++ }
+  END { if (copies != 2 || complete != 2 || copying) exit 1 }
+' "$root/sycl/beamhash3/layout.inc" > "$out/beamhash3_workgroup.inc"
+build_run beamhash3-admission -UNDEBUG -I "$out" "$root/tests/native/beamhash3_admission.cpp"
 
 awk '
   /^    if \(new_dag_words > / { copies++; copying = 1 }
@@ -70,6 +85,21 @@ awk '
   END { if (copies != 1 || complete != 1 || copying) exit 1 }
 ' "$root/sycl/etchash/state.inc" > "$out/etchash_dag_limit.inc"
 build_run etchash-word-limit -UNDEBUG -I "$out" "$root/tests/native/etchash_word_limit.cpp"
+
+awk '
+  /^constexpr uint32_t (ETCHASH_FORK_BLOCK|ETHASH_EPOCH|ETCHASH_EPOCH) = / { constants++; print }
+  /^(inline uint32_t etchash_(seed_)?epoch|bool is_zero_hash)\(/ { copies++; copying = 1 }
+  copying { print }
+  copying && /^}$/ { copying = 0; complete++ }
+  END { if (constants != 3 || copies != 3 || complete != 3 || copying) exit 1 }
+' "$root/sycl/etchash/device.inc" > "$out/etchash_epoch_helpers.inc"
+awk '
+  /^  void resolve_epochs\(/ { copies++; copying = 1 }
+  copying { print }
+  copying && /^  }$/ { copying = 0; complete++ }
+  END { if (copies != 1 || complete != 1 || copying) exit 1 }
+' "$root/sycl/etchash/state.inc" > "$out/etchash_resolve_epochs.inc"
+build_run etchash-epoch -UNDEBUG -I "$out" "$root/tests/native/etchash_epoch.cpp"
 
 build_run cn-gpu-launch "$root/tests/native/cn_gpu_launch.cpp"
 build_run cn-gpu-keccak -std=c++20 "$root/tests/native/cn_gpu_keccak.cpp"

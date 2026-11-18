@@ -353,7 +353,3 @@ static unsigned verthash_intensity(const sycl::device& dev) {
   }
   return 1u << 16;
 }
-
-// Equihash 125,4: the "intensity" is the number of header nonces searched per solve (one full Wagner
-// pass over a 3.72--4.25 GiB accelerator-specific arena), so one process searches one nonce per
-// dispatch. MOM_ZELHASH_INTENSITY overrides that process batch.

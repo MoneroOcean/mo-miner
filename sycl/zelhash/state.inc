@@ -1,4 +1,6 @@
-// Bound the aligned bucket capacity by total memory, single-allocation limits, and a minimum safe mean.
+// Bound the aligned bucket capacity by total memory and single-allocation limits. Return 0 below
+// MIN_SLOTS so discovery skips the device without throwing; MOM_ZELHASH_SLOTS applies only to the
+// workload process (zelhash_configured_slots).
 unsigned zelhash_slot_capacity(const sycl::device& device) {
   const bool gpu_compact = mom_is_cuda(device) || mom_is_hip(device);
   // Preserve the statistically selected fast capacity when it fits. On smaller or conservatively
@@ -25,26 +27,29 @@ unsigned zelhash_slot_capacity(const sycl::device& device) {
   if (arena_budget)
     capacity = std::min(capacity, arena_budget / (NBUCKETS * words_per_slot * sizeof(uint32_t)));
 
-  constexpr unsigned SLOT_ALIGNMENT = 16u;
   const unsigned aligned = round_down(
       static_cast<unsigned>(std::min<uint64_t>(capacity, std::numeric_limits<unsigned>::max())),
       SLOT_ALIGNMENT);
-  const unsigned mean = ceil_div_u64(NUM_ENTRIES, NBUCKETS);
-  const unsigned minimum = round_up(mean + ceil_sqrt(mean), SLOT_ALIGNMENT);
-  if (aligned < minimum)
+  return aligned < MIN_SLOTS ? 0u : aligned;
+}
+
+// Resolve the workload's slot stride, rejecting an unusable device or MOM_ZELHASH_SLOTS value.
+static unsigned zelhash_configured_slots(const sycl::device& device) {
+  const unsigned capacity = zelhash_slot_capacity(device);
+  if (!capacity)
     throw std::string("zelhash device has insufficient allocation capacity");
 
   // Keep the public tuning override bounded by this device-derived capacity. This lets additional
   // architectures sweep a safe stride with one binary while automatic mode remains portable.
   if (const char* value = std::getenv("MOM_ZELHASH_SLOTS"); value && *value) {
     unsigned long requested = 0;
-    if (!mom_parse_env_ulong("MOM_ZELHASH_SLOTS", requested) || requested < minimum ||
-        requested > aligned ||
+    if (!mom_parse_env_ulong("MOM_ZELHASH_SLOTS", requested) ||
+        requested < MIN_SLOTS || requested > capacity ||
         requested % SLOT_ALIGNMENT != 0u)
       throw std::string("MOM_ZELHASH_SLOTS must be a supported 16-slot-aligned capacity");
     return static_cast<unsigned>(requested);
   }
-  return aligned;
+  return capacity;
 }
 
 // Per-device state: queue + USM arenas (modeled on FishState). The Wagner arenas
@@ -84,7 +89,7 @@ public:
         queue(device, sycl::property_list{sycl::property::queue::in_order{}}),
         shared_io(device.is_cpu() || !mom_has_usm_device(device)),
         gpu_compact(mom_is_cuda(device) || mom_is_hip(device)),
-        slot_capacity(zelhash_slot_capacity(device)) {
+        slot_capacity(zelhash_configured_slots(device)) {
     if (!mom_has_usm_shared(device) || (!device.is_cpu() && !mom_has_usm_device(device)))
       throw std::string("zelhash SYCL device does not support required allocations");
   }
