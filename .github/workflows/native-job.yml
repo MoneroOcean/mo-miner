@@ -7,6 +7,10 @@ name: Native build job
 on:
   workflow_call:
     inputs:
+      name:
+        description: Job name shown by GitHub; reusable jobs otherwise all display as "run"
+        type: string
+        required: true
       run:
         description: Bash commands; every machine output must be written by this one step
         required: true
@@ -52,6 +56,7 @@ permissions:
 
 jobs:
   run:
+    name: ${{ inputs.name }}
     runs-on: ubuntu-24.04
     timeout-minutes: ${{ inputs.timeout }}
     env:

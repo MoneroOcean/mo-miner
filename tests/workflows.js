@@ -116,7 +116,7 @@ describe("Workflow structure", () => {
     }
   });
 
-  test("every job is bounded, checkouts drop credentials and uploads expire", () => {
+  test("every job is bounded and named, checkouts drop credentials and uploads expire", () => {
     for (const [file, workflow] of Object.entries(workflows)) {
       for (const [id, job] of Object.entries(map(workflow["jobs"]))) {
         const value = map(job), timeout = text(value["timeout-minutes"]);
@@ -129,6 +129,8 @@ describe("Workflow structure", () => {
     for (const call of nativeCalls()) {
       const timeout = text(call.with["timeout"]) || "60";
       assert.ok(Number(timeout) >= 10 && Number(timeout) <= 345, call.where);
+      // GitHub shows only the reusable job's own name; the caller id keeps each entry distinct.
+      assert.equal(text(call.with["name"]), call.where.split(":")[1], call.where + " names its native job");
     }
     for (const {where, step} of allSteps()) {
       const uses = text(step["uses"]);

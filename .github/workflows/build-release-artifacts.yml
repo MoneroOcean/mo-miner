@@ -31,6 +31,7 @@ jobs:
   linux-sources:
     uses: ./.github/workflows/native-job.yml
     with:
+      name: linux-sources
       timeout: 30
       upload: >-
         native-linux-sdk-state-@-sources.tar
@@ -39,6 +40,7 @@ jobs:
   llvm-sources:
     uses: ./.github/workflows/native-job.yml
     with:
+      name: llvm-sources
       upload: >-
         native-llvm21-state-@-sources.tar
       run: node scripts/run-native-ci.js stage sources
@@ -46,6 +48,7 @@ jobs:
   hermes-sources:
     uses: ./.github/workflows/native-job.yml
     with:
+      name: hermes-sources
       timeout: 30
       upload: >-
         native-hermes-state-@-sources.tar
@@ -54,6 +57,7 @@ jobs:
   acpp-sources:
     uses: ./.github/workflows/native-job.yml
     with:
+      name: acpp-sources
       timeout: 30
       upload: >-
         native-acpp-state-@-sources.tar
@@ -65,6 +69,7 @@ jobs:
   zstd-sources:
     uses: ./.github/workflows/native-job.yml
     with:
+      name: zstd-sources
       timeout: 30
       upload: >-
         native-zstd-state-@-sources.tar
@@ -73,6 +78,7 @@ jobs:
   rocm-sources:
     uses: ./.github/workflows/native-job.yml
     with:
+      name: rocm-sources
       timeout: 30
       upload: >-
         native-rocm-state-@-sources.tar
@@ -84,6 +90,7 @@ jobs:
   gnu-headers-linux:
     uses: ./.github/workflows/native-job.yml
     with:
+      name: gnu-headers-linux
       timeout: 30
       apt: libstdc++-13-dev libc6-dev linux-libc-dev
       upload: >-
@@ -93,6 +100,7 @@ jobs:
   gnu-headers-windows:
     uses: ./.github/workflows/native-job.yml
     with:
+      name: gnu-headers-windows
       timeout: 30
       apt: mingw-w64-common mingw-w64-x86-64-dev g++-mingw-w64-x86-64-posix
       upload: >-
@@ -110,6 +118,7 @@ jobs:
     needs: [linux-sources]
     uses: ./.github/workflows/native-job.yml
     with:
+      name: dpcpp-cuda-inputs
       download: >-
         native-linux-sdk-state-@-sources.tar
       upload: >-
@@ -122,6 +131,7 @@ jobs:
     needs: [linux-sources, dpcpp-cuda-inputs]
     uses: ./.github/workflows/native-job.yml
     with:
+      name: cuda-images
       download: >-
         native-linux-sdk-state-@-sources.tar
         native-linux-dpcpp-cuda-inputs-@.tar
@@ -141,6 +151,7 @@ jobs:
     needs: [llvm-sources]
     uses: ./.github/workflows/native-job.yml
     with:
+      name: linux-llvm
       timeout: 330
       dev: oneapi
       cache: linux-llvm
@@ -163,6 +174,7 @@ jobs:
     needs: [llvm-sources]
     uses: ./.github/workflows/native-job.yml
     with:
+      name: io-openssl
       download: >-
         native-llvm21-state-@-sources.tar
       upload: >-
@@ -173,6 +185,7 @@ jobs:
     needs: [llvm-sources]
     uses: ./.github/workflows/native-job.yml
     with:
+      name: openmp-sdk
       download: >-
         native-llvm21-state-@-sources.tar
       upload: >-
@@ -183,6 +196,7 @@ jobs:
     needs: [zstd-sources]
     uses: ./.github/workflows/native-job.yml
     with:
+      name: zstd-sdk
       download: >-
         native-zstd-state-@-sources.tar
       upload: >-
@@ -193,6 +207,7 @@ jobs:
     needs: [hermes-sources]
     uses: ./.github/workflows/native-job.yml
     with:
+      name: hermes-sdk
       download: >-
         native-hermes-state-@-sources.tar
       upload: >-
@@ -206,6 +221,7 @@ jobs:
     needs: [rocm-sources, llvm-sources, linux-llvm]
     uses: ./.github/workflows/native-job.yml
     with:
+      name: rocm-comgr
       download: >-
         native-rocm-state-@-sources.tar
         native-llvm21-state-@-sources.tar
@@ -223,6 +239,7 @@ jobs:
     needs: [rocm-comgr, linux-llvm]
     uses: ./.github/workflows/native-job.yml
     with:
+      name: rocm-host
       download: >-
         native-linux-rocm-comgr-sdk-@.tar
       upload: >-
@@ -235,6 +252,7 @@ jobs:
     needs: [acpp-sources, openmp-sdk, rocm-host, dpcpp-cuda-inputs, linux-llvm]
     uses: ./.github/workflows/native-job.yml
     with:
+      name: acpp-sdk
       download: >-
         native-acpp-state-@-sources.tar
         native-linux-openmp-sdk-@.tar
@@ -258,6 +276,7 @@ jobs:
     needs: [linux-sources, dpcpp-cuda-inputs, gnu-headers-linux]
     uses: ./.github/workflows/native-job.yml
     with:
+      name: linux-jit-resources
       download: >-
         native-linux-sdk-state-@-sources.tar
         native-linux-dpcpp-cuda-inputs-@.tar
@@ -275,6 +294,7 @@ jobs:
     needs: [dpcpp-cuda-inputs, linux-jit-resources]
     uses: ./.github/workflows/native-job.yml
     with:
+      name: linux-jit
       timeout: 330
       download: >-
         native-linux-sdk-state-@-sources.tar
@@ -293,6 +313,7 @@ jobs:
     needs: [linux-jit]
     uses: ./.github/workflows/native-job.yml
     with:
+      name: linux-jit-runtime
       timeout: 30
       download: >-
         native-linux-jit-runtime-proof-@.tar
@@ -314,6 +335,7 @@ jobs:
     needs: [linux-llvm, linux-sources, dpcpp-cuda-inputs, cuda-images, linux-jit, acpp-sources, acpp-sdk, hermes-sdk, rocm-host, openmp-sdk, zstd-sdk, io-openssl, gnu-headers-linux]
     uses: ./.github/workflows/native-job.yml
     with:
+      name: linux-descriptor
       npm: true
       dev: node
       download: >-
@@ -341,6 +363,7 @@ jobs:
     needs: [linux-descriptor]
     uses: ./.github/workflows/native-job.yml
     with:
+      name: component-core
       npm: true
       dev: node
       download: >-
@@ -369,6 +392,7 @@ jobs:
     needs: [linux-descriptor]
     uses: ./.github/workflows/native-job.yml
     with:
+      name: component-acpp-cuda
       npm: true
       dev: node
       download: >-
@@ -397,6 +421,7 @@ jobs:
     needs: [linux-descriptor]
     uses: ./.github/workflows/native-job.yml
     with:
+      name: component-acpp-hip
       npm: true
       dev: node
       download: >-
@@ -425,6 +450,7 @@ jobs:
     needs: [linux-descriptor]
     uses: ./.github/workflows/native-job.yml
     with:
+      name: component-dpcpp
       npm: true
       dev: node
       download: >-
@@ -453,6 +479,7 @@ jobs:
     needs: [linux-descriptor]
     uses: ./.github/workflows/native-job.yml
     with:
+      name: component-dpcpp-opencl
       npm: true
       dev: node
       download: >-
@@ -481,6 +508,7 @@ jobs:
     needs: [linux-descriptor]
     uses: ./.github/workflows/native-job.yml
     with:
+      name: component-oneapi
       npm: true
       dev: node
       download: >-
@@ -509,6 +537,7 @@ jobs:
     needs: [linux-descriptor, component-core, component-acpp-cuda, component-acpp-hip, component-dpcpp, component-dpcpp-opencl, component-oneapi]
     uses: ./.github/workflows/native-job.yml
     with:
+      name: linux-application
       npm: true
       dev: node
       download: >-
@@ -650,6 +679,7 @@ jobs:
     needs: [linux-sources, dpcpp-cuda-inputs, gnu-headers-windows, linux-jit-resources]
     uses: ./.github/workflows/native-job.yml
     with:
+      name: windows-jit-resources
       timeout: 30
       download: >-
         native-linux-sdk-state-@-sources.tar
@@ -674,6 +704,7 @@ jobs:
     needs: [windows-controller, linux-llvm]
     uses: ./.github/workflows/native-job.yml
     with:
+      name: windows-llvm
       timeout: 330
       npm: true
       apt: 7zip msitools
@@ -695,6 +726,7 @@ jobs:
     needs: [windows-jit-resources, linux-sources, dpcpp-cuda-inputs, windows-controller, linux-llvm]
     uses: ./.github/workflows/native-job.yml
     with:
+      name: windows-jit
       timeout: 330
       npm: true
       apt: 7zip msitools
@@ -722,6 +754,7 @@ jobs:
     needs: [windows-jit, linux-sources, dpcpp-cuda-inputs, windows-controller, hermes-sdk, linux-llvm]
     uses: ./.github/workflows/native-job.yml
     with:
+      name: windows-dpcpp
       npm: true
       apt: 7zip msitools
       dev: oneapi
@@ -759,6 +792,7 @@ jobs:
     needs: [linux-sources, dpcpp-cuda-inputs, linux-llvm]
     uses: ./.github/workflows/native-job.yml
     with:
+      name: windows-gpu-oneapi
       npm: true
       apt: cmake ninja-build python3 binutils 7zip msitools
       dev: oneapi
@@ -781,6 +815,7 @@ jobs:
     needs: [linux-sources, dpcpp-cuda-inputs, linux-llvm, cuda-images]
     uses: ./.github/workflows/native-job.yml
     with:
+      name: windows-gpu-dpcpp
       npm: true
       apt: cmake ninja-build python3 binutils 7zip msitools
       download: >-
@@ -804,6 +839,7 @@ jobs:
     needs: [linux-sources, dpcpp-cuda-inputs, linux-llvm]
     uses: ./.github/workflows/native-job.yml
     with:
+      name: windows-gpu-dpcpp-opencl
       npm: true
       apt: cmake ninja-build python3 binutils 7zip msitools
       download: >-
@@ -825,6 +861,7 @@ jobs:
     needs: [linux-sources, acpp-sources, acpp-sdk, linux-llvm, dpcpp-cuda-inputs, cuda-images]
     uses: ./.github/workflows/native-job.yml
     with:
+      name: windows-gpu-acpp-cuda
       npm: true
       apt: cmake ninja-build python3 binutils 7zip msitools
       download: >-
@@ -855,6 +892,7 @@ jobs:
     needs: [linux-sources, acpp-sources, acpp-sdk, linux-llvm, rocm-comgr]
     uses: ./.github/workflows/native-job.yml
     with:
+      name: windows-gpu-acpp-hip
       npm: true
       apt: cmake ninja-build python3 binutils 7zip msitools
       download: >-
@@ -883,6 +921,7 @@ jobs:
     needs: [windows-llvm, windows-controller, linux-llvm, linux-sources, dpcpp-cuda-inputs, rocm-sources, acpp-sources, rocm-comgr]
     uses: ./.github/workflows/native-job.yml
     with:
+      name: windows-host
       npm: true
       apt: 7zip msitools unzip
       dev: oneapi
@@ -924,6 +963,7 @@ jobs:
     needs: [windows-core, windows-dpcpp, windows-host, windows-controller, hermes-sdk, linux-llvm, dpcpp-cuda-inputs, linux-sources, rocm-comgr, cuda-images, windows-gpu-oneapi, windows-gpu-dpcpp, windows-gpu-dpcpp-opencl, windows-gpu-acpp-cuda, windows-gpu-acpp-hip]
     uses: ./.github/workflows/native-job.yml
     with:
+      name: windows-application
       npm: true
       apt: 7zip msitools unzip
       dev: oneapi
