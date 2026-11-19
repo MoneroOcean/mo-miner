@@ -30,7 +30,7 @@ function sha256(file) {return createHash("sha256").update(fs.readFileSync(file))
 let cudaImageFixtureCounter = 0;
 /** @param {import("node:test").TestContext} t @param {{suffix?:string,runnerTemp?:string}} [options] */
 function cudaImagesFixture(t, options = {}) {
-  const suffix = options.suffix || String(Date.now()) + "-" + String(++cudaImageFixtureCounter),
+  const suffix = options.suffix || "ci-" + String(Date.now()) + "-" + String(++cudaImageFixtureCounter),
     ownsRunnerTemp = !options.runnerTemp, runnerTemp = options.runnerTemp || fs.mkdtempSync(path.join("/var/tmp", "mom-windows-cuda-images-ci-")),
     incoming = path.join(runnerTemp, "incoming"),
     root = path.join("/tmp", "mom-native-cuda-images-handoff-" + suffix),
@@ -251,7 +251,7 @@ function mockAcppGpuReaders(t, fixture, queryOptions = {}) {
 let acppFixtureCounter = 0;
 /** @param {import("node:test").TestContext} t */
 function acppFixture(t) {
-  const suffix = String(Date.now()).slice(-11) + String(process.pid % 100000).padStart(5, "0") +
+  const suffix = "ci-" + String(Date.now()).slice(-11) + String(process.pid % 100000).padStart(5, "0") +
       String(++acppFixtureCounter).padStart(3, "0") + "-77",
     runnerTemp = fs.realpathSync(fs.mkdtempSync(path.join("/var/tmp", "mom-windows-acpp-ci-"))), incoming = path.join(runnerTemp, "incoming"),
     sdkName = "mom-native-acpp-cuda-hip-sdk-" + suffix, root = path.join("/tmp", sdkName), build = path.join(root, "build"),
@@ -352,7 +352,7 @@ function localDpcppConfigFixture(t) {
 let windowsGpuConfigFixtureCounter = 0;
 /** @param {import("node:test").TestContext} t */
 function dpcppWindowsGpuConfigFixture(t) {
-  const suffix = `${Date.now()}-${++windowsGpuConfigFixtureCounter}`, runnerTemp = fs.mkdtempSync(path.join("/var/tmp", "mom-windows-gpu-config-")),
+  const suffix = `ci-${Date.now()}-${++windowsGpuConfigFixtureCounter}`, runnerTemp = fs.mkdtempSync(path.join("/var/tmp", "mom-windows-gpu-config-")),
     taskRoot = fs.mkdtempSync(path.join("/var/tmp", "mom-windows-gpu-config-task-")),
     dpcppRoot = path.join("/tmp", "mom-native-dpcpp-cuda-inputs-" + suffix),
     linuxSource = path.join("/tmp", "mom-native-linux-source-prerequisites-" + suffix),

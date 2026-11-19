@@ -8,9 +8,9 @@ const hash = "a".repeat(64), now = Date.now();
 
 /** @param {string} root @param {string} stage */
 function environment(root, stage = "configure") {
-  const suffix = "9000000000000008-88", runnerTemp = path.join(root, "runner"), future = Math.floor(now / 1000),
+  const suffix = "ci-9000000000000008-88", runnerTemp = path.join(root, "runner"), future = Math.floor(now / 1000),
     env = /** @type {NodeJS.ProcessEnv} */ ({
-      MOM_NATIVE_CI_SUFFIX: "9000000000000008-88", GITHUB_JOB: "windows-jit",
+      MOM_NATIVE_CI_SUFFIX: "ci-9000000000000008-88", GITHUB_JOB: "windows-jit",
       RUNNER_TEMP: runnerTemp, MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: "2",
       GITHUB_OUTPUT: path.join(root, "outputs"), GITHUB_STEP_SUMMARY: path.join(root, "summary"),
       MOM_NATIVE_LINUX_SOURCES_DIR: path.join("/tmp", "mom-native-linux-source-prerequisites-" + suffix),
@@ -70,20 +70,20 @@ test.describe("Windows original source-JIT CI phases", {skip: process.platform !
   test.afterEach(() => {fs.rmSync(root, {recursive: true, force: true});});
 
   test("uses the original four phase sequence and same-run state names", () => {
-    const env = environment(root), config = path.join(env["RUNNER_TEMP"] || "", "incoming/config/native-windows-jit-sdk-9000000000000008-88.json"),
+    const env = environment(root), config = path.join(env["RUNNER_TEMP"] || "", "incoming/config/native-windows-jit-sdk-ci-9000000000000008-88.json"),
       plan = windowsJitCiJobPlan("configure", config, undefined, env, "linux", "x64", now);
     assert.equal(plan.jobId, "windows-jit_configure");
-    assert.equal(plan.root, "/tmp/mom-native-windows-jit-9000000000000008-88");
-    assert.equal(plan.descriptor, path.join(env["RUNNER_TEMP"] || "", "mom-native-windows-llvm21-descriptor-9000000000000008-88", "descriptor.json"));
-    assert.equal(plan.resourcesArtifactRoot, "/tmp/mom-native-windows-jit-resources-9000000000000008-88");
+    assert.equal(plan.root, "/tmp/mom-native-windows-jit-ci-9000000000000008-88");
+    assert.equal(plan.descriptor, path.join(env["RUNNER_TEMP"] || "", "mom-native-windows-llvm21-descriptor-ci-9000000000000008-88", "descriptor.json"));
+    assert.equal(plan.resourcesArtifactRoot, "/tmp/mom-native-windows-jit-resources-ci-9000000000000008-88");
     assert.equal(plan.resourcesRoot, path.join(plan.resourcesArtifactRoot, "resources"));
-    assert.equal(plan.dpcppName, "mom-native-dpcpp-cuda-inputs-9000000000000008-88");
-    assert.equal(path.basename(plan.dpcppArchive), "native-linux-dpcpp-cuda-inputs-9000000000000008-88.tar");
-    assert.equal(plan.archive, path.join(env["RUNNER_TEMP"] || "", "native-windows-jit-sdk-9000000000000008-88-configured.tar"));
+    assert.equal(plan.dpcppName, "mom-native-dpcpp-cuda-inputs-ci-9000000000000008-88");
+    assert.equal(path.basename(plan.dpcppArchive), "native-linux-dpcpp-cuda-inputs-ci-9000000000000008-88.tar");
+    assert.equal(plan.archive, path.join(env["RUNNER_TEMP"] || "", "native-windows-jit-sdk-ci-9000000000000008-88-configured.tar"));
     assert.equal(plan.previousPhase, null);
     for (const stage of ["support", "targets", "frontend", "link"]) {
       const stagedEnv = environment(root, stage), stagedConfig = path.join(stagedEnv["RUNNER_TEMP"] || "",
-          "incoming/config/native-windows-jit-sdk-9000000000000008-88.json"), staged = windowsJitCiJobPlan(stage, stagedConfig, hash, stagedEnv, "linux", "x64", now);
+          "incoming/config/native-windows-jit-sdk-ci-9000000000000008-88.json"), staged = windowsJitCiJobPlan(stage, stagedConfig, hash, stagedEnv, "linux", "x64", now);
       assert.equal(staged.previousPhase, ({support: "configured", targets: "support", frontend: "targets", link: "frontend"})[stage]);
       assert.equal(staged.jobId, "windows-jit_" + stage);
     }
@@ -91,14 +91,14 @@ test.describe("Windows original source-JIT CI phases", {skip: process.platform !
 
   test("mints one bounded run deadline only for configure", () => {
     const env = environment(root); delete env["MOM_NATIVE_WINDOWS_JIT_RUN_DEADLINE_EPOCH"];
-    const config = path.join(env["RUNNER_TEMP"] || "", "incoming/config/native-windows-jit-sdk-9000000000000008-88.json"),
+    const config = path.join(env["RUNNER_TEMP"] || "", "incoming/config/native-windows-jit-sdk-ci-9000000000000008-88.json"),
       plan = windowsJitCiJobPlan("configure", config, undefined, env, "linux", "x64", now);
     assert.equal(Number(plan.runDeadlineEpoch), Math.floor(now / 1000) + 8 * 60 * 60);
     assert.throws(() => windowsJitCiJobPlan("support", config, hash, {...env, GITHUB_JOB: "windows-jit"}, "linux", "x64", now), /deadline/);
   });
 
   test("rejects unknown phases, malformed identities and non-Linux or non-build-only jobs", () => {
-    const env = environment(root), config = path.join(env["RUNNER_TEMP"] || "", "incoming/config/native-windows-jit-sdk-9000000000000008-88.json");
+    const env = environment(root), config = path.join(env["RUNNER_TEMP"] || "", "incoming/config/native-windows-jit-sdk-ci-9000000000000008-88.json");
     for (const stage of ["all", "configure;link", "constructor"]) {assert.throws(() => windowsJitCiJobPlan(stage, config, hash, env, "linux", "x64", now));}
     for (const changed of [{...env, MOM_NATIVE_CI_SUFFIX: "../x"}, {...env, MOM_NATIVE_CI_SUFFIX: ""}, {...env, MOM_BUILD_JOBS: "3"}]) {
       assert.throws(() => windowsJitCiJobPlan("configure", config, undefined, changed, "linux", "x64", now));
@@ -107,7 +107,7 @@ test.describe("Windows original source-JIT CI phases", {skip: process.platform !
   });
 
   test("rejects stale config paths, state predecessors and absent external pins", () => {
-    const env = environment(root), config = path.join(env["RUNNER_TEMP"] || "", "incoming/config/native-windows-jit-sdk-9000000000000008-88.json");
+    const env = environment(root), config = path.join(env["RUNNER_TEMP"] || "", "incoming/config/native-windows-jit-sdk-ci-9000000000000008-88.json");
     assert.throws(() => windowsJitCiJobPlan("configure", "/tmp/stale.json", undefined, env, "linux", "x64", now), /paths/);
     assert.throws(() => windowsJitCiJobPlan("targets", config, hash, {...env, MOM_NATIVE_WINDOWS_JIT_STATE_PREVIOUS_PHASE: "configured"}, "linux", "x64", now), /paths/);
     assert.throws(() => windowsJitCiJobPlan("configure", config, undefined, {...env, MOM_NATIVE_WINDOWS_JIT_RESOURCES_BUNDLE_SHA256: ""}, "linux", "x64", now), /external/);
@@ -115,7 +115,7 @@ test.describe("Windows original source-JIT CI phases", {skip: process.platform !
   });
 
   test("limits each phase to 55 minutes and never extends the original eight-hour run", () => {
-    const env = environment(root), config = path.join(env["RUNNER_TEMP"] || "", "incoming/config/native-windows-jit-sdk-9000000000000008-88.json");
+    const env = environment(root), config = path.join(env["RUNNER_TEMP"] || "", "incoming/config/native-windows-jit-sdk-ci-9000000000000008-88.json");
     assert.throws(() => windowsJitCiJobPlan("configure", config, undefined,
       {...env, MOM_NATIVE_WINDOWS_JIT_DEADLINE_EPOCH: String(Math.floor(now / 1000) + 56 * 60)}, "linux", "x64", now), /55-minute/);
     assert.throws(() => windowsJitCiJobPlan("configure", config, undefined,
@@ -124,7 +124,7 @@ test.describe("Windows original source-JIT CI phases", {skip: process.platform !
 
   test("composes the original config from admitted same-run inputs and writes it once", t => {
     mockCanonicalTools(t, root);
-    const env = environment(root), configPath = path.join(env["RUNNER_TEMP"] || "", "incoming/config/native-windows-jit-sdk-9000000000000008-88.json"),
+    const env = environment(root), configPath = path.join(env["RUNNER_TEMP"] || "", "incoming/config/native-windows-jit-sdk-ci-9000000000000008-88.json"),
       plan = windowsJitCiJobPlan("configure", configPath, undefined, env, "linux", "x64", now),
       compilerReceipt = path.join(root, "linux", "compiler.json"), nativeJitTools = nativeTablegenInputs(root, compilerReceipt),
       admitted = {linux: {compilerPreparedReceipt: compilerReceipt},
@@ -161,7 +161,7 @@ test.describe("Windows original source-JIT CI phases", {skip: process.platform !
   });
 
   test("requires a configure-generated config to be fresh and prevents report aliasing", () => {
-    const env = environment(root), configPath = path.join(env["RUNNER_TEMP"] || "", "incoming/config/native-windows-jit-sdk-9000000000000008-88.json");
+    const env = environment(root), configPath = path.join(env["RUNNER_TEMP"] || "", "incoming/config/native-windows-jit-sdk-ci-9000000000000008-88.json");
     assert.throws(() => windowsJitCiJobPlan("configure", configPath, hash, env, "linux", "x64", now));
     assert.throws(() => windowsJitCiJobPlan("configure", configPath, undefined, {...env, GITHUB_OUTPUT: configPath}, "linux", "x64", now), /report files/);
   });

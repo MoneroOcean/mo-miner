@@ -14,13 +14,13 @@ const pinKeys = ["SOURCE_BUNDLE_SHA256", "DPCPP_BUNDLE_SHA256", "DPCPP_MANIFEST_
  * @param {number} now @returns {NodeJS.ProcessEnv} */
 function preflightEnv(now) {
   return {...Object.fromEntries(pinKeys.map(key => ["MOM_NATIVE_WINDOWS_DPCPP_STATIC_" + key, "a".repeat(64)])),
-    RUNNER_TEMP: "/runner/temp", MOM_NATIVE_CI_SUFFIX: "20261109-1", MOM_CI_DEADLINE_EPOCH: String(now + 900)};
+    RUNNER_TEMP: "/runner/temp", MOM_NATIVE_CI_SUFFIX: "ci-20261109-1", MOM_CI_DEADLINE_EPOCH: String(now + 900)};
 }
 
 /** Stage a fresh same-run component under /tmp plus a private runner temp with an empty GITHUB_OUTPUT.
  * @param {import("node:test").TestContext} t */
 function sealFixture(t) {
-  const f = fixture(t), suffix = `${Date.now()}${process.pid}-1`, name = "native-windows-dpcpp-static-" + suffix,
+  const f = fixture(t), suffix = `ci-${Date.now()}${process.pid}-1`, name = "native-windows-dpcpp-static-" + suffix,
     root = path.join("/tmp", name), runnerTemp = fs.mkdtempSync(path.join("/var/tmp", "mom-windows-dpcpp-runner-")),
     archive = path.join(runnerTemp, name + ".tar"), output = path.join(runnerTemp, "github-output");
   assert.equal(fs.existsSync(root), false);
@@ -28,7 +28,7 @@ function sealFixture(t) {
   t.after(() => fs.rmSync(runnerTemp, {recursive: true, force: true}));
   stageWindowsDpcppComponent(f.links, {path: "/original/adapter-receipt.json", sha256: "1".repeat(64)}, root);
   fs.writeFileSync(output, "", {flag: "wx"});
-  const env = {RUNNER_TEMP: runnerTemp, MOM_NATIVE_CI_SUFFIX: suffix.split("-")[0] + "-1", GITHUB_OUTPUT: output,
+  const env = {RUNNER_TEMP: runnerTemp, MOM_NATIVE_CI_SUFFIX: suffix, GITHUB_OUTPUT: output,
     MOM_NATIVE_WINDOWS_DPCPP_STATIC_COMPONENT_ROOT: root};
   return {f, name, root, archive, output, env};
 }
@@ -39,10 +39,10 @@ test.describe("Windows original static DPC++ job script", {skip: process.platfor
     assert.equal(deadline, now + 900); assert.equal(pins.linuxHermes, "a".repeat(64));
     assert.deepEqual(hostSdk, {
       MOM_NATIVE_WINDOWS_HOST_SDK_DEADLINE_EPOCH: String(now + 900),
-      MOM_NATIVE_WINDOWS_HOST_SDK_WORK_ROOT: "/runner/temp/mom-native-windows-host-sdk-20261109-1",
-      MOM_NATIVE_WINDOWS_HOST_SDK_ARCHIVE_DIR: "/runner/temp/mom-native-windows-host-sdk-20261109-1/archives",
-      MOM_NATIVE_WINDOWS_HOST_SDK_OUTPUT_DIR: "/runner/temp/mom-native-windows-host-sdk-20261109-1/native-windows-host-sdk-20261109-1",
-      MOM_NATIVE_WINDOWS_HOST_SDK_METADATA_TAR: "/runner/temp/native-windows-host-sdk-20261109-1-metadata.tar",
+      MOM_NATIVE_WINDOWS_HOST_SDK_WORK_ROOT: "/runner/temp/mom-native-windows-host-sdk-ci-20261109-1",
+      MOM_NATIVE_WINDOWS_HOST_SDK_ARCHIVE_DIR: "/runner/temp/mom-native-windows-host-sdk-ci-20261109-1/archives",
+      MOM_NATIVE_WINDOWS_HOST_SDK_OUTPUT_DIR: "/runner/temp/mom-native-windows-host-sdk-ci-20261109-1/native-windows-host-sdk-ci-20261109-1",
+      MOM_NATIVE_WINDOWS_HOST_SDK_METADATA_TAR: "/runner/temp/native-windows-host-sdk-ci-20261109-1-metadata.tar",
     });
   });
 

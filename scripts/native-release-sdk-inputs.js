@@ -6,7 +6,7 @@ const fs = require("node:fs"), path = require("node:path"), {spawnSync} = requir
 const {isDeepStrictEqual} = require("node:util");
 const {fileHash, readBuildJson, readBuildText, sourceInputs, verifySourceInputs} = require("./build-source-inputs");
 const {isStaticArchive} = require("./native-audit");
-const {hermesPins, hermesSourceFiles} = require("./build-native-hermes");
+const {hermesPins, hermesRecipeFiles, hermesSourceFiles} = require("./build-native-hermes");
 const {comgrSdkInputs} = require("./native-comgr-inputs");
 const {admitSyclSource, rocmInputs} = require("./native-sycl-inputs");
 const {elfReport} = require("./native-elf");
@@ -22,8 +22,7 @@ const syclRecipe = ["scripts/build-native-sycl-sdk.js", "scripts/native-sycl-inp
   "tests/reference/native-jit-cache.cpp",
   "scripts/build-environment.js", "scripts/native-audit.js", "scripts/native-resources.js",
   "runtime/adaptivecpp-static.patch", "runtime/adaptivecpp-jit.patch"];
-const hermesRecipe = ["scripts/build-native-hermes.js", "scripts/build-source-inputs.js", "scripts/build-environment.js",
-  "scripts/native-audit.js", "scripts/native-linux-sysroot.js", "runtime/hermes-host-rejections.patch"];
+const hermesRecipe = hermesRecipeFiles("linux");
 const rocmRecipe = ["scripts/build-native-rocm-host-runtime.js", "scripts/build-native-sycl-sdk.js", "scripts/build-native-comgr-sdk.js",
   "scripts/native-comgr-inputs.js", "scripts/prepare-native-sdk-sources.js", "scripts/build-native-release.js",
   "scripts/build-source-inputs.js", "scripts/build-environment.js", "scripts/native-audit.js", "scripts/native-sycl-inputs.js", "scripts/native-hcf.js",

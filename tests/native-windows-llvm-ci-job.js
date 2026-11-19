@@ -3,7 +3,7 @@
 const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), os = require("node:os"),
   path = require("node:path"), vm = require("node:vm"), {createHash} = require("node:crypto");
 const {buildPhases} = require("../scripts/build-native-windows-llvm-sdk"),
-  {windowsLlvmCiJobPlan, windowsLlvmCiJobPreflight, windowsLlvmDescriptorProducerPins, hostSdkDeadline} = require("../scripts/run-native-windows-llvm-ci");
+  {windowsLlvmCiJobPlan, windowsLlvmCiJobPreflight, windowsLlvmDescriptorProducerPins, windowsLlvmOutputValid, hostSdkDeadline} = require("../scripts/run-native-windows-llvm-ci");
 
 let fixtureSequence = 0;
 
@@ -13,12 +13,12 @@ function sha256(bytes) {return createHash("sha256").update(bytes).digest("hex");
 /** @param {import('node:test').TestContext} t @param {number} [nowMs] */
 function fixture(t, nowMs = Date.now()) {
   const runnerTemp = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "mom-windows-llvm-job-")),
-    runId = String(nowMs) + String(++fixtureSequence).padStart(4, "0"), attempt = "1", suffix = runId + "-" + attempt,
+    runId = String(nowMs) + String(++fixtureSequence).padStart(4, "0"), attempt = "1", suffix = "ci-" + runId + "-" + attempt,
     runDeadlineEpoch = String(Math.ceil((nowMs + 7 * 60 * 60 * 1000) / 1000)),
     jobDeadlineEpoch = String(Math.ceil((nowMs + 55 * 60 * 1000) / 1000)),
     outputFile = path.join(runnerTemp, "github-output"), summaryFile = path.join(runnerTemp, "github-summary"),
     environmentFile = path.join(runnerTemp, "github-env"),
-    environment = /** @type {NodeJS.ProcessEnv} */ ({RUNNER_TEMP: runnerTemp, MOM_NATIVE_CI_SUFFIX: `${runId}-${attempt}`,
+    environment = /** @type {NodeJS.ProcessEnv} */ ({RUNNER_TEMP: runnerTemp, MOM_NATIVE_CI_SUFFIX: `ci-${runId}-${attempt}`,
       GITHUB_JOB: "windows_llvm", MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: "2",
       MOM_NATIVE_WINDOWS_LLVM_DIR: path.join("/tmp", "mom-native-windows-llvm21-" + suffix),
       MOM_NATIVE_WINDOWS_LLVM_DESCRIPTOR_DIR: path.join(runnerTemp, "mom-native-windows-llvm21-descriptor-" + suffix),
@@ -112,7 +112,7 @@ test.describe("Windows LLVM CI phase job plan", {skip: process.platform !== "lin
     fs.writeFileSync(archive, "small state archive fixture\n", {flag: "wx"});
     assert.ok(start >= 0 && end > start, "finishStage remains extractable for direct behavior coverage");
     const finishStage = vm.runInNewContext("(" + source.slice(start, end) + ")", {
-      Buffer, createHash, fs, path, buildPhaseOutputValues: new Set(buildPhases.map(row => "build-" + row.name)),
+      Buffer, createHash, fs, path, windowsLlvmOutputValid, buildPhaseOutputValues: new Set(buildPhases.map(row => "build-" + row.name)),
       fileHash: (/** @type {string} */ file) => sha256(fs.readFileSync(file)),
       stateTransport: {packWindowsNativeLlvmState: () => {
         const manifest = {archive: {sha256: bundleSha256}}, manifestSha256 = sha256(JSON.stringify(manifest) + "\n");
@@ -427,4 +427,17 @@ test.describe("Windows LLVM descriptor producer output pins", {skip: process.pla
     assert.throws(() => windowsLlvmDescriptorProducerPins(f.generated, path.join(f.root, "other.json"), f.provenancePath), /inconsistent paths or pins/);
     assert.throws(() => windowsLlvmDescriptorProducerPins(f.generated, f.descriptorPath, path.join(f.root, "other-provenance.json")), /inconsistent paths or pins/);
   });
+});
+
+test("workflow outputs admit the CI state directory for the plain run-independent suffix", {skip: process.platform !== "linux"}, t => {
+  // CI sets MOM_NATIVE_CI_SUFFIX=ci; a digits-only directory pattern rejected every configure output.
+  const runnerTemp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mom-win-llvm-output-")));
+  t.after(() => fs.rmSync(runnerTemp, {recursive: true, force: true}));
+  const {windowsNativeLlvmCiStatePaths} = require("../scripts/native-ci-windows-llvm");
+  const state = windowsNativeLlvmCiStatePaths({RUNNER_TEMP: runnerTemp, MOM_NATIVE_CI_SUFFIX: "ci", MOM_AOT_BUILD_ONLY: "1",
+    MOM_BUILD_JOBS: "4", MOM_NATIVE_WINDOWS_LLVM_RUN_DEADLINE_EPOCH: "1900000000", GITHUB_JOB: "windows_llvm",
+    MOM_NATIVE_WINDOWS_LLVM_DIR: "/tmp/mom-native-windows-llvm21-ci"}, "linux", "x64");
+  assert.equal(windowsLlvmOutputValid("windows_llvm_state_dir", state.output), true);
+  assert.equal(windowsLlvmOutputValid("windows_llvm_state_dir", "/tmp/mom-native-windows-llvm21-ci/../output"), false);
+  assert.equal(windowsLlvmOutputValid("Bad-Key", "true"), false);
 });

@@ -69,4 +69,26 @@ test.describe("SDK producer recipes", () => {
       }
     }
   });
+
+  test("exported recipe lists cover their producer's local modules", () => {
+    // The Windows CI controller and handoff admissions compare producer receipts against these
+    // exported lists. Private copies went stale when the producers gained the sysroot module and
+    // rejected every Windows controller build, so consumers must import the list instead.
+    const {hermesRecipeFiles, hermesSdkPlan} = require("../scripts/build-native-hermes");
+    const {ioRecipeFiles} = require("../scripts/build-native-io"), {opensslBuildRecipe} = require("../scripts/build-native-openssl");
+    const tools = {git: "/t/git", cmake: "/t/cmake", cc: "/t/cc", cxx: "/t/cxx", ninja: "/t/ninja"};
+    /** @type {Array<[string, string[]]>} */
+    const lists = [["build-native-io", [...ioRecipeFiles]], ["build-native-openssl", Object.keys(opensslBuildRecipe().graph)],
+      ...(/** @type {NodeJS.Platform[]} */ (["linux", "win32"])).map(platform => /** @type {[string, string[]]} */ (["build-native-hermes", hermesRecipeFiles(platform)]))];
+    for (const [producer, files] of lists) {
+      const source = fs.readFileSync(path.join(scripts, producer + ".js"), "utf8");
+      for (const module of [producer, ...[...source.matchAll(/require\("\.\/([a-z0-9-]+)"\)/g)].map(match => match[1])]) {
+        assert.ok(files.includes(`scripts/${module}.js`), `${producer} recipe lacks scripts/${module}.js`);
+      }
+    }
+    for (const platform of /** @type {NodeJS.Platform[]} */ (["linux", "win32"])) {
+      assert.deepEqual(hermesRecipeFiles(platform).filter(file => file.endsWith(".patch")),
+        hermesSdkPlan("/source/hermes", "/sdk/new-hermes", tools, 2, platform).patches);
+    }
+  });
 });

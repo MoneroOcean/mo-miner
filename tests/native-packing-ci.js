@@ -6,7 +6,7 @@ const {prepareNativePackingTool} = require("../scripts/prepare-native-packing-to
 const {packingPlan, packNative} = require("../scripts/ci/pack-native");
 const toolCatalog = require("../scripts/native-packing-tool.json");
 
-const suffix = "123456789-1", digest = (/** @type {string} */ value) => createHash("sha256").update(value).digest("hex");
+const suffix = "ci-123456789-1", digest = (/** @type {string} */ value) => createHash("sha256").update(value).digest("hex");
 // Tool bytes are deliberately inert fixture data, never executable host programs.
 const toolArchive = "fixture upx archive", toolBytes = "fixture upx";
 
@@ -49,7 +49,7 @@ function fixture(t, target = "linux") {
     entrypointReceipt: {file: "entrypoint.json", sha256: hash("entrypoint.json")},
     buildOnly: true, executed: false, publicationQualified: false};
   /** @type {NodeJS.ProcessEnv} */
-  const env = {RUNNER_TEMP: temp, MOM_NATIVE_CI_SUFFIX: "123456789-1", NATIVE_PLATFORM: target,
+  const env = {RUNNER_TEMP: temp, MOM_NATIVE_CI_SUFFIX: "ci-123456789-1", NATIVE_PLATFORM: target,
     NATIVE_RAW_SHA256: fileHash(raw), GITHUB_OUTPUT: path.join(temp, "outputs")};
   // Seal the staged metadata into a real same-run tar and pin it like the producer job outputs.
   const seal = () => {

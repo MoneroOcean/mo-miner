@@ -12,14 +12,14 @@ function hash(data) {return createHash("sha256").update(data).digest("hex");}
 function fixture(t, variant = "valid") {
   const runnerTemp = fs.mkdtempSync(path.join(fs.realpathSync("/var/tmp"), "mom-linux-app-metadata-")), attempt = "1",
     outputFile = path.join(runnerTemp, "github-output");
-  let run = String(BigInt(Date.now()) * 100000n + BigInt(process.pid) * 100n), suffix = run + "-" + attempt,
+  let run = String(BigInt(Date.now()) * 100000n + BigInt(process.pid) * 100n), suffix = "ci-" + run + "-" + attempt,
     appRoot = path.join("/tmp", "mom-native-linux-application-" + suffix), evidenceRoot = path.join("/tmp", "native-linux-application-build-" + suffix),
     runtimeDirectory = path.join(runnerTemp, "mom-native-runtime-" + suffix),
     configPath = path.join(runnerTemp, "native-linux-assembly-config-" + suffix + ".json"),
     archive = path.join(runnerTemp, "native-linux-application-build-" + suffix + ".tar");
   for (let index = 0; [appRoot, evidenceRoot, archive].some(file => fs.existsSync(file)); index++) {
     run = String(BigInt(Date.now()) * 100000n + BigInt(process.pid) * 100n + BigInt(index + 1));
-    suffix = run + "-" + attempt;
+    suffix = "ci-" + run + "-" + attempt;
     appRoot = path.join("/tmp", "mom-native-linux-application-" + suffix);
     evidenceRoot = path.join("/tmp", "native-linux-application-build-" + suffix);
     runtimeDirectory = path.join(runnerTemp, "mom-native-runtime-" + suffix);
@@ -48,7 +48,7 @@ function fixture(t, variant = "valid") {
     fs.rmSync(appRoot, {recursive: true, force: true}); fs.rmSync(evidenceRoot, {recursive: true, force: true});
     fs.rmSync(runnerTemp, {recursive: true, force: true});
   });
-  const env = {...process.env, RUNNER_TEMP: runnerTemp, MOM_NATIVE_CI_SUFFIX: `${run}-${attempt}`,
+  const env = {...process.env, RUNNER_TEMP: runnerTemp, MOM_NATIVE_CI_SUFFIX: `ci-${run}-${attempt}`,
     MOM_NATIVE_APPLICATION_DEADLINE_EPOCH: String(Math.floor(Date.now() / 1000) + 600), GITHUB_OUTPUT: outputFile};
   return {env, runnerTemp, run, attempt, suffix, appRoot, binary, receiptPath, entrypointPath, configPath,
     evidenceRoot, archive, runtimeDirectory, outputFile, executableHash, executableBytes, configHash, receiptHash};

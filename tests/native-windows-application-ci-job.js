@@ -73,7 +73,7 @@ function pinEnvironment(suffix) {
   const gpuPins = profiles.map((profile, index) => ({profile, bundleSha256: String(index + 1).repeat(64),
     receiptSha256: String(index + 2).repeat(64), configSha256: String(index + 3).repeat(64), handoffSha256: String(index + 4).repeat(64)}));
   return {...Object.fromEntries(pinNames.map(name => [`MOM_NATIVE_WINDOWS_APPLICATION_${name}_SHA256`, "a".repeat(64)])),
-    MOM_NATIVE_WINDOWS_APPLICATION_GPU_HANDOFFS_JSON: JSON.stringify(gpuPins), MOM_NATIVE_CI_SUFFIX: suffix.split("-")[0] + "-1"};
+    MOM_NATIVE_WINDOWS_APPLICATION_GPU_HANDOFFS_JSON: JSON.stringify(gpuPins), MOM_NATIVE_CI_SUFFIX: suffix};
 }
 
 /** Recorded fakes for every reader the build admits restored inputs with; extraction creates the
@@ -171,13 +171,13 @@ test.describe("Windows full-application CI job", {skip: process.platform !== "li
   test("full application admits the maintained ordinary Windows DLL set but no application DLLs", () => {
     const selected = require("../scripts/build-native-windows-controller").windowsSystemImports();
     assert.deepEqual(selected, ordinaryWindowsImports);
-    const config = composeFixture(`${Date.now()}${process.pid}-1`, selected);
+    const config = composeFixture(`ci-${Date.now()}${process.pid}-1`, selected);
     assert.deepEqual(config.windowsSdk.allowedImports, ordinaryWindowsImports);
     assert.throws(() => composeFixture(`${Date.now()}${process.pid}-2`, [...selected, "mom.exe.dll"]), /ordinary system DLLs/);
   });
 
   test("build restores the planned flat cohort and invokes the public release command", t => {
-    const temp = runnerTemp(t), runId = `${Date.now()}${process.pid}`, suffix = `${runId}-1`, deadline = deadlineIn(900),
+    const temp = runnerTemp(t), runId = `${Date.now()}${process.pid}`, suffix = `ci-${runId}-1`, deadline = deadlineIn(900),
       coreName = `native-windows-core-${suffix}`, dpcppComponentName = `native-windows-dpcpp-static-${suffix}`,
       hostComponentName = `native-windows-host-component-${suffix}`, ioName = `native-windows-controller-io-${suffix}`,
       windowsHermesName = `native-windows-controller-hermes-${suffix}`, linuxToolsName = `native-linux-llvm-tools-${suffix}`,
@@ -218,7 +218,7 @@ test.describe("Windows full-application CI job", {skip: process.platform !== "li
       cudaInclude = path.join("/tmp", dpcppInputsName, "cuda/include"), hipInclude = path.join("/tmp", hipHeadersName, "include");
     fs.writeFileSync(githubOutput, "", {flag: "wx"});
     /** @type {NodeJS.ProcessEnv} */
-    const environment = {PATH: process.env["PATH"], RUNNER_TEMP: temp, MOM_NATIVE_CI_SUFFIX: runId + "-1",
+    const environment = {PATH: process.env["PATH"], RUNNER_TEMP: temp, MOM_NATIVE_CI_SUFFIX: "ci-" + runId + "-1",
       GITHUB_OUTPUT: githubOutput, MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: "4", MOM_CI_DEADLINE_EPOCH: deadline, ...pins};
     const {deps, restoreCalls, observed} = fakeBuildDependencies(suffix, temp, manifests);
     job.runBuild(environment, deps);
@@ -258,7 +258,7 @@ test.describe("Windows full-application CI job", {skip: process.platform !== "li
   });
 
   test("build refuses an unsupported job envelope before touching any download", t => {
-    const temp = runnerTemp(t), suffix = `${Date.now()}${process.pid}-1`,
+    const temp = runnerTemp(t), suffix = `ci-${Date.now()}${process.pid}-1`,
       deps = /** @type {any} */ ({ci: {ciPaths: () => ({suffix, runnerTemp: temp})}}),
       environment = {...pinEnvironment(suffix), RUNNER_TEMP: temp, MOM_AOT_BUILD_ONLY: "1", MOM_CI_DEADLINE_EPOCH: deadlineIn(900)};
     assert.throws(() => job.runBuild({...environment, MOM_BUILD_JOBS: "3"}, deps), /MOM_BUILD_JOBS/);
@@ -267,7 +267,7 @@ test.describe("Windows full-application CI job", {skip: process.platform !== "li
   });
 
   test("build rejects a download whose bytes differ from its external pin before tar reads it", t => {
-    const temp = runnerTemp(t), suffix = `${Date.now()}${process.pid}-1`, download = path.join(temp, "incoming", `native-windows-core-${suffix}.tar`),
+    const temp = runnerTemp(t), suffix = `ci-${Date.now()}${process.pid}-1`, download = path.join(temp, "incoming", `native-windows-core-${suffix}.tar`),
       {deps, restoreCalls} = fakeBuildDependencies(suffix, temp, {dpcppManifest: "{}\n", hostManifest: "{}\n"});
     fs.mkdirSync(path.dirname(download), {mode: 0o700});
     fs.writeFileSync(download, "tampered\n", {flag: "wx", mode: 0o444});
@@ -280,7 +280,7 @@ test.describe("Windows full-application CI job", {skip: process.platform !== "li
   test("pins accepts exactly five complete same-run profiles", t => {
     const temp = runnerTemp(t), output = path.join(temp, "github-output");
     fs.writeFileSync(output, "", {flag: "wx"});
-    const suffix = `${Date.now()}-1`, base = /** @type {NodeJS.ProcessEnv} */ ({...pinEnvironment(suffix), GITHUB_OUTPUT: output});
+    const suffix = `ci-${Date.now()}-1`, base = /** @type {NodeJS.ProcessEnv} */ ({...pinEnvironment(suffix), GITHUB_OUTPUT: output});
     job.runPins(base);
     const duplicated = JSON.parse(String(base["MOM_NATIVE_WINDOWS_APPLICATION_GPU_HANDOFFS_JSON"]));
     duplicated[4].profile = duplicated[0].profile;
@@ -295,11 +295,11 @@ test.describe("Windows full-application CI job", {skip: process.platform !== "li
   });
 
   test("seal refuses missing or expired aggregate deadlines", t => {
-    const temp = runnerTemp(t), runId = `${Date.now()}${process.pid}`, suffix = `${runId}-1`,
+    const temp = runnerTemp(t), runId = `${Date.now()}${process.pid}`, suffix = `ci-${runId}-1`,
       buildRoot = path.join(temp, `native-windows-application-output-${suffix}`),
       evidenceRoot = path.join("/tmp", `native-windows-application-build-${suffix}`),
       archive = path.join(temp, `native-windows-application-build-${suffix}.tar`),
-      base = {RUNNER_TEMP: temp, MOM_NATIVE_CI_SUFFIX: runId + "-1", MOM_CI_DEADLINE_EPOCH: deadlineIn(300),
+      base = {RUNNER_TEMP: temp, MOM_NATIVE_CI_SUFFIX: "ci-" + runId + "-1", MOM_CI_DEADLINE_EPOCH: deadlineIn(300),
         BUILD_OUTPUT: buildRoot, CONFIG_FILE: path.join(temp, `native-windows-application-config-${suffix}.json`),
         EXECUTABLE: path.join(buildRoot, "mom.exe"), RESULT_FILE: path.join(buildRoot, "result.json"),
         ENTRYPOINT_FILE: path.join(buildRoot, "entrypoint.json")};
@@ -315,7 +315,7 @@ test.describe("Windows full-application CI job", {skip: process.platform !== "li
 
   test("the public config composer and seal produce only the raw executable plus compact evidence", t => {
     const ci = require("../scripts/native-ci-tar"), temp = runnerTemp(t),
-      suffix = `${Date.now()}${process.pid}-1`, config = composeFixture(suffix), buildRoot = path.join(temp, `native-windows-application-output-${suffix}`),
+      suffix = `ci-${Date.now()}${process.pid}-1`, config = composeFixture(suffix), buildRoot = path.join(temp, `native-windows-application-output-${suffix}`),
       configFile = path.join(temp, `native-windows-application-config-${suffix}.json`), executable = path.join(buildRoot, "mom.exe"),
       resultFile = path.join(buildRoot, "result.json"), entrypointFile = path.join(buildRoot, "entrypoint.json"),
       evidenceName = `native-windows-application-build-${suffix}`, evidenceRoot = path.join("/tmp", evidenceName),
@@ -335,7 +335,7 @@ test.describe("Windows full-application CI job", {skip: process.platform !== "li
       buildOnly: true, publicationQualified: false};
     fs.writeFileSync(entrypointFile, JSON.stringify(entrypoint, null, 2) + "\n", {flag: "wx", mode: 0o444});
     fs.writeFileSync(output, "", {flag: "wx"});
-    job.runSeal({RUNNER_TEMP: temp, MOM_NATIVE_CI_SUFFIX: suffix.split("-")[0] + "-1", GITHUB_OUTPUT: output,
+    job.runSeal({RUNNER_TEMP: temp, MOM_NATIVE_CI_SUFFIX: suffix, GITHUB_OUTPUT: output,
       MOM_CI_DEADLINE_EPOCH: deadlineIn(300), BUILD_OUTPUT: buildRoot, CONFIG_FILE: configFile, EXECUTABLE: executable,
       RESULT_FILE: resultFile, ENTRYPOINT_FILE: entrypointFile});
     const values = Object.fromEntries(fs.readFileSync(output, "utf8").trim().split("\n").map(line => line.split("=")));

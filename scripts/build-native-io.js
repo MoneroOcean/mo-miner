@@ -9,6 +9,9 @@ const {nativeSdkEnvironment} = require("./build-environment");
 const {isStaticArchive} = require("./native-audit");
 const {requireLinuxSysroot, linuxSysrootRecord, verifyLinuxSysrootRecord} = require("./native-linux-sysroot");
 const repo = path.resolve(__dirname, "..");
+/** Repository files whose hashes identify the I/O producer; Windows handoff admission compares against this list. */
+const ioRecipeFiles = ["scripts/build-native-io.js", "scripts/build-environment.js", "scripts/build-source-inputs.js",
+  "scripts/native-audit.js", "scripts/native-linux-sysroot.js"];
 const ioPins = Object.freeze({
   libuv: Object.freeze({directory: "libuv-v1.51.0", sha256: "5f0557b90b1106de71951a3c3931de5e0430d78da1d9a10287ebc7a3f78ef8eb"}),
   zlib: Object.freeze({directory: "zlib-1.3.1", sha256: "9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23"}),
@@ -112,8 +115,7 @@ function buildNativeIo(archives, output, tools, jobs, environment = process.env)
     return [file, pin.sha256];
   }));
   const fingerprints = Object.fromEntries(Object.values(tools).map(file => [file, fileHash(file)]));
-  const recipe = sourceInputs(repo, [], ["scripts/build-native-io.js", "scripts/build-environment.js", "scripts/build-source-inputs.js", "scripts/native-audit.js",
-    "scripts/native-linux-sysroot.js"]);
+  const recipe = sourceInputs(repo, [], ioRecipeFiles);
   fs.mkdirSync(output, {mode: 0o700}); fs.mkdirSync(path.join(output, "logs"));
   const run = (/** @type {string[]} */ command, /** @type {string} */ label, capture = false) => {
     const program = command[0]; if (!program) {throw new Error("Missing I/O SDK command");}
@@ -174,7 +176,7 @@ function nativeIoInputs(root, platform = process.platform) {
   return {include: path.join(root, "include"), libraries, artifacts: record.artifacts, receipt, receiptSha256};
 }
 
-module.exports = {ioPins, nativeIoPlan, validateIoArchive, buildNativeIo, nativeIoInputs};
+module.exports = {ioPins, ioRecipeFiles, nativeIoPlan, validateIoArchive, buildNativeIo, nativeIoInputs};
 if (require.main === module) {
   try {
     const [libuv, zlib, output, cmake, cc, ninja, jobs = "2", extra] = process.argv.slice(2);

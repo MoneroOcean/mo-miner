@@ -57,7 +57,7 @@ function compactGpuHandoffs(f) {
   const states = new Map(), receipts = [], pins = [];
   for (const receipt of f.app.gpuReceipts) {
     const original = JSON.parse(fs.readFileSync(receipt, "utf8")), profile = original.profile,
-      root = path.join(f.root, "mom-native-windows-gpu-" + profile + "-123456789-1"), output = path.join(root, "output"),
+      root = path.join(f.root, "mom-native-windows-gpu-" + profile + "-ci-123456789-1"), output = path.join(root, "output"),
       isolated = path.join(output, "isolated"), configFile = path.join(root, "config.json"), graphFile = path.join(output, "result.json"),
       isolationFile = path.join(isolated, "result.json"), handoffFile = path.join(root, "handoff.json");
     fs.mkdirSync(isolated, {recursive: true}); json(configFile, {profile});

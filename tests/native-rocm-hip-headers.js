@@ -24,7 +24,7 @@ function mapSha(files) {return createHash("sha256").update(JSON.stringify(files)
 
 /** @param {import("node:test").TestContext} t @param {boolean} [duplicateRequired=false] */
 function fixture(t, duplicateRequired = false) {
-  const suffix = String(Date.now()).slice(-8) + String(process.pid).slice(-4) + String(++serial) + "-88",
+  const suffix = "ci-" + String(Date.now()).slice(-8) + String(process.pid).slice(-4) + String(++serial) + "-88",
     sourceRoot = path.join("/tmp", "mom-native-rocm-hip-headers-" + suffix),
     sourceCohortRoot = path.join("/tmp", "mom-native-rocm-prerequisites-" + suffix),
     consumerRoot = path.join("/tmp", "native-rocm-hip-headers-" + suffix),

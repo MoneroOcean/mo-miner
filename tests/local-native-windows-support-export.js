@@ -3,8 +3,8 @@
 const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), path = require("node:path"), os = require("node:os"),
   {createHash} = require("node:crypto");
 const {exportLocalWindowsSupport, exportOrAdmitLocalWindowsSupport} = require("../scripts/build-local-native-windows-support-export"), {fileHash, sourceInputs} = require("../scripts/build-source-inputs");
-const {ioPins} = require("../scripts/build-native-io"), {opensslPin, opensslBuildRecipe} = require("../scripts/build-native-openssl"),
-  {hermesPins} = require("../scripts/build-native-hermes"), {ioSourceRecipe, sourceRecipe, ioArchiveUrls, buildArchiveUrls} = require("../scripts/fetch-native-sdk-sources");
+const {ioPins, ioRecipeFiles} = require("../scripts/build-native-io"), {opensslPin, opensslBuildRecipe} = require("../scripts/build-native-openssl"),
+  {hermesPins, hermesRecipeFiles} = require("../scripts/build-native-hermes"), {ioSourceRecipe, sourceRecipe, ioArchiveUrls, buildArchiveUrls} = require("../scripts/fetch-native-sdk-sources");
 const repo = path.resolve(__dirname, "..");
 /** @param {string} text */
 const sha = text => createHash("sha256").update(text).digest("hex");
@@ -42,7 +42,7 @@ function fixture(t) {
       "lib/uv_a.lib": "!<arch>\nuv", "lib/zlibstatic.lib": "!<arch>\nzlib"};
   for (const [name, body] of Object.entries(ioArtifactFiles)) {write(path.join(ioRoot, ...name.split("/")), body);}
   const ioArtifacts = Object.fromEntries(Object.keys(ioArtifactFiles).map(name => [name, fileHash(path.join(ioRoot, ...name.split("/")))])),
-    ioRecipe = sourceInputs(repo, [], ["scripts/build-native-io.js", "scripts/build-environment.js", "scripts/build-source-inputs.js", "scripts/native-audit.js"]),
+    ioRecipe = sourceInputs(repo, [], ioRecipeFiles),
     ioReceipt = path.join(ioRoot, "result.json"), ioRecord = {version: 1, target: "win32", pins: ioPins, buildOnly: true, publicationQualified: false,
       inputs: {[archives.libuv]: ioPins.libuv.sha256, [archives.zlib]: ioPins.zlib.sha256},
       fingerprints: Object.fromEntries(Object.values(toolPaths).map(file => [file, sha(file)])), recipe: ioRecipe, artifacts: ioArtifacts};
@@ -56,7 +56,7 @@ function fixture(t) {
   for (const [name, body] of Object.entries(sslArtifactBodies)) {write(path.join(sslRoot, ...name.split("/")), body);}
   const license = write(path.join(sslRoot, "source/LICENSE.txt"), "OpenSSL license\n"),
     sslArtifacts = Object.fromEntries(Object.keys(sslArtifactBodies).map(name => [name, fileHash(path.join(sslRoot, ...name.split("/")))])),
-    sslRecipe = sourceInputs(repo, [], ["scripts/build-native-openssl.js", "scripts/build-source-inputs.js", "scripts/build-environment.js", "scripts/native-audit.js"]),
+    sslRecipe = opensslBuildRecipe(),
     sslReceipt = path.join(sslRoot, "result.json"), sslRecord = {version: 1, platform: "win32", target: "VC-WIN64A", opensslVersion: opensslPin.version,
       sourceDateEpoch: opensslPin.sourceDateEpoch, archive: {path: archives.openssl, sha256: opensslPin.sha256, bytes: 3000, members: 20},
       source: {files: 10, bytes: 10000, sha256: sha("source tree"), notice: {path: "source/LICENSE.txt", sha256: fileHash(license)}},
@@ -83,7 +83,7 @@ function fixture(t) {
       ...patches.map(name => ["C:\\repo\\" + name.replaceAll("/", "\\"), fileHash(path.join(repo, name))]),
     ]),
     hermesSources = Object.fromEntries(Object.keys(sourceFiles).map(name => [name, fileHash(path.join(hermesRoot, "source", ...name.split("/")))])),
-    hermesRecipe = sourceInputs(repo, [], ["scripts/build-native-hermes.js", "scripts/build-source-inputs.js", "scripts/build-environment.js", "scripts/native-audit.js", ...patches]),
+    hermesRecipe = sourceInputs(repo, [], hermesRecipeFiles("win32")),
     windowsBuild = "C:\\producer\\hermes-sdk\\build", windowsSource = "C:\\producer\\hermes-sdk\\source",
     hermesArtifactPaths = {compiler: "build/bin/shermes.exe", context: "build/external/boost/boost_1_86_0/libs/context/boost_context.lib",
       jsi: "build/jsi/jsi.lib", public: "build/public/hermes/Public/hermesPublic.lib", runtime: "build/lib/hermesvmlean_a.lib"},

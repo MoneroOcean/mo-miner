@@ -157,12 +157,32 @@ ARCH=$(dpkg --print-architecture)
 
 APT_UPDATED=0
 BASE_INSTALLED=0
+# Per-request timeouts do not bound a stalled transfer, and an update that only skips ("Ign") a dead
+# mirror still exits 0 with an incomplete index. Bound every apt call and, when an install fails,
+# refresh the index and retry instead of failing the whole provisioning.
+APT_OPTIONS=(-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
 apt_update() {
-  ((APT_UPDATED)) || { apt-get update; APT_UPDATED=1; }
+  local attempt
+  ((APT_UPDATED)) && return 0
+  for attempt in 1 2 3; do
+    timeout 300 apt-get "${APT_OPTIONS[@]}" update && { APT_UPDATED=1; return 0; }
+    echo "apt-get update failed (attempt $attempt)" >&2
+    sleep 20
+  done
+  return 1
 }
 apt_install() {
+  local attempt
   apt_update
-  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$@"
+  for attempt in 1 2 3; do
+    DEBIAN_FRONTEND=noninteractive timeout 1800 apt-get "${APT_OPTIONS[@]}" install -y --no-install-recommends "$@" && return 0
+    ((attempt < 3)) || break
+    echo "apt-get install failed (attempt $attempt); refreshing the package index" >&2
+    sleep 20
+    APT_UPDATED=0
+    apt_update
+  done
+  return 1
 }
 
 verify_sha256() {

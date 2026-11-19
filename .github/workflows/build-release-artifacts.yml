@@ -775,7 +775,7 @@ jobs:
         MOM_NATIVE_WINDOWS_GPU_TOOLS_HANDOFF_SHA256=${{ fromJSON(needs.linux-llvm.outputs.json).tools_handoff_sha256 }}
         MOM_NATIVE_WINDOWS_GPU_DPCPP_BUNDLE_SHA256=${{ fromJSON(needs.dpcpp-cuda-inputs.outputs.json).bundle_sha256 }}
         MOM_NATIVE_WINDOWS_GPU_DPCPP_MANIFEST_SHA256=${{ fromJSON(needs.dpcpp-cuda-inputs.outputs.json).manifest_sha256 }}
-      run: scripts/run-bounded-native-ci.sh node scripts/run-native-windows-gpu-ci.js "$MOM_NATIVE_WINDOWS_GPU_PROFILE"
+      run: MOM_NATIVE_WINDOWS_GPU_DEADLINE_EPOCH="$MOM_CI_DEADLINE_EPOCH" scripts/run-bounded-native-ci.sh node scripts/run-native-windows-gpu-ci.js "$MOM_NATIVE_WINDOWS_GPU_PROFILE"
 
   windows-gpu-dpcpp:
     needs: [linux-sources, dpcpp-cuda-inputs, linux-llvm, cuda-images]
@@ -798,7 +798,7 @@ jobs:
         MOM_NATIVE_WINDOWS_GPU_DPCPP_BUNDLE_SHA256=${{ fromJSON(needs.dpcpp-cuda-inputs.outputs.json).bundle_sha256 }}
         MOM_NATIVE_WINDOWS_GPU_DPCPP_MANIFEST_SHA256=${{ fromJSON(needs.dpcpp-cuda-inputs.outputs.json).manifest_sha256 }}
         MOM_NATIVE_WINDOWS_GPU_IMAGES_BUNDLE_SHA256=${{ fromJSON(needs.cuda-images.outputs.json).bundle_sha256 }}
-      run: scripts/run-bounded-native-ci.sh node scripts/run-native-windows-gpu-ci.js "$MOM_NATIVE_WINDOWS_GPU_PROFILE"
+      run: MOM_NATIVE_WINDOWS_GPU_DEADLINE_EPOCH="$MOM_CI_DEADLINE_EPOCH" scripts/run-bounded-native-ci.sh node scripts/run-native-windows-gpu-ci.js "$MOM_NATIVE_WINDOWS_GPU_PROFILE"
 
   windows-gpu-dpcpp-opencl:
     needs: [linux-sources, dpcpp-cuda-inputs, linux-llvm]
@@ -819,7 +819,7 @@ jobs:
         MOM_NATIVE_WINDOWS_GPU_TOOLS_HANDOFF_SHA256=${{ fromJSON(needs.linux-llvm.outputs.json).tools_handoff_sha256 }}
         MOM_NATIVE_WINDOWS_GPU_DPCPP_BUNDLE_SHA256=${{ fromJSON(needs.dpcpp-cuda-inputs.outputs.json).bundle_sha256 }}
         MOM_NATIVE_WINDOWS_GPU_DPCPP_MANIFEST_SHA256=${{ fromJSON(needs.dpcpp-cuda-inputs.outputs.json).manifest_sha256 }}
-      run: scripts/run-bounded-native-ci.sh node scripts/run-native-windows-gpu-ci.js "$MOM_NATIVE_WINDOWS_GPU_PROFILE"
+      run: MOM_NATIVE_WINDOWS_GPU_DEADLINE_EPOCH="$MOM_CI_DEADLINE_EPOCH" scripts/run-bounded-native-ci.sh node scripts/run-native-windows-gpu-ci.js "$MOM_NATIVE_WINDOWS_GPU_PROFILE"
 
   windows-gpu-acpp-cuda:
     needs: [linux-sources, acpp-sources, acpp-sdk, linux-llvm, dpcpp-cuda-inputs, cuda-images]
@@ -849,7 +849,7 @@ jobs:
         MOM_NATIVE_WINDOWS_GPU_ACPP_SDK_BUNDLE_SHA256=${{ fromJSON(needs.acpp-sdk.outputs.json).bundle_sha256 }}
         MOM_NATIVE_WINDOWS_GPU_FRONTEND_BUNDLE_SHA256=${{ fromJSON(needs.linux-llvm.outputs.json).frontend_bundle_sha256 }}
         MOM_NATIVE_WINDOWS_GPU_FRONTEND_HANDOFF_SHA256=${{ fromJSON(needs.linux-llvm.outputs.json).frontend_handoff_sha256 }}
-      run: scripts/run-bounded-native-ci.sh node scripts/run-native-windows-gpu-ci.js "$MOM_NATIVE_WINDOWS_GPU_PROFILE"
+      run: MOM_NATIVE_WINDOWS_GPU_DEADLINE_EPOCH="$MOM_CI_DEADLINE_EPOCH" scripts/run-bounded-native-ci.sh node scripts/run-native-windows-gpu-ci.js "$MOM_NATIVE_WINDOWS_GPU_PROFILE"
 
   windows-gpu-acpp-hip:
     needs: [linux-sources, acpp-sources, acpp-sdk, linux-llvm, rocm-comgr]
@@ -877,7 +877,7 @@ jobs:
         MOM_NATIVE_WINDOWS_GPU_FRONTEND_HANDOFF_SHA256=${{ fromJSON(needs.linux-llvm.outputs.json).frontend_handoff_sha256 }}
         MOM_NATIVE_WINDOWS_GPU_HIP_HEADERS_BUNDLE_SHA256=${{ fromJSON(needs.rocm-comgr.outputs.json).bundle_sha256 }}
         MOM_NATIVE_WINDOWS_GPU_HIP_HEADERS_HANDOFF_SHA256=${{ fromJSON(needs.rocm-comgr.outputs.json).handoff_sha256 }}
-      run: scripts/run-bounded-native-ci.sh node scripts/run-native-windows-gpu-ci.js "$MOM_NATIVE_WINDOWS_GPU_PROFILE"
+      run: MOM_NATIVE_WINDOWS_GPU_DEADLINE_EPOCH="$MOM_CI_DEADLINE_EPOCH" scripts/run-bounded-native-ci.sh node scripts/run-native-windows-gpu-ci.js "$MOM_NATIVE_WINDOWS_GPU_PROFILE"
 
   windows-host:
     needs: [windows-llvm, windows-controller, linux-llvm, linux-sources, dpcpp-cuda-inputs, rocm-sources, acpp-sources, rocm-comgr]

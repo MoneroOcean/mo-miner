@@ -24,7 +24,7 @@ function tempDir(t, parent = os.tmpdir()) {
 /** Unique run attempt so fixed /tmp restore roots never collide between test runs. */
 function uniqueRun() {
   const runId = String(Date.now()) + String(process.pid).padStart(6, "0");
-  return {runId, attempt: "2", suffix: runId + "-2"};
+  return {runId, attempt: "2", suffix: "ci-" + runId + "-2"};
 }
 
 /** @param {number} offsetSeconds */
@@ -86,16 +86,16 @@ function hostComponentFixture(root) {
 test.describe("Windows static host-component CI", {skip: process.platform !== "linux" && "Linux-hosted Windows build job harness"}, () => {
   test("pins validates every external pin and the job budget before writing same-run artifact names", t => {
     const directory = tempDir(t), output = path.join(directory, "output"),
-      environment = {GITHUB_OUTPUT: output, MOM_NATIVE_CI_SUFFIX: "123456-2", MOM_CI_DEADLINE_EPOCH: epoch(3300),
+      environment = {GITHUB_OUTPUT: output, MOM_NATIVE_CI_SUFFIX: "ci-123456-2", MOM_CI_DEADLINE_EPOCH: epoch(3300),
         ...allPins("a".repeat(64))};
     fs.writeFileSync(output, "");
     hostJob.validatePins(environment);
     const text = fs.readFileSync(output, "utf8");
     assert.equal(text.trim().split("\n").length, 10);
-    assert.match(text, /^linux_sdk_archive=native-linux-llvm21-sdk-123456-2\.tar$/m);
-    assert.match(text, /^windows_state_archive=native-windows-llvm-state-123456-2-audited\.tar$/m);
-    assert.match(text, /^windows_state_manifest=native-windows-llvm-state-123456-2-audited\.json$/m);
-    assert.match(text, /^hip_headers_archive=native-rocm-hip-headers-123456-2\.tar$/m);
+    assert.match(text, /^linux_sdk_archive=native-linux-llvm21-sdk-ci-123456-2\.tar$/m);
+    assert.match(text, /^windows_state_archive=native-windows-llvm-state-ci-123456-2-audited\.tar$/m);
+    assert.match(text, /^windows_state_manifest=native-windows-llvm-state-ci-123456-2-audited\.json$/m);
+    assert.match(text, /^hip_headers_archive=native-rocm-hip-headers-ci-123456-2\.tar$/m);
     assert.throws(() => hostJob.validatePins({...environment, MOM_NATIVE_LINUX_DPCPP_CUDA_MANIFEST_SHA256: "f".repeat(63)}),
       /Missing or malformed DPCPP_CUDA_MANIFEST pin/);
     assert.throws(() => hostJob.validatePins({...environment, MOM_CI_DEADLINE_EPOCH: epoch(120)}), /Insufficient budget/);
@@ -112,21 +112,21 @@ test.describe("Windows static host-component CI", {skip: process.platform !== "l
     assert.throws(() => hostJob.jobDeadlines(environment, String(now + 8 * 3600 + 1), now), /expired or exceeds eight hours/);
     assert.throws(() => hostJob.jobDeadlines(environment, 1234567890, now), /Invalid original Windows LLVM run deadline/);
     assert.throws(() => hostJob.jobDeadlines({MOM_CI_DEADLINE_EPOCH: String(now)}, String(now + 600), now), /MOM_CI_DEADLINE_EPOCH/);
-    const derived = hostJob.jobEnvironment("/runner/temp", "123456-2", {runEpoch: now + 7200, jobEpoch: now + 3300});
+    const derived = hostJob.jobEnvironment("/runner/temp", "ci-123456-2", {runEpoch: now + 7200, jobEpoch: now + 3300});
     assert.equal(derived.MOM_NATIVE_WINDOWS_LLVM_RUN_DEADLINE_EPOCH, String(now + 7200));
     assert.equal(derived.MOM_NATIVE_WINDOWS_LLVM_DEADLINE_EPOCH, String(now + 3300));
     assert.equal(derived.MOM_NATIVE_WINDOWS_HOST_SDK_DEADLINE_EPOCH, String(now + 3300));
-    assert.equal(derived.MOM_NATIVE_WINDOWS_HOST_SDK_OUTPUT_DIR, "/runner/temp/mom-native-windows-host-sdk-123456-2/native-windows-host-sdk-123456-2");
-    assert.equal(derived.MOM_NATIVE_WINDOWS_HOST_SDK_METADATA_TAR, "/runner/temp/native-windows-host-sdk-123456-2-metadata.tar");
-    assert.equal(derived.MOM_NATIVE_WINDOWS_LLVM_DESCRIPTOR_DIR, "/runner/temp/mom-native-windows-llvm21-descriptor-123456-2");
+    assert.equal(derived.MOM_NATIVE_WINDOWS_HOST_SDK_OUTPUT_DIR, "/runner/temp/mom-native-windows-host-sdk-ci-123456-2/native-windows-host-sdk-ci-123456-2");
+    assert.equal(derived.MOM_NATIVE_WINDOWS_HOST_SDK_METADATA_TAR, "/runner/temp/native-windows-host-sdk-ci-123456-2-metadata.tar");
+    assert.equal(derived.MOM_NATIVE_WINDOWS_LLVM_DESCRIPTOR_DIR, "/runner/temp/mom-native-windows-llvm21-descriptor-ci-123456-2");
   });
 
   test("job admission reads the run deadline only from the externally pinned flat Windows LLVM manifest", t => {
     const runnerTemp = tempDir(t), incoming = path.join(runnerTemp, "incoming"),
-      manifestFile = path.join(incoming, "native-windows-llvm-state-123456-2-audited.json"), runDeadline = epoch(7200);
+      manifestFile = path.join(incoming, "native-windows-llvm-state-ci-123456-2-audited.json"), runDeadline = epoch(7200);
     fs.mkdirSync(incoming);
     fs.writeFileSync(manifestFile, JSON.stringify({version: 1, runDeadlineEpoch: runDeadline}) + "\n");
-    const environment = {RUNNER_TEMP: runnerTemp, MOM_NATIVE_CI_SUFFIX: "123456-2", MOM_CI_DEADLINE_EPOCH: epoch(3300),
+    const environment = {RUNNER_TEMP: runnerTemp, MOM_NATIVE_CI_SUFFIX: "ci-123456-2", MOM_CI_DEADLINE_EPOCH: epoch(3300),
         ...allPins("a".repeat(64)), MOM_NATIVE_WINDOWS_LLVM_STATE_MANIFEST_SHA256: fileHash(manifestFile)},
       job = hostJob.admitHostJob(environment);
     assert.equal(job.deadlines.runEpoch, Number(runDeadline));
@@ -146,7 +146,7 @@ test.describe("Windows static host-component CI", {skip: process.platform !== "l
     fs.writeFileSync(output, "sentinel\n");
     fs.writeFileSync(summary, "summary\n");
     const environment = {...process.env, MOM_NATIVE_WINDOWS_LLVM_STATE_BUNDLE_SHA256: "not-a-digest", GITHUB_OUTPUT: output,
-        GITHUB_STEP_SUMMARY: summary, MOM_NATIVE_CI_SUFFIX: "123456-2", RUNNER_TEMP: directory},
+        GITHUB_STEP_SUMMARY: summary, MOM_NATIVE_CI_SUFFIX: "ci-123456-2", RUNNER_TEMP: directory},
       result = spawnSync(process.execPath, [path.join(repo, "scripts/ci/windows-host.js"), "build"],
         {cwd: repo, env: environment, encoding: "utf8", timeout: 10_000});
     assert.equal(result.status, 1);

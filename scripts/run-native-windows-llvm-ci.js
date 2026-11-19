@@ -316,6 +316,13 @@ function copyToState(source, target, sha256, maximum) {
   if (fileHash(source) !== sha256 || fileHash(target) !== sha256) {throw new Error("Windows LLVM descriptor evidence changed while retained");}
 }
 
+/** One workflow output: hashes, deadlines, flags, phase names or the CI state output directory
+ * (/tmp/mom-native-windows-llvm21-<MOM_NATIVE_CI_SUFFIX>/output). @param {string} key @param {string} text */
+function windowsLlvmOutputValid(key, text) {
+  return /^[a-z][a-z0-9_]*$/.test(key) && (buildPhaseOutputValues.has(text) ||
+    /^(?:[a-f0-9]{64}|[0-9]{10}|true|false|build|configure|audit|\/tmp\/mom-native-windows-llvm21-[a-z0-9][a-z0-9-]{0,39}\/output)$/.test(text));
+}
+
 /** @param {ReturnType<typeof windowsLlvmCiJobPlan>} plan @param {Record<string,string>} values @param {NodeJS.ProcessEnv} environment */
 function finishStage(plan, values, environment) {
   const reportedPhase = values["windows_llvm_phase"];
@@ -345,12 +352,7 @@ function finishStage(plan, values, environment) {
     run_deadline_epoch: plan.runDeadlineEpoch});
   if (plan.stage === "audit") {result["admission_sha256"] = values["windows_llvm_admission_sha256"] || "";}
   const lines = Object.entries(result).map(([key, value]) => {
-    const text = String(value);
-    if (!/^[a-z][a-z0-9_]*$/.test(key) ||
-        (!/^(?:[a-f0-9]{64}|[0-9]{10}|true|false|build|configure|audit|\/tmp\/mom-native-windows-llvm21-[0-9-]+\/output)$/.test(text) &&
-          !buildPhaseOutputValues.has(text))) {
-      throw new Error("Windows LLVM workflow output is malformed: " + key);
-    }
+    if (!windowsLlvmOutputValid(key, String(value))) {throw new Error("Windows LLVM workflow output is malformed: " + key);}
     return key + "=" + value;
   });
   fs.appendFileSync(output, lines.join("\n") + "\n", "utf8");
@@ -360,7 +362,7 @@ function finishStage(plan, values, environment) {
   return result;
 }
 
-module.exports = {windowsLlvmCiJobPlan, windowsLlvmCiJobPreflight, windowsLlvmDescriptorProducerPins, hostSdkDeadline};
+module.exports = {windowsLlvmCiJobPlan, windowsLlvmCiJobPreflight, windowsLlvmDescriptorProducerPins, windowsLlvmOutputValid, hostSdkDeadline};
 
 if (require.main === module) {
   try {

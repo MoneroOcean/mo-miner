@@ -10,11 +10,11 @@ const manifestHash = value => createHash("sha256").update(JSON.stringify(value) 
 
 /** @param {import('node:test').TestContext} t */
 function fixture(t, {checkpoint = true} = {}) {
-  const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-win-llvm-state-")), run = String(Date.now()) + String(process.pid), suffix = run + "-1",
+  const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-win-llvm-state-")), run = String(Date.now()) + String(process.pid), suffix = "ci-" + run + "-1",
     root = path.join("/tmp", "mom-native-windows-llvm21-" + suffix), outputFile = path.join(runnerTemp, "github-output"),
     summaryFile = path.join(runnerTemp, "github-summary"), archiveRoot = fs.mkdtempSync(path.join("/var/tmp", "mom-win-llvm-archive-")), now = Date.now(),
     epoch = (/** @type {number} */ minutes) => String(Math.ceil((now + minutes * 60 * 1000) / 1000)),
-    environment = /** @type {NodeJS.ProcessEnv} */ ({RUNNER_TEMP: runnerTemp, MOM_NATIVE_CI_SUFFIX: run + "-1", GITHUB_JOB: "llvm_configure",
+    environment = /** @type {NodeJS.ProcessEnv} */ ({RUNNER_TEMP: runnerTemp, MOM_NATIVE_CI_SUFFIX: "ci-" + run + "-1", GITHUB_JOB: "llvm_configure",
       MOM_NATIVE_WINDOWS_LLVM_DIR: root, MOM_NATIVE_WINDOWS_LLVM_RUN_DEADLINE_EPOCH: epoch(7 * 60),
       MOM_NATIVE_WINDOWS_LLVM_DEADLINE_EPOCH: epoch(55), MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: "2",
       GITHUB_OUTPUT: outputFile, GITHUB_STEP_SUMMARY: summaryFile}),

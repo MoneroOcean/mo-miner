@@ -108,10 +108,9 @@ function windowsSupportPlan(options, dependencies = {}) {
   }
   const probe = dependencies.gitProbe || probeHermesGit;
   probe(tools.hermes.git, sources.hermes);
-  const ioRecipe = sourceInputs(repo, [], ["scripts/build-native-io.js", "scripts/build-environment.js", "scripts/build-source-inputs.js", "scripts/native-audit.js"]),
+  const ioRecipe = sourceInputs(repo, [], io.ioRecipeFiles),
     opensslRecipe = openssl.opensslBuildRecipe(), hermesPlan = hermes.hermesSdkPlan(sources.hermes, path.join(paths.hermes, "pending"), tools.hermes, jobs, "win32"),
-    hermesRecipe = sourceInputs(repo, [], ["scripts/build-native-hermes.js", "scripts/build-source-inputs.js", "scripts/build-environment.js",
-      "scripts/native-audit.js", ...hermesPlan.patches]);
+    hermesRecipe = sourceInputs(repo, [], hermes.hermesRecipeFiles("win32"));
   /** @param {unknown} values @param {unknown} recipe @param {unknown} inputs */
   const fingerprint = (values, recipe, inputs) => createHash("sha256").update(JSON.stringify({version: 1, inputs, tools: values, recipe})).digest("hex"),
     ioTools = Object.fromEntries(Object.values(tools.io).map(file => [file, hash(file)])),

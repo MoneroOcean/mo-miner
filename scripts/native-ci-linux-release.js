@@ -3,7 +3,7 @@
 // Native CI Linux SDK descriptor, native components and application assembly.
 const fs = require("node:fs"), path = require("node:path"), {spawnSync} = require("node:child_process");
 const {isDeepStrictEqual} = require("node:util");
-const {canonicalExecutable, ciBuildJobs, hasExactKeys, jsonHash, linuxNativeComponentChildTimeout, runNode} = require("./native-ci-job");
+const {canonicalExecutable, ciBuildJobs, hasExactKeys, jsonHash, linuxNativeComponentChildTimeout, runNode, validCiSuffix} = require("./native-ci-job");
 const {fileHash, readBuildJson} = require("./build-source-inputs");
 const {verifyZstdArchive} = require("./fetch-native-sdk-sources");
 const {auditGnuHeaders} = require("./prepare-native-gnu-headers");
@@ -247,7 +247,7 @@ function linuxNativeComponentStatePaths(paths, profile) {
   if (profile !== "core" && !linuxNativeGpuProfiles.includes(profile)) {throw new Error("Select the Linux Core or one exact GPU factory profile");}
   const name = "mom-native-linux-component-" + profile + "-" + paths.suffix,
     root = path.join(temp, name), archive = path.join(paths.runnerTemp, "native-linux-component-" + profile + "-" + paths.suffix + ".tar");
-  if (!/^mom-native-linux-component-[a-z0-9-]+-[0-9]{1,20}-[1-9][0-9]{0,5}$/.test(name) || path.dirname(root) !== temp ||
+  if (!validCiSuffix(paths.suffix) || path.dirname(root) !== temp ||
       path.resolve(root) !== root || path.dirname(archive) !== paths.runnerTemp || path.resolve(archive) !== archive ||
       root === archive || root.startsWith(archive + path.sep)) {throw new Error("Native component paths differ from the run-scoped plan");}
   return {profile, name, root, archive, incoming: path.join(paths.runnerTemp, "incoming"), downloads: path.join(paths.runnerTemp, "downloads")};
@@ -329,6 +329,11 @@ function partitionLinuxNativeDownloads(paths, profiles = []) {
   const state = linuxNativeSdkDescriptorStatePaths(paths, paths.env), componentIncoming = path.join(paths.runnerTemp, "component-incoming"),
     descriptorName = path.basename(state.archive), componentNames = profiles.map(profile => "native-linux-component-" + profile + "-" + paths.suffix + ".tar"),
     expected = [descriptorName, ...state.inputRows.map(row => row.artifact), ...componentNames].sort();
+  // native-job.yml downloads every artifact flat into incoming/; move that set aside first so it is
+  // partitioned (and checked) exactly like a separate downloads directory.
+  if (!fs.lstatSync(state.downloads, {throwIfNoEntry: false}) && fs.lstatSync(state.incoming, {throwIfNoEntry: false})?.isDirectory()) {
+    fs.renameSync(state.incoming, state.downloads);
+  }
   const downloadsStat = fs.lstatSync(state.downloads, {throwIfNoEntry: false});
   if (!downloadsStat?.isDirectory() || downloadsStat.isSymbolicLink() || fs.realpathSync(state.downloads) !== state.downloads ||
       !isDeepStrictEqual(fs.readdirSync(state.downloads).sort(), expected) ||

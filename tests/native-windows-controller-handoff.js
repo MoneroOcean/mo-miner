@@ -3,12 +3,12 @@ const fs = require("node:fs"), path = require("node:path"), os = require("node:o
 const test = require("node:test"), assert = require("node:assert/strict");
 const {windowsControllerHandoffInputs, windowsLocalControllerHandoffInputs, validateIntelRuntimeMetadata} = require("../scripts/native-windows-controller-handoff");
 const {fileHash, sourceInputs} = require("../scripts/build-source-inputs");
-const {ioPins} = require("../scripts/build-native-io"), {opensslPin, opensslBuildRecipe} = require("../scripts/build-native-openssl");
-const {hermesPins} = require("../scripts/build-native-hermes");
+const {ioPins, ioRecipeFiles} = require("../scripts/build-native-io"), {opensslPin, opensslBuildRecipe} = require("../scripts/build-native-openssl");
+const {hermesPins, hermesRecipeFiles} = require("../scripts/build-native-hermes");
 const {ioSourceRecipe, sourceRecipe, ioArchiveUrls, buildArchiveUrls} = require("../scripts/fetch-native-sdk-sources");
 const intelRuntimeCatalog = require("../runtime/windows-intel-runtime.json");
 
-const repo = path.resolve(__dirname, ".."), suffix = "12345-1", sha = (/** @type {string} */ text) => createHash("sha256").update(text).digest("hex");
+const repo = path.resolve(__dirname, ".."), suffix = "ci-12345-1", sha = (/** @type {string} */ text) => createHash("sha256").update(text).digest("hex");
 /** @param {string} root @param {string} relative @param {string} data @returns {string} */
 function put(root, relative, data) {
   const file = path.join(root, ...relative.split("/")); fs.mkdirSync(path.dirname(file), {recursive: true}); fs.writeFileSync(file, data); return file;
@@ -65,7 +65,7 @@ function ioFixture(t) {
     const relative = name.slice("io-sdk/".length); return [relative, fileHash(path.join(root, ...name.split("/")))];
   }));
   const toolPaths = {cmake: "C:\\Tools\\cmake.exe", cc: "C:\\Tools\\icx-cl.exe", ninja: "C:\\Tools\\ninja.exe"},
-    ioRecipe = sourceInputs(repo, [], ["scripts/build-native-io.js", "scripts/build-environment.js", "scripts/build-source-inputs.js", "scripts/native-audit.js"]);
+    ioRecipe = sourceInputs(repo, [], ioRecipeFiles);
   save(root, "io-sdk/result.json", {version: 1, target: "win32", pins: ioPins, buildOnly: true, publicationQualified: false,
     inputs: {[libuvPath]: ioPins.libuv.sha256, [zlibPath]: ioPins.zlib.sha256}, fingerprints: Object.fromEntries(Object.values(toolPaths).map(file => [file, sha(file)])),
     recipe: ioRecipe, artifacts: ioArtifacts});
@@ -84,7 +84,7 @@ function ioFixture(t) {
     sourceDateEpoch: opensslPin.sourceDateEpoch,
     archive: {path: sslArchivePath, sha256: opensslPin.sha256, bytes: 3000, members: 200}, source: {files: 100, bytes: 10000, sha256: sha("source"),
       notice: {path: "source/LICENSE.txt", sha256: licenseSha256}}, config: {sha256: fileHash(path.join(root, "openssl-sdk/producer-tools.json"))},
-    tools: sslTools, recipe: sourceInputs(repo, [], ["scripts/build-native-openssl.js", "scripts/build-source-inputs.js", "scripts/build-environment.js", "scripts/native-audit.js"]),
+    tools: sslTools, recipe: opensslBuildRecipe(),
     artifacts: sslArtifacts, buildOnly: true, executed: false, publicationQualified: false});
   const handoff = {version: 1, format: "mom-windows-controller-support-handoff-v1", target: "win32", architecture: "x64", kind: "io",
     buildOnly: true, executed: false, publicationQualified: false, scope: "Selected build-only I/O/OpenSSL source closure.",
@@ -114,8 +114,7 @@ function hermesFixture(t, shareCCompiler = false, includeRootLicense = false) {
       ...Object.values(toolPaths).map(file => [file, sha(file)]), ...patches.map(name => ["C:\\repo\\" + name.replaceAll("/", "\\"), fileHash(path.join(repo, name))]),
     ]), sources = Object.fromEntries(Object.entries(sourceFiles).map(([name, body]) => [name, name.startsWith("lib/") || name === "LICENSE" && !includeRootLicense ? sha(body) :
       fileHash(path.join(root, "hermes/source", ...name.split("/")))])),
-    recipe = sourceInputs(repo, [], ["scripts/build-native-hermes.js", "scripts/build-source-inputs.js", "scripts/build-environment.js", "scripts/native-audit.js",
-      "runtime/hermes-host-rejections.patch", "runtime/hermes-clang-cl.patch"]),
+    recipe = sourceInputs(repo, [], hermesRecipeFiles("win32")),
     artifacts = {compiler: {path: win.join(build, "bin/shermes.exe"), sha256: sha("compiler"), bytes: 10},
       runtime: {path: win.join(build, "lib/hermesvmlean_a.lib"), sha256: fileHash(path.join(root, archiveNames.runtime)), bytes: fs.statSync(path.join(root, archiveNames.runtime)).size},
       jsi: {path: win.join(build, "jsi/jsi.lib"), sha256: fileHash(path.join(root, archiveNames.jsi)), bytes: fs.statSync(path.join(root, archiveNames.jsi)).size},

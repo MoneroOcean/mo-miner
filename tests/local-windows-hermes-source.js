@@ -60,7 +60,7 @@ describe("Local Windows Hermes source transport", {skip: process.platform !== "l
   });
 
   test("keeps the existing CI default /tmp source root", t => {
-    const rootName = "mom-native-hermes-prerequisites-24680-1", originalRoot = "/tmp/" + rootName + "/roots/hermes",
+    const rootName = "mom-native-hermes-prerequisites-ci-24680-1", originalRoot = "/tmp/" + rootName + "/roots/hermes",
       f = fixture(t, {rootName, originalRoot}), result = ci.extractWindowsHermesSource(f.state, tarTool, 30000);
     assert.equal(result.source, path.join(f.extractRoot, rootName, "roots/hermes"));
     assert.equal(result.fetch.components.hermes.root, originalRoot);

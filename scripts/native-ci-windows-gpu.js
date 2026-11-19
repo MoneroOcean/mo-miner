@@ -3,7 +3,7 @@
 // Native CI Windows GPU factory profiles cross-built on Linux and their handoffs.
 const fs = require("node:fs"), path = require("node:path"), {createHash} = require("node:crypto");
 const {isDeepStrictEqual} = require("node:util");
-const {appendWorkflowOutputs, ciSuffix, runNode} = require("./native-ci-job");
+const {appendWorkflowOutputs, ciBuildJobs, ciSuffix, runNode} = require("./native-ci-job");
 const {fileHash, nativeSourceInputs, verifySourceInputs} = require("./build-source-inputs");
 const {listState, packState, safeRelative, temp} = require("./native-ci-tar");
 const {windowsControllerReadJson, windowsControllerRegularFile} = require("./native-ci-windows-controller");
@@ -205,7 +205,10 @@ function windowsGpuProfileCiPreflight(profile, configSource, expectedConfigSha25
     deadlineEpoch = environment["MOM_NATIVE_WINDOWS_GPU_DEADLINE_EPOCH"] || "";
   if (environment["MOM_AOT_BUILD_ONLY"] !== "1") {throw new Error("Windows GPU profile CI requires MOM_AOT_BUILD_ONLY=1");}
   const {windowsGpuBuildJobs} = require("./build-native-windows-gpu");
-  if (windowsGpuBuildJobs(environment, platform) > 2) {throw new Error("Windows GPU profile CI is limited to two compiler jobs");}
+  // Like every CI producer, use the workflow's validated parallelism (2 or 4 inside the 12 GiB scope).
+  if (windowsGpuBuildJobs(environment, platform) !== Number(ciBuildJobs(environment))) {
+    throw new Error("Windows GPU profile CI must use the workflow's MOM_BUILD_JOBS");
+  }
   const buildBudget = windowsGpuDeadlineBudget(deadlineEpoch, "build", nowMs);
   windowsGpuDeadlineBudget(deadlineEpoch, "package", nowMs);
   if (typeof expectedConfigSha256 !== "string" || !/^[a-f0-9]{64}$/.test(expectedConfigSha256)) {

@@ -5,7 +5,7 @@ const fs = require("node:fs"), path = require("node:path"), os = require("node:o
 const {fileHash} = require("../scripts/build-source-inputs"), realCi = require("../scripts/native-ci-tar");
 const {packagePlan, preflightPackage, packageNative} = require("../scripts/ci/package-native");
 
-const suffix = "123456789-1", digest = (/** @type {string|Buffer} */ value) => createHash("sha256").update(value).digest("hex");
+const suffix = "ci-123456789-1", digest = (/** @type {string|Buffer} */ value) => createHash("sha256").update(value).digest("hex");
 
 /** Build the late packaging job's same-run inputs with no candidate execution: real raw/original/packed
  * tars in RUNNER_TEMP/incoming, both executables in their own download directories, a fixture
@@ -83,7 +83,7 @@ function fixture(t, target = "linux") {
     buildOnly: true, publicationQualified: false});
 
   /** @type {NodeJS.ProcessEnv} */
-  const env = {RUNNER_TEMP: temp, MOM_NATIVE_CI_SUFFIX: "123456789-1", NATIVE_PLATFORM: target,
+  const env = {RUNNER_TEMP: temp, MOM_NATIVE_CI_SUFFIX: "ci-123456789-1", NATIVE_PLATFORM: target,
     RAW_EXECUTABLE_SHA256: rawSha, GITHUB_WORKSPACE: repoRoot, MOM_CMAKE_PATH: cmakePath,
     PATH: [cmakeDirectory, process.env["PATH"] || "/usr/bin:/bin"].join(path.delimiter), GITHUB_OUTPUT: path.join(temp, "outputs")};
   const tarFiles = {packed: path.join(incoming, roots.packed + ".tar"), original: path.join(incoming, roots.original + ".tar")};

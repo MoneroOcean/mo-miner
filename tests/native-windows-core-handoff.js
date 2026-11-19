@@ -13,7 +13,7 @@ const currentSources = nativeSourceInputs(repo, "cpu");
 function fixture(t) {
   const tempRoot = fs.realpathSync(os.tmpdir()), root = fs.mkdtempSync(path.join(tempRoot, "mom-native-win-core-handoff-"));
   t.after(() => fs.rmSync(root, {recursive: true, force: true}));
-  const bundle = path.join(root, "native-windows-core-654321-3"); fs.mkdirSync(bundle);
+  const bundle = path.join(root, "native-windows-core-ci-654321-3"); fs.mkdirSync(bundle);
   const archive = path.join(bundle, "cpu-core.lib"); fs.writeFileSync(archive, "!<arch>\n", {flag: "wx"});
   const archiveSha256 = fileHash(archive), archiveBytes = fs.statSync(archive).size, producerPath = "C:\\agent\\_temp\\core\\cpu-core.lib",
     receiptFile = path.join(bundle, "inputs.json"), handoffFile = path.join(bundle, "handoff.json");

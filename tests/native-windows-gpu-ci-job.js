@@ -25,7 +25,7 @@ const managedKeys = ["RUNNER_TEMP", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITH
 /** @param {import("node:test").TestContext} t */
 function fixture(t) {
   const previous = new Map(managedKeys.map(key => [key, process.env[key]])), runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), "mom-native-gpu-ci-")),
-    run = String(Date.now()) + String(++runCounter).padStart(4, "0"), attempt = "1", suffix = run + "-" + attempt,
+    run = String(Date.now()) + String(++runCounter).padStart(4, "0"), attempt = "1", suffix = "ci-" + run + "-" + attempt,
     incoming = path.join(runnerTemp, "incoming"), output = path.join(runnerTemp, "github-output"), summary = path.join(runnerTemp, "github-summary"),
     tempRoot = "/tmp", dpcppName = "mom-native-dpcpp-cuda-inputs-" + suffix,
     files = [path.join(incoming, "native-linux-sdk-state-" + suffix + "-sources.tar"),
@@ -34,7 +34,7 @@ function fixture(t) {
   /** @param {string} name */
   const suffixPath = name => path.join(tempRoot, name + "-" + suffix);
   const environment = /** @type {NodeJS.ProcessEnv} */ ({
-    RUNNER_TEMP: runnerTemp, MOM_NATIVE_CI_SUFFIX: `${run}-${attempt}`, GITHUB_OUTPUT: output, GITHUB_STEP_SUMMARY: summary,
+    RUNNER_TEMP: runnerTemp, MOM_NATIVE_CI_SUFFIX: `ci-${run}-${attempt}`, GITHUB_OUTPUT: output, GITHUB_STEP_SUMMARY: summary,
     MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: "2",
     MOM_NATIVE_SOURCE_DIR: suffixPath("mom-native-prerequisites"), MOM_NATIVE_LINUX_SDK_DIR: suffixPath("mom-native-llvm21-sdk"),
     MOM_NATIVE_IO_SOURCE_DIR: suffixPath("mom-native-io-prerequisites"), MOM_NATIVE_IO_SDK_DIR: suffixPath("mom-native-io-openssl-sdk"),

@@ -23,11 +23,20 @@ runs:
       env:
         PACKAGES: ${{ inputs.apt }}
       run: |
-        # A dead first-choice mirror must not consume the job deadline.
+        # A dead or stalled mirror must not consume the job deadline. Per-request timeouts do not
+        # bound a stalled transfer, and an update that only "Ign"s a mirror still exits 0 with an
+        # incomplete index, so bound each attempt and retry update+install together.
         options=(-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
-        sudo apt-get "${options[@]}" update -qq
-        # shellcheck disable=SC2086
-        sudo apt-get "${options[@]}" install --yes --no-install-recommends $PACKAGES
+        for attempt in 1 2 3; do
+          # shellcheck disable=SC2086
+          if timeout 300 sudo apt-get "${options[@]}" update -qq &&
+             timeout 600 sudo apt-get "${options[@]}" install --yes --no-install-recommends $PACKAGES; then
+            exit 0
+          fi
+          echo "apt attempt $attempt failed; retrying" >&2
+          sleep 20
+        done
+        exit 1
     - if: inputs.dev != ''
       shell: bash
       env:

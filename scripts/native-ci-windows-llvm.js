@@ -73,7 +73,7 @@ function appendWindowsHostSdkOutputs(file, values) {
   const stat = fs.lstatSync(file);
   if (!stat.isFile() || stat.isSymbolicLink() || !path.isAbsolute(file)) {throw new Error("Windows host-SDK job output file is not regular");}
   const lines = Object.entries(values).map(([key, value]) => {
-    if (!/^[a-z][a-z0-9_]*$/.test(key) || !/^(?:[a-f0-9]{64}|[0-9]+|native-windows-host-sdk-[0-9]+-[0-9]+-metadata\.tar)$/.test(String(value))) {
+    if (!/^[a-z][a-z0-9_]*$/.test(key) || !/^(?:[a-f0-9]{64}|[0-9]+)$/.test(String(value))) {
       throw new Error("Windows host-SDK output is malformed: " + key);
     }
     return key + "=" + value;

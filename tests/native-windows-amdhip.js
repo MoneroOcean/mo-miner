@@ -164,7 +164,7 @@ describe("Source-generated Windows AMD import-library input", {skip: process.pla
   });
 
   test("rejects wrong roots and missing public source state before creating output", async t => {
-    const root = fixtureRoot(t), suffix = "99999999999999999999-4", env = {
+    const root = fixtureRoot(t), suffix = "ci-99999999999999999999-4", env = {
         MOM_NATIVE_CI_SUFFIX: suffix, RUNNER_TEMP: root,
         MOM_AOT_BUILD_ONLY: "1", MOM_BUILD_JOBS: "2", MOM_NATIVE_ROCM_SOURCE_DIR: "/tmp/mom-native-rocm-prerequisites-" + suffix,
       }, source = env.MOM_NATIVE_ROCM_SOURCE_DIR, bundle = path.join(root, "native-linux-llvm-tools-" + suffix), output = path.join(root, "native-windows-amdhip-" + suffix),
@@ -176,7 +176,7 @@ describe("Source-generated Windows AMD import-library input", {skip: process.pla
   });
 
   test("removes the temporary generated definition before sealing and admitting the handoff", async t => {
-    const root = fixtureRoot(t), c = windowsAmdhipCatalog(), suffix = "99999999999999999998-5", runnerTemp = path.join(root, "runner-temp"),
+    const root = fixtureRoot(t), c = windowsAmdhipCatalog(), suffix = "ci-99999999999999999998-5", runnerTemp = path.join(root, "runner-temp"),
       sourceRoot = "/tmp/mom-native-rocm-prerequisites-" + suffix, output = path.join(runnerTemp, "native-windows-amdhip-" + suffix),
       bundle = path.join(runnerTemp, "tool-bundle"), stateDir = path.join(root, "source-state"), fetchReceipt = path.join(stateDir, "fetch.json"),
       rootsFile = path.join(stateDir, "roots.json"), definition = fs.readFileSync(path.join(__dirname, "fixtures/native-windows-amdhip/amdhip.def")),

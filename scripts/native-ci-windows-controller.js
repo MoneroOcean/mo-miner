@@ -5,10 +5,10 @@ const fs = require("node:fs"), path = require("node:path"), {spawnSync} = requir
 const {isDeepStrictEqual} = require("node:util");
 const {ciBuildJobs, ciSuffix, hasExactKeys, jsonHash} = require("./native-ci-job");
 const {fileHash, readBuildJson, sourceInputs} = require("./build-source-inputs");
-const {ioPins, nativeIoInputs} = require("./build-native-io");
+const {ioPins, ioRecipeFiles, nativeIoInputs} = require("./build-native-io");
 const {nativeOpenSslInputs, opensslPin, opensslBuildRecipe} = require("./build-native-openssl");
 const {verifyIoArchives, fetchIoArchives, fetchWindowsOpenSslArchives, sourceRecipe, origins} = require("./fetch-native-sdk-sources");
-const {hermesPins, hermesSdkPlan} = require("./build-native-hermes");
+const {hermesPins, hermesRecipeFiles, hermesSdkPlan} = require("./build-native-hermes");
 const {isStaticArchive} = require("./native-audit");
 /** @typedef {{version:number,compiler:{version:string,sha256:string},libraries:Array<{name:string,source:string,path:string,bytes:number,sha256:string}>,licenses:Array<{source:string,path:string,bytes:number,sha256:string}>}} WindowsIntelRuntimeCatalog */
 /** @typedef {{kind:"library",name:string,source:string,path:string,bytes:number,sha256:string}|{kind:"license",source:string,path:string,bytes:number,sha256:string}} WindowsIntelRuntimePin */
@@ -107,11 +107,14 @@ function windowsControllerIoBuildCommands(state, tools) {
   ];
 }
 
-/** @param {ReturnType<typeof windowsControllerStatePaths>} state @param {WindowsControllerHermesTools} tools */
+/** The producer command plus the plan the producer derives from those same arguments; the receipt
+ * check compares against `plan`, so the job count and paths cannot diverge from the build.
+ * @param {ReturnType<typeof windowsControllerStatePaths>} state @param {WindowsControllerHermesTools} tools */
 function windowsControllerHermesBuildCommand(state, tools) {
   if (state.kind !== "hermes" || !state.hermesSource || !tools) {throw new Error("Windows Hermes command needs its exact role and tools");}
   return {script: "scripts/build-native-hermes.js", args: [state.hermesSource, state.hermesSdk,
-    tools.git, tools.cmake, tools.cc, tools.cxx, tools.ninja, state.jobs]};
+    tools.git, tools.cmake, tools.cc, tools.cxx, tools.ninja, state.jobs],
+  plan: hermesSdkPlan(state.hermesSource, state.hermesSdk, tools, Number(state.jobs), "win32")};
 }
 
 /** @param {string} file @param {string} label */
@@ -444,7 +447,7 @@ async function buildWindowsControllerIoCi() {
       [path.join(state.ioSource, "libuv-v1.51.0.tar.gz")]: ioPins.libuv.sha256,
       [path.join(state.ioSource, "zlib-1.3.1.tar.gz")]: ioPins.zlib.sha256,
       [ioFetchFile]: ioFetchSha, [opensslFetchFile]: opensslFetchSha, [state.opensslToolsFile]: fileHash(state.opensslToolsFile)},
-    ioRecipe = sourceInputs(repo, [], ["scripts/build-native-io.js", "scripts/build-environment.js", "scripts/build-source-inputs.js", "scripts/native-audit.js"]),
+    ioRecipe = sourceInputs(repo, [], ioRecipeFiles),
     opensslRecipe = opensslBuildRecipe();
   const commands = windowsControllerIoBuildCommands(state, tools), ioCommand = commands[0], opensslCommand = commands[1];
   if (!ioCommand || !opensslCommand) {throw new Error("Windows controller I/O/OpenSSL producer command set is incomplete");}
@@ -532,10 +535,9 @@ function buildWindowsControllerHermesCi() {
   windowsControllerRegularFile(tarTool, "Windows inbox tar tool");
   const tarSha = fileHash(tarTool), source = extractWindowsHermesSource(state, tarTool,
       windowsControllerDeadlineBudget(state.deadlineEpoch, "extract").timeoutMs), command = windowsControllerHermesBuildCommand(state, tools),
-    plan = hermesSdkPlan(source.source, state.hermesSdk, tools, 2, "win32");
+    plan = command.plan;
   if (fs.existsSync(state.hermesSdk)) {throw new Error("Windows Hermes SDK output must be new");}
-  const producerRecipe = sourceInputs(repo, [], ["scripts/build-native-hermes.js", "scripts/build-source-inputs.js", "scripts/build-environment.js",
-      "scripts/native-audit.js", ...plan.patches]), fingerprints = Object.fromEntries([...Object.values(tools), ...plan.patches.map(file => path.join(repo, file))].map(file => [file, fileHash(file)])),
+  const producerRecipe = sourceInputs(repo, [], hermesRecipeFiles("win32")), fingerprints = Object.fromEntries([...Object.values(tools), ...plan.patches.map(file => path.join(repo, file))].map(file => [file, fileHash(file)])),
     buildBudget = windowsControllerDeadlineBudget(state.deadlineEpoch, "build");
   runWindowsControllerProducer(command.script, command.args, environment, Math.min(buildBudget.timeoutMs, 45 * 60 * 1000));
   const resultFile = path.join(state.hermesSdk, "result.json"), beforeFile = path.join(state.hermesSdk, "before.json"),

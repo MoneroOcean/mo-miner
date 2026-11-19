@@ -8,7 +8,7 @@ const {jitSourceInputs} = require("../scripts/native-jit-sdk");
 const {windowsJitResourcePaths, profileFromAdmissions, composeWindowsJitResourceProfile, admitWindowsGnu, admitEmitter, verifyRequiredBaseManifest,
   validateWindowsJitNativeTools} = require("../scripts/native-windows-jit-resources");
 
-const suffix = Date.now().toString() + String(process.pid % 1000).padStart(3, "0") + "-88";
+const suffix = "ci-" + Date.now().toString() + String(process.pid % 1000).padStart(3, "0") + "-88";
 const repo = path.resolve(__dirname, "..");
 
 /** @param {import("node:test").TestContext} context @param {boolean} [gnu] */
@@ -127,8 +127,8 @@ test.describe("Windows GNU source-JIT profile composition", {concurrency: false}
 
 test.describe("Linux-hosted Windows resource filesystem admission", {concurrency: false, skip: process.platform !== "linux"}, () => {
   test("keeps emitter/profile evidence beside the prepared resource child in one run root", () => {
-    const paths = windowsJitResourcePaths("9000000000000008-88");
-    assert.equal(paths.root, "/tmp/mom-native-windows-jit-resources-9000000000000008-88");
+    const paths = windowsJitResourcePaths("ci-9000000000000008-88");
+    assert.equal(paths.root, "/tmp/mom-native-windows-jit-resources-ci-9000000000000008-88");
     assert.equal(paths.emitter, path.join(paths.root, "emitter"));
     assert.equal(paths.profile, path.join(paths.root, "resource-profile.json"));
     assert.equal(paths.resources, path.join(paths.root, "resources"));
@@ -137,9 +137,9 @@ test.describe("Linux-hosted Windows resource filesystem admission", {concurrency
   });
 
   test("maps admitted Windows roots, existing base headers, required bitcode pins and notices into the established profile", () => {
-    const baseRoot = "/tmp/mom-native-linux-jit-resources-9000000000000008-88/base/base",
-      gnuRoot = "/tmp/mom-native-windows-gnu-headers-9000000000000008-88",
-      emitterRoot = "/tmp/mom-native-windows-jit-resources-9000000000000008-88/emitter",
+    const baseRoot = "/tmp/mom-native-linux-jit-resources-ci-9000000000000008-88/base/base",
+      gnuRoot = "/tmp/mom-native-windows-gnu-headers-ci-9000000000000008-88",
+      emitterRoot = "/tmp/mom-native-windows-jit-resources-ci-9000000000000008-88/emitter",
       noticePath = path.join(gnuRoot, "licenses/mingw-w64-common/copyright"),
       profile = profileFromAdmissions({baseRoot, baseManifest: path.join(path.dirname(baseRoot), "base-manifest.json")},
         {root: gnuRoot, notices: [{package: "mingw-w64-common", path: noticePath, sha256: "d".repeat(64)}]},
@@ -169,7 +169,7 @@ test.describe("Linux-hosted Windows resource filesystem admission", {concurrency
   });
 
   test("rejects a root with a different work-root suffix", context => {
-    const selected = roots(context); const request = input(selected, "a".repeat(64)); request.suffix = "9000000000000008-89";
+    const selected = roots(context); const request = input(selected, "a".repeat(64)); request.suffix = "ci-9000000000000008-89";
     assert.throws(() => composeWindowsJitResourceProfile(request), /canonical current-run root/);
   });
 
@@ -233,7 +233,7 @@ test.describe("Linux-hosted Windows resource filesystem admission", {concurrency
 
   test("rejects a native TableGen payload from another run or source receipt", context => {
     const selected = roots(context), fixture = nativeToolsFixture(selected);
-    assert.throws(() => validateWindowsJitNativeTools(selected.output, "9000000000000008-89", fixture.source), /canonical current-run root/);
+    assert.throws(() => validateWindowsJitNativeTools(selected.output, "ci-9000000000000008-89", fixture.source), /canonical current-run root/);
     assert.throws(() => validateWindowsJitNativeTools(selected.output, suffix, {...fixture.source, receiptSha256: "e".repeat(64)}), /not bound to the current same-run Linux JIT source/);
     assert.throws(() => validateWindowsJitNativeTools(selected.output, suffix, {...fixture.source, dpcppCommit: "f".repeat(40)}), /not bound to the current same-run Linux JIT source/);
   });

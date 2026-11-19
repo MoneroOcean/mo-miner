@@ -17,7 +17,7 @@ function workspace(t) {
   t.after(() => fs.rmSync(root, {recursive: true, force: true}));
   const files = {GITHUB_ENV: path.join(root, "env"), GITHUB_OUTPUT: path.join(root, "output")};
   for (const file of Object.values(files)) {fs.writeFileSync(file, "");}
-  return {root, files, environment: {MOM_NATIVE_CI_SUFFIX: "123-2", RUNNER_TEMP: root, ...files}};
+  return {root, files, environment: {MOM_NATIVE_CI_SUFFIX: "ci-123-2", RUNNER_TEMP: root, ...files}};
 }
 
 describe("Native CI job preparation", {skip: process.platform !== "linux"}, () => {
@@ -27,18 +27,18 @@ describe("Native CI job preparation", {skip: process.platform !== "linux"}, () =
       NATIVE_JOB_DOWNLOAD: "native-a-@.tar\n native-b-@.tar", NATIVE_JOB_UPLOAD: "native-c-@.tar native-exe-@=out-@/mom",
       NATIVE_JOB_DIAGNOSTICS: "logs-@=/tmp/x-@/*.log"}, root);
     const env = fs.readFileSync(files.GITHUB_ENV, "utf8"), output = fs.readFileSync(files.GITHUB_OUTPUT, "utf8");
-    assert.match(env, /^MOM_NATIVE_LINUX_SDK_DIR=\/tmp\/mom-native-llvm21-sdk-123-2$/m);
-    assert.match(env, /^MOM_NATIVE_WINDOWS_GPU_DIR=\/tmp\/mom-native-windows-gpu-oneapi-123-2$/m);
+    assert.match(env, /^MOM_NATIVE_LINUX_SDK_DIR=\/tmp\/mom-native-llvm21-sdk-ci-123-2$/m);
+    assert.match(env, /^MOM_NATIVE_WINDOWS_GPU_DIR=\/tmp\/mom-native-windows-gpu-oneapi-ci-123-2$/m);
     assert.match(env, /^MOM_X_SHA256=a{64}$/m);
-    assert.match(output, /^pattern=\{native-a-123-2\.tar,native-b-123-2\.tar\}$/m);
-    assert.match(output, new RegExp("^upload_1=" + path.join(root, "native-c-123-2.tar") + "$\\nupload_1_name=$", "m"));
-    assert.match(output, new RegExp("^upload_2=" + path.join(root, "out-123-2/mom") + "$\\nupload_2_name=native-exe-123-2$", "m"));
-    assert.match(output, /^diagnostics_name=logs-123-2$\ndiagnostics_path=\/tmp\/x-123-2\/\*\.log$/m);
+    assert.match(output, /^pattern=\{native-a-ci-123-2\.tar,native-b-ci-123-2\.tar\}$/m);
+    assert.match(output, new RegExp("^upload_1=" + path.join(root, "native-c-ci-123-2.tar") + "$\\nupload_1_name=$", "m"));
+    assert.match(output, new RegExp("^upload_2=" + path.join(root, "out-ci-123-2/mom") + "$\\nupload_2_name=native-exe-ci-123-2$", "m"));
+    assert.match(output, /^diagnostics_name=logs-ci-123-2$\ndiagnostics_path=\/tmp\/x-ci-123-2\/\*\.log$/m);
   });
 
   test("rejects a work root left by an earlier job on the same runner", t => {
     const {root, files, environment} = workspace(t);
-    fs.mkdirSync(path.join(root, "mom-native-llvm21-sdk-123-2"));
+    fs.mkdirSync(path.join(root, "mom-native-llvm21-sdk-ci-123-2"));
     assert.throws(() => job.prepareJob(environment, root), /work roots from an earlier job/);
     assert.equal(fs.readFileSync(files.GITHUB_ENV, "utf8"), "");
   });
@@ -58,24 +58,24 @@ describe("Native CI job preparation", {skip: process.platform !== "linux"}, () =
 describe("Chained CI phases", {skip: process.platform !== "linux"}, () => {
   test("hand off outputs, retire consumed inputs and reset only new work roots", t => {
     const {root, environment} = workspace(t), deadline = String(Math.floor(Date.now() / 1000) + 3600),
-      existing = path.join(root, "kept-123-2");
+      existing = path.join(root, "kept-ci-123-2");
     fs.mkdirSync(existing);
     const context = chain.chainContext({...environment, MOM_CI_DEADLINE_EPOCH: deadline});
-    const state = path.join(root, "state-123-2.tar"), extracted = path.join(root, "extracted-123-2"), other = path.join(root, "unrelated");
+    const state = path.join(root, "state-ci-123-2.tar"), extracted = path.join(root, "extracted-ci-123-2"), other = path.join(root, "unrelated");
     fs.writeFileSync(state, "state");
     fs.mkdirSync(path.join(extracted, "ro"), {recursive: true});
     fs.writeFileSync(path.join(extracted, "ro", "file"), "x");
     fs.chmodSync(path.join(extracted, "ro"), 0o500);
     fs.mkdirSync(other);
-    chain.handOff(context, ["state-123-2.tar"]);
-    assert.equal(fs.readFileSync(path.join(context.incoming, "state-123-2.tar"), "utf8"), "state");
-    assert.throws(() => chain.handOff(context, ["state-123-2.tar"]), /ENOENT/);
-    fs.writeFileSync(path.join(root, "final-123-2.tar"), "final");
-    chain.resetWorkRoots(context, ["final-123-2.tar"]);
-    assert.deepEqual([fs.existsSync(extracted), fs.existsSync(existing), fs.existsSync(other), fs.existsSync(path.join(root, "final-123-2.tar"))],
+    chain.handOff(context, ["state-ci-123-2.tar"]);
+    assert.equal(fs.readFileSync(path.join(context.incoming, "state-ci-123-2.tar"), "utf8"), "state");
+    assert.throws(() => chain.handOff(context, ["state-ci-123-2.tar"]), /ENOENT/);
+    fs.writeFileSync(path.join(root, "final-ci-123-2.tar"), "final");
+    chain.resetWorkRoots(context, ["final-ci-123-2.tar"]);
+    assert.deepEqual([fs.existsSync(extracted), fs.existsSync(existing), fs.existsSync(other), fs.existsSync(path.join(root, "final-ci-123-2.tar"))],
       [false, true, true, true]);
-    chain.retire(context, ["state-123-2.tar"]);
-    assert.equal(fs.existsSync(path.join(context.incoming, "state-123-2.tar")), false);
+    chain.retire(context, ["state-ci-123-2.tar"]);
+    assert.equal(fs.existsSync(path.join(context.incoming, "state-ci-123-2.tar")), false);
   });
 
   test("bounds each phase by 55 minutes and the job deadline, and runs phases with fresh workflow files", t => {
@@ -98,7 +98,7 @@ describe("Chained CI phases", {skip: process.platform !== "linux"}, () => {
 
 describe("Cached SDK work roots", {skip: process.platform !== "linux"}, () => {
   test("a restored Linux LLVM root that fails admission is removed so the job rebuilds it", t => {
-    const {root} = workspace(t), sdkRoot = path.join(root, "mom-native-llvm21-sdk-123-2"), output = path.join(sdkRoot, "linux-llvm21-sdk");
+    const {root} = workspace(t), sdkRoot = path.join(root, "mom-native-llvm21-sdk-ci-123-2"), output = path.join(sdkRoot, "linux-llvm21-sdk");
     assert.equal(reuseCachedLinuxLlvm({sdkRoot, output}), false, "a cache miss builds from scratch");
     fs.mkdirSync(path.join(output, "build"), {recursive: true});
     fs.writeFileSync(path.join(output, "result.json"), "{}\n");
@@ -109,5 +109,22 @@ describe("Cached SDK work roots", {skip: process.platform !== "linux"}, () => {
 
   test("cache keys exist only for the maintained SDK roots", () => {
     assert.throws(() => cacheKey("windows-everything", {MOM_NATIVE_CI_SUFFIX: "ci", MOM_BUILD_JOBS: "4"}), /Unknown native CI cache/);
+  });
+});
+
+describe("Workflow stage deadlines", () => {
+  test("every stage deadline a CI script reads is set by a workflow or derived by a CI wrapper", () => {
+    // The CI restructure dropped the Windows GPU factory's deadline, so every GPU job failed its first check.
+    const repo = path.join(__dirname, ".."), workflows = path.join(repo, ".github/workflows"), ci = path.join(repo, "scripts/ci");
+    const read = (/** @type {string} */ dir) => fs.readdirSync(dir).filter(name => /\.(js|yml)$/.test(name))
+      .map(name => fs.readFileSync(path.join(dir, name), "utf8")).join("\n");
+    const scripts = read(path.join(repo, "scripts")), wrappers = read(ci), workflowText = read(workflows);
+    const readNames = new Set([...scripts.matchAll(/(?:environment|env|process\.env)\[\s*"(MOM_[A-Z_]*DEADLINE_EPOCH)"\s*\]/g)]
+      .map(match => match[1] || ""));
+    assert.ok(readNames.has("MOM_NATIVE_WINDOWS_GPU_DEADLINE_EPOCH"));
+    for (const name of readNames) {
+      const set = new RegExp(`\\b${name}=`).test(workflowText) || new RegExp(`\\b${name}:`).test(wrappers);
+      assert.ok(set, `${name} is read by a CI script but no workflow sets it and no CI wrapper derives it`);
+    }
   });
 });

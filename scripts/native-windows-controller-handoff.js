@@ -5,18 +5,16 @@
 // intentionally absent and must be admitted separately by their consumers.
 const fs = require("node:fs"), path = require("node:path"), {createHash} = require("node:crypto"), {isDeepStrictEqual} = require("node:util");
 const {fileHash, readBuildJson, sourceInputs, verifySourceInputs} = require("./build-source-inputs");
-const {ioPins, nativeIoInputs} = require("./build-native-io");
+const {ioPins, ioRecipeFiles, nativeIoInputs} = require("./build-native-io");
 const {opensslPin, opensslBuildRecipe} = require("./build-native-openssl");
-const {hermesPins} = require("./build-native-hermes");
+const {hermesPins, hermesRecipeFiles} = require("./build-native-hermes");
 const {ioSourceRecipe, sourceRecipe, ioArchiveUrls, buildArchiveUrls} = require("./fetch-native-sdk-sources");
 const {isStaticArchive} = require("./native-audit");
 const intelRuntimeCatalog = /** @type {any} */ (require("../runtime/windows-intel-runtime.json"));
 
 const repo = path.resolve(__dirname, "..");
 const MAX_FILES = 50000, MAX_ENTRIES = 100000, MAX_DEPTH = 64, MAX_BYTES = 512 << 20, HEX = /^[a-f0-9]{64}$/;
-const ioRecipeLeaves = ["scripts/build-native-io.js", "scripts/build-environment.js", "scripts/build-source-inputs.js", "scripts/native-audit.js"];
-const hermesRecipeLeaves = ["scripts/build-native-hermes.js", "scripts/build-source-inputs.js", "scripts/build-environment.js",
-  "scripts/native-audit.js", "runtime/hermes-host-rejections.patch", "runtime/hermes-clang-cl.patch"];
+const hermesRecipeLeaves = hermesRecipeFiles("win32");
 
 /** JSON records are validated at each trust boundary. @param {unknown} value @returns {boolean} */
 function object(value) {return Boolean(value && typeof value === "object" && !Array.isArray(value));}
@@ -197,9 +195,9 @@ function ioInputs(root, handoff) {
   if (new Set(Object.keys(ioRecord.fingerprints).map(file => path.win32.normalize(file).toLowerCase())).size !== 3) {
     throw new Error("Windows controller I/O tool fingerprints contain a case alias");
   }
-  currentRecipe(ioRecord.recipe, sourceInputs(repo, [], ioRecipeLeaves), "Windows I/O SDK producer");
+  currentRecipe(ioRecord.recipe, sourceInputs(repo, [], ioRecipeFiles), "Windows I/O SDK producer");
 
-  const opensslRecipeCurrent = sourceInputs(repo, [], ["scripts/build-native-openssl.js", "scripts/build-source-inputs.js", "scripts/build-environment.js", "scripts/native-audit.js"]);
+  const opensslRecipeCurrent = opensslBuildRecipe();
   if (ssl.version !== 1 || ssl.platform !== "win32" || ssl.target !== "VC-WIN64A" || ssl.opensslVersion !== opensslPin.version ||
       ssl.sourceDateEpoch !== opensslPin.sourceDateEpoch ||
       ssl.archive?.sha256 !== opensslPin.sha256 || ssl.archive?.path !== opensslArchive.path || ssl.archive.bytes !== opensslArchive.bytes ||
