@@ -893,3 +893,131 @@ describe("Reconnect, algorithm aliases, and invalid markers", () => {
     });
   });
 });
+
+describe("MoneroOcean split logins and Pearl jobs", () => {
+  const PEARL_HEADER = "ab".repeat(76);
+  const PEARL_TARGET = "0000ffff" + "f".repeat(56);
+  /** Gulf's Pearl push; current nodes add the top-level marker for native clients.
+   * @param {string} jobId @param {{algo?: string, header?: string}} [options] @returns {UnknownRecord} */
+  const pearlNotify = (jobId, {algo = "pearlhash", header = PEARL_HEADER} = {}) => ({
+    method: "mining.notify", id: null, ...(algo ? {algo} : {}),
+    params: {header, job_id: jobId, target: PEARL_TARGET, cert_version: 3, proof_encodings: ["none", "gzip"]},
+  });
+  /** @param {import("node:events").EventEmitter} socket @param {string} jobId @param {string} extraNonce */
+  const etchashSwitch = (socket, jobId, extraNonce) => {
+    // MoneroOcean resends the marked nonce prefix and difficulty after every family change.
+    emitPoolMessage(socket, {method: "mining.set_extranonce", algo: "etchash", params: [extraNonce, 6]});
+    emitPoolMessage(socket, {method: "mining.set_difficulty", algo: "etchash", id: null, params: [2]});
+    emitPoolMessage(socket, {method: "mining.notify", algo: "etchash", id: null, params: [jobId, SEED, HEADER, true]});
+  };
+  /** @param {import("node:events").EventEmitter} socket @param {string} jobId @param {unknown} result */
+  const acceptShare = (socket, jobId, result) => {
+    pool.pool_write(0, {jsonrpc: "2.0", id: 3, method: "mining.submit", params: {job_id: jobId}});
+    emitPoolMessage(socket, {id: 3, jsonrpc: "2.0", error: null, result});
+  };
+  /** @param {(context: {socket: import("./support").MockSocket, poolConfig: import("./support").TestPoolConfig, jobs: PoolJob[]}) => void} callback @param {string[]} [algos] */
+  const withAutoPool = (callback, algos = ["etchash", "pearlhash"]) => {
+    /** @type {PoolJob[]} */
+    const jobs = [];
+    return withMockPool({
+      pool: {use_subscribe: false, login: "wallet", pass: "x"},
+      opt: {job: {algo: null}, algo_params: positiveAlgoParams(algos)},
+    }, async ({socket, poolConfig}) => {
+      pool.connect_pool_throttle(0, (job) => {
+        jobs.push(job);
+        return completeMiningJob(job);
+      });
+      socket.emit("connect");
+      callback({socket, poolConfig, jobs});
+    });
+  };
+  /** @param {PoolJob[]} jobs */
+  const families = (jobs) => jobs.map((job) => [job.algo, job.submit_mode, job.job_id]);
+
+  test("a bare Pearl login accepts tagged Pearl and Etchash jobs on one connection", async () => {
+    await withAutoPool(({socket, poolConfig, jobs}) => {
+      emitPoolMessage(socket, {id: 1, jsonrpc: "2.0", error: null, result: true});
+      // `true` accepts the login only; the first-job timeout stays armed until real work arrives.
+      assert.equal(poolConfig.logged_in, true);
+      assert.equal(poolConfig.last_job, null);
+      assert.ok(poolConfig.first_job_timer);
+      emitPoolMessage(socket, pearlNotify("p1"));
+      acceptShare(socket, "p1", {status: "OK"});
+      etchashSwitch(socket, "e1", "abcd");
+      acceptShare(socket, "e1", true);
+      emitPoolMessage(socket, pearlNotify("p2"));
+      assert.deepEqual(families(jobs), [
+        ["pearlhash", "pearlhash", "p1"], ["etchash", "eth", "e1"], ["pearlhash", "pearlhash", "p2"],
+      ]);
+      assert.equal(jobs[0]?.pearlhash_base_target, PEARL_TARGET);
+      assert.equal(jobs[1]?.nonce, "abcd000000000000");
+      assert.equal(poolConfig.good_shares, 2);
+      assert.equal(poolConfig.bad_shares, 0);
+    });
+  });
+
+  test("a native Etchash split login switches to a tagged Pearl job and back", async () => {
+    await withAutoPool(({socket, poolConfig, jobs}) => {
+      emitPoolMessage(socket, {
+        id: 1, jsonrpc: "2.0", error: null,
+        result: {id: "worker", algo: "etchash", extra_nonce: "abcd", extensions: ["mo-native", "submit-result"]},
+      });
+      assert.equal(poolConfig.last_job, null);
+      emitPoolMessage(socket, {method: "mining.set_difficulty", algo: "etchash", id: null, params: [2]});
+      emitPoolMessage(socket, {method: "mining.notify", algo: "etchash", id: null, params: ["e1", SEED, HEADER, true]});
+      acceptShare(socket, "e1", true);
+      emitPoolMessage(socket, pearlNotify("p1"));
+      acceptShare(socket, "p1", {status: "OK"});
+      etchashSwitch(socket, "e2", "abce");
+      pool.pool_write(0, {jsonrpc: "2.0", id: 3, method: "mining.submit", params: ["e2"]});
+      emitPoolMessage(socket, {id: 3, jsonrpc: "2.0", error: {code: -1, message: "Low difficulty share"}, result: null});
+      assert.deepEqual(families(jobs), [
+        ["etchash", "eth", "e1"], ["pearlhash", "pearlhash", "p1"], ["etchash", "eth", "e2"],
+      ]);
+      assert.equal(jobs[0]?.nonce, "abcd000000000000");
+      assert.equal(jobs[2]?.nonce, "abce000000000000");
+      assert.equal(poolConfig.good_shares, 2);
+      assert.equal(poolConfig.bad_shares, 1);
+    });
+  });
+
+  test("embedded login jobs are unchanged when Pearl is advertised", async () => {
+    await withAutoPool(({socket, jobs}) => {
+      emitPoolMessage(socket, {
+        id: 1, jsonrpc: "2.0", error: null,
+        result: {id: "worker", algo: "rx/0", status: "OK", extensions: ["mo-native", "submit-result"],
+          job: {algo: "rx/0", job_id: "rx", blob_hex: "00".repeat(43), difficulty: 1}},
+      });
+      emitPoolMessage(socket, pearlNotify("p1"));
+      assert.deepEqual(families(jobs), [["rx/0", null, "rx"], ["pearlhash", "pearlhash", "p1"]]);
+    }, ["rx/0", "pearlhash"]);
+    await withAutoPool(({socket, jobs}) => {
+      emitPoolMessage(socket, {
+        id: 1, jsonrpc: "2.0", error: null,
+        result: {id: "worker", algo: "pearlhash", status: "OK", extensions: ["mo-native"],
+          job: {job_id: "p0", header: PEARL_HEADER, target: PEARL_TARGET}},
+      });
+      assert.deepEqual(families(jobs), [["pearlhash", "pearlhash", "p0"]]);
+    });
+  });
+
+  test("a tagged Pearl job for an unadvertised algorithm closes the pool without a job", async () => {
+    await withAutoPool(({socket, poolConfig, jobs}) => {
+      emitPoolMessage(socket, {id: 1, jsonrpc: "2.0", error: null, result: true});
+      emitPoolMessage(socket, pearlNotify("p1"));
+      assert.equal(jobs.length, 0);
+      assert.equal(poolConfig.last_job, null);
+      assert.equal(socket.destroyed, true);
+    }, ["etchash"]);
+  });
+
+  test("an unmarked Pearl notify is not a job and keeps the first-job timeout armed", async () => {
+    await withAutoPool(({socket, poolConfig, jobs}) => {
+      emitPoolMessage(socket, {id: 1, jsonrpc: "2.0", error: null, result: true});
+      emitPoolMessage(socket, pearlNotify("p1", {algo: ""}));
+      assert.equal(jobs.length, 0);
+      assert.equal(poolConfig.last_job, null);
+      assert.ok(poolConfig.first_job_timer);
+    });
+  });
+});

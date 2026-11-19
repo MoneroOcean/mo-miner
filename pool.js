@@ -1064,6 +1064,12 @@ function routePoolMessage(pool_id, json, setJob) {
   const pool = poolAt(pool_id);
   const nativeSwitching = pool.extensions?.includes("mo-native") === true;
   const jobAnnouncement = json.method === "job" || json.method === "mining.notify";
+  // A Pearl login reply is a bare `true`, so negotiated extensions may be unknown; a marked job must
+  // still name an advertised algorithm before it can select its family.
+  const markedAlgo = jobAnnouncement ? messageAlgorithm(json) : "";
+  if (markedAlgo && pool.requested_algos?.length && !pool.requested_algos.includes(markedAlgo)) {
+    throw new Error("Pool assigned an unadvertised algorithm: " + markedAlgo);
+  }
   if (!nativeSwitching && typeof json.method === "string") {
     rememberPoolProtocol(pool_id, json);
   }
@@ -1080,7 +1086,7 @@ function routePoolMessage(pool_id, json, setJob) {
     return;
   }
   if (nativeSwitching && jobAnnouncement) {
-    const algo = messageAlgorithm(json) || pool.job_algo;
+    const algo = markedAlgo || pool.job_algo;
     if (!algo) {throw new Error("Native pool job has no algorithm");}
     preparePoolFamily(pool_id, algo);
     const controls = pool.pending_controls || [];

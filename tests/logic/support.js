@@ -339,6 +339,7 @@ function mockPoolConfig(overrides = {}) {
     keepalive: null,
     last_job: null,
     last_connect_time: 0,
+    pending_submit_count: 0,
     good_shares: 0,
     bad_shares: 0,
     login: "wallet",
