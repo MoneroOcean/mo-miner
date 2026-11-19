@@ -152,4 +152,15 @@ test.describe("Native process environment", {concurrency: false}, () => {
     const binding = fs.readFileSync(path.join(__dirname, "../runtime/event-loop.cpp"), "utf8");
     assert.match(binding, /const int status = setEnvironment\(name\.c_str\(\), args\[1\]\.isNull\(\) \? nullptr : value\.c_str\(\)\)/);
   });
+
+  test("the native core's compile-option filter names exactly the algorithms that publish options", () => {
+    // Core::prepare() skips sycl_set_compile_options() for unlisted algorithms so a rejected job never
+    // delay-loads sycl.dll on Windows; an algorithm missing from the filter would silently lose its options.
+    const algos = (/** @type {string} */ block) => [...block.matchAll(/algo == "([^"]+)"/g)].map(match => match[1]).sort();
+    const sycl = path.join(__dirname, "../sycl");
+    const filter = extractCppBlock(fs.readFileSync(path.join(sycl, "lib.h"), "utf8"), "inline bool sycl_has_compile_options(");
+    const publisher = extractCppBlock(fs.readFileSync(path.join(sycl, "algo-params.inc"), "utf8"), "void sycl_set_compile_options(");
+    assert.ok(algos(filter).length >= 8);
+    assert.deepEqual(algos(filter), algos(publisher));
+  });
 });

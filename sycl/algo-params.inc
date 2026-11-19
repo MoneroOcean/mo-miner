@@ -255,7 +255,8 @@ sycl::device get_dev(const std::string& dev_str) {
 // Publish the program build options of the algorithm a worker is about to run. DPC++ reads them
 // once, at the process's first program build, so the worker's first job decides. The native core
 // calls this on the loop thread before the compute thread starts; compute threads never write the
-// environment. A device the job cannot use is left for the job itself to report.
+// environment. A device the job cannot use is left for the job itself to report. Callers filter with
+// sycl_has_compile_options() (lib.h), which must list every algorithm handled here.
 void sycl_set_compile_options(const std::string& algo, const std::string& dev_str) {
   try {
     const char* options = nullptr;

@@ -223,6 +223,15 @@ MOM_SYCL_API uint64_t pearlhash_attempt_hashes(
 // on the loop thread before the worker's compute thread starts: it may write the environment.
 MOM_SYCL_API void sycl_set_compile_options(const std::string& algo, const std::string& dev_str);
 
+// The algorithms sycl_set_compile_options() can publish options for; keep both lists in step. Inline
+// so callers skip the call for every other job: on Windows the call delay-loads the optional
+// sycl.dll, which costs a full runtime start and is absent from CPU-only Engineering builds, so a
+// job that validation is about to reject must not reach it.
+inline bool sycl_has_compile_options(const std::string& algo) {
+  return algo == "etchash" || algo == "kawpow" || algo == "firopow" || algo == "evrprogpow" ||
+         algo == "meowpow" || algo == "autolykos2" || algo == "cn/gpu" || algo == "nexapow";
+}
+
 // Release process-scoped SYCL state that requires ordered teardown while the Node environment and
 // compiler runtime are still alive. The addon registers this as an environment cleanup hook; it is
 // separate from C++ static destruction because runtime-compiled images have module destructors.

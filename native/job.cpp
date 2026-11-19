@@ -32,7 +32,8 @@ void Core::prepare(const Message& first) {
     return;
   const auto algo = first.values.find("algo");
   const auto dev = first.values.find("dev");
-  if (algo == first.values.end() || dev == first.values.end() || !gpu_algos.contains(algo->second))
+  if (algo == first.values.end() || dev == first.values.end() || !gpu_algos.contains(algo->second) ||
+      !sycl_has_compile_options(algo->second))
     return;
   try {
     sycl_set_compile_options(algo->second, dev->second.substr(0, dev->second.find('*')));
