@@ -32,13 +32,18 @@ typedef int v8i __attribute__((ext_vector_type(4)));
 #define PEARLHASH_DIRECT_SLOT 0
 #endif
 
+// Mirrors the host Result layout in matrix.inc: up to four distinct winning tiles per attempt.
+constexpr int kPearlHashWinners = 4;
+struct PearlHashWinner {
+  uint32_t row;
+  uint32_t col;
+  uint8_t jackpot[32];
+};
 struct PearlHashResult {
   int found;
   uint32_t seed;
-  uint32_t row;
-  uint32_t col;
   uint32_t chk;
-  uint8_t jackpot[32];
+  PearlHashWinner winners[kPearlHashWinners];
 };
 
 #define DEV __device__ __forceinline__
@@ -360,17 +365,20 @@ void pearlhash_wmma_hash_fused(const int8_t* A, const int8_t* B,
       if (debug_checksum)
         atomicAdd(&result->chk, tile_mix(proof_row, proof_col, tr_hash));
       uint32_t jackpot[8];
-      if (tile_wins(tr_hash, key, target, jackpot) &&
-          atomicExch(&result->found, 1) == 0) {
-        result->seed = seed;
-        result->row = proof_row;
-        result->col = proof_col;
-        #pragma unroll
-        for (int w = 0; w < 8; ++w) {
-          result->jackpot[w * 4] = (uint8_t)jackpot[w];
-          result->jackpot[w * 4 + 1] = (uint8_t)(jackpot[w] >> 8);
-          result->jackpot[w * 4 + 2] = (uint8_t)(jackpot[w] >> 16);
-          result->jackpot[w * 4 + 3] = (uint8_t)(jackpot[w] >> 24);
+      if (tile_wins(tr_hash, key, target, jackpot)) {
+        const int slot = atomicAdd(&result->found, 1);
+        if (slot < kPearlHashWinners) {
+          PearlHashWinner& winner = result->winners[slot];
+          result->seed = seed;
+          winner.row = proof_row;
+          winner.col = proof_col;
+          #pragma unroll
+          for (int w = 0; w < 8; ++w) {
+            winner.jackpot[w * 4] = (uint8_t)jackpot[w];
+            winner.jackpot[w * 4 + 1] = (uint8_t)(jackpot[w] >> 8);
+            winner.jackpot[w * 4 + 2] = (uint8_t)(jackpot[w] >> 16);
+            winner.jackpot[w * 4 + 3] = (uint8_t)(jackpot[w] >> 24);
+          }
         }
       }
     }

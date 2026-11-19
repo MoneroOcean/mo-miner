@@ -160,13 +160,17 @@ static void sycl_wait_and_throw(sycl::event event, const sycl::device& device) {
   event.wait_and_throw();
 }
 
+constexpr int kPearlhashWinners = 4;
+struct Winner {
+  unsigned row = 16;
+  unsigned col = 32;
+  uint8_t jackpot[32]{};
+};
 struct Result {
   int found = 41;
   int chk = 73;
   uint32_t seed = 777;
-  unsigned row = 16;
-  unsigned col = 32;
-  uint8_t jackpot[32]{};
+  Winner winners[kPearlhashWinners];
 };
 struct Buffers {
   Result* result;
@@ -183,16 +187,23 @@ struct Buffers {
   uint32_t fixed_b_seed = 0;
 };
 using CV = std::array<uint8_t, 32>;
+struct PearlHashClaim {
+  int row, col;
+  uint8_t jackpot[32];
+  uint32_t adjustment_factor;
+  std::string proof;
+};
+// Starts with a published claim so every path must visibly invalidate or replace it.
 struct Proof {
   uint32_t seed;
   uint32_t b_seed;
-  int row, col, m, n, k, rank, proof_rows, proof_cols;
-  uint8_t key[32], jackpot[32];
+  int m, n, k, rank, proof_rows, proof_cols;
+  uint8_t key[32];
   std::vector<CV> leaves_a, leaves_b;
   bool pair_dist8 = false;
   bool positive_inputs = false;
-  bool claim_ready = true;
-  bool valid = true;
+  int count = 1;
+  PearlHashClaim claims[kPearlhashWinners];
 } g_pf;
 
 struct PearlHashHipSearch {
@@ -397,7 +408,7 @@ static int check_copies(bool readback) {
     }
   }
   require(counts.fallback == 0 && counts.fail == 0, "queued-copy fault retried another search");
-  require(seed == original_seed && !g_pf.valid && !g_pf.claim_ready && g_pf.leaves_a.empty() &&
+  require(seed == original_seed && g_pf.count == 0 && g_pf.leaves_a.empty() &&
               g_pf.leaves_b.empty(),
           "queued-copy path committed a seed or proof");
   if (fault) {
@@ -578,7 +589,8 @@ static int check_native_capture(bool hip) {
   uint64_t seed = original_seed;
   bool caught = false, same_exception = false;
   try {
-    require(run(false, hip, q, buffers, &seed) == 1, "native winner was lost");
+    // found=41 keeps every winner slot; the commit reports how many it captured.
+    require(run(false, hip, q, buffers, &seed) == kPearlhashWinners, "native winner was lost");
   } catch (const std::string& error) {
     caught = true;
     same_exception = string_error && &error == thrown_address;
@@ -591,10 +603,10 @@ static int check_native_capture(bool hip) {
   require(q.pending.empty(), "native capture left a queued copy targeting proof storage");
   if (fault) {
     require(same_exception, "native capture changed the original exception");
-    require(seed == original_seed && !g_pf.valid && !g_pf.claim_ready,
+    require(seed == original_seed && g_pf.count == 0,
             "failed native capture committed a seed or exposed a stale claim");
   } else {
-    require(seed == result.seed && g_pf.valid && !g_pf.claim_ready &&
+    require(seed == result.seed && g_pf.count > 0 && g_pf.claims[0].proof.empty() &&
                 g_pf.leaves_a == a && g_pf.leaves_b == b,
             "native capture did not retain the winning seed's exact leaves");
     require(counts.copies == 2 && counts.retired_copies == 2,
@@ -622,7 +634,7 @@ static int check_pair_decline() {
   }
   require(caught && counts.fallback == 0 && counts.launch == 0 && counts.fail == 0,
           "admitted pair route silently changed its proof pattern or retried");
-  require(!g_pf.valid && !g_pf.claim_ready && g_pf.leaves_a.empty() && g_pf.leaves_b.empty(),
+  require(g_pf.count == 0 && g_pf.leaves_a.empty() && g_pf.leaves_b.empty(),
           "declined pair route exposed a stale claim");
   std::puts("PASS actual-source Pearl pair decline fails closed");
   return 0;
@@ -706,11 +718,12 @@ int main(int argc, char** argv) {
       require(result.found == 41 && result.chk == 73 && result.seed == 777,
               "submitted fault reset the result");
       require(seed == original_seed, "submitted fault committed a winning seed");
-      require(!g_pf.valid && !g_pf.claim_ready && g_pf.leaves_a.empty() && g_pf.leaves_b.empty(),
+      require(g_pf.count == 0 && g_pf.leaves_a.empty() && g_pf.leaves_b.empty(),
               "submitted fault published a proof");
       require(completed == -1, "submitted fault reached the result commit");
     } else {
-      require(completed == 1 && seed == 777 && g_pf.valid && !g_pf.claim_ready &&
+      require(completed == kPearlhashWinners && seed == 777 && g_pf.count == kPearlhashWinners &&
+                  g_pf.claims[0].proof.empty() &&
                   g_pf.leaves_a.empty() && g_pf.leaves_b.empty(),
               "successful path failed to capture the winning result");
       const bool unavailable = failure_stage == Stage::unavailable;

@@ -166,14 +166,15 @@ static sycl::event search_esimd_dpasw_impl(
       for (int t = 0; t < Tiles; ++t) {
         if (!wins[t])
           continue;
-        simd<int, 1> old = esimd_ns::atomic_update<esimd_ns::atomic_op::xchg>(
+        simd<int, 1> old = esimd_ns::atomic_update<esimd_ns::atomic_op::add>(
             &B.result->found, simd<uint32_t, 1>(0), simd<int, 1>(1), esimd_ns::simd_mask<1>(1));
-        if (old[0] == 0) {
+        if (const int slot = old[0]; slot < kPearlhashWinners) {
+          Winner& winner = B.result->winners[slot];
           B.result->seed = seed;
-          B.result->row = uint32_t(rowBase + (t / EC) * HT);
-          B.result->col = uint32_t((colBase + t % EC) * HT);
+          winner.row = uint32_t(rowBase + (t / EC) * HT);
+          winner.col = uint32_t((colBase + t % EC) * HT);
           for (int i = 0; i < 32; ++i)
-            B.result->jackpot[i] = static_cast<uint8_t>(
+            winner.jackpot[i] = static_cast<uint8_t>(
                 jackpots[i / 4][t] >> (8 * (i % 4)));
         }
       }

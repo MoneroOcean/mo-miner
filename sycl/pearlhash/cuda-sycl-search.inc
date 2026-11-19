@@ -250,12 +250,13 @@ static void search_cuda_direct(sycl::queue& q, const Buffers& bb, uint32_t seed,
                 sycl::atomic_ref<int, sycl::memory_order::relaxed, sycl::memory_scope::device,
                                  sycl::access::address_space::global_space>
                     at(B.result->found);
-                if (at.exchange(1) == 0) {
+                if (const int slot = at.fetch_add(1); slot < kPearlhashWinners) {
+                  Winner& winner = B.result->winners[slot];
                   B.result->seed = seed;
-                  B.result->row = (uint32_t)(rowBase + r * 16);
-                  B.result->col = (uint32_t)(colBase + c * 16);
+                  winner.row = (uint32_t)(rowBase + r * 16);
+                  winner.col = (uint32_t)(colBase + c * 16);
                   for (int i = 0; i < 32; ++i)
-                    B.result->jackpot[i] = jackpot[i];
+                    winner.jackpot[i] = jackpot[i];
                 }
               }
           }
@@ -411,12 +412,13 @@ static void search_cuda_pipe(sycl::queue& q, const Buffers& bb, uint32_t seed, i
               sycl::atomic_ref<int, sycl::memory_order::relaxed, sycl::memory_scope::device,
                                sycl::access::address_space::global_space>
                   at(B.result->found);
-              if (at.exchange(1) == 0) {
+              if (const int slot = at.fetch_add(1); slot < kPearlhashWinners) {
+                Winner& winner = B.result->winners[slot];
                 B.result->seed = seed;
-                B.result->row = (uint32_t)(rowBlock + warpRow + mt * 16);
-                B.result->col = (uint32_t)(colBlock + warpCol + nt * 16);
+                winner.row = (uint32_t)(rowBlock + warpRow + mt * 16);
+                winner.col = (uint32_t)(colBlock + warpCol + nt * 16);
                 for (int i = 0; i < 32; ++i)
-                  B.result->jackpot[i] = jackpot[i];
+                  winner.jackpot[i] = jackpot[i];
               }
             }
           }

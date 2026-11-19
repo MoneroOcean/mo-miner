@@ -92,13 +92,20 @@ static inline void dev_randHash(int index, const uint8_t* seed32, const uint8_t*
   b3(mb, 64, key32, out);
 }
 
+// Winning tiles kept per attempt. Each distinct tile is a separate pool share, so a search keeps
+// counting after the first win; `found` may exceed the slots, and later winners are dropped.
+// The JIT kernels mirror this layout exactly.
+constexpr int kPearlhashWinners = 4;
+struct Winner {
+  uint32_t row;
+  uint32_t col;
+  uint8_t jackpot[32];
+};
 struct Result {
   int found;
   uint32_t seed;
-  uint32_t row;
-  uint32_t col;
   uint32_t chk;
-  uint8_t jackpot[32];
+  Winner winners[kPearlhashWinners];
 };
 
 struct Buffers {

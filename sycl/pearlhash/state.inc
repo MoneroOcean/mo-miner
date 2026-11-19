@@ -226,20 +226,23 @@ State& state_for(const std::string& dev_str) {
     return std::make_unique<State>(dev_str);
   });
 }
-thread_local std::string
-    g_pearlhash_proof; // last built proof, fetched right after pearlhash() returns 1
-// Winning tile captured by pearlhash() on a find; consumed by pearlhash_claim() to build the proof lazily.
+// One winning tile of the captured attempt and its lazily built PlainProof.
+struct PearlHashClaim {
+  int row, col;
+  uint8_t jackpot[32];
+  uint32_t adjustment_factor;
+  std::string proof;
+};
+// Attempt captured by pearlhash() on a find; pearlhash_claim() builds each winner's proof lazily.
 thread_local struct PearlHashFound {
   uint32_t seed;
   uint32_t b_seed;
-  int row, col, m, n, k, rank, proof_rows, proof_cols;
+  int m, n, k, rank, proof_rows, proof_cols;
   uint8_t key[32];
-  uint8_t jackpot[32];
-  uint32_t adjustment_factor;
   std::vector<CV> leaves_a, leaves_b;
   bool pair_dist8;
   bool positive_inputs;
-  bool claim_ready;
-  bool valid;
+  int count; // captured winners; 0 when no claim is available
+  PearlHashClaim claims[kPearlhashWinners];
 } g_pf{};
 } // namespace

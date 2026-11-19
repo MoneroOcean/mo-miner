@@ -544,13 +544,14 @@ void Core::Execute() try {
       }
       if (m_dev == DEV::PEARLHASH_GPU) {
         const uint64_t prev_nonce = m_nonce64;
-        // Distinct winning seeds may be credited under the same pool job/header.
-        if (dev_sols == 1 && m_target) {
+        // Distinct winning seeds, and distinct winning tiles of one seed, are separate shares.
+        for (int winner = 0; m_target && winner < dev_sols; ++winner) {
           MessageValues values;
           values["nonce"]       = nonce_to_hex(dev_nonce, 8); // winning seed, for logging/traceability
           uint8_t jackpot[HASH_LEN];
           uint32_t adjustment_factor = 0;
-          const char* const plain_proof = pearlhash_claim(jackpot, &adjustment_factor);
+          const char* const plain_proof =
+            pearlhash_claim(static_cast<unsigned>(winner), jackpot, &adjustment_factor);
           if (!plain_proof) {
             send_error("PearlHash proof claim unavailable");
           } else {

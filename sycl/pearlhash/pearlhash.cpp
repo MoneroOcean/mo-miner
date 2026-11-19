@@ -189,9 +189,8 @@ int pearlhash(const unsigned job_ref, const uint32_t, const uint8_t* const input
               const std::string& dev_str, const std::string& backend, const unsigned requested_n,
               const unsigned requested_k, const unsigned requested_rank,
               const unsigned cert_version, const uint8_t* const base_target) {
-  // Even a rejected next call must not leave the previous seed's claim available.
-  g_pf.valid = false;
-  g_pf.claim_ready = false;
+  // Even a rejected next call must not leave the previous seed's claims available.
+  g_pf.count = 0;
   g_pf.leaves_a.clear();
   g_pf.leaves_b.clear();
   if (!input || !pseed || input_size < 76)
@@ -429,12 +428,13 @@ int pearlhash(const unsigned job_ref, const uint32_t, const uint8_t* const input
   // Keep this outside vendor guards so Intel ESIMD receives the same correctness check.
   if (is_test && q.get_device().is_gpu() && backend != "sycl") {
     const Result accelerated = *b.result;
+    const Winner& first = accelerated.winners[0];
     const bool winner_in_bounds = pair_dist8
-        ? pair_dist8_offset_valid(static_cast<int>(accelerated.row), m) &&
-              pair_dist8_offset_valid(static_cast<int>(accelerated.col), n)
-        : accelerated.row % b.proof_rows == 0 && accelerated.col % b.proof_cols == 0 &&
-              accelerated.row <= static_cast<unsigned>(m - b.proof_rows) &&
-              accelerated.col <= static_cast<unsigned>(n - b.proof_cols);
+        ? pair_dist8_offset_valid(static_cast<int>(first.row), m) &&
+              pair_dist8_offset_valid(static_cast<int>(first.col), n)
+        : first.row % b.proof_rows == 0 && first.col % b.proof_cols == 0 &&
+              first.row <= static_cast<unsigned>(m - b.proof_rows) &&
+              first.col <= static_cast<unsigned>(n - b.proof_cols);
     if (!accelerated.found || accelerated.seed != attempt_seed || !winner_in_bounds)
       throw std::string("PearlHash accelerated winner is missing or out of bounds");
     b.result->found = 0;
@@ -445,14 +445,14 @@ int pearlhash(const unsigned job_ref, const uint32_t, const uint8_t* const input
     // transcript checksums alone cannot detect a broken jackpot hash or byte ordering.
     std::vector<int> winner_rows, winner_cols;
     if (pair_dist8) {
-      if (!pair_dist8_lists(static_cast<int>(accelerated.row), static_cast<int>(accelerated.col),
+      if (!pair_dist8_lists(static_cast<int>(first.row), static_cast<int>(first.col),
                             m, n, winner_rows, winner_cols))
         throw std::string("PearlHash pair-dist8 winner pattern is invalid");
     } else {
       for (int r = 0; r < b.proof_rows; ++r)
-        winner_rows.push_back(static_cast<int>(accelerated.row) + r);
+        winner_rows.push_back(static_cast<int>(first.row) + r);
       for (int c = 0; c < b.proof_cols; ++c)
-        winner_cols.push_back(static_cast<int>(accelerated.col) + c);
+        winner_cols.push_back(static_cast<int>(first.col) + c);
     }
     std::vector<int8_t> winner_a(static_cast<size_t>(winner_rows.size()) * k),
                         winner_b(static_cast<size_t>(winner_cols.size()) * k);
@@ -482,7 +482,7 @@ int pearlhash(const unsigned job_ref, const uint32_t, const uint8_t* const input
     winner.target = tgtLE;
     winner.result = &expected;
     search_cpu(q, winner, attempt_seed, b.proof_rows, b.proof_cols, k, rank, false);
-    if (!expected.found || std::memcmp(expected.jackpot, accelerated.jackpot, 32) != 0)
+    if (!expected.found || std::memcmp(expected.winners[0].jackpot, first.jackpot, 32) != 0)
       throw std::string("PearlHash accelerated/host jackpot mismatch");
     std::fprintf(stderr, "PEARLHASH_TEST jackpot_match=true\n");
     // The portable search carries the same logical 16x16 tile order as the
@@ -544,13 +544,20 @@ int pearlhash(const unsigned job_ref, const uint32_t, const uint8_t* const input
     commit_fixed_b();
     return 1; // test: core only needs "ok", no proof
   }
+  // Each captured tile is a separate share; winners beyond the kept slots are dropped.
+  const int winners = std::min(b.result->found, kPearlhashWinners);
   // Compact trees are mutable state. Serialize under the existing state
   // mutex; only immutable bytes may survive unlock or be reused on retries.
   // Other routes keep their original lazy leaf snapshot.
   g_pf.seed = b.result->seed;
   g_pf.b_seed = pair_dist8 ? (reuse_fixed_b ? prior_fixed_b_seed : attempt_seed) : attempt_seed;
-  g_pf.row = (int)b.result->row;
-  g_pf.col = (int)b.result->col;
+  for (int i = 0; i < winners; ++i) {
+    PearlHashClaim& claim = g_pf.claims[i];
+    claim.row = static_cast<int>(b.result->winners[i].row);
+    claim.col = static_cast<int>(b.result->winners[i].col);
+    std::memcpy(claim.jackpot, b.result->winners[i].jackpot, 32);
+    claim.proof.clear();
+  }
   g_pf.m = m;
   g_pf.n = n;
   g_pf.k = k;
@@ -560,16 +567,17 @@ int pearlhash(const unsigned job_ref, const uint32_t, const uint8_t* const input
   g_pf.pair_dist8 = pair_dist8;
   g_pf.positive_inputs = b.positive_inputs;
   std::memcpy(g_pf.key, st.key, 32);
-  std::memcpy(g_pf.jackpot, b.result->jackpot, 32);
   if (compact_mode) {
     const auto proof_start = std::chrono::steady_clock::now();
     std::array<uint8_t,32> key{};
     std::copy(st.key,st.key+32,key.begin());
-    g_pearlhash_proof=st.compact_roots.proof(key,m,n,k,rank,attempt_seed,
-                                           g_pf.row,g_pf.col,&g_pf.adjustment_factor);
-    if (g_pearlhash_proof.empty())
-      throw std::string("Invalid compact PearlHash winning proof");
-    g_pf.claim_ready = true;
+    for (int i = 0; i < winners; ++i) {
+      PearlHashClaim& claim = g_pf.claims[i];
+      claim.proof = st.compact_roots.proof(key,m,n,k,rank,attempt_seed,
+                                           claim.row,claim.col,&claim.adjustment_factor);
+      if (claim.proof.empty())
+        throw std::string("Invalid compact PearlHash winning proof");
+    }
     if (std::getenv("MOM_PEARLHASH_STATS"))
       std::fprintf(stderr,"PEARLHASH_SYCL_STATS proof=%.3fms\n",
                    std::chrono::duration<double,std::milli>(
@@ -590,44 +598,43 @@ int pearlhash(const unsigned job_ref, const uint32_t, const uint8_t* const input
   }
   commit_fixed_b();
   *pseed = b.result->seed;
-  g_pf.valid = true;
-  return 1;
+  g_pf.count = winners;
+  return winners;
 }
-// Builds and caches the PlainProof plus its matching trusted-share metadata for the last winning tile.
-// Repeated calls for the captured tile return the same claim.
-const char* pearlhash_claim(uint8_t jackpot[32], uint32_t* adjustment_factor) {
-  if (!g_pf.valid || !jackpot || !adjustment_factor)
+// Builds and caches the PlainProof plus its matching trusted-share metadata for captured winner
+// `index` of the last attempt. Repeated calls for the same winner return the same claim.
+const char* pearlhash_claim(const unsigned index, uint8_t jackpot[32], uint32_t* adjustment_factor) {
+  if (index >= static_cast<unsigned>(g_pf.count) || !jackpot || !adjustment_factor)
     return nullptr;
-  if (!g_pf.claim_ready) {
+  PearlHashClaim& claim = g_pf.claims[index];
+  if (claim.proof.empty()) {
     // Compact claims must already be immutable; never use unlocked trees
     // or silently regenerate a missing compact snapshot from newer state.
     if (g_pf.proof_rows == CompactProfile::rows)
       return nullptr;
     const auto proof_start = std::chrono::steady_clock::now();
+    // The leaf snapshot stays until the next attempt so every winner of this one can use it.
+    const std::vector<CV>* const leaves_a = g_pf.leaves_a.empty() ? nullptr : &g_pf.leaves_a;
+    const std::vector<CV>* const leaves_b = g_pf.leaves_b.empty() ? nullptr : &g_pf.leaves_b;
     if (g_pf.pair_dist8)
-      g_pearlhash_proof = build_pair_plain_proof(
-          g_pf.seed, g_pf.m, g_pf.n, g_pf.k, g_pf.rank, g_pf.key, g_pf.row, g_pf.col,
-          &g_pf.adjustment_factor, g_pf.leaves_a.empty() ? nullptr : &g_pf.leaves_a,
-          g_pf.leaves_b.empty() ? nullptr : &g_pf.leaves_b, g_pf.positive_inputs, &g_pf.b_seed);
+      claim.proof = build_pair_plain_proof(
+          g_pf.seed, g_pf.m, g_pf.n, g_pf.k, g_pf.rank, g_pf.key, claim.row, claim.col,
+          &claim.adjustment_factor, leaves_a, leaves_b, g_pf.positive_inputs, &g_pf.b_seed);
     else
-      g_pearlhash_proof = build_plain_proof(
-          g_pf.seed, g_pf.m, g_pf.n, g_pf.k, g_pf.rank, g_pf.key, g_pf.row, g_pf.col,
-          &g_pf.adjustment_factor, g_pf.leaves_a.empty() ? nullptr : &g_pf.leaves_a,
-          g_pf.leaves_b.empty() ? nullptr : &g_pf.leaves_b, g_pf.proof_rows, g_pf.proof_cols,
+      claim.proof = build_plain_proof(
+          g_pf.seed, g_pf.m, g_pf.n, g_pf.k, g_pf.rank, g_pf.key, claim.row, claim.col,
+          &claim.adjustment_factor, leaves_a, leaves_b, g_pf.proof_rows, g_pf.proof_cols,
           g_pf.positive_inputs);
-    if (g_pearlhash_proof.empty())
+    if (claim.proof.empty())
       return nullptr;
-    g_pf.leaves_a.clear();
-    g_pf.leaves_b.clear();
-    g_pf.claim_ready = true;
     if (std::getenv("MOM_PEARLHASH_STATS"))
       std::fprintf(stderr, "PEARLHASH_SYCL_STATS proof=%.3fms\n",
                    std::chrono::duration<double, std::milli>(
                        std::chrono::steady_clock::now() - proof_start).count());
   }
-  std::memcpy(jackpot, g_pf.jackpot, 32);
-  *adjustment_factor = g_pf.adjustment_factor;
-  return g_pearlhash_proof.c_str();
+  std::memcpy(jackpot, claim.jackpot, 32);
+  *adjustment_factor = claim.adjustment_factor;
+  return claim.proof.c_str();
 }
 // Rank-128-equivalent GEMM MACs per attempt. V3's target is normalized to rank 128,
 // so this is also the stable accounting unit advertised to switching pools.

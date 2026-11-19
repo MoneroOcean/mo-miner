@@ -49,7 +49,7 @@ inline constexpr pearlhash_profile_t pearlhash_intel_capability_profile(
   return ordinary;
 }
 
-inline constexpr uint64_t pearlhash_result_allocation_bytes = 64;
+inline constexpr uint64_t pearlhash_result_allocation_bytes = 192;
 inline constexpr uint64_t pearlhash_runtime_reserve_bytes =
     512 * pow_intensity_detail::kMiB;
 

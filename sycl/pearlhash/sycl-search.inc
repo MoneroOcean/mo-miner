@@ -81,15 +81,15 @@ static void search_cpu(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, 
         bb.result->chk +=
             tile_mix(static_cast<uint32_t>(row_base), static_cast<uint32_t>(col_base), transcript);
       uint8_t jackpot[32];
-      if (!bb.result->found && tile_wins(transcript, bb.cA, bb.target, jackpot)) {
-        bb.result->found = 1;
-        bb.result->seed = seed;
-        bb.result->row = static_cast<uint32_t>(row_base);
-        bb.result->col = static_cast<uint32_t>(col_base);
-        for (int i = 0; i < 32; ++i)
-          bb.result->jackpot[i] = jackpot[i];
-        if (!dbg)
-          return;
+      if (tile_wins(transcript, bb.cA, bb.target, jackpot)) {
+        if (const int slot = bb.result->found++; slot < kPearlhashWinners) {
+          Winner& winner = bb.result->winners[slot];
+          bb.result->seed = seed;
+          winner.row = static_cast<uint32_t>(row_base);
+          winner.col = static_cast<uint32_t>(col_base);
+          for (int i = 0; i < 32; ++i)
+            winner.jackpot[i] = jackpot[i];
+        }
       }
     }
   }
@@ -442,12 +442,13 @@ static void search_t(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, in
             sycl::atomic_ref<int, sycl::memory_order::relaxed, sycl::memory_scope::device,
                              sycl::access::address_space::global_space>
                 a(B.result->found);
-            if (a.exchange(1) == 0) {
+            if (const int slot = a.fetch_add(1); slot < kPearlhashWinners) {
+              Winner& winner = B.result->winners[slot];
               B.result->seed = seed;
-              B.result->row = (uint32_t)rowBase;
-              B.result->col = (uint32_t)colBase;
+              winner.row = (uint32_t)rowBase;
+              winner.col = (uint32_t)colBase;
               for (int i = 0; i < 32; ++i)
-                B.result->jackpot[i] = jackpot[i];
+                winner.jackpot[i] = jackpot[i];
             }
           }
         }

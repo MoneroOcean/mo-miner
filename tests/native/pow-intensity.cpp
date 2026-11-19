@@ -58,12 +58,12 @@ void test_pearlhash_capacity() {
   expect_equal("Pearl wide CVA", wide_counts.cva_bytes, 64 * kMiB + 64);
   expect_equal("Pearl wide CVB", wide_counts.cvb_bytes, 256 * kMiB + 64);
   expect_equal("Pearl wide required maximum", wide_counts.max_alloc, 4 * kGiB);
-  expect_equal("Pearl wide complete required budget", wide_counts.total_bytes, 5855379776ULL);
+  expect_equal("Pearl wide complete required budget", wide_counts.total_bytes, 5855379904ULL);
   expect_true("Pearl compact legal", pearlhash_allocation_counts(compact, compact_counts));
   expect_equal("Pearl compact required maximum", compact_counts.max_alloc, 256 * kMiB);
-  expect_equal("Pearl compact complete required budget", compact_counts.total_bytes, 620822848ULL);
+  expect_equal("Pearl compact complete required budget", compact_counts.total_bytes, 620822976ULL);
   expect_true("Pearl ordinary legal", pearlhash_allocation_counts(ordinary, ordinary_counts));
-  expect_equal("Pearl ordinary complete required budget", ordinary_counts.total_bytes, 620790080ULL);
+  expect_equal("Pearl ordinary complete required budget", ordinary_counts.total_bytes, 620790208ULL);
 
   constexpr uint64_t transcript = 1 * kGiB;
   expect_true("Pearl optional transcript exact capacity",
@@ -242,7 +242,7 @@ void test_pearlhash_nvidia_compact_profile() {
         pearlhash_nvidia_compact_profile_for({units,16*kGiB,8*kGiB},true).m,0);
   PearlHashAllocationCounts fast_counts{},big{},little{};
   expect_true("Pearl fast required counts",pearlhash_allocation_counts(fast,fast_counts));
-  expect_equal("Pearl fast memory budget",fast_counts.total_bytes,4219863360ULL);
+  expect_equal("Pearl fast memory budget",fast_counts.total_bytes,4219863488ULL);
   expect_equal("Pearl fast largest allocation",fast_counts.max_alloc,2*kGiB);
   expect_pearl_profile("Pearl fast exact memory",
       pearlhash_nvidia_compact_profile_for(

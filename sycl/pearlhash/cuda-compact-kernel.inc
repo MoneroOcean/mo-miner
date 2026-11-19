@@ -57,13 +57,18 @@ __device__ __forceinline__ void swizzle_cta(int& block_m, int& block_n,
   }
 }
 
+// Mirrors the host Result layout in matrix.inc: up to four distinct winning tiles per attempt.
+constexpr int kPearlHashWinners = 4;
+struct PearlHashWinner {
+  uint32_t row;
+  uint32_t col;
+  unsigned char jackpot[32];
+};
 struct PearlHashResult {
   int found;
   uint32_t seed;
-  uint32_t row;
-  uint32_t col;
   uint32_t chk;
-  unsigned char jackpot[32];
+  PearlHashWinner winners[kPearlHashWinners];
 };
 
 __device__ __forceinline__ uint32_t load32(const unsigned char* p) {
@@ -164,17 +169,22 @@ __device__ __forceinline__ void hash_local(
 
   if (debug_checksum)
     atomicAdd(&result->chk, tile_mix(row, col, transcript_words));
-  if (wins && atomicExch(&result->found, 1) == 0) {
-    result->seed = seed;
-    result->row = row;
-    result->col = col;
+  // Every distinct winning tile is a pool share; claim a slot rather than only the first win.
+  if (wins) {
+    const int slot = atomicAdd(&result->found, 1);
+    if (slot < kPearlHashWinners) {
+      PearlHashWinner& winner = result->winners[slot];
+      result->seed = seed;
+      winner.row = row;
+      winner.col = col;
 #pragma unroll
-    for (int i = 0; i < 8; ++i) {
-      const uint32_t word = state[i] ^ state[i + 8];
-      result->jackpot[i * 4] = static_cast<unsigned char>(word);
-      result->jackpot[i * 4 + 1] = static_cast<unsigned char>(word >> 8);
-      result->jackpot[i * 4 + 2] = static_cast<unsigned char>(word >> 16);
-      result->jackpot[i * 4 + 3] = static_cast<unsigned char>(word >> 24);
+      for (int i = 0; i < 8; ++i) {
+        const uint32_t word = state[i] ^ state[i + 8];
+        winner.jackpot[i * 4] = static_cast<unsigned char>(word);
+        winner.jackpot[i * 4 + 1] = static_cast<unsigned char>(word >> 8);
+        winner.jackpot[i * 4 + 2] = static_cast<unsigned char>(word >> 16);
+        winner.jackpot[i * 4 + 3] = static_cast<unsigned char>(word >> 24);
+      }
     }
   }
 }

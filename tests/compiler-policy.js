@@ -2918,7 +2918,7 @@ int main() {
       assert.equal(poolHeader.nonceoffset, 172);
     });
 
-    test("PearlHash emits subsequent winning proofs and preserves its seed lifecycle", {
+    test("PearlHash emits every captured winner and preserves its seed lifecycle", {
       skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
     }, () => {
       const core = fs.readFileSync(path.join(__dirname, "../native/core/execution.inc"), "utf8");
@@ -2960,8 +2960,10 @@ struct Worker {
   unsigned m_pearlhash_proof_n = 0, m_pearlhash_proof_k = 0, m_pearlhash_proof_rank = 0,
            m_pearlhash_proof_cert_version = 0, m_pearlhash_proof_m = 0;
   std::string m_pearlhash_proof_pool, m_pearlhash_proof_job, m_pearlhash_proof_header;
-  const char* pearlhash_claim(uint8_t* jackpot, uint32_t* factor) {
+  std::vector<unsigned> claimed;
+  const char* pearlhash_claim(unsigned index, uint8_t* jackpot, uint32_t* factor) {
     ++claim_calls;
+    claimed.push_back(index);
     if (!available) return nullptr;
     for (unsigned i = 0; i < HASH_LEN; ++i) jackpot[i] = static_cast<uint8_t>(found_seed);
     *factor = 524288;
@@ -3022,11 +3024,18 @@ int main() {
   assert(retry.sent[0].first == "error");
   assert(retry.sent[0].second.at("message") == "PearlHash proof claim unavailable");
   expect_result(retry, 1, 16);
-  for (int solutions : {-1, 0, 2}) {
+  for (int solutions : {-1, 0}) {
     Worker pending;
     pending.run(solutions, 10);
     assert(pending.sent.empty() && pending.claim_calls == 0 && pending.m_nonce64 == 16 && pending.active);
   }
+  // Two winning tiles of one seed are two shares, claimed in capture order.
+  Worker pair;
+  pair.run(2, 10);
+  assert(pair.sent.size() == 2 && pair.claim_calls == 2 && pair.m_nonce64 == 16 && pair.active);
+  assert((pair.claimed == std::vector<unsigned>{0, 1}));
+  expect_result(pair, 0, 10);
+  expect_result(pair, 1, 10);
   Worker no_target;
   no_target.m_target = 0;
   no_target.run(1, 10);
@@ -3043,7 +3052,7 @@ int main() {
   no_target.m_nonce64 = UINT32_MAX - 5;
   no_target.run(1, no_target.m_nonce64);
   assert(!no_target.active && no_target.sent.empty());
-  std::puts("PASS PearlHash subsequent proofs, claims and seed lifecycle");
+  std::puts("PASS PearlHash captured winners, claims and seed lifecycle");
 }
 `);
       try {
@@ -3052,7 +3061,7 @@ int main() {
         assert.equal(compiled.status, 0, compiled.error?.message || compiled.stderr);
         const result = spawnSync(executable, [], {encoding: "utf8"});
         assert.equal(result.status, 0, result.error?.message || result.stderr);
-        assert.equal(result.stdout, "PASS PearlHash subsequent proofs, claims and seed lifecycle\n");
+        assert.equal(result.stdout, "PASS PearlHash captured winners, claims and seed lifecycle\n");
       } finally {
         fs.rmSync(fixture, {recursive: true, force: true});
       }
@@ -6637,7 +6646,7 @@ int main(int argc, char** argv) {
       const root = path.join(__dirname, "../sycl/pearlhash");
       const dispatch = fs.readFileSync(path.join(root, "dispatch.inc"), "utf8");
       const host = fs.readFileSync(path.join(root, "pearlhash.cpp"), "utf8");
-      const invalidateStart = host.indexOf("  g_pf.valid = false;");
+      const invalidateStart = host.indexOf("  g_pf.count = 0;");
       // Keep only the entry invalidation block. It intentionally precedes argument validation so
       // a rejected call cannot expose a previous share; the validation body is not self-contained
       // in the native fault fixture and must not be copied into it.

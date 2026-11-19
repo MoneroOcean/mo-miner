@@ -22,7 +22,7 @@ test.describe("Native GPU table follows the maintained interface", () => {
   });
   test("the fixed jackpot array argument and empty noexcept cleanup retain their ABI", () => {
     const rows = gpuDeclarations(original);
-    assert.deepEqual(rows.find((row) => row.name === "pearlhash_claim")?.args, ["jackpot", "adjustment_factor"]);
+    assert.deepEqual(rows.find((row) => row.name === "pearlhash_claim")?.args, ["index", "jackpot", "adjustment_factor"]);
     assert.equal(rows.find((row) => row.name === "sycl_cleanup")?.declaration, "void sycl_cleanup() noexcept");
   });
   test("added public entries are picked up without another function list", () => {
