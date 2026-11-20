@@ -247,8 +247,9 @@ each process launch; this is separate from kernel compilation and does not extra
 
 # GPU selection
 
-The standalone launcher auto-detects the backend on a single-vendor system. On a mixed-vendor
-system, select which GPU runtime MoM should use for that process:
+MoM auto-detects the backend on a single-vendor system, except that an Intel integrated GPU alone
+is not auto-selected (set `intel_igpu`). On a mixed-vendor system, select which GPU runtime MoM
+should use for that process:
 
 ```
 MOM_GPU_BACKEND=intel ./mom algos         # Linux standalone

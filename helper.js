@@ -20,6 +20,13 @@ const developmentBuildPlatform = isWindowsProcess ? "win" : "lin";
 const isExplicitWorker = process.env["MOM_CLUSTER_WORKER"] === "1";
 const isWorkerProcess = isExplicitWorker ||
   (!isWindowsProcess && !cluster.isPrimary);
+// The controller picks a backend left unset (workers inherit it) before anything reads it, starting
+// with the AMD worker choice below. An explicitly empty value still selects no backend: native
+// parity harnesses rely on that.
+if (!isWorkerProcess && process.env["MOM_GPU_BACKEND"] === undefined) {
+  const detected = require("./helper/gpu-detect").detectGpuBackend();
+  if (detected) {process.env["MOM_GPU_BACKEND"] = detected;}
+}
 const useSubprocessWorkers = isWindowsProcess ||
   process.env["MOM_USE_SUBPROCESS_WORKERS"] === "1" ||
   (process.env["MOM_GPU_BACKEND"] || "").toLowerCase() === "amd";

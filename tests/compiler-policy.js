@@ -2764,6 +2764,50 @@ int main() {
       }
     });
 
+    test("standalone backend detection selects only a single-vendor host", () => {
+      const {displayAdapters, detectGpuBackend} = require("../helper/gpu-detect");
+      // Windows Node has no sysfs (nor colon-named directories) and no native core to query.
+      if (process.platform === "win32") {assert.deepEqual(displayAdapters(), []);}
+      // Windows SetupAPI rows: a passthrough VM's virtio console must not hide its only GPU.
+      assert.equal(detectGpuBackend([{vendor: 0x1af4, device: 0x1050, bus: 0}, {vendor: 0x8086, device: 0xe20b, bus: 1}]), "intel");
+      assert.equal(detectGpuBackend([{vendor: 0x8086, device: 0x4c8a, bus: 0}]), "");
+      assert.equal(detectGpuBackend([]), "");
+      if (process.platform === "win32") {return;}
+      const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-gpu-detect-"));
+      const igpu = ["0000:00:02.0", "0x8086", "0x4c8a"], nvidia = ["0000:01:00.0", "0x10de", "0x2d04"];
+      /** @type {Array<[string, string[][], string]>} */
+      const cases = [
+        ["A770 alone", [["0000:03:00.0", "0x8086", "0x56a0"]], "intel"],
+        ["Arc beside its CPU's iGPU", [igpu, ["0000:03:00.0", "0x8086", "0xe20b"]], "intel"],
+        ["an Intel iGPU alone", [igpu], ""],
+        ["NVIDIA alone", [nvidia], "nvidia"],
+        ["AMD alone", [["0000:0a:00.0", "0x1002", "0x7590"]], "amd"],
+        ["NVIDIA with a Cirrus console", [nvidia, ["0000:00:03.0", "0x1013", "0x00b8"]], "nvidia"],
+        ["NVIDIA with an ASPEED BMC", [nvidia, ["0000:05:00.0", "0x1a03", "0x2000"]], "nvidia"],
+        ["another Cirrus device", [["0000:00:03.0", "0x1013", "0x9999"]], "opencl"],
+        ["NVIDIA beside an Intel iGPU", [igpu, nvidia], ""],
+        ["NVIDIA and AMD", [nvidia, ["0000:0a:00.0", "0x1002", "0x7590"]], ""],
+        ["an unknown GPU", [["0000:05:00.0", "0x9999", "0x0001"]], "opencl"],
+        ["an Intel audio device", [["0000:00:1f.3", "0x8086", "0x7ad0", "0x040300"]], ""],
+      ];
+      try {
+        for (const [name, devices, expected] of cases) {
+          const root = path.join(fixture, name.replace(/\W+/g, "-"));
+          for (const [slot = "", vendor = "", device = "", cls = "0x030000"] of devices) {
+            const directory = path.join(root, slot);
+            fs.mkdirSync(directory, {recursive: true});
+            fs.writeFileSync(path.join(directory, "vendor"), vendor + "\n");
+            fs.writeFileSync(path.join(directory, "device"), device + "\n");
+            fs.writeFileSync(path.join(directory, "class"), cls + "\n");
+          }
+          assert.equal(detectGpuBackend(displayAdapters(root)), expected, name);
+        }
+        assert.deepEqual(displayAdapters(path.join(fixture, "missing")), []);
+      } finally {
+        fs.rmSync(fixture, {recursive: true, force: true});
+      }
+    });
+
     test("GPU backend and compiler policy boundaries reject prefixes and coercive objects", () => {
       assert.equal(policyModule.gpuFromEnv({MOM_GPU_BACKEND: "nvidia-extra"}), "");
       assert.equal(policyModule.gpuFromEnv({MOM_GPU_BACKEND: "NVIDIA"}), "nvidia");

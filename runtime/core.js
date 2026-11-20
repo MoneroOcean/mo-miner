@@ -28,4 +28,5 @@ class AsyncWorker {
   }
 }
 
-module.exports = {AsyncWorker, nvidiaComputeCapabilities: () => globalThis.__momNvidiaComputeCapabilities()};
+module.exports = {AsyncWorker, nvidiaComputeCapabilities: () => globalThis.__momNvidiaComputeCapabilities(),
+  displayAdapters: () => globalThis.__momDisplayAdapters()};

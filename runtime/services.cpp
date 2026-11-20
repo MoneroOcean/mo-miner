@@ -130,6 +130,18 @@ void installServices(Runtime &rt) {
     for (size_t i = 0; i < values.size(); ++i) {result.setValueAtIndex(rt, i, static_cast<double>(values[i]));}
     return result;
   });
+  binding(rt, "__momDisplayAdapters", 0, [](Runtime &rt, const Value *) -> Value {
+    const auto adapters = displayAdapters();
+    Array result(rt, adapters.size());
+    for (size_t i = 0; i < adapters.size(); ++i) {
+      Object adapter(rt);
+      adapter.setProperty(rt, "vendor", static_cast<double>(adapters[i].vendor));
+      adapter.setProperty(rt, "device", static_cast<double>(adapters[i].device));
+      adapter.setProperty(rt, "bus", static_cast<double>(adapters[i].bus));
+      result.setValueAtIndex(rt, i, std::move(adapter));
+    }
+    return result;
+  });
   binding(rt, "__momIsIP", 1, [](Runtime &rt, const Value *args) -> Value {
     if (!args[0].isString()) {return Value(0.0);}
     return Value(static_cast<double>(nativeIsIP(args[0].asString(rt).utf8(rt))));
