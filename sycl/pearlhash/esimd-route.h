@@ -22,12 +22,24 @@ constexpr bool pearlhash_wide_pipeline_route(const unsigned dpas_width, const in
   return dpas_width == 16u && rank == 128 && columns > 0 && columns % 64 == 0;
 }
 
-// Traverse four 16-row strips and two column groups to retain B operands across nearby work.
-inline void pearlhash_esimd_stripe_position(unsigned wi, unsigned tiles_w,
+// One work-group is a whole Xe core at 256 GRFs (32 threads): 8 row groups by 4 column groups, so
+// its threads share every A band four ways and every B bank eight ways through L1.
+inline constexpr unsigned pearlhash_esimd_group_rows = 8, pearlhash_esimd_group_columns = 4;
+
+// Work-groups stacked per stripe. B streams past each stripe once, so taller stripes cut memory
+// traffic until their A rows (32 per row group) outgrow about 8 MiB of the L2 cache.
+constexpr unsigned pearlhash_esimd_strips(const unsigned k) {
+  const unsigned strips = (8u << 20) / (k * 32u * pearlhash_esimd_group_rows);
+  return strips ? strips : 1u;
+}
+
+// One block is one work-group; blocks walk down a stripe before stepping to the next columns.
+inline void pearlhash_esimd_stripe_position(unsigned wi, unsigned tiles_w, unsigned strips,
                                            unsigned& row, unsigned& column) {
-  const unsigned block = wi / 32, inner = wi % 32;
-  const unsigned blocks_w = tiles_w / 2;
-  const unsigned stripe = block / (4 * blocks_w), within = block % (4 * blocks_w);
-  row = (4 * stripe + within % 4) * 16 + inner / 2;
-  column = (within / 4) * 2 + inner % 2;
+  constexpr unsigned rows = pearlhash_esimd_group_rows, columns = pearlhash_esimd_group_columns;
+  const unsigned block = wi / (rows * columns), inner = wi % (rows * columns);
+  const unsigned blocks_w = tiles_w / columns;
+  const unsigned stripe = block / (strips * blocks_w), within = block % (strips * blocks_w);
+  row = (strips * stripe + within % strips) * rows + inner / columns;
+  column = (within / strips) * columns + inner % columns;
 }

@@ -67,7 +67,7 @@ the GPUs on adjacent rows; the last column names the comparison source.
 |                         | 5060 Ti | 25.09 MH/s (99%)    | 25.04 MH/s (94%)    | SRBMiner                       |
 |                         | 9060 XT | 19.56 MH/s (100%)   | 17.29 MH/s (86%)    | SRBMiner                       |
 | `fishhash` / IRON       | B580    | 12.60 MH/s (98%)    | 13.07 MH/s (102%)   | SRBMiner                       |
-|                         | A770    | 12.90 MH/s (81%*)   | -                   | SRBMiner*                      |
+|                         | A770    | 7.79 MH/s (49%*)    | -                   | SRBMiner*                      |
 |                         | 5060 Ti | 31.20 MH/s (88%)    | 31.32 MH/s (91%)    | miniZ                          |
 |                         | 9060 XT | 13.07 MH/s (100%)   | 11.57 MH/s (100%)   | lolMiner                       |
 | `karlsenhashv2` / KLS   | B580    | 12.75 MH/s (102%)   | 12.44 MH/s (100%)   | SRBMiner                       |
@@ -98,8 +98,8 @@ the GPUs on adjacent rows; the last column names the comparison source.
 |                         | A770    | 2.41 KH/s (106%*)   | -                   | SRBMiner*                      |
 |                         | 5060 Ti | 3.39 KH/s (88%)     | 3.48 KH/s (90%)     | XMR-Stak                       |
 |                         | 9060 XT | 3.17 KH/s (118%)    | 2.81 KH/s (107%)    | SRBMiner / BZMiner             |
-| `pearlhash` / PRL       | B580    | 86.48 TH/s (102%)   | 86.87 TH/s (102%)   | BZMiner                        |
-|                         | A770    | 88.75 TH/s (104%*)  | 89.00 TH/s (105%*)  | best peer*                     |
+| `pearlhash` / PRL       | B580    | 88.45 TH/s (104%)   | 86.87 TH/s (102%)   | BZMiner                        |
+|                         | A770    | 88.56 TH/s (104%*)  | 89.00 TH/s (105%*)  | best peer*                     |
 |                         | 5060 Ti | 94.93 TH/s (106%)   | 84.76 TH/s (93%)    | BZMiner                        |
 |                         | 9060 XT | 72.41 TH/s (106%)   | 69.54 TH/s (102%)   | BZMiner                        |
 | `hoohash` / HTN         | B580    | 3.03 MH/s (174%*)   | 2.99 MH/s (180%*)   | best peer*                     |
@@ -140,7 +140,8 @@ PearlHash result below. Starred miner names use measured averages where availabl
 throttling, short benchmarks or different pool workloads make
 these approximate comparisons. When a matched A770 reference is unavailable, `best peer*` uses a
 measured reference from another GPU. Some A770 rates use earlier MoM builds:
-FishHash, KarlsenHashV2, BeamHash3, Equihash192_7, Verthash, Walahash and Etchash.
+KarlsenHashV2, BeamHash3, Equihash192_7, Verthash, Walahash and Etchash. The A770 FishHash rate is
+the scalar kernel's: the faster cooperative kernel computes nothing on that card and is rejected.
 
 The A770 Windows PearlHash rate is reported by [@friskens in discussion #8](https://github.com/MoneroOcean/mo-miner/discussions/8),
 who also reports a 91.1 TH/s 15-minute average with undervolting. These are community results, not
