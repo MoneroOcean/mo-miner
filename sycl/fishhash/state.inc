@@ -12,6 +12,7 @@ public:
   unsigned coop_workgroup;
   bool cache_built = false;
   bool dag_built = false;
+  int fishhash_cooperative = -1; // search policy per algorithm: -1 unset, 0 scalar, 1 cooperative
   int karlsen_cooperative = -1;
   std::mutex mutex;
   // Bind the fixed dataset and job buffers to a device with required USM support.
@@ -129,65 +130,77 @@ static State& state_for(const std::string& dev_str) {
   return registry().get(dev_str, [&] { return std::make_unique<State>(dev_str); });
 }
 
-// Cache backend search policy, timing both real kernels on Level Zero.
-static bool select_karlsen_cooperative(State& state, const unsigned input_size,
-                                       const uint64_t start_nonce) {
+// Cache one algorithm's search policy in `choice`. CUDA and HIP have a clear cooperative winner and
+// other non-Level Zero GPUs keep the algorithm's default. On Level Zero the cooperative kernel must
+// first reproduce the scalar kernel's nonce-0 hash (the FishHash one silently computes nothing on an
+// Arc A770), then outrun it: Arc generations differ in register pressure versus subgroup-exchange
+// cost, so the real kernels are measured instead of branching on a GPU model.
+// `search(cooperative, count, is_test)` submits one search over the current input and target.
+template <class Search>
+static bool select_cooperative(State& state, int& choice, const char* const algo,
+                               const bool other_gpu_default, const Search& search) {
 #if defined(MOM_SYCL_PORTABLE_OPENCL)
   (void)state;
-  (void)input_size;
-  (void)start_nonce;
+  (void)choice;
+  (void)algo;
+  (void)other_gpu_default;
+  (void)search;
   return false;
 #else
-  if (state.karlsen_cooperative >= 0)
-    return state.karlsen_cooperative != 0;
-
-  // CUDA and HIP have a clear cooperative winner. Generic OpenCL retains the portable scalar path;
-  // Level Zero is tuned because Arc generations differ substantially in register pressure versus
-  // subgroup-exchange cost. This measures the common kernels instead of branching on a GPU model.
+  if (choice >= 0)
+    return choice != 0;
   if (mom_is_cuda(state.device) || mom_is_hip(state.device)) {
-    state.karlsen_cooperative = 1;
+    choice = 1;
     return true;
   }
   if (!sycl_is_level_zero_gpu(state.device)) {
-    state.karlsen_cooperative = 0;
-    return false;
+    choice = other_gpu_default ? 1 : 0;
+    return other_gpu_default;
   }
   const auto subgroup_sizes = state.device.get_info<sycl::info::device::sub_group_sizes>();
   if (std::find(subgroup_sizes.begin(), subgroup_sizes.end(), FISH_TEAM) == subgroup_sizes.end()) {
-    state.karlsen_cooperative = 0;
+    choice = 0;
+    return false;
+  }
+
+  const auto run = [&](const bool cooperative, const uint32_t count, const bool is_test) {
+    std::memset(state.result, 0, sizeof(*state.result));
+    const auto begin = std::chrono::steady_clock::now();
+    sycl_wait_and_throw(search(cooperative, count, is_test), state.device);
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
+  };
+  // Test mode stores nonce 0's hash whatever the target; a kernel that stores none fails.
+  const auto first_hash = [&](const bool cooperative, uint8_t (&hash)[HASH_LEN]) {
+    run(cooperative, 1, true);
+    if (state.result->count == 0)
+      return false;
+    std::memcpy(hash, state.result->hash[0], HASH_LEN);
+    return true;
+  };
+  uint8_t cooperative_hash[HASH_LEN], scalar_hash[HASH_LEN];
+  if (!first_hash(true, cooperative_hash) || !first_hash(false, scalar_hash) ||
+      std::memcmp(cooperative_hash, scalar_hash, HASH_LEN) != 0) {
+    choice = 0;
+    std::fprintf(stderr, "%s: cooperative search disagrees with the scalar kernel; using scalar\n",
+                 algo);
     return false;
   }
 
   constexpr uint32_t warmup_intensity = 65536;
   constexpr uint32_t sample_intensity = 1048576;
-  const auto run = [&](const bool cooperative, const uint32_t count) {
-    std::memset(state.result, 0, sizeof(*state.result));
-    const auto begin = std::chrono::steady_clock::now();
-    const sycl::event event =
-        cooperative
-            ? submit_karlsenhashv2_search_coop(state.queue, state.input, input_size, start_nonce,
-                                               state.dag, count, state.target, state.result, false,
-                                               state.coop_workgroup)
-            : submit_karlsenhashv2_search<true>(state.queue, state.input, input_size, start_nonce,
-                                                nullptr, state.dag, count, state.target, state.result,
-                                                false);
-    sycl_wait_and_throw(event, state.device);
-    return std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
-  };
-
   // Exclude each kernel's first-launch JIT cost, then alternate order to avoid a clock/thermal bias.
-  run(false, warmup_intensity);
-  run(true, warmup_intensity);
-  double scalar_seconds = run(false, sample_intensity);
-  double cooperative_seconds = run(true, sample_intensity);
-  cooperative_seconds += run(true, sample_intensity);
-  scalar_seconds += run(false, sample_intensity);
-  state.karlsen_cooperative = cooperative_seconds < scalar_seconds ? 1 : 0;
+  run(false, warmup_intensity, false);
+  run(true, warmup_intensity, false);
+  double scalar_seconds = run(false, sample_intensity, false);
+  double cooperative_seconds = run(true, sample_intensity, false);
+  cooperative_seconds += run(true, sample_intensity, false);
+  scalar_seconds += run(false, sample_intensity, false);
+  choice = cooperative_seconds < scalar_seconds ? 1 : 0;
   const double hashes = 2.0 * sample_intensity / 1e6;
-  std::fprintf(stderr, "karlsenhashv2: selected %s search (scalar %.2f, cooperative %.2f MH/s)\n",
-               state.karlsen_cooperative ? "cooperative" : "scalar", hashes / scalar_seconds,
+  std::fprintf(stderr, "%s: selected %s search (scalar %.2f, cooperative %.2f MH/s)\n", algo,
+               choice ? "cooperative" : "scalar", hashes / scalar_seconds,
                hashes / cooperative_seconds);
-  return state.karlsen_cooperative != 0;
+  return choice != 0;
 #endif
 }
 
