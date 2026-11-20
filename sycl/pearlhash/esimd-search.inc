@@ -104,7 +104,11 @@ static void search_esimd_impl(sycl::queue& q, const Buffers& bb, uint32_t seed, 
   // the cache-blocking note above); otherwise fall back to plain row-major traversal.
   const bool blocked = BLK > 1 && (tilesW % BLK) == 0 && (tilesH % BLK) == 0;
   const int blocksW = blocked ? tilesW / BLK : 0;
-  const bool striped = Width == 16 && EC == 4 && tilesH % 64 == 0 && tilesW % 2 == 0;
+  // Striped traversal needs whole stripes and work-groups; other grids keep the blocked order.
+  const unsigned strips = pearlhash_esimd_strips(static_cast<unsigned>(k));
+  const bool striped = Width == 16 && EC == 4 &&
+      tilesH % static_cast<int>(strips * pearlhash_esimd_group_rows) == 0 &&
+      tilesW % static_cast<int>(pearlhash_esimd_group_columns) == 0;
   q.submit([&](sycl::handler& h) {
     const auto work = [=](sycl::id<1> id) SYCL_ESIMD_FUNCTION MOM_SYCL_KERNEL_ARGS_RESTRICT {
       using esimd_ns::simd;
@@ -113,7 +117,7 @@ static void search_esimd_impl(sycl::queue& q, const Buffers& bb, uint32_t seed, 
       if (striped) {
         unsigned row, column;
         pearlhash_esimd_stripe_position(static_cast<unsigned>(wi),
-                                       static_cast<unsigned>(tilesW), row, column);
+                                       static_cast<unsigned>(tilesW), strips, row, column);
         Rg = static_cast<int>(row);
         Cg = static_cast<int>(column);
       } else if (blocked) { // swizzle into BLK x BLK super-blocks for L2 reuse
@@ -290,7 +294,8 @@ static void search_esimd_impl(sycl::queue& q, const Buffers& bb, uint32_t seed, 
       const auto grouped = [=](sycl::nd_item<1> item) SYCL_ESIMD_KERNEL {
         work(item.get_global_id());
       };
-      const size_t local = nWI % 16 == 0 ? 16 : 1;
+      const size_t local = striped ? pearlhash_esimd_group_rows * pearlhash_esimd_group_columns
+                                   : nWI % 16 == 0 ? 16 : 1;
 #if defined(MOM_PEARLHASH_INTEL_LARGE_GRF)
       namespace oneapi_exp = sycl::ext::oneapi::experimental;
       oneapi_exp::nd_launch(

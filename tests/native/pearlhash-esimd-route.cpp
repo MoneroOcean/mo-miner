@@ -94,17 +94,35 @@ int main() {
       return 1;
     }
   }
-  for (const unsigned rows : {64u, 128u, 256u}) {
-    for (const unsigned columns : {2u, 8u, 64u}) {
-      std::vector<bool> seen(rows * columns);
-      for (unsigned wi = 0; wi < rows * columns; ++wi) {
-        unsigned row, column;
-        pearlhash_esimd_stripe_position(wi, columns, row, column);
-        if (row >= rows || column >= columns || seen[row * columns + column]) {
-          std::fputs("PearlHash striped traversal is not a bijection\n", stderr);
-          return 1;
+  // Stripes hold about 8 MiB of A rows: 256 rows per work-group strip, K bytes per row.
+  static_assert(pearlhash_esimd_strips(2048) == 16 && pearlhash_esimd_strips(4096) == 8 &&
+                pearlhash_esimd_strips(8192) == 4 && pearlhash_esimd_strips(65536) == 1);
+  constexpr unsigned group_rows = pearlhash_esimd_group_rows;
+  constexpr unsigned group_columns = pearlhash_esimd_group_columns;
+  for (const unsigned strips : {1u, 4u, 8u, 16u}) {
+    for (const unsigned rows : {strips * group_rows, 3 * strips * group_rows}) {
+      for (const unsigned columns : {group_columns, 2 * group_columns, 64u}) {
+        std::vector<bool> seen(rows * columns);
+        for (unsigned wi = 0; wi < rows * columns; ++wi) {
+          unsigned row, column;
+          pearlhash_esimd_stripe_position(wi, columns, strips, row, column);
+          if (row >= rows || column >= columns || seen[row * columns + column]) {
+            std::fputs("PearlHash striped traversal is not a bijection\n", stderr);
+            return 1;
+          }
+          seen[row * columns + column] = true;
+          // Each work-group is one aligned rectangle, so its threads share A bands and B banks.
+          unsigned first_row, first_column;
+          const unsigned group = group_rows * group_columns;
+          pearlhash_esimd_stripe_position(wi / group * group, columns, strips, first_row,
+                                          first_column);
+          if (first_row % group_rows || first_column % group_columns ||
+              row - first_row != wi % group / group_columns ||
+              column - first_column != wi % group % group_columns) {
+            std::fputs("PearlHash striped work-group is not an aligned rectangle\n", stderr);
+            return 1;
+          }
         }
-        seen[row * columns + column] = true;
       }
     }
   }
