@@ -506,15 +506,46 @@ int pearlhash(const unsigned job_ref, const uint32_t, const uint8_t* const input
     std::fprintf(stderr, "PEARLHASH_CHK dev=%s seed=%u chk=%08x\n", dev_str.c_str(),
                  (uint32_t)*pseed, b.result->chk);
   if (compact_mode && !reuse_fixed_b) {
-    // Cold host-tree work must not contaminate the GPU wait EMA. Capture
-    // both immutable trees once; validity is committed only after the claim.
-    std::vector<CV> a(checked_chunk_count(checked_elements(m,k,"compact A cache"),"compact A cache"));
-    std::vector<CV> bt(checked_chunk_count(checked_elements(n,k,"compact B cache"),"compact B cache"));
+    // Capture complete GPU levels directly into their final host vectors. Only the bounded odd
+    // suffix is rebuilt from the captured top level after the readback completes.
+    const size_t a_leaves = checked_chunk_count(checked_elements(m,k,"compact A cache"),"compact A cache");
+    const size_t b_leaves = checked_chunk_count(checked_elements(n,k,"compact B cache"),"compact B cache");
+    const auto capture_levels = [&](uint8_t* device, const size_t leaves,
+                                    const size_t prefix_cvs, std::vector<std::vector<CV>>& layers) {
+      if (!leaves || leaves > (std::numeric_limits<size_t>::max() - 2) / 2 ||
+          prefix_cvs < leaves || prefix_cvs > 2 * leaves + 2)
+        throw std::string("Invalid compact PearlHash Merkle capture size");
+      size_t count = leaves, offset = 0, cursor = leaves;
+      while (true) {
+        if (count > std::vector<CV>().max_size() || count >
+                std::numeric_limits<size_t>::max() / sizeof(CV))
+          throw std::string("Invalid compact PearlHash Merkle level size");
+        layers.emplace_back(count);
+        q.memcpy(layers.back().data(), device + offset * sizeof(CV), count * sizeof(CV));
+        if (count <= 2 || count % 2)
+          break;
+        const size_t parents = count / 2;
+        offset = cursor;
+        cursor += parents;
+        count = parents;
+      }
+      if (cursor != prefix_cvs)
+        throw std::string("Invalid compact PearlHash Merkle prefix");
+    };
+    std::vector<std::vector<CV>> a, bt;
+    CV a_root{}, b_root{};
     std::array<uint8_t,32> key{};
     std::copy(st.key,st.key+32,key.begin());
     try {
-      q.memcpy(a.data(),b.CVA,a.size()*sizeof(CV));
-      q.memcpy(bt.data(),b.CVB,bt.size()*sizeof(CV));
+      capture_levels(b.CVA, a_leaves, b.compact_a_prefix_cvs, a);
+      capture_levels(b.CVB, b_leaves, b.compact_b_prefix_cvs, bt);
+      if (b.compact_a_root_offset < b.compact_a_prefix_cvs ||
+          b.compact_b_root_offset < b.compact_b_prefix_cvs ||
+          b.compact_a_root_offset > 2 * a_leaves + 1 ||
+          b.compact_b_root_offset > 2 * b_leaves + 1)
+        throw std::string("Invalid compact PearlHash Merkle root offset");
+      q.memcpy(&a_root, b.CVA + b.compact_a_root_offset * sizeof(CV), sizeof(CV));
+      q.memcpy(&b_root, b.CVB + b.compact_b_root_offset * sizeof(CV), sizeof(CV));
       q.memcpy(st.compact_b.data(),b.cB,32);
       q.wait_and_throw();
     } catch (...) {
@@ -522,7 +553,8 @@ int pearlhash(const unsigned job_ref, const uint32_t, const uint8_t* const input
       sycl_cleanup_noexcept("compact root capture",[&]{q.wait_and_throw();});
       throw;
     }
-    st.compact_roots.capture(key,m,n,k,rank,attempt_seed,a,bt);
+    st.compact_roots.capture(key,m,n,k,rank,attempt_seed,std::move(a),std::move(bt),
+                             a_root,b_root);
   }
   if (!b.result->found) {
     commit_fixed_b();

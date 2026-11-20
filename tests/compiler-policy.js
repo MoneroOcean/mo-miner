@@ -2753,7 +2753,7 @@ int main() {
           if (variant.pass) {
             assert.equal(result.status, 0, result.stdout + result.stderr);
             assert.equal(result.stdout,
-              "PARALLEL_TREE_SOURCE 1128 canonical-root/leaf-cache/bounds/ROOT/layout/reuse cases PASS\n");
+              "PARALLEL_TREE_SOURCE 1128 canonical-root/leaf-cache/bounds/ROOT/layout/reuse cases PASS retained_prefix=20 odd_suffix=12\n");
           } else {
             assert.notEqual(result.status, 0,
               variant.name + " unexpectedly passed\n" + result.stdout + result.stderr);
