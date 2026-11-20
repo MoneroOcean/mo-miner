@@ -34,6 +34,7 @@ declare function __momRandomBytes(size: number): ArrayBuffer;
 declare function __momGzip(data: Uint8Array): ArrayBuffer;
 declare function __momCpus(): import("node:os").CpuInfo[];
 declare function __momNvidiaComputeCapabilities(): number[];
+declare function __momDisplayAdapters(): Array<{vendor: number, device: number, bus: number}>;
 declare function __momReadFile(path: string): ArrayBuffer;
 declare function __momFileExists(path: string): boolean;
 declare function __momReadDirectory(path: string): string[];

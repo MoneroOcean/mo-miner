@@ -248,6 +248,7 @@ declare global {
     ) => object;
     exitNow?(code: number): void;
     nvidiaComputeCapabilities?(): number[];
+    displayAdapters?(): Array<{vendor: number, device: number, bus: number}>;
   }
 
   type NativeJob = MiningJob & {blob_hex: string};
