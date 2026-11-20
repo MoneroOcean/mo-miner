@@ -64,13 +64,11 @@ int fishhash(const unsigned, const uint32_t, const uint8_t* const input, const u
   std::lock_guard<std::mutex> lock(state.mutex);
   state.ensure_io(input_size);
   // MOM_FISHHASH_FULL_TEST makes the normal one-nonce vector build/use the full DAG, so the
-  // production cooperative kernel can be checked bit-exactly without slowing the default light-cache
-  // vector. The cooperative search is the GPU default; MOM_FISHHASH_COOP=0 retains the scalar path
-  // for diagnosis.
+  // production search selection can be checked bit-exactly without slowing the default light-cache
+  // vector. MOM_FISHHASH_COOP=0 or 1 overrides the selection for diagnosis.
   const bool full_test = is_test && std::getenv("MOM_FISHHASH_FULL_TEST") != nullptr;
 #if !defined(MOM_SYCL_PORTABLE_OPENCL)
   const char* const coop_env = std::getenv("MOM_FISHHASH_COOP");
-  const bool cooperative = state.device.is_gpu() && !(coop_env && coop_env[0] == '0');
 #endif
   if (is_test && !full_test)
     state.ensure_cache(!is_benchmark); // lazy path: no 4.6-GiB allocation
@@ -95,6 +93,22 @@ int fishhash(const unsigned, const uint32_t, const uint8_t* const input, const u
     state.queue.memcpy(state.input, input, input_size);
     state.queue.memcpy(state.target, target, HASH_LEN);
   }
+#if !defined(MOM_SYCL_PORTABLE_OPENCL)
+  const auto full_search = [&](const bool coop, const uint32_t count, const bool test) {
+    return coop ? submit_fishhash_search_coop(state.queue, state.input, input_size, start_nonce,
+                                              state.dag, count, state.target, state.result, test,
+                                              nonce_off, nonce_be, target_be, state.coop_workgroup)
+                : submit_fishhash_search<true>(state.queue, state.input, input_size, start_nonce,
+                                               nullptr, state.dag, count, state.target,
+                                               state.result, test, nonce_off, nonce_be, target_be);
+  };
+  const bool cooperative =
+      state.device.is_gpu() &&
+      (coop_env ? coop_env[0] != '0'
+                : (!is_test || full_test) &&
+                      select_cooperative(state, state.fishhash_cooperative, "fishhash", true,
+                                         full_search));
+#endif
   std::memset(state.result, 0, sizeof(FishResult));
 
   sycl::event search;
@@ -169,10 +183,20 @@ int karlsenhashv2(const unsigned, const uint32_t, const uint8_t* const input,
     state.queue.memcpy(state.target, target, HASH_LEN);
   }
 #if !defined(MOM_SYCL_PORTABLE_OPENCL)
+  const auto full_search = [&](const bool coop, const uint32_t count, const bool test) {
+    return coop ? submit_karlsenhashv2_search_coop(state.queue, state.input, input_size,
+                                                   start_nonce, state.dag, count, state.target,
+                                                   state.result, test, state.coop_workgroup)
+                : submit_karlsenhashv2_search<true>(state.queue, state.input, input_size,
+                                                    start_nonce, nullptr, state.dag, count,
+                                                    state.target, state.result, test);
+  };
   const bool cooperative =
       state.device.is_gpu() &&
       (coop_env ? coop_env[0] != '0'
-                : (!is_test && select_karlsen_cooperative(state, input_size, start_nonce)));
+                : (!is_test || full_test) &&
+                      select_cooperative(state, state.karlsen_cooperative, "karlsenhashv2", false,
+                                         full_search));
 #endif
   std::memset(state.result, 0, sizeof(FishResult));
 
