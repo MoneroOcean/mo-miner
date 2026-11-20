@@ -68,6 +68,40 @@ class CompactRootPath {
     return result;
   }
 
+  // Finish only the residual top that did not fit in the preserved even levels. Compact shape
+  // admission bounds this suffix well below the full tree; larger parents remain GPU-produced.
+  static CV finish_tree(std::vector<std::vector<CV>>& layers, const size_t leaf_count,
+                        const char which, const uint32_t seed, const int m, const int n,
+                        const int k, const uint8_t* key, const CV& gpu_root) {
+    size_t count = leaf_count, index = 0;
+    while (true) {
+      if (index >= layers.size() || layers[index].size() != count)
+        throw std::string("Invalid compact PearlHash retained level");
+      ++index;
+      if (count <= 2 || count % 2)
+        break;
+      count /= 2;
+    }
+    if (index != layers.size() || count > static_cast<size_t>(std::numeric_limits<int>::max()))
+      throw std::string("Invalid compact PearlHash retained prefix");
+    if (count > 2) {
+      auto top = build_layers(which, seed, static_cast<int>(count), m, n, k, key,
+                              &layers.back(), true, true);
+      if (top.empty() || top.front() != layers.back())
+        throw std::string("Invalid compact PearlHash top reconstruction");
+      for (size_t level = 1; level < top.size(); ++level)
+        layers.push_back(std::move(top[level]));
+    }
+    if (layers.back().size() != 2)
+      throw std::string("Invalid compact PearlHash root level");
+    CV top[2] = {layers.back()[0], layers.back()[1]};
+    CV root{};
+    pearlhash_b3::merge_root(reinterpret_cast<uint8_t*>(top), 2, key, root.data());
+    if (root != gpu_root)
+      throw std::string("Invalid compact PearlHash GPU Merkle root");
+    return root;
+  }
+
  public:
   CV first_leaf{}, root{}; // State-owned upload sources survive asynchronous queue submission.
 
@@ -89,33 +123,37 @@ class CompactRootPath {
   }
   bool valid() const noexcept { return valid_; }
 
-  // Retain the full A/B commitment trees produced for a new key/shape after verifying their first
-  // leaves against host regeneration, then derive this seed's root. Any mismatch leaves no path.
+  // Retain the GPU-produced complete levels for a new key/shape and finish only the small top.
+  // The first leaves and final roots are checked before the path becomes visible.
   void capture(const std::array<uint8_t, 32>& key, int m, int n, int k, int rank,
-               uint32_t seed, const std::vector<CV>& leaves,
-               const std::vector<CV>& b_leaves) {
+               uint32_t seed, std::vector<std::vector<CV>> a,
+               std::vector<std::vector<CV>> b, const CV& gpu_root_a,
+               const CV& gpu_root_b) {
     reset(); // A failed new-job capture must not expose the previous job's path.
-    if (!CompactProfile::supports(m, n, k, rank) ||
-        leaves.size() != checked_chunk_count(checked_elements(m, k, "compact A"), "compact A") ||
-        leaves.empty() || leaves.front() != leaf(seed, m, n, key.data()) ||
-        b_leaves.size() != checked_chunk_count(checked_elements(n,k,"compact B"),"compact B"))
+    if (!CompactProfile::supports(m, n, k, rank))
       throw std::string("Invalid compact root capture");
+    const size_t a_leaves = checked_chunk_count(checked_elements(m, k, "compact A"), "compact A");
+    const size_t b_leaves = checked_chunk_count(checked_elements(n, k, "compact B"), "compact B");
+    const CV a_root = finish_tree(a, a_leaves, 'A', seed, m, n, k, key.data(), gpu_root_a);
+    static_cast<void>(finish_tree(b, b_leaves, 'B', seed, m, n, k, key.data(), gpu_root_b));
+    if (a.empty() || a.front().empty() || a.front().front() != leaf(seed, m, n, key.data()))
+      throw std::string("Invalid compact A capture");
     uint8_t bytes[1024];
     CV first_b{};
     const size_t len = gen_leaf('B',seed,0,m,n,k,bytes,true,true);
     pearlhash_b3::chunk_cv(bytes,uint32_t(len),0,key.data(),first_b.data());
-    if (b_leaves.empty() || b_leaves.front() != first_b)
+    if (b.empty() || b.front().empty() || b.front().front() != first_b)
       throw std::string("Invalid compact B capture");
-    auto a = build_layers('A',seed,int(leaves.size()),m,n,k,key.data(),&leaves,true,true);
-    auto b = build_layers('B',seed,int(b_leaves.size()),m,n,k,key.data(),&b_leaves,true,true);
     key_ = key;
     m_ = m;
     n_ = n;
     b_seed_ = seed;
     a_ = std::move(a);
     b_ = std::move(b);
+    first_leaf = a_.front().front();
+    root = a_root;
+    seed_ = seed;
     valid_ = true;
-    update(key,m,n,k,rank,seed);
   }
 
   // Recompute A's root for a new seed by replacing its first leaf and rehashing only the leftmost

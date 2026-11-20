@@ -81,6 +81,21 @@ static std::vector<CV> leaves(char which,uint32_t seed,int m,int n,const uint8_t
   }
   return result;
 }
+struct CapturedTree { std::vector<std::vector<CV>> levels; CV root; };
+static CapturedTree captured_tree(const std::vector<CV>& leaves,const uint8_t* key) {
+  auto full=build_layers('A',0,static_cast<int>(leaves.size()),192,256,65536,key,
+                         &leaves,true,true);
+  CV top[2]={full.back()[0],full.back()[1]};
+  CapturedTree result;
+  pearlhash_b3::merge_root(reinterpret_cast<uint8_t*>(top),2,key,result.root.data());
+  size_t count=leaves.size();
+  for(size_t i=0;;++i) {
+    result.levels.push_back(full[i]);
+    if(count<=2||count%2) break;
+    count/=2;
+  }
+  return result;
+}
 int main() {
  try {
   unsigned long long checks=0;
@@ -104,7 +119,31 @@ int main() {
   std::array<uint8_t,32> key{};CompactProfile::derive_key(header.data(),key.data());
   constexpr int m=192,n=256;
   auto a=leaves('A',0,m,n,key.data()),b=leaves('B',0,m,n,key.data());
-  CompactRootPath cache;cache.capture(key,m,n,65536,128,0,a,b);
+  const auto captured_a=captured_tree(a,key.data()),captured_b=captured_tree(b,key.data());
+  CompactRootPath cache;cache.capture(key,m,n,65536,128,0,captured_a.levels,captured_b.levels,
+                                      captured_a.root,captured_b.root);
+  auto malformed=captured_a.levels;malformed.pop_back();
+  bool rejected=false;
+  try { cache.capture(key,m,n,65536,128,0,malformed,captured_b.levels,
+                      captured_a.root,captured_b.root); }
+  catch(const std::string&) { rejected=true; }
+  require(rejected&&!cache.valid(),"malformed compact capture remained available");
+  cache.capture(key,m,n,65536,128,0,captured_a.levels,captured_b.levels,
+                captured_a.root,captured_b.root);
+  malformed=captured_a.levels;malformed.back()[0][0]^=1u;rejected=false;
+  try { cache.capture(key,m,n,65536,128,0,malformed,captured_b.levels,
+                      captured_a.root,captured_b.root); }
+  catch(const std::string&) { rejected=true; }
+  require(rejected&&!cache.valid(),"mismatched compact GPU root was accepted");
+  cache.capture(key,m,n,65536,128,0,captured_a.levels,captured_b.levels,
+                captured_a.root,captured_b.root);
+  auto malformed_b=captured_b.levels;malformed_b.back()[0][0]^=1u;rejected=false;
+  try { cache.capture(key,m,n,65536,128,0,captured_a.levels,malformed_b,
+                      captured_a.root,captured_b.root); }
+  catch(const std::string&) { rejected=true; }
+  require(rejected&&!cache.valid(),"mismatched compact B root was accepted");
+  cache.capture(key,m,n,65536,128,0,captured_a.levels,captured_b.levels,
+                captured_a.root,captured_b.root);
   unsigned proofs=0;
   for(uint32_t seed:{0u,1u,17u,UINT32_MAX}) {
     cache.update(key,m,n,65536,128,seed);

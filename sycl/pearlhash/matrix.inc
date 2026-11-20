@@ -118,6 +118,8 @@ struct Buffers {
   Result* result;
   bool positive_inputs = false; // bound to this attempt and retained with winning proof leaves
   bool seed_prefix_inputs = false; // admitted compact route only; cleared on every attempt
+  size_t compact_a_prefix_cvs = 0, compact_b_prefix_cvs = 0;
+  size_t compact_a_root_offset = 0, compact_b_root_offset = 0;
   // Appended host-dispatch bit: only the admitted native CUDA pair route may retain B's
   // producer/commitment layout between attempts. All shared kernels leave it false.
   bool fixed_b_reuse = false;
@@ -155,7 +157,37 @@ static sycl::event k_noise_ebr(sycl::queue& q, const Buffers& B, int n, int rank
 // disjoint regions in the existing 2*nc-CV allocation; carrying an odd tail unchanged preserves
 // BLAKE3's left-power-of-two tree. Requires nc > 0 and the state's in-order queue so each level
 // finishes before the next reads it. Returns the CV-unit offset of the root.
-static size_t reduce_tree(sycl::queue& q, uint8_t* cvs, const uint8_t* key, int nc) {
+static size_t reduce_tree(sycl::queue& q, uint8_t* cvs, const uint8_t* key, int nc,
+                          bool retain_complete_levels = false,
+                          size_t* retained_prefix_cvs = nullptr) {
+  if (retain_complete_levels) {
+    const size_t leaves = static_cast<size_t>(nc);
+    if (nc <= 0 || leaves % 4096 != 0 ||
+        leaves > (std::numeric_limits<size_t>::max() - 2) / 2)
+      throw std::string("Invalid compact PearlHash Merkle leaf count");
+    const size_t capacity = 2 * leaves + 2;
+    size_t count = leaves, input = 0, cursor = leaves;
+    // Preserve the complete, contiguous power-of-two prefix. The existing reducer handles the
+    // residual top in free CV space once its odd count can no longer be halved exactly.
+    while (count > 2 && count % 2 == 0) {
+      const size_t parents = count / 2;
+      const size_t input_offset = input, output_offset = cursor;
+      q.parallel_for(sycl::range<1>(parents), [=](sycl::id<1> id) MOM_SYCL_KERNEL_ARGS_RESTRICT {
+        const size_t child = id[0] * 2;
+        const uint8_t* left = cvs + (input_offset + child) * 32;
+        uint8_t* out = cvs + (output_offset + id[0]) * 32;
+        pearlhash_b3::parent_cv(left, left + 32, key, false, out);
+      });
+      input = cursor;
+      cursor += parents;
+      count = parents;
+    }
+    if (cursor > capacity || input > capacity || count > (capacity - input) / 2)
+      throw std::string("Invalid compact PearlHash Merkle scratch bound");
+    if (retained_prefix_cvs)
+      *retained_prefix_cvs = cursor;
+    return input + reduce_tree(q, cvs + input * 32, key, static_cast<int>(count));
+  }
   const size_t first = static_cast<size_t>(nc);
   const size_t second = first + static_cast<size_t>(nc / 2 + nc % 2);
   size_t rd = 0, wr = first;
@@ -184,7 +216,7 @@ static size_t reduce_tree(sycl::queue& q, uint8_t* cvs, const uint8_t* key, int 
 // Commit to the attempt's raw A and Bt byte streams: hash every 1024-byte leaf in parallel,
 // reduce both keyed Merkle trees, then derive cB/cA from the roots on the device. A fixed-B pair
 // attempt keeps CVB/cB from its first attempt and recomputes only A. Returns the seed event.
-[[maybe_unused]] static sycl::event k_roots(sycl::queue& q, const Buffers& bb, uint32_t seed, int m,
+[[maybe_unused]] static sycl::event k_roots(sycl::queue& q, Buffers& bb, uint32_t seed, int m,
                                             int n, int k) {
   auto B = bb;
   const bool reuse_b = B.fixed_b_reuse;
@@ -232,8 +264,15 @@ static size_t reduce_tree(sycl::queue& q, uint8_t* cvs, const uint8_t* key, int 
                              B.CVB + ci * 32);
     });
   }
-  const size_t offA = reduce_tree(q, B.CVA, B.key, static_cast<int>(ncA));
-  const size_t offB = reuse_b ? 0 : reduce_tree(q, B.CVB, B.key, static_cast<int>(ncB));
+  size_t prefix_a = 0, prefix_b = 0;
+  const size_t offA = reduce_tree(q, B.CVA, B.key, static_cast<int>(ncA),
+                                  B.seed_prefix_inputs, &prefix_a);
+  const size_t offB = reuse_b ? 0 : reduce_tree(q, B.CVB, B.key, static_cast<int>(ncB),
+                                                B.seed_prefix_inputs, &prefix_b);
+  bb.compact_a_prefix_cvs = B.seed_prefix_inputs ? prefix_a : 0;
+  bb.compact_b_prefix_cvs = B.seed_prefix_inputs && !reuse_b ? prefix_b : 0;
+  bb.compact_a_root_offset = B.seed_prefix_inputs ? offA : 0;
+  bb.compact_b_root_offset = B.seed_prefix_inputs && !reuse_b ? offB : 0;
   return q.single_task([=]() MOM_SYCL_KERNEL_ARGS_RESTRICT {
     uint8_t rootA[32], rootB[32];
     for (int i = 0; i < 32; ++i)
