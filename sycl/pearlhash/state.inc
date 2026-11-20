@@ -64,10 +64,10 @@ static Buffers alloc_buffers(sycl::queue& q, int m, int n, int k, int rank, bool
                              bool cuda_jit = false) {
   static_assert(sizeof(Result) <= pearlhash_result_allocation_bytes);
   Buffers b{};
-  // The native HIP search opens 4x64 cells to reduce transcript register pressure. Retain that
-  // geometry if source-JIT initialization declines: the portable fallback must use the same key.
-  b.proof_rows = hip_jit ? 4 : 16;
-  b.proof_cols = hip_jit ? 64 : 16;
+  // The native HIP search opens lane-local 52x4 proofs. Retain that geometry if source-JIT
+  // initialization declines: the portable fallback must use the same key.
+  b.proof_rows = hip_jit ? kAmdLaneRows : kSquareAxis;
+  b.proof_cols = hip_jit ? kAmdLaneCols : kSquareAxis;
   const pearlhash_profile_t shape = {static_cast<unsigned>(m), static_cast<unsigned>(n),
                                      static_cast<unsigned>(k), static_cast<unsigned>(rank)};
   PearlHashAllocationCounts counts{};
@@ -237,10 +237,10 @@ struct PearlHashClaim {
 thread_local struct PearlHashFound {
   uint32_t seed;
   uint32_t b_seed;
-  int m, n, k, rank, proof_rows, proof_cols;
+  int m, n, k, rank;
+  ProofAxis proof_rows, proof_cols;
   uint8_t key[32];
   std::vector<CV> leaves_a, leaves_b;
-  bool pair_dist8;
   bool positive_inputs;
   int count; // captured winners; 0 when no claim is available
   PearlHashClaim claims[kPearlhashWinners];

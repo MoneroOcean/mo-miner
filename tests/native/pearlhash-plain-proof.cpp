@@ -79,7 +79,7 @@ static bool fixed_b_host_contract() {
   uint8_t header[76]{}, key[32]{};
   for (unsigned i = 0; i < sizeof(header); ++i)
     header[i] = static_cast<uint8_t>(0x21u + i * 29u);
-  derive_key_pair_dist8(header, k, rank, key);
+  derive_key(header, k, rank, key, kPairDist8Axis, kPairDist8Axis);
   const auto a0_leaves = leaf_cvs('A', a0, m, n, k, key, true);
   const auto a1_leaves = leaf_cvs('A', a1, m, n, k, key, true);
   const auto b0_leaves = leaf_cvs('B', b0, m, n, k, key, true);
@@ -101,29 +101,29 @@ static bool fixed_b_host_contract() {
   if (raw_a0 == raw_a1 || raw_b0 == raw_b1 || cb0 == cb1 || ca0 == ca1)
     return false;
   uint32_t f0 = 0, f1 = 0, f2 = 0, f3 = 0;
-  const auto uncached = build_pair_plain_proof(a0, m, n, k, rank, key, 0, 0, &f0,
-                                                nullptr, nullptr, true, &b0);
-  const auto cached = build_pair_plain_proof(a0, m, n, k, rank, key, 0, 0, &f1,
-                                              &a0_leaves, &b0_leaves, true, &b0);
-  const auto advancing = build_pair_plain_proof(a1, m, n, k, rank, key, 0, 0, &f2,
-                                                 &a1_leaves, &b0_leaves, true, &b0);
-  const auto changed_b = build_pair_plain_proof(a0, m, n, k, rank, key, 0, 0, &f3,
-                                                 &a0_leaves, &b1_leaves, true, &b1);
+  const auto uncached = build_plain_proof(a0, m, n, k, rank, key, 0, 0, &f0,
+                                                nullptr, nullptr, kPairDist8Axis, kPairDist8Axis, true, &b0);
+  const auto cached = build_plain_proof(a0, m, n, k, rank, key, 0, 0, &f1,
+                                              &a0_leaves, &b0_leaves, kPairDist8Axis, kPairDist8Axis, true, &b0);
+  const auto advancing = build_plain_proof(a1, m, n, k, rank, key, 0, 0, &f2,
+                                                 &a1_leaves, &b0_leaves, kPairDist8Axis, kPairDist8Axis, true, &b0);
+  const auto changed_b = build_plain_proof(a0, m, n, k, rank, key, 0, 0, &f3,
+                                                 &a0_leaves, &b1_leaves, kPairDist8Axis, kPairDist8Axis, true, &b1);
   if (uncached.empty() || uncached != cached || advancing.empty() || advancing == uncached ||
       changed_b.empty() || changed_b == uncached || f0 != f1 || f0 != f2 || f0 != f3)
     return false;
   uint32_t null_factor = 0, explicit_factor = 0;
-  const auto null_b = build_pair_plain_proof(a0, m, n, k, rank, key, 0, 0, &null_factor,
-                                              nullptr, nullptr, true, nullptr);
-  const auto explicit_a = build_pair_plain_proof(a0, m, n, k, rank, key, 0, 0,
-                                                  &explicit_factor, nullptr, nullptr, true, &a0);
+  const auto null_b = build_plain_proof(a0, m, n, k, rank, key, 0, 0, &null_factor,
+                                              nullptr, nullptr, kPairDist8Axis, kPairDist8Axis, true, nullptr);
+  const auto explicit_a = build_plain_proof(a0, m, n, k, rank, key, 0, 0,
+                                                  &explicit_factor, nullptr, nullptr, kPairDist8Axis, kPairDist8Axis, true, &a0);
   uint32_t reference_null_factor = 0, reference_explicit_factor = 0;
-  const auto reference_null = build_pair_plain_proof(a0, m, n, k, rank, key, 0, 0,
-                                                      &reference_null_factor, nullptr, nullptr,
+  const auto reference_null = build_plain_proof(a0, m, n, k, rank, key, 0, 0,
+                                                      &reference_null_factor, nullptr, nullptr, kPairDist8Axis, kPairDist8Axis,
                                                       false, nullptr);
-  const auto reference_explicit = build_pair_plain_proof(a0, m, n, k, rank, key, 0, 0,
+  const auto reference_explicit = build_plain_proof(a0, m, n, k, rank, key, 0, 0,
                                                           &reference_explicit_factor, nullptr,
-                                                          nullptr, false, &a0);
+                                                          nullptr, kPairDist8Axis, kPairDist8Axis, false, &a0);
   return !null_b.empty() && null_b == explicit_a && null_factor == explicit_factor &&
       !reference_null.empty() && reference_null == reference_explicit &&
       reference_null_factor == reference_explicit_factor;
@@ -172,12 +172,18 @@ int main() {
     const std::vector<CV> cached_a = leaf_cvs('A', seed, profile.m, profile.n, profile.k, key);
     const std::vector<CV> cached_b = leaf_cvs('B', seed, profile.m, profile.n, profile.k, key);
     uint32_t regenerated_factor = 0, cached_factor = 0;
-    const std::string regenerated = build_plain_proof(
-        seed, profile.m, profile.n, profile.k, profile.rank, key, profile.row, profile.col,
-        &regenerated_factor);
-    const std::string cached = build_plain_proof(
-        seed, profile.m, profile.n, profile.k, profile.rank, key, profile.row, profile.col,
-        &cached_factor, &cached_a, &cached_b);
+    // These pinned serialization fixtures open 16x16 cells at column 8, which no kernel reports
+    // (not a canonical origin), so they bypass the geometry check and pin only the bytes.
+    std::vector<int> rows, cols;
+    for (int i = 0; i < 16; ++i) {
+      rows.push_back(profile.row + i);
+      cols.push_back(profile.col + i);
+    }
+    const std::string regenerated = build_plain_proof_lists(
+        seed, profile.m, profile.n, profile.k, profile.rank, key, rows, cols, &regenerated_factor);
+    const std::string cached = build_plain_proof_lists(
+        seed, profile.m, profile.n, profile.k, profile.rank, key, rows, cols, &cached_factor,
+        &cached_a, &cached_b);
     if (regenerated != cached || regenerated_factor != cached_factor) {
       std::fprintf(stderr, "PearlHash cached PlainProof mismatch for %zu leaves\n", cached_a.size());
       return 1;
@@ -231,7 +237,7 @@ int main() {
 
   // Cached leaves and regeneration must carry the same explicit positive mode and retain the
   // existing adjustment factor. A reference-mode proof with the same key must differ.
-  const Profile positive_profile{32, 32, 1024, 128, 0, 8};
+  const Profile positive_profile{32, 32, 1024, 128, 0, 16}; // canonical 16x16 origin
   const std::vector<CV> positive_a = leaf_cvs('A', seed, positive_profile.m, positive_profile.n,
                                               positive_profile.k, key, true);
   const std::vector<CV> positive_b = leaf_cvs('B', seed, positive_profile.m, positive_profile.n,
@@ -240,16 +246,16 @@ int main() {
   const std::string positive_regenerated = build_plain_proof(
       seed, positive_profile.m, positive_profile.n, positive_profile.k, positive_profile.rank, key,
       positive_profile.row, positive_profile.col,
-      &positive_regenerated_factor, nullptr, nullptr, 16, 16, true);
+      &positive_regenerated_factor, nullptr, nullptr, kSquareAxis, kSquareAxis, true);
   const std::string positive_cached = build_plain_proof(
       seed, positive_profile.m, positive_profile.n, positive_profile.k, positive_profile.rank, key,
       positive_profile.row, positive_profile.col,
-      &positive_cached_factor, &positive_a, &positive_b, 16, 16, true);
+      &positive_cached_factor, &positive_a, &positive_b, kSquareAxis, kSquareAxis, true);
   uint32_t positive_reference_factor = 0;
   const std::string reference = build_plain_proof(
       seed, positive_profile.m, positive_profile.n, positive_profile.k, positive_profile.rank, key,
       positive_profile.row, positive_profile.col, &positive_reference_factor,
-      nullptr, nullptr, 16, 16, false);
+      nullptr, nullptr, kSquareAxis, kSquareAxis, false);
   if (positive_regenerated.empty() || positive_regenerated != positive_cached ||
       positive_regenerated_factor != positive_cached_factor || positive_regenerated_factor != 262144 ||
       positive_regenerated == reference) {
@@ -257,7 +263,7 @@ int main() {
     return 11;
   }
 
-  const Profile profile{32, 32, 1024, 128, 0, 8};
+  const Profile profile{32, 32, 1024, 128, 0, 16}; // canonical 16x16 origin
   const std::vector<CV> cached_a = leaf_cvs('A', seed, profile.m, profile.n, profile.k, key);
   const std::vector<CV> cached_b = leaf_cvs('B', seed, profile.m, profile.n, profile.k, key);
   std::vector<CV> wrong = cached_a;
@@ -271,18 +277,19 @@ int main() {
   } catch (const std::string&) {
   }
 
-  // Pattern counts bind the job key before commitments/noise. The native HIP rectangle keeps
-  // the same 256 selected cells, but must not reuse the square proof's key or serialization.
+  // Pattern counts bind the job key before commitments/noise. Contiguous rectangles with the
+  // same 256 cells must not share the square proof's key or serialization.
   for (const int rows : {16, 8, 4}) {
+    const ProofAxis row_axis = ProofAxis::make(1, rows), col_axis = ProofAxis::make(1, 256 / rows);
     const int cols = 256 / rows;
     uint8_t config[52], expected_config[52]{}, rectangle_key[32], expected_key[32], input[128];
     expected_config[1] = 8; // K2048, little endian
     expected_config[4] = 128;
     expected_config[9] = static_cast<uint8_t>(rows - 1);
     expected_config[15] = static_cast<uint8_t>(cols - 1);
-    config_bytes(config, 2048, 128, rows, cols);
+    config_bytes(config, 2048, 128, row_axis, col_axis);
     if (std::memcmp(config, expected_config, 52)) return 2;
-    derive_key(header, 2048, 128, rectangle_key, rows, cols);
+    derive_key(header, 2048, 128, rectangle_key, row_axis, col_axis);
     std::memcpy(input, header, 76);
     std::memcpy(input + 76, expected_config, 52);
     pearlhash_b3::b3(input, sizeof(input), nullptr, expected_key);
@@ -291,9 +298,9 @@ int main() {
     const auto b = leaf_cvs('B', seed, 32, 128, 2048, rectangle_key);
     uint32_t f1 = 0, f2 = 0;
     const auto regenerated = build_plain_proof(seed, 32, 128, 2048, 128, rectangle_key,
-                                                rows, cols, &f1, nullptr, nullptr, rows, cols);
+                                                rows, cols, &f1, nullptr, nullptr, row_axis, col_axis);
     const auto cached = build_plain_proof(seed, 32, 128, 2048, 128, rectangle_key,
-                                           rows, cols, &f2, &a, &b, rows, cols);
+                                           rows, cols, &f2, &a, &b, row_axis, col_axis);
     if (regenerated.empty() || regenerated != cached || f1 != 524288 || f2 != f1) return 4;
     if (rows == 16) {
       uint8_t default_key[32];
@@ -312,8 +319,8 @@ int main() {
     expected_pair_config[offset + 2] = 3;
     expected_pair_config[offset + 3] = 7;
   }
-  config_bytes_pattern(pair_config, 8192, 128, kPairDist8PatternBytes, kPairDist8PatternBytes);
-  derive_key_pair_dist8(header, 8192, 128, pair_key);
+  config_bytes(pair_config, 8192, 128, kPairDist8Axis, kPairDist8Axis);
+  derive_key(header, 8192, 128, pair_key, kPairDist8Axis, kPairDist8Axis);
   derive_key(header, 8192, 128, contiguous_key);
   uint8_t pair_input[128], expected_pair_key[32];
   std::memcpy(pair_input, header, 76);
@@ -327,7 +334,8 @@ int main() {
   std::array<unsigned, 64> selected{};
   for (const int base : {0, 2, 4, 6}) {
     std::vector<int> rows, cols;
-    if (!pair_dist8_lists(base, base, 64, 64, rows, cols) || rows != cols || rows.size() != 16)
+    if (!proof_lists(kPairDist8Axis, kPairDist8Axis, base, base, 64, 64, rows, cols) ||
+        rows != cols || rows.size() != 16)
       return 13;
     for (size_t i = 0; i < pair_offsets.size(); ++i) {
       if (rows[i] != base + pair_offsets[i]) return 14;
@@ -341,28 +349,67 @@ int main() {
     const auto b = leaf_cvs('B', seed, 64, 64, 8192, pair_key, positive);
     for (const int base : {0, 2, 6}) {
       uint32_t f1 = 0, f2 = 0;
-      const auto regenerated = build_pair_plain_proof(
-          seed, 64, 64, 8192, 128, pair_key, base, base, &f1, nullptr, nullptr, positive);
-      const auto cached = build_pair_plain_proof(
-          seed, 64, 64, 8192, 128, pair_key, base, base, &f2, &a, &b, positive);
+      const auto regenerated = build_plain_proof(
+          seed, 64, 64, 8192, 128, pair_key, base, base, &f1, nullptr, nullptr, kPairDist8Axis, kPairDist8Axis, positive);
+      const auto cached = build_plain_proof(
+          seed, 64, 64, 8192, 128, pair_key, base, base, &f2, &a, &b, kPairDist8Axis, kPairDist8Axis, positive);
       if (regenerated.empty() || regenerated != cached || f1 != 2097152 || f1 != f2)
         return 16;
     }
   }
   for (const int invalid : {-1, 1, 3, 5, 7, 8, 64, std::numeric_limits<int>::max()}) {
-    if (!build_pair_plain_proof(seed, 64, 64, 8192, 128, pair_key, invalid, 0, &factor).empty() ||
-        !build_pair_plain_proof(seed, 64, 64, 8192, 128, pair_key, 0, invalid, &factor).empty())
+    if (!build_plain_proof(seed, 64, 64, 8192, 128, pair_key, invalid, 0, &factor, nullptr, nullptr, kPairDist8Axis, kPairDist8Axis).empty() ||
+        !build_plain_proof(seed, 64, 64, 8192, 128, pair_key, 0, invalid, &factor, nullptr, nullptr, kPairDist8Axis, kPairDist8Axis).empty())
       return 17;
   }
 
-  // Reject unsupported rectangles and coordinates before generating or indexing any leaves.
+  // AMD lane openings: rows {4q+e+16i}, columns {c+16j}. The pattern binds the key, every
+  // canonical origin opens its own 52x4 cells, and the factor follows the 208-cell area.
+  {
+    uint8_t lane_config[52], expected_lane_config[52]{}, lane_key[32], square_key[32];
+    expected_lane_config[1] = 8; // K2048, little endian
+    expected_lane_config[4] = 128;
+    const uint8_t lane_rows[6] = {0, 3, 3, 12, 0, 0}, lane_cols[6] = {15, 3, 0, 0, 0, 0};
+    std::memcpy(expected_lane_config + 8, lane_rows, 6);
+    std::memcpy(expected_lane_config + 14, lane_cols, 6);
+    config_bytes(lane_config, 2048, 128, kAmdLaneRows, kAmdLaneCols);
+    derive_key(header, 2048, 128, lane_key, kAmdLaneRows, kAmdLaneCols);
+    derive_key(header, 2048, 128, square_key);
+    if (std::memcmp(lane_config, expected_lane_config, 52) || !std::memcmp(lane_key, square_key, 32))
+      return 18;
+    std::vector<int> rows, cols;
+    if (!proof_lists(kAmdLaneRows, kAmdLaneCols, 212, 69, 416, 128, rows, cols) ||
+        rows.size() != 52 || cols.size() != 4 || rows[0] != 212 || rows[3] != 215 ||
+        rows[4] != 228 || rows.back() != 212 + 3 + 16 * 12 ||
+        cols != std::vector<int>{69, 85, 101, 117})
+      return 19;
+    const auto a = leaf_cvs('A', seed, 416, 128, 2048, lane_key);
+    const auto b = leaf_cvs('B', seed, 416, 128, 2048, lane_key);
+    uint32_t f1 = 0, f2 = 0;
+    const auto regenerated = build_plain_proof(seed, 416, 128, 2048, 128, lane_key, 212, 69, &f1,
+                                               nullptr, nullptr, kAmdLaneRows, kAmdLaneCols);
+    const auto cached = build_plain_proof(seed, 416, 128, 2048, 128, lane_key, 212, 69, &f2, &a, &b,
+                                          kAmdLaneRows, kAmdLaneCols);
+    if (regenerated.empty() || regenerated != cached || f1 != 208u * 16u * 128u || f2 != f1)
+      return 20;
+    // Non-canonical origins (row % 208 >= 16 or % 4, column % 64 >= 16) and openings past the
+    // matrix are rejected before any leaf is generated.
+    for (const std::array<int, 2> invalid : {std::array<int, 2>{16, 0}, {2, 0}, {0, 16}, {416, 0},
+                                             {208, 128}})
+      if (!build_plain_proof(seed, 416, 128, 2048, 128, lane_key, invalid[0], invalid[1], &factor,
+                             nullptr, nullptr, kAmdLaneRows, kAmdLaneCols).empty())
+        return 21;
+  }
+
+  // Reject openings the verifier would refuse and coordinates before generating any leaves.
   for (const std::array<int, 4> invalid : {
-           std::array<int, 4>{0, 16, 0, 0}, {16, 0, 0, 0}, {32, 8, 0, 0},
+           std::array<int, 4>{0, 16, 0, 0}, {16, 0, 0, 0}, {3, 16, 0, 0}, {2, 8, 0, 0},
            {8, 32, -1, 0}, {8, 32, 0, -1}, {8, 32, 25, 0}, {8, 32, 0, 33},
            {16, 16, 17, 0}, {16, 16, 0, 49}, {4, 64, -1, 0}, {4, 64, 0, -1},
            {4, 64, 29, 0}, {4, 64, 0, 1}, {4, 64, 0, std::numeric_limits<int>::max()}}) {
-    if (!build_plain_proof(seed, 32, 64, 2048, 128, key, invalid[2], invalid[3],
-                           &factor, nullptr, nullptr, invalid[0], invalid[1]).empty()) {
+    if (!build_plain_proof(seed, 32, 64, 2048, 128, key, invalid[2], invalid[3], &factor, nullptr,
+                           nullptr, ProofAxis::make(1, uint32_t(invalid[0])),
+                           ProofAxis::make(1, uint32_t(invalid[1]))).empty()) {
       std::fprintf(stderr, "PearlHash accepted invalid proof geometry or coordinates\n");
       return 6;
     }

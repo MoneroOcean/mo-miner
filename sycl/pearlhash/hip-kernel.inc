@@ -26,12 +26,6 @@ typedef int v8i __attribute__((ext_vector_type(4)));
 #define PEARLHASH_K_UNROLL 1
 #endif
 
-#if PEARLHASH_ER == 13
-#define PEARLHASH_DIRECT_SLOT 1
-#else
-#define PEARLHASH_DIRECT_SLOT 0
-#endif
-
 // Mirrors the host Result layout in matrix.inc: up to four distinct winning tiles per attempt.
 constexpr int kPearlHashWinners = 4;
 struct PearlHashWinner {
@@ -125,19 +119,6 @@ DEV bool tile_wins(const uint32_t tr[16], const uint8_t* key, const uint8_t* tar
   return true;
 }
 
-#if defined(__gfx1200__) || defined(__gfx1201__)
-// Fuse x ^= DPP(x) into one VALU instruction. Literal controls retain the
-// existing full row/bank masks and bound_ctrl=false semantics.
-template <int Mask>
-DEV uint32_t pearlhash_xor_dpp(uint32_t x) {
-  static_assert(Mask == 1 || Mask == 2 || Mask == 4 || Mask == 8,
-                "checkpoint DPP mask must be one row XOR bit");
-  uint32_t y;
-  asm volatile("v_xor_b32_dpp %0, %1, %1 row_xmask:%2 row_mask:0xf bank_mask:0xf bound_ctrl:0"
-               : "=v"(y) : "v"(x), "n"(Mask));
-  return y;
-}
-#endif
 
 // Debug-only position-salted transcript checksum (MOM_PEARLHASH_CHK); not part of consensus.
 DEV uint32_t tile_mix(uint32_t row, uint32_t col, const uint32_t tr[16]) {
@@ -173,8 +154,6 @@ DEV void wave_groups(uint32_t wave, int m, int n, int* row_group, int* col_group
   }
 }
 
-// A wave64 quarter owns four rows. Fold four adjacent B tiles into 4x64 proofs,
-// keeping all lanes useful and BLAKE3 outside the matrix kernel's register budget.
 #if defined(__gfx1200__) || defined(__gfx1201__)
 #if __has_builtin(__builtin_amdgcn_make_buffer_rsrc) && \
     __has_builtin(__builtin_amdgcn_raw_buffer_load_b64)
@@ -196,8 +175,8 @@ DEV __amdgpu_buffer_rsrc_t pearlhash_input_resource(const int8_t* base, int tile
 #define PEARLHASH_RAW_BUFFER 0
 #endif
 // One wave64 per (ER*16)x(EC*16) block of K-packed A/B: accumulate int8 WMMA tiles, fold each
-// rank checkpoint into the 4x64 proof transcripts, then hash every transcript in-kernel and
-// publish the first winner. Tail waves still execute the collectives on clamped tiles.
+// rank checkpoint into the lane's own 52x4 proof transcript, then hash it in-kernel and publish
+// the winners. Every lane owns one proof, so no cross-lane reduction or barrier is needed.
 extern "C" __global__ __launch_bounds__(256)
 void pearlhash_wmma_hash_fused(const int8_t* A, const int8_t* B,
                                const uint8_t* key, const uint8_t* target,
@@ -206,14 +185,9 @@ void pearlhash_wmma_hash_fused(const int8_t* A, const int8_t* B,
   const int lane = (int)(threadIdx.x & 63);
   static_assert(PEARLHASH_K > 0 && PEARLHASH_RANK > 0,
                 "PearlHash dimensions must be positive");
-  constexpr bool direct_slots = PEARLHASH_ER == 13;
-  static_assert(PEARLHASH_EC == 4 &&
-                (PEARLHASH_ER == 12 || (direct_slots &&
-                 PEARLHASH_K % PEARLHASH_RANK == 0 &&
-                 PEARLHASH_K / PEARLHASH_RANK == 16)),
-                "ER13 requires exactly sixteen checkpoint slots");
+  static_assert(PEARLHASH_ER == 13 && PEARLHASH_EC == 4,
+                "the host opens 52x4 lane proofs over 13x4 tiles (kAmdLaneRows/kAmdLaneCols)");
   const uint32_t wave = (uint32_t)(blockIdx.x * (blockDim.x / 64) + threadIdx.x / 64);
-  const uint32_t wave_in_block = (uint32_t)(threadIdx.x / 64);
   const uint32_t groups_m = m / (16 * PEARLHASH_ER) + (m % (16 * PEARLHASH_ER) != 0);
   const uint32_t groups_n = n / (16 * PEARLHASH_EC) + (n % (16 * PEARLHASH_EC) != 0);
   const bool active_wave = wave < (uint64_t)groups_m * groups_n;
@@ -221,8 +195,11 @@ void pearlhash_wmma_hash_fused(const int8_t* A, const int8_t* B,
   wave_groups(active_wave ? wave : 0, m, n, &row_group, &col_group);
   const int tile_row = active_wave ? row_group * PEARLHASH_ER : 0;
   const int tile_col = active_wave ? col_group * PEARLHASH_EC : 0;
-  constexpr uint32_t proofs_per_wave = (uint32_t)PEARLHASH_ER * 4u;
-  __shared__ uint32_t fused_transcript[4 * PEARLHASH_ER * 4 * 16];
+  // Lane-private transcripts; the 17-word stride spreads one slot's stores across LDS banks.
+  __shared__ uint32_t lane_transcript[256 * 17];
+  uint32_t* const transcript = &lane_transcript[threadIdx.x * 17u];
+  // A lane holds rows 4q..4q+3 of every A tile (WMMA wave64 C layout) and column lane%16 of
+  // every B tile: exactly its 52x4 opening, whose origin is the first of each.
   const uint32_t proof_quarter =
       ((uint32_t)(lane >> 4) & 1u) * 2u + (uint32_t)(lane >> 5);
 #if PEARLHASH_RAW_BUFFER
@@ -235,12 +212,6 @@ void pearlhash_wmma_hash_fused(const int8_t* A, const int8_t* B,
   const auto b_resource = pearlhash_input_resource<PEARLHASH_EC>(B, tile_col, b_tiles);
 #endif
   v8i acc[PEARLHASH_ER][PEARLHASH_EC] = {};
-  static_assert(PEARLHASH_EC % 4 == 0, "contiguous 4x64 proofs require four B tiles");
-  // Each 16-lane quarter-wave owns one four-row proof across four adjacent B tiles.
-  // All four quarter-waves participate; no lane is discarded and no cross-half permute is needed.
-#if !PEARLHASH_DIRECT_SLOT
-  uint32_t tr[PEARLHASH_ER][PEARLHASH_EC / 4] = {};
-#endif
 
   static_assert(PEARLHASH_K % 32 == 0 && PEARLHASH_RANK % 32 == 0,
                 "paired WMMA loads require complete 32-byte rank groups");
@@ -286,99 +257,56 @@ void pearlhash_wmma_hash_fused(const int8_t* A, const int8_t* B,
     }
 
     if ((kk + 32) % PEARLHASH_RANK == 0) {
-      const int rc = kk / PEARLHASH_RANK;
-      uint32_t reduced[PEARLHASH_ER][PEARLHASH_EC / 4] = {};
-      // Four adjacent B tiles make one contiguous 64-column proof with four rows.
-      // DPP is deliberately confined to each 16-lane quarter-wave.
+      // RDNA4 issues this VALU work in the WMMA pipe, so keep it minimal: XOR the lane's 208
+      // accumulators as thirteen independent row chains, not one serial chain, then tree them.
+      uint32_t part[PEARLHASH_ER];
       #pragma unroll
       for (int i = 0; i < PEARLHASH_ER; ++i) {
-        #pragma unroll
-        for (int p = 0; p < PEARLHASH_EC / 4; ++p) {
-          uint32_t x = 0;
-          #pragma unroll
-          for (int j = 0; j < 4; ++j) {
-            #pragma unroll
-            for (int e = 0; e < 4; ++e)
-              x ^= (uint32_t)acc[i][4 * p + j][e];
-          }
-          x = pearlhash_xor_dpp<1>(x);
-          x = pearlhash_xor_dpp<2>(x);
-          x = pearlhash_xor_dpp<4>(x);
-          x = pearlhash_xor_dpp<8>(x);
-          reduced[i][p] = x;
-        }
+        uint32_t p0 = (uint32_t)acc[i][0][0] ^ (uint32_t)acc[i][0][1] ^ (uint32_t)acc[i][0][2];
+        uint32_t p1 = (uint32_t)acc[i][0][3] ^ (uint32_t)acc[i][1][0] ^ (uint32_t)acc[i][1][1];
+        p0 = p0 ^ (uint32_t)acc[i][1][2] ^ (uint32_t)acc[i][1][3];
+        p1 = p1 ^ (uint32_t)acc[i][2][0] ^ (uint32_t)acc[i][2][1];
+        p0 = p0 ^ (uint32_t)acc[i][2][2] ^ (uint32_t)acc[i][2][3];
+        p1 = p1 ^ (uint32_t)acc[i][3][0] ^ (uint32_t)acc[i][3][1];
+        part[i] = p0 ^ p1 ^ (uint32_t)acc[i][3][2] ^ (uint32_t)acc[i][3][3];
       }
-
-      const int slot = rc & 15;
-      // With sixteen checkpoints each slot is visited once. Write its final value
-      // directly to existing LDS, freeing registers for a taller matrix tile.
-      if (active_wave && ((lane & 15) == slot)) {
-        #pragma unroll
-        for (int i = 0; i < PEARLHASH_ER; ++i) {
-          #pragma unroll
-          for (int p = 0; p < PEARLHASH_EC / 4; ++p) {
-#if PEARLHASH_DIRECT_SLOT
-            const uint32_t local_proof = (uint32_t)i * 4u + proof_quarter;
-            fused_transcript[wave_in_block * proofs_per_wave * 16u +
-                             local_proof * 16u + (uint32_t)slot] = reduced[i][p];
-#else
-            tr[i][p] = rotl32(tr[i][p], 13) ^ reduced[i][p];
-#endif
-          }
-        }
-      }
-    }
-  }
-
-  // Wrapped checkpoint slots retain their per-lane recurrence. The q16 route
-  // already filled LDS; inactive waves still reach the common CTA barrier.
-#if !PEARLHASH_DIRECT_SLOT
-  #pragma unroll
-  for (int i = 0; i < PEARLHASH_ER; ++i) {
-    if (active_wave) {
-      const uint32_t proof = (uint32_t)i * 4u + proof_quarter;
-      fused_transcript[(wave_in_block * proofs_per_wave + proof) * 16u +
-                       (uint32_t)(lane & 15)] = tr[i][0];
-    }
-  }
-#endif
-  __syncthreads();
-
-  // One lane handles each 4x64 proof after the barrier. This retains the
-  // keyed-64 BLAKE3 implementation while eliminating global transcript traffic
-  // and the separate hash launch.
-  if (active_wave && lane < proofs_per_wave) {
-    const uint32_t hash_i = (uint32_t)lane % (uint32_t)PEARLHASH_ER;
-    const uint32_t hash_q = (uint32_t)lane / (uint32_t)PEARLHASH_ER;
-    const uint32_t local_proof = hash_i * 4u + hash_q;
-    const uint32_t proof_row = (uint32_t)row_offset +
-                               (uint32_t)(tile_row + (int)hash_i) * 16u +
-                               hash_q * 4u;
-    const uint32_t proof_col = (uint32_t)tile_col * 16u;
-    if (proof_row < (uint32_t)row_offset + (uint32_t)m &&
-        proof_col < (uint32_t)n) {
-      uint32_t tr_hash[16];
       #pragma unroll
-      for (int w = 0; w < 16; ++w)
-        tr_hash[w] = fused_transcript[wave_in_block * proofs_per_wave * 16u +
-                                      local_proof * 16u + (uint32_t)w];
-      if (debug_checksum)
-        atomicAdd(&result->chk, tile_mix(proof_row, proof_col, tr_hash));
-      uint32_t jackpot[8];
-      if (tile_wins(tr_hash, key, target, jackpot)) {
-        const int slot = atomicAdd(&result->found, 1);
-        if (slot < kPearlHashWinners) {
-          PearlHashWinner& winner = result->winners[slot];
-          result->seed = seed;
-          winner.row = proof_row;
-          winner.col = proof_col;
-          #pragma unroll
-          for (int w = 0; w < 8; ++w) {
-            winner.jackpot[w * 4] = (uint8_t)jackpot[w];
-            winner.jackpot[w * 4 + 1] = (uint8_t)(jackpot[w] >> 8);
-            winner.jackpot[w * 4 + 2] = (uint8_t)(jackpot[w] >> 16);
-            winner.jackpot[w * 4 + 3] = (uint8_t)(jackpot[w] >> 24);
-          }
+      for (int step = 1; step < PEARLHASH_ER; step *= 2) {
+        #pragma unroll
+        for (int i = 0; i + step < PEARLHASH_ER; i += 2 * step)
+          part[i] ^= part[i + step];
+      }
+      // The verifier's slots start at zero, so a first visit is just the XOR.
+      const int checkpoint = kk / PEARLHASH_RANK;
+      uint32_t& slot = transcript[checkpoint & 15];
+      slot = checkpoint < 16 ? part[0] : rotl32(slot, 13) ^ part[0];
+    }
+  }
+
+  // Tail groups reuse clamped tiles (see a_tiles) and own no complete opening.
+  const uint32_t proof_row = (uint32_t)row_offset + (uint32_t)tile_row * 16u + proof_quarter * 4u;
+  const uint32_t proof_col = (uint32_t)tile_col * 16u + (uint32_t)(lane & 15);
+  if (active_wave && tile_row + PEARLHASH_ER <= m / 16 && tile_col + PEARLHASH_EC <= n / 16) {
+    uint32_t tr_hash[16];
+    #pragma unroll
+    for (int w = 0; w < 16; ++w)
+      tr_hash[w] = transcript[w];
+    if (debug_checksum)
+      atomicAdd(&result->chk, tile_mix(proof_row, proof_col, tr_hash));
+    uint32_t jackpot[8];
+    if (tile_wins(tr_hash, key, target, jackpot)) {
+      const int slot = atomicAdd(&result->found, 1);
+      if (slot < kPearlHashWinners) {
+        PearlHashWinner& winner = result->winners[slot];
+        result->seed = seed;
+        winner.row = proof_row;
+        winner.col = proof_col;
+        #pragma unroll
+        for (int w = 0; w < 8; ++w) {
+          winner.jackpot[w * 4] = (uint8_t)jackpot[w];
+          winner.jackpot[w * 4 + 1] = (uint8_t)(jackpot[w] >> 8);
+          winner.jackpot[w * 4 + 2] = (uint8_t)(jackpot[w] >> 16);
+          winner.jackpot[w * 4 + 3] = (uint8_t)(jackpot[w] >> 24);
         }
       }
     }

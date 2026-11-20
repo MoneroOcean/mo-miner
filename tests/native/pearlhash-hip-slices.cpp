@@ -13,7 +13,7 @@
 
 #define DEV
 #ifndef PEARLHASH_ER
-#define PEARLHASH_ER 12
+#define PEARLHASH_ER 13
 #endif
 #ifndef PEARLHASH_EC
 #define PEARLHASH_EC 4
@@ -23,12 +23,6 @@
 #endif
 #include "matrix-offset.inc"
 #include "hip-wave-groups.inc"
-
-static int selected_tile_er(int k, int rank) {
-  int tile_er = 12;
-#include "hip-selector.inc"
-  return tile_er;
-}
 
 static void require(bool condition, const char* message) {
   if (!condition) throw std::runtime_error(message);
@@ -70,7 +64,8 @@ static int cache_rows_for(int k) {
 
 static int expected_chunk_rows(int m, int k, bool debug) {
   const int row_group = cache_rows_for(k) * PEARLHASH_ER * 16;
-  const int debug_rows = std::min(row_group, std::max(128, (m / 2 / 128) * 128));
+  const int group_rows = PEARLHASH_ER * 16;
+  const int debug_rows = std::min(row_group, std::max(group_rows, (m / 2 / group_rows) * group_rows));
   return std::min(m, debug ? debug_rows : row_group);
 }
 
@@ -128,7 +123,8 @@ static int hipModuleLaunchKernel(int function, unsigned blocks, unsigned y, unsi
       uint64_t((rows + PEARLHASH_ER * 16 - 1) / (PEARLHASH_ER * 16)) *
       uint64_t((n + 63) / 64);
   require(blocks == (waves + 3) / 4, "fused wave block coverage changed");
-  require(row_offset % 16 == 0, "fused row offsets lost 16-row granularity");
+  // Lane openings are canonical only from whole row groups (kAmdLaneRows: origin % 208 < 16).
+  require(row_offset % (PEARLHASH_ER * 16) == 0, "fused row offsets split a lane-proof group");
   const uintptr_t expected_a = active_buffers->Ap.base + size_t(row_offset) * PEARLHASH_K;
   require(reinterpret_cast<uintptr_t>(*static_cast<void**>(args[0])) == expected_a,
           "fused A slice offset changed");
@@ -186,11 +182,12 @@ static void check_wave_mapping(int m, int n) {
                         static_cast<size_t>(column);
     require(!seen[tile], "fused cache grouping duplicated an output tile");
     seen[tile] = true;
-    const int remaining_rows = m - row * PEARLHASH_ER * 16;
-    proofs += static_cast<uint64_t>(
-        std::min(std::max(remaining_rows, 0), PEARLHASH_ER * 16) / 4);
+    // Every lane of a complete group owns one 52x4 opening; tail groups own none.
+    const bool complete = m - row * PEARLHASH_ER * 16 >= PEARLHASH_ER * 16 &&
+                          n - column * 64 >= 64;
+    proofs += complete ? 64 : 0;
   }
-  require(proofs == uint64_t(m / 4) * uint64_t(n / 64),
+  require(proofs == uint64_t(m / (PEARLHASH_ER * 16)) * uint64_t(n / 64) * 64,
           "fused cache grouping changed proof coverage");
   int first_row = -1, first_column = -1, last_row = -1, last_column = -1;
   wave_groups(0, m, n, &first_row, &first_column);
@@ -243,13 +240,6 @@ static void check_wave_groups() {
   check_wave_boundary(524288, 524288);
 }
 
-static void check_host_selector() {
-  require(selected_tile_er(2048, 128) == 13 &&
-              selected_tile_er(4096, 256) == 13 &&
-              selected_tile_er(4096, 128) == 12 &&
-              selected_tile_er(8192, 128) == 12,
-          "HIP host q16/q32/q64 tile selector changed");
-}
 
 static void check_wait() {
   unsetenv("MOM_PEARLHASH_STATS");
@@ -374,7 +364,6 @@ static void check_launches() {
 }
 
 int main() try {
-  check_host_selector();
   check_wave_groups();
   check_wait();
   check_allocation();

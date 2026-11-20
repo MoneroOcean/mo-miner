@@ -10,6 +10,7 @@
 #include <cstdio>
 #include "native/job-boundary.h"
 #include "sycl/pearlhash/claim.h"
+using namespace mom_pearlhash; // ProofAxis and the canonical opening axes
 static std::array<uint8_t,128> keyed_input;
 namespace pearlhash_b3 { static void b3(const uint8_t* p,size_t n,const void*,uint8_t*) { if(n!=128) throw std::runtime_error("key length"); std::copy(p,p+n,keyed_input.begin()); } }
 #include "config_pattern.inc"

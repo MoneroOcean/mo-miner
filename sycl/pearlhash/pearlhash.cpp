@@ -78,6 +78,7 @@
 #include "../jit-cache.h"
 #endif
 
+#include "proof-axis.h"
 #include "../blake3-device.inc"
 #include "blake3.inc"
 #include "seed.inc"
@@ -268,9 +269,11 @@ int pearlhash(const unsigned job_ref, const uint32_t, const uint8_t* const input
   const bool compact_mode = cuda_native_int8_route && st.cuda.compact;
   // A declined compiler must leave the portable key, target and proof geometry
   // intact. Never carry the compact pattern across an unavailable JIT route.
-  b.proof_rows = compact_mode ? CompactProfile::rows : hip_jit ? 4 : 16;
-  b.proof_cols = compact_mode ? CompactProfile::cols : hip_jit ? 64 : 16;
   const bool pair_dist8 = cuda_native_int8_route && rank == 128 && (k == 8192 || compact_mode);
+  b.proof_rows = compact_mode ? CompactProfile::row_axis : pair_dist8 ? kPairDist8Axis
+                 : hip_jit ? kAmdLaneRows : kSquareAxis;
+  b.proof_cols = compact_mode ? CompactProfile::col_axis : pair_dist8 ? kPairDist8Axis
+                 : hip_jit ? kAmdLaneCols : kSquareAxis;
   if (st.have_header && st.header_pair_dist8 != pair_dist8)
     st.have_header = false;
   bool reuse_fixed_b = false;
@@ -302,8 +305,6 @@ int pearlhash(const unsigned job_ref, const uint32_t, const uint8_t* const input
       std::memcpy(st.header, input, 76);
       if (compact_mode)
         CompactProfile::derive_key(input,st.key);
-      else if (pair_dist8)
-        derive_key_pair_dist8(input, k, rank, st.key);
       else
         derive_key(input, k, rank, st.key, b.proof_rows, b.proof_cols);
       st.header_pair_dist8 = pair_dist8;
@@ -315,7 +316,8 @@ int pearlhash(const unsigned job_ref, const uint32_t, const uint8_t* const input
     if (is_test)
       std::memset(tgtLE, 0xff, 32); // test: all tiles are admissible; scheduling selects the winner
     else if (!pearlhash_search_target_le(
-                 target, base_target, b.proof_rows, b.proof_cols, k, rank, tgtLE))
+                 target, base_target, b.proof_rows.count(), b.proof_cols.count(), k, rank,
+                 tgtLE))
       throw std::string("Invalid PearlHash search target for the selected proof pattern");
     q.memcpy(b.target, tgtLE, 32);
     b.result->found = 0;
@@ -429,13 +431,11 @@ int pearlhash(const unsigned job_ref, const uint32_t, const uint8_t* const input
   if (is_test && q.get_device().is_gpu() && backend != "sycl") {
     const Result accelerated = *b.result;
     const Winner& first = accelerated.winners[0];
-    const bool winner_in_bounds = pair_dist8
-        ? pair_dist8_offset_valid(static_cast<int>(first.row), m) &&
-              pair_dist8_offset_valid(static_cast<int>(first.col), n)
-        : first.row % b.proof_rows == 0 && first.col % b.proof_cols == 0 &&
-              first.row <= static_cast<unsigned>(m - b.proof_rows) &&
-              first.col <= static_cast<unsigned>(n - b.proof_cols);
-    if (!accelerated.found || accelerated.seed != attempt_seed || !winner_in_bounds)
+    // Out-of-range origins become negative ints, which proof_lists rejects with the rest.
+    std::vector<int> winner_rows, winner_cols;
+    if (!accelerated.found || accelerated.seed != attempt_seed ||
+        !proof_lists(b.proof_rows, b.proof_cols, static_cast<int>(first.row),
+                     static_cast<int>(first.col), m, n, winner_rows, winner_cols))
       throw std::string("PearlHash accelerated winner is missing or out of bounds");
     b.result->found = 0;
     b.result->chk = 0;
@@ -443,17 +443,6 @@ int pearlhash(const unsigned job_ref, const uint32_t, const uint8_t* const input
     // The all-winning test target makes the selected tile schedule-dependent. Check that
     // exact tile on the host before the portable search overwrites the accelerated result;
     // transcript checksums alone cannot detect a broken jackpot hash or byte ordering.
-    std::vector<int> winner_rows, winner_cols;
-    if (pair_dist8) {
-      if (!pair_dist8_lists(static_cast<int>(first.row), static_cast<int>(first.col),
-                            m, n, winner_rows, winner_cols))
-        throw std::string("PearlHash pair-dist8 winner pattern is invalid");
-    } else {
-      for (int r = 0; r < b.proof_rows; ++r)
-        winner_rows.push_back(static_cast<int>(first.row) + r);
-      for (int c = 0; c < b.proof_cols; ++c)
-        winner_cols.push_back(static_cast<int>(first.col) + c);
-    }
     std::vector<int8_t> winner_a(static_cast<size_t>(winner_rows.size()) * k),
                         winner_b(static_cast<size_t>(winner_cols.size()) * k);
     std::array<uint8_t, 32> winner_key{};
@@ -472,8 +461,10 @@ int pearlhash(const unsigned job_ref, const uint32_t, const uint8_t* const input
     }
     Result expected{};
     Buffers winner{};
-    winner.proof_rows = static_cast<int>(winner_rows.size());
-    winner.proof_cols = static_cast<int>(winner_cols.size());
+    const int opened_rows = static_cast<int>(winner_rows.size());
+    const int opened_cols = static_cast<int>(winner_cols.size());
+    winner.proof_rows = ProofAxis::make(1, static_cast<uint32_t>(opened_rows));
+    winner.proof_cols = ProofAxis::make(1, static_cast<uint32_t>(opened_cols));
     // Gathered winner buffers form a contiguous proof rectangle for the scalar
     // host oracle; explicit row/column selection has already happened above.
     winner.Ap = winner_a.data();
@@ -481,15 +472,13 @@ int pearlhash(const unsigned job_ref, const uint32_t, const uint8_t* const input
     winner.cA = winner_key.data();
     winner.target = tgtLE;
     winner.result = &expected;
-    search_cpu(q, winner, attempt_seed, b.proof_rows, b.proof_cols, k, rank, false);
+    search_cpu(q, winner, attempt_seed, opened_rows, opened_cols, k, rank, false);
     if (!expected.found || std::memcmp(expected.winners[0].jackpot, first.jackpot, 32) != 0)
       throw std::string("PearlHash accelerated/host jackpot mismatch");
     std::fprintf(stderr, "PEARLHASH_TEST jackpot_match=true\n");
-    // The portable search carries the same logical 16x16 tile order as the
-    // native route.  When pair_dist8 is set it maps each logical tile to the
-    // selected 64x64-periodic rows/columns, so this is a full-work checksum,
-    // not merely a winner-tile oracle.
-    search(q, b, attempt_seed, m, n, k, rank, /*dbg=*/true, pair_dist8);
+    // The portable search maps each logical tile through the native route's opening axes,
+    // so this is a full-work checksum, not merely a winner-tile oracle.
+    search(q, b, attempt_seed, m, n, k, rank, /*dbg=*/true);
     q.wait_and_throw();
     if (b.result->chk != accelerated.chk) {
       std::ostringstream message;
@@ -564,7 +553,6 @@ int pearlhash(const unsigned job_ref, const uint32_t, const uint8_t* const input
   g_pf.rank = rank;
   g_pf.proof_rows = b.proof_rows;
   g_pf.proof_cols = b.proof_cols;
-  g_pf.pair_dist8 = pair_dist8;
   g_pf.positive_inputs = b.positive_inputs;
   std::memcpy(g_pf.key, st.key, 32);
   if (compact_mode) {
@@ -610,21 +598,17 @@ const char* pearlhash_claim(const unsigned index, uint8_t jackpot[32], uint32_t*
   if (claim.proof.empty()) {
     // Compact claims must already be immutable; never use unlocked trees
     // or silently regenerate a missing compact snapshot from newer state.
-    if (g_pf.proof_rows == CompactProfile::rows)
+    if (g_pf.proof_rows == CompactProfile::row_axis)
       return nullptr;
     const auto proof_start = std::chrono::steady_clock::now();
     // The leaf snapshot stays until the next attempt so every winner of this one can use it.
     const std::vector<CV>* const leaves_a = g_pf.leaves_a.empty() ? nullptr : &g_pf.leaves_a;
     const std::vector<CV>* const leaves_b = g_pf.leaves_b.empty() ? nullptr : &g_pf.leaves_b;
-    if (g_pf.pair_dist8)
-      claim.proof = build_pair_plain_proof(
-          g_pf.seed, g_pf.m, g_pf.n, g_pf.k, g_pf.rank, g_pf.key, claim.row, claim.col,
-          &claim.adjustment_factor, leaves_a, leaves_b, g_pf.positive_inputs, &g_pf.b_seed);
-    else
-      claim.proof = build_plain_proof(
-          g_pf.seed, g_pf.m, g_pf.n, g_pf.k, g_pf.rank, g_pf.key, claim.row, claim.col,
-          &claim.adjustment_factor, leaves_a, leaves_b, g_pf.proof_rows, g_pf.proof_cols,
-          g_pf.positive_inputs);
+    // b_seed equals the attempt seed unless the CUDA pair route reused a fixed B.
+    claim.proof = build_plain_proof(
+        g_pf.seed, g_pf.m, g_pf.n, g_pf.k, g_pf.rank, g_pf.key, claim.row, claim.col,
+        &claim.adjustment_factor, leaves_a, leaves_b, g_pf.proof_rows, g_pf.proof_cols,
+        g_pf.positive_inputs, &g_pf.b_seed);
     if (claim.proof.empty())
       return nullptr;
     if (std::getenv("MOM_PEARLHASH_STATS"))

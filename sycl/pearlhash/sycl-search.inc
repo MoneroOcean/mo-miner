@@ -30,19 +30,6 @@ static size_t pearlhash_portable_launch_groups(int k, bool opencl) {
   return static_cast<size_t>(std::max<uint64_t>(1, std::min<uint64_t>(max_groups, groups)));
 }
 
-// The native rank-128 CUDA route opens each logical 16x16 tile at the same
-// 64x64-periodic base as cuda-kernel.inc, then selects eight adjacent pairs
-// at offsets 0,1,8,9,...,56,57 on each axis.  Keep the portable test search
-// on that exact logical-tile order so its whole-search checksum validates the
-// native pair transcript rather than only rechecking the jackpot tile.
-static inline uint32_t pearlhash_pair_dist8_base(uint32_t logical_base) {
-  return (logical_base / 64u) * 64u + ((logical_base % 64u) / 16u) * 2u;
-}
-
-static inline uint32_t pearlhash_pair_dist8_component(uint32_t logical_index) {
-  return (logical_index / 2u) * 8u + (logical_index & 1u);
-}
-
 // Intel's Windows CPU OpenCL JIT corrupts its host heap after the work-group search below (the
 // failure is an access violation/STATUS_HEAP_CORRUPTION after the kernel has otherwise completed).
 // The failure is sensitive to the DPC++ build: even standards-only single-task/range variants can
@@ -54,19 +41,27 @@ static inline uint32_t pearlhash_pair_dist8_component(uint32_t logical_index) {
 static void search_cpu(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k,
                        int rank, bool dbg) {
   q.wait_and_throw();
-  const int rows = bb.proof_rows, cols = bb.proof_cols;
+  const ProofAxis& row_axis = bb.proof_rows;
+  const ProofAxis& col_axis = bb.proof_cols;
+  const int rows = static_cast<int>(row_axis.count()), cols = static_cast<int>(col_axis.count());
+  if (rows * cols > 256)
+    throw std::string("PearlHash host search opening exceeds 256 cells");
   const int nb = k / rank;
-  for (int row_base = 0; row_base < m; row_base += rows) {
-    for (int col_base = 0; col_base < n; col_base += cols) {
+  for (uint32_t row_tile = 0; row_tile < row_axis.tiles(static_cast<uint32_t>(m)); ++row_tile) {
+    const int row_base = static_cast<int>(row_axis.origin(row_tile));
+    for (uint32_t col_tile = 0; col_tile < col_axis.tiles(static_cast<uint32_t>(n)); ++col_tile) {
+      const int col_base = static_cast<int>(col_axis.origin(col_tile));
       uint32_t acc[256]{};
       uint32_t transcript[16]{};
       for (int boundary = 0; boundary < nb; ++boundary) {
         const int end = (boundary + 1) * rank;
         for (int depth = boundary * rank; depth < end; ++depth) {
           for (int i = 0; i < rows; ++i) {
-            const int a = static_cast<int>(bb.Ap[static_cast<size_t>(row_base + i) * k + depth]);
+            const size_t row = static_cast<size_t>(row_base) + row_axis.component(i);
+            const int a = static_cast<int>(bb.Ap[row * k + depth]);
             for (int j = 0; j < cols; ++j) {
-              const int b = static_cast<int>(bb.Bp[static_cast<size_t>(col_base + j) * k + depth]);
+              const size_t col = static_cast<size_t>(col_base) + col_axis.component(j);
+              const int b = static_cast<int>(bb.Bp[col * k + depth]);
               acc[i * cols + j] += static_cast<uint32_t>(a * b);
             }
           }
@@ -194,24 +189,27 @@ static_assert(alignof(PearlF16Scratch) == alignof(uint32_t) && sizeof(PearlF16Sc
 // Keep one argument order when HIP and CUDA share a translation unit: proof geometry must not
 // occupy the optional instruction flags. Unsupported instruction bodies remain compiler-gated.
 template <int ER, int EC, bool Native = false, bool FP16Matrix = false,
-          int Rows = 16, int Cols = 16, bool Pair = false>
+          int Rows = 16, int Cols = 16>
 // Submit the selected portable/native SYCL tile specialization without changing proof semantics.
 static void search_t(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k,
                      int rank, bool dbg) {
   constexpr int WG = (Rows * Cols) / (ER * EC); // work-items per tile
   [[maybe_unused]] constexpr int BW =
       Cols / EC; // micro-tile blocks per row (unused on the empty nvptx pass)
-  static_assert(Rows * Cols == 256 && Rows % ER == 0 && Cols % EC == 0,
-                "pearlhash portable: micro-tiles must divide the 256-cell proof");
+  static_assert(Rows * Cols <= 256 && Rows % ER == 0 && Cols % EC == 0,
+                "pearlhash portable: micro-tiles must divide the proof of at most 256 cells");
   static_assert((WG & (WG - 1)) == 0, "pearlhash portable: work-group size must be a power of two");
-  static_assert(!Pair || (Rows == 16 && Cols == 16),
-                "pearlhash pair-dist8 requires the canonical 16x16 logical tile");
 #if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
   static_assert(!FP16Matrix || (Native && ER * EC == 8 && Rows == 16 && Cols == 16),
                 "pearlhash f16: one full warp owns one 16x16 tile");
 #endif
   auto B = bb;
-  const uint32_t tilesH = static_cast<uint32_t>(m / Rows), tilesW = static_cast<uint32_t>(n / Cols);
+  // Logical tiles map through the opening axes; the f16 matrix path stages contiguous rows.
+  if (B.proof_rows.count() != Rows || B.proof_cols.count() != Cols ||
+      (FP16Matrix && !(B.proof_rows == kSquareAxis && B.proof_cols == kSquareAxis)))
+    throw std::string("PearlHash portable search does not match the proof geometry");
+  const uint32_t tilesH = B.proof_rows.tiles(static_cast<uint32_t>(m)),
+                 tilesW = B.proof_cols.tiles(static_cast<uint32_t>(n));
   const int k4 = k / 4, nb = k / rank;
   const size_t ntiles = static_cast<size_t>(tilesH) * tilesW;
   // The production A'/B' matrices are 512 MiB each. Plain row-major tile order re-streams all of B'
@@ -297,15 +295,7 @@ static void search_t(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, in
         constexpr int c4step = 1;
 #endif
         const int r0 = (lid / BW) * ER, c0 = (lid % BW) * EC; // this work-item's micro-tile origin
-        const uint32_t logicalRowBase = R * Rows, logicalColBase = C * Cols;
-        uint32_t rowBase, colBase;
-        if constexpr (Pair) {
-          rowBase = pearlhash_pair_dist8_base(logicalRowBase);
-          colBase = pearlhash_pair_dist8_base(logicalColBase);
-        } else {
-          rowBase = logicalRowBase;
-          colBase = logicalColBase;
-        }
+        const uint32_t rowBase = B.proof_rows.origin(R), colBase = B.proof_cols.origin(C);
         // A'/B' read as int32 words (4 packed int8) straight from global -- the L2 absorbs the per-tile
         // reuse (each 128KB tile slice stays resident), which is why no SLM staging is needed.
         auto A32 = sycl::address_space_cast<sycl::access::address_space::global_space,
@@ -314,6 +304,15 @@ static void search_t(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, in
         auto B32 = sycl::address_space_cast<sycl::access::address_space::global_space,
                                             sycl::access::decorated::no>(
             reinterpret_cast<const int32_t*>(B.Bp));
+        // This work-item's opened rows and columns are fixed for the whole K loop. Word offsets fit
+        // uint32: valid_pearlhash_shape bounds m*k and n*k below 2^31.
+        uint32_t a_offset[ER], b_offset[EC];
+        for (int i = 0; i < ER; i++)
+          a_offset[i] = (rowBase + B.proof_rows.component(static_cast<uint32_t>(r0 + i))) *
+                        static_cast<uint32_t>(k4);
+        for (int j = 0; j < EC; j++)
+          b_offset[j] = (colBase + B.proof_cols.component(static_cast<uint32_t>(c0 + j))) *
+                        static_cast<uint32_t>(k4);
         uint32_t acc[ER][EC];
         for (int i = 0; i < ER; i++)
           for (int j = 0; j < EC; j++)
@@ -358,26 +357,10 @@ static void search_t(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, in
 #endif
             {
               int32_t bw[EC];
-              for (int j = 0; j < EC; j++) {
-                const uint32_t logical_col = static_cast<uint32_t>(c0 + j);
-                uint32_t physical_col;
-                if constexpr (Pair)
-                  physical_col = colBase + pearlhash_pair_dist8_component(logical_col);
-                else
-                  physical_col = colBase + logical_col;
-                bw[j] = B32[static_cast<size_t>(physical_col) * static_cast<size_t>(k4) +
-                            static_cast<size_t>(c4)];
-              }
+              for (int j = 0; j < EC; j++)
+                bw[j] = B32[static_cast<size_t>(b_offset[j]) + static_cast<size_t>(c4)];
               for (int i = 0; i < ER; i++) {
-                const uint32_t logical_row = static_cast<uint32_t>(r0 + i);
-                uint32_t physical_row;
-                if constexpr (Pair)
-                  physical_row = rowBase + pearlhash_pair_dist8_component(logical_row);
-                else
-                  physical_row = rowBase + logical_row;
-                const int32_t aw =
-                    A32[static_cast<size_t>(physical_row) * static_cast<size_t>(k4) +
-                        static_cast<size_t>(c4)];
+                const int32_t aw = A32[static_cast<size_t>(a_offset[i]) + static_cast<size_t>(c4)];
 #if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
                 if constexpr (Native) {
                   for (int j = 0; j < EC; j++)
@@ -463,22 +446,12 @@ static void search_t(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, in
 // constants above rather than adding a preprocessor variant. SLM staging and software-pipelined prefetch were both measured slower on
 // the B580 (the L2 already absorbs the A'/B' reuse; IGC schedules the loads better than a manual pipeline).
 static void search(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int n, int k, int rank,
-                   bool dbg, bool pair_dist8 = false) {
+                   bool dbg) {
+  // Openings map through bb's axes; only their counts select a work-group tiling. The CUDA pair
+  // pattern shares the 16x16 tiling below.
 #if defined(MOM_SYCL_HAS_CUDA) || defined(MOM_SYCL_ADAPTIVECPP_CUDA)
-  if (pair_dist8) {
-#if defined(MOM_SYCL_ADAPTIVECPP_CUDA)
-    const bool is_cuda = q.get_device().get_backend() == sycl::backend::cuda;
-#else
-    const bool is_cuda = q.get_device().get_backend() == sycl::backend::ext_oneapi_cuda;
-#endif
-    if (!is_cuda)
-      throw std::string("PearlHash pair-dist8 reference dispatch requires CUDA");
-    return search_t<pearlhash_portable_er, pearlhash_portable_ec, false, false, 16, 16, true>(
-        q, bb, seed, m, n, k, rank, dbg);
-  }
-#else
-  if (pair_dist8)
-    throw std::string("PearlHash pair-dist8 reference dispatch requires CUDA");
+  if (bb.proof_rows == kCompactRows && bb.proof_cols == kCompactCols)
+    return search_t<3, 1, false, false, 24, 8>(q, bb, seed, m, n, k, rank, dbg);
 #endif
 #if defined(MOM_SYCL_HAS_HIP)
   // HIP keeps its measured-best 2x2 dp4a path (RX 9060 XT: 750 vs 496 GH/s for 2x2 versus the
@@ -486,10 +459,8 @@ static void search(sycl::queue& q, const Buffers& bb, uint32_t seed, int m, int 
   const bool is_hip = mom_is_hip(q.get_device());
   if (is_hip) {
     // Source-JIT fallback and native correctness checks must retain the job's proof geometry.
-    if (bb.proof_rows == 4 && bb.proof_cols == 64)
-      return search_t<2, 2, false, false, 4, 64>(q, bb, seed, m, n, k, rank, dbg);
-    if (bb.proof_rows == 8 && bb.proof_cols == 32)
-      return search_t<2, 2, false, false, 8, 32>(q, bb, seed, m, n, k, rank, dbg);
+    if (bb.proof_rows == kAmdLaneRows && bb.proof_cols == kAmdLaneCols)
+      return search_t<13, 1, false, false, 52, 4>(q, bb, seed, m, n, k, rank, dbg);
     // Keep several fully typed dp4a micro-tiles in the architecture-neutral image. This is a host
     // dispatch, so each hot kernel contains no runtime tile branch. MOM_PEARLHASH_AMD_DP4A_TILE is a
     // tuning/validation override; 2x2 remains the measured default until the final AMD SSCP sweep.

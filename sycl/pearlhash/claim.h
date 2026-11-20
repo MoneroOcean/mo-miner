@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <limits>
 
+#include "proof-axis.h"
+
 namespace mom_pearlhash {
 
 // Compute the rank-128-equivalent work factor for opened rows/columns, rejecting zero or uint32 overflow.

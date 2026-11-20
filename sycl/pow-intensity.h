@@ -135,8 +135,9 @@ inline pearlhash_profile_t pearlhash_nvidia_compact_profile_for(
 inline pearlhash_profile_t pearlhash_amd_native_profile_for(const PowDeviceProfile& device,
                                                             const bool native_int8) {
   if (native_int8) {
-    for (const auto& profile : {pearlhash_profile_t{524288, 524288, 2048, 128},
-                                pearlhash_profile_t{262144, 262144, 2048, 128}})
+    // m is a whole number of the native kernel's 208-row lane-proof groups (kAmdLaneRows).
+    for (const auto& profile : {pearlhash_profile_t{524160, 524288, 2048, 128},
+                                pearlhash_profile_t{262080, 262144, 2048, 128}})
       if (pearlhash_required_memory_fits(device, profile))
         return profile;
   }

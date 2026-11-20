@@ -71,7 +71,8 @@ function probeProfile(device) {
       marker: "PEARLHASH_COMPACT admitted=1"};
   }
   if (/^\/dev\/dri\/renderD[0-9]+$/.test(device)) {
-    return {gpu: "amd", shape: {m: 2048, n: 2048, k: 2048, rank: 128}, rows: 4, columns: 64,
+    // m is whole 208-row lane-proof groups (kAmdLaneRows), so every computed row is opened.
+    return {gpu: "amd", shape: {m: 2080, n: 2048, k: 2048, rank: 128}, rows: 52, columns: 4,
       marker: "PEARLHASH_HIP_STATS search="};
   }
   return null;

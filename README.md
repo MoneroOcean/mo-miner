@@ -101,7 +101,7 @@ the GPUs on adjacent rows; the last column names the comparison source.
 | `pearlhash` / PRL       | B580    | 86.48 TH/s (102%)   | 86.87 TH/s (102%)   | BZMiner                        |
 |                         | A770    | 88.75 TH/s (104%*)  | 89.00 TH/s (105%*)  | best peer*                     |
 |                         | 5060 Ti | 94.93 TH/s (106%)   | 84.76 TH/s (93%)    | BZMiner                        |
-|                         | 9060 XT | 69.09 TH/s (102%)   | 69.54 TH/s (102%)   | BZMiner                        |
+|                         | 9060 XT | 72.41 TH/s (106%)   | 69.54 TH/s (102%)   | BZMiner                        |
 | `hoohash` / HTN         | B580    | 3.03 MH/s (174%*)   | 2.99 MH/s (180%*)   | best peer*                     |
 |                         | A770    | Unsupported         | -                   | No FP64                        |
 |                         | 5060 Ti | 1.44 MH/s (83%)     | 1.42 MH/s (81%*)    | hoo_gpu (Linux)                |

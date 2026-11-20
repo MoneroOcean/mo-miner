@@ -109,7 +109,7 @@ struct Result {
 };
 
 struct Buffers {
-  int proof_rows = 16, proof_cols = 16;
+  ProofAxis proof_rows = kSquareAxis, proof_cols = kSquareAxis;
   int8_t *EAL, *EBR, *EBRt, *Ap, *Bp; // A'/B' (noised, search inputs); A/B regenerated from RNG
   int32_t *EARp1, *EARp2, *EBLq1, *EBLq2;
   uint8_t *cA, *cB, *key, *target, *CVA, *CVB;

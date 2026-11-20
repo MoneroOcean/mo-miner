@@ -6404,127 +6404,72 @@ int main(int argc, char** argv) {
       }
     });
 
-    test("PearlHash HIP fused checkpoint owners preserve reductions, direct slots, tails and coordinates", {
+    test("PearlHash HIP lane transcripts match their canonical openings, tails and coordinates", {
       skip: process.platform === "win32" ? "requires a host C++ compiler" : false,
     }, () => {
-      const source = fs.readFileSync(path.join(__dirname, "../sycl/pearlhash/hip-kernel.inc"), "utf8");
-      // Slice the fused kernel's guard, reduction, owner, store, hash-lane and coordinate statements
-      // into a CPU oracle; the mutations below prove each slice is load-bearing.
-      const guardStart = source.indexOf("static_assert(PEARLHASH_K > 0");
-      const guardEnd = source.indexOf("const uint32_t wave =", guardStart);
-      assert.ok(guardStart >= 0 && guardEnd > guardStart);
-      const kernelGuard = source.slice(guardStart, guardEnd);
-      const proofCountStart = source.indexOf("constexpr uint32_t proofs_per_wave =");
-      const proofCountEnd = source.indexOf("\n", proofCountStart);
-      const sharedStart = source.indexOf("__shared__ uint32_t fused_transcript[", proofCountEnd);
-      const sharedEnd = source.indexOf("\n", sharedStart);
-      const proofCountDeclaration = source.slice(proofCountStart, proofCountEnd);
-      const sharedDeclaration = source.slice(sharedStart, sharedEnd);
-      const sharedExtent = sharedDeclaration.match(/\[([^\]]+)\]/u)?.[1];
-      const reductionStart = source.indexOf("uint32_t reduced[PEARLHASH_ER][PEARLHASH_EC / 4] = {};");
-      const reductionEnd = source.indexOf("const int slot = rc & 15;", reductionStart);
-      const ownerStart = reductionEnd;
-      const ownerEnd = source.indexOf("    }\n  }\n\n  // Wrapped checkpoint", ownerStart);
-      const finalStoreStart = source.indexOf("#if !PEARLHASH_DIRECT_SLOT", ownerEnd);
-      const finalStoreEnd = source.indexOf("  __syncthreads();", finalStoreStart);
-      const hashGuardStart = source.indexOf("active_wave && lane < proofs_per_wave", finalStoreEnd);
-      const hashGuardEnd = hashGuardStart + "active_wave && lane < proofs_per_wave".length;
-      const coordinatesStart = source.indexOf("const uint32_t hash_i =", hashGuardEnd);
-      const coordinatesEnd = source.indexOf("if (proof_row <", coordinatesStart);
-      const tailConditionStart = source.indexOf("(", coordinatesEnd);
-      const tailConditionEnd = source.indexOf(") {", tailConditionStart);
-      const tailCondition = source.slice(tailConditionStart + 1, tailConditionEnd);
-      assert.ok(reductionStart >= 0 && reductionEnd > reductionStart &&
-        ownerEnd > ownerStart && finalStoreStart > ownerEnd && finalStoreEnd > finalStoreStart &&
-        hashGuardStart > finalStoreEnd && hashGuardEnd > hashGuardStart &&
-        coordinatesStart > hashGuardEnd && coordinatesEnd > coordinatesStart &&
-        proofCountStart >= 0 && proofCountEnd > proofCountStart &&
-        sharedStart > proofCountEnd && sharedEnd > sharedStart && sharedExtent &&
-        tailConditionStart > coordinatesEnd && tailConditionEnd > tailConditionStart);
-      const reduction = source.slice(reductionStart, reductionEnd);
-      const owner = source.slice(ownerStart, ownerEnd);
-      const finalStore = source.slice(finalStoreStart, finalStoreEnd);
-      const hashGuard = source.slice(hashGuardStart, hashGuardEnd);
-      const hashCoordinates = source.slice(coordinatesStart, coordinatesEnd);
+      const root = path.join(__dirname, "../sycl/pearlhash");
+      const source = fs.readFileSync(path.join(root, "hip-kernel.inc"), "utf8");
+      // Slice the fused kernel's fold, lane LDS row, coordinates and tail guard into a CPU oracle
+      // that recomputes each opening from the host axes; the mutations prove each slice matters.
+      const fold = extractCppBlock(source, "    if ((kk + 32) % PEARLHASH_RANK == 0) {");
+      const rowStart = source.indexOf("  uint32_t* const transcript =");
+      const rowEnd = source.indexOf("\n", rowStart);
+      const quarterStart = source.indexOf("  const uint32_t proof_quarter =");
+      const quarterEnd = source.indexOf(";\n", quarterStart) + 2;
+      const coordinatesStart = source.indexOf("  const uint32_t proof_row =");
+      const coordinatesEnd = source.indexOf("  if (active_wave &&", coordinatesStart);
+      const guardStart = source.indexOf("active_wave &&", coordinatesEnd);
+      const guardEnd = source.indexOf(") {\n    uint32_t tr_hash[16];", guardStart);
+      assert.ok(rowStart >= 0 && rowEnd > rowStart && quarterStart >= 0 && quarterEnd > quarterStart &&
+        coordinatesStart >= 0 && coordinatesEnd > coordinatesStart && guardStart > coordinatesEnd &&
+        guardEnd > guardStart);
+      const laneRow = source.slice(rowStart, rowEnd) + "\n";
+      const coordinates = source.slice(quarterStart, quarterEnd) +
+        source.slice(coordinatesStart, coordinatesEnd);
+      const guard = source.slice(guardStart, guardEnd) + "\n";
       const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-pearl-hip-transcript-"));
       try {
-        fs.writeFileSync(path.join(fixture, "kernel-guard.inc"), kernelGuard);
-        fs.writeFileSync(path.join(fixture, "proofs-per-wave.inc"), proofCountDeclaration + "\n");
-        fs.writeFileSync(path.join(fixture, "shared-extent.inc"),
-          `constexpr size_t production_fused_transcript_words = ${sharedExtent};\n`);
-        fs.writeFileSync(path.join(fixture, "tail-guard.inc"),
-          `if (${tailCondition}) in_bounds = true;\n`);
-        for (const variant of ["valid", "reduction", "owner", "lds-index", "hashlane",
-          "hash-active", "coordinate"]) {
-          const valid = variant === "valid";
-          const reductionVariant = variant === "reduction" ? reduction.replace("e < 4", "e < 3") : reduction;
-          const ownerVariant = variant === "owner" ?
-            owner.replace("const uint32_t local_proof = (uint32_t)i * 4u + proof_quarter;",
-              "const uint32_t local_proof = (uint32_t)i * 4u + (proof_quarter ^ 1u);") :
-            variant === "lds-index" ? owner.replace("local_proof * 16u", "local_proof * 8u") : owner;
-          const hashGuardVariant = variant === "hashlane" ?
-            hashGuard.replace("lane < proofs_per_wave", "lane < proofs_per_wave - 4u") :
-            variant === "hash-active" ? hashGuard.replace("active_wave && ", "") : hashGuard;
-          const coordinatesVariant = variant === "coordinate" ?
-            hashCoordinates.replace("hash_q * 4u", "hash_q * 8u") : hashCoordinates;
-          assert.notEqual(reductionVariant, "", "fused reduction extraction is empty");
-          if (variant === "reduction") {
-            assert.notEqual(reductionVariant, reduction);
+        fs.copyFileSync(path.join(root, "proof-axis.h"), path.join(fixture, "proof-axis.h"));
+        /** @typedef {"fold" | "laneRow" | "coordinates" | "guard"} TranscriptPart */
+        /** @type {Record<string, Array<[TranscriptPart, string, string]>>} */
+        const mutations = {
+          valid: [],
+          reduction: [["fold", "(uint32_t)acc[i][3][2] ^ ", ""]],
+          slot: [["fold", "checkpoint & 15", "checkpoint & 7"]],
+          wrap: [["fold", "checkpoint < 16", "checkpoint < 8"]],
+          "lane-row": [["laneRow", "threadIdx.x * 17u", "threadIdx.x * 8u"]],
+          coordinate: [["coordinates", "proof_quarter * 4u", "proof_quarter * 8u"]],
+          quarter: [["coordinates", "* 2u + (uint32_t)(lane >> 5)", "+ (uint32_t)(lane >> 5) * 2u"]],
+          tail: [["guard", "tile_row + PEARLHASH_ER <= m / 16", "tile_row < m / 16"]],
+        };
+        for (const [variant, edits] of Object.entries(mutations)) {
+          /** @type {Record<TranscriptPart, string>} */
+          const parts = {fold, laneRow, coordinates, guard};
+          for (const [part, from, to] of edits) {
+            assert.ok(parts[part].includes(from), `${variant}: ${from}`);
+            parts[part] = parts[part].replace(from, to);
           }
-          if (variant === "owner") {
-            assert.notEqual(ownerVariant, owner);
-          }
-          if (variant === "lds-index") {
-            assert.notEqual(ownerVariant, owner);
-          }
-          if (variant === "hash-active") {
-            assert.notEqual(hashGuardVariant, hashGuard);
-          }
-          if (variant === "coordinate") {
-            assert.notEqual(coordinatesVariant, hashCoordinates);
-          }
-          fs.writeFileSync(path.join(fixture, "checkpoint-owner.inc"), ownerVariant);
-          fs.writeFileSync(path.join(fixture, "final-store.inc"), finalStore);
-          fs.writeFileSync(path.join(fixture, "reduction.inc"), reductionVariant);
-          fs.writeFileSync(path.join(fixture, "hash-guard.inc"), hashGuardVariant);
-          fs.writeFileSync(path.join(fixture, "hash-coordinates.inc"), coordinatesVariant);
-          for (const profile of [
-            ["ER12-q16", 12, 2048, 128], ["ER12-q32", 12, 4096, 128],
-            ["ER12-q64", 12, 8192, 128], ["ER13-q16-a", 13, 2048, 128],
-            ["ER13-q16-b", 13, 4096, 256],
-          ]) {
-            const [name, er, k, rank] = profile;
-            const executable = path.join(fixture, `hip-transcript-${name}`);
+          fs.writeFileSync(path.join(fixture, "checkpoint-fold.inc"), parts.fold + "\n");
+          fs.writeFileSync(path.join(fixture, "lane-row.inc"), parts.laneRow);
+          fs.writeFileSync(path.join(fixture, "coordinates.inc"), parts.coordinates);
+          fs.writeFileSync(path.join(fixture, "tail-guard.inc"), parts.guard);
+          /** @type {Array<[number, number]>} */
+          const shapes = [[2048, 128], [4096, 128], [4096, 256], [8192, 128]];
+          for (const [k, rank] of shapes) {
+            const executable = path.join(fixture, `hip-transcript-${variant}-${k}-${rank}`);
             const compiled = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
-              "-Wno-unused-parameter", "-Wno-range-loop-construct", "-Wno-unknown-pragmas",
-              "-pedantic", `-DPEARLHASH_ER=${er}`, "-DPEARLHASH_EC=4", `-DPEARLHASH_K=${k}`,
-              `-DPEARLHASH_RANK=${rank}`, "-I" + fixture,
-              path.join(__dirname, "native/pearlhash-hip-transcript.cpp"), "-o", executable],
-            {encoding: "utf8"});
-            assert.equal(compiled.status, 0, `${variant}/${name}: ${compiled.stderr}`);
+              "-Wno-unknown-pragmas", "-pedantic", `-DPEARLHASH_K=${k}`, `-DPEARLHASH_RANK=${rank}`,
+              "-I" + fixture, path.join(__dirname, "native/pearlhash-hip-transcript.cpp"),
+              "-o", executable], {encoding: "utf8"});
+            assert.equal(compiled.status, 0, `${variant}/${k}/${rank}: ${compiled.stderr}`);
             const result = spawnSync(executable, [], {encoding: "utf8"});
-            const direct = er === 13;
-            const broken = variant === "reduction" || variant === "hashlane" ||
-              variant === "hash-active" || variant === "coordinate" ||
-              (direct && (variant === "owner" || variant === "lds-index"));
-            const expectedStatus = valid || !broken ? 0 : 1;
-            assert.equal(result.status, expectedStatus, `${variant}/${name}: ${result.stdout}${result.stderr}`);
-            assert.match(result.stdout + result.stderr, expectedStatus === 0 ?
-              /CPU fused oracle passed: ER=/u :
-              /reduction differs|hash lane guard|fused hash coordinate|fused LDS proof index|active fused LDS slot|inactive wave reached/u);
-          }
-          if (valid) {
-            for (const [name, k, rank] of [["ER13-q32", 4096, 128],
-              ["ER13-truncated", 4160, 256],
-              ["ER13-wrap", 4352, 256]]) {
-              const rejected = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
-                "-Wno-unused-parameter", "-Wno-range-loop-construct", "-Wno-unknown-pragmas",
-                "-pedantic", "-DPEARLHASH_ER=13", "-DPEARLHASH_EC=4", `-DPEARLHASH_K=${k}`,
-                `-DPEARLHASH_RANK=${rank}`, "-I" + fixture,
-                path.join(__dirname, "native/pearlhash-hip-transcript.cpp"),
-                "-o", path.join(fixture, `hip-transcript-${name}`)], {encoding: "utf8"});
-              assert.notEqual(rejected.status, 0, `${name} must fail closed at compile time`);
-              assert.match(rejected.stderr, /ER13 requires exactly sixteen checkpoint slots/u);
+            if (variant === "valid") {
+              assert.equal(result.status, 0, `${k}/${rank}: ${result.stdout}${result.stderr}`);
+              assert.match(result.stdout, new RegExp(`CPU lane transcript oracle passed: K=${k} ` +
+                `rank=${rank} checkpoints=${k / rank} openings=128`, "u"));
+            } else {
+              assert.equal(result.status, 1, `${variant}/${k}/${rank} must fail: ${result.stdout}`);
+              assert.match(result.stderr, /lane transcript differs|tail group published|not canonical|cover complete groups/u);
             }
           }
         }
@@ -6541,15 +6486,10 @@ int main(int argc, char** argv) {
       const kernel = fs.readFileSync(path.join(root, "hip-kernel.inc"), "utf8");
       const state = fs.readFileSync(path.join(root, "state.inc"), "utf8");
       const matrix = fs.readFileSync(path.join(root, "matrix.inc"), "utf8");
-      const selectorStart = source.indexOf("tile_er = k / rank == 16 ? 13 : 12;");
-      const selectorEnd = source.indexOf("\n", selectorStart);
-      assert.ok(selectorStart >= 0 && selectorEnd > selectorStart);
-      const selector = source.slice(selectorStart, selectorEnd);
       const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "mom-pearl-hip-slices-"));
       try {
         fs.writeFileSync(path.join(fixture, "hip-launch.inc"), extractCppBlock(source, "  void launch("));
         fs.writeFileSync(path.join(fixture, "hip-wait.inc"), extractCppBlock(source, "  void wait(double learned_us)"));
-        fs.writeFileSync(path.join(fixture, "hip-selector.inc"), selector + "\n");
         fs.writeFileSync(path.join(fixture, "hip-wave-groups.inc"), extractCppBlock(kernel, "DEV void wave_groups("));
         fs.writeFileSync(path.join(fixture, "matrix-offset.inc"),
           extractCppBlock(matrix, "static inline size_t amd_wmma_offset("));
@@ -6558,21 +6498,20 @@ int main(int argc, char** argv) {
         assert.ok(allocationStart >= 0 && allocationEnd > allocationStart);
         fs.writeFileSync(path.join(fixture, "transcript-allocation.inc"), state.slice(allocationStart, allocationEnd));
         const executable = path.join(fixture, "slices");
-        for (const er of [12, 13]) {
-          for (const k of [1024, 2048, 3072, 4096, 5632, 8192, 16384]) {
-            const compile = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
-              "-Wno-unused-parameter", "-Wno-range-loop-construct", "-pedantic", "-I" + fixture,
-              `-DPEARLHASH_ER=${er}`, "-DPEARLHASH_K=" + k,
-              path.join(__dirname, "native/pearlhash-hip-slices.cpp"), "-o", executable],
-            {encoding: "utf8"});
-            assert.equal(compile.status, 0, `ER${er}/K${k}: ${compile.stderr}`);
-            const result = spawnSync(executable, [], {encoding: "utf8"});
-            assert.equal(result.status, 0, `ER${er}/K${k}: ${result.stderr}`);
-            const cacheRows = Math.max(16, Math.min(64, Math.floor(131072 / k)));
-            const chunkRows = cacheRows * er * 16;
-            assert.match(result.stdout,
-              new RegExp(`CPU fused launch oracle passed: K=${k} cache_rows=${cacheRows} chunk_rows=${chunkRows}`));
-          }
+        const er = 13; // kAmdLaneRows: thirteen 16-row tiles per wave
+        for (const k of [1024, 2048, 3072, 4096, 5632, 8192, 16384]) {
+          const compile = spawnSync("c++", ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
+            "-Wno-unused-parameter", "-Wno-range-loop-construct", "-pedantic", "-I" + fixture,
+            `-DPEARLHASH_ER=${er}`, "-DPEARLHASH_K=" + k,
+            path.join(__dirname, "native/pearlhash-hip-slices.cpp"), "-o", executable],
+          {encoding: "utf8"});
+          assert.equal(compile.status, 0, `ER${er}/K${k}: ${compile.stderr}`);
+          const result = spawnSync(executable, [], {encoding: "utf8"});
+          assert.equal(result.status, 0, `ER${er}/K${k}: ${result.stderr}`);
+          const cacheRows = Math.max(16, Math.min(64, Math.floor(131072 / k)));
+          const chunkRows = cacheRows * er * 16;
+          assert.match(result.stdout,
+            new RegExp(`CPU fused launch oracle passed: K=${k} cache_rows=${cacheRows} chunk_rows=${chunkRows}`));
         }
       } finally {
         fs.rmSync(fixture, {recursive: true, force: true});
@@ -6694,6 +6633,7 @@ int main(int argc, char** argv) {
       try {
         fs.copyFileSync(path.join(__dirname, "native/pearlhash-fault.cpp"), source);
         fs.copyFileSync(path.join(root, "claim.h"), path.join(fixture, "claim.h"));
+        fs.copyFileSync(path.join(root, "proof-axis.h"), path.join(fixture, "proof-axis.h"));
         // This fixture exercises the legacy pair and HIP/CUDA lifecycle, not compact root caching.
         // Specialize only the distinct compact blocks away; retain actual legacy operations,
         // target conversion, exception boundaries, and the compiled stale-header negative.
@@ -6703,13 +6643,13 @@ int main(int argc, char** argv) {
         assert.equal(host.split(compactWinner).length, 2);
         const legacyCommit = host.slice(commitStart, commitEnd).replace(compactWinner, "  ");
         assert.doesNotMatch(legacyCommit, /compact_mode|compact_roots/u);
-        const compactKey = "if (compact_mode)\n        CompactProfile::derive_key(input,st.key);\n      else if (pair_dist8)";
+        const compactKey = "if (compact_mode)\n        CompactProfile::derive_key(input,st.key);\n      else\n";
         assert.equal(host.split(compactKey).length, 2);
         const legacyUpload = host.slice(uploadStart, uploadEnd)
           .replace("    sycl::event compact_roots_ready;\n", "")
           .replace(compactRoots, "")
           .replace(compactCapture, "")
-          .replace(compactKey, "if (pair_dist8)")
+          .replace(compactKey, "")
           .replace("compact_mode && reuse_fixed_b ? &compact_roots_ready : nullptr", "nullptr");
         assert.doesNotMatch(legacyUpload, /compact_mode|CompactProfile|compact_roots_ready/u);
         const legacyCommitFixed = host.slice(commitFixedStart, commitFixedEnd)

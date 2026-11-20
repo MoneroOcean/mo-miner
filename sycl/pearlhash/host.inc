@@ -13,10 +13,10 @@ static void config_bytes_pattern(uint8_t cfg[52], int k, int rank,
   std::copy(rows.begin(), rows.end(), cfg + 8);
   std::copy(cols.begin(), cols.end(), cfg + 14);
 }
-// Contiguous rows x cols openings encode only their extent minus one at pattern byte 1.
-static void config_bytes(uint8_t cfg[52], int k, int rank, int rows = 16, int cols = 16) {
-  config_bytes_pattern(cfg, k, rank, {0, static_cast<uint8_t>(rows - 1), 0, 0, 0, 0},
-                       {0, static_cast<uint8_t>(cols - 1), 0, 0, 0, 0});
+// The row and column opening patterns bind the job key, so each geometry has its own commitments.
+static void config_bytes(uint8_t cfg[52], int k, int rank, const ProofAxis& rows = kSquareAxis,
+                         const ProofAxis& cols = kSquareAxis) {
+  config_bytes_pattern(cfg, k, rank, rows.bytes(), cols.bytes());
 }
 // Per-job key = unkeyed BLAKE3 of the 76-byte header concatenated with the 52-byte config block.
 static void key_from_config(const uint8_t* header76, const uint8_t cfg[52], uint8_t key32[32]) {
@@ -26,46 +26,28 @@ static void key_from_config(const uint8_t* header76, const uint8_t cfg[52], uint
   pearlhash_b3::b3(kb, 128, nullptr, key32);
 }
 static void derive_key(const uint8_t* header76, int k, int rank, uint8_t key32[32],
-                       int rows = 16, int cols = 16) {
+                       const ProofAxis& rows = kSquareAxis, const ProofAxis& cols = kSquareAxis) {
   uint8_t cfg[52];
   config_bytes(cfg, k, rank, rows, cols);
   key_from_config(header76, cfg, key32);
 }
 
-// Native CUDA rank-128 pairs use the verifier's canonical 8-by-8-by-2 opening
-// pattern on both axes.  Keep this private: the public job/result ABI remains
-// the same 16-by-16 proof area and factor.
-static constexpr std::array<int, 16> kPairDist8Offsets = {
-    0, 1, 8, 9, 16, 17, 24, 25, 32, 33, 40, 41, 48, 49, 56, 57};
-static constexpr std::array<uint8_t, 6> kPairDist8PatternBytes = {0, 1, 3, 7, 0, 0};
-
-static bool pair_dist8_offset_valid(int offset, int dimension) {
-  if (offset < 0 || dimension < 58 || offset > dimension - 58)
-    return false;
-  const int residue = offset % 64;
-  return residue == 0 || residue == 2 || residue == 4 || residue == 6;
-}
-
-// Expand a pair-dist8 winner into its 16 opened A rows and Bt rows; false for an illegal origin.
-static bool pair_dist8_lists(int row, int col, int m, int n,
-                             std::vector<int>& a_rows, std::vector<int>& bt_rows) {
-  if (!pair_dist8_offset_valid(row, m) || !pair_dist8_offset_valid(col, n))
-    return false;
+// Expand a winning origin into its opened A rows and Bt rows; false for an origin the verifier
+// would reject or one whose opening leaves the matrix.
+static bool proof_lists(const ProofAxis& rows, const ProofAxis& cols, int row, int col, int m,
+                        int n, std::vector<int>& a_rows, std::vector<int>& bt_rows) {
   a_rows.clear();
   bt_rows.clear();
-  a_rows.reserve(kPairDist8Offsets.size());
-  bt_rows.reserve(kPairDist8Offsets.size());
-  for (const int offset : kPairDist8Offsets) {
-    a_rows.push_back(row + offset);
-    bt_rows.push_back(col + offset);
-  }
+  // pearl_verify's sanity_check: even sides opening 32..256 cells.
+  const uint64_t cells = uint64_t(rows.count()) * cols.count();
+  if (rows.count() % 2 || cols.count() % 2 || cells < 32 || cells > 256 || !rows.valid(row, m) ||
+      !cols.valid(col, n))
+    return false;
+  for (uint32_t i = 0; i < rows.count(); ++i)
+    a_rows.push_back(row + static_cast<int>(rows.component(i)));
+  for (uint32_t i = 0; i < cols.count(); ++i)
+    bt_rows.push_back(col + static_cast<int>(cols.component(i)));
   return true;
-}
-
-static void derive_key_pair_dist8(const uint8_t* header76, int k, int rank, uint8_t key32[32]) {
-  uint8_t cfg[52];
-  config_bytes_pattern(cfg, k, rank, kPairDist8PatternBytes, kPairDist8PatternBytes);
-  key_from_config(header76, cfg, key32);
 }
 
 // ---- PlainProof construction on the host (the pool submission for a winning tile) ----
@@ -265,9 +247,8 @@ static std::string base64(const std::vector<uint8_t>& d) {
   }
   return o;
 }
-// Full PlainProof (base64) for explicit selected rows/columns.  The old
-// contiguous builder and pair-dist8 builder both delegate here so the Merkle
-// serialization remains one implementation.
+// Full PlainProof (base64) for explicit selected rows/columns; every opening geometry
+// delegates here so the Merkle serialization remains one implementation.
 static std::string build_plain_proof_lists(
     uint32_t seed, int m, int n, int k, int rank, const uint8_t* key,
     const std::vector<int>& aRows, const std::vector<int>& btRows,
@@ -299,39 +280,18 @@ static std::string build_plain_proof_lists(
   return base64(buf);
 }
 
-// Full PlainProof for the existing contiguous proof patterns.  This wrapper
-// intentionally preserves the previous validation and byte path.
+// Full PlainProof for one winning origin of the attempt's opening geometry.
 static std::string build_plain_proof(uint32_t seed, int m, int n, int k, int rank,
                                      const uint8_t* key, int row, int col,
                                      uint32_t* adjustment_factor,
                                      const std::vector<CV>* cached_a = nullptr,
                                      const std::vector<CV>* cached_b = nullptr,
-                                     int rows = 16, int cols = 16,
-                                     bool positive_inputs = false) {
-  if (!((rows == 16 && cols == 16) || (rows == 8 && cols == 32) || (rows == 4 && cols == 64)) ||
-      m < rows || n < cols || row < 0 || col < 0 ||
-      row > m - rows || col > n - cols)
-    return {};
+                                     const ProofAxis& rows = kSquareAxis,
+                                     const ProofAxis& cols = kSquareAxis,
+                                     bool positive_inputs = false,
+                                     const uint32_t* b_seed = nullptr) {
   std::vector<int> aRows, btRows;
-  for (int r = 0; r < rows; r++)
-    aRows.push_back(row + r);
-  for (int r = 0; r < cols; r++)
-    btRows.push_back(col + r);
-  return build_plain_proof_lists(seed, m, n, k, rank, key, aRows, btRows,
-                                 adjustment_factor, cached_a, cached_b, positive_inputs);
-}
-
-// Pair-dist8's physical result offsets are the first elements of the canonical
-// strided lists, not contiguous 16x16 tile origins.
-static std::string build_pair_plain_proof(uint32_t seed, int m, int n, int k, int rank,
-                                          const uint8_t* key, int row, int col,
-                                          uint32_t* adjustment_factor,
-                                          const std::vector<CV>* cached_a = nullptr,
-                                          const std::vector<CV>* cached_b = nullptr,
-                                          bool positive_inputs = false,
-                                          const uint32_t* b_seed = nullptr) {
-  std::vector<int> aRows, btRows;
-  if (!pair_dist8_lists(row, col, m, n, aRows, btRows))
+  if (!proof_lists(rows, cols, row, col, m, n, aRows, btRows))
     return {};
   return build_plain_proof_lists(seed, m, n, k, rank, key, aRows, btRows,
                                  adjustment_factor, cached_a, cached_b, positive_inputs, b_seed);

@@ -5,6 +5,10 @@ struct CompactProfile {
   static constexpr int k = 65536, rank = 128, rows = 24, cols = 8;
   static constexpr std::array<uint8_t, 6> row_pattern = {0, 1, 7, 11, 0, 0};
   static constexpr std::array<uint8_t, 6> col_pattern = {7, 1, 3, 3, 0, 0};
+  static constexpr ProofAxis row_axis = kCompactRows, col_axis = kCompactCols;
+  static_assert(same_pattern(row_axis.bytes(), row_pattern) &&
+                same_pattern(col_axis.bytes(), col_pattern) && row_axis.count() == rows &&
+                col_axis.count() == cols);
 
   static bool supports(int m, int n, int requested_k, int requested_rank) {
     // B's wrapped global raw index must never alias A's seed-bearing prefix.

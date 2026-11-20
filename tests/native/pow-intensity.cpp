@@ -136,8 +136,11 @@ void test_pearlhash_capacity() {
 
 void test_pearlhash_amd_native_profile() {
   const pearlhash_profile_t ordinary = {131072, 131072, 2048, 128};
-  const pearlhash_profile_t candidate = {262144, 262144, 2048, 128};
-  const pearlhash_profile_t native = {524288, 524288, 2048, 128};
+  // m is whole 208-row lane-proof groups of the native HIP kernel.
+  const pearlhash_profile_t candidate = {262080, 262144, 2048, 128};
+  const pearlhash_profile_t native = {524160, 524288, 2048, 128};
+  expect_true("Pearl AMD native rows are whole lane-proof groups",
+              candidate.m % 208 == 0 && native.m % 208 == 0);
   PearlHashAllocationCounts candidate_counts{}, native_counts{};
   expect_true("Pearl AMD candidate shape legal",
               mom::job_boundary::valid_pearlhash_shape(

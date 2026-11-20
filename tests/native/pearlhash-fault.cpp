@@ -11,6 +11,8 @@
 #include <vector>
 #include "claim.h"
 using mom_pearlhash::pearlhash_search_target_le;
+using mom_pearlhash::ProofAxis;
+using mom_pearlhash::kSquareAxis;
 
 enum class Stage {
   success, unavailable, queue, preparation, event_a, event_b, launch, wait, query_a, query_b,
@@ -180,7 +182,7 @@ struct Buffers {
   uint8_t* CVB = nullptr;
   uint8_t* cA = nullptr;
   uint8_t* cB = nullptr;
-  int proof_rows = 16, proof_cols = 16;
+  ProofAxis proof_rows = kSquareAxis, proof_cols = kSquareAxis;
   bool positive_inputs = false;
   bool seed_prefix_inputs = false;
   bool fixed_b_reuse = false;
@@ -197,10 +199,10 @@ struct PearlHashClaim {
 struct Proof {
   uint32_t seed;
   uint32_t b_seed;
-  int m, n, k, rank, proof_rows, proof_cols;
+  int m, n, k, rank;
+  ProofAxis proof_rows, proof_cols;
   uint8_t key[32];
   std::vector<CV> leaves_a, leaves_b;
-  bool pair_dist8 = false;
   bool positive_inputs = false;
   int count = 1;
   PearlHashClaim claims[kPearlhashWinners];
@@ -330,12 +332,10 @@ struct State {
   uint32_t fixed_b_seed = 0;
 };
 
-static void derive_key(const uint8_t*, int, int, uint8_t* key, int, int) {
+static void derive_key(const uint8_t*, int, int, uint8_t* key, const ProofAxis&,
+                       const ProofAxis&) {
   ++counts.derived_keys;
   std::memset(key, 7, 32);
-}
-static void derive_key_pair_dist8(const uint8_t* header, int k, int rank, uint8_t* key) {
-  derive_key(header, k, rank, key, 16, 16);
 }
 static void prepare_roots_cpu(const Buffers& b, uint32_t, int, int, int,
                               const uint32_t* = nullptr) {
@@ -722,8 +722,7 @@ int main(int argc, char** argv) {
               "submitted fault published a proof");
       require(completed == -1, "submitted fault reached the result commit");
     } else {
-      require(completed == kPearlhashWinners && seed == 777 && g_pf.count == kPearlhashWinners &&
-                  g_pf.claims[0].proof.empty() &&
+      require(completed == kPearlhashWinners && seed == 777 && g_pf.count == kPearlhashWinners && g_pf.claims[0].proof.empty() &&
                   g_pf.leaves_a.empty() && g_pf.leaves_b.empty(),
               "successful path failed to capture the winning result");
       const bool unavailable = failure_stage == Stage::unavailable;

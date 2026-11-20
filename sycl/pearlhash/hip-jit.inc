@@ -9,8 +9,9 @@ struct PearlHashHipSearch {
   bool checked = false;
   bool enabled = false;
   unsigned stats_printed = 0;
-  int tile_er = 12;
-  int tile_ec = 4;
+  // One wave's 13x4 WMMA tiles hold exactly the lane openings the host keys and proves.
+  static constexpr int tile_er = static_cast<int>(kAmdLaneRows.length[1]);
+  static constexpr int tile_ec = static_cast<int>(kAmdLaneCols.length[0]);
   int k_unroll = 1;
   int compiled_k = 0;
   int compiled_rank = 0;
@@ -76,7 +77,6 @@ struct PearlHashHipSearch {
     kernel = nullptr;
     compiled_k = 0;
     compiled_rank = 0;
-    tile_er = 12;
     enabled = false;
     checked = false;
   }
@@ -112,9 +112,6 @@ struct PearlHashHipSearch {
       return false;
     }
     if (!checked) {
-      // Exactly sixteen checkpoints visit each transcript slot once. The kernel
-      // can write LDS directly and spend the saved registers on a thirteenth row.
-      tile_er = k / rank == 16 ? 13 : 12;
       try {
         checked = true;
         std::string arch = queue_properties.gcnArchName;
@@ -215,7 +212,9 @@ struct PearlHashHipSearch {
     // need not fit the unused global transcript; small jobs and tails remain masked.
     const int cache_rows = std::max(16, std::min(64, 131072 / k));
     const int row_group = cache_rows * tile_er * 16;
-    const int debug_rows = std::min(row_group, std::max(128, (m / 2 / 128) * 128));
+    // Slices start at whole row groups so every lane opening keeps its canonical origin.
+    const int group_rows = tile_er * 16;
+    const int debug_rows = std::min(row_group, std::max(group_rows, (m / 2 / group_rows) * group_rows));
     const int chunk_rows = std::min(m, debug ? debug_rows : row_group);
     try {
       hip_check(hipEventRecord(started, native_stream), "hipEventRecord(PearlHash start)");

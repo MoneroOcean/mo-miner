@@ -200,6 +200,9 @@ struct Buffers {
   uint32_t* transcript = reinterpret_cast<uint32_t*>(&handles[4]);
   int transcript_rows = 256;
 };
+#include "proof-axis.h"
+using mom_pearlhash::kAmdLaneCols;
+using mom_pearlhash::kAmdLaneRows;
 #include "pearl.inc"
 
 static void check(bool valid, const char* message) {

@@ -7,15 +7,17 @@
 #include <stdexcept>
 #include "claim.h"
 #include "job-boundary.h"
+using namespace mom_pearlhash; // ProofAxis and the canonical opening axes
 
 struct CompactProfile {
   static constexpr int k=65536, rank=128, rows=24, cols=8;
+  static constexpr ProofAxis row_axis=kCompactRows, col_axis=kCompactCols;
 #include "shape.inc"
 };
 namespace compact_private {
 #include "selected.inc"
 }
-struct Buffers { int proof_rows=16,proof_cols=16; };
+struct Buffers { ProofAxis proof_rows=kSquareAxis,proof_cols=kSquareAxis; };
 struct Native {
   bool admitted=false,compact=false,fault=false;
   bool ensure(int&, const Buffers&, int,int,int,int) {
@@ -24,13 +26,14 @@ struct Native {
   }
 };
 struct State { Native hip,cuda; };
-struct Result { int rows,cols; bool compact,pair; };
+struct Result { ProofAxis row_axis,col_axis; int rows,cols; bool compact,pair; };
 static Result choose(State& st, Buffers& b, bool hip_jit, bool cuda_jit,
                      int k=65536, int rank=128) {
   int q=0,m=16320,n=15360;
   (void)m;(void)n;(void)q;
 #include "admission.inc"
-  return {b.proof_rows,b.proof_cols,compact_mode,pair_dist8};
+  return {b.proof_rows,b.proof_cols,int(b.proof_rows.count()),int(b.proof_cols.count()),
+          compact_mode,pair_dist8};
 }
 static void check(bool yes,const char* message) {
   if(!yes) throw std::runtime_error(message);
@@ -62,18 +65,21 @@ int main() {
         for(bool cuda_compact:{false,true}) {
           State st{{hip_ok,false,false},{cuda_ok,cuda_compact,false}};
           // Deliberately stale geometry: every selection must replace it.
-          Buffers b{10,16};
+          Buffers b{ProofAxis::make(1,10),ProofAxis::make(1,16)};
           const auto r=choose(st,b,hip_jit,cuda_jit);
           const bool compact=(!hip_jit||!hip_ok)&&cuda_jit&&cuda_ok&&cuda_compact;
           check(r.compact==compact,"wrong compact admission");
-          check(r.rows==(compact?24:hip_jit?4:16)&&r.cols==(compact?8:hip_jit?64:16),
+          check(r.row_axis==(compact?kCompactRows:hip_jit?kAmdLaneRows:kSquareAxis)&&
+                r.col_axis==(compact?kCompactCols:hip_jit?kAmdLaneCols:kSquareAxis),
                 "fallback leaked compact geometry");
           check(r.pair==compact,"pair mode changed");
           check_target(r,uint32_t(r.rows*r.cols*65536));++cases;
         }
-    State legacy{{false,false,false},{true,false,false}};Buffers b{10,16};
+    State legacy{{false,false,false},{true,false,false}};
+    Buffers b{ProofAxis::make(1,10),ProofAxis::make(1,16)};
     const auto r=choose(legacy,b,false,true,8192,128);
-    check(!r.compact&&r.pair&&r.rows==16&&r.cols==16,"legacy pair changed");
+    check(!r.compact&&r.pair&&r.row_axis==kPairDist8Axis&&r.col_axis==kPairDist8Axis,
+          "legacy pair changed");
     State broken{{false,false,false},{true,true,true}};
     bool threw=false;try{(void)choose(broken,b,false,true);}catch(const std::runtime_error&){threw=true;}
     check(threw,"submitted fault was swallowed");

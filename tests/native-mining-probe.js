@@ -236,7 +236,7 @@ test.describe("Native Pearl execution profiles", () => {
       marker: "PEARLHASH_COMPACT admitted=1"});
   });
   test("AMD exercises its source-JIT row-slice traversal and native proof pattern", () => {
-    assert.deepEqual(probeProfile(amd), {gpu: "amd", shape: {m: 2048, n: 2048, k: 2048, rank: 128}, rows: 4, columns: 64,
+    assert.deepEqual(probeProfile(amd), {gpu: "amd", shape: {m: 2080, n: 2048, k: 2048, rank: 128}, rows: 52, columns: 4,
       marker: "PEARLHASH_HIP_STATS search="});
   });
   test("NVIDIA container reads the private config as the invoking host user", () => {
@@ -274,7 +274,7 @@ test.describe("Native Pearl execution profiles", () => {
       const profile = probeProfile(device); assert.ok(profile);
       return profile.rows * profile.columns * (profile.shape.k / profile.shape.rank) * 128;
     });
-    assert.deepEqual(factors, [12582912, 524288]);
+    assert.deepEqual(factors, [12582912, 425984]);
   });
   test("each caller gets an independent profile rather than mutable standing admission", () => {
     const profile = probeProfile(amd); assert.ok(profile); profile.shape.k = 1;
