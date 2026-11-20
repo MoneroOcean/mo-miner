@@ -166,10 +166,11 @@ static sycl::event search_esimd_dpasw_impl(
       for (int t = 0; t < Tiles; ++t) {
         if (!wins[t])
           continue;
-        simd<int, 1> old = esimd_ns::atomic_update<esimd_ns::atomic_op::add>(
+        // DIAGNOSTIC: single-winner claim, as before fd98cbd3.
+        simd<int, 1> old = esimd_ns::atomic_update<esimd_ns::atomic_op::xchg>(
             &B.result->found, simd<uint32_t, 1>(0), simd<int, 1>(1), esimd_ns::simd_mask<1>(1));
-        if (const int slot = old[0]; slot < kPearlhashWinners) {
-          Winner& winner = B.result->winners[slot];
+        if (old[0] == 0) {
+          Winner& winner = B.result->winners[0];
           B.result->seed = seed;
           winner.row = uint32_t(rowBase + (t / EC) * HT);
           winner.col = uint32_t((colBase + t % EC) * HT);
