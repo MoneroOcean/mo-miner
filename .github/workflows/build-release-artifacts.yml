@@ -616,8 +616,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - shell: cmd
-        run: scripts\install-dev.bat -Component base,node,oneapi -Jobs 4
+      - shell: pwsh
+        run: '& scripts/ci/retry.ps1 -Minutes 30 -- cmd /c scripts\install-dev.bat -Component "base,node,oneapi" -Jobs 4'
       - id: stage
         shell: pwsh
         run: scripts/ci/prepare-native-windows-ci.ps1 -Role core
@@ -654,7 +654,7 @@ jobs:
         with:
           persist-credentials: false
       - shell: pwsh
-        run: '& scripts/install-dev.ps1 -Component $(if ("${{ matrix.role }}" -eq "io") { "base,node,oneapi,perl" } else { "base,node,oneapi" }) -Jobs 4'
+        run: '& scripts/ci/retry.ps1 -Minutes 30 -- pwsh -NoProfile -File scripts/install-dev.ps1 -Component $(if ("${{ matrix.role }}" -eq "io") { "base,node,oneapi,perl" } else { "base,node,oneapi" }) -Jobs 4'
       - if: matrix.role == 'hermes'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
