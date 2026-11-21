@@ -43,7 +43,6 @@ popd
 if not defined RESOLVED_URL goto cleanup
 set "URL=%RESOLVED_URL%"
 
-echo [oneapi %TIME%] download installer
 curl.exe --fail --location --show-error --retry 5 --retry-delay 5 --output "%INSTALLER%" --url "%URL%"
 if not errorlevel 1 goto download_ok
 set "EXIT_CODE=%ERRORLEVEL%"

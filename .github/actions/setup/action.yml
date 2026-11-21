@@ -21,14 +21,17 @@ runs:
     - if: runner.os == 'Windows'
       shell: pwsh
       run: |
-        # install-dev.ps1 and the Windows native build pin Node.js at C:\Program Files\nodejs. Point
-        # that path at setup-node's copy so CI never runs the Node MSI as an upgrade over the
-        # runner's preinstalled Node (suspected in jobs that lost their runner during install-dev).
-        # install-dev's Test-Node still verifies the pinned version and node-gyp.
+        # install-dev.ps1 and the Windows native build pin Node.js at C:\Program Files\nodejs. Put
+        # setup-node's copy there so CI never runs the Node MSI as an upgrade over the runner's
+        # preinstalled Node (suspected in jobs that lost their runner during install-dev). A real
+        # copy, not a junction: npm and the build resolve real paths.
         $pinned = 'C:\Program Files\nodejs'
-        $node = (Get-Command node -CommandType Application)[0].Source
+        $source = Split-Path -Parent (Get-Command node -CommandType Application)[0].Source
+        if ($source -ieq $pinned) { exit 0 }
         if (Test-Path -LiteralPath $pinned) { Move-Item -LiteralPath $pinned "$pinned-runner" }
-        New-Item -ItemType Junction -Path $pinned -Target (Split-Path -Parent $node) | Out-Null
+        robocopy $source $pinned /E /NFL /NDL /NJH /NJS /NP | Out-Null
+        if ($LASTEXITCODE -ge 8) { throw "Copying Node.js to $pinned failed: robocopy exit $LASTEXITCODE" }
+        exit 0
     - if: inputs.apt != ''
       shell: bash
       env:

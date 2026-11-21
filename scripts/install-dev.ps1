@@ -65,6 +65,7 @@ function Initialize-Workspace {
 # only deliberate external prerequisite; CUDA/HIP below are compiler SDK payloads, not display drivers.
 $nodeVersion = '24.15.0'
 $nodeSha256 = 'feffb8e5cb5ac47f793666636d496ef3e975be82c84c4da5d20e6aa8fa4eb806'
+$pinnedNodeRoot = 'C:\Program Files\nodejs'
 # Official Strawberry release-asset hash pin; this is a ZIP, not an Authenticode-signed MSI.
 $perlVersion = '5.42.3.1'
 $perlCoreVersion = 'v5.42.3'
@@ -288,32 +289,41 @@ function Install-Base {
   Add-MachinePath 'C:\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja'
 }
 function Install-Node {
-  if (-not (Test-Node)) {
+  # The MSI is needed only for the runtime itself; a pinned Node.js that merely lacks node-gyp
+  # (for example the copy CI provisions) keeps its files.
+  if (-not (Test-NodeRuntime)) {
     $msi = Join-Path $Workspace "node-v$nodeVersion-x64.msi"
     Download "https://nodejs.org/dist/v$nodeVersion/node-v$nodeVersion-x64.msi" $msi
     Assert-Sha256 $msi $nodeSha256
     Install-Msi $msi
   }
-  Add-MachinePath 'C:\Program Files\nodejs'
-  $npmPrefix = ((& npm.cmd prefix -g) | Select-Object -Last 1).Trim()
-  if ($LASTEXITCODE -ne 0 -or -not $npmPrefix) { throw 'Unable to resolve the global npm prefix' }
+  Add-MachinePath $pinnedNodeRoot
+  # Use the pinned npm, not whichever npm is first on PATH: Test-Node validates this prefix.
+  $npmPrefix = Get-PinnedNpmPrefix
+  if (-not $npmPrefix) { throw 'Unable to resolve the global npm prefix' }
   Add-MachinePath $npmPrefix
-  if (-not (Get-Command node-gyp.cmd -ErrorAction SilentlyContinue)) {
+  if (-not (Test-Path (Join-Path $npmPrefix 'node_modules\node-gyp\bin\node-gyp.js'))) {
     Write-InstallStep 'npm install -g node-gyp'
-    Invoke-Checked 'npm.cmd' @('install','-g','node-gyp@12.2.0')
+    Invoke-Checked (Join-Path $pinnedNodeRoot 'npm.cmd') @('install','-g','node-gyp@12.2.0')
   }
 }
-function Test-Node {
+function Test-NodeRuntime {
   # MSI installers run later in an `all` setup may refresh the machine PATH
   # without updating this PowerShell process. Validate the pinned installation
   # directly so a successful Node setup is not mistaken for a missing one.
-  $node = 'C:\Program Files\nodejs\node.exe'
-  $npm = 'C:\Program Files\nodejs\npm.cmd'
-  if (-not ((Test-Path $node) -and (Test-Path $npm))) { return $false }
-  $npmPrefix = ((& $npm prefix -g) | Select-Object -Last 1).Trim()
-  if ($LASTEXITCODE -ne 0 -or -not $npmPrefix) { return $false }
-  ((& $node --version) -eq "v$nodeVersion") -and
-    (Test-Path (Join-Path $npmPrefix 'node_modules\node-gyp\bin\node-gyp.js'))
+  $node = Join-Path $pinnedNodeRoot 'node.exe'
+  (Test-Path $node) -and (Test-Path (Join-Path $pinnedNodeRoot 'npm.cmd')) -and
+    ((& $node --version) -eq "v$nodeVersion")
+}
+function Get-PinnedNpmPrefix {
+  $npmPrefix = ((& (Join-Path $pinnedNodeRoot 'npm.cmd') prefix -g) | Select-Object -Last 1)
+  if ($LASTEXITCODE -ne 0 -or -not $npmPrefix) { return $null }
+  $npmPrefix.Trim()
+}
+function Test-Node {
+  if (-not (Test-NodeRuntime)) { return $false }
+  $npmPrefix = Get-PinnedNpmPrefix
+  [bool]$npmPrefix -and (Test-Path (Join-Path $npmPrefix 'node_modules\node-gyp\bin\node-gyp.js'))
 }
 function Test-Perl([string]$Root = $perlRoot) {
   if ([string]::Equals($Root, $perlRoot, [StringComparison]::OrdinalIgnoreCase) -and
@@ -689,7 +699,6 @@ if ($ValidateOnly) {
 
 Require-Administrator
 Initialize-Workspace
-Write-InstallStep "components $($components -join ',')"
 
 if ($components -contains 'base') {
   Install-Base
