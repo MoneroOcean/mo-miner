@@ -120,7 +120,8 @@ int fishhash(const unsigned, const uint32_t, const uint8_t* const input, const u
   } else if (cooperative) {
     search = submit_fishhash_search_coop(
         state.queue, state.input, input_size, start_nonce, state.dag, intensity, state.target,
-        state.result, is_test, nonce_off, nonce_be, target_be, state.coop_workgroup);
+        state.result, is_test, nonce_off, nonce_be, target_be, state.coop_workgroup,
+        std::getenv("MOM_FISHHASH_COOP_DIAG") ? unsigned(std::atoi(std::getenv("MOM_FISHHASH_COOP_DIAG"))) : 0u);
 #endif
   } else {
     search = submit_fishhash_search<true>(state.queue, state.input, input_size, start_nonce, nullptr,

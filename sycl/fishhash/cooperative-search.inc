@@ -6,7 +6,8 @@ static sycl::event submit_fishhash_search_coop(sycl::queue& q, const uint8_t* d_
                                                const uint64_t* __restrict d_dag, uint32_t intensity,
                                                const uint8_t* d_target, FishResult* d_result,
                                                bool is_test, unsigned nonce_off, bool nonce_be,
-                                               bool target_be, unsigned workgroup) {
+                                               bool target_be, unsigned workgroup,
+                                               unsigned diag = 0) {
   const size_t work_items = static_cast<size_t>(intensity) * FISH_TEAM;
   const size_t global = (work_items + workgroup - 1) / workgroup * workgroup;
   return q.submit([&](sycl::handler& h) {
@@ -25,6 +26,21 @@ static sycl::event submit_fishhash_search_coop(sycl::queue& q, const uint8_t* d_
           const bool active = gid < intensity;
           const uint64_t nonce = start_nonce + gid;
           uint8_t* const work = &stage[team_local * FISH_STAGE_BYTES];
+          // DIAGNOSTIC (not for merge): the gid-0 leader stores stage `diag` instead of the hash.
+          const auto probe = [&](const unsigned stage_id, const uint8_t* const bytes) {
+            if (diag == stage_id && team_lane == 0 && gid == 0) {
+              uint8_t h[32];
+              for (unsigned i = 0; i < 32; ++i)
+                h[i] = bytes[i];
+              mom_store_pow_hit(d_result, nonce, h);
+            }
+          };
+          {
+            uint8_t pattern[32];
+            for (unsigned i = 0; i < 32; ++i)
+              pattern[i] = static_cast<uint8_t>(0x11 + i);
+            probe(1, pattern);
+          }
 
           const unsigned hlen = input_size <= FISH_STAGE_BYTES ? input_size : FISH_STAGE_BYTES;
           // The leader owns nonce bytes; other lanes must not overwrite them before the barrier.
@@ -42,6 +58,7 @@ static sycl::event submit_fishhash_search_coop(sycl::queue& q, const uint8_t* d_
             }
           }
           sycl::group_barrier(it.get_group());
+          probe(2, work);
 
           // The leader performs the serial BLAKE3 prefix; SLM then distributes its eight u64 words to
           // the 16 lanes (the second half repeats the seed, matching mix={seed,seed}).
@@ -52,6 +69,7 @@ static sycl::event submit_fishhash_search_coop(sycl::queue& q, const uint8_t* d_
               work[i] = seed[i];
           }
           sycl::group_barrier(it.get_group());
+          probe(3, work);
           const uint64_t seed_word = load64_le_dev(work + 8 * (team_lane & 7u));
           uint64_t mix = seed_word;
 
@@ -88,8 +106,21 @@ static sycl::event submit_fishhash_search_coop(sycl::queue& q, const uint8_t* d_
             store32_le_dev(work + 64 + 2 * team_lane, folded);
           }
           sycl::group_barrier(it.get_group());
+          probe(4, work + 64);
+          if (team_lane == 0 && gid == 0 && diag == 5) {
+            uint8_t h[32];
+            blake3_dev(h, 32, work, 96);
+            mom_store_pow_hit(d_result, nonce, h);
+          }
+          if (team_lane == 0 && gid == 0 && diag == 6) {
+            uint8_t copy[96], h[32];
+            for (unsigned i = 0; i < 96; ++i)
+              copy[i] = work[i];
+            blake3_dev(h, 32, copy, 96);
+            mom_store_pow_hit(d_result, nonce, h);
+          }
 
-          if (team_lane == 0 && active) {
+          if (team_lane == 0 && active && diag == 0) {
             uint8_t final_hash[32];
             blake3_dev(final_hash, 32, work, 96);
             const bool hit = target_be ? mom_meets_target_be(final_hash, d_target)
