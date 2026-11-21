@@ -98,7 +98,7 @@ describe("Workflow structure", () => {
     }
   });
 
-  test("permissions are read-only except the tag publish job", () => {
+  test("permissions are read-only except the tag publish and lost-runner rerun jobs", () => {
     for (const [file, workflow] of Object.entries(workflows)) {
       const top = map(workflow["permissions"]);
       assert.ok(Object.keys(top).length, file + " declares workflow permissions");
@@ -109,6 +109,10 @@ describe("Workflow structure", () => {
         if (file === "release.yml" && id === "publish") {
           assert.deepEqual(permissions, {contents: "write"});
           assert.match(text(map(job)["if"]), /startsWith\(github\.ref, 'refs\/tags\/'\)/);
+        } else if (file === "rerun-lost-runner.yml" && id === "rerun") {
+          // One automatic rerun: only a failed first attempt may trigger it.
+          assert.deepEqual(permissions, {actions: "write", checks: "read"});
+          assert.match(text(map(job)["if"]), /github\.event\.workflow_run\.run_attempt == 1/);
         } else {
           assert.deepEqual(writes, [], file + ":" + id);
         }
