@@ -18,7 +18,13 @@ $info = [Diagnostics.ProcessStartInfo]::new((Get-Command $Command[0] -CommandTyp
 $Command | Select-Object -Skip 1 | ForEach-Object { $info.ArgumentList.Add($_) }
 foreach ($attempt in 1..$options.Attempts) {
   $process = [Diagnostics.Process]::Start($info)
-  if ($process.WaitForExit($options.Minutes * 60000) -and $process.ExitCode -eq 0) { exit 0 }
+  $deadline = [DateTime]::UtcNow.AddMinutes($options.Minutes)
+  # Heartbeat every 5 min: if the log stops without one, the runner died rather than the command hung.
+  while (-not $process.WaitForExit([int][Math]::Max(0, [Math]::Min(300000, ($deadline - [DateTime]::UtcNow).TotalMilliseconds)))) {
+    if ([DateTime]::UtcNow -ge $deadline) { break }
+    Write-Host "[retry $(Get-Date -Format HH:mm:ss)] attempt $attempt still running: $($Command[0])"
+  }
+  if ($process.HasExited -and $process.ExitCode -eq 0) { exit 0 }
   if (-not $process.HasExited) { $process.Kill($true) } # whole tree, on every platform
   Write-Warning "attempt $attempt of $($options.Attempts) failed or exceeded $($options.Minutes) min: $Command"
 }

@@ -3,7 +3,14 @@ function Invoke-Checked([string]$File, [string[]]$Arguments) {
   if ($LASTEXITCODE -ne 0) { throw "$File failed with exit code $LASTEXITCODE" }
 }
 
+# Timestamped progress line. A CI job that loses its runner keeps only its streamed log, so the
+# last one names the phase that was running.
+function Write-InstallStep([string]$Message) {
+  Write-Host "[install $(Get-Date -Format HH:mm:ss)] $Message"
+}
+
 function Download([string]$Url, [string]$OutFile) {
+  Write-InstallStep "download $Url"
   New-Item -ItemType Directory -Force (Split-Path -Parent $OutFile) | Out-Null
   Invoke-Checked 'curl.exe' @(
     '-fL','--retry','5','--retry-all-errors','--retry-delay','5',
