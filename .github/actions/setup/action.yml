@@ -23,25 +23,18 @@ runs:
       env:
         PACKAGES: ${{ inputs.apt }}
       run: |
-        # A dead or stalled mirror must not consume the job deadline. Per-request timeouts do not
-        # bound a stalled transfer, and an update that only "Ign"s a mirror still exits 0 with an
-        # incomplete index, so bound each attempt and retry update+install together.
-        options=(-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
-        for attempt in 1 2 3; do
-          # shellcheck disable=SC2086
-          if timeout 300 sudo apt-get "${options[@]}" update -qq &&
-             timeout 600 sudo apt-get "${options[@]}" install --yes --no-install-recommends $PACKAGES; then
-            exit 0
-          fi
-          echo "apt attempt $attempt failed; retrying" >&2
-          sleep 20
-        done
-        exit 1
+        # Per-request timeouts do not bound a stalled transfer, and an update that only "Ign"s a
+        # mirror still exits 0 with an incomplete index, so bound and retry update+install together.
+        sudo env PACKAGES="$PACKAGES" pwsh -NoProfile -File scripts/ci/retry.ps1 -Minutes 15 -- bash -c \
+          'o="-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
+           apt-get $o update -qq && apt-get $o install --yes --no-install-recommends $PACKAGES'
     - if: inputs.dev != ''
       shell: bash
       env:
         COMPONENTS: ${{ inputs.dev }}
-      run: sudo env MOM_DEV_WORKSPACE="/var/tmp/mom-dev-ci" scripts/install-dev.sh --component "$COMPONENTS" --jobs 4
+      run: >-
+        sudo env MOM_DEV_WORKSPACE="/var/tmp/mom-dev-ci" pwsh -NoProfile -File scripts/ci/retry.ps1
+        -Minutes 30 -- bash scripts/install-dev.sh --component "$COMPONENTS" --jobs 4
     - if: inputs.npm == 'true'
       shell: bash
-      run: npm ci --ignore-scripts --no-audit --no-fund
+      run: pwsh -NoProfile -File scripts/ci/retry.ps1 -- npm ci --ignore-scripts --no-audit --no-fund

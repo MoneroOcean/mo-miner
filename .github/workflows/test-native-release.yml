@@ -56,12 +56,13 @@ jobs:
       - id: binary
         run: node scripts/ci/runtime-input.js binary
       - if: inputs.platform == 'linux' && matrix.lane == 'portable-cpu'
-        run: bash scripts/install-opencl-cpu.sh
+        run: sudo pwsh -NoProfile -File scripts/ci/retry.ps1 -- bash scripts/install-opencl-cpu.sh
       - if: inputs.platform == 'win32' && matrix.lane == 'portable-cpu'
         shell: pwsh
         run: |
           $workspace = Join-Path $env:RUNNER_TEMP 'mom-dev-opencl-cpu'
-          & .\scripts\install-dev.ps1 -Component opencl-cpu -Workspace $workspace
+          & scripts/ci/retry.ps1 -- pwsh -NoProfile -File scripts/install-dev.ps1 -Component opencl-cpu -Workspace $workspace
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $root = 'C:\Program Files (x86)\Common Files\Intel\Shared Libraries\'
           $registry = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Khronos\OpenCL\Vendors'
           $paths = @($registry.PSObject.Properties | Where-Object {

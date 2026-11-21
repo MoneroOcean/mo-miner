@@ -33,7 +33,7 @@ jobs:
         with:
           npm: true
           dev: base,node,oneapi,dpcpp
-      - run: bash scripts/install-opencl-cpu.sh
+      - run: sudo pwsh -NoProfile -File scripts/ci/retry.ps1 -- bash scripts/install-opencl-cpu.sh
       - run: scripts/run-bounded-native-ci.sh npm run dev -- node tests/run-hash.js engineering
 
   windows-build:
@@ -59,8 +59,11 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup
       - shell: pwsh
+        run: '& scripts/ci/retry.ps1 -Minutes 30 -- pwsh -NoProfile -File scripts/install-dev.ps1 -Component "${{ matrix.components }}" -Jobs 4'
+      - shell: pwsh
+        env:
+          MOM_BUILD_JOBS: 4 # install-dev set it in-process when both ran in one step
         run: |
-          & scripts/install-dev.ps1 -Component ${{ matrix.components }} -Jobs 4
           & scripts/build-windows-multicompiler.ps1 -Scope ${{ matrix.scope }}
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - id: seal
@@ -90,9 +93,7 @@ jobs:
         with:
           npm: true
       - shell: pwsh
-        run: |
-          & scripts/install-dev.ps1 -Component base,node,opencl-cpu -Jobs 4
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+        run: '& scripts/ci/retry.ps1 -- pwsh -NoProfile -File scripts/install-dev.ps1 -Component "base,node,opencl-cpu" -Jobs 4'
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: "{engineering-mom.node,engineering-dpcpp-opencl.zip}"
