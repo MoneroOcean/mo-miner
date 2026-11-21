@@ -52,7 +52,13 @@ static sycl::event search_esimd_dpasw_impl(
   // Capture only the buffers the kernel reads. An ESIMD kernel receives its captures in each
   // thread's payload, so a whole Buffers copy (with its proof axes) costs the A770 registers.
   // DIAG: capture layout (0 five pointers, 1 v0.9.4 Buffers mirror, 2 current Buffers).
+  // DIAG: Capture >= 100 encodes field order (hundreds digit - 1) and uint32 padding (rest).
+  constexpr int Order = Capture >= 100 ? Capture / 100 - 1 : 0, Pad = Capture >= 100 ? Capture % 100 : 0;
+  struct Narrow0 { const int8_t *Ap, *Bp; const uint8_t *cA, *target; Result* result; uint32_t pad[Pad ? Pad : 1]; };
+  struct Narrow1 { Result* result; const uint8_t *target, *cA; const int8_t *Bp, *Ap; uint32_t pad[Pad ? Pad : 1]; };
+  struct Narrow2 { const uint8_t *cA, *target; Result* result; const int8_t *Ap, *Bp; uint32_t pad[Pad ? Pad : 1]; };
   struct Narrow { const int8_t *Ap, *Bp; const uint8_t *cA, *target; Result* result; };
+  using NarrowP = std::conditional_t<Order == 0, Narrow0, std::conditional_t<Order == 1, Narrow1, Narrow2>>;
   struct Legacy {
     int proof_rows, proof_cols;
     int8_t *EAL, *EBR, *EBRt, *Ap, *Bp;
@@ -64,10 +70,15 @@ static sycl::event search_esimd_dpasw_impl(
     bool positive_inputs, seed_prefix_inputs, fixed_b_reuse;
     uint32_t fixed_b_seed;
   };
-  using Cap = std::conditional_t<Capture == 0, Narrow,
-                                 std::conditional_t<Capture == 1, Legacy, Buffers>>;
+  using Cap = std::conditional_t<Capture >= 100 ? true : false, NarrowP,
+               std::conditional_t<Capture == 0, Narrow,
+                                  std::conditional_t<Capture == 1, Legacy, Buffers>>>;
   Cap cap{};
-  if constexpr (Capture == 0)
+  if constexpr (Capture >= 100) {
+    cap.Ap = bb.Ap; cap.Bp = bb.Bp; cap.cA = bb.cA; cap.target = bb.target; cap.result = bb.result;
+    if constexpr (Pad > 0)
+      for (int i = 0; i < Pad; ++i) cap.pad[i] = uint32_t(i);
+  } else if constexpr (Capture == 0)
     cap = Narrow{bb.Ap, bb.Bp, bb.cA, bb.target, bb.result};
   else if constexpr (Capture == 1)
     cap = Legacy{16, 16, bb.EAL, bb.EBR, bb.EBRt, bb.Ap, bb.Bp, bb.EARp1, bb.EARp2, bb.EBLq1,
@@ -239,6 +250,11 @@ static sycl::event search_esimd_dpasw(sycl::queue& q, const Buffers& bb, uint32_
       return search_esimd_dpasw_impl<128, 1, 4, 2048, 1>(q, bb, seed, m, n, k, rank, dbg);
     if (capture == 2)
       return search_esimd_dpasw_impl<128, 1, 4, 2048, 2>(q, bb, seed, m, n, k, rank, dbg);
+#define MOM_DIAG_CAP(c) \
+    if (capture == c) return search_esimd_dpasw_impl<128, 1, 4, 2048, c>(q, bb, seed, m, n, k, rank, dbg);
+    MOM_DIAG_CAP(224) MOM_DIAG_CAP(112) MOM_DIAG_CAP(106) MOM_DIAG_CAP(103) MOM_DIAG_CAP(300)
+    MOM_DIAG_CAP(206) MOM_DIAG_CAP(324)
+#undef MOM_DIAG_CAP
     return search_esimd_dpasw_impl<128, 1, 4, 2048>(q, bb, seed, m, n, k, rank, dbg);
   }
   if (rank == 128 && m % 64 == 0)
