@@ -49,13 +49,32 @@ static sycl::event search_esimd_dpasw_impl(
   constexpr int BW = ER == 4 ? 128 : pearlhash_dpasw_block_columns;
   constexpr int AN = 128;
   constexpr int Tiles = ER * EC;
-  // Capture only the buffers the kernel reads. An ESIMD kernel receives its captures in each
-  // thread's payload, so a whole Buffers copy (with its proof axes) costs the A770 registers.
-  const int8_t* const Ap = bb.Ap;
-  const int8_t* const Bp = bb.Bp;
-  const uint8_t* const key = bb.cA;
-  const uint8_t* const target = bb.target;
-  Result* const result = bb.result;
+  // An ESIMD kernel receives its captures in each thread's payload, and on the A770 the compiler's
+  // register placement for the K loop follows that payload: its size, the offsets of the fields
+  // read, and where the kernel first reads them. This is the v0.9.4 payload (the five pointers at
+  // their old Buffers offsets, first read after the tile coordinates), which compiles to the
+  // v0.9.4 K loop. Packing the pointers costs 0.5-1.1% there and a larger payload 3-5%, so check
+  // the A770 kernel code before changing this struct or moving its first use.
+  struct KernelArgs {
+    uint64_t reserved0[4];
+    const int8_t *Ap, *Bp;
+    uint64_t reserved1[4];
+    const uint8_t* key;
+    uint64_t reserved2[2];
+    const uint8_t* target;
+    uint64_t reserved3[4];
+    Result* result;
+    uint64_t reserved4;
+  };
+  static_assert(sizeof(KernelArgs) == 160 && offsetof(KernelArgs, Ap) == 32 &&
+                offsetof(KernelArgs, key) == 80 && offsetof(KernelArgs, target) == 104 &&
+                offsetof(KernelArgs, result) == 144, "A770 K-loop payload layout changed");
+  KernelArgs args{};
+  args.Ap = bb.Ap;
+  args.Bp = bb.Bp;
+  args.key = bb.cA;
+  args.target = bb.target;
+  args.result = bb.result;
   const int tilesH = m / (HT * ER), tilesW = n / (HT * EC);
   const size_t nWI = size_t(tilesH) * tilesW;
   const bool blocked = tilesW % BW == 0 && tilesH % BH == 0;
@@ -79,6 +98,8 @@ static sycl::event search_esimd_dpasw_impl(
         Cg = wi % tilesW;
       }
       const int rowBase = Rg * HT * ER, colBase = Cg * EC;
+      const int8_t* Ap = args.Ap;
+      const int8_t* Bp = args.Bp;
       const int8_t* aBand0[ER], *aBand1[ER], *bBand[2 * EC];
       // Matrix-band bases do not change along K; only the bounded inner-byte offset advances.
       MU<ER>([&](auto r) {
@@ -152,12 +173,12 @@ static sycl::event search_esimd_dpasw_impl(
           const uint32_t mx = tile_mix(uint32_t(rowBase + (t / EC) * HT),
                                       uint32_t((colBase + t % EC) * HT), tile_transcript);
           esimd_ns::atomic_update<esimd_ns::atomic_op::add>(
-              &result->chk, simd<uint32_t, 1>(0), simd<uint32_t, 1>(mx), esimd_ns::simd_mask<1>(1));
+              &args.result->chk, simd<uint32_t, 1>(0), simd<uint32_t, 1>(mx), esimd_ns::simd_mask<1>(1));
         }
       }
       simd<uint32_t, Tiles> jackpots[8];
-      esimd_jackpots(tr, key, jackpots);
-      auto target_bytes = esimd_ns::block_load<uint8_t, 32>(target);
+      esimd_jackpots(tr, args.key, jackpots);
+      auto target_bytes = esimd_ns::block_load<uint8_t, 32>(args.target);
       simd<uint32_t, 8> target_words = target_bytes.template bit_cast_view<uint32_t>().read();
       esimd_ns::simd_mask<Tiles> less = 0, equal = 1;
       MU<8>([&](auto i) {
@@ -171,10 +192,10 @@ static sycl::event search_esimd_dpasw_impl(
         if (!wins[t])
           continue;
         simd<int, 1> old = esimd_ns::atomic_update<esimd_ns::atomic_op::add>(
-            &result->found, simd<uint32_t, 1>(0), simd<int, 1>(1), esimd_ns::simd_mask<1>(1));
+            &args.result->found, simd<uint32_t, 1>(0), simd<int, 1>(1), esimd_ns::simd_mask<1>(1));
         if (const int slot = old[0]; slot < kPearlhashWinners) {
-          Winner& winner = result->winners[slot];
-          result->seed = seed;
+          Winner& winner = args.result->winners[slot];
+          args.result->seed = seed;
           winner.row = uint32_t(rowBase + (t / EC) * HT);
           winner.col = uint32_t((colBase + t % EC) * HT);
           for (int i = 0; i < 32; ++i)
