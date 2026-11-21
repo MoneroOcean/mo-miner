@@ -126,9 +126,24 @@ struct Buffers {
   uint32_t fixed_b_seed = 0;
 };
 
+// The fields the commitment and noise producers read. Their kernels capture this, not the whole
+// Buffers: every captured byte travels in each launch's argument payload, and the proof axes
+// added to Buffers measurably slowed the A770's per-attempt kernels.
+struct ProducerBuffers {
+  int8_t *EAL, *EBR, *EBRt;
+  int32_t *EARp1, *EARp2, *EBLq1, *EBLq2;
+  uint8_t *cA, *cB, *key, *CVA, *CVB;
+  bool positive_inputs, seed_prefix_inputs, fixed_b_reuse;
+};
+static ProducerBuffers producer_buffers(const Buffers& b) {
+  return {b.EAL,   b.EBR, b.EBRt, b.EARp1, b.EARp2, b.EBLq1, b.EBLq2, b.cA,
+          b.cB,    b.key, b.CVA,  b.CVB,   b.positive_inputs, b.seed_prefix_inputs,
+          b.fixed_b_reuse};
+}
+
 // Generate B-side rank noise and write either the direct or transposed search layout.
 template <bool DirectLayout>
-static sycl::event k_noise_ebr(sycl::queue& q, const Buffers& B, int n, int rank, int blocks,
+static sycl::event k_noise_ebr(sycl::queue& q, const ProducerBuffers& B, int n, int rank, int blocks,
                                const sycl::event& roots) {
   return q.submit([&](sycl::handler& h) {
     h.depends_on(roots);
@@ -218,7 +233,7 @@ static size_t reduce_tree(sycl::queue& q, uint8_t* cvs, const uint8_t* key, int 
 // attempt keeps CVB/cB from its first attempt and recomputes only A. Returns the seed event.
 [[maybe_unused]] static sycl::event k_roots(sycl::queue& q, Buffers& bb, uint32_t seed, int m,
                                             int n, int k) {
-  auto B = bb;
+  const ProducerBuffers B = producer_buffers(bb);
   const bool reuse_b = B.fixed_b_reuse;
   const size_t lenA = checked_elements(m, k, "M*K roots");
   const size_t lenB = checked_elements(n, k, "N*K roots");
@@ -299,7 +314,7 @@ struct PearlHashEventPair {
 [[maybe_unused]] static PearlHashEventPair k_noise(sycl::queue& a_queue, sycl::queue& b_queue,
                                                       const Buffers& bb, int m, int n,
                                                       int k, int rank, const sycl::event& roots) {
-  auto B = bb;
+  const ProducerBuffers B = producer_buffers(bb);
   const bool reuse_b = B.fixed_b_reuse;
   const int dAL = (m * rank + 31) / 32, dBR = (n * rank + 31) / 32, dP = (k * 4 + 31) / 32;
   sycl::event a_noise = a_queue.submit([&](sycl::handler& h) {
