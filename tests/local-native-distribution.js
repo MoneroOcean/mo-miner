@@ -6,6 +6,8 @@ const {fileHash} = require("../scripts/build-source-inputs");
 const local = require("../scripts/build-local-native-sdk");
 const {buildLocalNativeDistribution} = require("../scripts/build-local-native-distribution");
 const repo = fs.realpathSync(path.resolve(__dirname, ".."));
+// The default archive name carries the package version, so a release bump needs no test edit.
+const {version} = require("../package.json");
 
 /** No producer runs: retain only the actual API boundary fields inspected by the frontdoor.
  * @param {import('node:test').TestContext} t @param {"linux"|"win32"} [target] */
@@ -58,8 +60,8 @@ test.describe("Local native distribution assembly", {skip: process.platform !== 
     assert.deepEqual(f.calls, ["scope", "notices", "packing-tool", "build", "binary-audit", "package", "archive-audit"]);
     assert.deepEqual(fs.readFileSync(f.configFile), original);
     assert.equal(path.basename(result.executable.path), "mom.exe");
-    assert.equal(path.basename(result.archive.path), "mom-v0.9.4-win.zip");
-    assert.equal(fs.readFileSync(result.sidecar, "utf8"), `${result.archive.sha256}  mom-v0.9.4-win.zip\n`);
+    assert.equal(path.basename(result.archive.path), `mom-v${version}-win.zip`);
+    assert.equal(fs.readFileSync(result.sidecar, "utf8"), `${result.archive.sha256}  mom-v${version}-win.zip\n`);
     assert.equal(result.runtimeTested, false);
     assert.equal(result.publicationQualified, false);
   });
@@ -94,6 +96,6 @@ test.describe("Local native distribution assembly", {skip: process.platform !== 
       audit(entrypoint, options); if (options?.archive) {fs.appendFileSync(f.configFile, " ");}
     };
     assert.throws(() => buildLocalNativeDistribution(f.sdk, f.output, {}, f.dependencies), /inputs changed during assembly/);
-    assert.equal(fs.existsSync(path.join(f.output, "mom-v0.9.4-lin.tgz.sha256")), false);
+    assert.equal(fs.existsSync(path.join(f.output, `mom-v${version}-lin.tgz.sha256`)), false);
   });
 });
