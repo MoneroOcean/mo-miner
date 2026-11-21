@@ -36,12 +36,14 @@ set "EXTRACT_DIR=%TEMP%\mom-oneapi-%RUN_ID%"
 set "EXTRACT_LOG=%TEMP%\mom-oneapi-%RUN_ID%-extract.log"
 set "EXIT_CODE=1"
 
+echo [oneapi %TIME%] resolve installer URL
 set "RESOLVED_URL="
 for /f "delims=" %%U in ('.\powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%resolve-oneapi-url.ps1" "%URL%" "%PACKAGE%"') do set "RESOLVED_URL=%%U"
 popd
 if not defined RESOLVED_URL goto cleanup
 set "URL=%RESOLVED_URL%"
 
+echo [oneapi %TIME%] download installer
 curl.exe --fail --location --show-error --retry 5 --retry-delay 5 --output "%INSTALLER%" --url "%URL%"
 if not errorlevel 1 goto download_ok
 set "EXIT_CODE=%ERRORLEVEL%"
@@ -53,6 +55,7 @@ set "EXIT_CODE=%ERRORLEVEL%"
 goto cleanup
 :installer_signature_ok
 
+echo [oneapi %TIME%] extract
 start "" /b /wait "%INSTALLER%" -s -x -f "%EXTRACT_DIR%" --log "%EXTRACT_LOG%"
 set "EXTRACT_EXIT_CODE=%ERRORLEVEL%"
 if "%EXTRACT_EXIT_CODE%"=="0" goto extraction_ok
@@ -67,6 +70,7 @@ if not errorlevel 1 goto bootstrapper_signature_ok
 set "EXIT_CODE=%ERRORLEVEL%"
 goto cleanup
 :bootstrapper_signature_ok
+echo [oneapi %TIME%] install %COMPONENTS%
 "%BOOTSTRAPPER%" -s --action install --components=%COMPONENTS% --eula=accept -p=NEED_VS2017_INTEGRATION=0 -p=NEED_VS2019_INTEGRATION=0 -p=NEED_VS2022_INTEGRATION=1 --log-dir="%EXTRACT_DIR%\logs"
 set "EXIT_CODE=%ERRORLEVEL%"
 

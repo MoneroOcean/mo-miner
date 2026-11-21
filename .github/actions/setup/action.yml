@@ -18,6 +18,17 @@ runs:
     - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
       with:
         node-version: 24.15.0
+    - if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        # install-dev.ps1 and the Windows native build pin Node.js at C:\Program Files\nodejs. Point
+        # that path at setup-node's copy so CI never runs the Node MSI as an upgrade over the
+        # runner's preinstalled Node (suspected in jobs that lost their runner during install-dev).
+        # install-dev's Test-Node still verifies the pinned version and node-gyp.
+        $pinned = 'C:\Program Files\nodejs'
+        $node = (Get-Command node -CommandType Application)[0].Source
+        if (Test-Path -LiteralPath $pinned) { Move-Item -LiteralPath $pinned "$pinned-runner" }
+        New-Item -ItemType Junction -Path $pinned -Target (Split-Path -Parent $node) | Out-Null
     - if: inputs.apt != ''
       shell: bash
       env:

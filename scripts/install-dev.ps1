@@ -193,8 +193,13 @@ function Export-DevelopmentEnvironment([string]$Name, [string]$Value) {
 function Install-Msi([string]$Path, [string[]]$Properties = @()) {
   Require-Administrator
   # Callers authenticate direct downloads or the signed/hash-pinned container they extract from.
-  $process = Start-Process msiexec.exe -ArgumentList (@('/i',"`"$Path`"",'/qn','/norestart') + $Properties) -Wait -PassThru
-  if ($process.ExitCode -notin @(0,3010,1641)) { throw "MSI $Path failed with exit code $($process.ExitCode)" }
+  $log = "$Path.log"
+  Write-InstallStep "msiexec $(Split-Path -Leaf $Path) (log $log)"
+  $process = Start-Process msiexec.exe -ArgumentList (@('/i',"`"$Path`"",'/qn','/norestart','/l*v',"`"$log`"") + $Properties) -Wait -PassThru
+  if ($process.ExitCode -notin @(0,3010,1641)) {
+    Get-Content -LiteralPath $log -Tail 40 -ErrorAction SilentlyContinue | Write-Host
+    throw "MSI $Path failed with exit code $($process.ExitCode)"
+  }
 }
 function Test-VsBuildTools {
   $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -244,6 +249,7 @@ function Install-Base {
       '--add','Microsoft.VisualStudio.Component.Windows11SDK.26100',
       '--add','Microsoft.VisualStudio.Component.VC.CMake.Project'
     )
+    Write-InstallStep 'Visual Studio Build Tools'
     $process = Start-Process $installer -ArgumentList $arguments -Wait -PassThru
     if ($process.ExitCode -notin @(0,3010)) { throw "Visual Studio Build Tools failed: $($process.ExitCode)" }
   }
@@ -293,6 +299,7 @@ function Install-Node {
   if ($LASTEXITCODE -ne 0 -or -not $npmPrefix) { throw 'Unable to resolve the global npm prefix' }
   Add-MachinePath $npmPrefix
   if (-not (Get-Command node-gyp.cmd -ErrorAction SilentlyContinue)) {
+    Write-InstallStep 'npm install -g node-gyp'
     Invoke-Checked 'npm.cmd' @('install','-g','node-gyp@12.2.0')
   }
 }
@@ -465,6 +472,7 @@ function Install-OpenClCpu {
 function Install-OneApi {
   if (-not (Test-OneApi)) {
     Require-Administrator
+    Write-InstallStep 'oneAPI'
     Invoke-Checked (Join-Path $repo 'scripts\install-oneapi.bat') @(
       $oneApiUrl,$oneApiComponents,$oneApiPackage)
   }
@@ -681,6 +689,7 @@ if ($ValidateOnly) {
 
 Require-Administrator
 Initialize-Workspace
+Write-InstallStep "components $($components -join ',')"
 
 if ($components -contains 'base') {
   Install-Base
