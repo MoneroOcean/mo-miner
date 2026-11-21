@@ -37,7 +37,7 @@ static inline esimd_ns::simd<int32_t, 64> dpasw_mad(
 
 // Submit the selected DPASW tile variant while preserving the common winning-tile transcript.
 template <int FixedRank, int Columns = pearlhash_dpasw_columns,
-          int Rows = pearlhash_dpasw_rows, int FixedK = 0>
+          int Rows = pearlhash_dpasw_rows, int FixedK = 0, int Capture = 0>
 static sycl::event search_esimd_dpasw_impl(
     sycl::queue& q, const Buffers& bb, uint32_t seed,
     int m, int n, int requested_k, int rank, bool dbg) {
@@ -51,11 +51,31 @@ static sycl::event search_esimd_dpasw_impl(
   constexpr int Tiles = ER * EC;
   // Capture only the buffers the kernel reads. An ESIMD kernel receives its captures in each
   // thread's payload, so a whole Buffers copy (with its proof axes) costs the A770 registers.
-  const int8_t* const Ap = bb.Ap;
-  const int8_t* const Bp = bb.Bp;
-  const uint8_t* const key = bb.cA;
-  const uint8_t* const target = bb.target;
-  Result* const result = bb.result;
+  // DIAG: capture layout (0 five pointers, 1 v0.9.4 Buffers mirror, 2 current Buffers).
+  struct Narrow { const int8_t *Ap, *Bp; const uint8_t *cA, *target; Result* result; };
+  struct Legacy {
+    int proof_rows, proof_cols;
+    int8_t *EAL, *EBR, *EBRt, *Ap, *Bp;
+    int32_t *EARp1, *EARp2, *EBLq1, *EBLq2;
+    uint8_t *cA, *cB, *key, *target, *CVA, *CVB;
+    uint32_t* transcript;
+    int transcript_rows;
+    Result* result;
+    bool positive_inputs, seed_prefix_inputs, fixed_b_reuse;
+    uint32_t fixed_b_seed;
+  };
+  using Cap = std::conditional_t<Capture == 0, Narrow,
+                                 std::conditional_t<Capture == 1, Legacy, Buffers>>;
+  Cap cap{};
+  if constexpr (Capture == 0)
+    cap = Narrow{bb.Ap, bb.Bp, bb.cA, bb.target, bb.result};
+  else if constexpr (Capture == 1)
+    cap = Legacy{16, 16, bb.EAL, bb.EBR, bb.EBRt, bb.Ap, bb.Bp, bb.EARp1, bb.EARp2, bb.EBLq1,
+                 bb.EBLq2, bb.cA, bb.cB, bb.key, bb.target, bb.CVA, bb.CVB, bb.transcript,
+                 bb.transcript_rows, bb.result, bb.positive_inputs, bb.seed_prefix_inputs,
+                 bb.fixed_b_reuse, bb.fixed_b_seed};
+  else
+    cap = bb;
   const int tilesH = m / (HT * ER), tilesW = n / (HT * EC);
   const size_t nWI = size_t(tilesH) * tilesW;
   const bool blocked = tilesW % BW == 0 && tilesH % BH == 0;
@@ -66,6 +86,11 @@ static sycl::event search_esimd_dpasw_impl(
   return q.submit([&](sycl::handler& h) {
     const auto kernel = [=](sycl::nd_item<1> id) SYCL_ESIMD_KERNEL MOM_SYCL_KERNEL_ARGS_RESTRICT {
       using esimd_ns::simd;
+      const int8_t* const Ap = cap.Ap;
+      const int8_t* const Bp = cap.Bp;
+      const uint8_t* const key = cap.cA;
+      const uint8_t* const target = cap.target;
+      Result* const result = cap.result;
       const int wi = int(id.get_global_id(0));
       // Consecutive local work-items share an A row band and supply different 128-byte halves.
       const size_t aHalfOffset = (id.get_local_id(0) & 1) * 128;
@@ -203,7 +228,19 @@ static sycl::event search_esimd_dpasw(sycl::queue& q, const Buffers& bb, uint32_
     return search_esimd_dpasw_impl<256>(q, bb, seed, m, n, k, rank, dbg);
 #if defined(MOM_PEARLHASH_INTEL_LARGE_GRF)
   if (rank == 128 && m % 64 == 0 && k == 2048)
+  {
+    static const int capture = [] {
+      const char* v = std::getenv("MOM_DIAG_DPASW_CAPTURE");
+      const int c = v ? std::atoi(v) : 0;
+      std::fprintf(stderr, "DIAG_DPASW_CAPTURE=%d\n", c);
+      return c;
+    }();
+    if (capture == 1)
+      return search_esimd_dpasw_impl<128, 1, 4, 2048, 1>(q, bb, seed, m, n, k, rank, dbg);
+    if (capture == 2)
+      return search_esimd_dpasw_impl<128, 1, 4, 2048, 2>(q, bb, seed, m, n, k, rank, dbg);
     return search_esimd_dpasw_impl<128, 1, 4, 2048>(q, bb, seed, m, n, k, rank, dbg);
+  }
   if (rank == 128 && m % 64 == 0)
     return search_esimd_dpasw_impl<128, 1, 4>(q, bb, seed, m, n, k, rank, dbg);
   // Keep each pair on one A band: widening columns requires an even number of wider groups.
