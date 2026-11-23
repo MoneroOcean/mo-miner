@@ -533,7 +533,9 @@ __device__ __forceinline__ void compact_gemm_impl(
   swizzle_with_tails(block_m, block_n, m, n, k);
 
   const int thread = int(threadIdx.x);
-  const int warp = thread >> 5;
+  const int physical_warp = thread >> 5;
+  // Exchange the two pairs in the second row group to spread the extra A-packet work.
+  const int warp = physical_warp ^ ((physical_warp >> 2) << 1);
   const int lane = thread & 31;
   const int warp_m = warp >> 2;
   const int warp_n = warp & 3;
@@ -766,7 +768,8 @@ __device__ __forceinline__ uint32_t swap_checkpoint(
       for(unsigned stream=0;stream<4;++stream) {
         const unsigned a=(outgoing>>(8*stream))&127,b=(word>>(8*stream))&127;
         const auto& gx=groups[x][stream];const auto& gy=groups[y][stream];
-        delta+=(stream<2?5:8)*(int(swap_max(gx,a,b))+int(swap_max(gy,b,a))-gx.maximum-gy.maximum);
+        // B is reconstructed privately by each consumer warp. A packets are shared.
+        delta+=(stream<2?1:8)*(int(swap_max(gx,a,b))+int(swap_max(gy,b,a))-gx.maximum-gy.maximum);
       }
     }
     // 128 encodes the global partner index, preserving lowest-index ties.
@@ -830,7 +833,7 @@ void selector_prepare(const uint32_t* input,uint32_t* output,unsigned k) {
           const unsigned rank=(word>>(8*s))&127;
           // Match refinement's distinct-rank bank objective: a duplicate
           // contributes no new address to this bin's working set.
-          score+=(s<2?5:8)*(groups[lane][s].ranks[rank]?0:2*counts[lane][s][rank&7]+1);
+          score+=(s<2?1:8)*(groups[lane][s].ranks[rank]?0:2*counts[lane][s][rank&7]+1);
         }
         key=(score*9+sizes[lane])*16+lane;
       }
@@ -850,7 +853,18 @@ void selector_prepare(const uint32_t* input,uint32_t* output,unsigned k) {
   }
   __syncthreads();
   const uint32_t word=swap_checkpoint(ordered,groups,thread);
-  output[base+thread]=word;
+  if(warp==0){
+    const auto* g=groups[lane&15];
+    const uint32_t a0=g[0].maximum,a1=g[1].maximum,b0=g[2].maximum,b1=g[3].maximum;
+    // Lane is the deterministic tie-break; invert rank to emit descending pressure.
+    const unsigned key=((b0+b1)*128u+16u*b0+2u*(a0+a1))*16u+(lane&15);
+    unsigned index=0;
+#pragma unroll
+    for(int peer=0;peer<16;++peer)index+=__shfl_sync(0xffffffffu,key,peer)<key;
+    if(lane<16)canonical[lane]=15u-index;
+  }
+  __syncthreads();
+  output[base+8*canonical[thread/8]+thread%8]=word;
 }
 
 

@@ -292,6 +292,54 @@ test("PearlHash compact cold permutations and result origins open the same publi
   publicMapExercise(source());
 });
 
+/** Execute the selector's actual final permutation block with tagged bank maxima.
+ * @param {string} code */
+function groupOrderExercise(code) {
+  const selector=extractCppBlock(code,"void selector_prepare(");
+  const order=extractCppBlock(selector,"  if(warp==0){\n    const auto* g=groups[lane&15];");
+  const flat=normalize(order);
+  const body=flat.slice(flat.indexOf("{")+1,flat.lastIndexOf("}"))
+    .replace(/#pragma unroll/gu,"")
+    .replace(/\bconst auto\*/gu,"const ")
+    .replace(/\bconst (?:uint32_t|unsigned|int) /gu,"const ")
+    .replace(/\bunsigned index=/gu,"let index=")
+    .replace(/for\(int /gu,"for(let ")
+    .replace(/\b(0x[0-9a-f]+|\d+)u\b/giu,"$1")
+    .replace(/__shfl_sync/gu,"shuffle");
+  const rankStart=body.indexOf("let index=0;");
+  assert.ok(rankStart>0,"descending group key and tie-break");
+  const keyFor=runInNewContext(`((groups,lane)=>{${body.slice(0,rankStart)}return key;})`);
+  const orderFor=runInNewContext(`((groups,keyFor)=>{
+    const canonical=new Array(16),warp=0;
+    const shuffle=(_mask,_key,peer)=>keyFor(groups,peer);
+    for(let lane=0;lane<16;++lane){${body}}
+    return canonical;
+  })`);
+  const profiles=[
+    [0,0,0,0],[1,1,0,0],[0,0,1,0],[1,1,0,1],
+    [3,1,2,1],[1,3,2,1],[4,2,3,0],[1,1,1,1],
+    [2,2,2,2],[0,0,3,1],[2,2,2,1],[4,4,4,4],
+    [0,0,0,2],[7,0,5,1],[1,0,0,0],[0,1,0,0],
+  ];
+  const groups=profiles.map(profile=>profile.map(maximum=>({maximum})));
+  const actual=orderFor(groups,keyFor);
+  /** @param {number[]} profile */
+  const score=([a0=0,a1=0,b0=0,b1=0])=>((b0+b1)*128+16*b0+2*(a0+a1));
+  const expected=profiles.map((profile,group)=>({group,score:score(profile)}))
+    .sort((a,b)=>b.score-a.score||b.group-a.group);
+  assert.equal(new Set(actual).size,16,"group destinations form a permutation");
+  for(let slot=0;slot<expected.length;++slot) {
+    const entry=expected[slot];assert.ok(entry);
+    assert.equal(actual[entry.group],slot,`group ${entry.group} destination`);
+  }
+  assert.ok(actual[10]<actual[5]&&actual[5]<actual[4],"equal pressure uses descending group id");
+  assert.ok(actual[15]<actual[14],"two-way pressure tie is deterministic");
+}
+
+test("PearlHash selector emits descending bank pressure with deterministic ties",()=>{
+  groupOrderExercise(source());
+});
+
 test("PearlHash compact policy binds canonical key, openings and target geometry", {
   skip:process.platform==="win32"?"requires a host C++ compiler":false,
 }, () => {

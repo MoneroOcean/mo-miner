@@ -6201,7 +6201,7 @@ int main(int argc, char** argv) {
             const counts = Array.from({length: 16}, () =>
               Array.from({length: 4}, () => new Uint8Array(8)));
             const word = rank * 0x01010101;
-            assert.equal(score(word, groups, counts, winner), 26);
+            assert.equal(score(word, groups, counts, winner), 18);
             for (let repeat = 0; repeat < 3; ++repeat) {
               for (let lane = 0; lane < 4; ++lane) {update(word, groups, counts, winner, lane);}
               assert.equal(score(word, groups, counts, winner), 0);
@@ -6209,7 +6209,7 @@ int main(int argc, char** argv) {
                 assert.equal(counts[winner]?.[lane]?.[rank & 7], 1);
               }
             }
-            assert.equal(score((rank + 8) * 0x01010101, groups, counts, winner), 78);
+            assert.equal(score((rank + 8) * 0x01010101, groups, counts, winner), 54);
           }
         }
       };
